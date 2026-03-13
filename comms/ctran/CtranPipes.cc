@@ -77,6 +77,9 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
           static_cast<uint8_t>(NCCL_CTRAN_IBGDA_RNR_RETRY);
     }
 
+    config.disableIb = NCCL_CTRAN_PIPES_DISABLE_IB;
+    config.topoConfig.p2pDisable = NCCL_P2P_DISABLE;
+
     // Topology config: MNNVL mode and overrides
     config.topoConfig.mnnvlMode =
         static_cast<comms::pipes::MnnvlMode>(NCCL_MNNVL_ENABLE);

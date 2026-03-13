@@ -27,7 +27,7 @@ INCEXPORTS  := nccl.h nccl_device.h CtranEx.h CtranExComm.h \
 
 
 LIBSRCFILES := \
- 	$(filter-out ${SRCDIR}/enhcompat.cc,$(wildcard ${SRCDIR}/*.cc)) \
+ 	$(filter-out ${SRCDIR}/enhcompat.cc ${SRCDIR}/init_nvtx.cc,$(wildcard ${SRCDIR}/*.cc)) \
 	$(wildcard ${SRCDIR}/graph/*.cc) \
 	$(wildcard ${SRCDIR}/misc/*.cc) \
 	$(wildcard ${SRCDIR}/transport/*.cc) \

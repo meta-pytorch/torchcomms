@@ -72,6 +72,13 @@ struct TopologyConfig {
   //   - 32-bit integer: override clique ID. Ranks with the same
   //     <clusterUuid, cliqueId> pair form an NVLink clique.
   std::optional<int> mnnvlCliqueId;
+
+  // Disable all P2P NVLink transport (both Tier 1 MNNVL and Tier 2 same-host).
+  // Follows NCCL's NCCL_P2P_DISABLE semantics (PATH_LOC — self only):
+  //   - false (default): use NVLink when available (MNNVL or peer access)
+  //   - true: skip both Tier 1 and Tier 2; all non-self peers fall back to
+  //     IBGDA
+  bool p2pDisable{false};
 };
 
 /**
@@ -134,6 +141,11 @@ using LocalInfoFn = std::function<RankTopologyInfo(int deviceId)>;
  *
  *   Tier 2 — Same-host + cudaDeviceCanAccessPeer (H100 and earlier):
  *     Both ranks on the same hostname → query CUDA peer access.
+ *     Skipped when TopologyConfig::p2pDisable is true (set by
+ * NCCL_P2P_DISABLE).
+ *
+ *   Both tiers are skipped when p2pDisable is true, matching NCCL's PATH_LOC
+ *   semantics where all inter-GPU P2P is disabled.
  *
  *   Fallback → IBGDA.
  *

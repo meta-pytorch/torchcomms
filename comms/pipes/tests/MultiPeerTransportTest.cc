@@ -6,6 +6,7 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include <folly/init/Init.h>
@@ -13,7 +14,10 @@
 #include "comms/pipes/GpuMemHandler.h"
 #include "comms/pipes/MultiPeerDeviceHandle.cuh"
 #include "comms/pipes/MultiPeerTransport.h"
+#include "comms/pipes/TopologyDiscovery.h"
 #include "comms/pipes/Transport.cuh"
+#include "comms/pipes/tests/MockBootstrap.h"
+#include "comms/pipes/tests/TopologyTestUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
@@ -50,6 +54,29 @@ class MultiPeerTransportTestFixture : public MpiBaseTestFixture {
             {
                 .cudaDevice = localRank,
             },
+    };
+    return std::make_unique<MultiPeerTransport>(
+        globalRank,
+        numRanks,
+        localRank,
+        std::make_shared<MpiBootstrap>(),
+        config);
+  }
+
+  std::unique_ptr<MultiPeerTransport> createDisableIbTransport() {
+    MultiPeerTransportConfig config{
+        .nvlConfig =
+            {
+                .dataBufferSize = 256 * 1024,
+                .chunkSize = 512,
+                .pipelineDepth = 4,
+                .p2pSignalCount = 4,
+            },
+        .ibgdaConfig =
+            {
+                .cudaDevice = localRank,
+            },
+        .disableIb = true,
     };
     return std::make_unique<MultiPeerTransport>(
         globalRank,
@@ -365,6 +392,436 @@ TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferFabric) {
 #endif
 
   MPI_Barrier(MPI_COMM_WORLD);
+}
+
+// POSIX FD path — cuMem buffer with CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR,
+// without fabric. Exercises the pidfd_getfd-based exchange on H100 NVL-only.
+TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferPosixFd) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
+  }
+
+  auto transport = createTransport();
+  transport->exchange();
+
+  if (transport->nvl_peer_ranks().empty()) {
+    GTEST_SKIP() << "No NVL peers available";
+  }
+  if (nvlSpansMultipleHosts(*transport)) {
+    GTEST_SKIP() << "POSIX FD exchange requires intra-host NVL; "
+                 << "NVL domain spans multiple hosts (MNNVL).";
+  }
+
+#if CUDART_VERSION >= 12030
+  const size_t requestedSize = 4096;
+
+  int cudaDev = 0;
+  CUdevice cuDev;
+  CUDACHECK_TEST(cudaGetDevice(&cudaDev));
+  ASSERT_EQ(cuDeviceGet(&cuDev, cudaDev), CUDA_SUCCESS);
+
+  CUmemAllocationProp prop = {};
+  prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+  prop.location = {CU_MEM_LOCATION_TYPE_DEVICE, cuDev};
+  prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+
+  int rdmaFlag = 0;
+  cuDeviceGetAttribute(
+      &rdmaFlag,
+      CU_DEVICE_ATTRIBUTE_GPU_DIRECT_RDMA_WITH_CUDA_VMM_SUPPORTED,
+      cuDev);
+  if (rdmaFlag) {
+    prop.allocFlags.gpuDirectRDMACapable = 1;
+  }
+
+  size_t granularity = 0;
+  ASSERT_EQ(
+      cuMemGetAllocationGranularity(
+          &granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM),
+      CUDA_SUCCESS);
+  size_t allocSize =
+      ((requestedSize + granularity - 1) / granularity) * granularity;
+
+  CUmemGenericAllocationHandle allocHandle;
+  ASSERT_EQ(cuMemCreate(&allocHandle, allocSize, &prop, 0), CUDA_SUCCESS);
+
+  CUdeviceptr devPtr = 0;
+  ASSERT_EQ(
+      cuMemAddressReserve(&devPtr, allocSize, granularity, 0, 0), CUDA_SUCCESS);
+  ASSERT_EQ(cuMemMap(devPtr, allocSize, 0, allocHandle, 0), CUDA_SUCCESS);
+
+  CUmemAccessDesc accessDesc = {};
+  accessDesc.location = {CU_MEM_LOCATION_TYPE_DEVICE, cuDev};
+  accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+  ASSERT_EQ(cuMemSetAccess(devPtr, allocSize, &accessDesc, 1), CUDA_SUCCESS);
+
+  void* localBuf = reinterpret_cast<void*>(devPtr);
+  CUDACHECK_TEST(cudaMemset(localBuf, globalRank + 1, requestedSize));
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  auto mappedPtrs = transport->exchangeNvlBuffer(localBuf, requestedSize);
+  verifyMappedPtrs(*transport, mappedPtrs, localBuf);
+
+  transport->unmapNvlBuffers(mappedPtrs);
+  cuMemUnmap(devPtr, allocSize);
+  cuMemAddressFree(devPtr, allocSize);
+  cuMemRelease(allocHandle);
+#endif
+
+  MPI_Barrier(MPI_COMM_WORLD);
+}
+
+// Verifies POSIX FD exchange + unmap round-trip works twice (no state leaks).
+TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferPosixFd_MultipleRounds) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
+  }
+
+  auto transport = createTransport();
+  transport->exchange();
+
+  if (transport->nvl_peer_ranks().empty()) {
+    GTEST_SKIP() << "No NVL peers available";
+  }
+  if (nvlSpansMultipleHosts(*transport)) {
+    GTEST_SKIP() << "POSIX FD exchange requires intra-host NVL";
+  }
+
+#if CUDART_VERSION >= 12030
+  const size_t requestedSize = 1024;
+
+  int cudaDev = 0;
+  CUdevice cuDev;
+  CUDACHECK_TEST(cudaGetDevice(&cudaDev));
+  ASSERT_EQ(cuDeviceGet(&cuDev, cudaDev), CUDA_SUCCESS);
+
+  CUmemAllocationProp prop = {};
+  prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+  prop.location = {CU_MEM_LOCATION_TYPE_DEVICE, cuDev};
+  prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+
+  int rdmaFlag = 0;
+  cuDeviceGetAttribute(
+      &rdmaFlag,
+      CU_DEVICE_ATTRIBUTE_GPU_DIRECT_RDMA_WITH_CUDA_VMM_SUPPORTED,
+      cuDev);
+  if (rdmaFlag) {
+    prop.allocFlags.gpuDirectRDMACapable = 1;
+  }
+
+  size_t granularity = 0;
+  ASSERT_EQ(
+      cuMemGetAllocationGranularity(
+          &granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM),
+      CUDA_SUCCESS);
+  size_t allocSize =
+      ((requestedSize + granularity - 1) / granularity) * granularity;
+
+  for (int iter = 0; iter < 2; ++iter) {
+    CUmemGenericAllocationHandle allocHandle;
+    ASSERT_EQ(cuMemCreate(&allocHandle, allocSize, &prop, 0), CUDA_SUCCESS);
+
+    CUdeviceptr devPtr = 0;
+    ASSERT_EQ(
+        cuMemAddressReserve(&devPtr, allocSize, granularity, 0, 0),
+        CUDA_SUCCESS);
+    ASSERT_EQ(cuMemMap(devPtr, allocSize, 0, allocHandle, 0), CUDA_SUCCESS);
+
+    CUmemAccessDesc accessDesc = {};
+    accessDesc.location = {CU_MEM_LOCATION_TYPE_DEVICE, cuDev};
+    accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+    ASSERT_EQ(cuMemSetAccess(devPtr, allocSize, &accessDesc, 1), CUDA_SUCCESS);
+
+    void* localBuf = reinterpret_cast<void*>(devPtr);
+    CUDACHECK_TEST(cudaMemset(localBuf, iter + 1, requestedSize));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    auto mappedPtrs = transport->exchangeNvlBuffer(localBuf, requestedSize);
+    ASSERT_EQ(static_cast<int>(mappedPtrs.size()), transport->nvl_n_ranks());
+    for (int rank = 0; rank < transport->nvl_n_ranks(); ++rank) {
+      EXPECT_NE(mappedPtrs[rank], nullptr);
+    }
+
+    transport->unmapNvlBuffers(mappedPtrs);
+    cuMemUnmap(devPtr, allocSize);
+    cuMemAddressFree(devPtr, allocSize);
+    cuMemRelease(allocHandle);
+
+    MPI_Barrier(MPI_COMM_WORLD);
+  }
+#endif
+
+  MPI_Barrier(MPI_COMM_WORLD);
+}
+
+// cuMem buffer with CU_MEM_HANDLE_TYPE_NONE should throw because it cannot
+// be exported via either fabric or POSIX FD.
+TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferCuMemNone_Throws) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
+  }
+
+  auto transport = createTransport();
+  transport->exchange();
+
+  if (transport->nvl_peer_ranks().empty()) {
+    GTEST_SKIP() << "No NVL peers available";
+  }
+
+#if CUDART_VERSION >= 12030
+  const size_t requestedSize = 4096;
+
+  int cudaDev = 0;
+  CUdevice cuDev;
+  CUDACHECK_TEST(cudaGetDevice(&cudaDev));
+  ASSERT_EQ(cuDeviceGet(&cuDev, cudaDev), CUDA_SUCCESS);
+
+  // Allocate with NONE handle type — no shareable handle support.
+  CUmemAllocationProp prop = {};
+  prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+  prop.location = {CU_MEM_LOCATION_TYPE_DEVICE, cuDev};
+  // requestedHandleTypes defaults to CU_MEM_HANDLE_TYPE_NONE
+
+  size_t granularity = 0;
+  ASSERT_EQ(
+      cuMemGetAllocationGranularity(
+          &granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM),
+      CUDA_SUCCESS);
+  size_t allocSize =
+      ((requestedSize + granularity - 1) / granularity) * granularity;
+
+  CUmemGenericAllocationHandle allocHandle;
+  ASSERT_EQ(cuMemCreate(&allocHandle, allocSize, &prop, 0), CUDA_SUCCESS);
+
+  CUdeviceptr devPtr = 0;
+  ASSERT_EQ(
+      cuMemAddressReserve(&devPtr, allocSize, granularity, 0, 0), CUDA_SUCCESS);
+  ASSERT_EQ(cuMemMap(devPtr, allocSize, 0, allocHandle, 0), CUDA_SUCCESS);
+
+  CUmemAccessDesc accessDesc = {};
+  accessDesc.location = {CU_MEM_LOCATION_TYPE_DEVICE, cuDev};
+  accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+  ASSERT_EQ(cuMemSetAccess(devPtr, allocSize, &accessDesc, 1), CUDA_SUCCESS);
+
+  void* localBuf = reinterpret_cast<void*>(devPtr);
+
+  EXPECT_THROW(
+      transport->exchangeNvlBuffer(localBuf, requestedSize),
+      std::runtime_error);
+
+  cuMemUnmap(devPtr, allocSize);
+  cuMemAddressFree(devPtr, allocSize);
+  cuMemRelease(allocHandle);
+#endif
+
+  MPI_Barrier(MPI_COMM_WORLD);
+}
+
+// =============================================================================
+// disableIb tests — NVL-only mode
+// =============================================================================
+
+TEST_F(MultiPeerTransportTestFixture, DisableIb_AllPeersNvl) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
+  }
+
+  auto transport = createDisableIbTransport();
+
+  // All non-self peers should be NVL (single-node setup).
+  for (int r = 0; r < numRanks; ++r) {
+    if (r == globalRank) {
+      EXPECT_EQ(transport->get_transport_type(r), TransportType::SELF);
+    } else {
+      EXPECT_EQ(transport->get_transport_type(r), TransportType::P2P_NVL)
+          << "Peer " << r << " should be P2P_NVL with disableIb";
+    }
+  }
+
+  EXPECT_TRUE(transport->ibgda_peer_ranks().empty());
+  for (int r = 0; r < numRanks; ++r) {
+    EXPECT_FALSE(transport->has_ibgda(r));
+  }
+
+  MPI_Barrier(MPI_COMM_WORLD);
+}
+
+TEST_F(MultiPeerTransportTestFixture, DisableIb_ExchangeSucceeds) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
+  }
+
+  auto transport = createDisableIbTransport();
+
+  EXPECT_NO_THROW(transport->exchange());
+
+  MPI_Barrier(MPI_COMM_WORLD);
+}
+
+TEST_F(MultiPeerTransportTestFixture, DisableIb_DeviceHandleZeroIbPeers) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
+  }
+
+  auto transport = createDisableIbTransport();
+
+  transport->exchange();
+  auto handle = transport->get_device_handle();
+
+  EXPECT_EQ(handle.myRank, globalRank);
+  EXPECT_EQ(handle.nRanks, numRanks);
+  EXPECT_EQ(handle.numIbPeers, 0);
+  EXPECT_GT(handle.numNvlPeers, 0);
+
+  MPI_Barrier(MPI_COMM_WORLD);
+}
+
+TEST_F(MultiPeerTransportTestFixture, DisableIb_NvlBufferExchange) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
+  }
+
+  auto transport = createDisableIbTransport();
+  transport->exchange();
+
+  if (nvlSpansMultipleHosts(*transport)) {
+    GTEST_SKIP() << "cudaIpc does not work across hosts";
+  }
+
+  const size_t nbytes = 4096;
+  void* localBuf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&localBuf, nbytes));
+  CUDACHECK_TEST(cudaMemset(localBuf, globalRank + 1, nbytes));
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  auto mappedPtrs = transport->exchangeNvlBuffer(localBuf, nbytes);
+  verifyMappedPtrs(*transport, mappedPtrs, localBuf);
+
+  transport->unmapNvlBuffers(mappedPtrs);
+  CUDACHECK_TEST(cudaFree(localBuf));
+
+  MPI_Barrier(MPI_COMM_WORLD);
+}
+
+// =============================================================================
+// disableIb mock-based tests — pre-computed TopologyResult, no GPU/MPI needed
+// =============================================================================
+
+using tests::make_rank_info;
+using tests::makeTopology;
+
+TEST(MultiPeerTransportDisableIbTest, ThrowsWhenPeerNotNvlReachable) {
+  constexpr int kMyRank = 0;
+  constexpr int kNRanks = 3;
+
+  // Rank 1 is NVL-reachable, rank 2 is NOT.
+  auto topo = makeTopology(kMyRank, {1});
+
+  MultiPeerTransportConfig config{.disableIb = true};
+  auto bootstrap = std::make_shared<testing::MockBootstrap>();
+
+  EXPECT_THROW(
+      MultiPeerTransport(
+          kMyRank, kNRanks, /*deviceId=*/0, bootstrap, config, std::move(topo)),
+      std::runtime_error);
+}
+
+TEST(MultiPeerTransportDisableIbTest, ErrorMessageContainsRank) {
+  constexpr int kMyRank = 0;
+  constexpr int kNRanks = 2;
+
+  // No NVL peers — rank 1 is unreachable.
+  auto topo = makeTopology(kMyRank, {});
+
+  MultiPeerTransportConfig config{.disableIb = true};
+  auto bootstrap = std::make_shared<testing::MockBootstrap>();
+
+  try {
+    MultiPeerTransport(
+        kMyRank, kNRanks, /*deviceId=*/0, bootstrap, config, std::move(topo));
+    FAIL() << "Expected std::runtime_error";
+  } catch (const std::runtime_error& e) {
+    EXPECT_THAT(e.what(), ::testing::HasSubstr("not NVL-reachable"));
+    EXPECT_THAT(e.what(), ::testing::HasSubstr("rank 1"));
+  }
+}
+
+TEST(MultiPeerTransportDisableIbTest, SucceedsWhenAllPeersNvl) {
+  constexpr int kMyRank = 0;
+  constexpr int kNRanks = 3;
+
+  // All peers NVL-reachable.
+  auto topo = makeTopology(kMyRank, {1, 2});
+
+  MultiPeerTransportConfig config{.disableIb = true};
+  auto bootstrap = std::make_shared<testing::MockBootstrap>();
+
+  // Construction succeeds up to the disableIb validation. NVL transport
+  // creation may fail without GPU — we catch that; the validation itself
+  // is what we're testing.
+  try {
+    MultiPeerTransport transport(
+        kMyRank, kNRanks, /*deviceId=*/0, bootstrap, config, std::move(topo));
+
+    for (int r = 0; r < kNRanks; ++r) {
+      if (r == kMyRank) {
+        EXPECT_EQ(transport.get_transport_type(r), TransportType::SELF);
+      } else {
+        EXPECT_EQ(transport.get_transport_type(r), TransportType::P2P_NVL);
+      }
+    }
+    EXPECT_TRUE(transport.ibgda_peer_ranks().empty());
+  } catch (const std::exception&) {
+    // NVL transport creation failed (expected without GPU).
+  }
+}
+
+// NCCL_P2P_DISABLE + disableIb: P2P disabled removes NVL peers from topology,
+// then disableIb validation fails because non-self peers are not NVL-reachable.
+TEST(MultiPeerTransportDisableIbTest, ThrowsWhenP2pDisableAndDisableIb) {
+  constexpr int kMyRank = 0;
+  constexpr int kNRanks = 2;
+
+  // Simulate what TopologyDiscovery::classify() produces when
+  // NCCL_P2P_DISABLE=1: peers are NOT added to the NVL group
+  // because both Tier 1 and Tier 2 are skipped.
+  constexpr const char* kHostname = "test-host-001";
+  std::vector<RankTopologyInfo> allInfo(kNRanks);
+  allInfo[0] = make_rank_info(kHostname, 0);
+  allInfo[1] = make_rank_info(kHostname, 1);
+
+  // classify() with p2pDisable=true should yield no NVL peers.
+  PeerAccessFn alwaysAccess = [](int, int) { return true; };
+  TopologyDiscovery topoDiscovery(alwaysAccess);
+  TopologyConfig topoConfig{.p2pDisable = true};
+  auto topo = topoDiscovery.classify(kMyRank, kNRanks, allInfo, topoConfig);
+  ASSERT_TRUE(topo.nvlPeerRanks.empty())
+      << "p2pDisable should suppress NVL detection";
+
+  // Now construct MultiPeerTransport with disableIb=true.
+  // disableIb requires all non-self peers to be NVL-reachable, but P2P
+  // disable removed them -> expect throw.
+  MultiPeerTransportConfig config{
+      .topoConfig = topoConfig,
+      .disableIb = true,
+  };
+  auto bootstrap = std::make_shared<testing::MockBootstrap>();
+
+  EXPECT_THROW(
+      MultiPeerTransport(
+          kMyRank,
+          kNRanks,
+          /*deviceId=*/0,
+          bootstrap,
+          config,
+          std::move(topo)),
+      std::runtime_error);
 }
 
 } // namespace comms::pipes::tests

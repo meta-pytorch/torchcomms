@@ -10,11 +10,21 @@
 #include "comms/ctran/utils/DevMemType.h"
 #include "comms/ctran/window/CtranWin.h"
 #include "comms/ctran/window/Types.h"
+#if defined(ENABLE_PIPES)
+#include "comms/pipes/MultiPeerTransport.h"
+#include "comms/pipes/window/DeviceWindow.cuh"
+#include "comms/pipes/window/HostWindow.h"
+#endif
 #include "comms/utils/logger/LogUtils.h"
 
 using ctran::window::RemWinInfo;
 
 namespace ctran {
+
+// Defined here (not in header) so that unique_ptr<HostWindow> destructor
+// sees the complete HostWindow type.
+CtranWin::~CtranWin() = default;
+
 CtranWin::CtranWin(CtranComm* comm, size_t size, DevMemType bufType)
     : comm(comm), dataBytes(size), bufType_(bufType) {
   if (comm == nullptr) {
@@ -259,6 +269,12 @@ commResult_t CtranWin::free() {
       }
     }
   }
+
+#if defined(ENABLE_PIPES)
+  // HostWindow handles cleanup via RAII
+  hostWindow_.reset();
+#endif
+
   freeMem(winBasePtr);
 
   return commSuccess;
@@ -268,6 +284,45 @@ bool CtranWin::nvlEnabled(int rank) const {
   return isGpuMem() &&
       comm->ctran_->mapper->hasBackend(rank, CtranMapperBackend::NVL);
 }
+
+#if defined(ENABLE_PIPES)
+commResult_t CtranWin::get_device_win(
+    comms::pipes::DeviceWindow* devWin,
+    const comms::pipes::WindowConfig& config) {
+  auto* transport = comm->multiPeerTransport_.get();
+  if (!transport) {
+    FB_ERRORRETURN(
+        commInternalError, "get_device_win: multiPeerTransport is null.");
+  }
+
+  if (!hostWindow_) {
+    const auto myRank = transport->my_rank();
+
+    CLOGF_SUBSYS(
+        INFO,
+        INIT,
+        "CTRAN-WINDOW: Rank {} creating HostWindow with signalCount={} "
+        "counterCount={} barrierCount={} dataPtr={} dataBytes={}",
+        myRank,
+        config.peerSignalCount,
+        config.peerCounterCount,
+        config.barrierCount,
+        winDataPtr,
+        dataBytes);
+
+    hostWindow_ = std::make_unique<comms::pipes::HostWindow>(
+        *transport, config, winDataPtr, dataBytes);
+
+    hostWindow_->exchange();
+
+    CLOGF_SUBSYS(
+        INFO, INIT, "CTRAN-WINDOW: Rank {} device window built", myRank);
+  }
+
+  new (devWin) comms::pipes::DeviceWindow(hostWindow_->getDeviceWindow());
+  return commSuccess;
+}
+#endif // ENABLE_PIPES
 
 commResult_t ctranWinAllocate(
     size_t size,

@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -31,6 +32,10 @@ struct MultiPeerTransportConfig {
   // MNNVL topology overrides for UUID and clique ID.
   // See TopologyConfig for field-level documentation.
   TopologyConfig topoConfig;
+
+  // When true, IBGDA transport is never constructed and all non-self peers
+  // are routed over NVLink. Requires all ranks in the same NVL domain.
+  bool disableIb{false};
 };
 
 /**
@@ -56,12 +61,15 @@ struct MultiPeerTransportConfig {
  */
 class MultiPeerTransport {
  public:
+  /// When topo is provided, bypasses TopologyDiscovery and uses the
+  /// pre-computed topology directly (primarily for unit testing).
   MultiPeerTransport(
       int myRank,
       int nRanks,
       int deviceId,
       std::shared_ptr<meta::comms::IBootstrap> bootstrap,
-      const MultiPeerTransportConfig& config);
+      const MultiPeerTransportConfig& config,
+      std::optional<TopologyResult> topo = std::nullopt);
 
   ~MultiPeerTransport();
 
@@ -91,7 +99,7 @@ class MultiPeerTransport {
   /** @return True if IBGDA transport is available for peerRank (all non-self).
    */
   bool has_ibgda(int peerRank) const {
-    return peerRank != myRank_;
+    return ibgdaTransport_ != nullptr && peerRank != myRank_;
   }
 
   /** @return True if IBGDA is the preferred transport (no NVL available). */
@@ -198,8 +206,11 @@ class MultiPeerTransport {
    *
    * COLLECTIVE OPERATION: All NVL ranks MUST call this with their buffer.
    * Supports both cudaMalloc'd and cuMem-allocated buffers (e.g. from
-   * ncclMemAlloc). For cuMem buffers, the allocation must have been created
-   * with CU_MEM_HANDLE_TYPE_FABRIC.
+   * ncclMemAlloc). Three exchange paths are auto-detected:
+   * - cudaMalloc buffers: cudaIpcMemHandle path
+   * - cuMem with CU_MEM_HANDLE_TYPE_FABRIC: fabric handle path
+   * - cuMem with CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR (no fabric):
+   *   POSIX FD path via pidfd_getfd (Linux 5.6+, intra-host only)
    *
    * @param localPtr GPU pointer (cudaMalloc or ncclMemAlloc)
    * @param size Size of the buffer in bytes
@@ -242,24 +253,31 @@ class MultiPeerTransport {
   bool deviceHandleBuilt_{false};
 
   // --- Private helpers ---
+  void initFromTopology(
+      TopologyResult topo,
+      const MultiPeerTransportConfig& config);
   void build_device_handle();
   void free_device_handle();
 
-  // Memory type detection for exchangeNvlBuffer dual-path support.
-  enum class NvlMemMode { kCudaIpc, kFabric };
+  // Memory type detection for exchangeNvlBuffer tri-path support.
+  enum class NvlMemMode { kCudaIpc, kFabric, kPosixFd };
   NvlMemMode detectNvlMemMode(void* ptr) const;
 
-  // Fabric handle exchange helpers
+  // Handle exchange helpers
   std::vector<void*> exchangeNvlBufferCudaIpc(void* localPtr);
   std::vector<void*> exchangeNvlBufferFabric(void* localPtr, std::size_t size);
+  std::vector<void*> exchangeNvlBufferPosixFd(void* localPtr, std::size_t size);
 
   // Track NVL exchange state for proper cleanup in unmapNvlBuffers
   struct NvlExchangeRecord {
     NvlMemMode mode;
-    // Fabric-only state for cleanup:
-    std::vector<CUdeviceptr> fabricPeerPtrs;
-    std::vector<CUmemGenericAllocationHandle> fabricPeerAllocHandles;
-    std::vector<size_t> fabricPeerSizes;
+    // cuMem state for cleanup (used by kFabric and kPosixFd paths):
+    std::vector<CUdeviceptr> cuMemPeerPtrs;
+    std::vector<CUmemGenericAllocationHandle> cuMemPeerAllocHandles;
+    std::vector<size_t> cuMemPeerSizes;
+    // POSIX FD exported by this rank — kept open until unmap so that peers
+    // can complete pidfd_getfd imports before the fd is closed.
+    int localExportedFd{-1};
   };
   // Keyed by the mappedPtrs vector's data pointer (first element address)
   std::unordered_map<void*, NvlExchangeRecord> nvlExchangeRecords_;

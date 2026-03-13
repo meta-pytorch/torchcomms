@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 
 #include "comms/ctran/algos/AllReduce/AllReduceRingAutoTune.h"
+#include "comms/ctran/algos/CtranAlgoConsts.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 using ctran::allreduce::ring::getAutoTunedParams;
@@ -75,6 +76,18 @@ class BlockSizeOverride {
   ~BlockSizeOverride() {
     NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE =
         NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE_DEFAULTCVARVALUE;
+  }
+};
+
+// RAII guard for STAGING_BUF_SIZE CVAR.
+class StagingBufSizeOverride {
+ public:
+  explicit StagingBufSizeOverride(int64_t v) {
+    NCCL_CTRAN_ALLREDUCE_RING_STAGING_BUF_SIZE = v;
+  }
+  ~StagingBufSizeOverride() {
+    NCCL_CTRAN_ALLREDUCE_RING_STAGING_BUF_SIZE =
+        NCCL_CTRAN_ALLREDUCE_RING_STAGING_BUF_SIZE_DEFAULTCVARVALUE;
   }
 };
 
@@ -221,17 +234,17 @@ TEST(AutoTuneCombinedDefault, MaxBDP64M_8Ranks) {
       {      8 * MB, 8, 512,    256 * KB, 32},
       {     16 * MB, 8, 512,    512 * KB, 32},
       {     32 * MB, 8, 512,      1 * MB, 32},
-      {     64 * MB, 8, 512,      2 * MB, 32},
-      {    128 * MB, 8, 512,      4 * MB, 16},
-      {    256 * MB, 8, 512,      8 * MB, 8},
-      {    512 * MB, 8, 512,      8 * MB, 8},
-      {      1 * GB, 8, 512,      8 * MB, 8},
-      {      2 * GB, 8, 512,      8 * MB, 8},
-      {      4 * GB, 8, 512,      8 * MB, 8},
-      {      8 * GB, 8, 512,      8 * MB, 8},
-      {     16 * GB, 8, 512,      8 * MB, 8},
-      {     32 * GB, 8, 512,      8 * MB, 8},
-      {     64 * GB, 8, 512,      8 * MB, 8},
+      {     64 * MB, 8, 512,      2 * MB, 16},
+      {    128 * MB, 8, 512,      4 * MB, 8},
+      {    256 * MB, 8, 512,      8 * MB, 4},
+      {    512 * MB, 8, 512,      8 * MB, 4},
+      {      1 * GB, 8, 512,      8 * MB, 4},
+      {      2 * GB, 8, 512,      8 * MB, 4},
+      {      4 * GB, 8, 512,      8 * MB, 4},
+      {      8 * GB, 8, 512,      8 * MB, 4},
+      {     16 * GB, 8, 512,      8 * MB, 4},
+      {     32 * GB, 8, 512,      8 * MB, 4},
+      {     64 * GB, 8, 512,      8 * MB, 4},
   };
   // clang-format on
 
@@ -262,17 +275,17 @@ TEST(AutoTuneCombinedDefault, MaxBDP128M_8Ranks) {
       {      8 * MB, 8, 512,    256 * KB, 32},
       {     16 * MB, 8, 512,    512 * KB, 32},
       {     32 * MB, 8, 512,      1 * MB, 32},
-      {     64 * MB, 8, 512,      2 * MB, 32},
-      {    128 * MB, 8, 512,      8 * MB, 16},
-      {    256 * MB, 8, 512,     16 * MB, 8},
-      {    512 * MB, 8, 512,     16 * MB, 8},
-      {      1 * GB, 8, 512,     16 * MB, 8},
-      {      2 * GB, 8, 512,     16 * MB, 8},
-      {      4 * GB, 8, 512,     16 * MB, 8},
-      {      8 * GB, 8, 512,     16 * MB, 8},
-      {     16 * GB, 8, 512,     16 * MB, 8},
-      {     32 * GB, 8, 512,     16 * MB, 8},
-      {     64 * GB, 8, 512,     16 * MB, 8},
+      {     64 * MB, 8, 512,      2 * MB, 16},
+      {    128 * MB, 8, 512,      8 * MB, 4},
+      {    256 * MB, 8, 512,     16 * MB, 2},
+      {    512 * MB, 8, 512,     16 * MB, 2},
+      {      1 * GB, 8, 512,     16 * MB, 2},
+      {      2 * GB, 8, 512,     16 * MB, 2},
+      {      4 * GB, 8, 512,     16 * MB, 2},
+      {      8 * GB, 8, 512,     16 * MB, 2},
+      {     16 * GB, 8, 512,     16 * MB, 2},
+      {     32 * GB, 8, 512,     16 * MB, 2},
+      {     64 * GB, 8, 512,     16 * MB, 2},
   };
   // clang-format on
 
@@ -392,17 +405,17 @@ TEST(AutoTuneCombinedHopper, MaxBDP64M_8Ranks) {
       {      8 * MB, 2, 512,    256 * KB, 32},
       {     16 * MB, 4, 512,    512 * KB, 32},
       {     32 * MB, 4, 512,      2 * MB, 16},
-      {     64 * MB, 4, 512,      8 * MB, 8},
-      {    128 * MB, 4, 512,      8 * MB, 8},
-      {    256 * MB, 4, 512,      8 * MB, 8},
-      {    512 * MB, 4, 512,      8 * MB, 8},
-      {      1 * GB, 4, 512,      8 * MB, 8},
-      {      2 * GB, 4, 512,      8 * MB, 8},
-      {      4 * GB, 4, 512,      8 * MB, 8},
-      {      8 * GB, 4, 512,      8 * MB, 8},
-      {     16 * GB, 4, 512,      8 * MB, 8},
-      {     32 * GB, 4, 512,      8 * MB, 8},
-      {     64 * GB, 4, 512,      8 * MB, 8},
+      {     64 * MB, 4, 512,      8 * MB, 4},
+      {    128 * MB, 4, 512,      8 * MB, 4},
+      {    256 * MB, 4, 512,      8 * MB, 4},
+      {    512 * MB, 4, 512,      8 * MB, 4},
+      {      1 * GB, 4, 512,      8 * MB, 4},
+      {      2 * GB, 4, 512,      8 * MB, 4},
+      {      4 * GB, 4, 512,      8 * MB, 4},
+      {      8 * GB, 4, 512,      8 * MB, 4},
+      {     16 * GB, 4, 512,      8 * MB, 4},
+      {     32 * GB, 4, 512,      8 * MB, 4},
+      {     64 * GB, 4, 512,      8 * MB, 4},
   };
   // clang-format on
 
@@ -434,17 +447,17 @@ TEST(AutoTuneCombinedHopper, MaxBDP128M_8Ranks) {
       {      8 * MB, 2, 512,    256 * KB, 32},
       {     16 * MB, 4, 512,    512 * KB, 32},
       {     32 * MB, 4, 512,      2 * MB, 16},
-      {     64 * MB, 4, 512,      8 * MB, 8},
-      {    128 * MB, 4, 512,     16 * MB, 8},
-      {    256 * MB, 4, 512,     16 * MB, 8},
-      {    512 * MB, 4, 512,     16 * MB, 8},
-      {      1 * GB, 4, 512,     16 * MB, 8},
-      {      2 * GB, 4, 512,     16 * MB, 8},
-      {      4 * GB, 4, 512,     16 * MB, 8},
-      {      8 * GB, 4, 512,     16 * MB, 8},
-      {     16 * GB, 4, 512,     16 * MB, 8},
-      {     32 * GB, 4, 512,     16 * MB, 8},
-      {     64 * GB, 4, 512,     16 * MB, 8},
+      {     64 * MB, 4, 512,      8 * MB, 4},
+      {    128 * MB, 4, 512,     16 * MB, 2},
+      {    256 * MB, 4, 512,     16 * MB, 2},
+      {    512 * MB, 4, 512,     16 * MB, 2},
+      {      1 * GB, 4, 512,     16 * MB, 2},
+      {      2 * GB, 4, 512,     16 * MB, 2},
+      {      4 * GB, 4, 512,     16 * MB, 2},
+      {      8 * GB, 4, 512,     16 * MB, 2},
+      {     16 * GB, 4, 512,     16 * MB, 2},
+      {     32 * GB, 4, 512,     16 * MB, 2},
+      {     64 * GB, 4, 512,     16 * MB, 2},
   };
   // clang-format on
 
@@ -478,17 +491,17 @@ TEST(AutoTuneDefaultRankSweep, DefaultBDP_8Ranks) {
       {      8 * MB, 8, 512,    256 * KB, 32},
       {     16 * MB, 8, 512,    512 * KB, 32},
       {     32 * MB, 8, 512,      1 * MB, 32},
-      {     64 * MB, 8, 512,      2 * MB, 32},
-      {    128 * MB, 8, 512,      8 * MB, 16},
-      {    256 * MB, 8, 512,     16 * MB, 8},
-      {    512 * MB, 8, 512,     16 * MB, 8},
-      {      1 * GB, 8, 512,     16 * MB, 8},
-      {      2 * GB, 8, 512,     16 * MB, 8},
-      {      4 * GB, 8, 512,     16 * MB, 8},
-      {      8 * GB, 8, 512,     16 * MB, 8},
-      {     16 * GB, 8, 512,     16 * MB, 8},
-      {     32 * GB, 8, 512,     16 * MB, 8},
-      {     64 * GB, 8, 512,     16 * MB, 8},
+      {     64 * MB, 8, 512,      2 * MB, 16},
+      {    128 * MB, 8, 512,      8 * MB, 4},
+      {    256 * MB, 8, 512,     16 * MB, 2},
+      {    512 * MB, 8, 512,     16 * MB, 2},
+      {      1 * GB, 8, 512,     16 * MB, 2},
+      {      2 * GB, 8, 512,     16 * MB, 2},
+      {      4 * GB, 8, 512,     16 * MB, 2},
+      {      8 * GB, 8, 512,     16 * MB, 2},
+      {     16 * GB, 8, 512,     16 * MB, 2},
+      {     32 * GB, 8, 512,     16 * MB, 2},
+      {     64 * GB, 8, 512,     16 * MB, 2},
   };
   // clang-format on
 
@@ -518,17 +531,17 @@ TEST(AutoTuneDefaultRankSweep, DefaultBDP_16Ranks) {
       {      8 * MB, 8, 512,    256 * KB, 32},
       {     16 * MB, 8, 512,    256 * KB, 64},
       {     32 * MB, 8, 512,    512 * KB, 64},
-      {     64 * MB, 8, 512,      1 * MB, 64},
-      {    128 * MB, 8, 512,      2 * MB, 64},
-      {    256 * MB, 8, 512,      4 * MB, 32},
-      {    512 * MB, 8, 512,      8 * MB, 16},
-      {      1 * GB, 8, 512,      8 * MB, 16},
-      {      2 * GB, 8, 512,      8 * MB, 16},
-      {      4 * GB, 8, 512,      8 * MB, 16},
-      {      8 * GB, 8, 512,      8 * MB, 16},
-      {     16 * GB, 8, 512,      8 * MB, 16},
-      {     32 * GB, 8, 512,      8 * MB, 16},
-      {     64 * GB, 8, 512,      8 * MB, 16},
+      {     64 * MB, 8, 512,      1 * MB, 32},
+      {    128 * MB, 8, 512,      2 * MB, 16},
+      {    256 * MB, 8, 512,      4 * MB, 8},
+      {    512 * MB, 8, 512,      8 * MB, 4},
+      {      1 * GB, 8, 512,      8 * MB, 4},
+      {      2 * GB, 8, 512,      8 * MB, 4},
+      {      4 * GB, 8, 512,      8 * MB, 4},
+      {      8 * GB, 8, 512,      8 * MB, 4},
+      {     16 * GB, 8, 512,      8 * MB, 4},
+      {     32 * GB, 8, 512,      8 * MB, 4},
+      {     64 * GB, 8, 512,      8 * MB, 4},
   };
   // clang-format on
 
@@ -558,17 +571,17 @@ TEST(AutoTuneDefaultRankSweep, DefaultBDP_32Ranks) {
       {      8 * MB, 8, 512,    128 * KB, 64},
       {     16 * MB, 8, 512,    256 * KB, 64},
       {     32 * MB, 8, 512,    256 * KB, 128},
-      {     64 * MB, 8, 512,    512 * KB, 128},
-      {    128 * MB, 8, 512,      1 * MB, 128},
-      {    256 * MB, 8, 512,      1 * MB, 128},
-      {    512 * MB, 8, 512,      2 * MB, 64},
-      {      1 * GB, 8, 512,      4 * MB, 32},
-      {      2 * GB, 8, 512,      4 * MB, 32},
-      {      4 * GB, 8, 512,      4 * MB, 32},
-      {      8 * GB, 8, 512,      4 * MB, 32},
-      {     16 * GB, 8, 512,      4 * MB, 32},
-      {     32 * GB, 8, 512,      4 * MB, 32},
-      {     64 * GB, 8, 512,      4 * MB, 32},
+      {     64 * MB, 8, 512,    512 * KB, 64},
+      {    128 * MB, 8, 512,      1 * MB, 32},
+      {    256 * MB, 8, 512,      1 * MB, 32},
+      {    512 * MB, 8, 512,      2 * MB, 16},
+      {      1 * GB, 8, 512,      4 * MB, 8},
+      {      2 * GB, 8, 512,      4 * MB, 8},
+      {      4 * GB, 8, 512,      4 * MB, 8},
+      {      8 * GB, 8, 512,      4 * MB, 8},
+      {     16 * GB, 8, 512,      4 * MB, 8},
+      {     32 * GB, 8, 512,      4 * MB, 8},
+      {     64 * GB, 8, 512,      4 * MB, 8},
   };
   // clang-format on
 
@@ -598,17 +611,17 @@ TEST(AutoTuneDefaultRankSweep, DefaultBDP_64Ranks) {
       {      8 * MB, 8, 512,     64 * KB, 128},
       {     16 * MB, 8, 512,    128 * KB, 128},
       {     32 * MB, 8, 512,    256 * KB, 128},
-      {     64 * MB, 8, 512,    256 * KB, 256},
-      {    128 * MB, 8, 512,    512 * KB, 256},
-      {    256 * MB, 8, 512,    512 * KB, 256},
-      {    512 * MB, 8, 512,    512 * KB, 256},
-      {      1 * GB, 8, 512,      1 * MB, 128},
-      {      2 * GB, 8, 512,      2 * MB, 64},
-      {      4 * GB, 8, 512,      2 * MB, 64},
-      {      8 * GB, 8, 512,      2 * MB, 64},
-      {     16 * GB, 8, 512,      2 * MB, 64},
-      {     32 * GB, 8, 512,      2 * MB, 64},
-      {     64 * GB, 8, 512,      2 * MB, 64},
+      {     64 * MB, 8, 512,    256 * KB, 128},
+      {    128 * MB, 8, 512,    512 * KB, 64},
+      {    256 * MB, 8, 512,    512 * KB, 64},
+      {    512 * MB, 8, 512,    512 * KB, 64},
+      {      1 * GB, 8, 512,      1 * MB, 32},
+      {      2 * GB, 8, 512,      2 * MB, 16},
+      {      4 * GB, 8, 512,      2 * MB, 16},
+      {      8 * GB, 8, 512,      2 * MB, 16},
+      {     16 * GB, 8, 512,      2 * MB, 16},
+      {     32 * GB, 8, 512,      2 * MB, 16},
+      {     64 * GB, 8, 512,      2 * MB, 16},
   };
   // clang-format on
 
@@ -988,6 +1001,28 @@ TEST_F(AutoTuneCVAROverrideTest, AllFourOverrides) {
   EXPECT_EQ(at.block.blockSize, 256);
 }
 
+// STAGING_BUF_SIZE CVAR affects getStagingBufSize() but not pipeline params.
+TEST_F(AutoTuneCVAROverrideTest, StagingBufSizeOverride) {
+  using namespace ctran::allreduce::ring;
+
+  // Default: kStagingBufSize
+  EXPECT_EQ(getStagingBufSize(), kStagingBufSize);
+
+  // Explicit STAGING_BUF_SIZE CVAR
+  {
+    StagingBufSizeOverride sb(64 * MB);
+    EXPECT_EQ(getStagingBufSize(), 64 * MB);
+  }
+
+  // Chunk override takes priority over STAGING_BUF_SIZE
+  {
+    ChunkSizeOverride cs(static_cast<int>(2 * MB));
+    NumChunksOverride nc(4);
+    StagingBufSizeOverride sb(64 * MB);
+    EXPECT_EQ(getStagingBufSize(), 8 * MB);
+  }
+}
+
 // ============================================================================
 // AutoTuned Invariants
 // ============================================================================
@@ -1086,9 +1121,9 @@ std::vector<T> buildProbes(const std::vector<T>& basePoints) {
       // clang-format off
       probes.insert(p);          // exact p
       probes.insert(p + 1);      // just above p
-      probes.insert(mid - 1);     // just below midpoint
-      probes.insert(mid);         // exact midpoint
-      probes.insert(mid + 1);     // just above midpoint
+      probes.insert(mid - 1);    // just below midpoint
+      probes.insert(mid);        // exact midpoint
+      probes.insert(mid + 1);    // just above midpoint
       probes.insert(pNext - 1);  // just below pNext
       probes.insert(pNext);      // exact pNext
       // clang-format on
@@ -1256,6 +1291,7 @@ TEST_F(AutoTuneInvariantTest, CombinedInvariants) {
 
   for (auto maxBDP : maxBDPs) {
     MaxBDPOverride o(maxBDP);
+    size_t stagingBufSize = ctran::allreduce::ring::getStagingBufSize();
     for (auto nRanks : rankProbes) {
       if (nRanks < 2) {
         continue;
@@ -1267,6 +1303,16 @@ TEST_F(AutoTuneInvariantTest, CombinedInvariants) {
             msgBytes, nRanks, kMaxOccNumBlocks, kMaxOccBlockSize, maxBDP);
         checkChunkAlignment(
             msgBytes, nRanks, kMaxOccNumBlocks, kMaxOccBlockSize, maxBDP);
+
+        // Pipeline footprint must fit within the staging buffer.
+        auto at = getAutoTunedParams(
+            msgBytes, nRanks, kMaxOccNumBlocks, kMaxOccBlockSize, 1);
+        EXPECT_LE(at.pipeline.chunkSize * at.pipeline.numChunks, stagingBufSize)
+            << "Staging buf violated: msgBytes=" << msgBytes
+            << " ranks=" << nRanks << " maxBDP=" << maxBDP
+            << " stagingBufSize=" << stagingBufSize
+            << " chunkSize=" << at.pipeline.chunkSize
+            << " numChunks=" << at.pipeline.numChunks;
       }
     }
   }

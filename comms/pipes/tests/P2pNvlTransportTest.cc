@@ -227,12 +227,19 @@ class TransportTestHelper {
     // cannot be copy-assigned
     p2pHost_ = std::make_unique<P2pNvlTransportDevice>(
         transport_->buildP2pTransportDevice(peerRank_));
+
+    p2pDevice_ = std::make_unique<DeviceBuffer>(sizeof(P2pNvlTransportDevice));
+    CUDACHECK_TEST(cudaMemcpy(
+        p2pDevice_->get(),
+        p2pHost_.get(),
+        sizeof(P2pNvlTransportDevice),
+        cudaMemcpyHostToDevice));
   }
 
   // Returns pointer to preallocated P2pNvlTransportDevice on device
   // This pointer is managed by MultiPeerNvlTransport
   P2pNvlTransportDevice* getDevicePtr() {
-    return transport_->getP2pTransportDevice(peerRank_);
+    return static_cast<P2pNvlTransportDevice*>(p2pDevice_->get());
   }
 
   // Returns reference to host copy (for accessing state pointers from host)
@@ -255,6 +262,7 @@ class TransportTestHelper {
   std::shared_ptr<meta::comms::MpiBootstrap> bootstrap_;
   std::unique_ptr<MultiPeerNvlTransport> transport_;
   std::unique_ptr<P2pNvlTransportDevice> p2pHost_;
+  std::unique_ptr<DeviceBuffer> p2pDevice_;
 };
 
 // =============================================================================

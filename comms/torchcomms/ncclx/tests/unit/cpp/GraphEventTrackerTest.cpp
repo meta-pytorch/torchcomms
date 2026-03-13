@@ -924,4 +924,166 @@ TEST_F(GraphEventTrackerTest, GraphCaptureCombineSavesOutputTensor) {
   setupFinalizeExpectations(*comm);
 }
 
+TEST_F(GraphEventTrackerTest, TimeoutMonitoringDisabled_NoStartEndEvents) {
+  resetGraphTimeoutMonitoringCacheForTest();
+  setupCCAExpectations(1, 2, 1);
+
+  auto comm = createMockedTorchComm();
+  cuda_mock_->setupDefaultBehaviors();
+  nccl_mock_->setupDefaultBehaviors();
+
+  auto options = createAbortModeOptions();
+  ::setenv("TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING", "0", 1);
+  comm->init(*device_, "test_no_timeout_events", options);
+
+  setupGraphCaptureMocks();
+
+  // Only 1 eventCreateWithFlags (sync_event_), not 3
+  cudaEvent_t sync = reinterpret_cast<cudaEvent_t>(0xA003);
+  EXPECT_CALL(*cuda_mock_, eventCreateWithFlags(_, _))
+      .WillOnce(DoAll(SetArgPointee<0>(sync), Return(cudaSuccess)));
+
+  // No launchHostFunc for replay counter
+  EXPECT_CALL(*cuda_mock_, launchHostFunc(_, _, _)).Times(0);
+
+  // Cleanup callback still installed
+  EXPECT_CALL(*cuda_mock_, userObjectCreate(_, _, _, _, _))
+      .WillOnce(DoAll(
+          SetArgPointee<0>(reinterpret_cast<cudaUserObject_t>(0x3000)),
+          Return(cudaSuccess)));
+  EXPECT_CALL(*cuda_mock_, graphRetainUserObject(_, _, _, _))
+      .WillOnce(Return(cudaSuccess));
+
+  setupEventRecordMocks();
+
+  auto tensor = createTestTensor({10, 10});
+
+  {
+    auto work = comm->send(tensor, 1, true);
+  }
+
+  ::testing::Mock::VerifyAndClearExpectations(cuda_mock_.get());
+
+  switchToReplayMode();
+  ::unsetenv("TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING");
+  resetGraphTimeoutMonitoringCacheForTest();
+  setupFinalizeExpectations(*comm);
+}
+
+TEST_F(
+    GraphEventTrackerTest,
+    TimeoutMonitoringDisabled_CpuTensorsStillTransferred) {
+  resetGraphTimeoutMonitoringCacheForTest();
+  setupCCAExpectations(1, 2, 1);
+
+  auto comm = createMockedTorchComm();
+  cuda_mock_->setupDefaultBehaviors();
+  nccl_mock_->setupDefaultBehaviors();
+
+  auto options = createAbortModeOptions();
+  ::setenv("TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING", "0", 1);
+  comm->init(*device_, "test_cpu_tensors_transferred", options);
+
+  setupGraphCaptureMocks();
+
+  // Only sync_event_ created
+  cudaEvent_t sync = reinterpret_cast<cudaEvent_t>(0xA003);
+  EXPECT_CALL(*cuda_mock_, eventCreateWithFlags(_, _))
+      .WillOnce(DoAll(SetArgPointee<0>(sync), Return(cudaSuccess)))
+      .WillRepeatedly(DoAll(
+          SetArgPointee<0>(reinterpret_cast<cudaEvent_t>(0xA100)),
+          Return(cudaSuccess)));
+
+  setupEventRecordMocks();
+
+  auto input_tensor = createTestTensor({100});
+  auto output_tensor_0 = createTestTensor({50});
+  auto output_tensor_1 = createTestTensor({50});
+  std::vector<at::Tensor> output_tensor_list = {
+      output_tensor_0, output_tensor_1};
+
+  auto input_chunk_sizes =
+      at::ones({2}, at::TensorOptions().device(*device_).dtype(at::kLong));
+  auto input_chunk_indices =
+      at::ones({2}, at::TensorOptions().device(*device_).dtype(at::kLong));
+  auto input_chunk_count_per_rank =
+      at::ones({2}, at::TensorOptions().device(*device_).dtype(at::kLong));
+  auto output_chunk_sizes_per_rank =
+      at::ones({4}, at::TensorOptions().device(*device_).dtype(at::kLong));
+
+  EXPECT_CALL(
+      *nccl_mock_, alltoallvDynamicDispatch(_, _, _, _, _, _, _, _, _, _, _, _))
+      .WillOnce(Return(ncclSuccess));
+
+  {
+    auto work = comm->alltoallv_dynamic_dispatch(
+        output_tensor_list,
+        output_chunk_sizes_per_rank,
+        input_tensor,
+        input_chunk_sizes,
+        input_chunk_indices,
+        input_chunk_count_per_rank,
+        true);
+
+    EXPECT_NE(work, nullptr);
+  }
+
+  // Tensors should still be valid (held by GraphState)
+  EXPECT_NE(output_tensor_0.data_ptr(), nullptr);
+  EXPECT_NE(output_tensor_1.data_ptr(), nullptr);
+
+  ::testing::Mock::VerifyAndClearExpectations(cuda_mock_.get());
+
+  switchToReplayMode();
+  ::unsetenv("TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING");
+  resetGraphTimeoutMonitoringCacheForTest();
+  setupFinalizeExpectations(*comm);
+}
+
+TEST_F(
+    GraphEventTrackerTest,
+    TimeoutMonitoringDisabled_CheckGraphEventsNoEventQueries) {
+  resetGraphTimeoutMonitoringCacheForTest();
+  setupCCAExpectations(1, 2, 1);
+
+  auto comm = createMockedTorchComm();
+  cuda_mock_->setupDefaultBehaviors();
+  nccl_mock_->setupDefaultBehaviors();
+
+  auto options = createAbortModeOptions();
+  ::setenv("TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING", "0", 1);
+  comm->init(*device_, "test_no_event_queries", options);
+
+  setupGraphCaptureMocks();
+
+  cudaEvent_t sync = reinterpret_cast<cudaEvent_t>(0xA003);
+  EXPECT_CALL(*cuda_mock_, eventCreateWithFlags(_, _))
+      .WillOnce(DoAll(SetArgPointee<0>(sync), Return(cudaSuccess)))
+      .WillRepeatedly(DoAll(
+          SetArgPointee<0>(reinterpret_cast<cudaEvent_t>(0xA100)),
+          Return(cudaSuccess)));
+
+  setupEventRecordMocks();
+
+  auto tensor = createTestTensor({10, 10});
+
+  {
+    auto work = comm->send(tensor, 1, true);
+  }
+
+  ::testing::Mock::VerifyAndClearExpectations(cuda_mock_.get());
+
+  switchToReplayMode();
+
+  // No eventQuery calls should be made (no GraphWork entries)
+  EXPECT_CALL(*cuda_mock_, eventQuery(_)).Times(0);
+
+  comm->checkGraphEvents();
+
+  ::testing::Mock::VerifyAndClearExpectations(cuda_mock_.get());
+
+  ::unsetenv("TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING");
+  resetGraphTimeoutMonitoringCacheForTest();
+  setupFinalizeExpectations(*comm);
+}
 } // namespace torch::comms::test

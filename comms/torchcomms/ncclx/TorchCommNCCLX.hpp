@@ -27,6 +27,16 @@
 
 namespace torch::comms {
 
+// Hint key names for NCCLX backend configuration
+constexpr std::string_view kHintHighPriorityStream = "high_priority_stream";
+constexpr std::string_view kHintMaxEventPoolSize = "max_event_pool_size";
+constexpr std::string_view kHintGarbageCollectIntervalMs =
+    "garbage_collect_interval_ms";
+constexpr std::string_view kHintEnableCudaGraphSupport =
+    "enable_cuda_graph_support";
+constexpr std::string_view kHintGraphTimeoutCheckIntervalMs =
+    "graph_timeout_check_interval_ms";
+
 // Maximum number of CUDA events to keep in the event pool. Events are recycled
 // to avoid repeated cudaEventCreate/cudaEventDestroy calls. 1000 events should
 // be sufficient for most workloads while keeping memory overhead reasonable.
@@ -46,6 +56,14 @@ constexpr bool kDefaultEnableCudaGraphSupport = true;
 // timeouts are typically in the seconds range. 1000ms keeps CPU overhead low
 // while still detecting timeouts promptly.
 constexpr size_t kDefaultGraphTimeoutCheckIntervalMs = 1000;
+
+// Global call-once check for graph timeout monitoring (env var gated).
+// Reads TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING on first call; caches result.
+// Default: enabled. Set to "0" or "false" to disable (for benchmarking).
+bool isGraphTimeoutMonitoringEnabled();
+
+// Test-only: reset the cached state so next call re-reads the env var.
+void resetGraphTimeoutMonitoringCacheForTest();
 
 class TorchCommNCCLX : public TorchCommBackend,
                        public std::enable_shared_from_this<TorchCommNCCLX> {
@@ -241,6 +259,11 @@ class TorchCommNCCLX : public TorchCommBackend,
     return cuda_api_.get();
   }
 
+  // Getter for graph event tracker (for work objects to access sync event pool)
+  GraphEventTracker& getGraphEventTracker() {
+    return graph_event_tracker_;
+  }
+
   // Getter for NCCL API (for friend classes)
   NcclxApi* getNcclApi() const {
     return nccl_api_.get();
@@ -316,6 +339,17 @@ class TorchCommNCCLX : public TorchCommBackend,
   }
 
   void checkGraphEvents();
+
+  struct Configs {
+    size_t max_event_pool_size_{kDefaultMaxEventPoolSize};
+    size_t garbage_collect_interval_ms_{kDefaultGarbageCollectIntervalMs};
+    bool enable_cuda_graph_support_{kDefaultEnableCudaGraphSupport};
+    size_t graph_timeout_check_interval_ms_{
+        kDefaultGraphTimeoutCheckIntervalMs};
+  };
+  Configs configs_;
+
+  bool high_priority_stream_{false};
 
  private:
   // Helper that automatically cleans up premul sums.
@@ -419,15 +453,6 @@ class TorchCommNCCLX : public TorchCommBackend,
   size_t split_counter_{};
   CommOptions options_;
 
-  struct Configs {
-    size_t max_event_pool_size_{kDefaultMaxEventPoolSize};
-    size_t garbage_collect_interval_ms_{kDefaultGarbageCollectIntervalMs};
-    bool enable_cuda_graph_support_{kDefaultEnableCudaGraphSupport};
-    size_t graph_timeout_check_interval_ms_{
-        kDefaultGraphTimeoutCheckIntervalMs};
-  };
-  Configs configs_;
-
   cudaStream_t internal_stream_{};
   void* barrier_buffer_{}; // Pre-allocated CUDA buffer for barrier operations
   enum class InitializationState {
@@ -459,7 +484,6 @@ class TorchCommNCCLX : public TorchCommBackend,
   std::condition_variable timeout_cv_;
   std::mutex timeout_mutex_;
 
-  bool high_priority_stream_{false};
   std::string name_;
 
   // Tracks ad-hoc events for CUDA graph-captured collectives and monitors

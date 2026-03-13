@@ -25,7 +25,11 @@
 
 namespace torch::comms {
 
-constexpr size_t kMaxEventPoolSize = 1000;
+// Hint key names for XCCL backend configuration
+constexpr std::string_view kHintHighPriorityStream = "high_priority_stream";
+constexpr std::string_view kHintMaxEventPoolSize = "max_event_pool_size";
+
+constexpr size_t kDefaultMaxEventPoolSize = 1000;
 
 // Custom exception class for better error handling
 class XCCLException : public std::exception {

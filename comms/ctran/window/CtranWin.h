@@ -14,6 +14,17 @@
 #include "comms/ctran/utils/CtranIpc.h"
 #include "comms/ctran/utils/DevMemType.h"
 #include "comms/ctran/window/Types.h"
+#if defined(ENABLE_PIPES)
+#include "comms/pipes/IbgdaBuffer.h"
+#endif
+
+#if defined(ENABLE_PIPES)
+namespace comms::pipes {
+class DeviceWindow;
+class HostWindow;
+struct WindowConfig;
+} // namespace comms::pipes
+#endif
 
 namespace ctran {
 struct CtranWin {
@@ -56,6 +67,7 @@ struct CtranWin {
       CtranComm* comm,
       size_t dataSize,
       DevMemType bufType = DevMemType::kCumem);
+  ~CtranWin();
 
   inline uint64_t updateOpCount(
       const int rank,
@@ -96,6 +108,20 @@ struct CtranWin {
   commResult_t allocate(void* userBufPtr = nullptr);
   commResult_t exchange();
 
+#if defined(ENABLE_PIPES)
+  // COLLECTIVE on first call: all ranks must call this together.
+  // Prerequisite: allocate() and exchange() must have been called first.
+  // Registers the window data buffer with pipes' MultiPeerTransport for
+  // IBGDA/NVL access and populates the device-side window struct.
+  // Subsequent calls return the cached result (config is ignored).
+  //
+  // @param devWin  Output: populated device-side window handle.
+  // @param config  WindowConfig controlling signal/counter/barrier allocation.
+  commResult_t get_device_win(
+      comms::pipes::DeviceWindow* devWin,
+      const comms::pipes::WindowConfig& config);
+#endif
+
   commResult_t free();
 
   bool nvlEnabled(int rank) const;
@@ -123,6 +149,10 @@ struct CtranWin {
       opCountMap_;
   // Actual size allocated for the total buffer per rank in this window
   size_t range_{0};
+
+#if defined(ENABLE_PIPES)
+  std::unique_ptr<comms::pipes::HostWindow> hostWindow_;
+#endif
 };
 
 commResult_t ctranWinAllocate(

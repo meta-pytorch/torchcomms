@@ -20,12 +20,6 @@
 
 namespace torch::comms {
 
-namespace {
-// Hint key names for NCCL backend configuration
-constexpr std::string_view kHintHighPriorityStream = "high_priority_stream";
-constexpr std::string_view kHintMaxEventPoolSize = "max_event_pool_size";
-} // namespace
-
 ncclResult_t NCCLException::getResult() const noexcept {
   return result_;
 }
@@ -148,10 +142,8 @@ void TorchCommNCCL::init(
       fmt::format("Failed to get memory info for device {}", device_.index()));
 
   // Read hints and store them
-  if (options_.hints.contains(std::string(kHintHighPriorityStream))) {
-    high_priority_stream_ =
-        string_to_bool(options_.hints.at(std::string(kHintHighPriorityStream)));
-  }
+  high_priority_stream_ =
+      options_.getHint<bool>(kHintHighPriorityStream, false);
 
   // Create internal stream
   //
@@ -190,13 +182,8 @@ void TorchCommNCCL::init(
       cuda_api_->malloc(&barrier_buffer_, sizeof(float)),
       "Failed to allocate barrier buffer");
 
-  const auto kHintMaxEventPoolSizeKey = std::string(kHintMaxEventPoolSize);
-  if (options_.hints.contains(kHintMaxEventPoolSizeKey)) {
-    max_event_pool_size_ =
-        std::stoull(options_.hints.at(kHintMaxEventPoolSizeKey));
-  } else {
-    max_event_pool_size_ = kDefaultMaxEventPoolSize;
-  }
+  max_event_pool_size_ =
+      options_.getHint<size_t>(kHintMaxEventPoolSize, kDefaultMaxEventPoolSize);
 
   // Give up our internal reference to the store object here.  The caller
   // would still need to keep a reference to the store object till the init

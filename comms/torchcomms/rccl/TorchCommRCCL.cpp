@@ -19,12 +19,6 @@
 
 namespace torch::comms {
 
-namespace {
-// Hint key names for RCCL backend configuration
-constexpr std::string_view kHintHighPriorityStream = "high_priority_stream";
-constexpr std::string_view kHintMaxEventPoolSize = "max_event_pool_size";
-} // namespace
-
 ncclResult_t RCCLException::getResult() const {
   return result_;
 }
@@ -152,11 +146,8 @@ void TorchCommRCCL::init(
       fmt::format("Failed to get memory info for device {}", device_.index()));
 
   // Read hints and store them
-  if (options_.hints.find(std::string(kHintHighPriorityStream)) !=
-      options_.hints.end()) {
-    high_priority_stream_ =
-        string_to_bool(options_.hints.at(std::string(kHintHighPriorityStream)));
-  }
+  high_priority_stream_ =
+      options_.getHint<bool>(kHintHighPriorityStream, false);
 
   // Create internal stream
   //
@@ -194,13 +185,8 @@ void TorchCommRCCL::init(
       hip_api_->malloc(&barrier_buffer_, sizeof(float)),
       "Failed to allocate barrier buffer");
 
-  if (options_.hints.find(std::string(kHintMaxEventPoolSize)) !=
-      options_.hints.end()) {
-    max_event_pool_size_ =
-        std::stoull(options_.hints.at(std::string(kHintMaxEventPoolSize)));
-  } else {
-    max_event_pool_size_ = kMaxEventPoolSize;
-  }
+  max_event_pool_size_ =
+      options_.getHint<size_t>(kHintMaxEventPoolSize, kDefaultMaxEventPoolSize);
 
   // Give up our internal reference to the store object here.  The caller
   // would still need to keep a reference to the store object till the init
