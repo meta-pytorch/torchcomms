@@ -4,6 +4,7 @@
 #include <folly/json/json.h>
 #include <folly/logging/xlog.h>
 #include <gtest/gtest.h>
+#include "comms/torchcomms/ncclx/NcclxGlobalApi.hpp"
 #include "comms/torchcomms/ncclx/tests/integration/cpp/CommDumpTest.hpp"
 
 #define LOG_TEST(msg) XLOG(INFO) << "[Rank " << rank_ << "] " << msg
@@ -65,6 +66,37 @@ TEST_F(CommDumpTest, CommDumpAfterCollective) {
   }
 
   LOG_TEST("CommDumpAfterCollective test passed");
+}
+
+TEST_F(CommDumpTest, CommDumpAll) {
+  LOG_TEST("Starting CommDumpAll test");
+
+  torch::comms::DefaultNcclxGlobalApi global_api;
+  std::unordered_map<std::string, std::unordered_map<std::string, std::string>>
+      all_dumps;
+  auto result = global_api.commDumpAll(all_dumps);
+  EXPECT_EQ(result, ncclSuccess) << "ncclCommDumpAll failed";
+
+  // At least 1 communicator should exist (created during SetUp)
+  EXPECT_GE(all_dumps.size(), 1)
+      << "Expected at least 1 communicator in dump_all";
+
+  for (const auto& [comm_key, dump] : all_dumps) {
+    EXPECT_GT(dump.size(), 0) << "Dump for comm " << comm_key << " is empty";
+    EXPECT_EQ(dump.count("rank"), 1) << "Missing rank for comm " << comm_key;
+    EXPECT_EQ(dump.count("nRanks"), 1)
+        << "Missing nRanks for comm " << comm_key;
+  }
+
+  if (rank_ == 0) {
+    LOG_TEST(
+        "comm_dump_all() returned " << all_dumps.size() << " communicators");
+    for (const auto& [comm_key, dump] : all_dumps) {
+      LOG_TEST("  Comm " << comm_key << ": " << dump.size() << " entries");
+    }
+  }
+
+  LOG_TEST("CommDumpAll test passed");
 }
 
 int main(int argc, char** argv) {

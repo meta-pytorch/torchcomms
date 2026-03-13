@@ -5,6 +5,7 @@
 import json
 import unittest
 
+from torchcomms._comms_ncclx import comm_dump_all
 from torchcomms.tests.integration.py.TorchCommTestHelpers import TorchCommTestWrapper
 
 
@@ -70,6 +71,61 @@ class CommDumpTest(unittest.TestCase):
             parent_dump.get("commHash"),
             "Split comm should have a different commHash than parent",
         )
+
+        del split_comm
+
+    def test_comm_dump_all_basic(self):
+        """Test that comm_dump_all returns a nested dict with at least one comm."""
+        all_dumps = comm_dump_all()
+
+        self.assertIsInstance(all_dumps, dict)
+        self.assertGreaterEqual(
+            len(all_dumps), 1, "comm_dump_all() returned no communicators"
+        )
+
+        for comm_key, dump in all_dumps.items():
+            self.assertIsInstance(dump, dict)
+            self.assertGreater(len(dump), 0, f"Dump for comm {comm_key} is empty")
+            self.assertIn("rank", dump, f"Missing rank for comm {comm_key}")
+            self.assertIn("nRanks", dump, f"Missing nRanks for comm {comm_key}")
+
+    def test_comm_dump_all_contains_current_comm(self):
+        """Test that comm_dump_all contains both parent and split communicators."""
+        # Create a split communicator so there are at least 2 comms
+        even_ranks = list(range(0, self.num_ranks, 2))
+        odd_ranks = list(range(1, self.num_ranks, 2))
+
+        if self.rank % 2 == 0:
+            split_comm = self.torchcomm.split(even_ranks, name="even_split")
+        else:
+            split_comm = self.torchcomm.split(odd_ranks, name="odd_split")
+
+        self.assertIsNotNone(split_comm)
+
+        parent_dump = self.ncclx_backend.comm_dump()
+        split_dump = split_comm.get_backend_impl().comm_dump()
+        all_dumps = comm_dump_all()
+
+        # Both parent and split comm hashes should appear in dump_all
+        parent_hash = parent_dump.get("commHash", "").strip('"')
+        split_hash = split_dump.get("commHash", "").strip('"')
+
+        parent_found = any(parent_hash in key for key in all_dumps)
+        split_found = any(split_hash in key for key in all_dumps)
+
+        self.assertTrue(
+            parent_found,
+            f"Parent comm hash {parent_hash} not found in comm_dump_all keys: "
+            f"{list(all_dumps.keys())}",
+        )
+        self.assertTrue(
+            split_found,
+            f"Split comm hash {split_hash} not found in comm_dump_all keys: "
+            f"{list(all_dumps.keys())}",
+        )
+
+        # dump_all should have at least 2 communicators
+        self.assertGreaterEqual(len(all_dumps), 2)
 
         del split_comm
 
