@@ -52,9 +52,14 @@ TEST_F(CommAllocTest, CuMemAllocation) {
   if (!ctran::utils::getCuMemSysSupported()) {
     GTEST_SKIP() << "CuMem not supported, skip CuMemAllocation test";
   }
-  if (gpuName_.find("GB200") == std::string::npos) {
-    // by default NCCL_CTRAN_NVL_FABRIC_ENABLE is false, we use posix file
-    // descriptor for cuda allocation
+  // TODO: device attribute query
+  // (CU_DEVICE_ATTRIBUTE_HANDLE_TYPE_FABRIC_SUPPORTED) doesn't give us
+  // trustable info about if fabric handle is supported, so we use this
+  // hardcoded GPU name to test. See:
+  // https://forums.developer.nvidia.com/t/cudevicegetattribute-shows-i-can-use-fabric-handle-but-actually-i-cannot/336426/10
+  if (gpuName_.find("GB") == std::string::npos) {
+    // on non-GB (Grace Blackwell) platforms, fabric is not supported, we use
+    // posix file descriptor for cuda allocation
     ensureDeviceMemNoLeak([this]() {
       void* ptr{nullptr};
       CUmemGenericAllocationHandle handle;
@@ -74,8 +79,8 @@ TEST_F(CommAllocTest, CuMemAllocation) {
     });
   } else {
 #if !defined(USE_ROCM)
-    // for GB200 platform, set NCCL_CTRAN_NVL_FABRIC_ENABLE to true.
-    EnvRAII env1(NCCL_CTRAN_NVL_FABRIC_ENABLE, true);
+    // for GB (Grace Blackwell) platforms, fabric handle is auto-detected as
+    // supported.
     ensureDeviceMemNoLeak([this]() {
       void* ptr{nullptr};
       CUmemGenericAllocationHandle handle;
@@ -99,19 +104,19 @@ TEST_F(CommAllocTest, CuMemAllocation) {
 }
 
 TEST_F(CommAllocTest, isCuMemFabricHandleSupported) {
-  // for any platform, if NCCL_CTRAN_NVL_FABRIC_ENABLE is false,
-  // isCuMemFabricHandleSupported should return false
-  ensureDeviceMemNoLeak([this]() {
-    EnvRAII env1(NCCL_CTRAN_NVL_FABRIC_ENABLE, false);
-    EXPECT_FALSE(isCuMemFabricHandleSupported());
-  });
-  // for GB200 platform, set NCCL_CTRAN_NVL_FABRIC_ENABLE to true,
-  // isCuMemFabricHandleSupported should return true
-  if (gpuName_.find("GB200") != std::string::npos) {
-    ensureDeviceMemNoLeak([this]() {
-      EnvRAII env1(NCCL_CTRAN_NVL_FABRIC_ENABLE, true);
-      EXPECT_TRUE(isCuMemFabricHandleSupported());
-    });
+  // getCuMemAllocHandleType() triggers runtime fabric detection internally
+  // (alloc/export/import probe), so we cannot wrap it in ensureDeviceMemNoLeak
+  // since the CUDA allocator may retain internal memory pools after the probe
+  // even though all allocations are freed.
+  bool fabricSupported = isCuMemFabricEnabled();
+  if (gpuName_.find("GB") == std::string::npos) {
+    // on non-GB (Grace Blackwell) platforms, fabric handle should not be
+    // supported
+    EXPECT_FALSE(fabricSupported);
+  } else {
+    // for GB (Grace Blackwell) platforms, fabric handle should be auto-detected
+    // as supported
+    EXPECT_TRUE(fabricSupported);
   }
 }
 
