@@ -134,7 +134,7 @@ class CtranAllGatherWindowTest : public CtranDistBaseTest {
 class AllGatherWindowTestParam
     : public CtranAllGatherWindowTest,
       public ::testing::WithParamInterface<
-          std::tuple<size_t, size_t, MemAllocType, bool>> {};
+          std::tuple<size_t, size_t, MemAllocType, bool, std::string>> {};
 
 /**
  * Test: AllGatherWindow
@@ -152,7 +152,8 @@ class AllGatherWindowTestParam
  * where rank_i_data = [i, i+1, i+2, ..., i+numElements-1]
  */
 TEST_P(AllGatherWindowTestParam, AllGatherWindow) {
-  const auto& [kNumElements, kNumIters, bufType, userBuf] = GetParam();
+  const auto& [kNumElements, kNumIters, bufType, userBuf, algoStr] = GetParam();
+  SysEnvRAII algoEnv("NCCL_ALLGATHER_WIN_ALGO", algoStr);
   EXPECT_GE(kNumElements, 1);
   EXPECT_GE(kNumIters, 1);
 
@@ -257,7 +258,8 @@ TEST_P(AllGatherWindowTestParam, AllGatherWindow) {
  * slot).
  */
 TEST_P(AllGatherWindowTestParam, AllGatherWindowInPlace) {
-  const auto& [kNumElements, kNumIters, bufType, userBuf] = GetParam();
+  const auto& [kNumElements, kNumIters, bufType, userBuf, algoStr] = GetParam();
+  SysEnvRAII algoEnv("NCCL_ALLGATHER_WIN_ALGO", algoStr);
   EXPECT_GE(kNumElements, 1);
   EXPECT_GE(kNumIters, 1);
 
@@ -346,25 +348,28 @@ INSTANTIATE_TEST_SUITE_P(
     AllGatherWindowTestInstance,
     AllGatherWindowTestParam,
     ::testing::Combine(
-        // kNumElements, kNumIters, bufType, userBuf
+        // kNumElements, kNumIters, bufType, userBuf, algo
         ::testing::Values(8192, 1024 * 1024),
         ::testing::Values(1, 10),
         ::testing::Values(
             MemAllocType::kMemCuMemAlloc,
             MemAllocType::kMemCudaMalloc),
-        ::testing::Values(true, false)),
+        ::testing::Values(true, false),
+        ::testing::Values("ctdirect", "ctpipeline")),
     [](const ::testing::TestParamInfo<AllGatherWindowTestParam::ParamType>&
            info) {
       const auto kNumElements = std::get<0>(info.param);
       const auto kNumIters = std::get<1>(info.param);
       const auto bufType = std::get<2>(info.param);
       const auto userBuf = std::get<3>(info.param);
+      const auto& algo = std::get<4>(info.param);
       std::string name = fmt::format(
-          "numElem{}_numIters{}_{}_{}",
+          "numElem{}_numIters{}_{}_{}_{}",
           kNumElements,
           kNumIters,
           testMemAllocTypeToStr(bufType),
-          userBuf ? "userBuf" : "allocBuf");
+          userBuf ? "userBuf" : "allocBuf",
+          algo);
       return name;
     });
 
