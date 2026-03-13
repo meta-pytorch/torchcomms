@@ -204,6 +204,30 @@ TEST_P(NcclxLazyConnectTestFixture, AllReduceTree) {
   NCCLCHECK_TEST(ncclCommDestroy(rootComm));
 }
 
+// Test that AllReduce with NVLS algorithm works under lazy connect/setup.
+TEST_P(NcclxLazyConnectTestFixture, AllReduceNvls) {
+  EnvRAII algo(NCCL_ALGO, std::string("AllReduce:NVLS"));
+  EnvRAII nvlsEnable(NCCL_NVLS_ENABLE, (int64_t)1);
+  NCCLCHECK_TEST(ncclCommInitRankConfig(
+      &rootComm, numRanks, ncclUid, globalRank, nullptr));
+  ASSERT_NE(nullptr, rootComm);
+
+  // With lazy setup channels, nvlsResources should not be initialized yet
+  if (NCCL_LAZY_SETUP_CHANNELS) {
+    EXPECT_EQ(rootComm->nvlsResources, nullptr);
+  }
+
+  size_t count = 1 << 10; // 1K elements
+  prepBuffers(count * ncclTypeSize(dataType), count * ncclTypeSize(dataType));
+
+  auto res = ncclAllReduce(
+      sendBuf, recvBuf, count, dataType, ncclSum, rootComm, stream);
+  EXPECT_EQ(res, ncclSuccess);
+
+  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  NCCLCHECK_TEST(ncclCommDestroy(rootComm));
+}
+
 TEST_P(NcclxLazyConnectTestFixture, AllReduceTreeIncreaseChannel) {
   EnvRAII algo(NCCL_ALGO, std::string("TREE"));
   NCCLCHECK_TEST(ncclCommInitRankConfig(
