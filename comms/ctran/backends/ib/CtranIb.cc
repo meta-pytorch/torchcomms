@@ -1244,7 +1244,52 @@ commResult_t CtranIb::bootstrapConnect(
     FB_CHECKABORT(
         allListenSocketAddrs.size() > 0,
         "Peer address is not specified, but pre-exchanged listen sockets is empty. It indicates a COMM internal bug.");
-    peerSockAddr = toSocketAddress(allListenSocketAddrs[peerRank]);
+    if (FOLLY_UNLIKELY(
+            peerRank < 0 ||
+            static_cast<size_t>(peerRank) >= allListenSocketAddrs.size())) {
+      CLOGF(
+          ERR,
+          "CTRAN-IB: bootstrapConnect: peerRank {} out of bounds "
+          "(allListenSocketAddrs.size()={}), commHash {:x}, commDesc {}, rank {}",
+          peerRank,
+          allListenSocketAddrs.size(),
+          commHash,
+          commDesc,
+          rank);
+      return commInternalError;
+    }
+    const auto& peerSockStorage = allListenSocketAddrs[peerRank];
+    auto family = peerSockStorage.ss_family;
+    if (FOLLY_UNLIKELY(family != AF_INET && family != AF_INET6)) {
+      const auto* raw =
+          reinterpret_cast<const unsigned char*>(&peerSockStorage);
+      std::string hexDump;
+      hexDump.reserve(32 * 3);
+      for (size_t i = 0; i < std::min<size_t>(32, sizeof(sockaddr_storage));
+           ++i) {
+        hexDump += fmt::format("{:02x}", raw[i]);
+        if (i % 4 == 3)
+          hexDump += ' ';
+      }
+      CLOGF(
+          ERR,
+          "CTRAN-IB: bootstrapConnect: corrupt allListenSocketAddrs[{}] "
+          "ss_family={} (expected AF_INET={} or AF_INET6={}), "
+          "commHash {:x}, commDesc {}, rank {}, "
+          "allListenSocketAddrs.size()={}, this={}, hex: [{}]",
+          peerRank,
+          family,
+          AF_INET,
+          AF_INET6,
+          commHash,
+          commDesc,
+          rank,
+          allListenSocketAddrs.size(),
+          (void*)this,
+          hexDump);
+      return commInternalError;
+    }
+    peerSockAddr = toSocketAddress(peerSockStorage);
     clientIfName = &NCCL_CLIENT_SOCKET_IFNAME;
   }
 
