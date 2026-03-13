@@ -498,6 +498,11 @@ class CtranIb {
 
  private:
   friend class CtranIbRequest;
+  // Return all CQs to the singleton pool and clear the cqs vector.
+  // Must be called under appropriate synchronization (destructor or epoch
+  // lock).
+  void checkinCqs();
+
   void init(
       CtranComm* comm,
       int rank,

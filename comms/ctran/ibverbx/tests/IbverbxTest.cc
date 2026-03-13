@@ -458,6 +458,34 @@ TEST_F(IbverbxTestFixture, IbvCq) {
   ASSERT_EQ(cq2.cq(), cqRawPtr);
 }
 
+TEST_F(IbverbxTestFixture, IbvCqMoveAssignment) {
+  auto devices = IbvDevice::ibvGetDeviceList();
+  ASSERT_TRUE(devices);
+  auto& device = devices->at(0);
+
+  int cqe = 100;
+
+  // Create two CQs
+  auto cq1 = device.createCq(cqe, nullptr, nullptr, 0);
+  ASSERT_TRUE(cq1);
+  auto cq2 = device.createCq(cqe, nullptr, nullptr, 0);
+  ASSERT_TRUE(cq2);
+
+  auto cq2RawPtr = cq2->cq();
+
+  // Move assign cq2 into cq1 — old cq1 should be destroyed, not leaked
+  *cq1 = std::move(*cq2);
+  ASSERT_EQ(cq1->cq(), cq2RawPtr);
+  ASSERT_EQ(cq2->cq(), nullptr);
+
+  // Move assign into default-constructed (empty) CQ
+  IbvCq cq3;
+  ASSERT_EQ(cq3.cq(), nullptr);
+  cq3 = std::move(*cq1);
+  ASSERT_EQ(cq3.cq(), cq2RawPtr);
+  ASSERT_EQ(cq1->cq(), nullptr);
+}
+
 TEST_F(IbverbxTestFixture, IbvQp) {
   auto devices = IbvDevice::ibvGetDeviceList();
   ASSERT_TRUE(devices);

@@ -1543,6 +1543,15 @@ cvars:
      Traffic class to use for control QPs. Note: To match NCCL_IB_TC, this
      directly sets the TC field, so multiply your DSCP value by 4.
 
+ - name        : NCCL_CTRAN_IB_CQ_POOL_ENABLE
+   type        : bool
+   default     : true
+   description : |-
+     Enable CQ pooling in CtranIbSingleton. When enabled, IB completion queues
+     are returned to a per-device pool on communicator destruction and reused
+     on subsequent communicator creation, avoiding the ~183ms ibv_create_cq
+     kernel syscall. Disable to fall back to per-communicator CQ creation.
+
  - name        : NCCL_CTRAN_IB_VC_MODE
    type        : enum
    default     : dqplb
