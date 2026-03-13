@@ -77,14 +77,14 @@ class TorchWorkXCCLQueue {
   TorchWorkXCCLQueue() = default;
   ~TorchWorkXCCLQueue() = default;
 
-  TorchWork::WorkStatus garbageCollect(bool isMainThread = true);
+  TorchWork::WorkStatus garbageCollect();
   // Finalize function can only be called from the main thread
   TorchWork::WorkStatus finalize();
   void enqueueWork(c10::intrusive_ptr<TorchWorkXCCL> work, xpuStream_t stream);
   bool empty();
 
  private:
-  TorchWork::WorkStatus garbageCollectLocked(bool isMainThread);
+  TorchWork::WorkStatus garbageCollectLocked();
   std::unordered_map<xpuStream_t, std::queue<c10::intrusive_ptr<TorchWorkXCCL>>>
       stream_work_queues_;
   std::mutex work_queues_mutex_;

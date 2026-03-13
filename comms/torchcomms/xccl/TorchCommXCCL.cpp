@@ -252,6 +252,26 @@ void TorchCommXCCL::init(
   timeout_thread_ = std::thread(&TorchCommXCCL::timeoutWatchdog, this);
 }
 
+[[noreturn]] void TorchCommXCCL::throwAsyncError(bool abort_comm) {
+  onecclResult_t asyncErr = onecclSuccess;
+  onecclResult_t res = xccl_api_->commGetAsyncError(xccl_comm_, &asyncErr);
+  if (res != onecclSuccess) {
+    TC_LOG(WARNING) << "commGetAsyncError returned " << res;
+    asyncErr = res;
+  }
+  if (asyncErr == onecclSuccess) {
+    asyncErr = onecclSystemError;
+  }
+  XCCLException xcclException(*xccl_api_, "XCCL Async Error", asyncErr);
+  if (abort_comm) {
+    abortXcclComm();
+  } else if (options_.abort_process_on_timeout_or_error) {
+    TC_LOG(ERROR) << "Aborting process due to error: " << xcclException.what();
+    abort();
+  }
+  throw xcclException;
+}
+
 void TorchCommXCCL::finalize() {
   if (init_state_ == InitializationState::UNINITIALIZED) {
     throw std::runtime_error("TorchCommXCCL not initialized");
@@ -278,18 +298,7 @@ void TorchCommXCCL::finalize() {
   auto work_status = workq_.finalize();
 
   if (comm_state_ == CommState::ERROR) {
-    onecclResult_t asyncErr = onecclSuccess;
-    onecclResult_t res = xccl_api_->commGetAsyncError(xccl_comm_, &asyncErr);
-    if (res != onecclSuccess) {
-      TC_LOG(WARNING) << "commGetAsyncError returned " << res;
-      asyncErr = res;
-    }
-    if (asyncErr == onecclSuccess) {
-      asyncErr = onecclSystemError;
-    }
-    XCCLException xcclException(*xccl_api_, "XCCL Async Error", asyncErr);
-    abortXcclComm();
-    throw xcclException;
+    throwAsyncError(true);
   }
 
   if (comm_state_ == CommState::TIMEOUT) {
@@ -310,18 +319,7 @@ void TorchCommXCCL::finalize() {
     throw std::runtime_error("Work timed out during finalize");
   } else if (work_status == TorchWork::WorkStatus::ERROR) {
     comm_state_ = CommState::ERROR;
-    onecclResult_t asyncErr = onecclSuccess;
-    onecclResult_t res = xccl_api_->commGetAsyncError(xccl_comm_, &asyncErr);
-    if (res != onecclSuccess) {
-      TC_LOG(WARNING) << "commGetAsyncError returned " << res;
-      asyncErr = res;
-    }
-    if (asyncErr == onecclSuccess) {
-      asyncErr = onecclSystemError;
-    }
-    XCCLException xcclException(*xccl_api_, "XCCL Async Error", asyncErr);
-    abortXcclComm();
-    throw xcclException;
+    throwAsyncError(true);
   }
 
   // Clean up event pool
@@ -705,9 +703,14 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_reduce(
   TracingGuard tracingGuard(
       name_, comm_size_, "all_reduce", rank_, tensor, tensor);
 
-  // oneCCL bug skips premul sum if comm_size is 1, so handle it here
-  // We do this before getOperationStream so that the internal stream
-  // waits for this operation to complete if async_op is true.
+  // Workaround for oneCCL bug: allreduce with PREMUL_SUM is a no-op when
+  // comm_size is 1, so the scaling factor is never applied.
+  // See: https://github.com/uxlfoundation/oneCCL/issues/196
+  //
+  // We apply the factor here (before getOperationStream) so that the multiply
+  // runs on the current stream.  When async_op is true, the dependency event
+  // recorded by getOperationStream will make the internal stream wait for this
+  // multiply to finish.
   // TODO: remove this workaround when oneCCL bug is fixed
   if (comm_size_ == 1 && op == ReduceOp::RedOpType::PREMUL_SUM) {
     applyPreMulFactor(tensor, op);
@@ -745,6 +748,9 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_reduce(
   // reductions natively.
   const auto maybe_new_op = [&]() -> ReduceOp {
     if (op == ReduceOp::RedOpType::PREMUL_SUM) {
+      // For comm_size > 1 we apply the pre-mul factor here (on the operation
+      // stream).  The comm_size == 1 case was already handled above before
+      // getOperationStream, so skip it to avoid applying the factor twice.
       if (comm_size_ != 1) {
         c10::StreamGuard guard(stream);
         applyPreMulFactor(tensor, op);

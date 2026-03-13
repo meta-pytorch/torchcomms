@@ -46,6 +46,8 @@ class TorchCommXCCLTest : public ::testing::Test {
 
   class TestTorchCommXCCL : public TorchCommXCCL {
    public:
+    using CommState = TorchCommXCCL::CommState;
+
     virtual ~TestTorchCommXCCL() = default;
 
     TestTorchCommXCCL() : TorchCommXCCL() {}
