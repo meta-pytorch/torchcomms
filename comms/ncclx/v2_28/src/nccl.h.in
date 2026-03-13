@@ -805,6 +805,27 @@ ncclResult_t pncclWinSharedQuery(int rank, ncclComm_t comm, ncclWindow_t win, vo
  */
 ncclResult_t ncclWinGetAttributes(int rank, ncclWindow_t win, ncclWinAttr_t* attr);
 
+#if defined(ENABLE_PIPES)
+/*
+ * Create a DeviceWindow in device memory from a ctran-registered ncclWindow_t.
+ * COLLECTIVE on first call — all ranks must call together.
+ * Subsequent calls return cached results (config parameters ignored).
+ *
+ * The returned device pointer must be freed via ncclWinDestroyDeviceWin().
+ */
+ncclResult_t ncclWinCreateDeviceWin(
+    ncclWindow_t win,
+    int signal_count,
+    int counter_count,
+    int barrier_count,
+    void** outDevicePtr);
+
+/*
+ * Free device memory allocated by ncclWinCreateDeviceWin.
+ */
+ncclResult_t ncclWinDestroyDeviceWin(void* devicePtr);
+#endif // ENABLE_PIPES
+
 /*
  * Free the window object and free the allocated memory
  */

@@ -341,6 +341,19 @@ class NcclxMock : public NcclxApi {
       (override));
 #endif
 
+#if defined(ENABLE_PIPES)
+  MOCK_METHOD(
+      ncclResult_t,
+      winCreateDeviceWin,
+      (NcclxWindow win,
+       int signal_count,
+       int counter_count,
+       int barrier_count,
+       void** outDevicePtr),
+      (override));
+  MOCK_METHOD(ncclResult_t, winDestroyDeviceWin, (void* devicePtr), (override));
+#endif
+
   // Group operations
   MOCK_METHOD(ncclResult_t, groupStart, (), (override));
   MOCK_METHOD(ncclResult_t, groupEnd, (), (override));
