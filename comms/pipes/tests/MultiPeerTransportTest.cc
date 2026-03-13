@@ -394,6 +394,233 @@ TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferFabric) {
   MPI_Barrier(MPI_COMM_WORLD);
 }
 
+// POSIX FD path — cuMem buffer with CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR,
+// without fabric. Exercises the pidfd_getfd-based exchange on H100 NVL-only.
+TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferPosixFd) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
+  }
+
+  auto transport = createTransport();
+  transport->exchange();
+
+  if (transport->nvl_peer_ranks().empty()) {
+    GTEST_SKIP() << "No NVL peers available";
+  }
+  if (nvlSpansMultipleHosts(*transport)) {
+    GTEST_SKIP() << "POSIX FD exchange requires intra-host NVL; "
+                 << "NVL domain spans multiple hosts (MNNVL).";
+  }
+
+#if CUDART_VERSION >= 12030
+  const size_t requestedSize = 4096;
+
+  int cudaDev = 0;
+  CUdevice cuDev;
+  CUDACHECK_TEST(cudaGetDevice(&cudaDev));
+  ASSERT_EQ(cuDeviceGet(&cuDev, cudaDev), CUDA_SUCCESS);
+
+  CUmemAllocationProp prop = {};
+  prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+  prop.location = {CU_MEM_LOCATION_TYPE_DEVICE, cuDev};
+  prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+
+  int rdmaFlag = 0;
+  cuDeviceGetAttribute(
+      &rdmaFlag,
+      CU_DEVICE_ATTRIBUTE_GPU_DIRECT_RDMA_WITH_CUDA_VMM_SUPPORTED,
+      cuDev);
+  if (rdmaFlag) {
+    prop.allocFlags.gpuDirectRDMACapable = 1;
+  }
+
+  size_t granularity = 0;
+  ASSERT_EQ(
+      cuMemGetAllocationGranularity(
+          &granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM),
+      CUDA_SUCCESS);
+  size_t allocSize =
+      ((requestedSize + granularity - 1) / granularity) * granularity;
+
+  CUmemGenericAllocationHandle allocHandle;
+  ASSERT_EQ(cuMemCreate(&allocHandle, allocSize, &prop, 0), CUDA_SUCCESS);
+
+  CUdeviceptr devPtr = 0;
+  ASSERT_EQ(
+      cuMemAddressReserve(&devPtr, allocSize, granularity, 0, 0), CUDA_SUCCESS);
+  ASSERT_EQ(cuMemMap(devPtr, allocSize, 0, allocHandle, 0), CUDA_SUCCESS);
+
+  CUmemAccessDesc accessDesc = {};
+  accessDesc.location = {CU_MEM_LOCATION_TYPE_DEVICE, cuDev};
+  accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+  ASSERT_EQ(cuMemSetAccess(devPtr, allocSize, &accessDesc, 1), CUDA_SUCCESS);
+
+  void* localBuf = reinterpret_cast<void*>(devPtr);
+  CUDACHECK_TEST(cudaMemset(localBuf, globalRank + 1, requestedSize));
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  auto mappedPtrs = transport->exchangeNvlBuffer(localBuf, requestedSize);
+  verifyMappedPtrs(*transport, mappedPtrs, localBuf);
+
+  transport->unmapNvlBuffers(mappedPtrs);
+  cuMemUnmap(devPtr, allocSize);
+  cuMemAddressFree(devPtr, allocSize);
+  cuMemRelease(allocHandle);
+#endif
+
+  MPI_Barrier(MPI_COMM_WORLD);
+}
+
+// Verifies POSIX FD exchange + unmap round-trip works twice (no state leaks).
+TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferPosixFd_MultipleRounds) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
+  }
+
+  auto transport = createTransport();
+  transport->exchange();
+
+  if (transport->nvl_peer_ranks().empty()) {
+    GTEST_SKIP() << "No NVL peers available";
+  }
+  if (nvlSpansMultipleHosts(*transport)) {
+    GTEST_SKIP() << "POSIX FD exchange requires intra-host NVL";
+  }
+
+#if CUDART_VERSION >= 12030
+  const size_t requestedSize = 1024;
+
+  int cudaDev = 0;
+  CUdevice cuDev;
+  CUDACHECK_TEST(cudaGetDevice(&cudaDev));
+  ASSERT_EQ(cuDeviceGet(&cuDev, cudaDev), CUDA_SUCCESS);
+
+  CUmemAllocationProp prop = {};
+  prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+  prop.location = {CU_MEM_LOCATION_TYPE_DEVICE, cuDev};
+  prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+
+  int rdmaFlag = 0;
+  cuDeviceGetAttribute(
+      &rdmaFlag,
+      CU_DEVICE_ATTRIBUTE_GPU_DIRECT_RDMA_WITH_CUDA_VMM_SUPPORTED,
+      cuDev);
+  if (rdmaFlag) {
+    prop.allocFlags.gpuDirectRDMACapable = 1;
+  }
+
+  size_t granularity = 0;
+  ASSERT_EQ(
+      cuMemGetAllocationGranularity(
+          &granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM),
+      CUDA_SUCCESS);
+  size_t allocSize =
+      ((requestedSize + granularity - 1) / granularity) * granularity;
+
+  for (int iter = 0; iter < 2; ++iter) {
+    CUmemGenericAllocationHandle allocHandle;
+    ASSERT_EQ(cuMemCreate(&allocHandle, allocSize, &prop, 0), CUDA_SUCCESS);
+
+    CUdeviceptr devPtr = 0;
+    ASSERT_EQ(
+        cuMemAddressReserve(&devPtr, allocSize, granularity, 0, 0),
+        CUDA_SUCCESS);
+    ASSERT_EQ(cuMemMap(devPtr, allocSize, 0, allocHandle, 0), CUDA_SUCCESS);
+
+    CUmemAccessDesc accessDesc = {};
+    accessDesc.location = {CU_MEM_LOCATION_TYPE_DEVICE, cuDev};
+    accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+    ASSERT_EQ(cuMemSetAccess(devPtr, allocSize, &accessDesc, 1), CUDA_SUCCESS);
+
+    void* localBuf = reinterpret_cast<void*>(devPtr);
+    CUDACHECK_TEST(cudaMemset(localBuf, iter + 1, requestedSize));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    auto mappedPtrs = transport->exchangeNvlBuffer(localBuf, requestedSize);
+    ASSERT_EQ(static_cast<int>(mappedPtrs.size()), transport->nvl_n_ranks());
+    for (int rank = 0; rank < transport->nvl_n_ranks(); ++rank) {
+      EXPECT_NE(mappedPtrs[rank], nullptr);
+    }
+
+    transport->unmapNvlBuffers(mappedPtrs);
+    cuMemUnmap(devPtr, allocSize);
+    cuMemAddressFree(devPtr, allocSize);
+    cuMemRelease(allocHandle);
+
+    MPI_Barrier(MPI_COMM_WORLD);
+  }
+#endif
+
+  MPI_Barrier(MPI_COMM_WORLD);
+}
+
+// cuMem buffer with CU_MEM_HANDLE_TYPE_NONE should throw because it cannot
+// be exported via either fabric or POSIX FD.
+TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferCuMemNone_Throws) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
+  }
+
+  auto transport = createTransport();
+  transport->exchange();
+
+  if (transport->nvl_peer_ranks().empty()) {
+    GTEST_SKIP() << "No NVL peers available";
+  }
+
+#if CUDART_VERSION >= 12030
+  const size_t requestedSize = 4096;
+
+  int cudaDev = 0;
+  CUdevice cuDev;
+  CUDACHECK_TEST(cudaGetDevice(&cudaDev));
+  ASSERT_EQ(cuDeviceGet(&cuDev, cudaDev), CUDA_SUCCESS);
+
+  // Allocate with NONE handle type — no shareable handle support.
+  CUmemAllocationProp prop = {};
+  prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+  prop.location = {CU_MEM_LOCATION_TYPE_DEVICE, cuDev};
+  // requestedHandleTypes defaults to CU_MEM_HANDLE_TYPE_NONE
+
+  size_t granularity = 0;
+  ASSERT_EQ(
+      cuMemGetAllocationGranularity(
+          &granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM),
+      CUDA_SUCCESS);
+  size_t allocSize =
+      ((requestedSize + granularity - 1) / granularity) * granularity;
+
+  CUmemGenericAllocationHandle allocHandle;
+  ASSERT_EQ(cuMemCreate(&allocHandle, allocSize, &prop, 0), CUDA_SUCCESS);
+
+  CUdeviceptr devPtr = 0;
+  ASSERT_EQ(
+      cuMemAddressReserve(&devPtr, allocSize, granularity, 0, 0), CUDA_SUCCESS);
+  ASSERT_EQ(cuMemMap(devPtr, allocSize, 0, allocHandle, 0), CUDA_SUCCESS);
+
+  CUmemAccessDesc accessDesc = {};
+  accessDesc.location = {CU_MEM_LOCATION_TYPE_DEVICE, cuDev};
+  accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+  ASSERT_EQ(cuMemSetAccess(devPtr, allocSize, &accessDesc, 1), CUDA_SUCCESS);
+
+  void* localBuf = reinterpret_cast<void*>(devPtr);
+
+  EXPECT_THROW(
+      transport->exchangeNvlBuffer(localBuf, requestedSize),
+      std::runtime_error);
+
+  cuMemUnmap(devPtr, allocSize);
+  cuMemAddressFree(devPtr, allocSize);
+  cuMemRelease(allocHandle);
+#endif
+
+  MPI_Barrier(MPI_COMM_WORLD);
+}
+
 // =============================================================================
 // disableIb tests — NVL-only mode
 // =============================================================================
