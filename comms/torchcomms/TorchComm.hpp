@@ -187,6 +187,19 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
    */
   InitHandle getInitHandle() const;
 
+  /**
+   * Reconfigure the communicator with a new set of peers.
+   * In dynamic regime, this method initializes the communicator with the
+   * provided set of peers. After a successful reconfigure call, the
+   * communicator is fully initialized and collective operations are permitted.
+   *
+   * @param opts ReconfigureOptions containing uuid, handles, timeout, and
+   * hints.
+   * @return A TorchWork handle that can be used to wait for completion.
+   * @throws std::runtime_error if not implemented by the backend.
+   */
+  c10::intrusive_ptr<TorchWork> reconfigure(const ReconfigureOptions& opts);
+
   // Hook types (defined in TorchCommHooks.hpp; aliased for backward compat)
   using PreHookArgs = ::torch::comms::PreHookArgs;
   using PostHookArgs = ::torch::comms::PostHookArgs;
