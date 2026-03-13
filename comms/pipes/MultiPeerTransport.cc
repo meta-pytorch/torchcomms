@@ -7,6 +7,7 @@
 #include <stdexcept>
 
 #include <cuda_runtime.h>
+#include <glog/logging.h>
 
 #include "comms/pipes/MultiPeerDeviceHandle.cuh"
 #include "comms/pipes/MultipeerIbgdaDeviceTransport.cuh"
@@ -46,14 +47,23 @@ MultiPeerTransport::MultiPeerTransport(
     int nRanks,
     int deviceId,
     std::shared_ptr<meta::comms::IBootstrap> bootstrap,
-    const MultiPeerTransportConfig& config)
+    const MultiPeerTransportConfig& config,
+    std::optional<TopologyResult> topo)
     : myRank_(myRank),
       nRanks_(nRanks),
       deviceId_(deviceId),
       bootstrap_(std::move(bootstrap)) {
-  TopologyDiscovery topoDiscovery;
-  auto topo = topoDiscovery.discover(
-      myRank_, nRanks_, deviceId_, *bootstrap_, config.topoConfig);
+  if (!topo.has_value()) {
+    TopologyDiscovery topoDiscovery;
+    topo = topoDiscovery.discover(
+        myRank_, nRanks_, deviceId_, *bootstrap_, config.topoConfig);
+  }
+  initFromTopology(std::move(*topo), config);
+}
+
+void MultiPeerTransport::initFromTopology(
+    TopologyResult topo,
+    const MultiPeerTransportConfig& config) {
   nvlPeerRanks_ = std::move(topo.nvlPeerRanks);
   globalToNvlLocal_ = std::move(topo.globalToNvlLocal);
 
@@ -62,19 +72,42 @@ MultiPeerTransport::MultiPeerTransport(
   nvlLocalRank_ = globalToNvlLocal_.at(myRank_);
 
   typePerRank_.resize(nRanks_);
-  for (int r = 0; r < nRanks_; ++r) {
-    if (r == myRank_) {
-      typePerRank_[r] = TransportType::SELF;
-    } else if (globalToNvlLocal_.count(r)) {
-      typePerRank_[r] = TransportType::P2P_NVL;
-    } else {
-      typePerRank_[r] = TransportType::P2P_IBGDA;
-    }
-  }
 
-  for (int r = 0; r < nRanks_; ++r) {
-    if (r != myRank_) {
-      ibgdaPeerRanks_.push_back(r);
+  if (config.disableIb) {
+    // NVL-only mode: validate all non-self peers are NVL-reachable, then
+    // force every non-self rank to P2P_NVL. IBGDA is never constructed.
+    LOG(INFO) << "MultiPeerTransport: rank " << myRank_
+              << " IBGDA disabled by config, NVL-only mode";
+
+    for (int r = 0; r < nRanks_; ++r) {
+      if (r == myRank_) {
+        typePerRank_.at(r) = TransportType::SELF;
+      } else if (globalToNvlLocal_.count(r)) {
+        typePerRank_.at(r) = TransportType::P2P_NVL;
+      } else {
+        throw std::runtime_error(
+            "MultiPeerTransport: IBGDA disabled but rank " + std::to_string(r) +
+            " is not NVL-reachable from rank " + std::to_string(myRank_) +
+            ". All ranks must be in the same NVL domain when "
+            "NCCL_CTRAN_PIPES_DISABLE_IB=1.");
+      }
+    }
+    // ibgdaPeerRanks_ stays empty; ibgdaTransport_ stays nullptr.
+  } else {
+    for (int r = 0; r < nRanks_; ++r) {
+      if (r == myRank_) {
+        typePerRank_.at(r) = TransportType::SELF;
+      } else if (globalToNvlLocal_.count(r)) {
+        typePerRank_.at(r) = TransportType::P2P_NVL;
+      } else {
+        typePerRank_.at(r) = TransportType::P2P_IBGDA;
+      }
+    }
+
+    for (int r = 0; r < nRanks_; ++r) {
+      if (r != myRank_) {
+        ibgdaPeerRanks_.push_back(r);
+      }
     }
   }
 
@@ -94,7 +127,7 @@ MultiPeerTransport::MultiPeerTransport(
 
   // Always create IBGDA transport — it is the universal fallback for all peers.
   // NVL is preferred when available, but IBGDA covers every non-self rank.
-  if (nRanks_ > 1) {
+  if (!config.disableIb && nRanks_ > 1) {
     auto ibgdaConfig = config.ibgdaConfig;
     ibgdaConfig.cudaDevice = deviceId_;
     ibgdaTransport_ = std::make_unique<MultipeerIbgdaTransport>(
