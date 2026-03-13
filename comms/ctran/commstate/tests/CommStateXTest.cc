@@ -236,8 +236,7 @@ TEST(CommStateXTest, ValidEorTopology) {
   }
 }
 TEST(CommStateXTest, multiRackTest) {
-  EnvRAII env1(NCCL_CTRAN_NVL_FABRIC_ENABLE, true);
-  EnvRAII env2(NCCL_MNNVL_TRUNK_DISABLE, true);
+  EnvRAII env(NCCL_MNNVL_TRUNK_DISABLE, true);
   const int rank = 0;
   const int nRanks = 3;
   const int cudaDev = 0;
@@ -268,8 +267,6 @@ TEST(CommStateXTest, multiRackTest) {
 }
 
 TEST(CommStateXTest, nvlFabricTest) {
-  // set NCCL_CTRAN_NVL_FABRIC_ENABLE to true
-  EnvRAII env(NCCL_CTRAN_NVL_FABRIC_ENABLE, true);
   const int rank = 0;
   const int nRanks = 8;
   const int cudaDev = 0;
@@ -324,7 +321,7 @@ TEST(CommStateXTest, nvlFabricTest) {
       commHash,
       rankTopologies,
       std::vector<int>{});
-  commState->setNvlFabricTopos(nvlFabricTopologies);
+  commState->setNvlFabricTopos(nvlFabricTopologies, true);
 
   for (int i = 0; i < nRanks; ++i) {
     if (i < 4) {
@@ -343,11 +340,10 @@ TEST(CommStateXTest, nvlFabricTest) {
     EXPECT_EQ(commState->localRankToRanks().size(), 4);
   }
   EXPECT_TRUE(commState->nvlFabricEnabled());
-  // reset NCCL_CTRAN_NVL_FABRIC_ENABLE to false
+  // Test with fabricHwSupported = false
   {
-    EnvRAII env(NCCL_CTRAN_NVL_FABRIC_ENABLE, false);
-    // reload nvlFabricTopologies
-    commState->setNvlFabricTopos(std::move(nvlFabricTopologies));
+    // reload nvlFabricTopologies with fabric HW not supported
+    commState->setNvlFabricTopos(std::move(nvlFabricTopologies), false);
     EXPECT_FALSE(commState->nvlFabricEnabled());
     for (int i = 0; i < nRanks; ++i) {
       EXPECT_FALSE(commState->isSameNvlFabric(0, i));
@@ -357,9 +353,8 @@ TEST(CommStateXTest, nvlFabricTest) {
 
 TEST(CommStateXTest, nvlFabricCliqueTest) {
   // enable clique and NVL software partioning mode
-  EnvRAII env1(NCCL_CTRAN_NVL_FABRIC_ENABLE, true);
-  EnvRAII env2(NCCL_MNNVL_DETERMINISTIC_COLLECTIVE_ENABLE, true);
-  EnvRAII env3(NCCL_MNNVL_CLIQUE_SIZE, 2);
+  EnvRAII env1(NCCL_MNNVL_DETERMINISTIC_COLLECTIVE_ENABLE, true);
+  EnvRAII env2(NCCL_MNNVL_CLIQUE_SIZE, 2);
   const int rank = 0;
   const int nRanks = 8;
   const int cudaDev = 0;
@@ -414,7 +409,7 @@ TEST(CommStateXTest, nvlFabricCliqueTest) {
       commHash,
       rankTopologies,
       std::vector<int>{});
-  commState->setNvlFabricTopos(nvlFabricTopologies);
+  commState->setNvlFabricTopos(nvlFabricTopologies, true);
   EXPECT_TRUE(commState->nvlFabricEnabled());
   EXPECT_TRUE(commState->nvlFabricCliqueEnabled());
 

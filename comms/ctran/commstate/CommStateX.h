@@ -5,6 +5,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -92,7 +93,11 @@ class CommStateX {
 
   /* Setters */
   void setRankTopologies(std::vector<RankTopology> rankTopologies);
-  void setNvlFabricTopos(std::vector<NvlFabricTopology> nvlFabricTopologies);
+  // fabricHwSupportedForTest: optional override for testing; when not provided,
+  // uses runtime detection via getCuMemAllocHandleType()
+  void setNvlFabricTopos(
+      std::vector<NvlFabricTopology> nvlFabricTopologies,
+      std::optional<bool> fabricHwSupportedForTest = std::nullopt);
 
   /* Getters */
   const std::vector<ncclx::RankTopology>& rankTopologiesRef() const;

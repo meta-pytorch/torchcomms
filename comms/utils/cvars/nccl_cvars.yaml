@@ -1454,12 +1454,6 @@ cvars:
      share its own data with all the other peers, similar to a bcast or incast
      pattern.
 
- - name        : NCCL_CTRAN_NVL_FABRIC_ENABLE
-   type        : bool
-   default     : false
-   description : |-
-     Enable the use of NVL fabric in CTRAN.
-
  - name        : NCCL_CTRAN_IB_DMABUF_ENABLE
    type        : bool
    default     : true
