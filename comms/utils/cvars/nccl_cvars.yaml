@@ -546,7 +546,7 @@ cvars:
 
  - name        : NCCL_PXN_DISABLE
    type        : int64_t
-   default     : 0
+   default     : 1
    description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-pxn-disable
 
  - name        : NCCL_NCHANNELS_PER_NET_PEER
