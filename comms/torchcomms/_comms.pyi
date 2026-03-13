@@ -86,6 +86,7 @@ class CommOptions:
     timeout: timedelta
     store: Any
     name: str
+    enable_reconfigure: bool
     hints: Dict[str, str]
     def __init__(self) -> None: ...
 
@@ -477,6 +478,7 @@ def new_comm(
     timeout: timedelta | None = ...,
     store: Any | None = ...,
     name: str | None = ...,
+    enable_reconfigure: bool = False,
     hints: Dict[str, str] | None = ...,
 ) -> TorchComm: ...
 def get_mem_allocator(backend: str) -> Any: ...
