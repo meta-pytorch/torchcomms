@@ -246,6 +246,7 @@ class TorchCommNCCLX : public TorchCommBackend,
       const std::string& name,
       const CommOptions& options = {}) override;
 
+  std::unordered_map<std::string, std::string> comm_dump();
   // Friend access for TorchCommNCCLX
   friend class TorchWorkNCCLX;
   friend class GraphEventTracker;

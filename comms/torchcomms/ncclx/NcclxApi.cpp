@@ -495,6 +495,13 @@ ncclResult_t DefaultNcclxApi::redOpDestroy(ncclRedOp_t op, ncclComm_t comm) {
   return ncclRedOpDestroy(op, comm);
 }
 
+ncclResult_t DefaultNcclxApi::commDump(
+    ncclComm_t comm,
+    std::unordered_map<std::string, std::string>& map) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+  return ::ncclCommDump(comm, map);
+}
+
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
 ncclResult_t DefaultNcclxApi::devCommCreate(
     ncclComm_t comm,

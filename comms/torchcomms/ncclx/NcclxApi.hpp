@@ -5,6 +5,7 @@
 #include <exception>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 
 #include <glog/logging.h>
 #include <nccl.h> // @manual=//comms/ncclx:nccl
@@ -307,6 +308,10 @@ class NcclxApi {
       const ncclComm_t comm,
       int* count) = 0;
 
+  [[nodiscard]] virtual ncclResult_t commDump(
+      ncclComm_t comm,
+      std::unordered_map<std::string, std::string>& map) = 0;
+
   [[nodiscard]] virtual ncclResult_t redOpCreatePreMulSum(
       ncclRedOp_t* op,
       void* scalar,
@@ -564,6 +569,10 @@ class DefaultNcclxApi : public NcclxApi {
       override;
   [[nodiscard]] ncclResult_t commCount(const ncclComm_t comm, int* count)
       override;
+
+  [[nodiscard]] ncclResult_t commDump(
+      ncclComm_t comm,
+      std::unordered_map<std::string, std::string>& map) override;
 
   [[nodiscard]] ncclResult_t redOpCreatePreMulSum(
       ncclRedOp_t* op,

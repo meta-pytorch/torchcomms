@@ -259,6 +259,19 @@ Returns:
           py::arg("forward_indices"),
           py::arg("recv_indices"),
           py::arg("request"),
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "comm_dump",
+          &TorchCommNCCLX::comm_dump,
+          R"(
+Dump NCCL communicator internal state as key-value pairs.
+
+Returns a dictionary of communicator metadata including comm hash,
+rank, number of ranks, and collective trace information.
+
+Returns:
+    dict[str, str]: Key-value pairs of communicator state.
+)",
           py::call_guard<py::gil_scoped_release>());
 
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
