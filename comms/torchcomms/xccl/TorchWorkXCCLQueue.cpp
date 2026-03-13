@@ -2,9 +2,7 @@
 
 namespace torch::comms {
 
-TorchWork::WorkStatus TorchWorkXCCLQueue::garbageCollectLocked(
-    bool isMainThread) {
-  (void)isMainThread;
+TorchWork::WorkStatus TorchWorkXCCLQueue::garbageCollectLocked() {
   TorchWork::WorkStatus overall_status = TorchWork::WorkStatus::COMPLETED;
 
   // Keep popping completed elements until we hit an in-progress element
@@ -54,9 +52,9 @@ TorchWork::WorkStatus TorchWorkXCCLQueue::garbageCollectLocked(
 // the main thread may be enqueuing work via enqueueWork(). The
 // work_queues_mutex_ ensures proper synchronization - both garbageCollect() and
 // enqueueWork() acquire the mutex before accessing stream_work_queues_.
-TorchWork::WorkStatus TorchWorkXCCLQueue::garbageCollect(bool isMainThread) {
+TorchWork::WorkStatus TorchWorkXCCLQueue::garbageCollect() {
   std::lock_guard<std::mutex> lock(work_queues_mutex_);
-  return garbageCollectLocked(isMainThread);
+  return garbageCollectLocked();
 }
 
 TorchWork::WorkStatus TorchWorkXCCLQueue::finalize() {
@@ -71,7 +69,7 @@ TorchWork::WorkStatus TorchWorkXCCLQueue::finalize() {
   // empty
   TorchWork::WorkStatus status = TorchWork::WorkStatus::COMPLETED;
   while (!stream_work_queues_.empty()) {
-    status = garbageCollectLocked(true);
+    status = garbageCollectLocked();
     if (status == TorchWork::WorkStatus::ERROR ||
         status == TorchWork::WorkStatus::TIMEDOUT ||
         status == TorchWork::WorkStatus::COMPLETED) {
