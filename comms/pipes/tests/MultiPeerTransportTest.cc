@@ -17,6 +17,7 @@
 #include "comms/pipes/TopologyDiscovery.h"
 #include "comms/pipes/Transport.cuh"
 #include "comms/pipes/tests/MockBootstrap.h"
+#include "comms/pipes/tests/TopologyTestUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
@@ -485,23 +486,8 @@ TEST_F(MultiPeerTransportTestFixture, DisableIb_NvlBufferExchange) {
 // disableIb mock-based tests — pre-computed TopologyResult, no GPU/MPI needed
 // =============================================================================
 
-namespace {
-
-/// Build a TopologyResult where only the given NVL ranks are reachable.
-/// Self (myRank) is always included in globalToNvlLocal.
-TopologyResult makeTopology(int myRank, const std::vector<int>& nvlPeers) {
-  TopologyResult topo;
-  topo.nvlPeerRanks = nvlPeers;
-
-  int nvlIdx = 0;
-  topo.globalToNvlLocal[myRank] = nvlIdx++;
-  for (int peer : nvlPeers) {
-    topo.globalToNvlLocal[peer] = nvlIdx++;
-  }
-  return topo;
-}
-
-} // namespace
+using tests::make_rank_info;
+using tests::makeTopology;
 
 TEST(MultiPeerTransportDisableIbTest, ThrowsWhenPeerNotNvlReachable) {
   constexpr int kMyRank = 0;
@@ -539,30 +525,6 @@ TEST(MultiPeerTransportDisableIbTest, ErrorMessageContainsRank) {
   }
 }
 
-// Simulates the NCCL_P2P_DISABLE + NCCL_CTRAN_PIPES_DISABLE_IB scenario:
-// P2P disabled means topology discovery finds zero NVL peers, and disableIb
-// means IBGDA is also unavailable — every non-self peer is unreachable.
-TEST(MultiPeerTransportDisableIbTest, ThrowsWhenP2pDisabledAndIbDisabled) {
-  constexpr int kMyRank = 0;
-  constexpr int kNRanks = 4;
-
-  // Empty NVL peers simulates NCCL_P2P_DISABLE: no peer is NVL-reachable.
-  auto topo = makeTopology(kMyRank, {});
-
-  MultiPeerTransportConfig config{.disableIb = true};
-  auto bootstrap = std::make_shared<testing::MockBootstrap>();
-
-  try {
-    MultiPeerTransport(
-        kMyRank, kNRanks, /*deviceId=*/0, bootstrap, config, std::move(topo));
-    FAIL() << "Expected std::runtime_error when both P2P and IB are disabled";
-  } catch (const std::runtime_error& e) {
-    EXPECT_THAT(e.what(), ::testing::HasSubstr("not NVL-reachable"));
-    EXPECT_THAT(
-        e.what(), ::testing::HasSubstr("NCCL_CTRAN_PIPES_DISABLE_IB=1"));
-  }
-}
-
 TEST(MultiPeerTransportDisableIbTest, SucceedsWhenAllPeersNvl) {
   constexpr int kMyRank = 0;
   constexpr int kNRanks = 3;
@@ -591,6 +553,48 @@ TEST(MultiPeerTransportDisableIbTest, SucceedsWhenAllPeersNvl) {
   } catch (const std::exception&) {
     // NVL transport creation failed (expected without GPU).
   }
+}
+
+// NCCL_P2P_DISABLE + disableIb: P2P disabled removes NVL peers from topology,
+// then disableIb validation fails because non-self peers are not NVL-reachable.
+TEST(MultiPeerTransportDisableIbTest, ThrowsWhenP2pDisableAndDisableIb) {
+  constexpr int kMyRank = 0;
+  constexpr int kNRanks = 2;
+
+  // Simulate what TopologyDiscovery::classify() produces when
+  // NCCL_P2P_DISABLE=1: peers are NOT added to the NVL group
+  // because both Tier 1 and Tier 2 are skipped.
+  constexpr const char* kHostname = "test-host-001";
+  std::vector<RankTopologyInfo> allInfo(kNRanks);
+  allInfo[0] = make_rank_info(kHostname, 0);
+  allInfo[1] = make_rank_info(kHostname, 1);
+
+  // classify() with p2pDisable=true should yield no NVL peers.
+  PeerAccessFn alwaysAccess = [](int, int) { return true; };
+  TopologyDiscovery topoDiscovery(alwaysAccess);
+  TopologyConfig topoConfig{.p2pDisable = true};
+  auto topo = topoDiscovery.classify(kMyRank, kNRanks, allInfo, topoConfig);
+  ASSERT_TRUE(topo.nvlPeerRanks.empty())
+      << "p2pDisable should suppress NVL detection";
+
+  // Now construct MultiPeerTransport with disableIb=true.
+  // disableIb requires all non-self peers to be NVL-reachable, but P2P
+  // disable removed them -> expect throw.
+  MultiPeerTransportConfig config{
+      .topoConfig = topoConfig,
+      .disableIb = true,
+  };
+  auto bootstrap = std::make_shared<testing::MockBootstrap>();
+
+  EXPECT_THROW(
+      MultiPeerTransport(
+          kMyRank,
+          kNRanks,
+          /*deviceId=*/0,
+          bootstrap,
+          config,
+          std::move(topo)),
+      std::runtime_error);
 }
 
 } // namespace comms::pipes::tests

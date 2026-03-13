@@ -342,6 +342,53 @@ TEST(TopologyDiscoveryTest, DisabledModePreventsOverrides) {
   EXPECT_EQ(result.cliqueId, 0u);
 }
 
+// =============================================================================
+// NCCL_P2P_DISABLE tests
+// =============================================================================
+
+// p2pDisable config field disables Tier 2 (same-host P2P via NVLink).
+TEST(TopologyDiscoveryTest, P2pDisableConfigDisablesTier2) {
+  constexpr const char* kHostname = "test-host-001";
+
+  constexpr int nRanks = 2;
+  std::vector<RankTopologyInfo> allInfo(nRanks);
+  allInfo[0] = make_rank_info(kHostname, 0);
+  allInfo[1] = make_rank_info(kHostname, 1);
+
+  PeerAccessFn alwaysAccess = [](int, int) { return true; };
+  TopologyDiscovery topo(alwaysAccess);
+  TopologyConfig config{.p2pDisable = true};
+  auto result = topo.classify(/*myRank=*/0, nRanks, allInfo, config);
+
+  // Same-host peers should NOT be detected — Tier 2 is disabled.
+  EXPECT_TRUE(result.nvlPeerRanks.empty());
+  EXPECT_EQ(result.globalToNvlLocal.size(), 1u);
+}
+
+// p2pDisable disables both Tier 1 (MNNVL) and Tier 2, matching NCCL's
+// PATH_LOC semantics where all inter-GPU P2P is disabled.
+TEST(TopologyDiscoveryTest, P2pDisableDisablesBothTiers) {
+  constexpr const char* kHostname = "test-host-001";
+  constexpr int64_t kUuid = 0xAAAABBBBCCCCDDDD;
+
+  constexpr int nRanks = 3;
+  std::vector<RankTopologyInfo> allInfo(nRanks);
+  // Rank 0 and 1 are MNNVL peers (same fabric UUID + clique).
+  allInfo[0] = make_mnnvl_rank_info(kHostname, 0, kUuid, 1);
+  allInfo[1] = make_mnnvl_rank_info("remote-host", 1, kUuid, 1);
+  // Rank 2 is same-host (Tier 2 candidate).
+  allInfo[2] = make_rank_info(kHostname, 2);
+
+  PeerAccessFn alwaysAccess = [](int, int) { return true; };
+  TopologyDiscovery topo(alwaysAccess);
+  TopologyConfig config{.p2pDisable = true};
+  auto result = topo.classify(/*myRank=*/0, nRanks, allInfo, config);
+
+  // Both Tier 1 (MNNVL) and Tier 2 (same-host) should be disabled.
+  EXPECT_TRUE(result.nvlPeerRanks.empty());
+  EXPECT_EQ(result.globalToNvlLocal.size(), 1u);
+}
+
 } // namespace comms::pipes::tests
 
 int main(int argc, char* argv[]) {
