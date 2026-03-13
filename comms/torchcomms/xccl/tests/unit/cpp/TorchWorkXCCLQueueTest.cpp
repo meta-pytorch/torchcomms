@@ -71,7 +71,7 @@ class TorchWorkXCCLQueueCommTest : public TorchCommXCCLTest {
 
 TEST_F(TorchWorkXCCLQueueTest, GarbageCollectEmptyQueue) {
   // Test garbage collection on empty queue
-  auto status = queue_->garbageCollect(true);
+  auto status = queue_->garbageCollect();
   EXPECT_EQ(status, TorchWork::WorkStatus::COMPLETED);
 }
 
@@ -82,9 +82,9 @@ TEST_F(TorchWorkXCCLQueueTest, FinalizeEmptyQueue) {
 
 TEST_F(TorchWorkXCCLQueueTest, MultipleGarbageCollectCalls) {
   // Multiple garbage collect calls on empty queue should be safe
-  auto status1 = queue_->garbageCollect(true);
-  auto status2 = queue_->garbageCollect(true);
-  auto status3 = queue_->garbageCollect(true);
+  auto status1 = queue_->garbageCollect();
+  auto status2 = queue_->garbageCollect();
+  auto status3 = queue_->garbageCollect();
 
   EXPECT_EQ(status1, TorchWork::WorkStatus::COMPLETED);
   EXPECT_EQ(status2, TorchWork::WorkStatus::COMPLETED);
@@ -93,7 +93,7 @@ TEST_F(TorchWorkXCCLQueueTest, MultipleGarbageCollectCalls) {
 
 TEST_F(TorchWorkXCCLQueueTest, MultipleFinalizeCallsAfterGarbageCollect) {
   // Garbage collect first
-  auto gc_status = queue_->garbageCollect(true);
+  auto gc_status = queue_->garbageCollect();
   EXPECT_EQ(gc_status, TorchWork::WorkStatus::COMPLETED);
 
   // Multiple finalize calls should be safe
@@ -110,15 +110,15 @@ TEST_F(TorchWorkXCCLQueueTest, MultipleFinalizeCallsAfterGarbageCollect) {
 
 TEST_F(TorchWorkXCCLQueueTest, ConcurrentGarbageCollectCalls) {
   for (int i = 0; i < 10; ++i) {
-    auto status = queue_->garbageCollect(false);
+    auto status = queue_->garbageCollect();
     EXPECT_EQ(status, TorchWork::WorkStatus::COMPLETED);
   }
 }
 
 TEST_F(TorchWorkXCCLQueueTest, ConcurrentFinalizeAndGarbageCollect) {
-  auto gc_status = queue_->garbageCollect(true);
+  auto gc_status = queue_->garbageCollect();
   auto finalize_status = queue_->finalize();
-  auto gc_status2 = queue_->garbageCollect(false);
+  auto gc_status2 = queue_->garbageCollect();
 
   EXPECT_EQ(gc_status, TorchWork::WorkStatus::COMPLETED);
   EXPECT_EQ(finalize_status, TorchWork::WorkStatus::COMPLETED);
@@ -133,7 +133,7 @@ TEST_F(TorchWorkXCCLQueueTest, QueueCreationAndDestruction) {
   auto queue2 = std::make_unique<TorchWorkXCCLQueue>();
   EXPECT_NE(queue2, nullptr);
 
-  auto status = queue2->garbageCollect(true);
+  auto status = queue2->garbageCollect();
   EXPECT_EQ(status, TorchWork::WorkStatus::COMPLETED);
 
   status = queue2->finalize();
@@ -146,8 +146,8 @@ TEST_F(TorchWorkXCCLQueueTest, MultipleQueuesIndependent) {
   auto queue2 = std::make_unique<TorchWorkXCCLQueue>();
   auto queue3 = std::make_unique<TorchWorkXCCLQueue>();
 
-  auto status1 = queue_->garbageCollect(true);
-  auto status2 = queue2->garbageCollect(true);
+  auto status1 = queue_->garbageCollect();
+  auto status2 = queue2->garbageCollect();
   auto status3 = queue3->finalize();
 
   EXPECT_EQ(status1, TorchWork::WorkStatus::COMPLETED);

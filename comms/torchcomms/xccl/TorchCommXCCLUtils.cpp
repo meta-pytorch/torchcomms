@@ -160,8 +160,8 @@ TorchCommXCCL::RedOpRAII TorchCommXCCL::getXcclReduceOp(
   }
 }
 
-void TorchCommXCCL::checkWorkQueue(bool isMainThread) {
-  TorchWork::WorkStatus status = workq_.garbageCollect(isMainThread);
+void TorchCommXCCL::checkWorkQueue() {
+  TorchWork::WorkStatus status = workq_.garbageCollect();
 
   switch (status) {
     case TorchWork::WorkStatus::TIMEDOUT:
@@ -195,7 +195,7 @@ void TorchCommXCCL::timeoutWatchdog() noexcept {
     }
 
     // Check work objects for completion or timeout
-    checkWorkQueue(false);
+    checkWorkQueue();
     if (shutdown_) {
       break;
     }
@@ -229,7 +229,7 @@ void TorchCommXCCL::checkInitialized() const {
 
 void TorchCommXCCL::checkAndAbortIfTimedOutOrError() {
   // First, check work queue status
-  checkWorkQueue(true);
+  checkWorkQueue();
 
   if (comm_state_ == CommState::TIMEOUT) {
     //    abortXcclComm(); // cannot abort oneCCL communicator
@@ -241,25 +241,7 @@ void TorchCommXCCL::checkAndAbortIfTimedOutOrError() {
       throw std::runtime_error("XCCL operation timed out");
     }
   } else if (comm_state_ == CommState::ERROR) {
-    onecclResult_t asyncErr = onecclSuccess;
-    onecclResult_t res = xccl_api_->commGetAsyncError(xccl_comm_, &asyncErr);
-    if (res != onecclSuccess) {
-      TC_LOG(WARNING) << "commGetAsyncError returned " << res;
-      asyncErr = res;
-    }
-    if (asyncErr == onecclSuccess) {
-      asyncErr = onecclSystemError;
-    }
-    XCCLException xcclException(*xccl_api_, "XCCL Async Error", asyncErr);
-    //    abortXcclComm(); // cannot abort oneCCL communicator
-    if (options_.abort_process_on_timeout_or_error) {
-      TC_LOG(ERROR) << "Aborting process due to error: "
-                    << xcclException.what();
-      runAbortHooks();
-      abort();
-    } else {
-      throw xcclException;
-    }
+    throwAsyncError(false);
   }
 }
 

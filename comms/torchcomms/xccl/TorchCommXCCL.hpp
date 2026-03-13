@@ -212,7 +212,7 @@ class TorchCommXCCL : public TorchCommBackend,
     return device_;
   }
 
- public:
+ protected:
   // Event management for friend classes
   xpuEvent_t getEvent();
   void returnEvent(xpuEvent_t&& event);
@@ -285,7 +285,8 @@ class TorchCommXCCL : public TorchCommBackend,
   void timeoutWatchdog() noexcept;
   void checkInitialized() const;
   void checkAndAbortIfTimedOutOrError();
-  void checkWorkQueue(bool isMainThread = true);
+  [[noreturn]] void throwAsyncError(bool abort_comm = true);
+  void checkWorkQueue();
   void enqueueWork(c10::intrusive_ptr<TorchWorkXCCL> work, xpuStream_t stream);
   xpuStream_t getOperationStream(bool async_op);
   void ensureTensorContiguous(const at::Tensor& tensor);
