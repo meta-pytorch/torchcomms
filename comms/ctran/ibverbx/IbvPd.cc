@@ -73,22 +73,6 @@ IbvPd::regMr(void* addr, size_t length, ibv_access_flags access) const {
   return IbvMr(mr);
 }
 
-folly::Expected<IbvMr, Error> IbvPd::regMrIova2(
-    void* addr,
-    size_t length,
-    uint64_t iova,
-    ibv_access_flags access) const {
-  if (ibvSymbols.ibv_internal_reg_mr_iova2 == nullptr) {
-    return folly::makeUnexpected(Error(ENOSYS));
-  }
-  ibv_mr* mr =
-      ibvSymbols.ibv_internal_reg_mr_iova2(pd_, addr, length, iova, access);
-  if (!mr) {
-    return folly::makeUnexpected(Error(errno));
-  }
-  return IbvMr(mr);
-}
-
 folly::Expected<IbvMr, Error> IbvPd::regDmabufMr(
     uint64_t offset,
     size_t length,

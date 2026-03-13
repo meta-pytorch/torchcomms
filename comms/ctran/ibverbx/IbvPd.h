@@ -37,12 +37,6 @@ class IbvPd {
   folly::Expected<IbvMr, Error>
   regMr(void* addr, size_t length, ibv_access_flags access) const;
 
-  folly::Expected<IbvMr, Error> regMrIova2(
-      void* addr,
-      size_t length,
-      uint64_t iova,
-      ibv_access_flags access) const;
-
   folly::Expected<IbvMr, Error> regDmabufMr(
       uint64_t offset,
       size_t length,
