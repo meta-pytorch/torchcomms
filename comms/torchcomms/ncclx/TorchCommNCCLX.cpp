@@ -2241,6 +2241,17 @@ void TorchCommNCCLX::deregister_address(const TorchCommNCCLX::Address& addr) {
   memoryRegistrationHandles_.erase(it);
 }
 
+std::unordered_map<std::string, std::string> TorchCommNCCLX::comm_dump() {
+  checkInitialized();
+  std::unordered_map<std::string, std::string> map;
+  NCCLX_CHECK(
+      nccl_api_,
+      nccl_comm_,
+      nccl_api_->commDump(nccl_comm_, map),
+      "ncclCommDump failed");
+  return map;
+}
+
 namespace {
 class NCCLXRegistration {
  public:
