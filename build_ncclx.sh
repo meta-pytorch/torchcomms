@@ -377,6 +377,29 @@ if [ "$CLEAN_BUILD" == 1 ]; then
 fi
 
 mkdir -p "$BUILDDIR"
+
+# Pre-generate nccl_git_version.h before the make build starts.
+# The Makefile has a rule for this, but it fails with re-cc/distcc because
+# the generated header is not available on the remote compilation machine.
+GIT_VERSION_DIR="$BUILDDIR/obj/include"
+mkdir -p "$GIT_VERSION_DIR"
+if [ -f "${NCCL_HOME}/src/misc/generate_git_version.py" ]; then
+  python3 "${NCCL_HOME}/src/misc/generate_git_version.py" "$GIT_VERSION_DIR/nccl_git_version.h"
+else
+  cat > "$GIT_VERSION_DIR/nccl_git_version.h" <<HEADER
+/* Auto-generated fallback. */
+#ifndef NCCL_GIT_VERSION_H
+#define NCCL_GIT_VERSION_H
+#ifndef NCCL_GIT_BRANCH
+#define NCCL_GIT_BRANCH "unknown"
+#endif
+#ifndef NCCL_GIT_COMMIT_HASH
+#define NCCL_GIT_COMMIT_HASH "${DEV_SIGNATURE:-unknown}"
+#endif
+#endif /* NCCL_GIT_VERSION_H */
+HEADER
+fi
+
 pushd "${NCCL_HOME}"
 
 function build_nccl {
@@ -419,23 +442,27 @@ fi
 
 # sanity check
 if [ -n "${NCCL_RUN_SANITY_CHECK}" ]; then
-    pushd examples
-    export NCCL_DEBUG=WARN
-    export LD_LIBRARY_PATH=$BUILDDIR/lib
+    if [ -f examples/Makefile ]; then
+        pushd examples
+        export NCCL_DEBUG=WARN
+        export LD_LIBRARY_PATH=$BUILDDIR/lib
 
-    make all \
-      NVCC_GENCODE="$NVCC_GENCODE" \
-      CUDA_HOME="$CUDA_HOME" \
-      NCCL_HOME="$CONDA_PREFIX"
+        make all \
+          NVCC_GENCODE="$NVCC_GENCODE" \
+          CUDA_HOME="$CUDA_HOME" \
+          NCCL_HOME="$CONDA_PREFIX"
 
-    set +e
+        set +e
 
-    TIMEOUT=10s
-    timeout $TIMEOUT "$BUILDDIR"/examples/HelloWorld
-    if [ "$?" == "124" ]; then
-        echo "Program TIMEOUT in ${TIMEOUT}. Terminate."
+        TIMEOUT=10s
+        timeout $TIMEOUT "$BUILDDIR"/examples/HelloWorld
+        if [ "$?" == "124" ]; then
+            echo "Program TIMEOUT in ${TIMEOUT}. Terminate."
+        fi
+        popd
+    else
+        echo "Skipping sanity check: examples/Makefile not found"
     fi
-    popd
 fi
 
 popd
