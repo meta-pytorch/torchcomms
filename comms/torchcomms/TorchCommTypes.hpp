@@ -90,4 +90,9 @@ class ReduceOp {
 constexpr std::chrono::milliseconds kDefaultTimeout = std::chrono::seconds(600);
 constexpr std::chrono::milliseconds kNoTimeout = std::chrono::milliseconds(0);
 
+// InitHandle type for fault tolerance API.
+// An InitHandle encodes information required
+// by the backend to complete the initialization process via reconfigure().
+using InitHandle = std::string;
+
 } // namespace torch::comms
