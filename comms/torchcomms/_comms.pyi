@@ -6,6 +6,8 @@ from datetime import timedelta
 from enum import auto, Enum
 from typing import Any, Callable, Dict, List
 
+InitHandle = str
+
 class RedOpType(Enum):
     SUM = auto()
     PRODUCT = auto()
@@ -265,6 +267,7 @@ class TorchComm:
     def get_backend(self) -> str: ...
     def get_backend_impl(self) -> TorchCommBackend: ...
     def unsafe_get_backend(self) -> TorchCommBackend: ...
+    def get_init_handle(self) -> InitHandle: ...
     def send(
         self,
         tensor: Any,
