@@ -327,6 +327,17 @@ class TorchCommNCCLX : public TorchCommBackend,
 
   void checkGraphEvents();
 
+  struct Configs {
+    size_t max_event_pool_size_{kDefaultMaxEventPoolSize};
+    size_t garbage_collect_interval_ms_{kDefaultGarbageCollectIntervalMs};
+    bool enable_cuda_graph_support_{kDefaultEnableCudaGraphSupport};
+    size_t graph_timeout_check_interval_ms_{
+        kDefaultGraphTimeoutCheckIntervalMs};
+  };
+  Configs configs_;
+
+  bool high_priority_stream_{false};
+
  private:
   // Helper that automatically cleans up premul sums.
   struct RedOpRAII {
@@ -429,15 +440,6 @@ class TorchCommNCCLX : public TorchCommBackend,
   size_t split_counter_{};
   CommOptions options_;
 
-  struct Configs {
-    size_t max_event_pool_size_{kDefaultMaxEventPoolSize};
-    size_t garbage_collect_interval_ms_{kDefaultGarbageCollectIntervalMs};
-    bool enable_cuda_graph_support_{kDefaultEnableCudaGraphSupport};
-    size_t graph_timeout_check_interval_ms_{
-        kDefaultGraphTimeoutCheckIntervalMs};
-  };
-  Configs configs_;
-
   cudaStream_t internal_stream_{};
   void* barrier_buffer_{}; // Pre-allocated CUDA buffer for barrier operations
   enum class InitializationState {
@@ -469,7 +471,6 @@ class TorchCommNCCLX : public TorchCommBackend,
   std::condition_variable timeout_cv_;
   std::mutex timeout_mutex_;
 
-  bool high_priority_stream_{false};
   std::string name_;
 
   // Tracks ad-hoc events for CUDA graph-captured collectives and monitors

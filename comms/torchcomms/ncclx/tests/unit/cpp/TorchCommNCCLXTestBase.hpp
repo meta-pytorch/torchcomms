@@ -87,6 +87,27 @@ class TorchCommNCCLXTest : public ::testing::Test {
     void checkGraphEvents() {
       TorchCommNCCLX::checkGraphEvents();
     }
+
+    // Hint parsing test accessors
+    bool testGetHighPriorityStream() const {
+      return high_priority_stream_;
+    }
+
+    size_t testGetMaxEventPoolSize() const {
+      return configs_.max_event_pool_size_;
+    }
+
+    size_t testGetGarbageCollectIntervalMs() const {
+      return configs_.garbage_collect_interval_ms_;
+    }
+
+    bool testGetEnableCudaGraphSupport() const {
+      return configs_.enable_cuda_graph_support_;
+    }
+
+    size_t testGetGraphTimeoutCheckIntervalMs() const {
+      return configs_.graph_timeout_check_interval_ms_;
+    }
   };
 
   void setupEventsForWork(TestTorchCommNCCLX& torchcomm, size_t numWork);
