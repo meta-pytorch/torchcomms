@@ -12,20 +12,21 @@ namespace torch::comms {
 void TorchWorkNCCLX::initEvents() {
   if (graph_capture_mode_) {
     // Ad-hoc create all three events — NOT from the event pool.
-    // start_event_ and end_event_ ownership will be transferred to
-    // GraphWork in enqueueWork(). sync_event_ is destroyed in dtor.
-    // TODO: sync_event_ is only needed for async_op=true; skip creation
-    // for synchronous operations where the work runs on the current stream.
-    CUDA_CHECK(
-        comm_->getCudaApi(),
-        comm_->getCudaApi()->eventCreateWithFlags(
-            &start_event_, cudaEventDisableTiming),
-        "Failed to create start event for graph capture");
-    CUDA_CHECK(
-        comm_->getCudaApi(),
-        comm_->getCudaApi()->eventCreateWithFlags(
-            &end_event_, cudaEventDisableTiming),
-        "Failed to create end event for graph capture");
+    // start_event_ and end_event_ are only created when timeout monitoring
+    // is enabled — ownership is transferred to GraphWork in enqueueWork().
+    // sync_event_ is destroyed in dtor.
+    if (isGraphTimeoutMonitoringEnabled()) {
+      CUDA_CHECK(
+          comm_->getCudaApi(),
+          comm_->getCudaApi()->eventCreateWithFlags(
+              &start_event_, cudaEventDisableTiming),
+          "Failed to create start event for graph capture");
+      CUDA_CHECK(
+          comm_->getCudaApi(),
+          comm_->getCudaApi()->eventCreateWithFlags(
+              &end_event_, cudaEventDisableTiming),
+          "Failed to create end event for graph capture");
+    }
     CUDA_CHECK(
         comm_->getCudaApi(),
         comm_->getCudaApi()->eventCreateWithFlags(
@@ -39,16 +40,17 @@ void TorchWorkNCCLX::initEvents() {
 
 void TorchWorkNCCLX::releaseEvents() {
   if (graph_capture_mode_) {
-    // In graph mode: start_event_ and end_event_ were ad-hoc created and
-    // should have been transferred to the GraphWorkEntry (set to nullptr).
-    // If transfer didn't happen (error path), destroy them.
-    // sync_event_ is always ad-hoc and always destroyed here.
+    // In graph mode: start_event_ and end_event_ are ad-hoc created (only
+    // when timeout monitoring is enabled) and should have been transferred to
+    // the GraphWorkEntry (set to nullptr). If transfer didn't happen (error
+    // path), destroy them.
     if (start_event_) {
       (void)comm_->getCudaApi()->eventDestroy(start_event_);
     }
     if (end_event_) {
       (void)comm_->getCudaApi()->eventDestroy(end_event_);
     }
+    // sync_event_ is always ad-hoc and always destroyed here.
     if (sync_event_) {
       (void)comm_->getCudaApi()->eventDestroy(sync_event_);
     }
@@ -128,11 +130,13 @@ void TorchWorkNCCLX::recordStart(std::string_view coll_name) {
     // Use cudaEventRecordExternal so start_event_ remains host-queryable
     // during graph replay (for watchdog timeout detection).
     // start_event_ is not used as a graph join point, so this is safe.
-    CUDA_CHECK(
-        comm_->getCudaApi(),
-        comm_->getCudaApi()->eventRecordWithFlags(
-            start_event_, stream_, cudaEventRecordExternal),
-        "Failed to record start event");
+    if (start_event_) {
+      CUDA_CHECK(
+          comm_->getCudaApi(),
+          comm_->getCudaApi()->eventRecordWithFlags(
+              start_event_, stream_, cudaEventRecordExternal),
+          "Failed to record start event");
+    }
   } else {
     CUDA_CHECK(
         comm_->getCudaApi(),
@@ -151,11 +155,13 @@ void TorchWorkNCCLX::recordEnd() {
   // serves as both the completion detection event and the join point.
   // sync_event_ is nullptr.
   if (graph_capture_mode_) {
-    CUDA_CHECK(
-        comm_->getCudaApi(),
-        comm_->getCudaApi()->eventRecordWithFlags(
-            end_event_, stream_, cudaEventRecordExternal),
-        "Failed to record end event");
+    if (end_event_) {
+      CUDA_CHECK(
+          comm_->getCudaApi(),
+          comm_->getCudaApi()->eventRecordWithFlags(
+              end_event_, stream_, cudaEventRecordExternal),
+          "Failed to record end event");
+    }
     CUDA_CHECK(
         comm_->getCudaApi(),
         comm_->getCudaApi()->eventRecord(sync_event_, stream_),

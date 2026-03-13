@@ -57,6 +57,14 @@ constexpr bool kDefaultEnableCudaGraphSupport = true;
 // while still detecting timeouts promptly.
 constexpr size_t kDefaultGraphTimeoutCheckIntervalMs = 1000;
 
+// Global call-once check for graph timeout monitoring (env var gated).
+// Reads TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING on first call; caches result.
+// Default: enabled. Set to "0" or "false" to disable (for benchmarking).
+bool isGraphTimeoutMonitoringEnabled();
+
+// Test-only: reset the cached state so next call re-reads the env var.
+void resetGraphTimeoutMonitoringCacheForTest();
+
 class TorchCommNCCLX : public TorchCommBackend,
                        public std::enable_shared_from_this<TorchCommNCCLX> {
  public:
@@ -249,6 +257,11 @@ class TorchCommNCCLX : public TorchCommBackend,
   // Getter for CUDA API (for friend classes)
   CudaApi* getCudaApi() const {
     return cuda_api_.get();
+  }
+
+  // Getter for graph event tracker (for work objects to access sync event pool)
+  GraphEventTracker& getGraphEventTracker() {
+    return graph_event_tracker_;
   }
 
   // Getter for NCCL API (for friend classes)
