@@ -2865,6 +2865,13 @@ cvars:
      with per-message-size optimal values. Set to 0 to use static CVAR
      values instead.
 
+ - name        : NCCL_CTRAN_ALLREDUCE_RING_STAGING_BUF_SIZE
+   type        : int64_t
+   default     : 0
+   description : |-
+     Size of the staging (tmp send/recv) buffer per direction in bytes.
+     When set to 0 (default), uses the built-in kStagingBufSize constant (32MB).
+
  - name        : NCCL_CTRAN_ALLREDUCE_RING_BIDIR_AG_MAX_SIZE
    type        : int64_t
    default     : -2

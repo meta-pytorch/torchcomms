@@ -811,19 +811,9 @@ commResult_t CtranAlgo::initTmpBufs() {
       TmpbufType::RECVCOUNTS_TMPBUF,
       sizeof(size_t) * all2allvDynamicMaxSendcounts);
 
-  // Ring buffer must be large enough for the maximum BDP the auto-tune may
-  // produce at runtime. Priority: (1) explicit chunk_size * num_chunks CVARs,
-  // (2) AUTO_TUNE_MAX_BDP CVAR, (3) kMaxBDP fallback.
-  size_t ringBufSize = NCCL_CTRAN_ALLREDUCE_RING_AUTO_TUNE_MAX_BDP;
-  if (NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_CHUNK_SIZE > 0 &&
-      NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_NUM_CHUNKS > 0) {
-    ringBufSize =
-        static_cast<size_t>(NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_CHUNK_SIZE) *
-        NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_NUM_CHUNKS;
-  }
-  if (ringBufSize <= 0) {
-    ringBufSize = ctran::allreduce::ring::kMaxBDP;
-  }
+  // Ring buffer sizing: delegates to deriveBufSize() which applies
+  // CVAR priority (chunk override > STAGING_BUF_SIZE > kStagingBufSize).
+  size_t ringBufSize = ctran::allreduce::ring::getStagingBufSize();
   segmentManager.insert(TmpbufType::RING_TMP_SEND_BUF, ringBufSize);
   segmentManager.insert(TmpbufType::RING_TMP_RECV_BUF, ringBufSize);
 
