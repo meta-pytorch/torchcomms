@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <ATen/core/ivalue.h> // @manual=//caffe2:ATen-core
 #include <c10/util/intrusive_ptr.h>
 #include <chrono>
 #include <functional>
@@ -97,6 +98,10 @@ class TorchWork : public c10::intrusive_ptr_target {
   void release_resources() override {
     callback_ = nullptr;
   }
+
+  virtual void markCompleted(
+      c10::intrusive_ptr<c10::ivalue::Future> future_,
+      std::vector<at::Tensor> outputTensors_);
 
   template <typename T, typename NullType>
   friend class c10::intrusive_ptr;
