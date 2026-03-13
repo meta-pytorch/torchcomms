@@ -106,6 +106,107 @@ __device__ __forceinline__ void memcpy_vectorized(
 }
 
 /**
+ * memcpy_vectorized_dual_dest_aligned - Dual-destination vectorized memory copy
+ *
+ * Reads each element from src once, then stores to both dst1 and dst2.
+ * Eliminates the extra HBM read that occurs when doing two sequential copies
+ * (src->dst1 then dst1->dst2). Same striding pattern as
+ * memcpy_vectorized_aligned.
+ *
+ * @tparam VecType Vector type for loads/stores (typically uint4 = 16 bytes)
+ * @tparam kUnroll Unroll factor (default 8)
+ * @param dst1_p First destination buffer pointer
+ * @param dst2_p Second destination buffer pointer
+ * @param src_p Source buffer pointer
+ * @param nelems Number of elements of VecType to copy
+ * @param group ThreadGroup for cooperative copy (all threads participate)
+ */
+template <typename VecType, int kUnroll = 8>
+__device__ __forceinline__ void memcpy_vectorized_dual_dest_aligned(
+    VecType* dst1_p,
+    VecType* dst2_p,
+    const VecType* src_p,
+    std::size_t nelems,
+    const ThreadGroup& group) {
+#ifdef __CUDA_ARCH__
+  const std::size_t kLoopStride = group.group_size * kUnroll;
+  const std::size_t numVecsAligned = (nelems / kLoopStride) * kLoopStride;
+  VecType* __restrict__ dst1 = dst1_p;
+  VecType* __restrict__ dst2 = dst2_p;
+  const VecType* __restrict__ src = src_p;
+
+  for (std::size_t i = group.thread_id_in_group; i < numVecsAligned;
+       i += kLoopStride) {
+    VecType v[kUnroll];
+#pragma unroll
+    for (int j = 0; j < kUnroll; ++j) {
+      v[j] = src[i + j * group.group_size];
+    }
+#pragma unroll
+    for (int j = 0; j < kUnroll; ++j) {
+      dst1[i + j * group.group_size] = v[j];
+    }
+#pragma unroll
+    for (int j = 0; j < kUnroll; ++j) {
+      dst2[i + j * group.group_size] = v[j];
+    }
+  }
+
+  for (std::size_t i = numVecsAligned + group.thread_id_in_group; i < nelems;
+       i += group.group_size) {
+    VecType v = src[i];
+    dst1[i] = v;
+    dst2[i] = v;
+  }
+#endif // __CUDA_ARCH__
+}
+
+/**
+ * memcpy_vectorized_dual_dest - Byte-level dual-destination vectorized copy
+ *
+ * Copies len bytes from src to both dst1 and dst2 with a single source read.
+ * Checks alignment of all three pointers to select vectorized (uint4) or
+ * byte-level path.
+ *
+ * @tparam kUnroll Unroll factor (default 8)
+ * @param dst1 First destination buffer
+ * @param dst2 Second destination buffer
+ * @param src Source buffer
+ * @param len Number of bytes to copy
+ * @param group ThreadGroup for cooperative copy
+ */
+template <int kUnroll = 8>
+__device__ __forceinline__ void memcpy_vectorized_dual_dest(
+    char* dst1,
+    char* dst2,
+    const char* src,
+    std::size_t len,
+    const ThreadGroup& group) {
+#ifdef __CUDA_ARCH__
+  constexpr std::size_t kAlignment = sizeof(uint4);
+  if ((uintptr_t)dst1 % kAlignment == 0 && (uintptr_t)dst2 % kAlignment == 0 &&
+      (uintptr_t)src % kAlignment == 0) {
+    const std::size_t nelems = len / kAlignment;
+    uint4* __restrict__ dst1_p = reinterpret_cast<uint4*>(dst1);
+    uint4* __restrict__ dst2_p = reinterpret_cast<uint4*>(dst2);
+    const uint4* __restrict__ src_p = reinterpret_cast<const uint4*>(src);
+    memcpy_vectorized_dual_dest_aligned<uint4, kUnroll>(
+        dst1_p, dst2_p, src_p, nelems, group);
+    len -= nelems * kAlignment;
+    if (len == 0) {
+      return;
+    }
+    dst1 = reinterpret_cast<char*>(dst1_p + nelems);
+    dst2 = reinterpret_cast<char*>(dst2_p + nelems);
+    src = reinterpret_cast<const char*>(src_p + nelems);
+  }
+
+  memcpy_vectorized_dual_dest_aligned<char, kUnroll>(
+      dst1, dst2, src, len, group);
+#endif // __CUDA_ARCH__
+}
+
+/**
  * assert_buffer_non_overlap - Assert that source and destination buffers do not
  * overlap
  *
