@@ -19,6 +19,7 @@
 #include "comms/ctran/algos/AllReduce/AllReduceImpl.h"
 #include "comms/ctran/algos/AllReduce/AllReduceRingAutoTune.h"
 #include "comms/ctran/algos/AllReduce/AllReduceRingCommon.cuh"
+#include "comms/ctran/algos/AllReduce/AllReduceRingTypes.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/CtranAlgoConsts.h"
 #include "comms/ctran/mapper/CtranMapper.h"
@@ -125,55 +126,7 @@ inline bool shouldEnableBidirAg(size_t messageBytes) {
   return messageBytes <= static_cast<size_t>(maxSize);
 }
 
-struct HostArgs {
-  int32_t rank{-1};
-  int32_t leftRank{-1};
-  int32_t rightRank{-1};
-
-  size_t minShardSize{0};
-
-  unsigned int numBlocks{0};
-  unsigned int numThreads{0};
-
-  // Enable bi-directional AllGather optimization
-  bool enableBidirAg{true};
-
-  // Forward: remote receive buffer on right
-  void* rightRemBuf{nullptr};
-  CtranMapperRemoteAccessKey rightRemKey;
-
-  // Forward: receive notifications from left
-  std::unique_ptr<CtranMapperNotify> leftNotify{nullptr};
-
-  // Reverse: remote receive buffer on left (left neighbor's tmpRecvBufRev)
-  void* leftRemBufRev{nullptr};
-  CtranMapperRemoteAccessKey leftRemKeyRev;
-
-  // Reverse: receive notifications from right
-  std::unique_ptr<CtranMapperNotify> rightNotify{nullptr};
-};
-struct HostResource {
-  CtranComm* comm{nullptr};
-
-  ctran::algos::GpeKernelSync* sendCopySync{nullptr};
-  ctran::algos::GpeKernelSync* recvRedCopySync{nullptr};
-  ctran::algos::GpeKernelSync* partitionSync{nullptr};
-
-  size_t chunkSize{0};
-  size_t numChunks{0};
-  void* tmpSendBuf{nullptr};
-  void* tmpSendBufHdl{nullptr};
-  void* tmpRecvBuf{nullptr};
-  void* tmpRecvBufHdl{nullptr};
-
-  // Reverse direction
-  ctran::algos::GpeKernelSync* revSendCopySync{nullptr};
-  ctran::algos::GpeKernelSync* revRecvCopySync{nullptr};
-  void* tmpSendBufRev{nullptr};
-  void* tmpSendBufRevHdl{nullptr};
-  void* tmpRecvBufRev{nullptr};
-  void* tmpRecvBufRevHdl{nullptr};
-};
+// HostArgs and HostResource are defined in AllReduceRingTypes.h
 
 namespace {
 
@@ -1043,14 +996,16 @@ static commResult_t impl(
 
   using HostArgs = ctran::allreduce::ring::HostArgs;
   using HostResource = ctran::allreduce::ring::HostResource;
-  auto argsGuard = std::unique_ptr<HostArgs>(
-      reinterpret_cast<HostArgs*>(op->allreduce.args));
-  auto resourceGuard = std::unique_ptr<HostResource>(
-      reinterpret_cast<HostResource*>(op->allreduce.resource));
-  auto& args = *argsGuard;
-  auto& resource = *resourceGuard;
+  // Use raw references — ownership stays with OpElem, freed by ~OpElem.
+  // This is safe for both normal mode (OpElem freed after single impl call)
+  // and CUDA graph mode (OpElem freed when graph is destroyed).
+  auto& args = *reinterpret_cast<HostArgs*>(op->allreduce.args);
+  auto& resource = *reinterpret_cast<HostResource*>(op->allreduce.resource);
 
-  FB_COMMCHECK(completeHostResourceSetup(comm, args, resource));
+  if (!resource.setupComplete) {
+    FB_COMMCHECK(completeHostResourceSetup(comm, args, resource));
+    resource.setupComplete = true;
+  }
 
   // setup algoCtx
   AlgoContext algoCtx = {

@@ -7,6 +7,7 @@
 #include <optional>
 
 #include "comms/ctran/CtranComm.h"
+#include "comms/ctran/algos/AllReduce/AllReduceRingTypes.h"
 #include "comms/ctran/gpe/CtranGpeImpl.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/utils/logger/LogUtils.h"
@@ -217,6 +218,13 @@ OpElem::~OpElem() {
       this->allreduce.kElemStepMap.~unordered_map();
       this->allreduce.remoteRecvBuffs.~vector();
       this->allreduce.remoteAccessKeys.~vector();
+      // Free ctring host resources (ctdirect doesn't set these, they stay
+      // nullptr). Ownership moved here from impl() to support CUDA graph
+      // persistent mode where impl() is called on every replay.
+      delete reinterpret_cast<ctran::allreduce::ring::HostArgs*>(
+          this->allreduce.args);
+      delete reinterpret_cast<ctran::allreduce::ring::HostResource*>(
+          this->allreduce.resource);
       break;
     }
     case ALLTOALLV_DYNAMIC: {
