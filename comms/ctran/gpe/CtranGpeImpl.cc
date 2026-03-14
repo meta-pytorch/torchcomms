@@ -122,7 +122,23 @@ OrderedWorkStreamGuard::Scope OrderedWorkStreamGuard::acquire(
 struct cmdCbPlan {
   CtranGpeCmd* cmd{nullptr};
   CtranGpe* gpe{nullptr};
+
+  // Leak detection counter: tracks live cmdCbPlan instances
+  static std::atomic<int>& liveCount() {
+    static std::atomic<int> count{0};
+    return count;
+  }
+  cmdCbPlan() {
+    liveCount().fetch_add(1);
+  }
+  ~cmdCbPlan() {
+    liveCount().fetch_sub(1);
+  }
 };
+
+int CtranGpe::liveCbPlanCount() {
+  return cmdCbPlan::liveCount().load();
+}
 
 void CUDART_CB CtranGpe::Impl::cmdCb(void* data) {
   struct cmdCbPlan* plan = reinterpret_cast<struct cmdCbPlan*>(data);
@@ -137,6 +153,8 @@ void CUDART_CB CtranGpe::Impl::cmdDestroy(void* data) {
   for (const auto& x : cmd->coll.opGroup) {
     x->setStatus(KernelElem::ElemStatus::RESET);
   }
+  // Free the host callback plan allocated during graph capture
+  delete reinterpret_cast<struct cmdCbPlan*>(cmd->cbPlan);
   delete cmd;
 }
 
@@ -336,6 +354,7 @@ commResult_t CtranGpe::Impl::submit(
       struct cmdCbPlan* plan = new struct cmdCbPlan;
       plan->cmd = cmd;
       plan->gpe = this->gpe;
+      cmd->cbPlan = plan;
       cmd->persistent = true;
 
       FB_COMMCHECKGOTO(

@@ -1872,3 +1872,90 @@ TEST_F(CtranGpeTest, ThrowAsyncException) {
   EXPECT_EQ(e.commHash(), statex->commHash());
   EXPECT_EQ(e.rank(), statex->rank());
 }
+
+#if not defined(__HIP_PLATFORM_AMD__) and not defined(__HIP_PLATFORM_HCC__)
+// Verify that repeated graph capture + destroy does not leak memory.
+// The GPE allocates a cmdCbPlan for each graph capture. This plan must
+// be freed when the graph is destroyed (via cmdDestroy).
+//
+// Method: capture and destroy a graph kIterations times. Measure RSS
+// before and after. A 16-byte leak per iteration × 10000 = 160KB growth
+// which is detectable above noise.
+TEST_F(CtranGpeTest, GraphCaptureDestroyNoLeak) {
+  constexpr int kIterations = 10000;
+
+  auto gpe = std::unique_ptr<CtranGpe>(new CtranGpe(cudaDev, dummyComm));
+
+  cudaStream_t stream;
+  CUDACHECK_TEST(cudaStreamCreate(&stream));
+
+  int* buf = nullptr;
+  int* valPtr = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMallocHost(&valPtr, sizeof(int)));
+  *valPtr = 1;
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Dummy impl function for GPE thread (no-op)
+  auto dummyImpl =
+      [](const std::vector<std::unique_ptr<struct OpElem>>&) -> commResult_t {
+    return commSuccess;
+  };
+
+  auto captureAndDestroy = [&]() {
+    CUDACHECK_TEST(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
+
+    // Must pass non-empty opGroup to trigger cmdCbPlan creation
+    std::vector<std::unique_ptr<struct OpElem>> ops;
+    ops.push_back(
+        std::make_unique<OpElem>(
+            OpElem::opType::ALLGATHER, dummyComm, /*opCount=*/0));
+    constexpr uint64_t dummyOpCount = 0;
+    auto config = KernelConfig(
+        KernelConfig::KernelType::ALLGATHER, stream, "dummyAlgo", dummyOpCount);
+    ctranKernelSetAllGatherArgs(
+        buf, valPtr, commInt8, count, dummyDevState_d, &config.args);
+    auto res = gpe->submit(
+        std::move(ops),
+        dummyImpl,
+        config,
+        reinterpret_cast<void*>(CtranGpeTestKernel));
+    ASSERT_EQ(res, commSuccess);
+
+    cudaGraph_t graph;
+    CUDACHECK_TEST(cudaStreamEndCapture(stream, &graph));
+    ASSERT_NE(graph, nullptr);
+
+    cudaGraphExec_t graphExec;
+    CUDACHECK_TEST(
+        cudaGraphInstantiate(&graphExec, graph, nullptr, nullptr, 0));
+    CUDACHECK_TEST(cudaGraphLaunch(graphExec, stream));
+    CUDACHECK_TEST(cudaStreamSynchronize(stream));
+    CUDACHECK_TEST(cudaGraphExecDestroy(graphExec));
+    CUDACHECK_TEST(cudaGraphDestroy(graph));
+  };
+
+  int countBefore = CtranGpe::liveCbPlanCount();
+
+  for (int i = 0; i < kIterations; ++i) {
+    captureAndDestroy();
+  }
+
+  // CUDA may defer cmdDestroy callback by one operation; do an extra
+  // capture+destroy to flush any pending destruction.
+  captureAndDestroy();
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  int countAfter = CtranGpe::liveCbPlanCount();
+  int leaked = countAfter - countBefore;
+
+  // Without the fix: leaked == kIterations + 1 (one plan per capture)
+  // With the fix: leaked == 0 (or at most 1 from deferred destruction)
+  EXPECT_LE(leaked, 1) << "cmdCbPlan leak: " << leaked << " plans leaked over "
+                       << kIterations + 1 << " graph capture/destroy cycles";
+
+  CUDACHECK_TEST(cudaFree(buf));
+  CUDACHECK_TEST(cudaFreeHost(valPtr));
+  CUDACHECK_TEST(cudaStreamDestroy(stream));
+}
+#endif
