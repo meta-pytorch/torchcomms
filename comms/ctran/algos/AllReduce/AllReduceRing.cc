@@ -22,6 +22,7 @@
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/CtranAlgoConsts.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/profiler/Profiler.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
@@ -1041,6 +1042,22 @@ static commResult_t impl(
   CtranComm* comm = opGroup.front()->comm_;
   CtranAlgoLogger logger(allReduceAlgoName(myAlgo), op->opCount, comm);
 
+  ctran::Profiler* profiler = comm->ctran_->profiler.get();
+  if (profiler) {
+    profiler->initForEachColl(
+        op->opCount, NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT);
+  }
+
+  size_t size = op->allreduce.count * commTypeSize(op->allreduce.datatype);
+  CTRAN_PROFILER_IF(profiler, {
+    auto& algoContext = profiler->algoContext;
+    algoContext.algorithmName = allReduceAlgoName(myAlgo);
+    algoContext.sendContext.totalBytes = size;
+    algoContext.sendContext.messageSizes = std::to_string(size);
+    algoContext.recvContext.totalBytes = size;
+    algoContext.recvContext.messageSizes = std::to_string(size);
+  });
+
   using HostArgs = ctran::allreduce::ring::HostArgs;
   using HostResource = ctran::allreduce::ring::HostResource;
   auto argsGuard = std::unique_ptr<HostArgs>(
@@ -1050,7 +1067,11 @@ static commResult_t impl(
   auto& args = *argsGuard;
   auto& resource = *resourceGuard;
 
+  CTRAN_PROFILER_IF(
+      profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_CTRL));
   FB_COMMCHECK(completeHostResourceSetup(comm, args, resource));
+  CTRAN_PROFILER_IF(
+      profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_CTRL));
 
   // setup algoCtx
   AlgoContext algoCtx = {
@@ -1075,6 +1096,9 @@ static commResult_t impl(
   std::vector<std::unique_ptr<CtranMapperRequest>> revBufSyncSResps;
   std::vector<std::unique_ptr<CtranMapperRequest>> revBufSyncRResps;
   std::vector<std::unique_ptr<CtranMapperRequest>> revFlushResps;
+
+  CTRAN_PROFILER_IF(
+      profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_DATA));
 
   while (algoCtx.partitionOffset < algoCtx.numElements) {
     updatePartitionCtxHost(args, resource, algoCtx);
@@ -1160,12 +1184,17 @@ static commResult_t impl(
     HOST_ABORT();
   } // end of partition loop
 
+  CTRAN_PROFILER_IF(
+      profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_DATA));
+
   // Reset flags for next allreduce to reuse
   resource.sendCopySync->reset();
   resource.recvRedCopySync->reset();
   resource.partitionSync->reset();
   resource.revSendCopySync->reset();
   resource.revRecvCopySync->reset();
+
+  CTRAN_PROFILER_IF(profiler, { profiler->reportToScuba(); });
 
   return commSuccess;
 }
