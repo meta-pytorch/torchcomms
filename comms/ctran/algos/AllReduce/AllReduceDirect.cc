@@ -590,6 +590,8 @@ commResult_t ctranAllReduceDirect(
   op->allreduce.count = count;
   op->allreduce.datatype = datatype;
   op->allreduce.op = redOp;
+  op->allreduce.args = nullptr;
+  op->allreduce.resource = nullptr;
 
   XCHECK(typeToFunc.contains(std::make_pair(datatype, redOp)))
       << "typeToFunc does not contain datatype " << datatype << " with op "
