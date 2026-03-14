@@ -730,67 +730,6 @@ TEST_F(P2pSendRecvBenchmarkFixture, BidirectionalBenchmark) {
       .name = "Bidir_1GB",
   });
 
-  // === NCCL-LIKE CONFIGURATIONS ===
-  // Helper function to add NCCL-like configs with consistent parameters
-  // NCCL uses 16 blocks for < 512M messages, 32 blocks for >= 512M messages
-  constexpr int kNcclBlocksSmall = 16; // For messages < 512MB
-  constexpr int kNcclBlocksLarge = 32; // For messages >= 512MB
-  constexpr int kNcclThreads = 512;
-  constexpr std::size_t kNcclStagedBufferSize = 8 * 1024 * 1024; // 8MB
-  constexpr std::size_t kChunkSize = 512 * 1024; // 512KB
-  constexpr std::size_t kLargeMessageThreshold = 512 * 1024 * 1024; // 512MB
-
-  // Helper function for adding NCCL-like config with auto-computed numBlocks
-  // Uses 16 blocks for < 512M, 32 blocks for >= 512M (like NCCL)
-  auto addNcclConfig = [&configs,
-                        kNcclBlocksLarge,
-                        kNcclStagedBufferSize,
-                        kLargeMessageThreshold](
-                           std::size_t sizeBytes,
-                           const std::string& sizeName,
-                           SyncScope scope,
-                           const std::string& scopeName) {
-    int numBlks = (sizeBytes >= kLargeMessageThreshold) ? kNcclBlocksLarge
-                                                        : kNcclBlocksSmall;
-    configs.push_back({
-        .nBytes = sizeBytes,
-        .stagedBufferSize = kNcclStagedBufferSize,
-        .numBlocks = numBlks,
-        .numThreads = kNcclThreads,
-        .pipelineDepth = 2,
-        .chunkSize = kChunkSize,
-        .groupScope = scope,
-        .spreadClusterLaunch = true,
-        .name = "NCCL_" + sizeName + "_" + scopeName,
-    });
-  };
-
-  // === BLOCK-BASED CONFIGURATIONS ===
-  addNcclConfig(128 * 1024, "128K", SyncScope::BLOCK, "Block");
-  addNcclConfig(256 * 1024, "256K", SyncScope::BLOCK, "Block");
-  addNcclConfig(1 * 1024 * 1024, "1M", SyncScope::BLOCK, "Block");
-  addNcclConfig(2 * 1024 * 1024, "2M", SyncScope::BLOCK, "Block");
-  addNcclConfig(8 * 1024 * 1024, "8M", SyncScope::BLOCK, "Block");
-  addNcclConfig(32 * 1024 * 1024, "32M", SyncScope::BLOCK, "Block");
-  addNcclConfig(64 * 1024 * 1024, "64M", SyncScope::BLOCK, "Block");
-  addNcclConfig(128 * 1024 * 1024, "128M", SyncScope::BLOCK, "Block");
-  addNcclConfig(256 * 1024 * 1024, "256M", SyncScope::BLOCK, "Block");
-  addNcclConfig(512 * 1024 * 1024, "512M", SyncScope::BLOCK, "Block");
-  addNcclConfig(1024 * 1024 * 1024, "1G", SyncScope::BLOCK, "Block");
-
-  // === CLUSTER-BASED CONFIGURATIONS ===
-  addNcclConfig(128 * 1024, "128K", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(256 * 1024, "256K", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(1 * 1024 * 1024, "1M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(2 * 1024 * 1024, "2M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(8 * 1024 * 1024, "8M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(32 * 1024 * 1024, "32M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(64 * 1024 * 1024, "64M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(128 * 1024 * 1024, "128M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(256 * 1024 * 1024, "256M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(512 * 1024 * 1024, "512M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(1024 * 1024 * 1024, "1G", SyncScope::CLUSTER, "Cluster");
-
   std::vector<BenchmarkResult> results;
 
   for (const auto& config : configs) {
