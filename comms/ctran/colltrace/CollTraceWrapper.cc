@@ -166,6 +166,13 @@ CollectiveMetadata getCollectiveMetadata(
           .count = allGatherArgs.count,
       };
     }
+    case KernelConfig::KernelType::ALLGATHERWINDOW: {
+      return CollectiveMetadata{
+          .opName = "AllGatherWindow",
+          .algoName = kernelConfig.algoName,
+          .opCount = opCount,
+      };
+    }
     case KernelConfig::KernelType::ALLGATHERP: {
       // TODO: Need to get overall allgatherp information separately
       return CollectiveMetadata{
