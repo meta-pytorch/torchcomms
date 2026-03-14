@@ -6,6 +6,7 @@
 
 #include "CommStateX.h"
 #include "comms/ctran/commstate/Topology.h"
+#include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
@@ -139,7 +140,10 @@ void CommStateX::initRankStatesTopology(meta::comms::IBootstrap* bootstrap) {
 }
 
 void CommStateX::setNvlFabricTopos(
-    std::vector<NvlFabricTopology> nvlFabricTopologies) {
+    std::vector<NvlFabricTopology> nvlFabricTopologies,
+    std::optional<bool> fabricHwSupportedForTest) {
+  bool fabricHwSupported =
+      fabricHwSupportedForTest.value_or(ctran::utils::isCuMemFabricEnabled());
   FB_CHECKABORT(
       nvlFabricTopologies.size() == nRanks_,
       "size of nvlFabricTopologies not equal to nRanks_: {}",
@@ -147,8 +151,8 @@ void CommStateX::setNvlFabricTopos(
   nvlFabricTopos_ = std::move(nvlFabricTopologies);
   nvlFabricRankStates_.clear();
   nvlDomainRanks_.clear();
-  nvlFabricEnabled_ = NCCL_CTRAN_NVL_FABRIC_ENABLE &&
-      nvlFabricTopos_.at(rank_).supportNvlFabric;
+  nvlFabricEnabled_ =
+      fabricHwSupported && nvlFabricTopos_.at(rank_).supportNvlFabric;
   if (!nvlFabricEnabled_) {
     return;
   }

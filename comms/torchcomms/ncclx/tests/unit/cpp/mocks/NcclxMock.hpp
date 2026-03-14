@@ -4,6 +4,7 @@
 
 #include <gmock/gmock.h>
 #include <nccl.h> // @manual
+#include <unordered_map>
 #include "comms/torchcomms/ncclx/NcclxApi.hpp"
 
 // Device API headers are only available in NCCLX 2.28+
@@ -13,6 +14,9 @@
 #endif
 
 namespace torch::comms::test {
+
+// Type alias to avoid preprocessor comma issues inside MOCK_METHOD macros.
+using NcclxCommDumpMap = std::unordered_map<std::string, std::string>;
 
 /**
  * Mock implementation of NcclxApi using Google Mock.
@@ -337,6 +341,19 @@ class NcclxMock : public NcclxApi {
       (override));
 #endif
 
+#if defined(ENABLE_PIPES)
+  MOCK_METHOD(
+      ncclResult_t,
+      winCreateDeviceWin,
+      (NcclxWindow win,
+       int signal_count,
+       int counter_count,
+       int barrier_count,
+       void** outDevicePtr),
+      (override));
+  MOCK_METHOD(ncclResult_t, winDestroyDeviceWin, (void* devicePtr), (override));
+#endif
+
   // Group operations
   MOCK_METHOD(ncclResult_t, groupStart, (), (override));
   MOCK_METHOD(ncclResult_t, groupEnd, (), (override));
@@ -350,6 +367,12 @@ class NcclxMock : public NcclxApi {
       ncclResult_t,
       commCount,
       (const ncclComm_t comm, int* count),
+      (override));
+
+  MOCK_METHOD(
+      ncclResult_t,
+      commDump,
+      (ncclComm_t comm, NcclxCommDumpMap& map),
       (override));
 
   MOCK_METHOD(

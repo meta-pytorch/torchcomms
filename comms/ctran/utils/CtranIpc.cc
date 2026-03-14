@@ -78,8 +78,7 @@ static inline CUmemAllocationHandleType getCuMemExportHandleType(
   CUmemAllocationHandleType exportHandleType =
       CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
 #if CUDART_VERSION >= 12040
-  if (NCCL_CTRAN_NVL_FABRIC_ENABLE &&
-      (cuMemHandleType & CU_MEM_HANDLE_TYPE_FABRIC)) {
+  if (cuMemHandleType & CU_MEM_HANDLE_TYPE_FABRIC) {
     exportHandleType = CU_MEM_HANDLE_TYPE_FABRIC;
   }
 #endif
@@ -262,10 +261,8 @@ inline commResult_t ctran::utils::CtranIpcMem::tryLoadCuMem(
   // when
   //   allocating ctran internal buffers (ALLOC mode). Always includes POSIX.
   // - getCuMemExportHandleType(): Determines the export handle type based on
-  // CVAR
-  //   enable flag (NCCL_CTRAN_NVL_FABRIC_ENABLE) and the allocation's handle
-  //   type. Used in LOAD mode to validate that user-provided memory can be
-  //   exported.
+  //   the allocation's handle type. Used in LOAD mode to validate that
+  //   user-provided memory can be exported.
 
   // temp linear loop through physical allocations, could be faster to get from
   // pytorch level

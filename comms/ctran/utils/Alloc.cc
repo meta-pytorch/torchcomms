@@ -5,27 +5,6 @@
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/DevUtils.cuh"
 
-namespace {
-#if CUDART_VERSION >= 12040
-constexpr size_t kCtranAllocMinSize = 2097152UL;
-#endif
-CUmemAllocationHandleType cuMemAllocHandleType =
-    CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
-std::once_flag initCuMemAllocHandleTypeFlag;
-
-void initCuMemAllocHandleTypeOnce() {
-#if CUDART_VERSION < 12040
-  return;
-#else
-  if (ctran::utils::isCuMemFabricHandleSupported()) {
-    cuMemAllocHandleType =
-        (CUmemAllocationHandleType)(CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR |
-                                    CU_MEM_HANDLE_TYPE_FABRIC);
-  }
-#endif
-}
-} // namespace
-
 namespace ctran::utils {
 
 commResult_t commCuMemAlloc(
@@ -125,21 +104,25 @@ commResult_t commCuMemFree(void* ptr, const CommLogData* logMetaData) {
   return commSuccess;
 }
 
+namespace {
+
+#if CUDART_VERSION >= 12040
+constexpr size_t kCtranAllocMinSize = 2097152UL;
+#endif
+CUmemAllocationHandleType cuMemAllocHandleType =
+    CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+std::once_flag initCuMemAllocHandleTypeFlag;
+
 bool isCuMemFabricHandleSupported() {
 #if CUDART_VERSION < 12040
   return false;
 #else
-  // 1: For safty, a manual ENV to gate all NVL FABRIC features
-  if (!NCCL_CTRAN_NVL_FABRIC_ENABLE) {
-    return false;
-  }
-
-  // 2: checking cumem support
+  // 1: checking cumem support
   if (!isCuMemSupported()) {
     return false;
   }
 
-  // 3: checking cuDeviceGetAttribute
+  // 2: checking cuDeviceGetAttribute
   CUdevice currentDev;
   int cudaDev;
   int flag = 0;
@@ -154,25 +137,52 @@ bool isCuMemFabricHandleSupported() {
     return false;
   }
 
-  // 4: checking if fabric handle type of memory can be allocated
+  // 3: checking if fabric handle type of memory can be allocated
+  // NOTE: We intentionally use raw CU calls here instead of commCuMemAlloc
+  // because this is a probe that is expected to fail on non-fabric platforms
+  // (e.g., H100), and we don't want to log errors for expected failures.
   void* addr = nullptr;
   CUmemGenericAllocationHandle allocHandle;
+  CUmemAllocationProp prop = {};
+  prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+  prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+  prop.location.id = currentDev;
+  prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_FABRIC;
 
-  commResult_t result = commCuMemAlloc(
-      &addr,
-      &allocHandle,
-      CU_MEM_HANDLE_TYPE_FABRIC,
-      kCtranAllocMinSize,
-      nullptr /* CommLogData */,
-      "isCuMemFabricHandleSupported");
-  if (result != commSuccess) {
-    if (addr) {
-      commCuMemFree(addr, nullptr /* CommLogData */);
-    }
+  size_t granularity = 0;
+  if (FB_CUPFN(cuMemGetAllocationGranularity(
+          &granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM)) !=
+      CUDA_SUCCESS) {
+    return false;
+  }
+  size_t size = ctran::utils::roundUp(kCtranAllocMinSize, granularity);
+  if (FB_CUPFN(cuMemCreate(&allocHandle, size, &prop, 0)) != CUDA_SUCCESS) {
+    return false;
+  }
+  if (FB_CUPFN(cuMemAddressReserve(
+          (CUdeviceptr*)&addr, size, granularity, 0, 0)) != CUDA_SUCCESS) {
+    FB_CUPFN(cuMemRelease(allocHandle));
+    return false;
+  }
+  if (FB_CUPFN(cuMemMap((CUdeviceptr)addr, size, 0, allocHandle, 0)) !=
+      CUDA_SUCCESS) {
+    FB_CUPFN(cuMemAddressFree((CUdeviceptr)addr, size));
+    FB_CUPFN(cuMemRelease(allocHandle));
+    return false;
+  }
+  CUmemAccessDesc accessDesc = {};
+  accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+  accessDesc.location.id = currentDev;
+  accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+  if (FB_CUPFN(cuMemSetAccess((CUdeviceptr)addr, size, &accessDesc, 1)) !=
+      CUDA_SUCCESS) {
+    FB_CUPFN(cuMemUnmap((CUdeviceptr)addr, size));
+    FB_CUPFN(cuMemAddressFree((CUdeviceptr)addr, size));
+    FB_CUPFN(cuMemRelease(allocHandle));
     return false;
   }
 
-  // 5: checking if import/export fabric handle type is supported
+  // 4: checking if import/export fabric handle type is supported
   CUmemFabricHandle sharedHandle;
   if (FB_CUPFN(cuMemExportToShareableHandle(
           &sharedHandle, allocHandle, CU_MEM_HANDLE_TYPE_FABRIC, 0)) !=
@@ -196,6 +206,20 @@ bool isCuMemFabricHandleSupported() {
   return true;
 #endif
 }
+
+void initCuMemAllocHandleTypeOnce() {
+#if CUDART_VERSION < 12040
+  return;
+#else
+  if (isCuMemFabricHandleSupported()) {
+    cuMemAllocHandleType =
+        (CUmemAllocationHandleType)(CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR |
+                                    CU_MEM_HANDLE_TYPE_FABRIC);
+  }
+#endif
+}
+
+} // namespace
 
 CUmemAllocationHandleType getCuMemAllocHandleType() {
   std::call_once(initCuMemAllocHandleTypeFlag, initCuMemAllocHandleTypeOnce);

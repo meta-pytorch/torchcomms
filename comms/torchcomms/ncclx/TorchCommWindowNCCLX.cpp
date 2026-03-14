@@ -11,6 +11,10 @@
 #include "comms/torchcomms/device/DeviceBackendTraits.hpp"
 #endif
 
+#if defined(ENABLE_PIPES)
+#include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
+#endif
+
 namespace torch::comms {
 
 // =============================================================================
@@ -43,30 +47,15 @@ TorchCommWindowNCCLX<Backend>::~TorchCommWindowNCCLX() noexcept {
   }
   registered_local_buffers_.clear();
 
-  // Destroy ncclDevComm using the dev_comm stored in the deleter
-  if (device_window_) {
-    auto& deleter = device_window_.get_deleter();
-    if (deleter.nccl_comm != nullptr && deleter.nccl_api != nullptr) {
-      auto nccl_result = deleter.nccl_api->devCommDestroy(
-          deleter.nccl_comm, &deleter.dev_comm);
-      if (nccl_result != ncclSuccess) {
-        TC_LOG(ERROR) << "Failed to destroy NCCL device communicator: "
-                      << deleter.nccl_api->getErrorString(nccl_result);
-      }
-    }
-  }
+  // Destroy backend-specific device communicator state.
+  // GIN: devCommDestroy. Pipes: no-op (cleanup via deleter).
+  Backend::destroy_device_comm(device_window_);
 
   // device_window_ unique_ptr destructor calls cudaFree via custom deleter
   device_window_.reset();
 
-  // Cleanup NCCL orig window
-  if (nccl_orig_win_ != nullptr) {
-    auto result = nccl_api_->commWindowDeregister(nccl_comm_, nccl_orig_win_);
-    if (result != ncclSuccess) {
-      TC_LOG(ERROR) << "NCCLX orig window deregister failed in destructor";
-    }
-    nccl_orig_win_ = nullptr;
-  }
+  // Deregister extra window (GIN nccl_orig_win_; Pipes: no-op).
+  Backend::deregister_extra_window(nccl_api_, nccl_comm_, &nccl_orig_win_);
 
 #endif
 
@@ -121,9 +110,10 @@ void TorchCommWindowNCCLX<Backend>::tensor_register(const at::Tensor& tensor) {
       << "[TorchCommWindowNCCLX]: NCCLX window registration failed.";
 
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
-  // Initialize local communicator and NCCL orig window for device API
-  // initLocalComm();
-  initNcclOrigWindow(tensor.data_ptr(), win_size_);
+  // GIN: register a second window with NCCL_WIN_DEVICE_API flag.
+  // Pipes: no-op (device window creation deferred to get_device_window).
+  Backend::register_extra_window(
+      nccl_api_, nccl_comm_, &nccl_orig_win_, tensor.data_ptr(), win_size_);
 #endif
 
   // In graph capture mode, we create a non-owned buffer: the window does not
@@ -162,13 +152,8 @@ void TorchCommWindowNCCLX<Backend>::tensor_deregister() {
   win_size_ = 0;
 
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
-  if (nccl_orig_win_ != nullptr) {
-    auto result = nccl_api_->commWindowDeregister(nccl_comm_, nccl_orig_win_);
-    if (result != ncclSuccess) {
-      TC_LOG(ERROR) << "NCCLX orig window deregister failed";
-    }
-    nccl_orig_win_ = nullptr;
-  }
+  // GIN: deregister nccl_orig_win_. Pipes: no-op.
+  Backend::deregister_extra_window(nccl_api_, nccl_comm_, &nccl_orig_win_);
 #endif
 
   buf_tensor_.reset();
@@ -312,22 +297,12 @@ std::shared_ptr<TorchCommWindowAttr> TorchCommWindowNCCLX<Backend>::get_attr(
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
 
 template <typename Backend>
-void TorchCommWindowNCCLX<Backend>::initNcclOrigWindow(void* ptr, size_t size) {
-  if (nccl_orig_win_ != nullptr) {
-    return;
-  }
-
-  CHECK_EQ(
-      nccl_api_->commWindowRegister(
-          ptr, size, nccl_comm_, &nccl_orig_win_, NCCL_WIN_DEVICE_API),
-      ncclSuccess)
-      << "[TorchCommWindowNCCLX]: NCCL orig window registration failed";
-}
-
-template <typename Backend>
 typename TorchCommWindowNCCLX<Backend>::DeviceRegisteredBuffer
 TorchCommWindowNCCLX<Backend>::register_local_buffer(const at::Tensor& tensor) {
   checkCommAndThrow();
+
+  // Throws for backends that don't support local buffer registration (Pipes).
+  Backend::validate_local_buffer_support();
 
   // GIN must be enabled via prior get_device_window() call.
   // tensor_register creates nccl_orig_win_ but doesn't enable GIN.
@@ -413,9 +388,9 @@ TorchCommWindowNCCLX<Backend>::get_device_window(
     int barrier_count) {
   checkCommAndThrow();
 
-  if (nccl_orig_win_ == nullptr) {
+  if (Backend::select_device_win(win_, nccl_orig_win_) == nullptr) {
     throw std::runtime_error(
-        "[TorchCommWindowNCCLX]: NCCL orig window not initialized. "
+        "[TorchCommWindowNCCLX]: Window not initialized. "
         "Call tensor_register first.");
   }
 
@@ -443,13 +418,14 @@ TorchCommWindowNCCLX<Backend>::get_device_window(
   config.comm_rank = commRank;
   config.comm_size = commSize;
 
-  // Create device window - the custom deleter handles all cleanup
+  // Create device window - the custom deleter handles all cleanup.
+  // Both backends share the same create_device_window signature.
   device_window_ = Backend::create_device_window(
       nccl_comm_,
       nccl_api_,
       torch_comm_->getCudaApi(),
       config,
-      nccl_orig_win_,
+      Backend::select_device_win(win_, nccl_orig_win_),
       buf_tensor_.has_value() ? buf_tensor_->data_ptr() : nullptr,
       win_size_);
 
@@ -515,6 +491,9 @@ void TorchCommWindowNCCLX<Backend>::checkWindowAndThrow() const {
 
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
 template class TorchCommWindowNCCLX<torchcomms::device::NCCLDeviceBackend>;
+#if defined(ENABLE_PIPES)
+template class TorchCommWindowNCCLX<torchcomms::device::PipesDeviceBackend>;
+#endif
 #else
 template class TorchCommWindowNCCLX<HostOnlyBackend>;
 #endif

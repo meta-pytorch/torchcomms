@@ -59,10 +59,13 @@ TEST_F(IpcUT, TryLoadCuMemRejectsNoneHandleType) {
   ctran::commMemFreeDisjoint(ptr, segmentSizes);
 }
 
-// Test Case 2: tryLoad should reject FABRIC-only memory when FABRIC is disabled
-// Currently this test is expected to FAIL because tryLoad does not validate
-// this
-TEST_F(IpcUT, TryLoadCuMemRejectsFabricOnlyWhenFabricDisabled) {
+// Test Case 2: tryLoad behavior for FABRIC-only memory depends on whether
+// the system auto-detects fabric support at runtime.
+// On GB200: fabric is auto-detected as supported, so FABRIC-only memory
+//   should be loadable (tryLoad succeeds).
+// On non-GB200 with CUDA 12.4+: fabric is not supported, so this test
+//   is skipped because FABRIC allocation would silently downgrade.
+TEST_F(IpcUT, TryLoadCuMemFabricOnlyHandleType) {
 #if CUDART_VERSION < 12040
   GTEST_SKIP() << "CUDA < 12.04, FABRIC handle type not available";
 #else
@@ -73,7 +76,6 @@ TEST_F(IpcUT, TryLoadCuMemRejectsFabricOnlyWhenFabricDisabled) {
   // Skip if system doesn't support FABRIC - allocation would silently downgrade
   // to NONE (see D90902516 for details on CUDA's silent downgrade behavior)
   {
-    EnvRAII fabricDisabled(NCCL_CTRAN_NVL_FABRIC_ENABLE, true);
     CUmemAllocationHandleType systemSupported =
         ctran::utils::getCuMemAllocHandleType();
     if ((systemSupported & CU_MEM_HANDLE_TYPE_FABRIC) == 0) {
@@ -82,9 +84,9 @@ TEST_F(IpcUT, TryLoadCuMemRejectsFabricOnlyWhenFabricDisabled) {
     }
   }
 
-  // Disable FABRIC support in ctran
-  EnvRAII fabricDisabled(NCCL_CTRAN_NVL_FABRIC_ENABLE, false);
-
+  // On systems where fabric is auto-detected as supported (e.g. GB200),
+  // FABRIC-only memory should be loadable since getCuMemExportHandleType()
+  // will use FABRIC for export.
   constexpr size_t size = 2 * 1024 * 1024; // 2MB
   std::vector<size_t> segmentSizes = {size};
   std::vector<TestMemSegment> segments;
@@ -100,15 +102,13 @@ TEST_F(IpcUT, TryLoadCuMemRejectsFabricOnlyWhenFabricDisabled) {
   // Create CtranIpcMem in LOAD mode
   auto ipcMem = std::make_unique<CtranIpcMem>(0, dummyDesc_);
 
-  // tryLoad should fail because ctran would try to export as POSIX
-  // but the allocation only supports FABRIC
+  // On fabric-supported systems, tryLoad should succeed because
+  // getCuMemExportHandleType() will match the FABRIC handle type.
   bool supported = false;
   (void)ipcMem->tryLoad(ptr, size, supported, false);
 
-  // Expected: tryLoad should return error or set supported=false
-  // because FABRIC-only memory cannot be exported as POSIX
-  EXPECT_FALSE(supported)
-      << "tryLoad should reject FABRIC-only memory when FABRIC export is disabled";
+  EXPECT_TRUE(supported)
+      << "tryLoad should accept FABRIC-only memory when fabric is supported";
 
   ctran::commMemFreeDisjoint(ptr, segmentSizes);
 #endif

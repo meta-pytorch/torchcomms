@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <ATen/core/ivalue.h> // @manual=//caffe2:ATen-core
 #include <c10/util/intrusive_ptr.h>
 #include <chrono>
 #include <functional>
@@ -48,6 +49,20 @@ class TorchWork : public c10::intrusive_ptr_target {
   // Returns max() by default for work types that don't support timeout.
   virtual std::chrono::milliseconds getTimeout() const {
     return std::chrono::milliseconds::max();
+  }
+
+  // Fault Tolerance API
+
+  /**
+   * Block the CPU thread until the work is completed.
+   * Unlike wait(), which blocks only the current CUDA stream, this method
+   * blocks the CPU thread itself until the operation completes.
+   *
+   * @throws std::runtime_error if not implemented by the backend.
+   */
+  virtual void waitBlocking() {
+    throw std::runtime_error(
+        "[TorchWork]: waitBlocking not implemented for this work type");
   }
 
   // Disable copy and move semantics
@@ -97,6 +112,10 @@ class TorchWork : public c10::intrusive_ptr_target {
   void release_resources() override {
     callback_ = nullptr;
   }
+
+  virtual void markCompleted(
+      c10::intrusive_ptr<c10::ivalue::Future> future_,
+      std::vector<at::Tensor> outputTensors_);
 
   template <typename T, typename NullType>
   friend class c10::intrusive_ptr;

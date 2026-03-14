@@ -41,6 +41,15 @@ inline std::string cuMemHandleTypeStr(CUmemAllocationHandleType handleType) {
 
 CUmemAllocationHandleType getCuMemAllocHandleType();
 
+inline bool isCuMemFabricEnabled() {
+#if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12040
+  return false;
+#else
+  return static_cast<bool>(
+      getCuMemAllocHandleType() & CU_MEM_HANDLE_TYPE_FABRIC);
+#endif
+}
+
 commResult_t commCuMemAlloc(
     void** ptr,
     CUmemGenericAllocationHandle* handlep,
@@ -50,8 +59,6 @@ commResult_t commCuMemAlloc(
     const char* callsite);
 
 commResult_t commCuMemFree(void* ptr, const CommLogData* logMetaData = nullptr);
-
-bool isCuMemFabricHandleSupported();
 
 template <typename T>
 commResult_t commCudaMallocDebug(

@@ -18,6 +18,11 @@
 #include "comms/torchcomms/device/TorchCommDeviceWindow.hpp"
 #endif
 
+#if defined(ENABLE_PIPES)
+#include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
+#include "comms/torchcomms/device/pipes/TorchCommDevicePipesTypes.hpp"
+#endif
+
 namespace torch::comms {
 
 // =============================================================================
@@ -136,18 +141,20 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
       int counter_count = -1,
       int barrier_count = 1);
 
-  // Get the host-side NCCL window handle.
+  // Get the host-side NCCL window handle (GIN backend only).
   // Useful for creating RegisteredBuffer from host code when the device
   // window's window_ field is in device memory and not directly accessible.
+  // TODO: Returns nullptr for PipesDeviceBackend (nccl_orig_win_ is not
+  // initialized). Gate or return win_ for Pipes if callers need it.
   ncclWindow_t get_nccl_window() const {
     return nccl_orig_win_;
   }
 #endif
 
  private:
-#ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
-  void initNcclOrigWindow(void* ptr, size_t size);
-#endif
+  // Backend-specific behavior is handled via static methods on the Backend
+  // type (e.g., Backend::register_extra_window(), Backend::select_device_win())
+  // instead of if constexpr dispatch.
 
   void checkRequestSizeAndThrow(size_t input_size) const;
   void checkDeviceAndThrow(const at::Tensor& tensor) const;
@@ -168,6 +175,9 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
   torchcomms::device::DeviceWindowPtr<Backend> device_window_;
 
   std::vector<DeviceRegisteredBuffer> registered_local_buffers_;
+
+  // No ctran_win_ member needed — Pipes device windows are created
+  // on-demand via nccl_api_->winCreateDeviceWin() in get_device_window().
 #endif
 
   // NCCL API abstraction
@@ -183,6 +193,13 @@ using TorchCommWindowNCCLXGin =
     TorchCommWindowNCCLX<torchcomms::device::NCCLDeviceBackend>;
 #else
 using TorchCommWindowNCCLXGin = TorchCommWindowNCCLX<HostOnlyBackend>;
+#endif
+
+// Type alias for the Pipes backend (IBGDA + NVLink device-side P2P).
+// Only available when ENABLE_PIPES is defined (propagated from ctran_lib).
+#if defined(ENABLE_PIPES)
+using TorchCommWindowNCCLXPipes =
+    TorchCommWindowNCCLX<torchcomms::device::PipesDeviceBackend>;
 #endif
 
 } // namespace torch::comms

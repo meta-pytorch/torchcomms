@@ -546,7 +546,7 @@ cvars:
 
  - name        : NCCL_PXN_DISABLE
    type        : int64_t
-   default     : 0
+   default     : 1
    description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-pxn-disable
 
  - name        : NCCL_NCHANNELS_PER_NET_PEER
@@ -1454,12 +1454,6 @@ cvars:
      share its own data with all the other peers, similar to a bcast or incast
      pattern.
 
- - name        : NCCL_CTRAN_NVL_FABRIC_ENABLE
-   type        : bool
-   default     : false
-   description : |-
-     Enable the use of NVL fabric in CTRAN.
-
  - name        : NCCL_CTRAN_IB_DMABUF_ENABLE
    type        : bool
    default     : true
@@ -1781,7 +1775,7 @@ cvars:
 
  - name        : NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET
    type        : bool
-   default     : false
+   default     : true
    description : |-
      Enable the IpcRegCache async socket server and peer address exchange for
      NVL remote memory release notifications. When disabled, the NVL backend

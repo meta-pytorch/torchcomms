@@ -6,6 +6,7 @@
 #include <pybind11/stl.h>
 #include <torch/csrc/utils/pybind.h>
 
+#include "comms/torchcomms/ncclx/NcclxGlobalApi.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
 #include "comms/torchcomms/ncclx/TorchCommWindowNCCLX.hpp"
 
@@ -259,7 +260,48 @@ Returns:
           py::arg("forward_indices"),
           py::arg("recv_indices"),
           py::arg("request"),
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "comm_dump",
+          &TorchCommNCCLX::comm_dump,
+          R"(
+Dump NCCL communicator internal state as key-value pairs.
+
+Returns a dictionary of communicator metadata including comm hash,
+rank, number of ranks, and collective trace information.
+
+Returns:
+    dict[str, str]: Key-value pairs of communicator state.
+)",
           py::call_guard<py::gil_scoped_release>());
+
+  m.def(
+      "comm_dump_all",
+      []() {
+        DefaultNcclxGlobalApi api;
+        std::unordered_map<
+            std::string,
+            std::unordered_map<std::string, std::string>>
+            map;
+        auto result = api.commDumpAll(map);
+        if (result != ncclSuccess) {
+          throw std::runtime_error(
+              std::string("ncclCommDumpAll failed: ") +
+              api.getErrorString(result));
+        }
+        return map;
+      },
+      R"(
+Dump internal state of all NCCL communicators as nested key-value pairs.
+
+This is a module-level function that does not require a communicator instance.
+Returns a dictionary keyed by communicator hash, where each value is a
+dictionary of that communicator's internal state.
+
+Returns:
+    dict[str, dict[str, str]]: Nested key-value pairs of all communicator states.
+)",
+      py::call_guard<py::gil_scoped_release>());
 
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
   // ==========================================================================

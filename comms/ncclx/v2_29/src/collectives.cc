@@ -100,14 +100,8 @@ ncclResult_t ncclAllGather(const void* sendbuff, void* recvbuff, size_t sendcoun
   NVTX3_FUNC_WITH_PARAMS(AllGather, NcclNvtxParamsAllGather,
     NVTX3_PAYLOAD(comm ? comm->commHash : 0, sendcount * ncclTypeSize(datatype)));
 
-  // Set algo to global config
-  auto algo = NCCL_ALLGATHER_ALGO;
-  // Override algo if comm config is set
-  if (ctranInitialized(comm->ctranComm_.get())) {
-    algo = comm->ctranComm_->ctran_->algo->getAllGatherAlgo();
-  }
+  auto algo = ncclx::algoconf::getAllGatherAlgo();
 
-  // Use ctran allgather if user specified and ctran is supported
   if (algo != NCCL_ALLGATHER_ALGO::orig && ctranAllGatherSupport(comm->ctranComm_.get(), algo)) {
     return metaCommToNccl(ctranAllGather(
         sendbuff, recvbuff, sendcount, ncclToMetaComm(datatype), comm->ctranComm_.get(), stream, algo));
@@ -281,7 +275,7 @@ ncclResult_t ncclSend(const void* sendbuff, size_t count, ncclDataType_t datatyp
   }
   SetCudaDevRAII setCudaDev(comm->cudaDev);
 
-  if ((ncclx::algoconf::getSendRecvAlgo() == NCCL_SENDRECV_ALGO::ctran) &&
+  if ((ncclx::algoconf::getSendRecvAlgo() != NCCL_SENDRECV_ALGO::orig) &&
       ctranSendRecvSupport(peer, comm->ctranComm_.get())) {
     // ctran send/recvs are enqueued within ctran wherease other non-ctran ones
     // are enqueued in the original queue. When reaching group end, these two
@@ -323,7 +317,7 @@ ncclResult_t ncclRecv(void* recvbuff, size_t count, ncclDataType_t datatype, int
   }
   SetCudaDevRAII setCudaDev(comm->cudaDev);
 
-  if ((ncclx::algoconf::getSendRecvAlgo() == NCCL_SENDRECV_ALGO::ctran) &&
+  if ((ncclx::algoconf::getSendRecvAlgo() != NCCL_SENDRECV_ALGO::orig) &&
       ctranSendRecvSupport(peer, comm->ctranComm_.get())) {
     // ctran send/recvs are enqueued within ctran wherease other non-ctran ones
     // are enqueued in the original queue. When reaching group end, these two

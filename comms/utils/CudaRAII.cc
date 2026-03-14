@@ -97,4 +97,21 @@ cudaEvent_t CudaEvent::get() const {
   return event_;
 }
 
+StreamCaptureModeGuard::StreamCaptureModeGuard(
+    cudaStreamCaptureMode desiredMode)
+    : prevMode_(desiredMode) {
+  CUDA_CHECK(cudaThreadExchangeStreamCaptureMode(&prevMode_));
+}
+
+StreamCaptureModeGuard::~StreamCaptureModeGuard() {
+  if (exchangeFn_) {
+    (void)exchangeFn_(ctx_, &prevMode_);
+  } else {
+    CUDA_CHECK_WITH_IGNORE(
+        cudaThreadExchangeStreamCaptureMode(&prevMode_),
+        cudaErrorCudartUnloading,
+        cudaErrorContextIsDestroyed);
+  }
+}
+
 } // namespace meta::comms

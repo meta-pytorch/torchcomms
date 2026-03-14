@@ -105,6 +105,8 @@ void NcclxMock::setupDefaultBehaviors() {
   ON_CALL(*this, commCount(_, _))
       .WillByDefault(DoAll(SetArgPointee<1>(1), Return(ncclSuccess)));
 
+  ON_CALL(*this, commDump(_, _)).WillByDefault(Return(ncclSuccess));
+
   ON_CALL(*this, redOpCreatePreMulSum(_, _, _, _, _))
       .WillByDefault(Return(ncclSuccess));
   ON_CALL(*this, redOpDestroy(_, _)).WillByDefault(Return(ncclSuccess));

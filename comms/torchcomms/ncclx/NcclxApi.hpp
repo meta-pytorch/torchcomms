@@ -5,6 +5,7 @@
 #include <exception>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 
 #include <glog/logging.h>
 #include <nccl.h> // @manual=//comms/ncclx:nccl
@@ -296,6 +297,22 @@ class NcclxApi {
       const ncclDevComm_t* devComm) = 0;
 #endif
 
+#if defined(ENABLE_PIPES)
+  // Create a DeviceWindow in device memory from a ctran-registered NcclxWindow.
+  // COLLECTIVE on first call — all ranks must call together.
+  // Returns opaque device pointer via outDevicePtr; free with
+  // winDestroyDeviceWin.
+  virtual ncclResult_t winCreateDeviceWin(
+      NcclxWindow win,
+      int signal_count,
+      int counter_count,
+      int barrier_count,
+      void** outDevicePtr) = 0;
+
+  // Free device memory allocated by winCreateDeviceWin.
+  virtual ncclResult_t winDestroyDeviceWin(void* devicePtr) = 0;
+#endif
+
   // Group operations
   [[nodiscard]] virtual ncclResult_t groupStart() = 0;
   [[nodiscard]] virtual ncclResult_t groupEnd() = 0;
@@ -306,6 +323,10 @@ class NcclxApi {
   [[nodiscard]] virtual ncclResult_t commCount(
       const ncclComm_t comm,
       int* count) = 0;
+
+  [[nodiscard]] virtual ncclResult_t commDump(
+      ncclComm_t comm,
+      std::unordered_map<std::string, std::string>& map) = 0;
 
   [[nodiscard]] virtual ncclResult_t redOpCreatePreMulSum(
       ncclRedOp_t* op,
@@ -556,6 +577,16 @@ class DefaultNcclxApi : public NcclxApi {
       override;
 #endif
 
+#if defined(ENABLE_PIPES)
+  ncclResult_t winCreateDeviceWin(
+      NcclxWindow win,
+      int signal_count,
+      int counter_count,
+      int barrier_count,
+      void** outDevicePtr) override;
+  ncclResult_t winDestroyDeviceWin(void* devicePtr) override;
+#endif
+
   // Group operations
   [[nodiscard]] ncclResult_t groupStart() override;
   [[nodiscard]] ncclResult_t groupEnd() override;
@@ -564,6 +595,10 @@ class DefaultNcclxApi : public NcclxApi {
       override;
   [[nodiscard]] ncclResult_t commCount(const ncclComm_t comm, int* count)
       override;
+
+  [[nodiscard]] ncclResult_t commDump(
+      ncclComm_t comm,
+      std::unordered_map<std::string, std::string>& map) override;
 
   [[nodiscard]] ncclResult_t redOpCreatePreMulSum(
       ncclRedOp_t* op,

@@ -75,9 +75,13 @@ enum class CoopScope : int {
 // IMPORTANT: Must be used with the SAME DeviceWindow that created it.
 
 struct RegisteredBuffer {
-  void* base_ptr;
-  size_t size;
-  void* backend_window; // Backend-specific window handle (e.g., ncclWindow_t)
+  void* base_ptr{nullptr};
+  size_t size{0};
+  void* backend_window{
+      nullptr}; // Backend-specific window handle (e.g., ncclWindow_t)
+  // RDMA local key in network byte order for IBGDA puts (PipesDeviceBackend).
+  // Zero for backends that do not use IBGDA (e.g., NCCLDeviceBackend).
+  uint32_t lkey{0};
 
   __device__ void* ptr() const {
     return base_ptr;

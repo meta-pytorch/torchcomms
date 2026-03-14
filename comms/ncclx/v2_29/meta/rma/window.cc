@@ -204,3 +204,101 @@ ncclWinGetAttributes(int rank, ncclWindow_t win, ncclWinAttr_t* attr) {
   guard.dismiss();
   return ncclSuccess;
 }
+
+#if defined(ENABLE_PIPES)
+#include <cuda_runtime_api.h>
+
+#include "comms/pipes/window/DeviceWindow.cuh"
+#include "comms/pipes/window/HostWindow.h"
+
+NCCL_API(
+    ncclResult_t,
+    ncclWinCreateDeviceWin,
+    ncclWindow_t win,
+    int signal_count,
+    int counter_count,
+    int barrier_count,
+    void** outDevicePtr);
+ncclResult_t ncclWinCreateDeviceWin(
+    ncclWindow_t win,
+    int signal_count,
+    int counter_count,
+    int barrier_count,
+    void** outDevicePtr) {
+  // Creates a DeviceWindow in device memory from the ctran window underlying
+  // the given ncclWindow_t. This is a COLLECTIVE operation on first call —
+  // all ranks must call together because get_device_win() does an allGather.
+  //
+  // Subsequent calls on the same window return cached results (config ignored).
+  //
+  // The returned void* is a device pointer to comms::pipes::DeviceWindow.
+  // The caller must free it via ncclWinDestroyDeviceWin().
+  if (win == nullptr || outDevicePtr == nullptr) {
+    return ncclInvalidArgument;
+  }
+
+  ncclWin* nw = ncclWinMap().find(win);
+  if (nw == nullptr || nw->ctranWindow == nullptr) {
+    return ncclInternalError;
+  }
+
+  // Build WindowConfig from parameters.
+  comms::pipes::WindowConfig config{
+      .peerSignalCount = static_cast<std::size_t>(std::max(signal_count, 0)),
+      .peerCounterCount = static_cast<std::size_t>(std::max(counter_count, 0)),
+      .barrierCount = static_cast<std::size_t>(std::max(barrier_count, 0)),
+  };
+
+  // Populate DeviceWindow on host stack. get_device_win() fills in transport
+  // handles, remote buffer descriptors, and signal pointers.
+  comms::pipes::DeviceWindow host_dev_win{};
+  auto result = nw->ctranWindow->get_device_win(&host_dev_win, config);
+  if (result != commSuccess) {
+    WARN("ncclWinCreateDeviceWin: get_device_win failed with error %d", result);
+    return ncclInternalError;
+  }
+
+  // Allocate device memory for DeviceWindow.
+  // NOTE: Uses raw cudaMalloc; the caller frees via ncclWinDestroyDeviceWin()
+  // or cuda_api->free() (which wraps cudaFree — compatible).
+  comms::pipes::DeviceWindow* dev_ptr = nullptr;
+  cudaError_t cuda_err = cudaMalloc(
+      reinterpret_cast<void**>(&dev_ptr), sizeof(comms::pipes::DeviceWindow));
+  if (cuda_err != cudaSuccess) {
+    WARN(
+        "ncclWinCreateDeviceWin: cudaMalloc failed: %s",
+        cudaGetErrorString(cuda_err));
+    return ncclInternalError;
+  }
+
+  // Copy populated DeviceWindow from host to device.
+  // dev_ptr is non-null here (cudaMalloc succeeded above).
+  // NOLINTNEXTLINE(facebook-hte-NullableDereference,facebook-security-vulnerable-memcpy)
+  cuda_err = cudaMemcpy(
+      dev_ptr,
+      &host_dev_win,
+      sizeof(comms::pipes::DeviceWindow),
+      cudaMemcpyHostToDevice);
+  if (cuda_err != cudaSuccess) {
+    WARN(
+        "ncclWinCreateDeviceWin: cudaMemcpy failed: %s",
+        cudaGetErrorString(cuda_err));
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check,facebook-hte-NullableDereference)
+    cudaFree(dev_ptr);
+    return ncclInternalError;
+  }
+
+  *outDevicePtr = dev_ptr;
+  return ncclSuccess;
+}
+
+NCCL_API(ncclResult_t, ncclWinDestroyDeviceWin, void* devicePtr);
+ncclResult_t ncclWinDestroyDeviceWin(void* devicePtr) {
+  // Frees device memory allocated by ncclWinCreateDeviceWin.
+  if (devicePtr == nullptr) {
+    return ncclSuccess;
+  }
+  cudaError_t err = cudaFree(devicePtr);
+  return (err == cudaSuccess) ? ncclSuccess : ncclInternalError;
+}
+#endif // ENABLE_PIPES

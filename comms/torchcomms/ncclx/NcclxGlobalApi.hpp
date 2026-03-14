@@ -4,6 +4,7 @@
 
 #include <mutex>
 #include <string>
+#include <unordered_map>
 
 #include <nccl.h> // @manual=//comms/ncclx:nccl
 
@@ -20,6 +21,12 @@ class NcclxGlobalApi {
 
   // Error handling
   virtual const char* getErrorString(ncclResult_t result) = 0;
+
+  // Communicator diagnostics
+  [[nodiscard]] virtual ncclResult_t commDumpAll(
+      std::unordered_map<
+          std::string,
+          std::unordered_map<std::string, std::string>>& map) = 0;
 };
 
 /**
@@ -30,6 +37,11 @@ class DefaultNcclxGlobalApi : public NcclxGlobalApi {
   ~DefaultNcclxGlobalApi() override = default;
 
   const char* getErrorString(ncclResult_t result) override;
+
+  [[nodiscard]] ncclResult_t commDumpAll(
+      std::unordered_map<
+          std::string,
+          std::unordered_map<std::string, std::string>>& map) override;
 
  private:
   mutable std::mutex api_mutex_;

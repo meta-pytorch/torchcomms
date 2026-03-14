@@ -68,11 +68,10 @@ WorkWrapper::WorkWrapper(
     std::vector<at::Tensor> outputTensors)
     : work_(std::move(work)), outputTensors_(std::move(outputTensors)) {
   std::vector<c10::Device> devices;
-  // MTIA, CPU needs to wait for the TorchWork to complete before marking Future
+  // CPU needs to wait for the TorchWork to complete before marking Future
   // as completed
   for (const auto& tensor : outputTensors_) {
-    if (tensor.device().type() != c10::DeviceType::CPU &&
-        tensor.device().type() != c10::DeviceType::MTIA) {
+    if (tensor.device().type() != c10::DeviceType::CPU) {
       devices.push_back(tensor.device());
       break;
     }
@@ -80,18 +79,17 @@ WorkWrapper::WorkWrapper(
   future_ = c10::make_intrusive<c10::ivalue::Future>(
       c10::ListType::create(c10::TensorType::get()), devices);
 
+  // If we are doing a barrier collective, for all device types, devices vector
+  // would be empty we would fallback to same CPU synchronization logic
   if (!devices.empty()) {
-    // CUDA: resolve immediately. Future records a CUDA event on the current
-    // stream via markCompleted(). Device guard ensures getCurrentStream()
-    // returns the correct device's stream.
-    c10::OptionalDeviceGuard guard(devices[0]);
-    future_->markCompleted(c10::IValue(outputTensors_));
+    work_->markCompleted(
+        c10::intrusive_ptr<c10::ivalue::Future>(future_), outputTensors_);
   } else if (work_->isCompleted()) {
-    // For other device types (CPU, MTIA etc.) synchronous op already finished —
+    // For other device types (CPU) synchronous op already finished —
     // resolve now.
     future_->markCompleted(c10::IValue(outputTensors_));
   } else {
-    // For other device types (CPU, MTIA etc.) async: register callback so
+    // For other device types (CPU) async: register callback so
     // future completes when setStatus fires.
     work_->setCallback([future = future_, tensors = outputTensors_]() {
       if (!future->completed()) {

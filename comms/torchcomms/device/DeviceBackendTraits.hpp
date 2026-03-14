@@ -115,6 +115,46 @@ struct NCCLDeviceBackend {
       Window host_window,
       void* base,
       size_t size);
+
+  // =========================================================================
+  // Backend-specific hooks called from TorchCommWindowNCCLX
+  // =========================================================================
+  //
+  // These static methods encapsulate backend-specific behavior so that the
+  // shared template code can call Backend::method() instead of using
+  // if constexpr to dispatch.
+
+  // Register the NCCL baseline window needed for GIN transport.
+  // This second window is registered with NCCL_WIN_DEVICE_API flag to enable
+  // GPU-initiated networking (GIN) device API support.
+  static void register_extra_window(
+      torch::comms::NcclxApi* nccl_api,
+      ncclComm_t nccl_comm,
+      ncclWindow_t* out_win,
+      void* ptr,
+      size_t size);
+
+  // Deregister the NCCL baseline window used for GIN transport.
+  static void deregister_extra_window(
+      torch::comms::NcclxApi* nccl_api,
+      ncclComm_t nccl_comm,
+      ncclWindow_t* win);
+
+  // Destroy backend-specific device communicator (GIN ncclDevComm).
+  static void destroy_device_comm(Ptr& device_window);
+
+  // Select which window handle to use for device window creation.
+  // GIN uses nccl_orig_win_ (device API flag).
+  static ncclWindow_t select_device_win(
+      ncclWindow_t /* win */,
+      ncclWindow_t nccl_orig_win) {
+    return nccl_orig_win;
+  }
+
+  // Validate that register_local_buffer is supported. Throws if not.
+  static void validate_local_buffer_support() {
+    // Supported for GIN backend — no-op.
+  }
 };
 
 // Type alias for backward compatibility
