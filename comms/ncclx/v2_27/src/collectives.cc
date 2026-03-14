@@ -424,6 +424,50 @@ ncclResult_t ncclAllToAllv(
   return ncclSuccess;
 }
 
+#if defined(ENABLE_PIPES)
+__attribute__((visibility("default")))
+ncclResult_t ncclx::deviceAllToAllv(
+    const void* sendbuff,
+    void* recvbuff,
+    const int64_t* sendcounts_d,
+    const int64_t* recvcounts_d,
+    const int64_t* senddispls_d,
+    const int64_t* recvdispls_d,
+    ncclDataType_t datatype,
+    ncclComm_t comm,
+    cudaStream_t stream) {
+  if (!ctranDeviceAllToAllvSupport(comm->ctranComm_.get())) {
+    FB_ERRORRETURN(
+        ncclInvalidUsage,
+        "deviceAllToAllv requires ctran with pipes transport support");
+  }
+  return metaCommToNccl(ctranDeviceAllToAllv(
+      sendbuff,
+      recvbuff,
+      sendcounts_d,
+      recvcounts_d,
+      senddispls_d,
+      recvdispls_d,
+      ncclToMetaComm(datatype),
+      comm->ctranComm_.get(),
+      stream));
+}
+#else
+__attribute__((visibility("default")))
+ncclResult_t ncclx::deviceAllToAllv(
+    const void* /*sendbuff*/,
+    void* /*recvbuff*/,
+    const int64_t* /*sendcounts_d*/,
+    const int64_t* /*recvcounts_d*/,
+    const int64_t* /*senddispls_d*/,
+    const int64_t* /*recvdispls_d*/,
+    ncclDataType_t /*datatype*/,
+    ncclComm_t /*comm*/,
+    cudaStream_t /*stream*/) {
+  return ncclInvalidUsage;
+}
+#endif // ENABLE_PIPES
+
 __attribute__((visibility("default")))
 ncclResult_t ncclx::alltoallvDynamic(
     const void * const* sendbuffs,

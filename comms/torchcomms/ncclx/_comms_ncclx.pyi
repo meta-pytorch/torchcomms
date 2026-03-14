@@ -32,6 +32,16 @@ class TorchCommNCCLXPersistentRequest:
     def map_remote_tensor(self) -> torch.Tensor: ...
 
 class TorchCommNCCLX:
+    def device_alltoallv_single(
+        self,
+        output: torch.Tensor,
+        input: torch.Tensor,
+        output_split_sizes: torch.Tensor,
+        input_split_sizes: torch.Tensor,
+        output_split_offsets: torch.Tensor,
+        input_split_offsets: torch.Tensor,
+        async_op: bool,
+    ) -> TorchWork: ...
     def alltoallv_dynamic_dispatch(
         self,
         output_tensor_list: List[torch.Tensor],

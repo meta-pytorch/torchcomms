@@ -198,6 +198,19 @@ class NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) = 0;
 
+  [[nodiscard]] virtual ncclResult_t deviceAllToAllv(
+      const void* sendbuff,
+      void* recvbuff,
+      const int64_t* sendcounts_d,
+      const int64_t* recvcounts_d,
+      const int64_t* senddispls_d,
+      const int64_t* recvdispls_d,
+      ncclDataType_t datatype,
+      ncclComm_t comm,
+      cudaStream_t stream) {
+    return ncclInvalidUsage;
+  }
+
   [[nodiscard]] virtual ncclResult_t alltoallvDynamicDispatch(
       const void* sendbuff,
       const size_t* sendSplitLengths,
@@ -471,6 +484,17 @@ class DefaultNcclxApi : public NcclxApi {
       void* recvbuff,
       const size_t recvcounts[],
       const size_t recvdispls[],
+      ncclDataType_t datatype,
+      ncclComm_t comm,
+      cudaStream_t stream) override;
+
+  [[nodiscard]] ncclResult_t deviceAllToAllv(
+      const void* sendbuff,
+      void* recvbuff,
+      const int64_t* sendcounts_d,
+      const int64_t* recvcounts_d,
+      const int64_t* senddispls_d,
+      const int64_t* recvdispls_d,
       ncclDataType_t datatype,
       ncclComm_t comm,
       cudaStream_t stream) override;

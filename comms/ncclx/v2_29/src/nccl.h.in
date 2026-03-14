@@ -1156,6 +1156,18 @@ ncclResult_t alltoallvDynamicCombine( const void* sendbuff, const size_t* sendSp
     ncclComm_t comm, cudaStream_t stream);
 
 /*
+ * Device AllToAllv: AllToAllv where split sizes are device tensors.
+ * Unlike regular AllToAllv where counts/displacements are host arrays,
+ * this variant takes device pointers for sendcounts, recvcounts,
+ * senddispls, and recvdispls. This is useful when split sizes are
+ * computed on the GPU and not known on the host beforehand.
+ */
+ncclResult_t deviceAllToAllv(const void* sendbuff, void* recvbuff,
+    const int64_t* sendcounts_d, const int64_t* recvcounts_d,
+    const int64_t* senddispls_d, const int64_t* recvdispls_d,
+    ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
+
+/*
  * Persistent All-Gather similar to ncclAllgather, the key difference is that
  * the execution will be deferred until allGatherExec is called
  * Arguments:
