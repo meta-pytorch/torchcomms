@@ -27,7 +27,7 @@ struct TimingStats {
 
 // Send kernel - groupScope selects warp vs block level parallelism
 __global__ void p2pSend(
-    P2pNvlTransportDevice* p2p,
+    P2pNvlTransportDevice p2p,
     void* srcBuff,
     std::size_t nBytes,
     SyncScope groupScope = SyncScope::WARP,
@@ -35,7 +35,7 @@ __global__ void p2pSend(
 
 // Recv kernel
 __global__ void p2pRecv(
-    P2pNvlTransportDevice* p2p,
+    P2pNvlTransportDevice p2p,
     void* dstBuff,
     std::size_t nBytes,
     SyncScope groupScope = SyncScope::WARP,
@@ -43,14 +43,14 @@ __global__ void p2pRecv(
 
 // Timed versions that export GPU-side clock64() timing stats
 __global__ void p2pSendTimed(
-    P2pNvlTransportDevice* p2p,
+    P2pNvlTransportDevice p2p,
     void* srcBuff,
     std::size_t nBytes,
     TimingStats* stats,
     SyncScope groupScope = SyncScope::WARP);
 
 __global__ void p2pRecvTimed(
-    P2pNvlTransportDevice* p2p,
+    P2pNvlTransportDevice p2p,
     void* dstBuff,
     std::size_t nBytes,
     TimingStats* stats,
@@ -58,7 +58,7 @@ __global__ void p2pRecvTimed(
 
 // Bidirectional kernel - half groups send, half groups receive
 __global__ void p2pBidirectional(
-    P2pNvlTransportDevice* p2p,
+    P2pNvlTransportDevice p2p,
     void* sendBuff,
     void* recvBuff,
     std::size_t nBytes,
@@ -67,8 +67,35 @@ __global__ void p2pBidirectional(
 
 // Signal benchmark kernel - ping-pong signaling pattern
 __global__ void p2pSignalBenchKernel(
-    P2pNvlTransportDevice* p2p,
+    P2pNvlTransportDevice p2p,
     int nSteps,
     SyncScope groupScope = SyncScope::WARP);
+
+// =============================================================================
+// LL128 benchmark kernels - warp-based LL128 protocol with inline flag
+// signaling
+// =============================================================================
+
+// LL128 send kernel
+__global__ void p2pLl128Send(
+    P2pNvlTransportDevice p2p,
+    void* srcBuff,
+    std::size_t nBytes,
+    Timeout timeout = Timeout());
+
+// LL128 recv kernel
+__global__ void p2pLl128Recv(
+    P2pNvlTransportDevice p2p,
+    void* dstBuff,
+    std::size_t nBytes,
+    Timeout timeout = Timeout());
+
+// LL128 bidirectional kernel - half warps send, half recv
+__global__ void p2pLl128Bidirectional(
+    P2pNvlTransportDevice p2p,
+    void* sendBuff,
+    void* recvBuff,
+    std::size_t nBytes,
+    Timeout timeout = Timeout());
 
 } // namespace comms::pipes::benchmark
