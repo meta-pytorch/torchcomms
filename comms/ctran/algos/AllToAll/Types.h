@@ -2,10 +2,15 @@
 
 #pragma once
 
+#include "comms/ctran/algos/CtranAlgoDev.h" // for CTRAN_MAX_NVL_PEERS
 #include "comms/utils/commSpecs.h"
 
-// Forward declaration
+// Forward declarations
 struct KernelElem;
+
+namespace comms::pipes {
+struct Transport;
+}
 
 #define CTRAN_MAX_TOTAL_RANK (128)
 
@@ -21,6 +26,38 @@ struct KernelArgs {
 };
 
 } // namespace alltoall
+
+namespace device_alltoallv_pipes {
+
+struct KernArgs {
+  const void* sendbuff;
+  void* recvbuff;
+  int nLocalRanks; // number of ranks on this node
+  int myRank; // global rank of this process
+  size_t elementSize; // bytes per element (commTypeSize(datatype))
+
+  // Device pointers to split sizes (int64_t, indexed by global rank)
+  const int64_t* sendcounts_d; // [nRanks] send counts per rank
+  const int64_t* recvcounts_d; // [nRanks] recv counts per rank
+
+  // Device pointers to displacements (int64_t, indexed by global rank)
+  const int64_t* senddispls_d; // [nRanks] send displacements per rank
+  const int64_t* recvdispls_d; // [nRanks] recv displacements per rank
+
+  // Maps local rank index [0..nLocalRanks) to global rank
+  int localRankToGlobalRank[CTRAN_MAX_NVL_PEERS];
+
+  // Transport array from MultiPeerTransport, indexed by global rank
+  comms::pipes::Transport* transports;
+
+  // If true, use block-level scheduling (make_block_group) instead of
+  // warp-level scheduling (make_warp_group). Block scheduling dedicates
+  // all threads in a block to one peer; warp scheduling distributes
+  // warps across peers for chunk-level pipelining.
+  bool useBlockGroup;
+};
+
+} // namespace device_alltoallv_pipes
 
 namespace alltoallv {
 

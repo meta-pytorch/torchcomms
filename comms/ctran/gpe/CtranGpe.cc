@@ -324,6 +324,7 @@ static std::unordered_map<KernelConfig::KernelType, std::string>
         {KernelConfig::KernelType::ALLGATHER, "ALLGATHER"},
         {KernelConfig::KernelType::ALLREDUCE, "ALLREDUCE"},
         {KernelConfig::KernelType::ALLTOALL, "ALLTOALL"},
+        {KernelConfig::KernelType::DEVICE_ALLTOALLV, "DEVICE_ALLTOALLV"},
         {KernelConfig::KernelType::ALLTOALLV, "ALLTOALLV"},
         {KernelConfig::KernelType::ALLTOALL_DEDUP, "ALLTOALL_DEDUP"},
         {KernelConfig::KernelType::ALLTOALLV_DYNAMIC, "ALLTOALLV_DYNAMIC"},
