@@ -245,7 +245,8 @@ std::vector<std::string> CtranDistTestFixture::exchangeInitUrls(
 
 std::unique_ptr<CtranComm> CtranDistTestFixture::makeCtranComm() {
   const auto initType = getInitEnvType();
-  const std::string uuid{"0"};
+  const auto commId = testCount_.fetch_add(1);
+  const std::string uuid = std::to_string(commId);
   uint64_t commHash =
       ctran::utils::getHash(uuid.data(), static_cast<int>(uuid.size()));
   std::string commDesc = fmt::format("CtranTestComm-{}", globalRank);
@@ -317,7 +318,7 @@ std::unique_ptr<CtranComm> CtranDistTestFixture::makeCtranComm() {
 
     // Initialize the bootstrap with all URLs
     // void init(urls, myRank, uuid, abort, timeout)
-    bootstrap->init(urlVec, static_cast<size_t>(globalRank), 0 /* uuid */);
+    bootstrap->init(urlVec, static_cast<size_t>(globalRank), commId /* uuid */);
 
     comm->bootstrap_ =
         std::make_unique<mccl::bootstrap::CtranAdapter>(bootstrap);
