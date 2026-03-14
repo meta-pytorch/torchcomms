@@ -68,6 +68,21 @@ if(NOT EXISTS "${CUDA_PATH}/include/texture_fetch_functions.h")
     message(STATUS "  Created texture_fetch_functions.h stub for CUDA 13+ compatibility")
 endif()
 
+# CUDA 13.2 added _NV_RSQRT_SPECIFIER (noexcept attribute on rsqrt) to
+# crt/math_functions.hpp. Clang versions before LLVM commit ab048ac6c033
+# (March 2026) don't define this macro, causing a parse error. Define it
+# as empty for device bitcode compilation where noexcept has no effect.
+# https://github.com/llvm/llvm-project/pull/185701
+set(CUDA_13_2_COMPAT_FLAGS "")
+if(EXISTS "${CUDA_PATH}/include/crt/math_functions.hpp")
+    file(STRINGS "${CUDA_PATH}/include/crt/math_functions.hpp" _has_rsqrt_spec
+        REGEX "_NV_RSQRT_SPECIFIER" LIMIT_COUNT 1)
+    if(_has_rsqrt_spec)
+        list(APPEND CUDA_13_2_COMPAT_FLAGS "-D_NV_RSQRT_SPECIFIER=")
+        message(STATUS "  Added -D_NV_RSQRT_SPECIFIER for CUDA 13.2+ / pre-patch clang compatibility")
+    endif()
+endif()
+
 # ---- GPU architecture detection ----
 # Priority: TORCHCOMMS_CUDA_ARCH > TORCH_CUDA_ARCH_LIST > nvidia-smi auto-detect > sm_90 default
 #
@@ -138,6 +153,7 @@ add_custom_command(
         -D__clang_llvm_bitcode_lib__
         -DNCCL_GIN_PROXY_ENABLE=0
         -Wno-unknown-cuda-version
+        ${CUDA_13_2_COMPAT_FLAGS}
         -fcuda-flush-denormals-to-zero
         "--cuda-path=${CUDA_PATH}"
         -isystem "${CUDA_PATH}/include"
