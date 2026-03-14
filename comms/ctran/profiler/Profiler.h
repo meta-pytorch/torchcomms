@@ -2,10 +2,15 @@
 
 #pragma once
 
+#include <memory>
+
 #include "comms/ctran/CtranComm.h"
+#include "comms/ctran/profiler/AlgoProfilerReport.h"
 #include "comms/ctran/utils/StopWatch.h"
 
 namespace ctran {
+
+class IAlgoProfilerReporter;
 
 // execute the profiling command only if the condition is true
 #define CTRAN_PROFILER_IF(profiler_, cmd_)     \
@@ -26,19 +31,6 @@ enum ProfilerEvent {
   NUM_PROFILER_EVENT_TYPES,
 };
 
-struct DataContext {
-  uint64_t totalBytes{0};
-  std::string messageSizes{};
-};
-
-struct AlgoContext {
-  std::string deviceName{};
-  std::string algorithmName{};
-  DataContext sendContext{};
-  DataContext recvContext{};
-  uint64_t peerRank{0};
-};
-
 class Profiler {
  public:
   using Clock = std::chrono::system_clock;
@@ -47,8 +39,12 @@ class Profiler {
       std::array<utils::StopWatch<Clock>, NUM_PROFILER_EVENT_TYPES>;
 
  public:
-  Profiler(CtranComm* comm) : comm_(comm) {};
-  ~Profiler() = default;
+  Profiler(CtranComm* comm);
+  ~Profiler();
+
+  // Set a custom reporter for algo profiling data. By default,
+  // NcclxAlgoProfilerReporter is used (logs to nccl_profiler_algo).
+  void setReporter(std::unique_ptr<IAlgoProfilerReporter> reporter);
 
   // This should be called at the beginning of the collective
   void initForEachColl(int opCount, int samplingWeight);
@@ -94,8 +90,7 @@ class Profiler {
   EventTimerArray timers_{};
   uint64_t readyTs_{0};
   uint64_t controlTs_{0};
-
-  void logNcclProfilingAlgo() const;
+  std::unique_ptr<IAlgoProfilerReporter> reporter_;
 
   friend class ProfilerTest;
 };
