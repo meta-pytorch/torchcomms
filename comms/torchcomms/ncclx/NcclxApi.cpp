@@ -502,6 +502,22 @@ ncclResult_t DefaultNcclxApi::commDump(
   return ::ncclCommDump(comm, map);
 }
 
+#if defined(ENABLE_PIPES)
+ncclResult_t DefaultNcclxApi::winCreateDeviceWin(
+    NcclxWindow win,
+    int signal_count,
+    int counter_count,
+    int barrier_count,
+    void** outDevicePtr) {
+  return ncclWinCreateDeviceWin(
+      win, signal_count, counter_count, barrier_count, outDevicePtr);
+}
+
+ncclResult_t DefaultNcclxApi::winDestroyDeviceWin(void* devicePtr) {
+  return ncclWinDestroyDeviceWin(devicePtr);
+}
+#endif // ENABLE_PIPES
+
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
 ncclResult_t DefaultNcclxApi::devCommCreate(
     ncclComm_t comm,

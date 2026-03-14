@@ -2079,8 +2079,20 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::gather(
 // Window & One-sided Operations
 std::shared_ptr<TorchCommWindow> TorchCommNCCLX::new_window(
     const std::optional<at::Tensor>& tensor) {
-  auto win =
-      std::make_shared<TorchCommWindowNCCLXGin>(nccl_comm_, shared_from_this());
+  std::shared_ptr<TorchCommWindow> win;
+#if defined(ENABLE_PIPES)
+  // Select Pipes backend when explicitly requested via env var.
+  // Pipes uses ctran IBGDA/NVLink instead of GIN for device-side P2P.
+  const char* pipes_env = std::getenv("TORCHCOMMS_PIPES_DEVICE_API_ENABLE");
+  if (pipes_env != nullptr && std::string_view(pipes_env) == "1") {
+    win = std::make_shared<TorchCommWindowNCCLXPipes>(
+        nccl_comm_, shared_from_this());
+  } else
+#endif
+  {
+    win = std::make_shared<TorchCommWindowNCCLXGin>(
+        nccl_comm_, shared_from_this());
+  }
   if (tensor.has_value()) {
     win->tensor_register(tensor.value());
   }

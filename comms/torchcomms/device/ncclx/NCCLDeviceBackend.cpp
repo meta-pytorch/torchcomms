@@ -157,4 +157,52 @@ NCCLDeviceBackend::Ptr NCCLDeviceBackend::create_device_window(
   return Ptr(device_ptr, deleter);
 }
 
+// =============================================================================
+// Backend-specific hooks
+// =============================================================================
+
+void NCCLDeviceBackend::register_extra_window(
+    torch::comms::NcclxApi* nccl_api,
+    ncclComm_t nccl_comm,
+    ncclWindow_t* out_win,
+    void* ptr,
+    size_t size) {
+  if (*out_win != nullptr) {
+    return;
+  }
+  CHECK_EQ(
+      nccl_api->commWindowRegister(
+          ptr, size, nccl_comm, out_win, NCCL_WIN_DEVICE_API),
+      ncclSuccess)
+      << "[NCCLDeviceBackend]: Extra window registration failed";
+}
+
+void NCCLDeviceBackend::deregister_extra_window(
+    torch::comms::NcclxApi* nccl_api,
+    ncclComm_t nccl_comm,
+    ncclWindow_t* win) {
+  if (*win != nullptr) {
+    auto result = nccl_api->commWindowDeregister(nccl_comm, *win);
+    if (result != ncclSuccess) {
+      TC_LOG(ERROR) << "NCCLX orig window deregister failed";
+    }
+    *win = nullptr;
+  }
+}
+
+void NCCLDeviceBackend::destroy_device_comm(Ptr& device_window) {
+  if (!device_window) {
+    return;
+  }
+  auto& deleter = device_window.get_deleter();
+  if (deleter.nccl_comm != nullptr && deleter.nccl_api != nullptr) {
+    auto nccl_result =
+        deleter.nccl_api->devCommDestroy(deleter.nccl_comm, &deleter.dev_comm);
+    if (nccl_result != ncclSuccess) {
+      TC_LOG(ERROR) << "Failed to destroy NCCL device communicator: "
+                    << deleter.nccl_api->getErrorString(nccl_result);
+    }
+  }
+}
+
 } // namespace torchcomms::device
