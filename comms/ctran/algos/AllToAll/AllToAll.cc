@@ -8,10 +8,22 @@
 #include "comms/ctran/algos/AllToAll/AllToAllImpl.h"
 #include "comms/ctran/algos/AllToAll/AllToAllPImpl.h"
 #include "comms/ctran/algos/AllToAll/AllToAllvImpl.h"
+#if defined(ENABLE_PIPES)
+#include "comms/ctran/algos/AllToAll/DeviceAllToAllvPipesImpl.h"
+#include "comms/pipes/MultiPeerTransport.h"
+#include "comms/pipes/Transport.cuh"
+#endif
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/utils/CtranPerf.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+
+#if defined(ENABLE_PIPES)
+extern __global__ void ncclKernelDeviceAllToAllvPipes(
+    int* flag,
+    CtranAlgoDeviceState* devState,
+    ctran::device_alltoallv_pipes::KernArgs args);
+#endif
 
 #define RETURN_ALLTOALLV_IB_IMPL(perfconfig) \
   return ctranAllToAllvIbImpl<perfconfig>(   \
@@ -182,3 +194,102 @@ bool ctranAllToAllSupport(
     return false;
   }
 }
+
+#if defined(ENABLE_PIPES)
+// ============================================================================
+// Device AllToAllv (split sizes on device)
+// NVLink domain only — all peers must be reachable via NVLink.
+// IB support will be added in a follow-up via IBGDA (not CPU proxy).
+// ============================================================================
+
+commResult_t ctranDeviceAllToAllv(
+    const void* sendbuff,
+    void* recvbuff,
+    const int64_t* sendcounts_d,
+    const int64_t* recvcounts_d,
+    const int64_t* senddispls_d,
+    const int64_t* recvdispls_d,
+    commDataType_t datatype,
+    CtranComm* comm,
+    cudaStream_t stream) {
+  auto opCount = comm->ctran_->getOpCount();
+
+  KernelConfig config = KernelConfig(
+      KernelConfig::KernelType::DEVICE_ALLTOALLV,
+      stream,
+      "DeviceAllToAllvPipes",
+      opCount);
+
+  ctran::device_alltoallv_pipes::KernArgs kernArgs;
+  FB_COMMCHECK(
+      ctran::device_alltoallv_pipes::setupKernelConfig(
+          sendbuff,
+          recvbuff,
+          sendcounts_d,
+          recvcounts_d,
+          senddispls_d,
+          recvdispls_d,
+          datatype,
+          comm,
+          config,
+          kernArgs));
+
+  // NVLink-only: no GPE op needed (no IB fallback)
+  std::vector<std::unique_ptr<struct OpElem>> opGroup;
+
+  FB_COMMCHECK(comm->ctran_->gpe->submit(
+      std::move(opGroup),
+      nullptr,
+      config,
+      reinterpret_cast<void*>(ncclKernelDeviceAllToAllvPipes)));
+
+  return commSuccess;
+}
+
+bool ctranDeviceAllToAllvSupport(CtranComm* comm) {
+  if (!ctranInitialized(comm)) {
+    return false;
+  }
+
+  // Require MultiPeerTransport (pipes)
+  if (!comm->multiPeerTransport_) {
+    return false;
+  }
+
+  // NVLink domain only: verify ALL peers are reachable via NVLink (or self).
+  // Reject communicators with any IB-only peers to prevent silent data loss.
+  // Use host-side API — getMultiPeerTransportsPtr() returns a device pointer
+  // that cannot be dereferenced on the host.
+  const auto statex = comm->statex_.get();
+  for (int rank = 0; rank < statex->nRanks(); rank++) {
+    auto type = comm->multiPeerTransport_->get_transport_type(rank);
+    if (type != comms::pipes::TransportType::P2P_NVL &&
+        type != comms::pipes::TransportType::SELF) {
+      return false;
+    }
+  }
+
+  return true;
+}
+#endif // ENABLE_PIPES
+
+// Stubs when ENABLE_PIPES is not defined — prevents linker errors from
+// unconditional declarations in Ctran.h.
+#if !defined(ENABLE_PIPES)
+commResult_t ctranDeviceAllToAllv(
+    const void* /*sendbuff*/,
+    void* /*recvbuff*/,
+    const int64_t* /*sendcounts_d*/,
+    const int64_t* /*recvcounts_d*/,
+    const int64_t* /*senddispls_d*/,
+    const int64_t* /*recvdispls_d*/,
+    commDataType_t /*datatype*/,
+    CtranComm* /*comm*/,
+    cudaStream_t /*stream*/) {
+  return commInternalError;
+}
+
+bool ctranDeviceAllToAllvSupport(CtranComm* /*comm*/) {
+  return false;
+}
+#endif // !ENABLE_PIPES

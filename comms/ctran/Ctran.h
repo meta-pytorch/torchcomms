@@ -125,6 +125,19 @@ commResult_t ctranAllToAll(
 
 bool ctranAllToAllvSupport(CtranComm* comm);
 
+bool ctranDeviceAllToAllvSupport(CtranComm* comm);
+
+commResult_t ctranDeviceAllToAllv(
+    const void* sendbuff,
+    void* recvbuff,
+    const int64_t* sendcounts_d,
+    const int64_t* recvcounts_d,
+    const int64_t* senddispls_d,
+    const int64_t* recvdispls_d,
+    commDataType_t datatype,
+    CtranComm* comm,
+    cudaStream_t stream);
+
 commResult_t ctranAllToAllv(
     const void* sendbuff,
     const size_t sendcounts[],
