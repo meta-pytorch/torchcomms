@@ -2033,6 +2033,33 @@ cvars:
      When enabled, ReduceScatter with ncclAvg uses FuncPatAvg for true floating-point
      division instead of FuncSumPostDiv (which only supports unsigned integers).
 
+ - name        : NCCL_CTRAN_ALLGATHER_P_DIRECT_BATCH_SIZE
+   type        : int
+   default     : 0
+   description : |-
+     Batch size for AllGatherP CE broadcast (nvlCeBcast) to control
+     NVSwitch incast congestion on large NVL domains.
+     0 = auto-select based on NVL domain size and message size:
+         nLocalRanks <= 8:  unbatched (current behavior)
+         nLocalRanks > 8 AND sendSize < BATCH_THRESHOLD:
+             unbatched (barrier overhead outweighs incast benefit)
+         nLocalRanks > 8 AND sendSize >= BATCH_THRESHOLD:
+             batchSize = min(ceil(nPeers/8), 16) — ~8 waves
+     N > 0 = use exactly N concurrent CE copies per wave, with an
+     nvlBarrier between waves to re-synchronize all GPUs.
+
+ - name        : NCCL_CTRAN_ALLGATHER_P_DIRECT_BATCH_THRESHOLD
+   type        : uint64_t
+   default     : 16777216
+   description : |-
+     Per-rank send size threshold (in bytes) above which AllGatherP
+     uses batched CE broadcast on large NVL domains (nLocalRanks > 8).
+     Above this threshold: aggressive batching (~8 waves).
+     Below this threshold: unbatched (no extra barriers).
+     Only effective when NCCL_CTRAN_ALLGATHER_P_DIRECT_BATCH_SIZE is 0
+     (auto-select mode).
+     Default: 16777216 (16 MB per rank).
+
  - name        : NCCL_ALLTOALL_ALGO
    type        : enum
    default     : orig

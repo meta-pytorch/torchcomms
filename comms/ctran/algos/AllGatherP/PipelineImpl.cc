@@ -213,8 +213,14 @@ commResult_t AlgoImpl::execPipeline(
   if (nLocalRanks > 1) {
     // - Step 0: Broadcast local chunk to intra-node peers
     // Copy data to other local ranks
-    FB_COMMCHECK(nvlCeBcast(
-        comm_, sendbuff, sendSize, myRank * sendSize, pArgs, stream_));
+    FB_COMMCHECK(nvlCeBcastBatched(
+        comm_,
+        sendbuff,
+        sendSize,
+        myRank * sendSize,
+        pArgs,
+        stream_,
+        resolveCeBatchSize(nLocalRanks, sendSize)));
 
     const int upPeer = (nRanks + myRank - nLocalRanks) & (nRanks - 1);
 
@@ -238,8 +244,14 @@ commResult_t AlgoImpl::execPipeline(
       const auto offset =
           getRecvChunkIdxInRail(upPeer, step, nLocalRanks, nRanks) * sendSize;
       const auto sendPtr = getPtr(pArgs.recvbuff, offset);
-      FB_COMMCHECK(
-          nvlCeBcast(comm_, sendPtr, sendSize, offset, pArgs, stream_));
+      FB_COMMCHECK(nvlCeBcastBatched(
+          comm_,
+          sendPtr,
+          sendSize,
+          offset,
+          pArgs,
+          stream_,
+          resolveCeBatchSize(nLocalRanks, sendSize)));
     }
 
     PipeEndKernArgs kernArgs = {
