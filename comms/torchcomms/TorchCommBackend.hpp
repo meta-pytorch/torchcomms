@@ -44,6 +44,13 @@ class TorchCommBackend {
 
   // Name of the backend impl that's the same for all instances of a backend.
   virtual std::string_view getBackendName() const = 0;
+
+  virtual std::string_view getBackendVersion() const {
+    throw std::logic_error(
+        "[TorchCommBackend]: version not implemented for communicator:" +
+        std::string(getCommName()));
+  }
+
   // Unique name for this instance of the communicator.
   virtual std::string_view getCommName() const = 0;
 

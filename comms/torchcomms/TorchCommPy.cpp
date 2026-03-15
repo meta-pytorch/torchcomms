@@ -914,6 +914,11 @@ Args:
           "Get communicator backend name",
           py::call_guard<py::gil_scoped_release>())
       .def(
+          "get_backend_version",
+          &TorchComm::getBackendVersion,
+          "Get communicator backend version",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
           "get_backend_impl",
           &TorchComm::getBackendImpl,
           R"(
