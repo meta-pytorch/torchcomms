@@ -21,6 +21,14 @@ __attribute__((visibility("default"))) Hints::Hints() {
   WinHintUtils::init(this->kv);
 }
 
+__attribute__((visibility("default"))) Hints::Hints(
+    std::initializer_list<std::pair<std::string, std::string>> init)
+    : Hints() {
+  for (const auto& [key, val] : init) {
+    set(key, val);
+  }
+}
+
 __attribute__((visibility("default"))) ncclResult_t
 Hints::set(const std::string& key, const std::string& val) {
   if (key.starts_with("ncclx_alltoallv_dynamic")) {
