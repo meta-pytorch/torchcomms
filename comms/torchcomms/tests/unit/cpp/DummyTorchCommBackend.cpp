@@ -1,7 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <comms/torchcomms/TorchCommBackend.hpp> // @manual=//comms/torchcomms:torchcomms-headers-cpp
-#include <comms/torchcomms/TorchCommDummy.hpp> // @manual=//comms/torchcomms:torchcomms-headers-cpp
+#include <comms/torchcomms/dummy/TorchCommDummy.hpp> // @manual=//comms/torchcomms/dummy:torchcomms-dummy-cpp
 
 static torch::comms::TorchCommBackend* new_comm_impl() {
   return new torch::comms::TorchCommDummy();

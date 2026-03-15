@@ -1,8 +1,8 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <comms/torchcomms/TorchComm.hpp>
-#include <comms/torchcomms/TorchCommDummy.hpp>
 #include <comms/torchcomms/TorchCommFactory.hpp>
+#include <comms/torchcomms/dummy/TorchCommDummy.hpp>
 #include <gtest/gtest.h>
 #include <cstdlib>
 #include <vector>
