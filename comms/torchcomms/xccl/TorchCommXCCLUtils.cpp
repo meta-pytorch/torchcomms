@@ -169,13 +169,13 @@ TorchCommXCCL::RedOpRAII TorchCommXCCL::getXcclReduceOp(
 }
 
 void TorchCommXCCL::checkWorkQueue() {
-  TorchWorkXCCL::WorkStatus status = workq_.garbageCollect();
+  TorchWork::WorkStatus status = workq_.garbageCollect();
 
   switch (status) {
-    case TorchWorkXCCL::WorkStatus::TIMEDOUT:
+    case TorchWork::WorkStatus::TIMEDOUT:
       comm_state_ = CommState::TIMEOUT;
       break;
-    case TorchWorkXCCL::WorkStatus::ERROR:
+    case TorchWork::WorkStatus::ERROR:
       comm_state_ = CommState::ERROR;
       break;
     default:
@@ -184,8 +184,8 @@ void TorchCommXCCL::checkWorkQueue() {
   }
 }
 
-// The timeout thread cannot make XCCL calls.  The only XPU call it can make
-// it xpuEventQuery.
+// The timeout thread cannot make XCCL calls. The only XPU call it can make is
+// xpuEventQuery via the work status checks.
 void TorchCommXCCL::timeoutWatchdog() noexcept {
   TC_LOG(INFO) << "Timeout thread starting for rank: " << rank_;
   while (!shutdown_) {
@@ -242,17 +242,7 @@ void TorchCommXCCL::checkAndAbortIfTimedOutOrError() {
       throw std::runtime_error("XCCL operation timed out");
     }
   } else if (comm_state_ == CommState::ERROR) {
-    onecclResult_t asyncErr;
-    xccl_api_->commGetAsyncError(xccl_comm_, &asyncErr);
-    XCCLException xcclException(*xccl_api_, "XCCL Async Error", asyncErr);
-    //    abortXcclComm(); // cannot abort oneCCL communicator
-    if (options_.abort_process_on_timeout_or_error) {
-      TC_LOG(ERROR) << "Aborting process due to error: "
-                    << xcclException.what();
-      abort();
-    } else {
-      throw xcclException;
-    }
+    throwAsyncError(false);
   }
 }
 

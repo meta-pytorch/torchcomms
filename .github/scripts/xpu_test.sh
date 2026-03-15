@@ -44,5 +44,12 @@ python3 -c "import torch; import torchcomms; print(f'Torch version: {torch.__ver
 python3 -c "import torch;print(\"XPU device available\"); print(torch.xpu.is_available())"
 python3 -c "import torch;[print(f'[{i}]: {torch.xpu.get_device_properties(i)}') for i in range(torch.xpu.device_count())];"
 
+cd torchcomms
+cmake -B build -G Ninja -DBUILD_TESTS=ON -DUSE_XCCL=ON -DUSE_NCCL=OFF -DUSE_NCCLX=OFF -DUSE_TRANSPORT=OFF
+cmake --build build
+ctest --test-dir build --output-on-failure -R "TorchCommXCCLTest|TorchWorkXCCLQueueTest|TorchCommXCCLBootstrapTest|HintParsingTest"
+
 #Run XCCL Python Integration Tests
+cd ..
+
 torchcomms/comms/torchcomms/scripts/run_tests_integration_xccl_py.sh
