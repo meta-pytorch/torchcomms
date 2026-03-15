@@ -145,8 +145,14 @@ commResult_t AlgoImpl::execDirect(
   }
 
   // Copy data to other local ranks
-  FB_COMMCHECK(
-      nvlCeBcast(comm_, sendbuff, sendSize, myRank * sendSize, pArgs, stream_));
+  FB_COMMCHECK(nvlCeBcastBatched(
+      comm_,
+      sendbuff,
+      sendSize,
+      myRank * sendSize,
+      pArgs,
+      stream_,
+      resolveCeBatchSize(nLocalRanks, sendSize)));
 
   auto op = std::make_unique<OpElem>(
       OpElem::opType::ALLGATHERP, stream_, comm_, opCount);
