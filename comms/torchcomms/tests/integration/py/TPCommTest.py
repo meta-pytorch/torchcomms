@@ -101,8 +101,8 @@ class TPCommTest(unittest.TestCase):
             },
         )
         LR = 8e-4  # Use the learning rate from torchtitan
-        local_optim = torch.optim.SGD(model.parameters(), lr=LR)
-        dist_optim = torch.optim.SGD(model_tp.parameters(), lr=LR)
+        local_optim = torch.optim.SGD(model.parameters(), lr=LR, foreach=True)
+        dist_optim = torch.optim.SGD(model_tp.parameters(), lr=LR, foreach=True)
         self._compare_params(model, model_tp, rank0_only)
         for _ in range(30):
             inp = torch.rand(*inp_size, device=device)
