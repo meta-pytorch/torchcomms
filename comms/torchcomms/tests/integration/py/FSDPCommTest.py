@@ -50,8 +50,8 @@ class FSDPCommTest(unittest.TestCase):
                 layer.set_gradient_divide_factor(1.0)
         fully_shard(model, mesh=device_mesh)
 
-        optim = torch.optim.Adam(model.parameters(), lr=0.05)
-        ref_optim = torch.optim.Adam(ref_model.parameters(), lr=0.05)
+        optim = torch.optim.Adam(model.parameters(), lr=0.05, foreach=True)
+        ref_optim = torch.optim.Adam(ref_model.parameters(), lr=0.05, foreach=True)
         inp = torch.randn((4, dim0), device=device)
 
         for _ in range(10):

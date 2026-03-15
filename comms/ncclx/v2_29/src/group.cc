@@ -6,10 +6,10 @@
  *************************************************************************/
 
 #include "group.h"
+#include "meta/NcclxConfig.h" // @manual
 #include "debug.h"
 #include "enqueue.h"
 #include "transport.h"
-#include "channel.h"
 #include <assert.h>
 #include "bootstrap.h"
 #include "ce_coll.h"
@@ -25,7 +25,6 @@
 #include "meta/transport/transportConnect.h"
 #include "meta/transport/transportProxy.h"
 #include "comms/utils/logger/EventsScubaUtil.h"
-#include "comms/ctran/utils/Utils.h"
 #include "meta/wrapper/MetaFactory.h"
 
 #define GROUP_MAX_RECLAIM_STEPS 10
@@ -360,7 +359,7 @@ static ncclResult_t doLaunches(struct ncclComm* head) {
             } else {
               NCCLCHECKGOTO(ncclLaunchKernel(comm, plan), result, failure);
             }
-            INFO(NCCL_COLL, "comm %s %p opCount %ld launched kernel for plan %p",  ctran::utils::parseCommDesc(comm->config.commDesc), comm, comm->opCount, plan);
+            INFO(NCCL_COLL, "comm %s %p opCount %ld launched kernel for plan %p",  NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str(), comm, comm->opCount, plan);
             // NOTE: bump up opCount right after launching kernel as this field is dedicated to track number of kernels
             // including both p2p and collective kernels, no matter proxyOp existance.
             // Known limitation: It won't be updated properly under cuda graph replay since it is not captured by the graph.

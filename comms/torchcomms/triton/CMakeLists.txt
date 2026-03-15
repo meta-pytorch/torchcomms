@@ -65,7 +65,9 @@ if(NOT EXISTS "${CUDA_PATH}/include/texture_fetch_functions.h")
     file(WRITE "${TRITON_TMPINC}/texture_fetch_functions.h"
         "// Empty stub: texture_fetch_functions.h was removed in CUDA 13.\n"
         "// Provided for clang CUDA wrapper compatibility.\n")
-    message(STATUS "  Created texture_fetch_functions.h stub for CUDA 13+ compatibility")
+    message(STATUS
+        "  Created texture_fetch_functions.h stub"
+        " for CUDA 13+ compatibility")
 endif()
 
 # CUDA 13.2 added _NV_RSQRT_SPECIFIER (noexcept attribute on rsqrt) to
@@ -84,7 +86,8 @@ if(EXISTS "${CUDA_PATH}/include/crt/math_functions.hpp")
 endif()
 
 # ---- GPU architecture detection ----
-# Priority: TORCHCOMMS_CUDA_ARCH > TORCH_CUDA_ARCH_LIST > nvidia-smi auto-detect > sm_90 default
+# Priority: TORCHCOMMS_CUDA_ARCH > TORCH_CUDA_ARCH_LIST
+#         > nvidia-smi auto-detect > sm_90 default
 #
 # Clang's NVPTX backend doesn't support all SM codes that nvcc does (e.g.
 # sm_103, sm_100a, sm_100f, sm_103a are not recognized by clang 21). Map
@@ -113,7 +116,8 @@ else()
         RESULT_VARIABLE _smi_result
     )
     if(_smi_result EQUAL 0 AND _smi_output)
-        # Take the first GPU's compute capability (e.g. "9.0" -> "90", "10.0" -> "100")
+        # Take the first GPU's compute capability
+        # (e.g. "9.0" -> "90", "10.0" -> "100")
         string(REGEX MATCH "[0-9]+\\.[0-9]+" _first_cc "${_smi_output}")
         if(_first_cc)
             string(REPLACE "." "" _raw_sm "${_first_cc}")

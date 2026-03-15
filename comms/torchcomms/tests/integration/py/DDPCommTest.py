@@ -42,9 +42,9 @@ class DDPCommTest(unittest.TestCase):
 
         model = DDP(model, process_group=pg)
 
-        optim = torch.optim.Adam(model.parameters(), lr=0.05)
+        optim = torch.optim.Adam(model.parameters(), lr=0.05, foreach=True)
         # Create input on CPU for reproducibility across ranks, then move
-        inp = torch.randn((4, dim0)).to(device)
+        inp = torch.randn((4, dim0), device=device)
 
         prev_loss = None
         for i in range(10):
