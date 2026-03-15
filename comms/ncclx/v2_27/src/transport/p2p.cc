@@ -5,6 +5,7 @@
  ************************************************************************/
 
 #include "comm.h"
+#include "meta/NcclxConfig.h" // @manual
 #include "graph.h"
 #include "utils.h"
 #include "shmutils.h"
@@ -175,7 +176,7 @@ ncclResult_t p2pCanConnect(int* ret, struct ncclComm* comm, struct ncclTopoGraph
   int p2p;
   if (cudaDeviceCanAccessPeer(&p2p, cudaDev1, cudaDev2) != cudaSuccess) {
     INFO(NCCL_INIT|NCCL_P2P,"commDesc: %s peer query failed between dev %d(=%lx) and dev %d(=%lx)",
-         ctran::utils::parseCommDesc(comm->config.commDesc), cudaDev1, info1->busId, cudaDev2, info2->busId);
+         NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str(), cudaDev1, info1->busId, cudaDev2, info2->busId);
     *ret = 0;
     return ncclSuccess;
   }
@@ -194,7 +195,7 @@ ncclResult_t p2pCanConnect(int* ret, struct ncclComm* comm, struct ncclTopoGraph
     memLogMetaData = comm->logMetaData;
     NCCLCHECK(ncclCudaMalloc(&dummy, CUDA_IPC_MIN));
     if (cudaIpcGetMemHandle(&ipc, dummy) != cudaSuccess) {
-      INFO(NCCL_INIT|NCCL_P2P,"commDesc: %s Legacy IPC not supported", ctran::utils::parseCommDesc(comm->config.commDesc));
+      INFO(NCCL_INIT|NCCL_P2P,"commDesc: %s Legacy IPC not supported", NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str());
       *ret = 0;
     }
     NCCLCHECK(ncclCudaFree(dummy));
@@ -204,7 +205,7 @@ ncclResult_t p2pCanConnect(int* ret, struct ncclComm* comm, struct ncclTopoGraph
 
   if (p2p == 0) {
     INFO(NCCL_INIT|NCCL_P2P,"commDesc: %s Could not enable P2P between dev %d(=%lx) and dev %d(=%lx)",
-         ctran::utils::parseCommDesc(comm->config.commDesc), cudaDev1, info1->busId, cudaDev2, info2->busId);
+         NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str(), cudaDev1, info1->busId, cudaDev2, info2->busId);
     *ret = 0;
     return ncclSuccess;
   }
@@ -252,7 +253,7 @@ ncclResult_t ncclP2pAllocateShareableBuffer(size_t size, int refcount, ncclIpcDe
       CUDACHECK(res);
     }
   }
-  INFO(NCCL_P2P|NCCL_ALLOC, "commDesc: %s Allocated shareable buffer %p size %zu ipcDesc %p for %s", ctran::utils::parseCommDesc(comm->config.commDesc), *ptr, size, ipcDesc, callsite);
+  INFO(NCCL_P2P|NCCL_ALLOC, "commDesc: %s Allocated shareable buffer %p size %zu ipcDesc %p for %s", NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str(), *ptr, size, ipcDesc, callsite);
 
   return ncclSuccess;
 }
@@ -313,7 +314,7 @@ ncclResult_t ncclP2pImportShareableBuffer(struct ncclComm *comm, int peer, size_
     CUDACHECK(cudaIpcOpenMemHandle(devMemPtr, ipcDesc->devIpc, cudaIpcMemLazyEnablePeerAccess));
   }
 
-  INFO(NCCL_P2P, "commDesc: %s Imported shareable buffer device %d size %zu ptr %p", ctran::utils::parseCommDesc(comm->config.commDesc), comm->cudaDev, size, *devMemPtr);
+  INFO(NCCL_P2P, "commDesc: %s Imported shareable buffer device %d size %zu ptr %p", NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str(), comm->cudaDev, size, *devMemPtr);
 
   return ncclSuccess;
 }
