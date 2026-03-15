@@ -6,6 +6,7 @@
  *************************************************************************/
 
 #include "nccl.h"
+#include "meta/NcclxConfig.h" // @manual
 #include "channel.h"
 #include "nvmlwrap.h"
 #include "gdrwrap.h"
@@ -23,7 +24,12 @@
 #include "compiler.h"
 #include "profiler.h"
 #include "mnnvl.h"
+#include <algorithm>
+#include <assert.h>
+#include <memory>
+#include <string>
 #include <sys/stat.h>
+#include <vector>
 #include "param.h"
 #include "nvtx_payload_schemas.h"
 #include "utils.h"
@@ -279,8 +285,10 @@ void ncclCommPushCudaGdrFree(struct ncclComm* comm, void* handle) {
 
 // Free NCCLX-specific resources
 static void ncclxCommFree(ncclComm_t comm) {
-  if (comm->config.ncclAllGatherAlgo) {
-    free((void*)comm->config.ncclAllGatherAlgo);
+  // Free the canonical ncclx::Config
+  if (comm->config.ncclxConfig != nullptr) {
+    delete static_cast<ncclx::Config*>(comm->config.ncclxConfig);
+    comm->config.ncclxConfig = nullptr;
   }
 }
 
@@ -1091,9 +1099,9 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   timers[TIMER_INIT_ALLGATHER] = clockNano() - timers[TIMER_INIT_ALLGATHER];
 
   // Check for lazy channel setup support
-  comm->lazySetupChannels = comm->cuMemSupport && comm->config.lazySetupChannels;
+  comm->lazySetupChannels = comm->cuMemSupport && NCCLX_CONFIG_FIELD(comm->config, lazySetupChannels);
   // Check for runtime connect support
-  comm->runtimeConn = comm->cuMemSupport && comm->config.lazyConnect;
+  comm->runtimeConn = comm->cuMemSupport && NCCLX_CONFIG_FIELD(comm->config, lazyConnect);
 
   if (comm->runtimeConn == 0 && comm->lazySetupChannels == 1) {
     WARN("NCCL_RUNTIME_CONNECT is disabled but NCCL_LAZY_SETUP_CHANNELS is enabled, full lazy connect features will still be used");
@@ -1480,7 +1488,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   if (comm->lazySetupChannels) {
     INFO(
         NCCL_INIT,
-        "commDesc: %s NCCL_LAZY_SETUP_CHANNELS=true, initializing minimal required channels at runtime when needed", ctran::utils::parseCommDesc(comm->config.commDesc));
+        "commDesc: %s NCCL_LAZY_SETUP_CHANNELS=true, initializing minimal required channels at runtime when needed", NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str());
     // cache the ring info to be used for setupChannel later when needed
     comm->rings = std::vector<int>(rings, rings + nranks * MAXCHANNELS);
   } else if (comm->runtimeConn) {
@@ -1750,15 +1758,15 @@ static ncclResult_t ncclxCommGetSplitInfo(struct ncclComm* comm, struct ncclComm
     return ncclSuccess;
   }
   CHECKABORT(
-      comm && comm->config.splitGroupRanks && comm->config.splitGroupSize > 0,
-      "Empty comm or undefined config of splitGroupRanks or splitGroupSize passed to ncclxCommGetSplitInfo");
+      comm && !NCCLX_CONFIG_FIELD(comm->config, splitGroupRanks).empty(),
+      "Empty comm or undefined config of splitGroupRanks passed to ncclxCommGetSplitInfo");
 
-  *nRanksRet = comm->config.splitGroupSize;
+  *nRanksRet = static_cast<int>(NCCLX_CONFIG_FIELD(comm->config, splitGroupRanks).size());
   *myRankRet = -1;
-  for (int i = 0; i < comm->config.splitGroupSize; i++) {
-    parentRanksRet[i] = comm->config.splitGroupRanks[i];
-    if (parent->rank == comm->config.splitGroupRanks[i]) {
-      *myRankRet = i;
+  for (size_t i = 0; i < NCCLX_CONFIG_FIELD(comm->config, splitGroupRanks).size(); i++) {
+    parentRanksRet[i] = NCCLX_CONFIG_FIELD(comm->config, splitGroupRanks)[i];
+    if (parent->rank == NCCLX_CONFIG_FIELD(comm->config, splitGroupRanks)[i]) {
+      *myRankRet = static_cast<int>(i);
     }
   }
   return ncclSuccess;
@@ -1801,7 +1809,7 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
     if (job->excludeRanksCount) {
       NCCLCHECKGOTO(getParentRanks(job->parent->nRanks, job->parent->rank, job->excludeRanksList, job->excludeRanksCount, &job->nranks, &job->myrank, parentRanks), res, fail);
     } else {
-      if (isFastInitRingMode(job->parent->config.fastInitMode)) {
+      if (isFastInitRingMode(NCCLX_CONFIG_FIELD(job->parent->config, fastInitMode))) {
         NCCLCHECKGOTO(ncclxCommGetSplitInfo(comm, job->parent, job->color, job->key, &job->nranks, &job->myrank, parentRanks), res, fail);
       } else {
         NCCLCHECKGOTO(commGetSplitInfo(comm, job->parent, job->color, job->key, &job->nranks, &job->myrank, parentRanks), res, fail);
@@ -1830,7 +1838,7 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
     // GROW or NORMAL INIT: use bootstrapInit
     // [Meta] Fast-init mode won't get unique commId for different communicators
     // use ctran helper function to generate unique hash
-    if (isFastInitRingMode(comm->config.fastInitMode)) {
+    if (isFastInitRingMode(NCCLX_CONFIG_FIELD(comm->config, fastInitMode))) {
       comm->commHash = commIdHash = ctran::utils::generateCommHash(job->nranks);
     }
     if (job->isGrow) {
@@ -1859,7 +1867,7 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   // init this communicator's  Logger fields
   comm->logMetaData.commId = commIdHash;
   comm->logMetaData.commHash = comm->commHash;
-  comm->logMetaData.commDesc = comm->config.commDesc ? comm->config.commDesc : "undefined";
+  comm->logMetaData.commDesc = NCCLX_CONFIG_FIELD(comm->config, commDesc);
   comm->logMetaData.rank = comm->rank;
   comm->logMetaData.nRanks = comm->nRanks;
 
@@ -2173,84 +2181,26 @@ static ncclResult_t envConfigOverride(ncclComm_t comm) {
   return ret;
 }
 
-static void ncclxCopyCommConfig(ncclComm_t childComm, ncclComm_t parnet) {
-  childComm->config.ncclAllGatherAlgo = parnet->config.ncclAllGatherAlgo
-      ? strdup(parnet->config.ncclAllGatherAlgo)
-      : nullptr;
-}
-
-static ncclResult_t copyCommConfig(ncclComm_t childComm, ncclComm_t parnet) {
-  memcpy(&childComm->config, &parnet->config, sizeof(ncclConfig_t));
-  ncclxCopyCommConfig(childComm, parnet);
+static ncclResult_t copyCommConfig(ncclComm_t childComm, ncclComm_t parent) {
+  memcpy(&childComm->config, &parent->config, sizeof(ncclConfig_t));
+  if (parent->config.ncclxConfig) {
+    childComm->config.ncclxConfig = new ncclx::Config(
+        *static_cast<ncclx::Config*>(parent->config.ncclxConfig));
+  }
   NCCLCHECK(envConfigOverride(childComm));
   return ncclSuccess;
 }
 
-static void ncclxParseCommConfig(
-    ncclConfig_t* internalConfigPtr,
-    ncclComm_t comm) {
-  /* set default communicator description */
-  NCCL_CONFIG_DEFAULT(
-      internalConfigPtr,
-      commDesc,
-      NCCL_CONFIG_UNDEF_PTR,
-      "undefined",
-      "Comm description",
-      "%s");
-  NCCL_CONFIG_DEFAULT(
-      internalConfigPtr,
-      splitGroupRanks,
-      NCCL_CONFIG_UNDEF_PTR,
-      nullptr,
-      "splitGroupRanks in communicator",
-      "%p");
-  NCCL_CONFIG_DEFAULT(
-      internalConfigPtr,
-      splitGroupSize,
-      NCCL_CONFIG_UNDEF_INT,
-      0,
-      "splitGroupSize in communicator",
-      "%d");
-  NCCL_CONFIG_DEFAULT(
-      internalConfigPtr,
-      ncclAllGatherAlgo,
-      NCCL_CONFIG_UNDEF_PTR,
-      "undefined",
-      "ncclAllGatherAlgo",
-      "%s");
-  /* Set default lazy features: Honor user-specified config first.
-   * If not set, use environment variable. */
-  NCCL_CONFIG_DEFAULT(
-      internalConfigPtr,
-      lazyConnect,
-      NCCL_CONFIG_UNDEF_INT,
-      NCCL_RUNTIME_CONNECT,
-      "lazyConnect",
-      "%d");
-  NCCL_CONFIG_DEFAULT(
-      internalConfigPtr,
-      lazySetupChannels,
-      NCCL_CONFIG_UNDEF_INT,
-      NCCL_LAZY_SETUP_CHANNELS,
-      "lazySetupChannels",
-      "%d");
-  NCCL_CONFIG_DEFAULT(
-      internalConfigPtr,
-      fastInitMode,
-      NCCL_CONFIG_UNDEF_INT,
-      NCCL_FAST_INIT_MODE_DEFAULT,
-      "fastInitMode",
-      "%d");
-
-  comm->config.commDesc = internalConfigPtr->commDesc;
-  comm->config.splitGroupRanks = internalConfigPtr->splitGroupRanks;
-  comm->config.splitGroupSize = internalConfigPtr->splitGroupSize;
-  comm->config.ncclAllGatherAlgo = internalConfigPtr->ncclAllGatherAlgo
-      ? strdup(internalConfigPtr->ncclAllGatherAlgo)
-      : nullptr;
-  comm->config.lazyConnect = internalConfigPtr->lazyConnect;
-  comm->config.lazySetupChannels = internalConfigPtr->lazySetupChannels;
-  comm->config.fastInitMode = internalConfigPtr->fastInitMode;
+// C-style wrapper around the ncclx::Config parsing constructor.
+// Most NCCL code is C-based, so this function translates C++
+// exceptions into ncclResult_t error codes for the C callers.
+ncclResult_t ncclxParseCommConfig(ncclConfig_t* config) {
+  try {
+    config->ncclxConfig = new ncclx::Config(config);
+    return ncclSuccess;
+  } catch (const std::exception&) {
+    return ncclInvalidArgument;
+  }
 }
 
 static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t *config) {
@@ -2401,8 +2351,6 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t *config) {
   NCCL_CONFIG_DEFAULT(internalConfigPtr, nChannelsPerNetPeer, NCCL_CONFIG_UNDEF_INT,
                       NCCL_CONFIG_UNDEF_INT, "nChannelsPerNetPeer", "%d");
 
-  ncclxParseCommConfig(internalConfigPtr, comm);
-
   NCCL_CONFIG_DEFAULT(internalConfigPtr, nvlinkCentricSched, NCCL_CONFIG_UNDEF_INT, 0, "nvlinkCentricSched", "%d");
   NCCL_CONFIG_DEFAULT(internalConfigPtr, graphUsageMode, NCCL_CONFIG_UNDEF_INT, 2, "graphUsageMode", "%d");
   NCCL_CONFIG_DEFAULT(internalConfigPtr, numRmaCtx, NCCL_CONFIG_UNDEF_INT, 1, "numRmaCtx", "%d");
@@ -2424,6 +2372,7 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t *config) {
   comm->config.nvlinkCentricSched = internalConfigPtr->nvlinkCentricSched;
   comm->config.graphUsageMode = internalConfigPtr->graphUsageMode;
   comm->config.numRmaCtx = internalConfigPtr->numRmaCtx;
+  comm->config.ncclxConfig = internalConfigPtr->ncclxConfig;
   NCCLCHECKGOTO(envConfigOverride(comm), ret, fail);
 
 exit:
@@ -2488,7 +2437,8 @@ static ncclResult_t ncclCommInitRankDev(ncclComm_t* newcomm, int nranks, int nId
   comm->usePatAvg_ = ncclx::commUsePatAvg();
   comm->noLocal_ = ncclx::commNoLocal();
   INFO(NCCL_INIT, "CommInit comm %p commHash 0x%lx commDesc %s useCtran %d usePatAvg %d noLocal %d: %s %s %s",
-       comm, getHash(commId->internal, NCCL_UNIQUE_ID_BYTES), ctran::utils::parseCommDesc(config->commDesc),
+       comm, getHash(commId->internal, NCCL_UNIQUE_ID_BYTES),
+       NCCLX_CONFIG_FIELD(*config, commDesc).c_str(),
        comm->useCtran_, comm->usePatAvg_, comm->noLocal_, ncclx::getCommUseCtranConfig().c_str(),
        ncclx::getCommUsePatAvgConfig().c_str(), ncclx::getCommNoLocalConfig().c_str());
   *comm->abortFlagRefCount = 1;
@@ -2512,7 +2462,7 @@ static ncclResult_t ncclCommInitRankDev(ncclComm_t* newcomm, int nranks, int nId
   memcpy(job->commId, commId, nId * NCCL_UNIQUE_ID_BYTES);
 
   commIdEnv = ncclGetEnv("NCCL_COMM_ID");
-  if (commIdEnv && myrank == 0 && !isFastInitRingMode(comm->config.fastInitMode)) {
+  if (commIdEnv && myrank == 0 && !isFastInitRingMode(NCCLX_CONFIG_FIELD(comm->config, fastInitMode))) {
     INFO(NCCL_ENV, "NCCL_COMM_ID set by environment to %s", commIdEnv);
     if (nId > 1) {
       INFO(NCCL_INIT | NCCL_ENV, "NCCL_COMM_ID cannot be used with more than one ncclUniqueId");
@@ -2549,6 +2499,7 @@ ncclResult_t ncclCommInitRank(ncclComm_t* newcomm, int nranks, ncclUniqueId comm
 
   int cudaDev;
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  NCCLCHECK(ncclxParseCommConfig(&config));
   CUDACHECK(cudaGetDevice(&cudaDev));
 
   NCCLCHECK(ncclCommInitRankDev(newcomm, nranks, 1, &commId, myrank, cudaDev, &config, __func__));
@@ -2565,6 +2516,7 @@ ncclResult_t ncclCommInitAll(ncclComm_t* comms, int ndev, const int* devlist) {
   int totalnDev;
   int *gpuFlags = NULL;
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  NCCLCHECK(ncclxParseCommConfig(&config));
   int oldDev = 0;
 
   ncclUniqueId uniqueId;
@@ -2641,13 +2593,14 @@ ncclResult_t ncclCommInitRankConfig(ncclComm_t *newcomm, int nranks, ncclUniqueI
   int cudaDev;
   ncclResult_t ret = ncclSuccess;
   ncclConfig_t internalConfig = NCCL_CONFIG_INITIALIZER;
-  ncclConfig_t *internalConfigPtr = NULL;
+  ncclConfig_t *internalConfigPtr = config ? config : &internalConfig;
+  NCCLCHECK(ncclxParseCommConfig(internalConfigPtr));
 
   NCCLCHECK(ncclInitEnv());
 
   char allZeroUniqueId[NCCL_UNIQUE_ID_BYTES] = {0};
   bool uniqueIdIsInitialized = memcmp(commId.internal, allZeroUniqueId, NCCL_UNIQUE_ID_BYTES) != 0;
-  int fastInitMode = config ? config->fastInitMode : NCCL_FAST_INIT_MODE_DEFAULT;
+  bool fastInitMode = NCCLX_CONFIG_FIELD(*internalConfigPtr, fastInitMode);
   if (isFastInitRingMode(fastInitMode)) {
     // in meta-fast-init mode, we don't need commId
     if (uniqueIdIsInitialized) {
@@ -2667,10 +2620,6 @@ ncclResult_t ncclCommInitRankConfig(ncclComm_t *newcomm, int nranks, ncclUniqueI
   (void)ncclCudaLibraryInit();
   CUDACHECK(cudaGetDevice(&cudaDev));
 
-  if (config == NULL)
-    internalConfigPtr = &internalConfig;
-  else
-    internalConfigPtr = config;
   NCCLCHECKGOTO(ncclCommInitRankDev(newcomm, nranks, 1, &commId, myrank, cudaDev, internalConfigPtr, __func__), ret, fail);
 
 exit:
@@ -2697,16 +2646,13 @@ ncclResult_t ncclCommInitRankScalable(ncclComm_t* newcomm, int nranks, int myran
   int cudaDev;
   ncclResult_t ret = ncclSuccess;
   ncclConfig_t internalConfig = NCCL_CONFIG_INITIALIZER;
-  ncclConfig_t *internalConfigPtr = NULL;
+  ncclConfig_t *internalConfigPtr = config ? config : &internalConfig;
+  NCCLCHECK(ncclxParseCommConfig(internalConfigPtr));
   NCCLCHECK(ncclGroupStartInternal());
 
   (void)ncclCudaLibraryInit();
   CUDACHECK(cudaGetDevice(&cudaDev));
 
-  if (config == NULL)
-    internalConfigPtr = &internalConfig;
-  else
-    internalConfigPtr = config;
   NCCLCHECKGOTO(ncclCommInitRankDev(newcomm, nranks, nId, commId, myrank, cudaDev, internalConfigPtr, __func__), ret, fail);
 
 exit:
@@ -3046,7 +2992,7 @@ static void commAbortLog(ncclComm_t comm, const std::string& abortScope) {
         "comm %p commHash %lx commDesc %s rank %d nRanks %d cudaDev %d busId %lx - Abort %s",
         comm,
         comm->commHash,
-        comm->config.commDesc,
+        NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str(),
         comm->rank,
         comm->nRanks,
         comm->cudaDev,
@@ -3179,7 +3125,7 @@ static ncclResult_t ncclCommInitChildComm(ncclComm_t comm, ncclComm_t* newcomm, 
     childComm->usePatAvg_ = ncclx::commUsePatAvg();
     childComm->noLocal_ = ncclx::commNoLocal();
     INFO(NCCL_INIT, "CommSplit comm %p commDesc %s useCtran %d usePatAvg %d noLocal %d: %s %s %s",
-        childComm, ctran::utils::parseCommDesc(childComm->config.commDesc),
+        childComm, NCCLX_CONFIG_FIELD(childComm->config, commDesc).c_str(),
         childComm->useCtran_, childComm->usePatAvg_, childComm->noLocal_, ncclx::getCommUseCtranConfig().c_str(),
         ncclx::getCommUsePatAvgConfig().c_str(), ncclx::getCommNoLocalConfig().c_str());
   }
@@ -3224,6 +3170,11 @@ NCCL_API(ncclResult_t, ncclCommShrink, ncclComm_t comm, int* excludeRanksList, i
 ncclResult_t  ncclCommShrink(ncclComm_t comm, int* excludeRanksList, int excludeRanksCount, ncclComm_t *newcomm, ncclConfig_t* config, int shrinkFlags) {
   NVTX3_RANGE(NcclNvtxParamsCommShrink)
   ncclResult_t res = ncclSuccess;
+
+  ncclConfig_t internalConfig = NCCL_CONFIG_INITIALIZER;
+  ncclConfig_t *internalConfigPtr = config ? config : &internalConfig;
+  NCCLCHECK(ncclxParseCommConfig(internalConfigPtr));
+
   NCCLCHECK(ncclGroupStartInternal());
   // Handle error mode by setting abort flags and waiting for kernels to complete and unset the flags to avoid bootstrap issues
   if (shrinkFlags & NCCL_SHRINK_ABORT) {
@@ -3231,7 +3182,7 @@ ncclResult_t  ncclCommShrink(ncclComm_t comm, int* excludeRanksList, int exclude
     NCCLCHECKGOTO(ncclStrongStreamSynchronize(&comm->sharedRes->deviceStream), res, exit);
     NCCLCHECKGOTO(setCommAbortFlags(comm, 0), res, exit);
   }
-  NCCLCHECKGOTO(ncclCommInitChildComm(comm, newcomm, /*isShrink=*/true, shrinkFlags, /*color=*/0, /*key=*/comm->rank, excludeRanksList, excludeRanksCount, config, __func__), res, exit);
+  NCCLCHECKGOTO(ncclCommInitChildComm(comm, newcomm, /*isShrink=*/true, shrinkFlags, /*color=*/0, /*key=*/comm->rank, excludeRanksList, excludeRanksCount, internalConfigPtr, __func__), res, exit);
 
 exit:
   (void)ncclGroupErrCheck(res);
@@ -3277,7 +3228,9 @@ ncclResult_t ncclCommGrow(ncclComm_t comm, int nRanks, const ncclUniqueId* uniqu
   bool isExistingRank = (comm != NULL);
   struct ncclCommInitRankAsyncJob *job = NULL;
   ncclComm_t newComm = NULL;
-  struct ncclBootstrapHandle recvHandle;
+  struct ncclBootstrapHandle recvHandle = {};
+  ncclConfig_t internalConfig = NCCL_CONFIG_INITIALIZER;
+  ncclConfig_t *internalConfigPtr = config ? config : &internalConfig;
 
   *newcomm = NULL;  // Initialize output parameter early in case of early errors
 
@@ -3336,6 +3289,8 @@ ncclResult_t ncclCommGrow(ncclComm_t comm, int nRanks, const ncclUniqueId* uniqu
     CUDACHECKGOTO(cudaFree(NULL), res, exit);  // CUDA runtime initialization
   }
 
+  NCCLCHECKGOTO(ncclxParseCommConfig(internalConfigPtr), res, exit);
+
   INFO(NCCL_INIT, "ncclCommGrow: %s rank creating new communicator with %d total ranks",
        isExistingRank ? "existing" : "new", nRanks);
 
@@ -3353,7 +3308,7 @@ ncclResult_t ncclCommGrow(ncclComm_t comm, int nRanks, const ncclUniqueId* uniqu
   if (isExistingRank && config == NULL) {
     NCCLCHECKGOTO(copyCommConfig(newComm, comm), res, fail);
   } else {
-    NCCLCHECKGOTO(parseCommConfig(newComm, config), res, fail);
+    NCCLCHECKGOTO(parseCommConfig(newComm, internalConfigPtr), res, fail);
   }
 
   newComm->initState = ncclInProgress;
@@ -3428,8 +3383,13 @@ ncclResult_t ncclCommSplit(ncclComm_t comm, int color, int key, ncclComm_t *newc
   NVTX3_RANGE(NcclNvtxParamsCommSplit)
 
   ncclResult_t res = ncclSuccess;
+
+  ncclConfig_t internalConfig = NCCL_CONFIG_INITIALIZER;
+  ncclConfig_t *internalConfigPtr = config ? config : &internalConfig;
+  NCCLCHECK(ncclxParseCommConfig(internalConfigPtr));
+
   NCCLCHECK(ncclGroupStartInternal());
-  NCCLCHECKGOTO(ncclCommInitChildComm(comm, newcomm, /*isShrink=*/false, /*shrink mode=*/NCCL_SHRINK_DEFAULT, color, key, NULL, 0, config, __func__), res, exit);
+  NCCLCHECKGOTO(ncclCommInitChildComm(comm, newcomm, /*isShrink=*/false, /*shrink mode=*/NCCL_SHRINK_DEFAULT, color, key, NULL, 0, internalConfigPtr, __func__), res, exit);
 
 exit:
   (void)ncclGroupErrCheck(res);

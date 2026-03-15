@@ -6,6 +6,7 @@
 #include "comm.h" // @manual
 #include "comms/ctran/Ctran.h" // @manual
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "meta/NcclxConfig.h"
 #include "meta/colltrace/CollTrace.h" // @manual
 #include "meta/comms-monitor/CommsMonitor.h" // @manual
 #include "meta/wrapper/MetaFactory.h"
@@ -16,7 +17,9 @@ inline std::unique_ptr<ncclComm> createFakeNcclComm() {
   comm->nRanks = 1;
   comm->cudaDev = 0;
   comm->commHash = 0xfaceb00c;
-  comm->config.commDesc = "fake_comm";
+  ncclx::Hints fakeHints({{"commDesc", "fake_comm"}});
+  comm->config.hints = &fakeHints;
+  ncclxParseCommConfig(&comm->config);
   comm->localRank = 0;
   comm->localRanks = 1;
   comm->nNodes = 1;
@@ -31,7 +34,7 @@ inline std::unique_ptr<ncclComm> createFakeNcclComm() {
       comm->commHash,
       std::vector<ncclx::RankTopology>(), /* rankTopologies */
       std::vector<int>(), /* commRanksToWorldRanks */
-      comm->config.commDesc);
+      NCCLX_CONFIG_FIELD(comm->config, commDesc));
 
   return comm;
 }
