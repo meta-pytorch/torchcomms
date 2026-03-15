@@ -54,19 +54,19 @@ TEST_P(InfoExtAllReduceTest, Override) {
       param.algorithm, param.protocol, param.nMaxChannels, param.nWarps);
 
   struct ncclInfo info = {
-      ncclFuncAllReduce,
-      "AllReduce",
-      sendbuff,
-      recvbuff,
-      param.count,
-      ncclFloat,
-      ncclSum,
-      0,
-      commGuard.get(),
-      stream,
-      ALLREDUCE_CHUNKSTEPS,
-      ALLREDUCE_SLICESTEPS,
-      ext};
+      .coll = ncclFuncAllReduce,
+      .opName = "AllReduce",
+      .sendbuff = sendbuff,
+      .recvbuff = recvbuff,
+      .count = param.count,
+      .datatype = ncclFloat,
+      .op = ncclSum,
+      .root = 0,
+      .comm = commGuard.get(),
+      .stream = stream,
+      .chunkSteps = ALLREDUCE_CHUNKSTEPS,
+      .sliceSteps = ALLREDUCE_SLICESTEPS,
+      .ext = ext};
 
   ASSERT_EQ(ncclEnqueueCheck(&info), ncclSuccess);
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
