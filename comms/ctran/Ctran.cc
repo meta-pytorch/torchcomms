@@ -17,6 +17,7 @@
 #include "comms/ctran/utils/CommGroupUtils.h"
 
 #if defined(ENABLE_PIPES)
+#include "comms/pipes/MultiPeerDeviceHandle.cuh"
 #include "comms/pipes/MultiPeerTransport.h"
 #endif // defined(ENABLE_PIPES)
 
@@ -93,6 +94,19 @@ uint64_t Ctran::getOpCount() const {
 uint64_t Ctran::getCtranOpCount() const {
   return comm_->getCtranOpCount();
 }
+
+#if defined(ENABLE_PIPES)
+comms::pipes::Transport* CtranComm::getMultiPeerTransportsPtr() const {
+  if (!multiPeerTransport_) {
+    return nullptr;
+  }
+  return multiPeerTransport_->get_device_handle().transports.data();
+}
+#else
+comms::pipes::Transport* CtranComm::getMultiPeerTransportsPtr() const {
+  return nullptr;
+}
+#endif // defined(ENABLE_PIPES)
 
 commResult_t ctranInit(CtranComm* comm) {
   NcclScubaEvent initEvent(&comm->logMetaData_);

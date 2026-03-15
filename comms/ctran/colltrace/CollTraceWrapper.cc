@@ -199,6 +199,18 @@ CollectiveMetadata getCollectiveMetadata(
           .count = allToAllArgs.count,
       };
     }
+    case KernelConfig::KernelType::DEVICE_ALLTOALLV: {
+      auto* pipesArgs =
+          static_cast<const ctran::device_alltoallv_pipes::KernArgs*>(
+              kernelConfig.algoArgs);
+      return CollectiveMetadata{
+          .opName = "DeviceAllToAllv_Pipes",
+          .algoName = kernelConfig.algoName,
+          .opCount = opCount,
+          .sendbuff = reinterpret_cast<uintptr_t>(pipesArgs->sendbuff),
+          .recvbuff = reinterpret_cast<uintptr_t>(pipesArgs->recvbuff),
+      };
+    }
     case KernelConfig::KernelType::ALLTOALLV: {
       auto allToAllvArgs = kernelConfig.args.collective.alltoallv;
       return CollectiveMetadata{
