@@ -25,8 +25,13 @@ const std::string kUniqueidXchgMethodAuto = "auto";
 const std::string kUniqueidXchgMethodTCPStore = "tcpstore";
 const std::string kUniqueidXchgMethodDefault = kUniqueidXchgMethodAuto;
 
-bool isFastInitEnable(ncclConfig_t config) {
+bool isFastInitEnable(const ncclConfig_t& config, const ncclx::Hints& hints) {
   if (config.fastInitMode == NCCL_FAST_INIT_MODE_RING) {
+    return true;
+  }
+  std::string fastInitVal;
+  if (hints.get("ncclx::fastInitMode", fastInitVal) == ncclSuccess &&
+      std::stoi(fastInitVal) == NCCL_FAST_INIT_MODE_RING) {
     return true;
   }
   const char* env = std::getenv("NCCL_FASTINIT_MODE");
@@ -213,17 +218,32 @@ static const std::set<std::string> kTorchCommLayerHints = {
     std::string(kHintGraphTimeoutCheckIntervalMs),
 };
 
-// Helper function to populate NCCL config from hints
+// Helper function to populate NCCL config from hints.  Upstream NCCL config
+// fields are set directly on the config struct.  NCCLx-specific fields use
+// the "ncclx::" key prefix and are passed via the hints object.
 void populateNcclConfigFromHints(
     ncclConfig_t& config,
+    ncclx::Hints& hints,
     const CommOptions& options,
     const std::string& name) {
-  // Iterate over the hints and set the corresponding fields in the config.  For
-  // string arguments, NCCLX uses a "const char*" instead of a std::string.  The
-  // strings only need to be valid for the duration of the
-  // ncclCommInitRankConfig call, so we use .c_str() directly.
+  constexpr std::string_view kNcclxPrefix = "ncclx::";
+
+  // Iterate over the hints and set the corresponding fields.  Keys with
+  // the "ncclx::" prefix are forwarded to the ncclx::Hints object.  All
+  // other keys are matched against upstream NCCL config fields.  For
+  // string arguments in the config struct, NCCLX uses a "const char*"
+  // instead of a std::string.  The strings only need to be valid for the
+  // duration of the ncclCommInitRankConfig call, so we use .c_str()
+  // directly.
   for (const auto& [key, val] : options.hints) {
-    if (kTorchCommLayerHints.count(key)) {
+    // NCCLx-specific fields -- pass via ncclx::Hints
+    if (key.compare(0, kNcclxPrefix.size(), kNcclxPrefix) == 0) {
+      hints.set(key, val);
+      TC_LOG(INFO, nullptr)
+          << "[comm=" << name << "] Setting hint " << key << "=" << val;
+    }
+    // Upstream NCCL config fields -- set directly on the config struct
+    else if (kTorchCommLayerHints.count(key)) {
       continue;
     } else if (key == "blocking") {
       config.blocking = std::stoi(val);
@@ -279,21 +299,6 @@ void populateNcclConfigFromHints(
       config.nvlsCTAs = std::stoi(val);
       TC_LOG(INFO, nullptr) << "[comm=" << name
                             << "] Setting config.nvlsCTAs=" << config.nvlsCTAs;
-    } else if (key == "ncclAllGatherAlgo") {
-      config.ncclAllGatherAlgo = val.c_str();
-      TC_LOG(INFO, nullptr)
-          << "[comm=" << name
-          << "] Setting config.ncclAllGatherAlgo=" << config.ncclAllGatherAlgo;
-    } else if (key == "lazySetupChannels" || key == "lazy_setup_channels") {
-      config.lazySetupChannels = std::stoi(val);
-      TC_LOG(INFO, nullptr)
-          << "[comm=" << name
-          << "] Setting config.lazySetupChannels=" << config.lazySetupChannels;
-    } else if (key == "fastInitMode") {
-      config.fastInitMode = std::stoi(val);
-      TC_LOG(INFO, nullptr)
-          << "[comm=" << name
-          << "] Setting config.fastInitMode=" << config.fastInitMode;
     } else {
       TC_LOG(WARNING)
           << "NCCL hint '" << key
@@ -303,8 +308,10 @@ void populateNcclConfigFromHints(
   }
 }
 
-bool TorchCommNCCLXBootstrap::useFastInit(ncclConfig_t config) {
-  if (isFastInitEnable(config)) {
+bool TorchCommNCCLXBootstrap::useFastInit(
+    ncclConfig_t config,
+    const ncclx::Hints& hints) {
+  if (isFastInitEnable(config, hints)) {
     // Use raw dynamic_cast instead of c10::dynamic_intrusive_pointer_cast
     // because the latter has a refcount leak when the cast fails (the
     // by-value intrusive_ptr parameter is release()'d before the cast,
@@ -341,10 +348,14 @@ ncclComm_t TorchCommNCCLXBootstrap::createNcclComm(
   config.commDesc = name.c_str();
   createStore(name);
 
-  // Populate NCCL config from user-provided hints
-  populateNcclConfigFromHints(config, options, name);
+  // Populate NCCL config from user-provided hints.  NCCLx-specific fields
+  // are passed via the hints object; upstream NCCL fields are set directly
+  // on the config struct.
+  ncclx::Hints hints;
+  populateNcclConfigFromHints(config, hints, options, name);
+  config.hints = &hints;
 
-  if (useFastInit(config)) {
+  if (useFastInit(config, hints)) {
     uniqueId = ncclUniqueId{};
   } else {
     uniqueId = exchangeUniqueId();

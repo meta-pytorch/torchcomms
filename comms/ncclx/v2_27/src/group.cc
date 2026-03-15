@@ -5,10 +5,10 @@
  ************************************************************************/
 
 #include "group.h"
+#include "meta/NcclxConfig.h" // @manual
 #include "debug.h"
 #include "enqueue.h"
 #include "transport.h"
-#include "channel.h"
 #include <assert.h>
 #include "bootstrap.h"
 
@@ -18,7 +18,6 @@
 #include "meta/transport/transportConnect.h"
 #include "meta/transport/transportProxy.h"
 #include "comms/utils/logger/EventsScubaUtil.h"
-#include "comms/ctran/utils/Utils.h"
 #include "meta/wrapper/MetaFactory.h"
 
 #define GROUP_MAX_RECLAIM_STEPS 10
@@ -137,7 +136,7 @@ struct ncclPreconnectJob {
 ncclResult_t ncclP2PPreconnectFunc(struct ncclAsyncJob* job_) {
   struct ncclPreconnectJob* job = (struct ncclPreconnectJob*)job_;
   struct ncclComm* comm = job->comm;
-  INFO(NCCL_INIT, "commDesc: %s new p2p send/recv needs to connect", ctran::utils::parseCommDesc(comm->config.commDesc));
+  INFO(NCCL_INIT, "commDesc: %s new p2p send/recv needs to connect", NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str());
   CUDACHECK(cudaSetDevice(comm->cudaDev));
   if (CPU_COUNT(&comm->cpuAffinity)) sched_setaffinity(0, sizeof(cpu_set_t), &comm->cpuAffinity);
   // setup channels if needed before setup transport
@@ -149,7 +148,7 @@ ncclResult_t ncclP2PPreconnectFunc(struct ncclAsyncJob* job_) {
   initEvent.lapAndRecord("p2pPreconnectFunc START");
   NCCLCHECK(ncclTransportP2pSetup(comm, NULL, 1));
   initEvent.lapAndRecord("p2pPreconnectFunc COMPLETE");
-  INFO(NCCL_INIT, "commDesc: %s new p2p send/recv finished preconnect", ctran::utils::parseCommDesc(comm->config.commDesc));
+  INFO(NCCL_INIT, "commDesc: %s new p2p send/recv finished preconnect", NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str());
   return ncclSuccess;
 }
 
@@ -157,7 +156,7 @@ ncclResult_t ncclCollPreconnectFunc(struct ncclAsyncJob* job_) {
   struct ncclPreconnectJob* job = (struct ncclPreconnectJob*)job_;
   struct ncclComm* comm = job->comm;
   ncclResult_t ret = ncclSuccess;
-  INFO(NCCL_INIT, "commDesc: %s new collective needs to connect", ctran::utils::parseCommDesc(comm->config.commDesc));
+  INFO(NCCL_INIT, "commDesc: %s new collective needs to connect", NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str());
   CUDACHECK(cudaSetDevice(comm->cudaDev));
   if (CPU_COUNT(&comm->cpuAffinity)) sched_setaffinity(0, sizeof(cpu_set_t), &comm->cpuAffinity);
   // setup channels if needed before setup transport
@@ -212,7 +211,7 @@ ncclResult_t ncclCollPreconnectFunc(struct ncclAsyncJob* job_) {
       initEvent.lapAndRecord(collpreStage + " COMPLETE");
     }
   }
-  INFO(NCCL_INIT, "commDesc: %s new collective finished preconnect", ctran::utils::parseCommDesc(comm->config.commDesc));
+  INFO(NCCL_INIT, "commDesc: %s new collective finished preconnect", NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str());
 
 exit:
   free(job->algoNeedConnect);
@@ -327,7 +326,7 @@ static ncclResult_t doLaunches(struct ncclComm* head) {
             CUDACHECKGOTO(cudaSetDevice(comm->cudaDev), result, failure);
             NCCLCHECKGOTO(ncclLaunchKernelBefore_NoUncapturedCuda(comm, plan), result, failure);
             NCCLCHECKGOTO(ncclLaunchKernel(comm, plan), result, failure);
-            INFO(NCCL_COLL, "comm %s %p opCount %ld launched kernel for plan %p",  ctran::utils::parseCommDesc(comm->config.commDesc), comm, comm->opCount, plan);
+            INFO(NCCL_COLL, "comm %s %p opCount %ld launched kernel for plan %p",  NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str(), comm, comm->opCount, plan);
             // NOTE: bump up opCount right after launching kernel as this field is dedicated to track number of kernels
             // including both p2p and collective kernels, no matter proxyOp existance.
             // Known limitation: It won't be updated properly under cuda graph replay since it is not captured by the graph.
@@ -342,7 +341,7 @@ static ncclResult_t doLaunches(struct ncclComm* head) {
         } else { // Final round.
           CUDACHECKGOTO(cudaSetDevice(comm->cudaDev), result, failure);
           NCCLCHECKGOTO(ncclLaunchFinish(comm), result, failure);
-          INFO(NCCL_COLL, "comm %s opCount %ld finished launching kernel",  ctran::utils::parseCommDesc(comm->config.commDesc), comm->opCount);
+          INFO(NCCL_COLL, "comm %s opCount %ld finished launching kernel",  NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str(), comm->opCount);
         }
         comm = next;
       } while (comm != cliqueNextHead);

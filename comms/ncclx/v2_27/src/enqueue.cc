@@ -5,8 +5,8 @@
  ************************************************************************/
 
 #include "enqueue.h"
+#include "meta/NcclxConfig.h" // @manual
 #include "argcheck.h"
-#include "coll_net.h"
 #include "gdrwrap.h"
 #include "bootstrap.h"
 #include "channel.h"
@@ -2470,7 +2470,7 @@ ncclResult_t ncclEnqueueCheck(struct ncclInfo* info) {
 
   INFO(NCCL_COLL,"%s: opCount %lx sendbuff %p recvbuff %p count %zu datatype %d op %d root %d comm %p commHash %lx commDesc %s [nranks=%d, nNodes=%d] stream %p",
         info->opName, info->comm->opCount, info->sendbuff, info->recvbuff, info->count,
-        info->datatype, info->op, info->root, info->comm, info->comm->commHash, info->comm->config.commDesc, info->comm->nRanks, info->comm->nNodes, info->stream);
+        info->datatype, info->op, info->root, info->comm, info->comm->commHash, NCCLX_CONFIG_FIELD(info->comm->config, commDesc).c_str(), info->comm->nRanks, info->comm->nNodes, info->stream);
   TRACE_CALL("nccl%s(%" PRIx64 ",%" PRIx64 ",%zu,%d,%d,%d,%p,%p)", info->opName, reinterpret_cast<int64_t>(info->sendbuff), reinterpret_cast<int64_t>(info->recvbuff), info->count, info->datatype, info->op, info->root, info->comm, info->stream);
 
   NCCLCHECKGOTO(taskAppend(info->comm, info), ret, fail);

@@ -31,7 +31,7 @@ uint64_t getHostHash();
 uint64_t getPidHash();
 ncclResult_t getRandomData(void* buffer, size_t bytes);
 
-bool isFastInitRingMode(int fastInitMode);
+bool isFastInitRingMode(bool fastInitMode);
 
 struct netIf {
   char prefix[64];
