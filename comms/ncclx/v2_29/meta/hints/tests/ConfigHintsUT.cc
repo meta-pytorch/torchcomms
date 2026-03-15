@@ -59,6 +59,40 @@ TEST(ConfigHintsUT, HintsCreateNcclxConfig) {
   delete static_cast<ncclx::Config*>(config.ncclxConfig);
 }
 
+TEST(ConfigHintsUT, PrefixedKeysMatchBareKeys) {
+  // Set hints using "ncclx::" prefix — should produce the same config
+  // as bare keys (tested in HintsCreateNcclxConfig above).
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ncclx::commDesc", "test_desc");
+  hints.set("ncclx::lazyConnect", "1");
+  hints.set("ncclx::lazySetupChannels", "0");
+  hints.set("ncclx::fastInitMode", "1");
+  hints.set("ncclx::ncclAllGatherAlgo", "custom_algo");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  ASSERT_NE(config.ncclxConfig, (void*)NCCL_CONFIG_UNDEF_PTR);
+  ASSERT_NE(config.ncclxConfig, nullptr);
+
+  EXPECT_EQ(NCCLX_CONFIG_FIELD(config, commDesc), "test_desc");
+  EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, lazyConnect));
+  EXPECT_FALSE(NCCLX_CONFIG_FIELD(config, lazySetupChannels));
+  EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, fastInitMode));
+  EXPECT_EQ(NCCLX_CONFIG_FIELD(config, ncclAllGatherAlgo), "custom_algo");
+
+  // Also verify get() with prefixed key returns the same value
+  std::string val;
+  EXPECT_EQ(hints.get("ncclx::commDesc", val), ncclSuccess);
+  EXPECT_EQ(val, "test_desc");
+  // And get() with bare key still works
+  EXPECT_EQ(hints.get("commDesc", val), ncclSuccess);
+  EXPECT_EQ(val, "test_desc");
+
+  delete static_cast<ncclx::Config*>(config.ncclxConfig);
+}
+
 TEST(ConfigHintsUT, BoolHintFormats) {
   // Test various truthy values
   for (const char* trueVal :
