@@ -395,6 +395,10 @@ bool collTraceRecordCtranKernelInfo(
       coll.count = allToAllArgs.count;
       break;
     }
+    case KernelConfig::KernelType::DEVICE_ALLTOALLV: {
+      coll.opName = "DeviceAllToAllvPipes";
+      break;
+    }
     case KernelConfig::KernelType::ALLTOALLV: {
       coll.opName = "AllToAllV";
       auto allToAllvArgs = kernelConfig.args.collective.alltoallv;
@@ -519,6 +523,12 @@ bool collTraceRecordCtranCollective(
       coll.dataType = metaCommToNccl(gpeOp.alltoallv.datatype);
       // Explicitly leave count as nullopt because there is no single count for
       // AllToAllV
+      break;
+    case OpElem::DEVICE_ALLTOALLV:
+      coll.opName = "DeviceAllToAllV";
+      coll.sendbuff = gpeOp.device_alltoallv.sendbuff;
+      coll.recvbuff = gpeOp.device_alltoallv.recvbuff;
+      coll.dataType = metaCommToNccl(gpeOp.device_alltoallv.datatype);
       break;
     case OpElem::ALLTOALLP: {
       coll.opName = "AllToAllP";

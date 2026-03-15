@@ -16,6 +16,11 @@
 #include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/utils/commSpecs.h"
 
+namespace comms::pipes {
+class MultiPeerTransport;
+struct Transport;
+} // namespace comms::pipes
+
 using meta::comms::CommBackend;
 struct ctranConfig {
   int blocking{-1};
@@ -125,6 +130,11 @@ class CtranComm {
   // TODO: after finish refactoring remove factory method and define proper
   // constructor
   friend commResult_t setCtranCommBase(ncclComm* comm);
+
+  // Get a pointer to the Transport array from MultiPeerTransport,
+  // indexed by global rank. Returns nullptr if MultiPeerTransport is not
+  // initialized.
+  comms::pipes::Transport* getMultiPeerTransportsPtr() const;
 
   // fields are public to allow access from external code and tests
   // TODO: remove config_, it's redundant

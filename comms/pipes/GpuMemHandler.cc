@@ -2,6 +2,8 @@
 
 #include "comms/pipes/GpuMemHandler.h"
 
+#include "comms/pipes/CudaDriverLazy.h"
+
 #include <glog/logging.h>
 #include <mutex>
 #include <stdexcept>
@@ -19,7 +21,7 @@ void checkCudaError(cudaError_t err, const char* msg) {
 void checkCuError(CUresult err, const char* msg) {
   if (err != CUDA_SUCCESS) {
     const char* errStr = nullptr;
-    cuGetErrorString(err, &errStr);
+    pfn_cuGetErrorString(err, &errStr);
     throw std::runtime_error(
         std::string(msg) + ": " + (errStr ? errStr : "unknown error"));
   }
@@ -34,6 +36,10 @@ bool checkFabricHandleSupportedImpl() {
 #if CUDART_VERSION < 12030
   return false;
 #else
+  if (cuda_driver_lazy_init() != 0) {
+    return false;
+  }
+
   int cudaDev = 0;
   CUdevice cuDev;
 
@@ -43,14 +49,14 @@ bool checkFabricHandleSupportedImpl() {
     return false;
   }
 
-  CUresult cuErr = cuDeviceGet(&cuDev, cudaDev);
+  CUresult cuErr = pfn_cuDeviceGet(&cuDev, cudaDev);
   if (cuErr != CUDA_SUCCESS) {
     return false;
   }
 
   // 2. Check device attribute for fabric handle support
   int fabricSupported = 0;
-  cuErr = cuDeviceGetAttribute(
+  cuErr = pfn_cuDeviceGetAttribute(
       &fabricSupported,
       CU_DEVICE_ATTRIBUTE_HANDLE_TYPE_FABRIC_SUPPORTED,
       cuDev);
@@ -68,7 +74,7 @@ bool checkFabricHandleSupportedImpl() {
   prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_FABRIC;
 
   size_t granularity = 0;
-  cuErr = cuMemGetAllocationGranularity(
+  cuErr = pfn_cuMemGetAllocationGranularity(
       &granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM);
   if (cuErr != CUDA_SUCCESS) {
     return false;
@@ -78,22 +84,22 @@ bool checkFabricHandleSupportedImpl() {
       ((kTrialAllocSize + granularity - 1) / granularity) * granularity;
 
   CUmemGenericAllocationHandle handle;
-  cuErr = cuMemCreate(&handle, allocSize, &prop, 0);
+  cuErr = pfn_cuMemCreate(&handle, allocSize, &prop, 0);
   if (cuErr != CUDA_SUCCESS) {
     return false;
   }
 
   CUdeviceptr ptr;
-  cuErr = cuMemAddressReserve(&ptr, allocSize, granularity, 0, 0);
+  cuErr = pfn_cuMemAddressReserve(&ptr, allocSize, granularity, 0, 0);
   if (cuErr != CUDA_SUCCESS) {
-    cuMemRelease(handle);
+    pfn_cuMemRelease(handle);
     return false;
   }
 
-  cuErr = cuMemMap(ptr, allocSize, 0, handle, 0);
+  cuErr = pfn_cuMemMap(ptr, allocSize, 0, handle, 0);
   if (cuErr != CUDA_SUCCESS) {
-    cuMemAddressFree(ptr, allocSize);
-    cuMemRelease(handle);
+    pfn_cuMemAddressFree(ptr, allocSize);
+    pfn_cuMemRelease(handle);
     return false;
   }
 
@@ -101,43 +107,43 @@ bool checkFabricHandleSupportedImpl() {
   accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
   accessDesc.location.id = cuDev;
   accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-  cuErr = cuMemSetAccess(ptr, allocSize, &accessDesc, 1);
+  cuErr = pfn_cuMemSetAccess(ptr, allocSize, &accessDesc, 1);
   if (cuErr != CUDA_SUCCESS) {
-    cuMemUnmap(ptr, allocSize);
-    cuMemAddressFree(ptr, allocSize);
-    cuMemRelease(handle);
+    pfn_cuMemUnmap(ptr, allocSize);
+    pfn_cuMemAddressFree(ptr, allocSize);
+    pfn_cuMemRelease(handle);
     return false;
   }
 
   // 4. Trial export to fabric handle
   CUmemFabricHandle fabricHandle;
-  cuErr = cuMemExportToShareableHandle(
+  cuErr = pfn_cuMemExportToShareableHandle(
       &fabricHandle, handle, CU_MEM_HANDLE_TYPE_FABRIC, 0);
   if (cuErr != CUDA_SUCCESS) {
-    cuMemUnmap(ptr, allocSize);
-    cuMemAddressFree(ptr, allocSize);
-    cuMemRelease(handle);
+    pfn_cuMemUnmap(ptr, allocSize);
+    pfn_cuMemAddressFree(ptr, allocSize);
+    pfn_cuMemRelease(handle);
     return false;
   }
 
   // 5. Trial import from fabric handle
   CUmemGenericAllocationHandle importedHandle;
-  cuErr = cuMemImportFromShareableHandle(
+  cuErr = pfn_cuMemImportFromShareableHandle(
       &importedHandle, &fabricHandle, CU_MEM_HANDLE_TYPE_FABRIC);
   if (cuErr != CUDA_SUCCESS) {
-    cuMemUnmap(ptr, allocSize);
-    cuMemAddressFree(ptr, allocSize);
-    cuMemRelease(handle);
+    pfn_cuMemUnmap(ptr, allocSize);
+    pfn_cuMemAddressFree(ptr, allocSize);
+    pfn_cuMemRelease(handle);
     return false;
   }
 
   // Import increases ref count, release it
-  cuMemRelease(importedHandle);
+  pfn_cuMemRelease(importedHandle);
 
   // Cleanup trial allocation
-  cuMemUnmap(ptr, allocSize);
-  cuMemAddressFree(ptr, allocSize);
-  cuMemRelease(handle);
+  pfn_cuMemUnmap(ptr, allocSize);
+  pfn_cuMemAddressFree(ptr, allocSize);
+  pfn_cuMemRelease(handle);
 
   return true;
 #endif
@@ -269,11 +275,15 @@ void GpuMemHandler::allocateFabricMemory(size_t size) {
 #if CUDART_VERSION < 12030
   throw std::runtime_error("Fabric handles require CUDA 12.3+");
 #else
+  if (cuda_driver_lazy_init() != 0) {
+    throw std::runtime_error("CUDA driver not available");
+  }
+
   int cudaDev = 0;
   CUdevice cuDev;
 
   checkCudaError(cudaGetDevice(&cudaDev), "cudaGetDevice failed");
-  checkCuError(cuDeviceGet(&cuDev, cudaDev), "cuDeviceGet failed");
+  checkCuError(pfn_cuDeviceGet(&cuDev, cudaDev), "cuDeviceGet failed");
 
   // Set up allocation properties with fabric handle support
   CUmemAllocationProp prop = {};
@@ -284,7 +294,7 @@ void GpuMemHandler::allocateFabricMemory(size_t size) {
 
   // Check for GPUDirect RDMA support
   int rdmaSupported = 0;
-  cuDeviceGetAttribute(
+  pfn_cuDeviceGetAttribute(
       &rdmaSupported, CU_DEVICE_ATTRIBUTE_GPU_DIRECT_RDMA_SUPPORTED, cuDev);
   if (rdmaSupported) {
     prop.allocFlags.gpuDirectRDMACapable = 1;
@@ -293,7 +303,7 @@ void GpuMemHandler::allocateFabricMemory(size_t size) {
   // Get allocation granularity
   size_t granularity = 0;
   checkCuError(
-      cuMemGetAllocationGranularity(
+      pfn_cuMemGetAllocationGranularity(
           &granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM),
       "cuMemGetAllocationGranularity failed");
 
@@ -302,17 +312,19 @@ void GpuMemHandler::allocateFabricMemory(size_t size) {
 
   // Create the physical memory allocation
   checkCuError(
-      cuMemCreate(&fabricLocalAllocHandle_, allocatedSize_, &prop, 0),
+      pfn_cuMemCreate(&fabricLocalAllocHandle_, allocatedSize_, &prop, 0),
       "cuMemCreate failed");
 
   // Reserve virtual address space
   checkCuError(
-      cuMemAddressReserve(&fabricLocalPtr_, allocatedSize_, granularity, 0, 0),
+      pfn_cuMemAddressReserve(
+          &fabricLocalPtr_, allocatedSize_, granularity, 0, 0),
       "cuMemAddressReserve failed");
 
   // Map the physical memory to virtual address
   checkCuError(
-      cuMemMap(fabricLocalPtr_, allocatedSize_, 0, fabricLocalAllocHandle_, 0),
+      pfn_cuMemMap(
+          fabricLocalPtr_, allocatedSize_, 0, fabricLocalAllocHandle_, 0),
       "cuMemMap failed");
 
   // Set access permissions
@@ -321,12 +333,12 @@ void GpuMemHandler::allocateFabricMemory(size_t size) {
   accessDesc.location.id = cuDev;
   accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
   checkCuError(
-      cuMemSetAccess(fabricLocalPtr_, allocatedSize_, &accessDesc, 1),
+      pfn_cuMemSetAccess(fabricLocalPtr_, allocatedSize_, &accessDesc, 1),
       "cuMemSetAccess failed");
 
   // Export to fabric handle for sharing with peers
   checkCuError(
-      cuMemExportToShareableHandle(
+      pfn_cuMemExportToShareableHandle(
           &fabricLocalHandle_,
           fabricLocalAllocHandle_,
           CU_MEM_HANDLE_TYPE_FABRIC,
@@ -382,15 +394,19 @@ void GpuMemHandler::importFabricPeerMemory(
 #if CUDART_VERSION < 12030
   throw std::runtime_error("Fabric handles require CUDA 12.3+");
 #else
+  if (cuda_driver_lazy_init() != 0) {
+    throw std::runtime_error("CUDA driver not available");
+  }
+
   int cudaDev = 0;
   CUdevice cuDev;
 
   checkCudaError(cudaGetDevice(&cudaDev), "cudaGetDevice failed");
-  checkCuError(cuDeviceGet(&cuDev, cudaDev), "cuDeviceGet failed");
+  checkCuError(pfn_cuDeviceGet(&cuDev, cudaDev), "cuDeviceGet failed");
 
   // Import the fabric handle to get allocation handle
   checkCuError(
-      cuMemImportFromShareableHandle(
+      pfn_cuMemImportFromShareableHandle(
           &fabricPeerAllocHandles_[rank],
           const_cast<void*>(static_cast<const void*>(&handle)),
           CU_MEM_HANDLE_TYPE_FABRIC),
@@ -399,25 +415,25 @@ void GpuMemHandler::importFabricPeerMemory(
   // Get allocation properties for granularity
   CUmemAllocationProp prop = {};
   checkCuError(
-      cuMemGetAllocationPropertiesFromHandle(
+      pfn_cuMemGetAllocationPropertiesFromHandle(
           &prop, fabricPeerAllocHandles_[rank]),
       "cuMemGetAllocationPropertiesFromHandle failed");
 
   size_t granularity = 0;
   checkCuError(
-      cuMemGetAllocationGranularity(
+      pfn_cuMemGetAllocationGranularity(
           &granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM),
       "cuMemGetAllocationGranularity failed");
 
   // Reserve virtual address space for peer memory
   checkCuError(
-      cuMemAddressReserve(
+      pfn_cuMemAddressReserve(
           &fabricPeerPtrs_[rank], peerAllocatedSize, granularity, 0, 0),
       "cuMemAddressReserve for peer failed");
 
   // Map peer's physical memory to our virtual address
   checkCuError(
-      cuMemMap(
+      pfn_cuMemMap(
           fabricPeerPtrs_[rank],
           peerAllocatedSize,
           0,
@@ -431,7 +447,8 @@ void GpuMemHandler::importFabricPeerMemory(
   accessDesc.location.id = cuDev;
   accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
   checkCuError(
-      cuMemSetAccess(fabricPeerPtrs_[rank], peerAllocatedSize, &accessDesc, 1),
+      pfn_cuMemSetAccess(
+          fabricPeerPtrs_[rank], peerAllocatedSize, &accessDesc, 1),
       "cuMemSetAccess for peer failed");
 #endif
 }
@@ -440,7 +457,8 @@ void GpuMemHandler::cleanupFabric() {
 #if CUDART_VERSION >= 12030
   // Check if CUDA context is still valid
   CUcontext ctx = nullptr;
-  if (cuCtxGetCurrent(&ctx) != CUDA_SUCCESS || ctx == nullptr) {
+  if (pfn_cuCtxGetCurrent == nullptr ||
+      pfn_cuCtxGetCurrent(&ctx) != CUDA_SUCCESS || ctx == nullptr) {
     return;
   }
 
@@ -450,24 +468,25 @@ void GpuMemHandler::cleanupFabric() {
       continue;
     }
     if (fabricPeerPtrs_[rank] != 0) {
-      cuMemUnmap(fabricPeerPtrs_[rank], fabricPeerAllocatedSizes_[rank]);
-      cuMemAddressFree(fabricPeerPtrs_[rank], fabricPeerAllocatedSizes_[rank]);
+      pfn_cuMemUnmap(fabricPeerPtrs_[rank], fabricPeerAllocatedSizes_[rank]);
+      pfn_cuMemAddressFree(
+          fabricPeerPtrs_[rank], fabricPeerAllocatedSizes_[rank]);
       fabricPeerPtrs_[rank] = 0;
     }
     if (fabricPeerAllocHandles_[rank] != 0) {
-      cuMemRelease(fabricPeerAllocHandles_[rank]);
+      pfn_cuMemRelease(fabricPeerAllocHandles_[rank]);
       fabricPeerAllocHandles_[rank] = 0;
     }
   }
 
   // Release local allocation
   if (fabricLocalPtr_ != 0) {
-    cuMemUnmap(fabricLocalPtr_, allocatedSize_);
-    cuMemAddressFree(fabricLocalPtr_, allocatedSize_);
+    pfn_cuMemUnmap(fabricLocalPtr_, allocatedSize_);
+    pfn_cuMemAddressFree(fabricLocalPtr_, allocatedSize_);
     fabricLocalPtr_ = 0;
   }
   if (fabricLocalAllocHandle_ != 0) {
-    cuMemRelease(fabricLocalAllocHandle_);
+    pfn_cuMemRelease(fabricLocalAllocHandle_);
     fabricLocalAllocHandle_ = 0;
   }
 #endif

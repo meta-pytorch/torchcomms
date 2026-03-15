@@ -46,6 +46,7 @@ struct OpElem {
     ALLTOALL,
     ALLTOALLP,
     ALLTOALLV,
+    DEVICE_ALLTOALLV,
     ALLTOALLV_DYNAMIC,
     ALLTOALLV_DYNAMIC_SPLIT,
     ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG,
@@ -156,6 +157,13 @@ struct OpElem {
       std::vector<size_t> rdispls;
       commDataType_t datatype;
     } alltoallv;
+    struct {
+      const void* sendbuff;
+      void* recvbuff;
+      const int64_t* sendcounts_d; // device pointer
+      const int64_t* recvcounts_d; // device pointer
+      commDataType_t datatype;
+    } device_alltoallv;
     struct {
       const void* const* sendbuffs;
       void* const* recvbuffs;
@@ -293,6 +301,7 @@ struct KernelConfig {
     SENDRECV_STAGED,
     SENDRECV_P2P,
     ALLTOALL,
+    DEVICE_ALLTOALLV,
     ALLTOALLV,
     ALLTOALLV_DYNAMIC,
     ALLTOALLV_DYNAMIC_SPLIT,
