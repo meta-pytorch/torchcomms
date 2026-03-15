@@ -2159,8 +2159,12 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
     config.splitGroupSize = static_cast<int>(ranks.size());
   }
 
-  // Populate NCCL config from user-provided hints
-  populateNcclConfigFromHints(config, options, commDesc);
+  // Populate NCCL config from user-provided hints.  NCCLx-specific fields
+  // are passed via the hints object; upstream NCCL fields are set directly
+  // on the config struct.
+  ncclx::Hints hints;
+  populateNcclConfigFromHints(config, hints, options, commDesc);
+  config.hints = &hints;
 
   // Verify the correct CUDA device is set before calling ncclCommSplit.
   // NCCL expects the caller to have set the device matching the communicator.
