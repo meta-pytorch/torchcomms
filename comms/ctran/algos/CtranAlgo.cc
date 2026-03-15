@@ -354,7 +354,7 @@ commResult_t CtranAlgo::initKernelResources() {
   comms::pipes::P2pNvlTransportOptions options{
       .dataBufferSize = NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE /
           NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH,
-      .chunkSize = 1024 * 512, // TODO: tune this
+      .chunkSize = NCCL_CTRAN_PIPES_NVL_CHUNK_SIZE,
       .pipelineDepth = NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH};
 
   for (int peer = 0; peer < nLocalRanks; peer++) {
