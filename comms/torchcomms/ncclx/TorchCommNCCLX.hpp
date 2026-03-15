@@ -176,6 +176,15 @@ class TorchCommNCCLX : public TorchCommBackend,
       const AllToAllOptions& options = {}) override;
 
   // AllToAllv Dynamic Operations
+  c10::intrusive_ptr<TorchWork> device_alltoallv_single(
+      at::Tensor& output,
+      const at::Tensor& input,
+      const at::Tensor& output_split_sizes,
+      const at::Tensor& input_split_sizes,
+      const at::Tensor& output_split_offsets,
+      const at::Tensor& input_split_offsets,
+      bool async_op);
+
   c10::intrusive_ptr<TorchWork> alltoallv_dynamic_dispatch(
       const std::vector<at::Tensor>& output_tensor_list,
       at::Tensor& output_chunk_sizes_per_rank,
