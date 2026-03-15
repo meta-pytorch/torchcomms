@@ -10,6 +10,7 @@ ENABLE_PIPES ?= 0
 # Assuming calling from src directory
 SRCDIR = $(abspath ./)
 NCCLDIR = $(abspath ../)
+SHAREDDIR = $(abspath ${NCCLDIR}/..)
 
 include ../makefiles/common.mk
 include ../makefiles/version.mk
@@ -58,7 +59,7 @@ LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/rma/*.cc)
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/collectives/*.cc)
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/comms-monitor/*.cc)
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/ctran-integration/*.cc)
-LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/hints/*.cc)
+LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/hints/*.cc)
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/algoconf/*.cc)
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/wrapper/*.cc)
 
@@ -111,9 +112,9 @@ LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/RMA/*.cc)
 INCLUDES := -Iinclude
 INCLUDES += -Iinclude/plugin
 INCLUDES += -I${NCCLDIR}/
+INCLUDES += -I${SHAREDDIR}/
 INCLUDES += -I${NCCLDIR}/meta
 INCLUDES += -I${NCCLDIR}/meta/wrapper
-INCLUDES += -I${NCCLDIR}/meta/hints
 INCLUDES += -I${NCCLDIR}/meta/algoconf
 INCLUDES += -I${NCCLDIR}/meta/logger -Idevice
 INCLUDES += -I$(BASE_DIR)
