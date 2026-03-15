@@ -79,6 +79,52 @@ __device__ int torchcomms_put_block(
     int signal_id,
     int counter_id);
 
+// Block-scope self-copy: local memory copy using all block threads.
+// Used for self-send (peer == my_rank) in alltoallv.
+// Returns: 0 on success
+__device__ int torchcomms_self_copy_block(
+    void* dst_ptr,
+    unsigned long long dst_offset,
+    void* src_ptr,
+    unsigned long long src_offset,
+    unsigned long long bytes);
+
+// NVLink-optimized block-scope put with GIN fallback.
+//
+// Multi-transport put: automatically selects optimal path based on peer
+// topology.
+//   - NVLink peers (intra-node): Uses inline PTX memcpy (zero allocas, zero
+//     register spills) for maximum performance via direct GPU-to-GPU copy.
+//   - IB/GIN peers (inter-node): Falls back to RDMA put via __noinline__
+//   helper,
+//     using GPU-Initiated Networking through the TorchComms/NCCL
+//     infrastructure.
+//
+// The transport selection happens automatically based on
+// win->is_nvlink_peer(dst_rank).
+//
+// Returns: 0 on success, negative on error
+__device__ int torchcomms_put_block_direct(
+    TorchCommsWindowHandle win,
+    unsigned long long dst_offset,
+    void* src_nccl_win,
+    unsigned long long src_offset,
+    int dst_rank,
+    unsigned long long bytes);
+
+// NVLink-optimized warp-distributed chunked put with GIN fallback.
+// NVLink: distributes chunks across warps using inline PTX memcpy.
+// GIN: falls back to win->put() via __noinline__ helper.
+// Returns: 0 on success, negative on error
+__device__ int torchcomms_put_warp_chunked_direct(
+    TorchCommsWindowHandle win,
+    unsigned long long dst_offset,
+    void* src_nccl_win,
+    unsigned long long src_offset,
+    int dst_rank,
+    unsigned long long total_bytes,
+    unsigned long long chunk_size);
+
 // Block-scope signal: all block threads cooperate.
 // Returns: 0 on success, negative on error
 __device__ int torchcomms_signal_block(
@@ -109,6 +155,16 @@ __device__ int torchcomms_barrier_block(
 // Returns: 0 on success, negative on error
 __device__ int torchcomms_wait_signal(
     TorchCommsWindowHandle win,
+    int signal_id,
+    unsigned long long expected_value);
+
+// Wait for signal from a specific peer to reach expected value (>=)
+// Used for per-peer synchronization in alltoallv and similar patterns.
+// Thread-scope (idempotent) — all 128 threads can call; same result.
+// Returns: 0 on success, negative on error
+__device__ int torchcomms_wait_signal_from(
+    TorchCommsWindowHandle win,
+    int peer,
     int signal_id,
     unsigned long long expected_value);
 
