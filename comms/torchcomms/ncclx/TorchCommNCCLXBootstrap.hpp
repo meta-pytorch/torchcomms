@@ -54,7 +54,7 @@ class TorchCommNCCLXBootstrap {
  private:
   ncclUniqueId exchangeUniqueId();
   void createStore(std::string_view name);
-  bool useFastInit(ncclConfig_t config);
+  bool useFastInit(ncclConfig_t config, const ncclx::Hints& hints);
   void cleanupTCPStore(ncclComm_t nccl_comm);
 
  private:
@@ -73,9 +73,12 @@ class TorchCommNCCLXBootstrap {
   std::string uniqueid_xchg_method_;
 };
 
-// Helper function to populate NCCL config from hints
+// Helper function to populate NCCL config from hints.  Upstream NCCL
+// config fields are set directly on the config struct.  NCCLx-specific
+// fields are passed via the hints object.
 void populateNcclConfigFromHints(
     ncclConfig_t& config,
+    ncclx::Hints& hints,
     const CommOptions& options,
     const std::string& name);
 
