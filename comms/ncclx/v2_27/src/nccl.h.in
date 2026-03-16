@@ -26,6 +26,7 @@
 #define NCCL_VERSION_CODE NCCL_VERSION(NCCL_MAJOR, NCCL_MINOR, NCCL_PATCH)
 
 #ifdef __cplusplus
+#include <initializer_list>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -689,6 +690,7 @@ typedef std::unordered_map<std::string, std::string> kvType;
 class Hints {
     public:
         Hints();
+        explicit Hints(std::initializer_list<std::pair<std::string, std::string>> init);
         ncclResult_t set(const std::string& key, const std::string& val);
         ncclResult_t get(const std::string& key, std::string& val) const;
 
