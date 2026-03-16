@@ -412,6 +412,9 @@ class CtranGpe {
   commResult_t
   allocKernelElems(size_t numElems, int ngroups, KernelElem** elemsList);
 
+  // Returns number of live cmdCbPlan objects (for leak detection in tests)
+  static int liveCbPlanCount();
+
   // Return number of inuse kernel elements.
   // Used to check potential kelem leak in UT due to inproper usage in ctran
   // algorithm.

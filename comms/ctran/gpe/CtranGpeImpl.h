@@ -134,6 +134,10 @@ class CtranGpeCmd {
 
   // Unpack queue to teardown after kernel completes (for TcpDM backend)
   void* unpackPool{nullptr};
+
+  // Host callback plan for CUDA graph mode. Allocated during graph capture,
+  // freed by cmdDestroy when the graph is destroyed.
+  void* cbPlan{nullptr};
 };
 
 /**
