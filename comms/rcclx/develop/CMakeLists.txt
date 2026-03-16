@@ -1171,7 +1171,6 @@ set(COMMON_FILES
   comms/pipes/GpuMemHandler.h
 # comms/pipes/IbgdaBuffer.h # manual
   comms/pipes/MultiPeerDeviceHandle.cuh
-  comms/pipes/MultiPeerDeviceTransport.cuh
 # comms/pipes/MultipeerIbgdaDeviceTransport.cuh # manual
 # comms/pipes/MultipeerIbgdaTransport.cc # manual
 # comms/pipes/MultipeerIbgdaTransportCuda.cu # manual
