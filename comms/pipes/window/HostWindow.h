@@ -79,10 +79,9 @@ class HostWindow {
    * Extracts topology, rank info, and transport handles from the
    * MultiPeerTransport instance. The transport must outlive this object.
    *
-   * If a user buffer is provided, HostWindow registers and exchanges it on
-   * both NVL (IPC) and IBGDA (RDMA) sides. After exchange(), use
-   * getUserLocalBuffer(), getUserRemoteBuffers(), getUserNvlPeerPtrs()
-   * to access the registered buffer info for kernels.
+   * If a user buffer is provided, HostWindow auto-registers and exchanges it
+   * via registerAndExchangeBuffer() during exchange(). The buffer is then
+   * accessible through the DeviceWindow's buffer registration table.
    *
    * @param transport MultiPeerTransport providing topology and buffer APIs
    * @param config Window memory configuration
@@ -117,55 +116,50 @@ class HostWindow {
    * uses MultiPeerDeviceHandle for transport dispatch and pre-computed
    * peer index maps for O(1) rank-to-peer-index lookup.
    *
-   * Must be called after exchange() and after all registerBuffer() calls.
+   * Must be called after exchange() and after all registerLocalBuffer()
+   * and registerAndExchangeBuffer() calls.
    */
   DeviceWindow getDeviceWindow() const;
 
   // --- Buffer registration for generic put/put_signal ---
 
   /**
-   * Register a user buffer for use in DeviceWindow::put/put_signal.
+   * Register a local buffer for use as a source in
+   * DeviceWindow::put/put_signal.
+   *
+   * NOT collective: only registers locally for IBGDA (gets lkey).
+   * Does not exchange with peers. Use for source-only buffers.
+   *
+   * May be called before or after exchange(). Call getDeviceWindow() after
+   * exchange() and all registration calls to get a DeviceWindow with the
+   * registration table.
+   *
+   * @param ptr   Local GPU buffer pointer
+   * @param size  Buffer size in bytes
+   * @return      Local buffer registration index
+   */
+  int registerLocalBuffer(void* ptr, std::size_t size);
+
+  /**
+   * Register and exchange a buffer for use as a destination in
+   * DeviceWindow::put/put_signal.
    *
    * COLLECTIVE: all ranks must call together, each with their local buffer.
    * Registers locally for IBGDA (gets lkey) and exchanges with all IBGDA
    * peers (gets rkeys). For NVL peers, exchanges IPC/fabric handles.
    *
-   * Must be called after exchange(). Call getDeviceWindow() after all
-   * registerBuffer() calls to get a DeviceWindow with the registration table.
+   * Each DeviceWindow supports exactly one exchanged dst buffer. Calling
+   * this more than once is an error.
+   *
+   * May be called before or after exchange(). Call getDeviceWindow() after
+   * exchange() and all registration calls to get a DeviceWindow with the
+   * registration table.
    *
    * @param ptr   Local GPU buffer pointer
    * @param size  Buffer size in bytes
-   * @return      Buffer registration index
+   * @return      Local buffer registration index
    */
-  int registerBuffer(void* ptr, std::size_t size);
-
-  // --- User buffer accessors (valid after exchange()) ---
-
-  /**
-   * @return IBGDA-registered local buffer descriptor (lkey for RDMA).
-   *         Only valid if a user buffer was provided.
-   */
-  const IbgdaLocalBuffer& getUserLocalBuffer() const {
-    return userLocalBuf_;
-  }
-
-  /**
-   * @return Device-accessible span of IBGDA remote buffer descriptors
-   *         (one per IBGDA peer, for RDMA writes to their buffers).
-   *         Only valid if a user buffer was provided and after exchange().
-   */
-  void* getUserRemoteBuffersDevice() const {
-    return userRemoteBufsDevice_ ? userRemoteBufsDevice_->get() : nullptr;
-  }
-
-  /**
-   * @return Device-accessible span of NVL peer pointers
-   *         (IPC-mapped, for direct NVLink access to peer buffers).
-   *         Only valid if a user buffer was provided and after exchange().
-   */
-  void* getUserNvlPeerPtrsDevice() const {
-    return userNvlPeerPtrsDevice_ ? userNvlPeerPtrsDevice_->get() : nullptr;
-  }
+  int registerAndExchangeBuffer(void* ptr, std::size_t size);
 
   int rank() const {
     return myRank_;
@@ -229,19 +223,19 @@ class HostWindow {
   // --- Per-peer counters (IBGDA-only, local — no exchange) ---
   IbgdaLocalBuffer ibgdaPeerCounterLocalBuf_;
 
-  // --- User data buffer (optional) ---
+  // --- User data buffer (optional, auto-registered via
+  //     registerAndExchangeBuffer) ---
+  void* userBuffer_{nullptr};
   std::size_t userBufferSize_{0};
-  IbgdaLocalBuffer userLocalBuf_;
-  std::unique_ptr<meta::comms::DeviceBuffer> userRemoteBufsDevice_;
-  std::vector<void*> userNvlMappedPtrs_;
-  std::unique_ptr<meta::comms::DeviceBuffer> userNvlPeerPtrsDevice_;
 
   // --- Buffer registration table (for generic put/put_signal) ---
   std::vector<LocalBufferRegistration> localRegistrations_;
-  // Flattened: [regIdx * nIbgdaPeers + ibgdaPeerIdx]
+  // Remote registrations for the single exchanged dst buffer (one per IBGDA
+  // peer)
   std::vector<RemoteBufferRegistration> remoteRegistrations_;
-  // Per-registration NVL mapped pointers (per-rank, includes self as nullptr)
-  std::vector<std::vector<void*>> registeredNvlMappedPtrs_;
+  // NVL mapped pointers for the exchanged dst buffer (per-rank, includes self
+  // as nullptr)
+  std::vector<void*> exchangedNvlMappedPtrs_;
   std::unique_ptr<meta::comms::DeviceBuffer> localRegistrationsDevice_;
   std::unique_ptr<meta::comms::DeviceBuffer> remoteRegistrationsDevice_;
 
