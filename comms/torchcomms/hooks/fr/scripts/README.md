@@ -14,7 +14,7 @@ The FlightRecorder is a debugging tool that records collective operations perfor
 
 - PyTorch 2.8 or higher
 - torchcomms with NCCL, NCCLX, or XCCL backend
-- CUDA-capable GPUs
+- CUDA-capable GPUs or Intel XPUs
 
 ## Running the Verification Script
 

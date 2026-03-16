@@ -35,6 +35,7 @@ on:
       - comms/torchcomms/tests/integration/py/SendRecvTest.py
       - comms/torchcomms/tests/integration/py/ScatterTest.py
       - comms/torchcomms/tests/integration/py/TPCommTest.py
+      - comms/torchcomms/hooks/fr/tests/py/FlightRecorderTest.py
       - setup.py
 
 permissions:
