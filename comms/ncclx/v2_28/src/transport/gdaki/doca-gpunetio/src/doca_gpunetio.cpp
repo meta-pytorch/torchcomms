@@ -551,7 +551,12 @@ doca_error_t doca_gpu_verbs_export_uar(uint64_t *sq_db, uint64_t **uar_addr_gpu)
         cudaHostRegisterPortable | cudaHostRegisterMapped | cudaHostRegisterIoMemory);
     if (cuda_status == cudaSuccess)
         registered = true;
-    else if (cuda_status != cudaErrorHostMemoryAlreadyRegistered) {
+    else if (cuda_status == cudaErrorHostMemoryAlreadyRegistered) {
+        // Clear the sticky CUDA error to prevent it from affecting subsequent CUDA calls.
+        // cudaHostRegister sets the CUDA runtime error state even when we handle
+        // the "already registered" case gracefully.
+        cudaGetLastError();
+    } else {
         DOCA_LOG(LOG_ERR,
                  "Function cudaHostRegister (err %d) "
                  "failed on addr %p size %d",

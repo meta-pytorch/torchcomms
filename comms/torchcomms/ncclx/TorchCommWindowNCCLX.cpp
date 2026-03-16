@@ -364,6 +364,17 @@ void TorchCommWindowNCCLX<Backend>::deregister_local_buffer(
     TC_LOG(ERROR) << "Failed to deregister local buffer";
   }
 
+  // ncclCommWindowDeregister may leave a sticky CUDA error in the runtime
+  // error queue.  The internal path (ncclCommDeregister -> async IPC release
+  // -> cuMemUnmap on remote peers, plus GIN ibv_dereg_mr -> DMA-BUF cleanup)
+  // can set cudaErrorHostMemoryAlreadyRegistered (712) as a deferred error.
+  // This is NOT a kernel error, so cudaDeviceSynchronize alone would not
+  // clear it.  We must call cudaGetLastError() to consume the sticky error
+  // before the next CUDA runtime API call (e.g. cudaMemset via tensor.zero_()
+  // in the next iteration) encounters it and throws.
+  cudaDeviceSynchronize();
+  cudaGetLastError();
+
   // Remove from tracking vector
   auto it = std::find_if(
       registered_local_buffers_.begin(),

@@ -216,7 +216,8 @@ struct RemoteBufferRegistration {
  *   transport.exchange();
  *   HostWindow window(transport, windowConfig);
  *   window.exchange();
- *   window.registerBuffer(myBuf, bufSize);  // collective, for put/put_signal
+ *   window.registerLocalBuffer(srcBuf, srcSize);   // local-only, for put src
+ *   window.registerAndExchangeBuffer(dstBuf, dstSize);  // collective, dst
  *   DeviceWindow dw = window.getDeviceWindow();
  *
  *   // Kernel
@@ -229,7 +230,9 @@ struct RemoteBufferRegistration {
  *
  * DATA TRANSFER APIS:
  * - put/put_signal: Generic one-sided write, dispatches to NVL or IBGDA
- *   internally. Buffers must be registered via HostWindow::registerBuffer().
+ *   internally. Source buffers must be registered via
+ *   HostWindow::registerLocalBuffer() or registerAndExchangeBuffer().
+ *   Destination buffers must be exchanged via registerAndExchangeBuffer().
  * - send/recv are NOT on DeviceWindow — use get_handle().get_nvl(rank)
  *   directly for two-sided operations.
  *
@@ -917,8 +920,10 @@ class DeviceWindow {
    * MultiPeerNvlTransportConfig.dataBufferSize. The staging buffer is
    * only used by P2pNvlTransportDevice::send()/recv().
    *
-   * PRECONDITION: Both localSrc and remoteDst must be within buffers
-   * previously registered via HostWindow::registerBuffer().
+   * PRECONDITION: localSrc must be within a buffer registered via
+   * HostWindow::registerLocalBuffer() or registerAndExchangeBuffer().
+   * remoteDst must be within a buffer exchanged via
+   * HostWindow::registerAndExchangeBuffer() on the target peer.
    *
    * @param target_rank  Rank to put to (must not be self).
    * @param group        ThreadGroup for group coordination.
@@ -965,8 +970,10 @@ class DeviceWindow {
    * - IBGDA: RDMA Write + NIC-fenced atomic signal (HW-ordered),
    *   single signal from global leader to match NVL semantics.
    *
-   * PRECONDITION: Both localSrc and remoteDst must be within buffers
-   * previously registered via HostWindow::registerBuffer().
+   * PRECONDITION: localSrc must be within a buffer registered via
+   * HostWindow::registerLocalBuffer() or registerAndExchangeBuffer().
+   * remoteDst must be within a buffer exchanged via
+   * HostWindow::registerAndExchangeBuffer() on the target peer.
    *
    * @param target_rank  Rank to put to (must not be self).
    * @param group        ThreadGroup for group coordination.
@@ -1084,16 +1091,16 @@ class DeviceWindow {
 
   /**
    * Lookup remote rkey for a destination pointer on a specific IBGDA peer.
-   * Linear scan over registered buffers.
-   * Traps if pointer is not in any registered buffer for that peer.
+   * There is exactly one exchanged dst buffer per DeviceWindow, so this
+   * is a direct peer-index lookup (no iteration).
+   * Traps if pointer is not within the exchanged buffer for that peer.
    */
   __device__ __forceinline__ NetworkRKey
   lookupRemoteRkey(int ibgdaPeerIdx, const void* remotePtr) const {
-    const auto* p = static_cast<const char*>(remotePtr);
-    int nRegs = static_cast<int>(localBufferRegistry_.size());
-    for (int i = 0; i < nRegs; ++i) {
-      const auto& reg = remoteBufferRegistry_[i * nIbgdaPeers_ + ibgdaPeerIdx];
+    if (remoteBufferRegistry_.size() > 0) {
+      const auto& reg = remoteBufferRegistry_[ibgdaPeerIdx];
       const auto* base = static_cast<const char*>(reg.base);
+      const auto* p = static_cast<const char*>(remotePtr);
       if (p >= base && p < base + reg.size) {
         return reg.rkey;
       }
@@ -1149,10 +1156,11 @@ class DeviceWindow {
   uint64_t barrierExpected_{0};
 
   // --- Buffer registration table (for generic put/put_signal) ---
-  // Local: lkey lookup for source buffers
+  // Local: lkey lookup for source buffers (registered via
+  // registerLocalBuffer or registerAndExchangeBuffer)
   DeviceSpan<LocalBufferRegistration> localBufferRegistry_;
-  // Remote: rkey lookup for destination buffers
-  // Flattened: [regIdx * nIbgdaPeers + ibgdaPeerIdx]
+  // Remote: rkey lookup for the single exchanged dst buffer.
+  // Indexed directly by ibgdaPeerIdx (one entry per IBGDA peer).
   DeviceSpan<RemoteBufferRegistration> remoteBufferRegistry_;
 
   // HostWindow constructs DeviceWindow directly

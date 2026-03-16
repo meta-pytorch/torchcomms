@@ -110,6 +110,155 @@ TEST_F(HostWindowTestFixture, WithBarriersAndCounters) {
 // header that requires CUDA compilation. Its success and error paths are
 // validated by the DeviceWindow unit tests and integration tests.
 
+// =============================================================================
+// registerLocalBuffer Tests
+// =============================================================================
+
+TEST_F(HostWindowTestFixture, RegisterLocalBufferBeforeExchange) {
+  auto transport = createTransport();
+  WindowConfig config{.peerSignalCount = 1};
+  HostWindow window(*transport, config);
+
+  void* buf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, 1024));
+
+  EXPECT_EQ(window.registerLocalBuffer(buf, 1024), 0);
+
+  CUDACHECK_TEST(cudaFree(buf));
+}
+
+TEST_F(HostWindowTestFixture, RegisterLocalBufferAfterExchange) {
+  auto transport = createTransport();
+  WindowConfig config{.peerSignalCount = 1};
+  HostWindow window(*transport, config);
+  window.exchange();
+
+  void* buf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, 4096));
+
+  int regIdx = window.registerLocalBuffer(buf, 4096);
+  EXPECT_EQ(regIdx, 0);
+
+  CUDACHECK_TEST(cudaFree(buf));
+}
+
+TEST_F(HostWindowTestFixture, RegisterMultipleLocalBuffers) {
+  auto transport = createTransport();
+  WindowConfig config{.peerSignalCount = 1};
+  HostWindow window(*transport, config);
+  window.exchange();
+
+  void* buf0 = nullptr;
+  void* buf1 = nullptr;
+  void* buf2 = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf0, 1024));
+  CUDACHECK_TEST(cudaMalloc(&buf1, 2048));
+  CUDACHECK_TEST(cudaMalloc(&buf2, 4096));
+
+  EXPECT_EQ(window.registerLocalBuffer(buf0, 1024), 0);
+  EXPECT_EQ(window.registerLocalBuffer(buf1, 2048), 1);
+  EXPECT_EQ(window.registerLocalBuffer(buf2, 4096), 2);
+
+  CUDACHECK_TEST(cudaFree(buf0));
+  CUDACHECK_TEST(cudaFree(buf1));
+  CUDACHECK_TEST(cudaFree(buf2));
+}
+
+// =============================================================================
+// registerAndExchangeBuffer Tests
+// =============================================================================
+
+TEST_F(HostWindowTestFixture, RegisterAndExchangeBufferBeforeExchange) {
+  auto transport = createTransport();
+  WindowConfig config{.peerSignalCount = 1};
+  HostWindow window(*transport, config);
+
+  void* buf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, 1024));
+
+  EXPECT_EQ(window.registerAndExchangeBuffer(buf, 1024), 0);
+
+  CUDACHECK_TEST(cudaFree(buf));
+}
+
+TEST_F(HostWindowTestFixture, RegisterAndExchangeBufferAfterExchange) {
+  auto transport = createTransport();
+  WindowConfig config{.peerSignalCount = 1};
+  HostWindow window(*transport, config);
+  window.exchange();
+
+  void* buf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, 4096));
+
+  int regIdx = window.registerAndExchangeBuffer(buf, 4096);
+  EXPECT_EQ(regIdx, 0);
+
+  CUDACHECK_TEST(cudaFree(buf));
+}
+
+TEST_F(HostWindowTestFixture, RegisterAndExchangeBufferCalledTwiceThrows) {
+  auto transport = createTransport();
+  WindowConfig config{.peerSignalCount = 1};
+  HostWindow window(*transport, config);
+  window.exchange();
+
+  void* buf0 = nullptr;
+  void* buf1 = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf0, 1024));
+  CUDACHECK_TEST(cudaMalloc(&buf1, 1024));
+
+  window.registerAndExchangeBuffer(buf0, 1024);
+  EXPECT_THROW(
+      window.registerAndExchangeBuffer(buf1, 1024), std::runtime_error);
+
+  CUDACHECK_TEST(cudaFree(buf0));
+  CUDACHECK_TEST(cudaFree(buf1));
+}
+
+// =============================================================================
+// Mixed registration Tests
+// =============================================================================
+
+TEST_F(HostWindowTestFixture, LocalThenExchangeBufferIndicesAreSequential) {
+  auto transport = createTransport();
+  WindowConfig config{.peerSignalCount = 1};
+  HostWindow window(*transport, config);
+  window.exchange();
+
+  void* localBuf = nullptr;
+  void* dstBuf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&localBuf, 1024));
+  CUDACHECK_TEST(cudaMalloc(&dstBuf, 2048));
+
+  EXPECT_EQ(window.registerLocalBuffer(localBuf, 1024), 0);
+  EXPECT_EQ(window.registerAndExchangeBuffer(dstBuf, 2048), 1);
+
+  CUDACHECK_TEST(cudaFree(localBuf));
+  CUDACHECK_TEST(cudaFree(dstBuf));
+}
+
+TEST_F(HostWindowTestFixture, ExchangeThenLocalBufferIndicesAreSequential) {
+  auto transport = createTransport();
+  WindowConfig config{.peerSignalCount = 1};
+  HostWindow window(*transport, config);
+  window.exchange();
+
+  void* dstBuf = nullptr;
+  void* localBuf0 = nullptr;
+  void* localBuf1 = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&dstBuf, 2048));
+  CUDACHECK_TEST(cudaMalloc(&localBuf0, 1024));
+  CUDACHECK_TEST(cudaMalloc(&localBuf1, 4096));
+
+  EXPECT_EQ(window.registerAndExchangeBuffer(dstBuf, 2048), 0);
+  EXPECT_EQ(window.registerLocalBuffer(localBuf0, 1024), 1);
+  EXPECT_EQ(window.registerLocalBuffer(localBuf1, 4096), 2);
+
+  CUDACHECK_TEST(cudaFree(dstBuf));
+  CUDACHECK_TEST(cudaFree(localBuf0));
+  CUDACHECK_TEST(cudaFree(localBuf1));
+}
+
 } // namespace comms::pipes::tests
 
 int main(int argc, char** argv) {
