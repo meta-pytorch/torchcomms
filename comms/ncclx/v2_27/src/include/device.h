@@ -128,7 +128,7 @@ static_assert(NCCL_LL_CLEAN_MASK % NCCL_STEPS == 0, "Invalid NCCL_LL_CLEAN_MASK 
 
 struct ncclConnInfo {
   // Regular comm mechanism
-  char *buffs[NCCL_NUM_PROTOCOLS]; // Local for recv, remote for send
+  volatile char *buffs[NCCL_NUM_PROTOCOLS]; // Local for recv, remote for send
   void* mhandles[NCCL_NUM_PROTOCOLS];
   uint64_t *tail;     // Local for recv, remote for send
   uint64_t *head;     // Local for send, remote for recv
@@ -460,7 +460,7 @@ struct alignas(16) ncclDevKernelArgs {
   // A channel's first batch is at `blockIdx.x`. Use `nextJump` to follow rest of list.
   // struct ncclDevWorkBatch batches[];
   // Pointer to the flag indicating if resources are ready for this kernel
-  volatile uint64_t *channelsReadyPtr;
+  uint64_t* channelsDoorBell;
 };
 
 __host__ __device__ constexpr int ncclMaxKernelArgsSize(/*int cudaDriver, */int cudaArch=NCCL_CUDA_ARCH) {

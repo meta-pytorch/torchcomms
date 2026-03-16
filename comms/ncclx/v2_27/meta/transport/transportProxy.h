@@ -18,7 +18,7 @@
 
 namespace ncclx::transport {
 
-constexpr size_t kDefaultSyncPoolSize = 1 << 21; // 2MiB
+constexpr size_t kDefaultSyncPoolSize = 1 << 27; // 128MiB
 
 enum class TransportRequestType : int {
   UNSET = 0,
@@ -35,7 +35,8 @@ struct TransportRequest {
   uint64_t opCount{0};
   std::shared_ptr<void> peerReconnInfoMap{nullptr};
   std::vector<std::string> bufKeys;
-  uint64_t* channelsReadyPtr{nullptr};
+  uint64_t* channelsDoorBell; // Length MAXCHANNELS int array, each int used to
+                              // indicate whether a channel is ready to run
   commResult_t state{commInProgress};
   // Following fields are only used for p2p/coll preconnect
   std::array<bool, NCCL_NUM_ALGORITHMS> algoNeedConnect{false};
@@ -49,14 +50,14 @@ struct TransportRequest {
       uint64_t channelMask,
       uint64_t opCount,
       std::shared_ptr<void> peerReconnInfoMap,
-      uint64_t* channelsReadyPtr,
+      uint64_t* channelsDoorBell,
       commResult_t initState)
       : type(type),
         comm(comm),
         channelMask(channelMask),
         opCount(opCount),
         peerReconnInfoMap(std::move(peerReconnInfoMap)),
-        channelsReadyPtr(channelsReadyPtr),
+        channelsDoorBell(channelsDoorBell),
         state(initState) {}
 
   // For PRECONNECT_P2P request
@@ -83,21 +84,21 @@ class TransportProxy {
   TransportProxy(ncclComm* comm);
   ~TransportProxy();
 
-  // Get the next available sync flag to synchronize with NCCL kernels
-  commResult_t getNextChannelsReadyPtr(uint64_t** channelsReadyPtr);
+  // Get the next available sync flags to synchronize with NCCL kernels
+  commResult_t getNextChannelDoorBell(uint64_t** ptrToDoorBell);
   // Enqueue a request to the transport proxy for preparing transport resources,
   // if needed, for the current kernel plan.
   //  @param[IN] comm: communicator, the ncclComm struct
   //  @param[IN] channelMask: the bit mask of channels to prepare resources for
   //  @param[IN] peerReconnInfoMap: the map of peer ranks to their transport
   //  connection state
-  //  @param[IN] channelsReadyPtr: pointer to the channels ready flag to
+  //  @param[IN] ptrToDoorBell: pointer to the channels ready flag to
   //  synchronize
   commResult_t enqueuePrepRequest(
       ncclComm* comm,
       uint64_t channelMask,
       std::shared_ptr<void> peerReconnInfoMap,
-      uint64_t* channelsReadyPtr);
+      uint64_t* channelsDoorBell);
   // Enqueue a request to the transport proxy for pre-connecting to p2p peers
   //  @param[IN] comm: communicator, the ncclComm struct
   commResult_t enqueueP2pPreconnect(ncclComm* comm);
@@ -127,6 +128,26 @@ class TransportProxy {
       opCountMap_[commHash] = 0;
     }
     return folly::get_default(opCountMap_, commHash);
+  }
+
+  inline int countReadyChannels(volatile uint64_t* channelsDoorBell) {
+    int count = 0;
+    for (int i = 0; i < MAXCHANNELS; i++) {
+      if (channelsDoorBell[i] == 1) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  inline void markReadyChannels(
+      volatile uint64_t* channelsDoorBell,
+      uint64_t channelMask) {
+    while (channelMask) {
+      unsigned pos = std::countr_zero(channelMask); // index of lowest set bit
+      channelsDoorBell[pos] = 1;
+      channelMask &= (channelMask - 1); // clear that bit
+    }
   }
 
   // request queue for worker thread to process
