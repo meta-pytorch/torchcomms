@@ -2001,10 +2001,19 @@ cvars:
      ctpipeline - Ctran-based pipeline algorithm that pipelines
                   inter-node rail ring and intra-node CopyEngine based copy
 
+ - name        : NCCL_ALLGATHER_WIN_ALGO
+   type        : enum
+   default     : ctdirect
+   choices     : ctdirect, ctpipeline
+   description : |-
+     The algorithm to use for window-based AllGather communication
+     ctdirect - All-to-all PUT to all peers
+     ctpipeline - Ring-based pipeline with inter-node ring and intra-node CE broadcast
+
  - name        : NCCL_ALLGATHER_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctdirect, ctring, ctrd, ctbrucks
+   choices     : orig, ctran, ctdirect, ctring, ctrd, ctbrucks, ctwindow
    description : |-
      The algorithm to use for Allgather communication
      orig - Copy-based ring algorithm
@@ -2012,6 +2021,7 @@ cvars:
      ctdirect - Ctran-based direct point-to-point algorithm
      ctring - Ctran-based ring algorithm
      ctrd - Ctran-based recursive doubling algorithm
+     ctwindow - Ctran-based window RMA put+signal algorithm
 
  - name        : NCCL_REDUCESCATTER_ALGO
    type        : enum
