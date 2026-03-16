@@ -24,6 +24,7 @@
 
 #include "LoggerUtil.h"
 #include "comm.h" // @manual
+#include "comms/ncclx/meta/tests/VerifyTopoUtil.h"
 #include "debug.h" // @manual
 #include "nccl.h" // @manual
 
@@ -84,7 +85,7 @@ class MemoryLoggingTestFixture : public NcclxBaseTestFixture {
 
   // Generate set of unqiue buffer keys based on communicator channel/peer
   // information
-  std::vector<std::string> parseCallsites(ncclComm* comm, bool p2pOnly) {
+  std::vector<std::string> parseCallsites(ncclComm* comm) {
     std::vector<std::string> expectedBufKeys;
     for (int c = 0; c < comm->nChannels; c++) {
       auto& channel = comm->channels[c];
@@ -93,46 +94,18 @@ class MemoryLoggingTestFixture : public NcclxBaseTestFixture {
         struct ncclChannelPeer** channelPeers = comm->channels[c].peers;
         int peerRank = 0;
         while (channelPeers[peerRank] != nullptr) {
-          parseChannelPeer(
-              channelPeers[peerRank],
-              c /* channelId*/,
-              0 /* connIndex */,
-              true /* isSend*/,
-              peerRank,
-              comm->ctranComm_->statex_->isSameNode(this->globalRank, peerRank),
-              comm->commHash,
-              p2pOnly,
-              expectedBufKeys);
-          parseChannelPeer(
-              channelPeers[peerRank],
-              c /* channelId*/,
-              0 /* connIndex */,
-              false /* isSend*/,
-              peerRank,
-              comm->ctranComm_->statex_->isSameNode(this->globalRank, peerRank),
-              comm->commHash,
-              p2pOnly,
-              expectedBufKeys);
-          parseChannelPeer(
-              channelPeers[peerRank],
-              c /* channelId*/,
-              1 /* connIndex */,
-              true /* isSend*/,
-              peerRank,
-              comm->ctranComm_->statex_->isSameNode(this->globalRank, peerRank),
-              comm->commHash,
-              p2pOnly,
-              expectedBufKeys);
-          parseChannelPeer(
-              channelPeers[peerRank],
-              c /* channelId*/,
-              1 /* connIndex */,
-              false /* isSend*/,
-              peerRank,
-              comm->ctranComm_->statex_->isSameNode(this->globalRank, peerRank),
-              comm->commHash,
-              p2pOnly,
-              expectedBufKeys);
+          for (int connIdx = 0; connIdx < 2; connIdx++) {
+            for (bool isSend : {true, false}) {
+              parseChannelPeer(
+                  channelPeers[peerRank],
+                  c /* channelId*/,
+                  connIdx,
+                  isSend,
+                  peerRank,
+                  comm->commHash,
+                  expectedBufKeys);
+            }
+          }
           peerRank++;
         }
       }
@@ -146,33 +119,42 @@ class MemoryLoggingTestFixture : public NcclxBaseTestFixture {
       int connIndex,
       bool isSend,
       int peerRank,
-      bool isSameNode,
       uint64_t commHash,
-      bool p2pOnly,
       std::vector<std::string>& expectedCallsites) {
     struct ncclConnector* connector =
         isSend ? &channelPeer->send[connIndex] : &channelPeer->recv[connIndex];
     if (!connector->connected) {
       return;
     }
+    auto transport = getTransportType(connector, isSend);
+    bool isP2p = (transport == NcclTransportType::kP2P);
     bool shared = connector->conn.shared;
     int tpLocalRank = connector->proxyConn.tpLocalRank;
-    std::string setupMethod = isSameNode ? "ProxySetup" : "ProxyConnect";
-    bool isP2pWrite = isSend && (connector->conn.flags & NCCL_P2P_WRITE);
-    // Only Net p2p buffers are shared currently
     if (shared) {
-      if (!p2pOnly) {
+      // Only Net p2p buffers are shared currently
+      expectedCallsites.push_back(
+          fmt::format(
+              "sharedNetBuffersInit:{}/{}/{}",
+              commHash,
+              tpLocalRank,
+              isSend ? 0 : 1));
+    } else if (isP2p && isSend) {
+      // P2P write: sender writes directly to receiver's mapped buffer.
+      // No staging buffer on send side — no memory event.
+      // P2P read: sender allocates staging buffer for receiver to read.
+      // Staging buffer IS allocated — memory event expected.
+      if (connector->conn.flags & NCCL_P2P_READ) {
         expectedCallsites.push_back(
-            fmt::format(
-                "sharedNetBuffersInit:{}/{}/{}",
-                commHash,
-                tpLocalRank,
-                isSend ? 0 : 1));
+            ncclx::memory::genKey(
+                "ProxySetup", isP2p, isSend, channelId, connIndex, peerRank));
       }
-    } else if ((isSameNode || !p2pOnly) && !isP2pWrite) {
+    } else {
+      // SHM/NET sends, and all recv connectors: always allocate staging buffers
+      bool isLocal = isP2p || (transport == NcclTransportType::kSHM);
+      std::string setupMethod = isLocal ? "ProxySetup" : "ProxyConnect";
       expectedCallsites.push_back(
           ncclx::memory::genKey(
-              setupMethod, isSameNode, isSend, channelId, connIndex, peerRank));
+              setupMethod, isP2p, isSend, channelId, connIndex, peerRank));
     }
   }
 
@@ -322,7 +304,7 @@ TEST_P(MemoryLoggingTestFixture, ncclInternalBufferLogTest) {
                              // ground truth
 
   // Only run this test on GPUs newer than H100
-  auto expectedCallsites = parseCallsites(comm, false /* p2pOnly*/);
+  auto expectedCallsites = parseCallsites(comm);
   if (comm->compCap > 80) {
     // Verify staging buffer allocation logs; each callsite is expected to be
     // logged exactly once
