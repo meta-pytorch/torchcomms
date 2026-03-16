@@ -239,6 +239,11 @@ class HostWindow {
   std::unique_ptr<meta::comms::DeviceBuffer> localRegistrationsDevice_;
   std::unique_ptr<meta::comms::DeviceBuffer> remoteRegistrationsDevice_;
 
+  // --- Window buffer NVL peer pointers (for offset-based put/put_signal) ---
+  // Device copy of NVL peers' IPC-mapped window buffer pointers.
+  std::unique_ptr<meta::comms::DeviceBuffer> userNvlPeerPtrsDevice_;
+
+  bool userBufferRegistered_{false};
   bool exchanged_{false};
 };
 
