@@ -154,8 +154,9 @@ commResult_t OrderedWorkStreamGuard::doAcquire(
 
   auto doWait = [&]() -> commResult_t {
 #if defined(__HIP_PLATFORM_AMD__)
-    unsigned int flags =
-        isCapturing ? hipEventWaitExternal : hipEventWaitDefault;
+    // hipify doesn't map cudaEventWaitExternal/cudaEventWaitDefault;
+    // use raw values: 0x01 = cudaEventWaitExternal, 0x00 = cudaEventWaitDefault
+    unsigned int flags = isCapturing ? 0x01 : 0x00;
 #else
     unsigned int flags =
         isCapturing ? cudaEventWaitExternal : cudaEventWaitDefault;
