@@ -3,6 +3,7 @@
 #include "comm.h"
 #include "comms/ctran/commstate/CommStateX.h"
 #include "comms/ctran/utils/Checks.h"
+#include "meta/NcclxConfig.h" // @manual
 
 #include "bootstrap.h"
 #include "nvmlwrap.h"
@@ -51,7 +52,7 @@ std::unique_ptr<CommStateX> createCommStateXFromNcclComm(void* _comm) {
       comm->commHash,
       std::vector<RankTopology>(), /* rankTopologies */
       std::vector<int>(), /* commRanksToWorldRanks */
-      comm->config.commDesc);
+      NCCLX_CONFIG_FIELD(comm->config, commDesc));
 
   if (comm->noLocal_ ||
       NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::nolocal) {

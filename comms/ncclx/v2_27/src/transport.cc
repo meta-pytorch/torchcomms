@@ -5,6 +5,7 @@
  ************************************************************************/
 
 #include "comm.h"
+#include "meta/NcclxConfig.h" // @manual
 #include "info.h"
 #include "bootstrap.h"
 #define ENABLE_TIMER 0
@@ -13,7 +14,6 @@
 
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/EventsScubaUtil.h"
-#include "comms/ctran/utils/Utils.h"
 #include "meta/transport/transportExt.h"
 
 struct ncclTransport* ncclTransports[NTRANSPORTS+1] = {
@@ -115,7 +115,9 @@ ncclResult_t ncclTransportCheckP2pType(struct ncclComm* comm, bool* isAllDirectP
   }
   *isAllDirectP2p = supportFlag;
   *directMode = directFlag;
-  if (comm->rank == 0) INFO(NCCL_INIT, "commDesc: %s Check P2P Type intraNodeP2pSupport %d directMode %d", ctran::utils::parseCommDesc(comm->config.commDesc), supportFlag, directFlag);
+  if (comm->rank == 0) {
+    INFO(NCCL_INIT, "commDesc: %s Check P2P Type intraNodeP2pSupport %d directMode %d", NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str(), supportFlag, directFlag);
+  }
   return ncclSuccess;
 }
 
