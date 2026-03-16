@@ -26,9 +26,6 @@
 #include "comm.h" // @manual
 #include "debug.h" // @manual
 #include "nccl.h" // @manual
-#include "transport.h" // @manual
-
-#include <sstream>
 
 class MemoryLoggingTestFixture : public NcclxBaseTestFixture {
  public:
@@ -261,8 +258,8 @@ TEST_P(MemoryLoggingTestFixture, ncclInternalBufferLogTest) {
   // First comm creation as well as first kernel launch has some extra memory
   // usage (https://fburl.com/code/rxjvjads), use second comm
   // creation/collective for testing
-  NCCLCHECK_TEST(
-      ncclCommInitRankConfig(&comm, numRanks, ncclUid, globalRank, nullptr));
+  comm = createNcclComm(
+      globalRank, numRanks, localRank, false, nullptr, server.get());
   std::cout << "Rank " << this->globalRank << " finished init, run AR"
             << std::endl;
   size_t count = 1 << 10; // 1K elements
@@ -363,8 +360,8 @@ TEST_P(MemoryLoggingTestFixture, userBufferLoggingTest) {
 
   auto logFileName = initLogger();
   EXPECT_EQ(NCCL_COMM_WORLD, nullptr);
-  NCCLCHECK_TEST(
-      ncclCommInitRankConfig(&comm, numRanks, ncclUid, globalRank, nullptr));
+  comm = createNcclComm(
+      globalRank, numRanks, localRank, false, nullptr, server.get());
 
   /* mapper registration logic */
   void *buf = nullptr, *segHdl = nullptr;
