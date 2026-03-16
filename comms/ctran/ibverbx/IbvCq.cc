@@ -58,10 +58,22 @@ IbvCq::IbvCq(IbvCq&& other) noexcept {
 }
 
 IbvCq& IbvCq::operator=(IbvCq&& other) noexcept {
-  cq_ = other.cq_;
-  deviceId_ = other.deviceId_;
-  other.cq_ = nullptr;
-  other.deviceId_ = -1;
+  if (this != &other) {
+    if (cq_) {
+      int rc = ibvSymbols.ibv_internal_destroy_cq(cq_);
+      if (rc != 0) {
+        XLOGF(
+            ERR,
+            "Failed to destroy cq in move assignment rc: {}, {}",
+            rc,
+            strerror(errno));
+      }
+    }
+    cq_ = other.cq_;
+    deviceId_ = other.deviceId_;
+    other.cq_ = nullptr;
+    other.deviceId_ = -1;
+  }
   return *this;
 }
 

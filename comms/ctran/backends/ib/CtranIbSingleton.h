@@ -4,6 +4,8 @@
 #define CTRAN_IB_SINGLETON_H_
 
 #include <memory>
+#include <mutex>
+#include <unordered_map>
 #include <vector>
 
 #include <folly/Singleton.h>
@@ -57,6 +59,16 @@ class CtranIbSingleton {
 
   bool getDevToDmaBufSupport(int cudaDev);
 
+  // Checkout a CQ from the per-device pool if CQ pooling is enabled and a
+  // pooled CQ is available, otherwise create a new CQ (~183ms syscall).
+  folly::Expected<ibverbx::IbvCq, ibverbx::Error> checkoutCq(
+      int singletonDevIdx,
+      int maxCqe);
+
+  // Return a CQ to the per-device pool for reuse. If CQ pooling is disabled,
+  // the CQ is destroyed immediately via IbvCq destructor.
+  void checkinCq(int singletonDevIdx, ibverbx::IbvCq cq);
+
   size_t getDeviceTrafficSnapshot(const int cudaDev);
 
   static IVerbsWrapper* getVerbsPtr();
@@ -75,6 +87,16 @@ class CtranIbSingleton {
   ~CtranIbSingleton();
   std::vector<ibverbx::IbvPd> ibvPds_;
   std::vector<std::unique_ptr<std::atomic<size_t>>> devBytes_;
+
+  // CQ pool: keyed by singletonDevIdx (CQs are bound to a specific
+  // ibv_context). Declared after ibvPds_ so implicit destruction order
+  // destroys pooled CQs before PDs/devices.
+  // Pool size per device is bounded in practice by the number of concurrent
+  // communicators sharing a device (typically 1-2).
+  // Lock ordering: when CtranIb::cqMutex is also needed, acquire cqMutex
+  // first (cqMutex -> cqPoolMutex_).
+  std::mutex cqPoolMutex_;
+  std::unordered_map<int, std::vector<ibverbx::IbvCq>> cqPool_;
 
   std::unordered_map<int, bool> devToDmaBufSupport;
   std::mutex dmaBufSupportMutex_;
