@@ -58,6 +58,7 @@ class CtranAllgatherPTest : public ctran::CtranDistTestFixture {
 
   void SetUp() override {
     setenv("NCCL_CTRAN_ENABLE", "1", 0);
+    setenv("NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET", "1", 0);
     CtranDistTestFixture::SetUp();
 
     CUDACHECK_TEST(cudaStreamCreate(&stream));
@@ -572,6 +573,13 @@ TEST_F(CtranAllgatherPTest, SharePersistentBuffer) {
   // Release resources
   for (int r = 0; r < requests.size(); r++) {
     ASSERT_EQ(ctran::allGatherPDestroy(requests[r]), commSuccess);
+  }
+
+  // Destroy test comms before deregistering buffers, since comm destruction
+  // releases IPC exports that reference the registered buffers
+  testComms.clear();
+  for (int c = 0; c < kComms; c++) {
+    CUDACHECK_TEST(cudaStreamDestroy(streams[c]));
   }
 
   // deregister buffers
