@@ -32,31 +32,43 @@ __attribute__((visibility("default"))) Hints::Hints(
   }
 }
 
+// Strip the "ncclx::" prefix from a key if present, so callers can use
+// either "fastInitMode" or "ncclx::fastInitMode" interchangeably.
+static std::string stripNcclxPrefix(const std::string& key) {
+  constexpr std::string_view kPrefix = "ncclx::";
+  if (key.compare(0, kPrefix.size(), kPrefix) == 0) {
+    return key.substr(kPrefix.size());
+  }
+  return key;
+}
+
 __attribute__((visibility("default"))) ncclResult_t
 Hints::set(const std::string& key, const std::string& val) {
-  if (key.starts_with("ncclx_alltoallv_dynamic")) {
+  auto bareKey = stripNcclxPrefix(key);
+  if (bareKey.starts_with("ncclx_alltoallv_dynamic")) {
     NCCLCHECK(
-        metaCommToNccl(AllToAllvDynamicHintUtils::set(key, val, this->kv)));
+        metaCommToNccl(AllToAllvDynamicHintUtils::set(bareKey, val, this->kv)));
     return ncclSuccess;
-  } else if (key.starts_with("ncclx_alltoallp")) {
-    NCCLCHECK(metaCommToNccl(AllToAllPHintUtils::set(key, val, this->kv)));
+  } else if (bareKey.starts_with("ncclx_alltoallp")) {
+    NCCLCHECK(metaCommToNccl(AllToAllPHintUtils::set(bareKey, val, this->kv)));
     return ncclSuccess;
-  } else if (key.starts_with(("window"))) {
-    NCCLCHECK(metaCommToNccl(WinHintUtils::set(key, val, this->kv)));
+  } else if (bareKey.starts_with(("window"))) {
+    NCCLCHECK(metaCommToNccl(WinHintUtils::set(bareKey, val, this->kv)));
     return ncclSuccess;
   } else {
     const auto& knownKeys = ncclx::knownHintKeys();
-    if (std::find(knownKeys.begin(), knownKeys.end(), key) == knownKeys.end()) {
-      WARN("NCCLX Hints: unknown key '%s'; check spelling", key.c_str());
+    if (std::find(knownKeys.begin(), knownKeys.end(), bareKey) ==
+        knownKeys.end()) {
+      WARN("NCCLX Hints: unknown key '%s'; check spelling", bareKey.c_str());
     }
-    this->kv[key] = val;
+    this->kv[bareKey] = val;
     return ncclSuccess;
   }
 }
 
 __attribute__((visibility("default"))) ncclResult_t
 Hints::get(const std::string& key, std::string& val) const {
-  auto iter = this->kv.find(key);
+  auto iter = this->kv.find(stripNcclxPrefix(key));
   if (iter != this->kv.end()) {
     val = iter->second;
     return ncclSuccess;
