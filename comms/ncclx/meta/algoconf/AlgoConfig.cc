@@ -311,7 +311,7 @@ std::string getAlgoHintValue(enum NCCL_RMA_ALGO algo) {
 
 void testOnlyResetAlgoConfig() {
   auto algoConfig = AlgoConfig::getInstance();
-  // It may cause hint entry to be registerd twice if this is the first time to
+  // It may cause hint entry to be registered twice if this is the first time to
   // initialize algoConfigSingleton. I.e., algoConfigSingleton will register all
   // entries in its constructor. It should be OK as this function is called only
   // in tests.
