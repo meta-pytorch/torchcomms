@@ -95,7 +95,7 @@ class StreamCaptureModeGuard {
           return static_cast<Api*>(ctx)->threadExchangeStreamCaptureMode(mode);
         }),
         prevMode_(desiredMode) {
-    exchangeFn_(ctx_, &prevMode_);
+    (void)exchangeFn_(ctx_, &prevMode_);
   }
 
   ~StreamCaptureModeGuard();
