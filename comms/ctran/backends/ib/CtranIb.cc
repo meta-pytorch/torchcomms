@@ -977,6 +977,14 @@ commResult_t CtranIb::initRemoteTransStates(void) {
   // create a new cq
   {
     std::unique_lock<std::mutex> lock(cqMutex);
+
+    // Clear old CQs before creating new ones (fixes accumulation on
+    // reconfigure).
+    for (int device = 0; device < NCCL_CTRAN_IB_DEVICES_PER_RANK; device++) {
+      devices[device].ibvCq = nullptr;
+    }
+    cqs.clear(); // IbvCq destructors call ibv_destroy_cq
+
     for (int device = 0; device < NCCL_CTRAN_IB_DEVICES_PER_RANK; device++) {
       auto createCqResult =
           devices[device].ibvDevice->createCq(maxCqe, nullptr, nullptr, 0);
