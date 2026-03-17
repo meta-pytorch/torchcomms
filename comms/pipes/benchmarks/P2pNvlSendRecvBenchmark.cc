@@ -634,7 +634,7 @@ TEST_F(P2pSendRecvBenchmarkFixture, UnidirectionalBenchmark) {
     result.ncclBandwidth = runNcclBenchmark(config, result.ncclTime);
 
     // Run P2P NVL benchmark
-    result.p2pBandwidth = runP2pNvlBenchmark(p2p, config, result.p2pTime);
+    result.p2pBandwidth = runP2pNvlBenchmark(*p2p, config, result.p2pTime);
 
     // Calculate speedup
     result.p2pSpeedup = (result.ncclBandwidth > 0)
@@ -822,7 +822,7 @@ TEST_F(P2pSendRecvBenchmarkFixture, BidirectionalBenchmark) {
 
     // Run P2P NVL bidirectional benchmark
     result.p2pBandwidth =
-        runP2pNvlBidirectionalBenchmark(p2p, config, result.p2pTime);
+        runP2pNvlBidirectionalBenchmark(*p2p, config, result.p2pTime);
 
     // Calculate speedup
     result.p2pSpeedup = (result.ncclBandwidth > 0)
