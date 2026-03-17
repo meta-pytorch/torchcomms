@@ -224,7 +224,7 @@ class ThreadGroupStridedTest
 // 4. This mapping is deterministic regardless of total_items
 //
 // Why this matters:
-// - ROUND-ROBIN pattern ensures consistent chunk-to-group mapping
+// - STRIDED pattern ensures consistent chunk-to-group mapping
 // - Useful when groups maintain local state for specific chunks
 // - e.g., ChunkState tracking where each group "owns" certain chunks
 //
@@ -260,7 +260,7 @@ TEST_P(ThreadGroupStridedTest, ForEachItemStridedLocality) {
       &errorCount_h, errorCount_d, sizeof(uint32_t), cudaMemcpyDeviceToHost));
 
   EXPECT_EQ(errorCount_h, 0)
-      << "Round-robin pattern should assign item K to group (K % total_groups) ("
+      << "Strided pattern should assign item K to group (K % total_groups) ("
       << params.description << ")";
 
   std::vector<uint32_t> groupIds_h(numItems);
@@ -847,9 +847,9 @@ class ThreadGroupPartitionInterleavedTest
     : public ThreadGroupTestFixture,
       public ::testing::WithParamInterface<PartitionTestParams> {};
 
-// Test: partition_interleaved round-robin assignment
+// Test: partition_interleaved strided assignment
 // Verifies:
-// - partition_id = group_id % num_partitions (round-robin)
+// - partition_id = group_id % num_partitions (strided)
 // - subgroup.group_id = group_id / num_partitions (renumbered within partition)
 // - subgroup.total_groups = (total_groups + num_partitions - 1 - pid) /
 // num_partitions
@@ -949,7 +949,7 @@ TEST_P(ThreadGroupPartitionInterleavedTest, PartitionInterleaved) {
   }
 
   EXPECT_EQ(partitionIds_h, expectedPartitionIds)
-      << "Partition IDs should follow interleaved (round-robin) pattern";
+      << "Partition IDs should follow interleaved (strided) pattern";
   EXPECT_EQ(subgroupIds_h, expectedSubgroupIds)
       << "Subgroup IDs should be sequential within each partition";
   EXPECT_EQ(subgroupTotalGroups_h, expectedTotalGroups)

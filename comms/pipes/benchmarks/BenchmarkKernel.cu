@@ -79,7 +79,7 @@ __global__ void p2pRecvTimed(
   }
 }
 
-__global__ void p2pBidirectional(
+__global__ __launch_bounds__(512, 1) void p2pBidirectional(
     P2pNvlTransportDevice* p2p,
     void* sendBuff,
     void* recvBuff,

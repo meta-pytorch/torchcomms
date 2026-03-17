@@ -74,7 +74,7 @@ class P2pSignalBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
   // Helper function to run P2P signal benchmark - returns latency
   // in microseconds
   float runSignalBenchmark(
-      comms::pipes::P2pNvlTransportDevice& p2p,
+      comms::pipes::P2pNvlTransportDevice* p2p,
       const BenchmarkConfig& config,
       int nSteps = 1000) {
     XLOGF(DBG1, "=== Running Signal benchmark: {} ===", config.name);
