@@ -1195,8 +1195,6 @@ set(COMMON_FILES
   comms/pipes/TopologyDiscovery.cc
   comms/pipes/TopologyDiscovery.h
   comms/pipes/Transport.cuh
-  comms/pipes/window/DeviceWindowMemory.cuh
-  comms/pipes/window/DeviceWindowSignal.cuh
   comms/pipes/window/WindowMemory.cc
   comms/pipes/window/WindowMemory.h
   comms/utils/checks.h
