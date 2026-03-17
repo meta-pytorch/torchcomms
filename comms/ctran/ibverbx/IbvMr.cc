@@ -1,6 +1,8 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 #include "comms/ctran/ibverbx/IbvMr.h"
 
+#include <utility>
+
 #include <folly/logging/xlog.h>
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
 
@@ -18,8 +20,7 @@ IbvMr::IbvMr(IbvMr&& other) noexcept {
 }
 
 IbvMr& IbvMr::operator=(IbvMr&& other) noexcept {
-  mr_ = other.mr_;
-  other.mr_ = nullptr;
+  std::swap(mr_, other.mr_);
   return *this;
 }
 

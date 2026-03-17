@@ -2,6 +2,8 @@
 
 #include "comms/ctran/ibverbx/IbvAh.h"
 
+#include <utility>
+
 #include <folly/logging/xlog.h>
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
 
@@ -19,8 +21,7 @@ IbvAh::IbvAh(IbvAh&& other) noexcept {
 }
 
 IbvAh& IbvAh::operator=(IbvAh&& other) noexcept {
-  ah_ = other.ah_;
-  other.ah_ = nullptr;
+  std::swap(ah_, other.ah_);
   return *this;
 }
 

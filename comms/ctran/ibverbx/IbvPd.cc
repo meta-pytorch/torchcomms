@@ -1,5 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <utility>
+
 #include "comms/ctran/ibverbx/IbvPd.h"
 #include "comms/ctran/ibverbx/IbvVirtualCq.h"
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
@@ -22,11 +24,9 @@ IbvPd::IbvPd(IbvPd&& other) noexcept {
 }
 
 IbvPd& IbvPd::operator=(IbvPd&& other) noexcept {
-  pd_ = other.pd_;
-  dataDirect_ = other.dataDirect_;
-  deviceId_ = other.deviceId_;
-  other.pd_ = nullptr;
-  other.deviceId_ = -1;
+  std::swap(pd_, other.pd_);
+  std::swap(dataDirect_, other.dataDirect_);
+  std::swap(deviceId_, other.deviceId_);
   return *this;
 }
 

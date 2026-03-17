@@ -2,6 +2,8 @@
 
 #include "comms/ctran/ibverbx/IbvSrq.h"
 
+#include <utility>
+
 #include <folly/logging/xlog.h>
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
 
@@ -19,8 +21,7 @@ IbvSrq::IbvSrq(IbvSrq&& other) noexcept {
 }
 
 IbvSrq& IbvSrq::operator=(IbvSrq&& other) noexcept {
-  srq_ = other.srq_;
-  other.srq_ = nullptr;
+  std::swap(srq_, other.srq_);
   return *this;
 }
 
