@@ -6,6 +6,7 @@
  *************************************************************************/
 
 #include "nccl.h"
+#include "meta/NcclxConfig.h" // @manual
 #include "core.h"
 #include "utils.h"
 #include "bootstrap.h"
@@ -692,7 +693,7 @@ ncclResult_t formRingViaTcpStore(bootstrapState* state, ncclComm* comm) {
   myFollyAddr.setFromSockaddr(reinterpret_cast<sockaddr*>(&listenSockAddr), sizeof(listenSockAddr));
   INFO(NCCL_INIT, "rank %d listen on %s: %s", rank, bootstrapNetIfName, myFollyAddr.describe().c_str());
 
-  const std::string kKeyPrefix = std::string(kTcpStoreAddrKeyPrefix) + comm->config.commDesc + "-";
+  const std::string kKeyPrefix = std::string(kTcpStoreAddrKeyPrefix) + NCCLX_CONFIG_FIELD(comm->config, commDesc) + "-";
 
   // put my-rank's listenSockAddr e.g <rank0, info.extAddressListen>
   std::string myKey = kKeyPrefix + std::to_string(rank);
@@ -752,7 +753,7 @@ ncclResult_t bootstrapInit(int nHandles, void* handles, struct ncclComm* comm, s
   state->cudaDev = comm->cudaDev;
   state->abortFlag = comm->abortFlag;
   state->net = comm->ncclNet;
-  state->fastInitMode = comm->config.fastInitMode;
+  state->fastInitMode = NCCLX_CONFIG_FIELD(comm->config, fastInitMode);
   comm->bootstrap = state;
 
   // Set magic: for grow existing ranks, receive from coordinator; otherwise use handle magic.
@@ -948,7 +949,7 @@ ncclResult_t bootstrapSplit(uint64_t magic, struct ncclComm* comm, struct ncclCo
   state->cudaDev = comm->cudaDev;
   state->abortFlag = comm->abortFlag;
   state->net = comm->ncclNet;
-  state->fastInitMode = comm->config.fastInitMode;
+  state->fastInitMode = NCCLX_CONFIG_FIELD(comm->config, fastInitMode);
   comm->bootstrap = state;
   comm->magic = state->magic = magic;
 
