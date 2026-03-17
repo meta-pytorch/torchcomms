@@ -23,27 +23,27 @@ __device__ inline ThreadGroup make_group(GroupType groupType) {
 // =============================================================================
 
 __global__ void testDeviceSignalKernel(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     uint64_t signalId,
     SignalOp op,
     uint64_t value,
     GroupType groupType) {
   auto group = make_group(groupType);
-  p2p.signal_threadgroup(group, signalId, op, value);
+  p2p->signal_threadgroup(group, signalId, op, value);
 }
 
 __global__ void testDeviceWaitSignalKernel(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     uint64_t signalId,
     CmpOp op,
     uint64_t value,
     GroupType groupType) {
   auto group = make_group(groupType);
-  p2p.wait_signal_until_threadgroup(group, signalId, op, value);
+  p2p->wait_signal_until_threadgroup(group, signalId, op, value);
 }
 
 __global__ void testDeviceSignalThenWaitKernel(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     uint64_t signalId,
     SignalOp signalOp,
     uint64_t signalValue,
@@ -51,12 +51,12 @@ __global__ void testDeviceSignalThenWaitKernel(
     uint64_t waitValue,
     GroupType groupType) {
   auto group = make_group(groupType);
-  p2p.signal_threadgroup(group, signalId, signalOp, signalValue);
-  p2p.wait_signal_until_threadgroup(group, signalId, waitOp, waitValue);
+  p2p->signal_threadgroup(group, signalId, signalOp, signalValue);
+  p2p->wait_signal_until_threadgroup(group, signalId, waitOp, waitValue);
 }
 
 void testDeviceSignal(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     uint64_t signalId,
     SignalOp op,
     uint64_t value,
@@ -69,7 +69,7 @@ void testDeviceSignal(
 }
 
 void testDeviceWaitSignal(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     uint64_t signalId,
     CmpOp op,
     uint64_t value,
@@ -82,7 +82,7 @@ void testDeviceWaitSignal(
 }
 
 void testDeviceSignalThenWait(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     uint64_t signalId,
     SignalOp signalOp,
     uint64_t signalValue,
