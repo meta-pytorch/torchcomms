@@ -830,9 +830,7 @@ set(CTRAN_FILES
   comms/ctran/algos/AllToAll/AllToAllvDynamicSplit.cc
   comms/ctran/algos/AllToAll/AllToallvDynamicSplitNonContig.cc
   comms/ctran/algos/AllToAll/AllToAllvImpl.h
-  comms/ctran/algos/AllToAll/fb/compressed/CompressedAllToAllv.cc
   comms/ctran/algos/AllToAll/fb/compressed/CompressedAllToAllv.h
-  comms/ctran/algos/AllToAll/fb/compressed/CompressedAllToAllvImpl.h
   comms/ctran/algos/AllToAll/HostTypes.h
   comms/ctran/algos/AllToAll/Types.h
   comms/ctran/algos/AllToAllvDedup/AlgoImpl.cc
