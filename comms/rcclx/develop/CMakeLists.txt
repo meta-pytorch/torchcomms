@@ -1107,7 +1107,6 @@ set(CTRAN_FILES
   comms/ctran/window/window.cc
   comms/ctran/window/WinHintUtils.cc
   comms/ctran/window/WinHintUtils.h
-  comms/tcp_devmem/transport.h # extra requirement
   comms/utils/MemUtils.h # extra requirement
 )
 
