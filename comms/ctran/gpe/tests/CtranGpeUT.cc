@@ -1559,11 +1559,20 @@ TEST_F(CtranGpeTest, GraphCaptureWithHostNode) {
   std::string output = testing::internal::GetCapturedStdout();
   EXPECT_THAT(output, testing::HasSubstr(kExpectedOutput));
 
-  // Expect flag is returned after kernel finish
-  EXPECT_EQ(gpe->numInUseKernelFlags(), 0);
+  // For persistent (graph) cmds, the flag stays in-use between replays to
+  // prevent the pool from reclaiming it. It is released when the graph
+  // (and thus the cmd) is destroyed.
+  EXPECT_EQ(gpe->numInUseKernelFlags(), 1);
 
   CUDACHECK_TEST(cudaGraphExecDestroy(graphExec));
   CUDACHECK_TEST(cudaGraphDestroy(graph));
+
+  // cudaUserObjectNoDestructorSync: cmdDestroy fires asynchronously after
+  // graph destruction. Wait for it to release the flag back to the pool.
+  while (gpe->numInUseKernelFlags() > 0) {
+    std::this_thread::yield();
+  }
+  EXPECT_EQ(gpe->numInUseKernelFlags(), 0);
   CUDACHECK_TEST(cudaFree(buf));
   CUDACHECK_TEST(cudaFreeHost(valPtr));
   CUDACHECK_TEST(cudaStreamDestroy(stream));
