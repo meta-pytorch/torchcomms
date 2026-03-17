@@ -10,7 +10,7 @@ namespace torch::comms {
 namespace {
 
 // Extract the scaling factor from NCCL's PREMUL_SUM operation supplement.
-// NCCLPreMulSumSupplement stores either a tensor or double scaling factor
+// PreMulSumSupplement stores either a tensor or double scaling factor
 // that is applied before summation.
 PreMulSumFactorT getPreMulSumFactor(const c10d::ReduceOp& op) {
   TORCH_CHECK(
@@ -18,10 +18,10 @@ PreMulSumFactorT getPreMulSumFactor(const c10d::ReduceOp& op) {
       "PREMUL_SUM operation requires a supplement, but none was provided");
 
   const auto* preMulSupplement =
-      dynamic_cast<const c10d::NCCLPreMulSumSupplement*>(op.supplement_.get());
+      dynamic_cast<const c10d::PreMulSumSupplement*>(op.supplement_.get());
   TORCH_CHECK(
       preMulSupplement != nullptr,
-      "PREMUL_SUM operation supplement must be of type NCCLPreMulSumSupplement");
+      "PREMUL_SUM operation supplement must be of type PreMulSumSupplement");
 
   if (preMulSupplement->tensor_factor.defined()) {
     return preMulSupplement->tensor_factor;
