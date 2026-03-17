@@ -308,6 +308,17 @@ class NcclxApi {
   virtual ncclResult_t devCommDestroy(
       ncclComm_t comm,
       const ncclDevComm_t* devComm) = 0;
+
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
+  // Get NVLink-mapped pointer for a peer's window memory.
+  // Returns nullptr in outPtr if peer is not NVLink-accessible.
+  // Requires NCCLX 2.29+.
+  [[nodiscard]] virtual ncclResult_t winGetPeerDevicePointer(
+      NcclxWindow win,
+      size_t offset,
+      int peer,
+      void** outPtr) = 0;
+#endif
 #endif
 
 #if defined(ENABLE_PIPES)
@@ -599,6 +610,14 @@ class DefaultNcclxApi : public NcclxApi {
       ncclDevComm_t* outDevComm) override;
   ncclResult_t devCommDestroy(ncclComm_t comm, const ncclDevComm_t* devComm)
       override;
+
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
+  [[nodiscard]] ncclResult_t winGetPeerDevicePointer(
+      NcclxWindow win,
+      size_t offset,
+      int peer,
+      void** outPtr) override;
+#endif
 #endif
 
 #if defined(ENABLE_PIPES)
