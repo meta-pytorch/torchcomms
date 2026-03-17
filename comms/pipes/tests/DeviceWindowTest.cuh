@@ -157,4 +157,66 @@ void testIbgdaSignalAggregateRead(
     int nPeers,
     uint64_t* result);
 
+/**
+ * Test: DeviceWindow offset-based NVL put()
+ *
+ * Verifies the offset-based put() overload correctly resolves
+ * dst_offset into the window buffer and src_buf + src_offset
+ * into a registered source buffer, then copies the data.
+ */
+void testDeviceWindowNvlOffsetPut(
+    int myRank,
+    int nRanks,
+    char* windowBuf_d,
+    const char* srcBuf_d,
+    std::size_t srcBufSize,
+    std::size_t dst_offset,
+    std::size_t src_offset,
+    std::size_t nbytes);
+
+/**
+ * Test: DeviceWindow offset-based NVL put_signal()
+ *
+ * Verifies the offset-based put_signal() overload copies data
+ * to the correct region and signals the target peer.
+ */
+void testDeviceWindowNvlOffsetPutSignal(
+    int myRank,
+    int nRanks,
+    char* windowBuf_d,
+    const char* srcBuf_d,
+    std::size_t srcBufSize,
+    std::size_t dst_offset,
+    std::size_t src_offset,
+    std::size_t nbytes,
+    int signalId);
+
+/**
+ * Test: Bidirectional offset-based NVL put_signal()
+ *
+ * Simulates 2 ranks on a single GPU. Each rank does put_signal()
+ * to the other's window buffer with different data patterns,
+ * verifying both directions land correctly.
+ *
+ * @param windowBuf0_d Window buffer for rank 0 (rank 1 writes here)
+ * @param windowBuf1_d Window buffer for rank 1 (rank 0 writes here)
+ * @param srcBuf0_d Source buffer for rank 0
+ * @param srcBuf1_d Source buffer for rank 1
+ * @param srcBufSize Size of each source buffer in bytes
+ * @param dst_offset Byte offset into destination window buffer
+ * @param src_offset Byte offset into source buffer
+ * @param nbytes Number of bytes to copy
+ * @param signalId Signal slot to use
+ */
+void testDeviceWindowNvlBidirectionalOffsetPutSignal(
+    char* windowBuf0_d,
+    char* windowBuf1_d,
+    const char* srcBuf0_d,
+    const char* srcBuf1_d,
+    std::size_t srcBufSize,
+    std::size_t dst_offset,
+    std::size_t src_offset,
+    std::size_t nbytes,
+    int signalId);
+
 } // namespace comms::pipes::test

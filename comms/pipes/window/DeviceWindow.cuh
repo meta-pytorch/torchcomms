@@ -25,6 +25,7 @@ namespace comms::pipes {
 // Forward declaration for test helper
 namespace test {
 struct NvlOnlyDeviceWindowBuffers;
+struct NvlOffsetPutDeviceWindowBuffers;
 struct IbgdaOnlyDeviceWindowBuffers;
 } // namespace test
 
@@ -958,6 +959,53 @@ class DeviceWindow {
   }
 
   // ===========================================================================
+  // Put (offset-based — destination is window buffer, source is registered buf)
+  // ===========================================================================
+
+  /**
+   * put - Offset-based one-sided write to a peer's window buffer.
+   *
+   * Group-level API: all threads in the group must call this together.
+   * Destination is the peer's window buffer (the userBuffer from HostWindow
+   * constructor). Source is a registered buffer (from
+   * HostWindow::registerLocalBuffer).
+   *
+   * @param group        ThreadGroup for group coordination.
+   * @param target_rank  Rank to put to (must not be self).
+   * @param dst_offset   Byte offset into the target peer's window buffer.
+   * @param src_buf      Registered source buffer.
+   * @param src_offset   Byte offset into the source buffer.
+   * @param nbytes       Number of bytes to transfer.
+   */
+  __device__ __forceinline__ void put(
+      ThreadGroup& group,
+      int target_rank,
+      std::size_t dst_offset,
+      const LocalBufferRegistration& src_buf,
+      std::size_t src_offset,
+      std::size_t nbytes) {
+    DEVICE_WINDOW_CHECK_RANK(target_rank, handle_.nRanks);
+    DEVICE_WINDOW_CHECK_NOT_SELF(target_rank, handle_.myRank);
+    const auto* localSrc = static_cast<const char*>(src_buf.base) + src_offset;
+    if (handle_.get_type(target_rank) == TransportType::P2P_NVL) {
+      int nvlPeerIdx = rankToNvlPeerIndex_[target_rank];
+      auto* remoteDst =
+          static_cast<char*>(windowNvlPeerPtrs_[nvlPeerIdx]) + dst_offset;
+      handle_.get_nvl(target_rank).put(group, remoteDst, localSrc, nbytes);
+    } else {
+      int ibgdaPeerIdx = rank_to_peer_index(target_rank);
+      IbgdaLocalBuffer localBuf(
+          const_cast<void*>(static_cast<const void*>(localSrc)), src_buf.lkey);
+      IbgdaRemoteBuffer remoteBuf(
+          const_cast<void*>(remoteBufferRegistry_[ibgdaPeerIdx].base),
+          remoteBufferRegistry_[ibgdaPeerIdx].rkey);
+      handle_.get_ibgda(target_rank)
+          .put_group_global(
+              group, localBuf, remoteBuf.subBuffer(dst_offset), nbytes);
+    }
+  }
+
+  // ===========================================================================
   // Combined Put + Signal (generic — dispatches to NVL or IBGDA internally)
   // ===========================================================================
 
@@ -1000,9 +1048,9 @@ class DeviceWindow {
               static_cast<char*>(remoteDst),
               static_cast<const char*>(localSrc),
               nbytes);
-      group.sync();
       signal_peer(
           group, target_rank, signalId, SignalOp::SIGNAL_ADD, signalVal);
+      group.sync();
     } else {
       int ibgdaIdx = rank_to_peer_index(target_rank);
       IbgdaLocalBuffer localBuf(
@@ -1019,6 +1067,67 @@ class DeviceWindow {
         handle_.get_ibgda(target_rank)
             .signal_remote_with_fence(
                 ibgdaPeerSignalRemoteBufs_[ibgdaIdx], signalId, signalVal);
+      }
+      group.sync();
+    }
+  }
+
+  // ===========================================================================
+  // Combined Put + Signal (offset-based — window buffer dest, registered src)
+  // ===========================================================================
+
+  /**
+   * put_signal - Offset-based one-sided write + signal to a peer.
+   *
+   * Group-level API: all threads in the group must call this together.
+   * Same as offset-based put(), followed by a signal to the target peer.
+   * NVL: put + sync + atomic signal via NVLink + sync.
+   * IBGDA: put + NIC-fenced atomic signal (HW-ordered) + sync.
+   *
+   * @param group        ThreadGroup for group coordination.
+   * @param target_rank  Rank to put to (must not be self).
+   * @param dst_offset   Byte offset into the target peer's window buffer.
+   * @param src_buf      Registered source buffer.
+   * @param src_offset   Byte offset into the source buffer.
+   * @param nbytes       Number of bytes to transfer.
+   * @param signalId     Signal slot index in [0, peerSignalCount).
+   * @param signalVal    Value to add to the signal (default: 1).
+   */
+  __device__ __forceinline__ void put_signal(
+      ThreadGroup& group,
+      int target_rank,
+      std::size_t dst_offset,
+      const LocalBufferRegistration& src_buf,
+      std::size_t src_offset,
+      std::size_t nbytes,
+      int signalId,
+      uint64_t signalVal = 1) {
+    DEVICE_WINDOW_CHECK_RANK(target_rank, handle_.nRanks);
+    DEVICE_WINDOW_CHECK_NOT_SELF(target_rank, handle_.myRank);
+    const auto* localSrc = static_cast<const char*>(src_buf.base) + src_offset;
+    if (handle_.get_type(target_rank) == TransportType::P2P_NVL) {
+      int nvlPeerIdx = rankToNvlPeerIndex_[target_rank];
+      auto* remoteDst =
+          static_cast<char*>(windowNvlPeerPtrs_[nvlPeerIdx]) + dst_offset;
+      handle_.get_nvl(target_rank).put(group, remoteDst, localSrc, nbytes);
+      signal_peer(
+          group, target_rank, signalId, SignalOp::SIGNAL_ADD, signalVal);
+      group.sync();
+    } else {
+      int ibgdaPeerIdx = rank_to_peer_index(target_rank);
+      IbgdaLocalBuffer localBuf(
+          const_cast<void*>(static_cast<const void*>(localSrc)), src_buf.lkey);
+      IbgdaRemoteBuffer remoteBuf(
+          const_cast<void*>(remoteBufferRegistry_[ibgdaPeerIdx].base),
+          remoteBufferRegistry_[ibgdaPeerIdx].rkey);
+      handle_.get_ibgda(target_rank)
+          .put_group_global(
+              group, localBuf, remoteBuf.subBuffer(dst_offset), nbytes);
+      // Single fenced signal from global leader (matches NVL semantics)
+      if (group.is_global_leader()) {
+        handle_.get_ibgda(target_rank)
+            .signal_remote_with_fence(
+                ibgdaPeerSignalRemoteBufs_[ibgdaPeerIdx], signalId, signalVal);
       }
       group.sync();
     }
@@ -1163,12 +1272,19 @@ class DeviceWindow {
   // Indexed directly by ibgdaPeerIdx (one entry per IBGDA peer).
   DeviceSpan<RemoteBufferRegistration> remoteBufferRegistry_;
 
+  // --- Window buffer NVL peer pointers (for offset-based put/put_signal) ---
+  // IPC-mapped pointers to each NVL peer's window buffer.
+  // Indexed by nvlPeerIdx (from rankToNvlPeerIndex_[globalRank]).
+  // IBGDA uses remoteBufferRegistry_ (the window buffer is the exchanged buf).
+  DeviceSpan<void*> windowNvlPeerPtrs_;
+
   // HostWindow constructs DeviceWindow directly
   friend class HostWindow;
 
   // Test helper for unit tests (constructs minimal DeviceWindow without
   // HostWindow)
   friend struct comms::pipes::test::NvlOnlyDeviceWindowBuffers;
+  friend struct comms::pipes::test::NvlOffsetPutDeviceWindowBuffers;
   friend struct comms::pipes::test::IbgdaOnlyDeviceWindowBuffers;
 };
 
