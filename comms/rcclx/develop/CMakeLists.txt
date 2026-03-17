@@ -1195,8 +1195,6 @@ set(COMMON_FILES
   comms/pipes/TopologyDiscovery.cc
   comms/pipes/TopologyDiscovery.h
   comms/pipes/Transport.cuh
-  comms/pipes/window/WindowMemory.cc
-  comms/pipes/window/WindowMemory.h
   comms/utils/checks.h
   comms/utils/colltrace/AlgoStats.cc
   comms/utils/colltrace/AlgoStats.h
