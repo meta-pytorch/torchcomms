@@ -41,6 +41,9 @@ run_tests () {
     for test_file in "${tests[@]}"; do
         torchrun --nnodes 1 --nproc_per_node "${NPROC_PER_NODE}" "$test_file" --verbose
     done
+
+    cd "$(dirname "$0")/../hooks/fr/tests/py"
+    torchrun --nnodes 1 --nproc_per_node "${NPROC_PER_NODE}" FlightRecorderTest.py --verbose
 }
 
 # XCCL
