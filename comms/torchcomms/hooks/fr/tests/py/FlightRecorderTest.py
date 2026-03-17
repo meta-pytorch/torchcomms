@@ -668,7 +668,9 @@ class TestFlightRecorderHook(unittest.TestCase):
 
         # Create tensors with specific sizes and dtypes
         tensor_float = torch.rand(3, 4, device=self.device, dtype=torch.float32)
-        tensor_int = torch.randint(0, 100, (5, 6), device=self.device, dtype=torch.int64)
+        tensor_int = torch.randint(
+            0, 100, (5, 6), device=self.device, dtype=torch.int64
+        )
 
         # All-reduce float tensor
         comm.all_reduce(tensor_float, op=torchcomms.ReduceOp.SUM, async_op=False)
@@ -802,7 +804,9 @@ class TestFlightRecorderHook(unittest.TestCase):
                     self.assertIn("state", entry)
 
                     # Validate profiling_name is for all_reduce
-                    self.assertEqual(entry["profiling_name"], f"{self.backend}:all_reduce")
+                    self.assertEqual(
+                        entry["profiling_name"], f"{self.backend}:all_reduce"
+                    )
 
             finally:
                 # Restore the original environment variables
@@ -910,7 +914,8 @@ class TestFlightRecorderHook(unittest.TestCase):
             )
 
             has_all_reduce = any(
-                entry.get("profiling_name") == f"{self.backend}:all_reduce" for entry in entries
+                entry.get("profiling_name") == f"{self.backend}:all_reduce"
+                for entry in entries
             )
             self.assertTrue(has_all_reduce, "Trace should contain all_reduce entry")
 

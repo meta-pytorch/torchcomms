@@ -905,7 +905,8 @@ void FlightRecorderHook::onPreHook(
   auto pg_name = std::make_tuple(comm_name, pg_desc);
 
   // Use "<backend>:<op>" format as expected by the FR trace analyzer
-  std::string profiling_name = std::string(pg_desc) + ":" + std::string(opToString(args.name));
+  std::string profiling_name =
+      std::string(pg_desc) + ":" + std::string(opToString(args.name));
 
   // TODO: Create start/end events for accurate timing
   // For now, pass nullptr - timing will be based on CPU timestamps
