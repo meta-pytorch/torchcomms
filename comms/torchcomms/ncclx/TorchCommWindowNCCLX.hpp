@@ -149,6 +149,23 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
   ncclWindow_t get_nccl_window() const {
     return nccl_orig_win_;
   }
+
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
+  // Get the NVLink-mapped address of a peer's window memory.
+  // Returns the device pointer that can be used to directly access the peer's
+  // window buffer via NVLink. Returns 0 (as int64) if the peer is not
+  // NVLink-accessible (e.g., remote node over RDMA).
+  //
+  // Prerequisites: Must call tensor_register() first so that nccl_orig_win_
+  // is initialized.
+  //
+  // Args:
+  //   peer: The world rank of the peer whose address to retrieve.
+  //   offset: Byte offset within the peer's window (default 0).
+  //
+  // Returns: Device pointer as void*, or nullptr if not NVLink-accessible.
+  void* get_nvlink_address(int peer, size_t offset = 0);
+#endif
 #endif
 
  private:
