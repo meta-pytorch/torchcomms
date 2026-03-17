@@ -906,59 +906,6 @@ class DeviceWindow {
   }
 
   // ===========================================================================
-  // Put (generic — dispatches to NVL or IBGDA internally)
-  // ===========================================================================
-
-  /**
-   * put - One-sided write to a peer's remote buffer.
-   *
-   * Group-level API: all threads in the group must call this together.
-   * Dispatches internally based on peer transport type:
-   * - NVL: direct vectorized memcpy over NVLink (no staging buffer)
-   * - IBGDA: RDMA Write via NIC (lkey/rkey resolved from registration table)
-   *
-   * NOTE: This does NOT use the NVL staging buffer allocated by
-   * MultiPeerNvlTransportConfig.dataBufferSize. The staging buffer is
-   * only used by P2pNvlTransportDevice::send()/recv().
-   *
-   * PRECONDITION: localSrc must be within a buffer registered via
-   * HostWindow::registerLocalBuffer() or registerAndExchangeBuffer().
-   * remoteDst must be within a buffer exchanged via
-   * HostWindow::registerAndExchangeBuffer() on the target peer.
-   *
-   * @param target_rank  Rank to put to (must not be self).
-   * @param group        ThreadGroup for group coordination.
-   * @param remoteDst    Destination buffer on the target peer.
-   * @param localSrc     Source buffer on this rank.
-   * @param nbytes       Number of bytes to transfer.
-   */
-  __device__ __forceinline__ void put(
-      int target_rank,
-      ThreadGroup& group,
-      void* remoteDst,
-      const void* localSrc,
-      std::size_t nbytes) {
-    DEVICE_WINDOW_CHECK_RANK(target_rank, handle_.nRanks);
-    DEVICE_WINDOW_CHECK_NOT_SELF(target_rank, handle_.myRank);
-    if (handle_.get_type(target_rank) == TransportType::P2P_NVL) {
-      handle_.get_nvl(target_rank)
-          .put(
-              group,
-              static_cast<char*>(remoteDst),
-              static_cast<const char*>(localSrc),
-              nbytes);
-    } else {
-      int ibgdaIdx = rank_to_peer_index(target_rank);
-      IbgdaLocalBuffer localBuf(
-          const_cast<void*>(localSrc), lookupLocalLkey(localSrc));
-      IbgdaRemoteBuffer remoteBuf(
-          remoteDst, lookupRemoteRkey(ibgdaIdx, remoteDst));
-      handle_.get_ibgda(target_rank)
-          .put_group_global(group, localBuf, remoteBuf, nbytes);
-    }
-  }
-
-  // ===========================================================================
   // Put (offset-based — destination is window buffer, source is registered buf)
   // ===========================================================================
 
@@ -1002,73 +949,6 @@ class DeviceWindow {
       handle_.get_ibgda(target_rank)
           .put_group_global(
               group, localBuf, remoteBuf.subBuffer(dst_offset), nbytes);
-    }
-  }
-
-  // ===========================================================================
-  // Combined Put + Signal (generic — dispatches to NVL or IBGDA internally)
-  // ===========================================================================
-
-  /**
-   * put_signal - One-sided write + signal to a peer.
-   *
-   * Group-level API: all threads in the group must call this together.
-   * Dispatches internally:
-   * - NVL: vectorized memcpy + group.sync() + atomic signal via NVLink
-   * - IBGDA: RDMA Write + NIC-fenced atomic signal (HW-ordered),
-   *   single signal from global leader to match NVL semantics.
-   *
-   * PRECONDITION: localSrc must be within a buffer registered via
-   * HostWindow::registerLocalBuffer() or registerAndExchangeBuffer().
-   * remoteDst must be within a buffer exchanged via
-   * HostWindow::registerAndExchangeBuffer() on the target peer.
-   *
-   * @param target_rank  Rank to put to (must not be self).
-   * @param group        ThreadGroup for group coordination.
-   * @param remoteDst    Destination buffer on the target peer.
-   * @param localSrc     Source buffer on this rank.
-   * @param nbytes       Number of bytes to transfer.
-   * @param signalId     Signal slot index in [0, peerSignalCount).
-   * @param signalVal    Value to add to the signal (default: 1).
-   */
-  __device__ __forceinline__ void put_signal(
-      int target_rank,
-      ThreadGroup& group,
-      void* remoteDst,
-      const void* localSrc,
-      std::size_t nbytes,
-      int signalId,
-      uint64_t signalVal = 1) {
-    DEVICE_WINDOW_CHECK_RANK(target_rank, handle_.nRanks);
-    DEVICE_WINDOW_CHECK_NOT_SELF(target_rank, handle_.myRank);
-    if (handle_.get_type(target_rank) == TransportType::P2P_NVL) {
-      handle_.get_nvl(target_rank)
-          .put(
-              group,
-              static_cast<char*>(remoteDst),
-              static_cast<const char*>(localSrc),
-              nbytes);
-      signal_peer(
-          group, target_rank, signalId, SignalOp::SIGNAL_ADD, signalVal);
-      group.sync();
-    } else {
-      int ibgdaIdx = rank_to_peer_index(target_rank);
-      IbgdaLocalBuffer localBuf(
-          const_cast<void*>(localSrc), lookupLocalLkey(localSrc));
-      IbgdaRemoteBuffer remoteBuf(
-          remoteDst, lookupRemoteRkey(ibgdaIdx, remoteDst));
-      handle_.get_ibgda(target_rank)
-          .put_group_global(group, localBuf, remoteBuf, nbytes);
-      // Single fenced signal from global leader (matches NVL semantics)
-      if (group.is_global_leader()) {
-        // Remote buffer is pre-offset to "my row" in the peer's inbox
-        // (computed once at exchange time in HostWindow), so signalId
-        // is the only offset needed here.
-        handle_.get_ibgda(target_rank)
-            .signal_remote_with_fence(
-                ibgdaPeerSignalRemoteBufs_[ibgdaIdx], signalId, signalVal);
-      }
-      group.sync();
     }
   }
 
@@ -1123,12 +1003,12 @@ class DeviceWindow {
       handle_.get_ibgda(target_rank)
           .put_group_global(
               group, localBuf, remoteBuf.subBuffer(dst_offset), nbytes);
-      // Single fenced signal from global leader (matches NVL semantics)
-      if (group.is_global_leader()) {
-        handle_.get_ibgda(target_rank)
-            .signal_remote_with_fence(
-                ibgdaPeerSignalRemoteBufs_[ibgdaPeerIdx], signalId, signalVal);
-      }
+      handle_.get_ibgda(target_rank)
+          .signal_remote_with_fence(
+              group,
+              ibgdaPeerSignalRemoteBufs_[ibgdaPeerIdx],
+              signalId,
+              signalVal);
       group.sync();
     }
   }
@@ -1167,69 +1047,6 @@ class DeviceWindow {
     return false;
   }
 
-  /**
-   * Lookup local lkey for a source pointer from the registration table.
-   * Linear scan over registered buffers (typically 1-5 entries).
-   * Traps if pointer is not in any registered buffer.
-   */
-  __device__ __forceinline__ NetworkLKey
-  lookupLocalLkey(const void* ptr) const {
-    const auto* p = static_cast<const char*>(ptr);
-    for (int i = 0; i < static_cast<int>(localBufferRegistry_.size()); ++i) {
-      const auto& reg = localBufferRegistry_[i];
-      const auto* base = static_cast<const char*>(reg.base);
-      if (p >= base && p < base + reg.size) {
-        return reg.lkey;
-      }
-    }
-    printf(
-        "DeviceWindow: localSrc %p not in any registered buffer"
-        " at %s:%d block=(%u,%u,%u) thread=(%u,%u,%u)\n",
-        ptr,
-        __FILE__,
-        __LINE__,
-        blockIdx.x,
-        blockIdx.y,
-        blockIdx.z,
-        threadIdx.x,
-        threadIdx.y,
-        threadIdx.z);
-    __trap();
-    return NetworkLKey{};
-  }
-
-  /**
-   * Lookup remote rkey for a destination pointer on a specific IBGDA peer.
-   * There is exactly one exchanged dst buffer per DeviceWindow, so this
-   * is a direct peer-index lookup (no iteration).
-   * Traps if pointer is not within the exchanged buffer for that peer.
-   */
-  __device__ __forceinline__ NetworkRKey
-  lookupRemoteRkey(int ibgdaPeerIdx, const void* remotePtr) const {
-    if (remoteBufferRegistry_.size() > 0) {
-      const auto& reg = remoteBufferRegistry_[ibgdaPeerIdx];
-      const auto* base = static_cast<const char*>(reg.base);
-      const auto* p = static_cast<const char*>(remotePtr);
-      if (p >= base && p < base + reg.size) {
-        return reg.rkey;
-      }
-    }
-    printf(
-        "DeviceWindow: remoteDst %p not registered for IBGDA peer %d"
-        " at %s:%d block=(%u,%u,%u) thread=(%u,%u,%u)\n",
-        remotePtr,
-        ibgdaPeerIdx,
-        __FILE__,
-        __LINE__,
-        blockIdx.x,
-        blockIdx.y,
-        blockIdx.z,
-        threadIdx.x,
-        threadIdx.y,
-        threadIdx.z);
-    __trap();
-    return NetworkRKey{};
-  }
 #endif // __CUDACC__
 
   // Transport handle (provides get_type, get_nvl, get_ibgda, myRank, nRanks)

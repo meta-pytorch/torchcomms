@@ -122,41 +122,6 @@ TEST_F(DeviceWindowTestFixture, ReadSignal) {
 }
 
 // =============================================================================
-// Generic NVL Put via DeviceWindow
-// =============================================================================
-
-TEST_F(DeviceWindowTestFixture, NvlPutViaGenericApi) {
-  const std::size_t nbytes = 4096;
-  const std::size_t numInts = nbytes / sizeof(int);
-  const int testValue = 0xCAFE;
-
-  DeviceBuffer srcBuffer(nbytes);
-  DeviceBuffer dstBuffer(nbytes);
-  auto src_d = static_cast<int*>(srcBuffer.get());
-  auto dst_d = static_cast<int*>(dstBuffer.get());
-
-  std::vector<int> srcHost(numInts, testValue);
-  CUDACHECK_TEST(
-      cudaMemcpy(src_d, srcHost.data(), nbytes, cudaMemcpyHostToDevice));
-  CUDACHECK_TEST(cudaMemset(dst_d, 0, nbytes));
-
-  test::testDeviceWindowNvlPut(
-      0,
-      2,
-      reinterpret_cast<char*>(dst_d),
-      reinterpret_cast<const char*>(src_d),
-      nbytes);
-  CUDACHECK_TEST(cudaDeviceSynchronize());
-
-  std::vector<int> dstHost(numInts);
-  CUDACHECK_TEST(
-      cudaMemcpy(dstHost.data(), dst_d, nbytes, cudaMemcpyDeviceToHost));
-
-  const std::vector<int> expected(numInts, testValue);
-  EXPECT_EQ(dstHost, expected) << "Generic NVL put should copy all data";
-}
-
-// =============================================================================
 // Offset-Based NVL Put via DeviceWindow
 // =============================================================================
 
