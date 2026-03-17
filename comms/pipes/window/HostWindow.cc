@@ -169,6 +169,23 @@ HostWindow::~HostWindow() {
   // DeviceBuffers are freed by DeviceBuffer destructors (RAII)
 }
 
+void* HostWindow::get_nvlink_address(int peer, std::size_t offset) const {
+  if (exchangedNvlMappedPtrs_.empty() || peer == myRank_ || peer < 0 ||
+      peer >= nRanks_) {
+    return nullptr;
+  }
+  // Find peer in NVL peer list (sorted by global rank).
+  for (int i = 0; i < static_cast<int>(nvlPeerRanks_.size()); ++i) {
+    if (nvlPeerRanks_[i] == peer) {
+      // Map nvlPeerIdx → nvlLocalRank (skip self's slot).
+      int nvlLocal = (i < nvlLocalRank_) ? i : (i + 1);
+      auto* base = static_cast<char*>(exchangedNvlMappedPtrs_[nvlLocal]);
+      return base ? base + offset : nullptr;
+    }
+  }
+  return nullptr;
+}
+
 void HostWindow::exchange() {
   if (exchanged_) {
     throw std::runtime_error("HostWindow::exchange() called more than once");

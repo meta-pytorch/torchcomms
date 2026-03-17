@@ -708,4 +708,29 @@ void testIbgdaSignalAggregateRead(
   CUDACHECK_TEST(cudaDeviceSynchronize());
 }
 
+// =============================================================================
+// DeviceWindow get_nvlink_address() Test
+// =============================================================================
+
+__global__ void
+getNvlinkAddressKernel(DeviceWindow dw, int nRanks, int64_t* results) {
+  for (int r = 0; r < nRanks; ++r) {
+    void* addr = dw.get_nvlink_address(r);
+    results[r] = reinterpret_cast<int64_t>(addr);
+  }
+}
+
+void testDeviceWindowGetNvlinkAddress(
+    int myRank,
+    int nRanks,
+    void* windowBuf_d,
+    int64_t* results) {
+  NvlOffsetPutDeviceWindowBuffers bufs;
+  auto dw = bufs.create_with_offset_put(myRank, nRanks, windowBuf_d);
+
+  getNvlinkAddressKernel<<<1, 1>>>(dw, nRanks, results);
+  CUDACHECK_TEST(cudaGetLastError());
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+}
+
 } // namespace comms::pipes::test
