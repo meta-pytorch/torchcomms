@@ -2,11 +2,24 @@
 
 #include "comms/ctran/ibverbx/tests/IbverbxTestFixture.h"
 
+#include <folly/ScopeGuard.h>
+#include "comms/ctran/ibverbx/IbverbxSymbols.h"
+
 FOLLY_INIT_LOGGING_CONFIG(
     ".=WARNING"
     ";default:async=true,sync_level=WARNING");
 
 namespace ibverbx {
+
+namespace {
+int g_destroyCqCount = 0;
+int (*g_origDestroyCq)(ibv_cq*) = nullptr;
+
+int countingDestroyCq(ibv_cq* cq) {
+  g_destroyCqCount++;
+  return g_origDestroyCq(cq);
+}
+} // namespace
 
 TEST_F(IbverbxTestFixture, MultiThreadInit) {
   std::thread t1([]() { ASSERT_TRUE(ibvInit()); });
@@ -456,6 +469,70 @@ TEST_F(IbverbxTestFixture, IbvCq) {
   IbvCq cq2(std::move(cq1));
   ASSERT_EQ(cq1.cq(), nullptr);
   ASSERT_EQ(cq2.cq(), cqRawPtr);
+}
+
+TEST_F(IbverbxTestFixture, IbvCqMoveAssignment) {
+  auto devices = IbvDevice::ibvGetDeviceList();
+  ASSERT_TRUE(devices);
+  auto& device = devices->at(0);
+
+  int cqe = 100;
+
+  // Create two CQs
+  auto cq1 = device.createCq(cqe, nullptr, nullptr, 0);
+  ASSERT_TRUE(cq1);
+  auto cq2 = device.createCq(cqe, nullptr, nullptr, 0);
+  ASSERT_TRUE(cq2);
+
+  auto cq1RawPtr = cq1->cq();
+  auto cq2RawPtr = cq2->cq();
+
+  // Move assign cq2 into cq1.
+  // Swap idiom: cq1 gets cq2's resource, cq2 gets cq1's old resource
+  *cq1 = std::move(*cq2);
+  ASSERT_EQ(cq1->cq(), cq2RawPtr);
+  ASSERT_EQ(cq2->cq(), cq1RawPtr);
+
+  // Move assign into default-constructed (empty) CQ
+  IbvCq cq3;
+  ASSERT_EQ(cq3.cq(), nullptr);
+  cq3 = std::move(*cq1);
+  ASSERT_EQ(cq3.cq(), cq2RawPtr);
+  ASSERT_EQ(cq1->cq(), nullptr);
+}
+
+TEST_F(IbverbxTestFixture, IbvCqMoveAssignmentDestroysOldCq) {
+  auto devices = IbvDevice::ibvGetDeviceList();
+  ASSERT_TRUE(devices);
+  auto& device = devices->at(0);
+  int cqe = 100;
+
+  g_origDestroyCq = ibvSymbols.ibv_internal_destroy_cq;
+  ibvSymbols.ibv_internal_destroy_cq = countingDestroyCq;
+  auto guard = folly::makeGuard(
+      [] { ibvSymbols.ibv_internal_destroy_cq = g_origDestroyCq; });
+
+  // Verify old CQ is destroyed after move assignment.
+  // Swap idiom defers destruction to the source's destructor,
+  // so we scope the source to trigger it before the assertion.
+  auto cq1 = device.createCq(cqe, nullptr, nullptr, 0);
+  ASSERT_TRUE(cq1);
+  {
+    auto cq2 = device.createCq(cqe, nullptr, nullptr, 0);
+    ASSERT_TRUE(cq2);
+    g_destroyCqCount = 0;
+    *cq1 = std::move(*cq2);
+  }
+  // cq2 destroyed — its destructor cleans up the old cq1 resource
+  EXPECT_EQ(g_destroyCqCount, 1)
+      << "Move assignment must destroy the old CQ to prevent kernel resource leak";
+
+  // Move-assign into empty CQ — no destroy expected
+  g_destroyCqCount = 0;
+  IbvCq cq3;
+  cq3 = std::move(*cq1);
+  EXPECT_EQ(g_destroyCqCount, 0)
+      << "Move assignment into empty CQ should not call destroy";
 }
 
 TEST_F(IbverbxTestFixture, IbvQp) {
