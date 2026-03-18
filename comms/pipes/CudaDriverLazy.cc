@@ -31,9 +31,10 @@ PFN_cuMemRetainAllocationHandle_v11000 pfn_cuMemRetainAllocationHandle =
     nullptr;
 PFN_cuMemGetAddressRange_v3020 pfn_cuMemGetAddressRange = nullptr;
 
-#if defined(__HIPCC__) || defined(__HIP_PLATFORM_AMD__)
-// ROCm does not provide the CUDA driver entry points used by this module.
-// Keep the function pointers null so that any accidental use fails fast.
+#if !defined(TORCHCOMMS_HAVE_CUDA_TYPEDEFS)
+// This build does not have `cudaTypedefs.h`, so the CUDA driver function
+// pointer types / entry points are not available. Keep the function pointers
+// null so any accidental use fails fast.
 int cuda_driver_lazy_init() {
   return -1;
 }
