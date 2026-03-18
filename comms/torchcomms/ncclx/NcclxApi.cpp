@@ -539,6 +539,22 @@ ncclResult_t DefaultNcclxApi::winCreateDeviceWin(
 ncclResult_t DefaultNcclxApi::winDestroyDeviceWin(void* devicePtr) {
   return ncclWinDestroyDeviceWin(devicePtr);
 }
+
+ncclResult_t DefaultNcclxApi::getMultiPeerDeviceHandle(
+    ncclComm_t comm,
+    void** outTransportsPtr,
+    int* outMyRank,
+    int* outNRanks,
+    int* outNumNvlPeers,
+    int* outNumIbPeers) {
+  return ncclGetMultiPeerDeviceHandle(
+      comm,
+      outTransportsPtr,
+      outMyRank,
+      outNRanks,
+      outNumNvlPeers,
+      outNumIbPeers);
+}
 #endif // ENABLE_PIPES
 
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API

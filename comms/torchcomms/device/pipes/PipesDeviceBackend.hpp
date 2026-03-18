@@ -23,6 +23,7 @@
 
 namespace comms::pipes {
 class DeviceWindow;
+struct MultiPeerDeviceHandle;
 } // namespace comms::pipes
 
 namespace torch::comms {
@@ -148,6 +149,18 @@ struct PipesDeviceBackend {
         "[TorchCommWindowNCCLX][Pipes]: register_local_buffer is not yet "
         "supported for PipesDeviceBackend.");
   }
+
+  // Get the pipes transport device handle from the communicator.
+  // NON-COLLECTIVE — reads already-exchanged state.
+  //
+  // Returns a MultiPeerDeviceHandle by value. The handle contains a
+  // device pointer to the Transport[] array (already GPU-allocated by
+  // MultiPeerTransport::exchange() during ctran init).
+  //
+  // Throws std::runtime_error if pipes transport is not initialized.
+  static comms::pipes::MultiPeerDeviceHandle get_device_transport(
+      ncclComm_t nccl_comm,
+      torch::comms::NcclxApi* nccl_api);
 };
 
 } // namespace torchcomms::device

@@ -839,6 +839,24 @@ ncclResult_t ncclWinCreateDeviceWin(
  * Free device memory allocated by ncclWinCreateDeviceWin.
  */
 ncclResult_t ncclWinDestroyDeviceWin(void* devicePtr);
+
+/*
+ * Get the MultiPeerDeviceHandle components from the communicator's
+ * pipes transport. NON-COLLECTIVE — reads already-exchanged state.
+ *
+ * Returns the device pointer to the Transport[] array and metadata.
+ * The caller assembles a MultiPeerDeviceHandle from these fields.
+ *
+ * Requires NCCL_CTRAN_USE_PIPES=1 during communicator init.
+ * Returns ncclInternalError if pipes transport is not initialized.
+ */
+ncclResult_t ncclGetMultiPeerDeviceHandle(
+    ncclComm_t comm,
+    void** outTransportsPtr,
+    int* outMyRank,
+    int* outNRanks,
+    int* outNumNvlPeers,
+    int* outNumIbPeers);
 #endif // ENABLE_PIPES
 
 /*

@@ -25,6 +25,10 @@
 #include "comms/torchcomms/ncclx/TorchCommWindowNCCLX.hpp"
 #include "comms/torchcomms/ncclx/TorchWorkNCCLX.hpp"
 
+#if defined(ENABLE_PIPES)
+#include "comms/pipes/MultiPeerDeviceHandle.cuh"
+#endif
+
 namespace torch::comms {
 
 // Hint key names for NCCLX backend configuration
@@ -296,6 +300,19 @@ class TorchCommNCCLX : public TorchCommBackend,
   const at::Device& getDevice() const override {
     return device_;
   }
+
+#if defined(ENABLE_PIPES)
+  // Get the pipes transport device handle for passing to CUDA kernels.
+  // NON-COLLECTIVE — reads already-exchanged state.
+  //
+  // Usage:
+  //   auto handle = ncclx_comm->get_device_transport();
+  //   myKernel<<<grid, block>>>(handle, ...);
+  //   // In kernel: handle.get_nvl(peer).send(group, src, nbytes);
+  //
+  // Throws std::runtime_error if pipes transport is not initialized.
+  ::comms::pipes::MultiPeerDeviceHandle get_device_transport();
+#endif
 
  protected:
   // Event management for friend classes
