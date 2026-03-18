@@ -241,7 +241,7 @@ export CMAKE_PREFIX_PATH="$CONDA_PREFIX"
 export LIB_PREFIX="lib64"
 
 BUILDDIR=${BUILDDIR:="${PWD}/build/rcclx"}
-AMDGPU_TARGETS=${AMDGPU_TARGETS:="gfx942,gfx950,gfx90a"}
+AMDGPU_TARGETS=${AMDGPU_TARGETS:="gfx942,gfx950"}
 
 # Parse command-line arguments (overrides env/defaults above)
 while [[ $# -gt 0 ]]; do
@@ -259,7 +259,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     *)
-      echo "Unknown option: $1 (supported: --amdgpu_targets TARGETS, --no_clean)" >&2
+      echo "Unknown option: $1 (supported: --amdgpu_targets TARGETS e.g. gfx942,gfx950, --no_clean)" >&2
       exit 1
       ;;
   esac
