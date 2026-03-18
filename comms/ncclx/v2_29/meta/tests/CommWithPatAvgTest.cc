@@ -13,36 +13,34 @@
 #include "meta/hints/GlobalHints.h" // @manual
 #include "nccl.h"
 
-class CommWithPatAvgTest : public ::testing::Test {
+class CommWithPatAvgTest : public NcclxBaseTest {
  public:
   CommWithPatAvgTest() = default;
 
   void SetUp() override {
-    initEnv();
-    std::tie(this->localRank, this->globalRank, this->numRanks) = getMpiInfo();
+    NcclxBaseTest::SetUp();
   }
 
   void TearDown() override {
     // Only reset our hint value, don't unregister all keys
     ncclx::resetGlobalHint(
         std::string(ncclx::HintKeys::kCommAlgoReduceScatter));
+    NcclxBaseTest::TearDown();
   }
-
-  int localRank{0};
-  int globalRank{0};
-  int numRanks{0};
 };
 
 TEST_F(CommWithPatAvgTest, PatAvgDisabledByDefault) {
   EnvRAII cvarEnv(NCCL_REDUCESCATTER_PAT_AVG_ENABLE, false);
-  NcclCommRAII comm{globalRank, numRanks, localRank};
+  NcclCommRAII comm{
+      globalRank, numRanks, localRank, false, nullptr, server.get()};
   ASSERT_NE(comm.get(), nullptr);
   EXPECT_FALSE(comm->usePatAvg_);
 }
 
 TEST_F(CommWithPatAvgTest, PatAvgEnableByCvar) {
   EnvRAII cvarEnv(NCCL_REDUCESCATTER_PAT_AVG_ENABLE, true);
-  NcclCommRAII comm{globalRank, numRanks, localRank};
+  NcclCommRAII comm{
+      globalRank, numRanks, localRank, false, nullptr, server.get()};
   ASSERT_NE(comm.get(), nullptr);
   EXPECT_TRUE(comm->usePatAvg_);
 }
@@ -56,7 +54,8 @@ TEST_F(CommWithPatAvgTest, PatAvgNotEnabledForOtherValues) {
           std::string(ncclx::HintKeys::kCommAlgoReduceScatter), "sum:ring"),
       ncclSuccess);
 
-  NcclCommRAII comm{globalRank, numRanks, localRank};
+  NcclCommRAII comm{
+      globalRank, numRanks, localRank, false, nullptr, server.get()};
   ASSERT_NE(comm.get(), nullptr);
   EXPECT_FALSE(comm->usePatAvg_);
 }
@@ -75,7 +74,8 @@ TEST_P(CommWithPatAvgTestParam, PatAvgEnableByHintWithModes) {
   EnvRAII cvarEnv(NCCL_REDUCESCATTER_PAT_AVG_ENABLE, false);
 
   // Default disabled - use NcclCommRAII for base comm
-  NcclCommRAII comm1{globalRank, numRanks, localRank};
+  NcclCommRAII comm1{
+      globalRank, numRanks, localRank, false, nullptr, server.get()};
   ASSERT_NE(comm1.get(), nullptr);
   EXPECT_FALSE(comm1->usePatAvg_);
 
@@ -96,7 +96,8 @@ TEST_P(CommWithPatAvgTestParam, PatAvgEnableByHintWithModes) {
   std::optional<NcclCommSplitRAII> comm2Split;
   ncclComm_t comm2;
   if (createMode == TestCommCreateMode::kDefault) {
-    comm2Default.emplace(globalRank, numRanks, localRank, false, &config);
+    comm2Default.emplace(
+        globalRank, numRanks, localRank, false, &config, server.get());
     comm2 = comm2Default->get();
   } else {
     comm2Split.emplace(comm1.get(), 1, this->globalRank, &config);
@@ -123,7 +124,8 @@ TEST_P(CommWithPatAvgTestParam, PatAvgEnableByHintWithModes) {
 
   // Now disabled again
   {
-    NcclCommRAII comm3{globalRank, numRanks, localRank};
+    NcclCommRAII comm3{
+        globalRank, numRanks, localRank, false, nullptr, server.get()};
     ASSERT_NE(comm3.get(), nullptr);
     EXPECT_FALSE(comm3->usePatAvg_);
   }
@@ -148,7 +150,6 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

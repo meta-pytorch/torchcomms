@@ -10,25 +10,29 @@
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 
-class CommGetUniqueHashTest : public ::testing::Test {
+class CommGetUniqueHashTest : public NcclxBaseTest {
  public:
   CommGetUniqueHashTest() = default;
 
   void SetUp() override {
-    std::tie(this->localRank, this->globalRank, this->numRanks) = getMpiInfo();
+    NcclxBaseTest::SetUp();
   }
 
-  void TearDown() override {}
-
-  int localRank{0};
-  int globalRank{0};
-  int numRanks{0};
+  void TearDown() override {
+    NcclxBaseTest::TearDown();
+  }
 };
 
 TEST_F(CommGetUniqueHashTest, DefaultComm) {
   auto res = ncclSuccess;
 
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{
+      this->globalRank,
+      this->numRanks,
+      this->localRank,
+      false,
+      nullptr,
+      server.get()};
   uint64_t commHash = 0;
   res = ncclCommGetUniqueHash(comm, &commHash);
   ASSERT_EQ(res, ncclSuccess);
@@ -47,7 +51,13 @@ TEST_F(CommGetUniqueHashTest, DefaultComm) {
 TEST_F(CommGetUniqueHashTest, ParentChildComm) {
   auto res = ncclSuccess;
 
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{
+      this->globalRank,
+      this->numRanks,
+      this->localRank,
+      false,
+      nullptr,
+      server.get()};
 
   // Split into two groups, one with odd ranks and one with even ranks
   ncclComm_t childComm = NCCL_COMM_NULL;
@@ -71,7 +81,13 @@ TEST_F(CommGetUniqueHashTest, ParentChildComm) {
 TEST_F(CommGetUniqueHashTest, ParentChildCommSplitGroup) {
   auto res = ncclSuccess;
 
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{
+      this->globalRank,
+      this->numRanks,
+      this->localRank,
+      false,
+      nullptr,
+      server.get()};
 
   ncclConfig_t inputConfig = NCCL_CONFIG_INITIALIZER;
   inputConfig.splitGroupSize = this->numRanks / 2;
@@ -120,7 +136,13 @@ TEST_F(CommGetUniqueHashTest, InvalidComm) {
 }
 
 TEST_F(CommGetUniqueHashTest, GetHashAfteCommDestroy) {
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{
+      this->globalRank,
+      this->numRanks,
+      this->localRank,
+      false,
+      nullptr,
+      server.get()};
   // Split into two groups, one with odd ranks and one with even ranks
   ncclComm_t childComm = NCCL_COMM_NULL;
   NCCLCHECK_TEST(ncclCommSplit(
@@ -141,7 +163,13 @@ TEST_F(CommGetUniqueHashTest, GetHashAfteCommDestroy) {
 TEST_F(CommGetUniqueHashTest, DISABLED_TwoChildCommsSameColor) {
   auto res = ncclSuccess;
 
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{
+      this->globalRank,
+      this->numRanks,
+      this->localRank,
+      false,
+      nullptr,
+      server.get()};
 
   // Make two child comms from commSplit with same color, compare commHash
   // between them
@@ -169,7 +197,6 @@ TEST_F(CommGetUniqueHashTest, DISABLED_TwoChildCommsSameColor) {
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

@@ -7,7 +7,7 @@
 #include "comms/testinfra/TestsDistUtils.h"
 
 #if defined(__CUDA_FP8_TYPES_EXIST__) && defined(NCCL_ENABLE_FP8)
-class FP8Test : public ::testing::Test {
+class FP8Test : public NcclxBaseTest {
  public:
   FP8Test() = default;
   char expectedVal;
@@ -18,7 +18,7 @@ class FP8Test : public ::testing::Test {
   int root = 0;
 
   void SetUp() override {
-    std::tie(this->localRank, this->globalRank, this->numRanks) = getMpiInfo();
+    NcclxBaseTest::SetUp();
 
     srand(time(NULL));
     expectedVal = rand();
@@ -27,7 +27,6 @@ class FP8Test : public ::testing::Test {
     sendBytes = count * sizeof(char);
     recvBytes = sendBytes * this->numRanks;
 
-    CUDACHECKIGNORE(cudaSetDevice(this->localRank));
     CUDACHECKIGNORE(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
 
     CUDACHECKIGNORE(cudaMalloc(&sendbuf, sendBytes));
@@ -43,16 +42,20 @@ class FP8Test : public ::testing::Test {
 
     CUDACHECKIGNORE(cudaDeviceSynchronize());
   }
-  void TearDown() override {}
-
-  int localRank{0};
-  int globalRank{0};
-  int numRanks{0};
+  void TearDown() override {
+    NcclxBaseTest::TearDown();
+  }
 };
 
 TEST_F(FP8Test, ncclFp8E5M2SendRecv) {
   ncclDataType_t dt = ncclFp8E5M2;
-  NcclCommRAII comm(this->globalRank, this->numRanks, this->localRank);
+  NcclCommRAII comm(
+      this->globalRank,
+      this->numRanks,
+      this->localRank,
+      false,
+      nullptr,
+      server.get());
   ASSERT_NE(nullptr, static_cast<ncclComm_t>(comm));
 
   auto res = ncclSuccess;
@@ -77,7 +80,13 @@ TEST_F(FP8Test, ncclFp8E5M2SendRecv) {
 
 TEST_F(FP8Test, ncclFp8E4M3SendRecv) {
   ncclDataType_t dt = ncclFp8E4M3;
-  NcclCommRAII comm(this->globalRank, this->numRanks, this->localRank);
+  NcclCommRAII comm(
+      this->globalRank,
+      this->numRanks,
+      this->localRank,
+      false,
+      nullptr,
+      server.get());
   ASSERT_NE(nullptr, static_cast<ncclComm_t>(comm));
 
   auto res = ncclSuccess;
@@ -102,7 +111,13 @@ TEST_F(FP8Test, ncclFp8E4M3SendRecv) {
 
 TEST_F(FP8Test, ncclFp8E5M2Allgather) {
   ncclDataType_t dt = ncclFp8E5M2;
-  NcclCommRAII comm(this->globalRank, this->numRanks, this->localRank);
+  NcclCommRAII comm(
+      this->globalRank,
+      this->numRanks,
+      this->localRank,
+      false,
+      nullptr,
+      server.get());
   ASSERT_NE(nullptr, static_cast<ncclComm_t>(comm));
 
   auto res = ncclAllGather(sendbuf, recvbuf, count, dt, comm, stream);
@@ -123,7 +138,13 @@ TEST_F(FP8Test, ncclFp8E5M2Allgather) {
 
 TEST_F(FP8Test, ncclFp8E4M3AllGather) {
   ncclDataType_t dt = ncclFp8E4M3;
-  NcclCommRAII comm(this->globalRank, this->numRanks, this->localRank);
+  NcclCommRAII comm(
+      this->globalRank,
+      this->numRanks,
+      this->localRank,
+      false,
+      nullptr,
+      server.get());
   ASSERT_NE(nullptr, static_cast<ncclComm_t>(comm));
 
   auto res = ncclAllGather(sendbuf, recvbuf, count, dt, comm, stream);
@@ -144,7 +165,13 @@ TEST_F(FP8Test, ncclFp8E4M3AllGather) {
 
 TEST_F(FP8Test, ncclFp8E5M2Bcast) {
   ncclDataType_t dt = ncclFp8E5M2;
-  NcclCommRAII comm(this->globalRank, this->numRanks, this->localRank);
+  NcclCommRAII comm(
+      this->globalRank,
+      this->numRanks,
+      this->localRank,
+      false,
+      nullptr,
+      server.get());
   ASSERT_NE(nullptr, static_cast<ncclComm_t>(comm));
 
   auto res = ncclBroadcast(sendbuf, recvbuf, count, dt, root, comm, stream);
@@ -160,7 +187,13 @@ TEST_F(FP8Test, ncclFp8E5M2Bcast) {
 
 TEST_F(FP8Test, ncclFp8E4M3AllBcast) {
   ncclDataType_t dt = ncclFp8E4M3;
-  NcclCommRAII comm(this->globalRank, this->numRanks, this->localRank);
+  NcclCommRAII comm(
+      this->globalRank,
+      this->numRanks,
+      this->localRank,
+      false,
+      nullptr,
+      server.get());
   ASSERT_NE(nullptr, static_cast<ncclComm_t>(comm));
 
   auto res = ncclBroadcast(sendbuf, recvbuf, count, dt, root, comm, stream);
@@ -176,7 +209,13 @@ TEST_F(FP8Test, ncclFp8E4M3AllBcast) {
 
 TEST_F(FP8Test, ncclFp8E5M2AllReduce) {
   ncclDataType_t dt = ncclFp8E5M2;
-  NcclCommRAII comm(this->globalRank, this->numRanks, this->localRank);
+  NcclCommRAII comm(
+      this->globalRank,
+      this->numRanks,
+      this->localRank,
+      false,
+      nullptr,
+      server.get());
   ASSERT_NE(nullptr, static_cast<ncclComm_t>(comm));
 
   auto res = ncclAllReduce(sendbuf, recvbuf, count, dt, ncclSum, comm, stream);
@@ -189,7 +228,13 @@ TEST_F(FP8Test, ncclFp8E5M2AllReduce) {
 
 TEST_F(FP8Test, ncclFp8E4M3AllReduce) {
   ncclDataType_t dt = ncclFp8E4M3;
-  NcclCommRAII comm(this->globalRank, this->numRanks, this->localRank);
+  NcclCommRAII comm(
+      this->globalRank,
+      this->numRanks,
+      this->localRank,
+      false,
+      nullptr,
+      server.get());
   ASSERT_NE(nullptr, static_cast<ncclComm_t>(comm));
 
   auto res = ncclAllReduce(sendbuf, recvbuf, count, dt, ncclSum, comm, stream);
@@ -202,7 +247,13 @@ TEST_F(FP8Test, ncclFp8E4M3AllReduce) {
 
 TEST_F(FP8Test, ncclFp8E5M2Reduce) {
   ncclDataType_t dt = ncclFp8E5M2;
-  NcclCommRAII comm(this->globalRank, this->numRanks, this->localRank);
+  NcclCommRAII comm(
+      this->globalRank,
+      this->numRanks,
+      this->localRank,
+      false,
+      nullptr,
+      server.get());
   ASSERT_NE(nullptr, static_cast<ncclComm_t>(comm));
 
   auto res =
@@ -216,7 +267,13 @@ TEST_F(FP8Test, ncclFp8E5M2Reduce) {
 
 TEST_F(FP8Test, ncclFp8E4M3Reduce) {
   ncclDataType_t dt = ncclFp8E4M3;
-  NcclCommRAII comm(this->globalRank, this->numRanks, this->localRank);
+  NcclCommRAII comm(
+      this->globalRank,
+      this->numRanks,
+      this->localRank,
+      false,
+      nullptr,
+      server.get());
   ASSERT_NE(nullptr, static_cast<ncclComm_t>(comm));
 
   auto res =
@@ -230,7 +287,13 @@ TEST_F(FP8Test, ncclFp8E4M3Reduce) {
 
 TEST_F(FP8Test, ncclFp8E5M2ReduceScatter) {
   ncclDataType_t dt = ncclFp8E5M2;
-  NcclCommRAII comm(this->globalRank, this->numRanks, this->localRank);
+  NcclCommRAII comm(
+      this->globalRank,
+      this->numRanks,
+      this->localRank,
+      false,
+      nullptr,
+      server.get());
   ASSERT_NE(nullptr, static_cast<ncclComm_t>(comm));
 
   auto res =
@@ -244,7 +307,13 @@ TEST_F(FP8Test, ncclFp8E5M2ReduceScatter) {
 
 TEST_F(FP8Test, ncclFp8E4M3ReduceScatter) {
   ncclDataType_t dt = ncclFp8E4M3;
-  NcclCommRAII comm(this->globalRank, this->numRanks, this->localRank);
+  NcclCommRAII comm(
+      this->globalRank,
+      this->numRanks,
+      this->localRank,
+      false,
+      nullptr,
+      server.get());
   ASSERT_NE(nullptr, static_cast<ncclComm_t>(comm));
 
   auto res =
@@ -259,7 +328,6 @@ TEST_F(FP8Test, ncclFp8E4M3ReduceScatter) {
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }
