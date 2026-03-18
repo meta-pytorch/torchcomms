@@ -2,11 +2,21 @@
 
 #pragma once
 
-#include <infiniband/verbs.h>
-
-// MLX5 DV (Data Direct sysfs path, mlx5dv_is_supported) is optional; omit on
-// systems without rdma-core mlx5 headers (e.g. many ROCm / non-MLX5 images).
+// Optional rdma-core headers (many ROCm / minimal HPC images have neither).
 #if defined(__has_include)
+#if __has_include(<infiniband/verbs.h>)
+#define TORCHCOMMS_HAVE_IBVERBS 1
+#include <infiniband/verbs.h>
+#endif
+#endif
+#ifndef TORCHCOMMS_HAVE_IBVERBS
+#define TORCHCOMMS_HAVE_IBVERBS 0
+struct ibv_device;
+struct ibv_context;
+#endif
+
+// MLX5 DV (Data Direct) requires mlx5dv.h in addition to verbs.
+#if TORCHCOMMS_HAVE_IBVERBS && defined(__has_include)
 #if __has_include(<infiniband/mlx5dv.h>)
 #define TORCHCOMMS_HAVE_MLX5DV 1
 #include <infiniband/mlx5dv.h>

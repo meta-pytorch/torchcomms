@@ -414,7 +414,10 @@ std::pair<PathType, int> GpuNicDiscovery::computePathType(
 // Static methods for Data Direct detection
 
 bool GpuNicDiscovery::isMlx5Supported(ibv_device* device) {
-#if TORCHCOMMS_HAVE_MLX5DV
+#if !TORCHCOMMS_HAVE_IBVERBS
+  (void)device;
+  return false;
+#elif TORCHCOMMS_HAVE_MLX5DV
   return mlx5dv_is_supported(device) != 0;
 #else
   (void)device;
@@ -423,6 +426,10 @@ bool GpuNicDiscovery::isMlx5Supported(ibv_device* device) {
 }
 
 bool GpuNicDiscovery::isDmaBufCapable(ibv_context* ctx) {
+#if !TORCHCOMMS_HAVE_IBVERBS
+  (void)ctx;
+  return false;
+#else
   struct ibv_pd* pd = ibv_alloc_pd(ctx);
   if (pd == nullptr) {
     return false;
@@ -436,12 +443,13 @@ bool GpuNicDiscovery::isDmaBufCapable(ibv_context* ctx) {
   bool notSupported = (errno == EOPNOTSUPP) || (errno == EPROTONOSUPPORT);
   ibv_dealloc_pd(pd);
   return !notSupported;
+#endif
 }
 
 bool GpuNicDiscovery::getDataDirectSysfsPath(
     ibv_context* ctx,
     std::string& path) {
-#if !TORCHCOMMS_HAVE_MLX5DV
+#if !TORCHCOMMS_HAVE_IBVERBS || !TORCHCOMMS_HAVE_MLX5DV
   (void)ctx;
   (void)path;
   return false;
@@ -466,7 +474,10 @@ void GpuNicDiscovery::augmentWithDataDirect() {
   if (dataDirectMode_ == DataDirectMode::Disabled) {
     return;
   }
-
+#if !TORCHCOMMS_HAVE_IBVERBS
+  return;
+#endif
+#if TORCHCOMMS_HAVE_IBVERBS
   struct ibv_device** deviceList = ibv_get_device_list(nullptr);
   if (deviceList == nullptr) {
     spdlog::warn("NicDiscovery: ibv_get_device_list() failed for DD probing");
@@ -572,6 +583,7 @@ void GpuNicDiscovery::augmentWithDataDirect() {
         candidates_[i].nhops,
         candidates_[i].isDataDirect);
   }
+#endif /* TORCHCOMMS_HAVE_IBVERBS */
 }
 
 std::string GpuNicDiscovery::anchorDescription() const {
