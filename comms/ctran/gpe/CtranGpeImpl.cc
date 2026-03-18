@@ -130,11 +130,26 @@ void CUDART_CB CtranGpe::Impl::cmdCb(void* data) {
   plan->gpe->pimpl->cmdEnqueue(plan->cmd);
 }
 
+CtranGpeCmd::~CtranGpeCmd() {
+  // Release kernelFlag back to pool for persistent (graph) cmds.
+  // clearPersistent() removes the reclaim guard. reset() clears flags
+  // to KERNEL_UNSET — normally a no-op since the kernel already wrote
+  // UNSET (both TERMINATE and HOST_ABORT paths), but needed if the
+  // graph was never replayed (flags still KERNEL_SCHEDULED from onPop).
+  if (persistent && kernelFlag) {
+    kernelFlag->clearPersistent();
+    kernelFlag->reset();
+  }
+}
+
 void CUDART_CB CtranGpe::Impl::cmdDestroy(void* data) {
   CtranGpeCmd* cmd = reinterpret_cast<CtranGpeCmd*>(data);
   if (!cmd->persistent) {
     CLOGF(WARN, "CTranGPE: cmd desctructor called for non-persistent cmd");
   }
+  // We actually don't need to do anything here, sicne
+  // ~OpElem::free() would also handle this
+  // TODO: remove in subsequent diff
   for (const auto& x : cmd->coll.opGroup) {
     x->setStatus(KernelElem::ElemStatus::RESET);
   }
@@ -338,6 +353,11 @@ commResult_t CtranGpe::Impl::submit(
       plan->cmd = cmd;
       plan->gpe = this->gpe;
       cmd->persistent = true;
+      // Mark the flag as persistent so reclaim() won't steal it between
+      // graph replays (the kernel writes KERNEL_UNSET after each replay).
+      if (kernelFlag) {
+        kernelFlag->setPersistent();
+      }
 
       FB_COMMCHECKGOTO(
           utils::cudagraph::addHostNode(
