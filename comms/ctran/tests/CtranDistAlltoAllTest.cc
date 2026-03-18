@@ -30,7 +30,7 @@ class CtranAllToAllTest : public CtranDistBaseTest {
     if (globalRank == 0) {
       expectedVal = rand();
     }
-    MPI_Bcast(&expectedVal, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    oobBroadcast(expectedVal, 0);
   }
 
   void* createDataBuf(size_t nbytes, void** handle) {
