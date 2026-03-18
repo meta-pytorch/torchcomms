@@ -830,7 +830,6 @@ set(CTRAN_FILES
   comms/ctran/algos/AllToAll/AllToAllvDynamicSplit.cc
   comms/ctran/algos/AllToAll/AllToallvDynamicSplitNonContig.cc
   comms/ctran/algos/AllToAll/AllToAllvImpl.h
-  comms/ctran/algos/AllToAll/fb/compressed/CompressedAllToAllv.h
   comms/ctran/algos/AllToAll/HostTypes.h
   comms/ctran/algos/AllToAll/Types.h
   comms/ctran/algos/AllToAllvDedup/AlgoImpl.cc
@@ -1037,7 +1036,6 @@ set(CTRAN_FILES
   comms/ctran/mapper/CtranMapperImpl.h
   comms/ctran/mapper/CtranMapperRequest.cc
   comms/ctran/mapper/CtranMapperTypes.h
-  comms/ctran/mapper/fb/IcompressionManager.h
   comms/ctran/memory/memCacheAllocator.cc
   comms/ctran/memory/memCacheAllocator.h
   comms/ctran/memory/SlabAllocator.cc
