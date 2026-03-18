@@ -2160,9 +2160,9 @@ std::shared_ptr<TorchCommWindow> TorchCommNCCLX::new_window(
     const std::optional<at::Tensor>& tensor) {
   std::shared_ptr<TorchCommWindow> win;
 #if defined(ENABLE_PIPES)
-  // Select Pipes backend when explicitly requested via env var.
+  // Select Pipes backend when NCCL_CTRAN_USE_PIPES is enabled.
   // Pipes uses ctran IBGDA/NVLink instead of GIN for device-side P2P.
-  const char* pipes_env = std::getenv("TORCHCOMMS_PIPES_DEVICE_API_ENABLE");
+  const char* pipes_env = std::getenv("NCCL_CTRAN_USE_PIPES");
   if (pipes_env != nullptr && std::string_view(pipes_env) == "1") {
     win = std::make_shared<TorchCommWindowNCCLXPipes>(
         nccl_comm_, shared_from_this());
