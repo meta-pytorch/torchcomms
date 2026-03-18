@@ -19,7 +19,7 @@ void PipesDeviceApiTest::SetUp() {
   if (checkIfSkip()) {
     GTEST_SKIP() << "Skipping Pipes Device API tests "
                     "(RUN_PIPES_DEVICE_API_TEST not set or "
-                    "TORCHCOMMS_PIPES_DEVICE_API_ENABLE not enabled)";
+                    "NCCL_CTRAN_USE_PIPES not enabled)";
   }
 
   wrapper_ = createWrapper();
@@ -49,10 +49,10 @@ bool PipesDeviceApiTest::checkIfSkip() {
     return true; // skip if not enabled
   }
 
-  // Also check TORCHCOMMS_PIPES_DEVICE_API_ENABLE=1 is set.
+  // Also check NCCL_CTRAN_USE_PIPES=1 is set.
   // Without this, new_window() returns TorchCommWindowNCCLXGin instead of
   // Pipes.
-  const char* pipes_env = getenv("TORCHCOMMS_PIPES_DEVICE_API_ENABLE");
+  const char* pipes_env = getenv("NCCL_CTRAN_USE_PIPES");
   if (!pipes_env || std::string(pipes_env) != "1") {
     return true;
   }
@@ -99,7 +99,7 @@ std::string PipesDeviceApiTest::getDtypeName(at::ScalarType dtype) {
 //   4. Verify the returned device pointer is non-null
 //
 // NOTE: TEST_F macros MUST be in this file (compiled with
-// TORCHCOMMS_HAS_NCCL_DEVICE_API and ENABLE_PIPES) to ensure
+// TORCHCOMMS_HAS_NCCL_DEVICE_API and ENABLE_PIPES) so that
 // TorchCommWindowNCCLXPipes resolves to the correct type (PipesDeviceBackend).
 
 void PipesDeviceApiTest::testPipesDeviceWindowCreation(
@@ -134,11 +134,11 @@ void PipesDeviceApiTest::testPipesDeviceWindowCreation(
   torchcomm_->barrier(false);
 
   // Cast to Pipes window to access device API.
-  // TORCHCOMMS_PIPES_DEVICE_API_ENABLE=1 makes new_window() return Pipes.
+  // NCCL_CTRAN_USE_PIPES=1 makes new_window() return Pipes.
   auto* win =
       dynamic_cast<torch::comms::TorchCommWindowNCCLXPipes*>(base_win.get());
   ASSERT_NE(win, nullptr) << "Window should be TorchCommWindowNCCLXPipes. "
-                             "Is TORCHCOMMS_PIPES_DEVICE_API_ENABLE=1 set?";
+                             "Is NCCL_CTRAN_USE_PIPES=1 set?";
 
   // get_device_window() is COLLECTIVE: internally calls
   // ctran_win->get_device_win() which does an allGather to exchange IBGDA
@@ -210,7 +210,7 @@ void PipesDeviceApiTest::testPerPeerSignal() {
   auto* win =
       dynamic_cast<torch::comms::TorchCommWindowNCCLXPipes*>(base_win.get());
   ASSERT_NE(win, nullptr) << "Window should be TorchCommWindowNCCLXPipes. "
-                             "Is TORCHCOMMS_PIPES_DEVICE_API_ENABLE=1 set?";
+                             "Is NCCL_CTRAN_USE_PIPES=1 set?";
 
   int signal_count = num_ranks_;
   decltype(win->get_device_window()) dev_win = nullptr;
@@ -320,7 +320,7 @@ void PipesDeviceApiTest::testWaitSignalFrom() {
   auto* win =
       dynamic_cast<torch::comms::TorchCommWindowNCCLXPipes*>(base_win.get());
   ASSERT_NE(win, nullptr) << "Window should be TorchCommWindowNCCLXPipes. "
-                             "Is TORCHCOMMS_PIPES_DEVICE_API_ENABLE=1 set?";
+                             "Is NCCL_CTRAN_USE_PIPES=1 set?";
 
   int signal_count = num_ranks_;
   decltype(win->get_device_window()) dev_win = nullptr;
@@ -417,7 +417,7 @@ void PipesDeviceApiTest::testDeviceBarrier() {
   auto* win =
       dynamic_cast<torch::comms::TorchCommWindowNCCLXPipes*>(base_win.get());
   ASSERT_NE(win, nullptr) << "Window should be TorchCommWindowNCCLXPipes. "
-                             "Is TORCHCOMMS_PIPES_DEVICE_API_ENABLE=1 set?";
+                             "Is NCCL_CTRAN_USE_PIPES=1 set?";
 
   // Get device window with barrier support
   int barrier_count = 2;
