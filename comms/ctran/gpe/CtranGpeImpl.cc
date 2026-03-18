@@ -245,28 +245,6 @@ commResult_t CtranGpe::Impl::submit(
     PreLaunchGraphPrepareFn graphPrepareFn) {
   commResult_t res = commSuccess;
 
-  // Reclaim once to gain back available flags
-  if (this->kernelFlagPool->size() == 0) {
-    this->kernelFlagPool->reclaim();
-  }
-
-  if (this->checksumPool->size() == 0) {
-    this->checksumPool->reclaim();
-  }
-
-  // We do not expect such high amount of inuse flags, return error here to
-  // avoid hang. If there can be really such a high usage case, either
-  // increase the pool size or set a timeout here to reclaim multiple times.
-  // Avoid timeout logic for now to avoid complexity.
-  if (this->kernelFlagPool->size() == 0) {
-    CLOGF(
-        ERR,
-        "CTRAN-GPE: Internal KernelFlag pool has unexpected high usage (capacity: {}, available: {}). It is likely that some COMM kernels are not released properly",
-        kernelFlagPool->capacity(),
-        kernelFlagPool->size());
-    return commInternalError;
-  }
-
   // Error checking before GPE cmd and kernel submission
   if (kernelConfig.args.devState_d == nullptr) {
     CLOGF(
@@ -1053,31 +1031,8 @@ commResult_t allocGpeKernelSyncs(
     size_t count,
     int nworkers,
     std::vector<ctran::algos::GpeKernelSync*>& gpeKernelSyncs) {
-  // reclaim from outstanding kernels once if pool items are insufficient
-  if (gpeKernelSyncPool->size() < count) {
-    gpeKernelSyncPool->reclaim();
-
-    // We do not expect such high amount of inuse pool items, return error here
-    // to avoid hang. If there can be really such a high usage case, either
-    // increase the pool size or set a timeout here to reclaim multiple times.
-    // Avoid timeout logic for now to avoid complexity.
-    if (count > gpeKernelSyncPool->size()) {
-      CLOGF(
-          WARN,
-          "CTRAN-GPE: Internal KernelSync pool has unexpected high usage (capacity: {}, available: {}, current request: {}). "
-          "It is likely that some COMM kernels are not released properly",
-          gpeKernelSyncPool->capacity(),
-          gpeKernelSyncPool->size(),
-          count);
-      return ErrorStackTraceUtil::log(commInternalError);
-    }
-  }
-
-  for (int i = 0; i < count; i++) {
+  for (size_t i = 0; i < count; i++) {
     auto* g = gpeKernelSyncPool->pop();
-    if (!g) {
-      return ErrorStackTraceUtil::log(commInternalError);
-    }
     // essentially the constructor (note resetStatus() is needed since we didn't
     // set nworkers before this point)
     g->nworkers = nworkers;
