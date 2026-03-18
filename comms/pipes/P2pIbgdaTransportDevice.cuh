@@ -506,6 +506,29 @@ class P2pIbgdaTransportDevice {
   }
 
   /**
+   * signal_remote_with_fence (group overload) - Group-aware fenced signal
+   *
+   * Group-level API: all threads in the group must call this together.
+   * Performs group.sync() for ordering, then the global leader executes
+   * signal_remote_with_fence().
+   *
+   * @param group ThreadGroup for group coordination.
+   * @param remoteBuf Remote signal buffer (window-owned, RDMA-registered)
+   * @param signalId Index into the remote signal buffer (uint64_t units)
+   * @param value Value to atomically add
+   */
+  __device__ void signal_remote_with_fence(
+      ThreadGroup& group,
+      const IbgdaRemoteBuffer& remoteBuf,
+      int signalId,
+      uint64_t value) {
+    group.sync();
+    if (group.is_global_leader()) {
+      signal_remote_with_fence(remoteBuf, signalId, value);
+    }
+  }
+
+  /**
    * put_signal_counter_remote - Data write + remote signal + local counter
    *
    * Compound operation using main QP (data + signal) and companion QP

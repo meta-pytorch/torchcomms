@@ -445,6 +445,42 @@ Returns:
     int: NCCL window handle as int64.
 )",
           py::call_guard<py::gil_scoped_release>())
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
+      .def(
+          "get_nvlink_address",
+          [](TorchCommWindowNCCLXGin& self, int peer, int64_t offset) {
+            void* ptr =
+                self.get_nvlink_address(peer, static_cast<size_t>(offset));
+            // Return as int64 for safe passage through Python
+            return reinterpret_cast<int64_t>(ptr);
+          },
+          R"(
+Get the NVLink-mapped device pointer for a peer's window memory.
+
+Returns the direct NVLink address that can be used to access the peer's
+window buffer via NVLink. Returns 0 if the peer is not NVLink-accessible
+(e.g., remote node over RDMA).
+
+Prerequisites: Must call tensor_register() first.
+
+Args:
+    peer: The world rank of the peer whose address to retrieve.
+    offset: Byte offset within the peer's window (default 0).
+
+Returns:
+    int: NVLink-mapped device pointer as int64, or 0 if not accessible.
+
+Example:
+    >>> window = comm.new_window()
+    >>> window.tensor_register(buffer)
+    >>> nvlink_ptr = window.get_nvlink_address(peer=1)
+    >>> if nvlink_ptr != 0:
+    ...     print("NVLink accessible!")
+)",
+          py::arg("peer"),
+          py::arg("offset") = 0,
+          py::call_guard<py::gil_scoped_release>())
+#endif
       .def(
           "register_local_buffer",
           [](TorchCommWindowNCCLXGin& self, const at::Tensor& tensor) {

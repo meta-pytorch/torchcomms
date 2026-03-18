@@ -143,6 +143,9 @@ OpElem::OpElem(
       new (&this->allreduce.remoteAccessKeys)
           std::vector<struct CtranMapperRemoteAccessKey>;
       this->allreduce.remoteAccessKeys.resize(comm_->statex_->nRanks());
+      new (&this->allreduce.hostArgs) ctran::allreduce::ring::HostArgs();
+      new (&this->allreduce.hostResource)
+          ctran::allreduce::ring::HostResource();
       break;
     default:
       break;
@@ -217,6 +220,9 @@ OpElem::~OpElem() {
       this->allreduce.kElemStepMap.~unordered_map();
       this->allreduce.remoteRecvBuffs.~vector();
       this->allreduce.remoteAccessKeys.~vector();
+      this->allreduce.hostArgs.~HostArgs();
+      // ~HostResource releases GpeKernelSyncs back to pool
+      this->allreduce.hostResource.~HostResource();
       break;
     }
     case ALLTOALLV_DYNAMIC: {

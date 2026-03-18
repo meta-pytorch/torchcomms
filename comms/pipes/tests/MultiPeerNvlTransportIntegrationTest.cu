@@ -210,8 +210,7 @@ void testConcurrentSignalMultiBlock(
 __global__ void putOperationKernel(
     DeviceWindow& dw,
     int targetRank,
-    void* remoteDst,
-    const void* localSrc,
+    LocalBufferRegistration srcBuf,
     std::size_t nbytes,
     int signalId,
     bool isWriter,
@@ -219,7 +218,7 @@ __global__ void putOperationKernel(
   auto group = make_warp_group();
 
   if (isWriter) {
-    dw.put_signal(targetRank, group, remoteDst, localSrc, nbytes, signalId, 1);
+    dw.put_signal(group, targetRank, 0, srcBuf, 0, nbytes, signalId, 1);
   } else {
     dw.wait_signal(group, signalId, CmpOp::CMP_GE, 1);
   }
@@ -232,14 +231,13 @@ __global__ void putOperationKernel(
 void testPutOperation(
     DeviceWindow& dw,
     int targetRank,
-    void* remoteDst,
-    const void* localSrc,
+    const LocalBufferRegistration& srcBuf,
     std::size_t nbytes,
     int signalId,
     bool isWriter,
     int* result) {
   putOperationKernel<<<1, 32>>>(
-      dw, targetRank, remoteDst, localSrc, nbytes, signalId, isWriter, result);
+      dw, targetRank, srcBuf, nbytes, signalId, isWriter, result);
   CUDACHECK_TEST(cudaGetLastError());
 }
 

@@ -103,9 +103,16 @@ StreamCaptureModeGuard::StreamCaptureModeGuard(
   CUDA_CHECK(cudaThreadExchangeStreamCaptureMode(&prevMode_));
 }
 
+void StreamCaptureModeGuard::init() {
+  FB_CUDACHECKTHROW(exchangeFn_(ctx_, &prevMode_));
+}
+
 StreamCaptureModeGuard::~StreamCaptureModeGuard() {
   if (exchangeFn_) {
-    (void)exchangeFn_(ctx_, &prevMode_);
+    CUDA_CHECK_WITH_IGNORE(
+        exchangeFn_(ctx_, &prevMode_),
+        cudaErrorCudartUnloading,
+        cudaErrorContextIsDestroyed);
   } else {
     CUDA_CHECK_WITH_IGNORE(
         cudaThreadExchangeStreamCaptureMode(&prevMode_),
