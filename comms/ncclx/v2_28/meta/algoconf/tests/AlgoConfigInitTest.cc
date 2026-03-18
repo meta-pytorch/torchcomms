@@ -8,7 +8,16 @@
 #include "meta/hints/GlobalHints.h" // @manual
 #include "nccl.h"
 
-TEST(AlgoConfigInitTest, SetHintBeforeCommCreation) {
+// Skip initEnv()/ncclCvarInit() to verify global hints are inaccessible
+// before NCCL initialization.
+class AlgoConfigInitTest : public NcclxBaseTestFixture {
+ protected:
+  AlgoConfigInitTest() {
+    initEnvAtSetup = false;
+  }
+};
+
+TEST_P(AlgoConfigInitTest, SetHintBeforeCommCreation) {
   // Expect invalid access to AlgoConfig global hints before comm creation
   ASSERT_FALSE(ncclx::setGlobalHint("algo_sendrecv", "orig"));
   auto res = ncclx::getGlobalHint("algo_sendrecv");
@@ -16,13 +25,8 @@ TEST(AlgoConfigInitTest, SetHintBeforeCommCreation) {
 
   ASSERT_FALSE(ncclx::resetGlobalHint("algo_sendrecv"));
 
-  auto [localRank, globalRank, numRanks, localSize] = getTcpStoreOrMpiInfo();
-
-  ASSERT_EQ(cudaSetDevice(localRank), cudaSuccess)
-      << "cudaSetDevice failed with device: " << localRank;
-
-  ncclComm_t comm __attribute__((unused)) =
-      createNcclComm(globalRank, numRanks, localRank);
+  ncclComm_t comm = createNcclComm(
+      globalRank, numRanks, localRank, false, nullptr, server.get());
 
   // Expect valid access to AlgoConfig global hints after comm creation
   ASSERT_TRUE(ncclx::setGlobalHint("algo_sendrecv", "orig"));
@@ -30,7 +34,14 @@ TEST(AlgoConfigInitTest, SetHintBeforeCommCreation) {
   ASSERT_TRUE(res.has_value());
   ASSERT_EQ(res.value(), "orig");
   ASSERT_TRUE(ncclx::resetGlobalHint("algo_sendrecv"));
+
+  NCCLCHECK_TEST(ncclCommDestroy(comm));
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    AlgoConfigInitTestSuite,
+    AlgoConfigInitTest,
+    testing::Values(NcclxEnvs({{"NCCL_FASTINIT_MODE", "none"}})));
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
