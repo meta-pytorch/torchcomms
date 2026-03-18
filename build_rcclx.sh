@@ -144,6 +144,7 @@ function build_third_party {
   if [[ -z "${USE_SYSTEM_LIBS}" ]]; then
     build_fb_oss_library "https://github.com/fmtlib/fmt.git" "11.2.0" fmt "-DFMT_INSTALL=ON -DFMT_TEST=OFF -DFMT_DOC=OFF"
     build_fb_oss_library "https://github.com/fmtlib/fmt.git" "11.2.0" fmt "-DFMT_INSTALL=ON -DFMT_TEST=OFF -DFMT_DOC=OFF -DBUILD_SHARED_LIBS=ON"
+    build_fb_oss_library "https://github.com/gabime/spdlog.git" "v1.17.0" spdlog "-DSPDLOG_BUILD_SHARED=OFF"
     build_fb_oss_library "https://github.com/madler/zlib.git" "v1.2.13" zlib "-DZLIB_BUILD_TESTING=OFF"
     build_boost
     build_openssl
@@ -185,6 +186,7 @@ function build_third_party {
         conda-forge::libopenssl-static
         conda-forge::folly
         fmt
+        conda-forge::spdlog
         pyyaml
       )
       conda install "${DEPS[@]}" --yes
@@ -239,11 +241,35 @@ export CMAKE_PREFIX_PATH="$CONDA_PREFIX"
 export LIB_PREFIX="lib64"
 
 BUILDDIR=${BUILDDIR:="${PWD}/build/rcclx"}
-AMDGPU_TARGETS=${AMDGPU_TARGETS:="gfx942,gfx950"}
+AMDGPU_TARGETS=${AMDGPU_TARGETS:="gfx942,gfx950,gfx90a"}
 
-# Add b200 support if CUDA 12.8+ is available
+# Parse command-line arguments (overrides env/defaults above)
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --amdgpu_targets)
+      AMDGPU_TARGETS="$2"
+      shift 2
+      ;;
+    --amdgpu_targets=*)
+      AMDGPU_TARGETS="${1#*=}"
+      shift
+      ;;
+    --no_clean)
+      CLEAN_BUILD=0
+      shift
+      ;;
+    *)
+      echo "Unknown option: $1 (supported: --amdgpu_targets TARGETS, --no_clean)" >&2
+      exit 1
+      ;;
+  esac
+done
+
+
 CLEAN_BUILD=${CLEAN_BUILD:=0}
 LIB_SUFFIX=${LIB_SUFFIX:-lib}
+
+echo "RCCL will be built for GPU targets: ${AMDGPU_TARGETS}"
 CONDA_INCLUDE_DIR="${CONDA_PREFIX}/include"
 CONDA_LIB_DIR="${CONDA_PREFIX}/lib"
 NCCL_HOME=${NCCL_HOME:="${PWD}/comms/rcclx/develop"}
