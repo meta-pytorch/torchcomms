@@ -155,6 +155,10 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
 
   std::string_view getBackendVersion() const;
 
+  // Device Transport API — returns device pointer as int64 for Triton kernels.
+  // Throws if not supported by the backend.
+  int64_t get_device_transport();
+
   std::shared_ptr<TorchCommBackend> getBackendImpl() const {
     return impl_;
   }

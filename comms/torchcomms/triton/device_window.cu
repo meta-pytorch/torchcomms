@@ -1,5 +1,5 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
-// TorchComms Triton Device API - nvcc-compiled implementations
+// TorchComms Triton Device Window - nvcc-compiled implementations
 //
 // This file provides extern "C" wrappers around TorchCommDeviceWindow methods.
 // Compiled with nvcc to support NCCLX GIN templates.
