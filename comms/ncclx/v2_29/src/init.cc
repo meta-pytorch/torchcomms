@@ -2527,7 +2527,6 @@ ncclResult_t ncclCommInitAll(ncclComm_t* comms, int ndev, const int* devlist) {
   int totalnDev;
   int *gpuFlags = NULL;
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
-  NCCLCHECK(ncclxParseCommConfig(&config));
   int oldDev = 0;
 
   ncclUniqueId uniqueId;
@@ -2536,6 +2535,15 @@ ncclResult_t ncclCommInitAll(ncclComm_t* comms, int ndev, const int* devlist) {
 
   // Load the CUDA driver and dlsym hooks (can fail on old drivers)
   (void)ncclCudaLibraryInit();
+
+  // ncclInitEnv must be called before ncclxParseCommConfig because the Config
+  // constructor reads cvars (e.g. NCCL_RUNTIME_CONNECT) that are only
+  // initialized inside ncclInitEnv/ncclCvarInit.  Without this ordering,
+  // non-root ranks (which skip ncclGetUniqueId) would read uninitialized
+  // cvar values, leading to mismatched runtimeConn across ranks and hangs
+  // during init.
+  NCCLCHECK(ncclInitEnv());
+  NCCLCHECK(ncclxParseCommConfig(&config));
 
   CUDACHECK(cudaGetDevice(&oldDev));
   NCCLCHECKGOTO(PtrCheck(comms, "CommInitAll", "comms"), ret, fail);
@@ -2605,9 +2613,16 @@ ncclResult_t ncclCommInitRankConfig(ncclComm_t *newcomm, int nranks, ncclUniqueI
   ncclResult_t ret = ncclSuccess;
   ncclConfig_t internalConfig = NCCL_CONFIG_INITIALIZER;
   ncclConfig_t *internalConfigPtr = config ? config : &internalConfig;
-  NCCLCHECK(ncclxParseCommConfig(internalConfigPtr));
 
+  // ncclInitEnv must be called before ncclxParseCommConfig because the Config
+  // constructor reads cvars (e.g. NCCL_RUNTIME_CONNECT) that are only
+  // initialized inside ncclInitEnv/ncclCvarInit.  Without this ordering,
+  // non-root ranks (which skip ncclGetUniqueId) would read uninitialized
+  // cvar values, leading to mismatched runtimeConn across ranks and hangs
+  // during init.
   NCCLCHECK(ncclInitEnv());
+
+  NCCLCHECK(ncclxParseCommConfig(internalConfigPtr));
 
   char allZeroUniqueId[NCCL_UNIQUE_ID_BYTES] = {0};
   bool uniqueIdIsInitialized = memcmp(commId.internal, allZeroUniqueId, NCCL_UNIQUE_ID_BYTES) != 0;
