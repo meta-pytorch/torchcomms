@@ -127,8 +127,8 @@ class NcclxLazyConnectTestFixture : public NcclxBaseTestFixture {
 };
 
 TEST_P(NcclxLazyConnectTestFixture, InitOnly) {
-  NCCLCHECK_TEST(ncclCommInitRankConfig(
-      &rootComm, numRanks, ncclUid, globalRank, nullptr));
+  rootComm = createNcclComm(
+      globalRank, numRanks, localRank, false, nullptr, server.get());
   ASSERT_NE(nullptr, rootComm);
   // Nothing should be connected or initialized if no collective is called
   if (NCCL_RUNTIME_CONNECT) {
@@ -152,8 +152,8 @@ TEST_P(NcclxLazyConnectTestFixture, InitOnly) {
 
 TEST_P(NcclxLazyConnectTestFixture, AllReduceRing) {
   EnvRAII algo(NCCL_ALGO, std::string("RING"));
-  NCCLCHECK_TEST(ncclCommInitRankConfig(
-      &rootComm, numRanks, ncclUid, globalRank, nullptr));
+  rootComm = createNcclComm(
+      globalRank, numRanks, localRank, false, nullptr, server.get());
   ASSERT_NE(nullptr, rootComm);
 
   size_t count = 1 << 10; // 1K elements
@@ -181,8 +181,8 @@ TEST_P(NcclxLazyConnectTestFixture, AllReduceRing) {
 
 TEST_P(NcclxLazyConnectTestFixture, AllReduceTree) {
   EnvRAII algo(NCCL_ALGO, std::string("TREE"));
-  NCCLCHECK_TEST(ncclCommInitRankConfig(
-      &rootComm, numRanks, ncclUid, globalRank, nullptr));
+  rootComm = createNcclComm(
+      globalRank, numRanks, localRank, false, nullptr, server.get());
   ASSERT_NE(nullptr, rootComm);
 
   size_t count = 1 << 10; // 1K elements
@@ -210,8 +210,8 @@ TEST_P(NcclxLazyConnectTestFixture, AllReduceTree) {
 
 TEST_P(NcclxLazyConnectTestFixture, AllReduceTreeIncreaseChannel) {
   EnvRAII algo(NCCL_ALGO, std::string("TREE"));
-  NCCLCHECK_TEST(ncclCommInitRankConfig(
-      &rootComm, numRanks, ncclUid, globalRank, nullptr));
+  rootComm = createNcclComm(
+      globalRank, numRanks, localRank, false, nullptr, server.get());
   ASSERT_NE(nullptr, rootComm);
 
   size_t smallCount = 1 << 10; // 1K elements
@@ -240,8 +240,8 @@ TEST_P(NcclxLazyConnectTestFixture, AllReduceTreeIncreaseChannel) {
 }
 
 TEST_P(NcclxLazyConnectTestFixture, Alltoall) {
-  NCCLCHECK_TEST(ncclCommInitRankConfig(
-      &rootComm, numRanks, ncclUid, globalRank, nullptr));
+  rootComm = createNcclComm(
+      globalRank, numRanks, localRank, false, nullptr, server.get());
   ASSERT_NE(nullptr, rootComm);
 
   size_t count = 1 << 20; // 1M BF16 elements
@@ -291,8 +291,8 @@ TEST_P(NcclxLazyConnectTestFixture, Alltoall) {
 }
 
 TEST_P(NcclxLazyConnectTestFixture, AlltoallAndAllGather) {
-  NCCLCHECK_TEST(ncclCommInitRankConfig(
-      &rootComm, numRanks, ncclUid, globalRank, nullptr));
+  rootComm = createNcclComm(
+      globalRank, numRanks, localRank, false, nullptr, server.get());
   ASSERT_NE(nullptr, rootComm);
 
   size_t count = 1 << 20; // 1M BF16 elements
@@ -329,8 +329,8 @@ TEST_P(NcclxLazyConnectTestFixture, higherP2pChThanColl) {
   EnvRAII p2pMinCh(NCCL_MIN_P2P_NCHANNELS, (int64_t)MAXCHANNELS);
   EnvRAII p2pMaxCh(NCCL_MAX_P2P_NCHANNELS, (int64_t)MAXCHANNELS);
 
-  NCCLCHECK_TEST(ncclCommInitRankConfig(
-      &rootComm, numRanks, ncclUid, globalRank, nullptr));
+  rootComm = createNcclComm(
+      globalRank, numRanks, localRank, false, nullptr, server.get());
   ASSERT_NE(nullptr, rootComm);
   // p2p channels should be higher than collective channels
   EXPECT_GE(rootComm->p2pnChannels, rootComm->collChannels);
@@ -366,8 +366,8 @@ TEST_P(NcclxLazyConnectTestFixture, higherP2pChThanColl) {
 }
 
 TEST_P(NcclxLazyConnectTestFixture, ChildCommAllGather) {
-  NCCLCHECK_TEST(ncclCommInitRankConfig(
-      &rootComm, numRanks, ncclUid, globalRank, nullptr));
+  rootComm = createNcclComm(
+      globalRank, numRanks, localRank, false, nullptr, server.get());
   ASSERT_NE(nullptr, rootComm);
 
   ncclComm_t childComm;
@@ -517,8 +517,8 @@ TEST_P(NcclxLazyConnectTestFixture, ChildCommAllGather) {
 // }
 
 TEST_P(NcclxLazyConnectTestFixture, ChildCommLazyConfig) {
-  NCCLCHECK_TEST(ncclCommInitRankConfig(
-      &rootComm, numRanks, ncclUid, globalRank, nullptr));
+  rootComm = createNcclComm(
+      globalRank, numRanks, localRank, false, nullptr, server.get());
   ASSERT_NE(nullptr, rootComm);
   // split/duplicate a communicator always enable lazy connect and setup
   // channels
@@ -555,8 +555,8 @@ TEST_P(NcclxLazyConnectTestFixture, ChildCommLazyConfig) {
 }
 
 TEST_P(NcclxLazyConnectTestFixture, coalescedAllReduce) {
-  NCCLCHECK_TEST(
-      ncclCommInitRankConfig(&comm, numRanks, ncclUid, globalRank, nullptr));
+  comm = createNcclComm(
+      globalRank, numRanks, localRank, false, nullptr, server.get());
   ASSERT_NE(nullptr, comm);
 
   size_t count = 1 << 10; // 1K elements

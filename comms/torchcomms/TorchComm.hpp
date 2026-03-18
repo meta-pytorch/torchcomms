@@ -153,6 +153,8 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
     return backend_;
   }
 
+  std::string_view getBackendVersion() const;
+
   std::shared_ptr<TorchCommBackend> getBackendImpl() const {
     return impl_;
   }
@@ -238,9 +240,9 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
   // Rank validation helper
   void validateRank(int rank, const char* param_name) const;
 
- private:
   // Backend name
   std::string backend_;
+  std::string backend_version_;
   // Implementation object
   std::shared_ptr<TorchCommBackend> impl_;
 

@@ -352,6 +352,16 @@ class NcclxMock : public NcclxApi {
        void** outDevicePtr),
       (override));
   MOCK_METHOD(ncclResult_t, winDestroyDeviceWin, (void* devicePtr), (override));
+  MOCK_METHOD(
+      ncclResult_t,
+      getMultiPeerDeviceHandle,
+      (ncclComm_t comm,
+       void** outTransportsPtr,
+       int* outMyRank,
+       int* outNRanks,
+       int* outNumNvlPeers,
+       int* outNumIbPeers),
+      (override));
 #endif
 
   // Group operations

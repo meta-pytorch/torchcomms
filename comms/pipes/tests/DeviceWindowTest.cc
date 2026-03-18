@@ -122,38 +122,200 @@ TEST_F(DeviceWindowTestFixture, ReadSignal) {
 }
 
 // =============================================================================
-// Generic NVL Put via DeviceWindow
+// Offset-Based NVL Put via DeviceWindow
 // =============================================================================
 
-TEST_F(DeviceWindowTestFixture, NvlPutViaGenericApi) {
-  const std::size_t nbytes = 4096;
-  const std::size_t numInts = nbytes / sizeof(int);
+TEST_F(DeviceWindowTestFixture, NvlOffsetPut) {
+  // Source buffer: 8KB filled with 0xCAFE
+  const std::size_t srcBufSize = 8192;
+  const std::size_t srcNumInts = srcBufSize / sizeof(int);
   const int testValue = 0xCAFE;
 
-  DeviceBuffer srcBuffer(nbytes);
-  DeviceBuffer dstBuffer(nbytes);
+  // Window buffer: 16KB, zero-initialized
+  const std::size_t windowBufSize = 16384;
+  const std::size_t windowNumInts = windowBufSize / sizeof(int);
+
+  DeviceBuffer srcBuffer(srcBufSize);
+  DeviceBuffer windowBuffer(windowBufSize);
   auto src_d = static_cast<int*>(srcBuffer.get());
-  auto dst_d = static_cast<int*>(dstBuffer.get());
+  auto window_d = static_cast<int*>(windowBuffer.get());
 
-  std::vector<int> srcHost(numInts, testValue);
+  std::vector<int> srcHost(srcNumInts, testValue);
   CUDACHECK_TEST(
-      cudaMemcpy(src_d, srcHost.data(), nbytes, cudaMemcpyHostToDevice));
-  CUDACHECK_TEST(cudaMemset(dst_d, 0, nbytes));
+      cudaMemcpy(src_d, srcHost.data(), srcBufSize, cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(cudaMemset(window_d, 0, windowBufSize));
 
-  test::testDeviceWindowNvlPut(
+  // Copy 4KB from src_offset=2048 to dst_offset=4096
+  const size_t dst_offset = 4096;
+  const size_t src_offset = 2048;
+  const std::size_t nbytes = 4096;
+
+  test::testDeviceWindowNvlOffsetPut(
       0,
       2,
-      reinterpret_cast<char*>(dst_d),
+      reinterpret_cast<char*>(window_d),
       reinterpret_cast<const char*>(src_d),
+      srcBufSize,
+      dst_offset,
+      src_offset,
       nbytes);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
-  std::vector<int> dstHost(numInts);
-  CUDACHECK_TEST(
-      cudaMemcpy(dstHost.data(), dst_d, nbytes, cudaMemcpyDeviceToHost));
+  std::vector<int> windowHost(windowNumInts);
+  CUDACHECK_TEST(cudaMemcpy(
+      windowHost.data(), window_d, windowBufSize, cudaMemcpyDeviceToHost));
 
-  const std::vector<int> expected(numInts, testValue);
-  EXPECT_EQ(dstHost, expected) << "Generic NVL put should copy all data";
+  // Expected: zeros everywhere except [dst_offset, dst_offset+nbytes)
+  const std::size_t dstStartInt = dst_offset / sizeof(int);
+  const std::size_t copyNumInts = nbytes / sizeof(int);
+  std::vector<int> expected(windowNumInts, 0);
+  std::fill(
+      expected.begin() + dstStartInt,
+      expected.begin() + dstStartInt + copyNumInts,
+      testValue);
+  EXPECT_EQ(windowHost, expected)
+      << "Offset put should copy data to correct region only";
+}
+
+// =============================================================================
+// Offset-Based NVL Put + Signal via DeviceWindow
+// =============================================================================
+
+TEST_F(DeviceWindowTestFixture, NvlOffsetPutSignal) {
+  // Source buffer: 8KB filled with 0xBEEF
+  const std::size_t srcBufSize = 8192;
+  const std::size_t srcNumInts = srcBufSize / sizeof(int);
+  const int testValue = 0xBEEF;
+
+  // Window buffer: 16KB, zero-initialized
+  const std::size_t windowBufSize = 16384;
+  const std::size_t windowNumInts = windowBufSize / sizeof(int);
+
+  DeviceBuffer srcBuffer(srcBufSize);
+  DeviceBuffer windowBuffer(windowBufSize);
+  auto src_d = static_cast<int*>(srcBuffer.get());
+  auto window_d = static_cast<int*>(windowBuffer.get());
+
+  std::vector<int> srcHost(srcNumInts, testValue);
+  CUDACHECK_TEST(
+      cudaMemcpy(src_d, srcHost.data(), srcBufSize, cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(cudaMemset(window_d, 0, windowBufSize));
+
+  // Copy 4KB from src_offset=0 to dst_offset=8192
+  const size_t dst_offset = 8192;
+  const size_t src_offset = 0;
+  const std::size_t nbytes = 4096;
+  const int signalId = 0;
+
+  test::testDeviceWindowNvlOffsetPutSignal(
+      0,
+      2,
+      reinterpret_cast<char*>(window_d),
+      reinterpret_cast<const char*>(src_d),
+      srcBufSize,
+      dst_offset,
+      src_offset,
+      nbytes,
+      signalId);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<int> windowHost(windowNumInts);
+  CUDACHECK_TEST(cudaMemcpy(
+      windowHost.data(), window_d, windowBufSize, cudaMemcpyDeviceToHost));
+
+  // Expected: zeros everywhere except [dst_offset, dst_offset+nbytes)
+  const std::size_t dstStartInt = dst_offset / sizeof(int);
+  const std::size_t copyNumInts = nbytes / sizeof(int);
+  std::vector<int> expected(windowNumInts, 0);
+  std::fill(
+      expected.begin() + dstStartInt,
+      expected.begin() + dstStartInt + copyNumInts,
+      testValue);
+  EXPECT_EQ(windowHost, expected)
+      << "Offset put_signal should copy data to correct region only";
+}
+
+// =============================================================================
+// Bidirectional Offset-Based NVL Put + Signal via DeviceWindow
+// =============================================================================
+
+TEST_F(DeviceWindowTestFixture, NvlBidirectionalOffsetPutSignal) {
+  // Two source buffers with different patterns
+  const std::size_t srcBufSize = 8192;
+  const std::size_t srcNumInts = srcBufSize / sizeof(int);
+  const int testValue0 = 0xAAAA; // rank 0's data
+  const int testValue1 = 0xBBBB; // rank 1's data
+
+  // Two window buffers (one per rank), zero-initialized
+  const std::size_t windowBufSize = 16384;
+  const std::size_t windowNumInts = windowBufSize / sizeof(int);
+
+  DeviceBuffer srcBuffer0(srcBufSize);
+  DeviceBuffer srcBuffer1(srcBufSize);
+  DeviceBuffer windowBuffer0(windowBufSize);
+  DeviceBuffer windowBuffer1(windowBufSize);
+
+  auto src0_d = static_cast<int*>(srcBuffer0.get());
+  auto src1_d = static_cast<int*>(srcBuffer1.get());
+  auto window0_d = static_cast<int*>(windowBuffer0.get());
+  auto window1_d = static_cast<int*>(windowBuffer1.get());
+
+  // Fill source buffers with distinct patterns
+  std::vector<int> srcHost0(srcNumInts, testValue0);
+  std::vector<int> srcHost1(srcNumInts, testValue1);
+  CUDACHECK_TEST(
+      cudaMemcpy(src0_d, srcHost0.data(), srcBufSize, cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(
+      cudaMemcpy(src1_d, srcHost1.data(), srcBufSize, cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(cudaMemset(window0_d, 0, windowBufSize));
+  CUDACHECK_TEST(cudaMemset(window1_d, 0, windowBufSize));
+
+  // Both ranks put 4KB from src_offset=0 to dst_offset=4096
+  const std::size_t dst_offset = 4096;
+  const std::size_t src_offset = 0;
+  const std::size_t nbytes = 4096;
+  const int signalId = 0;
+
+  test::testDeviceWindowNvlBidirectionalOffsetPutSignal(
+      reinterpret_cast<char*>(window0_d),
+      reinterpret_cast<char*>(window1_d),
+      reinterpret_cast<const char*>(src0_d),
+      reinterpret_cast<const char*>(src1_d),
+      srcBufSize,
+      dst_offset,
+      src_offset,
+      nbytes,
+      signalId);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Verify rank 0's put landed in windowBuffer1
+  const std::size_t dstStartInt = dst_offset / sizeof(int);
+  const std::size_t copyNumInts = nbytes / sizeof(int);
+
+  std::vector<int> window1Host(windowNumInts);
+  CUDACHECK_TEST(cudaMemcpy(
+      window1Host.data(), window1_d, windowBufSize, cudaMemcpyDeviceToHost));
+
+  std::vector<int> expected1(windowNumInts, 0);
+  std::fill(
+      expected1.begin() + dstStartInt,
+      expected1.begin() + dstStartInt + copyNumInts,
+      testValue0);
+  EXPECT_EQ(window1Host, expected1)
+      << "Rank 0's put_signal should write 0xAAAA into rank 1's window buffer";
+
+  // Verify rank 1's put landed in windowBuffer0
+  std::vector<int> window0Host(windowNumInts);
+  CUDACHECK_TEST(cudaMemcpy(
+      window0Host.data(), window0_d, windowBufSize, cudaMemcpyDeviceToHost));
+
+  std::vector<int> expected0(windowNumInts, 0);
+  std::fill(
+      expected0.begin() + dstStartInt,
+      expected0.begin() + dstStartInt + copyNumInts,
+      testValue1);
+  EXPECT_EQ(window0Host, expected0)
+      << "Rank 1's put_signal should write 0xBBBB into rank 0's window buffer";
 }
 
 // =============================================================================
@@ -642,6 +804,76 @@ TEST_F(DeviceWindowTestFixture, PeerIndexConversionRoundtripRank1Of2) {
 
 TEST_F(DeviceWindowTestFixture, PeerIndexConversionRoundtripRank4Of8) {
   verifyPeerIndexConversionRoundtrip(4, 8);
+}
+
+// =============================================================================
+// get_nvlink_address Tests
+// =============================================================================
+
+TEST_F(DeviceWindowTestFixture, GetNvlinkAddress) {
+  const int myRank = 0;
+  const int nRanks = 4;
+
+  // Allocate a fake "window buffer" on device — all NVL peers point to this.
+  DeviceBuffer windowBuf(1024);
+
+  DeviceBuffer resultsBuf(nRanks * sizeof(int64_t));
+  auto* results_d = static_cast<int64_t*>(resultsBuf.get());
+
+  test::testDeviceWindowGetNvlinkAddress(
+      myRank, nRanks, windowBuf.get(), results_d);
+
+  std::vector<int64_t> results_h(nRanks);
+  CUDACHECK_TEST(cudaMemcpy(
+      results_h.data(),
+      results_d,
+      nRanks * sizeof(int64_t),
+      cudaMemcpyDeviceToHost));
+
+  // Self should return nullptr.
+  EXPECT_EQ(results_h[myRank], 0)
+      << "get_nvlink_address(self) should return nullptr";
+
+  // All NVL peers should return the window buffer pointer.
+  auto expected = reinterpret_cast<int64_t>(windowBuf.get());
+  for (int r = 0; r < nRanks; ++r) {
+    if (r == myRank) {
+      continue;
+    }
+    EXPECT_EQ(results_h[r], expected)
+        << "get_nvlink_address(" << r << ") should return window buf ptr";
+  }
+}
+
+TEST_F(DeviceWindowTestFixture, GetNvlinkAddressMiddleRank) {
+  const int myRank = 1;
+  const int nRanks = 3;
+
+  DeviceBuffer windowBuf(1024);
+
+  DeviceBuffer resultsBuf(nRanks * sizeof(int64_t));
+  auto* results_d = static_cast<int64_t*>(resultsBuf.get());
+
+  test::testDeviceWindowGetNvlinkAddress(
+      myRank, nRanks, windowBuf.get(), results_d);
+
+  std::vector<int64_t> results_h(nRanks);
+  CUDACHECK_TEST(cudaMemcpy(
+      results_h.data(),
+      results_d,
+      nRanks * sizeof(int64_t),
+      cudaMemcpyDeviceToHost));
+
+  auto expected = reinterpret_cast<int64_t>(windowBuf.get());
+  for (int r = 0; r < nRanks; ++r) {
+    if (r == myRank) {
+      EXPECT_EQ(results_h[r], 0)
+          << "get_nvlink_address(self) should return nullptr";
+    } else {
+      EXPECT_EQ(results_h[r], expected)
+          << "get_nvlink_address(" << r << ") should return window buf ptr";
+    }
+  }
 }
 
 } // namespace comms::pipes

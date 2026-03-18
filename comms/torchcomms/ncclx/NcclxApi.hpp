@@ -308,6 +308,17 @@ class NcclxApi {
   virtual ncclResult_t devCommDestroy(
       ncclComm_t comm,
       const ncclDevComm_t* devComm) = 0;
+
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
+  // Get NVLink-mapped pointer for a peer's window memory.
+  // Returns nullptr in outPtr if peer is not NVLink-accessible.
+  // Requires NCCLX 2.29+.
+  [[nodiscard]] virtual ncclResult_t winGetPeerDevicePointer(
+      NcclxWindow win,
+      size_t offset,
+      int peer,
+      void** outPtr) = 0;
+#endif
 #endif
 
 #if defined(ENABLE_PIPES)
@@ -324,6 +335,17 @@ class NcclxApi {
 
   // Free device memory allocated by winCreateDeviceWin.
   virtual ncclResult_t winDestroyDeviceWin(void* devicePtr) = 0;
+
+  // Get pipes transport device handle components from the communicator.
+  // NON-COLLECTIVE — reads already-exchanged state.
+  // Returns ncclInternalError if pipes transport is not initialized.
+  virtual ncclResult_t getMultiPeerDeviceHandle(
+      ncclComm_t comm,
+      void** outTransportsPtr,
+      int* outMyRank,
+      int* outNRanks,
+      int* outNumNvlPeers,
+      int* outNumIbPeers) = 0;
 #endif
 
   // Group operations
@@ -599,6 +621,14 @@ class DefaultNcclxApi : public NcclxApi {
       ncclDevComm_t* outDevComm) override;
   ncclResult_t devCommDestroy(ncclComm_t comm, const ncclDevComm_t* devComm)
       override;
+
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
+  [[nodiscard]] ncclResult_t winGetPeerDevicePointer(
+      NcclxWindow win,
+      size_t offset,
+      int peer,
+      void** outPtr) override;
+#endif
 #endif
 
 #if defined(ENABLE_PIPES)
@@ -609,6 +639,13 @@ class DefaultNcclxApi : public NcclxApi {
       int barrier_count,
       void** outDevicePtr) override;
   ncclResult_t winDestroyDeviceWin(void* devicePtr) override;
+  ncclResult_t getMultiPeerDeviceHandle(
+      ncclComm_t comm,
+      void** outTransportsPtr,
+      int* outMyRank,
+      int* outNRanks,
+      int* outNumNvlPeers,
+      int* outNumIbPeers) override;
 #endif
 
   // Group operations

@@ -129,6 +129,9 @@ class BackendWrapper : public c10d::Backend {
 
   const std::string getBackendName() const override;
 
+  // c10d does not have a getBackendVersion method so no override required here
+  std::string_view getBackendVersion() const;
+
   c10::intrusive_ptr<c10d::Backend::Options> getBackendOptions() override;
 
   // Verify that a work object has the expected timeout.

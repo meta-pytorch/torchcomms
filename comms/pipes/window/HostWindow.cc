@@ -169,6 +169,23 @@ HostWindow::~HostWindow() {
   // DeviceBuffers are freed by DeviceBuffer destructors (RAII)
 }
 
+void* HostWindow::get_nvlink_address(int peer, std::size_t offset) const {
+  if (exchangedNvlMappedPtrs_.empty() || peer == myRank_ || peer < 0 ||
+      peer >= nRanks_) {
+    return nullptr;
+  }
+  // Find peer in NVL peer list (sorted by global rank).
+  for (int i = 0; i < static_cast<int>(nvlPeerRanks_.size()); ++i) {
+    if (nvlPeerRanks_[i] == peer) {
+      // Map nvlPeerIdx → nvlLocalRank (skip self's slot).
+      int nvlLocal = (i < nvlLocalRank_) ? i : (i + 1);
+      auto* base = static_cast<char*>(exchangedNvlMappedPtrs_[nvlLocal]);
+      return base ? base + offset : nullptr;
+    }
+  }
+  return nullptr;
+}
+
 void HostWindow::exchange() {
   if (exchanged_) {
     throw std::runtime_error("HostWindow::exchange() called more than once");
@@ -310,11 +327,12 @@ int HostWindow::registerLocalBuffer(void* ptr, std::size_t size) {
 }
 
 int HostWindow::registerAndExchangeBuffer(void* ptr, std::size_t size) {
-  if (!remoteRegistrations_.empty()) {
+  if (userBufferRegistered_) {
     throw std::runtime_error(
         "HostWindow::registerAndExchangeBuffer() called more than once. "
         "Each DeviceWindow supports exactly one exchanged dst buffer.");
   }
+  userBufferRegistered_ = true;
 
   int regIdx = static_cast<int>(localRegistrations_.size());
   int nIbgdaPeers = static_cast<int>(ibgdaPeerRanks_.size());
@@ -338,6 +356,25 @@ int HostWindow::registerAndExchangeBuffer(void* ptr, std::size_t size) {
   // NVL side: IPC exchange
   if (nNvlPeers > 0) {
     exchangedNvlMappedPtrs_ = transport_.exchangeNvlBuffer(ptr, size);
+
+    // Upload NVL peer pointers to device for offset-based put/put_signal.
+    // exchangedNvlMappedPtrs_ is indexed by NVL local rank; extract peers
+    // in nvlPeerIdx order (skip self).
+    std::vector<void*> nvlPeerPtrs;
+    nvlPeerPtrs.reserve(nNvlPeers);
+    for (int nvlLocal = 0; nvlLocal < nvlNRanks_; ++nvlLocal) {
+      if (nvlLocal == nvlLocalRank_) {
+        continue;
+      }
+      nvlPeerPtrs.push_back(exchangedNvlMappedPtrs_[nvlLocal]);
+    }
+    userNvlPeerPtrsDevice_ =
+        std::make_unique<meta::comms::DeviceBuffer>(nNvlPeers * sizeof(void*));
+    CUDA_CHECK(cudaMemcpy(
+        userNvlPeerPtrsDevice_->get(),
+        nvlPeerPtrs.data(),
+        nNvlPeers * sizeof(void*),
+        cudaMemcpyDefault));
   }
 
   localRegistrations_.push_back(localReg);
@@ -448,6 +485,13 @@ DeviceWindow HostWindow::getDeviceWindow() const {
         static_cast<RemoteBufferRegistration*>(
             remoteRegistrationsDevice_->get()),
         nIbgdaPeers);
+  }
+
+  // Window buffer NVL peer pointers (for offset-based put/put_signal).
+  // IBGDA uses remoteBufferRegistry_ (the window buffer is the exchanged buf).
+  if (userNvlPeerPtrsDevice_ && nNvlPeers > 0) {
+    new (&dw.windowNvlPeerPtrs_) DeviceSpan<void*>(
+        static_cast<void**>(userNvlPeerPtrsDevice_->get()), nNvlPeers);
   }
 
   return dw;

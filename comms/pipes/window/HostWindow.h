@@ -179,6 +179,19 @@ class HostWindow {
     return static_cast<int>(ibgdaPeerRanks_.size());
   }
 
+  /**
+   * get_nvlink_address - Get the NVLink-mapped pointer to a peer's window buf.
+   *
+   * Returns the IPC-mapped device pointer for the given peer's registered
+   * window buffer. Returns nullptr if the peer is not NVLink-accessible,
+   * is self, or no buffer has been registered/exchanged.
+   *
+   * @param peer   Global rank of the peer.
+   * @param offset Byte offset into the peer's window buffer (default 0).
+   * @return Host-visible device pointer, or nullptr.
+   */
+  void* get_nvlink_address(int peer, std::size_t offset = 0) const;
+
  private:
   void uploadRegistrationsToDevice();
 
@@ -239,6 +252,11 @@ class HostWindow {
   std::unique_ptr<meta::comms::DeviceBuffer> localRegistrationsDevice_;
   std::unique_ptr<meta::comms::DeviceBuffer> remoteRegistrationsDevice_;
 
+  // --- Window buffer NVL peer pointers (for offset-based put/put_signal) ---
+  // Device copy of NVL peers' IPC-mapped window buffer pointers.
+  std::unique_ptr<meta::comms::DeviceBuffer> userNvlPeerPtrsDevice_;
+
+  bool userBufferRegistered_{false};
   bool exchanged_{false};
 };
 

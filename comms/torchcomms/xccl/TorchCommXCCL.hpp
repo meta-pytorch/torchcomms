@@ -69,6 +69,7 @@ class TorchCommXCCL : public TorchCommBackend,
   int getRank() const override;
   int getSize() const override;
   std::string_view getBackendName() const override;
+  std::string_view getBackendVersion() const override;
   std::string_view getCommName() const override;
 
   // Point-to-Point Operations
@@ -321,6 +322,7 @@ class TorchCommXCCL : public TorchCommBackend,
 
   bool high_priority_stream_{false};
   std::string name_;
+  std::string backend_version_{"unknown"};
 };
 
 } // namespace torch::comms
