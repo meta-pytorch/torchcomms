@@ -841,4 +841,74 @@ TEST_F(DeviceWindowTestFixture, PeerIndexConversionRoundtripRank4Of8) {
   verifyPeerIndexConversionRoundtrip(4, 8);
 }
 
+// =============================================================================
+// get_nvlink_address Tests
+// =============================================================================
+
+TEST_F(DeviceWindowTestFixture, GetNvlinkAddress) {
+  const int myRank = 0;
+  const int nRanks = 4;
+
+  // Allocate a fake "window buffer" on device — all NVL peers point to this.
+  DeviceBuffer windowBuf(1024);
+
+  DeviceBuffer resultsBuf(nRanks * sizeof(int64_t));
+  auto* results_d = static_cast<int64_t*>(resultsBuf.get());
+
+  test::testDeviceWindowGetNvlinkAddress(
+      myRank, nRanks, windowBuf.get(), results_d);
+
+  std::vector<int64_t> results_h(nRanks);
+  CUDACHECK_TEST(cudaMemcpy(
+      results_h.data(),
+      results_d,
+      nRanks * sizeof(int64_t),
+      cudaMemcpyDeviceToHost));
+
+  // Self should return nullptr.
+  EXPECT_EQ(results_h[myRank], 0)
+      << "get_nvlink_address(self) should return nullptr";
+
+  // All NVL peers should return the window buffer pointer.
+  auto expected = reinterpret_cast<int64_t>(windowBuf.get());
+  for (int r = 0; r < nRanks; ++r) {
+    if (r == myRank) {
+      continue;
+    }
+    EXPECT_EQ(results_h[r], expected)
+        << "get_nvlink_address(" << r << ") should return window buf ptr";
+  }
+}
+
+TEST_F(DeviceWindowTestFixture, GetNvlinkAddressMiddleRank) {
+  const int myRank = 1;
+  const int nRanks = 3;
+
+  DeviceBuffer windowBuf(1024);
+
+  DeviceBuffer resultsBuf(nRanks * sizeof(int64_t));
+  auto* results_d = static_cast<int64_t*>(resultsBuf.get());
+
+  test::testDeviceWindowGetNvlinkAddress(
+      myRank, nRanks, windowBuf.get(), results_d);
+
+  std::vector<int64_t> results_h(nRanks);
+  CUDACHECK_TEST(cudaMemcpy(
+      results_h.data(),
+      results_d,
+      nRanks * sizeof(int64_t),
+      cudaMemcpyDeviceToHost));
+
+  auto expected = reinterpret_cast<int64_t>(windowBuf.get());
+  for (int r = 0; r < nRanks; ++r) {
+    if (r == myRank) {
+      EXPECT_EQ(results_h[r], 0)
+          << "get_nvlink_address(self) should return nullptr";
+    } else {
+      EXPECT_EQ(results_h[r], expected)
+          << "get_nvlink_address(" << r << ") should return window buf ptr";
+    }
+  }
+}
+
 } // namespace comms::pipes

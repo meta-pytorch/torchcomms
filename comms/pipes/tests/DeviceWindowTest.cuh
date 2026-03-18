@@ -219,4 +219,21 @@ void testDeviceWindowNvlBidirectionalOffsetPutSignal(
     std::size_t nbytes,
     int signalId);
 
+/**
+ * Test: DeviceWindow get_nvlink_address()
+ *
+ * Verifies that get_nvlink_address() returns the correct NVL-mapped
+ * pointer for NVL peers and nullptr for self.
+ *
+ * @param myRank Rank ID
+ * @param nRanks Total number of ranks
+ * @param windowBuf_d Device buffer used as the "window buffer" for peers
+ * @param results Output: one int64 per rank (the returned pointer value)
+ */
+void testDeviceWindowGetNvlinkAddress(
+    int myRank,
+    int nRanks,
+    void* windowBuf_d,
+    int64_t* results);
+
 } // namespace comms::pipes::test

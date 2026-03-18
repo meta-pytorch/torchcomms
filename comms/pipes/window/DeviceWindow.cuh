@@ -293,6 +293,35 @@ class DeviceWindow {
   }
 
   // ===========================================================================
+  // NVLink Address Query
+  // ===========================================================================
+
+#ifdef __CUDACC__
+  /**
+   * get_nvlink_address - Get the NVLink-mapped pointer to a peer's window buf.
+   *
+   * Thread-level API (idempotent): any thread may call independently.
+   *
+   * @param peer   Global rank of the peer.
+   * @param offset Byte offset into the peer's window buffer (default 0).
+   * @return NVLink-mapped device pointer, or nullptr if peer is not NVL.
+   */
+  __device__ __forceinline__ void* get_nvlink_address(
+      int peer,
+      std::size_t offset = 0) const {
+    DEVICE_WINDOW_CHECK_RANK(peer, handle_.nRanks);
+    if (peer == handle_.myRank) {
+      return nullptr;
+    }
+    if (handle_.get_type(peer) != TransportType::P2P_NVL) {
+      return nullptr;
+    }
+    int nvlIdx = rankToNvlPeerIndex_[peer];
+    return static_cast<char*>(windowNvlPeerPtrs_[nvlIdx]) + offset;
+  }
+#endif
+
+  // ===========================================================================
   // Transport Access
   // ===========================================================================
 
