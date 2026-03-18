@@ -10,9 +10,11 @@ This module serves as a namespace for TorchComm hook types.
 """
 
 from torchcomms.hooks.fr import FlightRecorderHook
+from torchcomms.hooks.nan_check import NanCheckHook
 
 __all__ = [
     "FlightRecorderHook",
+    "NanCheckHook",
 ]
 
 for name in __all__:
