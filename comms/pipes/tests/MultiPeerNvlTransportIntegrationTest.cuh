@@ -324,12 +324,11 @@ void testBarrierPeer(
     int* result);
 
 /**
- * Test kernel: Test the put() operation
+ * Test kernel: Test the put() operation (offset-based)
  *
  * @param dw The DeviceWindow to use
  * @param targetRank Target rank
- * @param remoteDst Remote destination buffer
- * @param localSrc Local source buffer
+ * @param srcBuf Registered source buffer
  * @param nbytes Number of bytes to transfer
  * @param signalId Signal slot to use for completion notification
  * @param isWriter True if this rank writes, false if it waits
@@ -338,8 +337,7 @@ void testBarrierPeer(
 void testPutOperation(
     DeviceWindow& dw,
     int targetRank,
-    void* remoteDst,
-    const void* localSrc,
+    const LocalBufferRegistration& srcBuf,
     std::size_t nbytes,
     int signalId,
     bool isWriter,

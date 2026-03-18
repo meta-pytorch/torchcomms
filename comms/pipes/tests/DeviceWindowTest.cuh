@@ -100,19 +100,6 @@ void testDeviceWindowReadSignalGroup(
     uint64_t* results);
 
 /**
- * Test: DeviceWindow NVL put() via generic API
- *
- * Verifies the generic put() dispatches to NVL correctly
- * and copies data between buffers.
- */
-void testDeviceWindowNvlPut(
-    int myRank,
-    int nRanks,
-    char* dst_d,
-    const char* src_d,
-    std::size_t nbytes);
-
-/**
  * Test: DeviceWindow signal_all + read_signal aggregate
  *
  * Verifies signal_all() signals all peers and read_signal()

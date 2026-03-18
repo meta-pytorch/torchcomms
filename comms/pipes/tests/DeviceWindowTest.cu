@@ -344,35 +344,6 @@ void testDeviceWindowReadSignalGroup(
 }
 
 // =============================================================================
-// DeviceWindow NVL Put via Generic API Test
-// =============================================================================
-
-__global__ void nvlPutKernel(
-    DeviceWindow dw,
-    int targetPeerRank,
-    char* remoteDst,
-    const char* localSrc,
-    std::size_t nbytes) {
-  auto group = make_block_group();
-  dw.put(targetPeerRank, group, remoteDst, localSrc, nbytes);
-}
-
-void testDeviceWindowNvlPut(
-    int myRank,
-    int nRanks,
-    char* dst_d,
-    const char* src_d,
-    std::size_t nbytes) {
-  NvlOnlyDeviceWindowBuffers bufs;
-  auto dw = bufs.create(myRank, nRanks, 1);
-
-  int targetPeerRank = (myRank == 0) ? 1 : 0;
-  nvlPutKernel<<<4, 256>>>(dw, targetPeerRank, dst_d, src_d, nbytes);
-  CUDACHECK_TEST(cudaGetLastError());
-  CUDACHECK_TEST(cudaDeviceSynchronize());
-}
-
-// =============================================================================
 // DeviceWindow Offset-Based NVL Put Test
 // =============================================================================
 
