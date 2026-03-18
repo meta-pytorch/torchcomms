@@ -24,7 +24,15 @@
 // collectives
 #define CACHE_LINE_SIZE 128UL
 
-// Refer to MI300X CDNA3 ISA manual for more details on the HW intrinsics
+// CDNA3+ FP8 convert instructions (v_cvt_f32_fp8, v_cvt_pk_fp8_f32). Not on
+// gfx90a / CDNA2. Kernels that need these are no-ops when this is unset.
+#if defined(__HIP_DEVICE_COMPILE__) && \
+    (defined(__gfx940__) || defined(__gfx941__) || defined(__gfx942__) || \
+     defined(__gfx943__) || defined(__gfx950__))
+#define RCCL_AMD_FP8_HW 1
+#endif
+
+#if defined(RCCL_AMD_FP8_HW)
 
 /**
  * Converts a single float value to FP8 E4M3 format using AMD GPU instruction.
@@ -176,6 +184,7 @@ __device__ __forceinline__ void dequantize_fp8_batch_to_float8(
  * collective operations. Provides utilities for chunk partitioning, offset
  * calculation, and address mapping.
  */
+ #endif // RCCL_AMD_FP8_HW
 struct PhaseBufferLayout {
   enum LayoutType { CONTIGUOUS, INTERLEAVED };
 

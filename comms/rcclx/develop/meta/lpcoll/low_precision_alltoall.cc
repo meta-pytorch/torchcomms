@@ -24,6 +24,10 @@ HOT ncclResult_t ncclLowPrecisionAllToAll(
   NCCLCHECK(ncclCommCount(comm, &nRanks));
   NCCLCHECK(ncclCommUserRank(comm, &rank));
 
+  if (!rcclGpuSupportsAmdFp8LpKernels()) {
+    return ncclInvalidUsage;
+  }
+
   if (count == 0) {
     return ncclSuccess;
   }

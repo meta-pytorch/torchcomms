@@ -25,6 +25,10 @@ HOT ncclResult_t ncclLowPrecisionAllGather(
   NCCLCHECK(ncclCommCount(comm, &nRanks));
   NCCLCHECK(ncclCommUserRank(comm, &rank));
 
+  if (!rcclGpuSupportsAmdFp8LpKernels()) {
+    return ncclInvalidUsage;
+  }
+
   // Calculate FP8 element count for supported data types
   // Input per rank: count elements → Output per rank: count FP8 elements (1:1
   // mapping) Total output: count*nRanks FP8 elements
