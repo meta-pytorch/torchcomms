@@ -120,14 +120,9 @@ OrderedWorkStreamGuard::Scope OrderedWorkStreamGuard::acquire(
   return Scope(*this, userStream, captureInfo);
 }
 
-struct cmdCbPlan {
-  CtranGpeCmd* cmd{nullptr};
-  CtranGpe* gpe{nullptr};
-};
-
 void CUDART_CB CtranGpe::Impl::cmdCb(void* data) {
-  struct cmdCbPlan* plan = reinterpret_cast<struct cmdCbPlan*>(data);
-  plan->gpe->pimpl->cmdEnqueue(plan->cmd);
+  CtranGpeCmd* cmd = reinterpret_cast<CtranGpeCmd*>(data);
+  cmd->gpe->pimpl->cmdEnqueue(cmd);
 }
 
 CtranGpeCmd::~CtranGpeCmd() {
@@ -349,24 +344,17 @@ commResult_t CtranGpe::Impl::submit(
     }
     if (streamCaptureInfo.status == cudaStreamCaptureStatusActive) {
       FB_COMMCHECK(preLaunchGraphPrepare(cmd, graphPrepareFn));
-      struct cmdCbPlan* plan = new struct cmdCbPlan;
-      plan->cmd = cmd;
-      plan->gpe = this->gpe;
       cmd->persistent = true;
       // Mark the flag as persistent so reclaim() won't steal it between
       // graph replays (the kernel writes KERNEL_UNSET after each replay).
       if (kernelFlag) {
         kernelFlag->setPersistent();
       }
+      cmd->gpe = this->gpe;
 
       FB_COMMCHECKGOTO(
           utils::cudagraph::addHostNode(
-              cmd,
-              reinterpret_cast<void*>(plan),
-              cmdCb,
-              cmdDestroy,
-              kernelConfig.stream,
-              streamCaptureInfo),
+              cmd, cmdCb, cmdDestroy, kernelConfig.stream, streamCaptureInfo),
           res,
           fail);
     } else {
