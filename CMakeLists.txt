@@ -63,20 +63,24 @@ find_package(Torch REQUIRED)
 
 # Helper to glob sources
 file(GLOB TORCHCOMMS_SOURCES "comms/torchcomms/*.cpp")
+file(GLOB TORCHCOMMS_DUMMY_SOURCES "comms/torchcomms/dummy/*.cpp")
 file(GLOB TORCHCOMMS_PYTHON_SOURCES "comms/torchcomms/*Py.cpp")
 file(GLOB HOOKS_SOURCES "comms/torchcomms/hooks/*.cpp")
 file(GLOB HOOKS_PYTHON_SOURCES "comms/torchcomms/hooks/*Py.cpp")
 file(GLOB UTILS_SOURCES "comms/torchcomms/utils/*.cpp")
+file(GLOB UTILS_PYTHON_SOURCES "comms/torchcomms/utils/*Py.cpp")
 
 list(REMOVE_ITEM TORCHCOMMS_SOURCES ${TORCHCOMMS_PYTHON_SOURCES})
 list(REMOVE_ITEM HOOKS_SOURCES ${HOOKS_PYTHON_SOURCES})
+list(REMOVE_ITEM UTILS_SOURCES ${UTILS_PYTHON_SOURCES})
 
 # Separate BackendWrapperPy.cpp and StoreManagerPy.cpp from other Python sources
 set(BACKEND_WRAPPER_PYTHON_SOURCES "comms/torchcomms/BackendWrapperPy.cpp")
-set(STORE_MANAGER_PYTHON_SOURCES "comms/torchcomms/StoreManagerPy.cpp")
+set(STORE_MANAGER_PYTHON_SOURCES "comms/torchcomms/utils/StoreManagerPy.cpp")
 list(REMOVE_ITEM TORCHCOMMS_PYTHON_SOURCES ${BACKEND_WRAPPER_PYTHON_SOURCES})
 list(REMOVE_ITEM TORCHCOMMS_PYTHON_SOURCES ${STORE_MANAGER_PYTHON_SOURCES})
 
+list(APPEND TORCHCOMMS_SOURCES ${TORCHCOMMS_DUMMY_SOURCES})
 list(APPEND TORCHCOMMS_SOURCES ${HOOKS_SOURCES})
 list(APPEND TORCHCOMMS_SOURCES ${UTILS_SOURCES})
 list(APPEND TORCHCOMMS_PYTHON_SOURCES ${HOOKS_PYTHON_SOURCES})

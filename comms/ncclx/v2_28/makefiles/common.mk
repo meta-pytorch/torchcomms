@@ -72,7 +72,7 @@ CXXSTD ?= -std=c++17
 
 CXXFLAGS   := -DCUDA_MAJOR=$(CUDA_MAJOR) -DCUDA_MINOR=$(CUDA_MINOR) -fPIC -fvisibility=hidden \
               -Wall -Wno-unused-function -Wno-sign-compare -std=c++2a -Wvla \
-              -I $(CUDA_INC) -I $(CUDA_INC)/cccl \
+              -isystem $(CUDA_INC) -isystem $(CUDA_INC)/cccl \
               $(CXXFLAGS)
 # Maxrregcount needs to be set accordingly to NCCL_MAX_NTHREADS (otherwise it will cause kernel launch errors)
 # 512 : 120, 640 : 96, 768 : 80, 1024 : 60

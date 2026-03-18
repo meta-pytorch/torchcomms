@@ -21,6 +21,10 @@
 #include "comms/torchcomms/utils/TracingGuard.hpp"
 #include "comms/torchcomms/utils/Utils.hpp"
 
+#if defined(ENABLE_PIPES)
+#include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
+#endif
+
 namespace torch::comms {
 
 namespace {
@@ -2392,5 +2396,12 @@ class NCCLXRegistration {
 
 static const NCCLXRegistration registration{};
 } // namespace
+
+#if defined(ENABLE_PIPES)
+::comms::pipes::MultiPeerDeviceHandle TorchCommNCCLX::get_device_transport() {
+  return torchcomms::device::PipesDeviceBackend::get_device_transport(
+      nccl_comm_, nccl_api_.get());
+}
+#endif
 
 } // namespace torch::comms
