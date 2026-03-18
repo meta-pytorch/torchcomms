@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - .github/workflows/xpu_test.yml
+      - .github/scripts/xpu_setup_env.sh
       - .github/scripts/xpu_test.sh
       - CMakeLists.txt
       - comms/torchcomms/TorchComm.hpp
@@ -178,7 +179,7 @@ jobs:
           if [[ $nprune -eq 1 ]]; then
             docker container prune -f
           fi
-      
+
       - name: Cleanup workspace
         if: always()
         run: sudo rm -rf ${{ github.workspace }}/*
