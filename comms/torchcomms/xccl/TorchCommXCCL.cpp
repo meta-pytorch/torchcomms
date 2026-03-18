@@ -240,6 +240,7 @@ void TorchCommXCCL::init(
   tryTorchCommLoggingInit("torchcomm");
 
   xccl_api_->setVersionInfo();
+  backend_version_ = std::to_string(xccl_api_->getVersion());
 
   result = xccl_api_->commCount(xccl_comm_, &comm_size_);
   if (result != onecclSuccess) [[unlikely]] {
@@ -382,6 +383,10 @@ int TorchCommXCCL::getSize() const {
 
 std::string_view TorchCommXCCL::getBackendName() const {
   return kBackendName;
+}
+
+std::string_view TorchCommXCCL::getBackendVersion() const {
+  return backend_version_;
 }
 
 std::string_view TorchCommXCCL::getCommName() const {
