@@ -2,6 +2,13 @@
 
 #pragma once
 
+#if defined(__HIPCC__) || defined(__HIP_PLATFORM_AMD__)
+// ROCm/HIP: no CUDA driver API; stub so GpuMemHandler compiles (fabric path
+// is disabled via CUDART_VERSION and this init returns failure).
+namespace comms::pipes {
+int cuda_driver_lazy_init();
+} // namespace comms::pipes
+#else
 // Lazy-loaded CUDA driver API function pointers.
 //
 // Uses cudaGetDriverEntryPoint (from cudart) to resolve CUDA driver API
@@ -63,3 +70,4 @@ extern PFN_cuMemRetainAllocationHandle_v11000 pfn_cuMemRetainAllocationHandle;
 extern PFN_cuMemGetAddressRange_v3020 pfn_cuMemGetAddressRange;
 
 } // namespace comms::pipes
+#endif

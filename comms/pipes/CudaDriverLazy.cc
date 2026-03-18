@@ -2,6 +2,13 @@
 
 #include "comms/pipes/CudaDriverLazy.h"
 
+#if defined(__HIPCC__) || defined(__HIP_PLATFORM_AMD__)
+namespace comms::pipes {
+int cuda_driver_lazy_init() {
+  return -1; // CUDA driver API not available on ROCm
+}
+} // namespace comms::pipes
+#else
 #include <cstdio>
 #include <mutex>
 
@@ -90,3 +97,4 @@ int cuda_driver_lazy_init() {
 }
 
 } // namespace comms::pipes
+#endif

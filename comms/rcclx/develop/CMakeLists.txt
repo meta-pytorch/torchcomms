@@ -1164,6 +1164,8 @@ set(COMMON_FILES
   comms/pipes/DeviceSpan.cuh
 # IBGDA/DOCA files depend on NVIDIA DOCA, not available for ROCm/RCCL builds
 # comms/pipes/DocaVerbsUtils.cuh # manual
+  comms/pipes/CudaDriverLazy.cc
+  comms/pipes/CudaDriverLazy.h
   comms/pipes/GpuMemHandler.cc
   comms/pipes/GpuMemHandler.h
 # comms/pipes/IbgdaBuffer.h # manual
