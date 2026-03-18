@@ -147,6 +147,7 @@ class CtranGpeCmd {
   std::shared_ptr<std::atomic_flag> cpuFlag{nullptr};
 
   bool persistent{false};
+  CtranGpe* gpe{nullptr};
 
   std::optional<std::chrono::milliseconds> timeout{std::nullopt};
 
