@@ -29,7 +29,11 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
   // - No manual cleanup is needed in the constructor
   // - The destructor only needs to handle successfully constructed objects
   //
-  // Allocation order: signal -> data -> state
+  // Data buffers are NOT allocated here — they are either:
+  // - Allocated internally in exchange() (default)
+  // - Provided externally via setExternalDataBuffers() before exchange()
+  //
+  // Allocation order: signal -> state
   // Each handler's destructor will free its GPU memory if constructed.
 
   // Calculate per-peer buffer sizes with pipelining
@@ -64,14 +68,11 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
     perPeerChunkStateBufferSize_ =
         chunkStateMultiplier * numChunksPerPeer * sizeof(ChunkState);
 
-    // Allocate buffers for (nRanks - 1) peers using GpuMemHandler
-    const std::size_t totalDataBufferSize =
-        perPeerDataBufferSize_ * (nRanks_ - 1);
+    // Allocate state buffer for (nRanks - 1) peers using GpuMemHandler.
+    // Data buffer allocation is deferred to exchange() to allow
+    // setExternalDataBuffers() to be called first.
     const std::size_t totalChunkStateBufferSize =
         perPeerChunkStateBufferSize_ * (nRanks_ - 1);
-
-    dataBufferHandler_ = std::make_unique<GpuMemHandler>(
-        bootstrap_, myRank_, nRanks_, totalDataBufferSize, memSharingMode_);
 
     stateBufferHandler_ = std::make_unique<GpuMemHandler>(
         bootstrap_,
@@ -108,8 +109,56 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
       cudaMemcpyDefault));
 }
 
+void MultiPeerNvlTransport::setExternalDataBuffers(
+    ExternalStagingBuffers externalStagingBuffers) {
+  // Validate that the vectors are large enough to index by rank.
+  if (static_cast<int>(externalStagingBuffers.localBuffers.size()) < nRanks_ ||
+      static_cast<int>(externalStagingBuffers.remoteBuffers.size()) < nRanks_) {
+    throw std::runtime_error(
+        "setExternalDataBuffers: localBuffers.size()=" +
+        std::to_string(externalStagingBuffers.localBuffers.size()) +
+        " and remoteBuffers.size()=" +
+        std::to_string(externalStagingBuffers.remoteBuffers.size()) +
+        " must both be >= nRanks=" + std::to_string(nRanks_));
+  }
+
+  // Validate that every non-self peer buffer meets the minimum size.
+  for (int peer = 0; peer < nRanks_; ++peer) {
+    if (peer == myRank_) {
+      continue;
+    }
+    auto localSize = externalStagingBuffers.localBuffers[peer].size();
+    auto remoteSize = externalStagingBuffers.remoteBuffers[peer].size();
+    if (localSize < perPeerDataBufferSize_) {
+      throw std::runtime_error(
+          "setExternalDataBuffers: local buffer for peer " +
+          std::to_string(peer) + " has size " + std::to_string(localSize) +
+          " but requires at least " + std::to_string(perPeerDataBufferSize_) +
+          " (pipelineDepth * dataBufferSize)");
+    }
+    if (remoteSize < perPeerDataBufferSize_) {
+      throw std::runtime_error(
+          "setExternalDataBuffers: remote buffer for peer " +
+          std::to_string(peer) + " has size " + std::to_string(remoteSize) +
+          " but requires at least " + std::to_string(perPeerDataBufferSize_) +
+          " (pipelineDepth * dataBufferSize)");
+    }
+  }
+  externalStagingBuffers_ = std::move(externalStagingBuffers);
+}
+
 void MultiPeerNvlTransport::exchange() {
-  // Exchange P2P transport buffer pointers
+  // Allocate and exchange data buffers when:
+  // - No external buffers were provided, AND
+  // - dataBufferSize > 0 (staging buffers needed for send/recv)
+  if (!externalStagingBuffers_ && config_.dataBufferSize > 0) {
+    const std::size_t totalDataBufferSize =
+        perPeerDataBufferSize_ * (nRanks_ - 1);
+    dataBufferHandler_ = std::make_unique<GpuMemHandler>(
+        bootstrap_, myRank_, nRanks_, totalDataBufferSize, memSharingMode_);
+  }
+
+  // Exchange buffer pointers across all ranks
   if (dataBufferHandler_) {
     dataBufferHandler_->exchangeMemPtrs();
   }
@@ -179,7 +228,7 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
 
   // When dataBufferSize=0, staging buffers are not allocated.
   // Set data/state to nullptr/empty — send()/recv() will trap.
-  if (!dataBufferHandler_ || !stateBufferHandler_) {
+  if (!dataBufferHandler_ && !externalStagingBuffers_) {
     LocalState localState{
         .dataBuffer = nullptr,
         .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
@@ -201,16 +250,28 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
   const auto numChunksPerPeer =
       static_cast<uint32_t>(config_.pipelineDepth * numChunksPerStep);
 
-  auto* localDataPtr =
-      static_cast<char*>(dataBufferHandler_->getLocalDeviceMemPtr());
   auto* localStatePtr =
       static_cast<char*>(stateBufferHandler_->getLocalDeviceMemPtr());
+
+  // Data buffer pointers: use external buffers if provided, otherwise
+  // use internally allocated dataBufferHandler_.
+  char* localDataBuffer = nullptr;
+  char* remoteDataBuffer = nullptr;
+  if (externalStagingBuffers_) {
+    localDataBuffer = externalStagingBuffers_->localBuffers[peerRank].data();
+    remoteDataBuffer = externalStagingBuffers_->remoteBuffers[peerRank].data();
+  } else {
+    localDataBuffer =
+        static_cast<char*>(dataBufferHandler_->getLocalDeviceMemPtr()) +
+        localDataBufferOffset;
+    remoteDataBuffer =
+        static_cast<char*>(dataBufferHandler_->getPeerDeviceMemPtr(peerRank)) +
+        remoteDataBufferOffset;
+  }
 
   auto* localChunkStateBase = reinterpret_cast<ChunkState*>(
       localStatePtr + localChunkStateBufferOffset);
 
-  auto* remoteDataPtr =
-      static_cast<char*>(dataBufferHandler_->getPeerDeviceMemPtr(peerRank));
   auto* remoteChunkStatePtr =
       static_cast<char*>(stateBufferHandler_->getPeerDeviceMemPtr(peerRank));
 
@@ -233,7 +294,7 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
     //     [numChunksPerPeer, 2*numChunksPerPeer): peer's sender state buffer
     //     (I write READY_TO_SEND after reading)
     LocalState localState{
-        .dataBuffer = localDataPtr + localDataBufferOffset,
+        .dataBuffer = localDataBuffer,
         .receiverStateBuffer =
             DeviceSpan<ChunkState>(localChunkStateBase, numChunksPerPeer),
         .senderStateBuffer = DeviceSpan<ChunkState>(
@@ -242,7 +303,7 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
     };
 
     RemoteState remoteState{
-        .dataBuffer = remoteDataPtr + remoteDataBufferOffset,
+        .dataBuffer = remoteDataBuffer,
         .receiverStateBuffer =
             DeviceSpan<ChunkState>(remoteChunkStateBase, numChunksPerPeer),
         .senderStateBuffer = DeviceSpan<ChunkState>(
@@ -258,7 +319,7 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
     //   Remote buffer: only receiverStateBuffer is used (points to peer's
     //   receiverStateBuffer, sender writes to signal data ready)
     LocalState localState{
-        .dataBuffer = localDataPtr + localDataBufferOffset,
+        .dataBuffer = localDataBuffer,
         .receiverStateBuffer =
             DeviceSpan<ChunkState>(localChunkStateBase, numChunksPerPeer),
         .senderStateBuffer = DeviceSpan<ChunkState>(), // Not used
@@ -266,7 +327,7 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
     };
 
     RemoteState remoteState{
-        .dataBuffer = remoteDataPtr + remoteDataBufferOffset,
+        .dataBuffer = remoteDataBuffer,
         .receiverStateBuffer =
             DeviceSpan<ChunkState>(remoteChunkStateBase, numChunksPerPeer),
         .senderStateBuffer = DeviceSpan<ChunkState>(), // Not used
