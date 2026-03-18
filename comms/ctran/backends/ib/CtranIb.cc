@@ -102,6 +102,68 @@ CtranIbSingleton::CtranIbSingleton() {
   return;
 }
 
+folly::Expected<ibverbx::IbvCq, ibverbx::Error> CtranIbSingleton::checkoutCq(
+    int singletonDevIdx,
+    int maxCqe) {
+  if (NCCL_CTRAN_IB_CQ_POOL_ENABLE) {
+    ibverbx::IbvCq cq;
+    {
+      std::lock_guard<std::mutex> lock(cqPoolMutex_);
+      auto it = cqPool_.find(singletonDevIdx);
+      if (it != cqPool_.end() && !it->second.empty()) {
+        cq = std::move(it->second.back());
+        it->second.pop_back();
+      }
+    }
+    // Drain stale CQEs outside the lock (cheap — microseconds)
+    if (cq.cq()) {
+      bool drainOk = true;
+      while (true) {
+        constexpr int kDrainBatchSize = 256;
+        auto result = cq.pollCq(kDrainBatchSize);
+        if (result.hasError()) {
+          CLOGF(
+              WARN,
+              "CTRAN-IB: CQ drain pollCq error for device {}: {}, discarding pooled CQ",
+              singletonDevIdx,
+              result.error().errStr);
+          drainOk = false;
+          break;
+        }
+        if (result->empty()) {
+          break;
+        }
+      }
+      if (drainOk) {
+        // Pooled CQs retain the maxCqe from their original creation.
+        // This is safe because all callers derive maxCqe from devAttr.max_cqe,
+        // which is constant per device. IbvCq does not store its creation
+        // maxCqe, so this invariant cannot be verified at runtime.
+        CLOGF(DBG, "CTRAN-IB: CQ pool hit for device {}", singletonDevIdx);
+        return std::move(cq);
+      }
+      // Drain failed — discard CQ (destroyed by IbvCq destructor when `cq`
+      // goes out of scope) and fall through to create a fresh one.
+    }
+  }
+  // Pool miss or disabled — create new CQ (slow path, ~183ms)
+  CLOGF(
+      INFO,
+      "CTRAN-IB: CQ pool miss for device {}, creating new CQ",
+      singletonDevIdx);
+  return ibvDevices[singletonDevIdx].createCq(maxCqe, nullptr, nullptr, 0);
+}
+
+void CtranIbSingleton::checkinCq(int singletonDevIdx, ibverbx::IbvCq cq) {
+  if (NCCL_CTRAN_IB_CQ_POOL_ENABLE) {
+    std::lock_guard<std::mutex> lock(cqPoolMutex_);
+    cqPool_[singletonDevIdx].push_back(std::move(cq));
+    return;
+  }
+  // Pool disabled — CQ destroyed via IbvCq destructor when `cq` goes out of
+  // scope
+}
+
 commResult_t CtranIbSingleton::destroy() {
   // No-op if already destroyed and skipped
   if (destroySkipped_) {
@@ -135,6 +197,15 @@ commResult_t CtranIbSingleton::destroy() {
   // Below reports any resource leak and cleanup network resource.
   // NOTE: If any outstanding comm or IB registration exists, it is known that
   // the resource cleanup calls can fail.
+
+  // Defensive: drain CQ pool before PDs/devices are destroyed.
+  // Member declaration order already guarantees this in ~CtranIbSingleton(),
+  // but explicit clear ensures correctness if destroy() is called manually.
+  {
+    std::lock_guard<std::mutex> lock(cqPoolMutex_);
+    cqPool_.clear(); // IbvCq destructors call ibv_destroy_cq()
+  }
+
   this->comms_.withRLock([&](auto& comms) {
     if (comms.size()) {
       for (auto& it : comms) {
@@ -542,12 +613,10 @@ void CtranIb::init(
 
     // Skip lock for cq and localVc in constructor since no other thread can
     // access it yet.
-    auto maybeCq =
-        devices[device].ibvDevice->createCq(maxCqe, nullptr, nullptr, 0);
+    auto maybeCq = s->checkoutCq(singletonDevIdx, maxCqe);
     FOLLY_EXPECTED_CHECKTHROW_EX(maybeCq, ncclLogData);
     cqs.emplace_back(std::move(*maybeCq));
     devices[device].ibvCq = &cqs[device];
-    // FIXME: use initRemoteTransStates() to create cq
   }
 
   if (enableLocalFlush) {
@@ -713,6 +782,7 @@ CtranIb::~CtranIb(void) {
   }
 
   FB_COMMCHECKIGNORE(releaseRemoteTransStates(true /* fromDestructor */));
+  checkinCqs();
 
   CLOGF_SUBSYS(
       INFO,
@@ -962,6 +1032,28 @@ commResult_t CtranIb::releaseRemoteTransStates(bool fromDestructor) {
   return commSuccess;
 }
 
+void CtranIb::checkinCqs() {
+  auto s = CtranIbSingleton::getInstance();
+  if (!s) {
+    return;
+  }
+
+  // Hold cqMutex to synchronize with progressInternal() which reads
+  // devices[device].ibvCq under this lock.
+  // Lock ordering: cqMutex -> cqPoolMutex_ (via checkinCq).
+  std::lock_guard<std::mutex> lock(cqMutex);
+  for (int device = 0; device < NCCL_CTRAN_IB_DEVICES_PER_RANK; device++) {
+    devices[device].ibvCq = nullptr; // invalidate raw pointer first
+    if (device < static_cast<int>(cqs.size())) {
+      int singletonDevIdx = cudaDev * NCCL_CTRAN_IB_DEVICES_PER_RANK *
+              NCCL_CTRAN_IB_DEVICE_STRIDE +
+          device;
+      s->checkinCq(singletonDevIdx, std::move(cqs[device]));
+    }
+  }
+  cqs.clear();
+}
+
 // Reset CtranIb backend qps and cq state
 commResult_t CtranIb::initRemoteTransStates(void) {
   // Ensure no other thread is accessing the CtranIb object while releasing
@@ -972,14 +1064,24 @@ commResult_t CtranIb::initRemoteTransStates(void) {
   // resources; We still need per-object lock here to ensure the internal
   // listenThread doesn't read garbage data
 
+  auto s = CtranIbSingleton::getInstance();
+  CHECK_VALID_IB_SINGLETON(s);
+
+  // Return old CQs to pool and clear vector before creating new ones
+  // (fixes CQ accumulation bug on reconfigure)
+  checkinCqs();
+
   this->cqs.reserve(NCCL_CTRAN_IB_DEVICES_PER_RANK);
 
   // create a new cq
+  // Lock ordering: cqMutex -> cqPoolMutex_ (via checkoutCq).
   {
     std::unique_lock<std::mutex> lock(cqMutex);
     for (int device = 0; device < NCCL_CTRAN_IB_DEVICES_PER_RANK; device++) {
-      auto createCqResult =
-          devices[device].ibvDevice->createCq(maxCqe, nullptr, nullptr, 0);
+      int singletonDevIdx = cudaDev * NCCL_CTRAN_IB_DEVICES_PER_RANK *
+              NCCL_CTRAN_IB_DEVICE_STRIDE +
+          device;
+      auto createCqResult = s->checkoutCq(singletonDevIdx, maxCqe);
       FOLLY_EXPECTED_CHECK(createCqResult);
       cqs.emplace_back(std::move(*createCqResult));
       devices[device].ibvCq = &this->cqs[device];
