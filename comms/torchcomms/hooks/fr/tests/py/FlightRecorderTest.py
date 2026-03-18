@@ -35,6 +35,7 @@ from torchcomms.tests.integration.py.TorchCommTestHelpers import get_rank_and_si
 
 class TestFlightRecorderHook(unittest.TestCase):
     """Test FlightRecorderHook for tracking collective operations."""
+
     backend = os.environ["TEST_BACKEND"]
     device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
 
