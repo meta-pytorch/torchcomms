@@ -2,11 +2,11 @@
 
 #pragma once
 #include "comms/ctran/algos/common/GpeKernelSync.h"
+#include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/utils/commSpecs.h"
 
 using ctran::algos::GpeKernelSync;
 
-struct CtranMapperRemoteAccessKey;
 namespace ctran::allgatherp {
 struct PersistArgs {
   void* recvbuff;
