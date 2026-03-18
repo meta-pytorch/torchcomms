@@ -15,8 +15,6 @@
 
 #include <cstddef>
 
-// ROCm builds frequently don't ship `cudaTypedefs.h`. Detect it so this header
-// can still compile by providing stub PFN types/pointers.
 #if defined(__has_include)
 #if __has_include(<cudaTypedefs.h>)
 #define TORCHCOMMS_HAVE_CUDA_TYPEDEFS 1
@@ -97,7 +95,8 @@ using CUcontext = void*;
 using PFN_cuDeviceGet_v2000 = CUresult (*)(CUdevice*, int);
 using PFN_cuDeviceGetAttribute_v2000 = CUresult (*)(int*, int, CUdevice);
 using PFN_cuCtxGetCurrent_v4000 = CUresult (*)(CUcontext*);
-using PFN_cuGetErrorString_v6000 = CUresult (*)(const char**, CUresult);
+// Matches cuGetErrorString(CUresult err, const char** pStr)
+using PFN_cuGetErrorString_v6000 = CUresult (*)(CUresult, const char**);
 
 using PFN_cuMemCreate_v10020 = CUresult (*)(void**, size_t, void*, unsigned int);
 using PFN_cuMemRelease_v10020 = CUresult (*)(void*);

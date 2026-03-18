@@ -32,9 +32,6 @@ PFN_cuMemRetainAllocationHandle_v11000 pfn_cuMemRetainAllocationHandle =
 PFN_cuMemGetAddressRange_v3020 pfn_cuMemGetAddressRange = nullptr;
 
 #if !defined(TORCHCOMMS_HAVE_CUDA_TYPEDEFS)
-// This build does not have `cudaTypedefs.h`, so the CUDA driver function
-// pointer types / entry points are not available. Keep the function pointers
-// null so any accidental use fails fast.
 int cuda_driver_lazy_init() {
   return -1;
 }
@@ -98,6 +95,6 @@ int cuda_driver_lazy_init() {
   return init_result;
 }
 
-} // namespace comms::pipes
-
 #endif
+
+} // namespace comms::pipes
