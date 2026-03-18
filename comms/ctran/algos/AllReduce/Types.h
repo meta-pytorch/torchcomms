@@ -43,7 +43,7 @@ struct KernelArgs {
 // Guard against nvcc host/device parses of folly in transitive includes.
 // HIP sets __CUDACC__ when compiling host .cc; still need HostArgs on ROCm.
 #if !defined(__CUDACC__) || \
-    (defined(__HIP_PLATFORM_AMD__) && !defined(__CUDA_ARCH__))
+    ((defined(__HIP__) || defined(__HIPCC__)) && !defined(__CUDA_ARCH__))
 
 #include <memory>
 
