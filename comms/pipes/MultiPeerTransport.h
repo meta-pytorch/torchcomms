@@ -143,6 +143,12 @@ class MultiPeerTransport {
     return nvlNRanks_;
   }
 
+  /** @return NVL local rank for the given global rank.
+   *  @throws std::out_of_range if globalRank is not in the NVL group. */
+  int global_to_nvl_local(int globalRank) const {
+    return globalToNvlLocal_.at(globalRank);
+  }
+
   // --- External buffer configuration ---
 
   /**

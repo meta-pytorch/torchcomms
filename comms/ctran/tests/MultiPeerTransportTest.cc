@@ -7,10 +7,16 @@
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
+#include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/pipes/MultiPeerDeviceHandle.cuh"
 #include "comms/pipes/MultiPeerTransport.h"
+#include "comms/pipes/P2pNvlTransportDevice.cuh"
+#include "comms/pipes/tests/Utils.cuh"
+#include "comms/testinfra/TestXPlatUtils.h"
+#include "comms/utils/CudaRAII.h"
 
 using namespace meta::comms;
 
@@ -105,6 +111,161 @@ TEST_F(MultiPeerTransportTest, DeviceHandle) {
              << ": MultiPeerTransport device handle created successfully"
              << ", numNvlPeers=" << deviceHandle.numNvlPeers
              << ", numIbPeers=" << deviceHandle.numIbPeers;
+}
+
+// Verify that the P2pNvlTransportDevice objects constructed by CtranAlgo
+// use buffer pointers that match the SharedResource staging buffers.
+// This catches buffer cross-wiring bugs where the transport would reference
+// invalid memory.
+TEST_F(MultiPeerTransportTest, TransportBufferPointersMatchStagingBuffers) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
+  }
+
+  auto comm = makeCtranComm();
+  ASSERT_NE(comm->multiPeerTransport_, nullptr);
+
+  auto* algo = comm->ctran_->algo.get();
+  ASSERT_NE(algo, nullptr);
+
+  auto* nvlTransportsBase = algo->getNvlTransportsBase();
+  ASSERT_NE(nvlTransportsBase, nullptr)
+      << "nvlTransports should be allocated after initKernelResources";
+
+  auto* statex = comm->statex_.get();
+  int myLocalRank = statex->localRank();
+  int nLocalRanks = statex->nLocalRanks();
+
+  // Copy CtranAlgoDeviceState from device to host to get staging buffer
+  // pointers (devState_ is private, but getDevState() returns device ptr).
+  CtranAlgoDeviceState devStateHost;
+  CUDACHECK_TEST(cudaMemcpy(
+      &devStateHost,
+      algo->getDevState(),
+      sizeof(CtranAlgoDeviceState),
+      cudaMemcpyDeviceToHost));
+
+  for (int peer = 0; peer < nLocalRanks; peer++) {
+    if (peer == myLocalRank) {
+      continue;
+    }
+
+    // Copy the P2pNvlTransportDevice from device memory back to host.
+    // P2pNvlTransportDevice has const members so default ctor is deleted;
+    // use a raw byte buffer and reinterpret_cast.
+    alignas(comms::pipes::P2pNvlTransportDevice) char
+        buf[sizeof(comms::pipes::P2pNvlTransportDevice)];
+    CUDACHECK_TEST(cudaMemcpy(
+        buf,
+        &nvlTransportsBase[peer],
+        sizeof(comms::pipes::P2pNvlTransportDevice),
+        cudaMemcpyDeviceToHost));
+    auto& transportHost =
+        *reinterpret_cast<comms::pipes::P2pNvlTransportDevice*>(buf);
+
+    // Verify data buffer pointers match SharedResource staging buffers
+    char* expectedLocalData =
+        static_cast<char*>(devStateHost.localStagingBufsMap[peer]);
+    char* expectedRemoteData =
+        static_cast<char*>(devStateHost.remoteStagingBufsMap[peer]);
+
+    ASSERT_NE(expectedLocalData, nullptr)
+        << "localStagingBufsMap[" << peer << "] should not be null";
+    ASSERT_NE(expectedRemoteData, nullptr)
+        << "remoteStagingBufsMap[" << peer << "] should not be null";
+
+    EXPECT_EQ(transportHost.getLocalState().dataBuffer, expectedLocalData)
+        << "Rank " << globalRank
+        << ": P2pNvlTransportDevice local data buffer for peer " << peer
+        << " does not match SharedResource staging buffer";
+    EXPECT_EQ(transportHost.getRemoteState().dataBuffer, expectedRemoteData)
+        << "Rank " << globalRank
+        << ": P2pNvlTransportDevice remote data buffer for peer " << peer
+        << " does not match SharedResource staging buffer";
+
+    XLOG(INFO) << "Rank " << globalRank << ": peer " << peer
+               << " buffer pointers verified"
+               << " localData=" << static_cast<void*>(expectedLocalData)
+               << " remoteData=" << static_cast<void*>(expectedRemoteData);
+  }
+}
+
+// Verify that the staging buffers wired into the transport are actually
+// accessible via IPC by writing a pattern and reading it from the peer.
+// This catches issues like stale IPC handles, unmapped memory, or
+// incorrect offset calculations that would cause segfaults or silent
+// data corruption.
+TEST_F(MultiPeerTransportTest, StagingBufferIpcAccessible) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
+  }
+
+  auto comm = makeCtranComm();
+  ASSERT_NE(comm->multiPeerTransport_, nullptr);
+
+  auto* statex = comm->statex_.get();
+  int myLocalRank = statex->localRank();
+  int nLocalRanks = statex->nLocalRanks();
+
+  // For simplicity, test with 1 peer (the next local rank)
+  int peerLocalRank = (myLocalRank + 1) % nLocalRanks;
+
+  // Copy CtranAlgoDeviceState from device to host to get staging buffer ptrs.
+  auto* algo = comm->ctran_->algo.get();
+  CtranAlgoDeviceState devStateHost;
+  CUDACHECK_TEST(cudaMemcpy(
+      &devStateHost,
+      algo->getDevState(),
+      sizeof(CtranAlgoDeviceState),
+      cudaMemcpyDeviceToHost));
+
+  // Each rank writes its globalRank into its local staging buffer for this
+  // peer. The peer should see this value through its remote staging buffer
+  // pointer.
+  constexpr size_t kNumElements = 256;
+  auto* localDataBuffer =
+      static_cast<int*>(devStateHost.localStagingBufsMap[peerLocalRank]);
+  ASSERT_NE(localDataBuffer, nullptr);
+
+  comms::pipes::test::fillBuffer(localDataBuffer, globalRank, kNumElements);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Barrier to ensure all ranks have written their patterns
+  comm->bootstrap_->barrier(comm->statex_->rank(), comm->statex_->nRanks())
+      .get();
+
+  // Now read from the remote staging buffer (IPC pointer to peer's local
+  // buffer) and verify we see the peer's globalRank value.
+  auto* remoteDataBuffer =
+      static_cast<int*>(devStateHost.remoteStagingBufsMap[peerLocalRank]);
+  ASSERT_NE(remoteDataBuffer, nullptr);
+
+  int peerGlobalRank = statex->localRankToRanks()[peerLocalRank];
+
+  DeviceBuffer errorCountBuffer(sizeof(int));
+  auto* d_errorCount = static_cast<int*>(errorCountBuffer.get());
+  CUDACHECK_TEST(cudaMemset(d_errorCount, 0, sizeof(int)));
+
+  comms::pipes::test::verifyBuffer(
+      remoteDataBuffer, peerGlobalRank, kNumElements, d_errorCount);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  int h_errorCount = 0;
+  CUDACHECK_TEST(cudaMemcpy(
+      &h_errorCount, d_errorCount, sizeof(int), cudaMemcpyDeviceToHost));
+
+  ASSERT_EQ(h_errorCount, 0)
+      << "Rank " << globalRank << " found " << h_errorCount
+      << " errors reading peer " << peerGlobalRank
+      << "'s staging buffer through IPC. "
+      << "This indicates the external buffer wiring is incorrect.";
+
+  XLOG(INFO) << "Rank " << globalRank << ": IPC read from peer "
+             << peerGlobalRank << "'s staging buffer verified (" << kNumElements
+             << " elements)";
+
+  comm->bootstrap_->barrier(comm->statex_->rank(), comm->statex_->nRanks())
+      .get();
 }
 
 int main(int argc, char* argv[]) {
