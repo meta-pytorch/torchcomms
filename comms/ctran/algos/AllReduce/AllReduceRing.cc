@@ -110,10 +110,10 @@ inline bool shouldEnableBidirAg(size_t messageBytes) {
   if (maxSize == -2) {
     // Auto-tune: select threshold based on GPU architecture
     int cudaDev = 0;
-    (void)cudaGetDevice(&cudaDev);
+    FB_CUDACHECK(cudaGetDevice(&cudaDev));
     int smMajor = 0;
-    (void)cudaDeviceGetAttribute(
-        &smMajor, cudaDevAttrComputeCapabilityMajor, cudaDev);
+    FB_CUDACHECK(cudaDeviceGetAttribute(
+        &smMajor, cudaDevAttrComputeCapabilityMajor, cudaDev));
     maxSize = (smMajor < 10) ? static_cast<int64_t>(kHopperBidirAgMaxSize)
                              : static_cast<int64_t>(kDefaultBidirAgMaxSize);
   }
