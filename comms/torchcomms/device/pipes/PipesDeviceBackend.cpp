@@ -4,6 +4,7 @@
 #if defined(ENABLE_PIPES)
 
 #include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
+#include "comms/pipes/MultiPeerDeviceHandle.cuh"
 #include "comms/torchcomms/device/DeviceBackendTraits.hpp"
 #include "comms/torchcomms/device/TorchCommDeviceWindow.hpp"
 #include "comms/torchcomms/device/cuda/CudaApi.hpp"
@@ -138,6 +139,45 @@ PipesDeviceBackend::Ptr PipesDeviceBackend::create_device_window(
 
   DeviceWindowDeleter deleter(nccl_api, cuda_api, pipes_device_win);
   return Ptr(device_ptr, deleter);
+}
+
+// =============================================================================
+// get_device_transport Implementation
+// =============================================================================
+
+comms::pipes::MultiPeerDeviceHandle PipesDeviceBackend::get_device_transport(
+    ncclComm_t nccl_comm,
+    torch::comms::NcclxApi* nccl_api) {
+  void* transports_ptr = nullptr;
+  int my_rank = -1;
+  int n_ranks = 0;
+  int num_nvl_peers = 0;
+  int num_ib_peers = 0;
+
+  auto result = nccl_api->getMultiPeerDeviceHandle(
+      nccl_comm,
+      &transports_ptr,
+      &my_rank,
+      &n_ranks,
+      &num_nvl_peers,
+      &num_ib_peers);
+
+  if (result != ncclSuccess) {
+    throw std::runtime_error(
+        "[PipesDeviceBackend::get_device_transport] "
+        "Failed to get MultiPeerDeviceHandle. "
+        "Ensure NCCL_CTRAN_USE_PIPES=1 is set.");
+  }
+
+  return comms::pipes::MultiPeerDeviceHandle{
+      my_rank,
+      n_ranks,
+      {static_cast<comms::pipes::Transport*>(transports_ptr),
+       static_cast<
+           comms::pipes::DeviceSpan<comms::pipes::Transport>::size_type>(
+           n_ranks)},
+      num_nvl_peers,
+      num_ib_peers};
 }
 
 } // namespace torchcomms::device

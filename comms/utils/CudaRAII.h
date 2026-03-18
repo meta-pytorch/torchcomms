@@ -95,7 +95,7 @@ class StreamCaptureModeGuard {
           return static_cast<Api*>(ctx)->threadExchangeStreamCaptureMode(mode);
         }),
         prevMode_(desiredMode) {
-    exchangeFn_(ctx_, &prevMode_);
+    init();
   }
 
   ~StreamCaptureModeGuard();
@@ -106,6 +106,8 @@ class StreamCaptureModeGuard {
   StreamCaptureModeGuard& operator=(StreamCaptureModeGuard&&) = delete;
 
  private:
+  void init();
+
   void* ctx_{nullptr};
   ExchangeFn exchangeFn_{nullptr};
   cudaStreamCaptureMode prevMode_;

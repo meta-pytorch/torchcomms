@@ -69,8 +69,7 @@ __global__ void multiPeerSignalAllKernel(DeviceWindow dw, int nSteps);
  *
  * @param dw DeviceWindow for NVLink operations
  * @param targetRank The target rank to communicate with
- * @param localSrc Local source buffer to read from
- * @param remoteDst Remote destination buffer to write to (IPC-mapped)
+ * @param srcBuf Registered source buffer
  * @param nbytes Number of bytes to transfer per put
  * @param nSteps Number of ping-pong iterations
  */
@@ -78,8 +77,7 @@ template <SyncScope S>
 __global__ void multiPeerPutPingPongKernel(
     DeviceWindow dw,
     int targetRank,
-    const void* localSrc,
-    void* remoteDst,
+    LocalBufferRegistration srcBuf,
     std::size_t nbytes,
     int nSteps);
 
@@ -97,8 +95,7 @@ __global__ void multiPeerPutPingPongKernel(
  *
  * @param dw DeviceWindow for NVLink operations
  * @param targetRank The target rank to communicate with
- * @param localSrc Local source buffer to read from
- * @param remoteDst Remote destination buffer to write to (IPC-mapped)
+ * @param srcBuf Registered source buffer
  * @param nbytes Number of bytes to transfer per put
  * @param nSteps Number of ping-pong iterations
  */
@@ -106,8 +103,7 @@ template <SyncScope S>
 __global__ void multiPeerPutSignalPingPongKernel(
     DeviceWindow dw,
     int targetRank,
-    const void* localSrc,
-    void* remoteDst,
+    LocalBufferRegistration srcBuf,
     std::size_t nbytes,
     int nSteps);
 

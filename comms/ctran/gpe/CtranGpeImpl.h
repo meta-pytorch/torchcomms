@@ -37,6 +37,9 @@ struct KernelFlagItem {
   }
 
   bool inUse() {
+    if (persistent_) {
+      return true;
+    }
     for (int i = 0; i < numGroups_; i++) {
       if (flag_[i] != KERNEL_UNSET) {
         return true;
@@ -67,11 +70,27 @@ struct KernelFlagItem {
     }
   }
 
+  // Prevent pool reclaim between graph replays. The kernel writes
+  // KERNEL_UNSET after each replay, but persistent keeps inUse() true.
+  void setPersistent() {
+    persistent_ = true;
+  }
+
+  // Allow pool reclaim. Called at graph destruction to release the flag.
+  void clearPersistent() {
+    persistent_ = false;
+  }
+
   volatile int flag_[CTRAN_ALGO_MAX_THREAD_BLOCKS];
   int numGroups_{1};
+  // If true, inUse() always returns true — prevents reclaim() from stealing
+  // the flag while a persistent cmd (graph capture) still owns it.
+  // Not cleared by reset() — only cleared by clearPersistent().
+  bool persistent_{false};
   // padding for different KernelFlagItems to be on different cache lines.
   static constexpr int kCacheLineSizeBytes = 128;
-  int unused[(kCacheLineSizeBytes - sizeof(int)) / sizeof(int)];
+  // -2 ints: one for numGroups_, one for persistent_ (padded to int)
+  int unused[(kCacheLineSizeBytes - 2 * sizeof(int)) / sizeof(int)];
 
   void _() {
     // Make sure KernelFlagItem satisfies the PinnedHostItem concept
@@ -80,8 +99,7 @@ struct KernelFlagItem {
     // The following compile-time check is a hint of the memory usage
     // KernelFlag uses 384 bytes of pinned memory
     static_assert(
-        sizeof(Self) ==
-        4 * CTRAN_ALGO_MAX_THREAD_BLOCKS + 4 + (kCacheLineSizeBytes - 4));
+        sizeof(Self) == 4 * CTRAN_ALGO_MAX_THREAD_BLOCKS + kCacheLineSizeBytes);
 
     // Ensure two KernelFlagItems are on different cache lines.
     //
@@ -105,7 +123,7 @@ using KernelFlagPool = PinnedHostPool<KernelFlagItem>;
 class CtranGpeCmd {
  public:
   CtranGpeCmd() = default;
-  ~CtranGpeCmd() = default;
+  ~CtranGpeCmd();
 
   enum TypeEnum {
     GRAPH_ENQUEUE,

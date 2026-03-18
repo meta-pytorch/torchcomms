@@ -1,8 +1,8 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include <comms/torchcomms/TorchCommDummy.hpp>
 #include <comms/torchcomms/TorchCommFactory.hpp>
 #include <comms/torchcomms/TorchWork.hpp>
+#include <comms/torchcomms/dummy/TorchCommDummy.hpp>
 #include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp-cpu
 
 namespace torch::comms {

@@ -26,7 +26,6 @@
 #include "comm.h" // @manual
 #include "debug.h" // @manual
 #include "nccl.h" // @manual
-#include "transport.h" // @manual
 
 class MemoryLoggingTestFixture : public NcclxBaseTestFixture {
  public:

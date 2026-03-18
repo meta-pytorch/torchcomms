@@ -21,6 +21,7 @@ add_subdirectory(
 # Build the dummy test backend as a shared library for dynamic loading tests
 add_library(dummy_test_backend SHARED
     DummyTorchCommBackend.cpp
+    ${ROOT}/comms/torchcomms/dummy/TorchCommDummy.cpp
 )
 target_include_directories(dummy_test_backend PRIVATE
     ${ROOT}

@@ -151,8 +151,7 @@ template <SyncScope S>
 __global__ void multiPeerPutPingPongKernel(
     DeviceWindow dw,
     int targetRank,
-    const void* localSrc,
-    void* remoteDst,
+    LocalBufferRegistration srcBuf,
     std::size_t nbytes,
     int nSteps) {
   auto group = makeGroup<S>();
@@ -169,8 +168,8 @@ __global__ void multiPeerPutPingPongKernel(
     bool myTurnToPut = ((step % 2) == myRank);
 
     if (myTurnToPut) {
-      // Put data to peer's buffer
-      dw.put(targetRank, group, remoteDst, localSrc, nbytes);
+      // Put data to peer's window buffer at offset 0
+      dw.put(group, targetRank, 0, srcBuf, 0, nbytes);
       // Sync to ensure put completes before signaling
       group.sync();
       // Signal peer that data is ready
@@ -191,8 +190,7 @@ template <SyncScope S>
 __global__ void multiPeerPutSignalPingPongKernel(
     DeviceWindow dw,
     int targetRank,
-    const void* localSrc,
-    void* remoteDst,
+    LocalBufferRegistration srcBuf,
     std::size_t nbytes,
     int nSteps) {
   auto group = makeGroup<S>();
@@ -209,8 +207,8 @@ __global__ void multiPeerPutSignalPingPongKernel(
     bool myTurnToPut = ((step % 2) == myRank);
 
     if (myTurnToPut) {
-      // Combined put + signal
-      dw.put_signal(targetRank, group, remoteDst, localSrc, nbytes, slotId, 1);
+      // Combined put + signal to peer's window buffer at offset 0
+      dw.put_signal(group, targetRank, 0, srcBuf, 0, nbytes, slotId, 1);
     } else {
       // Wait for (step/2 + 1) signals from peer
       uint64_t expectedValue = (step / 2) + 1;
@@ -227,15 +225,13 @@ __global__ void multiPeerPutSignalPingPongKernel(
 template __global__ void multiPeerPutPingPongKernel<SyncScope::WARP>(
     DeviceWindow,
     int,
-    const void*,
-    void*,
+    LocalBufferRegistration,
     std::size_t,
     int);
 template __global__ void multiPeerPutPingPongKernel<SyncScope::BLOCK>(
     DeviceWindow,
     int,
-    const void*,
-    void*,
+    LocalBufferRegistration,
     std::size_t,
     int);
 
@@ -243,15 +239,13 @@ template __global__ void multiPeerPutPingPongKernel<SyncScope::BLOCK>(
 template __global__ void multiPeerPutSignalPingPongKernel<SyncScope::WARP>(
     DeviceWindow,
     int,
-    const void*,
-    void*,
+    LocalBufferRegistration,
     std::size_t,
     int);
 template __global__ void multiPeerPutSignalPingPongKernel<SyncScope::BLOCK>(
     DeviceWindow,
     int,
-    const void*,
-    void*,
+    LocalBufferRegistration,
     std::size_t,
     int);
 

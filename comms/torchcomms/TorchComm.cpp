@@ -38,6 +38,10 @@ std::string_view TorchComm::getCommName() const {
   return impl_->getCommName();
 }
 
+std::string_view TorchComm::getBackendVersion() const {
+  return impl_->getBackendVersion();
+}
+
 void TorchComm::validateRank(int rank, const char* param_name) const {
   TORCH_CHECK(
       rank >= 0 && rank < getSize(),
