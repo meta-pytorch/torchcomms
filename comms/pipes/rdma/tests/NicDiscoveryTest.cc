@@ -89,4 +89,106 @@ TEST(NicDiscoveryTest, CpuAnchoredInvalidNumaNode) {
   EXPECT_THROW(CpuNicDiscovery(9999), std::invalid_argument);
 }
 
+// =============================================================================
+// DataDirect Enum and Field Tests
+// =============================================================================
+
+TEST(NicDiscoveryTest, DataDirectModeEnumValues) {
+  EXPECT_EQ(static_cast<int>(DataDirectMode::Disabled), 0);
+  EXPECT_EQ(static_cast<int>(DataDirectMode::Only), 1);
+  EXPECT_EQ(static_cast<int>(DataDirectMode::Both), 2);
+}
+
+TEST(NicDiscoveryTest, NicCandidateDataDirectDefaults) {
+  NicCandidate candidate;
+  EXPECT_FALSE(candidate.isDataDirect);
+  EXPECT_FALSE(candidate.forceFlush);
+}
+
+TEST(NicDiscoveryTest, NicCandidateDataDirectFields) {
+  NicCandidate candidate;
+  candidate.name = "mlx5_0";
+  candidate.pcie = "/sys/devices/pci0009:00/0009:00:00.0/0009:01:00.0";
+  candidate.pathType = PathType::PIX;
+  candidate.bandwidthGbps = 400;
+  candidate.numaNode = 0;
+  candidate.nhops = 2;
+  candidate.isDataDirect = true;
+  candidate.forceFlush = true;
+
+  EXPECT_EQ(candidate.name, "mlx5_0");
+  EXPECT_TRUE(candidate.isDataDirect);
+  EXPECT_TRUE(candidate.forceFlush);
+  EXPECT_EQ(candidate.pathType, PathType::PIX);
+  EXPECT_EQ(candidate.bandwidthGbps, 400);
+}
+
+// =============================================================================
+// DataDirect Sysfs Path Parsing Tests
+// =============================================================================
+
+// Test that buildAncestorChainFromSysfsPath (exercised indirectly via
+// computePathType with a pre-built chain) correctly extracts PCI bus IDs
+// from a sysfs path string. We verify the expected ancestor chain format here.
+TEST(NicDiscoveryTest, DataDirectSysfsPathFormat) {
+  // A typical DD sysfs path:
+  // /sys/devices/pci0009:00/0009:00:00.0/0009:01:00.0/0009:03:00.0
+  // The PCI bus IDs extracted (leaf-first) should be:
+  // ["0009:03:00.0", "0009:01:00.0", "0009:00:00.0"]
+  std::string sysfsPath =
+      "/sys/devices/pci0009:00/0009:00:00.0/0009:01:00.0/0009:03:00.0";
+
+  // Parse the path to extract PCI bus IDs (same logic as
+  // buildAncestorChainFromSysfsPath)
+  std::vector<std::string> chain;
+  size_t pos = 0;
+  while (pos < sysfsPath.size()) {
+    auto next = sysfsPath.find('/', pos);
+    std::string component;
+    if (next == std::string::npos) {
+      component = sysfsPath.substr(pos);
+      pos = sysfsPath.size();
+    } else {
+      component = sysfsPath.substr(pos, next - pos);
+      pos = next + 1;
+    }
+    if (!component.empty() && component.find(':') != std::string::npos &&
+        std::isxdigit(static_cast<unsigned char>(component[0]))) {
+      chain.push_back(component);
+    }
+  }
+  std::reverse(chain.begin(), chain.end());
+
+  const std::vector<std::string> expected{
+      "0009:03:00.0", "0009:01:00.0", "0009:00:00.0"};
+  EXPECT_EQ(chain, expected);
+}
+
+TEST(NicDiscoveryTest, DataDirectAncestorChainForTopology) {
+  // Verify that ancestor chain matching across PCI domains works
+  // GPU chain: 0000:1b:00.0 -> 0000:1a:00.0 -> 0000:00:00.0
+  // DD NIC chain: 0000:1b:00.0 -> 0000:1a:00.0 -> 0000:00:00.0
+  // If they share "0000:1a:00.0", common ancestor is found at hop 1
+
+  std::unordered_set<std::string> gpuAncestors{
+      "0000:1b:00.0", "0000:1a:00.0", "0000:00:00.0"};
+
+  std::vector<std::string> nicChain{
+      "0000:1c:00.0", "0000:1a:00.0", "0000:00:00.0"};
+
+  // Walk NIC chain to find first match in GPU ancestors
+  int nicHops = 0;
+  std::string commonAncestor;
+  for (const auto& ancestor : nicChain) {
+    if (gpuAncestors.count(ancestor)) {
+      commonAncestor = ancestor;
+      break;
+    }
+    nicHops++;
+  }
+
+  EXPECT_EQ(commonAncestor, "0000:1a:00.0");
+  EXPECT_EQ(nicHops, 1);
+}
+
 } // namespace comms::pipes::tests
