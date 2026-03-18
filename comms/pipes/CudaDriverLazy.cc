@@ -2,13 +2,6 @@
 
 #include "comms/pipes/CudaDriverLazy.h"
 
-#if defined(__HIPCC__) || defined(__HIP_PLATFORM_AMD__)
-namespace comms::pipes {
-int cuda_driver_lazy_init() {
-  return -1; // CUDA driver API not available on ROCm
-}
-} // namespace comms::pipes
-#else
 #include <cstdio>
 #include <mutex>
 
@@ -37,6 +30,14 @@ PFN_cuMemGetAllocationPropertiesFromHandle_v10020
 PFN_cuMemRetainAllocationHandle_v11000 pfn_cuMemRetainAllocationHandle =
     nullptr;
 PFN_cuMemGetAddressRange_v3020 pfn_cuMemGetAddressRange = nullptr;
+
+#if defined(__HIPCC__) || defined(__HIP_PLATFORM_AMD__)
+// ROCm does not provide the CUDA driver entry points used by this module.
+// Keep the function pointers null so that any accidental use fails fast.
+int cuda_driver_lazy_init() {
+  return -1;
+}
+#else
 
 namespace {
 
@@ -97,4 +98,5 @@ int cuda_driver_lazy_init() {
 }
 
 } // namespace comms::pipes
+
 #endif

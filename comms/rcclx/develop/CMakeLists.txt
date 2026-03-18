@@ -1558,6 +1558,10 @@ target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/meta/ctran)
 target_include_directories(rccl PRIVATE ${HIPIFY_DIR})
 target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/comms/rcclx/develop)
 
+# Fallback include path for hipify outputs that may be missing when doing
+# incremental builds. HIP-prefixed paths are still preferred above.
+target_include_directories(rccl PRIVATE ${FBCODE_DIR})
+
 ## Set RCCL compile definitions
 if(COLLTRACE)
   target_compile_definitions(rccl PRIVATE ENABLE_COLLTRACE)
