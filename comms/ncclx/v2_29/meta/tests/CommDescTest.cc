@@ -45,8 +45,7 @@ TEST_F(commDescTest, getDefinedCommDesc) {
   if (globalRank == 0) {
     NCCLCHECK_TEST(ncclGetUniqueId(&ncclId));
   }
-  MPICHECK_TEST(
-      MPI_Bcast((void*)&ncclId, sizeof(ncclId), MPI_BYTE, 0, MPI_COMM_WORLD));
+  oobBroadcast(ncclId, 0);
   CUDACHECK_TEST(cudaSetDevice(this->localRank));
 
   ncclComm_t comm;
@@ -69,8 +68,7 @@ TEST_F(commDescTest, InvalidPointerAccess) {
   if (globalRank == 0) {
     NCCLCHECK_TEST(ncclGetUniqueId(&ncclId));
   }
-  MPICHECK_TEST(
-      MPI_Bcast((void*)&ncclId, sizeof(ncclId), MPI_BYTE, 0, MPI_COMM_WORLD));
+  oobBroadcast(ncclId, 0);
   CUDACHECK_TEST(cudaSetDevice(this->localRank));
 
   ncclComm_t comm;
@@ -94,6 +92,7 @@ TEST_F(commDescTest, InvalidPointerAccess) {
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
+  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }
