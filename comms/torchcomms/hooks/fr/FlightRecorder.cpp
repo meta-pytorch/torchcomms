@@ -27,7 +27,7 @@ std::string ranks_str(const std::vector<uint64_t>& ranks) {
     }
     str += std::to_string(ranks[i]);
   }
-  return str;
+  return "[" + str + "]";
 }
 
 inline c10::Dict<c10::IValue, c10::IValue> new_dict() {
