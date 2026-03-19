@@ -115,7 +115,7 @@ TorchCommXCCL::TorchCommXCCL(const onecclComm_t xccl_comm)
 TorchCommXCCL::~TorchCommXCCL() {
   if (init_state_ == InitializationState::INITIALIZED) {
     TC_LOG(WARNING, this)
-        << "TorchCommXname_CCL " << name_
+        << "TorchCommXCCL " << name_
         << " was not finalized before destruction. "
         << "This may indicate a resource leak. Please call finalize() explicitly.";
 
