@@ -1,10 +1,10 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # =============================================================================
-# Triton device bitcode (libtorchcomms_device.bc)
+# Triton device bitcode (libdevice_window.bc)
 #
 # Compiles TorchComms device API to LLVM bitcode (.bc) for Triton's extern_libs.
 # Uses clang with CUDA device-only mode to produce portable bitcode.
-# Mirrors the Buck genrule torchcomms_device_bitcode in
+# Mirrors the Buck genrule device_window_bitcode in
 # comms/torchcomms/triton/BUCK.
 #
 # Key flags:
@@ -16,7 +16,7 @@
 if(NOT EXISTS "${CONDA_INCLUDE}/nccl_device/core.h")
     message(STATUS
         "Triton bitcode: NCCL Device API headers NOT found"
-        " (requires NCCLX 2.28+), skipping libtorchcomms_device.bc build")
+        " (requires NCCLX 2.28+), skipping libdevice_window.bc build")
     return()
 endif()
 
@@ -140,7 +140,7 @@ endif()
 set(TRITON_GPU_ARCH_FLAG "--cuda-gpu-arch=sm_${_clang_sm}")
 message(STATUS "  TRITON GPU arch  : sm_${_clang_sm} (raw: ${_raw_sm})")
 
-set(TRITON_BC_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/comms/torchcomms/triton/fb/libtorchcomms_device.bc")
+set(TRITON_BC_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/comms/torchcomms/triton/fb/libdevice_window.bc")
 
 # Ensure output directory exists
 get_filename_component(TRITON_BC_DIR "${TRITON_BC_OUTPUT}" DIRECTORY)
@@ -168,11 +168,11 @@ add_custom_command(
         "-I${NCCLX_INCLUDE}"
         "-I${NCCLX_INCLUDE}/nccl_device"
         "-I${ROOT}"
-        "${TRITON_SRC}/torchcomms_device.cu"
+        "${TRITON_SRC}/device_window.cu"
         -o "${TRITON_BC_OUTPUT}"
     DEPENDS
-        "${TRITON_SRC}/torchcomms_device.cu"
-        "${TRITON_SRC}/torchcomms_device.h"
+        "${TRITON_SRC}/device_window.cu"
+        "${TRITON_SRC}/device_window.h"
         "${TRITON_SRC}/ir_include/nccl.h"
     COMMENT "Compiling TorchComms Triton device bitcode"
     VERBATIM

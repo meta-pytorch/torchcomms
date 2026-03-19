@@ -142,10 +142,10 @@ PipesDeviceBackend::Ptr PipesDeviceBackend::create_device_window(
 }
 
 // =============================================================================
-// get_device_transport Implementation
+// fetch_transport_handle Implementation
 // =============================================================================
 
-comms::pipes::MultiPeerDeviceHandle PipesDeviceBackend::get_device_transport(
+comms::pipes::MultiPeerDeviceHandle PipesDeviceBackend::fetch_transport_handle(
     ncclComm_t nccl_comm,
     torch::comms::NcclxApi* nccl_api) {
   void* transports_ptr = nullptr;
@@ -164,7 +164,7 @@ comms::pipes::MultiPeerDeviceHandle PipesDeviceBackend::get_device_transport(
 
   if (result != ncclSuccess) {
     throw std::runtime_error(
-        "[PipesDeviceBackend::get_device_transport] "
+        "[PipesDeviceBackend::fetch_transport_handle] "
         "Failed to get MultiPeerDeviceHandle. "
         "Ensure NCCL_CTRAN_USE_PIPES=1 is set.");
   }
@@ -178,6 +178,67 @@ comms::pipes::MultiPeerDeviceHandle PipesDeviceBackend::get_device_transport(
            n_ranks)},
       num_nvl_peers,
       num_ib_peers};
+}
+
+// =============================================================================
+// TransportHandleDeleter Implementation
+// =============================================================================
+
+void PipesDeviceBackend::TransportHandleDeleter::operator()(void* ptr) const {
+  if (ptr != nullptr && cuda_api != nullptr) {
+    CUDA_CHECK_IGNORE(
+        cuda_api, cuda_api->free(ptr), "Failed to free transport handle");
+  }
+}
+
+// =============================================================================
+// get_device_transport Implementation
+// =============================================================================
+
+PipesDeviceBackend::TransportHandleDevPtr
+PipesDeviceBackend::get_device_transport(
+    ncclComm_t nccl_comm,
+    torch::comms::NcclxApi* nccl_api,
+    torch::comms::CudaApi* cuda_api) {
+  if (nccl_api == nullptr || cuda_api == nullptr) {
+    throw std::runtime_error(
+        "[PipesDeviceBackend::get_device_transport]: "
+        "nccl_api and cuda_api must not be null");
+  }
+
+  // Get handle on host (private helper)
+  auto handle = fetch_transport_handle(nccl_comm, nccl_api);
+
+  // Allocate device memory
+  void* device_ptr = nullptr;
+  cudaError_t err = cuda_api->malloc(
+      &device_ptr, sizeof(comms::pipes::MultiPeerDeviceHandle));
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        "[PipesDeviceBackend::get_device_transport]: "
+        "cudaMalloc failed: " +
+        std::string(cuda_api->getErrorString(err)));
+  }
+
+  // Copy to device
+  // NOLINTNEXTLINE(facebook-hte-NullableDereference,facebook-security-vulnerable-memcpy)
+  err = cuda_api->memcpy(
+      device_ptr,
+      &handle,
+      sizeof(comms::pipes::MultiPeerDeviceHandle),
+      cudaMemcpyHostToDevice);
+  if (err != cudaSuccess) {
+    CUDA_CHECK_IGNORE(
+        cuda_api,
+        cuda_api->free(device_ptr),
+        "Failed to free transport handle during error cleanup");
+    throw std::runtime_error(
+        "[PipesDeviceBackend::get_device_transport]: "
+        "cudaMemcpy failed: " +
+        std::string(cuda_api->getErrorString(err)));
+  }
+
+  return TransportHandleDevPtr(device_ptr, TransportHandleDeleter{cuda_api});
 }
 
 } // namespace torchcomms::device

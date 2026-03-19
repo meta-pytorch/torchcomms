@@ -29,6 +29,7 @@ struct MultiPeerDeviceHandle;
 namespace torch::comms {
 class CudaApi;
 class NcclxApi;
+class TorchCommNCCLX;
 } // namespace torch::comms
 
 namespace torchcomms::device {
@@ -150,6 +151,26 @@ struct PipesDeviceBackend {
         "supported for PipesDeviceBackend.");
   }
 
+  // =========================================================================
+  // Transport device handle (device-allocated MultiPeerDeviceHandle)
+  // =========================================================================
+
+  struct TransportHandleDeleter {
+    torch::comms::CudaApi* cuda_api{nullptr};
+    void operator()(void* ptr) const;
+  };
+  using TransportHandleDevPtr = std::unique_ptr<void, TransportHandleDeleter>;
+
+  // Get a device-allocated MultiPeerDeviceHandle for Triton and CUDA
+  // kernels. Calls fetch_transport_handle() internally to get handle by value,
+  // then cudaMalloc + cudaMemcpy to device memory.
+  // Returns managed pointer — cudaFree on destruction.
+  static TransportHandleDevPtr get_device_transport(
+      ncclComm_t nccl_comm,
+      torch::comms::NcclxApi* nccl_api,
+      torch::comms::CudaApi* cuda_api);
+
+ private:
   // Get the pipes transport device handle from the communicator.
   // NON-COLLECTIVE — reads already-exchanged state.
   //
@@ -158,7 +179,7 @@ struct PipesDeviceBackend {
   // MultiPeerTransport::exchange() during ctran init).
   //
   // Throws std::runtime_error if pipes transport is not initialized.
-  static comms::pipes::MultiPeerDeviceHandle get_device_transport(
+  static comms::pipes::MultiPeerDeviceHandle fetch_transport_handle(
       ncclComm_t nccl_comm,
       torch::comms::NcclxApi* nccl_api);
 };

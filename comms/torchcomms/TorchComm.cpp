@@ -572,6 +572,10 @@ c10::intrusive_ptr<TorchWork> TorchComm::reconfigure(
   return impl_->reconfigure(opts);
 }
 
+int64_t TorchComm::get_device_transport() {
+  return impl_->get_device_transport();
+}
+
 // Communicator Management
 std::shared_ptr<TorchComm> TorchComm::split(
     const std::vector<int>& ranks,
