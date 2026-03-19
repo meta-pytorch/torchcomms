@@ -2,14 +2,15 @@
 
 #pragma once
 
-#include <infiniband/mlx5dv.h>
-#include <infiniband/verbs.h>
-
 #include <string>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
+#include <doca_gpunetio_host.h>
+#include <doca_verbs_net_wrapper.h>
+
+#include "comms/pipes/IbverbsLazy.h"
 #include "comms/pipes/rdma/IbHcaParser.h"
 
 namespace comms::pipes {
