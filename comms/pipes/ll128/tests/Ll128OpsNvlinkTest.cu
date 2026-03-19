@@ -365,4 +365,92 @@ void test_ll128_nvlink_forward_3gpu(
   PIPES_CUDA_CHECK(cudaStreamDestroy(recv_stream));
 }
 
+// =============================================================================
+// Varying-data NVLink kernels — each step offsets src/dst by i * nbytes
+// =============================================================================
+
+__global__ void ll128_nvlink_varying_send_kernel(
+    const char* src,
+    size_t nbytes,
+    Ll128Packet* remote_ll128_buf,
+    size_t buffer_num_packets,
+    int num_steps) {
+  auto group = make_warp_group();
+  Timeout timeout;
+  timeout.start();
+  for (int i = 0; i < num_steps; i++) {
+    ll128_send(
+        group,
+        src + i * nbytes,
+        nbytes,
+        remote_ll128_buf,
+        timeout,
+        buffer_num_packets);
+  }
+}
+
+__global__ void ll128_nvlink_varying_recv_kernel(
+    char* dst,
+    size_t nbytes,
+    Ll128Packet* local_ll128_buf,
+    size_t buffer_num_packets,
+    int num_steps) {
+  auto group = make_warp_group();
+  Timeout timeout;
+  timeout.start();
+  for (int i = 0; i < num_steps; i++) {
+    ll128_recv(
+        group,
+        dst + i * nbytes,
+        nbytes,
+        local_ll128_buf,
+        timeout,
+        buffer_num_packets);
+  }
+}
+
+// =============================================================================
+// Varying-data NVLink host-callable wrapper
+// =============================================================================
+
+void test_ll128_nvlink_varying_send_recv(
+    int sender_gpu,
+    int receiver_gpu,
+    const char* src_d,
+    char* dst_d,
+    size_t nbytes,
+    Ll128Packet* ll128_buf,
+    size_t buffer_num_packets,
+    int num_steps,
+    int num_blocks,
+    int block_size) {
+  size_t buf_size = (buffer_num_packets > 0)
+      ? buffer_num_packets * kLl128PacketSize
+      : ll128_buffer_size(nbytes);
+  PIPES_CUDA_CHECK(cudaSetDevice(receiver_gpu));
+  PIPES_CUDA_CHECK(cudaMemset(ll128_buf, kLl128MemsetInitByte, buf_size));
+  PIPES_CUDA_CHECK(cudaDeviceSynchronize());
+
+  cudaStream_t send_stream;
+  PIPES_CUDA_CHECK(cudaSetDevice(sender_gpu));
+  PIPES_CUDA_CHECK(cudaStreamCreate(&send_stream));
+  ll128_nvlink_varying_send_kernel<<<num_blocks, block_size, 0, send_stream>>>(
+      src_d, nbytes, ll128_buf, buffer_num_packets, num_steps);
+  PIPES_KERNEL_LAUNCH_CHECK();
+
+  cudaStream_t recv_stream;
+  PIPES_CUDA_CHECK(cudaSetDevice(receiver_gpu));
+  PIPES_CUDA_CHECK(cudaStreamCreate(&recv_stream));
+  ll128_nvlink_varying_recv_kernel<<<num_blocks, block_size, 0, recv_stream>>>(
+      dst_d, nbytes, ll128_buf, buffer_num_packets, num_steps);
+  PIPES_KERNEL_LAUNCH_CHECK();
+
+  PIPES_CUDA_CHECK(cudaSetDevice(sender_gpu));
+  PIPES_CUDA_CHECK(cudaStreamSynchronize(send_stream));
+  PIPES_CUDA_CHECK(cudaStreamDestroy(send_stream));
+  PIPES_CUDA_CHECK(cudaSetDevice(receiver_gpu));
+  PIPES_CUDA_CHECK(cudaStreamSynchronize(recv_stream));
+  PIPES_CUDA_CHECK(cudaStreamDestroy(recv_stream));
+}
+
 } // namespace comms::pipes::test

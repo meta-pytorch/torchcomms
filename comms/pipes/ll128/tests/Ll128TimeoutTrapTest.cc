@@ -44,4 +44,15 @@ TEST_F(Ll128TimeoutTrapTest, SendNoRecv) {
       << "Expected trap error, got: " << cudaGetErrorString(err);
 }
 
+TEST_F(Ll128TimeoutTrapTest, SendRecv_Chunked_UndersizedBuffer_Trap) {
+  // Launch send/recv with buffer_num_packets=2, below kLl128PacketsPerWarp=4.
+  // PIPES_DEVICE_CHECK should fire, triggering __trap().
+  launch_ll128_send_recv_undersized_buffer(0);
+
+  cudaError_t err = cudaGetLastError();
+  EXPECT_TRUE(isExpectedTrapError(err))
+      << "Expected trap error for undersized buffer, got: "
+      << cudaGetErrorString(err);
+}
+
 } // namespace comms::pipes::test

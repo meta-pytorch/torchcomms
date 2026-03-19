@@ -185,4 +185,21 @@ TEST_F(Ll128OpsNvlink3GpuTestFixture, Forward_4KB_3GPU_Chunked_8pkt) {
       /*buffer_num_packets=*/8);
 }
 
+// =============================================================================
+// 3-GPU extended tests (Gap 9)
+// =============================================================================
+
+TEST_F(Ll128OpsNvlink3GpuTestFixture, Forward_64KB_3GPU_MultiBlock) {
+  run_forward_3gpu_test(65536, /*num_blocks=*/4, /*block_size=*/256);
+}
+
+TEST_F(Ll128OpsNvlink3GpuTestFixture, Forward_3GPU_Chunked_MultiStep) {
+  run_forward_3gpu_test(
+      4096,
+      /*num_blocks=*/1,
+      /*block_size=*/256,
+      /*buffer_num_packets=*/8,
+      /*num_steps=*/10);
+}
+
 } // namespace comms::pipes
