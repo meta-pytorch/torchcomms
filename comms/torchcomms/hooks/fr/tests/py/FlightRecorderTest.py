@@ -712,6 +712,58 @@ class TestFlightRecorderHook(unittest.TestCase):
         recorder.unregister()
         comm.finalize()
 
+    def test_fr_ranks_str_single_rank(self) -> None:
+        """Test that ranks_str correctly formats single rank as iterable.
+
+        Verifies that when a comm has a single rank, the ranks field in
+        pg_config is formatted with brackets (e.g., "[0]") so it can be
+        parsed as an iterable list by build_groups_memberships in the
+        flight recorder trace analyzer.
+        """
+        backend = os.environ["TEST_BACKEND"]
+        device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
+        comm = torchcomms.new_comm(
+            backend=backend,
+            device=device,
+            name="test_comm_single_rank",
+            timeout=timedelta(seconds=300),
+        )
+
+        recorder = FlightRecorderHook(max_entries=100, isolated=True)
+        recorder.register_with_comm(comm)
+
+        # Dump and verify pg_config
+        json_str = recorder.dump_json()
+        data = json.loads(json_str)
+
+        # Verify pg_config contains the comm with properly formatted ranks
+        pg_config = data.get("pg_config", {})
+        self.assertIn(
+            "test_comm_single_rank",
+            pg_config,
+            "pg_config should contain the registered comm",
+        )
+
+        comm_config = pg_config["test_comm_single_rank"]
+        ranks_str = comm_config.get("ranks", "")
+
+        # Verify ranks string is wrapped in brackets for iterability
+        self.assertTrue(
+            ranks_str.startswith("[") and ranks_str.endswith("]"),
+            f"ranks should be wrapped in brackets for iterability, got: {ranks_str}",
+        )
+
+        # Verify the ranks can be parsed as a list
+        # The format should be "[0]" or "[0,1,2]" etc.
+        self.assertRegex(
+            ranks_str,
+            r"^\[\d+(,\d+)*\]$",
+            f"ranks should match pattern [N] or [N,N,...], got: {ranks_str}",
+        )
+
+        recorder.unregister()
+        comm.finalize()
+
     def test_fr_enable_disable(self) -> None:
         """Test enabling and disabling the flight recorder.
 
