@@ -83,4 +83,24 @@ void test_ll128_nvlink_bidirectional(
     size_t buffer_num_packets = 0,
     int num_steps = 1);
 
+/// Cross-GPU LL128 forward test for 3 distinct GPUs.
+/// All 3 roles run on separate GPUs/streams — no combined kernel needed.
+///   sender_gpu writes to ll128_buf_a on forwarder_gpu
+///   forwarder_gpu reads local buf_a, writes buf_b on receiver_gpu, copies to
+///   fwd_dst receiver_gpu reads local buf_b to recv_dst
+void test_ll128_nvlink_forward_3gpu(
+    int sender_gpu,
+    int forwarder_gpu,
+    int receiver_gpu,
+    const char* src_d,
+    char* fwd_dst_d,
+    char* recv_dst_d,
+    size_t nbytes,
+    comms::pipes::Ll128Packet* ll128_buf_a,
+    comms::pipes::Ll128Packet* ll128_buf_b,
+    int num_blocks,
+    int block_size,
+    size_t buffer_num_packets = 0,
+    int num_steps = 1);
+
 } // namespace comms::pipes::test
