@@ -32,7 +32,7 @@ TEST_F(CtranTest, DISABLED_CommAbortAtAsyncInitFailure) {
   // get NCCL unique ID at rank 0 and broadcast it to all others
   if (globalRank == 0)
     ncclGetUniqueId(&id);
-  MPICHECK_TEST(MPI_Bcast((void*)&id, sizeof(id), MPI_BYTE, 0, MPI_COMM_WORLD));
+  oobBroadcast(id, 0);
 
   CUDACHECK_TEST(cudaSetDevice(localRank));
 
@@ -63,7 +63,7 @@ TEST_F(CtranTest, DISABLED_CommDestroyAtAsyncInitFailure) {
   // get NCCL unique ID at rank 0 and broadcast it to all others
   if (globalRank == 0)
     ncclGetUniqueId(&id);
-  MPICHECK_TEST(MPI_Bcast((void*)&id, sizeof(id), MPI_BYTE, 0, MPI_COMM_WORLD));
+  oobBroadcast(id, 0);
 
   CUDACHECK_TEST(cudaSetDevice(localRank));
 
@@ -92,7 +92,7 @@ TEST_F(CtranTest, DISABLED_CommAbortAtAsyncInitFailureBlocking) {
   // get NCCL unique ID at rank 0 and broadcast it to all others
   if (globalRank == 0)
     ncclGetUniqueId(&id);
-  MPICHECK_TEST(MPI_Bcast((void*)&id, sizeof(id), MPI_BYTE, 0, MPI_COMM_WORLD));
+  oobBroadcast(id, 0);
 
   CUDACHECK_TEST(cudaSetDevice(localRank));
 
@@ -114,7 +114,7 @@ TEST_F(CtranTest, DISABLED_CommDestroyAtAsyncInitFailureBlocking) {
   // get NCCL unique ID at rank 0 and broadcast it to all others
   if (globalRank == 0)
     ncclGetUniqueId(&id);
-  MPICHECK_TEST(MPI_Bcast((void*)&id, sizeof(id), MPI_BYTE, 0, MPI_COMM_WORLD));
+  oobBroadcast(id, 0);
 
   CUDACHECK_TEST(cudaSetDevice(localRank));
 

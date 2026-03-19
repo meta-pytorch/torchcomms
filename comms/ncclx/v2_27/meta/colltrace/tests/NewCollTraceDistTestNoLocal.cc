@@ -47,7 +47,6 @@ class CollTraceTest : public NcclxBaseTest {
     setenv("NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1", 0);
 
     NcclxBaseTest::SetUp();
-    std::tie(this->localRank, this->globalRank, this->numRanks) = getMpiInfo();
 
     CUDACHECK_TEST(cudaSetDevice(this->localRank));
     CUDACHECK_TEST(cudaStreamCreate(&this->stream));
@@ -150,14 +149,7 @@ class CollTraceTest : public NcclxBaseTest {
     initNcclLogger();
   }
 
-  void barrier() {
-    MPI_Barrier(MPI_COMM_WORLD);
-  }
-
  protected:
-  int localRank{0};
-  int globalRank{0};
-  int numRanks{0};
   int* sendBuf{nullptr};
   int* recvBuf{nullptr};
   void* sendHandle{nullptr};
@@ -606,7 +598,7 @@ TEST_F(CollTraceTest, winPutWait) {
   assignChunkValue(
       localbuf, kNumElements * statex->nRanks(), statex->rank(), 1);
   // Barrier to ensure all peers have finished creation
-  this->barrier();
+  this->oobBarrier();
 
   int nextPeer = (this->globalRank + 1) % this->numRanks;
   int prevPeer = (this->globalRank + this->numRanks - 1) % this->numRanks;
@@ -639,7 +631,7 @@ TEST_F(CollTraceTest, winPutWait) {
   CUDACHECK_TEST(cudaStreamSynchronize(put_stream));
   CUDACHECK_TEST(cudaStreamSynchronize(wait_stream));
   // Barrier to ensure all peers have finished put
-  this->barrier();
+  this->oobBarrier();
 
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
 

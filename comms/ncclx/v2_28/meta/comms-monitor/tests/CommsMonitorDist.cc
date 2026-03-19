@@ -30,7 +30,6 @@ class CommsMonitorDist : public NcclxBaseTest {
  public:
   void SetUp() override {
     NcclxBaseTest::SetUp();
-    std::tie(this->localRank, this->globalRank, this->numRanks) = getMpiInfo();
 
     ncclCvarInit();
     NCCL_COMMSMONITOR_ENABLE = true;
@@ -53,9 +52,6 @@ class CommsMonitorDist : public NcclxBaseTest {
   }
 
  protected:
-  int localRank{0};
-  int globalRank{0};
-  int numRanks{0};
   int* sendBuf{nullptr};
   int* recvBuf{nullptr};
   void* sendHandle{nullptr};
