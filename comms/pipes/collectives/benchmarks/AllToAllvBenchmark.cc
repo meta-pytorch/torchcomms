@@ -7,6 +7,7 @@
 
 #include "comms/common/CudaWrap.h"
 #include "comms/pipes/MultiPeerNvlTransport.h"
+#include "comms/pipes/TimeoutUtils.h"
 #include "comms/pipes/benchmarks/BenchmarkMacros.h"
 #include "comms/pipes/collectives/AllToAllv.h"
 #include "comms/testinfra/BenchmarkTestFixture.h"
@@ -163,6 +164,8 @@ class AllToAllvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
           ncclComm_,
           stream_));
     }
+    CUDA_CHECK(cudaStreamSynchronize(stream_));
+    bootstrap->barrierAll();
 
     // Benchmark
     CUDA_CHECK(cudaEventRecord(start.get(), stream_));
@@ -273,8 +276,11 @@ class AllToAllvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     void* recvBuff_d = recvBuffer.get();
     const void* sendBuff_d = sendBuffer.get();
 
-    // Use default timeout (0ms = no timeout)
-    std::chrono::milliseconds timeout{0};
+    // Pre-build Timeout once to avoid per-call
+    // cudaGetDevice/cudaDeviceGetAttribute overhead.
+    int device = 0;
+    CUDA_CHECK(cudaGetDevice(&device));
+    Timeout timeout_config = makeTimeout(0, device);
 
     CudaEvent start, stop;
     const int nIter = 100;
@@ -297,7 +303,7 @@ class AllToAllvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
           transports_span,
           send_chunk_infos,
           recv_chunk_infos,
-          timeout,
+          timeout_config,
           nullptr, // stream
           config.numBlocks,
           config.numThreads,
@@ -316,7 +322,7 @@ class AllToAllvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
           transports_span,
           send_chunk_infos,
           recv_chunk_infos,
-          timeout,
+          timeout_config,
           nullptr, // stream
           config.numBlocks,
           config.numThreads,
