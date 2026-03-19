@@ -123,4 +123,84 @@ ll128_auto_tune_bidirectional(size_t nbytes) {
   return {bidir_blocks, uni.numThreads};
 }
 
+/**
+ * Return the recommended (numBlocks, numThreads) for an AllToAllv LL128 kernel.
+ *
+ * AllToAllv partitions warps into 2 * (nranks - 1) groups (send/recv x peers),
+ * so each peer gets total_warps / (2 * (nranks - 1)) warps.
+ *
+ * The empirical lookup table below is derived from block-count sweep benchmarks
+ * on 8x H100 NVLink.  The old linear formula (bidir * (nranks-1)) grossly
+ * over-estimated block counts — e.g. 448 blocks for 64KB when the empirical
+ * optimum is ~128.  All peers share the same SMs, so sub-linear scaling is
+ * expected.
+ *
+ * For non-8-rank configurations a dampened heuristic is used as a conservative
+ * fallback until more sweep data is available.
+ *
+ * @param nbytes_per_peer  Message size per peer in bytes.
+ * @param nranks           Total number of ranks.
+ * @return Recommended launch configuration.
+ */
+inline __host__ __device__ Ll128LaunchConfig
+ll128_auto_tune_alltoallv(size_t nbytes_per_peer, int nranks) {
+  if (nbytes_per_peer == 0 || nranks <= 1) {
+    return {0, 0};
+  }
+
+  constexpr int kThreads = 512;
+
+  // Empirical lookup table for 8 ranks (from block-count sweep benchmarks).
+  // Each entry is the block count at or near the knee of the scaling curve.
+  auto empirical_8rank = [](size_t nbytes) -> int {
+    if (nbytes <= 4 * 1024) {
+      return 16; // Sweep: 16 blocks -> 7.76 GB/s vs 18 -> 7.52 GB/s
+    }
+    if (nbytes <= 32 * 1024) {
+      // 16KB benchmarked; 32KB interpolated (between 16KB=96 and 64KB=128)
+      return 96;
+    }
+    // 64KB+: 128 blocks (sweep confirms optimal at 64KB, 256KB, 1MB).
+    return 128;
+  };
+
+  int needed_blocks;
+
+  if (nranks == 8) {
+    // Direct lookup — this is the benchmarked configuration.
+    needed_blocks = empirical_8rank(nbytes_per_peer);
+  } else {
+    // Dampened heuristic for other rank counts.
+    // Use the 8-rank empirical value as a baseline, then scale by
+    // sqrt(nranks-1) / sqrt(7) to account for more/fewer peers.
+    // This is conservative: sqrt grows much slower than the old linear
+    // formula, matching the observed sub-linear scaling.
+    int base = empirical_8rank(nbytes_per_peer);
+    auto bidir = ll128_auto_tune_bidirectional(nbytes_per_peer);
+    // ceil(sqrt(nranks - 1))
+    int sqrt_peers = 1;
+    while (sqrt_peers * sqrt_peers < nranks - 1) {
+      ++sqrt_peers;
+    }
+    int scaled = bidir.numBlocks * sqrt_peers;
+    // Take the lesser of the scaled heuristic and the empirical baseline
+    // (empirical data already accounts for SM saturation).
+    needed_blocks = scaled < base ? scaled : base;
+  }
+
+  // Cap at 512 blocks (H100 has 132 SMs; beyond ~512 blocks diminishing
+  // returns dominate due to wave scheduling overhead).
+  if (needed_blocks > 512) {
+    needed_blocks = 512;
+  }
+  // Minimum: 2 * (nranks - 1) blocks so each peer gets at least 1 warp
+  // per direction.
+  int min_blocks = 2 * (nranks - 1);
+  if (needed_blocks < min_blocks) {
+    needed_blocks = min_blocks;
+  }
+
+  return {needed_blocks, kThreads};
+}
+
 } // namespace comms::pipes
