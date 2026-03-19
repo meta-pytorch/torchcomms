@@ -995,9 +995,6 @@ commResult_t CtranIb::initRemoteTransStates(void) {
     localVc = std::make_unique<LocalVirtualConn>(devices, ncclLogData);
   }
 
-  cqMutex.unlock();
-  localVcMutex.unlock();
-
   return commSuccess;
 }
 
