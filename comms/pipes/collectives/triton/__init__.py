@@ -3,18 +3,47 @@
 """
 Pipes Triton Collectives Module.
 
-This module provides device-initiated collective operations implemented
-using TorchComms Triton APIs. These collectives run entirely on GPU
-without CPU involvement in the data path.
+Device-initiated collective operations using TorchComms Triton APIs.
+Collectives run entirely on GPU without CPU involvement in the data path.
 
 Available Collectives:
     device_alltoallv_dynamic: AlltoAllv with GPU-resident counts
 
-High-level API (recommended — MSL-compatible signature):
-    AlltoallvOp: Token-level alltoallv with internal buffer management
+High-level API (recommended):
+    AlltoallvOp: Token-level alltoallv with zero-copy buffer ownership.
+        User provides both input and output tensors (MANDATORY).
+        100% memory reduction - no internal allocation.
+        User updates input tensor in-place between calls.
 
-Helpers:
-    alloc_comms_buffer: Transport-compatible buffer allocation helper
+Buffer Allocation:
+    AlltoallvOp.alloc_buffer(): Instance method to allocate GIN-compatible
+        tensors from the op's internal memory pool. Must be called AFTER
+        setup() (i.e., inside the ``with op:`` block).
+
+Zero-Copy Architecture
+----------------------
+AlltoallvOp takes ownership of user-provided tensors, registering them
+as GIN send/recv buffers. The user's input_tensor IS the send buffer,
+and the user's output_tensor IS the recv buffer. No internal allocation,
+no copies.
+
+**IMPORTANT**: Tensors must be allocated using alloc_buffer() which
+uses ncclMemAlloc (cuMem APIs). Regular torch.empty() uses cudaMalloc
+which is NOT compatible with GIN registration.
+
+Usage Example::
+
+    op = AlltoallvOp(comm, max_tokens, D, dtype, device, max_recv_per_peer)
+
+    with op:
+        # Allocate GIN-compatible tensors (pool managed internally)
+        input_tensor = op.alloc_buffer((max_tokens, D))
+        output_tensor = op.alloc_buffer((world_size * max_recv_per_peer, D))
+
+        # Use the tensors
+        input_tensor[:] = data
+        result = op.alltoallv(input_tensor, output_tensor,
+                              output_splits, input_splits)
 
 Key Feature: GPU-Resident Counts
 --------------------------------
@@ -32,14 +61,11 @@ from comms.pipes.collectives.triton.device_alltoallv_dynamic import (
     exchange_offsets,
     prewarm_completion_counters,
 )
-from comms.pipes.collectives.triton.utils import alloc_comms_buffer
 
 
 __all__ = [
     # High-level API (recommended — MSL-compatible signature)
     "AlltoallvOp",
-    # Helpers
-    "alloc_comms_buffer",
     # Raw collective APIs
     "device_alltoallv_dynamic",
     "auto_tune_alltoallv_params",
