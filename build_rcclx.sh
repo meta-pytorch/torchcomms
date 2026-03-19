@@ -338,7 +338,6 @@ fi
 
 mkdir -p "$BUILDDIR"
 pushd "${NCCL_HOME}"
-
 function build_rccl {
   ./install.sh \
     --prefix "$BUILDDIR" \
