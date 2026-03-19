@@ -23,4 +23,7 @@ void testPartitionMorePartitionsThanGroups(
     int numBlocks,
     int blockSize);
 
+// Tests that to_warp_group() traps when group_size < 32 (THREAD scope)
+void testToWarpGroupTrap(int numBlocks, int blockSize);
+
 } // namespace comms::pipes::test
