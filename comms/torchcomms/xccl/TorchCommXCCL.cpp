@@ -136,7 +136,7 @@ TorchCommXCCL::~TorchCommXCCL() {
 
     if (xccl_comm_) {
       if (xccl_api_) {
-        (void)xccl_api_->commAbort(xccl_comm_);
+        xccl_api_->commDestroy(xccl_comm_);
       }
       xccl_comm_ = nullptr;
     }
