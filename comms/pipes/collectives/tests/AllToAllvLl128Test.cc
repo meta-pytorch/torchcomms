@@ -8,7 +8,10 @@
 #include <folly/init/Init.h>
 #include <folly/logging/xlog.h>
 
+#include <algorithm>
+
 #include "comms/pipes/MultiPeerNvlTransport.h"
+#include "comms/pipes/collectives/AllToAllvAuto.h"
 #include "comms/pipes/collectives/AllToAllvLl128.cuh"
 #include "comms/pipes/collectives/tests/AllToAllvLl128Test.cuh"
 #include "comms/pipes/ll128/Ll128Packet.cuh"
@@ -1253,6 +1256,660 @@ TEST_F(AllToAllvLl128TestFixture, ChunkedBlockCountSweep) {
 
     bootstrap->barrierAll();
   }
+}
+
+// =============================================================================
+// Large message AllToAllV tests — 512KB and 1MB per peer (Gap 4)
+// =============================================================================
+
+INSTANTIATE_TEST_SUITE_P(
+    LargeMessageConfigs,
+    AllToAllvLl128EqualSizeTest,
+    ::testing::Values(
+        // 512KB per peer (131072 ints)
+        AllToAllvLl128EqualParams{
+            .numBlocks = 128,
+            .blockSize = 512,
+            .numIntsPerRank = 131072,
+            .testName = "128b_512t_512KB"},
+        // 1MB per peer (262144 ints)
+        AllToAllvLl128EqualParams{
+            .numBlocks = 256,
+            .blockSize = 512,
+            .numIntsPerRank = 262144,
+            .testName = "256b_512t_1MB"}),
+    [](const ::testing::TestParamInfo<AllToAllvLl128EqualParams>& info) {
+      return info.param.testName;
+    });
+
+// =============================================================================
+// Pipelined multi-call with varying sizes per iteration (Gap 8)
+// =============================================================================
+
+TEST_F(AllToAllvLl128TestFixture, PipelinedVaryingSizes) {
+  CUDACHECK_TEST(cudaSetDevice(localRank));
+
+  const std::vector<size_t> intsPerRankPerIter = {
+      1024, // 4KB
+      4096, // 16KB
+      256, // 1KB
+      16384, // 64KB
+      1024, // 4KB
+  };
+  const int numBlocks = 18;
+  const int blockSize = 512;
+
+  // Use max size for transport config
+  size_t maxIntsPerRank =
+      *std::max_element(intsPerRankPerIter.begin(), intsPerRankPerIter.end());
+  size_t maxPerPeerBytes = maxIntsPerRank * sizeof(int32_t);
+  size_t maxTotalInts = maxIntsPerRank * worldSize;
+  size_t maxBufferSize = maxTotalInts * sizeof(int32_t);
+
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = std::max(size_t(2048), maxBufferSize),
+      .chunkSize = 512,
+      .pipelineDepth = 4,
+      .ll128BufferSize = ll128_buffer_size(maxPerPeerBytes),
+  };
+
+  std::unique_ptr<MultiPeerNvlTransport> transport;
+  try {
+    transport = std::make_unique<MultiPeerNvlTransport>(
+        globalRank, worldSize, bootstrap, config);
+    transport->exchange();
+  } catch (const std::runtime_error& e) {
+    XLOGF(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
+    std::abort();
+  }
+
+  DeviceSpan<Transport> transports_span(
+      transport->getTransportsArray(), worldSize);
+
+  DeviceBuffer sendBuffer(maxBufferSize);
+  DeviceBuffer recvBuffer(maxBufferSize);
+
+  for (size_t iter = 0; iter < intsPerRankPerIter.size(); iter++) {
+    size_t numIntsPerRank = intsPerRankPerIter[iter];
+    size_t totalInts = numIntsPerRank * worldSize;
+    size_t bufferSize = totalInts * sizeof(int32_t);
+    size_t perPeerBytes = numIntsPerRank * sizeof(int32_t);
+
+    // Fill send buffer
+    std::vector<int32_t> h_send(totalInts);
+    for (int peer = 0; peer < worldSize; peer++) {
+      for (size_t i = 0; i < numIntsPerRank; i++) {
+        h_send[peer * numIntsPerRank + i] = globalRank * 10000 + peer * 1000 +
+            static_cast<int32_t>(iter) * 100 + static_cast<int32_t>(i);
+      }
+    }
+    CUDACHECK_TEST(cudaMemcpy(
+        sendBuffer.get(), h_send.data(), bufferSize, cudaMemcpyHostToDevice));
+
+    test::fillBuffer(reinterpret_cast<int*>(recvBuffer.get()), -1, totalInts);
+
+    // Setup ChunkInfo for this iteration's size
+    std::vector<ChunkInfo> h_send_chunk_infos;
+    std::vector<ChunkInfo> h_recv_chunk_infos;
+    for (int rank = 0; rank < worldSize; rank++) {
+      size_t offset = rank * perPeerBytes;
+      h_send_chunk_infos.emplace_back(offset, perPeerBytes);
+      h_recv_chunk_infos.emplace_back(offset, perPeerBytes);
+    }
+
+    DeviceBuffer d_send_chunk_infos(sizeof(ChunkInfo) * worldSize);
+    DeviceBuffer d_recv_chunk_infos(sizeof(ChunkInfo) * worldSize);
+    CUDACHECK_TEST(cudaMemcpy(
+        d_send_chunk_infos.get(),
+        h_send_chunk_infos.data(),
+        sizeof(ChunkInfo) * worldSize,
+        cudaMemcpyHostToDevice));
+    CUDACHECK_TEST(cudaMemcpy(
+        d_recv_chunk_infos.get(),
+        h_recv_chunk_infos.data(),
+        sizeof(ChunkInfo) * worldSize,
+        cudaMemcpyHostToDevice));
+
+    DeviceSpan<ChunkInfo> send_chunk_infos(
+        static_cast<ChunkInfo*>(d_send_chunk_infos.get()), worldSize);
+    DeviceSpan<ChunkInfo> recv_chunk_infos(
+        static_cast<ChunkInfo*>(d_recv_chunk_infos.get()), worldSize);
+
+    bootstrap->barrierAll();
+
+    test::test_all_to_allv_ll128(
+        recvBuffer.get(),
+        sendBuffer.get(),
+        globalRank,
+        worldSize,
+        transports_span,
+        send_chunk_infos,
+        recv_chunk_infos,
+        numBlocks,
+        blockSize);
+
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    // Verify
+    std::vector<int32_t> h_recv(totalInts);
+    CUDACHECK_TEST(cudaMemcpy(
+        h_recv.data(), recvBuffer.get(), bufferSize, cudaMemcpyDeviceToHost));
+
+    int h_errorCount = 0;
+    for (int peer = 0; peer < worldSize; peer++) {
+      for (size_t i = 0; i < numIntsPerRank; i++) {
+        int32_t expected = peer * 10000 + globalRank * 1000 +
+            static_cast<int32_t>(iter) * 100 + static_cast<int32_t>(i);
+        int32_t actual = h_recv[peer * numIntsPerRank + i];
+        if (expected != actual) {
+          h_errorCount++;
+          if (h_errorCount <= 5) {
+            XLOGF(
+                ERR,
+                "Rank {}: Iter {} ({}KB) error at peer {} pos {}: expected {}, got {}",
+                globalRank,
+                iter,
+                numIntsPerRank * 4 / 1024,
+                peer,
+                i,
+                expected,
+                actual);
+          }
+        }
+      }
+    }
+
+    EXPECT_EQ(h_errorCount, 0)
+        << "Rank " << globalRank << " iter " << iter << " ("
+        << numIntsPerRank * 4 / 1024 << "KB) found " << h_errorCount
+        << " verification errors";
+  }
+
+  bootstrap->barrierAll();
+}
+
+TEST_F(AllToAllvLl128TestFixture, PipelinedVaryingSizes_Chunked) {
+  CUDACHECK_TEST(cudaSetDevice(localRank));
+
+  const std::vector<size_t> intsPerRankPerIter = {
+      1024, // 4KB
+      4096, // 16KB
+      256, // 1KB
+      16384, // 64KB
+      1024, // 4KB
+  };
+  const int numBlocks = 18;
+  const int blockSize = 512;
+  const size_t ll128BufferNumPackets = 8;
+
+  size_t maxIntsPerRank =
+      *std::max_element(intsPerRankPerIter.begin(), intsPerRankPerIter.end());
+  size_t maxTotalInts = maxIntsPerRank * worldSize;
+  size_t maxBufferSize = maxTotalInts * sizeof(int32_t);
+
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = std::max(size_t(2048), maxBufferSize),
+      .chunkSize = 512,
+      .pipelineDepth = 4,
+      .ll128BufferSize = ll128BufferNumPackets * kLl128PacketSize,
+  };
+
+  std::unique_ptr<MultiPeerNvlTransport> transport;
+  try {
+    transport = std::make_unique<MultiPeerNvlTransport>(
+        globalRank, worldSize, bootstrap, config);
+    transport->exchange();
+  } catch (const std::runtime_error& e) {
+    XLOGF(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
+    std::abort();
+  }
+
+  DeviceSpan<Transport> transports_span(
+      transport->getTransportsArray(), worldSize);
+
+  DeviceBuffer sendBuffer(maxBufferSize);
+  DeviceBuffer recvBuffer(maxBufferSize);
+
+  for (size_t iter = 0; iter < intsPerRankPerIter.size(); iter++) {
+    size_t numIntsPerRank = intsPerRankPerIter[iter];
+    size_t totalInts = numIntsPerRank * worldSize;
+    size_t bufferSize = totalInts * sizeof(int32_t);
+    size_t perPeerBytes = numIntsPerRank * sizeof(int32_t);
+
+    std::vector<int32_t> h_send(totalInts);
+    for (int peer = 0; peer < worldSize; peer++) {
+      for (size_t i = 0; i < numIntsPerRank; i++) {
+        h_send[peer * numIntsPerRank + i] = globalRank * 10000 + peer * 1000 +
+            static_cast<int32_t>(iter) * 100 + static_cast<int32_t>(i);
+      }
+    }
+    CUDACHECK_TEST(cudaMemcpy(
+        sendBuffer.get(), h_send.data(), bufferSize, cudaMemcpyHostToDevice));
+
+    test::fillBuffer(reinterpret_cast<int*>(recvBuffer.get()), -1, totalInts);
+
+    std::vector<ChunkInfo> h_send_chunk_infos;
+    std::vector<ChunkInfo> h_recv_chunk_infos;
+    for (int rank = 0; rank < worldSize; rank++) {
+      size_t offset = rank * perPeerBytes;
+      h_send_chunk_infos.emplace_back(offset, perPeerBytes);
+      h_recv_chunk_infos.emplace_back(offset, perPeerBytes);
+    }
+
+    DeviceBuffer d_send_chunk_infos(sizeof(ChunkInfo) * worldSize);
+    DeviceBuffer d_recv_chunk_infos(sizeof(ChunkInfo) * worldSize);
+    CUDACHECK_TEST(cudaMemcpy(
+        d_send_chunk_infos.get(),
+        h_send_chunk_infos.data(),
+        sizeof(ChunkInfo) * worldSize,
+        cudaMemcpyHostToDevice));
+    CUDACHECK_TEST(cudaMemcpy(
+        d_recv_chunk_infos.get(),
+        h_recv_chunk_infos.data(),
+        sizeof(ChunkInfo) * worldSize,
+        cudaMemcpyHostToDevice));
+
+    DeviceSpan<ChunkInfo> send_chunk_infos(
+        static_cast<ChunkInfo*>(d_send_chunk_infos.get()), worldSize);
+    DeviceSpan<ChunkInfo> recv_chunk_infos(
+        static_cast<ChunkInfo*>(d_recv_chunk_infos.get()), worldSize);
+
+    bootstrap->barrierAll();
+
+    test::test_all_to_allv_ll128(
+        recvBuffer.get(),
+        sendBuffer.get(),
+        globalRank,
+        worldSize,
+        transports_span,
+        send_chunk_infos,
+        recv_chunk_infos,
+        numBlocks,
+        blockSize);
+
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    std::vector<int32_t> h_recv(totalInts);
+    CUDACHECK_TEST(cudaMemcpy(
+        h_recv.data(), recvBuffer.get(), bufferSize, cudaMemcpyDeviceToHost));
+
+    int h_errorCount = 0;
+    for (int peer = 0; peer < worldSize; peer++) {
+      for (size_t i = 0; i < numIntsPerRank; i++) {
+        int32_t expected = peer * 10000 + globalRank * 1000 +
+            static_cast<int32_t>(iter) * 100 + static_cast<int32_t>(i);
+        int32_t actual = h_recv[peer * numIntsPerRank + i];
+        if (expected != actual) {
+          h_errorCount++;
+          if (h_errorCount <= 5) {
+            XLOGF(
+                ERR,
+                "Rank {}: Iter {} ({}KB chunked) error at peer {} pos {}: expected {}, got {}",
+                globalRank,
+                iter,
+                numIntsPerRank * 4 / 1024,
+                peer,
+                i,
+                expected,
+                actual);
+          }
+        }
+      }
+    }
+
+    EXPECT_EQ(h_errorCount, 0)
+        << "Rank " << globalRank << " iter " << iter << " ("
+        << numIntsPerRank * 4 / 1024 << "KB chunked) found " << h_errorCount
+        << " verification errors";
+  }
+
+  bootstrap->barrierAll();
+}
+
+// =============================================================================
+// Auto dispatch tests — all_to_allv_auto() (Gap 3)
+// =============================================================================
+
+TEST_F(AllToAllvLl128TestFixture, AutoDispatch_1KB_UsesLl128) {
+  CUDACHECK_TEST(cudaSetDevice(localRank));
+
+  const size_t numIntsPerRank = 256; // 1KB per peer
+  const size_t totalInts = numIntsPerRank * worldSize;
+  const size_t bufferSize = totalInts * sizeof(int32_t);
+  const size_t perPeerBytes = numIntsPerRank * sizeof(int32_t);
+
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = std::max(size_t(2048), bufferSize),
+      .chunkSize = 512,
+      .pipelineDepth = 4,
+      .ll128BufferSize = ll128_buffer_size(perPeerBytes),
+  };
+
+  std::unique_ptr<MultiPeerNvlTransport> transport;
+  try {
+    transport = std::make_unique<MultiPeerNvlTransport>(
+        globalRank, worldSize, bootstrap, config);
+    transport->exchange();
+  } catch (const std::runtime_error& e) {
+    XLOGF(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
+    std::abort();
+  }
+
+  DeviceSpan<Transport> transports_span(
+      transport->getTransportsArray(), worldSize);
+
+  DeviceBuffer sendBuffer(bufferSize);
+  DeviceBuffer recvBuffer(bufferSize);
+
+  test::fillBuffer(reinterpret_cast<int*>(recvBuffer.get()), -1, totalInts);
+
+  std::vector<int32_t> h_send(totalInts);
+  for (int peer = 0; peer < worldSize; peer++) {
+    for (size_t i = 0; i < numIntsPerRank; i++) {
+      h_send[peer * numIntsPerRank + i] =
+          globalRank * 1000 + peer * 100 + static_cast<int32_t>(i);
+    }
+  }
+  CUDACHECK_TEST(cudaMemcpy(
+      sendBuffer.get(), h_send.data(), bufferSize, cudaMemcpyHostToDevice));
+
+  std::vector<ChunkInfo> h_send_chunk_infos;
+  std::vector<ChunkInfo> h_recv_chunk_infos;
+  for (int rank = 0; rank < worldSize; rank++) {
+    size_t offset = rank * perPeerBytes;
+    h_send_chunk_infos.emplace_back(offset, perPeerBytes);
+    h_recv_chunk_infos.emplace_back(offset, perPeerBytes);
+  }
+
+  DeviceBuffer d_send_chunk_infos(sizeof(ChunkInfo) * worldSize);
+  DeviceBuffer d_recv_chunk_infos(sizeof(ChunkInfo) * worldSize);
+  CUDACHECK_TEST(cudaMemcpy(
+      d_send_chunk_infos.get(),
+      h_send_chunk_infos.data(),
+      sizeof(ChunkInfo) * worldSize,
+      cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(cudaMemcpy(
+      d_recv_chunk_infos.get(),
+      h_recv_chunk_infos.data(),
+      sizeof(ChunkInfo) * worldSize,
+      cudaMemcpyHostToDevice));
+
+  DeviceSpan<ChunkInfo> send_chunk_infos(
+      static_cast<ChunkInfo*>(d_send_chunk_infos.get()), worldSize);
+  DeviceSpan<ChunkInfo> recv_chunk_infos(
+      static_cast<ChunkInfo*>(d_recv_chunk_infos.get()), worldSize);
+
+  bootstrap->barrierAll();
+
+  all_to_allv_auto(
+      recvBuffer.get(),
+      sendBuffer.get(),
+      globalRank,
+      worldSize,
+      transports_span,
+      send_chunk_infos,
+      recv_chunk_infos,
+      perPeerBytes);
+
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<int32_t> h_recv(totalInts);
+  CUDACHECK_TEST(cudaMemcpy(
+      h_recv.data(), recvBuffer.get(), bufferSize, cudaMemcpyDeviceToHost));
+
+  int h_errorCount = 0;
+  for (int peer = 0; peer < worldSize; peer++) {
+    for (size_t i = 0; i < numIntsPerRank; i++) {
+      int32_t expected =
+          peer * 1000 + globalRank * 100 + static_cast<int32_t>(i);
+      int32_t actual = h_recv[peer * numIntsPerRank + i];
+      if (expected != actual) {
+        h_errorCount++;
+        if (h_errorCount <= 10) {
+          XLOGF(
+              ERR,
+              "Rank {}: AutoDispatch 1KB error at peer {} pos {}: expected {}, got {}",
+              globalRank,
+              peer,
+              i,
+              expected,
+              actual);
+        }
+      }
+    }
+  }
+
+  EXPECT_EQ(h_errorCount, 0) << "Rank " << globalRank << " found "
+                             << h_errorCount << " verification errors";
+  bootstrap->barrierAll();
+}
+
+TEST_F(AllToAllvLl128TestFixture, AutoDispatch_256KB_UsesLl128) {
+  CUDACHECK_TEST(cudaSetDevice(localRank));
+
+  const size_t numIntsPerRank = 65536; // 256KB per peer (boundary)
+  const size_t totalInts = numIntsPerRank * worldSize;
+  const size_t bufferSize = totalInts * sizeof(int32_t);
+  const size_t perPeerBytes = numIntsPerRank * sizeof(int32_t);
+
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = std::max(size_t(2048), bufferSize),
+      .chunkSize = 512,
+      .pipelineDepth = 4,
+      .ll128BufferSize = ll128_buffer_size(perPeerBytes),
+  };
+
+  std::unique_ptr<MultiPeerNvlTransport> transport;
+  try {
+    transport = std::make_unique<MultiPeerNvlTransport>(
+        globalRank, worldSize, bootstrap, config);
+    transport->exchange();
+  } catch (const std::runtime_error& e) {
+    XLOGF(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
+    std::abort();
+  }
+
+  DeviceSpan<Transport> transports_span(
+      transport->getTransportsArray(), worldSize);
+
+  DeviceBuffer sendBuffer(bufferSize);
+  DeviceBuffer recvBuffer(bufferSize);
+
+  test::fillBuffer(reinterpret_cast<int*>(recvBuffer.get()), -1, totalInts);
+
+  std::vector<int32_t> h_send(totalInts);
+  for (int peer = 0; peer < worldSize; peer++) {
+    for (size_t i = 0; i < numIntsPerRank; i++) {
+      h_send[peer * numIntsPerRank + i] =
+          globalRank * 1000 + peer * 100 + static_cast<int32_t>(i);
+    }
+  }
+  CUDACHECK_TEST(cudaMemcpy(
+      sendBuffer.get(), h_send.data(), bufferSize, cudaMemcpyHostToDevice));
+
+  std::vector<ChunkInfo> h_send_chunk_infos;
+  std::vector<ChunkInfo> h_recv_chunk_infos;
+  for (int rank = 0; rank < worldSize; rank++) {
+    size_t offset = rank * perPeerBytes;
+    h_send_chunk_infos.emplace_back(offset, perPeerBytes);
+    h_recv_chunk_infos.emplace_back(offset, perPeerBytes);
+  }
+
+  DeviceBuffer d_send_chunk_infos(sizeof(ChunkInfo) * worldSize);
+  DeviceBuffer d_recv_chunk_infos(sizeof(ChunkInfo) * worldSize);
+  CUDACHECK_TEST(cudaMemcpy(
+      d_send_chunk_infos.get(),
+      h_send_chunk_infos.data(),
+      sizeof(ChunkInfo) * worldSize,
+      cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(cudaMemcpy(
+      d_recv_chunk_infos.get(),
+      h_recv_chunk_infos.data(),
+      sizeof(ChunkInfo) * worldSize,
+      cudaMemcpyHostToDevice));
+
+  DeviceSpan<ChunkInfo> send_chunk_infos(
+      static_cast<ChunkInfo*>(d_send_chunk_infos.get()), worldSize);
+  DeviceSpan<ChunkInfo> recv_chunk_infos(
+      static_cast<ChunkInfo*>(d_recv_chunk_infos.get()), worldSize);
+
+  bootstrap->barrierAll();
+
+  all_to_allv_auto(
+      recvBuffer.get(),
+      sendBuffer.get(),
+      globalRank,
+      worldSize,
+      transports_span,
+      send_chunk_infos,
+      recv_chunk_infos,
+      perPeerBytes);
+
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<int32_t> h_recv(totalInts);
+  CUDACHECK_TEST(cudaMemcpy(
+      h_recv.data(), recvBuffer.get(), bufferSize, cudaMemcpyDeviceToHost));
+
+  int h_errorCount = 0;
+  for (int peer = 0; peer < worldSize; peer++) {
+    for (size_t i = 0; i < numIntsPerRank; i++) {
+      int32_t expected =
+          peer * 1000 + globalRank * 100 + static_cast<int32_t>(i);
+      int32_t actual = h_recv[peer * numIntsPerRank + i];
+      if (expected != actual) {
+        h_errorCount++;
+        if (h_errorCount <= 10) {
+          XLOGF(
+              ERR,
+              "Rank {}: AutoDispatch 256KB error at peer {} pos {}: expected {}, got {}",
+              globalRank,
+              peer,
+              i,
+              expected,
+              actual);
+        }
+      }
+    }
+  }
+
+  EXPECT_EQ(h_errorCount, 0) << "Rank " << globalRank << " found "
+                             << h_errorCount << " verification errors";
+  bootstrap->barrierAll();
+}
+
+TEST_F(AllToAllvLl128TestFixture, AutoDispatch_512KB_UsesSimple) {
+  CUDACHECK_TEST(cudaSetDevice(localRank));
+
+  const size_t numIntsPerRank = 131072; // 512KB per peer (above threshold)
+  const size_t totalInts = numIntsPerRank * worldSize;
+  const size_t bufferSize = totalInts * sizeof(int32_t);
+  const size_t perPeerBytes = numIntsPerRank * sizeof(int32_t);
+
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = std::max(size_t(2048), bufferSize),
+      .chunkSize = 512,
+      .pipelineDepth = 4,
+      .ll128BufferSize = ll128_buffer_size(256 * 1024),
+  };
+
+  std::unique_ptr<MultiPeerNvlTransport> transport;
+  try {
+    transport = std::make_unique<MultiPeerNvlTransport>(
+        globalRank, worldSize, bootstrap, config);
+    transport->exchange();
+  } catch (const std::runtime_error& e) {
+    XLOGF(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
+    std::abort();
+  }
+
+  DeviceSpan<Transport> transports_span(
+      transport->getTransportsArray(), worldSize);
+
+  DeviceBuffer sendBuffer(bufferSize);
+  DeviceBuffer recvBuffer(bufferSize);
+
+  test::fillBuffer(reinterpret_cast<int*>(recvBuffer.get()), -1, totalInts);
+
+  std::vector<int32_t> h_send(totalInts);
+  for (int peer = 0; peer < worldSize; peer++) {
+    for (size_t i = 0; i < numIntsPerRank; i++) {
+      h_send[peer * numIntsPerRank + i] =
+          globalRank * 1000 + peer * 100 + static_cast<int32_t>(i);
+    }
+  }
+  CUDACHECK_TEST(cudaMemcpy(
+      sendBuffer.get(), h_send.data(), bufferSize, cudaMemcpyHostToDevice));
+
+  std::vector<ChunkInfo> h_send_chunk_infos;
+  std::vector<ChunkInfo> h_recv_chunk_infos;
+  for (int rank = 0; rank < worldSize; rank++) {
+    size_t offset = rank * perPeerBytes;
+    h_send_chunk_infos.emplace_back(offset, perPeerBytes);
+    h_recv_chunk_infos.emplace_back(offset, perPeerBytes);
+  }
+
+  DeviceBuffer d_send_chunk_infos(sizeof(ChunkInfo) * worldSize);
+  DeviceBuffer d_recv_chunk_infos(sizeof(ChunkInfo) * worldSize);
+  CUDACHECK_TEST(cudaMemcpy(
+      d_send_chunk_infos.get(),
+      h_send_chunk_infos.data(),
+      sizeof(ChunkInfo) * worldSize,
+      cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(cudaMemcpy(
+      d_recv_chunk_infos.get(),
+      h_recv_chunk_infos.data(),
+      sizeof(ChunkInfo) * worldSize,
+      cudaMemcpyHostToDevice));
+
+  DeviceSpan<ChunkInfo> send_chunk_infos(
+      static_cast<ChunkInfo*>(d_send_chunk_infos.get()), worldSize);
+  DeviceSpan<ChunkInfo> recv_chunk_infos(
+      static_cast<ChunkInfo*>(d_recv_chunk_infos.get()), worldSize);
+
+  bootstrap->barrierAll();
+
+  all_to_allv_auto(
+      recvBuffer.get(),
+      sendBuffer.get(),
+      globalRank,
+      worldSize,
+      transports_span,
+      send_chunk_infos,
+      recv_chunk_infos,
+      perPeerBytes);
+
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<int32_t> h_recv(totalInts);
+  CUDACHECK_TEST(cudaMemcpy(
+      h_recv.data(), recvBuffer.get(), bufferSize, cudaMemcpyDeviceToHost));
+
+  int h_errorCount = 0;
+  for (int peer = 0; peer < worldSize; peer++) {
+    for (size_t i = 0; i < numIntsPerRank; i++) {
+      int32_t expected =
+          peer * 1000 + globalRank * 100 + static_cast<int32_t>(i);
+      int32_t actual = h_recv[peer * numIntsPerRank + i];
+      if (expected != actual) {
+        h_errorCount++;
+        if (h_errorCount <= 10) {
+          XLOGF(
+              ERR,
+              "Rank {}: AutoDispatch 512KB error at peer {} pos {}: expected {}, got {}",
+              globalRank,
+              peer,
+              i,
+              expected,
+              actual);
+        }
+      }
+    }
+  }
+
+  EXPECT_EQ(h_errorCount, 0) << "Rank " << globalRank << " found "
+                             << h_errorCount << " verification errors";
+  bootstrap->barrierAll();
 }
 
 } // namespace comms::pipes

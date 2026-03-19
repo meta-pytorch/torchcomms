@@ -296,4 +296,73 @@ void test_ll128_nvlink_bidirectional(
   PIPES_CUDA_CHECK(cudaStreamDestroy(stream_c));
 }
 
+void test_ll128_nvlink_forward_3gpu(
+    int sender_gpu,
+    int forwarder_gpu,
+    int receiver_gpu,
+    const char* src_d,
+    char* fwd_dst_d,
+    char* recv_dst_d,
+    size_t nbytes,
+    Ll128Packet* ll128_buf_a,
+    Ll128Packet* ll128_buf_b,
+    int num_blocks,
+    int block_size,
+    size_t buffer_num_packets,
+    int num_steps) {
+  size_t buf_size = (buffer_num_packets > 0)
+      ? buffer_num_packets * kLl128PacketSize
+      : ll128_buffer_size(nbytes);
+
+  // Init both LL128 buffers on their respective GPUs
+  PIPES_CUDA_CHECK(cudaSetDevice(forwarder_gpu));
+  PIPES_CUDA_CHECK(cudaMemset(ll128_buf_a, kLl128MemsetInitByte, buf_size));
+  PIPES_CUDA_CHECK(cudaDeviceSynchronize());
+
+  PIPES_CUDA_CHECK(cudaSetDevice(receiver_gpu));
+  PIPES_CUDA_CHECK(cudaMemset(ll128_buf_b, kLl128MemsetInitByte, buf_size));
+  PIPES_CUDA_CHECK(cudaDeviceSynchronize());
+
+  // Sender on sender_gpu: writes to ll128_buf_a on forwarder_gpu
+  cudaStream_t send_stream;
+  PIPES_CUDA_CHECK(cudaSetDevice(sender_gpu));
+  PIPES_CUDA_CHECK(cudaStreamCreate(&send_stream));
+  ll128_nvlink_send_kernel<<<num_blocks, block_size, 0, send_stream>>>(
+      src_d, nbytes, ll128_buf_a, buffer_num_packets, num_steps);
+  PIPES_KERNEL_LAUNCH_CHECK();
+
+  // Forwarder on forwarder_gpu: reads local buf_a, writes buf_b on
+  // receiver_gpu, copies to fwd_dst
+  cudaStream_t fwd_stream;
+  PIPES_CUDA_CHECK(cudaSetDevice(forwarder_gpu));
+  PIPES_CUDA_CHECK(cudaStreamCreate(&fwd_stream));
+  ll128_nvlink_forward_kernel<<<num_blocks, block_size, 0, fwd_stream>>>(
+      fwd_dst_d,
+      nbytes,
+      ll128_buf_a,
+      ll128_buf_b,
+      buffer_num_packets,
+      num_steps);
+  PIPES_KERNEL_LAUNCH_CHECK();
+
+  // Receiver on receiver_gpu: reads local buf_b to recv_dst
+  cudaStream_t recv_stream;
+  PIPES_CUDA_CHECK(cudaSetDevice(receiver_gpu));
+  PIPES_CUDA_CHECK(cudaStreamCreate(&recv_stream));
+  ll128_nvlink_recv_kernel<<<num_blocks, block_size, 0, recv_stream>>>(
+      recv_dst_d, nbytes, ll128_buf_b, buffer_num_packets, num_steps);
+  PIPES_KERNEL_LAUNCH_CHECK();
+
+  // Wait for all to complete
+  PIPES_CUDA_CHECK(cudaSetDevice(sender_gpu));
+  PIPES_CUDA_CHECK(cudaStreamSynchronize(send_stream));
+  PIPES_CUDA_CHECK(cudaStreamDestroy(send_stream));
+  PIPES_CUDA_CHECK(cudaSetDevice(forwarder_gpu));
+  PIPES_CUDA_CHECK(cudaStreamSynchronize(fwd_stream));
+  PIPES_CUDA_CHECK(cudaStreamDestroy(fwd_stream));
+  PIPES_CUDA_CHECK(cudaSetDevice(receiver_gpu));
+  PIPES_CUDA_CHECK(cudaStreamSynchronize(recv_stream));
+  PIPES_CUDA_CHECK(cudaStreamDestroy(recv_stream));
+}
+
 } // namespace comms::pipes::test
