@@ -23,6 +23,8 @@ on:
       - comms/torchcomms/tests/integration/py/BatchSendRecvTest.py
       - comms/torchcomms/tests/integration/py/BroadcastTest.py
       - comms/torchcomms/tests/integration/py/DDPCommTest.py
+      - comms/torchcomms/tests/integration/py/DeviceMeshTest.py
+      - comms/torchcomms/tests/integration/py/DPTPCommTest.py
       - comms/torchcomms/tests/integration/py/FSDPCommTest.py
       - comms/torchcomms/tests/integration/py/GatherTest.py
       - comms/torchcomms/tests/integration/py/MultiCommTest.py
@@ -34,6 +36,7 @@ on:
       - comms/torchcomms/tests/integration/py/ReduceTest.py
       - comms/torchcomms/tests/integration/py/SendRecvTest.py
       - comms/torchcomms/tests/integration/py/ScatterTest.py
+      - comms/torchcomms/tests/integration/py/SplitTest.py
       - comms/torchcomms/tests/integration/py/TPCommTest.py
       - setup.py
 
