@@ -2406,14 +2406,17 @@ ncclResult_t ncclCommInitRankConfig(ncclComm_t *newcomm, int nranks, ncclUniqueI
   int cudaDev;
   ncclResult_t ret = ncclSuccess;
   ncclConfig_t internalConfig = NCCL_CONFIG_INITIALIZER;
-  ncclConfig_t *internalConfigPtr = config ? config : &internalConfig;
-  NCCLCHECK(ncclxParseCommConfig(internalConfigPtr));
+  if (config) {
+    internalConfig = *config;
+    internalConfig.ncclxConfig = NCCL_CONFIG_UNDEF_PTR;
+  }
+  NCCLCHECK(ncclxParseCommConfig(&internalConfig));
 
   NCCLCHECK(ncclInitEnv());
 
   char allZeroUniqueId[NCCL_UNIQUE_ID_BYTES] = {0};
   bool uniqueIdIsInitialized = memcmp(commId.internal, allZeroUniqueId, NCCL_UNIQUE_ID_BYTES) != 0;
-  bool fastInitMode = NCCLX_CONFIG_FIELD(*internalConfigPtr, fastInitMode);
+  bool fastInitMode = NCCLX_CONFIG_FIELD(internalConfig, fastInitMode);
   if (isFastInitRingMode(fastInitMode)) {
     // in meta-fast-init mode, we don't need commId
     if (uniqueIdIsInitialized) {
@@ -2433,7 +2436,7 @@ ncclResult_t ncclCommInitRankConfig(ncclComm_t *newcomm, int nranks, ncclUniqueI
   (void)ncclCudaLibraryInit();
   CUDACHECK(cudaGetDevice(&cudaDev));
 
-  NCCLCHECKGOTO(ncclCommInitRankDev(newcomm, nranks, 1, &commId, myrank, cudaDev, internalConfigPtr, __func__), ret, fail);
+  NCCLCHECKGOTO(ncclCommInitRankDev(newcomm, nranks, 1, &commId, myrank, cudaDev, &internalConfig, __func__), ret, fail);
 
 exit:
   ncclGroupErrCheck(ret);
@@ -2459,14 +2462,17 @@ ncclResult_t ncclCommInitRankScalable(ncclComm_t* newcomm, int nranks, int myran
   int cudaDev;
   ncclResult_t ret = ncclSuccess;
   ncclConfig_t internalConfig = NCCL_CONFIG_INITIALIZER;
-  ncclConfig_t *internalConfigPtr = config ? config : &internalConfig;
-  NCCLCHECK(ncclxParseCommConfig(internalConfigPtr));
+  if (config) {
+    internalConfig = *config;
+    internalConfig.ncclxConfig = NCCL_CONFIG_UNDEF_PTR;
+  }
+  NCCLCHECK(ncclxParseCommConfig(&internalConfig));
   NCCLCHECK(ncclGroupStartInternal());
 
   (void)ncclCudaLibraryInit();
   CUDACHECK(cudaGetDevice(&cudaDev));
 
-  NCCLCHECKGOTO(ncclCommInitRankDev(newcomm, nranks, nId, commId, myrank, cudaDev, internalConfigPtr, __func__), ret, fail);
+  NCCLCHECKGOTO(ncclCommInitRankDev(newcomm, nranks, nId, commId, myrank, cudaDev, &internalConfig, __func__), ret, fail);
 
 exit:
   ncclGroupErrCheck(ret);
@@ -3027,17 +3033,16 @@ ncclResult_t ncclCommSplit(ncclComm_t comm, int color, int key, ncclComm_t *newc
   // parent's config so the child inherits NCCLX settings (e.g.
   // ncclAllGatherAlgo) that live in the ncclx::Config object.
   ncclConfig_t internalConfig;
-  ncclConfig_t *internalConfigPtr;
   if (config) {
-    internalConfigPtr = config;
-    NCCLCHECK(ncclxParseCommConfig(internalConfigPtr));
+    internalConfig = *config;
+    internalConfig.ncclxConfig = NCCL_CONFIG_UNDEF_PTR;
+    NCCLCHECK(ncclxParseCommConfig(&internalConfig));
   } else {
     deepCopyCommConfig(&internalConfig, &comm->config);
-    internalConfigPtr = &internalConfig;
   }
 
   NCCLCHECK(ncclGroupStartInternal());
-  NCCLCHECKGOTO(ncclCommInitChildComm(comm, newcomm, /*isShrink=*/false, /*shrink mode=*/NCCL_SHRINK_DEFAULT, color, key, NULL, 0, internalConfigPtr, __func__), res, exit);
+  NCCLCHECKGOTO(ncclCommInitChildComm(comm, newcomm, /*isShrink=*/false, /*shrink mode=*/NCCL_SHRINK_DEFAULT, color, key, NULL, 0, &internalConfig, __func__), res, exit);
 
   if (*newcomm)
     NVTX3_RANGE_ADD_PAYLOAD(CommSplit, NcclNvtxParamsCommSplitSchema, NVTX3_PAYLOAD((*newcomm)->commHash, comm->commHash, comm->nRanks, comm->rank, comm->cudaDev, color, key));
