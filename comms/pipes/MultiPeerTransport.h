@@ -143,6 +143,16 @@ class MultiPeerTransport {
     return nvlNRanks_;
   }
 
+  // --- External buffer configuration ---
+
+  /**
+   * Set external NVL data buffers for reuse instead of internal allocation.
+   *
+   * Call BEFORE exchange(). Delegates to
+   * MultiPeerNvlTransport::setExternalDataBuffers().
+   */
+  void setExternalNvlDataBuffers(ExternalStagingBuffers externalStagingBuffers);
+
   // --- Host-side transport accessors ---
 
   /**
@@ -151,6 +161,12 @@ class MultiPeerTransport {
    * peer.
    */
   P2pNvlTransportDevice get_p2p_nvl_transport_device(int globalPeerRank) const;
+
+  /**
+   * @return Pointer to the device-side Transport array from NVL transport,
+   *   indexed by NVL local rank. Returns nullptr if no NVL transport.
+   */
+  Transport* /*nullable*/ get_nvl_transports_array() const;
 
   /**
    * @param globalPeerRank Global rank of the IBGDA peer.
