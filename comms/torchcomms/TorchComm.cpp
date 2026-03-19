@@ -38,6 +38,10 @@ std::string_view TorchComm::getCommName() const {
   return impl_->getCommName();
 }
 
+std::string_view TorchComm::getBackendVersion() const {
+  return impl_->getBackendVersion();
+}
+
 void TorchComm::validateRank(int rank, const char* param_name) const {
   TORCH_CHECK(
       rank >= 0 && rank < getSize(),
@@ -566,6 +570,10 @@ InitHandle TorchComm::getInitHandle() const {
 c10::intrusive_ptr<TorchWork> TorchComm::reconfigure(
     const ReconfigureOptions& opts) {
   return impl_->reconfigure(opts);
+}
+
+int64_t TorchComm::get_device_transport() {
+  return impl_->get_device_transport();
 }
 
 // Communicator Management

@@ -5,7 +5,7 @@
 //   1. register_local_buffer() throws "not yet supported" for Pipes backend
 //   2. get_device_window() throws when win_ is null (no tensor_register)
 //
-// Both tests set TORCHCOMMS_PIPES_DEVICE_API_ENABLE=1 in SetUp() so that
+// Both tests set NCCL_CTRAN_USE_PIPES=1 in SetUp() so that
 // TorchCommNCCLX::new_window() returns TorchCommWindowNCCLXPipes instead of
 // TorchCommWindowNCCLXGin.
 //
@@ -26,11 +26,11 @@ class TorchCommWindowNCCLXPipesTest : public TorchCommNCCLXTest {
   void SetUp() override {
     TorchCommNCCLXTest::SetUp();
     // Make new_window() return TorchCommWindowNCCLXPipes
-    setenv("TORCHCOMMS_PIPES_DEVICE_API_ENABLE", "1", 1);
+    setenv("NCCL_CTRAN_USE_PIPES", "1", 1);
   }
 
   void TearDown() override {
-    unsetenv("TORCHCOMMS_PIPES_DEVICE_API_ENABLE");
+    unsetenv("NCCL_CTRAN_USE_PIPES");
     TorchCommNCCLXTest::TearDown();
   }
 };
@@ -52,7 +52,7 @@ TEST_F(TorchCommWindowNCCLXPipesTest, RegisterLocalBufferThrowsNotSupported) {
   EXPECT_NO_THROW(comm->init(*device_, "test_name", default_options_));
 
   // new_window() returns TorchCommWindowNCCLXPipes because
-  // TORCHCOMMS_PIPES_DEVICE_API_ENABLE=1 is set in SetUp()
+  // NCCL_CTRAN_USE_PIPES=1 is set in SetUp()
   auto win_base = comm->new_window();
   auto win = std::dynamic_pointer_cast<TorchCommWindowNCCLXPipes>(win_base);
   ASSERT_NE(win, nullptr) << "Window should be TorchCommWindowNCCLXPipes";

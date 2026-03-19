@@ -335,6 +335,17 @@ class NcclxApi {
 
   // Free device memory allocated by winCreateDeviceWin.
   virtual ncclResult_t winDestroyDeviceWin(void* devicePtr) = 0;
+
+  // Get pipes transport device handle components from the communicator.
+  // NON-COLLECTIVE — reads already-exchanged state.
+  // Returns ncclInternalError if pipes transport is not initialized.
+  virtual ncclResult_t getMultiPeerDeviceHandle(
+      ncclComm_t comm,
+      void** outTransportsPtr,
+      int* outMyRank,
+      int* outNRanks,
+      int* outNumNvlPeers,
+      int* outNumIbPeers) = 0;
 #endif
 
   // Group operations
@@ -628,6 +639,13 @@ class DefaultNcclxApi : public NcclxApi {
       int barrier_count,
       void** outDevicePtr) override;
   ncclResult_t winDestroyDeviceWin(void* devicePtr) override;
+  ncclResult_t getMultiPeerDeviceHandle(
+      ncclComm_t comm,
+      void** outTransportsPtr,
+      int* outMyRank,
+      int* outNRanks,
+      int* outNumNvlPeers,
+      int* outNumIbPeers) override;
 #endif
 
   // Group operations

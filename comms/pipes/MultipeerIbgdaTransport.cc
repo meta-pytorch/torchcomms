@@ -13,9 +13,13 @@
 
 #include <fmt/core.h>
 
+#include "comms/pipes/DocaHostUtils.h"
+#include "comms/pipes/IbverbsLazy.h"
 #include "comms/pipes/MultipeerIbgdaDeviceTransport.cuh"
 #include "comms/pipes/MultipeerIbgdaTransportCuda.cuh"
 #include "comms/pipes/rdma/NicDiscovery.h"
+
+#include "doca_verbs_net_wrapper.h"
 
 namespace comms::pipes {
 
@@ -126,10 +130,12 @@ void MultipeerIbgdaTransport::initDocaGpu() {
 }
 
 void MultipeerIbgdaTransport::openIbDevice() {
-  // Get all IB devices
+  // Get all IB devices via DOCA's dlopen wrapper
   int numDevices = 0;
-  ibv_device** deviceList = ibv_get_device_list(&numDevices);
-  if (!deviceList || numDevices == 0) {
+  ibv_device** deviceList = nullptr;
+  doca_error_t docaRet =
+      doca_verbs_wrapper_ibv_get_device_list(&numDevices, &deviceList);
+  if (docaRet != DOCA_SUCCESS || !deviceList || numDevices == 0) {
     throw std::runtime_error("No IB devices found");
   }
 
@@ -153,13 +159,15 @@ void MultipeerIbgdaTransport::openIbDevice() {
   // Find the NIC by name
   int nicIdx = -1;
   for (int i = 0; i < numDevices; i++) {
-    if (nicDeviceName_ == deviceList[i]->name) {
+    const char* devName = nullptr;
+    doca_verbs_wrapper_ibv_get_device_name(deviceList[i], &devName);
+    if (devName && nicDeviceName_ == devName) {
       nicIdx = i;
       break;
     }
   }
   if (nicIdx < 0) {
-    ibv_free_device_list(deviceList);
+    doca_verbs_wrapper_ibv_free_device_list(deviceList);
     throw std::runtime_error("Specified NIC not found: " + nicDeviceName_);
   }
   VLOG(1) << "MultipeerIbgdaTransport: found NIC " << nicDeviceName_
@@ -169,20 +177,21 @@ void MultipeerIbgdaTransport::openIbDevice() {
           << " for GPU " << gpuPciBusId_;
 
   // Open the device
-  ibvCtx_ = ibv_open_device(deviceList[nicIdx]);
-  ibv_free_device_list(deviceList);
-  if (!ibvCtx_) {
+  docaRet = doca_verbs_wrapper_ibv_open_device(deviceList[nicIdx], &ibvCtx_);
+  doca_verbs_wrapper_ibv_free_device_list(deviceList);
+  if (docaRet != DOCA_SUCCESS || !ibvCtx_) {
     throw std::runtime_error("Failed to open IB device: " + nicDeviceName_);
   }
 
   // Allocate PD
-  ibvPd_ = ibv_alloc_pd(ibvCtx_);
-  if (!ibvPd_) {
+  docaRet = doca_verbs_wrapper_ibv_alloc_pd(ibvCtx_, &ibvPd_);
+  if (docaRet != DOCA_SUCCESS || !ibvPd_) {
     throw std::runtime_error("Failed to allocate protection domain");
   }
 
   // Query GID
-  if (ibv_query_gid(ibvCtx_, 1, gidIndex_, &localGid_) != 0) {
+  docaRet = doca_verbs_wrapper_ibv_query_gid(ibvCtx_, 1, gidIndex_, &localGid_);
+  if (docaRet != DOCA_SUCCESS) {
     throw std::runtime_error(
         "Failed to query GID at index " + std::to_string(gidIndex_));
   }
@@ -212,7 +221,8 @@ void MultipeerIbgdaTransport::openIbDevice() {
 
   // Query port to determine link layer (IB vs Ethernet)
   ibv_port_attr portAttr{};
-  if (ibv_query_port(ibvCtx_, 1, &portAttr) != 0) {
+  docaRet = doca_verbs_wrapper_ibv_query_port(ibvCtx_, 1, &portAttr);
+  if (docaRet != DOCA_SUCCESS) {
     throw std::runtime_error("Failed to query port attributes");
   }
 
@@ -300,10 +310,10 @@ void MultipeerIbgdaTransport::registerMemory() {
   // matches GIN's gdakiRegMr() pattern (gin_host_gdaki.cc).
   int sinkDmabufFd = -1;
   doca_error_t err =
-      doca_gpu_dmabuf_fd(docaGpu_, sinkBuffer_, sinkBufferSize_, &sinkDmabufFd);
+      getDmaBufFdAligned(docaGpu_, sinkBuffer_, sinkBufferSize_, &sinkDmabufFd);
   if (err == DOCA_SUCCESS && sinkDmabufFd >= 0) {
     // ibv_reg_dmabuf_mr: 4th param is iova — set to 0 for zero-based MR
-    sinkMr_ = ibv_reg_dmabuf_mr(
+    sinkMr_ = lazy_ibv_reg_dmabuf_mr(
         ibvPd_,
         0,
         sinkBufferSize_,
@@ -313,8 +323,8 @@ void MultipeerIbgdaTransport::registerMemory() {
   }
   if (!sinkMr_) {
     // Fallback: use ibv_reg_mr_iova2 with iova=0 for zero-based MR
-    sinkMr_ =
-        ibv_reg_mr_iova2(ibvPd_, sinkBuffer_, sinkBufferSize_, 0, accessFlags);
+    sinkMr_ = lazy_ibv_reg_mr_iova2(
+        ibvPd_, sinkBuffer_, sinkBufferSize_, 0, accessFlags);
     if (!sinkMr_) {
       throw std::runtime_error("Failed to register sink memory region");
     }
@@ -340,7 +350,7 @@ void MultipeerIbgdaTransport::createQpGroups() {
 
   // Query IB device capabilities for debugging
   ibv_device_attr devAttr{};
-  if (ibv_query_device(ibvCtx_, &devAttr) == 0) {
+  if (doca_verbs_wrapper_ibv_query_device(ibvCtx_, &devAttr) == DOCA_SUCCESS) {
     VLOG(1) << "MultipeerIbgdaTransport: IB device - max_qp=" << devAttr.max_qp
             << " max_cq=" << devAttr.max_cq << " max_mr=" << devAttr.max_mr
             << " max_qp_wr=" << devAttr.max_qp_wr;
@@ -420,7 +430,8 @@ void MultipeerIbgdaTransport::connectQp(
 
   // Query port for IB-specific parameters
   ibv_port_attr portAttr{};
-  if (ibv_query_port(ibvCtx_, 1, &portAttr) != 0) {
+  if (doca_verbs_wrapper_ibv_query_port(ibvCtx_, 1, &portAttr) !=
+      DOCA_SUCCESS) {
     LOG(WARNING) << "Failed to query port for IB-specific parameters";
   } else if (portAttr.link_layer == IBV_LINK_LAYER_INFINIBAND) {
     err = doca_verbs_ah_attr_set_dlid(ahAttr_, peerInfo.lid);
@@ -591,13 +602,13 @@ void MultipeerIbgdaTransport::cleanup() {
 
   // Destroy user buffer MRs
   for (auto& [_, mr] : registeredBuffers_) {
-    ibv_dereg_mr(mr);
+    doca_verbs_wrapper_ibv_dereg_mr(mr);
   }
   registeredBuffers_.clear();
 
   // Destroy sink MR
   if (sinkMr_) {
-    ibv_dereg_mr(sinkMr_);
+    doca_verbs_wrapper_ibv_dereg_mr(sinkMr_);
     sinkMr_ = nullptr;
   }
 
@@ -615,13 +626,13 @@ void MultipeerIbgdaTransport::cleanup() {
 
   // Destroy PD
   if (ibvPd_) {
-    ibv_dealloc_pd(ibvPd_);
+    doca_verbs_wrapper_ibv_dealloc_pd(ibvPd_);
     ibvPd_ = nullptr;
   }
 
   // Close device
   if (ibvCtx_) {
-    ibv_close_device(ibvCtx_);
+    doca_verbs_wrapper_ibv_close_device(ibvCtx_);
     ibvCtx_ = nullptr;
   }
 
@@ -656,7 +667,8 @@ void MultipeerIbgdaTransport::exchange() {
 
   // Query port for LID (IB only)
   ibv_port_attr exchPortAttr{};
-  if (ibv_query_port(ibvCtx_, 1, &exchPortAttr) != 0) {
+  if (doca_verbs_wrapper_ibv_query_port(ibvCtx_, 1, &exchPortAttr) !=
+      DOCA_SUCCESS) {
     LOG(WARNING) << "Failed to query port for LID";
   } else {
     myInfo.lid = exchPortAttr.lid;
@@ -723,7 +735,8 @@ void MultipeerIbgdaTransport::exchange() {
 
     // Query port for local LID (IB fabrics)
     ibv_port_attr loopbackPortAttr{};
-    if (ibv_query_port(ibvCtx_, 1, &loopbackPortAttr) == 0) {
+    if (doca_verbs_wrapper_ibv_query_port(ibvCtx_, 1, &loopbackPortAttr) ==
+        DOCA_SUCCESS) {
       selfInfo.lid = loopbackPortAttr.lid;
     }
 
@@ -821,9 +834,9 @@ IbgdaLocalBuffer MultipeerIbgdaTransport::registerBuffer(
   // Try DMABUF registration first, fall back to regular reg_mr
   ibv_mr* mr = nullptr;
   int dmabufFd = -1;
-  doca_error_t err = doca_gpu_dmabuf_fd(docaGpu_, ptr, size, &dmabufFd);
+  doca_error_t err = getDmaBufFdAligned(docaGpu_, ptr, size, &dmabufFd);
   if (err == DOCA_SUCCESS && dmabufFd >= 0) {
-    mr = ibv_reg_dmabuf_mr(
+    mr = lazy_ibv_reg_dmabuf_mr(
         ibvPd_,
         0,
         size,
@@ -832,8 +845,9 @@ IbgdaLocalBuffer MultipeerIbgdaTransport::registerBuffer(
         accessFlags);
   }
   if (!mr) {
-    mr = ibv_reg_mr(ibvPd_, ptr, size, accessFlags);
-    if (!mr) {
+    doca_error_t regErr =
+        doca_verbs_wrapper_ibv_reg_mr(ibvPd_, ptr, size, accessFlags, &mr);
+    if (regErr != DOCA_SUCCESS || !mr) {
       throw std::runtime_error("Failed to register buffer with RDMA");
     }
   }
@@ -854,7 +868,7 @@ void MultipeerIbgdaTransport::deregisterBuffer(void* ptr) {
     return;
   }
 
-  ibv_dereg_mr(it->second);
+  doca_verbs_wrapper_ibv_dereg_mr(it->second);
   registeredBuffers_.erase(it);
 
   VLOG(1) << "MultipeerIbgdaTransport: deregistered buffer ptr=" << ptr;

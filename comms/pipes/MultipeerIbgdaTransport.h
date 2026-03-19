@@ -10,11 +10,12 @@
 #include <unordered_map>
 #include <vector>
 
-#include <infiniband/verbs.h>
-
 #include <doca_gpunetio_host.h>
+#include "doca_verbs_net_wrapper.h"
+
 #include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/pipes/IbgdaBuffer.h"
+#include "comms/pipes/IbverbsLazy.h"
 
 // Forward declarations for device types (defined in .cuh files)
 namespace comms::pipes {

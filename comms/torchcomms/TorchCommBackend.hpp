@@ -44,6 +44,13 @@ class TorchCommBackend {
 
   // Name of the backend impl that's the same for all instances of a backend.
   virtual std::string_view getBackendName() const = 0;
+
+  virtual std::string_view getBackendVersion() const {
+    throw std::logic_error(
+        "[TorchCommBackend]: version not implemented for communicator:" +
+        std::string(getCommName()));
+  }
+
   // Unique name for this instance of the communicator.
   virtual std::string_view getCommName() const = 0;
 
@@ -258,6 +265,16 @@ class TorchCommBackend {
       const ReconfigureOptions& /*opts*/) {
     throw std::runtime_error(
         "[TorchCommBackend]: reconfigure not implemented for communicator:" +
+        std::string(getCommName()));
+  }
+
+  // Device Transport API
+  // Returns a device pointer (as int64) to a transport handle for use in
+  // Triton/CUDA kernels. Only supported by backends with pipes transport.
+  virtual int64_t get_device_transport() {
+    throw std::runtime_error(
+        "[TorchCommBackend]: get_device_transport not implemented for "
+        "communicator:" +
         std::string(getCommName()));
   }
 

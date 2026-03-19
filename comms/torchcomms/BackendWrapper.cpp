@@ -548,6 +548,10 @@ const std::string BackendWrapper::getBackendName() const {
   return comm_->getBackend();
 }
 
+std::string_view BackendWrapper::getBackendVersion() const {
+  return comm_->getBackendVersion();
+}
+
 c10::intrusive_ptr<c10d::Backend::Options> BackendWrapper::getBackendOptions() {
   return c10::static_intrusive_pointer_cast<c10d::Backend::Options>(options_);
 }

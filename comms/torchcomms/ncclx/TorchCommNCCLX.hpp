@@ -25,6 +25,10 @@
 #include "comms/torchcomms/ncclx/TorchCommWindowNCCLX.hpp"
 #include "comms/torchcomms/ncclx/TorchWorkNCCLX.hpp"
 
+#if defined(ENABLE_PIPES)
+#include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
+#endif
+
 namespace torch::comms {
 
 // Hint key names for NCCLX backend configuration
@@ -297,6 +301,13 @@ class TorchCommNCCLX : public TorchCommBackend,
     return device_;
   }
 
+#if defined(ENABLE_PIPES)
+  // Get device-allocated transport handle for Triton/CUDA kernels.
+  // Returns device pointer as int64 (same pointer on subsequent calls).
+  // The handle is freed when TorchCommNCCLX is destroyed.
+  int64_t get_device_transport() override;
+#endif
+
  protected:
   // Event management for friend classes
   [[nodiscard]] cudaEvent_t getEvent();
@@ -454,6 +465,11 @@ class TorchCommNCCLX : public TorchCommBackend,
 
   void attachMemoryHook();
   void detachMemoryHook();
+
+#if defined(ENABLE_PIPES)
+  torchcomms::device::PipesDeviceBackend::TransportHandleDevPtr
+      device_transport_handle_;
+#endif
 
   // Member variables
   ncclComm_t nccl_comm_{};
