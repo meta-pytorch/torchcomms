@@ -142,6 +142,8 @@ class CtranAlgo {
   CtranIbConfig* getCollToVcConfig(CollType type);
 
  private:
+  friend commResult_t ctranInitPipesResources(CtranAlgo* algo);
+
   class SharedResource;
 
   commResult_t destroyDevState();
