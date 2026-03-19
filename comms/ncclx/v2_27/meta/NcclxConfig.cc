@@ -4,6 +4,7 @@
 
 #include "debug.h"
 #include "nccl.h" // @manual
+#include "param.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
 
@@ -16,6 +17,8 @@
 namespace ncclx {
 
 Config::Config(const ncclConfig_t* config) {
+  initEnv();
+
   if (!config) {
     WARN("ncclx::Config: config is null");
     throw std::invalid_argument("config is null");
