@@ -3,6 +3,7 @@
 #include "comms/torchcomms/ncclx/NcclxApi.hpp"
 
 #include <folly/debugging/symbolizer/Symbolizer.h>
+#include "comms/utils/CudaRAII.h"
 
 // Check NCCL version at compile time
 #if NCCL_VERSION_CODE < NCCL_VERSION(2, 25, 0)
@@ -475,11 +476,15 @@ ncclResult_t DefaultNcclxApi::winGetAttributes(
 
 ncclResult_t DefaultNcclxApi::memAlloc(void** buff, size_t size) {
   std::lock_guard<std::mutex> lock(api_mutex_);
+  meta::comms::StreamCaptureModeGuard captureGuard{
+      cudaStreamCaptureModeRelaxed};
   return ncclMemAlloc(buff, size);
 }
 
 ncclResult_t DefaultNcclxApi::memFree(void* buff) {
   std::lock_guard<std::mutex> lock(api_mutex_);
+  meta::comms::StreamCaptureModeGuard captureGuard{
+      cudaStreamCaptureModeRelaxed};
   return ncclMemFree(buff);
 }
 
