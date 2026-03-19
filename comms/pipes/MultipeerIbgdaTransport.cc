@@ -17,7 +17,7 @@
 #include "comms/pipes/IbverbsLazy.h"
 #include "comms/pipes/MultipeerIbgdaDeviceTransport.cuh"
 #include "comms/pipes/MultipeerIbgdaTransportCuda.cuh"
-#include "comms/pipes/rdma/NicDiscovery.h"
+#include "comms/pipes/rdma/NicDiscoveryHelper.h"
 
 #include "doca_verbs_net_wrapper.h"
 
@@ -115,7 +115,7 @@ void MultipeerIbgdaTransport::initDocaGpu() {
         std::string(cudaGetErrorString(cudaErr)));
   }
 
-  gpuPciBusId_ = GpuNicDiscovery::getCudaPciBusId(config_.cudaDevice);
+  gpuPciBusId_ = NicDiscoveryHelper::getCudaPciBusId(config_.cudaDevice);
 
   VLOG(1) << "MultipeerIbgdaTransport: GPU " << config_.cudaDevice << " PCIe "
           << gpuPciBusId_;
@@ -149,9 +149,8 @@ void MultipeerIbgdaTransport::openIbDevice() {
 
   // Priority 2: Auto-discovery if no config override
   if (nicDeviceName_.empty()) {
-    auto discovery = GpuNicDiscovery(config_.cudaDevice, config_.ibHca);
-    const auto& candidates = discovery.getCandidates();
-    nicDeviceName_ = candidates[0].name;
+    nicDeviceName_ =
+        NicDiscoveryHelper::discoverBestNic(config_.cudaDevice, config_.ibHca);
     VLOG(1) << "MultipeerIbgdaTransport: using NIC " << nicDeviceName_
             << " for GPU device " << config_.cudaDevice;
   }
