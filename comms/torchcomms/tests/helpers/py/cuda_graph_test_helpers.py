@@ -98,6 +98,10 @@ class CudaGraphInfo:
         """Check if a and b can execute concurrently (no path in either direction)."""
         return not self.are_sequential(node_a, node_b)
 
+    def memcpy_nodes(self) -> list[CudaGraphNode]:
+        """Return MEMCPY nodes."""
+        return self.nodes_of_type("MEMCPY")
+
 
 def _collect_dot_elements(
     graph: pydot.Dot | pydot.Subgraph,
@@ -110,6 +114,26 @@ def _collect_dot_elements(
         nodes.extend(sub_nodes)
         edges.extend(sub_edges)
     return nodes, edges
+
+
+def probe_tensor_addr(
+    buf: torch.Tensor,
+    probe: torch.Tensor,
+) -> None:
+    """Launch a GPU kernel that writes the device address of ``buf`` into
+    ``probe[0]``.  When called during CUDA graph capture, the kernel is
+    captured; at replay it writes the actual address the graph assigned to
+    ``buf``, allowing the caller to verify address reuse from Python.
+
+    ``probe`` must be a 1-element int64 CUDA tensor.
+    """
+    from torchcomms.tests.helpers.cpp.cuda_graph_utils import (
+        write_addr as _cpp_write_addr,
+    )
+
+    assert probe.dtype == torch.int64 and probe.numel() >= 1
+    stream = torch.cuda.current_stream().cuda_stream
+    _cpp_write_addr(buf.data_ptr(), probe.data_ptr(), stream)
 
 
 def _wait(work: object | None) -> None:
