@@ -103,4 +103,21 @@ void test_ll128_nvlink_forward_3gpu(
     size_t buffer_num_packets = 0,
     int num_steps = 1);
 
+/// Cross-GPU LL128 varying-data send/recv test. Each step offsets src/dst
+/// by i * nbytes to detect stale buffer contents across steps.
+/// @param src_d Source buffer (num_steps * nbytes total, on sender_gpu)
+/// @param dst_d Destination buffer (num_steps * nbytes total, on receiver_gpu)
+/// @param buffer_num_packets Packets in ll128_buf (0 = sized to fit message)
+void test_ll128_nvlink_varying_send_recv(
+    int sender_gpu,
+    int receiver_gpu,
+    const char* src_d,
+    char* dst_d,
+    size_t nbytes,
+    comms::pipes::Ll128Packet* ll128_buf,
+    size_t buffer_num_packets,
+    int num_steps,
+    int num_blocks,
+    int block_size);
+
 } // namespace comms::pipes::test

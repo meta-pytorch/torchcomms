@@ -343,13 +343,15 @@ INSTANTIATE_TEST_SUITE_P(
         TestParam{"Chunked_4KB_8pkt", 4096, 1, 256, 8},
         TestParam{"Chunked_MultiStep_10", 4096, 1, 256, 8, 10},
         TestParam{"Chunked_64KB_8pkt_MultiBlock", 65536, 4, 256, 8},
+        TestParam{"Chunked_512t_64KB_8pkt", 65536, 4, 512, 8},
+        TestParam{"Chunked_256KB_8Pkt", 256 * 1024, 4, 256, 8},
         // Windowed mode
         TestParam{"Windowed_4KB_8pkt", 4096, 1, 64, 8},
         TestParam{"Windowed_64KB_64pkt", 65536, 2, 128, 64}),
     [](const auto& info) { return info.param.name; });
 
 // =============================================================================
-// SendRecv — stress test (standalone, unique host-side iteration structure)
+// SendRecv — stress tests (standalone, unique host-side iteration structure)
 // =============================================================================
 
 TEST_F(Ll128OpsNvlinkTestFixture, SendRecv_Stress_50) {
@@ -405,6 +407,179 @@ TEST_F(Ll128OpsNvlinkTestFixture, SendRecv_Stress_50) {
   CUDACHECK_TEST(cudaFree(ll128_buf));
 }
 
+TEST_F(Ll128OpsNvlinkTestFixture, SendRecv_Chunked_Stress_50) {
+  constexpr int kStressIterations = 50;
+  const size_t nbytes = 4096;
+  const size_t buffer_num_packets = 8;
+
+  CUDACHECK_TEST(cudaSetDevice(kGpu0));
+  char* src_d;
+  CUDACHECK_TEST(cudaMalloc(&src_d, nbytes));
+
+  CUDACHECK_TEST(cudaSetDevice(kGpu1));
+  char* dst_d;
+  CUDACHECK_TEST(cudaMalloc(&dst_d, nbytes));
+  size_t buf_size = buffer_num_packets * kLl128PacketSize;
+  Ll128Packet* ll128_buf;
+  CUDACHECK_TEST(cudaMalloc(&ll128_buf, buf_size));
+
+  for (int iter = 0; iter < kStressIterations; ++iter) {
+    auto pattern = make_pattern(nbytes, /*seed=*/iter);
+
+    CUDACHECK_TEST(cudaSetDevice(kGpu0));
+    CUDACHECK_TEST(
+        cudaMemcpy(src_d, pattern.data(), nbytes, cudaMemcpyHostToDevice));
+    CUDACHECK_TEST(cudaSetDevice(kGpu1));
+    CUDACHECK_TEST(cudaMemset(dst_d, 0, nbytes));
+
+    test::test_ll128_nvlink_send_recv(
+        kGpu0,
+        kGpu1,
+        src_d,
+        dst_d,
+        nbytes,
+        ll128_buf,
+        buffer_num_packets,
+        /*num_steps=*/1,
+        /*num_blocks=*/1,
+        /*block_size=*/256);
+
+    std::vector<char> result(nbytes);
+    CUDACHECK_TEST(
+        cudaMemcpy(result.data(), dst_d, nbytes, cudaMemcpyDeviceToHost));
+    for (size_t i = 0; i < nbytes; ++i) {
+      ASSERT_EQ(result[i], pattern[i])
+          << "Chunked stress iter " << iter << ": mismatch at byte " << i;
+    }
+  }
+
+  CUDACHECK_TEST(cudaSetDevice(kGpu0));
+  CUDACHECK_TEST(cudaFree(src_d));
+  CUDACHECK_TEST(cudaSetDevice(kGpu1));
+  CUDACHECK_TEST(cudaFree(dst_d));
+  CUDACHECK_TEST(cudaFree(ll128_buf));
+}
+
+// =============================================================================
+// SendRecv — varying-data multi-step (unique API:
+// test_ll128_nvlink_varying_send_recv)
+// =============================================================================
+
+TEST_F(Ll128OpsNvlinkTestFixture, SendRecv_VaryingData_MultiStep) {
+  const size_t nbytes = 4096;
+  const int num_steps = 10;
+  const size_t total_bytes = num_steps * nbytes;
+
+  // Build per-step patterns
+  std::vector<char> src_host(total_bytes);
+  for (int step = 0; step < num_steps; ++step) {
+    for (size_t i = 0; i < nbytes; ++i) {
+      src_host[step * nbytes + i] = static_cast<char>((i + step * 37) & 0xFF);
+    }
+  }
+
+  // Allocate src on GPU0
+  CUDACHECK_TEST(cudaSetDevice(kGpu0));
+  char* src_d;
+  CUDACHECK_TEST(cudaMalloc(&src_d, total_bytes));
+  CUDACHECK_TEST(
+      cudaMemcpy(src_d, src_host.data(), total_bytes, cudaMemcpyHostToDevice));
+
+  // Allocate dst + LL128 buffer on GPU1
+  CUDACHECK_TEST(cudaSetDevice(kGpu1));
+  char* dst_d;
+  CUDACHECK_TEST(cudaMalloc(&dst_d, total_bytes));
+  CUDACHECK_TEST(cudaMemset(dst_d, 0, total_bytes));
+  size_t buf_size = ll128_buffer_size(nbytes);
+  Ll128Packet* ll128_buf;
+  CUDACHECK_TEST(cudaMalloc(&ll128_buf, buf_size));
+
+  test::test_ll128_nvlink_varying_send_recv(
+      kGpu0,
+      kGpu1,
+      src_d,
+      dst_d,
+      nbytes,
+      ll128_buf,
+      /*buffer_num_packets=*/0,
+      num_steps,
+      /*num_blocks=*/1,
+      /*block_size=*/256);
+
+  std::vector<char> result(total_bytes);
+  CUDACHECK_TEST(
+      cudaMemcpy(result.data(), dst_d, total_bytes, cudaMemcpyDeviceToHost));
+  for (int step = 0; step < num_steps; ++step) {
+    for (size_t i = 0; i < nbytes; ++i) {
+      ASSERT_EQ(result[step * nbytes + i], src_host[step * nbytes + i])
+          << "VaryingData NVLink step " << step << ": mismatch at byte " << i;
+    }
+  }
+
+  CUDACHECK_TEST(cudaSetDevice(kGpu0));
+  CUDACHECK_TEST(cudaFree(src_d));
+  CUDACHECK_TEST(cudaSetDevice(kGpu1));
+  CUDACHECK_TEST(cudaFree(dst_d));
+  CUDACHECK_TEST(cudaFree(ll128_buf));
+}
+
+TEST_F(Ll128OpsNvlinkTestFixture, SendRecv_VaryingData_MultiStep_Chunked) {
+  const size_t nbytes = 4096;
+  const int num_steps = 10;
+  const size_t buffer_num_packets = 8;
+  const size_t total_bytes = num_steps * nbytes;
+
+  std::vector<char> src_host(total_bytes);
+  for (int step = 0; step < num_steps; ++step) {
+    for (size_t i = 0; i < nbytes; ++i) {
+      src_host[step * nbytes + i] = static_cast<char>((i + step * 37) & 0xFF);
+    }
+  }
+
+  CUDACHECK_TEST(cudaSetDevice(kGpu0));
+  char* src_d;
+  CUDACHECK_TEST(cudaMalloc(&src_d, total_bytes));
+  CUDACHECK_TEST(
+      cudaMemcpy(src_d, src_host.data(), total_bytes, cudaMemcpyHostToDevice));
+
+  CUDACHECK_TEST(cudaSetDevice(kGpu1));
+  char* dst_d;
+  CUDACHECK_TEST(cudaMalloc(&dst_d, total_bytes));
+  CUDACHECK_TEST(cudaMemset(dst_d, 0, total_bytes));
+  size_t buf_size = buffer_num_packets * kLl128PacketSize;
+  Ll128Packet* ll128_buf;
+  CUDACHECK_TEST(cudaMalloc(&ll128_buf, buf_size));
+
+  test::test_ll128_nvlink_varying_send_recv(
+      kGpu0,
+      kGpu1,
+      src_d,
+      dst_d,
+      nbytes,
+      ll128_buf,
+      buffer_num_packets,
+      num_steps,
+      /*num_blocks=*/1,
+      /*block_size=*/256);
+
+  std::vector<char> result(total_bytes);
+  CUDACHECK_TEST(
+      cudaMemcpy(result.data(), dst_d, total_bytes, cudaMemcpyDeviceToHost));
+  for (int step = 0; step < num_steps; ++step) {
+    for (size_t i = 0; i < nbytes; ++i) {
+      ASSERT_EQ(result[step * nbytes + i], src_host[step * nbytes + i])
+          << "VaryingData chunked NVLink step " << step << ": mismatch at byte "
+          << i;
+    }
+  }
+
+  CUDACHECK_TEST(cudaSetDevice(kGpu0));
+  CUDACHECK_TEST(cudaFree(src_d));
+  CUDACHECK_TEST(cudaSetDevice(kGpu1));
+  CUDACHECK_TEST(cudaFree(dst_d));
+  CUDACHECK_TEST(cudaFree(ll128_buf));
+}
+
 // =============================================================================
 // Forward — parameterized suite
 // =============================================================================
@@ -427,7 +602,8 @@ INSTANTIATE_TEST_SUITE_P(
         TestParam{"4KB_MultiStep_10", 4096, 1, 256, 0, 10},
         TestParam{"64KB_MultiBlock", 65536, 4, 256},
         TestParam{"4KB_Chunked_8pkt", 4096, 1, 256, 8},
-        TestParam{"4KB_Chunked_8pkt_MultiStep_10", 4096, 1, 256, 8, 10}),
+        TestParam{"4KB_Chunked_8pkt_MultiStep_10", 4096, 1, 256, 8, 10},
+        TestParam{"Chunked_MultiStep_MultiBlock", 65536, 4, 256, 8, 10}),
     [](const auto& info) { return info.param.name; });
 
 // =============================================================================
