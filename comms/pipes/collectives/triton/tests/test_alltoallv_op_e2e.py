@@ -1807,6 +1807,205 @@ class TestOpSyncBufferAttribute(_OpTestBase):
 
 
 # =============================================================================
+# Test: Full Lifecycle Graph Capture
+# =============================================================================
+
+
+class TestOpFullLifecycleGraph(_OpTestBase):
+    """Test the complete AlltoallvOp lifecycle captured inside a CUDA graph.
+
+    This test intentionally captures the **entire op lifecycle** inside
+    ``torch.cuda.graph()`` to validate that AlltoallvOp's setup path
+    (GIN registration, window creation, buffer allocation) works correctly
+    under CUDA graph capture:
+
+        1. Warmup   – A separate throwaway op compiles Triton kernels eagerly
+                      (JIT compilation cannot happen during graph capture).
+        2. Capture  – Inside ``torch.cuda.graph()``:
+                      a. AlltoallvOp(...)       – creation
+                      b. op.setup()             – comms setup + memory pool
+                      c. op.alloc_buffer(...)   – GIN-compatible tensor allocation
+                      d. input fill             – populate send data
+                      e. op.alltoallv(...)      – first call (triggers GIN registration)
+                      f. op.alltoallv(...)      – second call captured for replay
+        3. Replay   – graph.replay() multiple times, verifying correctness
+        4. Teardown – op.teardown() after graph usage is complete
+
+    NOTE: This test exercises a code path that requires GIN window
+    registration and buffer setup to be graph-capture-aware.  If the
+    underlying C++ layer does not yet support these operations during
+    capture the test will fail with an error such as
+    ``RuntimeError: Window not initialized``.
+    """
+
+    def test_full_lifecycle_graph(self) -> None:
+        import traceback
+
+        from comms.pipes.collectives.triton import AlltoallvOp
+
+        tokens_per_peer = 32
+        D = 16
+        max_input_tokens = tokens_per_peer * self.world_size
+        total_output_tokens = tokens_per_peer * self.world_size
+        packed_output_tokens = tokens_per_peer * self.world_size
+        num_replays = 3
+
+        input_split_sizes = torch.full(
+            (self.world_size,), tokens_per_peer, dtype=torch.int64, device=self.device
+        )
+        output_split_sizes = input_split_sizes.clone()
+
+        # ── Warmup phase ─────────────────────────────────────────────────
+        # A separate op instance compiles the Triton kernels eagerly.
+        # This is required because Triton JIT compilation cannot happen
+        # during CUDA graph capture.
+        warmup_op = AlltoallvOp(
+            self.torchcomm,
+            max_input_tokens,
+            D,
+            self.dtype,
+            self.device,
+            max_recv_tokens_per_peer=tokens_per_peer,
+            sync_buffer=True,
+        )
+        with warmup_op:
+            w_in = warmup_op.alloc_buffer((max_input_tokens, D))
+            w_out = warmup_op.alloc_buffer((total_output_tokens, D))
+            w_in.fill_(1.0)
+            warmup_op.alltoallv(
+                w_in,
+                w_out,
+                output_split_sizes,
+                input_split_sizes,
+                packed_output_tokens=packed_output_tokens,
+            )
+            torch.cuda.synchronize()
+
+        # ── Graph capture: full lifecycle ────────────────────────────────
+        graph_stream = torch.cuda.Stream()
+        op = None
+        graph = None
+        graph_output = None
+
+        try:
+            with torch.cuda.stream(graph_stream):
+                graph = torch.cuda.CUDAGraph()
+                with torch.cuda.graph(graph):
+                    # (a) Creation
+                    op = AlltoallvOp(
+                        self.torchcomm,
+                        max_input_tokens,
+                        D,
+                        self.dtype,
+                        self.device,
+                        max_recv_tokens_per_peer=tokens_per_peer,
+                        sync_buffer=True,
+                    )
+
+                    # (b) Setup (memory pool + completion counters + offsets)
+                    op.setup()
+
+                    # (c) Buffer allocation from GIN-compatible pool
+                    input_tensor = op.alloc_buffer((max_input_tokens, D))
+                    output_tensor = op.alloc_buffer((total_output_tokens, D))
+
+                    # (d) Fill input: value = rank * 1000 + dest_peer
+                    for peer in range(self.world_size):
+                        start = peer * tokens_per_peer
+                        input_tensor[start : start + tokens_per_peer] = float(
+                            self.rank * 1000 + peer
+                        )
+
+                    # (e) First alltoallv – triggers GIN registration
+                    op.alltoallv(
+                        input_tensor,
+                        output_tensor,
+                        output_split_sizes,
+                        input_split_sizes,
+                        packed_output_tokens=packed_output_tokens,
+                    )
+
+                    # (f) Second alltoallv – the one that will be replayed
+                    graph_output = op.alltoallv(
+                        input_tensor,
+                        output_tensor,
+                        output_split_sizes,
+                        input_split_sizes,
+                        packed_output_tokens=packed_output_tokens,
+                    )
+        except Exception:
+            # Print immediately so the traceback is visible in MPI output
+            # even if the process hangs during cleanup.
+            print(
+                f"\n{'=' * 60}\n[Rank {self.rank}] Graph capture failed:\n{'=' * 60}",
+                file=sys.stderr,
+                flush=True,
+            )
+            traceback.print_exc(file=sys.stderr)
+            sys.stderr.flush()
+
+            # Neutralise NCCL state on the op so that neither teardown()
+            # nor the GC destructor attempt collective/GIN operations that
+            # would hang (the window was never fully initialised during
+            # capture).
+            if op is not None:
+                op._window = None
+                op._src_info = None
+                op._dev_win_ptr = None
+                op._buffer_pool = None
+                op._setup_done = False
+                op._buffers_owned = False
+
+            # Drop the partially-captured graph before it can be GC'd by
+            # tearDownClass' gc.collect() → CUDAGraph.__del__ would block
+            # on captured-but-never-executed NCCL ops.
+            graph = None
+
+            # Force-exit because torch.cuda.synchronize() in tearDownClass
+            # will hang on the NCCL ops that were captured into the graph
+            # stream but never executed.
+            os._exit(1)
+
+        torch.cuda.synchronize()
+
+        # ── Replay and validate ──────────────────────────────────────────
+        for replay in range(num_replays):
+            with torch.cuda.stream(graph_stream):
+                graph.replay()
+            graph_stream.synchronize()
+
+            replay_output = graph_output.clone()
+
+            self.assertEqual(
+                replay_output.shape,
+                (packed_output_tokens, D),
+                f"Replay {replay}: unexpected output shape",
+            )
+
+            offset = 0
+            for peer in range(self.world_size):
+                count = int(output_split_sizes[peer].item())
+                actual = replay_output[offset : offset + count, :].cpu()
+                expected_value = float(peer * 1000 + self.rank)
+                expected = torch.full_like(actual, expected_value)
+                torch.testing.assert_close(
+                    actual,
+                    expected,
+                    msg=(
+                        f"Replay {replay}, Rank {self.rank}: Data from "
+                        f"peer {peer} incorrect. Expected {expected_value}, "
+                        f"got {actual[0, 0].item()}"
+                    ),
+                )
+                offset += count
+
+        # ── Teardown ─────────────────────────────────────────────────────
+        op.teardown()
+        torch.cuda.synchronize()
+        self.torchcomm.barrier(False)
+
+
+# =============================================================================
 # Test: Intentional Race Condition for Debugging
 # =============================================================================
 
@@ -2193,6 +2392,8 @@ ALL_TEST_CLASSES = [
     TestOpMultiIterDifferentContentPackedGraphLoop,
     # GraphLoop: copy-in API (loop captured in graph)
     TestOpMultiIterDifferentContentPackedGraphLoopCopyIn,
+    # Full lifecycle graph test
+    TestOpFullLifecycleGraph,
     # Debug: intentional race condition test (BLOCKS_PER_PEER == 1)
     TestOpRaceConditionDebug,
     # Debug: intentional race condition test (BLOCKS_PER_PEER > 1)

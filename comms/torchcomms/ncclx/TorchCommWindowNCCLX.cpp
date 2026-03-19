@@ -115,7 +115,19 @@ void TorchCommWindowNCCLX<Backend>::tensor_register(const at::Tensor& tensor) {
           ncclSuccess)
           << "[TorchCommWindowNCCLX]: NCCLX window registration failed "
           << "(graph capture).";
+
+#ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
+      // Register the extra device-API window (sets nccl_orig_win_) so that
+      // get_device_window() and register_local_buffer() find a fully
+      // initialized window during graph capture.
+      Backend::register_extra_window(
+          nccl_api_, nccl_comm_, &nccl_orig_win_, tensor.data_ptr(), win_size_);
+#endif
     }
+    // Store raw data pointer (not tensor ref) for get_device_window().
+    // We intentionally do NOT store buf_tensor_ so that Python-side
+    // del tensor returns memory to the pool for reuse within the graph.
+    buf_data_ptr_ = tensor.data_ptr();
     TC_LOG(WARNING)
         << "[TorchCommWindowNCCLX]: Graph capture mode active — window holds "
         << "a non-owned buffer. The registered tensor must remain alive for "
@@ -342,15 +354,30 @@ TorchCommWindowNCCLX<Backend>::register_local_buffer(const at::Tensor& tensor) {
   // making it truly local. The resulting window can only be used as a source
   // buffer for put operations (lkey only, no rkeys).
   NcclxWindow local_win = nullptr;
-  CHECK_EQ(
-      nccl_api_->commWindowRegister(
-          buf.base_ptr,
-          buf.size,
-          nccl_comm_,
-          &local_win,
-          NCCL_WIN_DEVICE_API | NCCL_WIN_LOCAL_ONLY),
-      ncclSuccess)
-      << "[TorchCommWindowNCCLX]: Local buffer registration failed";
+  if (torch_comm_->getGraphCaptureMode()) {
+    meta::comms::StreamCaptureModeGuard captureGuard{
+        cudaStreamCaptureModeRelaxed};
+    CHECK_EQ(
+        nccl_api_->commWindowRegister(
+            buf.base_ptr,
+            buf.size,
+            nccl_comm_,
+            &local_win,
+            NCCL_WIN_DEVICE_API | NCCL_WIN_LOCAL_ONLY),
+        ncclSuccess)
+        << "[TorchCommWindowNCCLX]: Local buffer registration failed "
+        << "(graph capture)";
+  } else {
+    CHECK_EQ(
+        nccl_api_->commWindowRegister(
+            buf.base_ptr,
+            buf.size,
+            nccl_comm_,
+            &local_win,
+            NCCL_WIN_DEVICE_API | NCCL_WIN_LOCAL_ONLY),
+        ncclSuccess)
+        << "[TorchCommWindowNCCLX]: Local buffer registration failed";
+  }
 
   buf.backend_window = static_cast<void*>(local_win);
   registered_local_buffers_.push_back(buf);
@@ -439,14 +466,36 @@ TorchCommWindowNCCLX<Backend>::get_device_window(
 
   // Create device window - the custom deleter handles all cleanup.
   // Both backends share the same create_device_window signature.
-  device_window_ = Backend::create_device_window(
-      nccl_comm_,
-      nccl_api_,
-      torch_comm_->getCudaApi(),
-      config,
-      Backend::select_device_win(win_, nccl_orig_win_),
-      buf_tensor_.has_value() ? buf_tensor_->data_ptr() : nullptr,
-      win_size_);
+  //
+  // buf_data_ptr_ is set during tensor_register() in graph capture mode
+  // when buf_tensor_ is intentionally not stored (to allow pool memory reuse).
+  void* buf_ptr =
+      buf_tensor_.has_value() ? buf_tensor_->data_ptr() : buf_data_ptr_;
+
+  // Graph capture mode: create_device_window() calls devCommCreate,
+  // cudaMalloc, and cudaMemcpy which require relaxed capture mode to
+  // execute eagerly rather than being captured into the graph.
+  if (torch_comm_->getGraphCaptureMode()) {
+    meta::comms::StreamCaptureModeGuard captureGuard{
+        cudaStreamCaptureModeRelaxed};
+    device_window_ = Backend::create_device_window(
+        nccl_comm_,
+        nccl_api_,
+        torch_comm_->getCudaApi(),
+        config,
+        Backend::select_device_win(win_, nccl_orig_win_),
+        buf_ptr,
+        win_size_);
+  } else {
+    device_window_ = Backend::create_device_window(
+        nccl_comm_,
+        nccl_api_,
+        torch_comm_->getCudaApi(),
+        config,
+        Backend::select_device_win(win_, nccl_orig_win_),
+        buf_ptr,
+        win_size_);
+  }
 
   return device_window_.get();
 }
