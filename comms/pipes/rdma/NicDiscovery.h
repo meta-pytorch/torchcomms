@@ -2,8 +2,10 @@
 
 #pragma once
 
-#include <infiniband/mlx5dv.h>
-#include <infiniband/verbs.h>
+// Forward declarations — only pointer types used in this header.
+// Full headers included in NicDiscovery.cc where the types are needed.
+struct ibv_device;
+struct ibv_context;
 
 #include <string>
 #include <unordered_set>
