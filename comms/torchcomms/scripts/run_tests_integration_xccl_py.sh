@@ -24,6 +24,7 @@ run_tests () {
         BatchSendRecvTest.py
         BroadcastTest.py
         DDPCommTest.py
+        FinalizeWarningTest.py
         FSDPCommTest.py
         GatherTest.py
         MultiCommTest.py

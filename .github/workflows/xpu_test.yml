@@ -23,6 +23,7 @@ on:
       - comms/torchcomms/tests/integration/py/BatchSendRecvTest.py
       - comms/torchcomms/tests/integration/py/BroadcastTest.py
       - comms/torchcomms/tests/integration/py/DDPCommTest.py
+      - comms/torchcomms/tests/integration/py/FinalizeWarningTest.py
       - comms/torchcomms/tests/integration/py/FSDPCommTest.py
       - comms/torchcomms/tests/integration/py/GatherTest.py
       - comms/torchcomms/tests/integration/py/MultiCommTest.py
