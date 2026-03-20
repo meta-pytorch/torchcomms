@@ -173,6 +173,90 @@ TEST_F(PipesDeviceApiTest, PipesDeviceWindowCreationFloat) {
 }
 
 // =============================================================================
+// Local Buffer Registration Test (Pipes)
+// =============================================================================
+// Validates register_local_buffer() for the Pipes (IBGDA) backend:
+//   1. Create window, register tensor, create device window
+//   2. Register a separate source tensor as a local buffer
+//   3. Verify RegisteredBuffer has valid lkey (used for IBGDA WQE construction)
+//   4. Verify backend_window is null (only GIN uses backend_window)
+//   5. Deregister and verify cleanup
+
+void PipesDeviceApiTest::testLocalBufferRegistration(
+    int count,
+    at::ScalarType dtype) {
+  SCOPED_TRACE(
+      ::testing::Message()
+      << "Testing Pipes Local Buffer Registration with count=" << count
+      << " and dtype=" << getDtypeName(dtype));
+
+  // Create MemPool for RDMA-compatible memory allocation (cuMem-based).
+  auto mem_pool = std::make_unique<at::cuda::MemPool>(
+      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
+          allocator_));
+  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
+      mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
+
+  auto options =
+      at::TensorOptions().dtype(dtype).device(at::kCUDA, device_index_);
+  at::Tensor win_tensor = at::zeros({count * num_ranks_}, options);
+
+  at::Tensor src_tensor = at::zeros({count}, options);
+  src_tensor.fill_(static_cast<float>(rank_ + 1));
+
+  c10::cuda::CUDACachingAllocator::endAllocateToPool(
+      mem_pool->device(), mem_pool->id());
+
+  // All ranks must register the tensor collectively
+  torchcomm_->barrier(false);
+  auto base_win = torchcomm_->new_window();
+  base_win->tensor_register(win_tensor);
+  torchcomm_->barrier(false);
+
+  auto* win =
+      dynamic_cast<torch::comms::TorchCommWindowNCCLXPipes*>(base_win.get());
+  ASSERT_NE(win, nullptr) << "Window should be TorchCommWindowNCCLXPipes. "
+                             "Is NCCL_CTRAN_USE_PIPES=1 set?";
+
+  // get_device_window() is COLLECTIVE — must be called before
+  // register_local_buffer() to initialize the Pipes device window.
+  decltype(win->get_device_window()) dev_win = nullptr;
+  try {
+    dev_win = win->get_device_window();
+  } catch (const std::runtime_error& e) {
+    base_win->tensor_deregister();
+    base_win.reset();
+    mem_pool.reset();
+    GTEST_SKIP() << "Skipping: IBGDA/Pipes hardware not available: "
+                 << e.what();
+  }
+  ASSERT_NE(dev_win, nullptr) << "Device window should not be null";
+
+  auto src_buf = win->register_local_buffer(src_tensor);
+
+  // Pipes backend: lkey is set (used for IBGDA WQE construction),
+  // backend_window is null (only GIN uses backend_window).
+  ASSERT_NE(src_buf.base_ptr, nullptr) << "Buffer base_ptr should not be null";
+  ASSERT_GT(src_buf.size, 0u) << "Buffer size should be positive";
+  EXPECT_NE(src_buf.lkey, 0u) << "Pipes backend should set lkey for IBGDA put";
+  EXPECT_EQ(src_buf.backend_window, nullptr)
+      << "Pipes backend should not set backend_window";
+
+  // Deregister and verify cleanup
+  win->deregister_local_buffer(src_buf);
+
+  base_win->tensor_deregister();
+  base_win.reset();
+  mem_pool.reset();
+
+  torchcomm_->barrier(false);
+}
+
+TEST_F(PipesDeviceApiTest, LocalBufferRegistrationFloat) {
+  testLocalBufferRegistration(1024, at::kFloat);
+}
+
+// =============================================================================
 // Per-Peer Signal Test (Pipes)
 // =============================================================================
 // Ring pattern: rank i signals rank (i+1) % num_ranks

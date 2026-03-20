@@ -142,6 +142,50 @@ PipesDeviceBackend::Ptr PipesDeviceBackend::create_device_window(
 }
 
 // =============================================================================
+// register_local_buffer / deregister_local_buffer Implementation
+// =============================================================================
+
+RegisteredBuffer PipesDeviceBackend::register_local_buffer(
+    torch::comms::NcclxApi* nccl_api,
+    ncclComm_t nccl_comm,
+    void* ptr,
+    size_t size) {
+  uint32_t lkey = 0;
+  auto result = nccl_api->winLocalRegisterBuffer(nccl_comm, ptr, size, &lkey);
+  if (result != ncclSuccess) {
+    throw std::runtime_error(
+        "[PipesDeviceBackend::register_local_buffer]: "
+        "winLocalRegisterBuffer failed");
+  }
+
+  // Pipes (IBGDA) put uses lkey for WQE construction during RDMA writes.
+  // backend_window is unused by Pipes — only the GIN backend needs it.
+  RegisteredBuffer buf;
+  buf.base_ptr = ptr;
+  buf.size = size;
+  buf.backend_window = nullptr;
+  buf.lkey = lkey;
+  return buf;
+}
+
+void PipesDeviceBackend::deregister_local_buffer(
+    torch::comms::NcclxApi* nccl_api,
+    ncclComm_t nccl_comm,
+    RegisteredBuffer& buf) {
+  if (buf.base_ptr == nullptr) {
+    return;
+  }
+  auto result = nccl_api->winLocalDeregisterBuffer(nccl_comm, buf.base_ptr);
+  if (result != ncclSuccess) {
+    TC_LOG(ERROR) << "[PipesDeviceBackend]: Failed to deregister local buffer";
+  }
+  buf.backend_window = nullptr;
+  buf.base_ptr = nullptr;
+  buf.size = 0;
+  buf.lkey = 0;
+}
+
+// =============================================================================
 // fetch_transport_handle Implementation
 // =============================================================================
 

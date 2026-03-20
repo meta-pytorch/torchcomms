@@ -62,6 +62,9 @@ class PipesDeviceApiTest : public ::testing::Test {
   // Test device barrier: all ranks synchronize via barrier().
   void testDeviceBarrier();
 
+  // Test local buffer registration: register_local_buffer returns valid lkey.
+  void testLocalBufferRegistration(int count, at::ScalarType dtype);
+
   // Member variables
   std::unique_ptr<TorchCommTestWrapper> wrapper_;
   std::shared_ptr<torch::comms::TorchComm> torchcomm_;

@@ -210,6 +210,7 @@ ncclWinGetAttributes(int rank, ncclWindow_t win, ncclWinAttr_t* attr) {
 #if defined(ENABLE_PIPES)
 #include <cuda_runtime_api.h>
 
+#include "comms/pipes/MultiPeerTransport.h"
 #include "comms/pipes/window/DeviceWindow.cuh"
 #include "comms/pipes/window/HostWindow.h"
 
@@ -302,5 +303,75 @@ ncclResult_t ncclWinDestroyDeviceWin(void* devicePtr) {
   }
   cudaError_t err = cudaFree(devicePtr);
   return (err == cudaSuccess) ? ncclSuccess : ncclInternalError;
+}
+NCCL_API(
+    ncclResult_t,
+    ncclWinLocalRegisterBuffer,
+    ncclComm_t comm,
+    void* ptr,
+    size_t size,
+    uint32_t* outLkey);
+ncclResult_t ncclWinLocalRegisterBuffer(
+    ncclComm_t comm,
+    void* ptr,
+    size_t size,
+    uint32_t* outLkey) {
+  if (comm == nullptr || ptr == nullptr || outLkey == nullptr) {
+    return ncclInvalidArgument;
+  }
+
+  if (!ctranInitialized(comm->ctranComm_.get())) {
+    WARN("ncclWinLocalRegisterBuffer: ctran not initialized");
+    return ncclInternalError;
+  }
+
+  auto* mpt = comm->ctranComm_->multiPeerTransport_.get();
+  if (mpt == nullptr) {
+    WARN(
+        "ncclWinLocalRegisterBuffer: MultiPeerTransport not initialized. "
+        "Set NCCL_CTRAN_USE_PIPES=1");
+    return ncclInternalError;
+  }
+
+  try {
+    auto ibgdaBuf = mpt->localRegisterIbgdaBuffer(ptr, size);
+    *outLkey = ibgdaBuf.lkey.value;
+    return ncclSuccess;
+  } catch (const std::exception& e) {
+    WARN("ncclWinLocalRegisterBuffer: %s", e.what());
+    return ncclInternalError;
+  }
+}
+
+NCCL_API(
+    ncclResult_t,
+    ncclWinLocalDeregisterBuffer,
+    ncclComm_t comm,
+    void* ptr);
+ncclResult_t ncclWinLocalDeregisterBuffer(ncclComm_t comm, void* ptr) {
+  if (comm == nullptr || ptr == nullptr) {
+    return ncclInvalidArgument;
+  }
+
+  if (!ctranInitialized(comm->ctranComm_.get())) {
+    WARN("ncclWinLocalDeregisterBuffer: ctran not initialized");
+    return ncclInternalError;
+  }
+
+  auto* mpt = comm->ctranComm_->multiPeerTransport_.get();
+  if (mpt == nullptr) {
+    WARN(
+        "ncclWinLocalDeregisterBuffer: MultiPeerTransport not initialized. "
+        "Set NCCL_CTRAN_USE_PIPES=1");
+    return ncclInternalError;
+  }
+
+  try {
+    mpt->localDeregisterIbgdaBuffer(ptr);
+    return ncclSuccess;
+  } catch (const std::exception& e) {
+    WARN("ncclWinLocalDeregisterBuffer: %s", e.what());
+    return ncclInternalError;
+  }
 }
 #endif // ENABLE_PIPES
