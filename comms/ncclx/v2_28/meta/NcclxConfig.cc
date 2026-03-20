@@ -175,7 +175,9 @@ Config::Config(const ncclConfig_t* config) {
   if (config->fastInitMode != NCCL_CONFIG_UNDEF_INT) {
     fastInitMode = config->fastInitMode != 0;
   } else {
-    fastInitMode = parseHintBool("fastInitMode", NCCL_FAST_INIT_MODE_DEFAULT);
+    // NCCL_FASTINIT_MODE is a enum, we could not directly convert it to bool
+    fastInitMode = parseHintBool(
+        "fastInitMode", NCCL_FASTINIT_MODE == NCCL_FASTINIT_MODE::ring_hybrid);
   }
 }
 
