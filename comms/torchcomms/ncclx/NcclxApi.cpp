@@ -555,6 +555,20 @@ ncclResult_t DefaultNcclxApi::getMultiPeerDeviceHandle(
       outNumNvlPeers,
       outNumIbPeers);
 }
+
+ncclResult_t DefaultNcclxApi::winLocalRegisterBuffer(
+    ncclComm_t comm,
+    void* ptr,
+    size_t size,
+    uint32_t* outLkey) {
+  return ncclWinLocalRegisterBuffer(comm, ptr, size, outLkey);
+}
+
+ncclResult_t DefaultNcclxApi::winLocalDeregisterBuffer(
+    ncclComm_t comm,
+    void* ptr) {
+  return ncclWinLocalDeregisterBuffer(comm, ptr);
+}
 #endif // ENABLE_PIPES
 
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API

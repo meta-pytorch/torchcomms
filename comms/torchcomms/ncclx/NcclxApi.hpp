@@ -346,6 +346,21 @@ class NcclxApi {
       int* outNRanks,
       int* outNumNvlPeers,
       int* outNumIbPeers) = 0;
+
+  // Register a local buffer for device-side RDMA put operations.
+  // NON-COLLECTIVE — purely local memory registration (lkey only).
+  // Returns lkey in network byte order via outLkey.
+  [[nodiscard]] virtual ncclResult_t winLocalRegisterBuffer(
+      ncclComm_t comm,
+      void* ptr,
+      size_t size,
+      uint32_t* outLkey) = 0;
+
+  // Deregister a buffer previously registered with winLocalRegisterBuffer.
+  // NON-COLLECTIVE.
+  [[nodiscard]] virtual ncclResult_t winLocalDeregisterBuffer(
+      ncclComm_t comm,
+      void* ptr) = 0;
 #endif
 
   // Group operations
@@ -646,6 +661,14 @@ class DefaultNcclxApi : public NcclxApi {
       int* outNRanks,
       int* outNumNvlPeers,
       int* outNumIbPeers) override;
+  [[nodiscard]] ncclResult_t winLocalRegisterBuffer(
+      ncclComm_t comm,
+      void* ptr,
+      size_t size,
+      uint32_t* outLkey) override;
+  [[nodiscard]] ncclResult_t winLocalDeregisterBuffer(
+      ncclComm_t comm,
+      void* ptr) override;
 #endif
 
   // Group operations

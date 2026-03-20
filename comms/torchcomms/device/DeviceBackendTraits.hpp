@@ -29,6 +29,7 @@ namespace torchcomms::device {
 
 // Forward declarations
 struct DeviceBackendConfig;
+struct RegisteredBuffer;
 template <typename Backend>
 class TorchCommDeviceWindow;
 
@@ -151,10 +152,20 @@ struct NCCLDeviceBackend {
     return nccl_orig_win;
   }
 
-  // Validate that register_local_buffer is supported. Throws if not.
-  static void validate_local_buffer_support() {
-    // Supported for GIN backend — no-op.
-  }
+  // Register a local buffer for device-side put operations (GIN path).
+  // Uses NCCL_WIN_DEVICE_API | NCCL_WIN_LOCAL_ONLY for non-collective
+  // registration with local lkey only (no rkey allGather).
+  static RegisteredBuffer register_local_buffer(
+      torch::comms::NcclxApi* nccl_api,
+      ncclComm_t nccl_comm,
+      void* ptr,
+      size_t size);
+
+  // Deregister a previously registered local buffer (GIN path).
+  static void deregister_local_buffer(
+      torch::comms::NcclxApi* nccl_api,
+      ncclComm_t nccl_comm,
+      RegisteredBuffer& buf);
 };
 
 // Type alias for backward compatibility
