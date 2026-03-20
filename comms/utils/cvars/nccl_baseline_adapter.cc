@@ -3,7 +3,6 @@
 #include <errno.h>
 #include <pthread.h>
 #include <stdlib.h>
-#include <mutex>
 
 #include <cstring>
 #include <string>
@@ -29,8 +28,6 @@ int64_t ncclLoadParam(
     int64_t deftVal,
     int64_t uninitialized,
     int64_t* cache) {
-  static std::mutex mutex;
-  std::lock_guard<std::mutex> lock(mutex);
   int64_t int64Value = __atomic_load_n(cache, __ATOMIC_RELAXED);
   if (int64Value != uninitialized) {
     // If the value is already initialized, return immediately.
