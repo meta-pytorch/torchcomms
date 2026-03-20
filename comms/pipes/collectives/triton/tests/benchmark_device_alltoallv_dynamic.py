@@ -121,7 +121,6 @@ class AlltoallvDynamicBenchmark:
 
     def __init__(self, comm: "TorchComm", max_msg_size: int = 16 * 1024 * 1024) -> None:
         import torchcomms
-        from comms.pipes.collectives.triton import alloc_comms_buffer
 
         self.comm = comm
         self.rank = comm.get_rank()
@@ -134,14 +133,17 @@ class AlltoallvDynamicBenchmark:
         self.pool_capacity = max_msg_size * self.num_ranks
 
         # Pre-allocate fixed-size buffers from the NCCL allocator via
-        # alloc_comms_buffer, which handles transport-compatible allocation.
+        # torchcomms memory allocator for GIN-compatible allocation.
         alloc_elems = self.pool_capacity // 4
-        self.recv_buf, self.recv_pool = alloc_comms_buffer(
-            alloc_elems, torch.float32, self.device, comm.get_backend()
-        )
-        self.send_buf, self.send_pool = alloc_comms_buffer(
-            alloc_elems, torch.float32, self.device, comm.get_backend()
-        )
+        pool = torch.cuda.MemPool(self.allocator)
+        with torch.cuda.use_mem_pool(pool):
+            self.recv_buf = torch.zeros(
+                alloc_elems, dtype=torch.float32, device=self.device
+            )
+            self.send_buf = torch.zeros(
+                alloc_elems, dtype=torch.float32, device=self.device
+            )
+        self._pool = pool  # Keep pool alive
 
         # Register the NCCL window once, reuse across all Triton benchmarks.
         self.comm.barrier(False)
@@ -191,11 +193,10 @@ class AlltoallvDynamicBenchmark:
             self.window.tensor_deregister()
             self.window = None
 
-        # 4. Clean up class-level pools LAST (after all graphs are destroyed)
+        # 4. Clean up class-level pool and buffers LAST (after all graphs are destroyed)
         self.recv_buf = None
         self.send_buf = None
-        self.recv_pool = None  # pyre-ignore[8]: Intentional cleanup
-        self.send_pool = None  # pyre-ignore[8]: Intentional cleanup
+        self._pool = None
         self.allocator = None
         gc.collect()
         torch.cuda.synchronize()
@@ -392,7 +393,7 @@ class AlltoallvDynamicBenchmark:
         self.recv_buf.zero_()
         self.send_buf[: total_send // 4].normal_()
 
-        # NOTE: These are GPU tensors — create before GIN is active
+        # NOTE: These are GPU tensors
         send_sizes = torch.tensor(
             send_sizes_list, dtype=torch.int64, device=self.device
         )
@@ -552,7 +553,7 @@ class AlltoallvDynamicBenchmark:
         # This enables correct wait_signal_from behavior during graph replay.
         #
         # Store graph at class level to control cleanup order. The graph
-        # uses class-level pools (recv_pool, send_pool) and must be deleted
+        # uses class-level pool (_pool) and must be deleted
         # BEFORE those pools to avoid MemPool cleanup conflicts.
         if self._current_raw_kernel_graph is not None:
             del self._current_raw_kernel_graph
@@ -623,14 +624,13 @@ class AlltoallvDynamicBenchmark:
         config: BenchmarkConfig,
     ) -> BenchmarkResult:
         """
-        Benchmark AlltoallvOp (packed output is now the default).
+        Benchmark AlltoallvOp with zero-copy buffer ownership.
 
         Uses CUDA graph capture/replay for accurate latency measurement.
-        Returns contiguous packed output for MSL API compatibility.
+        User provides both input and output tensors (zero-copy mode).
 
         NOTE: Only uniform distribution is supported. For uniform distribution
-        (benchmark case), packed output is a zero-copy view of the internal
-        data since slots are back-to-back.
+        (benchmark case), packed output is a zero-copy view of the output tensor.
         """
         from comms.pipes.collectives.triton import AlltoallvOp
 
@@ -647,6 +647,7 @@ class AlltoallvDynamicBenchmark:
         max_recv_tokens_per_peer = (
             elems_per_peer  # uniform: each peer sends same amount
         )
+        total_output_tokens = max_recv_tokens_per_peer * self.num_ranks
 
         # Create AlltoallvOp with sync_buffer=False for raw kernel overhead measurement.
         # NOTE: This is NOT production-safe. Use sync_buffer=True (the default) for
@@ -670,40 +671,41 @@ class AlltoallvDynamicBenchmark:
         # For uniform split sizes, this is simply elems_per_peer * num_ranks.
         packed_output_tokens = elems_per_peer * self.num_ranks
 
-        # Zero-copy path: fill send buffer BEFORE setup (GIN blocks regular fills)
-        send_buf = op.get_send_buffer(max_input_tokens)
-        send_buf.normal_()  # Fill with random data once
-
-        # Setup (enables GIN, registers buffers)
+        # Setup (enables GIN and creates internal buffer pool)
         op.setup()
 
+        # Allocate GIN-compatible tensors using the op's internal pool
+        # Must be done AFTER setup() when the pool is created
+        input_tensor = op.alloc_buffer((max_input_tokens, D))
+        output_tensor = op.alloc_buffer((total_output_tokens, D))
+        input_tensor.normal_()  # Fill with random data once
+
         # Warmup (eager, to compile Triton kernels).
-        # First call auto-runs prep kernel; subsequent calls auto-skip.
+        # First call takes ownership of tensors and auto-runs prep kernel.
         for _ in range(config.warmup_iters):
-            _ = op.alltoallv_from_buffer(
+            _ = op.alltoallv(
+                input_tensor,
+                output_tensor,
                 output_split_sizes,
                 input_split_sizes,
-                num_input_tokens=max_input_tokens,
                 packed_output_tokens=packed_output_tokens,
             )
         torch.cuda.synchronize()
         self.comm.barrier(False)
 
         # Capture bench_iters iterations in the graph (as users would do).
-        # Pass pool=op.get_graph_pool_id() to ensure allocations use the
-        # same transport-compatible pool as AlltoallvOp's buffers.
         # Pass packed_output_tokens to avoid .item() call during capture.
         # Prep kernel is auto-skipped since it ran during warmup.
         graph_stream = torch.cuda.Stream()
         with torch.cuda.stream(graph_stream):
             graph = torch.cuda.CUDAGraph()
-            # pyre-fixme[6]: Pyre doesn't recognize pool ID as valid _POOL_HANDLE
-            with torch.cuda.graph(graph, pool=op.get_graph_pool_id()):  # type: ignore[arg-type]
+            with torch.cuda.graph(graph):
                 for _ in range(config.bench_iters):
-                    _ = op.alltoallv_from_buffer(
+                    _ = op.alltoallv(
+                        input_tensor,
+                        output_tensor,
                         output_split_sizes,
                         input_split_sizes,
-                        num_input_tokens=max_input_tokens,
                         packed_output_tokens=packed_output_tokens,
                     )
 
@@ -756,6 +758,7 @@ class AlltoallvDynamicBenchmark:
         Uses CUDA graph capture/replay for accurate latency measurement.
         This measures the overhead of buffer-ready synchronization, which is
         required for safe buffer reuse in fused compute+communication kernels.
+        Uses zero-copy buffer ownership.
 
         The sync_buffer mode adds ~1-3us per-peer latency overhead due to additional
         BUFFER_READY signal exchanges. This overhead is acceptable for fused
@@ -779,6 +782,7 @@ class AlltoallvDynamicBenchmark:
         max_recv_tokens_per_peer = (
             elems_per_peer  # uniform: each peer sends same amount
         )
+        total_output_tokens = max_recv_tokens_per_peer * self.num_ranks
 
         # Create AlltoallvOp with sync_buffer=True (the default) for production-safe
         # buffer-ready synchronization across iterations.
@@ -802,40 +806,41 @@ class AlltoallvDynamicBenchmark:
         # This avoids .item() call during graph capture which would cause errors.
         packed_output_tokens = elems_per_peer * self.num_ranks
 
-        # Zero-copy path: fill send buffer BEFORE setup (GIN blocks regular fills)
-        send_buf = op.get_send_buffer(max_input_tokens)
-        send_buf.normal_()  # Fill with random data once
-
-        # Setup (enables GIN, registers buffers)
+        # Setup (enables GIN and creates internal buffer pool)
         op.setup()
 
+        # Allocate GIN-compatible tensors using the op's internal pool
+        # Must be done AFTER setup() when the pool is created
+        input_tensor = op.alloc_buffer((max_input_tokens, D))
+        output_tensor = op.alloc_buffer((total_output_tokens, D))
+        input_tensor.normal_()  # Fill with random data once
+
         # Warmup (eager, to compile Triton kernels).
-        # First call auto-runs prep kernel; subsequent calls auto-skip.
+        # First call takes ownership of tensors and auto-runs prep kernel.
         for _ in range(config.warmup_iters):
-            _ = op.alltoallv_from_buffer(
+            _ = op.alltoallv(
+                input_tensor,
+                output_tensor,
                 output_split_sizes,
                 input_split_sizes,
-                num_input_tokens=max_input_tokens,
                 packed_output_tokens=packed_output_tokens,
             )
         torch.cuda.synchronize()
         self.comm.barrier(False)
 
         # Capture bench_iters iterations in the graph (as users would do).
-        # Pass pool=op.get_graph_pool_id() to ensure allocations use the
-        # same transport-compatible pool as AlltoallvOp's buffers.
         # Pass packed_output_tokens to avoid .item() call during capture.
         # Prep kernel is auto-skipped since it ran during warmup.
         graph_stream = torch.cuda.Stream()
         with torch.cuda.stream(graph_stream):
             graph = torch.cuda.CUDAGraph()
-            # pyre-fixme[6]: Pyre doesn't recognize pool ID as valid _POOL_HANDLE
-            with torch.cuda.graph(graph, pool=op.get_graph_pool_id()):  # type: ignore[arg-type]
+            with torch.cuda.graph(graph):
                 for _ in range(config.bench_iters):
-                    _ = op.alltoallv_from_buffer(
+                    _ = op.alltoallv(
+                        input_tensor,
+                        output_tensor,
                         output_split_sizes,
                         input_split_sizes,
-                        num_input_tokens=max_input_tokens,
                         packed_output_tokens=packed_output_tokens,
                     )
 
