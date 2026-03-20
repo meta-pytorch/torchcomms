@@ -207,8 +207,6 @@ commResult_t ctranDeviceAllToAllv(
     void* recvbuff,
     const int64_t* sendcounts_d,
     const int64_t* recvcounts_d,
-    const int64_t* senddispls_d,
-    const int64_t* recvdispls_d,
     commDataType_t datatype,
     CtranComm* comm,
     cudaStream_t stream) {
@@ -227,8 +225,6 @@ commResult_t ctranDeviceAllToAllv(
           recvbuff,
           sendcounts_d,
           recvcounts_d,
-          senddispls_d,
-          recvdispls_d,
           datatype,
           comm,
           config,
@@ -281,8 +277,6 @@ commResult_t ctranDeviceAllToAllv(
     void* /*recvbuff*/,
     const int64_t* /*sendcounts_d*/,
     const int64_t* /*recvcounts_d*/,
-    const int64_t* /*senddispls_d*/,
-    const int64_t* /*recvdispls_d*/,
     commDataType_t /*datatype*/,
     CtranComm* /*comm*/,
     cudaStream_t /*stream*/) {

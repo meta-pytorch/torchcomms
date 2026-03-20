@@ -40,10 +40,6 @@ struct KernArgs {
   const int64_t* sendcounts_d; // [nRanks] send counts per rank
   const int64_t* recvcounts_d; // [nRanks] recv counts per rank
 
-  // Device pointers to displacements (int64_t, indexed by global rank)
-  const int64_t* senddispls_d; // [nRanks] send displacements per rank
-  const int64_t* recvdispls_d; // [nRanks] recv displacements per rank
-
   // Maps local rank index [0..nLocalRanks) to global rank
   int localRankToGlobalRank[CTRAN_MAX_NVL_PEERS];
 

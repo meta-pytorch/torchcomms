@@ -71,21 +71,13 @@ TEST_F(DeviceAllToAllvTest, UniformSplit) {
       cudaMemcpyHostToDevice));
   CUDACHECK_TEST(cudaMemset(recvBuf, 0, totalSize * sizeof(float)));
 
-  // Create device count/offset arrays (uniform split)
+  // Create device count arrays (uniform split)
   std::vector<int64_t> h_counts(nRanks, static_cast<int64_t>(chunkSize));
-  std::vector<int64_t> h_offsets(nRanks);
-  for (int i = 0; i < nRanks; i++) {
-    h_offsets[i] = static_cast<int64_t>(i * chunkSize);
-  }
 
   int64_t* d_sendcounts = nullptr;
   int64_t* d_recvcounts = nullptr;
-  int64_t* d_senddispls = nullptr;
-  int64_t* d_recvdispls = nullptr;
   CUDACHECK_TEST(cudaMalloc(&d_sendcounts, nRanks * sizeof(int64_t)));
   CUDACHECK_TEST(cudaMalloc(&d_recvcounts, nRanks * sizeof(int64_t)));
-  CUDACHECK_TEST(cudaMalloc(&d_senddispls, nRanks * sizeof(int64_t)));
-  CUDACHECK_TEST(cudaMalloc(&d_recvdispls, nRanks * sizeof(int64_t)));
 
   CUDACHECK_TEST(cudaMemcpy(
       d_sendcounts,
@@ -95,16 +87,6 @@ TEST_F(DeviceAllToAllvTest, UniformSplit) {
   CUDACHECK_TEST(cudaMemcpy(
       d_recvcounts,
       h_counts.data(),
-      nRanks * sizeof(int64_t),
-      cudaMemcpyHostToDevice));
-  CUDACHECK_TEST(cudaMemcpy(
-      d_senddispls,
-      h_offsets.data(),
-      nRanks * sizeof(int64_t),
-      cudaMemcpyHostToDevice));
-  CUDACHECK_TEST(cudaMemcpy(
-      d_recvdispls,
-      h_offsets.data(),
       nRanks * sizeof(int64_t),
       cudaMemcpyHostToDevice));
 
@@ -114,8 +96,6 @@ TEST_F(DeviceAllToAllvTest, UniformSplit) {
       recvBuf,
       d_sendcounts,
       d_recvcounts,
-      d_senddispls,
-      d_recvdispls,
       commFloat,
       comm.get(),
       stream_);
@@ -143,8 +123,6 @@ TEST_F(DeviceAllToAllvTest, UniformSplit) {
   CUDACHECK_TEST(cudaFree(recvBuf));
   CUDACHECK_TEST(cudaFree(d_sendcounts));
   CUDACHECK_TEST(cudaFree(d_recvcounts));
-  CUDACHECK_TEST(cudaFree(d_senddispls));
-  CUDACHECK_TEST(cudaFree(d_recvdispls));
 }
 
 // CUDA graph tests: capture ctranDeviceAllToAllv into a graph and replay.
@@ -179,19 +157,11 @@ TEST_F(DeviceAllToAllvTest, UniformSplitCudaGraph) {
   CUDACHECK_TEST(cudaMemset(recvBuf, 0, totalSize * sizeof(float)));
 
   std::vector<int64_t> h_counts(nRanks, static_cast<int64_t>(chunkSize));
-  std::vector<int64_t> h_offsets(nRanks);
-  for (int i = 0; i < nRanks; i++) {
-    h_offsets[i] = static_cast<int64_t>(i * chunkSize);
-  }
 
   int64_t* d_sendcounts = nullptr;
   int64_t* d_recvcounts = nullptr;
-  int64_t* d_senddispls = nullptr;
-  int64_t* d_recvdispls = nullptr;
   CUDACHECK_TEST(cudaMalloc(&d_sendcounts, nRanks * sizeof(int64_t)));
   CUDACHECK_TEST(cudaMalloc(&d_recvcounts, nRanks * sizeof(int64_t)));
-  CUDACHECK_TEST(cudaMalloc(&d_senddispls, nRanks * sizeof(int64_t)));
-  CUDACHECK_TEST(cudaMalloc(&d_recvdispls, nRanks * sizeof(int64_t)));
   CUDACHECK_TEST(cudaMemcpy(
       d_sendcounts,
       h_counts.data(),
@@ -200,16 +170,6 @@ TEST_F(DeviceAllToAllvTest, UniformSplitCudaGraph) {
   CUDACHECK_TEST(cudaMemcpy(
       d_recvcounts,
       h_counts.data(),
-      nRanks * sizeof(int64_t),
-      cudaMemcpyHostToDevice));
-  CUDACHECK_TEST(cudaMemcpy(
-      d_senddispls,
-      h_offsets.data(),
-      nRanks * sizeof(int64_t),
-      cudaMemcpyHostToDevice));
-  CUDACHECK_TEST(cudaMemcpy(
-      d_recvdispls,
-      h_offsets.data(),
       nRanks * sizeof(int64_t),
       cudaMemcpyHostToDevice));
 
@@ -227,8 +187,6 @@ TEST_F(DeviceAllToAllvTest, UniformSplitCudaGraph) {
       recvBuf,
       d_sendcounts,
       d_recvcounts,
-      d_senddispls,
-      d_recvdispls,
       commFloat,
       comm.get(),
       cudagraph_stream);
@@ -261,8 +219,6 @@ TEST_F(DeviceAllToAllvTest, UniformSplitCudaGraph) {
   CUDACHECK_TEST(cudaFree(recvBuf));
   CUDACHECK_TEST(cudaFree(d_sendcounts));
   CUDACHECK_TEST(cudaFree(d_recvcounts));
-  CUDACHECK_TEST(cudaFree(d_senddispls));
-  CUDACHECK_TEST(cudaFree(d_recvdispls));
 }
 
 TEST_F(DeviceAllToAllvTest, UniformSplitCudaGraphMultiReplay) {
@@ -291,19 +247,11 @@ TEST_F(DeviceAllToAllvTest, UniformSplitCudaGraphMultiReplay) {
       cudaMemcpyHostToDevice));
 
   std::vector<int64_t> h_counts(nRanks, static_cast<int64_t>(chunkSize));
-  std::vector<int64_t> h_offsets(nRanks);
-  for (int i = 0; i < nRanks; i++) {
-    h_offsets[i] = static_cast<int64_t>(i * chunkSize);
-  }
 
   int64_t* d_sendcounts = nullptr;
   int64_t* d_recvcounts = nullptr;
-  int64_t* d_senddispls = nullptr;
-  int64_t* d_recvdispls = nullptr;
   CUDACHECK_TEST(cudaMalloc(&d_sendcounts, nRanks * sizeof(int64_t)));
   CUDACHECK_TEST(cudaMalloc(&d_recvcounts, nRanks * sizeof(int64_t)));
-  CUDACHECK_TEST(cudaMalloc(&d_senddispls, nRanks * sizeof(int64_t)));
-  CUDACHECK_TEST(cudaMalloc(&d_recvdispls, nRanks * sizeof(int64_t)));
   CUDACHECK_TEST(cudaMemcpy(
       d_sendcounts,
       h_counts.data(),
@@ -312,16 +260,6 @@ TEST_F(DeviceAllToAllvTest, UniformSplitCudaGraphMultiReplay) {
   CUDACHECK_TEST(cudaMemcpy(
       d_recvcounts,
       h_counts.data(),
-      nRanks * sizeof(int64_t),
-      cudaMemcpyHostToDevice));
-  CUDACHECK_TEST(cudaMemcpy(
-      d_senddispls,
-      h_offsets.data(),
-      nRanks * sizeof(int64_t),
-      cudaMemcpyHostToDevice));
-  CUDACHECK_TEST(cudaMemcpy(
-      d_recvdispls,
-      h_offsets.data(),
       nRanks * sizeof(int64_t),
       cudaMemcpyHostToDevice));
 
@@ -337,8 +275,6 @@ TEST_F(DeviceAllToAllvTest, UniformSplitCudaGraphMultiReplay) {
       recvBuf,
       d_sendcounts,
       d_recvcounts,
-      d_senddispls,
-      d_recvdispls,
       commFloat,
       comm.get(),
       cudagraph_stream);
@@ -376,8 +312,6 @@ TEST_F(DeviceAllToAllvTest, UniformSplitCudaGraphMultiReplay) {
   CUDACHECK_TEST(cudaFree(recvBuf));
   CUDACHECK_TEST(cudaFree(d_sendcounts));
   CUDACHECK_TEST(cudaFree(d_recvcounts));
-  CUDACHECK_TEST(cudaFree(d_senddispls));
-  CUDACHECK_TEST(cudaFree(d_recvdispls));
 }
 
 TEST_F(DeviceAllToAllvTest, UniformSplitCudaGraphChangedData) {
@@ -399,19 +333,11 @@ TEST_F(DeviceAllToAllvTest, UniformSplitCudaGraphChangedData) {
   CUDACHECK_TEST(cudaMalloc(&recvBuf, totalSize * sizeof(float)));
 
   std::vector<int64_t> h_counts(nRanks, static_cast<int64_t>(chunkSize));
-  std::vector<int64_t> h_offsets(nRanks);
-  for (int i = 0; i < nRanks; i++) {
-    h_offsets[i] = static_cast<int64_t>(i * chunkSize);
-  }
 
   int64_t* d_sendcounts = nullptr;
   int64_t* d_recvcounts = nullptr;
-  int64_t* d_senddispls = nullptr;
-  int64_t* d_recvdispls = nullptr;
   CUDACHECK_TEST(cudaMalloc(&d_sendcounts, nRanks * sizeof(int64_t)));
   CUDACHECK_TEST(cudaMalloc(&d_recvcounts, nRanks * sizeof(int64_t)));
-  CUDACHECK_TEST(cudaMalloc(&d_senddispls, nRanks * sizeof(int64_t)));
-  CUDACHECK_TEST(cudaMalloc(&d_recvdispls, nRanks * sizeof(int64_t)));
   CUDACHECK_TEST(cudaMemcpy(
       d_sendcounts,
       h_counts.data(),
@@ -420,16 +346,6 @@ TEST_F(DeviceAllToAllvTest, UniformSplitCudaGraphChangedData) {
   CUDACHECK_TEST(cudaMemcpy(
       d_recvcounts,
       h_counts.data(),
-      nRanks * sizeof(int64_t),
-      cudaMemcpyHostToDevice));
-  CUDACHECK_TEST(cudaMemcpy(
-      d_senddispls,
-      h_offsets.data(),
-      nRanks * sizeof(int64_t),
-      cudaMemcpyHostToDevice));
-  CUDACHECK_TEST(cudaMemcpy(
-      d_recvdispls,
-      h_offsets.data(),
       nRanks * sizeof(int64_t),
       cudaMemcpyHostToDevice));
 
@@ -453,8 +369,6 @@ TEST_F(DeviceAllToAllvTest, UniformSplitCudaGraphChangedData) {
       recvBuf,
       d_sendcounts,
       d_recvcounts,
-      d_senddispls,
-      d_recvdispls,
       commFloat,
       comm.get(),
       cudagraph_stream);
@@ -502,8 +416,6 @@ TEST_F(DeviceAllToAllvTest, UniformSplitCudaGraphChangedData) {
   CUDACHECK_TEST(cudaFree(recvBuf));
   CUDACHECK_TEST(cudaFree(d_sendcounts));
   CUDACHECK_TEST(cudaFree(d_recvcounts));
-  CUDACHECK_TEST(cudaFree(d_senddispls));
-  CUDACHECK_TEST(cudaFree(d_recvdispls));
 }
 
 #endif // TEST_CUDA_GRAPH_MODE

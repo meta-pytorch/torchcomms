@@ -39,8 +39,6 @@ class TorchCommNCCLX:
         input: torch.Tensor,
         output_split_sizes: torch.Tensor,
         input_split_sizes: torch.Tensor,
-        output_split_offsets: torch.Tensor,
-        input_split_offsets: torch.Tensor,
         async_op: bool,
     ) -> TorchWork: ...
     def alltoallv_dynamic_dispatch(
