@@ -332,9 +332,8 @@ commResult_t ctranPutSignal(
 static commResult_t
 waitSignalDriverApi(int peer, CtranWin* win, cudaStream_t stream) {
 #if CUDART_VERSION >= 11070
-  // Check if hardware wait is available at runtime
-  if (FB_CUPFN(cuStreamWaitValue64) == nullptr) {
-    return commInternalError;
+  if (!ctran::utils::canUse64BitStreamMemOps()) {
+    return commInvalidUsage;
   }
 
   // Get the signal address
@@ -342,13 +341,48 @@ waitSignalDriverApi(int peer, CtranWin* win, cudaStream_t stream) {
   // Get the expected compare value
   uint64_t cmpVal = win->ctranNextWaitSignalVal(peer);
 
-  // Use hardware-accelerated stream wait (zero GPU overhead!)
-  // This uses hardware memory polling
-  CUresult result = FB_CUPFN(cuStreamWaitValue64)(
-      (CUstream)stream,
-      (CUdeviceptr)signalAddr,
-      cmpVal,
-      CU_STREAM_WAIT_VALUE_GEQ);
+  cudaStreamCaptureStatus captureStatus{};
+  cudaStreamGetCaptureInfo(stream, &captureStatus, nullptr);
+
+  CUresult result;
+
+  if (captureStatus == cudaStreamCaptureStatusActive) {
+    if (!ctran::utils::canUseCuStreamBatchMemOp()) {
+      return commInvalidUsage;
+    }
+
+    // During CUDA graph capture, use cuStreamBatchMemOp to atomically
+    // wait for the signal and then reset it to 0.  The reset prepares
+    // the slot for the next graph replay.
+    //
+    // This follows the pattern established by NCCL's CE collective path
+    // in ncclMemOpSync() (comms/ncclx/v2_28/src/ce_coll.cc lines 212-222),
+    // which batches waits + resets in a single cuStreamBatchMemOp during
+    // graph capture.  The batch is atomic on the stream — the wait
+    // completes before the reset runs, and no remote signal for the next
+    // replay can interleave.
+    CUstreamBatchMemOpParams ops[2] = {};
+
+    // wait for signal GEQ cmpVal
+    ops[0].waitValue.operation = CU_STREAM_MEM_OP_WAIT_VALUE_64;
+    ops[0].waitValue.address = (CUdeviceptr)signalAddr;
+    ops[0].waitValue.value64 = cmpVal;
+    ops[0].waitValue.flags = CU_STREAM_WAIT_VALUE_GEQ;
+
+    // reset signal to 0
+    ops[1].writeValue.operation = CU_STREAM_MEM_OP_WRITE_VALUE_64;
+    ops[1].writeValue.address = (CUdeviceptr)signalAddr;
+    ops[1].writeValue.value64 = 0;
+    ops[1].writeValue.flags = CU_STREAM_WRITE_VALUE_DEFAULT;
+
+    result = FB_CUPFN(cuStreamBatchMemOp)((CUstream)stream, 2, ops, 0);
+  } else {
+    result = FB_CUPFN(cuStreamWaitValue64)(
+        (CUstream)stream,
+        (CUdeviceptr)signalAddr,
+        cmpVal,
+        CU_STREAM_WAIT_VALUE_GEQ);
+  }
 
   if (result != CUDA_SUCCESS) {
     const char* errStr = nullptr;
