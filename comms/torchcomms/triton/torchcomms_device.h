@@ -5,7 +5,7 @@
 // Compiled to LLVM bitcode with clang for linking with Triton kernels.
 //
 // All functions use opaque void* handles to avoid C++ type dependencies.
-// The actual implementations (in device_window.cu) cast these to the
+// The actual implementations (in torchcomms_device.cu) cast these to the
 // appropriate TorchComms types.
 //
 // Usage:

@@ -26,7 +26,7 @@
 #include "comms/torchcomms/ncclx/TorchWorkNCCLX.hpp"
 
 #if defined(ENABLE_PIPES)
-#include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
+#include "comms/pipes/MultiPeerDeviceHandle.cuh"
 #endif
 
 namespace torch::comms {
@@ -300,10 +300,16 @@ class TorchCommNCCLX : public TorchCommBackend,
   }
 
 #if defined(ENABLE_PIPES)
-  // Get device-allocated transport handle for Triton/CUDA kernels.
-  // Returns device pointer as int64 (same pointer on subsequent calls).
-  // The handle is freed when TorchCommNCCLX is destroyed.
-  int64_t get_device_transport() override;
+  // Get the pipes transport device handle for passing to CUDA kernels.
+  // NON-COLLECTIVE — reads already-exchanged state.
+  //
+  // Usage:
+  //   auto handle = ncclx_comm->get_device_transport();
+  //   myKernel<<<grid, block>>>(handle, ...);
+  //   // In kernel: handle.get_nvl(peer).send(group, src, nbytes);
+  //
+  // Throws std::runtime_error if pipes transport is not initialized.
+  ::comms::pipes::MultiPeerDeviceHandle get_device_transport();
 #endif
 
  protected:
@@ -463,11 +469,6 @@ class TorchCommNCCLX : public TorchCommBackend,
 
   void attachMemoryHook();
   void detachMemoryHook();
-
-#if defined(ENABLE_PIPES)
-  torchcomms::device::PipesDeviceBackend::TransportHandleDevPtr
-      device_transport_handle_;
-#endif
 
   // Member variables
   ncclComm_t nccl_comm_{};

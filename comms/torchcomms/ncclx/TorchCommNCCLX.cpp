@@ -2398,13 +2398,9 @@ static const NCCLXRegistration registration{};
 } // namespace
 
 #if defined(ENABLE_PIPES)
-int64_t TorchCommNCCLX::get_device_transport() {
-  if (!device_transport_handle_) {
-    device_transport_handle_ =
-        torchcomms::device::PipesDeviceBackend::get_device_transport(
-            nccl_comm_, nccl_api_.get(), cuda_api_.get());
-  }
-  return reinterpret_cast<int64_t>(device_transport_handle_.get());
+::comms::pipes::MultiPeerDeviceHandle TorchCommNCCLX::get_device_transport() {
+  return torchcomms::device::PipesDeviceBackend::get_device_transport(
+      nccl_comm_, nccl_api_.get());
 }
 #endif
 
