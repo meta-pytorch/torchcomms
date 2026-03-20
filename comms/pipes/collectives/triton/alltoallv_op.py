@@ -6,125 +6,109 @@
 signature while preserving the zero-copy one-sided-put architecture of
 the underlying ``device_alltoallv_dynamic`` kernel.
 
+Zero-Copy Buffer Ownership
+--------------------------
+``AlltoallvOp`` uses zero-copy buffer ownership where the user provides
+both input and output tensors, which become the GIN-registered send/recv
+buffers. This achieves **100% memory reduction** - no internal allocation.
+
+**Both input_tensor and output_tensor are MANDATORY parameters.**
+
+**IMPORTANT**: Tensors must be allocated using ``alloc_buffer()`` which
+uses ncclMemAlloc (cuMem APIs). Regular ``torch.empty()`` uses cudaMalloc
+which is NOT compatible with GIN registration.
+
+Usage::
+
+    op = AlltoallvOp(comm, max_tokens, D, dtype, device, max_recv_per_peer)
+
+    with op:
+        # Allocate GIN-compatible tensors (pool managed internally)
+        input_tensor = op.alloc_buffer((max_tokens, D))
+        output_tensor = op.alloc_buffer((world_size * max_recv_per_peer, D))
+
+        # First call: op takes ownership of both tensors
+        input_tensor[:] = data_for_iteration_0
+        result = op.alltoallv(input_tensor, output_tensor,
+                              output_splits, input_splits)
+
+        # Subsequent calls: update input_tensor in-place, then call alltoallv
+        input_tensor[:] = data_for_iteration_1
+        result = op.alltoallv(input_tensor, output_tensor,
+                              output_splits, input_splits)
+
+**Key Points**:
+- Use ``alloc_buffer()`` to allocate GIN-compatible tensors (REQUIRED)
+- User's input_tensor IS the send buffer (no copy)
+- User's output_tensor IS the recv buffer (data arrives directly)
+- Update input_tensor contents in-place between calls
+- Must use the same tensors on every call (same memory addresses)
+- To use new tensors, call release_buffers() first
+
 Output Layout
 -------------
 The output is always returned in **packed uniform layout**:
     - Shape: ``(sum(output_split_sizes), D)``
     - Contiguous: ``[peer_0_data, peer_1_data, ..., peer_{W-1}_data]``
-    - Zero-copy view of internal buffer (no gather kernel needed)
+    - Zero-copy view of output_tensor
 
 **IMPORTANT**: Only uniform distribution is supported. All peers must send
-exactly ``max_recv_tokens_per_peer`` tokens. Non-uniform distributions will
-raise a ``ValueError``.
-
-Internally, data lands in fixed-slot positions in the receive buffer
-(one slot per peer). For uniform distribution, slots are back-to-back,
-so the output is directly a view of the contiguous buffer.
-
-Internally it:
-
-* Pre-allocates transport-compatible send/recv buffers sized to the caller's
-  declared maximum token count.
-* Registers those buffers once during ``setup()`` (create window, enable GIN).
-* Uses **fixed-slot** recv buffer layout — one contiguous slot of
-  ``max_recv_tokens_per_peer`` rows per peer — so that destination
-  offsets are deterministic and computed locally (no exchange needed).
-* Converts token-level split sizes to byte-level sizes/offsets per call
-  with zero CPU↔GPU synchronisation and zero per-call collectives.
-
-Two usage patterns are supported:
-
-Copy-in mode (simple)::
-
-    op = AlltoallvOp(comm, max_input_tokens=1024, D=4096,
-                     dtype=torch.bfloat16, device="cuda:0")
-    with op:
-        output = op.alltoallv(input_tensor, output_split_sizes,
-                              input_split_sizes)
-        # output is contiguous: shape (sum(output_split_sizes), D)
-
-Zero-copy mode (maximum performance)::
-
-    op = AlltoallvOp(comm, max_input_tokens=1024, D=4096,
-                     dtype=torch.bfloat16, device="cuda:0")
-    with op:
-        send_buf = op.get_send_buffer(num_tokens=512)
-        # Fill send_buf directly (e.g. from a gather / routing kernel)
-        send_buf[:] = my_data
-        output = op.alltoallv_from_buffer(output_split_sizes,
-                                          input_split_sizes,
-                                          num_input_tokens=512)
-        # output is contiguous: shape (sum(output_split_sizes), D)
+exactly ``max_recv_tokens_per_peer`` tokens.
 
 CUDA Graph Support
 ------------------
-AlltoallvOp is fully CUDA graph compatible. The iteration counter and
-cross-rank synchronization are handled internally via device-side kernels
-that get captured in the graph. Simply call ``graph.replay()`` - no special
-wrapper method needed!
+AlltoallvOp is fully CUDA graph compatible::
 
-CUDA Graph Usage Example::
+    op = AlltoallvOp(comm, max_tokens, D, dtype, device, max_recv_per_peer)
 
-    op = AlltoallvOp(comm, max_input_tokens, D, dtype, device)
     with op:
-        send_buf = op.get_send_buffer(max_input_tokens)
+        # Allocate GIN-compatible tensors
+        input_tensor = op.alloc_buffer((max_tokens, D))
+        output_tensor = op.alloc_buffer((total_recv_tokens, D))
 
-        # Warmup (uses iteration 0)
-        send_buf[:] = warmup_data
-        op.alltoallv_from_buffer(output_splits, input_splits,
-                                 num_input_tokens=max_input_tokens)
+        # Warmup
+        input_tensor[:] = warmup_data
+        op.alltoallv(input_tensor, output_tensor, output_splits, input_splits)
 
-        # Capture graph (uses iteration 1 during capture)
+        # Capture graph
         graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(graph, pool=op.get_graph_pool_id()):
-            output = op.alltoallv_from_buffer(output_splits, input_splits,
-                                              num_input_tokens=max_input_tokens)
+        with torch.cuda.graph(graph):
+            output = op.alltoallv(input_tensor, output_tensor,
+                                  output_splits, input_splits,
+                                  packed_output_tokens=total_tokens)
 
-        # Replay with different content per iteration
-        # Just use graph.replay() - cross-rank sync is in the kernel!
+        # Replay: update input in-place, then replay
         for i in range(num_iterations):
-            send_buf[:] = iteration_data[i]
-            graph.replay()  # Internal device-side sync + iteration advancement
-            # Output is valid here
+            input_tensor[:] = iteration_data[i]
+            graph.replay()
 
 Output lifetime
 ---------------
-The returned tensor is a **view** of the internal pre-registered receive
-buffer. It remains valid until the next ``alltoallv`` / ``alltoallv_from_buffer``
-call. If the caller needs the data to persist beyond that point it must
-``.clone()`` the output.
+The returned tensor is a **view** of the user-provided output_tensor.
+Since the user owns output_tensor, its lifetime is controlled by the user.
+The tensor remains valid as long as the user keeps it alive.
 """
 
-from typing import Any, Optional, TYPE_CHECKING, Union
+from typing import Any, Optional, Sequence, TYPE_CHECKING, Union
 
 import torch
+import torchcomms
 import triton  # @manual
 import triton.language as tl  # @manual
 from comms.pipes.collectives.triton.device_alltoallv_dynamic import (
     auto_tune_alltoallv_params,
     device_alltoallv_dynamic,
 )
-from comms.pipes.collectives.triton.utils import alloc_comms_buffer
 
 
 # =============================================================================
-# GIN-safe Triton kernels
+# Triton kernels
 # =============================================================================
-
-
-@triton.jit
-def _triton_copy_1d_kernel(src_ptr, dst_ptr, N, BLOCK_SIZE: tl.constexpr):
-    """Copy N elements from src to dst.  GIN-safe (pure device stores)."""
-    pid = tl.program_id(0)
-    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < N
-    data = tl.load(src_ptr + offsets, mask=mask)
-    tl.store(dst_ptr + offsets, data, mask=mask)
 
 
 @triton.jit
 def _sum_int64_kernel(input_ptr, output_ptr, N: tl.constexpr):
-    """GIN-safe kernel to compute sum of int64 tensor."""
+    """Kernel to compute sum of int64 tensor."""
     offsets = tl.arange(0, N)
     vals = tl.load(input_ptr + offsets)
     total = tl.sum(vals, axis=0)
@@ -142,7 +126,7 @@ def _prepare_alltoallv_kernel(
     W,
     BLOCK_SIZE: tl.constexpr,
 ):
-    """Token splits → byte sizes/offsets.  Single-block, GIN-safe.
+    """Token splits → byte sizes/offsets.  Single-block.
 
     Performs two operations entirely on GPU in one kernel launch:
     1. Multiply token counts by ``row_bytes`` to get byte sizes.
@@ -178,55 +162,73 @@ __all__ = [
 class AlltoallvOp:
     """High-level alltoallv operation with an MSL-compatible signature.
 
-    Encapsulates buffer allocation, registration, and byte-level plumbing
-    behind a token-level API.
-    behind a token-level API.  The caller works exclusively in token counts and
-    2-D ``(T, D)`` tensors; the op handles the conversion to byte sizes /
-    offsets internally.
+    Zero-Copy Buffer Ownership
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~
+    User provides both input and output tensors (MANDATORY). On the first
+    alltoallv() call, these tensors are registered as GIN buffers:
 
-    Buffer layout
+    - input_tensor → GIN local registration (send buffer)
+    - output_tensor → GIN remote registration (recv buffer)
+    - **100% memory reduction** - no internal buffers
+    - User updates input_tensor in-place between calls
+    - Data arrives directly in output_tensor
+
+    **IMPORTANT**: Tensors must be allocated using ``alloc_buffer()`` which
+    uses ncclMemAlloc (cuMem APIs). Regular ``torch.empty()`` uses cudaMalloc
+    which is NOT compatible with GIN registration.
+
+    Usage
+    ~~~~~
+    ::
+
+        op = AlltoallvOp(comm, max_tokens, D, dtype, device, max_recv_per_peer)
+
+        with op:
+            # Allocate GIN-compatible tensors (pool managed internally by op)
+            input_tensor = op.alloc_buffer((max_tokens, D))
+            output_tensor = op.alloc_buffer((world_size * max_recv_per_peer, D))
+
+            # Use the op
+            input_tensor[:] = data
+            result = op.alltoallv(input_tensor, output_tensor,
+                                  output_splits, input_splits)
+
+    Buffer Layout
     ~~~~~~~~~~~~~
-    * **Send buffer** — flat, contiguously packed:
-      ``[tokens_for_peer_0, tokens_for_peer_1, …]``.  ``send_offsets`` are
-      computed as the exclusive prefix sum of per-peer byte sizes each call.
-    * **Receive buffer** — fixed-slot:
-      ``[slot_0, slot_1, …, slot_{W-1}]`` where each slot is exactly
-      ``max_recv_tokens_per_peer * D`` elements.  Data from peer *i* always
-      lands at slot *i*.  This makes ``dst_offsets`` (the offsets the *sender*
-      writes to on the *receiver's* buffer) fully deterministic and
-      computable locally (no exchange needed).
+    * **Send buffer** (user's input_tensor):
+      ``[tokens_for_peer_0, tokens_for_peer_1, …]``
+    * **Receive buffer** (user's output_tensor):
+      ``[slot_0, slot_1, …, slot_{W-1}]`` where each slot is
+      ``max_recv_tokens_per_peer * D`` elements
 
     Parameters
     ----------
     comm : TorchComm
-        TorchComms communicator.  All ranks in this communicator participate
-        in the collective.
+        TorchComms communicator.
     max_input_tokens : int
-        Maximum total input tokens (rows in the input tensor) that any single
-        call will ever pass.  This determines the size of the send buffer.
-        **All ranks MUST use the same value.**
+        Maximum total input tokens. Determines minimum size of input_tensor.
     D : int
-        Hidden dimension (number of columns per token row).  Must be constant
-        across all calls.
+        Hidden dimension (columns per token row).
     dtype : torch.dtype
-        Element data type (e.g. ``torch.bfloat16``).
+        Element data type.
     device : str | torch.device
-        CUDA device (e.g. ``"cuda:0"``).
+        CUDA device.
     max_recv_tokens_per_peer : int
-        Maximum tokens that can be received from any single peer.  This
-        determines the size of each slot in the receive buffer.  For uniform
-        distribution workloads where each peer sends equal amounts, this
-        should be set to ``max_input_tokens // world_size``.
-        **All ranks MUST use the same value.**
+        Maximum tokens receivable from each peer. Determines minimum size
+        of output_tensor.
 
     Notes
     -----
+    * Use ``alloc_buffer()`` to allocate GIN-compatible tensors after
+      ``setup()`` (or inside the ``with`` block).
     * The op auto-tunes kernel parameters (``blocks_per_peer``,
       ``num_warps``, ``chunk_size``) per call based on the maximum per-peer
       message size.
     * The iteration counter is auto-incremented after every collective call.
       Do **not** mix raw ``device_alltoallv_dynamic`` calls on the same
       window — signal counters will diverge and cause deadlocks.
+    * **No internal buffer allocation occurs.** User MUST provide both
+      input_tensor and output_tensor on every alltoallv() call.
     """
 
     # Module-level cache: one AlltoallvOp per unique configuration.
@@ -283,7 +285,6 @@ class AlltoallvOp:
         self._setup_done = False
 
         # max_recv_tokens_per_peer is required - uniform distribution only.
-        # Typically set to max_input_tokens // world_size.
         self.max_recv_tokens_per_peer: int = max_recv_tokens_per_peer
 
         self._elem_bytes: int = torch.tensor([], dtype=dtype).element_size()
@@ -291,47 +292,39 @@ class AlltoallvOp:
         self._bytes_per_token: int = D * self._elem_bytes
 
         # Fixed slot size per peer in the receive buffer (bytes).
-        # Each peer's data lands in a slot of max_recv_tokens_per_peer × D elements.
         self._bytes_per_peer_slot: int = (
             max_recv_tokens_per_peer * self._bytes_per_token
         )
 
         # -----------------------------------------------------------------
-        # Allocate transport-compatible buffers
+        # Zero-copy buffer ownership: NO internal allocation
+        # User provides both input and output tensors on first alltoallv() call.
+        # These tensors become the GIN-registered send/recv buffers.
+        #
+        # IMPORTANT: We only store data pointers, not tensor references.
+        # This allows del tensor to return memory to the pool for reuse by
+        # other operations captured in the same CUDA graph. The pool-based
+        # caching allocator ensures the same addresses are reused each
+        # iteration during graph capture, so GIN registration remains valid.
         # -----------------------------------------------------------------
-        backend: str = comm.get_backend()
+        self._backend: str = comm.get_backend()
 
-        # Send buffer: contiguously packed, holds up to max_input_tokens rows.
-        max_input_elems = max_input_tokens * D
-        self.send_buf, self._send_pool = alloc_comms_buffer(
-            max_input_elems, dtype, device, backend
-        )
+        # Store only data pointers for validation, not tensor references.
+        # This allows the caching allocator to reuse memory within the graph.
+        self._send_data_ptr: Optional[int] = None
+        self._recv_data_ptr: Optional[int] = None
 
-        # Receive buffer: fixed-slot layout, one slot per peer.
-        # Each slot holds max_recv_tokens_per_peer tokens.
-        recv_total_elems = self.world_size * max_recv_tokens_per_peer * D
-        self.recv_buf, self._recv_pool = alloc_comms_buffer(
-            recv_total_elems, dtype, device, backend
-        )
+        # Track if buffers have been registered
+        self._buffers_owned: bool = False
+
+        # Required sizes for validation
+        self._required_send_elems = max_input_tokens * D
+        self._required_recv_elems = self.world_size * max_recv_tokens_per_peer * D
 
         # Compute recv_offsets: fixed slot layout where peer i's data lands at slot i.
-        # Data lands in slotted positions internally; we run a local gather kernel
-        # to pack it contiguously when returning to the caller.
-        #
-        # Naming clarification:
-        #   _local_recv_slot_offsets: Receiver's view - offsets within MY local
-        #       recv buffer where each peer's data lands
-        #   _remote_write_offsets: Sender's view - offsets on REMOTE peers'
-        #       recv buffers where I should write my data
-        self._local_recv_slot_offsets = (
-            torch.arange(self.world_size, dtype=torch.int64, device=device)
-            * self._bytes_per_peer_slot
-        )
+        self._local_recv_slot_offsets: Optional[torch.Tensor] = None
 
         # Internal state tensors (byte-level sizes/offsets for the kernel).
-        # These are written by _prepare_alltoallv_kernel and read by
-        # device_alltoallv_dynamic. They persist across calls, enabling
-        # automatic skip of the prep kernel when split sizes are static.
         self._send_sizes_bytes: Optional[torch.Tensor] = torch.empty(
             self.world_size, dtype=torch.int64, device=device
         )
@@ -343,20 +336,15 @@ class AlltoallvOp:
         )
 
         # Flag to track if prep kernel has run since setup().
-        # Used for auto-skipping prep on subsequent calls with static splits.
         self._prep_done: bool = False
 
-        # Pre-allocate buffer for total tokens sum (GIN-safe operation).
-        # Must be allocated before GIN is activated.
+        # Pre-allocate buffer for total tokens sum.
         self._total_tokens_buf = torch.empty(1, dtype=torch.int64, device=device)
 
         # BLOCK_SIZE for the preparation kernel (next power-of-2 of world_size).
         self._prep_block_size: int = triton.next_power_of_2(self.world_size)
 
-        # Auto-tune: select kernel params once from the worst-case message
-        # size (all max_input_tokens routed to a single peer).  This avoids
-        # per-call GPU→CPU synchronisation (.item()) and keeps the hot path
-        # entirely on GPU.
+        # Auto-tune: select kernel params once from the worst-case message size.
         worst_case_msg_bytes = max_input_tokens * self._bytes_per_token
         params = auto_tune_alltoallv_params(worst_case_msg_bytes)
         self._blocks_per_peer: int = params["blocks_per_peer"]
@@ -368,6 +356,7 @@ class AlltoallvOp:
         self._dev_win_ptr: Optional[int] = None
         self._src_info: Optional[tuple[int, int, int]] = None
         self._remote_write_offsets: Optional[torch.Tensor] = None
+        self._buffer_pool: Optional["torch.cuda.MemPool"] = None
 
     # ------------------------------------------------------------------
     # Factory / caching
@@ -397,7 +386,6 @@ class AlltoallvOp:
             dtype: Tensor dtype.
             device: CUDA device.
             max_recv_tokens_per_peer: Maximum tokens receivable from each peer.
-                For uniform distribution, this should be ``max_input_tokens // world_size``.
             sync_buffer: If True, enables buffer-ready synchronization.
 
         Returns:
@@ -434,17 +422,70 @@ class AlltoallvOp:
         cls._CACHE.clear()
 
     # ------------------------------------------------------------------
+    # Buffer allocation helpers
+    # ------------------------------------------------------------------
+
+    def alloc_buffer(
+        self,
+        shape: Union[int, Sequence[int]],
+    ) -> torch.Tensor:
+        """Allocate a GIN-compatible tensor from the op's internal memory pool.
+
+        Use this method to allocate input and output tensors that will be used
+        with this op. Tensors allocated this way use the NCCL memory allocator
+        (ncclMemAlloc) which is compatible with GIN registration.
+
+        Regular tensors allocated with torch.empty() use cudaMalloc which is
+        NOT compatible with GIN. Using such tensors will cause "CUDA failure 1
+        'invalid argument'" errors during registration.
+
+        The memory pool is created and owned internally by this op. You do NOT
+        need to manage pool lifecycle - it is automatically created during
+        setup() and destroyed during teardown().
+
+        Args:
+            shape: Tensor shape (int for 1-D, or a sequence of ints).
+                For input buffers, use ``(max_input_tokens, D)``.
+                For output buffers, use ``(world_size * max_recv_tokens_per_peer, D)``.
+
+        Returns:
+            A zero-initialized tensor allocated from the GIN-compatible pool.
+
+        Example:
+            op = AlltoallvOp(comm, max_tokens, D, dtype, device, max_recv_per_peer)
+
+            with op:
+                # Allocate GIN-compatible buffers (pool managed internally)
+                input_tensor = op.alloc_buffer((max_tokens, D))
+                output_tensor = op.alloc_buffer((world_size * max_recv_per_peer, D))
+
+                input_tensor[:] = data
+                result = op.alltoallv(input_tensor, output_tensor,
+                                      output_splits, input_splits)
+        """
+        if self._buffer_pool is None:
+            raise RuntimeError(
+                "alloc_buffer() called before setup(). "
+                "Use the context manager (with statement) or call setup() first."
+            )
+
+        # Normalize shape to a tuple for torch.zeros
+        size: Sequence[int] = (shape,) if isinstance(shape, int) else tuple(shape)
+        with torch.cuda.use_mem_pool(self._buffer_pool):
+            tensor = torch.zeros(size, dtype=self.dtype, device=self.device)
+        return tensor
+
+    # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
     def setup(self) -> None:
         """Perform one-time collective comms setup.
 
-        1. Pre-allocate completion counters (before GIN activation).
-        2. Compute ``dst_offsets`` locally (no exchange needed for slotted
-           layout since all ranks use identical recv_offsets).
-        3. Create a comms window, register the recv buffer, obtain a device
-           window handle, and register the send buffer.
+        Creates the internal memory pool for GIN-compatible buffer allocation
+        and prepares internal state. Window creation and buffer registration
+        are deferred until the first alltoallv() call when user provides their
+        tensors.
 
         All ranks MUST call ``setup()`` collectively.
 
@@ -454,38 +495,29 @@ class AlltoallvOp:
             If ``setup()`` is called twice without an intervening
             ``teardown()``.
         """
-        if self._window is not None:
+        if self._setup_done:
             raise RuntimeError("AlltoallvOp.setup() called twice without teardown()")
 
         # Reset prep state for new setup cycle.
         self._prep_done = False
 
-        # Pre-allocate completion counters BEFORE GIN activation.
-        # GIN (GPU-Initiated NCCL) blocks regular CUDA allocations after
-        # get_device_window() is called.
+        # Create the internal buffer pool using torchcomms memory allocator.
+        # This pool uses ncclMemAlloc which allocates via cuMem APIs (cuMemCreate,
+        # cuMemMap) that are compatible with GIN registration. Regular torch.empty()
+        # uses cudaMalloc which is NOT GIN compatible.
+        allocator = torchcomms.get_mem_allocator(self._backend)
+        self._buffer_pool = torch.cuda.MemPool(allocator)
+
+        # Pre-allocate completion counters.
         from comms.pipes.collectives.triton import prewarm_completion_counters
 
-        # Convert device to torch.device if string
         device_for_prewarm = (
             torch.device(self.device) if isinstance(self.device, str) else self.device
         )
         # pyre-ignore[6]: device_for_prewarm is always torch.device after the conditional
         prewarm_completion_counters(self.world_size, device_for_prewarm)
 
-        # Compute dst_offsets locally (same for both slotted and packed).
-        #
-        # All ranks have identical recv_offsets because they all use the same
-        # max_recv_tokens_per_peer and D. Therefore:
-        #   recv_offsets = [0, slot_bytes, 2*slot_bytes, ..., (W-1)*slot_bytes]
-        # dst_offsets[peer] = where MY data lands on PEER's recv buffer
-        #                   = peer's recv_offsets[my_rank]
-        #                   = my_rank * slot_bytes (same for all peers)
-        #
-        # Data always lands in slotted positions. For uniform distribution
-        # (where all peers send max_recv_tokens_per_peer), slots are back-to-back,
-        # so we return a zero-copy view of the contiguous buffer.
-        # Non-uniform distribution is NOT supported.
-        #
+        # Compute dst_offsets locally.
         # _remote_write_offsets[peer] = where MY data lands on PEER's recv buffer
         #                             = peer's _local_recv_slot_offsets[my_rank]
         #                             = my_rank * slot_bytes (same for all peers)
@@ -496,34 +528,153 @@ class AlltoallvOp:
             device=self.device,
         )
 
+        # Local recv slot offsets for fixed slot layout
+        self._local_recv_slot_offsets = (
+            torch.arange(self.world_size, dtype=torch.int64, device=self.device)
+            * self._bytes_per_peer_slot
+        )
+
+        # Window creation and buffer registration are DEFERRED until
+        # _complete_buffer_setup() which is called on first alltoallv()
+        # after user provides tensors. This ensures GIN activation happens
+        # AFTER user's tensors are allocated.
+        self._window = None
+        self._setup_done = True
+
+    def _capture_buffer_addresses(
+        self,
+        input_tensor: torch.Tensor,
+        output_tensor: torch.Tensor,
+    ) -> None:
+        """Capture data pointers from user-provided tensors for validation.
+
+        Records the memory addresses of user's tensors. These addresses are used
+        to validate that the same memory locations are used on subsequent calls,
+        which is required for GIN registration validity.
+
+        IMPORTANT: We intentionally do NOT store tensor references here. This
+        allows `del tensor` to return memory back to the caching allocator's
+        pool for reuse by other operations captured in the same CUDA graph.
+        The pool-based caching allocator ensures the same addresses are reused
+        each iteration during graph capture, so GIN registration remains valid.
+
+        Args:
+            input_tensor: User's input tensor (will be used as send buffer).
+            output_tensor: User's output tensor (will be used as receive buffer).
+
+        Raises:
+            RuntimeError: If buffers have already been captured.
+        """
+        if self._buffers_owned:
+            raise RuntimeError(
+                "Buffer addresses have already been captured. "
+                "Call release_buffers() before using different tensors."
+            )
+
+        # Validate input tensor size
+        if input_tensor.numel() < self._required_send_elems:
+            raise ValueError(
+                f"input_tensor has {input_tensor.numel()} elements but "
+                f"requires at least {self._required_send_elems} elements "
+                f"(max_input_tokens={self.max_input_tokens} × D={self.D})"
+            )
+
+        # Validate output tensor size
+        if output_tensor.numel() < self._required_recv_elems:
+            raise ValueError(
+                f"output_tensor has {output_tensor.numel()} elements but "
+                f"requires at least {self._required_recv_elems} elements "
+                f"(world_size={self.world_size} × "
+                f"max_recv_tokens_per_peer={self.max_recv_tokens_per_peer} × D={self.D})"
+            )
+
+        # Store data pointers for validation, not tensor references.
+        # The caching allocator guarantees these addresses remain valid
+        # within a captured CUDA graph since the pool holds the memory.
+        self._send_data_ptr = input_tensor.data_ptr()
+        self._recv_data_ptr = output_tensor.data_ptr()
+        self._buffers_owned = True
+
+    def _complete_buffer_setup(
+        self,
+        input_tensor: torch.Tensor,
+        output_tensor: torch.Tensor,
+    ) -> None:
+        """Complete buffer setup after user's tensors are owned.
+
+        Creates the comms window and performs GIN registration of user's tensors.
+        Called automatically on first alltoallv() call.
+
+        This is where GIN activation happens, AFTER user's tensors are allocated.
+
+        Args:
+            input_tensor: User's input tensor for GIN local registration.
+            output_tensor: User's output tensor for GIN remote registration.
+        """
+        if not self._buffers_owned:
+            raise RuntimeError(
+                "_complete_buffer_setup() called before buffers are owned"
+            )
+
+        if self._dev_win_ptr is not None:
+            return  # Already completed
+
+        # Create window NOW, after user's tensors are allocated.
+        # This ensures GIN activation happens after tensor allocation.
         self.comm.barrier(False)
         self._window = self.comm.new_window()
 
-        # tensor_register maps recv_buf for one-sided operations (collective).
-        self._window.tensor_register(self.recv_buf)
+        # Register user's output_tensor for one-sided operations
+        self._window.tensor_register(output_tensor.view(-1))
         self.comm.barrier(False)
 
-        # get_device_window triggers ncclDevCommCreate (enables GIN).
-        # When sync_buffer is enabled, allocate 2x signal slots:
-        # signal_id=0 for DATA_COMPLETE, signal_id=1 for BUFFER_READY
+        # Enable GIN
         signal_count = self.world_size * 2 if self.sync_buffer else self.world_size
         self._dev_win_ptr = self._window.get_device_window(signal_count=signal_count)
 
-        # register_local_buffer maps send_buf for one-sided puts.
-        self._src_info = self._window.register_local_buffer(self.send_buf)
+        # Register user's input_tensor for one-sided puts
+        self._src_info = self._window.register_local_buffer(input_tensor.view(-1))
 
-        # Reset iteration counter to match fresh signal memory state.
-        # Without this, cross-session hangs occur because the iteration counter
-        # persists globally but signal memory is recreated per-window.
+        # Reset iteration counter
         from comms.pipes.collectives.triton.device_alltoallv_dynamic import (
             _reset_iteration_counter,
         )
 
-        _reset_iteration_counter(self.world_size, device_for_prewarm)
+        device_for_reset = (
+            torch.device(self.device) if isinstance(self.device, str) else self.device
+        )
+        _reset_iteration_counter(self.world_size, device_for_reset)
+
+    def release_buffers(self) -> None:
+        """Release ownership of send/recv buffers.
+
+        Deregisters buffers from GIN. After this call, the user can safely
+        deallocate their tensors. New tensors can be provided on the next
+        alltoallv() call.
+        """
+        if not self._buffers_owned:
+            return
+
+        # Deregister from GIN
+        if self._src_info is not None and self._window is not None:
+            self._window.deregister_local_buffer(*self._src_info)
+            self._src_info = None
+
+        if self._window is not None:
+            self._window.tensor_deregister()
+            self._window = None
+
+        self._dev_win_ptr = None
+        self._send_data_ptr = None
+        self._recv_data_ptr = None
+        self._buffers_owned = False
 
     def teardown(self) -> None:
-        """Release comms resources and all buffers.  Safe to call multiple times."""
-        # First deregister comms buffers
+        """Release comms resources. Safe to call multiple times.
+
+        Deregisters user's tensors from GIN. The tensors themselves are NOT
+        deallocated (user owns the memory).
+        """
         if self._src_info is not None:
             self._window.deregister_local_buffer(*self._src_info)
             self._src_info = None
@@ -532,20 +683,22 @@ class AlltoallvOp:
             self._window = None
         self._dev_win_ptr = None
 
-        # Release all GPU buffers to free memory immediately.
-        # Without this, Python GC may defer collection and cause OOM.
-        self.send_buf = None
-        self.recv_buf = None
+        # Clear data pointers (memory returns to pool, not deallocated)
+        self._send_data_ptr = None
+        self._recv_data_ptr = None
         self._local_recv_slot_offsets = None
-        self._send_sizes_bytes = None
-        self._send_offsets_bytes = None
+
+        # Release the buffer pool
+        self._buffer_pool = None
+
+        self._buffers_owned = False
+        self._prep_done = False
+        self._setup_done = False
         self._recv_sizes_bytes = None
         self._total_tokens_buf = None
         self._remote_write_offsets = None
-
-        # Release MemPools AFTER buffers (buffers use the pools)
-        self._send_pool = None
-        self._recv_pool = None
+        self._buffers_owned = False
+        self._setup_done = False
 
     def __enter__(self) -> "AlltoallvOp":
         self.setup()
@@ -555,169 +708,13 @@ class AlltoallvOp:
         self.teardown()
 
     # ------------------------------------------------------------------
-    # CUDA Graph Support
-    # ------------------------------------------------------------------
-
-    def get_graph_pool_id(self) -> int:
-        """Return the memory pool ID for CUDA graph capture.
-
-        When capturing a CUDA graph that includes ``alltoallv`` calls, pass
-        this pool ID to ``torch.cuda.graph()`` to ensure memory allocations
-        during capture use the same transport-compatible pool.
-
-        **Critical**: Buffer registration must occur BEFORE graph capture.
-        Call ``setup()`` first, then warmup, then capture with this pool.
-
-        Example::
-
-            op = AlltoallvOp(comm, max_input_tokens=1024, D=4096,
-                             dtype=torch.bfloat16, device="cuda:0")
-            with op:
-                # 1. Warmup (compiles kernels, outside graph capture)
-                for _ in range(10):
-                    _ = op.alltoallv(input_tensor, output_splits, input_splits)
-                torch.cuda.synchronize()
-
-                # 2. Capture graph using op's memory pool
-                graph = torch.cuda.CUDAGraph()
-                with torch.cuda.graph(graph, pool=op.get_graph_pool_id()):
-                    _ = op.alltoallv(input_tensor, output_splits, input_splits,
-                                     packed_output_tokens=total_tokens)
-
-                # 3. Replay
-                graph.replay()
-
-        Returns:
-            int: The CUDA memory pool ID to pass to ``torch.cuda.graph(pool=...)``.
-        """
-        # Use recv_pool since it's the larger allocation and will be used
-        # for any internal allocations during alltoallv execution.
-        return self._recv_pool.id
-
-    # ------------------------------------------------------------------
-    # Send buffer access (zero-copy path)
-    # ------------------------------------------------------------------
-
-    def get_send_buffer(self, num_tokens: int) -> torch.Tensor:
-        """Return a 2-D view into the registered send buffer for zero-copy writes.
-
-        The returned tensor has shape ``(num_tokens, D)`` and is backed by the
-        pre-registered send buffer.  The caller can fill it directly
-        (e.g. via ``torch.gather(..., out=send_buf)``) and then call
-        :meth:`alltoallv_from_buffer` to perform the collective **without**
-        copying into the send buffer.
-
-        Args:
-            num_tokens: Number of token rows to expose.  Must be
-                ``≤ max_input_tokens``.
-
-        Returns:
-            A ``(num_tokens, D)`` tensor view of the registered send buffer.
-
-        Raises:
-            ValueError: If ``num_tokens > max_input_tokens``.
-
-        Example::
-
-            send_buf = op.get_send_buffer(512)
-            torch.gather(hidden_states, 0,
-                         routed_indices.unsqueeze(1).expand(-1, D),
-                         out=send_buf)
-            output = op.alltoallv_from_buffer(
-                recv_splits, send_splits, num_input_tokens=512)
-        """
-        if num_tokens > self.max_input_tokens:
-            raise ValueError(
-                f"num_tokens ({num_tokens}) exceeds max_input_tokens "
-                f"({self.max_input_tokens})"
-            )
-        return self.send_buf[: num_tokens * self.D].view(num_tokens, self.D)
-
-    def fill_send_buffer(
-        self,
-        input_tensor: torch.Tensor,
-        num_tokens: Optional[int] = None,
-    ) -> torch.Tensor:
-        """Fill the registered send buffer with data from input_tensor (GIN-safe).
-
-        This method uses a Triton kernel internally, making it safe to call
-        after ``setup()`` when GIN (GPU-Initiated NCCL) is active. Regular
-        CUDA operations like ``send_buf[:] = input`` fail after GIN activation
-        because GIN locks GPU memory pages for RDMA access.
-
-        Use this method for back-to-back iterations where you need to update
-        the send buffer contents between collective calls.
-
-        Args:
-            input_tensor: Source tensor of shape ``(N, D)`` or ``(N * D,)``.
-            num_tokens: Number of tokens to copy. If ``None``, inferred from
-                ``input_tensor.shape[0]`` (for 2D) or
-                ``input_tensor.numel() // D`` (for 1D).
-
-        Returns:
-            A ``(num_tokens, D)`` view of the send buffer containing the
-            copied data.
-
-        Raises:
-            ValueError: If ``num_tokens > max_input_tokens``.
-            RuntimeError: If ``input_tensor`` has fewer elements than required.
-
-        Example (back-to-back iterations)::
-
-            op = AlltoallvOp(comm, max_input_tokens, D, dtype, device)
-            with op:
-                for iteration in range(num_iters):
-                    # Compute new data each iteration (e.g., from a Triton kernel)
-                    input_data = compute_tokens_to_send()
-
-                    # Fill send buffer (GIN-safe) and call collective
-                    op.fill_send_buffer(input_data)
-                    output = op.alltoallv_from_buffer(
-                        output_split_sizes, input_split_sizes,
-                        num_input_tokens=num_tokens
-                    )
-        """
-        # Infer num_tokens from input shape if not provided
-        if num_tokens is None:
-            if input_tensor.dim() == 2:
-                num_tokens = input_tensor.shape[0]
-            else:
-                num_tokens = input_tensor.numel() // self.D
-
-        if num_tokens > self.max_input_tokens:
-            raise ValueError(
-                f"num_tokens ({num_tokens}) exceeds max_input_tokens "
-                f"({self.max_input_tokens})"
-            )
-
-        # Validate input tensor size
-        expected_elems = num_tokens * self.D
-        if input_tensor.numel() < expected_elems:
-            raise RuntimeError(
-                f"input_tensor has {input_tensor.numel()} elements but "
-                f"num_tokens={num_tokens} requires {expected_elems} elements"
-            )
-
-        # Use GIN-safe Triton copy kernel
-        n_elems = num_tokens * self.D
-        grid = (triton.cdiv(n_elems, 1024),)
-        _triton_copy_1d_kernel[grid](
-            input_tensor.reshape(-1),
-            self.send_buf,
-            n_elems,
-            # pyre-fixme[6]: Triton constexpr accepts int at runtime
-            BLOCK_SIZE=1024,
-        )
-
-        return self.send_buf[:n_elems].view(num_tokens, self.D)
-
-    # ------------------------------------------------------------------
-    # Public collective calls
+    # Public collective call
     # ------------------------------------------------------------------
 
     def alltoallv(
         self,
         input_tensor: torch.Tensor,
+        output_tensor: torch.Tensor,
         output_split_sizes: torch.Tensor,
         input_split_sizes: torch.Tensor,
         packed_output_tokens: Optional[int] = None,
@@ -725,28 +722,55 @@ class AlltoallvOp:
     ) -> torch.Tensor:
         """Perform alltoallv collective.
 
+        On the first call, the op takes ownership of both tensors. They become
+        the GIN-registered send/recv buffers. On subsequent calls, the user
+        updates input_tensor contents in-place before calling this method.
+
         Args:
             input_tensor: Token tensor ``(N, D)`` where ``N ≤ max_input_tokens``.
+                On first call, this tensor is registered as the send buffer.
+                On subsequent calls, must be the same tensor (same memory address).
+                User updates contents in-place before each call.
+            output_tensor: Pre-allocated output tensor with at least
+                ``world_size * max_recv_tokens_per_peer * D`` elements.
+                On first call, this tensor is registered as the recv buffer.
+                On subsequent calls, must be the same tensor (same memory address).
+                Data arrives directly here - no copy needed.
             output_split_sizes: int64 tensor ``[world_size]`` — per-peer
                 token counts to receive.
             input_split_sizes: int64 tensor ``[world_size]`` — per-peer
                 token counts to send.
             packed_output_tokens: Pre-computed total output tokens. If provided,
-                avoids a GPU→CPU sync (``.item()`` call) to sum output_split_sizes.
-                Required for CUDA graph capture.
-            skip_prep: Controls whether to skip the prep kernel:
-                 - ``None`` (default): Auto-detect. Runs prep on first call after
-                   setup(), skips on subsequent calls. Best for
-                   static splits (typical MoE scenario).
-                 - ``True``: Always skip. User guarantees sizes/offsets are valid.
-                 - ``False``: Always run. Use when split sizes change between calls.
+                avoids a GPU→CPU sync. Required for CUDA graph capture.
+            skip_prep: Controls whether to skip the prep kernel.
 
         Returns:
-            ``(sum(output_split_sizes), D)`` packed tensor. Only uniform
-            distribution is supported (all peers send exactly
-            ``max_recv_tokens_per_peer`` tokens).
+            ``(sum(output_split_sizes), D)`` packed tensor view of output_tensor.
+
+        Raises:
+            ValueError: If tensors are too small.
+            RuntimeError: If different tensors are passed after ownership is taken.
+
+        Example:
+            # Allocate tensors once
+            input_tensor = torch.empty(max_tokens, D, dtype=dtype, device=device)
+            output_tensor = torch.empty(world_size * max_recv_per_peer, D,
+                                        dtype=dtype, device=device)
+
+            op = AlltoallvOp(comm, max_tokens, D, dtype, device, max_recv_per_peer)
+            with op:
+                # First call: takes ownership
+                input_tensor[:] = initial_data
+                result = op.alltoallv(input_tensor, output_tensor,
+                                      output_splits, input_splits)
+
+                # Subsequent calls: update input_tensor in-place, then call
+                input_tensor[:] = new_data
+                result = op.alltoallv(input_tensor, output_tensor,
+                                      output_splits, input_splits)
         """
         self._ensure_setup()
+
         iT = input_tensor.shape[0]
         if iT > self.max_input_tokens:
             raise ValueError(
@@ -754,73 +778,34 @@ class AlltoallvOp:
                 f"{self.max_input_tokens}"
             )
 
-        # Copy into the pre-registered send buffer using a Triton kernel.
-        # Regular CUDA copy (tensor.copy_) fails when GIN is active
-        # (cudaErrorHostMemoryAlreadyRegistered).  Triton kernels use
-        # device-side loads/stores that are GIN-safe.
-        n_elems = iT * self.D
-        grid = (triton.cdiv(n_elems, 1024),)
-        _triton_copy_1d_kernel[grid](
-            input_tensor.reshape(-1),
-            self.send_buf,
-            n_elems,
-            # pyre-fixme[6]: Triton constexpr accepts int at runtime
-            BLOCK_SIZE=1024,
-        )
+        # First call: capture buffer addresses for validation
+        if not self._buffers_owned:
+            self._capture_buffer_addresses(input_tensor, output_tensor)
+            self._complete_buffer_setup(input_tensor, output_tensor)
+        else:
+            # Subsequent calls: verify same tensor addresses are used.
+            # We only store data pointers, not tensor references, to allow
+            # del tensor to return memory to the pool for reuse by other
+            # operations captured in the same CUDA graph.
+            if input_tensor.data_ptr() != self._send_data_ptr:
+                raise RuntimeError(
+                    "input_tensor memory address changed after ownership was taken. "
+                    f"Expected data_ptr={self._send_data_ptr}, "
+                    f"got data_ptr={input_tensor.data_ptr()}. "
+                    "Use the same tensor and update its contents in-place, "
+                    "or call release_buffers() first."
+                )
+            if output_tensor.data_ptr() != self._recv_data_ptr:
+                raise RuntimeError(
+                    "output_tensor memory address changed after ownership was taken. "
+                    f"Expected data_ptr={self._recv_data_ptr}, "
+                    f"got data_ptr={output_tensor.data_ptr()}. "
+                    "Use the same tensor on every call, or call release_buffers() first."
+                )
 
         return self._run_alltoallv(
-            output_split_sizes,
-            input_split_sizes,
-            packed_output_tokens,
-            skip_prep,
-        )
-
-    def alltoallv_from_buffer(
-        self,
-        output_split_sizes: torch.Tensor,
-        input_split_sizes: torch.Tensor,
-        num_input_tokens: int,
-        packed_output_tokens: Optional[int] = None,
-        skip_prep: Optional[bool] = None,
-    ) -> torch.Tensor:
-        """Perform alltoallv using data already in the send buffer.
-
-        The caller must have previously obtained the send buffer via
-        :meth:`get_send_buffer` and filled it with data.  This method skips
-        the ``copy_`` into the send buffer, achieving **true zero-copy**
-        end-to-end.
-
-        Args:
-            output_split_sizes: int64 tensor ``[world_size]`` — per-peer
-                token counts to receive.
-            input_split_sizes: int64 tensor ``[world_size]`` — per-peer
-                token counts to send.
-            num_input_tokens: Number of valid token rows in the send buffer.
-                Must match the ``num_tokens`` passed to
-                :meth:`get_send_buffer`.
-            packed_output_tokens: Pre-computed total output tokens. If provided,
-                avoids a GPU→CPU sync (``.item()`` call) to sum output_split_sizes.
-                Required for CUDA graph capture.
-            skip_prep: Controls whether to skip the prep kernel:
-                 - ``None`` (default): Auto-detect. Runs prep on first call after
-                   setup(), skips on subsequent calls. Best for
-                   static splits (typical MoE scenario).
-                 - ``True``: Always skip. User guarantees sizes/offsets are valid.
-                 - ``False``: Always run. Use when split sizes change between calls.
-
-        Returns:
-            ``(sum(output_split_sizes), D)`` packed tensor. Only uniform
-            distribution is supported (all peers send exactly
-            ``max_recv_tokens_per_peer`` tokens).
-        """
-        self._ensure_setup()
-        if num_input_tokens > self.max_input_tokens:
-            raise ValueError(
-                f"num_input_tokens={num_input_tokens} exceeds "
-                f"max_input_tokens={self.max_input_tokens}"
-            )
-
-        return self._run_alltoallv(
+            input_tensor,
+            output_tensor,
             output_split_sizes,
             input_split_sizes,
             packed_output_tokens,
@@ -833,7 +818,7 @@ class AlltoallvOp:
 
     def _ensure_setup(self) -> None:
         """Raise if ``setup()`` has not been called."""
-        if self._window is None or self._src_info is None:
+        if not self._setup_done:
             raise RuntimeError(
                 "AlltoallvOp has not been set up.  "
                 "Call setup() or use the context manager (with statement) first."
@@ -841,40 +826,31 @@ class AlltoallvOp:
 
     def _run_alltoallv(
         self,
+        input_tensor: torch.Tensor,
+        output_tensor: torch.Tensor,
         output_split_sizes: torch.Tensor,
         input_split_sizes: torch.Tensor,
         packed_output_tokens: Optional[int] = None,
         skip_prep: Optional[bool] = None,
     ) -> torch.Tensor:
-        """Shared kernel-launch logic for both copy-in and zero-copy paths.
+        """Shared kernel-launch logic.
 
         Args:
+            input_tensor: User's input tensor (send buffer).
+            output_tensor: User's output tensor (receive buffer).
             output_split_sizes: Per-peer token counts to receive.
             input_split_sizes: Per-peer token counts to send.
             packed_output_tokens: Total output tokens for packed mode.
-            skip_prep: Controls whether to skip the _prepare_alltoallv_kernel:
-                - None (default): Auto-detect. Runs prep on first call after
-                  setup(), skips on subsequent calls. Best for static splits
-                  (typical MoE scenario).
-                - True: Always skip. User guarantees sizes/offsets are valid.
-                - False: Always run. Use when split sizes change between calls.
-
-        Note:
-            Cached byte sizes/offsets are stored in:
-            - self._send_sizes_bytes: byte sizes for sending to each peer
-            - self._send_offsets_bytes: byte offsets into send buffer
-            - self._recv_sizes_bytes: byte sizes for receiving from each peer
-            These persist across calls and are computed by _prepare_alltoallv_kernel.
+            skip_prep: Controls whether to skip the _prepare_alltoallv_kernel.
         """
+        assert self._local_recv_slot_offsets is not None
+
         # Determine whether to run prep kernel.
-        # Auto-detect: skip if prep has already run since setup().
         should_run_prep = (skip_prep is None and not self._prep_done) or (
             skip_prep is False
         )
 
         if should_run_prep:
-            # Single Triton kernel: token splits → byte sizes and contiguous
-            # offsets.  Entirely GPU-side, no CUDA runtime calls (GIN-safe).
             _prepare_alltoallv_kernel[(1,)](
                 input_split_sizes,
                 output_split_sizes,
@@ -894,16 +870,28 @@ class AlltoallvOp:
         assert self._send_sizes_bytes is not None
         assert self._send_offsets_bytes is not None
         assert self._recv_sizes_bytes is not None
+        assert self._local_recv_slot_offsets is not None
+
+        # Use tensors passed as arguments (flattened views)
+        send_buf = input_tensor.view(-1)
+        recv_buf = output_tensor.view(-1)
 
         device_alltoallv_dynamic(
-            self.send_buf,
-            self.recv_buf,
+            send_buf,
+            recv_buf,
+            # pyre-fixme[6]: Pyre doesn't narrow Optional after assert
             self._send_sizes_bytes,
+            # pyre-fixme[6]: Pyre doesn't narrow Optional after assert
             self._send_offsets_bytes,
+            # pyre-fixme[6]: Pyre doesn't narrow Optional after assert
             self._recv_sizes_bytes,
+            # pyre-fixme[6]: Pyre doesn't narrow Optional after assert
             self._local_recv_slot_offsets,
+            # pyre-fixme[6]: Pyre doesn't narrow Optional after assert
             self._remote_write_offsets,
+            # pyre-fixme[6]: Pyre doesn't narrow Optional after assert
             self._dev_win_ptr,
+            # pyre-fixme[6]: Pyre doesn't narrow Optional after assert
             self._src_info,
             self.rank,
             self.world_size,
@@ -914,32 +902,15 @@ class AlltoallvOp:
             sync_buffer=self.sync_buffer,
         )
 
-        # NOTE: Iteration counter is now managed internally by
-        # device_alltoallv_dynamic, which auto-increments after each call.
-        # Cross-rank synchronization is handled via the BUFFER_READY
-        # signal/wait protocol. At each iteration N > 0, senders wait for
-        # BUFFER_READY=N from receivers before sending. Receivers signal
-        # BUFFER_READY=N at the start of iteration N. This naturally chains
-        # iterations across ranks without requiring an explicit barrier.
-
         # Return a 2-D view of the receive buffer with fixed-slot layout.
-        # Each slot has max_recv_tokens_per_peer rows, regardless of actual data.
-        # Shape: (world_size * max_recv_tokens_per_peer, D)
-        slotted_output = self.recv_buf.view(
+        slotted_output = recv_buf.view(
             self.world_size * self.max_recv_tokens_per_peer, self.D
         )
-
-        # Packed output: For uniform distribution (where each peer sends
-        # exactly max_recv_tokens_per_peer), data lands contiguously because
-        # slots are back-to-back with no gaps. We return a direct view.
-        #
-        # Non-uniform distribution is NOT supported and will raise an error.
 
         # Determine total tokens
         if packed_output_tokens is not None:
             total_tokens = packed_output_tokens
         else:
-            # Sum using GIN-safe kernel to avoid CUDA error when GIN is active
             _sum_int64_kernel[(1,)](
                 output_split_sizes,
                 self._total_tokens_buf,
@@ -948,8 +919,7 @@ class AlltoallvOp:
             )
             total_tokens = int(self._total_tokens_buf.item())
 
-        # Check if distribution is uniform (all peers send max_recv_tokens_per_peer)
-        # For uniform distribution, slots are back-to-back, so slotted = packed.
+        # Check if distribution is uniform
         expected_uniform_total = self.world_size * self.max_recv_tokens_per_peer
         if total_tokens != expected_uniform_total:
             raise ValueError(

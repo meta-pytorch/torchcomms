@@ -51,10 +51,7 @@ class _SingleTestBase(unittest.TestCase):
     def setUpClass(cls) -> None:
         if not _skip_if_not_ready():
             raise unittest.SkipTest("E2E test environment not ready")
-        from comms.pipes.collectives.triton import (
-            alloc_comms_buffer,
-            prewarm_completion_counters,
-        )
+        from comms.pipes.collectives.triton import prewarm_completion_counters
 
         torch.cuda.synchronize()
         cls.wrapper = TorchCommTestWrapper()
@@ -70,12 +67,16 @@ class _SingleTestBase(unittest.TestCase):
         alloc_elems = (
             cls.pool_capacity // torch.tensor([], dtype=cls.dtype).element_size()
         )
-        cls.recv_buf, cls.recv_pool = alloc_comms_buffer(
-            alloc_elems, cls.dtype, cls.device, cls.torchcomm.get_backend()
-        )
-        cls.send_buf, cls.send_pool = alloc_comms_buffer(
-            alloc_elems, cls.dtype, cls.device, cls.torchcomm.get_backend()
-        )
+
+        # Allocate GIN-compatible buffers using torchcomms memory allocator.
+        # These low-level tests don't use AlltoallvOp, so we allocate directly.
+        cls.recv_pool = torch.cuda.MemPool(cls.allocator)
+        with torch.cuda.use_mem_pool(cls.recv_pool):
+            cls.recv_buf = torch.zeros(alloc_elems, dtype=cls.dtype, device=cls.device)
+
+        cls.send_pool = torch.cuda.MemPool(cls.allocator)
+        with torch.cuda.use_mem_pool(cls.send_pool):
+            cls.send_buf = torch.zeros(alloc_elems, dtype=cls.dtype, device=cls.device)
 
         # Pre-allocate completion counters BEFORE GIN activation.
         # GIN (GPU-Initiated NCCL) blocks regular CUDA allocations after
@@ -181,8 +182,6 @@ class _SingleTestBase(unittest.TestCase):
         """Fill shared buffers with uniform-size identifiable patterns.
 
         Returns (send_sizes, send_offsets, recv_sizes, local_recv_slot_offsets, remote_write_offsets).
-        All tensors and offset exchange are done here (before GIN is active)
-        so that no CUDA tensor operations happen after _register_send_buf().
         """
         from comms.pipes.collectives.triton import exchange_offsets
 

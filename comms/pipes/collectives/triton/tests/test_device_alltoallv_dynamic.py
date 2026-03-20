@@ -498,6 +498,61 @@ class TestSyncBufferAPIAvailability(unittest.TestCase):
         )
 
 
+# =============================================================================
+# Tests: AlltoallvOp Zero-Copy API
+# =============================================================================
+
+
+class TestAlltoallvOpZeroCopyAPI(unittest.TestCase):
+    """Tests for AlltoallvOp zero-copy buffer ownership API."""
+
+    @unittest.skipUnless(TRITON_AVAILABLE, "Triton not available")
+    def test_alltoallv_requires_output_tensor(self) -> None:
+        """Test that alltoallv requires output_tensor parameter (mandatory)."""
+        import inspect
+
+        from comms.pipes.collectives.triton import AlltoallvOp
+
+        sig = inspect.signature(AlltoallvOp.alltoallv)
+        params = list(sig.parameters.keys())
+
+        # output_tensor should be present
+        self.assertIn("output_tensor", params)
+
+        # output_tensor should NOT have a default value (mandatory)
+        param = sig.parameters["output_tensor"]
+        self.assertEqual(
+            param.default,
+            inspect.Parameter.empty,
+            "output_tensor should be mandatory (no default)",
+        )
+
+    @unittest.skipUnless(TRITON_AVAILABLE, "Triton not available")
+    def test_alltoallv_parameter_order(self) -> None:
+        """Test that alltoallv has correct parameter order."""
+        import inspect
+
+        from comms.pipes.collectives.triton import AlltoallvOp
+
+        sig = inspect.signature(AlltoallvOp.alltoallv)
+        params = list(sig.parameters.keys())
+
+        # Expected order: self, input_tensor, output_tensor, output_split_sizes, input_split_sizes, ...
+        self.assertEqual(params[0], "self")
+        self.assertEqual(params[1], "input_tensor")
+        self.assertEqual(params[2], "output_tensor")
+        self.assertEqual(params[3], "output_split_sizes")
+        self.assertEqual(params[4], "input_split_sizes")
+
+    @unittest.skipUnless(TRITON_AVAILABLE, "Triton not available")
+    def test_alltoallv_op_has_release_buffers_method(self) -> None:
+        """Test that AlltoallvOp has release_buffers method."""
+        from comms.pipes.collectives.triton import AlltoallvOp
+
+        self.assertTrue(hasattr(AlltoallvOp, "release_buffers"))
+        self.assertTrue(callable(AlltoallvOp.release_buffers))
+
+
 class TestSyncBufferAlltoallvOp(unittest.TestCase):
     """Tests for sync_buffer in AlltoallvOp class."""
 
