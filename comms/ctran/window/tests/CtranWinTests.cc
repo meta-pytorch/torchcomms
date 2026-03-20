@@ -601,6 +601,130 @@ TEST_F(CtranWinDistTest, asymmetricWindowPutGet) {
   EXPECT_EQ(res, commSuccess);
 }
 
+// Verify that the cuStreamBatchMemOp signal reset in waitSignalDriverApi
+// correctly resets signal values between CUDA graph replays.  Without the
+// reset, replay N>0 would see stale GEQ values from replay N-1 and the
+// wait would pass prematurely (before the peer's put data arrives).
+TEST_F(CtranWinDistTest, signalResetAcrossGraphReplays) {
+  auto comm = makeCtranComm();
+  ASSERT_NE(comm, nullptr);
+
+  auto statex = comm->statex_.get();
+  ASSERT_NE(statex, nullptr);
+
+  if (statex->nRanks() < 2) {
+    GTEST_SKIP() << "Need at least 2 ranks";
+  }
+
+  const int rank = statex->rank();
+  const int numRanks = statex->nRanks();
+  const int nextPeer = (rank + 1) % numRanks;
+  const int prevPeer = (rank + numRanks - 1) % numRanks;
+  const size_t count = 1024;
+  const size_t winSizeBytes = count * sizeof(int) * numRanks;
+
+  // Allocate window
+  CtranWin* win = nullptr;
+  void* winBase = nullptr;
+  COMMCHECK_TEST(ctranWinAllocate(winSizeBytes, comm.get(), &winBase, &win));
+  ASSERT_NE(winBase, nullptr);
+
+  // Put buffer: rank * 1000 + index
+  int* putBuf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&putBuf, count * sizeof(int)));
+  assignChunkValue(putBuf, count, rank * 1000, 1);
+
+  cudaStream_t captureStream, putStream, waitStream;
+  CUDACHECK_TEST(
+      cudaStreamCreateWithFlags(&captureStream, cudaStreamNonBlocking));
+  CUDACHECK_TEST(cudaStreamCreateWithFlags(&putStream, cudaStreamNonBlocking));
+  CUDACHECK_TEST(cudaStreamCreateWithFlags(&waitStream, cudaStreamNonBlocking));
+
+  this->barrier(comm.get());
+
+  // Capture put + signal + wait_signal into a graph
+  CUDACHECK_TEST(
+      cudaStreamBeginCapture(captureStream, cudaStreamCaptureModeRelaxed));
+
+  // Fork to putStream
+  cudaEvent_t forkEvent, joinEvent;
+  CUDACHECK_TEST(cudaEventCreate(&forkEvent));
+  CUDACHECK_TEST(cudaEventCreate(&joinEvent));
+
+  CUDACHECK_TEST(cudaEventRecord(forkEvent, captureStream));
+  CUDACHECK_TEST(cudaStreamWaitEvent(putStream, forkEvent, 0));
+
+  COMMCHECK_TEST(ctranPutSignal(
+      putBuf, count, commInt32, nextPeer, count * rank, win, putStream, true));
+
+  // Join putStream back, fork to waitStream
+  CUDACHECK_TEST(cudaEventRecord(joinEvent, putStream));
+  CUDACHECK_TEST(cudaStreamWaitEvent(waitStream, joinEvent, 0));
+
+  COMMCHECK_TEST(ctranWaitSignal(prevPeer, win, waitStream));
+
+  // Join waitStream back to captureStream
+  cudaEvent_t joinEvent2;
+  CUDACHECK_TEST(cudaEventCreate(&joinEvent2));
+  CUDACHECK_TEST(cudaEventRecord(joinEvent2, waitStream));
+  CUDACHECK_TEST(cudaStreamWaitEvent(captureStream, joinEvent2, 0));
+
+  cudaGraph_t graph;
+  CUDACHECK_TEST(cudaStreamEndCapture(captureStream, &graph));
+  ASSERT_NE(graph, nullptr);
+
+  cudaGraphExec_t graphExec;
+  CUDACHECK_TEST(cudaGraphInstantiate(&graphExec, graph, nullptr, nullptr, 0));
+
+  this->barrier(comm.get());
+
+  // Replay multiple times — each replay should deliver fresh data
+  constexpr int kNumReplays = 5;
+  for (int replay = 0; replay < kNumReplays; replay++) {
+    // Zero the window buffer so we can detect fresh data
+    CUDACHECK_TEST(cudaMemset(winBase, 0, winSizeBytes));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    this->barrier(comm.get());
+
+    CUDACHECK_TEST(cudaGraphLaunch(graphExec, captureStream));
+    CUDACHECK_TEST(cudaStreamSynchronize(captureStream));
+    this->barrier(comm.get());
+
+    // Verify data from previous peer arrived correctly
+    int* winBufInt = reinterpret_cast<int*>(winBase);
+    std::vector<int> recvData(count, -1);
+    CUDACHECK_TEST(cudaMemcpy(
+        recvData.data(),
+        winBufInt + count * prevPeer,
+        count * sizeof(int),
+        cudaMemcpyDefault));
+
+    int errs = 0;
+    for (size_t i = 0; i < count; ++i) {
+      int expected = prevPeer * 1000 + static_cast<int>(i);
+      if (recvData[i] != expected && errs++ < 5) {
+        XLOG(ERR) << "Replay " << replay << ": Rank " << rank << ": data[" << i
+                  << "] = " << recvData[i] << ", expected = " << expected;
+      }
+    }
+    EXPECT_EQ(errs, 0) << "Replay " << replay
+                       << ": signal reset failed — stale data";
+  }
+
+  // Cleanup
+  CUDACHECK_TEST(cudaGraphExecDestroy(graphExec));
+  CUDACHECK_TEST(cudaGraphDestroy(graph));
+  CUDACHECK_TEST(cudaFree(putBuf));
+  CUDACHECK_TEST(cudaStreamDestroy(captureStream));
+  CUDACHECK_TEST(cudaStreamDestroy(putStream));
+  CUDACHECK_TEST(cudaStreamDestroy(waitStream));
+  CUDACHECK_TEST(cudaEventDestroy(forkEvent));
+  CUDACHECK_TEST(cudaEventDestroy(joinEvent));
+  CUDACHECK_TEST(cudaEventDestroy(joinEvent2));
+  COMMCHECK_TEST(ctranWinFree(win));
+  this->barrier(comm.get());
+}
+
 INSTANTIATE_TEST_SUITE_P(
     CtranWinInstance,
     CtranWinTestParam,

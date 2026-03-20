@@ -253,6 +253,61 @@ static commResult_t cudaPfnFuncLoader(void) {
 #endif
 }
 
+// CU_DEVICE_ATTRIBUTE_CAN_USE_STREAM_MEM_OPS was renamed to _V1 in CUDA 12+.
+// Both are enum values (not macros), so use the _V1 name which is available
+// across all supported CUDA versions.
+bool canUseCuStreamBatchMemOp() {
+#if defined(__HIP_PLATFORM_AMD__)
+  return false;
+#else
+  static bool supported = [] {
+    int cudaDev;
+    if (cudaGetDevice(&cudaDev) != cudaSuccess) {
+      return false;
+    }
+    CUdevice dev;
+    if (FB_CUPFN(cuDeviceGet) == nullptr ||
+        FB_CUPFN(cuDeviceGetAttribute) == nullptr) {
+      return false;
+    }
+    if (FB_CUPFN(cuDeviceGet)(&dev, cudaDev) != CUDA_SUCCESS) {
+      return false;
+    }
+    int value = 0;
+    auto st = FB_CUPFN(cuDeviceGetAttribute)(
+        &value, CU_DEVICE_ATTRIBUTE_CAN_USE_STREAM_MEM_OPS_V1, dev);
+    return st == CUDA_SUCCESS && value != 0;
+  }();
+  return supported;
+#endif
+}
+
+bool canUse64BitStreamMemOps() {
+#if defined(__HIP_PLATFORM_AMD__)
+  return false;
+#else
+  static bool supported = [] {
+    int cudaDev;
+    if (cudaGetDevice(&cudaDev) != cudaSuccess) {
+      return false;
+    }
+    CUdevice dev;
+    if (FB_CUPFN(cuDeviceGet) == nullptr ||
+        FB_CUPFN(cuDeviceGetAttribute) == nullptr) {
+      return false;
+    }
+    if (FB_CUPFN(cuDeviceGet)(&dev, cudaDev) != CUDA_SUCCESS) {
+      return false;
+    }
+    int value = 0;
+    auto st = FB_CUPFN(cuDeviceGetAttribute)(
+        &value, CU_DEVICE_ATTRIBUTE_CAN_USE_64_BIT_STREAM_MEM_OPS_V1, dev);
+    return st == CUDA_SUCCESS && value != 0;
+  }();
+  return supported;
+#endif
+}
+
 static std::once_flag commCudaLibraryInitFlag;
 static commResult_t commCudaLibraryInitResult;
 
