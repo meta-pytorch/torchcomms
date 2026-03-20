@@ -8,7 +8,22 @@ namespace torch::comms {
 TorchComm::TorchComm(
     const std::string& backend_name,
     std::shared_ptr<TorchCommBackend> impl)
-    : backend_(backend_name), impl_(std::move(impl)) {}
+    : backend_(backend_name), impl_(std::move(impl)) {
+  // Initialize ranks_ for root communicator: [0, 1, 2, ..., size-1]
+  int size = impl_->getSize();
+  ranks_.reserve(size);
+  for (int i = 0; i < size; ++i) {
+    ranks_.push_back(i);
+  }
+}
+
+TorchComm::TorchComm(
+    const std::string& backend_name,
+    std::shared_ptr<TorchCommBackend> impl,
+    std::vector<int> ranks)
+    : backend_(backend_name),
+      impl_(std::move(impl)),
+      ranks_(std::move(ranks)) {}
 
 std::shared_ptr<TorchComm> new_comm(
     const std::string& backend_name,
@@ -32,6 +47,10 @@ int TorchComm::getRank() const {
 
 int TorchComm::getSize() const {
   return impl_->getSize();
+}
+
+std::vector<int> TorchComm::getRanks() const {
+  return ranks_;
 }
 
 std::string_view TorchComm::getCommName() const {
@@ -593,8 +612,14 @@ std::shared_ptr<TorchComm> TorchComm::split(
   if (new_impl == nullptr) {
     return nullptr;
   }
-  auto comm =
-      std::shared_ptr<TorchComm>(new TorchComm(backend_, std::move(new_impl)));
+  // Map the local ranks to global ranks from this communicator
+  std::vector<int> global_ranks;
+  global_ranks.reserve(ranks.size());
+  for (int local_rank : ranks) {
+    global_ranks.push_back(ranks_[local_rank]);
+  }
+  auto comm = std::shared_ptr<TorchComm>(
+      new TorchComm(backend_, std::move(new_impl), std::move(global_ranks)));
   postHook(
       PostHookArgs{
           .name = OpName::split,
