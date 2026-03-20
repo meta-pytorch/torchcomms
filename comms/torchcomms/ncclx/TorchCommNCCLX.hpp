@@ -185,7 +185,8 @@ class TorchCommNCCLX : public TorchCommBackend,
       const at::Tensor& input,
       const at::Tensor& output_split_sizes,
       const at::Tensor& input_split_sizes,
-      bool async_op);
+      bool async_op,
+      const std::unordered_map<std::string, std::string>& hints = {});
 
   c10::intrusive_ptr<TorchWork> alltoallv_dynamic_dispatch(
       const std::vector<at::Tensor>& output_tensor_list,

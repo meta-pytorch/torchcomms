@@ -1507,7 +1507,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::device_alltoallv_single(
     const at::Tensor& input,
     const at::Tensor& output_split_sizes,
     const at::Tensor& input_split_sizes,
-    bool async_op) {
+    bool async_op,
+    const std::unordered_map<std::string, std::string>& hints) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(output);
@@ -1562,7 +1563,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::device_alltoallv_single(
       nccl_comm_,
       stream,
       send_elements_per_slice,
-      recv_elements_per_slice);
+      recv_elements_per_slice,
+      hints);
 
   NCCLX_CHECK(nccl_api_, nccl_comm_, result, "NCCLX deviceAllToAllv failed");
 
