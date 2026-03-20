@@ -22,17 +22,31 @@ struct Transport;
 } // namespace comms::pipes
 
 using meta::comms::CommBackend;
+
+// Per-communicator pipes NVL transport overrides.
+// -1 means use CVAR default.
+struct ctranPipesConfig {
+  int64_t nvlChunkSize{-1};
+  int useDualStateBuffer{-1}; // -1=cvar, 0=single, 1=dual
+
+  bool operator==(const ctranPipesConfig& other) const {
+    return nvlChunkSize == other.nvlChunkSize &&
+        useDualStateBuffer == other.useDualStateBuffer;
+  }
+};
+
 struct ctranConfig {
   int blocking{-1};
   std::string commDesc;
   const char* ncclAllGatherAlgo{nullptr};
   std::vector<enum CommBackend> backends = {};
+  ctranPipesConfig pipesConfig;
 
   bool operator==(const ctranConfig& other) const {
     return (
         blocking == other.blocking && commDesc == other.commDesc &&
         ncclAllGatherAlgo == other.ncclAllGatherAlgo &&
-        backends == other.backends);
+        backends == other.backends && pipesConfig == other.pipesConfig);
   }
 };
 

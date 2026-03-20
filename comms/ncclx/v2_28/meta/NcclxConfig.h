@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -29,6 +30,11 @@ class Config {
   bool lazyConnect = false;
   bool lazySetupChannels = false;
   bool fastInitMode = false;
+
+  // Per-communicator MultiPeerTransport (pipes) NVL config overrides.
+  // When set, override the corresponding CVARs for this communicator.
+  std::optional<size_t> pipesNvlChunkSize;
+  std::optional<bool> pipesUseDualStateBuffer;
 };
 
 // Hint keys corresponding to Config fields above.  Used by
@@ -41,6 +47,8 @@ inline const std::vector<std::string>& knownHintKeys() {
       "lazyConnect",
       "lazySetupChannels",
       "fastInitMode",
+      "pipesNvlChunkSize",
+      "pipesUseDualStateBuffer",
   };
   return keys;
 }
