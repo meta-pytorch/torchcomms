@@ -36,15 +36,20 @@ namespace ctran::utils {
         asyncErr, ctran::utils::Exception(e.what(), commRemoteError)); \
   }
 
-#define CTRAN_ASYNC_ERR_HANDLE_IMPL_FAULT_TOLERANCE(comm, e) \
-  do {                                                       \
-    CTRAN_ASYNC_ERR_HANDLE_IMPL(comm->getAsyncError(), e);   \
-    if (comm->abortEnabled()) {                              \
-      XLOGF(ERR, "Fault tolerance enabled; aborting");       \
-      comm->setAbort();                                      \
-    } else {                                                 \
-      throw;                                                 \
-    }                                                        \
+#define CTRAN_ASYNC_ERR_HANDLE_IMPL_FAULT_TOLERANCE(comm, e)       \
+  do {                                                             \
+    CTRAN_ASYNC_ERR_HANDLE_IMPL(comm->getAsyncError(), e);         \
+    if (comm->abortEnabled()) {                                    \
+      XLOGF(                                                       \
+          ERR,                                                     \
+          "Fault tolerance enabled; marking communicator aborted " \
+          "(rank={}, commHash={:x})",                              \
+          comm->logMetaData_.rank,                                 \
+          comm->logMetaData_.commHash);                            \
+      comm->setAbort();                                            \
+    } else {                                                       \
+      throw;                                                       \
+    }                                                              \
   } while (0)
 
 #define CTRAN_ASYNC_ERR_GUARD_FAULT_TOLERANCE(comm, code)          \

@@ -1020,8 +1020,15 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     }
 
     if (comm->testAbort()) {
-      // TODO(T238821628): re-evaluate error code
-      throw ctran::utils::Exception("comm aborted", commRemoteError);
+      auto _abort = comm->getAbort();
+      std::string _ctx =
+          _abort->TimedOut() ? "comm aborted due to timeout" : "comm aborted";
+      throw ctran::utils::Exception(
+          _ctx,
+          commRemoteError,
+          comm->logMetaData_.rank,
+          comm->logMetaData_.commHash,
+          fmt::format("waitNotify for peer {}", notify->peer));
     }
 
     CLOGF_TRACE(
@@ -1062,8 +1069,15 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     }
 
     if (comm->testAbort()) {
-      // TODO(T238821628): re-evaluate error code
-      throw ctran::utils::Exception("comm aborted", commRemoteError);
+      auto _abort = comm->getAbort();
+      std::string _ctx =
+          _abort->TimedOut() ? "comm aborted due to timeout" : "comm aborted";
+      throw ctran::utils::Exception(
+          _ctx,
+          commRemoteError,
+          comm->logMetaData_.rank,
+          comm->logMetaData_.commHash,
+          fmt::format("waitRequest for peer {}", req->peer));
     }
 
     return commSuccess;
