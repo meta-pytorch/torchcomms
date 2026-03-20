@@ -2224,24 +2224,26 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
 
   // Create a new NCCL communicator
   ncclComm_t new_comm;
-  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   std::string commDesc = fmt::format(
       "{}::split::{}_{}_{}", name_, color, split_name, split_counter_++);
-  config.commDesc = commDesc.c_str();
 
-  // Set splitGroupRanks and splitGroupSize hints automatically based on ranks
-  // parameter
-  if (!ranks.empty()) {
-    config.splitGroupRanks = const_cast<int*>(ranks.data());
-    config.splitGroupSize = static_cast<int>(ranks.size());
-  }
-
-  // Populate NCCL config from user-provided hints.  NCCLx-specific fields
-  // are passed via the hints object; upstream NCCL fields are set directly
-  // on the config struct.
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   ncclx::Hints hints;
-  populateNcclConfigFromHints(config, hints, options, commDesc);
   config.hints = &hints;
+  populateNcclConfig(config, options, commDesc);
+  hints.set("ncclx::commDesc", commDesc);
+
+  // Set splitGroupRanks hint automatically based on ranks parameter
+  if (!ranks.empty()) {
+    std::string rankStr;
+    for (size_t i = 0; i < ranks.size(); ++i) {
+      if (i > 0) {
+        rankStr += ',';
+      }
+      rankStr += std::to_string(ranks[i]);
+    }
+    hints.set("ncclx::splitGroupRanks", rankStr);
+  }
 
   // Verify the correct CUDA device is set before calling ncclCommSplit.
   // NCCL expects the caller to have set the device matching the communicator.
