@@ -485,7 +485,9 @@ ncclResult_t ncclx::deviceAllToAllv(
     const int64_t* recvcounts_d,
     ncclDataType_t datatype,
     ncclComm_t comm,
-    cudaStream_t stream) {
+    cudaStream_t stream,
+    int64_t sendcountsMultiplier,
+    int64_t recvcountsMultiplier) {
   if (!ctranDeviceAllToAllvSupport(comm->ctranComm_.get())) {
     FB_ERRORRETURN(
         ncclInvalidUsage,
@@ -498,7 +500,9 @@ ncclResult_t ncclx::deviceAllToAllv(
       recvcounts_d,
       ncclToMetaComm(datatype),
       comm->ctranComm_.get(),
-      stream));
+      stream,
+      sendcountsMultiplier,
+      recvcountsMultiplier));
 }
 #else
 __attribute__((visibility("default")))
@@ -509,7 +513,9 @@ ncclResult_t ncclx::deviceAllToAllv(
     const int64_t* /*recvcounts_d*/,
     ncclDataType_t /*datatype*/,
     ncclComm_t /*comm*/,
-    cudaStream_t /*stream*/) {
+    cudaStream_t /*stream*/,
+    int64_t /*sendcountsMultiplier*/,
+    int64_t /*recvcountsMultiplier*/) {
   return ncclInvalidUsage;
 }
 #endif // ENABLE_PIPES

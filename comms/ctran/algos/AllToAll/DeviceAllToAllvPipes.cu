@@ -39,6 +39,8 @@ __global__ void ncclKernelDeviceAllToAllvPipes(
   const int nLocalRanks = args.nLocalRanks;
   const int myRank = args.myRank;
   const size_t elementSize = args.elementSize;
+  const int64_t sendMultiplier = args.sendcountsMultiplier;
+  const int64_t recvMultiplier = args.recvcountsMultiplier;
   auto* transports = args.transports;
 
   auto group = args.useBlockGroup ? comms::pipes::make_block_group()
@@ -47,11 +49,12 @@ __global__ void ncclKernelDeviceAllToAllvPipes(
   if (nLocalRanks == 1) {
     // Single local rank — self-copy only
     int globalRank = args.localRankToGlobalRank[0];
-    size_t sendBytes = args.sendcounts_d[globalRank] * elementSize;
-    size_t sendOffset =
-        computeDisplacement(args.sendcounts_d, globalRank) * elementSize;
-    size_t recvOffset =
-        computeDisplacement(args.recvcounts_d, globalRank) * elementSize;
+    size_t sendBytes =
+        args.sendcounts_d[globalRank] * sendMultiplier * elementSize;
+    size_t sendOffset = computeDisplacement(args.sendcounts_d, globalRank) *
+        sendMultiplier * elementSize;
+    size_t recvOffset = computeDisplacement(args.recvcounts_d, globalRank) *
+        recvMultiplier * elementSize;
 
     transports[globalRank].self.put(
         group,
@@ -68,13 +71,15 @@ __global__ void ncclKernelDeviceAllToAllvPipes(
     int peerGlobalRank = args.localRankToGlobalRank[local_peer_idx];
 
     // Read counts from device memory (indexed by global rank)
-    size_t sendBytes = args.sendcounts_d[peerGlobalRank] * elementSize;
-    size_t recvBytes = args.recvcounts_d[peerGlobalRank] * elementSize;
+    size_t sendBytes =
+        args.sendcounts_d[peerGlobalRank] * sendMultiplier * elementSize;
+    size_t recvBytes =
+        args.recvcounts_d[peerGlobalRank] * recvMultiplier * elementSize;
     // Compute displacements as exclusive prefix sums of counts
-    size_t sendOffset =
-        computeDisplacement(args.sendcounts_d, peerGlobalRank) * elementSize;
-    size_t recvOffset =
-        computeDisplacement(args.recvcounts_d, peerGlobalRank) * elementSize;
+    size_t sendOffset = computeDisplacement(args.sendcounts_d, peerGlobalRank) *
+        sendMultiplier * elementSize;
+    size_t recvOffset = computeDisplacement(args.recvcounts_d, peerGlobalRank) *
+        recvMultiplier * elementSize;
 
     if (peerGlobalRank == myRank) {
       // Self-copy: only one partition does it

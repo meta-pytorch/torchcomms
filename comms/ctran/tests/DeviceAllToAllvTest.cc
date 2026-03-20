@@ -420,6 +420,96 @@ TEST_F(DeviceAllToAllvTest, UniformSplitCudaGraphChangedData) {
 
 #endif // TEST_CUDA_GRAPH_MODE
 
+// Multi-dimensional uniform split: split sizes are "row counts" (dim-0 slices),
+// and each row has numCols elements. The kernel multiplies counts by
+// sendcountsMultiplier/recvcountsMultiplier to get actual element counts.
+TEST_F(DeviceAllToAllvTest, UniformSplitMultiDim) {
+  auto comm = makeCtranComm();
+  ASSERT_NE(comm, nullptr);
+  ASSERT_NE(comm->multiPeerTransport_, nullptr);
+
+  if (!ctranDeviceAllToAllvSupport(comm.get())) {
+    GTEST_SKIP() << "deviceAllToAllv not supported (requires all NVLink peers)";
+  }
+
+  const int nRanks = numRanks;
+  const size_t chunkRows = 1024; // rows per peer (CTRAN minimum)
+  const size_t numCols = 4; // elements per row
+  const size_t totalRows = chunkRows * nRanks;
+  const size_t totalElements = totalRows * numCols;
+
+  // Allocate GPU buffers
+  float* sendBuf = nullptr;
+  float* recvBuf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&sendBuf, totalElements * sizeof(float)));
+  CUDACHECK_TEST(cudaMalloc(&recvBuf, totalElements * sizeof(float)));
+
+  // Fill send buffer with rank value
+  std::vector<float> h_send(totalElements, static_cast<float>(globalRank));
+  CUDACHECK_TEST(cudaMemcpy(
+      sendBuf,
+      h_send.data(),
+      totalElements * sizeof(float),
+      cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(cudaMemset(recvBuf, 0, totalElements * sizeof(float)));
+
+  // Split sizes are ROW counts, not element counts
+  std::vector<int64_t> h_counts(nRanks, static_cast<int64_t>(chunkRows));
+
+  int64_t* d_sendcounts = nullptr;
+  int64_t* d_recvcounts = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&d_sendcounts, nRanks * sizeof(int64_t)));
+  CUDACHECK_TEST(cudaMalloc(&d_recvcounts, nRanks * sizeof(int64_t)));
+
+  CUDACHECK_TEST(cudaMemcpy(
+      d_sendcounts,
+      h_counts.data(),
+      nRanks * sizeof(int64_t),
+      cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(cudaMemcpy(
+      d_recvcounts,
+      h_counts.data(),
+      nRanks * sizeof(int64_t),
+      cudaMemcpyHostToDevice));
+
+  // Pass scalingFactor = numCols to convert row counts to element counts
+  auto result = ctranDeviceAllToAllv(
+      sendBuf,
+      recvBuf,
+      d_sendcounts,
+      d_recvcounts,
+      commFloat,
+      comm.get(),
+      stream_,
+      static_cast<int64_t>(numCols),
+      static_cast<int64_t>(numCols));
+  ASSERT_EQ(result, commSuccess);
+  CUDACHECK_TEST(cudaStreamSynchronize(stream_));
+
+  // Verify: segment j should contain value j (sent from rank j)
+  std::vector<float> h_recv(totalElements);
+  CUDACHECK_TEST(cudaMemcpy(
+      h_recv.data(),
+      recvBuf,
+      totalElements * sizeof(float),
+      cudaMemcpyDeviceToHost));
+
+  const size_t elementsPerPeer = chunkRows * numCols;
+  for (int j = 0; j < nRanks; j++) {
+    for (size_t k = 0; k < elementsPerPeer; k++) {
+      EXPECT_EQ(h_recv[j * elementsPerPeer + k], static_cast<float>(j))
+          << "Rank " << globalRank << ": segment " << j << " element " << k
+          << " expected " << j << " got " << h_recv[j * elementsPerPeer + k];
+    }
+  }
+
+  // Cleanup
+  CUDACHECK_TEST(cudaFree(sendBuf));
+  CUDACHECK_TEST(cudaFree(recvBuf));
+  CUDACHECK_TEST(cudaFree(d_sendcounts));
+  CUDACHECK_TEST(cudaFree(d_recvcounts));
+}
+
 // Verify support check passes when pipes is initialized
 TEST_F(DeviceAllToAllvTest, SupportedWithPipes) {
   auto comm = makeCtranComm();
