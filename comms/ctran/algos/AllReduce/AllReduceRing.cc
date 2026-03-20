@@ -981,9 +981,17 @@ inline commResult_t completeHostResourceSetup(
 
 } // namespace
 
-#define HOST_ABORT()                                                \
-  if (comm->testAbort()) {                                          \
-    throw ctran::utils::Exception("comm aborted", commRemoteError); \
+#define HOST_ABORT(desc)                                                     \
+  if (comm->testAbort()) {                                                   \
+    auto _abort = comm->getAbort();                                          \
+    std::string _ctx =                                                       \
+        _abort->TimedOut() ? "comm aborted due to timeout" : "comm aborted"; \
+    throw ctran::utils::Exception(                                           \
+        _ctx,                                                                \
+        commRemoteError,                                                     \
+        comm->logMetaData_.rank,                                             \
+        comm->logMetaData_.commHash,                                         \
+        std::string(desc));                                                  \
   }
 
 static commResult_t impl(
@@ -1092,7 +1100,12 @@ static commResult_t impl(
       progressRecv(args, resource, algoCtx, bufSyncSResps, flushResps);
       progressRevSend(args, resource, algoCtx, revDataSResps, revBufSyncRResps);
       progressRevRecv(args, resource, algoCtx, revBufSyncSResps, revFlushResps);
-      HOST_ABORT();
+      HOST_ABORT(
+          fmt::format(
+              "ctring partition {}, rightPeer={}, leftPeer={}",
+              algoCtx.partition,
+              args.rightRank,
+              args.leftRank));
     }
 
     // Release any remaining resps before moving to next partition
@@ -1110,7 +1123,7 @@ static commResult_t impl(
     resource.revRecvCopySync->resetStatus();
 
     updatePartitionDone(algoCtx);
-    HOST_ABORT();
+    HOST_ABORT(fmt::format("ctring after partition {}", algoCtx.partition));
   } // end of partition loop
 
   // Reset flags for next allreduce to reuse. Only clear sync status (post/

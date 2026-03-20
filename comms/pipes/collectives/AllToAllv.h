@@ -20,6 +20,10 @@ namespace comms::pipes {
  * This is a host function that launches the AllToAllv kernel. All device
  * pointers and DeviceSpans must already be allocated and populated on the GPU.
  *
+ * This overload creates a Timeout internally per call. For pipelined usage
+ * (multiple back-to-back calls), prefer the Timeout overload below to avoid
+ * per-call cudaGetDevice/cudaDeviceGetAttribute overhead.
+ *
  * @param recvbuff_d Device pointer to receive buffer
  * @param sendbuff_d Device pointer to send buffer (const)
  * @param my_rank_id Current rank ID
@@ -43,6 +47,26 @@ void all_to_allv(
     DeviceSpan<ChunkInfo> send_chunk_infos,
     DeviceSpan<ChunkInfo> recv_chunk_infos,
     std::chrono::milliseconds timeout = std::chrono::milliseconds{0},
+    cudaStream_t stream = nullptr,
+    int num_blocks = 4,
+    int num_threads = 256,
+    std::optional<dim3> cluster_dim = dim3{4, 1, 1});
+
+/**
+ * Host wrapper for AllToAllv with pre-built Timeout.
+ *
+ * Use this overload for pipelined/multi-call usage (e.g., benchmarks) where
+ * Timeout is created once outside the loop (avoids per-call CUDA API
+ * queries from makeTimeout).
+ */
+void all_to_allv(
+    void* recvbuff_d,
+    const void* sendbuff_d,
+    int my_rank_id,
+    DeviceSpan<Transport> transports_per_rank,
+    DeviceSpan<ChunkInfo> send_chunk_infos,
+    DeviceSpan<ChunkInfo> recv_chunk_infos,
+    Timeout timeout_config,
     cudaStream_t stream = nullptr,
     int num_blocks = 4,
     int num_threads = 256,

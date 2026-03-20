@@ -3,6 +3,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 
 #include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/pipes/GpuMemHandler.h"
@@ -76,6 +77,40 @@ struct MultiPeerNvlTransportConfig {
   //   assigned to group (K % total_groups), making the unready write visible
   //   after group.sync().
   bool useDualStateBuffer{false};
+
+  // Size of LL128 packet buffer per peer (bytes).
+  // When > 0, allocates LL128 buffers and enables ll128_send/recv/forward
+  // on P2pNvlTransportDevice. When 0 (default), LL128 is disabled.
+  // Use ll128_buffer_size() from Ll128Packet.cuh to compute from message size.
+  std::size_t ll128BufferSize{0};
+};
+
+/**
+ * Pre-exchanged data buffer pointers for reuse by MultiPeerNvlTransport.
+ *
+ * Both vectors are indexed by NVL local rank. The entry at self rank is
+ * ignored (may be default-constructed / empty).
+ *
+ * - localBuffers[peerNvlRank]: this rank's data buffer region for receiving
+ *   from peerNvlRank (the peer writes here via NVLink).
+ * - remoteBuffers[peerNvlRank]: IPC-mapped pointer to peerNvlRank's data
+ *   buffer region that this rank writes into via NVLink.
+ *
+ * SIZE REQUIREMENTS:
+ *   Each per-peer buffer must be at least (pipelineDepth * dataBufferSize)
+ *   bytes, matching the config passed to MultiPeerNvlTransport.
+ *   setExternalDataBuffers() validates this and throws on mismatch.
+ *
+ * OWNERSHIP:
+ *   The caller retains ownership of the underlying GPU memory. The buffers
+ *   must remain valid and exclusively reserved for pipes' use for the
+ *   lifetime of the MultiPeerNvlTransport. Pipes will read/write these
+ *   buffers during send()/recv() operations — concurrent access by other
+ *   subsystems will cause data corruption.
+ */
+struct ExternalStagingBuffers {
+  std::vector<DeviceSpan<char>> localBuffers;
+  std::vector<DeviceSpan<char>> remoteBuffers;
 };
 
 /**
@@ -122,11 +157,15 @@ class MultiPeerNvlTransport {
    * Constructor - Initialize multi-peer NVLink transport
    *
    * Allocates local GPU buffers for multi-peer communication:
-   * - Data buffer: for staging data transfers (nRanks-1 peer regions)
    * - State buffer: for chunk-level synchronization states
+   * - Signal buffer: for P2P signal coordination
    * - P2pNvlTransportDevice array: preallocated on device memory for all peers
-   *   to allow stateful tranport and reduce kernel launch latency (avoids
+   *   to allow stateful transport and reduce kernel launch latency (avoids
    *   per-launch H2D copy)
+   *
+   * Data buffers are NOT allocated in the constructor. They are either:
+   * - Allocated internally in exchange() (default behavior)
+   * - Provided externally via setExternalDataBuffers() before exchange()
    *
    * Memory sharing mode is automatically detected:
    * - Fabric handles (H100+, CUDA 12.3+): Enables GB200 multi-node NVLink
@@ -158,17 +197,37 @@ class MultiPeerNvlTransport {
   ~MultiPeerNvlTransport() = default;
 
   /**
+   * setExternalDataBuffers - Provide pre-exchanged data buffers
+   *
+   * Call this BEFORE exchange() to use externally-managed data buffers instead
+   * of allocating internally. This enables reuse of data buffers that are
+   * already IPC-shared (e.g., ctran's staging buffers from SharedResource).
+   *
+   * When external data buffers are set:
+   * - exchange() will NOT allocate or exchange data buffers
+   * - State and signal buffers are still allocated and exchanged internally
+   * - buildP2pTransportDevice() uses the provided pointers for LocalState
+   *   and RemoteState dataBuffer fields
+   *
+   * See ExternalStagingBuffers for size requirements and ownership semantics.
+   */
+  void setExternalDataBuffers(ExternalStagingBuffers externalStagingBuffers);
+
+  /**
    * exchange - Exchange memory handles across all ranks
    *
    * COLLECTIVE OPERATION: All ranks MUST call this before using
    * getP2pTransportDevice().
    *
-   * Performs collective handle exchange using the bootstrap interface:
-   * 1. Each rank shares its local buffer's handle with all other ranks
-   * 2. Each rank receives handles from all other ranks
-   * 3. Builds and copies P2pNvlTransportDevice for each peer to the
+   * If setExternalDataBuffers() was called before exchange(), data buffers
+   * are used as-is (no allocation or exchange). Otherwise, data buffers are
+   * allocated internally and exchanged.
+   *
+   * In both cases:
+   * 1. State and signal buffer handles are exchanged across all ranks
+   * 2. Builds and copies P2pNvlTransportDevice for each peer to the
    *    preallocated device array (allocated in constructor)
-   * 4. Implicit barrier ensures all ranks complete before returning
+   * 3. Implicit barrier ensures all ranks complete before returning
    *
    * The type of handle (fabric or cudaIpc) depends on the automatically
    * detected memory sharing mode.
@@ -266,7 +325,7 @@ class MultiPeerNvlTransport {
    * @return kFabric for H100+/CUDA12.3+, kCudaIpc for fallback
    */
   MemSharingMode getMemSharingMode() const {
-    return dataBufferHandler_->getMode();
+    return memSharingMode_;
   }
 
  private:
@@ -286,11 +345,19 @@ class MultiPeerNvlTransport {
   std::shared_ptr<meta::comms::IBootstrap> bootstrap_;
   const MultiPeerNvlTransportConfig config_;
 
-  // GpuMemHandler-based memory for data, state, and signal buffers
+  // GpuMemHandler-based memory for data, state, signal, and LL128 buffers
   // Automatically uses fabric handles on H100+/CUDA12.3+, falls back to cudaIpc
+  // dataBufferHandler_ is only allocated when external data buffers are NOT
+  // used. It is allocated lazily in exchange() rather than in the constructor.
   std::unique_ptr<GpuMemHandler> dataBufferHandler_;
   std::unique_ptr<GpuMemHandler> stateBufferHandler_;
   std::unique_ptr<GpuMemHandler> signalBufferHandler_;
+  std::unique_ptr<GpuMemHandler>
+      ll128BufferHandler_; // nullptr when ll128BufferSize == 0
+
+  // External data buffer pointers (set via setExternalDataBuffers()).
+  // When set, exchange() skips data buffer allocation/exchange.
+  std::optional<ExternalStagingBuffers> externalStagingBuffers_;
 
   // Device-accessible Transport array for multi-peer transport
   // Allocated on device and populated in initializeTransportsArray()
@@ -301,6 +368,7 @@ class MultiPeerNvlTransport {
   std::size_t perPeerDataBufferSize_{0};
   std::size_t perPeerChunkStateBufferSize_{0};
   std::size_t perPeerSignalBufferSize_{0};
+  std::size_t perPeerLl128BufferSize_{0};
 
   // Flag to track if multi-peer device arrays have been initialized
   bool multiPeerInitialized_{false};

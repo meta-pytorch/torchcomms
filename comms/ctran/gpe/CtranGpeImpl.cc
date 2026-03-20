@@ -120,14 +120,9 @@ OrderedWorkStreamGuard::Scope OrderedWorkStreamGuard::acquire(
   return Scope(*this, userStream, captureInfo);
 }
 
-struct cmdCbPlan {
-  CtranGpeCmd* cmd{nullptr};
-  CtranGpe* gpe{nullptr};
-};
-
 void CUDART_CB CtranGpe::Impl::cmdCb(void* data) {
-  struct cmdCbPlan* plan = reinterpret_cast<struct cmdCbPlan*>(data);
-  plan->gpe->pimpl->cmdEnqueue(plan->cmd);
+  CtranGpeCmd* cmd = reinterpret_cast<CtranGpeCmd*>(data);
+  cmd->gpe->pimpl->cmdEnqueue(cmd);
 }
 
 CtranGpeCmd::~CtranGpeCmd() {
@@ -169,8 +164,9 @@ commResult_t OrderedWorkStreamGuard::doAcquire(
 
   auto doWait = [&]() -> commResult_t {
 #if defined(__HIP_PLATFORM_AMD__)
-    unsigned int flags =
-        isCapturing ? hipEventWaitExternal : hipEventWaitDefault;
+    // hipify doesn't map cudaEventWaitExternal/cudaEventWaitDefault;
+    // use raw values: 0x01 = cudaEventWaitExternal, 0x00 = cudaEventWaitDefault
+    unsigned int flags = isCapturing ? 0x01 : 0x00;
 #else
     unsigned int flags =
         isCapturing ? cudaEventWaitExternal : cudaEventWaitDefault;
@@ -244,28 +240,6 @@ commResult_t CtranGpe::Impl::submit(
     std::optional<std::chrono::milliseconds> timeout,
     PreLaunchGraphPrepareFn graphPrepareFn) {
   commResult_t res = commSuccess;
-
-  // Reclaim once to gain back available flags
-  if (this->kernelFlagPool->size() == 0) {
-    this->kernelFlagPool->reclaim();
-  }
-
-  if (this->checksumPool->size() == 0) {
-    this->checksumPool->reclaim();
-  }
-
-  // We do not expect such high amount of inuse flags, return error here to
-  // avoid hang. If there can be really such a high usage case, either
-  // increase the pool size or set a timeout here to reclaim multiple times.
-  // Avoid timeout logic for now to avoid complexity.
-  if (this->kernelFlagPool->size() == 0) {
-    CLOGF(
-        ERR,
-        "CTRAN-GPE: Internal KernelFlag pool has unexpected high usage (capacity: {}, available: {}). It is likely that some COMM kernels are not released properly",
-        kernelFlagPool->capacity(),
-        kernelFlagPool->size());
-    return commInternalError;
-  }
 
   // Error checking before GPE cmd and kernel submission
   if (kernelConfig.args.devState_d == nullptr) {
@@ -349,24 +323,17 @@ commResult_t CtranGpe::Impl::submit(
     }
     if (streamCaptureInfo.status == cudaStreamCaptureStatusActive) {
       FB_COMMCHECK(preLaunchGraphPrepare(cmd, graphPrepareFn));
-      struct cmdCbPlan* plan = new struct cmdCbPlan;
-      plan->cmd = cmd;
-      plan->gpe = this->gpe;
       cmd->persistent = true;
       // Mark the flag as persistent so reclaim() won't steal it between
       // graph replays (the kernel writes KERNEL_UNSET after each replay).
       if (kernelFlag) {
         kernelFlag->setPersistent();
       }
+      cmd->gpe = this->gpe;
 
       FB_COMMCHECKGOTO(
           utils::cudagraph::addHostNode(
-              cmd,
-              reinterpret_cast<void*>(plan),
-              cmdCb,
-              cmdDestroy,
-              kernelConfig.stream,
-              streamCaptureInfo),
+              cmd, cmdCb, cmdDestroy, kernelConfig.stream, streamCaptureInfo),
           res,
           fail);
     } else {
@@ -609,6 +576,20 @@ void CtranGpe::Impl::gpeThreadFn() {
         // if comm is aborted for any reason, we mark it as aborted to avoid
         // resetting the state.
         if (comm->testAbort()) {
+          auto abort = comm->getAbort();
+          if (abort->TimedOut()) {
+            CLOGF(
+                ERR,
+                "Communicator aborted due to timeout on rank {} commHash {:x}",
+                statex->rank(),
+                statex->commHash());
+          } else {
+            CLOGF(
+                ERR,
+                "Communicator aborted (explicit) on rank {} commHash {:x}",
+                statex->rank(),
+                statex->commHash());
+          }
           comm->setAbort();
         }
         comm->cancelTimeout();
@@ -1053,31 +1034,8 @@ commResult_t allocGpeKernelSyncs(
     size_t count,
     int nworkers,
     std::vector<ctran::algos::GpeKernelSync*>& gpeKernelSyncs) {
-  // reclaim from outstanding kernels once if pool items are insufficient
-  if (gpeKernelSyncPool->size() < count) {
-    gpeKernelSyncPool->reclaim();
-
-    // We do not expect such high amount of inuse pool items, return error here
-    // to avoid hang. If there can be really such a high usage case, either
-    // increase the pool size or set a timeout here to reclaim multiple times.
-    // Avoid timeout logic for now to avoid complexity.
-    if (count > gpeKernelSyncPool->size()) {
-      CLOGF(
-          WARN,
-          "CTRAN-GPE: Internal KernelSync pool has unexpected high usage (capacity: {}, available: {}, current request: {}). "
-          "It is likely that some COMM kernels are not released properly",
-          gpeKernelSyncPool->capacity(),
-          gpeKernelSyncPool->size(),
-          count);
-      return ErrorStackTraceUtil::log(commInternalError);
-    }
-  }
-
-  for (int i = 0; i < count; i++) {
+  for (size_t i = 0; i < count; i++) {
     auto* g = gpeKernelSyncPool->pop();
-    if (!g) {
-      return ErrorStackTraceUtil::log(commInternalError);
-    }
     // essentially the constructor (note resetStatus() is needed since we didn't
     // set nworkers before this point)
     g->nworkers = nworkers;

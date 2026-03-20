@@ -7,9 +7,23 @@
 #include <utility>
 #include <vector>
 
+#include <doca_gpunetio_host.h>
+#include <doca_verbs_net_wrapper.h>
+
+#include "comms/pipes/IbverbsLazy.h"
 #include "comms/pipes/rdma/IbHcaParser.h"
 
 namespace comms::pipes {
+
+/**
+ * Data Direct NIC discovery mode.
+ * Controls whether Data Direct DMA NICs are discovered alongside regular NICs.
+ */
+enum class DataDirectMode {
+  Disabled = 0, // No Data Direct discovery
+  Only = 1, // Replace regular NICs with DD variants (non-DD NICs remain)
+  Both = 2, // Keep both regular and DD variants
+};
 
 /**
  * Path type hierarchy for topology-aware NIC selection.
@@ -63,6 +77,8 @@ struct NicCandidate {
   int bandwidthGbps{0}; // Link bandwidth in Gb/s
   int numaNode{-1}; // NUMA node (-1 if unknown)
   int nhops{-1}; // PCIe hops between GPU and NIC (-1 if unknown)
+  bool isDataDirect{false}; // Data Direct DMA NIC variant
+  bool forceFlush{false}; // Requires explicit flush for Data Direct
 };
 
 /**
@@ -152,6 +168,16 @@ class NicDiscovery {
   void discover();
 
   /**
+   * Sort candidates by (isDataDirect DESC, pathType ASC, bandwidth DESC).
+   */
+  void sortCandidates();
+
+  /**
+   * Log the best (first) candidate NIC for debugging.
+   */
+  void logBestCandidate();
+
+  /**
    * Compute the path type between the anchor device and a NIC.
    * Subclasses override to implement their ranking strategy.
    *
@@ -183,9 +209,13 @@ class GpuNicDiscovery : public NicDiscovery {
    *
    * @param cudaDevice CUDA device index
    * @param ibHcaEnv NCCL_IB_HCA-style filter string (empty = no filtering)
+   * @param ddMode Data Direct discovery mode
    * @throws std::runtime_error if no suitable NIC found
    */
-  explicit GpuNicDiscovery(int cudaDevice, const std::string& ibHcaEnv = {});
+  explicit GpuNicDiscovery(
+      int cudaDevice,
+      const std::string& ibHcaEnv = {},
+      DataDirectMode ddMode = DataDirectMode::Only);
 
   /**
    * Get the anchor GPU's PCIe bus ID string.
@@ -199,16 +229,43 @@ class GpuNicDiscovery : public NicDiscovery {
    */
   static std::string getCudaPciBusId(int cudaDevice);
 
+  /**
+   * Check if an IB device supports MLX5 DV interface.
+   */
+  static bool isMlx5Supported(ibv_device* device);
+
+  /**
+   * Check if an IB context supports DMA-BUF registration.
+   * Probes with a dummy ibv_reg_dmabuf_mr call (fd=-1).
+   */
+  static bool isDmaBufCapable(ibv_context* ctx);
+
+  /**
+   * Get the Data Direct sysfs path for an MLX5 device.
+   *
+   * @param ctx ibv_context for the device
+   * @param path Output: filled with the full sysfs path (e.g.,
+   * /sys/devices/...)
+   * @return true if device supports Data Direct and path was retrieved
+   */
+  static bool getDataDirectSysfsPath(ibv_context* ctx, std::string& path);
+
  private:
   void initGpuTopology();
+  void augmentWithDataDirect();
 
   std::pair<PathType, int> computePathType(
       const std::string& nicPcie,
       int nicNuma) const override;
 
+  std::pair<PathType, int> computePathType(
+      const std::vector<std::string>& nicAncestorChain,
+      int nicNuma) const;
+
   std::string anchorDescription() const override;
 
   int cudaDevice_;
+  DataDirectMode dataDirectMode_;
   std::string anchorPciBusId_;
   std::vector<std::string> anchorAncestorChain_;
   std::unordered_set<std::string> anchorAncestors_;

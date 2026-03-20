@@ -27,16 +27,15 @@ inline cudaError_t getStreamCaptureInfo(
 }
 
 inline commResult_t addHostNode(
-    void* objectPtr,
-    void* data,
+    void* cmd,
     cudaHostFn_t execCallback,
     cudaHostFn_t destroyCallback,
     cudaStream_t stream,
     StreamCaptureInfo& info) {
-  FB_CUDACHECK(cudaLaunchHostFunc(stream, execCallback, data));
+  FB_CUDACHECK(cudaLaunchHostFunc(stream, execCallback, cmd));
   cudaUserObject_t object;
   FB_CUDACHECK(cudaUserObjectCreate(
-      &object, objectPtr, destroyCallback, 1, cudaUserObjectNoDestructorSync));
+      &object, cmd, destroyCallback, 1, cudaUserObjectNoDestructorSync));
 
   // Handover ownership to CUDA graph
   FB_CUDACHECK(

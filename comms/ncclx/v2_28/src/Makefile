@@ -50,7 +50,7 @@ LIBSRCFILES := \
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/*.cc)
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/analyzer/*.cc)
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/colltrace/*.cc)
-LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/logger/*.cc)
+LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/logger/*.cc)
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/tcpstore/*.cc)
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/transport/*.cc)
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/utilx/*.cc)
@@ -60,7 +60,7 @@ LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/collectives/*.cc)
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/comms-monitor/*.cc)
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/ctran-integration/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/hints/*.cc)
-LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/algoconf/*.cc)
+LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/algoconf/*.cc)
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/wrapper/*.cc)
 
 #### Start of fbcode source files
@@ -115,8 +115,7 @@ INCLUDES += -I${NCCLDIR}/
 INCLUDES += -I${SHAREDDIR}/
 INCLUDES += -I${NCCLDIR}/meta
 INCLUDES += -I${NCCLDIR}/meta/wrapper
-INCLUDES += -I${NCCLDIR}/meta/algoconf
-INCLUDES += -I${NCCLDIR}/meta/logger -Idevice
+INCLUDES += -Idevice
 INCLUDES += -I$(BASE_DIR)
 INCLUDES += -I$(CONDA_INCLUDE_DIR)
 

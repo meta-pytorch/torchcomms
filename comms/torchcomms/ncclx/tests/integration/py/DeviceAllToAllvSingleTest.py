@@ -15,9 +15,10 @@ from torchcomms.tests.integration.py.TorchCommTestHelpers import (
 class DeviceAllToAllvSingleTest(unittest.TestCase):
     """Test class for device_alltoallv_single operation.
 
-    This tests the device_alltoallv_single API where split sizes and offsets
-    are CUDA tensors (on GPU), unlike all_to_all_v_single where they are
-    host vectors.
+    This tests the device_alltoallv_single API where split sizes are
+    CUDA tensors (on GPU), unlike all_to_all_v_single where they are
+    host vectors. Displacements are computed internally by the kernel
+    as exclusive prefix sums of the counts.
 
     Test pattern:
     - Each rank creates an input tensor filled with its rank value
@@ -67,27 +68,13 @@ class DeviceAllToAllvSingleTest(unittest.TestCase):
         )
         output_tensor = torch.zeros(total_size, dtype=dtype, device=self.device)
 
-        # Create device tensors for split sizes and offsets
+        # Create device tensors for split sizes
         # Uniform split: each rank sends/receives chunk_size elements
         send_counts = torch.full(
             (self.num_ranks,), chunk_size, dtype=torch.int64, device=self.device
         )
         recv_counts = torch.full(
             (self.num_ranks,), chunk_size, dtype=torch.int64, device=self.device
-        )
-        send_offsets = torch.arange(
-            0,
-            total_size,
-            chunk_size,
-            dtype=torch.int64,
-            device=self.device,
-        )
-        recv_offsets = torch.arange(
-            0,
-            total_size,
-            chunk_size,
-            dtype=torch.int64,
-            device=self.device,
         )
 
         print(f"[Rank {self.rank}] input shape={input_tensor.shape}, value={self.rank}")
@@ -98,8 +85,6 @@ class DeviceAllToAllvSingleTest(unittest.TestCase):
             input_tensor,
             recv_counts,
             send_counts,
-            recv_offsets,
-            send_offsets,
             False,  # async_op
         )
 
@@ -145,10 +130,7 @@ class DeviceAllToAllvSingleTest(unittest.TestCase):
         )
         output_tensor = torch.zeros(total_recv, dtype=dtype, device=self.device)
 
-        # Compute offsets (prefix sum)
-        send_offsets_list = [0]
-        for s in send_sizes[:-1]:
-            send_offsets_list.append(send_offsets_list[-1] + s)
+        # Compute expected offsets for verification (prefix sum)
         recv_offsets_list = [0]
         for r in recv_sizes[:-1]:
             recv_offsets_list.append(recv_offsets_list[-1] + r)
@@ -156,12 +138,6 @@ class DeviceAllToAllvSingleTest(unittest.TestCase):
         # Create device tensors
         send_counts = torch.tensor(send_sizes, dtype=torch.int64, device=self.device)
         recv_counts = torch.tensor(recv_sizes, dtype=torch.int64, device=self.device)
-        send_offsets = torch.tensor(
-            send_offsets_list, dtype=torch.int64, device=self.device
-        )
-        recv_offsets = torch.tensor(
-            recv_offsets_list, dtype=torch.int64, device=self.device
-        )
 
         print(f"[Rank {self.rank}] send_sizes={send_sizes}, recv_sizes={recv_sizes}")
 
@@ -171,8 +147,6 @@ class DeviceAllToAllvSingleTest(unittest.TestCase):
             input_tensor,
             recv_counts,
             send_counts,
-            recv_offsets,
-            send_offsets,
             False,  # async_op
         )
 
@@ -204,6 +178,75 @@ class DeviceAllToAllvSingleTest(unittest.TestCase):
             for dtype in self.dtypes:
                 with self.subTest(chunk_size=chunk_size, dtype=dtype):
                     self._test_variable_split(chunk_size, dtype)
+
+    def _test_multidim_uniform_split(self, chunk_size, num_cols, dtype):
+        """Test with uniform split sizes on 2D tensors.
+
+        Split sizes are in units of rows (dim-0 slices), not element counts.
+        Each row has num_cols elements, so the implementation must multiply
+        split sizes by elements_per_slice internally.
+        """
+        print(
+            f"Testing device_alltoallv_single multidim uniform split with "
+            f"chunk_size={chunk_size} num_cols={num_cols} dtype={get_dtype_name(dtype)}"
+        )
+
+        total_rows = chunk_size * self.num_ranks
+
+        # Create 2D input tensor of shape [total_rows, num_cols]
+        input_tensor = torch.full(
+            (total_rows, num_cols), self.rank, dtype=dtype, device=self.device
+        )
+        output_tensor = torch.zeros(
+            (total_rows, num_cols), dtype=dtype, device=self.device
+        )
+
+        # Split sizes are ROW counts (not element counts)
+        send_counts = torch.full(
+            (self.num_ranks,), chunk_size, dtype=torch.int64, device=self.device
+        )
+        recv_counts = torch.full(
+            (self.num_ranks,), chunk_size, dtype=torch.int64, device=self.device
+        )
+
+        print(
+            f"[Rank {self.rank}] input shape={input_tensor.shape}, "
+            f"value={self.rank}, elements_per_slice={num_cols}"
+        )
+
+        self.ncclx_backend.device_alltoallv_single(
+            output_tensor,
+            input_tensor,
+            recv_counts,
+            send_counts,
+            False,
+        )
+
+        # Verify: segment j (chunk_size rows from rank j) should all be j
+        for j in range(self.num_ranks):
+            start_row = j * chunk_size
+            end_row = start_row + chunk_size
+            segment = output_tensor[start_row:end_row]
+            expected_val = j
+            if not torch.all(segment == expected_val):
+                actual_vals = segment.unique().cpu().tolist()
+                self.fail(
+                    f"[Rank {self.rank}] Segment {j} (rows {start_row}:{end_row}) "
+                    f"expected all {expected_val}, got unique values: {actual_vals}"
+                )
+
+        print(f"[Rank {self.rank}] Multidim uniform split test PASSED")
+
+    def test_multidim_uniform_split(self):
+        """Test device_alltoallv_single with 2D tensors and uniform row splits."""
+        num_cols_list = [4, 16]
+        for chunk_size in self.chunk_sizes:
+            for num_cols in num_cols_list:
+                for dtype in self.dtypes:
+                    with self.subTest(
+                        chunk_size=chunk_size, num_cols=num_cols, dtype=dtype
+                    ):
+                        self._test_multidim_uniform_split(chunk_size, num_cols, dtype)
 
 
 if __name__ == "__main__":

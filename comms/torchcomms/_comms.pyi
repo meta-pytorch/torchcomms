@@ -72,6 +72,14 @@ class PreHookArgs:
     def root(self) -> int: ...
     @property
     def op_id(self) -> int: ...
+    @property
+    def input_tensor(self) -> Any | None: ...
+    @property
+    def output_tensor(self) -> Any | None: ...
+    @property
+    def input_tensors(self) -> List[Any] | None: ...
+    @property
+    def output_tensors(self) -> List[Any] | None: ...
 
 class PostHookArgs:
     """Arguments passed to post-hook callbacks."""
@@ -437,7 +445,7 @@ class TorchComm:
     ) -> TorchWork: ...
     def split(
         self,
-        rank_groups: List[List[int]],
+        ranks: List[int],
         name: str,
         hints: Dict[str, str] | None = None,
         timeout: timedelta | None = None,

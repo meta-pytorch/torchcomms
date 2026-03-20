@@ -10,10 +10,11 @@
 #include <dirent.h>
 
 #include <algorithm>
-#include <climits>
+#include <cerrno>
 #include <cstring>
 #include <fstream>
 #include <stdexcept>
+#include <unordered_map>
 
 namespace comms::pipes {
 
@@ -102,6 +103,39 @@ std::vector<std::string> buildAncestorChain(const std::string& normalizedPcie) {
     chain.push_back(current);
     current = getPciParent(current);
   }
+  return chain;
+}
+
+// Build ancestor chain from a raw sysfs path (e.g.,
+// "/sys/devices/pci0009:00/0009:00:00.0/0009:01:00.0/0009:03:00.0")
+// Returns PCI bus IDs in leaf-first order: ["0009:03:00.0", "0009:01:00.0",
+// "0009:00:00.0"]
+// Used for Data Direct NICs whose leaf bus IDs may not exist under
+// /sys/bus/pci/devices/, making the normal getPciParent() sysfs walk fail.
+std::vector<std::string> buildAncestorChainFromSysfsPath(
+    const std::string& sysfsPath) {
+  std::vector<std::string> chain;
+  // Split on '/' and keep only components that look like PCI addresses
+  // PCI addresses start with a hex digit (e.g., "0009:03:00.0")
+  // Skip domain roots like "pci0000:00"
+  size_t pos = 0;
+  while (pos < sysfsPath.size()) {
+    auto next = sysfsPath.find('/', pos);
+    std::string component;
+    if (next == std::string::npos) {
+      component = sysfsPath.substr(pos);
+      pos = sysfsPath.size();
+    } else {
+      component = sysfsPath.substr(pos, next - pos);
+      pos = next + 1;
+    }
+    if (!component.empty() && component.find(':') != std::string::npos &&
+        std::isxdigit(static_cast<unsigned char>(component[0]))) {
+      chain.push_back(component);
+    }
+  }
+  // Reverse to get leaf-first order
+  std::reverse(chain.begin(), chain.end());
   return chain;
 }
 
@@ -231,16 +265,7 @@ void NicDiscovery::discover() {
     throw std::runtime_error(errMsg);
   }
 
-  // Sort by (pathType ASC, bandwidth DESC) - stable sort preserves enum order
-  std::stable_sort(
-      candidates_.begin(),
-      candidates_.end(),
-      [](const NicCandidate& a, const NicCandidate& b) {
-        if (a.pathType != b.pathType) {
-          return static_cast<int>(a.pathType) < static_cast<int>(b.pathType);
-        }
-        return a.bandwidthGbps > b.bandwidthGbps;
-      });
+  sortCandidates();
 
   // Log sorted candidates for debugging
   spdlog::info("NicDiscovery: NIC candidates after sorting:");
@@ -253,16 +278,36 @@ void NicDiscovery::discover() {
         candidates_[i].bandwidthGbps,
         candidates_[i].nhops);
   }
+}
 
-  const NicCandidate& best = candidates_[0];
-  spdlog::info(
-      "NicDiscovery: best candidate NIC {} for {} (path={}, bandwidth={} Gb/s) (numa={}, nhops={})",
-      best.name,
-      anchorDescription(),
-      pathTypeToString(best.pathType),
-      best.bandwidthGbps,
-      best.numaNode,
-      best.nhops);
+void NicDiscovery::sortCandidates() {
+  std::stable_sort(
+      candidates_.begin(),
+      candidates_.end(),
+      [](const NicCandidate& a, const NicCandidate& b) {
+        if (a.isDataDirect != b.isDataDirect) {
+          return a.isDataDirect > b.isDataDirect;
+        }
+        if (a.pathType != b.pathType) {
+          return static_cast<int>(a.pathType) < static_cast<int>(b.pathType);
+        }
+        return a.bandwidthGbps > b.bandwidthGbps;
+      });
+}
+
+void NicDiscovery::logBestCandidate() {
+  if (!candidates_.empty()) {
+    const NicCandidate& best = candidates_[0];
+    spdlog::info(
+        "NicDiscovery: best candidate NIC {} for {} (path={}, bandwidth={} Gb/s, dd={}) (numa={}, nhops={})",
+        best.name,
+        anchorDescription(),
+        pathTypeToString(best.pathType),
+        best.bandwidthGbps,
+        best.isDataDirect,
+        best.numaNode,
+        best.nhops);
+  }
 }
 
 // =============================================================================
@@ -280,10 +325,15 @@ std::string GpuNicDiscovery::getCudaPciBusId(int cudaDevice) {
   return std::string(busId);
 }
 
-GpuNicDiscovery::GpuNicDiscovery(int cudaDevice, const std::string& ibHcaEnv)
-    : NicDiscovery(ibHcaEnv), cudaDevice_(cudaDevice) {
+GpuNicDiscovery::GpuNicDiscovery(
+    int cudaDevice,
+    const std::string& ibHcaEnv,
+    DataDirectMode ddMode)
+    : NicDiscovery(ibHcaEnv), cudaDevice_(cudaDevice), dataDirectMode_(ddMode) {
   initGpuTopology();
   discover();
+  augmentWithDataDirect();
+  logBestCandidate();
 }
 
 void GpuNicDiscovery::initGpuTopology() {
@@ -312,20 +362,23 @@ void GpuNicDiscovery::initGpuTopology() {
 std::pair<PathType, int> GpuNicDiscovery::computePathType(
     const std::string& nicPcie,
     int nicNuma) const {
+  std::string nicNormalized = normalizePcieAddress(nicPcie);
+  std::vector<std::string> nicChain = buildAncestorChain(nicNormalized);
+  return computePathType(nicChain, nicNuma);
+}
+
+std::pair<PathType, int> GpuNicDiscovery::computePathType(
+    const std::vector<std::string>& nicAncestorChain,
+    int nicNuma) const {
   // If different NUMA nodes, it's PATH_SYS
   if (anchorNumaNode_ >= 0 && nicNuma >= 0 && anchorNumaNode_ != nicNuma) {
     return {PathType::SYS, -1};
   }
 
-  // Normalize NIC address and build its chain
-  std::string nicNormalized = normalizePcieAddress(nicPcie);
-  std::vector<std::string> nicChain = buildAncestorChain(nicNormalized);
-
-  // Find common ancestor
+  // Find common ancestor between GPU chain and NIC chain
   int nicHops = 0;
-  for (const auto& ancestor : nicChain) {
+  for (const auto& ancestor : nicAncestorChain) {
     if (anchorAncestors_.count(ancestor)) {
-      // Found common ancestor
       // Count hops from GPU to this ancestor
       int gpuHops = 0;
       for (const auto& g : anchorAncestorChain_) {
@@ -337,10 +390,6 @@ std::pair<PathType, int> GpuNicDiscovery::computePathType(
 
       int totalHops = gpuHops + nicHops;
 
-      // Heuristic based on PCI topology depth:
-      // - 2 hops (GPU->switch->NIC) = PIX (same switch)
-      // - 3-4 hops = PXB (multiple switches, same NUMA)
-      // - More = PHB (through host bridge)
       if (totalHops <= 2) {
         return {PathType::PIX, totalHops};
       }
@@ -354,12 +403,173 @@ std::pair<PathType, int> GpuNicDiscovery::computePathType(
 
   // No common ancestor found in PCI tree
   if (anchorNumaNode_ >= 0 && anchorNumaNode_ == nicNuma) {
-    // Same NUMA node but different PCI domains
-    int nhops =
-        static_cast<int>(anchorAncestorChain_.size() + nicChain.size()) + 2;
+    int nhops = static_cast<int>(
+                    anchorAncestorChain_.size() + nicAncestorChain.size()) +
+        2;
     return {PathType::NODE, nhops};
   }
   return {PathType::SYS, -1};
+}
+
+// Static methods for Data Direct detection
+
+bool GpuNicDiscovery::isMlx5Supported(ibv_device* device) {
+  return lazy_mlx5dv_is_supported(device) != 0;
+}
+
+bool GpuNicDiscovery::isDmaBufCapable(ibv_context* ctx) {
+  struct ibv_pd* pd = nullptr;
+  doca_error_t err = doca_verbs_wrapper_ibv_alloc_pd(ctx, &pd);
+  if (err != DOCA_SUCCESS || !pd) {
+    return false;
+  }
+
+  // Probe DMA-BUF support with a dummy call (fd=-1)
+  // If not supported, errno will be EOPNOTSUPP or EPROTONOSUPPORT
+  // If supported but invalid args, errno will be EBADF (which means supported)
+  (void)lazy_ibv_reg_dmabuf_mr(
+      pd, 0ULL /*offset*/, 0ULL /*len*/, 0ULL /*iova*/, -1 /*fd*/, 0 /*flags*/);
+  bool notSupported = (errno == EOPNOTSUPP) || (errno == EPROTONOSUPPORT);
+  doca_verbs_wrapper_ibv_dealloc_pd(pd);
+  return !notSupported;
+}
+
+bool GpuNicDiscovery::getDataDirectSysfsPath(
+    ibv_context* ctx,
+    std::string& path) {
+  char buf[PATH_MAX];
+  // Prepend "/sys" prefix
+  constexpr const char* kSysPrefix = "/sys";
+  int prefixLen = strlen(kSysPrefix);
+  memcpy(buf, kSysPrefix, prefixLen);
+
+  int rc = lazy_mlx5dv_get_data_direct_sysfs_path(
+      ctx, buf + prefixLen, sizeof(buf) - prefixLen);
+  if (rc != 0) {
+    return false;
+  }
+  path = std::string(buf);
+  return true;
+}
+
+void GpuNicDiscovery::augmentWithDataDirect() {
+  if (dataDirectMode_ == DataDirectMode::Disabled) {
+    return;
+  }
+
+  int numDevices = 0;
+  struct ibv_device** deviceList = nullptr;
+  doca_error_t docaRet =
+      doca_verbs_wrapper_ibv_get_device_list(&numDevices, &deviceList);
+  if (docaRet != DOCA_SUCCESS || !deviceList || numDevices == 0) {
+    spdlog::warn("NicDiscovery: ibv_get_device_list() failed for DD probing");
+    return;
+  }
+
+  // Build map of ibv_device* by name for quick lookup
+  std::unordered_map<std::string, ibv_device*> devMap;
+  for (int i = 0; i < numDevices; i++) {
+    const char* devName = nullptr;
+    doca_verbs_wrapper_ibv_get_device_name(deviceList[i], &devName);
+    if (devName) {
+      devMap[devName] = deviceList[i];
+    }
+  }
+
+  std::vector<NicCandidate> ddCandidates;
+  std::unordered_set<std::string> ddCapableNames;
+
+  for (const auto& candidate : candidates_) {
+    auto it = devMap.find(candidate.name);
+    if (it == devMap.end()) {
+      continue;
+    }
+
+    ibv_device* dev = it->second;
+    if (!isMlx5Supported(dev)) {
+      continue;
+    }
+
+    ibv_context* ctx = nullptr;
+    docaRet = doca_verbs_wrapper_ibv_open_device(dev, &ctx);
+    if (docaRet != DOCA_SUCCESS || !ctx) {
+      continue;
+    }
+
+    bool ddCapable = false;
+    if (isDmaBufCapable(ctx)) {
+      std::string ddSysfsPath;
+      if (getDataDirectSysfsPath(ctx, ddSysfsPath)) {
+        ddCapable = true;
+        ddCapableNames.insert(candidate.name);
+
+        // Build ancestor chain from the DD sysfs path for topology computation
+        auto ddAncestorChain = buildAncestorChainFromSysfsPath(ddSysfsPath);
+        auto [pathType, nhops] =
+            computePathType(ddAncestorChain, candidate.numaNode);
+
+        NicCandidate ddCandidate;
+        ddCandidate.name = candidate.name;
+        ddCandidate.pcie = ddSysfsPath;
+        ddCandidate.pathType = pathType;
+        ddCandidate.bandwidthGbps = candidate.bandwidthGbps;
+        ddCandidate.numaNode = candidate.numaNode;
+        ddCandidate.nhops = nhops;
+        ddCandidate.isDataDirect = true;
+        ddCandidate.forceFlush = true;
+        ddCandidates.push_back(std::move(ddCandidate));
+
+        spdlog::info(
+            "NicDiscovery: DD NIC {} sysfs={} path={} nhops={}",
+            candidate.name,
+            ddSysfsPath,
+            pathTypeToString(pathType),
+            nhops);
+      }
+    }
+
+    doca_verbs_wrapper_ibv_close_device(ctx);
+
+    if (!ddCapable) {
+      spdlog::debug(
+          "NicDiscovery: NIC {} does not support Data Direct", candidate.name);
+    }
+  }
+
+  // Apply mode policy
+  if (dataDirectMode_ == DataDirectMode::Only) {
+    // Remove regular candidates that have DD variants
+    candidates_.erase(
+        std::remove_if(
+            candidates_.begin(),
+            candidates_.end(),
+            [&ddCapableNames](const NicCandidate& c) {
+              return ddCapableNames.count(c.name) > 0;
+            }),
+        candidates_.end());
+  }
+
+  // Append DD candidates
+  for (auto& dd : ddCandidates) {
+    candidates_.push_back(std::move(dd));
+  }
+
+  doca_verbs_wrapper_ibv_free_device_list(deviceList);
+
+  sortCandidates();
+
+  // Re-log sorted candidates
+  spdlog::info("NicDiscovery: NIC candidates after Data Direct augmentation:");
+  for (size_t i = 0; i < candidates_.size(); i++) {
+    spdlog::info(
+        "  [{}] {} path={} bandwidth={} Gb/s nhops={} dd={}",
+        i,
+        candidates_[i].name,
+        pathTypeToString(candidates_[i].pathType),
+        candidates_[i].bandwidthGbps,
+        candidates_[i].nhops,
+        candidates_[i].isDataDirect);
+  }
 }
 
 std::string GpuNicDiscovery::anchorDescription() const {
@@ -383,6 +593,7 @@ CpuNicDiscovery::CpuNicDiscovery(int numaNode, const std::string& ibHcaEnv)
   spdlog::info(
       "NicDiscovery: CPU-anchored discovery, NUMA node {}", anchorNumaNode_);
   discover();
+  logBestCandidate();
 }
 
 std::pair<PathType, int> CpuNicDiscovery::computePathType(

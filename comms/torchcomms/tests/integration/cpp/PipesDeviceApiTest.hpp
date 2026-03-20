@@ -9,9 +9,9 @@
 //
 // Runtime prerequisites:
 //   - RUN_PIPES_DEVICE_API_TEST=true (skip gate)
-//   - TORCHCOMMS_PIPES_DEVICE_API_ENABLE=1 (select Pipes in new_window())
+//   - NCCL_CTRAN_USE_PIPES=1 (initialize ctran multiPeerTransport and select
+//     Pipes backend in new_window())
 //   - NCCL_P2P_DISABLE=1 (route traffic through ctran/RDMA path)
-//   - NCCL_CTRAN_USE_PIPES=1 (initialize ctran multiPeerTransport)
 
 #pragma once
 
@@ -61,6 +61,9 @@ class PipesDeviceApiTest : public ::testing::Test {
 
   // Test device barrier: all ranks synchronize via barrier().
   void testDeviceBarrier();
+
+  // Test local buffer registration: register_local_buffer returns valid lkey.
+  void testLocalBufferRegistration(int count, at::ScalarType dtype);
 
   // Member variables
   std::unique_ptr<TorchCommTestWrapper> wrapper_;

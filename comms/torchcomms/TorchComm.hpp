@@ -17,6 +17,10 @@
 
 namespace torch::comms {
 
+// Reset the global op_id generator. Used when creating isolated
+// FlightRecorder instances to ensure each test gets a fresh op_id space.
+void resetGlobalOpIdGenerator();
+
 // Forward declarations
 class TorchCommNCCLX;
 class TorchWin;
@@ -37,6 +41,7 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
   void finalize();
   int getRank() const;
   int getSize() const;
+  std::vector<int> getRanks() const;
   std::string_view getCommName() const;
 
   // Point-to-Point Operations
@@ -155,6 +160,10 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
 
   std::string_view getBackendVersion() const;
 
+  // Device Transport API — returns device pointer as int64 for Triton kernels.
+  // Throws if not supported by the backend.
+  int64_t get_device_transport();
+
   std::shared_ptr<TorchCommBackend> getBackendImpl() const {
     return impl_;
   }
@@ -229,10 +238,16 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
       const CommOptions& options);
 
  private:
-  // constructor for split communicators
+  // constructor for root communicators
   explicit TorchComm(
       const std::string& backend,
       std::shared_ptr<TorchCommBackend> impl);
+
+  // constructor for split communicators
+  TorchComm(
+      const std::string& backend,
+      std::shared_ptr<TorchCommBackend> impl,
+      std::vector<int> ranks);
 
   void preHook(PreHookArgs&& args);
   void postHook(PostHookArgs&& args);
@@ -249,8 +264,10 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
   int64_t nextHookId_ = 0;
   std::unordered_map<int64_t, PreHook> preHooks_;
   std::unordered_map<int64_t, PostHook> postHooks_;
-  // Counter for generating unique operation IDs
-  std::atomic<size_t> nextOpId_{0};
+  // Global ranks of the members of this communicator.
+  // For root communicators: [0, 1, 2, ..., size-1]
+  // For split communicators: global ranks from the parent communicator
+  std::vector<int> ranks_;
 };
 
 // Constructor that creates the appropriate backend implementation

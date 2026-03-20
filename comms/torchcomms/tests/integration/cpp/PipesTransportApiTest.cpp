@@ -70,7 +70,19 @@ void PipesTransportApiTest::testGetDeviceTransport() {
   ASSERT_NE(ncclx, nullptr) << "Backend is not TorchCommNCCLX";
 
   try {
-    auto handle = ncclx->get_device_transport();
+    auto handle_ptr = ncclx->get_device_transport();
+    ASSERT_NE(handle_ptr, 0) << "get_device_transport returned null";
+
+    // Copy the device-allocated handle back to host for validation
+    comms::pipes::MultiPeerDeviceHandle handle{};
+    auto copy_err = cudaMemcpy(
+        &handle,
+        reinterpret_cast<void*>(handle_ptr),
+        sizeof(comms::pipes::MultiPeerDeviceHandle),
+        cudaMemcpyDeviceToHost);
+    ASSERT_EQ(copy_err, cudaSuccess)
+        << "Failed to copy transport handle to host";
+
     EXPECT_EQ(handle.myRank, rank_);
     EXPECT_EQ(handle.nRanks, num_ranks_);
     EXPECT_NE(handle.transports.data(), nullptr);
@@ -102,7 +114,17 @@ void PipesTransportApiTest::testNvlSendRecv(size_t nbytes) {
       torchcomm_->getBackendImpl());
   ASSERT_NE(ncclx, nullptr) << "Backend is not TorchCommNCCLX";
 
-  auto handle = ncclx->get_device_transport();
+  auto handle_ptr = ncclx->get_device_transport();
+  ASSERT_NE(handle_ptr, 0) << "get_device_transport returned null";
+
+  // Copy the device-allocated handle back to host for kernel launch
+  comms::pipes::MultiPeerDeviceHandle handle{};
+  auto copy_err = cudaMemcpy(
+      &handle,
+      reinterpret_cast<void*>(handle_ptr),
+      sizeof(comms::pipes::MultiPeerDeviceHandle),
+      cudaMemcpyDeviceToHost);
+  ASSERT_EQ(copy_err, cudaSuccess) << "Failed to copy transport handle to host";
 
   if (handle.numNvlPeers == 0) {
     GTEST_SKIP() << "No NVL peers available — send/recv requires NVLink";
