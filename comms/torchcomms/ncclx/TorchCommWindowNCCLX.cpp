@@ -34,15 +34,10 @@ TorchCommWindowNCCLX<Backend>::TorchCommWindowNCCLX(
 template <typename Backend>
 TorchCommWindowNCCLX<Backend>::~TorchCommWindowNCCLX() noexcept {
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
-  // Cleanup registered local buffers (registered with parent comm using
-  // NCCL_WIN_LOCAL_ONLY)
+  // Cleanup registered local buffers via backend-specific deregistration
   for (auto& buf : registered_local_buffers_) {
-    if (buf.backend_window != nullptr && nccl_comm_ != nullptr) {
-      NCCLX_CHECK_IGNORE(
-          nccl_api_,
-          nccl_api_->commWindowDeregister(
-              nccl_comm_, static_cast<NcclxWindow>(buf.backend_window)),
-          "NCCLX local buffer deregister failed in destructor");
+    if (nccl_comm_ != nullptr) {
+      Backend::deregister_local_buffer(nccl_api_, nccl_comm_, buf);
     }
   }
   registered_local_buffers_.clear();
@@ -301,21 +296,10 @@ typename TorchCommWindowNCCLX<Backend>::DeviceRegisteredBuffer
 TorchCommWindowNCCLX<Backend>::register_local_buffer(const at::Tensor& tensor) {
   checkCommAndThrow();
 
-  // Throws for backends that don't support local buffer registration (Pipes).
-  Backend::validate_local_buffer_support();
-
-  // GIN must be enabled via prior get_device_window() call.
-  // tensor_register creates nccl_orig_win_ but doesn't enable GIN.
-  // get_device_window() calls ncclDevCommCreate which enables GIN.
-  if (nccl_orig_win_ == nullptr) {
-    throw std::runtime_error(
-        "[TorchCommWindowNCCLX]: Device API not initialized. "
-        "Call tensor_register first.");
-  }
   if (device_window_ == nullptr) {
     throw std::runtime_error(
-        "[TorchCommWindowNCCLX]: GIN not enabled. "
-        "Call get_device_window() first to enable GIN before registering local buffers.");
+        "[TorchCommWindowNCCLX]: Device window not initialized. "
+        "Call get_device_window() first before registering local buffers.");
   }
 
   if (!tensor.defined() || !tensor.is_contiguous()) {
@@ -325,70 +309,35 @@ TorchCommWindowNCCLX<Backend>::register_local_buffer(const at::Tensor& tensor) {
 
   checkDeviceAndThrow(tensor);
 
-  DeviceRegisteredBuffer buf;
-  buf.base_ptr = tensor.data_ptr();
-  buf.size = tensor.numel() * tensor.element_size();
+  auto buf = Backend::register_local_buffer(
+      nccl_api_,
+      nccl_comm_,
+      tensor.data_ptr(),
+      tensor.numel() * tensor.element_size());
 
-  // Use NCCL_WIN_LOCAL_ONLY flag with parent comm for non-collective
-  // registration. This uses the parent's PD but skips the rkey allGather,
-  // making it truly local. The resulting window can only be used as a source
-  // buffer for put operations (lkey only, no rkeys).
-  NcclxWindow local_win = nullptr;
-  CHECK_EQ(
-      nccl_api_->commWindowRegister(
-          buf.base_ptr,
-          buf.size,
-          nccl_comm_,
-          &local_win,
-          NCCL_WIN_DEVICE_API | NCCL_WIN_LOCAL_ONLY),
-      ncclSuccess)
-      << "[TorchCommWindowNCCLX]: Local buffer registration failed";
-
-  buf.backend_window = static_cast<void*>(local_win);
   registered_local_buffers_.push_back(buf);
-
   return buf;
 }
 
 template <typename Backend>
 void TorchCommWindowNCCLX<Backend>::deregister_local_buffer(
     DeviceRegisteredBuffer& buf) {
-  if (buf.backend_window == nullptr) {
+  if (buf.base_ptr == nullptr && buf.backend_window == nullptr) {
     return;
   }
 
-  // Use parent comm for deregistration (matches register_local_buffer)
-  auto result = nccl_api_->commWindowDeregister(
-      nccl_comm_, static_cast<NcclxWindow>(buf.backend_window));
-  if (result != ncclSuccess) {
-    TC_LOG(ERROR) << "Failed to deregister local buffer";
-  }
-
-  // ncclCommWindowDeregister may leave a sticky CUDA error in the runtime
-  // error queue.  The internal path (ncclCommDeregister -> async IPC release
-  // -> cuMemUnmap on remote peers, plus GIN ibv_dereg_mr -> DMA-BUF cleanup)
-  // can set cudaErrorHostMemoryAlreadyRegistered (712) as a deferred error.
-  // This is NOT a kernel error, so cudaDeviceSynchronize alone would not
-  // clear it.  We must call cudaGetLastError() to consume the sticky error
-  // before the next CUDA runtime API call (e.g. cudaMemset via tensor.zero_()
-  // in the next iteration) encounters it and throws.
-  cudaDeviceSynchronize();
-  cudaGetLastError();
-
-  // Remove from tracking vector
+  // Remove from tracking vector before deregistration
   auto it = std::find_if(
       registered_local_buffers_.begin(),
       registered_local_buffers_.end(),
       [&buf](const DeviceRegisteredBuffer& b) {
-        return b.backend_window == buf.backend_window;
+        return b.base_ptr == buf.base_ptr;
       });
   if (it != registered_local_buffers_.end()) {
     registered_local_buffers_.erase(it);
   }
 
-  buf.backend_window = nullptr;
-  buf.base_ptr = nullptr;
-  buf.size = 0;
+  Backend::deregister_local_buffer(nccl_api_, nccl_comm_, buf);
 }
 
 template <typename Backend>

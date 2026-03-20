@@ -40,9 +40,12 @@ struct KernArgs {
   const int64_t* sendcounts_d; // [nRanks] send counts per rank
   const int64_t* recvcounts_d; // [nRanks] recv counts per rank
 
-  // Device pointers to displacements (int64_t, indexed by global rank)
-  const int64_t* senddispls_d; // [nRanks] send displacements per rank
-  const int64_t* recvdispls_d; // [nRanks] recv displacements per rank
+  // Scaling factors for multi-dimensional tensors. For a tensor with shape
+  // [N, D1, D2, ..., Dk], the split sizes are in units of dim-0 slices (rows),
+  // and each row contains D1*D2*...*Dk elements. The kernel multiplies counts
+  // by these factors to get actual element counts. Default is 1 (1D tensors).
+  int64_t sendcountsMultiplier;
+  int64_t recvcountsMultiplier;
 
   // Maps local rank index [0..nLocalRanks) to global rank
   int localRankToGlobalRank[CTRAN_MAX_NVL_PEERS];

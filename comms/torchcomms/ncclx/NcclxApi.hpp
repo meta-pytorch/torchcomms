@@ -203,11 +203,11 @@ class NcclxApi {
       void* recvbuff,
       const int64_t* sendcounts_d,
       const int64_t* recvcounts_d,
-      const int64_t* senddispls_d,
-      const int64_t* recvdispls_d,
       ncclDataType_t datatype,
       ncclComm_t comm,
-      cudaStream_t stream) {
+      cudaStream_t stream,
+      int64_t sendcountsMultiplier = 1,
+      int64_t recvcountsMultiplier = 1) {
     return ncclInvalidUsage;
   }
 
@@ -346,6 +346,21 @@ class NcclxApi {
       int* outNRanks,
       int* outNumNvlPeers,
       int* outNumIbPeers) = 0;
+
+  // Register a local buffer for device-side RDMA put operations.
+  // NON-COLLECTIVE — purely local memory registration (lkey only).
+  // Returns lkey in network byte order via outLkey.
+  [[nodiscard]] virtual ncclResult_t winLocalRegisterBuffer(
+      ncclComm_t comm,
+      void* ptr,
+      size_t size,
+      uint32_t* outLkey) = 0;
+
+  // Deregister a buffer previously registered with winLocalRegisterBuffer.
+  // NON-COLLECTIVE.
+  [[nodiscard]] virtual ncclResult_t winLocalDeregisterBuffer(
+      ncclComm_t comm,
+      void* ptr) = 0;
 #endif
 
   // Group operations
@@ -515,11 +530,11 @@ class DefaultNcclxApi : public NcclxApi {
       void* recvbuff,
       const int64_t* sendcounts_d,
       const int64_t* recvcounts_d,
-      const int64_t* senddispls_d,
-      const int64_t* recvdispls_d,
       ncclDataType_t datatype,
       ncclComm_t comm,
-      cudaStream_t stream) override;
+      cudaStream_t stream,
+      int64_t sendcountsMultiplier = 1,
+      int64_t recvcountsMultiplier = 1) override;
 
   [[nodiscard]] ncclResult_t alltoallvDynamicDispatch(
       const void* sendbuff,
@@ -646,6 +661,14 @@ class DefaultNcclxApi : public NcclxApi {
       int* outNRanks,
       int* outNumNvlPeers,
       int* outNumIbPeers) override;
+  [[nodiscard]] ncclResult_t winLocalRegisterBuffer(
+      ncclComm_t comm,
+      void* ptr,
+      size_t size,
+      uint32_t* outLkey) override;
+  [[nodiscard]] ncclResult_t winLocalDeregisterBuffer(
+      ncclComm_t comm,
+      void* ptr) override;
 #endif
 
   // Group operations

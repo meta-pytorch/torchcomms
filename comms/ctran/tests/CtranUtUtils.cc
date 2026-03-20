@@ -5,14 +5,14 @@
 #include "comms/testinfra/TestsDistUtils.h"
 
 ncclComm_t CtranDistBaseTest::commWorld = NCCL_COMM_NULL;
-std::unique_ptr<c10d::TCPStore> CtranDistBaseTest::tcpStoreServer = nullptr;
+c10::intrusive_ptr<c10d::Store> CtranDistBaseTest::tcpStoreServer = nullptr;
 
 // Static helper instance for NCCL memory allocation
 static ctran::CtranNcclTestHelpers ncclHelpers;
 
 void CtranDistBaseTest::TearDownTestSuite() {
   LOG(INFO) << "CtranBaseTest::TearDownTestSuite: Release commWorld "
-            << commWorld << " tcpStoreServer " << tcpStoreServer;
+            << commWorld << " tcpStoreServer " << tcpStoreServer.get();
   // Clean up commWorld
   if (commWorld != NCCL_COMM_NULL) {
     const int cudaDev = commWorld->ctranComm_->statex_->rank();
@@ -53,7 +53,7 @@ void CtranDistBaseTest::SetUp() {
         globalRank, numRanks, localRank, false, nullptr, tcpStoreServer.get());
     LOG(INFO) << "CtranBaseTest::SetUp: New commWorld " << commWorld
               << " numRanks " << numRanks << " tcpStoreServer "
-              << tcpStoreServer;
+              << tcpStoreServer.get();
   }
 
   // Reinitialize rank info since each test will reset the value

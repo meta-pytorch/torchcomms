@@ -190,6 +190,55 @@ void NCCLDeviceBackend::deregister_extra_window(
   }
 }
 
+RegisteredBuffer NCCLDeviceBackend::register_local_buffer(
+    torch::comms::NcclxApi* nccl_api,
+    ncclComm_t nccl_comm,
+    void* ptr,
+    size_t size) {
+  ncclWindow_t local_win = nullptr;
+  CHECK_EQ(
+      nccl_api->commWindowRegister(
+          ptr,
+          size,
+          nccl_comm,
+          &local_win,
+          NCCL_WIN_DEVICE_API | NCCL_WIN_LOCAL_ONLY),
+      ncclSuccess)
+      << "[NCCLDeviceBackend]: Local buffer registration failed";
+
+  // GIN put uses backend_window (ncclWindow_t) for RDMA/NVLink transfers.
+  // lkey is unused by GIN — only the Pipes (IBGDA) backend needs it.
+  RegisteredBuffer buf;
+  buf.base_ptr = ptr;
+  buf.size = size;
+  buf.backend_window = static_cast<void*>(local_win);
+  buf.lkey = 0;
+  return buf;
+}
+
+void NCCLDeviceBackend::deregister_local_buffer(
+    torch::comms::NcclxApi* nccl_api,
+    ncclComm_t nccl_comm,
+    RegisteredBuffer& buf) {
+  if (buf.backend_window == nullptr) {
+    return;
+  }
+  auto result = nccl_api->commWindowDeregister(
+      nccl_comm, static_cast<ncclWindow_t>(buf.backend_window));
+  if (result != ncclSuccess) {
+    TC_LOG(ERROR) << "[NCCLDeviceBackend]: Failed to deregister local buffer";
+  }
+
+  // ncclCommWindowDeregister may leave a sticky CUDA error in the runtime
+  // error queue. Consume it to prevent the next CUDA API call from failing.
+  cudaDeviceSynchronize();
+  cudaGetLastError();
+
+  buf.backend_window = nullptr;
+  buf.base_ptr = nullptr;
+  buf.size = 0;
+}
+
 void NCCLDeviceBackend::destroy_device_comm(Ptr& device_window) {
   if (!device_window) {
     return;

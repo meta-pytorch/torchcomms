@@ -11,34 +11,30 @@ namespace comms::pipes {
 
 namespace {
 
-// Function pointer types for ibverbs functions we load via dlopen.
+// ---- ibverbs function pointer types ----
 using IbvRegMrIova2Fn =
     struct ibv_mr* (*)(struct ibv_pd*, void*, size_t, uint64_t, unsigned int);
-
 using IbvRegDmabufMrFn =
     struct ibv_mr* (*)(struct ibv_pd*, uint64_t, size_t, uint64_t, int, int);
 
-// Loaded function pointers (populated by load_ibverbs_lazy).
 IbvRegMrIova2Fn gIbvRegMrIova2 = nullptr;
 IbvRegDmabufMrFn gIbvRegDmabufMr = nullptr;
 
-std::once_flag gLoadFlag;
-int gLoadResult = -1;
+std::once_flag gIbvLoadFlag;
+int gIbvLoadResult = -1;
 
-void do_load() {
+void do_load_ibverbs() {
   void* handle = dlopen("libibverbs.so.1", RTLD_NOW | RTLD_NOLOAD);
   if (!handle) {
-    // Not already loaded — open fresh
     handle = dlopen("libibverbs.so.1", RTLD_NOW);
   }
   if (!handle) {
     LOG(ERROR) << "IbverbsLazy: failed to dlopen libibverbs.so.1: "
                << dlerror();
-    gLoadResult = 1;
+    gIbvLoadResult = 1;
     return;
   }
 
-  // ibv_reg_mr_iova2 — available since IBVERBS 1.8
   gIbvRegMrIova2 = reinterpret_cast<IbvRegMrIova2Fn>(
       dlvsym(handle, "ibv_reg_mr_iova2", "IBVERBS_1.8"));
   if (!gIbvRegMrIova2) {
@@ -46,7 +42,6 @@ void do_load() {
                  << dlerror();
   }
 
-  // ibv_reg_dmabuf_mr — available since IBVERBS 1.12
   gIbvRegDmabufMr = reinterpret_cast<IbvRegDmabufMrFn>(
       dlvsym(handle, "ibv_reg_dmabuf_mr", "IBVERBS_1.12"));
   if (!gIbvRegDmabufMr) {
@@ -54,12 +49,59 @@ void do_load() {
                  << dlerror();
   }
 
-  gLoadResult = 0;
+  gIbvLoadResult = 0;
 }
 
 int load_ibverbs_lazy() {
-  std::call_once(gLoadFlag, do_load);
-  return gLoadResult;
+  std::call_once(gIbvLoadFlag, do_load_ibverbs);
+  return gIbvLoadResult;
+}
+
+// ---- mlx5dv function pointer types ----
+using Mlx5dvIsSupportedFn = int (*)(struct ibv_device*);
+using Mlx5dvGetDataDirectSysfsPathFn =
+    int (*)(struct ibv_context*, char*, size_t);
+
+Mlx5dvIsSupportedFn gMlx5dvIsSupported = nullptr;
+Mlx5dvGetDataDirectSysfsPathFn gMlx5dvGetDataDirectSysfsPath = nullptr;
+
+std::once_flag gMlx5LoadFlag;
+bool gMlx5Loaded = false;
+
+void do_load_mlx5() {
+  void* handle = dlopen("libmlx5.so", RTLD_NOW);
+  if (!handle) {
+    handle = dlopen("libmlx5.so.1", RTLD_NOW);
+  }
+  if (!handle) {
+    LOG(WARNING) << "IbverbsLazy: failed to dlopen libmlx5.so[.1]: "
+                 << dlerror()
+                 << ". Data Direct NIC discovery will be disabled.";
+    return;
+  }
+
+  gMlx5dvIsSupported = reinterpret_cast<Mlx5dvIsSupportedFn>(
+      dlsym(handle, "mlx5dv_is_supported"));
+  if (!gMlx5dvIsSupported) {
+    LOG(WARNING) << "IbverbsLazy: mlx5dv_is_supported not available: "
+                 << dlerror();
+  }
+
+  // mlx5dv_get_data_direct_sysfs_path — available since MLX5_1.25
+  gMlx5dvGetDataDirectSysfsPath =
+      reinterpret_cast<Mlx5dvGetDataDirectSysfsPathFn>(
+          dlvsym(handle, "mlx5dv_get_data_direct_sysfs_path", "MLX5_1.25"));
+  if (!gMlx5dvGetDataDirectSysfsPath) {
+    LOG(WARNING)
+        << "IbverbsLazy: mlx5dv_get_data_direct_sysfs_path not available: "
+        << dlerror();
+  }
+
+  gMlx5Loaded = true;
+}
+
+void load_mlx5_lazy() {
+  std::call_once(gMlx5LoadFlag, do_load_mlx5);
 }
 
 } // namespace
@@ -89,6 +131,25 @@ struct ibv_mr* lazy_ibv_reg_dmabuf_mr(
     return nullptr;
   }
   return gIbvRegDmabufMr(pd, offset, length, iova, fd, access);
+}
+
+int lazy_mlx5dv_is_supported(struct ibv_device* device) {
+  load_mlx5_lazy();
+  if (!gMlx5dvIsSupported) {
+    return 0;
+  }
+  return gMlx5dvIsSupported(device);
+}
+
+int lazy_mlx5dv_get_data_direct_sysfs_path(
+    struct ibv_context* ctx,
+    char* buf,
+    size_t buf_len) {
+  load_mlx5_lazy();
+  if (!gMlx5dvGetDataDirectSysfsPath) {
+    return -1;
+  }
+  return gMlx5dvGetDataDirectSysfsPath(ctx, buf, buf_len);
 }
 
 } // namespace comms::pipes

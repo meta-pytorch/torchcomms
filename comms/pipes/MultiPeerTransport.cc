@@ -144,6 +144,13 @@ MultiPeerTransport::~MultiPeerTransport() {
   free_device_handle();
 }
 
+void MultiPeerTransport::setExternalNvlDataBuffers(
+    ExternalStagingBuffers externalStagingBuffers) {
+  if (nvlTransport_) {
+    nvlTransport_->setExternalDataBuffers(std::move(externalStagingBuffers));
+  }
+}
+
 void MultiPeerTransport::exchange() {
   if (cuda_driver_lazy_init() != 0) {
     throw std::runtime_error(
@@ -189,6 +196,13 @@ P2pIbgdaTransportDevice* MultiPeerTransport::get_p2p_ibgda_transport_device(
         "get_p2p_ibgda_transport_device: IBGDA transport not available (nRanks == 1?)");
   }
   return ibgdaTransport_->getP2pTransportDevice(globalPeerRank);
+}
+
+Transport* /*nullable*/ MultiPeerTransport::get_nvl_transports_array() const {
+  if (!nvlTransport_) {
+    return nullptr;
+  }
+  return nvlTransport_->getDeviceTransports().data();
 }
 
 P2pSelfTransportDevice MultiPeerTransport::get_p2p_self_transport_device()

@@ -1057,6 +1057,26 @@ Example:
           py::arg("timeout") = std::nullopt,
           py::arg("hints") = std::nullopt,
           py::call_guard<py::gil_scoped_release>())
+      .def(
+          "get_device_transport",
+          &TorchComm::get_device_transport,
+          R"(
+Get a device-allocated transport handle for pipes transport operations.
+
+Returns a device pointer (as int64) to a MultiPeerDeviceHandle that can be
+passed to Triton transport extern functions (transport.send, transport.recv,
+transport.signal, etc.).
+
+The handle is lazily created on first call and cached. The returned pointer
+is valid until the communicator is destroyed.
+
+Returns:
+    int: Device transport pointer as int64, suitable for passing to Triton kernels.
+
+Raises:
+    RuntimeError: If the backend does not support device transport.
+)",
+          py::call_guard<py::gil_scoped_release>())
 
       // Point-to-Point Operations
       .def(

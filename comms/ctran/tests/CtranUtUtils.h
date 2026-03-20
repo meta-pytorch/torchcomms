@@ -219,7 +219,7 @@ class CtranDistBaseTest : public NcclxBaseTest, public CtranBaseTest {
   // Destorying in TearDownTestSuite() to ensure release commWorld only after
   // all tests.
   static ncclComm_t commWorld;
-  static std::unique_ptr<c10d::TCPStore> tcpStoreServer;
+  static c10::intrusive_ptr<c10d::Store> tcpStoreServer;
   static void TearDownTestSuite();
 
   // Below provide convenient functions to communicate among testing ranks; use

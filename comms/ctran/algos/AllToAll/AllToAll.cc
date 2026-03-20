@@ -207,11 +207,11 @@ commResult_t ctranDeviceAllToAllv(
     void* recvbuff,
     const int64_t* sendcounts_d,
     const int64_t* recvcounts_d,
-    const int64_t* senddispls_d,
-    const int64_t* recvdispls_d,
     commDataType_t datatype,
     CtranComm* comm,
-    cudaStream_t stream) {
+    cudaStream_t stream,
+    int64_t sendcountsMultiplier,
+    int64_t recvcountsMultiplier) {
   auto opCount = comm->ctran_->getOpCount();
 
   KernelConfig config = KernelConfig(
@@ -227,12 +227,12 @@ commResult_t ctranDeviceAllToAllv(
           recvbuff,
           sendcounts_d,
           recvcounts_d,
-          senddispls_d,
-          recvdispls_d,
           datatype,
           comm,
           config,
-          kernArgs));
+          kernArgs,
+          sendcountsMultiplier,
+          recvcountsMultiplier));
 
   // NVLink-only: no GPE op needed (no IB fallback)
   std::vector<std::unique_ptr<struct OpElem>> opGroup;
@@ -281,11 +281,11 @@ commResult_t ctranDeviceAllToAllv(
     void* /*recvbuff*/,
     const int64_t* /*sendcounts_d*/,
     const int64_t* /*recvcounts_d*/,
-    const int64_t* /*senddispls_d*/,
-    const int64_t* /*recvdispls_d*/,
     commDataType_t /*datatype*/,
     CtranComm* /*comm*/,
-    cudaStream_t /*stream*/) {
+    cudaStream_t /*stream*/,
+    int64_t /*sendcountsMultiplier*/,
+    int64_t /*recvcountsMultiplier*/) {
   return commInternalError;
 }
 

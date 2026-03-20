@@ -9,6 +9,7 @@ using cudaHostAlloc. It is NOT thread-safe.
 
 #include <list>
 #include <stack>
+#include <vector>
 
 #include "comms/ctran/utils/Checks.h"
 
@@ -38,40 +39,41 @@ class PinnedHostPool {
  public:
   PinnedHostPool() = delete;
 
-  explicit PinnedHostPool(size_t capacity) : capacity_(capacity) {
-    FB_CUDACHECKTHROW_EX_NOCOMM(cudaHostAlloc(
-        &this->memPtr_, this->capacity_ * sizeof(T), cudaHostAllocDefault));
-
-    for (int i = 0; i < capacity_; ++i) {
-      T* item = reinterpret_cast<T*>(this->memPtr_) + i;
-      item->reset();
-      this->freeItems_.push(item);
-    }
+  explicit PinnedHostPool(size_t startCapacity) : chunkSize_(startCapacity) {
+    allocChunk();
   }
 
   ~PinnedHostPool() {
     this->reclaim();
     if (this->inuseItems_.size()) {
       CLOGF(
-          WARN,
+          INFO,
           "CTRAN-GPE: Internal {} pool has {} inuse items, indicating same amount of unfinished kernel",
           T::name(),
           this->inuseItems_.size());
     }
-    FB_CUDACHECKIGNORE(cudaFreeHost(this->memPtr_));
+    for (void* chunk : chunks_) {
+      FB_CUDACHECKIGNORE(cudaFreeHost(chunk));
+    }
 
-    // Dot not throw exception in destructor to avoid early termination in stack
+    // Do not throw exception in destructor to avoid early termination in stack
     // unwind. See discussion in
     // https://stackoverflow.com/questions/130117/if-you-shouldnt-throw-exceptions-in-a-destructor-how-do-you-handle-errors-in-i
   }
 
   T* pop() {
     if (this->freeItems_.size() == 0) {
+      this->reclaim();
+    }
+
+    if (this->freeItems_.size() == 0) {
       CLOGF(
-          WARN,
-          "CTRAN-GPE: Internal {} pool ran out of available items",
-          T::name());
-      return nullptr;
+          INFO,
+          "CTRAN-GPE: {} pool exhausted ({} capacity), growing by {}",
+          T::name(),
+          capacity_,
+          chunkSize_);
+      allocChunk();
     }
 
     T* item = this->freeItems_.top();
@@ -117,10 +119,25 @@ class PinnedHostPool {
   }
 
  private:
+  void allocChunk() {
+    void* mem = nullptr;
+    FB_CUDACHECKTHROW_EX_NOCOMM(
+        cudaHostAlloc(&mem, chunkSize_ * sizeof(T), cudaHostAllocDefault));
+    chunks_.push_back(mem);
+
+    for (size_t i = 0; i < chunkSize_; ++i) {
+      T* item = reinterpret_cast<T*>(mem) + i;
+      item->reset();
+      this->freeItems_.push(item);
+    }
+    capacity_ += chunkSize_;
+  }
+
   std::stack<T*> freeItems_;
   std::list<T*> inuseItems_;
-  const size_t capacity_{0};
-  void* memPtr_{nullptr};
+  std::vector<void*> chunks_;
+  const size_t chunkSize_{0};
+  size_t capacity_{0};
 
   PinnedHostPool(const PinnedHostPool&) = delete;
   PinnedHostPool& operator=(const PinnedHostPool&) = delete;

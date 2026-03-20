@@ -236,22 +236,22 @@ ncclResult_t DefaultNcclxApi::deviceAllToAllv(
     void* recvbuff,
     const int64_t* sendcounts_d,
     const int64_t* recvcounts_d,
-    const int64_t* senddispls_d,
-    const int64_t* recvdispls_d,
     ncclDataType_t datatype,
     ncclComm_t comm,
-    cudaStream_t stream) {
+    cudaStream_t stream,
+    int64_t sendcountsMultiplier,
+    int64_t recvcountsMultiplier) {
   std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclx::deviceAllToAllv(
       sendbuff,
       recvbuff,
       sendcounts_d,
       recvcounts_d,
-      senddispls_d,
-      recvdispls_d,
       datatype,
       comm,
-      stream);
+      stream,
+      sendcountsMultiplier,
+      recvcountsMultiplier);
 }
 
 ncclResult_t DefaultNcclxApi::alltoallvDynamicDispatch(
@@ -554,6 +554,20 @@ ncclResult_t DefaultNcclxApi::getMultiPeerDeviceHandle(
       outNRanks,
       outNumNvlPeers,
       outNumIbPeers);
+}
+
+ncclResult_t DefaultNcclxApi::winLocalRegisterBuffer(
+    ncclComm_t comm,
+    void* ptr,
+    size_t size,
+    uint32_t* outLkey) {
+  return ncclWinLocalRegisterBuffer(comm, ptr, size, outLkey);
+}
+
+ncclResult_t DefaultNcclxApi::winLocalDeregisterBuffer(
+    ncclComm_t comm,
+    void* ptr) {
+  return ncclWinLocalDeregisterBuffer(comm, ptr);
 }
 #endif // ENABLE_PIPES
 

@@ -1011,6 +1011,30 @@ ncclResult_t ncclGetMultiPeerDeviceHandle(
     int* outNRanks,
     int* outNumNvlPeers,
     int* outNumIbPeers);
+
+/*
+ * Register a local buffer for use as source in device-side RDMA put operations.
+ * NON-COLLECTIVE — purely local memory registration (lkey only, no rkey exchange).
+ *
+ * The returned lkey is in network byte order, suitable for IBGDA WQE construction.
+ * Deregister with ncclWinLocalDeregisterBuffer() when no longer needed.
+ *
+ * Requires NCCL_CTRAN_USE_PIPES=1 during communicator init.
+ * Returns ncclInternalError if pipes transport is not initialized.
+ */
+ncclResult_t ncclWinLocalRegisterBuffer(
+    ncclComm_t comm,
+    void* ptr,
+    size_t size,
+    uint32_t* outLkey);
+
+/*
+ * Deregister a buffer previously registered with ncclWinLocalRegisterBuffer().
+ * NON-COLLECTIVE.
+ */
+ncclResult_t ncclWinLocalDeregisterBuffer(
+    ncclComm_t comm,
+    void* ptr);
 #endif // ENABLE_PIPES
 
 /*
@@ -1191,14 +1215,15 @@ ncclResult_t alltoallvDynamicCombine( const void* sendbuff, const size_t* sendSp
 /*
  * Device AllToAllv: AllToAllv where split sizes are device tensors.
  * Unlike regular AllToAllv where counts/displacements are host arrays,
- * this variant takes device pointers for sendcounts, recvcounts,
- * senddispls, and recvdispls. This is useful when split sizes are
- * computed on the GPU and not known on the host beforehand.
+ * this variant takes device pointers for sendcounts and recvcounts.
+ * Displacements are computed internally as exclusive prefix sums of
+ * the counts. This is useful when split sizes are computed on the GPU
+ * and not known on the host beforehand.
  */
 ncclResult_t deviceAllToAllv(const void* sendbuff, void* recvbuff,
     const int64_t* sendcounts_d, const int64_t* recvcounts_d,
-    const int64_t* senddispls_d, const int64_t* recvdispls_d,
-    ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
+    ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream,
+    int64_t sendcountsMultiplier = 1, int64_t recvcountsMultiplier = 1);
 
 /*
  * Persistent All-Gather similar to ncclAllgather, the key difference is that

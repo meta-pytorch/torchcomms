@@ -414,36 +414,24 @@ std::pair<PathType, int> GpuNicDiscovery::computePathType(
 // Static methods for Data Direct detection
 
 bool GpuNicDiscovery::isMlx5Supported(ibv_device* device) {
-#if !TORCHCOMMS_HAVE_IBVERBS
-  (void)device;
-  return false;
-#elif TORCHCOMMS_HAVE_MLX5DV
-  return mlx5dv_is_supported(device) != 0;
-#else
-  (void)device;
-  return false;
-#endif
+  return lazy_mlx5dv_is_supported(device) != 0;
 }
 
 bool GpuNicDiscovery::isDmaBufCapable(ibv_context* ctx) {
-#if !TORCHCOMMS_HAVE_IBVERBS
-  (void)ctx;
-  return false;
-#else
-  struct ibv_pd* pd = ibv_alloc_pd(ctx);
-  if (pd == nullptr) {
+  struct ibv_pd* pd = nullptr;
+  doca_error_t err = doca_verbs_wrapper_ibv_alloc_pd(ctx, &pd);
+  if (err != DOCA_SUCCESS || !pd) {
     return false;
   }
 
   // Probe DMA-BUF support with a dummy call (fd=-1)
   // If not supported, errno will be EOPNOTSUPP or EPROTONOSUPPORT
   // If supported but invalid args, errno will be EBADF (which means supported)
-  (void)ibv_reg_dmabuf_mr(
+  (void)lazy_ibv_reg_dmabuf_mr(
       pd, 0ULL /*offset*/, 0ULL /*len*/, 0ULL /*iova*/, -1 /*fd*/, 0 /*flags*/);
   bool notSupported = (errno == EOPNOTSUPP) || (errno == EPROTONOSUPPORT);
-  ibv_dealloc_pd(pd);
+  doca_verbs_wrapper_ibv_dealloc_pd(pd);
   return !notSupported;
-#endif
 }
 
 bool GpuNicDiscovery::getDataDirectSysfsPath(
@@ -460,7 +448,7 @@ bool GpuNicDiscovery::getDataDirectSysfsPath(
   int prefixLen = strlen(kSysPrefix);
   memcpy(buf, kSysPrefix, prefixLen);
 
-  int rc = mlx5dv_get_data_direct_sysfs_path(
+  int rc = lazy_mlx5dv_get_data_direct_sysfs_path(
       ctx, buf + prefixLen, sizeof(buf) - prefixLen);
   if (rc != 0) {
     return false;
@@ -474,20 +462,24 @@ void GpuNicDiscovery::augmentWithDataDirect() {
   if (dataDirectMode_ == DataDirectMode::Disabled) {
     return;
   }
-#if !TORCHCOMMS_HAVE_IBVERBS
-  return;
-#endif
-#if TORCHCOMMS_HAVE_IBVERBS
-  struct ibv_device** deviceList = ibv_get_device_list(nullptr);
-  if (deviceList == nullptr) {
+
+  int numDevices = 0;
+  struct ibv_device** deviceList = nullptr;
+  doca_error_t docaRet =
+      doca_verbs_wrapper_ibv_get_device_list(&numDevices, &deviceList);
+  if (docaRet != DOCA_SUCCESS || !deviceList || numDevices == 0) {
     spdlog::warn("NicDiscovery: ibv_get_device_list() failed for DD probing");
     return;
   }
 
   // Build map of ibv_device* by name for quick lookup
   std::unordered_map<std::string, ibv_device*> devMap;
-  for (int i = 0; deviceList[i] != nullptr; i++) {
-    devMap[deviceList[i]->name] = deviceList[i];
+  for (int i = 0; i < numDevices; i++) {
+    const char* devName = nullptr;
+    doca_verbs_wrapper_ibv_get_device_name(deviceList[i], &devName);
+    if (devName) {
+      devMap[devName] = deviceList[i];
+    }
   }
 
   std::vector<NicCandidate> ddCandidates;
@@ -504,8 +496,9 @@ void GpuNicDiscovery::augmentWithDataDirect() {
       continue;
     }
 
-    ibv_context* ctx = ibv_open_device(dev);
-    if (ctx == nullptr) {
+    ibv_context* ctx = nullptr;
+    docaRet = doca_verbs_wrapper_ibv_open_device(dev, &ctx);
+    if (docaRet != DOCA_SUCCESS || !ctx) {
       continue;
     }
 
@@ -541,7 +534,7 @@ void GpuNicDiscovery::augmentWithDataDirect() {
       }
     }
 
-    ibv_close_device(ctx);
+    doca_verbs_wrapper_ibv_close_device(ctx);
 
     if (!ddCapable) {
       spdlog::debug(
@@ -567,7 +560,7 @@ void GpuNicDiscovery::augmentWithDataDirect() {
     candidates_.push_back(std::move(dd));
   }
 
-  ibv_free_device_list(deviceList);
+  doca_verbs_wrapper_ibv_free_device_list(deviceList);
 
   sortCandidates();
 
@@ -583,7 +576,6 @@ void GpuNicDiscovery::augmentWithDataDirect() {
         candidates_[i].nhops,
         candidates_[i].isDataDirect);
   }
-#endif /* TORCHCOMMS_HAVE_IBVERBS */
 }
 
 std::string GpuNicDiscovery::anchorDescription() const {

@@ -138,6 +138,11 @@ cudaError_t DefaultCudaApi::threadExchangeStreamCaptureMode(
   return cudaThreadExchangeStreamCaptureMode(mode);
 }
 
+cudaError_t
+DefaultCudaApi::hostAlloc(void** pHost, size_t size, unsigned int flags) {
+  return cudaHostAlloc(pHost, size, flags);
+}
+
 cudaError_t DefaultCudaApi::malloc(void** devPtr, size_t size) {
   return cudaMalloc(devPtr, size);
 }

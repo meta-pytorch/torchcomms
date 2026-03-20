@@ -106,13 +106,15 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
   // ==========================================================================
 
   // Register a local buffer for use as source in device-side put operations.
-  // This is NON-COLLECTIVE because it uses NCCL_WIN_LOCAL_ONLY flag which
-  // registers with local lkey only (no rkey allGather). The resulting window
-  // can only be used as a source buffer for put operations.
+  // NON-COLLECTIVE — registration is purely local (lkey only, no rkey
+  // exchange). The resulting buffer can only be used as a source for put
+  // operations.
   //
-  // Prerequisites: Must call tensor_register() then get_device_window() before
-  // this method. get_device_window() triggers ncclDevCommCreate which enables
-  // GIN - required for local buffer registration to work.
+  // Backend dispatch:
+  //   - NCCLDeviceBackend: NCCL_WIN_DEVICE_API | NCCL_WIN_LOCAL_ONLY
+  //   - PipesDeviceBackend: MultiPeerTransport::localRegisterIbgdaBuffer
+  //
+  // Prerequisites: Must call tensor_register() then get_device_window() first.
   DeviceRegisteredBuffer register_local_buffer(const at::Tensor& tensor);
 
   // Deregister a previously registered local buffer. NON-COLLECTIVE.

@@ -48,32 +48,23 @@ PYBIND11_MODULE(_comms_ncclx, m) {
              const at::Tensor& input,
              const at::Tensor& output_split_sizes,
              const at::Tensor& input_split_sizes,
-             const at::Tensor& output_split_offsets,
-             const at::Tensor& input_split_offsets,
              bool async_op) {
             return self.device_alltoallv_single(
-                output,
-                input,
-                output_split_sizes,
-                input_split_sizes,
-                output_split_offsets,
-                input_split_offsets,
-                async_op);
+                output, input, output_split_sizes, input_split_sizes, async_op);
           },
           R"(
-All-to-all-v operation where split sizes and offsets are device tensors (on GPU).
+All-to-all-v operation where split sizes are device tensors (on GPU).
 
 Unlike all_to_all_v_single where split sizes are host vectors, this API takes
-split sizes and displacements as CUDA tensors, allowing the GPU to read them
-directly without host-device synchronization.
+split sizes as CUDA tensors, allowing the GPU to read them directly without
+host-device synchronization. Displacements are computed internally by the
+kernel as exclusive prefix sums of the counts.
 
 Args:
     output: Output tensor to receive data.
     input: Input tensor containing data to send.
     output_split_sizes: CUDA int64 tensor of receive counts per rank.
     input_split_sizes: CUDA int64 tensor of send counts per rank.
-    output_split_offsets: CUDA int64 tensor of receive displacements per rank.
-    input_split_offsets: CUDA int64 tensor of send displacements per rank.
     async_op: Whether to perform the operation asynchronously.
 
 Returns:
@@ -83,8 +74,6 @@ Returns:
           py::arg("input"),
           py::arg("output_split_sizes"),
           py::arg("input_split_sizes"),
-          py::arg("output_split_offsets"),
-          py::arg("input_split_offsets"),
           py::arg("async_op"),
           py::call_guard<py::gil_scoped_release>())
       .def(

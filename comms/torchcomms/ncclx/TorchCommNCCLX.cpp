@@ -1507,8 +1507,6 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::device_alltoallv_single(
     const at::Tensor& input,
     const at::Tensor& output_split_sizes,
     const at::Tensor& input_split_sizes,
-    const at::Tensor& output_split_offsets,
-    const at::Tensor& input_split_offsets,
     bool async_op) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
@@ -1516,14 +1514,10 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::device_alltoallv_single(
   ensureTensorContiguous(input);
   ensureTensorContiguous(output_split_sizes);
   ensureTensorContiguous(input_split_sizes);
-  ensureTensorContiguous(output_split_offsets);
-  ensureTensorContiguous(input_split_offsets);
 
   // Validate metadata tensor types - all must be int64_t (torch.int64)
   validateInt64Dtype(input_split_sizes, "input_split_sizes");
   validateInt64Dtype(output_split_sizes, "output_split_sizes");
-  validateInt64Dtype(input_split_offsets, "input_split_offsets");
-  validateInt64Dtype(output_split_offsets, "output_split_offsets");
 
   // Validate metadata tensors are on CUDA
   TORCH_CHECK(
@@ -1532,25 +1526,29 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::device_alltoallv_single(
   TORCH_CHECK(
       output_split_sizes.is_cuda(),
       "output_split_sizes must be a CUDA tensor for device_alltoallv_single");
-  TORCH_CHECK(
-      input_split_offsets.is_cuda(),
-      "input_split_offsets must be a CUDA tensor for device_alltoallv_single");
-  TORCH_CHECK(
-      output_split_offsets.is_cuda(),
-      "output_split_offsets must be a CUDA tensor for device_alltoallv_single");
 
   TracingGuard tracingGuard(
       name_, comm_size_, "device_alltoallv_single", rank_, input, output);
+
+  // Calculate the number of elements per slice along the first dimension.
+  // For a tensor with shape [N, D1, D2, ..., Dk], each slice of size S along
+  // dim 0 contains S * D1 * D2 * ... * Dk elements.
+  // The split sizes from the user are in units of dim-0 slices (rows), so we
+  // pass the scaling factor to the kernel which multiplies counts internally
+  // without launching extra kernels.
+  int64_t send_elements_per_slice =
+      input.numel() ? input.numel() / input.size(0) : 0;
+  int64_t recv_elements_per_slice =
+      output.numel() ? output.numel() / output.size(0) : 0;
 
   cudaStream_t stream = getOperationStream(async_op);
   graph_event_tracker_.initOnGraphStart(stream);
   auto work = createWork(
       stream,
       options_.timeout,
-      async_op
-          ? std::vector<
-                at::Tensor>{input, input_split_sizes, output_split_sizes, input_split_offsets, output_split_offsets}
-          : std::vector<at::Tensor>{});
+      async_op ? std::vector<
+                     at::Tensor>{input, input_split_sizes, output_split_sizes}
+               : std::vector<at::Tensor>{});
 
   // Record start event before NCCL operation
   work->recordStart("device_alltoallv_single");
@@ -1560,11 +1558,11 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::device_alltoallv_single(
       output.data_ptr(),
       input_split_sizes.data_ptr<int64_t>(),
       output_split_sizes.data_ptr<int64_t>(),
-      input_split_offsets.data_ptr<int64_t>(),
-      output_split_offsets.data_ptr<int64_t>(),
       getNcclDataType(input),
       nccl_comm_,
-      stream);
+      stream,
+      send_elements_per_slice,
+      recv_elements_per_slice);
 
   NCCLX_CHECK(nccl_api_, nccl_comm_, result, "NCCLX deviceAllToAllv failed");
 
@@ -2160,9 +2158,9 @@ std::shared_ptr<TorchCommWindow> TorchCommNCCLX::new_window(
     const std::optional<at::Tensor>& tensor) {
   std::shared_ptr<TorchCommWindow> win;
 #if defined(ENABLE_PIPES)
-  // Select Pipes backend when explicitly requested via env var.
+  // Select Pipes backend when NCCL_CTRAN_USE_PIPES is enabled.
   // Pipes uses ctran IBGDA/NVLink instead of GIN for device-side P2P.
-  const char* pipes_env = std::getenv("TORCHCOMMS_PIPES_DEVICE_API_ENABLE");
+  const char* pipes_env = std::getenv("NCCL_CTRAN_USE_PIPES");
   if (pipes_env != nullptr && std::string_view(pipes_env) == "1") {
     win = std::make_shared<TorchCommWindowNCCLXPipes>(
         nccl_comm_, shared_from_this());
@@ -2226,24 +2224,26 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
 
   // Create a new NCCL communicator
   ncclComm_t new_comm;
-  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   std::string commDesc = fmt::format(
       "{}::split::{}_{}_{}", name_, color, split_name, split_counter_++);
-  config.commDesc = commDesc.c_str();
 
-  // Set splitGroupRanks and splitGroupSize hints automatically based on ranks
-  // parameter
-  if (!ranks.empty()) {
-    config.splitGroupRanks = const_cast<int*>(ranks.data());
-    config.splitGroupSize = static_cast<int>(ranks.size());
-  }
-
-  // Populate NCCL config from user-provided hints.  NCCLx-specific fields
-  // are passed via the hints object; upstream NCCL fields are set directly
-  // on the config struct.
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   ncclx::Hints hints;
-  populateNcclConfigFromHints(config, hints, options, commDesc);
   config.hints = &hints;
+  populateNcclConfig(config, options, commDesc);
+  hints.set("ncclx::commDesc", commDesc);
+
+  // Set splitGroupRanks hint automatically based on ranks parameter
+  if (!ranks.empty()) {
+    std::string rankStr;
+    for (size_t i = 0; i < ranks.size(); ++i) {
+      if (i > 0) {
+        rankStr += ',';
+      }
+      rankStr += std::to_string(ranks[i]);
+    }
+    hints.set("ncclx::splitGroupRanks", rankStr);
+  }
 
   // Verify the correct CUDA device is set before calling ncclCommSplit.
   // NCCL expects the caller to have set the device matching the communicator.
@@ -2398,9 +2398,13 @@ static const NCCLXRegistration registration{};
 } // namespace
 
 #if defined(ENABLE_PIPES)
-::comms::pipes::MultiPeerDeviceHandle TorchCommNCCLX::get_device_transport() {
-  return torchcomms::device::PipesDeviceBackend::get_device_transport(
-      nccl_comm_, nccl_api_.get());
+int64_t TorchCommNCCLX::get_device_transport() {
+  if (!device_transport_handle_) {
+    device_transport_handle_ =
+        torchcomms::device::PipesDeviceBackend::get_device_transport(
+            nccl_comm_, nccl_api_.get(), cuda_api_.get());
+  }
+  return reinterpret_cast<int64_t>(device_transport_handle_.get());
 }
 #endif
 
