@@ -576,6 +576,20 @@ void CtranGpe::Impl::gpeThreadFn() {
         // if comm is aborted for any reason, we mark it as aborted to avoid
         // resetting the state.
         if (comm->testAbort()) {
+          auto abort = comm->getAbort();
+          if (abort->TimedOut()) {
+            CLOGF(
+                ERR,
+                "Communicator aborted due to timeout on rank {} commHash {:x}",
+                statex->rank(),
+                statex->commHash());
+          } else {
+            CLOGF(
+                ERR,
+                "Communicator aborted (explicit) on rank {} commHash {:x}",
+                statex->rank(),
+                statex->commHash());
+          }
           comm->setAbort();
         }
         comm->cancelTimeout();
