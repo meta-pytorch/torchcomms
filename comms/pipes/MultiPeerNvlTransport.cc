@@ -4,6 +4,9 @@
 
 #include <vector>
 
+#include "comms/pipes/P2pSelfTransportDevice.cuh"
+#include "comms/pipes/Transport.cuh"
+#include "comms/pipes/ll128/Ll128Packet.cuh"
 #include "comms/utils/checks.h"
 
 namespace comms::pipes {
@@ -107,6 +110,22 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
       signalInitStates.data(),
       totalSignalBufferSize,
       cudaMemcpyDefault));
+
+  // Conditionally allocate LL128 buffers
+  if (config_.ll128BufferSize > 0) {
+    perPeerLl128BufferSize_ = config_.ll128BufferSize;
+    std::size_t totalLl128Size = perPeerLl128BufferSize_ * (nRanks_ - 1);
+    ll128BufferHandler_ = std::make_unique<GpuMemHandler>(
+        bootstrap_, myRank_, nRanks_, totalLl128Size, memSharingMode_);
+
+    // Initialize all LL128 packet flags to kLl128ReadyToWrite (-1).
+    // cudaMemset(0xFF) sets all bytes to 0xFF = -1 in two's complement.
+    // Data payload bytes are also 0xFF but get overwritten before first read.
+    auto* ll128Ptr = ll128BufferHandler_->getLocalDeviceMemPtr();
+    CUDA_CHECK(cudaMemset(ll128Ptr, kLl128MemsetInitByte, totalLl128Size));
+    CUDA_CHECK(
+        cudaDeviceSynchronize()); // Ensure init completes before exchange
+  }
 }
 
 void MultiPeerNvlTransport::setExternalDataBuffers(
@@ -166,6 +185,10 @@ void MultiPeerNvlTransport::exchange() {
     stateBufferHandler_->exchangeMemPtrs();
   }
   signalBufferHandler_->exchangeMemPtrs();
+
+  if (ll128BufferHandler_) {
+    ll128BufferHandler_->exchangeMemPtrs();
+  }
 }
 
 P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
@@ -211,7 +234,9 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
       .dataBufferSize = config_.dataBufferSize,
       .chunkSize = config_.chunkSize,
       .pipelineDepth = config_.pipelineDepth,
-      .useDualStateBuffer = config_.useDualStateBuffer};
+      .useDualStateBuffer = config_.useDualStateBuffer,
+      .ll128BufferNumPackets = perPeerLl128BufferSize_ / kLl128PacketSize,
+  };
 
   auto* localSignalPtr =
       static_cast<char*>(signalBufferHandler_->getLocalDeviceMemPtr());
@@ -275,6 +300,20 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
   auto* remoteChunkStatePtr =
       static_cast<char*>(stateBufferHandler_->getPeerDeviceMemPtr(peerRank));
 
+  // Compute LL128 buffer pointers (nullptr when LL128 is disabled)
+  Ll128Packet* localLl128 = nullptr;
+  Ll128Packet* remoteLl128 = nullptr;
+  if (ll128BufferHandler_) {
+    auto* localLl128Ptr =
+        static_cast<char*>(ll128BufferHandler_->getLocalDeviceMemPtr());
+    localLl128 = reinterpret_cast<Ll128Packet*>(
+        localLl128Ptr + localPeerIndex * perPeerLl128BufferSize_);
+    auto* remoteLl128Ptr =
+        static_cast<char*>(ll128BufferHandler_->getPeerDeviceMemPtr(peerRank));
+    remoteLl128 = reinterpret_cast<Ll128Packet*>(
+        remoteLl128Ptr + remotePeerIndex * perPeerLl128BufferSize_);
+  }
+
   auto* remoteChunkStateBase = reinterpret_cast<ChunkState*>(
       remoteChunkStatePtr + remoteChunkStateBufferOffset);
 
@@ -300,6 +339,7 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
         .senderStateBuffer = DeviceSpan<ChunkState>(
             localChunkStateBase + numChunksPerPeer, numChunksPerPeer),
         .signalBuffer = localSignalSpan,
+        .ll128Buffer = localLl128,
     };
 
     RemoteState remoteState{
@@ -309,6 +349,7 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
         .senderStateBuffer = DeviceSpan<ChunkState>(
             remoteChunkStateBase + numChunksPerPeer, numChunksPerPeer),
         .signalBuffer = remoteSignalSpan,
+        .ll128Buffer = remoteLl128,
     };
 
     return P2pNvlTransportDevice(
@@ -324,6 +365,7 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
             DeviceSpan<ChunkState>(localChunkStateBase, numChunksPerPeer),
         .senderStateBuffer = DeviceSpan<ChunkState>(), // Not used
         .signalBuffer = localSignalSpan,
+        .ll128Buffer = localLl128,
     };
 
     RemoteState remoteState{
@@ -332,6 +374,7 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
             DeviceSpan<ChunkState>(remoteChunkStateBase, numChunksPerPeer),
         .senderStateBuffer = DeviceSpan<ChunkState>(), // Not used
         .signalBuffer = remoteSignalSpan,
+        .ll128Buffer = remoteLl128,
     };
 
     return P2pNvlTransportDevice(
@@ -368,7 +411,8 @@ void MultiPeerNvlTransport::initializeTransportsArray() {
   }
 
   // Single batched memcpy for all Transport objects
-  // This works because Transport is designed for byte-copy (see Transport.cuh)
+  // This works because Transport is designed for byte-copy (see
+  // Transport.cuh)
   CUDA_CHECK(cudaMemcpy(
       transportsDevice_->get(),
       hostTransports.data(),

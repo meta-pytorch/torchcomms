@@ -81,4 +81,33 @@ void testRawWaitSignal(
 // Read the signal value (for verification)
 void testReadSignal(SignalState* signal_d, uint64_t* result_d);
 
+// =============================================================================
+// LL128 transport send/recv test helpers
+// These test the ll128_send()/ll128_recv() methods on P2pNvlTransportDevice
+// =============================================================================
+
+/**
+ * Test LL128 send/recv via P2pNvlTransportDevice transport wrappers.
+ *
+ * Uses two transports in a loopback configuration where transport0 sends
+ * to transport1. The sender calls p2p.ll128_send() and the receiver calls
+ * p2p.ll128_recv().
+ *
+ * @param sender Sender transport (writes to receiver's LL128 buffer)
+ * @param receiver Receiver transport (reads from its local LL128 buffer)
+ * @param src_d Source buffer on sender GPU
+ * @param dst_d Destination buffer on receiver GPU
+ * @param nbytes Number of bytes to transfer (must be multiple of 16)
+ * @param numBlocks Number of blocks to launch
+ * @param blockSize Threads per block
+ */
+void testLl128SendRecv(
+    P2pNvlTransportDevice sender,
+    P2pNvlTransportDevice receiver,
+    const char* src_d,
+    char* dst_d,
+    size_t nbytes,
+    int numBlocks,
+    int blockSize);
+
 } // namespace comms::pipes::test

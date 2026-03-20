@@ -77,6 +77,12 @@ struct MultiPeerNvlTransportConfig {
   //   assigned to group (K % total_groups), making the unready write visible
   //   after group.sync().
   bool useDualStateBuffer{false};
+
+  // Size of LL128 packet buffer per peer (bytes).
+  // When > 0, allocates LL128 buffers and enables ll128_send/recv/forward
+  // on P2pNvlTransportDevice. When 0 (default), LL128 is disabled.
+  // Use ll128_buffer_size() from Ll128Packet.cuh to compute from message size.
+  std::size_t ll128BufferSize{0};
 };
 
 /**
@@ -339,13 +345,15 @@ class MultiPeerNvlTransport {
   std::shared_ptr<meta::comms::IBootstrap> bootstrap_;
   const MultiPeerNvlTransportConfig config_;
 
-  // GpuMemHandler-based memory for data, state, and signal buffers
+  // GpuMemHandler-based memory for data, state, signal, and LL128 buffers
   // Automatically uses fabric handles on H100+/CUDA12.3+, falls back to cudaIpc
   // dataBufferHandler_ is only allocated when external data buffers are NOT
   // used. It is allocated lazily in exchange() rather than in the constructor.
   std::unique_ptr<GpuMemHandler> dataBufferHandler_;
   std::unique_ptr<GpuMemHandler> stateBufferHandler_;
   std::unique_ptr<GpuMemHandler> signalBufferHandler_;
+  std::unique_ptr<GpuMemHandler>
+      ll128BufferHandler_; // nullptr when ll128BufferSize == 0
 
   // External data buffer pointers (set via setExternalDataBuffers()).
   // When set, exchange() skips data buffer allocation/exchange.
@@ -360,6 +368,7 @@ class MultiPeerNvlTransport {
   std::size_t perPeerDataBufferSize_{0};
   std::size_t perPeerChunkStateBufferSize_{0};
   std::size_t perPeerSignalBufferSize_{0};
+  std::size_t perPeerLl128BufferSize_{0};
 
   // Flag to track if multi-peer device arrays have been initialized
   bool multiPeerInitialized_{false};

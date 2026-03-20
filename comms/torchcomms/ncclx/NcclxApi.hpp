@@ -203,11 +203,11 @@ class NcclxApi {
       void* recvbuff,
       const int64_t* sendcounts_d,
       const int64_t* recvcounts_d,
-      const int64_t* senddispls_d,
-      const int64_t* recvdispls_d,
       ncclDataType_t datatype,
       ncclComm_t comm,
-      cudaStream_t stream) {
+      cudaStream_t stream,
+      int64_t sendcountsMultiplier = 1,
+      int64_t recvcountsMultiplier = 1) {
     return ncclInvalidUsage;
   }
 
@@ -515,11 +515,11 @@ class DefaultNcclxApi : public NcclxApi {
       void* recvbuff,
       const int64_t* sendcounts_d,
       const int64_t* recvcounts_d,
-      const int64_t* senddispls_d,
-      const int64_t* recvdispls_d,
       ncclDataType_t datatype,
       ncclComm_t comm,
-      cudaStream_t stream) override;
+      cudaStream_t stream,
+      int64_t sendcountsMultiplier = 1,
+      int64_t recvcountsMultiplier = 1) override;
 
   [[nodiscard]] ncclResult_t alltoallvDynamicDispatch(
       const void* sendbuff,

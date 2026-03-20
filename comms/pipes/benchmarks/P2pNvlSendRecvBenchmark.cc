@@ -581,108 +581,74 @@ TEST_F(P2pSendRecvBenchmarkFixture, BidirectionalBenchmark) {
   // Bidirectional test configurations using NCCL-like parameters
   std::vector<BenchmarkConfig> configs;
 
-  // === NCCL-LIKE CONFIGURATIONS ===
-  // Helper function to add NCCL-like configs with consistent parameters
-  // NCCL uses 16 blocks for < 512M messages, 32 blocks for >= 512M messages
-  constexpr int kNcclBlocksSmall = 16; // For messages < 512MB
-  constexpr int kNcclBlocksLarge = 32; // For messages >= 512MB
-  constexpr int kNcclThreads = 512;
-  constexpr std::size_t kNcclStagedBufferSize = 8 * 1024 * 1024; // 8MB
-  constexpr std::size_t kChunkSize = 512 * 1024; // 512KB
-  const size_t kWarpChunkSize = 16 * 1024;
-  constexpr std::size_t kLargeMessageThreshold = 512 * 1024 * 1024; // 512MB
+  // 2MB: 256 warps, 128 chunks (16KB each) - matches optimal unidirectional
+  configs.push_back({
+      .nBytes = 2 * 1024 * 1024,
+      .stagedBufferSize = 2 * 1024 * 1024,
+      .numBlocks = 64,
+      .numThreads = 128,
+      .pipelineDepth = 2,
+      .chunkSize = 16 * 1024,
+      .name = "Bidir_2MB",
+  });
 
-  // Helper function for adding NCCL-like config with auto-computed numBlocks
-  // Uses 16 blocks for < 512M, 32 blocks for >= 512M (like NCCL)
-  // Adds both single state and dual state variants
-  auto addNcclConfig = [&configs,
-                        kNcclBlocksLarge,
-                        kNcclStagedBufferSize,
-                        kLargeMessageThreshold](
-                           std::size_t sizeBytes,
-                           const std::string& sizeName,
-                           SyncScope scope,
-                           const std::string& scopeName) {
-    int numBlks = (sizeBytes >= kLargeMessageThreshold) ? kNcclBlocksLarge
-                                                        : kNcclBlocksSmall;
-    // Single state buffer variant
-    configs.push_back({
-        .nBytes = sizeBytes,
-        .stagedBufferSize = kNcclStagedBufferSize,
-        .numBlocks = numBlks,
-        .numThreads = kNcclThreads,
-        .pipelineDepth = 2,
-        .chunkSize = scope == SyncScope::WARP ? kWarpChunkSize : kChunkSize,
-        .groupScope = scope,
-        .spreadClusterLaunch = true,
-        .useDualStateBuffer = false,
-        .name = "NCCL_" + sizeName + "_" + scopeName + "_Single",
-    });
-    // Dual state buffer variant
-    configs.push_back({
-        .nBytes = sizeBytes,
-        .stagedBufferSize = kNcclStagedBufferSize,
-        .numBlocks = numBlks,
-        .numThreads = kNcclThreads,
-        .pipelineDepth = 2,
-        .chunkSize = scope == SyncScope::WARP ? kWarpChunkSize : kChunkSize,
-        .groupScope = scope,
-        .spreadClusterLaunch = true,
-        .useDualStateBuffer = true,
-        .name = "NCCL_" + sizeName + "_" + scopeName + "_Dual",
-    });
-  };
+  // 64MB: 512 warps, 256 chunks (128KB each)
+  configs.push_back({
+      .nBytes = 64 * 1024 * 1024,
+      .stagedBufferSize = 8 * 1024 * 1024,
+      .numBlocks = 32,
+      .numThreads = 512,
+      .pipelineDepth = 2,
+      .chunkSize = 512 * 1024,
+      .groupScope = SyncScope::BLOCK,
+      .name = "Bidir_64MB",
+  });
 
-  // === WARP-BASED CONFIGURATIONS ===
-  addNcclConfig(4 * 1024, "4K", SyncScope::WARP, "Warp");
-  addNcclConfig(8 * 1024, "8K", SyncScope::WARP, "Warp");
-  addNcclConfig(16 * 1024, "16K", SyncScope::WARP, "Warp");
-  addNcclConfig(64 * 1024, "64K", SyncScope::WARP, "Warp");
-  addNcclConfig(128 * 1024, "128K", SyncScope::WARP, "Warp");
-  addNcclConfig(256 * 1024, "256K", SyncScope::WARP, "Warp");
-  addNcclConfig(1 * 1024 * 1024, "1M", SyncScope::WARP, "Warp");
-  addNcclConfig(2 * 1024 * 1024, "2M", SyncScope::WARP, "Warp");
-  addNcclConfig(8 * 1024 * 1024, "8M", SyncScope::WARP, "Warp");
-  addNcclConfig(32 * 1024 * 1024, "32M", SyncScope::WARP, "Warp");
-  addNcclConfig(64 * 1024 * 1024, "64M", SyncScope::WARP, "Warp");
-  addNcclConfig(128 * 1024 * 1024, "128M", SyncScope::WARP, "Warp");
-  addNcclConfig(256 * 1024 * 1024, "256M", SyncScope::WARP, "Warp");
-  addNcclConfig(512 * 1024 * 1024, "512M", SyncScope::WARP, "Warp");
-  addNcclConfig(1024 * 1024 * 1024, "1G", SyncScope::WARP, "Warp");
+  configs.push_back({
+      .nBytes = 128 * 1024 * 1024,
+      .stagedBufferSize = 8 * 1024 * 1024,
+      .numBlocks = 32,
+      .numThreads = 512,
+      .pipelineDepth = 2,
+      .chunkSize = 512 * 1024,
+      .groupScope = SyncScope::BLOCK,
+      .name = "Bidir_128MB",
+  });
 
-  // === BLOCK-BASED CONFIGURATIONS ===
-  addNcclConfig(4 * 1024, "4K", SyncScope::BLOCK, "Block");
-  addNcclConfig(8 * 1024, "8K", SyncScope::BLOCK, "Block");
-  addNcclConfig(16 * 1024, "16K", SyncScope::BLOCK, "Block");
-  addNcclConfig(64 * 1024, "64K", SyncScope::BLOCK, "Block");
-  addNcclConfig(128 * 1024, "128K", SyncScope::BLOCK, "Block");
-  addNcclConfig(256 * 1024, "256K", SyncScope::BLOCK, "Block");
-  addNcclConfig(1 * 1024 * 1024, "1M", SyncScope::BLOCK, "Block");
-  addNcclConfig(2 * 1024 * 1024, "2M", SyncScope::BLOCK, "Block");
-  addNcclConfig(8 * 1024 * 1024, "8M", SyncScope::BLOCK, "Block");
-  addNcclConfig(32 * 1024 * 1024, "32M", SyncScope::BLOCK, "Block");
-  addNcclConfig(64 * 1024 * 1024, "64M", SyncScope::BLOCK, "Block");
-  addNcclConfig(128 * 1024 * 1024, "128M", SyncScope::BLOCK, "Block");
-  addNcclConfig(256 * 1024 * 1024, "256M", SyncScope::BLOCK, "Block");
-  addNcclConfig(512 * 1024 * 1024, "512M", SyncScope::BLOCK, "Block");
-  addNcclConfig(1024 * 1024 * 1024, "1G", SyncScope::BLOCK, "Block");
+  // 256MB: 512 warps, 256 chunks (256KB each)
+  configs.push_back({
+      .nBytes = 256 * 1024 * 1024,
+      .stagedBufferSize = 8 * 1024 * 1024,
+      .numBlocks = 32,
+      .numThreads = 512,
+      .pipelineDepth = 2,
+      .chunkSize = 512 * 1024,
+      .groupScope = SyncScope::BLOCK,
+      .name = "Bidir_256MB",
+  });
 
-  // === CLUSTER-BASED CONFIGURATIONS ===
-  addNcclConfig(4 * 1024, "4K", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(8 * 1024, "8K", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(16 * 1024, "16K", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(64 * 1024, "64K", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(128 * 1024, "128K", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(256 * 1024, "256K", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(1 * 1024 * 1024, "1M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(2 * 1024 * 1024, "2M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(8 * 1024 * 1024, "8M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(32 * 1024 * 1024, "32M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(64 * 1024 * 1024, "64M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(128 * 1024 * 1024, "128M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(256 * 1024 * 1024, "256M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(512 * 1024 * 1024, "512M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(1024 * 1024 * 1024, "1G", SyncScope::CLUSTER, "Cluster");
+  configs.push_back({
+      .nBytes = 512 * 1024 * 1024,
+      .stagedBufferSize = 8 * 1024 * 1024,
+      .numBlocks = 32,
+      .numThreads = 512,
+      .pipelineDepth = 2,
+      .chunkSize = 512 * 1024,
+      .groupScope = SyncScope::BLOCK,
+      .name = "Bidir_512MB",
+  });
+
+  // 1GB with 256MB staging
+  configs.push_back({
+      .nBytes = 1024 * 1024 * 1024,
+      .stagedBufferSize = 8 * 1024 * 1024,
+      .numBlocks = 32,
+      .numThreads = 512,
+      .pipelineDepth = 2,
+      .chunkSize = 512 * 1024,
+      .groupScope = SyncScope::BLOCK,
+      .name = "Bidir_1GB",
+  });
 
   std::vector<BenchmarkResult> results;
 

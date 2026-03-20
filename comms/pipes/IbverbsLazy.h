@@ -23,16 +23,17 @@
 #include <cstddef>
 #include <cstdint>
 
+// Forward declarations — always safe to repeat even after full definitions.
+// Placed outside the INFINIBAND_VERBS_H guard so consumers can include this
+// header purely for opaque-pointer declarations without pulling in verbs.h.
+struct ibv_context;
+struct ibv_pd;
+struct ibv_device;
+
 // If infiniband/verbs.h is already included (e.g., via doca_verbs_ibv_wrapper.h
 // in conda builds where rdma-core headers are installed), skip our type
 // definitions and only provide the dlopen wrappers below.
 #ifndef INFINIBAND_VERBS_H
-
-// Forward declarations — these may already be forward-declared by DOCA
-// wrapper headers. Repeating a forward declaration is valid C++.
-struct ibv_context;
-struct ibv_pd;
-struct ibv_device;
 
 // ============================================================================
 // ibv_mtu — MTU enum (matches libibverbs ABI)
@@ -139,5 +140,28 @@ struct ibv_mr* lazy_ibv_reg_dmabuf_mr(
     uint64_t iova,
     int fd,
     int access);
+
+// ============================================================================
+// dlopen'd mlx5dv functions (from libmlx5)
+// ============================================================================
+
+/**
+ * mlx5dv_is_supported — Check if device supports mlx5 DV interface.
+ * Wraps the libmlx5 mlx5dv_is_supported() function loaded via dlopen.
+ *
+ * @return non-zero if supported, 0 if not or libmlx5 unavailable.
+ */
+int lazy_mlx5dv_is_supported(struct ibv_device* device);
+
+/**
+ * mlx5dv_get_data_direct_sysfs_path — Get Data Direct sysfs path.
+ * Wraps the libmlx5 mlx5dv_get_data_direct_sysfs_path() loaded via dlopen.
+ *
+ * @return 0 on success, non-zero on failure or libmlx5 unavailable.
+ */
+int lazy_mlx5dv_get_data_direct_sysfs_path(
+    struct ibv_context* ctx,
+    char* buf,
+    size_t buf_len);
 
 } // namespace comms::pipes

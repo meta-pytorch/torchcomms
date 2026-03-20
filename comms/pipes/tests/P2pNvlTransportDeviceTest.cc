@@ -85,6 +85,122 @@ class P2pNvlTransportDeviceTwoGpuFixture : public ::testing::Test {
     cudaSetDevice(kGpu1);
     cudaStreamDestroy(stream1_);
   }
+
+  /**
+   * Runs an LL128 loopback test: GPU0 ll128_send → GPU1 ll128_recv, verifies
+   * data. Handles LL128 buffer allocation, transport setup, kernel launch,
+   * verify, cleanup.
+   */
+  void runLl128LoopbackTest(
+      std::size_t nbytes,
+      int numBlocks,
+      int blockSize,
+      std::size_t ll128BufferNumPackets = 0) {
+    // Allocate LL128 buffer on GPU1 (receiver's local buffer, sender writes
+    // here via NVLink)
+    const std::size_t ll128BufSize = (ll128BufferNumPackets > 0)
+        ? ll128BufferNumPackets * kLl128PacketSize
+        : ll128_buffer_size(nbytes);
+    CUDACHECK_TEST(cudaSetDevice(kGpu1));
+    Ll128Packet* ll128Buffer;
+    CUDACHECK_TEST(cudaMalloc(&ll128Buffer, ll128BufSize));
+    // Initialize flags to READY_TO_WRITE (-1 = all-ones)
+    CUDACHECK_TEST(cudaMemset(ll128Buffer, kLl128MemsetInitByte, ll128BufSize));
+
+    // Allocate src on GPU0, fill with sequential byte pattern
+    CUDACHECK_TEST(cudaSetDevice(kGpu0));
+    char* srcBuffer0;
+    CUDACHECK_TEST(cudaMalloc(&srcBuffer0, nbytes));
+    std::vector<char> srcPattern(nbytes);
+    for (std::size_t i = 0; i < nbytes; ++i) {
+      srcPattern[i] = static_cast<char>(i % 256);
+    }
+    CUDACHECK_TEST(cudaMemcpy(
+        srcBuffer0, srcPattern.data(), nbytes, cudaMemcpyHostToDevice));
+
+    // Allocate dst on GPU1, zero it
+    CUDACHECK_TEST(cudaSetDevice(kGpu1));
+    char* dstBuffer1;
+    CUDACHECK_TEST(cudaMalloc(&dstBuffer1, nbytes));
+    CUDACHECK_TEST(cudaMemset(dstBuffer1, 0, nbytes));
+
+    // Dummy options (required by constructor, not used by LL128 path)
+    P2pNvlTransportOptions options{
+        .dataBufferSize = 1024,
+        .chunkSize = 512,
+        .pipelineDepth = 2,
+        .ll128BufferNumPackets = ll128BufferNumPackets,
+    };
+
+    // Sender transport on GPU0: only needs remoteState_.ll128Buffer
+    LocalState localState0{
+        .dataBuffer = nullptr,
+        .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+        .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+        .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
+    };
+    RemoteState remoteState0{
+        .dataBuffer = nullptr,
+        .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+        .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+        .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
+        .ll128Buffer = ll128Buffer,
+    };
+    P2pNvlTransportDevice transport0(
+        kGpu0, kGpu1, options, localState0, remoteState0);
+
+    // Receiver transport on GPU1: only needs localState_.ll128Buffer
+    LocalState localState1{
+        .dataBuffer = nullptr,
+        .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+        .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+        .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
+        .ll128Buffer = ll128Buffer,
+    };
+    RemoteState remoteState1{
+        .dataBuffer = nullptr,
+        .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+        .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+        .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
+    };
+    P2pNvlTransportDevice transport1(
+        kGpu1, kGpu0, options, localState1, remoteState1);
+
+    // Run the test
+    test::testLl128SendRecv(
+        transport0,
+        transport1,
+        srcBuffer0,
+        dstBuffer1,
+        nbytes,
+        numBlocks,
+        blockSize);
+
+    // Sync both GPUs
+    CUDACHECK_TEST(cudaSetDevice(kGpu0));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    CUDACHECK_TEST(cudaSetDevice(kGpu1));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    // Verify the data
+    std::vector<char> result(nbytes);
+    CUDACHECK_TEST(
+        cudaMemcpy(result.data(), dstBuffer1, nbytes, cudaMemcpyDeviceToHost));
+
+    for (std::size_t i = 0; i < nbytes; ++i) {
+      ASSERT_EQ(result[i], srcPattern[i])
+          << "Mismatch at byte " << i << ": expected "
+          << static_cast<int>(srcPattern[i]) << " got "
+          << static_cast<int>(result[i]);
+    }
+
+    // Cleanup
+    CUDACHECK_TEST(cudaSetDevice(kGpu0));
+    CUDACHECK_TEST(cudaFree(srcBuffer0));
+    CUDACHECK_TEST(cudaSetDevice(kGpu1));
+    CUDACHECK_TEST(cudaFree(ll128Buffer));
+    CUDACHECK_TEST(cudaFree(dstBuffer1));
+  }
 };
 
 // =============================================================================
@@ -928,6 +1044,26 @@ TEST_F(P2pNvlTransportDeviceTwoGpuFixture, DeviceSignalTwoGpuPingPong) {
   CUDACHECK_TEST(cudaSetDevice(kGpu1));
   CUDACHECK_TEST(cudaFree(signalBuffer1));
   CUDACHECK_TEST(cudaFree(transport1_d));
+}
+
+// =============================================================================
+// LL128 Transport Send/Recv Tests
+// These test the ll128_send()/ll128_recv() methods on P2pNvlTransportDevice
+// =============================================================================
+
+TEST_F(P2pNvlTransportDeviceTwoGpuFixture, Ll128SendRecv_4KB) {
+  // 4KB transfer via LL128 protocol through P2pNvlTransportDevice wrappers.
+  // Verifies that the transport correctly wires ll128Buffer pointers and
+  // delegates to the free functions.
+  runLl128LoopbackTest(
+      /*nbytes=*/4096,
+      /*numBlocks=*/1,
+      /*blockSize=*/256);
+}
+
+TEST_F(P2pNvlTransportDeviceTwoGpuFixture, Ll128SendRecv_4KB_Chunked_8pkt) {
+  runLl128LoopbackTest(
+      4096, /*numBlocks=*/1, /*blockSize=*/256, /*ll128BufferNumPackets=*/8);
 }
 
 } // namespace comms::pipes
