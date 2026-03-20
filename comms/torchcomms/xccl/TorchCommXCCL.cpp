@@ -707,7 +707,6 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::broadcast(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
   checkAllTensorsOnXPUorCPU({tensor});
-  checkRankRange(root);
 
   TracingGuard tracingGuard(
       name_, comm_size_, "broadcast", root, tensor, tensor);
@@ -856,7 +855,6 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
   checkAllTensorsOnXPUorCPU({tensor});
-  checkRankRange(root);
 
   TracingGuard tracingGuard(name_, comm_size_, "reduce", root, tensor, tensor);
 
@@ -1909,7 +1907,6 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::scatter(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(output_tensor);
   checkAllTensorsOnXPUorCPU(input_tensor_list, {output_tensor});
-  checkRankRange(root);
 
   // Only the root rank needs valid tensors
   if (rank_ == root) {
@@ -2045,7 +2042,6 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::gather(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(input_tensor);
   checkAllTensorsOnXPUorCPU({input_tensor}, output_tensor_list);
-  checkRankRange(root);
 
   // Only the root rank needs valid output tensors
   if (rank_ == root) {
@@ -2180,7 +2176,13 @@ std::shared_ptr<TorchCommBackend> TorchCommXCCL::split(
   checkAndAbortIfTimedOutOrError();
   std::unordered_set<int> rank_seen;
   for (int rank : ranks) {
-    checkRankRange(rank);
+    if (rank < 0 || rank >= comm_size_) {
+      throw std::runtime_error(
+          fmt::format(
+              "Invalid rank {} in ranks. Valid ranks are 0 to {}",
+              rank,
+              comm_size_ - 1));
+    }
     if (rank_seen.find(rank) != rank_seen.end()) [[unlikely]] {
       throw std::runtime_error(
           "Rank " + std::to_string(rank) + " appears multiple times in ranks");
