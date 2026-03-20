@@ -88,6 +88,11 @@ void CudaMock::setupDefaultBehaviors() {
         return cudaSuccess;
       });
 
+  ON_CALL(*this, hostFree(_)).WillByDefault([](void* ptr) {
+    std::free(ptr);
+    return cudaSuccess;
+  });
+
   // Memory management - return success by default
   ON_CALL(*this, malloc(_, _))
       .WillByDefault(DoAll(
