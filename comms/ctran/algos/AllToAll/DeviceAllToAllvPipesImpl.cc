@@ -14,7 +14,9 @@ commResult_t setupKernelConfig(
     commDataType_t datatype,
     CtranComm* comm,
     KernelConfig& config,
-    ctran::device_alltoallv_pipes::KernArgs& kernArgs) {
+    ctran::device_alltoallv_pipes::KernArgs& kernArgs,
+    int64_t sendcountsMultiplier,
+    int64_t recvcountsMultiplier) {
   const auto statex = comm->statex_.get();
 
   kernArgs.sendbuff = sendbuff;
@@ -26,6 +28,10 @@ commResult_t setupKernelConfig(
   // Device pointers to split sizes
   kernArgs.sendcounts_d = sendcounts_d;
   kernArgs.recvcounts_d = recvcounts_d;
+
+  // Scaling factors for multi-dimensional tensors
+  kernArgs.sendcountsMultiplier = sendcountsMultiplier;
+  kernArgs.recvcountsMultiplier = recvcountsMultiplier;
 
   // Build local rank → global rank mapping
   if (kernArgs.nLocalRanks > CTRAN_MAX_NVL_PEERS) {

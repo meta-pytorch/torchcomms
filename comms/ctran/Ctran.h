@@ -134,7 +134,9 @@ commResult_t ctranDeviceAllToAllv(
     const int64_t* recvcounts_d,
     commDataType_t datatype,
     CtranComm* comm,
-    cudaStream_t stream);
+    cudaStream_t stream,
+    int64_t sendcountsMultiplier = 1,
+    int64_t recvcountsMultiplier = 1);
 
 commResult_t ctranAllToAllv(
     const void* sendbuff,

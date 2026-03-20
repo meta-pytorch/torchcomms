@@ -1530,6 +1530,17 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::device_alltoallv_single(
   TracingGuard tracingGuard(
       name_, comm_size_, "device_alltoallv_single", rank_, input, output);
 
+  // Calculate the number of elements per slice along the first dimension.
+  // For a tensor with shape [N, D1, D2, ..., Dk], each slice of size S along
+  // dim 0 contains S * D1 * D2 * ... * Dk elements.
+  // The split sizes from the user are in units of dim-0 slices (rows), so we
+  // pass the scaling factor to the kernel which multiplies counts internally
+  // without launching extra kernels.
+  int64_t send_elements_per_slice =
+      input.numel() ? input.numel() / input.size(0) : 0;
+  int64_t recv_elements_per_slice =
+      output.numel() ? output.numel() / output.size(0) : 0;
+
   cudaStream_t stream = getOperationStream(async_op);
   graph_event_tracker_.initOnGraphStart(stream);
   auto work = createWork(
@@ -1549,7 +1560,9 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::device_alltoallv_single(
       output_split_sizes.data_ptr<int64_t>(),
       getNcclDataType(input),
       nccl_comm_,
-      stream);
+      stream,
+      send_elements_per_slice,
+      recv_elements_per_slice);
 
   NCCLX_CHECK(nccl_api_, nccl_comm_, result, "NCCLX deviceAllToAllv failed");
 

@@ -15,6 +15,8 @@ commResult_t setupKernelConfig(
     commDataType_t datatype,
     CtranComm* comm,
     KernelConfig& config,
-    ctran::device_alltoallv_pipes::KernArgs& kernArgs);
+    ctran::device_alltoallv_pipes::KernArgs& kernArgs,
+    int64_t sendcountsMultiplier = 1,
+    int64_t recvcountsMultiplier = 1);
 
 } // namespace ctran::device_alltoallv_pipes

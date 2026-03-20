@@ -238,10 +238,20 @@ ncclResult_t DefaultNcclxApi::deviceAllToAllv(
     const int64_t* recvcounts_d,
     ncclDataType_t datatype,
     ncclComm_t comm,
-    cudaStream_t stream) {
+    cudaStream_t stream,
+    int64_t sendcountsMultiplier,
+    int64_t recvcountsMultiplier) {
   std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclx::deviceAllToAllv(
-      sendbuff, recvbuff, sendcounts_d, recvcounts_d, datatype, comm, stream);
+      sendbuff,
+      recvbuff,
+      sendcounts_d,
+      recvcounts_d,
+      datatype,
+      comm,
+      stream,
+      sendcountsMultiplier,
+      recvcountsMultiplier);
 }
 
 ncclResult_t DefaultNcclxApi::alltoallvDynamicDispatch(
