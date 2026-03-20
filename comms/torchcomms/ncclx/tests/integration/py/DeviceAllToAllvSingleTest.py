@@ -15,9 +15,10 @@ from torchcomms.tests.integration.py.TorchCommTestHelpers import (
 class DeviceAllToAllvSingleTest(unittest.TestCase):
     """Test class for device_alltoallv_single operation.
 
-    This tests the device_alltoallv_single API where split sizes and offsets
-    are CUDA tensors (on GPU), unlike all_to_all_v_single where they are
-    host vectors.
+    This tests the device_alltoallv_single API where split sizes are
+    CUDA tensors (on GPU), unlike all_to_all_v_single where they are
+    host vectors. Displacements are computed internally by the kernel
+    as exclusive prefix sums of the counts.
 
     Test pattern:
     - Each rank creates an input tensor filled with its rank value
@@ -67,27 +68,13 @@ class DeviceAllToAllvSingleTest(unittest.TestCase):
         )
         output_tensor = torch.zeros(total_size, dtype=dtype, device=self.device)
 
-        # Create device tensors for split sizes and offsets
+        # Create device tensors for split sizes
         # Uniform split: each rank sends/receives chunk_size elements
         send_counts = torch.full(
             (self.num_ranks,), chunk_size, dtype=torch.int64, device=self.device
         )
         recv_counts = torch.full(
             (self.num_ranks,), chunk_size, dtype=torch.int64, device=self.device
-        )
-        send_offsets = torch.arange(
-            0,
-            total_size,
-            chunk_size,
-            dtype=torch.int64,
-            device=self.device,
-        )
-        recv_offsets = torch.arange(
-            0,
-            total_size,
-            chunk_size,
-            dtype=torch.int64,
-            device=self.device,
         )
 
         print(f"[Rank {self.rank}] input shape={input_tensor.shape}, value={self.rank}")
@@ -98,8 +85,6 @@ class DeviceAllToAllvSingleTest(unittest.TestCase):
             input_tensor,
             recv_counts,
             send_counts,
-            recv_offsets,
-            send_offsets,
             False,  # async_op
         )
 
@@ -145,10 +130,7 @@ class DeviceAllToAllvSingleTest(unittest.TestCase):
         )
         output_tensor = torch.zeros(total_recv, dtype=dtype, device=self.device)
 
-        # Compute offsets (prefix sum)
-        send_offsets_list = [0]
-        for s in send_sizes[:-1]:
-            send_offsets_list.append(send_offsets_list[-1] + s)
+        # Compute expected offsets for verification (prefix sum)
         recv_offsets_list = [0]
         for r in recv_sizes[:-1]:
             recv_offsets_list.append(recv_offsets_list[-1] + r)
@@ -156,12 +138,6 @@ class DeviceAllToAllvSingleTest(unittest.TestCase):
         # Create device tensors
         send_counts = torch.tensor(send_sizes, dtype=torch.int64, device=self.device)
         recv_counts = torch.tensor(recv_sizes, dtype=torch.int64, device=self.device)
-        send_offsets = torch.tensor(
-            send_offsets_list, dtype=torch.int64, device=self.device
-        )
-        recv_offsets = torch.tensor(
-            recv_offsets_list, dtype=torch.int64, device=self.device
-        )
 
         print(f"[Rank {self.rank}] send_sizes={send_sizes}, recv_sizes={recv_sizes}")
 
@@ -171,8 +147,6 @@ class DeviceAllToAllvSingleTest(unittest.TestCase):
             input_tensor,
             recv_counts,
             send_counts,
-            recv_offsets,
-            send_offsets,
             False,  # async_op
         )
 

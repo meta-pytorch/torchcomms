@@ -1507,8 +1507,6 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::device_alltoallv_single(
     const at::Tensor& input,
     const at::Tensor& output_split_sizes,
     const at::Tensor& input_split_sizes,
-    const at::Tensor& output_split_offsets,
-    const at::Tensor& input_split_offsets,
     bool async_op) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
@@ -1516,14 +1514,10 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::device_alltoallv_single(
   ensureTensorContiguous(input);
   ensureTensorContiguous(output_split_sizes);
   ensureTensorContiguous(input_split_sizes);
-  ensureTensorContiguous(output_split_offsets);
-  ensureTensorContiguous(input_split_offsets);
 
   // Validate metadata tensor types - all must be int64_t (torch.int64)
   validateInt64Dtype(input_split_sizes, "input_split_sizes");
   validateInt64Dtype(output_split_sizes, "output_split_sizes");
-  validateInt64Dtype(input_split_offsets, "input_split_offsets");
-  validateInt64Dtype(output_split_offsets, "output_split_offsets");
 
   // Validate metadata tensors are on CUDA
   TORCH_CHECK(
@@ -1532,12 +1526,6 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::device_alltoallv_single(
   TORCH_CHECK(
       output_split_sizes.is_cuda(),
       "output_split_sizes must be a CUDA tensor for device_alltoallv_single");
-  TORCH_CHECK(
-      input_split_offsets.is_cuda(),
-      "input_split_offsets must be a CUDA tensor for device_alltoallv_single");
-  TORCH_CHECK(
-      output_split_offsets.is_cuda(),
-      "output_split_offsets must be a CUDA tensor for device_alltoallv_single");
 
   TracingGuard tracingGuard(
       name_, comm_size_, "device_alltoallv_single", rank_, input, output);
@@ -1547,10 +1535,9 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::device_alltoallv_single(
   auto work = createWork(
       stream,
       options_.timeout,
-      async_op
-          ? std::vector<
-                at::Tensor>{input, input_split_sizes, output_split_sizes, input_split_offsets, output_split_offsets}
-          : std::vector<at::Tensor>{});
+      async_op ? std::vector<
+                     at::Tensor>{input, input_split_sizes, output_split_sizes}
+               : std::vector<at::Tensor>{});
 
   // Record start event before NCCL operation
   work->recordStart("device_alltoallv_single");
@@ -1560,8 +1547,6 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::device_alltoallv_single(
       output.data_ptr(),
       input_split_sizes.data_ptr<int64_t>(),
       output_split_sizes.data_ptr<int64_t>(),
-      input_split_offsets.data_ptr<int64_t>(),
-      output_split_offsets.data_ptr<int64_t>(),
       getNcclDataType(input),
       nccl_comm_,
       stream);

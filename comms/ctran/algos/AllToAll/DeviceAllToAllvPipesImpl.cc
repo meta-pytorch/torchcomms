@@ -11,8 +11,6 @@ commResult_t setupKernelConfig(
     void* recvbuff,
     const int64_t* sendcounts_d,
     const int64_t* recvcounts_d,
-    const int64_t* senddispls_d,
-    const int64_t* recvdispls_d,
     commDataType_t datatype,
     CtranComm* comm,
     KernelConfig& config,
@@ -25,11 +23,9 @@ commResult_t setupKernelConfig(
   kernArgs.myRank = statex->rank();
   kernArgs.nLocalRanks = statex->nLocalRanks();
 
-  // Device pointers to split sizes and displacements
+  // Device pointers to split sizes
   kernArgs.sendcounts_d = sendcounts_d;
   kernArgs.recvcounts_d = recvcounts_d;
-  kernArgs.senddispls_d = senddispls_d;
-  kernArgs.recvdispls_d = recvdispls_d;
 
   // Build local rank → global rank mapping
   if (kernArgs.nLocalRanks > CTRAN_MAX_NVL_PEERS) {
