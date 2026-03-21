@@ -41,7 +41,6 @@ class CollTraceTestLocal : public NcclxBaseTest {
     setenv("NCCL_CTRAN_IB_EPOCH_LOCK_ENFORCE_CHECK", "true", 0);
 
     NcclxBaseTest::SetUp();
-    std::tie(this->localRank, this->globalRank, this->numRanks) = getMpiInfo();
 
     CUDACHECK_TEST(cudaSetDevice(this->localRank));
     CUDACHECK_TEST(cudaStreamCreate(&this->stream));
@@ -66,9 +65,6 @@ class CollTraceTestLocal : public NcclxBaseTest {
   }
 
  protected:
-  int localRank{0};
-  int globalRank{0};
-  int numRanks{0};
   int* sendBuf{nullptr};
   int* recvBuf{nullptr};
   void* sendHandle{nullptr};
