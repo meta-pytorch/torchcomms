@@ -207,7 +207,8 @@ class NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream,
       int64_t sendcountsMultiplier = 1,
-      int64_t recvcountsMultiplier = 1) {
+      int64_t recvcountsMultiplier = 1,
+      const std::unordered_map<std::string, std::string>& hints = {}) {
     return ncclInvalidUsage;
   }
 
@@ -534,7 +535,8 @@ class DefaultNcclxApi : public NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream,
       int64_t sendcountsMultiplier = 1,
-      int64_t recvcountsMultiplier = 1) override;
+      int64_t recvcountsMultiplier = 1,
+      const std::unordered_map<std::string, std::string>& hints = {}) override;
 
   [[nodiscard]] ncclResult_t alltoallvDynamicDispatch(
       const void* sendbuff,

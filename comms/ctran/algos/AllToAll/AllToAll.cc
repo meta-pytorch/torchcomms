@@ -211,7 +211,8 @@ commResult_t ctranDeviceAllToAllv(
     CtranComm* comm,
     cudaStream_t stream,
     int64_t sendcountsMultiplier,
-    int64_t recvcountsMultiplier) {
+    int64_t recvcountsMultiplier,
+    const std::unordered_map<std::string, std::string>& hints) {
   auto opCount = comm->ctran_->getOpCount();
 
   KernelConfig config = KernelConfig(
@@ -219,6 +220,23 @@ commResult_t ctranDeviceAllToAllv(
       stream,
       "DeviceAllToAllvPipes",
       opCount);
+
+  // CollectiveConfig resolves all settings in its constructor:
+  // per-collective hint > cvar > default
+  ctran::device_alltoallv_pipes::CollectiveConfig collConfig(
+      comm->statex_->nLocalRanks(), &hints);
+
+  CLOGF_SUBSYS(
+      INFO,
+      COLL,
+      "DeviceAllToAllvPipes: opCount {} numBlocks {} numThreads {} "
+      "blockScheduling {} hasHints {} [nLocalRanks={}]",
+      opCount,
+      collConfig.numBlocks,
+      collConfig.numThreads,
+      collConfig.blockScheduling,
+      (!hints.empty()),
+      comm->statex_->nLocalRanks());
 
   ctran::device_alltoallv_pipes::KernArgs kernArgs;
   FB_COMMCHECK(
@@ -232,7 +250,8 @@ commResult_t ctranDeviceAllToAllv(
           config,
           kernArgs,
           sendcountsMultiplier,
-          recvcountsMultiplier));
+          recvcountsMultiplier,
+          collConfig));
 
   // NVLink-only: no GPE op needed (no IB fallback)
   std::vector<std::unique_ptr<struct OpElem>> opGroup;
@@ -285,7 +304,8 @@ commResult_t ctranDeviceAllToAllv(
     CtranComm* /*comm*/,
     cudaStream_t /*stream*/,
     int64_t /*sendcountsMultiplier*/,
-    int64_t /*recvcountsMultiplier*/) {
+    int64_t /*recvcountsMultiplier*/,
+    const std::unordered_map<std::string, std::string>& /*hints*/) {
   return commInternalError;
 }
 

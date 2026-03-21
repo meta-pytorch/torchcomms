@@ -1220,10 +1220,12 @@ ncclResult_t alltoallvDynamicCombine( const void* sendbuff, const size_t* sendSp
  * the counts. This is useful when split sizes are computed on the GPU
  * and not known on the host beforehand.
  */
+// Per-collective hint keys: numBlocks, numThreads, blockScheduling
 ncclResult_t deviceAllToAllv(const void* sendbuff, void* recvbuff,
     const int64_t* sendcounts_d, const int64_t* recvcounts_d,
     ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream,
-    int64_t sendcountsMultiplier = 1, int64_t recvcountsMultiplier = 1);
+    int64_t sendcountsMultiplier = 1, int64_t recvcountsMultiplier = 1,
+    const std::unordered_map<std::string, std::string>& hints = {});
 
 /*
  * Persistent All-Gather similar to ncclAllgather, the key difference is that
