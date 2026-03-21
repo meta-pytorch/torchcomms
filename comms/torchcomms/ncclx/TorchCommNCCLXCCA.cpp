@@ -1,8 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/torchcomms/ncclx/TorchCommNCCLXCCA.hpp"
-#include <ATen/cuda/CUDAContext.h>
-#include <c10/cuda/CUDAStream.h>
 #include <c10/cuda/driver_api.h>
 
 // Helper function to get allocation granularity for a device
@@ -87,32 +85,6 @@ void CachingAllocatorHookImpl::regDeregMem(
     // Register the memory through ncclCommRegister and add to commRegHandles_
     for (auto& comm : registeredComms_) {
       if (te.device_ == comm->getDevice().index()) {
-        // Check if we're inside CUDA graph capture. If so, skip registration.
-        // Memory allocated during graph capture is from a capture pool and will
-        // be freed after capture ends. We don't need to register it with NCCL.
-        // Use the current PyTorch CUDA stream to check capture status.
-        cudaStreamCaptureStatus captureStatus = cudaStreamCaptureStatusNone;
-        try {
-          cudaStream_t currentStream =
-              at::cuda::getCurrentCUDAStream(te.device_).stream();
-          cudaError_t err = cudaStreamGetCaptureInfo(
-              currentStream,
-              &captureStatus,
-              nullptr,
-              nullptr,
-              nullptr,
-              nullptr);
-
-          // Ignore errors - if we can't determine capture status, proceed
-          // with registration
-          if (err == cudaSuccess &&
-              captureStatus != cudaStreamCaptureStatusNone) {
-            continue;
-          }
-        } catch (const c10::Error&) {
-          // CUDA not available (e.g., unit tests), proceed with registration
-        }
-
         comm->register_address(TorchCommNCCLX::AddressWithLen(addr, len));
       }
     }
@@ -156,29 +128,6 @@ void CachingAllocatorHookImpl::regDeregMem(
       // Register the memory through ncclCommRegister
       for (auto& comm : registeredComms_) {
         if (te.device_ == comm->getDevice().index()) {
-          // Check if we're inside CUDA graph capture. If so, skip registration.
-          // Memory allocated during graph capture is from a capture pool and
-          // will be freed after capture ends. We don't need to register it with
-          // NCCL. Use the current PyTorch CUDA stream to check capture status.
-          cudaStreamCaptureStatus captureStatus = cudaStreamCaptureStatusNone;
-          try {
-            cudaStream_t currentStream =
-                at::cuda::getCurrentCUDAStream(te.device_).stream();
-            cudaError_t err = cudaStreamGetCaptureInfo(
-                currentStream,
-                &captureStatus,
-                nullptr,
-                nullptr,
-                nullptr,
-                nullptr);
-            if (err == cudaSuccess &&
-                captureStatus != cudaStreamCaptureStatusNone) {
-              continue;
-            }
-          } catch (const c10::Error&) {
-            // CUDA not available (e.g., unit tests), proceed with registration
-          }
-
           comm->register_address(
               TorchCommNCCLX::AddressWithLen(chunk_addr, chunk_size));
         }
