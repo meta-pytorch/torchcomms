@@ -20,6 +20,7 @@
 #include "comms/torchcomms/utils/Logging.hpp"
 #include "comms/torchcomms/utils/TracingGuard.hpp"
 #include "comms/torchcomms/utils/Utils.hpp"
+#include "comms/utils/CudaRAII.h"
 
 #if defined(ENABLE_PIPES)
 #include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
@@ -1507,7 +1508,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::device_alltoallv_single(
     const at::Tensor& input,
     const at::Tensor& output_split_sizes,
     const at::Tensor& input_split_sizes,
-    bool async_op) {
+    bool async_op,
+    const std::unordered_map<std::string, std::string>& hints) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(output);
@@ -1562,7 +1564,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::device_alltoallv_single(
       nccl_comm_,
       stream,
       send_elements_per_slice,
-      recv_elements_per_slice);
+      recv_elements_per_slice,
+      hints);
 
   NCCLX_CHECK(nccl_api_, nccl_comm_, result, "NCCLX deviceAllToAllv failed");
 
@@ -2365,6 +2368,8 @@ class NCCLXRegistration {
                   // alloc_fn
                   [nccl_api](size_t size, int device, cudaStream_t stream) {
                     at::cuda::OptionalCUDAGuard gpuGuard(device);
+                    meta::comms::StreamCaptureModeGuard captureGuard{
+                        cudaStreamCaptureModeRelaxed};
                     void* ptr = nullptr;
                     ncclResult_t result = nccl_api->memAlloc(&ptr, size);
                     TORCH_CHECK(
@@ -2383,6 +2388,8 @@ class NCCLXRegistration {
                         << "NCCL mem allocator: freeing " << ptr << " with "
                         << size << " bytes in stream " << stream;
                     at::cuda::OptionalCUDAGuard gpuGuard(device);
+                    meta::comms::StreamCaptureModeGuard captureGuard{
+                        cudaStreamCaptureModeRelaxed};
                     ncclResult_t result = nccl_api->memFree(ptr);
                     TORCH_CHECK(
                         result == ncclSuccess,

@@ -1,7 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "CudaMock.hpp"
-#include <cstring>
+#include <cstdlib>
 
 using ::testing::_;
 using ::testing::DoAll;
@@ -81,6 +81,17 @@ void CudaMock::setupDefaultBehaviors() {
 
   ON_CALL(*this, threadExchangeStreamCaptureMode(_))
       .WillByDefault(Return(cudaSuccess));
+
+  ON_CALL(*this, hostAlloc(_, _, _))
+      .WillByDefault([](void** pHost, size_t size, unsigned int /*flags*/) {
+        *pHost = std::calloc(1, size);
+        return cudaSuccess;
+      });
+
+  ON_CALL(*this, hostFree(_)).WillByDefault([](void* ptr) {
+    std::free(ptr);
+    return cudaSuccess;
+  });
 
   // Memory management - return success by default
   ON_CALL(*this, malloc(_, _))

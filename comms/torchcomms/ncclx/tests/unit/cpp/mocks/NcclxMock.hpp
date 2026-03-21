@@ -362,6 +362,16 @@ class NcclxMock : public NcclxApi {
        int* outNumNvlPeers,
        int* outNumIbPeers),
       (override));
+  MOCK_METHOD(
+      ncclResult_t,
+      winLocalRegisterBuffer,
+      (ncclComm_t comm, void* ptr, size_t size, uint32_t* outLkey),
+      (override));
+  MOCK_METHOD(
+      ncclResult_t,
+      winLocalDeregisterBuffer,
+      (ncclComm_t comm, void* ptr),
+      (override));
 #endif
 
   // Group operations

@@ -308,18 +308,18 @@ void MultipeerIbgdaTransport::registerMemory() {
   // ibv_reg_mr_iova2(pd, addr, length, iova=0, access) creates a zero-based
   // MR where IOVA range [0, length) maps to [addr, addr+length). This
   // matches GIN's gdakiRegMr() pattern (gin_host_gdaki.cc).
-  int sinkDmabufFd = -1;
-  doca_error_t err =
-      getDmaBufFdAligned(docaGpu_, sinkBuffer_, sinkBufferSize_, &sinkDmabufFd);
-  if (err == DOCA_SUCCESS && sinkDmabufFd >= 0) {
+  auto sinkDmabuf =
+      export_gpu_dmabuf_aligned(docaGpu_, sinkBuffer_, sinkBufferSize_);
+  if (sinkDmabuf) {
     // ibv_reg_dmabuf_mr: 4th param is iova — set to 0 for zero-based MR
     sinkMr_ = lazy_ibv_reg_dmabuf_mr(
         ibvPd_,
-        0,
+        sinkDmabuf->alignment.dmabufOffset,
         sinkBufferSize_,
         0, // iova=0: zero-based MR
-        sinkDmabufFd,
+        sinkDmabuf->fd,
         accessFlags);
+    close(sinkDmabuf->fd);
   }
   if (!sinkMr_) {
     // Fallback: use ibv_reg_mr_iova2 with iova=0 for zero-based MR
@@ -831,18 +831,20 @@ IbgdaLocalBuffer MultipeerIbgdaTransport::registerBuffer(
   int accessFlags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
       IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC;
 
-  // Try DMABUF registration first, fall back to regular reg_mr
+  // Try DMABUF registration first, fall back to regular reg_mr.
+  // export_gpu_dmabuf_aligned handles cuMemGetAddressRange + page alignment +
+  // doca_gpu_dmabuf_fd, returning nullopt on failure.
   ibv_mr* mr = nullptr;
-  int dmabufFd = -1;
-  doca_error_t err = getDmaBufFdAligned(docaGpu_, ptr, size, &dmabufFd);
-  if (err == DOCA_SUCCESS && dmabufFd >= 0) {
+  auto dmabuf = export_gpu_dmabuf_aligned(docaGpu_, ptr, size);
+  if (dmabuf) {
     mr = lazy_ibv_reg_dmabuf_mr(
         ibvPd_,
-        0,
+        dmabuf->alignment.dmabufOffset,
         size,
         reinterpret_cast<uint64_t>(ptr),
-        dmabufFd,
+        dmabuf->fd,
         accessFlags);
+    close(dmabuf->fd);
   }
   if (!mr) {
     doca_error_t regErr =

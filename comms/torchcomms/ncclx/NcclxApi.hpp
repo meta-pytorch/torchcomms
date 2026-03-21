@@ -207,7 +207,8 @@ class NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream,
       int64_t sendcountsMultiplier = 1,
-      int64_t recvcountsMultiplier = 1) {
+      int64_t recvcountsMultiplier = 1,
+      const std::unordered_map<std::string, std::string>& hints = {}) {
     return ncclInvalidUsage;
   }
 
@@ -346,6 +347,21 @@ class NcclxApi {
       int* outNRanks,
       int* outNumNvlPeers,
       int* outNumIbPeers) = 0;
+
+  // Register a local buffer for device-side RDMA put operations.
+  // NON-COLLECTIVE — purely local memory registration (lkey only).
+  // Returns lkey in network byte order via outLkey.
+  [[nodiscard]] virtual ncclResult_t winLocalRegisterBuffer(
+      ncclComm_t comm,
+      void* ptr,
+      size_t size,
+      uint32_t* outLkey) = 0;
+
+  // Deregister a buffer previously registered with winLocalRegisterBuffer.
+  // NON-COLLECTIVE.
+  [[nodiscard]] virtual ncclResult_t winLocalDeregisterBuffer(
+      ncclComm_t comm,
+      void* ptr) = 0;
 #endif
 
   // Group operations
@@ -519,7 +535,8 @@ class DefaultNcclxApi : public NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream,
       int64_t sendcountsMultiplier = 1,
-      int64_t recvcountsMultiplier = 1) override;
+      int64_t recvcountsMultiplier = 1,
+      const std::unordered_map<std::string, std::string>& hints = {}) override;
 
   [[nodiscard]] ncclResult_t alltoallvDynamicDispatch(
       const void* sendbuff,
@@ -646,6 +663,14 @@ class DefaultNcclxApi : public NcclxApi {
       int* outNRanks,
       int* outNumNvlPeers,
       int* outNumIbPeers) override;
+  [[nodiscard]] ncclResult_t winLocalRegisterBuffer(
+      ncclComm_t comm,
+      void* ptr,
+      size_t size,
+      uint32_t* outLkey) override;
+  [[nodiscard]] ncclResult_t winLocalDeregisterBuffer(
+      ncclComm_t comm,
+      void* ptr) override;
 #endif
 
   // Group operations
