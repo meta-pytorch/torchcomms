@@ -31,7 +31,7 @@ cudaError_t DeviceCounter::create(
 DeviceCounter::~DeviceCounter() {
   if (counter_) {
     CUDA_CHECK_IGNORE(
-        api_, cudaFreeHost(counter_), "Failed to free host counter");
+        api_, api_->hostFree(counter_), "Failed to free host counter");
   }
 }
 

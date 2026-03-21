@@ -99,6 +99,7 @@ class CudaApi {
 
   [[nodiscard]] virtual cudaError_t
   hostAlloc(void** pHost, size_t size, unsigned int flags) = 0;
+  [[nodiscard]] virtual cudaError_t hostFree(void* ptr) = 0;
 
   // Memory management
   [[nodiscard]] virtual cudaError_t malloc(void** devPtr, size_t size) = 0;
@@ -199,6 +200,7 @@ class DefaultCudaApi : public CudaApi {
 
   [[nodiscard]] cudaError_t
   hostAlloc(void** pHost, size_t size, unsigned int flags) override;
+  [[nodiscard]] cudaError_t hostFree(void* ptr) override;
 
   // Memory management
   [[nodiscard]] cudaError_t malloc(void** devPtr, size_t size) override;

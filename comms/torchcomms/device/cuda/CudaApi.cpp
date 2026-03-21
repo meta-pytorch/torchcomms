@@ -143,6 +143,10 @@ DefaultCudaApi::hostAlloc(void** pHost, size_t size, unsigned int flags) {
   return cudaHostAlloc(pHost, size, flags);
 }
 
+cudaError_t DefaultCudaApi::hostFree(void* ptr) {
+  return cudaFreeHost(ptr);
+}
+
 cudaError_t DefaultCudaApi::malloc(void** devPtr, size_t size) {
   return cudaMalloc(devPtr, size);
 }

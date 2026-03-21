@@ -121,6 +121,7 @@ class CudaMock : public CudaApi {
       hostAlloc,
       (void** pHost, size_t size, unsigned int flags),
       (override));
+  MOCK_METHOD(cudaError_t, hostFree, (void* ptr), (override));
 
   // Memory management
   MOCK_METHOD(cudaError_t, malloc, (void** devPtr, size_t size), (override));
