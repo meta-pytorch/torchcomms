@@ -113,15 +113,6 @@ void ProcessGlobalErrorsUtil::addIbCompletionError(IbCompletionError error) {
 }
 
 /* static */
-void ProcessGlobalErrorsUtil::clearIbCompletionErrors() {
-  auto statePtr = kAllState.try_get();
-  if (!statePtr) {
-    return;
-  }
-  statePtr->withWLock([](auto& state) { state.ibCompletionErrors.clear(); });
-}
-
-/* static */
 void ProcessGlobalErrorsUtil::addCudaError(CudaError error) {
   if (NCCL_PROCESS_GLOBAL_ERRORS_MAX_STACK_TRACES == 0) {
     return;
@@ -138,15 +129,6 @@ void ProcessGlobalErrorsUtil::addCudaError(CudaError error) {
     error.timestampMs = nowTs();
     state.cudaErrors.push_back(std::move(error));
   });
-}
-
-/* static */
-void ProcessGlobalErrorsUtil::clearCudaErrors() {
-  auto statePtr = kAllState.try_get();
-  if (!statePtr) {
-    return;
-  }
-  statePtr->withWLock([](auto& state) { state.cudaErrors.clear(); });
 }
 
 /* static */
