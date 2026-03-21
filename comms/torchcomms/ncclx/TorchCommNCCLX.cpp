@@ -20,6 +20,7 @@
 #include "comms/torchcomms/utils/Logging.hpp"
 #include "comms/torchcomms/utils/TracingGuard.hpp"
 #include "comms/torchcomms/utils/Utils.hpp"
+#include "comms/utils/CudaRAII.h"
 
 #if defined(ENABLE_PIPES)
 #include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
@@ -2365,6 +2366,8 @@ class NCCLXRegistration {
                   // alloc_fn
                   [nccl_api](size_t size, int device, cudaStream_t stream) {
                     at::cuda::OptionalCUDAGuard gpuGuard(device);
+                    meta::comms::StreamCaptureModeGuard captureGuard{
+                        cudaStreamCaptureModeRelaxed};
                     void* ptr = nullptr;
                     ncclResult_t result = nccl_api->memAlloc(&ptr, size);
                     TORCH_CHECK(
@@ -2383,6 +2386,8 @@ class NCCLXRegistration {
                         << "NCCL mem allocator: freeing " << ptr << " with "
                         << size << " bytes in stream " << stream;
                     at::cuda::OptionalCUDAGuard gpuGuard(device);
+                    meta::comms::StreamCaptureModeGuard captureGuard{
+                        cudaStreamCaptureModeRelaxed};
                     ncclResult_t result = nccl_api->memFree(ptr);
                     TORCH_CHECK(
                         result == ncclSuccess,
