@@ -25,7 +25,6 @@ class HintParsingTest : public TorchCommNCCLXTest {
 };
 
 TEST_F(HintParsingTest, DefaultConfigValues) {
-  setupCCAExpectations(1, 2, 1);
   auto comm = createMockedTorchComm();
   cuda_mock_->setupDefaultBehaviors();
   nccl_mock_->setupDefaultBehaviors();
@@ -43,7 +42,6 @@ TEST_F(HintParsingTest, DefaultConfigValues) {
 }
 
 TEST_F(HintParsingTest, MaxEventPoolSizeHint) {
-  setupCCAExpectations(1, 2, 1);
   auto comm = createMockedTorchComm();
   cuda_mock_->setupDefaultBehaviors();
   nccl_mock_->setupDefaultBehaviors();
@@ -58,7 +56,6 @@ TEST_F(HintParsingTest, MaxEventPoolSizeHint) {
 }
 
 TEST_F(HintParsingTest, GarbageCollectIntervalMsHint) {
-  setupCCAExpectations(1, 2, 1);
   auto comm = createMockedTorchComm();
   cuda_mock_->setupDefaultBehaviors();
   nccl_mock_->setupDefaultBehaviors();
@@ -73,7 +70,6 @@ TEST_F(HintParsingTest, GarbageCollectIntervalMsHint) {
 }
 
 TEST_F(HintParsingTest, EnableCudaGraphSupportHint) {
-  setupCCAExpectations(1, 2, 1);
   auto comm = createMockedTorchComm();
   cuda_mock_->setupDefaultBehaviors();
   nccl_mock_->setupDefaultBehaviors();
@@ -88,7 +84,6 @@ TEST_F(HintParsingTest, EnableCudaGraphSupportHint) {
 }
 
 TEST_F(HintParsingTest, GraphTimeoutCheckIntervalMsHint) {
-  setupCCAExpectations(1, 2, 1);
   auto comm = createMockedTorchComm();
   cuda_mock_->setupDefaultBehaviors();
   nccl_mock_->setupDefaultBehaviors();
@@ -103,7 +98,6 @@ TEST_F(HintParsingTest, GraphTimeoutCheckIntervalMsHint) {
 }
 
 TEST_F(HintParsingTest, AllHintsCombined) {
-  setupCCAExpectations(1, 2, 1);
   auto comm = createMockedTorchComm();
   cuda_mock_->setupDefaultBehaviors();
   nccl_mock_->setupDefaultBehaviors();
@@ -131,7 +125,6 @@ TEST_F(HintParsingTest, AllHintsCombined) {
 }
 
 TEST_F(HintParsingTest, UnknownHintsIgnored) {
-  setupCCAExpectations(1, 2, 1);
   auto comm = createMockedTorchComm();
   cuda_mock_->setupDefaultBehaviors();
   nccl_mock_->setupDefaultBehaviors();

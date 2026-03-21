@@ -45,7 +45,6 @@ TEST_F(
   // Production value: Clear error when the API is called out of order.
 
   setupRankAndSize(0, 2);
-  setupCCAExpectations(1, 2, 1);
   auto comm = createMockedTorchComm();
 
   cuda_mock_->setupDefaultBehaviors();
@@ -89,7 +88,6 @@ TEST_F(TorchCommWindowNCCLXPipesTest, GetDeviceWindowThrowsIfWinNull) {
   // Production value: Prevents silent failures when the API is misused.
 
   setupRankAndSize(0, 2);
-  setupCCAExpectations(1, 2, 1);
   auto comm = createMockedTorchComm();
 
   cuda_mock_->setupDefaultBehaviors();
@@ -131,7 +129,6 @@ TEST_F(TorchCommWindowNCCLXPipesTest, RegisterLocalBufferSuccess) {
   // Also verifies deregister_local_buffer() calls winLocalDeregisterBuffer.
 
   setupRankAndSize(0, 2);
-  setupCCAExpectations(1, 2, 1);
   auto comm = createMockedTorchComm();
 
   cuda_mock_->setupDefaultBehaviors();

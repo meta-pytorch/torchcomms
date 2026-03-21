@@ -55,8 +55,6 @@ TEST_F(TorchCommNCCLXCommDumpTest, CommDumpSuccess) {
           SetArgPointee<0>(reinterpret_cast<ncclComm_t>(0x3000)),
           Return(ncclSuccess)));
 
-  setupCCAExpectations(1, 2, 1);
-
   torchcomm->init(*device_, "test_comm", default_options_);
 
   setupNormalDestruction(*torchcomm);
@@ -92,8 +90,6 @@ TEST_F(TorchCommNCCLXCommDumpTest, CommDumpFailure) {
       .WillOnce(DoAll(
           SetArgPointee<0>(reinterpret_cast<ncclComm_t>(0x3000)),
           Return(ncclSuccess)));
-
-  setupCCAExpectations(1, 1, 1);
 
   // After NCCLXException from commDump, the comm will be aborted
   EXPECT_CALL(*nccl_mock_, commAbort(_)).WillOnce(Return(ncclSuccess));
