@@ -28,11 +28,22 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
 
     comms::pipes::MultiPeerTransportConfig config{};
 
-    // NVL config: use cvars consistent with CtranAlgo's P2P NVL transport
-    config.nvlConfig.dataBufferSize = NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE /
-        NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH;
-    config.nvlConfig.chunkSize = NCCL_CTRAN_PIPES_NVL_CHUNK_SIZE;
-    config.nvlConfig.pipelineDepth = NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH;
+    // NVL config: per-comm hint > CVAR default
+    const auto& pc = comm->config_.pipesConfig;
+
+    config.nvlConfig.pipelineDepth =
+        static_cast<size_t>(NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH);
+
+    config.nvlConfig.dataBufferSize = static_cast<size_t>(
+        NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE / config.nvlConfig.pipelineDepth);
+
+    config.nvlConfig.chunkSize = (pc.nvlChunkSize > 0)
+        ? static_cast<size_t>(pc.nvlChunkSize)
+        : static_cast<size_t>(NCCL_CTRAN_PIPES_NVL_CHUNK_SIZE);
+
+    config.nvlConfig.useDualStateBuffer = (pc.useDualStateBuffer >= 0)
+        ? (pc.useDualStateBuffer == 1)
+        : NCCL_CTRAN_PIPES_USE_DUAL_STATE_BUFFER;
 
     // IBGDA config (ordered to match MultipeerIbgdaTransportConfig fields)
     config.ibgdaConfig.cudaDevice = comm->statex_->cudaDev();

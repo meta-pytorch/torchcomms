@@ -179,6 +179,24 @@ Config::Config(const ncclConfig_t* config) {
     fastInitMode = parseHintBool(
         "fastInitMode", NCCL_FASTINIT_MODE == NCCL_FASTINIT_MODE::ring_hybrid);
   }
+  // Per-communicator pipes NVL transport config overrides
+  {
+    std::string val = getHintStr("pipesNvlChunkSize");
+    if (!val.empty()) {
+      try {
+        pipesNvlChunkSize = std::stoull(val);
+      } catch (const std::exception&) {
+        WARN("NCCLX hint 'pipesNvlChunkSize': invalid value '%s'", val.c_str());
+      }
+    }
+  }
+  {
+    std::string val = getHintStr("pipesUseDualStateBuffer");
+    if (!val.empty()) {
+      pipesUseDualStateBuffer = parseHintBool(
+          "pipesUseDualStateBuffer", NCCL_CTRAN_PIPES_USE_DUAL_STATE_BUFFER);
+    }
+  }
 }
 
 } // namespace ncclx
