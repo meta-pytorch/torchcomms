@@ -77,10 +77,6 @@ class ProcessGlobalErrorsUtil {
   // Report an IB completion error
   static void addIbCompletionError(IbCompletionError error);
 
-  // Clear all stored IB completion errors (called after reporting to avoid
-  // duplicate reporting)
-  static void clearIbCompletionErrors();
-
   // Get cached hostname (reads /etc/fbwhoami on first call)
   static std::string getHostname();
 
@@ -89,10 +85,6 @@ class ProcessGlobalErrorsUtil {
 
   // Report a CUDA error
   static void addCudaError(CudaError error);
-
-  // Clear all stored CUDA errors (called after reporting to avoid
-  // duplicate reporting)
-  static void clearCudaErrors();
 
   static State getAllState();
 };
