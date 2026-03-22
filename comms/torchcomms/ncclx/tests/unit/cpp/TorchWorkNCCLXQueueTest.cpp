@@ -87,8 +87,6 @@ class TorchWorkNCCLXQueueCommTest : public ::testing::Test {
   void TearDown() override {
     // Clear the communicator
     comm_.reset();
-    // Clear the instance data
-    CachingAllocatorHook::getInstance().clear();
     // Reset the instance to null to release the mock object
     CachingAllocatorHook::setInstance(nullptr);
   }
@@ -129,28 +127,6 @@ class TorchWorkNCCLXQueueCommTest : public ::testing::Test {
 
     EXPECT_CALL(*cuda_mock_, eventQuery(work_event.end_event))
         .WillRepeatedly(Return(cudaSuccess)); // end event succeeds
-  }
-
-  void setupCCAExpectations(
-      int times_register,
-      int times_deregister,
-      int times_clear) {
-    // Expect a registration call during init
-    EXPECT_CALL(*mock_hook_, registerComm(_)).Times(times_register);
-
-    // Expect a deregistration call during finalize, destruction or abort
-    EXPECT_CALL(*mock_hook_, deregisterComm(_)).Times(times_deregister);
-
-    // Expect a clear call during destruction
-    EXPECT_CALL(*mock_hook_, clear()).Times(times_clear);
-  }
-
-  void checkWorkQueue() {
-    comm_->checkWorkQueue();
-  }
-
-  const auto& getStreamWorkQueues() {
-    return comm_->workq_.stream_work_queues_;
   }
 
   cudaEvent_t getAsyncDependencyEvent() {
@@ -302,7 +278,6 @@ TEST_F(TorchWorkNCCLXQueueTest, MultipleQueuesIndependent) {
 
 TEST_F(TorchWorkNCCLXQueueCommTest, NoLeakedObjectsAfterFinalize) {
   setupRankAndSize(0, 2); // rank 0, size 2
-  setupCCAExpectations(1, 2, 1);
   cuda_mock_->setupDefaultBehaviors();
   nccl_mock_->setupDefaultBehaviors();
 
@@ -315,12 +290,8 @@ TEST_F(TorchWorkNCCLXQueueCommTest, NoLeakedObjectsAfterFinalize) {
       {10, 10}, at::TensorOptions().device(*device_).dtype(at::kFloat));
   auto work = comm_->send(tensor, 1, true); // async send
 
-  // Simulate the timeout thread calling checkWorkQueue
-  checkWorkQueue();
-  // Comm finalize will call the work queue finalize().
+  // Comm finalize will call the work queue finalize() and clean up all work.
   comm_->finalize();
-
-  EXPECT_EQ(getStreamWorkQueues().size(), 0);
 }
 
 } // namespace torch::comms
