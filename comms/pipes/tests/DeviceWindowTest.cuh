@@ -223,4 +223,44 @@ void testDeviceWindowGetNvlinkAddress(
     void* windowBuf_d,
     int64_t* results);
 
+/**
+ * Test: DeviceWindow offset-based NVL put_signal_counter()
+ *
+ * Verifies the offset-based put_signal_counter() copies data to the
+ * correct region and signals the target peer. On NVL, the counter
+ * parameter is silently ignored (same as put_signal).
+ */
+void testDeviceWindowNvlOffsetPutSignalCounter(
+    int myRank,
+    int nRanks,
+    char* windowBuf_d,
+    const char* srcBuf_d,
+    std::size_t srcBufSize,
+    std::size_t dst_offset,
+    std::size_t src_offset,
+    std::size_t nbytes,
+    int signalId,
+    uint64_t signalVal,
+    int counterId,
+    uint64_t counterVal);
+
+/**
+ * Test: DeviceWindow offset-based NVL put_counter()
+ *
+ * Verifies the offset-based put_counter() copies data to the correct
+ * region. On NVL, the counter parameter is silently ignored (same as
+ * plain put).
+ */
+void testDeviceWindowNvlOffsetPutCounter(
+    int myRank,
+    int nRanks,
+    char* windowBuf_d,
+    const char* srcBuf_d,
+    std::size_t srcBufSize,
+    std::size_t dst_offset,
+    std::size_t src_offset,
+    std::size_t nbytes,
+    int counterId,
+    uint64_t counterVal);
+
 } // namespace comms::pipes::test

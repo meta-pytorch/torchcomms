@@ -454,6 +454,7 @@ DeviceWindow HostWindow::getDeviceWindow() const {
   dw.peerCounterCount_ = static_cast<int>(config_.peerCounterCount);
   dw.ibgdaPeerCounterBuf_ =
       static_cast<uint64_t*>(ibgdaPeerCounterLocalBuf_.ptr);
+  dw.ibgdaPeerCounterLkey_ = ibgdaPeerCounterLocalBuf_.lkey;
 
   // Barrier
   dw.barrierCount_ = static_cast<int>(config_.barrierCount);
