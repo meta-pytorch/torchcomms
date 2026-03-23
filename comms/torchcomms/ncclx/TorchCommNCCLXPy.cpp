@@ -362,6 +362,11 @@ obtained via torchcomms.get_mem_allocator(backend).
 
 Args:
     tensor: A torch.Tensor allocated from the RDMA memory pool.
+    owning: If True (default), the window holds a reference to the tensor,
+        keeping its storage alive. If False, the window does NOT hold a
+        reference — the caller must ensure the tensor remains alive for the
+        window's lifetime. Use owning=False in CUDA graph capture mode to
+        allow tensor memory reuse within the graph.
 
 Example:
     >>> pool = torch.cuda.MemPool(allocator)
@@ -370,6 +375,7 @@ Example:
     >>> window.tensor_register(buf)
 )",
           py::arg("tensor"),
+          py::arg("owning") = true,
           py::call_guard<py::gil_scoped_release>())
       .def(
           "tensor_deregister",

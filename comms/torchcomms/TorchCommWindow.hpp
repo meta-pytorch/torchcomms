@@ -33,7 +33,15 @@ class TorchCommWindow {
 
   // tensor_register and tensor_deregister are collective operations - all
   // ranks must call them together.
-  virtual void tensor_register(const at::Tensor& tensor) = 0;
+  //
+  // When owning=true (default), the window holds a reference to the tensor,
+  // keeping its storage alive. When owning=false, the window does NOT hold a
+  // reference — the caller must ensure the tensor remains alive for the
+  // window's lifetime. Use owning=false in CUDA graph capture mode to allow
+  // tensor memory reuse within the graph.
+  virtual void tensor_register(
+      const at::Tensor& tensor,
+      bool owning = true) = 0;
   virtual void tensor_deregister() = 0;
 
   // Creates a new window with the same backend/comm configuration.
@@ -76,7 +84,7 @@ class TorchCommWindow {
     return win_size_;
   }
 
-  // Returns the registered tensor buffer, or nullopt in graph capture mode.
+  // Returns the registered tensor buffer, or nullopt if owning=false was used.
   std::optional<at::Tensor> get_tensor() const {
     return buf_tensor_;
   }
@@ -89,7 +97,7 @@ class TorchCommWindow {
   //  GPU, they should reside on the same device.
   size_t win_size_{0};
   // Holds a reference to the registered tensor to keep its storage alive.
-  // Nullopt in graph capture mode (non-owned buffer); see tensor_register docs.
+  // Nullopt when owning=false was passed to tensor_register().
   std::optional<at::Tensor> buf_tensor_;
   at::ScalarType buf_dtype_{at::kFloat};
   c10::Device buf_device_{c10::kCUDA};
