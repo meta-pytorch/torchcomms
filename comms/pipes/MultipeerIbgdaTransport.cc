@@ -13,6 +13,7 @@
 
 #include <fmt/core.h>
 
+#include "comms/pipes/CudaDriverLazy.h"
 #include "comms/pipes/DocaHostUtils.h"
 #include "comms/pipes/IbverbsLazy.h"
 #include "comms/pipes/MultipeerIbgdaDeviceTransport.cuh"
@@ -547,6 +548,11 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
     throw std::invalid_argument("Need at least 2 ranks");
   }
   try {
+    // Resolve CUDA driver function pointers
+    if (cuda_driver_lazy_init() != 0) {
+      throw std::runtime_error("CUDA driver not available");
+    }
+
     // Initialize DOCA GPU context
     initDocaGpu();
 
