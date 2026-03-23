@@ -74,7 +74,9 @@ TorchCommWindowNCCLX<Backend>::~TorchCommWindowNCCLX() noexcept {
 // =============================================================================
 
 template <typename Backend>
-void TorchCommWindowNCCLX<Backend>::tensor_register(const at::Tensor& tensor) {
+void TorchCommWindowNCCLX<Backend>::tensor_register(
+    const at::Tensor& tensor,
+    bool owning) {
   checkCommAndThrow();
 
   if (!tensor.defined()) {
@@ -136,14 +138,6 @@ void TorchCommWindowNCCLX<Backend>::tensor_register(const at::Tensor& tensor) {
       }
 #endif
     }
-    // Store raw data pointer (not tensor ref) for get_device_window().
-    // We intentionally do NOT store buf_tensor_ so that Python-side
-    // del tensor returns memory to the pool for reuse within the graph.
-    buf_data_ptr_ = tensor.data_ptr();
-    TC_LOG(WARNING)
-        << "[TorchCommWindowNCCLX]: Graph capture mode active — window holds "
-        << "a non-owned buffer. The registered tensor must remain alive for "
-        << "the lifetime of this window. get_tensor() will return nullopt.";
   } else {
     CHECK_EQ(
         nccl_api_->commWindowRegister(
@@ -157,7 +151,27 @@ void TorchCommWindowNCCLX<Backend>::tensor_register(const at::Tensor& tensor) {
     Backend::register_extra_window(
         nccl_api_, nccl_comm_, &nccl_orig_win_, tensor.data_ptr(), win_size_);
 #endif
+  }
+
+  // Store raw data pointer for get_device_window() fallback when
+  // buf_tensor_ is not set (owning=false).
+  buf_data_ptr_ = tensor.data_ptr();
+
+  // When owning=false, the window does NOT hold a reference to the tensor.
+  // This allows tensor memory to be reused (e.g., within a CUDA graph).
+  // The NCCL window registration (commWindowRegister) independently tracks
+  // the underlying physical buffer, so the window remains functional.
+  //
+  // IMPORTANT: When owning=false, the caller must ensure the tensor's
+  // storage remains valid for the window's entire lifetime.
+  if (owning) {
     buf_tensor_ = tensor;
+  } else {
+    TC_LOG(WARNING)
+        << "[TorchCommWindowNCCLX]: Non-owning registration — window does not "
+        << "hold a reference to the tensor. The caller must ensure the tensor "
+        << "remains alive for the lifetime of this window. get_tensor() will "
+        << "return nullopt.";
   }
   buf_device_ = tensor.device();
 }
