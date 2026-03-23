@@ -463,7 +463,7 @@ DefaultNcclxApi::winSignal(int peer, NcclxWindow win, cudaStream_t stream) {
 #else
   return ncclx::ncclSignal(
 #endif
-      peer, 0, peer, win, stream);
+      peer, win, stream);
 }
 
 ncclResult_t
