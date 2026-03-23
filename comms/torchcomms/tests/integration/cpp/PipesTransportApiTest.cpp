@@ -12,7 +12,6 @@
 
 #include "comms/pipes/MultiPeerDeviceHandle.cuh"
 
-#include <cuda_runtime.h>
 #include <cstring>
 #include <vector>
 
@@ -32,7 +31,8 @@ void PipesTransportApiTest::SetUp() {
   rank_ = torchcomm_->getRank();
   num_ranks_ = torchcomm_->getSize();
   int device_count = 0;
-  cudaGetDeviceCount(&device_count);
+  ASSERT_EQ(cudaGetDeviceCount(&device_count), cudaSuccess)
+      << "cudaGetDeviceCount failed";
   device_index_ = (device_count > 0) ? rank_ % device_count : 0;
 }
 

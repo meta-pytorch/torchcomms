@@ -102,6 +102,7 @@ PipesDeviceBackend::Ptr PipesDeviceBackend::create_device_window(
       sizeof(TorchCommDeviceWindow<PipesDeviceBackend>));
   if (cuda_result != cudaSuccess) {
     // Clean up Pipes DeviceWindow on failure.
+    // NOLINTNEXTLINE(facebook-hte-NullableDereference)
     auto destroy_result = nccl_api->winDestroyDeviceWin(pipes_device_win);
     if (destroy_result != ncclSuccess) {
       TC_LOG(ERROR) << "[PipesDeviceBackend]: Failed to clean up Pipes device "
@@ -126,6 +127,7 @@ PipesDeviceBackend::Ptr PipesDeviceBackend::create_device_window(
         cuda_api,
         cuda_api->free(device_ptr),
         "Failed to free device window during error cleanup");
+    // NOLINTNEXTLINE(facebook-hte-NullableDereference)
     auto destroy_result = nccl_api->winDestroyDeviceWin(pipes_device_win);
     if (destroy_result != ncclSuccess) {
       TC_LOG(ERROR) << "[PipesDeviceBackend]: Failed to clean up Pipes device "
