@@ -97,7 +97,7 @@ class TestWindowGraphCapture(CudaGraphTestBase):
                     buf_numel, dtype=torch.float32, device=self.device
                 )
 
-                win.tensor_register(win_buf)
+                win.tensor_register(win_buf, owning=False)
 
                 initial_stream = torch.cuda.current_stream()
                 put_stream.wait_stream(initial_stream)
@@ -319,9 +319,9 @@ class TestWindowGraphCapture(CudaGraphTestBase):
                         buf_numel, dtype=torch.float32, device=self.device
                     )
 
-                win.tensor_register(win_buf)
+                win.tensor_register(win_buf, owning=False)
 
-                # Device window creation during capture — the C++ layer uses
+                # Device window creation during capture
                 # StreamCaptureModeGuard so devCommCreate/cudaMalloc/cudaMemcpy
                 # execute eagerly rather than being captured.
                 has_device_api = hasattr(win, "get_device_window")
@@ -467,7 +467,7 @@ class TestWindowGraphCapture(CudaGraphTestBase):
             with torch.cuda.graph(graph):
                 # Non-owning registration: buffer is pre-allocated, window
                 # stores only buf_data_ptr_ (not buf_tensor_).
-                win.tensor_register(win_buf)
+                win.tensor_register(win_buf, owning=False)
 
                 initial_stream = torch.cuda.current_stream()
                 put_stream.wait_stream(initial_stream)

@@ -231,6 +231,7 @@ class TorchCommWindow:
     def tensor_register(
         self,
         tensor: Any,
+        owning: bool = True,
     ) -> None: ...
     def tensor_deregister(
         self,

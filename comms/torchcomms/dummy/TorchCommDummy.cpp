@@ -10,8 +10,9 @@ namespace torch::comms {
 namespace {
 class DummyTorchCommWindow : public TorchCommWindow {
  public:
-  void tensor_register(const at::Tensor& tensor) override {
+  void tensor_register(const at::Tensor& tensor, bool owning = true) override {
     (void)tensor;
+    (void)owning;
   }
   void tensor_deregister() override {}
   c10::intrusive_ptr<TorchWork> put(

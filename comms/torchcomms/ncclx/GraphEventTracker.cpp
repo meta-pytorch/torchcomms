@@ -72,14 +72,18 @@ void GraphEventTracker::maybeInitGraphState(
   SharedCallbackState* shared = allocateCallbackState();
   state.shared_ = shared;
 
-  // Set up replay counter — host node fires on each replay.
+  // Set up replay counter — kernel node fires on each replay.
   // Only installed when timeout monitoring is enabled; the cleanup callback
   // is always installed for GraphState lifecycle management.
   if (isGraphTimeoutMonitoringEnabled()) {
     CUDA_CHECK(
         api,
-        api->launchHostFunc(stream, replayCallback, &shared->replay_counter),
-        "Failed to launch replay counter host func");
+        DeviceCounter::create(api, state.replay_counter),
+        "Failed to create replay counter");
+    CUDA_CHECK(
+        api,
+        state.replay_counter->increment(stream),
+        "Failed to record replay counter increment");
   }
 
   // Set up deferred cleanup via a CUDA user object — when the graph is
@@ -152,15 +156,15 @@ void GraphEventTracker::addEntry(TorchWorkNCCLX* work) {
 // Timeout detection for graph-captured collectives.
 //
 // During a single replay, the GPU executes nodes in order:
-//   host_node (counter++) → start_event record → NCCL collective → end_event
-//   record
+//   kernel_node (counter++) → start_event record → NCCL collective →
+//   end_event record
 //
 // The watchdog may poll at any point. Possible observations:
 //
 //   (1) Between replays (previous end=success, counter unchanged):
 //       end=success → reset timer. Correct: collective is done.
 //
-//   (2) New replay started, GPU past host_node but before event records:
+//   (2) New replay started, GPU past kernel_node but before event records:
 //       counter changed → replay detection resets timer.
 //       end still=success from previous replay → reset timer (redundant,
 //       harmless).
@@ -168,13 +172,17 @@ void GraphEventTracker::addEntry(TorchWorkNCCLX* work) {
 //   (3) GPU past event records, collective in progress:
 //       start=success, end=notReady → start/continue timer. Correct.
 //
-//   (4) GPU past host_node but before this collective's start_event:
+//   (4) GPU past kernel_node but before this collective's start_event:
 //       both notReady → reset timer. Correct: collective hasn't started.
 //
 // Without the replay counter, case (2) could be missed if the watchdog
 // never observes end=success between consecutive replays, causing the
 // timer to span N replays and false-trigger a timeout.
 GraphEventTracker::CheckResult GraphEventTracker::checkAll() {
+  if (!isGraphTimeoutMonitoringEnabled()) {
+    return CheckResult::OK;
+  }
+
   CudaApi* api = comm_->getCudaApi();
   std::lock_guard<std::mutex> lock(mutex_);
 
@@ -183,8 +191,13 @@ GraphEventTracker::CheckResult GraphEventTracker::checkAll() {
 
   // Traverse remaining active graphs
   for (auto& [graph_id, graph_state] : graphs_) {
-    uint64_t current_replay =
-        graph_state.shared_->replay_counter.load(std::memory_order_acquire);
+    if (!graph_state.replay_counter) {
+      TC_LOG(ERROR, comm_) << "Graph monitor: replay counter is null for graph "
+                           << graph_id
+                           << " -- expected counter when monitoring is enabled";
+      return CheckResult::ERROR;
+    }
+    uint64_t current_replay = graph_state.replay_counter->read();
 
     // Collectives are ordered per stream — within each stream, if collective i
     // has not completed, collective i+1 cannot have started. This allows us to
@@ -276,12 +289,6 @@ void GraphEventTracker::cleanupReleasedGraphs() {
 void GraphEventTracker::destroyAll() {
   std::lock_guard<std::mutex> lock(mutex_);
   graphs_.clear();
-}
-
-// Static callback — fires on each graph replay to increment counter
-void CUDART_CB GraphEventTracker::replayCallback(void* userData) {
-  static_cast<std::atomic_uint64_t*>(userData)->fetch_add(
-      1, std::memory_order_release);
 }
 
 // Static callback — fires when graph is destroyed to set released flag

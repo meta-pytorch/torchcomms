@@ -77,7 +77,7 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
   TorchCommWindowNCCLX& operator=(TorchCommWindowNCCLX&& other) noexcept =
       delete;
 
-  void tensor_register(const at::Tensor& tensor) override;
+  void tensor_register(const at::Tensor& tensor, bool owning = true) override;
   void tensor_deregister() override;
 
   std::shared_ptr<TorchCommWindow> clone() override;

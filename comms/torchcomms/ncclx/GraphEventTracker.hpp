@@ -14,6 +14,7 @@
 #include <ATen/ATen.h>
 
 #include "comms/torchcomms/device/cuda/CudaApi.hpp"
+#include "comms/torchcomms/device/cuda/DeviceCounter.h"
 
 namespace torch::comms {
 
@@ -38,13 +39,13 @@ struct GraphWork {
   }
 };
 
-// Shared state between CUDA callbacks and the tracker. Allocated from a static
-// pool so that callbacks only perform atomic stores, avoiding mutex acquisition
-// or CUDA API calls inside the callback (which violates CUDA docs). Resource is
-// automatically released when prcoess exits, so graph destruction and comm
-// finalization can occur in any order.
+// Shared state for the graph-release flag, read by the tracker's watchdog.
+// Allocated from a static pool so that the cleanup callback only performs
+// an atomic store, avoiding mutex acquisition or CUDA API calls inside
+// the callback (which violates CUDA docs). Resource is automatically
+// released when process exits, so graph destruction and comm finalization
+// can occur in any order.
 struct SharedCallbackState {
-  std::atomic_uint64_t replay_counter{0};
   std::atomic_bool released{false};
 };
 
@@ -57,6 +58,7 @@ struct GraphState {
   std::unordered_map<cudaStream_t, std::vector<GraphWork>> stream_entries;
   SharedCallbackState* shared_{nullptr};
   CudaApi* api_{nullptr};
+  std::unique_ptr<DeviceCounter> replay_counter;
   // CPU tensors that must be kept alive for the graph's lifetime.
   // This includes CPU pointer tensors used by alltoallv_dynamic_dispatch
   // operations. These tensors are moved from work objects during graph
@@ -72,9 +74,10 @@ struct GraphState {
 // taking ownership of each collective's start/end CUDA events and polling
 // them from the watchdog thread.
 //
-// Replay detection: a host-node callback increments a per-graph atomic
-// counter on every replay so the watchdog can distinguish "not yet replayed"
-// from "stuck during a replay."
+// Replay detection: a single-thread GPU kernel node atomically increments a
+// per-graph counter in mapped pinned memory on every replay, so the watchdog
+// can distinguish "not yet replayed" from "stuck during a replay" without
+// the CPU round-trip cost of a host-function callback.
 //
 // Cleanup: a CUDA user-object callback sets a released flag when the graph
 // is destroyed.  The watchdog's next checkAll() call sees the flag and
@@ -120,9 +123,7 @@ class GraphEventTracker {
  private:
   // Static callback for CUDA user object cleanup — sets released flag
   static void CUDART_CB cleanupCallback(void* userData);
-  // Static callback for replay detection (fires on each graph replay)
-  static void CUDART_CB replayCallback(void* userData);
-  // One-time per-graph setup: replay counter + cleanup user object.
+  // One-time per-graph setup: replay counter kernel + cleanup user object.
   // Must be called with mutex_ held.
   void maybeInitGraphState(
       cudaStream_t stream,

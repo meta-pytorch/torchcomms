@@ -408,8 +408,8 @@ Post-hooks are called after each collective operation completes.
           })
       .def(
           "tensor_register",
-          [](TorchCommWindow& self, const at::Tensor& tensor) {
-            self.tensor_register(tensor);
+          [](TorchCommWindow& self, const at::Tensor& tensor, bool owning) {
+            self.tensor_register(tensor, owning);
           },
           R"(
 Register a tensor buffer with the window for RMA operations.
@@ -417,17 +417,22 @@ Register a tensor buffer with the window for RMA operations.
 Args:
     tensor (torch.Tensor): Contiguous tensor to register. Must be allocated
         within a memory pool created via ``torchcomms.get_mem_allocator()``.
+    owning (bool): If True (default), the window holds a reference to the tensor,
+        keeping its storage alive. If False, the window does NOT hold a reference
+        — the caller must ensure the tensor remains alive for the window's lifetime.
+        Use ``owning=False`` in CUDA graph capture mode to allow tensor memory
+        reuse within the graph.
 
 Raises:
     RuntimeError: If tensor is not contiguous or a buffer is already registered.
 
 Note:
-    In CUDA graph capture mode, the window holds a **non-owned** reference to the
+    When ``owning=False``, the window holds a **non-owned** reference to the
     underlying buffer — it does not prevent the tensor from being deallocated.
     The caller must ensure the tensor remains alive for the entire lifetime of
-    the window, and the window must not outlive the CUDA graph it was captured in.
+    the window. Use this mode when capturing CUDA graphs to allow memory reuse.
 
-Example:
+Example (standard usage with owning=True):
 
 .. code-block:: python
 
@@ -439,10 +444,45 @@ Example:
         buffer = torch.ones([size], dtype=dtype, device=device)
 
     window = comm.new_window()
-    window.tensor_register(buffer)
+    window.tensor_register(buffer)  # owning=True is default
+
+Example (CUDA graph capture with owning=False for memory reuse):
+
+.. code-block:: python
+
+    import torch
+    import torchcomms
+
+    # Create communicator and window outside the graph
+    comm = torchcomms.TorchCommNCCLX(...)
+    h_win = comm.new_window()
+
+    # Capture CUDA graph with non-owning tensor registration
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        buf = torch.empty([size], dtype=dtype, device=device)
+        h_win.tensor_register(buf, owning=False)
+        d_win = h_win.get_device_window()
+
+        # Launch kernels using d_win
+        kernel1(d_win)
+        kernel2(d_win)
+
+        # Now done using d_win and buf, delete it
+        del buf  # Physical memory can be reused within graph
+
+        # NOTE: d_win cannot be used for RMA ops after del buf in this capture,
+        # but it WILL work during graph replay (CUDA replays captured addresses)
+
+    # During replay, d_win uses the captured buffer address
+    graph.replay()
+
+    # NOTE: tensor_register() currently doesn't work inside graph capture as it
+    # calls cudaSyncrhonize() etc, this needs to be fixed separately.
 
       )",
           py::arg("tensor"),
+          py::arg("owning") = true,
           py::call_guard<py::gil_scoped_release>())
       .def(
           "tensor_deregister",

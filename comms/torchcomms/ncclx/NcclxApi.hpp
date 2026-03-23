@@ -57,9 +57,18 @@ class NCCLXException : public std::exception {
     }                                                                      \
   } while (0)
 
+// Window/RMA types are only available in NCCLX builds that define
+// NCCL_RMA_SUPPORTED
+#ifdef NCCL_RMA_SUPPORTED
 using NcclxWindow = ncclWindow_t;
 using NcclxWindowAccessType = ncclWinAccessType;
 using NcclxWindowAttr = ncclWinAttr_t;
+#else
+using NcclxWindow = void*;
+using NcclxWindowAccessType = int;
+using NcclxWindowAttr = void*;
+constexpr int NCCL_WIN_DEFAULT = 0;
+#endif
 
 /**
  * Abstract interface for NCCL API operations.
