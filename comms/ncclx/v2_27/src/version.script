@@ -11,6 +11,8 @@ cxa: Folly’s exception tracer intercepts all exceptions and uses
       *nccl*;
       *ctran*;
       *cxa*;
+      getDevMemType;
+      getCudaDevFromPtr;
   /* Transitive symbols (e.g. coming from static libs) are not exported */
   local:
       *;
