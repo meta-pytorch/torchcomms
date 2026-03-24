@@ -27,7 +27,7 @@ class ctranAllToAllPTest : public CtranDistBaseTest {
     if (globalRank == 0) {
       expectedVal = rand();
     }
-    MPI_Bcast(&expectedVal, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    oobBroadcast(&expectedVal, 1, 0);
   }
 
   void generateDistRandomCount(bool small_msg = false) {
@@ -38,7 +38,7 @@ class ctranAllToAllPTest : public CtranDistBaseTest {
         count = rand() % (maxRecvCount / numRanks) + 1;
       }
     }
-    MPI_Bcast(&count, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    oobBroadcast(&count, 1, 0);
   }
 
   void* createDataBuf(size_t nbytes, void** handle) {
