@@ -47,12 +47,9 @@ TorchComm::TorchComm(
     const std::string& backend_name,
     std::shared_ptr<TorchCommBackend> impl)
     : backend_(backend_name), impl_(std::move(impl)) {
-  // Initialize ranks_ for root communicator: [0, 1, 2, ..., size-1]
-  int size = impl_->getSize();
-  ranks_.reserve(size);
-  for (int i = 0; i < size; ++i) {
-    ranks_.push_back(i);
-  }
+  // ranks_ is lazily initialized in getRanks() to support backends
+  // that defer initialization (e.g., MCCL dynamic regime where getSize()
+  // is not valid until reconfigure() is called).
 }
 
 TorchComm::TorchComm(
@@ -88,6 +85,17 @@ int TorchComm::getSize() const {
 }
 
 std::vector<int> TorchComm::getRanks() const {
+  // Lazy initialization for root communicators. Split communicators have
+  // ranks_ set explicitly in their constructor. Root communicators defer
+  // initialization to here so that backends with deferred init (e.g., MCCL
+  // dynamic regime) don't crash when getSize() is called before reconfigure().
+  if (ranks_.empty()) {
+    int size = impl_->getSize();
+    ranks_.reserve(size);
+    for (int i = 0; i < size; ++i) {
+      ranks_.push_back(i);
+    }
+  }
   return ranks_;
 }
 
