@@ -7,6 +7,7 @@
 #include "comm.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/utils/Exception.h"
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "meta/wrapper/MetaFactory.h"
@@ -25,7 +26,8 @@ class CommAsyncErrorTest : public NcclxBaseTest {
 };
 
 TEST_F(CommAsyncErrorTest, NcclErrorOnly) {
-  ncclComm_t comm = createNcclComm(globalRank, numRanks, localRank);
+  ncclComm_t comm = ncclx::test::createNcclComm(
+      globalRank, numRanks, localRank, bootstrap_.get());
 
   ASSERT_NE(nullptr, comm);
 
@@ -41,7 +43,8 @@ TEST_F(CommAsyncErrorTest, NcclErrorOnly) {
 }
 
 TEST_F(CommAsyncErrorTest, CtranErrorOnly) {
-  ncclComm_t comm = createNcclComm(globalRank, numRanks, localRank);
+  ncclComm_t comm = ncclx::test::createNcclComm(
+      globalRank, numRanks, localRank, bootstrap_.get());
 
   ASSERT_NE(nullptr, comm);
   ASSERT_TRUE(ctranInitialized(comm->ctranComm_.get()));
@@ -59,7 +62,8 @@ TEST_F(CommAsyncErrorTest, CtranErrorOnly) {
 }
 
 TEST_F(CommAsyncErrorTest, NcclCtranErrorTogether) {
-  ncclComm_t comm = createNcclComm(globalRank, numRanks, localRank);
+  ncclComm_t comm = ncclx::test::createNcclComm(
+      globalRank, numRanks, localRank, bootstrap_.get());
 
   ASSERT_NE(nullptr, comm);
   ASSERT_TRUE(ctranInitialized(comm->ctranComm_.get()));
@@ -80,7 +84,8 @@ TEST_F(CommAsyncErrorTest, NcclCtranErrorTogether) {
 }
 
 TEST_F(CommAsyncErrorTest, NcclInProgressCtranError) {
-  ncclComm_t comm = createNcclComm(globalRank, numRanks, localRank);
+  ncclComm_t comm = ncclx::test::createNcclComm(
+      globalRank, numRanks, localRank, bootstrap_.get());
 
   ASSERT_NE(nullptr, comm);
   ASSERT_TRUE(ctranInitialized(comm->ctranComm_.get()));

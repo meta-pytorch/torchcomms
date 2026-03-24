@@ -10,6 +10,7 @@
 
 #include "checks.h"
 #include "comm.h"
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "nccl.h"
@@ -32,8 +33,8 @@ TEST_F(CommWorldTest, FirstCommAsWorld) {
   NCCL_COMM_WORLD = NULL;
   EXPECT_EQ(NCCL_COMM_WORLD, nullptr);
 
-  ncclComm_t comm =
-      createNcclComm(this->globalRank, this->numRanks, this->localRank);
+  ncclComm_t comm = ncclx::test::createNcclComm(
+      globalRank, numRanks, localRank, bootstrap_.get());
   ASSERT_NE(comm, nullptr);
 
   printf("NCCL_FIRST_COMM_AS_WORLD: %d\n", NCCL_FIRST_COMM_AS_WORLD);
@@ -47,8 +48,8 @@ TEST_F(CommWorldTest, DefaultCommWorld) {
   NCCL_COMM_WORLD = NULL;
   EXPECT_EQ(NCCL_COMM_WORLD, nullptr);
 
-  ncclComm_t comm =
-      createNcclComm(this->globalRank, this->numRanks, this->localRank);
+  ncclComm_t comm = ncclx::test::createNcclComm(
+      globalRank, numRanks, localRank, bootstrap_.get());
   ASSERT_NE(comm, nullptr);
 
   printf("NCCL_FIRST_COMM_AS_WORLD: %d\n", NCCL_FIRST_COMM_AS_WORLD);
