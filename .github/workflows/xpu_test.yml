@@ -5,7 +5,6 @@ on:
   pull_request:
     paths:
       - .github/workflows/xpu_test.yml
-      - .github/scripts/xpu_setup_env.sh
       - .github/scripts/xpu_test.sh
       - CMakeLists.txt
       - comms/torchcomms/TorchComm.hpp

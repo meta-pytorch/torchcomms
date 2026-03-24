@@ -20,7 +20,7 @@ TEST_F(TorchCommXCCLTest, TestOptionsEnvironmentVariables) {
   EXPECT_EQ(options2.timeout, std::chrono::milliseconds(2000));
 }
 
-TEST_F(TorchCommXCCLTest, SplitCommunicatorThrows) {
+TEST_F(TorchCommXCCLTest, SplitCommunicatorSuccess) {
   xpu_mock_->setupDefaultBehaviors();
   xccl_mock_->setupDefaultBehaviors();
   setupRankAndSize(0, 4);
@@ -28,8 +28,20 @@ TEST_F(TorchCommXCCLTest, SplitCommunicatorThrows) {
   auto comm = createMockedTorchComm();
   comm->init(*device_, "test_comm", default_options_);
 
-  // XCCL split is not yet implemented; verify it throws
-  EXPECT_THROW(comm->split({0, 1}, "split_comm"), std::runtime_error);
+  EXPECT_CALL(*xccl_mock_, commSplit(_, _, _, _, _))
+      .WillOnce(DoAll(
+          SetArgPointee<3>(reinterpret_cast<onecclComm_t>(0x2000)),
+          Return(onecclSuccess)));
+
+  // Need commUserRank and commCount for the new communicator's init
+  EXPECT_CALL(
+      *xccl_mock_, commUserRank(reinterpret_cast<onecclComm_t>(0x2000), _))
+      .WillOnce(DoAll(SetArgPointee<1>(0), Return(onecclSuccess)));
+  EXPECT_CALL(*xccl_mock_, commCount(reinterpret_cast<onecclComm_t>(0x2000), _))
+      .WillOnce(DoAll(SetArgPointee<1>(2), Return(onecclSuccess)));
+
+  auto split_comm = comm->split({0, 1}, "split_comm");
+  EXPECT_NE(split_comm, nullptr);
 
   comm->finalize();
 }
@@ -316,12 +328,8 @@ TEST_F(TorchCommXCCLTest, AllGather_Success) {
   std::vector<at::Tensor> outputs = {
       createTestTensor({4, 4}), createTestTensor({4, 4})};
 
-  EXPECT_CALL(*xccl_mock_, groupStart()).WillOnce(Return(onecclSuccess));
-  EXPECT_CALL(*xccl_mock_, broadcast(_, _, input.numel(), _, 0, _, _))
+  EXPECT_CALL(*xccl_mock_, allGather(_, _, input.numel(), _, _, _))
       .WillOnce(Return(onecclSuccess));
-  EXPECT_CALL(*xccl_mock_, broadcast(_, _, input.numel(), _, 1, _, _))
-      .WillOnce(Return(onecclSuccess));
-  EXPECT_CALL(*xccl_mock_, groupEnd()).WillOnce(Return(onecclSuccess));
   EXPECT_CALL(*xpu_mock_, eventQuery(_)).WillRepeatedly(Return(XPU_SUCCESS));
 
   auto work = comm->all_gather(outputs, input, true, AllGatherOptions());
@@ -399,12 +407,8 @@ TEST_F(TorchCommXCCLTest, ReduceScatter_Success) {
   std::vector<at::Tensor> inputs = {
       createTestTensor({4, 4}), createTestTensor({4, 4})};
 
-  EXPECT_CALL(*xccl_mock_, groupStart()).WillOnce(Return(onecclSuccess));
-  EXPECT_CALL(*xccl_mock_, reduce(_, _, output.numel(), _, _, 0, _, _))
+  EXPECT_CALL(*xccl_mock_, reduceScatter(_, _, output.numel(), _, _, _, _))
       .WillOnce(Return(onecclSuccess));
-  EXPECT_CALL(*xccl_mock_, reduce(_, _, output.numel(), _, _, 1, _, _))
-      .WillOnce(Return(onecclSuccess));
-  EXPECT_CALL(*xccl_mock_, groupEnd()).WillOnce(Return(onecclSuccess));
   EXPECT_CALL(*xpu_mock_, eventQuery(_)).WillRepeatedly(Return(XPU_SUCCESS));
 
   auto work = comm->reduce_scatter(
