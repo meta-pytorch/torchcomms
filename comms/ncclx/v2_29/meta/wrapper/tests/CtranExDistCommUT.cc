@@ -70,7 +70,7 @@ TEST_F(CtranExCommTest, TestNonBlockingThrow) {
   if (globalRank == 0) {
     NCCLCHECK_TEST(ncclGetUniqueId(&id));
   }
-  MPICHECK_TEST(MPI_Bcast((void*)&id, sizeof(id), MPI_BYTE, 0, MPI_COMM_WORLD));
+  oobBroadcast(&id, 1, 0);
   CUDACHECK_TEST(cudaSetDevice(localRank));
   auto nccl_result = ncclCommInitRankConfig(
       &nonBlockingComm, numRanks, id, globalRank, &config);
