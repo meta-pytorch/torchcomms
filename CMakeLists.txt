@@ -96,13 +96,8 @@ list(REMOVE_ITEM TORCHCOMMS_SOURCES ${TORCHCOMMS_PYTHON_SOURCES})
 list(REMOVE_ITEM HOOKS_SOURCES ${HOOKS_PYTHON_SOURCES})
 list(REMOVE_ITEM UTILS_SOURCES ${UTILS_PYTHON_SOURCES})
 
-# Separate BackendWrapperPy.cpp and StoreManagerPy.cpp from other Python sources
-set(BACKEND_WRAPPER_PYTHON_SOURCES "comms/torchcomms/BackendWrapperPy.cpp")
-set(STORE_MANAGER_PYTHON_SOURCES "comms/torchcomms/utils/StoreManagerPy.cpp")
-list(REMOVE_ITEM TORCHCOMMS_PYTHON_SOURCES ${BACKEND_WRAPPER_PYTHON_SOURCES})
-list(REMOVE_ITEM TORCHCOMMS_PYTHON_SOURCES ${STORE_MANAGER_PYTHON_SOURCES})
-
 list(APPEND TORCHCOMMS_SOURCES ${TORCHCOMMS_DUMMY_SOURCES})
+
 list(APPEND TORCHCOMMS_SOURCES ${HOOKS_SOURCES})
 list(APPEND TORCHCOMMS_SOURCES ${UTILS_SOURCES})
 list(APPEND TORCHCOMMS_PYTHON_SOURCES ${HOOKS_PYTHON_SOURCES})
@@ -180,50 +175,6 @@ target_link_libraries(torchcomms_comms PRIVATE
     nlohmann_json::nlohmann_json
 )
 
-# Extension: torchcomms._backend_wrapper
-add_library(torchcomms_backend_wrapper MODULE ${BACKEND_WRAPPER_PYTHON_SOURCES})
-set_target_properties(torchcomms_backend_wrapper PROPERTIES
-    PREFIX ""  # No 'lib' prefix for Python extension
-    OUTPUT_NAME "_backend_wrapper"
-    SUFFIX ".${Python3_SOABI}.so"
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/comms/torchcomms"
-)
-target_include_directories(torchcomms_backend_wrapper PRIVATE
-    ${ROOT}
-    ${CONDA_INCLUDE}
-    ${Python3_INCLUDE_DIRS}
-)
-target_compile_features(torchcomms_backend_wrapper PRIVATE cxx_std_20)
-target_link_directories(torchcomms_backend_wrapper PRIVATE ${CONDA_LIB})
-target_link_libraries(torchcomms_backend_wrapper PRIVATE
-    ${TORCH_LIBRARIES}
-    ${TORCH_PYTHON_LIB}
-    torchcomms
-    nlohmann_json::nlohmann_json
-)
-
-# Extension: torchcomms._store_manager
-add_library(torchcomms_store_manager MODULE ${STORE_MANAGER_PYTHON_SOURCES})
-set_target_properties(torchcomms_store_manager PROPERTIES
-    PREFIX ""  # No 'lib' prefix for Python extension
-    OUTPUT_NAME "_store_manager"
-    SUFFIX ".${Python3_SOABI}.so"
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/comms/torchcomms"
-)
-target_include_directories(torchcomms_store_manager PRIVATE
-    ${ROOT}
-    ${CONDA_INCLUDE}
-    ${Python3_INCLUDE_DIRS}
-)
-target_compile_features(torchcomms_store_manager PRIVATE cxx_std_20)
-target_link_directories(torchcomms_store_manager PRIVATE ${CONDA_LIB})
-target_link_libraries(torchcomms_store_manager PRIVATE
-    ${TORCH_LIBRARIES}
-    ${TORCH_PYTHON_LIB}
-    torchcomms
-    nlohmann_json::nlohmann_json
-)
-
 if (USE_NCCL)
     include(comms/torchcomms/nccl/CMakeLists.txt)
 endif()
@@ -255,12 +206,6 @@ install(TARGETS torchcomms
     LIBRARY DESTINATION .
 )
 install(TARGETS torchcomms_comms
-    LIBRARY DESTINATION .
-)
-install(TARGETS torchcomms_backend_wrapper
-    LIBRARY DESTINATION .
-)
-install(TARGETS torchcomms_store_manager
     LIBRARY DESTINATION .
 )
 
