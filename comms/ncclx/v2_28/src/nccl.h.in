@@ -941,18 +941,16 @@ ncclResult_t pncclPutSignal(
     cudaStream_t stream);
 
 /*
- * Wait for a signal from remote peer to complete the put operation.
+ * Wait for a signal from remote peer by checking the local signal region
  */
 ncclResult_t ncclWaitSignal(int peer, ncclWindow_t win, cudaStream_t stream);
 ncclResult_t pncclWaitSignal(int peer, ncclWindow_t win, cudaStream_t stream);
 
 /*
- * Wait for a signal given the local signal displacement, the signal value, and the comparison op.
+ * One-sided signal operation to a remote peer's signal region at an offset
+ * corresponding to the local rank ID.
  */
-
 ncclResult_t ncclSignal(
-    size_t signalDisp,
-    uint64_t signalVal,
     int peer,
     ncclWindow_t win,
     cudaStream_t stream

@@ -1144,11 +1144,10 @@ ncclResult_t ncclGet(
 ncclResult_t ncclWaitSignal(int peer, ncclWindow_t win, cudaStream_t stream);
 
 /*
- * Signal a remote peer given the local signal displacement and value.
+ * One-sided signal operation to a remote peer's signal region at an offset
+ * corresponding to the local rank ID.
  */
 ncclResult_t ncclSignal(
-    size_t signalDisp,
-    uint64_t signalVal,
     int peer,
     ncclWindow_t win,
     cudaStream_t stream);
