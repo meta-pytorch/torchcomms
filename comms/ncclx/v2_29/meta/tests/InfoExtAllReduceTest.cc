@@ -8,6 +8,8 @@
 #include "VerifyAlgoStatsUtil.h"
 #include "collectives.h"
 #include "comms/testinfra/TestsDistUtils.h"
+
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "device.h"
 #include "enqueue.h"
 #include "meta/algoconf/InfoExt.h"
@@ -42,7 +44,8 @@ class InfoExtAllReduceTest
 TEST_P(InfoExtAllReduceTest, Override) {
   const auto& param = GetParam();
 
-  NcclCommRAII commGuard(globalRank, numRanks, localRank);
+  ncclx::test::NcclCommRAII commGuard(
+      globalRank, numRanks, localRank, bootstrap_.get());
   cudaStream_t stream;
   CUDACHECK_TEST(cudaStreamCreate(&stream));
 
