@@ -82,6 +82,7 @@ add_library(torchcomms_comms_ncclx MODULE
     ${TORCHCOMMS_NCCLX_SOURCES}
     ${TORCHCOMMS_CUDA_DEVICE_SOURCES}
     ${TORCHCOMMS_DEVICE_NCCLX_SOURCE}
+    comms/utils/CudaRAII.cc
 )
 set_target_properties(torchcomms_comms_ncclx PROPERTIES
     PREFIX ""
