@@ -113,8 +113,55 @@ jobs:
         # Install from pre-built wheel (skip build step)
         pip install "${RUNNER_ARTIFACT_DIR}"/*.whl pytest numpy psutil parameterized pydot requests urllib3 tabulate
 
-        python -c "import torchcomms; import torchcomms._transport"
-
         # Run Python tests
         comms/torchcomms/scripts/run_tests_unit_py.sh
         comms/torchcomms/scripts/run_tests_integration_py.sh
+
+  check_pybind_imports:
+    needs: build_pip_wheel
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runs-on: "linux.g5.12xlarge.nvidia.gpu"
+            gpu-arch-type: "cuda"
+            gpu-arch-version: "12.8"
+            torch-version: "stable"
+          - runs-on: "linux.g5.12xlarge.nvidia.gpu"
+            gpu-arch-type: "cuda"
+            gpu-arch-version: "12.8"
+            torch-version: "nightly"
+
+    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    permissions:
+      id-token: write
+      contents: read
+    with:
+      timeout: 30
+      runner: ${{ matrix.runs-on }}
+      gpu-arch-type: ${{ matrix.gpu-arch-type }}
+      gpu-arch-version: ${{ matrix.gpu-arch-version }}
+      download-artifact: build-artifacts-${{ matrix.torch-version }}-${{ matrix.gpu-arch-type }}-${{ matrix.gpu-arch-version }}
+      script: |
+        set -ex
+        TORCH_VERSION=$(cat "${RUNNER_ARTIFACT_DIR}/torch_version.txt")
+        source .github/scripts/setup_env.sh --cuda-version "${{ matrix.gpu-arch-version }}" --torch-version "$TORCH_VERSION" "${{ matrix.torch-version }}"
+
+        pip install "${RUNNER_ARTIFACT_DIR}"/*.whl
+
+        # Verify all pybindings can be imported (each in its own subprocess to avoid
+        # folly singleton conflicts between backends that statically link folly)
+        PYBINDINGS=(
+          torchcomms._comms
+          torchcomms._backend_wrapper
+          torchcomms._store_manager
+          torchcomms.hooks.fr._fr
+          torchcomms._comms_nccl
+          torchcomms._comms_ncclx
+          torchcomms._comms_gloo
+          torchcomms._transport
+        )
+        for mod in "${PYBINDINGS[@]}"; do
+          echo "Importing ${mod}..."
+          python -c "import ${mod}"
+        done
