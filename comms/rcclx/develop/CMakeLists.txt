@@ -833,6 +833,7 @@ set(RCCLX_LIB_FILES
 set(CTRAN_FILES
   ${CTRAN_SOURCES}
   comms/common/bootstrap/IBootstrap.h
+  comms/ctran/bootstrap/ICtranBootstrap.h
   comms/tcp_devmem/transport.h # extra requirement
   comms/utils/MemUtils.h # extra requirement
 )

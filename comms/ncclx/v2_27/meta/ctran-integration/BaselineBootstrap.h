@@ -2,13 +2,13 @@
 
 #pragma once
 
-#include "comms/common/bootstrap/IBootstrap.h"
+#include "comms/ctran/bootstrap/ICtranBootstrap.h"
 
 #include "nccl.h" // @manual
 
 namespace ncclx {
 
-class BaselineBootstrap : public ::meta::comms::IBootstrap {
+class BaselineBootstrap : public ::meta::comms::ICtranBootstrap {
  public:
   explicit BaselineBootstrap(ncclComm_t comm) : comm_(comm) {}
 
