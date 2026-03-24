@@ -12,6 +12,8 @@
 #include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
+
 class CommRegisterTest : public NcclxBaseTest {
  public:
   CommRegisterTest() = default;
@@ -33,7 +35,8 @@ class CommRegisterTestParam
 
 TEST_P(CommRegisterTestParam, RegularUsage) {
   const auto& [nbytes, memType, ctranRegist] = GetParam();
-  NcclCommRAII comm(globalRank, numRanks, localRank);
+  ncclx::test::NcclCommRAII comm(
+      globalRank, numRanks, localRank, bootstrap_.get());
   EnvRAII env(NCCL_CTRAN_REGISTER, ctranRegist);
   EnvRAII env2(NCCL_LOCAL_REGISTER, (int64_t)0);
 
@@ -71,7 +74,8 @@ TEST_P(CommRegisterTestParam, RegularUsage) {
 }
 
 TEST_F(CommRegisterTest, InvalidHybridUsage) {
-  NcclCommRAII comm(globalRank, numRanks, localRank);
+  ncclx::test::NcclCommRAII comm(
+      globalRank, numRanks, localRank, bootstrap_.get());
   EnvRAII env1(NCCL_CTRAN_REGISTER, NCCL_CTRAN_REGISTER::lazy);
   EnvRAII env2(NCCL_LOCAL_REGISTER, (int64_t)1);
   constexpr size_t nbytes = 8192;
@@ -92,7 +96,8 @@ TEST_F(CommRegisterTest, InvalidHybridUsage) {
 }
 
 TEST_F(CommRegisterTest, InvalidHandle) {
-  NcclCommRAII comm(globalRank, numRanks, localRank);
+  ncclx::test::NcclCommRAII comm(
+      globalRank, numRanks, localRank, bootstrap_.get());
 
   auto res = ncclCommDeregister(comm, nullptr);
   ASSERT_EQ(res, ncclInvalidArgument);
