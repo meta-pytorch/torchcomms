@@ -228,13 +228,7 @@ __device__ unsigned long long torchcomms_size(void* win_ptr) {
 
 __device__ void* torchcomms_get_nvlink_address(void* win_ptr, int peer) {
   auto* win = reinterpret_cast<DeviceWindow*>(win_ptr);
-#ifdef USE_PIPES_BACKEND
-  // Pipes: DeviceWindow stores NVLink-mapped peer pointers directly.
-  return win->window()->get_nvlink_address(peer);
-#else
-  // GIN: resolve via ncclWindow_t peer pointer table.
-  return ncclGetPeerPointer(win->window(), 0, peer);
-#endif
+  return win->get_nvlink_address(peer);
 }
 
 } // extern "C"

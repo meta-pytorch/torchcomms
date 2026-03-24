@@ -461,4 +461,14 @@ __device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::barrier(
   return 0;
 }
 
+// =============================================================================
+// TorchCommDeviceWindow<NCCLDeviceBackend> NVLink Address Query
+// =============================================================================
+
+template <>
+__device__ inline void*
+TorchCommDeviceWindow<NCCLDeviceBackend>::get_nvlink_address(int peer) {
+  return ncclGetPeerPointer(window_, 0, peer);
+}
+
 } // namespace torchcomms::device
