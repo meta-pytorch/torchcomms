@@ -73,4 +73,44 @@ void launchPipesBarrierKernel(
     int barrier_id,
     cudaStream_t stream);
 
+// Launch device put kernel with signal - performs put with signal notification.
+// Ring pattern: rank puts data to dst_rank's window at dst_offset, signals
+// signal_id on completion.
+void launchPipesPutKernel(
+    DeviceWindowPipes* win,
+    RegisteredBufferPipes src_buf,
+    size_t src_offset,
+    size_t dst_offset,
+    size_t bytes,
+    int dst_rank,
+    int signal_id,
+    cudaStream_t stream);
+
+// Launch device put kernel with signal + counter - performs put_signal_counter
+// and then wait_local on the counter to verify local completion tracking.
+void launchPipesPutCounterKernel(
+    DeviceWindowPipes* win,
+    RegisteredBufferPipes src_buf,
+    size_t src_offset,
+    size_t dst_offset,
+    size_t bytes,
+    int dst_rank,
+    int signal_id,
+    int counter_id,
+    cudaStream_t stream);
+
+// Launch read counter kernel - reads aggregated counter value into output
+// buffer. out must be a device pointer to a single uint64_t.
+void launchPipesReadCounterKernel(
+    DeviceWindowPipes* win,
+    int counter_id,
+    uint64_t* out,
+    cudaStream_t stream);
+
+// Launch reset counter kernel - resets counter for all peers.
+void launchPipesResetCounterKernel(
+    DeviceWindowPipes* win,
+    int counter_id,
+    cudaStream_t stream);
+
 } // namespace torchcomms::device::test
