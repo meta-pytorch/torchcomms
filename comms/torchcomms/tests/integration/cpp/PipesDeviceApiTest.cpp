@@ -10,6 +10,9 @@
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/ncclx/TorchCommWindowNCCLX.hpp"
 
+// Bring device API types into scope (DeviceWindowPipes, RegisteredBufferPipes)
+using namespace torchcomms::device;
+
 std::unique_ptr<TorchCommTestWrapper> PipesDeviceApiTest::createWrapper() {
   return std::make_unique<TorchCommTestWrapper>();
 }
@@ -144,9 +147,9 @@ void PipesDeviceApiTest::testPipesDeviceWindowCreation(
   // ctran_win->get_device_win() which does an allGather to exchange IBGDA
   // buffer registration info and NVLink-mapped remote buffer pointers.
   // All ranks must call this simultaneously.
-  decltype(win->get_device_window()) dev_win = nullptr;
+  DeviceWindowPipes* dev_win = nullptr;
   try {
-    dev_win = win->get_device_window();
+    dev_win = static_cast<DeviceWindowPipes*>(win->get_device_window());
   } catch (const std::runtime_error& e) {
     // Gracefully skip if IBGDA hardware is not available.
     // Both ranks hit this simultaneously (multiPeerTransport is null on both),
@@ -220,9 +223,9 @@ void PipesDeviceApiTest::testLocalBufferRegistration(
 
   // get_device_window() is COLLECTIVE — must be called before
   // register_local_buffer() to initialize the Pipes device window.
-  decltype(win->get_device_window()) dev_win = nullptr;
+  DeviceWindowPipes* dev_win = nullptr;
   try {
-    dev_win = win->get_device_window();
+    dev_win = static_cast<DeviceWindowPipes*>(win->get_device_window());
   } catch (const std::runtime_error& e) {
     base_win->tensor_deregister();
     base_win.reset();
@@ -297,9 +300,10 @@ void PipesDeviceApiTest::testPerPeerSignal() {
                              "Is NCCL_CTRAN_USE_PIPES=1 set?";
 
   int signal_count = num_ranks_;
-  decltype(win->get_device_window()) dev_win = nullptr;
+  DeviceWindowPipes* dev_win = nullptr;
   try {
-    dev_win = win->get_device_window(signal_count, -1, 1);
+    dev_win = static_cast<DeviceWindowPipes*>(
+        win->get_device_window(signal_count, -1, 1));
   } catch (const std::runtime_error& e) {
     base_win->tensor_deregister();
     base_win.reset();
@@ -407,9 +411,10 @@ void PipesDeviceApiTest::testWaitSignalFrom() {
                              "Is NCCL_CTRAN_USE_PIPES=1 set?";
 
   int signal_count = num_ranks_;
-  decltype(win->get_device_window()) dev_win = nullptr;
+  DeviceWindowPipes* dev_win = nullptr;
   try {
-    dev_win = win->get_device_window(signal_count, -1, 1);
+    dev_win = static_cast<DeviceWindowPipes*>(
+        win->get_device_window(signal_count, -1, 1));
   } catch (const std::runtime_error& e) {
     base_win->tensor_deregister();
     base_win.reset();
@@ -505,9 +510,10 @@ void PipesDeviceApiTest::testDeviceBarrier() {
 
   // Get device window with barrier support
   int barrier_count = 2;
-  decltype(win->get_device_window()) dev_win = nullptr;
+  DeviceWindowPipes* dev_win = nullptr;
   try {
-    dev_win = win->get_device_window(-1, -1, barrier_count);
+    dev_win = static_cast<DeviceWindowPipes*>(
+        win->get_device_window(-1, -1, barrier_count));
   } catch (const std::runtime_error& e) {
     base_win->tensor_deregister();
     base_win.reset();
@@ -594,9 +600,10 @@ void PipesDeviceApiTest::testDevicePut(int count, at::ScalarType dtype) {
                              "Is NCCL_CTRAN_USE_PIPES=1 set?";
 
   int signal_count = num_ranks_;
-  decltype(win->get_device_window()) dev_win = nullptr;
+  DeviceWindowPipes* dev_win = nullptr;
   try {
-    dev_win = win->get_device_window(signal_count, -1, 1);
+    dev_win = static_cast<DeviceWindowPipes*>(
+        win->get_device_window(signal_count, -1, 1));
   } catch (const std::runtime_error& e) {
     base_win->tensor_deregister();
     base_win.reset();
@@ -623,7 +630,11 @@ void PipesDeviceApiTest::testDevicePut(int count, at::ScalarType dtype) {
     c10::cuda::CUDAStreamGuard guard(put_stream);
     torchcomms::device::test::launchPipesPutKernel(
         dev_win,
-        src_buf,
+        RegisteredBufferPipes{
+            src_buf.base_ptr,
+            src_buf.size,
+            src_buf.backend_window,
+            src_buf.lkey},
         src_offset,
         dst_offset,
         bytes,
@@ -713,9 +724,10 @@ void PipesDeviceApiTest::testDevicePutCounter(int count, at::ScalarType dtype) {
 
   int signal_count = num_ranks_;
   int counter_count = num_ranks_;
-  decltype(win->get_device_window()) dev_win = nullptr;
+  DeviceWindowPipes* dev_win = nullptr;
   try {
-    dev_win = win->get_device_window(signal_count, counter_count, 1);
+    dev_win = static_cast<DeviceWindowPipes*>(
+        win->get_device_window(signal_count, counter_count, 1));
   } catch (const std::runtime_error& e) {
     base_win->tensor_deregister();
     base_win.reset();
@@ -743,7 +755,11 @@ void PipesDeviceApiTest::testDevicePutCounter(int count, at::ScalarType dtype) {
     c10::cuda::CUDAStreamGuard guard(put_stream);
     torchcomms::device::test::launchPipesPutCounterKernel(
         dev_win,
-        src_buf,
+        RegisteredBufferPipes{
+            src_buf.base_ptr,
+            src_buf.size,
+            src_buf.backend_window,
+            src_buf.lkey},
         src_offset,
         dst_offset,
         bytes,
@@ -864,9 +880,10 @@ void PipesDeviceApiTest::testWaitLocal(int count, at::ScalarType dtype) {
 
   int signal_count = num_ranks_;
   int counter_count = num_ranks_;
-  decltype(win->get_device_window()) dev_win = nullptr;
+  DeviceWindowPipes* dev_win = nullptr;
   try {
-    dev_win = win->get_device_window(signal_count, counter_count, 1);
+    dev_win = static_cast<DeviceWindowPipes*>(
+        win->get_device_window(signal_count, counter_count, 1));
   } catch (const std::runtime_error& e) {
     base_win->tensor_deregister();
     base_win.reset();
@@ -894,7 +911,11 @@ void PipesDeviceApiTest::testWaitLocal(int count, at::ScalarType dtype) {
     c10::cuda::CUDAStreamGuard guard(put_stream);
     torchcomms::device::test::launchPipesPutCounterKernel(
         dev_win,
-        src_buf,
+        RegisteredBufferPipes{
+            src_buf.base_ptr,
+            src_buf.size,
+            src_buf.backend_window,
+            src_buf.lkey},
         src_offset,
         dst_offset,
         bytes,

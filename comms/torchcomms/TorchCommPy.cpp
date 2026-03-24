@@ -770,6 +770,98 @@ Example:
 
       )",
           py::arg("rank"),
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "get_device_window",
+          [](TorchCommWindow& self, int sc, int cc, int bc) {
+            return reinterpret_cast<int64_t>(
+                self.get_device_window(sc, cc, bc));
+          },
+          R"(
+Get a device-side window handle for GPU-initiated operations.
+
+Returns a pointer (as int64) that can be passed to Triton kernels via
+the torchcomms_* extern functions (put_block, signal_block, etc.).
+
+The window is lazily created on first call and cached. Requires NCCLX
+backend with device API support (NCCLX 2.28+).
+
+Args:
+    signal_count: Number of signal slots to allocate (-1 for default).
+    counter_count: Number of counter slots to allocate (-1 for default).
+    barrier_count: Number of barrier slots to allocate (default 1).
+
+Returns:
+    int: Device window pointer as int64.
+
+Raises:
+    RuntimeError: If this backend does not yet support the device API.
+)",
+          py::arg("signal_count") = -1,
+          py::arg("counter_count") = -1,
+          py::arg("barrier_count") = 1,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "register_local_buffer",
+          [](TorchCommWindow& self, const at::Tensor& tensor) {
+            TorchCommWindow::DeviceBuffer buf;
+            {
+              py::gil_scoped_release release;
+              buf = self.register_local_buffer(tensor);
+            }
+            return py::make_tuple(
+                reinterpret_cast<int64_t>(buf.base_ptr),
+                static_cast<int64_t>(buf.size),
+                reinterpret_cast<int64_t>(buf.backend_window),
+                static_cast<int64_t>(buf.lkey));
+          },
+          R"(
+Register a local buffer for use as source in device-side put operations.
+
+NON-COLLECTIVE. Must call tensor_register() then get_device_window() first.
+
+Args:
+    tensor: Source tensor to register as a local buffer.
+
+Returns:
+    tuple: (base_ptr, size, backend_window, lkey) as int64 values.
+
+Raises:
+    RuntimeError: If this backend does not yet support the device API.
+)",
+          py::arg("tensor"))
+      .def(
+          "deregister_local_buffer",
+          [](TorchCommWindow& self,
+             int64_t base_ptr,
+             int64_t size,
+             int64_t backend_window,
+             int64_t lkey) {
+            TorchCommWindow::DeviceBuffer buf;
+            // NOLINTNEXTLINE(performance-no-int-to-ptr)
+            buf.base_ptr = reinterpret_cast<void*>(base_ptr);
+            buf.size = static_cast<size_t>(size);
+            // NOLINTNEXTLINE(performance-no-int-to-ptr)
+            buf.backend_window = reinterpret_cast<void*>(backend_window);
+            buf.lkey = static_cast<uint32_t>(lkey);
+            self.deregister_local_buffer(buf);
+          },
+          R"(
+Deregister a previously registered local buffer. NON-COLLECTIVE.
+
+Args:
+    base_ptr: From register_local_buffer() return tuple.
+    size: From register_local_buffer() return tuple.
+    backend_window: From register_local_buffer() return tuple.
+    lkey: From register_local_buffer() return tuple.
+
+Raises:
+    RuntimeError: If this backend does not yet support the device API.
+)",
+          py::arg("base_ptr"),
+          py::arg("size"),
+          py::arg("backend_window"),
+          py::arg("lkey"),
           py::call_guard<py::gil_scoped_release>());
 
   // Bind BatchSendRecv::P2POp class

@@ -8,7 +8,9 @@
 #include "DeviceApiTestKernels.cuh"
 #include "TorchCommTestHelpers.h"
 #include "comms/torchcomms/TorchComm.hpp"
-#include "comms/torchcomms/ncclx/TorchCommWindowNCCLX.hpp"
+
+// Bring device API types into scope (DeviceWindowNCCL, RegisteredBufferNCCL)
+using namespace torchcomms::device;
 
 std::unique_ptr<TorchCommTestWrapper> DeviceApiTest::createWrapper() {
   return std::make_unique<TorchCommTestWrapper>();
@@ -102,22 +104,18 @@ void DeviceApiTest::testDeviceWindowCreation(int count, at::ScalarType dtype) {
 
   // Create window and register tensor
   torchcomm_->barrier(false);
-  auto base_win = torchcomm_->new_window();
-  base_win->tensor_register(win_tensor);
+  auto win = torchcomm_->new_window();
+  win->tensor_register(win_tensor);
   torchcomm_->barrier(false);
 
-  // Cast to NCCLX window to access device API
-  auto* win =
-      dynamic_cast<torch::comms::TorchCommWindowNCCLXGin*>(base_win.get());
-  ASSERT_NE(win, nullptr) << "Window should be TorchCommWindowNCCLXGin";
-
   // Get device window (returns device pointer for use in CUDA/Triton kernels)
-  auto* dev_win = win->get_device_window();
+  DeviceWindowNCCL* dev_win =
+      static_cast<DeviceWindowNCCL*>(win->get_device_window());
   EXPECT_NE(dev_win, nullptr) << "Device window pointer should not be null";
 
   // Cleanup
-  base_win->tensor_deregister();
-  base_win.reset();
+  win->tensor_deregister();
+  win.reset();
   mem_pool.reset();
 
   torchcomm_->barrier(false);
@@ -151,19 +149,15 @@ void DeviceApiTest::testLocalBufferRegistration(
 
   // Create window and register tensor
   torchcomm_->barrier(false);
-  auto base_win = torchcomm_->new_window();
-  base_win->tensor_register(win_tensor);
+  auto win = torchcomm_->new_window();
+  win->tensor_register(win_tensor);
   torchcomm_->barrier(false);
-
-  // Cast to NCCLX window to access device API
-  auto* win =
-      dynamic_cast<torch::comms::TorchCommWindowNCCLXGin*>(base_win.get());
-  ASSERT_NE(win, nullptr) << "Window should be TorchCommWindowNCCLXGin";
 
   // Get device window first to ensure GIN is enabled.
   // GIN is only enabled when ncclDevCommCreate is called (inside
   // get_device_window), not during window registration.
-  auto* dev_win = win->get_device_window();
+  DeviceWindowNCCL* dev_win =
+      static_cast<DeviceWindowNCCL*>(win->get_device_window());
   ASSERT_NE(dev_win, nullptr) << "Device window should not be null";
 
   auto src_buf = win->register_local_buffer(src_tensor);
@@ -176,8 +170,8 @@ void DeviceApiTest::testLocalBufferRegistration(
 
   // Cleanup
   win->deregister_local_buffer(src_buf);
-  base_win->tensor_deregister();
-  base_win.reset();
+  win->tensor_deregister();
+  win.reset();
   mem_pool.reset();
 
   torchcomm_->barrier(false);
@@ -208,23 +202,19 @@ void DeviceApiTest::testDeviceWindowWithSignals(
 
   // Create window and register tensor
   torchcomm_->barrier(false);
-  auto base_win = torchcomm_->new_window();
-  base_win->tensor_register(win_tensor);
+  auto win = torchcomm_->new_window();
+  win->tensor_register(win_tensor);
   torchcomm_->barrier(false);
-
-  // Cast to NCCLX window to access device API
-  auto* win =
-      dynamic_cast<torch::comms::TorchCommWindowNCCLXGin*>(base_win.get());
-  ASSERT_NE(win, nullptr) << "Window should be TorchCommWindowNCCLXGin";
 
   // Get device window with signals (returns device pointer for use in kernels)
   int signal_count = num_ranks_;
-  auto* dev_win = win->get_device_window(signal_count, -1, 1);
+  DeviceWindowNCCL* dev_win = static_cast<DeviceWindowNCCL*>(
+      win->get_device_window(signal_count, -1, 1));
   EXPECT_NE(dev_win, nullptr) << "Device window pointer should not be null";
 
   // Cleanup
-  base_win->tensor_deregister();
-  base_win.reset();
+  win->tensor_deregister();
+  win.reset();
   mem_pool.reset();
 
   torchcomm_->barrier(false);
@@ -255,24 +245,20 @@ void DeviceApiTest::testDeviceWindowWithCounters(
 
   // Create window and register tensor
   torchcomm_->barrier(false);
-  auto base_win = torchcomm_->new_window();
-  base_win->tensor_register(win_tensor);
+  auto win = torchcomm_->new_window();
+  win->tensor_register(win_tensor);
   torchcomm_->barrier(false);
-
-  // Cast to NCCLX window to access device API
-  auto* win =
-      dynamic_cast<torch::comms::TorchCommWindowNCCLXGin*>(base_win.get());
-  ASSERT_NE(win, nullptr) << "Window should be TorchCommWindowNCCLXGin";
 
   // Get device window with signals and counters (returns device pointer)
   int signal_count = num_ranks_;
   int counter_count = num_ranks_;
-  auto* dev_win = win->get_device_window(signal_count, counter_count, 1);
+  DeviceWindowNCCL* dev_win = static_cast<DeviceWindowNCCL*>(
+      win->get_device_window(signal_count, counter_count, 1));
   EXPECT_NE(dev_win, nullptr) << "Device window pointer should not be null";
 
   // Cleanup
-  base_win->tensor_deregister();
-  base_win.reset();
+  win->tensor_deregister();
+  win.reset();
   mem_pool.reset();
 
   torchcomm_->barrier(false);
@@ -320,18 +306,14 @@ void DeviceApiTest::testDevicePut(int count, at::ScalarType dtype) {
 
   // Create destination window and register tensor
   torchcomm_->barrier(false);
-  auto base_win = torchcomm_->new_window();
-  base_win->tensor_register(win_tensor);
+  auto win = torchcomm_->new_window();
+  win->tensor_register(win_tensor);
   torchcomm_->barrier(false);
-
-  // Cast to NCCLX window to access device API
-  auto* win =
-      dynamic_cast<torch::comms::TorchCommWindowNCCLXGin*>(base_win.get());
-  ASSERT_NE(win, nullptr) << "Window should be TorchCommWindowNCCLXGin";
 
   // Get device window with signals (returns device pointer for use in kernels)
   int signal_count = num_ranks_;
-  auto* dev_win = win->get_device_window(signal_count, -1, 1);
+  DeviceWindowNCCL* dev_win = static_cast<DeviceWindowNCCL*>(
+      win->get_device_window(signal_count, -1, 1));
   EXPECT_NE(dev_win, nullptr) << "Device window pointer should not be null";
 
   // Register source buffer as a local-only window using NCCL_WIN_LOCAL_ONLY.
@@ -366,7 +348,8 @@ void DeviceApiTest::testDevicePut(int count, at::ScalarType dtype) {
     c10::cuda::CUDAStreamGuard guard(put_stream);
     torchcomms::device::test::launchDevicePutKernelWithOffsets(
         dev_win,
-        src_buf,
+        RegisteredBufferNCCL{
+            src_buf.base_ptr, src_buf.size, src_buf.backend_window},
         src_offset,
         dst_offset,
         bytes,
@@ -416,8 +399,8 @@ void DeviceApiTest::testDevicePut(int count, at::ScalarType dtype) {
   // Cleanup - deregister local source buffer (non-collective), then destination
   win->deregister_local_buffer(src_buf);
 
-  base_win->tensor_deregister();
-  base_win.reset();
+  win->tensor_deregister();
+  win.reset();
   mem_pool.reset();
 
   torchcomm_->barrier(false);
@@ -427,8 +410,7 @@ void DeviceApiTest::testDevicePut(int count, at::ScalarType dtype) {
 // GTest Test Cases
 // =============================================================================
 // TEST_F macros MUST be in this file (compiled with
-// TORCHCOMMS_HAS_NCCL_DEVICE_API) to ensure TorchCommWindowNCCLXGin resolves to
-// the correct type (NCCLDeviceBackend).
+// TORCHCOMMS_HAS_NCCL_DEVICE_API) to ensure device API types resolve correctly.
 
 TEST_F(DeviceApiTest, DeviceWindowCreationFloat) {
   testDeviceWindowCreation(1024, at::kFloat);
@@ -493,17 +475,14 @@ void DeviceApiTest::testGinAtomicAdd() {
 
   // Create window and register tensor
   torchcomm_->barrier(false);
-  auto base_win = torchcomm_->new_window();
-  base_win->tensor_register(win_tensor);
+  auto win = torchcomm_->new_window();
+  win->tensor_register(win_tensor);
   torchcomm_->barrier(false);
-
-  auto* win =
-      dynamic_cast<torch::comms::TorchCommWindowNCCLXGin*>(base_win.get());
-  ASSERT_NE(win, nullptr) << "Window should be TorchCommWindowNCCLXGin";
 
   // Get device window with signals for synchronization
   int signal_count = num_ranks_;
-  auto* dev_win = win->get_device_window(signal_count, -1, 1);
+  DeviceWindowNCCL* dev_win = static_cast<DeviceWindowNCCL*>(
+      win->get_device_window(signal_count, -1, 1));
   ASSERT_NE(dev_win, nullptr) << "Device window pointer should not be null";
 
   // Ring pattern: rank i atomicAdds to rank (i+1) % num_ranks
@@ -570,8 +549,8 @@ void DeviceApiTest::testGinAtomicAdd() {
   ASSERT_EQ(signal_value, 0) << "Signal should be reset to 0 after reset";
 
   // Cleanup
-  base_win->tensor_deregister();
-  base_win.reset();
+  win->tensor_deregister();
+  win.reset();
   mem_pool.reset();
 
   torchcomm_->barrier(false);
@@ -612,16 +591,13 @@ void DeviceApiTest::testPerPeerSignal() {
       mem_pool->device(), mem_pool->id());
 
   torchcomm_->barrier(false);
-  auto base_win = torchcomm_->new_window();
-  base_win->tensor_register(win_tensor);
+  auto win = torchcomm_->new_window();
+  win->tensor_register(win_tensor);
   torchcomm_->barrier(false);
 
-  auto* win =
-      dynamic_cast<torch::comms::TorchCommWindowNCCLXGin*>(base_win.get());
-  ASSERT_NE(win, nullptr);
-
   int signal_count = num_ranks_;
-  auto* dev_win = win->get_device_window(signal_count, -1, 1);
+  DeviceWindowNCCL* dev_win = static_cast<DeviceWindowNCCL*>(
+      win->get_device_window(signal_count, -1, 1));
   ASSERT_NE(dev_win, nullptr);
 
   // Ring pattern: rank i signals rank (i+1) % num_ranks
@@ -674,8 +650,8 @@ void DeviceApiTest::testPerPeerSignal() {
   }
   op_stream.synchronize();
 
-  base_win->tensor_deregister();
-  base_win.reset();
+  win->tensor_deregister();
+  win.reset();
   mem_pool.reset();
 
   torchcomm_->barrier(false);
@@ -714,16 +690,13 @@ void DeviceApiTest::testWaitSignalFrom() {
       mem_pool->device(), mem_pool->id());
 
   torchcomm_->barrier(false);
-  auto base_win = torchcomm_->new_window();
-  base_win->tensor_register(win_tensor);
+  auto win = torchcomm_->new_window();
+  win->tensor_register(win_tensor);
   torchcomm_->barrier(false);
 
-  auto* win =
-      dynamic_cast<torch::comms::TorchCommWindowNCCLXGin*>(base_win.get());
-  ASSERT_NE(win, nullptr);
-
   int signal_count = num_ranks_;
-  auto* dev_win = win->get_device_window(signal_count, -1, 1);
+  DeviceWindowNCCL* dev_win = static_cast<DeviceWindowNCCL*>(
+      win->get_device_window(signal_count, -1, 1));
   ASSERT_NE(dev_win, nullptr);
 
   // Ring: rank i signals rank (i+1), receiver expects signal from (i-1)
@@ -766,8 +739,8 @@ void DeviceApiTest::testWaitSignalFrom() {
   }
   op_stream.synchronize();
 
-  base_win->tensor_deregister();
-  base_win.reset();
+  win->tensor_deregister();
+  win.reset();
   mem_pool.reset();
 
   torchcomm_->barrier(false);
@@ -805,17 +778,14 @@ void DeviceApiTest::testDeviceBarrier() {
       mem_pool->device(), mem_pool->id());
 
   torchcomm_->barrier(false);
-  auto base_win = torchcomm_->new_window();
-  base_win->tensor_register(win_tensor);
+  auto win = torchcomm_->new_window();
+  win->tensor_register(win_tensor);
   torchcomm_->barrier(false);
-
-  auto* win =
-      dynamic_cast<torch::comms::TorchCommWindowNCCLXGin*>(base_win.get());
-  ASSERT_NE(win, nullptr);
 
   // Get device window with barrier support
   int barrier_count = 2;
-  auto* dev_win = win->get_device_window(-1, -1, barrier_count);
+  DeviceWindowNCCL* dev_win = static_cast<DeviceWindowNCCL*>(
+      win->get_device_window(-1, -1, barrier_count));
   ASSERT_NE(dev_win, nullptr);
 
   constexpr int kBarrierId = 0;
@@ -838,8 +808,8 @@ void DeviceApiTest::testDeviceBarrier() {
   }
   op_stream.synchronize();
 
-  base_win->tensor_deregister();
-  base_win.reset();
+  win->tensor_deregister();
+  win.reset();
   mem_pool.reset();
 
   torchcomm_->barrier(false);
@@ -887,16 +857,13 @@ void DeviceApiTest::testDevicePutScoped(
       mem_pool->device(), mem_pool->id());
 
   torchcomm_->barrier(false);
-  auto base_win = torchcomm_->new_window();
-  base_win->tensor_register(win_tensor);
+  auto win = torchcomm_->new_window();
+  win->tensor_register(win_tensor);
   torchcomm_->barrier(false);
 
-  auto* win =
-      dynamic_cast<torch::comms::TorchCommWindowNCCLXGin*>(base_win.get());
-  ASSERT_NE(win, nullptr) << "Window should be TorchCommWindowNCCLXGin";
-
   int signal_count = num_ranks_;
-  auto* dev_win = win->get_device_window(signal_count, -1, 1);
+  DeviceWindowNCCL* dev_win = static_cast<DeviceWindowNCCL*>(
+      win->get_device_window(signal_count, -1, 1));
   EXPECT_NE(dev_win, nullptr) << "Device window pointer should not be null";
 
   auto src_buf = win->register_local_buffer(src_tensor);
@@ -917,7 +884,8 @@ void DeviceApiTest::testDevicePutScoped(
     c10::cuda::CUDAStreamGuard guard(put_stream);
     torchcomms::device::test::launchDevicePutScopedKernel(
         dev_win,
-        src_buf,
+        RegisteredBufferNCCL{
+            src_buf.base_ptr, src_buf.size, src_buf.backend_window},
         src_offset,
         dst_offset,
         bytes,
@@ -962,8 +930,8 @@ void DeviceApiTest::testDevicePutScoped(
   put_stream.synchronize();
 
   win->deregister_local_buffer(src_buf);
-  base_win->tensor_deregister();
-  base_win.reset();
+  win->tensor_deregister();
+  win.reset();
   mem_pool.reset();
 
   torchcomm_->barrier(false);
@@ -1008,16 +976,13 @@ void DeviceApiTest::testDeviceBarrierScoped(
       mem_pool->device(), mem_pool->id());
 
   torchcomm_->barrier(false);
-  auto base_win = torchcomm_->new_window();
-  base_win->tensor_register(win_tensor);
+  auto win = torchcomm_->new_window();
+  win->tensor_register(win_tensor);
   torchcomm_->barrier(false);
 
-  auto* win =
-      dynamic_cast<torch::comms::TorchCommWindowNCCLXGin*>(base_win.get());
-  ASSERT_NE(win, nullptr);
-
   int barrier_count = 2;
-  auto* dev_win = win->get_device_window(-1, -1, barrier_count);
+  DeviceWindowNCCL* dev_win = static_cast<DeviceWindowNCCL*>(
+      win->get_device_window(-1, -1, barrier_count));
   ASSERT_NE(dev_win, nullptr);
 
   constexpr int kBarrierId = 0;
@@ -1038,8 +1003,8 @@ void DeviceApiTest::testDeviceBarrierScoped(
   }
   op_stream.synchronize();
 
-  base_win->tensor_deregister();
-  base_win.reset();
+  win->tensor_deregister();
+  win.reset();
   mem_pool.reset();
 
   torchcomm_->barrier(false);
