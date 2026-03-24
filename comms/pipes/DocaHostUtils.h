@@ -66,7 +66,6 @@ inline std::optional<DmaBufExport>
 export_gpu_dmabuf_aligned(doca_gpu* gpu, void* ptr, size_t size) {
   CUdeviceptr allocBase = 0;
   size_t allocSize = 0;
-  cuda_driver_lazy_init();
   CUresult cuRes =
       pfn_cuMemGetAddressRange(&allocBase, &allocSize, (CUdeviceptr)ptr);
   if (cuRes != CUDA_SUCCESS || allocBase == 0) {
