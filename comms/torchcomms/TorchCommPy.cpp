@@ -12,6 +12,9 @@
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/TorchWork.hpp"
 
+// Forward declaration for flight recorder submodule init
+void init_flight_recorder_bindings(py::module_& m);
+
 namespace py = pybind11;
 using namespace torch::comms;
 
@@ -2126,4 +2129,9 @@ Args:
       )",
       py::arg("backend"),
       py::call_guard<py::gil_scoped_release>());
+
+  // Flight Recorder submodule: torchcomms._comms.hooks.fr
+  auto hooks_mod = m.def_submodule("hooks");
+  auto fr_mod = hooks_mod.def_submodule("fr");
+  init_flight_recorder_bindings(fr_mod);
 }

@@ -153,8 +153,17 @@ else()
     )
 endif()
 
+# Flight Recorder sources (compiled into _comms)
+file(GLOB TORCHCOMMS_FR_SOURCES "comms/torchcomms/hooks/fr/FlightRecorder.cpp")
+file(GLOB TORCHCOMMS_FR_PYTHON_SOURCES "comms/torchcomms/hooks/fr/FlightRecorderPy.cpp")
+
 # Extension: torchcomms._comms
-add_library(torchcomms_comms MODULE ${TORCHCOMMS_PYTHON_SOURCES} ${HOOKS_PYTHON_SOURCES})
+add_library(torchcomms_comms MODULE
+    ${TORCHCOMMS_PYTHON_SOURCES}
+    ${HOOKS_PYTHON_SOURCES}
+    ${TORCHCOMMS_FR_SOURCES}
+    ${TORCHCOMMS_FR_PYTHON_SOURCES}
+)
 set_target_properties(torchcomms_comms PROPERTIES
     PREFIX ""  # No 'lib' prefix for Python extension
     OUTPUT_NAME "_comms"
@@ -199,8 +208,6 @@ endif()
 if (USE_TRITON)
     include(comms/torchcomms/triton/CMakeLists.txt)
 endif()
-include(comms/torchcomms/hooks/fr/CMakeLists.txt)
-
 # Install targets to Python package structure
 install(TARGETS torchcomms
     LIBRARY DESTINATION .
