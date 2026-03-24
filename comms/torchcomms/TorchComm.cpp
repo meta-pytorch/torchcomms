@@ -47,8 +47,16 @@ TorchComm::TorchComm(
     const std::string& backend_name,
     std::shared_ptr<TorchCommBackend> impl)
     : backend_(backend_name), impl_(std::move(impl)) {
-  // Initialize ranks_ for root communicator: [0, 1, 2, ..., size-1]
+  // In dynamic regime (enable_reconfigure), rank/size are not known until
+  // reconfigure() is called. Defer ranks_ initialization to initRanks().
+  if (!impl_->getOptions().enable_reconfigure) {
+    initRanks();
+  }
+}
+
+void TorchComm::initRanks() {
   int size = impl_->getSize();
+  ranks_.clear();
   ranks_.reserve(size);
   for (int i = 0; i < size; ++i) {
     ranks_.push_back(i);
@@ -626,7 +634,9 @@ InitHandle TorchComm::getInitHandle() const {
 
 c10::intrusive_ptr<TorchWork> TorchComm::reconfigure(
     const ReconfigureOptions& opts) {
-  return impl_->reconfigure(opts);
+  auto work = impl_->reconfigure(opts);
+  initRanks();
+  return work;
 }
 
 int64_t TorchComm::get_device_transport() {
