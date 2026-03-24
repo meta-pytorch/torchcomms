@@ -24,7 +24,7 @@ class ctranAllToAllvTest : public CtranDistBaseTest {
     if (globalRank == 0) {
       expectedVal = rand();
     }
-    MPI_Bcast(&expectedVal, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    oobBroadcast(&expectedVal, 1, 0);
   }
 
   void generateFixedCountsDisps(size_t count) {
