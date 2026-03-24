@@ -222,6 +222,7 @@ TorchCommXCCL::~TorchCommXCCL() {
 
     if (xccl_comm_) {
       if (xccl_api_) {
+        // Use destroy to free resources since oneCCL doesn't have abort api
         xccl_api_->commDestroy(xccl_comm_);
       }
       xccl_comm_ = nullptr;
