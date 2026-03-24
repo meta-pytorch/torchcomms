@@ -14,6 +14,8 @@
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
+
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 #include "VerifyAlgoStatsUtil.h"
@@ -92,7 +94,8 @@ class ReduceScatterTest : public NcclxBaseTest {
     }
 
     // Create comm after environment variables are set by caller
-    NcclCommRAII commGuard{globalRank, numRanks, localRank};
+    ncclx::test::NcclCommRAII commGuard{
+        globalRank, numRanks, localRank, bootstrap_.get()};
     comm = commGuard.get();
 
     if (memType == kMemNcclMemAlloc && ncclIsCuMemSupported() == false) {
