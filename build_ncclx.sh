@@ -190,9 +190,6 @@ function build_third_party {
     build_fb_oss_library "https://github.com/facebook/mvfst" "$third_party_tag" quic
     build_fb_oss_library "https://github.com/facebook/wangle.git" "$third_party_tag" wangle "-DBUILD_TESTS=OFF"
     build_fb_oss_library "https://github.com/facebook/fbthrift.git" "$third_party_tag" thrift
-  else
-    # TODO: use feedstock fbthrift instead of github fbthrift for feedstock build
-    build_fb_oss_library "https://github.com/facebook/fbthrift.git" main thrift
   fi
   popd
 }
@@ -209,8 +206,13 @@ function build_comms_tracing_service {
   cp -r "${base_dir}/${include_prefix}"/* "$include_prefix"
   mv "$include_prefix"/CMakeLists.txt .
 
-  # set up the build config
-  cp -r /tmp/third-party/thrift/build .
+  if [[ -z "${NCCL_FEEDSTOCK_BUILD}" ]]; then
+    # Reuse thrift cmake build tree (source build path)
+    cp -r /tmp/third-party/thrift/build .
+  else
+    # fbthrift installed via conda — cmake finds it via CMAKE_PREFIX_PATH
+    mkdir -p build
+  fi
 
   # build the thrift service library
   cd build
