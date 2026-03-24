@@ -7,31 +7,28 @@
 #include <gtest/gtest.h>
 
 #include "comm.h"
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "meta/hints/GlobalHints.h" // @manual
 #include "nccl.h"
 
-class CommWithCtranTest : public ::testing::Test {
+class CommWithCtranTest : public NcclxBaseTest {
  public:
-  CommWithCtranTest() = default;
-
   void SetUp() override {
     // Init NCCL env so that creating communicator in each test case will not
     // initialize CVAR again, and we can override.
-    initEnv();
-    std::tie(this->localRank, this->globalRank, this->numRanks) = getMpiInfo();
+    NcclxBaseTest::SetUp();
   }
 
-  void TearDown() override {}
-
-  int localRank{0};
-  int globalRank{0};
-  int numRanks{0};
+  void TearDown() override {
+    NcclxBaseTest::TearDown();
+  }
 };
 
 TEST_F(CommWithCtranTest, CtranEnable) {
   EnvRAII env(NCCL_CTRAN_ENABLE, true);
-  ncclComm_t comm = createNcclComm(globalRank, numRanks, localRank);
+  ncclComm_t comm = ncclx::test::createNcclComm(
+      globalRank, numRanks, localRank, bootstrap_.get());
   ASSERT_NE(comm, nullptr);
   ASSERT_NE(comm->ctranComm_.get(), nullptr);
   ASSERT_TRUE(ctranInitialized(comm->ctranComm_.get()));
@@ -40,7 +37,8 @@ TEST_F(CommWithCtranTest, CtranEnable) {
 
 TEST_F(CommWithCtranTest, CtranDisable) {
   EnvRAII env(NCCL_CTRAN_ENABLE, false);
-  ncclComm_t comm = createNcclComm(globalRank, numRanks, localRank);
+  ncclComm_t comm = ncclx::test::createNcclComm(
+      globalRank, numRanks, localRank, bootstrap_.get());
   ASSERT_NE(comm, nullptr);
 
   // FIXME: currently ctranComm is used also for other modules, we should remove
@@ -63,14 +61,14 @@ TEST_P(CommWithCtranTestParam, CtranEnableByHint) {
 
   EnvRAII env(NCCL_CTRAN_ENABLE, false);
   // Default disabled
-  ncclComm_t comm1 = createNcclComm(globalRank, numRanks, localRank);
+  ncclComm_t comm1 = ncclx::test::createNcclComm(
+      globalRank, numRanks, localRank, bootstrap_.get());
   ASSERT_NE(comm1, nullptr);
   ASSERT_FALSE(ctranInitialized(comm1->ctranComm_.get()));
 
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   config.blocking = blockingInit ? 1 : 0;
-  const auto commDescStr = fmt::format("{}-{}", kNcclUtCommDesc, "useCtran");
-  ncclx::Hints ctranHints({{"commDesc", commDescStr}});
+  ncclx::Hints ctranHints;
   config.hints = &ctranHints;
 
   // Enable by hint
@@ -79,11 +77,11 @@ TEST_P(CommWithCtranTestParam, CtranEnableByHint) {
       ncclSuccess);
   ncclComm_t comm2;
   if (createMode == TestCommCreateMode::kDefault) {
-    comm2 = createNcclComm(globalRank, numRanks, localRank, false, &config);
+    comm2 = ncclx::test::createNcclComm(
+        globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
   } else {
     ASSERT_EQ(
-        ncclCommSplit(comm1, 1, this->globalRank, &comm2, &config),
-        ncclSuccess);
+        ncclCommSplit(comm1, 1, globalRank, &comm2, &config), ncclSuccess);
   }
   ASSERT_NE(comm2, nullptr);
 
@@ -104,7 +102,8 @@ TEST_P(CommWithCtranTestParam, CtranEnableByHint) {
       ncclx::resetGlobalHint(std::string(ncclx::HintKeys::kCommUseCtran)));
 
   // Now it should be disabled again after hint reset
-  ncclComm_t comm3 = createNcclComm(globalRank, numRanks, localRank);
+  ncclComm_t comm3 = ncclx::test::createNcclComm(
+      globalRank, numRanks, localRank, bootstrap_.get());
   ASSERT_NE(comm3, nullptr);
   ASSERT_FALSE(ctranInitialized(comm3->ctranComm_.get()));
 

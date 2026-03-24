@@ -7,28 +7,28 @@
 
 #include <nccl.h>
 #include "comm.h"
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 
-class CommGetUniqueHashTest : public ::testing::Test {
+class CommGetUniqueHashTest : public NcclxBaseTest {
  public:
   CommGetUniqueHashTest() = default;
 
   void SetUp() override {
-    std::tie(this->localRank, this->globalRank, this->numRanks) = getMpiInfo();
+    NcclxBaseTest::SetUp();
   }
 
-  void TearDown() override {}
-
-  int localRank{0};
-  int globalRank{0};
-  int numRanks{0};
+  void TearDown() override {
+    NcclxBaseTest::TearDown();
+  }
 };
 
 TEST_F(CommGetUniqueHashTest, DefaultComm) {
   auto res = ncclSuccess;
 
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
   uint64_t commHash = 0;
   res = ncclCommGetUniqueHash(comm, &commHash);
   ASSERT_EQ(res, ncclSuccess);
@@ -36,18 +36,16 @@ TEST_F(CommGetUniqueHashTest, DefaultComm) {
   EXPECT_EQ(commHash, comm->commHash);
 
   // check all ranks have the same commHash
-  uint64_t commHashMin = 0, commHashMax = 0;
-  MPI_Allreduce(
-      &commHash, &commHashMin, 1, MPI_UINT64_T, MPI_MIN, MPI_COMM_WORLD);
-  MPI_Allreduce(
-      &commHash, &commHashMax, 1, MPI_UINT64_T, MPI_MIN, MPI_COMM_WORLD);
-  EXPECT_TRUE(commHashMin == commHashMax && commHashMax == commHash);
+  uint64_t rootHash = commHash;
+  oobBroadcast(&rootHash, 1, /*root=*/0);
+  EXPECT_EQ(rootHash, commHash) << "commHash mismatch vs rank 0";
 }
 
 TEST_F(CommGetUniqueHashTest, ParentChildComm) {
   auto res = ncclSuccess;
 
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
 
   // Split into two groups, one with odd ranks and one with even ranks
   ncclComm_t childComm = NCCL_COMM_NULL;
@@ -71,7 +69,8 @@ TEST_F(CommGetUniqueHashTest, ParentChildComm) {
 TEST_F(CommGetUniqueHashTest, ParentChildCommSplitGroup) {
   auto res = ncclSuccess;
 
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
 
   ncclConfig_t inputConfig = NCCL_CONFIG_INITIALIZER;
   inputConfig.splitGroupSize = this->numRanks / 2;
@@ -120,7 +119,8 @@ TEST_F(CommGetUniqueHashTest, InvalidComm) {
 }
 
 TEST_F(CommGetUniqueHashTest, GetHashAfteCommDestroy) {
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
   // Split into two groups, one with odd ranks and one with even ranks
   ncclComm_t childComm = NCCL_COMM_NULL;
   NCCLCHECK_TEST(ncclCommSplit(
@@ -141,7 +141,8 @@ TEST_F(CommGetUniqueHashTest, GetHashAfteCommDestroy) {
 TEST_F(CommGetUniqueHashTest, DISABLED_TwoChildCommsSameColor) {
   auto res = ncclSuccess;
 
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
 
   // Make two child comms from commSplit with same color, compare commHash
   // between them
