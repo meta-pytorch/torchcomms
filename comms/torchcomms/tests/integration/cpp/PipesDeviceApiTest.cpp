@@ -549,3 +549,432 @@ void PipesDeviceApiTest::testDeviceBarrier() {
 TEST_F(PipesDeviceApiTest, DeviceBarrier) {
   testDeviceBarrier();
 }
+
+// =============================================================================
+// Device Put Test (Pipes)
+// =============================================================================
+// Ring pattern: rank i puts data to rank (i+1) % num_ranks
+//   1. Each rank fills src_tensor with (rank+1)
+//   2. put() with signal to next rank's window slot
+//   3. wait_signal on receiver side
+//   4. Verify data with at::allclose
+
+void PipesDeviceApiTest::testDevicePut(int count, at::ScalarType dtype) {
+  SCOPED_TRACE(
+      ::testing::Message() << "Testing Pipes Device Put with count=" << count
+                           << " and dtype=" << getDtypeName(dtype));
+
+  auto put_stream = at::cuda::getStreamFromPool(false, device_index_);
+  auto wait_stream = at::cuda::getStreamFromPool(false, device_index_);
+
+  auto mem_pool = std::make_unique<at::cuda::MemPool>(
+      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
+          allocator_));
+  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
+      mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
+
+  auto options =
+      at::TensorOptions().dtype(dtype).device(at::kCUDA, device_index_);
+  at::Tensor win_tensor = at::zeros({count * num_ranks_}, options);
+
+  at::Tensor src_tensor = at::zeros({count}, options);
+  src_tensor.fill_(static_cast<float>(rank_ + 1));
+
+  c10::cuda::CUDACachingAllocator::endAllocateToPool(
+      mem_pool->device(), mem_pool->id());
+
+  torchcomm_->barrier(false);
+  auto base_win = torchcomm_->new_window();
+  base_win->tensor_register(win_tensor);
+  torchcomm_->barrier(false);
+
+  auto* win =
+      dynamic_cast<torch::comms::TorchCommWindowNCCLXPipes*>(base_win.get());
+  ASSERT_NE(win, nullptr) << "Window should be TorchCommWindowNCCLXPipes. "
+                             "Is NCCL_CTRAN_USE_PIPES=1 set?";
+
+  int signal_count = num_ranks_;
+  decltype(win->get_device_window()) dev_win = nullptr;
+  try {
+    dev_win = win->get_device_window(signal_count, -1, 1);
+  } catch (const std::runtime_error& e) {
+    base_win->tensor_deregister();
+    base_win.reset();
+    mem_pool.reset();
+    GTEST_SKIP() << "Skipping: IBGDA/Pipes hardware not available: "
+                 << e.what();
+  }
+  ASSERT_NE(dev_win, nullptr);
+
+  auto src_buf = win->register_local_buffer(src_tensor);
+  ASSERT_NE(src_buf.base_ptr, nullptr);
+
+  int dst_rank = (rank_ + 1) % num_ranks_;
+  int src_rank = (rank_ - 1 + num_ranks_) % num_ranks_;
+  constexpr int kSignalId = 0;
+
+  size_t elem_size = win_tensor.element_size();
+  size_t bytes = count * elem_size;
+  size_t src_offset = 0;
+  size_t dst_offset = rank_ * bytes;
+
+  // Put to next rank with signal
+  {
+    c10::cuda::CUDAStreamGuard guard(put_stream);
+    torchcomms::device::test::launchPipesPutKernel(
+        dev_win,
+        src_buf,
+        src_offset,
+        dst_offset,
+        bytes,
+        dst_rank,
+        kSignalId,
+        put_stream.stream());
+  }
+
+  // Wait for signal indicating data arrived from previous rank
+  {
+    c10::cuda::CUDAStreamGuard guard(wait_stream);
+    torchcomms::device::test::launchPipesWaitSignalKernel(
+        dev_win, kSignalId, 1, wait_stream.stream());
+  }
+
+  put_stream.synchronize();
+  wait_stream.synchronize();
+
+  // Verify: slot at src_rank's index should contain src_rank's data
+  at::Tensor result_slice = win_tensor.index(
+      {at::indexing::Slice(src_rank * count, (src_rank + 1) * count)});
+  at::Tensor result_cpu = result_slice.cpu();
+
+  auto cpu_options = at::TensorOptions().dtype(dtype).device(at::kCPU);
+  at::Tensor expected_cpu = at::zeros({count}, cpu_options);
+  expected_cpu.fill_(static_cast<float>(src_rank + 1));
+
+  bool equal = at::allclose(result_cpu, expected_cpu);
+  ASSERT_TRUE(equal) << "Device put data mismatch: expected value "
+                     << (src_rank + 1) << " from rank " << src_rank
+                     << ", got first element: " << result_cpu[0].item<float>();
+
+  win->deregister_local_buffer(src_buf);
+  base_win->tensor_deregister();
+  base_win.reset();
+  mem_pool.reset();
+
+  torchcomm_->barrier(false);
+}
+
+TEST_F(PipesDeviceApiTest, DevicePutFloat) {
+  testDevicePut(1024, at::kFloat);
+}
+
+// =============================================================================
+// Device Put with Counter Test (Pipes)
+// =============================================================================
+// Ring pattern with counter-based local completion tracking:
+//   1. put_signal_counter to next rank (signal + counter)
+//   2. wait_local on counter (verifies NIC completion via companion QP)
+//   3. wait_signal on receiver side (verifies data arrival)
+//   4. Verify data + read_counter value
+
+void PipesDeviceApiTest::testDevicePutCounter(int count, at::ScalarType dtype) {
+  SCOPED_TRACE(
+      ::testing::Message() << "Testing Pipes Device Put with Counter, count="
+                           << count << " and dtype=" << getDtypeName(dtype));
+
+  auto put_stream = at::cuda::getStreamFromPool(false, device_index_);
+  auto wait_stream = at::cuda::getStreamFromPool(false, device_index_);
+
+  auto mem_pool = std::make_unique<at::cuda::MemPool>(
+      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
+          allocator_));
+  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
+      mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
+
+  auto options =
+      at::TensorOptions().dtype(dtype).device(at::kCUDA, device_index_);
+  at::Tensor win_tensor = at::zeros({count * num_ranks_}, options);
+
+  at::Tensor src_tensor = at::zeros({count}, options);
+  src_tensor.fill_(static_cast<float>(rank_ + 1));
+
+  c10::cuda::CUDACachingAllocator::endAllocateToPool(
+      mem_pool->device(), mem_pool->id());
+
+  torchcomm_->barrier(false);
+  auto base_win = torchcomm_->new_window();
+  base_win->tensor_register(win_tensor);
+  torchcomm_->barrier(false);
+
+  auto* win =
+      dynamic_cast<torch::comms::TorchCommWindowNCCLXPipes*>(base_win.get());
+  ASSERT_NE(win, nullptr) << "Window should be TorchCommWindowNCCLXPipes. "
+                             "Is NCCL_CTRAN_USE_PIPES=1 set?";
+
+  int signal_count = num_ranks_;
+  int counter_count = num_ranks_;
+  decltype(win->get_device_window()) dev_win = nullptr;
+  try {
+    dev_win = win->get_device_window(signal_count, counter_count, 1);
+  } catch (const std::runtime_error& e) {
+    base_win->tensor_deregister();
+    base_win.reset();
+    mem_pool.reset();
+    GTEST_SKIP() << "Skipping: IBGDA/Pipes hardware not available: "
+                 << e.what();
+  }
+  ASSERT_NE(dev_win, nullptr);
+
+  auto src_buf = win->register_local_buffer(src_tensor);
+  ASSERT_NE(src_buf.base_ptr, nullptr);
+
+  int dst_rank = (rank_ + 1) % num_ranks_;
+  int src_rank = (rank_ - 1 + num_ranks_) % num_ranks_;
+  constexpr int kSignalId = 0;
+  constexpr int kCounterId = 0;
+
+  size_t elem_size = win_tensor.element_size();
+  size_t bytes = count * elem_size;
+  size_t src_offset = 0;
+  size_t dst_offset = rank_ * bytes;
+
+  // Put with signal + counter; kernel also calls wait_local on the counter
+  {
+    c10::cuda::CUDAStreamGuard guard(put_stream);
+    torchcomms::device::test::launchPipesPutCounterKernel(
+        dev_win,
+        src_buf,
+        src_offset,
+        dst_offset,
+        bytes,
+        dst_rank,
+        kSignalId,
+        kCounterId,
+        put_stream.stream());
+  }
+
+  // Wait for signal indicating data arrived from previous rank
+  {
+    c10::cuda::CUDAStreamGuard guard(wait_stream);
+    torchcomms::device::test::launchPipesWaitSignalKernel(
+        dev_win, kSignalId, 1, wait_stream.stream());
+  }
+
+  put_stream.synchronize();
+  wait_stream.synchronize();
+
+  // Read counter value.
+  // For IBGDA peers: companion QP loopback atomic increments counter → >= 1.
+  // For NVLink-only peers: counter is silently ignored → 0.
+  // Both are valid — we just verify the read doesn't crash.
+  uint64_t* d_counter_out = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_counter_out, sizeof(uint64_t)), cudaSuccess);
+  {
+    c10::cuda::CUDAStreamGuard guard(put_stream);
+    torchcomms::device::test::launchPipesReadCounterKernel(
+        dev_win, kCounterId, d_counter_out, put_stream.stream());
+  }
+  put_stream.synchronize();
+
+  uint64_t h_counter = 0;
+  cudaMemcpy(
+      &h_counter, d_counter_out, sizeof(uint64_t), cudaMemcpyDeviceToHost);
+  cudaFree(d_counter_out);
+  // Log counter value for debugging (0 for NVLink, >= 1 for IBGDA)
+  SCOPED_TRACE(
+      ::testing::Message() << "Counter value after put: " << h_counter);
+
+  // Verify data
+  at::Tensor result_slice = win_tensor.index(
+      {at::indexing::Slice(src_rank * count, (src_rank + 1) * count)});
+  at::Tensor result_cpu = result_slice.cpu();
+
+  auto cpu_options = at::TensorOptions().dtype(dtype).device(at::kCPU);
+  at::Tensor expected_cpu = at::zeros({count}, cpu_options);
+  expected_cpu.fill_(static_cast<float>(src_rank + 1));
+
+  bool equal = at::allclose(result_cpu, expected_cpu);
+  ASSERT_TRUE(equal) << "Device put+counter data mismatch: expected value "
+                     << (src_rank + 1) << " from rank " << src_rank
+                     << ", got first element: " << result_cpu[0].item<float>();
+
+  // Reset counter for clean state
+  {
+    c10::cuda::CUDAStreamGuard guard(put_stream);
+    torchcomms::device::test::launchPipesResetCounterKernel(
+        dev_win, kCounterId, put_stream.stream());
+  }
+  put_stream.synchronize();
+
+  win->deregister_local_buffer(src_buf);
+  base_win->tensor_deregister();
+  base_win.reset();
+  mem_pool.reset();
+
+  torchcomm_->barrier(false);
+}
+
+TEST_F(PipesDeviceApiTest, DevicePutCounterFloat) {
+  testDevicePutCounter(1024, at::kFloat);
+}
+
+// =============================================================================
+// Wait Local (Counter) Test (Pipes)
+// =============================================================================
+// Validates wait_local() for local completion tracking:
+//   1. put_signal_counter to next rank (signal + counter)
+//   2. Read counter — if > 0 (IBGDA peers), call wait_local to verify it
+//      completes; if 0 (NVLink-only), skip wait_local (would spin forever)
+//   3. wait_signal on receiver side (verifies data arrival)
+//   4. Verify data with at::allclose
+
+void PipesDeviceApiTest::testWaitLocal(int count, at::ScalarType dtype) {
+  SCOPED_TRACE(
+      ::testing::Message() << "Testing Pipes wait_local with count=" << count
+                           << " and dtype=" << getDtypeName(dtype));
+
+  auto put_stream = at::cuda::getStreamFromPool(false, device_index_);
+  auto wait_stream = at::cuda::getStreamFromPool(false, device_index_);
+
+  auto mem_pool = std::make_unique<at::cuda::MemPool>(
+      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
+          allocator_));
+  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
+      mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
+
+  auto options =
+      at::TensorOptions().dtype(dtype).device(at::kCUDA, device_index_);
+  at::Tensor win_tensor = at::zeros({count * num_ranks_}, options);
+
+  at::Tensor src_tensor = at::zeros({count}, options);
+  src_tensor.fill_(static_cast<float>(rank_ + 1));
+
+  c10::cuda::CUDACachingAllocator::endAllocateToPool(
+      mem_pool->device(), mem_pool->id());
+
+  torchcomm_->barrier(false);
+  auto base_win = torchcomm_->new_window();
+  base_win->tensor_register(win_tensor);
+  torchcomm_->barrier(false);
+
+  auto* win =
+      dynamic_cast<torch::comms::TorchCommWindowNCCLXPipes*>(base_win.get());
+  ASSERT_NE(win, nullptr) << "Window should be TorchCommWindowNCCLXPipes. "
+                             "Is NCCL_CTRAN_USE_PIPES=1 set?";
+
+  int signal_count = num_ranks_;
+  int counter_count = num_ranks_;
+  decltype(win->get_device_window()) dev_win = nullptr;
+  try {
+    dev_win = win->get_device_window(signal_count, counter_count, 1);
+  } catch (const std::runtime_error& e) {
+    base_win->tensor_deregister();
+    base_win.reset();
+    mem_pool.reset();
+    GTEST_SKIP() << "Skipping: IBGDA/Pipes hardware not available: "
+                 << e.what();
+  }
+  ASSERT_NE(dev_win, nullptr);
+
+  auto src_buf = win->register_local_buffer(src_tensor);
+  ASSERT_NE(src_buf.base_ptr, nullptr);
+
+  int dst_rank = (rank_ + 1) % num_ranks_;
+  int src_rank = (rank_ - 1 + num_ranks_) % num_ranks_;
+  constexpr int kSignalId = 0;
+  constexpr int kCounterId = 0;
+
+  size_t elem_size = win_tensor.element_size();
+  size_t bytes = count * elem_size;
+  size_t src_offset = 0;
+  size_t dst_offset = rank_ * bytes;
+
+  // Put with signal + counter, then flush
+  {
+    c10::cuda::CUDAStreamGuard guard(put_stream);
+    torchcomms::device::test::launchPipesPutCounterKernel(
+        dev_win,
+        src_buf,
+        src_offset,
+        dst_offset,
+        bytes,
+        dst_rank,
+        kSignalId,
+        kCounterId,
+        put_stream.stream());
+  }
+  put_stream.synchronize();
+
+  // Read counter to determine if IBGDA peers exist
+  uint64_t* d_counter_out = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_counter_out, sizeof(uint64_t)), cudaSuccess);
+  {
+    c10::cuda::CUDAStreamGuard guard(put_stream);
+    torchcomms::device::test::launchPipesReadCounterKernel(
+        dev_win, kCounterId, d_counter_out, put_stream.stream());
+  }
+  put_stream.synchronize();
+
+  uint64_t h_counter = 0;
+  cudaMemcpy(
+      &h_counter, d_counter_out, sizeof(uint64_t), cudaMemcpyDeviceToHost);
+  cudaFree(d_counter_out);
+
+  // wait_local: only valid when IBGDA peers incremented the counter.
+  // For NVLink-only configs, counter stays 0 and wait_local would spin forever.
+  if (h_counter > 0) {
+    c10::cuda::CUDAStreamGuard guard(put_stream);
+    torchcomms::device::test::launchPipesWaitLocalKernel(
+        dev_win,
+        kCounterId,
+        torchcomms::device::CmpOp::GE,
+        1,
+        put_stream.stream());
+    put_stream.synchronize();
+  } else {
+    SCOPED_TRACE(
+        ::testing::Message()
+        << "NVLink-only config: counter=0, skipping wait_local");
+  }
+
+  // Wait for signal indicating data arrived from previous rank
+  {
+    c10::cuda::CUDAStreamGuard guard(wait_stream);
+    torchcomms::device::test::launchPipesWaitSignalKernel(
+        dev_win, kSignalId, 1, wait_stream.stream());
+  }
+  wait_stream.synchronize();
+
+  // Verify data
+  at::Tensor result_slice = win_tensor.index(
+      {at::indexing::Slice(src_rank * count, (src_rank + 1) * count)});
+  at::Tensor result_cpu = result_slice.cpu();
+
+  auto cpu_options = at::TensorOptions().dtype(dtype).device(at::kCPU);
+  at::Tensor expected_cpu = at::zeros({count}, cpu_options);
+  expected_cpu.fill_(static_cast<float>(src_rank + 1));
+
+  bool equal = at::allclose(result_cpu, expected_cpu);
+  ASSERT_TRUE(equal) << "wait_local data mismatch: expected value "
+                     << (src_rank + 1) << " from rank " << src_rank
+                     << ", got first element: " << result_cpu[0].item<float>();
+
+  // Reset counter for clean state
+  {
+    c10::cuda::CUDAStreamGuard guard(put_stream);
+    torchcomms::device::test::launchPipesResetCounterKernel(
+        dev_win, kCounterId, put_stream.stream());
+  }
+  put_stream.synchronize();
+
+  win->deregister_local_buffer(src_buf);
+  base_win->tensor_deregister();
+  base_win.reset();
+  mem_pool.reset();
+
+  torchcomm_->barrier(false);
+}
+
+TEST_F(PipesDeviceApiTest, WaitLocalFloat) {
+  testWaitLocal(1024, at::kFloat);
+}
