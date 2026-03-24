@@ -184,13 +184,6 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
   std::shared_ptr<TorchCommNCCLX> torch_comm_;
   NcclxWindow win_{nullptr};
 
-  // Raw buffer data pointer for graph capture mode.
-  // In graph capture mode, we cannot store buf_tensor_ (it would prevent
-  // pool memory reuse during CUDA graph replay). Instead we store only the
-  // raw data_ptr so that get_device_window() can pass it to
-  // create_device_window() without requiring an at::Tensor reference.
-  void* buf_data_ptr_{nullptr};
-
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
   // Device API state (only available with NCCLX 2.28+)
   NcclxWindow nccl_orig_win_{nullptr};

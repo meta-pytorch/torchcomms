@@ -15,7 +15,6 @@
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/Debug.h"
 #include "comms/ctran/utils/ExtUtils.h"
-#include "comms/utils/CudaRAII.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/logger/alloc.h"
 
@@ -613,9 +612,6 @@ commResult_t ctran::regcache::SegmentRange::pinRange(
     const int cudaDev,
     size_t len,
     std::vector<ctran::regcache::SegmentRange>& segRangs) {
-  meta::comms::StreamCaptureModeGuard captureGuard{
-      cudaStreamCaptureModeRelaxed};
-
   DevMemType memType{DevMemType::kCumem};
   FB_COMMCHECK(getDevMemType(ptr, cudaDev, memType));
 
@@ -1446,9 +1442,6 @@ commResult_t ctran::RegCache::deregAll() {
 
 commResult_t ctran::regcache::RegElem::doRegister(
     const std::vector<bool>& backends) {
-  meta::comms::StreamCaptureModeGuard captureGuard{
-      cudaStreamCaptureModeRelaxed};
-
   auto stat = stateMnger.wlock();
 
   // Register to backends
