@@ -40,12 +40,7 @@ TorchCommWindowNCCLX<Backend>::~TorchCommWindowNCCLX() noexcept {
   // Cleanup registered local buffers via backend-specific deregistration
   for (auto& buf : registered_local_buffers_) {
     if (nccl_comm_ != nullptr) {
-      torchcomms::device::RegisteredBuffer backend_buf;
-      backend_buf.base_ptr = buf.base_ptr;
-      backend_buf.size = buf.size;
-      backend_buf.backend_window = buf.backend_window;
-      backend_buf.lkey = buf.lkey;
-      Backend::deregister_local_buffer(nccl_api_, nccl_comm_, backend_buf);
+      Backend::deregister_local_buffer(nccl_api_, nccl_comm_, buf);
     }
   }
   registered_local_buffers_.clear();
@@ -348,8 +343,8 @@ std::shared_ptr<TorchCommWindowAttr> TorchCommWindowNCCLX<Backend>::get_attr(
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
 
 template <typename Backend>
-typename TorchCommWindowNCCLX<Backend>::DeviceBuffer
-TorchCommWindowNCCLX<Backend>::register_local_buffer(const at::Tensor& tensor) {
+RegisteredBuffer TorchCommWindowNCCLX<Backend>::register_local_buffer(
+    const at::Tensor& tensor) {
   checkCommAndThrow();
 
   if (device_window_ == nullptr) {
@@ -365,24 +360,19 @@ TorchCommWindowNCCLX<Backend>::register_local_buffer(const at::Tensor& tensor) {
 
   checkDeviceAndThrow(tensor);
 
-  auto backend_buf = Backend::register_local_buffer(
+  auto buf = Backend::register_local_buffer(
       nccl_api_,
       nccl_comm_,
       tensor.data_ptr(),
       tensor.numel() * tensor.element_size());
-
-  DeviceBuffer buf;
-  buf.base_ptr = backend_buf.base_ptr;
-  buf.size = backend_buf.size;
-  buf.backend_window = backend_buf.backend_window;
-  buf.lkey = backend_buf.lkey;
 
   registered_local_buffers_.push_back(buf);
   return buf;
 }
 
 template <typename Backend>
-void TorchCommWindowNCCLX<Backend>::deregister_local_buffer(DeviceBuffer& buf) {
+void TorchCommWindowNCCLX<Backend>::deregister_local_buffer(
+    RegisteredBuffer& buf) {
   if (buf.base_ptr == nullptr && buf.backend_window == nullptr) {
     return;
   }
@@ -391,18 +381,12 @@ void TorchCommWindowNCCLX<Backend>::deregister_local_buffer(DeviceBuffer& buf) {
   auto it = std::find_if(
       registered_local_buffers_.begin(),
       registered_local_buffers_.end(),
-      [&buf](const DeviceBuffer& b) { return b.base_ptr == buf.base_ptr; });
+      [&buf](const RegisteredBuffer& b) { return b.base_ptr == buf.base_ptr; });
   if (it != registered_local_buffers_.end()) {
     registered_local_buffers_.erase(it);
   }
 
-  // Reconstruct backend-specific buffer type for deregistration
-  torchcomms::device::RegisteredBuffer backend_buf;
-  backend_buf.base_ptr = buf.base_ptr;
-  backend_buf.size = buf.size;
-  backend_buf.backend_window = buf.backend_window;
-  backend_buf.lkey = buf.lkey;
-  Backend::deregister_local_buffer(nccl_api_, nccl_comm_, backend_buf);
+  Backend::deregister_local_buffer(nccl_api_, nccl_comm_, buf);
 
   // Clear the caller's buffer to indicate it's no longer registered
   buf.base_ptr = nullptr;

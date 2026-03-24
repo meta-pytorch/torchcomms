@@ -348,8 +348,7 @@ void DeviceApiTest::testDevicePut(int count, at::ScalarType dtype) {
     c10::cuda::CUDAStreamGuard guard(put_stream);
     torchcomms::device::test::launchDevicePutKernelWithOffsets(
         dev_win,
-        RegisteredBufferNCCL{
-            src_buf.base_ptr, src_buf.size, src_buf.backend_window},
+        src_buf,
         src_offset,
         dst_offset,
         bytes,
@@ -884,8 +883,7 @@ void DeviceApiTest::testDevicePutScoped(
     c10::cuda::CUDAStreamGuard guard(put_stream);
     torchcomms::device::test::launchDevicePutScopedKernel(
         dev_win,
-        RegisteredBufferNCCL{
-            src_buf.base_ptr, src_buf.size, src_buf.backend_window},
+        src_buf,
         src_offset,
         dst_offset,
         bytes,

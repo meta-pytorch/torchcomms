@@ -33,6 +33,7 @@
 #endif
 
 using namespace torchcomms::device;
+using torch::comms::RegisteredBuffer;
 
 #ifdef USE_PIPES_BACKEND
 using DeviceWindow = TorchCommDeviceWindow<PipesDeviceBackend>;

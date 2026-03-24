@@ -3,6 +3,7 @@
 
 #include <ATen/ATen.h>
 #include <c10/core/Device.h>
+#include <comms/torchcomms/RegisteredBuffer.hpp>
 #include <comms/torchcomms/TorchCommOptions.hpp>
 #include <comms/torchcomms/TorchCommTypes.hpp>
 namespace torch::comms {
@@ -22,6 +23,9 @@ class TorchCommWindowAttr {
 
 class TorchCommWindow {
  public:
+  // Backward-compat alias — prefer RegisteredBuffer directly.
+  using DeviceBuffer = RegisteredBuffer;
+
   TorchCommWindow() = default;
   virtual ~TorchCommWindow() = default;
 
@@ -73,17 +77,6 @@ class TorchCommWindow {
   // When all backends implement these, the defaults can be made pure virtual.
   // ==========================================================================
 
-  // Buffer descriptor for a locally-registered source buffer.
-  // Passed to device-side put() as (base_ptr, size, backend_window).
-  struct DeviceBuffer {
-    void* base_ptr{nullptr};
-    size_t size{0};
-    void* backend_window{nullptr};
-    // RDMA local key in network byte order for IBGDA puts (PipesDeviceBackend).
-    // Zero for backends that do not use IBGDA (e.g., NCCLDeviceBackend).
-    uint32_t lkey{0};
-  };
-
   virtual void* get_device_window(
       int /*signal_count*/ = -1,
       int /*counter_count*/ = -1,
@@ -92,12 +85,12 @@ class TorchCommWindow {
         "get_device_window is not yet supported by this backend");
   }
 
-  virtual DeviceBuffer register_local_buffer(const at::Tensor&) {
+  virtual RegisteredBuffer register_local_buffer(const at::Tensor&) {
     throw std::runtime_error(
         "register_local_buffer is not yet supported by this backend");
   }
 
-  virtual void deregister_local_buffer(DeviceBuffer&) {
+  virtual void deregister_local_buffer(RegisteredBuffer&) {
     throw std::runtime_error(
         "deregister_local_buffer is not yet supported by this backend");
   }

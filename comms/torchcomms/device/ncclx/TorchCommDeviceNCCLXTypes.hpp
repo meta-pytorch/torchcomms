@@ -20,6 +20,6 @@ namespace torchcomms::device {
 // =============================================================================
 
 using DeviceWindowNCCL = TorchCommDeviceWindow<NCCLDeviceBackend>;
-using RegisteredBufferNCCL = RegisteredBuffer;
+using RegisteredBufferNCCL = torch::comms::RegisteredBuffer;
 
 } // namespace torchcomms::device

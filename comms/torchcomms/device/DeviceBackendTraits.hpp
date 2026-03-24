@@ -25,11 +25,15 @@ class CudaApi;
 class NcclxApi;
 } // namespace torch::comms
 
+#include "comms/torchcomms/RegisteredBuffer.hpp"
+
 namespace torchcomms::device {
+
+// Note: Use fully qualified torch::comms::RegisteredBuffer in declarations
+// to avoid polluting the namespace of includers.
 
 // Forward declarations
 struct DeviceBackendConfig;
-struct RegisteredBuffer;
 template <typename Backend>
 class TorchCommDeviceWindow;
 
@@ -155,7 +159,7 @@ struct NCCLDeviceBackend {
   // Register a local buffer for device-side put operations (GIN path).
   // Uses NCCL_WIN_DEVICE_API | NCCL_WIN_LOCAL_ONLY for non-collective
   // registration with local lkey only (no rkey allGather).
-  static RegisteredBuffer register_local_buffer(
+  static torch::comms::RegisteredBuffer register_local_buffer(
       torch::comms::NcclxApi* nccl_api,
       ncclComm_t nccl_comm,
       void* ptr,
@@ -165,7 +169,7 @@ struct NCCLDeviceBackend {
   static void deregister_local_buffer(
       torch::comms::NcclxApi* nccl_api,
       ncclComm_t nccl_comm,
-      RegisteredBuffer& buf);
+      torch::comms::RegisteredBuffer& buf);
 };
 
 // Type alias for backward compatibility

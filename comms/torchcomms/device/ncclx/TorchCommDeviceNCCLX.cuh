@@ -217,7 +217,7 @@ __device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::signal(
 template <>
 __device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::put(
     size_t dst_offset,
-    const RegisteredBuffer& src_buf,
+    const torch::comms::RegisteredBuffer& src_buf,
     size_t src_offset,
     int dst_rank,
     size_t bytes,

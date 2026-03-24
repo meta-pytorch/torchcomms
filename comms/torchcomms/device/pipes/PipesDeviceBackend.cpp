@@ -16,6 +16,8 @@
 
 namespace torchcomms::device {
 
+using torch::comms::RegisteredBuffer;
+
 // =============================================================================
 // DeviceWindowDeleter Implementation
 // =============================================================================

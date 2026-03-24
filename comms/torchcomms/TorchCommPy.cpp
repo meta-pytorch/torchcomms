@@ -804,7 +804,7 @@ Raises:
       .def(
           "register_local_buffer",
           [](TorchCommWindow& self, const at::Tensor& tensor) {
-            TorchCommWindow::DeviceBuffer buf;
+            RegisteredBuffer buf;
             {
               py::gil_scoped_release release;
               buf = self.register_local_buffer(tensor);
@@ -837,7 +837,7 @@ Raises:
              int64_t size,
              int64_t backend_window,
              int64_t lkey) {
-            TorchCommWindow::DeviceBuffer buf;
+            RegisteredBuffer buf;
             // NOLINTNEXTLINE(performance-no-int-to-ptr)
             buf.base_ptr = reinterpret_cast<void*>(base_ptr);
             buf.size = static_cast<size_t>(size);
