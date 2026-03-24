@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <cstddef>
 #include "checks.h"
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/testinfra/AlgoTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
@@ -24,13 +25,8 @@ class SendRecvTest : public NcclxBaseTest {
   void SetUp() override {
     setenv("NCCL_CTRAN_ENABLE", "1", 1);
     NcclxBaseTest::SetUp();
-    this->comm = createNcclComm(
-        this->globalRank,
-        this->numRanks,
-        this->localRank,
-        false,
-        nullptr,
-        server.get());
+    this->comm = ncclx::test::createNcclComm(
+        globalRank, numRanks, localRank, bootstrap_.get());
 
     CUDACHECK_TEST(cudaSetDevice(this->localRank));
     CUDACHECK_TEST(cudaStreamCreate(&this->stream));

@@ -10,14 +10,13 @@
 
 #include "checks.h" // NOLINT
 #include "comms/ctran/Ctran.h"
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "meta/colltrace/CollTrace.h"
 
-class BroadcastTestCommon : public ::testing::Test {
+class BroadcastTestCommon : public NcclxBaseTest {
  public:
-  BroadcastTestCommon() = default;
-
   enum class MemType {
     CUDA_MALLOC,
     CUDA_HOST_ALLOC,
@@ -26,18 +25,18 @@ class BroadcastTestCommon : public ::testing::Test {
   };
 
   void SetUp() override {
-    std::tie(this->localRank, this->globalRank, this->numRanks) = getMpiInfo();
+    NcclxBaseTest::SetUp();
 
-    this->comm =
-        createNcclComm(this->globalRank, this->numRanks, this->localRank);
+    this->comm = ncclx::test::createNcclComm(
+        globalRank, numRanks, localRank, bootstrap_.get());
 
-    CUDACHECK_TEST(cudaSetDevice(this->localRank));
     CUDACHECK_TEST(cudaStreamCreate(&this->stream));
   }
 
   void TearDown() override {
     NCCLCHECK_TEST(ncclCommDestroy(this->comm));
     CUDACHECK_TEST(cudaStreamDestroy(this->stream));
+    NcclxBaseTest::TearDown();
   }
 
   void AllocateBuffers(MemType memType, size_t count) {
@@ -138,9 +137,6 @@ class BroadcastTestCommon : public ::testing::Test {
   }
 
  protected:
-  int localRank{0};
-  int globalRank{0};
-  int numRanks{0};
   void* sendbuff{nullptr};
   void* recvbuff{nullptr};
   ncclComm_t comm;
