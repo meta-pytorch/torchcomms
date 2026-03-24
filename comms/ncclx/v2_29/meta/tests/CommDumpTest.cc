@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include "comm.h"
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "meta/NcclxConfig.h"
@@ -25,17 +26,16 @@
 static bool VERBOSE = true;
 enum class sourceToDump { comm, telemetryData };
 
-class CommDumpTest : public ::testing::TestWithParam<enum sourceToDump> {
+class CommDumpTest : public NcclxBaseTest,
+                     public ::testing::WithParamInterface<enum sourceToDump> {
  public:
-  CommDumpTest() = default;
-
   void SetUp() override {
     setenv("NCCL_COLLTRACE", "trace", 0);
     setenv("NCCL_PROXYTRACE", "trace", 0);
 
-    std::tie(this->localRank, this->globalRank, this->numRanks) = getMpiInfo();
-    this->comm =
-        createNcclComm(this->globalRank, this->numRanks, this->localRank);
+    NcclxBaseTest::SetUp();
+    this->comm = ncclx::test::createNcclComm(
+        globalRank, numRanks, localRank, bootstrap_.get());
     CUDACHECK_TEST(cudaStreamCreate(&stream));
 
     // Prepare data for sanity check after commSplit
@@ -73,6 +73,7 @@ class CommDumpTest : public ::testing::TestWithParam<enum sourceToDump> {
     if (cpuSendBuf != nullptr) {
       free(cpuSendBuf);
     }
+    NcclxBaseTest::TearDown();
   }
 
   void prepareCtranExBcast(
@@ -131,9 +132,6 @@ class CommDumpTest : public ::testing::TestWithParam<enum sourceToDump> {
         commPtr, recvBuf, count * this->numRanks * sizeof(int), &recvHandle));
   }
 
-  int localRank{0};
-  int globalRank{0};
-  int numRanks{0};
   int* sendBuf{nullptr};
   int* recvBuf{nullptr};
   int* cpuSendBuf{nullptr};
@@ -174,7 +172,9 @@ TEST_F(CommDumpTest, SingleComm) {
   EXPECT_EQ(dump.count("node"), 1);
   EXPECT_EQ(dump["node"], std::to_string(this->comm->node));
   EXPECT_EQ(dump.count("commDesc"), 1);
-  EXPECT_EQ(dump["commDesc"], NCCLX_CONFIG_FIELD(this->comm->config, commDesc));
+  EXPECT_EQ(
+      dump["commDesc"],
+      "\"" + NCCLX_CONFIG_FIELD(this->comm->config, commDesc) + "\"");
 
   EXPECT_EQ(dump.count("nRanks"), 1);
   EXPECT_EQ(dump["nRanks"], std::to_string(this->comm->nRanks));
@@ -253,7 +253,7 @@ TEST_F(CommDumpTest, DumpAfterSendRecv) {
   // parsed as json entries.
   if (dump.count("CT_pastColls")) {
     folly::dynamic ctPastCollsObjs = folly::parseJson(dump["CT_pastColls"]);
-    EXPECT_EQ(ctPastCollsObjs.size(), nColl);
+    ASSERT_EQ(ctPastCollsObjs.size(), nColl);
     for (int i = 0; i < nColl; i++) {
       EXPECT_EQ(ctPastCollsObjs[i]["collId"].asInt(), i);
       EXPECT_EQ(ctPastCollsObjs[i]["opCount"].asInt(), i);
@@ -464,7 +464,7 @@ TEST_F(CommDumpTest, DumpAfterColl) {
   // parsed as json entries.
   if (dump.count("CT_pastColls")) {
     auto ctPastCollsObjs = folly::parseJson(dump["CT_pastColls"]);
-    EXPECT_EQ(ctPastCollsObjs.size(), numColls);
+    ASSERT_EQ(ctPastCollsObjs.size(), numColls);
     for (int i = 0; i < numColls; i++) {
       EXPECT_EQ(ctPastCollsObjs[i]["collId"].asInt(), i);
       EXPECT_EQ(ctPastCollsObjs[i]["opCount"].asInt(), i);
@@ -796,7 +796,8 @@ TEST_F(CommDumpTest, TestDumpAllWithTwoComms) {
   constexpr int nColl = 10;
 
   // Could not use this->comm as it is created before CommsMonitor is enabled
-  NcclCommRAII origComm{this->globalRank, this->numRanks, this->localRank};
+  ncclx::test::NcclCommRAII origComm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
 
   auto ctranExComm =
       std::make_unique<::ctran::CtranExComm>(origComm, "collTraceCpuBcastUt");
@@ -889,7 +890,8 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTrace) {
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
   auto newColltraceGuard = EnvRAII(NCCL_COLLTRACE_USE_NEW_COLLTRACE, true);
 
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
 
   auto res = ncclSuccess;
   std::unordered_map<std::string, std::string> dump;
@@ -992,7 +994,8 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTraceWithCommsMonitor) {
   auto newColltraceGuard = EnvRAII(NCCL_COLLTRACE_USE_NEW_COLLTRACE, true);
   auto commsMonitorGuard = EnvRAII(NCCL_COMMSMONITOR_ENABLE, true);
 
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
 
   auto res = ncclSuccess;
   std::unordered_map<std::string, std::string> dump;
@@ -1095,8 +1098,8 @@ TEST_F(CommDumpTest, DumpWhileCommsInDestruct) {
   auto commsMonitorGuard = EnvRAII(NCCL_COMMSMONITOR_ENABLE, true);
 
   for (int i = 0; i < 100; i++) {
-    auto comm_ptr = std::make_unique<NcclCommRAII>(
-        this->globalRank, this->numRanks, this->localRank);
+    auto comm_ptr = std::make_unique<ncclx::test::NcclCommRAII>(
+        globalRank, numRanks, localRank, bootstrap_.get());
     std::thread t(
         [](ncclComm_t comm_t_ptr) {
           for (int j = 0; j < 100; j++) {
