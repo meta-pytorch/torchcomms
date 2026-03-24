@@ -3,9 +3,9 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 import os
+import unittest
 from functools import wraps
 from typing import List, Tuple, Union
-import unittest
 
 import torch
 from torch.distributed import PrefixStore, TCPStore
@@ -329,15 +329,18 @@ class TorchCommTestWrapper:
         """Get the TorchComm instance."""
         return self.torchcomm
 
+
 def skipBackend(backend, msg="Skipping test for backend: "):
     def dec_fn(fn):
         reason = f"{msg}{backend}"
 
         @wraps(fn)
         def wrapper(*args, **kwargs):
-            if (os.environ["TEST_BACKEND"] == backend):
+            if os.environ["TEST_BACKEND"] == backend:
                 raise unittest.SkipTest(reason)
 
             return fn(*args, **kwargs)
+
         return wrapper
+
     return dec_fn
