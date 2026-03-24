@@ -265,9 +265,11 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
   std::unordered_map<int64_t, PreHook> preHooks_;
   std::unordered_map<int64_t, PostHook> postHooks_;
   // Global ranks of the members of this communicator.
-  // For root communicators: [0, 1, 2, ..., size-1]
-  // For split communicators: global ranks from the parent communicator
-  std::vector<int> ranks_;
+  // For root communicators: lazily initialized in getRanks() as [0, 1, ...,
+  // size-1] For split communicators: set explicitly in constructor from parent
+  // ranks Mutable because getRanks() lazily initializes it for root
+  // communicators.
+  mutable std::vector<int> ranks_;
 };
 
 // Constructor that creates the appropriate backend implementation
