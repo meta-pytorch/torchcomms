@@ -39,6 +39,9 @@ struct CtranWin {
   // Remote window info (addr, rkey, dataBytes) for all peers in this window
   std::vector<window::RemWinInfo> remWinInfo;
 
+  // Peers that require IB (non-NVLink) transport, computed once at exchange()
+  std::vector<int> ibPeers;
+
   // This rank's local data buffer size in bytes
   size_t dataBytes{0};
   // Signal buffer size in number of uint64_t elements per rank
