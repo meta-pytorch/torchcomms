@@ -2,15 +2,12 @@
 
 #include "comms/torchcomms/ncclx/TorchCommWindowNCCLX.hpp"
 
-#include <cuda_runtime.h>
 #include <fmt/core.h>
 
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
 #include "comms/torchcomms/utils/Logging.hpp"
-#include "comms/utils/CudaRAII.h"
 
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
-#include "comms/ctran/utils/DevMemType.h"
 #include "comms/torchcomms/device/DeviceBackendTraits.hpp"
 #endif
 
@@ -103,68 +100,34 @@ void TorchCommWindowNCCLX<Backend>::tensor_register(
     buf_shape_.push_back(buf_shape[i]);
   }
 
-  if (torch_comm_->getGraphCaptureMode()) {
-    {
-      meta::comms::StreamCaptureModeGuard captureGuard{
-          torch_comm_->getCudaApi(), cudaStreamCaptureModeRelaxed};
-      CHECK_EQ(
-          nccl_api_->commWindowRegister(
-              tensor.data_ptr(), win_size_, nccl_comm_, &win_),
-          ncclSuccess)
-          << "[TorchCommWindowNCCLX]: NCCLX window registration failed "
-          << "(graph capture).";
+  CHECK_EQ(
+      nccl_api_->commWindowRegister(
+          tensor.data_ptr(), win_size_, nccl_comm_, &win_),
+      ncclSuccess)
+      << "[TorchCommWindowNCCLX]: NCCLX window registration failed.";
 
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
-      // Register the extra device-API window (sets nccl_orig_win_) so that
-      // get_device_window() and register_local_buffer() find a fully
-      // initialized window during graph capture.
-      // The NCCL symmetric path requires VMM-allocated memory (cuMemCreate).
-      // Buffers from cudaMallocAsync (graph private pool) are not VMM and
-      // will fail cuMemRetainAllocationHandle. Only attempt registration
-      // if the buffer is VMM-allocated.
-      {
-        int cudaDev = 0;
-        cudaGetDevice(&cudaDev);
-        DevMemType memType{DevMemType::kCudaMalloc};
-        getDevMemType(tensor.data_ptr(), cudaDev, memType);
-        if (memType == DevMemType::kCumem) {
-          Backend::register_extra_window(
-              nccl_api_,
-              nccl_comm_,
-              &nccl_orig_win_,
-              tensor.data_ptr(),
-              win_size_);
-        }
-      }
+  // GIN: register a second window with NCCL_WIN_DEVICE_API flag.
+  // Pipes: no-op (device window creation deferred to get_device_window).
+  Backend::register_extra_window(
+      nccl_api_, nccl_comm_, &nccl_orig_win_, tensor.data_ptr(), win_size_);
 #endif
-    }
-  } else {
-    CHECK_EQ(
-        nccl_api_->commWindowRegister(
-            tensor.data_ptr(), win_size_, nccl_comm_, &win_),
-        ncclSuccess)
-        << "[TorchCommWindowNCCLX]: NCCLX window registration failed.";
 
-#ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
-    // GIN: register a second window with NCCL_WIN_DEVICE_API flag.
-    // Pipes: no-op (device window creation deferred to get_device_window).
-    Backend::register_extra_window(
-        nccl_api_, nccl_comm_, &nccl_orig_win_, tensor.data_ptr(), win_size_);
-#endif
-  }
-
-  // Store raw data pointer for get_device_window() fallback when
-  // buf_tensor_ is not set (owning=false).
-  buf_data_ptr_ = tensor.data_ptr();
-
-  // When owning=false, the window does NOT hold a reference to the tensor.
-  // This allows tensor memory to be reused (e.g., within a CUDA graph).
-  // The NCCL window registration (commWindowRegister) independently tracks
-  // the underlying physical buffer, so the window remains functional.
+  // In graph capture mode, we create a non-owned buffer: the window does not
+  // hold a reference to the tensor. This relies on the caller keeping the
+  // tensor alive for the lifetime of the window. The NCCL window registration
+  // (commWindowRegister) independently tracks the underlying physical buffer,
+  // so the window remains functional without buf_tensor_.
   //
-  // IMPORTANT: When owning=false, the caller must ensure the tensor's
-  // storage remains valid for the window's entire lifetime.
-  if (owning) {
+  // IMPORTANT: In graph capture mode, the window must not outlive the graph
+  // or the tensor that was registered. The user is responsible for ensuring
+  // the tensor's storage remains valid for the window's entire lifetime.
+  if (torch_comm_->getGraphCaptureMode()) {
+    TC_LOG(WARNING)
+        << "[TorchCommWindowNCCLX]: Graph capture mode active — window holds "
+        << "a non-owned buffer. The registered tensor must remain alive for "
+        << "the lifetime of this window. get_tensor() will return nullopt.";
+  } else if (owning) {
     buf_tensor_ = tensor;
   } else {
     TC_LOG(WARNING)
@@ -179,17 +142,11 @@ void TorchCommWindowNCCLX<Backend>::tensor_register(
 template <typename Backend>
 void TorchCommWindowNCCLX<Backend>::tensor_deregister() {
   checkCommAndThrow();
-
-  if (torch_comm_->getGraphCaptureMode()) {
-    return;
-  }
-
   torch_comm_->barrier(false);
 
   if (win_ == nullptr) {
     throw std::runtime_error("[TorchCommWindowNCCLX]: Double deregistration.");
   }
-
   auto ctran_result = nccl_api_->commWindowDeregister(nccl_comm_, win_);
   if (ctran_result != ncclSuccess) {
     TC_LOG(ERROR) << "NCCLX CTRAN window deregister failed";
@@ -360,24 +317,11 @@ TorchCommWindowNCCLX<Backend>::register_local_buffer(const at::Tensor& tensor) {
 
   checkDeviceAndThrow(tensor);
 
-  // Graph capture mode: commWindowRegister calls require relaxed capture
-  // mode to execute eagerly rather than being captured into the graph.
-  DeviceRegisteredBuffer buf;
-  if (torch_comm_->getGraphCaptureMode()) {
-    meta::comms::StreamCaptureModeGuard captureGuard{
-        torch_comm_->getCudaApi(), cudaStreamCaptureModeRelaxed};
-    buf = Backend::register_local_buffer(
-        nccl_api_,
-        nccl_comm_,
-        tensor.data_ptr(),
-        tensor.numel() * tensor.element_size());
-  } else {
-    buf = Backend::register_local_buffer(
-        nccl_api_,
-        nccl_comm_,
-        tensor.data_ptr(),
-        tensor.numel() * tensor.element_size());
-  }
+  auto buf = Backend::register_local_buffer(
+      nccl_api_,
+      nccl_comm_,
+      tensor.data_ptr(),
+      tensor.numel() * tensor.element_size());
 
   registered_local_buffers_.push_back(buf);
   return buf;
@@ -444,36 +388,14 @@ TorchCommWindowNCCLX<Backend>::get_device_window(
 
   // Create device window - the custom deleter handles all cleanup.
   // Both backends share the same create_device_window signature.
-  //
-  // buf_data_ptr_ is set during tensor_register() in graph capture mode
-  // when buf_tensor_ is intentionally not stored (to allow pool memory reuse).
-  void* buf_ptr =
-      buf_tensor_.has_value() ? buf_tensor_->data_ptr() : buf_data_ptr_;
-
-  // Graph capture mode: create_device_window() calls devCommCreate,
-  // cudaMalloc, and cudaMemcpy which require relaxed capture mode to
-  // execute eagerly rather than being captured into the graph.
-  if (torch_comm_->getGraphCaptureMode()) {
-    meta::comms::StreamCaptureModeGuard captureGuard{
-        torch_comm_->getCudaApi(), cudaStreamCaptureModeRelaxed};
-    device_window_ = Backend::create_device_window(
-        nccl_comm_,
-        nccl_api_,
-        torch_comm_->getCudaApi(),
-        config,
-        Backend::select_device_win(win_, nccl_orig_win_),
-        buf_ptr,
-        win_size_);
-  } else {
-    device_window_ = Backend::create_device_window(
-        nccl_comm_,
-        nccl_api_,
-        torch_comm_->getCudaApi(),
-        config,
-        Backend::select_device_win(win_, nccl_orig_win_),
-        buf_ptr,
-        win_size_);
-  }
+  device_window_ = Backend::create_device_window(
+      nccl_comm_,
+      nccl_api_,
+      torch_comm_->getCudaApi(),
+      config,
+      Backend::select_device_win(win_, nccl_orig_win_),
+      buf_tensor_.has_value() ? buf_tensor_->data_ptr() : nullptr,
+      win_size_);
 
   return device_window_.get();
 }
