@@ -13,27 +13,32 @@
 #include "meta/NcclxConfig.h"
 #include "nccl.h"
 
-class commDescTest : public ::testing::Test {
+#include <gmock/gmock.h>
+
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
+
+class commDescTest : public NcclxBaseTest {
  public:
   commDescTest() = default;
 
  protected:
   void SetUp() override {
-    std::tie(this->localRank, this->globalRank, this->numRanks) = getMpiInfo();
+    NcclxBaseTest::SetUp();
   }
 
-  void TearDown() override {}
-
-  int localRank{0};
-  int globalRank{0};
-  int numRanks{0};
+  void TearDown() override {
+    NcclxBaseTest::TearDown();
+  }
 };
 
 TEST_F(commDescTest, getUndefinedCommDesc) {
-  NcclCommRAII comm(this->globalRank, this->numRanks, this->localRank);
+  ncclx::test::NcclCommRAII comm(
+      globalRank, numRanks, localRank, bootstrap_.get());
   ASSERT_NE(nullptr, static_cast<ncclComm_t>(comm));
 
-  EXPECT_EQ(NCCLX_CONFIG_FIELD(comm->config, commDesc), "nccl_ut");
+  EXPECT_THAT(
+      NCCLX_CONFIG_FIELD(comm->config, commDesc),
+      testing::StartsWith("nccl_ut_"));
 }
 
 TEST_F(commDescTest, getDefinedCommDesc) {
@@ -41,8 +46,7 @@ TEST_F(commDescTest, getDefinedCommDesc) {
   if (globalRank == 0) {
     NCCLCHECK_TEST(ncclGetUniqueId(&ncclId));
   }
-  MPICHECK_TEST(
-      MPI_Bcast((void*)&ncclId, sizeof(ncclId), MPI_BYTE, 0, MPI_COMM_WORLD));
+  oobBroadcast(&ncclId, 1, 0);
   CUDACHECK_TEST(cudaSetDevice(this->localRank));
 
   ncclComm_t comm;
@@ -65,8 +69,7 @@ TEST_F(commDescTest, InvalidPointerAccess) {
   if (globalRank == 0) {
     NCCLCHECK_TEST(ncclGetUniqueId(&ncclId));
   }
-  MPICHECK_TEST(
-      MPI_Bcast((void*)&ncclId, sizeof(ncclId), MPI_BYTE, 0, MPI_COMM_WORLD));
+  oobBroadcast(&ncclId, 1, 0);
   CUDACHECK_TEST(cudaSetDevice(this->localRank));
 
   ncclComm_t comm;
