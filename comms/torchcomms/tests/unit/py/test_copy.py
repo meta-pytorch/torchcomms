@@ -6,7 +6,8 @@ import os
 import unittest
 
 import torch
-from torchcomms import new_comm, ReduceOp
+from torchcomms import new_comm
+from torchcomms._comms import ReduceOp
 from torchcomms.tests.integration.py.TorchCommTestHelpers import TorchCommTestWrapper
 
 
