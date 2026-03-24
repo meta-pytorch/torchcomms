@@ -13,6 +13,19 @@
 
 namespace torch::comms {
 
+// Create a StreamGuard only when the device is not CPU.
+// CPU tensors don't need stream-based ordering, and constructing a
+// StreamGuard with an XPU stream on a machine without XPU devices would
+// crash.  This keeps mock tests (which use CPU tensors) working without
+// real XPU hardware.
+// StreamGuard is non-movable, so we use a macro to declare the optional
+// in the caller's scope.
+#define MAYBE_STREAM_GUARD(name, stream, device_type) \
+  std::optional<c10::StreamGuard> name;               \
+  if ((device_type) != at::DeviceType::CPU) {         \
+    (name).emplace(stream);                           \
+  }
+
 static c10::DeviceType checkAndReturnCommonDeviceType(
     const std::vector<at::Tensor>& tensors,
     const std::vector<at::Tensor>& tensors2 = {}) {
@@ -71,9 +84,10 @@ template <typename T>
 static std::pair<T, ReduceOp> getMaybeScaledInputsAndNewOp(
     const T& input,
     const ReduceOp& op,
-    const xpuStream_t& stream) {
+    const xpuStream_t& stream,
+    at::DeviceType device_type = at::DeviceType::XPU) {
   if (op == ReduceOp::RedOpType::PREMUL_SUM) {
-    c10::StreamGuard guard(stream);
+    MAYBE_STREAM_GUARD(guard, stream, device_type);
     if constexpr (std::is_same_v<T, at::Tensor>) {
       at::Tensor scaled_input = input.clone();
       applyPreMulFactor(scaled_input, op);
@@ -157,7 +171,7 @@ static at::Tensor createFlattenedTensor(
     }
   }
 
-  c10::StreamGuard guard(stream);
+  MAYBE_STREAM_GUARD(guard, stream, tensors[0].device().type());
 
   const auto& t = tensors[0];
   auto shape = t.sizes().vec();
@@ -835,15 +849,9 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_reduce(
   TracingGuard tracingGuard(
       name_, comm_size_, "all_reduce", rank_, tensor, tensor);
 
-  // Workaround for oneCCL bug: allreduce with PREMUL_SUM is a no-op when
-  // comm_size is 1, so the scaling factor is never applied.
-  // See: https://github.com/uxlfoundation/oneCCL/issues/196
-  //
-  // We apply the factor here (before getOperationStream) so that the multiply
-  // runs on the current stream.  When async_op is true, the dependency event
-  // recorded by getOperationStream will make the internal stream wait for this
-  // multiply to finish.
-  // TODO: remove this workaround when oneCCL bug is fixed
+  // oneCCL allreduce with PREMUL_SUM is a no-op for comm_size == 1
+  // (https://github.com/uxlfoundation/oneCCL/issues/196). Apply the factor on
+  // the current stream so the async dependency event serializes correctly.
   if (comm_size_ == 1 && op == ReduceOp::RedOpType::PREMUL_SUM) {
     applyPreMulFactor(tensor, op);
   }
@@ -879,11 +887,9 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_reduce(
   // reductions natively.
   const auto maybe_new_op = [&]() -> ReduceOp {
     if (op == ReduceOp::RedOpType::PREMUL_SUM) {
-      // For comm_size > 1 we apply the pre-mul factor here (on the operation
-      // stream).  The comm_size == 1 case was already handled above before
-      // getOperationStream, so skip it to avoid applying the factor twice.
+      // comm_size == 1 was already handled before getOperationStream above.
       if (comm_size_ != 1) {
-        c10::StreamGuard guard(stream);
+        MAYBE_STREAM_GUARD(guard, stream, device_.type());
         applyPreMulFactor(tensor, op);
       }
       return ReduceOp(ReduceOp::RedOpType::SUM);
@@ -920,7 +926,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_reduce(
       rounding_mode = "trunc";
     }
     {
-      c10::StreamGuard guard(stream);
+      MAYBE_STREAM_GUARD(guard, stream, device_.type());
       tensor.div_(comm_size_, rounding_mode);
     }
   }
@@ -977,7 +983,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce(
   // TODO: remove this workaround when oneCCL fully supports PREMUL_SUM/AVG
   // reductions natively.
   const auto [maybe_scaled_tensor, maybe_new_op] =
-      getMaybeScaledInputsAndNewOp(tensor, op, stream);
+      getMaybeScaledInputsAndNewOp(tensor, op, stream, device_.type());
 
   const auto dataType = getXcclDataType(tensor);
   onecclResult_t result = xccl_api_->reduce(
@@ -1008,7 +1014,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce(
       rounding_mode = "trunc";
     }
     {
-      c10::StreamGuard guard(stream);
+      MAYBE_STREAM_GUARD(guard, stream, device_.type());
       maybe_scaled_tensor.div_(comm_size_, rounding_mode);
     }
   }
@@ -1306,7 +1312,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter(
   // reductions natively.
 
   const auto [maybe_scaled_input_list, maybe_new_op] =
-      getMaybeScaledInputsAndNewOp(input_list, op, stream);
+      getMaybeScaledInputsAndNewOp(input_list, op, stream, device_.type());
 
   at::Tensor input_flattened = createFlattenedTensor(
       maybe_scaled_input_list, stream, /*copy_data */ true, xpu_api_);
@@ -1339,7 +1345,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter(
       rounding_mode = "trunc";
     }
     {
-      c10::StreamGuard guard(stream);
+      MAYBE_STREAM_GUARD(guard, stream, device_.type());
       output.div_(comm_size_, rounding_mode);
     }
   }
@@ -1400,7 +1406,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_v(
   // TODO: remove this workaround when oneCCL fully supports PREMUL_SUM/AVG
   // reductions natively.
   const auto [maybe_scaled_input_list, maybe_new_op] =
-      getMaybeScaledInputsAndNewOp(input_list, op, stream);
+      getMaybeScaledInputsAndNewOp(input_list, op, stream, device_.type());
 
   // Use multiple reduce operations for reduce_scatter
   onecclResult_t result = xccl_api_->groupStart();
@@ -1461,7 +1467,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_v(
       rounding_mode = "trunc";
     }
     {
-      c10::StreamGuard guard(stream);
+      MAYBE_STREAM_GUARD(guard, stream, device_.type());
       output.div_(comm_size_, rounding_mode);
     }
   }
@@ -1527,7 +1533,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_single(
   // TODO: remove this workaround when oneCCL fully supports PREMUL_SUM/AVG
   // reductions natively.
   const auto [maybe_scaled_input, maybe_new_op] =
-      getMaybeScaledInputsAndNewOp(input, op, stream);
+      getMaybeScaledInputsAndNewOp(input, op, stream, device_.type());
 
   const auto dataType = getXcclDataType(maybe_scaled_input);
   onecclResult_t result = xccl_api_->reduceScatter(
@@ -1558,7 +1564,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_single(
       rounding_mode = "trunc";
     }
     {
-      c10::StreamGuard guard(stream);
+      MAYBE_STREAM_GUARD(guard, stream, device_.type());
       output.div_(comm_size_, rounding_mode);
     }
   }
