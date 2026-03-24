@@ -9,6 +9,7 @@
 #include <cstddef>
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
@@ -19,13 +20,8 @@ class AllGatherTest : public NcclxBaseTest {
   AllGatherTest() = default;
   void SetUp() override {
     NcclxBaseTest::SetUp();
-    this->comm = createNcclComm(
-        this->globalRank,
-        this->numRanks,
-        this->localRank,
-        false,
-        nullptr,
-        server.get());
+    this->comm = ncclx::test::createNcclComm(
+        globalRank, numRanks, localRank, bootstrap_.get());
 
     CUDACHECK_TEST(cudaSetDevice(localRank));
     CUDACHECK_TEST(cudaStreamCreate(&stream));
