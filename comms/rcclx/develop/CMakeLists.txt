@@ -833,7 +833,6 @@ set(RCCLX_LIB_FILES
 set(CTRAN_FILES
   ${CTRAN_SOURCES}
   comms/common/bootstrap/IBootstrap.h
-  comms/tcp_devmem/transport.h # extra requirement
   comms/utils/MemUtils.h # extra requirement
 )
 
@@ -875,7 +874,52 @@ set(COMMON_FILES
   comms/common/IpcGpuBarrier.cuh
   comms/common/IpcMemHandler.cc
   comms/common/IpcMemHandler.h
-  comms/common/bootstrap/IBootstrap.h
+  comms/pipes/BarrierState.cuh
+  comms/pipes/bootstrap/NvlBootstrapAdapter.h
+  comms/pipes/Checks.h
+  comms/pipes/ChunkState.cuh
+  comms/pipes/collectives/AllGather.cuh
+  comms/pipes/collectives/AllToAllv.cu
+  comms/pipes/collectives/AllToAllv.cuh
+  comms/pipes/collectives/AllToAllv.h
+# comms/pipes/collectives/Dispatchv.cu
+# comms/pipes/collectives/Dispatchv.cuh
+# comms/pipes/collectives/Dispatchv.h
+  comms/pipes/CopyUtils.cuh
+  comms/pipes/DeviceCheck.cuh
+  comms/pipes/DeviceSpan.cuh
+# IBGDA/DOCA files depend on NVIDIA DOCA, not available for ROCm/RCCL builds
+# comms/pipes/DocaVerbsUtils.cuh # manual
+  comms/pipes/CudaDriverLazy.cc
+  comms/pipes/CudaDriverLazy.h
+  comms/pipes/GpuMemHandler.cc
+  comms/pipes/GpuMemHandler.h
+# comms/pipes/IbgdaBuffer.h # manual
+  comms/pipes/MultiPeerDeviceHandle.cuh
+# comms/pipes/MultipeerIbgdaDeviceTransport.cuh # manual
+# comms/pipes/MultipeerIbgdaTransport.cc # manual
+# comms/pipes/MultipeerIbgdaTransportCuda.cu # manual
+# comms/pipes/MultipeerIbgdaTransportCuda.cuh # manual
+# comms/pipes/MultipeerIbgdaTransport.h # manual
+  comms/pipes/MultiPeerNvlTransport.cc
+  comms/pipes/MultiPeerNvlTransport.h
+# comms/pipes/MultiPeerTransport.cc # manual
+# comms/pipes/MultiPeerTransport.h # manual
+  comms/pipes/NvmlFabricInfo.h
+# comms/pipes/P2pIbgdaTransportDevice.cuh # manual
+  comms/pipes/P2pNvlTransportDevice.cuh
+  comms/pipes/P2pSelfTransportDevice.cuh
+  comms/pipes/rdma/IbHcaParser.cc
+  comms/pipes/rdma/IbHcaParser.h
+  comms/pipes/rdma/NicDiscovery.cc
+  comms/pipes/rdma/NicDiscovery.h
+  comms/pipes/SignalState.cuh
+  comms/pipes/ThreadGroup.cuh
+  comms/pipes/Timeout.cuh
+  comms/pipes/TimeoutUtils.h
+  comms/pipes/TopologyDiscovery.cc
+  comms/pipes/TopologyDiscovery.h
+  comms/pipes/Transport.cuh
   comms/utils/checks.h
   comms/utils/colltrace/AlgoStats.cc
   comms/utils/colltrace/AlgoStats.h
@@ -1239,6 +1283,10 @@ target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/meta/ctran)
 # we need to use fbcode/comms/rcclx/develop/build/release/hipify/ as one of the target include directories.
 target_include_directories(rccl PRIVATE ${HIPIFY_DIR})
 target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/comms/rcclx/develop)
+
+# Fallback include path for hipify outputs that may be missing when doing
+# incremental builds. HIP-prefixed paths are still preferred above.
+target_include_directories(rccl PRIVATE ${FBCODE_DIR})
 
 ## Set RCCL compile definitions
 if(COLLTRACE)

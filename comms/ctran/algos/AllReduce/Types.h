@@ -40,8 +40,10 @@ struct KernelArgs {
 } // namespace ctran::allreduce
 
 // Ring host types are only used by CPU code (AllReduceRing.cc, CtranGpe.cc).
-// Guard against nvcc which cannot compile folly XLOG in transitive includes.
-#if !defined(__CUDACC__)
+// Guard against nvcc host/device parses of folly in transitive includes.
+// HIP sets __CUDACC__ when compiling host .cc; still need HostArgs on ROCm.
+#if !defined(__CUDACC__) || \
+    ((defined(__HIP__) || defined(__HIPCC__)) && !defined(__CUDA_ARCH__))
 
 #include <memory>
 
@@ -133,4 +135,4 @@ struct HostResource {
 
 } // namespace ctran::allreduce::ring
 
-#endif // !defined(__CUDACC__)
+#endif

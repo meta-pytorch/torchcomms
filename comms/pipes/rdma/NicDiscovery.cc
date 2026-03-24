@@ -437,6 +437,11 @@ bool GpuNicDiscovery::isDmaBufCapable(ibv_context* ctx) {
 bool GpuNicDiscovery::getDataDirectSysfsPath(
     ibv_context* ctx,
     std::string& path) {
+#if !TORCHCOMMS_HAVE_IBVERBS || !TORCHCOMMS_HAVE_MLX5DV
+  (void)ctx;
+  (void)path;
+  return false;
+#else
   char buf[PATH_MAX];
   // Prepend "/sys" prefix
   constexpr const char* kSysPrefix = "/sys";
@@ -450,6 +455,7 @@ bool GpuNicDiscovery::getDataDirectSysfsPath(
   }
   path = std::string(buf);
   return true;
+#endif
 }
 
 void GpuNicDiscovery::augmentWithDataDirect() {

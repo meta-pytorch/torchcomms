@@ -1,5 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/ctran/algos/AllGatherP/AlgoImpl.h"
 #include "comms/ctran/algos/AllGatherP/Types.h"
 #include "comms/ctran/algos/CtranAlgo.h"

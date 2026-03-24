@@ -7,14 +7,27 @@
 #include <glog/logging.h>
 #include <mutex>
 #include <stdexcept>
+#include <string>
 
 namespace comms::pipes {
 
 namespace {
 
+#if defined(__HIPCC__) || defined(__HIP_PLATFORM_AMD__)
+// hipGetErrorString(cudaError_t) is unreliable after hipify; report numeric code.
+static inline std::string formatCudaRuntimeError(cudaError_t err) {
+  return std::string("code ") + std::to_string(static_cast<int>(err));
+}
+#else
+static inline std::string formatCudaRuntimeError(cudaError_t err) {
+  return cudaGetErrorString(err);
+}
+#endif
+
 void checkCudaError(cudaError_t err, const char* msg) {
   if (err != cudaSuccess) {
-    throw std::runtime_error(std::string(msg) + ": " + cudaGetErrorString(err));
+    throw std::runtime_error(
+        std::string(msg) + ": " + formatCudaRuntimeError(err));
   }
 }
 
@@ -548,7 +561,7 @@ void GpuMemHandler::cleanupCudaIpc() {
       cudaError_t err = cudaIpcCloseMemHandle(cudaIpcPeerPtrs_[rank]);
       if (err != cudaSuccess) {
         LOG(ERROR) << "cudaIpcCloseMemHandle failed for rank " << rank << ": "
-                   << cudaGetErrorString(err);
+                   << formatCudaRuntimeError(err);
       }
       cudaIpcPeerPtrs_[rank] = nullptr;
     }
@@ -558,7 +571,7 @@ void GpuMemHandler::cleanupCudaIpc() {
   if (cudaIpcLocalPtr_ != nullptr) {
     cudaError_t err = cudaFree(cudaIpcLocalPtr_);
     if (err != cudaSuccess) {
-      LOG(ERROR) << "cudaFree failed: " << cudaGetErrorString(err);
+      LOG(ERROR) << "cudaFree failed: " << formatCudaRuntimeError(err);
     }
     cudaIpcLocalPtr_ = nullptr;
   }

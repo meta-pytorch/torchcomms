@@ -31,6 +31,12 @@ PFN_cuMemRetainAllocationHandle_v11000 pfn_cuMemRetainAllocationHandle =
     nullptr;
 PFN_cuMemGetAddressRange_v3020 pfn_cuMemGetAddressRange = nullptr;
 
+#if !defined(TORCHCOMMS_HAVE_CUDA_TYPEDEFS)
+int cuda_driver_lazy_init() {
+  return -1;
+}
+#else
+
 namespace {
 
 std::once_flag init_flag;
@@ -88,5 +94,7 @@ int cuda_driver_lazy_init() {
   std::call_once(init_flag, do_init);
   return init_result;
 }
+
+#endif
 
 } // namespace comms::pipes

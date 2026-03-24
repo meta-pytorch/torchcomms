@@ -114,7 +114,8 @@ struct OpElem {
       std::vector<void*> remoteRecvBuffs;
       std::vector<struct CtranMapperRemoteAccessKey> remoteAccessKeys;
 
-#if !defined(__CUDACC__)
+#if !defined(__CUDACC__) || \
+    ((defined(__HIP__) || defined(__HIPCC__)) && !defined(__CUDA_ARCH__))
       // Ring algorithm host state. Owned by OpElem — constructed in
       // OpElem(), destroyed in ~OpElem(). Unused by ctdirect.
       ctran::allreduce::ring::HostArgs hostArgs;
