@@ -114,10 +114,10 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
   //   - PipesDeviceBackend: MultiPeerTransport::localRegisterIbgdaBuffer
   //
   // Prerequisites: Must call tensor_register() then get_device_window() first.
-  DeviceBuffer register_local_buffer(const at::Tensor& tensor) override;
+  RegisteredBuffer register_local_buffer(const at::Tensor& tensor) override;
 
   // Deregister a previously registered local buffer. NON-COLLECTIVE.
-  void deregister_local_buffer(DeviceBuffer& buf) override;
+  void deregister_local_buffer(RegisteredBuffer& buf) override;
 
   // Get a device-side window handle for GPU-initiated operations.
   // Returns a pointer to the cached device window. The window is lazily
@@ -190,7 +190,7 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
   // The custom deleter handles both cudaFree and ncclDevCommDestroy.
   torchcomms::device::DeviceWindowPtr<Backend> device_window_;
 
-  std::vector<DeviceBuffer> registered_local_buffers_;
+  std::vector<RegisteredBuffer> registered_local_buffers_;
 
   // No ctran_win_ member needed — Pipes device windows are created
   // on-demand via nccl_api_->winCreateDeviceWin() in get_device_window().

@@ -20,6 +20,7 @@
 #include "comms/torchcomms/device/ncclx/TorchCommDeviceNCCLX.cuh"
 
 using namespace torchcomms::device;
+using torch::comms::RegisteredBuffer;
 
 using DeviceWindow = TorchCommDeviceWindow<NCCLGinBackend>;
 
