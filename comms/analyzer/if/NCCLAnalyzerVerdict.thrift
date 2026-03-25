@@ -37,6 +37,11 @@ enum BrokenRankType {
   RANK_UNRESPONSIVE_OVER_HTTP_TOO_LONG = 14,
   IB_COMPLETION_ERROR_TYPE = 15,
   CUDA_ERROR_TYPE = 16,
+  // Transport-agnostic replacements for HTTP-named variants above.
+  // Old values kept for Scuba backwards compatibility.
+  NO_CONNECTION = 17,
+  FLAKY_OR_SLOW_CONNECTION = 18,
+  RANK_UNRESPONSIVE_TOO_LONG = 19,
 }
 
 @thrift.DeprecatedUnvalidatedAnnotations{items = {"hash": "1"}}
@@ -69,6 +74,9 @@ enum VerdictType {
   IB_COMPLETION_ERROR = 25,
   CUDA_ERROR = 26,
   CUDA_NVLINK_UNCORRECTABLE_ERROR = 27,
+  // Transport-agnostic replacement for RANKS_UNRESPONSIVE_OVER_HTTP_TOO_LONG.
+  // Old value kept for Scuba backwards compatibility.
+  RANKS_UNRESPONSIVE_TOO_LONG = 28,
 }
 
 struct SlowRankLeastCommsVerdict {
