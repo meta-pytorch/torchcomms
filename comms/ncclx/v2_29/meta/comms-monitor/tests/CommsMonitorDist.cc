@@ -34,7 +34,7 @@ class CommsMonitorDist : public NcclxBaseTest {
     ncclCvarInit();
     NCCL_COMMSMONITOR_ENABLE = true;
 
-    CUDACHECK_TEST(cudaSetDevice(this->localRank));
+    CUDACHECK_TEST(cudaSetDevice(localRank));
     CUDACHECK_TEST(cudaStreamCreate(&this->stream));
 
     ncclx::comms_monitor::CommsMonitorTest::resetCommsMap();
@@ -61,13 +61,13 @@ class CommsMonitorDist : public NcclxBaseTest {
 
 TEST_F(CommsMonitorDist, testNotEnable) {
   NCCL_COMMSMONITOR_ENABLE = false;
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
 
   EXPECT_EQ(CommsMonitor::getNumOfCommMonitoring(), 0);
 }
 
 TEST_F(CommsMonitorDist, testOneComm) {
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
 
   auto count = 1 << 20;
   auto nColl = 10;
@@ -84,27 +84,27 @@ TEST_F(CommsMonitorDist, testOneComm) {
 
 TEST_F(CommsMonitorDist, testOneCommDeregister) {
   {
-    NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+    NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
     EXPECT_EQ(CommsMonitor::getNumOfCommMonitoring(), 1);
   }
   EXPECT_EQ(CommsMonitor::getNumOfCommMonitoring(), 1);
 }
 
 TEST_F(CommsMonitorDist, testMultipleComms) {
-  NcclCommRAII comm1{this->globalRank, this->numRanks, this->localRank};
-  NcclCommRAII comm2{this->globalRank, this->numRanks, this->localRank};
-  NcclCommRAII comm3{this->globalRank, this->numRanks, this->localRank};
-  NcclCommRAII comm4{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm1{globalRank, numRanks, localRank, bootstrap_.get()};
+  NcclCommRAII comm2{globalRank, numRanks, localRank, bootstrap_.get()};
+  NcclCommRAII comm3{globalRank, numRanks, localRank, bootstrap_.get()};
+  NcclCommRAII comm4{globalRank, numRanks, localRank, bootstrap_.get()};
 
   EXPECT_EQ(CommsMonitor::getNumOfCommMonitoring(), 4);
 }
 
 TEST_F(CommsMonitorDist, testMultipleCommsDeregister) {
   {
-    NcclCommRAII comm1{this->globalRank, this->numRanks, this->localRank};
-    NcclCommRAII comm2{this->globalRank, this->numRanks, this->localRank};
-    NcclCommRAII comm3{this->globalRank, this->numRanks, this->localRank};
-    NcclCommRAII comm4{this->globalRank, this->numRanks, this->localRank};
+    NcclCommRAII comm1{globalRank, numRanks, localRank, bootstrap_.get()};
+    NcclCommRAII comm2{globalRank, numRanks, localRank, bootstrap_.get()};
+    NcclCommRAII comm3{globalRank, numRanks, localRank, bootstrap_.get()};
+    NcclCommRAII comm4{globalRank, numRanks, localRank, bootstrap_.get()};
 
     EXPECT_EQ(CommsMonitor::getNumOfCommMonitoring(), 4);
   }
@@ -112,7 +112,7 @@ TEST_F(CommsMonitorDist, testMultipleCommsDeregister) {
 }
 
 TEST_F(CommsMonitorDist, testCommSplit) {
-  NcclCommRAII origComm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII origComm{globalRank, numRanks, localRank, bootstrap_.get()};
 
   EXPECT_EQ(CommsMonitor::getNumOfCommMonitoring(), 1);
 
@@ -132,7 +132,7 @@ TEST_F(CommsMonitorDist, testCommSplit) {
 }
 
 TEST_F(CommsMonitorDist, testCommSplitNoColor) {
-  NcclCommRAII origComm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII origComm{globalRank, numRanks, localRank, bootstrap_.get()};
 
   EXPECT_EQ(CommsMonitor::getNumOfCommMonitoring(), 1);
 
@@ -157,7 +157,7 @@ TEST_F(CommsMonitorDist, testCommSplitNoColor) {
 }
 
 TEST_F(CommsMonitorDist, testOneCommDump) {
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
 
   auto count = 1 << 20;
   auto nColl = 10;
@@ -182,10 +182,10 @@ TEST_F(CommsMonitorDist, testOneCommDump) {
 TEST_F(CommsMonitorDist, testMultipleCommDump) {
   // TODO: Change it to use vector. Currently NcclCommRAII has some
   // compatibility issue with vector.
-  NcclCommRAII comm1{this->globalRank, this->numRanks, this->localRank};
-  NcclCommRAII comm2{this->globalRank, this->numRanks, this->localRank};
-  NcclCommRAII comm3{this->globalRank, this->numRanks, this->localRank};
-  NcclCommRAII comm4{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm1{globalRank, numRanks, localRank, bootstrap_.get()};
+  NcclCommRAII comm2{globalRank, numRanks, localRank, bootstrap_.get()};
+  NcclCommRAII comm3{globalRank, numRanks, localRank, bootstrap_.get()};
+  NcclCommRAII comm4{globalRank, numRanks, localRank, bootstrap_.get()};
 
   EXPECT_EQ(CommsMonitor::getNumOfCommMonitoring(), 4);
 
