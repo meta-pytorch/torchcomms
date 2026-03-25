@@ -249,7 +249,6 @@ class HostWindow {
   // NVL mapped pointers for the exchanged dst buffer (per-rank, includes self
   // as nullptr)
   std::vector<void*> exchangedNvlMappedPtrs_;
-  std::unique_ptr<meta::comms::DeviceBuffer> localRegistrationsDevice_;
   std::unique_ptr<meta::comms::DeviceBuffer> remoteRegistrationsDevice_;
 
   // --- Window buffer NVL peer pointers (for offset-based put/put_signal) ---

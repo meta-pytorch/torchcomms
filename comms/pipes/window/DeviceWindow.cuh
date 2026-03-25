@@ -1251,9 +1251,6 @@ class DeviceWindow {
   uint64_t barrierExpected_{0};
 
   // --- Buffer registration table (for generic put/put_signal) ---
-  // Local: lkey lookup for source buffers (registered via
-  // registerLocalBuffer or registerAndExchangeBuffer)
-  DeviceSpan<LocalBufferRegistration> localBufferRegistry_;
   // Remote: rkey lookup for the single exchanged dst buffer.
   // Indexed directly by ibgdaPeerIdx (one entry per IBGDA peer).
   DeviceSpan<RemoteBufferRegistration> remoteBufferRegistry_;
