@@ -10,10 +10,11 @@
 
 #include "checks.h" // NOLINT
 #include "comms/ctran/Ctran.h"
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 
-class NonBlockingCommsTest : public ::testing::Test {
+class NonBlockingCommsTest : public NcclxBaseTest {
  public:
   NonBlockingCommsTest() = default;
 
@@ -52,15 +53,14 @@ class NonBlockingCommsTest : public ::testing::Test {
   }
 
   void SetUp() override {
+    NcclxBaseTest::SetUp();
+
     ncclResult_t res;
-
-    std::tie(this->localRank, this->globalRank, this->numRanks) = getMpiInfo();
-
     ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
     config.blocking = 0;
 
-    this->comm = createNcclComm(
-        this->globalRank, this->numRanks, this->localRank, false, &config);
+    this->comm = ncclx::test::createNcclComm(
+        globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
     res = WaitForCompletion();
     EXPECT_EQ(res, ncclSuccess);
 
@@ -68,7 +68,6 @@ class NonBlockingCommsTest : public ::testing::Test {
     res = WaitForCompletion();
     EXPECT_EQ(res, ncclSuccess);
 
-    CUDACHECK_TEST(cudaSetDevice(this->localRank));
     CUDACHECK_TEST(cudaStreamCreate(&this->stream));
   }
 
@@ -76,6 +75,7 @@ class NonBlockingCommsTest : public ::testing::Test {
     NCCLCHECK_TEST(ncclCommDestroy(this->splitComm));
     NCCLCHECK_TEST(ncclCommDestroy(this->comm));
     CUDACHECK_TEST(cudaStreamDestroy(this->stream));
+    NcclxBaseTest::TearDown();
   }
 
   void AllocateBuffers(size_t count) {
@@ -125,9 +125,6 @@ class NonBlockingCommsTest : public ::testing::Test {
   }
 
  protected:
-  int localRank{0};
-  int globalRank{0};
-  int numRanks{0};
   void* sendbuff{nullptr};
   void* recvbuff{nullptr};
   ncclComm_t comm{nullptr};

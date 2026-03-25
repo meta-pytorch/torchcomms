@@ -40,13 +40,10 @@ int64_t ncclLoadParam(char const* env, int64_t deftVal, int64_t uninitialized, i
       "Unregistered CVAR \"NCCL_" env "\". Please add this CVAR to \"fbcode/comms/utils/cvars/nccl_cvars.yaml\", regenerate the nccl_cvars.(h|cc) files, and recompile."); \
   int64_t ncclParam##name() { \
     constexpr int64_t uninitialized = INT64_MIN; \
-    static int8_t noCache = /*uninitialized*/ -1; \
     static_assert(deftVal != uninitialized, "default value cannot be the uninitialized value."); \
-    static int64_t cache = uninitialized; \
-    if (COMPILER_EXPECT(COMPILER_ATOMIC_LOAD(&cache, std::memory_order_relaxed) == uninitialized, false)) { \
-      return ncclLoadParam("NCCL_" env, deftVal, uninitialized, &cache, &noCache); \
-    } \
-    return cache; \
+    int64_t cache = uninitialized; \
+    int8_t noCache = /*uninitialized*/ -1; \
+    return ncclLoadParam("NCCL_" env, deftVal, uninitialized, &cache, &noCache); \
   }
 
 void initNcclLogger();

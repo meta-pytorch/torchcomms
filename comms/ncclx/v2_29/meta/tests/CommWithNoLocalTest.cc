@@ -22,28 +22,27 @@
 
 #include "VerifyAlgoStatsUtil.h"
 
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
+
 // Hint lifecycle tests
 
-class CommWithNoLocalTest : public ::testing::Test {
+class CommWithNoLocalTest : public NcclxBaseTest {
  public:
   CommWithNoLocalTest() = default;
 
   void SetUp() override {
-    initEnv();
-    std::tie(this->localRank, this->globalRank, this->numRanks) = getMpiInfo();
+    NcclxBaseTest::SetUp();
   }
 
   void TearDown() override {
     ncclx::resetGlobalHint(std::string(ncclx::HintKeys::kCommNoLocal));
+    NcclxBaseTest::TearDown();
   }
-
-  int localRank{0};
-  int globalRank{0};
-  int numRanks{0};
 };
 
 TEST_F(CommWithNoLocalTest, NoLocalDisabledByDefault) {
-  NcclCommRAII comm{globalRank, numRanks, localRank};
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_NE(comm.get(), nullptr);
   EXPECT_FALSE(comm->noLocal_);
 }
@@ -61,7 +60,8 @@ TEST_P(CommWithNoLocalTestParam, NoLocalEnableByHint) {
   const auto& [createMode, blockingInit] = GetParam();
 
   // Default disabled
-  NcclCommRAII comm1{globalRank, numRanks, localRank};
+  ncclx::test::NcclCommRAII comm1{
+      globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_NE(comm1.get(), nullptr);
   EXPECT_FALSE(comm1->noLocal_);
 
@@ -77,11 +77,12 @@ TEST_P(CommWithNoLocalTestParam, NoLocalEnableByHint) {
       ncclSuccess);
 
   // Use appropriate RAII wrapper based on creation mode
-  std::optional<NcclCommRAII> comm2Default;
-  std::optional<NcclCommSplitRAII> comm2Split;
+  std::optional<ncclx::test::NcclCommRAII> comm2Default;
+  std::optional<ncclx::test::NcclCommSplitRAII> comm2Split;
   ncclComm_t comm2;
   if (createMode == TestCommCreateMode::kDefault) {
-    comm2Default.emplace(globalRank, numRanks, localRank, false, &config);
+    comm2Default.emplace(
+        globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
     comm2 = comm2Default->get();
   } else {
     comm2Split.emplace(comm1.get(), 1, this->globalRank, &config);
@@ -107,7 +108,8 @@ TEST_P(CommWithNoLocalTestParam, NoLocalEnableByHint) {
 
   // Now disabled again
   {
-    NcclCommRAII comm3{globalRank, numRanks, localRank};
+    ncclx::test::NcclCommRAII comm3{
+        globalRank, numRanks, localRank, bootstrap_.get()};
     ASSERT_NE(comm3.get(), nullptr);
     EXPECT_FALSE(comm3->noLocal_);
   }
@@ -337,8 +339,8 @@ TEST_P(CommWithNoLocalCollTest, BaselineRun) {
         ncclSuccess);
   }
 
-  NcclCommRAII comm{
-      globalRank, numRanks, localRank, false, nullptr, server.get()};
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_NE(comm.get(), nullptr);
   EXPECT_EQ(comm->noLocal_, noLocal);
 
@@ -361,8 +363,8 @@ TEST_P(CommWithNoLocalCollTest, CtranRun) {
       ncclx::setGlobalHint(std::string(ncclx::HintKeys::kCommNoLocal), "1"),
       ncclSuccess);
 
-  NcclCommRAII comm{
-      globalRank, numRanks, localRank, false, nullptr, server.get()};
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_NE(comm.get(), nullptr);
   EXPECT_TRUE(comm->noLocal_);
 

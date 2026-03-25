@@ -5,14 +5,13 @@
 #include "comms/testinfra/TestsDistUtils.h"
 
 ncclComm_t CtranDistBaseTest::commWorld = NCCL_COMM_NULL;
-c10::intrusive_ptr<c10d::Store> CtranDistBaseTest::tcpStoreServer = nullptr;
 
 // Static helper instance for NCCL memory allocation
 static ctran::CtranNcclTestHelpers ncclHelpers;
 
 void CtranDistBaseTest::TearDownTestSuite() {
   LOG(INFO) << "CtranBaseTest::TearDownTestSuite: Release commWorld "
-            << commWorld << " tcpStoreServer " << tcpStoreServer.get();
+            << commWorld;
   // Clean up commWorld
   if (commWorld != NCCL_COMM_NULL) {
     const int cudaDev = commWorld->ctranComm_->statex_->rank();
@@ -20,11 +19,6 @@ void CtranDistBaseTest::TearDownTestSuite() {
     commWorld = NCCL_COMM_NULL;
 
     ctran::logGpuMemoryStats(cudaDev);
-  }
-
-  // Reset tcpStore server
-  if (tcpStoreServer) {
-    tcpStoreServer.reset();
   }
 }
 
@@ -38,22 +32,17 @@ void CtranDistBaseTest::SetUp() {
   // exports IPC handles to peers.
   setenv("NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET", "1", 0);
 
-  // Create single tcpStore and commWorld shared by all tests running in
-  // this test suite.
-  if (commWorld == NCCL_COMM_NULL) {
-    NcclxBaseTest::SetUp();
-    // Handover tcpStore server to CtranBaseTest so that we control to release
-    // it only at global TearDownTestSuite()
-    if (server) {
-      tcpStoreServer = std::move(server);
-    }
+  // Always initialize bootstrap for oob operations (each parameterized test
+  // creates a new fixture object, so bootstrap_ must be re-created).
+  NcclxBaseTest::SetUp();
 
+  // Create single commWorld shared by all tests in this suite.
+  if (commWorld == NCCL_COMM_NULL) {
     // FIXME: this should be replaced with standalone ctranComm
     commWorld = createNcclComm(
-        globalRank, numRanks, localRank, false, nullptr, tcpStoreServer.get());
+        globalRank, numRanks, localRank, false, nullptr, server.get());
     LOG(INFO) << "CtranBaseTest::SetUp: New commWorld " << commWorld
-              << " numRanks " << numRanks << " tcpStoreServer "
-              << tcpStoreServer.get();
+              << " numRanks " << numRanks;
   }
 
   // Reinitialize rank info since each test will reset the value
@@ -83,8 +72,9 @@ void CtranDistBaseTest::SetUp() {
 
 void CtranDistBaseTest::TearDown() {
   ctranComm_ = nullptr;
-  finalizeNcclComm(globalRank, tcpStoreServer.get());
+  finalizeNcclComm(globalRank, server.get());
   CUDACHECK_TEST(cudaStreamDestroy(stream));
+  NcclxBaseTest::TearDown();
 }
 
 void* CtranBaseTest::prepareBuf(

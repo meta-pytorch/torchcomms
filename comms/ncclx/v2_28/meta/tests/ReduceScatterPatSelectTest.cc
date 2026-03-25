@@ -23,6 +23,8 @@
 #include "meta/hints/GlobalHints.h" // @manual
 #include "meta/wrapper/DataTypeStrUtils.h"
 
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
+
 /**
  * Test suite for ReduceScatter PAT algorithm selection logic.
  *
@@ -83,7 +85,8 @@ class ReduceScatterPatSelectTest : public NcclxBaseTest {
       std::optional<std::string> expectedAlgo = std::nullopt,
       std::optional<std::string> unexpectedAlgo = std::nullopt,
       std::optional<double> tolerance = std::nullopt) {
-    NcclCommRAII commGuard{globalRank, numRanks, localRank};
+    ncclx::test::NcclCommRAII commGuard{
+        globalRank, numRanks, localRank, bootstrap_.get()};
     ncclComm_t comm = commGuard.get();
     comm->usePatAvg_ = usePatAvg;
 
@@ -145,7 +148,8 @@ TEST_F(ReduceScatterPatSelectTest, UserPreMulSumNotConvertedToPatAvg) {
           std::string(ncclx::HintKeys::kCommAlgoReduceScatter), "avg:patavg"),
       ncclSuccess);
 
-  NcclCommRAII commGuard{globalRank, numRanks, localRank};
+  ncclx::test::NcclCommRAII commGuard{
+      globalRank, numRanks, localRank, bootstrap_.get()};
   ncclComm_t comm = commGuard.get();
   ASSERT_TRUE(comm->usePatAvg_);
 
@@ -205,7 +209,8 @@ TEST_F(ReduceScatterPatSelectTest, BuiltInAvgWithPatAvgWorks) {
           std::string(ncclx::HintKeys::kCommAlgoReduceScatter), "avg:patavg"),
       ncclSuccess);
 
-  NcclCommRAII commGuard{globalRank, numRanks, localRank};
+  ncclx::test::NcclCommRAII commGuard{
+      globalRank, numRanks, localRank, bootstrap_.get()};
   ncclComm_t comm = commGuard.get();
   ASSERT_TRUE(comm->usePatAvg_);
 
@@ -303,7 +308,8 @@ TEST_P(ReduceScatterPatAlgoSelectionTest, AlgoSelection) {
   // Enable PAT AVG via CVAR before comm creation
   auto patAvgGuard = EnvRAII(NCCL_REDUCESCATTER_PAT_AVG_ENABLE, patAvgEnable);
 
-  NcclCommRAII commGuard{globalRank, numRanks, localRank};
+  ncclx::test::NcclCommRAII commGuard{
+      globalRank, numRanks, localRank, bootstrap_.get()};
   ncclComm_t comm = commGuard.get();
   ASSERT_EQ(comm->usePatAvg_, patAvgEnable);
 
@@ -370,7 +376,8 @@ TEST_F(ReduceScatterPatSelectTest, GroupedReduceScatterPatAvg) {
           std::string(ncclx::HintKeys::kCommAlgoReduceScatter), "avg:patavg"),
       ncclSuccess);
 
-  NcclCommRAII commGuard{globalRank, numRanks, localRank};
+  ncclx::test::NcclCommRAII commGuard{
+      globalRank, numRanks, localRank, bootstrap_.get()};
   ncclComm_t comm = commGuard.get();
   ASSERT_TRUE(comm->usePatAvg_);
 
@@ -425,7 +432,8 @@ TEST_F(ReduceScatterPatSelectTest, UsePatAvgCvarControl) {
   // Enable PAT AVG via CVAR before comm creation
   auto patAvgGuard = EnvRAII(NCCL_REDUCESCATTER_PAT_AVG_ENABLE, true);
 
-  NcclCommRAII commGuard{globalRank, numRanks, localRank};
+  ncclx::test::NcclCommRAII commGuard{
+      globalRank, numRanks, localRank, bootstrap_.get()};
   ncclComm_t comm = commGuard.get();
 
   // Verify CVAR enabled usePatAvg_
@@ -485,7 +493,8 @@ TEST_F(ReduceScatterPatSelectTest, UsePatAvgOnlyAffectsReduceScatterAvg) {
           std::string(ncclx::HintKeys::kCommAlgoReduceScatter), "avg:patavg"),
       ncclSuccess);
 
-  NcclCommRAII commGuard{globalRank, numRanks, localRank};
+  ncclx::test::NcclCommRAII commGuard{
+      globalRank, numRanks, localRank, bootstrap_.get()};
   ncclComm_t comm = commGuard.get();
   ASSERT_TRUE(comm->usePatAvg_);
 
@@ -598,7 +607,8 @@ TEST_F(ReduceScatterPatSelectTest, SignedIntAvgWithPatSumPostDiv) {
  * = 40960 bytes.
  */
 TEST_F(ReduceScatterPatSelectTest, ComputePatAvgChannelsScalesWithMsgSize) {
-  NcclCommRAII commGuard{globalRank, numRanks, localRank};
+  ncclx::test::NcclCommRAII commGuard{
+      globalRank, numRanks, localRank, bootstrap_.get()};
   ncclComm_t comm = commGuard.get();
 
   const int maxNc = comm->nChannels;

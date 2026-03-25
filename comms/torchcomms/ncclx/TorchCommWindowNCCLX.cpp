@@ -343,8 +343,8 @@ std::shared_ptr<TorchCommWindowAttr> TorchCommWindowNCCLX<Backend>::get_attr(
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
 
 template <typename Backend>
-typename TorchCommWindowNCCLX<Backend>::DeviceRegisteredBuffer
-TorchCommWindowNCCLX<Backend>::register_local_buffer(const at::Tensor& tensor) {
+RegisteredBuffer TorchCommWindowNCCLX<Backend>::register_local_buffer(
+    const at::Tensor& tensor) {
   checkCommAndThrow();
 
   if (device_window_ == nullptr) {
@@ -360,24 +360,11 @@ TorchCommWindowNCCLX<Backend>::register_local_buffer(const at::Tensor& tensor) {
 
   checkDeviceAndThrow(tensor);
 
-  // Graph capture mode: commWindowRegister calls require relaxed capture
-  // mode to execute eagerly rather than being captured into the graph.
-  DeviceRegisteredBuffer buf;
-  if (torch_comm_->getGraphCaptureMode()) {
-    meta::comms::StreamCaptureModeGuard captureGuard{
-        torch_comm_->getCudaApi(), cudaStreamCaptureModeRelaxed};
-    buf = Backend::register_local_buffer(
-        nccl_api_,
-        nccl_comm_,
-        tensor.data_ptr(),
-        tensor.numel() * tensor.element_size());
-  } else {
-    buf = Backend::register_local_buffer(
-        nccl_api_,
-        nccl_comm_,
-        tensor.data_ptr(),
-        tensor.numel() * tensor.element_size());
-  }
+  auto buf = Backend::register_local_buffer(
+      nccl_api_,
+      nccl_comm_,
+      tensor.data_ptr(),
+      tensor.numel() * tensor.element_size());
 
   registered_local_buffers_.push_back(buf);
   return buf;
@@ -385,7 +372,7 @@ TorchCommWindowNCCLX<Backend>::register_local_buffer(const at::Tensor& tensor) {
 
 template <typename Backend>
 void TorchCommWindowNCCLX<Backend>::deregister_local_buffer(
-    DeviceRegisteredBuffer& buf) {
+    RegisteredBuffer& buf) {
   if (buf.base_ptr == nullptr && buf.backend_window == nullptr) {
     return;
   }
@@ -394,19 +381,22 @@ void TorchCommWindowNCCLX<Backend>::deregister_local_buffer(
   auto it = std::find_if(
       registered_local_buffers_.begin(),
       registered_local_buffers_.end(),
-      [&buf](const DeviceRegisteredBuffer& b) {
-        return b.base_ptr == buf.base_ptr;
-      });
+      [&buf](const RegisteredBuffer& b) { return b.base_ptr == buf.base_ptr; });
   if (it != registered_local_buffers_.end()) {
     registered_local_buffers_.erase(it);
   }
 
   Backend::deregister_local_buffer(nccl_api_, nccl_comm_, buf);
+
+  // Clear the caller's buffer to indicate it's no longer registered
+  buf.base_ptr = nullptr;
+  buf.size = 0;
+  buf.backend_window = nullptr;
+  buf.lkey = 0;
 }
 
 template <typename Backend>
-typename TorchCommWindowNCCLX<Backend>::DeviceWindow*
-TorchCommWindowNCCLX<Backend>::get_device_window(
+void* TorchCommWindowNCCLX<Backend>::get_device_window(
     int signal_count,
     int counter_count,
     int barrier_count) {
@@ -420,7 +410,7 @@ TorchCommWindowNCCLX<Backend>::get_device_window(
 
   // Return existing device window pointer if already created
   if (device_window_) {
-    return device_window_.get();
+    return static_cast<void*>(device_window_.get());
   }
 
   int commRank = 0;
@@ -475,7 +465,7 @@ TorchCommWindowNCCLX<Backend>::get_device_window(
         win_size_);
   }
 
-  return device_window_.get();
+  return static_cast<void*>(device_window_.get());
 }
 
 #if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)

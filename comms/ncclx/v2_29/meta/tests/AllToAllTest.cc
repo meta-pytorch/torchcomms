@@ -10,6 +10,7 @@
 #include "checks.h"
 
 #include "comms/ctran/Ctran.h"
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -27,7 +28,8 @@ class AllToAllTest : public NcclxBaseTest {
 
     NcclxBaseTest::SetUp();
 
-    this->comm = createNcclComm(globalRank, numRanks, localRank);
+    this->comm = ncclx::test::createNcclComm(
+        globalRank, numRanks, localRank, bootstrap_.get());
 
     CUDACHECK_TEST(cudaSetDevice(localRank));
     CUDACHECK_TEST(cudaStreamCreate(&this->stream));

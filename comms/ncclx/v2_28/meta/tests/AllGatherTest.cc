@@ -9,23 +9,22 @@
 #include <cstddef>
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
+#include "comms/testinfra/AlgoTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+
+using testinfra::AlgoRAII;
 
 class AllGatherTest : public NcclxBaseTest {
  public:
   AllGatherTest() = default;
   void SetUp() override {
     NcclxBaseTest::SetUp();
-    this->comm = createNcclComm(
-        this->globalRank,
-        this->numRanks,
-        this->localRank,
-        false,
-        nullptr,
-        server.get());
+    this->comm = ncclx::test::createNcclComm(
+        globalRank, numRanks, localRank, bootstrap_.get());
 
     CUDACHECK_TEST(cudaSetDevice(localRank));
     CUDACHECK_TEST(cudaStreamCreate(&stream));
@@ -44,7 +43,7 @@ class AllGatherTest : public NcclxBaseTest {
       bool useCudaGraph,
       MemAllocType memType,
       size_t count) {
-    auto envGuard = EnvRAII(NCCL_ALLGATHER_ALGO, algo);
+    auto algoGuard = AlgoRAII(NCCL_ALLGATHER_ALGO, algo);
 
     if ((memType == kMemNcclMemAlloc || memType == kCuMemAllocDisjoint) &&
         ncclIsCuMemSupported() == false) {

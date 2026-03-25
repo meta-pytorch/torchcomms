@@ -9,18 +9,19 @@
 
 #include "checks.h"
 #include "comm.h"
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "nccl.h"
 
-class CommSplitTest : public ::testing::Test {
+class CommSplitTest : public NcclxBaseTest {
  public:
   CommSplitTest() = default;
 
   void SetUp() override {
-    std::tie(this->localRank, this->globalRank, this->numRanks) = getMpiInfo();
-    this->comm =
-        createNcclComm(this->globalRank, this->numRanks, this->localRank);
+    NcclxBaseTest::SetUp();
+    this->comm = ncclx::test::createNcclComm(
+        globalRank, numRanks, localRank, bootstrap_.get());
     CUDACHECK_TEST(cudaStreamCreate(&stream));
 
     // Prepare data for sanity check after commSplit
@@ -71,11 +72,9 @@ class CommSplitTest : public ::testing::Test {
     CUDACHECK_TEST(cudaFree(this->dataBuf));
     CUDACHECK_TEST(cudaStreamDestroy(this->stream));
     NCCLCHECK_TEST(ncclCommDestroy(this->comm));
+    NcclxBaseTest::TearDown();
   }
 
-  int localRank{0};
-  int globalRank{0};
-  int numRanks{0};
   int* dataBuf{nullptr};
   const int dataCount{65536};
   ncclComm_t comm;

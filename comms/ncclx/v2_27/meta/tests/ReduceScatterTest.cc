@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <cstddef>
 #include "comms/ctran/Ctran.h"
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
@@ -21,7 +22,8 @@ class ReduceScatterTest : public NcclxBaseTest {
   ReduceScatterTest() = default;
   void SetUp() override {
     NcclxBaseTest::SetUp();
-    comm = createNcclComm(globalRank, numRanks, localRank);
+    comm = ncclx::test::createNcclComm(
+        globalRank, numRanks, localRank, bootstrap_.get());
     CUDACHECK_TEST(cudaStreamCreate(&stream));
   }
 

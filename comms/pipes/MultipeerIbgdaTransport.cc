@@ -13,6 +13,7 @@
 
 #include <fmt/core.h>
 
+#include "comms/pipes/CudaDriverLazy.h"
 #include "comms/pipes/DocaHostUtils.h"
 #include "comms/pipes/IbverbsLazy.h"
 #include "comms/pipes/MultipeerIbgdaDeviceTransport.cuh"
@@ -547,6 +548,11 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
     throw std::invalid_argument("Need at least 2 ranks");
   }
   try {
+    // Resolve CUDA driver function pointers
+    if (cuda_driver_lazy_init() != 0) {
+      throw std::runtime_error("CUDA driver not available");
+    }
+
     // Initialize DOCA GPU context
     initDocaGpu();
 
@@ -601,8 +607,8 @@ void MultipeerIbgdaTransport::cleanup() {
   loopbackCompanionQpHlList_.clear();
 
   // Destroy user buffer MRs
-  for (auto& [_, mr] : registeredBuffers_) {
-    doca_verbs_wrapper_ibv_dereg_mr(mr);
+  for (auto& [_, cached] : registeredBuffers_) {
+    doca_verbs_wrapper_ibv_dereg_mr(cached.mr);
   }
   registeredBuffers_.clear();
 
@@ -822,66 +828,110 @@ IbgdaLocalBuffer MultipeerIbgdaTransport::registerBuffer(
     throw std::invalid_argument("Invalid buffer pointer or size");
   }
 
-  // If already registered, return existing registration (no-op)
-  auto existingIt = registeredBuffers_.find(ptr);
-  if (existingIt != registeredBuffers_.end()) {
-    return IbgdaLocalBuffer(ptr, HostLKey(existingIt->second->lkey));
+  // Find the CUDA allocation that contains this pointer.
+  CUdeviceptr allocBase = 0;
+  size_t allocSize = 0;
+  CUresult cuRes =
+      pfn_cuMemGetAddressRange(&allocBase, &allocSize, (CUdeviceptr)ptr);
+  if (cuRes != CUDA_SUCCESS || allocBase == 0) {
+    throw std::runtime_error(
+        "registerBuffer: cuMemGetAddressRange failed for ptr");
   }
 
+  // Check if this CUDA allocation is already registered (cache hit).
+  auto it = registeredBuffers_.find(static_cast<uintptr_t>(allocBase));
+  if (it != registeredBuffers_.end()) {
+    it->second.refs++;
+    VLOG(1) << "MultipeerIbgdaTransport: cache hit for ptr=" << ptr
+            << " allocBase=0x" << std::hex << allocBase << std::dec
+            << " refs=" << it->second.refs;
+    return IbgdaLocalBuffer(ptr, HostLKey(it->second.mr->lkey));
+  }
+
+  // Cache miss — register the full CUDA allocation.
   int accessFlags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
       IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC;
 
   // Try DMABUF registration first, fall back to regular reg_mr.
-  // export_gpu_dmabuf_aligned handles cuMemGetAddressRange + page alignment +
-  // doca_gpu_dmabuf_fd, returning nullopt on failure.
+  // export_gpu_dmabuf_aligned handles page alignment + doca_gpu_dmabuf_fd.
+  // allocBase/allocSize already come from cuMemGetAddressRange above.
   ibv_mr* mr = nullptr;
-  auto dmabuf = export_gpu_dmabuf_aligned(docaGpu_, ptr, size);
+  auto dmabuf = export_gpu_dmabuf_aligned(
+      docaGpu_, reinterpret_cast<void*>(allocBase), allocSize);
   if (dmabuf) {
     mr = lazy_ibv_reg_dmabuf_mr(
         ibvPd_,
         dmabuf->alignment.dmabufOffset,
-        size,
-        reinterpret_cast<uint64_t>(ptr),
+        allocSize,
+        static_cast<uint64_t>(allocBase),
         dmabuf->fd,
         accessFlags);
     close(dmabuf->fd);
   }
   if (!mr) {
-    doca_error_t regErr =
-        doca_verbs_wrapper_ibv_reg_mr(ibvPd_, ptr, size, accessFlags, &mr);
+    doca_error_t regErr = doca_verbs_wrapper_ibv_reg_mr(
+        ibvPd_,
+        reinterpret_cast<void*>(allocBase),
+        allocSize,
+        accessFlags,
+        &mr);
     if (regErr != DOCA_SUCCESS || !mr) {
       throw std::runtime_error("Failed to register buffer with RDMA");
     }
   }
 
-  uint32_t lkey = mr->lkey;
-  registeredBuffers_.emplace(ptr, mr);
+  registeredBuffers_.emplace(
+      static_cast<uintptr_t>(allocBase), CachedMr{mr, allocSize, /*refs=*/1});
 
-  VLOG(1) << "MultipeerIbgdaTransport: registered user buffer ptr=" << ptr
-          << " size=" << size << " lkey=" << mr->lkey << " rkey=" << mr->rkey;
+  VLOG(1) << "MultipeerIbgdaTransport: registered allocation allocBase=0x"
+          << std::hex << allocBase << std::dec << " allocSize=" << allocSize
+          << " lkey=" << mr->lkey << " rkey=" << mr->rkey
+          << " (requested ptr=" << ptr << " size=" << size << ")";
 
-  return IbgdaLocalBuffer(ptr, HostLKey(lkey));
+  return IbgdaLocalBuffer(ptr, HostLKey(mr->lkey));
 }
 
 void MultipeerIbgdaTransport::deregisterBuffer(void* ptr) {
-  auto it = registeredBuffers_.find(ptr);
+  CUdeviceptr allocBase = 0;
+  size_t allocSize = 0;
+  CUresult cuRes =
+      pfn_cuMemGetAddressRange(&allocBase, &allocSize, (CUdeviceptr)ptr);
+  if (cuRes != CUDA_SUCCESS || allocBase == 0) {
+    LOG(WARNING) << "MultipeerIbgdaTransport: cuMemGetAddressRange failed for "
+                 << ptr;
+    return;
+  }
+
+  auto it = registeredBuffers_.find(static_cast<uintptr_t>(allocBase));
   if (it == registeredBuffers_.end()) {
     LOG(WARNING) << "MultipeerIbgdaTransport: buffer not registered: " << ptr;
     return;
   }
 
-  doca_verbs_wrapper_ibv_dereg_mr(it->second);
-  registeredBuffers_.erase(it);
-
-  VLOG(1) << "MultipeerIbgdaTransport: deregistered buffer ptr=" << ptr;
+  it->second.refs--;
+  VLOG(1) << "MultipeerIbgdaTransport: deregister ptr=" << ptr
+          << " allocBase=0x" << std::hex << allocBase << std::dec
+          << " refs=" << it->second.refs;
+  if (it->second.refs <= 0) {
+    doca_verbs_wrapper_ibv_dereg_mr(it->second.mr);
+    registeredBuffers_.erase(it);
+  }
 }
 
 std::vector<IbgdaRemoteBuffer> MultipeerIbgdaTransport::exchangeBuffer(
     const IbgdaLocalBuffer& localBuf) {
   const int numPeers = nRanks_ - 1;
 
-  // Find the MR for this buffer
-  auto it = registeredBuffers_.find(localBuf.ptr);
+  // Find the MR for this buffer via its CUDA allocation base.
+  CUdeviceptr allocBase = 0;
+  size_t allocSize = 0;
+  CUresult cuRes = pfn_cuMemGetAddressRange(
+      &allocBase, &allocSize, (CUdeviceptr)localBuf.ptr);
+  if (cuRes != CUDA_SUCCESS || allocBase == 0) {
+    throw std::runtime_error(
+        "exchangeBuffer: cuMemGetAddressRange failed for ptr");
+  }
+  auto it = registeredBuffers_.find(static_cast<uintptr_t>(allocBase));
   if (it == registeredBuffers_.end()) {
     throw std::runtime_error(
         "Buffer not registered - call registerBuffer() first");
@@ -893,7 +943,7 @@ std::vector<IbgdaRemoteBuffer> MultipeerIbgdaTransport::exchangeBuffer(
   // Write my info at my rank's slot
   allInfo[myRank_] = IbgdaBufferExchInfo{
       reinterpret_cast<uint64_t>(localBuf.ptr),
-      HostRKey(it->second->rkey),
+      HostRKey(it->second.mr->rkey),
   };
 
   // Use allGather to exchange buffer info with all ranks

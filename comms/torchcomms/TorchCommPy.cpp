@@ -8,8 +8,12 @@
 #include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include <torch/csrc/utils/pybind.h>
 
+#include "comms/torchcomms/BackendWrapper.hpp"
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/TorchWork.hpp"
+
+// Forward declaration for flight recorder submodule init
+void init_flight_recorder_bindings(py::module_& m);
 
 namespace py = pybind11;
 using namespace torch::comms;
@@ -770,6 +774,98 @@ Example:
 
       )",
           py::arg("rank"),
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "get_device_window",
+          [](TorchCommWindow& self, int sc, int cc, int bc) {
+            return reinterpret_cast<int64_t>(
+                self.get_device_window(sc, cc, bc));
+          },
+          R"(
+Get a device-side window handle for GPU-initiated operations.
+
+Returns a pointer (as int64) that can be passed to Triton kernels via
+the torchcomms_* extern functions (put_block, signal_block, etc.).
+
+The window is lazily created on first call and cached. Requires NCCLX
+backend with device API support (NCCLX 2.28+).
+
+Args:
+    signal_count: Number of signal slots to allocate (-1 for default).
+    counter_count: Number of counter slots to allocate (-1 for default).
+    barrier_count: Number of barrier slots to allocate (default 1).
+
+Returns:
+    int: Device window pointer as int64.
+
+Raises:
+    RuntimeError: If this backend does not yet support the device API.
+)",
+          py::arg("signal_count") = -1,
+          py::arg("counter_count") = -1,
+          py::arg("barrier_count") = 1,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "register_local_buffer",
+          [](TorchCommWindow& self, const at::Tensor& tensor) {
+            RegisteredBuffer buf;
+            {
+              py::gil_scoped_release release;
+              buf = self.register_local_buffer(tensor);
+            }
+            return py::make_tuple(
+                reinterpret_cast<int64_t>(buf.base_ptr),
+                static_cast<int64_t>(buf.size),
+                reinterpret_cast<int64_t>(buf.backend_window),
+                static_cast<int64_t>(buf.lkey));
+          },
+          R"(
+Register a local buffer for use as source in device-side put operations.
+
+NON-COLLECTIVE. Must call tensor_register() then get_device_window() first.
+
+Args:
+    tensor: Source tensor to register as a local buffer.
+
+Returns:
+    tuple: (base_ptr, size, backend_window, lkey) as int64 values.
+
+Raises:
+    RuntimeError: If this backend does not yet support the device API.
+)",
+          py::arg("tensor"))
+      .def(
+          "deregister_local_buffer",
+          [](TorchCommWindow& self,
+             int64_t base_ptr,
+             int64_t size,
+             int64_t backend_window,
+             int64_t lkey) {
+            RegisteredBuffer buf;
+            // NOLINTNEXTLINE(performance-no-int-to-ptr)
+            buf.base_ptr = reinterpret_cast<void*>(base_ptr);
+            buf.size = static_cast<size_t>(size);
+            // NOLINTNEXTLINE(performance-no-int-to-ptr)
+            buf.backend_window = reinterpret_cast<void*>(backend_window);
+            buf.lkey = static_cast<uint32_t>(lkey);
+            self.deregister_local_buffer(buf);
+          },
+          R"(
+Deregister a previously registered local buffer. NON-COLLECTIVE.
+
+Args:
+    base_ptr: From register_local_buffer() return tuple.
+    size: From register_local_buffer() return tuple.
+    backend_window: From register_local_buffer() return tuple.
+    lkey: From register_local_buffer() return tuple.
+
+Raises:
+    RuntimeError: If this backend does not yet support the device API.
+)",
+          py::arg("base_ptr"),
+          py::arg("size"),
+          py::arg("backend_window"),
+          py::arg("lkey"),
           py::call_guard<py::gil_scoped_release>());
 
   // Bind BatchSendRecv::P2POp class
@@ -2057,6 +2153,56 @@ Note:
           )doc",
           py::arg("callback"));
 
+  intrusive_ptr_class_<BackendWrapper, c10d::Backend>(m, "_BackendWrapper")
+      .def(
+          py::init<std::shared_ptr<TorchComm>>(),
+          "Create BackendWrapper around a TorchCommBackend",
+          py::arg("comm"),
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "get_comm",
+          &BackendWrapper::getComm,
+          "Get the underlying TorchComm instance",
+          py::call_guard<py::gil_scoped_release>())
+      .def("name", &BackendWrapper::getBackendName)
+      .def_property_readonly(
+          "options",
+          &BackendWrapper::getOptions,
+          R"(Return the options used to create the torchComm under the hood.)",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "_verify_work_timeout",
+          &BackendWrapper::verifyWorkTimeoutForTest,
+          R"(
+Verify that a work object has the expected timeout.
+Used for testing timeout propagation.
+
+Args:
+    work: The work object to verify.
+    timeout: The expected timeout.
+
+Returns:
+    bool: True if the work object has the expected timeout, False otherwise.
+          )",
+          py::arg("work"),
+          py::arg("timeout"),
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "_set_default_timeout",
+          &BackendWrapper::setTimeout,
+          R"(
+Set the default timeout for this backend.
+
+Args:
+    timeout: The timeout value to set.
+          )",
+          py::arg("timeout"),
+          py::call_guard<py::gil_scoped_release>());
+  intrusive_ptr_class_<WorkWrapper, c10d::Work>(m, "WorkWrapper");
+  // Register the backend Options
+  intrusive_ptr_class_<BackendWrapper::Options, c10d::Backend::Options>(
+      m, "_BackendWrapperOptions");
+
   m.def(
       "get_mem_allocator",
       [](const std::string& backend) { return get_mem_allocator(backend); },
@@ -2075,4 +2221,9 @@ Note:
       )",
       py::arg("backend"),
       py::call_guard<py::gil_scoped_release>());
+
+  // Flight Recorder submodule: torchcomms._comms.hooks.fr
+  auto hooks_mod = m.def_submodule("hooks");
+  auto fr_mod = hooks_mod.def_submodule("fr");
+  init_flight_recorder_bindings(fr_mod);
 }

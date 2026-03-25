@@ -21,6 +21,8 @@
 #include "meta/collectives/PatAvgHelper.h"
 #include "meta/wrapper/DataTypeStrUtils.h"
 
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
+
 struct ReduceScatterTestParams {
   enum NCCL_REDUCESCATTER_ALGO algo { NCCL_REDUCESCATTER_ALGO::orig };
   bool inplace{false};
@@ -92,7 +94,8 @@ class ReduceScatterTest : public NcclxBaseTest {
     }
 
     // Create comm after environment variables are set by caller
-    NcclCommRAII commGuard{globalRank, numRanks, localRank};
+    ncclx::test::NcclCommRAII commGuard{
+        globalRank, numRanks, localRank, bootstrap_.get()};
     comm = commGuard.get();
 
     if (memType == kMemNcclMemAlloc && ncclIsCuMemSupported() == false) {

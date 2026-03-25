@@ -217,7 +217,7 @@ __device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::signal(
 template <>
 __device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::put(
     size_t dst_offset,
-    const RegisteredBuffer& src_buf,
+    const torch::comms::RegisteredBuffer& src_buf,
     size_t src_offset,
     int dst_rank,
     size_t bytes,
@@ -459,6 +459,16 @@ __device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::barrier(
   });
 
   return 0;
+}
+
+// =============================================================================
+// TorchCommDeviceWindow<NCCLDeviceBackend> NVLink Address Query
+// =============================================================================
+
+template <>
+__device__ inline void*
+TorchCommDeviceWindow<NCCLDeviceBackend>::get_nvlink_address(int peer) {
+  return ncclGetPeerPointer(window_, 0, peer);
 }
 
 } // namespace torchcomms::device

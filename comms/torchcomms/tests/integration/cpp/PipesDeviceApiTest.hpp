@@ -11,7 +11,6 @@
 //   - RUN_PIPES_DEVICE_API_TEST=true (skip gate)
 //   - NCCL_CTRAN_USE_PIPES=1 (initialize ctran multiPeerTransport and select
 //     Pipes backend in new_window())
-//   - NCCL_P2P_DISABLE=1 (route traffic through ctran/RDMA path)
 
 #pragma once
 
@@ -64,6 +63,17 @@ class PipesDeviceApiTest : public ::testing::Test {
 
   // Test local buffer registration: register_local_buffer returns valid lkey.
   void testLocalBufferRegistration(int count, at::ScalarType dtype);
+
+  // Test device put: ring put with signal, verify data arrives correctly.
+  void testDevicePut(int count, at::ScalarType dtype);
+
+  // Test device put with counter: ring put_signal_counter + wait_local,
+  // verify data + counter value.
+  void testDevicePutCounter(int count, at::ScalarType dtype);
+
+  // Test wait_local: put_signal_counter, then wait_local on sender side
+  // to verify local completion tracking via companion QP counter.
+  void testWaitLocal(int count, at::ScalarType dtype);
 
   // Member variables
   std::unique_ptr<TorchCommTestWrapper> wrapper_;

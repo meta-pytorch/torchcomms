@@ -115,30 +115,66 @@ __device__ inline int TorchCommDeviceWindow<PipesDeviceBackend>::signal(
 // TorchCommDeviceWindow<PipesDeviceBackend> RMA Operations
 // =============================================================================
 
-// TODO: Implement put() using DeviceWindow::put() / put_signal() public API.
-// Requires resolving remote data pointers from window base + offsets.
-// Will be implemented when the DevicePut integration test is added.
 template <>
 __device__ inline int TorchCommDeviceWindow<PipesDeviceBackend>::put(
     size_t dst_offset,
-    const RegisteredBuffer& src_buf,
+    const torch::comms::RegisteredBuffer& src_buf,
     size_t src_offset,
     int dst_rank,
     size_t bytes,
     int signal_id,
     int counter_id,
     CoopScope scope) {
-  // Not yet implemented for Pipes backend.
-  (void)dst_offset;
-  (void)src_buf;
-  (void)src_offset;
-  (void)dst_rank;
-  (void)bytes;
-  (void)signal_id;
-  (void)counter_id;
-  (void)scope;
-  __trap();
-  return -1;
+  auto& win = *window_;
+  auto group = detail::make_pipes_thread_group(scope);
+
+  // Build Pipes LocalBufferRegistration from RegisteredBuffer.
+  // Pipes uses lkey (IBGDA local key); GIN uses backend_window.
+  ::comms::pipes::LocalBufferRegistration pipes_src{
+      src_buf.base_ptr,
+      src_buf.size,
+      ::comms::pipes::NetworkLKey{src_buf.lkey}};
+
+  bool has_signal = signal_id >= 0;
+  bool has_counter = counter_id >= 0;
+
+  if (has_signal && has_counter) {
+    win.put_signal_counter(
+        group,
+        dst_rank,
+        dst_offset,
+        pipes_src,
+        src_offset,
+        bytes,
+        signal_id,
+        /*signalVal=*/1,
+        counter_id,
+        /*counterVal=*/1);
+  } else if (has_signal) {
+    win.put_signal(
+        group,
+        dst_rank,
+        dst_offset,
+        pipes_src,
+        src_offset,
+        bytes,
+        signal_id,
+        /*signalVal=*/1);
+  } else if (has_counter) {
+    win.put_counter(
+        group,
+        dst_rank,
+        dst_offset,
+        pipes_src,
+        src_offset,
+        bytes,
+        counter_id,
+        /*counterVal=*/1);
+  } else {
+    win.put(group, dst_rank, dst_offset, pipes_src, src_offset, bytes);
+  }
+
+  return 0;
 }
 
 // =============================================================================
@@ -202,44 +238,74 @@ __device__ inline void TorchCommDeviceWindow<PipesDeviceBackend>::reset_signal(
 // =============================================================================
 // TorchCommDeviceWindow<PipesDeviceBackend> Counter Operations
 // =============================================================================
-// Counters require a companion RDMA QP for loopback atomic signaling
-// (NIC completion tracking). Not supported in the initial Pipes implementation.
+// Counters use companion RDMA QP loopback atomic signaling for NIC completion
+// tracking. read_counter/reset_counter must precede wait_local (which calls
+// read_counter).
+
+template <>
+__device__ inline uint64_t
+TorchCommDeviceWindow<PipesDeviceBackend>::read_counter(int counter_id) const {
+  // Sum the counter across all peers (aggregate model).
+  auto& win = *window_;
+  int nPeers = win.num_peers();
+  uint64_t total = 0;
+  for (int peer_index = 0; peer_index < nPeers; ++peer_index) {
+    int r = win.peer_index_to_rank(peer_index);
+    total += win.read_counter(r, counter_id);
+  }
+  return total;
+}
+
+template <>
+__device__ inline void TorchCommDeviceWindow<PipesDeviceBackend>::reset_counter(
+    int counter_id) {
+  // Reset the counter for all peers.
+  auto& win = *window_;
+  int nPeers = win.num_peers();
+  for (int peer_index = 0; peer_index < nPeers; ++peer_index) {
+    int r = win.peer_index_to_rank(peer_index);
+    win.reset_counter(r, counter_id);
+  }
+}
 
 template <>
 __device__ inline int TorchCommDeviceWindow<PipesDeviceBackend>::wait_local(
     int op_id,
     CmpOp cmp,
     uint64_t value) {
-  (void)op_id;
-  (void)cmp;
-  (void)value;
-  auto& win = *window_;
-  // Drain all pending IBGDA operations.
-  int nPeers = win.num_peers();
-  for (int peer_index = 0; peer_index < nPeers; ++peer_index) {
-    int r = win.peer_index_to_rank(peer_index);
-    if (win.get_type(r) == comms::pipes::TransportType::P2P_IBGDA) {
-      win.get_ibgda(r).fence();
+  // op_id is the counter_id. Sum the counter across all peers and poll
+  // until the aggregate satisfies the comparison (same model as GIN:
+  // counter_id 0 with value 5 = 5 puts completed regardless of peer).
+  //
+  // Spin-poll: read_counter() already sums across all peers.
+  while (true) {
+    uint64_t total = read_counter(op_id);
+    bool satisfied = false;
+    switch (cmp) {
+      case CmpOp::EQ:
+        satisfied = (total == value);
+        break;
+      case CmpOp::NE:
+        satisfied = (total != value);
+        break;
+      case CmpOp::GE:
+        satisfied = (total >= value);
+        break;
+      case CmpOp::GT:
+        satisfied = (total > value);
+        break;
+      case CmpOp::LE:
+        satisfied = (total <= value);
+        break;
+      case CmpOp::LT:
+        satisfied = (total < value);
+        break;
+    }
+    if (satisfied) {
+      break;
     }
   }
   return 0;
-}
-
-template <>
-__device__ inline uint64_t
-TorchCommDeviceWindow<PipesDeviceBackend>::read_counter(int counter_id) const {
-  // Counters not supported for Pipes backend.
-  (void)counter_id;
-  __trap();
-  return 0;
-}
-
-template <>
-__device__ inline void TorchCommDeviceWindow<PipesDeviceBackend>::reset_counter(
-    int counter_id) {
-  // Counters not supported for Pipes backend.
-  (void)counter_id;
-  __trap();
 }
 
 // =============================================================================
@@ -290,6 +356,16 @@ __device__ inline int TorchCommDeviceWindow<PipesDeviceBackend>::barrier(
   auto group = detail::make_pipes_thread_group(scope);
   win.barrier(group, barrier_id);
   return 0;
+}
+
+// =============================================================================
+// TorchCommDeviceWindow<PipesDeviceBackend> NVLink Address Query
+// =============================================================================
+
+template <>
+__device__ inline void*
+TorchCommDeviceWindow<PipesDeviceBackend>::get_nvlink_address(int peer) {
+  return window_->get_nvlink_address(peer);
 }
 
 } // namespace torchcomms::device

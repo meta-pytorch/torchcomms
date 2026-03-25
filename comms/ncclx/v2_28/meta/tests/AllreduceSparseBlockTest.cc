@@ -12,25 +12,26 @@
 #include <nccl.h>
 #include "checks.h"
 #include "comms/ctran/Ctran.h"
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 
-class AllReduceSparseBlockTest : public ::testing::Test {
+class AllReduceSparseBlockTest : public NcclxBaseTest {
  public:
   AllReduceSparseBlockTest() = default;
   void SetUp() override {
-    std::tie(this->localRank, this->globalRank, this->numRanks) = getMpiInfo();
+    NcclxBaseTest::SetUp();
 
-    this->comm =
-        createNcclComm(this->globalRank, this->numRanks, this->localRank);
+    this->comm = ncclx::test::createNcclComm(
+        globalRank, numRanks, localRank, bootstrap_.get());
 
-    CUDACHECK_TEST(cudaSetDevice(this->localRank));
     CUDACHECK_TEST(cudaStreamCreate(&this->stream));
   }
 
   void TearDown() override {
     NCCLCHECK_TEST(ncclCommDestroy(this->comm));
     CUDACHECK_TEST(cudaStreamDestroy(this->stream));
+    NcclxBaseTest::TearDown();
   }
 
   // TODO [test-cleanup]: port to common checkChunkValue in
@@ -123,9 +124,6 @@ class AllReduceSparseBlockTest : public ::testing::Test {
   }
 
  protected:
-  int localRank{0};
-  int globalRank{0};
-  int numRanks{0};
   ncclComm_t comm;
   cudaStream_t stream;
 };

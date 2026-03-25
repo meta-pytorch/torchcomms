@@ -163,15 +163,10 @@ commResult_t OrderedWorkStreamGuard::doAcquire(
   }
 
   auto doWait = [&]() -> commResult_t {
-#if defined(__HIP_PLATFORM_AMD__)
-    // hipify doesn't map cudaEventWaitExternal/cudaEventWaitDefault;
-    // use raw values: 0x01 = cudaEventWaitExternal, 0x00 = cudaEventWaitDefault
-    unsigned int flags = isCapturing ? 0x01 : 0x00;
-#else
-    unsigned int flags =
-        isCapturing ? cudaEventWaitExternal : cudaEventWaitDefault;
-#endif
-    FB_CUDACHECK(cudaStreamWaitEvent(userStream, execModeSyncEvent_, flags));
+    FB_CUDACHECK(cudaStreamWaitEvent(
+        userStream,
+        execModeSyncEvent_,
+        isCapturing ? cudaEventWaitExternal : cudaEventWaitDefault));
     return commSuccess;
   };
 
@@ -658,10 +653,35 @@ void CtranGpe::Impl::gpeThreadFn() {
         // TODO: lost peerRank info which would be useful for some errors (e.g.,
         // commRemoteError). We may want to enrich commResult_t to contain such
         // info at failure or throw exception from bottom.
-        CTRAN_ASYNC_ERR_GUARD_FAULT_TOLERANCE(comm, {
-          FB_COMMCHECKTHROW_EX(
-              cmd->coll.func(cmd->coll.opGroup), comm->logMetaData_);
-        });
+        if (comm->testAbort()) {
+          // Comm already aborted — skip collective to prevent
+          // progressInternal() from accessing stale VC queue entries
+          // left by a previously aborted collective (double-complete bug).
+          CLOGF(
+              WARN,
+              "Communicator aborted, skipping collective (opType={}, opCount={}) on rank {} commHash {:x}",
+              cmd->coll.opGroup.empty()
+                  ? -1
+                  : static_cast<int>(cmd->coll.opGroup.front()->type),
+              cmd->coll.opGroup.empty() ? 0UL
+                                        : cmd->coll.opGroup.front()->opCount,
+              statex->rank(),
+              statex->commHash());
+          // Ensure async error is set so callers see a non-success result
+          // via getResult(). The abort flag may have been set externally
+          // (e.g. comm->abort()) without setting the async exception.
+          if (comm->getAsyncError()->getAsyncResult() == commSuccess) {
+            comm->getAsyncError()->setAsyncException(
+                ctran::utils::Exception(
+                    "collective skipped: communicator aborted",
+                    commRemoteError));
+          }
+        } else {
+          CTRAN_ASYNC_ERR_GUARD_FAULT_TOLERANCE(comm, {
+            FB_COMMCHECKTHROW_EX(
+                cmd->coll.func(cmd->coll.opGroup), comm->logMetaData_);
+          });
+        }
 
         if (cmd->persistent) {
           for (const auto& x : cmd->coll.opGroup) {

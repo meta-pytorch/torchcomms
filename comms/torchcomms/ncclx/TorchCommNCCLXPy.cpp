@@ -24,23 +24,6 @@ PYBIND11_MODULE(_comms_ncclx, m) {
 
   py::class_<TorchCommNCCLX, std::shared_ptr<TorchCommNCCLX>>(
       m, "TorchCommNCCLX")
-#ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
-      .def(
-          "new_window",
-          [](TorchCommNCCLX& self, const std::optional<at::Tensor>& tensor) {
-            auto base = self.new_window(tensor);
-            auto ncclx_window =
-                std::dynamic_pointer_cast<TorchCommWindowNCCLXGin>(base);
-            if (!ncclx_window) {
-              throw std::runtime_error(
-                  "new_window() did not return a TorchCommWindowNCCLXGin. "
-                  "This is an internal error.");
-            }
-            return ncclx_window;
-          },
-          py::arg("tensor") = std::nullopt,
-          py::call_guard<py::gil_scoped_release>())
-#endif
       .def(
           "device_alltoallv_single",
           [](TorchCommNCCLX& self,
@@ -339,117 +322,25 @@ Returns:
       py::call_guard<py::gil_scoped_release>());
 
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
-  // ==========================================================================
-  // Device API Bindings (requires NCCLX 2.28+)
-  // ==========================================================================
-  //
-  // These bindings expose the device window API for use with Triton kernels.
-  // The get_device_window() method returns a pointer (as int64) that can be
-  // passed to Triton extern functions (torchcomms_put, torchcomms_signal, etc.)
+  // Device API methods (get_device_window, register_local_buffer,
+  // deregister_local_buffer) are bound on the TorchCommWindow base class
+  // in TorchCommPy.cpp and inherited by both GIN and Pipes subclasses.
 
-  py::class_<
+  // --- GIN backend window class ---
+  auto gin_cls = py::class_<
       TorchCommWindowNCCLXGin,
       TorchCommWindow,
-      std::shared_ptr<TorchCommWindowNCCLXGin>>(m, "TorchCommWindowNCCLXGin")
-      .def(
-          "tensor_register",
-          &TorchCommWindowNCCLXGin::tensor_register,
-          R"(
-Register a tensor with this window.
+      std::shared_ptr<TorchCommWindowNCCLXGin>>(m, "TorchCommWindowNCCLXGin");
 
-The tensor must be allocated from the RDMA-compatible memory pool
-obtained via torchcomms.get_mem_allocator(backend).
-
-Args:
-    tensor: A torch.Tensor allocated from the RDMA memory pool.
-    owning: If True (default), the window holds a reference to the tensor,
-        keeping its storage alive. If False, the window does NOT hold a
-        reference — the caller must ensure the tensor remains alive for the
-        window's lifetime. Use owning=False in CUDA graph capture mode to
-        allow tensor memory reuse within the graph.
-
-Example:
-    >>> pool = torch.cuda.MemPool(allocator)
-    >>> with torch.cuda.use_mem_pool(pool):
-    ...     buf = torch.zeros(1024, device='cuda')
-    >>> window.tensor_register(buf)
-)",
-          py::arg("tensor"),
-          py::arg("owning") = true,
-          py::call_guard<py::gil_scoped_release>())
-      .def(
-          "tensor_deregister",
-          &TorchCommWindowNCCLXGin::tensor_deregister,
-          R"(
-Deregister the tensor from this window.
-
-Must be called before the window is destroyed if tensor_register was called.
-)",
-          py::call_guard<py::gil_scoped_release>())
-      .def(
-          "get_device_window",
-          [](TorchCommWindowNCCLXGin& self,
-             int signal_count,
-             int counter_count,
-             int barrier_count) {
-            auto* ptr = self.get_device_window(
-                signal_count, counter_count, barrier_count);
-            // Return as int64 for safe passage through Python to Triton
-            return reinterpret_cast<int64_t>(ptr);
-          },
-          R"(
-Get a device-side window handle for GPU-initiated operations.
-
-Returns a pointer (as int64) that can be passed to Triton kernels via
-the torchcomms_* extern functions (torchcomms_put, torchcomms_signal, etc.).
-
-The window is lazily created on first call and cached. The returned pointer
-is valid until this host window is destroyed.
-
-Args:
-    signal_count: Number of signal slots to allocate (-1 for default).
-    counter_count: Number of counter slots to allocate (-1 for default).
-    barrier_count: Number of barrier slots to allocate (default 1).
-
-Returns:
-    int: Device window pointer as int64, suitable for passing to Triton kernels.
-
-Example:
-    >>> window = comm.new_window()
-    >>> window.tensor_register(buffer)
-    >>> dev_win_ptr = ncclx_window.get_device_window(signal_count=8)
-    >>> # Pass dev_win_ptr to Triton kernel
-)",
-          py::arg("signal_count") = -1,
-          py::arg("counter_count") = -1,
-          py::arg("barrier_count") = 1,
-          py::call_guard<py::gil_scoped_release>())
-      .def(
-          "get_nccl_window",
-          [](TorchCommWindowNCCLXGin& self) {
-            // Return as int64 for safe passage through Python
-            return reinterpret_cast<int64_t>(self.get_nccl_window());
-          },
-          R"(
-Get the host-side NCCL window handle.
-
-Returns the ncclWindow_t as an int64, useful for advanced use cases
-where the raw NCCL window handle is needed.
-
-Returns:
-    int: NCCL window handle as int64.
-)",
-          py::call_guard<py::gil_scoped_release>())
+  // GIN-specific methods (not on base class)
 #if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
-      .def(
-          "get_nvlink_address",
-          [](TorchCommWindowNCCLXGin& self, int peer, int64_t offset) {
-            void* ptr =
-                self.get_nvlink_address(peer, static_cast<size_t>(offset));
-            // Return as int64 for safe passage through Python
-            return reinterpret_cast<int64_t>(ptr);
-          },
-          R"(
+  gin_cls.def(
+      "get_nvlink_address",
+      [](TorchCommWindowNCCLXGin& self, int peer, int64_t offset) {
+        void* ptr = self.get_nvlink_address(peer, static_cast<size_t>(offset));
+        return reinterpret_cast<int64_t>(ptr);
+      },
+      R"(
 Get the NVLink-mapped device pointer for a peer's window memory.
 
 Returns the direct NVLink address that can be used to access the peer's
@@ -464,98 +355,20 @@ Args:
 
 Returns:
     int: NVLink-mapped device pointer as int64, or 0 if not accessible.
-
-Example:
-    >>> window = comm.new_window()
-    >>> window.tensor_register(buffer)
-    >>> nvlink_ptr = window.get_nvlink_address(peer=1)
-    >>> if nvlink_ptr != 0:
-    ...     print("NVLink accessible!")
 )",
-          py::arg("peer"),
-          py::arg("offset") = 0,
-          py::call_guard<py::gil_scoped_release>())
+      py::arg("peer"),
+      py::arg("offset") = 0,
+      py::call_guard<py::gil_scoped_release>());
 #endif
-      .def(
-          "register_local_buffer",
-          [](TorchCommWindowNCCLXGin& self, const at::Tensor& tensor) {
-            // Release GIL only during the C++ call, then reacquire for tuple
-            // creation
-            TorchCommWindowNCCLXGin::DeviceRegisteredBuffer buf;
-            {
-              py::gil_scoped_release release;
-              buf = self.register_local_buffer(tensor);
-            }
-            // GIL is held here - safe to create Python objects
-            // Return RegisteredBuffer as a tuple of (base_ptr, size,
-            // backend_window) All as int64 for safe passage through Python to
-            // Triton
-            return py::make_tuple(
-                reinterpret_cast<int64_t>(buf.base_ptr),
-                static_cast<int64_t>(buf.size),
-                reinterpret_cast<int64_t>(buf.backend_window));
-          },
-          R"(
-Register a local buffer for use as source in device-side put operations.
 
-This is a NON-COLLECTIVE operation - only the calling rank participates.
-The registered buffer can only be used as a source for put operations,
-not as a destination.
-
-Prerequisites: Must call tensor_register() then get_device_window() before
-this method. get_device_window() triggers ncclDevCommCreate which enables
-GIN - required for local buffer registration to work.
-
-Args:
-    tensor: A torch.Tensor to register as a local source buffer.
-
-Returns:
-    tuple: (base_ptr, size, backend_window) as int64 values.
-           These can be used with create_local_registered_buffer().
-
-Example:
-    >>> dst_win = comm.new_window()
-    >>> dst_win.tensor_register(dst_buf)
-    >>> dev_win_ptr = ncclx_window.get_device_window(signal_count=8)
-    >>> # Now register a local source buffer (non-collective)
-    >>> src_buf_info = ncclx_window.register_local_buffer(src_tensor)
-)",
-          py::arg("tensor"))
-      .def(
-          "deregister_local_buffer",
-          [](TorchCommWindowNCCLXGin& self,
-             int64_t base_ptr,
-             int64_t size,
-             int64_t backend_window) {
-            // Reconstruct RegisteredBuffer from tuple components
-            TorchCommWindowNCCLXGin::DeviceRegisteredBuffer buf;
-            // NOLINTNEXTLINE(performance-no-int-to-ptr)
-            buf.base_ptr = reinterpret_cast<void*>(base_ptr);
-            buf.size = static_cast<size_t>(size);
-            // NOLINTNEXTLINE(performance-no-int-to-ptr)
-            buf.backend_window = reinterpret_cast<void*>(backend_window);
-            self.deregister_local_buffer(buf);
-          },
-          R"(
-Deregister a previously registered local buffer.
-
-This is a NON-COLLECTIVE operation. Must be called before the window
-is destroyed if register_local_buffer() was called.
-
-Args:
-    base_ptr: The base_ptr from register_local_buffer() return tuple.
-    size: The size from register_local_buffer() return tuple.
-    backend_window: The backend_window from register_local_buffer() return tuple.
-
-Example:
-    >>> src_buf_info = ncclx_window.register_local_buffer(src_tensor)
-    >>> # ... use in put operations ...
-    >>> ncclx_window.deregister_local_buffer(*src_buf_info)
-)",
-          py::arg("base_ptr"),
-          py::arg("size"),
-          py::arg("backend_window"),
-          py::call_guard<py::gil_scoped_release>());
+#if defined(ENABLE_PIPES)
+  // --- Pipes backend window class ---
+  auto pipes_cls = py::class_<
+      TorchCommWindowNCCLXPipes,
+      TorchCommWindow,
+      std::shared_ptr<TorchCommWindowNCCLXPipes>>(
+      m, "TorchCommWindowNCCLXPipes");
+#endif
 
 #endif
 }
