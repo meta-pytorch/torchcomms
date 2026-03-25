@@ -25,8 +25,15 @@ class DeviceAllToAllvEnvironment : public ctran::CtranEnvironmentBase {
   }
 };
 
-class DeviceAllToAllvTest : public ctran::CtranDistTestFixture {
+// Parameterized fixture: bool param controls CUDA graph mode.
+// When true, the alltoallv is captured into a CUDA graph and replayed.
+class DeviceAllToAllvParamTest : public ctran::CtranDistTestFixture,
+                                 public ::testing::WithParamInterface<bool> {
  public:
+  bool useCudaGraph() const {
+    return GetParam();
+  }
+
   void SetUp() override {
     CtranDistTestFixture::SetUp();
     CUDACHECK_TEST(cudaStreamCreate(&stream_));
@@ -39,30 +46,91 @@ class DeviceAllToAllvTest : public ctran::CtranDistTestFixture {
 
  protected:
   cudaStream_t stream_;
+
+  // Run ctranDeviceAllToAllv either eagerly or via CUDA graph capture+replay.
+  commResult_t runAllToAllv(
+      const void* sendbuff,
+      void* recvbuff,
+      const int64_t* sendcounts_d,
+      const int64_t* recvcounts_d,
+      commDataType_t datatype,
+      CtranComm* comm,
+      int64_t sendMultiplier = 1,
+      int64_t recvMultiplier = 1) {
+    if (!useCudaGraph()) {
+      auto result = ctranDeviceAllToAllv(
+          sendbuff,
+          recvbuff,
+          sendcounts_d,
+          recvcounts_d,
+          datatype,
+          comm,
+          stream_,
+          sendMultiplier,
+          recvMultiplier);
+      CUDACHECK_TEST(cudaStreamSynchronize(stream_));
+      return result;
+    }
+
+    // CUDA graph path: capture, instantiate, replay, destroy
+    cudaStream_t graphStream;
+    CUDACHECK_TEST(cudaStreamCreate(&graphStream));
+
+    CUDACHECK_TEST(
+        cudaStreamBeginCapture(graphStream, cudaStreamCaptureModeGlobal));
+    auto result = ctranDeviceAllToAllv(
+        sendbuff,
+        recvbuff,
+        sendcounts_d,
+        recvcounts_d,
+        datatype,
+        comm,
+        graphStream,
+        sendMultiplier,
+        recvMultiplier);
+    if (result != commSuccess) {
+      cudaStreamEndCapture(graphStream, nullptr);
+      cudaStreamDestroy(graphStream);
+      return result;
+    }
+
+    cudaGraph_t graph;
+    CUDACHECK_TEST(cudaStreamEndCapture(graphStream, &graph));
+
+    cudaGraphExec_t instance;
+    CUDACHECK_TEST(cudaGraphInstantiate(&instance, graph, nullptr, nullptr, 0));
+
+    CUDACHECK_TEST(cudaGraphLaunch(instance, graphStream));
+    CUDACHECK_TEST(cudaStreamSynchronize(graphStream));
+
+    CUDACHECK_TEST(cudaGraphExecDestroy(instance));
+    CUDACHECK_TEST(cudaGraphDestroy(graph));
+    CUDACHECK_TEST(cudaStreamDestroy(graphStream));
+    return result;
+  }
 };
 
-// Uniform split: each rank sends/receives chunkSize elements to/from every peer
-TEST_F(DeviceAllToAllvTest, UniformSplit) {
+// ---------------------------------------------------------------------------
+// Balanced: every peer sends/receives the same chunk size
+// ---------------------------------------------------------------------------
+TEST_P(DeviceAllToAllvParamTest, Balanced) {
   auto comm = makeCtranComm();
   ASSERT_NE(comm, nullptr);
   ASSERT_NE(comm->multiPeerTransport_, nullptr);
 
-  // Check support — skip if not all NVLink peers
   if (!ctranDeviceAllToAllvSupport(comm.get())) {
     GTEST_SKIP() << "deviceAllToAllv not supported (requires all NVLink peers)";
   }
 
   const int nRanks = numRanks;
-  const size_t chunkSize = 1024; // CTRAN minimum
+  const size_t chunkSize = 1024;
   const size_t totalSize = chunkSize * nRanks;
 
-  // Allocate GPU buffers
   float* sendBuf = nullptr;
   float* recvBuf = nullptr;
   CUDACHECK_TEST(cudaMalloc(&sendBuf, totalSize * sizeof(float)));
   CUDACHECK_TEST(cudaMalloc(&recvBuf, totalSize * sizeof(float)));
 
-  // Fill send buffer with rank value
   std::vector<float> h_send(totalSize, static_cast<float>(globalRank));
   CUDACHECK_TEST(cudaMemcpy(
       sendBuf,
@@ -71,14 +139,12 @@ TEST_F(DeviceAllToAllvTest, UniformSplit) {
       cudaMemcpyHostToDevice));
   CUDACHECK_TEST(cudaMemset(recvBuf, 0, totalSize * sizeof(float)));
 
-  // Create device count arrays (uniform split)
   std::vector<int64_t> h_counts(nRanks, static_cast<int64_t>(chunkSize));
 
   int64_t* d_sendcounts = nullptr;
   int64_t* d_recvcounts = nullptr;
   CUDACHECK_TEST(cudaMalloc(&d_sendcounts, nRanks * sizeof(int64_t)));
   CUDACHECK_TEST(cudaMalloc(&d_recvcounts, nRanks * sizeof(int64_t)));
-
   CUDACHECK_TEST(cudaMemcpy(
       d_sendcounts,
       h_counts.data(),
@@ -90,17 +156,9 @@ TEST_F(DeviceAllToAllvTest, UniformSplit) {
       nRanks * sizeof(int64_t),
       cudaMemcpyHostToDevice));
 
-  // Run deviceAllToAllv
-  auto result = ctranDeviceAllToAllv(
-      sendBuf,
-      recvBuf,
-      d_sendcounts,
-      d_recvcounts,
-      commFloat,
-      comm.get(),
-      stream_);
+  auto result = runAllToAllv(
+      sendBuf, recvBuf, d_sendcounts, d_recvcounts, commFloat, comm.get());
   ASSERT_EQ(result, commSuccess);
-  CUDACHECK_TEST(cudaStreamSynchronize(stream_));
 
   // Verify: segment j should contain value j (sent from rank j)
   std::vector<float> h_recv(totalSize);
@@ -113,115 +171,23 @@ TEST_F(DeviceAllToAllvTest, UniformSplit) {
   for (int j = 0; j < nRanks; j++) {
     for (size_t k = 0; k < chunkSize; k++) {
       EXPECT_EQ(h_recv[j * chunkSize + k], static_cast<float>(j))
-          << "Rank " << globalRank << ": segment " << j << " element " << k
-          << " expected " << j << " got " << h_recv[j * chunkSize + k];
-    }
-  }
-
-  // Cleanup
-  CUDACHECK_TEST(cudaFree(sendBuf));
-  CUDACHECK_TEST(cudaFree(recvBuf));
-  CUDACHECK_TEST(cudaFree(d_sendcounts));
-  CUDACHECK_TEST(cudaFree(d_recvcounts));
-}
-
-// CUDA graph tests: capture ctranDeviceAllToAllv into a graph and replay.
-// DeviceAllToAllvPipes passes empty opGroup to GPE (flag=nullptr), so the
-// kernel launch is inherently graph-capturable with no host nodes.
-#if defined(TEST_CUDA_GRAPH_MODE)
-
-TEST_F(DeviceAllToAllvTest, UniformSplitCudaGraph) {
-  auto comm = makeCtranComm();
-  ASSERT_NE(comm, nullptr);
-  ASSERT_NE(comm->multiPeerTransport_, nullptr);
-
-  if (!ctranDeviceAllToAllvSupport(comm.get())) {
-    GTEST_SKIP() << "deviceAllToAllv not supported (requires all NVLink peers)";
-  }
-
-  const int nRanks = numRanks;
-  const size_t chunkSize = 1024;
-  const size_t totalSize = chunkSize * nRanks;
-
-  float* sendBuf = nullptr;
-  float* recvBuf = nullptr;
-  CUDACHECK_TEST(cudaMalloc(&sendBuf, totalSize * sizeof(float)));
-  CUDACHECK_TEST(cudaMalloc(&recvBuf, totalSize * sizeof(float)));
-
-  std::vector<float> h_send(totalSize, static_cast<float>(globalRank));
-  CUDACHECK_TEST(cudaMemcpy(
-      sendBuf,
-      h_send.data(),
-      totalSize * sizeof(float),
-      cudaMemcpyHostToDevice));
-  CUDACHECK_TEST(cudaMemset(recvBuf, 0, totalSize * sizeof(float)));
-
-  std::vector<int64_t> h_counts(nRanks, static_cast<int64_t>(chunkSize));
-
-  int64_t* d_sendcounts = nullptr;
-  int64_t* d_recvcounts = nullptr;
-  CUDACHECK_TEST(cudaMalloc(&d_sendcounts, nRanks * sizeof(int64_t)));
-  CUDACHECK_TEST(cudaMalloc(&d_recvcounts, nRanks * sizeof(int64_t)));
-  CUDACHECK_TEST(cudaMemcpy(
-      d_sendcounts,
-      h_counts.data(),
-      nRanks * sizeof(int64_t),
-      cudaMemcpyHostToDevice));
-  CUDACHECK_TEST(cudaMemcpy(
-      d_recvcounts,
-      h_counts.data(),
-      nRanks * sizeof(int64_t),
-      cudaMemcpyHostToDevice));
-
-  // Use a separate stream for graph capture (not the fixture stream)
-  cudaStream_t cudagraph_stream;
-  CUDACHECK_TEST(cudaStreamCreate(&cudagraph_stream));
-
-  // Capture
-  cudaGraph_t graph;
-  cudaGraphExec_t instance;
-  CUDACHECK_TEST(
-      cudaStreamBeginCapture(cudagraph_stream, cudaStreamCaptureModeGlobal));
-  auto result = ctranDeviceAllToAllv(
-      sendBuf,
-      recvBuf,
-      d_sendcounts,
-      d_recvcounts,
-      commFloat,
-      comm.get(),
-      cudagraph_stream);
-  ASSERT_EQ(result, commSuccess);
-  CUDACHECK_TEST(cudaStreamEndCapture(cudagraph_stream, &graph));
-  CUDACHECK_TEST(cudaGraphInstantiate(&instance, graph, nullptr, nullptr, 0));
-
-  // Replay
-  CUDACHECK_TEST(cudaGraphLaunch(instance, cudagraph_stream));
-  CUDACHECK_TEST(cudaStreamSynchronize(cudagraph_stream));
-
-  // Verify
-  std::vector<float> h_recv(totalSize);
-  CUDACHECK_TEST(cudaMemcpy(
-      h_recv.data(),
-      recvBuf,
-      totalSize * sizeof(float),
-      cudaMemcpyDeviceToHost));
-  for (int j = 0; j < nRanks; j++) {
-    for (size_t k = 0; k < chunkSize; k++) {
-      EXPECT_EQ(h_recv[j * chunkSize + k], static_cast<float>(j))
           << "Rank " << globalRank << ": segment " << j << " element " << k;
     }
   }
 
-  CUDACHECK_TEST(cudaGraphExecDestroy(instance));
-  CUDACHECK_TEST(cudaGraphDestroy(graph));
-  CUDACHECK_TEST(cudaStreamDestroy(cudagraph_stream));
   CUDACHECK_TEST(cudaFree(sendBuf));
   CUDACHECK_TEST(cudaFree(recvBuf));
   CUDACHECK_TEST(cudaFree(d_sendcounts));
   CUDACHECK_TEST(cudaFree(d_recvcounts));
 }
 
-TEST_F(DeviceAllToAllvTest, UniformSplitCudaGraphMultiReplay) {
+// ---------------------------------------------------------------------------
+// Imbalanced: variable send/recv sizes per peer
+// sendcounts[j] = (globalRank * nRanks + j + 1) * baseChunk
+// recvcounts[j] = (j * nRanks + globalRank + 1) * baseChunk
+// This is consistent: rank r's sendcounts[j] == rank j's recvcounts[r].
+// ---------------------------------------------------------------------------
+TEST_P(DeviceAllToAllvParamTest, Imbalanced) {
   auto comm = makeCtranComm();
   ASSERT_NE(comm, nullptr);
   ASSERT_NE(comm->multiPeerTransport_, nullptr);
@@ -231,22 +197,35 @@ TEST_F(DeviceAllToAllvTest, UniformSplitCudaGraphMultiReplay) {
   }
 
   const int nRanks = numRanks;
-  const size_t chunkSize = 1024;
-  const size_t totalSize = chunkSize * nRanks;
+  const size_t baseChunk = 1024;
+
+  // Compute per-peer send/recv counts
+  std::vector<int64_t> h_sendcounts(nRanks);
+  std::vector<int64_t> h_recvcounts(nRanks);
+  size_t totalSend = 0;
+  size_t totalRecv = 0;
+  for (int j = 0; j < nRanks; j++) {
+    h_sendcounts[j] =
+        static_cast<int64_t>((globalRank * nRanks + j + 1) * baseChunk);
+    h_recvcounts[j] =
+        static_cast<int64_t>((j * nRanks + globalRank + 1) * baseChunk);
+    totalSend += h_sendcounts[j];
+    totalRecv += h_recvcounts[j];
+  }
 
   float* sendBuf = nullptr;
   float* recvBuf = nullptr;
-  CUDACHECK_TEST(cudaMalloc(&sendBuf, totalSize * sizeof(float)));
-  CUDACHECK_TEST(cudaMalloc(&recvBuf, totalSize * sizeof(float)));
+  CUDACHECK_TEST(cudaMalloc(&sendBuf, totalSend * sizeof(float)));
+  CUDACHECK_TEST(cudaMalloc(&recvBuf, totalRecv * sizeof(float)));
 
-  std::vector<float> h_send(totalSize, static_cast<float>(globalRank));
+  // Fill send buffer: all elements = globalRank
+  std::vector<float> h_send(totalSend, static_cast<float>(globalRank));
   CUDACHECK_TEST(cudaMemcpy(
       sendBuf,
       h_send.data(),
-      totalSize * sizeof(float),
+      totalSend * sizeof(float),
       cudaMemcpyHostToDevice));
-
-  std::vector<int64_t> h_counts(nRanks, static_cast<int64_t>(chunkSize));
+  CUDACHECK_TEST(cudaMemset(recvBuf, 0, totalRecv * sizeof(float)));
 
   int64_t* d_sendcounts = nullptr;
   int64_t* d_recvcounts = nullptr;
@@ -254,67 +233,47 @@ TEST_F(DeviceAllToAllvTest, UniformSplitCudaGraphMultiReplay) {
   CUDACHECK_TEST(cudaMalloc(&d_recvcounts, nRanks * sizeof(int64_t)));
   CUDACHECK_TEST(cudaMemcpy(
       d_sendcounts,
-      h_counts.data(),
+      h_sendcounts.data(),
       nRanks * sizeof(int64_t),
       cudaMemcpyHostToDevice));
   CUDACHECK_TEST(cudaMemcpy(
       d_recvcounts,
-      h_counts.data(),
+      h_recvcounts.data(),
       nRanks * sizeof(int64_t),
       cudaMemcpyHostToDevice));
 
-  cudaStream_t cudagraph_stream;
-  CUDACHECK_TEST(cudaStreamCreate(&cudagraph_stream));
-
-  cudaGraph_t graph;
-  cudaGraphExec_t instance;
-  CUDACHECK_TEST(
-      cudaStreamBeginCapture(cudagraph_stream, cudaStreamCaptureModeGlobal));
-  auto result = ctranDeviceAllToAllv(
-      sendBuf,
-      recvBuf,
-      d_sendcounts,
-      d_recvcounts,
-      commFloat,
-      comm.get(),
-      cudagraph_stream);
+  auto result = runAllToAllv(
+      sendBuf, recvBuf, d_sendcounts, d_recvcounts, commFloat, comm.get());
   ASSERT_EQ(result, commSuccess);
-  CUDACHECK_TEST(cudaStreamEndCapture(cudagraph_stream, &graph));
-  CUDACHECK_TEST(cudaGraphInstantiate(&instance, graph, nullptr, nullptr, 0));
 
-  // Replay 5 times, verify each time
-  constexpr int numIters = 5;
-  for (int iter = 0; iter < numIters; iter++) {
-    CUDACHECK_TEST(cudaMemsetAsync(
-        recvBuf, 0, totalSize * sizeof(float), cudagraph_stream));
-    CUDACHECK_TEST(cudaGraphLaunch(instance, cudagraph_stream));
-    CUDACHECK_TEST(cudaStreamSynchronize(cudagraph_stream));
+  // Verify: chunk from rank j should contain all j's
+  std::vector<float> h_recv(totalRecv);
+  CUDACHECK_TEST(cudaMemcpy(
+      h_recv.data(),
+      recvBuf,
+      totalRecv * sizeof(float),
+      cudaMemcpyDeviceToHost));
 
-    std::vector<float> h_recv(totalSize);
-    CUDACHECK_TEST(cudaMemcpy(
-        h_recv.data(),
-        recvBuf,
-        totalSize * sizeof(float),
-        cudaMemcpyDeviceToHost));
-    for (int j = 0; j < nRanks; j++) {
-      for (size_t k = 0; k < chunkSize; k++) {
-        EXPECT_EQ(h_recv[j * chunkSize + k], static_cast<float>(j))
-            << "Iter " << iter << " Rank " << globalRank << ": segment " << j
-            << " element " << k;
-      }
+  size_t offset = 0;
+  for (int j = 0; j < nRanks; j++) {
+    for (int64_t k = 0; k < h_recvcounts[j]; k++) {
+      EXPECT_EQ(h_recv[offset + k], static_cast<float>(j))
+          << "Rank " << globalRank << ": chunk from rank " << j << " element "
+          << k << " (recvcount=" << h_recvcounts[j] << ")";
     }
+    offset += h_recvcounts[j];
   }
 
-  CUDACHECK_TEST(cudaGraphExecDestroy(instance));
-  CUDACHECK_TEST(cudaGraphDestroy(graph));
-  CUDACHECK_TEST(cudaStreamDestroy(cudagraph_stream));
   CUDACHECK_TEST(cudaFree(sendBuf));
   CUDACHECK_TEST(cudaFree(recvBuf));
   CUDACHECK_TEST(cudaFree(d_sendcounts));
   CUDACHECK_TEST(cudaFree(d_recvcounts));
 }
 
-TEST_F(DeviceAllToAllvTest, UniformSplitCudaGraphChangedData) {
+// ---------------------------------------------------------------------------
+// BalancedMultiDim: uniform row counts with multiplier (multi-dim tensors)
+// ---------------------------------------------------------------------------
+TEST_P(DeviceAllToAllvParamTest, BalancedMultiDim) {
   auto comm = makeCtranComm();
   ASSERT_NE(comm, nullptr);
   ASSERT_NE(comm->multiPeerTransport_, nullptr);
@@ -324,127 +283,15 @@ TEST_F(DeviceAllToAllvTest, UniformSplitCudaGraphChangedData) {
   }
 
   const int nRanks = numRanks;
-  const size_t chunkSize = 1024;
-  const size_t totalSize = chunkSize * nRanks;
+  const size_t chunkRows = 1024;
+  const size_t numCols = 4;
+  const size_t totalElements = chunkRows * nRanks * numCols;
 
-  float* sendBuf = nullptr;
-  float* recvBuf = nullptr;
-  CUDACHECK_TEST(cudaMalloc(&sendBuf, totalSize * sizeof(float)));
-  CUDACHECK_TEST(cudaMalloc(&recvBuf, totalSize * sizeof(float)));
-
-  std::vector<int64_t> h_counts(nRanks, static_cast<int64_t>(chunkSize));
-
-  int64_t* d_sendcounts = nullptr;
-  int64_t* d_recvcounts = nullptr;
-  CUDACHECK_TEST(cudaMalloc(&d_sendcounts, nRanks * sizeof(int64_t)));
-  CUDACHECK_TEST(cudaMalloc(&d_recvcounts, nRanks * sizeof(int64_t)));
-  CUDACHECK_TEST(cudaMemcpy(
-      d_sendcounts,
-      h_counts.data(),
-      nRanks * sizeof(int64_t),
-      cudaMemcpyHostToDevice));
-  CUDACHECK_TEST(cudaMemcpy(
-      d_recvcounts,
-      h_counts.data(),
-      nRanks * sizeof(int64_t),
-      cudaMemcpyHostToDevice));
-
-  // Fill initial data for capture
-  std::vector<float> h_send(totalSize, static_cast<float>(globalRank));
-  CUDACHECK_TEST(cudaMemcpy(
-      sendBuf,
-      h_send.data(),
-      totalSize * sizeof(float),
-      cudaMemcpyHostToDevice));
-
-  cudaStream_t cudagraph_stream;
-  CUDACHECK_TEST(cudaStreamCreate(&cudagraph_stream));
-
-  cudaGraph_t graph;
-  cudaGraphExec_t instance;
-  CUDACHECK_TEST(
-      cudaStreamBeginCapture(cudagraph_stream, cudaStreamCaptureModeGlobal));
-  auto result = ctranDeviceAllToAllv(
-      sendBuf,
-      recvBuf,
-      d_sendcounts,
-      d_recvcounts,
-      commFloat,
-      comm.get(),
-      cudagraph_stream);
-  ASSERT_EQ(result, commSuccess);
-  CUDACHECK_TEST(cudaStreamEndCapture(cudagraph_stream, &graph));
-  CUDACHECK_TEST(cudaGraphInstantiate(&instance, graph, nullptr, nullptr, 0));
-
-  // Replay with different send data each iteration
-  constexpr int numIters = 3;
-  for (int iter = 0; iter < numIters; iter++) {
-    float fillVal = static_cast<float>(globalRank * 100 + iter);
-    std::vector<float> h_data(totalSize, fillVal);
-    // Use async memcpy on the graph stream to avoid ordering issues
-    CUDACHECK_TEST(cudaMemcpyAsync(
-        sendBuf,
-        h_data.data(),
-        totalSize * sizeof(float),
-        cudaMemcpyHostToDevice,
-        cudagraph_stream));
-    CUDACHECK_TEST(cudaMemsetAsync(
-        recvBuf, 0, totalSize * sizeof(float), cudagraph_stream));
-    CUDACHECK_TEST(cudaGraphLaunch(instance, cudagraph_stream));
-    CUDACHECK_TEST(cudaStreamSynchronize(cudagraph_stream));
-
-    std::vector<float> h_recv(totalSize);
-    CUDACHECK_TEST(cudaMemcpy(
-        h_recv.data(),
-        recvBuf,
-        totalSize * sizeof(float),
-        cudaMemcpyDeviceToHost));
-    for (int j = 0; j < nRanks; j++) {
-      float expected = static_cast<float>(j * 100 + iter);
-      for (size_t k = 0; k < chunkSize; k++) {
-        EXPECT_EQ(h_recv[j * chunkSize + k], expected)
-            << "Iter " << iter << " Rank " << globalRank << ": segment " << j
-            << " element " << k << " expected " << expected;
-      }
-    }
-  }
-
-  CUDACHECK_TEST(cudaGraphExecDestroy(instance));
-  CUDACHECK_TEST(cudaGraphDestroy(graph));
-  CUDACHECK_TEST(cudaStreamDestroy(cudagraph_stream));
-  CUDACHECK_TEST(cudaFree(sendBuf));
-  CUDACHECK_TEST(cudaFree(recvBuf));
-  CUDACHECK_TEST(cudaFree(d_sendcounts));
-  CUDACHECK_TEST(cudaFree(d_recvcounts));
-}
-
-#endif // TEST_CUDA_GRAPH_MODE
-
-// Multi-dimensional uniform split: split sizes are "row counts" (dim-0 slices),
-// and each row has numCols elements. The kernel multiplies counts by
-// sendcountsMultiplier/recvcountsMultiplier to get actual element counts.
-TEST_F(DeviceAllToAllvTest, UniformSplitMultiDim) {
-  auto comm = makeCtranComm();
-  ASSERT_NE(comm, nullptr);
-  ASSERT_NE(comm->multiPeerTransport_, nullptr);
-
-  if (!ctranDeviceAllToAllvSupport(comm.get())) {
-    GTEST_SKIP() << "deviceAllToAllv not supported (requires all NVLink peers)";
-  }
-
-  const int nRanks = numRanks;
-  const size_t chunkRows = 1024; // rows per peer (CTRAN minimum)
-  const size_t numCols = 4; // elements per row
-  const size_t totalRows = chunkRows * nRanks;
-  const size_t totalElements = totalRows * numCols;
-
-  // Allocate GPU buffers
   float* sendBuf = nullptr;
   float* recvBuf = nullptr;
   CUDACHECK_TEST(cudaMalloc(&sendBuf, totalElements * sizeof(float)));
   CUDACHECK_TEST(cudaMalloc(&recvBuf, totalElements * sizeof(float)));
 
-  // Fill send buffer with rank value
   std::vector<float> h_send(totalElements, static_cast<float>(globalRank));
   CUDACHECK_TEST(cudaMemcpy(
       sendBuf,
@@ -453,14 +300,12 @@ TEST_F(DeviceAllToAllvTest, UniformSplitMultiDim) {
       cudaMemcpyHostToDevice));
   CUDACHECK_TEST(cudaMemset(recvBuf, 0, totalElements * sizeof(float)));
 
-  // Split sizes are ROW counts, not element counts
   std::vector<int64_t> h_counts(nRanks, static_cast<int64_t>(chunkRows));
 
   int64_t* d_sendcounts = nullptr;
   int64_t* d_recvcounts = nullptr;
   CUDACHECK_TEST(cudaMalloc(&d_sendcounts, nRanks * sizeof(int64_t)));
   CUDACHECK_TEST(cudaMalloc(&d_recvcounts, nRanks * sizeof(int64_t)));
-
   CUDACHECK_TEST(cudaMemcpy(
       d_sendcounts,
       h_counts.data(),
@@ -472,21 +317,17 @@ TEST_F(DeviceAllToAllvTest, UniformSplitMultiDim) {
       nRanks * sizeof(int64_t),
       cudaMemcpyHostToDevice));
 
-  // Pass scalingFactor = numCols to convert row counts to element counts
-  auto result = ctranDeviceAllToAllv(
+  auto result = runAllToAllv(
       sendBuf,
       recvBuf,
       d_sendcounts,
       d_recvcounts,
       commFloat,
       comm.get(),
-      stream_,
       static_cast<int64_t>(numCols),
       static_cast<int64_t>(numCols));
   ASSERT_EQ(result, commSuccess);
-  CUDACHECK_TEST(cudaStreamSynchronize(stream_));
 
-  // Verify: segment j should contain value j (sent from rank j)
   std::vector<float> h_recv(totalElements);
   CUDACHECK_TEST(cudaMemcpy(
       h_recv.data(),
@@ -498,19 +339,122 @@ TEST_F(DeviceAllToAllvTest, UniformSplitMultiDim) {
   for (int j = 0; j < nRanks; j++) {
     for (size_t k = 0; k < elementsPerPeer; k++) {
       EXPECT_EQ(h_recv[j * elementsPerPeer + k], static_cast<float>(j))
-          << "Rank " << globalRank << ": segment " << j << " element " << k
-          << " expected " << j << " got " << h_recv[j * elementsPerPeer + k];
+          << "Rank " << globalRank << ": segment " << j << " element " << k;
     }
   }
 
-  // Cleanup
   CUDACHECK_TEST(cudaFree(sendBuf));
   CUDACHECK_TEST(cudaFree(recvBuf));
   CUDACHECK_TEST(cudaFree(d_sendcounts));
   CUDACHECK_TEST(cudaFree(d_recvcounts));
 }
 
-// Verify support check passes when pipes is initialized
+// ---------------------------------------------------------------------------
+// ImbalancedMultiDim: variable row counts with multiplier
+// ---------------------------------------------------------------------------
+TEST_P(DeviceAllToAllvParamTest, ImbalancedMultiDim) {
+  auto comm = makeCtranComm();
+  ASSERT_NE(comm, nullptr);
+  ASSERT_NE(comm->multiPeerTransport_, nullptr);
+
+  if (!ctranDeviceAllToAllvSupport(comm.get())) {
+    GTEST_SKIP() << "deviceAllToAllv not supported (requires all NVLink peers)";
+  }
+
+  const int nRanks = numRanks;
+  const size_t baseRows = 1024;
+  const size_t numCols = 4;
+
+  // Row counts per peer (variable)
+  std::vector<int64_t> h_sendRowCounts(nRanks);
+  std::vector<int64_t> h_recvRowCounts(nRanks);
+  size_t totalSendElems = 0;
+  size_t totalRecvElems = 0;
+  for (int j = 0; j < nRanks; j++) {
+    h_sendRowCounts[j] =
+        static_cast<int64_t>((globalRank * nRanks + j + 1) * baseRows);
+    h_recvRowCounts[j] =
+        static_cast<int64_t>((j * nRanks + globalRank + 1) * baseRows);
+    totalSendElems += h_sendRowCounts[j] * numCols;
+    totalRecvElems += h_recvRowCounts[j] * numCols;
+  }
+
+  float* sendBuf = nullptr;
+  float* recvBuf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&sendBuf, totalSendElems * sizeof(float)));
+  CUDACHECK_TEST(cudaMalloc(&recvBuf, totalRecvElems * sizeof(float)));
+
+  std::vector<float> h_send(totalSendElems, static_cast<float>(globalRank));
+  CUDACHECK_TEST(cudaMemcpy(
+      sendBuf,
+      h_send.data(),
+      totalSendElems * sizeof(float),
+      cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(cudaMemset(recvBuf, 0, totalRecvElems * sizeof(float)));
+
+  int64_t* d_sendcounts = nullptr;
+  int64_t* d_recvcounts = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&d_sendcounts, nRanks * sizeof(int64_t)));
+  CUDACHECK_TEST(cudaMalloc(&d_recvcounts, nRanks * sizeof(int64_t)));
+  CUDACHECK_TEST(cudaMemcpy(
+      d_sendcounts,
+      h_sendRowCounts.data(),
+      nRanks * sizeof(int64_t),
+      cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(cudaMemcpy(
+      d_recvcounts,
+      h_recvRowCounts.data(),
+      nRanks * sizeof(int64_t),
+      cudaMemcpyHostToDevice));
+
+  auto result = runAllToAllv(
+      sendBuf,
+      recvBuf,
+      d_sendcounts,
+      d_recvcounts,
+      commFloat,
+      comm.get(),
+      static_cast<int64_t>(numCols),
+      static_cast<int64_t>(numCols));
+  ASSERT_EQ(result, commSuccess);
+
+  std::vector<float> h_recv(totalRecvElems);
+  CUDACHECK_TEST(cudaMemcpy(
+      h_recv.data(),
+      recvBuf,
+      totalRecvElems * sizeof(float),
+      cudaMemcpyDeviceToHost));
+
+  size_t offset = 0;
+  for (int j = 0; j < nRanks; j++) {
+    size_t chunkElems = h_recvRowCounts[j] * numCols;
+    for (size_t k = 0; k < chunkElems; k++) {
+      EXPECT_EQ(h_recv[offset + k], static_cast<float>(j))
+          << "Rank " << globalRank << ": chunk from rank " << j << " element "
+          << k << " (recvRows=" << h_recvRowCounts[j] << ")";
+    }
+    offset += chunkElems;
+  }
+
+  CUDACHECK_TEST(cudaFree(sendBuf));
+  CUDACHECK_TEST(cudaFree(recvBuf));
+  CUDACHECK_TEST(cudaFree(d_sendcounts));
+  CUDACHECK_TEST(cudaFree(d_recvcounts));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    DeviceAllToAllv,
+    DeviceAllToAllvParamTest,
+    ::testing::Bool(),
+    [](const ::testing::TestParamInfo<bool>& info) {
+      return info.param ? "CudaGraph" : "Eager";
+    });
+
+// ---------------------------------------------------------------------------
+// Non-parameterized: support check
+// ---------------------------------------------------------------------------
+class DeviceAllToAllvTest : public ctran::CtranDistTestFixture {};
+
 TEST_F(DeviceAllToAllvTest, SupportedWithPipes) {
   auto comm = makeCtranComm();
   ASSERT_NE(comm, nullptr);
@@ -519,7 +463,6 @@ TEST_F(DeviceAllToAllvTest, SupportedWithPipes) {
     GTEST_SKIP() << "MultiPeerTransport not available (requires NVLink peers)";
   }
 
-  // Should be supported with MultiPeerTransport and NVLink peers
   EXPECT_TRUE(ctranDeviceAllToAllvSupport(comm.get()));
 }
 
