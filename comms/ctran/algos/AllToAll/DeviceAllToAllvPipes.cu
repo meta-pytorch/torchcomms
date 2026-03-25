@@ -5,9 +5,6 @@
 #include <cstddef>
 #include "comms/ctran/algos/AllToAll/Types.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
-#include "comms/ctran/algos/DevAlgoImpl.cuh"
-#include "comms/ctran/algos/DevCommon.cuh"
-#include "comms/ctran/gpe/CtranGpeDev.h"
 #include "comms/pipes/DeviceSpan.cuh"
 #include "comms/pipes/Transport.cuh"
 
@@ -26,16 +23,9 @@ computeDisplacement(const int64_t* counts_d, int rank) {
 }
 
 __global__ void ncclKernelDeviceAllToAllvPipes(
-    int* flag,
-    CtranAlgoDeviceState* devState,
+    int* /* flag */,
+    CtranAlgoDeviceState* /* devState */,
     ctran::device_alltoallv_pipes::KernArgs args) {
-  const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
-
-  if (flag && gtIdx == 0) {
-    ctran::device::devLoadAbortFlags(flag, devState);
-    ctran::device::KernelStartGpe(flag);
-  }
-
   const int nLocalRanks = args.nLocalRanks;
   const int myRank = args.myRank;
   const size_t elementSize = args.elementSize;
@@ -103,10 +93,6 @@ __global__ void ncclKernelDeviceAllToAllvPipes(
           static_cast<char*>(args.recvbuff) + recvOffset,
           recvBytes);
     }
-  }
-
-  if (flag && gtIdx == 0) {
-    ctran::device::KernelWaitGpeTerminate(flag);
   }
 }
 
