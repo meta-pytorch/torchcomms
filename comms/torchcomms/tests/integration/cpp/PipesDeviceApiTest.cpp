@@ -241,7 +241,8 @@ void PipesDeviceApiTest::testLocalBufferRegistration(
   // backend_window is null (only GIN uses backend_window).
   ASSERT_NE(src_buf.base_ptr, nullptr) << "Buffer base_ptr should not be null";
   ASSERT_GT(src_buf.size, 0u) << "Buffer size should be positive";
-  EXPECT_NE(src_buf.lkey, 0u) << "Pipes backend should set lkey for IBGDA put";
+  // lkey is only set when IBGDA peers exist; on NVLink-only topologies
+  // (IB disabled) it will be 0, which is valid — NVLink puts never use lkey.
   EXPECT_EQ(src_buf.backend_window, nullptr)
       << "Pipes backend should not set backend_window";
 
