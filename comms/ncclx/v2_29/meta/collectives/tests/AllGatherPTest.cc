@@ -12,23 +12,22 @@
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 
-class AllGatherPTest : public ::testing::Test {
+class AllGatherPTest : public NcclxBaseTest {
  public:
   AllGatherPTest() = default;
   void SetUp() override {
     setenv("NCCL_CTRAN_ENABLE", "1", 1);
-    std::tie(this->localRank, this->globalRank, this->numRanks) = getMpiInfo();
+    NcclxBaseTest::SetUp();
 
-    this->comm =
-        createNcclComm(this->globalRank, this->numRanks, this->localRank);
+    comm = createNcclComm(globalRank, numRanks, localRank, bootstrap_.get());
 
-    CUDACHECK_TEST(cudaSetDevice(localRank));
     CUDACHECK_TEST(cudaStreamCreate(&stream));
   }
 
   void TearDown() override {
     NCCLCHECK_TEST(ncclCommDestroy(comm));
     CUDACHECK_TEST(cudaStreamDestroy(stream));
+    NcclxBaseTest::TearDown();
   }
 
   void* prepareBuf(size_t bufSize, MemAllocType memType) {
@@ -50,9 +49,6 @@ class AllGatherPTest : public ::testing::Test {
   }
 
  protected:
-  int localRank{0};
-  int globalRank{0};
-  int numRanks{0};
   ncclComm_t comm;
   cudaStream_t stream;
 };
