@@ -332,6 +332,16 @@ ncclResult_t ncclWinLocalRegisterBuffer(
     return ncclInternalError;
   }
 
+  // If no IBGDA peers exist (e.g. IB disabled, NVLink-only topology),
+  // skip registration and return success with a zero lkey. The lkey is
+  // only used for IBGDA WQE construction during RDMA writes; NVLink puts
+  // never read it.  This mirrors HostWindow::registerLocalBuffer which
+  // guards the same call with nIbgdaPeers > 0.
+  if (mpt->ibgda_peer_ranks().empty()) {
+    *outLkey = 0;
+    return ncclSuccess;
+  }
+
   try {
     auto ibgdaBuf = mpt->localRegisterIbgdaBuffer(ptr, size);
     *outLkey = ibgdaBuf.lkey.value;
