@@ -87,7 +87,7 @@ void launchPipesPutKernel(
     cudaStream_t stream);
 
 // Launch device put kernel with signal + counter - performs put_signal_counter
-// followed by flush. Does NOT call wait_local (counter may be 0 for NVLink).
+// followed by flush. Does NOT call wait_counter (counter may be 0 for NVLink).
 void launchPipesPutCounterKernel(
     DeviceWindowPipes* win,
     RegisteredBufferPipes src_buf,
@@ -113,9 +113,9 @@ void launchPipesResetCounterKernel(
     int counter_id,
     cudaStream_t stream);
 
-// Launch wait_local kernel - spin-polls aggregated counter until satisfied.
+// Launch wait_counter kernel - spin-polls aggregated counter until satisfied.
 // Only meaningful for IBGDA peers (counter stays 0 for NVLink-only).
-void launchPipesWaitLocalKernel(
+void launchPipesWaitCounterKernel(
     DeviceWindowPipes* win,
     int counter_id,
     CmpOp cmp,

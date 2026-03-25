@@ -186,7 +186,7 @@ __device__ void torchcomms_reset_signal(
 
 // Wait for local counter to reach expected value (>=)
 // Returns: 0 on success, negative on error
-__device__ int torchcomms_wait_local(
+__device__ int torchcomms_wait_counter(
     TorchCommsWindowHandle win,
     int counter_id,
     unsigned long long expected_value);
