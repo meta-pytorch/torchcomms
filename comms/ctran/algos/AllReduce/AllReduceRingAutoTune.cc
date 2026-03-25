@@ -65,7 +65,6 @@ getAutoTunedPipeline(size_t messageBytes, int nRanks, GpuArch arch) {
   static constexpr PipelineTier kDefaultTiers[] = {
     { 32ULL * 1024,          1},
     {  1ULL * 1024 * 1024,   2},
-    { 16ULL * 1024 * 1024,   4},
     { 32ULL * 1024 * 1024,   2},
     {kMax,                   1},
   };
