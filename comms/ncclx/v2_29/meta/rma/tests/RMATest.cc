@@ -11,7 +11,7 @@
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 
-class RMATest : public ::testing::Test {
+class RMATest : public NcclxBaseTest {
  public:
   RMATest() = default;
   ncclComm_t comm{nullptr};
@@ -21,18 +21,17 @@ class RMATest : public ::testing::Test {
     setenv("NCCL_CTRAN_ENABLE", "1", 0); // enable ctran
     setenv("NCCL_CTRAN_IB_EPOCH_LOCK_ENFORCE_CHECK", "true", 0);
 
-    std::tie(this->localRank, this->globalRank, this->numRanks) = getMpiInfo();
+    NcclxBaseTest::SetUp();
 
-    CUDACHECK_TEST(cudaSetDevice(this->localRank));
-    this->comm =
-        createNcclComm(this->globalRank, this->numRanks, this->localRank);
-    ASSERT_NE(this->comm, nullptr);
+    comm = createNcclComm(globalRank, numRanks, localRank, bootstrap_.get());
+    ASSERT_NE(comm, nullptr);
   }
   void TearDown() override {
     // Destroy the communicator at the end
-    NCCLCHECK_TEST(ncclCommDestroy(this->comm));
+    NCCLCHECK_TEST(ncclCommDestroy(comm));
     // Check that all allocated memory segments have been freed
     EXPECT_TRUE(segments.empty()) << "Not all memory segments were freed";
+    NcclxBaseTest::TearDown();
   }
 
   void barrier(ncclComm_t ncclComm, cudaStream_t stream) {
@@ -92,9 +91,6 @@ class RMATest : public ::testing::Test {
     }
   }
 
-  int localRank{0};
-  int globalRank{0};
-  int numRanks{0};
   std::vector<TestMemSegment> segments;
 };
 
@@ -547,8 +543,8 @@ TEST_P(NvlEnabledTestParam, ncclWinGetAttributes) {
   EnvRAII envBackend(NCCL_CTRAN_BACKENDS, backends);
 
   // create a test comm using the provided backends
-  ncclComm_t comm = createNcclComm(
-      this->globalRank, this->numRanks, this->localRank, false, nullptr);
+  ncclComm_t comm =
+      createNcclComm(globalRank, numRanks, localRank, bootstrap_.get());
   ASSERT_NE(comm, nullptr);
 
   auto statex = comm->ctranComm_->statex_.get();
