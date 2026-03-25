@@ -275,6 +275,17 @@ inline commResult_t sendRecvImpl(
     }
   }
 
+  // If abort fired during PUT issue loop, not all PUTs were issued.
+  // Throw immediately — no point waiting for issued PUTs since
+  // waitRequest would just detect the abort and throw.
+  if (putReqs.size() < sendOpGroup.size() && comm->testAbort()) {
+    throw ctran::utils::Exception(
+        "comm aborted during sendRecv PUT issuance",
+        commRemoteError,
+        comm->logMetaData_.rank,
+        comm->logMetaData_.commHash);
+  }
+
   // Wait for all PUT messages to complete
   for (auto i = 0; i < sendOpGroup.size(); i++) {
     auto op = sendOpGroup[i];
