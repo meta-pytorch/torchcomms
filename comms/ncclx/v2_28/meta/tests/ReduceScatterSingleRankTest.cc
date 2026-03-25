@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <cstddef>
 #include <random>
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
@@ -29,7 +30,8 @@ class ReduceScatterSingleRankTest : public NcclxBaseTest {
     if (numRanks != 1) {
       GTEST_SKIP() << "This test requires exactly 1 rank, got " << numRanks;
     }
-    comm = createNcclComm(globalRank, numRanks, localRank);
+    comm = ncclx::test::createNcclComm(
+        globalRank, numRanks, localRank, bootstrap_.get());
     CUDACHECK_TEST(cudaStreamCreate(&stream));
   }
 

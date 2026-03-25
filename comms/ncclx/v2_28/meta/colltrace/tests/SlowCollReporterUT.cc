@@ -10,7 +10,7 @@
 #include <filesystem>
 #include <string>
 
-#include "comms/ncclx/v2_28/meta/logger/tests/ScubaLoggerTestMixin.h"
+#include "comms/ncclx/meta/logger/tests/ScubaLoggerTestMixin.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/colltrace/CollTrace.h"

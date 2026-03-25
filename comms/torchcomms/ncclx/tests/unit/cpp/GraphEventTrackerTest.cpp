@@ -37,8 +37,6 @@ class GraphEventTrackerTest : public TorchCommNCCLXTest {
             SetArgPointee<2>(graph_id),
             SetArgPointee<3>(graph),
             Return(cudaSuccess)));
-    ON_CALL(*cuda_mock_, launchHostFunc(_, _, _))
-        .WillByDefault(Return(cudaSuccess));
     ON_CALL(*cuda_mock_, userObjectCreate(_, _, _, _, _))
         .WillByDefault(DoAll(
             SetArgPointee<0>(reinterpret_cast<cudaUserObject_t>(0x3000)),
@@ -75,7 +73,7 @@ class GraphEventTrackerTest : public TorchCommNCCLXTest {
   void setupFinalizeExpectations(TestTorchCommNCCLX& comm) {
     EXPECT_CALL(*cuda_mock_, eventDestroy(_))
         .WillRepeatedly(Return(cudaSuccess));
-    EXPECT_CALL(*cuda_mock_, free(_)).WillOnce(Return(cudaSuccess));
+    EXPECT_CALL(*cuda_mock_, free(_)).WillRepeatedly(Return(cudaSuccess));
     EXPECT_CALL(*cuda_mock_, streamDestroy(_)).WillOnce(Return(cudaSuccess));
     EXPECT_CALL(*nccl_mock_, commDestroy(_)).WillOnce(Return(ncclSuccess));
     comm.finalize();
@@ -83,8 +81,6 @@ class GraphEventTrackerTest : public TorchCommNCCLXTest {
 };
 
 TEST_F(GraphEventTrackerTest, GraphTimeoutCausesProcessDeath) {
-  setupCCAExpectations(0, 0, 1);
-
   EXPECT_DEATH(
       {
         cuda_mock_->setupDefaultBehaviors();
@@ -116,8 +112,6 @@ TEST_F(GraphEventTrackerTest, GraphTimeoutCausesProcessDeath) {
 TEST_F(
     GraphEventTrackerTest,
     GraphTimeoutAfterSuccessfulReplayCausesProcessDeath) {
-  setupCCAExpectations(0, 0, 1);
-
   // After a first replay completes, a second that hangs is still detected
   // as a timeout.  The sequence:
   //   1. end_event NOT REACHED  (first poll — replay in progress)
@@ -158,8 +152,6 @@ TEST_F(
 }
 
 TEST_F(GraphEventTrackerTest, GraphCaptureWorkObjectsDestroyedAfterCapture) {
-  setupCCAExpectations(1, 2, 1);
-
   auto comm = createMockedTorchComm();
   cuda_mock_->setupDefaultBehaviors();
   nccl_mock_->setupDefaultBehaviors();
@@ -186,8 +178,6 @@ TEST_F(GraphEventTrackerTest, GraphCaptureWorkObjectsDestroyedAfterCapture) {
 }
 
 TEST_F(GraphEventTrackerTest, GraphDestroyCleanupDestroysMonitorEvents) {
-  setupCCAExpectations(1, 2, 1);
-
   auto comm = createMockedTorchComm();
   cuda_mock_->setupDefaultBehaviors();
   nccl_mock_->setupDefaultBehaviors();
@@ -230,8 +220,6 @@ TEST_F(GraphEventTrackerTest, GraphDestroyCleanupDestroysMonitorEvents) {
 }
 
 TEST_F(GraphEventTrackerTest, CheckAllReturnsOKWhenNoEntries) {
-  setupCCAExpectations(1, 2, 1);
-
   auto comm = createMockedTorchComm();
   cuda_mock_->setupDefaultBehaviors();
   nccl_mock_->setupDefaultBehaviors();
@@ -257,8 +245,6 @@ TEST_F(GraphEventTrackerTest, CheckAllReturnsOKWhenNoEntries) {
 }
 
 TEST_F(GraphEventTrackerTest, CheckAllReturnsErrorOnCudaFailure) {
-  setupCCAExpectations(0, 0, 1);
-
   EXPECT_DEATH(
       {
         cuda_mock_->setupDefaultBehaviors();
@@ -286,8 +272,6 @@ TEST_F(GraphEventTrackerTest, CheckAllReturnsErrorOnCudaFailure) {
 }
 
 TEST_F(GraphEventTrackerTest, ReplayCounterResetsTimer) {
-  setupCCAExpectations(1, 2, 1);
-
   cuda_mock_->setupDefaultBehaviors();
   nccl_mock_->setupDefaultBehaviors();
 
@@ -299,14 +283,18 @@ TEST_F(GraphEventTrackerTest, ReplayCounterResetsTimer) {
   auto events = setupGraphCaptureEvents();
   setupEventRecordMocks();
 
-  cudaHostFn_t captured_replay_fn = nullptr;
-  void* captured_replay_data = nullptr;
-  // Override launchHostFunc to capture the replay callback
-  ON_CALL(*cuda_mock_, launchHostFunc(_, _, _))
-      .WillByDefault(DoAll(
-          SaveArg<1>(&captured_replay_fn),
-          SaveArg<2>(&captured_replay_data),
-          Return(cudaSuccess)));
+  // Capture the replay counter pointer from hostAlloc.
+  // DeviceCounter::create calls api->hostAlloc(sizeof(uint64_t)).
+  uint64_t* captured_counter = nullptr;
+  ON_CALL(*cuda_mock_, hostAlloc(_, _, _))
+      .WillByDefault(
+          [&captured_counter](void** ptr, size_t size, unsigned int) {
+            *ptr = std::calloc(1, size);
+            if (size == sizeof(uint64_t)) {
+              captured_counter = static_cast<uint64_t*>(*ptr);
+            }
+            return cudaSuccess;
+          });
 
   auto tensor = createTestTensor({10, 10});
   auto work = comm->send(tensor, 1, true);
@@ -318,8 +306,7 @@ TEST_F(GraphEventTrackerTest, ReplayCounterResetsTimer) {
   ON_CALL(*cuda_mock_, eventQuery(events.end))
       .WillByDefault(Return(cudaErrorNotReady));
 
-  ASSERT_NE(captured_replay_fn, nullptr);
-  ASSERT_NE(captured_replay_data, nullptr);
+  ASSERT_NE(captured_counter, nullptr);
 
   std::atomic<bool> stop_replays{false};
   std::thread replay_thread([&]() {
@@ -327,7 +314,10 @@ TEST_F(GraphEventTrackerTest, ReplayCounterResetsTimer) {
       // NOLINTNEXTLINE(facebook-hte-BadCall-sleep_for)
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
       if (!stop_replays.load()) {
-        captured_replay_fn(captured_replay_data);
+        // Simulate GPU kernel incrementing the counter on replay.
+        // In the mock, mapped memory is plain host memory, so a direct
+        // increment is equivalent to what launchAtomicAdd does.
+        ++(*captured_counter);
       }
     }
   });
@@ -351,8 +341,6 @@ TEST_F(GraphEventTrackerTest, ReplayCounterResetsTimer) {
 // destroyAll should destroy exactly the entry-owned events. We track which
 // events are destroyed to verify precise cleanup.
 TEST_F(GraphEventTrackerTest, DestroyAllCleansUpGraphEntryEvents) {
-  setupCCAExpectations(1, 2, 1);
-
   auto comm = createMockedTorchComm();
   cuda_mock_->setupDefaultBehaviors();
   nccl_mock_->setupDefaultBehaviors();
@@ -383,7 +371,7 @@ TEST_F(GraphEventTrackerTest, DestroyAllCleansUpGraphEntryEvents) {
             destroyed_events.push_back(event);
           },
           Return(cudaSuccess)));
-  EXPECT_CALL(*cuda_mock_, free(_)).WillOnce(Return(cudaSuccess));
+  EXPECT_CALL(*cuda_mock_, free(_)).WillRepeatedly(Return(cudaSuccess));
   EXPECT_CALL(*cuda_mock_, streamDestroy(_)).WillOnce(Return(cudaSuccess));
   EXPECT_CALL(*nccl_mock_, commDestroy(_)).WillOnce(Return(ncclSuccess));
 
@@ -403,8 +391,6 @@ TEST_F(GraphEventTrackerTest, DestroyAllCleansUpGraphEntryEvents) {
 // Verify that the cleanup callback only sets the released flag when a graph
 // contains multiple captured collectives, without destroying events directly.
 TEST_F(GraphEventTrackerTest, MultipleCollectivesInSameGraphCleanedUp) {
-  setupCCAExpectations(1, 2, 1);
-
   auto comm = createMockedTorchComm();
   cuda_mock_->setupDefaultBehaviors();
   nccl_mock_->setupDefaultBehaviors();
@@ -468,8 +454,6 @@ TEST_F(GraphEventTrackerTest, MultipleCollectivesInSameGraphCleanedUp) {
 // Verify that when userObjectCreate fails during graph capture init,
 // the pool entry is harmless (no leak) and the error propagates.
 TEST_F(GraphEventTrackerTest, UserObjectCreateFailureCleanup) {
-  setupCCAExpectations(1, 2, 1);
-
   auto comm = createMockedTorchComm();
   cuda_mock_->setupDefaultBehaviors();
   nccl_mock_->setupDefaultBehaviors();
@@ -493,7 +477,7 @@ TEST_F(GraphEventTrackerTest, UserObjectCreateFailureCleanup) {
   // The work was never fully created, so cleanup needs to handle the
   // partially-initialized state gracefully.
   EXPECT_CALL(*cuda_mock_, eventDestroy(_)).WillRepeatedly(Return(cudaSuccess));
-  EXPECT_CALL(*cuda_mock_, free(_)).WillOnce(Return(cudaSuccess));
+  EXPECT_CALL(*cuda_mock_, free(_)).WillRepeatedly(Return(cudaSuccess));
   EXPECT_CALL(*cuda_mock_, streamDestroy(_)).WillOnce(Return(cudaSuccess));
   EXPECT_CALL(*nccl_mock_, commDestroy(_)).WillOnce(Return(ncclSuccess));
 
@@ -503,8 +487,6 @@ TEST_F(GraphEventTrackerTest, UserObjectCreateFailureCleanup) {
 // Verify that when graphRetainUserObject fails, the RAII guard releases the
 // user_object (via userObjectRelease) and the error propagates.
 TEST_F(GraphEventTrackerTest, GraphRetainUserObjectFailureCleanup) {
-  setupCCAExpectations(1, 2, 1);
-
   auto comm = createMockedTorchComm();
   cuda_mock_->setupDefaultBehaviors();
   nccl_mock_->setupDefaultBehaviors();
@@ -529,7 +511,7 @@ TEST_F(GraphEventTrackerTest, GraphRetainUserObjectFailureCleanup) {
   switchToReplayMode();
 
   EXPECT_CALL(*cuda_mock_, eventDestroy(_)).WillRepeatedly(Return(cudaSuccess));
-  EXPECT_CALL(*cuda_mock_, free(_)).WillOnce(Return(cudaSuccess));
+  EXPECT_CALL(*cuda_mock_, free(_)).WillRepeatedly(Return(cudaSuccess));
   EXPECT_CALL(*cuda_mock_, streamDestroy(_)).WillOnce(Return(cudaSuccess));
   EXPECT_CALL(*nccl_mock_, commDestroy(_)).WillOnce(Return(ncclSuccess));
 
@@ -537,8 +519,6 @@ TEST_F(GraphEventTrackerTest, GraphRetainUserObjectFailureCleanup) {
 }
 
 TEST_F(GraphEventTrackerTest, CheckAllCleansUpReleasedGraphs) {
-  setupCCAExpectations(1, 2, 1);
-
   auto comm = createMockedTorchComm();
   cuda_mock_->setupDefaultBehaviors();
   nccl_mock_->setupDefaultBehaviors();
@@ -589,8 +569,6 @@ TEST_F(GraphEventTrackerTest, CheckAllCleansUpReleasedGraphs) {
 }
 
 TEST_F(GraphEventTrackerTest, MultipleGraphsOnlyReleasedOneCleanedUp) {
-  setupCCAExpectations(1, 2, 1);
-
   auto comm = createMockedTorchComm();
   cuda_mock_->setupDefaultBehaviors();
   nccl_mock_->setupDefaultBehaviors();
@@ -692,8 +670,6 @@ TEST_F(GraphEventTrackerTest, MultipleGraphsOnlyReleasedOneCleanedUp) {
 }
 
 TEST_F(GraphEventTrackerTest, DestroyAllIgnoresReleasedFlag) {
-  setupCCAExpectations(1, 2, 1);
-
   auto comm = createMockedTorchComm();
   cuda_mock_->setupDefaultBehaviors();
   nccl_mock_->setupDefaultBehaviors();
@@ -737,7 +713,7 @@ TEST_F(GraphEventTrackerTest, DestroyAllIgnoresReleasedFlag) {
             destroyed_events.push_back(event);
           },
           Return(cudaSuccess)));
-  EXPECT_CALL(*cuda_mock_, free(_)).WillOnce(Return(cudaSuccess));
+  EXPECT_CALL(*cuda_mock_, free(_)).WillRepeatedly(Return(cudaSuccess));
   EXPECT_CALL(*cuda_mock_, streamDestroy(_)).WillOnce(Return(cudaSuccess));
   EXPECT_CALL(*nccl_mock_, commDestroy(_)).WillOnce(Return(ncclSuccess));
 
@@ -755,8 +731,6 @@ TEST_F(GraphEventTrackerTest, DestroyAllIgnoresReleasedFlag) {
 }
 
 TEST_F(GraphEventTrackerTest, EventResetByReplayDefeatsTimeout) {
-  setupCCAExpectations(0, 0, 1);
-
   EXPECT_DEATH(
       {
         cuda_mock_->setupDefaultBehaviors();
@@ -807,8 +781,6 @@ TEST_F(GraphEventTrackerTest, EventResetByReplayDefeatsTimeout) {
 // Test that alltoallv_dynamic_dispatch works correctly during graph capture
 // mode. The work object stores output tensors and CPU pointer tensor.
 TEST_F(GraphEventTrackerTest, GraphCaptureDispatchSavesOutputTensors) {
-  setupCCAExpectations(1, 2, 1);
-
   auto comm = createMockedTorchComm();
   cuda_mock_->setupDefaultBehaviors();
   nccl_mock_->setupDefaultBehaviors();
@@ -871,8 +843,6 @@ TEST_F(GraphEventTrackerTest, GraphCaptureDispatchSavesOutputTensors) {
 // Test that alltoallv_dynamic_combine works correctly during graph capture
 // mode. The work object stores the output tensor.
 TEST_F(GraphEventTrackerTest, GraphCaptureCombineSavesOutputTensor) {
-  setupCCAExpectations(1, 2, 1);
-
   auto comm = createMockedTorchComm();
   cuda_mock_->setupDefaultBehaviors();
   nccl_mock_->setupDefaultBehaviors();
@@ -926,7 +896,6 @@ TEST_F(GraphEventTrackerTest, GraphCaptureCombineSavesOutputTensor) {
 
 TEST_F(GraphEventTrackerTest, TimeoutMonitoringDisabled_NoStartEndEvents) {
   resetGraphTimeoutMonitoringCacheForTest();
-  setupCCAExpectations(1, 2, 1);
 
   auto comm = createMockedTorchComm();
   cuda_mock_->setupDefaultBehaviors();
@@ -974,7 +943,6 @@ TEST_F(
     GraphEventTrackerTest,
     TimeoutMonitoringDisabled_CpuTensorsStillTransferred) {
   resetGraphTimeoutMonitoringCacheForTest();
-  setupCCAExpectations(1, 2, 1);
 
   auto comm = createMockedTorchComm();
   cuda_mock_->setupDefaultBehaviors();
@@ -1044,7 +1012,6 @@ TEST_F(
     GraphEventTrackerTest,
     TimeoutMonitoringDisabled_CheckGraphEventsNoEventQueries) {
   resetGraphTimeoutMonitoringCacheForTest();
-  setupCCAExpectations(1, 2, 1);
 
   auto comm = createMockedTorchComm();
   cuda_mock_->setupDefaultBehaviors();

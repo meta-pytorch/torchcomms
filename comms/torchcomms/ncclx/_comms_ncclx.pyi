@@ -6,7 +6,7 @@ from typing import Any, List, Union
 import torch
 
 class TorchCommWindowNCCLXGin:
-    def tensor_register(self, tensor: torch.Tensor) -> None: ...
+    def tensor_register(self, tensor: torch.Tensor, owning: bool = True) -> None: ...
     def tensor_deregister(self) -> None: ...
     def get_device_window(
         self,
@@ -39,8 +39,6 @@ class TorchCommNCCLX:
         input: torch.Tensor,
         output_split_sizes: torch.Tensor,
         input_split_sizes: torch.Tensor,
-        output_split_offsets: torch.Tensor,
-        input_split_offsets: torch.Tensor,
         async_op: bool,
     ) -> TorchWork: ...
     def alltoallv_dynamic_dispatch(

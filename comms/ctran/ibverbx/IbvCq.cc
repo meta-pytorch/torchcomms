@@ -2,6 +2,8 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include <utility>
+
 #include <fmt/format.h>
 #include <folly/logging/xlog.h>
 
@@ -58,10 +60,8 @@ IbvCq::IbvCq(IbvCq&& other) noexcept {
 }
 
 IbvCq& IbvCq::operator=(IbvCq&& other) noexcept {
-  cq_ = other.cq_;
-  deviceId_ = other.deviceId_;
-  other.cq_ = nullptr;
-  other.deviceId_ = -1;
+  std::swap(cq_, other.cq_);
+  std::swap(deviceId_, other.deviceId_);
   return *this;
 }
 

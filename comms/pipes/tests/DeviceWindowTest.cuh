@@ -100,19 +100,6 @@ void testDeviceWindowReadSignalGroup(
     uint64_t* results);
 
 /**
- * Test: DeviceWindow NVL put() via generic API
- *
- * Verifies the generic put() dispatches to NVL correctly
- * and copies data between buffers.
- */
-void testDeviceWindowNvlPut(
-    int myRank,
-    int nRanks,
-    char* dst_d,
-    const char* src_d,
-    std::size_t nbytes);
-
-/**
  * Test: DeviceWindow signal_all + read_signal aggregate
  *
  * Verifies signal_all() signals all peers and read_signal()
@@ -218,5 +205,62 @@ void testDeviceWindowNvlBidirectionalOffsetPutSignal(
     std::size_t src_offset,
     std::size_t nbytes,
     int signalId);
+
+/**
+ * Test: DeviceWindow get_nvlink_address()
+ *
+ * Verifies that get_nvlink_address() returns the correct NVL-mapped
+ * pointer for NVL peers and nullptr for self.
+ *
+ * @param myRank Rank ID
+ * @param nRanks Total number of ranks
+ * @param windowBuf_d Device buffer used as the "window buffer" for peers
+ * @param results Output: one int64 per rank (the returned pointer value)
+ */
+void testDeviceWindowGetNvlinkAddress(
+    int myRank,
+    int nRanks,
+    void* windowBuf_d,
+    int64_t* results);
+
+/**
+ * Test: DeviceWindow offset-based NVL put_signal_counter()
+ *
+ * Verifies the offset-based put_signal_counter() copies data to the
+ * correct region and signals the target peer. On NVL, the counter
+ * parameter is silently ignored (same as put_signal).
+ */
+void testDeviceWindowNvlOffsetPutSignalCounter(
+    int myRank,
+    int nRanks,
+    char* windowBuf_d,
+    const char* srcBuf_d,
+    std::size_t srcBufSize,
+    std::size_t dst_offset,
+    std::size_t src_offset,
+    std::size_t nbytes,
+    int signalId,
+    uint64_t signalVal,
+    int counterId,
+    uint64_t counterVal);
+
+/**
+ * Test: DeviceWindow offset-based NVL put_counter()
+ *
+ * Verifies the offset-based put_counter() copies data to the correct
+ * region. On NVL, the counter parameter is silently ignored (same as
+ * plain put).
+ */
+void testDeviceWindowNvlOffsetPutCounter(
+    int myRank,
+    int nRanks,
+    char* windowBuf_d,
+    const char* srcBuf_d,
+    std::size_t srcBufSize,
+    std::size_t dst_offset,
+    std::size_t src_offset,
+    std::size_t nbytes,
+    int counterId,
+    uint64_t counterVal);
 
 } // namespace comms::pipes::test

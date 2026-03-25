@@ -8,8 +8,12 @@
 #include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include <torch/csrc/utils/pybind.h>
 
+#include "comms/torchcomms/BackendWrapper.hpp"
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/TorchWork.hpp"
+
+// Forward declaration for flight recorder submodule init
+void init_flight_recorder_bindings(py::module_& m);
 
 namespace py = pybind11;
 using namespace torch::comms;
@@ -314,7 +318,43 @@ Pre-hooks are called before each collective operation starts.
       .def_readonly(
           "op_id",
           &TorchComm::PreHookArgs::op_id,
-          "Unique operation ID for correlation with post-hook");
+          "Unique operation ID for correlation with post-hook")
+      .def_property_readonly(
+          "input_tensor",
+          [](const TorchComm::PreHookArgs& self) -> py::object {
+            if (self.input_tensor) {
+              return py::cast(*self.input_tensor);
+            }
+            return py::none();
+          },
+          "Input tensor for the operation, or None if not applicable")
+      .def_property_readonly(
+          "output_tensor",
+          [](const TorchComm::PreHookArgs& self) -> py::object {
+            if (self.output_tensor) {
+              return py::cast(*self.output_tensor);
+            }
+            return py::none();
+          },
+          "Output tensor for the operation, or None if not applicable")
+      .def_property_readonly(
+          "input_tensors",
+          [](const TorchComm::PreHookArgs& self) -> py::object {
+            if (self.input_tensors) {
+              return py::cast(*self.input_tensors);
+            }
+            return py::none();
+          },
+          "Input tensor list for the operation, or None if not applicable")
+      .def_property_readonly(
+          "output_tensors",
+          [](const TorchComm::PreHookArgs& self) -> py::object {
+            if (self.output_tensors) {
+              return py::cast(*self.output_tensors);
+            }
+            return py::none();
+          },
+          "Output tensor list for the operation, or None if not applicable");
 
   // Bind PostHookArgs struct for post-hook callbacks
   py::class_<TorchComm::PostHookArgs>(
@@ -372,8 +412,8 @@ Post-hooks are called after each collective operation completes.
           })
       .def(
           "tensor_register",
-          [](TorchCommWindow& self, const at::Tensor& tensor) {
-            self.tensor_register(tensor);
+          [](TorchCommWindow& self, const at::Tensor& tensor, bool owning) {
+            self.tensor_register(tensor, owning);
           },
           R"(
 Register a tensor buffer with the window for RMA operations.
@@ -381,17 +421,22 @@ Register a tensor buffer with the window for RMA operations.
 Args:
     tensor (torch.Tensor): Contiguous tensor to register. Must be allocated
         within a memory pool created via ``torchcomms.get_mem_allocator()``.
+    owning (bool): If True (default), the window holds a reference to the tensor,
+        keeping its storage alive. If False, the window does NOT hold a reference
+        — the caller must ensure the tensor remains alive for the window's lifetime.
+        Use ``owning=False`` in CUDA graph capture mode to allow tensor memory
+        reuse within the graph.
 
 Raises:
     RuntimeError: If tensor is not contiguous or a buffer is already registered.
 
 Note:
-    In CUDA graph capture mode, the window holds a **non-owned** reference to the
+    When ``owning=False``, the window holds a **non-owned** reference to the
     underlying buffer — it does not prevent the tensor from being deallocated.
     The caller must ensure the tensor remains alive for the entire lifetime of
-    the window, and the window must not outlive the CUDA graph it was captured in.
+    the window. Use this mode when capturing CUDA graphs to allow memory reuse.
 
-Example:
+Example (standard usage with owning=True):
 
 .. code-block:: python
 
@@ -403,10 +448,45 @@ Example:
         buffer = torch.ones([size], dtype=dtype, device=device)
 
     window = comm.new_window()
-    window.tensor_register(buffer)
+    window.tensor_register(buffer)  # owning=True is default
+
+Example (CUDA graph capture with owning=False for memory reuse):
+
+.. code-block:: python
+
+    import torch
+    import torchcomms
+
+    # Create communicator and window outside the graph
+    comm = torchcomms.TorchCommNCCLX(...)
+    h_win = comm.new_window()
+
+    # Capture CUDA graph with non-owning tensor registration
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        buf = torch.empty([size], dtype=dtype, device=device)
+        h_win.tensor_register(buf, owning=False)
+        d_win = h_win.get_device_window()
+
+        # Launch kernels using d_win
+        kernel1(d_win)
+        kernel2(d_win)
+
+        # Now done using d_win and buf, delete it
+        del buf  # Physical memory can be reused within graph
+
+        # NOTE: d_win cannot be used for RMA ops after del buf in this capture,
+        # but it WILL work during graph replay (CUDA replays captured addresses)
+
+    # During replay, d_win uses the captured buffer address
+    graph.replay()
+
+    # NOTE: tensor_register() currently doesn't work inside graph capture as it
+    # calls cudaSyncrhonize() etc, this needs to be fixed separately.
 
       )",
           py::arg("tensor"),
+          py::arg("owning") = true,
           py::call_guard<py::gil_scoped_release>())
       .def(
           "tensor_deregister",
@@ -914,6 +994,11 @@ Args:
           "Get communicator backend name",
           py::call_guard<py::gil_scoped_release>())
       .def(
+          "get_backend_version",
+          &TorchComm::getBackendVersion,
+          "Get communicator backend version",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
           "get_backend_impl",
           &TorchComm::getBackendImpl,
           R"(
@@ -1015,6 +1100,26 @@ Example:
           py::arg("init_handles"),
           py::arg("timeout") = std::nullopt,
           py::arg("hints") = std::nullopt,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "get_device_transport",
+          &TorchComm::get_device_transport,
+          R"(
+Get a device-allocated transport handle for pipes transport operations.
+
+Returns a device pointer (as int64) to a MultiPeerDeviceHandle that can be
+passed to Triton transport extern functions (transport.send, transport.recv,
+transport.signal, etc.).
+
+The handle is lazily created on first call and cached. The returned pointer
+is valid until the communicator is destroyed.
+
+Returns:
+    int: Device transport pointer as int64, suitable for passing to Triton kernels.
+
+Raises:
+    RuntimeError: If the backend does not support device transport.
+)",
           py::call_guard<py::gil_scoped_release>())
 
       // Point-to-Point Operations
@@ -1956,6 +2061,56 @@ Note:
           )doc",
           py::arg("callback"));
 
+  intrusive_ptr_class_<BackendWrapper, c10d::Backend>(m, "_BackendWrapper")
+      .def(
+          py::init<std::shared_ptr<TorchComm>>(),
+          "Create BackendWrapper around a TorchCommBackend",
+          py::arg("comm"),
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "get_comm",
+          &BackendWrapper::getComm,
+          "Get the underlying TorchComm instance",
+          py::call_guard<py::gil_scoped_release>())
+      .def("name", &BackendWrapper::getBackendName)
+      .def_property_readonly(
+          "options",
+          &BackendWrapper::getOptions,
+          R"(Return the options used to create the torchComm under the hood.)",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "_verify_work_timeout",
+          &BackendWrapper::verifyWorkTimeoutForTest,
+          R"(
+Verify that a work object has the expected timeout.
+Used for testing timeout propagation.
+
+Args:
+    work: The work object to verify.
+    timeout: The expected timeout.
+
+Returns:
+    bool: True if the work object has the expected timeout, False otherwise.
+          )",
+          py::arg("work"),
+          py::arg("timeout"),
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "_set_default_timeout",
+          &BackendWrapper::setTimeout,
+          R"(
+Set the default timeout for this backend.
+
+Args:
+    timeout: The timeout value to set.
+          )",
+          py::arg("timeout"),
+          py::call_guard<py::gil_scoped_release>());
+  intrusive_ptr_class_<WorkWrapper, c10d::Work>(m, "WorkWrapper");
+  // Register the backend Options
+  intrusive_ptr_class_<BackendWrapper::Options, c10d::Backend::Options>(
+      m, "_BackendWrapperOptions");
+
   m.def(
       "get_mem_allocator",
       [](const std::string& backend) { return get_mem_allocator(backend); },
@@ -1974,4 +2129,9 @@ Note:
       )",
       py::arg("backend"),
       py::call_guard<py::gil_scoped_release>());
+
+  // Flight Recorder submodule: torchcomms._comms.hooks.fr
+  auto hooks_mod = m.def_submodule("hooks");
+  auto fr_mod = hooks_mod.def_submodule("fr");
+  init_flight_recorder_bindings(fr_mod);
 }

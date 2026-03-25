@@ -47,7 +47,7 @@ inline const char* devMemTypeStr(DevMemType memType) {
  *         commInternalError for unsupported cuMem handle types or other
  * internal errors
  */
-commResult_t
+__attribute__((visibility("default"))) commResult_t
 getDevMemType(const void* addr, const int cudaDev, DevMemType& memType);
 
 /**
@@ -62,4 +62,5 @@ getDevMemType(const void* addr, const int cudaDev, DevMemType& memType);
  * @return commSuccess on successful determination
  *         commInvalidUsage if addr is nullptr
  */
-commResult_t getCudaDevFromPtr(const void* addr, int& cudaDev);
+__attribute__((visibility("default"))) commResult_t
+getCudaDevFromPtr(const void* addr, int& cudaDev);

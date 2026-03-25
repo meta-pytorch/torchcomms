@@ -113,6 +113,25 @@ class IBootstrap {
    */
   virtual folly::SemiFuture<int>
   recv(void* buf, int len, int peer, int tag) = 0;
+
+  // Broadcast `len` bytes from `root` to all ranks.
+  // `buf` is input on root, output on all other ranks.
+  virtual folly::SemiFuture<int>
+  broadcast(void* buf, int len, int root, int rank, int nranks) {
+    constexpr int kBcastTag = 0x42;
+    if (rank != root) {
+      return recv(buf, len, root, kBcastTag);
+    }
+    for (int r = 0; r < nranks; r++) {
+      if (r != root) {
+        auto rc = send(buf, len, r, kBcastTag).get();
+        if (rc != 0) {
+          return folly::makeSemiFuture(rc);
+        }
+      }
+    }
+    return folly::makeSemiFuture(0);
+  }
 };
 
 } // namespace meta::comms

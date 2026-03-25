@@ -293,6 +293,35 @@ class DeviceWindow {
   }
 
   // ===========================================================================
+  // NVLink Address Query
+  // ===========================================================================
+
+#ifdef __CUDACC__
+  /**
+   * get_nvlink_address - Get the NVLink-mapped pointer to a peer's window buf.
+   *
+   * Thread-level API (idempotent): any thread may call independently.
+   *
+   * @param peer   Global rank of the peer.
+   * @param offset Byte offset into the peer's window buffer (default 0).
+   * @return NVLink-mapped device pointer, or nullptr if peer is not NVL.
+   */
+  __device__ __forceinline__ void* get_nvlink_address(
+      int peer,
+      std::size_t offset = 0) const {
+    DEVICE_WINDOW_CHECK_RANK(peer, handle_.nRanks);
+    if (peer == handle_.myRank) {
+      return nullptr;
+    }
+    if (handle_.get_type(peer) != TransportType::P2P_NVL) {
+      return nullptr;
+    }
+    int nvlIdx = rankToNvlPeerIndex_[peer];
+    return static_cast<char*>(windowNvlPeerPtrs_[nvlIdx]) + offset;
+  }
+#endif
+
+  // ===========================================================================
   // Transport Access
   // ===========================================================================
 
@@ -906,59 +935,6 @@ class DeviceWindow {
   }
 
   // ===========================================================================
-  // Put (generic — dispatches to NVL or IBGDA internally)
-  // ===========================================================================
-
-  /**
-   * put - One-sided write to a peer's remote buffer.
-   *
-   * Group-level API: all threads in the group must call this together.
-   * Dispatches internally based on peer transport type:
-   * - NVL: direct vectorized memcpy over NVLink (no staging buffer)
-   * - IBGDA: RDMA Write via NIC (lkey/rkey resolved from registration table)
-   *
-   * NOTE: This does NOT use the NVL staging buffer allocated by
-   * MultiPeerNvlTransportConfig.dataBufferSize. The staging buffer is
-   * only used by P2pNvlTransportDevice::send()/recv().
-   *
-   * PRECONDITION: localSrc must be within a buffer registered via
-   * HostWindow::registerLocalBuffer() or registerAndExchangeBuffer().
-   * remoteDst must be within a buffer exchanged via
-   * HostWindow::registerAndExchangeBuffer() on the target peer.
-   *
-   * @param target_rank  Rank to put to (must not be self).
-   * @param group        ThreadGroup for group coordination.
-   * @param remoteDst    Destination buffer on the target peer.
-   * @param localSrc     Source buffer on this rank.
-   * @param nbytes       Number of bytes to transfer.
-   */
-  __device__ __forceinline__ void put(
-      int target_rank,
-      ThreadGroup& group,
-      void* remoteDst,
-      const void* localSrc,
-      std::size_t nbytes) {
-    DEVICE_WINDOW_CHECK_RANK(target_rank, handle_.nRanks);
-    DEVICE_WINDOW_CHECK_NOT_SELF(target_rank, handle_.myRank);
-    if (handle_.get_type(target_rank) == TransportType::P2P_NVL) {
-      handle_.get_nvl(target_rank)
-          .put(
-              group,
-              static_cast<char*>(remoteDst),
-              static_cast<const char*>(localSrc),
-              nbytes);
-    } else {
-      int ibgdaIdx = rank_to_peer_index(target_rank);
-      IbgdaLocalBuffer localBuf(
-          const_cast<void*>(localSrc), lookupLocalLkey(localSrc));
-      IbgdaRemoteBuffer remoteBuf(
-          remoteDst, lookupRemoteRkey(ibgdaIdx, remoteDst));
-      handle_.get_ibgda(target_rank)
-          .put_group_global(group, localBuf, remoteBuf, nbytes);
-    }
-  }
-
-  // ===========================================================================
   // Put (offset-based — destination is window buffer, source is registered buf)
   // ===========================================================================
 
@@ -1002,73 +978,6 @@ class DeviceWindow {
       handle_.get_ibgda(target_rank)
           .put_group_global(
               group, localBuf, remoteBuf.subBuffer(dst_offset), nbytes);
-    }
-  }
-
-  // ===========================================================================
-  // Combined Put + Signal (generic — dispatches to NVL or IBGDA internally)
-  // ===========================================================================
-
-  /**
-   * put_signal - One-sided write + signal to a peer.
-   *
-   * Group-level API: all threads in the group must call this together.
-   * Dispatches internally:
-   * - NVL: vectorized memcpy + group.sync() + atomic signal via NVLink
-   * - IBGDA: RDMA Write + NIC-fenced atomic signal (HW-ordered),
-   *   single signal from global leader to match NVL semantics.
-   *
-   * PRECONDITION: localSrc must be within a buffer registered via
-   * HostWindow::registerLocalBuffer() or registerAndExchangeBuffer().
-   * remoteDst must be within a buffer exchanged via
-   * HostWindow::registerAndExchangeBuffer() on the target peer.
-   *
-   * @param target_rank  Rank to put to (must not be self).
-   * @param group        ThreadGroup for group coordination.
-   * @param remoteDst    Destination buffer on the target peer.
-   * @param localSrc     Source buffer on this rank.
-   * @param nbytes       Number of bytes to transfer.
-   * @param signalId     Signal slot index in [0, peerSignalCount).
-   * @param signalVal    Value to add to the signal (default: 1).
-   */
-  __device__ __forceinline__ void put_signal(
-      int target_rank,
-      ThreadGroup& group,
-      void* remoteDst,
-      const void* localSrc,
-      std::size_t nbytes,
-      int signalId,
-      uint64_t signalVal = 1) {
-    DEVICE_WINDOW_CHECK_RANK(target_rank, handle_.nRanks);
-    DEVICE_WINDOW_CHECK_NOT_SELF(target_rank, handle_.myRank);
-    if (handle_.get_type(target_rank) == TransportType::P2P_NVL) {
-      handle_.get_nvl(target_rank)
-          .put(
-              group,
-              static_cast<char*>(remoteDst),
-              static_cast<const char*>(localSrc),
-              nbytes);
-      signal_peer(
-          group, target_rank, signalId, SignalOp::SIGNAL_ADD, signalVal);
-      group.sync();
-    } else {
-      int ibgdaIdx = rank_to_peer_index(target_rank);
-      IbgdaLocalBuffer localBuf(
-          const_cast<void*>(localSrc), lookupLocalLkey(localSrc));
-      IbgdaRemoteBuffer remoteBuf(
-          remoteDst, lookupRemoteRkey(ibgdaIdx, remoteDst));
-      handle_.get_ibgda(target_rank)
-          .put_group_global(group, localBuf, remoteBuf, nbytes);
-      // Single fenced signal from global leader (matches NVL semantics)
-      if (group.is_global_leader()) {
-        // Remote buffer is pre-offset to "my row" in the peer's inbox
-        // (computed once at exchange time in HostWindow), so signalId
-        // is the only offset needed here.
-        handle_.get_ibgda(target_rank)
-            .signal_remote_with_fence(
-                ibgdaPeerSignalRemoteBufs_[ibgdaIdx], signalId, signalVal);
-      }
-      group.sync();
     }
   }
 
@@ -1123,15 +1032,144 @@ class DeviceWindow {
       handle_.get_ibgda(target_rank)
           .put_group_global(
               group, localBuf, remoteBuf.subBuffer(dst_offset), nbytes);
-      // Single fenced signal from global leader (matches NVL semantics)
-      if (group.is_global_leader()) {
-        handle_.get_ibgda(target_rank)
-            .signal_remote_with_fence(
-                ibgdaPeerSignalRemoteBufs_[ibgdaPeerIdx], signalId, signalVal);
-      }
+      handle_.get_ibgda(target_rank)
+          .signal_remote_with_fence(
+              group,
+              ibgdaPeerSignalRemoteBufs_[ibgdaPeerIdx],
+              signalId,
+              signalVal);
       group.sync();
     }
   }
+  // ===========================================================================
+  // Combined Put + Signal + Counter (offset-based)
+  // ===========================================================================
+
+  /**
+   * put_signal_counter - Offset-based one-sided write + signal + counter.
+   *
+   * Group-level API: all threads in the group must call this together.
+   * Same as put_signal(), but also increments the local counter for
+   * the target peer via companion-QP loopback RDMA atomic (IBGDA) or
+   * is silently ignored (NVL, same as NCCLDeviceBackend LSA path).
+   *
+   * @param group        ThreadGroup for group coordination.
+   * @param target_rank  Rank to put to (must not be self).
+   * @param dst_offset   Byte offset into the target peer's window buffer.
+   * @param src_buf      Registered source buffer.
+   * @param src_offset   Byte offset into the source buffer.
+   * @param nbytes       Number of bytes to transfer.
+   * @param signalId     Signal slot index in [0, peerSignalCount).
+   * @param signalVal    Value to add to the signal (default: 1).
+   * @param counterId    Counter slot index in [0, peerCounterCount).
+   * @param counterVal   Value to add to the counter (default: 1).
+   */
+  __device__ __forceinline__ void put_signal_counter(
+      ThreadGroup& group,
+      int target_rank,
+      std::size_t dst_offset,
+      const LocalBufferRegistration& src_buf,
+      std::size_t src_offset,
+      std::size_t nbytes,
+      int signalId,
+      uint64_t signalVal,
+      int counterId,
+      uint64_t counterVal = 1) {
+    DEVICE_WINDOW_CHECK_RANK(target_rank, handle_.nRanks);
+    DEVICE_WINDOW_CHECK_NOT_SELF(target_rank, handle_.myRank);
+    const auto* localSrc = static_cast<const char*>(src_buf.base) + src_offset;
+    if (handle_.get_type(target_rank) == TransportType::P2P_NVL) {
+      // NVL path: put + signal, counter silently ignored
+      int nvlPeerIdx = rankToNvlPeerIndex_[target_rank];
+      auto* remoteDst =
+          static_cast<char*>(windowNvlPeerPtrs_[nvlPeerIdx]) + dst_offset;
+      handle_.get_nvl(target_rank).put(group, remoteDst, localSrc, nbytes);
+      signal_peer(
+          group, target_rank, signalId, SignalOp::SIGNAL_ADD, signalVal);
+      group.sync();
+    } else {
+      int ibgdaPeerIdx = rank_to_peer_index(target_rank);
+      IbgdaLocalBuffer localBuf(
+          const_cast<void*>(static_cast<const void*>(localSrc)), src_buf.lkey);
+      IbgdaRemoteBuffer remoteBuf(
+          const_cast<void*>(remoteBufferRegistry_[ibgdaPeerIdx].base),
+          remoteBufferRegistry_[ibgdaPeerIdx].rkey);
+      IbgdaLocalBuffer counterBuf(ibgdaPeerCounterBuf_, ibgdaPeerCounterLkey_);
+      int counterSlot = ibgdaPeerIdx * peerCounterCount_ + counterId;
+      handle_.get_ibgda(target_rank)
+          .put_signal_counter_remote(
+              localBuf,
+              remoteBuf.subBuffer(dst_offset),
+              nbytes,
+              ibgdaPeerSignalRemoteBufs_[ibgdaPeerIdx],
+              signalId,
+              signalVal,
+              counterBuf,
+              counterSlot,
+              counterVal);
+      group.sync();
+    }
+  }
+
+  // ===========================================================================
+  // Combined Put + Counter (offset-based, no signal)
+  // ===========================================================================
+
+  /**
+   * put_counter - Offset-based one-sided write + counter (no signal).
+   *
+   * Group-level API: all threads in the group must call this together.
+   * Same as put(), but also increments the local counter for the target
+   * peer via companion-QP loopback RDMA atomic (IBGDA) or is silently
+   * ignored (NVL, same as NCCLDeviceBackend LSA path).
+   *
+   * @param group        ThreadGroup for group coordination.
+   * @param target_rank  Rank to put to (must not be self).
+   * @param dst_offset   Byte offset into the target peer's window buffer.
+   * @param src_buf      Registered source buffer.
+   * @param src_offset   Byte offset into the source buffer.
+   * @param nbytes       Number of bytes to transfer.
+   * @param counterId    Counter slot index in [0, peerCounterCount).
+   * @param counterVal   Value to add to the counter (default: 1).
+   */
+  __device__ __forceinline__ void put_counter(
+      ThreadGroup& group,
+      int target_rank,
+      std::size_t dst_offset,
+      const LocalBufferRegistration& src_buf,
+      std::size_t src_offset,
+      std::size_t nbytes,
+      int counterId,
+      uint64_t counterVal = 1) {
+    DEVICE_WINDOW_CHECK_RANK(target_rank, handle_.nRanks);
+    DEVICE_WINDOW_CHECK_NOT_SELF(target_rank, handle_.myRank);
+    const auto* localSrc = static_cast<const char*>(src_buf.base) + src_offset;
+    if (handle_.get_type(target_rank) == TransportType::P2P_NVL) {
+      // NVL path: put only, counter silently ignored
+      int nvlPeerIdx = rankToNvlPeerIndex_[target_rank];
+      auto* remoteDst =
+          static_cast<char*>(windowNvlPeerPtrs_[nvlPeerIdx]) + dst_offset;
+      handle_.get_nvl(target_rank).put(group, remoteDst, localSrc, nbytes);
+    } else {
+      int ibgdaPeerIdx = rank_to_peer_index(target_rank);
+      IbgdaLocalBuffer localBuf(
+          const_cast<void*>(static_cast<const void*>(localSrc)), src_buf.lkey);
+      IbgdaRemoteBuffer remoteBuf(
+          const_cast<void*>(remoteBufferRegistry_[ibgdaPeerIdx].base),
+          remoteBufferRegistry_[ibgdaPeerIdx].rkey);
+      IbgdaLocalBuffer counterBuf(ibgdaPeerCounterBuf_, ibgdaPeerCounterLkey_);
+      int counterSlot = ibgdaPeerIdx * peerCounterCount_ + counterId;
+      handle_.get_ibgda(target_rank)
+          .put_counter_local(
+              localBuf,
+              remoteBuf.subBuffer(dst_offset),
+              nbytes,
+              counterBuf,
+              counterSlot,
+              counterVal);
+    }
+  }
+
 #endif // __CUDACC__
 
   // ===========================================================================
@@ -1167,69 +1205,6 @@ class DeviceWindow {
     return false;
   }
 
-  /**
-   * Lookup local lkey for a source pointer from the registration table.
-   * Linear scan over registered buffers (typically 1-5 entries).
-   * Traps if pointer is not in any registered buffer.
-   */
-  __device__ __forceinline__ NetworkLKey
-  lookupLocalLkey(const void* ptr) const {
-    const auto* p = static_cast<const char*>(ptr);
-    for (int i = 0; i < static_cast<int>(localBufferRegistry_.size()); ++i) {
-      const auto& reg = localBufferRegistry_[i];
-      const auto* base = static_cast<const char*>(reg.base);
-      if (p >= base && p < base + reg.size) {
-        return reg.lkey;
-      }
-    }
-    printf(
-        "DeviceWindow: localSrc %p not in any registered buffer"
-        " at %s:%d block=(%u,%u,%u) thread=(%u,%u,%u)\n",
-        ptr,
-        __FILE__,
-        __LINE__,
-        blockIdx.x,
-        blockIdx.y,
-        blockIdx.z,
-        threadIdx.x,
-        threadIdx.y,
-        threadIdx.z);
-    __trap();
-    return NetworkLKey{};
-  }
-
-  /**
-   * Lookup remote rkey for a destination pointer on a specific IBGDA peer.
-   * There is exactly one exchanged dst buffer per DeviceWindow, so this
-   * is a direct peer-index lookup (no iteration).
-   * Traps if pointer is not within the exchanged buffer for that peer.
-   */
-  __device__ __forceinline__ NetworkRKey
-  lookupRemoteRkey(int ibgdaPeerIdx, const void* remotePtr) const {
-    if (remoteBufferRegistry_.size() > 0) {
-      const auto& reg = remoteBufferRegistry_[ibgdaPeerIdx];
-      const auto* base = static_cast<const char*>(reg.base);
-      const auto* p = static_cast<const char*>(remotePtr);
-      if (p >= base && p < base + reg.size) {
-        return reg.rkey;
-      }
-    }
-    printf(
-        "DeviceWindow: remoteDst %p not registered for IBGDA peer %d"
-        " at %s:%d block=(%u,%u,%u) thread=(%u,%u,%u)\n",
-        remotePtr,
-        ibgdaPeerIdx,
-        __FILE__,
-        __LINE__,
-        blockIdx.x,
-        blockIdx.y,
-        blockIdx.z,
-        threadIdx.x,
-        threadIdx.y,
-        threadIdx.z);
-    __trap();
-    return NetworkRKey{};
-  }
 #endif // __CUDACC__
 
   // Transport handle (provides get_type, get_nvl, get_ibgda, myRank, nRanks)
@@ -1255,6 +1230,7 @@ class DeviceWindow {
   // --- Per-peer counter buffers (IBGDA-only, local) ---
   int peerCounterCount_{0};
   uint64_t* ibgdaPeerCounterBuf_{nullptr};
+  NetworkLKey ibgdaPeerCounterLkey_{};
 
   // --- Barrier buffers (flat, per-peer-type) ---
   int barrierCount_{0};

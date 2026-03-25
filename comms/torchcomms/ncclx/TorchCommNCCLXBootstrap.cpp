@@ -25,10 +25,7 @@ const std::string kUniqueidXchgMethodAuto = "auto";
 const std::string kUniqueidXchgMethodTCPStore = "tcpstore";
 const std::string kUniqueidXchgMethodDefault = kUniqueidXchgMethodAuto;
 
-bool isFastInitEnable(const ncclConfig_t& config, const ncclx::Hints& hints) {
-  if (config.fastInitMode == NCCL_FAST_INIT_MODE_RING) {
-    return true;
-  }
+bool isFastInitEnable(const ncclx::Hints& hints) {
   std::string fastInitVal;
   if (hints.get("ncclx::fastInitMode", fastInitVal) == ncclSuccess &&
       std::stoi(fastInitVal) == NCCL_FAST_INIT_MODE_RING) {
@@ -218,14 +215,11 @@ static const std::set<std::string> kTorchCommLayerHints = {
     std::string(kHintGraphTimeoutCheckIntervalMs),
 };
 
-// Helper function to populate NCCL config from hints.  Upstream NCCL config
-// fields are set directly on the config struct.  NCCLx-specific fields use
-// the "ncclx::" key prefix and are passed via the hints object.
-void populateNcclConfigFromHints(
+void populateNcclConfig(
     ncclConfig_t& config,
-    ncclx::Hints& hints,
     const CommOptions& options,
     const std::string& name) {
+  auto* hints = static_cast<ncclx::Hints*>(config.hints);
   constexpr std::string_view kNcclxPrefix = "ncclx::";
 
   // Iterate over the hints and set the corresponding fields.  Keys with
@@ -238,7 +232,17 @@ void populateNcclConfigFromHints(
   for (const auto& [key, val] : options.hints) {
     // NCCLx-specific fields -- pass via ncclx::Hints
     if (key.compare(0, kNcclxPrefix.size(), kNcclxPrefix) == 0) {
-      hints.set(key, val);
+      if (key == "ncclx::commDesc") {
+        throw std::invalid_argument(
+            "ncclx::commDesc must not be set in hints; "
+            "it is derived internally");
+      }
+      if (key == "ncclx::splitGroupRanks") {
+        throw std::invalid_argument(
+            "ncclx::splitGroupRanks must not be set in hints; "
+            "it is derived from the ranks parameter");
+      }
+      hints->set(key, val);
       TC_LOG(INFO, nullptr)
           << "[comm=" << name << "] Setting hint " << key << "=" << val;
     }
@@ -308,10 +312,8 @@ void populateNcclConfigFromHints(
   }
 }
 
-bool TorchCommNCCLXBootstrap::useFastInit(
-    ncclConfig_t config,
-    const ncclx::Hints& hints) {
-  if (isFastInitEnable(config, hints)) {
+bool TorchCommNCCLXBootstrap::useFastInit(const ncclx::Hints& hints) {
+  if (isFastInitEnable(hints)) {
     // Use raw dynamic_cast instead of c10::dynamic_intrusive_pointer_cast
     // because the latter has a refcount leak when the cast fails (the
     // by-value intrusive_ptr parameter is release()'d before the cast,
@@ -344,18 +346,15 @@ ncclComm_t TorchCommNCCLXBootstrap::createNcclComm(
   // TODO: add logging on failures and successes
   // TODO: use scalable init
   // TODO: get the local rank
-  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
-  config.commDesc = name.c_str();
   createStore(name);
 
-  // Populate NCCL config from user-provided hints.  NCCLx-specific fields
-  // are passed via the hints object; upstream NCCL fields are set directly
-  // on the config struct.
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   ncclx::Hints hints;
-  populateNcclConfigFromHints(config, hints, options, name);
   config.hints = &hints;
+  populateNcclConfig(config, options, name);
+  hints.set("ncclx::commDesc", name);
 
-  if (useFastInit(config, hints)) {
+  if (useFastInit(hints)) {
     uniqueId = ncclUniqueId{};
   } else {
     uniqueId = exchangeUniqueId();

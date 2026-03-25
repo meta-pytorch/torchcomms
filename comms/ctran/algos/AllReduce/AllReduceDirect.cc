@@ -52,12 +52,21 @@ static const auto myAlgo = NCCL_ALLREDUCE_ALGO::ctdirect;
  *         registers and reduces them into the receive buffer.
  */
 
-#define THROW_IF_ABORTED(code)                                        \
-  do {                                                                \
-    code;                                                             \
-    if (comm->testAbort()) {                                          \
-      throw ctran::utils::Exception("comm aborted", commRemoteError); \
-    }                                                                 \
+#define THROW_IF_ABORTED(code, ...)                                            \
+  do {                                                                         \
+    code;                                                                      \
+    if (comm->testAbort()) {                                                   \
+      auto _abort = comm->getAbort();                                          \
+      std::string _ctx =                                                       \
+          _abort->TimedOut() ? "comm aborted due to timeout" : "comm aborted"; \
+      std::string _desc{__VA_ARGS__};                                          \
+      throw ctran::utils::Exception(                                           \
+          _ctx,                                                                \
+          commRemoteError,                                                     \
+          comm->logMetaData_.rank,                                             \
+          comm->logMetaData_.commHash,                                         \
+          _desc.empty() ? std::nullopt : std::make_optional(_desc));           \
+    }                                                                          \
   } while (0)
 
 static commResult_t impl(
@@ -261,7 +270,9 @@ static commResult_t impl(
     }
 
     elem->post();
-    THROW_IF_ABORTED(elem->wait(comm->getAbort()));
+    THROW_IF_ABORTED(
+        elem->wait(comm->getAbort()),
+        "ctdirect step 1: intra-node reduce-scatter");
 
     /* Step 2: Inter-node Reduce-scatter */
     /* wait for inter-node data transfer to perform local reduction */
@@ -317,7 +328,9 @@ static commResult_t impl(
     elem->stridedReduce.stride = chunkCount;
     /* poke kernel to start the local reduction */
     elem->post();
-    THROW_IF_ABORTED(elem->wait(comm->getAbort()));
+    THROW_IF_ABORTED(
+        elem->wait(comm->getAbort()),
+        "ctdirect step 2: inter-node reduce-scatter");
 
     /* Step 3: Inter-node Allgather */
     /* wait for inter-node data transfer to perform local reduction */
@@ -358,7 +371,7 @@ static commResult_t impl(
         }
       }
     }
-    THROW_IF_ABORTED();
+    THROW_IF_ABORTED(, "ctdirect step 3: inter-node allgather");
 
     /* Step 4: Intra-node Allgather */
     elem = op->allreduce.kElemStepMap.at(
@@ -376,7 +389,8 @@ static commResult_t impl(
 
     /* poke kernel to start the allgather */
     elem->post();
-    THROW_IF_ABORTED(elem->wait(comm->getAbort()));
+    THROW_IF_ABORTED(
+        elem->wait(comm->getAbort()), "ctdirect step 4: intra-node allgather");
 
     op->allreduce.sendbuff =
         BUFOFFSET(op->allreduce.sendbuff, stepCount * typeSize);
@@ -420,7 +434,9 @@ static commResult_t impl(
       }
     }
     elem->post();
-    THROW_IF_ABORTED(elem->wait(comm->getAbort()));
+    THROW_IF_ABORTED(
+        elem->wait(comm->getAbort()),
+        "ctdirect step 5: remainder intra-node reduce");
 
     /* Step 6: Intra-node bcast */
     elem = op->allreduce.kElemStepMap.at(
@@ -434,7 +450,9 @@ static commResult_t impl(
       }
     }
     elem->post();
-    THROW_IF_ABORTED(elem->wait(comm->getAbort()));
+    THROW_IF_ABORTED(
+        elem->wait(comm->getAbort()),
+        "ctdirect step 6: remainder intra-node bcast");
 
     /* Step 7: Inter-node allreduce */
     /* wait for inter-node data transfer to perform local reduction */
@@ -485,7 +503,9 @@ static commResult_t impl(
     elem->stridedReduce.blockCount = remCount;
     elem->stridedReduce.stride = remCount;
     elem->post();
-    THROW_IF_ABORTED(elem->wait(comm->getAbort()));
+    THROW_IF_ABORTED(
+        elem->wait(comm->getAbort()),
+        "ctdirect step 7: remainder inter-node allreduce");
   }
 
   if (localRegSend == true) {

@@ -91,8 +91,6 @@ NCCLXCommsTracingServiceHandler::co_getComms(
       thriftErr.localHostname() = ibErr.localHostname;
       response.ibErrors().ensure().push_back(std::move(thriftErr));
     }
-    // Flush after reading so errors are only reported once
-    ProcessGlobalErrorsUtil::clearIbCompletionErrors();
   }
 
   {
@@ -106,7 +104,6 @@ NCCLXCommsTracingServiceHandler::co_getComms(
       thriftErr.localHostname() = cudaErr.localHostname;
       response.cudaErrors().ensure().push_back(std::move(thriftErr));
     }
-    ProcessGlobalErrorsUtil::clearCudaErrors();
   }
 
   co_return std::make_unique<comms::GetCommsResponse>(std::move(response));

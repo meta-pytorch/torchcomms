@@ -8,7 +8,6 @@ class TorchCommWindowNCCLXTest : public TorchCommNCCLXTest {};
 
 TEST_F(TorchCommWindowNCCLXTest, windowPutExceedWindowSize) {
   setupRankAndSize(0, 2);
-  setupCCAExpectations(1, 2, 1);
   auto comm = createMockedTorchComm();
 
   cuda_mock_->setupDefaultBehaviors();
@@ -50,7 +49,6 @@ TEST_F(TorchCommWindowNCCLXTest, windowPutExceedWindowSize) {
 
 TEST_F(TorchCommWindowNCCLXTest, windowRegisterWithInvalidTensor) {
   setupRankAndSize(0, 2);
-  setupCCAExpectations(1, 2, 1);
   auto comm = createMockedTorchComm();
 
   cuda_mock_->setupDefaultBehaviors();
@@ -91,9 +89,6 @@ TEST_F(TorchCommWindowNCCLXTest, windowRegisterWithInvalidTensor) {
 TEST_F(
     TorchCommNCCLXTest,
     WindowOperationsWithoutInitializationThrowException) {
-  // Setup CCA expectations - no init calls
-  setupCCAExpectations(0, 1, 1);
-
   auto comm = createMockedTorchComm();
 
   // Initialize and then finalize the communicator
@@ -123,9 +118,6 @@ TEST_F(
 }
 
 TEST_F(TorchCommWindowNCCLXTest, WindowOperationsAfterFinalizeThrowException) {
-  // Setup CCA expectations - init and finalize calls
-  setupCCAExpectations(1, 2, 1);
-
   auto comm = createMockedTorchComm();
 
   // Initialize and then finalize the communicator
@@ -159,64 +151,79 @@ TEST_F(TorchCommWindowNCCLXTest, WindowOperationsAfterFinalizeThrowException) {
 }
 
 // =============================================================================
-// Graph Capture Mode Tests
+// Owning Parameter Tests
 // =============================================================================
 //
-// These tests verify that tensor_register() skips storing buf_tensor_ in
-// graph capture mode to save memory, while still storing it in normal mode.
+// These tests verify that tensor_register() respects the owning parameter:
+// - owning=true (default): window stores buf_tensor_ to keep tensor alive
+// - owning=false: window does NOT store buf_tensor_, allowing memory reuse
 
-TEST_F(
-    TorchCommWindowNCCLXTest,
-    TensorRegisterSkipsBufTensorInGraphCaptureMode) {
-  // Verifies: In graph capture mode, tensor_register() does NOT store
+TEST_F(TorchCommWindowNCCLXTest, TensorRegisterNonOwningSkipsBufTensor) {
+  // Verifies: With owning=false, tensor_register() does NOT store
   // buf_tensor_ so the tensor can be released to save memory.
   setupRankAndSize(0, 2);
-  setupCCAExpectations(1, 2, 1);
   auto comm = createMockedTorchComm();
 
   cuda_mock_->setupDefaultBehaviors();
   nccl_mock_->setupDefaultBehaviors();
 
   EXPECT_NO_THROW(
-      comm->init(*device_, "test_graph_buf_tensor", default_options_));
-
-  // Simulate graph capture mode: streamIsCapturing returns Active
-  ON_CALL(*cuda_mock_, streamIsCapturing(_, _))
-      .WillByDefault(DoAll(
-          SetArgPointee<1>(cudaStreamCaptureStatusActive),
-          Return(cudaSuccess)));
+      comm->init(*device_, "test_non_owning_buf_tensor", default_options_));
 
   auto tensor = createTestTensor({10, 10});
   auto win = comm->new_window();
-  win->tensor_register(tensor);
+  win->tensor_register(tensor, /*owning=*/false);
 
-  // In graph capture mode, get_tensor() should return nullopt
+  // With owning=false, get_tensor() should return nullopt
   EXPECT_FALSE(win->get_tensor().has_value())
-      << "buf_tensor_ should not be stored in graph capture mode";
+      << "buf_tensor_ should not be stored when owning=false";
 
   EXPECT_NO_THROW(comm->finalize());
 }
 
-TEST_F(TorchCommWindowNCCLXTest, TensorRegisterStoresBufTensorInNormalMode) {
-  // Verifies: In normal (non-graph-capture) mode, tensor_register() stores
+TEST_F(TorchCommWindowNCCLXTest, TensorRegisterOwningStoresBufTensor) {
+  // Verifies: With owning=true (default), tensor_register() stores
   // buf_tensor_ as usual.
   setupRankAndSize(0, 2);
-  setupCCAExpectations(1, 2, 1);
   auto comm = createMockedTorchComm();
 
   cuda_mock_->setupDefaultBehaviors();
   nccl_mock_->setupDefaultBehaviors();
 
   EXPECT_NO_THROW(
-      comm->init(*device_, "test_normal_buf_tensor", default_options_));
+      comm->init(*device_, "test_owning_buf_tensor", default_options_));
 
   auto tensor = createTestTensor({10, 10});
   auto win = comm->new_window();
-  win->tensor_register(tensor);
+  win->tensor_register(tensor); // owning=true is default
 
-  // In normal mode, get_tensor() should return the tensor
+  // With owning=true (default), get_tensor() should return the tensor
   EXPECT_TRUE(win->get_tensor().has_value())
-      << "buf_tensor_ should be stored in normal mode";
+      << "buf_tensor_ should be stored when owning=true (default)";
+
+  EXPECT_NO_THROW(comm->finalize());
+}
+
+TEST_F(
+    TorchCommWindowNCCLXTest,
+    TensorRegisterExplicitOwningTrueStoresBufTensor) {
+  // Verifies: Explicitly passing owning=true stores buf_tensor_.
+  setupRankAndSize(0, 2);
+  auto comm = createMockedTorchComm();
+
+  cuda_mock_->setupDefaultBehaviors();
+  nccl_mock_->setupDefaultBehaviors();
+
+  EXPECT_NO_THROW(
+      comm->init(*device_, "test_explicit_owning_true", default_options_));
+
+  auto tensor = createTestTensor({10, 10});
+  auto win = comm->new_window();
+  win->tensor_register(tensor, /*owning=*/true);
+
+  // With explicit owning=true, get_tensor() should return the tensor
+  EXPECT_TRUE(win->get_tensor().has_value())
+      << "buf_tensor_ should be stored when owning=true";
 
   EXPECT_NO_THROW(comm->finalize());
 }
@@ -246,7 +253,6 @@ TEST_F(TorchCommWindowNCCLXTest, GetDeviceWindowWithoutTensorRegisterThrows) {
   // Without tensor_register(), get_device_window() would fail.
 
   setupRankAndSize(0, 2);
-  setupCCAExpectations(1, 2, 1);
   auto comm = createMockedTorchComm();
 
   cuda_mock_->setupDefaultBehaviors();
@@ -295,7 +301,6 @@ TEST_F(TorchCommWindowNCCLXTest, GetDeviceWindowReturnsConsistentValue) {
   //   3. The device window struct is in GPU memory (cudaMalloc)
 
   setupRankAndSize(0, 8);
-  setupCCAExpectations(1, 2, 1);
   auto comm = createMockedTorchComm();
 
   cuda_mock_->setupDefaultBehaviors();
@@ -338,7 +343,6 @@ TEST_F(TorchCommWindowNCCLXTest, GetDeviceWindowDefaultParameters) {
   // signal/counter per peer.
 
   setupRankAndSize(0, 8); // rank 0 of 8 (use rank 0 for proper mock setup)
-  setupCCAExpectations(1, 2, 1);
   auto comm = createMockedTorchComm();
 
   cuda_mock_->setupDefaultBehaviors();

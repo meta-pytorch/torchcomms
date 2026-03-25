@@ -1701,7 +1701,6 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, PutSignalOperation) {
     GTEST_SKIP() << "Requires exactly 2 ranks, got " << numRanks;
   }
 
-  // Use a transfer size that fits within the transport's data buffer
   constexpr std::size_t kTransferSize = 4096;
   MultiPeerNvlTransportConfig config{
       .dataBufferSize = kDefaultDataBufferSize,
@@ -1712,69 +1711,66 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, PutSignalOperation) {
       .peerSignalCount = kDefaultSignalCount,
   };
 
-  auto [transport, window, dw] = createTransport(config, wmConfig);
-
   int peerRank = (globalRank == 0) ? 1 : 0;
   const int testValue = 0xCD + globalRank;
 
-  // Get the P2pNvlTransportDevice to access IPC-mapped remote buffers
-  // The transport's remoteState_.dataBuffer is already IPC-mapped
-  auto p2pTransport = transport->get_p2p_nvl_transport_device(peerRank);
-
-  // POINTER RELATIONSHIP CLARIFICATION:
-  //
-  // remoteDataBuffer: This rank's IPC-mapped pointer to the PEER's local
-  // buffer.
-  //                   When this rank writes here, data appears in peer's
-  //                   memory.
-  //
-  // localDataBuffer: This rank's local staging buffer. When the PEER writes to
-  //                  their remoteDataBuffer, the data appears here.
-  //
-  // So for rank 0 writing to rank 1:
-  //   - rank 0's remoteDataBuffer == IPC pointer to rank 1's localDataBuffer
-  //   - rank 0 writes to its remoteDataBuffer
-  //   - rank 1 reads from its localDataBuffer (same physical memory)
-  //
-  char* remoteDataBuffer = p2pTransport.getRemoteState().dataBuffer;
-  char* localDataBuffer = p2pTransport.getLocalState().dataBuffer;
+  // Allocate per-rank window buffer (destination for put operations).
+  // The peer will write into this buffer via NVLink IPC.
+  DeviceBuffer windowBuffer(kTransferSize);
+  auto windowBuf_d = windowBuffer.get();
+  CUDACHECK_TEST(cudaMemset(windowBuf_d, 0, kTransferSize));
 
   // Allocate local source buffer and result buffer
   DeviceBuffer localSrcBuffer(kTransferSize);
   DeviceBuffer resultBuffer(sizeof(int));
-
-  auto localSrc_d = static_cast<int*>(localSrcBuffer.get());
+  auto localSrc_d = localSrcBuffer.get();
   auto result_d = static_cast<int*>(resultBuffer.get());
 
-  // Rank 0: fill local source buffer with test pattern
-  // Rank 1: the local data buffer (destination) will receive the data
+  // Rank 0 (writer): fill source buffer with test pattern
   if (globalRank == 0) {
-    test::fillBuffer(localSrc_d, testValue, kTransferSize / sizeof(int));
+    test::fillBuffer(
+        static_cast<int*>(localSrc_d), testValue, kTransferSize / sizeof(int));
   }
-
-  // Clear the local data buffer (this is where peer will write to via NVLink)
-  CUDACHECK_TEST(cudaMemset(localDataBuffer, 0, kTransferSize));
   CUDACHECK_TEST(cudaMemset(result_d, 0, sizeof(int)));
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
+  // Set up transport + window with buffer registrations.
+  // Cannot use createTransport() helper because we need to register buffers
+  // between exchange() and getDeviceWindow().
+  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  MultiPeerTransportConfig transportConfig{
+      .nvlConfig = config,
+  };
+  auto transport = std::make_unique<MultiPeerTransport>(
+      globalRank, numRanks, localRank, bootstrap, transportConfig);
+  transport->exchange();
+
+  auto window = std::make_unique<HostWindow>(*transport, wmConfig);
+  window->exchange();
+
+  // Register the window buffer as the exchanged destination buffer
+  // (COLLECTIVE: all ranks must call together)
+  window->registerAndExchangeBuffer(windowBuf_d, kTransferSize);
+
+  // Register the source buffer locally (NOT collective)
+  window->registerLocalBuffer(localSrc_d, kTransferSize);
+
+  // Get DeviceWindow after all registrations
+  DeviceWindow dw = window->getDeviceWindow();
+
+  // Build LocalBufferRegistration for the source buffer.
+  // For NVL-only, lkey is unused.
+  LocalBufferRegistration srcBuf{localSrc_d, kTransferSize, NetworkLKey{}};
+
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-  // Rank 0 writes to rank 1's buffer using put_signal (via IPC-mapped ptr)
+  // Rank 0 writes to rank 1's window buffer using offset-based put_signal
   // Rank 1 waits for the signal
   bool isWriter = (globalRank == 0);
   constexpr int kSignalId = 0;
 
-  // remoteDataBuffer points to peer's local data buffer (via IPC)
-  // So rank 0's remoteDataBuffer points to rank 1's localDataBuffer
   test::testPutOperation(
-      dw,
-      peerRank,
-      isWriter ? remoteDataBuffer : nullptr, // Write to peer's buffer via IPC
-      isWriter ? localSrc_d : nullptr, // Source is our local data
-      kTransferSize,
-      kSignalId,
-      isWriter,
-      result_d);
+      dw, peerRank, srcBuf, kTransferSize, kSignalId, isWriter, result_d);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -1787,14 +1783,11 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, PutSignalOperation) {
                          << globalRank;
 
   // Verify data on receiver side
-  // Rank 1's localDataBuffer should now contain the data written by rank 0
+  // Rank 1's window buffer should now contain the data written by rank 0
   if (globalRank == 1) {
     std::vector<int> recvHost(kTransferSize / sizeof(int));
     CUDACHECK_TEST(cudaMemcpy(
-        recvHost.data(),
-        localDataBuffer,
-        kTransferSize,
-        cudaMemcpyDeviceToHost));
+        recvHost.data(), windowBuf_d, kTransferSize, cudaMemcpyDeviceToHost));
 
     const int expectedValue = 0xCD + 0; // Sender's testValue (rank 0)
     std::vector<int> expected(kTransferSize / sizeof(int), expectedValue);

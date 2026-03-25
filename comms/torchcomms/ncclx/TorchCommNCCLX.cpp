@@ -20,6 +20,11 @@
 #include "comms/torchcomms/utils/Logging.hpp"
 #include "comms/torchcomms/utils/TracingGuard.hpp"
 #include "comms/torchcomms/utils/Utils.hpp"
+#include "comms/utils/CudaRAII.h"
+
+#if defined(ENABLE_PIPES)
+#include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
+#endif
 
 namespace torch::comms {
 
@@ -126,10 +131,6 @@ TorchCommNCCLX::~TorchCommNCCLX() {
       nccl_comm_ = nullptr;
     }
   }
-
-  // We need to detach the memory hook in case finalize is not called,
-  // so that we don't encounter a memory corruption.
-  detachMemoryHook();
 }
 
 void TorchCommNCCLX::init(
@@ -266,7 +267,8 @@ void TorchCommNCCLX::init(
   // Start timeout watchdog thread
   timeout_thread_ = std::thread(&TorchCommNCCLX::timeoutWatchdog, this);
 
-  // Register comm with CachingAllocator
+  // Attach memory hook to register pre-existing allocations and capture future
+  // ones
   attachMemoryHook();
 
   // Mark initialization as complete only after all steps succeed
@@ -385,8 +387,6 @@ void TorchCommNCCLX::finalize() {
   // Note: If abortNcclComm() was called, nccl_comm_ is already nullptr and this
   // is skipped. We must not call commDestroy after commAbort per NCCL docs.
   if (nccl_comm_) {
-    detachMemoryHook();
-    // Deregister comm from the CachingAllocator
     NCCLX_CHECK(
         nccl_api_,
         nccl_comm_,
@@ -403,7 +403,6 @@ void TorchCommNCCLX::abortNcclComm() {
   //   subsequent alloc/free callbacks do not reference a destroyed comm.
   TC_LOG(INFO, this) << "Calling abort hooks before commAbort.";
   runAbortHooks();
-  detachMemoryHook();
   if (nccl_comm_) {
     NCCLX_CHECK(
         nccl_api_,
@@ -1503,23 +1502,18 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::device_alltoallv_single(
     const at::Tensor& input,
     const at::Tensor& output_split_sizes,
     const at::Tensor& input_split_sizes,
-    const at::Tensor& output_split_offsets,
-    const at::Tensor& input_split_offsets,
-    bool async_op) {
+    bool async_op,
+    const std::unordered_map<std::string, std::string>& hints) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(output);
   ensureTensorContiguous(input);
   ensureTensorContiguous(output_split_sizes);
   ensureTensorContiguous(input_split_sizes);
-  ensureTensorContiguous(output_split_offsets);
-  ensureTensorContiguous(input_split_offsets);
 
   // Validate metadata tensor types - all must be int64_t (torch.int64)
   validateInt64Dtype(input_split_sizes, "input_split_sizes");
   validateInt64Dtype(output_split_sizes, "output_split_sizes");
-  validateInt64Dtype(input_split_offsets, "input_split_offsets");
-  validateInt64Dtype(output_split_offsets, "output_split_offsets");
 
   // Validate metadata tensors are on CUDA
   TORCH_CHECK(
@@ -1528,25 +1522,29 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::device_alltoallv_single(
   TORCH_CHECK(
       output_split_sizes.is_cuda(),
       "output_split_sizes must be a CUDA tensor for device_alltoallv_single");
-  TORCH_CHECK(
-      input_split_offsets.is_cuda(),
-      "input_split_offsets must be a CUDA tensor for device_alltoallv_single");
-  TORCH_CHECK(
-      output_split_offsets.is_cuda(),
-      "output_split_offsets must be a CUDA tensor for device_alltoallv_single");
 
   TracingGuard tracingGuard(
       name_, comm_size_, "device_alltoallv_single", rank_, input, output);
+
+  // Calculate the number of elements per slice along the first dimension.
+  // For a tensor with shape [N, D1, D2, ..., Dk], each slice of size S along
+  // dim 0 contains S * D1 * D2 * ... * Dk elements.
+  // The split sizes from the user are in units of dim-0 slices (rows), so we
+  // pass the scaling factor to the kernel which multiplies counts internally
+  // without launching extra kernels.
+  int64_t send_elements_per_slice =
+      input.numel() ? input.numel() / input.size(0) : 0;
+  int64_t recv_elements_per_slice =
+      output.numel() ? output.numel() / output.size(0) : 0;
 
   cudaStream_t stream = getOperationStream(async_op);
   graph_event_tracker_.initOnGraphStart(stream);
   auto work = createWork(
       stream,
       options_.timeout,
-      async_op
-          ? std::vector<
-                at::Tensor>{input, input_split_sizes, output_split_sizes, input_split_offsets, output_split_offsets}
-          : std::vector<at::Tensor>{});
+      async_op ? std::vector<
+                     at::Tensor>{input, input_split_sizes, output_split_sizes}
+               : std::vector<at::Tensor>{});
 
   // Record start event before NCCL operation
   work->recordStart("device_alltoallv_single");
@@ -1556,11 +1554,12 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::device_alltoallv_single(
       output.data_ptr(),
       input_split_sizes.data_ptr<int64_t>(),
       output_split_sizes.data_ptr<int64_t>(),
-      input_split_offsets.data_ptr<int64_t>(),
-      output_split_offsets.data_ptr<int64_t>(),
       getNcclDataType(input),
       nccl_comm_,
-      stream);
+      stream,
+      send_elements_per_slice,
+      recv_elements_per_slice,
+      hints);
 
   NCCLX_CHECK(nccl_api_, nccl_comm_, result, "NCCLX deviceAllToAllv failed");
 
@@ -2156,9 +2155,9 @@ std::shared_ptr<TorchCommWindow> TorchCommNCCLX::new_window(
     const std::optional<at::Tensor>& tensor) {
   std::shared_ptr<TorchCommWindow> win;
 #if defined(ENABLE_PIPES)
-  // Select Pipes backend when explicitly requested via env var.
+  // Select Pipes backend when NCCL_CTRAN_USE_PIPES is enabled.
   // Pipes uses ctran IBGDA/NVLink instead of GIN for device-side P2P.
-  const char* pipes_env = std::getenv("TORCHCOMMS_PIPES_DEVICE_API_ENABLE");
+  const char* pipes_env = std::getenv("NCCL_CTRAN_USE_PIPES");
   if (pipes_env != nullptr && std::string_view(pipes_env) == "1") {
     win = std::make_shared<TorchCommWindowNCCLXPipes>(
         nccl_comm_, shared_from_this());
@@ -2222,24 +2221,26 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
 
   // Create a new NCCL communicator
   ncclComm_t new_comm;
-  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   std::string commDesc = fmt::format(
       "{}::split::{}_{}_{}", name_, color, split_name, split_counter_++);
-  config.commDesc = commDesc.c_str();
 
-  // Set splitGroupRanks and splitGroupSize hints automatically based on ranks
-  // parameter
-  if (!ranks.empty()) {
-    config.splitGroupRanks = const_cast<int*>(ranks.data());
-    config.splitGroupSize = static_cast<int>(ranks.size());
-  }
-
-  // Populate NCCL config from user-provided hints.  NCCLx-specific fields
-  // are passed via the hints object; upstream NCCL fields are set directly
-  // on the config struct.
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   ncclx::Hints hints;
-  populateNcclConfigFromHints(config, hints, options, commDesc);
   config.hints = &hints;
+  populateNcclConfig(config, options, commDesc);
+  hints.set("ncclx::commDesc", commDesc);
+
+  // Set splitGroupRanks hint automatically based on ranks parameter
+  if (!ranks.empty()) {
+    std::string rankStr;
+    for (size_t i = 0; i < ranks.size(); ++i) {
+      if (i > 0) {
+        rankStr += ',';
+      }
+      rankStr += std::to_string(ranks[i]);
+    }
+    hints.set("ncclx::splitGroupRanks", rankStr);
+  }
 
   // Verify the correct CUDA device is set before calling ncclCommSplit.
   // NCCL expects the caller to have set the device matching the communicator.
@@ -2285,51 +2286,29 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
   return new_torchcomm;
 }
 
-void TorchCommNCCLX::register_address(
-    const TorchCommNCCLX::AddressWithLen& addr) {
-  // We got a register after we got rid of the comm. Is this a fatal error?
-  if (nccl_comm_ == nullptr) {
-    return;
-  }
-
-  if (memoryRegistrationHandles_.contains(addr.addr)) {
-    throw std::runtime_error("Memory already registered with NCCLX");
-  }
-  void* handle = nullptr;
-  NCCLX_CHECK(
-      nccl_api_,
-      nccl_comm_,
-      nccl_api_->commRegister(nccl_comm_, addr.addr, addr.len, &handle),
-      "Failed to register memory with NCCLX");
-  // ncclCommRegister may return a NULL handle when registration is a no-op.
-  // Skip storing it so that deregister_address() does not later call
-  // ncclCommDeregister with a NULL handle.
-  if (handle != nullptr) {
-    memoryRegistrationHandles_.emplace(addr.addr, RegistrationHandle(handle));
+void TorchCommNCCLX::global_register_address(
+    const TorchCommNCCLX::AddressWithLen& addr,
+    NcclxApi* nccl_api) {
+  ncclResult_t result = nccl_api->globalRegisterWithPtr(addr.addr, addr.len);
+  if (result != ncclSuccess) {
+    LOG(WARNING) << "[TC] Failed to globally register memory with NCCL (addr="
+                 << addr.addr << ", len=" << addr.len
+                 << "). This is expected when ctran is not enabled. Error: "
+                 << nccl_api->getErrorString(result);
   }
 }
 
-void TorchCommNCCLX::deregister_address(const TorchCommNCCLX::Address& addr) {
-  // We got a deregister after we got rid of the comm. Is this a fatal error?
-  if (nccl_comm_ == nullptr) {
-    return;
+void TorchCommNCCLX::global_deregister_address(
+    const TorchCommNCCLX::AddressWithLen& addr,
+    NcclxApi* nccl_api) {
+  ncclResult_t result = nccl_api->globalDeregisterWithPtr(addr.addr, addr.len);
+
+  if (result != ncclSuccess) {
+    LOG(WARNING) << "[TC] Failed to globally deregister memory with NCCL (addr="
+                 << addr.addr << ", len=" << addr.len
+                 << "). This is expected when ctran is not enabled. Error: "
+                 << nccl_api->getErrorString(result);
   }
-
-  auto it = memoryRegistrationHandles_.find(addr.addr);
-  if (it == memoryRegistrationHandles_.end()) {
-    // it's possible that the memory was registered for a different comm,
-    // however failed registration for this comm.
-    return;
-  }
-
-  void* handle = it->second.regHandle;
-  NCCLX_CHECK(
-      nccl_api_,
-      nccl_comm_,
-      nccl_api_->commDeregister(nccl_comm_, handle),
-      "Failed to deregister memory with NCCLX");
-
-  memoryRegistrationHandles_.erase(it);
 }
 
 std::unordered_map<std::string, std::string> TorchCommNCCLX::comm_dump() {
@@ -2361,6 +2340,8 @@ class NCCLXRegistration {
                   // alloc_fn
                   [nccl_api](size_t size, int device, cudaStream_t stream) {
                     at::cuda::OptionalCUDAGuard gpuGuard(device);
+                    meta::comms::StreamCaptureModeGuard captureGuard{
+                        cudaStreamCaptureModeRelaxed};
                     void* ptr = nullptr;
                     ncclResult_t result = nccl_api->memAlloc(&ptr, size);
                     TORCH_CHECK(
@@ -2379,6 +2360,8 @@ class NCCLXRegistration {
                         << "NCCL mem allocator: freeing " << ptr << " with "
                         << size << " bytes in stream " << stream;
                     at::cuda::OptionalCUDAGuard gpuGuard(device);
+                    meta::comms::StreamCaptureModeGuard captureGuard{
+                        cudaStreamCaptureModeRelaxed};
                     ncclResult_t result = nccl_api->memFree(ptr);
                     TORCH_CHECK(
                         result == ncclSuccess,
@@ -2392,5 +2375,16 @@ class NCCLXRegistration {
 
 static const NCCLXRegistration registration{};
 } // namespace
+
+#if defined(ENABLE_PIPES)
+int64_t TorchCommNCCLX::get_device_transport() {
+  if (!device_transport_handle_) {
+    device_transport_handle_ =
+        torchcomms::device::PipesDeviceBackend::get_device_transport(
+            nccl_comm_, nccl_api_.get(), cuda_api_.get());
+  }
+  return reinterpret_cast<int64_t>(device_transport_handle_.get());
+}
+#endif
 
 } // namespace torch::comms

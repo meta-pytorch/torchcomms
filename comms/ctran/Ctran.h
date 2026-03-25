@@ -132,11 +132,12 @@ commResult_t ctranDeviceAllToAllv(
     void* recvbuff,
     const int64_t* sendcounts_d,
     const int64_t* recvcounts_d,
-    const int64_t* senddispls_d,
-    const int64_t* recvdispls_d,
     commDataType_t datatype,
     CtranComm* comm,
-    cudaStream_t stream);
+    cudaStream_t stream,
+    int64_t sendcountsMultiplier = 1,
+    int64_t recvcountsMultiplier = 1,
+    const std::unordered_map<std::string, std::string>& hints = {});
 
 commResult_t ctranAllToAllv(
     const void* sendbuff,

@@ -153,12 +153,13 @@ void CtranComm::destroy() {
   // All smart pointers are automatically de-initialized, but we want to
   // ensure they do so in a specific order. Therefore, we manually handle
   // their de-initialization here.
-  ctran_.reset();
 #if defined(ENABLE_PIPES)
-  // Must be destroyed before bootstrap_ since multiPeerTransport_ holds a
-  // non-owning reference to it.
+  // Must be destroyed before ctran_ (which owns SharedResource staging
+  // buffers used as external data buffers) and before bootstrap_ (since
+  // multiPeerTransport_ holds a non-owning reference to it).
   multiPeerTransport_.reset();
 #endif // defined(ENABLE_PIPES)
+  ctran_.reset();
   bootstrap_.reset();
   collTrace_.reset();
   colltraceNew_.reset();

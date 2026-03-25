@@ -3,8 +3,12 @@
 file(GLOB TORCHCOMMS_NCCLX_SOURCES
     "comms/torchcomms/ncclx/*.cpp"
 )
-file(GLOB TORCHCOMMS_CUDA_API_SOURCE "comms/torchcomms/device/cuda/CudaApi.cpp")
+file(GLOB TORCHCOMMS_CUDA_DEVICE_SOURCES
+    "comms/torchcomms/device/cuda/*.cpp"
+    "comms/torchcomms/device/cuda/*.cu"
+)
 
+enable_language(CUDA)
 find_package(CUDA)
 
 # NCCLX handling
@@ -76,8 +80,9 @@ endif()
 
 add_library(torchcomms_comms_ncclx MODULE
     ${TORCHCOMMS_NCCLX_SOURCES}
-    ${TORCHCOMMS_CUDA_API_SOURCE}
+    ${TORCHCOMMS_CUDA_DEVICE_SOURCES}
     ${TORCHCOMMS_DEVICE_NCCLX_SOURCE}
+    comms/utils/CudaRAII.cc
 )
 set_target_properties(torchcomms_comms_ncclx PROPERTIES
     PREFIX ""

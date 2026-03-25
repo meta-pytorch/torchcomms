@@ -25,6 +25,10 @@
 #include "comms/torchcomms/ncclx/TorchCommWindowNCCLX.hpp"
 #include "comms/torchcomms/ncclx/TorchWorkNCCLX.hpp"
 
+#if defined(ENABLE_PIPES)
+#include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
+#endif
+
 namespace torch::comms {
 
 // Hint key names for NCCLX backend configuration
@@ -181,9 +185,8 @@ class TorchCommNCCLX : public TorchCommBackend,
       const at::Tensor& input,
       const at::Tensor& output_split_sizes,
       const at::Tensor& input_split_sizes,
-      const at::Tensor& output_split_offsets,
-      const at::Tensor& input_split_offsets,
-      bool async_op);
+      bool async_op,
+      const std::unordered_map<std::string, std::string>& hints = {});
 
   c10::intrusive_ptr<TorchWork> alltoallv_dynamic_dispatch(
       const std::vector<at::Tensor>& output_tensor_list,
@@ -297,6 +300,13 @@ class TorchCommNCCLX : public TorchCommBackend,
     return device_;
   }
 
+#if defined(ENABLE_PIPES)
+  // Get device-allocated transport handle for Triton/CUDA kernels.
+  // Returns device pointer as int64 (same pointer on subsequent calls).
+  // The handle is freed when TorchCommNCCLX is destroyed.
+  int64_t get_device_transport() override;
+#endif
+
  protected:
   // Event management for friend classes
   [[nodiscard]] cudaEvent_t getEvent();
@@ -309,6 +319,13 @@ class TorchCommNCCLX : public TorchCommBackend,
     TIMEOUT,
   };
 
+  std::atomic<CommState> comm_state_{
+      CommState::NORMAL}; // State of the communicator
+
+  cudaEvent_t
+      dependency_event_{}; // Pre-allocated event for stream dependencies
+
+ public:
   struct Address {
     void* addr;
   };
@@ -318,14 +335,17 @@ class TorchCommNCCLX : public TorchCommBackend,
     size_t len;
   };
 
-  std::atomic<CommState> comm_state_{
-      CommState::NORMAL}; // State of the communicator
+  // Global pointer-based registration that doesn't require a comm instance.
+  // Used by CachingAllocatorHook for pre-comm memory registration.
+  // The caller provides the NcclxApi to use for the registration.
+  static void global_register_address(
+      const AddressWithLen& addr,
+      NcclxApi* nccl_api);
+  static void global_deregister_address(
+      const AddressWithLen& addr,
+      NcclxApi* nccl_api);
 
-  cudaEvent_t
-      dependency_event_{}; // Pre-allocated event for stream dependencies
-
-  void register_address(const AddressWithLen& addr);
-  void deregister_address(const Address& addr);
+ protected:
   ncclDataType_t getNcclDataType(const at::Tensor& tensor);
   ncclDataType_t getNcclDataType(const at::ScalarType scalar_type);
 
@@ -452,8 +472,13 @@ class TorchCommNCCLX : public TorchCommBackend,
   bool getGraphCaptureMode();
   void ensureTensorContiguous(const at::Tensor& tensor);
 
+  // Initialize the CachingAllocatorHook singleton
   void attachMemoryHook();
-  void detachMemoryHook();
+
+#if defined(ENABLE_PIPES)
+  torchcomms::device::PipesDeviceBackend::TransportHandleDevPtr
+      device_transport_handle_;
+#endif
 
   // Member variables
   ncclComm_t nccl_comm_{};

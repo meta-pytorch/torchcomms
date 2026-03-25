@@ -8,6 +8,7 @@
 #include "checks.h"
 #include "comm.h"
 #include "comms/ctran/utils/SkipDestroyUtil.h"
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "nccl.h"
@@ -28,7 +29,8 @@ class CommAbortTest : public NcclxBaseTest {
 using CommAbortDeathTest = CommAbortTest;
 
 TEST_F(CommAbortTest, CommScope) {
-  ncclComm_t comm = createNcclComm(globalRank, numRanks, localRank);
+  ncclComm_t comm = ncclx::test::createNcclComm(
+      globalRank, numRanks, localRank, bootstrap_.get());
 
   ASSERT_NE(nullptr, comm);
   ASSERT_NE(nullptr, comm->ctranComm_->ctran_);
@@ -38,7 +40,8 @@ TEST_F(CommAbortTest, CommScope) {
 }
 
 TEST_F(CommAbortTest, NoneScope) {
-  ncclComm_t comm = createNcclComm(globalRank, numRanks, localRank);
+  ncclComm_t comm = ncclx::test::createNcclComm(
+      globalRank, numRanks, localRank, bootstrap_.get());
   EnvRAII env(NCCL_COMM_ABORT_SCOPE, NCCL_COMM_ABORT_SCOPE::none);
 
   ASSERT_NE(nullptr, comm);

@@ -11,6 +11,7 @@
 
 #include "checks.h"
 #include "comms/ctran/Ctran.h"
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/testinfra/AlgoTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
@@ -32,7 +33,8 @@ class AllToAllvTest
 
     NcclxBaseTest::SetUp();
 
-    this->comm = createNcclComm(globalRank, numRanks, localRank);
+    this->comm = ncclx::test::createNcclComm(
+        globalRank, numRanks, localRank, bootstrap_.get());
 
     CUDACHECK_TEST(cudaSetDevice(this->localRank));
     CUDACHECK_TEST(cudaStreamCreate(&this->stream));

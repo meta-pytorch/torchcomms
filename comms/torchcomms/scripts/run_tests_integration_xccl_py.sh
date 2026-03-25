@@ -24,6 +24,8 @@ run_tests () {
         BatchSendRecvTest.py
         BroadcastTest.py
         DDPCommTest.py
+        DeviceMeshTest.py
+        DPTPCommTest.py
         FSDPCommTest.py
         GatherTest.py
         MultiCommTest.py
@@ -35,6 +37,7 @@ run_tests () {
         ReduceTest.py
         SendRecvTest.py
         ScatterTest.py
+        SplitTest.py
         TPCommTest.py
     )
 

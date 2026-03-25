@@ -4,6 +4,7 @@
 
 #include "debug.h"
 #include "nccl.h" // @manual
+#include "param.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
 
@@ -16,6 +17,8 @@
 namespace ncclx {
 
 Config::Config(const ncclConfig_t* config) {
+  initEnv();
+
   if (!config) {
     WARN("ncclx::Config: config is null");
     throw std::invalid_argument("config is null");
@@ -172,7 +175,27 @@ Config::Config(const ncclConfig_t* config) {
   if (config->fastInitMode != NCCL_CONFIG_UNDEF_INT) {
     fastInitMode = config->fastInitMode != 0;
   } else {
-    fastInitMode = parseHintBool("fastInitMode", NCCL_FAST_INIT_MODE_DEFAULT);
+    // NCCL_FASTINIT_MODE is a enum, we could not directly convert it to bool
+    fastInitMode = parseHintBool(
+        "fastInitMode", NCCL_FASTINIT_MODE == NCCL_FASTINIT_MODE::ring_hybrid);
+  }
+  // Per-communicator pipes NVL transport config overrides
+  {
+    std::string val = getHintStr("pipesNvlChunkSize");
+    if (!val.empty()) {
+      try {
+        pipesNvlChunkSize = std::stoull(val);
+      } catch (const std::exception&) {
+        WARN("NCCLX hint 'pipesNvlChunkSize': invalid value '%s'", val.c_str());
+      }
+    }
+  }
+  {
+    std::string val = getHintStr("pipesUseDualStateBuffer");
+    if (!val.empty()) {
+      pipesUseDualStateBuffer = parseHintBool(
+          "pipesUseDualStateBuffer", NCCL_CTRAN_PIPES_USE_DUAL_STATE_BUFFER);
+    }
   }
 }
 

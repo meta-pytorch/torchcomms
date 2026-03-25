@@ -77,7 +77,7 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
   TorchCommWindowNCCLX& operator=(TorchCommWindowNCCLX&& other) noexcept =
       delete;
 
-  void tensor_register(const at::Tensor& tensor) override;
+  void tensor_register(const at::Tensor& tensor, bool owning = true) override;
   void tensor_deregister() override;
 
   std::shared_ptr<TorchCommWindow> clone() override;
@@ -106,13 +106,15 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
   // ==========================================================================
 
   // Register a local buffer for use as source in device-side put operations.
-  // This is NON-COLLECTIVE because it uses NCCL_WIN_LOCAL_ONLY flag which
-  // registers with local lkey only (no rkey allGather). The resulting window
-  // can only be used as a source buffer for put operations.
+  // NON-COLLECTIVE — registration is purely local (lkey only, no rkey
+  // exchange). The resulting buffer can only be used as a source for put
+  // operations.
   //
-  // Prerequisites: Must call tensor_register() then get_device_window() before
-  // this method. get_device_window() triggers ncclDevCommCreate which enables
-  // GIN - required for local buffer registration to work.
+  // Backend dispatch:
+  //   - NCCLDeviceBackend: NCCL_WIN_DEVICE_API | NCCL_WIN_LOCAL_ONLY
+  //   - PipesDeviceBackend: MultiPeerTransport::localRegisterIbgdaBuffer
+  //
+  // Prerequisites: Must call tensor_register() then get_device_window() first.
   DeviceRegisteredBuffer register_local_buffer(const at::Tensor& tensor);
 
   // Deregister a previously registered local buffer. NON-COLLECTIVE.
@@ -181,6 +183,13 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
   ncclComm_t nccl_comm_{};
   std::shared_ptr<TorchCommNCCLX> torch_comm_;
   NcclxWindow win_{nullptr};
+
+  // Raw buffer data pointer for graph capture mode.
+  // In graph capture mode, we cannot store buf_tensor_ (it would prevent
+  // pool memory reuse during CUDA graph replay). Instead we store only the
+  // raw data_ptr so that get_device_window() can pass it to
+  // create_device_window() without requiring an at::Tensor reference.
+  void* buf_data_ptr_{nullptr};
 
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
   // Device API state (only available with NCCLX 2.28+)

@@ -1559,17 +1559,94 @@ TEST_F(CtranGpeTest, GraphCaptureWithHostNode) {
   std::string output = testing::internal::GetCapturedStdout();
   EXPECT_THAT(output, testing::HasSubstr(kExpectedOutput));
 
-  // Expect flag is returned after kernel finish
-  EXPECT_EQ(gpe->numInUseKernelFlags(), 0);
+  // For persistent (graph) cmds, the flag stays in-use between replays to
+  // prevent the pool from reclaiming it. It is released when the graph
+  // (and thus the cmd) is destroyed.
+  EXPECT_EQ(gpe->numInUseKernelFlags(), 1);
 
   CUDACHECK_TEST(cudaGraphExecDestroy(graphExec));
   CUDACHECK_TEST(cudaGraphDestroy(graph));
+
+  // cudaUserObjectNoDestructorSync: cmdDestroy fires asynchronously after
+  // graph destruction. Wait for it to release the flag back to the pool.
+  while (gpe->numInUseKernelFlags() > 0) {
+    std::this_thread::yield();
+  }
+  EXPECT_EQ(gpe->numInUseKernelFlags(), 0);
   CUDACHECK_TEST(cudaFree(buf));
   CUDACHECK_TEST(cudaFreeHost(valPtr));
   CUDACHECK_TEST(cudaStreamDestroy(stream));
 }
 #endif
 
+// Verify that destroying a captured graph triggers cmdDestroy, which resets
+// KernelElem statuses and frees the persistent cmd. After graph destruction,
+// all pool resources held by the graph should be reclaimable.
+//
+TEST_F(CtranGpeTest, GraphCaptureDestroyFreesResources) {
+  auto gpe = std::unique_ptr<CtranGpe>(new CtranGpe(cudaDev, dummyComm));
+  cudaStream_t stream;
+  CUDACHECK_TEST(cudaStreamCreate(&stream));
+
+  constexpr int kVal = 99;
+  int* buf = nullptr;
+  int* valPtr = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMemset(buf, 0, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMallocHost(&valPtr, sizeof(int)));
+  *valPtr = kVal;
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  CUDACHECK_TEST(cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed));
+
+  {
+    uint64_t dummyOpCount = 100;
+    std::vector<std::unique_ptr<struct OpElem>> ops;
+    auto& op = ops.emplace_back(
+        std::make_unique<OpElem>(
+            OpElem::opType::RECV, dummyComm, dummyOpCount));
+    op->recv.recvbuff = nullptr;
+    op->recv.count = 0;
+    op->recv.datatype = commInt8;
+    op->recv.peerRank = 0;
+
+    auto config = KernelConfig(
+        KernelConfig::KernelType::ALLGATHER, stream, "dummyAlgo", dummyOpCount);
+    ctranKernelSetAllGatherArgs(
+        buf, valPtr, commInt8, count, dummyDevState_d, &config.args);
+
+    auto res = gpe->submit(
+        std::move(ops),
+        &CtranGpeTestAlgoFunc,
+        config,
+        reinterpret_cast<void*>(CtranGpeTestKernel));
+    ASSERT_EQ(res, commSuccess);
+  }
+
+  cudaGraph_t graph;
+  CUDACHECK_TEST(cudaStreamEndCapture(stream, &graph));
+  ASSERT_NE(graph, nullptr);
+
+  cudaGraphExec_t graphExec;
+  CUDACHECK_TEST(cudaGraphInstantiate(&graphExec, graph, nullptr, nullptr, 0));
+
+  CUDACHECK_TEST(cudaGraphLaunch(graphExec, stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+
+  std::vector<int> hostBuf(count, 0);
+  CUDACHECK_TEST(cudaMemcpy(
+      hostBuf.data(), buf, sizeof(int) * count, cudaMemcpyDeviceToHost));
+  EXPECT_THAT(hostBuf, testing::Each(kVal));
+
+  CUDACHECK_TEST(cudaGraphExecDestroy(graphExec));
+  CUDACHECK_TEST(cudaGraphDestroy(graph));
+
+  EXPECT_EQ(gpe->numInUseKernelFlags(), 0);
+
+  CUDACHECK_TEST(cudaFree(buf));
+  CUDACHECK_TEST(cudaFreeHost(valPtr));
+  CUDACHECK_TEST(cudaStreamDestroy(stream));
+}
 TEST_F(CtranGpeTest, SubmitCustomKernArgs) {
   auto gpe = std::unique_ptr<CtranGpe>(new CtranGpe(cudaDev, dummyComm));
   cudaStream_t stream;

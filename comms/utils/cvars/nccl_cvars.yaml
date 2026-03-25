@@ -1710,6 +1710,14 @@ cvars:
      Chunk size in bytes for NVL transport in Pipes MultiPeerTransport.
      Controls the granularity of parallel copy operations over NVLink.
 
+ - name        : NCCL_CTRAN_PIPES_USE_DUAL_STATE_BUFFER
+   type        : bool
+   default     : false
+   description : |-
+     Enable dual state buffer mode for NVL transport in Pipes
+     MultiPeerTransport. When enabled, uses two chunk state buffers
+     instead of one, allowing overlap of copy and signal operations.
+
  - name        : NCCL_CTRAN_PIPES_DISABLE_IB
    type        : bool
    default     : false

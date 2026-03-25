@@ -114,6 +114,97 @@ __global__ void pipesBarrierKernel(DeviceWindowPipes* win, int barrier_id) {
 }
 
 // =============================================================================
+// Put with Signal Kernel
+// =============================================================================
+// Performs a put operation to dst_rank with signal notification.
+// Single thread performs the put + flush (CoopScope::THREAD).
+
+__global__ void pipesPutKernel(
+    DeviceWindowPipes* win,
+    RegisteredBufferPipes src_buf,
+    size_t src_offset,
+    size_t dst_offset,
+    size_t bytes,
+    int dst_rank,
+    int signal_id) {
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    win->put(dst_offset, src_buf, src_offset, dst_rank, bytes, signal_id, -1);
+    win->flush();
+  }
+}
+
+// =============================================================================
+// Put with Signal + Counter Kernel
+// =============================================================================
+// Performs a put with both signal and counter.
+// Counter is only incremented for IBGDA peers (companion QP loopback atomic).
+// For NVLink-only peers, counter stays 0 (silently ignored, same as GIN LSA).
+// Caller should NOT wait_local for NVLink-only configs — it would spin forever.
+
+__global__ void pipesPutCounterKernel(
+    DeviceWindowPipes* win,
+    RegisteredBufferPipes src_buf,
+    size_t src_offset,
+    size_t dst_offset,
+    size_t bytes,
+    int dst_rank,
+    int signal_id,
+    int counter_id) {
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    win->put(
+        dst_offset,
+        src_buf,
+        src_offset,
+        dst_rank,
+        bytes,
+        signal_id,
+        counter_id);
+    win->flush();
+  }
+}
+
+// =============================================================================
+// Read Counter Kernel
+// =============================================================================
+// Reads the aggregated counter value (summed across all peers).
+
+__global__ void
+pipesReadCounterKernel(DeviceWindowPipes* win, int counter_id, uint64_t* out) {
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    *out = win->read_counter(counter_id);
+  }
+}
+
+// =============================================================================
+// Reset Counter Kernel
+// =============================================================================
+// Resets counter for all peers.
+
+__global__ void pipesResetCounterKernel(
+    DeviceWindowPipes* win,
+    int counter_id) {
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    win->reset_counter(counter_id);
+  }
+}
+
+// =============================================================================
+// Wait Local (Counter) Kernel
+// =============================================================================
+// Spin-polls aggregated counter until it satisfies the comparison.
+// Only meaningful for IBGDA peers — NVLink counters stay 0.
+
+__global__ void pipesWaitLocalKernel(
+    DeviceWindowPipes* win,
+    int counter_id,
+    CmpOp cmp,
+    uint64_t value) {
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    win->wait_local(counter_id, cmp, value);
+  }
+}
+
+// =============================================================================
 // Host-callable wrapper functions
 // =============================================================================
 
@@ -172,6 +263,69 @@ void launchPipesBarrierKernel(
     cudaStream_t stream) {
   // Launch with 32 threads (1 warp) to match CoopScope::WARP in the kernel.
   pipesBarrierKernel<<<1, 32, 0, stream>>>(win, barrier_id);
+  CUDA_LAUNCH_CHECK();
+}
+
+void launchPipesPutKernel(
+    DeviceWindowPipes* win,
+    RegisteredBufferPipes src_buf,
+    size_t src_offset,
+    size_t dst_offset,
+    size_t bytes,
+    int dst_rank,
+    int signal_id,
+    cudaStream_t stream) {
+  pipesPutKernel<<<1, 1, 0, stream>>>(
+      win, src_buf, src_offset, dst_offset, bytes, dst_rank, signal_id);
+  CUDA_LAUNCH_CHECK();
+}
+
+void launchPipesPutCounterKernel(
+    DeviceWindowPipes* win,
+    RegisteredBufferPipes src_buf,
+    size_t src_offset,
+    size_t dst_offset,
+    size_t bytes,
+    int dst_rank,
+    int signal_id,
+    int counter_id,
+    cudaStream_t stream) {
+  pipesPutCounterKernel<<<1, 1, 0, stream>>>(
+      win,
+      src_buf,
+      src_offset,
+      dst_offset,
+      bytes,
+      dst_rank,
+      signal_id,
+      counter_id);
+  CUDA_LAUNCH_CHECK();
+}
+
+void launchPipesReadCounterKernel(
+    DeviceWindowPipes* win,
+    int counter_id,
+    uint64_t* out,
+    cudaStream_t stream) {
+  pipesReadCounterKernel<<<1, 1, 0, stream>>>(win, counter_id, out);
+  CUDA_LAUNCH_CHECK();
+}
+
+void launchPipesResetCounterKernel(
+    DeviceWindowPipes* win,
+    int counter_id,
+    cudaStream_t stream) {
+  pipesResetCounterKernel<<<1, 1, 0, stream>>>(win, counter_id);
+  CUDA_LAUNCH_CHECK();
+}
+
+void launchPipesWaitLocalKernel(
+    DeviceWindowPipes* win,
+    int counter_id,
+    CmpOp cmp,
+    uint64_t value,
+    cudaStream_t stream) {
+  pipesWaitLocalKernel<<<1, 1, 0, stream>>>(win, counter_id, cmp, value);
   CUDA_LAUNCH_CHECK();
 }
 

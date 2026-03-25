@@ -213,13 +213,12 @@ class CtranBaseTest {
 
 class CtranDistBaseTest : public NcclxBaseTest, public CtranBaseTest {
  public:
-  CtranDistBaseTest() : NcclxBaseTest(true) {};
+  CtranDistBaseTest() : NcclxBaseTest() {};
 
   // Global commWorld shared by all tests running by the process.
   // Destorying in TearDownTestSuite() to ensure release commWorld only after
   // all tests.
   static ncclComm_t commWorld;
-  static std::unique_ptr<c10d::TCPStore> tcpStoreServer;
   static void TearDownTestSuite();
 
   // Below provide convenient functions to communicate among testing ranks; use

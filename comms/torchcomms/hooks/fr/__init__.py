@@ -21,7 +21,14 @@ Example:
     >>> json_trace = recorder.dump_json()
 """
 
-from torchcomms.hooks.fr._fr import FlightRecorderHook
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from torchcomms.hooks.fr._fr import FlightRecorderHook
+else:
+    import torchcomms._comms as _comms_mod
+
+    FlightRecorderHook = _comms_mod.hooks.fr.FlightRecorderHook
 
 __all__ = [
     "FlightRecorderHook",

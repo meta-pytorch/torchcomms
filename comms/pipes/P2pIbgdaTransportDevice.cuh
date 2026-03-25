@@ -506,6 +506,29 @@ class P2pIbgdaTransportDevice {
   }
 
   /**
+   * signal_remote_with_fence (group overload) - Group-aware fenced signal
+   *
+   * Group-level API: all threads in the group must call this together.
+   * Performs group.sync() for ordering, then the global leader executes
+   * signal_remote_with_fence().
+   *
+   * @param group ThreadGroup for group coordination.
+   * @param remoteBuf Remote signal buffer (window-owned, RDMA-registered)
+   * @param signalId Index into the remote signal buffer (uint64_t units)
+   * @param value Value to atomically add
+   */
+  __device__ void signal_remote_with_fence(
+      ThreadGroup& group,
+      const IbgdaRemoteBuffer& remoteBuf,
+      int signalId,
+      uint64_t value) {
+    group.sync();
+    if (group.is_global_leader()) {
+      signal_remote_with_fence(remoteBuf, signalId, value);
+    }
+  }
+
+  /**
    * put_signal_counter_remote - Data write + remote signal + local counter
    *
    * Compound operation using main QP (data + signal) and companion QP
@@ -615,6 +638,56 @@ class P2pIbgdaTransportDevice {
         sigRemoteAddr,
         sigSinkAddr,
         signalVal,
+        companionQp_,
+        counterRemoteAddr,
+        counterSinkAddr,
+        counterVal);
+  }
+
+  /**
+   * put_counter_local - One-sided write + local counter (no signal)
+   *
+   * Compound operation: data write on the main QP, then the companion QP
+   * WAITs for completion and increments a local counter via loopback RDMA
+   * atomic.  Same as put_signal_counter_remote but without the signal.
+   *
+   * All buffer addresses are caller-provided (window-owned).
+   *
+   * @param localDataBuf Source data buffer (local GPU memory)
+   * @param remoteDataBuf Destination data buffer (remote GPU memory)
+   * @param nbytes Number of data bytes to transfer
+   * @param localCounterBuf Local counter buffer (window-owned)
+   * @param counterId Counter slot index
+   * @param counterVal Counter value to atomically add (typically 1)
+   */
+  __device__ void put_counter_local(
+      const IbgdaLocalBuffer& localDataBuf,
+      const IbgdaRemoteBuffer& remoteDataBuf,
+      std::size_t nbytes,
+      const IbgdaLocalBuffer& localCounterBuf,
+      int counterId,
+      uint64_t counterVal) {
+    doca_gpu_dev_verbs_addr laddr = {
+        .addr = reinterpret_cast<uint64_t>(localDataBuf.ptr),
+        .key = localDataBuf.lkey.value};
+    doca_gpu_dev_verbs_addr raddr = {
+        .addr = reinterpret_cast<uint64_t>(remoteDataBuf.ptr),
+        .key = remoteDataBuf.rkey.value};
+
+    doca_gpu_dev_verbs_addr counterRemoteAddr = {
+        .addr = reinterpret_cast<uint64_t>(
+            static_cast<uint64_t*>(localCounterBuf.ptr) + counterId),
+        .key = localCounterBuf.lkey.value};
+    doca_gpu_dev_verbs_addr counterSinkAddr = {
+        .addr = 0, .key = sinkLkey_.value};
+
+    doca_gpu_dev_verbs_put_counter<
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
+        DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(
+        qp_,
+        raddr,
+        laddr,
+        nbytes,
         companionQp_,
         counterRemoteAddr,
         counterSinkAddr,

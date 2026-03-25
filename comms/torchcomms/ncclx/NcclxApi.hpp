@@ -57,9 +57,18 @@ class NCCLXException : public std::exception {
     }                                                                      \
   } while (0)
 
+// Window/RMA types are only available in NCCLX builds that define
+// NCCL_RMA_SUPPORTED
+#ifdef NCCL_RMA_SUPPORTED
 using NcclxWindow = ncclWindow_t;
 using NcclxWindowAccessType = ncclWinAccessType;
 using NcclxWindowAttr = ncclWinAttr_t;
+#else
+using NcclxWindow = void*;
+using NcclxWindowAccessType = int;
+using NcclxWindowAttr = void*;
+constexpr int NCCL_WIN_DEFAULT = 0;
+#endif
 
 /**
  * Abstract interface for NCCL API operations.
@@ -107,6 +116,12 @@ class NcclxApi {
   [[nodiscard]] virtual ncclResult_t commDeregister(
       ncclComm_t comm,
       void* handle) = 0;
+
+  // Pointer-based memory registration (global - does not require comm)
+  // cudaDev is auto-detected from the buffer pointer.
+  virtual ncclResult_t globalRegisterWithPtr(void* buffer, size_t size) = 0;
+
+  virtual ncclResult_t globalDeregisterWithPtr(void* buffer, size_t size) = 0;
 
   // Point-to-point operations
   [[nodiscard]] virtual ncclResult_t send(
@@ -203,11 +218,12 @@ class NcclxApi {
       void* recvbuff,
       const int64_t* sendcounts_d,
       const int64_t* recvcounts_d,
-      const int64_t* senddispls_d,
-      const int64_t* recvdispls_d,
       ncclDataType_t datatype,
       ncclComm_t comm,
-      cudaStream_t stream) {
+      cudaStream_t stream,
+      int64_t sendcountsMultiplier = 1,
+      int64_t recvcountsMultiplier = 1,
+      const std::unordered_map<std::string, std::string>& hints = {}) {
     return ncclInvalidUsage;
   }
 
@@ -335,6 +351,32 @@ class NcclxApi {
 
   // Free device memory allocated by winCreateDeviceWin.
   virtual ncclResult_t winDestroyDeviceWin(void* devicePtr) = 0;
+
+  // Get pipes transport device handle components from the communicator.
+  // NON-COLLECTIVE — reads already-exchanged state.
+  // Returns ncclInternalError if pipes transport is not initialized.
+  virtual ncclResult_t getMultiPeerDeviceHandle(
+      ncclComm_t comm,
+      void** outTransportsPtr,
+      int* outMyRank,
+      int* outNRanks,
+      int* outNumNvlPeers,
+      int* outNumIbPeers) = 0;
+
+  // Register a local buffer for device-side RDMA put operations.
+  // NON-COLLECTIVE — purely local memory registration (lkey only).
+  // Returns lkey in network byte order via outLkey.
+  [[nodiscard]] virtual ncclResult_t winLocalRegisterBuffer(
+      ncclComm_t comm,
+      void* ptr,
+      size_t size,
+      uint32_t* outLkey) = 0;
+
+  // Deregister a buffer previously registered with winLocalRegisterBuffer.
+  // NON-COLLECTIVE.
+  [[nodiscard]] virtual ncclResult_t winLocalDeregisterBuffer(
+      ncclComm_t comm,
+      void* ptr) = 0;
 #endif
 
   // Group operations
@@ -408,6 +450,10 @@ class DefaultNcclxApi : public NcclxApi {
 
   [[nodiscard]] ncclResult_t commDeregister(ncclComm_t comm, void* handle)
       override;
+
+  ncclResult_t globalRegisterWithPtr(void* buffer, size_t size) override;
+
+  ncclResult_t globalDeregisterWithPtr(void* buffer, size_t size) override;
 
   // Point-to-point operations
   [[nodiscard]] ncclResult_t send(
@@ -504,11 +550,12 @@ class DefaultNcclxApi : public NcclxApi {
       void* recvbuff,
       const int64_t* sendcounts_d,
       const int64_t* recvcounts_d,
-      const int64_t* senddispls_d,
-      const int64_t* recvdispls_d,
       ncclDataType_t datatype,
       ncclComm_t comm,
-      cudaStream_t stream) override;
+      cudaStream_t stream,
+      int64_t sendcountsMultiplier = 1,
+      int64_t recvcountsMultiplier = 1,
+      const std::unordered_map<std::string, std::string>& hints = {}) override;
 
   [[nodiscard]] ncclResult_t alltoallvDynamicDispatch(
       const void* sendbuff,
@@ -628,6 +675,21 @@ class DefaultNcclxApi : public NcclxApi {
       int barrier_count,
       void** outDevicePtr) override;
   ncclResult_t winDestroyDeviceWin(void* devicePtr) override;
+  ncclResult_t getMultiPeerDeviceHandle(
+      ncclComm_t comm,
+      void** outTransportsPtr,
+      int* outMyRank,
+      int* outNRanks,
+      int* outNumNvlPeers,
+      int* outNumIbPeers) override;
+  [[nodiscard]] ncclResult_t winLocalRegisterBuffer(
+      ncclComm_t comm,
+      void* ptr,
+      size_t size,
+      uint32_t* outLkey) override;
+  [[nodiscard]] ncclResult_t winLocalDeregisterBuffer(
+      ncclComm_t comm,
+      void* ptr) override;
 #endif
 
   // Group operations

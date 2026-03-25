@@ -102,6 +102,16 @@ ncclResult_t DefaultNcclxApi::commDeregister(ncclComm_t comm, void* handle) {
   return ncclCommDeregister(comm, handle);
 }
 
+ncclResult_t DefaultNcclxApi::globalRegisterWithPtr(void* buffer, size_t size) {
+  return ncclGlobalRegisterWithPtr(buffer, size);
+}
+
+ncclResult_t DefaultNcclxApi::globalDeregisterWithPtr(
+    void* buffer,
+    size_t size) {
+  return ncclGlobalDeregisterWithPtr(buffer, size);
+}
+
 ncclResult_t DefaultNcclxApi::send(
     const void* sendbuff,
     size_t count,
@@ -236,22 +246,24 @@ ncclResult_t DefaultNcclxApi::deviceAllToAllv(
     void* recvbuff,
     const int64_t* sendcounts_d,
     const int64_t* recvcounts_d,
-    const int64_t* senddispls_d,
-    const int64_t* recvdispls_d,
     ncclDataType_t datatype,
     ncclComm_t comm,
-    cudaStream_t stream) {
+    cudaStream_t stream,
+    int64_t sendcountsMultiplier,
+    int64_t recvcountsMultiplier,
+    const std::unordered_map<std::string, std::string>& hints) {
   std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclx::deviceAllToAllv(
       sendbuff,
       recvbuff,
       sendcounts_d,
       recvcounts_d,
-      senddispls_d,
-      recvdispls_d,
       datatype,
       comm,
-      stream);
+      stream,
+      sendcountsMultiplier,
+      recvcountsMultiplier,
+      hints);
 }
 
 ncclResult_t DefaultNcclxApi::alltoallvDynamicDispatch(
@@ -451,7 +463,7 @@ DefaultNcclxApi::winSignal(int peer, NcclxWindow win, cudaStream_t stream) {
 #else
   return ncclx::ncclSignal(
 #endif
-      peer, 0, peer, win, stream);
+      peer, win, stream);
 }
 
 ncclResult_t
@@ -538,6 +550,36 @@ ncclResult_t DefaultNcclxApi::winCreateDeviceWin(
 
 ncclResult_t DefaultNcclxApi::winDestroyDeviceWin(void* devicePtr) {
   return ncclWinDestroyDeviceWin(devicePtr);
+}
+
+ncclResult_t DefaultNcclxApi::getMultiPeerDeviceHandle(
+    ncclComm_t comm,
+    void** outTransportsPtr,
+    int* outMyRank,
+    int* outNRanks,
+    int* outNumNvlPeers,
+    int* outNumIbPeers) {
+  return ncclGetMultiPeerDeviceHandle(
+      comm,
+      outTransportsPtr,
+      outMyRank,
+      outNRanks,
+      outNumNvlPeers,
+      outNumIbPeers);
+}
+
+ncclResult_t DefaultNcclxApi::winLocalRegisterBuffer(
+    ncclComm_t comm,
+    void* ptr,
+    size_t size,
+    uint32_t* outLkey) {
+  return ncclWinLocalRegisterBuffer(comm, ptr, size, outLkey);
+}
+
+ncclResult_t DefaultNcclxApi::winLocalDeregisterBuffer(
+    ncclComm_t comm,
+    void* ptr) {
+  return ncclWinLocalDeregisterBuffer(comm, ptr);
 }
 #endif // ENABLE_PIPES
 

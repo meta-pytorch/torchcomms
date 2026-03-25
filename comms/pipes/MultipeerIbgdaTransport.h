@@ -10,11 +10,12 @@
 #include <unordered_map>
 #include <vector>
 
-#include <infiniband/verbs.h>
-
 #include <doca_gpunetio_host.h>
+#include "doca_verbs_net_wrapper.h"
+
 #include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/pipes/IbgdaBuffer.h"
+#include "comms/pipes/IbverbsLazy.h"
 
 // Forward declarations for device types (defined in .cuh files)
 namespace comms::pipes {
@@ -396,8 +397,18 @@ class MultipeerIbgdaTransport {
   std::size_t sinkBufferSize_{0};
   ibv_mr* sinkMr_{nullptr};
 
-  // User-registered buffers (maps ptr -> ibv_mr*)
-  std::unordered_map<void*, ibv_mr*> registeredBuffers_;
+  // Cached MR entry: one MR per CUDA allocation, refcounted.
+  // Multiple user buffers within the same cudaMalloc allocation share one MR.
+  struct CachedMr {
+    ibv_mr* mr;
+    size_t allocSize;
+    int refs;
+  };
+
+  // Maps CUDA allocation base address -> cached MR covering the full
+  // allocation. Keyed by allocBase from cuMemGetAddressRange, not by user
+  // pointer.
+  std::unordered_map<uintptr_t, CachedMr> registeredBuffers_;
 
   // GPU PCIe bus ID and NIC device name
   std::string gpuPciBusId_;

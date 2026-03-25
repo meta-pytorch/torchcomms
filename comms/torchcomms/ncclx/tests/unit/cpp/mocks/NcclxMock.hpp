@@ -78,6 +78,19 @@ class NcclxMock : public NcclxApi {
       (ncclComm_t comm, void* handle),
       (override));
 
+  // Pointer-based memory registration (global - does not require comm)
+  MOCK_METHOD(
+      ncclResult_t,
+      globalRegisterWithPtr,
+      (void* buffer, size_t size),
+      (override));
+
+  MOCK_METHOD(
+      ncclResult_t,
+      globalDeregisterWithPtr,
+      (void* buffer, size_t size),
+      (override));
+
   // Point-to-point operations
   MOCK_METHOD(
       ncclResult_t,
@@ -352,6 +365,26 @@ class NcclxMock : public NcclxApi {
        void** outDevicePtr),
       (override));
   MOCK_METHOD(ncclResult_t, winDestroyDeviceWin, (void* devicePtr), (override));
+  MOCK_METHOD(
+      ncclResult_t,
+      getMultiPeerDeviceHandle,
+      (ncclComm_t comm,
+       void** outTransportsPtr,
+       int* outMyRank,
+       int* outNRanks,
+       int* outNumNvlPeers,
+       int* outNumIbPeers),
+      (override));
+  MOCK_METHOD(
+      ncclResult_t,
+      winLocalRegisterBuffer,
+      (ncclComm_t comm, void* ptr, size_t size, uint32_t* outLkey),
+      (override));
+  MOCK_METHOD(
+      ncclResult_t,
+      winLocalDeregisterBuffer,
+      (ncclComm_t comm, void* ptr),
+      (override));
 #endif
 
   // Group operations

@@ -7,6 +7,14 @@
 
 set -ex
 
+# If no InfiniBand devices are present, disable the IB backend to avoid
+# CtranIbSingleton init failures ("Operation not permitted") and cascading
+# CUDA graph registration errors.
+if [ ! -d /sys/class/infiniband ] || [ -z "$(ls /sys/class/infiniband 2>/dev/null)" ]; then
+    echo "No InfiniBand devices found, disabling IB backend"
+    export NCCL_CTRAN_BACKENDS="socket"
+fi
+
 cd "$(dirname "$0")/../tests/integration/py"
 
 run_tests () {

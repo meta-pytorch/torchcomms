@@ -86,7 +86,8 @@ class StreamCaptureModeGuard {
  public:
   using ExchangeFn = cudaError_t (*)(void*, cudaStreamCaptureMode*);
 
-  explicit StreamCaptureModeGuard(cudaStreamCaptureMode desiredMode);
+  __attribute__((visibility("default"))) explicit StreamCaptureModeGuard(
+      cudaStreamCaptureMode desiredMode);
 
   template <typename Api>
   StreamCaptureModeGuard(Api* api, cudaStreamCaptureMode desiredMode)
@@ -95,10 +96,10 @@ class StreamCaptureModeGuard {
           return static_cast<Api*>(ctx)->threadExchangeStreamCaptureMode(mode);
         }),
         prevMode_(desiredMode) {
-    (void)exchangeFn_(ctx_, &prevMode_);
+    init();
   }
 
-  ~StreamCaptureModeGuard();
+  __attribute__((visibility("default"))) ~StreamCaptureModeGuard();
 
   StreamCaptureModeGuard(const StreamCaptureModeGuard&) = delete;
   StreamCaptureModeGuard& operator=(const StreamCaptureModeGuard&) = delete;
@@ -106,6 +107,8 @@ class StreamCaptureModeGuard {
   StreamCaptureModeGuard& operator=(StreamCaptureModeGuard&&) = delete;
 
  private:
+  __attribute__((visibility("default"))) void init();
+
   void* ctx_{nullptr};
   ExchangeFn exchangeFn_{nullptr};
   cudaStreamCaptureMode prevMode_;

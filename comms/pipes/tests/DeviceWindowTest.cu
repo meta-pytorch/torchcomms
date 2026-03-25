@@ -344,35 +344,6 @@ void testDeviceWindowReadSignalGroup(
 }
 
 // =============================================================================
-// DeviceWindow NVL Put via Generic API Test
-// =============================================================================
-
-__global__ void nvlPutKernel(
-    DeviceWindow dw,
-    int targetPeerRank,
-    char* remoteDst,
-    const char* localSrc,
-    std::size_t nbytes) {
-  auto group = make_block_group();
-  dw.put(targetPeerRank, group, remoteDst, localSrc, nbytes);
-}
-
-void testDeviceWindowNvlPut(
-    int myRank,
-    int nRanks,
-    char* dst_d,
-    const char* src_d,
-    std::size_t nbytes) {
-  NvlOnlyDeviceWindowBuffers bufs;
-  auto dw = bufs.create(myRank, nRanks, 1);
-
-  int targetPeerRank = (myRank == 0) ? 1 : 0;
-  nvlPutKernel<<<4, 256>>>(dw, targetPeerRank, dst_d, src_d, nbytes);
-  CUDACHECK_TEST(cudaGetLastError());
-  CUDACHECK_TEST(cudaDeviceSynchronize());
-}
-
-// =============================================================================
 // DeviceWindow Offset-Based NVL Put Test
 // =============================================================================
 
@@ -704,6 +675,147 @@ void testIbgdaSignalAggregateRead(
   }
 
   ibgdaSignalAggregateReadKernel<<<1, 1>>>(dw, signalId, result);
+  CUDACHECK_TEST(cudaGetLastError());
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+}
+
+// =============================================================================
+// DeviceWindow get_nvlink_address() Test
+// =============================================================================
+
+__global__ void
+getNvlinkAddressKernel(DeviceWindow dw, int nRanks, int64_t* results) {
+  for (int r = 0; r < nRanks; ++r) {
+    void* addr = dw.get_nvlink_address(r);
+    results[r] = reinterpret_cast<int64_t>(addr);
+  }
+}
+
+void testDeviceWindowGetNvlinkAddress(
+    int myRank,
+    int nRanks,
+    void* windowBuf_d,
+    int64_t* results) {
+  NvlOffsetPutDeviceWindowBuffers bufs;
+  auto dw = bufs.create_with_offset_put(myRank, nRanks, windowBuf_d);
+
+  getNvlinkAddressKernel<<<1, 1>>>(dw, nRanks, results);
+  CUDACHECK_TEST(cudaGetLastError());
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+}
+
+// =============================================================================
+// DeviceWindow Offset-Based NVL Put + Signal + Counter Test
+// =============================================================================
+
+__global__ void nvlOffsetPutSignalCounterKernel(
+    DeviceWindow dw,
+    int targetPeerRank,
+    std::size_t dst_offset,
+    LocalBufferRegistration src_buf,
+    std::size_t src_offset,
+    std::size_t nbytes,
+    int signalId,
+    uint64_t signalVal,
+    int counterId,
+    uint64_t counterVal) {
+  auto group = make_block_group();
+  dw.put_signal_counter(
+      group,
+      targetPeerRank,
+      dst_offset,
+      src_buf,
+      src_offset,
+      nbytes,
+      signalId,
+      signalVal,
+      counterId,
+      counterVal);
+}
+
+void testDeviceWindowNvlOffsetPutSignalCounter(
+    int myRank,
+    int nRanks,
+    char* windowBuf_d,
+    const char* srcBuf_d,
+    std::size_t srcBufSize,
+    std::size_t dst_offset,
+    std::size_t src_offset,
+    std::size_t nbytes,
+    int signalId,
+    uint64_t signalVal,
+    int counterId,
+    uint64_t counterVal) {
+  NvlOffsetPutDeviceWindowBuffers bufs;
+  auto dw = bufs.create_with_offset_put(myRank, nRanks, windowBuf_d);
+
+  int targetPeerRank = (myRank == 0) ? 1 : 0;
+  LocalBufferRegistration src_buf{srcBuf_d, srcBufSize, NetworkLKey{}};
+  nvlOffsetPutSignalCounterKernel<<<4, 256>>>(
+      dw,
+      targetPeerRank,
+      dst_offset,
+      src_buf,
+      src_offset,
+      nbytes,
+      signalId,
+      signalVal,
+      counterId,
+      counterVal);
+  CUDACHECK_TEST(cudaGetLastError());
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+}
+
+// =============================================================================
+// DeviceWindow Offset-Based NVL Put + Counter (No Signal) Test
+// =============================================================================
+
+__global__ void nvlOffsetPutCounterKernel(
+    DeviceWindow dw,
+    int targetPeerRank,
+    std::size_t dst_offset,
+    LocalBufferRegistration src_buf,
+    std::size_t src_offset,
+    std::size_t nbytes,
+    int counterId,
+    uint64_t counterVal) {
+  auto group = make_block_group();
+  dw.put_counter(
+      group,
+      targetPeerRank,
+      dst_offset,
+      src_buf,
+      src_offset,
+      nbytes,
+      counterId,
+      counterVal);
+}
+
+void testDeviceWindowNvlOffsetPutCounter(
+    int myRank,
+    int nRanks,
+    char* windowBuf_d,
+    const char* srcBuf_d,
+    std::size_t srcBufSize,
+    std::size_t dst_offset,
+    std::size_t src_offset,
+    std::size_t nbytes,
+    int counterId,
+    uint64_t counterVal) {
+  NvlOffsetPutDeviceWindowBuffers bufs;
+  auto dw = bufs.create_with_offset_put(myRank, nRanks, windowBuf_d);
+
+  int targetPeerRank = (myRank == 0) ? 1 : 0;
+  LocalBufferRegistration src_buf{srcBuf_d, srcBufSize, NetworkLKey{}};
+  nvlOffsetPutCounterKernel<<<4, 256>>>(
+      dw,
+      targetPeerRank,
+      dst_offset,
+      src_buf,
+      src_offset,
+      nbytes,
+      counterId,
+      counterVal);
   CUDACHECK_TEST(cudaGetLastError());
   CUDACHECK_TEST(cudaDeviceSynchronize());
 }

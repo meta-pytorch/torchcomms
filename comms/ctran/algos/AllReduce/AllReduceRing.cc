@@ -19,6 +19,7 @@
 #include "comms/ctran/algos/AllReduce/AllReduceImpl.h"
 #include "comms/ctran/algos/AllReduce/AllReduceRingAutoTune.h"
 #include "comms/ctran/algos/AllReduce/AllReduceRingCommon.cuh"
+#include "comms/ctran/algos/AllReduce/Types.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/CtranAlgoConsts.h"
 #include "comms/ctran/mapper/CtranMapper.h"
@@ -110,10 +111,10 @@ inline bool shouldEnableBidirAg(size_t messageBytes) {
   if (maxSize == -2) {
     // Auto-tune: select threshold based on GPU architecture
     int cudaDev = 0;
-    (void)cudaGetDevice(&cudaDev);
+    FB_CUDACHECK(cudaGetDevice(&cudaDev));
     int smMajor = 0;
-    (void)cudaDeviceGetAttribute(
-        &smMajor, cudaDevAttrComputeCapabilityMajor, cudaDev);
+    FB_CUDACHECK(cudaDeviceGetAttribute(
+        &smMajor, cudaDevAttrComputeCapabilityMajor, cudaDev));
     maxSize = (smMajor < 10) ? static_cast<int64_t>(kHopperBidirAgMaxSize)
                              : static_cast<int64_t>(kDefaultBidirAgMaxSize);
   }
@@ -125,55 +126,7 @@ inline bool shouldEnableBidirAg(size_t messageBytes) {
   return messageBytes <= static_cast<size_t>(maxSize);
 }
 
-struct HostArgs {
-  int32_t rank{-1};
-  int32_t leftRank{-1};
-  int32_t rightRank{-1};
-
-  size_t minShardSize{0};
-
-  unsigned int numBlocks{0};
-  unsigned int numThreads{0};
-
-  // Enable bi-directional AllGather optimization
-  bool enableBidirAg{true};
-
-  // Forward: remote receive buffer on right
-  void* rightRemBuf{nullptr};
-  CtranMapperRemoteAccessKey rightRemKey;
-
-  // Forward: receive notifications from left
-  std::unique_ptr<CtranMapperNotify> leftNotify{nullptr};
-
-  // Reverse: remote receive buffer on left (left neighbor's tmpRecvBufRev)
-  void* leftRemBufRev{nullptr};
-  CtranMapperRemoteAccessKey leftRemKeyRev;
-
-  // Reverse: receive notifications from right
-  std::unique_ptr<CtranMapperNotify> rightNotify{nullptr};
-};
-struct HostResource {
-  CtranComm* comm{nullptr};
-
-  ctran::algos::GpeKernelSync* sendCopySync{nullptr};
-  ctran::algos::GpeKernelSync* recvRedCopySync{nullptr};
-  ctran::algos::GpeKernelSync* partitionSync{nullptr};
-
-  size_t chunkSize{0};
-  size_t numChunks{0};
-  void* tmpSendBuf{nullptr};
-  void* tmpSendBufHdl{nullptr};
-  void* tmpRecvBuf{nullptr};
-  void* tmpRecvBufHdl{nullptr};
-
-  // Reverse direction
-  ctran::algos::GpeKernelSync* revSendCopySync{nullptr};
-  ctran::algos::GpeKernelSync* revRecvCopySync{nullptr};
-  void* tmpSendBufRev{nullptr};
-  void* tmpSendBufRevHdl{nullptr};
-  void* tmpRecvBufRev{nullptr};
-  void* tmpRecvBufRevHdl{nullptr};
-};
+// HostArgs and HostResource are defined in AllReduce/Types.h
 
 namespace {
 
@@ -1028,9 +981,17 @@ inline commResult_t completeHostResourceSetup(
 
 } // namespace
 
-#define HOST_ABORT()                                                \
-  if (comm->testAbort()) {                                          \
-    throw ctran::utils::Exception("comm aborted", commRemoteError); \
+#define HOST_ABORT(desc)                                                     \
+  if (comm->testAbort()) {                                                   \
+    auto _abort = comm->getAbort();                                          \
+    std::string _ctx =                                                       \
+        _abort->TimedOut() ? "comm aborted due to timeout" : "comm aborted"; \
+    throw ctran::utils::Exception(                                           \
+        _ctx,                                                                \
+        commRemoteError,                                                     \
+        comm->logMetaData_.rank,                                             \
+        comm->logMetaData_.commHash,                                         \
+        std::string(desc));                                                  \
   }
 
 static commResult_t impl(
@@ -1041,16 +1002,16 @@ static commResult_t impl(
   CtranComm* comm = opGroup.front()->comm_;
   CtranAlgoLogger logger(allReduceAlgoName(myAlgo), op->opCount, comm);
 
-  using HostArgs = ctran::allreduce::ring::HostArgs;
-  using HostResource = ctran::allreduce::ring::HostResource;
-  auto argsGuard = std::unique_ptr<HostArgs>(
-      reinterpret_cast<HostArgs*>(op->allreduce.args));
-  auto resourceGuard = std::unique_ptr<HostResource>(
-      reinterpret_cast<HostResource*>(op->allreduce.resource));
-  auto& args = *argsGuard;
-  auto& resource = *resourceGuard;
+  // hostArgs/hostResource are direct members of OpElem — owned by OpElem,
+  // destroyed when OpElem is destroyed (after single impl() in eager mode,
+  // when graph is destroyed in CUDA graph persistent mode).
+  auto& args = op->allreduce.hostArgs;
+  auto& resource = op->allreduce.hostResource;
 
-  FB_COMMCHECK(completeHostResourceSetup(comm, args, resource));
+  if (!resource.setupComplete) {
+    FB_COMMCHECK(completeHostResourceSetup(comm, args, resource));
+    resource.setupComplete = true;
+  }
 
   // setup algoCtx
   AlgoContext algoCtx = {
@@ -1139,7 +1100,12 @@ static commResult_t impl(
       progressRecv(args, resource, algoCtx, bufSyncSResps, flushResps);
       progressRevSend(args, resource, algoCtx, revDataSResps, revBufSyncRResps);
       progressRevRecv(args, resource, algoCtx, revBufSyncSResps, revFlushResps);
-      HOST_ABORT();
+      HOST_ABORT(
+          fmt::format(
+              "ctring partition {}, rightPeer={}, leftPeer={}",
+              algoCtx.partition,
+              args.rightRank,
+              args.leftRank));
     }
 
     // Release any remaining resps before moving to next partition
@@ -1157,15 +1123,18 @@ static commResult_t impl(
     resource.revRecvCopySync->resetStatus();
 
     updatePartitionDone(algoCtx);
-    HOST_ABORT();
+    HOST_ABORT(fmt::format("ctring after partition {}", algoCtx.partition));
   } // end of partition loop
 
-  // Reset flags for next allreduce to reuse
-  resource.sendCopySync->reset();
-  resource.recvRedCopySync->reset();
-  resource.partitionSync->reset();
-  resource.revSendCopySync->reset();
-  resource.revRecvCopySync->reset();
+  // Reset flags for next allreduce to reuse. Only clear sync status (post/
+  // complete flags); do not release to pool (inuse stays true). Pool release
+  // happens in ~OpElem when the owning OpElem is destroyed, which for
+  // graph-captured operations occurs at graph destruction time.
+  resource.sendCopySync->resetStatus();
+  resource.recvRedCopySync->resetStatus();
+  resource.partitionSync->resetStatus();
+  resource.revSendCopySync->resetStatus();
+  resource.revRecvCopySync->resetStatus();
 
   return commSuccess;
 }
@@ -1338,9 +1307,8 @@ commResult_t ctranAllReduceRing(
   op->allreduce.datatype = datatype;
   op->allreduce.op = redOp;
 
-  auto* hostResource = new ctran::allreduce::ring::HostResource();
-  op->allreduce.resource = hostResource;
-  hostResource->comm = comm;
+  auto& hostResource = op->allreduce.hostResource;
+  hostResource.comm = comm;
   std::vector<ctran::algos::GpeKernelSync*> gpeKernelSyncs;
   // 3 forward (sendCopy, recvRedCopy, partition) + 2 reverse (revSendCopy,
   // revRecvCopy)
@@ -1351,24 +1319,24 @@ commResult_t ctranAllReduceRing(
       gpeKernelSyncs.size() == kAllReduceRingNumSyncs,
       comm->logMetaData_,
       "Failed to allocate GpeKernelSync");
-  hostResource->sendCopySync = gpeKernelSyncs[0];
-  hostResource->recvRedCopySync = gpeKernelSyncs[1];
-  hostResource->partitionSync = gpeKernelSyncs[2];
-  hostResource->revSendCopySync = gpeKernelSyncs[3];
-  hostResource->revRecvCopySync = gpeKernelSyncs[4];
-  hostResource->chunkSize = pipelineChunkSize;
-  hostResource->numChunks = pipelineNumChunks;
+  hostResource.sendCopySync = gpeKernelSyncs[0];
+  hostResource.recvRedCopySync = gpeKernelSyncs[1];
+  hostResource.partitionSync = gpeKernelSyncs[2];
+  hostResource.revSendCopySync = gpeKernelSyncs[3];
+  hostResource.revRecvCopySync = gpeKernelSyncs[4];
+  hostResource.chunkSize = pipelineChunkSize;
+  hostResource.numChunks = pipelineNumChunks;
 
-  std::tie(hostResource->tmpSendBuf, hostResource->tmpSendBufHdl) =
+  std::tie(hostResource.tmpSendBuf, hostResource.tmpSendBufHdl) =
       comm->ctran_->algo->getTmpBufInfo(
           CtranAlgo::TmpbufType::RING_TMP_SEND_BUF);
-  std::tie(hostResource->tmpRecvBuf, hostResource->tmpRecvBufHdl) =
+  std::tie(hostResource.tmpRecvBuf, hostResource.tmpRecvBufHdl) =
       comm->ctran_->algo->getTmpBufInfo(
           CtranAlgo::TmpbufType::RING_TMP_RECV_BUF);
-  std::tie(hostResource->tmpSendBufRev, hostResource->tmpSendBufRevHdl) =
+  std::tie(hostResource.tmpSendBufRev, hostResource.tmpSendBufRevHdl) =
       comm->ctran_->algo->getTmpBufInfo(
           CtranAlgo::TmpbufType::RING_TMP_SEND_BUF_REV);
-  std::tie(hostResource->tmpRecvBufRev, hostResource->tmpRecvBufRevHdl) =
+  std::tie(hostResource.tmpRecvBufRev, hostResource.tmpRecvBufRevHdl) =
       comm->ctran_->algo->getTmpBufInfo(
           CtranAlgo::TmpbufType::RING_TMP_RECV_BUF_REV);
   CLOGF(
@@ -1376,19 +1344,18 @@ commResult_t ctranAllReduceRing(
       "AutoTune: {} blocks of {} threads, tmpbuf {} x {} chunks, bidirAg={}",
       numBlocks,
       numThreads,
-      hostResource->numChunks,
-      hostResource->chunkSize,
+      hostResource.numChunks,
+      hostResource.chunkSize,
       enableBidirAg);
 
-  auto* hostArgs = new ctran::allreduce::ring::HostArgs();
-  op->allreduce.args = hostArgs;
-  hostArgs->rank = rank;
-  hostArgs->leftRank = (rank - 1 + nRanks) % nRanks;
-  hostArgs->rightRank = (rank + 1) % nRanks;
-  hostArgs->minShardSize = NCCL_CTRAN_ALLREDUCE_RING_MIN_SHARD_SIZE;
-  hostArgs->numBlocks = numBlocks;
-  hostArgs->numThreads = numThreads;
-  hostArgs->enableBidirAg = enableBidirAg;
+  auto& hostArgs = op->allreduce.hostArgs;
+  hostArgs.rank = rank;
+  hostArgs.leftRank = (rank - 1 + nRanks) % nRanks;
+  hostArgs.rightRank = (rank + 1) % nRanks;
+  hostArgs.minShardSize = NCCL_CTRAN_ALLREDUCE_RING_MIN_SHARD_SIZE;
+  hostArgs.numBlocks = numBlocks;
+  hostArgs.numThreads = numThreads;
+  hostArgs.enableBidirAg = enableBidirAg;
   // rightRemBuf, rightRemKey, leftNotify init from gpe thread for EpochLock
 
   opGroup.push_back(std::move(op));
@@ -1408,18 +1375,18 @@ commResult_t ctranAllReduceRing(
       .datatype = datatype,
       .redOp = redOp,
       .count = count,
-      .chunkSize = hostResource->chunkSize,
-      .numChunks = hostResource->numChunks,
-      .minShardSize = hostArgs->minShardSize,
-      .sendCopySync = hostResource->sendCopySync,
-      .recvRedCopySync = hostResource->recvRedCopySync,
-      .partitionSync = hostResource->partitionSync,
-      .tmpSendBuf = hostResource->tmpSendBuf,
-      .tmpRecvBuf = hostResource->tmpRecvBuf,
-      .revSendCopySync = hostResource->revSendCopySync,
-      .revRecvCopySync = hostResource->revRecvCopySync,
-      .tmpSendBufRev = hostResource->tmpSendBufRev,
-      .tmpRecvBufRev = hostResource->tmpRecvBufRev,
+      .chunkSize = hostResource.chunkSize,
+      .numChunks = hostResource.numChunks,
+      .minShardSize = hostArgs.minShardSize,
+      .sendCopySync = hostResource.sendCopySync,
+      .recvRedCopySync = hostResource.recvRedCopySync,
+      .partitionSync = hostResource.partitionSync,
+      .tmpSendBuf = hostResource.tmpSendBuf,
+      .tmpRecvBuf = hostResource.tmpRecvBuf,
+      .revSendCopySync = hostResource.revSendCopySync,
+      .revRecvCopySync = hostResource.revRecvCopySync,
+      .tmpSendBufRev = hostResource.tmpSendBufRev,
+      .tmpRecvBufRev = hostResource.tmpRecvBufRev,
   };
   // Used only in gpe->submit, copied as a Kernel Launch Arg.
   config.algoArgs = &kernArgs;

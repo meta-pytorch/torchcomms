@@ -1090,6 +1090,65 @@ TEST_F(RegCacheTest, FreeSegmentForceFreeBypassesRefCount) {
   CUDACHECK_TEST(cudaFree(buf));
 }
 
+// Verify that memory registration (cacheSegment + regRange, and regDynamic)
+// works correctly during CUDA graph stream capture. The StreamCaptureModeGuard
+// in doRegister() and pinRange() should temporarily exit capture mode so the
+// CUDA driver calls don't fail.
+TEST_F(RegCacheTest, RegistrationDuringGraphCapture) {
+  size_t bufSize = 8192;
+  void* buf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
+
+  cudaStream_t stream;
+  CUDACHECK_TEST(cudaStreamCreate(&stream));
+
+  // Use ThreadLocal (strict) mode so that CUDA driver calls on this thread
+  // would fail without the internal StreamCaptureModeGuard in doRegister /
+  // pinRange.  Using Relaxed here would make the guard a no-op.
+  CUDACHECK_TEST(
+      cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal));
+
+  // cacheSegment + implicit registration during capture
+  {
+    std::vector<ctran::regcache::Segment*> segments;
+    std::vector<void*> segHdls;
+    EXPECT_EQ(
+        regCache->cacheSegment(
+            buf, bufSize, cudaDev, false, 0, segments, segHdls),
+        commSuccess);
+    EXPECT_GT(segments.size(), 0);
+  }
+
+  // regDynamic during capture (exercises pinRange + doRegister)
+  {
+    std::vector<bool> backends = {true, false, false}; // IB only
+    ctran::regcache::RegElem* regElem = nullptr;
+    EXPECT_EQ(
+        regCache->regDynamic(buf, bufSize, cudaDev, backends, &regElem),
+        commSuccess);
+    ASSERT_NE(regElem, nullptr);
+    EXPECT_EQ(regCache->deregDynamic(regElem), commSuccess);
+  }
+
+  cudaGraph_t graph;
+  CUDACHECK_TEST(cudaStreamEndCapture(stream, &graph));
+  ASSERT_NE(graph, nullptr);
+
+  cudaGraphExec_t graphExec;
+  CUDACHECK_TEST(cudaGraphInstantiate(&graphExec, graph, nullptr, nullptr, 0));
+
+  CUDACHECK_TEST(cudaGraphExecDestroy(graphExec));
+  CUDACHECK_TEST(cudaGraphDestroy(graph));
+
+  bool freed = false;
+  bool ncclManaged = false;
+  std::vector<std::unique_ptr<ctran::regcache::RegElem>> regElems;
+  regCache->freeSegment(buf, freed, ncclManaged, regElems, true);
+
+  CUDACHECK_TEST(cudaStreamDestroy(stream));
+  CUDACHECK_TEST(cudaFree(buf));
+}
+
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

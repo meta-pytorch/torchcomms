@@ -12,6 +12,7 @@
 
 #include <comm.h>
 #include <nccl.h>
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 
@@ -42,8 +43,8 @@ class AllReduceUniformTest : public NcclxBaseTest {
   void SetUp() override {
     NcclxBaseTest::SetUp();
 
-    comm = createNcclComm(
-        globalRank, numRanks, localRank, false, nullptr, server.get());
+    comm = ncclx::test::createNcclComm(
+        globalRank, numRanks, localRank, bootstrap_.get());
 
     CUDACHECK_TEST(cudaSetDevice(localRank));
     CUDACHECK_TEST(cudaStreamCreate(&stream));
@@ -52,7 +53,6 @@ class AllReduceUniformTest : public NcclxBaseTest {
   void TearDown() override {
     NCCLCHECK_TEST(ncclCommDestroy(comm));
     CUDACHECK_TEST(cudaStreamDestroy(stream));
-    finalizeNcclComm(globalRank, server.get());
     NcclxBaseTest::TearDown();
   }
 

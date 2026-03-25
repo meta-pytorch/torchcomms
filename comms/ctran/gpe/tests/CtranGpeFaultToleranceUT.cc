@@ -176,7 +176,9 @@ class CtranGpeFaultToleranceTestBase : public ::ctran::CtranStandaloneFixture {
       void* kernelFn,
       cudaStream_t stream,
       FtTestSync* sync,
-      std::optional<std::chrono::milliseconds> timeout = std::nullopt);
+      std::optional<std::chrono::milliseconds> timeout = std::nullopt,
+      opFunc func = &CtranGpeFtTestAlgoFn,
+      const void* sendbuff = nullptr);
 };
 
 void CtranGpeFaultToleranceTestBase::launchKernelFn(
@@ -184,15 +186,17 @@ void CtranGpeFaultToleranceTestBase::launchKernelFn(
     void* kernelFn,
     cudaStream_t stream,
     FtTestSync* sync,
-    std::optional<std::chrono::milliseconds> timeout) {
+    std::optional<std::chrono::milliseconds> timeout,
+    opFunc func,
+    const void* sendbuff) {
   commResult_t res = commSuccess;
 
   uint64_t dummyOpCount = 100;
   std::vector<std::unique_ptr<struct OpElem>> ops;
   auto op = std::make_unique<struct OpElem>(
       OpElem::opType::SEND, stream, ctranComm.get(), dummyOpCount);
-  // hack to pass sync to the test opFunc
-  op->send.sendbuff = sync;
+  // hack to pass sync/data to the test opFunc via sendbuff
+  op->send.sendbuff = sendbuff ? sendbuff : sync;
   op->send.count = 0;
   op->send.datatype = commInt8;
   op->send.peerRank = 0;
@@ -207,8 +211,7 @@ void CtranGpeFaultToleranceTestBase::launchKernelFn(
   args.terminate = oobKernelTerminateFlag;
   kernelConfig.algoArgs = &args;
 
-  res = gpe->submit(
-      std::move(ops), &CtranGpeFtTestAlgoFn, kernelConfig, kernelFn, timeout);
+  res = gpe->submit(std::move(ops), func, kernelConfig, kernelFn, timeout);
 
   EXPECT_EQ(res, commSuccess);
 }
@@ -519,5 +522,60 @@ INSTANTIATE_TEST_SUITE_P(
         CtranGpeFTEnabledAbortFromErrorTest::ParamType>& info) {
       return std::get<0>(info.param);
     });
+
+// Impl function that sets a global flag to prove it was called.
+static std::atomic<bool> g_secondImplCalled{false};
+
+commResult_t CtranGpeFtTestRecordCallAlgoFn(
+    const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
+  g_secondImplCalled.store(true);
+  return commSuccess;
+}
+
+// Test: after abort from first collective, second collective's impl is skipped.
+// This verifies the fix for the double-complete bug where progressInternal()
+// would access stale VC queue entries from the previously aborted collective.
+TEST_F(CtranGpeFTEnabledTest, SecondCollectiveSkippedAfterAbort) {
+  ASSERT_TRUE(ctranComm->abortEnabled());
+  g_secondImplCalled.store(false);
+
+  auto gpe = std::make_unique<CtranGpe>(cudaDev, ctranComm.get());
+
+  // Collective 1: will throw, causing abort
+  FtTestSync sync1;
+  sync1.setException(
+      ctran::utils::Exception("test abort exception", commRemoteError));
+
+  this->launchKernelFn(
+      gpe.get(),
+      (void*)CtranGpeTestFtEnabledOobTerminateKernel,
+      stream,
+      &sync1);
+
+  // Let OobKernel terminate and unblock collective 1's impl
+  *oobKernelTerminateFlag = true;
+  sync1.signal();
+
+  // Wait for collective 1 to complete and abort to be set
+  tryQueryStreamFor(stream, kHostAlgoFnWait + std::chrono::milliseconds(1000));
+  ASSERT_TRUE(ctranComm->testAbort()) << "comm should be aborted after coll 1";
+
+  // Submit collective 2 with a different impl — should be skipped
+  this->launchKernelFn(
+      gpe.get(),
+      (void*)CtranGpeTestFtEnabledOobTerminateKernel,
+      stream,
+      nullptr,
+      std::nullopt,
+      &CtranGpeFtTestRecordCallAlgoFn);
+
+  // Wait for GPE thread to process collective 2.
+  // Busy-wait on kernel flags rather than sleeping to avoid flakiness.
+  while (gpe->numInUseKernelFlags() > 0) {
+  }
+
+  EXPECT_FALSE(g_secondImplCalled.load())
+      << "second collective's impl should be skipped after abort";
+}
 
 } // namespace ctran::fttesting

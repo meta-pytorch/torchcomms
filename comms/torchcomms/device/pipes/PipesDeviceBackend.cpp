@@ -4,6 +4,7 @@
 #if defined(ENABLE_PIPES)
 
 #include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
+#include "comms/pipes/MultiPeerDeviceHandle.cuh"
 #include "comms/torchcomms/device/DeviceBackendTraits.hpp"
 #include "comms/torchcomms/device/TorchCommDeviceWindow.hpp"
 #include "comms/torchcomms/device/cuda/CudaApi.hpp"
@@ -101,6 +102,7 @@ PipesDeviceBackend::Ptr PipesDeviceBackend::create_device_window(
       sizeof(TorchCommDeviceWindow<PipesDeviceBackend>));
   if (cuda_result != cudaSuccess) {
     // Clean up Pipes DeviceWindow on failure.
+    // NOLINTNEXTLINE(facebook-hte-NullableDereference)
     auto destroy_result = nccl_api->winDestroyDeviceWin(pipes_device_win);
     if (destroy_result != ncclSuccess) {
       TC_LOG(ERROR) << "[PipesDeviceBackend]: Failed to clean up Pipes device "
@@ -125,6 +127,7 @@ PipesDeviceBackend::Ptr PipesDeviceBackend::create_device_window(
         cuda_api,
         cuda_api->free(device_ptr),
         "Failed to free device window during error cleanup");
+    // NOLINTNEXTLINE(facebook-hte-NullableDereference)
     auto destroy_result = nccl_api->winDestroyDeviceWin(pipes_device_win);
     if (destroy_result != ncclSuccess) {
       TC_LOG(ERROR) << "[PipesDeviceBackend]: Failed to clean up Pipes device "
@@ -138,6 +141,150 @@ PipesDeviceBackend::Ptr PipesDeviceBackend::create_device_window(
 
   DeviceWindowDeleter deleter(nccl_api, cuda_api, pipes_device_win);
   return Ptr(device_ptr, deleter);
+}
+
+// =============================================================================
+// register_local_buffer / deregister_local_buffer Implementation
+// =============================================================================
+
+RegisteredBuffer PipesDeviceBackend::register_local_buffer(
+    torch::comms::NcclxApi* nccl_api,
+    ncclComm_t nccl_comm,
+    void* ptr,
+    size_t size) {
+  uint32_t lkey = 0;
+  auto result = nccl_api->winLocalRegisterBuffer(nccl_comm, ptr, size, &lkey);
+  if (result != ncclSuccess) {
+    throw std::runtime_error(
+        "[PipesDeviceBackend::register_local_buffer]: "
+        "winLocalRegisterBuffer failed");
+  }
+
+  // Pipes (IBGDA) put uses lkey for WQE construction during RDMA writes.
+  // backend_window is unused by Pipes — only the GIN backend needs it.
+  RegisteredBuffer buf;
+  buf.base_ptr = ptr;
+  buf.size = size;
+  buf.backend_window = nullptr;
+  buf.lkey = lkey;
+  return buf;
+}
+
+void PipesDeviceBackend::deregister_local_buffer(
+    torch::comms::NcclxApi* nccl_api,
+    ncclComm_t nccl_comm,
+    RegisteredBuffer& buf) {
+  if (buf.base_ptr == nullptr) {
+    return;
+  }
+  auto result = nccl_api->winLocalDeregisterBuffer(nccl_comm, buf.base_ptr);
+  if (result != ncclSuccess) {
+    TC_LOG(ERROR) << "[PipesDeviceBackend]: Failed to deregister local buffer";
+  }
+  buf.backend_window = nullptr;
+  buf.base_ptr = nullptr;
+  buf.size = 0;
+  buf.lkey = 0;
+}
+
+// =============================================================================
+// fetch_transport_handle Implementation
+// =============================================================================
+
+comms::pipes::MultiPeerDeviceHandle PipesDeviceBackend::fetch_transport_handle(
+    ncclComm_t nccl_comm,
+    torch::comms::NcclxApi* nccl_api) {
+  void* transports_ptr = nullptr;
+  int my_rank = -1;
+  int n_ranks = 0;
+  int num_nvl_peers = 0;
+  int num_ib_peers = 0;
+
+  auto result = nccl_api->getMultiPeerDeviceHandle(
+      nccl_comm,
+      &transports_ptr,
+      &my_rank,
+      &n_ranks,
+      &num_nvl_peers,
+      &num_ib_peers);
+
+  if (result != ncclSuccess) {
+    throw std::runtime_error(
+        "[PipesDeviceBackend::fetch_transport_handle] "
+        "Failed to get MultiPeerDeviceHandle. "
+        "Ensure NCCL_CTRAN_USE_PIPES=1 is set.");
+  }
+
+  return comms::pipes::MultiPeerDeviceHandle{
+      my_rank,
+      n_ranks,
+      {static_cast<comms::pipes::Transport*>(transports_ptr),
+       static_cast<
+           comms::pipes::DeviceSpan<comms::pipes::Transport>::size_type>(
+           n_ranks)},
+      num_nvl_peers,
+      num_ib_peers};
+}
+
+// =============================================================================
+// TransportHandleDeleter Implementation
+// =============================================================================
+
+void PipesDeviceBackend::TransportHandleDeleter::operator()(void* ptr) const {
+  if (ptr != nullptr && cuda_api != nullptr) {
+    CUDA_CHECK_IGNORE(
+        cuda_api, cuda_api->free(ptr), "Failed to free transport handle");
+  }
+}
+
+// =============================================================================
+// get_device_transport Implementation
+// =============================================================================
+
+PipesDeviceBackend::TransportHandleDevPtr
+PipesDeviceBackend::get_device_transport(
+    ncclComm_t nccl_comm,
+    torch::comms::NcclxApi* nccl_api,
+    torch::comms::CudaApi* cuda_api) {
+  if (nccl_api == nullptr || cuda_api == nullptr) {
+    throw std::runtime_error(
+        "[PipesDeviceBackend::get_device_transport]: "
+        "nccl_api and cuda_api must not be null");
+  }
+
+  // Get handle on host (private helper)
+  auto handle = fetch_transport_handle(nccl_comm, nccl_api);
+
+  // Allocate device memory
+  void* device_ptr = nullptr;
+  cudaError_t err = cuda_api->malloc(
+      &device_ptr, sizeof(comms::pipes::MultiPeerDeviceHandle));
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        "[PipesDeviceBackend::get_device_transport]: "
+        "cudaMalloc failed: " +
+        std::string(cuda_api->getErrorString(err)));
+  }
+
+  // Copy to device
+  // NOLINTNEXTLINE(facebook-hte-NullableDereference,facebook-security-vulnerable-memcpy)
+  err = cuda_api->memcpy(
+      device_ptr,
+      &handle,
+      sizeof(comms::pipes::MultiPeerDeviceHandle),
+      cudaMemcpyHostToDevice);
+  if (err != cudaSuccess) {
+    CUDA_CHECK_IGNORE(
+        cuda_api,
+        cuda_api->free(device_ptr),
+        "Failed to free transport handle during error cleanup");
+    throw std::runtime_error(
+        "[PipesDeviceBackend::get_device_transport]: "
+        "cudaMemcpy failed: " +
+        std::string(cuda_api->getErrorString(err)));
+  }
+
+  return TransportHandleDevPtr(device_ptr, TransportHandleDeleter{cuda_api});
 }
 
 } // namespace torchcomms::device
