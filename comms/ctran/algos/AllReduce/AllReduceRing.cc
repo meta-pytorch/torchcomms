@@ -332,9 +332,8 @@ inline void progressSendPostTrans(
   char* tmpSendBuf = reinterpret_cast<char*>(resource.tmpSendBuf) +
       tmpChunkId * algoCtx.chunkSize;
 
-  // Get allreduce specific IB config
-  static thread_local auto allReduceConfig =
-      resource.comm->ctran_->algo->getCollToVcConfig(CollType::ALLREDUCE);
+  CtranIbConfig* allReduceConfig =
+      resource.ibConfig ? &*resource.ibConfig : nullptr;
 
   CtranMapperRequest* req;
   FB_COMMCHECKTHROW_EX(
@@ -712,8 +711,8 @@ inline void progressRevSendPostTrans(
   char* tmpSendBufRev = reinterpret_cast<char*>(resource.tmpSendBufRev) +
       tmpChunkId * algoCtx.chunkSize;
 
-  static thread_local auto allReduceConfig =
-      resource.comm->ctran_->algo->getCollToVcConfig(CollType::ALLREDUCE);
+  CtranIbConfig* allReduceConfig =
+      resource.ibConfig ? &*resource.ibConfig : nullptr;
 
   CtranMapperRequest* req;
   FB_COMMCHECKTHROW_EX(
@@ -1177,7 +1176,9 @@ commResult_t getPipelineConfiguration(
     size_t* pipelineChunkSize,
     bool log_decision,
     size_t typeSize,
-    GpuArch arch) {
+    GpuArch arch,
+    CtranComm* comm,
+    std::optional<CtranIbConfig>* ibConfig) {
   int cudaOccupancyNumBlocks, cudaOccupancyBlockSize;
   FB_COMMCHECK(
       ctran::allreduce::ring::getNumBlocksAndThreads(
@@ -1206,6 +1207,11 @@ commResult_t getPipelineConfiguration(
   *pipelineNumChunks = params.pipeline.numChunks;
   *numBlocks = params.block.numBlocks;
   *numThreads = params.block.blockSize;
+
+  *ibConfig = ctran::allreduce::ring::resolveIbConfig(
+      comm->ctran_->algo->getCollToVcConfig(CollType::ALLREDUCE),
+      arch,
+      params.pipeline.chunkSize);
 
   return commSuccess;
 }
@@ -1288,6 +1294,7 @@ commResult_t ctranAllReduceRing(
   int numThreads = 0;
   size_t pipelineChunkSize = 0;
   size_t pipelineNumChunks = 0;
+  std::optional<CtranIbConfig> ibConfig;
 
   FB_COMMCHECK(
       ctran::allreduce::ring::getPipelineConfiguration(
@@ -1300,7 +1307,9 @@ commResult_t ctranAllReduceRing(
           &pipelineChunkSize,
           /*log_decision=*/rank == 0,
           typeSize,
-          arch));
+          arch,
+          comm,
+          &ibConfig));
 
   FB_COMMCHECK(comm->ctran_->algo->initTmpBufs());
 
@@ -1333,6 +1342,7 @@ commResult_t ctranAllReduceRing(
   hostResource.revRecvCopySync = gpeKernelSyncs[4];
   hostResource.chunkSize = pipelineChunkSize;
   hostResource.numChunks = pipelineNumChunks;
+  hostResource.ibConfig = ibConfig;
 
   std::tie(hostResource.tmpSendBuf, hostResource.tmpSendBufHdl) =
       comm->ctran_->algo->getTmpBufInfo(

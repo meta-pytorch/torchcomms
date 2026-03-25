@@ -3,6 +3,9 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
+
+#include "comms/ctran/backends/CtranCtrl.h"
 
 namespace ctran::allreduce::ring {
 
@@ -53,5 +56,10 @@ void logAutoTuneDecisions(
     int maxOccupancyBlockSize,
     size_t typeSize,
     GpuArch arch = GpuArch::Default);
+
+// Resolve IB config: explicit ALGO cvar > autotune-derived (Blackwell+) >
+// nullopt.
+std::optional<CtranIbConfig>
+resolveIbConfig(CtranIbConfig* explicitConfig, GpuArch arch, size_t chunkSize);
 
 } // namespace ctran::allreduce::ring

@@ -167,6 +167,31 @@ BlockParams getAutoTunedBlockParams(
   return {};
 }
 
+bool isQpScalingOverrideEnabled() {
+  return NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MIN >= 0 &&
+      NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MAX > 0 &&
+      NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MAX >=
+      NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MIN;
+}
+
+std::optional<CtranIbConfig> deriveIbConfig(size_t chunkSize) {
+  if (!isQpScalingOverrideEnabled()) {
+    return std::nullopt;
+  }
+  auto minTh = NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MIN;
+  auto maxTh = NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MAX;
+  CtranIbConfig config{};
+  auto maxQps = std::max(NCCL_CTRAN_IB_MAX_QPS, 1);
+  auto devicesPerRank = std::max(NCCL_CTRAN_IB_DEVICES_PER_RANK, 1);
+  config.qpScalingTh = std::clamp(
+      chunkSize /
+          (static_cast<size_t>(maxQps) * static_cast<size_t>(devicesPerRank)),
+      static_cast<size_t>(minTh),
+      static_cast<size_t>(maxTh));
+  config.vcMode = NCCL_CTRAN_IB_VC_MODE;
+  return config;
+}
+
 } // namespace
 
 AutoTuneParams getAutoTunedParams(
@@ -224,6 +249,14 @@ void logAutoTuneDecisions(
     GpuArch arch) {
   static_assert(
       sizeof(size_t) >= 8, "logAutoTuneDecisions assumes 64-bit size_t");
+  auto qpThMin = NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MIN;
+  auto qpThMax = NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MAX;
+  CLOGF(
+      DBG,
+      "AutoTune QP scaling: ThMin={}, ThMax={}, {}",
+      qpThMin,
+      qpThMax,
+      isQpScalingOverrideEnabled() ? "enabled" : "DISABLED");
   static constexpr int kPow2MaxExponent = 25; // 32GB
   static constexpr size_t kKB = 1024ULL;
   for (int i = 0; i <= kPow2MaxExponent; i++) {
@@ -264,6 +297,17 @@ void logAutoTuneDecisions(
           mat.pipeline.chunkSize);
     }
   }
+}
+
+std::optional<CtranIbConfig>
+resolveIbConfig(CtranIbConfig* explicitConfig, GpuArch arch, size_t chunkSize) {
+  if (explicitConfig) {
+    return *explicitConfig;
+  }
+  if (arch == GpuArch::Default) {
+    return deriveIbConfig(chunkSize);
+  }
+  return std::nullopt;
 }
 
 } // namespace ctran::allreduce::ring

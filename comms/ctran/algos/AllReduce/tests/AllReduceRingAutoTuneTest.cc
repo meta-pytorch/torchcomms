@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <vector>
@@ -14,10 +15,21 @@
 
 using ctran::allreduce::ring::getAutoTunedParams;
 using ctran::allreduce::ring::GpuArch;
+using ctran::allreduce::ring::resolveIbConfig;
 
 constexpr size_t KB = 1024ULL;
 constexpr size_t MB = 1024ULL * 1024;
 constexpr size_t GB = 1024ULL * 1024 * 1024;
+
+// Initialize all cvars to their YAML defaults before any tests run.
+class CvarInit : public ::testing::Environment {
+ public:
+  void SetUp() override {
+    ncclCvarInit();
+  }
+};
+static auto* const kCvarEnv __attribute__((unused)) =
+    ::testing::AddGlobalTestEnvironment(new CvarInit);
 
 // RAII guard for the maxBDP CVAR override. Restores to default on destruction.
 class MaxBDPOverride {
@@ -91,6 +103,30 @@ class StagingBufSizeOverride {
   }
 };
 
+// RAII guard for QP_SCALING_TH_MIN CVAR.
+class QpScalingThMinOverride {
+ public:
+  explicit QpScalingThMinOverride(int64_t v) {
+    NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MIN = v;
+  }
+  ~QpScalingThMinOverride() {
+    NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MIN =
+        NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MIN_DEFAULTCVARVALUE;
+  }
+};
+
+// RAII guard for QP_SCALING_TH_MAX CVAR.
+class QpScalingThMaxOverride {
+ public:
+  explicit QpScalingThMaxOverride(int64_t v) {
+    NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MAX = v;
+  }
+  ~QpScalingThMaxOverride() {
+    NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MAX =
+        NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MAX_DEFAULTCVARVALUE;
+  }
+};
+
 // ============================================================================
 // getAutoTunedParams golden tables: different arch / BDP & nranks.
 // ============================================================================
@@ -125,6 +161,20 @@ void verifyAutoTune(
         << "chunkSize mismatch at msg=" << c.msgBytes;
     EXPECT_EQ(at.pipeline.numChunks, c.numChunks)
         << "numChunks mismatch at msg=" << c.msgBytes;
+    auto resolved = resolveIbConfig(nullptr, arch, at.pipeline.chunkSize);
+    if (arch == GpuArch::Default) {
+      ASSERT_TRUE(resolved.has_value())
+          << "resolveIbConfig(Default) should return value at msg="
+          << c.msgBytes;
+      EXPECT_GE(
+          resolved->qpScalingTh,
+          static_cast<size_t>(NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MIN))
+          << "qpScalingTh below minimum at msg=" << c.msgBytes;
+    } else {
+      EXPECT_FALSE(resolved.has_value())
+          << "resolveIbConfig(Hopper) should return nullopt at msg="
+          << c.msgBytes;
+    }
   }
 }
 
@@ -1279,6 +1329,99 @@ void checkChunkAlignment(
   }
 }
 
+// ============================================================================
+// resolveIbConfig tests
+// ============================================================================
+
+TEST(ResolveIbConfig, ExplicitConfigTakesPrecedence) {
+  CtranIbConfig explicit_cfg{};
+  explicit_cfg.qpScalingTh = 42;
+  auto result = resolveIbConfig(&explicit_cfg, GpuArch::Default, 1 * MB);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->qpScalingTh, 42u);
+}
+
+TEST(ResolveIbConfig, BlackwellDerives) {
+  auto result = resolveIbConfig(nullptr, GpuArch::Default, 1 * MB);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_GE(
+      result->qpScalingTh,
+      static_cast<size_t>(NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MIN));
+}
+
+TEST(ResolveIbConfig, HopperReturnsNullopt) {
+  auto result = resolveIbConfig(nullptr, GpuArch::Hopper, 1 * MB);
+  EXPECT_FALSE(result.has_value());
+}
+
+TEST(ResolveIbConfig, ExplicitOverridesEvenOnHopper) {
+  CtranIbConfig explicit_cfg{};
+  explicit_cfg.qpScalingTh = 99;
+  auto result = resolveIbConfig(&explicit_cfg, GpuArch::Hopper, 1 * MB);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->qpScalingTh, 99u);
+}
+
+TEST(ResolveIbConfig, DisableConditionSweep) {
+  // Sweep ThMin/ThMax boundary values around the disable conditions:
+  //   disabled when: ThMin < 0 || ThMax <= 0 || ThMax < ThMin
+  struct Case {
+    int64_t thMin;
+    int64_t thMax;
+    bool expectEnabled;
+  };
+  // clang-format off
+  const std::vector<Case> cases = {
+      // ThMin < 0
+      {-2, 524288, false},
+      {-1, 524288, false},
+      // ThMax <= 0
+      {262144, -2, false},
+      {262144, -1, false},
+      {262144,  0, false},
+      // ThMax < ThMin
+      {1000, 999, false},
+      {1000, 500, false},
+      // Both negative
+      {-1, -1, false},
+      // Boundary: ThMin == 0 is valid (not < 0)
+      {0, 1, true},
+      {0, 524288, true},
+      // ThMax == ThMin (equal is valid, clamp returns that value)
+      {1000, 1000, true},
+      // Normal defaults
+      {262144, 524288, true},
+      // ThMax == 1 (minimal positive)
+      {0, 1, true},
+      {1, 1, true},
+      {2, 1, false},  // ThMax < ThMin
+  };
+  // clang-format on
+  for (const auto& c : cases) {
+    QpScalingThMinOverride oMin(c.thMin);
+    QpScalingThMaxOverride oMax(c.thMax);
+    auto result = resolveIbConfig(nullptr, GpuArch::Default, 1 * MB);
+    if (c.expectEnabled) {
+      ASSERT_TRUE(result.has_value())
+          << "Expected enabled at ThMin=" << c.thMin << " ThMax=" << c.thMax;
+      EXPECT_GE(result->qpScalingTh, static_cast<size_t>(c.thMin));
+      EXPECT_LE(result->qpScalingTh, static_cast<size_t>(c.thMax));
+    } else {
+      EXPECT_FALSE(result.has_value())
+          << "Expected disabled at ThMin=" << c.thMin << " ThMax=" << c.thMax;
+    }
+  }
+}
+
+TEST(ResolveIbConfig, CustomThMinThMaxClamps) {
+  QpScalingThMinOverride oMin(100000);
+  QpScalingThMaxOverride oMax(200000);
+  auto result = resolveIbConfig(nullptr, GpuArch::Default, 1 * MB);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_GE(result->qpScalingTh, 100000u);
+  EXPECT_LE(result->qpScalingTh, 200000u);
+}
+
 // Combined invariant checks over the full (maxBDP, nRanks, msgBytes) space.
 // For each combination we verify:
 //   1. Non-pow2 msgBytes produces same tuning as nearest pow2
@@ -1313,6 +1456,22 @@ TEST_F(AutoTuneInvariantTest, CombinedInvariants) {
             << " stagingBufSize=" << stagingBufSize
             << " chunkSize=" << at.pipeline.chunkSize
             << " numChunks=" << at.pipeline.numChunks;
+
+        // resolveIbConfig: Default returns value in [ThMin, ThMax], Hopper
+        // nullopt
+        auto resolved =
+            resolveIbConfig(nullptr, GpuArch::Default, at.pipeline.chunkSize);
+        ASSERT_TRUE(resolved.has_value())
+            << "resolveIbConfig(Default) should return value at msgBytes="
+            << msgBytes;
+        EXPECT_GE(
+            resolved->qpScalingTh,
+            static_cast<size_t>(NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MIN));
+
+        auto hopperResolved =
+            resolveIbConfig(nullptr, GpuArch::Hopper, at.pipeline.chunkSize);
+        EXPECT_FALSE(hopperResolved.has_value())
+            << "resolveIbConfig(Hopper) should return nullopt";
       }
     }
   }
