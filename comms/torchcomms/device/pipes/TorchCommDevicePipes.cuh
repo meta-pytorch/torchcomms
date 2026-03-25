@@ -358,6 +358,16 @@ __device__ inline int TorchCommDeviceWindow<PipesDeviceBackend>::barrier(
   return 0;
 }
 
+// =============================================================================
+// TorchCommDeviceWindow<PipesDeviceBackend> NVLink Address Query
+// =============================================================================
+
+template <>
+__device__ inline void*
+TorchCommDeviceWindow<PipesDeviceBackend>::get_nvlink_address(int peer) {
+  return window_->get_nvlink_address(peer);
+}
+
 } // namespace torchcomms::device
 
 #endif // ENABLE_PIPES

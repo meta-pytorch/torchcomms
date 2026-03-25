@@ -210,6 +210,16 @@ class TorchCommDeviceWindow {
   __device__ int barrier(int barrier_id, CoopScope scope = CoopScope::THREAD);
 
   // =========================================================================
+  // NVLink Address Query
+  // =========================================================================
+
+  // Get the NVLink-mapped device pointer for a peer's window memory.
+  // Returns the direct NVLink address for load/store operations,
+  // or nullptr if the peer is not NVLink-accessible.
+  // Self-rank behavior is backend-specific.
+  __device__ void* get_nvlink_address(int peer);
+
+  // =========================================================================
   // Data Members
   // =========================================================================
 
