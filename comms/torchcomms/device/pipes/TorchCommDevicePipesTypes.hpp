@@ -22,7 +22,7 @@ namespace torchcomms::device {
 // =============================================================================
 
 using DeviceWindowPipes = TorchCommDeviceWindow<PipesDeviceBackend>;
-using RegisteredBufferPipes = RegisteredBuffer;
+using RegisteredBufferPipes = torch::comms::RegisteredBuffer;
 
 } // namespace torchcomms::device
 

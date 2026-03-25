@@ -118,7 +118,7 @@ __device__ inline int TorchCommDeviceWindow<PipesDeviceBackend>::signal(
 template <>
 __device__ inline int TorchCommDeviceWindow<PipesDeviceBackend>::put(
     size_t dst_offset,
-    const RegisteredBuffer& src_buf,
+    const torch::comms::RegisteredBuffer& src_buf,
     size_t src_offset,
     int dst_rank,
     size_t bytes,

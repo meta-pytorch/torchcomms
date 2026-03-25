@@ -362,8 +362,8 @@ Returns:
 #endif
 
 #if defined(ENABLE_PIPES)
-  // --- Pipes backend window class (no additional methods) ---
-  py::class_<
+  // --- Pipes backend window class ---
+  auto pipes_cls = py::class_<
       TorchCommWindowNCCLXPipes,
       TorchCommWindow,
       std::shared_ptr<TorchCommWindowNCCLXPipes>>(

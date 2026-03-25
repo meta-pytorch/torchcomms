@@ -21,15 +21,19 @@
 #include <cuda_runtime.h>
 #include <cstdint>
 
+#include "comms/torchcomms/RegisteredBuffer.hpp"
+
 namespace torchcomms::device {
 
 // =============================================================================
-// Forward Declarations
+// Forward Declarations & Aliases
 // =============================================================================
 
 template <typename Backend>
 class TorchCommDeviceWindow;
-struct RegisteredBuffer;
+
+// Note: Use fully qualified torch::comms::RegisteredBuffer in declarations
+// to avoid polluting the namespace of includers.
 
 // =============================================================================
 // Enums
@@ -63,32 +67,6 @@ enum class CoopScope : int {
   THREAD = 0,
   WARP = 1,
   BLOCK = 2,
-};
-
-// =============================================================================
-// RegisteredBuffer - Handle for Local Registered Source Buffers
-// =============================================================================
-//
-// Represents a registered local memory region for RMA put operations.
-// Created on host via hostWindow.register_local_buffer().
-//
-// IMPORTANT: Must be used with the SAME DeviceWindow that created it.
-
-struct RegisteredBuffer {
-  void* base_ptr{nullptr};
-  size_t size{0};
-  void* backend_window{
-      nullptr}; // Backend-specific window handle (e.g., ncclWindow_t)
-  // RDMA local key in network byte order for IBGDA puts (PipesDeviceBackend).
-  // Zero for backends that do not use IBGDA (e.g., NCCLDeviceBackend).
-  uint32_t lkey{0};
-
-  __device__ void* ptr() const {
-    return base_ptr;
-  }
-  __device__ size_t buffer_size() const {
-    return size;
-  }
 };
 
 // =============================================================================
@@ -190,7 +168,7 @@ class TorchCommDeviceWindow {
   // THREAD.
   __device__ int put(
       size_t dst_offset,
-      const RegisteredBuffer& src_buf,
+      const torch::comms::RegisteredBuffer& src_buf,
       size_t src_offset,
       int dst_rank,
       size_t bytes,

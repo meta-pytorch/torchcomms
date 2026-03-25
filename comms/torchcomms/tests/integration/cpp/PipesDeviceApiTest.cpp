@@ -630,11 +630,7 @@ void PipesDeviceApiTest::testDevicePut(int count, at::ScalarType dtype) {
     c10::cuda::CUDAStreamGuard guard(put_stream);
     torchcomms::device::test::launchPipesPutKernel(
         dev_win,
-        RegisteredBufferPipes{
-            src_buf.base_ptr,
-            src_buf.size,
-            src_buf.backend_window,
-            src_buf.lkey},
+        src_buf,
         src_offset,
         dst_offset,
         bytes,
@@ -755,11 +751,7 @@ void PipesDeviceApiTest::testDevicePutCounter(int count, at::ScalarType dtype) {
     c10::cuda::CUDAStreamGuard guard(put_stream);
     torchcomms::device::test::launchPipesPutCounterKernel(
         dev_win,
-        RegisteredBufferPipes{
-            src_buf.base_ptr,
-            src_buf.size,
-            src_buf.backend_window,
-            src_buf.lkey},
+        src_buf,
         src_offset,
         dst_offset,
         bytes,
