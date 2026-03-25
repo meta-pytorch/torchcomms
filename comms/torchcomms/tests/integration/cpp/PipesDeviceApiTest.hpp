@@ -67,13 +67,13 @@ class PipesDeviceApiTest : public ::testing::Test {
   // Test device put: ring put with signal, verify data arrives correctly.
   void testDevicePut(int count, at::ScalarType dtype);
 
-  // Test device put with counter: ring put_signal_counter + wait_local,
+  // Test device put with counter: ring put_signal_counter + wait_counter,
   // verify data + counter value.
   void testDevicePutCounter(int count, at::ScalarType dtype);
 
-  // Test wait_local: put_signal_counter, then wait_local on sender side
+  // Test wait_counter: put_signal_counter, then wait_counter on sender side
   // to verify local completion tracking via companion QP counter.
-  void testWaitLocal(int count, at::ScalarType dtype);
+  void testWaitCounter(int count, at::ScalarType dtype);
 
   // Member variables
   std::unique_ptr<TorchCommTestWrapper> wrapper_;

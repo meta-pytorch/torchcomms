@@ -239,7 +239,7 @@ __device__ inline void TorchCommDeviceWindow<PipesDeviceBackend>::reset_signal(
 // TorchCommDeviceWindow<PipesDeviceBackend> Counter Operations
 // =============================================================================
 // Counters use companion RDMA QP loopback atomic signaling for NIC completion
-// tracking. read_counter/reset_counter must precede wait_local (which calls
+// tracking. read_counter/reset_counter must precede wait_counter (which calls
 // read_counter).
 
 template <>
@@ -269,17 +269,17 @@ __device__ inline void TorchCommDeviceWindow<PipesDeviceBackend>::reset_counter(
 }
 
 template <>
-__device__ inline int TorchCommDeviceWindow<PipesDeviceBackend>::wait_local(
-    int op_id,
+__device__ inline int TorchCommDeviceWindow<PipesDeviceBackend>::wait_counter(
+    int counter_id,
     CmpOp cmp,
     uint64_t value) {
-  // op_id is the counter_id. Sum the counter across all peers and poll
-  // until the aggregate satisfies the comparison (same model as GIN:
-  // counter_id 0 with value 5 = 5 puts completed regardless of peer).
+  // Sum the counter across all peers and poll until the aggregate satisfies
+  // the comparison (same model as GIN: counter_id 0 with value 5 = 5 puts
+  // completed regardless of peer).
   //
   // Spin-poll: read_counter() already sums across all peers.
   while (true) {
-    uint64_t total = read_counter(op_id);
+    uint64_t total = read_counter(counter_id);
     bool satisfied = false;
     switch (cmp) {
       case CmpOp::EQ:
