@@ -93,7 +93,8 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     }
 
     config.disableIb = NCCL_CTRAN_PIPES_DISABLE_IB;
-    config.topoConfig.p2pDisable = NCCL_P2P_DISABLE;
+    config.topoConfig.p2pDisable = NCCL_P2P_DISABLE ||
+        NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::nolocal;
 
     // Topology config: MNNVL mode and overrides
     config.topoConfig.mnnvlMode =
