@@ -44,8 +44,10 @@ struct KernelArgs {
 #if !defined(__CUDACC__)
 
 #include <memory>
+#include <optional>
 
 #include "comms/ctran/algos/common/GpeKernelSync.h"
+#include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 
 class CtranComm;
@@ -112,6 +114,7 @@ struct HostResource {
 
   size_t chunkSize{0};
   size_t numChunks{0};
+  std::optional<CtranIbConfig> ibConfig{std::nullopt};
   void* tmpSendBuf{nullptr};
   void* tmpSendBufHdl{nullptr};
   void* tmpRecvBuf{nullptr};
