@@ -80,7 +80,8 @@ class CommStateX {
       uint64_t commHash,
       std::vector<RankTopology> rankTopologies,
       std::vector<int> commRanksToWorldRanks,
-      const std::string& commDesc = "");
+      const std::string& commDesc = "",
+      bool noLocal = false);
 
   ~CommStateX();
 
@@ -285,6 +286,10 @@ class CommStateX {
   std::vector<NvlFabricRankState> nvlFabricRankStates_{};
 
   NvlFabricRankState myNvlFabricRankState_{};
+
+  // When true, treat every rank as if it is on its own node. Affects
+  // initRankStatesTopology() and setNvlFabricTopos() behavior.
+  const bool noLocal_{false};
 
   // flag to indicate if this rank has enabled NVL Fabric, if this flag is on,
   //  we assume all the nvl communication from/to this rank is through
