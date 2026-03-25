@@ -414,7 +414,9 @@ const c10::List<c10::IValue> FlightRecorder::getCollectiveTrace(
     auto dict = new_dict();
     auto& e = result.at(i);
     // Skip completed events
-    if (onlyActive && e.time_discovered_completed_.has_value()) {
+    // TODO: Original FR had e.time_discovered_completed_.has_value()
+    // instead of e.retired_
+    if (onlyActive && e.retired_) {
       continue;
     }
     if (includeStacktraces) {
@@ -574,7 +576,7 @@ std::string FlightRecorder::dump_json(
     std::list<json> entries;
     for (auto& e : dump_entries()) {
       json j;
-      if (onlyActive && e.time_discovered_completed_.has_value()) {
+      if (onlyActive && e.retired_) {
         continue;
       }
       j[record_id_key_str] = int64_t(e.id_);
