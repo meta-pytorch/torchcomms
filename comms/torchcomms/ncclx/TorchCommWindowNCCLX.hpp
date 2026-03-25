@@ -62,7 +62,6 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
   // Type aliases for device-side types (only available with device API)
   // Backend::Comm is the raw communicator type (e.g., ncclDevComm)
   using DeviceWindow = torchcomms::device::TorchCommDeviceWindow<Backend>;
-  using DeviceRegisteredBuffer = torchcomms::device::RegisteredBuffer;
 #endif
 
   TorchCommWindowNCCLX() = delete;
@@ -115,10 +114,10 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
   //   - PipesDeviceBackend: MultiPeerTransport::localRegisterIbgdaBuffer
   //
   // Prerequisites: Must call tensor_register() then get_device_window() first.
-  DeviceRegisteredBuffer register_local_buffer(const at::Tensor& tensor);
+  DeviceBuffer register_local_buffer(const at::Tensor& tensor) override;
 
   // Deregister a previously registered local buffer. NON-COLLECTIVE.
-  void deregister_local_buffer(DeviceRegisteredBuffer& buf);
+  void deregister_local_buffer(DeviceBuffer& buf) override;
 
   // Get a device-side window handle for GPU-initiated operations.
   // Returns a pointer to the cached device window. The window is lazily
@@ -138,19 +137,10 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
   // Usage (Triton):
   //   The same pointer can be passed to Triton kernels via torchcomms_put(),
   //   torchcomms_signal(), etc. wrappers that take void* handles.
-  DeviceWindow* get_device_window(
+  void* get_device_window(
       int signal_count = -1,
       int counter_count = -1,
-      int barrier_count = 1);
-
-  // Get the host-side NCCL window handle (GIN backend only).
-  // Useful for creating RegisteredBuffer from host code when the device
-  // window's window_ field is in device memory and not directly accessible.
-  // TODO: Returns nullptr for PipesDeviceBackend (nccl_orig_win_ is not
-  // initialized). Gate or return win_ for Pipes if callers need it.
-  ncclWindow_t get_nccl_window() const {
-    return nccl_orig_win_;
-  }
+      int barrier_count = 1) override;
 
 #if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
   // Get the NVLink-mapped address of a peer's window memory.
@@ -200,7 +190,7 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
   // The custom deleter handles both cudaFree and ncclDevCommDestroy.
   torchcomms::device::DeviceWindowPtr<Backend> device_window_;
 
-  std::vector<DeviceRegisteredBuffer> registered_local_buffers_;
+  std::vector<DeviceBuffer> registered_local_buffers_;
 
   // No ctran_win_ member needed — Pipes device windows are created
   // on-demand via nccl_api_->winCreateDeviceWin() in get_device_window().

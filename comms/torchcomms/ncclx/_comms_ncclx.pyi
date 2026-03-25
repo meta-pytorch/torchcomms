@@ -1,29 +1,15 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # pyre-strict
 
-from typing import Any, List, Union
+from typing import List
 
 import torch
+from torchcomms._comms import TorchCommWindow
 
-class TorchCommWindowNCCLXGin:
-    def tensor_register(self, tensor: torch.Tensor, owning: bool = True) -> None: ...
-    def tensor_deregister(self) -> None: ...
-    def get_device_window(
-        self,
-        signal_count: int = -1,
-        counter_count: int = -1,
-        barrier_count: int = 1,
-    ) -> int: ...
-    def get_nccl_window(self) -> int: ...
+class TorchCommWindowNCCLXGin(TorchCommWindow):
     def get_nvlink_address(self, peer: int, offset: int = 0) -> int: ...
-    def register_local_buffer(self, tensor: torch.Tensor) -> tuple[int, int, int]: ...
-    def deregister_local_buffer(
-        self, base_ptr: int, size: int, backend_window: int
-    ) -> None: ...
 
-def cast_to_ncclx_window(
-    base_window: Union[TorchCommWindowNCCLXGin, Any],
-) -> TorchCommWindowNCCLXGin: ...
+class TorchCommWindowNCCLXPipes(TorchCommWindow): ...
 
 class TorchWork:
     def is_completed(self) -> bool: ...
