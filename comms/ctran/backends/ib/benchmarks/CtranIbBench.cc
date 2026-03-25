@@ -24,7 +24,13 @@ constexpr int kDummyRank = 0;
 //------------------------------------------------------------------------------
 
 // Define the config to pass to the benchmark
-CtranIbConfig config{
+CtranIbConfig config_256k{
+    .numQps = 16,
+    .qpScalingTh = 262144,
+    .qpMsgs = 128,
+};
+
+CtranIbConfig config_512k{
     .numQps = 16,
     .qpScalingTh = 524288,
     .qpMsgs = 128,
@@ -275,42 +281,84 @@ static void BM_CtranIb_IGet(benchmark::State& state, CtranIbConfig config) {
 const size_t kMinBufferSize = 8 * 1024; // 8 KB
 const size_t kMaxBufferSize = 256 * 1024 * 1024; // 256 MB
 
-// Register the benchmark with the config as a parameter
-static auto* registered_benchmark = benchmark::RegisterBenchmark(
-                                        "BM_CtranIb_IputWithoutNotify",
-                                        BM_CtranIb_IputWithoutNotify,
-                                        config)
+// Register the benchmark with both qpScalingTh configs for comparison
+static auto* registered_iput_no_notify_256k =
+    benchmark::RegisterBenchmark(
+        "BM_CtranIb_IputWithoutNotify_256k",
+        BM_CtranIb_IputWithoutNotify,
+        config_256k)
+        ->RangeMultiplier(2)
+        ->Range(kMinBufferSize, kMaxBufferSize)
+        ->UseRealTime()
+        ->Unit(benchmark::kMicrosecond);
+
+static auto* registered_iput_no_notify_512k =
+    benchmark::RegisterBenchmark(
+        "BM_CtranIb_IputWithoutNotify_512k",
+        BM_CtranIb_IputWithoutNotify,
+        config_512k)
+        ->RangeMultiplier(2)
+        ->Range(kMinBufferSize, kMaxBufferSize)
+        ->UseRealTime()
+        ->Unit(benchmark::kMicrosecond);
+
+static auto* registered_iput_spray_256k =
+    benchmark::RegisterBenchmark(
+        "BM_CtranIb_IputWithNotifySpray_256k",
+        BM_CtranIb_IputWithNotifySpray,
+        config_256k)
+        ->RangeMultiplier(2)
+        ->Range(kMinBufferSize, kMaxBufferSize)
+        ->UseRealTime()
+        ->Unit(benchmark::kMicrosecond);
+
+static auto* registered_iput_spray_512k =
+    benchmark::RegisterBenchmark(
+        "BM_CtranIb_IputWithNotifySpray_512k",
+        BM_CtranIb_IputWithNotifySpray,
+        config_512k)
+        ->RangeMultiplier(2)
+        ->Range(kMinBufferSize, kMaxBufferSize)
+        ->UseRealTime()
+        ->Unit(benchmark::kMicrosecond);
+
+static auto* registered_iput_dqplb_256k =
+    benchmark::RegisterBenchmark(
+        "BM_CtranIb_IputWithNotifyDqplb_256k",
+        BM_CtranIb_IputWithNotifyDqplb,
+        config_256k)
+        ->RangeMultiplier(2)
+        ->Range(kMinBufferSize, kMaxBufferSize)
+        ->UseRealTime()
+        ->Unit(benchmark::kMicrosecond);
+
+static auto* registered_iput_dqplb_512k =
+    benchmark::RegisterBenchmark(
+        "BM_CtranIb_IputWithNotifyDqplb_512k",
+        BM_CtranIb_IputWithNotifyDqplb,
+        config_512k)
+        ->RangeMultiplier(2)
+        ->Range(kMinBufferSize, kMaxBufferSize)
+        ->UseRealTime()
+        ->Unit(benchmark::kMicrosecond);
+
+static auto* registered_iget_256k = benchmark::RegisterBenchmark(
+                                        "BM_CtranIb_Iget_256k",
+                                        BM_CtranIb_IGet,
+                                        config_256k)
                                         ->RangeMultiplier(2)
                                         ->Range(kMinBufferSize, kMaxBufferSize)
                                         ->UseRealTime()
                                         ->Unit(benchmark::kMicrosecond);
 
-static auto* registered_benchmark_with_notify_spray =
-    benchmark::RegisterBenchmark(
-        "BM_CtranIb_IputWithNotifySpray",
-        BM_CtranIb_IputWithNotifySpray,
-        config)
-        ->RangeMultiplier(2)
-        ->Range(kMinBufferSize, kMaxBufferSize)
-        ->UseRealTime()
-        ->Unit(benchmark::kMicrosecond);
-
-static auto* registered_benchmark_with_notify_dqplb =
-    benchmark::RegisterBenchmark(
-        "BM_CtranIb_IputWithNotifyDqplb",
-        BM_CtranIb_IputWithNotifyDqplb,
-        config)
-        ->RangeMultiplier(2)
-        ->Range(kMinBufferSize, kMaxBufferSize)
-        ->UseRealTime()
-        ->Unit(benchmark::kMicrosecond);
-
-static auto* registered_benchmark_iget =
-    benchmark::RegisterBenchmark("BM_CtranIb_Iget", BM_CtranIb_IGet, config)
-        ->RangeMultiplier(2)
-        ->Range(kMinBufferSize, kMaxBufferSize)
-        ->UseRealTime()
-        ->Unit(benchmark::kMicrosecond);
+static auto* registered_iget_512k = benchmark::RegisterBenchmark(
+                                        "BM_CtranIb_Iget_512k",
+                                        BM_CtranIb_IGet,
+                                        config_512k)
+                                        ->RangeMultiplier(2)
+                                        ->Range(kMinBufferSize, kMaxBufferSize)
+                                        ->UseRealTime()
+                                        ->Unit(benchmark::kMicrosecond);
 
 //------------------------------------------------------------------------------
 // Main Function
