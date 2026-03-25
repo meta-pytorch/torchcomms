@@ -10,7 +10,7 @@
 namespace py = pybind11;
 using namespace torch::comms::fr;
 
-PYBIND11_MODULE(_fr, m) {
+void init_flight_recorder_bindings(py::module_& m) {
   // Bind FlightRecorderHook class
   py::class_<FlightRecorderHook, std::shared_ptr<FlightRecorderHook>>(
       m,
