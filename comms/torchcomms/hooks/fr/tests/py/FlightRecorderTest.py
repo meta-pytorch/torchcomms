@@ -1036,14 +1036,14 @@ class TestFlightRecorderHook(unittest.TestCase):
         )
 
         # Verify split operation is recorded
-        split_entries = [e for e in entries if e["profiling_name"] == "nccl:split"]
+        split_entries = [e for e in entries if e["profiling_name"].endswith(":split")]
         self.assertGreater(
             len(split_entries), 0, "Should have recorded the split operation"
         )
 
         # Verify all_reduce operations are recorded (at least 2 - one from each comm)
         all_reduce_entries = [
-            e for e in entries if e["profiling_name"] == "nccl:all_reduce"
+            e for e in entries if e["profiling_name"].endswith(":all_reduce")
         ]
         self.assertGreaterEqual(
             len(all_reduce_entries),
@@ -1118,14 +1118,14 @@ class TestFlightRecorderHook(unittest.TestCase):
         )
 
         # Verify split operations are recorded
-        split_entries = [e for e in entries if e["profiling_name"] == "nccl:split"]
+        split_entries = [e for e in entries if e["profiling_name"].endswith(":split")]
         self.assertEqual(
             len(split_entries), 2, "Should have recorded both split operations"
         )
 
         # Verify all_reduce operations are recorded from all three communicators
         all_reduce_entries = [
-            e for e in entries if e["profiling_name"] == "nccl:all_reduce"
+            e for e in entries if e["profiling_name"].endswith(":all_reduce")
         ]
         self.assertGreaterEqual(
             len(all_reduce_entries),
