@@ -154,7 +154,7 @@ class CollTraceTest : public NcclxBaseTest {
   }
 
   void barrier() {
-    MPI_Barrier(MPI_COMM_WORLD);
+    oobBarrier();
   }
 
  protected:
@@ -171,7 +171,7 @@ TEST_F(CollTraceTest, TraceFeatureEnableCollTrace) {
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
   startVerboseLogging();
   CAPTURE_STDOUT_WITH_FAIL_SAFE()
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_EQ(comm->newCollTrace, nullptr);
   const int count = 1048576;
   const int nColl = 10;
@@ -195,7 +195,7 @@ TEST_F(CollTraceTest, TraceFeatureEnableCollTrace) {
 
 TEST_F(CollTraceTest, VerboseAllReduce) {
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"verbose"});
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_EQ(comm->newCollTrace, nullptr);
   const int count = 1048576;
   const int nColl = 10;
@@ -228,7 +228,7 @@ TEST_F(CollTraceTest, VerboseAllReduce) {
 
 TEST_F(CollTraceTest, VerboseAllToAll) {
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"verbose"});
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_EQ(comm->newCollTrace, nullptr);
   const int count = 1048576;
   const int nColl = 10;
@@ -257,7 +257,7 @@ TEST_F(CollTraceTest, VerboseAllToAll) {
 
 TEST_F(CollTraceTest, VerboseSendRecv) {
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"verbose"});
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_EQ(comm->newCollTrace, nullptr);
   const int count = 1048576;
   const int nColl = 10;
@@ -294,7 +294,7 @@ TEST_F(CollTraceTest, VerboseSendOrRecv) {
   }
 
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"verbose"});
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_EQ(comm->newCollTrace, nullptr);
   const int count = 1048576;
   const int nColl = 10;
@@ -336,7 +336,7 @@ TEST_F(CollTraceTest, DumpSendRecv) {
   }
 
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"verbose"});
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_EQ(comm->newCollTrace, nullptr);
   const int count = 1048576;
   const int nColl = 10;
@@ -371,7 +371,7 @@ TEST_F(CollTraceTest, DumpSendRecv) {
 
 TEST_F(CollTraceTest, DumpAllFinished) {
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_EQ(comm->newCollTrace, nullptr);
   const int count = 1048576;
   const int nColl = 10;
@@ -391,7 +391,7 @@ TEST_F(CollTraceTest, DumpAllFinished) {
 
 TEST_F(CollTraceTest, DumpWithUnfinished) {
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_EQ(comm->newCollTrace, nullptr);
   const int count = 1048576;
   const int nColl = 10;
@@ -436,7 +436,7 @@ TEST_F(CollTraceTest, DumpWithUnfinished) {
 
 TEST_F(CollTraceTest, TestSerializedDump) {
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_EQ(comm->newCollTrace, nullptr);
   const int count = 1048576;
   const int nColl = 10;
@@ -488,7 +488,7 @@ TEST_F(CollTraceTest, TestScubaEntry) {
   // overwrite CollTrace features before creating comm
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
 
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_EQ(comm->newCollTrace, nullptr);
   const int count = 1048576;
   const int nColl = 10;
@@ -560,7 +560,7 @@ TEST_F(CollTraceTest, TestRecordNoDropBelowLimit) {
   auto recordGuard = EnvRAII(
       NCCL_COLLTRACE_RECORD_MAX, NCCL_COLLTRACE_RECORD_MAX_DEFAULTCVARVALUE);
 
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_EQ(comm->newCollTrace, nullptr);
   const int count = 1048576;
   if (NCCL_COLLTRACE_RECORD_MAX_DEFAULTCVARVALUE <= 1) {
@@ -586,7 +586,7 @@ TEST_F(CollTraceTest, TestRecordNoDropByEnv) {
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
   auto recordGuard = EnvRAII(NCCL_COLLTRACE_RECORD_MAX, -1);
 
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_EQ(comm->newCollTrace, nullptr);
   const int count = 1048576;
   const int nColl =
@@ -610,7 +610,7 @@ TEST_F(CollTraceTest, TestRecordDropOverLIMIT) {
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
   auto recordGuard = EnvRAII(NCCL_COLLTRACE_RECORD_MAX, 100);
 
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_EQ(comm->newCollTrace, nullptr);
   const int count = 1048576;
   const int nColl = NCCL_COLLTRACE_RECORD_MAX * 5;
@@ -635,7 +635,7 @@ TEST_F(CollTraceTest, TestCtranScubaEntry) {
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
   auto ctranGuard = EnvRAII(NCCL_CTRAN_ENABLE, true);
 
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_EQ(comm->newCollTrace, nullptr);
 
   constexpr int count = 1048576;
@@ -709,7 +709,7 @@ TEST_F(CollTraceTest, VerboseAllToAllCtran) {
   auto ctranAlgoGuard = EnvRAII(NCCL_ALLTOALL_ALGO, NCCL_ALLTOALL_ALGO::ctran);
   auto ctranGuard = EnvRAII(NCCL_CTRAN_ENABLE, true);
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"verbose"});
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_EQ(comm->newCollTrace, nullptr);
 
   constexpr int count = 1048576;
@@ -753,7 +753,7 @@ TEST_F(CollTraceTest, VerboseAllToAllCtran) {
 TEST_F(CollTraceTest, TestBcastCtranEx) {
   auto ctranGuard = EnvRAII(NCCL_CTRAN_ENABLE, true);
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_EQ(comm->newCollTrace, nullptr);
 
   constexpr int count = 1048576;
@@ -825,7 +825,7 @@ TEST_F(CollTraceTest, MixedCtranBaseline) {
   auto checksumSampleRateGuard =
       EnvRAII(NCCL_CTRAN_ALLGATHER_CHECKSUM_SAMPLE_RATE, 1);
   auto gx = EnvRAII(NCCL_COLLTRACE_RECORD_MAX, -1);
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_EQ(comm->newCollTrace, nullptr);
 
   constexpr int count = 1048576;
@@ -869,7 +869,7 @@ TEST_F(CollTraceTest, GroupedSendRecv) {
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
   auto gx = EnvRAII(NCCL_COLLTRACE_RECORD_MAX, -1);
 
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_EQ(comm->newCollTrace, nullptr);
 
   const int count = 1048576;
@@ -917,7 +917,7 @@ TEST_F(CollTraceTest, SimulatePPSendRecv) {
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
   auto gx = EnvRAII(NCCL_COLLTRACE_RECORD_MAX, -1);
 
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_EQ(comm->newCollTrace, nullptr);
 
   const int count = 1048576;
@@ -982,7 +982,7 @@ TEST_F(CollTraceTest, GroupedSendRecvCtran) {
   auto nolocalGuard =
       EnvRAII(NCCL_COMM_STATE_DEBUG_TOPO, NCCL_COMM_STATE_DEBUG_TOPO::nolocal);
 
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_EQ(comm->newCollTrace, nullptr);
 
   const int count = 1048576;
@@ -1043,7 +1043,7 @@ TEST_F(CollTraceTest, SimulatePPSendRecvCtran) {
       EnvRAII(NCCL_CTRAN_SENDRECV_CHECKSUM_SAMPLE_RATE, 1);
   auto gx = EnvRAII(NCCL_COLLTRACE_RECORD_MAX, -1);
 
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
 
   const int count = 1048576;
   const int nColl = 10;
@@ -1109,7 +1109,7 @@ TEST_F(CollTraceTest, SimulatePPSendRecvCtran) {
 TEST_F(CollTraceTest, TestIterLimit) {
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
   auto iterGuard = EnvRAII(NCCL_COLLTRACE_RECORD_MAX_ITERATIONS, 4);
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_EQ(comm->newCollTrace, nullptr);
 
   constexpr int count = 1048576;
@@ -1141,7 +1141,7 @@ TEST_F(CollTraceTest, winPutWait) {
   auto cpuGuard = EnvRAII(NCCL_COLLTRACE_CTRAN_USE_CPU_RECORD, true);
   auto recordGuard = EnvRAII(NCCL_COLLTRACE_RECORD_MAX, kNumIters * 3);
 
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_EQ(comm->newCollTrace, nullptr);
 
   auto statex = comm->ctranComm_->statex_.get();
@@ -1256,7 +1256,7 @@ TEST_F(CollTraceTest, TestCudaGraphAllReduce) {
   auto graphGuard = EnvRAII{NCCL_COLLTRACE_TRACE_CUDA_GRAPH, true};
   // Set a big enough number to get all the colls
   auto recordGuard = EnvRAII{NCCL_COLLTRACE_RECORD_MAX, 1000};
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_EQ(comm->newCollTrace, nullptr);
   const int count = 1024;
   const int nColl = 3;
@@ -1309,7 +1309,7 @@ TEST_F(CollTraceTest, TestCudaGraphDisabledByEnvVar) {
   auto graphGuard = EnvRAII{NCCL_COLLTRACE_TRACE_CUDA_GRAPH, false};
   // Set a big enough number to get all the colls
   auto recordGuard = EnvRAII{NCCL_COLLTRACE_RECORD_MAX, 1000};
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_EQ(comm->newCollTrace, nullptr);
   const int count = 1024;
   const int nColl = 3;
