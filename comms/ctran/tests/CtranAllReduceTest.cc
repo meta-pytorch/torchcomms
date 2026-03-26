@@ -11,6 +11,7 @@
 #include <folly/synchronization/Baton.h>
 
 #include "comms/ctran/Ctran.h"
+#include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
@@ -495,5 +496,115 @@ TEST_F(CtranAllReduceRingOneRankTest, Basic) {
 TEST_F(CtranAllReduceRingOneRankTest, SmallMessageSize) {
   this->runAllReduce(/*nElem=*/1);
 }
+
+// Test fixture with transport profiler enabled to verify profiler
+// instrumentation in AllReduce algorithms.
+class CtranAllReduceProfilerTest
+    : public CtranIntraProcessFixture,
+      public ::testing::WithParamInterface<AllReduceTestParam> {
+ protected:
+  static constexpr int kNRanks = 4;
+  static constexpr commRedOp_t kReduceOpType = commSum;
+  static constexpr commDataType_t kDataType = commFloat32;
+  static constexpr size_t kTypeSize = sizeof(float);
+  static constexpr size_t kBufferNElem = kBufferSize / kTypeSize;
+
+  void SetUp() override {
+    setenv("NCCL_COMM_STATE_DEBUG_TOPO", "nolocal", 1);
+    setenv("NCCL_IGNORE_TOPO_LOAD_FAILURE", "1", 1);
+
+    // Enable transport profiler via env vars so ncclCvarInit() picks them up.
+    // Direct C++ assignment can be overwritten by ncclCvarInit() which reads
+    // from the environment.
+    setenv("NCCL_CTRAN_TRANSPORT_PROFILER", "true", 1);
+    setenv("NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT", "1", 1);
+    ncclCvarInit();
+
+    CtranIntraProcessFixture::SetUp();
+  }
+
+  void TearDown() override {
+    CtranIntraProcessFixture::TearDown();
+    unsetenv("NCCL_CTRAN_TRANSPORT_PROFILER");
+    unsetenv("NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT");
+    ncclCvarInit();
+  }
+};
+
+// Verify that the profiler is invoked and records valid event durations
+// after running an AllReduce collective.
+TEST_P(CtranAllReduceProfilerTest, ProfilerRecordsEvents) {
+  auto [algoName, algo] = GetParam();
+
+  std::vector<std::shared_ptr<::ctran::utils::Abort>> aborts;
+  CtranIntraProcessFixture::startWorkers(kNRanks, /*aborts=*/aborts);
+
+  for (int rank = 0; rank < kNRanks; ++rank) {
+    run(rank, [this, algo](PerRankState& state) {
+      void* srcHandle;
+      void* dstHandle;
+      ASSERT_EQ(
+          commSuccess,
+          state.ctranComm->ctran_->commRegister(
+              state.srcBuffer, kBufferSize, &srcHandle));
+      ASSERT_EQ(
+          commSuccess,
+          state.ctranComm->ctran_->commRegister(
+              state.dstBuffer, kBufferSize, &dstHandle));
+      SCOPE_EXIT {
+        state.ctranComm->ctran_->commDeregister(dstHandle);
+        state.ctranComm->ctran_->commDeregister(srcHandle);
+      };
+
+      EXPECT_EQ(
+          commSuccess,
+          ctranAllReduce(
+              state.srcBuffer,
+              state.dstBuffer,
+              kBufferNElem,
+              kDataType,
+              kReduceOpType,
+              state.ctranComm.get(),
+              state.stream,
+              algo));
+      EXPECT_EQ(cudaSuccess, cudaStreamSynchronize(state.stream));
+      EXPECT_EQ(commSuccess, state.ctranComm->getAsyncResult());
+
+      // Verify profiler exists and recorded event durations
+      auto* profiler = state.ctranComm->ctran_->profiler.get();
+      ASSERT_NE(profiler, nullptr);
+
+      constexpr uint64_t kOneMinUs = 1000 * 1000 * 60;
+
+      EXPECT_GT(
+          profiler->getEventDurationUs(ctran::ProfilerEvent::ALGO_TOTAL), 0);
+      EXPECT_LE(
+          profiler->getEventDurationUs(ctran::ProfilerEvent::ALGO_TOTAL),
+          kOneMinUs);
+
+      EXPECT_GT(
+          profiler->getEventDurationUs(ctran::ProfilerEvent::ALGO_CTRL), 0);
+      EXPECT_LE(
+          profiler->getEventDurationUs(ctran::ProfilerEvent::ALGO_CTRL),
+          kOneMinUs);
+
+      EXPECT_GT(
+          profiler->getEventDurationUs(ctran::ProfilerEvent::ALGO_DATA), 0);
+      EXPECT_LE(
+          profiler->getEventDurationUs(ctran::ProfilerEvent::ALGO_DATA),
+          kOneMinUs);
+    });
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    AllAlgos,
+    CtranAllReduceProfilerTest,
+    ::testing::Values(
+        std::make_tuple("ctring", NCCL_ALLREDUCE_ALGO::ctring),
+        std::make_tuple("ctdirect", NCCL_ALLREDUCE_ALGO::ctdirect)),
+    [](const ::testing::TestParamInfo<AllReduceTestParam>& info) {
+      return std::get<0>(info.param);
+    });
 
 } // namespace ctran::testing
