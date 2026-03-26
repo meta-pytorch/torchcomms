@@ -21,24 +21,22 @@
 
 static bool VERBOSE = true;
 
-class ProxyTraceTest : public ::testing::Test {
+class ProxyTraceTest : public NcclxBaseTest {
  public:
   ProxyTraceTest() = default;
   void SetUp() override {
     setenv("NCCL_CTRAN_ENABLE", "1", 0); // enable ctran
     // Initialize CVAR so that we can overwrite global variable in each test
     initEnv();
-
-    std::tie(this->localRank, this->globalRank, this->numRanks) = getMpiInfo();
-
-    CUDACHECK_TEST(cudaSetDevice(this->localRank));
-    CUDACHECK_TEST(cudaStreamCreate(&this->stream));
+    NcclxBaseTest::SetUp();
+    CUDACHECK_TEST(cudaStreamCreate(&stream));
   }
 
   void TearDown() override {
-    CUDACHECK_TEST(cudaStreamDestroy(this->stream));
+    CUDACHECK_TEST(cudaStreamDestroy(stream));
     CUDACHECK_TEST(cudaFree(sendBuf));
     CUDACHECK_TEST(cudaFree(recvBuf));
+    NcclxBaseTest::TearDown();
   }
 
   void runAllReduce(const int count, const int nColl, ncclComm_t comm) {
@@ -206,26 +204,14 @@ class ProxyTraceTest : public ::testing::Test {
 
     // Note that comm->rank may perform proxy ops for other ranks due to NCCL
     // topology detection, so we cannot assume rank 0 will see hanging at proxy
-    // send from rank 0. Thus, we have to use MPI to collect min steps/rank from
-    // all ranks and find the global min
-    std::vector<MinOpCountStep> allMinSends(this->numRanks);
-    std::vector<MinOpCountStep> allMinRecvs(this->numRanks);
-    MPI_Allgather(
-        &minSend,
-        sizeof(MinOpCountStep),
-        MPI_BYTE,
-        allMinSends.data(),
-        sizeof(MinOpCountStep),
-        MPI_BYTE,
-        MPI_COMM_WORLD);
-    MPI_Allgather(
-        &minRecv,
-        sizeof(MinOpCountStep),
-        MPI_BYTE,
-        allMinRecvs.data(),
-        sizeof(MinOpCountStep),
-        MPI_BYTE,
-        MPI_COMM_WORLD);
+    // send from rank 0. Thus, we collect min steps/rank from all ranks and find
+    // the global min
+    std::vector<MinOpCountStep> allMinSends(numRanks);
+    std::vector<MinOpCountStep> allMinRecvs(numRanks);
+    allMinSends[globalRank] = minSend;
+    allMinRecvs[globalRank] = minRecv;
+    oobAllGather(allMinSends);
+    oobAllGather(allMinRecvs);
     for (auto& send : allMinSends) {
       minSend.update(send.opCount, send.step, send.ts);
     }
@@ -249,7 +235,7 @@ class ProxyTraceTest : public ::testing::Test {
       if (VERBOSE) {
         printf(
             "Rank %d found root cause bewteen ranks %d:%d event %s\n",
-            this->globalRank,
+            globalRank,
             foundOp.rank,
             foundOp.remoteRank,
             foundOp.serialize().c_str());
@@ -263,7 +249,7 @@ class ProxyTraceTest : public ::testing::Test {
       if (VERBOSE) {
         printf(
             "Rank %d found root cause bewteen ranks %d:%d event %s\n",
-            this->globalRank,
+            globalRank,
             foundOp.rank,
             foundOp.remoteRank,
             foundOp.serialize().c_str());
@@ -296,9 +282,6 @@ class ProxyTraceTest : public ::testing::Test {
   }
 
  protected:
-  int localRank{0};
-  int globalRank{0};
-  int numRanks{0};
   int* sendBuf{nullptr};
   int* recvBuf{nullptr};
   cudaStream_t stream;
@@ -316,7 +299,7 @@ TEST_F(ProxyTraceTest, PastCollNoDropUnderLimit) {
   auto recordGuard = EnvRAII(
       NCCL_PROXYTRACE_RECORD_MAX, std::max(NCCL_PROXYTRACE_RECORD_MAX, 100));
 
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   if (!checkTestRequirement(comm)) {
     GTEST_SKIP();
   }
@@ -342,7 +325,7 @@ TEST_F(ProxyTraceTest, TestRecordNoDropByEnv) {
   auto traceGuard = EnvRAII(NCCL_PROXYTRACE, {"trace"});
   auto recordGuard = EnvRAII(NCCL_PROXYTRACE_RECORD_MAX, -1);
 
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   if (!checkTestRequirement(comm)) {
     GTEST_SKIP();
   }
@@ -371,7 +354,7 @@ TEST_F(ProxyTraceTest, TestRecordDropExceedLimit) {
       NCCL_PROXYTRACE_RECORD_MAX,
       std::max(NCCL_PROXYTRACE_RECORD_MAX_DEFAULTCVARVALUE, 100));
 
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   if (!checkTestRequirement(comm)) {
     GTEST_SKIP();
   }
@@ -395,7 +378,7 @@ TEST_F(ProxyTraceTest, TestRecordDropExceedLimit) {
 
 TEST_F(ProxyTraceTest, QueryFinishedAllReduce) {
   auto traceGuard = EnvRAII(NCCL_PROXYTRACE, {"trace"});
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   if (!checkTestRequirement(comm)) {
     GTEST_SKIP();
   }
@@ -435,7 +418,7 @@ TEST_F(ProxyTraceTest, QueryFinishedAllToAll) {
   // ensure we use default proxy path
   NCCL_ALLTOALL_ALGO = NCCL_ALLTOALL_ALGO::orig;
 
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   if (!checkTestRequirement(comm)) {
     GTEST_SKIP();
   }
@@ -486,7 +469,7 @@ TEST_F(ProxyTraceTest, QueryFinishedSendRecv) {
   // ensure we use default proxy path
   NCCL_SENDRECV_ALGO = NCCL_SENDRECV_ALGO::orig;
 
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   if (!checkTestRequirement(comm)) {
     GTEST_SKIP();
   }
@@ -546,7 +529,7 @@ TEST_F(ProxyTraceTest, QueryHangAllReduce) {
   };
   setMockConfig(failureConfig);
 
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   if (!checkTestRequirement(comm)) {
     GTEST_SKIP();
   }
@@ -594,7 +577,7 @@ TEST_F(ProxyTraceTest, QueryHangSendRecv) {
   // ensure we use default proxy path
   NCCL_SENDRECV_ALGO = NCCL_SENDRECV_ALGO::orig;
 
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
   if (!checkTestRequirement(comm)) {
     GTEST_SKIP();
   }
