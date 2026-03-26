@@ -56,7 +56,7 @@ class Profiler {
   ~Profiler();
 
   // This should be called at the beginning of the collective
-  void initForEachColl(int opCount, int samplingWeight);
+  void initForEachColl(uint64_t opCount, int samplingWeight);
 
   bool shouldTrace() const {
     return shouldTrace_;
@@ -95,6 +95,7 @@ class Profiler {
   AlgoProfilerReport buildReport() const;
   CtranComm* comm_{nullptr};
   bool shouldTrace_{false};
+  uint64_t invocationCount_{0};
   uint64_t opCount_{std::numeric_limits<uint64_t>::max()};
   EventDurationArray durations_{};
   EventTimerArray timers_{};

@@ -60,8 +60,9 @@ Profiler::Profiler(CtranComm* comm, ReporterType reporterType)
 
 Profiler::~Profiler() = default;
 
-void Profiler::initForEachColl(int opCount, int samplingWeight) {
-  shouldTrace_ = samplingWeight > 0 && (opCount % samplingWeight) == 0;
+void Profiler::initForEachColl(uint64_t opCount, int samplingWeight) {
+  invocationCount_++;
+  shouldTrace_ = samplingWeight > 0 && (invocationCount_ % samplingWeight) == 0;
   if (shouldTrace_) {
     opCount_ = opCount;
     durations_.fill(0);
