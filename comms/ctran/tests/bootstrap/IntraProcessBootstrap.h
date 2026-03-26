@@ -24,17 +24,17 @@ class IntraProcessBootstrap : public meta::comms::ICtranBootstrap {
 
   folly::SemiFuture<int> allGather(void* buf, int len, int rank, int nRanks)
       override;
-  folly::SemiFuture<int> allGatherIntraNode(
+  folly::SemiFuture<int> allGatherNvlDomain(
       void* buf,
       int len,
-      int localRank,
-      int localNRanks,
-      std::vector<int> localRankToCommRank) override;
+      int nvlLocalRank,
+      int nvlNranks,
+      std::vector<int> nvlRankToCommRank) override;
   folly::SemiFuture<int> barrier(int rank, int nRanks) override;
-  folly::SemiFuture<int> barrierIntraNode(
-      int localRank,
-      int localNRanks,
-      std::vector<int> localRankToCommRank) override;
+  folly::SemiFuture<int> barrierNvlDomain(
+      int nvlLocalRank,
+      int nvlNranks,
+      std::vector<int> nvlRankToCommRank) override;
   folly::SemiFuture<int> send(void* buf, int len, int peer, int tag) override;
   folly::SemiFuture<int> recv(void* buf, int len, int peer, int tag) override;
 

@@ -73,7 +73,7 @@ void CtranDistAlgoDevTest::initIpcBufs(size_t srcCount, size_t dstCount) {
 
   // Exchange with the other ranks on the same node.
   // (SetUp already checked all ranks on the same node)
-  auto resFuture = comm_->ctranComm_->bootstrap_->allGatherIntraNode(
+  auto resFuture = comm_->ctranComm_->bootstrap_->allGatherNvlDomain(
       ipcDescs.data(),
       sizeof(ctran::utils::CtranIpcDesc),
       localRank,
