@@ -287,7 +287,11 @@ inline commResult_t sendRecvImpl(
   }
 
   // Wait for all PUT messages to complete
-  for (auto i = 0; i < sendOpGroup.size(); i++) {
+  for (auto i = 0; i < sendOpGroup.size() && !comm->testAbort(); i++) {
+    // putReqs[i] may be null if the issue loop above exited early due to abort
+    if (putReqs.find(i) == putReqs.end() || putReqs[i] == nullptr) {
+      break;
+    }
     auto op = sendOpGroup[i];
     FB_COMMCHECK(mapper->waitRequest(putReqs[i].get()));
     timestamp->putComplete.push_back(
@@ -299,9 +303,23 @@ inline commResult_t sendRecvImpl(
       profiler->endEvent(ctran::ProfilerEvent::ALGO_DATA));
 
   // Wait for all control messages and notifications to complete
-  for (auto i = 0; i < recvOpGroup.size(); i++) {
+  for (auto i = 0; i < recvOpGroup.size() && !comm->testAbort(); i++) {
     FB_COMMCHECK(mapper->waitRequest(recvCtrlReqs[i].get()));
     FB_COMMCHECK(mapper->waitNotify(notifyVec[i].get()));
+  }
+
+  // If aborted, propagate the error so the GPE fault-tolerance guard
+  // can set the async error flag on the communicator.
+  if (comm->testAbort()) {
+    auto _abort = comm->getAbort();
+    std::string _ctx =
+        _abort->TimedOut() ? "comm aborted due to timeout" : "comm aborted";
+    throw ctran::utils::Exception(
+        _ctx,
+        commRemoteError,
+        comm->logMetaData_.rank,
+        comm->logMetaData_.commHash,
+        "sendRecvImpl");
   }
 
   // Deregister temporary registrations

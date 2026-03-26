@@ -1003,6 +1003,10 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
 
   template <typename PerfConfig = DefaultPerfCollConfig>
   inline commResult_t waitNotifyImpl(CtranMapperNotify* notify) {
+    // Capture peer early to avoid use-after-free if abort teardown
+    // invalidates the notify object while we are waiting.
+    const int peerRank = notify->peer;
+
     if (notify->backend == CtranMapperBackend::NVL) {
       while (!notify->kernElem->isComplete() && !comm->testAbort()) {
       }
@@ -1028,7 +1032,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
           commRemoteError,
           comm->logMetaData_.rank,
           comm->logMetaData_.commHash,
-          fmt::format("waitNotify for peer {}", notify->peer));
+          fmt::format("waitNotify for peer {}", peerRank));
     }
 
     CLOGF_TRACE(
@@ -1062,7 +1066,25 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
 
   template <typename PerfConfig = DefaultPerfCollConfig>
   inline commResult_t waitRequestImpl(CtranMapperRequest* req) {
+    if (req == nullptr) {
+      if (comm->testAbort()) {
+        auto _abort = comm->getAbort();
+        std::string _ctx =
+            _abort->TimedOut() ? "comm aborted due to timeout" : "comm aborted";
+        throw ctran::utils::Exception(
+            _ctx,
+            commRemoteError,
+            comm->logMetaData_.rank,
+            comm->logMetaData_.commHash,
+            "waitRequest for unknown peer (null request)");
+      }
+      return commInternalError;
+    }
+
     bool isComplete = false;
+    // Capture peer early to avoid use-after-free if abort teardown
+    // invalidates the request object while we are waiting.
+    const int peerRank = req->peer;
 
     while (!isComplete && !comm->testAbort()) {
       FB_COMMCHECK(testRequestImpl<PerfConfig>(req, &isComplete));
@@ -1077,7 +1099,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
           commRemoteError,
           comm->logMetaData_.rank,
           comm->logMetaData_.commHash,
-          fmt::format("waitRequest for peer {}", req->peer));
+          fmt::format("waitRequest for peer {}", peerRank));
     }
 
     return commSuccess;
