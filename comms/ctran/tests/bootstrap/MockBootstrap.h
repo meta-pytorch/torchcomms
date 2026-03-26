@@ -5,12 +5,12 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#include "comms/common/bootstrap/IBootstrap.h"
+#include "comms/ctran/bootstrap/ICtranBootstrap.h"
 
 namespace ctran::testing {
 
-// Mock IBootstrap for testing
-class MockBootstrap : public meta::comms::IBootstrap {
+// Mock ICtranBootstrap for testing
+class MockBootstrap : public meta::comms::ICtranBootstrap {
  public:
   MOCK_METHOD(
       folly::SemiFuture<int>,
