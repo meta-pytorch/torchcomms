@@ -30,6 +30,18 @@ enum ProfilerEvent {
   NUM_PROFILER_EVENT_TYPES,
 };
 
+// Factory function type for creating custom algo profiler reporters.
+// Callers (e.g., MCCL) can register a factory to inject their own reporter
+// without ctran needing to depend on caller-specific libraries.
+using AlgoProfilerReporterFactory =
+    std::function<std::unique_ptr<IAlgoProfilerReporter>(CtranComm*)>;
+
+// Register a factory for the given reporter type. Must be called before
+// ctranInit() so that the Profiler can use it during construction.
+void registerAlgoProfilerReporterFactory(
+    ReporterType type,
+    AlgoProfilerReporterFactory factory);
+
 class Profiler {
  public:
   using Clock = std::chrono::system_clock;
