@@ -19,7 +19,10 @@ void AsyncClientSocket::send(
     std::chrono::milliseconds timeout) {
   // Self-owning: lifetime tied to async completion.
   auto self = std::shared_ptr<AsyncClientSocket>(new AsyncClientSocket(evb));
-  auto payload = folly::IOBuf::wrapBuffer(buf, len);
+  // copyBuffer instead of wrapBuffer: the send is async and the caller may
+  // free `buf` before the write completes (e.g. ~CtranMapper clearing
+  // postedCbCtrlReqs_). Copying avoids a use-after-free of the send buffer.
+  auto payload = folly::IOBuf::copyBuffer(buf, len);
   evb.runInEventBaseThread([self,
                             payload = std::move(payload),
                             dst,

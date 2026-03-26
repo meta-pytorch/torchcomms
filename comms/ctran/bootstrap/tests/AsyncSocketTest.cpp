@@ -225,6 +225,64 @@ TEST(AsyncSocket, AsyncServerSocketReceiveTimeout) {
   std::move(fut).get();
 }
 
+// Regression test: AsyncClientSocket::send must copy the buffer internally.
+// Previously, wrapBuffer (zero-copy) was used, so freeing the source buffer
+// before the async send completed caused the remote peer to receive garbage.
+TEST(AsyncSocket, SendBufferSafeAfterCallerFrees) {
+  auto eventThread = std::make_unique<folly::ScopedEventBaseThread>();
+  std::string recv_str;
+  std::atomic<ReqStatus> recvStatus(INCOMPLETE);
+
+  ctran::bootstrap::AsyncServerSocket server(*eventThread->getEventBase());
+
+  constexpr size_t kMsgSize = 64;
+  auto serverAddrFuture = server.start(
+      folly::SocketAddress("::1", 0),
+      kMsgSize,
+      [&recv_str, &recvStatus](std::unique_ptr<folly::IOBuf> buf) {
+        recv_str.assign(
+            reinterpret_cast<const char*>(buf->data()), buf->length());
+        recvStatus.store(COMPLETE);
+      });
+
+  auto serverAddr = std::move(serverAddrFuture).get();
+
+  // Allocate send buffer, fill with a known pattern, send it, then
+  // immediately OVERWRITE the buffer before the async send completes.
+  // With wrapBuffer (old code) the IOBuf holds a raw pointer to this buffer,
+  // so the send would read the overwritten garbage → test fails.
+  // With copyBuffer (new code) the IOBuf owns an independent copy,
+  // so the send reads the original data → test passes.
+  std::atomic<ReqStatus> sendStatus(INCOMPLETE);
+  const std::string expected(kMsgSize, 'Z');
+  auto heapBuf = std::make_unique<char[]>(kMsgSize);
+  std::memcpy(heapBuf.get(), expected.data(), kMsgSize);
+
+  ctran::bootstrap::AsyncClientSocket::send(
+      *eventThread->getEventBase(),
+      serverAddr,
+      heapBuf.get(),
+      kMsgSize,
+      [&sendStatus](const folly::AsyncSocketException* err) {
+        sendStatus.store(err ? ERROR : COMPLETE);
+      });
+
+  // Immediately poison the source buffer while the async send is in flight.
+  std::memset(heapBuf.get(), 0xFF, kMsgSize);
+
+  while (sendStatus.load() == INCOMPLETE) {
+  }
+  EXPECT_EQ(sendStatus.load(), COMPLETE);
+
+  while (recvStatus.load() == INCOMPLETE) {
+  }
+  EXPECT_EQ(recvStatus.load(), COMPLETE);
+  EXPECT_EQ(recv_str, expected);
+
+  auto fut = server.stop();
+  std::move(fut).get();
+}
+
 TEST(AsyncSocket, AsyncServerSocketReceivePartialDataTimeout) {
   const size_t expectedSize = 100;
   auto eventThread = std::make_unique<folly::ScopedEventBaseThread>();
