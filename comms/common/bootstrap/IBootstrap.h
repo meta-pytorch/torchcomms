@@ -32,38 +32,9 @@ class IBootstrap {
   allGather(void* buf, int len, int rank, int nranks) = 0;
 
   /*
-   * `buf` refers to a continuous memory segment that is of size
-   * `localNranks * len`.  `localRank` must be a valid value between 0 to
-   * `localNranks -1`. The `localRankToCommRank` must be an array of size
-   * `localNranks` and provides mapping from local rank (on host) to
-   * rank in a communicator.
-   */
-  virtual folly::SemiFuture<int> allGatherIntraNode(
-      void* buf,
-      int len,
-      int localRank,
-      int localNranks,
-      std::vector<int> localRankToCommRank) {
-    throw std::runtime_error("not implemented");
-  }
-
-  /*
    * `rank` must be a valid value between 0 and `nranks - 1`
    */
   virtual folly::SemiFuture<int> barrier(int rank, int nranks) = 0;
-
-  /**
-   * `localRank` must be a valid value between 0 and `nranks -1`. The
-   * `localRankToCommRank` must be an array of size `localNranks` and
-   * provides mapping from local rank (on host) to rank in a
-   * communicator
-   */
-  virtual folly::SemiFuture<int> barrierIntraNode(
-      int localRank,
-      int localNranks,
-      std::vector<int> localRankToCommRank) {
-    throw std::runtime_error("not implemented");
-  }
 
   /**
    * AllGather within an NVLink domain, which may span multiple hosts (MNNVL).

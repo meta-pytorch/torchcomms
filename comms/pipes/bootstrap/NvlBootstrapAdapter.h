@@ -47,26 +47,8 @@ class NvlBootstrapAdapter : public meta::comms::IBootstrap {
         buf, len, rank, nranks, localRankToCommRank_);
   }
 
-  folly::SemiFuture<int> allGatherIntraNode(
-      void* buf,
-      int len,
-      int localRank,
-      int localNranks,
-      std::vector<int> localRankToCommRank) override {
-    return underlying_->allGatherIntraNode(
-        buf, len, localRank, localNranks, std::move(localRankToCommRank));
-  }
-
   folly::SemiFuture<int> barrier(int rank, int nranks) override {
     return underlying_->barrierNvlDomain(rank, nranks, localRankToCommRank_);
-  }
-
-  folly::SemiFuture<int> barrierIntraNode(
-      int localRank,
-      int localNranks,
-      std::vector<int> localRankToCommRank) override {
-    return underlying_->barrierIntraNode(
-        localRank, localNranks, std::move(localRankToCommRank));
   }
 
   folly::SemiFuture<int> send(void* buf, int len, int peer, int tag) override {
