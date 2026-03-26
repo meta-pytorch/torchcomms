@@ -330,4 +330,87 @@ void launchPipesWaitCounterKernel(
   CUDA_LAUNCH_CHECK();
 }
 
+// =============================================================================
+// Scoped Wait Signal Kernel
+// =============================================================================
+// Waits for aggregated signal using the specified CoopScope.
+
+__global__ void pipesWaitSignalScopedKernel(
+    DeviceWindowPipes* win,
+    int signal_id,
+    uint64_t expected_value,
+    CoopScope scope) {
+  if (blockIdx.x == 0) {
+    win->wait_signal(signal_id, CmpOp::GE, expected_value, scope);
+  }
+}
+
+void launchPipesWaitSignalScopedKernel(
+    DeviceWindowPipes* win,
+    int signal_id,
+    uint64_t expected_value,
+    CoopScope scope,
+    int num_threads,
+    cudaStream_t stream) {
+  pipesWaitSignalScopedKernel<<<1, num_threads, 0, stream>>>(
+      win, signal_id, expected_value, scope);
+  CUDA_LAUNCH_CHECK();
+}
+
+// =============================================================================
+// Scoped Wait Signal From Kernel
+// =============================================================================
+// Waits for signal from a specific peer using the specified CoopScope.
+
+__global__ void pipesWaitSignalFromScopedKernel(
+    DeviceWindowPipes* win,
+    int src_rank,
+    int signal_id,
+    CmpOp cmp,
+    uint64_t value,
+    CoopScope scope) {
+  if (blockIdx.x == 0) {
+    win->wait_signal_from(src_rank, signal_id, cmp, value, scope);
+  }
+}
+
+void launchPipesWaitSignalFromScopedKernel(
+    DeviceWindowPipes* win,
+    int src_rank,
+    int signal_id,
+    CmpOp cmp,
+    uint64_t value,
+    CoopScope scope,
+    int num_threads,
+    cudaStream_t stream) {
+  pipesWaitSignalFromScopedKernel<<<1, num_threads, 0, stream>>>(
+      win, src_rank, signal_id, cmp, value, scope);
+  CUDA_LAUNCH_CHECK();
+}
+
+// =============================================================================
+// Scoped Reset Counter Kernel
+// =============================================================================
+// Resets counter for all peers using the specified CoopScope.
+
+__global__ void pipesResetCounterScopedKernel(
+    DeviceWindowPipes* win,
+    int counter_id,
+    CoopScope scope) {
+  if (blockIdx.x == 0) {
+    win->reset_counter(counter_id, scope);
+  }
+}
+
+void launchPipesResetCounterScopedKernel(
+    DeviceWindowPipes* win,
+    int counter_id,
+    CoopScope scope,
+    int num_threads,
+    cudaStream_t stream) {
+  pipesResetCounterScopedKernel<<<1, num_threads, 0, stream>>>(
+      win, counter_id, scope);
+  CUDA_LAUNCH_CHECK();
+}
+
 } // namespace torchcomms::device::test

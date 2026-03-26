@@ -328,4 +328,52 @@ void launchDeviceBarrierScopedKernel(
       win, barrier_id, scope);
 }
 
+// =============================================================================
+// Scope-Aware Wait Signal Test Kernel
+// =============================================================================
+
+__global__ void deviceWaitSignalScopedKernel(
+    DeviceWindowNCCL* win,
+    int signal_id,
+    uint64_t expected_value,
+    CoopScope scope) {
+  if (blockIdx.x == 0) {
+    win->wait_signal(signal_id, CmpOp::GE, expected_value, scope);
+  }
+}
+
+void launchDeviceWaitSignalScopedKernel(
+    DeviceWindowNCCL* win,
+    int signal_id,
+    uint64_t expected_value,
+    CoopScope scope,
+    int num_threads,
+    cudaStream_t stream) {
+  deviceWaitSignalScopedKernel<<<1, num_threads, 0, stream>>>(
+      win, signal_id, expected_value, scope);
+}
+
+// =============================================================================
+// Scope-Aware Reset Signal Test Kernel
+// =============================================================================
+
+__global__ void deviceResetSignalScopedKernel(
+    DeviceWindowNCCL* win,
+    int signal_id,
+    CoopScope scope) {
+  if (blockIdx.x == 0) {
+    win->reset_signal(signal_id, scope);
+  }
+}
+
+void launchDeviceResetSignalScopedKernel(
+    DeviceWindowNCCL* win,
+    int signal_id,
+    CoopScope scope,
+    int num_threads,
+    cudaStream_t stream) {
+  deviceResetSignalScopedKernel<<<1, num_threads, 0, stream>>>(
+      win, signal_id, scope);
+}
+
 } // namespace torchcomms::device::test

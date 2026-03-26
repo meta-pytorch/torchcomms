@@ -289,23 +289,31 @@ template <>
 __device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::wait_signal(
     int signal_id,
     CmpOp cmp,
-    uint64_t value) {
-  const ncclDevComm& dev_comm = comm_;
-  uint64_t* base = detail::signal_slot_base(
-      dev_comm, signal_buffer_handle_, signal_id, num_ranks_);
+    uint64_t value,
+    CoopScope scope) {
+  auto group = detail::make_thread_group(scope);
 
-  // Spin-poll with acquire loads
-  // that once we see a signal value, all prior stores from the signaler
-  // (i.e. the data written by put()) are visible to us.
-  for (;;) {
-    uint64_t sum = 0;
-    for (int i = 0; i < num_ranks_; i++) {
-      sum += comms::device::ld_acquire_sys_global(base + i);
-    }
-    if (detail::cmp_op(cmp, sum, value)) {
-      return 0;
+  if (group.is_leader()) {
+    const ncclDevComm& dev_comm = comm_;
+    uint64_t* base = detail::signal_slot_base(
+        dev_comm, signal_buffer_handle_, signal_id, num_ranks_);
+
+    // Spin-poll with acquire loads
+    // that once we see a signal value, all prior stores from the signaler
+    // (i.e. the data written by put()) are visible to us.
+    for (;;) {
+      uint64_t sum = 0;
+      for (int i = 0; i < num_ranks_; i++) {
+        sum += comms::device::ld_acquire_sys_global(base + i);
+      }
+      if (detail::cmp_op(cmp, sum, value)) {
+        break;
+      }
     }
   }
+
+  group.sync();
+  return 0;
 }
 
 template <>
@@ -314,18 +322,27 @@ TorchCommDeviceWindow<NCCLDeviceBackend>::wait_signal_from(
     int peer,
     int signal_id,
     CmpOp cmp,
-    uint64_t value) {
-  const ncclDevComm& dev_comm = comm_;
-  uint64_t* slot = detail::signal_slot_base(
-                       dev_comm, signal_buffer_handle_, signal_id, num_ranks_) +
-      peer;
+    uint64_t value,
+    CoopScope scope) {
+  auto group = detail::make_thread_group(scope);
 
-  for (;;) {
-    uint64_t val = comms::device::ld_acquire_sys_global(slot);
-    if (detail::cmp_op(cmp, val, value)) {
-      return 0;
+  if (group.is_leader()) {
+    const ncclDevComm& dev_comm = comm_;
+    uint64_t* slot =
+        detail::signal_slot_base(
+            dev_comm, signal_buffer_handle_, signal_id, num_ranks_) +
+        peer;
+
+    for (;;) {
+      uint64_t val = comms::device::ld_acquire_sys_global(slot);
+      if (detail::cmp_op(cmp, val, value)) {
+        break;
+      }
     }
   }
+
+  group.sync();
+  return 0;
 }
 
 template <>
@@ -344,13 +361,19 @@ TorchCommDeviceWindow<NCCLDeviceBackend>::read_signal(int signal_id) const {
 
 template <>
 __device__ inline void TorchCommDeviceWindow<NCCLDeviceBackend>::reset_signal(
-    int signal_id) {
-  const ncclDevComm& dev_comm = comm_;
-  uint64_t* base = detail::signal_slot_base(
-      dev_comm, signal_buffer_handle_, signal_id, num_ranks_);
+    int signal_id,
+    CoopScope scope) {
+  auto group = detail::make_thread_group(scope);
+  group.sync();
 
-  for (int i = 0; i < num_ranks_; i++) {
-    comms::device::st_release_sys_global(base + i, 0ULL);
+  if (group.is_leader()) {
+    const ncclDevComm& dev_comm = comm_;
+    uint64_t* base = detail::signal_slot_base(
+        dev_comm, signal_buffer_handle_, signal_id, num_ranks_);
+
+    for (int i = 0; i < num_ranks_; i++) {
+      comms::device::st_release_sys_global(base + i, 0ULL);
+    }
   }
 }
 
@@ -364,7 +387,8 @@ template <>
 __device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::wait_counter(
     int counter_id,
     CmpOp cmp,
-    uint64_t value) {
+    uint64_t value,
+    CoopScope scope) {
   if (cmp != CmpOp::GE) {
     // GIN hardware counters only support GE comparison.
     __trap();
@@ -374,11 +398,13 @@ __device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::wait_counter(
   const ncclDevComm& dev_comm = comm_;
   ncclGin gin(dev_comm, kDefaultGinContextIndex);
 
-  gin.waitCounter(
-      ncclCoopThread{},
-      static_cast<ncclGinCounter_t>(counter_id),
-      value,
-      kDefaultCounterBits);
+  detail::nccl_coop_dispatch(scope, [&](auto coop) {
+    gin.waitCounter(
+        coop,
+        static_cast<ncclGinCounter_t>(counter_id),
+        value,
+        kDefaultCounterBits);
+  });
 
   return 0;
 }
@@ -395,11 +421,16 @@ TorchCommDeviceWindow<NCCLDeviceBackend>::read_counter(int counter_id) const {
 
 template <>
 __device__ inline void TorchCommDeviceWindow<NCCLDeviceBackend>::reset_counter(
-    int counter_id) {
-  const ncclDevComm& dev_comm = comm_;
-  ncclGin gin(dev_comm, kDefaultGinContextIndex);
+    int counter_id,
+    CoopScope scope) {
+  auto group = detail::make_thread_group(scope);
+  group.sync();
 
-  gin.resetCounter(static_cast<ncclGinCounter_t>(counter_id));
+  if (group.is_leader()) {
+    const ncclDevComm& dev_comm = comm_;
+    ncclGin gin(dev_comm, kDefaultGinContextIndex);
+    gin.resetCounter(static_cast<ncclGinCounter_t>(counter_id));
+  }
 }
 
 // =============================================================================
