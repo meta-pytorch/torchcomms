@@ -12,6 +12,9 @@
 #include "comms/testinfra/TestUtils.h"
 #include "nccl.h" // @manual
 
+// Re-export DistEnvironmentBase so test main() files can use it unqualified.
+using meta::comms::DistEnvironmentBase;
+
 // TODO: Long-term, migrate all tests from #ifdef compiler flags to NcclxEnvs
 // params.
 using NcclxEnvs = std::vector<std::pair<std::string, std::string>>;
