@@ -361,8 +361,8 @@ __device__ inline void TorchCommDeviceWindow<NCCLDeviceBackend>::reset_signal(
 // (NIC increments after source buffer read). Only meaningful for RDMA path.
 
 template <>
-__device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::wait_local(
-    int op_id,
+__device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::wait_counter(
+    int counter_id,
     CmpOp cmp,
     uint64_t value) {
   if (cmp != CmpOp::GE) {
@@ -376,7 +376,7 @@ __device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::wait_local(
 
   gin.waitCounter(
       ncclCoopThread{},
-      static_cast<ncclGinCounter_t>(op_id),
+      static_cast<ncclGinCounter_t>(counter_id),
       value,
       kDefaultCounterBits);
 

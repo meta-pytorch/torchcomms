@@ -166,12 +166,12 @@ __device__ void torchcomms_reset_signal(void* win_ptr, int signal_id) {
 // Thread-scope (idempotent)
 // =============================================================================
 
-__device__ int torchcomms_wait_local(
+__device__ int torchcomms_wait_counter(
     void* win_ptr,
     int counter_id,
     unsigned long long expected_value) {
   auto* win = reinterpret_cast<DeviceWindow*>(win_ptr);
-  return win->wait_local(counter_id, CmpOp::GE, expected_value);
+  return win->wait_counter(counter_id, CmpOp::GE, expected_value);
 }
 
 __device__ unsigned long long torchcomms_read_counter(

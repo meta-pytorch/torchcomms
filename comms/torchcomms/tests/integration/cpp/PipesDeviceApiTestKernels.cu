@@ -139,7 +139,8 @@ __global__ void pipesPutKernel(
 // Performs a put with both signal and counter.
 // Counter is only incremented for IBGDA peers (companion QP loopback atomic).
 // For NVLink-only peers, counter stays 0 (silently ignored, same as GIN LSA).
-// Caller should NOT wait_local for NVLink-only configs — it would spin forever.
+// Caller should NOT wait_counter for NVLink-only configs — it would spin
+// forever.
 
 __global__ void pipesPutCounterKernel(
     DeviceWindowPipes* win,
@@ -189,18 +190,18 @@ __global__ void pipesResetCounterKernel(
 }
 
 // =============================================================================
-// Wait Local (Counter) Kernel
+// Wait Counter Kernel
 // =============================================================================
 // Spin-polls aggregated counter until it satisfies the comparison.
 // Only meaningful for IBGDA peers — NVLink counters stay 0.
 
-__global__ void pipesWaitLocalKernel(
+__global__ void pipesWaitCounterKernel(
     DeviceWindowPipes* win,
     int counter_id,
     CmpOp cmp,
     uint64_t value) {
   if (threadIdx.x == 0 && blockIdx.x == 0) {
-    win->wait_local(counter_id, cmp, value);
+    win->wait_counter(counter_id, cmp, value);
   }
 }
 
@@ -319,13 +320,13 @@ void launchPipesResetCounterKernel(
   CUDA_LAUNCH_CHECK();
 }
 
-void launchPipesWaitLocalKernel(
+void launchPipesWaitCounterKernel(
     DeviceWindowPipes* win,
     int counter_id,
     CmpOp cmp,
     uint64_t value,
     cudaStream_t stream) {
-  pipesWaitLocalKernel<<<1, 1, 0, stream>>>(win, counter_id, cmp, value);
+  pipesWaitCounterKernel<<<1, 1, 0, stream>>>(win, counter_id, cmp, value);
   CUDA_LAUNCH_CHECK();
 }
 

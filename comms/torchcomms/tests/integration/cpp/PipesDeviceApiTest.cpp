@@ -241,7 +241,8 @@ void PipesDeviceApiTest::testLocalBufferRegistration(
   // backend_window is null (only GIN uses backend_window).
   ASSERT_NE(src_buf.base_ptr, nullptr) << "Buffer base_ptr should not be null";
   ASSERT_GT(src_buf.size, 0u) << "Buffer size should be positive";
-  EXPECT_NE(src_buf.lkey, 0u) << "Pipes backend should set lkey for IBGDA put";
+  // lkey is only set when IBGDA peers exist; on NVLink-only topologies
+  // (IB disabled) it will be 0, which is valid — NVLink puts never use lkey.
   EXPECT_EQ(src_buf.backend_window, nullptr)
       << "Pipes backend should not set backend_window";
 
@@ -680,7 +681,7 @@ TEST_F(PipesDeviceApiTest, DevicePutFloat) {
 // =============================================================================
 // Ring pattern with counter-based local completion tracking:
 //   1. put_signal_counter to next rank (signal + counter)
-//   2. wait_local on counter (verifies NIC completion via companion QP)
+//   2. wait_counter on counter (verifies NIC completion via companion QP)
 //   3. wait_signal on receiver side (verifies data arrival)
 //   4. Verify data + read_counter value
 
@@ -746,7 +747,7 @@ void PipesDeviceApiTest::testDevicePutCounter(int count, at::ScalarType dtype) {
   size_t src_offset = 0;
   size_t dst_offset = rank_ * bytes;
 
-  // Put with signal + counter; kernel also calls wait_local on the counter
+  // Put with signal + counter; kernel also calls wait_counter on the counter
   {
     c10::cuda::CUDAStreamGuard guard(put_stream);
     torchcomms::device::test::launchPipesPutCounterKernel(
@@ -827,18 +828,18 @@ TEST_F(PipesDeviceApiTest, DevicePutCounterFloat) {
 }
 
 // =============================================================================
-// Wait Local (Counter) Test (Pipes)
+// Wait Counter Test (Pipes)
 // =============================================================================
-// Validates wait_local() for local completion tracking:
+// Validates wait_counter() for local completion tracking:
 //   1. put_signal_counter to next rank (signal + counter)
-//   2. Read counter — if > 0 (IBGDA peers), call wait_local to verify it
-//      completes; if 0 (NVLink-only), skip wait_local (would spin forever)
+//   2. Read counter — if > 0 (IBGDA peers), call wait_counter to verify it
+//      completes; if 0 (NVLink-only), skip wait_counter (would spin forever)
 //   3. wait_signal on receiver side (verifies data arrival)
 //   4. Verify data with at::allclose
 
-void PipesDeviceApiTest::testWaitLocal(int count, at::ScalarType dtype) {
+void PipesDeviceApiTest::testWaitCounter(int count, at::ScalarType dtype) {
   SCOPED_TRACE(
-      ::testing::Message() << "Testing Pipes wait_local with count=" << count
+      ::testing::Message() << "Testing Pipes wait_counter with count=" << count
                            << " and dtype=" << getDtypeName(dtype));
 
   auto put_stream = at::cuda::getStreamFromPool(false, device_index_);
@@ -933,11 +934,12 @@ void PipesDeviceApiTest::testWaitLocal(int count, at::ScalarType dtype) {
       &h_counter, d_counter_out, sizeof(uint64_t), cudaMemcpyDeviceToHost);
   cudaFree(d_counter_out);
 
-  // wait_local: only valid when IBGDA peers incremented the counter.
-  // For NVLink-only configs, counter stays 0 and wait_local would spin forever.
+  // wait_counter: only valid when IBGDA peers incremented the counter.
+  // For NVLink-only configs, counter stays 0 and wait_counter would spin
+  // forever.
   if (h_counter > 0) {
     c10::cuda::CUDAStreamGuard guard(put_stream);
-    torchcomms::device::test::launchPipesWaitLocalKernel(
+    torchcomms::device::test::launchPipesWaitCounterKernel(
         dev_win,
         kCounterId,
         torchcomms::device::CmpOp::GE,
@@ -947,7 +949,7 @@ void PipesDeviceApiTest::testWaitLocal(int count, at::ScalarType dtype) {
   } else {
     SCOPED_TRACE(
         ::testing::Message()
-        << "NVLink-only config: counter=0, skipping wait_local");
+        << "NVLink-only config: counter=0, skipping wait_counter");
   }
 
   // Wait for signal indicating data arrived from previous rank
@@ -968,7 +970,7 @@ void PipesDeviceApiTest::testWaitLocal(int count, at::ScalarType dtype) {
   expected_cpu.fill_(static_cast<float>(src_rank + 1));
 
   bool equal = at::allclose(result_cpu, expected_cpu);
-  ASSERT_TRUE(equal) << "wait_local data mismatch: expected value "
+  ASSERT_TRUE(equal) << "wait_counter data mismatch: expected value "
                      << (src_rank + 1) << " from rank " << src_rank
                      << ", got first element: " << result_cpu[0].item<float>();
 
@@ -988,6 +990,6 @@ void PipesDeviceApiTest::testWaitLocal(int count, at::ScalarType dtype) {
   torchcomm_->barrier(false);
 }
 
-TEST_F(PipesDeviceApiTest, WaitLocalFloat) {
-  testWaitLocal(1024, at::kFloat);
+TEST_F(PipesDeviceApiTest, WaitCounterFloat) {
+  testWaitCounter(1024, at::kFloat);
 }

@@ -61,7 +61,7 @@ class CollTraceTestLocal : public NcclxBaseTest {
   // communicator
   void barrier() {
     CUDACHECK_TEST(cudaDeviceSynchronize());
-    MPI_Barrier(MPI_COMM_WORLD);
+    oobBarrier();
   }
 
  protected:
@@ -75,7 +75,7 @@ class CollTraceTestLocal : public NcclxBaseTest {
 TEST_F(CollTraceTestLocal, winSignal) {
   const int kNumIters = 16;
 
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
 
   auto statex = comm->ctranComm_->statex_.get();
   ASSERT_NE(statex, nullptr);
@@ -163,7 +163,7 @@ TEST_F(CollTraceTestLocal, winPutOnly) {
   const int kNumElements = 8192;
   const int kNumIters = 500;
 
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
 
   EXPECT_GE(kNumElements, 8192);
   EXPECT_GE(kNumIters, 1);

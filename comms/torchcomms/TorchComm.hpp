@@ -255,6 +255,9 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
   // Rank validation helper
   void validateRank(int rank, const char* param_name) const;
 
+  // Initialize ranks_ from the backend's current size
+  void initRanks();
+
   // Backend name
   std::string backend_;
   std::string backend_version_;

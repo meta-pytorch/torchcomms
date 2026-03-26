@@ -27,15 +27,14 @@ class BroadcastTestCommon : public NcclxBaseTest {
   void SetUp() override {
     NcclxBaseTest::SetUp();
 
-    this->comm = ncclx::test::createNcclComm(
-        globalRank, numRanks, localRank, bootstrap_.get());
+    comm = createNcclComm(globalRank, numRanks, localRank, bootstrap_.get());
 
-    CUDACHECK_TEST(cudaStreamCreate(&this->stream));
+    CUDACHECK_TEST(cudaStreamCreate(&stream));
   }
 
   void TearDown() override {
-    NCCLCHECK_TEST(ncclCommDestroy(this->comm));
-    CUDACHECK_TEST(cudaStreamDestroy(this->stream));
+    NCCLCHECK_TEST(ncclCommDestroy(comm));
+    CUDACHECK_TEST(cudaStreamDestroy(stream));
     NcclxBaseTest::TearDown();
   }
 

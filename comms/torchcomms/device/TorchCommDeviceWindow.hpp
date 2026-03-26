@@ -197,7 +197,7 @@ class TorchCommDeviceWindow {
   // Counter Operations (Local Completion)
   // =========================================================================
 
-  __device__ int wait_local(int op_id, CmpOp cmp, uint64_t value);
+  __device__ int wait_counter(int counter_id, CmpOp cmp, uint64_t value);
   __device__ uint64_t read_counter(int counter_id) const;
   __device__ void reset_counter(int counter_id);
 
