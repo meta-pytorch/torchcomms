@@ -993,3 +993,106 @@ void PipesDeviceApiTest::testWaitCounter(int count, at::ScalarType dtype) {
 TEST_F(PipesDeviceApiTest, WaitCounterFloat) {
   testWaitCounter(1024, at::kFloat);
 }
+
+// =============================================================================
+// Scoped Wait Signal Test (Pipes)
+// =============================================================================
+// Ring pattern with scoped wait: rank i signals rank (i+1) % num_ranks
+//   1. Each rank sends ADD 1 to the next rank via thread-scope signal
+//   2. Each rank waits with scoped wait_signal kernel (WARP or BLOCK)
+//   3. Verifies completion (no hang = pass)
+
+void PipesDeviceApiTest::testWaitSignalScoped(
+    CoopScope scope,
+    int num_threads) {
+  SCOPED_TRACE(
+      ::testing::Message() << "Testing scoped wait_signal (Pipes), threads="
+                           << num_threads);
+
+  auto op_stream = at::cuda::getStreamFromPool(false, device_index_);
+  auto wait_stream = at::cuda::getStreamFromPool(false, device_index_);
+
+  auto mem_pool = std::make_unique<at::cuda::MemPool>(
+      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
+          allocator_));
+  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
+      mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
+
+  auto options =
+      at::TensorOptions().dtype(at::kLong).device(at::kCUDA, device_index_);
+  at::Tensor win_tensor = at::zeros({1}, options);
+
+  c10::cuda::CUDACachingAllocator::endAllocateToPool(
+      mem_pool->device(), mem_pool->id());
+
+  torchcomm_->barrier(false);
+  auto base_win = torchcomm_->new_window();
+  base_win->tensor_register(win_tensor);
+  torchcomm_->barrier(false);
+
+  auto* win =
+      dynamic_cast<torch::comms::TorchCommWindowNCCLXPipes*>(base_win.get());
+  ASSERT_NE(win, nullptr) << "Window should be TorchCommWindowNCCLXPipes. "
+                             "Is NCCL_CTRAN_USE_PIPES=1 set?";
+
+  int signal_count = num_ranks_;
+  DeviceWindowPipes* dev_win = nullptr;
+  try {
+    dev_win = static_cast<DeviceWindowPipes*>(
+        win->get_device_window(signal_count, -1, 1));
+  } catch (const std::runtime_error& e) {
+    base_win->tensor_deregister();
+    base_win.reset();
+    mem_pool.reset();
+    GTEST_SKIP() << "Skipping: IBGDA/Pipes hardware not available: "
+                 << e.what();
+  }
+  ASSERT_NE(dev_win, nullptr);
+
+  int dst_rank = (rank_ + 1) % num_ranks_;
+  constexpr int kSignalId = 0;
+
+  // Signal next rank (thread scope)
+  {
+    c10::cuda::CUDAStreamGuard guard(op_stream);
+    torchcomms::device::test::launchPipesSignalKernel(
+        dev_win,
+        dst_rank,
+        kSignalId,
+        torchcomms::device::SignalOp::ADD,
+        1,
+        op_stream.stream());
+  }
+
+  // Wait for signal using scoped kernel
+  {
+    c10::cuda::CUDAStreamGuard guard(wait_stream);
+    torchcomms::device::test::launchPipesWaitSignalScopedKernel(
+        dev_win, kSignalId, 1, scope, num_threads, wait_stream.stream());
+  }
+
+  op_stream.synchronize();
+  wait_stream.synchronize();
+
+  base_win->tensor_deregister();
+  base_win.reset();
+  mem_pool.reset();
+
+  torchcomm_->barrier(false);
+}
+
+class PipesDeviceApiScopedWaitSignalTest
+    : public PipesDeviceApiTest,
+      public ::testing::WithParamInterface<std::tuple<CoopScope, int>> {};
+
+TEST_P(PipesDeviceApiScopedWaitSignalTest, WaitSignalScoped) {
+  auto [scope, num_threads] = GetParam();
+  testWaitSignalScoped(scope, num_threads);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ScopeTests,
+    PipesDeviceApiScopedWaitSignalTest,
+    ::testing::Values(
+        std::make_tuple(CoopScope::WARP, 32),
+        std::make_tuple(CoopScope::BLOCK, 256)));

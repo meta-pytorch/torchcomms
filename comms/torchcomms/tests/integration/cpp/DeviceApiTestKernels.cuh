@@ -134,4 +134,21 @@ void launchDeviceBarrierScopedKernel(
     int num_threads,
     cudaStream_t stream);
 
+// Launch scope-aware wait_signal kernel
+void launchDeviceWaitSignalScopedKernel(
+    DeviceWindowNCCL* win,
+    int signal_id,
+    uint64_t expected_value,
+    CoopScope scope,
+    int num_threads,
+    cudaStream_t stream);
+
+// Launch scope-aware reset_signal kernel
+void launchDeviceResetSignalScopedKernel(
+    DeviceWindowNCCL* win,
+    int signal_id,
+    CoopScope scope,
+    int num_threads,
+    cudaStream_t stream);
+
 } // namespace torchcomms::device::test

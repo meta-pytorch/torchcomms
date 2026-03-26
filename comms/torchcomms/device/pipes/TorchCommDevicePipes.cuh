@@ -185,15 +185,11 @@ template <>
 __device__ inline int TorchCommDeviceWindow<PipesDeviceBackend>::wait_signal(
     int signal_id,
     CmpOp cmp,
-    uint64_t value) {
+    uint64_t value,
+    CoopScope scope) {
   auto& win = *window_;
   auto pipes_cmp = detail::to_pipes_cmp_op(cmp);
-  // TODO: Add CoopScope parameter to wait_signal in the base class
-  // (TorchCommDeviceWindow). Pipes wait_signal takes a ThreadGroup and
-  // benefits from leader-only polling + group sync. Currently forced to
-  // thread-solo (all threads poll independently). NCCLXGin doesn't support
-  // scope either, so will add it to both backends together.
-  auto group = comms::pipes::make_thread_solo();
+  auto group = detail::make_pipes_thread_group(scope);
   win.wait_signal(group, signal_id, pipes_cmp, value);
   return 0;
 }
@@ -204,10 +200,12 @@ TorchCommDeviceWindow<PipesDeviceBackend>::wait_signal_from(
     int peer,
     int signal_id,
     CmpOp cmp,
-    uint64_t value) {
+    uint64_t value,
+    CoopScope scope) {
   auto& win = *window_;
   auto pipes_cmp = detail::to_pipes_cmp_op(cmp);
-  win.wait_signal_from(peer, signal_id, pipes_cmp, value);
+  auto group = detail::make_pipes_thread_group(scope);
+  win.wait_signal_from(group, peer, signal_id, pipes_cmp, value);
   return 0;
 }
 
@@ -223,15 +221,12 @@ TorchCommDeviceWindow<PipesDeviceBackend>::read_signal(int signal_id) const {
 
 template <>
 __device__ inline void TorchCommDeviceWindow<PipesDeviceBackend>::reset_signal(
-    int signal_id) {
+    int signal_id,
+    CoopScope scope) {
   // Pipes DeviceWindow does not support device-side signal reset.
-  // Recommended pattern: use monotonically increasing signal values, or
-  // reset signal buffers from the host side (cudaMemset) between kernel
-  // launches with proper synchronization.
-  //
-  // Calling reset_signal from device code is a programming error for the
-  // Pipes backend.
+  // Use monotonically increasing signal values, or reset from host side.
   (void)signal_id;
+  (void)scope;
   __trap();
 }
 
@@ -258,13 +253,18 @@ TorchCommDeviceWindow<PipesDeviceBackend>::read_counter(int counter_id) const {
 
 template <>
 __device__ inline void TorchCommDeviceWindow<PipesDeviceBackend>::reset_counter(
-    int counter_id) {
-  // Reset the counter for all peers.
-  auto& win = *window_;
-  int nPeers = win.num_peers();
-  for (int peer_index = 0; peer_index < nPeers; ++peer_index) {
-    int r = win.peer_index_to_rank(peer_index);
-    win.reset_counter(r, counter_id);
+    int counter_id,
+    CoopScope scope) {
+  auto group = detail::make_pipes_thread_group(scope);
+  group.sync();
+
+  if (group.is_leader()) {
+    auto& win = *window_;
+    int nPeers = win.num_peers();
+    for (int peer_index = 0; peer_index < nPeers; ++peer_index) {
+      int r = win.peer_index_to_rank(peer_index);
+      win.reset_counter(r, counter_id);
+    }
   }
 }
 
@@ -272,39 +272,41 @@ template <>
 __device__ inline int TorchCommDeviceWindow<PipesDeviceBackend>::wait_counter(
     int counter_id,
     CmpOp cmp,
-    uint64_t value) {
-  // Sum the counter across all peers and poll until the aggregate satisfies
-  // the comparison (same model as GIN: counter_id 0 with value 5 = 5 puts
-  // completed regardless of peer).
-  //
-  // Spin-poll: read_counter() already sums across all peers.
-  while (true) {
-    uint64_t total = read_counter(counter_id);
-    bool satisfied = false;
-    switch (cmp) {
-      case CmpOp::EQ:
-        satisfied = (total == value);
+    uint64_t value,
+    CoopScope scope) {
+  auto group = detail::make_pipes_thread_group(scope);
+
+  if (group.is_leader()) {
+    while (true) {
+      uint64_t total = read_counter(counter_id);
+      bool satisfied = false;
+      switch (cmp) {
+        case CmpOp::EQ:
+          satisfied = (total == value);
+          break;
+        case CmpOp::NE:
+          satisfied = (total != value);
+          break;
+        case CmpOp::GE:
+          satisfied = (total >= value);
+          break;
+        case CmpOp::GT:
+          satisfied = (total > value);
+          break;
+        case CmpOp::LE:
+          satisfied = (total <= value);
+          break;
+        case CmpOp::LT:
+          satisfied = (total < value);
+          break;
+      }
+      if (satisfied) {
         break;
-      case CmpOp::NE:
-        satisfied = (total != value);
-        break;
-      case CmpOp::GE:
-        satisfied = (total >= value);
-        break;
-      case CmpOp::GT:
-        satisfied = (total > value);
-        break;
-      case CmpOp::LE:
-        satisfied = (total <= value);
-        break;
-      case CmpOp::LT:
-        satisfied = (total < value);
-        break;
-    }
-    if (satisfied) {
-      break;
+      }
     }
   }
+
+  group.sync();
   return 0;
 }
 

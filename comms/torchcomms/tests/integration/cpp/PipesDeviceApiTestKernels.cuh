@@ -122,4 +122,32 @@ void launchPipesWaitCounterKernel(
     uint64_t value,
     cudaStream_t stream);
 
+// Scope-aware wait_signal kernel
+void launchPipesWaitSignalScopedKernel(
+    DeviceWindowPipes* win,
+    int signal_id,
+    uint64_t expected_value,
+    CoopScope scope,
+    int num_threads,
+    cudaStream_t stream);
+
+// Scope-aware wait_signal_from kernel
+void launchPipesWaitSignalFromScopedKernel(
+    DeviceWindowPipes* win,
+    int src_rank,
+    int signal_id,
+    CmpOp cmp,
+    uint64_t value,
+    CoopScope scope,
+    int num_threads,
+    cudaStream_t stream);
+
+// Scope-aware reset_counter kernel
+void launchPipesResetCounterScopedKernel(
+    DeviceWindowPipes* win,
+    int counter_id,
+    CoopScope scope,
+    int num_threads,
+    cudaStream_t stream);
+
 } // namespace torchcomms::device::test

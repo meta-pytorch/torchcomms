@@ -1015,3 +1015,117 @@ TEST_F(DeviceApiTest, DeviceBarrierWarpScope) {
 TEST_F(DeviceApiTest, DeviceBarrierBlockScope) {
   testDeviceBarrierScoped(torchcomms::device::CoopScope::BLOCK, 256);
 }
+
+// =============================================================================
+// Scope-Aware Wait/Reset Signal Tests
+// =============================================================================
+// Validates wait_signal and reset_signal with CoopScope::WARP and BLOCK.
+// Ring signal from rank i to (i+1)%N, wait with scoped kernel, reset with
+// scoped kernel, verify signal is 0 after reset.
+
+void DeviceApiTest::testWaitSignalScoped(
+    torchcomms::device::CoopScope scope,
+    int num_threads) {
+  std::string scope_name =
+      (scope == torchcomms::device::CoopScope::WARP) ? "WARP" : "BLOCK";
+  SCOPED_TRACE(
+      ::testing::Message() << "Testing Scoped WaitSignal (" << scope_name
+                           << ", threads=" << num_threads << ")");
+
+  auto op_stream = at::cuda::getStreamFromPool(false, device_index_);
+  auto wait_stream = at::cuda::getStreamFromPool(false, device_index_);
+
+  auto mem_pool = std::make_unique<at::cuda::MemPool>(
+      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
+          allocator_));
+  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
+      mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
+
+  auto options =
+      at::TensorOptions().dtype(at::kLong).device(at::kCUDA, device_index_);
+  at::Tensor win_tensor = at::zeros({1}, options);
+
+  c10::cuda::CUDACachingAllocator::endAllocateToPool(
+      mem_pool->device(), mem_pool->id());
+
+  torchcomm_->barrier(false);
+  auto win = torchcomm_->new_window();
+  win->tensor_register(win_tensor);
+  torchcomm_->barrier(false);
+
+  int signal_count = num_ranks_;
+  DeviceWindowNCCL* dev_win = static_cast<DeviceWindowNCCL*>(
+      win->get_device_window(signal_count, -1, 1));
+  ASSERT_NE(dev_win, nullptr);
+
+  int dst_rank = (rank_ + 1) % num_ranks_;
+  constexpr int kSignalId = 0;
+
+  // Signal next rank (thread scope)
+  {
+    c10::cuda::CUDAStreamGuard guard(op_stream);
+    torchcomms::device::test::launchDeviceSignalKernel(
+        dev_win,
+        dst_rank,
+        kSignalId,
+        torchcomms::device::SignalOp::ADD,
+        1,
+        op_stream.stream());
+  }
+
+  // Wait for signal using scoped kernel
+  {
+    c10::cuda::CUDAStreamGuard guard(wait_stream);
+    torchcomms::device::test::launchDeviceWaitSignalScopedKernel(
+        dev_win, kSignalId, 1, scope, num_threads, wait_stream.stream());
+  }
+
+  op_stream.synchronize();
+  wait_stream.synchronize();
+
+  // Reset signal using scoped kernel
+  {
+    c10::cuda::CUDAStreamGuard guard(op_stream);
+    torchcomms::device::test::launchDeviceResetSignalScopedKernel(
+        dev_win, kSignalId, scope, num_threads, op_stream.stream());
+  }
+  op_stream.synchronize();
+
+  // Verify signal is 0 after reset
+  uint64_t* d_out = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_out, sizeof(uint64_t)), cudaSuccess);
+  {
+    c10::cuda::CUDAStreamGuard guard(op_stream);
+    torchcomms::device::test::launchDeviceReadSignalKernel(
+        dev_win, kSignalId, d_out, op_stream.stream());
+  }
+  op_stream.synchronize();
+
+  uint64_t h_out = 0;
+  cudaMemcpy(&h_out, d_out, sizeof(uint64_t), cudaMemcpyDeviceToHost);
+  cudaFree(d_out);
+  ASSERT_EQ(h_out, 0u) << "Signal should be 0 after scoped reset";
+
+  win->tensor_deregister();
+  win.reset();
+  mem_pool.reset();
+
+  torchcomm_->barrier(false);
+}
+
+class DeviceApiScopedWaitSignalTest
+    : public DeviceApiTest,
+      public ::testing::WithParamInterface<
+          std::tuple<torchcomms::device::CoopScope, int>> {};
+
+TEST_P(DeviceApiScopedWaitSignalTest, WaitSignalScoped) {
+  auto [scope, num_threads] = GetParam();
+  testWaitSignalScoped(scope, num_threads);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ScopeTests,
+    DeviceApiScopedWaitSignalTest,
+    ::testing::Values(
+        std::make_tuple(torchcomms::device::CoopScope::WARP, 32),
+        std::make_tuple(torchcomms::device::CoopScope::BLOCK, 256)));

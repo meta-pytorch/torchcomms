@@ -75,6 +75,11 @@ class DeviceApiTest : public ::testing::Test {
       torchcomms::device::CoopScope scope,
       int num_threads);
 
+  // Scope-aware wait_signal + reset_signal test
+  void testWaitSignalScoped(
+      torchcomms::device::CoopScope scope,
+      int num_threads);
+
   // Member variables
   std::unique_ptr<TorchCommTestWrapper> wrapper_;
   std::shared_ptr<torch::comms::TorchComm> torchcomm_;
