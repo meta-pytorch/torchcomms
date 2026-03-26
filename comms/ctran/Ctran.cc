@@ -21,7 +21,7 @@
 #include "comms/pipes/MultiPeerTransport.h"
 #endif // defined(ENABLE_PIPES)
 
-Ctran::Ctran(CtranComm* comm) : comm_(comm) {
+Ctran::Ctran(CtranComm* comm, ctran::ReporterType reporterType) : comm_(comm) {
   ctran::logging::initCtranLogging();
 
   mapper = std::make_unique<CtranMapper>(comm_);
@@ -30,7 +30,7 @@ Ctran::Ctran(CtranComm* comm) : comm_(comm) {
   algo = std::make_unique<CtranAlgo>(comm, this);
 
   if (NCCL_CTRAN_TRANSPORT_PROFILER) {
-    profiler = std::make_unique<ctran::Profiler>(comm);
+    profiler = std::make_unique<ctran::Profiler>(comm, reporterType);
   }
 }
 
@@ -108,11 +108,11 @@ comms::pipes::Transport* CtranComm::getMultiPeerTransportsPtr() const {
 }
 #endif // defined(ENABLE_PIPES)
 
-commResult_t ctranInit(CtranComm* comm) {
+commResult_t ctranInit(CtranComm* comm, ctran::ReporterType reporterType) {
   NcclScubaEvent initEvent(&comm->logMetaData_);
   initEvent.lapAndRecord("CtranInit START");
   try {
-    comm->ctran_ = std::make_shared<Ctran>(comm);
+    comm->ctran_ = std::make_shared<Ctran>(comm, reporterType);
   } catch (std::exception& e) {
     CLOGF(ERR, "Ctran initialization failed: {}", e.what());
     return commInternalError;

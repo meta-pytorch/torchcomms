@@ -2,7 +2,11 @@
 
 #pragma once
 
+#include <memory>
+
 #include "comms/ctran/CtranComm.h"
+#include "comms/ctran/profiler/AlgoProfilerReport.h"
+#include "comms/ctran/profiler/IAlgoProfilerReporter.h"
 #include "comms/ctran/utils/StopWatch.h"
 
 namespace ctran {
@@ -26,19 +30,6 @@ enum ProfilerEvent {
   NUM_PROFILER_EVENT_TYPES,
 };
 
-struct DataContext {
-  uint64_t totalBytes{0};
-  std::string messageSizes{};
-};
-
-struct AlgoContext {
-  std::string deviceName{};
-  std::string algorithmName{};
-  DataContext sendContext{};
-  DataContext recvContext{};
-  uint64_t peerRank{0};
-};
-
 class Profiler {
  public:
   using Clock = std::chrono::system_clock;
@@ -47,8 +38,10 @@ class Profiler {
       std::array<utils::StopWatch<Clock>, NUM_PROFILER_EVENT_TYPES>;
 
  public:
-  Profiler(CtranComm* comm) : comm_(comm) {};
-  ~Profiler() = default;
+  // Construct with a reporter type. The reporter is immutable after
+  // construction.
+  Profiler(CtranComm* comm, ReporterType reporterType = ReporterType::NCCLX);
+  ~Profiler();
 
   // This should be called at the beginning of the collective
   void initForEachColl(int opCount, int samplingWeight);
@@ -87,6 +80,7 @@ class Profiler {
   AlgoContext algoContext{};
 
  private:
+  AlgoProfilerReport buildReport() const;
   CtranComm* comm_{nullptr};
   bool shouldTrace_{false};
   uint64_t opCount_{std::numeric_limits<uint64_t>::max()};
@@ -94,8 +88,7 @@ class Profiler {
   EventTimerArray timers_{};
   uint64_t readyTs_{0};
   uint64_t controlTs_{0};
-
-  void logNcclProfilingAlgo() const;
+  std::unique_ptr<IAlgoProfilerReporter> reporter_;
 
   friend class ProfilerTest;
 };
