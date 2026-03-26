@@ -11,8 +11,9 @@ namespace meta::comms {
 /**
  * Extended bootstrap interface for ctran.
  *
- * Adds intra-node collective operations (allGatherIntraNode, barrierIntraNode)
+ * Adds NVL domain collective operations (allGatherNvlDomain, barrierNvlDomain)
  * needed by ctran for IPC handle exchange and local synchronization.
+ * The NVL domain may span multiple nodes when NVL fabric is enabled.
  *
  * Production implementations: BaselineBootstrap (ncclx), CtranAdapter (mccl).
  * Pipes will use this interface too.
@@ -22,29 +23,29 @@ class ICtranBootstrap : public IBootstrap {
   ~ICtranBootstrap() override = default;
 
   /**
-   * AllGather among a subset of ranks identified by `localRankToCommRank`.
+   * AllGather among a subset of ranks identified by `nvlRankToCommRank`.
    *
-   * `buf` is a continuous memory segment of size `localNranks * len`.
-   * `localRank` is this rank's index in [0, localNranks).
-   * `localRankToCommRank` maps local indices to global communicator ranks.
+   * `buf` is a continuous memory segment of size `nvlNranks * len`.
+   * `nvlLocalRank` is this rank's index in [0, nvlNranks).
+   * `nvlRankToCommRank` maps NVL domain indices to global communicator ranks.
    */
-  virtual folly::SemiFuture<int> allGatherIntraNode(
+  virtual folly::SemiFuture<int> allGatherNvlDomain(
       void* buf,
       int len,
-      int localRank,
-      int localNranks,
-      std::vector<int> localRankToCommRank) = 0;
+      int nvlLocalRank,
+      int nvlNranks,
+      std::vector<int> nvlRankToCommRank) = 0;
 
   /**
-   * Barrier among a subset of ranks identified by `localRankToCommRank`.
+   * Barrier among a subset of ranks identified by `nvlRankToCommRank`.
    *
-   * `localRank` is this rank's index in [0, localNranks).
-   * `localRankToCommRank` maps local indices to global communicator ranks.
+   * `nvlLocalRank` is this rank's index in [0, nvlNranks).
+   * `nvlRankToCommRank` maps NVL domain indices to global communicator ranks.
    */
-  virtual folly::SemiFuture<int> barrierIntraNode(
-      int localRank,
-      int localNranks,
-      std::vector<int> localRankToCommRank) = 0;
+  virtual folly::SemiFuture<int> barrierNvlDomain(
+      int nvlLocalRank,
+      int nvlNranks,
+      std::vector<int> nvlRankToCommRank) = 0;
 };
 
 } // namespace meta::comms

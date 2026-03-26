@@ -62,13 +62,13 @@ IntraProcessBootstrap::allGather(void* buf, int len, int rank, int nRanks) {
 
   return commSuccess;
 }
-folly::SemiFuture<int> IntraProcessBootstrap::allGatherIntraNode(
+folly::SemiFuture<int> IntraProcessBootstrap::allGatherNvlDomain(
     void* buf,
     int len,
-    int localRank,
-    int localNRanks,
-    std::vector<int> localRankToCommRank) {
-  if (localNRanks == 1) {
+    int nvlLocalRank,
+    int nvlNranks,
+    std::vector<int> nvlRankToCommRank) {
+  if (nvlNranks == 1) {
     // Topo::nolocal
     return commSuccess;
   }
@@ -78,21 +78,21 @@ folly::SemiFuture<int> IntraProcessBootstrap::allGatherIntraNode(
   // Topo::system
   char* src = reinterpret_cast<char*>(buf);
   char* dst = reinterpret_cast<char*>(state_->tmpBuf.data());
-  std::memcpy(dst + localRank * len, src + localRank * len, len);
+  std::memcpy(dst + nvlLocalRank * len, src + nvlLocalRank * len, len);
 
   barrierNamed(
-      localRank,
-      localNRanks,
+      nvlLocalRank,
+      nvlNranks,
       /*timeoutSeconds=*/3,
-      "AGIntraNode");
+      "AGNvlDomain");
 
-  std::memcpy(buf, dst, len * localNRanks);
+  std::memcpy(buf, dst, len * nvlNranks);
 
   barrierNamed(
-      localRank,
-      localNRanks,
+      nvlLocalRank,
+      nvlNranks,
       /*timeoutSeconds=*/3,
-      "AGIntraNode-complete");
+      "AGNvlDomain-complete");
 
   return commSuccess;
 }
@@ -101,21 +101,21 @@ folly::SemiFuture<int> IntraProcessBootstrap::barrier(int rank, int nRanks) {
   barrierNamed(rank, nRanks, /*timeoutSeconds=*/3, "barrier");
   return commSuccess;
 }
-folly::SemiFuture<int> IntraProcessBootstrap::barrierIntraNode(
-    int localRank,
-    int localNRanks,
-    std::vector<int> localRankToCommRank) {
-  if (localNRanks == 1) {
+folly::SemiFuture<int> IntraProcessBootstrap::barrierNvlDomain(
+    int nvlLocalRank,
+    int nvlNranks,
+    std::vector<int> nvlRankToCommRank) {
+  if (nvlNranks == 1) {
     // Topo::nolocal
     return commSuccess;
   }
 
   // Topo::system
   barrierNamed(
-      localRank,
-      localNRanks,
+      nvlLocalRank,
+      nvlNranks,
       /*timeoutSeconds=*/3,
-      "barrierIntraNode");
+      "barrierNvlDomain");
   return commSuccess;
 }
 folly::SemiFuture<int>
