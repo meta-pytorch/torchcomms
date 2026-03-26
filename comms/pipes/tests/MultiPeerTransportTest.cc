@@ -11,12 +11,12 @@
 
 #include <folly/init/Init.h>
 
+#include "comms/common/bootstrap/tests/MockBootstrap.h"
 #include "comms/pipes/GpuMemHandler.h"
 #include "comms/pipes/MultiPeerDeviceHandle.cuh"
 #include "comms/pipes/MultiPeerTransport.h"
 #include "comms/pipes/TopologyDiscovery.h"
 #include "comms/pipes/Transport.cuh"
-#include "comms/pipes/tests/MockBootstrap.h"
 #include "comms/pipes/tests/TopologyTestUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/testinfra/mpi/MpiBootstrap.h"
@@ -26,6 +26,8 @@
 using namespace meta::comms;
 
 namespace comms::pipes::tests {
+
+using meta::comms::testing::MockBootstrap;
 
 /**
  * Test fixture for MultiPeerTransport.
@@ -724,7 +726,7 @@ TEST(MultiPeerTransportDisableIbTest, ThrowsWhenPeerNotNvlReachable) {
   auto topo = makeTopology(kMyRank, {1});
 
   MultiPeerTransportConfig config{.disableIb = true};
-  auto bootstrap = std::make_shared<testing::MockBootstrap>();
+  auto bootstrap = std::make_shared<MockBootstrap>();
 
   EXPECT_THROW(
       MultiPeerTransport(
@@ -740,7 +742,7 @@ TEST(MultiPeerTransportDisableIbTest, ErrorMessageContainsRank) {
   auto topo = makeTopology(kMyRank, {});
 
   MultiPeerTransportConfig config{.disableIb = true};
-  auto bootstrap = std::make_shared<testing::MockBootstrap>();
+  auto bootstrap = std::make_shared<MockBootstrap>();
 
   try {
     MultiPeerTransport(
@@ -760,7 +762,7 @@ TEST(MultiPeerTransportDisableIbTest, SucceedsWhenAllPeersNvl) {
   auto topo = makeTopology(kMyRank, {1, 2});
 
   MultiPeerTransportConfig config{.disableIb = true};
-  auto bootstrap = std::make_shared<testing::MockBootstrap>();
+  auto bootstrap = std::make_shared<MockBootstrap>();
 
   // Construction succeeds up to the disableIb validation. NVL transport
   // creation may fail without GPU — we catch that; the validation itself
@@ -811,7 +813,7 @@ TEST(MultiPeerTransportDisableIbTest, ThrowsWhenP2pDisableAndDisableIb) {
       .topoConfig = topoConfig,
       .disableIb = true,
   };
-  auto bootstrap = std::make_shared<testing::MockBootstrap>();
+  auto bootstrap = std::make_shared<MockBootstrap>();
 
   EXPECT_THROW(
       MultiPeerTransport(

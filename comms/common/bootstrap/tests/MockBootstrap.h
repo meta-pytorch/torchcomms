@@ -8,7 +8,7 @@
 
 #include "comms/common/bootstrap/IBootstrap.h"
 
-namespace comms::pipes::testing {
+namespace meta::comms::testing {
 
 /// GMock-based mock of IBootstrap for unit testing.
 class MockBootstrap : public meta::comms::IBootstrap {
@@ -61,6 +61,11 @@ class MockBootstrap : public meta::comms::IBootstrap {
       recv,
       (void* buf, int len, int peer, int tag),
       (override));
+  MOCK_METHOD(
+      folly::SemiFuture<int>,
+      broadcast,
+      (void* buf, int len, int root, int rank, int nranks),
+      (override));
 };
 
-} // namespace comms::pipes::testing
+} // namespace meta::comms::testing
