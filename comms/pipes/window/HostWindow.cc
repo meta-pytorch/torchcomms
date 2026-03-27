@@ -321,7 +321,6 @@ int HostWindow::registerLocalBuffer(void* ptr, std::size_t size) {
   }
 
   localRegistrations_.push_back(localReg);
-  uploadRegistrationsToDevice();
 
   return regIdx;
 }
@@ -384,16 +383,7 @@ int HostWindow::registerAndExchangeBuffer(void* ptr, std::size_t size) {
 }
 
 void HostWindow::uploadRegistrationsToDevice() {
-  int nRegs = static_cast<int>(localRegistrations_.size());
   int nIbgdaPeers = static_cast<int>(ibgdaPeerRanks_.size());
-
-  localRegistrationsDevice_ = std::make_unique<meta::comms::DeviceBuffer>(
-      nRegs * sizeof(LocalBufferRegistration));
-  CUDA_CHECK(cudaMemcpy(
-      localRegistrationsDevice_->get(),
-      localRegistrations_.data(),
-      nRegs * sizeof(LocalBufferRegistration),
-      cudaMemcpyDefault));
 
   if (nIbgdaPeers > 0 && !remoteRegistrations_.empty()) {
     remoteRegistrationsDevice_ = std::make_unique<meta::comms::DeviceBuffer>(
@@ -474,13 +464,7 @@ DeviceWindow HostWindow::getDeviceWindow() const {
         nIbgdaPeers);
   }
 
-  // Buffer registration table (for generic put/put_signal)
-  int nRegs = static_cast<int>(localRegistrations_.size());
-  if (localRegistrationsDevice_ && nRegs > 0) {
-    new (&dw.localBufferRegistry_) DeviceSpan<LocalBufferRegistration>(
-        static_cast<LocalBufferRegistration*>(localRegistrationsDevice_->get()),
-        nRegs);
-  }
+  // Remote buffer registration table (for generic put/put_signal)
   if (remoteRegistrationsDevice_ && !remoteRegistrations_.empty()) {
     new (&dw.remoteBufferRegistry_) DeviceSpan<RemoteBufferRegistration>(
         static_cast<RemoteBufferRegistration*>(
