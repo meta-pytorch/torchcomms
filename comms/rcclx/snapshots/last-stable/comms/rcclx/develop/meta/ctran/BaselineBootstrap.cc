@@ -14,37 +14,37 @@ folly::SemiFuture<int> BaselineBootstrap::allGather(
   return folly::makeSemiFuture<int>(static_cast<int>(res));
 }
 
-folly::SemiFuture<int> BaselineBootstrap::allGatherIntraNode(
-    void* buf,
-    int len,
-    int localRank,
-    int localNranks,
-    std::vector<int> localRankToCommRank) {
-  auto res = bootstrapIntraNodeAllGather(
-      comm_->bootstrap,
-      localRankToCommRank.data(),
-      localRank,
-      localNranks,
-      buf,
-      len);
-  return folly::makeSemiFuture<int>(static_cast<int>(res));
-}
-
 folly::SemiFuture<int> BaselineBootstrap::barrier(int rank, int nranks) {
   auto res = bootstrapBarrier(comm_->bootstrap, rank, nranks, 0 /* tag */);
   return folly::makeSemiFuture<int>(static_cast<int>(res));
 }
 
-folly::SemiFuture<int> BaselineBootstrap::barrierIntraNode(
-    int localRank,
-    int localNranks,
-    std::vector<int> localRankToCommRank) {
+folly::SemiFuture<int> BaselineBootstrap::allGatherNvlDomain(
+    void* buf,
+    int len,
+    int nvlLocalRank,
+    int nvlNranks,
+    std::vector<int> nvlRankToCommRank) {
+  auto res = bootstrapIntraNodeAllGather(
+      comm_->bootstrap,
+      nvlRankToCommRank.data(),
+      nvlLocalRank,
+      nvlNranks,
+      buf,
+      len);
+  return folly::makeSemiFuture<int>(static_cast<int>(res));
+}
+
+folly::SemiFuture<int> BaselineBootstrap::barrierNvlDomain(
+    int nvlLocalRank,
+    int nvlNranks,
+    std::vector<int> nvlRankToCommRank) {
   auto res = bootstrapIntraNodeBarrier(
       comm_->bootstrap,
-      localRankToCommRank.data(),
-      localRank,
-      localNranks,
-      localRankToCommRank.at(0) /* tag */);
+      nvlRankToCommRank.data(),
+      nvlLocalRank,
+      nvlNranks,
+      nvlRankToCommRank.at(0) /* tag */);
   return folly::makeSemiFuture<int>(static_cast<int>(res));
 }
 
