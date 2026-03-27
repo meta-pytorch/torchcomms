@@ -1729,11 +1729,13 @@ cvars:
 
  - name        : NCCL_CTRAN_IBGDA_QP_DEPTH
    type        : uint64_t
-   default     : 128
+   default     : 1024
    description : |-
      Queue pair depth (number of outstanding WQEs per peer) for IBGDA
-     transport in Pipes MultiPeerTransport. Higher values allow more
-     pipelining but use more memory.
+     transport in Pipes MultiPeerTransport. Must be >= the largest
+     ThreadGroup size used in group-scope put operations (e.g., 256 for
+     block-scope). Higher values allow more pipelining but use more
+     memory.
 
  - name        : NCCL_CTRAN_IBGDA_SIGNAL_COUNT
    type        : uint64_t

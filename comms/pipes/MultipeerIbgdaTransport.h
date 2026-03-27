@@ -73,7 +73,7 @@ struct MultipeerIbgdaTransportConfig {
 
   // Queue pair depth (number of outstanding WQEs per peer).
   // Higher values allow more pipelining but use more memory.
-  uint32_t qpDepth{128};
+  uint32_t qpDepth{1024};
 
   // InfiniBand Verbs Timeout for QP ACK timeout.
   // Timeout is computed as 4.096 µs * 2^timeout.
