@@ -21,7 +21,7 @@ CtranNvl::CtranNvl(CtranComm* comm) {
   std::vector<std::string> nvlFabricSupportedRanksStr;
 
   peerDevs[myLocalRank] = statex->cudaDev();
-  auto resFuture = comm->bootstrap_->allGatherIntraNode(
+  auto resFuture = comm->bootstrap_->allGatherNvlDomain(
       peerDevs.data(),
       sizeof(int),
       myLocalRank,
