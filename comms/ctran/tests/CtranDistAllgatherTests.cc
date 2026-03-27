@@ -12,6 +12,7 @@
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
 #include "comms/ctran/algos/AllReduce/AllReduceImpl.h"
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
+#include "comms/ctran/profiler/Profiler.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
@@ -39,10 +40,35 @@ class CtranAllgatherTest : public CtranDistBaseTest {
     setenv("NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1", 0);
     // -1 for not limiting the number of colls to trace
     setenv("NCCL_COLLTRACE_RECORD_MAX", "-1", 0);
+    setenv("NCCL_CTRAN_TRANSPORT_PROFILER", "1", 0);
+    setenv("NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT", "1", 0);
     CtranDistBaseTest::SetUp();
     comm = commWorld;
     segments.clear();
     segHandles.clear();
+  }
+
+  static void checkProfiler(ctran::Profiler* profiler) {
+    if (!profiler) {
+      return;
+    }
+    uint64_t algoTotal =
+        profiler->getEventDurationUs(ctran::ProfilerEvent::ALGO_TOTAL);
+    uint64_t algoCtrl =
+        profiler->getEventDurationUs(ctran::ProfilerEvent::ALGO_CTRL);
+    uint64_t algoData =
+        profiler->getEventDurationUs(ctran::ProfilerEvent::ALGO_DATA);
+    uint64_t bufReg =
+        profiler->getEventDurationUs(ctran::ProfilerEvent::BUF_REG);
+    uint64_t oneMinUs = 1000 * 1000 * 60;
+    EXPECT_GE(algoTotal, 0);
+    EXPECT_LE(algoTotal, oneMinUs);
+    EXPECT_GE(algoCtrl, 0);
+    EXPECT_LE(algoCtrl, oneMinUs);
+    EXPECT_GE(algoData, 0);
+    EXPECT_LE(algoData, oneMinUs);
+    EXPECT_GE(bufReg, 0);
+    EXPECT_LE(bufReg, oneMinUs);
   }
 
   void TearDown() override {
@@ -191,6 +217,9 @@ TEST_P(CtranAllgatherTestParam, AllgatherAlgo) {
       EXPECT_EQ(res, commSuccess);
     }
     CUDACHECK_TEST(cudaStreamSynchronize(stream));
+
+    // Verify profiler event durations are populated
+    checkProfiler(comm->ctranComm_->ctran_->profiler.get());
   }
 
   size_t sCommBytes = count * commTypeSize(dt);

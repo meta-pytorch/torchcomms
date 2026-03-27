@@ -3,6 +3,7 @@
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/utils/DevUtils.cuh"
 #include "comms/utils/cvars/nccl_cvars.h"
 
@@ -22,6 +23,12 @@ static commResult_t impl(
 
   CtranAlgoLogger logger(allGatherAlgoName(myAlgo), op->opCount, comm);
 
+  ctran::Profiler* profiler = comm->ctran_->profiler.get();
+  if (profiler) {
+    profiler->initForEachColl(
+        op->opCount, NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT);
+  }
+
   void* memHdl;
   std::vector<size_t> peers(nSteps);
   std::vector<size_t> dists(nSteps);
@@ -39,6 +46,13 @@ static commResult_t impl(
       allGatherAlgoName(myAlgo), sendSize, sendSize * nRanks);
   comm->ctran_->mapper->setContext(std::move(context));
 
+  CTRAN_PROFILER_IF(profiler, {
+    auto& algoContext = profiler->algoContext;
+    algoContext.algorithmName = allGatherAlgoName(myAlgo);
+    algoContext.sendContext.messageSizes = std::to_string(sendSize);
+    algoContext.recvContext.messageSizes = std::to_string(sendSize * nRanks);
+  });
+
   bool localMemReg{false};
 
   // Calculate distance and peer per step
@@ -48,9 +62,15 @@ static commResult_t impl(
     peers[i] = pos == 0 ? rank + dists[i] : rank - dists[i];
   }
 
+  CTRAN_PROFILER_IF(
+      profiler, profiler->startEvent(ctran::ProfilerEvent::BUF_REG));
   FB_COMMCHECK(comm->ctran_->mapper->searchRegHandle(
       recvbuff, nRanks * sendSize, &memHdl, &localMemReg));
+  CTRAN_PROFILER_IF(
+      profiler, profiler->endEvent(ctran::ProfilerEvent::BUF_REG));
 
+  CTRAN_PROFILER_IF(
+      profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_CTRL));
   // Exchange memory handles with relevant peers
   for (size_t i = 0; i < nSteps; i++) {
     auto peer = peers[i];
@@ -71,9 +91,14 @@ static commResult_t impl(
     FB_COMMCHECK(
         comm->ctran_->mapper->initNotify(peer, memHdl, notifyVec[i].get()));
   }
+  CTRAN_PROFILER_IF(
+      profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_CTRL));
 
   for (size_t i = 0; i < nSteps; i++) {
     auto peer = peers[i];
+    // Measure only the ctrl wait time (accumulates across steps)
+    CTRAN_PROFILER_IF(
+        profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_CTRL));
 
     if (NCCL_CTRAN_AG_RD_RTR) {
       CtranMapperRequest* sendReq = nullptr;
@@ -85,6 +110,13 @@ static commResult_t impl(
     // Block until we have handle for this peer
     FB_COMMCHECK(comm->ctran_->mapper->waitRequest(irecvReq[i].get()));
     timestamp->recvCtrl.push_back(CtranMapperTimestampPoint(peer));
+
+    CTRAN_PROFILER_IF(
+        profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_CTRL));
+
+    // Measure only data transfer time (accumulates across steps)
+    CTRAN_PROFILER_IF(
+        profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_DATA));
 
     for (size_t j = 0; j < (1 << i); j++) {
       size_t putOffset = j * (nRanks / (1 << i)) + rank % (nRanks / (1 << i));
@@ -126,6 +158,9 @@ static commResult_t impl(
     // Capture duration ended at last put when it is completed
     timestamp->putComplete.push_back(CtranMapperTimestampPoint(peer));
     FB_COMMCHECK(comm->ctran_->mapper->waitNotify(notifyVec[i].get()));
+
+    CTRAN_PROFILER_IF(
+        profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_DATA));
   }
 
   for (int i = 0; i < nSteps; i++) {
@@ -135,6 +170,8 @@ static commResult_t impl(
   if (localMemReg) {
     FB_COMMCHECK(comm->ctran_->mapper->deregDynamic(memHdl));
   }
+
+  CTRAN_PROFILER_IF(profiler, { profiler->reportToScuba(); });
 
   comm->ctran_->mapper->timestamps.push_back(std::move(timestamp));
   comm->ctran_->mapper->reportProfiling();
