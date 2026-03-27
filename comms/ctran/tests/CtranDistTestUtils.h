@@ -13,9 +13,6 @@
 
 namespace ctran {
 
-// Detect which initialization environment to use
-InitEnvType getInitEnvType();
-
 // Ctran-specific environment that inherits DistEnvironmentBase and adds
 // ctran-specific env vars (NCCL_CTRAN_ENABLE, profiling, etc.)
 class CtranDistEnvironment : public meta::comms::DistEnvironmentBase {
@@ -39,10 +36,6 @@ class CtranDistTestFixture : public CtranTestFixtureBase,
   std::unique_ptr<CtranComm> makeCtranComm();
 
   bool enableNolocal{false};
-
- private:
-  std::vector<std::string>
-  exchangeInitUrls(const std::string& selfUrl, int numRanks, int selfRank);
 };
 
 } // namespace ctran
