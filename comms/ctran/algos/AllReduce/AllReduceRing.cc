@@ -23,6 +23,7 @@
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/CtranAlgoConsts.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/utils/CudaUtils.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
@@ -87,6 +88,25 @@ static const std::unordered_map<
 #endif
 };
 
+namespace {
+
+commResult_t getGpuArch(ctran::allreduce::ring::GpuArch* arch) {
+  *arch = ctran::allreduce::ring::GpuArch::Default;
+  int cudaDev = 0;
+  FB_CUDACHECK(cudaGetDevice(&cudaDev));
+  auto cudaArch = ctran::utils::getCudaArch(cudaDev);
+  if (!cudaArch.hasValue()) {
+    CLOGF(ERR, "{}", cudaArch.error());
+    return commUnhandledCudaError;
+  }
+  if (cudaArch.value() < 1000) {
+    *arch = ctran::allreduce::ring::GpuArch::Hopper;
+  }
+  return commSuccess;
+}
+
+} // namespace
+
 namespace ctran::allreduce::ring {
 
 // Check if bi-directional AllGather should be enabled based on CVAR and
@@ -98,7 +118,7 @@ namespace ctran::allreduce::ring {
 //  -1  = enabled for all sizes
 //  -2  = auto-tune per GPU architecture (GB200: 128MB, H100: 4MB)
 //  >0  = enabled for messages up to that size in bytes
-inline bool shouldEnableBidirAg(size_t messageBytes) {
+inline bool shouldEnableBidirAg(size_t messageBytes, GpuArch arch) {
   int64_t maxSize = NCCL_CTRAN_ALLREDUCE_RING_BIDIR_AG_MAX_SIZE;
   if (maxSize == 0) {
     // Explicitly disabled
@@ -110,13 +130,9 @@ inline bool shouldEnableBidirAg(size_t messageBytes) {
   }
   if (maxSize == -2) {
     // Auto-tune: select threshold based on GPU architecture
-    int cudaDev = 0;
-    FB_CUDACHECK(cudaGetDevice(&cudaDev));
-    int smMajor = 0;
-    FB_CUDACHECK(cudaDeviceGetAttribute(
-        &smMajor, cudaDevAttrComputeCapabilityMajor, cudaDev));
-    maxSize = (smMajor < 10) ? static_cast<int64_t>(kHopperBidirAgMaxSize)
-                             : static_cast<int64_t>(kDefaultBidirAgMaxSize);
+    maxSize = (arch == GpuArch::Hopper)
+        ? static_cast<int64_t>(kHopperBidirAgMaxSize)
+        : static_cast<int64_t>(kDefaultBidirAgMaxSize);
   }
   if (maxSize < 0) {
     // Any other negative value: treat as enabled for all sizes
@@ -316,9 +332,8 @@ inline void progressSendPostTrans(
   char* tmpSendBuf = reinterpret_cast<char*>(resource.tmpSendBuf) +
       tmpChunkId * algoCtx.chunkSize;
 
-  // Get allreduce specific IB config
-  static thread_local auto allReduceConfig =
-      resource.comm->ctran_->algo->getCollToVcConfig(CollType::ALLREDUCE);
+  CtranIbConfig* allReduceConfig =
+      resource.ibConfig ? &*resource.ibConfig : nullptr;
 
   CtranMapperRequest* req;
   FB_COMMCHECKTHROW_EX(
@@ -696,8 +711,8 @@ inline void progressRevSendPostTrans(
   char* tmpSendBufRev = reinterpret_cast<char*>(resource.tmpSendBufRev) +
       tmpChunkId * algoCtx.chunkSize;
 
-  static thread_local auto allReduceConfig =
-      resource.comm->ctran_->algo->getCollToVcConfig(CollType::ALLREDUCE);
+  CtranIbConfig* allReduceConfig =
+      resource.ibConfig ? &*resource.ibConfig : nullptr;
 
   CtranMapperRequest* req;
   FB_COMMCHECKTHROW_EX(
@@ -1139,27 +1154,14 @@ static commResult_t impl(
   return commSuccess;
 }
 
-commResult_t getNumBlocksAndThreads(
-    int* numBlocks,
-    int* numThreads,
-    GpuArch* arch,
-    const void* func) {
+commResult_t
+getNumBlocksAndThreads(int* numBlocks, int* numThreads, const void* func) {
   FB_CUDACHECK(cudaOccupancyMaxPotentialBlockSize(
       numBlocks,
       numThreads,
       func,
       0 /* dynamicSMemSize */,
       0 /* blockSizeLimit */));
-
-  *arch = GpuArch::Default;
-  int cudaDev = 0;
-  FB_CUDACHECK(cudaGetDevice(&cudaDev));
-  int smMajor = 0;
-  FB_CUDACHECK(cudaDeviceGetAttribute(
-      &smMajor, cudaDevAttrComputeCapabilityMajor, cudaDev));
-  if (smMajor < 10) {
-    *arch = GpuArch::Hopper;
-  }
 
   return commSuccess;
 }
@@ -1173,12 +1175,14 @@ commResult_t getPipelineConfiguration(
     size_t* pipelineNumChunks,
     size_t* pipelineChunkSize,
     bool log_decision,
-    size_t typeSize) {
-  auto arch = ctran::allreduce::ring::GpuArch::Default;
+    size_t typeSize,
+    GpuArch arch,
+    CtranComm* comm,
+    std::optional<CtranIbConfig>* ibConfig) {
   int cudaOccupancyNumBlocks, cudaOccupancyBlockSize;
   FB_COMMCHECK(
       ctran::allreduce::ring::getNumBlocksAndThreads(
-          &cudaOccupancyNumBlocks, &cudaOccupancyBlockSize, &arch, func));
+          &cudaOccupancyNumBlocks, &cudaOccupancyBlockSize, func));
 
   if (log_decision) {
     static std::once_flag logFlag;
@@ -1203,6 +1207,11 @@ commResult_t getPipelineConfiguration(
   *pipelineNumChunks = params.pipeline.numChunks;
   *numBlocks = params.block.numBlocks;
   *numThreads = params.block.blockSize;
+
+  *ibConfig = ctran::allreduce::ring::resolveIbConfig(
+      comm->ctran_->algo->getCollToVcConfig(CollType::ALLREDUCE),
+      arch,
+      params.pipeline.chunkSize);
 
   return commSuccess;
 }
@@ -1264,9 +1273,12 @@ commResult_t ctranAllReduceRing(
 
   const size_t messageBytes = count * typeSize;
 
+  auto arch = ctran::allreduce::ring::GpuArch::Default;
+  FB_COMMCHECK(getGpuArch(&arch));
+
   // Select kernel based on bi-directional AG CVAR and message size
   const bool enableBidirAg =
-      ctran::allreduce::ring::shouldEnableBidirAg(messageBytes);
+      ctran::allreduce::ring::shouldEnableBidirAg(messageBytes, arch);
   const auto& typeToFunc = enableBidirAg ? typeToFuncBidir : typeToFuncSimple;
 
   FB_CHECKTHROW_EX(
@@ -1282,6 +1294,7 @@ commResult_t ctranAllReduceRing(
   int numThreads = 0;
   size_t pipelineChunkSize = 0;
   size_t pipelineNumChunks = 0;
+  std::optional<CtranIbConfig> ibConfig;
 
   FB_COMMCHECK(
       ctran::allreduce::ring::getPipelineConfiguration(
@@ -1293,7 +1306,10 @@ commResult_t ctranAllReduceRing(
           &pipelineNumChunks,
           &pipelineChunkSize,
           /*log_decision=*/rank == 0,
-          typeSize));
+          typeSize,
+          arch,
+          comm,
+          &ibConfig));
 
   FB_COMMCHECK(comm->ctran_->algo->initTmpBufs());
 
@@ -1326,6 +1342,7 @@ commResult_t ctranAllReduceRing(
   hostResource.revRecvCopySync = gpeKernelSyncs[4];
   hostResource.chunkSize = pipelineChunkSize;
   hostResource.numChunks = pipelineNumChunks;
+  hostResource.ibConfig = ibConfig;
 
   std::tie(hostResource.tmpSendBuf, hostResource.tmpSendBufHdl) =
       comm->ctran_->algo->getTmpBufInfo(

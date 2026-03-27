@@ -93,7 +93,8 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     }
 
     config.disableIb = NCCL_CTRAN_PIPES_DISABLE_IB;
-    config.topoConfig.p2pDisable = NCCL_P2P_DISABLE;
+    config.topoConfig.p2pDisable = NCCL_P2P_DISABLE ||
+        NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::nolocal;
 
     // Topology config: MNNVL mode and overrides
     config.topoConfig.mnnvlMode =
@@ -212,35 +213,45 @@ commResult_t ctranInitPipesResources(CtranAlgo* algo) {
 
   int nvlNRanks = comm->multiPeerTransport_->nvl_n_ranks();
 
-  validatePipesCtranConsistency(comm);
+  // Wire staging buffers only when there are NVL peers. When P2P is disabled
+  // (NCCL_P2P_DISABLE=1), nvlNRanks == 1 (self only) while nLocalRanks may
+  // be larger. No NVL peers means no staging buffers to wire; communication
+  // falls back to IBGDA for all peers including intra-node.
+  if (nvlNRanks > 1) {
+    validatePipesCtranConsistency(comm);
 
-  // Build per-NVL-rank buffer spans. DeviceSpan is non-assignable (const
-  // pointer member), so we construct the vectors in NVL local rank order.
-  const auto bufSize = static_cast<uint32_t>(algo->devState_.bufSize);
-  std::vector<comms::pipes::DeviceSpan<char>> localSpans;
-  std::vector<comms::pipes::DeviceSpan<char>> remoteSpans;
-  localSpans.reserve(nvlNRanks);
-  remoteSpans.reserve(nvlNRanks);
+    // Build per-NVL-rank buffer spans. DeviceSpan is non-assignable (const
+    // pointer member), so we construct the vectors in NVL local rank order.
+    const auto bufSize = static_cast<uint32_t>(algo->devState_.bufSize);
+    std::vector<comms::pipes::DeviceSpan<char>> localSpans;
+    std::vector<comms::pipes::DeviceSpan<char>> remoteSpans;
+    localSpans.reserve(nvlNRanks);
+    remoteSpans.reserve(nvlNRanks);
 
-  for (int nvl = 0; nvl < nvlNRanks; nvl++) {
-    if (nvl == localRank) {
-      localSpans.emplace_back(nullptr, 0u);
-      remoteSpans.emplace_back(nullptr, 0u);
-      continue;
+    for (int nvl = 0; nvl < nvlNRanks; nvl++) {
+      if (nvl == localRank) {
+        localSpans.emplace_back(nullptr, 0u);
+        remoteSpans.emplace_back(nullptr, 0u);
+        continue;
+      }
+      // Map NVL local rank back to statex local rank index (same value since
+      // both systems assign indices in sorted global rank order).
+      localSpans.emplace_back(
+          static_cast<char*>(algo->devState_.localStagingBufsMap[nvl]),
+          bufSize);
+      remoteSpans.emplace_back(
+          static_cast<char*>(algo->devState_.remoteStagingBufsMap[nvl]),
+          bufSize);
     }
-    // Map NVL local rank back to statex local rank index (same value since
-    // both systems assign indices in sorted global rank order).
-    localSpans.emplace_back(
-        static_cast<char*>(algo->devState_.localStagingBufsMap[nvl]), bufSize);
-    remoteSpans.emplace_back(
-        static_cast<char*>(algo->devState_.remoteStagingBufsMap[nvl]), bufSize);
+
+    comms::pipes::ExternalStagingBuffers externalBufs;
+    externalBufs.localBuffers = std::move(localSpans);
+    externalBufs.remoteBuffers = std::move(remoteSpans);
+
+    comm->multiPeerTransport_->setExternalNvlDataBuffers(
+        std::move(externalBufs));
   }
 
-  comms::pipes::ExternalStagingBuffers externalBufs;
-  externalBufs.localBuffers = std::move(localSpans);
-  externalBufs.remoteBuffers = std::move(remoteSpans);
-
-  comm->multiPeerTransport_->setExternalNvlDataBuffers(std::move(externalBufs));
   comm->multiPeerTransport_->exchange();
 
   return commSuccess;

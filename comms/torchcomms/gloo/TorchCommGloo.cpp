@@ -312,6 +312,9 @@ void TorchCommGloo::init(
   device_ = device;
   name_ = name;
   options_ = options;
+  // Avoid retaining the reference to store object here
+  // We handle it separately in this function
+  options_.store = nullptr;
 
   // Only initialize once
   if (init_state_ == InitializationState::INITIALIZED) {

@@ -178,6 +178,55 @@ TEST_F(PinnedHostPoolTest, NoLeakAcrossChunks) {
   EXPECT_EQ(pool->size(), pool->capacity());
 }
 
+// Verify that pool resize (allocChunk) succeeds during CUDA graph capture.
+// Without the StreamCaptureModeGuard in allocChunk, cudaHostAlloc would fail
+// because host allocations are not allowed during stream capture.
+TEST_F(PinnedHostPoolTest, ResizeDuringGraphCapture) {
+  constexpr int chunkSize = 4;
+  auto pool = std::make_unique<TestItemPool>(chunkSize);
+
+  EXPECT_EQ(pool->size(), chunkSize);
+  EXPECT_EQ(pool->capacity(), chunkSize);
+
+  // Exhaust the pool so the next pop triggers allocChunk
+  std::vector<TestItem*> items;
+  for (int i = 0; i < chunkSize; ++i) {
+    items.push_back(pool->pop());
+  }
+  EXPECT_EQ(pool->size(), 0);
+
+  // Begin CUDA graph capture on a stream
+  cudaStream_t stream;
+  ASSERT_EQ(cudaStreamCreate(&stream), cudaSuccess);
+  ASSERT_EQ(
+      cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed),
+      cudaSuccess);
+
+  // Pop triggers allocChunk — must succeed despite active graph capture
+  auto* overflow = pool->pop();
+  ASSERT_NE(overflow, nullptr);
+  EXPECT_EQ(pool->capacity(), chunkSize * 2);
+
+  // End capture and verify the graph has no nodes — the allocChunk call
+  // must not have leaked any memcpy or other operations into the graph.
+  cudaGraph_t graph;
+  ASSERT_EQ(cudaStreamEndCapture(stream, &graph), cudaSuccess);
+  ASSERT_NE(graph, nullptr);
+
+  size_t numNodes = 0;
+  ASSERT_EQ(cudaGraphGetNodes(graph, nullptr, &numNodes), cudaSuccess);
+  EXPECT_EQ(numNodes, 0);
+
+  cudaGraphDestroy(graph);
+  cudaStreamDestroy(stream);
+
+  // Clean up items
+  for (auto* item : items) {
+    item->inUse_ = false;
+  }
+  overflow->inUse_ = false;
+}
+
 TEST_F(PinnedHostPoolTest, ReclaimTest) {
   constexpr int poolSize = 10;
   constexpr int popSize = 6;

@@ -1002,6 +1002,178 @@ class TestFlightRecorderHook(unittest.TestCase):
                 except OSError:
                     pass
 
+    def test_only_active_excludes_completed_collectives(self) -> None:
+        """Test that completed collectives are excluded when include_completed=False.
+
+        When dump_json is called with include_completed=False (onlyActive=True),
+        completed/retired collectives should not appear in the output.
+        When called with include_completed=True, they should appear.
+        """
+        backend = os.environ["TEST_BACKEND"]
+        device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
+        comm = torchcomms.new_comm(
+            backend=backend,
+            device=device,
+            name="test_only_active",
+            timeout=timedelta(seconds=300),
+        )
+
+        recorder = FlightRecorderHook(max_entries=100, isolated=True)
+        recorder.register_with_comm(comm)
+
+        # Run synchronous collectives - these will complete (retire) immediately
+        t = torch.rand(10, 10, device=device)
+        num_ops = 3
+        for _ in range(num_ops):
+            comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
+
+        # Verify that include_completed=True returns all entries
+        json_str_all = recorder.dump_json(True)
+        data_all = json.loads(json_str_all)
+        entries_all = data_all.get("entries", [])
+        self.assertEqual(
+            len(entries_all),
+            num_ops,
+            f"include_completed=True should return all {num_ops} entries",
+        )
+        for entry in entries_all:
+            self._validate_entry_format(entry)
+
+        # Verify that include_completed=False excludes completed collectives
+        json_str_active = recorder.dump_json(False)
+        data_active = json.loads(json_str_active)
+        entries_active = data_active.get("entries", [])
+        self.assertEqual(
+            len(entries_active),
+            0,
+            "include_completed=False should return 0 entries when all collectives "
+            "have completed",
+        )
+
+        recorder.unregister()
+        comm.finalize()
+
+    def test_only_active_via_dump_file_excludes_completed(self) -> None:
+        """Test that dump_file with include_completed=False excludes retired collectives.
+
+        This exercises the getCollectiveTrace code path which uses the retired_
+        flag to filter completed collectives when onlyActive is true.
+        """
+        backend = os.environ["TEST_BACKEND"]
+        device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
+        comm = torchcomms.new_comm(
+            backend=backend,
+            device=device,
+            name="test_only_active_dump_file",
+            timeout=timedelta(seconds=300),
+        )
+
+        recorder = FlightRecorderHook(max_entries=100, isolated=True)
+        recorder.register_with_comm(comm)
+
+        # Run synchronous collectives - these will complete (retire) immediately
+        t = torch.rand(10, 10, device=device)
+        num_ops = 3
+        for _ in range(num_ops):
+            comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
+
+        rank = comm.get_rank()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original_dump_file = os.environ.get("TORCHCOMM_FR_DUMP_TEMP_FILE")
+
+            try:
+                # Dump with include_completed=True - should have all entries
+                all_file = os.path.join(tmpdir, f"fr_all_{rank}")
+                os.environ["TORCHCOMM_FR_DUMP_TEMP_FILE"] = all_file
+                recorder.dump_file(rank, True)
+
+                self.assertTrue(os.path.exists(all_file))
+                with open(all_file, "rb") as f:
+                    data_all = pickle.load(f)
+
+                entries_all = data_all.get("entries", [])
+                self.assertEqual(
+                    len(entries_all),
+                    num_ops,
+                    f"include_completed=True should return all {num_ops} entries",
+                )
+
+                # Dump with include_completed=False - completed/retired should be excluded
+                active_file = os.path.join(tmpdir, f"fr_active_{rank}")
+                os.environ["TORCHCOMM_FR_DUMP_TEMP_FILE"] = active_file
+                recorder.dump_file(rank, False)
+
+                self.assertTrue(os.path.exists(active_file))
+                with open(active_file, "rb") as f:
+                    data_active = pickle.load(f)
+
+                entries_active = data_active.get("entries", [])
+                self.assertEqual(
+                    len(entries_active),
+                    0,
+                    "include_completed=False should return 0 entries when all "
+                    "collectives have retired",
+                )
+
+            finally:
+                if original_dump_file is not None:
+                    os.environ["TORCHCOMM_FR_DUMP_TEMP_FILE"] = original_dump_file
+                elif "TORCHCOMM_FR_DUMP_TEMP_FILE" in os.environ:
+                    del os.environ["TORCHCOMM_FR_DUMP_TEMP_FILE"]
+
+        recorder.unregister()
+        comm.finalize()
+
+    def test_only_active_with_mixed_operations(self) -> None:
+        """Test onlyActive filtering with multiple collective types.
+
+        Verifies that all types of completed collectives (all_reduce, broadcast)
+        are excluded when include_completed=False.
+        """
+        backend = os.environ["TEST_BACKEND"]
+        device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
+        comm = torchcomms.new_comm(
+            backend=backend,
+            device=device,
+            name="test_only_active_mixed",
+            timeout=timedelta(seconds=300),
+        )
+
+        recorder = FlightRecorderHook(max_entries=100, isolated=True)
+        recorder.register_with_comm(comm)
+
+        t = torch.rand(10, 10, device=device)
+
+        # Run different types of synchronous collectives
+        comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
+        comm.broadcast(t, root=0, async_op=False)
+        comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
+
+        # All operations completed - include_completed=True should show all
+        json_str_all = recorder.dump_json(True)
+        data_all = json.loads(json_str_all)
+        entries_all = data_all.get("entries", [])
+        self.assertGreaterEqual(
+            len(entries_all),
+            3,
+            "include_completed=True should return all completed entries",
+        )
+
+        # include_completed=False should show none (all completed)
+        json_str_active = recorder.dump_json(False)
+        data_active = json.loads(json_str_active)
+        entries_active = data_active.get("entries", [])
+        self.assertEqual(
+            len(entries_active),
+            0,
+            "include_completed=False should return 0 entries when all mixed "
+            "collectives have completed",
+        )
+
+        recorder.unregister()
+        comm.finalize()
+
     def test_split_hook_registers_new_comm(self) -> None:
         """Test that splitHook automatically registers the new communicator.
 

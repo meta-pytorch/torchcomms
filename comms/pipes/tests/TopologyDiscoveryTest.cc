@@ -12,13 +12,14 @@
 
 #include <folly/init/Init.h>
 
+#include "comms/common/bootstrap/tests/MockBootstrap.h"
 #include "comms/pipes/NvmlFabricInfo.h"
 #include "comms/pipes/TopologyDiscovery.h"
-#include "comms/pipes/tests/MockBootstrap.h"
 #include "comms/pipes/tests/TopologyTestUtils.h"
 
 namespace comms::pipes::tests {
 
+using meta::comms::testing::MockBootstrap;
 using ::testing::_;
 
 namespace {
@@ -31,7 +32,7 @@ LocalInfoFn make_simple_local_info_fn(const RankTopologyInfo& info) {
 /// Configure mock bootstrap so allGather fills in pre-built data for all
 /// ranks except the caller's own slot (which discover() fills in itself).
 void expect_prefilled_all_gather(
-    testing::MockBootstrap& mock,
+    MockBootstrap& mock,
     const std::vector<RankTopologyInfo>& allInfo) {
   EXPECT_CALL(mock, allGather(_, _, _, _))
       .WillRepeatedly(
@@ -68,7 +69,7 @@ TEST(TopologyDiscoveryTest, DiscoverWithFakeSameHostPeers) {
   allInfo[1] = make_rank_info(kHostname, 1);
   allInfo[2] = make_rank_info(kHostname, 2);
 
-  testing::MockBootstrap bootstrap;
+  MockBootstrap bootstrap;
   expect_prefilled_all_gather(bootstrap, allInfo);
 
   PeerAccessFn alwaysAccess = [](int, int) { return true; };
@@ -94,7 +95,7 @@ TEST(TopologyDiscoveryTest, DiscoverWithRemotePeer) {
   allInfo[0] = make_rank_info(kHostname, 0);
   allInfo[1] = make_rank_info("remote-host-xyz", 0);
 
-  testing::MockBootstrap bootstrap;
+  MockBootstrap bootstrap;
   expect_prefilled_all_gather(bootstrap, allInfo);
 
   PeerAccessFn alwaysAccess = [](int, int) { return true; };
@@ -116,7 +117,7 @@ TEST(TopologyDiscoveryTest, NvlLocalIndicesDense) {
     allInfo[r] = make_rank_info(kHostname, r);
   }
 
-  testing::MockBootstrap bootstrap;
+  MockBootstrap bootstrap;
   expect_prefilled_all_gather(bootstrap, allInfo);
 
   PeerAccessFn alwaysAccess = [](int, int) { return true; };
@@ -149,7 +150,7 @@ TEST(TopologyDiscoveryTest, DiscoverSingleRank) {
   std::vector<RankTopologyInfo> allInfo(nRanks);
   allInfo[0] = localInfo;
 
-  testing::MockBootstrap bootstrap;
+  MockBootstrap bootstrap;
   expect_prefilled_all_gather(bootstrap, allInfo);
 
   TopologyDiscovery topo(PeerAccessFn{}, make_simple_local_info_fn(localInfo));
@@ -173,7 +174,7 @@ TEST(TopologyDiscoveryTest, MnnvlModeDisabled) {
   allInfo[0] = make_rank_info(kHostname, 0);
   allInfo[1] = make_rank_info(kHostname, 1);
 
-  testing::MockBootstrap bootstrap;
+  MockBootstrap bootstrap;
   expect_prefilled_all_gather(bootstrap, allInfo);
 
   PeerAccessFn alwaysAccess = [](int, int) { return true; };
@@ -198,7 +199,7 @@ TEST(TopologyDiscoveryTest, MnnvlModeEnabledThrowsOnNonMnnvl) {
   std::vector<RankTopologyInfo> allInfo(nRanks);
   allInfo[0] = localInfo;
 
-  testing::MockBootstrap bootstrap;
+  MockBootstrap bootstrap;
   expect_prefilled_all_gather(bootstrap, allInfo);
 
   TopologyDiscovery topo(PeerAccessFn{}, make_simple_local_info_fn(localInfo));
@@ -219,7 +220,7 @@ TEST(TopologyDiscoveryTest, MnnvlModeEnabledSucceedsOnMnnvl) {
   std::vector<RankTopologyInfo> allInfo(nRanks);
   allInfo[0] = localInfo;
 
-  testing::MockBootstrap bootstrap;
+  MockBootstrap bootstrap;
   expect_prefilled_all_gather(bootstrap, allInfo);
 
   TopologyDiscovery topo(PeerAccessFn{}, make_simple_local_info_fn(localInfo));
@@ -242,13 +243,13 @@ TEST(TopologyDiscoveryTest, MnnvlModeAutoMatchesDefault) {
   PeerAccessFn alwaysAccess = [](int, int) { return true; };
   auto localInfoFn = make_simple_local_info_fn(allInfo[0]);
 
-  testing::MockBootstrap bootstrap1;
+  MockBootstrap bootstrap1;
   expect_prefilled_all_gather(bootstrap1, allInfo);
   TopologyDiscovery topo1(alwaysAccess, localInfoFn);
   auto defaultResult =
       topo1.discover(/*myRank=*/0, nRanks, /*deviceId=*/0, bootstrap1);
 
-  testing::MockBootstrap bootstrap2;
+  MockBootstrap bootstrap2;
   expect_prefilled_all_gather(bootstrap2, allInfo);
   TopologyDiscovery topo2(alwaysAccess, localInfoFn);
   TopologyConfig config{.mnnvlMode = MnnvlMode::kAuto};
@@ -275,7 +276,7 @@ TEST(TopologyDiscoveryTest, CliqueIdOverride) {
   std::vector<RankTopologyInfo> allInfo(nRanks);
   allInfo[0] = localInfo;
 
-  testing::MockBootstrap bootstrap;
+  MockBootstrap bootstrap;
   expect_prefilled_all_gather(bootstrap, allInfo);
 
   TopologyDiscovery topo(PeerAccessFn{}, make_simple_local_info_fn(localInfo));
@@ -299,7 +300,7 @@ TEST(TopologyDiscoveryTest, UuidOverride) {
   std::vector<RankTopologyInfo> allInfo(nRanks);
   allInfo[0] = localInfo;
 
-  testing::MockBootstrap bootstrap;
+  MockBootstrap bootstrap;
   expect_prefilled_all_gather(bootstrap, allInfo);
 
   TopologyDiscovery topo(PeerAccessFn{}, make_simple_local_info_fn(localInfo));
@@ -326,7 +327,7 @@ TEST(TopologyDiscoveryTest, DisabledModePreventsOverrides) {
   std::vector<RankTopologyInfo> allInfo(nRanks);
   allInfo[0] = localInfo;
 
-  testing::MockBootstrap bootstrap;
+  MockBootstrap bootstrap;
   expect_prefilled_all_gather(bootstrap, allInfo);
 
   TopologyDiscovery topo(PeerAccessFn{}, make_simple_local_info_fn(localInfo));

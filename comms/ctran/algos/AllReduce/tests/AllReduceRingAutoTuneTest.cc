@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <vector>
@@ -14,10 +15,26 @@
 
 using ctran::allreduce::ring::getAutoTunedParams;
 using ctran::allreduce::ring::GpuArch;
+using ctran::allreduce::ring::resolveIbConfig;
 
 constexpr size_t KB = 1024ULL;
 constexpr size_t MB = 1024ULL * 1024;
 constexpr size_t GB = 1024ULL * 1024 * 1024;
+
+// Initialize all cvars to their YAML defaults before any tests run.
+// After ncclCvarInit(), reset IB cvars that affect qpScalingTh computation
+// to their YAML defaults, since the RE environment may override them.
+// DEVICES_PER_RANK=2 matches GB200 (Default arch) deployment.
+class CvarInit : public ::testing::Environment {
+ public:
+  void SetUp() override {
+    ncclCvarInit();
+    NCCL_CTRAN_IB_MAX_QPS = 16;
+    NCCL_CTRAN_IB_DEVICES_PER_RANK = 2;
+  }
+};
+static auto* const kCvarEnv __attribute__((unused)) =
+    ::testing::AddGlobalTestEnvironment(new CvarInit);
 
 // RAII guard for the maxBDP CVAR override. Restores to default on destruction.
 class MaxBDPOverride {
@@ -91,6 +108,30 @@ class StagingBufSizeOverride {
   }
 };
 
+// RAII guard for QP_SCALING_TH_MIN CVAR.
+class QpScalingThMinOverride {
+ public:
+  explicit QpScalingThMinOverride(int64_t v) {
+    NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MIN = v;
+  }
+  ~QpScalingThMinOverride() {
+    NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MIN =
+        NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MIN_DEFAULTCVARVALUE;
+  }
+};
+
+// RAII guard for QP_SCALING_TH_MAX CVAR.
+class QpScalingThMaxOverride {
+ public:
+  explicit QpScalingThMaxOverride(int64_t v) {
+    NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MAX = v;
+  }
+  ~QpScalingThMaxOverride() {
+    NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MAX =
+        NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MAX_DEFAULTCVARVALUE;
+  }
+};
+
 // ============================================================================
 // getAutoTunedParams golden tables: different arch / BDP & nranks.
 // ============================================================================
@@ -101,6 +142,7 @@ struct AutoTuneExpected {
   int threads;
   size_t chunkSize;
   size_t numChunks;
+  std::optional<size_t> qpScalingTh;
 };
 
 // ============================================================================
@@ -125,6 +167,16 @@ void verifyAutoTune(
         << "chunkSize mismatch at msg=" << c.msgBytes;
     EXPECT_EQ(at.pipeline.numChunks, c.numChunks)
         << "numChunks mismatch at msg=" << c.msgBytes;
+    auto resolved = resolveIbConfig(nullptr, arch, at.pipeline.chunkSize);
+    if (c.qpScalingTh.has_value()) {
+      ASSERT_TRUE(resolved.has_value())
+          << "expected ibConfig at msg=" << c.msgBytes;
+      EXPECT_EQ(resolved->qpScalingTh, *c.qpScalingTh)
+          << "qpScalingTh mismatch at msg=" << c.msgBytes;
+    } else {
+      EXPECT_FALSE(resolved.has_value())
+          << "expected nullopt at msg=" << c.msgBytes;
+    }
   }
 }
 
@@ -136,33 +188,33 @@ TEST(AutoTuneCombinedDefault, MaxBDP16M_8Ranks) {
 
   // clang-format off
   const AutoTuneExpected cases[] = {
-      {      1 * KB, 1, 512,         128, 8},
-      {      2 * KB, 1, 512,         256, 8},
-      {      4 * KB, 1, 512,         512, 8},
-      {      8 * KB, 1, 512,      1 * KB, 8},
-      {     16 * KB, 1, 512,      2 * KB, 8},
-      {     32 * KB, 1, 512,      4 * KB, 8},
-      {     64 * KB, 2, 512,      8 * KB, 8},
-      {    128 * KB, 2, 512,     16 * KB, 8},
-      {    256 * KB, 2, 512,     16 * KB, 16},
-      {    512 * KB, 4, 512,     32 * KB, 16},
-      {      1 * MB, 8, 512,     64 * KB, 16},
-      {      2 * MB, 8, 512,    128 * KB, 16},
-      {      4 * MB, 8, 512,    256 * KB, 16},
-      {      8 * MB, 8, 512,    512 * KB, 16},
-      {     16 * MB, 8, 512,      1 * MB, 16},
-      {     32 * MB, 8, 512,      1 * MB, 16},
-      {     64 * MB, 8, 512,      1 * MB, 16},
-      {    128 * MB, 8, 512,      1 * MB, 16},
-      {    256 * MB, 8, 512,      2 * MB, 8},
-      {    512 * MB, 8, 512,      2 * MB, 8},
-      {      1 * GB, 8, 512,      2 * MB, 8},
-      {      2 * GB, 8, 512,      2 * MB, 8},
-      {      4 * GB, 8, 512,      2 * MB, 8},
-      {      8 * GB, 8, 512,      2 * MB, 8},
-      {     16 * GB, 8, 512,      2 * MB, 8},
-      {     32 * GB, 8, 512,      2 * MB, 8},
-      {     64 * GB, 8, 512,      2 * MB, 8},
+      {      1 * KB, 1, 512,         128,  8, 256 * KB},
+      {      2 * KB, 1, 512,         256,  8, 256 * KB},
+      {      4 * KB, 1, 512,         512,  8, 256 * KB},
+      {      8 * KB, 1, 512,      1 * KB,  8, 256 * KB},
+      {     16 * KB, 1, 512,      2 * KB,  8, 256 * KB},
+      {     32 * KB, 1, 512,      4 * KB,  8, 256 * KB},
+      {     64 * KB, 2, 512,      8 * KB,  8, 256 * KB},
+      {    128 * KB, 2, 512,     16 * KB,  8, 256 * KB},
+      {    256 * KB, 2, 512,     16 * KB, 16, 256 * KB},
+      {    512 * KB, 4, 512,     32 * KB, 16, 256 * KB},
+      {      1 * MB, 8, 512,     64 * KB, 16, 256 * KB},
+      {      2 * MB, 8, 512,    128 * KB, 16, 256 * KB},
+      {      4 * MB, 8, 512,    256 * KB, 16, 256 * KB},
+      {      8 * MB, 8, 512,    512 * KB, 16, 256 * KB},
+      {     16 * MB, 8, 512,      1 * MB, 16, 256 * KB},
+      {     32 * MB, 8, 512,      1 * MB, 16, 256 * KB},
+      {     64 * MB, 8, 512,      1 * MB, 16, 256 * KB},
+      {    128 * MB, 8, 512,      1 * MB, 16, 256 * KB},
+      {    256 * MB, 8, 512,      2 * MB,  8, 256 * KB},
+      {    512 * MB, 8, 512,      2 * MB,  8, 256 * KB},
+      {      1 * GB, 8, 512,      2 * MB,  8, 256 * KB},
+      {      2 * GB, 8, 512,      2 * MB,  8, 256 * KB},
+      {      4 * GB, 8, 512,      2 * MB,  8, 256 * KB},
+      {      8 * GB, 8, 512,      2 * MB,  8, 256 * KB},
+      {     16 * GB, 8, 512,      2 * MB,  8, 256 * KB},
+      {     32 * GB, 8, 512,      2 * MB,  8, 256 * KB},
+      {     64 * GB, 8, 512,      2 * MB,  8, 256 * KB},
   };
   // clang-format on
 
@@ -177,33 +229,33 @@ TEST(AutoTuneCombinedDefault, MaxBDP32M_8Ranks) {
 
   // clang-format off
   const AutoTuneExpected cases[] = {
-      {      1 * KB, 1, 512,         128, 8},
-      {      2 * KB, 1, 512,         256, 8},
-      {      4 * KB, 1, 512,         512, 8},
-      {      8 * KB, 1, 512,      1 * KB, 8},
-      {     16 * KB, 1, 512,      2 * KB, 8},
-      {     32 * KB, 1, 512,      4 * KB, 8},
-      {     64 * KB, 2, 512,      8 * KB, 8},
-      {    128 * KB, 2, 512,     16 * KB, 8},
-      {    256 * KB, 2, 512,     16 * KB, 16},
-      {    512 * KB, 4, 512,     32 * KB, 16},
-      {      1 * MB, 8, 512,     64 * KB, 16},
-      {      2 * MB, 8, 512,    128 * KB, 16},
-      {      4 * MB, 8, 512,    256 * KB, 16},
-      {      8 * MB, 8, 512,    512 * KB, 16},
-      {     16 * MB, 8, 512,      1 * MB, 16},
-      {     32 * MB, 8, 512,      2 * MB, 16},
-      {     64 * MB, 8, 512,      2 * MB, 16},
-      {    128 * MB, 8, 512,      2 * MB, 16},
-      {    256 * MB, 8, 512,      4 * MB, 8},
-      {    512 * MB, 8, 512,      4 * MB, 8},
-      {      1 * GB, 8, 512,      4 * MB, 8},
-      {      2 * GB, 8, 512,      4 * MB, 8},
-      {      4 * GB, 8, 512,      4 * MB, 8},
-      {      8 * GB, 8, 512,      4 * MB, 8},
-      {     16 * GB, 8, 512,      4 * MB, 8},
-      {     32 * GB, 8, 512,      4 * MB, 8},
-      {     64 * GB, 8, 512,      4 * MB, 8},
+      {      1 * KB, 1, 512,         128,  8, 256 * KB},
+      {      2 * KB, 1, 512,         256,  8, 256 * KB},
+      {      4 * KB, 1, 512,         512,  8, 256 * KB},
+      {      8 * KB, 1, 512,      1 * KB,  8, 256 * KB},
+      {     16 * KB, 1, 512,      2 * KB,  8, 256 * KB},
+      {     32 * KB, 1, 512,      4 * KB,  8, 256 * KB},
+      {     64 * KB, 2, 512,      8 * KB,  8, 256 * KB},
+      {    128 * KB, 2, 512,     16 * KB,  8, 256 * KB},
+      {    256 * KB, 2, 512,     16 * KB, 16, 256 * KB},
+      {    512 * KB, 4, 512,     32 * KB, 16, 256 * KB},
+      {      1 * MB, 8, 512,     64 * KB, 16, 256 * KB},
+      {      2 * MB, 8, 512,    128 * KB, 16, 256 * KB},
+      {      4 * MB, 8, 512,    256 * KB, 16, 256 * KB},
+      {      8 * MB, 8, 512,    512 * KB, 16, 256 * KB},
+      {     16 * MB, 8, 512,      1 * MB, 16, 256 * KB},
+      {     32 * MB, 8, 512,      2 * MB, 16, 256 * KB},
+      {     64 * MB, 8, 512,      2 * MB, 16, 256 * KB},
+      {    128 * MB, 8, 512,      2 * MB, 16, 256 * KB},
+      {    256 * MB, 8, 512,      4 * MB,  8, 256 * KB},
+      {    512 * MB, 8, 512,      4 * MB,  8, 256 * KB},
+      {      1 * GB, 8, 512,      4 * MB,  8, 256 * KB},
+      {      2 * GB, 8, 512,      4 * MB,  8, 256 * KB},
+      {      4 * GB, 8, 512,      4 * MB,  8, 256 * KB},
+      {      8 * GB, 8, 512,      4 * MB,  8, 256 * KB},
+      {     16 * GB, 8, 512,      4 * MB,  8, 256 * KB},
+      {     32 * GB, 8, 512,      4 * MB,  8, 256 * KB},
+      {     64 * GB, 8, 512,      4 * MB,  8, 256 * KB},
   };
   // clang-format on
 
@@ -218,33 +270,33 @@ TEST(AutoTuneCombinedDefault, MaxBDP64M_8Ranks) {
 
   // clang-format off
   const AutoTuneExpected cases[] = {
-      {      1 * KB, 1, 512,         128, 8},
-      {      2 * KB, 1, 512,         256, 8},
-      {      4 * KB, 1, 512,         512, 8},
-      {      8 * KB, 1, 512,      1 * KB, 8},
-      {     16 * KB, 1, 512,      2 * KB, 8},
-      {     32 * KB, 1, 512,      4 * KB, 8},
-      {     64 * KB, 2, 512,      8 * KB, 8},
-      {    128 * KB, 2, 512,     16 * KB, 8},
-      {    256 * KB, 2, 512,     16 * KB, 16},
-      {    512 * KB, 4, 512,     32 * KB, 16},
-      {      1 * MB, 8, 512,     64 * KB, 16},
-      {      2 * MB, 8, 512,    128 * KB, 16},
-      {      4 * MB, 8, 512,    256 * KB, 16},
-      {      8 * MB, 8, 512,    512 * KB, 16},
-      {     16 * MB, 8, 512,      1 * MB, 16},
-      {     32 * MB, 8, 512,      2 * MB, 16},
-      {     64 * MB, 8, 512,      4 * MB, 8},
-      {    128 * MB, 8, 512,      4 * MB, 8},
-      {    256 * MB, 8, 512,      8 * MB, 4},
-      {    512 * MB, 8, 512,      8 * MB, 4},
-      {      1 * GB, 8, 512,      8 * MB, 4},
-      {      2 * GB, 8, 512,      8 * MB, 4},
-      {      4 * GB, 8, 512,      8 * MB, 4},
-      {      8 * GB, 8, 512,      8 * MB, 4},
-      {     16 * GB, 8, 512,      8 * MB, 4},
-      {     32 * GB, 8, 512,      8 * MB, 4},
-      {     64 * GB, 8, 512,      8 * MB, 4},
+      {      1 * KB, 1, 512,         128,  8, 256 * KB},
+      {      2 * KB, 1, 512,         256,  8, 256 * KB},
+      {      4 * KB, 1, 512,         512,  8, 256 * KB},
+      {      8 * KB, 1, 512,      1 * KB,  8, 256 * KB},
+      {     16 * KB, 1, 512,      2 * KB,  8, 256 * KB},
+      {     32 * KB, 1, 512,      4 * KB,  8, 256 * KB},
+      {     64 * KB, 2, 512,      8 * KB,  8, 256 * KB},
+      {    128 * KB, 2, 512,     16 * KB,  8, 256 * KB},
+      {    256 * KB, 2, 512,     16 * KB, 16, 256 * KB},
+      {    512 * KB, 4, 512,     32 * KB, 16, 256 * KB},
+      {      1 * MB, 8, 512,     64 * KB, 16, 256 * KB},
+      {      2 * MB, 8, 512,    128 * KB, 16, 256 * KB},
+      {      4 * MB, 8, 512,    256 * KB, 16, 256 * KB},
+      {      8 * MB, 8, 512,    512 * KB, 16, 256 * KB},
+      {     16 * MB, 8, 512,      1 * MB, 16, 256 * KB},
+      {     32 * MB, 8, 512,      2 * MB, 16, 256 * KB},
+      {     64 * MB, 8, 512,      4 * MB,  8, 256 * KB},
+      {    128 * MB, 8, 512,      4 * MB,  8, 256 * KB},
+      {    256 * MB, 8, 512,      8 * MB,  4, 256 * KB},
+      {    512 * MB, 8, 512,      8 * MB,  4, 256 * KB},
+      {      1 * GB, 8, 512,      8 * MB,  4, 256 * KB},
+      {      2 * GB, 8, 512,      8 * MB,  4, 256 * KB},
+      {      4 * GB, 8, 512,      8 * MB,  4, 256 * KB},
+      {      8 * GB, 8, 512,      8 * MB,  4, 256 * KB},
+      {     16 * GB, 8, 512,      8 * MB,  4, 256 * KB},
+      {     32 * GB, 8, 512,      8 * MB,  4, 256 * KB},
+      {     64 * GB, 8, 512,      8 * MB,  4, 256 * KB},
   };
   // clang-format on
 
@@ -259,33 +311,33 @@ TEST(AutoTuneCombinedDefault, MaxBDP128M_8Ranks) {
 
   // clang-format off
   const AutoTuneExpected cases[] = {
-      {      1 * KB, 1, 512,         128, 8},
-      {      2 * KB, 1, 512,         256, 8},
-      {      4 * KB, 1, 512,         512, 8},
-      {      8 * KB, 1, 512,      1 * KB, 8},
-      {     16 * KB, 1, 512,      2 * KB, 8},
-      {     32 * KB, 1, 512,      4 * KB, 8},
-      {     64 * KB, 2, 512,      8 * KB, 8},
-      {    128 * KB, 2, 512,     16 * KB, 8},
-      {    256 * KB, 2, 512,     16 * KB, 16},
-      {    512 * KB, 4, 512,     32 * KB, 16},
-      {      1 * MB, 8, 512,     64 * KB, 16},
-      {      2 * MB, 8, 512,    128 * KB, 16},
-      {      4 * MB, 8, 512,    256 * KB, 16},
-      {      8 * MB, 8, 512,    512 * KB, 16},
-      {     16 * MB, 8, 512,      1 * MB, 16},
-      {     32 * MB, 8, 512,      2 * MB, 16},
-      {     64 * MB, 8, 512,      4 * MB, 8},
-      {    128 * MB, 8, 512,      8 * MB, 4},
-      {    256 * MB, 8, 512,     16 * MB, 2},
-      {    512 * MB, 8, 512,     16 * MB, 2},
-      {      1 * GB, 8, 512,     16 * MB, 2},
-      {      2 * GB, 8, 512,     16 * MB, 2},
-      {      4 * GB, 8, 512,     16 * MB, 2},
-      {      8 * GB, 8, 512,     16 * MB, 2},
-      {     16 * GB, 8, 512,     16 * MB, 2},
-      {     32 * GB, 8, 512,     16 * MB, 2},
-      {     64 * GB, 8, 512,     16 * MB, 2},
+      {      1 * KB, 1, 512,         128,  8, 256 * KB},
+      {      2 * KB, 1, 512,         256,  8, 256 * KB},
+      {      4 * KB, 1, 512,         512,  8, 256 * KB},
+      {      8 * KB, 1, 512,      1 * KB,  8, 256 * KB},
+      {     16 * KB, 1, 512,      2 * KB,  8, 256 * KB},
+      {     32 * KB, 1, 512,      4 * KB,  8, 256 * KB},
+      {     64 * KB, 2, 512,      8 * KB,  8, 256 * KB},
+      {    128 * KB, 2, 512,     16 * KB,  8, 256 * KB},
+      {    256 * KB, 2, 512,     16 * KB, 16, 256 * KB},
+      {    512 * KB, 4, 512,     32 * KB, 16, 256 * KB},
+      {      1 * MB, 8, 512,     64 * KB, 16, 256 * KB},
+      {      2 * MB, 8, 512,    128 * KB, 16, 256 * KB},
+      {      4 * MB, 8, 512,    256 * KB, 16, 256 * KB},
+      {      8 * MB, 8, 512,    512 * KB, 16, 256 * KB},
+      {     16 * MB, 8, 512,      1 * MB, 16, 256 * KB},
+      {     32 * MB, 8, 512,      2 * MB, 16, 256 * KB},
+      {     64 * MB, 8, 512,      4 * MB,  8, 256 * KB},
+      {    128 * MB, 8, 512,      8 * MB,  4, 256 * KB},
+      {    256 * MB, 8, 512,     16 * MB,  2, 512 * KB},
+      {    512 * MB, 8, 512,     16 * MB,  2, 512 * KB},
+      {      1 * GB, 8, 512,     16 * MB,  2, 512 * KB},
+      {      2 * GB, 8, 512,     16 * MB,  2, 512 * KB},
+      {      4 * GB, 8, 512,     16 * MB,  2, 512 * KB},
+      {      8 * GB, 8, 512,     16 * MB,  2, 512 * KB},
+      {     16 * GB, 8, 512,     16 * MB,  2, 512 * KB},
+      {     32 * GB, 8, 512,     16 * MB,  2, 512 * KB},
+      {     64 * GB, 8, 512,     16 * MB,  2, 512 * KB},
   };
   // clang-format on
 
@@ -305,33 +357,33 @@ TEST(AutoTuneCombinedHopper, MaxBDP16M_8Ranks) {
 
   // clang-format off
   const AutoTuneExpected cases[] = {
-      {      1 * KB, 1, 384,         128, 8},
-      {      2 * KB, 1, 384,         256, 8},
-      {      4 * KB, 1, 384,         512, 8},
-      {      8 * KB, 1, 384,      1 * KB, 8},
-      {     16 * KB, 1, 384,      2 * KB, 8},
-      {     32 * KB, 1, 384,      4 * KB, 8},
-      {     64 * KB, 1, 384,      8 * KB, 8},
-      {    128 * KB, 1, 512,     16 * KB, 8},
-      {    256 * KB, 1, 512,     16 * KB, 16},
-      {    512 * KB, 1, 512,     32 * KB, 16},
-      {      1 * MB, 1, 512,     64 * KB, 16},
-      {      2 * MB, 2, 512,    128 * KB, 16},
-      {      4 * MB, 2, 512,    256 * KB, 16},
-      {      8 * MB, 2, 512,    256 * KB, 32},
-      {     16 * MB, 4, 512,    512 * KB, 32},
-      {     32 * MB, 4, 512,      1 * MB, 16},
-      {     64 * MB, 4, 512,      2 * MB, 8},
-      {    128 * MB, 4, 512,      2 * MB, 8},
-      {    256 * MB, 4, 512,      2 * MB, 8},
-      {    512 * MB, 4, 512,      2 * MB, 8},
-      {      1 * GB, 4, 512,      2 * MB, 8},
-      {      2 * GB, 4, 512,      2 * MB, 8},
-      {      4 * GB, 4, 512,      2 * MB, 8},
-      {      8 * GB, 4, 512,      2 * MB, 8},
-      {     16 * GB, 4, 512,      2 * MB, 8},
-      {     32 * GB, 4, 512,      2 * MB, 8},
-      {     64 * GB, 4, 512,      2 * MB, 8},
+      {      1 * KB, 1, 384,         128,  8, std::nullopt},
+      {      2 * KB, 1, 384,         256,  8, std::nullopt},
+      {      4 * KB, 1, 384,         512,  8, std::nullopt},
+      {      8 * KB, 1, 384,      1 * KB,  8, std::nullopt},
+      {     16 * KB, 1, 384,      2 * KB,  8, std::nullopt},
+      {     32 * KB, 1, 384,      4 * KB,  8, std::nullopt},
+      {     64 * KB, 1, 384,      8 * KB,  8, std::nullopt},
+      {    128 * KB, 1, 512,     16 * KB,  8, std::nullopt},
+      {    256 * KB, 1, 512,     16 * KB, 16, std::nullopt},
+      {    512 * KB, 1, 512,     32 * KB, 16, std::nullopt},
+      {      1 * MB, 1, 512,     64 * KB, 16, std::nullopt},
+      {      2 * MB, 2, 512,    128 * KB, 16, std::nullopt},
+      {      4 * MB, 2, 512,    256 * KB, 16, std::nullopt},
+      {      8 * MB, 2, 512,    256 * KB, 32, std::nullopt},
+      {     16 * MB, 4, 512,    512 * KB, 32, std::nullopt},
+      {     32 * MB, 4, 512,      1 * MB, 16, std::nullopt},
+      {     64 * MB, 4, 512,      2 * MB,  8, std::nullopt},
+      {    128 * MB, 4, 512,      2 * MB,  8, std::nullopt},
+      {    256 * MB, 4, 512,      2 * MB,  8, std::nullopt},
+      {    512 * MB, 4, 512,      2 * MB,  8, std::nullopt},
+      {      1 * GB, 4, 512,      2 * MB,  8, std::nullopt},
+      {      2 * GB, 4, 512,      2 * MB,  8, std::nullopt},
+      {      4 * GB, 4, 512,      2 * MB,  8, std::nullopt},
+      {      8 * GB, 4, 512,      2 * MB,  8, std::nullopt},
+      {     16 * GB, 4, 512,      2 * MB,  8, std::nullopt},
+      {     32 * GB, 4, 512,      2 * MB,  8, std::nullopt},
+      {     64 * GB, 4, 512,      2 * MB,  8, std::nullopt},
   };
   // clang-format on
 
@@ -347,33 +399,33 @@ TEST(AutoTuneCombinedHopper, MaxBDP32M_8Ranks) {
 
   // clang-format off
   const AutoTuneExpected cases[] = {
-      {      1 * KB, 1, 384,         128, 8},
-      {      2 * KB, 1, 384,         256, 8},
-      {      4 * KB, 1, 384,         512, 8},
-      {      8 * KB, 1, 384,      1 * KB, 8},
-      {     16 * KB, 1, 384,      2 * KB, 8},
-      {     32 * KB, 1, 384,      4 * KB, 8},
-      {     64 * KB, 1, 384,      8 * KB, 8},
-      {    128 * KB, 1, 512,     16 * KB, 8},
-      {    256 * KB, 1, 512,     16 * KB, 16},
-      {    512 * KB, 1, 512,     32 * KB, 16},
-      {      1 * MB, 1, 512,     64 * KB, 16},
-      {      2 * MB, 2, 512,    128 * KB, 16},
-      {      4 * MB, 2, 512,    256 * KB, 16},
-      {      8 * MB, 2, 512,    256 * KB, 32},
-      {     16 * MB, 4, 512,    512 * KB, 32},
-      {     32 * MB, 4, 512,      2 * MB, 16},
-      {     64 * MB, 4, 512,      4 * MB, 8},
-      {    128 * MB, 4, 512,      4 * MB, 8},
-      {    256 * MB, 4, 512,      4 * MB, 8},
-      {    512 * MB, 4, 512,      4 * MB, 8},
-      {      1 * GB, 4, 512,      4 * MB, 8},
-      {      2 * GB, 4, 512,      4 * MB, 8},
-      {      4 * GB, 4, 512,      4 * MB, 8},
-      {      8 * GB, 4, 512,      4 * MB, 8},
-      {     16 * GB, 4, 512,      4 * MB, 8},
-      {     32 * GB, 4, 512,      4 * MB, 8},
-      {     64 * GB, 4, 512,      4 * MB, 8},
+      {      1 * KB, 1, 384,         128,  8, std::nullopt},
+      {      2 * KB, 1, 384,         256,  8, std::nullopt},
+      {      4 * KB, 1, 384,         512,  8, std::nullopt},
+      {      8 * KB, 1, 384,      1 * KB,  8, std::nullopt},
+      {     16 * KB, 1, 384,      2 * KB,  8, std::nullopt},
+      {     32 * KB, 1, 384,      4 * KB,  8, std::nullopt},
+      {     64 * KB, 1, 384,      8 * KB,  8, std::nullopt},
+      {    128 * KB, 1, 512,     16 * KB,  8, std::nullopt},
+      {    256 * KB, 1, 512,     16 * KB, 16, std::nullopt},
+      {    512 * KB, 1, 512,     32 * KB, 16, std::nullopt},
+      {      1 * MB, 1, 512,     64 * KB, 16, std::nullopt},
+      {      2 * MB, 2, 512,    128 * KB, 16, std::nullopt},
+      {      4 * MB, 2, 512,    256 * KB, 16, std::nullopt},
+      {      8 * MB, 2, 512,    256 * KB, 32, std::nullopt},
+      {     16 * MB, 4, 512,    512 * KB, 32, std::nullopt},
+      {     32 * MB, 4, 512,      2 * MB, 16, std::nullopt},
+      {     64 * MB, 4, 512,      4 * MB,  8, std::nullopt},
+      {    128 * MB, 4, 512,      4 * MB,  8, std::nullopt},
+      {    256 * MB, 4, 512,      4 * MB,  8, std::nullopt},
+      {    512 * MB, 4, 512,      4 * MB,  8, std::nullopt},
+      {      1 * GB, 4, 512,      4 * MB,  8, std::nullopt},
+      {      2 * GB, 4, 512,      4 * MB,  8, std::nullopt},
+      {      4 * GB, 4, 512,      4 * MB,  8, std::nullopt},
+      {      8 * GB, 4, 512,      4 * MB,  8, std::nullopt},
+      {     16 * GB, 4, 512,      4 * MB,  8, std::nullopt},
+      {     32 * GB, 4, 512,      4 * MB,  8, std::nullopt},
+      {     64 * GB, 4, 512,      4 * MB,  8, std::nullopt},
   };
   // clang-format on
 
@@ -389,33 +441,33 @@ TEST(AutoTuneCombinedHopper, MaxBDP64M_8Ranks) {
 
   // clang-format off
   const AutoTuneExpected cases[] = {
-      {      1 * KB, 1, 384,         128, 8},
-      {      2 * KB, 1, 384,         256, 8},
-      {      4 * KB, 1, 384,         512, 8},
-      {      8 * KB, 1, 384,      1 * KB, 8},
-      {     16 * KB, 1, 384,      2 * KB, 8},
-      {     32 * KB, 1, 384,      4 * KB, 8},
-      {     64 * KB, 1, 384,      8 * KB, 8},
-      {    128 * KB, 1, 512,     16 * KB, 8},
-      {    256 * KB, 1, 512,     16 * KB, 16},
-      {    512 * KB, 1, 512,     32 * KB, 16},
-      {      1 * MB, 1, 512,     64 * KB, 16},
-      {      2 * MB, 2, 512,    128 * KB, 16},
-      {      4 * MB, 2, 512,    256 * KB, 16},
-      {      8 * MB, 2, 512,    256 * KB, 32},
-      {     16 * MB, 4, 512,    512 * KB, 32},
-      {     32 * MB, 4, 512,      2 * MB, 16},
-      {     64 * MB, 4, 512,      8 * MB, 4},
-      {    128 * MB, 4, 512,      8 * MB, 4},
-      {    256 * MB, 4, 512,      8 * MB, 4},
-      {    512 * MB, 4, 512,      8 * MB, 4},
-      {      1 * GB, 4, 512,      8 * MB, 4},
-      {      2 * GB, 4, 512,      8 * MB, 4},
-      {      4 * GB, 4, 512,      8 * MB, 4},
-      {      8 * GB, 4, 512,      8 * MB, 4},
-      {     16 * GB, 4, 512,      8 * MB, 4},
-      {     32 * GB, 4, 512,      8 * MB, 4},
-      {     64 * GB, 4, 512,      8 * MB, 4},
+      {      1 * KB, 1, 384,         128,  8, std::nullopt},
+      {      2 * KB, 1, 384,         256,  8, std::nullopt},
+      {      4 * KB, 1, 384,         512,  8, std::nullopt},
+      {      8 * KB, 1, 384,      1 * KB,  8, std::nullopt},
+      {     16 * KB, 1, 384,      2 * KB,  8, std::nullopt},
+      {     32 * KB, 1, 384,      4 * KB,  8, std::nullopt},
+      {     64 * KB, 1, 384,      8 * KB,  8, std::nullopt},
+      {    128 * KB, 1, 512,     16 * KB,  8, std::nullopt},
+      {    256 * KB, 1, 512,     16 * KB, 16, std::nullopt},
+      {    512 * KB, 1, 512,     32 * KB, 16, std::nullopt},
+      {      1 * MB, 1, 512,     64 * KB, 16, std::nullopt},
+      {      2 * MB, 2, 512,    128 * KB, 16, std::nullopt},
+      {      4 * MB, 2, 512,    256 * KB, 16, std::nullopt},
+      {      8 * MB, 2, 512,    256 * KB, 32, std::nullopt},
+      {     16 * MB, 4, 512,    512 * KB, 32, std::nullopt},
+      {     32 * MB, 4, 512,      2 * MB, 16, std::nullopt},
+      {     64 * MB, 4, 512,      8 * MB,  4, std::nullopt},
+      {    128 * MB, 4, 512,      8 * MB,  4, std::nullopt},
+      {    256 * MB, 4, 512,      8 * MB,  4, std::nullopt},
+      {    512 * MB, 4, 512,      8 * MB,  4, std::nullopt},
+      {      1 * GB, 4, 512,      8 * MB,  4, std::nullopt},
+      {      2 * GB, 4, 512,      8 * MB,  4, std::nullopt},
+      {      4 * GB, 4, 512,      8 * MB,  4, std::nullopt},
+      {      8 * GB, 4, 512,      8 * MB,  4, std::nullopt},
+      {     16 * GB, 4, 512,      8 * MB,  4, std::nullopt},
+      {     32 * GB, 4, 512,      8 * MB,  4, std::nullopt},
+      {     64 * GB, 4, 512,      8 * MB,  4, std::nullopt},
   };
   // clang-format on
 
@@ -431,33 +483,33 @@ TEST(AutoTuneCombinedHopper, MaxBDP128M_8Ranks) {
 
   // clang-format off
   const AutoTuneExpected cases[] = {
-      {      1 * KB, 1, 384,         128, 8},
-      {      2 * KB, 1, 384,         256, 8},
-      {      4 * KB, 1, 384,         512, 8},
-      {      8 * KB, 1, 384,      1 * KB, 8},
-      {     16 * KB, 1, 384,      2 * KB, 8},
-      {     32 * KB, 1, 384,      4 * KB, 8},
-      {     64 * KB, 1, 384,      8 * KB, 8},
-      {    128 * KB, 1, 512,     16 * KB, 8},
-      {    256 * KB, 1, 512,     16 * KB, 16},
-      {    512 * KB, 1, 512,     32 * KB, 16},
-      {      1 * MB, 1, 512,     64 * KB, 16},
-      {      2 * MB, 2, 512,    128 * KB, 16},
-      {      4 * MB, 2, 512,    256 * KB, 16},
-      {      8 * MB, 2, 512,    256 * KB, 32},
-      {     16 * MB, 4, 512,    512 * KB, 32},
-      {     32 * MB, 4, 512,      2 * MB, 16},
-      {     64 * MB, 4, 512,      8 * MB, 4},
-      {    128 * MB, 4, 512,     16 * MB, 2},
-      {    256 * MB, 4, 512,     16 * MB, 2},
-      {    512 * MB, 4, 512,     16 * MB, 2},
-      {      1 * GB, 4, 512,     16 * MB, 2},
-      {      2 * GB, 4, 512,     16 * MB, 2},
-      {      4 * GB, 4, 512,     16 * MB, 2},
-      {      8 * GB, 4, 512,     16 * MB, 2},
-      {     16 * GB, 4, 512,     16 * MB, 2},
-      {     32 * GB, 4, 512,     16 * MB, 2},
-      {     64 * GB, 4, 512,     16 * MB, 2},
+      {      1 * KB, 1, 384,         128,  8, std::nullopt},
+      {      2 * KB, 1, 384,         256,  8, std::nullopt},
+      {      4 * KB, 1, 384,         512,  8, std::nullopt},
+      {      8 * KB, 1, 384,      1 * KB,  8, std::nullopt},
+      {     16 * KB, 1, 384,      2 * KB,  8, std::nullopt},
+      {     32 * KB, 1, 384,      4 * KB,  8, std::nullopt},
+      {     64 * KB, 1, 384,      8 * KB,  8, std::nullopt},
+      {    128 * KB, 1, 512,     16 * KB,  8, std::nullopt},
+      {    256 * KB, 1, 512,     16 * KB, 16, std::nullopt},
+      {    512 * KB, 1, 512,     32 * KB, 16, std::nullopt},
+      {      1 * MB, 1, 512,     64 * KB, 16, std::nullopt},
+      {      2 * MB, 2, 512,    128 * KB, 16, std::nullopt},
+      {      4 * MB, 2, 512,    256 * KB, 16, std::nullopt},
+      {      8 * MB, 2, 512,    256 * KB, 32, std::nullopt},
+      {     16 * MB, 4, 512,    512 * KB, 32, std::nullopt},
+      {     32 * MB, 4, 512,      2 * MB, 16, std::nullopt},
+      {     64 * MB, 4, 512,      8 * MB,  4, std::nullopt},
+      {    128 * MB, 4, 512,     16 * MB,  2, std::nullopt},
+      {    256 * MB, 4, 512,     16 * MB,  2, std::nullopt},
+      {    512 * MB, 4, 512,     16 * MB,  2, std::nullopt},
+      {      1 * GB, 4, 512,     16 * MB,  2, std::nullopt},
+      {      2 * GB, 4, 512,     16 * MB,  2, std::nullopt},
+      {      4 * GB, 4, 512,     16 * MB,  2, std::nullopt},
+      {      8 * GB, 4, 512,     16 * MB,  2, std::nullopt},
+      {     16 * GB, 4, 512,     16 * MB,  2, std::nullopt},
+      {     32 * GB, 4, 512,     16 * MB,  2, std::nullopt},
+      {     64 * GB, 4, 512,     16 * MB,  2, std::nullopt},
   };
   // clang-format on
 
@@ -475,33 +527,33 @@ TEST(AutoTuneDefaultRankSweep, DefaultBDP_8Ranks) {
 
   // clang-format off
   const AutoTuneExpected cases[] = {
-      {      1 * KB, 1, 512,         128, 8},
-      {      2 * KB, 1, 512,         256, 8},
-      {      4 * KB, 1, 512,         512, 8},
-      {      8 * KB, 1, 512,      1 * KB, 8},
-      {     16 * KB, 1, 512,      2 * KB, 8},
-      {     32 * KB, 1, 512,      4 * KB, 8},
-      {     64 * KB, 2, 512,      8 * KB, 8},
-      {    128 * KB, 2, 512,     16 * KB, 8},
-      {    256 * KB, 2, 512,     16 * KB, 16},
-      {    512 * KB, 4, 512,     32 * KB, 16},
-      {      1 * MB, 8, 512,     64 * KB, 16},
-      {      2 * MB, 8, 512,    128 * KB, 16},
-      {      4 * MB, 8, 512,    256 * KB, 16},
-      {      8 * MB, 8, 512,    512 * KB, 16},
-      {     16 * MB, 8, 512,      1 * MB, 16},
-      {     32 * MB, 8, 512,      2 * MB, 16},
-      {     64 * MB, 8, 512,      4 * MB, 8},
-      {    128 * MB, 8, 512,      8 * MB, 4},
-      {    256 * MB, 8, 512,     16 * MB, 2},
-      {    512 * MB, 8, 512,     16 * MB, 2},
-      {      1 * GB, 8, 512,     16 * MB, 2},
-      {      2 * GB, 8, 512,     16 * MB, 2},
-      {      4 * GB, 8, 512,     16 * MB, 2},
-      {      8 * GB, 8, 512,     16 * MB, 2},
-      {     16 * GB, 8, 512,     16 * MB, 2},
-      {     32 * GB, 8, 512,     16 * MB, 2},
-      {     64 * GB, 8, 512,     16 * MB, 2},
+      {      1 * KB, 1, 512,         128,  8, 256 * KB},
+      {      2 * KB, 1, 512,         256,  8, 256 * KB},
+      {      4 * KB, 1, 512,         512,  8, 256 * KB},
+      {      8 * KB, 1, 512,      1 * KB,  8, 256 * KB},
+      {     16 * KB, 1, 512,      2 * KB,  8, 256 * KB},
+      {     32 * KB, 1, 512,      4 * KB,  8, 256 * KB},
+      {     64 * KB, 2, 512,      8 * KB,  8, 256 * KB},
+      {    128 * KB, 2, 512,     16 * KB,  8, 256 * KB},
+      {    256 * KB, 2, 512,     16 * KB, 16, 256 * KB},
+      {    512 * KB, 4, 512,     32 * KB, 16, 256 * KB},
+      {      1 * MB, 8, 512,     64 * KB, 16, 256 * KB},
+      {      2 * MB, 8, 512,    128 * KB, 16, 256 * KB},
+      {      4 * MB, 8, 512,    256 * KB, 16, 256 * KB},
+      {      8 * MB, 8, 512,    512 * KB, 16, 256 * KB},
+      {     16 * MB, 8, 512,      1 * MB, 16, 256 * KB},
+      {     32 * MB, 8, 512,      2 * MB, 16, 256 * KB},
+      {     64 * MB, 8, 512,      4 * MB,  8, 256 * KB},
+      {    128 * MB, 8, 512,      8 * MB,  4, 256 * KB},
+      {    256 * MB, 8, 512,     16 * MB,  2, 512 * KB},
+      {    512 * MB, 8, 512,     16 * MB,  2, 512 * KB},
+      {      1 * GB, 8, 512,     16 * MB,  2, 512 * KB},
+      {      2 * GB, 8, 512,     16 * MB,  2, 512 * KB},
+      {      4 * GB, 8, 512,     16 * MB,  2, 512 * KB},
+      {      8 * GB, 8, 512,     16 * MB,  2, 512 * KB},
+      {     16 * GB, 8, 512,     16 * MB,  2, 512 * KB},
+      {     32 * GB, 8, 512,     16 * MB,  2, 512 * KB},
+      {     64 * GB, 8, 512,     16 * MB,  2, 512 * KB},
   };
   // clang-format on
 
@@ -515,33 +567,33 @@ TEST(AutoTuneDefaultRankSweep, DefaultBDP_16Ranks) {
 
   // clang-format off
   const AutoTuneExpected cases[] = {
-      {      1 * KB, 1, 512,          64, 16},
-      {      2 * KB, 1, 512,         128, 16},
-      {      4 * KB, 1, 512,         256, 16},
-      {      8 * KB, 1, 512,         512, 16},
-      {     16 * KB, 1, 512,      1 * KB, 16},
-      {     32 * KB, 1, 512,      2 * KB, 16},
-      {     64 * KB, 1, 512,      4 * KB, 16},
-      {    128 * KB, 2, 512,      8 * KB, 16},
-      {    256 * KB, 2, 512,     16 * KB, 16},
-      {    512 * KB, 2, 512,     16 * KB, 32},
-      {      1 * MB, 4, 512,     32 * KB, 32},
-      {      2 * MB, 8, 512,     64 * KB, 32},
-      {      4 * MB, 8, 512,    128 * KB, 32},
-      {      8 * MB, 8, 512,    256 * KB, 32},
-      {     16 * MB, 8, 512,    512 * KB, 32},
-      {     32 * MB, 8, 512,      1 * MB, 32},
-      {     64 * MB, 8, 512,      2 * MB, 16},
-      {    128 * MB, 8, 512,      4 * MB, 8},
-      {    256 * MB, 8, 512,      4 * MB, 8},
-      {    512 * MB, 8, 512,      8 * MB, 4},
-      {      1 * GB, 8, 512,      8 * MB, 4},
-      {      2 * GB, 8, 512,      8 * MB, 4},
-      {      4 * GB, 8, 512,      8 * MB, 4},
-      {      8 * GB, 8, 512,      8 * MB, 4},
-      {     16 * GB, 8, 512,      8 * MB, 4},
-      {     32 * GB, 8, 512,      8 * MB, 4},
-      {     64 * GB, 8, 512,      8 * MB, 4},
+      {      1 * KB, 1, 512,          64, 16, 256 * KB},
+      {      2 * KB, 1, 512,         128, 16, 256 * KB},
+      {      4 * KB, 1, 512,         256, 16, 256 * KB},
+      {      8 * KB, 1, 512,         512, 16, 256 * KB},
+      {     16 * KB, 1, 512,      1 * KB, 16, 256 * KB},
+      {     32 * KB, 1, 512,      2 * KB, 16, 256 * KB},
+      {     64 * KB, 1, 512,      4 * KB, 16, 256 * KB},
+      {    128 * KB, 2, 512,      8 * KB, 16, 256 * KB},
+      {    256 * KB, 2, 512,     16 * KB, 16, 256 * KB},
+      {    512 * KB, 2, 512,     16 * KB, 32, 256 * KB},
+      {      1 * MB, 4, 512,     32 * KB, 32, 256 * KB},
+      {      2 * MB, 8, 512,     64 * KB, 32, 256 * KB},
+      {      4 * MB, 8, 512,    128 * KB, 32, 256 * KB},
+      {      8 * MB, 8, 512,    256 * KB, 32, 256 * KB},
+      {     16 * MB, 8, 512,    512 * KB, 32, 256 * KB},
+      {     32 * MB, 8, 512,      1 * MB, 32, 256 * KB},
+      {     64 * MB, 8, 512,      2 * MB, 16, 256 * KB},
+      {    128 * MB, 8, 512,      4 * MB,  8, 256 * KB},
+      {    256 * MB, 8, 512,      4 * MB,  8, 256 * KB},
+      {    512 * MB, 8, 512,      8 * MB,  4, 256 * KB},
+      {      1 * GB, 8, 512,      8 * MB,  4, 256 * KB},
+      {      2 * GB, 8, 512,      8 * MB,  4, 256 * KB},
+      {      4 * GB, 8, 512,      8 * MB,  4, 256 * KB},
+      {      8 * GB, 8, 512,      8 * MB,  4, 256 * KB},
+      {     16 * GB, 8, 512,      8 * MB,  4, 256 * KB},
+      {     32 * GB, 8, 512,      8 * MB,  4, 256 * KB},
+      {     64 * GB, 8, 512,      8 * MB,  4, 256 * KB},
   };
   // clang-format on
 
@@ -555,33 +607,33 @@ TEST(AutoTuneDefaultRankSweep, DefaultBDP_32Ranks) {
 
   // clang-format off
   const AutoTuneExpected cases[] = {
-      {      1 * KB, 1, 512,          32, 32},
-      {      2 * KB, 1, 512,          64, 32},
-      {      4 * KB, 1, 512,         128, 32},
-      {      8 * KB, 1, 512,         256, 32},
-      {     16 * KB, 1, 512,         512, 32},
-      {     32 * KB, 1, 512,      1 * KB, 32},
-      {     64 * KB, 1, 512,      2 * KB, 32},
-      {    128 * KB, 1, 512,      4 * KB, 32},
-      {    256 * KB, 2, 512,      8 * KB, 32},
-      {    512 * KB, 2, 512,     16 * KB, 32},
-      {      1 * MB, 2, 512,     16 * KB, 64},
-      {      2 * MB, 4, 512,     32 * KB, 64},
-      {      4 * MB, 8, 512,     64 * KB, 64},
-      {      8 * MB, 8, 512,    128 * KB, 64},
-      {     16 * MB, 8, 512,    256 * KB, 64},
-      {     32 * MB, 8, 512,    512 * KB, 64},
-      {     64 * MB, 8, 512,      1 * MB, 32},
-      {    128 * MB, 8, 512,      2 * MB, 16},
-      {    256 * MB, 8, 512,      2 * MB, 16},
-      {    512 * MB, 8, 512,      2 * MB, 16},
-      {      1 * GB, 8, 512,      4 * MB, 8},
-      {      2 * GB, 8, 512,      4 * MB, 8},
-      {      4 * GB, 8, 512,      4 * MB, 8},
-      {      8 * GB, 8, 512,      4 * MB, 8},
-      {     16 * GB, 8, 512,      4 * MB, 8},
-      {     32 * GB, 8, 512,      4 * MB, 8},
-      {     64 * GB, 8, 512,      4 * MB, 8},
+      {      1 * KB, 1, 512,          32, 32, 256 * KB},
+      {      2 * KB, 1, 512,          64, 32, 256 * KB},
+      {      4 * KB, 1, 512,         128, 32, 256 * KB},
+      {      8 * KB, 1, 512,         256, 32, 256 * KB},
+      {     16 * KB, 1, 512,         512, 32, 256 * KB},
+      {     32 * KB, 1, 512,      1 * KB, 32, 256 * KB},
+      {     64 * KB, 1, 512,      2 * KB, 32, 256 * KB},
+      {    128 * KB, 1, 512,      4 * KB, 32, 256 * KB},
+      {    256 * KB, 2, 512,      8 * KB, 32, 256 * KB},
+      {    512 * KB, 2, 512,     16 * KB, 32, 256 * KB},
+      {      1 * MB, 2, 512,     16 * KB, 64, 256 * KB},
+      {      2 * MB, 4, 512,     32 * KB, 64, 256 * KB},
+      {      4 * MB, 8, 512,     64 * KB, 64, 256 * KB},
+      {      8 * MB, 8, 512,    128 * KB, 64, 256 * KB},
+      {     16 * MB, 8, 512,    256 * KB, 64, 256 * KB},
+      {     32 * MB, 8, 512,    512 * KB, 64, 256 * KB},
+      {     64 * MB, 8, 512,      1 * MB, 32, 256 * KB},
+      {    128 * MB, 8, 512,      2 * MB, 16, 256 * KB},
+      {    256 * MB, 8, 512,      2 * MB, 16, 256 * KB},
+      {    512 * MB, 8, 512,      2 * MB, 16, 256 * KB},
+      {      1 * GB, 8, 512,      4 * MB,  8, 256 * KB},
+      {      2 * GB, 8, 512,      4 * MB,  8, 256 * KB},
+      {      4 * GB, 8, 512,      4 * MB,  8, 256 * KB},
+      {      8 * GB, 8, 512,      4 * MB,  8, 256 * KB},
+      {     16 * GB, 8, 512,      4 * MB,  8, 256 * KB},
+      {     32 * GB, 8, 512,      4 * MB,  8, 256 * KB},
+      {     64 * GB, 8, 512,      4 * MB,  8, 256 * KB},
   };
   // clang-format on
 
@@ -595,33 +647,33 @@ TEST(AutoTuneDefaultRankSweep, DefaultBDP_64Ranks) {
 
   // clang-format off
   const AutoTuneExpected cases[] = {
-      {      1 * KB, 1, 512,          16, 64},
-      {      2 * KB, 1, 512,          32, 64},
-      {      4 * KB, 1, 512,          64, 64},
-      {      8 * KB, 1, 512,         128, 64},
-      {     16 * KB, 1, 512,         256, 64},
-      {     32 * KB, 1, 512,         512, 64},
-      {     64 * KB, 1, 512,      1 * KB, 64},
-      {    128 * KB, 1, 512,      2 * KB, 64},
-      {    256 * KB, 1, 512,      4 * KB, 64},
-      {    512 * KB, 2, 512,      8 * KB, 64},
-      {      1 * MB, 2, 512,     16 * KB, 64},
-      {      2 * MB, 2, 512,     16 * KB, 128},
-      {      4 * MB, 4, 512,     32 * KB, 128},
-      {      8 * MB, 8, 512,     64 * KB, 128},
-      {     16 * MB, 8, 512,    128 * KB, 128},
-      {     32 * MB, 8, 512,    256 * KB, 128},
-      {     64 * MB, 8, 512,    512 * KB, 64},
-      {    128 * MB, 8, 512,      1 * MB, 32},
-      {    256 * MB, 8, 512,      1 * MB, 32},
-      {    512 * MB, 8, 512,      1 * MB, 32},
-      {      1 * GB, 8, 512,      1 * MB, 32},
-      {      2 * GB, 8, 512,      2 * MB, 16},
-      {      4 * GB, 8, 512,      2 * MB, 16},
-      {      8 * GB, 8, 512,      2 * MB, 16},
-      {     16 * GB, 8, 512,      2 * MB, 16},
-      {     32 * GB, 8, 512,      2 * MB, 16},
-      {     64 * GB, 8, 512,      2 * MB, 16},
+      {      1 * KB, 1, 512,          16,  64, 256 * KB},
+      {      2 * KB, 1, 512,          32,  64, 256 * KB},
+      {      4 * KB, 1, 512,          64,  64, 256 * KB},
+      {      8 * KB, 1, 512,         128,  64, 256 * KB},
+      {     16 * KB, 1, 512,         256,  64, 256 * KB},
+      {     32 * KB, 1, 512,         512,  64, 256 * KB},
+      {     64 * KB, 1, 512,      1 * KB,  64, 256 * KB},
+      {    128 * KB, 1, 512,      2 * KB,  64, 256 * KB},
+      {    256 * KB, 1, 512,      4 * KB,  64, 256 * KB},
+      {    512 * KB, 2, 512,      8 * KB,  64, 256 * KB},
+      {      1 * MB, 2, 512,     16 * KB,  64, 256 * KB},
+      {      2 * MB, 2, 512,     16 * KB, 128, 256 * KB},
+      {      4 * MB, 4, 512,     32 * KB, 128, 256 * KB},
+      {      8 * MB, 8, 512,     64 * KB, 128, 256 * KB},
+      {     16 * MB, 8, 512,    128 * KB, 128, 256 * KB},
+      {     32 * MB, 8, 512,    256 * KB, 128, 256 * KB},
+      {     64 * MB, 8, 512,    512 * KB,  64, 256 * KB},
+      {    128 * MB, 8, 512,      1 * MB,  32, 256 * KB},
+      {    256 * MB, 8, 512,      1 * MB,  32, 256 * KB},
+      {    512 * MB, 8, 512,      1 * MB,  32, 256 * KB},
+      {      1 * GB, 8, 512,      1 * MB,  32, 256 * KB},
+      {      2 * GB, 8, 512,      2 * MB,  16, 256 * KB},
+      {      4 * GB, 8, 512,      2 * MB,  16, 256 * KB},
+      {      8 * GB, 8, 512,      2 * MB,  16, 256 * KB},
+      {     16 * GB, 8, 512,      2 * MB,  16, 256 * KB},
+      {     32 * GB, 8, 512,      2 * MB,  16, 256 * KB},
+      {     64 * GB, 8, 512,      2 * MB,  16, 256 * KB},
   };
   // clang-format on
 
@@ -640,33 +692,33 @@ TEST(AutoTuneHopperRankSweep, DefaultBDP_8Ranks) {
 
   // clang-format off
   const AutoTuneExpected cases[] = {
-      {      1 * KB, 1, 384,         128, 8},
-      {      2 * KB, 1, 384,         256, 8},
-      {      4 * KB, 1, 384,         512, 8},
-      {      8 * KB, 1, 384,      1 * KB, 8},
-      {     16 * KB, 1, 384,      2 * KB, 8},
-      {     32 * KB, 1, 384,      4 * KB, 8},
-      {     64 * KB, 1, 384,      8 * KB, 8},
-      {    128 * KB, 1, 512,     16 * KB, 8},
-      {    256 * KB, 1, 512,     16 * KB, 16},
-      {    512 * KB, 1, 512,     32 * KB, 16},
-      {      1 * MB, 1, 512,     64 * KB, 16},
-      {      2 * MB, 2, 512,    128 * KB, 16},
-      {      4 * MB, 2, 512,    256 * KB, 16},
-      {      8 * MB, 2, 512,    256 * KB, 32},
-      {     16 * MB, 4, 512,    512 * KB, 32},
-      {     32 * MB, 4, 512,      2 * MB, 16},
-      {     64 * MB, 4, 512,      4 * MB, 8},
-      {    128 * MB, 4, 512,      4 * MB, 8},
-      {    256 * MB, 4, 512,      4 * MB, 8},
-      {    512 * MB, 4, 512,      4 * MB, 8},
-      {      1 * GB, 4, 512,      4 * MB, 8},
-      {      2 * GB, 4, 512,      4 * MB, 8},
-      {      4 * GB, 4, 512,      4 * MB, 8},
-      {      8 * GB, 4, 512,      4 * MB, 8},
-      {     16 * GB, 4, 512,      4 * MB, 8},
-      {     32 * GB, 4, 512,      4 * MB, 8},
-      {     64 * GB, 4, 512,      4 * MB, 8},
+      {      1 * KB, 1, 384,         128,  8, std::nullopt},
+      {      2 * KB, 1, 384,         256,  8, std::nullopt},
+      {      4 * KB, 1, 384,         512,  8, std::nullopt},
+      {      8 * KB, 1, 384,      1 * KB,  8, std::nullopt},
+      {     16 * KB, 1, 384,      2 * KB,  8, std::nullopt},
+      {     32 * KB, 1, 384,      4 * KB,  8, std::nullopt},
+      {     64 * KB, 1, 384,      8 * KB,  8, std::nullopt},
+      {    128 * KB, 1, 512,     16 * KB,  8, std::nullopt},
+      {    256 * KB, 1, 512,     16 * KB, 16, std::nullopt},
+      {    512 * KB, 1, 512,     32 * KB, 16, std::nullopt},
+      {      1 * MB, 1, 512,     64 * KB, 16, std::nullopt},
+      {      2 * MB, 2, 512,    128 * KB, 16, std::nullopt},
+      {      4 * MB, 2, 512,    256 * KB, 16, std::nullopt},
+      {      8 * MB, 2, 512,    256 * KB, 32, std::nullopt},
+      {     16 * MB, 4, 512,    512 * KB, 32, std::nullopt},
+      {     32 * MB, 4, 512,      2 * MB, 16, std::nullopt},
+      {     64 * MB, 4, 512,      4 * MB,  8, std::nullopt},
+      {    128 * MB, 4, 512,      4 * MB,  8, std::nullopt},
+      {    256 * MB, 4, 512,      4 * MB,  8, std::nullopt},
+      {    512 * MB, 4, 512,      4 * MB,  8, std::nullopt},
+      {      1 * GB, 4, 512,      4 * MB,  8, std::nullopt},
+      {      2 * GB, 4, 512,      4 * MB,  8, std::nullopt},
+      {      4 * GB, 4, 512,      4 * MB,  8, std::nullopt},
+      {      8 * GB, 4, 512,      4 * MB,  8, std::nullopt},
+      {     16 * GB, 4, 512,      4 * MB,  8, std::nullopt},
+      {     32 * GB, 4, 512,      4 * MB,  8, std::nullopt},
+      {     64 * GB, 4, 512,      4 * MB,  8, std::nullopt},
   };
   // clang-format on
 
@@ -681,33 +733,33 @@ TEST(AutoTuneHopperRankSweep, DefaultBDP_16Ranks) {
 
   // clang-format off
   const AutoTuneExpected cases[] = {
-      {      1 * KB, 1, 384,          64, 16},
-      {      2 * KB, 1, 384,         128, 16},
-      {      4 * KB, 1, 384,         256, 16},
-      {      8 * KB, 1, 384,         512, 16},
-      {     16 * KB, 1, 384,      1 * KB, 16},
-      {     32 * KB, 1, 384,      2 * KB, 16},
-      {     64 * KB, 1, 384,      4 * KB, 16},
-      {    128 * KB, 1, 384,      8 * KB, 16},
-      {    256 * KB, 1, 512,     16 * KB, 16},
-      {    512 * KB, 1, 512,     16 * KB, 32},
-      {      1 * MB, 1, 512,     32 * KB, 32},
-      {      2 * MB, 1, 512,     64 * KB, 32},
-      {      4 * MB, 2, 512,    128 * KB, 32},
-      {      8 * MB, 2, 512,    256 * KB, 32},
-      {     16 * MB, 2, 512,    256 * KB, 64},
-      {     32 * MB, 4, 512,    512 * KB, 64},
-      {     64 * MB, 4, 512,      1 * MB, 32},
-      {    128 * MB, 4, 512,      2 * MB, 16},
-      {    256 * MB, 4, 512,      2 * MB, 16},
-      {    512 * MB, 4, 512,      2 * MB, 16},
-      {      1 * GB, 4, 512,      2 * MB, 16},
-      {      2 * GB, 4, 512,      2 * MB, 16},
-      {      4 * GB, 4, 512,      2 * MB, 16},
-      {      8 * GB, 4, 512,      2 * MB, 16},
-      {     16 * GB, 4, 512,      2 * MB, 16},
-      {     32 * GB, 4, 512,      2 * MB, 16},
-      {     64 * GB, 4, 512,      2 * MB, 16},
+      {      1 * KB, 1, 384,          64, 16, std::nullopt},
+      {      2 * KB, 1, 384,         128, 16, std::nullopt},
+      {      4 * KB, 1, 384,         256, 16, std::nullopt},
+      {      8 * KB, 1, 384,         512, 16, std::nullopt},
+      {     16 * KB, 1, 384,      1 * KB, 16, std::nullopt},
+      {     32 * KB, 1, 384,      2 * KB, 16, std::nullopt},
+      {     64 * KB, 1, 384,      4 * KB, 16, std::nullopt},
+      {    128 * KB, 1, 384,      8 * KB, 16, std::nullopt},
+      {    256 * KB, 1, 512,     16 * KB, 16, std::nullopt},
+      {    512 * KB, 1, 512,     16 * KB, 32, std::nullopt},
+      {      1 * MB, 1, 512,     32 * KB, 32, std::nullopt},
+      {      2 * MB, 1, 512,     64 * KB, 32, std::nullopt},
+      {      4 * MB, 2, 512,    128 * KB, 32, std::nullopt},
+      {      8 * MB, 2, 512,    256 * KB, 32, std::nullopt},
+      {     16 * MB, 2, 512,    256 * KB, 64, std::nullopt},
+      {     32 * MB, 4, 512,    512 * KB, 64, std::nullopt},
+      {     64 * MB, 4, 512,      1 * MB, 32, std::nullopt},
+      {    128 * MB, 4, 512,      2 * MB, 16, std::nullopt},
+      {    256 * MB, 4, 512,      2 * MB, 16, std::nullopt},
+      {    512 * MB, 4, 512,      2 * MB, 16, std::nullopt},
+      {      1 * GB, 4, 512,      2 * MB, 16, std::nullopt},
+      {      2 * GB, 4, 512,      2 * MB, 16, std::nullopt},
+      {      4 * GB, 4, 512,      2 * MB, 16, std::nullopt},
+      {      8 * GB, 4, 512,      2 * MB, 16, std::nullopt},
+      {     16 * GB, 4, 512,      2 * MB, 16, std::nullopt},
+      {     32 * GB, 4, 512,      2 * MB, 16, std::nullopt},
+      {     64 * GB, 4, 512,      2 * MB, 16, std::nullopt},
   };
   // clang-format on
 
@@ -722,33 +774,33 @@ TEST(AutoTuneHopperRankSweep, DefaultBDP_32Ranks) {
 
   // clang-format off
   const AutoTuneExpected cases[] = {
-      {      1 * KB, 1, 384,          32, 32},
-      {      2 * KB, 1, 384,          64, 32},
-      {      4 * KB, 1, 384,         128, 32},
-      {      8 * KB, 1, 384,         256, 32},
-      {     16 * KB, 1, 384,         512, 32},
-      {     32 * KB, 1, 384,      1 * KB, 32},
-      {     64 * KB, 1, 384,      2 * KB, 32},
-      {    128 * KB, 1, 384,      4 * KB, 32},
-      {    256 * KB, 1, 384,      8 * KB, 32},
-      {    512 * KB, 1, 512,     16 * KB, 32},
-      {      1 * MB, 1, 512,     16 * KB, 64},
-      {      2 * MB, 1, 512,     32 * KB, 64},
-      {      4 * MB, 1, 512,     64 * KB, 64},
-      {      8 * MB, 2, 512,    128 * KB, 64},
-      {     16 * MB, 2, 512,    256 * KB, 64},
-      {     32 * MB, 2, 512,    256 * KB, 128},
-      {     64 * MB, 2, 512,    256 * KB, 128},
-      {    128 * MB, 4, 512,    512 * KB, 64},
-      {    256 * MB, 4, 512,      1 * MB, 32},
-      {    512 * MB, 4, 512,      1 * MB, 32},
-      {      1 * GB, 4, 512,      1 * MB, 32},
-      {      2 * GB, 4, 512,      1 * MB, 32},
-      {      4 * GB, 4, 512,      1 * MB, 32},
-      {      8 * GB, 4, 512,      1 * MB, 32},
-      {     16 * GB, 4, 512,      1 * MB, 32},
-      {     32 * GB, 4, 512,      1 * MB, 32},
-      {     64 * GB, 4, 512,      1 * MB, 32},
+      {      1 * KB, 1, 384,          32,  32, std::nullopt},
+      {      2 * KB, 1, 384,          64,  32, std::nullopt},
+      {      4 * KB, 1, 384,         128,  32, std::nullopt},
+      {      8 * KB, 1, 384,         256,  32, std::nullopt},
+      {     16 * KB, 1, 384,         512,  32, std::nullopt},
+      {     32 * KB, 1, 384,      1 * KB,  32, std::nullopt},
+      {     64 * KB, 1, 384,      2 * KB,  32, std::nullopt},
+      {    128 * KB, 1, 384,      4 * KB,  32, std::nullopt},
+      {    256 * KB, 1, 384,      8 * KB,  32, std::nullopt},
+      {    512 * KB, 1, 512,     16 * KB,  32, std::nullopt},
+      {      1 * MB, 1, 512,     16 * KB,  64, std::nullopt},
+      {      2 * MB, 1, 512,     32 * KB,  64, std::nullopt},
+      {      4 * MB, 1, 512,     64 * KB,  64, std::nullopt},
+      {      8 * MB, 2, 512,    128 * KB,  64, std::nullopt},
+      {     16 * MB, 2, 512,    256 * KB,  64, std::nullopt},
+      {     32 * MB, 2, 512,    256 * KB, 128, std::nullopt},
+      {     64 * MB, 2, 512,    256 * KB, 128, std::nullopt},
+      {    128 * MB, 4, 512,    512 * KB,  64, std::nullopt},
+      {    256 * MB, 4, 512,      1 * MB,  32, std::nullopt},
+      {    512 * MB, 4, 512,      1 * MB,  32, std::nullopt},
+      {      1 * GB, 4, 512,      1 * MB,  32, std::nullopt},
+      {      2 * GB, 4, 512,      1 * MB,  32, std::nullopt},
+      {      4 * GB, 4, 512,      1 * MB,  32, std::nullopt},
+      {      8 * GB, 4, 512,      1 * MB,  32, std::nullopt},
+      {     16 * GB, 4, 512,      1 * MB,  32, std::nullopt},
+      {     32 * GB, 4, 512,      1 * MB,  32, std::nullopt},
+      {     64 * GB, 4, 512,      1 * MB,  32, std::nullopt},
   };
   // clang-format on
 
@@ -763,33 +815,33 @@ TEST(AutoTuneHopperRankSweep, DefaultBDP_64Ranks) {
 
   // clang-format off
   const AutoTuneExpected cases[] = {
-      {      1 * KB, 1, 384,          16, 64},
-      {      2 * KB, 1, 384,          32, 64},
-      {      4 * KB, 1, 384,          64, 64},
-      {      8 * KB, 1, 384,         128, 64},
-      {     16 * KB, 1, 384,         256, 64},
-      {     32 * KB, 1, 384,         512, 64},
-      {     64 * KB, 1, 384,      1 * KB, 64},
-      {    128 * KB, 1, 384,      2 * KB, 64},
-      {    256 * KB, 1, 384,      4 * KB, 64},
-      {    512 * KB, 1, 384,      8 * KB, 64},
-      {      1 * MB, 1, 512,     16 * KB, 64},
-      {      2 * MB, 1, 512,     16 * KB, 128},
-      {      4 * MB, 1, 512,     32 * KB, 128},
-      {      8 * MB, 1, 512,     64 * KB, 128},
-      {     16 * MB, 2, 512,    128 * KB, 128},
-      {     32 * MB, 2, 512,    256 * KB, 128},
-      {     64 * MB, 2, 512,    128 * KB, 256},
-      {    128 * MB, 2, 512,    128 * KB, 256},
-      {    256 * MB, 2, 512,    256 * KB, 128},
-      {    512 * MB, 4, 512,    512 * KB, 64},
-      {      1 * GB, 4, 512,    512 * KB, 64},
-      {      2 * GB, 4, 512,    512 * KB, 64},
-      {      4 * GB, 4, 512,    512 * KB, 64},
-      {      8 * GB, 4, 512,    512 * KB, 64},
-      {     16 * GB, 4, 512,    512 * KB, 64},
-      {     32 * GB, 4, 512,    512 * KB, 64},
-      {     64 * GB, 4, 512,    512 * KB, 64},
+      {      1 * KB, 1, 384,          16,  64, std::nullopt},
+      {      2 * KB, 1, 384,          32,  64, std::nullopt},
+      {      4 * KB, 1, 384,          64,  64, std::nullopt},
+      {      8 * KB, 1, 384,         128,  64, std::nullopt},
+      {     16 * KB, 1, 384,         256,  64, std::nullopt},
+      {     32 * KB, 1, 384,         512,  64, std::nullopt},
+      {     64 * KB, 1, 384,      1 * KB,  64, std::nullopt},
+      {    128 * KB, 1, 384,      2 * KB,  64, std::nullopt},
+      {    256 * KB, 1, 384,      4 * KB,  64, std::nullopt},
+      {    512 * KB, 1, 384,      8 * KB,  64, std::nullopt},
+      {      1 * MB, 1, 512,     16 * KB,  64, std::nullopt},
+      {      2 * MB, 1, 512,     16 * KB, 128, std::nullopt},
+      {      4 * MB, 1, 512,     32 * KB, 128, std::nullopt},
+      {      8 * MB, 1, 512,     64 * KB, 128, std::nullopt},
+      {     16 * MB, 2, 512,    128 * KB, 128, std::nullopt},
+      {     32 * MB, 2, 512,    256 * KB, 128, std::nullopt},
+      {     64 * MB, 2, 512,    128 * KB, 256, std::nullopt},
+      {    128 * MB, 2, 512,    128 * KB, 256, std::nullopt},
+      {    256 * MB, 2, 512,    256 * KB, 128, std::nullopt},
+      {    512 * MB, 4, 512,    512 * KB,  64, std::nullopt},
+      {      1 * GB, 4, 512,    512 * KB,  64, std::nullopt},
+      {      2 * GB, 4, 512,    512 * KB,  64, std::nullopt},
+      {      4 * GB, 4, 512,    512 * KB,  64, std::nullopt},
+      {      8 * GB, 4, 512,    512 * KB,  64, std::nullopt},
+      {     16 * GB, 4, 512,    512 * KB,  64, std::nullopt},
+      {     32 * GB, 4, 512,    512 * KB,  64, std::nullopt},
+      {     64 * GB, 4, 512,    512 * KB,  64, std::nullopt},
   };
   // clang-format on
 
@@ -1279,6 +1331,99 @@ void checkChunkAlignment(
   }
 }
 
+// ============================================================================
+// resolveIbConfig tests
+// ============================================================================
+
+TEST(ResolveIbConfig, ExplicitConfigTakesPrecedence) {
+  CtranIbConfig explicit_cfg{};
+  explicit_cfg.qpScalingTh = 42;
+  auto result = resolveIbConfig(&explicit_cfg, GpuArch::Default, 1 * MB);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->qpScalingTh, 42u);
+}
+
+TEST(ResolveIbConfig, BlackwellDerives) {
+  auto result = resolveIbConfig(nullptr, GpuArch::Default, 1 * MB);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_GE(
+      result->qpScalingTh,
+      static_cast<size_t>(NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MIN));
+}
+
+TEST(ResolveIbConfig, HopperReturnsNullopt) {
+  auto result = resolveIbConfig(nullptr, GpuArch::Hopper, 1 * MB);
+  EXPECT_FALSE(result.has_value());
+}
+
+TEST(ResolveIbConfig, ExplicitOverridesEvenOnHopper) {
+  CtranIbConfig explicit_cfg{};
+  explicit_cfg.qpScalingTh = 99;
+  auto result = resolveIbConfig(&explicit_cfg, GpuArch::Hopper, 1 * MB);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->qpScalingTh, 99u);
+}
+
+TEST(ResolveIbConfig, DisableConditionSweep) {
+  // Sweep ThMin/ThMax boundary values around the disable conditions:
+  //   disabled when: ThMin < 0 || ThMax <= 0 || ThMax < ThMin
+  struct Case {
+    int64_t thMin;
+    int64_t thMax;
+    bool expectEnabled;
+  };
+  // clang-format off
+  const std::vector<Case> cases = {
+      // ThMin < 0
+      {-2, 524288, false},
+      {-1, 524288, false},
+      // ThMax <= 0
+      {262144, -2, false},
+      {262144, -1, false},
+      {262144,  0, false},
+      // ThMax < ThMin
+      {1000, 999, false},
+      {1000, 500, false},
+      // Both negative
+      {-1, -1, false},
+      // Boundary: ThMin == 0 is valid (not < 0)
+      {0, 1, true},
+      {0, 524288, true},
+      // ThMax == ThMin (equal is valid, clamp returns that value)
+      {1000, 1000, true},
+      // Normal defaults
+      {262144, 524288, true},
+      // ThMax == 1 (minimal positive)
+      {0, 1, true},
+      {1, 1, true},
+      {2, 1, false},  // ThMax < ThMin
+  };
+  // clang-format on
+  for (const auto& c : cases) {
+    QpScalingThMinOverride oMin(c.thMin);
+    QpScalingThMaxOverride oMax(c.thMax);
+    auto result = resolveIbConfig(nullptr, GpuArch::Default, 1 * MB);
+    if (c.expectEnabled) {
+      ASSERT_TRUE(result.has_value())
+          << "Expected enabled at ThMin=" << c.thMin << " ThMax=" << c.thMax;
+      EXPECT_GE(result->qpScalingTh, static_cast<size_t>(c.thMin));
+      EXPECT_LE(result->qpScalingTh, static_cast<size_t>(c.thMax));
+    } else {
+      EXPECT_FALSE(result.has_value())
+          << "Expected disabled at ThMin=" << c.thMin << " ThMax=" << c.thMax;
+    }
+  }
+}
+
+TEST(ResolveIbConfig, CustomThMinThMaxClamps) {
+  QpScalingThMinOverride oMin(100000);
+  QpScalingThMaxOverride oMax(200000);
+  auto result = resolveIbConfig(nullptr, GpuArch::Default, 1 * MB);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_GE(result->qpScalingTh, 100000u);
+  EXPECT_LE(result->qpScalingTh, 200000u);
+}
+
 // Combined invariant checks over the full (maxBDP, nRanks, msgBytes) space.
 // For each combination we verify:
 //   1. Non-pow2 msgBytes produces same tuning as nearest pow2
@@ -1313,6 +1458,22 @@ TEST_F(AutoTuneInvariantTest, CombinedInvariants) {
             << " stagingBufSize=" << stagingBufSize
             << " chunkSize=" << at.pipeline.chunkSize
             << " numChunks=" << at.pipeline.numChunks;
+
+        // resolveIbConfig: Default returns value in [ThMin, ThMax], Hopper
+        // nullopt
+        auto resolved =
+            resolveIbConfig(nullptr, GpuArch::Default, at.pipeline.chunkSize);
+        ASSERT_TRUE(resolved.has_value())
+            << "resolveIbConfig(Default) should return value at msgBytes="
+            << msgBytes;
+        EXPECT_GE(
+            resolved->qpScalingTh,
+            static_cast<size_t>(NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MIN));
+
+        auto hopperResolved =
+            resolveIbConfig(nullptr, GpuArch::Hopper, at.pipeline.chunkSize);
+        EXPECT_FALSE(hopperResolved.has_value())
+            << "resolveIbConfig(Hopper) should return nullopt";
       }
     }
   }

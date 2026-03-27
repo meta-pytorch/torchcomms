@@ -1,21 +1,22 @@
-// Copyright (c) Meta Platforms, Inc. and affiliates.
+// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #pragma once
 
+#include <vector>
+
 #include <gmock/gmock.h>
-#include <gtest/gtest.h>
 
-#include "comms/ctran/bootstrap/ICtranBootstrap.h"
+#include "comms/common/bootstrap/IBootstrap.h"
 
-namespace ctran::testing {
+namespace meta::comms::testing {
 
-// Mock ICtranBootstrap for testing
-class MockBootstrap : public meta::comms::ICtranBootstrap {
+/// GMock-based mock of IBootstrap for unit testing.
+class MockBootstrap : public meta::comms::IBootstrap {
  public:
   MOCK_METHOD(
       folly::SemiFuture<int>,
       allGather,
-      (void* buf, int len, int rank, int nranks),
+      (void* buf, int len, int rank, int nRanks),
       (override));
   MOCK_METHOD(
       folly::SemiFuture<int>,
@@ -23,18 +24,18 @@ class MockBootstrap : public meta::comms::ICtranBootstrap {
       (void* buf,
        int len,
        int localRank,
-       int localNranks,
+       int localNRanks,
        std::vector<int> localRankToCommRank),
       (override));
   MOCK_METHOD(
       folly::SemiFuture<int>,
       barrier,
-      (int rank, int nranks),
+      (int rank, int nRanks),
       (override));
   MOCK_METHOD(
       folly::SemiFuture<int>,
       barrierIntraNode,
-      (int localRank, int localNranks, std::vector<int> localRankToCommRank),
+      (int localRank, int localNRanks, std::vector<int> localRankToCommRank),
       (override));
   MOCK_METHOD(
       folly::SemiFuture<int>,
@@ -42,13 +43,13 @@ class MockBootstrap : public meta::comms::ICtranBootstrap {
       (void* buf,
        int len,
        int nvlLocalRank,
-       int nvlNranks,
+       int nvlNRanks,
        std::vector<int> nvlRankToCommRank),
       (override));
   MOCK_METHOD(
       folly::SemiFuture<int>,
       barrierNvlDomain,
-      (int nvlLocalRank, int nvlNranks, std::vector<int> nvlRankToCommRank),
+      (int nvlLocalRank, int nvlNRanks, std::vector<int> nvlRankToCommRank),
       (override));
   MOCK_METHOD(
       folly::SemiFuture<int>,
@@ -60,8 +61,11 @@ class MockBootstrap : public meta::comms::ICtranBootstrap {
       recv,
       (void* buf, int len, int peer, int tag),
       (override));
-
-  void expectSuccessfulCtranInitCalls();
+  MOCK_METHOD(
+      folly::SemiFuture<int>,
+      broadcast,
+      (void* buf, int len, int root, int rank, int nranks),
+      (override));
 };
 
-} // namespace ctran::testing
+} // namespace meta::comms::testing

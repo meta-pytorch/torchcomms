@@ -13,6 +13,7 @@ using cudaHostAlloc. It is NOT thread-safe.
 
 #include "comms/ctran/utils/Checks.h"
 
+#include "comms/utils/CudaRAII.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 
@@ -120,6 +121,9 @@ class PinnedHostPool {
 
  private:
   void allocChunk() {
+    meta::comms::StreamCaptureModeGuard captureGuard{
+        cudaStreamCaptureModeRelaxed};
+
     void* mem = nullptr;
     FB_CUDACHECKTHROW_EX_NOCOMM(
         cudaHostAlloc(&mem, chunkSize_ * sizeof(T), cudaHostAllocDefault));

@@ -187,19 +187,35 @@ class TorchCommDeviceWindow {
       uint64_t value = 1,
       CoopScope scope = CoopScope::THREAD);
 
-  __device__ int wait_signal(int signal_id, CmpOp cmp, uint64_t value);
-  __device__ int
-  wait_signal_from(int peer, int signal_id, CmpOp cmp, uint64_t value);
+  __device__ int wait_signal(
+      int signal_id,
+      CmpOp cmp,
+      uint64_t value,
+      CoopScope scope = CoopScope::THREAD);
+  __device__ int wait_signal_from(
+      int peer,
+      int signal_id,
+      CmpOp cmp,
+      uint64_t value,
+      CoopScope scope = CoopScope::THREAD);
   __device__ uint64_t read_signal(int signal_id) const;
-  __device__ void reset_signal(int signal_id);
+  __device__ void reset_signal(
+      int signal_id,
+      CoopScope scope = CoopScope::THREAD);
 
   // =========================================================================
   // Counter Operations (Local Completion)
   // =========================================================================
 
-  __device__ int wait_counter(int counter_id, CmpOp cmp, uint64_t value);
+  __device__ int wait_counter(
+      int counter_id,
+      CmpOp cmp,
+      uint64_t value,
+      CoopScope scope = CoopScope::THREAD);
   __device__ uint64_t read_counter(int counter_id) const;
-  __device__ void reset_counter(int counter_id);
+  __device__ void reset_counter(
+      int counter_id,
+      CoopScope scope = CoopScope::THREAD);
 
   // =========================================================================
   // Synchronization & Completion

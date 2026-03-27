@@ -2867,6 +2867,24 @@ cvars:
      with per-message-size optimal values. Set to 0 to use static CVAR
      values instead.
 
+ - name        : NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MIN
+   type        : int64_t
+   default     : 262144
+   description : |-
+     Lower bound (in bytes) for the QP scaling threshold in AllReduceRing autotune.
+     The threshold is clamped to [this value, TH_MAX]. Default: 262144 (256KB).
+     Autotune-derived QP scaling is disabled when TH_MIN < 0, TH_MAX <= 0,
+     or TH_MAX < TH_MIN.
+
+ - name        : NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MAX
+   type        : int64_t
+   default     : 524288
+   description : |-
+     Upper bound (in bytes) for the QP scaling threshold in AllReduceRing autotune.
+     The threshold is clamped to [TH_MIN, this value]. Default: 524288 (512KB).
+     Autotune-derived QP scaling is disabled when TH_MIN < 0, TH_MAX <= 0,
+     or TH_MAX < TH_MIN.
+
  - name        : NCCL_CTRAN_ALLREDUCE_RING_STAGING_BUF_SIZE
    type        : int64_t
    default     : 0

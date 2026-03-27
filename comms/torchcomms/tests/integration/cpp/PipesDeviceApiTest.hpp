@@ -27,6 +27,7 @@
 
 #include "TorchCommTestHelpers.h"
 #include "comms/torchcomms/TorchComm.hpp"
+#include "comms/torchcomms/device/TorchCommDeviceWindow.hpp"
 #include "comms/torchcomms/ncclx/TorchCommWindowNCCLX.hpp"
 
 class PipesDeviceApiTest : public ::testing::Test {
@@ -74,6 +75,11 @@ class PipesDeviceApiTest : public ::testing::Test {
   // Test wait_counter: put_signal_counter, then wait_counter on sender side
   // to verify local completion tracking via companion QP counter.
   void testWaitCounter(int count, at::ScalarType dtype);
+
+  // Test wait_signal with CoopScope (WARP/BLOCK)
+  void testWaitSignalScoped(
+      torchcomms::device::CoopScope scope,
+      int num_threads);
 
   // Member variables
   std::unique_ptr<TorchCommTestWrapper> wrapper_;
