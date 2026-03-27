@@ -209,6 +209,54 @@ class CtranBaseTest {
   inline size_t pageAligned(size_t nBytes) {
     return ((nBytes + pageSize_ - 1) / pageSize_) * pageSize_;
   }
+
+  // Assign a linear sequence (seed, seed+inc, seed+2*inc, ...) to a device
+  // buffer synchronously.
+  template <typename T>
+  void assignChunkValue(T* buf, size_t count, T seed, T inc) {
+    std::vector<T> vals(count);
+    for (size_t i = 0; i < count; ++i) {
+      vals[i] = seed + i * inc;
+    }
+    CUDACHECK_ASSERT(
+        cudaMemcpy(buf, vals.data(), count * sizeof(T), cudaMemcpyDefault));
+  }
+
+  // Check that a device buffer contains a linear sequence (seed, seed+inc,
+  // seed+2*inc, ...). Returns the number of mismatches. Prints the first 10
+  // errors with the given rank for identification.
+  template <typename T>
+  int checkChunkValue(
+      T* buf,
+      size_t count,
+      T seed,
+      T inc,
+      int rank,
+      cudaStream_t stream) {
+    std::vector<T> observed(count, -1);
+    CUDACHECK_TEST(cudaMemcpyAsync(
+        observed.data(), buf, count * sizeof(T), cudaMemcpyDefault, stream));
+    CUDACHECK_TEST(cudaStreamSynchronize(stream));
+    int errs = 0;
+    for (size_t i = 0; i < count; ++i) {
+      T expected = seed + inc * i;
+      if (observed[i] != expected) {
+        if (errs < 10) {
+          std::cout << "[" << rank << "] observed[" << i
+                    << "] = " << observed[i] << ", expected = " << expected
+                    << std::endl;
+        }
+        errs++;
+      }
+    }
+    return errs;
+  }
+
+  // Overload without increment — checks for a constant value.
+  template <typename T>
+  int checkChunkValue(T* buf, size_t count, T val) {
+    return checkChunkValue(buf, count, val, T{0}, /*rank=*/0, cudaStream_t{0});
+  }
 };
 
 class CtranDistBaseTest : public NcclxBaseTest, public CtranBaseTest {

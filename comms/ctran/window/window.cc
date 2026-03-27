@@ -134,6 +134,16 @@ commResult_t CtranWin::exchange() {
         myRank == i ? "(local)" : remWinInfo[i].dataRkey.toString());
   }
 
+  // Precompute the list of IB (non-NVLink) peers — topology is fixed for the
+  // lifetime of the window.
+  ibPeers.clear();
+  for (int p = 1; p < nRanks; p++) {
+    const int peer = (myRank + p) % nRanks;
+    if (statex->node(peer) != statex->node() || !nvlEnabled(peer)) {
+      ibPeers.push_back(peer);
+    }
+  }
+
   // A barrier among ranks after importing handles to prevent accessing window
   // memory space while other ranks are still importing.
   FB_COMMCHECK(mapper->barrier());
