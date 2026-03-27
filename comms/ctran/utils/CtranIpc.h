@@ -3,6 +3,7 @@
 #ifndef CTRAN_IPC_H_
 #define CTRAN_IPC_H_
 
+#include <algorithm>
 #include <sstream>
 #include <vector>
 
@@ -90,7 +91,8 @@ static inline void printHandle(
 #define CTRAN_IPC_INLINE_SEGMENTS 2
 
 struct CtranIpcDesc {
-  int numSegments{0};
+  // Total number of segments including any extra segments beyond inline.
+  int totalSegments{0};
   void* base{nullptr};
   size_t range{0};
   // pass local pid for peer to import sharedHandle as file descriptor
@@ -100,6 +102,11 @@ struct CtranIpcDesc {
 
   // Preallocated payload for multi-segment IPC memory.
   CtranIpcSegDesc segments[CTRAN_IPC_INLINE_SEGMENTS] = {};
+
+  // Number of valid entries in the inline segments[] array.
+  int numInlineSegments() const {
+    return std::min(totalSegments, CTRAN_IPC_INLINE_SEGMENTS);
+  }
 
   std::string toString() const {
     std::stringstream ss;
@@ -172,12 +179,19 @@ class CtranIpcMem {
       // work on AMD
       bool shouldSupportCudaMalloc = false);
 
-  // Export the memory range to a CtranIpcDesc for remote process importing
-  // Input arguments:
-  //   - ipcDesc: the information to be filled with the memory range exporting.
-  //              Caller is responsible for sending the descriptor to the remote
-  //              process.
+  // Export the memory range to a CtranIpcDesc for remote process importing.
+  // The first min(totalSegments, CTRAN_IPC_INLINE_SEGMENTS) segments are placed
+  // into ipcDesc.segments[]. ipcDesc.totalSegments is set to the full segment
+  // count.
+  // remaining segments beyond INLINE are returned in extraSegments (empty when
+  // totalSegments <= CTRAN_IPC_INLINE_SEGMENTS).
+  // Returns commInternalError via the no-extraSegments overload when
+  // totalSegments > CTRAN_IPC_INLINE_SEGMENTS and the caller cannot handle
+  // them.
   commResult_t ipcExport(CtranIpcDesc& ipcDesc);
+  commResult_t ipcExport(
+      CtranIpcDesc& ipcDesc,
+      std::vector<CtranIpcSegDesc>& extraSegments);
 
   // Free the memory range and associated handles.
   // Note: recommending call free explicitly to check potential cuda failure.
@@ -228,6 +242,9 @@ class CtranIpcMem {
  private:
   commResult_t alloc(const size_t size);
 
+  inline commResult_t exportSegmentSharedHandle(
+      int segIdx,
+      CUmemAllocationHandleType exportHandleType);
   inline commResult_t freeCuMem();
   inline commResult_t freeCudaMallocMem();
 
@@ -264,11 +281,14 @@ class CtranIpcRemMem {
   //   - logMetaData: logMetaData of the communicator for memory logging
   //                  purposes
   //   - desc: description of the usage of the memory range to be imported
+  //   - extraSegments: extra segment descriptors beyond
+  //   CTRAN_IPC_INLINE_SEGMENTS
   CtranIpcRemMem(
       const CtranIpcDesc& ipcDesc,
       const int cudaDev,
       const struct CommLogData* logMetaData,
-      const char* desc);
+      const char* desc,
+      const std::vector<CtranIpcSegDesc>& extraSegments = {});
 
   // Release the memory range and associated handles
   ~CtranIpcRemMem();
@@ -319,7 +339,9 @@ class CtranIpcRemMem {
   }
 
  private:
-  commResult_t import(const CtranIpcDesc& ipcDesc);
+  commResult_t import(
+      const CtranIpcDesc& ipcDesc,
+      const std::vector<CtranIpcSegDesc>& extraSegments = {});
   commResult_t importCuMem(const CtranIpcDesc& ipcDesc);
   commResult_t importCudaMallocMem(const CtranIpcDesc& ipcDesc);
 

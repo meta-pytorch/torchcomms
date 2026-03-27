@@ -86,14 +86,64 @@ static inline CUmemAllocationHandleType getCuMemExportHandleType(
 }
 
 commResult_t ctran::utils::CtranIpcMem::ipcExport(CtranIpcDesc& ipcDesc) {
-  // FIXME: we need either fallback to IB or support numSegments > 2 case via
-  // variable length control msg
-  if (allocHandles_.size() > CTRAN_IPC_INLINE_SEGMENTS) {
+  std::vector<CtranIpcSegDesc> extraSegments;
+  FB_COMMCHECK(ipcExport(ipcDesc, extraSegments));
+  if (!extraSegments.empty()) {
     CLOGF(
         ERR,
         "CTRAN-IPC: tried to export CtranIpcMem backed by too many physical memory allocations. [{}]",
         this->toString());
     return commInternalError;
+  }
+  return commSuccess;
+}
+
+inline commResult_t ctran::utils::CtranIpcMem::exportSegmentSharedHandle(
+    int segIdx,
+    CUmemAllocationHandleType exportHandleType) {
+  if (sharedHandlesInitialized_[segIdx]) {
+    return commSuccess;
+  }
+
+  if (memType_ == DevMemType::kCumem) {
+    bool isCumemFabric = false;
+#if CUDART_VERSION >= 12040
+    isCumemFabric = (exportHandleType == CU_MEM_HANDLE_TYPE_FABRIC);
+#endif
+    if (isCumemFabric) {
+      FB_CUCHECK(cuMemExportToShareableHandle(
+          &sharedHandles_[segIdx].handle,
+          allocHandles_[segIdx],
+          exportHandleType,
+          0));
+    } else {
+      FB_CUCHECK(cuMemExportToShareableHandle(
+          &sharedHandles_[segIdx].fd,
+          allocHandles_[segIdx],
+          CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR,
+          0));
+    }
+  } else if (memType_ == DevMemType::kCudaMalloc) {
+    void* p = (void*)pbase_;
+    FB_CUDACHECK(cudaIpcGetMemHandle(&sharedHandles_[segIdx].cudaIpcHandle, p));
+  } else {
+    FB_ERRORRETURN(
+        commInternalError,
+        "CTRAN-IPC: unsupported memory type {}",
+        devMemTypeStr(memType_));
+  }
+
+  sharedHandlesInitialized_[segIdx] = true;
+  return commSuccess;
+}
+
+commResult_t ctran::utils::CtranIpcMem::ipcExport(
+    CtranIpcDesc& ipcDesc,
+    std::vector<CtranIpcSegDesc>& extraSegments) {
+  const int totalSegments = allocHandles_.size();
+
+  if (totalSegments <= 0) {
+    FB_ERRORRETURN(commInvalidArgument, "CTRAN-IPC: no segments to export");
   }
 
   // Export handle
@@ -103,52 +153,40 @@ commResult_t ctran::utils::CtranIpcMem::ipcExport(CtranIpcDesc& ipcDesc) {
   ipcDesc.memType = memType_;
   ipcDesc.cuMemHandleType = exportHandleType;
 
-  for (int i = 0; i < allocHandles_.size(); i++) {
-    // Reuse handle if already exported
-    if (!sharedHandlesInitialized_[i]) {
-      if (memType_ == DevMemType::kCumem) {
-        bool isCumemFabric = false;
-#if CUDART_VERSION >= 12040
-        isCumemFabric = (exportHandleType == CU_MEM_HANDLE_TYPE_FABRIC);
-#endif
-        if (isCumemFabric) {
-          FB_CUCHECK(cuMemExportToShareableHandle(
-              &sharedHandles_[i].handle,
-              allocHandles_[i],
-              exportHandleType,
-              0));
-        } else {
-          FB_CUCHECK(cuMemExportToShareableHandle(
-              &sharedHandles_[i].fd,
-              allocHandles_[i],
-              CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR,
-              0));
-        }
-      } else if (memType_ == DevMemType::kCudaMalloc) {
-        void* p = (void*)pbase_;
-        FB_CUDACHECK(cudaIpcGetMemHandle(&sharedHandles_[i].cudaIpcHandle, p));
-      } else {
-        FB_ERRORRETURN(
-            commInternalError,
-            "CTRAN-IPC: unsupported memory type {}",
-            devMemTypeStr(ipcDesc.memType));
-      }
-    }
+  const int inlineEnd = std::min(totalSegments, CTRAN_IPC_INLINE_SEGMENTS);
 
-    sharedHandlesInitialized_[i] = true;
+  // Fill the inline segments in ipcDesc
+  for (int i = 0; i < inlineEnd; i++) {
+    FB_COMMCHECK(exportSegmentSharedHandle(i, exportHandleType));
     ipcDesc.segments[i].sharedHandle = sharedHandles_[i];
     ipcDesc.segments[i].range = segmentRanges_[i];
   }
 
-  ipcDesc.numSegments = allocHandles_.size();
+  // Zero out unused inline slots
+  for (int i = inlineEnd; i < CTRAN_IPC_INLINE_SEGMENTS; i++) {
+    ipcDesc.segments[i] = CtranIpcSegDesc{};
+  }
+
+  // Fill extra segments beyond CTRAN_IPC_INLINE_SEGMENTS
+  extraSegments.clear();
+  for (int i = CTRAN_IPC_INLINE_SEGMENTS; i < totalSegments; i++) {
+    FB_COMMCHECK(exportSegmentSharedHandle(i, exportHandleType));
+    CtranIpcSegDesc seg;
+    seg.sharedHandle = sharedHandles_[i];
+    seg.range = segmentRanges_[i];
+    extraSegments.push_back(seg);
+  }
+
+  ipcDesc.totalSegments = totalSegments;
   ipcDesc.pid = getpid();
   ipcDesc.base = this->getBase();
   ipcDesc.range = this->getRange();
 
   CLOGF_TRACE(
       ALLOC,
-      "CTRAN-IPC: exported mem [{}] to ipcDesc: {}",
+      "CTRAN-IPC: exported mem [{}] to ipcDesc (extraSegments={}): {}",
       this->toString(),
+      extraSegments.size(),
       ipcDesc.toString());
 
   return commSuccess;
@@ -264,8 +302,8 @@ inline commResult_t ctran::utils::CtranIpcMem::tryLoadCuMem(
   //   the allocation's handle type. Used in LOAD mode to validate that
   //   user-provided memory can be exported.
 
-  // temp linear loop through physical allocations, could be faster to get from
-  // pytorch level
+  // temp linear loop through physical allocations, could be faster to get
+  // from pytorch level
   size_t cur_offset = 0;
   while (cur_offset < len) {
     const void* cur_ptr = (char*)ptr + cur_offset;
@@ -354,8 +392,8 @@ inline commResult_t CtranIpcMem::tryLoadCudaMallocMem(
 }
 
 commResult_t ctran::utils::CtranIpcMem::free() {
-  // In case context has already been destroyed by PyTorch, all resources should
-  // already be released. Thus, safe to skip here.
+  // In case context has already been destroyed by PyTorch, all resources
+  // should already be released. Thus, safe to skip here.
   CUcontext pctx;
   FB_CUCHECK(cuCtxGetCurrent(&pctx));
   if (pctx == nullptr) {
@@ -428,7 +466,8 @@ ctran::utils::CtranIpcRemMem::CtranIpcRemMem(
     const CtranIpcDesc& ipcDesc,
     const int cudaDev,
     const struct CommLogData* logMetaData,
-    const char* desc)
+    const char* desc,
+    const std::vector<CtranIpcSegDesc>& extraSegments)
     : cudaDev_(cudaDev),
       logMetaData_(logMetaData),
       desc_(desc),
@@ -437,7 +476,7 @@ ctran::utils::CtranIpcRemMem::CtranIpcRemMem(
   if (!CtranIpcSupport()) {
     FB_COMMCHECKTHROW_EX_NOCOMM(commInternalError);
   }
-  FB_COMMCHECKTHROW_EX_NOCOMM(this->import(ipcDesc));
+  FB_COMMCHECKTHROW_EX_NOCOMM(this->import(ipcDesc, extraSegments));
 };
 
 ctran::utils::CtranIpcRemMem::~CtranIpcRemMem() {
@@ -449,17 +488,30 @@ ctran::utils::CtranIpcRemMem::~CtranIpcRemMem() {
   // https://stackoverflow.com/questions/130117/if-you-shouldnt-throw-exceptions-in-a-destructor-how-do-you-handle-errors-in-i
 }
 
-commResult_t ctran::utils::CtranIpcRemMem::import(const CtranIpcDesc& ipcDesc) {
+commResult_t ctran::utils::CtranIpcRemMem::import(
+    const CtranIpcDesc& ipcDesc,
+    const std::vector<CtranIpcSegDesc>& extraSegments) {
   range_ = ipcDesc.range;
   remPid_ = ipcDesc.pid;
 
-  remHandles_.resize(ipcDesc.numSegments);
-  segmentRanges_.resize(ipcDesc.numSegments);
-  allocHandles_.resize(ipcDesc.numSegments);
+  remHandles_.resize(ipcDesc.totalSegments);
+  segmentRanges_.resize(ipcDesc.totalSegments);
+  allocHandles_.resize(ipcDesc.totalSegments);
 
-  for (int i = 0; i < ipcDesc.numSegments; i++) {
+  // Copy inline segments from ipcDesc
+  for (int i = 0; i < ipcDesc.numInlineSegments(); i++) {
     remHandles_[i] = ipcDesc.segments[i].sharedHandle;
     segmentRanges_[i] = ipcDesc.segments[i].range;
+  }
+
+  // Copy extra segments
+  for (size_t i = 0; i < extraSegments.size(); i++) {
+    int idx = CTRAN_IPC_INLINE_SEGMENTS + i;
+    if (idx >= ipcDesc.totalSegments) {
+      break;
+    }
+    remHandles_[idx] = extraSegments[i].sharedHandle;
+    segmentRanges_[idx] = extraSegments[i].range;
   }
 
   if (ipcDesc.memType == DevMemType::kCumem) {
@@ -538,11 +590,11 @@ commResult_t CtranIpcRemMem::importCuMem(const CtranIpcDesc& ipcDesc) {
 }
 
 commResult_t CtranIpcRemMem::importCudaMallocMem(const CtranIpcDesc& ipcDesc) {
-  if (ipcDesc.numSegments != 1) {
+  if (ipcDesc.totalSegments != 1) {
     CLOGF(
         ERR,
         "CTRAN-IPC: Number of segments is expected to be 1, but got {}",
-        ipcDesc.numSegments);
+        ipcDesc.totalSegments);
     return commInternalError;
   }
 
@@ -557,8 +609,8 @@ commResult_t CtranIpcRemMem::importCudaMallocMem(const CtranIpcDesc& ipcDesc) {
 }
 
 commResult_t ctran::utils::CtranIpcRemMem::release() {
-  // In case context has already been destroyed by PyTorch, all resources should
-  // already be released. Thus, safe to skip here.
+  // In case context has already been destroyed by PyTorch, all resources
+  // should already be released. Thus, safe to skip here.
   CUcontext pctx;
   FB_CUCHECK(cuCtxGetCurrent(&pctx));
   if (pctx == nullptr) {
