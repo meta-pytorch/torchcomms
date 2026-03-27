@@ -155,11 +155,9 @@ HostWindow::~HostWindow() {
     cudaFree(ibgdaPeerCounterLocalBuf_.ptr);
   }
 
-  // Clean up registered buffers
-  for (const auto& reg : localRegistrations_) {
-    if (reg.lkey != NetworkLKey{}) {
-      transport_.localDeregisterIbgdaBuffer(const_cast<void*>(reg.base));
-    }
+  // Clean up IBGDA buffer registrations
+  for (auto* ptr : registeredLocalBuffers_) {
+    transport_.localDeregisterIbgdaBuffer(ptr);
   }
   if (!exchangedNvlMappedPtrs_.empty()) {
     transport_.unmapNvlBuffers(exchangedNvlMappedPtrs_);
@@ -309,23 +307,18 @@ void HostWindow::exchange() {
   exchanged_ = true;
 }
 
-int HostWindow::registerLocalBuffer(void* ptr, std::size_t size) {
-  int regIdx = static_cast<int>(localRegistrations_.size());
-  int nIbgdaPeers = static_cast<int>(ibgdaPeerRanks_.size());
-
-  LocalBufferRegistration localReg{ptr, size, NetworkLKey{}};
-
-  if (nIbgdaPeers > 0) {
-    auto ibgdaBuf = transport_.localRegisterIbgdaBuffer(ptr, size);
-    localReg.lkey = ibgdaBuf.lkey;
+std::optional<NetworkLKey> HostWindow::registerLocalBuffer(
+    void* ptr,
+    std::size_t size) {
+  if (ibgdaPeerRanks_.empty()) {
+    return std::nullopt;
   }
-
-  localRegistrations_.push_back(localReg);
-
-  return regIdx;
+  auto ibgdaBuf = transport_.localRegisterIbgdaBuffer(ptr, size);
+  registeredLocalBuffers_.push_back(ptr);
+  return ibgdaBuf.lkey;
 }
 
-int HostWindow::registerAndExchangeBuffer(void* ptr, std::size_t size) {
+void HostWindow::registerAndExchangeBuffer(void* ptr, std::size_t size) {
   if (userBufferRegistered_) {
     throw std::runtime_error(
         "HostWindow::registerAndExchangeBuffer() called more than once. "
@@ -333,17 +326,13 @@ int HostWindow::registerAndExchangeBuffer(void* ptr, std::size_t size) {
   }
   userBufferRegistered_ = true;
 
-  int regIdx = static_cast<int>(localRegistrations_.size());
   int nIbgdaPeers = static_cast<int>(ibgdaPeerRanks_.size());
   int nNvlPeers = static_cast<int>(nvlPeerRanks_.size());
-
-  LocalBufferRegistration localReg{ptr, size, NetworkLKey{}};
 
   // IBGDA side: register + exchange
   if (nIbgdaPeers > 0) {
     auto ibgdaBuf = transport_.localRegisterIbgdaBuffer(ptr, size);
-    localReg.lkey = ibgdaBuf.lkey;
-
+    registeredLocalBuffers_.push_back(ptr);
     auto remoteBufs = transport_.exchangeIbgdaBuffer(ibgdaBuf);
     for (int i = 0; i < nIbgdaPeers; ++i) {
       remoteRegistrations_.push_back(
@@ -376,10 +365,7 @@ int HostWindow::registerAndExchangeBuffer(void* ptr, std::size_t size) {
         cudaMemcpyDefault));
   }
 
-  localRegistrations_.push_back(localReg);
   uploadRegistrationsToDevice();
-
-  return regIdx;
 }
 
 void HostWindow::uploadRegistrationsToDevice() {

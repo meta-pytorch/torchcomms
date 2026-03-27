@@ -122,7 +122,8 @@ TEST_F(HostWindowTestFixture, RegisterLocalBufferBeforeExchange) {
   void* buf = nullptr;
   CUDACHECK_TEST(cudaMalloc(&buf, 1024));
 
-  EXPECT_EQ(window.registerLocalBuffer(buf, 1024), 0);
+  // No IBGDA peers in mock transport → returns nullopt
+  EXPECT_FALSE(window.registerLocalBuffer(buf, 1024).has_value());
 
   CUDACHECK_TEST(cudaFree(buf));
 }
@@ -136,8 +137,7 @@ TEST_F(HostWindowTestFixture, RegisterLocalBufferAfterExchange) {
   void* buf = nullptr;
   CUDACHECK_TEST(cudaMalloc(&buf, 4096));
 
-  int regIdx = window.registerLocalBuffer(buf, 4096);
-  EXPECT_EQ(regIdx, 0);
+  EXPECT_FALSE(window.registerLocalBuffer(buf, 4096).has_value());
 
   CUDACHECK_TEST(cudaFree(buf));
 }
@@ -155,9 +155,9 @@ TEST_F(HostWindowTestFixture, RegisterMultipleLocalBuffers) {
   CUDACHECK_TEST(cudaMalloc(&buf1, 2048));
   CUDACHECK_TEST(cudaMalloc(&buf2, 4096));
 
-  EXPECT_EQ(window.registerLocalBuffer(buf0, 1024), 0);
-  EXPECT_EQ(window.registerLocalBuffer(buf1, 2048), 1);
-  EXPECT_EQ(window.registerLocalBuffer(buf2, 4096), 2);
+  EXPECT_FALSE(window.registerLocalBuffer(buf0, 1024).has_value());
+  EXPECT_FALSE(window.registerLocalBuffer(buf1, 2048).has_value());
+  EXPECT_FALSE(window.registerLocalBuffer(buf2, 4096).has_value());
 
   CUDACHECK_TEST(cudaFree(buf0));
   CUDACHECK_TEST(cudaFree(buf1));
@@ -176,7 +176,7 @@ TEST_F(HostWindowTestFixture, RegisterAndExchangeBufferBeforeExchange) {
   void* buf = nullptr;
   CUDACHECK_TEST(cudaMalloc(&buf, 1024));
 
-  EXPECT_EQ(window.registerAndExchangeBuffer(buf, 1024), 0);
+  window.registerAndExchangeBuffer(buf, 1024);
 
   CUDACHECK_TEST(cudaFree(buf));
 }
@@ -190,8 +190,7 @@ TEST_F(HostWindowTestFixture, RegisterAndExchangeBufferAfterExchange) {
   void* buf = nullptr;
   CUDACHECK_TEST(cudaMalloc(&buf, 4096));
 
-  int regIdx = window.registerAndExchangeBuffer(buf, 4096);
-  EXPECT_EQ(regIdx, 0);
+  window.registerAndExchangeBuffer(buf, 4096);
 
   CUDACHECK_TEST(cudaFree(buf));
 }
@@ -219,7 +218,7 @@ TEST_F(HostWindowTestFixture, RegisterAndExchangeBufferCalledTwiceThrows) {
 // Mixed registration Tests
 // =============================================================================
 
-TEST_F(HostWindowTestFixture, LocalThenExchangeBufferIndicesAreSequential) {
+TEST_F(HostWindowTestFixture, LocalThenExchangeBuffer) {
   auto transport = createTransport();
   WindowConfig config{.peerSignalCount = 1};
   HostWindow window(*transport, config);
@@ -230,14 +229,14 @@ TEST_F(HostWindowTestFixture, LocalThenExchangeBufferIndicesAreSequential) {
   CUDACHECK_TEST(cudaMalloc(&localBuf, 1024));
   CUDACHECK_TEST(cudaMalloc(&dstBuf, 2048));
 
-  EXPECT_EQ(window.registerLocalBuffer(localBuf, 1024), 0);
-  EXPECT_EQ(window.registerAndExchangeBuffer(dstBuf, 2048), 1);
+  EXPECT_FALSE(window.registerLocalBuffer(localBuf, 1024).has_value());
+  window.registerAndExchangeBuffer(dstBuf, 2048);
 
   CUDACHECK_TEST(cudaFree(localBuf));
   CUDACHECK_TEST(cudaFree(dstBuf));
 }
 
-TEST_F(HostWindowTestFixture, ExchangeThenLocalBufferIndicesAreSequential) {
+TEST_F(HostWindowTestFixture, ExchangeThenLocalBuffer) {
   auto transport = createTransport();
   WindowConfig config{.peerSignalCount = 1};
   HostWindow window(*transport, config);
@@ -250,9 +249,9 @@ TEST_F(HostWindowTestFixture, ExchangeThenLocalBufferIndicesAreSequential) {
   CUDACHECK_TEST(cudaMalloc(&localBuf0, 1024));
   CUDACHECK_TEST(cudaMalloc(&localBuf1, 4096));
 
-  EXPECT_EQ(window.registerAndExchangeBuffer(dstBuf, 2048), 0);
-  EXPECT_EQ(window.registerLocalBuffer(localBuf0, 1024), 1);
-  EXPECT_EQ(window.registerLocalBuffer(localBuf1, 4096), 2);
+  window.registerAndExchangeBuffer(dstBuf, 2048);
+  EXPECT_FALSE(window.registerLocalBuffer(localBuf0, 1024).has_value());
+  EXPECT_FALSE(window.registerLocalBuffer(localBuf1, 4096).has_value());
 
   CUDACHECK_TEST(cudaFree(dstBuf));
   CUDACHECK_TEST(cudaFree(localBuf0));
