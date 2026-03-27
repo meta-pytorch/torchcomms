@@ -55,6 +55,27 @@ void ctran::IpcRegCache::remReleaseMem(
   ipcRelease.uid = reg->uid;
 }
 
+namespace {
+
+// Serialize IpcReq and extra segments into a contiguous wire buffer
+std::shared_ptr<std::vector<uint8_t>> serializeIpcReq(
+    const ctran::regcache::IpcReq& req,
+    const std::vector<ctran::utils::CtranIpcSegDesc>& extraSegments) {
+  size_t wireSize = sizeof(ctran::regcache::IpcReq) +
+      extraSegments.size() * sizeof(ctran::utils::CtranIpcSegDesc);
+  auto wireBuf = std::make_shared<std::vector<uint8_t>>(wireSize);
+  std::memcpy(wireBuf->data(), &req, sizeof(ctran::regcache::IpcReq));
+  if (!extraSegments.empty()) {
+    std::memcpy(
+        wireBuf->data() + sizeof(ctran::regcache::IpcReq),
+        extraSegments.data(),
+        extraSegments.size() * sizeof(ctran::utils::CtranIpcSegDesc));
+  }
+  return wireBuf;
+}
+
+} // namespace
+
 static folly::Singleton<ctran::IpcRegCache> ipcRegCacheSingleton;
 std::shared_ptr<ctran::IpcRegCache> ctran::IpcRegCache::getInstance() {
   return ipcRegCacheSingleton.try_get();
@@ -291,6 +312,7 @@ commResult_t ctran::IpcRegCache::notifyRemoteIpcExport(
     const std::string& myId,
     const folly::SocketAddress& peerAddr,
     const ctran::regcache::IpcDesc& ipcDesc,
+    const std::vector<ctran::utils::CtranIpcSegDesc>& extraSegments,
     ctran::regcache::IpcReqCb* reqCb) {
   // Check if AsyncSocket is initialized
   if (!asyncSocketEvbThread_ || !asyncServerSocket_) {
@@ -306,20 +328,27 @@ commResult_t ctran::IpcRegCache::notifyRemoteIpcExport(
   reqCb->completed.store(false);
   reqCb->req.desc = ipcDesc;
 
+  // Build contiguous wire buffer: IpcReq header + extra segments.
+  // extraSegments only applies to kDesc; kept local to this function
+  // rather than polluting IpcReqCb which is shared with kRelease.
+  auto wireBuf = serializeIpcReq(reqCb->req, extraSegments);
+
   CLOGF_TRACE(
       COLL,
-      "CTRAN-REGCACHE: Sending IPC_DESC to peerAddr {}: {}",
+      "CTRAN-REGCACHE: Sending IPC_DESC to peerAddr {}: {} (wireSize={}, extraSegments={})",
       peerAddr.describe(),
-      reqCb->req.toString());
+      reqCb->req.toString(),
+      wireBuf->size(),
+      extraSegments.size());
 
-  // Send the whole IpcReq via AsyncClientSocket
-  // The peer checks IpcReqType and calls importMem for kDesc
+  // Send the serialized wire buffer via AsyncClientSocket.
+  // wireBuf captured in lambda to extend lifetime until send completes.
   ctran::bootstrap::AsyncClientSocket::send(
       *asyncSocketEvbThread_->getEventBase(),
       peerAddr,
-      &reqCb->req,
-      sizeof(ctran::regcache::IpcReq),
-      [reqCb, peerAddr](const folly::AsyncSocketException* err) {
+      wireBuf->data(),
+      wireBuf->size(),
+      [reqCb, peerAddr, wireBuf](const folly::AsyncSocketException* err) {
         if (err != nullptr) {
           CLOGF(
               WARN,
@@ -363,6 +392,18 @@ commResult_t ctran::IpcRegCache::initAsyncSocket() {
   auto serverAddrFuture = asyncServerSocket_->start(
       folly::SocketAddress(maybeAddr.value(), 0),
       sizeof(ctran::regcache::IpcReq),
+      // Size calculator: returns total wire size based on header content
+      [](const void* headerBuf, size_t headerSize) -> size_t {
+        const auto* req =
+            static_cast<const ctran::regcache::IpcReq*>(headerBuf);
+        if (req->type == ctran::regcache::IpcReqType::kDesc) {
+          int numExtra = std::max(
+              0, req->desc.desc.totalSegments - CTRAN_IPC_INLINE_SEGMENTS);
+          return sizeof(ctran::regcache::IpcReq) +
+              numExtra * sizeof(ctran::utils::CtranIpcSegDesc);
+        }
+        return sizeof(ctran::regcache::IpcReq);
+      },
       [this](std::unique_ptr<folly::IOBuf> buf) {
         // Extract the IpcReq from the received buffer
         ctran::regcache::IpcReq ipcReq;
@@ -387,8 +428,6 @@ commResult_t ctran::IpcRegCache::initAsyncSocket() {
           case ctran::regcache::IpcReqType::kDesc: {
             // Handle descriptor request - import the remote memory
             std::string peerId = ipcReq.getPeerId();
-            void* buf = nullptr;
-            ctran::regcache::IpcRemHandle remKey;
 
             CLOGF_TRACE(
                 COLL,
@@ -396,13 +435,36 @@ commResult_t ctran::IpcRegCache::initAsyncSocket() {
                 peerId,
                 ipcReq.desc.toString());
 
+            // Extract extra segments beyond CTRAN_IPC_INLINE_SEGMENTS
+            std::vector<ctran::utils::CtranIpcSegDesc> extraSegments;
+            int numExtra = ipcReq.desc.desc.totalSegments -
+                ipcReq.desc.desc.numInlineSegments();
+            if (numExtra > 0) {
+              const auto* extraData =
+                  reinterpret_cast<const ctran::utils::CtranIpcSegDesc*>(
+                      buf->data() + sizeof(ctran::regcache::IpcReq));
+              extraSegments.assign(extraData, extraData + numExtra);
+              CLOGF_TRACE(
+                  COLL,
+                  "CTRAN-REGCACHE: IPC_DESC has {} extra segments beyond inline",
+                  numExtra);
+            }
+
             // FIXME: currently notifyRemoteIpcExport shouldn't be used, since
             // the cudaDev is not passed in
+            void* mappedBuf = nullptr;
+            ctran::regcache::IpcRemHandle remKey;
             CLOGF(
                 WARN,
                 "CTRAN-REGCACHE: unsafe path to importMem with cudaDev 0 via async-socket");
-            FB_COMMCHECKIGNORE(
-                importMem(peerId, ipcReq.desc, 0, &buf, &remKey));
+            FB_COMMCHECKIGNORE(importMem(
+                peerId,
+                ipcReq.desc,
+                0,
+                &mappedBuf,
+                &remKey,
+                nullptr,
+                extraSegments));
             break;
           }
         }

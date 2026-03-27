@@ -163,6 +163,7 @@ class IpcRegCache {
       const std::string& myId,
       const folly::SocketAddress& peerAddr,
       const regcache::IpcDesc& ipcDesc,
+      const std::vector<ctran::utils::CtranIpcSegDesc>& extraSegments,
       regcache::IpcReqCb* reqCb);
 
   // Register an IpcExportClient with the registry. The client will be
