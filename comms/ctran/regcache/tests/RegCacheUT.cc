@@ -899,7 +899,10 @@ TEST_F(RegCacheTest, IpcRemRegElemRefCount) {
 
   // Export the memory to get an IPC descriptor
   ctran::regcache::IpcDesc ipcDesc;
-  EXPECT_EQ(ipcRegCache->exportMem(buf, ipcRegElem, ipcDesc), commSuccess);
+  std::vector<ctran::utils::CtranIpcSegDesc> extraSegments;
+  EXPECT_EQ(
+      ipcRegCache->exportMem(buf, ipcRegElem, ipcDesc, extraSegments),
+      commSuccess);
 
   const std::string peerId = "test_refcount_peer";
 

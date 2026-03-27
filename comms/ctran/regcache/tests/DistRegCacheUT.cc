@@ -229,8 +229,9 @@ TEST_P(DistRegCacheTestSuite, ExportImportMem) {
     ASSERT_NE(regHdl, nullptr);
 
     ControlMsg msg(ControlMsgType::NVL_EXPORT_MEM);
-    COMMCHECK_TEST(
-        ipcRegCache->exportMem(data, regHdl->ipcRegElem, msg.ipcDesc));
+    std::vector<ctran::utils::CtranIpcSegDesc> extraSegments;
+    COMMCHECK_TEST(ipcRegCache->exportMem(
+        data, regHdl->ipcRegElem, msg.ipcDesc, extraSegments));
     ctran::regcache::IpcRegElem* ipcRegElem =
         reinterpret_cast<ctran::regcache::IpcRegElem*>(regHdl->ipcRegElem);
     auto ipcMem = ipcRegElem->ipcMem.rlock();
@@ -328,7 +329,9 @@ TEST_F(DistRegCacheTest, ExportReleaseMemCb) {
     std::vector<ctran::regcache::IpcReqCb> exportReqs(numRanks - 1);
     for (int peer = 1; peer < numRanks; peer++) {
       struct ctran::regcache::IpcDesc IpcDesc;
-      COMMCHECK_TEST(ipcRegCache->exportMem(data, ipcRegElem, IpcDesc));
+      std::vector<ctran::utils::CtranIpcSegDesc> extraSegments;
+      COMMCHECK_TEST(
+          ipcRegCache->exportMem(data, ipcRegElem, IpcDesc, extraSegments));
       EXPECT_EQ(IpcDesc.desc.range, ipcMemSize);
       EXPECT_EQ(IpcDesc.desc.numInlineSegments(), 1);
       EXPECT_EQ(IpcDesc.desc.totalSegments, 1);
@@ -393,11 +396,13 @@ TEST_F(DistRegCacheTest, ExportMultiMem) {
 
     // register and export the same GPU buffer twice
     std::vector<ctran::regcache::IpcReqCb> reqs(2);
+    std::vector<ctran::utils::CtranIpcSegDesc> extraSegments;
     COMMCHECK_TEST(
         mapper->regMem(data, dataRange, &segHdl, true, true, (void**)&regHdl));
     ctran::regcache::IpcRegElem* ipcRegElem1 =
         reinterpret_cast<ctran::regcache::IpcRegElem*>(regHdl->ipcRegElem);
-    COMMCHECK_TEST(ipcRegCache->exportMem(data, ipcRegElem1, IpcDesc));
+    COMMCHECK_TEST(
+        ipcRegCache->exportMem(data, ipcRegElem1, IpcDesc, extraSegments));
     COMMCHECK_TEST(ipcRegCache->notifyRemoteIpcExport(
         myId, peerServerAddrs[peer], IpcDesc, &reqs[0]));
     COMMCHECK_TEST(mapper->deregMem(segHdl, true));
@@ -406,7 +411,8 @@ TEST_F(DistRegCacheTest, ExportMultiMem) {
         mapper->regMem(data, dataRange, &segHdl, true, true, (void**)&regHdl));
     ctran::regcache::IpcRegElem* ipcRegElem2 =
         reinterpret_cast<ctran::regcache::IpcRegElem*>(regHdl->ipcRegElem);
-    COMMCHECK_TEST(ipcRegCache->exportMem(data, ipcRegElem2, IpcDesc));
+    COMMCHECK_TEST(
+        ipcRegCache->exportMem(data, ipcRegElem2, IpcDesc, extraSegments));
     COMMCHECK_TEST(ipcRegCache->notifyRemoteIpcExport(
         myId, peerServerAddrs[peer], IpcDesc, &reqs[1]));
     for (auto it = reqs.begin(); it != reqs.end(); it++) {

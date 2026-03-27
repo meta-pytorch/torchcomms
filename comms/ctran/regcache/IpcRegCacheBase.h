@@ -102,8 +102,14 @@ struct IpcRemRegElem {
   IpcRemRegElem(
       const ctran::utils::CtranIpcDesc& ipcDesc,
       int cudaDev,
-      const struct CommLogData* logMetaData)
-      : ipcRemMem(ipcDesc, cudaDev, logMetaData, "IPC RemRegElem") {};
+      const struct CommLogData* logMetaData,
+      const std::vector<ctran::utils::CtranIpcSegDesc>& extraSegments = {})
+      : ipcRemMem(
+            ipcDesc,
+            cudaDev,
+            logMetaData,
+            "IPC RemRegElem",
+            extraSegments) {};
 
   std::string toString() const {
     return fmt::format(

@@ -1100,12 +1100,23 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
 
     if (backend == CtranMapperBackend::NVL) {
       msg.setType(ControlMsgType::NVL_EXPORT_MEM);
+      std::vector<ctran::utils::CtranIpcSegDesc> extraSegments;
       FB_COMMCHECK(
           ctran::IpcRegCache::getInstance()->exportMem(
-              buf, regElem->ipcRegElem, msg.ipcDesc));
+              buf, regElem->ipcRegElem, msg.ipcDesc, extraSegments));
+      if (!extraSegments.empty()) {
+        CLOGF(
+            ERR,
+            "CTRAN-MAPPER: exportMem to rank {} has overflow segments, which is "
+            "not supported in this path.",
+            rank);
+        return commInternalError;
+      }
 
       // Record the exported remote rank to notify at deregistration
-      exportRegCache_.wlock()->record(regElem, rank);
+      if (NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET) {
+        exportRegCache_.wlock()->record(regElem, rank);
+      }
 
     } else if (backend == CtranMapperBackend::IB) {
       FB_COMMCHECK(CtranIb::exportMem(buf, regElem->ibRegElem, msg));
@@ -1128,7 +1139,8 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       int rank,
       const ControlMsg& msg,
       void** buf,
-      CtranMapperRemoteAccessKey* remKey) {
+      CtranMapperRemoteAccessKey* remKey,
+      const std::vector<ctran::utils::CtranIpcSegDesc>& extraSegments = {}) {
     switch (msg.type) {
       case ControlMsgType::IB_EXPORT_MEM:
         if (!this->ctranIb) {
@@ -1158,7 +1170,8 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
                 comm->statex_->cudaDev(),
                 buf,
                 &(remKey->nvlKey),
-                &this->logMetaData_));
+                &this->logMetaData_,
+                extraSegments));
         break;
       }
       default:
