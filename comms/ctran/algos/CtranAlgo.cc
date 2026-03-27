@@ -482,11 +482,8 @@ CtranAlgo::SharedResource::SharedResource(CtranComm* comm) {
         comm->logMetaData_);
   }
 
-  // Exchange IPC handle with all local ranks
-  // Note allGatherIntraNode can support allgather from all ranks in the same
-  // nvl Domain even if they are cross node. TODO: maybe rename
-  // allGatherIntraNode or create a new wrapper name to better reflect this.
-  auto resFuture = comm_->bootstrap_->allGatherIntraNode(
+  // Exchange IPC handle with all ranks in the NVL domain
+  auto resFuture = comm_->bootstrap_->allGatherNvlDomain(
       ipcDescs.data(),
       sizeof(ctran::utils::CtranIpcDesc),
       localRank,
@@ -519,7 +516,7 @@ CtranAlgo::SharedResource::SharedResource(CtranComm* comm) {
   // Ensure all local ranks have imported remote memory.
   // This is required to ensure no one destroys the local memory handle while
   // other ranks are still importing, which may fail.
-  resFuture = comm_->bootstrap_->barrierIntraNode(
+  resFuture = comm_->bootstrap_->barrierNvlDomain(
       localRank, nLocalRanks, statex->localRankToRanks());
   FB_COMMCHECKTHROW_EX(
       static_cast<commResult_t>(std::move(resFuture).get()),
