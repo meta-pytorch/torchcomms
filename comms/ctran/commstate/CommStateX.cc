@@ -49,14 +49,16 @@ CommStateX::CommStateX(
     uint64_t commHash,
     std::vector<RankTopology> rankTopologies,
     std::vector<int> commRanksToWorldRanks,
-    const std::string& commDesc)
+    const std::string& commDesc,
+    bool noLocal)
     : rank_(rank),
       nRanks_(nRanks),
       cudaDev_(cudaDev),
       cudaArch_(cudaArch),
       busId_(busId),
       commHash_(commHash),
-      commDesc_(commDesc) {
+      commDesc_(commDesc),
+      noLocal_(noLocal) {
   setRankStatesTopologies(std::move(rankTopologies));
   setCommRankToWorldRanks(std::move(commRanksToWorldRanks));
 }
@@ -101,6 +103,10 @@ void CommStateX::initRankTopologyVnode(const int nLocalRanks) {
 }
 
 void CommStateX::initRankStatesTopology(meta::comms::IBootstrap* bootstrap) {
+  if (noLocal_) {
+    initRankTopologyNolocal();
+    return;
+  }
   auto myTopo = ctran::commstate::loadTopology(rank_, NCCL_TOPO_FILE_PATH);
   if (!myTopo) {
     FB_CHECKTHROW_EX(
@@ -158,6 +164,32 @@ void CommStateX::setNvlFabricTopos(
   }
   nvlFabricCliqueEnabled_ = nvlFabricEnabled_ && NCCL_MNNVL_CLIQUE_SIZE > 0 &&
       NCCL_MNNVL_DETERMINISTIC_COLLECTIVE_ENABLE;
+
+  // When noLocal is set, override NVL fabric maps so each rank appears as its
+  // own NVL domain with nLocalRanks=1, while keeping NVL fabric enabled for
+  // transport.
+  if (noLocal_) {
+    nvlFabricRankStates_.resize(nRanks_);
+    for (int i = 0; i < nRanks_; i++) {
+      auto& state = nvlFabricRankStates_.at(i);
+      state.rank = i;
+      state.nvlDomainIndex = i;
+      state.nvlDomainRank = 0;
+      state.nNvlDomainRanks = 1;
+      state.nvlDomainRankToRank = {i};
+      nvlDomainRanks_.emplace_back(std::vector<int>{i});
+      if (nvlFabricCliqueEnabled_) {
+        state.cliqueIndex = i;
+        state.cliqueRank = 0;
+        state.nCliqueRanks = 1;
+        state.cliqueRankToRank = {i};
+        cliqueRanks_.emplace_back(std::vector<int>{i});
+      }
+    }
+    myNvlFabricRankState_ = nvlFabricRankStates_.at(rank_);
+    return;
+  }
+
   std::unordered_map<std::string, int> clusterIdToNvlDomainIndex;
   // cliqueIds might not be contiguous, within the same communicator.
   // CliqueIndex is contiguous fron 0 to nCliqueIds - 1.
