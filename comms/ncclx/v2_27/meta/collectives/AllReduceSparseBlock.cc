@@ -179,11 +179,7 @@ ncclResult_t ncclAllReduceSparseBlock(
 
   // Additional pointer checks to ensure valid device pointers are used in
   // reset/unpack
-#if NCCL_MINOR >= 29
-  if (comm->checkMode != ncclCheckModeDefault) {
-#else
   if (comm->checkPointers) {
-#endif
     if (resetFlag || unpackFlag) {
       NCCLCHECK(
           CudaPtrCheck(recvbuff, comm, "recvbuff", "ncclAllReduceSparseBlock"));
