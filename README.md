@@ -28,6 +28,21 @@ torchcomms requires the following software and hardware:
 torchcomms is available on PyPI and can be installed using pip. Alternatively,
 you can build torchcomms from source.
 
+### Using pip (Stable)
+
+You can install torchcomms and PyTorch (2.11+) using pip:
+
+```bash
+# Cuda 12.6
+pip install torch torchcomms --index-url https://download.pytorch.org/whl/cu126
+
+# Cuda 12.8
+pip install torch torchcomms --index-url https://download.pytorch.org/whl/cu128
+
+# Cuda 13.0
+pip install torch torchcomms --index-url https://download.pytorch.org/whl/cu130
+```
+
 ### Using pip (Nightly Builds)
 
 You can install torchcomms and PyTorch nightly builds using pip:
@@ -38,9 +53,6 @@ pip install --pre torch torchcomms --index-url https://download.pytorch.org/whl/
 
 # Cuda 12.8
 pip install --pre torch torchcomms --index-url https://download.pytorch.org/whl/nightly/cu128
-
-# Cuda 12.9
-pip install --pre torch torchcomms --index-url https://download.pytorch.org/whl/nightly/cu129
 
 # Cuda 13.0
 pip install --pre torch torchcomms --index-url https://download.pytorch.org/whl/nightly/cu130
