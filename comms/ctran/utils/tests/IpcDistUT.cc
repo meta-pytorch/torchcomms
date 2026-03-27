@@ -219,7 +219,7 @@ TEST_P(IpcExportImportTest, ExportImport) {
   EXPECT_EQ(ipcDesc.base, ipcMem->getBase());
   EXPECT_EQ(ipcDesc.pid, getpid());
   EXPECT_EQ(ipcDesc.cuMemHandleType, CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR);
-  EXPECT_EQ(ipcDesc.numSegments, 1);
+  EXPECT_EQ(ipcDesc.numInlineSegments(), 1);
   EXPECT_NE(ipcDesc.segments[0].sharedHandle.fd, 0);
   for (int i = 1; i < CTRAN_IPC_INLINE_SEGMENTS; i++) {
     EXPECT_EQ(ipcDesc.segments[i].sharedHandle.fd, 0);
@@ -233,7 +233,7 @@ TEST_P(IpcExportImportTest, ExportImport) {
   EXPECT_GE(peerIpcDesc.range, size);
   EXPECT_NE(peerIpcDesc.base, nullptr);
   EXPECT_NE(peerIpcDesc.pid, 0);
-  EXPECT_EQ(peerIpcDesc.numSegments, 1);
+  EXPECT_EQ(peerIpcDesc.numInlineSegments(), 1);
   EXPECT_EQ(
       peerIpcDesc.cuMemHandleType, CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR);
   EXPECT_NE(peerIpcDesc.segments[0].sharedHandle.fd, 0);
@@ -334,8 +334,8 @@ TEST_F(IpcTest, DisjointExportImport) {
   EXPECT_EQ(ipcDesc.base, ipcMem->getBase());
   EXPECT_EQ(ipcDesc.pid, getpid());
   EXPECT_EQ(ipcDesc.cuMemHandleType, CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR);
-  EXPECT_EQ(ipcDesc.numSegments, disjointSegmentSizes.size());
-  for (int i = 0; i < ipcDesc.numSegments; i++) {
+  EXPECT_EQ(ipcDesc.numInlineSegments(), disjointSegmentSizes.size());
+  for (int i = 0; i < ipcDesc.numInlineSegments(); i++) {
     EXPECT_NE(ipcDesc.segments[i].sharedHandle.fd, 0);
     EXPECT_EQ(ipcDesc.segments[i].range, disjointSegmentSizes[i]);
   }
@@ -348,10 +348,10 @@ TEST_F(IpcTest, DisjointExportImport) {
   EXPECT_GE(peerIpcDesc.range, size);
   EXPECT_NE(peerIpcDesc.base, nullptr);
   EXPECT_NE(peerIpcDesc.pid, 0);
-  EXPECT_EQ(peerIpcDesc.numSegments, disjointSegmentSizes.size());
+  EXPECT_EQ(peerIpcDesc.numInlineSegments(), disjointSegmentSizes.size());
   EXPECT_EQ(
       peerIpcDesc.cuMemHandleType, CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR);
-  for (int i = 0; i < peerIpcDesc.numSegments; i++) {
+  for (int i = 0; i < peerIpcDesc.numInlineSegments(); i++) {
     EXPECT_NE(peerIpcDesc.segments[i].sharedHandle.fd, 0);
     EXPECT_EQ(peerIpcDesc.segments[i].range, disjointSegmentSizes[i]);
   }
@@ -438,8 +438,8 @@ TEST_F(IpcTest, DisjointExportOffset) {
   EXPECT_EQ(ipcDesc.base, ipcMem->getBase());
   EXPECT_EQ(ipcDesc.pid, getpid());
   EXPECT_EQ(ipcDesc.cuMemHandleType, CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR);
-  EXPECT_EQ(ipcDesc.numSegments, disjointSegmentSizes.size());
-  for (int i = 0; i < ipcDesc.numSegments; i++) {
+  EXPECT_EQ(ipcDesc.numInlineSegments(), disjointSegmentSizes.size());
+  for (int i = 0; i < ipcDesc.numInlineSegments(); i++) {
     EXPECT_NE(ipcDesc.segments[i].sharedHandle.fd, 0);
     EXPECT_EQ(ipcDesc.segments[i].range, disjointSegmentSizes[i]);
   }
@@ -492,8 +492,32 @@ TEST_F(IpcTest, DisjointExportTooManyPhysicalBackings) {
   auto res = ipcMem->ipcExport(ipcDescs[rank]);
   EXPECT_EQ(res, commInternalError);
 
+  // The extraSegments overload succeeds and returns all segments
+  ctran::utils::CtranIpcDesc firstDesc{};
+  std::vector<ctran::utils::CtranIpcSegDesc> extraSegments;
+  res = ipcMem->ipcExport(firstDesc, extraSegments);
+  EXPECT_EQ(res, commSuccess);
+  EXPECT_EQ(
+      firstDesc.totalSegments, static_cast<int>(disjointSegmentSizes.size()));
+  EXPECT_EQ(firstDesc.numInlineSegments(), CTRAN_IPC_INLINE_SEGMENTS);
+  // First CTRAN_IPC_INLINE_SEGMENTS segments are in the descriptor
+  for (int i = 0; i < CTRAN_IPC_INLINE_SEGMENTS; i++) {
+    EXPECT_NE(firstDesc.segments[i].sharedHandle.fd, 0);
+    EXPECT_EQ(firstDesc.segments[i].range, disjointSegmentSizes[i]);
+  }
+  // Remaining segments are returned in extraSegments
+  ASSERT_EQ(
+      extraSegments.size(),
+      disjointSegmentSizes.size() - CTRAN_IPC_INLINE_SEGMENTS);
+  for (size_t i = 0; i < extraSegments.size(); i++) {
+    EXPECT_NE(extraSegments[i].sharedHandle.fd, 0);
+    EXPECT_EQ(
+        extraSegments[i].range,
+        disjointSegmentSizes[i + CTRAN_IPC_INLINE_SEGMENTS]);
+  }
+
   EXPECT_EQ(ipcMem->free(), commSuccess);
-  // Check IPC created in this test have been freed
+  EXPECT_EQ(ncclMemFreeDisjoint(buf, disjointSegmentSizes), ncclSuccess);
   EXPECT_EQ(ctran::utils::getActiveIpcMemCount(), commIpcCount);
   EXPECT_EQ(ctran::utils::getActiveIpcRemMemCount(), commIpcRemCount);
 }
