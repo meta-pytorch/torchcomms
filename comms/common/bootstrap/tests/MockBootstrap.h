@@ -20,22 +20,8 @@ class MockBootstrap : public meta::comms::IBootstrap {
       (override));
   MOCK_METHOD(
       folly::SemiFuture<int>,
-      allGatherIntraNode,
-      (void* buf,
-       int len,
-       int localRank,
-       int localNRanks,
-       std::vector<int> localRankToCommRank),
-      (override));
-  MOCK_METHOD(
-      folly::SemiFuture<int>,
       barrier,
       (int rank, int nRanks),
-      (override));
-  MOCK_METHOD(
-      folly::SemiFuture<int>,
-      barrierIntraNode,
-      (int localRank, int localNRanks, std::vector<int> localRankToCommRank),
       (override));
   MOCK_METHOD(
       folly::SemiFuture<int>,
