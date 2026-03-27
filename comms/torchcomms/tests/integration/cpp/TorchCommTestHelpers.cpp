@@ -136,11 +136,11 @@ c10::intrusive_ptr<c10d::Store> createStore() {
   TORCH_INTERNAL_ASSERT(port_str, "MASTER_PORT env is not set");
   int port = std::stoi(port_str);
   c10d::TCPStoreOptions opts;
+  // Use default 300s timeout
   opts.port = port;
   opts.isServer = (rank == 0);
   opts.waitWorkers = false;
   opts.useLibUV = true;
-  opts.timeout = std::chrono::milliseconds(60000);
   return c10::make_intrusive<c10d::TCPStore>(std::string{host}, opts);
 }
 
