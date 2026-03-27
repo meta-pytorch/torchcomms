@@ -1135,6 +1135,34 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     return commSuccess;
   }
 
+  struct ExtraPacketInfo {
+    int numExtraPackets;
+    int numExtraSegments;
+  };
+
+  static ExtraPacketInfo computeExtraPacketInfo(
+      int totalSegments,
+      int inlineSegments,
+      int segsPerPacket) {
+    ExtraPacketInfo info;
+    info.numExtraSegments =
+        (totalSegments > inlineSegments) ? totalSegments - inlineSegments : 0;
+    info.numExtraPackets = (info.numExtraSegments > 0)
+        ? (info.numExtraSegments + segsPerPacket - 1) / segsPerPacket
+        : 0;
+    return info;
+  }
+
+  static void computePacketSlice(
+      int pktIdx,
+      int segsPerPacket,
+      int numExtra,
+      int& startIdx,
+      int& count) {
+    startIdx = pktIdx * segsPerPacket;
+    count = std::min(segsPerPacket, numExtra - startIdx);
+  }
+
   inline commResult_t importMem(
       int rank,
       const ControlMsg& msg,
