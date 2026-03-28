@@ -174,4 +174,12 @@ std::unordered_map<std::string, std::string> dumpCollTrace(CtranComm* comm) {
   return commDumpToMap(dump.value());
 }
 
+void CtranDistTestFixture::barrierNvlDomain(CtranComm* comm) {
+  auto resFuture = comm->bootstrap_->barrierNvlDomain(
+      comm->statex_->localRank(),
+      comm->statex_->nLocalRanks(),
+      comm->statex_->localRankToRanks());
+  COMMCHECK_TEST(static_cast<commResult_t>(std::move(resFuture).get()));
+}
+
 } // namespace ctran
