@@ -8,6 +8,8 @@
 #include "comms/ctran/utils/CudaUtils.h"
 #include "comms/ctran/utils/Utils.h"
 #include "comms/testinfra/DistEnvironmentBase.h"
+#include "comms/utils/colltrace/CollTrace.h"
+#include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
 
 namespace ctran {
 
@@ -21,6 +23,7 @@ void CtranDistEnvironment::SetUp() {
   // Ctran-specific env vars
   setenv("NCCL_CTRAN_PROFILING", "none", 1);
   setenv("NCCL_CTRAN_ENABLE", "1", 0);
+  setenv("NCCL_COLLTRACE", "trace", 0);
   setenv("NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1", 0);
 
 #ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
@@ -132,7 +135,43 @@ std::unique_ptr<CtranComm> CtranDistTestFixture::makeCtranComm() {
 
   COMMCHECK_TEST(ctranInit(comm.get()));
   CHECK(ctranInitialized(comm.get())) << "Ctran not initialized";
+
+  // Initialize standalone colltrace with CommDumpPlugin so tests can verify
+  // colltrace records without requiring a full ncclComm
+  {
+    meta::comms::colltrace::CollTraceConfig collTraceConfig;
+    std::vector<std::unique_ptr<meta::comms::colltrace::ICollTracePlugin>>
+        plugins;
+    plugins.push_back(
+        std::make_unique<meta::comms::colltrace::CommDumpPlugin>(
+            meta::comms::colltrace::CommDumpConfig{.pastCollSize = 1024}));
+    comm->colltraceNew_ = std::shared_ptr<meta::comms::colltrace::ICollTrace>(
+        new meta::comms::colltrace::CollTrace(
+            collTraceConfig,
+            comm->logMetaData_,
+            []() -> meta::comms::CommsMaybeVoid { return folly::unit; },
+            std::move(plugins)));
+  }
+
   return comm;
+}
+
+std::unordered_map<std::string, std::string> dumpCollTrace(CtranComm* comm) {
+  using namespace meta::comms::colltrace;
+  if (comm->colltraceNew_ == nullptr) {
+    return {};
+  }
+  auto* plugin = comm->colltraceNew_->getPluginByName(
+      std::string{CommDumpPlugin::kCommDumpPluginName});
+  auto* commDumpPlugin = dynamic_cast<CommDumpPlugin*>(plugin);
+  if (commDumpPlugin == nullptr) {
+    return {};
+  }
+  auto dump = commDumpPlugin->dump();
+  if (dump.hasError()) {
+    return {};
+  }
+  return commDumpToMap(dump.value());
 }
 
 } // namespace ctran
