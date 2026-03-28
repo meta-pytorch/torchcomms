@@ -7,6 +7,7 @@
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/utils/ExtUtils.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -24,6 +25,12 @@ static commResult_t impl(
   CtranComm* comm = opGroup.front()->comm_;
 
   CtranAlgoLogger logger(allGatherAlgoName(myAlgo), op->opCount, comm);
+
+  ctran::Profiler* profiler = comm->ctran_->profiler.get();
+  if (profiler) {
+    profiler->initForEachColl(
+        op->opCount, NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT);
+  }
 
   const auto statex = comm->statex_.get();
   const int rank = statex->rank();
@@ -47,8 +54,23 @@ static commResult_t impl(
   CtranMapperContext context(
       allGatherAlgoName(myAlgo), sendSize, sendSize * nRanks);
   comm->ctran_->mapper->setContext(std::move(context));
+
+  CTRAN_PROFILER_IF(profiler, {
+    auto& algoContext = profiler->algoContext;
+    algoContext.algorithmName = allGatherAlgoName(myAlgo);
+    algoContext.sendContext.messageSizes = std::to_string(sendSize);
+    algoContext.recvContext.messageSizes = std::to_string(sendSize * nRanks);
+  });
+
+  CTRAN_PROFILER_IF(
+      profiler, profiler->startEvent(ctran::ProfilerEvent::BUF_REG));
   FB_COMMCHECK(comm->ctran_->mapper->searchRegHandle(
       op->allgather.recvbuff, nRanks * sendSize, &memHdl, &localMemReg));
+  CTRAN_PROFILER_IF(
+      profiler, profiler->endEvent(ctran::ProfilerEvent::BUF_REG));
+
+  CTRAN_PROFILER_IF(
+      profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_CTRL));
 
   // Issue control messages for send and recv operations
   for (int p = 1; p < nRanks; p++) {
@@ -101,6 +123,9 @@ static commResult_t impl(
 
   elem->post();
 
+  CTRAN_PROFILER_IF(
+      profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_DATA));
+
   // Post remaining inter-node puts
   bool pendingRecv;
   do {
@@ -140,6 +165,9 @@ static commResult_t impl(
     }
   } while (pendingRecv == true);
 
+  CTRAN_PROFILER_IF(
+      profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_CTRL));
+
   // Wait for all PUTs to complete
   for (int p = 1; p < nRanks; p++) {
     int peer = (rank + p) % nRanks;
@@ -161,9 +189,14 @@ static commResult_t impl(
   // Wait for intranode bcast to complete
   elem->wait();
 
+  CTRAN_PROFILER_IF(
+      profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_DATA));
+
   if (localMemReg) {
     FB_COMMCHECK(comm->ctran_->mapper->deregDynamic(memHdl));
   }
+
+  CTRAN_PROFILER_IF(profiler, { profiler->reportToScuba(); });
 
   comm->ctran_->mapper->timestamps.emplace_back(std::move(timestamp));
   comm->ctran_->mapper->reportProfiling();
