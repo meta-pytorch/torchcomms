@@ -1,36 +1,31 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include "nccl.h"
-
 #include <folly/init/Init.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "comms/ctran/algos/common/BufManager.h"
 #include "comms/testinfra/TestUtils.h"
 
-#include "comm.h"
 #include "comms/ctran/Ctran.h"
-#include "comms/testinfra/TestsDistUtils.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 
-class BufManagerTest : public NcclxBaseTest {
+class BufManagerTest : public ctran::CtranDistTestFixture {
  public:
   BufManagerTest() = default;
   void SetUp() override {
-    // This test requires CTRAN to be enabled
-    setenv("NCCL_CTRAN_ENABLE", "1", 1);
     // TODO: remove this when memCache does not rely on colltrace
     setenv("NCCL_COLLTRACE", "trace", 1);
-    NcclxBaseTest::SetUp();
-    comm_ = createNcclComm(globalRank, numRanks, localRank);
+    ctran::CtranDistTestFixture::SetUp();
+    ctranComm_ = makeCtranComm();
   }
 
   void TearDown() override {
-    NCCLCHECK_TEST(ncclCommDestroy(comm_));
-    NcclxBaseTest::TearDown();
+    ctranComm_.reset();
+    ctran::CtranDistTestFixture::TearDown();
   }
 
  protected:
-  ncclComm_t comm_{nullptr};
+  std::unique_ptr<CtranComm> ctranComm_;
 };
 
 using ctran::algos::BufManager;
@@ -47,7 +42,7 @@ class BufManagerTestParamFixture
 TEST_P(BufManagerTestParamFixture, Alloc) {
   auto memType = GetParam();
 
-  if (!ctranInitialized(comm_->ctranComm_.get())) {
+  if (!ctranInitialized(ctranComm_.get())) {
     GTEST_SKIP() << "Skip test because ctranInitialized returns false";
   }
 
@@ -55,15 +50,15 @@ TEST_P(BufManagerTestParamFixture, Alloc) {
   enum class TestModuleBufNames { kBuf1, kBuf2, kBuf3, kNumBufs };
 
   for (int x = 0; x < numIter; x++) {
-    const auto statex = comm_->ctranComm_->statex_.get();
+    const auto statex = ctranComm_->statex_.get();
     // as we destroy bufMngr in each iteration, the same key can be reused;
     // otherwise mempool may complain duplicated keys
     auto memKey = folly::sformat("test-module-{:#x}", statex->commHash());
     auto bufMngr = std::make_unique<
         BufManager<TestModuleBufNames, TestModuleBufNames::kNumBufs>>(
         statex,
-        comm_->ctranComm_->ctran_->mapper.get(),
-        &comm_->logMetaData,
+        ctranComm_->ctran_->mapper.get(),
+        &ctranComm_->logMetaData_,
         memKey);
 
     ASSERT_NE(bufMngr, nullptr);
@@ -97,22 +92,22 @@ TEST_P(BufManagerTestParamFixture, Alloc) {
 
 TEST_P(BufManagerTestParamFixture, Exchange) {
   auto memType = GetParam();
-  if (!ctranInitialized(comm_->ctranComm_.get())) {
+  if (!ctranInitialized(ctranComm_.get())) {
     GTEST_SKIP() << "Skip test because ctranInitialized returns false";
   }
 
   constexpr int numIter = 10;
   enum class TestModuleBufNames { kBuf1, kBuf2, kBuf3, kNumBufs };
-  const auto nRanks = comm_->ctranComm_->statex_->nRanks();
+  const auto nRanks = ctranComm_->statex_->nRanks();
 
   for (int x = 0; x < numIter; x++) {
-    const auto statex = comm_->ctranComm_->statex_.get();
+    const auto statex = ctranComm_->statex_.get();
     auto memKey = folly::sformat("test-module-{:#x}", statex->commHash());
     auto bufMngr = std::make_unique<
         BufManager<TestModuleBufNames, TestModuleBufNames::kNumBufs>>(
         statex,
-        comm_->ctranComm_->ctran_->mapper.get(),
-        &comm_->logMetaData,
+        ctranComm_->ctran_->mapper.get(),
+        &ctranComm_->logMetaData_,
         memKey);
 
     bufMngr->insert(memType, TestModuleBufNames::kBuf1, 8199);
@@ -157,8 +152,7 @@ TEST_P(BufManagerTestParamFixture, Exchange) {
       } else if (
           // For device memory buffer exchanged with intra-node peers, we expect
           // it is exporded via NVL backend
-          comm_->ctranComm_->statex_->isSameNode(
-              statex->rank(), peerRanks1[i]) &&
+          ctranComm_->statex_->isSameNode(statex->rank(), peerRanks1[i]) &&
           memType == MemType::kDevice) {
         ASSERT_EQ(remBufs1[i].rkey.backend, CtranMapperBackend::NVL);
       } else {
@@ -171,20 +165,20 @@ TEST_P(BufManagerTestParamFixture, Exchange) {
 
 TEST_F(BufManagerTest, InvalidAssign) {
   const auto memType = MemType::kDevice;
-  if (!ctranInitialized(comm_->ctranComm_.get())) {
+  if (!ctranInitialized(ctranComm_.get())) {
     GTEST_SKIP() << "Skip test because ctranInitialized returns false";
   }
 
   enum class TestModuleBufNames { kBuf1, kBuf2, kBuf3, kNumBufs };
-  const auto nRanks = comm_->ctranComm_->statex_->nRanks();
+  const auto nRanks = ctranComm_->statex_->nRanks();
 
-  const auto statex = comm_->ctranComm_->statex_.get();
+  const auto statex = ctranComm_->statex_.get();
   auto memKey = folly::sformat("test-module-{:#x}", statex->commHash());
   auto bufMngr = std::make_unique<
       BufManager<TestModuleBufNames, TestModuleBufNames::kNumBufs>>(
       statex,
-      comm_->ctranComm_->ctran_->mapper.get(),
-      &comm_->logMetaData,
+      ctranComm_->ctran_->mapper.get(),
+      &ctranComm_->logMetaData_,
       memKey);
 
   bufMngr->insert(memType, TestModuleBufNames::kBuf1, 8199);
@@ -214,20 +208,20 @@ TEST_F(BufManagerTest, InvalidAssign) {
 TEST_P(BufManagerTestParamFixture, DifferentMemKeysDifferentAddresses) {
   auto memType = GetParam();
 
-  if (!ctranInitialized(comm_->ctranComm_.get())) {
+  if (!ctranInitialized(ctranComm_.get())) {
     GTEST_SKIP() << "Skip test because ctranInitialized returns false";
   }
 
   enum class TestModuleBufNames { kBuf1, kBuf2, kNumBufs };
-  const auto statex = comm_->ctranComm_->statex_.get();
+  const auto statex = ctranComm_->statex_.get();
 
   // Create first BufManager with memKey1
   auto memKey1 = folly::sformat("test-module-key1-{:#x}", statex->commHash());
   auto bufMngr1 = std::make_unique<
       BufManager<TestModuleBufNames, TestModuleBufNames::kNumBufs>>(
       statex,
-      comm_->ctranComm_->ctran_->mapper.get(),
-      &comm_->logMetaData,
+      ctranComm_->ctran_->mapper.get(),
+      &ctranComm_->logMetaData_,
       memKey1);
 
   ASSERT_NE(bufMngr1, nullptr);
@@ -237,8 +231,8 @@ TEST_P(BufManagerTestParamFixture, DifferentMemKeysDifferentAddresses) {
   auto bufMngr2 = std::make_unique<
       BufManager<TestModuleBufNames, TestModuleBufNames::kNumBufs>>(
       statex,
-      comm_->ctranComm_->ctran_->mapper.get(),
-      &comm_->logMetaData,
+      ctranComm_->ctran_->mapper.get(),
+      &ctranComm_->logMetaData_,
       memKey2);
 
   ASSERT_NE(bufMngr2, nullptr);
@@ -279,27 +273,27 @@ TEST_P(BufManagerTestParamFixture, DifferentMemKeysDifferentAddresses) {
 TEST_P(BufManagerTestParamFixture, DifferentCommsDifferentAddresses) {
   auto memType = GetParam();
 
-  if (!ctranInitialized(comm_->ctranComm_.get())) {
+  if (!ctranInitialized(ctranComm_.get())) {
     GTEST_SKIP() << "Skip test because ctranInitialized returns false";
   }
 
   enum class TestModuleBufNames { kBuf1, kBuf2, kNumBufs };
 
-  // Create second communicator (comm2) identical to the first one
-  auto comm2_ = createNcclComm(globalRank, numRanks, localRank);
-  ASSERT_NE(comm2_, nullptr);
+  // Create second communicator (ctranComm2) identical to the first one
+  auto ctranComm2 = makeCtranComm();
+  ASSERT_NE(ctranComm2, nullptr);
 
   // Get statex from both communicators
-  const auto statex1 = comm_->ctranComm_->statex_.get();
-  const auto statex2 = comm2_->ctranComm_->statex_.get();
+  const auto statex1 = ctranComm_->statex_.get();
+  const auto statex2 = ctranComm2->statex_.get();
 
   // Create BufManager for first communicator
   auto memKey1 = folly::sformat("test-module-comm1-{:#x}", statex1->commHash());
   auto bufMngr1 = std::make_unique<
       BufManager<TestModuleBufNames, TestModuleBufNames::kNumBufs>>(
       statex1,
-      comm_->ctranComm_->ctran_->mapper.get(),
-      &comm_->logMetaData,
+      ctranComm_->ctran_->mapper.get(),
+      &ctranComm_->logMetaData_,
       memKey1);
 
   ASSERT_NE(bufMngr1, nullptr);
@@ -309,8 +303,8 @@ TEST_P(BufManagerTestParamFixture, DifferentCommsDifferentAddresses) {
   auto bufMngr2 = std::make_unique<
       BufManager<TestModuleBufNames, TestModuleBufNames::kNumBufs>>(
       statex2,
-      comm2_->ctranComm_->ctran_->mapper.get(),
-      &comm2_->logMetaData,
+      ctranComm2->ctran_->mapper.get(),
+      &ctranComm2->logMetaData_,
       memKey2);
 
   ASSERT_NE(bufMngr2, nullptr);
@@ -343,28 +337,25 @@ TEST_P(BufManagerTestParamFixture, DifferentCommsDifferentAddresses) {
   // different memory regions
   ASSERT_NE(buf1.ptr, buf2.ptr)
       << "Expected different memory addresses for buffers from different communicators";
-
-  // Clean up second communicator
-  NCCLCHECK_TEST(ncclCommDestroy(comm2_));
 }
 
 TEST_P(BufManagerTestParamFixture, DifferentSizes) {
   auto memType = GetParam();
 
-  if (!ctranInitialized(comm_->ctranComm_.get())) {
+  if (!ctranInitialized(ctranComm_.get())) {
     GTEST_SKIP() << "Skip test because ctranInitialized returns false";
   }
 
   enum class TestModuleBufNames { kBuf1, kBuf2, kNumBufs };
-  const auto statex = comm_->ctranComm_->statex_.get();
+  const auto statex = ctranComm_->statex_.get();
 
   // Create first BufManager with memKey
   auto memKey = folly::sformat("test-module-key-{:#x}", statex->commHash());
   auto bufMngr1 = std::make_unique<
       BufManager<TestModuleBufNames, TestModuleBufNames::kNumBufs>>(
       statex,
-      comm_->ctranComm_->ctran_->mapper.get(),
-      &comm_->logMetaData,
+      ctranComm_->ctran_->mapper.get(),
+      &ctranComm_->logMetaData_,
       memKey);
 
   ASSERT_NE(bufMngr1, nullptr);
@@ -373,8 +364,8 @@ TEST_P(BufManagerTestParamFixture, DifferentSizes) {
   auto bufMngr2 = std::make_unique<
       BufManager<TestModuleBufNames, TestModuleBufNames::kNumBufs>>(
       statex,
-      comm_->ctranComm_->ctran_->mapper.get(),
-      &comm_->logMetaData,
+      ctranComm_->ctran_->mapper.get(),
+      &ctranComm_->logMetaData_,
       memKey);
 
   ASSERT_NE(bufMngr2, nullptr);
@@ -423,7 +414,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranDistEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }
