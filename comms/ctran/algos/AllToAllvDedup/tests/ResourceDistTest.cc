@@ -6,8 +6,8 @@
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/AllToAllvDedup/ResourceImpl.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
 
 // #define VERBOSE
 using ctran::alltoallvdedup::PersistArgs;
@@ -15,27 +15,23 @@ using ctran::alltoallvdedup::PersistConfig;
 using ctran::alltoallvdedup::ResourceBufName;
 using ctran::alltoallvdedup::ResourceImpl;
 
-class CtranAllToAllvDedupResourceTest : public NcclxBaseTest {
+class CtranAllToAllvDedupResourceTest : public ctran::CtranDistTestFixture {
  public:
   CtranAllToAllvDedupResourceTest() = default;
   void SetUp() override {
-    // This test requires CTRAN to be enabled
-    setenv("NCCL_CTRAN_ENABLE", "1", 1);
     // TODO: remove this when memCache does not rely on colltrace
     setenv("NCCL_COLLTRACE", "trace", 1);
-    NcclxBaseTest::SetUp();
-    comm_ = createNcclComm(
-        globalRank, numRanks, localRank, false, nullptr, server.get());
+    ctran::CtranDistTestFixture::SetUp();
+    ctranComm_ = makeCtranComm();
   }
 
   void TearDown() override {
-    finalizeNcclComm(globalRank, server.get());
-    NCCLCHECK_TEST(ncclCommDestroy(comm_));
-    NcclxBaseTest::TearDown();
+    ctranComm_.reset();
+    ctran::CtranDistTestFixture::TearDown();
   }
 
  protected:
-  ncclComm_t comm_{nullptr};
+  std::unique_ptr<CtranComm> ctranComm_;
 };
 
 namespace {
@@ -69,7 +65,7 @@ namespace {
 }; // namespace
 
 TEST_F(CtranAllToAllvDedupResourceTest, InitDestroy) {
-  if (!ctranInitialized(comm_->ctranComm_.get())) {
+  if (!ctranInitialized(ctranComm_.get())) {
     GTEST_SKIP() << "Skip test because ctranInitialized returns false";
   }
 
@@ -87,7 +83,7 @@ TEST_F(CtranAllToAllvDedupResourceTest, InitDestroy) {
   };
 
   const int numIter = 10;
-  const auto myRank = comm_->ctranComm_->statex_->rank();
+  const auto myRank = ctranComm_->statex_->rank();
 
   auto usedBytesBase =
       ncclx::memory::memCacheAllocator::getInstance()->getUsedMem();
@@ -98,9 +94,9 @@ TEST_F(CtranAllToAllvDedupResourceTest, InitDestroy) {
   CUDACHECK_TEST(cudaStreamCreate(&stream));
   for (int x = 0; x < numIter; x++) {
     auto resource = std::make_unique<ResourceImpl>(
-        comm_->ctranComm_->statex_.get(),
-        comm_->ctranComm_->ctran_->mapper.get(),
-        &comm_->logMetaData);
+        ctranComm_->statex_.get(),
+        ctranComm_->ctran_->mapper.get(),
+        &ctranComm_->logMetaData_);
     ASSERT_NE(resource, nullptr);
     ASSERT_EQ(resource->initialize(pArgs, config, stream), ncclSuccess);
 
@@ -151,7 +147,7 @@ TEST_F(CtranAllToAllvDedupResourceTest, InitDestroy) {
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranDistEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }
