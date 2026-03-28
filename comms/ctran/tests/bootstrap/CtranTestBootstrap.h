@@ -14,8 +14,8 @@ namespace ctran::testing {
 
 /**
  * Test-only ICtranBootstrap that wraps a single IBootstrap instance.
- * Global operations delegate directly; intra-node and NVL-domain operations
- * are implemented via pairwise send/recv through the global bootstrap.
+ * Global operations delegate directly; NVL-domain operations are implemented
+ * via pairwise send/recv through the global bootstrap.
  */
 class CtranTestBootstrap : public meta::comms::ICtranBootstrap {
  public:
@@ -45,82 +45,6 @@ class CtranTestBootstrap : public meta::comms::ICtranBootstrap {
   folly::SemiFuture<int>
   broadcast(void* buf, int len, int root, int rank, int nranks) override {
     return bootstrap_->broadcast(buf, len, root, rank, nranks);
-  }
-
-  // -- Intra-node operations (pairwise sendrecv via bootstrap_) --
-
-  folly::SemiFuture<int> allGatherIntraNode(
-      void* buf,
-      int len,
-      int localRank,
-      int localNranks,
-      std::vector<int> localRankToCommRank) override {
-    int myGlobalRank = localRankToCommRank[localRank];
-    for (int lr = 0; lr < localNranks; ++lr) {
-      if (lr == localRank) {
-        continue;
-      }
-      int peer = localRankToCommRank[lr];
-      int tag = nextTag(peer);
-      auto* myChunk =
-          static_cast<char*>(buf) + static_cast<size_t>(localRank) * len;
-      auto* peerChunk = static_cast<char*>(buf) + static_cast<size_t>(lr) * len;
-      if (myGlobalRank < peer) {
-        auto rc = bootstrap_->send(myChunk, len, peer, tag).get();
-        if (rc != 0) {
-          return folly::makeSemiFuture(rc);
-        }
-        rc = bootstrap_->recv(peerChunk, len, peer, tag).get();
-        if (rc != 0) {
-          return folly::makeSemiFuture(rc);
-        }
-      } else {
-        auto rc = bootstrap_->recv(peerChunk, len, peer, tag).get();
-        if (rc != 0) {
-          return folly::makeSemiFuture(rc);
-        }
-        rc = bootstrap_->send(myChunk, len, peer, tag).get();
-        if (rc != 0) {
-          return folly::makeSemiFuture(rc);
-        }
-      }
-    }
-    return folly::makeSemiFuture(0);
-  }
-
-  folly::SemiFuture<int> barrierIntraNode(
-      int localRank,
-      int localNranks,
-      std::vector<int> localRankToCommRank) override {
-    int myGlobalRank = localRankToCommRank[localRank];
-    uint8_t dummy = 0;
-    for (int lr = 0; lr < localNranks; ++lr) {
-      if (lr == localRank) {
-        continue;
-      }
-      int peer = localRankToCommRank[lr];
-      int tag = nextTag(peer);
-      if (myGlobalRank < peer) {
-        auto rc = bootstrap_->send(&dummy, sizeof(dummy), peer, tag).get();
-        if (rc != 0) {
-          return folly::makeSemiFuture(rc);
-        }
-        rc = bootstrap_->recv(&dummy, sizeof(dummy), peer, tag).get();
-        if (rc != 0) {
-          return folly::makeSemiFuture(rc);
-        }
-      } else {
-        auto rc = bootstrap_->recv(&dummy, sizeof(dummy), peer, tag).get();
-        if (rc != 0) {
-          return folly::makeSemiFuture(rc);
-        }
-        rc = bootstrap_->send(&dummy, sizeof(dummy), peer, tag).get();
-        if (rc != 0) {
-          return folly::makeSemiFuture(rc);
-        }
-      }
-    }
-    return folly::makeSemiFuture(0);
   }
 
   // -- NvlDomain operations (pairwise sendrecv via bootstrap_) --

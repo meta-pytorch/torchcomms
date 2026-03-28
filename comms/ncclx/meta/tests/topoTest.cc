@@ -16,7 +16,8 @@ class topoTest : public ::testing::Test {
 
  protected:
   void SetUp() override {
-    setenv("NCCL_DEBUG", "WARN", 0);
+    setenv("NCCL_DEBUG", "INFO", 0);
+    setenv("NCCL_DEBUG_LOGGING_ASYNC", "0", 1);
     CUDACHECK_TEST(cudaSetDevice(0));
     NCCLCHECK_TEST(ncclCommInitAll(&mockComm, 1, nullptr));
   }
@@ -29,10 +30,15 @@ class topoTest : public ::testing::Test {
 
 TEST_F(topoTest, defaultTopoXmlNotFound) {
   folly::test::TemporaryFile dumpXmlFile;
+
+  testing::internal::CaptureStdout();
   auto res = ncclTopoGetSystem(mockComm, nullptr, dumpXmlFile.path().c_str());
+  const auto logContent = testing::internal::GetCapturedStdout();
+
   EXPECT_EQ(res, ncclSuccess);
-  auto lastErr = std::string(ncclGetLastError(mockComm));
-  EXPECT_TRUE(lastErr.empty());
+  // Verify no WARN emitted by ncclTopoGetSystem
+  EXPECT_THAT(logContent, ::testing::Not(::testing::HasSubstr("NCCL WARN")));
+
   // print the dump xml file
   std::ifstream dumpXml(dumpXmlFile.path().c_str());
   std::string dumpXmlStr(
@@ -45,10 +51,13 @@ TEST_F(topoTest, userTopoXmlFileNotFound) {
   EnvRAII<std::string> topoFileEnv(
       NCCL_TOPO_FILE, "/tmp/nccl_topo_not_exist.xml");
   folly::test::TemporaryFile dumpXmlFile;
-  // return ncclSuccess, but with warning/error message and record last error
+
+  testing::internal::CaptureStdout();
   auto res = ncclTopoGetSystem(mockComm, nullptr, dumpXmlFile.path().c_str());
+  const auto logContent = testing::internal::GetCapturedStdout();
+
   EXPECT_EQ(res, ncclSuccess);
-  auto lastErr = std::string(ncclGetLastError(mockComm));
-  LOG(INFO) << "ncclGetLastError: " << lastErr;
-  EXPECT_GT(lastErr.size(), 0);
+  // Verify log about missing topo file
+  EXPECT_THAT(
+      logContent, ::testing::HasSubstr("Could not open XML topology file"));
 }

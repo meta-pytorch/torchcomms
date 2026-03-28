@@ -565,7 +565,7 @@ TEST(CommStateXTest, TopologySetInvalidNvlFabricTopos) {
   EXPECT_DEATH(commState->setNvlFabricTopos(nvlFabricTopologies), "");
 }
 
-TEST(CommStateXTest, DISABLED_nvlFabricWithNoLocal) {
+TEST(CommStateXTest, nvlFabricWithNoLocal) {
   const int rank = 0;
   const int nRanks = 8;
   const int cudaDev = 0;
@@ -583,10 +583,13 @@ TEST(CommStateXTest, DISABLED_nvlFabricWithNoLocal) {
       busId,
       commHash,
       std::vector<RankTopology>{},
-      std::vector<int>{});
+      std::vector<int>{},
+      "" /* commDesc */,
+      true /* noLocal */);
 
-  // Simulate noLocal init path: set noLocal topology then enable NVL fabric
-  commState->initRankTopologyNolocal();
+  // noLocal is set at construction; initRankStatesTopology delegates to
+  // initRankTopologyNolocal
+  commState->initRankStatesTopology(nullptr);
 
   // Set up NVL fabric with 2 clusters of 4 ranks each (e.g. GB200 2-GPU trays)
   std::vector<NvlFabricTopology> nvlFabricTopologies{};

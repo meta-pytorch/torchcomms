@@ -15,24 +15,25 @@
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/regcache/RegCache.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "meta/wrapper/MetaFactory.h"
 
 #define dceil(x, y) ((x / y) + !!(x % y))
 
-class CtranTest : public NcclxBaseTest, public CtranBaseTest {
+class CtranTest : public ctran::CtranDistTestFixture, public CtranBaseTest {
  public:
   void SetUp() override {
     setenv("NCCL_CTRAN_ENABLE", "1", 0);
-    NcclxBaseTest::SetUp();
+    ctran::CtranDistTestFixture::SetUp();
   }
 
   void TearDown() override {
     if (!Test::IsSkipped()) {
       verifyPostCommResourceLeak();
     }
-    NcclxBaseTest::TearDown();
+    ctran::CtranDistTestFixture::TearDown();
   };
 
   void verifyPostCommResourceLeak() {
@@ -731,7 +732,7 @@ TEST_F(CtranTest, CtranOpCount) {
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranDistEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

@@ -15,19 +15,19 @@ class BaselineBootstrap : public ::meta::comms::ICtranBootstrap {
   virtual folly::SemiFuture<int>
   allGather(void* buf, int len, int rank, int nranks) override;
 
-  virtual folly::SemiFuture<int> allGatherIntraNode(
-      void* buf,
-      int len,
-      int localRank,
-      int localNranks,
-      std::vector<int> localRankToCommRank) override;
-
   virtual folly::SemiFuture<int> barrier(int rank, int nranks) override;
 
-  virtual folly::SemiFuture<int> barrierIntraNode(
-      int localRank,
-      int localNranks,
-      std::vector<int> localRankToCommRank) override;
+  virtual folly::SemiFuture<int> allGatherNvlDomain(
+      void* buf,
+      int len,
+      int nvlLocalRank,
+      int nvlNranks,
+      std::vector<int> nvlRankToCommRank) override;
+
+  virtual folly::SemiFuture<int> barrierNvlDomain(
+      int nvlLocalRank,
+      int nvlNranks,
+      std::vector<int> nvlRankToCommRank) override;
 
   virtual folly::SemiFuture<int> send(void* buf, int len, int peer, int tag)
       override;

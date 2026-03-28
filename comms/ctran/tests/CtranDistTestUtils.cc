@@ -2,27 +2,16 @@
 
 #include "CtranDistTestUtils.h"
 
-#include <chrono>
-#include <thread>
-
 #include <folly/logging/xlog.h>
 
+#include "comms/ctran/tests/bootstrap/CtranTestBootstrap.h"
 #include "comms/ctran/utils/CudaUtils.h"
 #include "comms/ctran/utils/Utils.h"
-#include "comms/mccl/bootstrap/Bootstrap.h"
-#include "comms/mccl/bootstrap/CtranAdapter.h"
-#include "comms/mccl/utils/Utils.h"
-#include "comms/testinfra/mpi/MpiBootstrap.h"
-#include "comms/testinfra/mpi/MpiTestUtils.h"
+#include "comms/testinfra/DistEnvironmentBase.h"
+#include "comms/utils/colltrace/CollTrace.h"
+#include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
 
 namespace ctran {
-
-InitEnvType getInitEnvType() {
-  if (checkTcpStoreEnv()) {
-    return InitEnvType::TCP_STORE;
-  }
-  return InitEnvType::MPI;
-}
 
 // ============================================================================
 // CtranDistEnvironment Implementation
@@ -34,6 +23,7 @@ void CtranDistEnvironment::SetUp() {
   // Ctran-specific env vars
   setenv("NCCL_CTRAN_PROFILING", "none", 1);
   setenv("NCCL_CTRAN_ENABLE", "1", 0);
+  setenv("NCCL_COLLTRACE", "trace", 0);
   setenv("NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1", 0);
 
 #ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
@@ -92,30 +82,7 @@ void CtranDistTestFixture::TearDown() {
   distTearDown();
 }
 
-std::vector<std::string> CtranDistTestFixture::exchangeInitUrls(
-    const std::string& selfUrl,
-    int numRanks,
-    int selfRank) {
-  constexpr size_t kMaxUrlLen = 256;
-  std::vector<char> buf(numRanks * kMaxUrlLen, 0);
-
-  CHECK(selfUrl.size() < kMaxUrlLen) << "URL too long for allGather buffer";
-  std::memcpy(
-      buf.data() + selfRank * kMaxUrlLen, selfUrl.data(), selfUrl.size());
-
-  auto res = bootstrap_->allGather(buf.data(), kMaxUrlLen, selfRank, numRanks);
-  CHECK_EQ(std::move(res).get(), 0) << "exchangeInitUrls allGather failed";
-
-  std::vector<std::string> urls;
-  urls.reserve(numRanks);
-  for (int i = 0; i < numRanks; ++i) {
-    urls.emplace_back(buf.data() + i * kMaxUrlLen);
-  }
-  return urls;
-}
-
 std::unique_ptr<CtranComm> CtranDistTestFixture::makeCtranComm() {
-  const auto initType = getInitEnvType();
   const std::string uuid{"0"};
   uint64_t commHash =
       ctran::utils::getHash(uuid.data(), static_cast<int>(uuid.size()));
@@ -128,10 +95,6 @@ std::unique_ptr<CtranComm> CtranDistTestFixture::makeCtranComm() {
   comm->logMetaData_.commDesc = commDesc;
   comm->logMetaData_.rank = globalRank;
   comm->logMetaData_.nRanks = numRanks;
-
-  const auto useVirtualTopo =
-      (NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::nolocal ||
-       NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::vnode);
 
   int cudaDev;
   CUDACHECK_TEST(cudaGetDevice(&cudaDev));
@@ -151,42 +114,64 @@ std::unique_ptr<CtranComm> CtranDistTestFixture::makeCtranComm() {
       commRanksToWorldRanks,
       commDesc);
 
-  if (initType == InitEnvType::MPI && useVirtualTopo) {
-    mccl::utils::initRankTopologyNoSystem(comm->statex_.get());
+  // Create global bootstrap (MPI or TcpStore depending on env)
+  std::unique_ptr<meta::comms::IBootstrap> commBootstrap(
+      meta::comms::createBootstrap("ctrancomm"));
 
-    const auto localRank = comm->statex_->localRank();
-    const auto node = comm->statex_->node();
-
-    comm->bootstrap_ =
-        std::make_unique<meta::comms::MpiBootstrap>(localRank, node);
-  } else if (initType == InitEnvType::MPI) {
-    comm->bootstrap_ = std::make_unique<meta::comms::MpiBootstrap>();
-    mccl::utils::initRankTopology(comm->statex_.get(), comm->bootstrap_.get());
+  // Initialize topology
+  if (NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::nolocal) {
+    comm->statex_->initRankTopologyNolocal();
+  } else if (NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::vnode) {
+    comm->statex_->initRankTopologyVnode(
+        NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS);
   } else {
-    auto bootstrap = std::make_shared<mccl::bootstrap::Bootstrap>(
-        NCCL_SOCKET_IFNAME,
-        mccl::bootstrap::Options{
-            .port = 0, .ifAddrPrefix = NCCL_SOCKET_IPADDR_PREFIX});
-
-    std::string selfUrl = bootstrap->semi_getInitUrl().get();
-    XLOG(DBG) << "Rank " << globalRank << " initURL: " << selfUrl;
-
-    auto allUrls = exchangeInitUrls(selfUrl, numRanks, globalRank);
-
-    std::vector<mccl::InitURL> urlVec(allUrls.begin(), allUrls.end());
-
-    bootstrap->init(urlVec, static_cast<size_t>(globalRank), 0 /* uuid */);
-
-    comm->bootstrap_ =
-        std::make_unique<mccl::bootstrap::CtranAdapter>(bootstrap);
-    mccl::utils::initRankTopology(comm->statex_.get(), comm->bootstrap_.get());
+    comm->statex_->initRankStatesTopology(commBootstrap.get());
   }
+
+  comm->bootstrap_ = std::make_unique<ctran::testing::CtranTestBootstrap>(
+      std::move(commBootstrap));
 
   comm->config_.commDesc = comm->statex_->commDesc().c_str();
 
   COMMCHECK_TEST(ctranInit(comm.get()));
   CHECK(ctranInitialized(comm.get())) << "Ctran not initialized";
+
+  // Initialize standalone colltrace with CommDumpPlugin so tests can verify
+  // colltrace records without requiring a full ncclComm
+  {
+    meta::comms::colltrace::CollTraceConfig collTraceConfig;
+    std::vector<std::unique_ptr<meta::comms::colltrace::ICollTracePlugin>>
+        plugins;
+    plugins.push_back(
+        std::make_unique<meta::comms::colltrace::CommDumpPlugin>(
+            meta::comms::colltrace::CommDumpConfig{.pastCollSize = 1024}));
+    comm->colltraceNew_ = std::shared_ptr<meta::comms::colltrace::ICollTrace>(
+        new meta::comms::colltrace::CollTrace(
+            collTraceConfig,
+            comm->logMetaData_,
+            []() -> meta::comms::CommsMaybeVoid { return folly::unit; },
+            std::move(plugins)));
+  }
+
   return comm;
+}
+
+std::unordered_map<std::string, std::string> dumpCollTrace(CtranComm* comm) {
+  using namespace meta::comms::colltrace;
+  if (comm->colltraceNew_ == nullptr) {
+    return {};
+  }
+  auto* plugin = comm->colltraceNew_->getPluginByName(
+      std::string{CommDumpPlugin::kCommDumpPluginName});
+  auto* commDumpPlugin = dynamic_cast<CommDumpPlugin*>(plugin);
+  if (commDumpPlugin == nullptr) {
+    return {};
+  }
+  auto dump = commDumpPlugin->dump();
+  if (dump.hasError()) {
+    return {};
+  }
+  return commDumpToMap(dump.value());
 }
 
 } // namespace ctran

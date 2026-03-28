@@ -5,6 +5,7 @@
 #include <atomic>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "comms/ctran/CtranComm.h"
@@ -12,9 +13,6 @@
 #include "comms/testinfra/DistTestBase.h"
 
 namespace ctran {
-
-// Detect which initialization environment to use
-InitEnvType getInitEnvType();
 
 // Ctran-specific environment that inherits DistEnvironmentBase and adds
 // ctran-specific env vars (NCCL_CTRAN_ENABLE, profiling, etc.)
@@ -39,10 +37,11 @@ class CtranDistTestFixture : public CtranTestFixtureBase,
   std::unique_ptr<CtranComm> makeCtranComm();
 
   bool enableNolocal{false};
-
- private:
-  std::vector<std::string>
-  exchangeInitUrls(const std::string& selfUrl, int numRanks, int selfRank);
 };
+
+// Dump colltrace records from a standalone CtranComm's colltraceNew_.
+// Returns a map with keys like "CT_pastColls", "CT_pendingColls",
+// "CT_currentColl". Returns empty map if colltrace is not initialized.
+std::unordered_map<std::string, std::string> dumpCollTrace(CtranComm* comm);
 
 } // namespace ctran

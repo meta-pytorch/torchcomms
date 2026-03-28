@@ -237,7 +237,8 @@ TEST_P(DistRegCacheTestSuite, ExportImportMem) {
 
     EXPECT_EQ(msg.type, ControlMsgType::NVL_EXPORT_MEM);
     EXPECT_EQ(msg.ipcDesc.desc.range, ipcMem->getRange());
-    EXPECT_EQ(msg.ipcDesc.desc.numSegments, 1);
+    EXPECT_EQ(msg.ipcDesc.desc.numInlineSegments(), 1);
+    EXPECT_EQ(msg.ipcDesc.desc.totalSegments, 1);
     EXPECT_NE(msg.ipcDesc.desc.segments[0].sharedHandle.fd, 0);
     EXPECT_GT(msg.ipcDesc.desc.segments[0].range, 0);
     EXPECT_EQ(msg.ipcDesc.desc.pid, getpid());
@@ -329,7 +330,8 @@ TEST_F(DistRegCacheTest, ExportReleaseMemCb) {
       struct ctran::regcache::IpcDesc IpcDesc;
       COMMCHECK_TEST(ipcRegCache->exportMem(data, ipcRegElem, IpcDesc));
       EXPECT_EQ(IpcDesc.desc.range, ipcMemSize);
-      EXPECT_EQ(IpcDesc.desc.numSegments, 1);
+      EXPECT_EQ(IpcDesc.desc.numInlineSegments(), 1);
+      EXPECT_EQ(IpcDesc.desc.totalSegments, 1);
       EXPECT_GT(IpcDesc.desc.segments[0].range, 0);
       COMMCHECK_TEST(ipcRegCache->notifyRemoteIpcExport(
           myId, peerServerAddrs[peer], IpcDesc, &exportReqs[peer - 1]));

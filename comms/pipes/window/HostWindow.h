@@ -3,6 +3,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "comms/pipes/GpuMemHandler.h"
@@ -130,19 +131,14 @@ class HostWindow {
    * NOT collective: only registers locally for IBGDA (gets lkey).
    * Does not exchange with peers. Use for source-only buffers.
    *
-   * May be called before or after exchange(). Call getDeviceWindow() after
-   * exchange() and all registration calls to get a DeviceWindow with the
-   * registration table.
-   *
    * @param ptr   Local GPU buffer pointer
    * @param size  Buffer size in bytes
-   * @return      Local buffer registration index
+   * @return      lkey for the registered buffer, or nullopt if no IBGDA peers
    */
-  int registerLocalBuffer(void* ptr, std::size_t size);
+  std::optional<NetworkLKey> registerLocalBuffer(void* ptr, std::size_t size);
 
   /**
-   * Register and exchange a buffer for use as a destination in
-   * DeviceWindow::put/put_signal.
+   * Register and exchange the window data buffer with all peers.
    *
    * COLLECTIVE: all ranks must call together, each with their local buffer.
    * Registers locally for IBGDA (gets lkey) and exchanges with all IBGDA
@@ -151,15 +147,10 @@ class HostWindow {
    * Each DeviceWindow supports exactly one exchanged dst buffer. Calling
    * this more than once is an error.
    *
-   * May be called before or after exchange(). Call getDeviceWindow() after
-   * exchange() and all registration calls to get a DeviceWindow with the
-   * registration table.
-   *
    * @param ptr   Local GPU buffer pointer
    * @param size  Buffer size in bytes
-   * @return      Local buffer registration index
    */
-  int registerAndExchangeBuffer(void* ptr, std::size_t size);
+  void registerAndExchangeBuffer(void* ptr, std::size_t size);
 
   int rank() const {
     return myRank_;
@@ -241,15 +232,16 @@ class HostWindow {
   void* userBuffer_{nullptr};
   std::size_t userBufferSize_{0};
 
-  // --- Buffer registration table (for generic put/put_signal) ---
-  std::vector<LocalBufferRegistration> localRegistrations_;
+  // --- Locally registered buffer pointers (for IBGDA deregistration) ---
+  std::vector<void*> registeredLocalBuffers_;
+
+  // --- Remote buffer registration (for generic put/put_signal) ---
   // Remote registrations for the single exchanged dst buffer (one per IBGDA
   // peer)
   std::vector<RemoteBufferRegistration> remoteRegistrations_;
   // NVL mapped pointers for the exchanged dst buffer (per-rank, includes self
   // as nullptr)
   std::vector<void*> exchangedNvlMappedPtrs_;
-  std::unique_ptr<meta::comms::DeviceBuffer> localRegistrationsDevice_;
   std::unique_ptr<meta::comms::DeviceBuffer> remoteRegistrationsDevice_;
 
   // --- Window buffer NVL peer pointers (for offset-based put/put_signal) ---

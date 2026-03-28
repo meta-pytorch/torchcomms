@@ -1,25 +1,21 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <folly/init/Init.h>
-#include <gmock/gmock.h>
+#include <folly/json/json.h>
 #include <gtest/gtest.h>
-#include <nccl.h>
 #include <stdlib.h>
-#include <new>
+#include <thread>
 
 #include "CtranUtUtils.h"
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/AllToAll/AllToAllPImpl.h"
-#include "comms/ctran/algos/AllToAll/AllToAllvImpl.h"
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "meta/commDump.h"
 
-#include <folly/json/json.h>
-
-class ctranAllToAllPTest : public CtranDistBaseTest {
+class ctranAllToAllPTest : public ctran::CtranDistTestFixture,
+                           public CtranBaseTest {
  public:
   ctranAllToAllPTest() = default;
 
@@ -41,41 +37,34 @@ class ctranAllToAllPTest : public CtranDistBaseTest {
     oobBroadcast(&count, 1, 0);
   }
 
-  void* createDataBuf(size_t nbytes, void** handle) {
+  void* createDataBuf(size_t nbytes, bool doRegister) {
     void* buf = nullptr;
-    // Allocate data buffer, and assign different value for each send chunk
-    NCCLCHECK_TEST(ncclMemAlloc(&buf, nbytes));
-    if (buf && handle) {
-      NCCLCHECK_TEST(ncclCommRegister(comm, buf, nbytes, handle));
+    CUDACHECK_TEST(cudaMalloc(&buf, nbytes));
+    if (buf && doRegister) {
+      COMMCHECK_TEST(ctran::globalRegisterWithPtr(buf, nbytes));
     }
     return buf;
   }
 
-  void releaseDataBuf(void* buf, void* handle) {
-    if (handle) {
-      NCCLCHECK_TEST(ncclCommDeregister(comm, handle));
+  void releaseDataBuf(void* buf, size_t nbytes, bool doDeregister) {
+    if (doDeregister) {
+      COMMCHECK_TEST(ctran::globalDeregisterWithPtr(buf, nbytes));
     }
-    NCCLCHECK_TEST(ncclMemFreeWithRefCheck(buf));
+    CUDACHECK_TEST(cudaFree(buf));
   }
 
   void SetUp() override {
-    setenv("NCCL_COLLTRACE", "trace", 0);
-    setenv("NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1", 0);
-    // -1 for not limiting the number of colls to trace
-    setenv("NCCL_COLLTRACE_RECORD_MAX", "-1", 0);
-    CtranDistBaseTest::SetUp();
-    comm = commWorld;
-    if (!ctran::AllToAllPSupport(comm->ctranComm_.get())) {
+    ctran::CtranDistTestFixture::SetUp();
+    ctranComm = makeCtranComm();
+    if (!ctran::AllToAllPSupport(ctranComm.get())) {
       GTEST_SKIP() << "Skip the test because ctran::AllToAllP is not supported";
     }
 
-    // Allocate enough space for arguments, value assignment set in each test
     sendBuf = nullptr;
-    sendHdl = nullptr;
   }
 
   void TearDown() override {
-    CtranDistBaseTest::TearDown();
+    ctran::CtranDistTestFixture::TearDown();
   }
 
   void setupHints(bool skip_ctrl_msg) {
@@ -92,8 +81,7 @@ class ctranAllToAllPTest : public CtranDistBaseTest {
 
   void run() {
     ASSERT_TRUE(
-        meta::comms::colltrace::testOnlyClearCollTraceRecords(
-            comm->ctranComm_.get()));
+        meta::comms::colltrace::testOnlyClearCollTraceRecords(ctranComm.get()));
 
     // Initialize double persistent requests using double recv buffer allocated.
     std::array<CtranPersistentRequest*, 2> doublePRequests;
@@ -104,8 +92,8 @@ class ctranAllToAllPTest : public CtranDistBaseTest {
               maxRecvCount,
               hints,
               commInt,
-              comm->ctranComm_.get(),
-              stream,
+              ctranComm.get(),
+              testStream,
               doublePRequests[idx]));
     }
 
@@ -124,7 +112,7 @@ class ctranAllToAllPTest : public CtranDistBaseTest {
       const int idx = x % 2;
       auto res = ctran::AllToAllPExec(sendBuf, count, doublePRequests[idx]);
       ASSERT_EQ(res, commSuccess);
-      CUDACHECK_TEST(cudaStreamSynchronize(stream));
+      CUDACHECK_TEST(cudaStreamSynchronize(testStream));
 
       // Check each received chunk
       int* recvbuff = (int*)doubleRecvbuffs[idx];
@@ -145,18 +133,17 @@ class ctranAllToAllPTest : public CtranDistBaseTest {
     }
 
     CUDACHECK_TEST(cudaDeviceSynchronize());
-    // Sleep for a while to make sure all the colls are finished
+
+    // Verify colltrace records the AllToAllP operations
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    ASSERT_TRUE(comm->newCollTrace != nullptr);
-    auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
-
+    ASSERT_NE(ctranComm->colltraceNew_, nullptr);
+    auto dumpMap = ctran::dumpCollTrace(ctranComm.get());
     EXPECT_NE(dumpMap["CT_pastColls"], "[]");
     EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
     EXPECT_EQ(dumpMap["CT_currentColl"], "null");
 
     auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
-    auto statex = comm->ctranComm_->statex_.get();
+    auto statex = ctranComm->statex_.get();
     // If there are remote peers, AllToAllPInit submits gpe op and was recorded
     // by colltrace.
     int numTimesRunInit = statex->nNodes() == 1 ? 0 : 2;
@@ -182,28 +169,27 @@ class ctranAllToAllPTest : public CtranDistBaseTest {
     std::vector<CtranMapperBackend> excludedBackends = {
         CtranMapperBackend::NVL};
     // If all ranks are local, uses only kernel staged copy
-    if (comm->ctranComm_->statex_->nLocalRanks() ==
-        comm->ctranComm_->statex_->nRanks()) {
+    if (ctranComm->statex_->nLocalRanks() == ctranComm->statex_->nRanks()) {
       excludedBackends.push_back(CtranMapperBackend::IB);
     }
     verifyBackendsUsed(
-        comm->ctranComm_->ctran_.get(),
-        comm->ctranComm_->statex_.get(),
+        ctranComm->ctran_.get(),
+        ctranComm->statex_.get(),
         kMemCudaMalloc,
         excludedBackends);
   }
 
  protected:
-  ncclComm_t comm{nullptr};
+  cudaStream_t testStream{0};
+  std::unique_ptr<CtranComm> ctranComm{nullptr};
   meta::comms::Hints hints;
   int* sendBuf{nullptr};
   std::array<void*, 2> doubleRecvbuffs;
   size_t maxRecvCount{1024 * 1024};
   size_t count{0};
-  void* sendHdl{nullptr};
-  std::array<void*, 2> recvHdls;
   int expectedVal{0};
   int numTimesRunExec{7};
+  size_t bufNbytes{0};
 };
 
 class ctranAllToAllPTestParam
@@ -220,16 +206,16 @@ TEST_P(ctranAllToAllPTestParam, normalRun) {
       enable_put_fast_path_for_small_msgs);
   setupHints(skip_ctrl_msg);
 
-  sendBuf = (int*)createDataBuf(maxRecvCount * sizeof(int), &sendHdl);
+  bufNbytes = maxRecvCount * sizeof(int);
+  sendBuf = (int*)createDataBuf(bufNbytes, true);
   for (int idx = 0; idx < 2; idx++) {
-    doubleRecvbuffs[idx] =
-        (int*)createDataBuf(maxRecvCount * sizeof(int), &recvHdls[idx]);
+    doubleRecvbuffs[idx] = createDataBuf(bufNbytes, true);
   }
   run();
 
-  releaseDataBuf(sendBuf, sendHdl);
+  releaseDataBuf(sendBuf, bufNbytes, true);
   for (int idx = 0; idx < 2; idx++) {
-    releaseDataBuf(doubleRecvbuffs[idx], recvHdls[idx]);
+    releaseDataBuf(doubleRecvbuffs[idx], bufNbytes, true);
   }
 }
 
@@ -243,10 +229,10 @@ TEST_P(ctranAllToAllPTestParam, countExceedsPreregBufferSize) {
       enable_put_fast_path_for_small_msgs);
   setupHints(skip_ctrl_msg);
 
-  sendBuf = (int*)createDataBuf(maxRecvCount * sizeof(int), &sendHdl);
+  bufNbytes = maxRecvCount * sizeof(int);
+  sendBuf = (int*)createDataBuf(bufNbytes, true);
   for (int idx = 0; idx < 2; idx++) {
-    doubleRecvbuffs[idx] =
-        (int*)createDataBuf(maxRecvCount * sizeof(int), &recvHdls[idx]);
+    doubleRecvbuffs[idx] = createDataBuf(bufNbytes, true);
   }
 
   CtranPersistentRequest* pRequest;
@@ -256,25 +242,23 @@ TEST_P(ctranAllToAllPTestParam, countExceedsPreregBufferSize) {
           maxRecvCount,
           hints,
           commInt,
-          comm->ctranComm_.get(),
-          stream,
+          ctranComm.get(),
+          testStream,
           pRequest));
 
   auto res = ctran::AllToAllPExec(
       sendBuf, /* count */ maxRecvCount / numRanks + 1, pRequest);
   ASSERT_EQ(res, commInvalidArgument);
 
-  releaseDataBuf(sendBuf, sendHdl);
+  releaseDataBuf(sendBuf, bufNbytes, true);
   for (int idx = 0; idx < 2; idx++) {
-    releaseDataBuf(doubleRecvbuffs[idx], recvHdls[idx]);
+    releaseDataBuf(doubleRecvbuffs[idx], bufNbytes, true);
   }
 }
 
 TEST_F(ctranAllToAllPTest, InvalidPreq) {
   auto request = std::make_unique<CtranPersistentRequest>(
-      CtranPersistentRequest::Type::ALLGATHER_P,
-      comm->ctranComm_.get(),
-      stream);
+      CtranPersistentRequest::Type::ALLGATHER_P, ctranComm.get(), testStream);
   ASSERT_EQ(
       ctran::AllToAllPExec(nullptr, 0, request.get()), commInvalidArgument);
 }
@@ -298,7 +282,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranDistEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

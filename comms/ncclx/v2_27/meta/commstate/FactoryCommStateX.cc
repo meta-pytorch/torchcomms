@@ -52,7 +52,8 @@ std::unique_ptr<CommStateX> createCommStateXFromNcclComm(void* _comm) {
       comm->commHash,
       std::vector<RankTopology>(), /* rankTopologies */
       std::vector<int>(), /* commRanksToWorldRanks */
-      NCCLX_CONFIG_FIELD(comm->config, commDesc));
+      NCCLX_CONFIG_FIELD(comm->config, commDesc),
+      comm->noLocal_);
 
   if (comm->noLocal_ ||
       NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::nolocal) {
@@ -149,11 +150,7 @@ ncclResult_t initCtranCommStatexFromNcclComm(
   }
 
   try {
-    if (ncclComm->noLocal_) {
-      ctranComm->statex_->initRankTopologyNolocal();
-    } else {
-      ctranComm->statex_->initRankStatesTopology(ctranComm->bootstrap_.get());
-    }
+    ctranComm->statex_->initRankStatesTopology(ctranComm->bootstrap_.get());
 
     NCCLCHECK(initNvlFabricTopologies(ncclComm, ctranComm));
 

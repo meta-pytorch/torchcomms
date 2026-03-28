@@ -1,9 +1,8 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include <nccl.h>
 #include <stdlib.h>
 #include <cstdio>
-#include <new>
+#include <thread>
 
 #include <folly/init/Init.h>
 #include <folly/json/json.h>
@@ -11,18 +10,15 @@
 #include <gtest/gtest.h>
 
 #include "CtranUtUtils.h"
-#include "comm.h"
 #include "comms/ctran/Ctran.h"
-#include "comms/ctran/algos/AllToAll/AllToAllPImpl.h"
 #include "comms/ctran/algos/AllToAll/AllToAllvImpl.h"
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
-#include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "meta/commDump.h"
 
-class CtranAllToAllTest : public CtranDistBaseTest {
+class CtranAllToAllTest : public ctran::CtranDistTestFixture,
+                          public CtranBaseTest {
  public:
   CtranAllToAllTest() = default;
 
@@ -33,35 +29,31 @@ class CtranAllToAllTest : public CtranDistBaseTest {
     oobBroadcast(&expectedVal, 1, 0);
   }
 
-  void* createDataBuf(size_t nbytes, void** handle) {
+  void* createDataBuf(size_t nbytes, bool doRegister) {
     void* buf = nullptr;
-    // Allocate data buffer, and assign different value for each send chunk
     CUDACHECK_TEST(cudaMalloc(&buf, nbytes));
     if (buf) {
       FB_CUDACHECKIGNORE(cudaMemset(buf, -1, nbytes));
       CUDACHECK_TEST(cudaDeviceSynchronize());
-      if (handle) {
-        NCCLCHECK_TEST(ncclCommRegister(comm, buf, nbytes, handle));
+      if (doRegister) {
+        COMMCHECK_TEST(ctran::globalRegisterWithPtr(buf, nbytes));
       }
     }
     return buf;
   }
 
-  void releaseDataBuf(void* buf, void* handle) {
-    if (handle) {
-      NCCLCHECK_TEST(ncclCommDeregister(comm, handle));
+  void releaseDataBuf(void* buf, size_t nbytes, bool doDeregister) {
+    if (doDeregister) {
+      COMMCHECK_TEST(ctran::globalDeregisterWithPtr(buf, nbytes));
     }
     CUDACHECK_TEST(cudaFree(buf));
   }
 
   bool checkTestPrerequisite(size_t count, commDataType_t dataType) {
-    EXPECT_NE(nullptr, comm);
-    EXPECT_NE(nullptr, comm->ctranComm_->ctran_);
+    EXPECT_NE(nullptr, ctranComm.get());
+    EXPECT_NE(nullptr, ctranComm->ctran_);
     if (!ctranAllToAllSupport(
-            count,
-            dataType,
-            comm->ctranComm_.get(),
-            NCCL_ALLTOALL_ALGO::ctran)) {
+            count, dataType, ctranComm.get(), NCCL_ALLTOALL_ALGO::ctran)) {
       if (globalRank == 0) {
         printf("Skip test because ctranAllToAllSupport returns false\n");
       }
@@ -71,15 +63,11 @@ class CtranAllToAllTest : public CtranDistBaseTest {
   }
 
   void SetUp() override {
-    setenv("NCCL_COLLTRACE", "trace", 0);
-    setenv("NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1", 0);
-    // -1 for not limiting the number of colls to trace
-    setenv("NCCL_COLLTRACE_RECORD_MAX", "-1", 0);
     // Always run ctran alltoall no matter the message size
     setenv("NCCL_CTRAN_ALLTOALL_THRESHOLD", "0", 0);
 
-    CtranDistBaseTest::SetUp();
-    comm = commWorld;
+    ctran::CtranDistTestFixture::SetUp();
+    ctranComm = makeCtranComm();
     CUDACHECK_TEST(cudaEventCreate(&start));
     CUDACHECK_TEST(cudaEventCreate(&stop));
   }
@@ -87,7 +75,7 @@ class CtranAllToAllTest : public CtranDistBaseTest {
   void TearDown() override {
     CUDACHECK_TEST(cudaEventDestroy(start));
     CUDACHECK_TEST(cudaEventDestroy(stop));
-    CtranDistBaseTest::TearDown();
+    ctran::CtranDistTestFixture::TearDown();
   }
 
   template <commDataType_t DataType = commInt>
@@ -100,7 +88,7 @@ class CtranAllToAllTest : public CtranDistBaseTest {
     size_t dataTypeSize = sizeof(DT);
 
     DT *sendBuf = nullptr, *recvBuf = nullptr;
-    void *sendHdl = nullptr, *recvHdl = nullptr;
+    size_t bufNbytes = bufCount * dataTypeSize;
 
     assert(count * numRanks <= bufCount);
 
@@ -108,13 +96,14 @@ class CtranAllToAllTest : public CtranDistBaseTest {
       GTEST_SKIP() << "Skip test because ctranAllToAllSupport returns false";
     }
 
+    ASSERT_TRUE(
+        meta::comms::colltrace::testOnlyClearCollTraceRecords(ctranComm.get()));
+
     generateDistRandomExpValue();
 
     // Allocate data buffer and register
-    sendBuf = (DT*)createDataBuf(
-        bufCount * dataTypeSize, registerFlag ? &sendHdl : nullptr);
-    recvBuf = (DT*)createDataBuf(
-        bufCount * dataTypeSize, registerFlag ? &recvHdl : nullptr);
+    sendBuf = (DT*)createDataBuf(bufNbytes, registerFlag);
+    recvBuf = (DT*)createDataBuf(bufNbytes, registerFlag);
 
     // Assign different value for each send chunk
     for (int i = 0; i < numRanks; ++i) {
@@ -124,21 +113,17 @@ class CtranAllToAllTest : public CtranDistBaseTest {
           DT(expectedVal + globalRank * 10 + i + 1));
     }
 
-    ASSERT_TRUE(
-        meta::comms::colltrace::testOnlyClearCollTraceRecords(
-            comm->ctranComm_.get()));
-
     // Run communication
     auto res = ctranAllToAll(
         sendBuf,
         recvBuf,
         count,
         DataType,
-        comm->ctranComm_.get(),
-        stream,
+        ctranComm.get(),
+        testStream,
         NCCL_ALLTOALL_ALGO::ctran);
     ASSERT_EQ(res, commSuccess);
-    CUDACHECK_TEST(cudaStreamSynchronize(stream));
+    CUDACHECK_TEST(cudaStreamSynchronize(testStream));
 
     // Check each received chunk
     for (int i = 0; i < numRanks; ++i) {
@@ -160,21 +145,23 @@ class CtranAllToAllTest : public CtranDistBaseTest {
                          << " errors";
     }
 
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
     if (count > 0) {
       // Alltoall uses kernel staged copy not NVL iput
       std::vector<CtranMapperBackend> excludedBackends = {
           CtranMapperBackend::NVL};
       // If single node, uses only kernel staged copy
-      if (comm->ctranComm_->statex_->nNodes() == 1) {
+      if (ctranComm->statex_->nNodes() == 1) {
         excludedBackends.push_back(CtranMapperBackend::IB);
       }
       verifyBackendsUsed(
-          comm->ctranComm_->ctran_.get(),
-          comm->ctranComm_->statex_.get(),
+          ctranComm->ctran_.get(),
+          ctranComm->statex_.get(),
           kMemCudaMalloc,
           excludedBackends);
     }
-    verifyGpeLeak(comm->ctranComm_->ctran_.get());
+    verifyGpeLeak(ctranComm->ctran_.get());
 
     int totalColls = 1;
     if (reportPerf) {
@@ -188,24 +175,24 @@ class CtranAllToAllTest : public CtranDistBaseTest {
             recvBuf,
             count,
             DataType,
-            comm->ctranComm_.get(),
-            stream,
+            ctranComm.get(),
+            testStream,
             NCCL_ALLTOALL_ALGO::ctran));
       }
 
-      CUDACHECK_TEST(cudaEventRecord(start, stream));
+      CUDACHECK_TEST(cudaEventRecord(start, testStream));
       for (int x = 0; x < iter; x++) {
         COMMCHECK_TEST(ctranAllToAll(
             sendBuf,
             recvBuf,
             count,
             DataType,
-            comm->ctranComm_.get(),
-            stream,
+            ctranComm.get(),
+            testStream,
             NCCL_ALLTOALL_ALGO::ctran));
       }
-      CUDACHECK_TEST(cudaEventRecord(stop, stream));
-      CUDACHECK_TEST(cudaStreamSynchronize(stream));
+      CUDACHECK_TEST(cudaEventRecord(stop, testStream));
+      CUDACHECK_TEST(cudaStreamSynchronize(testStream));
       CUDACHECK_TEST(cudaEventElapsedTime(&gpuTime_, start, stop));
       gpuTime_ = gpuTime_ * 1000 / iter; // in us
       double bw = count * sizeof(DT) * (numRanks - 1) / gpuTime_ / 1000;
@@ -220,8 +207,8 @@ class CtranAllToAllTest : public CtranDistBaseTest {
     // Sleep for a while to make sure all the colls are finished
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    ASSERT_TRUE(comm->newCollTrace != nullptr);
-    auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+    ASSERT_NE(ctranComm->colltraceNew_, nullptr);
+    auto dumpMap = ctran::dumpCollTrace(ctranComm.get());
 
     EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
     EXPECT_EQ(dumpMap["CT_currentColl"], "null");
@@ -239,14 +226,15 @@ class CtranAllToAllTest : public CtranDistBaseTest {
           coll["algoName"].asString(),
           testing::HasSubstr(allToAllAlgoName(NCCL_ALLTOALL_ALGO::ctran)));
     }
-    verifyGpeLeak(comm->ctranComm_->ctran_.get());
-    releaseDataBuf(sendBuf, registerFlag ? sendHdl : nullptr);
-    releaseDataBuf(recvBuf, registerFlag ? recvHdl : nullptr);
+    verifyGpeLeak(ctranComm->ctran_.get());
+
+    releaseDataBuf(sendBuf, bufNbytes, registerFlag);
+    releaseDataBuf(recvBuf, bufNbytes, registerFlag);
   }
 
  protected:
-  cudaStream_t stream{0};
-  ncclComm_t comm{nullptr};
+  cudaStream_t testStream{0};
+  std::unique_ptr<CtranComm> ctranComm{nullptr};
   int expectedVal{0};
   cudaEvent_t start;
   cudaEvent_t stop;
@@ -265,25 +253,22 @@ TEST_P(CtranAllToAllTestParam, AllToAll) {
       NCCL_CTRAN_ENABLE_PUT_FAST_PATH_FOR_SMALL_MSGS,
       enable_put_fast_path_for_small_msgs);
   // test 1 byte types
-  run<commInt8>(8192, 8192 * comm->ctranComm_->statex_->nRanks());
+  run<commInt8>(8192, 8192 * ctranComm->statex_->nRanks());
   run<commInt8>(
       8192 + 41,
-      (8192 + 41) * comm->ctranComm_->statex_->nRanks()); // non-power of 2
+      (8192 + 41) * ctranComm->statex_->nRanks()); // non-power of 2
 
   // test 2 byte types
-  run<commFloat16>(8192, 8192 * comm->ctranComm_->statex_->nRanks());
-  run<commFloat16>(
-      8192 + 103, (8192 + 103) * comm->ctranComm_->statex_->nRanks());
+  run<commFloat16>(8192, 8192 * ctranComm->statex_->nRanks());
+  run<commFloat16>(8192 + 103, (8192 + 103) * ctranComm->statex_->nRanks());
 
   // test 4 byte types
-  run<commInt32>(8192, 8192 * comm->ctranComm_->statex_->nRanks());
-  run<commInt32>(
-      (8192 + 60), (8192 + 60) * comm->ctranComm_->statex_->nRanks());
+  run<commInt32>(8192, 8192 * ctranComm->statex_->nRanks());
+  run<commInt32>((8192 + 60), (8192 + 60) * ctranComm->statex_->nRanks());
 
   // test 8 byte types
-  run<commInt64>(8192, 8192 * comm->ctranComm_->statex_->nRanks());
-  run<commInt64>(
-      (8192 + 192), (8192 + 192) * comm->ctranComm_->statex_->nRanks());
+  run<commInt64>(8192, 8192 * ctranComm->statex_->nRanks());
+  run<commInt64>((8192 + 192), (8192 + 192) * ctranComm->statex_->nRanks());
 }
 
 TEST_P(CtranAllToAllTestParam, UnalignedAllToAll) {
@@ -294,7 +279,7 @@ TEST_P(CtranAllToAllTestParam, UnalignedAllToAll) {
   EnvRAII env3(
       NCCL_CTRAN_ENABLE_PUT_FAST_PATH_FOR_SMALL_MSGS,
       enable_put_fast_path_for_small_msgs);
-  run(9991, 9991 * comm->ctranComm_->statex_->nRanks());
+  run(9991, 9991 * ctranComm->statex_->nRanks());
 }
 
 TEST_P(CtranAllToAllTestParam, SmallAllToAll) {
@@ -307,7 +292,7 @@ TEST_P(CtranAllToAllTestParam, SmallAllToAll) {
       enable_put_fast_path_for_small_msgs);
   // Even for small data transfer size, need buffer size >= pagesize for IB
   // registration
-  run(2, 8192 * comm->ctranComm_->statex_->nRanks(), true, true);
+  run(2, 8192 * ctranComm->statex_->nRanks(), true, true);
 }
 
 TEST_P(CtranAllToAllTestParam, LargeAllToAll) {
@@ -319,7 +304,7 @@ TEST_P(CtranAllToAllTestParam, LargeAllToAll) {
       NCCL_CTRAN_ENABLE_PUT_FAST_PATH_FOR_SMALL_MSGS,
       enable_put_fast_path_for_small_msgs);
   run(1024 * 1024 * 128UL,
-      1024 * 1024 * 128UL * comm->ctranComm_->statex_->nRanks(),
+      1024 * 1024 * 128UL * ctranComm->statex_->nRanks(),
       true,
       true);
 }
@@ -332,7 +317,7 @@ TEST_P(CtranAllToAllTestParam, ZeroByteAllToAll) {
   EnvRAII env3(
       NCCL_CTRAN_ENABLE_PUT_FAST_PATH_FOR_SMALL_MSGS,
       enable_put_fast_path_for_small_msgs);
-  run(0, 8192 * comm->ctranComm_->statex_->nRanks());
+  run(0, 8192 * ctranComm->statex_->nRanks());
 }
 
 TEST_P(CtranAllToAllTestParam, AllToAllDynamicRegister) {
@@ -343,7 +328,7 @@ TEST_P(CtranAllToAllTestParam, AllToAllDynamicRegister) {
   EnvRAII env3(
       NCCL_CTRAN_ENABLE_PUT_FAST_PATH_FOR_SMALL_MSGS,
       enable_put_fast_path_for_small_msgs);
-  run(8192, 8192 * comm->ctranComm_->statex_->nRanks(), false);
+  run(8192, 8192 * ctranComm->statex_->nRanks(), false);
 }
 
 #ifdef TEST_CUDA_GRAPH_MODE
@@ -356,16 +341,12 @@ TEST_P(CtranAllToAllTestParam, CudaGraphAwareAllToAll) {
       NCCL_CTRAN_ENABLE_PUT_FAST_PATH_FOR_SMALL_MSGS,
       enable_put_fast_path_for_small_msgs);
   EnvRAII env4(NCCL_CTRAN_ALLTOALL_CUDAGRAPH_AWARE_ENABLE, true);
-  // FIXME: if enable colltrace, waitForWorkerFinishQueue() hangs when ppn > 1;
-  // so disable for now.
-  EnvRAII env5(NCCL_COLLTRACE, {});
-  size_t count = 2, bufCount = 8192 * comm->ctranComm_->statex_->nRanks();
+  size_t count = 2, bufCount = 8192 * ctranComm->statex_->nRanks();
   commDataType_t DataType = commInt;
   using DT = int;
   size_t dataTypeSize = sizeof(DT);
 
   DT *sendBuf = nullptr, *recvBuf = nullptr;
-  void *sendHdl = nullptr, *recvHdl = nullptr;
 
   assert(count * numRanks <= bufCount);
 
@@ -376,17 +357,15 @@ TEST_P(CtranAllToAllTestParam, CudaGraphAwareAllToAll) {
   generateDistRandomExpValue();
 
   // Allocate data buffer and register
-  sendBuf = (DT*)createDataBuf(bufCount * dataTypeSize, &sendHdl);
-  recvBuf = (DT*)createDataBuf(bufCount * dataTypeSize, &recvHdl);
+  size_t bufNbytes = bufCount * dataTypeSize;
+  sendBuf = (DT*)createDataBuf(bufNbytes, true);
+  recvBuf = (DT*)createDataBuf(bufNbytes, true);
 
   // Assign different value for each send chunk
   for (int i = 0; i < numRanks; ++i) {
     assignChunkValue<DT>(
         sendBuf + i * count, count, DT(expectedVal + globalRank * 10 + i + 1));
   }
-  ASSERT_TRUE(
-      meta::comms::colltrace::testOnlyClearCollTraceRecords(
-          comm->ctranComm_.get()));
   cudaGraph_t graph;
   cudaGraphExec_t instance;
   // FIXME: if using the stream created in SetUp(), got error "operation not
@@ -404,7 +383,7 @@ TEST_P(CtranAllToAllTestParam, CudaGraphAwareAllToAll) {
       recvBuf,
       count,
       DataType,
-      comm->ctranComm_.get(),
+      ctranComm.get(),
       cudagraph_stream,
       NCCL_ALLTOALL_ALGO::ctran);
   ASSERT_EQ(res, commSuccess);
@@ -438,52 +417,13 @@ TEST_P(CtranAllToAllTestParam, CudaGraphAwareAllToAll) {
   }
 
   CUDACHECK_TEST(cudaDeviceSynchronize());
-  // Sleep for a while to make sure all the colls are finished
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-  ASSERT_TRUE(comm->newCollTrace != nullptr);
-  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
-
-  EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
-  EXPECT_EQ(dumpMap["CT_currentColl"], "null");
-
-  // FIXME: Currently colltrace does not support tracing cuda graph mode, so
-  // we check whether the past colls are empty. Once we have cuda graph enabled,
-  // we can enable the check for past colls.
-
-  EXPECT_EQ(dumpMap["CT_pastColls"], "[]");
-
-  // auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
-  // constexpr int numTimesRunInit = 1;
-  // EXPECT_EQ(pastCollsJson.size(), numIters + numTimesRunInit);
-
-  // auto statex = comm->ctranComm_->statex_.get();
-  // // Skip the check for the AllToAllPInit (first 1) colls.
-  // for (int i = numTimesRunInit; i < pastCollsJson.size(); i++) {
-  //   const auto& coll = pastCollsJson[i];
-  //   if (statex->nNodes() == 1) {
-  //     // If only cuda kernel is launched (no IB put), AlltoAllP is
-  //     essentially
-  //     // alltoall because it shares cuda kernel logic with AlltoAll.
-  //     EXPECT_EQ(coll["opName"].asString(), "AllToAll");
-  //   } else {
-  //     EXPECT_EQ(coll["opName"].asString(), "AllToAllP");
-  //   }
-  //   EXPECT_EQ(coll["count"].asInt(), count);
-  //   EXPECT_EQ(
-  //       coll["dataType"].asString(),
-  //       commDataTypeToString(ncclToMetaComm(ncclDataType_t(DataType))));
-  //   EXPECT_EQ(
-  //       coll["algoName"].asString(),
-  //       ctran::alltoallp::AlgoImpl::algoName(NCCL_ALLTOALL_ALGO::ctran));
-  // }
 
   CUDACHECK_TEST(cudaStreamDestroy(cudagraph_stream));
   CUDACHECK_TEST(cudaGraphExecDestroy(instance));
   CUDACHECK_TEST(cudaGraphDestroy(graph));
-  verifyGpeLeak(comm->ctranComm_->ctran_.get());
-  releaseDataBuf(sendBuf, sendHdl);
-  releaseDataBuf(recvBuf, recvHdl);
+  verifyGpeLeak(ctranComm->ctran_.get());
+  releaseDataBuf(sendBuf, bufNbytes, true);
+  releaseDataBuf(recvBuf, bufNbytes, true);
 }
 #endif
 
@@ -504,7 +444,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranDistEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

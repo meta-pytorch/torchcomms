@@ -5,6 +5,7 @@
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/profiler/Profiler.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 struct PutQElem {
@@ -33,9 +34,22 @@ static commResult_t impl(
 
   CtranAlgoLogger logger(allGatherAlgoName(myAlgo), op->opCount, comm);
 
+  ctran::Profiler* profiler = comm->ctran_->profiler.get();
+  if (profiler) {
+    profiler->initForEachColl(
+        op->opCount, NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT);
+  }
+
   CtranMapperContext context(
       allGatherAlgoName(myAlgo), sendSize, sendSize * nRanks);
   mapper->setContext(std::move(context));
+
+  CTRAN_PROFILER_IF(profiler, {
+    auto& algoContext = profiler->algoContext;
+    algoContext.algorithmName = allGatherAlgoName(myAlgo);
+    algoContext.sendContext.messageSizes = std::to_string(sendSize);
+    algoContext.recvContext.messageSizes = std::to_string(sendSize * nRanks);
+  });
 
   if (nRanks == 1) {
     return commSuccess;
@@ -61,8 +75,15 @@ static commResult_t impl(
   uint64_t blockNum{0};
   uint64_t stepInBlock{0};
 
+  CTRAN_PROFILER_IF(
+      profiler, profiler->startEvent(ctran::ProfilerEvent::BUF_REG));
   FB_COMMCHECK(mapper->searchRegHandle(
       op->allgather.recvbuff, nRanks * sendSize, &memHdl, &localMemReg));
+  CTRAN_PROFILER_IF(
+      profiler, profiler->endEvent(ctran::ProfilerEvent::BUF_REG));
+
+  CTRAN_PROFILER_IF(
+      profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_CTRL));
 
   CtranMapperRequest* req = nullptr;
   FB_COMMCHECK(
@@ -74,10 +95,15 @@ static commResult_t impl(
 
   FB_COMMCHECK(mapper->waitRequest(irecvReq.get()));
   timestamp->recvCtrl.push_back(CtranMapperTimestampPoint(right));
+  CTRAN_PROFILER_IF(
+      profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_CTRL));
 
   // Initialize notify flag to receive from left
   notifyLeft = std::make_unique<CtranMapperNotify>();
   FB_COMMCHECK(mapper->initNotify(left, memHdl, notifyLeft.get()));
+
+  CTRAN_PROFILER_IF(
+      profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_DATA));
 
   // Push addresses for first block onto deque
   for (int i = 0; i < stepsPerBlock; ++i) {
@@ -144,11 +170,16 @@ static commResult_t impl(
     }
   }
 
+  CTRAN_PROFILER_IF(
+      profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_DATA));
+
   FB_COMMCHECK(mapper->waitRequest(isendReq.get()));
 
   if (localMemReg) {
     FB_COMMCHECK(mapper->deregDynamic(memHdl));
   }
+
+  CTRAN_PROFILER_IF(profiler, { profiler->reportToScuba(); });
 
   mapper->timestamps.push_back(std::move(timestamp));
   mapper->reportProfiling();

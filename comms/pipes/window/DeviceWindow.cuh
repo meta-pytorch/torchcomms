@@ -801,7 +801,14 @@ class DeviceWindow {
       int barrier_id,
       const Timeout& timeout = Timeout()) {
     barrier_arrive(group, barrier_id);
-    barrierExpected_ += static_cast<uint64_t>(handle_.nRanks - 1);
+    // Only one thread updates barrierExpected_ to avoid races when
+    // DeviceWindow is accessed via pointer (shared mutable state).
+    if (group.is_leader()) {
+      barrierExpected_ += static_cast<uint64_t>(handle_.nRanks - 1);
+    }
+    // Broadcast the updated value to all threads via group sync so
+    // barrier_wait sees a consistent threshold.
+    group.sync();
     barrier_wait(group, barrier_id, CmpOp::CMP_GE, barrierExpected_, timeout);
   }
 
@@ -822,7 +829,10 @@ class DeviceWindow {
       int barrier_id,
       const Timeout& timeout = Timeout()) {
     barrier_arrive_peer(group, target_rank, barrier_id);
-    barrierExpected_ += 1;
+    if (group.is_leader()) {
+      barrierExpected_ += 1;
+    }
+    group.sync();
     barrier_wait(group, barrier_id, CmpOp::CMP_GE, barrierExpected_, timeout);
   }
 
@@ -1241,9 +1251,6 @@ class DeviceWindow {
   uint64_t barrierExpected_{0};
 
   // --- Buffer registration table (for generic put/put_signal) ---
-  // Local: lkey lookup for source buffers (registered via
-  // registerLocalBuffer or registerAndExchangeBuffer)
-  DeviceSpan<LocalBufferRegistration> localBufferRegistry_;
   // Remote: rkey lookup for the single exchanged dst buffer.
   // Indexed directly by ibgdaPeerIdx (one entry per IBGDA peer).
   DeviceSpan<RemoteBufferRegistration> remoteBufferRegistry_;
