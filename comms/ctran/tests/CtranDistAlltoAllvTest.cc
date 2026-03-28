@@ -2,21 +2,22 @@
 
 #include <folly/init/Init.h>
 #include <folly/json/json.h>
+#include <folly/logging/xlog.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include <nccl.h>
 #include <stdlib.h>
+#include <thread>
 
 #include "CtranUtUtils.h"
-#include "comm.h"
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/AllToAll/AllToAllvImpl.h"
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
-#include "meta/commDump.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 
-class ctranAllToAllvTest : public CtranDistBaseTest {
+class ctranAllToAllvTest : public ctran::CtranDistTestFixture,
+                           public CtranBaseTest {
  public:
   ctranAllToAllvTest() = default;
 
@@ -41,8 +42,6 @@ class ctranAllToAllvTest : public CtranDistBaseTest {
   }
 
   void generateDistRandomCountsDisps() {
-    std::vector<MPI_Request> reqs(numRanks * 2, MPI_REQUEST_NULL);
-
     // assign random send count for each peer
     srand(time(NULL) + globalRank);
 
@@ -51,60 +50,50 @@ class ctranAllToAllvTest : public CtranDistBaseTest {
       sendCounts[i] = (rand() % 10) * getpagesize(); // always page aligned size
       sendDisps[i] = sendTotalCount;
       sendTotalCount += sendCounts[i];
-      // exchange send count to receiver side
-      MPI_Isend(&sendCounts[i], 1, MPI_INT, i, 0, MPI_COMM_WORLD, &reqs[i]);
-      MPI_Irecv(
-          &recvCounts[i],
-          1,
-          MPI_INT,
-          i,
-          0,
-          MPI_COMM_WORLD,
-          &reqs[numRanks + i]);
     }
-    MPI_Waitall(numRanks * 2, reqs.data(), MPI_STATUSES_IGNORE);
 
-    // updates recvDisp based on received counts from sender
+    // Exchange send counts to derive recv counts using oobAllGather.
+    // For each destination rank, gather what each source rank sends to it.
     recvTotalCount = 0;
-    for (int i = 0; i < numRanks; ++i) {
-      recvDisps[i] = recvTotalCount;
-      recvTotalCount += recvCounts[i];
+    for (int dest = 0; dest < numRanks; ++dest) {
+      std::vector<size_t> countsForDest(numRanks, 0);
+      countsForDest[globalRank] = sendCounts[dest];
+      oobAllGather(countsForDest);
+      if (dest == globalRank) {
+        for (int src = 0; src < numRanks; ++src) {
+          recvCounts[src] = countsForDest[src];
+          recvDisps[src] = recvTotalCount;
+          recvTotalCount += recvCounts[src];
+        }
+      }
     }
   }
 
-  void* createDataBuf(size_t nbytes, void** handle) {
+  void* createDataBuf(size_t nbytes, bool doRegister) {
     void* buf = nullptr;
-    // Allocate data buffer, and assign different value for each send chunk
     CUDACHECK_TEST(cudaMalloc(&buf, nbytes));
-    if (buf && handle) {
-      NCCLCHECK_TEST(ncclCommRegister(comm, buf, nbytes, handle));
+    if (buf && doRegister) {
+      COMMCHECK_TEST(ctran::globalRegisterWithPtr(buf, nbytes));
     }
     return buf;
   }
 
-  void releaseDataBuf(void* buf, void* handle) {
-    if (handle) {
-      NCCLCHECK_TEST(ncclCommDeregister(comm, handle));
+  void releaseDataBuf(void* buf, size_t nbytes, bool doDeregister) {
+    if (doDeregister) {
+      COMMCHECK_TEST(ctran::globalDeregisterWithPtr(buf, nbytes));
     }
     CUDACHECK_TEST(cudaFree(buf));
   }
 
   void SetUp() override {
-    setenv("NCCL_COLLTRACE", "trace", 0);
-    setenv("NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1", 0);
-    // -1 for not limiting the number of colls to trace
-    setenv("NCCL_COLLTRACE_RECORD_MAX", "-1", 0);
-    CtranDistBaseTest::SetUp();
-    comm = commWorld;
-    if (!ctranAllToAllvSupport(comm->ctranComm_.get())) {
+    ctran::CtranDistTestFixture::SetUp();
+    ctranComm = makeCtranComm();
+    if (!ctranAllToAllvSupport(ctranComm.get())) {
       GTEST_SKIP() << "Skip the test because ctranAllToAllv is not supported";
     }
 
-    // Allocate enough space for arguments, value assignment set in each test
     sendBuf = nullptr;
     recvBuf = nullptr;
-    sendHdl = nullptr;
-    recvHdl = nullptr;
     sendCounts.resize(numRanks, 0);
     recvCounts.resize(numRanks, 0);
     sendDisps.resize(numRanks, 0);
@@ -112,7 +101,7 @@ class ctranAllToAllvTest : public CtranDistBaseTest {
   }
 
   void TearDown() override {
-    CtranDistBaseTest::TearDown();
+    ctran::CtranDistTestFixture::TearDown();
   }
 
   void run() {
@@ -125,8 +114,7 @@ class ctranAllToAllvTest : public CtranDistBaseTest {
     }
 
     ASSERT_TRUE(
-        meta::comms::colltrace::testOnlyClearCollTraceRecords(
-            comm->ctranComm_.get()));
+        meta::comms::colltrace::testOnlyClearCollTraceRecords(ctranComm.get()));
 
     // Run communication
     for (int x = 0; x < 1; x++) {
@@ -138,11 +126,11 @@ class ctranAllToAllvTest : public CtranDistBaseTest {
           recvCounts.data(),
           recvDisps.data(),
           commInt,
-          comm->ctranComm_.get(),
-          stream);
+          ctranComm.get(),
+          testStream);
       ASSERT_EQ(res, commSuccess);
     }
-    CUDACHECK_TEST(cudaStreamSynchronize(stream));
+    CUDACHECK_TEST(cudaStreamSynchronize(testStream));
 
     // Check each received chunk
     for (int i = 0; i < numRanks; ++i) {
@@ -156,19 +144,16 @@ class ctranAllToAllvTest : public CtranDistBaseTest {
     }
 
     CUDACHECK_TEST(cudaDeviceSynchronize());
-    // Sleep for a while to make sure all the colls are finished
+
+    // Verify colltrace records the AllToAllv operation
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    ASSERT_TRUE(comm->newCollTrace != nullptr);
-    auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
-
+    ASSERT_NE(ctranComm->colltraceNew_, nullptr);
+    auto dumpMap = ctran::dumpCollTrace(ctranComm.get());
     EXPECT_NE(dumpMap["CT_pastColls"], "[]");
     EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
     EXPECT_EQ(dumpMap["CT_currentColl"], "null");
-
     auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
-    EXPECT_EQ(pastCollsJson.size(), 1);
-
+    ASSERT_GE(pastCollsJson.size(), 1);
     for (const auto& coll : pastCollsJson) {
       EXPECT_EQ(coll["opName"].asString(), "AllToAllv");
       EXPECT_THAT(
@@ -182,19 +167,20 @@ class ctranAllToAllvTest : public CtranDistBaseTest {
       std::vector<CtranMapperBackend> excludedBackends = {
           CtranMapperBackend::NVL};
       // If single node, uses only kernel staged copy
-      if (comm->ctranComm_->statex_->nNodes() == 1) {
+      if (ctranComm->statex_->nNodes() == 1) {
         excludedBackends.push_back(CtranMapperBackend::IB);
       }
       verifyBackendsUsed(
-          comm->ctranComm_->ctran_.get(),
-          comm->ctranComm_->statex_.get(),
+          ctranComm->ctran_.get(),
+          ctranComm->statex_.get(),
           kMemCudaMalloc,
           excludedBackends);
     }
   }
 
  protected:
-  ncclComm_t comm{nullptr};
+  cudaStream_t testStream{0};
+  std::unique_ptr<CtranComm> ctranComm{nullptr};
   int* sendBuf{nullptr};
   int* recvBuf{nullptr};
   std::vector<size_t> sendCounts;
@@ -203,8 +189,6 @@ class ctranAllToAllvTest : public CtranDistBaseTest {
   std::vector<size_t> recvDisps;
   size_t sendTotalCount{0};
   size_t recvTotalCount{0};
-  void* sendHdl{nullptr};
-  void* recvHdl{nullptr};
   int expectedVal{0};
 };
 
@@ -219,13 +203,13 @@ TEST_P(ctranAllToAllvTestParam, AllToAllv) {
   generateDistRandomCountsDisps();
   generateDistRandomExpValue();
 
-  sendBuf = (int*)createDataBuf(sendTotalCount * sizeof(int), &sendHdl);
-  recvBuf = (int*)createDataBuf(recvTotalCount * sizeof(int), &recvHdl);
+  sendBuf = (int*)createDataBuf(sendTotalCount * sizeof(int), true);
+  recvBuf = (int*)createDataBuf(recvTotalCount * sizeof(int), true);
 
   run();
 
-  releaseDataBuf(sendBuf, sendHdl);
-  releaseDataBuf(recvBuf, recvHdl);
+  releaseDataBuf(sendBuf, sendTotalCount * sizeof(int), true);
+  releaseDataBuf(recvBuf, recvTotalCount * sizeof(int), true);
 }
 
 TEST_P(ctranAllToAllvTestParam, AllToAll) {
@@ -236,13 +220,13 @@ TEST_P(ctranAllToAllvTestParam, AllToAll) {
   generateFixedCountsDisps(1024 * 1024UL);
   generateDistRandomExpValue();
 
-  sendBuf = (int*)createDataBuf(sendTotalCount * sizeof(int), &sendHdl);
-  recvBuf = (int*)createDataBuf(recvTotalCount * sizeof(int), &recvHdl);
+  sendBuf = (int*)createDataBuf(sendTotalCount * sizeof(int), true);
+  recvBuf = (int*)createDataBuf(recvTotalCount * sizeof(int), true);
 
   run();
 
-  releaseDataBuf(sendBuf, sendHdl);
-  releaseDataBuf(recvBuf, recvHdl);
+  releaseDataBuf(sendBuf, sendTotalCount * sizeof(int), true);
+  releaseDataBuf(recvBuf, recvTotalCount * sizeof(int), true);
 }
 
 TEST_P(ctranAllToAllvTestParam, ZeroByteAllToAllv) {
@@ -256,8 +240,8 @@ TEST_P(ctranAllToAllvTestParam, ZeroByteAllToAllv) {
   sendTotalCount = 1048576;
   recvTotalCount = 1048576;
 
-  sendBuf = (int*)createDataBuf(sendTotalCount * sizeof(int), &sendHdl);
-  recvBuf = (int*)createDataBuf(recvTotalCount * sizeof(int), &recvHdl);
+  sendBuf = (int*)createDataBuf(sendTotalCount * sizeof(int), true);
+  recvBuf = (int*)createDataBuf(recvTotalCount * sizeof(int), true);
 
   // Reset buffers' value
   assignChunkValue(sendBuf, sendTotalCount, globalRank);
@@ -271,8 +255,8 @@ TEST_P(ctranAllToAllvTestParam, ZeroByteAllToAllv) {
                      << " checked receive buffer (expect no update) with "
                      << errs << " errors";
 
-  releaseDataBuf(sendBuf, sendHdl);
-  releaseDataBuf(recvBuf, recvHdl);
+  releaseDataBuf(sendBuf, sendTotalCount * sizeof(int), true);
+  releaseDataBuf(recvBuf, recvTotalCount * sizeof(int), true);
 }
 
 // Do not support all to all v with different memory allocs
@@ -284,10 +268,10 @@ TEST_P(ctranAllToAllvTestParam, DISABLED_AllToAllvMultiBufs) {
   EnvRAII env2(NCCL_CTRAN_ENABLE_PRECONNECT, enable_lowlatency_config);
 
   std::vector<int*> sendBufs(numRanks, nullptr), recvBufs(numRanks, nullptr);
-  std::vector<void*> sendHdls(numRanks, nullptr), recvHdls(numRanks, nullptr);
+  std::vector<size_t> sendBufSizes(numRanks, 0), recvBufSizes(numRanks, 0);
 
-  ASSERT_NE(nullptr, comm);
-  ASSERT_NE(nullptr, comm->ctranComm_->ctran_);
+  ASSERT_NE(nullptr, ctranComm.get());
+  ASSERT_NE(nullptr, ctranComm->ctran_);
 
   generateDistRandomCountsDisps();
   generateDistRandomExpValue();
@@ -295,11 +279,11 @@ TEST_P(ctranAllToAllvTestParam, DISABLED_AllToAllvMultiBufs) {
   // Allocate different buffer for each send/recv chunk, and re-generate
   // displacement as offset to first buffer
   for (int i = 0; i < numRanks; ++i) {
-    sendBufs[i] =
-        (int*)createDataBuf(sendCounts[i] * sizeof(int), &sendHdls[i]);
+    sendBufSizes[i] = sendCounts[i] * sizeof(int);
+    sendBufs[i] = (int*)createDataBuf(sendBufSizes[i], true);
     sendDisps[i] = (i == 0) ? 0 : sendBufs[i] - sendBufs[0];
-    recvBufs[i] =
-        (int*)createDataBuf(recvCounts[i] * sizeof(int), &recvHdls[i]);
+    recvBufSizes[i] = recvCounts[i] * sizeof(int);
+    recvBufs[i] = (int*)createDataBuf(recvBufSizes[i], true);
     recvDisps[i] = (i == 0) ? 0 : recvBufs[i] - recvBufs[0];
   }
 
@@ -308,8 +292,8 @@ TEST_P(ctranAllToAllvTestParam, DISABLED_AllToAllvMultiBufs) {
   run();
 
   for (int i = 0; i < numRanks; ++i) {
-    releaseDataBuf(sendBufs[i], sendHdls[i]);
-    releaseDataBuf(recvBufs[i], recvHdls[i]);
+    releaseDataBuf(sendBufs[i], sendBufSizes[i], true);
+    releaseDataBuf(recvBufs[i], recvBufSizes[i], true);
   }
 }
 
@@ -318,20 +302,20 @@ TEST_P(ctranAllToAllvTestParam, AllToAllvDynamicRegister) {
   EnvRAII env1(NCCL_CTRAN_NO_ERROR_CHECK, enable_lowlatency_config);
   EnvRAII env2(NCCL_CTRAN_ENABLE_PRECONNECT, enable_lowlatency_config);
 
-  ASSERT_NE(nullptr, comm);
-  ASSERT_NE(nullptr, comm->ctranComm_->ctran_);
+  ASSERT_NE(nullptr, ctranComm.get());
+  ASSERT_NE(nullptr, ctranComm->ctran_);
 
   generateDistRandomCountsDisps();
   generateDistRandomExpValue();
 
   // Skip registration as for dynamic registration test
-  sendBuf = (int*)createDataBuf(sendTotalCount * sizeof(int), nullptr);
-  recvBuf = (int*)createDataBuf(recvTotalCount * sizeof(int), nullptr);
+  sendBuf = (int*)createDataBuf(sendTotalCount * sizeof(int), false);
+  recvBuf = (int*)createDataBuf(recvTotalCount * sizeof(int), false);
 
   run();
 
-  releaseDataBuf(sendBuf, sendHdl);
-  releaseDataBuf(recvBuf, recvHdl);
+  releaseDataBuf(sendBuf, sendTotalCount * sizeof(int), false);
+  releaseDataBuf(recvBuf, recvTotalCount * sizeof(int), false);
 }
 
 // Tests for PerfConfig
@@ -362,16 +346,16 @@ class ctranAllToAllvIbTest : public ctranAllToAllvTest {
 TEST_F(ctranAllToAllvIbTest, AllToAllvIbconfig) {
   generateDistRandomCountsDisps();
   generateDistRandomExpValue();
-  sendBuf = (int*)createDataBuf(sendTotalCount * sizeof(int), &sendHdl);
-  recvBuf = (int*)createDataBuf(recvTotalCount * sizeof(int), &recvHdl);
+  sendBuf = (int*)createDataBuf(sendTotalCount * sizeof(int), true);
+  recvBuf = (int*)createDataBuf(recvTotalCount * sizeof(int), true);
   run();
 
   if (this->globalRank == 0) {
-    if (comm->ctranComm_->ctran_->algo == nullptr) {
+    if (ctranComm->ctran_->algo == nullptr) {
       XLOGF(INFO, "No ctran algo found, skip test");
     } else {
       CtranIbConfig* ctranIbConfigPtr =
-          comm->ctranComm_->ctran_->algo->getCollToVcConfig(CollType::ALLTOALL);
+          ctranComm->ctran_->algo->getCollToVcConfig(CollType::ALLTOALL);
       if (ctranIbConfigPtr != nullptr) {
         EXPECT_EQ(ctranIbConfigPtr->qpScalingTh, 131072);
         EXPECT_EQ(ctranIbConfigPtr->numQps, 1);
@@ -383,13 +367,13 @@ TEST_F(ctranAllToAllvIbTest, AllToAllvIbconfig) {
       }
     }
   }
-  releaseDataBuf(sendBuf, sendHdl);
-  releaseDataBuf(recvBuf, recvHdl);
+  releaseDataBuf(sendBuf, sendTotalCount * sizeof(int), true);
+  releaseDataBuf(recvBuf, recvTotalCount * sizeof(int), true);
 }
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranDistEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }
