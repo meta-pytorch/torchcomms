@@ -8,10 +8,12 @@
 #include "CtranUtUtils.h"
 
 #include "comms/ctran/Ctran.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 
-class CtranStressQpConnTest : public NcclxBaseTest, public CtranBaseTest {
+class CtranStressQpConnTest : public ctran::CtranDistTestFixture,
+                              public CtranBaseTest {
  public:
   // Times to repeat the test
   int repeat{5};
@@ -23,7 +25,7 @@ class CtranStressQpConnTest : public NcclxBaseTest, public CtranBaseTest {
 
   void SetUp() override {
     setenv("NCCL_CTRAN_ENABLE", "1", 0);
-    NcclxBaseTest::SetUp();
+    ctran::CtranDistTestFixture::SetUp();
     CUDACHECK_TEST(cudaSetDevice(localRank));
 
     // Allow overriding the number of comms and repeat count
@@ -41,7 +43,7 @@ class CtranStressQpConnTest : public NcclxBaseTest, public CtranBaseTest {
   }
 
   void TearDown() override {
-    NcclxBaseTest::TearDown();
+    ctran::CtranDistTestFixture::TearDown();
     NCCLCHECK_TEST(ncclCommDestroy(commWorld));
   }
 
@@ -139,7 +141,7 @@ TEST_F(CtranStressQpConnTest, AllToAll) {
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranDistEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

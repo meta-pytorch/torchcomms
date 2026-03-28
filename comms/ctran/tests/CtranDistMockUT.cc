@@ -6,18 +6,19 @@
 #include <nccl.h>
 #include <stdlib.h>
 #include "CtranUtUtils.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 
-class CtranTest : public NcclxBaseTest, public CtranBaseTest {
+class CtranTest : public ctran::CtranDistTestFixture, public CtranBaseTest {
  public:
   void SetUp() override {
     setenv("NCCL_CTRAN_ENABLE", "1", 0);
-    NcclxBaseTest::SetUp();
+    ctran::CtranDistTestFixture::SetUp();
   }
 
   void TearDown() override {
-    NcclxBaseTest::TearDown();
+    ctran::CtranDistTestFixture::TearDown();
   };
 };
 
@@ -129,7 +130,7 @@ TEST_F(CtranTest, DISABLED_CommDestroyAtAsyncInitFailureBlocking) {
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranDistEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }
