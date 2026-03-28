@@ -1,29 +1,25 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include <comm.h>
 #include <folly/init/Init.h>
+#include <folly/json/json.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include <nccl.h>
 #include <stdlib.h>
 
 #include "CtranUtUtils.h"
 #include "comms/ctran/Ctran.h"
-#include "comms/ctran/colltrace/CollTraceWrapper.h"
+#include "comms/ctran/backends/ib/CtranIbSingleton.h"
 #include "comms/ctran/regcache/RegCache.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/utils/CommGroupUtils.h"
+#include "comms/ctran/utils/CudaWrap.h"
 #include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsCuUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "meta/commDump.h"
 
-#include <folly/json/json.h>
-
-class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
+class CtranTestFixture : public ctran::CtranDistTestFixture,
+                         public CtranBaseTest {
  public:
   std::vector<TestMemSegment> segments;
-  std::vector<void*> segHandles;
   std::shared_ptr<ctran::RegCache> regCache{nullptr};
 
   void SetUp() override {
@@ -34,7 +30,7 @@ class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
     setenv("NCCL_CTRAN_ENABLE", "1", 0);
     setenv("NCCL_CTRAN_TRANSPORT_PROFILER", "1", 0);
     setenv("NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT", "1", 0);
-    NcclxBaseTest::SetUp();
+    ctran::CtranDistTestFixture::SetUp();
     srand(time(NULL));
     ctran::logGpuMemoryStats(globalRank);
 
@@ -44,7 +40,7 @@ class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
 
   void TearDown() override {
     ctran::logGpuMemoryStats(globalRank);
-    NcclxBaseTest::TearDown();
+    ctran::CtranDistTestFixture::TearDown();
   }
 
   static void checkProfiler(ctran::Profiler* profiler, uint64_t opCount) {
@@ -100,23 +96,28 @@ class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
     // Setup NCCL_CTRAN_IB_MAX_QPS before comm creation so that internal QP
     // containers can be initialized
     EnvRAII env(NCCL_CTRAN_IB_MAX_QPS, numMaxQp);
-    NcclCommRAII comm(globalRank, numRanks, localRank);
-    ASSERT_NE(nullptr, static_cast<ncclComm_t>(comm));
-    ASSERT_NE(nullptr, comm->ctranComm_->ctran_);
+    auto ctranComm = makeCtranComm();
+    ASSERT_NE(nullptr, ctranComm.get());
+    ASSERT_NE(nullptr, ctranComm->ctran_.get());
 
     // Check cumem after comm creation to make sure we have loaded cu symbols
     if ((memType == kMemNcclMemAlloc || memType == kCuMemAllocDisjoint) &&
-        ncclIsCuMemSupported() == false) {
+        ctran::utils::isCuMemSupported() == false) {
       GTEST_SKIP() << "CuMem not supported, skip test";
     }
 
-    if (memType == kCuMemAllocDisjoint &&
-        (!comm->dmaBufSupport || !NCCL_CTRAN_IB_DMABUF_ENABLE)) {
-      GTEST_SKIP() << "dmabuf is not supported, skip disjoint test";
+    if (memType == kCuMemAllocDisjoint) {
+      int cudaDev;
+      CUDACHECK_TEST(cudaGetDevice(&cudaDev));
+      auto ibSingleton = CtranIbSingleton::getInstance();
+      if (!ibSingleton || !ibSingleton->getDevToDmaBufSupport(cudaDev) ||
+          !NCCL_CTRAN_IB_DMABUF_ENABLE) {
+        GTEST_SKIP() << "dmabuf is not supported, skip disjoint test";
+      }
     }
 
-    for (int peer = 0; peer < comm->ctranComm_->statex_->nRanks(); peer++) {
-      if (!ctranSendRecvSupport(peer, comm->ctranComm_.get())) {
+    for (int peer = 0; peer < ctranComm->statex_->nRanks(); peer++) {
+      if (!ctranSendRecvSupport(peer, ctranComm.get())) {
         GTEST_SKIP()
             << "Skip test since ctran cannot support SendRecv with peer "
             << peer;
@@ -135,9 +136,7 @@ class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
     CUDACHECK_TEST(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
 
     for (auto& segment : segments) {
-      void* hdl = nullptr;
-      NCCLCHECK_TEST(ncclCommRegister(comm, segment.ptr, segment.size, &hdl));
-      segHandles.push_back(hdl);
+      COMMCHECK_TEST(ctran::globalRegisterWithPtr(segment.ptr, segment.size));
     }
 
     int* buf = reinterpret_cast<int*>(reinterpret_cast<char*>(base) + offset);
@@ -148,11 +147,11 @@ class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
       commGroupDepth++;
       bool doSendRecv = false;
 
-      auto opCount = comm->ctranComm_->ctran_->getOpCount();
+      auto opCount = ctranComm->ctran_->getOpCount();
       if (globalRank == sendRank) {
         printf(
             "Rank %d sendRank %d send to %d other ranks with offset %ld count %ld numMaxQP %d memType %s\n",
-            comm->ctranComm_->statex_->rank(),
+            ctranComm->statex_->rank(),
             sendRank,
             numRanks - 1, // exclude itself
             offset,
@@ -176,21 +175,19 @@ class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
         for (auto recvRank : recvRanks) {
           if (recvRank != globalRank) {
             EXPECT_EQ(
-                ctranSend(
-                    buf, count, dt, recvRank, comm->ctranComm_.get(), stream),
+                ctranSend(buf, count, dt, recvRank, ctranComm.get(), stream),
                 commSuccess);
             doSendRecv = true;
           }
         }
 
         // Expect same opCount for all ops in the group
-        EXPECT_EQ(comm->ctranComm_->ctran_->getOpCount(), opCount);
+        EXPECT_EQ(ctranComm->ctran_->getOpCount(), opCount);
       } else {
         if (isReceiver) {
           CUDACHECK_TEST(cudaMemset(base, rand(), bufSize));
           EXPECT_EQ(
-              ctranRecv(
-                  buf, count, dt, sendRank, comm->ctranComm_.get(), stream),
+              ctranRecv(buf, count, dt, sendRank, ctranComm.get(), stream),
               commSuccess);
           doSendRecv = true;
         }
@@ -202,7 +199,7 @@ class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
       CUDACHECK_TEST(cudaStreamSynchronize(stream));
 
       if (doSendRecv) {
-        checkProfiler(comm->ctranComm_->ctran_->profiler.get(), opCount);
+        checkProfiler(ctranComm->ctran_->profiler.get(), opCount);
       }
 
       if (isReceiver) {
@@ -215,55 +212,64 @@ class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
         (NCCL_SENDRECV_ALGO != NCCL_SENDRECV_ALGO::ctstaged) &&
         (NCCL_SENDRECV_ALGO != NCCL_SENDRECV_ALGO::ctp2p)) {
       verifyBackendsUsed(
-          comm->ctranComm_->ctran_.get(),
-          comm->ctranComm_->statex_.get(),
-          memType);
+          ctranComm->ctran_.get(), ctranComm->statex_.get(), memType);
     }
-    verifyGpeLeak(comm->ctranComm_->ctran_.get());
+    verifyGpeLeak(ctranComm->ctran_.get());
+
+    // Brief wait for GPE thread to flush colltrace entries after stream sync
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // Check the coll trace only for participating ranks
+    bool participated = (globalRank == sendRank) || isReceiver;
+    if (participated) {
+      auto dumpMap = ctran::dumpCollTrace(ctranComm.get());
+      ASSERT_FALSE(dumpMap.empty()) << "Colltrace should be initialized";
+
+      int numSendPeers = oneToOne ? 1 : (numRanks - 1);
+      std::string expAlgoName;
+      if (globalRank == sendRank) {
+        expAlgoName = numSendPeers > 1 ? "CtranSendRecv" : "CtranSend";
+      } else {
+        expAlgoName = "CtranRecv";
+      }
+
+      auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
+      ASSERT_FALSE(pastCollsJson.empty()) << "pastColls should not be empty";
+      for (const auto& coll : pastCollsJson) {
+        auto algoName = coll.getDefault("algoName", "").asString();
+        auto opName = coll.getDefault("opName", "").asString();
+        // Skip handle exchange entries
+        if (algoName.find("HanldeExchange") != std::string::npos) {
+          continue;
+        }
+        // algoName is always populated
+        EXPECT_EQ(algoName, expAlgoName);
+        // opName and count are only populated when GPE opGroup is non-empty
+        // (i.e., the default algo). For ctstaged/ctp2p/CopyEngine notify
+        // kernels, the opGroup is empty so opName/count are not set.
+        if (!opName.empty() && coll.count("count")) {
+          EXPECT_EQ(opName, globalRank == sendRank ? "Send" : "Recv");
+          if (globalRank == sendRank && numSendPeers > 1) {
+            // getGroupedP2PMetaData sums counts across all send ops
+            EXPECT_EQ(
+                coll["count"].asInt(),
+                static_cast<int64_t>(count) * numSendPeers);
+          } else {
+            EXPECT_EQ(coll["count"].asInt(), count);
+          }
+        }
+      }
+    }
 
     // First deregister buffer to catch potential 'remote access error' caused
     // by incomplete ctranSend when ctranRecv has returned incorrectly.
     // Delaying it after check can lead to false positive since ctranSend may
     // eventually complete.
-    for (auto& hdl : segHandles) {
-      NCCLCHECK_TEST(ncclCommDeregister(comm, hdl));
+    for (auto& segment : segments) {
+      COMMCHECK_TEST(ctran::globalDeregisterWithPtr(segment.ptr, segment.size));
     }
 
     CUDACHECK_TEST(cudaDeviceSynchronize());
-    // Sleep for a while to make sure all the colls are finished
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    // Check the coll trace
-    ASSERT_TRUE(comm->newCollTrace != nullptr);
-    auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
-
-    std::string expAlgoName;
-    if (globalRank == sendRank) {
-      // Sender issues numRanks - 1 sends; if more than 1, the current algoName
-      // logic doesn't distingush whether send or recv.
-      expAlgoName = numRanks > 2 ? "CtranSendRecv" : "CtranSend";
-    } else {
-      expAlgoName = "CtranRecv";
-    }
-
-    auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
-    for (const auto& coll : pastCollsJson) {
-      // Ignore handle exchange
-      if (coll["opName"].asString().find("HanldeExchange") ==
-          std::string::npos) {
-        continue;
-      }
-      EXPECT_EQ(
-          coll["opName"].asString(), globalRank == sendRank ? "Send" : "Recv");
-      // For pure send/recv, count should be set to the count of the send/recv
-      if (globalRank == sendRank && numRanks - 1 > 1) {
-        // If sendRank sends to multiple peers, count is 0
-        EXPECT_EQ(coll["count"].asInt(), 0);
-      } else {
-        EXPECT_EQ(coll["count"].asInt(), count);
-      }
-      EXPECT_EQ(coll["algoName"].asString(), expAlgoName);
-    }
 
     releaseBuf(base, bufSize, memType, numSegments);
     CUDACHECK_TEST(cudaStreamDestroy(stream));
@@ -507,15 +513,9 @@ TEST_F(CtranTestFixture, DISABLED_sendRecvCopyEngineMultiSegment) {
   const int numMaxQp = 1;
 
   EnvRAII env1(NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE, true);
-  NcclCommRAII comm(globalRank, numRanks, localRank);
-  ASSERT_NE(nullptr, static_cast<ncclComm_t>(comm));
 
-  if (ncclIsCuMemSupported() == false) {
+  if (ctran::utils::isCuMemSupported() == false) {
     GTEST_SKIP() << "CuMem not supported, skip test";
-  }
-
-  if (!comm->dmaBufSupport || !NCCL_CTRAN_IB_DMABUF_ENABLE) {
-    GTEST_SKIP() << "dmabuf is not supported, skip multi-segment disjoint test";
   }
 
   regCache->init();
@@ -523,6 +523,7 @@ TEST_F(CtranTestFixture, DISABLED_sendRecvCopyEngineMultiSegment) {
   // This test currently exposes a bug - the runTest will fail with:
   // "CTRAN ERROR CTRAN-IPC: tried to export CtranIpcMem backed by too many
   // physical memory allocations."
+  // The dmaBuf support check is done inside runTest after comm creation.
   runTest(
       offset,
       count,
@@ -537,7 +538,7 @@ TEST_F(CtranTestFixture, DISABLED_sendRecvCopyEngineMultiSegment) {
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranDistEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }
