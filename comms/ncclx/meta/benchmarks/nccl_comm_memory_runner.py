@@ -9,7 +9,7 @@ from windtunnel.benchmarks.python_benchmark_runner.benchmark import (  # pyre-ig
 )
 
 
-TARGET_PREFIX = "fbcode//comms/ctran/memory/benchmarks:nccl_comm_memory_bench_ppn"
+TARGET_PREFIX = "fbcode//comms/ncclx/meta/benchmarks:nccl_comm_memory_bench_ppn"
 SEARCH_PATTERN = r"NCCL Comm Memory:\s*([\d.]+)\s*MB"
 
 
