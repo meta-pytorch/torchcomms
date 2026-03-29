@@ -6,6 +6,7 @@
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
@@ -99,6 +100,21 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     // Topology config: MNNVL mode and overrides
     config.topoConfig.mnnvlMode =
         static_cast<comms::pipes::MnnvlMode>(NCCL_MNNVL_ENABLE);
+
+    // Guard against H100 Grand Teton returning NVML fabric info
+    // (state=COMPLETED) without actual cross-node NVLink (MNNVL) capability.
+    // The FABRIC handle export/import probe (same check used by ncclx's
+    // ncclMnnvlCheck Gate 7 and CommStateX's isCuMemFabricEnabled) is the only
+    // reliable way to distinguish real MNNVL (GB200) from false positives.
+    if (config.topoConfig.mnnvlMode != comms::pipes::MnnvlMode::kDisabled &&
+        !ctran::utils::isCuMemFabricEnabled()) {
+      CLOGF(
+          INFO,
+          "CTRAN-PIPES: FABRIC handle probe failed — disabling MNNVL Tier 1 "
+          "topology detection (falling back to same-host peer access)");
+      config.topoConfig.mnnvlMode = comms::pipes::MnnvlMode::kDisabled;
+    }
+
     if (NCCL_MNNVL_UUID != -1) {
       config.topoConfig.mnnvlUuid = NCCL_MNNVL_UUID;
     }
