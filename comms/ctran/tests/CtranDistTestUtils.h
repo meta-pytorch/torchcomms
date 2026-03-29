@@ -36,6 +36,21 @@ class CtranDistTestFixture : public CtranTestFixtureBase,
 
   std::unique_ptr<CtranComm> makeCtranComm();
 
+  // Intra-node (NVL domain) barrier using CtranComm's bootstrap
+  void barrierNvlDomain(CtranComm* comm);
+
+  // Type-safe wrapper for intra-node all-gather
+  template <typename T>
+  void allGatherNvlDomain(CtranComm* comm, std::vector<T>& data) {
+    auto resFuture = comm->bootstrap_->allGatherNvlDomain(
+        data.data(),
+        sizeof(T),
+        comm->statex_->localRank(),
+        comm->statex_->nLocalRanks(),
+        comm->statex_->localRankToRanks());
+    COMMCHECK_TEST(static_cast<commResult_t>(std::move(resFuture).get()));
+  }
+
   bool enableNolocal{false};
 };
 
