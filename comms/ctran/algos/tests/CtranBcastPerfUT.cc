@@ -44,14 +44,14 @@ TEST_P(CtranDistAlgoDevBcastPerfTestParamFixture, Bcast_Peft) {
   CUDACHECK_TEST(cudaEventCreate(&stop));
 
   cudaStream_t stream = nullptr;
-  const int localRank = comm_->ctranComm_->statex_->localRank();
-  const int nLocalRanks = comm_->ctranComm_->statex_->nLocalRanks();
+  const int localRank = ctranComm_->statex_->localRank();
+  const int nLocalRanks = ctranComm_->statex_->nLocalRanks();
 
   CUDACHECK_TEST(cudaStreamCreate(&stream));
 
   KernelElem* bcastElem = nullptr;
   COMMCHECK_TEST(
-      comm_->ctranComm_->ctran_->gpe->allocKernelElems(1, nGroups, &bcastElem));
+      ctranComm_->ctran_->gpe->allocKernelElems(1, nGroups, &bcastElem));
 
   initIpcBufs<int>(count * nSteps * nLocalRanks);
   // Use localBuf as sendbuf, and ipcBuf as recvbuf in an allgather patter
@@ -59,7 +59,7 @@ TEST_P(CtranDistAlgoDevBcastPerfTestParamFixture, Bcast_Peft) {
   assignVal<int>(ipcBuf_, count * nSteps * nLocalRanks, rand());
   // Ensure data has been stored before IPC access
   CUDACHECK_TEST(cudaDeviceSynchronize());
-  intraNodeBarrier(comm_);
+  barrierNvlDomain(ctranComm_.get());
 
   // Submit bcast kernel
   // Always barrier + flush to ensure every rank has finished copy and every
@@ -80,7 +80,7 @@ TEST_P(CtranDistAlgoDevBcastPerfTestParamFixture, Bcast_Peft) {
       bcastElem,
       nSteps,
       nGroups,
-      comm_->ctranComm_->ctran_->algo->getDevState());
+      ctranComm_->ctran_->algo->getDevState());
 
   for (int i = 0; i < nSteps; i++) {
     // Repost the same bcast op nSteps times, similar to usage in collective
@@ -269,7 +269,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranDistEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

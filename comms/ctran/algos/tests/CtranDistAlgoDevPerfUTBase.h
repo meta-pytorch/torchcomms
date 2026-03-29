@@ -69,13 +69,6 @@ class CtranDistAlgoDevPerfTestBase : public CtranDistAlgoDevTest {
   cudaStream_t stream{nullptr};
   cudaEvent_t start{nullptr};
   cudaEvent_t end{nullptr};
-
-  const struct CommLogData dummyLogMetaData_ = {
-      0,
-      0xfaceb00c12345678 /*Dummy placeholder value for commHash*/,
-      "perfTestComm",
-      0,
-      0};
 };
 
 #define DECLAR_ALGO_PERF_UT_FUNCS(T)                                      \

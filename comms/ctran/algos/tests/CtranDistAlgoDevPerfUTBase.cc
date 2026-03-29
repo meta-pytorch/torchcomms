@@ -37,12 +37,12 @@ KernelElem* CtranDistAlgoDevPerfTestBase::prepareReduceElem(
     int nDsts,
     bool barrierLastElem) {
   KernelElem* reduceELemList = nullptr;
-  COMMCHECK_TEST(comm_->ctranComm_->ctran_->gpe->allocKernelElems(
+  COMMCHECK_TEST(ctranComm_->ctran_->gpe->allocKernelElems(
       numElems, nGroups, &reduceELemList));
 
   // In-place reduce from all local ranks for each elem. Each elem starts at
   // different offset
-  const int localRank = comm_->ctranComm_->statex_->localRank();
+  const int localRank = ctranComm_->statex_->localRank();
 
   const int vectorNBytes = count * sizeof(T);
   const int localRankNSrcs = localRankSrcs ? nSrcs : 1;
@@ -103,10 +103,10 @@ void CtranDistAlgoDevPerfTestBase::startBenchmark(
   const auto& [testType, numElems, inplace, barrierLastElem, nGroups, beginCount, endCount, op, warmup, iters, localRankNSrcs, nDsts] =
       param;
 
-  const int localRank = comm_->ctranComm_->statex_->localRank();
-  const int nLocalRanks = comm_->ctranComm_->statex_->nLocalRanks();
+  const int localRank = ctranComm_->statex_->localRank();
+  const int nLocalRanks = ctranComm_->statex_->nLocalRanks();
 
-  if (comm_->ctranComm_->statex_->rank() == 0) {
+  if (ctranComm_->statex_->rank() == 0) {
     std::cout << std::string(100, '-') << std::endl;
   }
 
@@ -124,7 +124,7 @@ void CtranDistAlgoDevPerfTestBase::startBenchmark(
     assignVal<T>(localBuf_, totalDstCount, rand());
     assignVal<T>(ipcBuf_, totalSrcCount, localRank, true);
     // Ensure data has been stored before IPC access
-    intraNodeBarrier(comm_);
+    barrierNvlDomain(ctranComm_.get());
 
     void* dstBases[kMaxNVectors];
     // inplace reduce is only valid for 1 of the nDsts
@@ -175,10 +175,10 @@ void CtranDistAlgoDevPerfTestBase::startBenchmark(
       postIterWorkFn(reduceELemList);
     }
 
-    if (comm_->ctranComm_->statex_->rank() == 0) {
+    if (ctranComm_->statex_->rank() == 0) {
       auto timeUsPerIter = (timeMs * 1000) / iters;
       std::cout << "[" << kernName << "-" << typeid(T).name() << "] Rank-["
-                << comm_->ctranComm_->statex_->rank() << "]";
+                << ctranComm_->statex_->rank() << "]";
       std::cout << ", nSrcs " << nSrcs;
       if (localRankSrcs) {
         std::cout << " (" << localRankNSrcs << " per rank, across 1 ranks)";
@@ -195,10 +195,10 @@ void CtranDistAlgoDevPerfTestBase::startBenchmark(
                 << " MB/s write" << std::endl;
     }
     // ensure everyone is done before freeing IPC buffer
-    intraNodeBarrier(comm_);
+    barrierNvlDomain(ctranComm_.get());
     freeIpcBufs();
   }
-  if (comm_->ctranComm_->statex_->rank() == 0) {
+  if (ctranComm_->statex_->rank() == 0) {
     std::cout << std::string(100, '-') << std::endl;
   }
 }
