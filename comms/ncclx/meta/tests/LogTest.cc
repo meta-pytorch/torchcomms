@@ -23,13 +23,18 @@ class LogTest : public ::testing::Test {
 
   void initLogging() {
     ncclDebugLevel = -1;
+#if NCCL_VERSION_CODE >= 22800
+    ncclDebugFile = nullptr;
+#else
     ncclDebugLogFileStr = "";
+#endif
     initNcclLogger();
   }
 };
 
 TEST_F(LogTest, Info) {
   auto envGuard = EnvRAII(NCCL_DEBUG, std::string("INFO"));
+  SysEnvRAII sysDebugGuard("NCCL_DEBUG", "INFO");
   initLogging();
   const std::string kTestStr = "Testing INFO";
 
@@ -42,6 +47,7 @@ TEST_F(LogTest, Info) {
 
 TEST_F(LogTest, LongInfo) {
   auto envGuard = EnvRAII(NCCL_DEBUG, std::string("INFO"));
+  SysEnvRAII sysDebugGuard("NCCL_DEBUG", "INFO");
   initLogging();
   std::string kTestStr = "Testing long INFO,";
 
@@ -59,6 +65,7 @@ TEST_F(LogTest, LongInfo) {
 
 TEST_F(LogTest, Warn) {
   auto envGuard = EnvRAII(NCCL_DEBUG, std::string("WARN"));
+  SysEnvRAII sysDebugGuard("NCCL_DEBUG", "WARN");
   const std::string kTestStr = "Testing WARN";
   initLogging();
   testing::internal::CaptureStdout();
@@ -70,6 +77,7 @@ TEST_F(LogTest, Warn) {
 
 TEST_F(LogTest, LongWarn) {
   auto envGuard = EnvRAII(NCCL_DEBUG, std::string("WARN"));
+  SysEnvRAII sysDebugGuard("NCCL_DEBUG", "WARN");
   std::string kTestStr = "Testing long WARN,";
   initLogging();
   // prepare log longer than 1024 chars as statically set previously
@@ -86,6 +94,7 @@ TEST_F(LogTest, LongWarn) {
 
 TEST_F(LogTest, InfoOff) {
   auto envGuard = EnvRAII(NCCL_DEBUG, std::string("WARN"));
+  SysEnvRAII sysDebugGuard("NCCL_DEBUG", "WARN");
   const std::string kTestStr = "Testing INFO when NCCL_DEBUG=WARN";
   initLogging();
   testing::internal::CaptureStdout();
@@ -99,7 +108,9 @@ TEST_F(LogTest, InfoToFile) {
   const std::string kDebugFile = getTestFilePath("nccl_logtest", ".log");
   const std::string kTestStr = "Testing INFO to FILE";
   auto envGuard0 = EnvRAII(NCCL_DEBUG_FILE, kDebugFile);
+  SysEnvRAII sysDebugFileGuard("NCCL_DEBUG_FILE", kDebugFile);
   auto envGuard1 = EnvRAII(NCCL_DEBUG, std::string("INFO"));
+  SysEnvRAII sysDebugGuard("NCCL_DEBUG", "INFO");
   initLogging();
   INFO(NCCL_ALL, "%s", kTestStr.c_str());
   finishLogging();
@@ -121,7 +132,9 @@ TEST_F(LogTest, InfoWarnToFile) {
 
   XLOG(WARN) << kDebugFile;
   auto envGuard0 = EnvRAII(NCCL_DEBUG_FILE, kDebugFile);
+  SysEnvRAII sysDebugFileGuard("NCCL_DEBUG_FILE", kDebugFile);
   auto envGuard1 = EnvRAII(NCCL_DEBUG, std::string("INFO"));
+  SysEnvRAII sysDebugGuard("NCCL_DEBUG", "INFO");
 
   initLogging();
   testing::internal::CaptureStdout();

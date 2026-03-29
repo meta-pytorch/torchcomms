@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 #include <thread>
 #include "comms/testinfra/TestUtils.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 #include "nccl.h"
 
 class SocketSetTosTest : public ::testing::Test {
@@ -22,7 +23,9 @@ class SocketSetTosTest : public ::testing::Test {
 
 TEST_F(SocketSetTosTest, TestOverrideTOS) {
   const int kExpectedTos = 96;
-  EnvRAII<int> tosConfigGuard(NCCL_SOCKET_TOS_CONFIG, kExpectedTos);
+  SysEnvRAII tosConfigGuard(
+      "NCCL_SOCKET_TOS_CONFIG", std::to_string(kExpectedTos));
+  ncclCvarInit();
   struct ncclSocket sock{};
   union ncclSocketAddress addr{};
   char bootstrapNetIfName[MAX_IF_NAME_SIZE + 1];
@@ -36,12 +39,14 @@ TEST_F(SocketSetTosTest, TestOverrideTOS) {
       ncclSocketInit(&sock, &addr, 0 /* magic */, ncclSocketTypeBootstrap),
       ncclSuccess);
   int family = sock.addr.sa.sa_family;
+  int fd;
+  EXPECT_EQ(ncclSocketGetFd(&sock, &fd), ncclSuccess);
   int socketTos = 0;
   socklen_t rlen = sizeof(int);
   if (family == AF_INET6) {
-    getsockopt(sock.fd, IPPROTO_IPV6, IPV6_TCLASS, &socketTos, &rlen);
+    getsockopt(fd, IPPROTO_IPV6, IPV6_TCLASS, &socketTos, &rlen);
   } else {
-    getsockopt(sock.fd, IPPROTO_IP, IP_TOS, &socketTos, &rlen);
+    getsockopt(fd, IPPROTO_IP, IP_TOS, &socketTos, &rlen);
   }
   EXPECT_EQ(socketTos, kExpectedTos);
   EXPECT_EQ(ncclSocketClose(&sock), ncclSuccess);
