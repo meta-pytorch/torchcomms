@@ -8,10 +8,10 @@
 #include "nccl.h"
 
 #include "comms/ctran/CtranComm.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/CtranIpc.h"
 #include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/commSpecs.h"
 
 // Helper functions for parameterized tests to avoid code duplication
@@ -29,11 +29,11 @@ auto getDevMemTypeNameGenerator() {
 
 } // namespace
 
-class IpcTest : public NcclxBaseTest {
+class IpcTest : public ctran::CtranDistTestFixture {
  public:
   void SetUp() override {
     setenv("NCCL_CTRAN_ENABLE", "1", 0);
-    NcclxBaseTest::SetUp();
+    ctran::CtranDistTestFixture::SetUp();
 
     // Ensure cuda driver functions have been loaded
     COMMCHECK_TEST(ctran::utils::commCudaLibraryInit());
@@ -43,31 +43,23 @@ class IpcTest : public NcclxBaseTest {
     }
 
     CUDACHECK_TEST(cudaSetDevice(localRank));
-    commDeprecated = createNcclComm(globalRank, numRanks, localRank);
-    comm_ = commDeprecated->ctranComm_.get();
+    comm_ = makeCtranComm();
 
     commIpcCount = ctran::utils::getActiveIpcMemCount();
     commIpcRemCount = ctran::utils::getActiveIpcRemMemCount();
   }
 
   void TearDown() override {
-    NCCLCHECK_TEST(ncclCommDestroy(commDeprecated));
-    // Check comm created IPC resources have been freed after ncclCommDestroy
+    comm_.reset();
+    // Check comm created IPC resources have been freed after comm destroy
     EXPECT_EQ(ctran::utils::getActiveIpcMemCount(), 0);
     EXPECT_EQ(ctran::utils::getActiveIpcRemMemCount(), 0);
-    NcclxBaseTest::TearDown();
+    ctran::CtranDistTestFixture::TearDown();
   }
 
  protected:
-  CtranComm* comm_{nullptr};
-  ncclComm_t commDeprecated{nullptr};
+  std::unique_ptr<CtranComm> comm_;
   const char* dummyDesc_{"dummy"};
-  const struct CommLogData dummyLogMetaData_ = {
-      0,
-      0xfaceb00c12345678 /*Dummy placeholder value for commHash*/,
-      dummyDesc_,
-      0,
-      0};
   size_t commIpcCount{0};
   size_t commIpcRemCount{0};
   const bool kShouldSupportCudaMalloc = true;
@@ -86,7 +78,7 @@ TEST_P(IpcAllocFreeTest, AllocFree) {
       ipcMem = std::make_unique<ctran::utils::CtranIpcMem>(
           size,
           this->localRank,
-          &dummyLogMetaData_,
+          &comm_->logMetaData_,
           dummyDesc_,
           memType,
           cuMemHandleType));
@@ -201,7 +193,7 @@ TEST_P(IpcExportImportTest, ExportImport) {
   std::unique_ptr<ctran::utils::CtranIpcMem> ipcMem = nullptr;
   ASSERT_NO_THROW(
       ipcMem = std::make_unique<ctran::utils::CtranIpcMem>(
-          size, this->localRank, &dummyLogMetaData_, dummyDesc_, memType));
+          size, this->localRank, &comm_->logMetaData_, dummyDesc_, memType));
 
   // Assign value to local memory
   std::vector<int> vals(count);
@@ -225,7 +217,7 @@ TEST_P(IpcExportImportTest, ExportImport) {
     EXPECT_EQ(ipcDesc.segments[i].sharedHandle.fd, 0);
   }
 
-  intraNodeAllGather<ctran::utils::CtranIpcDesc>(commDeprecated, ipcDescs);
+  allGatherNvlDomain(comm_.get(), ipcDescs);
 
   // Check received descriptor
   int peerRank = (rank + 1) % nRanks;
@@ -246,7 +238,7 @@ TEST_P(IpcExportImportTest, ExportImport) {
   std::unique_ptr<ctran::utils::CtranIpcRemMem> ipcRemMem = nullptr;
   try {
     ipcRemMem = std::make_unique<ctran::utils::CtranIpcRemMem>(
-        peerIpcDesc, this->localRank, &dummyLogMetaData_, dummyDesc_);
+        peerIpcDesc, this->localRank, &comm_->logMetaData_, dummyDesc_);
   } catch (std::exception& e) {
     GTEST_FAIL() << "Failed to import remote memory: " << e.what();
   }
@@ -262,7 +254,7 @@ TEST_P(IpcExportImportTest, ExportImport) {
   EXPECT_THAT(peerVals, ::testing::ElementsAreArray(peerExpVals));
 
   // Ensure the remote rank has imported the memory before local frees
-  intraNodeBarrier(commDeprecated);
+  barrierNvlDomain(comm_.get());
 
   // Free local memory
   EXPECT_EQ(ipcMem->free(), commSuccess);
@@ -340,7 +332,7 @@ TEST_F(IpcTest, DisjointExportImport) {
     EXPECT_EQ(ipcDesc.segments[i].range, disjointSegmentSizes[i]);
   }
 
-  intraNodeAllGather<ctran::utils::CtranIpcDesc>(commDeprecated, ipcDescs);
+  allGatherNvlDomain(comm_.get(), ipcDescs);
 
   // Check received descriptor
   int peerRank = (rank + 1) % nRanks;
@@ -360,7 +352,7 @@ TEST_F(IpcTest, DisjointExportImport) {
   std::unique_ptr<ctran::utils::CtranIpcRemMem> ipcRemMem = nullptr;
   try {
     ipcRemMem = std::make_unique<ctran::utils::CtranIpcRemMem>(
-        peerIpcDesc, this->localRank, &dummyLogMetaData_, dummyDesc_);
+        peerIpcDesc, this->localRank, &comm_->logMetaData_, dummyDesc_);
   } catch (std::exception& e) {
     GTEST_FAIL() << "Failed to import remote memory: " << e.what();
   }
@@ -376,7 +368,7 @@ TEST_F(IpcTest, DisjointExportImport) {
   EXPECT_THAT(peerVals, ::testing::ElementsAreArray(peerExpVals));
 
   // Ensure the remote rank has imported the memory before local frees
-  intraNodeBarrier(commDeprecated);
+  barrierNvlDomain(comm_.get());
 
   // Free only handle in load mode
   EXPECT_EQ(ipcMem->free(), commSuccess);
@@ -524,7 +516,7 @@ TEST_F(IpcTest, DisjointExportTooManyPhysicalBackings) {
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranDistEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }
