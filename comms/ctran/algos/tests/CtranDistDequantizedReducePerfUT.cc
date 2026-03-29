@@ -4,7 +4,6 @@
 
 #include "comms/ctran/algos/tests/CtranAlgoDevTestUtils.h"
 #include "comms/ctran/algos/tests/CtranDistAlgoDevPerfUTBase.h"
-#include "comms/testinfra/TestsDistUtils.h"
 
 using CtranDistDequantizedReduceParams = std::tuple<
     unsigned int /*nGroups*/,
@@ -32,10 +31,10 @@ class CtranKernDequantizedReducePerf : public CtranDistAlgoDevPerfTestBase {
       CtranDistDequantizedReduceParams param) {
     const auto& [nGroups, beginCount, endCount, op, warmup, iters] = param;
 
-    const int localRank = comm_->ctranComm_->statex_->localRank();
-    const int nLocalRanks = comm_->ctranComm_->statex_->nLocalRanks();
+    const int localRank = ctranComm_->statex_->localRank();
+    const int nLocalRanks = ctranComm_->statex_->nLocalRanks();
 
-    if (comm_->ctranComm_->statex_->rank() == 0) {
+    if (ctranComm_->statex_->rank() == 0) {
       std::cout << std::string(100, '-') << std::endl;
     }
 
@@ -48,7 +47,7 @@ class CtranKernDequantizedReducePerf : public CtranDistAlgoDevPerfTestBase {
       assignVal<T>(ipcBuf_, totalCount, localRank, true);
       assignVal<T>(localBuf_, totalCount, rand());
       // Ensure data has been stored before IPC access
-      intraNodeBarrier(comm_);
+      barrierNvlDomain(ctranComm_.get());
 
       float timeMs = 0.0;
       for (int i = 0; i < warmup + iters; ++i) {
@@ -64,11 +63,11 @@ class CtranKernDequantizedReducePerf : public CtranDistAlgoDevPerfTestBase {
         }
       }
 
-      if (comm_->ctranComm_->statex_->rank() == 0) {
+      if (ctranComm_->statex_->rank() == 0) {
         auto timeUsPerIter = (timeMs * 1000) / iters;
         std::cout << "[" << kernName << "-" << typeid(T).name() << "] Rank-"
-                  << comm_->ctranComm_->statex_->rank() << ", nRanks "
-                  << comm_->ctranComm_->statex_->nRanks() << ", redOp "
+                  << ctranComm_->statex_->rank() << ", nRanks "
+                  << ctranComm_->statex_->nRanks() << ", redOp "
                   << commOpToString(op) << ", nGroups " << nGroups << ", count "
                   << std::setw(9) << count << ", nbytesPerRank " << std::setw(9)
                   << bytesPerRank << " => " << std::fixed
@@ -77,10 +76,10 @@ class CtranKernDequantizedReducePerf : public CtranDistAlgoDevPerfTestBase {
                   << (totalBytes / (timeUsPerIter)) << " MB/s" << std::endl;
       }
       // ensure everyone is done before freeing IPC buffer
-      intraNodeBarrier(comm_);
+      barrierNvlDomain(ctranComm_.get());
       freeIpcBufs();
     }
-    if (comm_->ctranComm_->statex_->rank() == 0) {
+    if (ctranComm_->statex_->rank() == 0) {
       std::cout << std::string(100, '-') << std::endl;
     }
   }
@@ -116,7 +115,7 @@ TEST_P(
           void* recvbuff,
           size_t count,
           cudaStream_t stream) {
-        auto devState = comm_->ctranComm_->ctran_->algo->getDevState();
+        auto devState = ctranComm_->ctran_->algo->getDevState();
         void* args[] = {&sendbuff, &recvbuff, &count, &devState};
         CUDA_LAUNCH_KERNEL_WITH_DYNAMIC_SHM_TEST(
             fn, grid, blocks, args, sizeof(CtranAlgoDeviceState), stream);
@@ -149,7 +148,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranDistEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

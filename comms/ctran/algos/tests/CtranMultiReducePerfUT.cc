@@ -4,7 +4,6 @@
 
 #include "comms/ctran/algos/tests/CtranAlgoDevTestUtils.h"
 #include "comms/ctran/algos/tests/CtranDistAlgoDevPerfUTBase.h"
-#include "comms/testinfra/TestsDistUtils.h"
 
 static void postElemList(KernelElem* elemList) {
   auto elem = elemList;
@@ -62,7 +61,7 @@ TEST_P(CtranKernMultiReducePerfTestParam, ctranKernMultiReducePerf) {
   CtranDistAlgoDevPerfTestBase::startBenchmark<int>(
       "ctranKernMultiReduce",
       [&](KernelElem* reduceELemList, cudaStream_t stream) {
-        auto devstate_d = comm_->ctranComm_->ctran_->algo->getDevState();
+        auto devstate_d = ctranComm_->ctran_->algo->getDevState();
         void* args[] = {&reduceELemList, &nSteps, &devstate_d};
         CUDA_LAUNCH_KERNEL_WITH_DYNAMIC_SHM_TEST(
             fn, grid, blocks, args, sizeof(CtranAlgoDeviceState), stream);
@@ -132,7 +131,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranDistEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

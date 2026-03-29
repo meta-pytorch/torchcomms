@@ -6,7 +6,6 @@
 #include "comms/ctran/algos/tests/CtranDistAlgoDevUTBase.h"
 #include "comms/ctran/algos/tests/CtranDistAlgoDevUTKernels.h"
 #include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
 
 class CtranDistAlgoDevTestParamFixture
     : public CtranDistAlgoDevTest,
@@ -101,8 +100,8 @@ TEST_P(CtranDistAlgoDevTestParamFixture, PutNotify) {
 
   cudaStream_t putStream = nullptr;
   cudaStream_t waitStream = nullptr;
-  const int localRank = comm_->ctranComm_->statex_->localRank();
-  const int localRanks = comm_->ctranComm_->statex_->nLocalRanks();
+  const int localRank = ctranComm_->statex_->localRank();
+  const int localRanks = ctranComm_->statex_->nLocalRanks();
 
   int putPeerLocalRank = (localRank + 1) % localRanks;
   int waitPeerLocalRank = (localRank - 1 + localRanks) % localRanks;
@@ -112,20 +111,20 @@ TEST_P(CtranDistAlgoDevTestParamFixture, PutNotify) {
 
   // Put kernel requires nPutGroups thread blocks
   KernelElem* putElemList = nullptr;
-  COMMCHECK_TEST(comm_->ctranComm_->ctran_->gpe->allocKernelElems(
+  COMMCHECK_TEST(ctranComm_->ctran_->gpe->allocKernelElems(
       numElems, nPutGroups, &putElemList));
 
   // Wait kernel requires only 1 thread block
   KernelElem* waitElemList = nullptr;
-  COMMCHECK_TEST(comm_->ctranComm_->ctran_->gpe->allocKernelElems(
-      numElems, 1, &waitElemList));
+  COMMCHECK_TEST(
+      ctranComm_->ctran_->gpe->allocKernelElems(numElems, 1, &waitElemList));
 
   initIpcBufs<int>(count * numElems);
   // Use localBuf as source of put, and ipcBuf as recvBuf
   assignVal<int>(localBuf_, count * numElems, localRank, true);
   assignVal<int>(ipcBuf_, count * numElems, rand());
   // Ensure data has been stored before IPC access
-  intraNodeBarrier(comm_);
+  barrierNvlDomain(ctranComm_.get());
 
   // Submit put kernel
   {
@@ -155,7 +154,7 @@ TEST_P(CtranDistAlgoDevTestParamFixture, PutNotify) {
         blocks,
         putStream,
         putElemList,
-        comm_->ctranComm_->ctran_->algo->getDevState()));
+        ctranComm_->ctran_->algo->getDevState()));
 
     // recvbuff already assigned; just post for kernel to start
     postElemList(putElemList);
@@ -178,7 +177,7 @@ TEST_P(CtranDistAlgoDevTestParamFixture, PutNotify) {
         blocks,
         waitStream,
         waitElemList,
-        comm_->ctranComm_->ctran_->algo->getDevState()));
+        ctranComm_->ctran_->algo->getDevState()));
 
     // recvbuff already assigned; just post for kernel to start
     postElemList(waitElemList);
@@ -214,13 +213,13 @@ TEST_P(CtranDistAlgoDevBcastTestParamFixture, Bcast) {
   ASSERT_TRUE(count >= lastCount) << "lastCount should be smaller than count";
 
   cudaStream_t stream = nullptr;
-  const int localRank = comm_->ctranComm_->statex_->localRank();
-  const int nLocalRanks = comm_->ctranComm_->statex_->nLocalRanks();
+  const int localRank = ctranComm_->statex_->localRank();
+  const int nLocalRanks = ctranComm_->statex_->nLocalRanks();
 
   CUDACHECK_TEST(cudaStreamCreate(&stream));
 
   KernelElem* bcastElem = nullptr;
-  COMMCHECK_TEST(comm_->ctranComm_->ctran_->gpe->allocKernelElems(
+  COMMCHECK_TEST(ctranComm_->ctran_->gpe->allocKernelElems(
       nBcasts, nBcastBlocks, &bcastElem));
 
   initIpcBufs<int>(count * nSteps * nBcasts * nLocalRanks);
@@ -229,7 +228,7 @@ TEST_P(CtranDistAlgoDevBcastTestParamFixture, Bcast) {
   assignVal<int>(ipcBuf_, count * nSteps * nBcasts * nLocalRanks, rand());
   // Ensure data has been stored before IPC access
   CUDACHECK_TEST(cudaDeviceSynchronize());
-  intraNodeBarrier(comm_);
+  barrierNvlDomain(ctranComm_.get());
 
   // Submit bcast kernel
   // Always barrier + flush to ensure every rank has finished copy and every
@@ -253,7 +252,7 @@ TEST_P(CtranDistAlgoDevBcastTestParamFixture, Bcast) {
       bcastElem,
       nSteps,
       nBcastBlocks,
-      comm_->ctranComm_->ctran_->algo->getDevState()));
+      ctranComm_->ctran_->algo->getDevState()));
 
   curElem = bcastElem;
   for (int j = 0; j < nBcasts; j++) {
@@ -311,8 +310,8 @@ TEST_P(CtranDistAlgoDevReduceTestParamFixture, MultiReduce) {
       GetParam();
 
   cudaStream_t stream = nullptr;
-  const int localRank = comm_->ctranComm_->statex_->localRank();
-  const int nLocalRanks = comm_->ctranComm_->statex_->nLocalRanks();
+  const int localRank = ctranComm_->statex_->localRank();
+  const int nLocalRanks = ctranComm_->statex_->nLocalRanks();
 
   CUDACHECK_TEST(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
   initIpcBufs<int>(count * numElems * nLocalRanks);
@@ -320,7 +319,7 @@ TEST_P(CtranDistAlgoDevReduceTestParamFixture, MultiReduce) {
   assignVal<int>(localBuf_, count * numElems * nLocalRanks, rand());
   assignVal<int>(ipcBuf_, count * numElems * nLocalRanks, localRank, true);
   // Ensure data has been stored before IPC access
-  intraNodeBarrier(comm_);
+  barrierNvlDomain(ctranComm_.get());
   int nSteps = (testType == kTestElemRepost) ? 5 : 1;
 
   if (testType == kTestElemRepost && inplace) {
@@ -337,7 +336,7 @@ TEST_P(CtranDistAlgoDevReduceTestParamFixture, MultiReduce) {
   }
 
   KernelElem* reduceELemList = nullptr;
-  COMMCHECK_TEST(comm_->ctranComm_->ctran_->gpe->allocKernelElems(
+  COMMCHECK_TEST(ctranComm_->ctran_->gpe->allocKernelElems(
       numElems, nGroups, &reduceELemList));
 
   // In-place reduce from all local ranks for each elem. Each elem starts at
@@ -383,7 +382,7 @@ TEST_P(CtranDistAlgoDevReduceTestParamFixture, MultiReduce) {
       stream,
       reduceELemList,
       nSteps,
-      comm_->ctranComm_->ctran_->algo->getDevState()));
+      ctranComm_->ctran_->algo->getDevState()));
 
   if (testType == kTestElemRepost) {
     // recvbuff already assigned; just post for kernel to start
@@ -543,7 +542,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranDistEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }
