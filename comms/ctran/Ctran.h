@@ -23,7 +23,9 @@
 
 class Ctran : public ICtran {
  public:
-  Ctran(CtranComm* comm);
+  Ctran(
+      CtranComm* comm,
+      ctran::ReporterType reporterType = ctran::ReporterType::NCCLX);
   ~Ctran();
 
   bool isInitialized() const override;

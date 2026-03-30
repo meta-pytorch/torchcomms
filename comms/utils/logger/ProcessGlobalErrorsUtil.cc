@@ -5,6 +5,8 @@
 #include <folly/Singleton.h>
 #include <folly/Synchronized.h>
 
+#include "comms/ctran/utils/ErrorReport.h"
+#include "comms/ctran/utils/ErrorReporterGuard.h"
 #include "comms/utils/cvars/nccl_cvars.h" // @manual=fbcode//comms/utils/cvars:ncclx-cvars
 #include "comms/utils/logger/BackendTopologyUtil.h"
 #include "comms/utils/logger/ScubaLogger.h"
@@ -60,11 +62,24 @@ void ProcessGlobalErrorsUtil::setNic(
     }
   });
 
-  NcclScubaSample nicEvent("NIC_EVENT");
-  nicEvent.addNormal("device", devName);
-  nicEvent.addInt("port", port);
-  nicEvent.addNormal("status", errorMessage.has_value() ? "DOWN" : "UP");
-  SCUBA_nccl_structured_logging.addSample(std::move(nicEvent));
+  // Route scuba write through error reporter if available
+  ctran::ErrorReport report;
+  report.kind = ctran::ErrorReportKind::NIC_EVENT;
+  report.deviceName = devName;
+  report.port = port;
+  report.nicStatus = errorMessage.has_value() ? "DOWN" : "UP";
+
+  auto* reporter = ctran::getThreadLocalErrorReporter();
+  if (reporter) {
+    reporter->reportError(report);
+  } else {
+    // Original path: write NIC_EVENT to nccl_structured_logging
+    NcclScubaSample nicEvent("NIC_EVENT");
+    nicEvent.addNormal("device", report.deviceName);
+    nicEvent.addInt("port", report.port);
+    nicEvent.addNormal("status", report.nicStatus);
+    SCUBA_nccl_structured_logging.addSample(std::move(nicEvent));
+  }
 }
 
 /* static */
