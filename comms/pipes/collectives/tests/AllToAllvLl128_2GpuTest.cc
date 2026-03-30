@@ -7,8 +7,8 @@
 
 #include "comms/pipes/MultiPeerNvlTransport.h"
 #include "comms/pipes/collectives/AllToAllvLl128.cuh"
+#include "comms/pipes/collectives/tests/AllToAllvLl128Test.cuh"
 #include "comms/pipes/ll128/Ll128Packet.cuh"
-#include "comms/pipes/tests/AllToAllvLl128Test.cuh"
 #include "comms/pipes/tests/Utils.cuh"
 #include "comms/testinfra/BenchmarkTestFixture.h"
 #include "comms/testinfra/TestXPlatUtils.h"
@@ -66,8 +66,7 @@ TEST_F(AllToAllvLl128_2GpuTestFixture, EqualSize_2GPU_4KB) {
     std::abort();
   }
 
-  DeviceSpan<Transport> transports_span(
-      transport->getTransportsArray(), worldSize);
+  DeviceSpan<Transport> transports_span = transport->getDeviceTransports();
 
   DeviceBuffer sendBuffer(bufferSize);
   DeviceBuffer recvBuffer(bufferSize);
@@ -194,8 +193,7 @@ TEST_F(AllToAllvLl128_2GpuTestFixture, EqualSize_2GPU_64KB) {
     std::abort();
   }
 
-  DeviceSpan<Transport> transports_span(
-      transport->getTransportsArray(), worldSize);
+  DeviceSpan<Transport> transports_span = transport->getDeviceTransports();
 
   DeviceBuffer sendBuffer(bufferSize);
   DeviceBuffer recvBuffer(bufferSize);
