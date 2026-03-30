@@ -283,6 +283,22 @@ class NcclxApi {
       void* recvBuff,
       void* request) = 0;
 
+  // Persistent AllGather operations
+  [[nodiscard]] virtual ncclResult_t allGatherInit(
+      void* recvbuff,
+      size_t maxRecvCount,
+      const std::unordered_map<std::string, std::string>& hints,
+      ncclDataType_t datatype,
+      ncclComm_t comm,
+      cudaStream_t stream,
+      void** request) = 0;
+
+  [[nodiscard]] virtual ncclResult_t allGatherExec(
+      const void* sendbuff,
+      size_t count,
+      ncclDataType_t datatype,
+      void* request) = 0;
+
   [[nodiscard]] virtual ncclResult_t pFree(void* request) = 0;
 
   [[nodiscard]] virtual ncclResult_t commWindowRegister(
@@ -609,6 +625,22 @@ class DefaultNcclxApi : public NcclxApi {
       const int* fwdIdx,
       const int* recvIdx,
       void* recvBuff,
+      void* request) override;
+
+  // Persistent AllGather operations
+  [[nodiscard]] ncclResult_t allGatherInit(
+      void* recvbuff,
+      size_t maxRecvCount,
+      const std::unordered_map<std::string, std::string>& hints,
+      ncclDataType_t datatype,
+      ncclComm_t comm,
+      cudaStream_t stream,
+      void** request) override;
+
+  [[nodiscard]] ncclResult_t allGatherExec(
+      const void* sendbuff,
+      size_t count,
+      ncclDataType_t datatype,
       void* request) override;
 
   [[nodiscard]] ncclResult_t pFree(void* request) override;

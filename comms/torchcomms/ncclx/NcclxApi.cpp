@@ -407,6 +407,32 @@ ncclResult_t DefaultNcclxApi::alltoallvDedupCombine(
       "NCCLX allToAllvDedupCombine is not supported in this build");
 }
 
+ncclResult_t DefaultNcclxApi::allGatherInit(
+    void* recvbuff,
+    size_t maxRecvCount,
+    const std::unordered_map<std::string, std::string>& hints,
+    ncclDataType_t datatype,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    void** request) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+  ncclx::Hints ncclxHints;
+  for (const auto& [key, value] : hints) {
+    ncclxHints.set(key, value);
+  }
+  return ncclx::allGatherInit(
+      recvbuff, maxRecvCount, ncclxHints, datatype, comm, stream, request);
+}
+
+ncclResult_t DefaultNcclxApi::allGatherExec(
+    const void* sendbuff,
+    size_t count,
+    ncclDataType_t datatype,
+    void* request) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+  return ncclx::allGatherExec(sendbuff, count, datatype, request);
+}
+
 ncclResult_t DefaultNcclxApi::pFree(void* request) {
   std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclx::pFree(request);
