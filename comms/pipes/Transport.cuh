@@ -37,6 +37,19 @@ enum class TransportType : uint8_t {
   P2P_IBGDA,
 };
 
+/// Human-readable name for TransportType (host-only).
+inline const char* transport_type_name(TransportType t) {
+  switch (t) {
+    case TransportType::SELF:
+      return "SELF";
+    case TransportType::P2P_NVL:
+      return "P2P_NVL";
+    case TransportType::P2P_IBGDA:
+      return "P2P_IBGDA";
+  }
+  return "UNKNOWN";
+}
+
 /**
  * Polymorphic transport wrapper using tagged union.
  * Allows storing either self-transport (intra-GPU) or P2P NVL transport

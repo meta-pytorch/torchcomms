@@ -116,6 +116,26 @@ void MultiPeerTransport::initFromTopology(
     }
   }
 
+  // Log topology summary (init-time, once per communicator).
+  {
+    int nvlCount = 0;
+    int ibgdaCount = 0;
+    for (int r = 0; r < nRanks_; ++r) {
+      if (typePerRank_[r] == TransportType::P2P_NVL) {
+        ++nvlCount;
+      } else if (typePerRank_[r] == TransportType::P2P_IBGDA) {
+        ++ibgdaCount;
+      }
+    }
+    LOG(INFO) << "MultiPeerTransport: rank " << myRank_ << "/" << nRanks_
+              << " topology: " << nvlCount << " NVL peers, " << ibgdaCount
+              << " IBGDA peers";
+  }
+  for (int r = 0; r < nRanks_; ++r) {
+    VLOG(1) << "MultiPeerTransport: rank " << myRank_ << " -> rank " << r
+            << ": " << transport_type_name(typePerRank_[r]);
+  }
+
   // Create NVLink sub-transport with NvlBootstrapAdapter
   if (!nvlPeerRanks_.empty()) {
     std::vector<int> localRankToCommRank(nvlNRanks_);
@@ -128,6 +148,9 @@ void MultiPeerTransport::initFromTopology(
 
     nvlTransport_ = std::make_unique<MultiPeerNvlTransport>(
         nvlLocalRank_, nvlNRanks_, nvlBootstrapAdapter_, config.nvlConfig);
+    VLOG(1) << "MultiPeerTransport: rank " << myRank_
+            << " created NVL sub-transport, nvlNRanks=" << nvlNRanks_
+            << " nvlLocalRank=" << nvlLocalRank_;
   }
 
   // Always create IBGDA transport — it is the universal fallback for all peers.
@@ -137,6 +160,9 @@ void MultiPeerTransport::initFromTopology(
     ibgdaConfig.cudaDevice = deviceId_;
     ibgdaTransport_ = std::make_unique<MultipeerIbgdaTransport>(
         myRank_, nRanks_, bootstrap_, ibgdaConfig);
+    VLOG(1) << "MultiPeerTransport: rank " << myRank_
+            << " created IBGDA sub-transport for " << ibgdaPeerRanks_.size()
+            << " peers";
   }
 }
 
@@ -156,6 +182,10 @@ void MultiPeerTransport::exchange() {
     throw std::runtime_error(
         "MultiPeerTransport::exchange: failed to initialize CUDA driver API");
   }
+
+  VLOG(1) << "MultiPeerTransport: rank " << myRank_ << " exchange()"
+          << " nvl=" << (nvlTransport_ ? "yes" : "no")
+          << " ibgda=" << (ibgdaTransport_ ? "yes" : "no");
 
   if (nvlTransport_) {
     nvlTransport_->exchange();
