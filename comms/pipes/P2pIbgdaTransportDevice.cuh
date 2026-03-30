@@ -780,6 +780,25 @@ class P2pIbgdaTransportDevice {
       const IbgdaLocalBuffer& laneBuf,
       const IbgdaRemoteBuffer& laneRemoteBuf,
       std::size_t laneBytes) {
+    // Guard: group_size must fit within the QP send queue depth.
+    // The leader reserves group_size WQE slots atomically. If group_size
+    // exceeds the QP ring buffer depth (sq_wqe_num), the DOCA backpressure
+    // mechanism deadlocks: it waits for CQ completions of WQEs that are part
+    // of the current reservation and have not been submitted yet.
+    // Fix: set NCCL_CTRAN_IBGDA_QP_DEPTH >= max ThreadGroup size.
+    if (group.is_leader()) {
+      const uint16_t qp_depth = __ldg(&qp_->sq_wqe_num);
+      if (group.group_size > qp_depth) {
+        printf(
+            "[PIPES] FATAL: put_group_impl group_size (%u) > QP depth (%u). "
+            "Set NCCL_CTRAN_IBGDA_QP_DEPTH >= %u to avoid deadlock.\n",
+            group.group_size,
+            qp_depth,
+            group.group_size);
+        __trap();
+      }
+    }
+
     // 1. Leader reserves group_size WQE slots
     uint64_t base_wqe_idx = 0;
     if (group.is_leader()) {
