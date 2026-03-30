@@ -129,7 +129,12 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
             comm->statex_->cudaDev(),
             bootstrapPtr,
             config);
-    CLOGF(INFO, "Pipes MultiPeerTransport initialized");
+    CLOGF(
+        INFO,
+        "Pipes MultiPeerTransport initialized: nvlPeers={}, ibgdaPeers={}, p2pDisable={}",
+        comm->multiPeerTransport_->nvl_n_ranks() - 1,
+        comm->multiPeerTransport_->ibgda_peer_ranks().size(),
+        config.topoConfig.p2pDisable);
   } catch (const std::exception& e) {
     CLOGF(ERR, "Failed to initialize Pipes MultiPeerTransport: {}", e.what());
     return commInternalError;
