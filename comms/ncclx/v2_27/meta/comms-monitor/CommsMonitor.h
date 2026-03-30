@@ -6,6 +6,7 @@
 #include "comm.h"
 #include "device.h"
 
+#include "comms/analyzer/if/gen-cpp2/CommsTracingService_types.h"
 #include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/utils/commSpecs.h"
@@ -17,14 +18,20 @@ namespace ncclx::comms_monitor {
 struct NcclTreeNodeInfo {
   int parentNode;
   std::array<int, NCCL_MAX_TREE_ARITY> childrenNodes;
+
+  ::comms::NCCLTreeNodeInfo toThrift() const;
 };
 
 struct NcclTopoInfo {
   uint64_t nChannels{0};
-  std::vector<std::vector<int>> rings;
+  std::vector<std::vector<int64_t>> rings;
   // Neighbor ranks for current rank in each tree.
   std::vector<NcclTreeNodeInfo> trees;
   static NcclTopoInfo fromNcclComm(ncclComm_t comm);
+
+  // ::comms::NCCLTopologyInfo is the thrift struct for NcclTopoInfo.
+  // TODO: We should make the fact that this is a thrift struct more explicit
+  ::comms::NCCLTopologyInfo toThrift() const;
 };
 
 struct NcclCommMonitorInfo {
