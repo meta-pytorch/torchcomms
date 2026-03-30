@@ -19,6 +19,7 @@
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/Debug.h"
+#include "comms/ctran/utils/ErrorReport.h"
 #include "comms/ctran/utils/ErrorReporterGuard.h"
 #include "comms/ctran/utils/Exception.h"
 #include "comms/ctran/utils/ExtUtils.h"
@@ -565,6 +566,25 @@ void CtranGpe::Impl::gpeThreadFn() {
     // Set thread-local error reporter for the GPE thread so all error macros
     // within the call tree dispatch to the correct scuba table.
     ctran::ErrorReporterGuard errorGuard(comm->errorReporter_.get());
+
+    // DEBUG: inject a fake error to verify the error reporting pipeline.
+    // Set CTRAN_INJECT_FAKE_ERROR=1 to trigger.
+    if (comm->errorReporter_) {
+      const char* injectEnv = std::getenv("CTRAN_INJECT_FAKE_ERROR");
+      if (injectEnv && std::string(injectEnv) == "1") {
+        ctran::ErrorReport fakeReport;
+        fakeReport.kind = ctran::ErrorReportKind::GENERAL_ERROR;
+        fakeReport.errorMessage = "FAKE_ERROR: error reporting pipeline test";
+        comm->errorReporter_->reportError(fakeReport);
+
+        ctran::ErrorReport fakeNicReport;
+        fakeNicReport.kind = ctran::ErrorReportKind::NIC_EVENT;
+        fakeNicReport.deviceName = "fake_mlx5_0";
+        fakeNicReport.port = 1;
+        fakeNicReport.nicStatus = "DOWN";
+        comm->errorReporter_->reportError(fakeNicReport);
+      }
+    }
 
     while (1) {
       auto cmd = cmdDequeue();
