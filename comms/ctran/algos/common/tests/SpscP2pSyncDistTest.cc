@@ -3,9 +3,9 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "comms/ctran/algos/common/SpscP2pSync.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
 
 using ctran::algos::SpscP2pSync;
 using ctran::utils::CtranIpcDesc;
@@ -22,15 +22,13 @@ __global__ void SpscP2pSyncTestKernel(
     // returned to host for test correctness check
     int* outData);
 
-class SpscP2pSyncDistTest : public NcclxBaseTest {
+class SpscP2pSyncDistTest : public ctran::CtranDistTestFixture {
  public:
   SpscP2pSyncDistTest() = default;
 
  protected:
   void SetUp() override {
-    CUDACHECK_ASSERT(cudaSetDevice(cudaDev_));
-    setenv("NCCL_CTRAN_ENABLE", "1", 0);
-    NcclxBaseTest::SetUp();
+    ctran::CtranDistTestFixture::SetUp();
 
     // Ensure cuda driver functions have been loaded
     COMMCHECK_ASSERT(ctran::utils::commCudaLibraryInit());
@@ -39,13 +37,12 @@ class SpscP2pSyncDistTest : public NcclxBaseTest {
       GTEST_SKIP() << "CTran IPC is not supported on this platform. Skip test.";
     }
 
-    commDeprecated_ = createNcclComm(globalRank, numRanks, localRank);
-    comm_ = commDeprecated_->ctranComm_.get();
+    ctranComm_ = makeCtranComm();
 
-    if (comm_->statex_->nLocalRanks() != 2) {
+    if (ctranComm_->statex_->nLocalRanks() != 2) {
       GTEST_SKIP() << "Requires 2 local ranks, skip test" << std::endl;
     }
-    if (comm_->statex_->nNodes() > 1) {
+    if (ctranComm_->statex_->nNodes() > 1) {
       GTEST_SKIP() << "Requires single nodes, skip test" << std::endl;
     }
 
@@ -54,10 +51,10 @@ class SpscP2pSyncDistTest : public NcclxBaseTest {
   }
 
   void TearDown() override {
-    NCCLCHECK_TEST(ncclCommDestroy(commDeprecated_));
+    ctranComm_.reset();
     CUDACHECK_ASSERT(cudaEventDestroy(start_));
     CUDACHECK_ASSERT(cudaEventDestroy(stop_));
-    NcclxBaseTest::TearDown();
+    ctran::CtranDistTestFixture::TearDown();
   }
 
   void allGather(void* buf, const int len);
@@ -68,15 +65,7 @@ class SpscP2pSyncDistTest : public NcclxBaseTest {
  protected:
   cudaEvent_t start_;
   cudaEvent_t stop_;
-  CtranComm* comm_{nullptr};
-  ncclComm_t commDeprecated_{nullptr};
-  const struct CommLogData dummyLogMetaData_ = {
-      0,
-      0xfaceb00c12345678 /*Dummy placeholder value for commHash*/,
-      "TestComm",
-      0,
-      0};
-  int cudaDev_{0};
+  std::unique_ptr<CtranComm> ctranComm_;
   std::unique_ptr<CtranIpcMem> ipcMem_;
   std::vector<std::unique_ptr<CtranIpcRemMem>> ipcRemMems_;
 };
@@ -87,12 +76,12 @@ void SpscP2pSyncDistTest::initIpcBufs(
   // Allocate local memory
   ASSERT_NO_THROW(
       ipcMem_ = std::make_unique<CtranIpcMem>(
-          nBytes, localRank, &dummyLogMetaData_, "Test"));
+          nBytes, localRank, &ctranComm_->logMetaData_, "Test"));
 
   // Exchange with the other ranks on the same node.
   // Setup already checked all ranks on the same node
-  const auto nRanks = comm_->statex_->nRanks();
-  const auto rank = comm_->statex_->rank();
+  const auto nRanks = ctranComm_->statex_->nRanks();
+  const auto rank = ctranComm_->statex_->rank();
 
   std::vector<CtranIpcDesc> ipcDescs(nRanks);
   COMMCHECK_ASSERT(ipcMem_->ipcExport(ipcDescs[rank]));
@@ -108,7 +97,7 @@ void SpscP2pSyncDistTest::initIpcBufs(
         continue;
       }
       ipcRemMems_[peer] = std::make_unique<CtranIpcRemMem>(
-          ipcDescs[peer], localRank, &dummyLogMetaData_, "Test");
+          ipcDescs[peer], localRank, &ctranComm_->logMetaData_, "Test");
       remBufs[peer] = ipcRemMems_[peer]->getBase();
     }
   } catch (std::exception& e) {
@@ -119,8 +108,8 @@ void SpscP2pSyncDistTest::initIpcBufs(
 void SpscP2pSyncDistTest::releaseIpcBufs() {
   COMMCHECK_ASSERT(ipcMem_->free());
 
-  const auto nRanks = comm_->statex_->nRanks();
-  const auto rank = comm_->statex_->rank();
+  const auto nRanks = ctranComm_->statex_->nRanks();
+  const auto rank = ctranComm_->statex_->rank();
   for (int peer = 0; peer < nRanks; peer++) {
     if (peer == rank) {
       continue;
@@ -131,16 +120,16 @@ void SpscP2pSyncDistTest::releaseIpcBufs() {
 }
 
 void SpscP2pSyncDistTest::barrier() {
-  int nRanks = comm_->statex_->nRanks();
-  int rank = comm_->statex_->rank();
-  auto resFuture = comm_->bootstrap_->barrier(rank, nRanks);
+  int nRanks = ctranComm_->statex_->nRanks();
+  int rank = ctranComm_->statex_->rank();
+  auto resFuture = ctranComm_->bootstrap_->barrier(rank, nRanks);
   COMMCHECK_ASSERT(static_cast<commResult_t>(std::move(resFuture).get()));
 }
 
 void SpscP2pSyncDistTest::allGather(void* buf, const int len) {
-  int nRanks = comm_->statex_->nRanks();
-  int rank = comm_->statex_->rank();
-  auto resFuture = comm_->bootstrap_->allGather(buf, len, rank, nRanks);
+  int nRanks = ctranComm_->statex_->nRanks();
+  int rank = ctranComm_->statex_->rank();
+  auto resFuture = ctranComm_->bootstrap_->allGather(buf, len, rank, nRanks);
   COMMCHECK_ASSERT(static_cast<commResult_t>(std::move(resFuture).get()));
 }
 
@@ -152,7 +141,7 @@ TEST_P(SpscP2pSyncDistTestParamFixture, Check) {
   auto count = GetParam();
 
   int numIter = 100;
-  const auto myLocalRank = comm_->statex_->localRank();
+  const auto myLocalRank = ctranComm_->statex_->localRank();
   // rank 0 is producer, rank 1 is consumer
   const auto consumerRank = 1;
   const size_t dataSize = ctran::utils::align(count * sizeof(int), (size_t)16);
@@ -237,7 +226,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranDistEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

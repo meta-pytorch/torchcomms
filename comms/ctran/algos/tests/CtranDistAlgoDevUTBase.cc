@@ -4,28 +4,27 @@
 #include <gtest/gtest.h>
 #include <numeric>
 
+#include "nccl.h"
+
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/tests/CtranDistAlgoDevUTBase.h"
 #include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
-#include "meta/wrapper/MetaFactory.h"
 
 void CtranDistAlgoDevTest::SetUp() {
   // Require EAGER load to support concurrent kernels on two streasm since
   // cuda 12. Otherwise test may hang.
   setenv("CUDA_MODULE_LOADING", "EAGER", 1);
-  setenv("NCCL_CTRAN_ENABLE", "1", 0);
 
-  NcclxBaseTest::SetUp();
-  comm_ = createNcclComm(globalRank, numRanks, localRank);
+  ctran::CtranDistTestFixture::SetUp();
+  ctranComm_ = makeCtranComm();
 
   CUDACHECK_TEST(cudaSetDevice(localRank));
 
-  ASSERT_NE(nullptr, comm_);
-  ASSERT_TRUE(ctranInitialized(comm_->ctranComm_.get()));
+  ASSERT_NE(nullptr, ctranComm_);
+  ASSERT_TRUE(ctranInitialized(ctranComm_.get()));
 
-  const int nLocalRanks = comm_->ctranComm_->statex_->nLocalRanks();
-  const int localRanks = comm_->ctranComm_->statex_->nLocalRanks();
+  const int nLocalRanks = ctranComm_->statex_->nLocalRanks();
+  const int localRanks = ctranComm_->statex_->nLocalRanks();
 
   if (nLocalRanks < 2 || localRanks != nLocalRanks) {
     GTEST_SKIP()
@@ -35,8 +34,8 @@ void CtranDistAlgoDevTest::SetUp() {
 }
 
 void CtranDistAlgoDevTest::TearDown() {
-  NCCLCHECK_TEST(ncclCommDestroy(comm_));
-  NcclxBaseTest::TearDown();
+  ctranComm_.reset();
+  ctran::CtranDistTestFixture::TearDown();
 }
 
 template <typename T>
@@ -61,35 +60,35 @@ void CtranDistAlgoDevTest::initIpcBufs(size_t srcCount, size_t dstCount) {
   NCCLCHECK_TEST(ncclMemAlloc(&localBuf_, dstCount * sizeof(T)));
   ASSERT_NO_THROW(
       ipcMem_ = std::make_unique<ctran::utils::CtranIpcMem>(
-          srcCount * sizeof(T), localRank, &dummyLogMetaData_, "Test"));
+          srcCount * sizeof(T), localRank, &ctranComm_->logMetaData_, "Test"));
   ipcBuf_ = ipcMem_->getBase();
 
   // Export recvBuf
-  int nLocalRanks = comm_->ctranComm_->statex_->nLocalRanks();
-  int localRank = comm_->ctranComm_->statex_->localRank();
+  int nLocalRanks = ctranComm_->statex_->nLocalRanks();
+  int myLocalRank = ctranComm_->statex_->localRank();
 
   std::vector<ctran::utils::CtranIpcDesc> ipcDescs(nLocalRanks);
-  COMMCHECK_TEST(ipcMem_->ipcExport(ipcDescs[localRank]));
+  COMMCHECK_TEST(ipcMem_->ipcExport(ipcDescs[myLocalRank]));
 
   // Exchange with the other ranks on the same node.
   // (SetUp already checked all ranks on the same node)
-  auto resFuture = comm_->ctranComm_->bootstrap_->allGatherNvlDomain(
+  auto resFuture = ctranComm_->bootstrap_->allGatherNvlDomain(
       ipcDescs.data(),
       sizeof(ctran::utils::CtranIpcDesc),
-      localRank,
+      myLocalRank,
       nLocalRanks,
-      comm_->ctranComm_->statex_->localRankToRanks());
+      ctranComm_->statex_->localRankToRanks());
   COMMCHECK_TEST(static_cast<commResult_t>(std::move(resFuture).get()));
 
   // Import remote recvBuf from all other peers
   ipcRemMem_.resize(nLocalRanks);
   try {
     for (int peer = 0; peer < nLocalRanks; peer++) {
-      if (peer == localRank) {
+      if (peer == myLocalRank) {
         continue;
       }
       ipcRemMem_[peer] = std::make_unique<ctran::utils::CtranIpcRemMem>(
-          ipcDescs[peer], localRank, &dummyLogMetaData_, "Test");
+          ipcDescs[peer], localRank, &ctranComm_->logMetaData_, "Test");
     }
   } catch (std::exception& e) {
     GTEST_FAIL() << "Failed to import remote memory: " << e.what();
@@ -118,10 +117,10 @@ void CtranDistAlgoDevTest::checkVals(size_t count, T seedVal, size_t offset) {
 void CtranDistAlgoDevTest::freeIpcBufs() {
   COMMCHECK_TEST(ipcMem_->free());
 
-  const int nLocalRanks = comm_->ctranComm_->statex_->nLocalRanks();
-  const int localRank = comm_->ctranComm_->statex_->localRank();
+  const int nLocalRanks = ctranComm_->statex_->nLocalRanks();
+  const int myLocalRank = ctranComm_->statex_->localRank();
   for (int peer = 0; peer < nLocalRanks; peer++) {
-    if (peer != localRank) {
+    if (peer != myLocalRank) {
       COMMCHECK_TEST(ipcRemMem_.at(peer)->release());
     }
   }

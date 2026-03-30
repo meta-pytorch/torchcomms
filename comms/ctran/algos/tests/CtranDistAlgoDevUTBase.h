@@ -4,15 +4,12 @@
 #include <gtest/gtest.h>
 #include <stdlib.h>
 
-#include "nccl.h"
-
 #include "comms/ctran/Ctran.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/utils/CtranIpc.h"
 #include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
-#include "comms/utils/commSpecs.h"
 
-class CtranDistAlgoDevTest : public NcclxBaseTest {
+class CtranDistAlgoDevTest : public ctran::CtranDistTestFixture {
  public:
   void SetUp() override;
 
@@ -34,18 +31,11 @@ class CtranDistAlgoDevTest : public NcclxBaseTest {
   void freeIpcBufs();
 
  protected:
-  ncclComm_t comm_{nullptr};
+  std::unique_ptr<CtranComm> ctranComm_;
   void* localBuf_{nullptr};
   void* ipcBuf_{nullptr};
   std::unique_ptr<ctran::utils::CtranIpcMem> ipcMem_{nullptr};
   std::vector<std::unique_ptr<ctran::utils::CtranIpcRemMem>> ipcRemMem_;
-
-  const struct CommLogData dummyLogMetaData_ = {
-      0,
-      0xfaceb00c12345678 /*Dummy placeholder value for commHash*/,
-      "testComm",
-      0,
-      0};
 };
 
 // instantiate the template functions
