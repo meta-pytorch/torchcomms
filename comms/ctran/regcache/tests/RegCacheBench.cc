@@ -8,29 +8,27 @@
 #include <memory>
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/regcache/RegCache.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
-#include "nccl.h"
 
-class RegCacheBench : public NcclxBaseTest {
+class RegCacheBench : public ctran::CtranDistTestFixture {
  public:
-  int cudaDev{0};
   std::shared_ptr<ctran::RegCache> regCache{nullptr};
 
   void SetUp() override {
     setenv("NCCL_CTRAN_ENABLE", "1", 1);
-    setenv("NCCL_FASTINIT_MODE", "ring_hybrid", 1);
-    NcclxBaseTest::SetUp();
+    ctran::CtranDistTestFixture::SetUp();
 
     ctran::logGpuMemoryStats(cudaDev);
 
-    commDeprecated_ = createNcclComm(globalRank, numRanks, localRank);
-    comm_ = commDeprecated_->ctranComm_.get();
+    comm_ = makeCtranComm();
 
     // Turn on profiler after initialization to track only test registrations
     NCCL_CTRAN_REGISTER_REPORT_SNAPSHOT_COUNT = 0;
 
-    if (!ctranInitialized(comm_) || !comm_->ctran_->mapper->hasBackend()) {
+    if (!ctranInitialized(comm_.get()) ||
+        !comm_->ctran_->mapper->hasBackend()) {
       GTEST_SKIP()
           << "Ctran is not initialized or backend is not available.  Skip test.";
     }
@@ -47,14 +45,13 @@ class RegCacheBench : public NcclxBaseTest {
     // Turn off profiler to avoid internal in comm destroy.
     NCCL_CTRAN_REGISTER_REPORT_SNAPSHOT_COUNT = -1;
 
-    NCCLCHECK_TEST(ncclCommDestroy(commDeprecated_));
+    comm_.reset();
     ctran::logGpuMemoryStats(cudaDev);
-    NcclxBaseTest::TearDown();
+    ctran::CtranDistTestFixture::TearDown();
   }
 
  protected:
-  ncclComm_t commDeprecated_{nullptr};
-  CtranComm* comm_{nullptr};
+  std::unique_ptr<CtranComm> comm_{nullptr};
 };
 
 class RegCacheTestParam
@@ -168,7 +165,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranDistEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }
