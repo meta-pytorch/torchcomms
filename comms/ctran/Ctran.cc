@@ -8,6 +8,7 @@
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/regcache/RegCache.h"
+#include "comms/ctran/utils/ErrorReporterRegistry.h"
 #include "comms/ctran/utils/LogInit.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -32,6 +33,9 @@ Ctran::Ctran(CtranComm* comm, ctran::ReporterType reporterType) : comm_(comm) {
   if (NCCL_CTRAN_TRANSPORT_PROFILER) {
     profiler = std::make_unique<ctran::Profiler>(comm, reporterType);
   }
+
+  // Create per-comm error reporter
+  comm->errorReporter_ = ctran::createErrorReporter(reporterType, comm);
 }
 
 Ctran::~Ctran() {

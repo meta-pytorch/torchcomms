@@ -3,6 +3,7 @@
 #pragma once
 
 #include "comms/ctran/utils/ReporterType.h"
+#include "comms/ctran/utils/ReporterType.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
