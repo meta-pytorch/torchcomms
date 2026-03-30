@@ -140,6 +140,71 @@ finish:
 }
 
 template <typename T>
+commResult_t commCudaHostAllocDebug(
+    T** ptr,
+    size_t nelem,
+    unsigned int flags,
+    const CommLogData* logMetaData,
+    const char* callsite,
+    const char* filefunc,
+    int line) {
+  commResult_t result = commSuccess;
+  cudaStreamCaptureMode mode = cudaStreamCaptureModeRelaxed;
+  *ptr = nullptr;
+  FB_CUDACHECK(cudaThreadExchangeStreamCaptureMode(&mode));
+  if (nelem > 0) {
+    FB_CUDACHECKGOTO(
+        cudaHostAlloc(ptr, nelem * sizeof(T), flags), result, finish);
+  }
+finish:
+  FB_CUDACHECK(cudaThreadExchangeStreamCaptureMode(&mode));
+  if (*ptr == nullptr && nelem > 0) {
+    CLOGF(WARN, "Failed to cudaHostAlloc {} bytes", nelem * sizeof(T));
+  }
+  CLOGF_SUBSYS(
+      INFO,
+      ALLOC,
+      "{}:{} CudaHostAlloc Size {} pointer {}",
+      filefunc,
+      line,
+      nelem * sizeof(T),
+      (void*)*ptr);
+  logMemoryEvent(
+      logMetaData ? *logMetaData : CommLogData{},
+      callsite,
+      "commCudaHostAlloc",
+      reinterpret_cast<uintptr_t>(*ptr),
+      nelem * sizeof(T));
+  return result;
+}
+
+#define commCudaHostAlloc(...) \
+  commCudaHostAllocDebug(__VA_ARGS__, __FILE__, __LINE__)
+
+template <typename T>
+commResult_t commCudaFreeHost(
+    T* ptr,
+    const CommLogData* logMetaData = nullptr) {
+  commResult_t result = commSuccess;
+  cudaStreamCaptureMode mode = cudaStreamCaptureModeRelaxed;
+  CLOGF_TRACE(ALLOC, "CudaFreeHost pointer {}", (void*)ptr);
+
+  FB_CUDACHECKGOTO(cudaThreadExchangeStreamCaptureMode(&mode), result, finish);
+  if (ptr) {
+    FB_CUDACHECKGOTO(cudaFreeHost(ptr), result, finish);
+  }
+finish:
+  logMemoryEvent(
+      logMetaData ? *logMetaData : CommLogData{},
+      "",
+      "commCudaFreeHost",
+      reinterpret_cast<uintptr_t>(ptr));
+  CLOGF_SUBSYS(INFO, ALLOC, "CudaFreeHost pointer {}", (void*)ptr);
+  FB_CUDACHECK(cudaThreadExchangeStreamCaptureMode(&mode));
+  return result;
+}
+
+template <typename T>
 commResult_t commCudaCallocAsync(
     T** ptr,
     size_t nelem,
