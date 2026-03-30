@@ -63,32 +63,40 @@ class ProfilerTest : public ::testing::Test {
 };
 
 TEST_F(ProfilerTest, testInitForEachColl) {
-  uint64_t opCount = 100;
-  // test negative sampling weight
+  constexpr uint64_t opCount = 42;
+
+  // test negative sampling weight — never traces
   profiler_->initForEachColl(opCount, -1);
   EXPECT_FALSE(profiler_->shouldTrace());
-  EXPECT_NE(getOpCount(), opCount);
 
-  // test zero sampling weight
+  // test zero sampling weight — never traces
   profiler_->initForEachColl(opCount, 0);
   EXPECT_FALSE(profiler_->shouldTrace());
-  EXPECT_NE(getOpCount(), opCount);
 
-  // test sampling weight = 1
+  // test sampling weight = 1 — traces every call
   profiler_->initForEachColl(opCount, 1);
   EXPECT_TRUE(profiler_->shouldTrace());
   EXPECT_EQ(getOpCount(), opCount);
 
-  // test opCount is the multiple of sampling weight
-  profiler_->initForEachColl(opCount, 20);
+  profiler_->initForEachColl(opCount, 1);
   EXPECT_TRUE(profiler_->shouldTrace());
-  EXPECT_EQ(getOpCount(), opCount);
+}
 
-  // test opCount is not the multiple of sampling weight
-  ++opCount;
-  profiler_->initForEachColl(opCount, 20);
-  EXPECT_FALSE(profiler_->shouldTrace());
-  EXPECT_NE(getOpCount(), opCount);
+TEST_F(ProfilerTest, testSamplingByInvocationCount) {
+  constexpr uint64_t opCount = 0; // frozen opCount (CUDA graph replay)
+  constexpr int samplingWeight = 3;
+  int traceCount = 0;
+
+  // Sampling is based on invocation count, not opCount.
+  // With weight=3, every 3rd invocation should trace.
+  for (int i = 0; i < 9; ++i) {
+    profiler_->initForEachColl(opCount, samplingWeight);
+    if (profiler_->shouldTrace()) {
+      traceCount++;
+      EXPECT_EQ(getOpCount(), opCount);
+    }
+  }
+  EXPECT_EQ(traceCount, 3);
 }
 
 TEST_F(ProfilerTest, testDefaultReporterType) {
