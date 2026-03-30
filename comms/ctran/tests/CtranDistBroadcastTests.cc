@@ -1,53 +1,42 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include <comm.h>
 #include <folly/init/Init.h>
+#include <folly/json/json.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include <nccl.h>
 #include <stdlib.h>
+#include <thread>
 
 #include "CtranUtUtils.h"
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/Broadcast/BroadcastImpl.h"
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "meta/commDump.h"
 
-#include <folly/json/json.h>
-
-class CtranBroadcastTest : public CtranDistBaseTest {
+class CtranBroadcastTest : public ctran::CtranDistTestFixture,
+                           public CtranBaseTest {
  public:
   CtranBroadcastTest() = default;
-  // TODO: mark it as deprectated
-  // TODO: replace ncclComm with CtranComm
-  ncclComm_t comm;
   std::vector<TestMemSegment> segments;
-  std::vector<void*> segHandles;
 
   void SetUp() override {
-    setenv("NCCL_COLLTRACE", "trace", 0);
-    setenv("NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1", 0);
-    // -1 for not limiting the number of colls to trace
-    setenv("NCCL_COLLTRACE_RECORD_MAX", "-1", 0);
 #ifdef CTRAN_TEST_SOCKET_ONLY_BACKEND
     setenv("NCCL_CTRAN_BACKENDS", "socket, nvl", 1);
 #endif
-    CtranDistBaseTest::SetUp();
+    ctran::CtranDistTestFixture::SetUp();
     srand(time(NULL));
-    comm = commWorld;
+    ctranComm = makeCtranComm();
     segments.clear();
-    segHandles.clear();
-    if (!ctranBroadcastSupport(comm->ctranComm_.get(), NCCL_BROADCAST_ALGO)) {
+    if (!ctranBroadcastSupport(ctranComm.get(), NCCL_BROADCAST_ALGO)) {
       GTEST_SKIP() << "ctranBroadcastSupport returns false, skip test";
     }
   }
 
   void TearDown() override {
-    CtranDistBaseTest::TearDown();
+    ctran::CtranDistTestFixture::TearDown();
   }
 
   template <typename T>
@@ -73,6 +62,10 @@ class CtranBroadcastTest : public CtranDistBaseTest {
     }
     return errs;
   }
+
+ protected:
+  cudaStream_t testStream{0};
+  std::unique_ptr<CtranComm> ctranComm{nullptr};
 };
 
 class CtranTestBroadcastFixture
@@ -96,8 +89,7 @@ TEST_P(CtranTestBroadcastFixture, Broadcast) {
     GTEST_SKIP() << "CuMem not supported, skip test";
   }
 
-  if (memType == kCuMemAllocDisjoint &&
-      (!comm->dmaBufSupport || !NCCL_CTRAN_IB_DMABUF_ENABLE)) {
+  if (memType == kCuMemAllocDisjoint && !NCCL_CTRAN_IB_DMABUF_ENABLE) {
     GTEST_SKIP() << "dmabuf is not supported, skip disjoint test";
   }
 
@@ -116,13 +108,10 @@ TEST_P(CtranTestBroadcastFixture, Broadcast) {
   void* base = prepareBuf(bufSize, memType, segments);
 
   ASSERT_TRUE(
-      meta::comms::colltrace::testOnlyClearCollTraceRecords(
-          comm->ctranComm_.get()));
+      meta::comms::colltrace::testOnlyClearCollTraceRecords(ctranComm.get()));
 
   for (auto& segment : segments) {
-    void* hdl = nullptr;
-    NCCLCHECK_TEST(ncclCommRegister(comm, segment.ptr, segment.size, &hdl));
-    segHandles.push_back(hdl);
+    COMMCHECK_TEST(ctran::globalRegisterWithPtr(segment.ptr, segment.size));
   }
 
   char* sourceBuf = reinterpret_cast<char*>(base) + offset;
@@ -134,7 +123,7 @@ TEST_P(CtranTestBroadcastFixture, Broadcast) {
   if (globalRank == sendRank) {
     printf(
         "Rank %d sendRank %d send to others with offset %ld count %ld %s %s\n",
-        comm->ctranComm_->statex_->rank(),
+        ctranComm->statex_->rank(),
         sendRank,
         offset,
         count,
@@ -149,33 +138,21 @@ TEST_P(CtranTestBroadcastFixture, Broadcast) {
 
   if (binomialTreeAlgo) {
     res = ctranBroadcastBinomialTree(
-        sourceBuf,
-        targetBuf,
-        count,
-        dt,
-        sendRank,
-        comm->ctranComm_.get(),
-        stream);
+        sourceBuf, targetBuf, count, dt, sendRank, ctranComm.get(), testStream);
   } else {
     res = ctranBroadcastDirect(
-        sourceBuf,
-        targetBuf,
-        count,
-        dt,
-        sendRank,
-        comm->ctranComm_.get(),
-        stream);
+        sourceBuf, targetBuf, count, dt, sendRank, ctranComm.get(), testStream);
   }
   EXPECT_EQ(res, commSuccess);
 
-  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(testStream));
 
   CUDACHECK_TEST(cudaDeviceSynchronize());
   // Sleep for a while to make sure all the colls are finished
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-  ASSERT_TRUE(comm->newCollTrace != nullptr);
-  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+  ASSERT_NE(ctranComm->colltraceNew_, nullptr);
+  auto dumpMap = ctran::dumpCollTrace(ctranComm.get());
 
   EXPECT_NE(dumpMap["CT_pastColls"], "[]");
   EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
@@ -199,19 +176,17 @@ TEST_P(CtranTestBroadcastFixture, Broadcast) {
 
   if (globalRank == sendRank) {
     verifyBackendsUsed(
-        comm->ctranComm_->ctran_.get(),
-        comm->ctranComm_->statex_.get(),
-        memType);
+        ctranComm->ctran_.get(), ctranComm->statex_.get(), memType);
   }
 
-  verifyGpeLeak(comm->ctranComm_->ctran_.get());
+  verifyGpeLeak(ctranComm->ctran_.get());
 
   // First deregister buffer to catch potential 'remote access error' caused
   // by incomplete ctranSend when ctranRecv has returned incorrectly.
   // Delaying it after check can lead to false positive since ctranSend may
   // eventually complete.
-  for (auto& hdl : segHandles) {
-    NCCLCHECK_TEST(ncclCommDeregister(comm, hdl));
+  for (auto& segment : segments) {
+    COMMCHECK_TEST(ctran::globalDeregisterWithPtr(segment.ptr, segment.size));
   }
 
   if (globalRank != sendRank) {
@@ -271,7 +246,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranDistEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

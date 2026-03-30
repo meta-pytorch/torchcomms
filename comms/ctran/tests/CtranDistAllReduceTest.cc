@@ -5,19 +5,15 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <stdlib.h>
+#include <thread>
 
 #include "CtranUtUtils.h"
-#include "comm.h"
-#include "comms/ctran/utils/Checks.h"
-#include "nccl.h"
-
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/AllReduce/AllReduceImpl.h"
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "meta/commDump.h"
 
 // Reduce the value range to avoid integer overflow when running large count
 constexpr size_t VAL_RANGE = 1024;
@@ -26,7 +22,8 @@ constexpr size_t VAL_RANGE = 1024;
 constexpr size_t VAL_RANGE_PROD = 8;
 
 template <typename TYPE>
-class CtranAllReduceTest : public CtranDistBaseTest {
+class CtranAllReduceTest : public ctran::CtranDistTestFixture,
+                           public CtranBaseTest {
  public:
   CtranAllReduceTest() = default;
   commDataType_t dt = ctran::getCommDataType<TYPE>();
@@ -34,26 +31,19 @@ class CtranAllReduceTest : public CtranDistBaseTest {
   size_t bufSize;
   void *sendbuf, *recvbuf;
   std::vector<TestMemSegment> segments;
-  std::vector<void*> segHandles;
   TYPE* hostbuf;
-  ncclComm_t comm;
 
   void SetUp() override {
-    setenv("NCCL_COLLTRACE", "trace", 0);
-    setenv("NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1", 0);
-    // -1 for not limiting the number of colls to trace
-    setenv("NCCL_COLLTRACE_RECORD_MAX", "-1", 0);
 #ifdef CTRAN_TEST_SOCKET_ONLY_BACKEND
     setenv("NCCL_CTRAN_BACKENDS", "socket, nvl", 1);
 #endif
-    CtranDistBaseTest::SetUp();
-    comm = commWorld;
+    ctran::CtranDistTestFixture::SetUp();
+    ctranComm = makeCtranComm();
     segments.clear();
-    segHandles.clear();
   }
 
   void TearDown() override {
-    CtranDistBaseTest::TearDown();
+    ctran::CtranDistTestFixture::TearDown();
   }
 
   void memorySetUp(
@@ -162,26 +152,22 @@ class CtranAllReduceTest : public CtranDistBaseTest {
       TestInPlaceType inplace,
       commRedOp_t op,
       MemAllocType memType) {
-    if (memType == kCuMemAllocDisjoint &&
-        (!comm->dmaBufSupport || !NCCL_CTRAN_IB_DMABUF_ENABLE)) {
+    if (memType == kCuMemAllocDisjoint && !NCCL_CTRAN_IB_DMABUF_ENABLE) {
       GTEST_SKIP() << "dmabuf is not supported, skip disjoint test";
     }
 
     memorySetUp(count, inplace, op, memType);
 
-    if (!ctranAllReduceSupport(comm->ctranComm_.get(), algo)) {
+    if (!ctranAllReduceSupport(ctranComm.get(), algo)) {
       GTEST_SKIP() << "ctranAllReduceSupport returns fails, skip test";
     }
 
     for (auto& segment : segments) {
-      void* hdl = nullptr;
-      NCCLCHECK_TEST(ncclCommRegister(comm, segment.ptr, segment.size, &hdl));
-      segHandles.push_back(hdl);
+      COMMCHECK_TEST(ctran::globalRegisterWithPtr(segment.ptr, segment.size));
     }
 
     ASSERT_TRUE(
-        meta::comms::colltrace::testOnlyClearCollTraceRecords(
-            comm->ctranComm_.get()));
+        meta::comms::colltrace::testOnlyClearCollTraceRecords(ctranComm.get()));
 
     if (inplace == kTestInPlace) {
       auto res = allreduceFunc(
@@ -190,8 +176,8 @@ class CtranAllReduceTest : public CtranDistBaseTest {
           count,
           dt,
           op,
-          comm->ctranComm_.get(),
-          stream,
+          ctranComm.get(),
+          testStream,
           /*timeout=*/std::nullopt);
       EXPECT_EQ(res, commSuccess);
     } else {
@@ -201,13 +187,13 @@ class CtranAllReduceTest : public CtranDistBaseTest {
           count,
           dt,
           op,
-          comm->ctranComm_.get(),
-          stream,
+          ctranComm.get(),
+          testStream,
           /*timeout=*/std::nullopt);
       EXPECT_EQ(res, commSuccess);
     }
 
-    FB_CUDACHECKIGNORE(cudaStreamSynchronize(stream));
+    FB_CUDACHECKIGNORE(cudaStreamSynchronize(testStream));
 
     verifyResult(count, op);
 
@@ -215,8 +201,8 @@ class CtranAllReduceTest : public CtranDistBaseTest {
     // Sleep for a while to make sure all the colls are finished
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    ASSERT_TRUE(comm->newCollTrace != nullptr);
-    auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+    ASSERT_NE(ctranComm->colltraceNew_, nullptr);
+    auto dumpMap = ctran::dumpCollTrace(ctranComm.get());
 
     EXPECT_NE(dumpMap["CT_pastColls"], "[]");
     EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
@@ -233,19 +219,23 @@ class CtranAllReduceTest : public CtranDistBaseTest {
         testing::HasSubstr(allReduceAlgoName(algo)));
 
     verifyBackendsUsed(
-        comm->ctranComm_->ctran_.get(),
-        comm->ctranComm_->statex_.get(),
+        ctranComm->ctran_.get(),
+        ctranComm->statex_.get(),
         kMemNcclMemAlloc,
         // AllReduce uses kernel reduce not NVL iput
         {CtranMapperBackend::NVL});
-    verifyGpeLeak(comm->ctranComm_->ctran_.get());
+    verifyGpeLeak(ctranComm->ctran_.get());
 
-    for (auto& hdl : segHandles) {
-      NCCLCHECK_TEST(ncclCommDeregister(comm, hdl));
+    for (auto& segment : segments) {
+      COMMCHECK_TEST(ctran::globalDeregisterWithPtr(segment.ptr, segment.size));
     }
 
     memoryCleanUp(memType);
   }
+
+ protected:
+  cudaStream_t testStream{0};
+  std::unique_ptr<CtranComm> ctranComm{nullptr};
 };
 
 class CtranAllReduceTestParamUInt64
@@ -542,16 +532,15 @@ class CtranAllReduceIbTest : public CtranAllReduceTest<uint64_t> {
 };
 
 TEST_F(CtranAllReduceIbTest, AllReduceIbConfig) {
-  ASSERT_NE(comm, nullptr) << "comm should not be null";
-  ASSERT_NE(comm->ctranComm_, nullptr) << "ctranComm should not be null";
-  ASSERT_NE(comm->ctranComm_->ctran_, nullptr) << "ctran should not be null";
+  ASSERT_NE(ctranComm.get(), nullptr) << "ctranComm should not be null";
+  ASSERT_NE(ctranComm->ctran_, nullptr) << "ctran should not be null";
 
-  if (comm->ctranComm_->ctran_->algo == nullptr) {
+  if (ctranComm->ctran_->algo == nullptr) {
     GTEST_SKIP() << "No ctran algo found, skip test";
   }
 
   CtranIbConfig* ctranIbConfigPtr =
-      comm->ctranComm_->ctran_->algo->getCollToVcConfig(CollType::ALLREDUCE);
+      ctranComm->ctran_->algo->getCollToVcConfig(CollType::ALLREDUCE);
 
   ASSERT_NE(ctranIbConfigPtr, nullptr)
       << "AllReduce IB config should not be null";
@@ -566,7 +555,7 @@ TEST_F(CtranAllReduceIbTest, AllReduceIbConfig) {
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranDistEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }
