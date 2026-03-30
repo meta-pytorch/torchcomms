@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "comms/ctran/utils/ReporterType.h"
+#include "comms/ctran/utils/ReporterType.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
@@ -59,7 +61,9 @@ inline bool ctranIsUsed() {
   return (NCCL_SENDRECV_ALGO == NCCL_SENDRECV_ALGO::ctran);
 }
 
-commResult_t ctranInit(CtranComm* comm);
+commResult_t ctranInit(
+    CtranComm* comm,
+    ctran::ReporterType reporterType = ctran::ReporterType::NCCLX);
 // Check whether the default CTran associated with the comm is initialized.
 // If to check a dedicated CTran instance, use ctran->isInitialized() instead.
 bool ctranInitialized(CtranComm* comm);
