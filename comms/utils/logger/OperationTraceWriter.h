@@ -22,6 +22,12 @@ struct OperationTraceSample {
   int worldSize{-1};
   int64_t opCount{-1};
   std::optional<int64_t> durationUs;
+
+  // === GPE Execution context (Optional) ===
+  std::optional<std::string> gpeKernelType;
+  std::optional<int> gpeNumBlocks;
+  std::optional<int> gpeNumThreads;
+  std::optional<bool> gpePersistent;
 };
 
 // Interface for operation trace writers.
