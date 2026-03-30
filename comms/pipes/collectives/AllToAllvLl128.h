@@ -6,6 +6,7 @@
 #include <chrono>
 
 #include "comms/pipes/collectives/AllToAllvLl128.cuh"
+#include "comms/pipes/ll128/Ll128AutoTune.cuh"
 
 namespace comms::pipes {
 
@@ -49,7 +50,7 @@ void all_to_allv_ll128(
     std::chrono::milliseconds timeout = std::chrono::milliseconds{0},
     cudaStream_t stream = nullptr,
     int num_blocks = 16,
-    int num_threads = 512);
+    int num_threads = kLl128ThreadsPerBlock);
 
 /**
  * Host wrapper for AllToAllv LL128 with pre-built Timeout.
@@ -81,6 +82,6 @@ void all_to_allv_ll128(
     Timeout timeout_config,
     cudaStream_t stream = nullptr,
     int num_blocks = 16,
-    int num_threads = 512);
+    int num_threads = kLl128ThreadsPerBlock);
 
 } // namespace comms::pipes

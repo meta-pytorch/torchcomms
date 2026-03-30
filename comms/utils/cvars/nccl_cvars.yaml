@@ -3365,3 +3365,27 @@ cvars:
      arguments are checked symmetrically across all ranks to detect mismatched
      buffer addresses, counts, or operation types. Possible values: ""
      (default/disabled), "DEBUG_LOCAL", "DEBUG_GLOBAL".
+
+ - name        : NCCL_CTRAN_DA2A_LL128_BUFFER_SIZE
+   type        : int64_t
+   default     : 0
+   description : |-
+     Per-peer LL128 buffer size in bytes for DeviceAllToAllv. When set to 0
+     (default), the buffer size is auto-computed from a 256KB default using
+     ll128_buffer_size(256 * 1024). Override for workloads with known larger
+     per-peer message sizes. Only takes effect when
+     NCCL_CTRAN_DA2A_LL128_THRESHOLD is non-zero.
+
+ - name        : NCCL_CTRAN_DA2A_LL128_THRESHOLD
+   type        : int64_t
+   default     : 0
+   description : |-
+     Per-peer byte threshold for LL128 protocol selection in DeviceAllToAllv.
+     When non-zero, LL128 buffers are allocated at init time and the kernel
+     uses LL128 for per-peer transfers <= this many bytes (and meeting 16-byte
+     alignment), with Simple (send/recv) fallback for larger or misaligned
+     transfers. When 0 (default), LL128 is disabled and only Simple protocol
+     is used. Set to 262144 (256KB) to enable LL128 for typical workloads.
+     LL128 uses 128-byte cache-line-atomic packets with inline flag signaling,
+     providing better performance for small/medium messages. Requires per-peer
+     byte counts (count * elementSize) to be multiples of 16.
