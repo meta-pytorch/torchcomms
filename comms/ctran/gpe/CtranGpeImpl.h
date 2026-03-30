@@ -153,6 +153,16 @@ class CtranGpeCmd {
 
   // Unpack queue to teardown after kernel completes (for TcpDM backend)
   void* unpackPool{nullptr};
+
+  // GPE execution tracing (mccl_operation_trace).
+  // tEnqueueUs is captured in submit(); kernel context is copied from
+  // KernelConfig which is not available on the GPE thread.
+  struct {
+    int64_t tEnqueueUs{0};
+    std::string kernelTypeName;
+    int numBlocks{0};
+    int numThreads{0};
+  } timing;
 };
 
 /**
