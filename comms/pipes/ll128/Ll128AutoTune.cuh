@@ -6,6 +6,9 @@
 
 namespace comms::pipes {
 
+/// Number of threads per block for LL128 kernels (16 warps/block).
+constexpr int kLl128ThreadsPerBlock = 512;
+
 /// Recommended launch configuration for LL128 kernels.
 struct Ll128LaunchConfig {
   int numBlocks;
@@ -34,7 +37,7 @@ inline __host__ __device__ Ll128LaunchConfig ll128_auto_tune(size_t nbytes) {
     return {0, 0}; // No kernel launch needed.
   }
 
-  // All configs use 512 threads (16 warps/block).
+  // All configs use kLl128ThreadsPerBlock threads (16 warps/block).
   //
   // Target: ~2-4 packets/warp.
   //   packets = ceil(nbytes / 120)
@@ -45,7 +48,7 @@ inline __host__ __device__ Ll128LaunchConfig ll128_auto_tune(size_t nbytes) {
   // just past the "knee" of the scaling curve (i.e., the point where adding
   // more blocks yields <5% additional bandwidth).
 
-  constexpr int kThreads = 512;
+  constexpr int kThreads = kLl128ThreadsPerBlock;
 
   if (nbytes <= 2 * 1024) {
     // 64B-2KB: 1 block, 16 warps.
@@ -148,7 +151,7 @@ ll128_auto_tune_alltoallv(size_t nbytes_per_peer, int nranks) {
     return {0, 0};
   }
 
-  constexpr int kThreads = 512;
+  constexpr int kThreads = kLl128ThreadsPerBlock;
 
   // Empirical lookup table for 8 ranks (from block-count sweep benchmarks).
   // Each entry is the block count at or near the knee of the scaling curve.

@@ -14,6 +14,7 @@
 #if defined(ENABLE_PIPES)
 
 #include "comms/pipes/MultiPeerTransport.h"
+#include "comms/pipes/ll128/Ll128Packet.cuh"
 
 commResult_t ctranInitializePipes(CtranComm* comm) {
   if (!NCCL_CTRAN_USE_PIPES) {
@@ -45,6 +46,20 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     config.nvlConfig.useDualStateBuffer = (pc.useDualStateBuffer >= 0)
         ? (pc.useDualStateBuffer == 1)
         : NCCL_CTRAN_PIPES_USE_DUAL_STATE_BUFFER;
+
+    // LL128 buffer allocation for DeviceAllToAllv
+    if (NCCL_CTRAN_DA2A_LL128_THRESHOLD > 0) {
+      if (NCCL_CTRAN_DA2A_LL128_BUFFER_SIZE > 0) {
+        config.nvlConfig.ll128BufferSize = NCCL_CTRAN_DA2A_LL128_BUFFER_SIZE;
+      } else {
+        config.nvlConfig.ll128BufferSize =
+            comms::pipes::ll128_buffer_size(256 * 1024);
+      }
+      CLOGF(
+          INFO,
+          "Pipes LL128 buffer size configured (size={} per peer)",
+          config.nvlConfig.ll128BufferSize);
+    }
 
     // IBGDA config (ordered to match MultipeerIbgdaTransportConfig fields)
     config.ibgdaConfig.cudaDevice = comm->statex_->cudaDev();

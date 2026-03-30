@@ -14,6 +14,11 @@ struct Transport;
 
 #define CTRAN_MAX_TOTAL_RANK (128)
 
+// Compile-time protocol selection for DeviceAllToAllv kernel.
+// Simple: standard send/recv via NVLink staging buffers.
+// LL128: 128-byte cache-line-atomic packets with inline flag signaling.
+enum class PipeProtocol { Simple, LL128 };
+
 namespace ctran {
 
 namespace alltoall {
@@ -58,6 +63,11 @@ struct KernArgs {
   // all threads in a block to one peer; warp scheduling distributes
   // warps across peers for chunk-level pipelining.
   bool useBlockGroup;
+
+  // Per-peer byte threshold for LL128 vs Simple protocol selection.
+  // When > 0, use LL128 for transfers <= this size (if alignment is met),
+  // Simple otherwise. When 0, always use Simple.
+  size_t ll128ThresholdBytes;
 };
 
 } // namespace device_alltoallv_pipes
