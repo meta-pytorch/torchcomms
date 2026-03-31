@@ -1,11 +1,11 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include <comm.h>
 #include <folly/init/Init.h>
+#include <folly/json/json.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include <nccl.h>
 #include <stdlib.h>
+#include <thread>
 
 #include "CtranUtUtils.h"
 #include "comms/ctran/Ctran.h"
@@ -13,15 +13,13 @@
 #include "comms/ctran/algos/AllReduce/AllReduceImpl.h"
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
 #include "comms/ctran/profiler/Profiler.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "meta/commDump.h"
 
-#include <folly/json/json.h>
-
-class CtranAllgatherTest : public CtranDistBaseTest {
+class CtranAllgatherTest : public ctran::CtranDistTestFixture,
+                           public CtranBaseTest {
  public:
   CtranAllgatherTest() = default;
   char expectedVal;
@@ -31,21 +29,14 @@ class CtranAllgatherTest : public CtranDistBaseTest {
   void *sendbuf, *recvbuf, *pairbuf;
   // Buffers with offset used in collective
   void *sCommBuf, *rCommBuf, *pCommBuf;
-  std::vector<void*> segHandles;
   std::vector<TestMemSegment> segments;
-  ncclComm_t comm;
 
   void SetUp() override {
-    setenv("NCCL_COLLTRACE", "trace", 0);
-    setenv("NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1", 0);
-    // -1 for not limiting the number of colls to trace
-    setenv("NCCL_COLLTRACE_RECORD_MAX", "-1", 0);
     setenv("NCCL_CTRAN_TRANSPORT_PROFILER", "1", 0);
     setenv("NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT", "1", 0);
-    CtranDistBaseTest::SetUp();
-    comm = commWorld;
+    ctran::CtranDistTestFixture::SetUp();
+    ctranComm = makeCtranComm();
     segments.clear();
-    segHandles.clear();
   }
 
   static void checkProfiler(ctran::Profiler* profiler) {
@@ -72,7 +63,7 @@ class CtranAllgatherTest : public CtranDistBaseTest {
   }
 
   void TearDown() override {
-    CtranDistBaseTest::TearDown();
+    ctran::CtranDistTestFixture::TearDown();
   }
 
   void memorySetUp(
@@ -137,6 +128,10 @@ class CtranAllgatherTest : public CtranDistBaseTest {
       releaseBuf(pairbuf, pageAligned(sendBytes), memType);
     }
   }
+
+ protected:
+  cudaStream_t testStream{0};
+  std::unique_ptr<CtranComm> ctranComm{nullptr};
 };
 
 class CtranAllgatherTestParam : public CtranAllgatherTest,
@@ -156,21 +151,19 @@ TEST_P(CtranAllgatherTestParam, AllgatherAlgo) {
   // CollTrace will help check whether the specified algo is used
   EnvRAII env(NCCL_ALLGATHER_ALGO, algo);
 
-  if (memType == kCuMemAllocDisjoint &&
-      (!comm->dmaBufSupport || !NCCL_CTRAN_IB_DMABUF_ENABLE)) {
+  if (memType == kCuMemAllocDisjoint && !NCCL_CTRAN_IB_DMABUF_ENABLE) {
     GTEST_SKIP() << "dmabuf is not supported, skip disjoint test";
   }
 
   // NVL is now using bcast kernel, which will fail with cudaMalloc
-  if (comm->ctranComm_->statex_->nLocalRanks() > 1 &&
-      memType == kMemCudaMalloc) {
+  if (ctranComm->statex_->nLocalRanks() > 1 && memType == kMemCudaMalloc) {
     GTEST_SKIP() << allGatherAlgoName(algo)
                  << " cannot support nLocalRanks > 1 with cudaMalloc"
                  << ", skip test";
   }
 
-  const int nLocalRanks = comm->ctranComm_->statex_->nLocalRanks();
-  if (!ctranAllGatherSupport(comm->ctranComm_.get(), algo)) {
+  const int nLocalRanks = ctranComm->statex_->nLocalRanks();
+  if (!ctranAllGatherSupport(ctranComm.get(), algo)) {
     GTEST_SKIP() << "Test with " << allGatherAlgoName(algo)
                  << " only supports nLocalRanks=1, but got " << nLocalRanks
                  << ", skip test";
@@ -179,9 +172,7 @@ TEST_P(CtranAllgatherTestParam, AllgatherAlgo) {
   memorySetUp(memType, offset, count, inplace, pairColl);
 
   for (auto& segment : segments) {
-    void* hdl = nullptr;
-    NCCLCHECK_TEST(ncclCommRegister(comm, segment.ptr, segment.size, &hdl));
-    segHandles.push_back(hdl);
+    COMMCHECK_TEST(ctran::globalRegisterWithPtr(segment.ptr, segment.size));
   }
 
   // Used for collTrace check
@@ -189,37 +180,30 @@ TEST_P(CtranAllgatherTestParam, AllgatherAlgo) {
   std::vector<std::string> expAlgoNames;
 
   ASSERT_TRUE(
-      meta::comms::colltrace::testOnlyClearCollTraceRecords(
-          comm->ctranComm_.get()));
+      meta::comms::colltrace::testOnlyClearCollTraceRecords(ctranComm.get()));
 
   for (int x = 0; x < iter; x++) {
     expOpNames.push_back("AllGather");
     expAlgoNames.push_back(allGatherAlgoName(algo));
 
-    if (!ctranAllGatherSupport(comm->ctranComm_.get(), algo)) {
+    if (!ctranAllGatherSupport(ctranComm.get(), algo)) {
       GTEST_SKIP() << "ctranAllGatherSupport returns fails, skip test";
     }
     auto res = ctranAllGather(
-        sCommBuf, rCommBuf, count, dt, comm->ctranComm_.get(), stream, algo);
+        sCommBuf, rCommBuf, count, dt, ctranComm.get(), testStream, algo);
     EXPECT_EQ(res, commSuccess);
 
     if (pairColl == kTestPairAllReduce) {
       expOpNames.push_back("AllReduce");
       expAlgoNames.push_back(allReduceAlgoName(NCCL_ALLREDUCE_ALGO::ctdirect));
       auto res = ctranAllReduceDirect(
-          pCommBuf,
-          pCommBuf,
-          count,
-          dt,
-          commSum,
-          comm->ctranComm_.get(),
-          stream);
+          pCommBuf, pCommBuf, count, dt, commSum, ctranComm.get(), testStream);
       EXPECT_EQ(res, commSuccess);
     }
-    CUDACHECK_TEST(cudaStreamSynchronize(stream));
+    CUDACHECK_TEST(cudaStreamSynchronize(testStream));
 
     // Verify profiler event durations are populated
-    checkProfiler(comm->ctranComm_->ctran_->profiler.get());
+    checkProfiler(ctranComm->ctran_->profiler.get());
   }
 
   size_t sCommBytes = count * commTypeSize(dt);
@@ -235,19 +219,19 @@ TEST_P(CtranAllgatherTestParam, AllgatherAlgo) {
   }
 
   verifyBackendsUsed(
-      comm->ctranComm_->ctran_.get(),
-      comm->ctranComm_->statex_.get(),
+      ctranComm->ctran_.get(),
+      ctranComm->statex_.get(),
       memType,
       // AllGatherDirect uses kernel bcast not NVL iput
       {CtranMapperBackend::NVL});
-  verifyGpeLeak(comm->ctranComm_->ctran_.get());
+  verifyGpeLeak(ctranComm->ctran_.get());
 
   CUDACHECK_TEST(cudaDeviceSynchronize());
   // Sleep for a while to make sure all the colls are finished
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-  ASSERT_TRUE(comm->newCollTrace != nullptr);
-  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+  ASSERT_NE(ctranComm->colltraceNew_, nullptr);
+  auto dumpMap = ctran::dumpCollTrace(ctranComm.get());
 
   EXPECT_NE(dumpMap["CT_pastColls"], "[]");
   EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
@@ -264,8 +248,8 @@ TEST_P(CtranAllgatherTestParam, AllgatherAlgo) {
     idx++;
   }
 
-  for (auto& hdl : segHandles) {
-    NCCLCHECK_TEST(ncclCommDeregister(comm, hdl));
+  for (auto& segment : segments) {
+    COMMCHECK_TEST(ctran::globalDeregisterWithPtr(segment.ptr, segment.size));
   }
 
   memoryCleanUp(memType, inplace, pairColl);
@@ -275,7 +259,7 @@ TEST_F(CtranAllgatherTest, OutOfPlaceAllgatherRingDynamicRegist) {
   size_t count = 8192;
   MemAllocType memType = kMemCudaMalloc;
 
-  const int nLocalRanks = comm->ctranComm_->statex_->nLocalRanks();
+  const int nLocalRanks = ctranComm->statex_->nLocalRanks();
   if (nLocalRanks != 1) {
     GTEST_SKIP() << "Test only supports nLocalRanks=1, but got " << nLocalRanks
                  << ", skip test";
@@ -284,10 +268,10 @@ TEST_F(CtranAllgatherTest, OutOfPlaceAllgatherRingDynamicRegist) {
   memorySetUp(memType, 0, count, kTestOutOfPlace, kTestPairNone);
 
   auto res = ctranAllGatherRing(
-      sendbuf, recvbuf, count, dt, comm->ctranComm_.get(), stream);
+      sendbuf, recvbuf, count, dt, ctranComm.get(), testStream);
   EXPECT_EQ(res, commSuccess);
 
-  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(testStream));
 
   for (int i = 0; i < numRanks; ++i) {
     std::vector<char> observedVals(sendBytes, rand());
@@ -300,12 +284,12 @@ TEST_F(CtranAllgatherTest, OutOfPlaceAllgatherRingDynamicRegist) {
   }
 
   verifyBackendsUsed(
-      comm->ctranComm_->ctran_.get(),
-      comm->ctranComm_->statex_.get(),
+      ctranComm->ctran_.get(),
+      ctranComm->statex_.get(),
       memType,
       // AllGatherDirect uses kernel bcast not NVL iput
       {CtranMapperBackend::NVL});
-  verifyGpeLeak(comm->ctranComm_->ctran_.get());
+  verifyGpeLeak(ctranComm->ctran_.get());
 
   memoryCleanUp(memType, kTestOutOfPlace, kTestPairNone);
 }
@@ -428,9 +412,7 @@ TEST_P(CtranSocketAllgatherTestParam, AllgatherAlgo) {
   memorySetUp(kMemNcclMemAlloc, offset, count, inplace, pairColl);
 
   for (auto& segment : segments) {
-    void* hdl = nullptr;
-    NCCLCHECK_TEST(ncclCommRegister(comm, segment.ptr, segment.size, &hdl));
-    segHandles.push_back(hdl);
+    COMMCHECK_TEST(ctran::globalRegisterWithPtr(segment.ptr, segment.size));
   }
 
   // Used for collTrace check
@@ -438,18 +420,17 @@ TEST_P(CtranSocketAllgatherTestParam, AllgatherAlgo) {
   std::vector<std::string> expAlgoNames;
 
   ASSERT_TRUE(
-      meta::comms::colltrace::testOnlyClearCollTraceRecords(
-          comm->ctranComm_.get()));
+      meta::comms::colltrace::testOnlyClearCollTraceRecords(ctranComm.get()));
 
   for (int x = 0; x < iter; x++) {
     expOpNames.emplace_back("AllGather");
     expAlgoNames.push_back(allGatherAlgoName(algo));
 
-    if (!ctranAllGatherSupport(comm->ctranComm_.get(), algo)) {
+    if (!ctranAllGatherSupport(ctranComm.get(), algo)) {
       GTEST_SKIP() << "ctranAllGatherSupport returns fails, skip test";
     }
     auto res = ctranAllGather(
-        sCommBuf, rCommBuf, count, dt, comm->ctranComm_.get(), stream, algo);
+        sCommBuf, rCommBuf, count, dt, ctranComm.get(), testStream, algo);
 
     EXPECT_EQ(res, commSuccess);
 
@@ -457,16 +438,10 @@ TEST_P(CtranSocketAllgatherTestParam, AllgatherAlgo) {
       expOpNames.emplace_back("AllReduce");
       expAlgoNames.push_back(allReduceAlgoName(NCCL_ALLREDUCE_ALGO::ctdirect));
       auto resAllReduce = ctranAllReduceDirect(
-          pCommBuf,
-          pCommBuf,
-          count,
-          dt,
-          commSum,
-          comm->ctranComm_.get(),
-          stream);
+          pCommBuf, pCommBuf, count, dt, commSum, ctranComm.get(), testStream);
       EXPECT_EQ(resAllReduce, commSuccess);
     }
-    CUDACHECK_TEST(cudaStreamSynchronize(stream));
+    CUDACHECK_TEST(cudaStreamSynchronize(testStream));
   }
 
   size_t sCommBytes = count * commTypeSize(dt);
@@ -482,19 +457,19 @@ TEST_P(CtranSocketAllgatherTestParam, AllgatherAlgo) {
   }
 
   verifyBackendsUsed(
-      comm->ctranComm_->ctran_.get(),
-      comm->ctranComm_->statex_.get(),
+      ctranComm->ctran_.get(),
+      ctranComm->statex_.get(),
       kMemNcclMemAlloc,
       // AllGatherDirect uses kernel bcast not NVL iput
       {CtranMapperBackend::NVL});
-  verifyGpeLeak(comm->ctranComm_->ctran_.get());
+  verifyGpeLeak(ctranComm->ctran_.get());
 
   CUDACHECK_TEST(cudaDeviceSynchronize());
   // Sleep for a while to make sure all the colls are finished
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-  ASSERT_TRUE(comm->newCollTrace != nullptr);
-  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+  ASSERT_NE(ctranComm->colltraceNew_, nullptr);
+  auto dumpMap = ctran::dumpCollTrace(ctranComm.get());
 
   EXPECT_NE(dumpMap["CT_pastColls"], "[]");
   EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
@@ -511,8 +486,8 @@ TEST_P(CtranSocketAllgatherTestParam, AllgatherAlgo) {
     idx++;
   }
 
-  for (auto& hdl : segHandles) {
-    NCCLCHECK_TEST(ncclCommDeregister(comm, hdl));
+  for (auto& segment : segments) {
+    COMMCHECK_TEST(ctran::globalDeregisterWithPtr(segment.ptr, segment.size));
   }
 
   memoryCleanUp(kMemNcclMemAlloc, inplace, pairColl);
@@ -553,7 +528,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranDistEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }
