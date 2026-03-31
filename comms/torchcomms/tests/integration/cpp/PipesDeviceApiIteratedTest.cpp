@@ -42,6 +42,16 @@ void PipesDeviceApiIteratedTest::SetUp() {
 }
 
 void PipesDeviceApiIteratedTest::TearDown() {
+  // Barrier + GPU sync before destroy to prevent cross-rank desynchronization.
+  // Without this, fast ranks can start creating the next communicator (which
+  // requires collective bootstrap) while slow ranks are still destroying DOCA
+  // IBGDA resources (QP teardown, cudaFree implicit sync, ibv_close_device).
+  // On GB200 multi-node, this desync causes the next comm's exchangeUniqueId()
+  // to hang because ranks never rendezvous on the same bootstrap operation.
+  if (torchcomm_) {
+    torchcomm_->barrier(false);
+    cudaDeviceSynchronize();
+  }
   torchcomm_.reset();
   wrapper_.reset();
 }
