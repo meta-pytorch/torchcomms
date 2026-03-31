@@ -1,6 +1,8 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
+
 #include "comms/ctran/algos/SendRecv/SendRecvP2pImpl.h"
-#include "comms/ctran/algos/CtranAlgoDev.h"
+#include "comms/ctran/utils/Alloc.h"
+#include "comms/ctran/utils/PinnedHostPool.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 namespace {
@@ -17,6 +19,13 @@ inline size_t getNumGroups(size_t nbytes) {
     nGroups = 16;
   }
   return nGroups;
+}
+
+using SendRecvOpHostPool = PinnedHostPool<ctran::sendrecv::SendRecvOpHostBuf>;
+
+SendRecvOpHostPool& getSendRecvOpHostPool() {
+  static SendRecvOpHostPool pool(/*startCapacity=*/1);
+  return pool;
 }
 
 } // namespace
@@ -51,20 +60,59 @@ commResult_t setupP2pKernelConfig(
 
   // Fallback to list format if exceeding kCtranMaxNvlSendRecvOps.
   // This is slower but handles arbitrary number of ops.
-  if (numSendOps > kCtranMaxNvlSendRecvOps ||
-      numRecvOps > kCtranMaxNvlSendRecvOps) {
-    // TODO: the `useList` path has ms-level overhead, need to optimize by using
-    // pre-allocated host-pinned memory pool
-    kernArgs.useList = true;
-    if (numSendOps > 0) {
-      FB_CUDACHECK(cudaMalloc(
-          &kernArgs.sendsList,
-          numSendOps * sizeof(ctran::sendrecv::SendRecvOp)));
-    }
-    if (numRecvOps > 0) {
-      FB_CUDACHECK(cudaMalloc(
-          &kernArgs.recvsList,
-          numRecvOps * sizeof(ctran::sendrecv::SendRecvOp)));
+  bool needUseList = numSendOps > kCtranMaxNvlSendRecvOps ||
+      numRecvOps > kCtranMaxNvlSendRecvOps;
+
+  // Skip the pool during graph capture: it's a one-time cost
+  // anyway, and there is no limit on the number of ops.
+  bool isCapturing = false;
+  if (needUseList && config.stream) {
+    cudaStreamCaptureStatus status;
+    FB_CUDACHECK(cudaStreamIsCapturing(config.stream, &status));
+    isCapturing = status == cudaStreamCaptureStatusActive;
+  }
+
+  if (kernArgs.useList = needUseList; needUseList) {
+    // use pool allocation if...
+    // 1. pool items are large enough to hold numSendOps and numRecvOps
+    // 2. we aren't capturing
+    if (!isCapturing && numSendOps + numRecvOps <= kMaxSendRecvOpsPerPoolBuf) {
+      auto* poolBuf = getSendRecvOpHostPool().pop();
+      if (numSendOps > 0) {
+        kernArgs.sendsList = poolBuf->ops;
+      }
+      if (numRecvOps > 0) {
+        kernArgs.recvsList = poolBuf->ops + numSendOps;
+      }
+      config.postKernelCleanup = [poolBuf]() { poolBuf->inUse_ = false; };
+    } else {
+      if (numSendOps > 0) {
+        FB_COMMCHECK(
+            ctran::utils::commCudaHostAlloc(
+                &kernArgs.sendsList,
+                numSendOps,
+                cudaHostAllocDefault,
+                &comm->logMetaData_,
+                "setupP2pKernelConfig"));
+      }
+      if (numRecvOps > 0) {
+        FB_COMMCHECK(
+            ctran::utils::commCudaHostAlloc(
+                &kernArgs.recvsList,
+                numRecvOps,
+                cudaHostAllocDefault,
+                &comm->logMetaData_,
+                "setupP2pKernelConfig"));
+      }
+      config.postKernelCleanup = [sendsList = kernArgs.sendsList,
+                                  recvsList = kernArgs.recvsList]() {
+        if (sendsList) {
+          ctran::utils::commCudaFreeHost(sendsList);
+        }
+        if (recvsList) {
+          ctran::utils::commCudaFreeHost(recvsList);
+        }
+      };
     }
   }
 
@@ -82,16 +130,8 @@ commResult_t setupP2pKernelConfig(
       sendOp.peerLocalRank = statex->localRank(op->send.peerRank);
       size_t nGroups = getNumGroups(sendOp.nbytes);
       sendOp.nGroups = nGroups;
-
-      if (kernArgs.useList) {
-        FB_CUDACHECK(cudaMemcpy(
-            &kernArgs.sendsList[sendIdx],
-            &sendOp,
-            sizeof(ctran::sendrecv::SendRecvOp),
-            cudaMemcpyHostToDevice));
-      } else {
-        kernArgs.sends[sendIdx] = sendOp;
-      }
+      (kernArgs.useList ? kernArgs.sendsList : kernArgs.sends)[sendIdx] =
+          sendOp;
       kernArgs.numSendBlocks = std::max(kernArgs.numSendBlocks, nGroups);
       sendIdx++;
     } else if (op->type == OpElem::opType::RECV && op->recv.count > 0) {
@@ -101,16 +141,8 @@ commResult_t setupP2pKernelConfig(
       recvOp.peerLocalRank = statex->localRank(op->recv.peerRank);
       size_t nGroups = getNumGroups(recvOp.nbytes);
       recvOp.nGroups = nGroups;
-
-      if (kernArgs.useList) {
-        FB_CUDACHECK(cudaMemcpy(
-            &kernArgs.recvsList[recvIdx],
-            &recvOp,
-            sizeof(ctran::sendrecv::SendRecvOp),
-            cudaMemcpyHostToDevice));
-      } else {
-        kernArgs.recvs[recvIdx] = recvOp;
-      }
+      (kernArgs.useList ? kernArgs.recvsList : kernArgs.recvs)[recvIdx] =
+          recvOp;
       kernArgs.numRecvBlocks = std::max(kernArgs.numRecvBlocks, nGroups);
       recvIdx++;
     }

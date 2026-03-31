@@ -30,12 +30,37 @@ namespace ctran::sendrecv {
 // arbitrary number of ops).
 constexpr size_t kCtranMaxNvlSendRecvOps = 2;
 
+// Max ops per pinned host pool buffer. Each peer (excluding self) can have
+// both a send and a recv op.
+constexpr size_t kMaxSendRecvOpsPerPoolBuf = (CTRAN_MAX_NVL_PEERS - 1) * 2;
+
 struct SendRecvOp {
   void* buff;
   size_t nbytes;
   int nGroups;
 
   int peerLocalRank;
+};
+
+struct SendRecvOpHostBuf {
+  static const char* name() {
+    return "SendRecvOpHostBuf";
+  }
+
+  void reset() {
+    inUse_ = false;
+  }
+
+  bool inUse() {
+    return inUse_;
+  }
+
+  void onPop() {
+    inUse_ = true;
+  }
+
+  bool inUse_{false};
+  SendRecvOp ops[kMaxSendRecvOpsPerPoolBuf];
 };
 
 struct KernArgs {
