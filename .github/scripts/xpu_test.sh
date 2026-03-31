@@ -1,6 +1,7 @@
 #!/bin/bash
 
 set -ex
+
 # Install oneAPI DLE
 ONEAPI_URL="https://registrationcenter-download.intel.com/akdlm/IRC_NAS/b3e6c1bf-a6d5-4580-8b1d-80cbfd38c8af/intel-deep-learning-essentials-2025.3.2.36_offline.sh"
 wget -qO /tmp/intel-deep-learning-essentials.sh ${ONEAPI_URL}
@@ -36,7 +37,16 @@ export USE_TRANSPORT=OFF
 export USE_SYSTEM_LIBS=1
 
 python3 -m pip install typing-extensions numpy sympy
-python3 -m pip install --no-deps --pre torch pytorch-triton-xpu --index-url https://download.pytorch.org/whl/nightly/xpu --force-reinstall --no-cache-dir 
+python3 -m pip install --no-deps --pre torch pytorch-triton-xpu --index-url https://download.pytorch.org/whl/nightly/xpu --force-reinstall --no-cache-dir
+
+#Build and run C++ tests
+cd torchcomms
+cmake -B build -G Ninja -DBUILD_TESTS=ON -DUSE_XCCL=ON -DUSE_NCCL=OFF -DUSE_NCCLX=OFF -DUSE_TRANSPORT=OFF
+cmake --build build
+ctest --test-dir build --output-on-failure -R "TorchCommXCCLTest|TorchWorkXCCLQueueTest|TorchCommXCCLBootstrapTest|HintParsingTest"
+cd ..
+
+#Install torchcomms Python package
 cd torchcomms && pip install . --no-deps --no-build-isolation && cd ..
 
 #Check Intel XPU visibility

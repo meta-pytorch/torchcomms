@@ -178,7 +178,7 @@ jobs:
           if [[ $nprune -eq 1 ]]; then
             docker container prune -f
           fi
-      
+
       - name: Cleanup workspace
         if: always()
         run: sudo rm -rf ${{ github.workspace }}/*
