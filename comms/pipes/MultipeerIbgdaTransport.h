@@ -393,8 +393,12 @@ class MultipeerIbgdaTransport {
   // Sink buffer for RDMA atomic return values (discarded).
   // DOCA's OPCODE_ATOMIC_FA requires a local address for the fetch-add
   // return value. We don't need it, so we use a small "sink" buffer.
+  // Allocated via cuMemCreate with gpuDirectRDMACapable=1 so it can be
+  // registered as an IB MR on all platforms (including aarch64/SMMU).
   void* sinkBuffer_{nullptr};
   std::size_t sinkBufferSize_{0};
+  std::size_t sinkBufferAllocSize_{0};
+  std::uint64_t sinkBufferHandle_{0};
   ibv_mr* sinkMr_{nullptr};
 
   // Cached MR entry: one MR per CUDA allocation, refcounted.
