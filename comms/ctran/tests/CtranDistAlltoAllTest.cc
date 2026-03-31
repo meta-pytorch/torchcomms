@@ -83,6 +83,7 @@ class CtranAllToAllTest : public ctran::CtranDistTestFixture,
       const size_t count,
       const size_t bufCount,
       bool registerFlag = true,
+      // TODO: Move perf measurement to a separate benchmark file
       bool reportPerf = false) {
     using DT = typename CommTypeTraits<DataType>::T;
     size_t dataTypeSize = sizeof(DT);
@@ -292,7 +293,7 @@ TEST_P(CtranAllToAllTestParam, SmallAllToAll) {
       enable_put_fast_path_for_small_msgs);
   // Even for small data transfer size, need buffer size >= pagesize for IB
   // registration
-  run(2, 8192 * ctranComm->statex_->nRanks(), true, true);
+  run(2, 8192 * ctranComm->statex_->nRanks());
 }
 
 TEST_P(CtranAllToAllTestParam, LargeAllToAll) {
@@ -303,10 +304,7 @@ TEST_P(CtranAllToAllTestParam, LargeAllToAll) {
   EnvRAII env3(
       NCCL_CTRAN_ENABLE_PUT_FAST_PATH_FOR_SMALL_MSGS,
       enable_put_fast_path_for_small_msgs);
-  run(1024 * 1024 * 128UL,
-      1024 * 1024 * 128UL * ctranComm->statex_->nRanks(),
-      true,
-      true);
+  run(1024 * 1024 * 128UL, 1024 * 1024 * 128UL * ctranComm->statex_->nRanks());
 }
 
 TEST_P(CtranAllToAllTestParam, ZeroByteAllToAll) {
