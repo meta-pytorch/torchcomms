@@ -26,21 +26,31 @@ inline cudaError_t getStreamCaptureInfo(
 #endif
 }
 
+// Retain a user object on the graph so its destroy callback runs when the
+// graph is destroyed. Use this to tie resource lifetime to graph lifetime
+// (e.g., pinned memory that must outlive graph replays).
+inline commResult_t retainUserObject(
+    void* obj,
+    cudaHostFn_t destroyCallback,
+    StreamCaptureInfo& info) {
+  cudaUserObject_t object;
+  FB_CUDACHECK(cudaUserObjectCreate(
+      &object, obj, destroyCallback, 1, cudaUserObjectNoDestructorSync));
+  FB_CUDACHECK(
+      cudaGraphRetainUserObject(info.g, object, 1, cudaGraphUserObjectMove));
+  return commSuccess;
+}
+
+// Add a host node to the captured graph and retain the user object so its
+// destroy callback runs on graph destruction.
 inline commResult_t addHostNode(
-    void* cmd,
+    void* data,
     cudaHostFn_t execCallback,
     cudaHostFn_t destroyCallback,
     cudaStream_t stream,
     StreamCaptureInfo& info) {
-  FB_CUDACHECK(cudaLaunchHostFunc(stream, execCallback, cmd));
-  cudaUserObject_t object;
-  FB_CUDACHECK(cudaUserObjectCreate(
-      &object, cmd, destroyCallback, 1, cudaUserObjectNoDestructorSync));
-
-  // Handover ownership to CUDA graph
-  FB_CUDACHECK(
-      cudaGraphRetainUserObject(info.g, object, 1, cudaGraphUserObjectMove));
-  return commSuccess;
+  FB_CUDACHECK(cudaLaunchHostFunc(stream, execCallback, data));
+  return retainUserObject(data, destroyCallback, info);
 }
 // Add an event record node to a graph being captured on `capturedStream`.
 //

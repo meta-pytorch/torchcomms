@@ -135,6 +135,14 @@ CtranGpeCmd::~CtranGpeCmd() {
     kernelFlag->clearPersistent();
     kernelFlag->reset();
   }
+
+  // For persistent (graph) cmds, postKernelCleanup is deliberately skipped
+  // during replay (the resources must persist across replays). Run it here
+  // on destruction so resources like device-allocated sendsList/recvsList
+  // are freed when the graph is destroyed.
+  if (postKernelCleanup) {
+    postKernelCleanup();
+  }
 }
 
 void CUDART_CB CtranGpe::Impl::cmdDestroy(void* data) {
@@ -247,8 +255,21 @@ commResult_t CtranGpe::Impl::submit(
 
   bool ifchecksum = checksumIsSampled(kernelConfig.type, kernelConfig.opCount);
 
-  // Get kernelFlag from the pool
-  auto kernelFlag = opGroup.size() ? this->kernelFlagPool->pop() : nullptr;
+  utils::cudagraph::StreamCaptureInfo streamCaptureInfo;
+  FB_CUDACHECK(
+      utils::cudagraph::getStreamCaptureInfo(
+          kernelConfig.stream, streamCaptureInfo));
+  bool isCapturing = streamCaptureInfo.status == cudaStreamCaptureStatusActive;
+
+  // For eager (non-capture) submits with empty opGroup but a
+  // postKernelCleanup, we still need a cmd + kernelFlag so the GPE thread
+  // can synchronize with the kernel before running cleanup. During graph
+  // capture the cleanup is retained directly on the graph via
+  // retainUserObject, avoiding host-node overhead.
+  bool needsKernelFlag =
+      !opGroup.empty() || (kernelConfig.postKernelCleanup && !isCapturing);
+
+  auto kernelFlag = needsKernelFlag ? this->kernelFlagPool->pop() : nullptr;
   volatile int* flag = nullptr;
   if (kernelFlag != nullptr) {
     // TODO: remove this allowlist once the per-block flag is enabled in all
@@ -289,17 +310,13 @@ commResult_t CtranGpe::Impl::submit(
   auto colltraceHandle = meta::comms::colltrace::getCollTraceHandle(
       comm, opGroup, kernelConfig, ifchecksum);
 
-  utils::cudagraph::StreamCaptureInfo streamCaptureInfo;
-  FB_CUDACHECK(
-      utils::cudagraph::getStreamCaptureInfo(
-          kernelConfig.stream, streamCaptureInfo));
-
   cudaStream_t launchStream = kernelConfig.stream;
   std::optional<OrderedWorkStreamGuard::Scope> wsScope;
 
   size_t opGroupSize = 0;
-  // Enqueue op to gpeThread if any op is appended
-  if (!opGroup.empty()) {
+  // Enqueue op to gpeThread if any op is appended, or if there is a
+  // postKernelCleanup that needs to run after the kernel completes.
+  if (needsKernelFlag) {
     // record opGroup size before moving the object
     opGroupSize = opGroup.size();
     class CtranGpeCmd* cmd = new class CtranGpeCmd;
@@ -307,6 +324,7 @@ commResult_t CtranGpe::Impl::submit(
     cmd->kernelFlag = kernelFlag;
     cmd->timeout = timeout;
     cmd->unpackPool = kernelConfig.unpackPool;
+    cmd->postKernelCleanup = std::move(kernelConfig.postKernelCleanup);
 
     if (type == CtranGpeCmd::TypeEnum::GRAPH_ENQUEUE) {
       cmd->coll.opGroup = std::move(opGroup);
@@ -316,7 +334,7 @@ commResult_t CtranGpe::Impl::submit(
       }
       cmd->coll.comm = comm;
     }
-    if (streamCaptureInfo.status == cudaStreamCaptureStatusActive) {
+    if (isCapturing) {
       FB_COMMCHECK(preLaunchGraphPrepare(cmd, graphPrepareFn));
       cmd->persistent = true;
       // Mark the flag as persistent so reclaim() won't steal it between
@@ -328,12 +346,34 @@ commResult_t CtranGpe::Impl::submit(
 
       FB_COMMCHECKGOTO(
           utils::cudagraph::addHostNode(
-              cmd, cmdCb, cmdDestroy, kernelConfig.stream, streamCaptureInfo),
+              /*data=*/cmd,
+              /*execCallback=*/cmdCb,
+              /*destroyCallback=*/cmdDestroy,
+              kernelConfig.stream,
+              streamCaptureInfo),
           res,
           fail);
     } else {
       cmdEnqueue(cmd);
     }
+  } else if (kernelConfig.postKernelCleanup && isCapturing) {
+    // During graph capture with empty opGroup (e.g., ctp2p NVL-only ops),
+    // postKernelCleanup wasn't moved into a cmd. Retain it as a user object
+    // on the graph so it runs on graph destruction
+    FB_COMMCHECKGOTO(
+        utils::cudagraph::retainUserObject(
+            /*obj=*/
+            new std::function<void()>(
+                std::move(kernelConfig.postKernelCleanup)),
+            /*destroyCallback=*/
+            [](void* p) {
+              auto* fn = static_cast<std::function<void()>*>(p);
+              (*fn)();
+              delete fn;
+            },
+            streamCaptureInfo),
+        res,
+        fail);
   }
 
   if (!kernelConfig.canConcurrent) {
@@ -492,6 +532,9 @@ commResult_t CtranGpe::Impl::submitHost(
     opFunc func,
     KernelConfig& kernelConfig,
     std::shared_ptr<std::atomic_flag> cpuFlag) {
+  // postKernelCleanup is not supported for host submits (no kernel launched).
+  DCHECK(!kernelConfig.postKernelCleanup);
+
   // Enqueue op to gpeThread if any op is appended
   if (!opGroup.empty()) {
     class CtranGpeCmd* cmd = new class CtranGpeCmd;
@@ -650,9 +693,6 @@ void CtranGpe::Impl::gpeThreadFn() {
         };
 
         /* run collective */
-        // TODO: lost peerRank info which would be useful for some errors (e.g.,
-        // commRemoteError). We may want to enrich commResult_t to contain such
-        // info at failure or throw exception from bottom.
         if (comm->testAbort()) {
           // Comm already aborted — skip collective to prevent
           // progressInternal() from accessing stale VC queue entries
@@ -676,7 +716,7 @@ void CtranGpe::Impl::gpeThreadFn() {
                     "collective skipped: communicator aborted",
                     commRemoteError));
           }
-        } else {
+        } else if (!cmd->coll.opGroup.empty() /* skip when opGroup is empty, i.e,. we are only here for post-kernel cmd destruction/cleanup */) {
           CTRAN_ASYNC_ERR_GUARD_FAULT_TOLERANCE(comm, {
             FB_COMMCHECKTHROW_EX(
                 cmd->coll.func(cmd->coll.opGroup), comm->logMetaData_);
