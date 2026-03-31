@@ -120,6 +120,10 @@ struct CtranWin {
   commResult_t get_device_win(
       comms::pipes::DeviceWindow* devWin,
       const comms::pipes::WindowConfig& config);
+
+  comms::pipes::HostWindow* getPipesHostWindow() const {
+    return hostWindow_.get();
+  }
 #endif
 
   commResult_t free();
