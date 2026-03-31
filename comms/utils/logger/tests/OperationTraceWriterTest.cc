@@ -167,3 +167,99 @@ TEST_F(OperationTraceWriterTest, LoggerGpeContextAppliedToAllEvents) {
     EXPECT_FALSE(s.gpePersistent.value());
   }
 }
+
+// Simulate the exact 6-event GPE tracing pattern from CtranGpeImpl.cc
+// gpeThreadFn() to verify correctness of the instrumentation sequence.
+TEST_F(OperationTraceWriterTest, GpeThreadTracingPattern) {
+  auto mock = std::make_shared<MockOperationTraceWriter>();
+  OperationTraceWriterRegistry::set(mock);
+
+  // Simulated timestamps (microseconds)
+  const int64_t tEnqueue = 1000;
+  const int64_t tDequeue = 1050;
+  const int64_t tKernelWaitStart = 1055;
+  const int64_t tKernelWaitEnd = 1100;
+  const int64_t tCpuStart = 1105;
+  const int64_t tCpuEnd = 1400;
+  const int64_t tTermStart = 1405;
+  const int64_t tTermEnd = 1500;
+  const int64_t tEnd = 1505;
+
+  // Mirror gpeThreadFn() instrumentation
+  OperationTraceLogger traceLogger("GPE_EXECUTION", 2, 0xABCD, 42, 16, 7);
+  ASSERT_TRUE(traceLogger.isActive());
+  traceLogger.setGpeContext("AllReduce", 8, 512, false);
+
+  // 1. GPE_EXECUTION_START (at enqueue time, no duration)
+  traceLogger.logEvent("GPE_EXECUTION_START", tEnqueue);
+
+  // 2. GPE_QUEUE_WAIT_END (dequeue time, duration = dequeue - enqueue)
+  traceLogger.logEvent("GPE_QUEUE_WAIT_END", tDequeue, tDequeue - tEnqueue);
+
+  // 3. GPE_KERNEL_WAIT_END (kernel started, duration = wait time)
+  traceLogger.logEvent(
+      "GPE_KERNEL_WAIT_END", tKernelWaitEnd, tKernelWaitEnd - tKernelWaitStart);
+
+  // 4. GPE_CPU_EXECUTION_END (collective done, duration = cpu time)
+  traceLogger.logEvent("GPE_CPU_EXECUTION_END", tCpuEnd, tCpuEnd - tCpuStart);
+
+  // 5. GPE_GPU_TERMINATE_END (kernel stopped, duration = term time)
+  traceLogger.logEvent(
+      "GPE_GPU_TERMINATE_END", tTermEnd, tTermEnd - tTermStart);
+
+  // 6. GPE_EXECUTION_END (total, duration = end - enqueue)
+  traceLogger.logEvent("GPE_EXECUTION_END", tEnd, tEnd - tEnqueue);
+
+  // Verify all 6 events were logged
+  ASSERT_EQ(mock->samples.size(), 6);
+
+  // Verify event names in order
+  EXPECT_EQ(mock->samples[0].event, "GPE_EXECUTION_START");
+  EXPECT_EQ(mock->samples[1].event, "GPE_QUEUE_WAIT_END");
+  EXPECT_EQ(mock->samples[2].event, "GPE_KERNEL_WAIT_END");
+  EXPECT_EQ(mock->samples[3].event, "GPE_CPU_EXECUTION_END");
+  EXPECT_EQ(mock->samples[4].event, "GPE_GPU_TERMINATE_END");
+  EXPECT_EQ(mock->samples[5].event, "GPE_EXECUTION_END");
+
+  // Verify timestamps
+  EXPECT_EQ(mock->samples[0].timestampUs, tEnqueue);
+  EXPECT_EQ(mock->samples[5].timestampUs, tEnd);
+
+  // Verify durations
+  EXPECT_FALSE(
+      mock->samples[0].durationUs.has_value()); // START has no duration
+  EXPECT_EQ(mock->samples[1].durationUs.value(), 50); // queue wait
+  EXPECT_EQ(mock->samples[2].durationUs.value(), 45); // kernel wait
+  EXPECT_EQ(mock->samples[3].durationUs.value(), 295); // cpu execution
+  EXPECT_EQ(mock->samples[4].durationUs.value(), 95); // gpu terminate
+  EXPECT_EQ(mock->samples[5].durationUs.value(), 505); // total
+
+  // Verify identity fields consistent across all events
+  for (const auto& s : mock->samples) {
+    EXPECT_EQ(s.mcclop, "GPE_EXECUTION");
+    EXPECT_EQ(s.rank, 2);
+    EXPECT_EQ(s.commHash, 0xABCD);
+    EXPECT_EQ(s.commId, 42);
+    EXPECT_EQ(s.worldSize, 16);
+    EXPECT_EQ(s.opCount, 7);
+    ASSERT_TRUE(s.gpeKernelType.has_value());
+    EXPECT_EQ(s.gpeKernelType.value(), "AllReduce");
+    EXPECT_EQ(s.gpeNumBlocks.value(), 8);
+    EXPECT_EQ(s.gpeNumThreads.value(), 512);
+    EXPECT_FALSE(s.gpePersistent.value());
+  }
+}
+
+// Verify GPE tracing is completely skipped when no writer is registered
+TEST_F(OperationTraceWriterTest, GpeTracingNoOpWithoutWriter) {
+  // No writer registered
+  OperationTraceLogger traceLogger("GPE_EXECUTION", 0, 111, 222, 8, 1);
+  EXPECT_FALSE(traceLogger.isActive());
+
+  // All these should be no-ops
+  traceLogger.setGpeContext("AllReduce", 4, 256, false);
+  traceLogger.logEvent("GPE_EXECUTION_START", 1000);
+  traceLogger.logEvent("GPE_QUEUE_WAIT_END", 1050, 50);
+  traceLogger.logEvent("GPE_EXECUTION_END", 1100, 100);
+  // No crash, no samples — verified by mock not existing
+}

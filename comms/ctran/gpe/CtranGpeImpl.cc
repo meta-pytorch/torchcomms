@@ -25,6 +25,7 @@
 #include "comms/utils/colltrace/CollRecord.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
+#include "comms/utils/logger/OperationTraceWriter.h"
 
 using namespace ctran;
 using namespace ncclx::colltrace;
@@ -307,6 +308,12 @@ commResult_t CtranGpe::Impl::submit(
     cmd->kernelFlag = kernelFlag;
     cmd->timeout = timeout;
     cmd->unpackPool = kernelConfig.unpackPool;
+
+    // Capture enqueue timing for GPE execution tracing
+    cmd->timing.tEnqueueUs = comms::logger::getTraceTimestampUs();
+    cmd->timing.kernelTypeName = kernelTypeToName[kernelConfig.type];
+    cmd->timing.numBlocks = kernelConfig.numBlocks;
+    cmd->timing.numThreads = kernelConfig.numThreads;
 
     if (type == CtranGpeCmd::TypeEnum::GRAPH_ENQUEUE) {
       cmd->coll.opGroup = std::move(opGroup);
@@ -602,18 +609,49 @@ void CtranGpe::Impl::gpeThreadFn() {
         return;
       }
 
-      // If kernelFlag is set, indicates it is a device memory communication
-      // thus, wait for the kernel to launch
+      // --- GPE execution tracing ---
+      comms::logger::OperationTraceLogger traceLogger(
+          "GPE_EXECUTION",
+          this->comm->logMetaData_.rank,
+          static_cast<int64_t>(this->comm->logMetaData_.commHash),
+          static_cast<int64_t>(this->comm->logMetaData_.commId),
+          this->comm->logMetaData_.nRanks,
+          !cmd->coll.opGroup.empty()
+              ? static_cast<int64_t>(cmd->coll.opGroup.front()->opCount)
+              : -1);
+      if (traceLogger.isActive()) {
+        traceLogger.setGpeContext(
+            cmd->timing.kernelTypeName,
+            cmd->timing.numBlocks,
+            cmd->timing.numThreads,
+            cmd->persistent);
+        traceLogger.logEvent("GPE_EXECUTION_START", cmd->timing.tEnqueueUs);
+      }
+
+      // Queue wait phase: enqueue (submit thread) → dequeue (this thread)
+      auto tDequeue = comms::logger::getTraceTimestampUs();
+      traceLogger.logEvent(
+          "GPE_QUEUE_WAIT_END", tDequeue, tDequeue - cmd->timing.tEnqueueUs);
+
+      // Kernel wait phase: wait for GPU kernel to signal KERNEL_STARTED
       KernelFlagItem* kernelFlag = cmd->kernelFlag;
-      if (kernelFlag) {
-        volatile int* flag_d = kernelFlag->flag_;
-        // Here we check just flag_d[0]. This is ok because Kernel Start signal
-        // is only used for tracing purposes. Before the flags are freed below
-        // with reset, all block flags are checked.
-        while (flag_d[0] != KERNEL_STARTED &&
-               flag_d[0] != KERNEL_STARTED_AND_EXIT) {
-          std::this_thread::yield();
+      {
+        auto tKernelWaitStart = comms::logger::getTraceTimestampUs();
+        if (kernelFlag) {
+          volatile int* flag_d = kernelFlag->flag_;
+          // Here we check just flag_d[0]. This is ok because Kernel Start
+          // signal is only used for tracing purposes. Before the flags are
+          // freed below with reset, all block flags are checked.
+          while (flag_d[0] != KERNEL_STARTED &&
+                 flag_d[0] != KERNEL_STARTED_AND_EXIT) {
+            std::this_thread::yield();
+          }
         }
+        auto tKernelWaitEnd = comms::logger::getTraceTimestampUs();
+        traceLogger.logEvent(
+            "GPE_KERNEL_WAIT_END",
+            tKernelWaitEnd,
+            tKernelWaitEnd - tKernelWaitStart);
       }
 
       if (cmd->coll.collHandle != nullptr) {
@@ -634,7 +672,9 @@ void CtranGpe::Impl::gpeThreadFn() {
             });
       }
 
+      // CPU execution phase: run collective function
       {
+        auto tCpuStart = comms::logger::getTraceTimestampUs();
         // comm may be dummy in GPE UT, although never happens in real.
         // Pass in nullptr mapper to skip lock.
         auto mapper =
@@ -690,38 +730,55 @@ void CtranGpe::Impl::gpeThreadFn() {
         } else {
           cmd->coll.opGroup.clear();
         }
+        auto tCpuEnd = comms::logger::getTraceTimestampUs();
+        traceLogger.logEvent(
+            "GPE_CPU_EXECUTION_END", tCpuEnd, tCpuEnd - tCpuStart);
       }
 
-      if (kernelFlag) {
-        volatile int* flag_d = kernelFlag->flag_;
-        if (flag_d[0] == KERNEL_STARTED_AND_EXIT) {
-          // Indicate kernel would exit without the terminate signal, thus free
-          // the flag now
-          while (!kernelFlag->testFlagAllGroups(KERNEL_STARTED_AND_EXIT)) {
-            std::this_thread::yield();
+      // GPU terminate phase: signal kernel to stop and wait
+      {
+        auto tTermStart = comms::logger::getTraceTimestampUs();
+        if (kernelFlag) {
+          volatile int* flag_d = kernelFlag->flag_;
+          if (flag_d[0] == KERNEL_STARTED_AND_EXIT) {
+            // Indicate kernel would exit without the terminate signal, thus
+            // free the flag now
+            while (!kernelFlag->testFlagAllGroups(KERNEL_STARTED_AND_EXIT)) {
+              std::this_thread::yield();
+            }
+            // After all blocks exited, we can safely reset.
+            kernelFlag->reset();
+          } else {
+            // In case of aborted comm, wait for kernel to start
+            while (comm->testAbort() &&
+                   !kernelFlag->testFlagAllGroups(KERNEL_STARTED)) {
+              std::this_thread::yield();
+            }
+            // Stop kernel and kernel will free up the flag after confirmed the
+            // termination
+            kernelFlag->setFlagPerGroup(
+                comm->testAbort() ? KERNEL_HOST_ABORT : KERNEL_TERMINATE);
           }
-          // After all blocks exited, we can safely reset.
-          kernelFlag->reset();
-        } else {
-          // In case of aborted comm, wait for kernel to start
-          while (comm->testAbort() &&
-                 !kernelFlag->testFlagAllGroups(KERNEL_STARTED)) {
-            std::this_thread::yield();
+          // Teardown unpack queue if it was allocated for this operation (TcpDM
+          // backend). Don't wait for kernel to finish, the pool manages
+          // the allocations in the round robin fashion to avoid immediate
+          // reuse.
+          if (cmd->unpackPool != nullptr) {
+            FB_COMMCHECKTHROW_EX(
+                comm->ctran_->mapper->teardownUnpackConsumer(cmd->unpackPool),
+                comm->logMetaData_);
           }
-          // Stop kernel and kernel will free up the flag after confirmed the
-          // termination
-          kernelFlag->setFlagPerGroup(
-              comm->testAbort() ? KERNEL_HOST_ABORT : KERNEL_TERMINATE);
         }
-        // Teardown unpack queue if it was allocated for this operation (TcpDM
-        // backend). Don't wait for kernel to finish, the pool manages
-        // the allocations in the round robin fashion to avoid immediate
-        // reuse.
-        if (cmd->unpackPool != nullptr) {
-          FB_COMMCHECKTHROW_EX(
-              comm->ctran_->mapper->teardownUnpackConsumer(cmd->unpackPool),
-              comm->logMetaData_);
-        }
+        auto tTermEnd = comms::logger::getTraceTimestampUs();
+        traceLogger.logEvent(
+            "GPE_GPU_TERMINATE_END", tTermEnd, tTermEnd - tTermStart);
+      }
+
+      // Log overall GPE execution end with total duration
+      {
+        auto tEnd = comms::logger::getTraceTimestampUs();
+        traceLogger.logEvent(
+            "GPE_EXECUTION_END", tEnd, tEnd - cmd->timing.tEnqueueUs);
       }
 
       if (cmd->coll.collHandle != nullptr) {
