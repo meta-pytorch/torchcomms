@@ -62,24 +62,44 @@ commResult_t checkEpochLock(CtranIb* ctranIb) {
 static folly::Singleton<CtranIbSingleton> ctranIbSingleton;
 
 std::shared_ptr<CtranIbSingleton> CtranIbSingleton::getInstance() {
-  return ctranIbSingleton.try_get();
+  try {
+    return ctranIbSingleton.try_get();
+  } catch ([[maybe_unused]] const ctran::utils::Exception& e) {
+    return nullptr;
+  }
 }
 
 CtranIbSingleton::CtranIbSingleton() {
   auto ibvInitResult = ibverbx::ibvInit();
-  FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM(ibvInitResult);
+  if (!ibvInitResult.hasValue()) {
+    std::string msg =
+        "CTRAN-IB: Failed to initialize ibverbs (libibverbs.so). "
+        "InfiniBand backend is not available. "
+        "Set NCCL_CTRAN_BACKENDS=nvl,socket to use alternative backends.";
+    CLOGF(ERR, msg);
+    throw ctran::utils::Exception(msg, commSystemError);
+  }
   auto maybeDeviceList = ibverbx::IbvDevice::ibvGetDeviceList(
       NCCL_IB_HCA, NCCL_IB_HCA_PREFIX, CTRAN_IB_ANY_PORT, NCCL_IB_DATA_DIRECT);
-  FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM(maybeDeviceList);
+  if (!maybeDeviceList.hasValue()) {
+    std::string msg =
+        "CTRAN-IB: Failed to get InfiniBand device list. "
+        "No HCA devices found on this system. "
+        "Set NCCL_CTRAN_BACKENDS=nvl,socket to use alternative backends.";
+    CLOGF(ERR, msg);
+    throw ctran::utils::Exception(msg, commSystemError);
+  }
   ibvDevices = std::move(*maybeDeviceList);
 
   if (ibvDevices.size() < NCCL_CTRAN_IB_DEVICES_PER_RANK) {
-    CLOGF(
-        WARN,
-        "CTRAN-IB : active device found {} is less than requested device count {}",
+    std::string msg = fmt::format(
+        "CTRAN-IB: Found {} InfiniBand device(s) but {} required "
+        "(NCCL_CTRAN_IB_DEVICES_PER_RANK). "
+        "Set NCCL_CTRAN_BACKENDS=nvl,socket to use alternative backends.",
         ibvDevices.size(),
         NCCL_CTRAN_IB_DEVICES_PER_RANK);
-    throw std::bad_alloc();
+    CLOGF(ERR, msg);
+    throw ctran::utils::Exception(msg, commSystemError);
   }
 
   for (auto i = 0; i < this->ibvDevices.size(); i++) {
@@ -98,8 +118,6 @@ CtranIbSingleton::CtranIbSingleton() {
   for (auto& p : this->devBytes_) {
     p = std::make_unique<std::atomic<size_t>>(0);
   }
-
-  return;
 }
 
 commResult_t CtranIbSingleton::destroy() {

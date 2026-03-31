@@ -563,7 +563,7 @@ int buildIbvSymbols(IbvSymbols& symbols, const std::string& ibv_path) {
     cast = (void**)&funcptr;                                 \
     tmp = dlvsym(handle, symbol, version);                   \
     if (tmp == nullptr) {                                    \
-      XLOG(WARN) << fmt::format(                             \
+      XLOG(DBG) << fmt::format(                              \
           "dlvsym failed on {} - {} version {}, set null",   \
           symbol,                                            \
           dlerror(),                                         \

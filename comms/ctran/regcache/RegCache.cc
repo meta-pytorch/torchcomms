@@ -219,7 +219,13 @@ void ctran::RegCache::init() {
   // exist, so the lifetime dependency is not needed.
   if (globalBackends_[CommBackend::IB]) {
     ibSingleton_ = CtranIbSingleton::getInstance();
-    CHECK_VALID_IB_SINGLETON(ibSingleton_);
+    if (!ibSingleton_) {
+      CLOGF_SUBSYS(
+          WARN,
+          INIT,
+          "CTRAN-REGCACHE: IB backend not available, disabling.");
+      globalBackends_[CommBackend::IB] = false;
+    }
   }
 
   if (NCCL_CTRAN_REGISTER == NCCL_CTRAN_REGISTER::async &&
