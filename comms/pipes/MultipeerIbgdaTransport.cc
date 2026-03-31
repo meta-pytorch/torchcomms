@@ -274,16 +274,90 @@ void MultipeerIbgdaTransport::allocateResources() {
   // Allocate sink buffer for RDMA atomic return values (discarded).
   // DOCA's OPCODE_ATOMIC_FA requires a local address for the fetch-add
   // result. We don't need it, so we use a small "sink" buffer.
+  //
+  // Uses cuMemCreate with gpuDirectRDMACapable=1 (instead of cudaMalloc /
+  // doca_gpu_mem_alloc) so the memory can be registered as an IB MR on
+  // aarch64/SMMU platforms (GB200). This matches GIN's ncclCuMemAlloc
+  // pattern in gin_host_gdaki.cc.
   sinkBufferSize_ = sizeof(uint64_t);
-  void* sinkBufferCpu = nullptr;
-  doca_error_t err = doca_gpu_mem_alloc(
-      docaGpu_,
-      sinkBufferSize_,
-      4096,
-      DOCA_GPU_MEM_TYPE_GPU,
-      &sinkBuffer_,
-      &sinkBufferCpu);
-  checkDocaError(err, "Failed to allocate GPU sink buffer");
+
+  if (cuda_driver_lazy_init() != 0) {
+    throw std::runtime_error(
+        "CUDA driver API not available for sink buffer allocation");
+  }
+
+  CUdevice cuDevice;
+  CUresult cuErr = pfn_cuDeviceGet(&cuDevice, config_.cudaDevice);
+  if (cuErr != CUDA_SUCCESS) {
+    throw std::runtime_error(
+        "Failed to get CUdevice for device " +
+        std::to_string(config_.cudaDevice));
+  }
+
+  CUmemAllocationProp prop = {};
+  prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+  prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+  prop.location.id = cuDevice;
+  prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_NONE;
+
+  int rdmaFlag = 0;
+  cuErr = pfn_cuDeviceGetAttribute(
+      &rdmaFlag,
+      CU_DEVICE_ATTRIBUTE_GPU_DIRECT_RDMA_WITH_CUDA_VMM_SUPPORTED,
+      cuDevice);
+  if (cuErr != CUDA_SUCCESS) {
+    LOG(WARNING) << "Failed to query GPU Direct RDMA support: " << cuErr;
+    rdmaFlag = 0;
+  }
+  if (rdmaFlag) {
+    prop.allocFlags.gpuDirectRDMACapable = 1;
+  }
+
+  size_t granularity = 0;
+  cuErr = pfn_cuMemGetAllocationGranularity(
+      &granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM);
+  if (cuErr != CUDA_SUCCESS) {
+    throw std::runtime_error("Failed to get allocation granularity");
+  }
+
+  sinkBufferAllocSize_ =
+      ((sinkBufferSize_ + granularity - 1) / granularity) * granularity;
+
+  CUmemGenericAllocationHandle handle;
+  cuErr = pfn_cuMemCreate(&handle, sinkBufferAllocSize_, &prop, 0);
+  if (cuErr != CUDA_SUCCESS) {
+    throw std::runtime_error("Failed to create sink buffer allocation");
+  }
+  sinkBufferHandle_ = static_cast<uint64_t>(handle);
+
+  CUdeviceptr devPtr = 0;
+  cuErr =
+      pfn_cuMemAddressReserve(&devPtr, sinkBufferAllocSize_, granularity, 0, 0);
+  if (cuErr != CUDA_SUCCESS) {
+    pfn_cuMemRelease(handle);
+    throw std::runtime_error("Failed to reserve address for sink buffer");
+  }
+
+  cuErr = pfn_cuMemMap(devPtr, sinkBufferAllocSize_, 0, handle, 0);
+  if (cuErr != CUDA_SUCCESS) {
+    pfn_cuMemAddressFree(devPtr, sinkBufferAllocSize_);
+    pfn_cuMemRelease(handle);
+    throw std::runtime_error("Failed to map sink buffer");
+  }
+
+  CUmemAccessDesc accessDesc = {};
+  accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+  accessDesc.location.id = cuDevice;
+  accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+  cuErr = pfn_cuMemSetAccess(devPtr, sinkBufferAllocSize_, &accessDesc, 1);
+  if (cuErr != CUDA_SUCCESS) {
+    pfn_cuMemUnmap(devPtr, sinkBufferAllocSize_);
+    pfn_cuMemAddressFree(devPtr, sinkBufferAllocSize_);
+    pfn_cuMemRelease(handle);
+    throw std::runtime_error("Failed to set access for sink buffer");
+  }
+
+  sinkBuffer_ = reinterpret_cast<void*>(devPtr);
 
   cudaError_t cudaErr = cudaMemset(sinkBuffer_, 0, sinkBufferSize_);
   if (cudaErr != cudaSuccess) {
@@ -618,9 +692,13 @@ void MultipeerIbgdaTransport::cleanup() {
     sinkMr_ = nullptr;
   }
 
-  // Free sink buffer
+  // Free sink buffer (cuMem-allocated with gpuDirectRDMACapable)
   if (sinkBuffer_ != nullptr) {
-    doca_gpu_mem_free(docaGpu_, sinkBuffer_);
+    auto devPtr = reinterpret_cast<CUdeviceptr>(sinkBuffer_);
+    pfn_cuMemUnmap(devPtr, sinkBufferAllocSize_);
+    pfn_cuMemAddressFree(devPtr, sinkBufferAllocSize_);
+    pfn_cuMemRelease(
+        static_cast<CUmemGenericAllocationHandle>(sinkBufferHandle_));
     sinkBuffer_ = nullptr;
   }
 
