@@ -2,31 +2,11 @@
 
 #include "comms/ctran/profiler/Profiler.h"
 #include <gtest/gtest.h>
-#include "comms/ctran/profiler/AlgoProfilerReport.h"
-#include "comms/ctran/profiler/IAlgoProfilerReporter.h"
+#include "comms/ctran/profiler/tests/MockAlgoProfilerReporter.h"
 
 using namespace ::testing;
 
 namespace ctran {
-
-// Mock reporter that captures the report for verification
-class MockAlgoProfilerReporter : public IAlgoProfilerReporter {
- public:
-  void report(const AlgoProfilerReport& report) override {
-    reportCalled_ = true;
-    lastReport_ = report;
-    // Deep-copy the AlgoContext since the pointer may become invalid
-    if (report.algoContext) {
-      capturedAlgoContext_ = *report.algoContext;
-    }
-    reportCount_++;
-  }
-
-  bool reportCalled_{false};
-  AlgoProfilerReport lastReport_;
-  AlgoContext capturedAlgoContext_;
-  int reportCount_{0};
-};
 
 class ProfilerTest : public ::testing::Test {
  public:
@@ -47,7 +27,7 @@ class ProfilerTest : public ::testing::Test {
   }
 
   void setReporter(std::unique_ptr<ctran::IAlgoProfilerReporter> reporter) {
-    profiler_->reporter_ = std::move(reporter);
+    profiler_->setReporter(std::move(reporter));
   }
 
  protected:
