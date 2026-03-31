@@ -1,23 +1,21 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include <comm.h>
 #include <folly/init/Init.h>
+#include <folly/json/json.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include <nccl.h>
 #include <stdlib.h>
 #include <iostream>
+#include <thread>
+
 #include "CtranUtUtils.h"
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/ReduceScatter/ReduceScatterImpl.h"
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "meta/commDump.h"
-
-#include <folly/json/json.h>
 
 // Reduce the value range to avoid integer overflow when running large count
 constexpr size_t VAL_RANGE = 1000;
@@ -26,32 +24,26 @@ constexpr size_t VAL_RANGE = 1000;
 constexpr size_t VAL_RANGE_PROD = 10;
 
 template <typename T>
-class CtranReduceScatterTest : public CtranDistBaseTest {
+class CtranReduceScatterTest : public ctran::CtranDistTestFixture,
+                               public CtranBaseTest {
  public:
   CtranReduceScatterTest() = default;
   commDataType_t dt = ctran::getCommDataType<T>();
   size_t sendBytes, recvBytes;
   T *sendBuf, *recvBuf;
   std::vector<TestMemSegment> segments;
-  std::vector<void*> segHandles;
   T* hostbuf;
-  ncclComm_t comm;
 
   void SetUp() override {
-    setenv("NCCL_COLLTRACE", "trace", 0);
-    setenv("NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1", 0);
-    // -1 for not limiting the number of colls to trace
-    setenv("NCCL_COLLTRACE_RECORD_MAX", "-1", 0);
-    CtranDistBaseTest::SetUp();
-    comm = commWorld;
-    if (!ctranReduceScatterSupport(
-            comm->ctranComm_.get(), NCCL_REDUCESCATTER_ALGO)) {
+    ctran::CtranDistTestFixture::SetUp();
+    ctranComm = makeCtranComm();
+    if (!ctranReduceScatterSupport(ctranComm.get(), NCCL_REDUCESCATTER_ALGO)) {
       GTEST_SKIP() << "ctranReduceScatterSupport returns fails, skip test";
     }
   }
 
   void TearDown() override {
-    CtranDistBaseTest::TearDown();
+    ctran::CtranDistTestFixture::TearDown();
   }
 
   void memorySetUp(
@@ -94,19 +86,20 @@ class CtranReduceScatterTest : public CtranDistBaseTest {
 
     if (registerFlag) {
       for (auto& segment : segments) {
-        void* hdl = nullptr;
-        NCCLCHECK_TEST(ncclCommRegister(comm, segment.ptr, segment.size, &hdl));
-        segHandles.push_back(hdl);
+        COMMCHECK_TEST(ctran::globalRegisterWithPtr(segment.ptr, segment.size));
       }
     }
 
     CUDACHECK_TEST(cudaDeviceSynchronize());
   }
 
-  void memoryCleanUp(MemAllocType memType) {
+  void memoryCleanUp(MemAllocType memType, bool registerFlag = true) {
     CUDACHECK_TEST(cudaFreeHost(hostbuf));
-    for (auto& hdl : segHandles) {
-      NCCLCHECK_TEST(ncclCommDeregister(comm, hdl));
+    if (registerFlag) {
+      for (auto& segment : segments) {
+        COMMCHECK_TEST(
+            ctran::globalDeregisterWithPtr(segment.ptr, segment.size));
+      }
     }
 
     releaseBuf(sendBuf, sendBytes, memType);
@@ -158,8 +151,8 @@ class CtranReduceScatterTest : public CtranDistBaseTest {
       // ctranReduceScatterSupport always returns false for ctrhd algo, but we
       // still want to test it here. We only test ctrhd when the conditions are
       // met (nLocalRanks=1, nNodes is power of 2, and tmpBuf is small enough)
-      const int nNodes = comm->ctranComm_->statex_->nNodes();
-      const int nLocalRanks = comm->ctranComm_->statex_->nLocalRanks();
+      const int nNodes = ctranComm->statex_->nNodes();
+      const int nLocalRanks = ctranComm->statex_->nLocalRanks();
       if (nLocalRanks != 1) {
         GTEST_SKIP() << "ctrhd only supports nLocalRanks=1, but got "
                      << nLocalRanks << ", skip test";
@@ -175,19 +168,17 @@ class CtranReduceScatterTest : public CtranDistBaseTest {
                      << " bytes is too large to fit in tmpBuf for "
                      << "ctrhd, skip test";
       }
-    } else if (!ctranReduceScatterSupport(comm->ctranComm_.get(), algo)) {
+    } else if (!ctranReduceScatterSupport(ctranComm.get(), algo)) {
       GTEST_SKIP() << "ctranReduceScatterSupport returns fails, skip test";
     }
 
-    if (memType == kCuMemAllocDisjoint &&
-        (!comm->dmaBufSupport || !NCCL_CTRAN_IB_DMABUF_ENABLE)) {
+    if (memType == kCuMemAllocDisjoint && !NCCL_CTRAN_IB_DMABUF_ENABLE) {
       GTEST_SKIP() << "dmabuf is not supported, skip disjoint test";
     }
 
     memorySetUp(memType, count, redOp, regist);
     ASSERT_TRUE(
-        meta::comms::colltrace::testOnlyClearCollTraceRecords(
-            comm->ctranComm_.get()));
+        meta::comms::colltrace::testOnlyClearCollTraceRecords(ctranComm.get()));
 
     T* recvBufComm = recvBuf;
     if (inplace == kTestInPlace) {
@@ -199,32 +190,32 @@ class CtranReduceScatterTest : public CtranDistBaseTest {
         count,
         dt,
         redOp,
-        comm->ctranComm_.get(),
-        stream,
+        ctranComm.get(),
+        testStream,
         algo);
     EXPECT_EQ(res, commSuccess);
 
-    CUDACHECK_TEST(cudaStreamSynchronize(stream));
+    CUDACHECK_TEST(cudaStreamSynchronize(testStream));
 
     verifyResult(count, redOp, recvBufComm);
 
     if (count > 0) {
       verifyBackendsUsed(
-          comm->ctranComm_->ctran_.get(),
-          comm->ctranComm_->statex_.get(),
+          ctranComm->ctran_.get(),
+          ctranComm->statex_.get(),
           memType,
           // ReduceScatter uses kernel reduce not NVL iput
           {CtranMapperBackend::NVL});
     }
 
-    verifyGpeLeak(comm->ctranComm_->ctran_.get());
+    verifyGpeLeak(ctranComm->ctran_.get());
 
     CUDACHECK_TEST(cudaDeviceSynchronize());
     // Sleep for a while to make sure all the colls are finished
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    ASSERT_TRUE(comm->newCollTrace != nullptr);
-    auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+    ASSERT_NE(ctranComm->colltraceNew_, nullptr);
+    auto dumpMap = ctran::dumpCollTrace(ctranComm.get());
 
     EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
     EXPECT_EQ(dumpMap["CT_currentColl"], "null");
@@ -241,8 +232,12 @@ class CtranReduceScatterTest : public CtranDistBaseTest {
       EXPECT_EQ(lastColl["count"].asInt(), count);
       EXPECT_EQ(lastColl["algoName"].asString(), reduceScatterAlgoName(algo));
     }
-    memoryCleanUp(memType);
+    memoryCleanUp(memType, regist);
   }
+
+ protected:
+  cudaStream_t testStream{0};
+  std::unique_ptr<CtranComm> ctranComm{nullptr};
 };
 
 class CtranReduceScatterTestParamInt
@@ -386,7 +381,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranDistEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

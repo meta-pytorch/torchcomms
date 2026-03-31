@@ -6,6 +6,9 @@
 
 namespace comms::pipes {
 
+/// Number of threads per block for LL128 kernels (16 warps/block).
+constexpr int kLl128ThreadsPerBlock = 512;
+
 /// Recommended launch configuration for LL128 kernels.
 struct Ll128LaunchConfig {
   int numBlocks;
@@ -34,7 +37,7 @@ inline __host__ __device__ Ll128LaunchConfig ll128_auto_tune(size_t nbytes) {
     return {0, 0}; // No kernel launch needed.
   }
 
-  // All configs use 512 threads (16 warps/block).
+  // All configs use kLl128ThreadsPerBlock threads (16 warps/block).
   //
   // Target: ~2-4 packets/warp.
   //   packets = ceil(nbytes / 120)
@@ -45,7 +48,7 @@ inline __host__ __device__ Ll128LaunchConfig ll128_auto_tune(size_t nbytes) {
   // just past the "knee" of the scaling curve (i.e., the point where adding
   // more blocks yields <5% additional bandwidth).
 
-  constexpr int kThreads = 512;
+  constexpr int kThreads = kLl128ThreadsPerBlock;
 
   if (nbytes <= 2 * 1024) {
     // 64B-2KB: 1 block, 16 warps.
@@ -135,6 +138,12 @@ ll128_auto_tune_bidirectional(size_t nbytes) {
  * optimum is ~128.  All peers share the same SMs, so sub-linear scaling is
  * expected.
  *
+ * IMPORTANT: A sharp performance cliff exists at >~2048 total warps
+ * (e.g. >128 blocks at 512 threads, >256 blocks at 256 threads).
+ * Going from 128 to 192 blocks (512t) drops bandwidth by 18-32% due to
+ * wave scheduling overhead on H100's 132 SMs. Do not increase the 64KB+
+ * entry without re-running the block-count sweep.
+ *
  * For non-8-rank configurations a dampened heuristic is used as a conservative
  * fallback until more sweep data is available.
  *
@@ -148,34 +157,44 @@ ll128_auto_tune_alltoallv(size_t nbytes_per_peer, int nranks) {
     return {0, 0};
   }
 
-  constexpr int kThreads = 512;
-
-  // Empirical lookup table for 8 ranks (from block-count sweep benchmarks).
-  // Each entry is the block count at or near the knee of the scaling curve.
-  auto empirical_8rank = [](size_t nbytes) -> int {
-    if (nbytes <= 4 * 1024) {
-      return 16; // Sweep: 16 blocks -> 7.76 GB/s vs 18 -> 7.52 GB/s
-    }
-    if (nbytes <= 32 * 1024) {
-      // 16KB benchmarked; 32KB interpolated (between 16KB=96 and 64KB=128)
-      return 96;
-    }
-    // 64KB+: 128 blocks (sweep confirms optimal at 64KB, 256KB, 1MB).
-    return 128;
-  };
+  constexpr int kThreads = kLl128ThreadsPerBlock;
 
   int needed_blocks;
 
   if (nranks == 8) {
-    // Direct lookup — this is the benchmarked configuration.
-    needed_blocks = empirical_8rank(nbytes_per_peer);
+    // Sweep-validated lookup table for 8x H100 NVLink.
+    // Each entry is at the knee of the block-count scaling curve.
+    if (nbytes_per_peer <= 4 * 1024) {
+      needed_blocks = 16; // Sweep: 16 blocks = 9.44 GB/s (knee); plateau 16-256
+    } else if (nbytes_per_peer <= 32 * 1024) {
+      // 16KB sweep: 48 blocks is the knee (35.6 GB/s); plateau extends to 128.
+      // 32KB interpolated (no sweep data; 48 sits on the 16KB plateau).
+      needed_blocks = 48;
+    } else {
+      // 64KB+: 128 blocks (sweep-confirmed optimal at 64KB, 256KB, 1MB).
+      // CAUTION: sharp cliff at >~2048 total warps (e.g. 192 blocks at 512
+      // threads drops BW by 18-32%). Do not increase without re-sweeping.
+      needed_blocks = 128;
+    }
   } else {
-    // Dampened heuristic for other rank counts.
-    // Use the 8-rank empirical value as a baseline, then scale by
-    // sqrt(nranks-1) / sqrt(7) to account for more/fewer peers.
-    // This is conservative: sqrt grows much slower than the old linear
-    // formula, matching the observed sub-linear scaling.
-    int base = empirical_8rank(nbytes_per_peer);
+    // Conservative heuristic cap for non-8-rank configurations.
+    // These values are intentionally higher than the 8-rank sweep optima
+    // to avoid under-provisioning at higher rank counts (e.g., GB200 with
+    // 72 NVLink ranks has 142 warp groups and needs more total warps).
+    auto heuristic_cap = [](size_t nbytes) -> int {
+      if (nbytes <= 4 * 1024) {
+        return 16;
+      }
+      if (nbytes <= 32 * 1024) {
+        return 96; // Conservative: 8-rank optimum is 48, but higher rank
+                   // counts need headroom for more warp groups.
+      }
+      return 128;
+    };
+
+    // Dampened heuristic: scale by sqrt(nranks-1) / sqrt(7).
+    // sqrt grows much slower than linear, matching observed sub-linear scaling.
+    int base = heuristic_cap(nbytes_per_peer);
     auto bidir = ll128_auto_tune_bidirectional(nbytes_per_peer);
     // ceil(sqrt(nranks - 1))
     int sqrt_peers = 1;
@@ -183,8 +202,7 @@ ll128_auto_tune_alltoallv(size_t nbytes_per_peer, int nranks) {
       ++sqrt_peers;
     }
     int scaled = bidir.numBlocks * sqrt_peers;
-    // Take the lesser of the scaled heuristic and the empirical baseline
-    // (empirical data already accounts for SM saturation).
+    // Take the lesser of scaled heuristic and the conservative cap.
     needed_blocks = scaled < base ? scaled : base;
   }
 

@@ -1,5 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#if defined(ENABLE_PIPES)
+
 #include "comms/ctran/algos/AllToAll/DeviceAllToAllvPipesImpl.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -43,7 +45,7 @@ CollectiveConfig::CollectiveConfig(
     return -1; // not set
   };
 
-  // --- blockScheduling ---
+  // === Step 1: blockScheduling ===
   // hint > NCCL_CTRAN_DA2A_BLOCK_SCHEDULING env > default(false/warp)
   int bs = hintBool("blockScheduling");
   if (bs >= 0) {
@@ -53,8 +55,16 @@ CollectiveConfig::CollectiveConfig(
     blockScheduling = (env && std::atoi(env) == 1);
   }
 
-  // --- numBlocks ---
-  // hint > NCCL_CTRAN_DA2A_NBLOCKS env > default(nLocalRanks*2)
+  // === Step 2: LL128 threshold (CVAR-only) ===
+  // Note: per-collective opt-in/out via hints could be added here in the
+  // future if needed.
+  ll128ThresholdBytes = static_cast<size_t>(NCCL_CTRAN_DA2A_LL128_THRESHOLD);
+
+  // === Step 3: numBlocks ===
+  unsigned int defaultBlocks =
+      static_cast<unsigned int>(std::max(1, nLocalRanks * 2));
+
+  // hint > env > default (resolved once for both protocols)
   int nb = hintInt("numBlocks");
   if (nb >= 0) {
     numBlocks = static_cast<unsigned int>(nb);
@@ -63,25 +73,28 @@ CollectiveConfig::CollectiveConfig(
     if (env) {
       numBlocks = static_cast<unsigned int>(std::atoi(env));
     } else {
-      numBlocks = static_cast<unsigned int>(std::max(1, nLocalRanks * 2));
+      numBlocks = defaultBlocks;
     }
   }
 
-  // Align to cluster size if needed
-  unsigned int clusterSize = NCCL_CTRAN_CGA_CLUSTER_SIZE;
-  if (clusterSize > 1 && numBlocks % clusterSize != 0) {
-    numBlocks = ((numBlocks + clusterSize - 1) / clusterSize) * clusterSize;
+  // Align to CGA cluster size when LL128 is disabled
+  // (volatile stores bypass L1, cluster alignment not beneficial).
+  if (ll128ThresholdBytes == 0) {
+    unsigned int clusterSize = NCCL_CTRAN_CGA_CLUSTER_SIZE;
+    if (clusterSize > 1 && numBlocks % clusterSize != 0) {
+      numBlocks = ((numBlocks + clusterSize - 1) / clusterSize) * clusterSize;
+    }
   }
 
-  // If block scheduling requested but not enough blocks, fall back to warp
+  // If block scheduling requested but not enough blocks,
+  // fall back to warp scheduling.
   if (blockScheduling &&
       numBlocks < static_cast<unsigned int>(nLocalRanks * 2)) {
     blockScheduling = false;
   }
 
-  // --- numThreads ---
-  // hint > NCCL_CTRAN_DA2A_NTHREADS env > NCCL_CTRAN_ALLTOALL_THREAD_BLOCK_SIZE
-  // cvar > default(512)
+  // === Step 4: numThreads ===
+  // hint > env > CVAR > default(512)
   int nt = hintInt("numThreads");
   if (nt >= 0) {
     numThreads = static_cast<unsigned int>(nt);
@@ -141,6 +154,9 @@ commResult_t setupKernelConfig(
   // Set transport array from MultiPeerTransport
   kernArgs.transports = comm->getMultiPeerTransportsPtr();
 
+  // LL128 threshold from pre-resolved config
+  kernArgs.ll128ThresholdBytes = collConfig.ll128ThresholdBytes;
+
   // All config is pre-resolved in CollectiveConfig — just apply it.
   kernArgs.useBlockGroup = collConfig.blockScheduling;
   config.numBlocks = collConfig.numBlocks;
@@ -153,3 +169,5 @@ commResult_t setupKernelConfig(
 }
 
 } // namespace ctran::device_alltoallv_pipes
+
+#endif // ENABLE_PIPES

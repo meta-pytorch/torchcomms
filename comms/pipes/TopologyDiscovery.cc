@@ -195,6 +195,11 @@ TopologyResult TopologyDiscovery::classify(
     }
   }
 
+  LOG(INFO) << "TopologyDiscovery: rank " << myRank << " classified "
+            << result.nvlPeerRanks.size() << " NVL peers from " << (nRanks - 1)
+            << " total" << (topoConfig.p2pDisable ? " (p2p disabled)" : "")
+            << (myInfo.fabricInfo.available ? " (MNNVL)" : "");
+
   // Store fabric info in the result.
   if (myInfo.fabricInfo.available) {
     std::memcpy(

@@ -17,6 +17,8 @@
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/CudaRAII.h"
 
+#include <cstdlib>
+#include <fstream>
 #include <iomanip>
 #include <sstream>
 #include <vector>
@@ -95,6 +97,50 @@ class AllToAllvLl128BenchmarkFixture
     return id;
   }
 
+  void run_global_warmup() {
+    // --- Global warmup: trigger NCCL connection setup and GPU clock ramp ---
+    {
+      constexpr int kGlobalWarmupIters = 10;
+      constexpr std::size_t kWarmupBytes = 16 * 1024; // 16KB per peer
+      const std::size_t totalWarmupBytes = kWarmupBytes * worldSize;
+
+      DeviceBuffer warmupSend(totalWarmupBytes);
+      DeviceBuffer warmupRecv(totalWarmupBytes);
+      CUDA_CHECK_VOID(cudaMemset(warmupSend.get(), 1, totalWarmupBytes));
+      CUDA_CHECK_VOID(cudaMemset(warmupRecv.get(), 0, totalWarmupBytes));
+
+      std::vector<size_t> sendcounts(worldSize, kWarmupBytes);
+      std::vector<size_t> recvcounts(worldSize, kWarmupBytes);
+      std::vector<size_t> sdispls(worldSize);
+      std::vector<size_t> rdispls(worldSize);
+      for (int i = 0; i < worldSize; i++) {
+        sdispls[i] = i * kWarmupBytes;
+        rdispls[i] = i * kWarmupBytes;
+      }
+
+      bootstrap->barrierAll();
+      for (int i = 0; i < kGlobalWarmupIters; i++) {
+        NCCL_CHECK_VOID(ncclAllToAllv(
+            warmupSend.get(),
+            sendcounts.data(),
+            sdispls.data(),
+            warmupRecv.get(),
+            recvcounts.data(),
+            rdispls.data(),
+            ncclChar,
+            ncclComm_,
+            stream_));
+      }
+      CUDA_CHECK_VOID(cudaStreamSynchronize(stream_));
+      bootstrap->barrierAll();
+
+      if (globalRank == 0) {
+        XLOG(INFO) << "Global warmup complete (" << kGlobalWarmupIters
+                   << " NCCL iterations at 16KB/peer)";
+      }
+    }
+  }
+
   float run_nccl_benchmark(
       const Ll128BenchmarkConfig& config,
       float& latency_us) {
@@ -118,7 +164,7 @@ class AllToAllvLl128BenchmarkFixture
 
     CudaEvent start, stop;
     constexpr int kNIter = 100;
-    constexpr int kNWarmup = 5;
+    constexpr int kNWarmup = 10;
 
     bootstrap->barrierAll();
     for (int i = 0; i < kNWarmup; i++) {
@@ -133,6 +179,8 @@ class AllToAllvLl128BenchmarkFixture
           ncclComm_,
           stream_));
     }
+    CUDA_CHECK(cudaStreamSynchronize(stream_));
+    bootstrap->barrierAll();
 
     CUDA_CHECK(cudaEventRecord(start.get(), stream_));
     for (int i = 0; i < kNIter; i++) {
@@ -148,7 +196,7 @@ class AllToAllvLl128BenchmarkFixture
           stream_));
     }
     CUDA_CHECK(cudaEventRecord(stop.get(), stream_));
-    CUDA_CHECK(cudaStreamSynchronize(stream_));
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     float totalTime_ms = 0.0f;
     CUDA_CHECK(cudaEventElapsedTime(&totalTime_ms, start.get(), stop.get()));
@@ -223,7 +271,7 @@ class AllToAllvLl128BenchmarkFixture
 
     CudaEvent start, stop;
     constexpr int kNIter = 100;
-    constexpr int kNWarmup = 5;
+    constexpr int kNWarmup = 10;
 
     bootstrap->barrierAll();
     for (int i = 0; i < kNWarmup; i++) {
@@ -240,6 +288,8 @@ class AllToAllvLl128BenchmarkFixture
           config.simpleNumThreads,
           clusterDimOpt);
     }
+    CUDA_CHECK(cudaDeviceSynchronize());
+    bootstrap->barrierAll();
 
     CUDA_CHECK(cudaEventRecord(start.get()));
     for (int i = 0; i < kNIter; i++) {
@@ -322,13 +372,13 @@ class AllToAllvLl128BenchmarkFixture
 
     CudaEvent start, stop;
     constexpr int kNIter = 100;
-    constexpr int kNWarmup = 5;
+    constexpr int kNWarmup = 10;
 
     // Create timeout ONCE outside the loop to avoid per-call
     // cudaGetDevice/cudaDeviceGetAttribute overhead.
     int device = 0;
     CUDA_CHECK(cudaGetDevice(&device));
-    Timeout timeout_config = makeTimeout(30000, device);
+    Timeout timeout_config = makeTimeout(5000, device);
 
     // Warmup: per-iteration sync to ensure each iteration completes
     bootstrap->barrierAll();
@@ -345,6 +395,10 @@ class AllToAllvLl128BenchmarkFixture
           config.ll128NumBlocks,
           config.ll128NumThreads);
     }
+    CUDA_CHECK(cudaDeviceSynchronize());
+    // Barrier ensures all ranks start timed iterations together after warmup.
+    // cudaDeviceSynchronize() only syncs the local GPU, not cross-rank.
+    bootstrap->barrierAll();
 
     // Timed loop
     CUDA_CHECK(cudaEventRecord(start.get()));
@@ -364,7 +418,7 @@ class AllToAllvLl128BenchmarkFixture
           config.ll128NumThreads);
     }
     CUDA_CHECK(cudaEventRecord(stop.get()));
-    CUDACHECK_TEST(cudaDeviceSynchronize());
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     float totalTime_ms = 0.0f;
     CUDA_CHECK(cudaEventElapsedTime(&totalTime_ms, start.get(), stop.get()));
@@ -591,6 +645,8 @@ TEST_F(AllToAllvLl128BenchmarkFixture, Ll128VsSimpleVsNccl) {
       .name = "1MB",
   });
 
+  run_global_warmup();
+
   std::vector<Ll128BenchmarkResult> results;
 
   for (const auto& config : configs) {
@@ -620,6 +676,189 @@ TEST_F(AllToAllvLl128BenchmarkFixture, Ll128VsSimpleVsNccl) {
   }
 
   print_results_table(results);
+}
+
+TEST_F(AllToAllvLl128BenchmarkFixture, LatencySweep) {
+  if (globalRank == 0) {
+    XLOG(INFO)
+        << "\n=== LL128 vs Simple vs NCCL Latency Sweep (for Triton comparison) ===\n";
+  }
+
+  const std::size_t kDataBufferSize = 8 * 1024 * 1024; // 8MB
+
+  auto auto_ll128_blocks = [&](std::size_t bytesPerPeer) {
+    return ll128_auto_tune_alltoallv(bytesPerPeer, worldSize).numBlocks;
+  };
+
+  // Sizes where LL128 is expected to compete (run all three protocols)
+  struct SizeConfig {
+    std::size_t bytesPerPeer;
+    int simpleNumBlocks;
+    std::size_t chunkSize;
+    bool runLl128;
+    bool simpleSpreadCluster;
+    std::string name;
+  };
+
+  std::vector<SizeConfig> sizes = {
+      // Small sizes: cluster OFF to reduce launch overhead
+      {4 * 1024, 8, 64 * 1024, true, false, "4KB"},
+      {16 * 1024, 8, 64 * 1024, true, false, "16KB"},
+      {64 * 1024, 8, 64 * 1024, true, false, "64KB"},
+      {128 * 1024, 8, 64 * 1024, true, false, "128KB"},
+      // Medium+ sizes: cluster ON (amortized by data volume)
+      {256 * 1024, 8, 64 * 1024, true, true, "256KB"},
+      {512 * 1024, 16, 64 * 1024, true, true, "512KB"},
+      {1024 * 1024, 16, 64 * 1024, true, true, "1MB"},
+      // Large sizes: NCCL+Simple only
+      {2 * 1024 * 1024, 16, 128 * 1024, false, true, "2MB"},
+      {4 * 1024 * 1024, 16, 128 * 1024, false, true, "4MB"},
+      {8 * 1024 * 1024, 16, 128 * 1024, false, true, "8MB"},
+      {16 * 1024 * 1024, 16, 128 * 1024, false, true, "16MB"},
+      {32 * 1024 * 1024, 16, 128 * 1024, false, true, "32MB"},
+  };
+
+  struct LatencySweepResult {
+    std::string name;
+    std::size_t bytesPerPeer;
+    float ncclLatency;
+    float simpleLatency;
+    float ll128Latency; // -1 if not run
+  };
+
+  run_global_warmup();
+
+  std::vector<LatencySweepResult> results;
+
+  for (const auto& sz : sizes) {
+    Ll128BenchmarkConfig config{
+        .bytesPerPeer = sz.bytesPerPeer,
+        .simpleNumBlocks = sz.simpleNumBlocks,
+        .simpleNumThreads = 512,
+        .simpleSpreadCluster = sz.simpleSpreadCluster,
+        .pipelineDepth = 2,
+        .chunkSize = sz.chunkSize,
+        .dataBufferSize = kDataBufferSize,
+        .ll128NumBlocks = sz.runLl128 ? auto_ll128_blocks(sz.bytesPerPeer) : 1,
+        .ll128NumThreads = 512,
+        .name = sz.name,
+    };
+
+    float ncclLatency = 0.0f;
+    run_nccl_benchmark(config, ncclLatency);
+
+    float simpleLatency = 0.0f;
+    run_simple_benchmark(config, simpleLatency);
+
+    float ll128Latency = -1.0f;
+    if (sz.runLl128) {
+      run_ll128_benchmark(config, ll128Latency);
+    }
+
+    if (globalRank == 0) {
+      results.push_back({
+          .name = sz.name,
+          .bytesPerPeer = sz.bytesPerPeer,
+          .ncclLatency = ncclLatency,
+          .simpleLatency = simpleLatency,
+          .ll128Latency = ll128Latency,
+      });
+    }
+
+    bootstrap->barrierAll();
+  }
+
+  // Print latency-focused table
+  if (globalRank == 0) {
+    auto format_bytes = [](std::size_t bytes) -> std::string {
+      if (bytes < 1024) {
+        return std::to_string(bytes) + "B";
+      }
+      if (bytes < 1024 * 1024) {
+        return std::to_string(bytes / 1024) + "KB";
+      }
+      return std::to_string(bytes / (1024 * 1024)) + "MB";
+    };
+
+    std::stringstream ss;
+    ss << "\n";
+    ss << std::string(90, '=') << "\n";
+    ss << "  LL128 vs Simple vs NCCL Latency Sweep (" << worldSize
+       << " ranks)\n";
+    ss << std::string(90, '=') << "\n";
+    ss << std::left << std::setw(12) << "Per-peer" << std::right
+       << std::setw(14) << "NCCL (us)" << std::right << std::setw(14)
+       << "Simple (us)" << std::right << std::setw(14) << "LL128 (us)"
+       << std::right << std::setw(14) << "LL128/NCCL" << std::right
+       << std::setw(14) << "LL128/Simple"
+       << "\n";
+    ss << std::string(90, '-') << "\n";
+
+    for (const auto& r : results) {
+      ss << std::left << std::setw(12) << format_bytes(r.bytesPerPeer)
+         << std::right << std::setw(14) << std::fixed << std::setprecision(1)
+         << r.ncclLatency << std::right << std::setw(14) << std::fixed
+         << std::setprecision(1) << r.simpleLatency;
+
+      if (r.ll128Latency >= 0) {
+        float ll128VsNccl =
+            r.ncclLatency > 0 ? r.ncclLatency / r.ll128Latency : 0;
+        float ll128VsSimple =
+            r.simpleLatency > 0 ? r.simpleLatency / r.ll128Latency : 0;
+        ss << std::right << std::setw(14) << std::fixed << std::setprecision(1)
+           << r.ll128Latency << std::right << std::setw(13) << std::fixed
+           << std::setprecision(2) << ll128VsNccl << "x" << std::right
+           << std::setw(13) << std::fixed << std::setprecision(2)
+           << ll128VsSimple << "x";
+      } else {
+        ss << std::right << std::setw(14) << "N/A" << std::right
+           << std::setw(14) << "N/A" << std::right << std::setw(14) << "N/A";
+      }
+      ss << "\n";
+    }
+
+    ss << std::string(90, '=') << "\n";
+    ss << "LL128/NCCL and LL128/Simple are speedup ratios (higher is better)\n";
+    ss << std::string(90, '=') << "\n";
+
+    XLOG(INFO) << ss.str();
+
+    // CSV output to file if BENCH_CSV_OUTPUT is set
+    const char* csvPath = std::getenv("BENCH_CSV_OUTPUT");
+    if (csvPath != nullptr) {
+      std::ofstream csvFile(csvPath);
+      if (csvFile.is_open()) {
+        csvFile << "per_peer_bytes,nccl_us,simple_us,ll128_us\n";
+        for (const auto& r : results) {
+          csvFile << r.bytesPerPeer << "," << std::fixed << std::setprecision(3)
+                  << r.ncclLatency << "," << r.simpleLatency << ",";
+          if (r.ll128Latency >= 0) {
+            csvFile << r.ll128Latency;
+          }
+          csvFile << "\n";
+        }
+        csvFile.close();
+        XLOG(INFO) << "CSV results written to: " << csvPath;
+      } else {
+        XLOG(ERR) << "Failed to open CSV output file: " << csvPath;
+      }
+    }
+
+    // Always print CSV to log output for easy extraction from buck2 test
+    ss.str("");
+    ss << "\n--- CSV START ---\n";
+    ss << "per_peer_bytes,nccl_us,simple_us,ll128_us\n";
+    for (const auto& r : results) {
+      ss << r.bytesPerPeer << "," << std::fixed << std::setprecision(3)
+         << r.ncclLatency << "," << r.simpleLatency << ",";
+      if (r.ll128Latency >= 0) {
+        ss << r.ll128Latency;
+      }
+      ss << "\n";
+    }
+    ss << "--- CSV END ---";
+    XLOG(INFO) << ss.str();
+  }
 }
 
 TEST_F(AllToAllvLl128BenchmarkFixture, Ll128BlockThreadSweep) {

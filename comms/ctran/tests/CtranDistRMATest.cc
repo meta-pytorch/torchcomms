@@ -1,52 +1,48 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include <comm.h>
 #include <folly/init/Init.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include <nccl.h>
 #include <stdlib.h>
 
 #include "CtranUtUtils.h"
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/RMA/WaitSignalImpl.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 using namespace ctran;
 
-class CtranRMATest : public CtranDistBaseTest {
+class CtranRMATest : public ctran::CtranDistTestFixture, public CtranBaseTest {
  public:
   CtranRMATest() = default;
-  ncclComm_t comm{nullptr};
 
  protected:
+  std::unique_ptr<CtranComm> ctranComm{nullptr};
+
   void SetUp() override {
     setenv("NCCL_CTRAN_ENABLE", "1", 0);
     setenv("NCCL_CTRAN_IB_EPOCH_LOCK_ENFORCE_CHECK", "true", 0);
 #ifdef CTRAN_TEST_IB_ONLY_BACKEND
     setenv("NCCL_CTRAN_BACKENDS", "ib", 1);
 #endif
-    CtranDistBaseTest::SetUp();
+    ctran::CtranDistTestFixture::SetUp();
     CUDACHECK_TEST(cudaSetDevice(this->localRank));
-    comm = commWorld;
-    ASSERT_NE(comm, nullptr);
+    ctranComm = makeCtranComm();
+    ASSERT_NE(ctranComm.get(), nullptr);
   }
   void TearDown() override {
-    CtranDistBaseTest::TearDown();
+    ctranComm.reset();
+    ctran::CtranDistTestFixture::TearDown();
     // Check that all allocated memory segments have been freed
     EXPECT_TRUE(segments.empty()) << "Not all memory segments were freed";
   }
 
-  void barrier(ncclComm_t comm, cudaStream_t stream) {
-    // simple Allreduce as barrier before get data from other ranks
-    void* buf;
-    CUDACHECK_TEST(cudaMalloc(&buf, sizeof(char)));
-    NCCLCHECK_TEST(ncclAllReduce(buf, buf, 1, ncclChar, ncclSum, comm, stream));
+  void barrier() {
     CUDACHECK_TEST(cudaDeviceSynchronize());
-    CUDACHECK_TEST(cudaFree(buf));
+    oobBarrier();
   }
 
   void createWin(
@@ -61,7 +57,7 @@ class CtranRMATest : public CtranDistBaseTest {
     if (isUserBuf) {
       *winBasePtr = commMemAlloc(sizeBytes, bufType, segments);
       res = ctranWinRegister(
-          (void*)*winBasePtr, sizeBytes, comm->ctranComm_.get(), winPtr, hints);
+          (void*)*winBasePtr, sizeBytes, ctranComm.get(), winPtr, hints);
 
     } else {
       hints.set(
@@ -71,7 +67,7 @@ class CtranRMATest : public CtranDistBaseTest {
               ? "cpu"
               : "gpu");
       res = ctranWinAllocate(
-          sizeBytes, comm->ctranComm_.get(), (void**)winBasePtr, winPtr, hints);
+          sizeBytes, ctranComm.get(), (void**)winBasePtr, winPtr, hints);
     }
     ASSERT_EQ(res, commSuccess);
     ASSERT_NE(*winBasePtr, nullptr);
@@ -102,14 +98,12 @@ TEST_P(MultiWindowTestParam, multiWindow) {
   EXPECT_GE(kMaxNumElements, 1);
   EXPECT_GE(kNumIters, 1);
 
-  auto comm = this->comm;
-  auto statex = comm->ctranComm_->statex_.get();
+  auto statex = ctranComm->statex_.get();
   ASSERT_NE(statex, nullptr);
   EXPECT_EQ(statex->nRanks(), this->numRanks);
 
   for (size_t numElements = 1; numElements <= kMaxNumElements;
        numElements = numElements * 2) {
-    cudaStream_t main_stream = 0;
     cudaStream_t put_stream, wait_stream;
     CUDACHECK_TEST(
         cudaStreamCreateWithFlags(&put_stream, cudaStreamNonBlocking));
@@ -119,9 +113,8 @@ TEST_P(MultiWindowTestParam, multiWindow) {
     size_t sizeBytes = numElements * sizeof(int) * statex->nRanks();
     CtranWin* win = nullptr;
     void* winBase = nullptr;
-    auto res =
-        ctranWinAllocate(sizeBytes, comm->ctranComm_.get(), &winBase, &win);
-    ASSERT_EQ(res, ncclSuccess);
+    auto res = ctranWinAllocate(sizeBytes, ctranComm.get(), &winBase, &win);
+    ASSERT_EQ(res, commSuccess);
     ASSERT_NE(winBase, nullptr);
     int* localbuf = reinterpret_cast<int*>(winBase);
 
@@ -130,7 +123,7 @@ TEST_P(MultiWindowTestParam, multiWindow) {
     assignChunkValue(
         localbuf, numElements * statex->nRanks(), statex->rank(), 1);
     // Barrier to ensure all peers have finished creation
-    this->barrier(comm, main_stream);
+    barrier();
 
     int nextPeer = (this->globalRank + 1) % this->numRanks;
     int prevPeer = (this->globalRank + this->numRanks - 1) % this->numRanks;
@@ -148,7 +141,7 @@ TEST_P(MultiWindowTestParam, multiWindow) {
       COMMCHECK_TEST(ctranWaitSignal(prevPeer, win, wait_stream));
     }
     // Barrier to ensure all peers have finished put
-    this->barrier(comm, main_stream);
+    barrier();
 
     // Check results
     size_t errs = checkChunkValue(
@@ -161,7 +154,7 @@ TEST_P(MultiWindowTestParam, multiWindow) {
     EXPECT_EQ(errs, 0);
 
     res = ctranWinFree(win);
-    EXPECT_EQ(res, ncclSuccess);
+    EXPECT_EQ(res, commSuccess);
 
     CUDACHECK_TEST(cudaStreamDestroy(put_stream));
     CUDACHECK_TEST(cudaStreamDestroy(wait_stream));
@@ -178,24 +171,17 @@ TEST_P(CtranRMATestParam, winPutWait) {
       GetParam();
   EXPECT_GE(kNumElements, 8192);
   EXPECT_GE(kNumIters, 1);
-  if (!comm->ctranComm_->ctran_->mapper->hasBackend(
+  if (!ctranComm->ctran_->mapper->hasBackend(
           globalRank, CtranMapperBackend::NVL) &&
       ctranAllReduce) {
     GTEST_SKIP()
         << "NVL not enabled, which is required for ctranAllReduce. Skip test";
   }
 
-  // Enable ctran for all-reduce
-  auto envGuard = EnvRAII(
-      NCCL_ALLREDUCE_ALGO,
-      ctranAllReduce ? NCCL_ALLREDUCE_ALGO::ctdirect
-                     : NCCL_ALLREDUCE_ALGO::orig);
-
-  auto statex = comm->ctranComm_->statex_.get();
+  auto statex = ctranComm->statex_.get();
   ASSERT_NE(statex, nullptr);
   EXPECT_EQ(statex->nRanks(), this->numRanks);
 
-  cudaStream_t main_stream = 0;
   cudaStream_t put_stream, wait_stream;
   cudaEvent_t start_event, end_event;
   CUDACHECK_TEST(cudaStreamCreateWithFlags(&put_stream, cudaStreamNonBlocking));
@@ -211,21 +197,18 @@ TEST_P(CtranRMATestParam, winPutWait) {
   void* winBase = nullptr;
   createWin(userBuf, bufType, &winBase, &win, sizeBytes, hints);
 
-  // Always allocate localBuf from GPU mem so it can be used in ctranAllReduce
+  // Allocate localBuf from GPU mem for allreduce usage
   int* localBuf = nullptr;
-  void* localHdl = nullptr;
-  ASSERT_EQ(
-      ncclMemAlloc((void**)&localBuf, kNumElements * sizeof(int)), ncclSuccess);
-  ASSERT_EQ(
-      ncclCommRegister(comm, localBuf, kNumElements * sizeof(int), &localHdl),
-      ncclSuccess);
+  size_t localBufBytes = kNumElements * sizeof(int);
+  CUDACHECK_TEST(cudaMalloc(&localBuf, localBufBytes));
+  COMMCHECK_TEST(ctran::globalRegisterWithPtr(localBuf, localBufBytes));
 
   EXPECT_THAT(win, ::testing::NotNull());
 
   for (int peer = 0; peer < this->numRanks; peer++) {
     void* remoteAddr = nullptr;
     auto res = ctranWinSharedQuery(peer, win, &remoteAddr);
-    EXPECT_EQ(res, ncclSuccess);
+    EXPECT_EQ(res, commSuccess);
     if (peer == statex->rank()) {
       EXPECT_EQ(remoteAddr, winBase);
     } else if (!win->nvlEnabled(peer)) {
@@ -238,7 +221,7 @@ TEST_P(CtranRMATestParam, winPutWait) {
   assignChunkValue((int*)winBase, kNumElements * statex->nRanks(), -1, 0);
   assignChunkValue(localBuf, kNumElements, statex->rank(), 1);
   // Barrier to ensure all peers have finished value assignment
-  this->barrier(comm, main_stream);
+  barrier();
 
   int nextPeer = (this->globalRank + 1) % this->numRanks;
   int prevPeer = (this->globalRank + this->numRanks - 1) % this->numRanks;
@@ -260,19 +243,6 @@ TEST_P(CtranRMATestParam, winPutWait) {
     }
   }
   CUDACHECK_TEST(cudaEventRecord(end_event, put_stream));
-
-  // A couple of all-reduce after RMA tests
-  // waitSignal on wait_stream should ensure all remote puts have finished
-  for (auto iter = 0; iter < kNumIters; iter++) {
-    NCCLCHECK_TEST(ncclAllReduce(
-        localBuf,
-        localBuf,
-        kNumElements,
-        ncclInt32,
-        ncclSum,
-        comm,
-        wait_stream));
-  }
 
   size_t errs = checkChunkValue(
       (int*)winBase + kNumElements * prevPeer,
@@ -304,10 +274,10 @@ TEST_P(CtranRMATestParam, winPutWait) {
   }
 
   auto res = ctranWinFree(win);
-  EXPECT_EQ(res, ncclSuccess);
+  EXPECT_EQ(res, commSuccess);
 
-  ASSERT_EQ(ncclCommDeregister(comm, localHdl), ncclSuccess);
-  ASSERT_EQ(ncclMemFree(localBuf), ncclSuccess);
+  COMMCHECK_TEST(ctran::globalDeregisterWithPtr(localBuf, localBufBytes));
+  CUDACHECK_TEST(cudaFree(localBuf));
   freeWinBuf(userBuf, winBase, sizeBytes, bufType);
 
   CUDACHECK_TEST(cudaEventDestroy(start_event));
@@ -323,28 +293,15 @@ TEST_P(CtranRMATestParam, winWaitPut) {
       GetParam();
   EXPECT_GE(kNumElements, 8192);
   EXPECT_GE(kNumIters, 1);
-  if (!comm->ctranComm_->ctran_->mapper->hasBackend(
-          globalRank, CtranMapperBackend::NVL) &&
-      ctranAllReduce) {
-    GTEST_SKIP()
-        << "NVL not enabled, which is required for ctranAllReduce. Skip test";
-  }
   if (bufType != MemAllocType::kMemCuMemAlloc &&
       bufType != MemAllocType::kMemCudaMalloc) {
     GTEST_SKIP() << "Only support GPU memory for winWaitPut";
   }
 
-  // Enable ctran for all-reduce
-  auto envGuard = EnvRAII(
-      NCCL_ALLREDUCE_ALGO,
-      ctranAllReduce ? NCCL_ALLREDUCE_ALGO::ctdirect
-                     : NCCL_ALLREDUCE_ALGO::orig);
-
-  auto statex = comm->ctranComm_->statex_.get();
+  auto statex = ctranComm->statex_.get();
   ASSERT_NE(statex, nullptr);
   EXPECT_EQ(statex->nRanks(), this->numRanks);
 
-  cudaStream_t main_stream = 0;
   cudaStream_t put_stream, wait_stream;
   cudaEvent_t start_event, end_event;
   CUDACHECK_TEST(cudaStreamCreateWithFlags(&put_stream, cudaStreamNonBlocking));
@@ -360,21 +317,18 @@ TEST_P(CtranRMATestParam, winWaitPut) {
   void* winBase = nullptr;
   createWin(userBuf, bufType, &winBase, &win, sizeBytes, hints);
 
-  // Always allocate localBuf from GPU mem so it can be used in ctranAllReduce
+  // Allocate localBuf from GPU mem for allreduce usage
   int* localBuf = nullptr;
-  void* localHdl = nullptr;
-  ASSERT_EQ(
-      ncclMemAlloc((void**)&localBuf, kNumElements * sizeof(int)), ncclSuccess);
-  ASSERT_EQ(
-      ncclCommRegister(comm, localBuf, kNumElements * sizeof(int), &localHdl),
-      ncclSuccess);
+  size_t localBufBytes = kNumElements * sizeof(int);
+  CUDACHECK_TEST(cudaMalloc(&localBuf, localBufBytes));
+  COMMCHECK_TEST(ctran::globalRegisterWithPtr(localBuf, localBufBytes));
 
   EXPECT_THAT(win, ::testing::NotNull());
 
   for (int peer = 0; peer < this->numRanks; peer++) {
     void* remoteAddr = nullptr;
     auto res = ctranWinSharedQuery(peer, win, &remoteAddr);
-    EXPECT_EQ(res, ncclSuccess);
+    EXPECT_EQ(res, commSuccess);
     if (peer == statex->rank()) {
       EXPECT_EQ(remoteAddr, winBase);
     } else if (!win->nvlEnabled(peer)) {
@@ -387,7 +341,7 @@ TEST_P(CtranRMATestParam, winWaitPut) {
   assignChunkValue((int*)winBase, kNumElements * statex->nRanks(), -1, 0);
   assignChunkValue(localBuf, kNumElements, statex->rank(), 1);
   // Barrier to ensure all peers have finished value assignment
-  this->barrier(comm, main_stream);
+  barrier();
 
   int nextPeer = (this->globalRank + 1) % this->numRanks;
   int prevPeer = (this->globalRank + this->numRanks - 1) % this->numRanks;
@@ -414,19 +368,6 @@ TEST_P(CtranRMATestParam, winWaitPut) {
   }
   CUDACHECK_TEST(cudaEventRecord(end_event, put_stream));
 
-  // A couple of all-reduce after RMA tests
-  // waitSignal on wait_stream should ensure all remote puts have finished
-  for (auto iter = 0; iter < kNumIters; iter++) {
-    NCCLCHECK_TEST(ncclAllReduce(
-        localBuf,
-        localBuf,
-        kNumElements,
-        ncclInt32,
-        ncclSum,
-        comm,
-        wait_stream));
-  }
-
   size_t errs = checkChunkValue(
       (int*)winBase + kNumElements * prevPeer,
       kNumElements,
@@ -457,10 +398,10 @@ TEST_P(CtranRMATestParam, winWaitPut) {
   }
 
   auto res = ctranWinFree(win);
-  EXPECT_EQ(res, ncclSuccess);
+  EXPECT_EQ(res, commSuccess);
 
-  ASSERT_EQ(ncclCommDeregister(comm, localHdl), ncclSuccess);
-  ASSERT_EQ(ncclMemFree(localBuf), ncclSuccess);
+  COMMCHECK_TEST(ctran::globalDeregisterWithPtr(localBuf, localBufBytes));
+  CUDACHECK_TEST(cudaFree(localBuf));
   freeWinBuf(userBuf, winBase, sizeBytes, bufType);
 
   CUDACHECK_TEST(cudaEventDestroy(start_event));
@@ -476,24 +417,18 @@ TEST_P(CtranRMATestParam, winPutOnly) {
       GetParam();
   EXPECT_GE(kNumElements, 8192);
   EXPECT_GE(kNumIters, 1);
-  if (!comm->ctranComm_->ctran_->mapper->hasBackend(
+  if (!ctranComm->ctran_->mapper->hasBackend(
           globalRank, CtranMapperBackend::NVL) &&
       ctranAllReduce) {
     GTEST_SKIP()
         << "NVL not enabled, which is required for ctranAllReduce. Skip test";
   }
 
-  // Enable ctran for all-reduce
-  auto envGuard = EnvRAII(
-      NCCL_ALLREDUCE_ALGO,
-      ctranAllReduce ? NCCL_ALLREDUCE_ALGO::ctdirect
-                     : NCCL_ALLREDUCE_ALGO::orig);
-
-  auto statex = comm->ctranComm_->statex_.get();
+  auto statex = ctranComm->statex_.get();
   ASSERT_NE(statex, nullptr);
   EXPECT_EQ(statex->nRanks(), this->numRanks);
 
-  cudaStream_t main_stream = 0, put_stream;
+  cudaStream_t put_stream;
   CUDACHECK_TEST(cudaStreamCreateWithFlags(&put_stream, cudaStreamNonBlocking));
 
   size_t sizeBytes = kNumElements * sizeof(int) * statex->nRanks();
@@ -503,19 +438,16 @@ TEST_P(CtranRMATestParam, winPutOnly) {
   void* winBase = nullptr;
   createWin(userBuf, bufType, &winBase, &win, sizeBytes, hints);
 
-  // Always allocate localBuf from GPU mem
+  // Allocate localBuf from GPU mem
   int* localBuf = nullptr;
-  void* localHdl = nullptr;
-  ASSERT_EQ(
-      ncclMemAlloc((void**)&localBuf, kNumElements * sizeof(int)), ncclSuccess);
-  ASSERT_EQ(
-      ncclCommRegister(comm, localBuf, kNumElements * sizeof(int), &localHdl),
-      ncclSuccess);
+  size_t localBufBytes = kNumElements * sizeof(int);
+  CUDACHECK_TEST(cudaMalloc(&localBuf, localBufBytes));
+  COMMCHECK_TEST(ctran::globalRegisterWithPtr(localBuf, localBufBytes));
 
   assignChunkValue((int*)winBase, kNumElements * statex->nRanks(), -1, 0);
   assignChunkValue(localBuf, kNumElements, statex->rank(), 1);
   // Barrier to ensure all peers have finished value assignment
-  this->barrier(comm, main_stream);
+  barrier();
 
   const auto rank = statex->rank();
   const auto numRanks = statex->nRanks();
@@ -535,22 +467,23 @@ TEST_P(CtranRMATestParam, winPutOnly) {
         false));
   }
   CUDACHECK_TEST(cudaStreamSynchronize(put_stream));
-  this->barrier(comm, main_stream);
+  barrier();
 
-  // allreduce ensures all remote puts have finished
+  // barrier ensures all remote puts have finished
+  cudaStream_t default_stream = 0;
   size_t errs = checkChunkValue(
       (int*)winBase + kNumElements * prevPeer,
       kNumElements,
       prevPeer,
       1,
       this->globalRank,
-      main_stream);
+      default_stream);
 
   auto res = ctranWinFree(win);
-  EXPECT_EQ(res, ncclSuccess);
+  EXPECT_EQ(res, commSuccess);
 
-  ASSERT_EQ(ncclCommDeregister(comm, localHdl), ncclSuccess);
-  ASSERT_EQ(ncclMemFree(localBuf), ncclSuccess);
+  COMMCHECK_TEST(ctran::globalDeregisterWithPtr(localBuf, localBufBytes));
+  CUDACHECK_TEST(cudaFree(localBuf));
   freeWinBuf(userBuf, winBase, sizeBytes, bufType);
 
   CUDACHECK_TEST(cudaStreamDestroy(put_stream));
@@ -562,24 +495,18 @@ TEST_P(CtranRMATestParam, winGet) {
       GetParam();
   EXPECT_GE(kNumElements, 8192);
   EXPECT_GE(kNumIters, 1);
-  if (!comm->ctranComm_->ctran_->mapper->hasBackend(
+  if (!ctranComm->ctran_->mapper->hasBackend(
           globalRank, CtranMapperBackend::NVL) &&
       ctranAllReduce) {
     GTEST_SKIP()
         << "NVL not enabled, which is required for ctranAllReduce. Skip test";
   }
 
-  // Enable ctran for all-reduce
-  auto envGuard = EnvRAII(
-      NCCL_ALLREDUCE_ALGO,
-      ctranAllReduce ? NCCL_ALLREDUCE_ALGO::ctdirect
-                     : NCCL_ALLREDUCE_ALGO::orig);
-
-  auto statex = comm->ctranComm_->statex_.get();
+  auto statex = ctranComm->statex_.get();
   ASSERT_NE(statex, nullptr);
   EXPECT_EQ(statex->nRanks(), this->numRanks);
 
-  cudaStream_t main_stream = 0, get_stream;
+  cudaStream_t get_stream;
   CUDACHECK_TEST(cudaStreamCreateWithFlags(&get_stream, cudaStreamNonBlocking));
 
   size_t sizeBytes = kNumElements * sizeof(int) * statex->nRanks();
@@ -590,14 +517,11 @@ TEST_P(CtranRMATestParam, winGet) {
   void* winBase = nullptr;
   createWin(userBuf, bufType, &winBase, &win, sizeBytes, hints);
 
-  // Always allocate localBuf from GPU mem
+  // Allocate localBuf from GPU mem
   int* localBuf = nullptr;
-  void* localHdl = nullptr;
-  ASSERT_EQ(
-      ncclMemAlloc((void**)&localBuf, kNumElements * sizeof(int)), ncclSuccess);
-  ASSERT_EQ(
-      ncclCommRegister(comm, localBuf, kNumElements * sizeof(int), &localHdl),
-      ncclSuccess);
+  size_t localBufBytes = kNumElements * sizeof(int);
+  CUDACHECK_TEST(cudaMalloc(&localBuf, localBufBytes));
+  COMMCHECK_TEST(ctran::globalRegisterWithPtr(localBuf, localBufBytes));
 
   const auto rank = statex->rank();
   const auto numRanks = statex->nRanks();
@@ -605,12 +529,12 @@ TEST_P(CtranRMATestParam, winGet) {
   assignChunkValue((int*)winBase, kNumElements * statex->nRanks(), rank, 0);
   assignChunkValue(localBuf, kNumElements, statex->rank(), -1);
   // Barrier to ensure all peers have finished value assignment
-  this->barrier(comm, main_stream);
+  barrier();
 
   int nextPeer = (rank + 1) % numRanks;
 
   for (auto iter = 0; iter < kNumIters; iter++) {
-    // Put data to next peer at offset of kNumElements * rank
+    // Get data from next peer at offset of kNumElements * rank
     COMMCHECK_TEST(ctranGet(
         localBuf,
         kNumElements * statex->rank(),
@@ -622,17 +546,23 @@ TEST_P(CtranRMATestParam, winGet) {
         get_stream));
   }
   CUDACHECK_TEST(cudaStreamSynchronize(get_stream));
-  this->barrier(comm, main_stream);
+  barrier();
 
-  // allreduce ensures all remote puts have finished
+  // barrier ensures all remote gets have finished
+  cudaStream_t default_stream = 0;
   size_t errs = checkChunkValue(
-      (int*)localBuf, kNumElements, nextPeer, 0, this->globalRank, main_stream);
+      (int*)localBuf,
+      kNumElements,
+      nextPeer,
+      0,
+      this->globalRank,
+      default_stream);
 
   auto res = ctranWinFree(win);
-  EXPECT_EQ(res, ncclSuccess);
+  EXPECT_EQ(res, commSuccess);
 
-  ASSERT_EQ(ncclCommDeregister(comm, localHdl), ncclSuccess);
-  ASSERT_EQ(ncclMemFree(localBuf), ncclSuccess);
+  COMMCHECK_TEST(ctran::globalDeregisterWithPtr(localBuf, localBufBytes));
+  CUDACHECK_TEST(cudaFree(localBuf));
   freeWinBuf(userBuf, winBase, sizeBytes, bufType);
 
   CUDACHECK_TEST(cudaStreamDestroy(get_stream));
@@ -645,14 +575,11 @@ class RMATestSignalParam : public CtranRMATest,
 
 TEST_P(RMATestSignalParam, winSignalWait) {
   const auto& [kNumIters, bufType, signalOnly, userBuf] = GetParam();
-  auto envGuard = EnvRAII(NCCL_ALLREDUCE_ALGO, NCCL_ALLREDUCE_ALGO::orig);
 
-  auto comm = this->comm;
-  auto statex = comm->ctranComm_->statex_.get();
+  auto statex = ctranComm->statex_.get();
   ASSERT_NE(statex, nullptr);
   EXPECT_EQ(statex->nRanks(), this->numRanks);
 
-  cudaStream_t main_stream = 0;
   cudaStream_t sig_stream, wait_stream;
   CUDACHECK_TEST(cudaStreamCreateWithFlags(&sig_stream, cudaStreamNonBlocking));
   CUDACHECK_TEST(
@@ -669,7 +596,7 @@ TEST_P(RMATestSignalParam, winSignalWait) {
   ASSERT_NE(signalBase, nullptr);
 
   // barrier to ensure all peers have finished value assignment
-  this->barrier(comm, main_stream);
+  barrier();
 
   const auto myrank = statex->rank();
   const auto numRanks = statex->nRanks();
@@ -695,8 +622,8 @@ TEST_P(RMATestSignalParam, winSignalWait) {
 
   if (signalOnly) {
     // barrier to ensure all peers have finished signal, and check values
-    this->barrier(comm, sig_stream);
     CUDACHECK_TEST(cudaStreamSynchronize(sig_stream));
+    barrier();
   } else {
     CUDACHECK_TEST(cudaStreamSynchronize(wait_stream));
   }
@@ -720,7 +647,7 @@ TEST_P(RMATestSignalParam, winSignalWait) {
   CUDACHECK_TEST(cudaStreamSynchronize(sig_stream));
 
   auto res = ctranWinFree(win);
-  EXPECT_EQ(res, ncclSuccess);
+  EXPECT_EQ(res, commSuccess);
   freeWinBuf(userBuf, winBase, sizeBytes, bufType);
 
   CUDACHECK_TEST(cudaStreamDestroy(sig_stream));
@@ -791,7 +718,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranDistEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

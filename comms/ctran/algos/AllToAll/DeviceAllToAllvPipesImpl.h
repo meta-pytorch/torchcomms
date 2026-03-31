@@ -19,9 +19,13 @@ struct CollectiveConfig {
   unsigned int numBlocks;
   unsigned int numThreads;
   bool blockScheduling; // false=warp(default), true=block scheduling
+  size_t ll128ThresholdBytes{0}; // 0 = Simple-only; >0 = LL128 threshold
 
   // Construct with all defaults resolved from env vars / cvars.
   // Per-collective hints (if any) override those defaults.
+  // Note: LL128 enable/disable is controlled by NCCL_CTRAN_DA2A_LL128_THRESHOLD
+  // (0 = disabled, non-zero = enabled with that threshold in bytes).
+  // Per-collective opt-in/out via hints could be added in the future if needed.
   explicit CollectiveConfig(
       int nLocalRanks,
       const std::unordered_map<std::string, std::string>* hints_ptr = nullptr);

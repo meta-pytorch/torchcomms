@@ -4,7 +4,6 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <cstdlib>
-#include <iostream>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -13,31 +12,27 @@
 #include "comms/ctran/regcache/IpcRegCache.h"
 #include "comms/ctran/regcache/IpcRegCacheBase.h"
 #include "comms/ctran/regcache/RegCache.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranNcclTestUtils.h"
-#include "comms/ctran/utils/Debug.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
-#include "nccl.h"
 
-class DistRegCacheTest : public NcclxBaseTest {
+class DistRegCacheTest : public ctran::CtranDistTestFixture {
  public:
-  int cudaDev{0};
   std::shared_ptr<ctran::RegCache> regCache{nullptr};
 
   void SetUp() override {
     setenv("NCCL_CTRAN_ENABLE", "1", 1);
     setenv("NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET", "1", 1);
-    setenv("NCCL_FASTINIT_MODE", "ring_hybrid", 1);
-    NcclxBaseTest::SetUp();
+    ctran::CtranDistTestFixture::SetUp();
 
-    commDeprecated_ = createNcclComm(globalRank, numRanks, localRank);
-    comm_ = commDeprecated_->ctranComm_.get();
-    cudaDev = comm_->statex_->cudaDev();
+    comm_ = makeCtranComm();
 
     // Turn on profiler after initialization to track only test registrations
     NCCL_CTRAN_REGISTER_REPORT_SNAPSHOT_COUNT = 0;
 
-    if (!ctranInitialized(comm_) || !comm_->ctran_->mapper->hasBackend()) {
+    if (!ctranInitialized(comm_.get()) ||
+        !comm_->ctran_->mapper->hasBackend()) {
       GTEST_SKIP()
           << "Ctran is not initialized or backend is not available.  Skip test.";
     }
@@ -50,8 +45,7 @@ class DistRegCacheTest : public NcclxBaseTest {
     // Turn off profiler to avoid internal in comm destroy.
     NCCL_CTRAN_REGISTER_REPORT_SNAPSHOT_COUNT = -1;
 
-    NCCLCHECK_TEST(ncclCommDestroy(commDeprecated_));
-    NcclxBaseTest::TearDown();
+    ctran::CtranDistTestFixture::TearDown();
   }
 
   commResult_t
@@ -87,41 +81,13 @@ class DistRegCacheTest : public NcclxBaseTest {
   void allGatherSocketAddress(
       const folly::SocketAddress& msg,
       std::vector<folly::SocketAddress>& remoteMsgs) {
-    auto statex = comm_->statex_.get();
-    int nRanks = statex->nRanks();
-
-    const size_t msgSize = sizeof(folly::SocketAddress);
-    void* sendBuf = nullptr;
-    void* recvBuf = nullptr;
-    CUDACHECK_TEST(cudaMalloc(&sendBuf, msgSize));
-    CUDACHECK_TEST(cudaMalloc(&recvBuf, msgSize * nRanks));
-
-    // Create a CUDA stream for all operations
-    cudaStream_t stream;
-    CUDACHECK_TEST(cudaStreamCreate(&stream));
-    CUDACHECK_TEST(cudaMemcpyAsync(
-        sendBuf, &msg, msgSize, cudaMemcpyHostToDevice, stream));
-    // Perform ncclAllGather to get ControlMsg
-    NCCLCHECK_TEST(ncclAllGather(
-        sendBuf, recvBuf, msgSize, ncclInt8, commDeprecated_, stream));
-    remoteMsgs.resize(nRanks);
-    CUDACHECK_TEST(cudaMemcpyAsync(
-        remoteMsgs.data(),
-        recvBuf,
-        msgSize * nRanks,
-        cudaMemcpyDeviceToHost,
-        stream));
-    CUDACHECK_TEST(cudaStreamSynchronize(stream));
-
-    // Clean up
-    CUDACHECK_TEST(cudaFree(sendBuf));
-    CUDACHECK_TEST(cudaFree(recvBuf));
-    CUDACHECK_TEST(cudaStreamDestroy(stream));
+    remoteMsgs.resize(numRanks);
+    remoteMsgs[globalRank] = msg;
+    oobAllGather(remoteMsgs);
   }
 
  protected:
-  ncclComm_t commDeprecated_{nullptr};
-  CtranComm* comm_{nullptr};
+  std::unique_ptr<CtranComm> comm_{nullptr};
 };
 
 class DistRegCacheTestSuite
@@ -195,7 +161,7 @@ TEST_P(DistRegCacheTestSuite, ExportImportMem) {
 
   std::unique_ptr<CtranIb> ctranIb;
   try {
-    ctranIb = std::make_unique<CtranIb>(comm_, nullptr);
+    ctranIb = std::make_unique<CtranIb>(comm_.get(), nullptr);
   } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend failed to allocate. Skip test";
   }
@@ -441,7 +407,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranDistEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

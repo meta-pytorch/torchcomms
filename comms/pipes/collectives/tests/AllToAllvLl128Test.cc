@@ -1323,8 +1323,7 @@ TEST_F(AllToAllvLl128TestFixture, PipelinedVaryingSizes) {
     std::abort();
   }
 
-  DeviceSpan<Transport> transports_span(
-      transport->getTransportsArray(), worldSize);
+  DeviceSpan<Transport> transports_span = transport->getDeviceTransports();
 
   DeviceBuffer sendBuffer(maxBufferSize);
   DeviceBuffer recvBuffer(maxBufferSize);
@@ -1464,8 +1463,7 @@ TEST_F(AllToAllvLl128TestFixture, PipelinedVaryingSizes_Chunked) {
     std::abort();
   }
 
-  DeviceSpan<Transport> transports_span(
-      transport->getTransportsArray(), worldSize);
+  DeviceSpan<Transport> transports_span = transport->getDeviceTransports();
 
   DeviceBuffer sendBuffer(maxBufferSize);
   DeviceBuffer recvBuffer(maxBufferSize);
@@ -1595,8 +1593,7 @@ TEST_F(AllToAllvLl128TestFixture, AutoDispatch_1KB_UsesLl128) {
     std::abort();
   }
 
-  DeviceSpan<Transport> transports_span(
-      transport->getTransportsArray(), worldSize);
+  DeviceSpan<Transport> transports_span = transport->getDeviceTransports();
 
   DeviceBuffer sendBuffer(bufferSize);
   DeviceBuffer recvBuffer(bufferSize);
@@ -1709,8 +1706,7 @@ TEST_F(AllToAllvLl128TestFixture, AutoDispatch_256KB_UsesLl128) {
     std::abort();
   }
 
-  DeviceSpan<Transport> transports_span(
-      transport->getTransportsArray(), worldSize);
+  DeviceSpan<Transport> transports_span = transport->getDeviceTransports();
 
   DeviceBuffer sendBuffer(bufferSize);
   DeviceBuffer recvBuffer(bufferSize);
@@ -1823,8 +1819,7 @@ TEST_F(AllToAllvLl128TestFixture, AutoDispatch_512KB_UsesSimple) {
     std::abort();
   }
 
-  DeviceSpan<Transport> transports_span(
-      transport->getTransportsArray(), worldSize);
+  DeviceSpan<Transport> transports_span = transport->getDeviceTransports();
 
   DeviceBuffer sendBuffer(bufferSize);
   DeviceBuffer recvBuffer(bufferSize);

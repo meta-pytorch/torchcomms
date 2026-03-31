@@ -94,13 +94,20 @@ inline commResult_t nvlCeBcast(
     sizes.at(r - 1) = sendSize;
   }
 
-#if CUDART_VERSION >= 13000
+#if CUDART_VERSION >= 12080
   cudaMemcpyAttributes attr = {};
   attr.srcAccessOrder = cudaMemcpySrcAccessOrderStream;
   attr.flags = cudaMemcpyFlagPreferOverlapWithCompute;
 
+#if CUDART_VERSION < 13000
+  size_t failIdx = 0;
+  FB_CUDACHECK(cudaMemcpyBatchAsync(
+      dsts.data(), srcs.data(), sizes.data(), numOps, attr, &failIdx, stream));
+#else
   FB_CUDACHECK(cudaMemcpyBatchAsync(
       dsts.data(), srcs.data(), sizes.data(), numOps, attr, stream));
+#endif
+
 #else
   auto mapper = comm->ctran_->mapper.get();
   for (size_t i = 0; i < numOps; i++) {

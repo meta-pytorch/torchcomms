@@ -6,7 +6,9 @@
 #include "comms/ctran/algos/AllToAll/Types.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/pipes/DeviceSpan.cuh"
+#include "comms/pipes/Timeout.cuh"
 #include "comms/pipes/Transport.cuh"
+#include "comms/pipes/ll128/Ll128Packet.cuh"
 
 // Compute the exclusive prefix sum of counts[0..rank-1] to get the
 // displacement for the given rank. Each thread computes its own peer's
@@ -22,6 +24,52 @@ computeDisplacement(const int64_t* counts_d, int rank) {
   return displ;
 }
 
+// Select LL128 or Simple protocol and send data to peer via NVLink.
+template <PipeProtocol Proto>
+__device__ __forceinline__ void send_peer(
+    comms::pipes::Transport& transport,
+    comms::pipes::ThreadGroup& group,
+    const char* src,
+    size_t bytes,
+    size_t ll128ThresholdBytes,
+    comms::pipes::Timeout timeout) {
+  if constexpr (Proto == PipeProtocol::LL128) {
+    bool use_ll128 = (bytes <= ll128ThresholdBytes) &&
+        comms::pipes::can_use_ll128(src, bytes);
+    if (use_ll128) {
+      transport.p2p_nvl.ll128_send(
+          group, const_cast<char*>(src), bytes, timeout);
+    } else {
+      transport.p2p_nvl.send(group, const_cast<char*>(src), bytes, timeout);
+    }
+  } else {
+    transport.p2p_nvl.send(group, const_cast<char*>(src), bytes, timeout);
+  }
+}
+
+// Select LL128 or Simple protocol and receive data from peer via NVLink.
+template <PipeProtocol Proto>
+__device__ __forceinline__ void recv_peer(
+    comms::pipes::Transport& transport,
+    comms::pipes::ThreadGroup& group,
+    char* dst,
+    size_t bytes,
+    size_t ll128ThresholdBytes,
+    comms::pipes::Timeout timeout) {
+  if constexpr (Proto == PipeProtocol::LL128) {
+    bool use_ll128 = (bytes <= ll128ThresholdBytes) &&
+        comms::pipes::can_use_ll128(dst, bytes);
+    if (use_ll128) {
+      transport.p2p_nvl.ll128_recv(group, dst, bytes, timeout);
+    } else {
+      transport.p2p_nvl.recv(group, dst, bytes, timeout);
+    }
+  } else {
+    transport.p2p_nvl.recv(group, dst, bytes, timeout);
+  }
+}
+
+template <PipeProtocol Proto>
 __global__ void ncclKernelDeviceAllToAllvPipes(
     int* /* flag */,
     CtranAlgoDeviceState* /* devState */,
@@ -33,8 +81,20 @@ __global__ void ncclKernelDeviceAllToAllvPipes(
   const int64_t recvMultiplier = args.recvcountsMultiplier;
   auto* transports = args.transports;
 
-  auto group = args.useBlockGroup ? comms::pipes::make_block_group()
-                                  : comms::pipes::make_warp_group();
+  // LL128 requires warp-level scheduling; Simple supports both.
+  auto group = [&]() {
+    if constexpr (Proto == PipeProtocol::LL128) {
+      return comms::pipes::make_warp_group();
+    } else {
+      return args.useBlockGroup ? comms::pipes::make_block_group()
+                                : comms::pipes::make_warp_group();
+    }
+  }();
+
+  // Timeout for LL128 path (default = no timeout / infinite wait).
+  // Harmless for Simple path (send/recv accept optional Timeout with same
+  // default).
+  comms::pipes::Timeout timeout{};
 
   if (nLocalRanks == 1) {
     // Single local rank — self-copy only
@@ -71,29 +131,43 @@ __global__ void ncclKernelDeviceAllToAllvPipes(
     size_t recvOffset = computeDisplacement(args.recvcounts_d, peerGlobalRank) *
         recvMultiplier * elementSize;
 
+    const char* src_ptr = static_cast<const char*>(args.sendbuff) + sendOffset;
+    char* dst_ptr = static_cast<char*>(args.recvbuff) + recvOffset;
+
     if (peerGlobalRank == myRank) {
-      // Self-copy: only one partition does it
       if (partition_id == 0) {
         transports[peerGlobalRank].self.put(
-            group_per_peer,
-            static_cast<char*>(args.recvbuff) + recvOffset,
-            static_cast<const char*>(args.sendbuff) + sendOffset,
-            sendBytes);
+            group_per_peer, dst_ptr, src_ptr, sendBytes);
       }
     } else if (partition_id == 0) {
-      // Send to peer via NVL
-      transports[peerGlobalRank].p2p_nvl.send(
+      send_peer<Proto>(
+          transports[peerGlobalRank],
           group_per_peer,
-          static_cast<char*>(const_cast<void*>(args.sendbuff)) + sendOffset,
-          sendBytes);
+          src_ptr,
+          sendBytes,
+          args.ll128ThresholdBytes,
+          timeout);
     } else {
-      // Recv from peer via NVL
-      transports[peerGlobalRank].p2p_nvl.recv(
+      recv_peer<Proto>(
+          transports[peerGlobalRank],
           group_per_peer,
-          static_cast<char*>(args.recvbuff) + recvOffset,
-          recvBytes);
+          dst_ptr,
+          recvBytes,
+          args.ll128ThresholdBytes,
+          timeout);
     }
   }
 }
+
+// Explicit template instantiations for both protocols.
+template __global__ void ncclKernelDeviceAllToAllvPipes<PipeProtocol::Simple>(
+    int* flag,
+    CtranAlgoDeviceState* devState,
+    ctran::device_alltoallv_pipes::KernArgs args);
+
+template __global__ void ncclKernelDeviceAllToAllvPipes<PipeProtocol::LL128>(
+    int* flag,
+    CtranAlgoDeviceState* devState,
+    ctran::device_alltoallv_pipes::KernArgs args);
 
 #endif // ENABLE_PIPES
