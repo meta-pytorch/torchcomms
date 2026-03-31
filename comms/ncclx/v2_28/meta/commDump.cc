@@ -7,6 +7,7 @@
 #include <folly/json/dynamic.h>
 #include <folly/json/json.h>
 
+#include <thrift/lib/cpp2/protocol/Serializer.h>
 #include "comm.h"
 #include "meta/NcclxConfig.h" // @manual
 #include "nccl.h"
@@ -22,6 +23,7 @@
 #include "meta/colltrace/ProxyTrace.h"
 #include "meta/commDump.h"
 #include "meta/comms-monitor/CommsMonitor.h"
+#include "nccl.h"
 
 using meta::comms::colltrace::CommDumpPlugin;
 
@@ -211,7 +213,7 @@ std::unordered_map<std::string, std::string> commDumpByMonitorInfo(
   } else {
     XLOGF(DBG2, "CommDump: MAPPERTRACE is disabled. No trace to dump");
   }
-  map["ncclTopoInfo"] =
+  map["commsTopoInfo"] =
       apache::thrift::SimpleJSONSerializer::serialize<std::string>(
           info.topoInfo);
 
@@ -264,7 +266,7 @@ __attribute__((visibility("default"))) ncclResult_t ncclCommDump(
       XLOGF(DBG2, "CommDump: MAPPERTRACE is disabled. No trace to dump");
     }
 
-    map["ncclTopoInfo"] =
+    map["commsTopoInfo"] =
         apache::thrift::SimpleJSONSerializer::serialize<std::string>(
             ncclx::comms_monitor::getTopoInfoFromNcclComm(comm));
   }

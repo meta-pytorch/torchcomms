@@ -178,9 +178,6 @@ TEST_F(CommsMonitorTest, TestNcclTopoInfoFromNcclCommMultiRank) {
   auto topoInfo = getTopoInfoFromNcclComm(fakeComm.get());
 
   EXPECT_EQ(topoInfo.nChannels(), 2);
-  for (int i = 0; i < topoInfo.rings()->size(); ++i) {
-    XLOG(INFO) << "ring: " << i << " " << (*topoInfo.rings())[i].size();
-  }
   ASSERT_EQ(topoInfo.rings()->size(), 2);
 
   // Channel 0 ring: [0, 1, 2, 3]
