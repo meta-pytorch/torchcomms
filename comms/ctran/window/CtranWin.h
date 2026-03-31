@@ -117,7 +117,7 @@ struct CtranWin {
   //
   // @param devWin  Output: populated device-side window handle.
   // @param config  WindowConfig controlling signal/counter/barrier allocation.
-  commResult_t get_device_win(
+  commResult_t getDeviceWin(
       comms::pipes::DeviceWindow* devWin,
       const comms::pipes::WindowConfig& config);
 
