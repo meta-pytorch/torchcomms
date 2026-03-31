@@ -13,6 +13,7 @@
 #include "comms/ctran/utils/Abort.h"
 #include "comms/ctran/utils/AsyncError.h"
 #include "comms/ctran/utils/Exception.h"
+#include "comms/ctran/utils/IErrorReporter.h"
 #include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/utils/commSpecs.h"
 
@@ -154,6 +155,21 @@ class CtranComm {
   // TODO: remove config_, it's redundant
   ctranConfig config_;
   CommLogData logMetaData_;
+
+  // Opaque context for the algo profiler reporter. Set by the caller (e.g.,
+  // MCCL sets this to McclCommLogMetadata*) before ctranInit(). The registered
+  // reporter factory uses this to construct the appropriate reporter.
+  const void* algoProfilerReporterCtx_{nullptr};
+
+  // Opaque context for the error reporter. Set by the caller (e.g.,
+  // MCCL sets this to McclCommLogMetadata*) before ctranInit(). The registered
+  // error reporter factory uses this to construct the appropriate reporter.
+  const void* errorReporterCtx_{nullptr};
+
+  // Per-comm error reporter instance, created during ctranInit().
+  // Set as thread-local via ErrorReporterGuard at GPE dispatch entry points.
+  std::unique_ptr<ctran::IErrorReporter> errorReporter_;
+
   // opCount to be updated per kernel submit.
   // - Default points to the internal ctranOpCount_ field.
   // - When used with NCCL, will be updated to point to the NCCL opCount

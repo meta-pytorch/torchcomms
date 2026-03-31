@@ -19,6 +19,7 @@
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/Debug.h"
+#include "comms/ctran/utils/ErrorReporterGuard.h"
 #include "comms/ctran/utils/Exception.h"
 #include "comms/ctran/utils/ExtUtils.h"
 
@@ -560,6 +561,10 @@ void CtranGpe::Impl::gpeThreadFn() {
 
   CTRAN_ASYNC_ERR_GUARD(comm->getAsyncError(), {
     FB_CUDACHECKTHROW_EX(cudaSetDevice(cudaDev), comm->logMetaData_);
+
+    // Set thread-local error reporter for the GPE thread so all error macros
+    // within the call tree dispatch to the correct scuba table.
+    ctran::ErrorReporterGuard errorGuard(comm->errorReporter_.get());
 
     while (1) {
       auto cmd = cmdDequeue();
