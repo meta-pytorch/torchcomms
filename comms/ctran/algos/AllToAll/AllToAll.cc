@@ -19,6 +19,7 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 
 #if defined(ENABLE_PIPES)
+template <PipeProtocol Proto>
 extern __global__ void ncclKernelDeviceAllToAllvPipes(
     int* flag,
     CtranAlgoDeviceState* devState,
@@ -230,11 +231,12 @@ commResult_t ctranDeviceAllToAllv(
       INFO,
       COLL,
       "DeviceAllToAllvPipes: opCount {} numBlocks {} numThreads {} "
-      "blockScheduling {} hasHints {} [nLocalRanks={}]",
+      "blockScheduling {} ll128ThresholdBytes {} hasHints {} [nLocalRanks={}]",
       opCount,
       collConfig.numBlocks,
       collConfig.numThreads,
       collConfig.blockScheduling,
+      collConfig.ll128ThresholdBytes,
       (!hints.empty()),
       comm->statex_->nLocalRanks());
 
@@ -256,11 +258,12 @@ commResult_t ctranDeviceAllToAllv(
   // NVLink-only: no GPE op needed (no IB fallback)
   std::vector<std::unique_ptr<struct OpElem>> opGroup;
 
+  auto* kernel = (collConfig.ll128ThresholdBytes > 0)
+      ? ncclKernelDeviceAllToAllvPipes<PipeProtocol::LL128>
+      : ncclKernelDeviceAllToAllvPipes<PipeProtocol::Simple>;
+
   FB_COMMCHECK(comm->ctran_->gpe->submit(
-      std::move(opGroup),
-      nullptr,
-      config,
-      reinterpret_cast<void*>(ncclKernelDeviceAllToAllvPipes)));
+      std::move(opGroup), nullptr, config, reinterpret_cast<void*>(kernel)));
 
   return commSuccess;
 }
