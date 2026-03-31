@@ -18,6 +18,7 @@
 #include <string>
 
 #include "TorchCommTestHelpers.h"
+#include "comms/pipes/MultiPeerDeviceHandle.cuh"
 #include "comms/torchcomms/TorchComm.hpp"
 
 class PipesTransportApiTest : public ::testing::Test {
@@ -31,6 +32,9 @@ class PipesTransportApiTest : public ::testing::Test {
   // Create a wrapper for TorchComm
   std::unique_ptr<TorchCommTestWrapper> createWrapper();
 
+  // Helper to get transport handle (returns false + skips if unavailable)
+  bool getTransportHandle(comms::pipes::MultiPeerDeviceHandle& handle);
+
   // Test functions
 
   // Verify that get_device_transport() returns a valid MultiPeerDeviceHandle.
@@ -38,6 +42,12 @@ class PipesTransportApiTest : public ::testing::Test {
 
   // Test NVL send/recv: rank 0 sends nbytes to rank 1 via NVLink transport.
   void testNvlSendRecv(size_t nbytes);
+
+  // Test NVL signal: both ranks signal each other and wait.
+  void testNvlSignal();
+
+  // Test NVL LL128 send/recv: rank 0 sends, rank 1 receives via LL128.
+  void testNvlLl128SendRecv(size_t nbytes);
 
   // Member variables
   std::unique_ptr<TorchCommTestWrapper> wrapper_;
