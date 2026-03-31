@@ -52,4 +52,73 @@ class OperationTraceWriterRegistry {
   OperationTraceWriterRegistry() = delete;
 };
 
+// Get current timestamp in microseconds (re-declared to avoid pulling in
+// ScubaFileUtils.h — definition lives in OperationTraceWriter.cc).
+int64_t getTraceTimestampUs();
+
+// Lightweight logger that captures shared identity fields once and provides
+// simple logEvent() calls. No RAII, no automatic START/END — the caller
+// explicitly logs each event at the point they want.
+//
+// Usage:
+//   OperationTraceLogger logger("GPE_EXECUTION", rank, commHash, commId,
+//                               worldSize, opCount);
+//   if (!logger.isActive()) return;  // writer not registered or disabled
+//   logger.setGpeContext("AllGather", 4, 256, false);
+//   logger.logEvent("GPE_EXECUTION_START");
+//   // ... do work ...
+//   logger.logEvent("GPE_EXECUTION_END", startUs, endUs - startUs);
+class OperationTraceLogger {
+ public:
+  OperationTraceLogger(
+      std::string mcclop,
+      int rank,
+      int64_t commHash,
+      int64_t commId,
+      int worldSize,
+      int64_t opCount);
+
+  bool isActive() const {
+    return active_;
+  }
+
+  // Set GPE context fields on all subsequent logEvent() calls.
+  void setGpeContext(
+      std::string kernelType,
+      int numBlocks,
+      int numThreads,
+      bool persistent);
+
+  // Log an event with auto-generated timestamp, no duration.
+  void logEvent(const std::string& event);
+
+  // Log an event with explicit timestamp, no duration.
+  void logEvent(const std::string& event, int64_t timestampUs);
+
+  // Log an event with explicit timestamp and duration.
+  void
+  logEvent(const std::string& event, int64_t timestampUs, int64_t durationUs);
+
+ private:
+  OperationTraceSample buildSample(
+      const std::string& event,
+      int64_t timestampUs,
+      std::optional<int64_t> durationUs) const;
+
+  IOperationTraceWriter* writer_{nullptr};
+  std::string mcclop_;
+  int rank_;
+  int64_t commHash_;
+  int64_t commId_;
+  int worldSize_;
+  int64_t opCount_;
+  bool active_{false};
+
+  // GPE context (set once, applied to all samples)
+  std::optional<std::string> gpeKernelType_;
+  std::optional<int> gpeNumBlocks_;
+  std::optional<int> gpeNumThreads_;
+  std::optional<bool> gpePersistent_;
+};
+
 } // namespace comms::logger
