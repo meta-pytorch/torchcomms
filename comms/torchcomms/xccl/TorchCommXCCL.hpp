@@ -183,6 +183,7 @@ class TorchCommXCCL : public TorchCommBackend,
 
   // Friend access for TorchCommXCCL
   friend class TorchWorkXCCL;
+  friend class CachingAllocatorHookImpl;
 
   // Getter for XPU API (for friend classes)
   XpuApi* getXpuApi() const {
@@ -283,6 +284,9 @@ class TorchCommXCCL : public TorchCommBackend,
   void enqueueWork(c10::intrusive_ptr<TorchWorkXCCL> work, xpuStream_t stream);
   xpuStream_t getOperationStream(bool async_op);
   void ensureTensorContiguous(const at::Tensor& tensor);
+
+  void attachMemoryHook();
+  void detachMemoryHook();
 
   // Member variables
   onecclComm_t xccl_comm_{};

@@ -20,7 +20,7 @@ DefaultCachingAllocatorHookImpl::DefaultCachingAllocatorHookImpl() {
   // Setup memory registration hooks
   at::globalContext().lazyInitDevice(c10::DeviceType::XPU);
   registerMemPreHook();
-  c10::cuda::CUDACachingAllocator::attachAllocatorTraceTracker(
+  c10::xpu::XPUCachingAllocator::attachAllocatorTraceTracker(
       &cachingAllocatorHookFn);
 }
 

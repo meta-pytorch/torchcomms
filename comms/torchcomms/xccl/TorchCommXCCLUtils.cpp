@@ -343,4 +343,13 @@ void TorchCommXCCL::returnEvent(xpuEvent_t&& event) {
         xpu_api_, xpu_api_->eventDestroy(event), "Failed to destroy event");
   }
 }
+
+void TorchCommXCCL::attachMemoryHook() {
+  CachingAllocatorHook::getInstance().registerComm(this);
+}
+
+void TorchCommXCCL::detachMemoryHook() {
+  CachingAllocatorHook::getInstance().deregisterComm(this);
+}
+
 } // namespace torch::comms
