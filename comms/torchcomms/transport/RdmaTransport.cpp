@@ -100,7 +100,10 @@ struct RdmaTransport::Work {
   std::chrono::steady_clock::time_point creationTime;
 };
 
-RdmaTransport::RdmaTransport(int cudaDev, folly::EventBase* evb)
+RdmaTransport::RdmaTransport(
+    int cudaDev,
+    folly::EventBase* evb,
+    std::optional<int> maxNumCqe)
     : cudaDev_(cudaDev), evb_(evb) {
   initEnvironment();
   // Create IB Instance
@@ -111,7 +114,11 @@ RdmaTransport::RdmaTransport(int cudaDev, folly::EventBase* evb)
       "RDMA-Transport",
       nullptr /* ctrlManager */,
       true /* enableLocalFlush */,
-      CtranIb::BootstrapMode::kExternal);
+      CtranIb::BootstrapMode::kExternal,
+      std::nullopt /* qpServerAddr */,
+      ::ctran::utils::createAbort(/*enabled=*/false),
+      nullptr /* socketFactory */,
+      maxNumCqe);
 
   if (evb_) {
     // Optionally create progress timeout; skip it if the transport is never

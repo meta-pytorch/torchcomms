@@ -221,6 +221,28 @@ TEST_F(CvarTest, CvarMapsPopulation) {
   unsetenv("__NCCL_UNIT_TEST_INT64_T_CVAR__");
 }
 
+// Test NCCL_CTRAN_IB_MAX_NUM_CQE cvar reads correct values
+TEST_F(CvarTest, CtranIbMaxCqSize_DefaultNoCap) {
+  // Default -1 to use the device-reported maximum
+  unsetenv("NCCL_CTRAN_IB_MAX_NUM_CQE");
+  ncclCvarInit();
+  EXPECT_EQ(NCCL_CTRAN_IB_MAX_NUM_CQE, -1);
+}
+
+TEST_F(CvarTest, CtranIbMaxCqSize_SetCap) {
+  setenv("NCCL_CTRAN_IB_MAX_NUM_CQE", "32768", 1);
+  ncclCvarInit();
+  EXPECT_EQ(NCCL_CTRAN_IB_MAX_NUM_CQE, 32768);
+  unsetenv("NCCL_CTRAN_IB_MAX_NUM_CQE");
+}
+
+TEST_F(CvarTest, CtranIbMaxCqSize_CustomCap) {
+  setenv("NCCL_CTRAN_IB_MAX_NUM_CQE", "65536", 1);
+  ncclCvarInit();
+  EXPECT_EQ(NCCL_CTRAN_IB_MAX_NUM_CQE, 65536);
+  unsetenv("NCCL_CTRAN_IB_MAX_NUM_CQE");
+}
+
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new NCCLEnvironment);
