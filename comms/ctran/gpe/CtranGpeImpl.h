@@ -153,6 +153,9 @@ class CtranGpeCmd {
 
   // Unpack queue to teardown after kernel completes (for TcpDM backend)
   void* unpackPool{nullptr};
+
+  // Post-kernel cleanup callback. Called by GPE thread after kernel finishes.
+  std::function<void()> postKernelCleanup{nullptr};
 };
 
 /**

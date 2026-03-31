@@ -1641,7 +1641,9 @@ TEST_F(CtranGpeTest, GraphCaptureDestroyFreesResources) {
   CUDACHECK_TEST(cudaGraphExecDestroy(graphExec));
   CUDACHECK_TEST(cudaGraphDestroy(graph));
 
-  EXPECT_EQ(gpe->numInUseKernelFlags(), 0);
+  while (gpe->numInUseKernelFlags() > 0) {
+    std::this_thread::yield();
+  }
 
   CUDACHECK_TEST(cudaFree(buf));
   CUDACHECK_TEST(cudaFreeHost(valPtr));
@@ -1949,3 +1951,215 @@ TEST_F(CtranGpeTest, ThrowAsyncException) {
   EXPECT_EQ(e.commHash(), statex->commHash());
   EXPECT_EQ(e.rank(), statex->rank());
 }
+
+// Verify postKernelCleanup is called after kernel completion for eager
+// submit with empty opGroup.
+TEST_F(CtranGpeTest, PostKernelCleanupEagerEmptyOpGroup) {
+  auto gpe = std::make_unique<CtranGpe>(cudaDev, dummyComm);
+  cudaStream_t stream;
+  CUDACHECK_TEST(cudaStreamCreate(&stream));
+
+  int* a = nullptr;
+  int* expectedValPtr = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&a, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMemset(a, 0, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMallocHost(&expectedValPtr, sizeof(int)));
+  *expectedValPtr = kKernelpdatedVal;
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  constexpr uint64_t dummyOpCount = 100;
+  auto config = KernelConfig(
+      KernelConfig::KernelType::ALLGATHER, stream, "dummyAlgo", dummyOpCount);
+  ctranKernelSetAllGatherArgs(
+      a, expectedValPtr, commInt8, count, dummyDevState_d, &config.args);
+
+  std::atomic<bool> cleanupRan{false};
+  config.postKernelCleanup = [&cleanupRan]() { cleanupRan.store(true); };
+
+  std::vector<std::unique_ptr<OpElem>> emptyOps;
+  auto res = gpe->submit(
+      std::move(emptyOps),
+      nullptr,
+      config,
+      reinterpret_cast<void*>(CtranGpeTestKernel));
+  EXPECT_EQ(res, commSuccess);
+
+  // postKernelCleanup should have been moved out of config
+  EXPECT_EQ(config.postKernelCleanup, nullptr);
+
+  // Wait for kernel + GPE thread to finish
+  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  // Give GPE thread time to process the cmd
+  while (!cleanupRan.load()) {
+    std::this_thread::yield();
+  }
+  EXPECT_TRUE(cleanupRan.load());
+
+  CUDACHECK_TEST(cudaFreeHost(expectedValPtr));
+  CUDACHECK_TEST(cudaFree(a));
+  CUDACHECK_TEST(cudaStreamDestroy(stream));
+}
+
+// Verify postKernelCleanup is called after kernel completion for eager
+// submit with non-empty opGroup.
+TEST_F(CtranGpeTest, PostKernelCleanupEagerWithOpGroup) {
+  auto gpe = std::make_unique<CtranGpe>(cudaDev, dummyComm);
+  cudaStream_t stream;
+  CUDACHECK_TEST(cudaStreamCreate(&stream));
+
+  int* a = nullptr;
+  int* expectedValPtr = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&a, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMemset(a, 0, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMallocHost(&expectedValPtr, sizeof(int)));
+  *expectedValPtr = kKernelpdatedVal;
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  constexpr uint64_t dummyOpCount = 100;
+  auto config = KernelConfig(
+      KernelConfig::KernelType::ALLGATHER, stream, "dummyAlgo", dummyOpCount);
+  ctranKernelSetAllGatherArgs(
+      a, expectedValPtr, commInt8, count, dummyDevState_d, &config.args);
+
+  std::atomic<bool> cleanupRan{false};
+  config.postKernelCleanup = [&cleanupRan]() { cleanupRan.store(true); };
+
+  std::vector<std::unique_ptr<OpElem>> ops;
+  auto* op = new OpElem(OpElem::opType::RECV, dummyComm, dummyOpCount);
+  op->recv.recvbuff = nullptr;
+  op->recv.count = 0;
+  op->recv.datatype = commInt8;
+  op->recv.peerRank = 0;
+  ops.push_back(std::unique_ptr<OpElem>(op));
+
+  auto res = gpe->submit(
+      std::move(ops),
+      &CtranGpeTestAlgoFunc,
+      config,
+      reinterpret_cast<void*>(CtranGpeTestKernel));
+  EXPECT_EQ(res, commSuccess);
+  EXPECT_EQ(config.postKernelCleanup, nullptr);
+
+  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  while (!cleanupRan.load()) {
+    std::this_thread::yield();
+  }
+  EXPECT_TRUE(cleanupRan.load());
+
+  CUDACHECK_TEST(cudaFreeHost(expectedValPtr));
+  CUDACHECK_TEST(cudaFree(a));
+  CUDACHECK_TEST(cudaStreamDestroy(stream));
+}
+
+#if not defined(__HIP_PLATFORM_AMD__) and not defined(__HIP_PLATFORM_HCC__)
+// Verify postKernelCleanup is called on graph destruction for graph capture
+// with empty opGroup.
+TEST_F(CtranGpeTest, PostKernelCleanupGraphEmptyOpGroup) {
+  auto gpe = std::make_unique<CtranGpe>(cudaDev, dummyComm);
+  cudaStream_t stream;
+  CUDACHECK_TEST(cudaStreamCreate(&stream));
+
+  int* a = nullptr;
+  int* expectedValPtr = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&a, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMemset(a, 0, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMallocHost(&expectedValPtr, sizeof(int)));
+  *expectedValPtr = kKernelpdatedVal;
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  constexpr uint64_t dummyOpCount = 100;
+
+  std::atomic<bool> cleanupRan{false};
+
+  CUDACHECK_TEST(cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed));
+
+  auto config = KernelConfig(
+      KernelConfig::KernelType::ALLGATHER, stream, "dummyAlgo", dummyOpCount);
+  ctranKernelSetAllGatherArgs(
+      a, expectedValPtr, commInt8, count, dummyDevState_d, &config.args);
+  config.postKernelCleanup = [&cleanupRan]() { cleanupRan.store(true); };
+
+  std::vector<std::unique_ptr<OpElem>> emptyOps;
+  auto res = gpe->submit(
+      std::move(emptyOps),
+      nullptr,
+      config,
+      reinterpret_cast<void*>(CtranGpeTestKernel));
+  EXPECT_EQ(res, commSuccess);
+  EXPECT_EQ(config.postKernelCleanup, nullptr);
+
+  cudaGraph_t graph;
+  CUDACHECK_TEST(cudaStreamEndCapture(stream, &graph));
+  ASSERT_NE(graph, nullptr);
+
+  // Cleanup should not have run yet
+  EXPECT_FALSE(cleanupRan.load());
+
+  // Destroying the graph should trigger cleanup via retained user object
+  CUDACHECK_TEST(cudaGraphDestroy(graph));
+  EXPECT_TRUE(cleanupRan.load())
+      << "postKernelCleanup was not called on graph destruction";
+
+  CUDACHECK_TEST(cudaFreeHost(expectedValPtr));
+  CUDACHECK_TEST(cudaFree(a));
+  CUDACHECK_TEST(cudaStreamDestroy(stream));
+}
+
+// Verify postKernelCleanup is called on graph destruction for graph capture
+// with non-empty opGroup.
+TEST_F(CtranGpeTest, PostKernelCleanupGraphWithOpGroup) {
+  auto gpe = std::make_unique<CtranGpe>(cudaDev, dummyComm);
+  cudaStream_t stream;
+  CUDACHECK_TEST(cudaStreamCreate(&stream));
+
+  int* a = nullptr;
+  int* expectedValPtr = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&a, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMemset(a, 0, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMallocHost(&expectedValPtr, sizeof(int)));
+  *expectedValPtr = kKernelpdatedVal;
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  constexpr uint64_t dummyOpCount = 100;
+
+  std::atomic<bool> cleanupRan{false};
+
+  CUDACHECK_TEST(cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed));
+
+  auto config = KernelConfig(
+      KernelConfig::KernelType::ALLGATHER, stream, "dummyAlgo", dummyOpCount);
+  ctranKernelSetAllGatherArgs(
+      a, expectedValPtr, commInt8, count, dummyDevState_d, &config.args);
+  config.postKernelCleanup = [&cleanupRan]() { cleanupRan.store(true); };
+
+  std::vector<std::unique_ptr<OpElem>> ops;
+  auto* op = new OpElem(OpElem::opType::RECV, dummyComm, dummyOpCount);
+  op->recv.recvbuff = nullptr;
+  op->recv.count = 0;
+  op->recv.datatype = commInt8;
+  op->recv.peerRank = 0;
+  ops.push_back(std::unique_ptr<OpElem>(op));
+
+  auto res = gpe->submit(
+      std::move(ops),
+      &CtranGpeTestAlgoFunc,
+      config,
+      reinterpret_cast<void*>(CtranGpeTestKernel));
+  EXPECT_EQ(res, commSuccess);
+  EXPECT_EQ(config.postKernelCleanup, nullptr);
+
+  cudaGraph_t graph;
+  CUDACHECK_TEST(cudaStreamEndCapture(stream, &graph));
+  ASSERT_NE(graph, nullptr);
+
+  EXPECT_FALSE(cleanupRan.load());
+
+  CUDACHECK_TEST(cudaGraphDestroy(graph));
+  EXPECT_TRUE(cleanupRan.load())
+      << "postKernelCleanup was not called on graph destruction";
+
+  CUDACHECK_TEST(cudaFreeHost(expectedValPtr));
+  CUDACHECK_TEST(cudaFree(a));
+  CUDACHECK_TEST(cudaStreamDestroy(stream));
+}
+#endif
