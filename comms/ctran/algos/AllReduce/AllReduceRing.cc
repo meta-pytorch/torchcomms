@@ -1024,6 +1024,16 @@ static commResult_t impl(
         op->opCount, NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT);
   }
 
+  size_t size = op->allreduce.count * commTypeSize(op->allreduce.datatype);
+  CTRAN_PROFILER_IF(profiler, {
+    auto& algoContext = profiler->algoContext;
+    algoContext.algorithmName = allReduceAlgoName(myAlgo);
+    algoContext.sendContext.totalBytes = size;
+    algoContext.sendContext.messageSizes = std::to_string(size);
+    algoContext.recvContext.totalBytes = size;
+    algoContext.recvContext.messageSizes = std::to_string(size);
+  });
+
   // hostArgs/hostResource are direct members of OpElem — owned by OpElem,
   // destroyed when OpElem is destroyed (after single impl() in eager mode,
   // when graph is destroyed in CUDA graph persistent mode).
@@ -1072,6 +1082,7 @@ static commResult_t impl(
 
   CTRAN_PROFILER_IF(
       profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_DATA));
+
   while (algoCtx.partitionOffset < algoCtx.numElements) {
     updatePartitionCtxHost(args, resource, algoCtx);
     CLOGF_TRACE(
@@ -1165,6 +1176,9 @@ static commResult_t impl(
 
   CTRAN_PROFILER_IF(profiler, { profiler->reportToScuba(); });
 
+  CTRAN_PROFILER_IF(
+      profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_DATA));
+
   // Reset flags for next allreduce to reuse. Only clear sync status (post/
   // complete flags); do not release to pool (inuse stays true). Pool release
   // happens in ~OpElem when the owning OpElem is destroyed, which for
@@ -1174,6 +1188,8 @@ static commResult_t impl(
   resource.partitionSync->resetStatus();
   resource.revSendCopySync->resetStatus();
   resource.revRecvCopySync->resetStatus();
+
+  CTRAN_PROFILER_IF(profiler, { profiler->reportToScuba(); });
 
   return commSuccess;
 }
