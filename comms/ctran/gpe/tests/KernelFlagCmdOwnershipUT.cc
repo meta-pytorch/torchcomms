@@ -53,6 +53,43 @@ TEST_F(KernelFlagCmdOwnershipTest, CmdDestructorReleasesFlag) {
   EXPECT_EQ(pool->size(), poolSize);
 }
 
+// Verify that ~CtranGpeCmd invokes postKernelCleanup for persistent (graph)
+// cmds. During graph replay, postKernelCleanup is deliberately skipped so
+// resources persist across replays. On graph destruction, cmdDestroy deletes
+// the cmd, and the destructor must run the cleanup to free those resources.
+TEST_F(KernelFlagCmdOwnershipTest, CmdDestructorRunsPostKernelCleanup) {
+  bool cleanupCalled = false;
+
+  auto* cmd = new CtranGpeCmd;
+  cmd->persistent = true;
+  cmd->postKernelCleanup = [&cleanupCalled]() { cleanupCalled = true; };
+
+  EXPECT_FALSE(cleanupCalled);
+  delete cmd;
+  EXPECT_TRUE(cleanupCalled);
+}
+
+// Verify that ~CtranGpeCmd also invokes postKernelCleanup for non-persistent
+// cmds (e.g., if cleanup wasn't already called by the GPE thread).
+TEST_F(KernelFlagCmdOwnershipTest, NonPersistentCmdDestructorRunsCleanup) {
+  bool cleanupCalled = false;
+
+  auto* cmd = new CtranGpeCmd;
+  cmd->persistent = false;
+  cmd->postKernelCleanup = [&cleanupCalled]() { cleanupCalled = true; };
+
+  delete cmd;
+  EXPECT_TRUE(cleanupCalled);
+}
+
+// Verify that ~CtranGpeCmd handles null postKernelCleanup (already consumed).
+TEST_F(KernelFlagCmdOwnershipTest, CmdDestructorNullCleanupNoOp) {
+  auto* cmd = new CtranGpeCmd;
+  cmd->persistent = true;
+  cmd->postKernelCleanup = nullptr;
+  delete cmd;
+}
+
 // Demonstrates the bug scenario: without setPersistent(), the kernel writes
 // KERNEL_UNSET after each replay, making the flag reclaimable while
 // the graph still holds a baked-in pointer to it.
