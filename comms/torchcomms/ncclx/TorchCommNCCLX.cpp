@@ -1007,6 +1007,87 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather_single(
   return work;
 }
 
+// Persistent AllGather operations
+
+TorchCommBackend::AllGatherPHandle TorchCommNCCLX::all_gather_p_init(
+    at::Tensor& output,
+    const AllGatherPInitOptions& options) {
+  checkInitialized();
+  checkAndAbortIfTimedOutOrError();
+  ensureTensorContiguous(output);
+
+  size_t maxRecvCount = output.numel();
+  size_t bufferSize = maxRecvCount * output.element_size();
+
+  // Register the output buffer if not already registered
+  void* dataPtr = output.data_ptr();
+  auto it = memoryRegistrationHandles_.find(dataPtr);
+  if (it == memoryRegistrationHandles_.end()) {
+    void* regHandle = nullptr;
+    NCCLX_CHECK(
+        nccl_api_,
+        nccl_comm_,
+        nccl_api_->commRegister(nccl_comm_, dataPtr, bufferSize, &regHandle),
+        "NCCLX commRegister failed for AllGatherP output buffer");
+    memoryRegistrationHandles_.emplace(dataPtr, RegistrationHandle(regHandle));
+  }
+
+  void* request = nullptr;
+  NCCLX_CHECK(
+      nccl_api_,
+      nccl_comm_,
+      nccl_api_->allGatherInit(
+          dataPtr,
+          maxRecvCount,
+          options.hints,
+          getNcclDataType(output),
+          nccl_comm_,
+          getInternalStream(),
+          &request),
+      "NCCLX allGatherInit failed");
+
+  return request;
+}
+
+c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather_p_exec(
+    AllGatherPHandle handle,
+    const at::Tensor& input,
+    bool async_op,
+    const AllGatherPExecOptions& options) {
+  checkInitialized();
+  checkAndAbortIfTimedOutOrError();
+  ensureTensorContiguous(input);
+
+  TracingGuard tracingGuard(
+      name_, comm_size_, "all_gather_p_exec", rank_, {input}, {});
+
+  cudaStream_t stream = getOperationStream(async_op);
+  graph_event_tracker_.initOnGraphStart(stream);
+  auto work = createWork(
+      stream, getOperationTimeout(options.timeout, options_.timeout), {input});
+
+  work->recordStart("all_gather_p_exec");
+
+  NCCLX_CHECK(
+      nccl_api_,
+      nccl_comm_,
+      nccl_api_->allGatherExec(
+          input.data_ptr(), input.numel(), getNcclDataType(input), handle),
+      "NCCLX allGatherExec failed");
+
+  work->recordEnd();
+  enqueueWork(work, stream);
+
+  return work;
+}
+
+void TorchCommNCCLX::all_gather_p_free(AllGatherPHandle handle) {
+  if (handle == nullptr) {
+    return;
+  }
+  NCCLX_CHECK_IGNORE(nccl_api_, nccl_api_->pFree(handle), "NCCLX pFree failed");
+}
+
 c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter(
     at::Tensor& output,
     const std::vector<at::Tensor>& input_list,

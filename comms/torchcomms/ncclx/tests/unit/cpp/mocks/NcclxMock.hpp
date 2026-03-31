@@ -280,6 +280,28 @@ class NcclxMock : public NcclxApi {
        void* request),
       (override));
 
+  // Persistent AllGather operations
+  MOCK_METHOD(
+      ncclResult_t,
+      allGatherInit,
+      (void* recvbuff,
+       size_t maxRecvCount,
+       (const NcclxCommDumpMap& hints),
+       ncclDataType_t datatype,
+       ncclComm_t comm,
+       cudaStream_t stream,
+       void** request),
+      (override));
+
+  MOCK_METHOD(
+      ncclResult_t,
+      allGatherExec,
+      (const void* sendbuff,
+       size_t count,
+       ncclDataType_t datatype,
+       void* request),
+      (override));
+
   MOCK_METHOD(ncclResult_t, pFree, (void* request), (override));
 
   MOCK_METHOD(
