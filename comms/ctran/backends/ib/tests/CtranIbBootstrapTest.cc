@@ -125,7 +125,8 @@ std::unique_ptr<CtranIb> createCtranIb(
     CtranIb::BootstrapMode mode,
     AbortPtr abortCtrl,
     std::optional<const SocketServerAddr*> qpServerAddr = std::nullopt,
-    std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory = nullptr) {
+    std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory = nullptr,
+    std::optional<int> maxNumCqe = std::nullopt) {
   const uint64_t commHash = 0x12345678;
   const std::string commDesc = "test";
 
@@ -144,7 +145,8 @@ std::unique_ptr<CtranIb> createCtranIb(
       mode,
       qpServerAddr,
       abortCtrl,
-      socketFactory);
+      socketFactory,
+      maxNumCqe);
 }
 // Helper class to run two-rank tests with address exchange
 class TwoRankTestHelper {
@@ -244,8 +246,8 @@ class CtranIbBootstrapTestBase : public ::testing::Test {
       CtranIb::BootstrapMode mode,
       AbortPtr abortCtrl,
       std::optional<const SocketServerAddr*> qpServerAddr = std::nullopt,
-      std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory =
-          nullptr) {
+      std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory = nullptr,
+      std::optional<int> maxNumCqe = std::nullopt) {
     const uint64_t commHash = 0x12345678;
     const std::string commDesc = "test";
 
@@ -264,7 +266,8 @@ class CtranIbBootstrapTestBase : public ::testing::Test {
         mode,
         qpServerAddr,
         abortCtrl,
-        socketFactory);
+        socketFactory,
+        maxNumCqe);
   }
 };
 
@@ -1426,4 +1429,48 @@ TEST_P(CtranIbBootstrapParameterizedTest, ListenAddrConsistency) {
       addr1.value().getIPAddress().str(), addr2.value().getIPAddress().str());
   EXPECT_EQ(
       addr1.value().getIPAddress().str(), addr3.value().getIPAddress().str());
+}
+
+// Test NCCL_CTRAN_IB_MAX_NUM_CQE: global cvar, per-transport, and precedence
+TEST_F(CtranIbBootstrapCommonTest, MaxNumCqe) {
+  unsetenv("NCCL_CTRAN_IB_MAX_NUM_CQE");
+  ncclCvarInit();
+  SCOPE_EXIT {
+    unsetenv("NCCL_CTRAN_IB_MAX_NUM_CQE");
+    ncclCvarInit();
+  };
+
+  auto makeIb = [&](std::optional<int> maxNumCqe = std::nullopt) {
+    auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+    return createCtranIb(
+        /*rank=*/0,
+        CtranIb::BootstrapMode::kDefaultServer,
+        abortCtrl,
+        std::nullopt,
+        nullptr,
+        maxNumCqe);
+  };
+
+  // Default: no cap, uses device-reported max
+  const int deviceMaxCqe = makeIb()->getMaxCqe();
+  EXPECT_GT(deviceMaxCqe, 2048);
+
+  // Global CVAR cap
+  setenv("NCCL_CTRAN_IB_MAX_NUM_CQE", "4096", 1);
+  ncclCvarInit();
+  EXPECT_EQ(makeIb()->getMaxCqe(), 4096);
+
+  // nullopt falls through to CVAR
+  EXPECT_EQ(makeIb(std::nullopt)->getMaxCqe(), 4096);
+
+  // Per-transport cap overrides CVAR (smaller)
+  EXPECT_EQ(makeIb(2048)->getMaxCqe(), 2048);
+
+  // Per-transport cap overrides CVAR (larger)
+  EXPECT_EQ(makeIb(8192)->getMaxCqe(), 8192);
+
+  // Per-transport cap without CVAR
+  unsetenv("NCCL_CTRAN_IB_MAX_NUM_CQE");
+  ncclCvarInit();
+  EXPECT_EQ(makeIb(2048)->getMaxCqe(), 2048);
 }

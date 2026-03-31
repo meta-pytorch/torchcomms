@@ -296,7 +296,8 @@ CtranIb::CtranIb(
     CtranComm* comm,
     CtranCtrlManager* ctrlMgr,
     std::optional<bool> enableLocalFlush,
-    std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory)
+    std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory,
+    std::optional<int> maxNumCqe)
     : comm(comm) {
   // enableLocalFlush: whether to support local flush. If true, CtranIb
   // will enable resource required for local flush.
@@ -325,7 +326,8 @@ CtranIb::CtranIb(
       BootstrapMode::kDefaultServer,
       std::nullopt,
       ::ctran::utils::createAbort(/*enabled=*/false),
-      socketFactory);
+      socketFactory,
+      maxNumCqe);
   CLOGF_SUBSYS(
       INFO,
       INIT,
@@ -347,7 +349,8 @@ CtranIb::CtranIb(
     const BootstrapMode bootstrapMode,
     std::optional<const SocketServerAddr*> qpServerAddr,
     std::shared_ptr<Abort> abortCtrl,
-    std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory) {
+    std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory,
+    std::optional<int> maxNumCqe) {
   init(
       nullptr,
       rank,
@@ -359,7 +362,8 @@ CtranIb::CtranIb(
       bootstrapMode,
       qpServerAddr,
       abortCtrl,
-      socketFactory);
+      socketFactory,
+      maxNumCqe);
 
   CLOGF_SUBSYS(
       INFO,
@@ -383,7 +387,8 @@ void CtranIb::init(
     const BootstrapMode bootstrapMode,
     std::optional<const SocketServerAddr*> qpServerAddr,
     std::shared_ptr<Abort> abortCtrl,
-    std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory) {
+    std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory,
+    std::optional<int> maxNumCqe) {
   bool foundPort = false;
   this->comm = comm;
   this->rank = rank;
@@ -539,6 +544,24 @@ void CtranIb::init(
 #else
     maxCqe = devAttr.max_cqe;
 #endif
+
+    // Cap CQ size to avoid excessive memory usage.
+    // Per-transport maxNumCqe takes precedence over env
+    // NCCL_CTRAN_IB_MAX_NUM_CQE. Default -1 (or nullopt) to use the
+    // device-reported maximum.
+    const int cqeCap = maxNumCqe.value_or(NCCL_CTRAN_IB_MAX_NUM_CQE);
+    if (cqeCap > 0 && maxCqe > cqeCap) {
+      CLOGF(
+          INFO,
+          "CTRAN-IB: Capping CQ size from {} to {} ({}) to reduce memory overhead",
+          maxCqe,
+          cqeCap,
+          maxNumCqe.has_value() ? "per-transport"
+                                : "NCCL_CTRAN_IB_MAX_NUM_CQE");
+      maxCqe = cqeCap;
+    } else {
+      CLOGF(INFO, "CTRAN-IB: CQ size is {}", maxCqe);
+    }
 
     // Skip lock for cq and localVc in constructor since no other thread can
     // access it yet.

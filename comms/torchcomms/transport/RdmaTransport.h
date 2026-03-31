@@ -316,8 +316,13 @@ class __attribute__((visibility("default"))) RdmaTransport {
    * cudaDev - Transport needs to use NIC for I/O. It does so by identifying
    *           the NIC associated with specified cudaDevice.
    * evb - EventLoop to drive the RDMA operations.
+   * maxNumCqe - Optional per-transport CQ size cap. When set, overrides
+   *             the global NCCL_CTRAN_IB_MAX_NUM_CQE env var.
    */
-  explicit RdmaTransport(int cudaDev, folly::EventBase* evb = nullptr);
+  explicit RdmaTransport(
+      int cudaDev,
+      folly::EventBase* evb = nullptr,
+      std::optional<int> maxNumCqe = std::nullopt);
 
   ~RdmaTransport();
 

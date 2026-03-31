@@ -51,8 +51,8 @@ class CtranIb {
       CtranComm* comm,
       CtranCtrlManager* ctrlMgr,
       std::optional<bool> enableLocalFlush = std::nullopt,
-      std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory =
-          nullptr);
+      std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory = nullptr,
+      std::optional<int> maxNumCqe = std::nullopt);
 
   // Creates local IB resources without pre-existing communicator. It is used
   // for use cases directly control the local transport (see CtranEx). In
@@ -86,8 +86,8 @@ class CtranIb {
       std::optional<const SocketServerAddr*> qpServerAddr = std::nullopt,
       std::shared_ptr<Abort> abortCtrl =
           ::ctran::utils::createAbort(/*enabled=*/false),
-      std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory =
-          nullptr);
+      std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory = nullptr,
+      std::optional<int> maxNumCqe = std::nullopt);
 
   ~CtranIb();
 
@@ -496,6 +496,10 @@ class CtranIb {
     return commDesc;
   }
 
+  int getMaxCqe() const {
+    return maxCqe;
+  }
+
  private:
   friend class CtranIbRequest;
   void init(
@@ -510,8 +514,8 @@ class CtranIb {
       std::optional<const SocketServerAddr*> qpServerAddr = std::nullopt,
       std::shared_ptr<Abort> abortCtrl =
           ::ctran::utils::createAbort(/*enabled=*/false),
-      std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory =
-          nullptr);
+      std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory = nullptr,
+      std::optional<int> maxNumCqe = std::nullopt);
 
   void bootstrapStart(std::optional<const SocketServerAddr*> qpServerAddr);
   static void bootstrapAccept(CtranIb* ib);
