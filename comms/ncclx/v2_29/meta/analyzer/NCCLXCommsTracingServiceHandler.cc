@@ -15,7 +15,6 @@
 #include "comms/utils/logger/ProcessGlobalErrorsUtil.h"
 #include "comms/utils/trainer/TrainerContext.h"
 #include "meta/RankUtil.h"
-#include "meta/comms-monitor/CommsMonitor.h"
 
 namespace ncclx {
 
@@ -108,24 +107,6 @@ NCCLXCommsTracingServiceHandler::co_getComms(
   }
 
   co_return std::make_unique<comms::GetCommsResponse>(std::move(response));
-}
-
-folly::coro::Task<std::unique_ptr<comms::GetTopologyResponse>>
-NCCLXCommsTracingServiceHandler::co_getTopology(
-    std::unique_ptr<comms::GetTopologyRequest> request) {
-  auto response = std::make_unique<comms::GetTopologyResponse>();
-
-  if (request->commDesc().has_value()) {
-    auto topo = comms_monitor::CommsMonitor::getTopologyByCommDesc(
-        *request->commDesc());
-    if (topo) {
-      response->topologies()->push_back(std::move(*topo));
-    }
-  } else {
-    *response->topologies() = comms_monitor::CommsMonitor::getAllTopologies();
-  }
-
-  co_return response;
 }
 
 }; // namespace ncclx
