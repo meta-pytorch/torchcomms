@@ -102,4 +102,15 @@ __global__ void ibgdaMultiPeerCounterFanOutBatchKernel(
     int numIters,
     unsigned long long* totalCycles);
 
+__global__ void ibgdaScatterSignalSinglePutBatchKernel(
+    P2pIbgdaTransportDevice** transports,
+    IbgdaLocalBuffer* localBufs,
+    IbgdaRemoteBuffer* remoteBufs,
+    IbgdaRemoteBuffer* remoteSignalBufs,
+    std::size_t dataSize,
+    int numPeers,
+    int signalId,
+    int numIters,
+    unsigned long long* totalCycles);
+
 } // namespace comms::pipes::benchmark
