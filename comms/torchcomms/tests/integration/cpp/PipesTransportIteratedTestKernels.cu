@@ -52,7 +52,7 @@ __global__ void transportIteratedSendRecvKernel(
   size_t nbytes = count * sizeof(float);
 
   for (int iter = 0; iter < iterations; iter++) {
-    if (rank == 0) {
+    if (rank % 2 == 0) {
       // Fill src with identifiable pattern
       fillPattern(buf, count, rank, iter);
       group.sync();
@@ -70,7 +70,7 @@ __global__ void transportIteratedSendRecvKernel(
       group.sync();
       nvl.recv(group, buf, nbytes);
       // Verify received data matches sender's pattern
-      verifyPattern(buf, count, 0 /* sender rank */, iter, &results[iter]);
+      verifyPattern(buf, count, peer, iter, &results[iter]);
     }
     group.sync();
 
@@ -154,7 +154,7 @@ __global__ void transportIteratedCombinedKernel(
         group, 0, CmpOp::CMP_GE, static_cast<uint64_t>(2 * iter + 1));
 
     // Phase 2: Send/recv
-    if (rank == 0) {
+    if (rank % 2 == 0) {
       fillPattern(buf, count, rank, iter);
       group.sync();
       nvl.send(group, buf, nbytes);
@@ -173,8 +173,8 @@ __global__ void transportIteratedCombinedKernel(
         group, 0, CmpOp::CMP_GE, static_cast<uint64_t>(2 * iter + 2));
 
     // Phase 4: Verify on receiver
-    if (rank == 1) {
-      verifyPattern(buf, count, 0, iter, &results[iter]);
+    if (rank % 2 == 1) {
+      verifyPattern(buf, count, peer, iter, &results[iter]);
     } else {
       if (group.thread_id_in_group == 0) {
         results[iter] = 1;
@@ -228,7 +228,7 @@ __global__ void transportIteratedLl128Kernel(
   for (int iter = 0; iter < iterations; iter++) {
     char pattern = static_cast<char>((iter + 1) & 0xFF);
 
-    if (rank == 0) {
+    if (rank % 2 == 0) {
       // Fill with byte pattern
       for (size_t i = threadIdx.x; i < nbytes; i += blockDim.x) {
         buf[i] = pattern;
