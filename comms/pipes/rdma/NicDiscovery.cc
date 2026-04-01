@@ -295,6 +295,22 @@ void NicDiscovery::sortCandidates() {
       });
 }
 
+std::vector<NicCandidate> NicDiscovery::getBestAffinityNics() const {
+  std::vector<NicCandidate> result;
+  if (candidates_.empty()) {
+    return result;
+  }
+  const auto& best = candidates_.front();
+  for (const auto& c : candidates_) {
+    if (c.pathType != best.pathType || c.isDataDirect != best.isDataDirect ||
+        c.bandwidthGbps != best.bandwidthGbps) {
+      break;
+    }
+    result.push_back(c);
+  }
+  return result;
+}
+
 void NicDiscovery::logBestCandidate() {
   if (!candidates_.empty()) {
     const NicCandidate& best = candidates_[0];

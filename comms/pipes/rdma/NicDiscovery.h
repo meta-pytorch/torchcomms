@@ -108,6 +108,15 @@ class NicDiscovery {
   }
 
   /**
+   * Get only the NICs at the best affinity level (same pathType,
+   * isDataDirect, and bandwidthGbps as the top candidate). On a GPU with
+   * 2 same-switch 400G NICs, returns both. A 200G NIC at the same switch
+   * is excluded. The hardware topology determines the count — no artificial
+   * cap.
+   */
+  std::vector<NicCandidate> getBestAffinityNics() const;
+
+  /**
    * Get the anchor's NUMA node.
    * For GPU-anchored: the GPU's NUMA node.
    * For CPU-anchored: the NUMA node passed to the constructor.
