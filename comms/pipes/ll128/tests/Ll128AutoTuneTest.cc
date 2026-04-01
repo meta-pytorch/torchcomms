@@ -143,9 +143,9 @@ TEST(Ll128AutoTuneTest, AllToAllv8Rank) {
   EXPECT_EQ(cfg.numBlocks, 16);
   EXPECT_EQ(cfg.numThreads, 512);
 
-  // 16KB per peer: empirical = 96, min = 14 → 96
+  // 16KB per peer: sweep-validated = 48, min = 14 → 48
   auto cfg2 = ll128_auto_tune_alltoallv(16384, 8);
-  EXPECT_EQ(cfg2.numBlocks, 96);
+  EXPECT_EQ(cfg2.numBlocks, 48);
 
   // 64KB per peer: empirical = 128, min = 14 → 128
   auto cfg3 = ll128_auto_tune_alltoallv(65536, 8);
