@@ -211,6 +211,10 @@ std::unordered_map<std::string, std::string> commDumpByMonitorInfo(
   } else {
     XLOGF(DBG2, "CommDump: MAPPERTRACE is disabled. No trace to dump");
   }
+  map["ncclTopoInfo"] =
+      apache::thrift::SimpleJSONSerializer::serialize<std::string>(
+          info.topoInfo);
+
   dumpProcessGlobalErrors(map);
   return map;
 }
@@ -259,6 +263,10 @@ __attribute__((visibility("default"))) ncclResult_t ncclCommDump(
     } else {
       XLOGF(DBG2, "CommDump: MAPPERTRACE is disabled. No trace to dump");
     }
+
+    map["ncclTopoInfo"] =
+        apache::thrift::SimpleJSONSerializer::serialize<std::string>(
+            ncclx::comms_monitor::getTopoInfoFromNcclComm(comm));
   }
   dumpProcessGlobalErrors(map);
 
