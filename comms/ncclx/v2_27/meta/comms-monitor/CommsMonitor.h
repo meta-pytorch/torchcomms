@@ -14,12 +14,30 @@
 #include "meta/colltrace/ProxyTrace.h"
 
 namespace ncclx::comms_monitor {
-::comms::CommsTopologyInfo getTopoInfoFromNcclComm(ncclComm_t comm);
+
+struct NcclTreeNodeInfo {
+  int parentNode;
+  std::array<int, NCCL_MAX_TREE_ARITY> childrenNodes;
+
+  ::comms::NCCLTreeNodeInfo toThrift() const;
+};
+
+struct NcclTopoInfo {
+  uint64_t nChannels{0};
+  std::vector<std::vector<int64_t>> rings;
+  // Neighbor ranks for current rank in each tree.
+  std::vector<NcclTreeNodeInfo> trees;
+  static NcclTopoInfo fromNcclComm(ncclComm_t comm);
+
+  // ::comms::NCCLTopologyInfo is the thrift struct for NcclTopoInfo.
+  // TODO: We should make the fact that this is a thrift struct more explicit
+  ::comms::NCCLTopologyInfo toThrift() const;
+};
 
 struct NcclCommMonitorInfo {
   CommLogData logMetaData;
   ncclx::CommStateX commState;
-  ::comms::CommsTopologyInfo topoInfo;
+  NcclTopoInfo topoInfo;
   // This one will be deprecated soon.
   std::shared_ptr<CollTrace> collTrace;
   std::shared_ptr<colltrace::MapperTrace> mapperTrace;
