@@ -196,6 +196,9 @@ void TorchCommXCCL::timeoutWatchdog() noexcept {
 
     // Check work objects for completion or timeout
     checkWorkQueue();
+    if (shutdown_) {
+      break;
+    }
     if (comm_state_ != CommState::NORMAL &&
         options_.abort_process_on_timeout_or_error) {
       // Log the error and abort the process.  We cannot abort the XCCL

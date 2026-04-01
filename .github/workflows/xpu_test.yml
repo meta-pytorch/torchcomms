@@ -25,6 +25,7 @@ on:
       - comms/torchcomms/tests/integration/py/DDPCommTest.py
       - comms/torchcomms/tests/integration/py/DeviceMeshTest.py
       - comms/torchcomms/tests/integration/py/DPTPCommTest.py
+      - comms/torchcomms/tests/integration/py/FinalizeWarningTest.py
       - comms/torchcomms/tests/integration/py/FSDPCommTest.py
       - comms/torchcomms/tests/integration/py/GatherTest.py
       - comms/torchcomms/tests/integration/py/MultiCommTest.py

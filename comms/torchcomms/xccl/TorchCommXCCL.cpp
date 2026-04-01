@@ -200,12 +200,32 @@ TorchCommXCCL::TorchCommXCCL(const onecclComm_t xccl_comm)
 
 TorchCommXCCL::~TorchCommXCCL() {
   if (init_state_ == InitializationState::INITIALIZED) {
-    TC_LOG(ERROR) << "TorchCommXCCL was not finalized before destruction";
+    TC_LOG(WARNING, this)
+        << "TorchCommXCCL " << name_
+        << " was not finalized before destruction. "
+        << "This may indicate a resource leak. Please call finalize() explicitly.";
 
-    // If finalize was not called, we need to clean up the timeout thread
+    shutdown_ = true;
+
+    {
+      std::lock_guard<std::mutex> lock(timeout_mutex_);
+      timeout_cv_.notify_all();
+    }
+
     if (timeout_thread_.joinable()) {
-      shutdown_.store(true);
-      timeout_thread_.join();
+      if (std::this_thread::get_id() != timeout_thread_.get_id()) {
+        timeout_thread_.join();
+      } else {
+        timeout_thread_.detach(); // NOLINT(facebook-hte-BadCall-detach)
+      }
+    }
+
+    if (xccl_comm_) {
+      if (xccl_api_) {
+        // Use destroy to free resources since oneCCL doesn't have abort api
+        xccl_api_->commDestroy(xccl_comm_);
+      }
+      xccl_comm_ = nullptr;
     }
   }
 }

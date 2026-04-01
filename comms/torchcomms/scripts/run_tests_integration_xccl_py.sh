@@ -26,6 +26,7 @@ run_tests () {
         DDPCommTest.py
         DeviceMeshTest.py
         DPTPCommTest.py
+        FinalizeWarningTest.py
         FSDPCommTest.py
         GatherTest.py
         MultiCommTest.py
