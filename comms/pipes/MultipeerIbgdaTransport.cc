@@ -932,7 +932,6 @@ IbgdaLocalBuffer MultipeerIbgdaTransport::registerBuffer(
 
   // Try DMABUF registration first, fall back to regular reg_mr.
   // export_gpu_dmabuf_aligned handles page alignment + doca_gpu_dmabuf_fd.
-  // allocBase/allocSize already come from cuMemGetAddressRange above.
   ibv_mr* mr = nullptr;
   auto dmabuf = export_gpu_dmabuf_aligned(
       docaGpu_, reinterpret_cast<void*>(allocBase), allocSize);
@@ -970,30 +969,27 @@ IbgdaLocalBuffer MultipeerIbgdaTransport::registerBuffer(
 }
 
 void MultipeerIbgdaTransport::deregisterBuffer(void* ptr) {
-  CUdeviceptr allocBase = 0;
-  size_t allocSize = 0;
-  CUresult cuRes =
-      pfn_cuMemGetAddressRange(&allocBase, &allocSize, (CUdeviceptr)ptr);
-  if (cuRes != CUDA_SUCCESS || allocBase == 0) {
-    LOG(WARNING) << "MultipeerIbgdaTransport: cuMemGetAddressRange failed for "
-                 << ptr;
-    return;
+  // Containment lookup on the ordered map: find the allocation whose base
+  // address is <= ptr and whose range covers ptr.  This avoids calling
+  // cuMemGetAddressRange, which fails when CUDA has already freed the
+  // underlying memory (e.g. PyTorch caching allocator teardown).
+  auto addr = reinterpret_cast<uintptr_t>(ptr);
+  auto it = registeredBuffers_.upper_bound(addr);
+  if (it != registeredBuffers_.begin()) {
+    --it;
+    if (addr < it->first + it->second.allocSize) {
+      it->second.refs--;
+      VLOG(1) << "MultipeerIbgdaTransport: deregister ptr=" << ptr
+              << " allocBase=0x" << std::hex << it->first << std::dec
+              << " refs=" << it->second.refs;
+      if (it->second.refs <= 0) {
+        doca_verbs_wrapper_ibv_dereg_mr(it->second.mr);
+        registeredBuffers_.erase(it);
+      }
+      return;
+    }
   }
-
-  auto it = registeredBuffers_.find(static_cast<uintptr_t>(allocBase));
-  if (it == registeredBuffers_.end()) {
-    LOG(WARNING) << "MultipeerIbgdaTransport: buffer not registered: " << ptr;
-    return;
-  }
-
-  it->second.refs--;
-  VLOG(1) << "MultipeerIbgdaTransport: deregister ptr=" << ptr
-          << " allocBase=0x" << std::hex << allocBase << std::dec
-          << " refs=" << it->second.refs;
-  if (it->second.refs <= 0) {
-    doca_verbs_wrapper_ibv_dereg_mr(it->second.mr);
-    registeredBuffers_.erase(it);
-  }
+  LOG(WARNING) << "MultipeerIbgdaTransport: buffer not registered: " << ptr;
 }
 
 std::vector<IbgdaRemoteBuffer> MultipeerIbgdaTransport::exchangeBuffer(
