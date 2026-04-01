@@ -454,6 +454,99 @@ void PipesDeviceApiIteratedTest::testWindowLifecycle() {
   }
 }
 
+void PipesDeviceApiIteratedTest::testMultiComm() {
+  int num_comms = config_.comm_count;
+  int iterations = config_.num_iterations / 2;
+  size_t count = 1024;
+
+  SCOPED_TRACE(
+      ::testing::Message() << "PipesMultiComm comms=" << num_comms
+                           << " iters=" << iterations);
+
+  // Create multiple communicators
+  std::vector<std::unique_ptr<TorchCommTestWrapper>> wrappers;
+  wrappers.reserve(num_comms);
+  std::vector<std::shared_ptr<torch::comms::TorchComm>> comms;
+  comms.reserve(num_comms);
+  for (int c = 0; c < num_comms; c++) {
+    auto w = std::make_unique<TorchCommTestWrapper>();
+    comms.push_back(w->getTorchComm());
+    wrappers.push_back(std::move(w));
+  }
+
+  int dst_rank = (rank_ + 1) % num_ranks_;
+  int src_rank = (rank_ - 1 + num_ranks_) % num_ranks_;
+
+  // Create a window per communicator
+  std::vector<PipesWindowSetup> windows;
+  windows.reserve(num_comms);
+  for (int c = 0; c < num_comms; c++) {
+    windows.push_back(createPipesWindowSetup(
+        comms[c],
+        allocator_,
+        device_index_,
+        num_ranks_,
+        count,
+        std::max(num_ranks_, 2),
+        -1,
+        -1));
+  }
+
+  // Run iterated put on each comm's window
+  std::vector<int*> d_results_vec(num_comms, nullptr);
+  std::vector<at::cuda::CUDAStream> streams;
+  streams.reserve(num_comms);
+
+  for (int c = 0; c < num_comms; c++) {
+    ASSERT_EQ(
+        cudaMalloc(&d_results_vec[c], iterations * sizeof(int)), cudaSuccess);
+    ASSERT_EQ(
+        cudaMemset(d_results_vec[c], 0, iterations * sizeof(int)), cudaSuccess);
+
+    auto stream = at::cuda::getStreamFromPool(false, device_index_);
+    streams.push_back(stream);
+
+    size_t bytes = count * sizeof(float);
+    c10::cuda::CUDAStreamGuard guard(stream);
+    launchPipesIteratedPutKernel(
+        windows[c].dev_win,
+        windows[c].src_buf,
+        windows[c].src_tensor.data_ptr<float>(),
+        windows[c].win_tensor.data_ptr<float>(),
+        0,
+        rank_ * bytes,
+        bytes,
+        count,
+        dst_rank,
+        src_rank,
+        0,
+        iterations,
+        CoopScope::THREAD,
+        1,
+        d_results_vec[c],
+        stream.stream());
+  }
+
+  for (auto& stream : streams) {
+    stream.synchronize();
+  }
+
+  for (int c = 0; c < num_comms; c++) {
+    checkKernelResults(
+        d_results_vec[c],
+        iterations,
+        "PipesMultiComm[" + std::to_string(c) + "]");
+    cudaFree(d_results_vec[c]);
+  }
+
+  for (int c = 0; c < num_comms; c++) {
+    teardownPipesWindow(windows[c], comms[c]);
+  }
+
+  comms.clear();
+  wrappers.clear();
+}
+
 // =============================================================================
 // Parameterized Test Registrations
 // =============================================================================
@@ -477,6 +570,7 @@ INSTANTIATE_TEST_SUITE_P(
     IteratedPut,
     PipesDeviceApiIteratedPutTest,
     ::testing::Values(
+        PipesPutParam{4, CoopScope::THREAD},
         PipesPutParam{1024, CoopScope::THREAD},
         PipesPutParam{1048576, CoopScope::THREAD},
         PipesPutParam{16777216, CoopScope::THREAD},
@@ -500,7 +594,7 @@ TEST_P(PipesDeviceApiIteratedSignalTest, Signal) {
 INSTANTIATE_TEST_SUITE_P(
     IteratedSignal,
     PipesDeviceApiIteratedSignalTest,
-    ::testing::Values(CoopScope::THREAD, CoopScope::WARP),
+    ::testing::Values(CoopScope::THREAD, CoopScope::WARP, CoopScope::BLOCK),
     [](const ::testing::TestParamInfo<CoopScope>& info) {
       return std::string(scopeName(info.param));
     });
@@ -518,7 +612,7 @@ TEST_P(PipesDeviceApiIteratedBarrierTest, Barrier) {
 INSTANTIATE_TEST_SUITE_P(
     IteratedBarrier,
     PipesDeviceApiIteratedBarrierTest,
-    ::testing::Values(CoopScope::THREAD, CoopScope::WARP),
+    ::testing::Values(CoopScope::THREAD, CoopScope::WARP, CoopScope::BLOCK),
     [](const ::testing::TestParamInfo<CoopScope>& info) {
       return std::string(scopeName(info.param));
     });
@@ -545,6 +639,10 @@ INSTANTIATE_TEST_SUITE_P(
 
 TEST_F(PipesDeviceApiIteratedTest, MultiWindow) {
   testMultiWindow();
+}
+
+TEST_F(PipesDeviceApiIteratedTest, MultiComm) {
+  testMultiComm();
 }
 
 TEST_F(PipesDeviceApiIteratedTest, WindowLifecycle) {
