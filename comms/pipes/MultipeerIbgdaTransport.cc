@@ -410,7 +410,8 @@ void MultipeerIbgdaTransport::registerMemory() {
 }
 void MultipeerIbgdaTransport::createQpGroups() {
   const int numPeers = nRanks_ - 1;
-  qpGroupHlList_.resize(numPeers, nullptr);
+  const int totalQpCount = numPeers * config_.numQpsPerPeer;
+  qpGroupHlList_.resize(totalQpCount, nullptr);
 
   // Verify CUDA device is still set correctly
   int currentDevice = -1;
@@ -438,13 +439,14 @@ void MultipeerIbgdaTransport::createQpGroups() {
   initAttr.nic_handler = DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO;
   initAttr.mreg_type = DOCA_GPUNETIO_VERBS_MEM_REG_TYPE_DEFAULT;
 
-  VLOG(1) << "MultipeerIbgdaTransport: creating " << numPeers
-          << " QP groups (main + companion)"
+  VLOG(1) << "MultipeerIbgdaTransport: creating " << totalQpCount
+          << " QP groups (" << numPeers << " peers x " << config_.numQpsPerPeer
+          << " QPs/peer)"
           << " gpu_dev=" << (void*)docaGpu_ << " ibpd=" << (void*)initAttr.ibpd
           << " sq_nwqe=" << config_.qpDepth
           << " nic_handler=AUTO mreg_type=DEFAULT";
 
-  for (int i = 0; i < numPeers; i++) {
+  for (int i = 0; i < totalQpCount; i++) {
     doca_error_t err =
         doca_gpu_verbs_create_qp_group_hl(&initAttr, &qpGroupHlList_[i]);
     if (err != DOCA_SUCCESS) {
@@ -462,11 +464,11 @@ void MultipeerIbgdaTransport::createQpGroups() {
 }
 
 void MultipeerIbgdaTransport::createLoopbackCompanionQps() {
-  const int numPeers = nRanks_ - 1;
+  const int totalQpCount = (nRanks_ - 1) * config_.numQpsPerPeer;
   // Create one self-loop responder companion QP per peer.
   // These are passive endpoints connected to the active companion QPs
   // (from the QP groups) to form loopback pairs for counter atomics.
-  loopbackCompanionQpHlList_.resize(numPeers, nullptr);
+  loopbackCompanionQpHlList_.resize(totalQpCount, nullptr);
 
   doca_gpu_verbs_qp_init_attr_hl initAttr{};
   initAttr.gpu_dev = docaGpu_;
@@ -475,10 +477,10 @@ void MultipeerIbgdaTransport::createLoopbackCompanionQps() {
   initAttr.nic_handler = DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO;
   initAttr.mreg_type = DOCA_GPUNETIO_VERBS_MEM_REG_TYPE_DEFAULT;
 
-  VLOG(1) << "MultipeerIbgdaTransport: creating " << numPeers
+  VLOG(1) << "MultipeerIbgdaTransport: creating " << totalQpCount
           << " loopback companion QPs with depth=" << kCompanionQpDepth;
 
-  for (int i = 0; i < numPeers; i++) {
+  for (int i = 0; i < totalQpCount; i++) {
     doca_error_t err =
         doca_gpu_verbs_create_qp_hl(&initAttr, &loopbackCompanionQpHlList_[i]);
     if (err != DOCA_SUCCESS) {
@@ -758,54 +760,57 @@ void MultipeerIbgdaTransport::exchange() {
     myInfo.lid = exchPortAttr.lid;
   }
 
-  // Fill in per-target QPNs
-  // qpnForRank[j] = QPN I use to connect to rank j
-  for (int peerIndex = 0; peerIndex < numPeers; peerIndex++) {
-    int peerRank = peerIndexToRank(peerIndex);
-    myInfo.qpnForRank[peerRank] =
-        doca_verbs_qp_get_qpn(qpGroupHlList_[peerIndex]->qp_main.qp);
-  }
-  myInfo.qpnForRank[myRank_] = 0; // Unused (self)
+  const int totalQpCount = numPeers * config_.numQpsPerPeer;
 
-  VLOG(1) << "MultipeerIbgdaTransport: rank " << myRank_
-          << " performing allGather exchange";
-
-  // Use allGather to exchange transport info with all ranks
-  auto result = bootstrap_
-                    ->allGather(
-                        allInfo.data(),
-                        sizeof(IbgdaTransportExchInfoAll),
-                        myRank_,
-                        nRanks_)
-                    .get();
-  if (result != 0) {
-    throw std::runtime_error(
-        "MultipeerIbgdaTransport::exchange allGather failed");
-  }
-
-  // Convert allGather results to per-peer IbgdaTransportExchInfo
-  // For each peer, extract their info and the QPN they use to connect to me
+  // Exchange QPNs and connect QPs. With numQpsPerPeer > 1, we do one
+  // allGather per QP layer so each local QP connects to a unique remote QP.
+  // QP layout: [peer0_qp0, peer0_qp1, ..., peer1_qp0, peer1_qp1, ...]
   peerExchInfo_.resize(numPeers);
-  for (int peerIndex = 0; peerIndex < numPeers; peerIndex++) {
-    int peerRank = peerIndexToRank(peerIndex);
-    const IbgdaTransportExchInfoAll& peerInfo = allInfo[peerRank];
+  for (int qpIdx = 0; qpIdx < config_.numQpsPerPeer; qpIdx++) {
+    IbgdaTransportExchInfoAll& myInfoRef = allInfo[myRank_];
+    for (int peerIndex = 0; peerIndex < numPeers; peerIndex++) {
+      int peerRank = peerIndexToRank(peerIndex);
+      int qpGroupIdx = peerIndex * config_.numQpsPerPeer + qpIdx;
+      myInfoRef.qpnForRank[peerRank] =
+          doca_verbs_qp_get_qpn(qpGroupHlList_[qpGroupIdx]->qp_main.qp);
+    }
+    myInfoRef.qpnForRank[myRank_] = 0;
 
-    // Extract transport info
-    // The QPN we need is the one peer uses to connect to us:
-    // peerInfo.qpnForRank[myRank_]
-    peerExchInfo_[peerIndex].qpn = peerInfo.qpnForRank[myRank_];
-    memcpy(peerExchInfo_[peerIndex].gid, peerInfo.gid, sizeof(peerInfo.gid));
-    peerExchInfo_[peerIndex].gidIndex = peerInfo.gidIndex;
-    peerExchInfo_[peerIndex].lid = peerInfo.lid;
-    peerExchInfo_[peerIndex].mtu = peerInfo.mtu;
+    auto result = bootstrap_
+                      ->allGather(
+                          allInfo.data(),
+                          sizeof(IbgdaTransportExchInfoAll),
+                          myRank_,
+                          nRanks_)
+                      .get();
+    if (result != 0) {
+      throw std::runtime_error(
+          "MultipeerIbgdaTransport::exchange allGather failed");
+    }
 
-    VLOG(1) << "MultipeerIbgdaTransport: received from peer " << peerRank
-            << " qpn=" << peerExchInfo_[peerIndex].qpn;
-  }
+    // Connect this layer's QPs
+    for (int peerIndex = 0; peerIndex < numPeers; peerIndex++) {
+      int peerRank = peerIndexToRank(peerIndex);
+      const IbgdaTransportExchInfoAll& peerInfo = allInfo[peerRank];
 
-  // Connect main QPs to peers
-  for (int peerIndex = 0; peerIndex < numPeers; peerIndex++) {
-    connectQp(&qpGroupHlList_[peerIndex]->qp_main, peerExchInfo_[peerIndex]);
+      IbgdaTransportExchInfo exchInfo{};
+      exchInfo.qpn = peerInfo.qpnForRank[myRank_];
+      memcpy(exchInfo.gid, peerInfo.gid, sizeof(exchInfo.gid));
+      exchInfo.gidIndex = peerInfo.gidIndex;
+      exchInfo.lid = peerInfo.lid;
+      exchInfo.mtu = peerInfo.mtu;
+
+      int qpGroupIdx = peerIndex * config_.numQpsPerPeer + qpIdx;
+      connectQp(&qpGroupHlList_[qpGroupIdx]->qp_main, exchInfo);
+
+      if (qpIdx == 0) {
+        peerExchInfo_[peerIndex] = exchInfo;
+      }
+
+      VLOG(1) << "MultipeerIbgdaTransport: connected QP " << qpGroupIdx
+              << " (peer " << peerRank << " layer " << qpIdx
+              << ") to remote qpn=" << exchInfo.qpn;
+    }
   }
 
   // Connect companion QPs as loopback pairs on the local NIC.
@@ -824,7 +829,7 @@ void MultipeerIbgdaTransport::exchange() {
       selfInfo.lid = loopbackPortAttr.lid;
     }
 
-    for (int i = 0; i < numPeers; i++) {
+    for (int i = 0; i < totalQpCount; i++) {
       // Connect active companion → loopback responder
       selfInfo.qpn = doca_verbs_qp_get_qpn(loopbackCompanionQpHlList_[i]->qp);
       connectQp(&qpGroupHlList_[i]->qp_companion, selfInfo);
@@ -840,8 +845,8 @@ void MultipeerIbgdaTransport::exchange() {
   }
 
   // Build device transports on GPU
-  std::vector<P2pIbgdaTransportBuildParams> buildParams(numPeers);
-  for (int i = 0; i < numPeers; i++) {
+  std::vector<P2pIbgdaTransportBuildParams> buildParams(totalQpCount);
+  for (int i = 0; i < totalQpCount; i++) {
     // Get GPU-accessible QP handle for main QP
     doca_gpu_dev_verbs_qp* gpuQp = nullptr;
     doca_error_t err =
@@ -858,11 +863,13 @@ void MultipeerIbgdaTransport::exchange() {
         gpuQp, companionGpuQp, NetworkLKey(HostLKey(sinkMr_->lkey))};
   }
 
-  peerTransportsGpu_ = buildDeviceTransportsOnGpu(buildParams.data(), numPeers);
+  peerTransportsGpu_ =
+      buildDeviceTransportsOnGpu(buildParams.data(), totalQpCount);
   peerTransportSize_ = getP2pIbgdaTransportDeviceSize();
 
   VLOG(1) << "MultipeerIbgdaTransport: rank " << myRank_
-          << " exchange complete, connected to " << numPeers << " peers";
+          << " exchange complete, " << totalQpCount << " QPs to " << numPeers
+          << " peers";
 }
 
 MultipeerIbgdaDeviceTransport MultipeerIbgdaTransport::getDeviceTransport()
@@ -870,7 +877,7 @@ MultipeerIbgdaDeviceTransport MultipeerIbgdaTransport::getDeviceTransport()
   return MultipeerIbgdaDeviceTransport(
       myRank_,
       nRanks_,
-      DeviceSpan<P2pIbgdaTransportDevice>(peerTransportsGpu_, nRanks_ - 1));
+      DeviceSpan<P2pIbgdaTransportDevice>(peerTransportsGpu_, totalQps()));
 }
 
 P2pIbgdaTransportDevice* MultipeerIbgdaTransport::getP2pTransportDevice(
@@ -882,6 +889,13 @@ P2pIbgdaTransportDevice* MultipeerIbgdaTransport::getP2pTransportDevice(
       peerIndex * peerTransportSize_);
 }
 
+P2pIbgdaTransportDevice* MultipeerIbgdaTransport::getP2pTransportDeviceByIndex(
+    int qpIndex) const {
+  return reinterpret_cast<P2pIbgdaTransportDevice*>(
+      reinterpret_cast<char*>(peerTransportsGpu_) +
+      qpIndex * peerTransportSize_);
+}
+
 P2pIbgdaTransportDevice* MultipeerIbgdaTransport::getDeviceTransportPtr()
     const {
   return peerTransportsGpu_;
@@ -889,6 +903,10 @@ P2pIbgdaTransportDevice* MultipeerIbgdaTransport::getDeviceTransportPtr()
 
 int MultipeerIbgdaTransport::numPeers() const {
   return nRanks_ - 1;
+}
+
+int MultipeerIbgdaTransport::totalQps() const {
+  return (nRanks_ - 1) * config_.numQpsPerPeer;
 }
 
 int MultipeerIbgdaTransport::myRank() const {
