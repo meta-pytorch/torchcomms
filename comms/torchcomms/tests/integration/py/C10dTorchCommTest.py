@@ -149,6 +149,42 @@ class TestC10dTorchCommsBasic(unittest.TestCase):
         expected = list(range(1, dist.get_world_size() + 1))
         self.assertEqual([t.item() for t in output_tensor], expected)
 
+    def test_all_to_all_single_with_split_sizes(self):
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+
+        # Each rank sends (rank + 1) elements to every other rank,
+        # so rank r's input_split_sizes are all (rank + 1).
+        input_split_sizes = [rank + 1] * world_size
+        # Rank r receives (sender_rank + 1) elements from each sender,
+        # so output_split_sizes[i] = i + 1.
+        output_split_sizes = [i + 1 for i in range(world_size)]
+
+        input_tensor = torch.empty(sum(input_split_sizes), dtype=torch.float32)
+        offset = 0
+        for dst in range(world_size):
+            input_tensor[offset : offset + input_split_sizes[dst]].fill_(rank + dst)
+            offset += input_split_sizes[dst]
+
+        output_tensor = torch.empty(sum(output_split_sizes), dtype=torch.float32)
+        dist.all_to_all_single(
+            output_tensor,
+            input_tensor,
+            output_split_sizes=output_split_sizes,
+            input_split_sizes=input_split_sizes,
+        )
+
+        # Verify: section from sender i should contain value (i + rank)
+        offset = 0
+        for src in range(world_size):
+            section = output_tensor[offset : offset + output_split_sizes[src]]
+            expected = torch.full_like(section, src + rank)
+            self.assertTrue(
+                torch.equal(section, expected),
+                f"Mismatch in section from rank {src}: got {section}, expected {expected}",
+            )
+            offset += output_split_sizes[src]
+
     def test_send_recv(self):
         send_rank = (dist.get_rank() + 1) % dist.get_world_size()
         recv_rank = (
