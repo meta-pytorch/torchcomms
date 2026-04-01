@@ -1458,6 +1458,14 @@ target_compile_definitions(rccl PRIVATE MOCK_SCUBA_DATA) # removes some Scuba lo
 target_compile_definitions(rccl PRIVATE CTRAN_DISABLE_TCPDM) # TCPDM has strict topology requirements, which is why it isn't supported NCCLX/RCCLX Conda packages. See T239012482.
 target_compile_definitions(rccl PRIVATE NVTX_DISABLE) # NVTX is for annotating code for profilers like NSight systems. It's disabled by default for the NCCLX Conda package.
 
+# Undefine __HIPCC__ for host-only .cc files that need types guarded by
+# #if !defined(__CUDACC__) (hipified to __HIPCC__) in AllReduce/Types.h.
+set_source_files_properties(
+  ${CMAKE_CURRENT_BINARY_DIR}/hipify/comms/ctran/gpe/CtranGpe.cc
+  ${CMAKE_CURRENT_BINARY_DIR}/hipify/comms/ctran/algos/AllReduce/AllReduceRing.cc
+  PROPERTIES COMPILE_OPTIONS "-U__HIPCC__"
+)
+
 ## Set RCCL compile options
 if (HAVE_PARALLEL_JOBS)
   target_compile_options(rccl PRIVATE -parallel-jobs=12)
