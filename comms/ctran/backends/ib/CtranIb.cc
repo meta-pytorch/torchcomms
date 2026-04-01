@@ -62,32 +62,32 @@ commResult_t checkEpochLock(CtranIb* ctranIb) {
 static folly::Singleton<CtranIbSingleton> ctranIbSingleton;
 
 std::shared_ptr<CtranIbSingleton> CtranIbSingleton::getInstance() {
-  try {
-    return ctranIbSingleton.try_get();
-  } catch ([[maybe_unused]] const ctran::utils::Exception& e) {
-    return nullptr;
-  }
+  return ctranIbSingleton.try_get();
 }
 
 CtranIbSingleton::CtranIbSingleton() {
   auto ibvInitResult = ibverbx::ibvInit();
-  if (!ibvInitResult.hasValue()) {
-    std::string msg =
-        "CTRAN-IB: Failed to initialize ibverbs (libibverbs.so). "
-        "InfiniBand backend is not available. "
-        "Set NCCL_CTRAN_BACKENDS=nvl,socket to use alternative backends.";
-    CLOGF(ERR, msg);
-    throw ctran::utils::Exception(msg, commSystemError);
+  try {
+    FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM(ibvInitResult);
+  } catch (const ctran::utils::Exception& e) {
+    CLOGF(
+        ERR,
+        "CTRAN-IB: Failed to initialize ibverbs (libibverbs.so): {}. "
+        "Set NCCL_CTRAN_BACKENDS=nvl,socket to use alternative backends.",
+        e.what());
+    throw;
   }
   auto maybeDeviceList = ibverbx::IbvDevice::ibvGetDeviceList(
       NCCL_IB_HCA, NCCL_IB_HCA_PREFIX, CTRAN_IB_ANY_PORT, NCCL_IB_DATA_DIRECT);
-  if (!maybeDeviceList.hasValue()) {
-    std::string msg =
-        "CTRAN-IB: Failed to get InfiniBand device list. "
-        "No HCA devices found on this system. "
-        "Set NCCL_CTRAN_BACKENDS=nvl,socket to use alternative backends.";
-    CLOGF(ERR, msg);
-    throw ctran::utils::Exception(msg, commSystemError);
+  try {
+    FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM(maybeDeviceList);
+  } catch (const ctran::utils::Exception& e) {
+    CLOGF(
+        ERR,
+        "CTRAN-IB: Failed to get InfiniBand device list: {}. "
+        "Set NCCL_CTRAN_BACKENDS=nvl,socket to use alternative backends.",
+        e.what());
+    throw;
   }
   ibvDevices = std::move(*maybeDeviceList);
 
