@@ -65,8 +65,12 @@ void PipesTransportIteratedTest::SetUp() {
     GTEST_SKIP() << "No NVL peers available — transport tests require NVLink";
   }
 
-  // Ring pattern: peer is the other rank
-  peer_ = (rank_ == 0) ? 1 : 0;
+  // Pair adjacent ranks: 0↔1, 2↔3, 4↔5, ...
+  // Odd-numbered total ranks: last rank has no partner → skip.
+  if (num_ranks_ % 2 != 0 && rank_ == num_ranks_ - 1) {
+    GTEST_SKIP() << "Odd rank count — last rank has no partner";
+  }
+  peer_ = (rank_ % 2 == 0) ? rank_ + 1 : rank_ - 1;
 }
 
 void PipesTransportIteratedTest::TearDown() {
