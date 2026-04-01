@@ -127,6 +127,12 @@ class PinnedHostPool {
     void* mem = nullptr;
     FB_CUDACHECKTHROW_EX_NOCOMM(
         cudaHostAlloc(&mem, chunkSize_ * sizeof(T), cudaHostAllocDefault));
+    // Zero-initialize before reset(): cudaHostAlloc does not guarantee zeroed
+    // memory when recycling pages from its internal pool. reset() calls
+    // resetStatus() which loops `nworkers` times — if nworkers is non-zero
+    // garbage (e.g. from recycled pages of a differently-typed pool), writes
+    // go past the postFlag[CTRAN_ALGO_MAX_THREAD_BLOCKS] array bounds.
+    memset(mem, 0, chunkSize_ * sizeof(T));
     chunks_.push_back(mem);
 
     for (size_t i = 0; i < chunkSize_; ++i) {

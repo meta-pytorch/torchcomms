@@ -77,6 +77,54 @@ TEST_F(GpeKernelSyncPoolTest, ReclaimTest) {
   EXPECT_EQ(pool->capacity(), poolSize);
 }
 
+// Regression test for PinnedHostPool::allocChunk() calling reset() on raw
+// cudaHostAlloc memory without running the C++ constructor. reset() calls
+// resetStatus() which loops `for (i = 0; i < nworkers; i++)` — if nworkers
+// is non-zero garbage, this writes past postFlag[CTRAN_ALGO_MAX_THREAD_BLOCKS]
+// and causes SIGSEGV. The fix (memset in allocChunk) ensures nworkers=0.
+TEST_F(GpeKernelSyncPoolTest, InitNworkersZero) {
+  constexpr int poolSize = 16;
+  auto pool = std::make_unique<GpeKernelSyncPool>(poolSize);
+
+  // All freshly allocated elements must have nworkers=0 so that
+  // resetStatus() is a safe no-op during pool construction.
+  for (int i = 0; i < poolSize; ++i) {
+    auto* g = pool->pop();
+    ASSERT_NE(g, nullptr);
+    EXPECT_EQ(g->nworkers, 0u) << "element " << i;
+  }
+}
+
+// Exercises the recycled-memory scenario that caused the production SIGSEGV:
+// destroy a pool whose elements had non-zero nworkers, then construct a new
+// pool of the same size. CUDA's allocator frequently returns the same pages,
+// so without memset the new pool's allocChunk() would see non-zero nworkers
+// and crash in resetStatus(). With the fix, nworkers is always 0 on init.
+TEST_F(GpeKernelSyncPoolTest, NworkersZeroAfterPoolRecycle) {
+  constexpr int poolSize = 16;
+  constexpr int nworkers = 32; // non-zero value to leave in recycled memory
+
+  // Round 1: allocate pool, set nworkers on all elements, then destroy.
+  {
+    auto pool = std::make_unique<GpeKernelSyncPool>(poolSize);
+    std::vector<ctran::algos::GpeKernelSync*> syncs;
+    ::allocGpeKernelSyncs(pool.get(), poolSize, nworkers, syncs);
+    ASSERT_EQ(static_cast<int>(syncs.size()), poolSize);
+    // pool destructs here, cudaFreeHost called with nworkers=32 in memory
+  }
+
+  // Round 2: new pool of same size — CUDA often returns the same pages.
+  // With the fix, nworkers must be 0 regardless of what pages CUDA returns.
+  auto pool2 = std::make_unique<GpeKernelSyncPool>(poolSize);
+  for (int i = 0; i < poolSize; ++i) {
+    auto* g = pool2->pop();
+    ASSERT_NE(g, nullptr);
+    EXPECT_EQ(g->nworkers, 0u)
+        << "element " << i
+        << ": nworkers must be 0 after pool init (memset), not recycled garbage";
+  }
+}
+
 TEST_F(GpeKernelSyncPoolTest, allocGpeKernelSyncs) {
   constexpr int poolSize = 10;
   constexpr int popSize = 3;
