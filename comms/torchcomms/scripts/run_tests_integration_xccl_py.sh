@@ -23,6 +23,7 @@ run_tests () {
         BarrierTest.py
         BatchSendRecvTest.py
         BroadcastTest.py
+        C10dTorchCommTest.py
         DDPCommTest.py
         DeviceMeshTest.py
         DPTPCommTest.py
@@ -40,7 +41,6 @@ run_tests () {
         ScatterTest.py
         SplitTest.py
         TPCommTest.py
-        C10dTorchCommTest.py
     )
 
     for test_file in "${tests[@]}"; do
