@@ -13,8 +13,8 @@ The FlightRecorder is a debugging tool that records collective operations perfor
 ## Prerequisites
 
 - PyTorch 2.8 or higher
-- torchcomms with NCCL or NCCLX backend
-- CUDA-capable GPUs
+- torchcomms with NCCL, NCCLX, or XCCL backend
+- CUDA-capable GPUs or Intel XPUs
 
 ## Running the Verification Script
 
@@ -33,8 +33,8 @@ TEST_BACKEND=nccl torchrun --nproc_per_node=2 verify_flight_recorder.py
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `TEST_BACKEND` | Backend to use (nccl, ncclx, gloo) | `gloo` |
-| `TEST_DEVICE` | Device type | `cuda` |
+| `TEST_BACKEND` | Backend to use (nccl, ncclx, gloo, xccl) | `gloo` |
+| `TEST_DEVICE` | Device type (cuda or xpu) | `cuda` |
 | `TORCHCOMM_FR_DUMP_TEMP_FILE` | File prefix for trace dumps (rank is appended) | `~/.cache/torchcomm_fr_trace_` |
 | `TORCHCOMM_FR_DUMP_DYNAMIC_FILE_NAME` | Enable dynamic file naming | `false` |
 
