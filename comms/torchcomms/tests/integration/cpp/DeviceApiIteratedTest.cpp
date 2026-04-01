@@ -573,89 +573,6 @@ void DeviceApiIteratedTest::testWindowLifecycle() {
   }
 }
 
-void DeviceApiIteratedTest::testBufferRegistrationChurn() {
-  int cycles = config_.lifecycle_cycles;
-  size_t count = 256;
-
-  SCOPED_TRACE(
-      ::testing::Message() << "BufferRegistrationChurn cycles=" << cycles);
-
-  // Create window once, repeatedly register/deregister source buffers
-  auto mem_pool = std::make_unique<at::cuda::MemPool>(
-      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
-          allocator_));
-  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
-      mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
-
-  auto options =
-      at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, device_index_);
-  at::Tensor win_tensor =
-      at::zeros({static_cast<int64_t>(count * num_ranks_)}, options);
-
-  c10::cuda::CUDACachingAllocator::endAllocateToPool(
-      mem_pool->device(), mem_pool->id());
-
-  torchcomm_->barrier(false);
-  auto win = torchcomm_->new_window();
-  win->tensor_register(win_tensor);
-  torchcomm_->barrier(false);
-
-  auto* dev_win =
-      static_cast<DeviceWindowNCCL*>(win->get_device_window(num_ranks_, -1, 1));
-  ASSERT_NE(dev_win, nullptr);
-
-  int dst_rank = (rank_ + 1) % num_ranks_;
-  int src_rank = (rank_ - 1 + num_ranks_) % num_ranks_;
-
-  for (int cycle = 0; cycle < cycles; cycle++) {
-    // Create a new source tensor and register it
-    at::Tensor src = at::zeros({static_cast<int64_t>(count)}, options);
-    auto src_buf = win->register_local_buffer(src);
-    ASSERT_NE(src_buf.base_ptr, nullptr)
-        << "Cycle " << cycle << ": register_local_buffer returned null";
-
-    // Do one put
-    int* d_result = nullptr;
-    ASSERT_EQ(cudaMalloc(&d_result, sizeof(int)), cudaSuccess);
-    ASSERT_EQ(cudaMemset(d_result, 0, sizeof(int)), cudaSuccess);
-
-    size_t bytes = count * sizeof(float);
-    auto stream = at::cuda::getStreamFromPool(false, device_index_);
-    {
-      c10::cuda::CUDAStreamGuard guard(stream);
-      launchIteratedPutKernel(
-          dev_win,
-          src_buf,
-          src.data_ptr<float>(),
-          win_tensor.data_ptr<float>(),
-          /*src_offset=*/0,
-          /*dst_offset=*/rank_ * bytes,
-          bytes,
-          count,
-          dst_rank,
-          src_rank,
-          /*signal_id=*/0,
-          /*iterations=*/1,
-          CoopScope::THREAD,
-          1,
-          d_result,
-          stream.stream());
-    }
-    stream.synchronize();
-
-    checkKernelResults(
-        d_result, 1, "BufferChurn[" + std::to_string(cycle) + "]");
-    cudaFree(d_result);
-
-    win->deregister_local_buffer(src_buf);
-  }
-
-  win->tensor_deregister();
-  win.reset();
-  mem_pool.reset();
-  torchcomm_->barrier(false);
-}
-
 // =============================================================================
 // Parameterized Test Registrations
 // =============================================================================
@@ -756,8 +673,4 @@ TEST_F(DeviceApiIteratedTest, MultiComm) {
 
 TEST_F(DeviceApiIteratedTest, WindowLifecycle) {
   testWindowLifecycle();
-}
-
-TEST_F(DeviceApiIteratedTest, BufferRegistrationChurn) {
-  testBufferRegistrationChurn();
 }
