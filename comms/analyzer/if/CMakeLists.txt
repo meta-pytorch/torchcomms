@@ -12,42 +12,53 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# This CMakelists.txt file is used for oss_build.sh specifically and
-# should be run under conda environment.
-cmake_minimum_required(VERSION 3.10)
+# Standalone build support (e.g., oss_build.sh / conda).
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    cmake_minimum_required(VERSION 3.10)
+    project(CommsTracingService)
+    find_package(wangle REQUIRED)
+endif()
 
-project(CommsTracingService)
-
-find_package(wangle REQUIRED)
-
-set(THRIFT_FILE "comms/analyzer/if/CommsTracingService.thrift")
+# When included as subdirectory, CMAKE_CURRENT_SOURCE_DIR is already
+# comms/analyzer/if, so use just the filename.  Standalone builds set
+# it up from the repo root.
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    set(THRIFT_FILE "comms/analyzer/if/CommsTracingService.thrift")
+else()
+    set(THRIFT_FILE "CommsTracingService.thrift")
+endif()
 set(LIB_NAME "comms_tracing_service")
 
-set(CMAKE_MODULE_PATH
-  # For in-fbsource builds:
-  ${CMAKE_CURRENT_SOURCE_DIR}/../opensource/fbcode_builder/CMake
-  # For shipit-transformed builds:
-  ${CMAKE_CURRENT_SOURCE_DIR}/build/fbcode_builder/CMake
-  ${CMAKE_MODULE_PATH})
+# When included as subdirectory from the root build, fbthrift's cmake modules
+# are already on CMAKE_MODULE_PATH via add_subdirectory.  For standalone builds
+# we need to add them explicitly.
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    set(CMAKE_MODULE_PATH
+        ${CMAKE_CURRENT_SOURCE_DIR}/../opensource/fbcode_builder/CMake
+        ${CMAKE_CURRENT_SOURCE_DIR}/build/fbcode_builder/CMake
+        ${CMAKE_MODULE_PATH})
+endif()
 
-# Include the FBThrift cmake module for helper functions
-include(FBThriftConfig)
+# Include the FBThrift cmake module for helper functions.
+# FBThriftConfig sets FBTHRIFT_COMPILER and FBTHRIFT_INCLUDE_DIR;
+# for the subdirectory build these are already set by fbthrift.cmake.
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    include(FBThriftConfig)
+endif()
 include(FBThriftCppLibrary)
 
 # Create the Thrift library
 add_fbthrift_cpp_library(
-  ${LIB_NAME}
-  ${THRIFT_FILE}
-  SERVICES
-    CommsTracingService
-  OPTIONS
-    "json"
+    ${LIB_NAME}
+    ${THRIFT_FILE}
+    SERVICES
+        CommsTracingService
+    OPTIONS
+        "json"
 )
-
-# Install library
-install(
-  TARGETS
-    comms_tracing_service
-  PUBLIC_HEADER DESTINATION
-    "$<TARGET_PROPERTY:${LIB_NAME},HEADER_INSTALL_DIR>"
+# fbthrift requires C++20; wangle may have set CMAKE_CXX_STANDARD to 17
+# in its scope. Explicitly require C++20 for the generated thrift code.
+set_target_properties(${LIB_NAME} PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
 )

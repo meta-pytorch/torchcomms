@@ -46,6 +46,6 @@ target_link_libraries(torchcomms_comms_rcclx PRIVATE
 
 set(CMAKE_CXX_COMPILE_OBJECT "${CMAKE_CXX_COMPILE_OBJECT} -std=c++20")
 
-install(TARGETS torchcomms_comms_rcclx
+_install(TARGETS torchcomms_comms_rcclx
         LIBRARY DESTINATION .
 )

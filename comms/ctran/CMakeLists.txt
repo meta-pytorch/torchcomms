@@ -61,3 +61,7 @@ target_include_directories(ctran PRIVATE
     ${CONDA_INCLUDE}
     ${CUDA_INCLUDE_DIRS}
 )
+# When folly/fmt are built via FetchContent, propagate their include dirs.
+if(TARGET Folly::folly)
+    target_link_libraries(ctran PUBLIC Folly::folly fmt::fmt)
+endif()

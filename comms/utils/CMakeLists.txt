@@ -21,3 +21,7 @@ target_include_directories(utils PUBLIC
     ${CONDA_INCLUDE}
     ${CUDA_INCLUDE_DIRS}
 )
+# When folly/fmt are built via FetchContent, propagate their include dirs.
+if(TARGET Folly::folly)
+    target_link_libraries(utils PUBLIC Folly::folly fmt::fmt)
+endif()

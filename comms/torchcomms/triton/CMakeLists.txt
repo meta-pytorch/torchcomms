@@ -181,6 +181,6 @@ add_custom_target(torchcomms_triton_bitcode ALL
     DEPENDS "${TRITON_BC_OUTPUT}"
 )
 
-install(FILES "${TRITON_BC_OUTPUT}"
+_install(FILES "${TRITON_BC_OUTPUT}"
     DESTINATION triton/fb/
 )

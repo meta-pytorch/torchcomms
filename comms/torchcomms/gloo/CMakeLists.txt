@@ -21,7 +21,6 @@ set_target_properties(torchcomms_comms_gloo PROPERTIES
 )
 target_include_directories(torchcomms_comms_gloo PRIVATE
     ${ROOT}
-    ${FMT_INCLUDE}
     ${CONDA_INCLUDE}
     ${Python3_INCLUDE_DIRS}
     ${gloo_SOURCE_DIR}
@@ -32,17 +31,10 @@ target_link_libraries(torchcomms_comms_gloo PRIVATE
     ${TORCH_LIBRARIES}
     ${TORCH_PYTHON_LIB}
     torchcomms
+    fmt::fmt
+    glog::glog
 )
-if(USE_SYSTEM_LIBS)
-    target_link_libraries(torchcomms_comms_gloo PRIVATE
-        "-lfmt"
-    )
-else()
-    target_link_libraries(torchcomms_comms_gloo PRIVATE
-        "-l:libfmt.a"
-    )
-endif()
 
-install(TARGETS torchcomms_comms_gloo
+_install(TARGETS torchcomms_comms_gloo
     LIBRARY DESTINATION .
 )
