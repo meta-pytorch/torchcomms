@@ -10,8 +10,8 @@
 #include <chrono>
 
 #include "comms/common/CudaWrap.h"
+#include "comms/pipes/Checks.h"
 #include "comms/pipes/TimeoutUtils.h"
-#include "comms/pipes/tests/Checks.h"
 
 namespace comms::pipes {
 
