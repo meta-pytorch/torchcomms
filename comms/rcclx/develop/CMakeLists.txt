@@ -797,6 +797,11 @@ list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/pipes/.*/benchmarks/.*")
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/pipes/rdma/.*")
 # Exclude window files — they depend on IbgdaBuffer.h which is excluded.
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/pipes/window/.*")
+# Exclude GpuMemHandler and CudaDriverLazy — they depend on cudaTypedefs.h which is not available.
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "GpuMemHandler\\.")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "CudaDriverLazy\\.")
+# Exclude MultiPeerNvlTransport — it depends on GpuMemHandler.h which is excluded.
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "MultiPeerNvlTransport\\.")
 
 # Run this command to get RCCLX_LIB_FILES:
 # find comms/rcclx/develop/meta -type f ! -path "*/tests/*" -path "*/lib/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" \) | sort
