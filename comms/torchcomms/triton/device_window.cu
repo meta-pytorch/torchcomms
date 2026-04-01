@@ -83,13 +83,15 @@ __device__ int torchcomms_put_block(
     int dst_rank,
     unsigned long long bytes,
     int signal_id,
-    int counter_id) {
+    int counter_id,
+    unsigned int src_lkey) {
   auto* win = reinterpret_cast<DeviceWindow*>(win_ptr);
 
   RegisteredBuffer src_buf;
   src_buf.base_ptr = src_base_ptr;
   src_buf.size = static_cast<size_t>(src_size);
   src_buf.backend_window = src_nccl_win;
+  src_buf.lkey = static_cast<uint32_t>(src_lkey);
 
   return win->put(
       static_cast<size_t>(dst_offset),
