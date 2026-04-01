@@ -40,6 +40,7 @@ run_tests () {
         ScatterTest.py
         SplitTest.py
         TPCommTest.py
+        C10dTorchCommTest.py
     )
 
     for test_file in "${tests[@]}"; do
