@@ -173,40 +173,6 @@ CommDumpAllMap CommsMonitor::commDumpAllImpl() {
   return lockedMap->size();
 }
 
-/*static*/ std::vector<::comms::CommsTopologyInfo>
-CommsMonitor::getAllTopologies() {
-  std::vector<::comms::CommsTopologyInfo> result;
-  auto commMonitorPtr = getInstance();
-  if (commMonitorPtr == nullptr) {
-    return result;
-  }
-  commMonitorPtr->commsMap_.withRLock([&](const auto& map) {
-    result.reserve(map.size());
-    for (const auto& [_, info] : map) {
-      result.push_back(info.topoInfo);
-    }
-  });
-  return result;
-}
-
-/*static*/ std::optional<::comms::CommsTopologyInfo>
-CommsMonitor::getTopologyByCommDesc(const std::string& commDesc) {
-  auto commMonitorPtr = getInstance();
-  if (commMonitorPtr == nullptr) {
-    return std::nullopt;
-  }
-  std::optional<::comms::CommsTopologyInfo> result;
-  commMonitorPtr->commsMap_.withRLock([&](const auto& map) {
-    for (const auto& [_, info] : map) {
-      if (*info.topoInfo.commDesc() == commDesc) {
-        result = info.topoInfo;
-        return;
-      }
-    }
-  });
-  return result;
-}
-
 /*static*/ std::shared_ptr<CommsMonitor> CommsMonitor::getInstance() {
   return commsMonitorSingleton.try_get();
 }

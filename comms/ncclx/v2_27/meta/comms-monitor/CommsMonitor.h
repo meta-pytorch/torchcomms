@@ -52,10 +52,6 @@ class CommsMonitor {
   static std::optional<NcclCommMonitorInfo> getCommInfoByCommPtr(
       ncclComm_t comm);
 
-  static std::vector<::comms::CommsTopologyInfo> getAllTopologies();
-  static std::optional<::comms::CommsTopologyInfo> getTopologyByCommDesc(
-      const std::string& commDesc);
-
   // Get the total number of communicators CommsMonitor is currently monitoring
   // If any failure happened during calling this function, it will return -1.
   static int64_t getNumOfCommMonitoring();
