@@ -331,6 +331,12 @@ struct KernelConfig {
   void* algoArgs{nullptr};
   void* unpackPool{nullptr};
 
+  // Post-kernel cleanup callback. Populated by algorithm setup (e.g.,
+  // SendRecv P2P useList path); transferred to CtranGpeCmd on submit,
+  // invoked by GPE thread after the kernel signals completion via
+  // kernelFlag.
+  std::function<void()> postKernelCleanup{nullptr};
+
   const std::string algoName;
   // Copied after collective called ctran->updateOpCount()
   // Upon collective submission, we should always use the copied opCount since

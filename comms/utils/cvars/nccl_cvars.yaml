@@ -1517,6 +1517,16 @@ cvars:
      complete and CQEs are generated, new messages will be posted to keep the
      send queue full of this many WQEs.
 
+ - name        : NCCL_CTRAN_IB_MAX_NUM_CQE
+   type        : int
+   default     : -1
+   description : |-
+     Maximum number of Completion Queue Entries (CQEs). When set to a
+     positive value, caps the CQ size to reduce memory overhead. ConnectX
+     NICs report max_cqe ~4M which causes the driver to allocate ~256MB
+     per CQ. For example, setting to 32768 keeps per-CQ memory at ~2MB.
+     Default -1 to use the device-reported maximum.
+
  - name        : NCCL_CTRAN_IB_DEVICES_PER_RANK
    type        : int
    default     : 1

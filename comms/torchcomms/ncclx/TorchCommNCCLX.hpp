@@ -230,6 +230,17 @@ class TorchCommNCCLX : public TorchCommBackend,
       const at::Tensor& recv_indices,
       at::intrusive_ptr<TorchCommNCCLXPersistentRequest> pReq);
 
+  // Persistent AllGather operations
+  AllGatherPHandle all_gather_p_init(
+      at::Tensor& output,
+      const AllGatherPInitOptions& options = {}) override;
+  c10::intrusive_ptr<TorchWork> all_gather_p_exec(
+      AllGatherPHandle handle,
+      const at::Tensor& input,
+      bool async_op,
+      const AllGatherPExecOptions& options = {}) override;
+  void all_gather_p_free(AllGatherPHandle handle) override;
+
   c10::intrusive_ptr<TorchWork> barrier(
       bool async_op,
       const BarrierOptions& options = {}) override;
