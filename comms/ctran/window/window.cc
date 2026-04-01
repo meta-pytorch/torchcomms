@@ -286,13 +286,13 @@ bool CtranWin::nvlEnabled(int rank) const {
 }
 
 #if defined(ENABLE_PIPES)
-commResult_t CtranWin::get_device_win(
+commResult_t CtranWin::getDeviceWin(
     comms::pipes::DeviceWindow* devWin,
     const comms::pipes::WindowConfig& config) {
   auto* transport = comm->multiPeerTransport_.get();
   if (!transport) {
     FB_ERRORRETURN(
-        commInternalError, "get_device_win: multiPeerTransport is null.");
+        commInternalError, "getDeviceWin: multiPeerTransport is null.");
   }
 
   if (!hostWindow_) {

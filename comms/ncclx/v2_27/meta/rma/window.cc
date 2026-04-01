@@ -230,7 +230,7 @@ ncclResult_t ncclWinCreateDeviceWin(
     void** outDevicePtr) {
   // Creates a DeviceWindow in device memory from the ctran window underlying
   // the given ncclWindow_t. This is a COLLECTIVE operation on first call —
-  // all ranks must call together because get_device_win() does an allGather.
+  // all ranks must call together because getDeviceWin() does an allGather.
   //
   // Subsequent calls on the same window return cached results (config ignored).
   //
@@ -252,12 +252,12 @@ ncclResult_t ncclWinCreateDeviceWin(
       .barrierCount = static_cast<std::size_t>(std::max(barrier_count, 0)),
   };
 
-  // Populate DeviceWindow on host stack. get_device_win() fills in transport
+  // Populate DeviceWindow on host stack. getDeviceWin() fills in transport
   // handles, remote buffer descriptors, and signal pointers.
   comms::pipes::DeviceWindow host_dev_win{};
-  auto result = nw->ctranWindow->get_device_win(&host_dev_win, config);
+  auto result = nw->ctranWindow->getDeviceWin(&host_dev_win, config);
   if (result != commSuccess) {
-    WARN("ncclWinCreateDeviceWin: get_device_win failed with error %d", result);
+    WARN("ncclWinCreateDeviceWin: getDeviceWin failed with error %d", result);
     return ncclInternalError;
   }
 
