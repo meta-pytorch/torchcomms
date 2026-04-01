@@ -72,11 +72,6 @@ namespace ncclx::comms_monitor {
 class CommsMonitorTest : public ::testing::Test {
  public:
   void SetUp() override {
-    int deviceCount = 0;
-    cudaError_t err = cudaGetDeviceCount(&deviceCount);
-    if (err != cudaSuccess || deviceCount == 0) {
-      GTEST_SKIP() << "Skipping test because CUDA device is not available.";
-    }
     ncclCvarInit();
     NCCL_COMMSMONITOR_ENABLE = true;
   }
