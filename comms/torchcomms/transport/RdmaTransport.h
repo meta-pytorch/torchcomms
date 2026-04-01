@@ -357,6 +357,11 @@ class __attribute__((visibility("default"))) RdmaTransport {
   bool connected() const;
 
   /*
+   * Return the effective max CQ entries configured for this transport.
+   */
+  int getMaxCqe() const;
+
+  /*
    * [Remote Op] Transfer data from local buffer to remote buffer on the peer
    * rank via RDMA. The remote side can use the `checkNotify` API to wait for
    * the completion of the transfer for every iput call with notify=true.

@@ -201,6 +201,10 @@ bool RdmaTransport::connected() const {
   return ib_->getVc(kDummyRank) != nullptr;
 }
 
+int RdmaTransport::getMaxCqe() const {
+  return ib_->getMaxCqe();
+}
+
 folly::SemiFuture<commResult_t> RdmaTransport::write(
     RdmaMemory::View localBuffer,
     const RdmaRemoteBuffer& remoteBuffer,
