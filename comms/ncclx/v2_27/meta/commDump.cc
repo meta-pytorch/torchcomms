@@ -6,7 +6,6 @@
 
 #include <folly/json/dynamic.h>
 #include <folly/json/json.h>
-#include <thrift/lib/cpp2/protocol/Serializer.h>
 
 #include "comm.h"
 #include "meta/NcclxConfig.h" // @manual
@@ -212,11 +211,6 @@ std::unordered_map<std::string, std::string> commDumpByMonitorInfo(
   } else {
     XLOGF(DBG2, "CommDump: MAPPERTRACE is disabled. No trace to dump");
   }
-
-  map["ncclTopoInfo"] =
-      apache::thrift::SimpleJSONSerializer::serialize<std::string>(
-          info.topoInfo.toThrift());
-
   dumpProcessGlobalErrors(map);
   return map;
 }
@@ -265,10 +259,6 @@ __attribute__((visibility("default"))) ncclResult_t ncclCommDump(
     } else {
       XLOGF(DBG2, "CommDump: MAPPERTRACE is disabled. No trace to dump");
     }
-
-    map["ncclTopoInfo"] =
-        apache::thrift::SimpleJSONSerializer::serialize<std::string>(
-            ncclx::comms_monitor::NcclTopoInfo::fromNcclComm(comm).toThrift());
   }
   dumpProcessGlobalErrors(map);
 
