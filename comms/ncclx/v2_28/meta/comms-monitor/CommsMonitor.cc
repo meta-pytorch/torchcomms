@@ -30,17 +30,22 @@ std::vector<int64_t> getVectorRingFromArray(int nRanks, int* ring) {
 ::comms::CommsTopologyInfo getTopoInfoFromNcclComm(ncclComm_t comm) {
   ::comms::CommsTopologyInfo thriftTopoInfo;
   thriftTopoInfo.nChannels() = comm->nChannels;
+  thriftTopoInfo.commDesc() = comm->config.commDesc;
   std::vector<std::vector<int64_t>> rings(comm->nChannels);
   std::vector<::comms::TopoTreeNodeInfo> trees(comm->nChannels);
   for (int i = 0; i < comm->nChannels; i++) {
     auto& channel = comm->channels[i];
-    if (comm->lazySetupChannels && comm->nChannels != comm->nChannelsReady) {
-      rings[i] = getVectorRingFromArray(
-          comm->nRanks, comm->rings.value().data() + i * comm->nRanks);
-    } else {
-      rings[i] = getVectorRingFromArray(comm->nRanks, channel.ring.userRanks);
+    // Only acquire ring information from comm rank 0
+    if (comm->rank == 0) {
+      if (comm->lazySetupChannels && comm->nChannels != comm->nChannelsReady) {
+        rings[i] = getVectorRingFromArray(
+            comm->nRanks, comm->rings.value().data() + i * comm->nRanks);
+      } else {
+        rings[i] = getVectorRingFromArray(comm->nRanks, channel.ring.userRanks);
+      }
     }
     ::comms::TopoTreeNodeInfo curTreeNodeInfo;
+    curTreeNodeInfo.rank() = comm->rank;
     curTreeNodeInfo.parentNode() = channel.tree.up;
     std::vector<int64_t> childNodes(NCCL_MAX_TREE_ARITY);
     for (int i = 0; i < NCCL_MAX_TREE_ARITY; i++) {
