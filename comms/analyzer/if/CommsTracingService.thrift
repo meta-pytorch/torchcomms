@@ -232,7 +232,6 @@ struct NCCLCommRawEntry {
   // serialized json of ProcessGlobalErrors
   23: string processGlobalErrors;
   24: string NetworkPerfMonitor;
-  25: string commsTopoInfo;
 }
 
 struct TopoTreeNodeInfo {
@@ -281,7 +280,6 @@ struct NCCLParsedEntry {
   18: map<CommRank, i64> MT_putFinishedByPeer;
   22: string stage;
   23: ProcessGlobalErrors processGlobalErrors;
-  25: CommsTopologyInfo commsTopoInfo;
 }
 
 struct GlobalInfo {
@@ -321,9 +319,29 @@ struct GetCommsResponse {
   8: optional list<CudaError> cudaErrors;
 }
 
+enum TopologySource {
+  LIVE = 0,
+  SCUBA = 1,
+}
+
+struct GetTopologyRequest {
+  1: TopologySource source = TopologySource.LIVE;
+  2: optional string commDesc;
+  // For SCUBA source:
+  3: optional string mastJobName;
+  4: optional i64 jobVersion;
+  5: optional i64 jobAttempt;
+  6: optional string scubaTable;
+}
+
+struct GetTopologyResponse {
+  1: list<CommsTopologyInfo> topologies;
+}
+
 // Implementors of this service expose tracing information about communications
 // from *CCL libraries. Callers of this service can use this information to track
 // hung collectives and other issues.
 service CommsTracingService {
   GetCommsResponse getComms(1: GetCommsRequest request);
+  GetTopologyResponse getTopology(1: GetTopologyRequest request);
 }
