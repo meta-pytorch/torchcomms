@@ -120,6 +120,13 @@ struct CtranWin {
   commResult_t get_device_win(
       comms::pipes::DeviceWindow* devWin,
       const comms::pipes::WindowConfig& config);
+
+  // Returns the pipes HostWindow pointer for this window.
+  // The caller does not take ownership.
+  // Returns nullptr if pipes device window is not initialized.
+  comms::pipes::HostWindow* getPipesHostWindow() const {
+    return hostWindow_.get();
+  }
 #endif
 
   commResult_t free();
