@@ -1,6 +1,5 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include <nccl.h>
 #include <stdlib.h>
 #include <cstdio>
 
@@ -9,10 +8,9 @@
 #include <gtest/gtest.h>
 
 #include "CtranUtUtils.h"
-#include "comm.h"
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/AllToAllvDedup/tests/AllToAllvDedupTestBase.h"
-#include "comms/testinfra/TestsDistUtils.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 
 // #define VERBOSE 0
 
@@ -20,14 +18,16 @@
 // use it for debugging only
 constexpr bool kUseDeterministicBucketSeed = false;
 
-class CtranAllToAllvDedupTest : public CtranDistBaseTest,
+class CtranAllToAllvDedupTest : public ctran::CtranDistTestFixture,
+                                public CtranBaseTest,
                                 public AllToAllvDedupTestBase {
  public:
   CtranAllToAllvDedupTest() = default;
   void SetUp() override {
-    CtranDistBaseTest::SetUp();
+    ctran::CtranDistTestFixture::SetUp();
 
-    comm_ = commWorld->ctranComm_.get();
+    ctranComm_ = makeCtranComm();
+    comm_ = ctranComm_.get();
     CUDACHECK_ASSERT(cudaEventCreate(&execStart_));
     CUDACHECK_ASSERT(cudaEventCreate(&execStop_));
 
@@ -40,7 +40,8 @@ class CtranAllToAllvDedupTest : public CtranDistBaseTest,
     CUDACHECK_ASSERT(cudaEventDestroy(execStart_));
     CUDACHECK_ASSERT(cudaEventDestroy(execStop_));
 
-    CtranDistBaseTest::TearDown();
+    ctranComm_.reset();
+    ctran::CtranDistTestFixture::TearDown();
   }
 
   template <typename T>
@@ -72,6 +73,7 @@ class CtranAllToAllvDedupTest : public CtranDistBaseTest,
 
  protected:
   cudaStream_t stream_{0};
+  std::unique_ptr<CtranComm> ctranComm_{nullptr};
   CtranComm* comm_{nullptr};
   int expectedVal_{0};
   int myRank_;
@@ -182,8 +184,8 @@ std::vector<std::vector<int>> CtranAllToAllvDedupTest::genAllRankIndices(
   genRankBlockRecvBuckets(
       allowBuckets, allRankTmpContig.data() + myRank * numBlocksPerRank, seed);
 
-  // allgather block buckets from all ranks
-  allGather(allRankTmpContig.data(), numBlocksPerRank * sizeof(int));
+  // allgather block buckets from all ranks using OOB bootstrap
+  oobAllGather(allRankTmpContig, numBlocksPerRank * sizeof(int));
 
   // copy to 2D allRankBlkBkts_ for easier access
   std::vector<std::vector<int>> allRankBlkBkts;
@@ -680,7 +682,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranDistEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }
