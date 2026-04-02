@@ -3,16 +3,15 @@
 #include <folly/init/Init.h>
 #include <gtest/gtest.h>
 #include <stdlib.h>
-#include "comm.h"
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
 #include "nccl.h"
 
-class CtranDistMapperTest : public NcclxBaseTest {
+class CtranDistMapperTest : public ctran::CtranDistTestFixture {
  public:
   void SetUp() override {
     setenv("NCCL_CTRAN_ENABLE", "1", 0);
@@ -20,27 +19,23 @@ class CtranDistMapperTest : public NcclxBaseTest {
 #ifdef CTRAN_TEST_SOCKET_ONLY_BACKEND
     setenv("NCCL_CTRAN_BACKENDS", "socket, nvl", 1);
 #endif
-    NcclxBaseTest::SetUp();
+    ctran::CtranDistTestFixture::SetUp();
 
     // Turn on CTran for the entire test
     NCCL_CTRAN_ENABLE = true;
-    // Check epoch lock for the entire test
-    NCCL_CTRAN_IB_EPOCH_LOCK_ENFORCE_CHECK = true;
 
-    commDeprecated_ = createNcclComm(
-        globalRank, numRanks, localRank, false, nullptr, server.get());
-    comm_ = commDeprecated_->ctranComm_.get();
+    comm_ = makeCtranComm();
 
-    if (!ctranInitialized(comm_) || !comm_->ctran_->mapper->hasBackend()) {
+    if (!ctranInitialized(comm_.get()) ||
+        !comm_->ctran_->mapper->hasBackend()) {
       GTEST_SKIP()
           << "Ctran is not initialized or backend is not available.  Skip test.";
     }
   }
 
   void TearDown() override {
-    finalizeNcclComm(globalRank, server.get());
-    NCCLCHECK_TEST(ncclCommDestroy(commDeprecated_));
-    NcclxBaseTest::TearDown();
+    comm_.reset();
+    ctran::CtranDistTestFixture::TearDown();
   }
 
   void PreConnectAllPeers() {
@@ -54,8 +49,7 @@ class CtranDistMapperTest : public NcclxBaseTest {
   }
 
  protected:
-  ncclComm_t commDeprecated_{nullptr};
-  CtranComm* comm_{nullptr};
+  std::unique_ptr<CtranComm> comm_;
 };
 
 class CtranDistMapperBackendParam
@@ -125,7 +119,7 @@ TEST_P(CtranDistMapperBackendParam, intraAllGatherCtrl) {
 
   // Ensure all local ranks have finished importing remote NVL buffer before
   // deregister
-  intraNodeBarrier(commDeprecated_);
+  barrierNvlDomain(comm_.get());
 
   COMMCHECK_TEST(comm_->ctran_->commDeregister(handle));
   NCCLCHECK_TEST(ncclMemFree(buf));
@@ -210,7 +204,7 @@ TEST_P(CtranDistMapperBackendParam, allGatherCtrl) {
 
   // Ensure all local ranks have finished importing remote NVL buffer before
   // deregister
-  intraNodeBarrier(commDeprecated_);
+  barrierNvlDomain(comm_.get());
 
   COMMCHECK_TEST(comm_->ctran_->commDeregister(handle));
   NCCLCHECK_TEST(ncclMemFree(buf));
@@ -264,7 +258,7 @@ TEST_F(CtranDistMapperTest, allGatherCtrlNRanks) {
 
   // Ensure all local ranks have finished importing remote NVL buffer before
   // deregister
-  intraNodeBarrier(commDeprecated_);
+  barrierNvlDomain(comm_.get());
 
   COMMCHECK_TEST(comm_->ctran_->commDeregister(handle));
   NCCLCHECK_TEST(ncclMemFree(buf));
@@ -359,7 +353,7 @@ TEST_P(CtranDistMapperPerfConfigTestParam, CtrlWithUserAllocatedReq) {
 
   // Ensure all local ranks have finished importing remote NVL buffer before
   // deregister
-  intraNodeBarrier(commDeprecated_);
+  barrierNvlDomain(comm_.get());
 
   COMMCHECK_TEST(comm_->ctran_->commDeregister(handle));
   NCCLCHECK_TEST(ncclMemFree(buf));
@@ -499,7 +493,7 @@ TEST_P(CtranDistMapperPerfConfigTestParam, isendCtrlBatchToAllPeers) {
 
   // Ensure all local ranks have finished importing remote NVL buffer before
   // deregister
-  intraNodeBarrier(commDeprecated_);
+  barrierNvlDomain(comm_.get());
 
   COMMCHECK_TEST(comm_->ctran_->commDeregister(handle));
   NCCLCHECK_TEST(ncclMemFree(buf));
@@ -700,7 +694,7 @@ TEST_F(CtranDistMapperTest, intraNodeDynamicRegistration) {
 
   // Ensure all local ranks have finished importing remote NVL buffer before
   // deregister
-  intraNodeBarrier(commDeprecated_);
+  barrierNvlDomain(comm_.get());
 
   COMMCHECK_TEST(comm_->ctran_->mapper->deregDynamic(sendHdl));
 
@@ -905,7 +899,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranDistEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }
