@@ -45,6 +45,9 @@ struct AllToAllvAutoConfig {
   /// as 2 * nranks * 32 (minimum for partition_interleaved chain).
   int ibgdaNumBlocks{1};
   int ibgdaNumThreads{128};
+
+  /// Warp reservation for hybrid NVLink+IBGDA (0 = auto for all fields).
+  WarpReserveConfig warpReserve;
 };
 
 /**

@@ -22,6 +22,52 @@
 
 namespace comms::pipes {
 
+/**
+ * Host-side warp reservation config for hybrid NVLink+IBGDA AllToAllv.
+ *
+ * Controls exact warp allocation across five categories:
+ * NVL-send, NVL-recv, IBGDA-send, IBGDA-recv, and self-copy.
+ * A value of 0 means "auto-compute from peer counts" (backward compatible):
+ *   - selfWarps:     default 1
+ *   - nvlSendWarps:  default 2 per NVL peer
+ *   - nvlRecvWarps:  default 2 per NVL peer
+ *   - ibgdaSendWarps: default 1 per IBGDA peer
+ *   - ibgdaRecvWarps: default 1 per IBGDA peer
+ */
+struct WarpReserveConfig {
+  int nvlSendWarps = 0;
+  int nvlRecvWarps = 0;
+  int ibgdaSendWarps = 0;
+  int ibgdaRecvWarps = 0;
+  int selfWarps = 0;
+};
+
+/**
+ * Device-side warp reserve config with precomputed cumulative boundaries.
+ *
+ * Warp categories are ordered: [self | nvlSend | nvlRecv | ibgdaSend |
+ * ibgdaRecv]. Each *End field is the exclusive boundary (first warp_id NOT in
+ * that category). ibgdaRecvEnd is implicit (= total warps from thread count).
+ *
+ * When isConfigured() returns false, the kernel falls back to the existing
+ * uniform partition_interleaved logic for full backward compatibility.
+ */
+struct WarpReserveDeviceConfig {
+  uint32_t selfEnd = 0;
+  uint32_t nvlSendEnd = 0;
+  uint32_t nvlRecvEnd = 0;
+  uint32_t ibgdaSendEnd = 0;
+
+  const int* nvlPeerRanks = nullptr;
+  uint32_t numNvlPeers = 0;
+  const int* ibgdaPeerRanks = nullptr;
+  uint32_t numIbgdaPeers = 0;
+
+  __host__ __device__ bool isConfigured() const {
+    return nvlSendEnd > 0 || ibgdaSendEnd > 0 || selfEnd > 0;
+  }
+};
+
 namespace {
 /**
  * Debug helper to print all_to_allv communication information.

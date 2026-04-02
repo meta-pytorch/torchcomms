@@ -104,4 +104,45 @@ void all_to_allv(
       cluster_dim);
 }
 
+WarpReserveDeviceConfig resolveWarpReserve(
+    const WarpReserveConfig& config,
+    int numNvlPeers,
+    int numIbgdaPeers,
+    const int* d_nvlPeerRanks,
+    const int* d_ibgdaPeerRanks) {
+  if (numNvlPeers == 0 && numIbgdaPeers == 0) {
+    return {};
+  }
+
+  bool anyExplicit = config.nvlSendWarps > 0 || config.nvlRecvWarps > 0 ||
+      config.ibgdaSendWarps > 0 || config.ibgdaRecvWarps > 0 ||
+      config.selfWarps > 0;
+  if (!anyExplicit) {
+    return {};
+  }
+
+  int selfW = config.selfWarps > 0 ? config.selfWarps : 1;
+  int nvlSendW =
+      config.nvlSendWarps > 0 ? config.nvlSendWarps : 2 * numNvlPeers;
+  int nvlRecvW =
+      config.nvlRecvWarps > 0 ? config.nvlRecvWarps : 2 * numNvlPeers;
+  int ibgdaSendW =
+      config.ibgdaSendWarps > 0 ? config.ibgdaSendWarps : 1 * numIbgdaPeers;
+  int ibgdaRecvW =
+      config.ibgdaRecvWarps > 0 ? config.ibgdaRecvWarps : 1 * numIbgdaPeers;
+
+  WarpReserveDeviceConfig dc;
+  dc.selfEnd = static_cast<uint32_t>(selfW);
+  dc.nvlSendEnd = dc.selfEnd + static_cast<uint32_t>(nvlSendW);
+  dc.nvlRecvEnd = dc.nvlSendEnd + static_cast<uint32_t>(nvlRecvW);
+  dc.ibgdaSendEnd = dc.nvlRecvEnd + static_cast<uint32_t>(ibgdaSendW);
+
+  dc.nvlPeerRanks = d_nvlPeerRanks;
+  dc.numNvlPeers = static_cast<uint32_t>(numNvlPeers);
+  dc.ibgdaPeerRanks = d_ibgdaPeerRanks;
+  dc.numIbgdaPeers = static_cast<uint32_t>(numIbgdaPeers);
+
+  return dc;
+}
+
 } // namespace comms::pipes
