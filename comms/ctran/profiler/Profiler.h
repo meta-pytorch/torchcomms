@@ -79,6 +79,11 @@ class Profiler {
 
   void reportToScuba();
 
+  // Replace the reporter (for testing with mock reporters).
+  void setReporter(std::unique_ptr<IAlgoProfilerReporter> reporter) {
+    reporter_ = std::move(reporter);
+  }
+
  public:
   AlgoContext algoContext{};
 

@@ -3,18 +3,11 @@
 #include "comms/ctran/profiler/Profiler.h"
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "comms/ctran/profiler/AlgoProfilerReport.h"
-#include "comms/ctran/profiler/IProfilerReporter.h"
+#include "comms/ctran/profiler/tests/MockAlgoProfilerReporter.h"
 
 using namespace ::testing;
 
 namespace ctran {
-
-// Mock reporter using GMock for call verification
-class MockAlgoProfilerReporter : public IProfilerReporter {
- public:
-  MOCK_METHOD(void, report, (const AlgoProfilerReport& report), (override));
-};
 
 class ProfilerTest : public ::testing::Test {
  public:
@@ -28,6 +21,14 @@ class ProfilerTest : public ::testing::Test {
   }
   void TearDown() override {
     comm_ = nullptr;
+  }
+
+  uint64_t getOpCount() {
+    return profiler_->opCount_;
+  }
+
+  void setReporter(std::unique_ptr<ctran::IProfilerReporter> reporter) {
+    profiler_->setReporter(std::move(reporter));
   }
 
  protected:
