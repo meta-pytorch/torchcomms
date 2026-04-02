@@ -1,7 +1,8 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #include "comms/ctran/profiler/Profiler.h"
-#include "comms/utils/logger/EventMgr.h"
-#include "comms/utils/logger/ScubaLogger.h"
+#include "comms/ctran/profiler/DefaultAlgoProfilerReporter.h"
+
+#include <unordered_map>
 
 namespace {
 
@@ -26,6 +27,38 @@ uint64_t getTimeStamp(TimePoint timePoint) {
 } // namespace
 
 namespace ctran {
+
+namespace {
+
+std::unordered_map<ReporterType, AlgoProfilerReporterFactory>&
+getFactoryRegistry() {
+  static std::unordered_map<ReporterType, AlgoProfilerReporterFactory> registry;
+  return registry;
+}
+
+std::unique_ptr<IProfilerReporter> createReporter(
+    ReporterType type,
+    CtranComm* comm) {
+  auto& registry = getFactoryRegistry();
+  auto it = registry.find(type);
+  if (it != registry.end()) {
+    return it->second(comm);
+  }
+  return std::make_unique<DefaultAlgoProfilerReporter>();
+}
+
+} // namespace
+
+void registerAlgoProfilerReporterFactory(
+    ReporterType type,
+    AlgoProfilerReporterFactory factory) {
+  getFactoryRegistry()[type] = std::move(factory);
+}
+
+Profiler::Profiler(CtranComm* comm, ReporterType reporterType)
+    : comm_(comm), reporter_(createReporter(reporterType, comm)) {}
+
+Profiler::~Profiler() = default;
 
 void Profiler::initForEachColl(int opCount, int samplingWeight) {
   shouldTrace_ = samplingWeight > 0 && (opCount % samplingWeight) == 0;
@@ -70,56 +103,40 @@ void Profiler::endEvent(
   }
 }
 
+AlgoProfilerReport Profiler::buildReport() const {
+  return {
+      .algoContext = &algoContext,
+      .logMetaData = &comm_->logMetaData_,
+      .opCount = opCount_,
+      .bufferRegistrationTimeUs =
+          durations_[static_cast<size_t>(ProfilerEvent::BUF_REG)],
+      .controlSyncTimeUs =
+          durations_[static_cast<size_t>(ProfilerEvent::ALGO_CTRL)],
+      .dataTransferTimeUs =
+          durations_[static_cast<size_t>(ProfilerEvent::ALGO_DATA)],
+      .collectiveDurationUs =
+          durations_[static_cast<size_t>(ProfilerEvent::ALGO_TOTAL)],
+      .readyTs = readyTs_,
+      .controlTs = controlTs_,
+      .timeFromDataToCollEndUs = getDurationUs(
+          timers_[static_cast<size_t>(ProfilerEvent::ALGO_DATA)]
+              .getCheckpoint(),
+          timers_[static_cast<size_t>(ProfilerEvent::ALGO_TOTAL)]
+              .getCheckpoint()),
+  };
+}
+
 void Profiler::reportToScuba() {
   if (!shouldTrace_) {
     return;
   }
   endEvent(ctran::ProfilerEvent::ALGO_TOTAL);
-  logNcclProfilingAlgo();
+
+  if (reporter_) {
+    reporter_->report(buildReport());
+  }
+
   shouldTrace_ = false;
-}
-
-void Profiler::logNcclProfilingAlgo() const {
-  const uint64_t bufferRegistrationTimeUs =
-      durations_[static_cast<size_t>(ProfilerEvent::BUF_REG)];
-
-  const uint64_t controlSyncTimeUs =
-      durations_[static_cast<size_t>(ProfilerEvent::ALGO_CTRL)];
-
-  const uint64_t dataTransferTimeUs =
-      durations_[static_cast<size_t>(ProfilerEvent::ALGO_DATA)];
-
-  const uint64_t timeFromDataToCollEndUs = getDurationUs(
-      timers_[static_cast<size_t>(ProfilerEvent::ALGO_DATA)].getCheckpoint(),
-      timers_[static_cast<size_t>(ProfilerEvent::ALGO_TOTAL)].getCheckpoint());
-
-  const uint64_t collDurationUs =
-      durations_[static_cast<size_t>(ProfilerEvent::ALGO_TOTAL)];
-
-  NcclScubaEvent scubaEvent(
-      std::make_unique<CtranProfilerAlgoEvent>(
-          &comm_->logMetaData_,
-          "algoProfilingV2",
-          "",
-          0,
-          algoContext.peerRank,
-          algoContext.deviceName,
-          "",
-          algoContext.algorithmName,
-          algoContext.sendContext.messageSizes,
-          algoContext.recvContext.messageSizes,
-          "",
-          algoContext.sendContext.totalBytes,
-          algoContext.recvContext.totalBytes,
-          bufferRegistrationTimeUs,
-          controlSyncTimeUs,
-          dataTransferTimeUs,
-          opCount_,
-          readyTs_,
-          controlTs_,
-          timeFromDataToCollEndUs,
-          collDurationUs));
-  scubaEvent.record();
 }
 
 } // namespace ctran

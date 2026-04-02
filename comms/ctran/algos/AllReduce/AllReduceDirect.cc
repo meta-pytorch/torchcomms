@@ -8,6 +8,7 @@
 #include "comms/ctran/algos/AllReduce/AllReduceImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/profiler/Profiler.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
@@ -87,6 +88,21 @@ static commResult_t impl(
 
   CtranAlgoLogger logger(allReduceAlgoName(myAlgo), op->opCount, comm);
 
+  ctran::Profiler* profiler = comm->ctran_->profiler.get();
+  if (profiler) {
+    profiler->initForEachColl(
+        op->opCount, NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT);
+  }
+
+  CTRAN_PROFILER_IF(profiler, {
+    auto& algoContext = profiler->algoContext;
+    algoContext.algorithmName = allReduceAlgoName(myAlgo);
+    algoContext.sendContext.totalBytes = size;
+    algoContext.sendContext.messageSizes = std::to_string(size);
+    algoContext.recvContext.totalBytes = size;
+    algoContext.recvContext.messageSizes = std::to_string(size);
+  });
+
   /* intra-node */
   std::vector<void*> intraNodeRemoteSendBuffs(nLocalRanks);
   std::vector<void*> intraNodeRemoteRecvBuffs(nLocalRanks);
@@ -118,10 +134,14 @@ static commResult_t impl(
       std::unique_ptr<CtranMapperTimestamp>(
           new CtranMapperTimestamp(allReduceAlgoName(myAlgo)));
 
+  CTRAN_PROFILER_IF(
+      profiler, profiler->startEvent(ctran::ProfilerEvent::BUF_REG));
   FB_COMMCHECK(comm->ctran_->mapper->searchRegHandle(
       op->allreduce.sendbuff, size, &sendHdl, &localRegSend));
   FB_COMMCHECK(comm->ctran_->mapper->searchRegHandle(
       op->allreduce.recvbuff, size, &recvHdl, &localRegRecv));
+  CTRAN_PROFILER_IF(
+      profiler, profiler->endEvent(ctran::ProfilerEvent::BUF_REG));
 
   CtranMapperContext context(allReduceAlgoName(myAlgo), size, size);
   comm->ctran_->mapper->setContext(std::move(context));
@@ -130,6 +150,9 @@ static commResult_t impl(
   // so we first exchange control messages for the sendbuff, wait for
   // it to complete, and then exchange control messages for the
   // recvbuff.
+
+  CTRAN_PROFILER_IF(
+      profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_CTRL));
 
   // Issue sendbuff control messages within the node
   for (int lr = 0; lr < nLocalRanks; lr++) {
@@ -235,6 +258,11 @@ static commResult_t impl(
           interNodeLocalRecvbuffReq[n].get()));
     }
   }
+
+  CTRAN_PROFILER_IF(
+      profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_CTRL));
+  CTRAN_PROFILER_IF(
+      profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_DATA));
 
   auto [tmpBuf, tmpbufRegHdl] = comm->ctran_->algo->getTmpBufInfo(
       CtranAlgo::TmpbufType::INTERNODE_TMPBUF);
@@ -508,12 +536,17 @@ static commResult_t impl(
         "ctdirect step 7: remainder inter-node allreduce");
   }
 
+  CTRAN_PROFILER_IF(
+      profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_DATA));
+
   if (localRegSend == true) {
     FB_COMMCHECK(comm->ctran_->mapper->deregDynamic(sendHdl));
   }
   if (localRegRecv == true) {
     FB_COMMCHECK(comm->ctran_->mapper->deregDynamic(recvHdl));
   }
+
+  CTRAN_PROFILER_IF(profiler, { profiler->reportToScuba(); });
 
   comm->ctran_->mapper->timestamps.emplace_back(std::move(timestamp));
   comm->ctran_->mapper->reportProfiling();
