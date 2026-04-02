@@ -264,6 +264,14 @@ MultiPeerDeviceHandle MultiPeerTransport::get_device_handle() const {
       {transportsGpu_, static_cast<uint32_t>(nRanks_)},
       static_cast<int>(nvlPeerRanks_.size()),
       static_cast<int>(ibgdaPeerRanks_.size()),
+      nvlPeerRanksGpu_
+          ? DeviceSpan<const int>(
+                nvlPeerRanksGpu_, static_cast<uint32_t>(numNvlTransportPeers_))
+          : DeviceSpan<const int>{},
+      ibgdaPeerRanksGpu_ ? DeviceSpan<const int>(
+                               ibgdaPeerRanksGpu_,
+                               static_cast<uint32_t>(numIbgdaTransportPeers_))
+                         : DeviceSpan<const int>{},
   };
 
   return handle;
@@ -770,6 +778,45 @@ void MultiPeerTransport::build_device_handle() {
   CUDA_CHECK(cudaMalloc(&chunkInfoSendBuf_, chunkBytes));
   CUDA_CHECK(cudaMalloc(&chunkInfoRecvBuf_, chunkBytes));
 
+  // Build transport-type-based peer rank arrays for WarpReserveDeviceConfig.
+  // These must reflect the ACTUAL transport type (typePerRank_), not topology.
+  // With forceIbgda=true, NVLink-topology peers use IBGDA transport, so they
+  // must appear in ibgda peer ranks, not nvl peer ranks.
+  std::vector<int> nvlTransportPeers;
+  std::vector<int> ibgdaTransportPeers;
+  for (int r = 0; r < nRanks_; ++r) {
+    if (typePerRank_[r] == TransportType::P2P_NVL) {
+      nvlTransportPeers.push_back(r);
+    } else if (typePerRank_[r] == TransportType::P2P_IBGDA) {
+      ibgdaTransportPeers.push_back(r);
+    }
+  }
+
+  // Upload NVL peer rank array to device (by transport type, not topology)
+  if (!nvlTransportPeers.empty()) {
+    const size_t nvlBytes = nvlTransportPeers.size() * sizeof(int);
+    CUDA_CHECK(cudaMalloc(&nvlPeerRanksGpu_, nvlBytes));
+    CUDA_CHECK(cudaMemcpy(
+        nvlPeerRanksGpu_,
+        nvlTransportPeers.data(),
+        nvlBytes,
+        cudaMemcpyHostToDevice));
+  }
+
+  // Upload IBGDA peer rank array to device (by transport type, not topology)
+  if (!ibgdaTransportPeers.empty()) {
+    const size_t ibgdaBytes = ibgdaTransportPeers.size() * sizeof(int);
+    CUDA_CHECK(cudaMalloc(&ibgdaPeerRanksGpu_, ibgdaBytes));
+    CUDA_CHECK(cudaMemcpy(
+        ibgdaPeerRanksGpu_,
+        ibgdaTransportPeers.data(),
+        ibgdaBytes,
+        cudaMemcpyHostToDevice));
+  }
+
+  numNvlTransportPeers_ = static_cast<int>(nvlTransportPeers.size());
+  numIbgdaTransportPeers_ = static_cast<int>(ibgdaTransportPeers.size());
+
   deviceHandleBuilt_ = true;
 }
 
@@ -791,6 +838,14 @@ void MultiPeerTransport::free_device_handle() {
   if (chunkInfoRecvBuf_) {
     (void)cudaFree(chunkInfoRecvBuf_);
     chunkInfoRecvBuf_ = nullptr;
+  }
+  if (nvlPeerRanksGpu_) {
+    (void)cudaFree(nvlPeerRanksGpu_);
+    nvlPeerRanksGpu_ = nullptr;
+  }
+  if (ibgdaPeerRanksGpu_) {
+    (void)cudaFree(ibgdaPeerRanksGpu_);
+    ibgdaPeerRanksGpu_ = nullptr;
   }
   deviceHandleBuilt_ = false;
 }
