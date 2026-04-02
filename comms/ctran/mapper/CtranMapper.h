@@ -1213,7 +1213,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       CtranMapperBackend backend = CtranMapperBackend::UNSET) {
     req->type = CtranMapperRequest::ReqType::SEND_CTRL;
     req->peer = peerRank;
-    req->backend = getCtrlBackend(backend);
+    req->backend = getCtrlBackend();
     FB_COMMCHECK(
         this->exportMem(peerRank, buf, hdl, req->sendCtrl.msg, backend));
     auto& msg = req->sendCtrl.msg;
