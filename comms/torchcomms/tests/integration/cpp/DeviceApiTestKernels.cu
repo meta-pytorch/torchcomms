@@ -1,9 +1,9 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 //
-// CUDA kernel implementations for DeviceApiIteratedTest (NCCLx backend).
+// CUDA kernel implementations for DeviceApiStressTest (NCCLx backend).
 
-#include "DeviceApiIteratedTestKernels.cuh"
-#include "IteratedTestKernelUtils.cuh"
+#include "DeviceApiTestKernels.cuh"
+#include "StressTestKernelUtils.cuh"
 
 #include <cuda_fp16.h>
 #include "comms/torchcomms/device/ncclx/TorchCommDeviceNCCLX.cuh"
@@ -19,11 +19,11 @@
 namespace torchcomms::device::test {
 
 // ---------------------------------------------------------------------------
-// Iterated Put Kernel
+// Stress Put Kernel
 // ---------------------------------------------------------------------------
 // Each iteration: fill src -> put to dst_rank -> wait signal from src_rank ->
 // verify received data. Uses monotonic signal values (signal = iter+1).
-__global__ void iteratedPutKernel(
+__global__ void stressPutKernel(
     DeviceWindowNCCL* win,
     RegisteredBufferNCCL src_buf,
     float* src_ptr,
@@ -65,7 +65,7 @@ __global__ void iteratedPutKernel(
   }
 }
 
-void launchIteratedPutKernel(
+void launchStressPutKernel(
     DeviceWindowNCCL* win,
     RegisteredBufferNCCL src_buf,
     float* src_ptr,
@@ -82,7 +82,7 @@ void launchIteratedPutKernel(
     int num_threads,
     int* results,
     cudaStream_t stream) {
-  iteratedPutKernel<<<1, num_threads, 0, stream>>>(
+  stressPutKernel<<<1, num_threads, 0, stream>>>(
       win,
       src_buf,
       src_ptr,
@@ -101,12 +101,12 @@ void launchIteratedPutKernel(
 }
 
 // ---------------------------------------------------------------------------
-// Iterated Signal Kernel
+// Stress Signal Kernel
 // ---------------------------------------------------------------------------
 // Ring signal pattern: rank i signals rank (i+1), waits for signal from (i-1).
 // Uses monotonic signal values.
 
-__global__ void iteratedSignalKernel(
+__global__ void stressSignalKernel(
     DeviceWindowNCCL* win,
     int dst_rank,
     int src_rank,
@@ -125,7 +125,7 @@ __global__ void iteratedSignalKernel(
   }
 }
 
-void launchIteratedSignalKernel(
+void launchStressSignalKernel(
     DeviceWindowNCCL* win,
     int dst_rank,
     int src_rank,
@@ -134,31 +134,31 @@ void launchIteratedSignalKernel(
     CoopScope scope,
     int num_threads,
     cudaStream_t stream) {
-  iteratedSignalKernel<<<1, num_threads, 0, stream>>>(
+  stressSignalKernel<<<1, num_threads, 0, stream>>>(
       win, dst_rank, src_rank, signal_id, iterations, scope);
   KERNEL_LAUNCH_CHECK();
 }
 
 // ---------------------------------------------------------------------------
-// Iterated Barrier Kernel
+// Stress Barrier Kernel
 // ---------------------------------------------------------------------------
 // Calls barrier repeatedly, alternating between two barrier IDs.
 
 __global__ void
-iteratedBarrierKernel(DeviceWindowNCCL* win, int iterations, CoopScope scope) {
+stressBarrierKernel(DeviceWindowNCCL* win, int iterations, CoopScope scope) {
   for (int iter = 0; iter < iterations; iter++) {
     int barrier_id = iter % 2;
     win->barrier(barrier_id, scope);
   }
 }
 
-void launchIteratedBarrierKernel(
+void launchStressBarrierKernel(
     DeviceWindowNCCL* win,
     int iterations,
     CoopScope scope,
     int num_threads,
     cudaStream_t stream) {
-  iteratedBarrierKernel<<<1, num_threads, 0, stream>>>(win, iterations, scope);
+  stressBarrierKernel<<<1, num_threads, 0, stream>>>(win, iterations, scope);
   KERNEL_LAUNCH_CHECK();
 }
 
@@ -167,7 +167,7 @@ void launchIteratedBarrierKernel(
 // ---------------------------------------------------------------------------
 // Each iteration: barrier -> fill -> put -> wait_signal -> verify -> barrier
 
-__global__ void iteratedCombinedKernel(
+__global__ void stressCombinedKernel(
     DeviceWindowNCCL* win,
     RegisteredBufferNCCL src_buf,
     float* src_ptr,
@@ -211,7 +211,7 @@ __global__ void iteratedCombinedKernel(
   }
 }
 
-void launchIteratedCombinedKernel(
+void launchStressCombinedKernel(
     DeviceWindowNCCL* win,
     RegisteredBufferNCCL src_buf,
     float* src_ptr,
@@ -227,7 +227,7 @@ void launchIteratedCombinedKernel(
     int iterations,
     int* results,
     cudaStream_t stream) {
-  iteratedCombinedKernel<<<1, 1, 0, stream>>>(
+  stressCombinedKernel<<<1, 1, 0, stream>>>(
       win,
       src_buf,
       src_ptr,
@@ -246,12 +246,12 @@ void launchIteratedCombinedKernel(
 }
 
 // ---------------------------------------------------------------------------
-// Iterated Aggregated Signal Kernel
+// Stress Aggregated Signal Kernel
 // ---------------------------------------------------------------------------
 // Each iteration: signal dst_rank -> aggregated wait_signal (not per-peer)
 // -> read_signal -> reset_signal -> verify read_signal returns 0 after reset.
 
-__global__ void iteratedAggregatedSignalKernel(
+__global__ void stressAggregatedSignalKernel(
     DeviceWindowNCCL* win,
     int dst_rank,
     int signal_id,
@@ -289,25 +289,25 @@ __global__ void iteratedAggregatedSignalKernel(
   }
 }
 
-void launchIteratedAggregatedSignalKernel(
+void launchStressAggregatedSignalKernel(
     DeviceWindowNCCL* win,
     int dst_rank,
     int signal_id,
     int iterations,
     int* results,
     cudaStream_t stream) {
-  iteratedAggregatedSignalKernel<<<1, 1, 0, stream>>>(
+  stressAggregatedSignalKernel<<<1, 1, 0, stream>>>(
       win, dst_rank, signal_id, iterations, results);
   KERNEL_LAUNCH_CHECK();
 }
 
 // ---------------------------------------------------------------------------
-// Iterated Half-Precision Put Kernel
+// Stress Half-Precision Put Kernel
 // ---------------------------------------------------------------------------
-// Same as iteratedPutKernel but operates on __half data. Each iteration:
+// Same as stressPutKernel but operates on __half data. Each iteration:
 // fill src with half-precision pattern -> put -> wait_signal -> verify.
 
-__global__ void iteratedPutHalfKernel(
+__global__ void stressPutHalfKernel(
     DeviceWindowNCCL* win,
     RegisteredBufferNCCL src_buf,
     __half* src_ptr,
@@ -372,7 +372,7 @@ __global__ void iteratedPutHalfKernel(
   }
 }
 
-void launchIteratedPutHalfKernel(
+void launchStressPutHalfKernel(
     DeviceWindowNCCL* win,
     RegisteredBufferNCCL src_buf,
     void* src_ptr,
@@ -389,7 +389,7 @@ void launchIteratedPutHalfKernel(
     int num_threads,
     int* results,
     cudaStream_t stream) {
-  iteratedPutHalfKernel<<<1, num_threads, 0, stream>>>(
+  stressPutHalfKernel<<<1, num_threads, 0, stream>>>(
       win,
       src_buf,
       static_cast<__half*>(src_ptr),

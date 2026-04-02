@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 //
-// Iterated functional tests for TorchComm Device API — Pipes (IBGDA+NVLink)
+// Stress functional tests for TorchComm Device API — Pipes (IBGDA+NVLink)
 // backend.
 
 #pragma once
@@ -15,27 +15,27 @@
 
 #include <ATen/cuda/MemPool.h>
 
-#include "IteratedTestHelpers.hpp"
+#include "StressTestHelpers.hpp"
 #include "TorchCommTestHelpers.h"
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/ncclx/TorchCommWindowNCCLX.hpp"
 
-class PipesDeviceApiIteratedTest : public ::testing::Test {
+class PipesDeviceApiTest : public ::testing::Test {
  protected:
   void SetUp() override;
   void TearDown() override;
 
-  void testIteratedPut(size_t msg_bytes, torchcomms::device::CoopScope scope);
-  void testIteratedSignal(torchcomms::device::CoopScope scope);
-  void testIteratedBarrier(torchcomms::device::CoopScope scope);
-  void testIteratedCombined(size_t msg_bytes);
+  void testStressPut(size_t msg_bytes, torchcomms::device::CoopScope scope);
+  void testStressSignal(torchcomms::device::CoopScope scope);
+  void testStressBarrier(torchcomms::device::CoopScope scope);
+  void testStressCombined(size_t msg_bytes);
   void testMultiWindow();
   void testMultiComm();
   void testWindowLifecycle();
-  void testIteratedPutCounter(size_t msg_bytes);
-  void testIteratedSignalReadHost(torchcomms::device::CoopScope scope);
+  void testStressPutCounter(size_t msg_bytes);
+  void testStressSignalReadHost(torchcomms::device::CoopScope scope);
 
-  torchcomms::device::test::IteratedTestConfig config_;
+  torchcomms::device::test::StressTestConfig config_;
   std::unique_ptr<TorchCommTestWrapper> wrapper_;
   std::shared_ptr<torch::comms::TorchComm> torchcomm_;
   std::shared_ptr<c10::Allocator> allocator_;

@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 //
-// CUDA kernel declarations for PipesDeviceApiIteratedTest (Pipes backend).
+// CUDA kernel declarations for PipesDeviceApiTest (Pipes backend).
 // Host-safe header — can be included from .cpp files compiled by clang.
 
 // NOLINTNEXTLINE(clang-diagnostic-pragma-once-outside-header)
@@ -11,9 +11,9 @@
 
 namespace torchcomms::device::test {
 
-// Iterated put kernel for Pipes backend.
+// Stress put kernel for Pipes backend.
 // Uses monotonic signal values (Pipes does NOT support reset_signal).
-void launchPipesIteratedPutKernel(
+void launchPipesStressPutKernel(
     DeviceWindowPipes* win,
     RegisteredBufferPipes src_buf,
     float* src_ptr,
@@ -31,9 +31,9 @@ void launchPipesIteratedPutKernel(
     int* results,
     cudaStream_t stream);
 
-// Iterated signal kernel for Pipes backend.
+// Stress signal kernel for Pipes backend.
 // Ring pattern with monotonic signal values.
-void launchPipesIteratedSignalKernel(
+void launchPipesStressSignalKernel(
     DeviceWindowPipes* win,
     int dst_rank,
     int src_rank,
@@ -43,8 +43,8 @@ void launchPipesIteratedSignalKernel(
     int num_threads,
     cudaStream_t stream);
 
-// Iterated barrier kernel for Pipes backend.
-void launchPipesIteratedBarrierKernel(
+// Stress barrier kernel for Pipes backend.
+void launchPipesStressBarrierKernel(
     DeviceWindowPipes* win,
     int iterations,
     CoopScope scope,
@@ -53,7 +53,7 @@ void launchPipesIteratedBarrierKernel(
 
 // Combined ops kernel for Pipes backend.
 // barrier -> fill -> put -> wait_signal -> verify -> barrier per iteration.
-void launchPipesIteratedCombinedKernel(
+void launchPipesStressCombinedKernel(
     DeviceWindowPipes* win,
     RegisteredBufferPipes src_buf,
     float* src_ptr,
@@ -70,10 +70,10 @@ void launchPipesIteratedCombinedKernel(
     int* results,
     cudaStream_t stream);
 
-// Iterated put-with-counter kernel for Pipes backend.
+// Stress put-with-counter kernel for Pipes backend.
 // Each iteration: put with signal+counter, wait_counter (if IBGDA),
 // wait_signal, verify data, read_counter into results array.
-void launchPipesIteratedPutCounterKernel(
+void launchPipesStressPutCounterKernel(
     DeviceWindowPipes* win,
     RegisteredBufferPipes src_buf,
     float* src_ptr,

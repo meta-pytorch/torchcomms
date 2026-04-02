@@ -1,10 +1,10 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 //
-// CUDA kernel implementations for PipesTransportIteratedTest.
-// Tests P2pNvlTransportDevice APIs under iterated stress.
+// CUDA kernel implementations for PipesTransportApiTest.
+// Tests P2pNvlTransportDevice APIs under stress.
 
-#include "IteratedTestKernelUtils.cuh"
-#include "PipesTransportIteratedTestKernels.cuh"
+#include "PipesTransportApiTestKernels.cuh"
+#include "StressTestKernelUtils.cuh"
 
 #include "comms/pipes/P2pNvlTransportDevice.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
@@ -35,11 +35,11 @@ __device__ inline comms::pipes::ThreadGroup make_group_for_launch() {
 }
 
 // ---------------------------------------------------------------------------
-// Iterated Send/Recv Kernel
+// Stress Send/Recv Kernel
 // ---------------------------------------------------------------------------
 // Rank 0 fills buffer with pattern, sends to rank 1 via NVLink transport.
 // Rank 1 receives, verifies data. Barrier sync between iterations.
-__global__ void transportIteratedSendRecvKernel(
+__global__ void transportStressSendRecvKernel(
     comms::pipes::MultiPeerDeviceHandle handle,
     float* buf,
     size_t count,
@@ -83,7 +83,7 @@ __global__ void transportIteratedSendRecvKernel(
   }
 }
 
-void launchTransportIteratedSendRecvKernel(
+void launchTransportStressSendRecvKernel(
     comms::pipes::MultiPeerDeviceHandle handle,
     float* buf,
     size_t count,
@@ -92,17 +92,17 @@ void launchTransportIteratedSendRecvKernel(
     int num_threads,
     int* results,
     cudaStream_t stream) {
-  transportIteratedSendRecvKernel<<<1, num_threads, 0, stream>>>(
+  transportStressSendRecvKernel<<<1, num_threads, 0, stream>>>(
       handle, buf, count, peer, iterations, results);
   TRANSPORT_KERNEL_LAUNCH_CHECK();
 }
 
 // ---------------------------------------------------------------------------
-// Iterated Signal Kernel
+// Stress Signal Kernel
 // ---------------------------------------------------------------------------
 // Both ranks signal each other and wait in a ring pattern.
 // Uses monotonic ADD signals with GE waits.
-__global__ void transportIteratedSignalKernel(
+__global__ void transportStressSignalKernel(
     comms::pipes::MultiPeerDeviceHandle handle,
     int peer,
     int iterations) {
@@ -118,13 +118,13 @@ __global__ void transportIteratedSignalKernel(
   }
 }
 
-void launchTransportIteratedSignalKernel(
+void launchTransportStressSignalKernel(
     comms::pipes::MultiPeerDeviceHandle handle,
     int peer,
     int iterations,
     int num_threads,
     cudaStream_t stream) {
-  transportIteratedSignalKernel<<<1, num_threads, 0, stream>>>(
+  transportStressSignalKernel<<<1, num_threads, 0, stream>>>(
       handle, peer, iterations);
   TRANSPORT_KERNEL_LAUNCH_CHECK();
 }
@@ -133,7 +133,7 @@ void launchTransportIteratedSignalKernel(
 // Combined Ops Kernel
 // ---------------------------------------------------------------------------
 // Exercises barrier + send/recv + signal/wait per iteration.
-__global__ void transportIteratedCombinedKernel(
+__global__ void transportStressCombinedKernel(
     comms::pipes::MultiPeerDeviceHandle handle,
     float* buf,
     size_t count,
@@ -184,7 +184,7 @@ __global__ void transportIteratedCombinedKernel(
   }
 }
 
-void launchTransportIteratedCombinedKernel(
+void launchTransportStressCombinedKernel(
     comms::pipes::MultiPeerDeviceHandle handle,
     float* buf,
     size_t count,
@@ -193,7 +193,7 @@ void launchTransportIteratedCombinedKernel(
     int num_threads,
     int* results,
     cudaStream_t stream) {
-  transportIteratedCombinedKernel<<<1, num_threads, 0, stream>>>(
+  transportStressCombinedKernel<<<1, num_threads, 0, stream>>>(
       handle, buf, count, peer, iterations, results);
   TRANSPORT_KERNEL_LAUNCH_CHECK();
 }
@@ -203,7 +203,7 @@ void launchTransportIteratedCombinedKernel(
 // ---------------------------------------------------------------------------
 // Warp-only LL128 protocol test. Rank 0 sends, rank 1 receives.
 // Fills with byte pattern, verifies on receiver.
-__global__ void transportIteratedLl128Kernel(
+__global__ void transportStressLl128Kernel(
     comms::pipes::MultiPeerDeviceHandle handle,
     char* buf,
     size_t nbytes,
@@ -270,7 +270,7 @@ __global__ void transportIteratedLl128Kernel(
   }
 }
 
-void launchTransportIteratedLl128Kernel(
+void launchTransportStressLl128Kernel(
     comms::pipes::MultiPeerDeviceHandle handle,
     char* buf,
     size_t nbytes,
@@ -278,7 +278,7 @@ void launchTransportIteratedLl128Kernel(
     int iterations,
     int* results,
     cudaStream_t stream) {
-  transportIteratedLl128Kernel<<<1, 32, 0, stream>>>(
+  transportStressLl128Kernel<<<1, 32, 0, stream>>>(
       handle, buf, nbytes, peer, iterations, results);
   TRANSPORT_KERNEL_LAUNCH_CHECK();
 }

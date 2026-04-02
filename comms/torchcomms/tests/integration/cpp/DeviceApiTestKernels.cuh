@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 //
-// CUDA kernel declarations for DeviceApiIteratedTest (NCCLx backend).
+// CUDA kernel declarations for DeviceApiStressTest (NCCLx backend).
 // Host-safe header — can be included from .cpp files compiled by clang.
 
 // NOLINTNEXTLINE(clang-diagnostic-pragma-once-outside-header)
@@ -11,7 +11,7 @@
 
 namespace torchcomms::device::test {
 
-// Iterated put kernel: performs put+signal in a loop, writing src_buf to
+// Stress put kernel: performs put+signal in a loop, writing src_buf to
 // dst_rank's window. Uses monotonic signal values (signal value = iteration+1).
 // Receiver waits for signal to reach the monotonic target before verifying.
 // The kernel fills src with a rank+iteration pattern each iteration.
@@ -31,7 +31,7 @@ namespace torchcomms::device::test {
 //   iterations  - number of put iterations
 //   scope       - cooperative scope (THREAD, WARP, BLOCK)
 //   results     - device int array[iterations], 1=pass 0=fail per iteration
-void launchIteratedPutKernel(
+void launchStressPutKernel(
     DeviceWindowNCCL* win,
     RegisteredBufferNCCL src_buf,
     float* src_ptr,
@@ -49,9 +49,9 @@ void launchIteratedPutKernel(
     int* results,
     cudaStream_t stream);
 
-// Iterated signal kernel: sends signal to dst_rank in a ring, waits for
+// Stress signal kernel: sends signal to dst_rank in a ring, waits for
 // signal from src_rank, repeated iterations times. Uses monotonic values.
-void launchIteratedSignalKernel(
+void launchStressSignalKernel(
     DeviceWindowNCCL* win,
     int dst_rank,
     int src_rank,
@@ -61,9 +61,9 @@ void launchIteratedSignalKernel(
     int num_threads,
     cudaStream_t stream);
 
-// Iterated barrier kernel: calls barrier iterations times, alternating
+// Stress barrier kernel: calls barrier iterations times, alternating
 // between barrier_id 0 and 1.
-void launchIteratedBarrierKernel(
+void launchStressBarrierKernel(
     DeviceWindowNCCL* win,
     int iterations,
     CoopScope scope,
@@ -72,7 +72,7 @@ void launchIteratedBarrierKernel(
 
 // Combined ops kernel: barrier -> fill -> put -> wait_signal -> verify ->
 // barrier per iteration. Tests interleaved operations.
-void launchIteratedCombinedKernel(
+void launchStressCombinedKernel(
     DeviceWindowNCCL* win,
     RegisteredBufferNCCL src_buf,
     float* src_ptr,
@@ -89,10 +89,10 @@ void launchIteratedCombinedKernel(
     int* results,
     cudaStream_t stream);
 
-// Iterated aggregated wait_signal kernel: ring signal -> aggregated
+// Stress aggregated wait_signal kernel: ring signal -> aggregated
 // wait_signal (not per-peer) -> read_signal -> reset_signal -> verify
 // read_signal returns 0. Exercises the non-per-peer signal path.
-void launchIteratedAggregatedSignalKernel(
+void launchStressAggregatedSignalKernel(
     DeviceWindowNCCL* win,
     int dst_rank,
     int signal_id,
@@ -100,9 +100,9 @@ void launchIteratedAggregatedSignalKernel(
     int* results,
     cudaStream_t stream);
 
-// Iterated half-precision put kernel: same as iteratedPutKernel but with
+// Stress half-precision put kernel: same as stressPutKernel but with
 // __half data type. Uses half-precision fill/verify patterns.
-void launchIteratedPutHalfKernel(
+void launchStressPutHalfKernel(
     DeviceWindowNCCL* win,
     RegisteredBufferNCCL src_buf,
     void* src_ptr,

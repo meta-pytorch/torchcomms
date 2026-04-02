@@ -1,8 +1,8 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 //
-// Iterated stress tests for P2pNvlTransportDevice APIs.
+// Stress tests for P2pNvlTransportDevice APIs.
 
-#include "PipesTransportIteratedTest.hpp"
+#include "PipesTransportApiTest.hpp"
 
 #include <gtest/gtest.h>
 #include <algorithm>
@@ -13,8 +13,8 @@
 #include <c10/cuda/CUDAGuard.h>
 #include <c10/cuda/CUDAStream.h>
 
-#include "IteratedTestHelpers.hpp"
-#include "PipesTransportIteratedTestKernels.cuh"
+#include "PipesTransportApiTestKernels.cuh"
+#include "StressTestHelpers.hpp"
 #include "TorchCommTestHelpers.h"
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
@@ -25,18 +25,17 @@ using namespace torchcomms::device::test;
 // Setup / Teardown
 // =============================================================================
 
-void PipesTransportIteratedTest::SetUp() {
-  if (!shouldRunIteratedTest()) {
-    GTEST_SKIP()
-        << "Skipping iterated tests (RUN_DEVICE_ITERATED_TEST not set)";
+void PipesTransportApiTest::SetUp() {
+  if (!shouldRunStressTest()) {
+    GTEST_SKIP() << "Skipping stress tests (RUN_DEVICE_STRESS_TEST not set)";
   }
   const char* pipes_env = getenv("RUN_PIPES_DEVICE_API_TEST");
   if (!pipes_env) {
     GTEST_SKIP()
-        << "Skipping Pipes iterated tests (RUN_PIPES_DEVICE_API_TEST not set)";
+        << "Skipping Pipes stress tests (RUN_PIPES_DEVICE_API_TEST not set)";
   }
 
-  config_ = parseIteratedTestConfig();
+  config_ = parseStressTestConfig();
   wrapper_ = std::make_unique<TorchCommTestWrapper>();
   torchcomm_ = wrapper_->getTorchComm();
   rank_ = torchcomm_->getRank();
@@ -77,7 +76,7 @@ void PipesTransportIteratedTest::SetUp() {
   peer_ = (rank_ % 2 == 0) ? rank_ + 1 : rank_ - 1;
 }
 
-void PipesTransportIteratedTest::TearDown() {
+void PipesTransportApiTest::TearDown() {
   torchcomm_.reset();
   wrapper_.reset();
 }
@@ -114,7 +113,7 @@ const char* scopeNameForThreads(int num_threads) {
 // Test Implementations
 // =============================================================================
 
-void PipesTransportIteratedTest::testIteratedSendRecv(
+void PipesTransportApiTest::testStressSendRecv(
     size_t msg_bytes,
     int num_threads) {
   size_t count = msg_bytes / sizeof(float);
@@ -124,7 +123,7 @@ void PipesTransportIteratedTest::testIteratedSendRecv(
   int iterations = config_.num_iterations;
 
   SCOPED_TRACE(
-      ::testing::Message() << "TransportIteratedSendRecv msg="
+      ::testing::Message() << "TransportStressSendRecv msg="
                            << formatBytes(msg_bytes)
                            << " scope=" << scopeNameForThreads(num_threads)
                            << " iters=" << iterations);
@@ -141,7 +140,7 @@ void PipesTransportIteratedTest::testIteratedSendRecv(
   auto stream = at::cuda::getStreamFromPool(false, device_index_);
   {
     c10::cuda::CUDAStreamGuard guard(stream);
-    launchTransportIteratedSendRecvKernel(
+    launchTransportStressSendRecvKernel(
         handle_,
         d_buf,
         count,
@@ -164,11 +163,11 @@ void PipesTransportIteratedTest::testIteratedSendRecv(
   torchcomm_->barrier(false);
 }
 
-void PipesTransportIteratedTest::testIteratedSignal(int num_threads) {
+void PipesTransportApiTest::testStressSignal(int num_threads) {
   int iterations = config_.num_iterations;
 
   SCOPED_TRACE(
-      ::testing::Message() << "TransportIteratedSignal scope="
+      ::testing::Message() << "TransportStressSignal scope="
                            << scopeNameForThreads(num_threads));
 
   torchcomm_->barrier(false);
@@ -176,14 +175,14 @@ void PipesTransportIteratedTest::testIteratedSignal(int num_threads) {
   auto stream = at::cuda::getStreamFromPool(false, device_index_);
   {
     c10::cuda::CUDAStreamGuard guard(stream);
-    launchTransportIteratedSignalKernel(
+    launchTransportStressSignalKernel(
         handle_, peer_, iterations, num_threads, stream.stream());
   }
   stream.synchronize();
   torchcomm_->barrier(false);
 }
 
-void PipesTransportIteratedTest::testIteratedCombined(
+void PipesTransportApiTest::testStressCombined(
     size_t msg_bytes,
     int num_threads) {
   size_t count = msg_bytes / sizeof(float);
@@ -193,7 +192,7 @@ void PipesTransportIteratedTest::testIteratedCombined(
   int iterations = config_.num_iterations;
 
   SCOPED_TRACE(
-      ::testing::Message() << "TransportIteratedCombined msg="
+      ::testing::Message() << "TransportStressCombined msg="
                            << formatBytes(msg_bytes)
                            << " scope=" << scopeNameForThreads(num_threads));
 
@@ -209,7 +208,7 @@ void PipesTransportIteratedTest::testIteratedCombined(
   auto stream = at::cuda::getStreamFromPool(false, device_index_);
   {
     c10::cuda::CUDAStreamGuard guard(stream);
-    launchTransportIteratedCombinedKernel(
+    launchTransportStressCombinedKernel(
         handle_,
         d_buf,
         count,
@@ -232,14 +231,14 @@ void PipesTransportIteratedTest::testIteratedCombined(
   torchcomm_->barrier(false);
 }
 
-void PipesTransportIteratedTest::testIteratedLl128(size_t nbytes) {
+void PipesTransportApiTest::testStressLl128(size_t nbytes) {
   int iterations = config_.num_iterations;
 
   // LL128 requires 16-byte alignment and multiple-of-16 size
   ASSERT_EQ(nbytes % 16, 0u) << "LL128 requires nbytes multiple of 16";
 
   SCOPED_TRACE(
-      ::testing::Message() << "TransportIteratedLl128 nbytes="
+      ::testing::Message() << "TransportStressLl128 nbytes="
                            << formatBytes(nbytes));
 
   char* d_buf = nullptr;
@@ -254,7 +253,7 @@ void PipesTransportIteratedTest::testIteratedLl128(size_t nbytes) {
   auto stream = at::cuda::getStreamFromPool(false, device_index_);
   {
     c10::cuda::CUDAStreamGuard guard(stream);
-    launchTransportIteratedLl128Kernel(
+    launchTransportStressLl128Kernel(
         handle_, d_buf, nbytes, peer_, iterations, d_results, stream.stream());
   }
   stream.synchronize();
@@ -278,17 +277,17 @@ struct TransportSendRecvParam {
   int num_threads; // 32 = WARP, 256 = BLOCK
 };
 
-class TransportIteratedSendRecvTest
-    : public PipesTransportIteratedTest,
+class TransportSendRecvTest
+    : public PipesTransportApiTest,
       public ::testing::WithParamInterface<TransportSendRecvParam> {};
 
-TEST_P(TransportIteratedSendRecvTest, SendRecv) {
-  testIteratedSendRecv(GetParam().msg_bytes, GetParam().num_threads);
+TEST_P(TransportSendRecvTest, SendRecv) {
+  testStressSendRecv(GetParam().msg_bytes, GetParam().num_threads);
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    IteratedSendRecv,
-    TransportIteratedSendRecvTest,
+    StressSendRecv,
+    TransportSendRecvTest,
     ::testing::Values(
         // WARP scope (32 threads)
         TransportSendRecvParam{1024, 32}, // 1KB
@@ -306,17 +305,16 @@ INSTANTIATE_TEST_SUITE_P(
 
 // --- Signal: parameterized by num_threads ---
 
-class TransportIteratedSignalTest : public PipesTransportIteratedTest,
-                                    public ::testing::WithParamInterface<int> {
-};
+class TransportSignalTest : public PipesTransportApiTest,
+                            public ::testing::WithParamInterface<int> {};
 
-TEST_P(TransportIteratedSignalTest, Signal) {
-  testIteratedSignal(GetParam());
+TEST_P(TransportSignalTest, Signal) {
+  testStressSignal(GetParam());
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    IteratedSignal,
-    TransportIteratedSignalTest,
+    StressSignal,
+    TransportSignalTest,
     ::testing::Values(32, 256),
     [](const ::testing::TestParamInfo<int>& info) {
       return std::string(info.param >= 256 ? "BLOCK" : "WARP");
@@ -329,17 +327,17 @@ struct TransportCombinedParam {
   int num_threads;
 };
 
-class TransportIteratedCombinedTest
-    : public PipesTransportIteratedTest,
+class TransportCombinedTest
+    : public PipesTransportApiTest,
       public ::testing::WithParamInterface<TransportCombinedParam> {};
 
-TEST_P(TransportIteratedCombinedTest, Combined) {
-  testIteratedCombined(GetParam().msg_bytes, GetParam().num_threads);
+TEST_P(TransportCombinedTest, Combined) {
+  testStressCombined(GetParam().msg_bytes, GetParam().num_threads);
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    IteratedCombined,
-    TransportIteratedCombinedTest,
+    StressCombined,
+    TransportCombinedTest,
     ::testing::Values(
         // WARP scope
         TransportCombinedParam{1024, 32},
@@ -356,17 +354,16 @@ INSTANTIATE_TEST_SUITE_P(
 
 // --- LL128: parameterized by nbytes (warp-only) ---
 
-class TransportIteratedLl128Test
-    : public PipesTransportIteratedTest,
-      public ::testing::WithParamInterface<size_t> {};
+class TransportLl128Test : public PipesTransportApiTest,
+                           public ::testing::WithParamInterface<size_t> {};
 
-TEST_P(TransportIteratedLl128Test, Ll128) {
-  testIteratedLl128(GetParam());
+TEST_P(TransportLl128Test, Ll128) {
+  testStressLl128(GetParam());
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    IteratedLl128,
-    TransportIteratedLl128Test,
+    StressLl128,
+    TransportLl128Test,
     ::testing::Values(
         static_cast<size_t>(1024), // 1KB
         static_cast<size_t>(65536)), // 64KB
