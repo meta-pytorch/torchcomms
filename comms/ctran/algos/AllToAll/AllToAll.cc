@@ -15,21 +15,6 @@
 #include "comms/pipes/Transport.cuh"
 #include "comms/pipes/collectives/AllToAllv.cuh"
 
-// Pipes-direct bypass defined in DeviceAllToAllvPipes.cu
-extern commResult_t pipesDirectDeviceAllToAllv(
-    const void* sendbuff,
-    void* recvbuff,
-    const int64_t* sendcounts_d,
-    const int64_t* recvcounts_d,
-    size_t elementSize,
-    int myRank,
-    int nRanks,
-    comms::pipes::DeviceSpan<comms::pipes::Transport> transports,
-    int64_t sendMultiplier,
-    int64_t recvMultiplier,
-    comms::pipes::ChunkInfo* d_sendChunks,
-    comms::pipes::ChunkInfo* d_recvChunks,
-    cudaStream_t stream);
 #endif
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/gpe/CtranGpe.h"
@@ -39,6 +24,10 @@ extern commResult_t pipesDirectDeviceAllToAllv(
 #if defined(ENABLE_PIPES)
 template <PipeProtocol Proto>
 extern __global__ void ncclKernelDeviceAllToAllvPipes(
+    int* flag,
+    CtranAlgoDeviceState* devState,
+    ctran::device_alltoallv_pipes::KernArgs args);
+extern __global__ void ncclKernelDeviceAllToAllvPipesUnified(
     int* flag,
     CtranAlgoDeviceState* devState,
     ctran::device_alltoallv_pipes::KernArgs args);
@@ -233,23 +222,40 @@ commResult_t ctranDeviceAllToAllv(
     int64_t recvcountsMultiplier,
     const std::unordered_map<std::string, std::string>& hints) {
   if (NCCL_CTRAN_PIPES_DEVICE_ALLTOALLV_ENABLE) {
-    // Pipes-direct path: unified all_to_allv() handles NVLink + IBGDA.
+    auto opCount = comm->ctran_->getOpCount();
     auto* mpt = comm->multiPeerTransport_.get();
     auto deviceHandle = mpt->get_device_handle();
-    return pipesDirectDeviceAllToAllv(
-        sendbuff,
-        recvbuff,
-        sendcounts_d,
-        recvcounts_d,
-        commTypeSize(datatype),
-        mpt->my_rank(),
-        mpt->n_ranks(),
-        deviceHandle.transports,
-        sendcountsMultiplier,
-        recvcountsMultiplier,
-        mpt->getChunkInfoSendBuf(),
-        mpt->getChunkInfoRecvBuf(),
-        stream);
+
+    KernelConfig config = KernelConfig(
+        KernelConfig::KernelType::DEVICE_ALLTOALLV,
+        stream,
+        "DeviceAllToAllvPipesUnified",
+        opCount);
+    config.numBlocks = 4;
+    config.numThreads = 256;
+    config.args.devState_d = comm->ctran_->algo->getDevState();
+
+    ctran::device_alltoallv_pipes::KernArgs kernArgs{};
+    kernArgs.sendbuff = sendbuff;
+    kernArgs.recvbuff = recvbuff;
+    kernArgs.myRank = mpt->my_rank();
+    kernArgs.nRanks = mpt->n_ranks();
+    kernArgs.elementSize = commTypeSize(datatype);
+    kernArgs.sendcounts_d = sendcounts_d;
+    kernArgs.recvcounts_d = recvcounts_d;
+    kernArgs.sendcountsMultiplier = sendcountsMultiplier;
+    kernArgs.recvcountsMultiplier = recvcountsMultiplier;
+    kernArgs.transports = deviceHandle.transports.data();
+    config.algoArgs = &kernArgs;
+
+    std::vector<std::unique_ptr<struct OpElem>> opGroup;
+    FB_COMMCHECK(comm->ctran_->gpe->submit(
+        std::move(opGroup),
+        nullptr,
+        config,
+        reinterpret_cast<void*>(ncclKernelDeviceAllToAllvPipesUnified)));
+
+    return commSuccess;
   }
 
   // Ctran kernel path: GPE, block scheduling, tunable hints.
