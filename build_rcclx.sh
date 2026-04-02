@@ -349,7 +349,9 @@ if [ "$CLEAN_BUILD" == 1 ]; then
     rm -rf "$BUILDDIR"
 fi
 
-export CXXFLAGS="-DSO_INCOMING_NAPI_ID=56"
+# hipify-perl (ROCm 7.0) doesn't map cudaEventWait/Record flags, so they pass
+# through unchanged into hipified source. Define them directly.
+export CXXFLAGS="-DSO_INCOMING_NAPI_ID=56 -DcudaEventWaitDefault=0x00 -DcudaEventWaitExternal=0x01 -DcudaEventRecordDefault=0x00 -DcudaEventRecordExternal=0x01"
 
 # Create linker version script to hide gflags/glog symbols from librccl.so.
 # These get pulled in via static libs (libfolly.a, libthriftcpp2.a) but conflict
