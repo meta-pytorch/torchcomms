@@ -520,19 +520,22 @@ TEST_F(CtranAllgatherPTest, SharePersistentBuffer) {
 
   if (ncclIsCuMemSupported() == false) {
     XLOG(INFO)
-        << "CuMem not supported, skipping InvalidCount test with memType = kMemNcclMemAlloc";
-    ;
+        << "CuMem not supported, skipping SharePersistentBuffer test with memType = kMemNcclMemAlloc";
     return;
   }
 
-  // allocate persistent buffers
+  // Allocate persistent buffers and register with ALL communicators
+  // before any allGatherPInit (export) calls
   for (int b = 0; b < kBufs; b++) {
     cumemBufSetup(sendCount, recvCount, &sendBufs.at(b), &recvBufs.at(b));
-    // use default ctran comm to register buffers once
-    COMMCHECK_TEST(ctranComm->ctran_->commRegister(
-        recvBufs.at(b), recvCount * commTypeSize(dt), &recvHdls.at(b)));
-    COMMCHECK_TEST(ctranComm->ctran_->commRegister(
-        sendBufs.at(b), sendCount * commTypeSize(dt), &sendHdls.at(b)));
+    for (int c = 0; c < kComms; c++) {
+      COMMCHECK_TEST(
+          testComms[c]->ctran_->commRegister(
+              recvBufs.at(b), recvCount * commTypeSize(dt), &recvHdls.at(b)));
+      COMMCHECK_TEST(
+          testComms[c]->ctran_->commRegister(
+              sendBufs.at(b), sendCount * commTypeSize(dt), &sendHdls.at(b)));
+    }
   }
   // Convert to int8_t for init to mimic FSDP use case
   const auto initMaxRecvCount =
@@ -572,13 +575,23 @@ TEST_F(CtranAllgatherPTest, SharePersistentBuffer) {
   // Release resources
   for (int r = 0; r < requests.size(); r++) {
     ASSERT_EQ(ctran::allGatherPDestroy(requests[r]), commSuccess);
+    delete requests[r];
   }
 
-  // deregister buffers
+  // Deregister buffers from all communicators
   for (int b = 0; b < kBufs; b++) {
-    COMMCHECK_TEST(ctranComm->ctran_->commDeregister(sendHdls.at(b)));
-    COMMCHECK_TEST(ctranComm->ctran_->commDeregister(recvHdls.at(b)));
+    for (int c = 0; c < kComms; c++) {
+      COMMCHECK_TEST(testComms[c]->ctran_->commDeregister(sendHdls.at(b)));
+      COMMCHECK_TEST(testComms[c]->ctran_->commDeregister(recvHdls.at(b)));
+    }
     cumemBufCleanUp(sendBufs.at(b), recvBufs.at(b));
+  }
+
+  // Destroy comms before streams
+  testComms.clear();
+
+  for (int c = 0; c < kComms; c++) {
+    CUDACHECK_TEST(cudaStreamDestroy(streams[c]));
   }
 }
 

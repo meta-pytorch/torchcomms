@@ -1090,6 +1090,10 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       ControlMsg& msg,
       CtranMapperBackend backend = CtranMapperBackend::UNSET) {
     auto regElem = reinterpret_cast<ctran::regcache::RegElem*>(hdl);
+    // TODO: Enforce that a communicator can only export memory it registered
+    // itself except the memory registered by globalRegister. Currently any comm
+    // can export memory registered by a different comm, which violates
+    // ownership semantics.
 
     // For a NVL peer, send NVL registration if the buffer has been registered
     // as NVL sharable buffer (i.e., allocated by cuMem). Otherwise pass IB
