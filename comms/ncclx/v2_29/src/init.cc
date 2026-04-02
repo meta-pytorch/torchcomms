@@ -1836,17 +1836,16 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
     commIdHash = 0;
   } else {
     // GROW or NORMAL INIT: use bootstrapInit
-    // [Meta] Fast-init mode won't get unique commId for different communicators
-    // use ctran helper function to generate unique hash
-    if (isFastInitRingMode(NCCLX_CONFIG_FIELD(comm->config, fastInitMode))) {
-      comm->commHash = commIdHash = ctran::utils::generateCommHash(job->nranks);
-    }
     if (job->isGrow) {
       struct ncclBootstrapHandle* growHandle = (struct ncclBootstrapHandle*)job->commId;
       uint64_t baseMagic = growHandle ? growHandle->magic : hashCombine(job->parent->magic, job->parent->childCount);
       comm->commHash = commIdHash = hashCombine(baseMagic, job->nranks);
       INFO(NCCL_INIT, "Rank %d: Generated commHash 0x%lx from baseMagic 0x%lx and newNRanks %d",
            job->myrank, comm->commHash, baseMagic, job->nranks);
+    } else if (isFastInitRingMode(NCCLX_CONFIG_FIELD(comm->config, fastInitMode))) {
+      // [Meta] Fast-init mode won't get unique commId for different communicators
+      // use ctran helper function to generate unique hash
+      comm->commHash = commIdHash = ctran::utils::generateCommHash(job->nranks);
     } else {
       // obtain a unique hash using the first commId
       comm->commHash = commIdHash = getHash(job->commId->internal, NCCL_UNIQUE_ID_BYTES);

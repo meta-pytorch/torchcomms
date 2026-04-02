@@ -482,9 +482,7 @@ TEST_P(FastInitTestFixture, NcclCommSplitNoColor) {
   NCCLCHECK_TEST(ncclCommDestroy(rootComm));
 }
 
-// FIXME: v2.29 regression — getHash(commId) overwrites generateCommHash,
-// causing identical commHash for different commDesc. v2.27/v2.28 pass.
-TEST_P(FastInitTestFixture, DISABLED_NcclCommInitWithDifferentCommDesc) {
+TEST_P(FastInitTestFixture, NcclCommInitWithDifferentCommDesc) {
   ncclComm_t comm1 = nullptr, comm2 = nullptr;
   ncclUniqueId commId1, commId2;
 
