@@ -14,6 +14,7 @@
 #if defined(ENABLE_PIPES)
 
 #include "comms/pipes/MultiPeerTransport.h"
+#include "comms/pipes/collectives/AllToAllvAutoTuneConfig.h"
 #include "comms/pipes/ll128/Ll128Packet.cuh"
 
 commResult_t ctranInitializePipes(CtranComm* comm) {
@@ -173,6 +174,23 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
         comm->multiPeerTransport_->nvl_n_ranks() - 1,
         comm->multiPeerTransport_->ibgda_peer_ranks().size(),
         config.topoConfig.p2pDisable);
+
+    // Populate AllToAllvAutoTuneConfig with in-code defaults.
+    // CVAR overrides take priority over the in-code defaults.
+    auto& autoTune = comm->alltoallvAutoTuneConfig_;
+
+    // NVL init-time defaults (from lookup table), overridden by CVARs
+    autoTune.nvlInit.nvlChunkSize = config.nvlConfig.chunkSize;
+    autoTune.nvlInit.nvlDataBufferSize =
+        config.nvlConfig.dataBufferSize * config.nvlConfig.pipelineDepth;
+    autoTune.nvlInit.pipelineDepth =
+        static_cast<int>(config.nvlConfig.pipelineDepth);
+
+    // IBGDA init-time defaults (from lookup table), overridden by CVARs
+    autoTune.ibgdaInit.stagingBufferSize =
+        config.ibgdaSetupConfig.dataBufferSize;
+    autoTune.ibgdaInit.pipelineDepth = config.ibgdaSetupConfig.pipelineDepth;
+    autoTune.ibgdaInit.ibgdaChunkSize = config.ibgdaSetupConfig.chunkSize;
   } catch (const std::exception& e) {
     CLOGF(ERR, "Failed to initialize Pipes MultiPeerTransport: {}", e.what());
     return commInternalError;
