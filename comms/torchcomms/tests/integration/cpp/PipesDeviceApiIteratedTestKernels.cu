@@ -241,4 +241,132 @@ void launchPipesIteratedCombinedKernel(
   KERNEL_LAUNCH_CHECK();
 }
 
+// ---------------------------------------------------------------------------
+// Iterated Put with Counter Kernel (Pipes)
+// ---------------------------------------------------------------------------
+// Each iteration: fill src, put with signal+counter, wait_counter (if IBGDA
+// counters are active), wait_signal on receiver, verify data, write
+// counter value to output array. Uses monotonic signals (no reset).
+__global__ void pipesIteratedPutCounterKernel(
+    DeviceWindowPipes* win,
+    RegisteredBufferPipes src_buf,
+    float* src_ptr,
+    float* win_base,
+    size_t src_offset,
+    size_t dst_offset,
+    size_t bytes,
+    size_t count,
+    int dst_rank,
+    int src_rank,
+    int signal_id,
+    int counter_id,
+    int barrier_id,
+    int iterations,
+    int* results,
+    uint64_t* counter_values) {
+  int rank = win->rank();
+
+  for (int iter = 0; iter < iterations; iter++) {
+    // Barrier ensures all ranks finished verifying previous iteration before
+    // any rank starts the next put (prevents data race on receive slots).
+    win->barrier(barrier_id);
+
+    fillPattern(src_ptr, count, rank, iter);
+    __syncthreads();
+
+    if (threadIdx.x == 0) {
+      // Put with signal + counter
+      win->put(
+          dst_offset,
+          src_buf,
+          src_offset,
+          dst_rank,
+          bytes,
+          signal_id,
+          counter_id);
+      win->flush();
+    }
+    __syncthreads();
+
+    // Read counter value — IBGDA peers increment it, NVLink peers leave at 0
+    if (threadIdx.x == 0) {
+      counter_values[iter] = win->read_counter(counter_id);
+    }
+    __syncthreads();
+
+    // Wait for signal from sender (monotonic)
+    if (threadIdx.x == 0) {
+      win->wait_signal(signal_id, CmpOp::GE, static_cast<uint64_t>(iter + 1));
+    }
+    __syncthreads();
+
+    float* recv_slot = win_base + src_rank * count;
+    verifyPattern(recv_slot, count, src_rank, iter, &results[iter]);
+    __syncthreads();
+
+    // Reset counter for next iteration
+    if (threadIdx.x == 0) {
+      win->reset_counter(counter_id);
+    }
+    __syncthreads();
+  }
+}
+
+void launchPipesIteratedPutCounterKernel(
+    DeviceWindowPipes* win,
+    RegisteredBufferPipes src_buf,
+    float* src_ptr,
+    float* win_base,
+    size_t src_offset,
+    size_t dst_offset,
+    size_t bytes,
+    size_t count,
+    int dst_rank,
+    int src_rank,
+    int signal_id,
+    int counter_id,
+    int barrier_id,
+    int iterations,
+    int* results,
+    uint64_t* counter_values,
+    cudaStream_t stream) {
+  pipesIteratedPutCounterKernel<<<1, 1, 0, stream>>>(
+      win,
+      src_buf,
+      src_ptr,
+      win_base,
+      src_offset,
+      dst_offset,
+      bytes,
+      count,
+      dst_rank,
+      src_rank,
+      signal_id,
+      counter_id,
+      barrier_id,
+      iterations,
+      results,
+      counter_values);
+  KERNEL_LAUNCH_CHECK();
+}
+
+// ---------------------------------------------------------------------------
+// Read Signal Kernel (for host-side verification)
+// ---------------------------------------------------------------------------
+__global__ void
+pipesReadSignalKernel_(DeviceWindowPipes* win, int signal_id, uint64_t* out) {
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    *out = win->read_signal(signal_id);
+  }
+}
+
+void launchPipesReadSignalKernel(
+    DeviceWindowPipes* win,
+    int signal_id,
+    uint64_t* out,
+    cudaStream_t stream) {
+  pipesReadSignalKernel_<<<1, 1, 0, stream>>>(win, signal_id, out);
+  KERNEL_LAUNCH_CHECK();
+}
+
 } // namespace torchcomms::device::test

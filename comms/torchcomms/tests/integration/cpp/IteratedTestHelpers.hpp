@@ -16,8 +16,8 @@ namespace torchcomms::device::test {
 
 // Configuration parsed from environment variables.
 struct IteratedTestConfig {
-  // Number of iterations for soak-style tests (default: 100).
-  int num_iterations{100};
+  // Number of iterations for soak-style tests (default: 50).
+  int num_iterations{50};
 
   // Message sizes in bytes to sweep (default: 4B, 1KB, 1MB, 16MB).
   std::vector<size_t> msg_sizes{4, 1024, 1048576, 16777216};

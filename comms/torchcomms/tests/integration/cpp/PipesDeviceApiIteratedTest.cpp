@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 #include <algorithm>
+#include <cassert>
 #include <vector>
 #include "IteratedTestHelpers.hpp"
 #include "PipesDeviceApiIteratedTestKernels.cuh"
@@ -98,10 +99,26 @@ PipesWindowSetup createPipesWindowSetup(
   s.win->tensor_register(s.win_tensor);
   torchcomm->barrier(false);
 
-  s.dev_win = static_cast<DeviceWindowPipes*>(
-      s.win->get_device_window(signal_count, counter_count, barrier_count));
+  try {
+    s.dev_win = static_cast<DeviceWindowPipes*>(
+        s.win->get_device_window(signal_count, counter_count, barrier_count));
+  } catch (const std::runtime_error&) {
+    // IBGDA/Pipes hardware not available — caller must GTEST_SKIP().
+    // Clean up window state before returning so the caller can skip cleanly.
+    s.win->tensor_deregister();
+    s.win.reset();
+    s.mem_pool.reset();
+    s.dev_win = nullptr;
+    return s;
+  }
 
   s.src_buf = s.win->register_local_buffer(s.src_tensor);
+
+  // Gap 4: buffer registration invariants (ported from non-iterated tests)
+  // Pipes backend: backend_window is null (only GIN uses it), size is positive.
+  assert(s.src_buf.base_ptr != nullptr);
+  assert(s.src_buf.size > 0);
+  assert(s.src_buf.backend_window == nullptr);
 
   // Ensure both ranks have completed all registration before kernels launch
   torchcomm->barrier(false);
@@ -111,6 +128,12 @@ PipesWindowSetup createPipesWindowSetup(
   cudaDeviceSynchronize();
 
   return s;
+}
+
+// Check if IBGDA/Pipes hardware was unavailable during window setup.
+// Returns true if the caller should GTEST_SKIP().
+bool pipesWindowSetupFailed(const PipesWindowSetup& s) {
+  return s.dev_win == nullptr;
 }
 
 void teardownPipesWindow(
@@ -171,6 +194,9 @@ void PipesDeviceApiIteratedTest::testIteratedPut(
       signal_count,
       -1,
       -1);
+  if (pipesWindowSetupFailed(s)) {
+    GTEST_SKIP() << "Skipping: IBGDA/Pipes hardware not available";
+  }
 
   int dst_rank = (rank_ + 1) % num_ranks_;
   int src_rank = (rank_ - 1 + num_ranks_) % num_ranks_;
@@ -221,6 +247,9 @@ void PipesDeviceApiIteratedTest::testIteratedSignal(CoopScope scope) {
 
   auto s = createPipesWindowSetup(
       torchcomm_, allocator_, device_index_, num_ranks_, 1, num_ranks_, -1, 1);
+  if (pipesWindowSetupFailed(s)) {
+    GTEST_SKIP() << "Skipping: IBGDA/Pipes hardware not available";
+  }
 
   int dst_rank = (rank_ + 1) % num_ranks_;
   int src_rank = (rank_ - 1 + num_ranks_) % num_ranks_;
@@ -252,6 +281,9 @@ void PipesDeviceApiIteratedTest::testIteratedBarrier(CoopScope scope) {
 
   auto s = createPipesWindowSetup(
       torchcomm_, allocator_, device_index_, num_ranks_, 1, -1, -1, 1);
+  if (pipesWindowSetupFailed(s)) {
+    GTEST_SKIP() << "Skipping: IBGDA/Pipes hardware not available";
+  }
 
   auto stream = at::cuda::getStreamFromPool(false, device_index_);
   {
@@ -283,6 +315,9 @@ void PipesDeviceApiIteratedTest::testIteratedCombined(size_t msg_bytes) {
       num_ranks_,
       -1,
       4);
+  if (pipesWindowSetupFailed(s)) {
+    GTEST_SKIP() << "Skipping: IBGDA/Pipes hardware not available";
+  }
 
   int dst_rank = (rank_ + 1) % num_ranks_;
   int src_rank = (rank_ - 1 + num_ranks_) % num_ranks_;
@@ -336,7 +371,7 @@ void PipesDeviceApiIteratedTest::testMultiWindow() {
   std::vector<PipesWindowSetup> windows;
   windows.reserve(num_windows);
   for (int w = 0; w < num_windows; w++) {
-    windows.push_back(createPipesWindowSetup(
+    auto ws = createPipesWindowSetup(
         torchcomm_,
         allocator_,
         device_index_,
@@ -344,7 +379,15 @@ void PipesDeviceApiIteratedTest::testMultiWindow() {
         count,
         std::max(num_ranks_, 2),
         -1,
-        -1));
+        -1);
+    if (pipesWindowSetupFailed(ws)) {
+      // Clean up any already-created windows before skipping
+      for (auto& prev : windows) {
+        teardownPipesWindow(prev, torchcomm_);
+      }
+      GTEST_SKIP() << "Skipping: IBGDA/Pipes hardware not available";
+    }
+    windows.push_back(std::move(ws));
   }
 
   std::vector<int*> d_results_vec(num_windows, nullptr);
@@ -418,6 +461,9 @@ void PipesDeviceApiIteratedTest::testWindowLifecycle() {
         std::max(num_ranks_, 2),
         -1,
         -1);
+    if (pipesWindowSetupFailed(s)) {
+      GTEST_SKIP() << "Skipping: IBGDA/Pipes hardware not available";
+    }
 
     int* d_result = nullptr;
     ASSERT_EQ(cudaMalloc(&d_result, sizeof(int)), cudaSuccess);
@@ -481,7 +527,7 @@ void PipesDeviceApiIteratedTest::testMultiComm() {
   std::vector<PipesWindowSetup> windows;
   windows.reserve(num_comms);
   for (int c = 0; c < num_comms; c++) {
-    windows.push_back(createPipesWindowSetup(
+    auto ws = createPipesWindowSetup(
         comms[c],
         allocator_,
         device_index_,
@@ -489,7 +535,14 @@ void PipesDeviceApiIteratedTest::testMultiComm() {
         count,
         std::max(num_ranks_, 2),
         -1,
-        -1));
+        -1);
+    if (pipesWindowSetupFailed(ws)) {
+      for (int prev = 0; prev < c; prev++) {
+        teardownPipesWindow(windows[prev], comms[prev]);
+      }
+      GTEST_SKIP() << "Skipping: IBGDA/Pipes hardware not available";
+    }
+    windows.push_back(std::move(ws));
   }
 
   // Run iterated put on each comm's window
@@ -545,6 +598,168 @@ void PipesDeviceApiIteratedTest::testMultiComm() {
 
   comms.clear();
   wrappers.clear();
+}
+
+// =============================================================================
+// Counter infrastructure (Gap 1: ported from non-iterated tests)
+// =============================================================================
+// Validates put with counter-based local completion tracking over iterations:
+//   1. put_signal_counter to next rank (signal + counter)
+//   2. Read counter value (> 0 for IBGDA, 0 for NVLink-only)
+//   3. wait_signal on receiver (verifies data arrival)
+//   4. Verify data, reset counter, repeat
+
+void PipesDeviceApiIteratedTest::testIteratedPutCounter(size_t msg_bytes) {
+  size_t count = msg_bytes / sizeof(float);
+  if (count == 0) {
+    count = 1;
+  }
+  int iterations = config_.num_iterations;
+
+  SCOPED_TRACE(
+      ::testing::Message() << "PipesIteratedPutCounter msg="
+                           << formatBytes(msg_bytes)
+                           << " iters=" << iterations);
+
+  int signal_count = std::max(num_ranks_, 2);
+  int counter_count = num_ranks_;
+  int barrier_count = 1;
+  auto s = createPipesWindowSetup(
+      torchcomm_,
+      allocator_,
+      device_index_,
+      num_ranks_,
+      count,
+      signal_count,
+      counter_count,
+      barrier_count);
+  if (pipesWindowSetupFailed(s)) {
+    GTEST_SKIP() << "Skipping: IBGDA/Pipes hardware not available";
+  }
+
+  int dst_rank = (rank_ + 1) % num_ranks_;
+  int src_rank = (rank_ - 1 + num_ranks_) % num_ranks_;
+  size_t bytes = count * sizeof(float);
+
+  int* d_results = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_results, iterations * sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_results, 0, iterations * sizeof(int)), cudaSuccess);
+
+  uint64_t* d_counter_values = nullptr;
+  ASSERT_EQ(
+      cudaMalloc(&d_counter_values, iterations * sizeof(uint64_t)),
+      cudaSuccess);
+  ASSERT_EQ(
+      cudaMemset(d_counter_values, 0, iterations * sizeof(uint64_t)),
+      cudaSuccess);
+
+  auto stream = at::cuda::getStreamFromPool(false, device_index_);
+  {
+    c10::cuda::CUDAStreamGuard guard(stream);
+    launchPipesIteratedPutCounterKernel(
+        s.dev_win,
+        s.src_buf,
+        s.src_tensor.data_ptr<float>(),
+        s.win_tensor.data_ptr<float>(),
+        0,
+        rank_ * bytes,
+        bytes,
+        count,
+        dst_rank,
+        src_rank,
+        /*signal_id=*/0,
+        /*counter_id=*/0,
+        /*barrier_id=*/0,
+        iterations,
+        d_results,
+        d_counter_values,
+        stream.stream());
+  }
+  stream.synchronize();
+
+  checkKernelResults(
+      d_results,
+      iterations,
+      "PipesIteratedPutCounter(" + formatBytes(msg_bytes) + ")");
+
+  // Read counter values to host for logging (IBGDA: > 0, NVLink: 0)
+  std::vector<uint64_t> h_counter_values(iterations);
+  cudaMemcpy(
+      h_counter_values.data(),
+      d_counter_values,
+      iterations * sizeof(uint64_t),
+      cudaMemcpyDeviceToHost);
+  SCOPED_TRACE(
+      ::testing::Message() << "Counter value at iter 0: " << h_counter_values[0]
+                           << " (0=NVLink-only, >0=IBGDA)");
+
+  cudaFree(d_results);
+  cudaFree(d_counter_values);
+  teardownPipesWindow(s, torchcomm_);
+}
+
+// =============================================================================
+// read_signal host verification (Gap 2: ported from non-iterated tests)
+// =============================================================================
+// Ring pattern with host-side read_signal verification:
+//   1. Each rank signals next rank (iterated, monotonic)
+//   2. Each rank waits for signal from previous rank
+//   3. After all iterations, read_signal value to host and verify it matches
+//      the expected monotonic count
+
+void PipesDeviceApiIteratedTest::testIteratedSignalReadHost(CoopScope scope) {
+  int iterations = config_.num_iterations;
+  int num_threads = threadsForScope(scope);
+
+  SCOPED_TRACE(
+      ::testing::Message() << "PipesIteratedSignalReadHost scope="
+                           << scopeName(scope) << " iters=" << iterations);
+
+  auto s = createPipesWindowSetup(
+      torchcomm_, allocator_, device_index_, num_ranks_, 1, num_ranks_, -1, 1);
+  if (pipesWindowSetupFailed(s)) {
+    GTEST_SKIP() << "Skipping: IBGDA/Pipes hardware not available";
+  }
+
+  int dst_rank = (rank_ + 1) % num_ranks_;
+  int src_rank = (rank_ - 1 + num_ranks_) % num_ranks_;
+  constexpr int kSignalId = 0;
+
+  auto stream = at::cuda::getStreamFromPool(false, device_index_);
+  {
+    c10::cuda::CUDAStreamGuard guard(stream);
+    launchPipesIteratedSignalKernel(
+        s.dev_win,
+        dst_rank,
+        src_rank,
+        kSignalId,
+        iterations,
+        scope,
+        num_threads,
+        stream.stream());
+  }
+  stream.synchronize();
+
+  // Host-side verification: read_signal value should equal the monotonic count
+  // after all iterations. Each iteration increments by 1 from the sender, so
+  // the aggregated signal should be >= iterations.
+  uint64_t* d_signal_out = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_signal_out, sizeof(uint64_t)), cudaSuccess);
+  {
+    c10::cuda::CUDAStreamGuard guard(stream);
+    launchPipesReadSignalKernel(
+        s.dev_win, kSignalId, d_signal_out, stream.stream());
+  }
+  stream.synchronize();
+
+  uint64_t h_signal = 0;
+  cudaMemcpy(&h_signal, d_signal_out, sizeof(uint64_t), cudaMemcpyDeviceToHost);
+  cudaFree(d_signal_out);
+
+  ASSERT_GE(h_signal, static_cast<uint64_t>(iterations))
+      << "Expected aggregated signal >= " << iterations << ", got " << h_signal;
+
+  teardownPipesWindow(s, torchcomm_);
 }
 
 // =============================================================================
@@ -633,6 +848,42 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Values(static_cast<size_t>(1024), static_cast<size_t>(1048576)),
     [](const ::testing::TestParamInfo<size_t>& info) {
       return std::to_string(info.param) + "B";
+    });
+
+// --- PutCounter: parameterized by msg_bytes ---
+
+class PipesDeviceApiIteratedPutCounterTest
+    : public PipesDeviceApiIteratedTest,
+      public ::testing::WithParamInterface<size_t> {};
+
+TEST_P(PipesDeviceApiIteratedPutCounterTest, PutCounter) {
+  testIteratedPutCounter(GetParam());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    IteratedPutCounter,
+    PipesDeviceApiIteratedPutCounterTest,
+    ::testing::Values(static_cast<size_t>(1024), static_cast<size_t>(1048576)),
+    [](const ::testing::TestParamInfo<size_t>& info) {
+      return std::to_string(info.param) + "B";
+    });
+
+// --- SignalReadHost: parameterized by scope ---
+
+class PipesDeviceApiIteratedSignalReadHostTest
+    : public PipesDeviceApiIteratedTest,
+      public ::testing::WithParamInterface<CoopScope> {};
+
+TEST_P(PipesDeviceApiIteratedSignalReadHostTest, SignalReadHost) {
+  testIteratedSignalReadHost(GetParam());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    IteratedSignalReadHost,
+    PipesDeviceApiIteratedSignalReadHostTest,
+    ::testing::Values(CoopScope::THREAD, CoopScope::WARP, CoopScope::BLOCK),
+    [](const ::testing::TestParamInfo<CoopScope>& info) {
+      return std::string(scopeName(info.param));
     });
 
 // --- Non-parameterized tests ---
