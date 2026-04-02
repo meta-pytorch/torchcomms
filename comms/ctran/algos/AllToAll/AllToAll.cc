@@ -10,8 +10,26 @@
 #include "comms/ctran/algos/AllToAll/AllToAllvImpl.h"
 #if defined(ENABLE_PIPES)
 #include "comms/ctran/algos/AllToAll/DeviceAllToAllvPipesImpl.h"
+#include "comms/pipes/MultiPeerDeviceHandle.cuh"
 #include "comms/pipes/MultiPeerTransport.h"
 #include "comms/pipes/Transport.cuh"
+#include "comms/pipes/collectives/AllToAllv.cuh"
+
+// Pipes-direct bypass defined in DeviceAllToAllvPipes.cu
+extern commResult_t pipesDirectDeviceAllToAllv(
+    const void* sendbuff,
+    void* recvbuff,
+    const int64_t* sendcounts_d,
+    const int64_t* recvcounts_d,
+    size_t elementSize,
+    int myRank,
+    int nRanks,
+    comms::pipes::DeviceSpan<comms::pipes::Transport> transports,
+    int64_t sendMultiplier,
+    int64_t recvMultiplier,
+    comms::pipes::ChunkInfo* d_sendChunks,
+    comms::pipes::ChunkInfo* d_recvChunks,
+    cudaStream_t stream);
 #endif
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/gpe/CtranGpe.h"
@@ -214,6 +232,28 @@ commResult_t ctranDeviceAllToAllv(
     int64_t sendcountsMultiplier,
     int64_t recvcountsMultiplier,
     const std::unordered_map<std::string, std::string>& hints) {
+  if (NCCL_CTRAN_PIPES_DEVICE_ALLTOALLV_ENABLE) {
+    // Pipes-direct path: unified all_to_allv() handles NVLink + IBGDA.
+    auto* mpt = comm->multiPeerTransport_.get();
+    auto deviceHandle = mpt->get_device_handle();
+    return pipesDirectDeviceAllToAllv(
+        sendbuff,
+        recvbuff,
+        sendcounts_d,
+        recvcounts_d,
+        commTypeSize(datatype),
+        mpt->my_rank(),
+        mpt->n_ranks(),
+        deviceHandle.transports,
+        sendcountsMultiplier,
+        recvcountsMultiplier,
+        mpt->getChunkInfoSendBuf(),
+        mpt->getChunkInfoRecvBuf(),
+        stream);
+  }
+
+  // Ctran kernel path: GPE, block scheduling, tunable hints.
+  // Currently NVLink-only.
   auto opCount = comm->ctran_->getOpCount();
 
   KernelConfig config = KernelConfig(
@@ -278,14 +318,15 @@ bool ctranDeviceAllToAllvSupport(CtranComm* comm) {
     return false;
   }
 
-  // NVLink domain only: verify ALL peers are reachable via NVLink (or self).
-  // Reject communicators with any IB-only peers to prevent silent data loss.
+  // Verify ALL peers are reachable via a supported transport.
+  // Supported: NVLink (P2P_NVL), IBGDA (P2P_IBGDA), or self (SELF).
   // Use host-side API — getMultiPeerTransportsPtr() returns a device pointer
   // that cannot be dereferenced on the host.
   const auto statex = comm->statex_.get();
   for (int rank = 0; rank < statex->nRanks(); rank++) {
     auto type = comm->multiPeerTransport_->get_transport_type(rank);
     if (type != comms::pipes::TransportType::P2P_NVL &&
+        type != comms::pipes::TransportType::P2P_IBGDA &&
         type != comms::pipes::TransportType::SELF) {
       return false;
     }
