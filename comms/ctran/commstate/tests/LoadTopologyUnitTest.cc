@@ -120,6 +120,13 @@ TEST(TopologyTest, EmptyRackSerial) {
   EXPECT_EQ(topo->rackSerial, -1);
 }
 
+TEST(TopologyTest, FileNotFound) {
+  const std::string filepath = "/tmp/nonexistent-topo-file.txt";
+
+  auto topo = ctran::commstate::loadTopology(0, filepath);
+  EXPECT_FALSE(topo);
+}
+
 TEST(TopologyTest, InvalidRackSerialFormat) {
   const std::string filepath = "/tmp/ut-topology.txt";
   std::ofstream file(filepath);
