@@ -218,6 +218,151 @@ class AllToAllvIbgdaE2eTestFixture : public MpiBaseTestFixture {
     MPI_Barrier(MPI_COMM_WORLD);
     cudaFree(d_transports);
   }
+  // Helper to run an equal-size alltoallv with a WarpReserveDeviceConfig
+  // and verify correctness. Builds IBGDA peer rank device arrays and
+  // constructs the reserve config from the given warp counts.
+  void runWarpReserveTest(
+      MultipeerIbgdaTransport& ibgdaTransport,
+      MultiPeerIbgdaTransportSetup& setup,
+      size_t numIntsPerRank,
+      int ibgdaSendWarps,
+      int ibgdaRecvWarps,
+      int selfWarps = 1) {
+    const int numIbgdaPeers = numRanks - 1;
+    const int totalWarps = selfWarps + ibgdaSendWarps + ibgdaRecvWarps;
+    const int totalThreads = totalWarps * 32;
+    const int maxThreadsPerBlock = 256;
+    const int threadsPerBlock = std::min(totalThreads, maxThreadsPerBlock);
+    const int numBlocks = std::max(1, totalThreads / threadsPerBlock);
+
+    const size_t totalInts = numIntsPerRank * numRanks;
+    const size_t bufferSize = totalInts * sizeof(int32_t);
+    const size_t perPeerBytes = numIntsPerRank * sizeof(int32_t);
+
+    Transport* d_transports =
+        buildTransportsArray(ibgdaTransport, setup, globalRank, numRanks);
+
+    // Build IBGDA peer rank array (all non-self ranks)
+    std::vector<int> ibgdaPeerRanks;
+    for (int r = 0; r < numRanks; ++r) {
+      if (r != globalRank) {
+        ibgdaPeerRanks.push_back(r);
+      }
+    }
+    int* d_ibgdaPeerRanks = nullptr;
+    CUDACHECK_TEST(cudaMalloc(&d_ibgdaPeerRanks, numIbgdaPeers * sizeof(int)));
+    CUDACHECK_TEST(cudaMemcpy(
+        d_ibgdaPeerRanks,
+        ibgdaPeerRanks.data(),
+        numIbgdaPeers * sizeof(int),
+        cudaMemcpyHostToDevice));
+
+    // Build WarpReserveDeviceConfig
+    WarpReserveDeviceConfig reserveConfig;
+    reserveConfig.selfEnd = static_cast<uint32_t>(selfWarps);
+    reserveConfig.nvlSendEnd = reserveConfig.selfEnd; // no NVL peers
+    reserveConfig.nvlRecvEnd = reserveConfig.nvlSendEnd; // no NVL peers
+    reserveConfig.ibgdaSendEnd =
+        reserveConfig.nvlRecvEnd + static_cast<uint32_t>(ibgdaSendWarps);
+    reserveConfig.nvlPeerRanks = nullptr;
+    reserveConfig.numNvlPeers = 0;
+    reserveConfig.ibgdaPeerRanks = d_ibgdaPeerRanks;
+    reserveConfig.numIbgdaPeers = static_cast<uint32_t>(numIbgdaPeers);
+
+    DeviceBuffer sendBuffer(bufferSize);
+    DeviceBuffer recvBuffer(bufferSize);
+
+    // Fill send buffer: rank R sending to peer P: R*1000 + P*100 + i
+    std::vector<int32_t> h_send(totalInts);
+    for (int peer = 0; peer < numRanks; peer++) {
+      for (size_t i = 0; i < numIntsPerRank; i++) {
+        h_send[peer * numIntsPerRank + i] =
+            globalRank * 1000 + peer * 100 + static_cast<int32_t>(i);
+      }
+    }
+    CUDACHECK_TEST(cudaMemcpy(
+        sendBuffer.get(), h_send.data(), bufferSize, cudaMemcpyHostToDevice));
+
+    std::vector<int32_t> h_recv_init(totalInts, -1);
+    CUDACHECK_TEST(cudaMemcpy(
+        recvBuffer.get(),
+        h_recv_init.data(),
+        bufferSize,
+        cudaMemcpyHostToDevice));
+
+    // Build ChunkInfo arrays on device
+    std::vector<ChunkInfo> h_chunks;
+    h_chunks.reserve(numRanks);
+    for (int rank = 0; rank < numRanks; rank++) {
+      h_chunks.emplace_back(rank * perPeerBytes, perPeerBytes);
+    }
+    DeviceBuffer d_send_chunks(sizeof(ChunkInfo) * numRanks);
+    DeviceBuffer d_recv_chunks(sizeof(ChunkInfo) * numRanks);
+    CUDACHECK_TEST(cudaMemcpy(
+        d_send_chunks.get(),
+        h_chunks.data(),
+        sizeof(ChunkInfo) * numRanks,
+        cudaMemcpyHostToDevice));
+    CUDACHECK_TEST(cudaMemcpy(
+        d_recv_chunks.get(),
+        h_chunks.data(),
+        sizeof(ChunkInfo) * numRanks,
+        cudaMemcpyHostToDevice));
+
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    all_to_allv(
+        recvBuffer.get(),
+        sendBuffer.get(),
+        globalRank,
+        DeviceSpan<Transport>(d_transports, static_cast<uint32_t>(numRanks)),
+        DeviceSpan<ChunkInfo>(
+            static_cast<ChunkInfo*>(d_send_chunks.get()), numRanks),
+        DeviceSpan<ChunkInfo>(
+            static_cast<ChunkInfo*>(d_recv_chunks.get()), numRanks),
+        std::chrono::milliseconds{30000},
+        nullptr,
+        numBlocks,
+        threadsPerBlock,
+        std::nullopt,
+        reserveConfig);
+
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    // Verify received data
+    std::vector<int32_t> h_recv(totalInts);
+    CUDACHECK_TEST(cudaMemcpy(
+        h_recv.data(), recvBuffer.get(), bufferSize, cudaMemcpyDeviceToHost));
+
+    int errorCount = 0;
+    for (int peer = 0; peer < numRanks; peer++) {
+      for (size_t i = 0; i < numIntsPerRank; i++) {
+        int32_t expected =
+            peer * 1000 + globalRank * 100 + static_cast<int32_t>(i);
+        int32_t actual = h_recv[peer * numIntsPerRank + i];
+        if (expected != actual) {
+          errorCount++;
+          if (errorCount <= 10) {
+            XLOGF(
+                ERR,
+                "Rank {}: WarpReserve error at peer {} pos {}: expected {}, got {}",
+                globalRank,
+                peer,
+                i,
+                expected,
+                actual);
+          }
+        }
+      }
+    }
+
+    EXPECT_EQ(errorCount, 0) << "Rank " << globalRank << " found " << errorCount
+                             << " verification errors";
+
+    MPI_Barrier(MPI_COMM_WORLD);
+    (void)cudaFree(d_ibgdaPeerRanks);
+    (void)cudaFree(d_transports);
+  }
 };
 
 // =============================================================================
@@ -681,6 +826,59 @@ INSTANTIATE_TEST_SUITE_P(
     PipelineDepth,
     AllToAllvIbgdaE2ePipelineDepthTest,
     ::testing::Values(1, 2, 4, 8));
+
+// =============================================================================
+// Warp reserve config tests — uses the category-based warp partition path
+// =============================================================================
+
+TEST_F(AllToAllvIbgdaE2eTestFixture, WarpReserve_MinimumConfig) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Need at least 2 ranks";
+  }
+  auto transport = createTransport();
+  if (shouldSkip(transport)) {
+    GTEST_SKIP() << "IBGDA transport not available (collective skip)";
+  }
+
+  MultiPeerIbgdaTransportSetupConfig setupConfig{
+      .dataBufferSize = 4096,
+      .chunkSize = 4096,
+      .pipelineDepth = 4,
+  };
+
+  MultiPeerIbgdaTransportSetup setup(
+      *transport, globalRank, numRanks, setupConfig);
+  setup.exchangeBuffers();
+
+  // 1 IBGDA send warp per peer, 1 IBGDA recv warp per peer
+  const int numIbgdaPeers = numRanks - 1;
+  runWarpReserveTest(*transport, setup, 256, numIbgdaPeers, numIbgdaPeers);
+}
+
+TEST_F(AllToAllvIbgdaE2eTestFixture, WarpReserve_IbgdaHeavySend) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Need at least 2 ranks";
+  }
+  auto transport = createTransport();
+  if (shouldSkip(transport)) {
+    GTEST_SKIP() << "IBGDA transport not available (collective skip)";
+  }
+
+  MultiPeerIbgdaTransportSetupConfig setupConfig{
+      .dataBufferSize = 4096,
+      .chunkSize = 4096,
+      .pipelineDepth = 4,
+  };
+
+  MultiPeerIbgdaTransportSetup setup(
+      *transport, globalRank, numRanks, setupConfig);
+  setup.exchangeBuffers();
+
+  // 4 IBGDA send warps per peer, 1 IBGDA recv warp per peer (asymmetric)
+  const int numIbgdaPeers = numRanks - 1;
+  runWarpReserveTest(
+      *transport, setup, 256, 4 * numIbgdaPeers, 1 * numIbgdaPeers);
+}
 
 } // namespace comms::pipes
 
