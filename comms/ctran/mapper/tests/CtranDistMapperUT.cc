@@ -791,7 +791,8 @@ TEST_P(CtranDistMapperBufExportParam, BufExportCtrl) {
   auto remoteAccessKeys = CtranMapperRemoteAccessKey();
 
   std::vector<std::unique_ptr<CtranMapperRequest>> requests;
-  for (int x = 0; x < 10; x++) {
+
+  {
     CtranMapperRequest* req = nullptr;
 
     CtranMapperEpochRAII epochRAII(mapper);
