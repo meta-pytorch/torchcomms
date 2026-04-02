@@ -835,8 +835,8 @@ void MultipeerIbgdaTransport::exchange() {
     }
   }
 
-  // Build device transports on GPU
-  std::vector<P2pIbgdaTransportBuildParams> buildParams(numPeers);
+  // Build QP params and save host-side for buildP2pTransportDevice()
+  buildParams_.resize(numPeers);
   for (int i = 0; i < numPeers; i++) {
     // Get GPU-accessible QP handle for main QP
     doca_gpu_dev_verbs_qp* gpuQp = nullptr;
@@ -850,14 +850,16 @@ void MultipeerIbgdaTransport::exchange() {
         qpGroupHlList_[i]->qp_companion.qp_gverbs, &companionGpuQp);
     checkDocaError(err, "Failed to get companion GPU QP handle");
 
-    buildParams[i] = P2pIbgdaTransportBuildParams{
+    buildParams_[i] = P2pIbgdaTransportBuildParams{
         gpuQp,
         companionGpuQp,
         NetworkLKey(HostLKey(sinkMr_->lkey)),
         reinterpret_cast<uint64_t>(sinkBuffer_)};
   }
 
-  peerTransportsGpu_ = buildDeviceTransportsOnGpu(buildParams.data(), numPeers);
+  // Upload QP-only devices to GPU for backward compat (getP2pTransportDevice)
+  peerTransportsGpu_ =
+      buildDeviceTransportsOnGpu(buildParams_.data(), numPeers);
   peerTransportSize_ = getP2pIbgdaTransportDeviceSize();
 
   VLOG(1) << "MultipeerIbgdaTransport: rank " << myRank_
@@ -870,6 +872,16 @@ MultipeerIbgdaDeviceTransport MultipeerIbgdaTransport::getDeviceTransport()
       myRank_,
       nRanks_,
       DeviceSpan<P2pIbgdaTransportDevice>(peerTransportsGpu_, nRanks_ - 1));
+}
+
+P2pIbgdaTransportDevice* MultipeerIbgdaTransport::buildP2pTransportDevice(
+    int peerRank,
+    const P2pIbgdaTransportState& stagingState,
+    uint64_t* sendCounter,
+    uint64_t* recvCounter) const {
+  int peerIndex = rankToPeerIndex(peerRank);
+  return buildFullP2pIbgdaTransportDeviceOnGpu(
+      buildParams_[peerIndex], stagingState, sendCounter, recvCounter);
 }
 
 P2pIbgdaTransportDevice* MultipeerIbgdaTransport::getP2pTransportDevice(

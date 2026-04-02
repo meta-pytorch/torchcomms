@@ -9,6 +9,7 @@
 #include <device/doca_gpunetio_dev_verbs_counter.cuh>
 #include <device/doca_gpunetio_dev_verbs_onesided.cuh>
 
+#include "comms/pipes/CopyUtils.cuh"
 #include "comms/pipes/DocaVerbsUtils.cuh"
 #include "comms/pipes/IbgdaBuffer.h"
 #include "comms/pipes/ThreadGroup.cuh"
@@ -80,7 +81,7 @@ class P2pIbgdaTransportDevice {
   P2pIbgdaTransportDevice() = default;
 
   /**
-   * Constructor
+   * Constructor (QP-only, without staging state)
    *
    * @param qp GPU QP handle for RDMA operations
    */
@@ -93,6 +94,44 @@ class P2pIbgdaTransportDevice {
         companionQp_(companionQp),
         sinkLkey_(sinkLkey),
         sinkAddr_(sinkAddr) {}
+
+  /**
+   * Constructor with staging state (fully-formed device, NVLink-symmetric)
+   *
+   * Constructs a device handle with both QP handles AND staging state,
+   * so that send()/recv() can operate without any external state.
+   */
+  __host__ __device__ P2pIbgdaTransportDevice(
+      doca_gpu_dev_verbs_qp* qp,
+      doca_gpu_dev_verbs_qp* companionQp,
+      NetworkLKey sinkLkey,
+      uint64_t sinkAddr,
+      IbgdaLocalBuffer localStagingBuf,
+      IbgdaRemoteBuffer remoteStagingBuf,
+      IbgdaLocalBuffer recvStagingBuf,
+      IbgdaLocalBuffer localSignalBuf,
+      IbgdaRemoteBuffer remoteSignalBuf,
+      int localSignalId,
+      int remoteSignalId,
+      size_t dataBufferSize,
+      int pipelineDepth,
+      uint64_t* sendIterationCounter,
+      uint64_t* recvIterationCounter)
+      : qp_(qp),
+        companionQp_(companionQp),
+        sinkLkey_(sinkLkey),
+        sinkAddr_(sinkAddr),
+        localStagingBuf_(localStagingBuf),
+        remoteStagingBuf_(remoteStagingBuf),
+        recvStagingBuf_(recvStagingBuf),
+        localSignalBuf_(localSignalBuf),
+        remoteSignalBuf_(remoteSignalBuf),
+        localSignalId_(localSignalId),
+        remoteSignalId_(remoteSignalId),
+        dataBufferSize_(dataBufferSize),
+        pipelineDepth_(pipelineDepth),
+        sendIterationCounter_(sendIterationCounter),
+        recvIterationCounter_(recvIterationCounter) {}
 
   /**
    * put - RDMA Write without signal (non-blocking)
@@ -762,6 +801,146 @@ class P2pIbgdaTransportDevice {
     return qp_;
   }
 
+  // ===========================================================================
+  // High-level send()/recv() APIs (NVLink-symmetric)
+  // ===========================================================================
+  // Encapsulate the pipelined staging buffer protocol, mirroring
+  // P2pNvlTransportDevice::send()/recv(). Requires the fully-formed
+  // constructor (with staging state + counters).
+
+  /**
+   * send - Pipelined RDMA send to peer via staging buffers
+   *
+   * Copies data from src to local staging buffer, then RDMA puts to
+   * the peer's recv staging buffer with completion signaling. Handles
+   * multi-step pipelining and back-pressure automatically.
+   *
+   * Symmetric with P2pNvlTransportDevice::send().
+   */
+  __device__ __forceinline__ void send(
+      [[maybe_unused]] ThreadGroup& group,
+      [[maybe_unused]] void* src,
+      [[maybe_unused]] size_t nbytes,
+      [[maybe_unused]] const Timeout& timeout = Timeout()) {
+#ifdef __CUDA_ARCH__
+    if (nbytes == 0) {
+      return;
+    }
+    const char* srcPtr = static_cast<const char*>(src);
+    const uint64_t iteration = *sendIterationCounter_;
+    const size_t totalSteps = (nbytes + dataBufferSize_ - 1) / dataBufferSize_;
+
+    const int completionSlot = remoteSignalId_;
+    const int backPressureSlot = localSignalId_ + 1;
+
+    for (size_t stepId = 0; stepId < totalSteps; stepId++) {
+      const size_t pipelineIdx = (iteration + stepId) % pipelineDepth_;
+      const size_t stagingOffset = pipelineIdx * dataBufferSize_;
+      const size_t stepOffset = stepId * dataBufferSize_;
+      const size_t stepBytes = (stepOffset + dataBufferSize_ <= nbytes)
+          ? dataBufferSize_
+          : (nbytes - stepOffset);
+
+      if (iteration + stepId >= static_cast<uint64_t>(pipelineDepth_)) {
+        if (group.is_leader()) {
+          wait_signal(
+              localSignalBuf_,
+              backPressureSlot,
+              iteration + stepId - pipelineDepth_ + 1,
+              timeout);
+        }
+        group.sync();
+      }
+
+      memcpy_vectorized(
+          static_cast<char*>(localStagingBuf_.ptr) + stagingOffset,
+          srcPtr + stepOffset,
+          stepBytes,
+          group);
+
+      group.sync();
+      __threadfence_system();
+
+      if (group.is_global_leader()) {
+        put_signal(
+            localStagingBuf_.subBuffer(stagingOffset),
+            remoteStagingBuf_.subBuffer(stagingOffset),
+            stepBytes,
+            remoteSignalBuf_,
+            completionSlot,
+            1);
+      }
+    }
+
+    if (group.is_global_leader()) {
+      atomicAdd(
+          reinterpret_cast<unsigned long long int*>(sendIterationCounter_),
+          static_cast<unsigned long long int>(totalSteps));
+    }
+#endif
+  }
+
+  /**
+   * recv - Pipelined RDMA recv from peer via staging buffers
+   *
+   * Waits for completion signals from the sender, then copies data from
+   * the local recv staging buffer to dst. Sends back-pressure signals
+   * to the sender to allow pipeline slot reuse.
+   *
+   * Symmetric with P2pNvlTransportDevice::recv().
+   */
+  __device__ __forceinline__ void recv(
+      [[maybe_unused]] ThreadGroup& group,
+      [[maybe_unused]] void* dst,
+      [[maybe_unused]] size_t nbytes,
+      [[maybe_unused]] const Timeout& timeout = Timeout()) {
+#ifdef __CUDA_ARCH__
+    if (nbytes == 0) {
+      return;
+    }
+    char* dstPtr = static_cast<char*>(dst);
+    const uint64_t iteration = *recvIterationCounter_;
+    const size_t totalSteps = (nbytes + dataBufferSize_ - 1) / dataBufferSize_;
+
+    const int completionSlot = localSignalId_;
+    const int backPressureSlot = remoteSignalId_ + 1;
+
+    for (size_t stepId = 0; stepId < totalSteps; stepId++) {
+      const size_t pipelineIdx = (iteration + stepId) % pipelineDepth_;
+      const size_t stagingOffset = pipelineIdx * dataBufferSize_;
+      const size_t stepOffset = stepId * dataBufferSize_;
+      const size_t stepBytes = (stepOffset + dataBufferSize_ <= nbytes)
+          ? dataBufferSize_
+          : (nbytes - stepOffset);
+
+      if (group.is_leader()) {
+        wait_signal(
+            localSignalBuf_, completionSlot, iteration + stepId + 1, timeout);
+      }
+      group.sync();
+      __threadfence_system();
+
+      memcpy_vectorized(
+          dstPtr + stepOffset,
+          static_cast<char*>(recvStagingBuf_.ptr) + stagingOffset,
+          stepBytes,
+          group);
+
+      group.sync();
+
+      if (group.is_global_leader()) {
+        signal_remote(remoteSignalBuf_, backPressureSlot, 1);
+      }
+    }
+
+    if (group.is_global_leader()) {
+      atomicAdd(
+          reinterpret_cast<unsigned long long int*>(recvIterationCounter_),
+          static_cast<unsigned long long int>(totalSteps));
+    }
+#endif
+  }
+
  private:
   /**
    * put_group_impl - Generic group-collaborative RDMA Write
@@ -860,6 +1039,19 @@ class P2pIbgdaTransportDevice {
   doca_gpu_dev_verbs_qp* companionQp_{nullptr};
   NetworkLKey sinkLkey_{};
   uint64_t sinkAddr_{0};
+
+  // Staging state (populated by fully-formed constructor)
+  IbgdaLocalBuffer localStagingBuf_{};
+  IbgdaRemoteBuffer remoteStagingBuf_{};
+  IbgdaLocalBuffer recvStagingBuf_{};
+  IbgdaLocalBuffer localSignalBuf_{};
+  IbgdaRemoteBuffer remoteSignalBuf_{};
+  [[maybe_unused]] int localSignalId_{0};
+  [[maybe_unused]] int remoteSignalId_{0};
+  [[maybe_unused]] size_t dataBufferSize_{0};
+  [[maybe_unused]] int pipelineDepth_{0};
+  [[maybe_unused]] uint64_t* sendIterationCounter_{nullptr};
+  [[maybe_unused]] uint64_t* recvIterationCounter_{nullptr};
 };
 
 } // namespace comms::pipes
