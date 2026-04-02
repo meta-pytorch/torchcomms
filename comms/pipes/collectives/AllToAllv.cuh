@@ -11,6 +11,15 @@
 #include "comms/pipes/Timeout.cuh"
 #include "comms/pipes/Transport.cuh"
 
+// P2pIbgdaTransportDevice.cuh includes DOCA device headers with CUDA-only
+// intrinsics (atomicCAS, __ldg, etc.) that cannot compile in .cc translation
+// units. Guard with __CUDA_ARCH__ so the header is only included during device
+// compilation. Transport.cuh provides the forward declaration of
+// P2pIbgdaTransportDevice for the pointer type.
+#ifdef __CUDA_ARCH__
+#include "comms/pipes/P2pIbgdaTransportDevice.cuh"
+#endif
+
 namespace comms::pipes {
 
 namespace {
@@ -82,7 +91,7 @@ struct ChunkInfo {
  * 2. For self-rank: Perform local memory copy within the same GPU
  * 3. For peer ranks: Second weighted partition to split warps between send
  *    and recv operations based on their respective data sizes
- * 4. Execute send or recv using P2P NVL transport
+ * 4. Execute send or recv using P2P NVL or P2P IBGDA transport
  *
  * Parameters:
  *   @param recvbuff_d: Device pointer to receive buffer
@@ -93,6 +102,7 @@ struct ChunkInfo {
  *   @param send_chunk_infos: Array of send chunk metadata, one per destination
  * rank
  *   @param recv_chunk_infos: Array of recv chunk metadata, one per source rank
+ *   @param timeout: Timeout configuration
  *
  * Requirements:
  * - Must be called from device code with sufficient threads
@@ -103,13 +113,13 @@ struct ChunkInfo {
  * - Max 8 ranks supported (stack-allocated weights)
  */
 __device__ __forceinline__ void all_to_allv(
-    void* recvbuff_d,
-    const void* sendbuff_d,
-    int my_rank_id,
-    DeviceSpan<Transport> transports_per_rank,
-    DeviceSpan<ChunkInfo> send_chunk_infos,
-    DeviceSpan<ChunkInfo> recv_chunk_infos,
-    Timeout timeout
+    [[maybe_unused]] void* recvbuff_d,
+    [[maybe_unused]] const void* sendbuff_d,
+    [[maybe_unused]] int my_rank_id,
+    [[maybe_unused]] DeviceSpan<Transport> transports_per_rank,
+    [[maybe_unused]] DeviceSpan<ChunkInfo> send_chunk_infos,
+    [[maybe_unused]] DeviceSpan<ChunkInfo> recv_chunk_infos,
+    [[maybe_unused]] Timeout timeout
     // all arguments below will eventually come from communicator
 ) {
 #ifdef __CUDA_ARCH__
@@ -135,22 +145,63 @@ __device__ __forceinline__ void all_to_allv(
   // partition_id: 0 = send, 1 = recv
   auto [partition_id, send_recv_group] = group.partition_interleaved(2);
 
-  // 2. Then partition by PEERS using interleaved partitioning
-  // Spreads blocks for same peer across SM space for better load balancing
-  auto [peer_rank_id, group_per_peer] =
-      send_recv_group.partition_interleaved(nranks);
+  // 2. Capped partition by PEERS: cap concurrent peers at available warps
+  // so partition_interleaved never exceeds total_groups. When nranks >
+  // available warps, each warp iterates over multiple peers in batches.
+  uint32_t avail = send_recv_group.total_groups;
+  uint32_t concurrent = (nranks < avail) ? nranks : avail;
+  auto [slot_id, group_per_peer] =
+      send_recv_group.partition_interleaved(concurrent);
 
-  if (peer_rank_id == my_rank_id) {
-    // Self partition - both send and recv groups participate in copying
-    auto& transport = transports_per_rank[my_rank_id];
-    PIPES_DEVICE_CHECK(transport.type == TransportType::SELF);
+  // Extract to local pointer to avoid aliasing (see DeviceSpan.cuh:228).
+  auto transports = transports_per_rank.data();
 
-    const auto& send_info = send_chunk_infos[my_rank_id];
-    const auto& recv_info = recv_chunk_infos[my_rank_id];
-    PIPES_DEVICE_CHECK(send_info.nbytes == recv_info.nbytes);
+  for (uint32_t batch = 0; batch * concurrent < nranks; batch++) {
+    uint32_t peer_rank_id = slot_id + batch * concurrent;
+    if (peer_rank_id >= nranks)
+      break;
 
-    const char* src = static_cast<const char*>(sendbuff_d) + send_info.offset;
-    char* dst = static_cast<char*>(recvbuff_d) + recv_info.offset;
+    const auto& send_info = send_chunk_infos[peer_rank_id];
+    const auto& recv_info = recv_chunk_infos[peer_rank_id];
+    const bool is_send = (partition_id == 0);
+    const size_t nbytes = is_send ? send_info.nbytes : recv_info.nbytes;
+
+    // Nothing to send/recv for this peer
+    if (nbytes == 0) {
+      continue;
+    }
+
+    if (peer_rank_id == static_cast<uint32_t>(my_rank_id)) {
+      // Self partition
+      auto& transport = transports[my_rank_id];
+      PIPES_DEVICE_CHECK(transport.type == TransportType::SELF);
+      PIPES_DEVICE_CHECK(send_info.nbytes == recv_info.nbytes);
+
+      const char* src = static_cast<const char*>(sendbuff_d) + send_info.offset;
+      char* dst = static_cast<char*>(recvbuff_d) + recv_info.offset;
+
+#ifdef DEBUG_ALLTOALLV
+      if (group_per_peer.is_global_leader()) {
+        printPerPeerOperation(
+            my_rank_id,
+            peer_rank_id,
+            partition_id,
+            group_per_peer.total_groups,
+            send_info.offset,
+            recv_info.offset,
+            send_info.nbytes,
+            recv_info.nbytes);
+      }
+#endif
+
+      // Only one partition is active for self-copy
+      if (partition_id == 0) {
+        transport.self.put(group_per_peer, dst, src, send_info.nbytes);
+      }
+      continue;
+    }
+
+    auto& transport = transports[peer_rank_id];
 
 #ifdef DEBUG_ALLTOALLV
     if (group_per_peer.is_global_leader()) {
@@ -166,52 +217,38 @@ __device__ __forceinline__ void all_to_allv(
     }
 #endif
 
-    // Only one partition is active for self-copy
-    if (partition_id == 0) {
-      transport.self.put(group_per_peer, dst, src, send_info.nbytes);
+    // Dispatch based on transport type
+    if (transport.type == TransportType::P2P_NVL) {
+      if (is_send) {
+        transport.p2p_nvl.send(
+            group_per_peer,
+            static_cast<char*>(const_cast<void*>(sendbuff_d)) +
+                send_info.offset,
+            send_info.nbytes,
+            timeout);
+      } else {
+        transport.p2p_nvl.recv(
+            group_per_peer,
+            static_cast<char*>(recvbuff_d) + recv_info.offset,
+            recv_info.nbytes,
+            timeout);
+      }
+    } else if (transport.type == TransportType::P2P_IBGDA) {
+      if (is_send) {
+        transport.p2p_ibgda->send(
+            group_per_peer,
+            static_cast<char*>(const_cast<void*>(sendbuff_d)) +
+                send_info.offset,
+            send_info.nbytes,
+            timeout);
+      } else {
+        transport.p2p_ibgda->recv(
+            group_per_peer,
+            static_cast<char*>(recvbuff_d) + recv_info.offset,
+            recv_info.nbytes,
+            timeout);
+      }
     }
-    return;
-  }
-
-  // Peer communication
-  const auto& send_info = send_chunk_infos[peer_rank_id];
-  const auto& recv_info = recv_chunk_infos[peer_rank_id];
-
-  // Extract to local pointer to avoid aliasing: compiler can't prove that
-  // operations on transport won't modify transports_per_rank.data_, forcing
-  // reloads. Local variable is provably independent. See DeviceSpan.cuh:228.
-  auto transports = transports_per_rank.data();
-  auto& transport = transports[peer_rank_id];
-  PIPES_DEVICE_CHECK(transport.type == TransportType::P2P_NVL);
-
-#ifdef DEBUG_ALLTOALLV
-  if (group_per_peer.is_global_leader()) {
-    printPerPeerOperation(
-        my_rank_id,
-        peer_rank_id,
-        partition_id,
-        group_per_peer.total_groups,
-        send_info.offset,
-        recv_info.offset,
-        send_info.nbytes,
-        recv_info.nbytes);
-  }
-#endif
-
-  // Perform peer send/recv based on partition_id from first partition
-  bool is_send = (partition_id == 0);
-  if (is_send) {
-    transport.p2p_nvl.send(
-        group_per_peer,
-        static_cast<char*>(const_cast<void*>(sendbuff_d)) + send_info.offset,
-        send_info.nbytes,
-        timeout);
-  } else {
-    transport.p2p_nvl.recv(
-        group_per_peer,
-        static_cast<char*>(recvbuff_d) + recv_info.offset,
-        recv_info.nbytes,
-        timeout);
   }
 
 #endif
