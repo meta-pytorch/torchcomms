@@ -96,7 +96,7 @@ std::string PipesDeviceApiTest::getDtypeName(at::ScalarType dtype) {
 // Validates the Pipes device window creation flow:
 //   1. All ranks register the same-sized tensor in a symmetric window
 //   2. Barrier ensures all registrations complete before device window creation
-//   3. get_device_window() triggers ctran_win->get_device_win() (allGather):
+//   3. get_device_window() triggers ctran_win->getDeviceWin() (allGather):
 //      - IBGDA path: exchanges remote buffer registration info
 //      - NVLink path: exchanges NVLink-mapped remote pointers
 //   4. Verify the returned device pointer is non-null
@@ -144,7 +144,7 @@ void PipesDeviceApiTest::testPipesDeviceWindowCreation(
                              "Is NCCL_CTRAN_USE_PIPES=1 set?";
 
   // get_device_window() is COLLECTIVE: internally calls
-  // ctran_win->get_device_win() which does an allGather to exchange IBGDA
+  // ctran_win->getDeviceWin() which does an allGather to exchange IBGDA
   // buffer registration info and NVLink-mapped remote buffer pointers.
   // All ranks must call this simultaneously.
   DeviceWindowPipes* dev_win = nullptr;

@@ -43,14 +43,14 @@ class CtranWinDeviceTest : public ctran::CtranDistTestFixture {
   }
 };
 
-// Verify get_device_win() returns a correctly populated CtranWinDevice.
+// Verify getDeviceWin() returns a correctly populated CtranWinDevice.
 TEST_F(CtranWinDeviceTest, GetDeviceWin) {
   auto [comm, win] = makeCommAndWindow();
   ASSERT_NE(comm->multiPeerTransport_, nullptr);
 
   WindowConfig config{.peerSignalCount = win->signalSize};
   DeviceWindow devWin{};
-  ASSERT_EQ(win->get_device_win(&devWin, config), commSuccess);
+  ASSERT_EQ(win->getDeviceWin(&devWin, config), commSuccess);
 
   // Verify rank and n_ranks match the communicator's values
   EXPECT_EQ(devWin.rank(), globalRank);
@@ -68,7 +68,7 @@ TEST_F(CtranWinDeviceTest, GetDeviceWin) {
   ctran::ctranWinFree(win);
 }
 
-// Verify get_device_win() returns the same result on repeated calls.
+// Verify getDeviceWin() returns the same result on repeated calls.
 TEST_F(CtranWinDeviceTest, GetDeviceWinIdempotent) {
   auto [comm, win] = makeCommAndWindow();
   ASSERT_NE(comm->multiPeerTransport_, nullptr);
@@ -76,8 +76,8 @@ TEST_F(CtranWinDeviceTest, GetDeviceWinIdempotent) {
   WindowConfig config{.peerSignalCount = win->signalSize};
   DeviceWindow devWin1{};
   DeviceWindow devWin2{};
-  ASSERT_EQ(win->get_device_win(&devWin1, config), commSuccess);
-  ASSERT_EQ(win->get_device_win(&devWin2, config), commSuccess);
+  ASSERT_EQ(win->getDeviceWin(&devWin1, config), commSuccess);
+  ASSERT_EQ(win->getDeviceWin(&devWin2, config), commSuccess);
 
   EXPECT_EQ(devWin1.rank(), devWin2.rank());
   EXPECT_EQ(devWin1.n_ranks(), devWin2.n_ranks());
@@ -87,17 +87,17 @@ TEST_F(CtranWinDeviceTest, GetDeviceWinIdempotent) {
   ctran::ctranWinFree(win);
 }
 
-// Verify get_device_win() fails when MultiPeerTransport is not initialized.
+// Verify getDeviceWin() fails when MultiPeerTransport is not initialized.
 TEST_F(CtranWinDeviceTest, GetDeviceWinNoTransportFails) {
   auto [comm, win] = makeCommAndWindow();
 
   // Simulate no-pipes by nulling out the transport
   comm->multiPeerTransport_.reset();
 
-  // get_device_win should fail since multiPeerTransport_ is null
+  // getDeviceWin should fail since multiPeerTransport_ is null
   WindowConfig config{.peerSignalCount = win->signalSize};
   DeviceWindow devWin{};
-  EXPECT_NE(win->get_device_win(&devWin, config), commSuccess);
+  EXPECT_NE(win->getDeviceWin(&devWin, config), commSuccess);
 
   ctran::ctranWinFree(win);
 }

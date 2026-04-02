@@ -55,14 +55,6 @@ void createPreMulSum(
 
 } // namespace
 
-void TorchCommXCCL::checkRankRange(int rank) const {
-  if (rank < 0 || rank >= comm_size_) [[unlikely]] {
-    throw std::runtime_error(
-        "Rank " + std::to_string(rank) + " is out of valid range [0, " +
-        std::to_string(comm_size_ - 1) + "]");
-  }
-}
-
 TorchCommXCCL::RedOpRAII::RedOpRAII(onecclRedOp_t op)
     : xcclRedOp_(op), comm_(nullptr) {}
 
@@ -204,6 +196,9 @@ void TorchCommXCCL::timeoutWatchdog() noexcept {
 
     // Check work objects for completion or timeout
     checkWorkQueue();
+    if (shutdown_) {
+      break;
+    }
     if (comm_state_ != CommState::NORMAL &&
         options_.abort_process_on_timeout_or_error) {
       // Log the error and abort the process.  We cannot abort the XCCL

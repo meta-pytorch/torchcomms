@@ -49,7 +49,7 @@ class PipesDeviceApiTest : public ::testing::Test {
 
   // Verify that tensor_register() + get_device_window() succeeds.
   // get_device_window() is COLLECTIVE: all ranks call
-  // ctran_win->get_device_win() which performs an allGather to exchange IBGDA
+  // ctran_win->getDeviceWin() which performs an allGather to exchange IBGDA
   // registration info and NVLink-mapped pointers.
   void testPipesDeviceWindowCreation(int count, at::ScalarType dtype);
 

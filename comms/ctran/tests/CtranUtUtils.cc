@@ -2,80 +2,9 @@
 
 #include "CtranUtUtils.h"
 #include "comms/ctran/tests/CtranNcclTestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
-
-ncclComm_t CtranDistBaseTest::commWorld = NCCL_COMM_NULL;
 
 // Static helper instance for NCCL memory allocation
 static ctran::CtranNcclTestHelpers ncclHelpers;
-
-void CtranDistBaseTest::TearDownTestSuite() {
-  LOG(INFO) << "CtranBaseTest::TearDownTestSuite: Release commWorld "
-            << commWorld;
-  // Clean up commWorld
-  if (commWorld != NCCL_COMM_NULL) {
-    const int cudaDev = commWorld->ctranComm_->statex_->rank();
-    NCCLCHECK_TEST(ncclCommDestroy(commWorld));
-    commWorld = NCCL_COMM_NULL;
-
-    ctran::logGpuMemoryStats(cudaDev);
-  }
-}
-
-void CtranDistBaseTest::SetUp() {
-  setenv("NCCL_CTRAN_PROFILING", "none", 1);
-  setenv("NCCL_DEBUG", "WARN", 0);
-  setenv("NCCL_CTRAN_ENABLE", "1", 0);
-  setenv("NCCL_COLLTRACE", "trace", 0);
-  setenv("NCCL_CTRAN_IB_EPOCH_LOCK_ENFORCE_CHECK", "true", 0);
-  // Enable async socket for IPC regcache. This is needed when NVL backend
-  // exports IPC handles to peers.
-  setenv("NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET", "1", 0);
-
-  // Always initialize bootstrap for oob operations (each parameterized test
-  // creates a new fixture object, so bootstrap_ must be re-created).
-  NcclxBaseTest::SetUp();
-
-  // Create single commWorld shared by all tests in this suite.
-  if (commWorld == NCCL_COMM_NULL) {
-    // FIXME: this should be replaced with standalone ctranComm
-    commWorld = createNcclComm(
-        globalRank, numRanks, localRank, false, nullptr, server.get());
-    LOG(INFO) << "CtranBaseTest::SetUp: New commWorld " << commWorld
-              << " numRanks " << numRanks;
-  }
-
-  // Reinitialize rank info since each test will reset the value
-  ctranComm_ = commWorld->ctranComm_.get();
-  numRanks = ctranComm_->statex_->nRanks();
-  localRank = ctranComm_->statex_->localRank();
-  globalRank = ctranComm_->statex_->rank();
-  localSize = ctranComm_->statex_->nLocalRanks();
-
-  // Reset the value of enableNolocal since each test will reset
-  // the value and we set them only in NcclxBaseTest::SetUp()
-  enableNolocal =
-      NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::nolocal;
-
-  ASSERT_TRUE(ctranInitialized(ctranComm_));
-
-  if (ctranComm_->ctran_->mapper->ctranIbPtr() == nullptr &&
-      ctranComm_->ctran_->mapper->ctranSockPtr() == nullptr) {
-    GTEST_SKIP() << "No IB or Socket Backend found, skip test";
-  }
-
-  CUDACHECK_TEST(cudaStreamCreate(&stream));
-
-  // Reset backends used counter
-  resetBackendsUsed(ctranComm_->ctran_.get());
-}
-
-void CtranDistBaseTest::TearDown() {
-  ctranComm_ = nullptr;
-  finalizeNcclComm(globalRank, server.get());
-  CUDACHECK_TEST(cudaStreamDestroy(stream));
-  NcclxBaseTest::TearDown();
-}
 
 void* CtranBaseTest::prepareBuf(
     size_t bufSize,

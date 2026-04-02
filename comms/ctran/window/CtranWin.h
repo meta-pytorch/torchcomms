@@ -117,9 +117,16 @@ struct CtranWin {
   //
   // @param devWin  Output: populated device-side window handle.
   // @param config  WindowConfig controlling signal/counter/barrier allocation.
-  commResult_t get_device_win(
+  commResult_t getDeviceWin(
       comms::pipes::DeviceWindow* devWin,
       const comms::pipes::WindowConfig& config);
+
+  // Returns the pipes HostWindow pointer for this window.
+  // The caller does not take ownership.
+  // Returns nullptr if pipes device window is not initialized.
+  comms::pipes::HostWindow* getPipesHostWindow() const {
+    return hostWindow_.get();
+  }
 #endif
 
   commResult_t free();

@@ -55,9 +55,6 @@ class DeviceApiIteratedTest : public ::testing::Test {
   // Repeated window create/register/operate/deregister/destroy
   void testWindowLifecycle();
 
-  // Repeated register_local_buffer / put / deregister_local_buffer
-  void testBufferRegistrationChurn();
-
   // Member variables
   torchcomms::device::test::IteratedTestConfig config_;
   std::unique_ptr<TorchCommTestWrapper> wrapper_;

@@ -237,8 +237,6 @@ class TorchCommXCCL : public TorchCommBackend,
       std::chrono::milliseconds timeout,
       const at::Tensor& inputTensor);
 
-  void checkRankRange(int rank) const;
-
  private:
   // Helper that automatically cleans up premul sums.
   struct RedOpRAII {

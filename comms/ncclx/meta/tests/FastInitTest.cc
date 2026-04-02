@@ -9,10 +9,26 @@
 
 #include "checks.h"
 #include "comm.h"
-#include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
+#include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "meta/NcclxConfig.h"
-#include "nccl.h"
+
+class FastInitTestFixture : public NcclxBaseTestFixture,
+                            public ::testing::WithParamInterface<NcclxEnvs> {
+ protected:
+  void SetUp() override {
+    NcclxEnvs envs;
+    for (const auto& [key, value] : GetParam()) {
+      if (key == "TEST_ENABLE_FASTINIT_CONFIG") {
+        enableFastInitConfig = (value == "1");
+      } else {
+        envs.push_back({key, value});
+      }
+    }
+    NcclxBaseTestFixture::SetUp(envs);
+  }
+
+  bool enableFastInitConfig{false};
+};
 
 void printCommStateX(const ncclComm& comm) {
   const auto statex = comm.ctranComm_->statex_.get();
@@ -41,24 +57,31 @@ void validateCtranInitialization(
   EXPECT_EQ(comm->commHash, comm->ctranComm_->statex_->commHash());
 }
 
+// Each ncclCommInitRankConfig call needs a unique commDesc so that
+// TCPStore bootstrap keys (bootstrapAddr-{commDesc}-{rank}) don't collide
+// across tests in the same process.
+int nextCommId() {
+  static int counter = 0;
+  return counter++;
+}
+
 ncclResult_t ncclCommInitRankConfigHelper(
     ncclComm_t* comm,
     int nRanks,
     ncclUniqueId commId,
     int myRank,
     bool enableFastInitConfig) {
-  if (!enableFastInitConfig) {
-    return ncclCommInitRankConfig(comm, nRanks, commId, myRank, nullptr);
-  } else {
-    ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
-    ncclx::Hints hints(
-        {{"fastInitMode", std::to_string(NCCL_FAST_INIT_MODE_RING)}});
-    config.hints = &hints;
-    return ncclCommInitRankConfig(comm, nRanks, commId, myRank, &config);
+  const std::string commDesc = "fast_init_test_" + std::to_string(nextCommId());
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints({{"commDesc", commDesc}});
+  if (enableFastInitConfig) {
+    hints.set("fastInitMode", std::to_string(NCCL_FAST_INIT_MODE_RING));
   }
+  config.hints = &hints;
+  return ncclCommInitRankConfig(comm, nRanks, commId, myRank, &config);
 }
 
-TEST_P(NcclxBaseTestFixture, NcclCommInitWorldAndDestroy) {
+TEST_P(FastInitTestFixture, NcclCommInitWorldAndDestroy) {
   ncclComm_t rootComm = nullptr;
   ncclUniqueId commId;
   NCCLCHECK_TEST(ncclCommInitRankConfigHelper(
@@ -82,7 +105,7 @@ TEST_P(NcclxBaseTestFixture, NcclCommInitWorldAndDestroy) {
   NCCLCHECK_TEST(ncclCommDestroy(rootComm));
 }
 
-TEST_P(NcclxBaseTestFixture, NcclCommInitWorldAndAbort) {
+TEST_P(FastInitTestFixture, NcclCommInitWorldAndAbort) {
   ncclComm_t rootComm = nullptr;
   ncclUniqueId commId;
   NCCLCHECK_TEST(ncclCommInitRankConfigHelper(
@@ -125,7 +148,7 @@ void compareComm(const ncclComm& comm1, const ncclComm& comm2) {
   // populate them to support statex->gRank() API
 }
 
-TEST_P(NcclxBaseTestFixture, NcclCommSplit) {
+TEST_P(FastInitTestFixture, NcclCommSplit) {
   ncclComm_t rootComm = nullptr;
   ncclUniqueId commId;
   NCCLCHECK_TEST(ncclCommInitRankConfigHelper(
@@ -172,6 +195,7 @@ TEST_P(NcclxBaseTestFixture, NcclCommSplit) {
   EXPECT_EQ(statex1->nLocalRanks(), localSize / 2);
 
   ncclComm expectedComm;
+  expectedComm.config = NCCL_CONFIG_INITIALIZER;
   ncclx::Hints expectedHints({{"commDesc", childCommDesc}});
   expectedComm.config.hints = &expectedHints;
   ncclxParseCommConfig(&expectedComm.config);
@@ -197,7 +221,7 @@ TEST_P(NcclxBaseTestFixture, NcclCommSplit) {
 
 // we can split the same group rank multiple times
 // we should expect unique hash for each communicator
-TEST_P(NcclxBaseTestFixture, NcclCommSplitDuplicateGroups) {
+TEST_P(FastInitTestFixture, NcclCommSplitDuplicateGroups) {
   ncclComm_t rootComm = nullptr;
   ncclUniqueId commId;
   NCCLCHECK_TEST(ncclCommInitRankConfigHelper(
@@ -256,7 +280,7 @@ TEST_P(NcclxBaseTestFixture, NcclCommSplitDuplicateGroups) {
   NCCLCHECK_TEST(ncclCommDestroy(rootComm));
 }
 
-TEST_P(NcclxBaseTestFixture, WorldCommAllGather) {
+TEST_P(FastInitTestFixture, WorldCommAllGather) {
   ncclComm_t rootComm = nullptr;
   ncclUniqueId commId;
   NCCLCHECK_TEST(ncclCommInitRankConfigHelper(
@@ -306,7 +330,7 @@ TEST_P(NcclxBaseTestFixture, WorldCommAllGather) {
   NCCLCHECK_TEST(ncclCommDestroy(rootComm));
 }
 
-TEST_P(NcclxBaseTestFixture, ChildCommAllGather) {
+TEST_P(FastInitTestFixture, ChildCommAllGather) {
   ncclComm_t rootComm = nullptr;
   ncclUniqueId commId;
   NCCLCHECK_TEST(ncclCommInitRankConfigHelper(
@@ -382,12 +406,13 @@ TEST_P(NcclxBaseTestFixture, ChildCommAllGather) {
   NCCLCHECK_TEST(ncclCommDestroy(rootComm));
 }
 
-TEST_P(NcclxBaseTestFixture, NcclCommSplitNoColor) {
+TEST_P(FastInitTestFixture, NcclCommSplitNoColor) {
   ncclComm_t rootComm = nullptr;
   ncclComm_t childComm = NCCL_COMM_NULL;
   ncclUniqueId commId;
   ncclConfig_t rootConfig = NCCL_CONFIG_INITIALIZER;
-  ncclx::Hints rootHints({{"commDesc", "root_communicator"}});
+  ncclx::Hints rootHints(
+      {{"commDesc", "root_comm_" + std::to_string(nextCommId())}});
   if (enableFastInitConfig) {
     rootHints.set("fastInitMode", std::to_string(NCCL_FAST_INIT_MODE_RING));
   }
@@ -457,13 +482,14 @@ TEST_P(NcclxBaseTestFixture, NcclCommSplitNoColor) {
   NCCLCHECK_TEST(ncclCommDestroy(rootComm));
 }
 
-TEST_P(NcclxBaseTestFixture, NcclCommInitWithDifferentCommDesc) {
+TEST_P(FastInitTestFixture, NcclCommInitWithDifferentCommDesc) {
   ncclComm_t comm1 = nullptr, comm2 = nullptr;
   ncclUniqueId commId1, commId2;
 
-  // Create first comm with commDesc "comm_desc_1"
+  // Create first comm
   ncclConfig_t config1 = NCCL_CONFIG_INITIALIZER;
-  ncclx::Hints hints1({{"commDesc", "comm_desc_1"}});
+  const std::string commDesc1 = "comm_desc_" + std::to_string(nextCommId());
+  ncclx::Hints hints1({{"commDesc", commDesc1}});
   if (enableFastInitConfig) {
     hints1.set("fastInitMode", std::to_string(NCCL_FAST_INIT_MODE_RING));
   }
@@ -473,9 +499,10 @@ TEST_P(NcclxBaseTestFixture, NcclCommInitWithDifferentCommDesc) {
   ASSERT_NE(nullptr, comm1);
   validateCtranInitialization(comm1, globalRank, numRanks, localRank);
 
-  // Create second comm with commDesc "comm_desc_2"
+  // Create second comm
   ncclConfig_t config2 = NCCL_CONFIG_INITIALIZER;
-  ncclx::Hints hints2({{"commDesc", "comm_desc_2"}});
+  const std::string commDesc2 = "comm_desc_" + std::to_string(nextCommId());
+  ncclx::Hints hints2({{"commDesc", commDesc2}});
   if (enableFastInitConfig) {
     hints2.set("fastInitMode", std::to_string(NCCL_FAST_INIT_MODE_RING));
   }
@@ -506,7 +533,7 @@ TEST_P(NcclxBaseTestFixture, NcclCommInitWithDifferentCommDesc) {
 
 INSTANTIATE_TEST_SUITE_P(
     MyTestSuite,
-    NcclxBaseTestFixture,
+    FastInitTestFixture,
     testing::ValuesIn(
         {NcclxEnvs({
              {"NCCL_FASTINIT_MODE", "ring_hybrid"},
@@ -528,7 +555,7 @@ INSTANTIATE_TEST_SUITE_P(
              {"NCCL_COLLTRACE", "trace"},
              {"NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1"},
          })}),
-    [](const testing::TestParamInfo<NcclxBaseTestFixture::ParamType>& info) {
+    [](const testing::TestParamInfo<FastInitTestFixture::ParamType>& info) {
       // generate test-name for a given NcclxEnvs
       std::string name = "";
       for (const auto& [key, val] : info.param) {

@@ -68,9 +68,9 @@ def main() -> None:
     world_size = comm.get_size()
 
     # Calculate device ID
-    num_devices = torch.cuda.device_count()
+    num_devices = torch.accelerator.device_count()
     device_id = rank % num_devices
-    target_device = torch.device(f"cuda:{device_id}")
+    target_device = torch.device(f"{device.type}:{device_id}")
 
     print(f"Rank {rank}/{world_size}: Running on device {device_id}")
 
@@ -107,7 +107,7 @@ def main() -> None:
     comm.broadcast(tensor, root=0, async_op=False)
 
     # Synchronize CUDA stream
-    torch.cuda.current_stream().synchronize()
+    torch.accelerator.current_stream().synchronize()
 
     print(f"Rank {rank}: After AllReduce: {tensor[0].item()}")
 

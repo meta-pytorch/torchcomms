@@ -30,6 +30,7 @@ class PipesDeviceApiIteratedTest : public ::testing::Test {
   void testIteratedBarrier(torchcomms::device::CoopScope scope);
   void testIteratedCombined(size_t msg_bytes);
   void testMultiWindow();
+  void testMultiComm();
   void testWindowLifecycle();
 
   torchcomms::device::test::IteratedTestConfig config_;

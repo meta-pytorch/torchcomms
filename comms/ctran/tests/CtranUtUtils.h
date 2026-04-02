@@ -211,41 +211,5 @@ class CtranBaseTest {
   }
 };
 
-class CtranDistBaseTest : public NcclxBaseTest, public CtranBaseTest {
- public:
-  CtranDistBaseTest() : NcclxBaseTest() {};
-
-  // Global commWorld shared by all tests running by the process.
-  // Destorying in TearDownTestSuite() to ensure release commWorld only after
-  // all tests.
-  static ncclComm_t commWorld;
-  static void TearDownTestSuite();
-
-  // Below provide convenient functions to communicate among testing ranks; use
-  // bootstrap to avoid interference with GPU communication. Not for
-  // communication with performance.
-
-  // - AllGather data from all ranks. buf is a pointer to continuous memory with
-  // nRanks * len bytes, and each rank sets its own data in the buffer at
-  // postion len * rank.
-  inline void allGather(void* buf, const size_t len) {
-    auto resFuture = ctranComm_->bootstrap_->allGather(
-        buf, len, ctranComm_->statex_->rank(), ctranComm_->statex_->nRanks());
-    ASSERT_EQ(
-        static_cast<commResult_t>(std::move(resFuture).get()), commSuccess);
-  }
-
-  // - Barrier to ensure all ranks have arrived
-  inline void barrier() {
-    auto resFuture = ctranComm_->bootstrap_->barrier(
-        ctranComm_->statex_->rank(), ctranComm_->statex_->nRanks());
-    ASSERT_EQ(
-        static_cast<commResult_t>(std::move(resFuture).get()), commSuccess);
-  }
-
- protected:
-  cudaStream_t stream = 0;
-  CtranComm* ctranComm_{nullptr};
-  void SetUp() override;
-  void TearDown() override;
-};
+// CtranDistBaseTest has been deprecated and removed.
+// Migrate to ctran::CtranDistTestFixture in CtranDistTestUtils.h instead.
