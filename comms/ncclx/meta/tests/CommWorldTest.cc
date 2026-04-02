@@ -14,20 +14,17 @@
 #include "comms/testinfra/TestUtils.h"
 #include "nccl.h"
 
-class CommWorldTest : public NcclxBaseTestFixture {
- public:
+class CommWorldTestFixture : public NcclxBaseTestFixture,
+                             public ::testing::WithParamInterface<NcclxEnvs> {
+ protected:
   void SetUp() override {
-    NcclxBaseTestFixture::SetUp();
+    NcclxBaseTestFixture::SetUp(GetParam());
     // Set NCCL_FIRST_COMM_AS_WORLD as the default value
     setenv("NCCL_FIRST_COMM_AS_WORLD", "false", 0);
   }
-
-  void TearDown() override {
-    NcclxBaseTestFixture::TearDown();
-  }
 };
 
-TEST_F(CommWorldTest, FirstCommAsWorld) {
+TEST_P(CommWorldTestFixture, FirstCommAsWorld) {
   EnvRAII env(NCCL_FIRST_COMM_AS_WORLD, true);
   NCCL_COMM_WORLD = NULL;
   EXPECT_EQ(NCCL_COMM_WORLD, nullptr);
@@ -43,7 +40,7 @@ TEST_F(CommWorldTest, FirstCommAsWorld) {
   NCCLCHECK_TEST(ncclCommDestroy(comm));
 }
 
-TEST_F(CommWorldTest, DefaultCommWorld) {
+TEST_P(CommWorldTestFixture, DefaultCommWorld) {
   NCCL_COMM_WORLD = NULL;
   EXPECT_EQ(NCCL_COMM_WORLD, nullptr);
 
@@ -57,6 +54,16 @@ TEST_F(CommWorldTest, DefaultCommWorld) {
 
   NCCLCHECK_TEST(ncclCommDestroy(comm));
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    CommWorld,
+    CommWorldTestFixture,
+    testing::Values(
+        NcclxEnvs({{"NCCL_FASTINIT_MODE", "none"}}),
+        NcclxEnvs({{"NCCL_FASTINIT_MODE", "ring_hybrid"}})),
+    [](const testing::TestParamInfo<CommWorldTestFixture::ParamType>& info) {
+      return "fastinit_" + info.param.at(0).second;
+    });
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
