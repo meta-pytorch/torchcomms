@@ -13,8 +13,7 @@
 #include "comms/pipes/MultiPeerDeviceHandle.cuh"
 #include "comms/pipes/MultiPeerTransport.h"
 #include "comms/pipes/Transport.cuh"
-#include "comms/pipes/collectives/AllToAllv.cuh"
-
+#include "comms/pipes/collectives/AllToAllv.h" // resolveWarpReserve, WarpReserveConfig
 #endif
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/gpe/CtranGpe.h"
@@ -246,6 +245,39 @@ commResult_t ctranDeviceAllToAllv(
     kernArgs.sendcountsMultiplier = sendcountsMultiplier;
     kernArgs.recvcountsMultiplier = recvcountsMultiplier;
     kernArgs.transports = deviceHandle.transports.data();
+
+    // Resolve warp reserve config: read CVARs directly and build
+    // WarpReserveConfig, then resolve to device config using peer rank
+    // arrays from the device handle.
+    comms::pipes::WarpReserveConfig warpReserveCfg{};
+    warpReserveCfg.nvlSendWarps =
+        static_cast<int>(NCCL_CTRAN_PIPES_WARP_RESERVE_NVL_SEND);
+    warpReserveCfg.nvlRecvWarps =
+        static_cast<int>(NCCL_CTRAN_PIPES_WARP_RESERVE_NVL_RECV);
+    warpReserveCfg.ibgdaSendWarps =
+        static_cast<int>(NCCL_CTRAN_PIPES_WARP_RESERVE_IBGDA_SEND);
+    warpReserveCfg.ibgdaRecvWarps =
+        static_cast<int>(NCCL_CTRAN_PIPES_WARP_RESERVE_IBGDA_RECV);
+    warpReserveCfg.selfWarps =
+        static_cast<int>(NCCL_CTRAN_PIPES_WARP_RESERVE_SELF);
+
+    kernArgs.warpReserve = comms::pipes::resolveWarpReserve(
+        warpReserveCfg,
+        deviceHandle.nvlPeerRanks.size(),
+        deviceHandle.ibgdaPeerRanks.size(),
+        deviceHandle.nvlPeerRanks.data(),
+        deviceHandle.ibgdaPeerRanks.data());
+
+    // When warp reserve is configured, derive thread count from total warps
+    if (kernArgs.warpReserve.isConfigured()) {
+      int ibgdaRecvW = warpReserveCfg.ibgdaRecvWarps > 0
+          ? warpReserveCfg.ibgdaRecvWarps
+          : static_cast<int>(deviceHandle.ibgdaPeerRanks.size());
+      int totalWarps =
+          static_cast<int>(kernArgs.warpReserve.ibgdaSendEnd) + ibgdaRecvW;
+      config.numThreads = totalWarps * 32;
+    }
+
     config.algoArgs = &kernArgs;
 
     std::vector<std::unique_ptr<struct OpElem>> opGroup;

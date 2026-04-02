@@ -311,10 +311,10 @@ INSTANTIATE_TEST_SUITE_P(
             .numIntsPerRank = 64,
             .testName = "7b_256t_256B"},
         AllToAllvTestParams{
-            .numBlocks = 8,
-            .blockSize = 512,
+            .numBlocks = 16,
+            .blockSize = 256,
             .numIntsPerRank = 256,
-            .testName = "8b_512t_1KB"},
+            .testName = "16b_256t_1KB"},
         AllToAllvTestParams{
             .numBlocks = 16,
             .blockSize = 128,
@@ -544,10 +544,10 @@ INSTANTIATE_TEST_SUITE_P(
             .testName = "8b_256t_3840B"},
         // base_ints = 256, max = (7+7+1)*256*4 = 15KB
         AllToAllvUnequalSizeParams{
-            .numBlocks = 8,
-            .blockSize = 512,
+            .numBlocks = 16,
+            .blockSize = 256,
             .base_ints = 256,
-            .testName = "8b_512t_15KB"},
+            .testName = "16b_256t_15KB"},
         // base_ints = 512, max = (7+7+1)*512*4 = 30KB
         AllToAllvUnequalSizeParams{
             .numBlocks = 16,
