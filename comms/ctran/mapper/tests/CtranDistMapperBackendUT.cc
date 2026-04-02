@@ -7,8 +7,8 @@
 #include "comms/ctran/algos/common/GpeKernelSync.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
 #include "nccl.h"
 
 // Note that The bufSize should be less than NCCL_CTRAN_IB_QP_SCALING_THRESHOLD
@@ -23,16 +23,15 @@ using ctran::algos::GpeKernelSync;
 extern __global__ void
 waitSigTestKernel(GpeKernelSync* sync, uint64_t* data, int cmpVal);
 
-class CtranDistMapperBackendTest : public NcclxBaseTest {
+class CtranDistMapperBackendTest : public ctran::CtranDistTestFixture {
  public:
   void SetUp() override {
     setenv("NCCL_CTRAN_ENABLE", "1", 0);
-    NcclxBaseTest::SetUp();
-    commDeprecated_ = createNcclComm(
-        globalRank, numRanks, localRank, false, nullptr, server.get());
-    comm_ = commDeprecated_->ctranComm_.get();
+    ctran::CtranDistTestFixture::SetUp();
+    comm_ = makeCtranComm();
 
-    if (!ctranInitialized(comm_) || !comm_->ctran_->mapper->hasBackend()) {
+    if (!ctranInitialized(comm_.get()) ||
+        !comm_->ctran_->mapper->hasBackend()) {
       GTEST_SKIP()
           << "Ctran is not initialized or backend is not available.  Skip test.";
     }
@@ -47,9 +46,8 @@ class CtranDistMapperBackendTest : public NcclxBaseTest {
   }
 
   void TearDown() override {
-    finalizeNcclComm(globalRank, server.get());
-    NCCLCHECK_TEST(ncclCommDestroy(commDeprecated_));
-    NcclxBaseTest::TearDown();
+    comm_.reset();
+    ctran::CtranDistTestFixture::TearDown();
   }
 
   void PreConnectAllPeers() {
@@ -199,8 +197,7 @@ class CtranDistMapperBackendTest : public NcclxBaseTest {
   void* sendHdl{nullptr};
 
  protected:
-  ncclComm_t commDeprecated_{nullptr};
-  CtranComm* comm_{nullptr};
+  std::unique_ptr<CtranComm> comm_;
 };
 
 class CtranDistMapperBackendPerfConfigTestParam
@@ -244,7 +241,7 @@ TEST_P(CtranDistMapperBackendPerfConfigTestParam, IntraNodeUseIb) {
             CtranMapperBackend::IB),
         commSuccess);
 
-    intraNodeBarrier(commDeprecated_);
+    barrierNvlDomain(comm_.get());
 
     ASSERT_EQ(mapper->iPutCount[CtranMapperBackend::IB], 0);
     ASSERT_EQ(mapper->iPutCount[CtranMapperBackend::NVL], 0);
@@ -319,7 +316,7 @@ TEST_P(CtranDistMapperBackendPerfConfigTestParam, IntraNodeUseNvl) {
             CtranMapperBackend::NVL),
         commSuccess);
 
-    intraNodeBarrier(commDeprecated_);
+    barrierNvlDomain(comm_.get());
 
     ASSERT_EQ(mapper->iPutCount[CtranMapperBackend::IB], 0);
     ASSERT_EQ(mapper->iPutCount[CtranMapperBackend::NVL], 0);
@@ -375,10 +372,12 @@ TEST_P(
             buf, sendHdl, ranks, remoteBufs, remoteAccessKeys),
         commSuccess);
 
-    intraNodeBarrier(commDeprecated_);
+    barrierNvlDomain(comm_.get());
 
     ASSERT_EQ(mapper->iPutCount[CtranMapperBackend::IB], 0);
     ASSERT_EQ(mapper->iPutCount[CtranMapperBackend::NVL], 0);
+
+    // issue puts to all ranks
 
     // issue puts to all ranks, they should use NVL for intra-node and IB for
     // inter-node
@@ -428,7 +427,7 @@ TEST_P(CtranDistMapperBackendPerfConfigTestParam, InteNodeUseIbFastPut) {
             buf, sendHdl, ranks, remoteBufs, remoteAccessKeys),
         commSuccess);
 
-    intraNodeBarrier(commDeprecated_);
+    barrierNvlDomain(comm_.get());
 
     ASSERT_EQ(mapper->iPutCount[CtranMapperBackend::IB], 0);
     // Remove local ranks from the list of peers
@@ -558,7 +557,7 @@ TEST_F(CtranDistMapperBackendTest, InterNodeIbSignal) {
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranDistEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }
