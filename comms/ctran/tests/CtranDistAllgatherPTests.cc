@@ -219,7 +219,9 @@ class CtranAllgatherPTest : public ctran::CtranDistTestFixture {
                 sendBytes,
                 cudaMemcpyDefault),
             cudaSuccess);
-        EXPECT_THAT(observedVals, testing::Each(i + j * 10))
+        const std::vector<char> expectedVals(
+            sendBytes, static_cast<char>(i + j * 10));
+        EXPECT_EQ(observedVals, expectedVals)
             << "at rank " << globalRank << " in iteration " << j
             << " at chunk received from peer " << i;
       }
@@ -484,8 +486,9 @@ TEST_F(CtranAllgatherPTest, InternalRegisteredMemory) {
               cudaMemcpyDefault),
           cudaSuccess);
 
-      const char expectedRankVal = static_cast<char>(i + j * 10);
-      EXPECT_THAT(observedVals, testing::Each(expectedRankVal))
+      const std::vector<char> expectedVals(
+          sendBytes, static_cast<char>(i + j * 10));
+      EXPECT_EQ(observedVals, expectedVals)
           << "at rank " << globalRank << " in iteration " << j
           << " at chunk received from peer " << i;
     }
