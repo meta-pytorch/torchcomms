@@ -2939,13 +2939,13 @@ cvars:
      Usage: If the NCCL_CTRAN_BACKENS is set with certain values,
      this config will allow MCCL to override backends.
 
- - name        : MCCL_SCUBA_ENABLED
+ - name        : MCCL_TRACE_LOGGING_ENABLED
    type        : bool
    default     : false
    description : |-
-     Enable MCCL Scuba structured logging. When enabled, MCCL will log
-     events to dedicated MCCL Scuba tables for observability and debugging.
-     This is separate from NCCLX logging to minimize risk.
+     Enable MCCL structured trace logging. When enabled, MCCL will log
+     events to a dedicated structured logging backend for observability
+     and debugging. This is separate from NCCLX logging to minimize risk.
 
  - name        : MCCL_SCUBA_LOG_LEVEL
    type        : enum
