@@ -7,25 +7,25 @@
 #include <nccl.h>
 #include <stdlib.h>
 #include <new>
+#include <thread>
 
 #include "CtranUtUtils.h"
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/AllToAll/AllToAllDedupImpl.h"
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
-#include "meta/commDump.h"
 
-class ctranAllToAllDedupTest : public CtranDistBaseTest {
+class ctranAllToAllDedupTest : public ctran::CtranDistTestFixture,
+                               public CtranBaseTest {
  public:
   ctranAllToAllDedupTest() = default;
 
   void generateUnevenRailDisps() {
     size_t sendTotalCount = 0;
     size_t recvTotalCount = 0;
-    int nNodes = comm->ctranComm_->statex_->nNodes();
-    int myNode = comm->ctranComm_->statex_->rank() /
-        comm->ctranComm_->statex_->nLocalRanks();
+    int nNodes = ctranComm->statex_->nNodes();
+    int myNode = ctranComm->statex_->rank() / ctranComm->statex_->nLocalRanks();
     if (myNode == 0) {
       // send count to self and count/2 to everyone else
       // get count from everyone
@@ -57,7 +57,7 @@ class ctranAllToAllDedupTest : public CtranDistBaseTest {
   void generateRailDisps() {
     size_t sendTotalCount = 0;
     size_t recvTotalCount = 0;
-    int nNodes = comm->ctranComm_->statex_->nNodes();
+    int nNodes = ctranComm->statex_->nNodes();
     for (int i = 0; i < nNodes; ++i) {
       sendCounts[i] = count;
       recvCounts[i] = count;
@@ -71,8 +71,8 @@ class ctranAllToAllDedupTest : public CtranDistBaseTest {
   // Split up parallel alltoall into nLocalRanks chunks where each local rank
   // is responsible for a specific split
   void computeParallelSplitOffsets() {
-    int nNodes = comm->ctranComm_->statex_->nNodes();
-    int nLocalRanks = comm->ctranComm_->statex_->nLocalRanks();
+    int nNodes = ctranComm->statex_->nNodes();
+    int nLocalRanks = ctranComm->statex_->nLocalRanks();
     for (int i = 0; i < nNodes; i++) {
       size_t send_split_size = sendCounts[i] / nLocalRanks;
       size_t recv_split_size = recvCounts[i] / nLocalRanks;
@@ -83,39 +83,32 @@ class ctranAllToAllDedupTest : public CtranDistBaseTest {
     }
   }
 
-  void* createDataBuf(size_t nbytes, void** handle) {
+  void* createDataBuf(size_t nbytes) {
     void* buf = nullptr;
-    // Allocate data buffer, and assign different value for each send chunk
     NCCLCHECK_TEST(ncclMemAlloc(&buf, nbytes));
-    if (buf && handle) {
-      NCCLCHECK_TEST(ncclCommRegister(comm, buf, nbytes, handle));
+    if (buf) {
+      COMMCHECK_TEST(ctran::globalRegisterWithPtr(buf, nbytes));
     }
     return buf;
   }
 
-  void releaseDataBuf(void* buf, void* handle) {
-    if (handle) {
-      NCCLCHECK_TEST(ncclCommDeregister(comm, handle));
+  void releaseDataBuf(void* buf, size_t nbytes) {
+    if (buf) {
+      COMMCHECK_TEST(ctran::globalDeregisterWithPtr(buf, nbytes));
     }
     NCCLCHECK_TEST(ncclMemFreeWithRefCheck(buf));
   }
 
   void SetUp() override {
-    setenv("NCCL_COLLTRACE", "trace", 0);
-    setenv("NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1", 0);
-    // -1 for not limiting the number of colls to trace
-    setenv("NCCL_COLLTRACE_RECORD_MAX", "-1", 0);
-    CtranDistBaseTest::SetUp();
-    comm = commWorld;
-    if (!ctranAllToAllDedupSupport(comm->ctranComm_.get())) {
+    ctran::CtranDistTestFixture::SetUp();
+    ctranComm = makeCtranComm();
+    if (!ctranAllToAllDedupSupport(ctranComm.get())) {
       GTEST_SKIP() << "Skip the test because ctranAllToAllv is not supported";
     }
 
     // Allocate enough space for arguments, value assignment set in each test
     sendBuf = nullptr;
-    sendHdl = nullptr;
-    recvHdl = nullptr;
-    int nNodes = comm->ctranComm_->statex_->nNodes();
+    int nNodes = ctranComm->statex_->nNodes();
     sendCounts.resize(nNodes, 0);
     recvCounts.resize(nNodes, 0);
     sendDisps.resize(nNodes, 0);
@@ -127,18 +120,17 @@ class ctranAllToAllDedupTest : public CtranDistBaseTest {
   }
 
   void TearDown() override {
-    CtranDistBaseTest::TearDown();
+    ctran::CtranDistTestFixture::TearDown();
   }
 
   void run() {
     // Assign different value for each send chunk
-    int nLocalRanks = comm->ctranComm_->statex_->nLocalRanks();
+    int nLocalRanks = ctranComm->statex_->nLocalRanks();
     int numSplits = nLocalRanks;
-    int nNodes = comm->ctranComm_->statex_->nNodes();
+    int nNodes = ctranComm->statex_->nNodes();
 
     ASSERT_TRUE(
-        meta::comms::colltrace::testOnlyClearCollTraceRecords(
-            comm->ctranComm_.get()));
+        meta::comms::colltrace::testOnlyClearCollTraceRecords(ctranComm.get()));
 
     CtranPersistentRequest* request = nullptr;
     void* recvBuf = nullptr;
@@ -152,8 +144,8 @@ class ctranAllToAllDedupTest : public CtranDistBaseTest {
         splitRecvDisps.data(),
         maxRecvCount,
         commInt,
-        comm->ctranComm_.get(),
-        stream,
+        ctranComm.get(),
+        testStream,
         request));
 
     for (int x = 0; x < numTimesRunExec; x++) {
@@ -178,7 +170,7 @@ class ctranAllToAllDedupTest : public CtranDistBaseTest {
 
       auto res = ctranAllToAllDedupExec(request);
       ASSERT_EQ(res, commSuccess);
-      CUDACHECK_TEST(cudaStreamSynchronize(stream));
+      CUDACHECK_TEST(cudaStreamSynchronize(testStream));
 
       // Check each received chunk
       for (int i = 0; i < nNodes; ++i) {
@@ -204,8 +196,8 @@ class ctranAllToAllDedupTest : public CtranDistBaseTest {
     // Sleep for a while to make sure all the colls are finished
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    ASSERT_TRUE(comm->newCollTrace != nullptr);
-    auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+    ASSERT_NE(ctranComm->colltraceNew_, nullptr);
+    auto dumpMap = ctran::dumpCollTrace(ctranComm.get());
 
     EXPECT_NE(dumpMap["CT_pastColls"], "[]");
     EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
@@ -230,19 +222,20 @@ class ctranAllToAllDedupTest : public CtranDistBaseTest {
       std::vector<CtranMapperBackend> excludedBackends = {
           CtranMapperBackend::NVL};
       // If single node, uses only kernel staged copy
-      if (comm->ctranComm_->statex_->nNodes() == 1) {
+      if (ctranComm->statex_->nNodes() == 1) {
         excludedBackends.push_back(CtranMapperBackend::IB);
       }
       verifyBackendsUsed(
-          comm->ctranComm_->ctran_.get(),
-          comm->ctranComm_->statex_.get(),
+          ctranComm->ctran_.get(),
+          ctranComm->statex_.get(),
           kMemCudaMalloc,
           excludedBackends);
     }
   }
 
  protected:
-  ncclComm_t comm{nullptr};
+  cudaStream_t testStream{0};
+  std::unique_ptr<CtranComm> ctranComm{nullptr};
   int* sendBuf{nullptr};
   size_t countSet{0};
   std::vector<size_t> sendCounts;
@@ -256,8 +249,6 @@ class ctranAllToAllDedupTest : public CtranDistBaseTest {
   size_t count{0};
   size_t maxSendCount{0};
   size_t maxRecvCount{0};
-  void* sendHdl{nullptr};
-  void* recvHdl{nullptr};
   int expectedVal{0};
   int numTimesRunExec{3};
   std::vector<std::string> execs;
@@ -295,7 +286,7 @@ class ctranAllToAllDedupTest : public CtranDistBaseTest {
 // Node2     121  122  123  104    121  122  123  124    ...
 //           221  222  223  224    221  222  223  224    ...
 TEST_F(ctranAllToAllDedupTest, even) {
-  if (comm->ctranComm_->statex_->nNodes() < 2) {
+  if (ctranComm->statex_->nNodes() < 2) {
     GTEST_SKIP() << "Skip the test because single node";
   }
 
@@ -306,18 +297,19 @@ TEST_F(ctranAllToAllDedupTest, even) {
   for (int i = 0; i < numTimesRunExec; i++) {
     execs.emplace_back("even");
   }
-  maxSendCount = count * comm->ctranComm_->statex_->nNodes();
-  maxRecvCount = count * comm->ctranComm_->statex_->nNodes();
+  maxSendCount = count * ctranComm->statex_->nNodes();
+  maxRecvCount = count * ctranComm->statex_->nNodes();
 
-  sendBuf = (int*)createDataBuf(maxSendCount * sizeof(int), &sendHdl);
+  size_t sendBufSize = maxSendCount * sizeof(int);
+  sendBuf = (int*)createDataBuf(sendBufSize);
 
   run();
 
-  releaseDataBuf(sendBuf, sendHdl);
+  releaseDataBuf(sendBuf, sendBufSize);
 }
 
 TEST_F(ctranAllToAllDedupTest, uneven) {
-  if (comm->ctranComm_->statex_->nNodes() < 2) {
+  if (ctranComm->statex_->nNodes() < 2) {
     GTEST_SKIP() << "Skip the test because single node";
   }
 
@@ -328,18 +320,19 @@ TEST_F(ctranAllToAllDedupTest, uneven) {
   for (int i = 0; i < numTimesRunExec; i++) {
     execs.emplace_back("uneven");
   }
-  maxSendCount = count * comm->ctranComm_->statex_->nNodes();
-  maxRecvCount = count * comm->ctranComm_->statex_->nNodes();
+  maxSendCount = count * ctranComm->statex_->nNodes();
+  maxRecvCount = count * ctranComm->statex_->nNodes();
 
-  sendBuf = (int*)createDataBuf(maxSendCount * sizeof(int), &sendHdl);
+  size_t sendBufSize = maxSendCount * sizeof(int);
+  sendBuf = (int*)createDataBuf(sendBufSize);
 
   run();
 
-  releaseDataBuf(sendBuf, sendHdl);
+  releaseDataBuf(sendBuf, sendBufSize);
 }
 
 TEST_F(ctranAllToAllDedupTest, evenAndUneven) {
-  if (comm->ctranComm_->statex_->nNodes() < 2) {
+  if (ctranComm->statex_->nNodes() < 2) {
     GTEST_SKIP() << "Skip the test because single node";
   }
   numTimesRunExec = 3;
@@ -350,18 +343,19 @@ TEST_F(ctranAllToAllDedupTest, evenAndUneven) {
   execs.emplace_back("uneven");
   execs.emplace_back("even");
 
-  maxSendCount = count * comm->ctranComm_->statex_->nNodes();
-  maxRecvCount = count * comm->ctranComm_->statex_->nNodes();
+  maxSendCount = count * ctranComm->statex_->nNodes();
+  maxRecvCount = count * ctranComm->statex_->nNodes();
 
-  sendBuf = (int*)createDataBuf(maxSendCount * sizeof(int), &sendHdl);
+  size_t sendBufSize = maxSendCount * sizeof(int);
+  sendBuf = (int*)createDataBuf(sendBufSize);
 
   run();
 
-  releaseDataBuf(sendBuf, sendHdl);
+  releaseDataBuf(sendBuf, sendBufSize);
 }
 
 TEST_F(ctranAllToAllDedupTest, invalidSendBuff) {
-  if (comm->ctranComm_->statex_->nNodes() < 2) {
+  if (ctranComm->statex_->nNodes() < 2) {
     GTEST_SKIP() << "Skip the test because single node";
   }
 
@@ -379,15 +373,15 @@ TEST_F(ctranAllToAllDedupTest, invalidSendBuff) {
       splitRecvDisps.data(),
       maxRecvCount,
       commInt,
-      comm->ctranComm_.get(),
-      stream,
+      ctranComm.get(),
+      testStream,
       request);
   ASSERT_EQ(res, commInvalidArgument);
 }
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranDistEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }
