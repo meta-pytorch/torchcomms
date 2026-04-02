@@ -3,6 +3,7 @@
 #include "comms/pipes/collectives/AllToAllvAuto.h"
 
 #include "comms/pipes/collectives/AllToAllv.h"
+#include "comms/pipes/collectives/AllToAllvAutoTuneConfig.h"
 #include "comms/pipes/collectives/AllToAllvLl128.h"
 #include "comms/pipes/ll128/Ll128AutoTune.cuh"
 
@@ -24,6 +25,12 @@ void all_to_allv_auto(
   if (has_ibgda_peers) {
     // IBGDA peers present — use IBGDA-capable path which handles
     // both NVL and IBGDA via per-peer dispatch.
+    //
+    // Use autotune lookup table for per-msg-size config when no explicit
+    // override is provided (ibgdaNumBlocks <= 0 means use autotune).
+    auto hybridCfg = getHybridConfigForMsgSize(max_bytes_per_peer);
+    int blocks = (config.ibgdaNumBlocks > 0) ? config.ibgdaNumBlocks
+                                             : hybridCfg.numBlocks;
 
     // Compute optimal thread count dynamically:
     // Minimum = 2 (send/recv partitions) * nranks * 32 (warpSize)
@@ -38,7 +45,7 @@ void all_to_allv_auto(
         recv_chunk_infos,
         timeout,
         stream,
-        config.ibgdaNumBlocks,
+        blocks,
         ibgdaThreads);
   } else if (max_bytes_per_peer <= config.ll128Threshold) {
     int blocks = config.ll128NumBlocks;

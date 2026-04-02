@@ -78,6 +78,8 @@ struct KernArgs {
   int nRanks;
 #if defined(ENABLE_PIPES)
   comms::pipes::WarpReserveDeviceConfig warpReserve;
+  comms::pipes::WarpReserveConfig warpReserveCvars;
+  bool hasIbgdaPeers = false;
 #endif
 };
 
