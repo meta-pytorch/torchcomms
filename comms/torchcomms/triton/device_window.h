@@ -77,7 +77,8 @@ __device__ int torchcomms_put_block(
     int dst_rank,
     unsigned long long bytes,
     int signal_id,
-    int counter_id);
+    int counter_id,
+    unsigned int src_lkey);
 
 // Block-scope self-copy: local memory copy using all block threads.
 // Used for self-send (peer == my_rank) in alltoallv.
