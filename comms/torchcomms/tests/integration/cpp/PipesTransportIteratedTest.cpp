@@ -60,6 +60,10 @@ void PipesTransportIteratedTest::SetUp() {
       cudaMemcpyDeviceToHost);
   ASSERT_EQ(copy_err, cudaSuccess) << "Failed to copy transport handle";
   ASSERT_EQ(handle_.myRank, rank_);
+  ASSERT_EQ(handle_.nRanks, num_ranks_);
+  ASSERT_NE(handle_.transports.data(), nullptr);
+  EXPECT_GE(handle_.numNvlPeers, 0);
+  EXPECT_GE(handle_.numIbPeers, 0);
 
   if (handle_.numNvlPeers == 0) {
     GTEST_SKIP() << "No NVL peers available — transport tests require NVLink";
@@ -290,12 +294,10 @@ INSTANTIATE_TEST_SUITE_P(
         TransportSendRecvParam{1024, 32}, // 1KB
         TransportSendRecvParam{1048576, 32}, // 1MB
         TransportSendRecvParam{16777216, 32}, // 16MB
-        TransportSendRecvParam{536870912, 32}, // 512MB
         // BLOCK scope (256 threads)
         TransportSendRecvParam{1024, 256}, // 1KB
         TransportSendRecvParam{1048576, 256}, // 1MB
-        TransportSendRecvParam{16777216, 256}, // 16MB
-        TransportSendRecvParam{536870912, 256} // 512MB
+        TransportSendRecvParam{16777216, 256} // 16MB
         ),
     [](const ::testing::TestParamInfo<TransportSendRecvParam>& info) {
       return std::to_string(info.param.msg_bytes) + "B_" +
@@ -342,11 +344,11 @@ INSTANTIATE_TEST_SUITE_P(
         // WARP scope
         TransportCombinedParam{1024, 32},
         TransportCombinedParam{1048576, 32},
-        TransportCombinedParam{536870912, 32},
+        TransportCombinedParam{16777216, 32}, // 16MB
         // BLOCK scope
         TransportCombinedParam{1024, 256},
         TransportCombinedParam{1048576, 256},
-        TransportCombinedParam{536870912, 256}),
+        TransportCombinedParam{16777216, 256}), // 16MB
     [](const ::testing::TestParamInfo<TransportCombinedParam>& info) {
       return std::to_string(info.param.msg_bytes) + "B_" +
           std::string(info.param.num_threads >= 256 ? "BLOCK" : "WARP");

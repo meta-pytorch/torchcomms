@@ -89,4 +89,35 @@ void launchIteratedCombinedKernel(
     int* results,
     cudaStream_t stream);
 
+// Iterated aggregated wait_signal kernel: ring signal -> aggregated
+// wait_signal (not per-peer) -> read_signal -> reset_signal -> verify
+// read_signal returns 0. Exercises the non-per-peer signal path.
+void launchIteratedAggregatedSignalKernel(
+    DeviceWindowNCCL* win,
+    int dst_rank,
+    int signal_id,
+    int iterations,
+    int* results,
+    cudaStream_t stream);
+
+// Iterated half-precision put kernel: same as iteratedPutKernel but with
+// __half data type. Uses half-precision fill/verify patterns.
+void launchIteratedPutHalfKernel(
+    DeviceWindowNCCL* win,
+    RegisteredBufferNCCL src_buf,
+    void* src_ptr,
+    void* win_base,
+    size_t src_offset,
+    size_t dst_offset,
+    size_t bytes,
+    size_t count,
+    int dst_rank,
+    int src_rank,
+    int signal_id,
+    int iterations,
+    CoopScope scope,
+    int num_threads,
+    int* results,
+    cudaStream_t stream);
+
 } // namespace torchcomms::device::test

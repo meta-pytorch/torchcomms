@@ -32,6 +32,8 @@ class PipesDeviceApiIteratedTest : public ::testing::Test {
   void testMultiWindow();
   void testMultiComm();
   void testWindowLifecycle();
+  void testIteratedPutCounter(size_t msg_bytes);
+  void testIteratedSignalReadHost(torchcomms::device::CoopScope scope);
 
   torchcomms::device::test::IteratedTestConfig config_;
   std::unique_ptr<TorchCommTestWrapper> wrapper_;

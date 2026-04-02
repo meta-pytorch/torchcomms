@@ -70,4 +70,33 @@ void launchPipesIteratedCombinedKernel(
     int* results,
     cudaStream_t stream);
 
+// Iterated put-with-counter kernel for Pipes backend.
+// Each iteration: put with signal+counter, wait_counter (if IBGDA),
+// wait_signal, verify data, read_counter into results array.
+void launchPipesIteratedPutCounterKernel(
+    DeviceWindowPipes* win,
+    RegisteredBufferPipes src_buf,
+    float* src_ptr,
+    float* win_base,
+    size_t src_offset,
+    size_t dst_offset,
+    size_t bytes,
+    size_t count,
+    int dst_rank,
+    int src_rank,
+    int signal_id,
+    int counter_id,
+    int barrier_id,
+    int iterations,
+    int* results,
+    uint64_t* counter_values,
+    cudaStream_t stream);
+
+// Read signal value into a device buffer (for host-side verification).
+void launchPipesReadSignalKernel(
+    DeviceWindowPipes* win,
+    int signal_id,
+    uint64_t* out,
+    cudaStream_t stream);
+
 } // namespace torchcomms::device::test
