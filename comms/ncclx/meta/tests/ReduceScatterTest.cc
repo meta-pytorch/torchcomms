@@ -11,9 +11,9 @@
 #include <cstddef>
 #include <optional>
 #include "comms/ctran/Ctran.h"
+#include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
 
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -51,23 +51,23 @@ struct ReduceScatterTestParams {
   }
 };
 
-class ReduceScatterTest : public NcclxBaseTest {
+class ReduceScatterTest : public NcclxBaseTestFixture {
  public:
   ReduceScatterTest() = default;
-  void SetUp() override {
-    NcclxBaseTest::SetUp();
-    // [META:PAT_AVG] Enable PAT before any comm creation to ensure the
-    // NCCL_PARAM cache gets the right value. This is needed because NCCL_PARAM
-    // uses static caching - once set, the value is never re-read.
+  void setUpWithEnvs(const NcclxEnvs& extraEnvs = {}) {
+    NcclxEnvs envs = extraEnvs;
+    // CTRAN always enabled for this test
+    envs.push_back({"NCCL_CTRAN_ENABLE", "1"});
+    envs.push_back({"NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET", "1"});
+    NcclxBaseTestFixture::SetUp(envs);
     patEnableGuard_.emplace(NCCL_PAT_ENABLE, (int64_t)1);
-    // Enable AlgoStats for algorithm validation (must be before comm creation)
     algoStats_.enable();
     CUDACHECK_TEST(cudaStreamCreate(&stream));
   }
 
   void TearDown() override {
     CUDACHECK_TEST(cudaStreamDestroy(stream));
-    NcclxBaseTest::TearDown();
+    NcclxBaseTestFixture::TearDown();
   }
 
   // Runs a ReduceScatter collective and verifies results.
@@ -101,12 +101,6 @@ class ReduceScatterTest : public NcclxBaseTest {
     if (memType == kMemNcclMemAlloc && ncclIsCuMemSupported() == false) {
       GTEST_SKIP() << "CuMem not supported, skip test";
     }
-
-#if !defined TEST_ENABLE_CTRAN
-    if (algo != NCCL_REDUCESCATTER_ALGO::orig) {
-      GTEST_SKIP() << "Ctran is disabled, skip test";
-    }
-#endif
 
     if (algo != NCCL_REDUCESCATTER_ALGO::orig &&
         !ctranReduceScatterSupport(comm->ctranComm_.get(), algo)) {
@@ -235,14 +229,21 @@ class ReduceScatterTest : public NcclxBaseTest {
 
 class ReduceScatterTestParam : public ReduceScatterTest,
                                public ::testing::WithParamInterface<std::tuple<
+                                   NcclxEnvs,
                                    enum NCCL_REDUCESCATTER_ALGO,
                                    bool,
                                    bool,
                                    MemAllocType,
-                                   size_t>> {};
+                                   size_t>> {
+ protected:
+  void SetUp() override {
+    ReduceScatterTest::setUpWithEnvs(std::get<0>(GetParam()));
+  }
+};
 
 TEST_P(ReduceScatterTestParam, Test) {
-  auto [algo, inplace, registFlag, memType, count] = GetParam();
+  auto [envs_, algo, inplace, registFlag, memType, count] = GetParam();
+  (void)envs_; // applied in SetUp
   auto rsAlgoGuard = EnvRAII(NCCL_REDUCESCATTER_ALGO, algo);
 
   ReduceScatterTestParams param{
@@ -264,10 +265,17 @@ TEST_P(ReduceScatterTestParam, Test) {
 // the algorithm was actually used via AlgoStats.
 class ReduceScatterOrigTestParam
     : public ReduceScatterTest,
-      public ::testing::WithParamInterface<std::tuple<std::string, size_t>> {};
+      public ::testing::WithParamInterface<
+          std::tuple<NcclxEnvs, std::string, size_t>> {
+ protected:
+  void SetUp() override {
+    ReduceScatterTest::setUpWithEnvs(std::get<0>(GetParam()));
+  }
+};
 
 TEST_P(ReduceScatterOrigTestParam, OrigTest) {
-  auto [ncclAlgo, count] = GetParam();
+  auto [envs_, ncclAlgo, count] = GetParam();
+  (void)envs_; // applied in SetUp
   auto rsAlgoGuard =
       EnvRAII(NCCL_REDUCESCATTER_ALGO, NCCL_REDUCESCATTER_ALGO::orig);
   auto algoGuard = EnvRAII<std::string>(NCCL_ALGO, ncclAlgo);
@@ -287,10 +295,16 @@ TEST_P(ReduceScatterOrigTestParam, OrigTest) {
 class ReduceScatterPatAvgTestParam
     : public ReduceScatterTest,
       public ::testing::WithParamInterface<
-          std::tuple<bool, size_t, ncclDataType_t>> {};
+          std::tuple<NcclxEnvs, bool, size_t, ncclDataType_t>> {
+ protected:
+  void SetUp() override {
+    ReduceScatterTest::setUpWithEnvs(std::get<0>(GetParam()));
+  }
+};
 
 TEST_P(ReduceScatterPatAvgTestParam, PatAvgTest) {
-  auto [inplace, count, datatype] = GetParam();
+  auto [envs_, inplace, count, datatype] = GetParam();
+  (void)envs_; // applied in SetUp
   auto rsAlgoGuard =
       EnvRAII(NCCL_REDUCESCATTER_ALGO, NCCL_REDUCESCATTER_ALGO::orig);
   auto patAvgGuard = EnvRAII(NCCL_REDUCESCATTER_PAT_AVG_ENABLE, true);
@@ -317,70 +331,128 @@ TEST_P(ReduceScatterPatAvgTestParam, PatAvgTest) {
   }
 }
 
+// Helper to generate env suffix for test names
+std::string envSuffix(const NcclxEnvs& envs) {
+  std::string suffix;
+  for (const auto& [key, value] : envs) {
+    if (key == "NCCL_COMM_STATE_DEBUG_TOPO" && value == "nolocal") {
+      suffix += "Nolocal_";
+    } else if (key == "NCCL_FASTINIT_MODE" && value == "ring_hybrid") {
+      suffix += "Fastinit_";
+    }
+  }
+  return suffix;
+}
+
+// Common env combos
+const NcclxEnvs kDefaultEnvs = {};
+const NcclxEnvs kNolocalEnvs = {{"NCCL_COMM_STATE_DEBUG_TOPO", "nolocal"}};
+const NcclxEnvs kFastinitEnvs = {{"NCCL_FASTINIT_MODE", "ring_hybrid"}};
+const NcclxEnvs kNolocalFastinitEnvs = {
+    {"NCCL_COMM_STATE_DEBUG_TOPO", "nolocal"},
+    {"NCCL_FASTINIT_MODE", "ring_hybrid"}};
+
+// Name generator for ReduceScatterTestParam
+const auto rsTestNameGen = [](const auto& info) {
+  ReduceScatterTestParams params{
+      .algo = std::get<1>(info.param),
+      .inplace = std::get<2>(info.param),
+      .registFlag = std::get<3>(info.param),
+      .memType = std::get<4>(info.param),
+      .count = std::get<5>(info.param),
+  };
+  return envSuffix(std::get<0>(info.param)) + params.name();
+};
+
+// Name generator for ReduceScatterOrigTestParam
+const auto rsOrigTestNameGen = [](const auto& info) {
+  ReduceScatterTestParams params{
+      .algo = NCCL_REDUCESCATTER_ALGO::orig,
+      .count = std::get<2>(info.param),
+      .ncclAlgo = std::get<1>(info.param),
+  };
+  return envSuffix(std::get<0>(info.param)) + params.name();
+};
+
+// Name generator for ReduceScatterPatAvgTestParam
+const auto rsPatAvgTestNameGen = [](const auto& info) {
+  ReduceScatterTestParams params{
+      .algo = NCCL_REDUCESCATTER_ALGO::orig,
+      .inplace = std::get<1>(info.param),
+      .registFlag = false,
+      .memType = kMemNcclMemAlloc,
+      .count = std::get<2>(info.param),
+      .op = ncclAvg,
+      .datatype = std::get<3>(info.param),
+  };
+  return envSuffix(std::get<0>(info.param)) + params.name();
+};
+
 INSTANTIATE_TEST_SUITE_P(
-    ReduceScatterTestInstance,
+    ReduceScatter,
     ReduceScatterTestParam,
     ::testing::Combine(
+        ::testing::Values(kDefaultEnvs, kNolocalEnvs),
         ::testing::Values(
             NCCL_REDUCESCATTER_ALGO::orig,
             NCCL_REDUCESCATTER_ALGO::ctran,
             NCCL_REDUCESCATTER_ALGO::ctrhd,
             NCCL_REDUCESCATTER_ALGO::ctring),
-        ::testing::Values(true, false), // inplace
-        ::testing::Values(true), // registFlag
-        ::testing::Values(kMemCudaMalloc, kMemNcclMemAlloc), // memType
-        ::testing::Values(1, 8192, 33554432) // count: small, medium, large
-        ),
-    ([](const auto& info) {
-      ReduceScatterTestParams params{
-          .algo = std::get<0>(info.param),
-          .inplace = std::get<1>(info.param),
-          .registFlag = std::get<2>(info.param),
-          .memType = std::get<3>(info.param),
-          .count = std::get<4>(info.param),
-      };
-      return params.name();
-    }));
+        ::testing::Values(true, false),
+        ::testing::Values(true),
+        ::testing::Values(kMemCudaMalloc, kMemNcclMemAlloc),
+        ::testing::Values(1, 8192, 33554432)),
+    rsTestNameGen);
 
 INSTANTIATE_TEST_SUITE_P(
-    ReduceScatterOrigTestInstance,
+    ReduceScatter_Fastinit,
+    ReduceScatterTestParam,
+    ::testing::Combine(
+        ::testing::Values(kFastinitEnvs, kNolocalFastinitEnvs),
+        ::testing::Values(NCCL_REDUCESCATTER_ALGO::orig),
+        ::testing::Values(false),
+        ::testing::Values(true),
+        ::testing::Values(kMemNcclMemAlloc),
+        ::testing::Values(8192)),
+    rsTestNameGen);
+
+INSTANTIATE_TEST_SUITE_P(
+    ReduceScatterOrig,
     ReduceScatterOrigTestParam,
     ::testing::Combine(
+        ::testing::Values(kDefaultEnvs, kNolocalEnvs),
         ::testing::Values(std::string("RING"), std::string("PAT")),
-        ::testing::Values(1, 8192, 33554432) // count: small, medium, large
-        ),
-    ([](const auto& info) {
-      ReduceScatterTestParams params{
-          .algo = NCCL_REDUCESCATTER_ALGO::orig,
-          .count = std::get<1>(info.param),
-          .ncclAlgo = std::get<0>(info.param),
-      };
-      return params.name();
-    }));
+        ::testing::Values(1, 8192, 33554432)),
+    rsOrigTestNameGen);
 
 INSTANTIATE_TEST_SUITE_P(
-    ReduceScatterPatAvgTestInstance,
+    ReduceScatterOrig_Fastinit,
+    ReduceScatterOrigTestParam,
+    ::testing::Combine(
+        ::testing::Values(kFastinitEnvs, kNolocalFastinitEnvs),
+        ::testing::Values(std::string("RING")),
+        ::testing::Values(8192)),
+    rsOrigTestNameGen);
+
+INSTANTIATE_TEST_SUITE_P(
+    ReduceScatterPatAvg,
     ReduceScatterPatAvgTestParam,
     ::testing::Combine(
-        ::testing::Values(true, false), // inplace
-        ::testing::Values(1, 8000, 33554430), // count per rank
-        ::testing::Values(
-            ncclInt,
-            ncclFloat,
-            ncclDouble,
-            ncclBfloat16)), // datatype
-    ([](const auto& info) {
-      ReduceScatterTestParams params{
-          .algo = NCCL_REDUCESCATTER_ALGO::orig,
-          .inplace = std::get<0>(info.param),
-          .registFlag = false,
-          .memType = kMemNcclMemAlloc,
-          .count = std::get<1>(info.param),
-          .op = ncclAvg,
-          .datatype = std::get<2>(info.param),
-      };
-      return params.name();
-    }));
+        ::testing::Values(kDefaultEnvs, kNolocalEnvs),
+        ::testing::Values(true, false),
+        ::testing::Values(1, 8000, 33554430),
+        ::testing::Values(ncclInt, ncclFloat, ncclDouble, ncclBfloat16)),
+    rsPatAvgTestNameGen);
+
+INSTANTIATE_TEST_SUITE_P(
+    ReduceScatterPatAvg_Fastinit,
+    ReduceScatterPatAvgTestParam,
+    ::testing::Combine(
+        ::testing::Values(kFastinitEnvs, kNolocalFastinitEnvs),
+        ::testing::Values(false),
+        ::testing::Values(8192),
+        ::testing::Values(ncclInt)),
+    rsPatAvgTestNameGen);
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
