@@ -11,6 +11,8 @@
 #include <folly/synchronization/Baton.h>
 
 #include "comms/ctran/Ctran.h"
+#include "comms/ctran/profiler/Profiler.h"
+#include "comms/ctran/profiler/tests/MockAlgoProfilerReporter.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
@@ -268,6 +270,52 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Values(
         std::make_tuple("ctring", NCCL_ALLREDUCE_ALGO::ctring),
         std::make_tuple("ctdirect", NCCL_ALLREDUCE_ALGO::ctdirect)),
+    [](const ::testing::TestParamInfo<AllReduceTestParam>& info) {
+      return std::get<0>(info.param);
+    });
+
+// Profiler test subclass: enables profiler in SetUp so ctran::Profiler is
+// created during ctranInit, then injects MockAlgoProfilerReporter.
+class CtranAllReduceProfilerTest : public CtranAllReduceTest {
+ protected:
+  void SetUp() override {
+    setenv("NCCL_CTRAN_TRANSPORT_PROFILER", "1", 1);
+    setenv("NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT", "1", 1);
+    CtranAllReduceTest::SetUp();
+  }
+};
+
+TEST_P(CtranAllReduceProfilerTest, ProfilerReportsValidData) {
+  auto [algoName, algo] = GetParam();
+
+  startWorkers(/*abortEnabled=*/false);
+  for (int rank = 0; rank < kNRanks; ++rank) {
+    run(rank, [this, algo](PerRankState& state) {
+      auto mockReporter = std::make_unique<ctran::MockAlgoProfilerReporter>();
+      auto* mockPtr = mockReporter.get();
+      auto* profiler = state.ctranComm->ctran_->profiler.get();
+      ASSERT_NE(profiler, nullptr);
+      profiler->setReporter(std::move(mockReporter));
+
+      runAllReduce(kBufferNElem, state, algo);
+
+      ASSERT_TRUE(mockPtr->reportCalled_);
+      EXPECT_GE(mockPtr->reportCount_, 1);
+      EXPECT_EQ(
+          mockPtr->capturedAlgoContext_.algorithmName, "CtranAllReduceRing");
+      EXPECT_GT(mockPtr->capturedAlgoContext_.sendContext.totalBytes, 0);
+      EXPECT_GT(mockPtr->capturedAlgoContext_.recvContext.totalBytes, 0);
+      EXPECT_GT(mockPtr->lastReport_.collectiveDurationUs, 0);
+      EXPECT_GE(mockPtr->lastReport_.controlSyncTimeUs, 0);
+      EXPECT_GE(mockPtr->lastReport_.dataTransferTimeUs, 0);
+    });
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ProfilerCombinations,
+    CtranAllReduceProfilerTest,
+    ::testing::Values(std::make_tuple("ctring", NCCL_ALLREDUCE_ALGO::ctring)),
     [](const ::testing::TestParamInfo<AllReduceTestParam>& info) {
       return std::get<0>(info.param);
     });
