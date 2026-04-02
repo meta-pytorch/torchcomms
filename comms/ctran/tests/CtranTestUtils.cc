@@ -457,7 +457,7 @@ void CtranTestFixtureBase::TearDown() {
 
 void CtranTestFixtureBase::setupEnvironment() {
   setenv("NCCL_CTRAN_ENABLE", "1", 1);
-  setenv("NCCL_DEBUG", "INFO", 1);
+  setenv("NCCL_DEBUG", "INFO", 0);
 
   FB_CUDACHECKIGNORE(cudaSetDevice(cudaDev));
 
