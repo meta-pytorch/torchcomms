@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "IteratedTestHelpers.hpp"
+#include "StressTestHelpers.hpp"
 
 #include <folly/String.h>
 #include <algorithm>
@@ -64,17 +64,17 @@ int envInt(const char* name, int default_val) {
 
 } // namespace
 
-IteratedTestConfig parseIteratedTestConfig() {
-  IteratedTestConfig config;
+StressTestConfig parseStressTestConfig() {
+  StressTestConfig config;
 
   config.num_iterations = envInt("NUM_ITERATIONS", config.num_iterations);
-  config.window_count = envInt("ITERATED_WINDOW_COUNT", config.window_count);
-  config.comm_count = envInt("ITERATED_COMM_COUNT", config.comm_count);
+  config.window_count = envInt("STRESS_WINDOW_COUNT", config.window_count);
+  config.comm_count = envInt("STRESS_COMM_COUNT", config.comm_count);
   config.lifecycle_cycles =
-      envInt("ITERATED_LIFECYCLE_CYCLES", config.lifecycle_cycles);
-  config.verbose = envBool("ITERATED_VERBOSE");
+      envInt("STRESS_LIFECYCLE_CYCLES", config.lifecycle_cycles);
+  config.verbose = envBool("STRESS_VERBOSE");
 
-  const char* sizes_env = std::getenv("ITERATED_MSG_SIZES");
+  const char* sizes_env = std::getenv("STRESS_MSG_SIZES");
   if (sizes_env) {
     auto parsed = parseSizeList(sizes_env);
     if (!parsed.empty()) {
@@ -82,7 +82,7 @@ IteratedTestConfig parseIteratedTestConfig() {
     }
   }
 
-  const char* scopes_env = std::getenv("ITERATED_SCOPES");
+  const char* scopes_env = std::getenv("STRESS_SCOPES");
   if (scopes_env) {
     auto parsed = parseScopeList(scopes_env);
     if (!parsed.empty()) {
@@ -93,8 +93,8 @@ IteratedTestConfig parseIteratedTestConfig() {
   return config;
 }
 
-bool shouldRunIteratedTest() {
-  return envBool("RUN_DEVICE_ITERATED_TEST");
+bool shouldRunStressTest() {
+  return envBool("RUN_DEVICE_STRESS_TEST");
 }
 
 int threadsForScope(CoopScope scope) {

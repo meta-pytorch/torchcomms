@@ -1,12 +1,12 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 //
-// Iterated functional tests for TorchComm Device API — NCCLx (GIN+LSA) backend.
+// Stress functional tests for TorchComm Device API — NCCLx (GIN+LSA) backend.
 
-#include "DeviceApiIteratedTest.hpp"
+#include "DeviceApiTest.hpp"
 
 #include <gtest/gtest.h>
-#include "DeviceApiIteratedTestKernels.cuh"
-#include "IteratedTestHelpers.hpp"
+#include "DeviceApiTestKernels.cuh"
+#include "StressTestHelpers.hpp"
 #include "TorchCommTestHelpers.h"
 #include "comms/torchcomms/TorchComm.hpp"
 
@@ -17,13 +17,12 @@ using namespace torchcomms::device::test;
 // Setup / Teardown
 // =============================================================================
 
-void DeviceApiIteratedTest::SetUp() {
-  if (!shouldRunIteratedTest()) {
-    GTEST_SKIP()
-        << "Skipping iterated tests (RUN_DEVICE_ITERATED_TEST not set)";
+void DeviceApiTest::SetUp() {
+  if (!shouldRunStressTest()) {
+    GTEST_SKIP() << "Skipping stress tests (RUN_DEVICE_STRESS_TEST not set)";
   }
 
-  config_ = parseIteratedTestConfig();
+  config_ = parseStressTestConfig();
   wrapper_ = std::make_unique<TorchCommTestWrapper>();
   torchcomm_ = wrapper_->getTorchComm();
   rank_ = torchcomm_->getRank();
@@ -32,7 +31,7 @@ void DeviceApiIteratedTest::SetUp() {
   allocator_ = torch::comms::get_mem_allocator(torchcomm_->getBackend());
 }
 
-void DeviceApiIteratedTest::TearDown() {
+void DeviceApiTest::TearDown() {
   torchcomm_.reset();
   wrapper_.reset();
 }
@@ -186,10 +185,10 @@ void checkKernelResults(
 } // namespace
 
 // =============================================================================
-// Category 1: Iterated Correctness
+// Category 1: Stress Correctness
 // =============================================================================
 
-void DeviceApiIteratedTest::testIteratedPut(size_t msg_bytes, CoopScope scope) {
+void DeviceApiTest::testStressPut(size_t msg_bytes, CoopScope scope) {
   size_t count = msg_bytes / sizeof(float);
   if (count == 0) {
     count = 1;
@@ -198,7 +197,7 @@ void DeviceApiIteratedTest::testIteratedPut(size_t msg_bytes, CoopScope scope) {
   int iterations = config_.num_iterations;
 
   SCOPED_TRACE(
-      ::testing::Message() << "IteratedPut msg=" << formatBytes(msg_bytes)
+      ::testing::Message() << "StressPut msg=" << formatBytes(msg_bytes)
                            << " scope=" << scopeName(scope)
                            << " iters=" << iterations);
 
@@ -226,7 +225,7 @@ void DeviceApiIteratedTest::testIteratedPut(size_t msg_bytes, CoopScope scope) {
   auto stream = at::cuda::getStreamFromPool(false, device_index_);
   {
     c10::cuda::CUDAStreamGuard guard(stream);
-    launchIteratedPutKernel(
+    launchStressPutKernel(
         s.dev_win,
         s.src_buf,
         s.src_tensor.data_ptr<float>(),
@@ -249,18 +248,18 @@ void DeviceApiIteratedTest::testIteratedPut(size_t msg_bytes, CoopScope scope) {
   checkKernelResults(
       d_results,
       iterations,
-      "IteratedPut(" + formatBytes(msg_bytes) + "," + scopeName(scope) + ")");
+      "StressPut(" + formatBytes(msg_bytes) + "," + scopeName(scope) + ")");
 
   cudaFree(d_results);
   teardownWindow(s, torchcomm_);
 }
 
-void DeviceApiIteratedTest::testIteratedSignal(CoopScope scope) {
+void DeviceApiTest::testStressSignal(CoopScope scope) {
   int iterations = config_.num_iterations;
   int num_threads = threadsForScope(scope);
 
   SCOPED_TRACE(
-      ::testing::Message() << "IteratedSignal scope=" << scopeName(scope)
+      ::testing::Message() << "StressSignal scope=" << scopeName(scope)
                            << " iters=" << iterations);
 
   // Minimal window — only need signal infrastructure
@@ -281,7 +280,7 @@ void DeviceApiIteratedTest::testIteratedSignal(CoopScope scope) {
   auto stream = at::cuda::getStreamFromPool(false, device_index_);
   {
     c10::cuda::CUDAStreamGuard guard(stream);
-    launchIteratedSignalKernel(
+    launchStressSignalKernel(
         s.dev_win,
         dst_rank,
         src_rank,
@@ -297,12 +296,12 @@ void DeviceApiIteratedTest::testIteratedSignal(CoopScope scope) {
   teardownWindow(s, torchcomm_);
 }
 
-void DeviceApiIteratedTest::testIteratedBarrier(CoopScope scope) {
+void DeviceApiTest::testStressBarrier(CoopScope scope) {
   int iterations = config_.num_iterations;
   int num_threads = threadsForScope(scope);
 
   SCOPED_TRACE(
-      ::testing::Message() << "IteratedBarrier scope=" << scopeName(scope)
+      ::testing::Message() << "StressBarrier scope=" << scopeName(scope)
                            << " iters=" << iterations);
 
   size_t count = 1;
@@ -319,7 +318,7 @@ void DeviceApiIteratedTest::testIteratedBarrier(CoopScope scope) {
   auto stream = at::cuda::getStreamFromPool(false, device_index_);
   {
     c10::cuda::CUDAStreamGuard guard(stream);
-    launchIteratedBarrierKernel(
+    launchStressBarrierKernel(
         s.dev_win, iterations, scope, num_threads, stream.stream());
   }
   stream.synchronize();
@@ -327,7 +326,7 @@ void DeviceApiIteratedTest::testIteratedBarrier(CoopScope scope) {
   teardownWindow(s, torchcomm_);
 }
 
-void DeviceApiIteratedTest::testIteratedCombined(size_t msg_bytes) {
+void DeviceApiTest::testStressCombined(size_t msg_bytes) {
   size_t count = msg_bytes / sizeof(float);
   if (count == 0) {
     count = 1;
@@ -335,7 +334,7 @@ void DeviceApiIteratedTest::testIteratedCombined(size_t msg_bytes) {
   int iterations = config_.num_iterations;
 
   SCOPED_TRACE(
-      ::testing::Message() << "IteratedCombined msg=" << formatBytes(msg_bytes)
+      ::testing::Message() << "StressCombined msg=" << formatBytes(msg_bytes)
                            << " iters=" << iterations);
 
   auto s = createWindowSetup(
@@ -361,7 +360,7 @@ void DeviceApiIteratedTest::testIteratedCombined(size_t msg_bytes) {
   auto stream = at::cuda::getStreamFromPool(false, device_index_);
   {
     c10::cuda::CUDAStreamGuard guard(stream);
-    launchIteratedCombinedKernel(
+    launchStressCombinedKernel(
         s.dev_win,
         s.src_buf,
         s.src_tensor.data_ptr<float>(),
@@ -381,9 +380,7 @@ void DeviceApiIteratedTest::testIteratedCombined(size_t msg_bytes) {
   stream.synchronize();
 
   checkKernelResults(
-      d_results,
-      iterations,
-      "IteratedCombined(" + formatBytes(msg_bytes) + ")");
+      d_results, iterations, "StressCombined(" + formatBytes(msg_bytes) + ")");
 
   cudaFree(d_results);
   teardownWindow(s, torchcomm_);
@@ -393,7 +390,7 @@ void DeviceApiIteratedTest::testIteratedCombined(size_t msg_bytes) {
 // Category 2: Concurrency
 // =============================================================================
 
-void DeviceApiIteratedTest::testMultiWindow() {
+void DeviceApiTest::testMultiWindow() {
   int num_windows = config_.window_count;
   int iterations = config_.num_iterations / 2; // fewer iters per window
   size_t count = 1024; // 4KB per window
@@ -436,7 +433,7 @@ void DeviceApiIteratedTest::testMultiWindow() {
 
     size_t bytes = count * sizeof(float);
     c10::cuda::CUDAStreamGuard guard(stream);
-    launchIteratedPutKernel(
+    launchStressPutKernel(
         windows[w].dev_win,
         windows[w].src_buf,
         windows[w].src_tensor.data_ptr<float>(),
@@ -472,7 +469,7 @@ void DeviceApiIteratedTest::testMultiWindow() {
   }
 }
 
-void DeviceApiIteratedTest::testMultiComm() {
+void DeviceApiTest::testMultiComm() {
   int num_comms = config_.comm_count;
   int iterations = config_.num_iterations / 2;
   size_t count = 1024;
@@ -510,7 +507,7 @@ void DeviceApiIteratedTest::testMultiComm() {
         /*barrier_count=*/2));
   }
 
-  // Run iterated put on each comm's window
+  // Run stress put on each comm's window
   std::vector<int*> d_results_vec(num_comms, nullptr);
   std::vector<at::cuda::CUDAStream> streams;
   streams.reserve(num_comms);
@@ -526,7 +523,7 @@ void DeviceApiIteratedTest::testMultiComm() {
 
     size_t bytes = count * sizeof(float);
     c10::cuda::CUDAStreamGuard guard(stream);
-    launchIteratedPutKernel(
+    launchStressPutKernel(
         windows[c].dev_win,
         windows[c].src_buf,
         windows[c].src_tensor.data_ptr<float>(),
@@ -567,7 +564,7 @@ void DeviceApiIteratedTest::testMultiComm() {
 // Category 3: Resource Exhaustion
 // =============================================================================
 
-void DeviceApiIteratedTest::testWindowLifecycle() {
+void DeviceApiTest::testWindowLifecycle() {
   int cycles = config_.lifecycle_cycles;
   size_t count = 256; // Small window per cycle
 
@@ -596,7 +593,7 @@ void DeviceApiIteratedTest::testWindowLifecycle() {
     auto stream = at::cuda::getStreamFromPool(false, device_index_);
     {
       c10::cuda::CUDAStreamGuard guard(stream);
-      launchIteratedPutKernel(
+      launchStressPutKernel(
           s.dev_win,
           s.src_buf,
           s.src_tensor.data_ptr<float>(),
@@ -628,11 +625,11 @@ void DeviceApiIteratedTest::testWindowLifecycle() {
 // Aggregated wait_signal + read_signal + reset
 // =============================================================================
 
-void DeviceApiIteratedTest::testIteratedAggregatedSignal() {
+void DeviceApiTest::testStressAggregatedSignal() {
   int iterations = config_.num_iterations;
 
   SCOPED_TRACE(
-      ::testing::Message() << "IteratedAggregatedSignal iters=" << iterations);
+      ::testing::Message() << "StressAggregatedSignal iters=" << iterations);
 
   size_t count = 1;
   auto s = createWindowSetup(
@@ -654,7 +651,7 @@ void DeviceApiIteratedTest::testIteratedAggregatedSignal() {
   auto stream = at::cuda::getStreamFromPool(false, device_index_);
   {
     c10::cuda::CUDAStreamGuard guard(stream);
-    launchIteratedAggregatedSignalKernel(
+    launchStressAggregatedSignalKernel(
         s.dev_win,
         dst_rank,
         /*signal_id=*/0,
@@ -664,7 +661,7 @@ void DeviceApiIteratedTest::testIteratedAggregatedSignal() {
   }
   stream.synchronize();
 
-  checkKernelResults(d_results, iterations, "IteratedAggregatedSignal");
+  checkKernelResults(d_results, iterations, "StressAggregatedSignal");
 
   cudaFree(d_results);
   teardownWindow(s, torchcomm_);
@@ -674,9 +671,7 @@ void DeviceApiIteratedTest::testIteratedAggregatedSignal() {
 // Half-precision put
 // =============================================================================
 
-void DeviceApiIteratedTest::testIteratedPutHalf(
-    size_t msg_bytes,
-    CoopScope scope) {
+void DeviceApiTest::testStressPutHalf(size_t msg_bytes, CoopScope scope) {
   size_t count = msg_bytes / sizeof(at::Half);
   if (count == 0) {
     count = 1;
@@ -685,7 +680,7 @@ void DeviceApiIteratedTest::testIteratedPutHalf(
   int iterations = config_.num_iterations;
 
   SCOPED_TRACE(
-      ::testing::Message() << "IteratedPutHalf msg=" << formatBytes(msg_bytes)
+      ::testing::Message() << "StressPutHalf msg=" << formatBytes(msg_bytes)
                            << " scope=" << scopeName(scope)
                            << " iters=" << iterations);
 
@@ -713,7 +708,7 @@ void DeviceApiIteratedTest::testIteratedPutHalf(
   auto stream = at::cuda::getStreamFromPool(false, device_index_);
   {
     c10::cuda::CUDAStreamGuard guard(stream);
-    launchIteratedPutHalfKernel(
+    launchStressPutHalfKernel(
         s.dev_win,
         s.src_buf,
         s.src_tensor.data_ptr(),
@@ -736,8 +731,7 @@ void DeviceApiIteratedTest::testIteratedPutHalf(
   checkKernelResults(
       d_results,
       iterations,
-      "IteratedPutHalf(" + formatBytes(msg_bytes) + "," + scopeName(scope) +
-          ")");
+      "StressPutHalf(" + formatBytes(msg_bytes) + "," + scopeName(scope) + ")");
 
   cudaFree(d_results);
   teardownWindow(s, torchcomm_);
@@ -754,17 +748,16 @@ struct PutParam {
   CoopScope scope;
 };
 
-class DeviceApiIteratedPutTest
-    : public DeviceApiIteratedTest,
-      public ::testing::WithParamInterface<PutParam> {};
+class DeviceApiPutTest : public DeviceApiTest,
+                         public ::testing::WithParamInterface<PutParam> {};
 
-TEST_P(DeviceApiIteratedPutTest, Put) {
-  testIteratedPut(GetParam().msg_bytes, GetParam().scope);
+TEST_P(DeviceApiPutTest, Put) {
+  testStressPut(GetParam().msg_bytes, GetParam().scope);
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    IteratedPut,
-    DeviceApiIteratedPutTest,
+    StressPut,
+    DeviceApiPutTest,
     ::testing::Values(
         PutParam{4, CoopScope::THREAD},
         PutParam{1024, CoopScope::THREAD},
@@ -781,17 +774,16 @@ INSTANTIATE_TEST_SUITE_P(
 
 // --- Signal: parameterized by scope ---
 
-class DeviceApiIteratedSignalTest
-    : public DeviceApiIteratedTest,
-      public ::testing::WithParamInterface<CoopScope> {};
+class DeviceApiSignalTest : public DeviceApiTest,
+                            public ::testing::WithParamInterface<CoopScope> {};
 
-TEST_P(DeviceApiIteratedSignalTest, Signal) {
-  testIteratedSignal(GetParam());
+TEST_P(DeviceApiSignalTest, Signal) {
+  testStressSignal(GetParam());
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    IteratedSignal,
-    DeviceApiIteratedSignalTest,
+    StressSignal,
+    DeviceApiSignalTest,
     ::testing::Values(CoopScope::THREAD, CoopScope::WARP, CoopScope::BLOCK),
     [](const ::testing::TestParamInfo<CoopScope>& info) {
       return std::string(scopeName(info.param));
@@ -799,17 +791,16 @@ INSTANTIATE_TEST_SUITE_P(
 
 // --- Barrier: parameterized by scope ---
 
-class DeviceApiIteratedBarrierTest
-    : public DeviceApiIteratedTest,
-      public ::testing::WithParamInterface<CoopScope> {};
+class DeviceApiBarrierTest : public DeviceApiTest,
+                             public ::testing::WithParamInterface<CoopScope> {};
 
-TEST_P(DeviceApiIteratedBarrierTest, Barrier) {
-  testIteratedBarrier(GetParam());
+TEST_P(DeviceApiBarrierTest, Barrier) {
+  testStressBarrier(GetParam());
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    IteratedBarrier,
-    DeviceApiIteratedBarrierTest,
+    StressBarrier,
+    DeviceApiBarrierTest,
     ::testing::Values(CoopScope::THREAD, CoopScope::WARP, CoopScope::BLOCK),
     [](const ::testing::TestParamInfo<CoopScope>& info) {
       return std::string(scopeName(info.param));
@@ -817,44 +808,43 @@ INSTANTIATE_TEST_SUITE_P(
 
 // --- Combined: parameterized by msg_bytes ---
 
-class DeviceApiIteratedCombinedTest
-    : public DeviceApiIteratedTest,
-      public ::testing::WithParamInterface<size_t> {};
+class DeviceApiCombinedTest : public DeviceApiTest,
+                              public ::testing::WithParamInterface<size_t> {};
 
-TEST_P(DeviceApiIteratedCombinedTest, Combined) {
-  testIteratedCombined(GetParam());
+TEST_P(DeviceApiCombinedTest, Combined) {
+  testStressCombined(GetParam());
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    IteratedCombined,
-    DeviceApiIteratedCombinedTest,
+    StressCombined,
+    DeviceApiCombinedTest,
     ::testing::Values(static_cast<size_t>(1024), static_cast<size_t>(1048576)),
     [](const auto& info) { return std::to_string(info.param) + "B"; });
 
 // --- Non-parameterized tests ---
 
-TEST_F(DeviceApiIteratedTest, MultiWindow) {
+TEST_F(DeviceApiTest, MultiWindow) {
   testMultiWindow();
 }
 
-TEST_F(DeviceApiIteratedTest, MultiComm) {
+TEST_F(DeviceApiTest, MultiComm) {
   testMultiComm();
 }
 
-TEST_F(DeviceApiIteratedTest, WindowLifecycle) {
+TEST_F(DeviceApiTest, WindowLifecycle) {
   testWindowLifecycle();
 }
 
 // --- Aggregated signal + read_signal + reset ---
 
-TEST_F(DeviceApiIteratedTest, AggregatedSignal) {
-  testIteratedAggregatedSignal();
+TEST_F(DeviceApiTest, AggregatedSignal) {
+  testStressAggregatedSignal();
 }
 
 // --- Half-precision put: 1KB THREAD only ---
 // Put is dtype-agnostic (operates on bytes). Float16 only tests tensor
 // allocation and element_size calculation, so one test suffices.
 
-TEST_F(DeviceApiIteratedTest, PutHalf) {
-  testIteratedPutHalf(1024, CoopScope::THREAD);
+TEST_F(DeviceApiTest, PutHalf) {
+  testStressPutHalf(1024, CoopScope::THREAD);
 }

@@ -1,17 +1,17 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 //
-// Iterated functional tests for TorchComm Device API — Pipes (IBGDA+NVLink).
+// Stress functional tests for TorchComm Device API — Pipes (IBGDA+NVLink).
 // Key difference from NCCLx: uses DeviceWindowPipes type and monotonic signals
 // only (no reset_signal).
 
-#include "PipesDeviceApiIteratedTest.hpp"
+#include "PipesDeviceApiTest.hpp"
 
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <cassert>
 #include <vector>
-#include "IteratedTestHelpers.hpp"
-#include "PipesDeviceApiIteratedTestKernels.cuh"
+#include "PipesDeviceApiTestKernels.cuh"
+#include "StressTestHelpers.hpp"
 #include "TorchCommTestHelpers.h"
 #include "comms/torchcomms/TorchComm.hpp"
 
@@ -22,18 +22,17 @@ using namespace torchcomms::device::test;
 // Setup / Teardown
 // =============================================================================
 
-void PipesDeviceApiIteratedTest::SetUp() {
-  if (!shouldRunIteratedTest()) {
-    GTEST_SKIP()
-        << "Skipping iterated tests (RUN_DEVICE_ITERATED_TEST not set)";
+void PipesDeviceApiTest::SetUp() {
+  if (!shouldRunStressTest()) {
+    GTEST_SKIP() << "Skipping stress tests (RUN_DEVICE_STRESS_TEST not set)";
   }
   const char* pipes_env = getenv("RUN_PIPES_DEVICE_API_TEST");
   if (!pipes_env) {
     GTEST_SKIP()
-        << "Skipping Pipes iterated tests (RUN_PIPES_DEVICE_API_TEST not set)";
+        << "Skipping Pipes stress tests (RUN_PIPES_DEVICE_API_TEST not set)";
   }
 
-  config_ = parseIteratedTestConfig();
+  config_ = parseStressTestConfig();
   wrapper_ = std::make_unique<TorchCommTestWrapper>();
   torchcomm_ = wrapper_->getTorchComm();
   rank_ = torchcomm_->getRank();
@@ -42,7 +41,7 @@ void PipesDeviceApiIteratedTest::SetUp() {
   allocator_ = torch::comms::get_mem_allocator(torchcomm_->getBackend());
 }
 
-void PipesDeviceApiIteratedTest::TearDown() {
+void PipesDeviceApiTest::TearDown() {
   torchcomm_.reset();
   wrapper_.reset();
 }
@@ -114,7 +113,7 @@ PipesWindowSetup createPipesWindowSetup(
 
   s.src_buf = s.win->register_local_buffer(s.src_tensor);
 
-  // Gap 4: buffer registration invariants (ported from non-iterated tests)
+  // Gap 4: buffer registration invariants (ported from non-stress tests)
   // Pipes backend: backend_window is null (only GIN uses it), size is positive.
   assert(s.src_buf.base_ptr != nullptr);
   assert(s.src_buf.size > 0);
@@ -168,9 +167,7 @@ void checkKernelResults(
 // Test Implementations
 // =============================================================================
 
-void PipesDeviceApiIteratedTest::testIteratedPut(
-    size_t msg_bytes,
-    CoopScope scope) {
+void PipesDeviceApiTest::testStressPut(size_t msg_bytes, CoopScope scope) {
   size_t count = msg_bytes / sizeof(float);
   if (count == 0) {
     count = 1;
@@ -179,7 +176,7 @@ void PipesDeviceApiIteratedTest::testIteratedPut(
   int iterations = config_.num_iterations;
 
   SCOPED_TRACE(
-      ::testing::Message() << "PipesIteratedPut msg=" << formatBytes(msg_bytes)
+      ::testing::Message() << "PipesStressPut msg=" << formatBytes(msg_bytes)
                            << " scope=" << scopeName(scope)
                            << " iters=" << iterations);
 
@@ -209,7 +206,7 @@ void PipesDeviceApiIteratedTest::testIteratedPut(
   auto stream = at::cuda::getStreamFromPool(false, device_index_);
   {
     c10::cuda::CUDAStreamGuard guard(stream);
-    launchPipesIteratedPutKernel(
+    launchPipesStressPutKernel(
         s.dev_win,
         s.src_buf,
         s.src_tensor.data_ptr<float>(),
@@ -232,18 +229,18 @@ void PipesDeviceApiIteratedTest::testIteratedPut(
   checkKernelResults(
       d_results,
       iterations,
-      "PipesIteratedPut(" + formatBytes(msg_bytes) + "," + scopeName(scope) +
+      "PipesStressPut(" + formatBytes(msg_bytes) + "," + scopeName(scope) +
           ")");
   cudaFree(d_results);
   teardownPipesWindow(s, torchcomm_);
 }
 
-void PipesDeviceApiIteratedTest::testIteratedSignal(CoopScope scope) {
+void PipesDeviceApiTest::testStressSignal(CoopScope scope) {
   int iterations = config_.num_iterations;
   int num_threads = threadsForScope(scope);
 
   SCOPED_TRACE(
-      ::testing::Message() << "PipesIteratedSignal scope=" << scopeName(scope));
+      ::testing::Message() << "PipesStressSignal scope=" << scopeName(scope));
 
   auto s = createPipesWindowSetup(
       torchcomm_, allocator_, device_index_, num_ranks_, 1, num_ranks_, -1, 1);
@@ -257,7 +254,7 @@ void PipesDeviceApiIteratedTest::testIteratedSignal(CoopScope scope) {
   auto stream = at::cuda::getStreamFromPool(false, device_index_);
   {
     c10::cuda::CUDAStreamGuard guard(stream);
-    launchPipesIteratedSignalKernel(
+    launchPipesStressSignalKernel(
         s.dev_win,
         dst_rank,
         src_rank,
@@ -271,13 +268,12 @@ void PipesDeviceApiIteratedTest::testIteratedSignal(CoopScope scope) {
   teardownPipesWindow(s, torchcomm_);
 }
 
-void PipesDeviceApiIteratedTest::testIteratedBarrier(CoopScope scope) {
+void PipesDeviceApiTest::testStressBarrier(CoopScope scope) {
   int iterations = config_.num_iterations;
   int num_threads = threadsForScope(scope);
 
   SCOPED_TRACE(
-      ::testing::Message() << "PipesIteratedBarrier scope="
-                           << scopeName(scope));
+      ::testing::Message() << "PipesStressBarrier scope=" << scopeName(scope));
 
   auto s = createPipesWindowSetup(
       torchcomm_, allocator_, device_index_, num_ranks_, 1, -1, -1, 1);
@@ -288,14 +284,14 @@ void PipesDeviceApiIteratedTest::testIteratedBarrier(CoopScope scope) {
   auto stream = at::cuda::getStreamFromPool(false, device_index_);
   {
     c10::cuda::CUDAStreamGuard guard(stream);
-    launchPipesIteratedBarrierKernel(
+    launchPipesStressBarrierKernel(
         s.dev_win, iterations, scope, num_threads, stream.stream());
   }
   stream.synchronize();
   teardownPipesWindow(s, torchcomm_);
 }
 
-void PipesDeviceApiIteratedTest::testIteratedCombined(size_t msg_bytes) {
+void PipesDeviceApiTest::testStressCombined(size_t msg_bytes) {
   size_t count = msg_bytes / sizeof(float);
   if (count == 0) {
     count = 1;
@@ -303,7 +299,7 @@ void PipesDeviceApiIteratedTest::testIteratedCombined(size_t msg_bytes) {
   int iterations = config_.num_iterations;
 
   SCOPED_TRACE(
-      ::testing::Message() << "PipesIteratedCombined msg="
+      ::testing::Message() << "PipesStressCombined msg="
                            << formatBytes(msg_bytes));
 
   auto s = createPipesWindowSetup(
@@ -330,7 +326,7 @@ void PipesDeviceApiIteratedTest::testIteratedCombined(size_t msg_bytes) {
   auto stream = at::cuda::getStreamFromPool(false, device_index_);
   {
     c10::cuda::CUDAStreamGuard guard(stream);
-    launchPipesIteratedCombinedKernel(
+    launchPipesStressCombinedKernel(
         s.dev_win,
         s.src_buf,
         s.src_tensor.data_ptr<float>(),
@@ -352,12 +348,12 @@ void PipesDeviceApiIteratedTest::testIteratedCombined(size_t msg_bytes) {
   checkKernelResults(
       d_results,
       iterations,
-      "PipesIteratedCombined(" + formatBytes(msg_bytes) + ")");
+      "PipesStressCombined(" + formatBytes(msg_bytes) + ")");
   cudaFree(d_results);
   teardownPipesWindow(s, torchcomm_);
 }
 
-void PipesDeviceApiIteratedTest::testMultiWindow() {
+void PipesDeviceApiTest::testMultiWindow() {
   int num_windows = config_.window_count;
   int iterations = config_.num_iterations / 2;
   size_t count = 1024;
@@ -405,7 +401,7 @@ void PipesDeviceApiIteratedTest::testMultiWindow() {
 
     size_t bytes = count * sizeof(float);
     c10::cuda::CUDAStreamGuard guard(stream);
-    launchPipesIteratedPutKernel(
+    launchPipesStressPutKernel(
         windows[w].dev_win,
         windows[w].src_buf,
         windows[w].src_tensor.data_ptr<float>(),
@@ -441,7 +437,7 @@ void PipesDeviceApiIteratedTest::testMultiWindow() {
   }
 }
 
-void PipesDeviceApiIteratedTest::testWindowLifecycle() {
+void PipesDeviceApiTest::testWindowLifecycle() {
   int cycles = config_.lifecycle_cycles;
   size_t count = 256;
 
@@ -473,7 +469,7 @@ void PipesDeviceApiIteratedTest::testWindowLifecycle() {
     auto stream = at::cuda::getStreamFromPool(false, device_index_);
     {
       c10::cuda::CUDAStreamGuard guard(stream);
-      launchPipesIteratedPutKernel(
+      launchPipesStressPutKernel(
           s.dev_win,
           s.src_buf,
           s.src_tensor.data_ptr<float>(),
@@ -500,7 +496,7 @@ void PipesDeviceApiIteratedTest::testWindowLifecycle() {
   }
 }
 
-void PipesDeviceApiIteratedTest::testMultiComm() {
+void PipesDeviceApiTest::testMultiComm() {
   int num_comms = config_.comm_count;
   int iterations = config_.num_iterations / 2;
   size_t count = 1024;
@@ -545,7 +541,7 @@ void PipesDeviceApiIteratedTest::testMultiComm() {
     windows.push_back(std::move(ws));
   }
 
-  // Run iterated put on each comm's window
+  // Run stress put on each comm's window
   std::vector<int*> d_results_vec(num_comms, nullptr);
   std::vector<at::cuda::CUDAStream> streams;
   streams.reserve(num_comms);
@@ -561,7 +557,7 @@ void PipesDeviceApiIteratedTest::testMultiComm() {
 
     size_t bytes = count * sizeof(float);
     c10::cuda::CUDAStreamGuard guard(stream);
-    launchPipesIteratedPutKernel(
+    launchPipesStressPutKernel(
         windows[c].dev_win,
         windows[c].src_buf,
         windows[c].src_tensor.data_ptr<float>(),
@@ -601,7 +597,7 @@ void PipesDeviceApiIteratedTest::testMultiComm() {
 }
 
 // =============================================================================
-// Counter infrastructure (Gap 1: ported from non-iterated tests)
+// Counter infrastructure (Gap 1: ported from non-stress tests)
 // =============================================================================
 // Validates put with counter-based local completion tracking over iterations:
 //   1. put_signal_counter to next rank (signal + counter)
@@ -609,7 +605,7 @@ void PipesDeviceApiIteratedTest::testMultiComm() {
 //   3. wait_signal on receiver (verifies data arrival)
 //   4. Verify data, reset counter, repeat
 
-void PipesDeviceApiIteratedTest::testIteratedPutCounter(size_t msg_bytes) {
+void PipesDeviceApiTest::testStressPutCounter(size_t msg_bytes) {
   size_t count = msg_bytes / sizeof(float);
   if (count == 0) {
     count = 1;
@@ -617,7 +613,7 @@ void PipesDeviceApiIteratedTest::testIteratedPutCounter(size_t msg_bytes) {
   int iterations = config_.num_iterations;
 
   SCOPED_TRACE(
-      ::testing::Message() << "PipesIteratedPutCounter msg="
+      ::testing::Message() << "PipesStressPutCounter msg="
                            << formatBytes(msg_bytes)
                            << " iters=" << iterations);
 
@@ -656,7 +652,7 @@ void PipesDeviceApiIteratedTest::testIteratedPutCounter(size_t msg_bytes) {
   auto stream = at::cuda::getStreamFromPool(false, device_index_);
   {
     c10::cuda::CUDAStreamGuard guard(stream);
-    launchPipesIteratedPutCounterKernel(
+    launchPipesStressPutCounterKernel(
         s.dev_win,
         s.src_buf,
         s.src_tensor.data_ptr<float>(),
@@ -680,7 +676,7 @@ void PipesDeviceApiIteratedTest::testIteratedPutCounter(size_t msg_bytes) {
   checkKernelResults(
       d_results,
       iterations,
-      "PipesIteratedPutCounter(" + formatBytes(msg_bytes) + ")");
+      "PipesStressPutCounter(" + formatBytes(msg_bytes) + ")");
 
   // Read counter values to host for logging (IBGDA: > 0, NVLink: 0)
   std::vector<uint64_t> h_counter_values(iterations);
@@ -699,20 +695,20 @@ void PipesDeviceApiIteratedTest::testIteratedPutCounter(size_t msg_bytes) {
 }
 
 // =============================================================================
-// read_signal host verification (Gap 2: ported from non-iterated tests)
+// read_signal host verification (Gap 2: ported from non-stress tests)
 // =============================================================================
 // Ring pattern with host-side read_signal verification:
-//   1. Each rank signals next rank (iterated, monotonic)
+//   1. Each rank signals next rank (stress, monotonic)
 //   2. Each rank waits for signal from previous rank
 //   3. After all iterations, read_signal value to host and verify it matches
 //      the expected monotonic count
 
-void PipesDeviceApiIteratedTest::testIteratedSignalReadHost(CoopScope scope) {
+void PipesDeviceApiTest::testStressSignalReadHost(CoopScope scope) {
   int iterations = config_.num_iterations;
   int num_threads = threadsForScope(scope);
 
   SCOPED_TRACE(
-      ::testing::Message() << "PipesIteratedSignalReadHost scope="
+      ::testing::Message() << "PipesStressSignalReadHost scope="
                            << scopeName(scope) << " iters=" << iterations);
 
   auto s = createPipesWindowSetup(
@@ -728,7 +724,7 @@ void PipesDeviceApiIteratedTest::testIteratedSignalReadHost(CoopScope scope) {
   auto stream = at::cuda::getStreamFromPool(false, device_index_);
   {
     c10::cuda::CUDAStreamGuard guard(stream);
-    launchPipesIteratedSignalKernel(
+    launchPipesStressSignalKernel(
         s.dev_win,
         dst_rank,
         src_rank,
@@ -773,17 +769,17 @@ struct PipesPutParam {
   CoopScope scope;
 };
 
-class PipesDeviceApiIteratedPutTest
-    : public PipesDeviceApiIteratedTest,
+class PipesDeviceApiPutTest
+    : public PipesDeviceApiTest,
       public ::testing::WithParamInterface<PipesPutParam> {};
 
-TEST_P(PipesDeviceApiIteratedPutTest, Put) {
-  testIteratedPut(GetParam().msg_bytes, GetParam().scope);
+TEST_P(PipesDeviceApiPutTest, Put) {
+  testStressPut(GetParam().msg_bytes, GetParam().scope);
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    IteratedPut,
-    PipesDeviceApiIteratedPutTest,
+    StressPut,
+    PipesDeviceApiPutTest,
     ::testing::Values(
         PipesPutParam{4, CoopScope::THREAD},
         PipesPutParam{1024, CoopScope::THREAD},
@@ -798,17 +794,17 @@ INSTANTIATE_TEST_SUITE_P(
 
 // --- Signal: parameterized by scope ---
 
-class PipesDeviceApiIteratedSignalTest
-    : public PipesDeviceApiIteratedTest,
+class PipesDeviceApiSignalTest
+    : public PipesDeviceApiTest,
       public ::testing::WithParamInterface<CoopScope> {};
 
-TEST_P(PipesDeviceApiIteratedSignalTest, Signal) {
-  testIteratedSignal(GetParam());
+TEST_P(PipesDeviceApiSignalTest, Signal) {
+  testStressSignal(GetParam());
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    IteratedSignal,
-    PipesDeviceApiIteratedSignalTest,
+    StressSignal,
+    PipesDeviceApiSignalTest,
     ::testing::Values(CoopScope::THREAD, CoopScope::WARP, CoopScope::BLOCK),
     [](const ::testing::TestParamInfo<CoopScope>& info) {
       return std::string(scopeName(info.param));
@@ -816,17 +812,17 @@ INSTANTIATE_TEST_SUITE_P(
 
 // --- Barrier: parameterized by scope ---
 
-class PipesDeviceApiIteratedBarrierTest
-    : public PipesDeviceApiIteratedTest,
+class PipesDeviceApiBarrierTest
+    : public PipesDeviceApiTest,
       public ::testing::WithParamInterface<CoopScope> {};
 
-TEST_P(PipesDeviceApiIteratedBarrierTest, Barrier) {
-  testIteratedBarrier(GetParam());
+TEST_P(PipesDeviceApiBarrierTest, Barrier) {
+  testStressBarrier(GetParam());
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    IteratedBarrier,
-    PipesDeviceApiIteratedBarrierTest,
+    StressBarrier,
+    PipesDeviceApiBarrierTest,
     ::testing::Values(CoopScope::THREAD, CoopScope::WARP, CoopScope::BLOCK),
     [](const ::testing::TestParamInfo<CoopScope>& info) {
       return std::string(scopeName(info.param));
@@ -834,17 +830,17 @@ INSTANTIATE_TEST_SUITE_P(
 
 // --- Combined: parameterized by msg_bytes ---
 
-class PipesDeviceApiIteratedCombinedTest
-    : public PipesDeviceApiIteratedTest,
+class PipesDeviceApiCombinedTest
+    : public PipesDeviceApiTest,
       public ::testing::WithParamInterface<size_t> {};
 
-TEST_P(PipesDeviceApiIteratedCombinedTest, Combined) {
-  testIteratedCombined(GetParam());
+TEST_P(PipesDeviceApiCombinedTest, Combined) {
+  testStressCombined(GetParam());
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    IteratedCombined,
-    PipesDeviceApiIteratedCombinedTest,
+    StressCombined,
+    PipesDeviceApiCombinedTest,
     ::testing::Values(static_cast<size_t>(1024), static_cast<size_t>(1048576)),
     [](const ::testing::TestParamInfo<size_t>& info) {
       return std::to_string(info.param) + "B";
@@ -852,17 +848,17 @@ INSTANTIATE_TEST_SUITE_P(
 
 // --- PutCounter: parameterized by msg_bytes ---
 
-class PipesDeviceApiIteratedPutCounterTest
-    : public PipesDeviceApiIteratedTest,
+class PipesDeviceApiPutCounterTest
+    : public PipesDeviceApiTest,
       public ::testing::WithParamInterface<size_t> {};
 
-TEST_P(PipesDeviceApiIteratedPutCounterTest, PutCounter) {
-  testIteratedPutCounter(GetParam());
+TEST_P(PipesDeviceApiPutCounterTest, PutCounter) {
+  testStressPutCounter(GetParam());
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    IteratedPutCounter,
-    PipesDeviceApiIteratedPutCounterTest,
+    StressPutCounter,
+    PipesDeviceApiPutCounterTest,
     ::testing::Values(static_cast<size_t>(1024), static_cast<size_t>(1048576)),
     [](const ::testing::TestParamInfo<size_t>& info) {
       return std::to_string(info.param) + "B";
@@ -870,17 +866,17 @@ INSTANTIATE_TEST_SUITE_P(
 
 // --- SignalReadHost: parameterized by scope ---
 
-class PipesDeviceApiIteratedSignalReadHostTest
-    : public PipesDeviceApiIteratedTest,
+class PipesDeviceApiSignalReadHostTest
+    : public PipesDeviceApiTest,
       public ::testing::WithParamInterface<CoopScope> {};
 
-TEST_P(PipesDeviceApiIteratedSignalReadHostTest, SignalReadHost) {
-  testIteratedSignalReadHost(GetParam());
+TEST_P(PipesDeviceApiSignalReadHostTest, SignalReadHost) {
+  testStressSignalReadHost(GetParam());
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    IteratedSignalReadHost,
-    PipesDeviceApiIteratedSignalReadHostTest,
+    StressSignalReadHost,
+    PipesDeviceApiSignalReadHostTest,
     ::testing::Values(CoopScope::THREAD, CoopScope::WARP, CoopScope::BLOCK),
     [](const ::testing::TestParamInfo<CoopScope>& info) {
       return std::string(scopeName(info.param));
@@ -888,14 +884,14 @@ INSTANTIATE_TEST_SUITE_P(
 
 // --- Non-parameterized tests ---
 
-TEST_F(PipesDeviceApiIteratedTest, MultiWindow) {
+TEST_F(PipesDeviceApiTest, MultiWindow) {
   testMultiWindow();
 }
 
-TEST_F(PipesDeviceApiIteratedTest, MultiComm) {
+TEST_F(PipesDeviceApiTest, MultiComm) {
   testMultiComm();
 }
 
-TEST_F(PipesDeviceApiIteratedTest, WindowLifecycle) {
+TEST_F(PipesDeviceApiTest, WindowLifecycle) {
   testWindowLifecycle();
 }

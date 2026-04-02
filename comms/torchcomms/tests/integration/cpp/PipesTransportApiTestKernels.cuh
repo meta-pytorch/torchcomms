@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 //
-// CUDA kernel declarations for PipesTransportIteratedTest.
+// CUDA kernel declarations for PipesTransportApiTest.
 // Host-safe header — can be included from .cpp files compiled by clang.
 
 // NOLINTNEXTLINE(clang-diagnostic-pragma-once-outside-header)
@@ -11,9 +11,9 @@
 
 namespace torchcomms::device::test {
 
-// Iterated send/recv: rank 0 sends, rank 1 receives, with signal-based sync
+// Stress send/recv: rank 0 sends, rank 1 receives, with signal-based sync
 // between iterations. Verifies data integrity on receiver.
-void launchTransportIteratedSendRecvKernel(
+void launchTransportStressSendRecvKernel(
     comms::pipes::MultiPeerDeviceHandle handle,
     float* buf,
     size_t count,
@@ -23,8 +23,8 @@ void launchTransportIteratedSendRecvKernel(
     int* results,
     cudaStream_t stream);
 
-// Iterated signal/wait: ring pattern, monotonic ADD signals with GE waits.
-void launchTransportIteratedSignalKernel(
+// Stress signal/wait: ring pattern, monotonic ADD signals with GE waits.
+void launchTransportStressSignalKernel(
     comms::pipes::MultiPeerDeviceHandle handle,
     int peer,
     int iterations,
@@ -32,7 +32,7 @@ void launchTransportIteratedSignalKernel(
     cudaStream_t stream);
 
 // Combined: signal-sync + send/recv + signal/wait + verify per iteration.
-void launchTransportIteratedCombinedKernel(
+void launchTransportStressCombinedKernel(
     comms::pipes::MultiPeerDeviceHandle handle,
     float* buf,
     size_t count,
@@ -43,7 +43,7 @@ void launchTransportIteratedCombinedKernel(
     cudaStream_t stream);
 
 // LL128 send/recv: warp-only, small messages.
-void launchTransportIteratedLl128Kernel(
+void launchTransportStressLl128Kernel(
     comms::pipes::MultiPeerDeviceHandle handle,
     char* buf,
     size_t nbytes,

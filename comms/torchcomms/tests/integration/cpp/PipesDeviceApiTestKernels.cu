@@ -1,11 +1,11 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 //
-// CUDA kernel implementations for PipesDeviceApiIteratedTest (Pipes backend).
+// CUDA kernel implementations for PipesDeviceApiTest (Pipes backend).
 // Key difference from NCCLx: Pipes does NOT support reset_signal (traps!).
 // All signal patterns use monotonic values.
 
-#include "IteratedTestKernelUtils.cuh"
-#include "PipesDeviceApiIteratedTestKernels.cuh"
+#include "PipesDeviceApiTestKernels.cuh"
+#include "StressTestKernelUtils.cuh"
 
 #include "comms/torchcomms/device/pipes/TorchCommDevicePipes.cuh"
 
@@ -20,9 +20,9 @@
 namespace torchcomms::device::test {
 
 // ---------------------------------------------------------------------------
-// Iterated Put Kernel (Pipes)
+// Stress Put Kernel (Pipes)
 // ---------------------------------------------------------------------------
-__global__ void pipesIteratedPutKernel(
+__global__ void pipesStressPutKernel(
     DeviceWindowPipes* win,
     RegisteredBufferPipes src_buf,
     float* src_ptr,
@@ -69,7 +69,7 @@ __global__ void pipesIteratedPutKernel(
   }
 }
 
-void launchPipesIteratedPutKernel(
+void launchPipesStressPutKernel(
     DeviceWindowPipes* win,
     RegisteredBufferPipes src_buf,
     float* src_ptr,
@@ -86,7 +86,7 @@ void launchPipesIteratedPutKernel(
     int num_threads,
     int* results,
     cudaStream_t stream) {
-  pipesIteratedPutKernel<<<1, num_threads, 0, stream>>>(
+  pipesStressPutKernel<<<1, num_threads, 0, stream>>>(
       win,
       src_buf,
       src_ptr,
@@ -105,9 +105,9 @@ void launchPipesIteratedPutKernel(
 }
 
 // ---------------------------------------------------------------------------
-// Iterated Signal Kernel (Pipes)
+// Stress Signal Kernel (Pipes)
 // ---------------------------------------------------------------------------
-__global__ void pipesIteratedSignalKernel(
+__global__ void pipesStressSignalKernel(
     DeviceWindowPipes* win,
     int dst_rank,
     int src_rank,
@@ -125,7 +125,7 @@ __global__ void pipesIteratedSignalKernel(
   }
 }
 
-void launchPipesIteratedSignalKernel(
+void launchPipesStressSignalKernel(
     DeviceWindowPipes* win,
     int dst_rank,
     int src_rank,
@@ -134,15 +134,15 @@ void launchPipesIteratedSignalKernel(
     CoopScope scope,
     int num_threads,
     cudaStream_t stream) {
-  pipesIteratedSignalKernel<<<1, num_threads, 0, stream>>>(
+  pipesStressSignalKernel<<<1, num_threads, 0, stream>>>(
       win, dst_rank, src_rank, signal_id, iterations, scope);
   KERNEL_LAUNCH_CHECK();
 }
 
 // ---------------------------------------------------------------------------
-// Iterated Barrier Kernel (Pipes)
+// Stress Barrier Kernel (Pipes)
 // ---------------------------------------------------------------------------
-__global__ void pipesIteratedBarrierKernel(
+__global__ void pipesStressBarrierKernel(
     DeviceWindowPipes* win,
     int iterations,
     CoopScope scope) {
@@ -153,13 +153,13 @@ __global__ void pipesIteratedBarrierKernel(
   }
 }
 
-void launchPipesIteratedBarrierKernel(
+void launchPipesStressBarrierKernel(
     DeviceWindowPipes* win,
     int iterations,
     CoopScope scope,
     int num_threads,
     cudaStream_t stream) {
-  pipesIteratedBarrierKernel<<<1, num_threads, 0, stream>>>(
+  pipesStressBarrierKernel<<<1, num_threads, 0, stream>>>(
       win, iterations, scope);
   KERNEL_LAUNCH_CHECK();
 }
@@ -167,7 +167,7 @@ void launchPipesIteratedBarrierKernel(
 // ---------------------------------------------------------------------------
 // Combined Ops Kernel (Pipes)
 // ---------------------------------------------------------------------------
-__global__ void pipesIteratedCombinedKernel(
+__global__ void pipesStressCombinedKernel(
     DeviceWindowPipes* win,
     RegisteredBufferPipes src_buf,
     float* src_ptr,
@@ -207,7 +207,7 @@ __global__ void pipesIteratedCombinedKernel(
   }
 }
 
-void launchPipesIteratedCombinedKernel(
+void launchPipesStressCombinedKernel(
     DeviceWindowPipes* win,
     RegisteredBufferPipes src_buf,
     float* src_ptr,
@@ -223,7 +223,7 @@ void launchPipesIteratedCombinedKernel(
     int iterations,
     int* results,
     cudaStream_t stream) {
-  pipesIteratedCombinedKernel<<<1, 1, 0, stream>>>(
+  pipesStressCombinedKernel<<<1, 1, 0, stream>>>(
       win,
       src_buf,
       src_ptr,
@@ -242,12 +242,12 @@ void launchPipesIteratedCombinedKernel(
 }
 
 // ---------------------------------------------------------------------------
-// Iterated Put with Counter Kernel (Pipes)
+// Stress Put with Counter Kernel (Pipes)
 // ---------------------------------------------------------------------------
 // Each iteration: fill src, put with signal+counter, wait_counter (if IBGDA
 // counters are active), wait_signal on receiver, verify data, write
 // counter value to output array. Uses monotonic signals (no reset).
-__global__ void pipesIteratedPutCounterKernel(
+__global__ void pipesStressPutCounterKernel(
     DeviceWindowPipes* win,
     RegisteredBufferPipes src_buf,
     float* src_ptr,
@@ -312,7 +312,7 @@ __global__ void pipesIteratedPutCounterKernel(
   }
 }
 
-void launchPipesIteratedPutCounterKernel(
+void launchPipesStressPutCounterKernel(
     DeviceWindowPipes* win,
     RegisteredBufferPipes src_buf,
     float* src_ptr,
@@ -330,7 +330,7 @@ void launchPipesIteratedPutCounterKernel(
     int* results,
     uint64_t* counter_values,
     cudaStream_t stream) {
-  pipesIteratedPutCounterKernel<<<1, 1, 0, stream>>>(
+  pipesStressPutCounterKernel<<<1, 1, 0, stream>>>(
       win,
       src_buf,
       src_ptr,

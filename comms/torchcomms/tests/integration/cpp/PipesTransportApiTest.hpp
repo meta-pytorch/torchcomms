@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 //
-// Iterated stress tests for P2pNvlTransportDevice APIs.
+// Stress tests for P2pNvlTransportDevice APIs.
 // Tests transport-layer send/recv, signal, combined, and LL128
 // operations under sustained load to catch race conditions and leaks.
 
@@ -9,22 +9,22 @@
 #include <gtest/gtest.h>
 #include <memory>
 
-#include "IteratedTestHelpers.hpp"
+#include "StressTestHelpers.hpp"
 #include "TorchCommTestHelpers.h"
 #include "comms/pipes/MultiPeerDeviceHandle.cuh"
 #include "comms/torchcomms/TorchComm.hpp"
 
-class PipesTransportIteratedTest : public ::testing::Test {
+class PipesTransportApiTest : public ::testing::Test {
  protected:
   void SetUp() override;
   void TearDown() override;
 
-  void testIteratedSendRecv(size_t msg_bytes, int num_threads);
-  void testIteratedSignal(int num_threads);
-  void testIteratedCombined(size_t msg_bytes, int num_threads);
-  void testIteratedLl128(size_t nbytes);
+  void testStressSendRecv(size_t msg_bytes, int num_threads);
+  void testStressSignal(int num_threads);
+  void testStressCombined(size_t msg_bytes, int num_threads);
+  void testStressLl128(size_t nbytes);
 
-  torchcomms::device::test::IteratedTestConfig config_;
+  torchcomms::device::test::StressTestConfig config_;
   std::unique_ptr<TorchCommTestWrapper> wrapper_;
   std::shared_ptr<torch::comms::TorchComm> torchcomm_;
   comms::pipes::MultiPeerDeviceHandle handle_;

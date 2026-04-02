@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 //
-// Shared CUDA device helpers for iterated device API tests.
+// Shared CUDA device helpers for stress device API tests.
 // These are __device__ functions that can be called from both NCCLx and Pipes
 // test kernels.
 
@@ -14,7 +14,7 @@ namespace torchcomms::device::test {
 
 // Fill a float buffer with a pattern that encodes rank and iteration.
 // Pattern value: (rank + 1) * 1000.0f + iteration
-// Must match fillPatternValue() in IteratedTestHelpers.hpp.
+// Must match fillPatternValue() in StressTestHelpers.hpp.
 __device__ inline void
 fillPattern(float* buf, size_t count, int rank, int iteration) {
   float val = static_cast<float>((rank + 1) * 1000 + iteration);

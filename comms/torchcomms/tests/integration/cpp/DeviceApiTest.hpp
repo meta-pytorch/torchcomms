@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 //
-// Iterated functional tests for TorchComm Device API — NCCLx (GIN+LSA) backend.
+// Stress functional tests for TorchComm Device API — NCCLx (GIN+LSA) backend.
 // Runs each device API operation many times with data verification to catch
 // correctness issues under sustained load.
 
@@ -17,39 +17,37 @@
 
 #include <ATen/cuda/MemPool.h>
 
-#include "IteratedTestHelpers.hpp"
+#include "StressTestHelpers.hpp"
 #include "TorchCommTestHelpers.h"
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/device/TorchCommDeviceWindow.hpp"
 #include "comms/torchcomms/ncclx/TorchCommWindowNCCLX.hpp"
 
-class DeviceApiIteratedTest : public ::testing::Test {
+class DeviceApiTest : public ::testing::Test {
  protected:
   void SetUp() override;
   void TearDown() override;
 
-  // --- Category 1: Iterated correctness (in-kernel loops) ---
+  // --- Category 1: Stress correctness (in-kernel loops) ---
 
   // Put soak: ring put with fill/verify per iteration, parameterized by scope
-  void testIteratedPut(size_t msg_bytes, torchcomms::device::CoopScope scope);
+  void testStressPut(size_t msg_bytes, torchcomms::device::CoopScope scope);
 
   // Signal soak: ring signal+wait_signal_from per iteration
-  void testIteratedSignal(torchcomms::device::CoopScope scope);
+  void testStressSignal(torchcomms::device::CoopScope scope);
 
   // Barrier soak: barrier called repeatedly
-  void testIteratedBarrier(torchcomms::device::CoopScope scope);
+  void testStressBarrier(torchcomms::device::CoopScope scope);
 
   // Combined: barrier -> put -> wait -> verify per iteration
-  void testIteratedCombined(size_t msg_bytes);
+  void testStressCombined(size_t msg_bytes);
 
   // Aggregated wait_signal + read_signal + reset: exercises aggregated
   // (non-per-peer) signal path with read and reset verification
-  void testIteratedAggregatedSignal();
+  void testStressAggregatedSignal();
 
   // Half-precision put soak: ring put with at::kHalf data
-  void testIteratedPutHalf(
-      size_t msg_bytes,
-      torchcomms::device::CoopScope scope);
+  void testStressPutHalf(size_t msg_bytes, torchcomms::device::CoopScope scope);
 
   // --- Category 2: Concurrency (host-side orchestration) ---
 
@@ -65,7 +63,7 @@ class DeviceApiIteratedTest : public ::testing::Test {
   void testWindowLifecycle();
 
   // Member variables
-  torchcomms::device::test::IteratedTestConfig config_;
+  torchcomms::device::test::StressTestConfig config_;
   std::unique_ptr<TorchCommTestWrapper> wrapper_;
   std::shared_ptr<torch::comms::TorchComm> torchcomm_;
   std::shared_ptr<c10::Allocator> allocator_;

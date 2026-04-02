@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 //
-// Shared helpers for iterated device API tests.
+// Shared helpers for stress device API tests.
 // Provides configuration from environment variables, message size sweeps,
 // scope parameterization, and verification utilities.
 
@@ -15,7 +15,7 @@
 namespace torchcomms::device::test {
 
 // Configuration parsed from environment variables.
-struct IteratedTestConfig {
+struct StressTestConfig {
   // Number of iterations for soak-style tests (default: 50).
   int num_iterations{50};
 
@@ -42,15 +42,15 @@ struct IteratedTestConfig {
 };
 
 // Parse configuration from environment variables:
-//   NUM_ITERATIONS, ITERATED_MSG_SIZES (comma-separated bytes),
-//   ITERATED_SCOPES (comma-separated: thread,warp,block),
-//   ITERATED_WINDOW_COUNT, ITERATED_COMM_COUNT,
-//   ITERATED_LIFECYCLE_CYCLES, ITERATED_VERBOSE
-IteratedTestConfig parseIteratedTestConfig();
+//   NUM_ITERATIONS, STRESS_MSG_SIZES (comma-separated bytes),
+//   STRESS_SCOPES (comma-separated: thread,warp,block),
+//   STRESS_WINDOW_COUNT, STRESS_COMM_COUNT,
+//   STRESS_LIFECYCLE_CYCLES, STRESS_VERBOSE
+StressTestConfig parseStressTestConfig();
 
-// Check if iterated tests should run (RUN_DEVICE_ITERATED_TEST env var).
+// Check if stress tests should run (RUN_DEVICE_STRESS_TEST env var).
 // Returns true if the env var is set to "1" or "true".
-bool shouldRunIteratedTest();
+bool shouldRunStressTest();
 
 // Map CoopScope to the number of threads to launch.
 int threadsForScope(CoopScope scope);
