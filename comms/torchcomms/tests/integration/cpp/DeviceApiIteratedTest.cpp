@@ -105,6 +105,57 @@ WindowSetup createWindowSetup(
   return s;
 }
 
+// Overload that accepts a custom dtype for the window and source tensors.
+WindowSetup createWindowSetupWithDtype(
+    std::shared_ptr<torch::comms::TorchComm>& torchcomm,
+    std::shared_ptr<c10::Allocator>& allocator,
+    int device_index,
+    int num_ranks,
+    size_t count,
+    int signal_count,
+    int counter_count,
+    int barrier_count,
+    at::ScalarType dtype) {
+  WindowSetup s;
+
+  s.mem_pool = std::make_unique<at::cuda::MemPool>(
+      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
+          allocator));
+  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
+      s.mem_pool->device(), s.mem_pool->id(), [](cudaStream_t) {
+        return true;
+      });
+
+  auto options =
+      at::TensorOptions().dtype(dtype).device(at::kCUDA, device_index);
+  s.win_tensor = at::zeros({static_cast<int64_t>(count * num_ranks)}, options);
+
+  c10::cuda::CUDACachingAllocator::endAllocateToPool(
+      s.mem_pool->device(), s.mem_pool->id());
+
+  // Allocate src_tensor OUTSIDE the pool to ensure it gets its own cuMem
+  // allocation. When both tensors share the same cuMem block and the
+  // src_tensor is not 4096-aligned within that block, NCCL LOCAL_ONLY window
+  // registration truncates ginOffset4K, and NVLink put with P2P disabled
+  // fails to deliver data. Separate allocations avoid this issue.
+  s.src_tensor = at::zeros({static_cast<int64_t>(count)}, options);
+
+  torchcomm->barrier(false);
+  s.win = torchcomm->new_window();
+  s.win->tensor_register(s.win_tensor);
+  torchcomm->barrier(false);
+
+  s.dev_win = static_cast<DeviceWindowNCCL*>(
+      s.win->get_device_window(signal_count, counter_count, barrier_count));
+
+  s.src_buf = s.win->register_local_buffer(s.src_tensor);
+
+  torchcomm->barrier(false);
+  cudaDeviceSynchronize();
+
+  return s;
+}
+
 void teardownWindow(
     WindowSetup& s,
     std::shared_ptr<torch::comms::TorchComm>& torchcomm) {
@@ -574,6 +625,125 @@ void DeviceApiIteratedTest::testWindowLifecycle() {
 }
 
 // =============================================================================
+// Aggregated wait_signal + read_signal + reset
+// =============================================================================
+
+void DeviceApiIteratedTest::testIteratedAggregatedSignal() {
+  int iterations = config_.num_iterations;
+
+  SCOPED_TRACE(
+      ::testing::Message() << "IteratedAggregatedSignal iters=" << iterations);
+
+  size_t count = 1;
+  auto s = createWindowSetup(
+      torchcomm_,
+      allocator_,
+      device_index_,
+      num_ranks_,
+      count,
+      /*signal_count=*/num_ranks_,
+      /*counter_count=*/-1,
+      /*barrier_count=*/2);
+
+  int dst_rank = (rank_ + 1) % num_ranks_;
+
+  int* d_results = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_results, iterations * sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_results, 0, iterations * sizeof(int)), cudaSuccess);
+
+  auto stream = at::cuda::getStreamFromPool(false, device_index_);
+  {
+    c10::cuda::CUDAStreamGuard guard(stream);
+    launchIteratedAggregatedSignalKernel(
+        s.dev_win,
+        dst_rank,
+        /*signal_id=*/0,
+        iterations,
+        d_results,
+        stream.stream());
+  }
+  stream.synchronize();
+
+  checkKernelResults(d_results, iterations, "IteratedAggregatedSignal");
+
+  cudaFree(d_results);
+  teardownWindow(s, torchcomm_);
+}
+
+// =============================================================================
+// Half-precision put
+// =============================================================================
+
+void DeviceApiIteratedTest::testIteratedPutHalf(
+    size_t msg_bytes,
+    CoopScope scope) {
+  size_t count = msg_bytes / sizeof(at::Half);
+  if (count == 0) {
+    count = 1;
+  }
+  int num_threads = threadsForScope(scope);
+  int iterations = config_.num_iterations;
+
+  SCOPED_TRACE(
+      ::testing::Message() << "IteratedPutHalf msg=" << formatBytes(msg_bytes)
+                           << " scope=" << scopeName(scope)
+                           << " iters=" << iterations);
+
+  auto s = createWindowSetupWithDtype(
+      torchcomm_,
+      allocator_,
+      device_index_,
+      num_ranks_,
+      count,
+      /*signal_count=*/num_ranks_,
+      /*counter_count=*/-1,
+      /*barrier_count=*/2,
+      at::kHalf);
+
+  int dst_rank = (rank_ + 1) % num_ranks_;
+  int src_rank = (rank_ - 1 + num_ranks_) % num_ranks_;
+  size_t bytes = count * sizeof(at::Half);
+  size_t src_offset = 0;
+  size_t dst_offset = rank_ * bytes;
+
+  int* d_results = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_results, iterations * sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_results, 0, iterations * sizeof(int)), cudaSuccess);
+
+  auto stream = at::cuda::getStreamFromPool(false, device_index_);
+  {
+    c10::cuda::CUDAStreamGuard guard(stream);
+    launchIteratedPutHalfKernel(
+        s.dev_win,
+        s.src_buf,
+        s.src_tensor.data_ptr(),
+        s.win_tensor.data_ptr(),
+        src_offset,
+        dst_offset,
+        bytes,
+        count,
+        dst_rank,
+        src_rank,
+        /*signal_id=*/0,
+        iterations,
+        scope,
+        num_threads,
+        d_results,
+        stream.stream());
+  }
+  stream.synchronize();
+
+  checkKernelResults(
+      d_results,
+      iterations,
+      "IteratedPutHalf(" + formatBytes(msg_bytes) + "," + scopeName(scope) +
+          ")");
+
+  cudaFree(d_results);
+  teardownWindow(s, torchcomm_);
+}
+
+// =============================================================================
 // Parameterized Test Registrations
 // =============================================================================
 
@@ -673,4 +843,18 @@ TEST_F(DeviceApiIteratedTest, MultiComm) {
 
 TEST_F(DeviceApiIteratedTest, WindowLifecycle) {
   testWindowLifecycle();
+}
+
+// --- Aggregated signal + read_signal + reset ---
+
+TEST_F(DeviceApiIteratedTest, AggregatedSignal) {
+  testIteratedAggregatedSignal();
+}
+
+// --- Half-precision put: 1KB THREAD only ---
+// Put is dtype-agnostic (operates on bytes). Float16 only tests tensor
+// allocation and element_size calculation, so one test suffices.
+
+TEST_F(DeviceApiIteratedTest, PutHalf) {
+  testIteratedPutHalf(1024, CoopScope::THREAD);
 }

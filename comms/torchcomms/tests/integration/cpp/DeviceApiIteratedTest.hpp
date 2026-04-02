@@ -42,6 +42,15 @@ class DeviceApiIteratedTest : public ::testing::Test {
   // Combined: barrier -> put -> wait -> verify per iteration
   void testIteratedCombined(size_t msg_bytes);
 
+  // Aggregated wait_signal + read_signal + reset: exercises aggregated
+  // (non-per-peer) signal path with read and reset verification
+  void testIteratedAggregatedSignal();
+
+  // Half-precision put soak: ring put with at::kHalf data
+  void testIteratedPutHalf(
+      size_t msg_bytes,
+      torchcomms::device::CoopScope scope);
+
   // --- Category 2: Concurrency (host-side orchestration) ---
 
   // Multiple windows on the same communicator, each doing independent puts
