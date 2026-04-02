@@ -2,6 +2,8 @@
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/profiler/DefaultAlgoProfilerReporter.h"
 
+#include <unordered_map>
+
 namespace {
 
 template <typename Duration>
@@ -26,11 +28,35 @@ uint64_t getTimeStamp(TimePoint timePoint) {
 
 namespace ctran {
 
-Profiler::Profiler(CtranComm* comm, std::unique_ptr<IProfilerReporter> reporter)
-    : comm_(comm),
-      reporter_(
-          reporter ? std::move(reporter)
-                   : std::make_unique<DefaultAlgoProfilerReporter>()) {}
+namespace {
+
+std::unordered_map<ReporterType, AlgoProfilerReporterFactory>&
+getFactoryRegistry() {
+  static std::unordered_map<ReporterType, AlgoProfilerReporterFactory> registry;
+  return registry;
+}
+
+std::unique_ptr<IProfilerReporter> createReporter(
+    ReporterType type,
+    CtranComm* comm) {
+  auto& registry = getFactoryRegistry();
+  auto it = registry.find(type);
+  if (it != registry.end()) {
+    return it->second(comm);
+  }
+  return std::make_unique<DefaultAlgoProfilerReporter>();
+}
+
+} // namespace
+
+void registerAlgoProfilerReporterFactory(
+    ReporterType type,
+    AlgoProfilerReporterFactory factory) {
+  getFactoryRegistry()[type] = std::move(factory);
+}
+
+Profiler::Profiler(CtranComm* comm, ReporterType reporterType)
+    : comm_(comm), reporter_(createReporter(reporterType, comm)) {}
 
 Profiler::~Profiler() = default;
 
