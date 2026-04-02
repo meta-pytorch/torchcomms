@@ -260,6 +260,10 @@ commResult_t ctran::RegCache::destroy() {
       it = regHdlToElemMap.erase(it);
     }
 
+    // Clear segment-to-regElem correlation map to avoid stale entries
+    // after segments and regElems are destroyed above.
+    regElemsMaps->segToRegElemsMap.clear();
+
     for (auto avlHdl : segmentsAvl->getAllElems()) {
       auto seg = reinterpret_cast<ctran::regcache::Segment*>(
           segmentsAvl->lookup(avlHdl));
