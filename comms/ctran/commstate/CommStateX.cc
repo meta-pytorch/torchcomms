@@ -107,6 +107,13 @@ void CommStateX::initRankStatesTopology(meta::comms::IBootstrap* bootstrap) {
     initRankTopologyNolocal();
     return;
   }
+
+  if (NCCL_TOPO_FILE_PATH.empty()) {
+    CLOGF_SUBSYS(
+        WARN, INIT, "NCCL_TOPO_FILE_PATH is empty; skipping topology override");
+    return;
+  }
+
   auto myTopo = ctran::commstate::loadTopology(rank_, NCCL_TOPO_FILE_PATH);
   if (!myTopo) {
     FB_CHECKTHROW_EX(

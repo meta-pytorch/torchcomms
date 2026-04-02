@@ -798,6 +798,39 @@ def get_script_and_output_directories() -> tuple[pathlib.Path, pathlib.Path]:
     return output_dir, script_dir
 
 
+def apply_internal_overrides(cvars, script_dir):
+    """
+    Apply internal-only cvar default overrides from nccl_cvars_internal.yaml.
+    This file is only present in Buck builds (included as a resource);
+    OSS builds use the base defaults from nccl_cvars.yaml.
+    """
+    internal_file = os.path.join(script_dir, "fb", "nccl_cvars_internal.yaml")
+    if not os.path.exists(internal_file):
+        return cvars
+
+    print(f"Applying internal overrides from {internal_file}")
+    with open(internal_file, "r") as f:
+        internal_data = yaml.safe_load(f)
+
+    if not internal_data or not internal_data.get("cvars"):
+        return cvars
+
+    # Build a map of override name -> override fields
+    overrides = {o["name"]: o for o in internal_data["cvars"]}
+
+    for cvar in cvars:
+        if cvar["name"] in overrides:
+            override = overrides[cvar["name"]]
+            for key, value in override.items():
+                if key != "name":
+                    print(
+                        f"  Override {cvar['name']}.{key}: {cvar.get(key)} -> {value}"
+                    )
+                    cvar[key] = value
+
+    return cvars
+
+
 def main():
     output_dir, script_dir = get_script_and_output_directories()
     config_file = os.path.join(script_dir, "nccl_cvars.yaml")
@@ -807,6 +840,8 @@ def main():
         data = yaml.safe_load(f)
     if data["cvars"] is None:
         data["cvars"] = []
+
+    data["cvars"] = apply_internal_overrides(data["cvars"], script_dir)
 
     loadedCvars = sorted(data["cvars"], key=lambda x: x["name"])
 

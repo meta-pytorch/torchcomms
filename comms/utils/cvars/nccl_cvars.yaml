@@ -60,7 +60,7 @@ cvars:
 
  - name        : NCCL_SLOW_RANK_LOGGING
    type        : string
-   default     : "scuba:nccl_profiler_slow_rank"
+   default     : ""
    description : |-
       File location for logging communicator profiler events. By default,
       all data is logged to scuba table nccl_profiler_slow_rank.
@@ -68,7 +68,7 @@ cvars:
 
  - name        : NCCL_CTRAN_ALGO_PROFILING_LOGGING
    type        : string
-   default     : "scuba:nccl_profiler_algo"
+   default     : ""
    description : |-
       File location for logging communicator profiler events. By default,
       all data is logged to scuba table nccl_profiler_algo.
@@ -83,14 +83,14 @@ cvars:
 
  - name        : NCCL_SLOW_COLL_LOGGING
    type        : string
-   default     : "pipe:nccl_slow_coll"
+   default     : ""
    description : |-
       File location for logging slow collectives.
       (the same format with NCCL_COMM_EVENT_LOGGING)
 
  - name        : NCCL_COLL_STATS_LOGGING
    type        : string
-   default     : "pipe:nccl_collective_stats"
+   default     : ""
    description : |-
       File location for logging collective stats.
       (the same format with NCCL_COMM_EVENT_LOGGING)
@@ -2231,7 +2231,7 @@ cvars:
 
  - name        : NCCL_TOPO_FILE_PATH
    type        : string
-   default     : "/etc/fbwhoami"
+   default     : ""
    description : |-
      [NCCLX] File that contains topology information in KEY=VALUE format
 
