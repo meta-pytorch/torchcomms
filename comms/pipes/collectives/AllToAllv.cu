@@ -29,7 +29,8 @@ __global__ void allToAllvKernel(
     DeviceSpan<Transport> transports_per_rank,
     DeviceSpan<ChunkInfo> send_chunk_infos,
     DeviceSpan<ChunkInfo> recv_chunk_infos,
-    Timeout timeout) {
+    Timeout timeout,
+    WarpReserveDeviceConfig reserve_config) {
   timeout.start();
   all_to_allv(
       recvbuff_d,
@@ -38,7 +39,8 @@ __global__ void allToAllvKernel(
       transports_per_rank,
       send_chunk_infos,
       recv_chunk_infos,
-      timeout);
+      timeout,
+      reserve_config);
 }
 
 // --- Unified host wrappers ---
@@ -54,7 +56,8 @@ void all_to_allv(
     cudaStream_t stream,
     int num_blocks,
     int num_threads,
-    std::optional<dim3> cluster_dim) {
+    std::optional<dim3> cluster_dim,
+    WarpReserveDeviceConfig reserve_config) {
   void* args[] = {
       &recvbuff_d,
       &sendbuff_d,
@@ -62,7 +65,8 @@ void all_to_allv(
       &transports_per_rank,
       &send_chunk_infos,
       &recv_chunk_infos,
-      &timeout_config};
+      &timeout_config,
+      &reserve_config};
 
   comms::common::launchKernel(
       (void*)allToAllvKernel,
@@ -85,7 +89,8 @@ void all_to_allv(
     cudaStream_t stream,
     int num_blocks,
     int num_threads,
-    std::optional<dim3> cluster_dim) {
+    std::optional<dim3> cluster_dim,
+    WarpReserveDeviceConfig reserve_config) {
   int device = 0;
   PIPES_CUDA_CHECK(cudaGetDevice(&device));
   Timeout timeout_config =
@@ -101,7 +106,8 @@ void all_to_allv(
       stream,
       num_blocks,
       num_threads,
-      cluster_dim);
+      cluster_dim,
+      reserve_config);
 }
 
 WarpReserveDeviceConfig resolveWarpReserve(
@@ -114,6 +120,11 @@ WarpReserveDeviceConfig resolveWarpReserve(
     return {};
   }
 
+  // Only activate warp reserve when at least one field is explicitly set.
+  // When all fields are 0 (auto), return unconfigured so the kernel uses
+  // the uniform partition_interleaved path which dispatches per-transport-type.
+  // This is critical for TEST_IBGDA_SINGLE_NODE=1 where nvlPeerRanks reflects
+  // NVLink topology but the actual transport is forced to IBGDA.
   bool anyExplicit = config.nvlSendWarps > 0 || config.nvlRecvWarps > 0 ||
       config.ibgdaSendWarps > 0 || config.ibgdaRecvWarps > 0 ||
       config.selfWarps > 0;
