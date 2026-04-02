@@ -906,7 +906,23 @@ IbgdaLocalBuffer MultipeerIbgdaTransport::registerBuffer(
     throw std::invalid_argument("Invalid buffer pointer or size");
   }
 
-  // Find the CUDA allocation that contains this pointer.
+  // Fast path: containment lookup — if [ptr, ptr+size) falls entirely
+  // within an existing registration, return the cached lkey without any
+  // CUDA driver call.
+  auto addr = reinterpret_cast<uintptr_t>(ptr);
+  auto it = registeredBuffers_.upper_bound(addr);
+  if (it != registeredBuffers_.begin()) {
+    --it;
+    if (addr + size <= it->first + it->second.allocSize) {
+      it->second.refs++;
+      VLOG(1) << "MultipeerIbgdaTransport: cache hit for ptr=" << ptr
+              << " allocBase=0x" << std::hex << it->first << std::dec
+              << " refs=" << it->second.refs;
+      return IbgdaLocalBuffer(ptr, HostLKey(it->second.mr->lkey));
+    }
+  }
+
+  // Cache miss — find the CUDA allocation base and register it.
   CUdeviceptr allocBase = 0;
   size_t allocSize = 0;
   CUresult cuRes =
@@ -915,18 +931,6 @@ IbgdaLocalBuffer MultipeerIbgdaTransport::registerBuffer(
     throw std::runtime_error(
         "registerBuffer: cuMemGetAddressRange failed for ptr");
   }
-
-  // Check if this CUDA allocation is already registered (cache hit).
-  auto it = registeredBuffers_.find(static_cast<uintptr_t>(allocBase));
-  if (it != registeredBuffers_.end()) {
-    it->second.refs++;
-    VLOG(1) << "MultipeerIbgdaTransport: cache hit for ptr=" << ptr
-            << " allocBase=0x" << std::hex << allocBase << std::dec
-            << " refs=" << it->second.refs;
-    return IbgdaLocalBuffer(ptr, HostLKey(it->second.mr->lkey));
-  }
-
-  // Cache miss — register the full CUDA allocation.
   int accessFlags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
       IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC;
 
