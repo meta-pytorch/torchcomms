@@ -35,6 +35,7 @@ class Config {
   // When set, override the corresponding CVARs for this communicator.
   std::optional<size_t> pipesNvlChunkSize;
   std::optional<bool> pipesUseDualStateBuffer;
+  int vCliqueSize = 0;
 };
 
 // Hint keys corresponding to Config fields above.  Used by
@@ -49,6 +50,7 @@ inline const std::vector<std::string>& knownHintKeys() {
       "fastInitMode",
       "pipesNvlChunkSize",
       "pipesUseDualStateBuffer",
+      "vCliqueSize",
   };
   return keys;
 }
