@@ -81,7 +81,8 @@ class CommStateX {
       std::vector<RankTopology> rankTopologies,
       std::vector<int> commRanksToWorldRanks,
       const std::string& commDesc = "",
-      bool noLocal = false);
+      bool noLocal = false,
+      int vCliqueSize = 0);
 
   ~CommStateX();
 
@@ -290,6 +291,11 @@ class CommStateX {
   // When true, treat every rank as if it is on its own node. Affects
   // initRankStatesTopology() and setNvlFabricTopos() behavior.
   const bool noLocal_{false};
+
+  // Per-communicator virtual NVLink clique size override.
+  // When > 0, partitions ranks into virtual cliques of this size,
+  // overriding both rank topology and NVL fabric topology.
+  const int vCliqueSize_{0};
 
   // flag to indicate if this rank has enabled NVL Fabric, if this flag is on,
   //  we assume all the nvl communication from/to this rank is through
