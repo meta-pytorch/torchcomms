@@ -174,5 +174,6 @@ std::optional<T> getTypedGlobalHint(std::string_view key) {
 }
 
 template std::optional<bool> getTypedGlobalHint<bool>(std::string_view key);
+template std::optional<int> getTypedGlobalHint<int>(std::string_view key);
 
 } // namespace ncclx

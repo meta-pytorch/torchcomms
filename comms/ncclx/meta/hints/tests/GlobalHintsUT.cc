@@ -8,6 +8,7 @@
 
 #include "nccl.h" // @manual
 
+#include "meta/hints/CommHintConfig.h" // @manual
 #include "meta/hints/GlobalHints.h" // @manual
 
 constexpr std::string_view testGlobalHintKey = "testGlobalHintKey";
@@ -337,4 +338,33 @@ TEST(GlobalHintsUT, TestHintHooksWithCharKeyVal) {
   EXPECT_TRUE(ncclx::resetGlobalHint(testHintKeyChar));
   // Expect testResetHook is called
   EXPECT_EQ(testHintVal, testHintValDefault);
+}
+
+TEST(GlobalHintsUT, TestCommVCliqueSize) {
+  ncclx::testOnlyResetGlobalHints();
+
+  // Re-register kVCliqueSize (testOnlyReset clears all registrations,
+  // but the constructor auto-registers kHintKeysArray entries)
+  auto hintMngr = ncclx::GlobalHints::getInstance();
+  hintMngr->regHintEntry(std::string(ncclx::HintKeys::kVCliqueSize));
+
+  // Without global hint set, commVCliqueSize returns the per-comm value
+  EXPECT_EQ(ncclx::commVCliqueSize(4), 4);
+  EXPECT_EQ(ncclx::commVCliqueSize(0), 0);
+
+  // Set global hint to 8
+  EXPECT_EQ(
+      ncclx::setGlobalHint(
+          std::string{ncclx::HintKeys::kVCliqueSize}, std::string{"8"}),
+      ncclSuccess);
+
+  // Global hint overrides per-comm value
+  EXPECT_EQ(ncclx::commVCliqueSize(4), 8);
+  EXPECT_EQ(ncclx::commVCliqueSize(0), 8);
+
+  // Reset global hint, per-comm value is used again
+  EXPECT_TRUE(
+      ncclx::resetGlobalHint(std::string{ncclx::HintKeys::kVCliqueSize}));
+  EXPECT_EQ(ncclx::commVCliqueSize(4), 4);
+  EXPECT_EQ(ncclx::commVCliqueSize(0), 0);
 }
