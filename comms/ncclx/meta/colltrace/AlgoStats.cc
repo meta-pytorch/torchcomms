@@ -1,5 +1,11 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include "nccl.h"
+
+// TODO: Remove this guard once v2_27 is deprecated — v2_27 does not have the
+// comms/utils/colltrace:algostats dependency
+#if NCCL_MINOR >= 28
+
 #include "meta/colltrace/AlgoStats.h"
 
 #include "comm.h"
@@ -19,3 +25,5 @@ __attribute__((visibility("default"))) void dumpAlgoStat(
 }
 
 } // namespace ncclx::colltrace
+
+#endif // NCCL_MINOR >= 28

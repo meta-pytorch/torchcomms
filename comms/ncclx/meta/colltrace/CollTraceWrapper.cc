@@ -6,9 +6,9 @@
 
 #include "comms/utils/RankUtils.h"
 #include "comms/utils/checks.h"
-#include "comms/utils/colltrace/AlgoStats.h"
 #include "comms/utils/colltrace/CollMetadataImpl.h"
 #include "comms/utils/colltrace/CollTrace.h"
+
 #include "comms/utils/colltrace/CudaWaitEvent.h"
 #include "comms/utils/colltrace/DummyCollTraceHandle.h"
 #include "comms/utils/colltrace/GenericMetadata.h"
@@ -20,6 +20,12 @@
 
 #include "debug.h"
 #include "nccl.h"
+
+// TODO: Remove this guard once v2_27 is deprecated — v2_27 does not have the
+// comms/utils/colltrace:algostats dependency
+#if NCCL_MINOR >= 28
+#include "comms/utils/colltrace/AlgoStats.h"
+#endif
 
 #include <fmt/core.h>
 #include <folly/logging/xlog.h>
@@ -290,6 +296,9 @@ ncclResult_t newCollTraceInit(ncclComm* comm) {
     return ncclSuccess;
   }
 
+  // TODO: Remove this guard once v2_27 is deprecated — v2_27's comm.h does not
+  // have the algoStats field
+#if NCCL_MINOR >= 28
   // Parse NCCL_COLLTRACE configuration flags
   bool algoStatEnabled = false;
   bool verboseEnabled = false;
@@ -324,6 +333,16 @@ ncclResult_t newCollTraceInit(ncclComm* comm) {
   if ((!verboseEnabled && !traceEnabled)) {
     return ncclSuccess;
   }
+#else
+  if (NCCL_COLLTRACE.empty()) {
+    XLOGF(
+        INFO,
+        "Skipping CollTrace init. NCCL_COLLTRACE: {}, NCCL_COLLTRACE_USE_NEW_COLLTRACE: {}",
+        folly::join(", ", NCCL_COLLTRACE),
+        NCCL_COLLTRACE_USE_NEW_COLLTRACE);
+    return ncclSuccess;
+  }
+#endif
 
   XLOG(INFO, "Initializing new CollTrace");
 
