@@ -3083,7 +3083,7 @@ cvars:
 
  - name        : NCCL_P2P_PER_CHANNEL_NET_BW
    type        : int
-   default     : -1
+   default     : 14
    description : |-
      Specifies the assumed per-channel network bandwidth in GB/s used to calculate
      the number of network channels for P2P (point-to-point) communication with
