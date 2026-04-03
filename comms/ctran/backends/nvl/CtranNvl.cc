@@ -120,3 +120,12 @@ bool CtranNvl::isSupported(int rank) {
       (this->pimpl_->nvlRankSupportMode[rank].nvlFabric ||
        this->pimpl_->nvlRankSupportMode[rank].nvlIntraHost);
 }
+
+bool CtranNvl::isNvlFabric(int rank) const {
+  FB_CHECKABORT(
+      rank < this->pimpl_->nvlRankSupportMode.size(),
+      "CTRAN-NVL : rank {} should be smaller than nvlRankSupportMode's size {}.",
+      rank,
+      this->pimpl_->nvlRankSupportMode.size());
+  return this->pimpl_->nvlRankSupportMode[rank].nvlFabric;
+}
