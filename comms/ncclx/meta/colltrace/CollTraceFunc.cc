@@ -895,6 +895,9 @@ using meta::comms::colltrace::ICollTraceHandle;
 std::shared_ptr<ICollTraceHandle> collTraceBaselineGetHandle(
     ncclKernelPlan* plan,
     cudaStream_t stream) {
+  // TODO: Remove this guard once v2_27 is deprecated — v2_27's comm.h does not
+  // have the algoStats field
+#if NCCL_MINOR >= 28
   // Record to standalone AlgoStats (independent of colltrace implementation)
   if (plan->comm->algoStats) {
     auto collOpt = parseCollInfoFromNcclKernelPlan(*plan, stream);
@@ -902,6 +905,7 @@ std::shared_ptr<ICollTraceHandle> collTraceBaselineGetHandle(
       plan->comm->algoStats->record(collOpt->opName, collOpt->algoName);
     }
   }
+#endif
 
   if (!NCCL_COLLTRACE.empty() && NCCL_COLLTRACE_USE_NEW_COLLTRACE) {
     return meta::comms::ncclx::getHandleFromNcclKernelPlan(*plan, stream);
