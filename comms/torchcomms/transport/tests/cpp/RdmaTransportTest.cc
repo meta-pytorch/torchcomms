@@ -10,6 +10,7 @@
 #include <folly/io/async/EventBase.h>
 #include <folly/io/async/ScopedEventBaseThread.h>
 
+#include "comms/ctran/regcache/RegCache.h"
 #include "comms/torchcomms/transport/RdmaTransport.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
@@ -445,17 +446,27 @@ TEST_F(RdmaMemoryTest, MoveOnlySemantics) {
 }
 
 TEST_F(RdmaMemoryTest, CacheRegConstruction) {
-  RdmaMemory memory(buffer_, bufferSize_, cudaDev_, true /* cacheReg */);
+  // Without globalRegister, RdmaMemory should throw because the buffer
+  // is not cached and searchIbRegHandle returns nullptr
+  EXPECT_THROW(
+      RdmaMemory(buffer_, bufferSize_, cudaDev_, true /* cacheReg */),
+      std::runtime_error);
 
+  // After globalRegister, RdmaMemory should succeed
+  auto regCache = ctran::RegCache::getInstance();
+  EXPECT_EQ(
+      regCache->globalRegister(buffer_, bufferSize_, false, cudaDev_),
+      commSuccess);
+  RdmaMemory memory(buffer_, bufferSize_, cudaDev_, true /* cacheReg */);
   EXPECT_EQ(memory.getDevice(), cudaDev_);
   EXPECT_NE(memory.localKey(), nullptr);
   EXPECT_FALSE(memory.remoteKey().empty());
   EXPECT_TRUE(memory.contains(buffer_, bufferSize_));
-
   // Views should work the same as non-cached
   auto view = memory.createView();
   EXPECT_EQ(view.data(), buffer_);
   EXPECT_EQ(view.size(), bufferSize_);
+  EXPECT_EQ(regCache->globalDeregister(buffer_, bufferSize_), commSuccess);
 }
 
 TEST_F(RdmaTransportTest, ServerClientDataTransferWrite) {

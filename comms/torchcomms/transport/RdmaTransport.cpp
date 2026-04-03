@@ -39,11 +39,10 @@ RdmaMemory::RdmaMemory(const void* buf, size_t len, int cudaDev, bool cacheReg)
     // Hold a shared_ptr to ensure RegCache lifetime while RdmaMemory is in
     // scope
     regCache_ = ctran::RegCache::getInstance();
-    FB_COMMCHECKTHROW(
-        regCache_->globalRegister(buf_, len_, true /* forceReg */, cudaDev_));
-    regHdl_ = regCache_->searchIbRegElem(buf_, len_);
+    regHdl_ = regCache_->searchIbRegHandle(buf_, len_, cudaDev_);
     if (regHdl_ == nullptr) {
-      throw std::runtime_error("Failed to fetch the IB regHdl from regCache");
+      throw std::runtime_error(
+          "Failed to fetch the IB handle from regCache. The buffer may not be registered");
     }
   } else {
     FB_COMMCHECKTHROW(CtranIb::regMem(buf_, len_, cudaDev_, &regHdl_));
@@ -71,9 +70,7 @@ RdmaMemory::RdmaMemory(RdmaMemory&& other) noexcept
 
 RdmaMemory::~RdmaMemory() noexcept {
   if (cacheReg_) {
-    // RegCache destructor handles deregistration; regCache_ shared_ptr
-    // release ensures RegCache outlives this RdmaMemory.
-    FB_COMMCHECKTHROW(regCache_->globalDeregister(buf_, len_));
+    // cacheReg path only queried the handle; caller owns registration lifetime
     return;
   }
   if (remoteKey_.size() > 0 && regHdl_) {
