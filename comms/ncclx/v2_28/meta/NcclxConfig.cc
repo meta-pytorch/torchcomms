@@ -197,6 +197,20 @@ Config::Config(const ncclConfig_t* config) {
           "pipesUseDualStateBuffer", NCCL_CTRAN_PIPES_USE_DUAL_STATE_BUFFER);
     }
   }
+
+  // vCliqueSize: hint only (no flat ncclConfig_t field)
+  {
+    auto val = getHintStr("vCliqueSize");
+    if (!val.empty()) {
+      try {
+        vCliqueSize = std::stoi(val);
+      } catch (const std::exception&) {
+        WARN(
+            "NCCLX hint 'vCliqueSize': invalid integer value '%s'",
+            val.c_str());
+      }
+    }
+  }
 }
 
 } // namespace ncclx

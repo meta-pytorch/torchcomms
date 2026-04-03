@@ -53,7 +53,8 @@ std::unique_ptr<CommStateX> createCommStateXFromNcclComm(void* _comm) {
       std::vector<RankTopology>(), /* rankTopologies */
       std::vector<int>(), /* commRanksToWorldRanks */
       NCCLX_CONFIG_FIELD(comm->config, commDesc),
-      comm->noLocal_);
+      comm->noLocal_,
+      NCCLX_CONFIG_FIELD(comm->config, vCliqueSize));
 
   if (comm->noLocal_ ||
       NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::nolocal) {
@@ -132,7 +133,8 @@ ncclResult_t initNvlFabricTopologies(ncclComm* ncclComm, CtranComm* ctranComm) {
     }
     nvlFabricTopos.emplace_back(std::move(topo));
   }
-  ctranComm->statex_->setNvlFabricTopos(std::move(nvlFabricTopos));
+  ctranComm->statex_->setNvlFabricTopos(
+      std::move(nvlFabricTopos), std::nullopt);
   return ncclSuccess;
 }
 
