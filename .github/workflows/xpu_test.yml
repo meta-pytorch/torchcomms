@@ -2,45 +2,10 @@ name: xpu-test
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
   pull_request:
-    paths:
-      - .github/workflows/xpu_test.yml
-      - .github/scripts/xpu_test.sh
-      - CMakeLists.txt
-      - comms/torchcomms/TorchComm.hpp
-      - comms/torchcomms/device/XpuApi.cpp
-      - comms/torchcomms/device/XpuApi.hpp
-      - comms/torchcomms/tests/integration/py/TorchCommTestHelpers.py
-      - comms/torchcomms/xccl/**
-      - comms/torchcomms/tests/integration/py/AllGatherSingleTest.py
-      - comms/torchcomms/tests/integration/py/AllGatherTest.py
-      - comms/torchcomms/tests/integration/py/AllGatherVTest.py
-      - comms/torchcomms/tests/integration/py/AllReduceTest.py
-      - comms/torchcomms/tests/integration/py/AllToAllSingleTest.py
-      - comms/torchcomms/tests/integration/py/AllToAllTest.py
-      - comms/torchcomms/tests/integration/py/AllToAllvSingleTest.py
-      - comms/torchcomms/tests/integration/py/BarrierTest.py
-      - comms/torchcomms/tests/integration/py/BatchSendRecvTest.py
-      - comms/torchcomms/tests/integration/py/BroadcastTest.py
-      - comms/torchcomms/tests/integration/py/DDPCommTest.py
-      - comms/torchcomms/tests/integration/py/DeviceMeshTest.py
-      - comms/torchcomms/tests/integration/py/DPTPCommTest.py
-      - comms/torchcomms/tests/integration/py/FinalizeWarningTest.py
-      - comms/torchcomms/tests/integration/py/FSDPCommTest.py
-      - comms/torchcomms/tests/integration/py/GatherTest.py
-      - comms/torchcomms/tests/integration/py/MultiCommTest.py
-      - comms/torchcomms/tests/integration/py/ObjColTest.py
-      - comms/torchcomms/tests/integration/py/OptionsTest.py
-      - comms/torchcomms/tests/integration/py/ReduceScatterSingleTest.py
-      - comms/torchcomms/tests/integration/py/ReduceScatterTest.py
-      - comms/torchcomms/tests/integration/py/ReduceScatterVTest.py
-      - comms/torchcomms/tests/integration/py/ReduceTest.py
-      - comms/torchcomms/tests/integration/py/SendRecvTest.py
-      - comms/torchcomms/tests/integration/py/ScatterTest.py
-      - comms/torchcomms/tests/integration/py/SplitTest.py
-      - comms/torchcomms/tests/integration/py/TPCommTest.py
-      - comms/torchcomms/hooks/fr/tests/py/FlightRecorderTest.py
-      - setup.py
 
 permissions:
   id-token: write
