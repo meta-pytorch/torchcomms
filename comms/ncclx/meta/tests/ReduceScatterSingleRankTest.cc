@@ -16,16 +16,16 @@
 #include <cstddef>
 #include <random>
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
-#include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsCuUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
 
-class ReduceScatterSingleRankTest : public NcclxBaseTest {
+#include "comms/ncclx/meta/tests/NcclxBaseTest.h"
+#include "comms/testinfra/TestsCuUtils.h"
+
+class ReduceScatterSingleRankTest : public NcclxBaseTestFixture {
  public:
   ReduceScatterSingleRankTest() = default;
 
   void SetUp() override {
-    NcclxBaseTest::SetUp();
+    NcclxBaseTestFixture::SetUp();
     // This test is specifically for single-rank scenarios
     if (numRanks != 1) {
       GTEST_SKIP() << "This test requires exactly 1 rank, got " << numRanks;
@@ -42,7 +42,7 @@ class ReduceScatterSingleRankTest : public NcclxBaseTest {
     if (stream != nullptr) {
       CUDACHECK_TEST(cudaStreamDestroy(stream));
     }
-    NcclxBaseTest::TearDown();
+    NcclxBaseTestFixture::TearDown();
   }
 
  protected:
