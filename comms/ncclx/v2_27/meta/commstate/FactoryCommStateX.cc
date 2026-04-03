@@ -4,6 +4,7 @@
 #include "comms/ctran/commstate/CommStateX.h"
 #include "comms/ctran/utils/Checks.h"
 #include "meta/NcclxConfig.h" // @manual
+#include "meta/hints/CommHintConfig.h" // @manual
 
 #include "bootstrap.h"
 #include "nvmlwrap.h"
@@ -54,7 +55,7 @@ std::unique_ptr<CommStateX> createCommStateXFromNcclComm(void* _comm) {
       std::vector<int>(), /* commRanksToWorldRanks */
       NCCLX_CONFIG_FIELD(comm->config, commDesc),
       comm->noLocal_,
-      NCCLX_CONFIG_FIELD(comm->config, vCliqueSize));
+      commVCliqueSize(NCCLX_CONFIG_FIELD(comm->config, vCliqueSize)));
 
   if (comm->noLocal_ ||
       NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::nolocal) {
