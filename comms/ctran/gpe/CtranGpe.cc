@@ -243,6 +243,12 @@ OpElem::~OpElem() {
       }
       break;
     }
+    case ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG_P: {
+      if (this->alltoallv_dynamic.kElem) {
+        this->alltoallv_dynamic.kElem->free();
+      }
+      break;
+    }
     default:
       break;
   }
@@ -316,6 +322,14 @@ void OpElem::setStatus(KernelElem::ElemStatus status) {
     case ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG_P: {
       if (this->alltoallv_dynamic.kElem) {
         this->alltoallv_dynamic.kElem->setStatus(status);
+      }
+      break;
+    }
+    case ALLTOALL_DEDUP: {
+      for (auto& pair : this->alltoall_dedup.bcastElemMap) {
+        if (pair.second != nullptr) {
+          pair.second->setStatus(status);
+        }
       }
       break;
     }

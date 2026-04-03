@@ -1,9 +1,4 @@
-// Copyright (c) Meta Platforms, Inc. and affiliates.
-// TorchComms Pipes Transport API Integration Test Main
-//
-// NOTE: TEST_F macros are in PipesTransportApiTest.cpp (which is compiled with
-// TORCHCOMMS_HAS_NCCL_DEVICE_API=1 and ENABLE_PIPES=1) to ensure consistent
-// type resolution. This file only contains the main() entry point.
+// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include <gtest/gtest.h>
 

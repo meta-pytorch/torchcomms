@@ -1,34 +1,33 @@
-// Copyright (c) Meta Platforms, Inc. and affiliates.
-// TorchComms Device API Integration Test - NCCL GIN Backend
+// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+//
+// Stress functional tests for TorchComm Device API — NCCLx (GIN+LSA) backend.
 
 #include "DeviceApiTest.hpp"
 
 #include <gtest/gtest.h>
-#include <algorithm>
 #include "DeviceApiTestKernels.cuh"
+#include "StressTestHelpers.hpp"
 #include "TorchCommTestHelpers.h"
 #include "comms/torchcomms/TorchComm.hpp"
 
-// Bring device API types into scope (DeviceWindowNCCL, RegisteredBufferNCCL)
 using namespace torchcomms::device;
+using namespace torchcomms::device::test;
 
-std::unique_ptr<TorchCommTestWrapper> DeviceApiTest::createWrapper() {
-  return std::make_unique<TorchCommTestWrapper>();
-}
+// =============================================================================
+// Setup / Teardown
+// =============================================================================
 
 void DeviceApiTest::SetUp() {
-  // Check skip condition FIRST, before any initialization
-  if (checkIfSkip()) {
-    GTEST_SKIP() << "Skipping Device API tests (RUN_DEVICE_API_TEST not set)";
+  if (!shouldRunStressTest()) {
+    GTEST_SKIP() << "Skipping stress tests (RUN_DEVICE_STRESS_TEST not set)";
   }
 
-  wrapper_ = createWrapper();
+  config_ = parseStressTestConfig();
+  wrapper_ = std::make_unique<TorchCommTestWrapper>();
   torchcomm_ = wrapper_->getTorchComm();
   rank_ = torchcomm_->getRank();
   num_ranks_ = torchcomm_->getSize();
   device_index_ = rank_ % at::cuda::device_count();
-
-  // Get allocator using global function - obtained once and reused
   allocator_ = torch::comms::get_mem_allocator(torchcomm_->getBackend());
 }
 
@@ -37,1095 +36,815 @@ void DeviceApiTest::TearDown() {
   wrapper_.reset();
 }
 
-bool DeviceApiTest::checkIfSkip() {
-  // Check RUN_DEVICE_API_TEST env var
-  const char* device_api_env = getenv("RUN_DEVICE_API_TEST");
-  if (!device_api_env) {
-    return true; // skip if not set
-  }
-  std::string val(device_api_env);
-  std::transform(val.begin(), val.end(), val.begin(), ::tolower);
-  if (val != "1" && val != "true") {
-    return true; // skip if not enabled
-  }
-  return false;
+// =============================================================================
+// Helper: create MemPool, allocate tensors, create window, get device window
+// =============================================================================
+
+namespace {
+
+struct WindowSetup {
+  std::unique_ptr<at::cuda::MemPool> mem_pool;
+  at::Tensor win_tensor;
+  at::Tensor src_tensor;
+  std::shared_ptr<torch::comms::TorchCommWindow> win;
+  DeviceWindowNCCL* dev_win{nullptr};
+  RegisteredBufferNCCL src_buf{};
+};
+
+WindowSetup createWindowSetup(
+    std::shared_ptr<torch::comms::TorchComm>& torchcomm,
+    std::shared_ptr<c10::Allocator>& allocator,
+    int device_index,
+    int num_ranks,
+    size_t count,
+    int signal_count,
+    int counter_count,
+    int barrier_count) {
+  WindowSetup s;
+
+  s.mem_pool = std::make_unique<at::cuda::MemPool>(
+      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
+          allocator));
+  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
+      s.mem_pool->device(), s.mem_pool->id(), [](cudaStream_t) {
+        return true;
+      });
+
+  auto options =
+      at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, device_index);
+  s.win_tensor = at::zeros({static_cast<int64_t>(count * num_ranks)}, options);
+
+  c10::cuda::CUDACachingAllocator::endAllocateToPool(
+      s.mem_pool->device(), s.mem_pool->id());
+
+  // Allocate src_tensor OUTSIDE the pool to ensure it gets its own cuMem
+  // allocation. When both tensors share the same cuMem block and the src_tensor
+  // is not 4096-aligned within that block, NCCL LOCAL_ONLY window registration
+  // truncates ginOffset4K, and NVLink put with P2P disabled fails to deliver
+  // data. Separate allocations avoid this issue.
+  s.src_tensor = at::zeros({static_cast<int64_t>(count)}, options);
+
+  torchcomm->barrier(false);
+  s.win = torchcomm->new_window();
+  s.win->tensor_register(s.win_tensor);
+  torchcomm->barrier(false);
+
+  s.dev_win = static_cast<DeviceWindowNCCL*>(
+      s.win->get_device_window(signal_count, counter_count, barrier_count));
+
+  s.src_buf = s.win->register_local_buffer(s.src_tensor);
+
+  // Ensure both ranks have completed all registration before kernels launch
+  torchcomm->barrier(false);
+
+  // Ensure all GPU work (tensor zeroing, registration) is complete before
+  // kernels launch on a different stream
+  cudaDeviceSynchronize();
+
+  return s;
 }
 
-at::Tensor DeviceApiTest::createTestTensor(
-    int64_t count,
+// Overload that accepts a custom dtype for the window and source tensors.
+WindowSetup createWindowSetupWithDtype(
+    std::shared_ptr<torch::comms::TorchComm>& torchcomm,
+    std::shared_ptr<c10::Allocator>& allocator,
+    int device_index,
+    int num_ranks,
+    size_t count,
+    int signal_count,
+    int counter_count,
+    int barrier_count,
     at::ScalarType dtype) {
-  auto options =
-      at::TensorOptions().dtype(dtype).device(at::kCUDA, device_index_);
-  return at::ones({count}, options) * (rank_ + 1);
-}
+  WindowSetup s;
 
-std::string DeviceApiTest::getDtypeName(at::ScalarType dtype) {
-  switch (dtype) {
-    case at::kFloat:
-      return "float32";
-    case at::kDouble:
-      return "float64";
-    case at::kHalf:
-      return "float16";
-    case at::kBFloat16:
-      return "bfloat16";
-    case at::kInt:
-      return "int32";
-    case at::kLong:
-      return "int64";
-    default:
-      return "unknown";
-  }
-}
-
-// Test device window creation and basic properties
-void DeviceApiTest::testDeviceWindowCreation(int count, at::ScalarType dtype) {
-  SCOPED_TRACE(
-      ::testing::Message() << "Testing Device Window Creation with count="
-                           << count << " and dtype=" << getDtypeName(dtype));
-
-  // Create MemPool for RDMA-compatible memory allocation (cuMem-based)
-  // This is required for NCCL orig path (symmetric windows) which calls
-  // cuMemRetainAllocationHandle - only works with cuMem-allocated memory.
-  auto mem_pool = std::make_unique<at::cuda::MemPool>(
+  s.mem_pool = std::make_unique<at::cuda::MemPool>(
       std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
-          allocator_));
+          allocator));
   c10::cuda::CUDACachingAllocator::beginAllocateToPool(
-      mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
+      s.mem_pool->device(), s.mem_pool->id(), [](cudaStream_t) {
+        return true;
+      });
 
-  // Allocate window buffer from the RDMA-compatible pool
   auto options =
-      at::TensorOptions().dtype(dtype).device(at::kCUDA, device_index_);
-  at::Tensor win_tensor = at::zeros({count * num_ranks_}, options);
-
-  // End pool context immediately after allocation
-  c10::cuda::CUDACachingAllocator::endAllocateToPool(
-      mem_pool->device(), mem_pool->id());
-
-  // Create window and register tensor
-  torchcomm_->barrier(false);
-  auto win = torchcomm_->new_window();
-  win->tensor_register(win_tensor);
-  torchcomm_->barrier(false);
-
-  // Get device window (returns device pointer for use in CUDA/Triton kernels)
-  DeviceWindowNCCL* dev_win =
-      static_cast<DeviceWindowNCCL*>(win->get_device_window());
-  EXPECT_NE(dev_win, nullptr) << "Device window pointer should not be null";
-
-  // Cleanup
-  win->tensor_deregister();
-  win.reset();
-  mem_pool.reset();
-
-  torchcomm_->barrier(false);
-}
-
-void DeviceApiTest::testLocalBufferRegistration(
-    int count,
-    at::ScalarType dtype) {
-  SCOPED_TRACE(
-      ::testing::Message() << "Testing Local Buffer Registration with count="
-                           << count << " and dtype=" << getDtypeName(dtype));
-
-  // Create MemPool for RDMA-compatible memory allocation (cuMem-based)
-  auto mem_pool = std::make_unique<at::cuda::MemPool>(
-      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
-          allocator_));
-  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
-      mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
-
-  // Allocate window buffer from the RDMA-compatible pool
-  auto options =
-      at::TensorOptions().dtype(dtype).device(at::kCUDA, device_index_);
-  at::Tensor win_tensor = at::zeros({count * num_ranks_}, options);
-
-  at::Tensor src_tensor = at::zeros({count}, options);
-  src_tensor.fill_(static_cast<float>(rank_ + 1));
-
-  // End pool context immediately after allocation
-  c10::cuda::CUDACachingAllocator::endAllocateToPool(
-      mem_pool->device(), mem_pool->id());
-
-  // Create window and register tensor
-  torchcomm_->barrier(false);
-  auto win = torchcomm_->new_window();
-  win->tensor_register(win_tensor);
-  torchcomm_->barrier(false);
-
-  // Get device window first to ensure GIN is enabled.
-  // GIN is only enabled when ncclDevCommCreate is called (inside
-  // get_device_window), not during window registration.
-  DeviceWindowNCCL* dev_win =
-      static_cast<DeviceWindowNCCL*>(win->get_device_window());
-  ASSERT_NE(dev_win, nullptr) << "Device window should not be null";
-
-  auto src_buf = win->register_local_buffer(src_tensor);
-
-  // Verify buffer properties
-  ASSERT_NE(src_buf.base_ptr, nullptr) << "Buffer base_ptr should not be null";
-  ASSERT_GT(src_buf.size, 0) << "Buffer size should be positive";
-  ASSERT_NE(src_buf.backend_window, nullptr)
-      << "Buffer backend_window should not be null";
-
-  // Cleanup
-  win->deregister_local_buffer(src_buf);
-  win->tensor_deregister();
-  win.reset();
-  mem_pool.reset();
-
-  torchcomm_->barrier(false);
-}
-
-void DeviceApiTest::testDeviceWindowWithSignals(
-    int count,
-    at::ScalarType dtype) {
-  SCOPED_TRACE(
-      ::testing::Message() << "Testing Device Window with Signals count="
-                           << count << " and dtype=" << getDtypeName(dtype));
-
-  // Create MemPool for RDMA-compatible memory allocation (cuMem-based)
-  auto mem_pool = std::make_unique<at::cuda::MemPool>(
-      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
-          allocator_));
-  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
-      mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
-
-  // Allocate window buffer from the RDMA-compatible pool
-  auto options =
-      at::TensorOptions().dtype(dtype).device(at::kCUDA, device_index_);
-  at::Tensor win_tensor = at::zeros({count * num_ranks_}, options);
-
-  // End pool context immediately after allocation
-  c10::cuda::CUDACachingAllocator::endAllocateToPool(
-      mem_pool->device(), mem_pool->id());
-
-  // Create window and register tensor
-  torchcomm_->barrier(false);
-  auto win = torchcomm_->new_window();
-  win->tensor_register(win_tensor);
-  torchcomm_->barrier(false);
-
-  // Get device window with signals (returns device pointer for use in kernels)
-  int signal_count = num_ranks_;
-  DeviceWindowNCCL* dev_win = static_cast<DeviceWindowNCCL*>(
-      win->get_device_window(signal_count, -1, 1));
-  EXPECT_NE(dev_win, nullptr) << "Device window pointer should not be null";
-
-  // Cleanup
-  win->tensor_deregister();
-  win.reset();
-  mem_pool.reset();
-
-  torchcomm_->barrier(false);
-}
-
-void DeviceApiTest::testDeviceWindowWithCounters(
-    int count,
-    at::ScalarType dtype) {
-  SCOPED_TRACE(
-      ::testing::Message() << "Testing Device Window with Counters count="
-                           << count << " and dtype=" << getDtypeName(dtype));
-
-  // Create MemPool for RDMA-compatible memory allocation (cuMem-based)
-  auto mem_pool = std::make_unique<at::cuda::MemPool>(
-      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
-          allocator_));
-  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
-      mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
-
-  // Allocate window buffer from the RDMA-compatible pool
-  auto options =
-      at::TensorOptions().dtype(dtype).device(at::kCUDA, device_index_);
-  at::Tensor win_tensor = at::zeros({count * num_ranks_}, options);
-
-  // End pool context immediately after allocation
-  c10::cuda::CUDACachingAllocator::endAllocateToPool(
-      mem_pool->device(), mem_pool->id());
-
-  // Create window and register tensor
-  torchcomm_->barrier(false);
-  auto win = torchcomm_->new_window();
-  win->tensor_register(win_tensor);
-  torchcomm_->barrier(false);
-
-  // Get device window with signals and counters (returns device pointer)
-  int signal_count = num_ranks_;
-  int counter_count = num_ranks_;
-  DeviceWindowNCCL* dev_win = static_cast<DeviceWindowNCCL*>(
-      win->get_device_window(signal_count, counter_count, 1));
-  EXPECT_NE(dev_win, nullptr) << "Device window pointer should not be null";
-
-  // Cleanup
-  win->tensor_deregister();
-  win.reset();
-  mem_pool.reset();
-
-  torchcomm_->barrier(false);
-}
-
-// =============================================================================
-// Device Put Test - Uses CUDA kernel to perform device-initiated RMA
-// =============================================================================
-// This test validates the full device-side put flow:
-//   1. Create window and get device window handle
-//   2. Register local source buffer
-//   3. Launch CUDA kernel that performs put to next rank
-//   4. Use signals to synchronize sender/receiver
-//   5. Verify data arrived correctly
-
-void DeviceApiTest::testDevicePut(int count, at::ScalarType dtype) {
-  SCOPED_TRACE(
-      ::testing::Message() << "Testing Device Put with count=" << count
-                           << " and dtype=" << getDtypeName(dtype));
-
-  // Create streams for put and wait operations
-  auto put_stream = at::cuda::getStreamFromPool(false, device_index_);
-  auto wait_stream = at::cuda::getStreamFromPool(false, device_index_);
-
-  // Create MemPool for RDMA-compatible memory allocation
-  auto mem_pool = std::make_unique<at::cuda::MemPool>(
-      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
-          allocator_));
-  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
-      mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
-
-  // Window layout: [rank0_slot | rank1_slot | ... | rankN-1_slot]
-  // Each slot has 'count' elements.
-  auto options =
-      at::TensorOptions().dtype(dtype).device(at::kCUDA, device_index_);
-  at::Tensor win_tensor = at::zeros({count * num_ranks_}, options);
-
-  // Allocate separate source buffer for the put operation
-  at::Tensor src_tensor = at::zeros({count}, options);
-  src_tensor.fill_(static_cast<float>(rank_ + 1));
-
-  // End pool context
-  c10::cuda::CUDACachingAllocator::endAllocateToPool(
-      mem_pool->device(), mem_pool->id());
-
-  // Create destination window and register tensor
-  torchcomm_->barrier(false);
-  auto win = torchcomm_->new_window();
-  win->tensor_register(win_tensor);
-  torchcomm_->barrier(false);
-
-  // Get device window with signals (returns device pointer for use in kernels)
-  int signal_count = num_ranks_;
-  DeviceWindowNCCL* dev_win = static_cast<DeviceWindowNCCL*>(
-      win->get_device_window(signal_count, -1, 1));
-  EXPECT_NE(dev_win, nullptr) << "Device window pointer should not be null";
-
-  // Register source buffer as a local-only window using NCCL_WIN_LOCAL_ONLY.
-  // This is NON-COLLECTIVE - uses the parent comm's PD but skips rkey
-  // allGather. The resulting window can only be used as a source buffer for put
-  // operations.
-  auto src_buf = win->register_local_buffer(src_tensor);
-  ASSERT_NE(src_buf.base_ptr, nullptr)
-      << "Source buffer base_ptr should not be null";
-  ASSERT_NE(src_buf.backend_window, nullptr)
-      << "Source buffer backend_window should not be null";
-
-  // Calculate ranks for ring pattern
-  int dst_rank = (rank_ + 1) % num_ranks_;
-  int src_rank = (rank_ - 1 + num_ranks_) % num_ranks_;
-
-  // Signal semantics: put() with signal_id increments that signal on the
-  // DESTINATION rank. All ranks use signal 0. Each rank receives one put,
-  // so waits for signal 0 >= 1.
-  constexpr int kSignalId = 0;
-
-  // Calculate offsets and bytes
-  size_t elem_size = win_tensor.element_size();
-  size_t bytes = count * elem_size;
-  // Source: start of src_tensor (offset 0 within src_buf)
-  size_t src_offset = 0;
-  // Destination: our slot on the remote rank (rank i puts to slot i on dst)
-  size_t dst_offset = rank_ * bytes;
-
-  // Launch put kernel on put_stream
-  {
-    c10::cuda::CUDAStreamGuard guard(put_stream);
-    torchcomms::device::test::launchDevicePutKernelWithOffsets(
-        dev_win,
-        src_buf,
-        src_offset,
-        dst_offset,
-        bytes,
-        dst_rank,
-        kSignalId,
-        put_stream.stream());
-  }
-
-  // Launch wait signal kernel on wait_stream
-  // Wait for signal 0 to be incremented (indicating put completed to us)
-  {
-    c10::cuda::CUDAStreamGuard guard(wait_stream);
-    torchcomms::device::test::launchDeviceWaitSignalKernel(
-        dev_win, kSignalId, 1, wait_stream.stream());
-  }
-
-  // Synchronize streams
-  put_stream.synchronize();
-  wait_stream.synchronize();
-
-  // Verify: the slot at src_rank's index should now contain src_rank's data
-  // src_rank wrote (src_rank+1) to slot[src_rank]
-  at::Tensor result_slice = win_tensor.index(
-      {at::indexing::Slice(src_rank * count, (src_rank + 1) * count)});
-
-  // Copy result to CPU for comparison
-  at::Tensor result_cpu = result_slice.cpu();
-
-  // Create expected tensor on CPU to avoid CUDA memory conflicts
-  auto cpu_options = at::TensorOptions().dtype(dtype).device(at::kCPU);
-  at::Tensor expected_cpu = at::zeros({count}, cpu_options);
-  expected_cpu.fill_(static_cast<float>(src_rank + 1));
-
-  bool equal = at::allclose(result_cpu, expected_cpu);
-  ASSERT_TRUE(equal) << "Device put data mismatch: expected value "
-                     << (src_rank + 1) << " from rank " << src_rank
-                     << ", got first element: " << result_cpu[0].item<float>();
-
-  // Reset signals for next iteration (if any)
-  {
-    c10::cuda::CUDAStreamGuard guard(put_stream);
-    torchcomms::device::test::launchDeviceResetSignalKernel(
-        dev_win, kSignalId, put_stream.stream());
-  }
-  put_stream.synchronize();
-
-  // Cleanup - deregister local source buffer (non-collective), then destination
-  win->deregister_local_buffer(src_buf);
-
-  win->tensor_deregister();
-  win.reset();
-  mem_pool.reset();
-
-  torchcomm_->barrier(false);
-}
-
-// =============================================================================
-// GTest Test Cases
-// =============================================================================
-// TEST_F macros MUST be in this file (compiled with
-// TORCHCOMMS_HAS_NCCL_DEVICE_API) to ensure device API types resolve correctly.
-
-TEST_F(DeviceApiTest, DeviceWindowCreationFloat) {
-  testDeviceWindowCreation(1024, at::kFloat);
-}
-
-TEST_F(DeviceApiTest, DeviceWindowCreationHalf) {
-  testDeviceWindowCreation(1024, at::kHalf);
-}
-
-TEST_F(DeviceApiTest, LocalBufferRegistrationFloat) {
-  // Test non-collective local buffer registration using NCCL_WIN_LOCAL_ONLY.
-  // This uses the parent comm's PD but skips the rkey allGather, making
-  // registration truly non-collective. The resulting window can only be used
-  // as a source buffer for put operations.
-  testLocalBufferRegistration(1024, at::kFloat);
-}
-
-TEST_F(DeviceApiTest, DeviceWindowWithSignalsFloat) {
-  testDeviceWindowWithSignals(1024, at::kFloat);
-}
-
-TEST_F(DeviceApiTest, DeviceWindowWithCountersFloat) {
-  testDeviceWindowWithCounters(1024, at::kFloat);
-}
-
-TEST_F(DeviceApiTest, DevicePutFloat) {
-  testDevicePut(1024, at::kFloat);
-}
-
-// =============================================================================
-// GIN atomicAdd Test
-// =============================================================================
-// This test validates the gin.atomicAdd() API at the NCCLx layer:
-//   1. Each rank creates a window with uint64_t slots
-//   2. In a ring pattern, rank i atomically adds (rank+1) to slot[rank] on
-//      the next rank's window
-//   3. Signal the next rank after atomicAdd completes
-//   4. Wait for signal from previous rank
-//   5. Verify the atomically-added value matches expected
-
-void DeviceApiTest::testGinAtomicAdd() {
-  SCOPED_TRACE(::testing::Message() << "Testing GIN atomicAdd");
-
-  auto op_stream = at::cuda::getStreamFromPool(false, device_index_);
-  auto wait_stream = at::cuda::getStreamFromPool(false, device_index_);
-
-  // Create MemPool for RDMA-compatible memory allocation
-  auto mem_pool = std::make_unique<at::cuda::MemPool>(
-      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
-          allocator_));
-  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
-      mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
-
-  // Window layout: num_ranks uint64_t slots, one per sender rank
-  // Each slot is 8 bytes (sizeof(uint64_t))
-  auto options =
-      at::TensorOptions().dtype(at::kLong).device(at::kCUDA, device_index_);
-  at::Tensor win_tensor = at::zeros({num_ranks_}, options);
+      at::TensorOptions().dtype(dtype).device(at::kCUDA, device_index);
+  s.win_tensor = at::zeros({static_cast<int64_t>(count * num_ranks)}, options);
 
   c10::cuda::CUDACachingAllocator::endAllocateToPool(
-      mem_pool->device(), mem_pool->id());
+      s.mem_pool->device(), s.mem_pool->id());
 
-  // Create window and register tensor
-  torchcomm_->barrier(false);
-  auto win = torchcomm_->new_window();
-  win->tensor_register(win_tensor);
-  torchcomm_->barrier(false);
+  // Allocate src_tensor OUTSIDE the pool to ensure it gets its own cuMem
+  // allocation. When both tensors share the same cuMem block and the
+  // src_tensor is not 4096-aligned within that block, NCCL LOCAL_ONLY window
+  // registration truncates ginOffset4K, and NVLink put with P2P disabled
+  // fails to deliver data. Separate allocations avoid this issue.
+  s.src_tensor = at::zeros({static_cast<int64_t>(count)}, options);
 
-  // Get device window with signals for synchronization
-  int signal_count = num_ranks_;
-  DeviceWindowNCCL* dev_win = static_cast<DeviceWindowNCCL*>(
-      win->get_device_window(signal_count, -1, 1));
-  ASSERT_NE(dev_win, nullptr) << "Device window pointer should not be null";
+  torchcomm->barrier(false);
+  s.win = torchcomm->new_window();
+  s.win->tensor_register(s.win_tensor);
+  torchcomm->barrier(false);
 
-  // Ring pattern: rank i atomicAdds to rank (i+1) % num_ranks
-  int dst_rank = (rank_ + 1) % num_ranks_;
-  int src_rank = (rank_ - 1 + num_ranks_) % num_ranks_;
+  s.dev_win = static_cast<DeviceWindowNCCL*>(
+      s.win->get_device_window(signal_count, counter_count, barrier_count));
 
-  // Each rank writes to its own slot on the destination.
-  // dst_offset = rank_ * sizeof(uint64_t) bytes into the window.
-  size_t dst_offset = rank_ * sizeof(uint64_t);
-  uint64_t add_value = static_cast<uint64_t>(rank_ + 1);
-  constexpr int kSignalId = 0;
+  s.src_buf = s.win->register_local_buffer(s.src_tensor);
 
-  // Launch atomicAdd kernel
-  {
-    c10::cuda::CUDAStreamGuard guard(op_stream);
-    torchcomms::device::test::launchDeviceGinAtomicAddKernel(
-        dev_win,
-        dst_offset,
-        add_value,
-        dst_rank,
-        kSignalId,
-        op_stream.stream());
-  }
+  torchcomm->barrier(false);
+  cudaDeviceSynchronize();
 
-  // Wait for signal from src_rank indicating its atomicAdd completed to us
-  {
-    c10::cuda::CUDAStreamGuard guard(wait_stream);
-    torchcomms::device::test::launchDeviceWaitSignalKernel(
-        dev_win, kSignalId, 1, wait_stream.stream());
-  }
+  return s;
+}
 
-  op_stream.synchronize();
-  wait_stream.synchronize();
+void teardownWindow(
+    WindowSetup& s,
+    std::shared_ptr<torch::comms::TorchComm>& torchcomm) {
+  s.win->deregister_local_buffer(s.src_buf);
+  s.win->tensor_deregister();
+  s.win.reset();
+  s.mem_pool.reset();
+  torchcomm->barrier(false);
+}
 
-  // Verify: slot[src_rank] should have value (src_rank + 1) from the sender
-  at::Tensor result_cpu = win_tensor.cpu();
-  int64_t got = result_cpu[src_rank].item<int64_t>();
-  int64_t expected = static_cast<int64_t>(src_rank + 1);
-  ASSERT_EQ(got, expected) << "atomicAdd mismatch at slot[" << src_rank
-                           << "]: expected " << expected << ", got " << got;
-
-  // Reset signal for cleanup
-  {
-    c10::cuda::CUDAStreamGuard guard(op_stream);
-    torchcomms::device::test::launchDeviceResetSignalKernel(
-        dev_win, kSignalId, op_stream.stream());
-  }
-  op_stream.synchronize();
-
-  // Verify signal was reset to 0
-  uint64_t* d_signal_out = nullptr;
-  ASSERT_EQ(cudaMalloc(&d_signal_out, sizeof(uint64_t)), cudaSuccess);
-  {
-    c10::cuda::CUDAStreamGuard guard(op_stream);
-    torchcomms::device::test::launchDeviceReadSignalKernel(
-        dev_win, kSignalId, d_signal_out, op_stream.stream());
-  }
-  op_stream.synchronize();
-
-  uint64_t signal_value = 0;
+// Allocate device int array, check results on host after kernel completion.
+void checkKernelResults(
+    int* d_results,
+    int iterations,
+    const std::string& tag) {
+  std::vector<int> h_results(iterations);
   cudaMemcpy(
-      &signal_value, d_signal_out, sizeof(uint64_t), cudaMemcpyDeviceToHost);
-  cudaFree(d_signal_out);
-  ASSERT_EQ(signal_value, 0) << "Signal should be reset to 0 after reset";
-
-  // Cleanup
-  win->tensor_deregister();
-  win.reset();
-  mem_pool.reset();
-
-  torchcomm_->barrier(false);
+      h_results.data(),
+      d_results,
+      iterations * sizeof(int),
+      cudaMemcpyDeviceToHost);
+  for (int i = 0; i < iterations; i++) {
+    ASSERT_EQ(h_results[i], 1)
+        << tag << ": verification failed at iteration " << i;
+  }
 }
 
-TEST_F(DeviceApiTest, GinAtomicAdd) {
-  testGinAtomicAdd();
-}
+} // namespace
 
 // =============================================================================
-// Per-Peer Signal Test
+// Category 1: Stress Correctness
 // =============================================================================
-// Validates the resource buffer per-peer signal slot model:
-//   1. Each rank signals the next rank in a ring pattern (standalone signal,
-//      no data transfer)
-//   2. Each rank waits for the aggregated signal to reach expected value
-//   3. Verifies read_signal returns the correct aggregated value
 
-void DeviceApiTest::testPerPeerSignal() {
-  SCOPED_TRACE(::testing::Message() << "Testing per-peer signal slots");
-
-  auto op_stream = at::cuda::getStreamFromPool(false, device_index_);
-  auto wait_stream = at::cuda::getStreamFromPool(false, device_index_);
-
-  // Create MemPool for RDMA-compatible memory allocation
-  auto mem_pool = std::make_unique<at::cuda::MemPool>(
-      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
-          allocator_));
-  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
-      mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
-
-  // Minimal window — we only need the signal infrastructure, not data
-  auto options =
-      at::TensorOptions().dtype(at::kLong).device(at::kCUDA, device_index_);
-  at::Tensor win_tensor = at::zeros({1}, options);
-
-  c10::cuda::CUDACachingAllocator::endAllocateToPool(
-      mem_pool->device(), mem_pool->id());
-
-  torchcomm_->barrier(false);
-  auto win = torchcomm_->new_window();
-  win->tensor_register(win_tensor);
-  torchcomm_->barrier(false);
-
-  int signal_count = num_ranks_;
-  DeviceWindowNCCL* dev_win = static_cast<DeviceWindowNCCL*>(
-      win->get_device_window(signal_count, -1, 1));
-  ASSERT_NE(dev_win, nullptr);
-
-  // Ring pattern: rank i signals rank (i+1) % num_ranks
-  int dst_rank = (rank_ + 1) % num_ranks_;
-  constexpr int kSignalId = 0;
-
-  // Each rank sends ADD 1 to the next rank
-  {
-    c10::cuda::CUDAStreamGuard guard(op_stream);
-    torchcomms::device::test::launchDeviceSignalKernel(
-        dev_win,
-        dst_rank,
-        kSignalId,
-        torchcomms::device::SignalOp::ADD,
-        1,
-        op_stream.stream());
+void DeviceApiTest::testStressPut(size_t msg_bytes, CoopScope scope) {
+  size_t count = msg_bytes / sizeof(float);
+  if (count == 0) {
+    count = 1;
   }
+  int num_threads = threadsForScope(scope);
+  int iterations = config_.num_iterations;
 
-  // Each rank receives one signal, so aggregate sum should be >= 1
-  {
-    c10::cuda::CUDAStreamGuard guard(wait_stream);
-    torchcomms::device::test::launchDeviceWaitSignalKernel(
-        dev_win, kSignalId, 1, wait_stream.stream());
-  }
-
-  op_stream.synchronize();
-  wait_stream.synchronize();
-
-  // Read signal value via kernel and verify on host
-  uint64_t* d_out = nullptr;
-  ASSERT_EQ(cudaMalloc(&d_out, sizeof(uint64_t)), cudaSuccess);
-  {
-    c10::cuda::CUDAStreamGuard guard(op_stream);
-    torchcomms::device::test::launchDeviceReadSignalKernel(
-        dev_win, kSignalId, d_out, op_stream.stream());
-  }
-  op_stream.synchronize();
-
-  uint64_t h_out = 0;
-  cudaMemcpy(&h_out, d_out, sizeof(uint64_t), cudaMemcpyDeviceToHost);
-  cudaFree(d_out);
-
-  ASSERT_GE(h_out, 1u) << "Expected aggregated signal >= 1, got " << h_out;
-
-  // Reset signals
-  {
-    c10::cuda::CUDAStreamGuard guard(op_stream);
-    torchcomms::device::test::launchDeviceResetSignalKernel(
-        dev_win, kSignalId, op_stream.stream());
-  }
-  op_stream.synchronize();
-
-  win->tensor_deregister();
-  win.reset();
-  mem_pool.reset();
-
-  torchcomm_->barrier(false);
-}
-
-TEST_F(DeviceApiTest, PerPeerSignal) {
-  testPerPeerSignal();
-}
-
-// =============================================================================
-// Wait Signal From Specific Peer Test
-// =============================================================================
-// Validates point-to-point signal synchronization via wait_signal_from():
-//   1. Each rank signals the next rank in a ring
-//   2. Receiver uses wait_signal_from(src_rank, ...) to wait for the
-//      specific sender's slot (not aggregated)
-//   3. Verifies that only the expected sender's slot was written
-
-void DeviceApiTest::testWaitSignalFrom() {
-  SCOPED_TRACE(::testing::Message() << "Testing wait_signal_from");
-
-  auto op_stream = at::cuda::getStreamFromPool(false, device_index_);
-  auto wait_stream = at::cuda::getStreamFromPool(false, device_index_);
-
-  auto mem_pool = std::make_unique<at::cuda::MemPool>(
-      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
-          allocator_));
-  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
-      mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
-
-  auto options =
-      at::TensorOptions().dtype(at::kLong).device(at::kCUDA, device_index_);
-  at::Tensor win_tensor = at::zeros({1}, options);
-
-  c10::cuda::CUDACachingAllocator::endAllocateToPool(
-      mem_pool->device(), mem_pool->id());
-
-  torchcomm_->barrier(false);
-  auto win = torchcomm_->new_window();
-  win->tensor_register(win_tensor);
-  torchcomm_->barrier(false);
-
-  int signal_count = num_ranks_;
-  DeviceWindowNCCL* dev_win = static_cast<DeviceWindowNCCL*>(
-      win->get_device_window(signal_count, -1, 1));
-  ASSERT_NE(dev_win, nullptr);
-
-  // Ring: rank i signals rank (i+1), receiver expects signal from (i-1)
-  int dst_rank = (rank_ + 1) % num_ranks_;
-  int src_rank = (rank_ - 1 + num_ranks_) % num_ranks_;
-  constexpr int kSignalId = 0;
-
-  // Send signal
-  {
-    c10::cuda::CUDAStreamGuard guard(op_stream);
-    torchcomms::device::test::launchDeviceSignalKernel(
-        dev_win,
-        dst_rank,
-        kSignalId,
-        torchcomms::device::SignalOp::ADD,
-        1,
-        op_stream.stream());
-  }
-
-  // Wait for signal from specific peer (not aggregated)
-  {
-    c10::cuda::CUDAStreamGuard guard(wait_stream);
-    torchcomms::device::test::launchDeviceWaitSignalFromKernel(
-        dev_win,
-        src_rank,
-        kSignalId,
-        torchcomms::device::CmpOp::GE,
-        1,
-        wait_stream.stream());
-  }
-
-  op_stream.synchronize();
-  wait_stream.synchronize();
-
-  // Reset signals
-  {
-    c10::cuda::CUDAStreamGuard guard(op_stream);
-    torchcomms::device::test::launchDeviceResetSignalKernel(
-        dev_win, kSignalId, op_stream.stream());
-  }
-  op_stream.synchronize();
-
-  win->tensor_deregister();
-  win.reset();
-  mem_pool.reset();
-
-  torchcomm_->barrier(false);
-}
-
-TEST_F(DeviceApiTest, WaitSignalFrom) {
-  testWaitSignalFrom();
-}
-
-// =============================================================================
-// Device Barrier Test
-// =============================================================================
-// Validates the device-side world barrier (LSA + GIN hierarchical):
-//   1. All ranks launch a barrier kernel
-//   2. Barrier synchronizes all ranks (LSA first, then GIN Rail)
-//   3. All ranks complete successfully
-
-void DeviceApiTest::testDeviceBarrier() {
-  SCOPED_TRACE(::testing::Message() << "Testing device barrier");
-
-  auto op_stream = at::cuda::getStreamFromPool(false, device_index_);
-
-  auto mem_pool = std::make_unique<at::cuda::MemPool>(
-      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
-          allocator_));
-  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
-      mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
-
-  // Minimal window for barrier infrastructure
-  auto options =
-      at::TensorOptions().dtype(at::kLong).device(at::kCUDA, device_index_);
-  at::Tensor win_tensor = at::zeros({1}, options);
-
-  c10::cuda::CUDACachingAllocator::endAllocateToPool(
-      mem_pool->device(), mem_pool->id());
-
-  torchcomm_->barrier(false);
-  auto win = torchcomm_->new_window();
-  win->tensor_register(win_tensor);
-  torchcomm_->barrier(false);
-
-  // Get device window with barrier support
-  int barrier_count = 2;
-  DeviceWindowNCCL* dev_win = static_cast<DeviceWindowNCCL*>(
-      win->get_device_window(-1, -1, barrier_count));
-  ASSERT_NE(dev_win, nullptr);
-
-  constexpr int kBarrierId = 0;
-
-  // Launch barrier kernel - all ranks must participate
-  {
-    c10::cuda::CUDAStreamGuard guard(op_stream);
-    torchcomms::device::test::launchDeviceBarrierKernel(
-        dev_win, kBarrierId, op_stream.stream());
-  }
-
-  // Synchronize - if barrier works, all ranks complete together
-  op_stream.synchronize();
-
-  // Second barrier to verify reusability
-  {
-    c10::cuda::CUDAStreamGuard guard(op_stream);
-    torchcomms::device::test::launchDeviceBarrierKernel(
-        dev_win, kBarrierId + 1, op_stream.stream());
-  }
-  op_stream.synchronize();
-
-  win->tensor_deregister();
-  win.reset();
-  mem_pool.reset();
-
-  torchcomm_->barrier(false);
-}
-
-TEST_F(DeviceApiTest, DeviceBarrier) {
-  testDeviceBarrier();
-}
-
-// =============================================================================
-// Scope-Aware Put Tests
-// =============================================================================
-// Validates that put() with CoopScope::WARP and CoopScope::BLOCK produces
-// correct results. Uses the same ring pattern as testDevicePut but with
-// cooperative kernels launched with the appropriate thread count.
-
-void DeviceApiTest::testDevicePutScoped(
-    int count,
-    at::ScalarType dtype,
-    torchcomms::device::CoopScope scope,
-    int num_threads) {
-  std::string scope_name =
-      (scope == torchcomms::device::CoopScope::WARP) ? "WARP" : "BLOCK";
   SCOPED_TRACE(
-      ::testing::Message() << "Testing Scoped Put (" << scope_name
-                           << ", threads=" << num_threads << ") with count="
-                           << count << " and dtype=" << getDtypeName(dtype));
+      ::testing::Message() << "StressPut msg=" << formatBytes(msg_bytes)
+                           << " scope=" << scopeName(scope)
+                           << " iters=" << iterations);
 
-  auto put_stream = at::cuda::getStreamFromPool(false, device_index_);
-  auto wait_stream = at::cuda::getStreamFromPool(false, device_index_);
-
-  auto mem_pool = std::make_unique<at::cuda::MemPool>(
-      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
-          allocator_));
-  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
-      mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
-
-  auto options =
-      at::TensorOptions().dtype(dtype).device(at::kCUDA, device_index_);
-  at::Tensor win_tensor = at::zeros({count * num_ranks_}, options);
-  at::Tensor src_tensor = at::zeros({count}, options);
-  src_tensor.fill_(static_cast<float>(rank_ + 1));
-
-  c10::cuda::CUDACachingAllocator::endAllocateToPool(
-      mem_pool->device(), mem_pool->id());
-
-  torchcomm_->barrier(false);
-  auto win = torchcomm_->new_window();
-  win->tensor_register(win_tensor);
-  torchcomm_->barrier(false);
-
-  int signal_count = num_ranks_;
-  DeviceWindowNCCL* dev_win = static_cast<DeviceWindowNCCL*>(
-      win->get_device_window(signal_count, -1, 1));
-  EXPECT_NE(dev_win, nullptr) << "Device window pointer should not be null";
-
-  auto src_buf = win->register_local_buffer(src_tensor);
-  ASSERT_NE(src_buf.base_ptr, nullptr);
-  ASSERT_NE(src_buf.backend_window, nullptr);
+  auto s = createWindowSetup(
+      torchcomm_,
+      allocator_,
+      device_index_,
+      num_ranks_,
+      count,
+      /*signal_count=*/num_ranks_,
+      /*counter_count=*/-1,
+      /*barrier_count=*/2);
 
   int dst_rank = (rank_ + 1) % num_ranks_;
   int src_rank = (rank_ - 1 + num_ranks_) % num_ranks_;
-  constexpr int kSignalId = 0;
-
-  size_t elem_size = win_tensor.element_size();
-  size_t bytes = count * elem_size;
+  size_t bytes = count * sizeof(float);
   size_t src_offset = 0;
   size_t dst_offset = rank_ * bytes;
 
-  // Launch scoped put kernel
+  // Allocate results buffer on device
+  int* d_results = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_results, iterations * sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_results, 0, iterations * sizeof(int)), cudaSuccess);
+
+  auto stream = at::cuda::getStreamFromPool(false, device_index_);
   {
-    c10::cuda::CUDAStreamGuard guard(put_stream);
-    torchcomms::device::test::launchDevicePutScopedKernel(
-        dev_win,
-        src_buf,
+    c10::cuda::CUDAStreamGuard guard(stream);
+    launchStressPutKernel(
+        s.dev_win,
+        s.src_buf,
+        s.src_tensor.data_ptr<float>(),
+        s.win_tensor.data_ptr<float>(),
         src_offset,
         dst_offset,
         bytes,
+        count,
         dst_rank,
-        kSignalId,
+        src_rank,
+        /*signal_id=*/0,
+        iterations,
         scope,
         num_threads,
-        put_stream.stream());
+        d_results,
+        stream.stream());
   }
+  stream.synchronize();
 
-  // Wait for signal (thread scope is fine for the wait side)
-  {
-    c10::cuda::CUDAStreamGuard guard(wait_stream);
-    torchcomms::device::test::launchDeviceWaitSignalKernel(
-        dev_win, kSignalId, 1, wait_stream.stream());
-  }
+  checkKernelResults(
+      d_results,
+      iterations,
+      "StressPut(" + formatBytes(msg_bytes) + "," + scopeName(scope) + ")");
 
-  put_stream.synchronize();
-  wait_stream.synchronize();
-
-  // Verify data
-  at::Tensor result_slice = win_tensor.index(
-      {at::indexing::Slice(src_rank * count, (src_rank + 1) * count)});
-  at::Tensor result_cpu = result_slice.cpu();
-
-  auto cpu_options = at::TensorOptions().dtype(dtype).device(at::kCPU);
-  at::Tensor expected_cpu = at::zeros({count}, cpu_options);
-  expected_cpu.fill_(static_cast<float>(src_rank + 1));
-
-  bool equal = at::allclose(result_cpu, expected_cpu);
-  ASSERT_TRUE(equal) << "Scoped put (" << scope_name
-                     << ") data mismatch: expected value " << (src_rank + 1)
-                     << " from rank " << src_rank
-                     << ", got first element: " << result_cpu[0].item<float>();
-
-  // Reset signals
-  {
-    c10::cuda::CUDAStreamGuard guard(put_stream);
-    torchcomms::device::test::launchDeviceResetSignalKernel(
-        dev_win, kSignalId, put_stream.stream());
-  }
-  put_stream.synchronize();
-
-  win->deregister_local_buffer(src_buf);
-  win->tensor_deregister();
-  win.reset();
-  mem_pool.reset();
-
-  torchcomm_->barrier(false);
+  cudaFree(d_results);
+  teardownWindow(s, torchcomm_);
 }
 
-TEST_F(DeviceApiTest, DevicePutWarpScope) {
-  testDevicePutScoped(
-      1024, at::kFloat, torchcomms::device::CoopScope::WARP, 32);
-}
+void DeviceApiTest::testStressSignal(CoopScope scope) {
+  int iterations = config_.num_iterations;
+  int num_threads = threadsForScope(scope);
 
-TEST_F(DeviceApiTest, DevicePutBlockScope) {
-  testDevicePutScoped(
-      1024, at::kFloat, torchcomms::device::CoopScope::BLOCK, 256);
-}
-
-// =============================================================================
-// Scope-Aware Barrier Tests
-// =============================================================================
-
-void DeviceApiTest::testDeviceBarrierScoped(
-    torchcomms::device::CoopScope scope,
-    int num_threads) {
-  std::string scope_name =
-      (scope == torchcomms::device::CoopScope::WARP) ? "WARP" : "BLOCK";
   SCOPED_TRACE(
-      ::testing::Message() << "Testing Scoped Barrier (" << scope_name
-                           << ", threads=" << num_threads << ")");
+      ::testing::Message() << "StressSignal scope=" << scopeName(scope)
+                           << " iters=" << iterations);
 
-  auto op_stream = at::cuda::getStreamFromPool(false, device_index_);
-
-  auto mem_pool = std::make_unique<at::cuda::MemPool>(
-      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
-          allocator_));
-  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
-      mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
-
-  auto options =
-      at::TensorOptions().dtype(at::kLong).device(at::kCUDA, device_index_);
-  at::Tensor win_tensor = at::zeros({1}, options);
-
-  c10::cuda::CUDACachingAllocator::endAllocateToPool(
-      mem_pool->device(), mem_pool->id());
-
-  torchcomm_->barrier(false);
-  auto win = torchcomm_->new_window();
-  win->tensor_register(win_tensor);
-  torchcomm_->barrier(false);
-
-  int barrier_count = 2;
-  DeviceWindowNCCL* dev_win = static_cast<DeviceWindowNCCL*>(
-      win->get_device_window(-1, -1, barrier_count));
-  ASSERT_NE(dev_win, nullptr);
-
-  constexpr int kBarrierId = 0;
-
-  // First barrier
-  {
-    c10::cuda::CUDAStreamGuard guard(op_stream);
-    torchcomms::device::test::launchDeviceBarrierScopedKernel(
-        dev_win, kBarrierId, scope, num_threads, op_stream.stream());
-  }
-  op_stream.synchronize();
-
-  // Second barrier to verify reusability
-  {
-    c10::cuda::CUDAStreamGuard guard(op_stream);
-    torchcomms::device::test::launchDeviceBarrierScopedKernel(
-        dev_win, kBarrierId + 1, scope, num_threads, op_stream.stream());
-  }
-  op_stream.synchronize();
-
-  win->tensor_deregister();
-  win.reset();
-  mem_pool.reset();
-
-  torchcomm_->barrier(false);
-}
-
-TEST_F(DeviceApiTest, DeviceBarrierWarpScope) {
-  testDeviceBarrierScoped(torchcomms::device::CoopScope::WARP, 32);
-}
-
-TEST_F(DeviceApiTest, DeviceBarrierBlockScope) {
-  testDeviceBarrierScoped(torchcomms::device::CoopScope::BLOCK, 256);
-}
-
-// =============================================================================
-// Scope-Aware Wait/Reset Signal Tests
-// =============================================================================
-// Validates wait_signal and reset_signal with CoopScope::WARP and BLOCK.
-// Ring signal from rank i to (i+1)%N, wait with scoped kernel, reset with
-// scoped kernel, verify signal is 0 after reset.
-
-void DeviceApiTest::testWaitSignalScoped(
-    torchcomms::device::CoopScope scope,
-    int num_threads) {
-  std::string scope_name =
-      (scope == torchcomms::device::CoopScope::WARP) ? "WARP" : "BLOCK";
-  SCOPED_TRACE(
-      ::testing::Message() << "Testing Scoped WaitSignal (" << scope_name
-                           << ", threads=" << num_threads << ")");
-
-  auto op_stream = at::cuda::getStreamFromPool(false, device_index_);
-  auto wait_stream = at::cuda::getStreamFromPool(false, device_index_);
-
-  auto mem_pool = std::make_unique<at::cuda::MemPool>(
-      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
-          allocator_));
-  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
-      mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
-
-  auto options =
-      at::TensorOptions().dtype(at::kLong).device(at::kCUDA, device_index_);
-  at::Tensor win_tensor = at::zeros({1}, options);
-
-  c10::cuda::CUDACachingAllocator::endAllocateToPool(
-      mem_pool->device(), mem_pool->id());
-
-  torchcomm_->barrier(false);
-  auto win = torchcomm_->new_window();
-  win->tensor_register(win_tensor);
-  torchcomm_->barrier(false);
-
-  int signal_count = num_ranks_;
-  DeviceWindowNCCL* dev_win = static_cast<DeviceWindowNCCL*>(
-      win->get_device_window(signal_count, -1, 1));
-  ASSERT_NE(dev_win, nullptr);
+  // Minimal window — only need signal infrastructure
+  size_t count = 1;
+  auto s = createWindowSetup(
+      torchcomm_,
+      allocator_,
+      device_index_,
+      num_ranks_,
+      count,
+      /*signal_count=*/num_ranks_,
+      /*counter_count=*/-1,
+      /*barrier_count=*/1);
 
   int dst_rank = (rank_ + 1) % num_ranks_;
-  constexpr int kSignalId = 0;
+  int src_rank = (rank_ - 1 + num_ranks_) % num_ranks_;
 
-  // Signal next rank (thread scope)
+  auto stream = at::cuda::getStreamFromPool(false, device_index_);
   {
-    c10::cuda::CUDAStreamGuard guard(op_stream);
-    torchcomms::device::test::launchDeviceSignalKernel(
-        dev_win,
+    c10::cuda::CUDAStreamGuard guard(stream);
+    launchStressSignalKernel(
+        s.dev_win,
         dst_rank,
-        kSignalId,
-        torchcomms::device::SignalOp::ADD,
-        1,
-        op_stream.stream());
+        src_rank,
+        /*signal_id=*/0,
+        iterations,
+        scope,
+        num_threads,
+        stream.stream());
   }
+  // If signal is broken, this hangs — timeout is the failure signal.
+  stream.synchronize();
 
-  // Wait for signal using scoped kernel
-  {
-    c10::cuda::CUDAStreamGuard guard(wait_stream);
-    torchcomms::device::test::launchDeviceWaitSignalScopedKernel(
-        dev_win, kSignalId, 1, scope, num_threads, wait_stream.stream());
-  }
-
-  op_stream.synchronize();
-  wait_stream.synchronize();
-
-  // Reset signal using scoped kernel
-  {
-    c10::cuda::CUDAStreamGuard guard(op_stream);
-    torchcomms::device::test::launchDeviceResetSignalScopedKernel(
-        dev_win, kSignalId, scope, num_threads, op_stream.stream());
-  }
-  op_stream.synchronize();
-
-  // Verify signal is 0 after reset
-  uint64_t* d_out = nullptr;
-  ASSERT_EQ(cudaMalloc(&d_out, sizeof(uint64_t)), cudaSuccess);
-  {
-    c10::cuda::CUDAStreamGuard guard(op_stream);
-    torchcomms::device::test::launchDeviceReadSignalKernel(
-        dev_win, kSignalId, d_out, op_stream.stream());
-  }
-  op_stream.synchronize();
-
-  uint64_t h_out = 0;
-  cudaMemcpy(&h_out, d_out, sizeof(uint64_t), cudaMemcpyDeviceToHost);
-  cudaFree(d_out);
-  ASSERT_EQ(h_out, 0u) << "Signal should be 0 after scoped reset";
-
-  win->tensor_deregister();
-  win.reset();
-  mem_pool.reset();
-
-  torchcomm_->barrier(false);
+  teardownWindow(s, torchcomm_);
 }
 
-class DeviceApiScopedWaitSignalTest
-    : public DeviceApiTest,
-      public ::testing::WithParamInterface<
-          std::tuple<torchcomms::device::CoopScope, int>> {};
+void DeviceApiTest::testStressBarrier(CoopScope scope) {
+  int iterations = config_.num_iterations;
+  int num_threads = threadsForScope(scope);
 
-TEST_P(DeviceApiScopedWaitSignalTest, WaitSignalScoped) {
-  auto [scope, num_threads] = GetParam();
-  testWaitSignalScoped(scope, num_threads);
+  SCOPED_TRACE(
+      ::testing::Message() << "StressBarrier scope=" << scopeName(scope)
+                           << " iters=" << iterations);
+
+  size_t count = 1;
+  auto s = createWindowSetup(
+      torchcomm_,
+      allocator_,
+      device_index_,
+      num_ranks_,
+      count,
+      /*signal_count=*/-1,
+      /*counter_count=*/-1,
+      /*barrier_count=*/2);
+
+  auto stream = at::cuda::getStreamFromPool(false, device_index_);
+  {
+    c10::cuda::CUDAStreamGuard guard(stream);
+    launchStressBarrierKernel(
+        s.dev_win, iterations, scope, num_threads, stream.stream());
+  }
+  stream.synchronize();
+
+  teardownWindow(s, torchcomm_);
+}
+
+void DeviceApiTest::testStressCombined(size_t msg_bytes) {
+  size_t count = msg_bytes / sizeof(float);
+  if (count == 0) {
+    count = 1;
+  }
+  int iterations = config_.num_iterations;
+
+  SCOPED_TRACE(
+      ::testing::Message() << "StressCombined msg=" << formatBytes(msg_bytes)
+                           << " iters=" << iterations);
+
+  auto s = createWindowSetup(
+      torchcomm_,
+      allocator_,
+      device_index_,
+      num_ranks_,
+      count,
+      /*signal_count=*/num_ranks_,
+      /*counter_count=*/-1,
+      /*barrier_count=*/4);
+
+  int dst_rank = (rank_ + 1) % num_ranks_;
+  int src_rank = (rank_ - 1 + num_ranks_) % num_ranks_;
+  size_t bytes = count * sizeof(float);
+  size_t src_offset = 0;
+  size_t dst_offset = rank_ * bytes;
+
+  int* d_results = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_results, iterations * sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_results, 0, iterations * sizeof(int)), cudaSuccess);
+
+  auto stream = at::cuda::getStreamFromPool(false, device_index_);
+  {
+    c10::cuda::CUDAStreamGuard guard(stream);
+    launchStressCombinedKernel(
+        s.dev_win,
+        s.src_buf,
+        s.src_tensor.data_ptr<float>(),
+        s.win_tensor.data_ptr<float>(),
+        src_offset,
+        dst_offset,
+        bytes,
+        count,
+        dst_rank,
+        src_rank,
+        /*signal_id=*/0,
+        /*barrier_id_base=*/0,
+        iterations,
+        d_results,
+        stream.stream());
+  }
+  stream.synchronize();
+
+  checkKernelResults(
+      d_results, iterations, "StressCombined(" + formatBytes(msg_bytes) + ")");
+
+  cudaFree(d_results);
+  teardownWindow(s, torchcomm_);
+}
+
+// =============================================================================
+// Category 2: Concurrency
+// =============================================================================
+
+void DeviceApiTest::testMultiWindow() {
+  int num_windows = config_.window_count;
+  int iterations = config_.num_iterations / 2; // fewer iters per window
+  size_t count = 1024; // 4KB per window
+
+  SCOPED_TRACE(
+      ::testing::Message() << "MultiWindow windows=" << num_windows
+                           << " iters=" << iterations);
+
+  int dst_rank = (rank_ + 1) % num_ranks_;
+  int src_rank = (rank_ - 1 + num_ranks_) % num_ranks_;
+
+  // Create multiple windows on the same communicator
+  std::vector<WindowSetup> windows;
+  windows.reserve(num_windows);
+  for (int w = 0; w < num_windows; w++) {
+    windows.push_back(createWindowSetup(
+        torchcomm_,
+        allocator_,
+        device_index_,
+        num_ranks_,
+        count,
+        /*signal_count=*/num_ranks_,
+        /*counter_count=*/-1,
+        /*barrier_count=*/2));
+  }
+
+  // Run put iterations on each window sequentially (different streams)
+  std::vector<int*> d_results_vec(num_windows, nullptr);
+  std::vector<at::cuda::CUDAStream> streams;
+  streams.reserve(num_windows);
+
+  for (int w = 0; w < num_windows; w++) {
+    ASSERT_EQ(
+        cudaMalloc(&d_results_vec[w], iterations * sizeof(int)), cudaSuccess);
+    ASSERT_EQ(
+        cudaMemset(d_results_vec[w], 0, iterations * sizeof(int)), cudaSuccess);
+
+    auto stream = at::cuda::getStreamFromPool(false, device_index_);
+    streams.push_back(stream);
+
+    size_t bytes = count * sizeof(float);
+    c10::cuda::CUDAStreamGuard guard(stream);
+    launchStressPutKernel(
+        windows[w].dev_win,
+        windows[w].src_buf,
+        windows[w].src_tensor.data_ptr<float>(),
+        windows[w].win_tensor.data_ptr<float>(),
+        /*src_offset=*/0,
+        /*dst_offset=*/rank_ * bytes,
+        bytes,
+        count,
+        dst_rank,
+        src_rank,
+        /*signal_id=*/0,
+        iterations,
+        CoopScope::THREAD,
+        1,
+        d_results_vec[w],
+        stream.stream());
+  }
+
+  // Wait for all
+  for (auto& stream : streams) {
+    stream.synchronize();
+  }
+
+  // Verify all windows
+  for (int w = 0; w < num_windows; w++) {
+    checkKernelResults(
+        d_results_vec[w], iterations, "MultiWindow[" + std::to_string(w) + "]");
+    cudaFree(d_results_vec[w]);
+  }
+
+  for (auto& ws : windows) {
+    teardownWindow(ws, torchcomm_);
+  }
+}
+
+void DeviceApiTest::testMultiComm() {
+  int num_comms = config_.comm_count;
+  int iterations = config_.num_iterations / 2;
+  size_t count = 1024;
+
+  SCOPED_TRACE(
+      ::testing::Message() << "MultiComm comms=" << num_comms
+                           << " iters=" << iterations);
+
+  // Create multiple communicators
+  std::vector<std::unique_ptr<TorchCommTestWrapper>> wrappers;
+  wrappers.reserve(num_comms);
+  std::vector<std::shared_ptr<torch::comms::TorchComm>> comms;
+  comms.reserve(num_comms);
+  for (int c = 0; c < num_comms; c++) {
+    auto w = std::make_unique<TorchCommTestWrapper>();
+    comms.push_back(w->getTorchComm());
+    wrappers.push_back(std::move(w));
+  }
+
+  int dst_rank = (rank_ + 1) % num_ranks_;
+  int src_rank = (rank_ - 1 + num_ranks_) % num_ranks_;
+
+  // Create a window per communicator
+  std::vector<WindowSetup> windows;
+  windows.reserve(num_comms);
+  for (int c = 0; c < num_comms; c++) {
+    windows.push_back(createWindowSetup(
+        comms[c],
+        allocator_,
+        device_index_,
+        num_ranks_,
+        count,
+        /*signal_count=*/num_ranks_,
+        /*counter_count=*/-1,
+        /*barrier_count=*/2));
+  }
+
+  // Run stress put on each comm's window
+  std::vector<int*> d_results_vec(num_comms, nullptr);
+  std::vector<at::cuda::CUDAStream> streams;
+  streams.reserve(num_comms);
+
+  for (int c = 0; c < num_comms; c++) {
+    ASSERT_EQ(
+        cudaMalloc(&d_results_vec[c], iterations * sizeof(int)), cudaSuccess);
+    ASSERT_EQ(
+        cudaMemset(d_results_vec[c], 0, iterations * sizeof(int)), cudaSuccess);
+
+    auto stream = at::cuda::getStreamFromPool(false, device_index_);
+    streams.push_back(stream);
+
+    size_t bytes = count * sizeof(float);
+    c10::cuda::CUDAStreamGuard guard(stream);
+    launchStressPutKernel(
+        windows[c].dev_win,
+        windows[c].src_buf,
+        windows[c].src_tensor.data_ptr<float>(),
+        windows[c].win_tensor.data_ptr<float>(),
+        /*src_offset=*/0,
+        /*dst_offset=*/rank_ * bytes,
+        bytes,
+        count,
+        dst_rank,
+        src_rank,
+        /*signal_id=*/0,
+        iterations,
+        CoopScope::THREAD,
+        1,
+        d_results_vec[c],
+        stream.stream());
+  }
+
+  for (auto& stream : streams) {
+    stream.synchronize();
+  }
+
+  for (int c = 0; c < num_comms; c++) {
+    checkKernelResults(
+        d_results_vec[c], iterations, "MultiComm[" + std::to_string(c) + "]");
+    cudaFree(d_results_vec[c]);
+  }
+
+  for (int c = 0; c < num_comms; c++) {
+    teardownWindow(windows[c], comms[c]);
+  }
+
+  comms.clear();
+  wrappers.clear();
+}
+
+// =============================================================================
+// Category 3: Resource Exhaustion
+// =============================================================================
+
+void DeviceApiTest::testWindowLifecycle() {
+  int cycles = config_.lifecycle_cycles;
+  size_t count = 256; // Small window per cycle
+
+  SCOPED_TRACE(::testing::Message() << "WindowLifecycle cycles=" << cycles);
+
+  int dst_rank = (rank_ + 1) % num_ranks_;
+  int src_rank = (rank_ - 1 + num_ranks_) % num_ranks_;
+
+  for (int cycle = 0; cycle < cycles; cycle++) {
+    auto s = createWindowSetup(
+        torchcomm_,
+        allocator_,
+        device_index_,
+        num_ranks_,
+        count,
+        /*signal_count=*/num_ranks_,
+        /*counter_count=*/-1,
+        /*barrier_count=*/2);
+
+    // Do one put+verify per cycle
+    int* d_result = nullptr;
+    ASSERT_EQ(cudaMalloc(&d_result, sizeof(int)), cudaSuccess);
+    ASSERT_EQ(cudaMemset(d_result, 0, sizeof(int)), cudaSuccess);
+
+    size_t bytes = count * sizeof(float);
+    auto stream = at::cuda::getStreamFromPool(false, device_index_);
+    {
+      c10::cuda::CUDAStreamGuard guard(stream);
+      launchStressPutKernel(
+          s.dev_win,
+          s.src_buf,
+          s.src_tensor.data_ptr<float>(),
+          s.win_tensor.data_ptr<float>(),
+          /*src_offset=*/0,
+          /*dst_offset=*/rank_ * bytes,
+          bytes,
+          count,
+          dst_rank,
+          src_rank,
+          /*signal_id=*/0,
+          /*iterations=*/1,
+          CoopScope::THREAD,
+          1,
+          d_result,
+          stream.stream());
+    }
+    stream.synchronize();
+
+    checkKernelResults(
+        d_result, 1, "WindowLifecycle[" + std::to_string(cycle) + "]");
+    cudaFree(d_result);
+
+    teardownWindow(s, torchcomm_);
+  }
+}
+
+// =============================================================================
+// Aggregated wait_signal + read_signal + reset
+// =============================================================================
+
+void DeviceApiTest::testStressAggregatedSignal() {
+  int iterations = config_.num_iterations;
+
+  SCOPED_TRACE(
+      ::testing::Message() << "StressAggregatedSignal iters=" << iterations);
+
+  size_t count = 1;
+  auto s = createWindowSetup(
+      torchcomm_,
+      allocator_,
+      device_index_,
+      num_ranks_,
+      count,
+      /*signal_count=*/num_ranks_,
+      /*counter_count=*/-1,
+      /*barrier_count=*/2);
+
+  int dst_rank = (rank_ + 1) % num_ranks_;
+
+  int* d_results = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_results, iterations * sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_results, 0, iterations * sizeof(int)), cudaSuccess);
+
+  auto stream = at::cuda::getStreamFromPool(false, device_index_);
+  {
+    c10::cuda::CUDAStreamGuard guard(stream);
+    launchStressAggregatedSignalKernel(
+        s.dev_win,
+        dst_rank,
+        /*signal_id=*/0,
+        iterations,
+        d_results,
+        stream.stream());
+  }
+  stream.synchronize();
+
+  checkKernelResults(d_results, iterations, "StressAggregatedSignal");
+
+  cudaFree(d_results);
+  teardownWindow(s, torchcomm_);
+}
+
+// =============================================================================
+// Half-precision put
+// =============================================================================
+
+void DeviceApiTest::testStressPutHalf(size_t msg_bytes, CoopScope scope) {
+  size_t count = msg_bytes / sizeof(at::Half);
+  if (count == 0) {
+    count = 1;
+  }
+  int num_threads = threadsForScope(scope);
+  int iterations = config_.num_iterations;
+
+  SCOPED_TRACE(
+      ::testing::Message() << "StressPutHalf msg=" << formatBytes(msg_bytes)
+                           << " scope=" << scopeName(scope)
+                           << " iters=" << iterations);
+
+  auto s = createWindowSetupWithDtype(
+      torchcomm_,
+      allocator_,
+      device_index_,
+      num_ranks_,
+      count,
+      /*signal_count=*/num_ranks_,
+      /*counter_count=*/-1,
+      /*barrier_count=*/2,
+      at::kHalf);
+
+  int dst_rank = (rank_ + 1) % num_ranks_;
+  int src_rank = (rank_ - 1 + num_ranks_) % num_ranks_;
+  size_t bytes = count * sizeof(at::Half);
+  size_t src_offset = 0;
+  size_t dst_offset = rank_ * bytes;
+
+  int* d_results = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_results, iterations * sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_results, 0, iterations * sizeof(int)), cudaSuccess);
+
+  auto stream = at::cuda::getStreamFromPool(false, device_index_);
+  {
+    c10::cuda::CUDAStreamGuard guard(stream);
+    launchStressPutHalfKernel(
+        s.dev_win,
+        s.src_buf,
+        s.src_tensor.data_ptr(),
+        s.win_tensor.data_ptr(),
+        src_offset,
+        dst_offset,
+        bytes,
+        count,
+        dst_rank,
+        src_rank,
+        /*signal_id=*/0,
+        iterations,
+        scope,
+        num_threads,
+        d_results,
+        stream.stream());
+  }
+  stream.synchronize();
+
+  checkKernelResults(
+      d_results,
+      iterations,
+      "StressPutHalf(" + formatBytes(msg_bytes) + "," + scopeName(scope) + ")");
+
+  cudaFree(d_results);
+  teardownWindow(s, torchcomm_);
+}
+
+// =============================================================================
+// Parameterized Test Registrations
+// =============================================================================
+
+// --- Put: parameterized by (msg_bytes, scope) ---
+
+struct PutParam {
+  size_t msg_bytes;
+  CoopScope scope;
+};
+
+class DeviceApiPutTest : public DeviceApiTest,
+                         public ::testing::WithParamInterface<PutParam> {};
+
+TEST_P(DeviceApiPutTest, Put) {
+  testStressPut(GetParam().msg_bytes, GetParam().scope);
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    ScopeTests,
-    DeviceApiScopedWaitSignalTest,
+    StressPut,
+    DeviceApiPutTest,
     ::testing::Values(
-        std::make_tuple(torchcomms::device::CoopScope::WARP, 32),
-        std::make_tuple(torchcomms::device::CoopScope::BLOCK, 256)));
+        PutParam{4, CoopScope::THREAD},
+        PutParam{1024, CoopScope::THREAD},
+        PutParam{1048576, CoopScope::THREAD},
+        PutParam{16777216, CoopScope::THREAD},
+        PutParam{1024, CoopScope::WARP},
+        PutParam{1024, CoopScope::BLOCK},
+        PutParam{1048576, CoopScope::WARP},
+        PutParam{1048576, CoopScope::BLOCK}),
+    [](const auto& info) {
+      return std::to_string(info.param.msg_bytes) + "B_" +
+          scopeName(info.param.scope);
+    });
+
+// --- Signal: parameterized by scope ---
+
+class DeviceApiSignalTest : public DeviceApiTest,
+                            public ::testing::WithParamInterface<CoopScope> {};
+
+TEST_P(DeviceApiSignalTest, Signal) {
+  testStressSignal(GetParam());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    StressSignal,
+    DeviceApiSignalTest,
+    ::testing::Values(CoopScope::THREAD, CoopScope::WARP, CoopScope::BLOCK),
+    [](const ::testing::TestParamInfo<CoopScope>& info) {
+      return std::string(scopeName(info.param));
+    });
+
+// --- Barrier: parameterized by scope ---
+
+class DeviceApiBarrierTest : public DeviceApiTest,
+                             public ::testing::WithParamInterface<CoopScope> {};
+
+TEST_P(DeviceApiBarrierTest, Barrier) {
+  testStressBarrier(GetParam());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    StressBarrier,
+    DeviceApiBarrierTest,
+    ::testing::Values(CoopScope::THREAD, CoopScope::WARP, CoopScope::BLOCK),
+    [](const ::testing::TestParamInfo<CoopScope>& info) {
+      return std::string(scopeName(info.param));
+    });
+
+// --- Combined: parameterized by msg_bytes ---
+
+class DeviceApiCombinedTest : public DeviceApiTest,
+                              public ::testing::WithParamInterface<size_t> {};
+
+TEST_P(DeviceApiCombinedTest, Combined) {
+  testStressCombined(GetParam());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    StressCombined,
+    DeviceApiCombinedTest,
+    ::testing::Values(static_cast<size_t>(1024), static_cast<size_t>(1048576)),
+    [](const auto& info) { return std::to_string(info.param) + "B"; });
+
+// --- Non-parameterized tests ---
+
+TEST_F(DeviceApiTest, MultiWindow) {
+  testMultiWindow();
+}
+
+TEST_F(DeviceApiTest, MultiComm) {
+  testMultiComm();
+}
+
+TEST_F(DeviceApiTest, WindowLifecycle) {
+  testWindowLifecycle();
+}
+
+// --- Aggregated signal + read_signal + reset ---
+
+TEST_F(DeviceApiTest, AggregatedSignal) {
+  testStressAggregatedSignal();
+}
+
+// --- Half-precision put: 1KB THREAD only ---
+// Put is dtype-agnostic (operates on bytes). Float16 only tests tensor
+// allocation and element_size calculation, so one test suffices.
+
+TEST_F(DeviceApiTest, PutHalf) {
+  testStressPutHalf(1024, CoopScope::THREAD);
+}

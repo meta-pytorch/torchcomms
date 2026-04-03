@@ -1,153 +1,102 @@
-// Copyright (c) Meta Platforms, Inc. and affiliates.
-// CUDA kernel declarations for PipesDeviceApiTest
+// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 //
-// This header provides function declarations that can be included from
-// both .cpp (host code, compiled by clang) and .cu (CUDA code, compiled
-// by nvcc) files.
-//
-// The type aliases (DeviceWindowPipes, RegisteredBufferPipes) are defined in
-// TorchCommDevicePipesTypes.hpp which is safe to include from host code.
-// The full device implementations (Pipes transport usage, etc.) are only in
-// the .cu file which is compiled by nvcc.
+// CUDA kernel declarations for PipesDeviceApiTest (Pipes backend).
+// Host-safe header — can be included from .cpp files compiled by clang.
 
 // NOLINTNEXTLINE(clang-diagnostic-pragma-once-outside-header)
 #pragma once
 
 #include <cuda_runtime.h>
-// Include the host-safe header that provides type aliases
-// (DeviceWindowPipes = TorchCommDeviceWindow<PipesDeviceBackend>)
-// This does NOT include the device implementation code that requires nvcc.
 #include "comms/torchcomms/device/pipes/TorchCommDevicePipesTypes.hpp"
 
 namespace torchcomms::device::test {
 
-// Host-callable wrapper functions to launch CUDA kernels
-// These are defined in PipesDeviceApiTestKernels.cu
-
-// Launch standalone signal kernel - signals a peer without data transfer.
-// Tests per-peer signal model via Pipes transport (NVLink/IBGDA).
-void launchPipesSignalKernel(
+// Stress put kernel for Pipes backend.
+// Uses monotonic signal values (Pipes does NOT support reset_signal).
+void launchPipesStressPutKernel(
     DeviceWindowPipes* win,
-    int peer,
+    RegisteredBufferPipes src_buf,
+    float* src_ptr,
+    float* win_base,
+    size_t src_offset,
+    size_t dst_offset,
+    size_t bytes,
+    size_t count,
+    int dst_rank,
+    int src_rank,
     int signal_id,
-    SignalOp op,
-    uint64_t value,
+    int iterations,
+    CoopScope scope,
+    int num_threads,
+    int* results,
     cudaStream_t stream);
 
-// Launch device wait signal kernel - waits for aggregated signal from all peers
-// Note: DeviceWindowPipes* is a DEVICE pointer (allocated via cudaMalloc)
-void launchPipesWaitSignalKernel(
+// Stress signal kernel for Pipes backend.
+// Ring pattern with monotonic signal values.
+void launchPipesStressSignalKernel(
     DeviceWindowPipes* win,
+    int dst_rank,
+    int src_rank,
     int signal_id,
-    uint64_t expected_value,
+    int iterations,
+    CoopScope scope,
+    int num_threads,
     cudaStream_t stream);
 
-// Launch device reset signal kernel - resets all signal slots to 0
-// Note: DeviceWindowPipes* is a DEVICE pointer (allocated via cudaMalloc)
-void launchPipesResetSignalKernel(
+// Stress barrier kernel for Pipes backend.
+void launchPipesStressBarrierKernel(
     DeviceWindowPipes* win,
-    int signal_id,
+    int iterations,
+    CoopScope scope,
+    int num_threads,
     cudaStream_t stream);
 
-// Launch read signal kernel - reads aggregated signal value into output buffer.
-// out must be a device pointer to a single uint64_t.
+// Combined ops kernel for Pipes backend.
+// barrier -> fill -> put -> wait_signal -> verify -> barrier per iteration.
+void launchPipesStressCombinedKernel(
+    DeviceWindowPipes* win,
+    RegisteredBufferPipes src_buf,
+    float* src_ptr,
+    float* win_base,
+    size_t src_offset,
+    size_t dst_offset,
+    size_t bytes,
+    size_t count,
+    int dst_rank,
+    int src_rank,
+    int signal_id,
+    int barrier_id_base,
+    int iterations,
+    int* results,
+    cudaStream_t stream);
+
+// Stress put-with-counter kernel for Pipes backend.
+// Each iteration: put with signal+counter, wait_counter (if IBGDA),
+// wait_signal, verify data, read_counter into results array.
+void launchPipesStressPutCounterKernel(
+    DeviceWindowPipes* win,
+    RegisteredBufferPipes src_buf,
+    float* src_ptr,
+    float* win_base,
+    size_t src_offset,
+    size_t dst_offset,
+    size_t bytes,
+    size_t count,
+    int dst_rank,
+    int src_rank,
+    int signal_id,
+    int counter_id,
+    int barrier_id,
+    int iterations,
+    int* results,
+    uint64_t* counter_values,
+    cudaStream_t stream);
+
+// Read signal value into a device buffer (for host-side verification).
 void launchPipesReadSignalKernel(
     DeviceWindowPipes* win,
     int signal_id,
     uint64_t* out,
-    cudaStream_t stream);
-
-// Launch wait signal from specific peer kernel - waits for signal from a
-// single peer (not aggregated). Tests point-to-point synchronization.
-void launchPipesWaitSignalFromKernel(
-    DeviceWindowPipes* win,
-    int peer,
-    int signal_id,
-    CmpOp cmp,
-    uint64_t value,
-    cudaStream_t stream);
-
-// Launch device barrier kernel - synchronizes all ranks via barrier
-void launchPipesBarrierKernel(
-    DeviceWindowPipes* win,
-    int barrier_id,
-    cudaStream_t stream);
-
-// Launch device put kernel with signal - performs put with signal notification.
-// Ring pattern: rank puts data to dst_rank's window at dst_offset, signals
-// signal_id on completion.
-void launchPipesPutKernel(
-    DeviceWindowPipes* win,
-    RegisteredBufferPipes src_buf,
-    size_t src_offset,
-    size_t dst_offset,
-    size_t bytes,
-    int dst_rank,
-    int signal_id,
-    cudaStream_t stream);
-
-// Launch device put kernel with signal + counter - performs put_signal_counter
-// followed by flush. Does NOT call wait_counter (counter may be 0 for NVLink).
-void launchPipesPutCounterKernel(
-    DeviceWindowPipes* win,
-    RegisteredBufferPipes src_buf,
-    size_t src_offset,
-    size_t dst_offset,
-    size_t bytes,
-    int dst_rank,
-    int signal_id,
-    int counter_id,
-    cudaStream_t stream);
-
-// Launch read counter kernel - reads aggregated counter value into output
-// buffer. out must be a device pointer to a single uint64_t.
-void launchPipesReadCounterKernel(
-    DeviceWindowPipes* win,
-    int counter_id,
-    uint64_t* out,
-    cudaStream_t stream);
-
-// Launch reset counter kernel - resets counter for all peers.
-void launchPipesResetCounterKernel(
-    DeviceWindowPipes* win,
-    int counter_id,
-    cudaStream_t stream);
-
-// Launch wait_counter kernel - spin-polls aggregated counter until satisfied.
-// Only meaningful for IBGDA peers (counter stays 0 for NVLink-only).
-void launchPipesWaitCounterKernel(
-    DeviceWindowPipes* win,
-    int counter_id,
-    CmpOp cmp,
-    uint64_t value,
-    cudaStream_t stream);
-
-// Scope-aware wait_signal kernel
-void launchPipesWaitSignalScopedKernel(
-    DeviceWindowPipes* win,
-    int signal_id,
-    uint64_t expected_value,
-    CoopScope scope,
-    int num_threads,
-    cudaStream_t stream);
-
-// Scope-aware wait_signal_from kernel
-void launchPipesWaitSignalFromScopedKernel(
-    DeviceWindowPipes* win,
-    int src_rank,
-    int signal_id,
-    CmpOp cmp,
-    uint64_t value,
-    CoopScope scope,
-    int num_threads,
-    cudaStream_t stream);
-
-// Scope-aware reset_counter kernel
-void launchPipesResetCounterScopedKernel(
-    DeviceWindowPipes* win,
-    int counter_id,
-    CoopScope scope,
-    int num_threads,
     cudaStream_t stream);
 
 } // namespace torchcomms::device::test

@@ -150,12 +150,6 @@ void CUDART_CB CtranGpe::Impl::cmdDestroy(void* data) {
   if (!cmd->persistent) {
     CLOGF(WARN, "CTranGPE: cmd desctructor called for non-persistent cmd");
   }
-  // We actually don't need to do anything here, sicne
-  // ~OpElem::free() would also handle this
-  // TODO: remove in subsequent diff
-  for (const auto& x : cmd->coll.opGroup) {
-    x->setStatus(KernelElem::ElemStatus::RESET);
-  }
   delete cmd;
 }
 

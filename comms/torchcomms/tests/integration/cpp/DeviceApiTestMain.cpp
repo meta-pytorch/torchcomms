@@ -1,9 +1,7 @@
-// Copyright (c) Meta Platforms, Inc. and affiliates.
-// TorchComms Device API Integration Test Main
+// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 //
-// NOTE: TEST_F macros are in DeviceApiTest.cpp (which is compiled with
-// TORCHCOMMS_HAS_NCCL_DEVICE_API=1) to ensure consistent type resolution.
-// This file only contains the main() entry point.
+// Entry point for DeviceApiStressTest (NCCLx backend).
+// Links against the test library which statically registers all TEST_F cases.
 
 #include <gtest/gtest.h>
 

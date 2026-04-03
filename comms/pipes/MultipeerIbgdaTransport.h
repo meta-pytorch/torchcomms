@@ -411,8 +411,11 @@ class MultipeerIbgdaTransport {
 
   // Maps CUDA allocation base address -> cached MR covering the full
   // allocation. Keyed by allocBase from cuMemGetAddressRange, not by user
-  // pointer.
-  std::unordered_map<uintptr_t, CachedMr> registeredBuffers_;
+  // pointer. Ordered map enables O(log n) containment lookup via
+  // upper_bound — used by deregisterBuffer to find the owning allocation
+  // without calling cuMemGetAddressRange (which fails if CUDA already freed
+  // the memory).
+  std::map<uintptr_t, CachedMr> registeredBuffers_;
 
   // GPU PCIe bus ID and NIC device name
   std::string gpuPciBusId_;

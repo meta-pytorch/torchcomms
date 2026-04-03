@@ -1,17 +1,14 @@
-// Copyright (c) Meta Platforms, Inc. and affiliates.
-// TorchComms Device API Integration Test - NCCL GIN Backend
+// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 //
-// This test validates the device-side communication primitives using NCCL GIN.
-// It exercises get_device_window(), register_local_buffer(), and
-// deregister_local_buffer() operations from the host side.
-//
-// NOTE: This test requires NCCLX 2.28+ with device API headers.
+// Stress functional tests for TorchComm Device API — NCCLx (GIN+LSA) backend.
+// Runs each device API operation many times with data verification to catch
+// correctness issues under sustained load.
 
 #pragma once
 
 #include <gtest/gtest.h>
 #include <memory>
-#include <string>
+#include <vector>
 
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDACachingAllocator.h>
@@ -20,6 +17,7 @@
 
 #include <ATen/cuda/MemPool.h>
 
+#include "StressTestHelpers.hpp"
 #include "TorchCommTestHelpers.h"
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/device/TorchCommDeviceWindow.hpp"
@@ -30,62 +28,46 @@ class DeviceApiTest : public ::testing::Test {
   void SetUp() override;
   void TearDown() override;
 
-  // Check if test should be skipped
-  bool checkIfSkip();
+  // --- Category 1: Stress correctness (in-kernel loops) ---
 
-  // Create a wrapper for TorchComm
-  std::unique_ptr<TorchCommTestWrapper> createWrapper();
+  // Put soak: ring put with fill/verify per iteration, parameterized by scope
+  void testStressPut(size_t msg_bytes, torchcomms::device::CoopScope scope);
 
-  // Test helper functions
-  at::Tensor createTestTensor(int64_t count, at::ScalarType dtype);
-  std::string getDtypeName(at::ScalarType dtype);
+  // Signal soak: ring signal+wait_signal_from per iteration
+  void testStressSignal(torchcomms::device::CoopScope scope);
 
-  // Test functions
-  void testDeviceWindowCreation(int count, at::ScalarType dtype);
-  void testLocalBufferRegistration(int count, at::ScalarType dtype);
-  void testDeviceWindowWithSignals(int count, at::ScalarType dtype);
-  void testDeviceWindowWithCounters(int count, at::ScalarType dtype);
+  // Barrier soak: barrier called repeatedly
+  void testStressBarrier(torchcomms::device::CoopScope scope);
 
-  // Device-initiated RMA test - uses CUDA kernel to perform put
-  void testDevicePut(int count, at::ScalarType dtype);
+  // Combined: barrier -> put -> wait -> verify per iteration
+  void testStressCombined(size_t msg_bytes);
 
-  // GIN atomicAdd test - uses CUDA kernel to perform remote atomic
-  // fetch-and-add
-  void testGinAtomicAdd();
+  // Aggregated wait_signal + read_signal + reset: exercises aggregated
+  // (non-per-peer) signal path with read and reset verification
+  void testStressAggregatedSignal();
 
-  // Per-peer signal test - validates resource buffer signal model
-  // Each rank signals the next in a ring, receiver aggregates per-peer slots
-  void testPerPeerSignal();
+  // Half-precision put soak: ring put with at::kHalf data
+  void testStressPutHalf(size_t msg_bytes, torchcomms::device::CoopScope scope);
 
-  // Wait signal from specific peer test - validates point-to-point sync
-  void testWaitSignalFrom();
+  // --- Category 2: Concurrency (host-side orchestration) ---
 
-  // Device barrier test - validates world barrier (LSA + GIN)
-  void testDeviceBarrier();
+  // Multiple windows on the same communicator, each doing independent puts
+  void testMultiWindow();
 
-  // Scope-aware put test - validates cooperative put with warp/block scope
-  void testDevicePutScoped(
-      int count,
-      at::ScalarType dtype,
-      torchcomms::device::CoopScope scope,
-      int num_threads);
+  // Multiple communicators, each doing independent puts
+  void testMultiComm();
 
-  // Scope-aware barrier test - validates cooperative barrier
-  void testDeviceBarrierScoped(
-      torchcomms::device::CoopScope scope,
-      int num_threads);
+  // --- Category 3: Resource exhaustion (host-side loops) ---
 
-  // Scope-aware wait_signal + reset_signal test
-  void testWaitSignalScoped(
-      torchcomms::device::CoopScope scope,
-      int num_threads);
+  // Repeated window create/register/operate/deregister/destroy
+  void testWindowLifecycle();
 
   // Member variables
+  torchcomms::device::test::StressTestConfig config_;
   std::unique_ptr<TorchCommTestWrapper> wrapper_;
   std::shared_ptr<torch::comms::TorchComm> torchcomm_;
   std::shared_ptr<c10::Allocator> allocator_;
   int rank_{0};
   int num_ranks_{0};
   int device_index_{0};
-  at::DeviceType device_type_{at::kCUDA};
 };

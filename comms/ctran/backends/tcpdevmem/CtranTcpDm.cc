@@ -31,13 +31,13 @@ void CtranTcpDm::bootstrapPrepare(meta::comms::IBootstrap* bootstrap) {
   sin6.sin6_addr = dev->addr;
   ifAddrSockAddr.setFromSockaddr(&sin6);
   FB_SYSCHECKTHROW_EX(
-      listenSocket_.bindAndListen(ifAddrSockAddr, *dev->name),
+      listenSocket_.bindAndListen(ifAddrSockAddr, dev->name.c_str()),
       rank_,
       commHash_,
       commDesc_);
 
   std::string line =
-      ::comms::tcp_devmem::addrToString(&dev->addr, 0, *dev->name);
+      ::comms::tcp_devmem::addrToString(&dev->addr, 0, dev->name.c_str());
   CLOGF_SUBSYS(
       INFO,
       INIT,

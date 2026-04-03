@@ -1,240 +1,363 @@
-// Copyright (c) Meta Platforms, Inc. and affiliates.
-// CUDA kernels for PipesDeviceApiTest - tests device-side communication
-// primitives using the Pipes backend (IBGDA + NVLink)
+// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+//
+// CUDA kernel implementations for PipesDeviceApiTest (Pipes backend).
+// Key difference from NCCLx: Pipes does NOT support reset_signal (traps!).
+// All signal patterns use monotonic values.
 
 #include "PipesDeviceApiTestKernels.cuh"
+#include "StressTestKernelUtils.cuh"
 
-// Include the Pipes device API implementation (header-only)
 #include "comms/torchcomms/device/pipes/TorchCommDevicePipes.cuh"
 
-#include <stdexcept>
-#include <string>
-
-// NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
-#define CUDA_LAUNCH_CHECK()                                                   \
-  do {                                                                        \
-    cudaError_t err__ = cudaGetLastError();                                   \
-    if (err__ != cudaSuccess) {                                               \
-      throw std::runtime_error(                                               \
-          std::string("Kernel launch failed: ") + cudaGetErrorString(err__)); \
-    }                                                                         \
+// Kernel launch error check for test code.
+#define KERNEL_LAUNCH_CHECK()                        \
+  do {                                               \
+    cudaError_t err__ = cudaGetLastError();          \
+    assert(err__ == cudaSuccess && "kernel launch"); \
+    (void)err__;                                     \
   } while (0)
 
 namespace torchcomms::device::test {
 
-// =============================================================================
-// Standalone Signal Test Kernel
-// =============================================================================
-// Sends a signal to a peer without any associated data transfer.
-// Used to test the per-peer signal model via Pipes transport.
-//
-// Signal semantics for Pipes:
-//   - signal_id is ignored (slots are indexed by sender rank, not signal_id)
-//   - NVL path: atomicAdd/store to remote signal slot at nvl_remote_signal_ptr
-//   - IBGDA path: signal_remote_with_fence to peer's remote signal buffer
-
-__global__ void pipesSignalKernel(
+// ---------------------------------------------------------------------------
+// Stress Put Kernel (Pipes)
+// ---------------------------------------------------------------------------
+__global__ void pipesStressPutKernel(
     DeviceWindowPipes* win,
-    int peer,
+    RegisteredBufferPipes src_buf,
+    float* src_ptr,
+    float* win_base,
+    size_t src_offset,
+    size_t dst_offset,
+    size_t bytes,
+    size_t count,
+    int dst_rank,
+    int src_rank,
     int signal_id,
-    SignalOp op,
-    uint64_t value) {
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    win->signal(peer, signal_id, op, value);
+    int iterations,
+    CoopScope scope,
+    int* results) {
+  int rank = win->rank();
+
+  for (int iter = 0; iter < iterations; iter++) {
+    fillPattern(src_ptr, count, rank, iter);
+    __syncthreads();
+
+    // Monotonic signals: each put adds 1 to signal_id on destination
+    win->put(
+        dst_offset, src_buf, src_offset, dst_rank, bytes, signal_id, -1, scope);
+    win->flush(scope);
+
+    // Wait for monotonic signal value (no reset — Pipes doesn't support it)
+    win->wait_signal(
+        signal_id, CmpOp::GE, static_cast<uint64_t>(iter + 1), scope);
+
+    float* recv_slot = win_base + src_rank * count;
+    verifyPattern(recv_slot, count, src_rank, iter, &results[iter]);
+    __syncthreads();
+
+    // Reverse signal: tell the sender we're done reading, so it can safely
+    // overwrite our receive slot in the next iteration.
+    // All threads must call signal() — Pipes signal_peer(group, ...) has
+    // group.sync() internally, so all threads in the group must participate.
+    win->signal(src_rank, signal_id + 1, SignalOp::ADD, 1, scope);
+    __syncthreads();
+
+    // Wait for receiver of our data to finish reading before next put
+    win->wait_signal(
+        signal_id + 1, CmpOp::GE, static_cast<uint64_t>(iter + 1), scope);
   }
 }
 
-// =============================================================================
-// Wait Signal Kernel
-// =============================================================================
-// Waits for aggregated signal from all peers to reach expected_value.
-// Pipes aggregates by summing all per-sender slots in local signal buffer.
-
-__global__ void pipesWaitSignalKernel(
+void launchPipesStressPutKernel(
     DeviceWindowPipes* win,
+    RegisteredBufferPipes src_buf,
+    float* src_ptr,
+    float* win_base,
+    size_t src_offset,
+    size_t dst_offset,
+    size_t bytes,
+    size_t count,
+    int dst_rank,
+    int src_rank,
     int signal_id,
-    uint64_t expected_value) {
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    win->wait_signal(signal_id, CmpOp::GE, expected_value);
+    int iterations,
+    CoopScope scope,
+    int num_threads,
+    int* results,
+    cudaStream_t stream) {
+  pipesStressPutKernel<<<1, num_threads, 0, stream>>>(
+      win,
+      src_buf,
+      src_ptr,
+      win_base,
+      src_offset,
+      dst_offset,
+      bytes,
+      count,
+      dst_rank,
+      src_rank,
+      signal_id,
+      iterations,
+      scope,
+      results);
+  KERNEL_LAUNCH_CHECK();
+}
+
+// ---------------------------------------------------------------------------
+// Stress Signal Kernel (Pipes)
+// ---------------------------------------------------------------------------
+__global__ void pipesStressSignalKernel(
+    DeviceWindowPipes* win,
+    int dst_rank,
+    int src_rank,
+    int signal_id,
+    int iterations,
+    CoopScope scope) {
+  for (int iter = 0; iter < iterations; iter++) {
+    // All threads must call signal() — Pipes signal_peer(group, ...) has
+    // group.sync() internally, so all threads in the group must participate.
+    win->signal(dst_rank, signal_id, SignalOp::ADD, 1, scope);
+    __syncthreads();
+
+    win->wait_signal_from(
+        src_rank, signal_id, CmpOp::GE, static_cast<uint64_t>(iter + 1), scope);
   }
 }
 
-// =============================================================================
-// Reset Signal Kernel
-// =============================================================================
-// Resets all per-sender signal slots to 0.
+void launchPipesStressSignalKernel(
+    DeviceWindowPipes* win,
+    int dst_rank,
+    int src_rank,
+    int signal_id,
+    int iterations,
+    CoopScope scope,
+    int num_threads,
+    cudaStream_t stream) {
+  pipesStressSignalKernel<<<1, num_threads, 0, stream>>>(
+      win, dst_rank, src_rank, signal_id, iterations, scope);
+  KERNEL_LAUNCH_CHECK();
+}
 
-__global__ void pipesResetSignalKernel(DeviceWindowPipes* win, int signal_id) {
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    win->reset_signal(signal_id);
+// ---------------------------------------------------------------------------
+// Stress Barrier Kernel (Pipes)
+// ---------------------------------------------------------------------------
+__global__ void pipesStressBarrierKernel(
+    DeviceWindowPipes* win,
+    int iterations,
+    CoopScope scope) {
+  for (int iter = 0; iter < iterations; iter++) {
+    // Pipes uses a shared barrierExpected_ counter across all barrier IDs,
+    // so we must reuse the same barrier_id (not alternate like NCCLx).
+    win->barrier(0, scope);
   }
 }
 
-// =============================================================================
-// Read Signal Kernel
-// =============================================================================
-// Reads the aggregated signal value (sum of all per-sender slots).
+void launchPipesStressBarrierKernel(
+    DeviceWindowPipes* win,
+    int iterations,
+    CoopScope scope,
+    int num_threads,
+    cudaStream_t stream) {
+  pipesStressBarrierKernel<<<1, num_threads, 0, stream>>>(
+      win, iterations, scope);
+  KERNEL_LAUNCH_CHECK();
+}
 
+// ---------------------------------------------------------------------------
+// Combined Ops Kernel (Pipes)
+// ---------------------------------------------------------------------------
+__global__ void pipesStressCombinedKernel(
+    DeviceWindowPipes* win,
+    RegisteredBufferPipes src_buf,
+    float* src_ptr,
+    float* win_base,
+    size_t src_offset,
+    size_t dst_offset,
+    size_t bytes,
+    size_t count,
+    int dst_rank,
+    int src_rank,
+    int signal_id,
+    int barrier_id_base,
+    int iterations,
+    int* results) {
+  int rank = win->rank();
+
+  for (int iter = 0; iter < iterations; iter++) {
+    // Pipes uses a shared barrierExpected_ counter — must reuse same ID
+    win->barrier(barrier_id_base);
+
+    fillPattern(src_ptr, count, rank, iter);
+
+    if (threadIdx.x == 0) {
+      win->put(dst_offset, src_buf, src_offset, dst_rank, bytes, signal_id, -1);
+      win->flush();
+    }
+    __syncthreads();
+
+    if (threadIdx.x == 0) {
+      win->wait_signal(signal_id, CmpOp::GE, static_cast<uint64_t>(iter + 1));
+    }
+    __syncthreads();
+
+    float* recv_slot = win_base + src_rank * count;
+    verifyPattern(recv_slot, count, src_rank, iter, &results[iter]);
+    __syncthreads();
+  }
+}
+
+void launchPipesStressCombinedKernel(
+    DeviceWindowPipes* win,
+    RegisteredBufferPipes src_buf,
+    float* src_ptr,
+    float* win_base,
+    size_t src_offset,
+    size_t dst_offset,
+    size_t bytes,
+    size_t count,
+    int dst_rank,
+    int src_rank,
+    int signal_id,
+    int barrier_id_base,
+    int iterations,
+    int* results,
+    cudaStream_t stream) {
+  pipesStressCombinedKernel<<<1, 1, 0, stream>>>(
+      win,
+      src_buf,
+      src_ptr,
+      win_base,
+      src_offset,
+      dst_offset,
+      bytes,
+      count,
+      dst_rank,
+      src_rank,
+      signal_id,
+      barrier_id_base,
+      iterations,
+      results);
+  KERNEL_LAUNCH_CHECK();
+}
+
+// ---------------------------------------------------------------------------
+// Stress Put with Counter Kernel (Pipes)
+// ---------------------------------------------------------------------------
+// Each iteration: fill src, put with signal+counter, wait_counter (if IBGDA
+// counters are active), wait_signal on receiver, verify data, write
+// counter value to output array. Uses monotonic signals (no reset).
+__global__ void pipesStressPutCounterKernel(
+    DeviceWindowPipes* win,
+    RegisteredBufferPipes src_buf,
+    float* src_ptr,
+    float* win_base,
+    size_t src_offset,
+    size_t dst_offset,
+    size_t bytes,
+    size_t count,
+    int dst_rank,
+    int src_rank,
+    int signal_id,
+    int counter_id,
+    int barrier_id,
+    int iterations,
+    int* results,
+    uint64_t* counter_values) {
+  int rank = win->rank();
+
+  for (int iter = 0; iter < iterations; iter++) {
+    // Barrier ensures all ranks finished verifying previous iteration before
+    // any rank starts the next put (prevents data race on receive slots).
+    win->barrier(barrier_id);
+
+    fillPattern(src_ptr, count, rank, iter);
+    __syncthreads();
+
+    if (threadIdx.x == 0) {
+      // Put with signal + counter
+      win->put(
+          dst_offset,
+          src_buf,
+          src_offset,
+          dst_rank,
+          bytes,
+          signal_id,
+          counter_id);
+      win->flush();
+    }
+    __syncthreads();
+
+    // Read counter value — IBGDA peers increment it, NVLink peers leave at 0
+    if (threadIdx.x == 0) {
+      counter_values[iter] = win->read_counter(counter_id);
+    }
+    __syncthreads();
+
+    // Wait for signal from sender (monotonic)
+    if (threadIdx.x == 0) {
+      win->wait_signal(signal_id, CmpOp::GE, static_cast<uint64_t>(iter + 1));
+    }
+    __syncthreads();
+
+    float* recv_slot = win_base + src_rank * count;
+    verifyPattern(recv_slot, count, src_rank, iter, &results[iter]);
+    __syncthreads();
+
+    // Reset counter for next iteration
+    if (threadIdx.x == 0) {
+      win->reset_counter(counter_id);
+    }
+    __syncthreads();
+  }
+}
+
+void launchPipesStressPutCounterKernel(
+    DeviceWindowPipes* win,
+    RegisteredBufferPipes src_buf,
+    float* src_ptr,
+    float* win_base,
+    size_t src_offset,
+    size_t dst_offset,
+    size_t bytes,
+    size_t count,
+    int dst_rank,
+    int src_rank,
+    int signal_id,
+    int counter_id,
+    int barrier_id,
+    int iterations,
+    int* results,
+    uint64_t* counter_values,
+    cudaStream_t stream) {
+  pipesStressPutCounterKernel<<<1, 1, 0, stream>>>(
+      win,
+      src_buf,
+      src_ptr,
+      win_base,
+      src_offset,
+      dst_offset,
+      bytes,
+      count,
+      dst_rank,
+      src_rank,
+      signal_id,
+      counter_id,
+      barrier_id,
+      iterations,
+      results,
+      counter_values);
+  KERNEL_LAUNCH_CHECK();
+}
+
+// ---------------------------------------------------------------------------
+// Read Signal Kernel (for host-side verification)
+// ---------------------------------------------------------------------------
 __global__ void
-pipesReadSignalKernel(DeviceWindowPipes* win, int signal_id, uint64_t* out) {
+pipesReadSignalKernel_(DeviceWindowPipes* win, int signal_id, uint64_t* out) {
   if (threadIdx.x == 0 && blockIdx.x == 0) {
     *out = win->read_signal(signal_id);
   }
-}
-
-// =============================================================================
-// Wait Signal From Specific Peer Kernel
-// =============================================================================
-// Waits for a signal from a specific peer rank (point-to-point, not
-// aggregated).
-
-__global__ void pipesWaitSignalFromKernel(
-    DeviceWindowPipes* win,
-    int peer,
-    int signal_id,
-    CmpOp cmp,
-    uint64_t value) {
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    win->wait_signal_from(peer, signal_id, cmp, value);
-  }
-}
-
-// =============================================================================
-// Barrier Kernel
-// =============================================================================
-// Synchronizes all ranks via DeviceWindow::barrier().
-
-__global__ void pipesBarrierKernel(DeviceWindowPipes* win, int barrier_id) {
-  // WARP scope: all 32 threads participate in the barrier collectively.
-  // NOTE: Pipes barriers use monotonic counters (barrierExpected_ accumulates).
-  // When DeviceWindow is accessed via pointer (not by value), barrierExpected_
-  // persists across kernel launches. Multiple barriers must reuse the same
-  // barrier_id (counters accumulate in lockstep).
-  win->barrier(barrier_id, CoopScope::WARP);
-}
-
-// =============================================================================
-// Put with Signal Kernel
-// =============================================================================
-// Performs a put operation to dst_rank with signal notification.
-// Single thread performs the put + flush (CoopScope::THREAD).
-
-__global__ void pipesPutKernel(
-    DeviceWindowPipes* win,
-    RegisteredBufferPipes src_buf,
-    size_t src_offset,
-    size_t dst_offset,
-    size_t bytes,
-    int dst_rank,
-    int signal_id) {
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    win->put(dst_offset, src_buf, src_offset, dst_rank, bytes, signal_id, -1);
-    win->flush();
-  }
-}
-
-// =============================================================================
-// Put with Signal + Counter Kernel
-// =============================================================================
-// Performs a put with both signal and counter.
-// Counter is only incremented for IBGDA peers (companion QP loopback atomic).
-// For NVLink-only peers, counter stays 0 (silently ignored, same as GIN LSA).
-// Caller should NOT wait_counter for NVLink-only configs — it would spin
-// forever.
-
-__global__ void pipesPutCounterKernel(
-    DeviceWindowPipes* win,
-    RegisteredBufferPipes src_buf,
-    size_t src_offset,
-    size_t dst_offset,
-    size_t bytes,
-    int dst_rank,
-    int signal_id,
-    int counter_id) {
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    win->put(
-        dst_offset,
-        src_buf,
-        src_offset,
-        dst_rank,
-        bytes,
-        signal_id,
-        counter_id);
-    win->flush();
-  }
-}
-
-// =============================================================================
-// Read Counter Kernel
-// =============================================================================
-// Reads the aggregated counter value (summed across all peers).
-
-__global__ void
-pipesReadCounterKernel(DeviceWindowPipes* win, int counter_id, uint64_t* out) {
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    *out = win->read_counter(counter_id);
-  }
-}
-
-// =============================================================================
-// Reset Counter Kernel
-// =============================================================================
-// Resets counter for all peers.
-
-__global__ void pipesResetCounterKernel(
-    DeviceWindowPipes* win,
-    int counter_id) {
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    win->reset_counter(counter_id);
-  }
-}
-
-// =============================================================================
-// Wait Counter Kernel
-// =============================================================================
-// Spin-polls aggregated counter until it satisfies the comparison.
-// Only meaningful for IBGDA peers — NVLink counters stay 0.
-
-__global__ void pipesWaitCounterKernel(
-    DeviceWindowPipes* win,
-    int counter_id,
-    CmpOp cmp,
-    uint64_t value) {
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    win->wait_counter(counter_id, cmp, value);
-  }
-}
-
-// =============================================================================
-// Host-callable wrapper functions
-// =============================================================================
-
-void launchPipesSignalKernel(
-    DeviceWindowPipes* win,
-    int peer,
-    int signal_id,
-    SignalOp op,
-    uint64_t value,
-    cudaStream_t stream) {
-  pipesSignalKernel<<<1, 1, 0, stream>>>(win, peer, signal_id, op, value);
-  CUDA_LAUNCH_CHECK();
-}
-
-void launchPipesWaitSignalKernel(
-    DeviceWindowPipes* win,
-    int signal_id,
-    uint64_t expected_value,
-    cudaStream_t stream) {
-  pipesWaitSignalKernel<<<1, 1, 0, stream>>>(win, signal_id, expected_value);
-  CUDA_LAUNCH_CHECK();
-}
-
-void launchPipesResetSignalKernel(
-    DeviceWindowPipes* win,
-    int signal_id,
-    cudaStream_t stream) {
-  pipesResetSignalKernel<<<1, 1, 0, stream>>>(win, signal_id);
-  CUDA_LAUNCH_CHECK();
 }
 
 void launchPipesReadSignalKernel(
@@ -242,175 +365,8 @@ void launchPipesReadSignalKernel(
     int signal_id,
     uint64_t* out,
     cudaStream_t stream) {
-  pipesReadSignalKernel<<<1, 1, 0, stream>>>(win, signal_id, out);
-  CUDA_LAUNCH_CHECK();
-}
-
-void launchPipesWaitSignalFromKernel(
-    DeviceWindowPipes* win,
-    int peer,
-    int signal_id,
-    CmpOp cmp,
-    uint64_t value,
-    cudaStream_t stream) {
-  pipesWaitSignalFromKernel<<<1, 1, 0, stream>>>(
-      win, peer, signal_id, cmp, value);
-  CUDA_LAUNCH_CHECK();
-}
-
-void launchPipesBarrierKernel(
-    DeviceWindowPipes* win,
-    int barrier_id,
-    cudaStream_t stream) {
-  // Launch with 32 threads (1 warp) to match CoopScope::WARP in the kernel.
-  pipesBarrierKernel<<<1, 32, 0, stream>>>(win, barrier_id);
-  CUDA_LAUNCH_CHECK();
-}
-
-void launchPipesPutKernel(
-    DeviceWindowPipes* win,
-    RegisteredBufferPipes src_buf,
-    size_t src_offset,
-    size_t dst_offset,
-    size_t bytes,
-    int dst_rank,
-    int signal_id,
-    cudaStream_t stream) {
-  pipesPutKernel<<<1, 1, 0, stream>>>(
-      win, src_buf, src_offset, dst_offset, bytes, dst_rank, signal_id);
-  CUDA_LAUNCH_CHECK();
-}
-
-void launchPipesPutCounterKernel(
-    DeviceWindowPipes* win,
-    RegisteredBufferPipes src_buf,
-    size_t src_offset,
-    size_t dst_offset,
-    size_t bytes,
-    int dst_rank,
-    int signal_id,
-    int counter_id,
-    cudaStream_t stream) {
-  pipesPutCounterKernel<<<1, 1, 0, stream>>>(
-      win,
-      src_buf,
-      src_offset,
-      dst_offset,
-      bytes,
-      dst_rank,
-      signal_id,
-      counter_id);
-  CUDA_LAUNCH_CHECK();
-}
-
-void launchPipesReadCounterKernel(
-    DeviceWindowPipes* win,
-    int counter_id,
-    uint64_t* out,
-    cudaStream_t stream) {
-  pipesReadCounterKernel<<<1, 1, 0, stream>>>(win, counter_id, out);
-  CUDA_LAUNCH_CHECK();
-}
-
-void launchPipesResetCounterKernel(
-    DeviceWindowPipes* win,
-    int counter_id,
-    cudaStream_t stream) {
-  pipesResetCounterKernel<<<1, 1, 0, stream>>>(win, counter_id);
-  CUDA_LAUNCH_CHECK();
-}
-
-void launchPipesWaitCounterKernel(
-    DeviceWindowPipes* win,
-    int counter_id,
-    CmpOp cmp,
-    uint64_t value,
-    cudaStream_t stream) {
-  pipesWaitCounterKernel<<<1, 1, 0, stream>>>(win, counter_id, cmp, value);
-  CUDA_LAUNCH_CHECK();
-}
-
-// =============================================================================
-// Scoped Wait Signal Kernel
-// =============================================================================
-// Waits for aggregated signal using the specified CoopScope.
-
-__global__ void pipesWaitSignalScopedKernel(
-    DeviceWindowPipes* win,
-    int signal_id,
-    uint64_t expected_value,
-    CoopScope scope) {
-  if (blockIdx.x == 0) {
-    win->wait_signal(signal_id, CmpOp::GE, expected_value, scope);
-  }
-}
-
-void launchPipesWaitSignalScopedKernel(
-    DeviceWindowPipes* win,
-    int signal_id,
-    uint64_t expected_value,
-    CoopScope scope,
-    int num_threads,
-    cudaStream_t stream) {
-  pipesWaitSignalScopedKernel<<<1, num_threads, 0, stream>>>(
-      win, signal_id, expected_value, scope);
-  CUDA_LAUNCH_CHECK();
-}
-
-// =============================================================================
-// Scoped Wait Signal From Kernel
-// =============================================================================
-// Waits for signal from a specific peer using the specified CoopScope.
-
-__global__ void pipesWaitSignalFromScopedKernel(
-    DeviceWindowPipes* win,
-    int src_rank,
-    int signal_id,
-    CmpOp cmp,
-    uint64_t value,
-    CoopScope scope) {
-  if (blockIdx.x == 0) {
-    win->wait_signal_from(src_rank, signal_id, cmp, value, scope);
-  }
-}
-
-void launchPipesWaitSignalFromScopedKernel(
-    DeviceWindowPipes* win,
-    int src_rank,
-    int signal_id,
-    CmpOp cmp,
-    uint64_t value,
-    CoopScope scope,
-    int num_threads,
-    cudaStream_t stream) {
-  pipesWaitSignalFromScopedKernel<<<1, num_threads, 0, stream>>>(
-      win, src_rank, signal_id, cmp, value, scope);
-  CUDA_LAUNCH_CHECK();
-}
-
-// =============================================================================
-// Scoped Reset Counter Kernel
-// =============================================================================
-// Resets counter for all peers using the specified CoopScope.
-
-__global__ void pipesResetCounterScopedKernel(
-    DeviceWindowPipes* win,
-    int counter_id,
-    CoopScope scope) {
-  if (blockIdx.x == 0) {
-    win->reset_counter(counter_id, scope);
-  }
-}
-
-void launchPipesResetCounterScopedKernel(
-    DeviceWindowPipes* win,
-    int counter_id,
-    CoopScope scope,
-    int num_threads,
-    cudaStream_t stream) {
-  pipesResetCounterScopedKernel<<<1, num_threads, 0, stream>>>(
-      win, counter_id, scope);
-  CUDA_LAUNCH_CHECK();
+  pipesReadSignalKernel_<<<1, 1, 0, stream>>>(win, signal_id, out);
+  KERNEL_LAUNCH_CHECK();
 }
 
 } // namespace torchcomms::device::test
