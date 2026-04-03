@@ -114,11 +114,8 @@ __device__ int torchcomms_flush_block(void* win_ptr) {
 }
 
 __device__ int torchcomms_barrier_block(void* win_ptr, int barrier_id) {
-  if (threadIdx.x != 0) {
-    return 0;
-  }
   auto* win = reinterpret_cast<DeviceWindow*>(win_ptr);
-  return win->barrier(barrier_id, CoopScope::THREAD);
+  return win->barrier(barrier_id, CoopScope::BLOCK);
 }
 
 // =============================================================================
