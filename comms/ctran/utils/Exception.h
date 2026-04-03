@@ -69,4 +69,16 @@ class Exception : public std::exception {
   std::optional<uint64_t> commHash_;
   std::optional<std::string> desc_;
 };
+
+class BackendAllocException : public std::bad_alloc {
+ public:
+  explicit BackendAllocException(std::string msg) : msg_(std::move(msg)) {}
+  const char* what() const noexcept override {
+    return msg_.c_str();
+  }
+
+ private:
+  std::string msg_;
+};
+
 } // namespace ctran::utils
