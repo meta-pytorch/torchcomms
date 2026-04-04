@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
-#include "comms/testinfra/TestsDistUtils.h"
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
+#include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 
 namespace {
 
@@ -15,26 +16,27 @@ size_t getGpuMemorySnapshot() {
 
 } // namespace
 
-class NcclCommMemoryBench : public NcclxBaseTest {
+class NcclCommMemoryBench : public NcclxBaseTestFixture {
  public:
   void SetUp() override {
     setenv("NCCL_CTRAN_ENABLE", "1", 0);
     setenv("NCCL_COMM_STATE_DEBUG_TOPO", "vnode", 0);
     setenv("NCCL_RUNTIME_CONNECT", "0", 0);
     setenv("NCCL_LAZY_SETUP_CHANNELS", "0", 0);
-    NcclxBaseTest::SetUp();
+    NcclxBaseTestFixture::SetUp();
 
     CUDACHECK_TEST(cudaSetDevice(localRank));
   }
 
   void TearDown() override {
-    NcclxBaseTest::TearDown();
+    NcclxBaseTestFixture::TearDown();
   }
 };
 
 TEST_F(NcclCommMemoryBench, MeasureCommMemory) {
   auto before = getGpuMemorySnapshot();
-  NcclCommRAII comm(globalRank, numRanks, localRank);
+  ncclx::test::NcclCommRAII comm(
+      globalRank, numRanks, localRank, bootstrap_.get());
   auto after = getGpuMemorySnapshot();
 
   size_t memoryUsedBytes = after - before;

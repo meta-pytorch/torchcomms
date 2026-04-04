@@ -10,21 +10,21 @@
 #include <cstddef>
 #include "checks.h"
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
+
+#include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/testinfra/AlgoTestUtils.h"
-#include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/hints/GlobalHints.h"
 
 static bool VERBOSE = true;
 using testinfra::AlgoRAII;
 
-class SendRecvTest : public NcclxBaseTest {
+class SendRecvTest : public NcclxBaseTestFixture {
  public:
   SendRecvTest() = default;
   void SetUp() override {
     setenv("NCCL_CTRAN_ENABLE", "1", 1);
-    NcclxBaseTest::SetUp();
+    NcclxBaseTestFixture::SetUp();
     this->comm = ncclx::test::createNcclComm(
         globalRank, numRanks, localRank, bootstrap_.get());
 
@@ -35,7 +35,7 @@ class SendRecvTest : public NcclxBaseTest {
   void TearDown() override {
     NCCLCHECK_TEST(ncclCommDestroy(this->comm));
     CUDACHECK_TEST(cudaStreamDestroy(this->stream));
-    NcclxBaseTest::TearDown();
+    NcclxBaseTestFixture::TearDown();
   }
 
   void prepareBufs(const size_t count, bool registFlag = false) {
