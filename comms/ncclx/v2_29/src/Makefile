@@ -54,7 +54,7 @@ LIBSRCFILES := \
 
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/*.cc)
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/analyzer/*.cc)
-LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/colltrace/*.cc)
+LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/colltrace/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/logger/*.cc)
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/tcpstore/*.cc)
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/transport/*.cc)

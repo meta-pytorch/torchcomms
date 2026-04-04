@@ -14,8 +14,12 @@ namespace {
 ncclResult_t waitGraphCaptureComplete(cudaStream_t stream) {
   struct ncclCudaGraph graph;
   do {
+#if NCCL_MINOR >= 29
     // FIXME[max7255]: should pass the graphmode variable here
     auto res = ncclCudaGetCapturingGraph(&graph, stream, 0);
+#else
+    auto res = ncclCudaGetCapturingGraph(&graph, stream);
+#endif
     if (res != ncclSuccess) {
       WARN_FIRST_N(
           1, "Internal error: ncclCudaGetCapturingGraph failed by %d", res);
