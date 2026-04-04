@@ -608,15 +608,28 @@ TEST_F(CollTraceTest, winPutWait) {
   int prevPeer = (this->globalRank + this->numRanks - 1) % this->numRanks;
 
   for (auto iter = 0; iter < kNumIters; iter++) {
-    NCCLCHECK_TEST(ncclPutSignal(
-        localbuf + kNumElements * statex->rank(),
-        kNumElements,
-        ncclInt32,
-        nextPeer,
-        kNumElements * statex->rank(),
-        win,
-        put_stream));
+    NCCLCHECK_TEST(
+#if NCCL_MINOR >= 29
+        ncclx::ncclPutSignal(
+            localbuf + kNumElements * statex->rank(),
+            kNumElements,
+            ncclInt32,
+            nextPeer,
+            kNumElements * statex->rank(),
+            win,
+            put_stream));
+    NCCLCHECK_TEST(ncclx::ncclWaitSignal(prevPeer, win, wait_stream));
+#else
+        ncclPutSignal(
+            localbuf + kNumElements * statex->rank(),
+            kNumElements,
+            ncclInt32,
+            nextPeer,
+            kNumElements * statex->rank(),
+            win,
+            put_stream));
     NCCLCHECK_TEST(ncclWaitSignal(prevPeer, win, wait_stream));
+#endif
   }
 
   int errs = 0;

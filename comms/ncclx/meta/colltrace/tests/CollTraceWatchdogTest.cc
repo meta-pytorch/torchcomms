@@ -230,8 +230,14 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorFromGPE) {
   auto dstRank = (rank + 1) % worldSize;
 
   NCCLCHECK_FATAL(
+#if NCCL_MINOR >= 29
+      ncclx::ncclPutSignal(
+          sendBuff, 32, ncclFloat, dstRank, 0, win, stream.raw()));
+  NCCLCHECK_FATAL(ncclx::ncclWaitSignal(srcRank, win, stream.raw()));
+#else
       ncclPutSignal(sendBuff, 32, ncclFloat, dstRank, 0, win, stream.raw()));
   NCCLCHECK_FATAL(ncclWaitSignal(srcRank, win, stream.raw()));
+#endif
   waitStreamWithTimeout(stream.raw(), std::chrono::seconds{80});
 }
 
