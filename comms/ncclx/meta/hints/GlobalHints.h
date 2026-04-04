@@ -27,15 +27,18 @@ struct HintKeys {
       "ncclx.comm.algo_reducescatter";
   // disable local (P2P and SHM) transports at communicator creation time
   static constexpr std::string_view kCommNoLocal = "ncclx.comm.nolocal";
+  // override per-communicator virtual NVL clique size
+  static constexpr std::string_view kVCliqueSize = "ncclx.comm.vCliqueSize";
 };
 
-constexpr std::array<std::string_view, 6> kHintKeysArray = {
+constexpr std::array<std::string_view, 7> kHintKeysArray = {
     HintKeys::kCollTraceCrashOnAsyncError,
     HintKeys::kCollTraceCrashOnTimeout,
     HintKeys::kCollTraceTimeoutMs,
     HintKeys::kCommUseCtran,
     HintKeys::kCommAlgoReduceScatter,
-    HintKeys::kCommNoLocal};
+    HintKeys::kCommNoLocal,
+    HintKeys::kVCliqueSize};
 
 using GlobalSetHintHook =
     std::function<void(const std::string& key, const std::string& val)>;

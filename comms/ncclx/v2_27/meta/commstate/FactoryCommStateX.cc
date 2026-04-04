@@ -4,6 +4,7 @@
 #include "comms/ctran/commstate/CommStateX.h"
 #include "comms/ctran/utils/Checks.h"
 #include "meta/NcclxConfig.h" // @manual
+#include "meta/hints/CommHintConfig.h" // @manual
 
 #include "bootstrap.h"
 #include "nvmlwrap.h"
@@ -53,7 +54,8 @@ std::unique_ptr<CommStateX> createCommStateXFromNcclComm(void* _comm) {
       std::vector<RankTopology>(), /* rankTopologies */
       std::vector<int>(), /* commRanksToWorldRanks */
       NCCLX_CONFIG_FIELD(comm->config, commDesc),
-      comm->noLocal_);
+      comm->noLocal_,
+      commVCliqueSize(NCCLX_CONFIG_FIELD(comm->config, vCliqueSize)));
 
   if (comm->noLocal_ ||
       NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::nolocal) {
@@ -132,7 +134,8 @@ ncclResult_t initNvlFabricTopologies(ncclComm* ncclComm, CtranComm* ctranComm) {
     }
     nvlFabricTopos.emplace_back(std::move(topo));
   }
-  ctranComm->statex_->setNvlFabricTopos(std::move(nvlFabricTopos));
+  ctranComm->statex_->setNvlFabricTopos(
+      std::move(nvlFabricTopos), std::nullopt);
   return ncclSuccess;
 }
 

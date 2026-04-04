@@ -25,6 +25,15 @@ inline bool commNoLocal() {
   return getTypedGlobalHint<bool>(HintKeys::kCommNoLocal).value_or(false);
 }
 
+// Resolve vCliqueSize: global hint overrides per-comm value when set.
+inline int commVCliqueSize(int perCommValue) {
+  auto globalVal = getTypedGlobalHint<int>(HintKeys::kVCliqueSize);
+  if (globalVal.has_value()) {
+    return globalVal.value();
+  }
+  return perCommValue;
+}
+
 const std::string getCommUseCtranConfig();
 const std::string getCommUsePatAvgConfig();
 const std::string getCommNoLocalConfig();

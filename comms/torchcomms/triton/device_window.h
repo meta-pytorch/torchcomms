@@ -63,22 +63,20 @@ typedef void* TorchCommsBufferHandle;
 // =============================================================================
 
 // Block-scope put: all block threads cooperate on the transfer.
-// src buffer specified by its components (base_ptr, size, nccl_win) rather
-// than a pointer to a RegisteredBuffer struct. This avoids GPU memory
-// allocation conflicts with NCCLX's cuMemMap-based memory management.
+// src buffer specified by a device pointer to a RegisteredBuffer struct,
+// allocated in device memory by the host-side register_local_buffer() call.
+// The struct is allocated via cudaMalloc (separate VA space from NCCLX's
+// cuMemMap) and freed on deregister_local_buffer().
 // Returns: 0 on success, negative on error
 __device__ int torchcomms_put_block(
     TorchCommsWindowHandle win,
     unsigned long long dst_offset,
-    void* src_base_ptr,
-    unsigned long long src_size,
-    void* src_nccl_win,
+    void* src_buf_ptr,
     unsigned long long src_offset,
     int dst_rank,
     unsigned long long bytes,
     int signal_id,
-    int counter_id,
-    unsigned int src_lkey);
+    int counter_id);
 
 // Block-scope self-copy: local memory copy using all block threads.
 // Used for self-send (peer == my_rank) in alltoallv.

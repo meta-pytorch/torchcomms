@@ -7,7 +7,7 @@
 #include <nccl.h>
 #include "VerifyAlgoStatsUtil.h"
 #include "collectives.h"
-#include "comms/testinfra/TestsDistUtils.h"
+#include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "device.h"
@@ -30,13 +30,13 @@ struct InfoExtAllReduceParams {
 };
 
 class InfoExtAllReduceTest
-    : public NcclxBaseTest,
+    : public NcclxBaseTestFixture,
       public ::testing::WithParamInterface<InfoExtAllReduceParams> {
  protected:
   ncclx::test::VerifyAlgoStatsHelper algoStats_;
 
   void SetUp() override {
-    NcclxBaseTest::SetUp();
+    NcclxBaseTestFixture::SetUp();
     algoStats_.enable(); // Must be called before comm creation
   }
 };

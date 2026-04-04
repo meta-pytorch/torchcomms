@@ -13,8 +13,8 @@
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/memory/Utils.h"
-#include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
+#include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/utils/StrUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/EventMgr.h"
@@ -28,14 +28,16 @@
 #include "debug.h" // @manual
 #include "nccl.h" // @manual
 
-class MemoryLoggingTestFixture : public NcclxBaseTestFixture {
+class MemoryLoggingTestFixture
+    : public NcclxBaseTestFixture,
+      public ::testing::WithParamInterface<NcclxEnvs> {
  public:
   MemoryLoggingTestFixture() = default;
   void SetUp() override {
     ctran::utils::commCudaLibraryInit();
     setenv("NCCL_CTRAN_ENABLE", "1", 1);
     setenv("NCCL_MEMORY_EVENT_LOGGING", "pipe:nccl_memory_logging", 1);
-    NcclxBaseTestFixture::SetUp();
+    NcclxBaseTestFixture::SetUp(GetParam());
     setenv("RANK", std::to_string(this->globalRank).c_str(), 1);
     LOG(INFO) << "Rank " << this->globalRank << " localRank "
               << this->localRank;
@@ -229,8 +231,8 @@ TEST_P(MemoryLoggingTestFixture, ncclInternalBufferLogTest) {
   // First comm creation as well as first kernel launch has some extra memory
   // usage (https://fburl.com/code/rxjvjads), use second comm
   // creation/collective for testing
-  comm = createNcclComm(
-      globalRank, numRanks, localRank, false, nullptr, server.get());
+  comm = ncclx::test::createNcclComm(
+      globalRank, numRanks, localRank, bootstrap_.get());
   std::cout << "Rank " << this->globalRank << " finished init, run AR"
             << std::endl;
   size_t count = 1 << 10; // 1K elements
@@ -331,8 +333,8 @@ TEST_P(MemoryLoggingTestFixture, userBufferLoggingTest) {
 
   auto logFileName = initLogger();
   EXPECT_EQ(NCCL_COMM_WORLD, nullptr);
-  comm = createNcclComm(
-      globalRank, numRanks, localRank, false, nullptr, server.get());
+  comm = ncclx::test::createNcclComm(
+      globalRank, numRanks, localRank, bootstrap_.get());
 
   /* mapper registration logic */
   void *buf = nullptr, *segHdl = nullptr;

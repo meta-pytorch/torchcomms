@@ -430,6 +430,82 @@ TEST(CommStateXTest, nvlFabricCliqueTest) {
   }
 }
 
+TEST(CommStateXTest, nvlFabricVCliqueSizeHint) {
+  const int rank = 0;
+  const int nRanks = 8;
+  const int cudaDev = 0;
+  const int cudaArch = 90;
+  const int64_t busId = 25;
+  const uint64_t commHash = 0;
+
+  std::vector<NvlFabricTopology> nvlFabricTopologies{};
+  for (int i = 0; i < nRanks; ++i) {
+    nvlFabricTopologies.emplace_back(
+        createNvlFabricTopology(i, kNvlFabricClusterId1, 0));
+  }
+
+  std::vector<RankTopology> rankTopologies{};
+  const std::string kSu = "";
+  rankTopologies.emplace_back(
+      createRankTopology(0, kDc, kZone, kSu, kRtsw0, kHost0));
+  rankTopologies.emplace_back(
+      createRankTopology(1, kDc, kZone, kSu, kRtsw0, kHost0));
+  rankTopologies.emplace_back(
+      createRankTopology(2, kDc, kZone, kSu, kRtsw0, kHost1));
+  rankTopologies.emplace_back(
+      createRankTopology(3, kDc, kZone, kSu, kRtsw0, kHost1));
+  rankTopologies.emplace_back(
+      createRankTopology(4, kDc, kZone, kSu, kRtsw1, kHost2));
+  rankTopologies.emplace_back(
+      createRankTopology(5, kDc, kZone, kSu, kRtsw1, kHost2));
+  rankTopologies.emplace_back(
+      createRankTopology(6, kDc, kZone, kSu, kRtsw1, kHost3));
+  rankTopologies.emplace_back(
+      createRankTopology(7, kDc, kZone, kSu, kRtsw1, kHost3));
+
+  auto makeCommState = [&](int vCliqueSize = 0) {
+    return std::make_unique<CommStateX>(
+        rank,
+        nRanks,
+        cudaDev,
+        cudaArch,
+        busId,
+        commHash,
+        rankTopologies,
+        std::vector<int>{},
+        "" /* commDesc */,
+        false /* noLocal */,
+        vCliqueSize);
+  };
+
+  // vCliqueSize=4 partitions 8 ranks into 2 virtual domains of 4
+  {
+    auto cs = makeCommState(4);
+    cs->setNvlFabricTopos(nvlFabricTopologies, true);
+    EXPECT_TRUE(cs->nvlFabricCliqueEnabled());
+    EXPECT_EQ(cs->nNodes(), 2);
+    for (int i = 0; i < nRanks; ++i) {
+      EXPECT_EQ(cs->localRank(i), i % 4);
+      EXPECT_EQ(cs->nLocalRanks(i), 4);
+    }
+  }
+
+  // vCliqueSize=0 does not override (no CVARs set either)
+  {
+    auto cs = makeCommState(0);
+    cs->setNvlFabricTopos(nvlFabricTopologies, true);
+    EXPECT_FALSE(cs->nvlFabricCliqueEnabled());
+  }
+
+  // vCliqueSize=3 is invalid (8 ranks not divisible by 3)
+  {
+    auto cs = makeCommState(3);
+    EXPECT_DEATH(
+        cs->setNvlFabricTopos(nvlFabricTopologies, true),
+        "nRanks.*must be evenly divisible by effectiveVCliqueSize");
+  }
+}
+
 TEST(CommStateXTest, TopologyFailure) {
   const int rank = 0;
   const int nRanks = 8;
