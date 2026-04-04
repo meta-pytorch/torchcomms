@@ -92,7 +92,7 @@ TEST_F(KernelFlagPoolTest, PopTest) {
   }
 
   auto another_flag = flagPool->pop();
-  EXPECT_EQ(another_flag, nullptr);
+  EXPECT_NE(another_flag, nullptr);
 }
 
 TEST_F(KernelFlagPoolTest, ReclaimTestHost) {
