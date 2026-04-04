@@ -16,8 +16,7 @@
 #include <vector>
 
 #include "VerifyAlgoStatsUtil.h"
-#include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
+#include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -34,12 +33,12 @@
  * 3. Built-in ncclAvg correctly uses PAT when PAT_AVG is enabled
  */
 
-class ReduceScatterPatSelectTest : public NcclxBaseTest {
+class ReduceScatterPatSelectTest : public NcclxBaseTestFixture {
  public:
   ReduceScatterPatSelectTest() = default;
 
   void SetUp() override {
-    NcclxBaseTest::SetUp();
+    NcclxBaseTestFixture::SetUp();
     // [META:PAT] Enable PAT algorithm for all tests in this suite.
     // This must be set BEFORE any communicator is created because
     // ncclParamPatEnable() uses a static cache that is only populated once.
@@ -58,7 +57,7 @@ class ReduceScatterPatSelectTest : public NcclxBaseTest {
     // Reset global hint to avoid affecting subsequent tests
     ncclx::resetGlobalHint(
         std::string(ncclx::HintKeys::kCommAlgoReduceScatter));
-    NcclxBaseTest::TearDown();
+    NcclxBaseTestFixture::TearDown();
   }
 
  protected:
