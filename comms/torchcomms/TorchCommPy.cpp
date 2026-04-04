@@ -1,7 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <c10/util/intrusive_ptr.h>
-#include <cuda_runtime.h>
 #include <pybind11/chrono.h>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
@@ -808,40 +807,17 @@ Raises:
           py::call_guard<py::gil_scoped_release>())
       .def(
           "register_local_buffer",
-          [](TorchCommWindow& self, const at::Tensor& tensor) -> int64_t {
+          [](TorchCommWindow& self, const at::Tensor& tensor) {
             RegisteredBuffer buf;
             {
               py::gil_scoped_release release;
               buf = self.register_local_buffer(tensor);
             }
-            // Allocate device-side copy of RegisteredBuffer.
-            // Uses cudaMalloc which operates in a separate VA space from
-            // NCCLX's cuMemMap, avoiding allocation conflicts.
-            RegisteredBuffer* device_buf = nullptr;
-            auto err = cudaMalloc(&device_buf, sizeof(RegisteredBuffer));
-            if (err != cudaSuccess) {
-              self.deregister_local_buffer(buf);
-              throw std::runtime_error(
-                  std::string(
-                      "[TorchCommWindow] cudaMalloc failed for "
-                      "RegisteredBuffer device copy: ") +
-                  cudaGetErrorString(err));
-            }
-            err = cudaMemcpy(
-                device_buf,
-                &buf,
-                sizeof(RegisteredBuffer),
-                cudaMemcpyHostToDevice);
-            if (err != cudaSuccess) {
-              cudaFree(device_buf);
-              self.deregister_local_buffer(buf);
-              throw std::runtime_error(
-                  std::string(
-                      "[TorchCommWindow] cudaMemcpy failed for "
-                      "RegisteredBuffer device copy: ") +
-                  cudaGetErrorString(err));
-            }
-            return reinterpret_cast<int64_t>(device_buf);
+            return py::make_tuple(
+                reinterpret_cast<int64_t>(buf.base_ptr),
+                static_cast<int64_t>(buf.size),
+                reinterpret_cast<int64_t>(buf.backend_window),
+                static_cast<int64_t>(buf.lkey));
           },
           R"(
 Register a local buffer for use as source in device-side put operations.
@@ -852,8 +828,7 @@ Args:
     tensor: Source tensor to register as a local buffer.
 
 Returns:
-    int: Opaque device handle for use in Triton put_block() calls.
-         Pass this handle to deregister_local_buffer() when done.
+    tuple: (base_ptr, size, backend_window, lkey) as int64 values.
 
 Raises:
     RuntimeError: If this backend does not yet support the device API.
@@ -861,39 +836,37 @@ Raises:
           py::arg("tensor"))
       .def(
           "deregister_local_buffer",
-          [](TorchCommWindow& self, int64_t handle) {
-            // NOLINTNEXTLINE(performance-no-int-to-ptr)
-            auto* device_buf = reinterpret_cast<RegisteredBuffer*>(handle);
-            // Read RegisteredBuffer back from device memory.
+          [](TorchCommWindow& self,
+             int64_t base_ptr,
+             int64_t size,
+             int64_t backend_window,
+             int64_t lkey) {
             RegisteredBuffer buf;
-            {
-              py::gil_scoped_release release;
-              auto err = cudaMemcpy(
-                  &buf,
-                  device_buf,
-                  sizeof(RegisteredBuffer),
-                  cudaMemcpyDeviceToHost);
-              if (err != cudaSuccess) {
-                throw std::runtime_error(
-                    std::string(
-                        "[TorchCommWindow] cudaMemcpy D2H failed in "
-                        "deregister_local_buffer: ") +
-                    cudaGetErrorString(err));
-              }
-              self.deregister_local_buffer(buf);
-              cudaFree(device_buf);
-            }
+            // NOLINTNEXTLINE(performance-no-int-to-ptr)
+            buf.base_ptr = reinterpret_cast<void*>(base_ptr);
+            buf.size = static_cast<size_t>(size);
+            // NOLINTNEXTLINE(performance-no-int-to-ptr)
+            buf.backend_window = reinterpret_cast<void*>(backend_window);
+            buf.lkey = static_cast<uint32_t>(lkey);
+            self.deregister_local_buffer(buf);
           },
           R"(
 Deregister a previously registered local buffer. NON-COLLECTIVE.
 
 Args:
-    handle: Device handle returned by register_local_buffer().
+    base_ptr: From register_local_buffer() return tuple.
+    size: From register_local_buffer() return tuple.
+    backend_window: From register_local_buffer() return tuple.
+    lkey: From register_local_buffer() return tuple.
 
 Raises:
     RuntimeError: If this backend does not yet support the device API.
 )",
-          py::arg("handle"));
+          py::arg("base_ptr"),
+          py::arg("size"),
+          py::arg("backend_window"),
+          py::arg("lkey"),
+          py::call_guard<py::gil_scoped_release>());
 
   // Bind BatchSendRecv::P2POp class
   py::class_<BatchSendRecv::P2POp>(

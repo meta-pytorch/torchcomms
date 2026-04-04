@@ -420,7 +420,7 @@ class TestWindowGraphCapture(CudaGraphTestBase):
 
             if has_device_api:
                 # pyre-ignore[16, 61]: device API on NCCLX subclass
-                win.deregister_local_buffer(src_buf_info)
+                win.deregister_local_buffer(*src_buf_info)
             del win
             torch.cuda.synchronize()
 
