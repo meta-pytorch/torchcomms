@@ -22,6 +22,10 @@ class ProfilerTest : public ::testing::Test {
     comm_ = nullptr;
   }
 
+  uint64_t getOpCount() {
+    return profiler_->getOpCount();
+  }
+
  protected:
   std::vector<char> commBuf_;
   CtranComm* comm_{nullptr};
