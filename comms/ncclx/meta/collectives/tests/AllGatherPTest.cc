@@ -9,17 +9,17 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "nccl.h"
 
-#include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
+#include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 
-class AllGatherPTest : public NcclxBaseTest {
+class AllGatherPTest : public NcclxBaseTestFixture {
  public:
   AllGatherPTest() = default;
   void SetUp() override {
-    setenv("NCCL_CTRAN_ENABLE", "1", 1);
-    NcclxBaseTest::SetUp();
+    NcclxBaseTestFixture::SetUp({{"NCCL_CTRAN_ENABLE", "1"}});
 
-    comm = createNcclComm(globalRank, numRanks, localRank, bootstrap_.get());
+    comm = ncclx::test::createNcclComm(
+        globalRank, numRanks, localRank, bootstrap_.get());
 
     CUDACHECK_TEST(cudaStreamCreate(&stream));
   }
@@ -27,7 +27,7 @@ class AllGatherPTest : public NcclxBaseTest {
   void TearDown() override {
     NCCLCHECK_TEST(ncclCommDestroy(comm));
     CUDACHECK_TEST(cudaStreamDestroy(stream));
-    NcclxBaseTest::TearDown();
+    NcclxBaseTestFixture::TearDown();
   }
 
   void* prepareBuf(size_t bufSize, MemAllocType memType) {

@@ -5,12 +5,13 @@
 
 #include <folly/init/Init.h>
 
-#include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
+#include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "meta/comms-monitor/CommsMonitor.h"
 #include "nccl.h"
 
 using namespace ncclx::comms_monitor;
+using ncclx::test::NcclCommRAII;
 
 namespace ncclx::comms_monitor {
 class CommsMonitorTest {
@@ -26,15 +27,14 @@ class CommsMonitorTest {
 };
 } // namespace ncclx::comms_monitor
 
-class CommsMonitorDist : public NcclxBaseTest {
+class CommsMonitorDist : public NcclxBaseTestFixture {
  public:
   void SetUp() override {
-    NcclxBaseTest::SetUp();
+    NcclxBaseTestFixture::SetUp();
 
     ncclCvarInit();
     NCCL_COMMSMONITOR_ENABLE = true;
 
-    CUDACHECK_TEST(cudaSetDevice(localRank));
     CUDACHECK_TEST(cudaStreamCreate(&this->stream));
 
     ncclx::comms_monitor::CommsMonitorTest::resetCommsMap();
@@ -44,6 +44,7 @@ class CommsMonitorDist : public NcclxBaseTest {
     CUDACHECK_TEST(cudaStreamDestroy(this->stream));
     CUDACHECK_TEST(cudaFree(sendBuf));
     CUDACHECK_TEST(cudaFree(recvBuf));
+    NcclxBaseTestFixture::TearDown();
   }
 
   void prepareAllreduce(const int count) {
