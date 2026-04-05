@@ -54,6 +54,14 @@ class TorchCommBackend {
   // Unique name for this instance of the communicator.
   virtual std::string_view getCommName() const = 0;
 
+virtual void register_address(void* addr, size_t len) {
+  throw std::runtime_error("register_address not supported for this backend");
+}
+
+virtual void deregister_address(void* addr) {
+  throw std::runtime_error("deregister_address not supported for this backend");
+}
+
   // Point-to-Point Operations
   virtual c10::intrusive_ptr<TorchWork> send(
       const at::Tensor& tensor,

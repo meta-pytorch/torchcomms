@@ -359,6 +359,52 @@ void TorchCommXCCL::init(
   timeout_thread_ = std::thread(&TorchCommXCCL::timeoutWatchdog, this);
 }
 
+void TorchCommXCCL::register_address(void* addr, size_t len) {
+  if (xccl_comm_ == nullptr) {
+    return;
+  }
+
+  std::lock_guard<std::mutex> lock(memory_registration_mutex_);
+
+  if (memoryRegistrationHandles_.contains(addr)) {
+    throw std::runtime_error("Memory already registered with XCCL");
+  }
+
+  void* handle = nullptr;
+  onecclResult_t result =
+      xccl_api_->commRegister(xccl_comm_, addr, len, &handle);
+
+  if (result != onecclSuccess) [[unlikely]] {
+    throw XCCLException(
+        *xccl_api_, "Failed to register memory with XCCL", result);
+  }
+
+  memoryRegistrationHandles_.emplace(addr, RegistrationHandle(handle));
+}
+
+void TorchCommXCCL::deregister_address(void* addr) {
+  if (xccl_comm_ == nullptr) {
+    return;
+  }
+
+  std::lock_guard<std::mutex> lock(memory_registration_mutex_);
+
+  auto it = memoryRegistrationHandles_.find(addr);
+  if (it == memoryRegistrationHandles_.end()) {
+    return;
+  }
+
+  void* handle = it->second.regHandle;
+  onecclResult_t result = xccl_api_->commDeregister(xccl_comm_, handle);
+
+  if (result != onecclSuccess) [[unlikely]] {
+    throw XCCLException(
+        *xccl_api_, "Failed to deregister memory with XCCL", result);
+  }
+
+  memoryRegistrationHandles_.erase(it);
+}
+
 void TorchCommXCCL::finalize() {
   if (init_state_ == InitializationState::UNINITIALIZED) {
     throw std::runtime_error("TorchCommXCCL not initialized");
@@ -367,21 +413,17 @@ void TorchCommXCCL::finalize() {
   }
   init_state_ = InitializationState::FINALIZED;
 
-  // Signal shutdown to timeout watchdog
   shutdown_ = true;
 
-  // Wake up the timeout watchdog thread
   {
     std::lock_guard<std::mutex> lock(timeout_mutex_);
     timeout_cv_.notify_all();
   }
 
-  // Wait for timeout thread to finish
   if (timeout_thread_.joinable()) {
     timeout_thread_.join();
   }
 
-  // Wait for all pending work objects to complete and get final status
   auto work_status = workq_.finalize();
 
   if (work_status == TorchWorkXCCL::WorkStatus::NOT_STARTED ||
@@ -390,7 +432,6 @@ void TorchCommXCCL::finalize() {
         "WorkQ finalize returned in progress or not started state");
   }
 
-  // Update comm_state_ based on the work status
   if (work_status == TorchWorkXCCL::WorkStatus::TIMEDOUT) {
     comm_state_ = CommState::TIMEOUT;
     abortXcclComm();
@@ -404,7 +445,21 @@ void TorchCommXCCL::finalize() {
     throw xcclException;
   }
 
-  // Clean up event pool
+  {
+    std::lock_guard<std::mutex> lock(memory_registration_mutex_);
+    for (auto it = memoryRegistrationHandles_.begin();
+         it != memoryRegistrationHandles_.end();) {
+      void* handle = it->second.regHandle;
+      onecclResult_t result = xccl_api_->commDeregister(xccl_comm_, handle);
+      if (result != onecclSuccess) {
+        TC_LOG(ERROR, this)
+            << "XCCL commDeregister failed during finalize for addr="
+            << it->first << ": " << xccl_api_->getErrorString(result);
+      }
+      it = memoryRegistrationHandles_.erase(it);
+    }
+  }
+
   {
     std::lock_guard<std::mutex> lock(event_pool_mutex_);
     while (!event_pool_.empty()) {
@@ -415,7 +470,6 @@ void TorchCommXCCL::finalize() {
     }
   }
 
-  // Free barrier buffer. TODO: handle errors on xpu free and stream destroy
   if (barrier_buffer_) {
     XPU_CHECK(
         xpu_api_,
@@ -424,7 +478,6 @@ void TorchCommXCCL::finalize() {
     barrier_buffer_ = nullptr;
   }
 
-  // Destroy dependency event
   if (dependency_event_.has_value()) {
     XPU_CHECK(
         xpu_api_,
@@ -433,7 +486,6 @@ void TorchCommXCCL::finalize() {
     dependency_event_.reset();
   }
 
-  // Destroy internal stream
   if (internal_stream_.has_value()) {
     XPU_CHECK(
         xpu_api_,
@@ -442,8 +494,6 @@ void TorchCommXCCL::finalize() {
     internal_stream_.reset();
   }
 
-  // Destroy XCCL communicator
-  // TODO: should probably not call this after calling abort.
   if (xccl_comm_) {
     onecclResult_t result = xccl_api_->commDestroy(xccl_comm_);
     if (result != onecclSuccess) [[unlikely]] {
@@ -456,13 +506,29 @@ void TorchCommXCCL::finalize() {
 
 void TorchCommXCCL::abortXcclComm() {
   if (xccl_comm_) {
+    {
+      std::lock_guard<std::mutex> lock(memory_registration_mutex_);
+      for (auto it = memoryRegistrationHandles_.begin();
+           it != memoryRegistrationHandles_.end();) {
+        void* handle = it->second.regHandle;
+        onecclResult_t result = xccl_api_->commDeregister(xccl_comm_, handle);
+        if (result != onecclSuccess) {
+          TC_LOG(ERROR, this)
+              << "XCCL commDeregister failed during abort for addr="
+              << it->first << ": " << xccl_api_->getErrorString(result);
+        }
+        it = memoryRegistrationHandles_.erase(it);
+      }
+    }
+
     xccl_api_->commAbort(xccl_comm_);
     xccl_comm_ = nullptr;
   }
-  if (options_.abort_process_on_timeout_or_error) {
-    TC_LOG(ERROR) << "Aborting process due to timeout";
-    abort();
-  }
+
+ // if (options_.abort_process_on_timeout_or_error) {
+ //   TC_LOG(ERROR) << "Aborting process due to timeout";
+  //  abort();
+ // }
 }
 
 int TorchCommXCCL::getRank() const {

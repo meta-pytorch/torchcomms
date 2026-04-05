@@ -50,6 +50,8 @@ class XCCLException : public std::exception {
 class TorchCommXCCL : public TorchCommBackend,
                       public std::enable_shared_from_this<TorchCommXCCL> {
  public:
+
+
   static constexpr std::string_view kBackendName = "xccl";
 
   TorchCommXCCL();
@@ -60,7 +62,8 @@ class TorchCommXCCL : public TorchCommBackend,
   TorchCommXCCL(TorchCommXCCL&&) = delete;
   TorchCommXCCL& operator=(const TorchCommXCCL&) = delete;
   TorchCommXCCL& operator=(TorchCommXCCL&&) = delete;
-
+ void register_address(void* addr, size_t len) override;
+  void deregister_address(void* addr) override;
   void init(
       at::Device device,
       const std::string& name,
@@ -239,6 +242,13 @@ class TorchCommXCCL : public TorchCommBackend,
 
  private:
   // Helper that automatically cleans up premul sums.
+  struct RegistrationHandle {
+  explicit RegistrationHandle(void* handle) : regHandle(handle) {}
+  void* regHandle = nullptr;
+};
+
+std::unordered_map<void*, RegistrationHandle> memoryRegistrationHandles_;
+std::mutex memory_registration_mutex_;
   struct RedOpRAII {
     /* implicit */ RedOpRAII(onecclRedOp_t op);
 
