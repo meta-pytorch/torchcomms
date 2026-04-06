@@ -699,4 +699,63 @@ TEST(CommStateXTest, nvlFabricWithNoLocal) {
   EXPECT_EQ(commState->nNodes(), nRanks);
 }
 
+TEST(CommStateXTest, nvlFabricWithNoLocalCvar) {
+  const int rank = 0;
+  const int nRanks = 8;
+  const int cudaDev = 0;
+  const int cudaArch = 90;
+  const int64_t busId = 25;
+  const uint64_t commHash = 0;
+
+  // Set the CVAR to nolocal but do NOT set the noLocal_ hint bool
+  EnvRAII noLocalCvar(
+      NCCL_COMM_STATE_DEBUG_TOPO, NCCL_COMM_STATE_DEBUG_TOPO::nolocal);
+
+  auto commState = std::make_unique<CommStateX>(
+      rank,
+      nRanks,
+      cudaDev,
+      cudaArch,
+      busId,
+      commHash,
+      std::vector<RankTopology>{},
+      std::vector<int>{},
+      "" /* commDesc */,
+      false /* noLocal - hint is NOT set, only CVAR */);
+
+  // initRankTopologyNolocal sets host-based nLocalRanks=1 for all ranks
+  commState->initRankTopologyNolocal();
+
+  // Set up NVL fabric with 2 clusters of 4 ranks each (e.g. GB200 2-GPU trays)
+  std::vector<NvlFabricTopology> nvlFabricTopologies{};
+  nvlFabricTopologies.emplace_back(
+      createNvlFabricTopology(0, kNvlFabricClusterId1, kNvlFabricCliqueId1));
+  nvlFabricTopologies.emplace_back(
+      createNvlFabricTopology(1, kNvlFabricClusterId1, kNvlFabricCliqueId1));
+  nvlFabricTopologies.emplace_back(
+      createNvlFabricTopology(2, kNvlFabricClusterId1, kNvlFabricCliqueId1));
+  nvlFabricTopologies.emplace_back(
+      createNvlFabricTopology(3, kNvlFabricClusterId1, kNvlFabricCliqueId1));
+  nvlFabricTopologies.emplace_back(
+      createNvlFabricTopology(4, kNvlFabricClusterId2, kNvlFabricCliqueId1));
+  nvlFabricTopologies.emplace_back(
+      createNvlFabricTopology(5, kNvlFabricClusterId2, kNvlFabricCliqueId1));
+  nvlFabricTopologies.emplace_back(
+      createNvlFabricTopology(6, kNvlFabricClusterId2, kNvlFabricCliqueId1));
+  nvlFabricTopologies.emplace_back(
+      createNvlFabricTopology(7, kNvlFabricClusterId2, kNvlFabricCliqueId1));
+  commState->setNvlFabricTopos(nvlFabricTopologies, true);
+
+  // NVL fabric should still be enabled (for transport)
+  EXPECT_TRUE(commState->nvlFabricEnabled());
+
+  // The CVAR should be respected: each rank is its own node with nLocalRanks=1
+  for (int i = 0; i < nRanks; ++i) {
+    EXPECT_EQ(commState->nLocalRanks(i), 1);
+    EXPECT_EQ(commState->localRank(i), 0);
+    EXPECT_EQ(commState->node(i), i);
+  }
+  EXPECT_EQ(commState->nNodes(), nRanks);
+}
+
 } // namespace ncclx
