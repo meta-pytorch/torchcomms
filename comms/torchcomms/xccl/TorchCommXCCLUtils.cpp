@@ -4,6 +4,7 @@
 #include <string>
 #include "comms/torchcomms/utils/Logging.hpp"
 #include "comms/torchcomms/xccl/TorchCommXCCL.hpp"
+#include "comms/torchcomms/xccl/TorchCommXCCLCCA.hpp"
 
 namespace torch::comms {
 

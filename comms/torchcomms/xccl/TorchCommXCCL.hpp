@@ -219,6 +219,15 @@ class TorchCommXCCL : public TorchCommBackend,
   void returnEvent(xpuEvent_t&& event);
   void abortXcclComm();
 
+  struct Address {
+    void* addr;
+  };
+
+  struct AddressWithLen {
+    void* addr;
+    size_t len;
+  };
+
   enum class CommState {
     NORMAL,
     ERROR,
