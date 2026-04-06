@@ -25,4 +25,17 @@ struct GlobaltimerCalibration {
 // Launch a single-thread kernel that writes globaltimer() to *out.
 cudaError_t launchReadGlobaltimer(cudaStream_t stream, uint64_t* out);
 
+#if defined(__CUDACC__) || defined(__HIPCC__)
+// Device-side globaltimer read. Returns nanoseconds since device boot.
+__device__ __forceinline__ uint64_t readGlobaltimer() {
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
+  return wall_clock64();
+#else
+  uint64_t timer;
+  asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(timer));
+  return timer;
+#endif
+}
+#endif
+
 } // namespace meta::comms::colltrace
