@@ -1103,20 +1103,18 @@ break as interfaces change.
           py::call_guard<py::gil_scoped_release>())
 
       .def(
-    "register_tensor",
-    [](TorchComm& self, const at::Tensor& t) {
-      self.getBackendImpl()->register_address(
-          t.data_ptr(),
-          static_cast<size_t>(t.nbytes()));
-    },
-    py::arg("tensor"))
+          "register_tensor",
+          [](TorchComm& self, const at::Tensor& t) {
+            self.getBackendImpl()->register_address(
+                t.data_ptr(), static_cast<size_t>(t.nbytes()));
+          },
+          py::arg("tensor"))
       .def(
-    "deregister_tensor",
-    [](TorchComm& self, const at::Tensor& t) {
-      self.getBackendImpl()->deregister_address(t.data_ptr());
-    },
-    py::arg("tensor"))
-
+          "deregister_tensor",
+          [](TorchComm& self, const at::Tensor& t) {
+            self.getBackendImpl()->deregister_address(t.data_ptr());
+          },
+          py::arg("tensor"))
 
       .def(
           "unsafe_get_backend",
