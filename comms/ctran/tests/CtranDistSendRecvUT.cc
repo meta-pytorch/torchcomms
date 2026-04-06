@@ -47,7 +47,6 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
   static void checkProfiler(ctran::Profiler* profiler, uint64_t opCount) {
     // algo profiler currently only enabled for IB backend
     if (NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE ||
-        NCCL_SENDRECV_ALGO == NCCL_SENDRECV_ALGO::ctstaged ||
         NCCL_SENDRECV_ALGO == NCCL_SENDRECV_ALGO::ctp2p) {
       return;
     }
@@ -269,7 +268,6 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
 
     if (!useGraph) {
       if (globalRank == sendRank &&
-          (NCCL_SENDRECV_ALGO != NCCL_SENDRECV_ALGO::ctstaged) &&
           (NCCL_SENDRECV_ALGO != NCCL_SENDRECV_ALGO::ctp2p)) {
         verifyBackendsUsed(
             ctranComm->ctran_.get(), ctranComm->statex_.get(), memType);
@@ -313,7 +311,7 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
           // algoName is always populated
           EXPECT_EQ(algoName, expAlgoName);
           // opName and count are only populated when GPE opGroup is non-empty
-          // (i.e., the default algo). For ctstaged/ctp2p/CopyEngine notify
+          // (i.e., the default algo). For ctp2p/CopyEngine notify
           // kernels, the opGroup is empty so opName/count are not set.
           if (!opName.empty() && coll.count("count")) {
             EXPECT_EQ(opName, globalRank == sendRank ? "Send" : "Recv");
@@ -355,16 +353,6 @@ TEST_P(CtranTestParamFixture, sendRecv) {
 
   regCache->init();
 
-  runTest(offset, count, numMaxQp, 1 /* nIter */, memType);
-
-  // Destroy regCache for later test with different NCCL_CTRAN_REGISTER config.
-  COMMCHECK_TEST(regCache->destroy());
-}
-
-TEST_P(CtranTestParamFixture, sendRecvStagedCopyKernel) {
-  const auto& [offset, count, numMaxQp, memType] = GetParam();
-  EnvRAII env1(NCCL_SENDRECV_ALGO, NCCL_SENDRECV_ALGO::ctstaged);
-  regCache->init();
   runTest(offset, count, numMaxQp, 1 /* nIter */, memType);
 
   // Destroy regCache for later test with different NCCL_CTRAN_REGISTER config.
