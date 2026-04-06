@@ -413,13 +413,16 @@ void TorchCommXCCL::finalize() {
   }
   init_state_ = InitializationState::FINALIZED;
 
+  // Signal shutdown to timeout watchdog
   shutdown_ = true;
 
+  // Wake up the timeout watchdog thread
   {
     std::lock_guard<std::mutex> lock(timeout_mutex_);
     timeout_cv_.notify_all();
   }
 
+  // Wait for timeout thread to finish
   if (timeout_thread_.joinable()) {
     timeout_thread_.join();
   }
@@ -432,6 +435,7 @@ void TorchCommXCCL::finalize() {
         "WorkQ finalize returned in progress or not started state");
   }
 
+  // Update comm_state_ based on the work status
   if (work_status == TorchWorkXCCL::WorkStatus::TIMEDOUT) {
     comm_state_ = CommState::TIMEOUT;
     abortXcclComm();
@@ -459,9 +463,10 @@ void TorchCommXCCL::finalize() {
       it = memoryRegistrationHandles_.erase(it);
     }
   }
-
+  // Clean up event pool
   {
     std::lock_guard<std::mutex> lock(event_pool_mutex_);
+
     while (!event_pool_.empty()) {
       xpuEvent_t event = std::move(event_pool_.front());
       event_pool_.pop();
@@ -469,7 +474,7 @@ void TorchCommXCCL::finalize() {
           xpu_api_, xpu_api_->eventDestroy(event), "Failed to destroy event");
     }
   }
-
+  // Free barrier buffer. TODO: handle errors on xpu free and stream destroy
   if (barrier_buffer_) {
     XPU_CHECK(
         xpu_api_,
@@ -478,6 +483,7 @@ void TorchCommXCCL::finalize() {
     barrier_buffer_ = nullptr;
   }
 
+  // Destroy dependency event
   if (dependency_event_.has_value()) {
     XPU_CHECK(
         xpu_api_,
@@ -485,7 +491,7 @@ void TorchCommXCCL::finalize() {
         "Failed to destroy dependency event");
     dependency_event_.reset();
   }
-
+  // Destroy internal stream
   if (internal_stream_.has_value()) {
     XPU_CHECK(
         xpu_api_,
@@ -494,6 +500,8 @@ void TorchCommXCCL::finalize() {
     internal_stream_.reset();
   }
 
+  // Destroy XCCL communicator
+  // TODO: should probably not call this after calling abort.
   if (xccl_comm_) {
     onecclResult_t result = xccl_api_->commDestroy(xccl_comm_);
     if (result != onecclSuccess) [[unlikely]] {
@@ -521,14 +529,18 @@ void TorchCommXCCL::abortXcclComm() {
       }
     }
 
-    xccl_api_->commAbort(xccl_comm_);
+    onecclResult_t result = xccl_api_->commAbort(xccl_comm_);
+    if (result != onecclSuccess) {
+      TC_LOG(ERROR) << "XCCL commAbort failed: "
+                    << xccl_api_->getErrorString(result);
+    }
     xccl_comm_ = nullptr;
   }
 
- // if (options_.abort_process_on_timeout_or_error) {
- //   TC_LOG(ERROR) << "Aborting process due to timeout";
-  //  abort();
- // }
+  if (options_.abort_process_on_timeout_or_error) {
+    TC_LOG(ERROR) << "Aborting process due to timeout";
+    abort();
+  }
 }
 
 int TorchCommXCCL::getRank() const {
