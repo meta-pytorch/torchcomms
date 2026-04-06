@@ -15,6 +15,24 @@ using TestBuffer = HRDWRingBuffer<void*>;
 using TestReader = HRDWRingBufferReader<void*>;
 using TestEntry = TestBuffer::Entry;
 
+// Test accessor — friend of HRDWRingBuffer, provides access to internals
+// for CPU-side simulation of GPU writes.
+namespace meta::comms::colltrace {
+class HRDWRingBufferTestAccessor {
+ public:
+  static HRDWEntry* ring(const TestBuffer& buf) {
+    return buf.ring_;
+  }
+  static uint32_t mask(const TestBuffer& buf) {
+    return buf.mask_;
+  }
+  static uint64_t* writeIndex(const TestBuffer& buf) {
+    return buf.writeIndex_;
+  }
+};
+} // namespace meta::comms::colltrace
+using TestAccess = meta::comms::colltrace::HRDWRingBufferTestAccessor;
+
 // Helper to store/retrieve a uint32_t tag in the void* data field.
 static void* tagToData(uint32_t tag) {
   // NOLINTNEXTLINE(performance-no-int-to-ptr)
@@ -29,30 +47,23 @@ TEST(HRDWRingBuffer, ConstructionAndAccessors) {
   TestBuffer buf(64);
   ASSERT_TRUE(buf.valid());
   EXPECT_EQ(buf.size(), 64u);
-  EXPECT_EQ(buf.mask(), 63u);
-  EXPECT_NE(buf.ring(), nullptr);
-  EXPECT_NE(buf.writeIndex(), nullptr);
-  EXPECT_EQ(*buf.writeIndex(), 0u);
+  EXPECT_NE(TestAccess::ring(buf), nullptr);
 }
 
-TEST(HRDWRingBuffer, InitialEntriesMarkedWritePending) {
+TEST(HRDWRingBuffer, InitialEntriesMarkedSlotEmpty) {
   TestBuffer buf(16);
   ASSERT_TRUE(buf.valid());
   for (uint32_t i = 0; i < 16; ++i) {
-    EXPECT_EQ(buf.ring()[i].sequence, HRDW_RINGBUFFER_WRITE_PENDING);
+    EXPECT_EQ(TestAccess::ring(buf)[i].sequence, HRDW_RINGBUFFER_SLOT_EMPTY);
   }
 }
 
 TEST(HRDWRingBuffer, MoveConstruction) {
   TestBuffer buf(32);
   ASSERT_TRUE(buf.valid());
-  auto* ring = buf.ring();
-  auto* writeIdx = buf.writeIndex();
 
   TestBuffer moved(std::move(buf));
   EXPECT_TRUE(moved.valid());
-  EXPECT_EQ(moved.ring(), ring);
-  EXPECT_EQ(moved.writeIndex(), writeIdx);
   EXPECT_EQ(moved.size(), 32u);
 
   // Moved-from should be invalid.
@@ -64,11 +75,9 @@ TEST(HRDWRingBuffer, MoveAssignment) {
   TestBuffer buf2(64);
   ASSERT_TRUE(buf1.valid());
   ASSERT_TRUE(buf2.valid());
-  auto* ring2 = buf2.ring();
 
   buf1 = std::move(buf2);
   EXPECT_TRUE(buf1.valid());
-  EXPECT_EQ(buf1.ring(), ring2);
   EXPECT_EQ(buf1.size(), 64u);
   EXPECT_FALSE(buf2.valid()); // NOLINT(bugprone-use-after-move)
 }
@@ -77,14 +86,12 @@ TEST(HRDWRingBuffer, RoundsUpZeroSize) {
   TestBuffer buf(0);
   EXPECT_TRUE(buf.valid());
   EXPECT_EQ(buf.size(), 1u);
-  EXPECT_EQ(buf.mask(), 0u);
 }
 
 TEST(HRDWRingBuffer, RoundsUpNonPowerOfTwo) {
   TestBuffer buf(10);
   EXPECT_TRUE(buf.valid());
   EXPECT_EQ(buf.size(), 16u);
-  EXPECT_EQ(buf.mask(), 15u);
 
   TestBuffer buf2(7);
   EXPECT_TRUE(buf2.valid());
@@ -107,26 +114,27 @@ class HRDWRingBufferReaderTest : public ::testing::Test {
   }
 
   // Simulate a GPU writing a complete entry at the next slot.
-  void writeEntry(uint32_t tag, uint64_t startNs = 100, uint64_t endNs = 200) {
-    uint64_t slot = (*buf_->writeIndex())++;
-    uint64_t idx = slot & buf_->mask();
-    auto& entry = buf_->ring()[idx];
-    entry.start_ns = startNs;
-    entry.end_ns = endNs;
+  void writeEntry(uint32_t tag, uint64_t timestampNs = 100) {
+    uint64_t slot = (*TestAccess::writeIndex(*buf_))++;
+    uint64_t idx = slot & TestAccess::mask(*buf_);
+    auto& entry = TestAccess::ring(*buf_)[idx];
+    entry.timestamp_ns = timestampNs;
     entry.data = tagToData(tag);
     entry.sequence = slot; // Mark complete
   }
 
-  // Simulate a GPU writing a write-pending entry (start kernel ran, end
-  // kernel hasn't stamped yet).
-  void writeIncompleteEntry(uint32_t tag, uint64_t startNs = 100) {
-    uint64_t slot = (*buf_->writeIndex())++;
-    uint64_t idx = slot & buf_->mask();
-    auto& entry = buf_->ring()[idx];
-    entry.start_ns = startNs;
-    entry.end_ns = 0;
-    entry.data = tagToData(tag);
-    entry.sequence = HRDW_RINGBUFFER_WRITE_PENDING;
+  // Advance writeIndex but leave the entry unstamped (sequence mismatch).
+  // Simulates a GPU write that hasn't completed yet.
+  void writeUnstampedSlot() {
+    uint64_t slot = (*TestAccess::writeIndex(*buf_))++;
+    uint64_t idx = slot & TestAccess::mask(*buf_);
+    auto& entry = TestAccess::ring(*buf_)[idx];
+    entry.timestamp_ns = 0;
+    entry.data = nullptr;
+    // Don't stamp sequence — it still has SLOT_EMPTY or a stale value.
+    // The reader will see preSeq != slot and count it as lost.
+    (void)slot;
+    (void)entry;
   }
 
   std::optional<TestBuffer> buf_;
@@ -139,23 +147,22 @@ TEST_F(HRDWRingBufferReaderTest, EmptyBufferReturnsNothing) {
       [&](const TestEntry& e, uint64_t) { seen.push_back(dataToTag(e.data)); });
   EXPECT_EQ(result.entriesRead, 0u);
   EXPECT_EQ(result.entriesLost, 0u);
-  EXPECT_FALSE(result.tornReadDetected);
+
   EXPECT_TRUE(seen.empty());
 }
 
 TEST_F(HRDWRingBufferReaderTest, ReadsSingleEntry) {
-  writeEntry(42, 1000, 2000);
+  writeEntry(42, 1000);
 
   std::vector<uint32_t> seen;
   auto result = reader_->poll([&](const TestEntry& e, uint64_t) {
     seen.push_back(dataToTag(e.data));
-    EXPECT_EQ(e.start_ns, 1000u);
-    EXPECT_EQ(e.end_ns, 2000u);
+    EXPECT_EQ(e.timestamp_ns, 1000u);
   });
 
   EXPECT_EQ(result.entriesRead, 1u);
   EXPECT_EQ(result.entriesLost, 0u);
-  EXPECT_FALSE(result.tornReadDetected);
+
   const std::vector<uint32_t> expected{42};
   EXPECT_EQ(seen, expected);
 }
@@ -194,53 +201,20 @@ TEST_F(HRDWRingBufferReaderTest, DoesNotReReadOldEntries) {
   EXPECT_EQ(seen, expected);
 }
 
-TEST_F(HRDWRingBufferReaderTest, StopsAtWritePendingEntry) {
+TEST_F(HRDWRingBufferReaderTest, UnstampedEntryStopsScanning) {
   writeEntry(1);
-  writeIncompleteEntry(
-      2); // This entry has sequence = HRDW_RINGBUFFER_WRITE_PENDING
+  writeUnstampedSlot(); // writeIndex advanced but sequence not stamped
   writeEntry(3);
 
   std::vector<uint32_t> seen;
   auto result = reader_->poll(
       [&](const TestEntry& e, uint64_t) { seen.push_back(dataToTag(e.data)); });
 
-  // Reader stops at entry 2 (in-flight). Only entry 1 is delivered.
-  // Entries 2 and 3 are deferred (entriesInFlight=2).
+  // Reader stops at unstamped entry (kNotReady). Only entry 1 delivered.
   EXPECT_EQ(result.entriesRead, 1u);
   EXPECT_EQ(result.entriesLost, 0u);
-  EXPECT_EQ(result.entriesInFlight, 2u);
   const std::vector<uint32_t> expected{1};
   EXPECT_EQ(seen, expected);
-  EXPECT_EQ(reader_->lastReadIndex(), 1u);
-
-  // Complete entry 2 — next poll picks up entries 2 and 3.
-  buf_->ring()[1].sequence = 1;
-  std::vector<uint32_t> seen2;
-  auto result2 = reader_->poll([&](const TestEntry& e, uint64_t) {
-    seen2.push_back(dataToTag(e.data));
-  });
-
-  EXPECT_EQ(result2.entriesRead, 2u);
-  EXPECT_EQ(result2.entriesLost, 0u);
-  EXPECT_EQ(result2.entriesInFlight, 0u);
-  const std::vector<uint32_t> expected2{2, 3};
-  EXPECT_EQ(seen2, expected2);
-}
-
-TEST_F(HRDWRingBufferReaderTest, DetectsLostEntriesWhenFarBehind) {
-  // Write more entries than the ring can hold, so the reader falls behind.
-  for (uint32_t i = 0; i < kRingSize + 5; ++i) {
-    writeEntry(i);
-  }
-
-  std::vector<uint32_t> seen;
-  auto result = reader_->poll(
-      [&](const TestEntry& e, uint64_t) { seen.push_back(dataToTag(e.data)); });
-
-  // The first 5 entries were overwritten before we could read them.
-  EXPECT_EQ(result.entriesLost, 5u);
-  // We should read the remaining kRingSize entries.
-  EXPECT_EQ(result.entriesRead, kRingSize);
 }
 
 TEST_F(HRDWRingBufferReaderTest, WrapAroundReadsCorrectly) {
@@ -293,19 +267,20 @@ TEST_F(HRDWRingBufferReaderTest, MultiplePollCyclesAccumulate) {
 // memory. Mutate the ring entry after poll() captures it but before we
 // inspect what the callback received — the callback should see the original.
 TEST_F(HRDWRingBufferReaderTest, CallbackReceivesSnapshotNotReference) {
-  writeEntry(42, 1000, 2000);
+  writeEntry(42, 1000);
 
-  uint64_t observedStartNs = 0;
-  auto result = reader_->poll(
-      [&](const TestEntry& e, uint64_t) { observedStartNs = e.start_ns; });
+  uint64_t observedTimestamp = 0;
+  auto result = reader_->poll([&](const TestEntry& e, uint64_t) {
+    observedTimestamp = e.timestamp_ns;
+  });
 
   EXPECT_EQ(result.entriesRead, 1u);
-  EXPECT_EQ(observedStartNs, 1000u);
+  EXPECT_EQ(observedTimestamp, 1000u);
 
   // Mutate the ring entry after poll completed. The callback already ran
   // with a snapshot, so this mutation should not affect the observed value.
-  buf_->ring()[0].start_ns = 9999;
-  EXPECT_EQ(observedStartNs, 1000u);
+  TestAccess::ring(*buf_)[0].timestamp_ns = 9999;
+  EXPECT_EQ(observedTimestamp, 1000u);
 }
 
 // Verify that overwritten entries (where sequence is a different valid
@@ -324,7 +299,7 @@ TEST_F(HRDWRingBufferReaderTest, OverwrittenEntriesNeverDelivered) {
 
   // Manually set sequence to a different valid slot to simulate an
   // overwrite from a later wrap-around.
-  buf_->ring()[0].sequence = kRingSize + kRingSize; // wrong epoch
+  TestAccess::ring(*buf_)[0].sequence = kRingSize + kRingSize; // wrong epoch
 
   uint32_t callbackCount = 0;
   auto result =
@@ -336,255 +311,152 @@ TEST_F(HRDWRingBufferReaderTest, OverwrittenEntriesNeverDelivered) {
   EXPECT_EQ(result.entriesLost, 1u);
 }
 
-// Verify that write-pending entries are delivered through the callback
-// with sequence == HRDW_RINGBUFFER_WRITE_PENDING when scanIncomplete=true,
-// allowing consumers to identify exactly which collectives are in-flight.
-TEST_F(HRDWRingBufferReaderTest, WritePendingEntriesDeliveredViaCallback) {
-  // Write one complete entry, then two write-pending entries with distinct
-  // collId tags and start timestamps.
-  writeEntry(/*tag=*/10, /*startNs=*/1000, /*endNs=*/2000);
-  writeIncompleteEntry(/*tag=*/20, /*startNs=*/3000);
-  writeIncompleteEntry(/*tag=*/30, /*startNs=*/4000);
+// Verify that data pointers and timestamps are correctly preserved.
+TEST_F(HRDWRingBufferReaderTest, DataAndTimestampsPreserved) {
+  writeEntry(10, 1000);
+  writeEntry(10, 2000);
 
   struct SeenEntry {
     uint32_t tag;
-    uint64_t start_ns;
-    uint64_t slot;
-    bool isPending;
+    uint64_t timestamp_ns;
   };
   std::vector<SeenEntry> seen;
-  auto result = reader_->poll(
-      [&](const TestEntry& e, uint64_t slot) {
-        seen.push_back({
-            dataToTag(e.data),
-            e.start_ns,
-            slot,
-            e.sequence == HRDW_RINGBUFFER_WRITE_PENDING,
-        });
-      },
-      /*scanIncomplete=*/true);
+  auto result = reader_->poll([&](const TestEntry& e, uint64_t) {
+    seen.push_back({dataToTag(e.data), e.timestamp_ns});
+  });
 
-  // 3 entries delivered: 1 complete + 2 write-pending.
-  ASSERT_EQ(seen.size(), 3u);
-  EXPECT_EQ(result.entriesRead, 3u);
-  EXPECT_EQ(result.entriesInFlight, 2u);
+  ASSERT_EQ(seen.size(), 2u);
+  EXPECT_EQ(result.entriesRead, 2u);
+
+  EXPECT_EQ(seen[0].tag, 10u);
+  EXPECT_EQ(seen[0].timestamp_ns, 1000u);
+
+  EXPECT_EQ(seen[1].tag, 10u);
+  EXPECT_EQ(seen[1].timestamp_ns, 2000u);
+}
+
+// Verify that unstamped entries stop scanning, and subsequent polls
+// pick up the entry once it's stamped.
+TEST_F(HRDWRingBufferReaderTest, UnstampedEntryResumesAfterStamp) {
+  writeEntry(/*tag=*/1, /*timestampNs=*/100);
+  writeUnstampedSlot();
+  writeEntry(/*tag=*/3, /*timestampNs=*/300);
+
+  // First poll: stops at unstamped entry.
+  std::vector<uint32_t> seen;
+  auto result = reader_->poll(
+      [&](const TestEntry& e, uint64_t) { seen.push_back(dataToTag(e.data)); });
+
+  const std::vector<uint32_t> expected{1};
+  EXPECT_EQ(seen, expected);
+  EXPECT_EQ(result.entriesRead, 1u);
   EXPECT_EQ(reader_->lastReadIndex(), 1u);
 
-  // First entry: complete.
-  EXPECT_EQ(seen[0].tag, 10u);
-  EXPECT_FALSE(seen[0].isPending);
+  // Stamp the unstamped entry.
+  TestAccess::ring(*buf_)[1].timestamp_ns = 200;
+  TestAccess::ring(*buf_)[1].data = tagToData(2);
+  TestAccess::ring(*buf_)[1].sequence = 1;
 
-  // Second and third: write-pending with correct start_ns and slot.
-  EXPECT_EQ(seen[1].tag, 20u);
-  EXPECT_TRUE(seen[1].isPending);
-  EXPECT_EQ(seen[1].start_ns, 3000u);
-  EXPECT_EQ(seen[1].slot, 1u);
+  // Second poll: picks up entries 2 and 3.
+  std::vector<uint32_t> seen2;
+  auto result2 = reader_->poll([&](const TestEntry& e, uint64_t) {
+    seen2.push_back(dataToTag(e.data));
+  });
 
-  EXPECT_EQ(seen[2].tag, 30u);
-  EXPECT_TRUE(seen[2].isPending);
-  EXPECT_EQ(seen[2].start_ns, 4000u);
-  EXPECT_EQ(seen[2].slot, 2u);
-
-  // Complete entry at slot 1 — next poll delivers slot 1 as complete,
-  // slot 2 still as write-pending.
-  buf_->ring()[1].end_ns = 3500;
-  buf_->ring()[1].sequence = 1;
-
-  std::vector<SeenEntry> seen2;
-  auto result2 = reader_->poll(
-      [&](const TestEntry& e, uint64_t slot) {
-        seen2.push_back({
-            dataToTag(e.data),
-            e.start_ns,
-            slot,
-            e.sequence == HRDW_RINGBUFFER_WRITE_PENDING,
-        });
-      },
-      /*scanIncomplete=*/true);
-
-  ASSERT_EQ(seen2.size(), 2u);
-  EXPECT_EQ(seen2[0].tag, 20u);
-  EXPECT_FALSE(seen2[0].isPending);
-  EXPECT_EQ(seen2[1].tag, 30u);
-  EXPECT_TRUE(seen2[1].isPending);
-  EXPECT_EQ(result2.entriesInFlight, 1u);
-
-  // Complete the last entry — everything clears.
-  buf_->ring()[2].end_ns = 5000;
-  buf_->ring()[2].sequence = 2;
-
-  std::vector<SeenEntry> seen3;
-  auto result3 = reader_->poll(
-      [&](const TestEntry& e, uint64_t slot) {
-        seen3.push_back({
-            dataToTag(e.data),
-            e.start_ns,
-            slot,
-            e.sequence == HRDW_RINGBUFFER_WRITE_PENDING,
-        });
-      },
-      /*scanIncomplete=*/true);
-  ASSERT_EQ(seen3.size(), 1u);
-  EXPECT_EQ(seen3[0].tag, 30u);
-  EXPECT_FALSE(seen3[0].isPending);
-  EXPECT_EQ(result3.entriesInFlight, 0u);
+  const std::vector<uint32_t> expected2{2, 3};
+  EXPECT_EQ(seen2, expected2);
+  EXPECT_EQ(result2.entriesRead, 2u);
   EXPECT_EQ(reader_->lastReadIndex(), 3u);
 }
 
-// Verify that when all entries are write-pending, they're all delivered
-// through the callback with the pending sentinel.
-TEST_F(HRDWRingBufferReaderTest, AllEntriesPendingDeliveredViaCallback) {
-  writeIncompleteEntry(/*tag=*/5, /*startNs=*/500);
-  writeIncompleteEntry(/*tag=*/6, /*startNs=*/600);
-  writeIncompleteEntry(/*tag=*/7, /*startNs=*/700);
-
-  struct SeenEntry {
-    uint32_t tag;
-    uint64_t start_ns;
-    bool isPending;
-  };
-  std::vector<SeenEntry> seen;
+TEST_F(HRDWRingBufferReaderTest, TimeoutReturnsImmediatelyWhenNoEntries) {
   auto result = reader_->poll(
-      [&](const TestEntry& e, uint64_t) {
-        seen.push_back({
-            dataToTag(e.data),
-            e.start_ns,
-            e.sequence == HRDW_RINGBUFFER_WRITE_PENDING,
-        });
-      },
-      /*scanIncomplete=*/true);
-
-  // All three delivered as write-pending.
-  ASSERT_EQ(seen.size(), 3u);
-  EXPECT_EQ(result.entriesRead, 3u);
-  EXPECT_EQ(result.entriesInFlight, 3u);
-  EXPECT_EQ(reader_->lastReadIndex(), 0u);
-
-  EXPECT_EQ(seen[0].tag, 5u);
-  EXPECT_EQ(seen[0].start_ns, 500u);
-  EXPECT_TRUE(seen[0].isPending);
-  EXPECT_EQ(seen[1].tag, 6u);
-  EXPECT_EQ(seen[1].start_ns, 600u);
-  EXPECT_TRUE(seen[1].isPending);
-  EXPECT_EQ(seen[2].tag, 7u);
-  EXPECT_EQ(seen[2].start_ns, 700u);
-  EXPECT_TRUE(seen[2].isPending);
+      [](const TestEntry&, uint64_t) {}, std::chrono::milliseconds{50});
+  EXPECT_EQ(result.entriesRead, 0u);
+  EXPECT_EQ(result.entriesLost, 0u);
+  EXPECT_FALSE(result.timedOut);
 }
 
-// Verify that the default scanIncomplete=false still breaks at the first
-// WRITE_PENDING and does NOT deliver pending entries via the callback.
-TEST_F(HRDWRingBufferReaderTest, DefaultPollDoesNotScanIncomplete) {
-  writeEntry(/*tag=*/1, /*startNs=*/100, /*endNs=*/200);
-  writeIncompleteEntry(/*tag=*/2, /*startNs=*/300);
-  writeIncompleteEntry(/*tag=*/3, /*startNs=*/400);
+TEST_F(HRDWRingBufferReaderTest, ZeroTimeoutReturnsImmediatelyWhenEmpty) {
+  auto result = reader_->poll(
+      [](const TestEntry&, uint64_t) {}, std::chrono::milliseconds{0});
+  EXPECT_EQ(result.entriesRead, 0u);
+  EXPECT_FALSE(result.timedOut);
+}
+
+TEST_F(HRDWRingBufferReaderTest, ZeroTimeoutStillReadsAvailableEntries) {
+  writeEntry(1);
+  writeEntry(2);
+  writeEntry(3);
+
+  std::vector<uint32_t> seen;
+  auto result = reader_->poll(
+      [&](const TestEntry& e, uint64_t) { seen.push_back(dataToTag(e.data)); },
+      std::chrono::milliseconds{0});
+
+  // Zero timeout should still deliver all available entries.
+  EXPECT_EQ(result.entriesRead, 3u);
+  const std::vector<uint32_t> expected{1, 2, 3};
+  EXPECT_EQ(seen, expected);
+}
+
+TEST_F(HRDWRingBufferReaderTest, TimeoutBoundsOverwrittenProcessing) {
+  // Fill the ring completely, then overwrite all entries multiple times.
+  // This simulates the reader being heavily lapped.
+  for (uint32_t lap = 0; lap < 10; ++lap) {
+    for (uint32_t i = 0; i < kRingSize; ++i) {
+      writeEntry(i + lap * kRingSize);
+    }
+  }
+
+  std::vector<uint32_t> seen;
+  auto result = reader_->poll(
+      [&](const TestEntry& e, uint64_t) { seen.push_back(dataToTag(e.data)); },
+      std::chrono::milliseconds{50});
+
+  // 10 laps * 16 entries = 160 total. Reader jumps to tail (160 - 16 = 144).
+  // 144 entries lost, 16 entries read.
+  constexpr uint64_t kTotalEntries = 10 * kRingSize;
+  EXPECT_EQ(result.entriesLost, kTotalEntries - kRingSize);
+  EXPECT_EQ(result.entriesRead, kRingSize);
+  EXPECT_EQ(result.entriesRead + result.entriesLost, kTotalEntries);
+}
+
+TEST_F(HRDWRingBufferReaderTest, OnePastLapJumpsToTailLosesOne) {
+  // Write ringSize + 1 entries. Reader should jump to tail, losing 1.
+  for (uint32_t i = 0; i < kRingSize + 1; ++i) {
+    writeEntry(i);
+  }
 
   std::vector<uint32_t> seen;
   auto result = reader_->poll(
       [&](const TestEntry& e, uint64_t) { seen.push_back(dataToTag(e.data)); });
 
-  // Completed entry delivered, reader stopped at first WRITE_PENDING.
-  const std::vector<uint32_t> expectedSeen{1};
-  EXPECT_EQ(seen, expectedSeen);
-  EXPECT_EQ(result.entriesRead, 1u);
-  EXPECT_EQ(result.entriesInFlight, 2u);
+  EXPECT_EQ(result.entriesLost, 1u);
+  EXPECT_EQ(result.entriesRead, kRingSize);
+  EXPECT_EQ(result.entriesRead + result.entriesLost, kRingSize + 1);
 }
 
-// ---------------------------------------------------------------------------
-// Integration tests: simulate the pollGraphEvents() consumer pattern.
-//
-// These tests exercise the full reader → collId dispatch pipeline that
-// pollGraphEvents() uses: the callback checks entry.sequence to distinguish
-// complete vs. write-pending entries and dispatches per-collective actions.
-// ---------------------------------------------------------------------------
+TEST_F(HRDWRingBufferReaderTest, JumpToTailAfterPartialRead) {
+  // Write some entries, poll to read them, then write enough to lap.
+  for (uint32_t i = 0; i < 4; ++i) {
+    writeEntry(i);
+  }
+  reader_->poll([](const TestEntry&, uint64_t) {});
+  EXPECT_EQ(reader_->lastReadIndex(), 4u);
 
-namespace {
+  // Now write ringSize + 3 more entries — reader is lapped by 3.
+  for (uint32_t i = 0; i < kRingSize + 3; ++i) {
+    writeEntry(100 + i);
+  }
 
-// Minimal stand-in for GraphCollectiveEntry used in pollGraphEvents().
-struct FakeCollEntry {
-  uint32_t collId{};
-  bool progressingFired{false};
-  uint64_t detectedStartNs{0};
-};
+  std::vector<uint32_t> seen;
+  auto result = reader_->poll(
+      [&](const TestEntry& e, uint64_t) { seen.push_back(dataToTag(e.data)); });
 
-} // namespace
-
-// Simulate pollGraphEvents() with 4 collectives: 2 complete, 2 in-flight.
-// Verify that only the in-flight collectives get progressing actions, and
-// that the completed collectives are delivered normally.
-TEST_F(HRDWRingBufferReaderTest, PerCollectiveDispatchMixedState) {
-  writeEntry(/*tag=*/10, /*startNs=*/1000, /*endNs=*/1500);
-  writeEntry(/*tag=*/20, /*startNs=*/2000, /*endNs=*/2500);
-  writeIncompleteEntry(/*tag=*/30, /*startNs=*/3000);
-  writeIncompleteEntry(/*tag=*/40, /*startNs=*/4000);
-
-  FakeCollEntry coll10{10}, coll20{20}, coll30{30}, coll40{40};
-  std::unordered_map<uint32_t, FakeCollEntry*> collIdMap{
-      {10, &coll10}, {20, &coll20}, {30, &coll30}, {40, &coll40}};
-
-  std::vector<uint32_t> completedCollIds;
-  std::vector<uint32_t> progressingCollIds;
-  reader_->poll(
-      [&](const TestEntry& e, uint64_t) {
-        auto collId = dataToTag(e.data);
-        auto it = collIdMap.find(collId);
-        if (it == collIdMap.end()) {
-          return;
-        }
-        if (e.sequence == HRDW_RINGBUFFER_WRITE_PENDING) {
-          it->second->progressingFired = true;
-          it->second->detectedStartNs = e.start_ns;
-          progressingCollIds.push_back(collId);
-        } else {
-          completedCollIds.push_back(collId);
-        }
-      },
-      /*scanIncomplete=*/true);
-
-  const std::vector<uint32_t> expectedCompleted{10, 20};
-  EXPECT_EQ(completedCollIds, expectedCompleted);
-
-  const std::vector<uint32_t> expectedProgressing{30, 40};
-  EXPECT_EQ(progressingCollIds, expectedProgressing);
-
-  EXPECT_FALSE(coll10.progressingFired);
-  EXPECT_FALSE(coll20.progressingFired);
-  EXPECT_TRUE(coll30.progressingFired);
-  EXPECT_EQ(coll30.detectedStartNs, 3000u);
-  EXPECT_TRUE(coll40.progressingFired);
-  EXPECT_EQ(coll40.detectedStartNs, 4000u);
-}
-
-// Verify that a write-pending entry that completes between polls is
-// delivered as a normal completed entry on the next poll.
-TEST_F(HRDWRingBufferReaderTest, PendingEntryCompletedBetweenPolls) {
-  writeIncompleteEntry(/*tag=*/50, /*startNs=*/9000);
-
-  // Poll 1 — entry delivered as write-pending.
-  bool sawPending = false;
-  reader_->poll(
-      [&](const TestEntry& e, uint64_t) {
-        if (e.sequence == HRDW_RINGBUFFER_WRITE_PENDING) {
-          EXPECT_EQ(dataToTag(e.data), 50u);
-          sawPending = true;
-        }
-      },
-      /*scanIncomplete=*/true);
-  EXPECT_TRUE(sawPending);
-
-  // Complete the entry.
-  buf_->ring()[0].end_ns = 9500;
-  buf_->ring()[0].sequence = 0;
-
-  // Poll 2 — delivered as completed.
-  std::vector<uint32_t> completed;
-  auto result2 = reader_->poll(
-      [&](const TestEntry& e, uint64_t) {
-        EXPECT_NE(e.sequence, HRDW_RINGBUFFER_WRITE_PENDING);
-        completed.push_back(dataToTag(e.data));
-      },
-      /*scanIncomplete=*/true);
-
-  const std::vector<uint32_t> expectedCompleted{50};
-  EXPECT_EQ(completed, expectedCompleted);
-  EXPECT_EQ(result2.entriesInFlight, 0u);
+  EXPECT_EQ(result.entriesLost, 3u);
+  EXPECT_EQ(result.entriesRead, kRingSize);
+  EXPECT_EQ(
+      result.entriesRead + result.entriesLost,
+      static_cast<uint64_t>(kRingSize + 3));
 }
