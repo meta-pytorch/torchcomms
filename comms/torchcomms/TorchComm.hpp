@@ -140,6 +140,12 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
       int root,
       bool async_op,
       const GatherOptions& options = {});
+  c10::intrusive_ptr<TorchWork> gather_single(
+      at::Tensor& output,
+      const at::Tensor& input,
+      int root,
+      bool async_op,
+      const GatherSingleOptions& options = {});
 
   // Communicator Management
   std::shared_ptr<TorchComm> split(

@@ -143,6 +143,14 @@ class GatherOptions {
   GatherOptions() : timeout(kNoTimeout) {}
 };
 
+class GatherSingleOptions {
+ public:
+  std::unordered_map<std::string, std::string> hints;
+  std::chrono::milliseconds timeout;
+
+  GatherSingleOptions() : timeout(kNoTimeout) {}
+};
+
 class CommOptions {
  public:
   bool abort_process_on_timeout_or_error{true};

@@ -282,6 +282,7 @@ Raises:
       .value("barrier", OpName::barrier)
       .value("scatter", OpName::scatter)
       .value("gather", OpName::gather)
+      .value("gather_single", OpName::gather_single)
       .value("split", OpName::split)
       .value("new_window", OpName::new_window);
 
@@ -1852,6 +1853,42 @@ Args:
           )",
           py::arg("output_tensor_list"),
           py::arg("input_tensor"),
+          py::arg("root"),
+          py::arg("async_op"),
+          py::arg("hints") = std::nullopt,
+          py::arg("timeout") = std::nullopt,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "gather_single",
+          [](TorchComm& self,
+             at::Tensor& output,
+             const at::Tensor& input,
+             int root,
+             bool async_op,
+             std::optional<std::unordered_map<std::string, std::string>> hints,
+             std::optional<std::chrono::milliseconds> timeout) {
+            GatherSingleOptions opts;
+            if (hints) {
+              opts.hints = *hints;
+            }
+            if (timeout) {
+              opts.timeout = *timeout;
+            }
+            return self.gather_single(output, input, root, async_op, opts);
+          },
+          R"(
+Gather the input tensor from all ranks to the root using a single output tensor.
+
+Args:
+    output: Output tensor on the root rank. Ignored on non-root ranks.
+    input: Input tensor to gather.
+    root: The root rank.
+    async_op: Whether to perform the operation asynchronously.
+    hints: Dictionary of string hints for backend-specific options.
+    timeout: Timeout for the operation.
+          )",
+          py::arg("output"),
+          py::arg("input"),
           py::arg("root"),
           py::arg("async_op"),
           py::arg("hints") = std::nullopt,

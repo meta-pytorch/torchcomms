@@ -53,6 +53,7 @@ class OpName(Enum):
     barrier = auto()
     scatter = auto()
     gather = auto()
+    gather_single = auto()
     split = auto()
     new_window = auto()
 
@@ -447,6 +448,15 @@ class TorchComm:
         self,
         output_tensor_list: List[Any],
         input_tensor: Any,
+        root: int,
+        async_op: bool,
+        hints: Dict[str, str] | None = None,
+        timeout: timedelta | None = None,
+    ) -> TorchWork: ...
+    def gather_single(
+        self,
+        output: Any,
+        input: Any,
         root: int,
         async_op: bool,
         hints: Dict[str, str] | None = None,
