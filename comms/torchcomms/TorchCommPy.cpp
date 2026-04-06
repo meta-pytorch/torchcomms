@@ -1,7 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <c10/util/intrusive_ptr.h>
-#include <cuda_runtime.h>
 #include <pybind11/chrono.h>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
@@ -809,39 +808,8 @@ Raises:
       .def(
           "register_local_buffer",
           [](TorchCommWindow& self, const at::Tensor& tensor) -> int64_t {
-            RegisteredBuffer buf;
-            {
-              py::gil_scoped_release release;
-              buf = self.register_local_buffer(tensor);
-            }
-            // Allocate device-side copy of RegisteredBuffer.
-            // Uses cudaMalloc which operates in a separate VA space from
-            // NCCLX's cuMemMap, avoiding allocation conflicts.
-            RegisteredBuffer* device_buf = nullptr;
-            auto err = cudaMalloc(&device_buf, sizeof(RegisteredBuffer));
-            if (err != cudaSuccess) {
-              self.deregister_local_buffer(buf);
-              throw std::runtime_error(
-                  std::string(
-                      "[TorchCommWindow] cudaMalloc failed for "
-                      "RegisteredBuffer device copy: ") +
-                  cudaGetErrorString(err));
-            }
-            err = cudaMemcpy(
-                device_buf,
-                &buf,
-                sizeof(RegisteredBuffer),
-                cudaMemcpyHostToDevice);
-            if (err != cudaSuccess) {
-              cudaFree(device_buf);
-              self.deregister_local_buffer(buf);
-              throw std::runtime_error(
-                  std::string(
-                      "[TorchCommWindow] cudaMemcpy failed for "
-                      "RegisteredBuffer device copy: ") +
-                  cudaGetErrorString(err));
-            }
-            return reinterpret_cast<int64_t>(device_buf);
+            py::gil_scoped_release release;
+            return self.register_local_buffer_handle(tensor);
           },
           R"(
 Register a local buffer for use as source in device-side put operations.
@@ -862,27 +830,8 @@ Raises:
       .def(
           "deregister_local_buffer",
           [](TorchCommWindow& self, int64_t handle) {
-            // NOLINTNEXTLINE(performance-no-int-to-ptr)
-            auto* device_buf = reinterpret_cast<RegisteredBuffer*>(handle);
-            // Read RegisteredBuffer back from device memory.
-            RegisteredBuffer buf;
-            {
-              py::gil_scoped_release release;
-              auto err = cudaMemcpy(
-                  &buf,
-                  device_buf,
-                  sizeof(RegisteredBuffer),
-                  cudaMemcpyDeviceToHost);
-              if (err != cudaSuccess) {
-                throw std::runtime_error(
-                    std::string(
-                        "[TorchCommWindow] cudaMemcpy D2H failed in "
-                        "deregister_local_buffer: ") +
-                    cudaGetErrorString(err));
-              }
-              self.deregister_local_buffer(buf);
-              cudaFree(device_buf);
-            }
+            py::gil_scoped_release release;
+            self.deregister_local_buffer_handle(handle);
           },
           R"(
 Deregister a previously registered local buffer. NON-COLLECTIVE.
