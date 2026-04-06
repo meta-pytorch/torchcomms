@@ -2,6 +2,7 @@
 
 #include "comms/torchcomms/ncclx/NcclxApi.hpp"
 
+#include <comms/ctran/Ctran.h>
 #include <folly/debugging/symbolizer/Symbolizer.h>
 
 // Check NCCL version at compile time
@@ -110,6 +111,24 @@ ncclResult_t DefaultNcclxApi::globalDeregisterWithPtr(
     void* buffer,
     size_t size) {
   return ncclGlobalDeregisterWithPtr(buffer, size);
+}
+
+// commResult_t and ncclResult_t enums have matching values by design
+// (commSuccess=0 -> ncclSuccess=0, commInternalError=3 -> ncclInternalError=3,
+// etc). This mirrors the metaCommToNccl mapping in MetaFactory.h.
+static ncclResult_t commToNcclResult(commResult_t res) {
+  if (res < 0 || res >= commNumResults) {
+    return ncclInternalError;
+  }
+  return static_cast<ncclResult_t>(res);
+}
+
+ncclResult_t DefaultNcclxApi::registerAll() {
+  return commToNcclResult(ctran::registerAll());
+}
+
+ncclResult_t DefaultNcclxApi::deregisterAll() {
+  return commToNcclResult(ctran::deregisterAll());
 }
 
 ncclResult_t DefaultNcclxApi::send(

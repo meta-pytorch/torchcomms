@@ -119,9 +119,19 @@ class NcclxApi {
 
   // Pointer-based memory registration (global - does not require comm)
   // cudaDev is auto-detected from the buffer pointer.
-  virtual ncclResult_t globalRegisterWithPtr(void* buffer, size_t size) = 0;
+  [[nodiscard]] virtual ncclResult_t globalRegisterWithPtr(
+      void* buffer,
+      size_t size) = 0;
 
-  virtual ncclResult_t globalDeregisterWithPtr(void* buffer, size_t size) = 0;
+  [[nodiscard]] virtual ncclResult_t globalDeregisterWithPtr(
+      void* buffer,
+      size_t size) = 0;
+
+  // Register all cached memory segments in contiguous memory registrations.
+  [[nodiscard]] virtual ncclResult_t registerAll() = 0;
+
+  // Deregister all registrations from the global cache.
+  [[nodiscard]] virtual ncclResult_t deregisterAll() = 0;
 
   // Point-to-point operations
   [[nodiscard]] virtual ncclResult_t send(
@@ -467,9 +477,15 @@ class DefaultNcclxApi : public NcclxApi {
   [[nodiscard]] ncclResult_t commDeregister(ncclComm_t comm, void* handle)
       override;
 
-  ncclResult_t globalRegisterWithPtr(void* buffer, size_t size) override;
+  [[nodiscard]] ncclResult_t globalRegisterWithPtr(void* buffer, size_t size)
+      override;
 
-  ncclResult_t globalDeregisterWithPtr(void* buffer, size_t size) override;
+  [[nodiscard]] ncclResult_t globalDeregisterWithPtr(void* buffer, size_t size)
+      override;
+
+  [[nodiscard]] ncclResult_t registerAll() override;
+
+  [[nodiscard]] ncclResult_t deregisterAll() override;
 
   // Point-to-point operations
   [[nodiscard]] ncclResult_t send(

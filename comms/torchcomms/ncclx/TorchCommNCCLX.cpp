@@ -2367,6 +2367,24 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
   return new_torchcomm;
 }
 
+void TorchCommNCCLX::registerAll() {
+  ncclResult_t result = nccl_api_->registerAll();
+  if (result != ncclSuccess) {
+    throw std::runtime_error(
+        "Failed to register all cached memory segments: " +
+        std::string(nccl_api_->getErrorString(result)));
+  }
+}
+
+void TorchCommNCCLX::deregisterAll() {
+  ncclResult_t result = nccl_api_->deregisterAll();
+  if (result != ncclSuccess) {
+    throw std::runtime_error(
+        "Failed to deregister all cached memory segments: " +
+        std::string(nccl_api_->getErrorString(result)));
+  }
+}
+
 void TorchCommNCCLX::global_register_address(
     const TorchCommNCCLX::AddressWithLen& addr,
     NcclxApi* nccl_api) {
