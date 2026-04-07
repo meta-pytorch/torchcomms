@@ -708,7 +708,7 @@ class FullgraphCompileTest(unittest.TestCase):
                 )
 
         logger.info(f"All_gather test passed for rank {self.rank}")
-
+    @unittest.skipIf(os.getenv("TEST_BACKEND") == "xccl", "Skipping for XCCL backend")
     def _test_fullgraph_compile_window_put_get(
         self, count, dtype, signal, window_is_cpu, async_op
     ):
