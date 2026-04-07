@@ -296,3 +296,97 @@ TEST_F(CommDumpPluginTest, ConfigurablePendingQueueSize) {
     EXPECT_VALUE(smallQueuePlugin->afterCollKernelScheduled(event));
   }
 }
+
+// Test that events whose events are fired out-of-order work correctly.
+// With the unified polling pipeline, eager and graph events are merged by
+// timestamp, so the start sequence may be different than the originally
+// scheduled sequence. CommDumpPlugin must handle this via find_if search rather
+// than assume FIFO.
+TEST_F(CommDumpPluginTest, OutOfOrderScheduling) {
+  // Schedule three events out of order: 1, 2, 3
+  auto event1 = createCollTraceEvent(1);
+  auto event2 = createCollTraceEvent(2);
+  auto event3 = createCollTraceEvent(3);
+
+  EXPECT_VALUE(plugin->afterCollKernelScheduled(event1));
+  EXPECT_VALUE(plugin->afterCollKernelScheduled(event2));
+  EXPECT_VALUE(plugin->afterCollKernelScheduled(event3));
+
+  // Complete event2 first (out of order)
+  EXPECT_VALUE(plugin->afterCollKernelStart(event2));
+
+  auto dump1 = plugin->dump();
+  EXPECT_VALUE(dump1);
+  ASSERT_EQ(dump1.value().currentColls.size(), 1);
+  EXPECT_EQ(dump1.value().currentColls.front()->getCollId(), 2);
+  EXPECT_EQ(dump1.value().pendingColls.size(), 2);
+
+  EXPECT_VALUE(plugin->afterCollKernelEnd(event2));
+
+  // Complete event1 second
+  EXPECT_VALUE(plugin->afterCollKernelStart(event1));
+
+  auto dump2 = plugin->dump();
+  EXPECT_VALUE(dump2);
+  ASSERT_EQ(dump2.value().currentColls.size(), 1);
+  EXPECT_EQ(dump2.value().currentColls.front()->getCollId(), 1);
+  EXPECT_EQ(dump2.value().pastColls.size(), 1);
+  EXPECT_EQ(dump2.value().pastColls.front()->getCollId(), 2);
+  EXPECT_EQ(dump2.value().pendingColls.size(), 1);
+
+  EXPECT_VALUE(plugin->afterCollKernelEnd(event1));
+
+  // Complete event3 last
+  EXPECT_VALUE(plugin->afterCollKernelStart(event3));
+  EXPECT_VALUE(plugin->afterCollKernelEnd(event3));
+
+  // Final dump: all three in pastColls in completion order (2, 1, 3)
+  auto dump3 = plugin->dump();
+  EXPECT_VALUE(dump3);
+  EXPECT_EQ(dump3.value().pastColls.size(), 3);
+  EXPECT_EQ(dump3.value().pastColls[0]->getCollId(), 2);
+  EXPECT_EQ(dump3.value().pastColls[1]->getCollId(), 1);
+  EXPECT_EQ(dump3.value().pastColls[2]->getCollId(), 3);
+  EXPECT_TRUE(dump3.value().currentColls.empty());
+  EXPECT_TRUE(dump3.value().pendingColls.empty());
+}
+
+// Test two concurrent collectives in currentColls simultaneously
+TEST_F(CommDumpPluginTest, ConcurrentActiveCollectives) {
+  auto event1 = createCollTraceEvent(1);
+  auto event2 = createCollTraceEvent(2);
+
+  // Schedule both
+  EXPECT_VALUE(plugin->afterCollKernelScheduled(event1));
+  EXPECT_VALUE(plugin->afterCollKernelScheduled(event2));
+
+  // Start both (simulates concurrent NCCL + ctran)
+  EXPECT_VALUE(plugin->afterCollKernelStart(event1));
+  EXPECT_VALUE(plugin->afterCollKernelStart(event2));
+
+  // Both should be in currentColls
+  auto dump1 = plugin->dump();
+  EXPECT_VALUE(dump1);
+  EXPECT_EQ(dump1.value().currentColls.size(), 2);
+  EXPECT_EQ(dump1.value().currentColls[0]->getCollId(), 1);
+  EXPECT_EQ(dump1.value().currentColls[1]->getCollId(), 2);
+  EXPECT_TRUE(dump1.value().pendingColls.empty());
+
+  // End event1 first
+  EXPECT_VALUE(plugin->afterCollKernelEnd(event1));
+
+  auto dump2 = plugin->dump();
+  EXPECT_VALUE(dump2);
+  EXPECT_EQ(dump2.value().currentColls.size(), 1);
+  EXPECT_EQ(dump2.value().currentColls.front()->getCollId(), 2);
+  EXPECT_EQ(dump2.value().pastColls.size(), 1);
+  EXPECT_EQ(dump2.value().pastColls.front()->getCollId(), 1);
+
+  // End event2
+  EXPECT_VALUE(plugin->afterCollKernelEnd(event2));
+
+  auto dump3 = plugin->dump();
+  EXPECT_VALUE(dump3);
+  EXPECT_TRUE(dump3.value().currentColls.empty());
+  EXPECT_EQ(dump3.value().pastColls.size(), 2);
+}

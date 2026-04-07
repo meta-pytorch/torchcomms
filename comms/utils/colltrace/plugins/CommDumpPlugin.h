@@ -39,7 +39,7 @@ struct CommDumpConfig {
 
 struct CollTraceDump {
   std::deque<std::shared_ptr<CollRecord>> pastColls;
-  std::vector<std::shared_ptr<CollRecord>> currentColls;
+  std::deque<std::shared_ptr<CollRecord>> currentColls;
   std::deque<std::shared_ptr<CollRecord>> pendingColls;
 };
 
