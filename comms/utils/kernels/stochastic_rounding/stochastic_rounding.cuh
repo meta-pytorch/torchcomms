@@ -12,6 +12,12 @@
 
 #include <cuda_bf16.h>
 
+#if __CUDA_ARCH__ >= 1000
+constexpr bool kHasHardwareSR = true;
+#else
+constexpr bool kHasHardwareSR = false;
+#endif
+
 // Simple check for whether the number is finite
 __device__ __forceinline__ bool isFinite(float val) {
   // Check for special values (NaN or Infinity).
@@ -32,9 +38,9 @@ __device__ __forceinline__ bool isFinite(float val) {
 // instruction for hardware-accelerated stochastic rounding.
 // Takes 2 FP32 values + random bits and produces 2 BF16 values packed in
 // uint32.
-#if __CUDA_ARCH__ >= 1000
 __device__ __forceinline__ __nv_bfloat162
 stochastic_round_bf16x2_blackwell(float2 vals, uint32_t rand_bits) {
+#if __CUDA_ARCH__ >= 1000
   // Use cvt.rs.bf16x2.f32 for vectorized stochastic rounding
   // PTX instruction: cvt.rs.bf16x2.f32 dst, src_hi, src_lo, rand;
   // - dst: 32-bit register containing 2 packed BF16 values
@@ -58,8 +64,13 @@ stochastic_round_bf16x2_blackwell(float2 vals, uint32_t rand_bits) {
                : "=r"(out)
                : "f"(vals.x), "f"(vals.y), "r"(rand_bits));
   return *reinterpret_cast<__nv_bfloat162*>(&out);
-}
+#else
+  // We could not use static assert here because we only want to fail if the
+  // function is actually called.
+  __trap();
+  return __nv_bfloat162{};
 #endif
+}
 
 // ==============================================================================
 // Software Stochastic Rounding (Pre-Blackwell Fallback)
@@ -136,4 +147,25 @@ stochastic_round_bf16x2_software_32bit(float2 vals, uint32_t rand_bits) {
   __nv_bfloat16 lo = stochastic_round_bf16_software_16bit(vals.x, lo_rand);
   __nv_bfloat16 hi = stochastic_round_bf16_software_16bit(vals.y, hi_rand);
   return __nv_bfloat162(lo, hi);
+}
+
+// For 1 FP32 → 1 BF16, only
+template <bool useHardwareSR>
+__device__ __forceinline__ __nv_bfloat16
+stochastic_round_bf16(float val, uint16_t rand_bits) {
+  return stochastic_round_bf16_software_16bit(val, rand_bits);
+}
+
+// Currently only x2 version supports hardware-accelerated SR
+template <bool useHardwareSR>
+__device__ __forceinline__ __nv_bfloat162
+stochastic_round_bf16x2(float2 vals, uint32_t rand_bits) {
+  if constexpr (useHardwareSR) {
+    static_assert(
+        !useHardwareSR || kHasHardwareSR,
+        "Hardware SR not supported on this arch");
+    return stochastic_round_bf16x2_blackwell(vals, rand_bits);
+  } else {
+    return stochastic_round_bf16x2_software_32bit(vals, rand_bits);
+  }
 }
