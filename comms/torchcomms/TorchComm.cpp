@@ -590,6 +590,36 @@ c10::intrusive_ptr<TorchWork> TorchComm::gather(
   return work;
 }
 
+c10::intrusive_ptr<TorchWork> TorchComm::gather_single(
+    at::Tensor& output,
+    const at::Tensor& input,
+    int root,
+    bool async_op,
+    const GatherSingleOptions& options) {
+  validateRank(root, "root");
+  auto op_id = GlobalOpIdGenerator::instance().nextOpId();
+  preHook(
+      PreHookArgs{
+          .name = OpName::gather_single,
+          .async_op = async_op,
+          .input_tensor = &input,
+          .output_tensor = &output,
+          .root = root,
+          .op_id = op_id,
+      });
+
+  auto work = impl_->gather_single(output, input, root, async_op, options);
+
+  postHook(
+      PostHookArgs{
+          .name = OpName::gather_single,
+          .work = c10::weak_intrusive_ptr<TorchWork>(work),
+          .op_id = op_id,
+      });
+
+  return work;
+}
+
 std::shared_ptr<TorchCommWindow> TorchComm::new_window(
     const std::optional<at::Tensor>& tensor) {
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
