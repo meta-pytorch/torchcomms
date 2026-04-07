@@ -243,6 +243,10 @@ std::unordered_map<std::string, std::string> commDumpToMap(
   return map;
 }
 
+int64_t CommDumpPlugin::maxEventRetention() const noexcept {
+  return config_.pastCollSize;
+}
+
 CommsMaybeVoid CommDumpPlugin::testOnlyClearColls() noexcept {
   collTraceDump_.exchange(CollTraceDump{});
   newPendingColls_ =
