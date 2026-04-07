@@ -431,10 +431,6 @@ commResult_t CtranGpe::allocKernelElems(
   if (numElems > this->pimpl->kernelElemPool->size()) {
     this->pimpl->kernelElemPool->reclaim();
 
-    // We do not expect such high amount of inuse elements, return error here to
-    // avoid hang. If there can be really such a high usage case, either
-    // increase the pool size or set a timeout here to reclaim multiple times.
-    // Avoid timeout logic for now to avoid complexity.
     if (numElems > this->pimpl->kernelElemPool->size()) {
       CLOGF(
           WARN,
@@ -462,6 +458,7 @@ commResult_t CtranGpe::allocKernelElems(
     }
     elem = elem->next;
   }
+
   return commSuccess;
 }
 
