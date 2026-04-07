@@ -27,8 +27,6 @@ std::unordered_map<KernelConfig::KernelType, void*> kernelFns = {
      reinterpret_cast<void*>(ncclKernelRecv</*UNPACK=*/true>)},
     {KernelConfig::KernelType::SENDRECV_UNPACK,
      reinterpret_cast<void*>(ncclKernelSendRecv</*UNPACK=*/true>)},
-    {KernelConfig::KernelType::SENDRECV_STAGED,
-     reinterpret_cast<void*>(ncclKernelSendRecvStaged)},
     {KernelConfig::KernelType::SENDRECV_P2P,
      reinterpret_cast<void*>(ncclKernelSendRecvP2p)},
 };
@@ -211,7 +209,6 @@ commResult_t ctranGroupEndHook(
           sendRecvAlgoName(myAlgo, allOps),
           allOps.front()->opCount);
 
-      // Create kernArgs on stack for SENDRECV_STAGED
       ctran::sendrecv::KernArgs kernArgs;
       FB_COMMCHECK(
           ctran::sendrecv::setupKernelConfig(

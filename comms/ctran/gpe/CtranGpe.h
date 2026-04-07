@@ -302,7 +302,6 @@ struct KernelConfig {
     SENDRECV_NOTIFY,
     RECV_UNPACK,
     SENDRECV_UNPACK,
-    SENDRECV_STAGED,
     SENDRECV_P2P,
     ALLTOALL,
     DEVICE_ALLTOALLV,
@@ -511,11 +510,6 @@ extern __global__ void ncclKernelSendRecvNotifyOnly(
     int* flag,
     CtranAlgoDeviceState* devState,
     ctran::sendrecv::KernelSendRecvArgs args);
-
-extern __global__ void ncclKernelSendRecvStaged(
-    int* flag,
-    CtranAlgoDeviceState* devState,
-    ctran::sendrecv::KernArgs args);
 
 extern __global__ void ncclKernelSendRecvP2p(
     int* flag,

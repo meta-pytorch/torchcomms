@@ -1390,11 +1390,11 @@ cvars:
      Number of threads in each thread block used for intra-node zero-copy
      sendrecv kernel. Default -1 to use the recommended size by CUDA runtime
 
- - name        : NCCL_CTRAN_NVL_SENDRECV_STAGED_COPY_THREAD_BLOCK_SIZE
+ - name        : NCCL_CTRAN_NVL_SENDRECV_P2P_THREAD_BLOCK_SIZE
    type        : int
    default     : 512
    description : |-
-     Number of threads in each thread block used for intra-node staged-copy
+     Number of threads in each thread block used for intra-node p2p
      sendrecv kernel.
 
  # TODO: after refactoring of copy-engine, remove this and use NCCL_SENDRECV_ALGO
@@ -2002,14 +2002,13 @@ cvars:
  - name        : NCCL_SENDRECV_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctzcopy, ctstaged, ctp2p
+   choices     : orig, ctran, ctzcopy, ctp2p
    description : |-
      The algorithm to use for sendrecv communication
      orig - Copy-based communication
      ctran - Ctran-based communication auto-select
      ctzcopy - Ctran-based zero-copy kernel for NVL
-     ctstaged - Ctran-based staged-copy kernel for NVL
-     ctp2p - Experimental algo: Ctran-based point-to-point kernel for NVL
+     ctp2p - Ctran-based point-to-point kernel for NVL
 
  - name        : NCCL_ALLGATHER_P_ALGO
    type        : enum
