@@ -162,11 +162,11 @@ static void dumpCollTrace(
     // old coll trace, we don't care too much about code reuse here.
     map["CT_pastColls"] = folly::toJson(folly::toDynamic(dump.pastColls));
     map["CT_pendingColls"] = folly::toJson(folly::toDynamic(dump.pendingColls));
+    auto currentColls = folly::dynamic::array();
     if (dump.currentColl != nullptr) {
-      map["CT_currentColl"] = folly::toJson(dump.currentColl->toDynamic());
-    } else {
-      map["CT_currentColl"] = "null";
+      currentColls.push_back(dump.currentColl->toDynamic());
     }
+    map["CT_currentColls"] = folly::toJson(currentColls);
   } else {
     XLOGF(DBG2, "CommDump: COLLTRACE is disabled. No trace to dump");
   }

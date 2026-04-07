@@ -398,7 +398,7 @@ TEST_F(NcclCommsTest, AnalyzerSuccess) {
             }
 
             const auto& ncclParsedEntry = commHashMap.begin()->second;
-            if (ncclParsedEntry.CT_currentColl().has_value()) {
+            if (!ncclParsedEntry.CT_currentColls()->empty()) {
               XLOG(INFO) << "Expecting no ongoing collectives";
               return false;
             }
@@ -512,7 +512,7 @@ TEST_F(NcclCommsTest, OneRankHangs) {
             const auto& ncclParsedEntry = commHashMap.begin()->second;
             // Rank 0 is not in the collective
             if (i != 0) {
-              if (!ncclParsedEntry.CT_currentColl().has_value()) {
+              if (ncclParsedEntry.CT_currentColls()->empty()) {
                 XLOG(INFO) << "Expecting current collective";
                 return false;
               }
@@ -644,7 +644,7 @@ TEST_F(NcclCommsTest, DISABLED_OneRankHangsCudaGraph) {
             const auto& ncclParsedEntry = commHashMap.begin()->second;
             // Rank 0 is not in the collective
             if (i != 0) {
-              if (!ncclParsedEntry.CT_currentColl().has_value()) {
+              if (ncclParsedEntry.CT_currentColls()->empty()) {
                 XLOG(INFO) << "Expecting current collective";
                 return false;
               }

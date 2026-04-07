@@ -4,6 +4,7 @@
 
 #include <deque>
 #include <memory>
+#include <vector>
 
 #include <folly/MPMCQueue.h>
 #include <folly/Synchronized.h>
@@ -38,7 +39,7 @@ struct CommDumpConfig {
 
 struct CollTraceDump {
   std::deque<std::shared_ptr<CollRecord>> pastColls;
-  std::shared_ptr<CollRecord> currentColl;
+  std::vector<std::shared_ptr<CollRecord>> currentColls;
   std::deque<std::shared_ptr<CollRecord>> pendingColls;
 };
 

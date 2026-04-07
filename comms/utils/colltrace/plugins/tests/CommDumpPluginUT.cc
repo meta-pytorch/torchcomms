@@ -85,8 +85,8 @@ TEST_F(CommDumpPluginTest, AfterCollKernelScheduledWithDump) {
   auto dump = plugin->dump();
   EXPECT_VALUE(dump);
   EXPECT_TRUE(dump.value().pastColls.empty());
-  ASSERT_NE(dump.value().currentColl, nullptr);
-  EXPECT_EQ(dump.value().currentColl.get(), event.collRecord.get());
+  ASSERT_EQ(dump.value().currentColls.size(), 1);
+  EXPECT_EQ(dump.value().currentColls.front().get(), event.collRecord.get());
 }
 
 TEST_F(CommDumpPluginTest, NullAfterCollKernel) {
@@ -115,7 +115,8 @@ TEST_F(CommDumpPluginTest, AfterCollKernelStart) {
   EXPECT_VALUE(dump);
   EXPECT_TRUE(dump.value().pastColls.empty());
   EXPECT_TRUE(dump.value().pendingColls.empty());
-  EXPECT_EQ(dump.value().currentColl.get(), event.collRecord.get());
+  ASSERT_EQ(dump.value().currentColls.size(), 1);
+  EXPECT_EQ(dump.value().currentColls.front().get(), event.collRecord.get());
 }
 
 // Test afterCollKernelEnd
@@ -139,7 +140,7 @@ TEST_F(CommDumpPluginTest, AfterCollKernelEnd) {
   EXPECT_EQ(dump.value().pastColls.size(), 1);
   EXPECT_EQ(dump.value().pastColls.front().get(), event.collRecord.get());
   EXPECT_TRUE(dump.value().pendingColls.empty());
-  EXPECT_EQ(dump.value().currentColl, nullptr);
+  EXPECT_TRUE(dump.value().currentColls.empty());
 }
 
 // Test dump method
@@ -151,7 +152,7 @@ TEST_F(CommDumpPluginTest, Dump) {
   // Verify that the dump is initially empty
   auto& dump = dumpResult.value();
   EXPECT_TRUE(dump.pastColls.empty());
-  EXPECT_EQ(dump.currentColl, nullptr);
+  EXPECT_TRUE(dump.currentColls.empty());
   EXPECT_TRUE(dump.pendingColls.empty());
 
   // Process a complete collective
@@ -166,7 +167,7 @@ TEST_F(CommDumpPluginTest, Dump) {
 
   auto& dump2 = dumpResult2.value();
   EXPECT_EQ(dump2.pastColls.size(), 1);
-  EXPECT_EQ(dump2.currentColl, nullptr);
+  EXPECT_TRUE(dump2.currentColls.empty());
   EXPECT_TRUE(dump2.pendingColls.empty());
   EXPECT_EQ(dump2.pastColls.front()->getCollId(), 1);
 }
@@ -188,8 +189,9 @@ TEST_F(CommDumpPluginTest, MultipleCollectives) {
 
   auto& dump = dumpResult.value();
   EXPECT_TRUE(dump.pastColls.empty());
-  EXPECT_EQ(dump.currentColl.get(), event1.collRecord.get());
-  EXPECT_EQ(dump.currentColl->getCollId(), 1);
+  ASSERT_EQ(dump.currentColls.size(), 1);
+  EXPECT_EQ(dump.currentColls.front().get(), event1.collRecord.get());
+  EXPECT_EQ(dump.currentColls.front()->getCollId(), 1);
   EXPECT_EQ(dump.pendingColls.size(), 1);
   EXPECT_EQ(dump.pendingColls.front()->getCollId(), 2);
   EXPECT_EQ(dump.pendingColls.front().get(), event2.collRecord.get());
@@ -207,8 +209,8 @@ TEST_F(CommDumpPluginTest, MultipleCollectives) {
   auto& dump2 = dumpResult2.value();
   EXPECT_EQ(dump2.pastColls.size(), 1);
   EXPECT_EQ(dump2.pastColls.front()->getCollId(), 1);
-  EXPECT_NE(dump2.currentColl, nullptr);
-  EXPECT_EQ(dump2.currentColl->getCollId(), 2);
+  ASSERT_EQ(dump2.currentColls.size(), 1);
+  EXPECT_EQ(dump2.currentColls.front()->getCollId(), 2);
   EXPECT_TRUE(dump2.pendingColls.empty());
 
   // Complete second collective
@@ -222,7 +224,7 @@ TEST_F(CommDumpPluginTest, MultipleCollectives) {
   EXPECT_EQ(dump3.pastColls.size(), 2);
   EXPECT_EQ(dump3.pastColls.front()->getCollId(), 1);
   EXPECT_EQ(dump3.pastColls.back()->getCollId(), 2);
-  EXPECT_EQ(dump3.currentColl, nullptr);
+  EXPECT_TRUE(dump3.currentColls.empty());
   EXPECT_TRUE(dump3.pendingColls.empty());
 }
 
@@ -279,8 +281,8 @@ TEST_F(CommDumpPluginTest, ConfigurablePendingQueueSize) {
   EXPECT_EQ(
       dump.value().pendingColls.size(),
       kTestPendingQueueSize - 1); // One will be marked as currentColl
-  EXPECT_NE(dump.value().currentColl, nullptr); // First one moved to current
-  EXPECT_EQ(dump.value().currentColl->getCollId(), 0);
+  ASSERT_EQ(dump.value().currentColls.size(), 1); // First one moved to current
+  EXPECT_EQ(dump.value().currentColls.front()->getCollId(), 0);
   if (dump.value().pendingColls.size() == kTestPendingQueueSize - 1) {
     for (int i = 0; i < kTestPendingQueueSize - 1; ++i) {
       EXPECT_EQ(dump.value().pendingColls[i]->getCollId(), i + 1); // IDs 1-3
