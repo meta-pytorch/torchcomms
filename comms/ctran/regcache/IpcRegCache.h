@@ -78,6 +78,8 @@ class IpcRegCache {
   //   - ipcDesc: the remote memory IPC descriptor
   //   - cudaDev: the CUDA device to import the memory to
   //   - logMetaData: (optional) logging metadata from the communicator
+  //   - extraSegments: extra segment descriptors beyond
+  //   CTRAN_IPC_INLINE_SEGMENTS
   // Output arguments:
   //   - buf: the local buffer mapped to the imported remote memory
   //   - remKey: the remoteAccessKey (rkey) of the remote buffer registration
@@ -87,7 +89,8 @@ class IpcRegCache {
       int cudaDev,
       void** buf,
       struct ctran::regcache::IpcRemHandle* remKey,
-      const struct CommLogData* logMetaData = nullptr);
+      const struct CommLogData* logMetaData = nullptr,
+      const std::vector<ctran::utils::CtranIpcSegDesc>& extraSegments = {});
 
   // Export local NVL memory registration for sharing with remote peers.
   // Input arguments:
@@ -95,10 +98,13 @@ class IpcRegCache {
   //   - ipcRegElem: local IPC registration element
   // Output arguments:
   //   - ipcDesc: IPC descriptor to be populated and sent to remote peer
+  //   - extraSegments: extra segments beyond CTRAN_IPC_INLINE_SEGMENTS
+
   inline commResult_t exportMem(
       const void* buf,
       void* ipcRegElem,
-      ctran::regcache::IpcDesc& ipcDesc) {
+      ctran::regcache::IpcDesc& ipcDesc,
+      std::vector<ctran::utils::CtranIpcSegDesc>& extraSegments) {
     if (ipcRegElem == nullptr) {
       CLOGF(ERR, "CTRAN-REGCACHE: ipcRegElem is nullptr in exportMem");
       return commInvalidArgument;
@@ -107,7 +113,7 @@ class IpcRegCache {
 
     // Fill IPC descriptor content
     auto ipcMem = reg->ipcMem.wlock();
-    FB_COMMCHECK(ipcMem->ipcExport(ipcDesc.desc));
+    FB_COMMCHECK(ipcMem->ipcExport(ipcDesc.desc, extraSegments));
     ipcDesc.offset = reinterpret_cast<size_t>(buf) -
         reinterpret_cast<size_t>(ipcMem->getBase());
     ipcDesc.uid = reg->uid;
@@ -180,7 +186,8 @@ class IpcRegCache {
       const ctran::regcache::IpcDesc& ipcDesc,
       int cudaDev,
       const struct CommLogData* logMetaData,
-      void** mappedBase);
+      void** mappedBase,
+      const std::vector<ctran::utils::CtranIpcSegDesc>& extraSegments = {});
 
   // Initialize the AsyncSocket infrastructure for this rank.
   // Must be called once per rank before notifyRemoteIpcRelease can be used.
