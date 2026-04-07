@@ -46,6 +46,7 @@ run_tests () {
         torchrun --nnodes 1 --nproc_per_node "${NPROC_PER_NODE}" "$test_file" --verbose
     done
 
+    #TODO: Re-enable test when internal PYTORCHDGQ-8654 is resolved.
     # cd -
     # cd "$(dirname "$0")/../hooks/fr/tests/py"
     # torchrun --nnodes 1 --nproc_per_node "${NPROC_PER_NODE}" FlightRecorderTest.py --verbose
