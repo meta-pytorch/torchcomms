@@ -243,20 +243,22 @@ TEST_F(GlobalRegistrationTest, CpuTensorRegistration) {
   // CtranMapper behavior. IB backend handles CPU memory gracefully via
   // exception catching in doRegister.
   commResult_t result =
-      ctran::globalRegisterWithPtr(cpuBuf, cpuBufSize, /*forceReg=*/true);
+      ctran::globalRegisterWithPtr(cpuBuf, cpuBufSize, /*forceReg=*/false);
   EXPECT_EQ(result, commSuccess) << "CPU memory registration should succeed";
-
-  // Verify that searchRegElem finds the registered element (via isRegistered)
   auto regCache = ctran::RegCache::getInstance();
   ASSERT_NE(regCache, nullptr);
-  EXPECT_TRUE(regCache->isRegistered(cpuBuf, cpuBufSize))
-      << "CPU buffer should be found by searchRegElem after registration";
-  auto* ibRegHdl = regCache->searchIbRegElem(cpuBuf, cpuBufSize);
-  EXPECT_NE(ibRegHdl, nullptr);
-
+  // Verify that searchIbRegHandle registers and finds the IB handle
+  auto* ibRegHdl = regCache->searchIbRegHandle(cpuBuf, cpuBufSize, cudaDev);
+  EXPECT_NE(ibRegHdl, nullptr)
+      << "Found IB handle by searchIbRegHandle after registration";
   // Deregistration of CPU memory should also succeed gracefully
   result = ctran::globalDeregisterWithPtr(cpuBuf, cpuBufSize);
   EXPECT_EQ(result, commSuccess) << "CPU memory deregistration should succeed";
+  // Verify that searchIbRegHandle cannot find the IB handle after
+  // deregistration
+  ibRegHdl = regCache->searchIbRegHandle(cpuBuf, cpuBufSize, cudaDev);
+  EXPECT_EQ(ibRegHdl, nullptr)
+      << "Cannot found IB handle by searchIbRegHandle after deregistration";
 
   free(cpuBuf);
 }
