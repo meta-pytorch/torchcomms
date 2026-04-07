@@ -23,6 +23,7 @@
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/CtranAlgoConsts.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/utils/CudaUtils.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -1009,6 +1010,45 @@ inline commResult_t completeHostResourceSetup(
         std::string(desc));                                                  \
   }
 
+// Dedicated ctrl exchange for straggler detection, separate from the data
+// credit flow. Each rank signals "I'm ready" to both ring neighbors and waits
+// for both to signal back. The measured duration captures pure setup latency
+// (how long until the slowest neighbor is ready) with no data transfer noise.
+static void neighborReadinessBarrier(
+    CtranComm* comm,
+    const ctran::allreduce::ring::HostArgs& args) {
+  CtranMapperRequest recvFromRight;
+  CtranMapperRequest recvFromLeft;
+  CtranMapperRequest sendToLeft;
+  CtranMapperRequest sendToRight;
+
+  // Post receives first to avoid missed signals
+  FB_COMMCHECKTHROW_EX(
+      comm->ctran_->mapper->irecvCtrl(args.rightRank, &recvFromRight),
+      comm->logMetaData_);
+  FB_COMMCHECKTHROW_EX(
+      comm->ctran_->mapper->irecvCtrl(args.leftRank, &recvFromLeft),
+      comm->logMetaData_);
+
+  // Signal both neighbors
+  FB_COMMCHECKTHROW_EX(
+      comm->ctran_->mapper->isendCtrl(args.leftRank, &sendToLeft),
+      comm->logMetaData_);
+  FB_COMMCHECKTHROW_EX(
+      comm->ctran_->mapper->isendCtrl(args.rightRank, &sendToRight),
+      comm->logMetaData_);
+
+  // Wait for peer readiness
+  FB_COMMCHECKTHROW_EX(
+      comm->ctran_->mapper->waitRequest(&recvFromRight), comm->logMetaData_);
+  FB_COMMCHECKTHROW_EX(
+      comm->ctran_->mapper->waitRequest(&recvFromLeft), comm->logMetaData_);
+  FB_COMMCHECKTHROW_EX(
+      comm->ctran_->mapper->waitRequest(&sendToLeft), comm->logMetaData_);
+  FB_COMMCHECKTHROW_EX(
+      comm->ctran_->mapper->waitRequest(&sendToRight), comm->logMetaData_);
+}
+
 static commResult_t impl(
     const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
   FB_CHECKTHROW_EX_NOCOMM(
@@ -1017,16 +1057,27 @@ static commResult_t impl(
   CtranComm* comm = opGroup.front()->comm_;
   CtranAlgoLogger logger(allReduceAlgoName(myAlgo), op->opCount, comm);
 
+  ctran::Profiler* profiler = comm->ctran_->profiler.get();
+  if (profiler) {
+    profiler->initForEachColl(
+        op->opCount, NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT);
+  }
+
   // hostArgs/hostResource are direct members of OpElem — owned by OpElem,
   // destroyed when OpElem is destroyed (after single impl() in eager mode,
   // when graph is destroyed in CUDA graph persistent mode).
   auto& args = op->allreduce.hostArgs;
   auto& resource = op->allreduce.hostResource;
 
+  CTRAN_PROFILER_IF(
+      profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_CTRL));
   if (!resource.setupComplete) {
     FB_COMMCHECK(completeHostResourceSetup(comm, args, resource));
     resource.setupComplete = true;
   }
+  neighborReadinessBarrier(comm, args);
+  CTRAN_PROFILER_IF(
+      profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_CTRL));
 
   // setup algoCtx
   AlgoContext algoCtx = {
@@ -1040,6 +1091,17 @@ static commResult_t impl(
   };
   setupAlgoCtxImpl(algoCtx);
 
+  const size_t messageSize =
+      op->allreduce.count * commTypeSize(op->allreduce.datatype);
+  CTRAN_PROFILER_IF(profiler, {
+    auto& algoContext = profiler->algoContext;
+    algoContext.algorithmName = allReduceAlgoName(myAlgo);
+    algoContext.sendContext.totalBytes = messageSize;
+    algoContext.sendContext.messageSizes = std::to_string(messageSize);
+    algoContext.recvContext.totalBytes = messageSize;
+    algoContext.recvContext.messageSizes = std::to_string(messageSize);
+  });
+
   // Forward direction request vectors
   std::vector<std::unique_ptr<CtranMapperRequest>> dataSResps;
   std::vector<std::unique_ptr<CtranMapperRequest>> bufSyncSResps;
@@ -1052,6 +1114,8 @@ static commResult_t impl(
   std::vector<std::unique_ptr<CtranMapperRequest>> revBufSyncRResps;
   std::vector<std::unique_ptr<CtranMapperRequest>> revFlushResps;
 
+  CTRAN_PROFILER_IF(
+      profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_DATA));
   while (algoCtx.partitionOffset < algoCtx.numElements) {
     updatePartitionCtxHost(args, resource, algoCtx);
     CLOGF_TRACE(
@@ -1140,6 +1204,10 @@ static commResult_t impl(
     updatePartitionDone(algoCtx);
     HOST_ABORT(fmt::format("ctring after partition {}", algoCtx.partition));
   } // end of partition loop
+  CTRAN_PROFILER_IF(
+      profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_DATA));
+
+  CTRAN_PROFILER_IF(profiler, { profiler->reportToScuba(); });
 
   // Reset flags for next allreduce to reuse. Only clear sync status (post/
   // complete flags); do not release to pool (inuse stays true). Pool release
