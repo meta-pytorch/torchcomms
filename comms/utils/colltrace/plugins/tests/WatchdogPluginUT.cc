@@ -262,11 +262,12 @@ TEST_F(WatchdogPluginTest, TimeoutDisabledByDefault) {
   EXPECT_EQ(lastTriggeredEvent, nullptr);
 }
 
-// Test timeout functionality - enabled but no timeout occurs
-TEST_F(WatchdogPluginTest, TimeoutEnabledNoTimeout) {
+// Test per-event timers are independent — timing out event1 doesn't
+// affect event2's timer.
+TEST_F(WatchdogPluginTest, PerEventTimersAreIndependent) {
   WatchdogPluginConfig config{
       .checkTimeout = true,
-      .timeout = std::chrono::milliseconds{1}, // 1ms timeout
+      .timeout = std::chrono::milliseconds{50},
       .funcTriggerOnTimeout = mockTriggerOnError,
   };
   plugin = std::make_unique<WatchdogPlugin>(config);
@@ -274,17 +275,22 @@ TEST_F(WatchdogPluginTest, TimeoutEnabledNoTimeout) {
   auto event1 = createCollTraceEvent(1);
   auto event2 = createCollTraceEvent(2);
 
-  // Call with different events - should reset timer each time
-  auto result1 = plugin->collEventProgressing(event1);
-  EXPECT_VALUE(result1);
-  // Sleep longer than timeout, it shouldn't trigger as we are using different
-  // events
-  std::this_thread::sleep_for(std::chrono::milliseconds{10});
-  auto result2 = plugin->collEventProgressing(event2);
-  EXPECT_VALUE(result2);
+  // Start both timers.
+  plugin->collEventProgressing(event1);
+  plugin->collEventProgressing(event2);
 
-  EXPECT_EQ(triggerCallCount, 0);
-  EXPECT_EQ(lastTriggeredEvent, nullptr);
+  // Sleep past timeout.
+  std::this_thread::sleep_for(std::chrono::milliseconds{60});
+
+  // event1 times out.
+  plugin->collEventProgressing(event1);
+  EXPECT_EQ(triggerCallCount, 1);
+  EXPECT_EQ(lastTriggeredEvent, &event1);
+
+  // event2 also times out independently.
+  plugin->collEventProgressing(event2);
+  EXPECT_EQ(triggerCallCount, 2);
+  EXPECT_EQ(lastTriggeredEvent, &event2);
 }
 
 // Test timeout functionality - timeout occurs
@@ -313,44 +319,60 @@ TEST_F(WatchdogPluginTest, TimeoutOccurs) {
   EXPECT_EQ(lastTriggeredEvent, &event);
 }
 
-// Test timeout functionality - timer resets with different events
-TEST_F(WatchdogPluginTest, TimeoutTimerResetWithDifferentEvents) {
+// Test afterCollKernelEnd clears the timer for that event.
+TEST_F(WatchdogPluginTest, AfterCollKernelEndClearsTimer) {
   WatchdogPluginConfig config{
       .checkTimeout = true,
-      .timeout = std::chrono::milliseconds{50}, // 50ms timeout
+      .timeout = std::chrono::milliseconds{50},
       .funcTriggerOnTimeout = mockTriggerOnError,
   };
   plugin = std::make_unique<WatchdogPlugin>(config);
 
-  auto event1 = createCollTraceEvent(1);
-  auto event2 = createCollTraceEvent(2);
+  auto event = createCollTraceEvent(1);
 
-  // First call with event1
-  auto result1 = plugin->collEventProgressing(event1);
-  EXPECT_VALUE(result1);
-  EXPECT_EQ(triggerCallCount, 0);
+  // Start timer.
+  plugin->collEventProgressing(event);
 
-  // Sleep longer than timeout
+  // Complete the collective — clears the timer.
+  plugin->afterCollKernelEnd(event);
+
+  // Sleep past timeout.
   std::this_thread::sleep_for(std::chrono::milliseconds{60});
 
-  // Call with different event - should reset timer, no timeout
-  auto result2 = plugin->collEventProgressing(event2);
-  EXPECT_VALUE(result2);
+  // Progressing again — starts a fresh timer, no timeout.
+  plugin->collEventProgressing(event);
   EXPECT_EQ(triggerCallCount, 0);
+}
 
-  // Call again with event2 immediately - no timeout yet
-  auto result3 = plugin->collEventProgressing(event2);
-  EXPECT_VALUE(result3);
-  EXPECT_EQ(triggerCallCount, 0);
+// Test startTs change resets the timer (new replay detection).
+TEST_F(WatchdogPluginTest, StartTsChangeResetsTimer) {
+  WatchdogPluginConfig config{
+      .checkTimeout = true,
+      .timeout = std::chrono::milliseconds{50},
+      .funcTriggerOnTimeout = mockTriggerOnError,
+  };
+  plugin = std::make_unique<WatchdogPlugin>(config);
 
-  // Sleep longer than timeout
+  auto event = createCollTraceEvent(1);
+
+  // Start timer with initial startTs.
+  auto t1 = std::chrono::system_clock::now();
+  event.collRecord->getTimingInfo().setCollStartTs(t1);
+  plugin->collEventProgressing(event);
+
+  // Sleep past timeout.
   std::this_thread::sleep_for(std::chrono::milliseconds{60});
 
-  // Call with event2 again - should trigger timeout
-  auto result4 = plugin->collEventProgressing(event2);
-  EXPECT_VALUE(result4);
+  // Change startTs (simulates new replay) — should reset timer.
+  auto t2 = std::chrono::system_clock::now();
+  event.collRecord->getTimingInfo().setCollStartTs(t2);
+  plugin->collEventProgressing(event);
+  EXPECT_EQ(triggerCallCount, 0) << "Timer should reset on startTs change";
+
+  // Sleep past timeout again — now it should fire.
+  std::this_thread::sleep_for(std::chrono::milliseconds{60});
+  plugin->collEventProgressing(event);
   EXPECT_EQ(triggerCallCount, 1);
-  EXPECT_EQ(lastTriggeredEvent, &event2);
 }
 
 // Test timeout functionality - multiple timeouts

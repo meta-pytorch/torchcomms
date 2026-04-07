@@ -75,12 +75,18 @@ CommsMaybeVoid WatchdogPlugin::collEventProgressing(
 
     config_.funcTriggerOnError(curEvent);
   }
+  // Per-event timeout: each in-flight event gets its own timer so a stuck
+  // collective is detected even when others are progressing normally.
+  // If the start timestamp changed, a new replay started — reset the timer
+  // so we don't falsely timeout on a fresh replay after data loss.
   if (config_.checkTimeout) {
-    if (&curEvent == lastEvent_ && timer_.elapsed(config_.timeout)) {
+    auto currentStartTs = curEvent.collRecord->getTimingInfo().getCollStartTs();
+    auto [it, inserted] = eventTimers_.try_emplace(&curEvent);
+    if (inserted || it->second.startTs != currentStartTs) {
+      it->second.timer.reset();
+      it->second.startTs = currentStartTs;
+    } else if (it->second.timer.elapsed(config_.timeout)) {
       config_.funcTriggerOnTimeout(curEvent);
-    } else if (&curEvent != lastEvent_) {
-      lastEvent_ = &curEvent;
-      timer_.reset();
     }
   }
   return folly::unit;
@@ -88,6 +94,7 @@ CommsMaybeVoid WatchdogPlugin::collEventProgressing(
 
 CommsMaybeVoid WatchdogPlugin::afterCollKernelEnd(
     CollTraceEvent& curEvent) noexcept {
+  eventTimers_.erase(&curEvent);
   return folly::unit;
 }
 
