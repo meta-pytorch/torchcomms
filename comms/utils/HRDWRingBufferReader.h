@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include <cassert>
+#include <chrono>
 #include <cstdint>
 #include <utility>
 #include <vector>
@@ -21,17 +23,13 @@ __attribute__((always_inline)) inline uint64_t acquireLoad(
 struct PollResult {
   uint64_t entriesRead{0};
   uint64_t entriesLost{0};
-  uint64_t entriesInFlight{0};
-  bool tornReadDetected{false};
+  bool timedOut{false};
 };
 
-// CPU-side snapshot-and-validate consumer for a HRDWRingBuffer. Tracks the
-// last-read index and implements the standard pattern:
-//   1. Snapshot writeIndex via acquire load
-//   2. Skip ahead if behind by more than buffer size (returns lost count)
-//   3. For each entry: seqlock pre-read, snapshot, seqlock post-read
-//   4. Post-read: re-read writeIndex, discard if lapped (torn read)
-//   5. Only invoke callbacks after validation passes
+// CPU-side consumer for a HRDWRingBuffer. Uses the mapped writeIndex to
+// know how far ahead writers have gone, then validates each entry via
+// per-entry sequence (seqlock). If the reader falls behind by more than
+// ringSize, it jumps to the tail and counts skipped entries as lost.
 //
 // Non-owning — the HRDWRingBuffer must outlive this reader. Single-threaded
 // (only the poll thread should call poll()).
@@ -41,171 +39,107 @@ class HRDWRingBufferReader {
 
  public:
   explicit HRDWRingBufferReader(const HRDWRingBuffer<DataT>& buffer)
-      : ring_(buffer.ring()),
-        writeIndex_(buffer.writeIndex()),
-        size_(buffer.size()),
-        mask_(buffer.mask()) {}
+      : ring_(static_cast<Entry*>(buffer.ring_)),
+        writeIndex_(buffer.writeIndex_),
+        size_(buffer.size_),
+        mask_(buffer.mask_) {
+    assert(buffer.valid());
+  }
+
+  enum class ReadResult { kSuccess, kOverwritten, kNotReady };
+
+  // Try to read a single entry at the given slot. Returns:
+  //   kSuccess:     entry copied into dest, valid
+  //   kOverwritten: entry was overwritten by a newer writer, lost
+  //   kNotReady:    entry not yet written, retry later
+  ReadResult tryRead(uint64_t slot, Entry& dest) const {
+    uint64_t idx = slot & mask_;
+    auto preSeq = acquireLoad(&ring_[idx].sequence);
+
+    if (preSeq == slot) {
+      dest = ring_[idx];
+      if (acquireLoad(&ring_[idx].sequence) != preSeq) {
+        return ReadResult::kOverwritten;
+      }
+      return ReadResult::kSuccess;
+    }
+
+    if (preSeq != HRDW_RINGBUFFER_SLOT_EMPTY && preSeq > slot) {
+      return ReadResult::kOverwritten;
+    }
+    return ReadResult::kNotReady;
+  }
 
   // Poll for new entries. Calls callback(entry, slot) for each valid entry.
-  // The entry's data_as() method returns the typed data pointer.
-  // Callbacks are only invoked after the torn-read check passes — they never
-  // see partially-overwritten data.
+  // Accumulates all readable entries first, then delivers via callback.
   //
-  // When scanIncomplete is true, the reader continues scanning past the
-  // first WRITE_PENDING entry and delivers write-pending entries through
-  // the same callback. The callback can distinguish them by checking
-  // entry.sequence == HRDW_RINGBUFFER_WRITE_PENDING. Only start_ns and
-  // data are valid on write-pending entries (end_ns is not yet stamped).
-  // When false (default), the reader breaks at the first WRITE_PENDING.
+  // If timeout is non-zero, waits up to that duration for the first entry
+  // before returning empty.
   //
-  // Returns a PollResult with counts of entries read, lost, and whether a
-  // torn read was detected (in which case no callbacks are invoked).
+  // Returns a PollResult with counts of entries read and lost.
   template <typename Callback>
-  PollResult poll(Callback&& callback, bool scanIncomplete = false) {
+  PollResult poll(
+      Callback&& callback,
+      std::chrono::milliseconds timeout = std::chrono::milliseconds{0}) {
     PollResult result;
 
-    if (ring_ == nullptr || writeIndex_ == nullptr) {
+    auto deadline = std::chrono::steady_clock::now() + timeout;
+
+    // jump to the oldest valid entry if the reader fell behind by more than
+    // size_ and returns the number of entries skipped (lost). also updates
+    // head to the newest-read writeIndex_
+    auto jumpToTail = [&](uint64_t& head) -> uint64_t {
+      head = acquireLoad(writeIndex_);
+      if (head > lastReadIndex_ && head - lastReadIndex_ > size_) {
+        uint64_t lost = head - lastReadIndex_ - size_;
+        lastReadIndex_ = head - size_;
+        return lost;
+      }
+      return 0;
+    };
+
+    auto head = acquireLoad(writeIndex_);
+    if (head <= lastReadIndex_ /* no new entries since last read */) {
       return result;
     }
 
-    auto snapshotWriteIdx = acquireLoad(writeIndex_);
+    result.entriesLost += jumpToTail(head);
 
-    if (snapshotWriteIdx <= lastReadIndex_) {
-      return result;
-    }
+    validEntries_.clear();
 
-    uint64_t readStart = lastReadIndex_;
+    while (lastReadIndex_ < head) {
+      Entry entry;
+      auto readResult = tryRead(lastReadIndex_, entry);
 
-    // If we fell behind by more than the ring size, some entries are lost.
-    if (snapshotWriteIdx - readStart > size_) {
-      result.entriesLost = snapshotWriteIdx - readStart - size_;
-      readStart = snapshotWriteIdx - size_;
-    }
-
-    uint64_t newEntries = snapshotWriteIdx - readStart;
-
-    // Snapshot valid entries into a local buffer. Callbacks are deferred
-    // until after the post-read torn-read check so they never observe
-    // partially-overwritten data.
-    //
-    // Write-pending entries (sequence == HRDW_RINGBUFFER_WRITE_PENDING) are
-    // not lost — they just haven't been stamped by the end kernel yet. We
-    // don't advance lastReadIndex_ past the first one, so it will be
-    // retried on the next poll. When scanIncomplete is true, we continue
-    // scanning and snapshot write-pending entries into validEntries_ so
-    // the callback can identify which collectives are in-flight.
-    // NOLINTNEXTLINE(cppcoreguidelines-special-member-functions)
-    struct ClearGuard {
-      std::vector<std::pair<Entry, uint64_t>>& v;
-      ~ClearGuard() {
-        v.clear();
-      }
-    } guard{validEntries_};
-
-    bool hitFirstIncomplete = false;
-    for (uint64_t i = 0; i < newEntries; ++i) {
-      uint64_t slot = readStart + i;
-      uint64_t idx = slot & mask_;
-
-      // Seqlock: read sequence BEFORE data to establish ordering.
-      // The acquire load ensures subsequent reads see at least the
-      // memory state from when sequence was written.
-      auto preSeq = acquireLoad(&ring_[idx].sequence);
-
-      if (preSeq == HRDW_RINGBUFFER_WRITE_PENDING) {
-        // In-flight: start kernel ran, end kernel hasn't stamped yet.
-        // Don't advance past the first write-pending slot — retry on
-        // next poll.
-        if (!hitFirstIncomplete) {
-          hitFirstIncomplete = true;
-          result.entriesInFlight = snapshotWriteIdx - slot;
-          snapshotWriteIdx = slot;
-          if (!scanIncomplete) {
-            break;
+      switch (readResult) {
+        case ReadResult::kSuccess:
+          validEntries_.emplace_back(entry, lastReadIndex_);
+          ++lastReadIndex_;
+          break;
+        case ReadResult::kOverwritten: {
+          auto lost = jumpToTail(head);
+          if (lost == 0 /* not lapped by full ring - just lost this entry */) {
+            ++lastReadIndex_;
+            lost = 1;
           }
-        }
-
-        // Snapshot start_ns and data (guaranteed visible by the start
-        // kernel's __threadfence_system()).
-        Entry entryCopy;
-        entryCopy.start_ns = ring_[idx].start_ns;
-        entryCopy.data = ring_[idx].data;
-        entryCopy.sequence = HRDW_RINGBUFFER_WRITE_PENDING;
-        entryCopy.end_ns = 0;
-
-        // Re-read sequence to confirm still WRITE_PENDING — if the end
-        // kernel stamped between our reads, skip (it'll be picked up
-        // as a completed entry on the next poll).
-        auto confirmSeq = acquireLoad(&ring_[idx].sequence);
-        if (confirmSeq == HRDW_RINGBUFFER_WRITE_PENDING) {
-          validEntries_.emplace_back(std::move(entryCopy), slot);
-        }
-        continue;
-      }
-
-      // Once past the first incomplete, don't collect completed entries
-      // — they'll be picked up after the incomplete one finishes.
-      if (hitFirstIncomplete) {
-        continue;
-      }
-
-      if (preSeq != slot) {
-        ++result.entriesLost;
-        continue;
-      }
-
-      // Copy data fields. The acquire fence above ensures we see data
-      // at least as new as when sequence was stamped.
-      Entry entryCopy = ring_[idx];
-
-      // Post-read: re-check sequence. If it changed, the entry was
-      // overwritten during our copy — discard.
-      auto postSeq = acquireLoad(&ring_[idx].sequence);
-      if (postSeq != preSeq) {
-        if (postSeq == HRDW_RINGBUFFER_WRITE_PENDING) {
-          if (!hitFirstIncomplete) {
-            hitFirstIncomplete = true;
-            result.entriesInFlight = snapshotWriteIdx - slot;
-            snapshotWriteIdx = slot;
-            if (!scanIncomplete) {
-              break;
-            }
+          result.entriesLost += lost;
+          if (timeout.count() > 0 &&
+              std::chrono::steady_clock::now() > deadline) {
+            result.timedOut = true;
+            goto done;
           }
-          Entry pendingCopy;
-          pendingCopy.start_ns = ring_[idx].start_ns;
-          pendingCopy.data = ring_[idx].data;
-          pendingCopy.sequence = HRDW_RINGBUFFER_WRITE_PENDING;
-          pendingCopy.end_ns = 0;
-          auto confirmSeq = acquireLoad(&ring_[idx].sequence);
-          if (confirmSeq == HRDW_RINGBUFFER_WRITE_PENDING) {
-            validEntries_.emplace_back(std::move(pendingCopy), slot);
-          }
-          continue;
+          break;
         }
-        ++result.entriesLost;
-        continue;
+        case ReadResult::kNotReady:
+          goto done;
       }
-
-      validEntries_.emplace_back(std::move(entryCopy), slot);
     }
+  done:
 
-    // Re-read writeIndex after the read pass. If writers advanced by
-    // more than bufferSize since the earliest slot we read, that slot has
-    // been overwritten (torn read). Discard everything from this pass.
-    if (auto newWriteIdx = acquireLoad(writeIndex_);
-        newWriteIdx - readStart > size_) {
-      result.tornReadDetected = true;
-      result.entriesRead = 0;
-      result.entriesLost = newWriteIdx - lastReadIndex_;
-      lastReadIndex_ = newWriteIdx;
-    } else {
-      // Validation passed — invoke callbacks with snapshotted entries.
-      for (const auto& [entry, slot] : validEntries_) {
-        callback(entry, slot);
-      }
-      result.entriesRead = validEntries_.size();
-      lastReadIndex_ = snapshotWriteIdx;
+    for (const auto& [entry, slot] : validEntries_) {
+      callback(entry, slot);
     }
+    result.entriesRead = validEntries_.size();
 
     return result;
   }
@@ -221,7 +155,7 @@ class HRDWRingBufferReader {
   uint32_t mask_;
   uint64_t lastReadIndex_{0};
 
-  // Reusable buffer for snapshotted entries — avoids allocation per poll().
+  // Reusable buffer for accumulated entries — avoids allocation per poll().
   std::vector<std::pair<Entry, uint64_t>> validEntries_;
 };
 

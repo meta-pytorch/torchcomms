@@ -1,7 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <c10/util/intrusive_ptr.h>
-#include <cuda_runtime.h>
 #include <pybind11/chrono.h>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
@@ -282,6 +281,7 @@ Raises:
       .value("barrier", OpName::barrier)
       .value("scatter", OpName::scatter)
       .value("gather", OpName::gather)
+      .value("gather_single", OpName::gather_single)
       .value("split", OpName::split)
       .value("new_window", OpName::new_window);
 
@@ -809,39 +809,8 @@ Raises:
       .def(
           "register_local_buffer",
           [](TorchCommWindow& self, const at::Tensor& tensor) -> int64_t {
-            RegisteredBuffer buf;
-            {
-              py::gil_scoped_release release;
-              buf = self.register_local_buffer(tensor);
-            }
-            // Allocate device-side copy of RegisteredBuffer.
-            // Uses cudaMalloc which operates in a separate VA space from
-            // NCCLX's cuMemMap, avoiding allocation conflicts.
-            RegisteredBuffer* device_buf = nullptr;
-            auto err = cudaMalloc(&device_buf, sizeof(RegisteredBuffer));
-            if (err != cudaSuccess) {
-              self.deregister_local_buffer(buf);
-              throw std::runtime_error(
-                  std::string(
-                      "[TorchCommWindow] cudaMalloc failed for "
-                      "RegisteredBuffer device copy: ") +
-                  cudaGetErrorString(err));
-            }
-            err = cudaMemcpy(
-                device_buf,
-                &buf,
-                sizeof(RegisteredBuffer),
-                cudaMemcpyHostToDevice);
-            if (err != cudaSuccess) {
-              cudaFree(device_buf);
-              self.deregister_local_buffer(buf);
-              throw std::runtime_error(
-                  std::string(
-                      "[TorchCommWindow] cudaMemcpy failed for "
-                      "RegisteredBuffer device copy: ") +
-                  cudaGetErrorString(err));
-            }
-            return reinterpret_cast<int64_t>(device_buf);
+            py::gil_scoped_release release;
+            return self.register_local_buffer_handle(tensor);
           },
           R"(
 Register a local buffer for use as source in device-side put operations.
@@ -862,27 +831,8 @@ Raises:
       .def(
           "deregister_local_buffer",
           [](TorchCommWindow& self, int64_t handle) {
-            // NOLINTNEXTLINE(performance-no-int-to-ptr)
-            auto* device_buf = reinterpret_cast<RegisteredBuffer*>(handle);
-            // Read RegisteredBuffer back from device memory.
-            RegisteredBuffer buf;
-            {
-              py::gil_scoped_release release;
-              auto err = cudaMemcpy(
-                  &buf,
-                  device_buf,
-                  sizeof(RegisteredBuffer),
-                  cudaMemcpyDeviceToHost);
-              if (err != cudaSuccess) {
-                throw std::runtime_error(
-                    std::string(
-                        "[TorchCommWindow] cudaMemcpy D2H failed in "
-                        "deregister_local_buffer: ") +
-                    cudaGetErrorString(err));
-              }
-              self.deregister_local_buffer(buf);
-              cudaFree(device_buf);
-            }
+            py::gil_scoped_release release;
+            self.deregister_local_buffer_handle(handle);
           },
           R"(
 Deregister a previously registered local buffer. NON-COLLECTIVE.
@@ -1852,6 +1802,42 @@ Args:
           )",
           py::arg("output_tensor_list"),
           py::arg("input_tensor"),
+          py::arg("root"),
+          py::arg("async_op"),
+          py::arg("hints") = std::nullopt,
+          py::arg("timeout") = std::nullopt,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "gather_single",
+          [](TorchComm& self,
+             at::Tensor& output,
+             const at::Tensor& input,
+             int root,
+             bool async_op,
+             std::optional<std::unordered_map<std::string, std::string>> hints,
+             std::optional<std::chrono::milliseconds> timeout) {
+            GatherSingleOptions opts;
+            if (hints) {
+              opts.hints = *hints;
+            }
+            if (timeout) {
+              opts.timeout = *timeout;
+            }
+            return self.gather_single(output, input, root, async_op, opts);
+          },
+          R"(
+Gather the input tensor from all ranks to the root using a single output tensor.
+
+Args:
+    output: Output tensor on the root rank. Ignored on non-root ranks.
+    input: Input tensor to gather.
+    root: The root rank.
+    async_op: Whether to perform the operation asynchronously.
+    hints: Dictionary of string hints for backend-specific options.
+    timeout: Timeout for the operation.
+          )",
+          py::arg("output"),
+          py::arg("input"),
           py::arg("root"),
           py::arg("async_op"),
           py::arg("hints") = std::nullopt,

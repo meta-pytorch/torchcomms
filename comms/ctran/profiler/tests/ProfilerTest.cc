@@ -1,20 +1,12 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/ctran/profiler/Profiler.h"
-#include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "comms/ctran/profiler/AlgoProfilerReport.h"
-#include "comms/ctran/profiler/IProfilerReporter.h"
+#include "comms/ctran/profiler/tests/MockProfilerReporter.h"
 
 using namespace ::testing;
 
 namespace ctran {
-
-// Mock reporter using GMock for call verification
-class MockAlgoProfilerReporter : public IProfilerReporter {
- public:
-  MOCK_METHOD(void, report, (const AlgoProfilerReport& report), (override));
-};
 
 class ProfilerTest : public ::testing::Test {
  public:
@@ -28,6 +20,10 @@ class ProfilerTest : public ::testing::Test {
   }
   void TearDown() override {
     comm_ = nullptr;
+  }
+
+  uint64_t getOpCount() {
+    return profiler_->getOpCount();
   }
 
  protected:
@@ -79,7 +75,7 @@ TEST_F(ProfilerTest, testDefaultReporterType) {
 }
 
 TEST_F(ProfilerTest, testReportToScubaCallsReporter) {
-  auto mockReporter = std::make_unique<StrictMock<MockAlgoProfilerReporter>>();
+  auto mockReporter = std::make_unique<StrictMock<MockProfilerReporter>>();
   auto* mockPtr = mockReporter.get();
   profiler_ = std::make_unique<ctran::Profiler>(comm_, std::move(mockReporter));
 
@@ -128,7 +124,7 @@ TEST_F(ProfilerTest, testReportToScubaCallsReporter) {
 }
 
 TEST_F(ProfilerTest, testReportToScubaNotCalledWhenNotTracing) {
-  auto mockReporter = std::make_unique<StrictMock<MockAlgoProfilerReporter>>();
+  auto mockReporter = std::make_unique<StrictMock<MockProfilerReporter>>();
   profiler_ = std::make_unique<ctran::Profiler>(comm_, std::move(mockReporter));
 
   // Don't init tracing — StrictMock will fail if report() is called

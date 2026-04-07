@@ -1180,8 +1180,31 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       int rank) {
     if (this->ctranNvl && this->ctranNvl->isSupported(rank) &&
         regElem->ipcRegElem) {
-      return CtranMapperBackend::NVL;
-    } else if (this->ctranIb && regElem->ibRegElem) {
+      // Cross-node MNNVL (nvlFabric) peers require FABRIC-capable cuMem
+      // handles. On GB200, nvlFabric is set for ALL local peers (including
+      // same-host), so we use isSameNode() to distinguish. Same-node peers
+      // can use NVL with either cudaMalloc (cudaIpc) or cuMem handles.
+      //
+      // Only cuMem (kCumem) buffers can produce FABRIC handles for cross-node
+      // NVL. cudaMalloc buffers produce cudaIpc handles which are intra-host
+      // only. Note: isCuMemFabricEnabled() is guaranteed true when
+      // isNvlFabric() is true (nvlFabricEnabled requires fabric HW support),
+      // so checking getType() == kCumem is sufficient.
+      const bool isCrossNode = this->ctranNvl->isNvlFabric(rank) &&
+          !this->comm->statex_->isSameNode(this->comm->logMetaData_.rank, rank);
+      if (isCrossNode && regElem->getType() != DevMemType::kCumem) {
+        CLOGF_SUBSYS(
+            DBG,
+            ALLOC,
+            "CTRAN-MAPPER: cross-node nvlFabric peer rank {} with non-cuMem "
+            "buffer (type={}), falling back to IB",
+            rank,
+            devMemTypeStr(regElem->getType()));
+      } else {
+        return CtranMapperBackend::NVL;
+      }
+    }
+    if (this->ctranIb && regElem->ibRegElem) {
       return CtranMapperBackend::IB;
     } else if (this->ctranTcpDm && regElem->tcpRegElem) {
       return CtranMapperBackend::TCPDM;

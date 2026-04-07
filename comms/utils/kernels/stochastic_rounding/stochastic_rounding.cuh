@@ -97,3 +97,43 @@ stochastic_round_bf16x2_software(float2 vals, uint32_t r0, uint32_t r1) {
   __nv_bfloat16 hi = stochastic_round_bf16_software(vals.y, r1);
   return __nv_bfloat162(lo, hi);
 }
+
+// ==============================================================================
+// Randomness-Efficient Software Stochastic Rounding Variants
+// ==============================================================================
+// The original stochastic_round_bf16_software takes 32-bit rand_bits but only
+// uses the low 16 bits (the PTX splits into two 16-bit halves and discards the
+// upper half). These "efficient" variants take exactly the randomness needed,
+// enabling better amortization of Philox RNG calls.
+
+// Takes only 16 bits of randomness (exactly what's needed for one FP32→BF16 SR)
+__device__ __forceinline__ __nv_bfloat16
+stochastic_round_bf16_software_16bit(float val, uint16_t rand_bits) {
+  if (!isFinite(val)) {
+    return __float2bfloat16(val);
+  }
+  uint16_t out;
+  asm("{\n\t"
+      "  .reg .b32 r;\n\t"
+      "  .reg .b16 a, b;\n\t"
+      "  mov.b16 a, %2;\n\t" // a = rand_bits (16-bit)
+      "  mov.b32 r, {a, 0};\n\t" // r = rand_bits in lower half, zeros upper
+      "  add.s32 r, %1, r;\n\t" // Add random bits to val, carry propagates up
+      "  mov.b32 {a, b}, r;\n\t" // Split result: a=low, b=high (our BF16)
+      "  mov.b16 %0, b;\n\t" // Output the high 16 bits as BF16
+      "}\n\t"
+      : "=h"(out)
+      : "r"(__float_as_uint(val)), "h"(rand_bits));
+  return __ushort_as_bfloat16(out);
+}
+
+// Takes one 32-bit random value for two FP32→BF16 roundings.
+// Splits into low 16 bits for vals.x and high 16 bits for vals.y.
+__device__ __forceinline__ __nv_bfloat162
+stochastic_round_bf16x2_software_32bit(float2 vals, uint32_t rand_bits) {
+  uint16_t lo_rand = static_cast<uint16_t>(rand_bits);
+  uint16_t hi_rand = static_cast<uint16_t>(rand_bits >> 16);
+  __nv_bfloat16 lo = stochastic_round_bf16_software_16bit(vals.x, lo_rand);
+  __nv_bfloat16 hi = stochastic_round_bf16_software_16bit(vals.y, hi_rand);
+  return __nv_bfloat162(lo, hi);
+}

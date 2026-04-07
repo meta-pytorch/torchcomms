@@ -69,6 +69,61 @@ __global__ void stochasticRoundBf16x2Kernel(
 }
 
 // =============================================================================
+// Test Kernels for randomness-efficient variants (16-bit / 32-bit)
+// =============================================================================
+
+// Kernel: round a single float to bf16 using 16-bit efficient SR
+__global__ void stochasticRoundSingle16bitKernel(
+    float input,
+    uint16_t rand_bits,
+    __nv_bfloat16* output) {
+  *output = stochastic_round_bf16_software_16bit(input, rand_bits);
+}
+
+// Kernel: round the same float many times with 16-bit efficient SR
+__global__ void stochasticRoundRepeat16bitKernel(
+    float input,
+    int n,
+    uint64_t seed,
+    __nv_bfloat16* outputs) {
+  auto idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= n)
+    return;
+
+  uint32_t r0, r1, r2, r3;
+  philox_randint4x(seed, (uint64_t)idx, r0, r1, r2, r3);
+  outputs[idx] =
+      stochastic_round_bf16_software_16bit(input, static_cast<uint16_t>(r0));
+}
+
+// Kernel: test bf16x2 software rounding with 32-bit efficient variant
+__global__ void stochasticRoundBf16x2_32bitKernel(
+    float x,
+    float y,
+    uint32_t rand_bits,
+    __nv_bfloat162* output) {
+  float2 vals = make_float2(x, y);
+  *output = stochastic_round_bf16x2_software_32bit(vals, rand_bits);
+}
+
+// Kernel: repeat 32-bit efficient bf16x2 rounding for statistical tests
+__global__ void stochasticRoundBf16x2_32bitRepeatKernel(
+    float x,
+    float y,
+    int n,
+    uint64_t seed,
+    __nv_bfloat162* outputs) {
+  auto idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= n)
+    return;
+
+  uint32_t r0, r1, r2, r3;
+  philox_randint4x(seed, (uint64_t)idx, r0, r1, r2, r3);
+  float2 vals = make_float2(x, y);
+  outputs[idx] = stochastic_round_bf16x2_software_32bit(vals, r0);
+}
+
+// =============================================================================
 // Hardware-Accelerated Stochastic Rounding Kernels (Blackwell, SM >= 100)
 // =============================================================================
 // Note: __CUDA_ARCH__ is only defined during device compilation, so we guard
@@ -1109,4 +1164,177 @@ TEST_F(StochasticRoundingTest, BlackwellHardwareSoftwareConsistency) {
   CUDACHECK(cudaFree(d_y_vals));
   CUDACHECK(cudaFree(d_hw_out));
   CUDACHECK(cudaFree(d_sw_out));
+}
+
+// =============================================================================
+// Tests: Randomness-Efficient 16-bit Variant
+// =============================================================================
+
+// Exact BF16 values should pass through unchanged with 16-bit variant
+TEST_F(StochasticRoundingTest, Software16bit_ExactBf16ValuesUnchanged) {
+  __nv_bfloat16* d_out;
+  CUDACHECK(cudaMalloc(&d_out, sizeof(__nv_bfloat16)));
+
+  float exactValues[] = {0.0f, 1.0f, -1.0f, 2.0f, -3.0f, 0.5f, 256.0f};
+  for (float val : exactValues) {
+    for (uint16_t rand : {(uint16_t)0u, (uint16_t)0xFFFFu, (uint16_t)0x8000u}) {
+      stochasticRoundSingle16bitKernel<<<1, 1>>>(val, rand, d_out);
+      CUDACHECK(cudaGetLastError());
+      CUDACHECK(cudaDeviceSynchronize());
+      __nv_bfloat16 h_out;
+      CUDACHECK(cudaMemcpy(
+          &h_out, d_out, sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost));
+      EXPECT_EQ(bf16ToFloat(h_out), val)
+          << "Exact bf16 value " << val
+          << " should remain unchanged with rand=" << rand;
+    }
+  }
+
+  CUDACHECK(cudaFree(d_out));
+}
+
+// Unbiasedness check for 16-bit variant
+TEST_F(StochasticRoundingTest, Software16bit_UnbiasedRounding) {
+  constexpr int N = 8192;
+  __nv_bfloat16* d_out;
+  CUDACHECK(cudaMalloc(&d_out, N * sizeof(__nv_bfloat16)));
+
+  float testValue = 1.004f;
+
+  stochasticRoundRepeat16bitKernel<<<(N + 255) / 256, 256>>>(
+      testValue, N, 42, d_out);
+  CUDACHECK(cudaGetLastError());
+  CUDACHECK(cudaDeviceSynchronize());
+
+  std::vector<__nv_bfloat16> h_out(N);
+  CUDACHECK(cudaMemcpy(
+      h_out.data(), d_out, N * sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost));
+
+  double sum = 0.0;
+  for (int i = 0; i < N; i++) {
+    sum += bf16ToFloat(h_out[i]);
+  }
+  double avg = sum / N;
+
+  float lower, upper;
+  getBracketingBf16(testValue, lower, upper);
+  double gap = upper - lower;
+
+  EXPECT_NEAR(avg, (double)testValue, gap * 0.1)
+      << "16-bit variant average should approximate original value. "
+      << "Original: " << testValue << " Average: " << avg;
+
+  CUDACHECK(cudaFree(d_out));
+}
+
+// Zero random bits should round down with 16-bit variant
+TEST_F(StochasticRoundingTest, Software16bit_ZeroRandomBitsRoundsDown) {
+  __nv_bfloat16* d_out;
+  CUDACHECK(cudaMalloc(&d_out, sizeof(__nv_bfloat16)));
+
+  float testValue = 1.004f;
+  stochasticRoundSingle16bitKernel<<<1, 1>>>(testValue, 0, d_out);
+  CUDACHECK(cudaGetLastError());
+  CUDACHECK(cudaDeviceSynchronize());
+
+  __nv_bfloat16 h_out;
+  CUDACHECK(
+      cudaMemcpy(&h_out, d_out, sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost));
+
+  float lower, upper;
+  getBracketingBf16(testValue, lower, upper);
+
+  EXPECT_EQ(bf16ToFloat(h_out), lower)
+      << "Zero random bits should truncate to lower neighbor";
+
+  CUDACHECK(cudaFree(d_out));
+}
+
+// Max random bits should round up with 16-bit variant
+TEST_F(StochasticRoundingTest, Software16bit_MaxRandomBitsRoundsUp) {
+  __nv_bfloat16* d_out;
+  CUDACHECK(cudaMalloc(&d_out, sizeof(__nv_bfloat16)));
+
+  float testValue = 1.004f;
+  stochasticRoundSingle16bitKernel<<<1, 1>>>(testValue, 0xFFFF, d_out);
+  CUDACHECK(cudaGetLastError());
+  CUDACHECK(cudaDeviceSynchronize());
+
+  __nv_bfloat16 h_out;
+  CUDACHECK(
+      cudaMemcpy(&h_out, d_out, sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost));
+
+  float lower, upper;
+  getBracketingBf16(testValue, lower, upper);
+
+  EXPECT_EQ(bf16ToFloat(h_out), upper)
+      << "Max random bits should round up to upper neighbor";
+
+  CUDACHECK(cudaFree(d_out));
+}
+
+// =============================================================================
+// Tests: Randomness-Efficient 32-bit bf16x2 Variant
+// =============================================================================
+
+// Exact BF16 values should pass through unchanged with 32-bit bf16x2 variant
+TEST_F(StochasticRoundingTest, Bf16x2Software32bit_Correct) {
+  __nv_bfloat162* d_out;
+  CUDACHECK(cudaMalloc(&d_out, sizeof(__nv_bfloat162)));
+
+  float x = 1.0f, y = 2.0f; // Exactly representable
+  stochasticRoundBf16x2_32bitKernel<<<1, 1>>>(x, y, 0, d_out);
+  CUDACHECK(cudaGetLastError());
+  CUDACHECK(cudaDeviceSynchronize());
+
+  __nv_bfloat162 h_out;
+  CUDACHECK(cudaMemcpy(
+      &h_out, d_out, sizeof(__nv_bfloat162), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(bf16ToFloat(__low2bfloat16(h_out)), x);
+  EXPECT_EQ(bf16ToFloat(__high2bfloat16(h_out)), y);
+
+  CUDACHECK(cudaFree(d_out));
+}
+
+// Unbiasedness check for 32-bit bf16x2 variant
+TEST_F(StochasticRoundingTest, Bf16x2Software32bit_Unbiased) {
+  constexpr int N = 8192;
+  __nv_bfloat162* d_out;
+  CUDACHECK(cudaMalloc(&d_out, N * sizeof(__nv_bfloat162)));
+
+  float testX = 1.004f;
+  float testY = 2.003f;
+
+  stochasticRoundBf16x2_32bitRepeatKernel<<<(N + 255) / 256, 256>>>(
+      testX, testY, N, 42, d_out);
+  CUDACHECK(cudaGetLastError());
+  CUDACHECK(cudaDeviceSynchronize());
+
+  std::vector<__nv_bfloat162> h_out(N);
+  CUDACHECK(cudaMemcpy(
+      h_out.data(), d_out, N * sizeof(__nv_bfloat162), cudaMemcpyDeviceToHost));
+
+  double sumX = 0.0, sumY = 0.0;
+  for (int i = 0; i < N; i++) {
+    sumX += bf16ToFloat(__low2bfloat16(h_out[i]));
+    sumY += bf16ToFloat(__high2bfloat16(h_out[i]));
+  }
+  double avgX = sumX / N;
+  double avgY = sumY / N;
+
+  float lowerX, upperX, lowerY, upperY;
+  getBracketingBf16(testX, lowerX, upperX);
+  getBracketingBf16(testY, lowerY, upperY);
+  double gapX = upperX - lowerX;
+  double gapY = upperY - lowerY;
+
+  EXPECT_NEAR(avgX, (double)testX, gapX * 0.15)
+      << "32-bit bf16x2 X average should approximate original. "
+      << "Original: " << testX << " Average: " << avgX;
+  EXPECT_NEAR(avgY, (double)testY, gapY * 0.15)
+      << "32-bit bf16x2 Y average should approximate original. "
+      << "Original: " << testY << " Average: " << avgY;
+
+  CUDACHECK(cudaFree(d_out));
 }

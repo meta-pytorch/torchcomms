@@ -37,6 +37,15 @@ TorchCommWindowNCCLX<Backend>::TorchCommWindowNCCLX(
 template <typename Backend>
 TorchCommWindowNCCLX<Backend>::~TorchCommWindowNCCLX() noexcept {
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
+  // Free device-side buffer handles (cudaMalloc'd in
+  // register_local_buffer_handle). The host-side RegisteredBuffer cleanup is
+  // handled below by registered_local_buffers_.
+  for (auto& [handle, buf] : device_buffer_handles_) {
+    // NOLINTNEXTLINE(performance-no-int-to-ptr)
+    cudaFree(reinterpret_cast<void*>(handle));
+  }
+  device_buffer_handles_.clear();
+
   // Cleanup registered local buffers via backend-specific deregistration
   for (auto& buf : registered_local_buffers_) {
     if (nccl_comm_ != nullptr) {
@@ -393,6 +402,62 @@ void TorchCommWindowNCCLX<Backend>::deregister_local_buffer(
   buf.size = 0;
   buf.backend_window = nullptr;
   buf.lkey = 0;
+}
+
+template <typename Backend>
+int64_t TorchCommWindowNCCLX<Backend>::register_local_buffer_handle(
+    const at::Tensor& tensor) {
+  // Get host-side RegisteredBuffer via the existing method.
+  auto buf = register_local_buffer(tensor);
+
+  // Allocate device-side copy of RegisteredBuffer.
+  // Uses cudaMalloc which operates in a separate VA space from
+  // NCCLX's cuMemMap, avoiding allocation conflicts.
+  RegisteredBuffer* device_buf = nullptr;
+  auto err = cudaMalloc(&device_buf, sizeof(RegisteredBuffer));
+  if (err != cudaSuccess) {
+    deregister_local_buffer(buf);
+    throw std::runtime_error(
+        std::string(
+            "[TorchCommWindowNCCLX] cudaMalloc failed for "
+            "RegisteredBuffer device copy: ") +
+        cudaGetErrorString(err));
+  }
+  err = cudaMemcpy(
+      device_buf, &buf, sizeof(RegisteredBuffer), cudaMemcpyHostToDevice);
+  if (err != cudaSuccess) {
+    cudaFree(device_buf);
+    deregister_local_buffer(buf);
+    throw std::runtime_error(
+        std::string(
+            "[TorchCommWindowNCCLX] cudaMemcpy failed for "
+            "RegisteredBuffer device copy: ") +
+        cudaGetErrorString(err));
+  }
+
+  auto handle = reinterpret_cast<int64_t>(device_buf);
+  device_buffer_handles_[handle] = buf;
+  return handle;
+}
+
+template <typename Backend>
+void TorchCommWindowNCCLX<Backend>::deregister_local_buffer_handle(
+    int64_t handle) {
+  auto it = device_buffer_handles_.find(handle);
+  if (it == device_buffer_handles_.end()) {
+    throw std::runtime_error(
+        "[TorchCommWindowNCCLX] deregister_local_buffer_handle called with "
+        "unknown handle");
+  }
+
+  // Retrieve host-side RegisteredBuffer and deregister via backend.
+  auto buf = it->second;
+  deregister_local_buffer(buf);
+
+  // Free device-side copy.
+  // NOLINTNEXTLINE(performance-no-int-to-ptr)
+  cudaFree(reinterpret_cast<void*>(handle));
+  device_buffer_handles_.erase(it);
 }
 
 template <typename Backend>

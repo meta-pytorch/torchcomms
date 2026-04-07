@@ -82,7 +82,6 @@ endif()
 
 find_package(Torch REQUIRED)
 
-
 # Helper to glob sources
 file(GLOB TORCHCOMMS_SOURCES "comms/torchcomms/*.cpp")
 file(GLOB TORCHCOMMS_DUMMY_SOURCES "comms/torchcomms/dummy/*.cpp")
