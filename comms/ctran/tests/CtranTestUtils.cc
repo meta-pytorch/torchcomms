@@ -752,11 +752,7 @@ void CtranTestHelpers::verifyBackendsUsed(
       // collective
       if (nLocalRanks > 1 &&
           isBackendValid(excludedBackends, CtranMapperBackend::NVL)) {
-        if (NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE) {
-          ASSERT_GT(ctran->mapper->iCopyCount, 0);
-        } else {
-          ASSERT_GT(ctran->mapper->iPutCount[CtranMapperBackend::NVL], 0);
-        }
+        ASSERT_GT(ctran->mapper->iPutCount[CtranMapperBackend::NVL], 0);
       } else {
         ASSERT_EQ(ctran->mapper->iPutCount[CtranMapperBackend::NVL], 0);
       }

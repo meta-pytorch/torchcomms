@@ -22,7 +22,6 @@ commResult_t setupGpeOp(
     CtranComm* comm,
     std::vector<OpElem*>& allOps,
     std::vector<OpElem*>& nvlOps,
-    std::vector<OpElem*>& sendNvlOps,
     std::vector<OpElem*>& ibOps,
     std::vector<std::unique_ptr<OpElem>>& gpeOpGroup,
     enum NCCL_SENDRECV_ALGO algo);

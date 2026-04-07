@@ -1397,15 +1397,6 @@ cvars:
      Number of threads in each thread block used for intra-node p2p
      sendrecv kernel.
 
- # TODO: after refactoring of copy-engine, remove this and use NCCL_SENDRECV_ALGO
- # to select sendrecv copy engine
- - name        : NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE
-   type        : bool
-   default     : false
-   description : |-
-     Enable the use of copy engine in CTRAN NVL sendrecv.
-     Default to use SM based SEND/RECV for NVL.
-
  - name        : NCCL_CTRAN_REDUCESCATTER_RING_MAX_NUM_THREAD_BLOCKS
    type        : int
    default     : 4

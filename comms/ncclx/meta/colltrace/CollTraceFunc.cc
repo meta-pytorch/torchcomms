@@ -312,15 +312,6 @@ bool collTraceRecordCtranKernelInfo(
     case KernelConfig::KernelType::SENDRECV_P2P:
       coll.opName = "SendRecvP2P";
       break;
-    case KernelConfig::KernelType::SEND_NOTIFY:
-      coll.opName = "SendNotify";
-      break;
-    case KernelConfig::KernelType::RECV_NOTIFY:
-      coll.opName = "RecvNotify";
-      break;
-    case KernelConfig::KernelType::SENDRECV_NOTIFY:
-      coll.opName = "SendRecvNotify";
-      break;
     case KernelConfig::KernelType::RECV_UNPACK:
       coll.opName = "RecvUnpack";
       break;

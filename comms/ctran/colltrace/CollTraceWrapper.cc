@@ -350,9 +350,6 @@ CollectiveMetadata getCollectiveMetadata(
     case KernelConfig::KernelType::SEND:
     case KernelConfig::KernelType::RECV:
     case KernelConfig::KernelType::SENDRECV:
-    case KernelConfig::KernelType::SEND_NOTIFY:
-    case KernelConfig::KernelType::RECV_NOTIFY:
-    case KernelConfig::KernelType::SENDRECV_NOTIFY:
     case KernelConfig::KernelType::RECV_UNPACK:
     case KernelConfig::KernelType::SENDRECV_UNPACK:
     case KernelConfig::KernelType::SENDRECV_P2P:
@@ -371,9 +368,6 @@ bool isP2PKernel(KernelConfig::KernelType kernelType) {
       KernelConfig::KernelType::SEND,
       KernelConfig::KernelType::RECV,
       KernelConfig::KernelType::SENDRECV,
-      KernelConfig::KernelType::SEND_NOTIFY,
-      KernelConfig::KernelType::RECV_NOTIFY,
-      KernelConfig::KernelType::SENDRECV_NOTIFY,
       KernelConfig::KernelType::RECV_UNPACK,
       KernelConfig::KernelType::SENDRECV_UNPACK,
   };
