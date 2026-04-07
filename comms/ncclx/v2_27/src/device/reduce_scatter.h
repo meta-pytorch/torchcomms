@@ -8,6 +8,8 @@
 #include "collectives.h"
 #include "primitives.h"
 
+#include "meta/collectives/kernels/prims_quantize.cuh"
+
 namespace {
   template<typename T, typename RedOp, typename Proto>
   __device__ __forceinline__ void runRing(int tid, int nthreads, struct ncclDevWorkColl* work) {
@@ -74,6 +76,95 @@ template<typename T, typename RedOp>
 struct RunWorkColl<ncclFuncReduceScatter, T, RedOp, NCCL_ALGO_RING, NCCL_PROTO_LL128> {
   __device__ __forceinline__ void run(int tid, int nthreads, struct ncclDevWorkColl* work) {
     runRing<T, RedOp, ProtoLL128>(tid, nthreads, work);
+  }
+};
+
+
+// NCCLX specific specialization, for adding an interface for quantized reduce scatter.
+// Most of the implementation is the same as the non-quantized version, we only added
+template<typename RedOp>
+struct RunWorkColl<ncclFuncReduceScatter, float, RedOp, NCCL_ALGO_PAT, NCCL_PROTO_SIMPLE> {
+  __device__ __forceinline__ void run(int tid, int nthreads, struct ncclDevWorkColl* work) {
+    using Proto = ProtoSimple<1, 1>;
+    const int nranks = ncclShmem.comm.nRanks;
+    const int rank = ncclShmem.comm.rank;
+    size_t count, channelOffset, channelCount, chunkCount;
+    ncclCollCbdPart(work, ncclShmem.channelId, Proto::Id, sizeof(float), &count, &channelOffset, &channelCount, &chunkCount);
+
+    static constexpr int nworkers = NCCL_PAT_NWORKERS;
+    struct ncclPatShmem* shmem = (struct ncclPatShmem*)ncclScratchForWarp(0);
+    uint64_t pollCount = 0;
+    __syncthreads(); // Don't start using shared mem until everyone arrives
+    for (int i=tid; i<NCCL_SHMEM_PAT_STEPS; i+=nthreads) shmem->patSteps[i].flags = 0;
+    if (tid == 0) shmem->localAccSize = 0;
+    if (tid == nworkers) shmem->parallelFactor = 0;
+    __syncthreads();
+
+    if (tid == nworkers) { // Algo computation thread
+      PatRSAlgorithm<float> patAlgo(chunkCount*sizeof(float), NCCL_STEPS, NCCL_PAT_NWORKERS/WARP_SIZE, channelOffset, channelOffset + channelCount, count, chunkCount, rank, nranks);
+      int parallelFactor = shmem->parallelFactor = patAlgo.getParallelFactor();
+      int step = 0;
+      while (1) {
+        struct ncclPatStep* ps = shmem->patSteps+(step%NCCL_SHMEM_PAT_STEPS);
+        cuda::atomic_ref<int, cuda::thread_scope_block> poll(ps->flags);
+        while (poll.load(cuda::memory_order_acquire) != 0) pollCount++; // Wait for workers to be done with step 'step-NCCL_SHMEM_PAT_STEPS'
+        patAlgo.getNextOp(ps);
+        int last = ps->last;
+        step++;
+        if (last == 2) break;
+      }
+    } else if (tid < nworkers) { // Worker threads
+      float *inputBuf = (float*)work->sendbuff;
+      float *outputBuf = (float*)work->recvbuff;
+      int parallelFactor = 0;
+      volatile int* pfPtr = &shmem->parallelFactor;
+      while (parallelFactor == 0) parallelFactor = *pfPtr;
+
+      int groupSize = nworkers/(WARP_SIZE*parallelFactor) * WARP_SIZE;
+      int group = tid / groupSize;
+      int nGroups = nworkers / groupSize;
+      int tidInGroup = tid - group*groupSize;
+      // We don't use recvPeers/sendPeers so let's pass shmem structs instead
+
+      // Start of NCCLX specific code: Added the true branch. In the branch
+      // we changed to use PrimitivesQuantized instead of Primitives.
+      // All the other code is the same in both branches.
+      if (work->quantizeRandomSeedPtr != nullptr) {
+        PrimitivesQuantized<float /* I/O type */, nv_bfloat16 /* transport type */, RedOp, 1 /* StepPerSlice */, COLL_UNROLL> primsQuantized
+        (tidInGroup, groupSize, (int*)shmem->recvDims, (int*)shmem->sendDims, inputBuf, outputBuf, work->redOpArg, group, work->quantizeRandomSeedPtr);
+
+        // Having a large enough shift for each channel to ensure the random
+        // number they used is different.
+        const uint64_t channelOffsetBase = ncclShmem.channelId * (1ULL << 40);
+
+        int step = group;
+        while(1) {
+          struct ncclPatStep* ps = shmem->patSteps+(step%NCCL_SHMEM_PAT_STEPS);
+          cuda::atomic_ref<int, cuda::thread_scope_block> poll(ps->flags);
+          while (poll.load(cuda::memory_order_acquire) == 0) pollCount++; // Wait for compute thread
+          int last = ps->last;
+          primsQuantized.patReduce(ps, shmem, channelOffsetBase + step * chunkCount);
+          if (tidInGroup == 0) poll.store(0, cuda::memory_order_release); // Return element to compute thread
+          if (last) break;
+          step += nGroups;
+        }
+      } else {
+        Primitives<float, RedOp, FanSymmetric<1>, 0, Proto, 0> prims
+          (tidInGroup, groupSize, (int*)shmem->recvDims, (int*)shmem->sendDims, inputBuf, outputBuf, work->redOpArg, group, 0, 0, nullptr, nullptr, 0, primsModePatRs);
+
+        int step = group;
+        while(1) {
+          struct ncclPatStep* ps = shmem->patSteps+(step%NCCL_SHMEM_PAT_STEPS);
+          cuda::atomic_ref<int, cuda::thread_scope_block> poll(ps->flags);
+          while (poll.load(cuda::memory_order_acquire) == 0) pollCount++; // Wait for compute thread
+          int last = ps->last;
+          prims.patReduce(ps, shmem);
+          if (tidInGroup == 0) poll.store(0, cuda::memory_order_release); // Return element to compute thread
+          if (last) break;
+          step += nGroups;
+        }
+      }
+    }
   }
 };
 
