@@ -1202,6 +1202,71 @@ TEST_F(CtranMapperTest, getMultiSegRegElems) {
   EXPECT_EQ(ctran::commMemFreeDisjoint(buf_, segSizes), commSuccess);
 }
 
+TEST_F(CtranMapperTest, exportMemFailsWithExtraSegments) {
+  // Verify that isendCtrl (which internally calls exportMem) returns
+  // commInternalError when the underlying IPC export produces extra segments
+  // (> CTRAN_IPC_INLINE_SEGMENTS).
+  if (!ctran::utils::getCuMemSysSupported()) {
+    GTEST_SKIP() << "CuMem not supported, skip multi-segment test";
+  }
+
+  // Enable NVL backend so isendCtrl routes through the NVL exportMem path
+  SysEnvRAII backendsEnv("NCCL_CTRAN_BACKENDS", "ib, nvl");
+  ncclCvarInit();
+
+  mapper = std::make_unique<CtranMapper>(dummyComm_);
+  EXPECT_THAT(mapper, testing::NotNull());
+
+  void* buf_ = nullptr;
+  std::vector<TestMemSegment> segments;
+  constexpr int numSegments = 3;
+  std::vector<size_t> segSizes(numSegments, 1048576);
+  EXPECT_EQ(
+      ctran::commMemAllocDisjoint(&buf_, segSizes, segments), commSuccess);
+
+  std::vector<void*> segHdls;
+  for (auto& seg : segments) {
+    void* hdl = nullptr;
+    EXPECT_EQ(mapper->regMem(seg.ptr, seg.size, &hdl), commSuccess);
+    segHdls.push_back(hdl);
+  }
+
+  // Get a handle spanning all 3 segments
+  size_t totalSize = 0;
+  for (auto& seg : segments) {
+    totalSize += seg.size;
+  }
+  void* regHdl = nullptr;
+  bool dynamicReg = false;
+  EXPECT_EQ(
+      mapper->searchRegHandle(buf_, totalSize, &regHdl, &dynamicReg),
+      commSuccess);
+  EXPECT_THAT(regHdl, testing::NotNull());
+
+  auto* regElem = reinterpret_cast<ctran::regcache::RegElem*>(regHdl);
+  if (regElem->ipcRegElem == nullptr) {
+    for (auto& hdl : segHdls) {
+      EXPECT_EQ(mapper->deregMem(hdl), commSuccess);
+    }
+    EXPECT_EQ(ctran::commMemFreeDisjoint(buf_, segSizes), commSuccess);
+    GTEST_SKIP() << "IPC memory not supported for disjoint buffers, skipping";
+  }
+
+  int rank = dummyComm_->statex_->rank();
+  // Verify NVL is the selected backend for this rank and regElem
+  ASSERT_TRUE(mapper->hasBackend(rank, CtranMapperBackend::NVL));
+
+  // isendCtrl internally calls exportMem; expect it to propagate the error
+  CtranMapperRequest* req = nullptr;
+  EXPECT_EQ(mapper->isendCtrl(buf_, regHdl, rank, &req), commInternalError);
+  delete req;
+
+  for (auto& hdl : segHdls) {
+    EXPECT_EQ(mapper->deregMem(hdl), commSuccess);
+  }
+  EXPECT_EQ(ctran::commMemFreeDisjoint(buf_, segSizes), commSuccess);
+}
+
 TEST_F(CtranMapperTest, RemoteAccessKeyToString) {
   CtranMapperRemoteAccessKey rkey1 = {.backend = CtranMapperBackend::IB};
   for (auto i = 0; i < CTRAN_MAX_IB_DEVICES_PER_RANK; i++) {
