@@ -21,6 +21,10 @@ enum OpCountType {
 struct RemWinInfo {
   void* dataAddr{nullptr};
   uint64_t* signalAddr{nullptr};
+  // Dedicated signal slot for CUDA graph capture/replay. Isolated from the
+  // eager signalAddr so that graph signal values and eager monotonic
+  // counters don't interfere.
+  uint64_t* graphSignalAddr{nullptr};
   CtranMapperRemoteAccessKey dataRkey{CtranMapperBackend::UNSET};
   CtranMapperRemoteAccessKey signalRkey{CtranMapperBackend::UNSET};
   size_t dataBytes{0};

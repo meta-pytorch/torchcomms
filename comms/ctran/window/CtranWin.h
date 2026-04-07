@@ -57,6 +57,17 @@ struct CtranWin {
   void* winDataPtr{nullptr};
   // The pointer of the signal buffer of this window
   uint64_t* winSignalPtr{nullptr};
+  // Dedicated signal buffer for CUDA graph capture/replay. Isolated from
+  // winSignalPtr so graph signal values don't conflict with eager monotonic
+  // counters.
+  uint64_t* winGraphSignalPtr{nullptr};
+
+  // Device-side replay counter for CUDA graph replay. Incremented by a
+  // small kernel at the start of each graph replay. PutSignal/WaitSignal
+  // kernels read this to get a unique, monotonically increasing signal
+  // value per replay — eliminating the need for signal resets and
+  // preventing inter-replay races.
+  uint64_t* graphReplayCounter{nullptr};
   // Stores signal values for waiting, used to track progress
   std::deque<std::atomic<uint64_t>> waitSignalVal{};
 
