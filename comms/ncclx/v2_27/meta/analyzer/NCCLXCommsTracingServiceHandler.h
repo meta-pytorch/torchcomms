@@ -18,6 +18,9 @@ class NCCLXCommsTracingServiceHandler
   folly::coro::Task<std::unique_ptr<comms::GetCommsResponse>> co_getComms(
       std::unique_ptr<comms::GetCommsRequest> request) override;
 
+  folly::coro::Task<std::unique_ptr<comms::GetTopologyResponse>> co_getTopology(
+      std::unique_ptr<comms::GetTopologyRequest> request) override;
+
  private:
   std::chrono::nanoseconds jobStartTimeNs_;
 
