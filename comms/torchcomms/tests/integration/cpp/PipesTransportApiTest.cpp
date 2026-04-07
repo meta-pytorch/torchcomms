@@ -1,143 +1,50 @@
-// Copyright (c) Meta Platforms, Inc. and affiliates.
-// TorchComms Pipes Transport API Integration Test
+// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+//
+// Stress tests for P2pNvlTransportDevice APIs.
 
 #include "PipesTransportApiTest.hpp"
 
 #include <gtest/gtest.h>
 #include <algorithm>
+#include <cstring>
+#include <vector>
+
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
+#include <c10/cuda/CUDAStream.h>
+
 #include "PipesTransportApiTestKernels.cuh"
+#include "StressTestHelpers.hpp"
 #include "TorchCommTestHelpers.h"
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
 
-#include "comms/pipes/MultiPeerDeviceHandle.cuh"
+using namespace torchcomms::device::test;
 
-#include <cstring>
-#include <vector>
-
-std::unique_ptr<TorchCommTestWrapper> PipesTransportApiTest::createWrapper() {
-  return std::make_unique<TorchCommTestWrapper>();
-}
+// =============================================================================
+// Setup / Teardown
+// =============================================================================
 
 void PipesTransportApiTest::SetUp() {
-  // Check skip condition FIRST, before any initialization
-  if (checkIfSkip()) {
-    GTEST_SKIP() << "Skipping Pipes Transport API tests "
-                    "(RUN_PIPES_DEVICE_API_TEST not set)";
+  if (!shouldRunStressTest()) {
+    GTEST_SKIP() << "Skipping stress tests (RUN_DEVICE_STRESS_TEST not set)";
+  }
+  const char* pipes_env = getenv("RUN_PIPES_DEVICE_API_TEST");
+  if (!pipes_env) {
+    GTEST_SKIP()
+        << "Skipping Pipes stress tests (RUN_PIPES_DEVICE_API_TEST not set)";
   }
 
-  wrapper_ = createWrapper();
+  config_ = parseStressTestConfig();
+  wrapper_ = std::make_unique<TorchCommTestWrapper>();
   torchcomm_ = wrapper_->getTorchComm();
   rank_ = torchcomm_->getRank();
   num_ranks_ = torchcomm_->getSize();
-  int device_count = 0;
-  ASSERT_EQ(cudaGetDeviceCount(&device_count), cudaSuccess)
-      << "cudaGetDeviceCount failed";
-  device_index_ = (device_count > 0) ? rank_ % device_count : 0;
-}
+  device_index_ = rank_ % at::cuda::device_count();
 
-void PipesTransportApiTest::TearDown() {
-  torchcomm_.reset();
-  wrapper_.reset();
-}
+  ASSERT_GE(num_ranks_, 2) << "Need at least 2 ranks for transport tests";
 
-bool PipesTransportApiTest::checkIfSkip() {
-  // Check RUN_PIPES_DEVICE_API_TEST env var (unified gate for all pipes tests)
-  const char* run_env = getenv("RUN_PIPES_DEVICE_API_TEST");
-  if (!run_env) {
-    return true; // skip if not set
-  }
-  std::string val(run_env);
-  std::transform(val.begin(), val.end(), val.begin(), ::tolower);
-  if (val != "1" && val != "true") {
-    return true; // skip if not enabled
-  }
-
-  return false;
-}
-
-// =============================================================================
-// Helper: fetch transport handle
-// =============================================================================
-
-bool PipesTransportApiTest::getTransportHandle(
-    comms::pipes::MultiPeerDeviceHandle& handle) {
-  auto ncclx = std::dynamic_pointer_cast<torch::comms::TorchCommNCCLX>(
-      torchcomm_->getBackendImpl());
-  EXPECT_NE(ncclx, nullptr) << "Backend is not TorchCommNCCLX";
-  if (!ncclx) {
-    return false;
-  }
-
-  auto handle_ptr = ncclx->get_device_transport();
-  EXPECT_NE(handle_ptr, 0) << "get_device_transport returned null";
-  if (handle_ptr == 0) {
-    return false;
-  }
-
-  auto copy_err = cudaMemcpy(
-      &handle,
-      reinterpret_cast<void*>(handle_ptr),
-      sizeof(comms::pipes::MultiPeerDeviceHandle),
-      cudaMemcpyDeviceToHost);
-  EXPECT_EQ(copy_err, cudaSuccess) << "Failed to copy transport handle";
-  return copy_err == cudaSuccess;
-}
-
-// =============================================================================
-// Get Device Transport Test
-// =============================================================================
-// Validates that TorchCommNCCLX::get_device_transport() returns a valid
-// MultiPeerDeviceHandle with correct rank info and non-null transport array.
-
-void PipesTransportApiTest::testGetDeviceTransport() {
-  SCOPED_TRACE(::testing::Message() << "Testing get_device_transport()");
-
-  auto ncclx = std::dynamic_pointer_cast<torch::comms::TorchCommNCCLX>(
-      torchcomm_->getBackendImpl());
-  ASSERT_NE(ncclx, nullptr) << "Backend is not TorchCommNCCLX";
-
-  try {
-    auto handle_ptr = ncclx->get_device_transport();
-    ASSERT_NE(handle_ptr, 0) << "get_device_transport returned null";
-
-    // Copy the device-allocated handle back to host for validation
-    comms::pipes::MultiPeerDeviceHandle handle{};
-    auto copy_err = cudaMemcpy(
-        &handle,
-        reinterpret_cast<void*>(handle_ptr),
-        sizeof(comms::pipes::MultiPeerDeviceHandle),
-        cudaMemcpyDeviceToHost);
-    ASSERT_EQ(copy_err, cudaSuccess)
-        << "Failed to copy transport handle to host";
-
-    EXPECT_EQ(handle.myRank, rank_);
-    EXPECT_EQ(handle.nRanks, num_ranks_);
-    EXPECT_NE(handle.transports.data(), nullptr);
-    EXPECT_GE(handle.numNvlPeers, 0);
-    EXPECT_GE(handle.numIbPeers, 0);
-  } catch (const std::runtime_error& e) {
-    GTEST_SKIP() << "Pipes transport not available: " << e.what();
-  }
-}
-
-TEST_F(PipesTransportApiTest, GetDeviceTransport) {
-  testGetDeviceTransport();
-}
-
-// =============================================================================
-// NVL Send/Recv Test
-// =============================================================================
-// Rank 0 sends a buffer filled with 0x42 to rank 1 via NVLink transport.
-// Rank 1 verifies the received data matches.
-// Requires at least 2 ranks and NVL peers.
-
-void PipesTransportApiTest::testNvlSendRecv(size_t nbytes) {
-  SCOPED_TRACE(
-      ::testing::Message() << "Testing NVL send/recv with nbytes=" << nbytes);
-
-  ASSERT_GE(num_ranks_, 2) << "Need at least 2 ranks for send/recv test";
-
+  // Get device transport handle
   auto ncclx = std::dynamic_pointer_cast<torch::comms::TorchCommNCCLX>(
       torchcomm_->getBackendImpl());
   ASSERT_NE(ncclx, nullptr) << "Backend is not TorchCommNCCLX";
@@ -145,175 +52,321 @@ void PipesTransportApiTest::testNvlSendRecv(size_t nbytes) {
   auto handle_ptr = ncclx->get_device_transport();
   ASSERT_NE(handle_ptr, 0) << "get_device_transport returned null";
 
-  // Copy the device-allocated handle back to host for kernel launch
-  comms::pipes::MultiPeerDeviceHandle handle{};
   auto copy_err = cudaMemcpy(
-      &handle,
+      &handle_,
       reinterpret_cast<void*>(handle_ptr),
       sizeof(comms::pipes::MultiPeerDeviceHandle),
       cudaMemcpyDeviceToHost);
-  ASSERT_EQ(copy_err, cudaSuccess) << "Failed to copy transport handle to host";
+  ASSERT_EQ(copy_err, cudaSuccess) << "Failed to copy transport handle";
+  ASSERT_EQ(handle_.myRank, rank_);
+  ASSERT_EQ(handle_.nRanks, num_ranks_);
+  ASSERT_NE(handle_.transports.data(), nullptr);
+  EXPECT_GE(handle_.numNvlPeers, 0);
+  EXPECT_GE(handle_.numIbPeers, 0);
 
-  if (handle.numNvlPeers == 0) {
-    GTEST_SKIP() << "No NVL peers available — send/recv requires NVLink";
+  if (handle_.numNvlPeers == 0) {
+    GTEST_SKIP() << "No NVL peers available — transport tests require NVLink";
   }
 
-  void* buf_d = nullptr;
-  auto cuda_err = cudaMalloc(&buf_d, nbytes);
-  ASSERT_EQ(cuda_err, cudaSuccess) << "cudaMalloc failed";
-
-  int peer = (rank_ == 0) ? 1 : 0;
-
-  if (rank_ == 0) {
-    cuda_err = cudaMemset(buf_d, 0x42, nbytes);
-    ASSERT_EQ(cuda_err, cudaSuccess);
-  } else {
-    cuda_err = cudaMemset(buf_d, 0x00, nbytes);
-    ASSERT_EQ(cuda_err, cudaSuccess);
+  // Pair adjacent ranks: 0↔1, 2↔3, 4↔5, ...
+  // Odd-numbered total ranks: last rank has no partner → skip.
+  if (num_ranks_ % 2 != 0 && rank_ == num_ranks_ - 1) {
+    GTEST_SKIP() << "Odd rank count — last rank has no partner";
   }
-
-  torchcomm_->barrier(false);
-
-  if (rank_ == 0) {
-    torchcomms::device::test::launchNvlSendKernel(handle, peer, buf_d, nbytes);
-  } else if (rank_ == 1) {
-    torchcomms::device::test::launchNvlRecvKernel(handle, peer, buf_d, nbytes);
-  }
-
-  cuda_err = cudaDeviceSynchronize();
-  ASSERT_EQ(cuda_err, cudaSuccess) << "Kernel execution failed";
-
-  if (rank_ == 1) {
-    std::vector<uint8_t> host_buf(nbytes);
-    cuda_err =
-        cudaMemcpy(host_buf.data(), buf_d, nbytes, cudaMemcpyDeviceToHost);
-    ASSERT_EQ(cuda_err, cudaSuccess);
-
-    std::vector<uint8_t> expected(nbytes, 0x42);
-    ASSERT_EQ(memcmp(host_buf.data(), expected.data(), nbytes), 0)
-        << "Data mismatch in received buffer";
-  }
-
-  torchcomm_->barrier(false);
-  ASSERT_EQ(cudaFree(buf_d), cudaSuccess) << "cudaFree failed";
+  peer_ = (rank_ % 2 == 0) ? rank_ + 1 : rank_ - 1;
 }
 
-TEST_F(PipesTransportApiTest, NvlSendRecvSmall) {
-  testNvlSendRecv(4096);
-}
-
-TEST_F(PipesTransportApiTest, NvlSendRecvLarge) {
-  testNvlSendRecv(1024 * 1024);
+void PipesTransportApiTest::TearDown() {
+  torchcomm_.reset();
+  wrapper_.reset();
 }
 
 // =============================================================================
-// NVL Signal Test
+// Helpers
 // =============================================================================
-// Both ranks signal each other (ADD 1 on signal_id 0) and wait (GE 1).
-// Validates cross-GPU signal/wait via the transport handle.
 
-void PipesTransportApiTest::testNvlSignal() {
-  SCOPED_TRACE(::testing::Message() << "Testing NVL signal");
+namespace {
 
-  ASSERT_GE(num_ranks_, 2) << "Need at least 2 ranks for signal test";
-
-  comms::pipes::MultiPeerDeviceHandle handle{};
-  ASSERT_TRUE(getTransportHandle(handle));
-
-  if (handle.numNvlPeers == 0) {
-    GTEST_SKIP() << "No NVL peers available — signal requires NVLink";
+void checkKernelResults(
+    int* d_results,
+    int iterations,
+    const std::string& tag) {
+  std::vector<int> h_results(iterations);
+  cudaMemcpy(
+      h_results.data(),
+      d_results,
+      iterations * sizeof(int),
+      cudaMemcpyDeviceToHost);
+  for (int i = 0; i < iterations; i++) {
+    ASSERT_EQ(h_results[i], 1)
+        << tag << ": verification failed at iteration " << i;
   }
-
-  int peer = (rank_ == 0) ? 1 : 0;
-
-  torchcomm_->barrier(false);
-
-  torchcomms::device::test::launchNvlSignalKernel(handle, peer);
-
-  auto cuda_err = cudaDeviceSynchronize();
-  ASSERT_EQ(cuda_err, cudaSuccess) << "Signal kernel execution failed";
-
-  torchcomm_->barrier(false);
 }
 
-TEST_F(PipesTransportApiTest, NvlSignal) {
-  testNvlSignal();
+const char* scopeNameForThreads(int num_threads) {
+  return (num_threads >= 256) ? "BLOCK" : "WARP";
 }
 
-// =============================================================================
-// NVL LL128 Send/Recv Test
-// =============================================================================
-// Rank 0 sends a buffer filled with 0xAB to rank 1 via LL128 protocol.
-// Rank 1 receives and verifies the data.
-// LL128 requires 16-byte alignment and nbytes multiple of 16.
+} // namespace
 
-void PipesTransportApiTest::testNvlLl128SendRecv(size_t nbytes) {
+// =============================================================================
+// Test Implementations
+// =============================================================================
+
+void PipesTransportApiTest::testStressSendRecv(
+    size_t msg_bytes,
+    int num_threads) {
+  size_t count = msg_bytes / sizeof(float);
+  if (count == 0) {
+    count = 1;
+  }
+  int iterations = config_.num_iterations;
+
   SCOPED_TRACE(
-      ::testing::Message() << "Testing NVL LL128 send/recv nbytes=" << nbytes);
+      ::testing::Message() << "TransportStressSendRecv msg="
+                           << formatBytes(msg_bytes)
+                           << " scope=" << scopeNameForThreads(num_threads)
+                           << " iters=" << iterations);
 
-  ASSERT_GE(num_ranks_, 2) << "Need at least 2 ranks for LL128 test";
+  float* d_buf = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_buf, count * sizeof(float)), cudaSuccess);
+
+  int* d_results = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_results, iterations * sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_results, 0, iterations * sizeof(int)), cudaSuccess);
+
+  torchcomm_->barrier(false);
+
+  auto stream = at::cuda::getStreamFromPool(false, device_index_);
+  {
+    c10::cuda::CUDAStreamGuard guard(stream);
+    launchTransportStressSendRecvKernel(
+        handle_,
+        d_buf,
+        count,
+        peer_,
+        iterations,
+        num_threads,
+        d_results,
+        stream.stream());
+  }
+  stream.synchronize();
+
+  checkKernelResults(
+      d_results,
+      iterations,
+      "TransportSendRecv(" + formatBytes(msg_bytes) + "," +
+          scopeNameForThreads(num_threads) + ")");
+
+  cudaFree(d_results);
+  cudaFree(d_buf);
+  torchcomm_->barrier(false);
+}
+
+void PipesTransportApiTest::testStressSignal(int num_threads) {
+  int iterations = config_.num_iterations;
+
+  SCOPED_TRACE(
+      ::testing::Message() << "TransportStressSignal scope="
+                           << scopeNameForThreads(num_threads));
+
+  torchcomm_->barrier(false);
+
+  auto stream = at::cuda::getStreamFromPool(false, device_index_);
+  {
+    c10::cuda::CUDAStreamGuard guard(stream);
+    launchTransportStressSignalKernel(
+        handle_, peer_, iterations, num_threads, stream.stream());
+  }
+  stream.synchronize();
+  torchcomm_->barrier(false);
+}
+
+void PipesTransportApiTest::testStressCombined(
+    size_t msg_bytes,
+    int num_threads) {
+  size_t count = msg_bytes / sizeof(float);
+  if (count == 0) {
+    count = 1;
+  }
+  int iterations = config_.num_iterations;
+
+  SCOPED_TRACE(
+      ::testing::Message() << "TransportStressCombined msg="
+                           << formatBytes(msg_bytes)
+                           << " scope=" << scopeNameForThreads(num_threads));
+
+  float* d_buf = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_buf, count * sizeof(float)), cudaSuccess);
+
+  int* d_results = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_results, iterations * sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_results, 0, iterations * sizeof(int)), cudaSuccess);
+
+  torchcomm_->barrier(false);
+
+  auto stream = at::cuda::getStreamFromPool(false, device_index_);
+  {
+    c10::cuda::CUDAStreamGuard guard(stream);
+    launchTransportStressCombinedKernel(
+        handle_,
+        d_buf,
+        count,
+        peer_,
+        iterations,
+        num_threads,
+        d_results,
+        stream.stream());
+  }
+  stream.synchronize();
+
+  checkKernelResults(
+      d_results,
+      iterations,
+      "TransportCombined(" + formatBytes(msg_bytes) + "," +
+          scopeNameForThreads(num_threads) + ")");
+
+  cudaFree(d_results);
+  cudaFree(d_buf);
+  torchcomm_->barrier(false);
+}
+
+void PipesTransportApiTest::testStressLl128(size_t nbytes) {
+  int iterations = config_.num_iterations;
+
+  // LL128 requires 16-byte alignment and multiple-of-16 size
   ASSERT_EQ(nbytes % 16, 0u) << "LL128 requires nbytes multiple of 16";
 
-  comms::pipes::MultiPeerDeviceHandle handle{};
-  ASSERT_TRUE(getTransportHandle(handle));
+  SCOPED_TRACE(
+      ::testing::Message() << "TransportStressLl128 nbytes="
+                           << formatBytes(nbytes));
 
-  if (handle.numNvlPeers == 0) {
-    GTEST_SKIP() << "No NVL peers available — LL128 requires NVLink";
-  }
+  char* d_buf = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_buf, nbytes), cudaSuccess);
 
-  // Check LL128 availability on host side BEFORE launching kernels.
-  // Both ranks must agree on skip/run to avoid one side hanging.
-  int peer = (rank_ == 0) ? 1 : 0;
-  int ll128_available =
-      torchcomms::device::test::checkLl128Available(handle, peer);
-  if (!ll128_available) {
-    GTEST_SKIP() << "LL128 not configured on this hardware";
-  }
-
-  void* buf_d = nullptr;
-  auto cuda_err = cudaMalloc(&buf_d, nbytes);
-  ASSERT_EQ(cuda_err, cudaSuccess) << "cudaMalloc failed";
-
-  if (rank_ == 0) {
-    cuda_err = cudaMemset(buf_d, 0xAB, nbytes);
-    ASSERT_EQ(cuda_err, cudaSuccess);
-  } else {
-    cuda_err = cudaMemset(buf_d, 0x00, nbytes);
-    ASSERT_EQ(cuda_err, cudaSuccess);
-  }
+  int* d_results = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_results, iterations * sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_results, 0, iterations * sizeof(int)), cudaSuccess);
 
   torchcomm_->barrier(false);
 
-  if (rank_ == 0) {
-    torchcomms::device::test::launchNvlLl128SendKernel(
-        handle, peer, buf_d, nbytes);
-  } else if (rank_ == 1) {
-    torchcomms::device::test::launchNvlLl128RecvKernel(
-        handle, peer, buf_d, nbytes);
+  auto stream = at::cuda::getStreamFromPool(false, device_index_);
+  {
+    c10::cuda::CUDAStreamGuard guard(stream);
+    launchTransportStressLl128Kernel(
+        handle_, d_buf, nbytes, peer_, iterations, d_results, stream.stream());
   }
+  stream.synchronize();
 
-  cuda_err = cudaDeviceSynchronize();
-  ASSERT_EQ(cuda_err, cudaSuccess) << "LL128 kernel execution failed";
+  checkKernelResults(
+      d_results, iterations, "TransportLl128(" + formatBytes(nbytes) + ")");
 
-  if (rank_ == 1) {
-    std::vector<uint8_t> host_buf(nbytes);
-    cuda_err =
-        cudaMemcpy(host_buf.data(), buf_d, nbytes, cudaMemcpyDeviceToHost);
-    ASSERT_EQ(cuda_err, cudaSuccess);
-
-    std::vector<uint8_t> expected(nbytes, 0xAB);
-    ASSERT_EQ(memcmp(host_buf.data(), expected.data(), nbytes), 0)
-        << "Data mismatch in LL128 received buffer";
-  }
-
+  cudaFree(d_results);
+  cudaFree(d_buf);
   torchcomm_->barrier(false);
-  ASSERT_EQ(cudaFree(buf_d), cudaSuccess) << "cudaFree failed";
 }
 
-TEST_F(PipesTransportApiTest, NvlLl128SendRecvSmall) {
-  testNvlLl128SendRecv(1024);
+// =============================================================================
+// Parameterized Test Registrations
+// =============================================================================
+
+// --- SendRecv: parameterized by (msg_bytes, num_threads) ---
+
+struct TransportSendRecvParam {
+  size_t msg_bytes;
+  int num_threads; // 32 = WARP, 256 = BLOCK
+};
+
+class TransportSendRecvTest
+    : public PipesTransportApiTest,
+      public ::testing::WithParamInterface<TransportSendRecvParam> {};
+
+TEST_P(TransportSendRecvTest, SendRecv) {
+  testStressSendRecv(GetParam().msg_bytes, GetParam().num_threads);
 }
 
-TEST_F(PipesTransportApiTest, NvlLl128SendRecvLarge) {
-  testNvlLl128SendRecv(65536);
+INSTANTIATE_TEST_SUITE_P(
+    StressSendRecv,
+    TransportSendRecvTest,
+    ::testing::Values(
+        // WARP scope (32 threads)
+        TransportSendRecvParam{1024, 32}, // 1KB
+        TransportSendRecvParam{1048576, 32}, // 1MB
+        TransportSendRecvParam{16777216, 32}, // 16MB
+        // BLOCK scope (256 threads)
+        TransportSendRecvParam{1024, 256}, // 1KB
+        TransportSendRecvParam{1048576, 256}, // 1MB
+        TransportSendRecvParam{16777216, 256} // 16MB
+        ),
+    [](const ::testing::TestParamInfo<TransportSendRecvParam>& info) {
+      return std::to_string(info.param.msg_bytes) + "B_" +
+          std::string(info.param.num_threads >= 256 ? "BLOCK" : "WARP");
+    });
+
+// --- Signal: parameterized by num_threads ---
+
+class TransportSignalTest : public PipesTransportApiTest,
+                            public ::testing::WithParamInterface<int> {};
+
+TEST_P(TransportSignalTest, Signal) {
+  testStressSignal(GetParam());
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    StressSignal,
+    TransportSignalTest,
+    ::testing::Values(32, 256),
+    [](const ::testing::TestParamInfo<int>& info) {
+      return std::string(info.param >= 256 ? "BLOCK" : "WARP");
+    });
+
+// --- Combined: parameterized by (msg_bytes, num_threads) ---
+
+struct TransportCombinedParam {
+  size_t msg_bytes;
+  int num_threads;
+};
+
+class TransportCombinedTest
+    : public PipesTransportApiTest,
+      public ::testing::WithParamInterface<TransportCombinedParam> {};
+
+TEST_P(TransportCombinedTest, Combined) {
+  testStressCombined(GetParam().msg_bytes, GetParam().num_threads);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    StressCombined,
+    TransportCombinedTest,
+    ::testing::Values(
+        // WARP scope
+        TransportCombinedParam{1024, 32},
+        TransportCombinedParam{1048576, 32},
+        TransportCombinedParam{16777216, 32}, // 16MB
+        // BLOCK scope
+        TransportCombinedParam{1024, 256},
+        TransportCombinedParam{1048576, 256},
+        TransportCombinedParam{16777216, 256}), // 16MB
+    [](const ::testing::TestParamInfo<TransportCombinedParam>& info) {
+      return std::to_string(info.param.msg_bytes) + "B_" +
+          std::string(info.param.num_threads >= 256 ? "BLOCK" : "WARP");
+    });
+
+// --- LL128: parameterized by nbytes (warp-only) ---
+
+class TransportLl128Test : public PipesTransportApiTest,
+                           public ::testing::WithParamInterface<size_t> {};
+
+TEST_P(TransportLl128Test, Ll128) {
+  testStressLl128(GetParam());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    StressLl128,
+    TransportLl128Test,
+    ::testing::Values(
+        static_cast<size_t>(1024), // 1KB
+        static_cast<size_t>(65536)), // 64KB
+    [](const ::testing::TestParamInfo<size_t>& info) {
+      return std::to_string(info.param) + "B";
+    });

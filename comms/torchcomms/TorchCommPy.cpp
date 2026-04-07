@@ -280,6 +280,7 @@ Raises:
       .value("barrier", OpName::barrier)
       .value("scatter", OpName::scatter)
       .value("gather", OpName::gather)
+      .value("gather_single", OpName::gather_single)
       .value("split", OpName::split)
       .value("new_window", OpName::new_window);
 
@@ -806,17 +807,9 @@ Raises:
           py::call_guard<py::gil_scoped_release>())
       .def(
           "register_local_buffer",
-          [](TorchCommWindow& self, const at::Tensor& tensor) {
-            RegisteredBuffer buf;
-            {
-              py::gil_scoped_release release;
-              buf = self.register_local_buffer(tensor);
-            }
-            return py::make_tuple(
-                reinterpret_cast<int64_t>(buf.base_ptr),
-                static_cast<int64_t>(buf.size),
-                reinterpret_cast<int64_t>(buf.backend_window),
-                static_cast<int64_t>(buf.lkey));
+          [](TorchCommWindow& self, const at::Tensor& tensor) -> int64_t {
+            py::gil_scoped_release release;
+            return self.register_local_buffer_handle(tensor);
           },
           R"(
 Register a local buffer for use as source in device-side put operations.
@@ -827,7 +820,8 @@ Args:
     tensor: Source tensor to register as a local buffer.
 
 Returns:
-    tuple: (base_ptr, size, backend_window, lkey) as int64 values.
+    int: Opaque device handle for use in Triton put_block() calls.
+         Pass this handle to deregister_local_buffer() when done.
 
 Raises:
     RuntimeError: If this backend does not yet support the device API.
@@ -835,37 +829,20 @@ Raises:
           py::arg("tensor"))
       .def(
           "deregister_local_buffer",
-          [](TorchCommWindow& self,
-             int64_t base_ptr,
-             int64_t size,
-             int64_t backend_window,
-             int64_t lkey) {
-            RegisteredBuffer buf;
-            // NOLINTNEXTLINE(performance-no-int-to-ptr)
-            buf.base_ptr = reinterpret_cast<void*>(base_ptr);
-            buf.size = static_cast<size_t>(size);
-            // NOLINTNEXTLINE(performance-no-int-to-ptr)
-            buf.backend_window = reinterpret_cast<void*>(backend_window);
-            buf.lkey = static_cast<uint32_t>(lkey);
-            self.deregister_local_buffer(buf);
+          [](TorchCommWindow& self, int64_t handle) {
+            py::gil_scoped_release release;
+            self.deregister_local_buffer_handle(handle);
           },
           R"(
 Deregister a previously registered local buffer. NON-COLLECTIVE.
 
 Args:
-    base_ptr: From register_local_buffer() return tuple.
-    size: From register_local_buffer() return tuple.
-    backend_window: From register_local_buffer() return tuple.
-    lkey: From register_local_buffer() return tuple.
+    handle: Device handle returned by register_local_buffer().
 
 Raises:
     RuntimeError: If this backend does not yet support the device API.
 )",
-          py::arg("base_ptr"),
-          py::arg("size"),
-          py::arg("backend_window"),
-          py::arg("lkey"),
-          py::call_guard<py::gil_scoped_release>());
+          py::arg("handle"));
 
   // Bind BatchSendRecv::P2POp class
   py::class_<BatchSendRecv::P2POp>(
@@ -1839,6 +1816,42 @@ Args:
           )",
           py::arg("output_tensor_list"),
           py::arg("input_tensor"),
+          py::arg("root"),
+          py::arg("async_op"),
+          py::arg("hints") = std::nullopt,
+          py::arg("timeout") = std::nullopt,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "gather_single",
+          [](TorchComm& self,
+             at::Tensor& output,
+             const at::Tensor& input,
+             int root,
+             bool async_op,
+             std::optional<std::unordered_map<std::string, std::string>> hints,
+             std::optional<std::chrono::milliseconds> timeout) {
+            GatherSingleOptions opts;
+            if (hints) {
+              opts.hints = *hints;
+            }
+            if (timeout) {
+              opts.timeout = *timeout;
+            }
+            return self.gather_single(output, input, root, async_op, opts);
+          },
+          R"(
+Gather the input tensor from all ranks to the root using a single output tensor.
+
+Args:
+    output: Output tensor on the root rank. Ignored on non-root ranks.
+    input: Input tensor to gather.
+    root: The root rank.
+    async_op: Whether to perform the operation asynchronously.
+    hints: Dictionary of string hints for backend-specific options.
+    timeout: Timeout for the operation.
+          )",
+          py::arg("output"),
+          py::arg("input"),
           py::arg("root"),
           py::arg("async_op"),
           py::arg("hints") = std::nullopt,

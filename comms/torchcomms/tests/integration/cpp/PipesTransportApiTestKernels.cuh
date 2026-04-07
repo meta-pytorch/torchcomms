@@ -1,11 +1,7 @@
-// Copyright (c) Meta Platforms, Inc. and affiliates.
-// CUDA kernel declarations for PipesTransportApiTest
+// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 //
-// This header provides function declarations for launching warp-level
-// NVL transport kernels via the pipes MultiPeerDeviceHandle.
-//
-// The full device implementations are only in the .cu file which is
-// compiled by nvcc.
+// CUDA kernel declarations for PipesTransportApiTest.
+// Host-safe header — can be included from .cpp files compiled by clang.
 
 // NOLINTNEXTLINE(clang-diagnostic-pragma-once-outside-header)
 #pragma once
@@ -15,50 +11,45 @@
 
 namespace torchcomms::device::test {
 
-// Launch a warp-level NVL send kernel.
-void launchNvlSendKernel(
+// Stress send/recv: rank 0 sends, rank 1 receives, with signal-based sync
+// between iterations. Verifies data integrity on receiver.
+void launchTransportStressSendRecvKernel(
     comms::pipes::MultiPeerDeviceHandle handle,
-    int peerRank,
-    void* src_d,
+    float* buf,
+    size_t count,
+    int peer,
+    int iterations,
+    int num_threads,
+    int* results,
+    cudaStream_t stream);
+
+// Stress signal/wait: ring pattern, monotonic ADD signals with GE waits.
+void launchTransportStressSignalKernel(
+    comms::pipes::MultiPeerDeviceHandle handle,
+    int peer,
+    int iterations,
+    int num_threads,
+    cudaStream_t stream);
+
+// Combined: signal-sync + send/recv + signal/wait + verify per iteration.
+void launchTransportStressCombinedKernel(
+    comms::pipes::MultiPeerDeviceHandle handle,
+    float* buf,
+    size_t count,
+    int peer,
+    int iterations,
+    int num_threads,
+    int* results,
+    cudaStream_t stream);
+
+// LL128 send/recv: warp-only, small messages.
+void launchTransportStressLl128Kernel(
+    comms::pipes::MultiPeerDeviceHandle handle,
+    char* buf,
     size_t nbytes,
-    cudaStream_t stream = nullptr);
-
-// Launch a warp-level NVL recv kernel.
-void launchNvlRecvKernel(
-    comms::pipes::MultiPeerDeviceHandle handle,
-    int peerRank,
-    void* dst_d,
-    size_t nbytes,
-    cudaStream_t stream = nullptr);
-
-// Launch signal kernel: signals peer (ADD 1 on signal_id 0) and waits for
-// peer's signal (GE 1 on signal_id 0). Both ranks must call.
-void launchNvlSignalKernel(
-    comms::pipes::MultiPeerDeviceHandle handle,
-    int peerRank,
-    cudaStream_t stream = nullptr);
-
-// Launch LL128 send kernel (warp-only, 16-byte aligned).
-void launchNvlLl128SendKernel(
-    comms::pipes::MultiPeerDeviceHandle handle,
-    int peerRank,
-    void* src_d,
-    size_t nbytes,
-    cudaStream_t stream = nullptr);
-
-// Launch LL128 recv kernel (warp-only, 16-byte aligned).
-void launchNvlLl128RecvKernel(
-    comms::pipes::MultiPeerDeviceHandle handle,
-    int peerRank,
-    void* dst_d,
-    size_t nbytes,
-    cudaStream_t stream = nullptr);
-
-// Host-side check: returns non-zero if LL128 is available for the given peer.
-// Launches a tiny kernel to query get_ll128_buffer_num_packets() on device.
-int checkLl128Available(
-    comms::pipes::MultiPeerDeviceHandle handle,
-    int peerRank,
-    cudaStream_t stream = nullptr);
+    int peer,
+    int iterations,
+    int* results,
+    cudaStream_t stream);
 
 } // namespace torchcomms::device::test

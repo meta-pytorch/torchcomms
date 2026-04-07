@@ -8,6 +8,7 @@
 
 #include "CtranUtUtils.h"
 #include "comms/ctran/Ctran.h"
+#include "comms/ctran/algos/SendRecv/Types.h"
 #include "comms/ctran/backends/ib/CtranIbSingleton.h"
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
@@ -90,7 +91,9 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
       int nIter,
       MemAllocType memType,
       bool oneToOne = false,
-      size_t numSegments = 2) {
+      size_t numSegments = 2,
+      size_t numOpPairsPerPeer = 1,
+      bool useGraph = false) {
     const commDataType_t dt = commInt;
 
     // Setup NCCL_CTRAN_IB_MAX_QPS before comm creation so that internal QP
@@ -141,6 +144,22 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
 
     int* buf = reinterpret_cast<int*>(reinterpret_cast<char*>(base) + offset);
 
+    // graph mode: prepare data once before capture
+    if (useGraph) {
+      if (globalRank == sendRank) {
+        std::vector<int> sendVals(count);
+        std::iota(std::begin(sendVals), std::end(sendVals), sendRank);
+        CUDACHECK_TEST(
+            cudaMemcpy(buf, sendVals.data(), sendSize, cudaMemcpyDefault));
+      } else {
+        CUDACHECK_TEST(cudaMemset(base, 0, bufSize));
+      }
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      CUDACHECK_TEST(
+          cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed));
+    }
+
     for (int x = 0; x < nIter; x++) {
       // Indicating that we are in a group to populate same opCount for all ops
       // in the group
@@ -159,10 +178,12 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
             numMaxQp,
             memType == kMemNcclMemAlloc ? "ncclMemAlloc" : "cudaMalloc");
 
-        std::vector<int> sendVals(count);
-        std::iota(std::begin(sendVals), std::end(sendVals), sendRank + x);
-        CUDACHECK_TEST(
-            cudaMemcpy(buf, sendVals.data(), sendSize, cudaMemcpyDefault));
+        if (!useGraph) {
+          std::vector<int> sendVals(count);
+          std::iota(std::begin(sendVals), std::end(sendVals), sendRank + x);
+          CUDACHECK_TEST(
+              cudaMemcpy(buf, sendVals.data(), sendSize, cudaMemcpyDefault));
+        }
 
         std::vector<int> recvRanks;
         if (oneToOne) {
@@ -172,12 +193,14 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
           recvRanks.resize(numRanks);
           std::iota(recvRanks.begin(), recvRanks.end(), 0);
         }
-        for (auto recvRank : recvRanks) {
-          if (recvRank != globalRank) {
-            EXPECT_EQ(
-                ctranSend(buf, count, dt, recvRank, ctranComm.get(), stream),
-                commSuccess);
-            doSendRecv = true;
+        for (size_t p = 0; p < numOpPairsPerPeer; p++) {
+          for (auto recvRank : recvRanks) {
+            if (recvRank != globalRank) {
+              EXPECT_EQ(
+                  ctranSend(buf, count, dt, recvRank, ctranComm.get(), stream),
+                  commSuccess);
+              doSendRecv = true;
+            }
           }
         }
 
@@ -185,10 +208,14 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
         EXPECT_EQ(ctranComm->ctran_->getOpCount(), opCount);
       } else {
         if (isReceiver) {
-          CUDACHECK_TEST(cudaMemset(base, rand(), bufSize));
-          EXPECT_EQ(
-              ctranRecv(buf, count, dt, sendRank, ctranComm.get(), stream),
-              commSuccess);
+          if (!useGraph) {
+            CUDACHECK_TEST(cudaMemset(base, rand(), bufSize));
+          }
+          for (size_t p = 0; p < numOpPairsPerPeer; p++) {
+            EXPECT_EQ(
+                ctranRecv(buf, count, dt, sendRank, ctranComm.get(), stream),
+                commSuccess);
+          }
           doSendRecv = true;
         }
       }
@@ -196,66 +223,108 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
       // Indicating end of group
       commGroupDepth--;
       EXPECT_EQ(ctranGroupEndHook(NCCL_SENDRECV_ALGO), commSuccess);
-      CUDACHECK_TEST(cudaStreamSynchronize(stream));
 
-      if (doSendRecv) {
-        checkProfiler(ctranComm->ctran_->profiler.get(), opCount);
+      if (!useGraph) {
+        CUDACHECK_TEST(cudaStreamSynchronize(stream));
+
+        if (doSendRecv) {
+          checkProfiler(ctranComm->ctran_->profiler.get(), opCount);
+        }
+
+        if (isReceiver) {
+          EXPECT_EQ(
+              checkChunkValue(buf, count, sendRank + x, 1, this->globalRank),
+              0);
+        }
       }
+    }
+
+    if (useGraph) {
+      cudaGraph_t graph;
+      CUDACHECK_TEST(cudaStreamEndCapture(stream, &graph));
+      ASSERT_NE(graph, nullptr);
+
+      cudaGraphExec_t instance;
+      CUDACHECK_TEST(
+          cudaGraphInstantiate(&instance, graph, nullptr, nullptr, 0));
+
+      CUDACHECK_TEST(cudaGraphLaunch(instance, stream));
+      CUDACHECK_TEST(cudaStreamSynchronize(stream));
 
       if (isReceiver) {
         EXPECT_EQ(
-            checkChunkValue(buf, count, sendRank + x, 1, this->globalRank), 0);
+            checkChunkValue(buf, count, sendRank, 1, this->globalRank), 0);
+      }
+
+      CUDACHECK_TEST(cudaGraphExecDestroy(instance));
+      CUDACHECK_TEST(cudaGraphDestroy(graph));
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      // Wait for GPE thread to finish processing the destroyed cmd
+      while (ctranComm->ctran_->gpe->numInUseKernelFlags() > 0 ||
+             ctranComm->ctran_->gpe->numInUseKernelElems() > 0) {
+        std::this_thread::yield();
       }
     }
 
-    if (globalRank == sendRank &&
-        (NCCL_SENDRECV_ALGO != NCCL_SENDRECV_ALGO::ctstaged) &&
-        (NCCL_SENDRECV_ALGO != NCCL_SENDRECV_ALGO::ctp2p)) {
-      verifyBackendsUsed(
-          ctranComm->ctran_.get(), ctranComm->statex_.get(), memType);
+    if (!useGraph) {
+      if (globalRank == sendRank &&
+          (NCCL_SENDRECV_ALGO != NCCL_SENDRECV_ALGO::ctstaged) &&
+          (NCCL_SENDRECV_ALGO != NCCL_SENDRECV_ALGO::ctp2p)) {
+        verifyBackendsUsed(
+            ctranComm->ctran_.get(), ctranComm->statex_.get(), memType);
+      }
     }
+
     verifyGpeLeak(ctranComm->ctran_.get());
 
-    // Brief wait for GPE thread to flush colltrace entries after stream sync
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    if (!useGraph) {
+      // Brief wait for GPE thread to flush colltrace entries after stream sync
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    // Check the coll trace only for participating ranks
-    bool participated = (globalRank == sendRank) || isReceiver;
-    if (participated) {
-      auto dumpMap = ctran::dumpCollTrace(ctranComm.get());
-      ASSERT_FALSE(dumpMap.empty()) << "Colltrace should be initialized";
+      // Check the coll trace only for participating ranks
+      bool participated = (globalRank == sendRank) || isReceiver;
+      if (participated) {
+        auto dumpMap = ctran::dumpCollTrace(ctranComm.get());
+        ASSERT_FALSE(dumpMap.empty()) << "Colltrace should be initialized";
 
-      int numSendPeers = oneToOne ? 1 : (numRanks - 1);
-      std::string expAlgoName;
-      if (globalRank == sendRank) {
-        expAlgoName = numSendPeers > 1 ? "CtranSendRecv" : "CtranSend";
-      } else {
-        expAlgoName = "CtranRecv";
-      }
-
-      auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
-      ASSERT_FALSE(pastCollsJson.empty()) << "pastColls should not be empty";
-      for (const auto& coll : pastCollsJson) {
-        auto algoName = coll.getDefault("algoName", "").asString();
-        auto opName = coll.getDefault("opName", "").asString();
-        // Skip handle exchange entries
-        if (algoName.find("HanldeExchange") != std::string::npos) {
-          continue;
+        int numSendPeers = oneToOne ? 1 : (numRanks - 1);
+        size_t totalOps = (globalRank == sendRank)
+            ? numSendPeers * numOpPairsPerPeer
+            : numOpPairsPerPeer;
+        std::string expAlgoName;
+        if (totalOps > 1) {
+          expAlgoName = "CtranSendRecv";
+        } else if (globalRank == sendRank) {
+          expAlgoName = "CtranSend";
+        } else {
+          expAlgoName = "CtranRecv";
         }
-        // algoName is always populated
-        EXPECT_EQ(algoName, expAlgoName);
-        // opName and count are only populated when GPE opGroup is non-empty
-        // (i.e., the default algo). For ctstaged/ctp2p/CopyEngine notify
-        // kernels, the opGroup is empty so opName/count are not set.
-        if (!opName.empty() && coll.count("count")) {
-          EXPECT_EQ(opName, globalRank == sendRank ? "Send" : "Recv");
-          if (globalRank == sendRank && numSendPeers > 1) {
-            // getGroupedP2PMetaData sums counts across all send ops
-            EXPECT_EQ(
-                coll["count"].asInt(),
-                static_cast<int64_t>(count) * numSendPeers);
-          } else {
-            EXPECT_EQ(coll["count"].asInt(), count);
+
+        auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
+        ASSERT_FALSE(pastCollsJson.empty()) << "pastColls should not be empty";
+        for (const auto& coll : pastCollsJson) {
+          auto algoName = coll.getDefault("algoName", "").asString();
+          auto opName = coll.getDefault("opName", "").asString();
+          // Skip handle exchange entries
+          if (algoName.find("HanldeExchange") != std::string::npos) {
+            continue;
+          }
+          // algoName is always populated
+          EXPECT_EQ(algoName, expAlgoName);
+          // opName and count are only populated when GPE opGroup is non-empty
+          // (i.e., the default algo). For ctstaged/ctp2p/CopyEngine notify
+          // kernels, the opGroup is empty so opName/count are not set.
+          if (!opName.empty() && coll.count("count")) {
+            EXPECT_EQ(opName, globalRank == sendRank ? "Send" : "Recv");
+            if (globalRank == sendRank && numSendPeers > 1) {
+              // getGroupedP2PMetaData sums counts across all send ops
+              EXPECT_EQ(
+                  coll["count"].asInt(),
+                  static_cast<int64_t>(count) * numSendPeers);
+            } else {
+              EXPECT_EQ(coll["count"].asInt(), count);
+            }
           }
         }
       }
@@ -311,6 +380,45 @@ TEST_P(CtranTestParamFixture, sendRecvP2pCopyKernel) {
   // Destroy regCache for later test with different NCCL_CTRAN_REGISTER config.
   COMMCHECK_TEST(regCache->destroy());
 }
+
+class CtranP2pUseListTestFixture
+    : public CtranTestFixture,
+      public ::testing::WithParamInterface<size_t /* numOpPairsPerPeer */> {};
+
+TEST_P(CtranP2pUseListTestFixture, sendRecvP2pUseList) {
+  const size_t numOpPairsPerPeer = GetParam();
+
+  // Need enough total send ops to trigger useList (> kCtranMaxNvlSendRecvOps)
+  if (numOpPairsPerPeer * (numRanks - 1) <=
+      ctran::sendrecv::kCtranMaxNvlSendRecvOps) {
+    GTEST_SKIP() << "Not enough ops to trigger useList with " << numRanks
+                 << " ranks";
+  }
+
+  EnvRAII env1(NCCL_SENDRECV_ALGO, NCCL_SENDRECV_ALGO::ctp2p);
+  regCache->init();
+  runTest(
+      0 /* offset */,
+      4096 /* count */,
+      1 /* numMaxQp */,
+      1 /* nIter */,
+      kMemNcclMemAlloc,
+      false /* oneToOne */,
+      2 /* numSegments */,
+      numOpPairsPerPeer);
+  COMMCHECK_TEST(regCache->destroy());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    CtranP2pUseListTest,
+    CtranP2pUseListTestFixture,
+    ::testing::Values(
+        /* pool path */ 1,
+        /* ad-hoc alloc path */
+        ctran::sendrecv::kMaxSendRecvOpsPerPoolBuf + 1),
+    [](const testing::TestParamInfo<size_t>& info) {
+      return "numOpPairsPerPeer_" + std::to_string(info.param);
+    });
 
 TEST_F(CtranTestFixture, oneToOneSendRecv) {
   const size_t offset = 0;
@@ -535,6 +643,41 @@ TEST_F(CtranTestFixture, DISABLED_sendRecvCopyEngineMultiSegment) {
 
   COMMCHECK_TEST(regCache->destroy());
 }
+
+#if not defined(__HIP_PLATFORM_AMD__) and not defined(__HIP_PLATFORM_HCC__)
+
+class CtranP2pCudaGraphTestFixture
+    : public CtranTestFixture,
+      public ::testing::WithParamInterface<bool /* oneToOne */> {};
+
+TEST_P(CtranP2pCudaGraphTestFixture, sendRecvP2p) {
+  const bool oneToOne = GetParam();
+  EnvRAII env1(NCCL_SENDRECV_ALGO, NCCL_SENDRECV_ALGO::ctp2p);
+  regCache->init();
+  runTest(
+      0,
+      4096,
+      1 /* numMaxQp */,
+      1 /* nIter */,
+      kMemNcclMemAlloc,
+      oneToOne,
+      2,
+      1,
+      true /* useGraph */);
+  COMMCHECK_TEST(regCache->destroy());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    CtranP2pCudaGraphTest,
+    CtranP2pCudaGraphTestFixture,
+    ::testing::Values(
+        /* useList path */ false,
+        /* non-useList path */ true),
+    [](const testing::TestParamInfo<bool>& info) {
+      return "useList_" + std::to_string(!info.param);
+    });
+
+#endif
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);

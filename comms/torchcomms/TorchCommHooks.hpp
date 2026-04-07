@@ -38,6 +38,7 @@ enum class OpName {
   barrier,
   scatter,
   gather,
+  gather_single,
   split,
   new_window,
 };
@@ -79,6 +80,8 @@ constexpr std::string_view opToString(OpName name) {
       return "scatter";
     case OpName::gather:
       return "gather";
+    case OpName::gather_single:
+      return "gather_single";
     case OpName::split:
       return "split";
     case OpName::new_window:

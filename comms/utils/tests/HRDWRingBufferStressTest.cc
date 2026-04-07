@@ -18,35 +18,6 @@
 
 using meta::comms::colltrace::HRDWRingBuffer;
 using meta::comms::colltrace::HRDWRingBufferReader;
-using meta::comms::colltrace::launchRingBufferEndWrite;
-using meta::comms::colltrace::launchRingBufferStartWrite;
-
-namespace {
-
-// RAII wrapper for per-collective pinned memory (slot storage).
-struct PerCollState {
-  uint64_t* slotStorage{nullptr};
-
-  PerCollState() {
-    void* ptr = nullptr;
-    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-    cudaHostAlloc(&ptr, sizeof(uint64_t), cudaHostAllocDefault);
-    slotStorage = static_cast<uint64_t*>(ptr);
-    *slotStorage = 0;
-  }
-
-  ~PerCollState() {
-    if (slotStorage) {
-      // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-      cudaFreeHost(slotStorage);
-    }
-  }
-
-  PerCollState(const PerCollState&) = delete;
-  PerCollState& operator=(const PerCollState&) = delete;
-};
-
-} // namespace
 
 class HRDWRingBufferStressTest : public ::testing::Test {
  protected:
@@ -87,24 +58,16 @@ static const StressConfig kStressConfigs[] = {
     {16, 1, 1000}, // Tiny ring, maximum lapping pressure.
 };
 
-// Helper: launch totalWrites start+end pairs across numStreams streams.
+// Helper: launch totalWrites write pairs (2 writes each) across streams.
 static void launchEagerWrites(
     const std::vector<cudaStream_t>& streams,
     HRDWRingBuffer<void*>& buf,
-    std::vector<std::unique_ptr<PerCollState>>& states) {
-  auto totalWrites = static_cast<int>(states.size());
+    int totalPairs) {
   auto numStreams = static_cast<int>(streams.size());
-  for (int i = 0; i < totalWrites; ++i) {
+  for (int i = 0; i < totalPairs; ++i) {
     auto streamIdx = i % numStreams;
-    launchRingBufferStartWrite(
-        streams[streamIdx],
-        buf.ring(),
-        buf.writeIndex(),
-        buf.mask(),
-        nullptr,
-        states[i]->slotStorage);
-    launchRingBufferEndWrite(
-        streams[streamIdx], buf.ring(), states[i]->slotStorage, buf.mask());
+    buf.write(streams[streamIdx], nullptr);
+    buf.write(streams[streamIdx], nullptr);
   }
 }
 
@@ -112,14 +75,12 @@ static void launchEagerWrites(
 //   cfg       — StressConfig
 //   buf       — HRDWRingBuffer<void*>
 //   streams   — vector of cudaStream_t (cfg.numStreams)
-//   states    — vector of PerCollState (cfg.totalWrites())
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
 #define EAGER_STRESS_TEST(name)                                 \
   static void eagerStressBody_##name(                           \
       const StressConfig&,                                      \
       HRDWRingBuffer<void*>&,                                   \
-      std::vector<cudaStream_t>&,                               \
-      std::vector<std::unique_ptr<PerCollState>>&);             \
+      std::vector<cudaStream_t>&);                              \
   TEST_F(HRDWRingBufferStressTest, name) {                      \
     for (const auto& cfg : kStressConfigs) {                    \
       SCOPED_TRACE(                                             \
@@ -132,12 +93,7 @@ static void launchEagerWrites(
       for (auto& s : streams) {                                 \
         ASSERT_EQ(cudaStreamCreate(&s), cudaSuccess);           \
       }                                                         \
-      std::vector<std::unique_ptr<PerCollState>> states;        \
-      states.reserve(cfg.totalWrites());                        \
-      for (int i = 0; i < cfg.totalWrites(); ++i) {             \
-        states.push_back(std::make_unique<PerCollState>());     \
-      }                                                         \
-      eagerStressBody_##name(cfg, buf, streams, states);        \
+      eagerStressBody_##name(cfg, buf, streams);                \
       for (auto& s : streams) {                                 \
         /* NOLINTNEXTLINE(facebook-cuda-safe-api-call-check) */ \
         cudaStreamDestroy(s);                                   \
@@ -147,14 +103,13 @@ static void launchEagerWrites(
   static void eagerStressBody_##name(                           \
       const StressConfig& cfg,                                  \
       HRDWRingBuffer<void*>& buf,                               \
-      std::vector<cudaStream_t>& streams,                       \
-      std::vector<std::unique_ptr<PerCollState>>& states)
+      std::vector<cudaStream_t>& streams)
 
-// Launch start+end pairs across multiple streams, sync, then poll.
+// Launch write pairs across multiple streams, sync, then poll.
 // Every delivered entry must have valid timestamps.
 EAGER_STRESS_TEST(MultiStreamTimestampOrdering) {
   HRDWRingBufferReader<void*> reader(buf);
-  launchEagerWrites(streams, buf, states);
+  launchEagerWrites(streams, buf, cfg.totalWrites());
 
   for (auto& s : streams) {
     ASSERT_EQ(cudaStreamSynchronize(s), cudaSuccess);
@@ -162,16 +117,17 @@ EAGER_STRESS_TEST(MultiStreamTimestampOrdering) {
 
   uint64_t badEntries = 0;
   auto result = reader.poll([&](const auto& e, uint64_t) {
-    if (e.start_ns == 0 || e.end_ns == 0 || e.end_ns < e.start_ns) {
+    if (e.timestamp_ns == 0) {
       ++badEntries;
     }
   });
 
   EXPECT_EQ(badEntries, 0u)
       << "Entries with invalid timestamps (threadfence_system ordering failure)";
+  // Each pair produces 2 ring entries.
   EXPECT_EQ(
       result.entriesRead + result.entriesLost,
-      static_cast<uint64_t>(cfg.totalWrites()));
+      static_cast<uint64_t>(2 * cfg.totalWrites()));
 }
 
 // Launch writes while a background CPU thread polls continuously.
@@ -185,7 +141,7 @@ EAGER_STRESS_TEST(ConcurrentWriteAndPoll) {
     HRDWRingBufferReader<void*> reader(buf);
     while (!writersDone.load(std::memory_order_acquire)) {
       auto result = reader.poll([&](const auto& e, uint64_t) {
-        if (e.start_ns == 0 || e.end_ns == 0 || e.end_ns < e.start_ns) {
+        if (e.timestamp_ns == 0) {
           totalBad.fetch_add(1, std::memory_order_relaxed);
         }
       });
@@ -194,7 +150,7 @@ EAGER_STRESS_TEST(ConcurrentWriteAndPoll) {
     }
     // Final drain.
     auto result = reader.poll([&](const auto& e, uint64_t) {
-      if (e.start_ns == 0 || e.end_ns == 0 || e.end_ns < e.start_ns) {
+      if (e.timestamp_ns == 0) {
         totalBad.fetch_add(1, std::memory_order_relaxed);
       }
     });
@@ -202,7 +158,7 @@ EAGER_STRESS_TEST(ConcurrentWriteAndPoll) {
     totalLost.fetch_add(result.entriesLost, std::memory_order_relaxed);
   });
 
-  launchEagerWrites(streams, buf, states);
+  launchEagerWrites(streams, buf, cfg.totalWrites());
 
   for (auto& s : streams) {
     // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
@@ -215,70 +171,57 @@ EAGER_STRESS_TEST(ConcurrentWriteAndPoll) {
       << "Corrupted entries during concurrent polling";
 
   auto accounted = totalRead.load() + totalLost.load();
-  EXPECT_EQ(accounted, static_cast<uint64_t>(cfg.totalWrites()));
+  EXPECT_EQ(accounted, static_cast<uint64_t>(2 * cfg.totalWrites()));
 }
 
 // Single-stream configs only: verify monotonic timestamp ordering.
-// On a single stream, start_ns of entry N+1 >= end_ns of entry N.
 EAGER_STRESS_TEST(SingleStreamMonotonicOrdering) {
   if (cfg.numStreams != 1) {
     return; // Only meaningful for single-stream configs.
   }
 
   HRDWRingBufferReader<void*> reader(buf);
-  launchEagerWrites(streams, buf, states);
+  launchEagerWrites(streams, buf, cfg.totalWrites());
   ASSERT_EQ(cudaStreamSynchronize(streams[0]), cudaSuccess);
 
   uint64_t badEntries = 0;
-  uint64_t prevEndNs = 0;
+  uint64_t prevTimestamp = 0;
   auto result = reader.poll([&](const auto& e, uint64_t) {
-    if (e.start_ns == 0 || e.end_ns == 0 || e.end_ns < e.start_ns) {
+    if (e.timestamp_ns == 0) {
       ++badEntries;
     }
-    if (prevEndNs > 0 && e.start_ns < prevEndNs) {
+    if (prevTimestamp > 0 && e.timestamp_ns < prevTimestamp) {
       ++badEntries;
     }
-    prevEndNs = e.end_ns;
+    prevTimestamp = e.timestamp_ns;
   });
 
   EXPECT_EQ(badEntries, 0u);
   EXPECT_EQ(
       result.entriesRead + result.entriesLost,
-      static_cast<uint64_t>(cfg.totalWrites()));
-  EXPECT_FALSE(result.tornReadDetected);
+      static_cast<uint64_t>(2 * cfg.totalWrites()));
 }
 
 // NOTE: graph tests reuse kStressConfigs: numStreams = numColls, numWrites =
 // replays.
 
-// Helper: capture N serial start+end pairs into a graph, return the
+// Helper: capture N serial write pairs into a graph, return the
 // graph and instance. Caller owns cleanup.
 struct CapturedGraph {
   cudaGraph_t graph{nullptr};
   cudaGraphExec_t instance{nullptr};
-  std::vector<std::unique_ptr<PerCollState>> states;
 };
 
 static CapturedGraph
 captureGraph(cudaStream_t stream, HRDWRingBuffer<void*>& buf, int numColls) {
   CapturedGraph cg;
-  cg.states.reserve(numColls);
-  for (int i = 0; i < numColls; ++i) {
-    cg.states.push_back(std::make_unique<PerCollState>());
-  }
 
   cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal);
   for (int i = 0; i < numColls; ++i) {
-    launchRingBufferStartWrite(
-        stream,
-        buf.ring(),
-        buf.writeIndex(),
-        buf.mask(),
-        // NOLINTNEXTLINE(performance-no-int-to-ptr)
-        reinterpret_cast<void*>(static_cast<uintptr_t>(i)),
-        cg.states[i]->slotStorage);
-    launchRingBufferEndWrite(
-        stream, buf.ring(), cg.states[i]->slotStorage, buf.mask());
+    // NOLINTNEXTLINE(performance-no-int-to-ptr)
+    auto* data = reinterpret_cast<void*>(static_cast<uintptr_t>(i));
+    buf.write(stream, data);
+    buf.write(stream, data);
   }
   cudaStreamEndCapture(stream, &cg.graph);
   if (cg.graph) {
@@ -302,8 +245,7 @@ static void destroyGraph(CapturedGraph& cg) {
 //   cfg.ringSize, cfg.numStreams, cfg.numWrites
 //   buf     — HRDWRingBuffer<void*> sized to cfg.ringSize
 //   stream  — cudaStream_t
-//   cg      — CapturedGraph with cfg.numStreams start+end pairs
-// The test body goes after the macro invocation as a brace-enclosed block.
+//   cg      — CapturedGraph with cfg.numStreams write pairs
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
 #define GRAPH_STRESS_TEST(name)                               \
   static void graphStressBody_##name(                         \
@@ -347,7 +289,7 @@ GRAPH_STRESS_TEST(GraphReplayTimestampOrdering) {
 
   uint64_t badEntries = 0;
   auto result = reader.poll([&](const auto& e, uint64_t) {
-    if (e.start_ns == 0 || e.end_ns == 0 || e.end_ns < e.start_ns) {
+    if (e.timestamp_ns == 0) {
       ++badEntries;
     }
   });
@@ -355,8 +297,9 @@ GRAPH_STRESS_TEST(GraphReplayTimestampOrdering) {
   EXPECT_EQ(badEntries, 0u)
       << "Graph replay produced entries with invalid timestamps";
 
-  uint64_t totalWrites = static_cast<uint64_t>(cfg.numStreams) * cfg.numWrites;
-  EXPECT_EQ(result.entriesRead + result.entriesLost, totalWrites);
+  uint64_t totalSlots =
+      static_cast<uint64_t>(cfg.numStreams) * cfg.numWrites * 2;
+  EXPECT_EQ(result.entriesRead + result.entriesLost, totalSlots);
 }
 
 // Replay graph while a background CPU thread polls continuously.
@@ -370,7 +313,7 @@ GRAPH_STRESS_TEST(GraphReplayConcurrentPoll) {
     HRDWRingBufferReader<void*> reader(buf);
     while (!replaysDone.load(std::memory_order_acquire)) {
       auto result = reader.poll([&](const auto& e, uint64_t) {
-        if (e.start_ns == 0 || e.end_ns == 0 || e.end_ns < e.start_ns) {
+        if (e.timestamp_ns == 0) {
           totalBad.fetch_add(1, std::memory_order_relaxed);
         }
       });
@@ -379,7 +322,7 @@ GRAPH_STRESS_TEST(GraphReplayConcurrentPoll) {
     }
     // Final drain.
     auto result = reader.poll([&](const auto& e, uint64_t) {
-      if (e.start_ns == 0 || e.end_ns == 0 || e.end_ns < e.start_ns) {
+      if (e.timestamp_ns == 0) {
         totalBad.fetch_add(1, std::memory_order_relaxed);
       }
     });
@@ -400,48 +343,36 @@ GRAPH_STRESS_TEST(GraphReplayConcurrentPoll) {
       << "Graph replay produced corrupted entries during concurrent polling";
 
   auto accounted = totalRead.load() + totalLost.load();
-  EXPECT_EQ(accounted, static_cast<uint64_t>(cfg.totalWrites()));
+  EXPECT_EQ(accounted, static_cast<uint64_t>(cfg.totalWrites()) * 2);
 }
 
-// Replay with scanIncomplete=true to exercise per-collective in-flight
-// detection. Verify write-pending entries have valid collId tags.
-GRAPH_STRESS_TEST(GraphReplayIncompleteDetection) {
+// Replay and verify entries have valid data tags and timestamps.
+GRAPH_STRESS_TEST(GraphReplayEventValidation) {
   std::atomic<uint64_t> totalCompleted{0};
   std::atomic<uint64_t> totalLost{0};
-  std::atomic<uint64_t> totalPending{0};
   std::atomic<uint64_t> totalBad{0};
   std::atomic<bool> replaysDone{false};
 
   std::thread readerThread([&]() {
     HRDWRingBufferReader<void*> reader(buf);
     while (!replaysDone.load(std::memory_order_acquire)) {
-      auto result = reader.poll(
-          [&](const auto& e, uint64_t) {
-            auto tag =
-                static_cast<uint32_t>(reinterpret_cast<uintptr_t>(e.data));
-            if (tag >= static_cast<uint32_t>(cfg.numStreams)) {
-              totalBad.fetch_add(1, std::memory_order_relaxed);
-            }
-            if (e.sequence == HRDW_RINGBUFFER_WRITE_PENDING) {
-              totalPending.fetch_add(1, std::memory_order_relaxed);
-            } else {
-              if (e.start_ns == 0 || e.end_ns == 0 || e.end_ns < e.start_ns) {
-                totalBad.fetch_add(1, std::memory_order_relaxed);
-              }
-              totalCompleted.fetch_add(1, std::memory_order_relaxed);
-            }
-          },
-          /*scanIncomplete=*/true);
+      auto result = reader.poll([&](const auto& e, uint64_t) {
+        auto tag = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(e.data));
+        if (tag >= static_cast<uint32_t>(cfg.numStreams)) {
+          totalBad.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (e.timestamp_ns == 0) {
+          totalBad.fetch_add(1, std::memory_order_relaxed);
+        }
+        totalCompleted.fetch_add(1, std::memory_order_relaxed);
+      });
       totalLost.fetch_add(result.entriesLost, std::memory_order_relaxed);
     }
     // Final drain.
-    auto result = reader.poll(
-        [&](const auto& e, uint64_t) {
-          if (e.sequence != HRDW_RINGBUFFER_WRITE_PENDING) {
-            totalCompleted.fetch_add(1, std::memory_order_relaxed);
-          }
-        },
-        /*scanIncomplete=*/true);
+    auto result = reader.poll([&](const auto& e, uint64_t) {
+      (void)e;
+      totalCompleted.fetch_add(1, std::memory_order_relaxed);
+    });
     totalLost.fetch_add(result.entriesLost, std::memory_order_relaxed);
   });
 
@@ -455,8 +386,79 @@ GRAPH_STRESS_TEST(GraphReplayIncompleteDetection) {
   readerThread.join();
 
   EXPECT_EQ(totalBad.load(), 0u)
-      << "Write-pending or completed entries had invalid data";
+      << "Entries had invalid data tags or timestamps";
 
   auto accounted = totalCompleted.load() + totalLost.load();
-  EXPECT_EQ(accounted, static_cast<uint64_t>(cfg.totalWrites()));
+  EXPECT_EQ(accounted, static_cast<uint64_t>(cfg.totalWrites()) * 2);
+}
+
+// Each write claims its own slot — no contention. Fill the ring, then
+// write again to verify wrap-around succeeds immediately.
+TEST_F(HRDWRingBufferStressTest, WrapAroundImmediateNoContention) {
+  constexpr uint32_t kSize = 8;
+  HRDWRingBuffer<void*> buf(kSize);
+  ASSERT_TRUE(buf.valid());
+
+  cudaStream_t stream;
+  ASSERT_EQ(cudaStreamCreate(&stream), cudaSuccess);
+
+  // Fill the ring with kSize writes, then one more to wrap around.
+  for (uint32_t i = 0; i <= kSize; ++i) {
+    buf.write(stream, nullptr);
+  }
+  ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+
+  // Poll and verify all entries are readable (including the wrap-around).
+  HRDWRingBufferReader<void*> reader(buf);
+  uint64_t readCount = 0;
+  auto result = reader.poll([&](const auto& e, uint64_t) {
+    EXPECT_NE(e.timestamp_ns, 0u);
+    ++readCount;
+  });
+  // kSize + 1 writes total. Some may be lost due to lapping on tiny ring.
+  EXPECT_EQ(result.entriesRead + result.entriesLost, kSize + 1);
+
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  cudaStreamDestroy(stream);
+}
+
+// Multi-writer stress test: 4 streams, all writing concurrently.
+// No contention — all streams complete immediately.
+TEST_F(HRDWRingBufferStressTest, MultiWriterNeverBlocks) {
+  constexpr uint32_t kSize = 16;
+  constexpr int kNumStreams = 4;
+  constexpr int kWritesPerStream = 32;
+  HRDWRingBuffer<void*> buf(kSize);
+  ASSERT_TRUE(buf.valid());
+
+  cudaStream_t streams[kNumStreams];
+  for (auto& s : streams) {
+    ASSERT_EQ(cudaStreamCreate(&s), cudaSuccess);
+  }
+
+  for (int w = 0; w < kWritesPerStream; ++w) {
+    for (int si = 0; si < kNumStreams; ++si) {
+      buf.write(streams[si], nullptr);
+    }
+  }
+
+  for (auto& s : streams) {
+    ASSERT_EQ(cudaStreamSynchronize(s), cudaSuccess);
+  }
+
+  HRDWRingBufferReader<void*> reader(buf);
+  uint64_t badEntries = 0;
+  auto result = reader.poll([&](const auto& e, uint64_t) {
+    if (e.timestamp_ns == 0) {
+      ++badEntries;
+    }
+  });
+  EXPECT_EQ(badEntries, 0u);
+  uint64_t totalSlots = static_cast<uint64_t>(kNumStreams) * kWritesPerStream;
+  EXPECT_EQ(result.entriesRead + result.entriesLost, totalSlots);
+
+  for (auto& s : streams) {
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+    cudaStreamDestroy(s);
+  }
 }

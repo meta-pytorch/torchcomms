@@ -42,7 +42,7 @@ TEST_F(GpeKernelSyncPoolTest, PopTest) {
   }
 
   auto another_kernel_sync = pool->pop();
-  EXPECT_EQ(another_kernel_sync, nullptr);
+  EXPECT_NE(another_kernel_sync, nullptr);
 }
 
 TEST_F(GpeKernelSyncPoolTest, ReclaimTest) {

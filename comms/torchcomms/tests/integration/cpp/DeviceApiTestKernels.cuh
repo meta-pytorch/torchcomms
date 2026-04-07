@@ -1,154 +1,123 @@
-// Copyright (c) Meta Platforms, Inc. and affiliates.
-// CUDA kernel declarations for DeviceApiTest
+// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 //
-// This header provides function declarations that can be included from
-// both .cpp (host code, compiled by clang) and .cu (CUDA code, compiled
-// by nvcc) files.
-//
-// The type aliases (DeviceWindowNCCL, RegisteredBufferNCCL) are defined in
-// TorchCommDeviceNCCLXTypes.hpp which is safe to include from host code.
-// The full device implementations (ncclGin usage, etc.) are only in the
-// .cu file which is compiled by nvcc.
+// CUDA kernel declarations for DeviceApiStressTest (NCCLx backend).
+// Host-safe header — can be included from .cpp files compiled by clang.
 
 // NOLINTNEXTLINE(clang-diagnostic-pragma-once-outside-header)
 #pragma once
 
 #include <cuda_runtime.h>
-// Include the host-safe header that provides type aliases
-// (DeviceWindowNCCL = TorchCommDeviceWindow<NCCLDeviceBackend>)
-// This does NOT include the device implementation code that requires nvcc.
 #include "comms/torchcomms/device/ncclx/TorchCommDeviceNCCLXTypes.hpp"
 
 namespace torchcomms::device::test {
 
-// Host-callable wrapper functions to launch CUDA kernels
-// These are defined in DeviceApiTestKernels.cu
-
-// Launch device put kernel - performs put from src_buf to window on dst_rank
-// Uses src_offset=0 and dst_offset=rank*bytes pattern
-// Note: DeviceWindowNCCL* is a DEVICE pointer (allocated via cudaMalloc)
-void launchDevicePutKernel(
+// Stress put kernel: performs put+signal in a loop, writing src_buf to
+// dst_rank's window. Uses monotonic signal values (signal value = iteration+1).
+// Receiver waits for signal to reach the monotonic target before verifying.
+// The kernel fills src with a rank+iteration pattern each iteration.
+//
+// Parameters:
+//   win         - device window pointer (device memory)
+//   src_buf     - registered local source buffer
+//   src_ptr     - raw float pointer to source buffer (for fill pattern)
+//   win_base    - raw float pointer to window base (for verification)
+//   src_offset  - byte offset within src_buf
+//   dst_offset  - byte offset within destination window
+//   bytes       - bytes to put per iteration
+//   count       - number of float elements (bytes / sizeof(float))
+//   dst_rank    - destination rank in ring
+//   src_rank    - source rank (who sends to us)
+//   signal_id   - signal slot to use
+//   iterations  - number of put iterations
+//   scope       - cooperative scope (THREAD, WARP, BLOCK)
+//   results     - device int array[iterations], 1=pass 0=fail per iteration
+void launchStressPutKernel(
     DeviceWindowNCCL* win,
     RegisteredBufferNCCL src_buf,
-    size_t bytes,
-    int dst_rank,
-    int signal_id,
-    cudaStream_t stream);
-
-// Launch device put kernel with explicit offsets - performs put with custom
-// src/dst offsets This is useful when using a single window buffer for both
-// source and destination sections.
-// Note: DeviceWindowNCCL* is a DEVICE pointer (allocated via cudaMalloc)
-void launchDevicePutKernelWithOffsets(
-    DeviceWindowNCCL* win,
-    RegisteredBufferNCCL src_buf,
+    float* src_ptr,
+    float* win_base,
     size_t src_offset,
     size_t dst_offset,
     size_t bytes,
+    size_t count,
     int dst_rank,
+    int src_rank,
     int signal_id,
+    int iterations,
+    CoopScope scope,
+    int num_threads,
+    int* results,
     cudaStream_t stream);
 
-// Launch device wait signal kernel - waits for signal from peer
-// Note: DeviceWindowNCCL* is a DEVICE pointer (allocated via cudaMalloc)
-void launchDeviceWaitSignalKernel(
+// Stress signal kernel: sends signal to dst_rank in a ring, waits for
+// signal from src_rank, repeated iterations times. Uses monotonic values.
+void launchStressSignalKernel(
     DeviceWindowNCCL* win,
-    int signal_id,
-    uint64_t expected_value,
-    cudaStream_t stream);
-
-// Launch device reset signal kernel - resets signal to 0
-// Note: DeviceWindowNCCL* is a DEVICE pointer (allocated via cudaMalloc)
-void launchDeviceResetSignalKernel(
-    DeviceWindowNCCL* win,
-    int signal_id,
-    cudaStream_t stream);
-
-// Launch read signal kernel - reads aggregated signal value into output buffer.
-// out must be a device pointer to a single uint64_t.
-void launchDeviceReadSignalKernel(
-    DeviceWindowNCCL* win,
-    int signal_id,
-    uint64_t* out,
-    cudaStream_t stream);
-
-// Launch GIN atomicAdd test kernel - performs remote atomic fetch-and-add
-// on a uint64_t in the destination window, then signals the destination rank
-// using resource buffer signals.
-// Note: DeviceWindowNCCL* is a DEVICE pointer (allocated via cudaMalloc)
-void launchDeviceGinAtomicAddKernel(
-    DeviceWindowNCCL* win,
-    size_t dst_offset,
-    uint64_t add_value,
     int dst_rank,
+    int src_rank,
     int signal_id,
+    int iterations,
+    CoopScope scope,
+    int num_threads,
     cudaStream_t stream);
 
-// Launch standalone signal kernel - signals a peer without data transfer.
-// Tests per-peer resource buffer signal model in isolation.
-void launchDeviceSignalKernel(
+// Stress barrier kernel: calls barrier iterations times, alternating
+// between barrier_id 0 and 1.
+void launchStressBarrierKernel(
     DeviceWindowNCCL* win,
-    int peer,
-    int signal_id,
-    SignalOp op,
-    uint64_t value,
+    int iterations,
+    CoopScope scope,
+    int num_threads,
     cudaStream_t stream);
 
-// Launch wait signal from specific peer kernel - waits for signal from a
-// single peer (not aggregated). Tests point-to-point synchronization.
-void launchDeviceWaitSignalFromKernel(
-    DeviceWindowNCCL* win,
-    int peer,
-    int signal_id,
-    CmpOp cmp,
-    uint64_t value,
-    cudaStream_t stream);
-
-// Launch device barrier kernel - synchronizes all ranks via world barrier
-void launchDeviceBarrierKernel(
-    DeviceWindowNCCL* win,
-    int barrier_id,
-    cudaStream_t stream);
-
-// Launch scope-aware put kernel - all threads in the cooperative group
-// call put() together. num_threads must match the scope:
-//   - WARP:  32
-//   - BLOCK: 256 (or any block size)
-void launchDevicePutScopedKernel(
+// Combined ops kernel: barrier -> fill -> put -> wait_signal -> verify ->
+// barrier per iteration. Tests interleaved operations.
+void launchStressCombinedKernel(
     DeviceWindowNCCL* win,
     RegisteredBufferNCCL src_buf,
+    float* src_ptr,
+    float* win_base,
     size_t src_offset,
     size_t dst_offset,
     size_t bytes,
+    size_t count,
+    int dst_rank,
+    int src_rank,
+    int signal_id,
+    int barrier_id_base,
+    int iterations,
+    int* results,
+    cudaStream_t stream);
+
+// Stress aggregated wait_signal kernel: ring signal -> aggregated
+// wait_signal (not per-peer) -> read_signal -> reset_signal -> verify
+// read_signal returns 0. Exercises the non-per-peer signal path.
+void launchStressAggregatedSignalKernel(
+    DeviceWindowNCCL* win,
     int dst_rank,
     int signal_id,
-    CoopScope scope,
-    int num_threads,
+    int iterations,
+    int* results,
     cudaStream_t stream);
 
-// Launch scope-aware barrier kernel
-void launchDeviceBarrierScopedKernel(
+// Stress half-precision put kernel: same as stressPutKernel but with
+// __half data type. Uses half-precision fill/verify patterns.
+void launchStressPutHalfKernel(
     DeviceWindowNCCL* win,
-    int barrier_id,
-    CoopScope scope,
-    int num_threads,
-    cudaStream_t stream);
-
-// Launch scope-aware wait_signal kernel
-void launchDeviceWaitSignalScopedKernel(
-    DeviceWindowNCCL* win,
+    RegisteredBufferNCCL src_buf,
+    void* src_ptr,
+    void* win_base,
+    size_t src_offset,
+    size_t dst_offset,
+    size_t bytes,
+    size_t count,
+    int dst_rank,
+    int src_rank,
     int signal_id,
-    uint64_t expected_value,
+    int iterations,
     CoopScope scope,
     int num_threads,
-    cudaStream_t stream);
-
-// Launch scope-aware reset_signal kernel
-void launchDeviceResetSignalScopedKernel(
-    DeviceWindowNCCL* win,
-    int signal_id,
-    CoopScope scope,
-    int num_threads,
+    int* results,
     cudaStream_t stream);
 
 } // namespace torchcomms::device::test

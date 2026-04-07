@@ -95,6 +95,20 @@ class TorchCommWindow {
         "deregister_local_buffer is not yet supported by this backend");
   }
 
+  // Device-handle variants of register/deregister_local_buffer.
+  // Returns an opaque int64_t handle (device pointer to RegisteredBuffer)
+  // for use in Triton put_block() calls. The backend owns the device memory.
+  // NOT thread-safe — concurrent calls require external synchronization.
+  virtual int64_t register_local_buffer_handle(const at::Tensor&) {
+    throw std::runtime_error(
+        "register_local_buffer_handle is not yet supported by this backend");
+  }
+
+  virtual void deregister_local_buffer_handle(int64_t /*handle*/) {
+    throw std::runtime_error(
+        "deregister_local_buffer_handle is not yet supported by this backend");
+  }
+
   // Get the registered buffer's dtype (for torch.compile meta kernel)
   at::ScalarType getDtype() const {
     return buf_dtype_;

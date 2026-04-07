@@ -85,6 +85,11 @@ static commResult_t impl(
   void *sendHdl, *recvHdl;
   KernelElem* elem = nullptr;
 
+  // Use local copies for the advancing pointers so we don't mutate the OpElem
+  // (which persists across CUDA graph replays).
+  const void* sendbuff = op->allreduce.sendbuff;
+  void* recvbuff = op->allreduce.recvbuff;
+
   CtranAlgoLogger logger(allReduceAlgoName(myAlgo), op->opCount, comm);
 
   /* intra-node */
@@ -119,9 +124,9 @@ static commResult_t impl(
           new CtranMapperTimestamp(allReduceAlgoName(myAlgo)));
 
   FB_COMMCHECK(comm->ctran_->mapper->searchRegHandle(
-      op->allreduce.sendbuff, size, &sendHdl, &localRegSend));
+      sendbuff, size, &sendHdl, &localRegSend));
   FB_COMMCHECK(comm->ctran_->mapper->searchRegHandle(
-      op->allreduce.recvbuff, size, &recvHdl, &localRegRecv));
+      recvbuff, size, &recvHdl, &localRegRecv));
 
   CtranMapperContext context(allReduceAlgoName(myAlgo), size, size);
   comm->ctran_->mapper->setContext(std::move(context));
@@ -144,8 +149,7 @@ static commResult_t impl(
           &req));
       intraNodeRemoteSendbuffReq[lr] = std::unique_ptr<CtranMapperRequest>(req);
 
-      FB_COMMCHECK(comm->ctran_->mapper->isendCtrl(
-          op->allreduce.sendbuff, sendHdl, p, &req));
+      FB_COMMCHECK(comm->ctran_->mapper->isendCtrl(sendbuff, sendHdl, p, &req));
       intraNodeLocalSendbuffReq[lr] = std::unique_ptr<CtranMapperRequest>(req);
     }
   }
@@ -181,8 +185,7 @@ static commResult_t impl(
           &req));
       intraNodeRemoteRecvbuffReq[lr] = std::unique_ptr<CtranMapperRequest>(req);
 
-      FB_COMMCHECK(comm->ctran_->mapper->isendCtrl(
-          op->allreduce.recvbuff, recvHdl, p, &req));
+      FB_COMMCHECK(comm->ctran_->mapper->isendCtrl(recvbuff, recvHdl, p, &req));
       intraNodeLocalRecvbuffReq[lr] = std::unique_ptr<CtranMapperRequest>(req);
     }
   }
@@ -220,8 +223,7 @@ static commResult_t impl(
           &req));
       interNodeRemoteRecvbuffReq[n] = std::unique_ptr<CtranMapperRequest>(req);
 
-      FB_COMMCHECK(comm->ctran_->mapper->isendCtrl(
-          op->allreduce.recvbuff, recvHdl, p, &req));
+      FB_COMMCHECK(comm->ctran_->mapper->isendCtrl(recvbuff, recvHdl, p, &req));
       interNodeLocalRecvbuffReq[n] = std::unique_ptr<CtranMapperRequest>(req);
     }
   }
@@ -258,11 +260,10 @@ static commResult_t impl(
     elem = op->allreduce.kElemStepMap.at(
         static_cast<int>(ctran::allreduce::KernElemRole::kIntraReduceScatter));
     elem->localReduce.count = stepCount / nLocalRanks;
-    elem->localReduce.dst = BUFOFFSET(op->allreduce.recvbuff, localOffset);
+    elem->localReduce.dst = BUFOFFSET(recvbuff, localOffset);
     for (int lr = 0; lr < nLocalRanks; lr++) {
       if (lr == localRank) {
-        elem->localReduce.srcs[lr] =
-            BUFOFFSET(op->allreduce.sendbuff, localOffset);
+        elem->localReduce.srcs[lr] = BUFOFFSET(sendbuff, localOffset);
       } else {
         elem->localReduce.srcs[lr] =
             BUFOFFSET(intraNodeRemoteSendBuffs[lr], localOffset);
@@ -281,8 +282,7 @@ static commResult_t impl(
         if (n != node) {
           int p = statex->localRankToRank(localRank, n);
 
-          void* src =
-              BUFOFFSET(op->allreduce.recvbuff, localOffset + n * chunk);
+          void* src = BUFOFFSET(recvbuff, localOffset + n * chunk);
           auto [interNodeRemoteTmpbuff, interNodeRemoteTmpAccessKey] =
               comm->ctran_->algo->getRemoteTmpBufInfo(p);
           void* dst = BUFOFFSET(interNodeRemoteTmpbuff, node * chunk);
@@ -321,8 +321,7 @@ static commResult_t impl(
     /* local reduction from tmpbuf */
     elem = op->allreduce.kElemStepMap.at(
         static_cast<int>(ctran::allreduce::KernElemRole::kInterReduceScatter));
-    elem->stridedReduce.dst =
-        BUFOFFSET(op->allreduce.recvbuff, localOffset + nodeOffset);
+    elem->stridedReduce.dst = BUFOFFSET(recvbuff, localOffset + nodeOffset);
     elem->stridedReduce.stridedSrc = tmpBuf;
     elem->stridedReduce.blockCount = chunkCount;
     elem->stridedReduce.stride = chunkCount;
@@ -338,8 +337,7 @@ static commResult_t impl(
       for (int n = 0; n < nNodes; n++) {
         if (n != node) {
           int p = statex->localRankToRank(localRank, n);
-          void* src =
-              BUFOFFSET(op->allreduce.recvbuff, localOffset + nodeOffset);
+          void* src = BUFOFFSET(recvbuff, localOffset + nodeOffset);
           void* dst =
               BUFOFFSET(interNodeRemoteRecvBuffs[n], localOffset + nodeOffset);
 
@@ -377,10 +375,10 @@ static commResult_t impl(
     elem = op->allreduce.kElemStepMap.at(
         static_cast<int>(ctran::allreduce::KernElemRole::kIntraAllGather));
     elem->bcast.count = stepCount / nLocalRanks;
-    elem->bcast.src = BUFOFFSET(op->allreduce.recvbuff, localOffset);
+    elem->bcast.src = BUFOFFSET(recvbuff, localOffset);
     for (int lr = 0; lr < nLocalRanks; lr++) {
       if (lr == localRank) {
-        elem->bcast.dsts[lr] = BUFOFFSET(op->allreduce.recvbuff, localOffset);
+        elem->bcast.dsts[lr] = BUFOFFSET(recvbuff, localOffset);
       } else {
         elem->bcast.dsts[lr] =
             BUFOFFSET(intraNodeRemoteRecvBuffs[lr], localOffset);
@@ -392,10 +390,8 @@ static commResult_t impl(
     THROW_IF_ABORTED(
         elem->wait(comm->getAbort()), "ctdirect step 4: intra-node allgather");
 
-    op->allreduce.sendbuff =
-        BUFOFFSET(op->allreduce.sendbuff, stepCount * typeSize);
-    op->allreduce.recvbuff =
-        BUFOFFSET(op->allreduce.recvbuff, stepCount * typeSize);
+    sendbuff = BUFOFFSET(sendbuff, stepCount * typeSize);
+    recvbuff = BUFOFFSET(recvbuff, stepCount * typeSize);
     for (int lr = 0; lr < nLocalRanks; lr++) {
       if (lr != localRank) {
         intraNodeRemoteSendBuffs[lr] =
@@ -425,10 +421,10 @@ static commResult_t impl(
     /* Step 5: Intra-node reduce */
     elem = op->allreduce.kElemStepMap.at(
         static_cast<int>(ctran::allreduce::KernElemRole::kRemIntraReduce));
-    elem->localReduce.dst = op->allreduce.recvbuff;
+    elem->localReduce.dst = recvbuff;
     for (int lr = 0; lr < nLocalRanks; lr++) {
       if (lr == localRank) {
-        elem->localReduce.srcs[lr] = op->allreduce.sendbuff;
+        elem->localReduce.srcs[lr] = sendbuff;
       } else {
         elem->localReduce.srcs[lr] = intraNodeRemoteSendBuffs[lr];
       }
@@ -441,10 +437,10 @@ static commResult_t impl(
     /* Step 6: Intra-node bcast */
     elem = op->allreduce.kElemStepMap.at(
         static_cast<int>(ctran::allreduce::KernElemRole::kRemIntraBcast));
-    elem->bcast.src = op->allreduce.recvbuff;
+    elem->bcast.src = recvbuff;
     for (int lr = 0; lr < nLocalRanks; lr++) {
       if (lr == localRank) {
-        elem->bcast.dsts[lr] = op->allreduce.recvbuff;
+        elem->bcast.dsts[lr] = recvbuff;
       } else {
         elem->bcast.dsts[lr] = intraNodeRemoteRecvBuffs[lr];
       }
@@ -460,7 +456,7 @@ static commResult_t impl(
       if (n != node) {
         int p = statex->localRankToRank(localRank, n);
 
-        void* src = op->allreduce.recvbuff;
+        void* src = recvbuff;
         auto [interNodeRemoteTmpbuff, interNodeRemoteTmpAccessKey] =
             comm->ctran_->algo->getRemoteTmpBufInfo(p);
         void* dst =
@@ -498,7 +494,7 @@ static commResult_t impl(
     /* local reduction from tmpbuf */
     elem = op->allreduce.kElemStepMap.at(
         static_cast<int>(ctran::allreduce::KernElemRole::kRemInterReduce));
-    elem->stridedReduce.dst = op->allreduce.recvbuff;
+    elem->stridedReduce.dst = recvbuff;
     elem->stridedReduce.stridedSrc = tmpBuf;
     elem->stridedReduce.blockCount = remCount;
     elem->stridedReduce.stride = remCount;

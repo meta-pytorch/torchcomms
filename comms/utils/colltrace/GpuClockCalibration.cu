@@ -24,25 +24,15 @@
     }                                  \
   } while (0)
 
-namespace {
+namespace meta::comms::colltrace {
 
-__device__ __forceinline__ uint64_t readGlobaltimer() {
-#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
-  return wall_clock64();
-#else
-  uint64_t timer;
-  asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(timer));
-  return timer;
-#endif
-}
+namespace {
 
 __global__ void readGlobaltimerKernel(uint64_t* out) {
   *out = readGlobaltimer();
 }
 
 } // namespace
-
-namespace meta::comms::colltrace {
 
 cudaError_t launchReadGlobaltimer(cudaStream_t stream, uint64_t* out) {
   readGlobaltimerKernel<<<1, 1, 0, stream>>>(out);

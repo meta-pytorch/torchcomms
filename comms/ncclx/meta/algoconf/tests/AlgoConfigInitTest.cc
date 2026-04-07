@@ -4,7 +4,8 @@
 #include <glog/logging.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "comms/testinfra/TestsDistUtils.h"
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
+#include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "meta/hints/GlobalHints.h" // @manual
 #include "nccl.h"
 
@@ -17,7 +18,7 @@ class AlgoConfigInitTest : public NcclxBaseTestFixture {
   }
 };
 
-TEST_P(AlgoConfigInitTest, SetHintBeforeCommCreation) {
+TEST_F(AlgoConfigInitTest, SetHintBeforeCommCreation) {
   // Expect invalid access to AlgoConfig global hints before comm creation
   ASSERT_FALSE(ncclx::setGlobalHint("algo_sendrecv", "orig"));
   auto res = ncclx::getGlobalHint("algo_sendrecv");
@@ -25,8 +26,8 @@ TEST_P(AlgoConfigInitTest, SetHintBeforeCommCreation) {
 
   ASSERT_FALSE(ncclx::resetGlobalHint("algo_sendrecv"));
 
-  ncclComm_t comm = createNcclComm(
-      globalRank, numRanks, localRank, false, nullptr, server.get());
+  ncclComm_t comm = ncclx::test::createNcclComm(
+      globalRank, numRanks, localRank, bootstrap_.get());
 
   // Expect valid access to AlgoConfig global hints after comm creation
   ASSERT_TRUE(ncclx::setGlobalHint("algo_sendrecv", "orig"));
@@ -37,11 +38,6 @@ TEST_P(AlgoConfigInitTest, SetHintBeforeCommCreation) {
 
   NCCLCHECK_TEST(ncclCommDestroy(comm));
 }
-
-INSTANTIATE_TEST_SUITE_P(
-    AlgoConfigInitTestSuite,
-    AlgoConfigInitTest,
-    testing::Values(NcclxEnvs({{"NCCL_FASTINIT_MODE", "none"}})));
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);

@@ -25,6 +25,14 @@ class CtranNvl {
   //   - rank: the rank of the peer in the current communicator
   bool isSupported(int rank);
 
+  // Returns true if NVL support for this rank uses NVLink fabric (cross-node
+  // MNNVL). Fabric peers require FABRIC-capable handles (cuMem VMM buffers).
+  // cudaMalloc buffers produce cudaIpc handles which are intra-host only and
+  // will fail when imported on a different physical machine.
+  // Input arguments:
+  //   - rank: the rank of the peer in the current communicator
+  bool isNvlFabric(int rank) const;
+
  private:
   class Impl;
   std::unique_ptr<Impl> pimpl_;

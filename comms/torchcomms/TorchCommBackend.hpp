@@ -165,6 +165,23 @@ class TorchCommBackend {
       bool async_op,
       const GatherOptions& options = {}) = 0;
 
+  virtual c10::intrusive_ptr<TorchWork> gather_single(
+      at::Tensor& output,
+      const at::Tensor& input,
+      int root,
+      bool async_op,
+      const GatherSingleOptions& /*options*/ = {}) {
+    // Default: split output along dim-0 into getSize() views and delegate to
+    // gather. The views share the same underlying storage so data lands
+    // contiguously in the original output tensor.
+    std::vector<at::Tensor> output_list;
+    if (getRank() == root) {
+      output_list = output.chunk(getSize(), /*dim=*/0);
+    }
+    GatherOptions gather_opts;
+    return gather(output_list, input, root, async_op, gather_opts);
+  }
+
   // Communicator Management
   virtual std::shared_ptr<TorchCommBackend> split(
       const std::vector<int>& ranks,

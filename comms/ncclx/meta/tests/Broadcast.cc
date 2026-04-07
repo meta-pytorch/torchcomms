@@ -11,11 +11,10 @@
 #include "checks.h" // NOLINT
 #include "comms/ctran/Ctran.h"
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
-#include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
+#include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "meta/colltrace/CollTrace.h"
 
-class BroadcastTestCommon : public NcclxBaseTest {
+class BroadcastTestCommon : public NcclxBaseTestFixture {
  public:
   enum class MemType {
     CUDA_MALLOC,
@@ -25,7 +24,7 @@ class BroadcastTestCommon : public NcclxBaseTest {
   };
 
   void SetUp() override {
-    NcclxBaseTest::SetUp();
+    NcclxBaseTestFixture::SetUp();
 
     this->comm = ncclx::test::createNcclComm(
         globalRank, numRanks, localRank, bootstrap_.get());
@@ -36,7 +35,7 @@ class BroadcastTestCommon : public NcclxBaseTest {
   void TearDown() override {
     NCCLCHECK_TEST(ncclCommDestroy(this->comm));
     CUDACHECK_TEST(cudaStreamDestroy(this->stream));
-    NcclxBaseTest::TearDown();
+    NcclxBaseTestFixture::TearDown();
   }
 
   void AllocateBuffers(MemType memType, size_t count) {

@@ -53,6 +53,7 @@ class OpName(Enum):
     barrier = auto()
     scatter = auto()
     gather = auto()
+    gather_single = auto()
     split = auto()
     new_window = auto()
 
@@ -270,10 +271,8 @@ class TorchCommWindow:
         counter_count: int = -1,
         barrier_count: int = 1,
     ) -> int: ...
-    def register_local_buffer(self, tensor: Any) -> tuple[int, int, int, int]: ...
-    def deregister_local_buffer(
-        self, base_ptr: int, size: int, backend_window: int, lkey: int
-    ) -> None: ...
+    def register_local_buffer(self, tensor: Any) -> int: ...
+    def deregister_local_buffer(self, handle: int) -> None: ...
 
 class P2POpType(Enum):
     SEND = auto()
@@ -449,6 +448,15 @@ class TorchComm:
         self,
         output_tensor_list: List[Any],
         input_tensor: Any,
+        root: int,
+        async_op: bool,
+        hints: Dict[str, str] | None = None,
+        timeout: timedelta | None = None,
+    ) -> TorchWork: ...
+    def gather_single(
+        self,
+        output: Any,
+        input: Any,
         root: int,
         async_op: bool,
         hints: Dict[str, str] | None = None,
