@@ -10,7 +10,7 @@
 #include "comms/ctran/utils/ExtUtils.h"
 
 using ctran::allgatherp::AlgoImpl;
-using ctran::allgatherp::PersistArgs;
+using ctran::allgatherp::Buffer;
 using ctran::allgatherp::Resource;
 using ncclx::CommStateX;
 namespace {
@@ -27,7 +27,7 @@ getRecvChunkIdxInRail(int rank, int step, int nLocalRanks, int nRanks) {
 commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
   struct OpElem* op = opGroup.front().get();
   auto* resource = reinterpret_cast<Resource*>(op->allgatherP.algoResource);
-  auto* pArgs = reinterpret_cast<PersistArgs*>(op->allgatherP.pArgs);
+  auto* buffer = reinterpret_cast<Buffer*>(op->allgatherP.pArgs);
   const void* sendBuff = op->allgatherP.sendbuff;
   const auto sendSize =
       op->allgatherP.count * commTypeSize(op->allgatherP.datatype);
@@ -67,7 +67,7 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
 
   // Initialize notify flag to receive from upstream peer
   auto notify = std::make_unique<CtranMapperNotify>();
-  FB_COMMCHECK(mapper->initNotify(upPeer, pArgs->recvHdl, notify.get()));
+  FB_COMMCHECK(mapper->initNotify(upPeer, buffer->recvHdl, notify.get()));
 
   std::vector<CtranMapperRequest> putReqs(nNodes - 1);
   for (auto step = 0; step < nNodes - 1; step++) {
@@ -78,18 +78,18 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
     // previously received chunk.
     auto sendPtr = step == 0
         ? sendBuff
-        : ctran::allgatherp::getPtr(pArgs->recvbuff, offset);
-    auto sendHdl_ = step == 0 ? sendHdl : pArgs->recvHdl;
+        : ctran::allgatherp::getPtr(buffer->recvbuff, offset);
+    auto sendHdl_ = step == 0 ? sendHdl : buffer->recvHdl;
 
     // Issue put to IB peers
     FB_COMMCHECK(mapper->iput(
         sendPtr,
-        ctran::allgatherp::getPtr(pArgs->remoteRecvBuffs[downPeer], offset),
+        ctran::allgatherp::getPtr((*buffer->remoteRecvBuffs)[downPeer], offset),
         sendSize,
         downPeer,
         CtranMapperConfig{
             .memHdl_ = sendHdl_,
-            .remoteAccessKey_ = pArgs->remoteAccessKeys[downPeer],
+            .remoteAccessKey_ = (*buffer->remoteAccessKeys)[downPeer],
             .notify_ = true},
         &putReqs.at(step)));
 
@@ -128,13 +128,16 @@ extern __global__ void ncclKernelAllGatherPPipe(
     int* flag,
     CtranAlgoDeviceState* devState);
 
-commResult_t AlgoImpl::execPipeline(
+commResult_t execPipelineCore(
     const void* sendbuff,
     const size_t count,
-    const commDataType_t datatype) {
-  auto recvbuff = pArgs.recvbuff;
-  auto ctran = comm_->ctran_.get();
-  const auto statex = comm_->statex_.get();
+    const commDataType_t datatype,
+    Buffer& buffer,
+    Resource& resource,
+    CtranComm* comm,
+    cudaStream_t stream) {
+  auto ctran = comm->ctran_.get();
+  const auto statex = comm->statex_.get();
   const auto opCount = ctran->getOpCount();
   const auto sendSize = count * commTypeSize(datatype);
 
@@ -146,22 +149,16 @@ commResult_t AlgoImpl::execPipeline(
   CTRAN_COLL_INFO(
       AlgoImpl::algoName(myAlgo),
       sendbuff,
-      recvbuff,
+      buffer.recvbuff,
       count,
       datatype,
       -1,
-      comm_,
-      stream_);
-
-  // Wait till async init is done, so that we can schedule copy operations with
-  // the remote address
-  if (nLocalRanks > 1) {
-    FB_COMMCHECK(waitInit());
-  }
+      comm,
+      stream);
 
   auto config = KernelConfig(
       KernelConfig::KernelType::ALLGATHERP,
-      stream_,
+      stream,
       AlgoImpl::algoName(myAlgo),
       opCount);
   config.numBlocks = 1;
@@ -175,9 +172,9 @@ commResult_t AlgoImpl::execPipeline(
     // Submit inter-node Ring pipeline for GPE thread to execute. Skip if single
     // node.
     auto op = std::make_unique<OpElem>(
-        OpElem::opType::ALLGATHERP, stream_, comm_, opCount);
-    op->allgatherP.pArgs = &pArgs;
-    op->allgatherP.algoResource = &resource_;
+        OpElem::opType::ALLGATHERP, stream, comm, opCount);
+    op->allgatherP.pArgs = &buffer;
+    op->allgatherP.algoResource = &resource;
     op->allgatherP.sendbuff = sendbuff;
     op->allgatherP.count = count;
     op->allgatherP.datatype = datatype;
@@ -207,20 +204,20 @@ commResult_t AlgoImpl::execPipeline(
   }
 
   // Copy data to self for out-of-place allgather
-  FB_COMMCHECK(copyToSelf(comm_, sendbuff, sendSize, pArgs.recvbuff, stream_));
+  FB_COMMCHECK(copyToSelf(comm, sendbuff, sendSize, buffer.recvbuff, stream));
 
   // Submit intra-node copies in the pipeline
   if (nLocalRanks > 1) {
     // - Step 0: Broadcast local chunk to intra-node peers
     // Copy data to other local ranks
     FB_COMMCHECK(nvlCeBcast(
-        comm_,
+        comm,
         sendbuff,
         sendSize,
         myRank * sendSize,
-        pArgs.remoteRecvBuffs,
-        pArgs.remoteAccessKeys,
-        stream_));
+        *buffer.remoteRecvBuffs,
+        *buffer.remoteAccessKeys,
+        stream));
 
     const int upPeer = (nRanks + myRank - nLocalRanks) & (nRanks - 1);
 
@@ -230,7 +227,7 @@ commResult_t AlgoImpl::execPipeline(
       // step-n exchange and has posted via the shared pipeSync flag.
       PipeSyncKernArgs kernArgs = {
           .stepId = step,
-          .pipeSync = resource_.pipeSync,
+          .pipeSync = resource.pipeSync,
       };
       config.algoArgs = reinterpret_cast<void*>(&kernArgs);
       FB_COMMCHECK(ctran->gpe->submit(
@@ -243,20 +240,20 @@ commResult_t AlgoImpl::execPipeline(
       //  to the same offset on other local ranks
       const auto offset =
           getRecvChunkIdxInRail(upPeer, step, nLocalRanks, nRanks) * sendSize;
-      const auto sendPtr = getPtr(pArgs.recvbuff, offset);
+      const auto sendPtr = getPtr(buffer.recvbuff, offset);
       FB_COMMCHECK(nvlCeBcast(
-          comm_,
+          comm,
           sendPtr,
           sendSize,
           offset,
-          pArgs.remoteRecvBuffs,
-          pArgs.remoteAccessKeys,
-          stream_));
+          *buffer.remoteRecvBuffs,
+          *buffer.remoteAccessKeys,
+          stream));
     }
 
     PipeEndKernArgs kernArgs = {
         // Pass pipeSync to reset the flag before starting the next pipeline
-        .pipeSync = resource_.pipeSync,
+        .pipeSync = resource.pipeSync,
     };
     config.algoArgs = reinterpret_cast<void*>(&kernArgs);
     FB_COMMCHECK(ctran->gpe->submit(
@@ -267,6 +264,22 @@ commResult_t AlgoImpl::execPipeline(
   }
 
   return commSuccess;
+}
+
+commResult_t AlgoImpl::execPipeline(
+    const void* sendbuff,
+    const size_t count,
+    const commDataType_t datatype) {
+  const auto nLocalRanks = comm_->statex_->nLocalRanks();
+
+  // Wait till async init is done, so that we can schedule copy operations with
+  // the remote address
+  if (nLocalRanks > 1) {
+    FB_COMMCHECK(waitInit());
+  }
+
+  return execPipelineCore(
+      sendbuff, count, datatype, buffer, resource_, comm_, stream_);
 }
 
 } // namespace ctran::allgatherp

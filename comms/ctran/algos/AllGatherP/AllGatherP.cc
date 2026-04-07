@@ -68,6 +68,16 @@ extern __global__ void ncclKernelAllGatherPInit(
     int* flag,
     CtranAlgoDeviceState* devState);
 
+commResult_t AlgoImpl::initResources() {
+  void* base = nullptr;
+  FB_CUDACHECK(
+      cudaHostAlloc(&base, sizeof(GpeKernelSync), cudaHostAllocDefault));
+
+  resource_.pipeSync = reinterpret_cast<GpeKernelSync*>(base);
+  new (resource_.pipeSync) GpeKernelSync(1 /* numWorkers */);
+  return commSuccess;
+}
+
 commResult_t AlgoImpl::initialize() {
   auto opCount = comm_->ctran_->getOpCount();
   CTRAN_COLL_INFO(
@@ -80,12 +90,7 @@ commResult_t AlgoImpl::initialize() {
       comm_,
       stream_);
 
-  void* base = nullptr;
-  FB_CUDACHECK(
-      cudaHostAlloc(&base, sizeof(GpeKernelSync), cudaHostAllocDefault));
-
-  resource_.pipeSync = reinterpret_cast<GpeKernelSync*>(base);
-  new (resource_.pipeSync) GpeKernelSync(1 /* numWorkers */);
+  FB_COMMCHECK(initResources());
 
   KernelConfig config = KernelConfig(
       KernelConfig::KernelType::ALLGATHERP_INIT,
@@ -183,6 +188,16 @@ commResult_t allGatherPInit(
   algo->pArgs.maxRecvCount = maxRecvCount;
   algo->pArgs.datatype = datatype;
   algo->pArgs.initialized.store(false);
+
+  // Point buffer view into PersistArgs. The vector pointers are stable even
+  // before exchangeMemHdl populates them (pointer-to-vector-object is fixed;
+  // only internal storage changes on resize).
+  algo->buffer = ctran::allgatherp::Buffer{
+      .recvbuff = algo->pArgs.recvbuff,
+      .recvHdl = algo->pArgs.recvHdl,
+      .remoteRecvBuffs = &algo->pArgs.remoteRecvBuffs,
+      .remoteAccessKeys = &algo->pArgs.remoteAccessKeys,
+  };
 
   // Initialize algo internal resource and schedule handle exchange on GPE
   // thread

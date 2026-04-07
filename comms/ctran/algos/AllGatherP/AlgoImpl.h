@@ -10,6 +10,7 @@ namespace ctran::allgatherp {
 class AlgoImpl {
  public:
   PersistArgs pArgs;
+  Buffer buffer; // Non-owning view of buffer metadata for the algorithm core
 
   AlgoImpl(CtranComm* comm, cudaStream_t stream)
       : comm_(comm), stream_(stream) {};
@@ -53,6 +54,11 @@ class AlgoImpl {
   }
 
  private:
+  // Allocate pipeSync and other internal resources. Factored out from
+  // initialize() so the window path (Phase 3) can allocate resources without
+  // running the exchangeMemHdl GPE job.
+  commResult_t initResources();
+
   // Wait till either the async initialization is done or hit async error.
   // It is called before execution scheduling any CE copy to the stream.
   inline commResult_t waitInit() {
@@ -66,4 +72,27 @@ class AlgoImpl {
   CtranComm* comm_{nullptr};
   cudaStream_t stream_{nullptr};
 };
+
+// Shared algorithm core — free functions callable from any data source.
+// `buffer` must persist until the GPE function completes (passed through
+// OpElem). For the legacy path, `buffer` is a member of AlgoImpl (persistent).
+
+commResult_t execDirectCore(
+    const void* sendbuff,
+    const size_t count,
+    const commDataType_t datatype,
+    Buffer& buffer,
+    Resource& resource,
+    CtranComm* comm,
+    cudaStream_t stream);
+
+commResult_t execPipelineCore(
+    const void* sendbuff,
+    const size_t count,
+    const commDataType_t datatype,
+    Buffer& buffer,
+    Resource& resource,
+    CtranComm* comm,
+    cudaStream_t stream);
+
 } // namespace ctran::allgatherp
