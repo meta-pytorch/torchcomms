@@ -207,14 +207,20 @@ commResult_t AlgoImpl::execPipeline(
   }
 
   // Copy data to self for out-of-place allgather
-  FB_COMMCHECK(copyToSelf(comm_, sendbuff, sendSize, pArgs, stream_));
+  FB_COMMCHECK(copyToSelf(comm_, sendbuff, sendSize, pArgs.recvbuff, stream_));
 
   // Submit intra-node copies in the pipeline
   if (nLocalRanks > 1) {
     // - Step 0: Broadcast local chunk to intra-node peers
     // Copy data to other local ranks
     FB_COMMCHECK(nvlCeBcast(
-        comm_, sendbuff, sendSize, myRank * sendSize, pArgs, stream_));
+        comm_,
+        sendbuff,
+        sendSize,
+        myRank * sendSize,
+        pArgs.remoteRecvBuffs,
+        pArgs.remoteAccessKeys,
+        stream_));
 
     const int upPeer = (nRanks + myRank - nLocalRanks) & (nRanks - 1);
 
@@ -238,8 +244,14 @@ commResult_t AlgoImpl::execPipeline(
       const auto offset =
           getRecvChunkIdxInRail(upPeer, step, nLocalRanks, nRanks) * sendSize;
       const auto sendPtr = getPtr(pArgs.recvbuff, offset);
-      FB_COMMCHECK(
-          nvlCeBcast(comm_, sendPtr, sendSize, offset, pArgs, stream_));
+      FB_COMMCHECK(nvlCeBcast(
+          comm_,
+          sendPtr,
+          sendSize,
+          offset,
+          pArgs.remoteRecvBuffs,
+          pArgs.remoteAccessKeys,
+          stream_));
     }
 
     PipeEndKernArgs kernArgs = {
