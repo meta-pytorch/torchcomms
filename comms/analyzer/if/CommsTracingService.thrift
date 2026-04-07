@@ -208,9 +208,9 @@ struct CudaError {
 // NOTE: Keep in sync with commDump.cc
 // The field names must exactly match the json keys.
 // The values themselves are serialized json.
-@thrift.ReserveIds{ids = [19, 20, 21]}
+@thrift.ReserveIds{ids = [1, 19, 20, 21]}
 struct NCCLCommRawEntry {
-  1: string CT_currentColl;
+  25: string CT_currentColls;
   2: string CT_pastColls;
   3: string CT_pendingColls;
   4: string PT_activeColls;
@@ -267,9 +267,9 @@ struct GetTopologyResponse {
   1: list<CommsTopologyInfo> topologies;
 }
 
-@thrift.ReserveIds{ids = [19, 20, 21]}
+@thrift.ReserveIds{ids = [1, 19, 20, 21]}
 struct NCCLParsedEntry {
-  1: optional CT_Coll_struct CT_currentColl;
+  25: list<CT_Coll_struct> CT_currentColls;
   2: list<CT_Coll_struct> CT_pastColls;
   3: list<CT_Coll_struct> CT_pendingColls;
   4: list<PT_Coll_struct> PT_activeColls;

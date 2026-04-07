@@ -151,7 +151,7 @@ class ctranAllToAllvTest : public ctran::CtranDistTestFixture,
     auto dumpMap = ctran::dumpCollTrace(ctranComm.get());
     EXPECT_NE(dumpMap["CT_pastColls"], "[]");
     EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
-    EXPECT_EQ(dumpMap["CT_currentColl"], "null");
+    EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
     auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
     ASSERT_GE(pastCollsJson.size(), 1);
     for (const auto& coll : pastCollsJson) {
