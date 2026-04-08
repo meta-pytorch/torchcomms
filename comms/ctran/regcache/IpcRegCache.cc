@@ -78,10 +78,11 @@ commResult_t ctran::IpcRegCache::importMem(
     int cudaDev,
     void** buf,
     struct ctran::regcache::IpcRemHandle* remKey,
-    const struct CommLogData* logMetaData) {
+    const struct CommLogData* logMetaData,
+    const std::vector<ctran::utils::CtranIpcSegDesc>& extraSegments) {
   void* basePtr = nullptr;
-  FB_COMMCHECK(
-      importRemMemImpl(peerId, ipcDesc, cudaDev, logMetaData, &basePtr));
+  FB_COMMCHECK(importRemMemImpl(
+      peerId, ipcDesc, cudaDev, logMetaData, &basePtr, extraSegments));
 
   // import from baseAddr of a remote segment, return buf at offset from
   // baseAddr
@@ -105,7 +106,8 @@ commResult_t ctran::IpcRegCache::importRemMemImpl(
     const ctran::regcache::IpcDesc& ipcDesc,
     int cudaDev,
     const struct CommLogData* logMetaData,
-    void** mappedBase) {
+    void** mappedBase,
+    const std::vector<ctran::utils::CtranIpcSegDesc>& extraSegments) {
   auto lockedMap = ipcRemRegMap_.wlock();
   uint64_t base = reinterpret_cast<uint64_t>(ipcDesc.desc.base);
   IpcRemRegKey key{base, ipcDesc.uid};
@@ -131,7 +133,7 @@ commResult_t ctran::IpcRegCache::importRemMemImpl(
   std::unique_ptr<ctran::regcache::IpcRemRegElem> reg = nullptr;
   try {
     reg = std::make_unique<ctran::regcache::IpcRemRegElem>(
-        ipcDesc.desc, cudaDev, logMetaData);
+        ipcDesc.desc, cudaDev, logMetaData, extraSegments);
   } catch (std::exception& e) {
     CLOGF(
         WARN,

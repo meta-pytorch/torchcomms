@@ -46,9 +46,7 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
 
   static void checkProfiler(ctran::Profiler* profiler, uint64_t opCount) {
     // algo profiler currently only enabled for IB backend
-    if (NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE ||
-        NCCL_SENDRECV_ALGO == NCCL_SENDRECV_ALGO::ctstaged ||
-        NCCL_SENDRECV_ALGO == NCCL_SENDRECV_ALGO::ctp2p) {
+    if (NCCL_SENDRECV_ALGO == NCCL_SENDRECV_ALGO::ctp2p) {
       return;
     }
     ASSERT_NE(profiler, nullptr);
@@ -269,7 +267,6 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
 
     if (!useGraph) {
       if (globalRank == sendRank &&
-          (NCCL_SENDRECV_ALGO != NCCL_SENDRECV_ALGO::ctstaged) &&
           (NCCL_SENDRECV_ALGO != NCCL_SENDRECV_ALGO::ctp2p)) {
         verifyBackendsUsed(
             ctranComm->ctran_.get(), ctranComm->statex_.get(), memType);
@@ -313,8 +310,8 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
           // algoName is always populated
           EXPECT_EQ(algoName, expAlgoName);
           // opName and count are only populated when GPE opGroup is non-empty
-          // (i.e., the default algo). For ctstaged/ctp2p/CopyEngine notify
-          // kernels, the opGroup is empty so opName/count are not set.
+          // (i.e., the default algo). For ctp2p kernel, the opGroup is empty
+          // so opName/count are not set.
           if (!opName.empty() && coll.count("count")) {
             EXPECT_EQ(opName, globalRank == sendRank ? "Send" : "Recv");
             if (globalRank == sendRank && numSendPeers > 1) {
@@ -355,16 +352,6 @@ TEST_P(CtranTestParamFixture, sendRecv) {
 
   regCache->init();
 
-  runTest(offset, count, numMaxQp, 1 /* nIter */, memType);
-
-  // Destroy regCache for later test with different NCCL_CTRAN_REGISTER config.
-  COMMCHECK_TEST(regCache->destroy());
-}
-
-TEST_P(CtranTestParamFixture, sendRecvStagedCopyKernel) {
-  const auto& [offset, count, numMaxQp, memType] = GetParam();
-  EnvRAII env1(NCCL_SENDRECV_ALGO, NCCL_SENDRECV_ALGO::ctstaged);
-  regCache->init();
   runTest(offset, count, numMaxQp, 1 /* nIter */, memType);
 
   // Destroy regCache for later test with different NCCL_CTRAN_REGISTER config.
@@ -479,25 +466,6 @@ TEST_P(CtranSocketTestParamFixture, nvlSendRecv) {
   COMMCHECK_TEST(regCache->destroy());
 }
 
-class CtranSendRecvCopyEngineTestParamFixture
-    : public CtranTestFixture,
-      public ::testing::WithParamInterface<
-          std::tuple<size_t, ssize_t, MemAllocType>> {};
-
-TEST_P(CtranSendRecvCopyEngineTestParamFixture, sendRecv) {
-  const int numMaxQp = 1;
-  const auto& [offset, count, memType] = GetParam();
-
-  regCache->init();
-  EnvRAII env1(NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE, true);
-  EnvRAII env2(NCCL_CTRAN_IB_EPOCH_LOCK_ENFORCE_CHECK, true);
-
-  runTest(offset, count, numMaxQp, 1 /* nIter */, memType);
-
-  // Destroy regCache for later test with different NCCL_CTRAN_REGISTER config.
-  COMMCHECK_TEST(regCache->destroy());
-}
-
 // test various size and various num of max QP, intentionally make some sizes
 // not aligned
 INSTANTIATE_TEST_SUITE_P(
@@ -579,70 +547,6 @@ INSTANTIATE_TEST_SUITE_P(
           std::to_string(std::get<1>(info.param)) + "int_" +
           testMemAllocTypeToStr(std::get<2>(info.param));
     });
-
-INSTANTIATE_TEST_SUITE_P(
-    CtranTest,
-    CtranSendRecvCopyEngineTestParamFixture,
-    ::testing::Values(
-        // // test ncclMemAlloc based memory
-        std::make_tuple(0, 4096, kMemNcclMemAlloc),
-        // // unaligned addr and size
-        std::make_tuple(0, 2097155, kMemNcclMemAlloc),
-        // // unaligned size
-        std::make_tuple(5, 2097155, kMemNcclMemAlloc),
-        // large and unaligned
-        std::make_tuple(5, 1073741819, kMemNcclMemAlloc),
-        std::make_tuple(0, 1UL << 21, kCuMemAllocDisjoint)),
-    [&](const testing::TestParamInfo<
-        CtranSendRecvCopyEngineTestParamFixture::ParamType>& info) {
-      return std::to_string(std::get<0>(info.param)) + "offset_" +
-          std::to_string(std::get<1>(info.param)) + "int_" +
-          testMemAllocTypeToStr(std::get<2>(info.param));
-    });
-
-// Test case for NVL zero-copy path with 3+ segments to expose
-// CTRAN_IPC_INLINE_SEGMENTS limitation. This test demonstrates the bug where
-// Ctran NVL zero-copy path fails when memory is backed by 3+ physical memory
-// allocations (expandable segments). The current implementation is limited to 2
-// segments due to fixed-size CtranIpcDesc.segments array.
-//
-// Expected behavior with current code: FAIL with error:
-// "CTRAN-IPC: tried to export CtranIpcMem backed by too many physical memory
-// allocations."
-//
-// After fix: Test should PASS
-TEST_F(CtranTestFixture, DISABLED_sendRecvCopyEngineMultiSegment) {
-  // Use kCuMemAllocDisjoint with 3 segments to trigger the bug
-  const MemAllocType memType = kCuMemAllocDisjoint;
-  constexpr size_t numSegments = 3;
-  const size_t offset = 0;
-  // Use 6MB buffer = 3 x 2MB segments to ensure 3 physical allocations
-  const ssize_t count = 6 * 1024 * 1024 / sizeof(int); // 6MB in int elements
-  const int numMaxQp = 1;
-
-  EnvRAII env1(NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE, true);
-
-  if (ctran::utils::isCuMemSupported() == false) {
-    GTEST_SKIP() << "CuMem not supported, skip test";
-  }
-
-  regCache->init();
-
-  // This test currently exposes a bug - the runTest will fail with:
-  // "CTRAN ERROR CTRAN-IPC: tried to export CtranIpcMem backed by too many
-  // physical memory allocations."
-  // The dmaBuf support check is done inside runTest after comm creation.
-  runTest(
-      offset,
-      count,
-      numMaxQp,
-      1 /* nIter */,
-      memType,
-      false /* oneToOne */,
-      numSegments);
-
-  COMMCHECK_TEST(regCache->destroy());
-}
 
 #if not defined(__HIP_PLATFORM_AMD__) and not defined(__HIP_PLATFORM_HCC__)
 

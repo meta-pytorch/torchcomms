@@ -157,7 +157,7 @@ commResult_t setupP2pKernelConfig(
       std::max((size_t)1, kernArgs.numSendBlocks + kernArgs.numRecvBlocks);
   // TODO: tunning needed
   kernArgs.useBlockGroup = true;
-  config.numThreads = NCCL_CTRAN_NVL_SENDRECV_STAGED_COPY_THREAD_BLOCK_SIZE;
+  config.numThreads = NCCL_CTRAN_NVL_SENDRECV_P2P_THREAD_BLOCK_SIZE;
   config.algoArgs = &kernArgs;
   return commSuccess;
 }

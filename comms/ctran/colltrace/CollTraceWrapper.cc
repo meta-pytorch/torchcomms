@@ -350,12 +350,8 @@ CollectiveMetadata getCollectiveMetadata(
     case KernelConfig::KernelType::SEND:
     case KernelConfig::KernelType::RECV:
     case KernelConfig::KernelType::SENDRECV:
-    case KernelConfig::KernelType::SEND_NOTIFY:
-    case KernelConfig::KernelType::RECV_NOTIFY:
-    case KernelConfig::KernelType::SENDRECV_NOTIFY:
     case KernelConfig::KernelType::RECV_UNPACK:
     case KernelConfig::KernelType::SENDRECV_UNPACK:
-    case KernelConfig::KernelType::SENDRECV_STAGED:
     case KernelConfig::KernelType::SENDRECV_P2P:
       XLOG_FIRST_N(ERR, 3, "P2P kernel types being handled by collective path");
       break;
@@ -372,12 +368,8 @@ bool isP2PKernel(KernelConfig::KernelType kernelType) {
       KernelConfig::KernelType::SEND,
       KernelConfig::KernelType::RECV,
       KernelConfig::KernelType::SENDRECV,
-      KernelConfig::KernelType::SEND_NOTIFY,
-      KernelConfig::KernelType::RECV_NOTIFY,
-      KernelConfig::KernelType::SENDRECV_NOTIFY,
       KernelConfig::KernelType::RECV_UNPACK,
       KernelConfig::KernelType::SENDRECV_UNPACK,
-      KernelConfig::KernelType::SENDRECV_STAGED,
   };
 
   return p2pKernels.contains(kernelType);

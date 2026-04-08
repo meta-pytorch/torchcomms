@@ -175,15 +175,13 @@ OpElem::~OpElem() {
       break;
     // Free kElem for later reclaim back to KernelElemPool
     case SEND:
-      // when copy engine is enabled, kElem is freed by the kernels
-      if (this->send.kElem && !NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE) {
+      if (this->send.kElem) {
         this->send.kElem->free();
       }
       this->send.remoteAccessKey.~CtranMapperRemoteAccessKey();
       break;
     case RECV:
-      // when copy engine is enabled, kElem is freed by the kernels
-      if (this->recv.kElem && !NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE) {
+      if (this->recv.kElem) {
         this->recv.kElem->free();
       }
       break;
@@ -355,11 +353,7 @@ static std::unordered_map<KernelConfig::KernelType, std::string>
         {KernelConfig::KernelType::SENDRECV, "SENDRECV"},
         {KernelConfig::KernelType::SEND, "SEND"},
         {KernelConfig::KernelType::RECV, "RECV"},
-        {KernelConfig::KernelType::SENDRECV_NOTIFY, "SENDRECV_NOTIFY"},
-        {KernelConfig::KernelType::SENDRECV_STAGED, "SENDRECV_STAGED"},
         {KernelConfig::KernelType::SENDRECV_P2P, "SENDRECV_P2P"},
-        {KernelConfig::KernelType::SEND_NOTIFY, "SEND_NOTIFY"},
-        {KernelConfig::KernelType::RECV_NOTIFY, "RECV_NOTIFY"},
         {KernelConfig::KernelType::BROADCAST, "BROADCAST"},
         {KernelConfig::KernelType::REDUCESCATTER, "REDUCESCATTER"},
         {KernelConfig::KernelType::PUTNOTIFY, "PUTNOTIFY"},

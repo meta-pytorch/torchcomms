@@ -17,8 +17,6 @@ inline const std::string algoValToStr(enum NCCL_SENDRECV_ALGO val) {
       return "orig";
     case NCCL_SENDRECV_ALGO::ctzcopy:
       return "ctzcopy";
-    case NCCL_SENDRECV_ALGO::ctstaged:
-      return "ctstaged";
     case NCCL_SENDRECV_ALGO::ctp2p:
       return "ctp2p";
   }
@@ -29,8 +27,6 @@ inline void algoStrToVal(const std::string& str, enum NCCL_SENDRECV_ALGO& val) {
     val = NCCL_SENDRECV_ALGO::ctran;
   } else if (str == "ctzcopy") {
     val = NCCL_SENDRECV_ALGO::ctzcopy;
-  } else if (str == "ctstaged") {
-    val = NCCL_SENDRECV_ALGO::ctstaged;
   } else if (str == "ctp2p") {
     val = NCCL_SENDRECV_ALGO::ctp2p;
   } else {

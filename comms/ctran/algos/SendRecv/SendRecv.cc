@@ -17,18 +17,10 @@ std::unordered_map<KernelConfig::KernelType, void*> kernelFns = {
      reinterpret_cast<void*>(ncclKernelRecv</*UNPACK=*/false>)},
     {KernelConfig::KernelType::SENDRECV,
      reinterpret_cast<void*>(ncclKernelSendRecv</*UNPACK=*/false>)},
-    {KernelConfig::KernelType::SEND_NOTIFY,
-     reinterpret_cast<void*>(ncclKernelSendNotifyOnly)},
-    {KernelConfig::KernelType::RECV_NOTIFY,
-     reinterpret_cast<void*>(ncclKernelRecvNotifyOnly)},
-    {KernelConfig::KernelType::SENDRECV_NOTIFY,
-     reinterpret_cast<void*>(ncclKernelSendRecvNotifyOnly)},
     {KernelConfig::KernelType::RECV_UNPACK,
      reinterpret_cast<void*>(ncclKernelRecv</*UNPACK=*/true>)},
     {KernelConfig::KernelType::SENDRECV_UNPACK,
      reinterpret_cast<void*>(ncclKernelSendRecv</*UNPACK=*/true>)},
-    {KernelConfig::KernelType::SENDRECV_STAGED,
-     reinterpret_cast<void*>(ncclKernelSendRecvStaged)},
     {KernelConfig::KernelType::SENDRECV_P2P,
      reinterpret_cast<void*>(ncclKernelSendRecvP2p)},
 };
@@ -65,14 +57,6 @@ commResult_t ctranSend(
   op->send.count = count;
   op->send.datatype = datatype;
   op->send.peerRank = peer;
-  if (NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE &&
-      comm->ctran_->mapper->getBackend(peer) == CtranMapperBackend::NVL &&
-      comm->statex_.get()->rank() != peer) {
-    // used for storing recv address (updated by GPE thread), delete after
-    // the address is no longer needed
-    op->send.recvbuff = new std::atomic<void*>();
-  }
-
   CtranOpGroup.push_back(op);
 
   return commSuccess;
@@ -110,7 +94,7 @@ commResult_t ctranGroupEndHook(
   while (!CtranOpGroup.empty()) {
     // TODO: clean up duplicate info in allops, nvlOps and ibOps
     std::vector<OpElem*> allOps;
-    std::vector<OpElem*> selfSends, selfRecvs, sendNvlOps, nvlOps, ibOps;
+    std::vector<OpElem*> selfSends, selfRecvs, nvlOps, ibOps;
     std::deque<OpElem*> pending;
     bool hasSend = false;
     bool hasRecv = false;
@@ -154,7 +138,6 @@ commResult_t ctranGroupEndHook(
           FB_COMMCHECK(mapper->regAsync(op->send.sendbuff, nbytes));
           if (comm->ctran_->mapper->getBackend(op->send.peerRank) ==
               CtranMapperBackend::NVL) {
-            sendNvlOps.push_back(op);
             nvlOps.push_back(op);
           } else {
             ibOps.push_back(op);
@@ -200,7 +183,7 @@ commResult_t ctranGroupEndHook(
       std::vector<std::unique_ptr<struct OpElem>> gpeOpGroup;
       FB_COMMCHECK(
           ctran::sendrecv::setupGpeOp(
-              comm, allOps, nvlOps, sendNvlOps, ibOps, gpeOpGroup, algo));
+              comm, allOps, nvlOps, ibOps, gpeOpGroup, algo));
 
       // device side
       KernelConfig::KernelType kernelType =
@@ -211,7 +194,6 @@ commResult_t ctranGroupEndHook(
           sendRecvAlgoName(myAlgo, allOps),
           allOps.front()->opCount);
 
-      // Create kernArgs on stack for SENDRECV_STAGED
       ctran::sendrecv::KernArgs kernArgs;
       FB_COMMCHECK(
           ctran::sendrecv::setupKernelConfig(

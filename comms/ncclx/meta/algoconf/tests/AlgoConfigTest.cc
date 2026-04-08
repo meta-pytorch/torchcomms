@@ -50,7 +50,6 @@ TEST_F(AlgoConfigUT, SendRecvAlgoHintOverride) {
   std::unordered_map<enum NCCL_SENDRECV_ALGO, const char*> overrideAlgos = {
       {NCCL_SENDRECV_ALGO::ctran, "ctran"},
       {NCCL_SENDRECV_ALGO::ctzcopy, "ctzcopy"},
-      {NCCL_SENDRECV_ALGO::ctstaged, "ctstaged"},
       {NCCL_SENDRECV_ALGO::ctp2p, "ctp2p"},
   };
 

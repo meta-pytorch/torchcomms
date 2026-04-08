@@ -59,7 +59,9 @@ CommStateX::CommStateX(
       busId_(busId),
       commHash_(commHash),
       commDesc_(commDesc),
-      noLocal_(noLocal),
+      noLocal_(
+          noLocal ||
+          NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::nolocal),
       vCliqueSize_(vCliqueSize) {
   setRankStatesTopologies(std::move(rankTopologies));
   setCommRankToWorldRanks(std::move(commRanksToWorldRanks));

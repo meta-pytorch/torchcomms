@@ -1,17 +1,11 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #include "comms/ctran/algos/SendRecv/SendRecvImpl.h"
-#include "comms/ctran/algos/SendRecv/SendRecvCEImpl.h"
 #include "comms/ctran/algos/SendRecv/SendRecvP2pImpl.h"
-#include "comms/ctran/algos/SendRecv/SendRecvStagedCopyImpl.h"
 namespace {
 
 unsigned int bestThreadBlockSize = 0;
 
 inline int getNumGroups(size_t nbytes) {
-  if (NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE) {
-    // if copy engine is enabled, we only need 1 group
-    return 1;
-  }
   // compute needed thread blocks for given bytes
   int nGroups = nbytes / NCCL_CTRAN_NVL_SENDRECV_CHUNK_SIZE;
   return std::min(
@@ -50,26 +44,16 @@ KernelConfig::KernelType getKernelType(
     bool hasTcpDmRecv,
     enum NCCL_SENDRECV_ALGO algo) {
   KernelConfig::KernelType kernelType = KernelConfig::KernelType::SENDRECV;
-  if (algo == NCCL_SENDRECV_ALGO::ctstaged) {
-    kernelType = KernelConfig::KernelType::SENDRECV_STAGED;
-    return kernelType;
-  } else if (algo == NCCL_SENDRECV_ALGO::ctp2p) {
+  if (algo == NCCL_SENDRECV_ALGO::ctp2p) {
     kernelType = KernelConfig::KernelType::SENDRECV_P2P;
     return kernelType;
   }
-  // TODO: send/recv/sendrecv kernels should be combined into one kernel just
-  // like SENDRECV_STAGED
   if (hasSend && hasRecv) {
-    if (NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE) {
-      kernelType = KernelConfig::KernelType::SENDRECV_NOTIFY;
-    } else if (hasTcpDmRecv) {
+    if (hasTcpDmRecv) {
       kernelType = KernelConfig::KernelType::SENDRECV_UNPACK;
     }
   } else {
-    if (NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE) {
-      kernelType = hasSend ? KernelConfig::KernelType::SEND_NOTIFY
-                           : KernelConfig::KernelType::RECV_NOTIFY;
-    } else if (hasTcpDmRecv) {
+    if (hasTcpDmRecv) {
       kernelType = hasSend ? KernelConfig::KernelType::SEND
                            : KernelConfig::KernelType::RECV_UNPACK;
     } else {
@@ -84,21 +68,11 @@ commResult_t setupGpeOp(
     CtranComm* comm,
     std::vector<OpElem*>& allOps,
     std::vector<OpElem*>& nvlOps,
-    std::vector<OpElem*>& sendNvlOps,
     std::vector<OpElem*>& ibOps,
     std::vector<std::unique_ptr<OpElem>>& gpeOpGroup,
     enum NCCL_SENDRECV_ALGO algo) {
-  if (NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE) {
-    if (!nvlOps.empty()) {
-      // first, send/recv NVL ops with copy engine
-      FB_COMMCHECK(launchSendRecvCopyEngine(nvlOps, sendNvlOps, comm));
-    }
-  }
-
-  // If kernel is copy-engine or copy-based, GPE deals with IB ops only.
-  if (NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE ||
-      algo == NCCL_SENDRECV_ALGO::ctstaged ||
-      algo == NCCL_SENDRECV_ALGO::ctp2p) {
+  // If kernel is copy-based, GPE deals with IB ops only.
+  if (algo == NCCL_SENDRECV_ALGO::ctp2p) {
     // next, deal with IB ops
     if (!ibOps.empty()) {
       gpeOpGroup.reserve(ibOps.size());
@@ -125,9 +99,7 @@ commResult_t setupKernelConfig(
     ctran::sendrecv::KernArgs& kernArgs) {
   const auto statex = comm->statex_.get();
   config.args.devState_d = comm->ctran_->algo->getDevState();
-  if (config.type == KernelConfig::KernelType::SENDRECV_STAGED) {
-    return setupStagedCopyKernelConfig(comm, nvlOps, config, kernArgs);
-  } else if (config.type == KernelConfig::KernelType::SENDRECV_P2P) {
+  if (config.type == KernelConfig::KernelType::SENDRECV_P2P) {
     return setupP2pKernelConfig(comm, nvlOps, config, kernArgs);
   }
   auto putNotifyList = CommonList<KernelElem>();
@@ -195,7 +167,6 @@ commResult_t setupKernelConfig(
   }
 
   if (config.type == KernelConfig::KernelType::SENDRECV ||
-      config.type == KernelConfig::KernelType::SENDRECV_NOTIFY ||
       config.type == KernelConfig::KernelType::SENDRECV_UNPACK) {
     config.args.collective.sendrecv.putNotifyList = putNotifyList.head;
     config.args.collective.sendrecv.waitNotifyList = waitNotifyList.head;
@@ -204,9 +175,7 @@ commResult_t setupKernelConfig(
         NCCL_CTRAN_UNPACK_NUM_THREAD_BLOCKS,
         opGroup,
         config));
-  } else if (
-      config.type == KernelConfig::KernelType::SEND ||
-      config.type == KernelConfig::KernelType::SEND_NOTIFY) {
+  } else if (config.type == KernelConfig::KernelType::SEND) {
     config.args.collective.send.putNotifyList = putNotifyList.head;
     config.args.collective.send.sendbuff = nullptr;
     if (opGroup.size() == 1) {
@@ -217,7 +186,6 @@ commResult_t setupKernelConfig(
     }
   } else if (
       config.type == KernelConfig::KernelType::RECV ||
-      config.type == KernelConfig::KernelType::RECV_NOTIFY ||
       config.type == KernelConfig::KernelType::RECV_UNPACK) {
     config.args.collective.recv.waitNotifyList = waitNotifyList.head;
     config.args.collective.recv.recvbuff = nullptr;
