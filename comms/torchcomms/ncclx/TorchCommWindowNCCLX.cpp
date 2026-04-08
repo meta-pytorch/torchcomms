@@ -554,6 +554,25 @@ void* TorchCommWindowNCCLX<Backend>::get_nvlink_address(
 
   return outPtr;
 }
+
+template <typename Backend>
+void* TorchCommWindowNCCLX<Backend>::get_multimem_address(size_t offset) {
+  checkCommAndThrow();
+
+  if (nccl_orig_win_ == nullptr) {
+    throw std::runtime_error(
+        "[TorchCommWindowNCCLX]: NCCL orig window not initialized. "
+        "Call tensor_register first.");
+  }
+
+  void* outPtr = nullptr;
+  CHECK_EQ(
+      nccl_api_->winGetLsaMultimemDevicePointer(nccl_orig_win_, offset, &outPtr),
+      ncclSuccess)
+      << "[TorchCommWindowNCCLX]: ncclGetLsaMultimemDevicePointer failed";
+
+  return outPtr;
+}
 #endif
 
 #endif // TORCHCOMMS_HAS_NCCL_DEVICE_API

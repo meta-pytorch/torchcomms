@@ -359,6 +359,32 @@ Returns:
       py::arg("peer"),
       py::arg("offset") = 0,
       py::call_guard<py::gil_scoped_release>());
+
+  gin_cls.def(
+      "get_multimem_address",
+      [](TorchCommWindowNCCLXGin& self, int64_t offset) {
+        void* ptr = self.get_multimem_address(static_cast<size_t>(offset));
+        return reinterpret_cast<int64_t>(ptr);
+      },
+      R"(
+Get the NVLS multicast (multimem) device pointer for this window.
+
+Returns the multicast address that can be used with multimem.ld_reduce
+(hardware-fused all-reduce) and multimem.st (broadcast) PTX instructions
+across all LSA-connected peers.
+
+Requires sm_90+ (Hopper+) hardware with NVLS support.
+
+Prerequisites: Must call tensor_register() first.
+
+Args:
+    offset: Byte offset within the window (default 0).
+
+Returns:
+    int: Multimem device pointer as int64, or 0 if not supported.
+)",
+      py::arg("offset") = 0,
+      py::call_guard<py::gil_scoped_release>());
 #endif
 
 #if defined(ENABLE_PIPES)

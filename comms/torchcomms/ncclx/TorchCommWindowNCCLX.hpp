@@ -164,6 +164,21 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
   //
   // Returns: Device pointer as void*, or nullptr if not NVLink-accessible.
   void* get_nvlink_address(int peer, size_t offset = 0);
+
+  // Get the LSA multimem (NVLS multicast) address for this window.
+  // Returns the device pointer that can be used with multimem.ld_reduce
+  // (hardware-fused all-reduce) and multimem.st (broadcast) PTX instructions
+  // across all LSA-connected peers.
+  //
+  // Prerequisites: Must call tensor_register() first so that nccl_orig_win_
+  // is initialized. Requires lsaMultimem=true in ncclDevCommRequirements and
+  // sm_90+ (Hopper+) hardware with NVLS support.
+  //
+  // Args:
+  //   offset: Byte offset within the window (default 0).
+  //
+  // Returns: Multimem device pointer as void*, or nullptr if not supported.
+  void* get_multimem_address(size_t offset = 0);
 #endif
 #endif
 

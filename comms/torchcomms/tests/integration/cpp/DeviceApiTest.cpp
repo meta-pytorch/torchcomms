@@ -738,6 +738,60 @@ void DeviceApiTest::testStressPutHalf(size_t msg_bytes, CoopScope scope) {
 }
 
 // =============================================================================
+// Address Query Tests
+// =============================================================================
+
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
+void DeviceApiTest::testGetMultimemAddress() {
+  SCOPED_TRACE(::testing::Message() << "GetMultimemAddress");
+
+  size_t count = 1024;
+  auto s = createWindowSetup(
+      torchcomm_,
+      allocator_,
+      device_index_,
+      num_ranks_,
+      count,
+      /*signal_count=*/num_ranks_,
+      /*counter_count=*/-1,
+      /*barrier_count=*/1);
+
+  // Get host-side multimem address via the typed window
+  auto typed_win =
+      std::dynamic_pointer_cast<torch::comms::TorchCommWindowNCCLXGin>(s.win);
+  ASSERT_NE(typed_win, nullptr) << "Window is not TorchCommWindowNCCLXGin";
+
+  void* host_ptr = typed_win->get_multimem_address(0);
+  int64_t host_addr = reinterpret_cast<int64_t>(host_ptr);
+
+  // Get device-side multimem address via kernel
+  int64_t* d_result = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_result, sizeof(int64_t)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_result, 0, sizeof(int64_t)), cudaSuccess);
+
+  auto stream = at::cuda::getStreamFromPool(false, device_index_);
+  {
+    c10::cuda::CUDAStreamGuard guard(stream);
+    launchGetMultimemAddressKernel(
+        s.dev_win, /*offset=*/0, d_result, stream.stream());
+  }
+  stream.synchronize();
+
+  int64_t device_addr = 0;
+  cudaMemcpy(&device_addr, d_result, sizeof(int64_t), cudaMemcpyDeviceToHost);
+  cudaFree(d_result);
+
+  // Both should match — both can be nullptr if NVLS is not supported on
+  // this hardware, but they should be consistent.
+  ASSERT_EQ(device_addr, host_addr)
+      << "get_multimem_address mismatch: device=" << device_addr
+      << " host=" << host_addr;
+
+  teardownWindow(s, torchcomm_);
+}
+#endif
+
+// =============================================================================
 // Parameterized Test Registrations
 // =============================================================================
 
@@ -848,3 +902,11 @@ TEST_F(DeviceApiTest, AggregatedSignal) {
 TEST_F(DeviceApiTest, PutHalf) {
   testStressPutHalf(1024, CoopScope::THREAD);
 }
+
+// --- Address query tests ---
+
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
+TEST_F(DeviceApiTest, GetMultimemAddress) {
+  testGetMultimemAddress();
+}
+#endif
