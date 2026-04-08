@@ -235,6 +235,13 @@ class TorchCommDeviceWindow {
   // Self-rank behavior is backend-specific.
   __device__ void* get_nvlink_address(int peer);
 
+  // Get the NVLS multicast (multimem) device pointer for this window.
+  // Returns the multicast address for hardware-fused all-reduce
+  // (multimem.ld_reduce) and broadcast (multimem.st) across all
+  // LSA-connected peers.
+  // Returns nullptr if multimem is not supported (requires sm_90+, NVLS).
+  __device__ void* get_multimem_address(size_t offset = 0);
+
   // =========================================================================
   // Data Members
   // =========================================================================

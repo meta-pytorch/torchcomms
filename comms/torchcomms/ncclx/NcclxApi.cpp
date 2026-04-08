@@ -631,6 +631,13 @@ ncclResult_t DefaultNcclxApi::winGetPeerDevicePointer(
     void** outPtr) {
   return ncclGetPeerDevicePointer(win, offset, peer, outPtr);
 }
+
+ncclResult_t DefaultNcclxApi::winGetLsaMultimemDevicePointer(
+    NcclxWindow win,
+    size_t offset,
+    void** outPtr) {
+  return ncclGetLsaMultimemDevicePointer(win, offset, outPtr);
+}
 #endif
 #endif // TORCHCOMMS_HAS_NCCL_DEVICE_API
 

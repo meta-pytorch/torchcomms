@@ -241,6 +241,15 @@ __device__ void* torchcomms_get_nvlink_address(
     TorchCommsWindowHandle win,
     int peer);
 
+// Get the NVLS multicast (multimem) device pointer for this window.
+// Returns the multicast address for hardware-fused all-reduce
+// (multimem.ld_reduce) and broadcast (multimem.st) across all
+// LSA-connected peers.
+// Returns nullptr (0) if multimem is not supported (requires sm_90+, NVLS).
+__device__ void* torchcomms_get_multimem_address(
+    TorchCommsWindowHandle win,
+    unsigned long long offset);
+
 #ifdef __cplusplus
 }
 #endif
