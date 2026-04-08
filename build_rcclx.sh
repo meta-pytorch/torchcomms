@@ -107,7 +107,7 @@ function build_boost() {
   export LDFLAGS="-Wl,--allow-shlib-undefined"
   pushd "$library_name"
   ./bootstrap.sh --prefix="$CMAKE_PREFIX_PATH" --libdir="$CMAKE_PREFIX_PATH/$LIB_SUFFIX" --without-libraries=python --without-icu
-  ./b2 -q cxxflags=-fPIC cflags=-fPIC install
+  ./b2 -q cxxflags=-fPIC cflags=-fPIC pch=off install
   popd
 }
 
