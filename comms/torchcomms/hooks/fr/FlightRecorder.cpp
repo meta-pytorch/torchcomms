@@ -2,6 +2,7 @@
 
 #include "comms/torchcomms/hooks/fr/FlightRecorder.hpp"
 
+#include <c10/core/impl/DeviceGuardImplInterface.h>
 #include <c10/util/ApproximateClock.h>
 #include <c10/util/WaitCounter.h>
 #include <c10/util/irange.h>
@@ -144,8 +145,8 @@ void FlightRecorder::record(
     std::string profiling_name,
     const std::vector<at::Tensor>& inputs,
     const std::vector<at::Tensor>& outputs,
-    c10::Event* start,
-    c10::Event* end,
+    std::unique_ptr<c10::Event> start,
+    std::unique_ptr<c10::Event> end,
     std::chrono::milliseconds timeout_ms,
     std::shared_ptr<ProcessGroupStatus> pg_status) {
   if (!enabled_) {
@@ -155,7 +156,14 @@ void FlightRecorder::record(
   auto traceback =
       torch::CapturedTraceback::gather(true, true, capture_cpp_stack_);
 
+  c10::Event* start_ptr = start.get();
+  c10::Event* end_ptr = end.get();
+
   std::lock_guard<std::mutex> guard(mutex_);
+
+  if (start) {
+    pending_events_[op_id] = EventPair{std::move(start), std::move(end)};
+  }
 
   if (all_pg_status_.find(pg_id) == all_pg_status_.end()) {
     // Current pg_status is not in FR.
@@ -177,8 +185,8 @@ void FlightRecorder::record(
       op_id,
       std::move(profiling_name),
       std::move(traceback),
-      start,
-      end,
+      start_ptr,
+      end_ptr,
       c10::getTime(),
       timeout_ms.count(),
       std::nullopt,
@@ -322,6 +330,7 @@ std::optional<FlightRecorder::Entry> FlightRecorder::getEntry(
 
 void FlightRecorder::retire_id(
     std::optional<size_t> id,
+    const at::Device& device,
     bool compute_duration) {
   if (!enabled_ || !id) {
     return;
@@ -333,6 +342,17 @@ void FlightRecorder::retire_id(
   std::optional<float> duration = std::nullopt;
 
   std::unique_lock<std::mutex> guard(mutex_);
+
+  // Record end event if available
+  auto events_it = pending_events_.find(*id);
+  if (events_it != pending_events_.end()) {
+    try {
+      auto* guard_impl = c10::impl::getDeviceGuardImpl(device.type());
+      events_it->second.end->record(guard_impl->getStream(device));
+    } catch (const std::exception&) {
+      pending_events_.erase(events_it);
+    }
+  }
 
   // Look up the (id_, reset_epoch_) pair for this op_id
   auto it = op_id_to_id_and_epoch_.find(*id);
@@ -351,13 +371,22 @@ void FlightRecorder::retire_id(
           entry->start_ && entry->end_;
       startEvent = entry->start_;
       endEvent = entry->end_;
+
+      // CPU wall-clock fallback: when device events are not available
+      // (CPU backends or backends without DeviceGuardImpl support),
+      // compute duration from the time elapsed since the entry was created.
+      if (!can_compute_duration && !entry->start_ && !entry->end_) {
+        auto now = c10::getTime();
+        entry->duration_ =
+            static_cast<float>(now - entry->time_created_) / 1e6f; // ns to ms
+      }
     }
     entry->retired_ = true;
     entry->start_ = entry->end_ = nullptr;
   }
 
   if (can_compute_duration) {
-    // Compute duration without without holding the lock, because
+    // Compute duration without holding the lock, because
     // cudaEventDuration() can hang, and we need to acquire the lock before we
     // can dump(), which we never want to block.
     guard.unlock();
@@ -369,12 +398,15 @@ void FlightRecorder::retire_id(
     if (!(entry->id_ == *id && entry->reset_epoch_ == reset_epoch)) {
       LOG(INFO) << "retire_id abandoned for id " << *id
                 << ", event was overwritten while waiting to compute duration.";
+      pending_events_.erase(*id);
       return;
     }
     if (duration.has_value()) {
       entry->duration_ = duration;
     }
   }
+
+  pending_events_.erase(*id);
 }
 
 void FlightRecorder::reset_all() {
@@ -785,10 +817,11 @@ void DebugInfoWriter::registerWriter(std::unique_ptr<DebugInfoWriter> writer) {
 std::unique_ptr<DebugInfoWriter> DebugInfoWriter::writer_ = nullptr;
 std::atomic<bool> DebugInfoWriter::hasWriterRegistered_(false);
 
-float getDurationFromEvent(
-    [[maybe_unused]] c10::Event& startEvent,
-    [[maybe_unused]] c10::Event& endEvent) {
-  TORCH_CHECK(false, "getDuration not supported by c10::Event.");
+float getDurationFromEvent(c10::Event& startEvent, c10::Event& endEvent) {
+  TORCH_CHECK(
+      endEvent.query(),
+      "getDurationFromEvent can only be called after the end event has completed.");
+  return static_cast<float>(startEvent.elapsedTime(endEvent));
 }
 
 // ============================================================================
@@ -834,16 +867,21 @@ void FlightRecorderHook::registerWithComm(std::shared_ptr<TorchComm> comm) {
   }
   recorder_->record_pg_ranks(pgName, pg_ranks);
 
+  auto device = comm->getDevice();
+
   // Register pre-hook - records the operation
-  auto pre_hook_handle = comm->registerPreHook(
-      [this, comm_name, pg_id, pg_desc](const TorchComm::PreHookArgs& args) {
-        this->onPreHook(comm_name, pg_id, pg_desc, args);
+  auto pre_hook_handle =
+      comm->registerPreHook([this, comm_name, pg_id, pg_desc, device](
+                                const TorchComm::PreHookArgs& args) {
+        this->onPreHook(comm_name, pg_id, pg_desc, device, args);
       });
 
   // Register post-hook - called via work callback when work completes
   // The post-hook is invoked by TorchComm when the work's callback fires
   auto post_hook_handle = comm->registerPostHook(
-      [this](const TorchComm::PostHookArgs& args) { this->onPostHook(args); });
+      [this, device](const TorchComm::PostHookArgs& args) {
+        this->onPostHook(device, args);
+      });
 
   // Register abort hook - called before aborting to dump flight recorder data
   int rank = comm->getRank();
@@ -877,6 +915,7 @@ void FlightRecorderHook::onPreHook(
     const std::string& comm_name,
     size_t pg_id,
     const std::string& pg_desc,
+    const at::Device& device,
     const TorchComm::PreHookArgs& args) {
   if (!enabled_) {
     return;
@@ -905,9 +944,27 @@ void FlightRecorderHook::onPreHook(
     }
   }
 
-  // For in-place operations where input == output, copy input to output
-  if (outputs.empty() && !inputs.empty()) {
-    outputs = inputs;
+  // For in-place operations where input == output, use input as output
+  const auto& effective_outputs =
+      outputs.empty() && !inputs.empty() ? inputs : outputs;
+
+  // Create events for GPU-accurate timing on non-CPU devices
+  std::unique_ptr<c10::Event> start_event;
+  std::unique_ptr<c10::Event> end_event;
+  if (device.type() != c10::DeviceType::CPU) {
+    try {
+      auto* guard_impl = c10::impl::getDeviceGuardImpl(device.type());
+      start_event = std::make_unique<c10::Event>(
+          device.type(), c10::EventFlag::BACKEND_DEFAULT);
+      end_event = std::make_unique<c10::Event>(
+          device.type(), c10::EventFlag::BACKEND_DEFAULT);
+      start_event->record(guard_impl->getStream(device));
+    } catch (const std::exception&) {
+      // Backend does not support DeviceGuardImpl or events (e.g. MTIA).
+      // Fall back to no event tracking — duration will use wall-clock.
+      start_event.reset();
+      end_event.reset();
+    }
   }
 
   auto pg_name = std::make_tuple(comm_name, pg_desc);
@@ -916,28 +973,28 @@ void FlightRecorderHook::onPreHook(
   std::string profiling_name =
       std::string(pg_desc) + ":" + std::string(opToString(args.name));
 
-  // TODO: Create start/end events for accurate timing
-  // For now, pass nullptr - timing will be based on CPU timestamps
-
   recorder_->record(
       pg_id,
       pg_name,
       args.op_id,
       std::move(profiling_name),
       inputs,
-      outputs,
-      nullptr, // start event
-      nullptr, // end event
+      effective_outputs,
+      std::move(start_event),
+      std::move(end_event),
       std::chrono::milliseconds(600000), // 10 minute default timeout
       nullptr // pg_status
   );
 }
 
-void FlightRecorderHook::onPostHook(const TorchComm::PostHookArgs& args) {
+void FlightRecorderHook::onPostHook(
+    const at::Device& device,
+    const TorchComm::PostHookArgs& args) {
   if (!enabled_) {
     return;
   }
-  recorder_->retire_id(args.op_id, false);
+
+  recorder_->retire_id(args.op_id, device, /*compute_duration=*/true);
 
   // Handle split operations - register the new communicator with flight
   // recorder
