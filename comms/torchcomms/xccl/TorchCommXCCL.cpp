@@ -2147,6 +2147,51 @@ std::shared_ptr<TorchCommBackend> TorchCommXCCL::split(
       "XCCL split is not supported now and will be added later");
 }
 
+void TorchCommXCCL::register_address(
+    const TorchCommXCCL::AddressWithLen& addr) {
+  // We got a register after we got rid of the comm. Is this a fatal error?
+  if (xccl_comm_ == nullptr) {
+    return;
+  }
+
+  if (memoryRegistrationHandles_.contains(addr.addr)) {
+    throw std::runtime_error("Memory already registered with XCCL");
+  }
+  void* handle = nullptr;
+  onecclResult_t result =
+      xccl_api_->commRegister(xccl_comm_, addr, len, &handle);
+
+  if (result != onecclSuccess) [[unlikely]] {
+    throw XCCLException(
+        *xccl_api_, "Failed to register memory with XCCL", result);
+  }
+  memoryRegistrationHandles_.emplace(addr.addr, RegistrationHandle(handle));
+}
+
+void TorchCommXCCL::deregister_address(const TorchCommXCCL::Address& addr) {
+  // We got a deregister after we got rid of the comm. Is this a fatal error?
+  if (Xccl_comm_ == nullptr) {
+    return;
+  }
+
+  auto it = memoryRegistrationHandles_.find(addr.addr);
+  if (it == memoryRegistrationHandles_.end()) {
+    // it's possible that the memory was registered for a different comm,
+    // however failed registration for this comm.
+    return;
+  }
+
+  void* handle = it->second.regHandle;
+  onecclResult_t result = xccl_api_->commDeregister(xccl_comm_, handle);
+
+  if (result != onecclSuccess) [[unlikely]] {
+    throw XCCLException(
+        *xccl_api_, "Failed to deregister memory with XCCL", result);
+  }
+
+  memoryRegistrationHandles_.erase(it);
+}
+
 XCCLException::XCCLException(
     XcclApi& xccl_api,
     const std::string& message,
