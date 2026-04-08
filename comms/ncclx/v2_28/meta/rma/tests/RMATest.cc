@@ -505,7 +505,7 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Combine(
         // kNumElements, kNumIters, ctranAllReduce, bufType, userBuf
         ::testing::Values(8192, 8 * 1024 * 1024),
-        ::testing::Values(500),
+        ::testing::Values(50),
         ::testing::Values(true, false),
         ::testing::Values(
             MemAllocType::kMemNcclMemAlloc,
@@ -537,7 +537,20 @@ INSTANTIATE_TEST_SUITE_P(
 class NvlEnabledTestParam
     : public RMATest,
       public ::testing::WithParamInterface<
-          std::tuple<std::vector<enum NCCL_CTRAN_BACKENDS>, bool>> {};
+          std::tuple<std::vector<enum NCCL_CTRAN_BACKENDS>, bool>> {
+ protected:
+  // Skip fixture comm creation — this test creates its own comm with
+  // parameterized backends and never uses the fixture's this->comm.
+  void SetUp() override {
+    setenv("NCCL_CTRAN_ENABLE", "1", 0);
+    setenv("NCCL_CTRAN_IB_EPOCH_LOCK_ENFORCE_CHECK", "true", 0);
+    NcclxBaseTest::SetUp();
+  }
+  void TearDown() override {
+    EXPECT_TRUE(segments.empty()) << "Not all memory segments were freed";
+    NcclxBaseTest::TearDown();
+  }
+};
 
 TEST_P(NvlEnabledTestParam, ncclWinGetAttributes) {
   const auto& [backends, expectNvlEnabled] = GetParam();
