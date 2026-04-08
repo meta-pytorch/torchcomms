@@ -612,6 +612,104 @@ INSTANTIATE_TEST_SUITE_P(
             std::vector<enum NCCL_CTRAN_BACKENDS>({NCCL_CTRAN_BACKENDS::ib}),
             false)));
 
+// =============================================================================
+// Window AllGather tests for ncclx::winAllGatherInit/Exec/Destroy
+// =============================================================================
+
+class WinAllGatherTestParam : public RMATest,
+                              public ::testing::WithParamInterface<size_t> {};
+
+TEST_P(WinAllGatherTestParam, winAllGather) {
+  const size_t sendCount = GetParam();
+
+  auto comm = this->comm;
+  auto statex = comm->ctranComm_->statex_.get();
+  ASSERT_NE(statex, nullptr);
+
+  const auto nRanks = statex->nRanks();
+  const auto myRank = statex->rank();
+  const size_t sendBytes = sendCount * sizeof(float);
+  const size_t recvBytes = sendBytes * nRanks;
+
+  cudaStream_t stream;
+  CUDACHECK_TEST(cudaStreamCreate(&stream));
+
+  // Allocate recv buffer and register it with a window
+  void* winBase = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&winBase, recvBytes));
+  ncclWindow_t win = nullptr;
+  ASSERT_EQ(
+      ncclCommWindowRegister(comm, winBase, recvBytes, &win, NCCL_WIN_DEFAULT),
+      ncclSuccess);
+  EXPECT_THAT(win, testing::NotNull());
+
+  // Check allgatherP support via window API
+  bool supported = false;
+  ASSERT_EQ(ncclx::winAllGatherPSupported(win, &supported), ncclSuccess);
+  if (!supported) {
+    ASSERT_EQ(ncclWinFree(comm, win), ncclSuccess);
+    CUDACHECK_TEST(cudaFree(winBase));
+    CUDACHECK_TEST(cudaStreamDestroy(stream));
+    GTEST_SKIP() << "allGatherP not supported on this topology";
+  }
+
+  // Allocate separate send buffer
+  float* sendbuf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&sendbuf, sendBytes));
+
+  // Init persistent window allgather
+  void* request = nullptr;
+  ASSERT_EQ(ncclx::winAllGatherInit(win, comm, stream, &request), ncclSuccess);
+  ASSERT_NE(request, nullptr);
+  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+
+  // Barrier to ensure all ranks have finished init
+  this->barrier(comm, stream);
+
+  constexpr int nIter = 3;
+  for (int iter = 0; iter < nIter; iter++) {
+    // Fill send buffer with rank+iter specific value
+    const float sendVal = static_cast<float>(myRank * 100 + iter);
+    assignChunkValue(sendbuf, sendCount, sendVal);
+
+    // Clear recv (window) buffer
+    assignChunkValue(
+        reinterpret_cast<float*>(winBase), sendCount * nRanks, 0.0f);
+
+    ASSERT_EQ(
+        ncclx::winAllGatherExec(sendbuf, sendCount, ncclFloat, request),
+        ncclSuccess);
+    CUDACHECK_TEST(cudaStreamSynchronize(stream));
+
+    // Verify each rank's chunk
+    for (int r = 0; r < nRanks; r++) {
+      const float expected = static_cast<float>(r * 100 + iter);
+      int errs = checkChunkValue(
+          reinterpret_cast<float*>(static_cast<char*>(winBase) + r * sendBytes),
+          sendCount,
+          expected,
+          0.0f,
+          myRank);
+      EXPECT_EQ(errs, 0) << "rank " << myRank << " iter " << iter
+                         << " chunk from rank " << r;
+    }
+  }
+
+  ASSERT_EQ(ncclx::winAllGatherDestroy(request), ncclSuccess);
+  CUDACHECK_TEST(cudaFree(sendbuf));
+  ASSERT_EQ(ncclWinFree(comm, win), ncclSuccess);
+  CUDACHECK_TEST(cudaFree(winBase));
+  CUDACHECK_TEST(cudaStreamDestroy(stream));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    WinAllGatherTestInstance,
+    WinAllGatherTestParam,
+    ::testing::Values(1024, 65536),
+    [](const ::testing::TestParamInfo<WinAllGatherTestParam::ParamType>& info) {
+      return "count_" + std::to_string(info.param);
+    });
+
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
