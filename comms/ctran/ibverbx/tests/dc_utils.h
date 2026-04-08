@@ -50,6 +50,16 @@ createSRQ(IbvPd& pd, int maxWr = 256, int maxSge = 1);
 
 folly::Expected<IbvQp, Error> createDCI(IbvPd& pd, IbvCq& cq);
 
+folly::Expected<IbvQp, Error> createDCIWithStreams(
+    IbvPd& pd,
+    IbvCq& cq,
+    uint8_t logNumConcurrent = 2,
+    uint8_t logNumErrored = 0);
+
+folly::Expected<folly::Unit, Error> resetDciStream(
+    IbvQp& qp,
+    uint16_t streamId);
+
 folly::Expected<IbvQp, Error>
 createDCT(IbvPd& pd, IbvCq& cq, IbvSrq& srq, uint64_t dcKey = DC_KEY);
 

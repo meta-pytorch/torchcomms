@@ -7,6 +7,8 @@
 #include <fmt/format.h>
 #include <folly/logging/xlog.h>
 
+#include "comms/ctran/ibverbx/IbverbxSymbols.h"
+
 namespace ibverbx {
 
 std::ostream& operator<<(std::ostream& out, DcBusinessCard const& card) {
@@ -47,6 +49,52 @@ folly::Expected<IbvQp, Error> createDCI(IbvPd& pd, IbvCq& cq) {
   dvInitAttr.dc_init_attr.dc_type = MLX5DV_DCTYPE_DCI;
 
   return pd.createDcQp(&initAttr, &dvInitAttr);
+}
+
+folly::Expected<IbvQp, Error> createDCIWithStreams(
+    IbvPd& pd,
+    IbvCq& cq,
+    uint8_t logNumConcurrent,
+    uint8_t logNumErrored) {
+  mlx5dv_qp_init_attr dvInitAttr{};
+  ibv_qp_init_attr_ex initAttr{};
+
+  initAttr.qp_type = IBV_QPT_DRIVER;
+  initAttr.send_cq = cq.cq();
+  initAttr.recv_cq = cq.cq();
+  initAttr.comp_mask = IBV_QP_INIT_ATTR_PD;
+
+  initAttr.cap.max_send_wr = 1024;
+  initAttr.cap.max_send_sge = 1;
+  initAttr.comp_mask |= IBV_QP_INIT_ATTR_SEND_OPS_FLAGS;
+  initAttr.send_ops_flags = IBV_QP_EX_WITH_RDMA_WRITE;
+
+  dvInitAttr.comp_mask =
+      MLX5DV_QP_INIT_ATTR_MASK_DC | MLX5DV_QP_INIT_ATTR_MASK_DCI_STREAMS;
+  dvInitAttr.dc_init_attr.dc_type = MLX5DV_DCTYPE_DCI;
+  dvInitAttr.dc_init_attr.dci_streams.log_num_concurent = logNumConcurrent;
+  dvInitAttr.dc_init_attr.dci_streams.log_num_errored = logNumErrored;
+
+  return pd.createDcQp(&initAttr, &dvInitAttr);
+}
+
+folly::Expected<folly::Unit, Error> resetDciStream(
+    IbvQp& qp,
+    uint16_t streamId) {
+  if (ibvSymbols.mlx5dv_internal_dci_stream_id_reset == nullptr) {
+    return folly::makeUnexpected(
+        Error(ENOTSUP, "mlx5dv_dci_stream_id_reset not available"));
+  }
+  int ret = ibvSymbols.mlx5dv_internal_dci_stream_id_reset(qp.qp(), streamId);
+  if (ret != 0) {
+    return folly::makeUnexpected(Error(
+        ret,
+        fmt::format(
+            "mlx5dv_dci_stream_id_reset failed for stream_id={}: errno={}",
+            streamId,
+            ret)));
+  }
+  return folly::unit;
 }
 
 folly::Expected<IbvQp, Error>
