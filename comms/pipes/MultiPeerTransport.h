@@ -14,6 +14,7 @@
 #include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/pipes/GpuMemHandler.h"
 #include "comms/pipes/MultiPeerNvlTransport.h"
+#include "comms/pipes/MultiRailIbgdaTransport.h"
 #include "comms/pipes/MultipeerIbgdaTransport.h"
 #include "comms/pipes/P2pSelfTransportDevice.cuh"
 #include "comms/pipes/TopologyDiscovery.h"
@@ -268,7 +269,7 @@ class MultiPeerTransport {
   // --- Sub-transports ---
   std::shared_ptr<meta::comms::IBootstrap> nvlBootstrapAdapter_;
   std::unique_ptr<MultiPeerNvlTransport> nvlTransport_;
-  std::unique_ptr<MultipeerIbgdaTransport> ibgdaTransport_;
+  std::unique_ptr<MultiRailIbgdaTransport> ibgdaTransport_;
 
   // --- GPU-allocated transport array for device handle ---
   Transport* transportsGpu_{nullptr};

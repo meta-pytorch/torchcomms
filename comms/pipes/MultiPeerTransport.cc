@@ -158,7 +158,7 @@ void MultiPeerTransport::initFromTopology(
   if (!config.disableIb && nRanks_ > 1) {
     auto ibgdaConfig = config.ibgdaConfig;
     ibgdaConfig.cudaDevice = deviceId_;
-    ibgdaTransport_ = std::make_unique<MultipeerIbgdaTransport>(
+    ibgdaTransport_ = std::make_unique<MultiRailIbgdaTransport>(
         myRank_, nRanks_, bootstrap_, ibgdaConfig);
     VLOG(1) << "MultiPeerTransport: rank " << myRank_
             << " created IBGDA sub-transport for " << ibgdaPeerRanks_.size()

@@ -510,4 +510,85 @@ void launchMultiPeerCounterFanOutBatch(
   }
 }
 
+// Single-put scatter kernel: 1 put() + 1 signal_remote_with_fence() per peer.
+__global__ void ibgdaScatterSignalSinglePutBatchKernel(
+    P2pIbgdaTransportDevice** transports,
+    IbgdaLocalBuffer* localBufs,
+    IbgdaRemoteBuffer* remoteBufs,
+    IbgdaRemoteBuffer* remoteSignalBufs,
+    std::size_t dataSize,
+    int numPeers,
+    int signalId,
+    int numIters,
+    unsigned long long* totalCycles) {
+  auto peerIdx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (peerIdx >= numPeers)
+    return;
+
+  auto& ibgda = *transports[peerIdx];
+  const auto& localBuf = localBufs[peerIdx];
+  const auto& remoteBuf = remoteBufs[peerIdx];
+  const auto& remoteSignalBuf = remoteSignalBufs[peerIdx];
+
+  // Warmup
+  IbgdaWork work;
+  for (int w = 0; w < 10; w++) {
+    ibgda.put(localBuf, remoteBuf, dataSize);
+    work = ibgda.signal_remote_with_fence(remoteSignalBuf, signalId, 1);
+  }
+  ibgda.wait_local(work);
+
+  __threadfence();
+  unsigned long long startCycle = clock64();
+
+  for (int iter = 0; iter < numIters; iter++) {
+    ibgda.put(localBuf, remoteBuf, dataSize);
+    work = ibgda.signal_remote_with_fence(remoteSignalBuf, signalId, 1);
+  }
+
+  unsigned long long postCycle = clock64();
+  ibgda.wait_local(work);
+  unsigned long long endCycle = clock64();
+
+  // totalCycles[0] = total (post + wait), totalCycles[1] = post only
+  atomicMax(&totalCycles[0], endCycle - startCycle);
+  atomicMax(&totalCycles[1], postCycle - startCycle);
+}
+
+void launchIbgdaScatterSignalSinglePutBatch(
+    P2pIbgdaTransportDevice** transports,
+    const IbgdaLocalBuffer* localBufs,
+    const IbgdaRemoteBuffer* remoteBufs,
+    const IbgdaRemoteBuffer* remoteSignalBufs,
+    std::size_t dataSize,
+    int numPeers,
+    int signalId,
+    int numIters,
+    unsigned long long* totalCycles,
+    cudaStream_t stream,
+    int threadsPerBlock) {
+  cudaMemsetAsync(totalCycles, 0, 2 * sizeof(unsigned long long), stream);
+
+  int numBlocks = (numPeers + threadsPerBlock - 1) / threadsPerBlock;
+  ibgdaScatterSignalSinglePutBatchKernel<<<
+      numBlocks,
+      threadsPerBlock,
+      0,
+      stream>>>(
+      transports,
+      const_cast<IbgdaLocalBuffer*>(localBufs),
+      const_cast<IbgdaRemoteBuffer*>(remoteBufs),
+      const_cast<IbgdaRemoteBuffer*>(remoteSignalBufs),
+      dataSize,
+      numPeers,
+      signalId,
+      numIters,
+      totalCycles);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
 } // namespace comms::pipes::benchmark

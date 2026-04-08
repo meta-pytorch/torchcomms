@@ -110,6 +110,12 @@ struct MultipeerIbgdaTransportConfig {
   // 7 means infinite retry.
   // Default is 7 (matching NCCL IbvQpUtils).
   uint8_t rnrRetry{7};
+
+  // Number of QPs per peer. Default is 1. Setting this > 1 creates multiple
+  // QPs to each peer, all in the same PD/QP group. Useful for benchmarks
+  // that simulate many virtual peers with few physical ranks.
+  // Total QPs = (nRanks - 1) * numQpsPerPeer.
+  int numQpsPerPeer{1};
 };
 
 /**
@@ -280,6 +286,16 @@ class MultipeerIbgdaTransport {
   P2pIbgdaTransportDevice* getP2pTransportDevice(int peerRank) const;
 
   /**
+   * getP2pTransportDeviceByIndex - Get P2P transport by QP index
+   *
+   * For numQpsPerPeer > 1, QPs are laid out as:
+   * [peer0_qp0, peer0_qp1, ..., peer1_qp0, peer1_qp1, ...]
+   *
+   * @param qpIndex Index in [0, totalQps())
+   */
+  P2pIbgdaTransportDevice* getP2pTransportDeviceByIndex(int qpIndex) const;
+
+  /**
    * getDeviceTransportPtr - Get pointer to device transport array
    *
    * Returns a pointer to the GPU memory containing the per-peer transport
@@ -294,6 +310,11 @@ class MultipeerIbgdaTransport {
    * Get number of peers (nRanks - 1)
    */
   int numPeers() const;
+
+  /**
+   * Get total number of QPs ((nRanks - 1) * numQpsPerPeer)
+   */
+  int totalQps() const;
 
   /**
    * Get this rank's ID

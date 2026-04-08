@@ -184,4 +184,27 @@ void launchMultiPeerCounterFanOutBatch(
     unsigned long long* totalCycles,
     cudaStream_t stream);
 
+// ============================================================================
+// Scatter-signal benchmark (1 sender → N peers)
+// ============================================================================
+
+/**
+ * Launch batched single-put scatter-signal kernel.
+ *
+ * Each peer gets 1 put() + 1 signal_remote_with_fence() with all data packed.
+ * Reduces RDMA operations from 4+1 to 1+1 per peer (fewer doorbells).
+ */
+void launchIbgdaScatterSignalSinglePutBatch(
+    P2pIbgdaTransportDevice** transports,
+    const IbgdaLocalBuffer* localBufs,
+    const IbgdaRemoteBuffer* remoteBufs,
+    const IbgdaRemoteBuffer* remoteSignalBufs,
+    std::size_t dataSize,
+    int numPeers,
+    int signalId,
+    int numIters,
+    unsigned long long* totalCycles,
+    cudaStream_t stream,
+    int threadsPerBlock = 32);
+
 } // namespace comms::pipes::benchmark
