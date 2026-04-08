@@ -1153,6 +1153,29 @@ ncclResult_t ncclSignal(
     cudaStream_t stream);
 
 /*
+ * Window-based persistent AllGather.
+ * Uses the window's registered buffer as the recv buffer.
+ * The window must have been exchanged (via ncclWinRegister) before calling Init.
+ *
+ * winAllGatherInit: Initialize persistent allgather state from a window.
+ * winAllGatherExec: Execute an allgather using a previously initialized request.
+ * winAllGatherDestroy: Free persistent allgather resources.
+ */
+ncclResult_t winAllGatherInit(
+    ncclWindow_t win,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    void** request);
+
+ncclResult_t winAllGatherExec(
+    const void* sendbuff,
+    size_t count,
+    ncclDataType_t datatype,
+    void* request);
+
+ncclResult_t winAllGatherDestroy(void* request);
+
+/*
  * All-To-Allv Dynamic
  * Device (i) sends scounts[j] of data from sbuf[j] to device (j).
  * At the same time, device (i) receives rcounts[j] of data from device (j)

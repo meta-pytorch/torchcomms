@@ -108,4 +108,64 @@ ncclSignal(int peer, ncclWindow_t win, cudaStream_t stream) {
   return metaCommToNccl(ctranSignal(peer, ncclWinPtr->ctranWindow, stream));
 }
 
+__attribute__((visibility("default"))) ncclResult_t winAllGatherInit(
+    ncclWindow_t win,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    void** request) {
+  ncclWin* ncclWinPtr = nullptr;
+  NCCLCHECK(getValidatedNcclWin(win, &ncclWinPtr, "winAllGatherInit"));
+
+  if (!ctran::allGatherPSupport(comm->ctranComm_.get())) {
+    FB_ERRORRETURN(
+        ncclInvalidUsage,
+        "Window AllGather is not supported. Check whether CTRAN is enabled.");
+  }
+
+  CtranPersistentRequest* pReq = nullptr;
+  NCCLCHECK(metaCommToNccl(
+      ctran::allGatherWinInit(
+          ncclWinPtr->ctranWindow, comm->ctranComm_.get(), stream, pReq)));
+  *request = reinterpret_cast<void*>(pReq);
+  return ncclSuccess;
+}
+
+__attribute__((visibility("default"))) ncclResult_t winAllGatherExec(
+    const void* sendbuff,
+    size_t count,
+    ncclDataType_t datatype,
+    void* request) {
+  if (request == nullptr) {
+    FB_ERRORRETURN(
+        ncclInvalidArgument, "winAllGatherExec received null request");
+  }
+  auto* pReq = reinterpret_cast<CtranPersistentRequest*>(request);
+  if (pReq->type != CtranPersistentRequest::Type::ALLGATHER_P_WIN) {
+    FB_ERRORRETURN(
+        ncclInvalidArgument,
+        "winAllGatherExec requires ALLGATHER_P_WIN request type, got {}",
+        pReq->type);
+  }
+  return metaCommToNccl(
+      ctran::allGatherWinExec(sendbuff, count, ncclToMetaComm(datatype), pReq));
+}
+
+__attribute__((visibility("default"))) ncclResult_t
+winAllGatherDestroy(void* request) {
+  if (request == nullptr) {
+    FB_ERRORRETURN(
+        ncclInvalidArgument, "winAllGatherDestroy received null request");
+  }
+  auto* pReq = reinterpret_cast<CtranPersistentRequest*>(request);
+  if (pReq->type != CtranPersistentRequest::Type::ALLGATHER_P_WIN) {
+    FB_ERRORRETURN(
+        ncclInvalidArgument,
+        "winAllGatherDestroy requires ALLGATHER_P_WIN request type, got {}",
+        pReq->type);
+  }
+  NCCLCHECK(metaCommToNccl(ctran::allGatherWinDestroy(pReq)));
+  delete pReq;
+  return ncclSuccess;
+}
+
 } // namespace ncclx
