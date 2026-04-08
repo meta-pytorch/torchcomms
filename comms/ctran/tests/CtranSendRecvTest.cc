@@ -279,4 +279,29 @@ TEST_F(CtranSendRecvIbTest, SendRecvIbconfig) {
   });
 }
 
+// Test small buffer send/recv that triggers tmpbuf staging path.
+// When nbytes < CTRAN_MIN_REGISTRATION_SIZE, SendRecv redirects through
+// pre-registered temporary buffers to avoid IB registration failure on
+// sub-page-size GPU buffers.
+TEST_F(CtranSendRecvTest, SendRecvSmallBufferUnidirectional) {
+  // 2 float32 elements = 8 bytes, well below CTRAN_MIN_REGISTRATION_SIZE
+  static constexpr size_t kSmallNElem = 2;
+  startWorkers(/*abortEnabled=*/true);
+  run(/*rank=*/0,
+      [this](PerRankState& state) { runSend(1, kSmallNElem, state); });
+  run(/*rank=*/1,
+      [this](PerRankState& state) { runRecv(0, kSmallNElem, state); });
+}
+
+TEST_F(CtranSendRecvTest, SendRecvSmallBufferBidirectional) {
+  static constexpr size_t kSmallNElem = 2;
+  startWorkers(/*abortEnabled=*/true);
+  for (int rank = 0; rank < kNRanks; rank++) {
+    int peer = rank ^ 1;
+    std::vector<PeerConfig> cfg = {{peer, kSmallNElem}};
+    run(/*rank=*/rank,
+        [this, cfg](PerRankState& state) { runSendRecv(cfg, cfg, state); });
+  }
+}
+
 } // namespace ctran::testing

@@ -99,6 +99,9 @@ commResult_t ctranGroupEndHook(
     bool hasSend = false;
     bool hasRecv = false;
     bool hasTcpDmRecv = false;
+    bool smallSendRedirected = false;
+    void* smallRecvOrigBuf = nullptr;
+    size_t smallRecvBytes = 0;
 
     // Submit ops with the same comm and stream in a single batch
     CtranComm* comm = CtranOpGroup.front()->comm_;
@@ -135,7 +138,23 @@ commResult_t ctranGroupEndHook(
           //   asyncReg thread or not-advanced CPU schedule, the registration
           //   cost has to be exposed similar to lazy registatration mode.
           size_t nbytes = op->send.count * commTypeSize(op->send.datatype);
-          FB_COMMCHECK(mapper->regAsync(op->send.sendbuff, nbytes));
+          if (nbytes < CTRAN_MIN_REGISTRATION_SIZE && !smallSendRedirected) {
+            // Small buffer: stage through pre-registered tmpbuf to avoid
+            // IB registration failure on sub-page-size GPU buffers.
+            smallSendRedirected = true;
+            FB_COMMCHECK(comm->ctran_->algo->initTmpBufs());
+            void* srcTmpbuf = comm->ctran_->algo->getTmpBuf(
+                CtranAlgo::TmpbufType::MIN_REG_SRC_TMPBUF);
+            FB_CUDACHECK(cudaMemcpyAsync(
+                srcTmpbuf,
+                op->send.sendbuff,
+                nbytes,
+                cudaMemcpyDefault,
+                stream));
+            op->send.sendbuff = srcTmpbuf;
+          } else {
+            FB_COMMCHECK(mapper->regAsync(op->send.sendbuff, nbytes));
+          }
           if (comm->ctran_->mapper->getBackend(op->send.peerRank) ==
               CtranMapperBackend::NVL) {
             nvlOps.push_back(op);
@@ -157,7 +176,18 @@ commResult_t ctranGroupEndHook(
           }
 
           size_t nbytes = op->recv.count * commTypeSize(op->recv.datatype);
-          FB_COMMCHECK(mapper->regAsync(op->recv.recvbuff, nbytes));
+          if (nbytes < CTRAN_MIN_REGISTRATION_SIZE && !smallRecvOrigBuf) {
+            // Small buffer: stage through pre-registered tmpbuf to avoid
+            // IB registration failure on sub-page-size GPU buffers.
+            FB_COMMCHECK(comm->ctran_->algo->initTmpBufs());
+            void* dstTmpbuf = comm->ctran_->algo->getTmpBuf(
+                CtranAlgo::TmpbufType::MIN_REG_DST_TMPBUF);
+            smallRecvOrigBuf = op->recv.recvbuff;
+            smallRecvBytes = nbytes;
+            op->recv.recvbuff = dstTmpbuf;
+          } else {
+            FB_COMMCHECK(mapper->regAsync(op->recv.recvbuff, nbytes));
+          }
           if (comm->ctran_->mapper->getBackend(op->recv.peerRank) ==
               CtranMapperBackend::NVL) {
             nvlOps.push_back(op);
@@ -205,6 +235,20 @@ commResult_t ctranGroupEndHook(
           config,
           kernelFns.at(kernelType),
           timeout));
+
+      // Post-copy: move received data from pre-registered tmpbuf back to
+      // user's recv buffer. Stream ordering guarantees this executes after
+      // the GPE kernel completes.
+      if (smallRecvOrigBuf) {
+        void* dstTmpbuf = comm->ctran_->algo->getTmpBuf(
+            CtranAlgo::TmpbufType::MIN_REG_DST_TMPBUF);
+        FB_CUDACHECK(cudaMemcpyAsync(
+            smallRecvOrigBuf,
+            dstTmpbuf,
+            smallRecvBytes,
+            cudaMemcpyDefault,
+            stream));
+      }
     }
 
     // No kernel would be submitted if only self sendrecv is called, update op

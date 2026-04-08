@@ -35,6 +35,8 @@ class ReconfigureTest(unittest.TestCase):
 
     def setUp(self):
         """Set up test environment before each test."""
+        os.environ["NCCL_ALLREDUCE_ALGO"] = "ctdirect"
+
         self.backend = os.getenv("TEST_BACKEND", "")
 
         # For supported backends, we need CUDA and a shared TCPStore
@@ -256,40 +258,27 @@ class ReconfigureTest(unittest.TestCase):
         )
         work.wait_blocking()
 
-        # Test send/recv after reconfigure
-        if self.world_size > 1:
-            count = 4
-            send_tensor = torch.ones(count, dtype=torch.float, device=self.device) * (
-                self.rank + 1
-            )
-            recv_tensor = torch.zeros(count, dtype=torch.float, device=self.device)
+        # Test AllReduce after reconfigure
+        count = 4
+        tensor = torch.ones(count, dtype=torch.float, device=self.device) * (
+            self.rank + 1
+        )
 
-            send_rank = (self.rank + 1) % self.world_size
-            recv_rank = (self.rank - 1 + self.world_size) % self.world_size
+        work = comm.all_reduce(tensor, torchcomms.ReduceOp.SUM, async_op=True)
+        work.wait()
 
-            # Alternate send/recv order based on rank to avoid deadlock
-            if self.rank % 2 == 0:
-                send_work = comm.send(send_tensor, send_rank, async_op=True)
-                recv_work = comm.recv(recv_tensor, recv_rank, async_op=True)
-            else:
-                recv_work = comm.recv(recv_tensor, recv_rank, async_op=True)
-                send_work = comm.send(send_tensor, send_rank, async_op=True)
+        torch.cuda.current_stream().synchronize()
 
-            send_work.wait()
-            recv_work.wait()
+        # AllReduce sums across ranks: expected = 1 + 2 + ... + world_size
+        expected_val = self.world_size * (self.world_size + 1) / 2
+        expected = torch.ones(count, dtype=torch.float, device="cpu") * expected_val
+        self.assertTrue(
+            torch.allclose(tensor.cpu(), expected),
+            f"[Rank {self.rank}] AllReduce after reconfigure failed: "
+            f"got {tensor.cpu()}, expected {expected}",
+        )
 
-            torch.cuda.current_stream().synchronize()
-
-            # Verify received data
-            expected = torch.ones(count, dtype=torch.float, device="cpu") * (
-                recv_rank + 1
-            )
-            self.assertTrue(
-                torch.allclose(recv_tensor.cpu(), expected),
-                f"[Rank {self.rank}] Send/recv after reconfigure failed",
-            )
-
-            print(f"[Rank {self.rank}] Send/recv after reconfigure succeeded")
+        print(f"[Rank {self.rank}] AllReduce after reconfigure succeeded")
 
         comm.finalize()
 
