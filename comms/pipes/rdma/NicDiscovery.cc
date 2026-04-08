@@ -2,6 +2,9 @@
 
 #include "comms/pipes/rdma/NicDiscovery.h"
 
+#include <infiniband/mlx5dv.h>
+#include <infiniband/verbs.h>
+
 #include <cuda_runtime.h>
 #include <spdlog/spdlog.h>
 #include <sys/syscall.h>

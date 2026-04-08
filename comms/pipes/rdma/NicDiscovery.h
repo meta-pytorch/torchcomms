@@ -13,6 +13,12 @@
 #include "comms/pipes/IbverbsLazy.h"
 #include "comms/pipes/rdma/IbHcaParser.h"
 
+// Forward declarations for ibverbs/mlx5 types used as pointers in the API.
+// Full definitions are in <infiniband/verbs.h> and <infiniband/mlx5dv.h>,
+// included only in NicDiscovery.cc to avoid conflicts with DOCA wrapper headers.
+struct ibv_device;
+struct ibv_context;
+
 namespace comms::pipes {
 
 /**
