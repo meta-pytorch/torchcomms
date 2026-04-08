@@ -74,12 +74,12 @@ CtranIbSingleton::CtranIbSingleton() {
   ibvDevices = std::move(*maybeDeviceList);
 
   if (ibvDevices.size() < NCCL_CTRAN_IB_DEVICES_PER_RANK) {
-    CLOGF(
-        WARN,
+    auto msg = fmt::format(
         "CTRAN-IB : active device found {} is less than requested device count {}",
         ibvDevices.size(),
         NCCL_CTRAN_IB_DEVICES_PER_RANK);
-    throw std::bad_alloc();
+    CLOGF(WARN, "{}", msg);
+    throw ctran::utils::BackendAllocException(std::move(msg));
   }
 
   for (auto i = 0; i < this->ibvDevices.size(); i++) {
