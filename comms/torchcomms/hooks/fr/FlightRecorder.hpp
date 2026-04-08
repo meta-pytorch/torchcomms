@@ -236,8 +236,8 @@ class FlightRecorder {
       std::string profiling_name,
       const std::vector<at::Tensor>& inputs,
       const std::vector<at::Tensor>& outputs,
-      c10::Event* start,
-      c10::Event* end,
+      std::unique_ptr<c10::Event> start,
+      std::unique_ptr<c10::Event> end,
       std::chrono::milliseconds timeout_ms,
       std::shared_ptr<ProcessGroupStatus> pg_status);
 
@@ -249,17 +249,18 @@ class FlightRecorder {
 
   std::vector<Entry> dump_entries();
 
-  /*
-  Mark an Event as completed and free its events.
-  This is called by the watchdog thread, and is asynchronous from the
-  perspective of the main thread.
-  compute_duration defaults to true since retire_id is only called in the
-  watchdog thread, which is currently a place we call cuda APIs which may hang,
-  but care should be taken to avoid computing duration in any function that must
-  never hang. (timing must also be enabled for compute_duration - see
-  TORCH_NCCL_ENABLE_TIMING).
-  */
-  void retire_id(std::optional<size_t> id, bool compute_duration = true);
+  // Stores start/end events per op_id for GPU-accurate timing.
+  struct EventPair {
+    std::unique_ptr<c10::Event> start;
+    std::unique_ptr<c10::Event> end;
+  };
+
+  // Record end event on the device stream, retire the entry, and cleanup
+  // stored events. Acquires mutex_ internally.
+  void retire_id(
+      std::optional<size_t> id,
+      const at::Device& device,
+      bool compute_duration = true);
 
   void reset_all();
 
@@ -329,6 +330,9 @@ class FlightRecorder {
   std::string comm_lib_version_;
   // Map from op_id to (id_, reset_epoch_) to pass correct values when retiring
   std::unordered_map<size_t, std::pair<size_t, size_t>> op_id_to_id_and_epoch_;
+
+  // Pending events for GPU-accurate timing, keyed by op_id.
+  std::unordered_map<size_t, EventPair> pending_events_;
 };
 
 // ============================================================================
@@ -422,14 +426,17 @@ class FlightRecorderHook {
       const std::string& comm_name,
       size_t pg_id,
       const std::string& pg_desc,
+      const at::Device& device,
       const TorchComm::PreHookArgs& args);
 
-  void onPostHook(const TorchComm::PostHookArgs& args);
+  void onPostHook(
+      const at::Device& device,
+      const TorchComm::PostHookArgs& args);
 
   FlightRecorder* recorder_;
   bool owns_recorder_{false}; // True when using isolated instance
 
-  // Track registered communicators with their handles for unregistration
+  // Track registered communicators
   struct CommRegistration {
     std::weak_ptr<TorchComm> comm;
     size_t pg_id;
