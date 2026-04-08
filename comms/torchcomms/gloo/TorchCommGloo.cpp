@@ -340,9 +340,12 @@ void TorchCommGloo::init(
   if (hints.contains("interface")) {
     attr.iface = hints.at("interface");
   }
-  auto gloo_device = hints.contains("lazy")
-      ? ::gloo::transport::tcp::CreateLazyDevice(attr)
-      : ::gloo::transport::tcp::CreateDevice(attr);
+  bool lazy = env_to_value<bool>("TORCHCOMM_GLOO_LAZY_INIT", true);
+  if (hints.contains("lazy")) {
+    lazy = string_to_bool(hints.at("lazy"));
+  }
+  auto gloo_device = lazy ? ::gloo::transport::tcp::CreateLazyDevice(attr)
+                          : ::gloo::transport::tcp::CreateDevice(attr);
   auto context =
       std::make_shared<::gloo::rendezvous::Context>(rank_, comm_size_);
   context->setTimeout(options.timeout);
