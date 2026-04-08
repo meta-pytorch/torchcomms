@@ -146,6 +146,11 @@ struct CtranWin {
         bufType_ == DevMemType::kCumem;
   }
 
+  // Check whether this window's communicator supports persistent collectives.
+  // Returns true if ctran is initialized and all peers have configured
+  // backends.
+  bool persistentColSupported() const;
+
  private:
   DevMemType bufType_{DevMemType::kCumem};
   // whether allocate window data buffer or provided by users
