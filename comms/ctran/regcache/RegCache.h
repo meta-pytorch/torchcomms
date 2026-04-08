@@ -430,8 +430,9 @@ class RegCache {
   bool isRegistered(const void* ptr, const size_t len);
 
   // Thread-safe function to search for a RegElem containing [ptr, ptr+len)
-  // and return its ibRegElem. Returns nullptr if not found.
-  void* searchIbRegElem(const void* ptr, size_t len);
+  // and return its ibRegElem. If the buffer is cached but not yet registered,
+  // it will perform registration via regRange(). Returns nullptr if not cached.
+  void* searchIbRegHandle(const void* ptr, size_t len, int deviceId = -1);
 
   // Thread-safe function to wait on all async registration requests to finish.
   // Used by test only.
