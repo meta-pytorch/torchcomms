@@ -291,6 +291,20 @@ rank, number of ranks, and collective trace information.
 Returns:
     dict[str, str]: Key-value pairs of communicator state.
 )",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "register_all",
+          &TorchCommNCCLX::registerAll,
+          R"(
+Register all cached memory segments in contiguous registrations.
+)",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "deregister_all",
+          &TorchCommNCCLX::deregisterAll,
+          R"(
+Deregister registration elements from the global cache.
+)",
           py::call_guard<py::gil_scoped_release>());
 
   m.def(
