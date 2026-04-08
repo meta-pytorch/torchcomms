@@ -2159,7 +2159,7 @@ void TorchCommXCCL::register_address(
   }
   void* handle = nullptr;
   onecclResult_t result =
-      xccl_api_->commRegister(xccl_comm_, addr, len, &handle);
+      xccl_api_->commRegister(xccl_comm_, addr.addr, addr.len, &handle);
 
   if (result != onecclSuccess) [[unlikely]] {
     throw XCCLException(
@@ -2170,7 +2170,7 @@ void TorchCommXCCL::register_address(
 
 void TorchCommXCCL::deregister_address(const TorchCommXCCL::Address& addr) {
   // We got a deregister after we got rid of the comm. Is this a fatal error?
-  if (Xccl_comm_ == nullptr) {
+  if (xccl_comm_ == nullptr) {
     return;
   }
 
