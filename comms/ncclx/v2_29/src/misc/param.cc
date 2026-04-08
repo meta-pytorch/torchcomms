@@ -108,7 +108,8 @@ void initEnv() {
     // To keep v2.29 has the same numeric behavior as v2.27
     // TODO: remove this after numeric breakages rollout
     if (!NCCL_TOPO_BOND_V228) {
-      NCCL_PXN_C2C = 0;
+      extern int64_t ncclParamPxnC2cCache;
+      ncclParamPxnC2cCache = 0;
     }
     initEnvFunc();
     initNcclLogger();
