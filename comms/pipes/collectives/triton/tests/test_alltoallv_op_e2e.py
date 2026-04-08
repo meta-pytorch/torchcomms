@@ -3,12 +3,18 @@
 """
 End-to-end integration tests for AlltoallvOp (high-level MSL-compatible API).
 
-Tests the simplified token-level API covering:
-- Copy-in mode with uniform splits (alltoallv)
-- Zero-copy mode via get_send_buffer + alltoallv_from_buffer
-- Repeated calls with auto-incrementing iteration counter
+Tests the simplified token-level API with zero-copy buffer ownership covering:
+- Zero-copy mode with mandatory input_tensor and output_tensor
+- Repeated calls with in-place input tensor updates
 - get_or_create() caching factory
 - Error handling (double setup, alltoallv without setup, oversized input)
+- CUDA graph capture and replay
+
+Zero-Copy Architecture:
+    User provides both input_tensor and output_tensor (MANDATORY).
+    These tensors become GIN-registered buffers on first alltoallv() call.
+    User updates input_tensor contents in-place between calls.
+    Data arrives directly in output_tensor.
 
 NOTE: Only uniform distribution is supported. Non-uniform distributions will
 raise a ValueError.
@@ -32,7 +38,7 @@ import os
 import sys
 import time
 import unittest
-from typing import Optional
+from typing import Any
 
 import torch
 from torch.utils._triton import has_triton
@@ -53,23 +59,25 @@ def _skip_if_not_ready() -> bool:
 
 
 class _OpTestBase(unittest.TestCase):
-    """Base class providing common helpers for AlltoallvOp tests."""
+    """Common setUp / tearDown for AlltoallvOp tests."""
 
-    wrapper: Optional[TorchCommTestWrapper] = None
+    # Class-level shared state for the test session
+    wrapper: TorchCommTestWrapper | None = None
+    torchcomm: Any = None
+    rank: int = 0
+    world_size: int = 1
+    device: Any = None
+    dtype: torch.dtype = torch.float32
+    D: int = 16  # Unused but kept for backward compatibility
 
     @classmethod
     def setUpClass(cls) -> None:
-        if not _skip_if_not_ready():
-            raise unittest.SkipTest("E2E test environment not ready")
-
-        torch.cuda.synchronize()
         cls.wrapper = TorchCommTestWrapper()
         cls.torchcomm = cls.wrapper.get_torchcomm()
         cls.rank = cls.torchcomm.get_rank()
         cls.world_size = cls.torchcomm.get_size()
         cls.device = cls.torchcomm.get_device()
         cls.dtype = torch.float32
-        cls.backend = cls.torchcomm.get_backend()
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -77,7 +85,10 @@ class _OpTestBase(unittest.TestCase):
 
         AlltoallvOp.clear_cache()
         if cls.torchcomm is not None:
-            cls.torchcomm.barrier(False)
+            try:
+                cls.torchcomm.barrier(False)
+            except RuntimeError:
+                pass  # Ignore if communicator already torn down
         cls.torchcomm = None
         cls.wrapper = None
         gc.collect()
@@ -117,36 +128,22 @@ class _OpTestBase(unittest.TestCase):
 
 
 # =============================================================================
-# Test: Copy-In Mode with Uniform Splits
+# Test: Zero-Copy Mode with Uniform Splits
 # =============================================================================
 
 
-class TestOpUniformSplitsCopyIn(_OpTestBase):
-    """Test alltoallv() copy-in path with uniform per-peer token counts."""
+class TestOpUniformSplitsZeroCopy(_OpTestBase):
+    """Test basic alltoallv with user-owned zero-copy buffers (uniform splits)."""
 
-    def test_uniform_splits_copy_in(self) -> None:
+    def test_uniform_splits_zero_copy(self) -> None:
         from comms.pipes.collectives.triton import AlltoallvOp
 
         tokens_per_peer = 64
         D = 16
         max_input_tokens = tokens_per_peer * self.world_size
+        total_output_tokens = tokens_per_peer * self.world_size
 
-        # Build the input tensor: tokens_for_peer_0 ++ tokens_for_peer_1 ++ …
-        input_tensor = torch.empty(
-            max_input_tokens, D, dtype=self.dtype, device=self.device
-        )
-        for peer in range(self.world_size):
-            start = peer * tokens_per_peer
-            input_tensor[start : start + tokens_per_peer] = float(
-                self.rank * 1000 + peer
-            )
-
-        input_split_sizes = torch.full(
-            (self.world_size,), tokens_per_peer, dtype=torch.int64, device=self.device
-        )
-        # Uniform: everyone sends the same amount → everyone receives the same.
-        output_split_sizes = input_split_sizes.clone()
-
+        # Create op
         op = AlltoallvOp(
             self.torchcomm,
             max_input_tokens,
@@ -154,10 +151,29 @@ class TestOpUniformSplitsCopyIn(_OpTestBase):
             self.dtype,
             self.device,
             max_recv_tokens_per_peer=tokens_per_peer,
-            sync_buffer=True,
         )
+
+        input_split_sizes = torch.full(
+            (self.world_size,), tokens_per_peer, dtype=torch.int64, device=self.device
+        )
+        output_split_sizes = input_split_sizes.clone()
+
         with op:
-            output = op.alltoallv(input_tensor, output_split_sizes, input_split_sizes)
+            # Allocate GIN-compatible tensors using the op's internal pool
+            # Must be done AFTER setup() (inside the with block)
+            input_tensor = op.alloc_buffer((max_input_tokens, D))
+            output_tensor = op.alloc_buffer((total_output_tokens, D))
+
+            # Fill input tensor
+            for peer in range(self.world_size):
+                start = peer * tokens_per_peer
+                input_tensor[start : start + tokens_per_peer] = float(
+                    self.rank * 1000 + peer
+                )
+
+            output = op.alltoallv(
+                input_tensor, output_tensor, output_split_sizes, input_split_sizes
+            )
 
         torch.cuda.synchronize()
         total_tokens = tokens_per_peer * self.world_size
@@ -165,88 +181,27 @@ class TestOpUniformSplitsCopyIn(_OpTestBase):
             output.shape,
             (total_tokens, D),
         )
-        self._verify_packed_data(output, D, output_split_sizes, "uniform_copy_in")
+        self._verify_packed_data(output, D, output_split_sizes, "uniform_zero_copy")
 
 
 # =============================================================================
-# Test: Zero-Copy Mode via get_send_buffer
-# =============================================================================
-
-
-class TestOpZeroCopy(_OpTestBase):
-    """Test get_send_buffer() + alltoallv_from_buffer() zero-copy path."""
-
-    def test_zero_copy_send(self) -> None:
-        from comms.pipes.collectives.triton import AlltoallvOp
-
-        tokens_per_peer = 64
-        D = 16
-        max_input_tokens = tokens_per_peer * self.world_size
-        total_tokens = tokens_per_peer * self.world_size
-
-        input_split_sizes = torch.full(
-            (self.world_size,), tokens_per_peer, dtype=torch.int64, device=self.device
-        )
-        output_split_sizes = input_split_sizes.clone()
-
-        op = AlltoallvOp(
-            self.torchcomm,
-            max_input_tokens,
-            D,
-            self.dtype,
-            self.device,
-            max_recv_tokens_per_peer=tokens_per_peer,
-        )
-
-        # Fill send buffer BEFORE setup — GIN blocks regular CUDA fill ops.
-        send_buf = op.get_send_buffer(total_tokens)
-        self.assertEqual(send_buf.shape, (total_tokens, D))
-        for peer in range(self.world_size):
-            start = peer * tokens_per_peer
-            send_buf[start : start + tokens_per_peer] = float(self.rank * 1000 + peer)
-
-        with op:
-            output = op.alltoallv_from_buffer(
-                output_split_sizes,
-                input_split_sizes,
-                num_input_tokens=total_tokens,
-            )
-
-        torch.cuda.synchronize()
-        self.assertEqual(output.shape, (total_tokens, D))
-        self._verify_packed_data(output, D, output_split_sizes, "zero_copy")
-
-
-# =============================================================================
-# Test: Repeated Calls (Iteration Counter)
+# Test: Repeated Calls with In-Place Updates
 # =============================================================================
 
 
 class TestOpRepeatedCalls(_OpTestBase):
-    """Test multiple consecutive alltoallv calls with iteration tracking."""
+    """Test calling alltoallv multiple times with same buffers (zero-copy pattern)."""
 
-    def test_repeated_calls(self) -> None:
+    def test_repeated_calls_same_buffers(self) -> None:
         from comms.pipes.collectives.triton import AlltoallvOp
 
         tokens_per_peer = 64
         D = 16
         max_input_tokens = tokens_per_peer * self.world_size
+        total_output_tokens = tokens_per_peer * self.world_size
         num_iterations = 5
 
-        input_tensor = torch.empty(
-            max_input_tokens, D, dtype=self.dtype, device=self.device
-        )
-        for peer in range(self.world_size):
-            start = peer * tokens_per_peer
-            input_tensor[start : start + tokens_per_peer] = float(
-                self.rank * 1000 + peer
-            )
-
-        input_split_sizes = torch.full(
-            (self.world_size,), tokens_per_peer, dtype=torch.int64, device=self.device
-        )
-        output_split_sizes = input_split_sizes.clone()
-
+        # Create op
         op = AlltoallvOp(
             self.torchcomm,
             max_input_tokens,
@@ -255,11 +210,29 @@ class TestOpRepeatedCalls(_OpTestBase):
             self.device,
             max_recv_tokens_per_peer=tokens_per_peer,
         )
+
+        input_split_sizes = torch.full(
+            (self.world_size,), tokens_per_peer, dtype=torch.int64, device=self.device
+        )
+        output_split_sizes = input_split_sizes.clone()
+
         with op:
+            # Allocate GIN-compatible tensors using the op's internal pool
+            input_tensor = op.alloc_buffer((max_input_tokens, D))
+            output_tensor = op.alloc_buffer((total_output_tokens, D))
+
+            # Fill input tensor
+            for peer in range(self.world_size):
+                start = peer * tokens_per_peer
+                input_tensor[start : start + tokens_per_peer] = float(
+                    self.rank * 1000 + peer
+                )
+
             output = None
             for _ in range(num_iterations):
+                # Use same tensors, update input in-place if needed
                 output = op.alltoallv(
-                    input_tensor, output_split_sizes, input_split_sizes
+                    input_tensor, output_tensor, output_split_sizes, input_split_sizes
                 )
             torch.cuda.synchronize()
 
@@ -285,17 +258,7 @@ class TestOpGetOrCreate(_OpTestBase):
         tokens_per_peer = 32
         D = 16
         max_input_tokens = tokens_per_peer * self.world_size
-
-        # Create and fill input tensor BEFORE get_or_create (which calls
-        # setup and activates GIN, blocking regular CUDA fill ops).
-        input_tensor = torch.empty(
-            max_input_tokens, D, dtype=self.dtype, device=self.device
-        )
-        for peer in range(self.world_size):
-            start = peer * tokens_per_peer
-            input_tensor[start : start + tokens_per_peer] = float(
-                self.rank * 1000 + peer
-            )
+        total_output_tokens = tokens_per_peer * self.world_size
 
         input_split_sizes = torch.full(
             (self.world_size,), tokens_per_peer, dtype=torch.int64, device=self.device
@@ -322,9 +285,21 @@ class TestOpGetOrCreate(_OpTestBase):
         )
         self.assertIs(op1, op2)
 
+        # Allocate GIN-compatible tensors AFTER get_or_create (which calls setup)
+        input_tensor = op1.alloc_buffer((max_input_tokens, D))
+        output_tensor = op1.alloc_buffer((total_output_tokens, D))
+
+        # Fill input tensor
+        for peer in range(self.world_size):
+            start = peer * tokens_per_peer
+            input_tensor[start : start + tokens_per_peer] = float(
+                self.rank * 1000 + peer
+            )
+
         # The cached op should be ready to use (no explicit setup needed).
-        # alltoallv uses a Triton copy kernel internally (GIN-safe).
-        output = op1.alltoallv(input_tensor, output_split_sizes, input_split_sizes)
+        output = op1.alltoallv(
+            input_tensor, output_tensor, output_split_sizes, input_split_sizes
+        )
         torch.cuda.synchronize()
 
         total_tokens = tokens_per_peer * self.world_size
@@ -386,18 +361,10 @@ class TestOpAlltoallvWithoutSetupRaises(_OpTestBase):
             self.device,
             max_recv_tokens_per_peer=tokens_per_peer,
         )
-        input_tensor = torch.empty(
-            max_input_tokens, D, dtype=self.dtype, device=self.device
-        )
-        split_sizes = torch.full(
-            (self.world_size,),
-            max_input_tokens // self.world_size,
-            dtype=torch.int64,
-            device=self.device,
-        )
 
+        # Try to call alloc_buffer without setup - should raise
         with self.assertRaises(RuntimeError):
-            op.alltoallv(input_tensor, split_sizes, split_sizes)
+            op.alloc_buffer((max_input_tokens, D))
 
         # Sync all ranks BEFORE teardown to avoid race conditions where one
         # rank tears down while another is still using shared NCCL resources.
@@ -415,11 +382,48 @@ class TestOpOversizedInputRaises(_OpTestBase):
         D = 16
         max_input_tokens = 128
         tokens_per_peer = max_input_tokens // self.world_size
+        total_output_tokens = tokens_per_peer * self.world_size
 
-        # Oversized by 1 token
-        oversized_input = torch.empty(
-            max_input_tokens + 1, D, dtype=self.dtype, device=self.device
+        op = AlltoallvOp(
+            self.torchcomm,
+            max_input_tokens,
+            D,
+            self.dtype,
+            self.device,
+            max_recv_tokens_per_peer=tokens_per_peer,
         )
+
+        split_sizes = torch.full(
+            (self.world_size,),
+            tokens_per_peer,
+            dtype=torch.int64,
+            device=self.device,
+        )
+
+        with op:
+            # Allocate GIN-compatible tensors
+            # Oversized by 1 token - allocate max_input_tokens + 1
+            oversized_input = op.alloc_buffer((max_input_tokens + 1, D))
+            output_tensor = op.alloc_buffer((total_output_tokens, D))
+
+            with self.assertRaises(ValueError):
+                op.alltoallv(oversized_input, output_tensor, split_sizes, split_sizes)
+
+        torch.cuda.synchronize()
+        self.torchcomm.barrier(False)
+
+
+class TestOpTensorIdentityEnforced(_OpTestBase):
+    """Test that different tensors after first call raises RuntimeError."""
+
+    def test_tensor_identity_enforced(self) -> None:
+        from comms.pipes.collectives.triton import AlltoallvOp
+
+        D = 16
+        max_input_tokens = 64
+        tokens_per_peer = max_input_tokens // self.world_size
+        total_output_tokens = tokens_per_peer * self.world_size
+
         split_sizes = torch.full(
             (self.world_size,),
             tokens_per_peer,
@@ -435,46 +439,31 @@ class TestOpOversizedInputRaises(_OpTestBase):
             self.device,
             max_recv_tokens_per_peer=tokens_per_peer,
         )
-        op.setup()
 
-        with self.assertRaises(ValueError):
-            op.alltoallv(oversized_input, split_sizes, split_sizes)
+        with op:
+            # Allocate GIN-compatible tensors
+            input_tensor = op.alloc_buffer((max_input_tokens, D))
+            output_tensor = op.alloc_buffer((total_output_tokens, D))
 
-        # Sync all ranks BEFORE teardown to avoid race conditions where one
-        # rank tears down while another is still using shared NCCL resources.
-        torch.cuda.synchronize()
-        self.torchcomm.barrier(False)
-        op.teardown()
+            # Fill input tensor
+            for peer in range(self.world_size):
+                start = peer * tokens_per_peer
+                input_tensor[start : start + tokens_per_peer] = float(
+                    self.rank * 1000 + peer
+                )
 
+            # First call takes ownership
+            op.alltoallv(input_tensor, output_tensor, split_sizes, split_sizes)
 
-class TestOpOversizedGetSendBufferRaises(_OpTestBase):
-    """Test that get_send_buffer() with too many tokens raises."""
+            # Second call with different input tensor should raise
+            different_input = op.alloc_buffer((max_input_tokens, D))
+            with self.assertRaises(RuntimeError):
+                op.alltoallv(different_input, output_tensor, split_sizes, split_sizes)
 
-    def test_oversized_get_send_buffer_raises(self) -> None:
-        from comms.pipes.collectives.triton import AlltoallvOp
-
-        D = 16
-        max_input_tokens = 64
-        tokens_per_peer = max_input_tokens // self.world_size
-
-        op = AlltoallvOp(
-            self.torchcomm,
-            max_input_tokens,
-            D,
-            self.dtype,
-            self.device,
-            max_recv_tokens_per_peer=tokens_per_peer,
-        )
-        with self.assertRaises(ValueError):
-            op.get_send_buffer(max_input_tokens + 1)
-
-        # Sync all ranks BEFORE teardown to avoid race conditions where one
-        # rank tears down while another is still using shared NCCL resources.
-        # Even though setup() was not called, the op still holds buffers
-        # that must be released cleanly.
-        torch.cuda.synchronize()
-        self.torchcomm.barrier(False)
-        op.teardown()
+            # Second call with different output tensor should raise
+            different_output = op.alloc_buffer((total_output_tokens, D))
+            with self.assertRaises(RuntimeError):
+                op.alltoallv(input_tensor, different_output, split_sizes, split_sizes)
 
 
 class TestOpTeardownIdempotent(_OpTestBase):
@@ -509,34 +498,24 @@ class TestOpTeardownIdempotent(_OpTestBase):
 
 
 class TestOpPackedOutputUniform(_OpTestBase):
-    """Test alltoallv() with packed_output mode (now the default) and uniform splits."""
+    """Test packed output logic with uniform splits and GIN-compatible tensors."""
 
     def test_packed_output_uniform(self) -> None:
         from comms.pipes.collectives.triton import AlltoallvOp
 
-        tokens_per_peer = 64
+        tokens_per_peer = 32
         D = 16
         max_input_tokens = tokens_per_peer * self.world_size
-
-        # Build input tensor
-        input_tensor = torch.empty(
-            max_input_tokens, D, dtype=self.dtype, device=self.device
-        )
-        for peer in range(self.world_size):
-            start = peer * tokens_per_peer
-            input_tensor[start : start + tokens_per_peer] = float(
-                self.rank * 1000 + peer
-            )
+        total_output_tokens = tokens_per_peer * self.world_size
 
         input_split_sizes = torch.full(
             (self.world_size,), tokens_per_peer, dtype=torch.int64, device=self.device
         )
         output_split_sizes = input_split_sizes.clone()
 
-        # Pre-compute total tokens to avoid .item() call when GIN is active
+        # Pre-compute total tokens
         packed_output_tokens = tokens_per_peer * self.world_size
 
-        # Use packed_output mode (now the default) for contiguous output
         op = AlltoallvOp(
             self.torchcomm,
             max_input_tokens,
@@ -546,8 +525,20 @@ class TestOpPackedOutputUniform(_OpTestBase):
             max_recv_tokens_per_peer=tokens_per_peer,
         )
         with op:
+            # Allocate GIN-compatible tensors
+            input_tensor = op.alloc_buffer((max_input_tokens, D))
+            output_tensor = op.alloc_buffer((total_output_tokens, D))
+
+            # Build input tensor
+            for peer in range(self.world_size):
+                start = peer * tokens_per_peer
+                input_tensor[start : start + tokens_per_peer] = float(
+                    self.rank * 1000 + peer
+                )
+
             output = op.alltoallv(
                 input_tensor,
+                output_tensor,
                 output_split_sizes,
                 input_split_sizes,
                 packed_output_tokens=packed_output_tokens,
@@ -561,270 +552,22 @@ class TestOpPackedOutputUniform(_OpTestBase):
         # Verify packed output data
         self._verify_packed_data(output, D, output_split_sizes, "packed_uniform")
 
-    def _verify_packed_data(
-        self,
-        output: torch.Tensor,
-        D: int,
-        output_split_sizes: torch.Tensor,
-        test_name: str = "",
-    ) -> None:
-        """Verify data in packed contiguous layout."""
-        offset = 0
-        for peer in range(self.world_size):
-            count = int(output_split_sizes[peer].item())
-            if count == 0:
-                continue
-            actual = output[offset : offset + count, :].cpu()
-            expected_value = float(peer * 1000 + self.rank)
-            expected = torch.full_like(actual, expected_value)
-            torch.testing.assert_close(
-                actual,
-                expected,
-                msg=(
-                    f"[{test_name}] Rank {self.rank}: Data from peer {peer} at "
-                    f"offset {offset} is incorrect. Expected {expected_value}, "
-                    f"got {actual[0, :5].tolist()}..."
-                ),
-            )
-            offset += count
-
 
 # =============================================================================
-# Test: fill_send_buffer() GIN-Safe Buffer Update
+# Test: Multi-Iteration with Different Input Content (Non-Graph)
 # =============================================================================
 
 
-class TestOpFillSendBufferBasic(_OpTestBase):
-    """Test fill_send_buffer() basic functionality."""
+class TestOpMultiIterDifferentContentNonGraph(_OpTestBase):
+    """Test repeated alltoallv calls with varying input data per iteration (no CUDA graph)."""
 
-    def test_fill_send_buffer_basic(self) -> None:
-        """Test that fill_send_buffer works after GIN is active."""
-        from comms.pipes.collectives.triton import AlltoallvOp
-
-        tokens_per_peer = 64
-        D = 16
-        max_input_tokens = tokens_per_peer * self.world_size
-        total_tokens = tokens_per_peer * self.world_size
-
-        # Pre-allocate input tensor BEFORE context (GIN blocks torch.empty)
-        input_tensor = torch.empty(
-            total_tokens, D, dtype=self.dtype, device=self.device
-        )
-        for peer in range(self.world_size):
-            start = peer * tokens_per_peer
-            input_tensor[start : start + tokens_per_peer] = float(
-                self.rank * 1000 + peer
-            )
-
-        input_split_sizes = torch.full(
-            (self.world_size,), tokens_per_peer, dtype=torch.int64, device=self.device
-        )
-        output_split_sizes = input_split_sizes.clone()
-
-        op = AlltoallvOp(
-            self.torchcomm,
-            max_input_tokens,
-            D,
-            self.dtype,
-            self.device,
-            max_recv_tokens_per_peer=tokens_per_peer,
-        )
-
-        with op:
-            # Use fill_send_buffer (GIN-safe) instead of direct assignment
-            send_view = op.fill_send_buffer(input_tensor)
-            self.assertEqual(send_view.shape, (total_tokens, D))
-
-            output = op.alltoallv_from_buffer(
-                output_split_sizes,
-                input_split_sizes,
-                num_input_tokens=total_tokens,
-            )
-
-        torch.cuda.synchronize()
-        self.assertEqual(output.shape, (total_tokens, D))
-        self._verify_packed_data(
-            output, D, output_split_sizes, "fill_send_buffer_basic"
-        )
-
-
-class TestOpFillSendBufferBackToBack(_OpTestBase):
-    """Test fill_send_buffer() for back-to-back iterations."""
-
-    def test_fill_send_buffer_back_to_back(self) -> None:
-        """Test multiple iterations with fill_send_buffer inside 'with op:'."""
+    def test_multi_iter_different_content_non_graph(self) -> None:
         from comms.pipes.collectives.triton import AlltoallvOp
 
         tokens_per_peer = 32
         D = 16
         max_input_tokens = tokens_per_peer * self.world_size
-        total_tokens = tokens_per_peer * self.world_size
-        num_iterations = 5
-
-        input_split_sizes = torch.full(
-            (self.world_size,), tokens_per_peer, dtype=torch.int64, device=self.device
-        )
-        output_split_sizes = input_split_sizes.clone()
-
-        # Pre-allocate input tensor BEFORE entering context
-        input_tensor = torch.empty(
-            total_tokens, D, dtype=self.dtype, device=self.device
-        )
-        for peer in range(self.world_size):
-            start = peer * tokens_per_peer
-            input_tensor[start : start + tokens_per_peer] = float(
-                self.rank * 1000 + peer
-            )
-
-        op = AlltoallvOp(
-            self.torchcomm,
-            max_input_tokens,
-            D,
-            self.dtype,
-            self.device,
-            max_recv_tokens_per_peer=tokens_per_peer,
-        )
-
-        output = None
-        with op:
-            for _iteration in range(num_iterations):
-                # Use fill_send_buffer to copy into registered buffer (GIN-safe)
-                op.fill_send_buffer(input_tensor, num_tokens=total_tokens)
-
-                output = op.alltoallv_from_buffer(
-                    output_split_sizes,
-                    input_split_sizes,
-                    num_input_tokens=total_tokens,
-                )
-        assert output is not None
-
-        torch.cuda.synchronize()
-        self.assertEqual(output.shape, (total_tokens, D))
-        self._verify_packed_data(
-            output,
-            D,
-            output_split_sizes,
-            "fill_send_buffer_back_to_back",
-        )
-
-
-class TestOpFillSendBufferOversizedRaises(_OpTestBase):
-    """Test that fill_send_buffer raises for oversized input."""
-
-    def test_fill_send_buffer_oversized_raises(self) -> None:
-        from comms.pipes.collectives.triton import AlltoallvOp
-
-        D = 16
-        max_input_tokens = 64
-        tokens_per_peer = max_input_tokens // self.world_size
-
-        # Create oversized input BEFORE context
-        oversized_input = torch.ones(
-            max_input_tokens + 10, D, dtype=self.dtype, device=self.device
-        )
-
-        op = AlltoallvOp(
-            self.torchcomm,
-            max_input_tokens,
-            D,
-            self.dtype,
-            self.device,
-            max_recv_tokens_per_peer=tokens_per_peer,
-        )
-
-        with op:
-            with self.assertRaises(ValueError):
-                op.fill_send_buffer(oversized_input)
-
-
-class TestOpFillSendBufferWithExplicitNumTokens(_OpTestBase):
-    """Test fill_send_buffer with explicit num_tokens parameter."""
-
-    def test_fill_send_buffer_explicit_num_tokens(self) -> None:
-        """Test fill_send_buffer with smaller num_tokens than input size."""
-        from comms.pipes.collectives.triton import AlltoallvOp
-
-        tokens_per_peer = 32
-        D = 16
-        max_input_tokens = tokens_per_peer * self.world_size
-        # Use fewer tokens than allocated
-        actual_tokens = tokens_per_peer * self.world_size // 2
-
-        # Pre-allocate larger buffer
-        input_tensor = torch.empty(
-            max_input_tokens, D, dtype=self.dtype, device=self.device
-        )
-        # Fill only the portion we'll use
-        half_tokens_per_peer = tokens_per_peer // 2
-        for peer in range(self.world_size):
-            start = peer * half_tokens_per_peer
-            input_tensor[start : start + half_tokens_per_peer] = float(
-                self.rank * 1000 + peer
-            )
-
-        input_split_sizes = torch.full(
-            (self.world_size,),
-            half_tokens_per_peer,
-            dtype=torch.int64,
-            device=self.device,
-        )
-        output_split_sizes = input_split_sizes.clone()
-
-        op = AlltoallvOp(
-            self.torchcomm,
-            max_input_tokens,
-            D,
-            self.dtype,
-            self.device,
-            max_recv_tokens_per_peer=half_tokens_per_peer,
-        )
-
-        with op:
-            # Explicitly specify num_tokens to copy less than full input
-            send_view = op.fill_send_buffer(input_tensor, num_tokens=actual_tokens)
-            self.assertEqual(send_view.shape, (actual_tokens, D))
-
-            output = op.alltoallv_from_buffer(
-                output_split_sizes,
-                input_split_sizes,
-                num_input_tokens=actual_tokens,
-            )
-
-        torch.cuda.synchronize()
-        actual_recv_tokens = actual_tokens  # Same as sent in uniform distribution
-        self.assertEqual(output.shape, (actual_recv_tokens, D))
-        self._verify_packed_data(
-            output,
-            D,
-            output_split_sizes,
-            "fill_send_buffer_explicit_num_tokens",
-        )
-
-
-# =============================================================================
-# Main
-# =============================================================================
-
-# =============================================================================
-# Test: Multi-Iteration with Different Input Content (Graph & Non-Graph)
-# =============================================================================
-
-
-class TestOpMultiIterDifferentContentPackedNonGraph(_OpTestBase):
-    """Test zero-copy mode with varying content across iterations (packed output).
-
-    Similar to TestOpMultiIterDifferentContentPackedGraph but WITHOUT graph capture.
-    Uses op.get_send_buffer() to get the internal send buffer, then fills it
-    with different data for each iteration. Packed output mode.
-    Cross-rank synchronization is used.
-    """
-
-    def test_multi_iter_different_content_packed_non_graph(self) -> None:
-        from comms.pipes.collectives.triton import AlltoallvOp
-
-        tokens_per_peer = 32
-        D = 16
-        max_input_tokens = tokens_per_peer * self.world_size
+        total_output_tokens = tokens_per_peer * self.world_size
         num_iterations = 3
         packed_output_tokens = tokens_per_peer * self.world_size
 
@@ -833,10 +576,9 @@ class TestOpMultiIterDifferentContentPackedNonGraph(_OpTestBase):
         )
         output_split_sizes = input_split_sizes.clone()
 
-        # Use a dedicated stream for operations (consistent with graph mode tests)
+        # Use a dedicated stream for operations
         op_stream = torch.cuda.Stream()
 
-        # proper cross-rank synchronization via the BUFFER_READY signal protocol.
         op = AlltoallvOp(
             self.torchcomm,
             max_input_tokens,
@@ -848,109 +590,16 @@ class TestOpMultiIterDifferentContentPackedNonGraph(_OpTestBase):
         )
 
         with op:
-            # Get send buffer for zero-copy writes
-            send_buf = op.get_send_buffer(max_input_tokens)
+            # Allocate GIN-compatible tensors inside the with block
+            input_tensor = op.alloc_buffer((max_input_tokens, D))
+            output_tensor = op.alloc_buffer((total_output_tokens, D))
 
             # Pre-allocate buffers to capture output state after each iteration.
-            # This avoids validation racing with the next iteration's buffer updates.
             validation_buffers = []
 
             for iteration in range(num_iterations):
                 with torch.cuda.stream(op_stream):
-                    # Fill send buffer with iteration-specific content
-                    for peer in range(self.world_size):
-                        start = peer * tokens_per_peer
-                        value = float(iteration * 10000 + self.rank * 1000 + peer)
-                        send_buf[start : start + tokens_per_peer] = value
-
-                    output = op.alltoallv_from_buffer(
-                        output_split_sizes,
-                        input_split_sizes,
-                        num_input_tokens=max_input_tokens,
-                        packed_output_tokens=packed_output_tokens,
-                    )
-
-                    # Clone output on op_stream to capture this iteration's data
-                    # before the next iteration overwrites it
-                    validation_buffers.append(output.clone())
-
-            # Wait for all operations to complete
-            op_stream.synchronize()
-
-            # Now validate all iterations on CPU (safe since all GPU work is done)
-            for iteration in range(num_iterations):
-                output_snapshot = validation_buffers[iteration]
-
-                # Verify packed output shape
-                self.assertEqual(output_snapshot.shape, (packed_output_tokens, D))
-
-                # Verify packed output data
-                offset = 0
-                for peer in range(self.world_size):
-                    count = int(output_split_sizes[peer].item())
-                    actual = output_snapshot[offset : offset + count, :].cpu()
-                    expected_value = float(iteration * 10000 + peer * 1000 + self.rank)
-                    expected = torch.full_like(actual, expected_value)
-                    torch.testing.assert_close(
-                        actual,
-                        expected,
-                        msg=(
-                            f"Zero-copy packed iter {iteration}, Rank {self.rank}: Data "
-                            f"from peer {peer} incorrect. Expected {expected_value}, "
-                            f"got {actual[0, 0].item()}"
-                        ),
-                    )
-                    offset += count
-
-
-class TestOpMultiIterDifferentContentPackedNonGraphCopyIn(_OpTestBase):
-    """Test multiple iterations with different input content per iteration (packed, non-graph)."""
-
-    def test_multi_iter_different_content_packed_non_graph(self) -> None:
-        """Test packed output with different input content per iteration (non-graph mode).
-
-        This test verifies that packed output mode correctly handles different
-        data per iteration. Cross-rank synchronization ensures proper
-        cross-rank synchronization between iterations.
-        """
-        from comms.pipes.collectives.triton import AlltoallvOp
-
-        tokens_per_peer = 32
-        D = 16
-        max_input_tokens = tokens_per_peer * self.world_size
-        num_iterations = 3
-        packed_output_tokens = tokens_per_peer * self.world_size
-
-        input_split_sizes = torch.full(
-            (self.world_size,), tokens_per_peer, dtype=torch.int64, device=self.device
-        )
-        output_split_sizes = input_split_sizes.clone()
-
-        # Use a dedicated stream for operations (consistent with graph mode tests)
-        op_stream = torch.cuda.Stream()
-
-        # proper cross-rank synchronization via the BUFFER_READY signal protocol.
-        op = AlltoallvOp(
-            self.torchcomm,
-            max_input_tokens,
-            D,
-            self.dtype,
-            self.device,
-            max_recv_tokens_per_peer=tokens_per_peer,
-            sync_buffer=True,  # Required for multi-iteration
-        )
-
-        with op:
-            # Pre-allocate buffers to capture output state after each iteration.
-            # This avoids validation racing with the next iteration's buffer updates.
-            validation_buffers = []
-
-            for iteration in range(num_iterations):
-                with torch.cuda.stream(op_stream):
-                    # Build unique input tensor for this iteration
-                    input_tensor = torch.empty(
-                        max_input_tokens, D, dtype=self.dtype, device=self.device
-                    )
+                    # Update input tensor in-place with iteration-specific content
                     for peer in range(self.world_size):
                         start = peer * tokens_per_peer
                         value = float(iteration * 10000 + self.rank * 1000 + peer)
@@ -958,13 +607,13 @@ class TestOpMultiIterDifferentContentPackedNonGraphCopyIn(_OpTestBase):
 
                     output = op.alltoallv(
                         input_tensor,
+                        output_tensor,
                         output_split_sizes,
                         input_split_sizes,
                         packed_output_tokens=packed_output_tokens,
                     )
 
                     # Clone output on op_stream to capture this iteration's data
-                    # before the next iteration overwrites it
                     validation_buffers.append(output.clone())
 
             # Wait for all operations to complete
@@ -988,161 +637,36 @@ class TestOpMultiIterDifferentContentPackedNonGraphCopyIn(_OpTestBase):
                         actual,
                         expected,
                         msg=(
-                            f"Packed iter {iteration}, Rank {self.rank}: Data from peer "
-                            f"{peer} incorrect. Expected {expected_value}, got "
-                            f"{actual[0, 0].item()}"
+                            f"Zero-copy iter {iteration}, Rank {self.rank}: Data "
+                            f"from peer {peer} incorrect. Expected {expected_value}, "
+                            f"got {actual[0, 0].item()}"
                         ),
                     )
                     offset += count
 
 
-class TestOpMultiIterDifferentContentPackedGraph(_OpTestBase):
-    """Test CUDA graph replay with varying input data per iteration (packed output).
-
-    This test verifies the vLLM production use case (piecewise CUDA graphs):
-    - Capture a SINGLE graph with one alltoallv call
-    - Update input buffer OUTSIDE the graph before each replay
-    - Replay the same graph multiple times with different data
-    - Validate only the final iteration's output (CUDA graph internal
-      synchronization for intermediate snapshots has known limitations)
-    """
-
-    def test_multi_iter_different_content_packed_graph(self) -> None:
-        """Test packed output with single graph replayed with different data.
-
-        vLLM-style approach:
-        1. Pre-stage input data for all iterations
-        2. Capture a SINGLE graph with one alltoallv call
-        3. Before each replay: copy staged input to send buffer (outside graph)
-        4. Replay the same graph - it sees the updated buffer contents
-        5. Verify final output data matches expected values
-        """
-        from comms.pipes.collectives.triton import AlltoallvOp
-
-        tokens_per_peer = 32
-        D = 16
-        max_input_tokens = tokens_per_peer * self.world_size
-        num_iterations = 3
-        packed_output_tokens = tokens_per_peer * self.world_size
-
-        input_split_sizes = torch.full(
-            (self.world_size,), tokens_per_peer, dtype=torch.int64, device=self.device
-        )
-        output_split_sizes = input_split_sizes.clone()
-
-        op = AlltoallvOp(
-            self.torchcomm,
-            max_input_tokens,
-            D,
-            self.dtype,
-            self.device,
-            max_recv_tokens_per_peer=tokens_per_peer,
-            sync_buffer=True,  # Required for multi-iteration CUDA graph replays
-        )
-
-        with op:
-            # Get send buffer for zero-copy writes
-            send_buf = op.get_send_buffer(max_input_tokens)
-
-            # Pre-stage input data for ALL iterations before graph capture
-            staged_inputs = []
-            for iteration in range(num_iterations):
-                staged_input = torch.empty(
-                    max_input_tokens, D, dtype=self.dtype, device=self.device
-                )
-                for peer in range(self.world_size):
-                    start = peer * tokens_per_peer
-                    value = float(iteration * 10000 + self.rank * 1000 + peer)
-                    staged_input[start : start + tokens_per_peer] = value
-                staged_inputs.append(staged_input)
-
-            # Initialize send buffer with first iteration's data for warmup
-            send_buf.copy_(staged_inputs[0])
-
-            # Warmup (compile Triton kernels before graph capture)
-            op.alltoallv_from_buffer(
-                output_split_sizes,
-                input_split_sizes,
-                num_input_tokens=max_input_tokens,
-                packed_output_tokens=packed_output_tokens,
-            )
-            torch.cuda.synchronize()
-
-            # Capture a SINGLE graph with alltoallv
-            graph_stream = torch.cuda.Stream()
-            with torch.cuda.stream(graph_stream):
-                graph = torch.cuda.CUDAGraph()
-                # pyre-fixme[6]: Pyre doesn't recognize pool ID as valid _POOL_HANDLE
-                with torch.cuda.graph(graph, pool=op.get_graph_pool_id()):  # type: ignore[arg-type]
-                    graph_output = op.alltoallv_from_buffer(
-                        output_split_sizes,
-                        input_split_sizes,
-                        num_input_tokens=max_input_tokens,
-                        packed_output_tokens=packed_output_tokens,
-                    )
-            torch.cuda.synchronize()
-
-            # Replay the SAME graph multiple times with different input data
-            # and validate each iteration
-            for iteration in range(num_iterations):
-                with torch.cuda.stream(graph_stream):
-                    send_buf.copy_(staged_inputs[iteration])
-                    graph.replay()
-
-                # Wait for this iteration to complete before validating
-                graph_stream.synchronize()
-
-                # Clone output for this iteration
-                iter_output = graph_output.clone()
-
-                # Verify packed output shape
-                self.assertEqual(iter_output.shape, (packed_output_tokens, D))
-
-                # Verify packed data for this iteration
-                offset = 0
-                for peer in range(self.world_size):
-                    count = int(output_split_sizes[peer].item())
-                    actual = iter_output[offset : offset + count, :].cpu()
-                    expected_value = float(iteration * 10000 + peer * 1000 + self.rank)
-                    expected = torch.full_like(actual, expected_value)
-                    torch.testing.assert_close(
-                        actual,
-                        expected,
-                        msg=(
-                            f"Graph iteration {iteration}, Rank {self.rank}: "
-                            f"Packed data from peer {peer} incorrect. "
-                            f"Expected {expected_value}, got {actual[0, 0].item()}"
-                        ),
-                    )
-                    offset += count
+# =============================================================================
+# Test: Multi-Iteration with CUDA Graph
+# =============================================================================
 
 
-class TestOpMultiIterDifferentContentPackedGraphCopyIn(_OpTestBase):
-    """Test CUDA graph replay with varying input data per iteration (packed, copy-in).
+class TestOpMultiIterDifferentContentGraph(_OpTestBase):
+    """Test CUDA graph replay with varying input data per iteration.
 
     This test verifies the vLLM production use case (piecewise CUDA graphs):
     - Capture a SINGLE graph with one alltoallv call
     - Update input tensor OUTSIDE the graph before each replay
     - Replay the same graph multiple times with different data
-    - Validate only the final iteration's output (CUDA graph internal
-      synchronization for intermediate snapshots has known limitations)
+    - Validate output data per iteration
     """
 
-    def test_multi_iter_different_content_packed_graph_copy_in(self) -> None:
-        """Test packed output with single graph replayed with different data (copy-in).
-
-        vLLM-style approach with copy-in API:
-        1. Pre-stage input data for all iterations
-        2. Capture a SINGLE graph with one alltoallv call
-        3. Before each replay: copy staged input to input tensor (outside graph)
-        4. Replay the same graph - it sees the updated tensor contents
-        5. Verify final output data matches expected values
-        """
+    def test_multi_iter_different_content_graph(self) -> None:
         from comms.pipes.collectives.triton import AlltoallvOp
 
         tokens_per_peer = 32
         D = 16
         max_input_tokens = tokens_per_peer * self.world_size
+        total_output_tokens = tokens_per_peer * self.world_size
         num_iterations = 3
         packed_output_tokens = tokens_per_peer * self.world_size
 
@@ -1162,17 +686,14 @@ class TestOpMultiIterDifferentContentPackedGraphCopyIn(_OpTestBase):
         )
 
         with op:
-            # Create a persistent input tensor that will be reused
-            input_tensor = torch.empty(
-                max_input_tokens, D, dtype=self.dtype, device=self.device
-            )
+            # Allocate GIN-compatible tensors inside the with block
+            input_tensor = op.alloc_buffer((max_input_tokens, D))
+            output_tensor = op.alloc_buffer((total_output_tokens, D))
 
             # Pre-stage input data for ALL iterations before graph capture
             staged_inputs = []
             for iteration in range(num_iterations):
-                staged_input = torch.empty(
-                    max_input_tokens, D, dtype=self.dtype, device=self.device
-                )
+                staged_input = op.alloc_buffer((max_input_tokens, D))
                 for peer in range(self.world_size):
                     start = peer * tokens_per_peer
                     value = float(iteration * 10000 + self.rank * 1000 + peer)
@@ -1185,6 +706,7 @@ class TestOpMultiIterDifferentContentPackedGraphCopyIn(_OpTestBase):
             # Warmup (compile Triton kernels before graph capture)
             op.alltoallv(
                 input_tensor,
+                output_tensor,
                 output_split_sizes,
                 input_split_sizes,
                 packed_output_tokens=packed_output_tokens,
@@ -1195,10 +717,10 @@ class TestOpMultiIterDifferentContentPackedGraphCopyIn(_OpTestBase):
             graph_stream = torch.cuda.Stream()
             with torch.cuda.stream(graph_stream):
                 graph = torch.cuda.CUDAGraph()
-                # pyre-fixme[6]: Pyre doesn't recognize pool ID as valid _POOL_HANDLE
-                with torch.cuda.graph(graph, pool=op.get_graph_pool_id()):  # type: ignore[arg-type]
+                with torch.cuda.graph(graph):
                     graph_output = op.alltoallv(
                         input_tensor,
+                        output_tensor,
                         output_split_sizes,
                         input_split_sizes,
                         packed_output_tokens=packed_output_tokens,
@@ -1206,9 +728,9 @@ class TestOpMultiIterDifferentContentPackedGraphCopyIn(_OpTestBase):
             torch.cuda.synchronize()
 
             # Replay the SAME graph multiple times with different input data
-            # and validate each iteration
             for iteration in range(num_iterations):
                 with torch.cuda.stream(graph_stream):
+                    # Update input tensor in-place before replay
                     input_tensor.copy_(staged_inputs[iteration])
                     graph.replay()
 
@@ -1240,187 +762,6 @@ class TestOpMultiIterDifferentContentPackedGraphCopyIn(_OpTestBase):
                     offset += count
 
 
-def _update_send_buffer_kernel(
-    send_buf: torch.Tensor,
-    loop_index: torch.Tensor,
-    base_value: float,
-    tokens_per_peer: int,
-    world_size: int,
-) -> None:
-    """Simple kernel to update send buffer with loop-iteration-specific values.
-
-    This kernel is captured in the CUDA graph along with the alltoallv call.
-    On each iteration of the captured loop, it reads the loop_index tensor
-    (which was filled with a different constant for each iteration during capture)
-    and updates the send buffer accordingly.
-
-    IMPORTANT: This function must be CUDA graph-compatible. We cannot use
-    .item() or any host-CPU sync operations inside graph capture. Instead,
-    we use pure tensor operations that stay on the GPU.
-
-    Args:
-        send_buf: The send buffer to update (shape: [max_tokens, D])
-        loop_index: Tensor containing the current loop iteration index
-        base_value: Base value (typically rank * 1000)
-        tokens_per_peer: Number of tokens per peer
-        world_size: Number of peers
-    """
-    # Compute iteration-specific offset using GPU tensor ops (no .item()!)
-    # iter_offset = loop_index * 10000 (stays on GPU)
-    iter_offset = loop_index * 10000
-
-    # Update buffer with iteration-specific values using broadcasting
-    # Value format: loop_iter * 10000 + rank * 1000 + peer
-    # We use tensor operations that are CUDA graph-compatible
-    for peer in range(world_size):
-        start = peer * tokens_per_peer
-        end = start + tokens_per_peer
-        # Use iter_offset tensor (on GPU) + scalars for base_value and peer
-        # The tensor + scalar operations are graph-compatible
-        value = iter_offset.float() + base_value + peer
-        send_buf[start:end, :] = value
-
-
-class TestOpMultiIterDifferentContentPackedGraphLoop(_OpTestBase):
-    """Test multi-iteration with loop captured in graph (packed output).
-
-    Validates only the final iteration's output per replay (CUDA graph internal
-    synchronization for intermediate snapshots has known limitations).
-    """
-
-    def test_multi_iter_different_content_packed_graph_loop(self) -> None:
-        """Test packed output with iteration loop captured in CUDA graph.
-
-        Unlike the regular graph test where we capture one iteration and replay
-        multiple times, here we capture the entire iteration loop in the graph
-        and replay the loop as a whole.
-
-        Each iteration within the captured loop sees DIFFERENT data because we
-        include a compute kernel that updates the send buffer based on a
-        loop_index tensor. The loop_index.fill_(i) operations are captured
-        with different constant values for each iteration.
-
-        This tests the scenario where multiple alltoallv calls with varying
-        data are captured in a single CUDA graph with packed output mode.
-        Only validates the final loop iteration's output per replay.
-        """
-        from comms.pipes.collectives.triton import AlltoallvOp
-
-        tokens_per_peer = 32
-        D = 16
-        max_input_tokens = tokens_per_peer * self.world_size
-        num_iterations_in_loop = 3  # Number of iterations captured in the loop
-        packed_output_tokens = tokens_per_peer * self.world_size
-
-        input_split_sizes = torch.full(
-            (self.world_size,), tokens_per_peer, dtype=torch.int64, device=self.device
-        )
-        output_split_sizes = input_split_sizes.clone()
-
-        op = AlltoallvOp(
-            self.torchcomm,
-            max_input_tokens,
-            D,
-            self.dtype,
-            self.device,
-            max_recv_tokens_per_peer=tokens_per_peer,
-            sync_buffer=True,  # Required for multi-iteration CUDA graph replays
-        )
-
-        with op:
-            # Get send buffer for zero-copy writes
-            send_buf = op.get_send_buffer(max_input_tokens)
-
-            # Tensor to hold the current loop index (updated inside the captured loop)
-            loop_index = torch.zeros(1, dtype=torch.int64, device=self.device)
-
-            # Base value for this rank (rank * 1000)
-            base_value = float(self.rank * 1000)
-
-            # Warmup (compile Triton kernels before graph capture)
-            _update_send_buffer_kernel(
-                send_buf, loop_index, base_value, tokens_per_peer, self.world_size
-            )
-            op.alltoallv_from_buffer(
-                output_split_sizes,
-                input_split_sizes,
-                num_input_tokens=max_input_tokens,
-                packed_output_tokens=packed_output_tokens,
-            )
-            torch.cuda.synchronize()
-
-            # Capture the entire iteration loop in a single graph.
-            # We only keep the final iteration's output for validation.
-            graph_stream = torch.cuda.Stream()
-
-            with torch.cuda.stream(graph_stream):
-                graph = torch.cuda.CUDAGraph()
-                # pyre-fixme[6]: Pyre doesn't recognize pool ID as valid _POOL_HANDLE
-                with torch.cuda.graph(graph, pool=op.get_graph_pool_id()):  # type: ignore[arg-type]
-                    for loop_iter in range(num_iterations_in_loop):
-                        # Update loop index - this is captured with constant loop_iter
-                        loop_index.fill_(loop_iter)
-
-                        # Update send buffer based on loop index
-                        _update_send_buffer_kernel(
-                            send_buf,
-                            loop_index,
-                            base_value,
-                            tokens_per_peer,
-                            self.world_size,
-                        )
-
-                        # Perform alltoallv
-                        graph_output = op.alltoallv_from_buffer(
-                            output_split_sizes,
-                            input_split_sizes,
-                            num_input_tokens=max_input_tokens,
-                            packed_output_tokens=packed_output_tokens,
-                        )
-            torch.cuda.synchronize()
-
-            # Replay the captured loop multiple times and validate after each replay.
-            num_replays = 2
-
-            for replay in range(num_replays):
-                with torch.cuda.stream(graph_stream):
-                    graph.replay()
-
-                # Wait for this replay to complete before validating
-                graph_stream.synchronize()
-
-                # Clone output after this replay
-                replay_output = graph_output.clone()
-
-                # Verify packed output shape
-                self.assertEqual(replay_output.shape, (packed_output_tokens, D))
-
-                # Validate the final loop iteration's output for this replay.
-                # Each replay produces the same final loop iteration output.
-                final_loop_iter = num_iterations_in_loop - 1
-
-                # Verify packed output data for final loop iteration
-                offset = 0
-                for peer in range(self.world_size):
-                    count = int(output_split_sizes[peer].item())
-                    actual = replay_output[offset : offset + count, :].cpu()
-                    # Expected: final_loop_iter * 10000 + peer * 1000 + self.rank
-                    expected_value = float(
-                        final_loop_iter * 10000 + peer * 1000 + self.rank
-                    )
-                    expected = torch.full_like(actual, expected_value)
-                    torch.testing.assert_close(
-                        actual,
-                        expected,
-                        msg=(
-                            f"Replay {replay}, final loop iteration {final_loop_iter}, "
-                            f"Rank {self.rank}: Data from peer {peer} incorrect. "
-                            f"Expected {expected_value}, got {actual[0, 0].item()}"
-                        ),
-                    )
-                    offset += count
-
-
 def _update_input_tensor_kernel(
     input_tensor: torch.Tensor,
     loop_index: torch.Tensor,
@@ -1429,9 +770,6 @@ def _update_input_tensor_kernel(
     world_size: int,
 ) -> None:
     """Simple kernel to update input tensor with loop-iteration-specific values.
-
-    Similar to _update_send_buffer_kernel but for copy-in mode where we update
-    the user's input tensor instead of the send buffer.
 
     IMPORTANT: This function must be CUDA graph-compatible. We cannot use
     .item() or any host-CPU sync operations inside graph capture. Instead,
@@ -1455,23 +793,23 @@ def _update_input_tensor_kernel(
         input_tensor[start:end, :] = value
 
 
-class TestOpMultiIterDifferentContentPackedGraphLoopCopyIn(_OpTestBase):
-    """Test multi-iteration with loop captured in graph (packed, copy-in).
+class TestOpMultiIterDifferentContentGraphLoop(_OpTestBase):
+    """Test CUDA graph replay with a loop of alltoallv calls captured in the graph.
 
-    Validates only the final iteration's output per replay (CUDA graph internal
-    synchronization for intermediate snapshots has known limitations).
+    This test verifies capturing multiple iterations inside a single graph:
+    - Capture a SINGLE graph containing a LOOP of multiple alltoallv calls
+    - Update input tensor INSIDE the graph using GPU-compatible operations
+    - Replay the same graph multiple times
+    - Validate output data for each iteration per replay
     """
 
-    def test_multi_iter_different_content_packed_graph_loop_copy_in(self) -> None:
-        """Test packed output with iteration loop captured in CUDA graph (copy-in).
-
-        Only validates the final loop iteration's output per replay.
-        """
+    def test_multi_iter_different_content_graph_loop(self) -> None:
         from comms.pipes.collectives.triton import AlltoallvOp
 
         tokens_per_peer = 32
         D = 16
         max_input_tokens = tokens_per_peer * self.world_size
+        total_output_tokens = tokens_per_peer * self.world_size
         num_iterations_in_loop = 3
         packed_output_tokens = tokens_per_peer * self.world_size
 
@@ -1491,19 +829,26 @@ class TestOpMultiIterDifferentContentPackedGraphLoopCopyIn(_OpTestBase):
         )
 
         with op:
-            input_tensor = torch.empty(
-                max_input_tokens, D, dtype=self.dtype, device=self.device
-            )
+            # Allocate GIN-compatible tensors inside the with block
+            input_tensor = op.alloc_buffer((max_input_tokens, D))
+            output_tensor = op.alloc_buffer((total_output_tokens, D))
             loop_index = torch.zeros(1, dtype=torch.int64, device=self.device)
-
             base_value = float(self.rank * 1000)
+
+            # Allocate separate storage tensors for each iteration's output
+            iter_outputs = [
+                op.alloc_buffer((packed_output_tokens, D))
+                for _ in range(num_iterations_in_loop)
+            ]
 
             # Warmup
             _update_input_tensor_kernel(
                 input_tensor, loop_index, base_value, tokens_per_peer, self.world_size
             )
+            # First call takes ownership of tensors
             op.alltoallv(
                 input_tensor,
+                output_tensor,
                 output_split_sizes,
                 input_split_sizes,
                 packed_output_tokens=packed_output_tokens,
@@ -1515,8 +860,7 @@ class TestOpMultiIterDifferentContentPackedGraphLoopCopyIn(_OpTestBase):
 
             with torch.cuda.stream(graph_stream):
                 graph = torch.cuda.CUDAGraph()
-                # pyre-fixme[6]: Pyre doesn't recognize pool ID as valid _POOL_HANDLE
-                with torch.cuda.graph(graph, pool=op.get_graph_pool_id()):  # type: ignore[arg-type]
+                with torch.cuda.graph(graph):
                     for loop_iter in range(num_iterations_in_loop):
                         loop_index.fill_(loop_iter)
                         _update_input_tensor_kernel(
@@ -1528,10 +872,13 @@ class TestOpMultiIterDifferentContentPackedGraphLoopCopyIn(_OpTestBase):
                         )
                         graph_output = op.alltoallv(
                             input_tensor,
+                            output_tensor,
                             output_split_sizes,
                             input_split_sizes,
                             packed_output_tokens=packed_output_tokens,
                         )
+                        # Copy output to iteration-specific storage
+                        iter_outputs[loop_iter].copy_(graph_output)
             torch.cuda.synchronize()
 
             # Replay the captured loop multiple times and validate after each replay.
@@ -1544,36 +891,32 @@ class TestOpMultiIterDifferentContentPackedGraphLoopCopyIn(_OpTestBase):
                 # Wait for this replay to complete before validating
                 graph_stream.synchronize()
 
-                # Clone output after this replay
-                replay_output = graph_output.clone()
+                # Validate output for each loop iteration
+                for loop_iter in range(num_iterations_in_loop):
+                    iter_output = iter_outputs[loop_iter].clone()
 
-                # Verify packed output shape
-                self.assertEqual(replay_output.shape, (packed_output_tokens, D))
+                    # Verify packed output shape
+                    self.assertEqual(iter_output.shape, (packed_output_tokens, D))
 
-                # Validate the final loop iteration's output for this replay.
-                # Each replay produces the same final loop iteration output.
-                final_loop_iter = num_iterations_in_loop - 1
-
-                # Verify packed output data for final loop iteration
-                offset = 0
-                for peer in range(self.world_size):
-                    count = int(output_split_sizes[peer].item())
-                    actual = replay_output[offset : offset + count, :].cpu()
-                    # Expected: final_loop_iter * 10000 + peer * 1000 + self.rank
-                    expected_value = float(
-                        final_loop_iter * 10000 + peer * 1000 + self.rank
-                    )
-                    expected = torch.full_like(actual, expected_value)
-                    torch.testing.assert_close(
-                        actual,
-                        expected,
-                        msg=(
-                            f"Replay {replay}, final loop iteration {final_loop_iter}, "
-                            f"Rank {self.rank}: Data from peer {peer} incorrect. "
-                            f"Expected {expected_value}, got {actual[0, 0].item()}"
-                        ),
-                    )
-                    offset += count
+                    # Verify packed output data for this iteration
+                    offset = 0
+                    for peer in range(self.world_size):
+                        count = int(output_split_sizes[peer].item())
+                        actual = iter_output[offset : offset + count, :].cpu()
+                        expected_value = float(
+                            loop_iter * 10000 + peer * 1000 + self.rank
+                        )
+                        expected = torch.full_like(actual, expected_value)
+                        torch.testing.assert_close(
+                            actual,
+                            expected,
+                            msg=(
+                                f"Replay {replay}, loop iteration {loop_iter}, "
+                                f"Rank {self.rank}: Data from peer {peer} incorrect. "
+                                f"Expected {expected_value}, got {actual[0, 0].item()}"
+                            ),
+                        )
+                        offset += count
 
 
 # =============================================================================
@@ -1590,15 +933,7 @@ class TestOpSyncBufferBasic(_OpTestBase):
         tokens_per_peer = 64
         D = 16
         max_input_tokens = tokens_per_peer * self.world_size
-
-        input_tensor = torch.empty(
-            max_input_tokens, D, dtype=self.dtype, device=self.device
-        )
-        for peer in range(self.world_size):
-            start = peer * tokens_per_peer
-            input_tensor[start : start + tokens_per_peer] = float(
-                self.rank * 1000 + peer
-            )
+        total_output_tokens = tokens_per_peer * self.world_size
 
         input_split_sizes = torch.full(
             (self.world_size,), tokens_per_peer, dtype=torch.int64, device=self.device
@@ -1616,7 +951,19 @@ class TestOpSyncBufferBasic(_OpTestBase):
             sync_buffer=True,  # Enable buffer-ready synchronization
         )
         with op:
-            output = op.alltoallv(input_tensor, output_split_sizes, input_split_sizes)
+            # Allocate GIN-compatible tensors
+            input_tensor = op.alloc_buffer((max_input_tokens, D))
+            output_tensor = op.alloc_buffer((total_output_tokens, D))
+
+            for peer in range(self.world_size):
+                start = peer * tokens_per_peer
+                input_tensor[start : start + tokens_per_peer] = float(
+                    self.rank * 1000 + peer
+                )
+
+            output = op.alltoallv(
+                input_tensor, output_tensor, output_split_sizes, input_split_sizes
+            )
 
         torch.cuda.synchronize()
         total_tokens = tokens_per_peer * self.world_size
@@ -1637,16 +984,8 @@ class TestOpSyncBufferRepeatedCalls(_OpTestBase):
         tokens_per_peer = 64
         D = 16
         max_input_tokens = tokens_per_peer * self.world_size
+        total_output_tokens = tokens_per_peer * self.world_size
         num_iterations = 5
-
-        input_tensor = torch.empty(
-            max_input_tokens, D, dtype=self.dtype, device=self.device
-        )
-        for peer in range(self.world_size):
-            start = peer * tokens_per_peer
-            input_tensor[start : start + tokens_per_peer] = float(
-                self.rank * 1000 + peer
-            )
 
         input_split_sizes = torch.full(
             (self.world_size,), tokens_per_peer, dtype=torch.int64, device=self.device
@@ -1663,10 +1002,19 @@ class TestOpSyncBufferRepeatedCalls(_OpTestBase):
             sync_buffer=True,
         )
         with op:
+            # Allocate GIN-compatible tensors
+            input_tensor = op.alloc_buffer((max_input_tokens, D))
+            output_tensor = op.alloc_buffer((total_output_tokens, D))
+
+            for peer in range(self.world_size):
+                start = peer * tokens_per_peer
+                input_tensor[start : start + tokens_per_peer] = float(
+                    self.rank * 1000 + peer
+                )
             output = None
             for _iteration in range(num_iterations):
                 output = op.alltoallv(
-                    input_tensor, output_split_sizes, input_split_sizes
+                    input_tensor, output_tensor, output_split_sizes, input_split_sizes
                 )
             torch.cuda.synchronize()
 
@@ -1678,50 +1026,6 @@ class TestOpSyncBufferRepeatedCalls(_OpTestBase):
             )
 
 
-class TestOpSyncBufferZeroCopy(_OpTestBase):
-    """Test AlltoallvOp sync_buffer with zero-copy send buffer."""
-
-    def test_sync_buffer_zero_copy(self) -> None:
-        from comms.pipes.collectives.triton import AlltoallvOp
-
-        tokens_per_peer = 64
-        D = 16
-        max_input_tokens = tokens_per_peer * self.world_size
-        total_tokens = tokens_per_peer * self.world_size
-
-        input_split_sizes = torch.full(
-            (self.world_size,), tokens_per_peer, dtype=torch.int64, device=self.device
-        )
-        output_split_sizes = input_split_sizes.clone()
-
-        op = AlltoallvOp(
-            self.torchcomm,
-            max_input_tokens,
-            D,
-            self.dtype,
-            self.device,
-            max_recv_tokens_per_peer=tokens_per_peer,
-            sync_buffer=True,
-        )
-
-        # Fill send buffer BEFORE setup
-        send_buf = op.get_send_buffer(total_tokens)
-        for peer in range(self.world_size):
-            start = peer * tokens_per_peer
-            send_buf[start : start + tokens_per_peer] = float(self.rank * 1000 + peer)
-
-        with op:
-            output = op.alltoallv_from_buffer(
-                output_split_sizes,
-                input_split_sizes,
-                num_input_tokens=total_tokens,
-            )
-
-        torch.cuda.synchronize()
-        self.assertEqual(output.shape, (total_tokens, D))
-        self._verify_packed_data(output, D, output_split_sizes, "sync_buffer_zero_copy")
-
-
 class TestOpSyncBufferPackedOutput(_OpTestBase):
     """Test AlltoallvOp sync_buffer with packed output."""
 
@@ -1731,23 +1035,15 @@ class TestOpSyncBufferPackedOutput(_OpTestBase):
         tokens_per_peer = 64
         D = 16
         max_input_tokens = tokens_per_peer * self.world_size
-
-        input_tensor = torch.empty(
-            max_input_tokens, D, dtype=self.dtype, device=self.device
-        )
-        for peer in range(self.world_size):
-            start = peer * tokens_per_peer
-            input_tensor[start : start + tokens_per_peer] = float(
-                self.rank * 1000 + peer
-            )
+        total_output_tokens = tokens_per_peer * self.world_size
 
         input_split_sizes = torch.full(
             (self.world_size,), tokens_per_peer, dtype=torch.int64, device=self.device
         )
         output_split_sizes = input_split_sizes.clone()
-        total_output_tokens = int(output_split_sizes.sum().item())
+        total_packed_tokens = int(output_split_sizes.sum().item())
 
-        # Create op with both sync_buffer and packed_output
+        # Create op with sync_buffer
         op = AlltoallvOp(
             self.torchcomm,
             max_input_tokens,
@@ -1758,17 +1054,27 @@ class TestOpSyncBufferPackedOutput(_OpTestBase):
             sync_buffer=True,
         )
         with op:
+            # Allocate GIN-compatible tensors
+            input_tensor = op.alloc_buffer((max_input_tokens, D))
+            output_tensor = op.alloc_buffer((total_output_tokens, D))
+
+            for peer in range(self.world_size):
+                start = peer * tokens_per_peer
+                input_tensor[start : start + tokens_per_peer] = float(
+                    self.rank * 1000 + peer
+                )
+
             # Pass packed_output_tokens to enable CUDA graph compatibility
-            # (avoids .item() call during graph capture)
             output = op.alltoallv(
                 input_tensor,
+                output_tensor,
                 output_split_sizes,
                 input_split_sizes,
-                packed_output_tokens=total_output_tokens,
+                packed_output_tokens=total_packed_tokens,
             )
 
         torch.cuda.synchronize()
-        self.assertEqual(output.shape, (total_output_tokens, D))
+        self.assertEqual(output.shape, (total_packed_tokens, D))
 
 
 class TestOpSyncBufferAttribute(_OpTestBase):
@@ -1793,7 +1099,7 @@ class TestOpSyncBufferAttribute(_OpTestBase):
         )
         self.assertTrue(op_sync.sync_buffer)
 
-        # Create op with sync_buffer=False (default)
+        # Create op with sync_buffer=False
         op_non_sync = AlltoallvOp(
             self.torchcomm,
             max_input_tokens,
@@ -1807,11 +1113,81 @@ class TestOpSyncBufferAttribute(_OpTestBase):
 
 
 # =============================================================================
+# Test: release_buffers() API
+# =============================================================================
+
+
+class TestOpReleaseBuffers(_OpTestBase):
+    """Test release_buffers() allows switching to new tensors."""
+
+    def test_release_buffers_allows_new_tensors(self) -> None:
+        from comms.pipes.collectives.triton import AlltoallvOp
+
+        tokens_per_peer = 32
+        D = 16
+        max_input_tokens = tokens_per_peer * self.world_size
+        total_output_tokens = tokens_per_peer * self.world_size
+
+        split_sizes = torch.full(
+            (self.world_size,), tokens_per_peer, dtype=torch.int64, device=self.device
+        )
+
+        op = AlltoallvOp(
+            self.torchcomm,
+            max_input_tokens,
+            D,
+            self.dtype,
+            self.device,
+            max_recv_tokens_per_peer=tokens_per_peer,
+        )
+
+        with op:
+            # Allocate first set of GIN-compatible tensors
+            input_tensor1 = op.alloc_buffer((max_input_tokens, D))
+            output_tensor1 = op.alloc_buffer((total_output_tokens, D))
+
+            for peer in range(self.world_size):
+                start = peer * tokens_per_peer
+                input_tensor1[start : start + tokens_per_peer] = float(
+                    self.rank * 1000 + peer
+                )
+
+            # First call takes ownership of tensor1 set
+            output1 = op.alltoallv(
+                input_tensor1, output_tensor1, split_sizes, split_sizes
+            )
+            torch.cuda.synchronize()
+
+            # Release buffers
+            op.release_buffers()
+
+            # Allocate second set of GIN-compatible tensors
+            input_tensor2 = op.alloc_buffer((max_input_tokens, D))
+            output_tensor2 = op.alloc_buffer((total_output_tokens, D))
+
+            for peer in range(self.world_size):
+                start = peer * tokens_per_peer
+                input_tensor2[start : start + tokens_per_peer] = float(
+                    self.rank * 1000 + peer + 100
+                )
+
+            # Should work with new tensors after release
+            output2 = op.alltoallv(
+                input_tensor2, output_tensor2, split_sizes, split_sizes
+            )
+            torch.cuda.synchronize()
+
+            # Verify output shapes
+            total_tokens = tokens_per_peer * self.world_size
+            self.assertEqual(output1.shape, (total_tokens, D))
+            self.assertEqual(output2.shape, (total_tokens, D))
+
+
+# =============================================================================
 # Test: Intentional Race Condition for Debugging
 # =============================================================================
 
 
-@unittest.skipIf(not _skip_if_not_ready(), "Skipping without device API test flag")
 class TestOpRaceConditionDebug(_OpTestBase):
     """
     Test that intentionally creates a race condition by delaying graph completion
@@ -1819,7 +1195,7 @@ class TestOpRaceConditionDebug(_OpTestBase):
     by comparing failing runs with passing runs.
 
     The race condition occurs when:
-    1. Some ranks finish their graph early and start send_buf.copy_() for next iteration
+    1. Some ranks finish their graph early and start input_tensor updates for next iteration
     2. Other ranks are still executing the previous graph and reading from send buffers
     3. The early ranks overwrite their send buffers while other ranks are still reading
 
@@ -1852,6 +1228,7 @@ class TestOpRaceConditionDebug(_OpTestBase):
         tokens_per_peer = 32
         D = 16
         max_input_tokens = tokens_per_peer * self.world_size
+        total_output_tokens = tokens_per_peer * self.world_size
         num_iterations = 5  # More iterations to increase chance of hitting race
         packed_output_tokens = tokens_per_peer * self.world_size
 
@@ -1875,13 +1252,15 @@ class TestOpRaceConditionDebug(_OpTestBase):
         )
 
         with op:
-            send_buf = op.get_send_buffer(max_input_tokens)
+            # Allocate GIN-compatible tensors inside the with block
+            input_tensor = op.alloc_buffer((max_input_tokens, D))
+            output_tensor = op.alloc_buffer((total_output_tokens, D))
 
             # Pre-stage all iteration inputs to verify data integrity
             # Value encoding: iteration * 10000 + my_rank * 1000 + dest_rank
             staged_inputs = []
             for iteration in range(num_iterations):
-                staged_input = torch.zeros_like(send_buf)
+                staged_input = op.alloc_buffer((max_input_tokens, D))
                 for dest_rank in range(self.world_size):
                     start_idx = dest_rank * tokens_per_peer
                     end_idx = start_idx + tokens_per_peer
@@ -1890,19 +1269,21 @@ class TestOpRaceConditionDebug(_OpTestBase):
                 staged_inputs.append(staged_input)
 
             # Warmup iteration to establish baseline signals
-            send_buf.copy_(staged_inputs[0])
-            op.alltoallv_from_buffer(
+            # First call takes ownership of input_tensor and output_tensor
+            input_tensor.copy_(staged_inputs[0])
+            op.alltoallv(
+                input_tensor,
+                output_tensor,
                 output_split_sizes,
                 input_split_sizes,
-                num_input_tokens=max_input_tokens,
                 packed_output_tokens=packed_output_tokens,
             )
             torch.cuda.synchronize()
 
             # Create a staging buffer for graph capture
-            # The staging buffer holds the input data that will be copied to send_buf
+            # The staging buffer holds the input data that will be copied to input_tensor
             # inside the graph, AFTER the BUFFER_READY wait
-            staging_buffer = torch.zeros_like(send_buf)
+            staging_buffer = op.alloc_buffer((max_input_tokens, D))
 
             # Capture graph with copy INSIDE the graph
             # This ensures the copy happens on the GPU stream, synchronized with
@@ -1910,16 +1291,16 @@ class TestOpRaceConditionDebug(_OpTestBase):
             graph_stream = torch.cuda.Stream()
             with torch.cuda.stream(graph_stream):
                 graph = torch.cuda.CUDAGraph()
-                # pyre-fixme[6]: Pyre doesn't recognize pool ID as valid _POOL_HANDLE
-                with torch.cuda.graph(graph, pool=op.get_graph_pool_id()):  # type: ignore[arg-type]
-                    # Copy from staging to send_buf INSIDE the graph
+                with torch.cuda.graph(graph):
+                    # Copy from staging to input_tensor INSIDE the graph
                     # This copy will be captured and replayed
-                    send_buf.copy_(staging_buffer)
+                    input_tensor.copy_(staging_buffer)
                     # Then run alltoallv
-                    graph_output = op.alltoallv_from_buffer(
+                    graph_output = op.alltoallv(
+                        input_tensor,
+                        output_tensor,
                         output_split_sizes,
                         input_split_sizes,
-                        num_input_tokens=max_input_tokens,
                         packed_output_tokens=packed_output_tokens,
                     )
                     # Add spin loop AFTER alltoallv for ODD ranks only
@@ -1986,13 +1367,11 @@ class TestOpRaceConditionDebug(_OpTestBase):
                 )
 
 
-@unittest.skipIf(not _skip_if_not_ready(), "Skipping without device API test flag")
 class TestOpRaceConditionDebugMultiBlock(_OpTestBase):
-    """
-    Test race conditions with BLOCKS_PER_PEER > 1 code paths.
+    """Test race conditions with BLOCKS_PER_PEER > 1 code paths.
 
     Similar to TestOpRaceConditionDebug but uses larger message sizes to trigger
-    multi-block code paths (BLOCKS_PER_PEER = 8 for 64KB-256KB messages).
+    multi-block code paths (BLOCKS_PER_PEER = 8 for 64KB to 256KB messages).
 
     The multi-block path uses atomic completion counters and different signaling
     logic that needs to be tested separately.
@@ -2025,6 +1404,7 @@ class TestOpRaceConditionDebugMultiBlock(_OpTestBase):
         tokens_per_peer = 2048
         D = 32
         max_input_tokens = tokens_per_peer * self.world_size
+        total_output_tokens = tokens_per_peer * self.world_size
         num_iterations = 5
         packed_output_tokens = tokens_per_peer * self.world_size
 
@@ -2055,13 +1435,15 @@ class TestOpRaceConditionDebugMultiBlock(_OpTestBase):
         )
 
         with op:
-            send_buf = op.get_send_buffer(max_input_tokens)
+            # Allocate GIN-compatible tensors inside the with block
+            input_tensor = op.alloc_buffer((max_input_tokens, D))
+            output_tensor = op.alloc_buffer((total_output_tokens, D))
 
             # Pre-stage all iteration inputs to verify data integrity
             # Value encoding: iteration * 10000 + my_rank * 1000 + dest_rank
             staged_inputs = []
             for iteration in range(num_iterations):
-                staged_input = torch.zeros_like(send_buf)
+                staged_input = op.alloc_buffer((max_input_tokens, D))
                 for dest_rank in range(self.world_size):
                     start_idx = dest_rank * tokens_per_peer
                     end_idx = start_idx + tokens_per_peer
@@ -2070,29 +1452,31 @@ class TestOpRaceConditionDebugMultiBlock(_OpTestBase):
                 staged_inputs.append(staged_input)
 
             # Warmup iteration to establish baseline signals
-            send_buf.copy_(staged_inputs[0])
-            op.alltoallv_from_buffer(
+            # First call takes ownership of input_tensor and output_tensor
+            input_tensor.copy_(staged_inputs[0])
+            op.alltoallv(
+                input_tensor,
+                output_tensor,
                 output_split_sizes,
                 input_split_sizes,
-                num_input_tokens=max_input_tokens,
                 packed_output_tokens=packed_output_tokens,
             )
             torch.cuda.synchronize()
 
             # Create a staging buffer for graph capture
-            staging_buffer = torch.zeros_like(send_buf)
+            staging_buffer = op.alloc_buffer((max_input_tokens, D))
 
             # Capture graph with copy INSIDE the graph
             graph_stream = torch.cuda.Stream()
             with torch.cuda.stream(graph_stream):
                 graph = torch.cuda.CUDAGraph()
-                # pyre-fixme[6]: Pyre doesn't recognize pool ID as valid _POOL_HANDLE
-                with torch.cuda.graph(graph, pool=op.get_graph_pool_id()):  # type: ignore[arg-type]
-                    send_buf.copy_(staging_buffer)
-                    graph_output = op.alltoallv_from_buffer(
+                with torch.cuda.graph(graph):
+                    input_tensor.copy_(staging_buffer)
+                    graph_output = op.alltoallv(
+                        input_tensor,
+                        output_tensor,
                         output_split_sizes,
                         input_split_sizes,
-                        num_input_tokens=max_input_tokens,
                         packed_output_tokens=packed_output_tokens,
                     )
                     # Add spin loop AFTER alltoallv for ODD ranks only
@@ -2159,43 +1543,27 @@ class TestOpRaceConditionDebugMultiBlock(_OpTestBase):
 # =============================================================================
 
 ALL_TEST_CLASSES = [
-    TestOpUniformSplitsCopyIn,
-    TestOpZeroCopy,
+    TestOpUniformSplitsZeroCopy,
     TestOpRepeatedCalls,
     TestOpGetOrCreate,
     TestOpDoubleSetupRaises,
     TestOpAlltoallvWithoutSetupRaises,
     TestOpOversizedInputRaises,
-    TestOpOversizedGetSendBufferRaises,
+    TestOpTensorIdentityEnforced,
     TestOpTeardownIdempotent,
     TestOpPackedOutputUniform,
-    TestOpFillSendBufferBasic,
-    # Multi-iteration tests (different content per iteration)
-    TestOpFillSendBufferBackToBack,
-    TestOpFillSendBufferOversizedRaises,
-    TestOpFillSendBufferWithExplicitNumTokens,
+    TestOpReleaseBuffers,
     # Sync buffer mode tests
     TestOpSyncBufferBasic,
     TestOpSyncBufferRepeatedCalls,
-    TestOpSyncBufferZeroCopy,
     TestOpSyncBufferPackedOutput,
     TestOpSyncBufferAttribute,
-    # Multi-iteration tests (different content per iteration)
-    # Non-graph: zero-copy API
-    TestOpMultiIterDifferentContentPackedNonGraph,
-    # Non-graph: copy-in API
-    TestOpMultiIterDifferentContentPackedNonGraphCopyIn,
-    # Graph: zero-copy API
-    TestOpMultiIterDifferentContentPackedGraph,
-    # Graph: copy-in API
-    TestOpMultiIterDifferentContentPackedGraphCopyIn,
-    # GraphLoop: zero-copy API (loop captured in graph)
-    TestOpMultiIterDifferentContentPackedGraphLoop,
-    # GraphLoop: copy-in API (loop captured in graph)
-    TestOpMultiIterDifferentContentPackedGraphLoopCopyIn,
-    # Debug: intentional race condition test (BLOCKS_PER_PEER == 1)
+    # Multi-iteration tests
+    TestOpMultiIterDifferentContentNonGraph,
+    TestOpMultiIterDifferentContentGraph,
+    TestOpMultiIterDifferentContentGraphLoop,
+    # Race condition debug tests
     TestOpRaceConditionDebug,
-    # Debug: intentional race condition test (BLOCKS_PER_PEER > 1)
     TestOpRaceConditionDebugMultiBlock,
 ]
 

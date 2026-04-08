@@ -9,17 +9,21 @@ directly from Triton kernels without CPU involvement.
 
 Simplified Wrapper (Recommended)
 --------------------------------
-For most users, the ``AlltoallvOp`` wrapper provides a much simpler,
-token-level API that handles buffer registration and iteration tracking
-automatically (no offset exchange needed due to fixed-slot layout)::
+For most users, the ``AlltoallvOp`` wrapper provides a simpler token-level API::
 
     from comms.pipes.collectives.triton import AlltoallvOp
 
-    op = AlltoallvOp(comm, max_input_tokens=1024, D=4096,
-                     dtype=torch.bfloat16, device="cuda:0")
+    # Allocate tensors (user owns the memory - no internal allocation)
+    input_tensor = torch.empty(max_tokens, D, dtype=dtype, device=device)
+    output_tensor = torch.empty(world_size * max_recv_per_peer, D,
+                                dtype=dtype, device=device)
+
+    op = AlltoallvOp(comm, max_tokens, D, dtype, device, max_recv_per_peer)
     with op:
-        output = op.alltoallv(input_tensor, output_split_sizes,
-                              input_split_sizes)
+        # Zero-copy: tensors become the registered send/recv buffers
+        input_tensor[:] = my_data
+        output = op.alltoallv(input_tensor, output_tensor,
+                              output_split_sizes, input_split_sizes)
 
 See ``AlltoallvOp`` for full documentation.
 
@@ -99,10 +103,6 @@ def _get_iteration_tensor(world_size: int, device: torch.device) -> torch.Tensor
 
     The tensor is allocated once on first use and reused across all
     subsequent calls. The iteration value grows monotonically.
-
-    IMPORTANT: This must be called BEFORE GIN (GPU-Initiated NCCL) is
-    activated via get_device_window(). Once GIN is active, regular CUDA
-    allocations fail with cudaErrorHostMemoryAlreadyRegistered.
     """
     key = (device, world_size)
     if key not in _ITERATION_TENSOR_CACHE:
@@ -130,16 +130,12 @@ def _reset_iteration_counter(world_size: int, device: torch.device) -> None:
     - This ensures send blocks don't wait for signals from "previous iterations"
       that were actually in a different window's signal memory
 
-    Note: This function uses a GIN-safe Triton kernel to reset the counter,
-    so it's safe to call after GIN is activated.
-
     Args:
         world_size: Number of ranks in the communicator.
         device: CUDA device where the iteration tensor is stored.
     """
     key = (device, world_size)
     if key in _ITERATION_TENSOR_CACHE:
-        # Use a GIN-safe kernel to reset the counter
         _fill_int32_kernel[(1,)](_ITERATION_TENSOR_CACHE[key], 0, N=1)
 
 
@@ -169,7 +165,7 @@ _COMPLETION_COUNTERS_CACHE: dict = {}
 @requires_torchcomms
 @triton.jit
 def _fill_int32_kernel(ptr, value, N: tl.constexpr):
-    """GIN-safe kernel to fill an int32 tensor with a scalar value."""
+    """Kernel to fill an int32 tensor with a scalar value."""
     idx = tl.program_id(0)
     if idx < N:
         tl.store(ptr + idx, value)
@@ -183,7 +179,7 @@ def _fill_completion_counters_from_iteration_kernel(
     BLOCKS_PER_PEER: tl.constexpr,
     N: tl.constexpr,
 ):
-    """GIN-safe kernel to reset completion counters based on iteration.
+    """Kernel to reset completion counters based on iteration.
 
     Reads iteration from GPU memory and computes expected_base = BLOCKS_PER_PEER * iteration.
     This is CUDA graph compatible since iteration is read from GPU, not host.
@@ -193,18 +189,6 @@ def _fill_completion_counters_from_iteration_kernel(
         iteration = tl.load(iteration_ptr)
         expected_base = BLOCKS_PER_PEER * iteration
         tl.store(counters_ptr + idx, expected_base)
-
-
-def _fill_completion_counters_gin_safe(
-    counters: torch.Tensor, value: int, world_size: int
-) -> None:
-    """Fill completion counters using a GIN-safe Triton kernel.
-
-    Regular CUDA operations like tensor.fill_() fail when GIN is active
-    (cudaErrorHostMemoryAlreadyRegistered).  This function uses a Triton
-    kernel which only does device-side stores and is GIN-safe.
-    """
-    _fill_int32_kernel[(world_size,)](counters, value, N=world_size)
 
 
 def _fill_completion_counters_from_iteration(
@@ -239,10 +223,6 @@ def _get_completion_counters(world_size: int, device: torch.device) -> torch.Ten
     across all subsequent calls.  Counters grow monotonically with each
     iteration (no in-kernel reset) to avoid race conditions with CUDA
     block scheduling.
-
-    IMPORTANT: This must be called BEFORE GIN (GPU-Initiated NCCL) is
-    activated via get_device_window().  Once GIN is active, regular CUDA
-    allocations fail with cudaErrorHostMemoryAlreadyRegistered.
     """
     key = (device, world_size)
     if key not in _COMPLETION_COUNTERS_CACHE:
@@ -253,20 +233,14 @@ def _get_completion_counters(world_size: int, device: torch.device) -> torch.Ten
 
 
 def prewarm_completion_counters(world_size: int, device: torch.device) -> None:
-    """Pre-allocate completion counters and iteration tensor before GIN is activated.
-
-    This function MUST be called BEFORE get_device_window() to avoid CUDA
-    allocation failures when GIN is active.  GIN (GPU-Initiated NCCL)
-    registers GPU memory which blocks subsequent regular CUDA allocations.
+    """Pre-allocate completion counters and iteration tensor.
 
     Args:
         world_size: Number of ranks in the communicator.
         device: CUDA device to allocate on.
 
     Example:
-        >>> # Before GIN activation
         >>> prewarm_completion_counters(world_size, device)
-        >>> # Now activate GIN
         >>> dev_win_ptr = window.get_device_window(signal_count=world_size)
         >>> # Now device_alltoallv_dynamic can be called safely
     """
@@ -604,22 +578,12 @@ def auto_tune_alltoallv_params(
     """
     Select optimal kernel parameters based on maximum per-peer message size.
 
-    Based on benchmark data across message sizes, the optimal configuration is:
-    - ≤1KB: 1 block/peer, 4 warps (Gw4)
-    - >1KB, ≤4KB: 1 block/peer, 8 warps (Gw8)
-    - >4KB, ≤8KB: 1 block/peer, 16 warps (Gw16)
-    - >8KB, ≤16KB: 1 block/peer, 32 warps (Gw32)
-    - >16KB, ≤256KB: 8 blocks/peer, 16 warps (GB8)
-    - >256KB: 16 blocks/peer, 16 warps, 64KB chunks (GB16c64)
-
-    Benchmark sweep (1MB-16MB) confirmed GB16c64 is consistently the best
-    config across all large message sizes.
-
+    Based on benchmark data across message sizes, the optimal configuration is set.
     Thread count (num_warps) rationale:
-    - Small messages (<4KB): fewer warps (4-8) reduce launch overhead
-    - Medium messages (4KB-64KB): moderate warps (16) balance occupancy
-    - Large messages (>64KB): more warps (32) maximize memory bandwidth
-    - Multi-block (>128KB): 16 warps/block with multiple blocks for parallelism
+    - Small messages: fewer warps reduce launch overhead
+    - Medium messages: moderate warps balance occupancy
+    - Large messages: more warps maximize memory bandwidth
+    - Multi-block: multiple blocks for parallelism
 
     Args:
         max_msg_size_bytes: Maximum per-peer message size in bytes.
@@ -718,7 +682,7 @@ def device_alltoallv_dynamic(
                      microbenchmarking raw kernel throughput.
 
     Example:
-        >>> # One-time setup (call prewarm_completion_counters BEFORE GIN activation)
+        >>> # One-time setup
         >>> prewarm_completion_counters(world_size, device)
         >>> window = comm.new_window()
         >>> window.tensor_register(recv_buf)
@@ -771,7 +735,7 @@ def device_alltoallv_dynamic(
     # iteration value from GPU memory, making it CUDA graph compatible.
     completion_counters = _get_completion_counters(world_size, send_buf.device)
     if blocks_per_peer > 1:
-        # Reset each peer's counter using a GIN-safe Triton kernel that
+        # Reset each peer's counter using a Triton kernel that
         # reads iteration from GPU memory.  This is CUDA graph compatible.
         _fill_completion_counters_from_iteration(
             completion_counters, iteration_tensor, blocks_per_peer, world_size
