@@ -296,10 +296,9 @@ def genalgos(gensrc):
     gen_reduce_scatter_files(gensrc, srcs, rules)
     gen_alltoall_files(gensrc, srcs, rules)
 
-    rules.write("CTRAN_GEN_SRCS = ")
-    for src in srcs:
-        rules.write("$(OBJDIR)/gensrc/" + src + " ")
-    rules.write("\n")
+    rules.write(
+        "CTRAN_LIB_OBJS = $(patsubst %,$(OBJDIR)/genobj/%.o," + " ".join(srcs) + ")\n"
+    )
     rules.close()
 
 
