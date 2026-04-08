@@ -10,14 +10,14 @@
 #include "comms/utils/checks.h"
 
 using ctran::allgatherp::AlgoImpl;
-using ctran::allgatherp::PersistArgs;
+using ctran::allgatherp::Buffer;
 using ncclx::CommStateX;
 namespace {
 const auto myAlgo = NCCL_ALLGATHER_P_ALGO::ctdirect;
 
 commResult_t gpnFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
   auto op = opGroup.front().get();
-  auto* pArgs = reinterpret_cast<PersistArgs*>(op->allgatherP.pArgs);
+  auto* buffer = reinterpret_cast<Buffer*>(op->allgatherP.pArgs);
   const auto sendSize =
       op->allgatherP.count * commTypeSize(op->allgatherP.datatype);
   const void* sendBuff = op->allgatherP.sendbuff;
@@ -53,7 +53,7 @@ commResult_t gpnFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
   for (int p = 1; p < nRanks; p++) {
     CtranMapperRequest* req = nullptr;
     const int peer = (rank + p) % nRanks;
-    if (pArgs->remoteAccessKeys[peer].backend == CtranMapperBackend::IB) {
+    if ((*buffer->remoteAccessKeys)[peer].backend == CtranMapperBackend::IB) {
       FB_COMMCHECK(mapper->irecvCtrl(peer, &req));
       rReqs.push_back(std::unique_ptr<CtranMapperRequest>(req));
       FB_COMMCHECK(mapper->isendCtrl(peer, &req));
@@ -71,21 +71,22 @@ commResult_t gpnFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
   for (auto p = 1; p < nRanks; p++) {
     CtranMapperRequest* req = nullptr;
     const auto peer = (rank + p) % nRanks;
-    if (pArgs->remoteAccessKeys[peer].backend == CtranMapperBackend::IB) {
+    if ((*buffer->remoteAccessKeys)[peer].backend == CtranMapperBackend::IB) {
       // Initialize notify flag to receive from peer
       auto notify = std::make_unique<CtranMapperNotify>();
-      FB_COMMCHECK(mapper->initNotify(peer, pArgs->recvHdl, notify.get()));
+      FB_COMMCHECK(mapper->initNotify(peer, buffer->recvHdl, notify.get()));
       notifyVec.push_back(std::move(notify));
 
       // Issue put to IB peers
       FB_COMMCHECK(mapper->iput(
           sendBuff,
-          (void*)((uintptr_t)pArgs->remoteRecvBuffs[peer] + rank * sendSize),
+          (void*)((uintptr_t)(*buffer->remoteRecvBuffs)[peer] +
+                  rank * sendSize),
           sendSize,
           peer,
           CtranMapperConfig{
               .memHdl_ = sendHdl,
-              .remoteAccessKey_ = pArgs->remoteAccessKeys[peer],
+              .remoteAccessKey_ = (*buffer->remoteAccessKeys)[peer],
               .notify_ = true},
           &req));
       pReqs.push_back(std::unique_ptr<CtranMapperRequest>(req));
@@ -113,45 +114,47 @@ extern __global__ void ncclKernelAllGatherPDirect(
     int* flag,
     CtranAlgoDeviceState* devState);
 
-commResult_t AlgoImpl::execDirect(
+commResult_t execDirectCore(
     const void* sendbuff,
     const size_t count,
-    const commDataType_t datatype) {
-  auto recvbuff = pArgs.recvbuff;
-  auto ctran = comm_->ctran_.get();
+    const commDataType_t datatype,
+    Buffer& buffer,
+    Resource& resource,
+    CtranComm* comm,
+    cudaStream_t stream) {
+  auto ctran = comm->ctran_.get();
   const auto opCount = ctran->getOpCount();
-  const auto myRank = comm_->statex_->rank();
-  const auto nLocalRanks = comm_->statex_->nRanks();
+  const auto myRank = comm->statex_->rank();
 
   CTRAN_COLL_INFO(
       AlgoImpl::algoName(myAlgo),
       sendbuff,
-      recvbuff,
+      buffer.recvbuff,
       count,
       datatype,
       -1,
-      comm_,
-      stream_);
+      comm,
+      stream);
 
   const auto sendSize = count * commTypeSize(datatype);
 
   // Copy data to self for out-of-place allgather
-  FB_COMMCHECK(copyToSelf(comm_, sendbuff, sendSize, pArgs, stream_));
-
-  // Wait till async init is done, so that we can schedule copy operations with
-  // the remote address
-  if (nLocalRanks > 1) {
-    FB_COMMCHECK(waitInit());
-  }
+  FB_COMMCHECK(copyToSelf(comm, sendbuff, sendSize, buffer.recvbuff, stream));
 
   // Copy data to other local ranks
-  FB_COMMCHECK(
-      nvlCeBcast(comm_, sendbuff, sendSize, myRank * sendSize, pArgs, stream_));
+  FB_COMMCHECK(nvlCeBcast(
+      comm,
+      sendbuff,
+      sendSize,
+      myRank * sendSize,
+      *buffer.remoteRecvBuffs,
+      *buffer.remoteAccessKeys,
+      stream));
 
   auto op = std::make_unique<OpElem>(
-      OpElem::opType::ALLGATHERP, stream_, comm_, opCount);
-  op->allgatherP.pArgs = &pArgs;
-  op->allgatherP.algoResource = &resource_;
+      OpElem::opType::ALLGATHERP, stream, comm, opCount);
+  op->allgatherP.pArgs = &buffer;
+  op->allgatherP.algoResource = &resource;
   op->allgatherP.sendbuff = sendbuff;
   op->allgatherP.count = count;
   op->allgatherP.datatype = datatype;
@@ -161,12 +164,11 @@ commResult_t AlgoImpl::execDirect(
 
   auto config = KernelConfig(
       KernelConfig::KernelType::ALLGATHERP,
-      stream_,
+      stream,
       AlgoImpl::algoName(myAlgo),
       opCount);
   config.numBlocks = 1;
   config.numThreads = 1;
-  config.algoArgs = reinterpret_cast<void*>(&pArgs);
   config.args.devState_d = ctran->algo->getDevState();
 
   FB_COMMCHECK(ctran->gpe->submit(
@@ -175,5 +177,21 @@ commResult_t AlgoImpl::execDirect(
       config,
       reinterpret_cast<void*>(ncclKernelAllGatherPDirect)));
   return commSuccess;
+}
+
+commResult_t AlgoImpl::execDirect(
+    const void* sendbuff,
+    const size_t count,
+    const commDataType_t datatype) {
+  const auto nLocalRanks = comm_->statex_->nRanks();
+
+  // Wait till async init is done, so that we can schedule copy operations with
+  // the remote address
+  if (nLocalRanks > 1) {
+    FB_COMMCHECK(waitInit());
+  }
+
+  return execDirectCore(
+      sendbuff, count, datatype, buffer, resource_, comm_, stream_);
 }
 } // namespace ctran::allgatherp

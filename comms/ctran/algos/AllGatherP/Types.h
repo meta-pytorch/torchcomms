@@ -25,6 +25,17 @@ struct PersistArgs {
   std::atomic<bool> initialized{false};
 };
 
+// Non-owning view of buffer metadata needed by the algorithm core.
+// Scalar values are copied; vector pointers reference persistent data (e.g.,
+// PersistArgs vectors or caller-maintained vectors for the window path).
+struct Buffer {
+  void* recvbuff{nullptr};
+  void* recvHdl{nullptr};
+  const std::vector<void*>* remoteRecvBuffs{nullptr};
+  const std::vector<struct CtranMapperRemoteAccessKey>* remoteAccessKeys{
+      nullptr};
+};
+
 struct Resource {
   // Used in the pipeline algorithm. Sync object for GPE thread to notify the
   // wait kernel the completion of inter-node exchange, so that it can terminate
