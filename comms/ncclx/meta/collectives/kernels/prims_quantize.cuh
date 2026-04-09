@@ -280,7 +280,11 @@ class PrimitivesQuantized {
     if (tid == 0) {
       ncclShmem.groups[group].userInput = (void*)inputBuf;
       ncclShmem.groups[group].userOutput = (void*)outputBuf;
+#if NCCL_VERSION_CODE >= 22900
+      ncclShmem.groups[group].redOpArgs = redOpArg; // scaler for local input
+#else
       ncclShmem.redOpArgs[0] = redOpArg; // scaler for local input
+#endif
     }
     patBarrier();
   }

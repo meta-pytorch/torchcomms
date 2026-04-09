@@ -334,6 +334,10 @@ ncclResult_t ncclTasksRegAndEnqueue(struct ncclComm* comm) {
     devWork.nWarps = task->nWarps;
     devWork.redOpArg = task->opDev.scalarArg;
     devWork.redOpArgIsPtr = task->opDev.scalarArgIsPtr;
+    // [NCCLX-QuantizedColl] Pipe quantize seed pointer from InfoExt to device work
+    if (task->ext.has_value()) {
+      devWork.quantizeRandomSeedPtr = task->ext->quantizeRandomSeedPtr;
+    }
     devWork.oneNode = (comm->nNodes == 1);
     devWork.isOneRPN = comm->isOneRPN;
     devWork.netRegUsed = devWork.regUsed = 0;
@@ -2182,6 +2186,15 @@ static ncclResult_t calcCollChunking(
   int chunkSize = stepSize*chunkSteps;
   if (info->protocol == NCCL_PROTO_LL) chunkSize /= 2;
   if (info->protocol == NCCL_PROTO_LL128) chunkSize = (chunkSize / NCCL_LL128_LINEELEMS) * NCCL_LL128_DATAELEMS;
+
+  // [NCCLX-Quantized]
+  // Quantized collectives (e.g., ReduceScatterQuantize) transport data in a
+  // smaller type (BF16, 2 bytes) than the input type (FP32, 4 bytes). The
+  // transport buffer step can hold 2x more elements, so double the chunk size
+  // to fully utilize the transport buffer and halve the number of PAT steps.
+  if (info->ext.has_value() && info->ext->quantizeRandomSeedPtr != nullptr) {
+    chunkSize *= 2;
+  }
 
   if (info->algorithm == NCCL_ALGO_COLLNET_DIRECT) {
     // Optimize chunkSize / nSteps
