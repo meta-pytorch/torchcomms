@@ -333,6 +333,11 @@ struct KernelConfig {
   // kernelFlag.
   std::function<void()> postKernelCleanup{nullptr};
 
+  // KernelElems marked persistent during graph capture by allocKernelElems().
+  // submit() retains cleanup on the graph for the no-cmd (empty opGroup) path.
+  // For the cmd path, ~OpElem handles free() and this vector is ignored.
+  std::vector<KernelElem*> persistentKernelElems;
+
   const std::string algoName;
   // Copied after collective called ctran->updateOpCount()
   // Upon collective submission, we should always use the copied opCount since
@@ -407,14 +412,6 @@ class CtranGpe {
       std::shared_ptr<std::atomic_flag> cpuFlag);
 
   // Allocate numElems number of p2pElem objects from internal pool.
-  // When free objects are not enough, it will be in blocking wait and reclaim
-  // inuse p2pElems till enough objects are available. Return commSuccess if all
-  // elements are allocated, otherwise return commInternalError. Input
-  // arguments:
-  //   - numElems: number of p2pElem objects to be allocated
-  //   - ngroups: number of thread block groups to use each p2pElem object
-  // Output arguments:
-  //   - elemsList: a C-style list of p2pElem objects being accessed in kernel
   commResult_t
   allocKernelElems(size_t numElems, int ngroups, KernelElem** elemsList);
 
