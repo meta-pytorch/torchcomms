@@ -106,6 +106,9 @@ class AsyncClientSocket
  * The server can handle multiple concurrent one-shot connections, with each
  * connection managed independently and automatically cleaned up upon
  * completion.
+
+ * The server uses sizeCalc interface to calculate the real message size
+ * after receiving the header, to support variable length of messages.
  *
  * User API:
  *   - start(): Binds to the specified address and begins accepting connections.
@@ -116,8 +119,17 @@ class AsyncClientSocket
 class AsyncServerSocket : private folly::AsyncServerSocket::AcceptCallback {
  public:
   using RecvCb = std::function<void(std::unique_ptr<folly::IOBuf>)>;
+  using MsgSizeCalculator =
+      std::function<size_t(const void* headerBuf, size_t headerSize)>;
 
   AsyncServerSocket(folly::EventBase& evb) : evb_(evb) {}
+
+  folly::SemiFuture<folly::SocketAddress> start(
+      folly::SocketAddress bindAddr,
+      size_t headerSize,
+      MsgSizeCalculator sizeCalc,
+      RecvCb onRecv,
+      std::chrono::milliseconds timeout = std::chrono::milliseconds(0));
 
   folly::SemiFuture<folly::SocketAddress> start(
       folly::SocketAddress bindAddr,
@@ -142,10 +154,13 @@ class AsyncServerSocket : private folly::AsyncServerSocket::AcceptCallback {
         folly::EventBase& evb,
         RecvCb onRecv,
         DoneCb onDone,
-        size_t msgSize,
+        size_t headerSize,
+        MsgSizeCalculator sizeCalc,
         std::chrono::milliseconds timeout)
         : folly::AsyncTimeout(&evb),
-          msgSize_(msgSize),
+          headerSize_(headerSize),
+          totalSize_(headerSize),
+          sizeCalc_(std::move(sizeCalc)),
           sock_(std::move(sock)),
           evb_(evb),
           onRecv_(std::move(onRecv)),
@@ -166,8 +181,11 @@ class AsyncServerSocket : private folly::AsyncServerSocket::AcceptCallback {
    private:
     void closeNow();
     void notifyDone();
+    void computeTotalSize();
 
-    const size_t msgSize_;
+    const size_t headerSize_;
+    size_t totalSize_;
+    MsgSizeCalculator sizeCalc_;
     folly::AsyncSocket::UniquePtr sock_;
     folly::EventBase& evb_;
 
@@ -187,7 +205,8 @@ class AsyncServerSocket : private folly::AsyncServerSocket::AcceptCallback {
   void acceptError(const std::exception& ex) noexcept override;
 
   folly::EventBase& evb_;
-  size_t msgSize_;
+  size_t headerSize_;
+  MsgSizeCalculator sizeCalc_;
   RecvCb onRecv_;
   folly::SocketAddress bindAddr_;
   std::shared_ptr<folly::AsyncServerSocket> server_;
