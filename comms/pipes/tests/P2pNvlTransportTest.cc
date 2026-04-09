@@ -2887,8 +2887,84 @@ TEST_F(P2pNvlTransportTestFixture, Ll128BufferWiring_Disabled) {
   ASSERT_EQ(p2p.getRemoteState().ll128Buffer, nullptr)
       << "Rank " << globalRank
       << ": remoteState.ll128Buffer should be null when ll128BufferSize == 0";
+  ASSERT_EQ(p2p.getLocalState().llBuffer, nullptr)
+      << "Rank " << globalRank
+      << ": localState.llBuffer should be null when llBufferSize == 0";
+  ASSERT_EQ(p2p.getRemoteState().llBuffer, nullptr)
+      << "Rank " << globalRank
+      << ": remoteState.llBuffer should be null when llBufferSize == 0";
 
   XLOGF(INFO, "Rank {}: Ll128BufferWiring_Disabled test completed", globalRank);
+}
+
+// =============================================================================
+// LL Buffer Wiring Tests
+// Verify MultiPeerNvlTransport correctly wires LL buffer pointers into
+// P2pNvlTransportDevice handles.
+// =============================================================================
+
+TEST_F(P2pNvlTransportTestFixture, LlBufferWiring_Enabled) {
+  if (numRanks != 2) {
+    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    return;
+  }
+
+  int peerRank = (globalRank == 0) ? 1 : 0;
+
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = 4096,
+      .chunkSize = 256,
+      .pipelineDepth = 2,
+      .llBufferSize = ll_buffer_size(4096),
+  };
+
+  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  transport.exchange();
+
+  auto p2p = transport.buildP2pTransportDevice(peerRank);
+
+  ASSERT_NE(p2p.getLocalState().llBuffer, nullptr)
+      << "Rank " << globalRank
+      << ": localState.llBuffer should be non-null when llBufferSize > 0";
+  ASSERT_NE(p2p.getRemoteState().llBuffer, nullptr)
+      << "Rank " << globalRank
+      << ": remoteState.llBuffer should be non-null when llBufferSize > 0";
+  ASSERT_NE(p2p.getLocalState().llBuffer, p2p.getRemoteState().llBuffer)
+      << "Rank " << globalRank
+      << ": local and remote llBuffer should point to different ranks' buffers";
+
+  XLOGF(INFO, "Rank {}: LlBufferWiring_Enabled test completed", globalRank);
+}
+
+TEST_F(P2pNvlTransportTestFixture, LlBufferWiring_Disabled) {
+  if (numRanks != 2) {
+    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    return;
+  }
+
+  int peerRank = (globalRank == 0) ? 1 : 0;
+
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = 4096,
+      .chunkSize = 256,
+      .pipelineDepth = 2,
+  };
+
+  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  transport.exchange();
+
+  auto p2p = transport.buildP2pTransportDevice(peerRank);
+
+  ASSERT_EQ(p2p.getLocalState().llBuffer, nullptr)
+      << "Rank " << globalRank
+      << ": localState.llBuffer should be null when llBufferSize == 0";
+  ASSERT_EQ(p2p.getRemoteState().llBuffer, nullptr)
+      << "Rank " << globalRank
+      << ": remoteState.llBuffer should be null when llBufferSize == 0";
+
+  XLOGF(INFO, "Rank {}: LlBufferWiring_Disabled test completed", globalRank);
 }
 
 } // namespace comms::pipes::tests

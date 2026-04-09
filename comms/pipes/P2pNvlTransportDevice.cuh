@@ -13,6 +13,7 @@
 #include "comms/pipes/SignalState.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
 #include "comms/pipes/Timeout.cuh"
+#include "comms/pipes/ll/LlOps.cuh"
 #include "comms/pipes/ll128/Ll128Ops.cuh"
 
 namespace comms::pipes {
@@ -49,6 +50,7 @@ struct LocalState {
   DeviceSpan<SignalState> signalBuffer;
   DeviceSpan<BarrierState> barrierBuffer;
   Ll128Packet* ll128Buffer{nullptr};
+  LlLine* llBuffer{nullptr};
 };
 
 /**
@@ -82,6 +84,7 @@ struct RemoteState {
   DeviceSpan<SignalState> signalBuffer;
   DeviceSpan<BarrierState> barrierBuffer;
   Ll128Packet* ll128Buffer{nullptr};
+  LlLine* llBuffer{nullptr};
 };
 
 /**
@@ -131,6 +134,7 @@ struct P2pNvlTransportOptions {
   std::size_t pipelineDepth;
   bool useDualStateBuffer{false}; // Default to single state buffer mode
   std::size_t ll128BufferNumPackets{0}; // 0 = no chunking
+  std::size_t llBufferNumLines{0}; // 0 = no chunking
 };
 
 /**
@@ -1110,6 +1114,129 @@ class P2pNvlTransportDevice {
         timeout,
         effective_packets);
 #endif
+  }
+
+  // ===========================================================================
+  // LL Protocol Operations
+  // ===========================================================================
+
+  /**
+   * ll_send — Send data to peer's LL buffer via NVLink.
+   *
+   * Packs user data into LL lines and volatile-stores them to the
+   * peer's LL buffer with inline flag signaling.
+   *
+   * PRECONDITION: llBufferSize > 0 in transport config.
+   *
+   * @param group   ThreadGroup (auto-converted to warp scope)
+   * @param src     Local source buffer (8-byte aligned)
+   * @param nbytes  Total bytes (must be a multiple of 8)
+   * @param timeout Timeout for flag polling
+   */
+  __device__ __forceinline__ void ll_send(
+      const ThreadGroup& group,
+      const char* src,
+      size_t nbytes,
+      const Timeout& timeout = Timeout()) {
+#ifdef __CUDA_ARCH__
+    PIPES_DEVICE_CHECK(remoteState_.llBuffer != nullptr);
+    PIPES_DEVICE_CHECK(can_use_ll(src, nbytes));
+
+    comms::pipes::ll_send(
+        group,
+        src,
+        nbytes,
+        remoteState_.llBuffer,
+        timeout,
+        options_.llBufferNumLines);
+#endif
+  }
+
+  /**
+   * ll_recv — Receive data from local LL buffer.
+   *
+   * Polls the local LL buffer (written remotely by peer), reads
+   * payload to output buffer, and ACKs with kLlReadyToWrite.
+   *
+   * PRECONDITION: llBufferSize > 0 in transport config.
+   *
+   * @param group   ThreadGroup (auto-converted to warp scope)
+   * @param dst     Local output buffer (8-byte aligned)
+   * @param nbytes  Total bytes (must be a multiple of 8)
+   * @param timeout Timeout for flag polling
+   */
+  __device__ __forceinline__ void ll_recv(
+      const ThreadGroup& group,
+      char* dst,
+      size_t nbytes,
+      const Timeout& timeout = Timeout()) {
+#ifdef __CUDA_ARCH__
+    PIPES_DEVICE_CHECK(localState_.llBuffer != nullptr);
+    PIPES_DEVICE_CHECK(can_use_ll(dst, nbytes));
+
+    comms::pipes::ll_recv(
+        group,
+        dst,
+        nbytes,
+        localState_.llBuffer,
+        timeout,
+        options_.llBufferNumLines);
+#endif
+  }
+
+  /**
+   * ll_forward — Receive from predecessor and forward to successor.
+   *
+   * Reads from this transport's local LL buffer (predecessor wrote here),
+   * forwards to successor_transport's remote LL buffer, copies payload
+   * to local output, and ACKs predecessor.
+   *
+   * PRECONDITION: llBufferSize > 0 in both this and successor transport.
+   *
+   * @param group                ThreadGroup (auto-converted to warp scope)
+   * @param dst                  Local output buffer (8-byte aligned)
+   * @param nbytes               Total bytes (must be a multiple of 8)
+   * @param successor_transport  Transport for the successor peer
+   * @param timeout              Timeout for flag polling
+   */
+  __device__ __forceinline__ void ll_forward(
+      const ThreadGroup& group,
+      char* dst,
+      size_t nbytes,
+      const P2pNvlTransportDevice& successor_transport,
+      const Timeout& timeout = Timeout()) {
+#ifdef __CUDA_ARCH__
+    PIPES_DEVICE_CHECK(localState_.llBuffer != nullptr);
+    PIPES_DEVICE_CHECK(successor_transport.remoteState_.llBuffer != nullptr);
+    PIPES_DEVICE_CHECK(can_use_ll(dst, nbytes));
+
+    const size_t my_lines = options_.llBufferNumLines;
+    const size_t succ_lines = successor_transport.options_.llBufferNumLines;
+    size_t effective_lines = 0;
+    if (my_lines > 0 && succ_lines > 0) {
+      effective_lines = (my_lines < succ_lines) ? my_lines : succ_lines;
+    } else if (my_lines > 0) {
+      effective_lines = my_lines;
+    } else {
+      effective_lines = succ_lines;
+    }
+
+    comms::pipes::ll_forward(
+        group,
+        dst,
+        nbytes,
+        localState_.llBuffer,
+        successor_transport.remoteState_.llBuffer,
+        timeout,
+        effective_lines);
+#endif
+  }
+
+  /**
+   * get_ll_buffer_num_lines — Get the number of LL lines in the buffer.
+   */
+  __device__ __forceinline__ size_t get_ll_buffer_num_lines() const {
+    return options_.llBufferNumLines;
   }
 
  private:
