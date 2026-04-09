@@ -350,24 +350,51 @@ commResult_t CtranGpe::Impl::submit(
     } else {
       cmdEnqueue(cmd);
     }
-  } else if (kernelConfig.postKernelCleanup && isCapturing) {
-    // During graph capture with empty opGroup (e.g., ctp2p NVL-only ops),
-    // postKernelCleanup wasn't moved into a cmd. Retain it as a user object
-    // on the graph so it runs on graph destruction
-    FB_COMMCHECKGOTO(
-        utils::cudagraph::retainUserObject(
-            /*obj=*/
-            new std::function<void()>(
-                std::move(kernelConfig.postKernelCleanup)),
-            /*destroyCallback=*/
-            [](void* p) {
-              auto* fn = static_cast<std::function<void()>*>(p);
-              (*fn)();
-              delete fn;
-            },
-            streamCaptureInfo),
-        res,
-        fail);
+  }
+
+  // For the no-cmd path during graph capture, retain cleanup on the graph.
+  if (isCapturing && !needsKernelFlag) {
+    if (kernelConfig.postKernelCleanup) {
+      FB_COMMCHECKGOTO(
+          utils::cudagraph::retainUserObject(
+              /*obj=*/
+              new std::function<void()>(
+                  std::move(kernelConfig.postKernelCleanup)),
+              /*destroyCallback=*/
+              [](void* p) {
+                auto* fn = static_cast<std::function<void()>*>(p);
+                (*fn)();
+                delete fn;
+              },
+              streamCaptureInfo),
+          res,
+          fail);
+    }
+
+    // Mark KernelElems as persistent and release on graph destruction.
+    // In the cmd path, ~OpElem handles free() (which also clears persistent).
+    if (!kernelConfig.persistentKernelElems.empty()) {
+      for (auto* elem : kernelConfig.persistentKernelElems) {
+        elem->setPersistent();
+      }
+      auto* elems = new std::vector<KernelElem*>(
+          std::move(kernelConfig.persistentKernelElems));
+      FB_COMMCHECKGOTO(
+          utils::cudagraph::retainUserObject(
+              /*obj=*/elems,
+              /*destroyCallback=*/
+              [](void* p) {
+                auto* v = static_cast<std::vector<KernelElem*>*>(p);
+                for (auto* elem : *v) {
+                  elem->clearPersistent();
+                  elem->free();
+                }
+                delete v;
+              },
+              streamCaptureInfo),
+          res,
+          fail);
+    }
   }
 
   if (!kernelConfig.canConcurrent) {
@@ -818,6 +845,8 @@ void KernelElem::setStatus(KernelElem::ElemStatus s) {
 }
 
 void KernelElem::free() {
+  // Clear persistence so reclaim() can pick up this elem after free.
+  persistent_ = false;
   CHECK_KELEM_NGROUPS(this);
 
   bool canFree = true;
@@ -853,6 +882,9 @@ void KernelElem::free() {
 }
 
 bool KernelElem::isFree() {
+  if (persistent_) {
+    return false;
+  }
   CHECK_KELEM_NGROUPS(this);
   bool allFree = true;
   for (int i = 0; i < this->ngroups && allFree; i++) {
