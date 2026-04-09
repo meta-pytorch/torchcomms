@@ -5,6 +5,7 @@
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/ctran/utils/ExtUtils.h"
 
 namespace ctran::allgatherp {
@@ -17,9 +18,8 @@ inline commResult_t nvlBarrier(CtranComm* comm, cudaStream_t stream) {
   const auto localRank = statex->localRank();
   const auto nLocalRanks = statex->nLocalRanks();
 
-  // FIXME: needs to add cudaGraph capture support
+  // Barrier to make sure all local ranks are ready to start intranode comm.
 
-  // Barrier to make sure all local ranks is ready to start intranode comm
   std::array<void*, 3> kernelArgs;
   kernelArgs.at(0) = (void*)&localRank;
   kernelArgs.at(1) = (void*)&nLocalRanks;
@@ -94,26 +94,44 @@ inline commResult_t nvlCeBcast(
     sizes.at(r - 1) = sendSize;
   }
 
+  // cudaMemcpyBatchAsync operations are not permitted during CUDA graph
+  // capture. Fall back to parallel cudaMemcpyAsync calls which are captured as
+  // memcpy nodes in the graph.
+  utils::cudagraph::StreamCaptureInfo captureInfo;
+  FB_CUDACHECK(utils::cudagraph::getStreamCaptureInfo(stream, captureInfo));
+  if (captureInfo.status == cudaStreamCaptureStatusActive) {
+    for (size_t i = 0; i < numOps; i++) {
+      FB_CUDACHECK(cudaMemcpyAsync(
+          dsts.at(i), srcs.at(i), sizes.at(i), cudaMemcpyDefault, stream));
+    }
+  } else {
 #if CUDART_VERSION >= 12080
-  cudaMemcpyAttributes attr = {};
-  attr.srcAccessOrder = cudaMemcpySrcAccessOrderStream;
-  attr.flags = cudaMemcpyFlagPreferOverlapWithCompute;
+    cudaMemcpyAttributes attr = {};
+    attr.srcAccessOrder = cudaMemcpySrcAccessOrderStream;
+    attr.flags = cudaMemcpyFlagPreferOverlapWithCompute;
 
 #if CUDART_VERSION < 13000
-  size_t failIdx = 0;
-  FB_CUDACHECK(cudaMemcpyBatchAsync(
-      dsts.data(), srcs.data(), sizes.data(), numOps, attr, &failIdx, stream));
+    size_t failIdx = 0;
+    FB_CUDACHECK(cudaMemcpyBatchAsync(
+        dsts.data(),
+        srcs.data(),
+        sizes.data(),
+        numOps,
+        attr,
+        &failIdx,
+        stream));
 #else
-  FB_CUDACHECK(cudaMemcpyBatchAsync(
-      dsts.data(), srcs.data(), sizes.data(), numOps, attr, stream));
+    FB_CUDACHECK(cudaMemcpyBatchAsync(
+        dsts.data(), srcs.data(), sizes.data(), numOps, attr, stream));
 #endif
 
 #else
-  auto mapper = comm->ctran_->mapper.get();
-  for (size_t i = 0; i < numOps; i++) {
-    FB_COMMCHECK(mapper->icopy(dsts.at(i), srcs.at(i), sizes.at(i), stream));
-  }
+    auto mapper = comm->ctran_->mapper.get();
+    for (size_t i = 0; i < numOps; i++) {
+      FB_COMMCHECK(mapper->icopy(dsts.at(i), srcs.at(i), sizes.at(i), stream));
+    }
 #endif
+  }
 
   return commSuccess;
 }
