@@ -87,8 +87,12 @@ class P2pIbgdaTransportDevice {
   __host__ __device__ P2pIbgdaTransportDevice(
       doca_gpu_dev_verbs_qp* qp,
       doca_gpu_dev_verbs_qp* companionQp = nullptr,
-      NetworkLKey sinkLkey = NetworkLKey{})
-      : qp_(qp), companionQp_(companionQp), sinkLkey_(sinkLkey) {}
+      NetworkLKey sinkLkey = NetworkLKey{},
+      uint64_t sinkAddr = 0)
+      : qp_(qp),
+        companionQp_(companionQp),
+        sinkLkey_(sinkLkey),
+        sinkAddr_(sinkAddr) {}
 
   /**
    * put - RDMA Write without signal (non-blocking)
@@ -439,7 +443,8 @@ class P2pIbgdaTransportDevice {
         .addr = reinterpret_cast<uint64_t>(
             static_cast<uint64_t*>(remoteBuf.ptr) + signalId),
         .key = remoteBuf.rkey.value};
-    doca_gpu_dev_verbs_addr sinkAddr = {.addr = 0, .key = sinkLkey_.value};
+    doca_gpu_dev_verbs_addr sinkAddr = {
+        .addr = sinkAddr_, .key = sinkLkey_.value};
 
     doca_gpu_dev_verbs_signal<
         DOCA_GPUNETIO_VERBS_SIGNAL_OP_ADD,
@@ -470,7 +475,8 @@ class P2pIbgdaTransportDevice {
         .addr = reinterpret_cast<uint64_t>(
             static_cast<uint64_t*>(remoteBuf.ptr) + signalId),
         .key = remoteBuf.rkey.value};
-    doca_gpu_dev_verbs_addr sinkAddr = {.addr = 0, .key = sinkLkey_.value};
+    doca_gpu_dev_verbs_addr sinkAddr = {
+        .addr = sinkAddr_, .key = sinkLkey_.value};
 
     uint64_t wqe_idx = doca_gpu_dev_verbs_reserve_wq_slots<
         DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(qp_, 1);
@@ -571,14 +577,15 @@ class P2pIbgdaTransportDevice {
         .addr = reinterpret_cast<uint64_t>(
             static_cast<uint64_t*>(remoteSignalBuf.ptr) + signalId),
         .key = remoteSignalBuf.rkey.value};
-    doca_gpu_dev_verbs_addr sigSinkAddr = {.addr = 0, .key = sinkLkey_.value};
+    doca_gpu_dev_verbs_addr sigSinkAddr = {
+        .addr = sinkAddr_, .key = sinkLkey_.value};
 
     doca_gpu_dev_verbs_addr counterRemoteAddr = {
         .addr = reinterpret_cast<uint64_t>(
             static_cast<uint64_t*>(localCounterBuf.ptr) + counterId),
         .key = localCounterBuf.lkey.value};
     doca_gpu_dev_verbs_addr counterSinkAddr = {
-        .addr = 0, .key = sinkLkey_.value};
+        .addr = sinkAddr_, .key = sinkLkey_.value};
 
     doca_gpu_dev_verbs_put_signal_counter<
         DOCA_GPUNETIO_VERBS_SIGNAL_OP_ADD,
@@ -621,14 +628,15 @@ class P2pIbgdaTransportDevice {
         .addr = reinterpret_cast<uint64_t>(
             static_cast<uint64_t*>(remoteSignalBuf.ptr) + signalId),
         .key = remoteSignalBuf.rkey.value};
-    doca_gpu_dev_verbs_addr sigSinkAddr = {.addr = 0, .key = sinkLkey_.value};
+    doca_gpu_dev_verbs_addr sigSinkAddr = {
+        .addr = sinkAddr_, .key = sinkLkey_.value};
 
     doca_gpu_dev_verbs_addr counterRemoteAddr = {
         .addr = reinterpret_cast<uint64_t>(
             static_cast<uint64_t*>(localCounterBuf.ptr) + counterId),
         .key = localCounterBuf.lkey.value};
     doca_gpu_dev_verbs_addr counterSinkAddr = {
-        .addr = 0, .key = sinkLkey_.value};
+        .addr = sinkAddr_, .key = sinkLkey_.value};
 
     doca_gpu_dev_verbs_signal_counter<
         DOCA_GPUNETIO_VERBS_SIGNAL_OP_ADD,
@@ -679,7 +687,7 @@ class P2pIbgdaTransportDevice {
             static_cast<uint64_t*>(localCounterBuf.ptr) + counterId),
         .key = localCounterBuf.lkey.value};
     doca_gpu_dev_verbs_addr counterSinkAddr = {
-        .addr = 0, .key = sinkLkey_.value};
+        .addr = sinkAddr_, .key = sinkLkey_.value};
 
     doca_gpu_dev_verbs_put_counter<
         DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
@@ -851,6 +859,7 @@ class P2pIbgdaTransportDevice {
   doca_gpu_dev_verbs_qp* qp_{nullptr};
   doca_gpu_dev_verbs_qp* companionQp_{nullptr};
   NetworkLKey sinkLkey_{};
+  uint64_t sinkAddr_{0};
 };
 
 } // namespace comms::pipes
