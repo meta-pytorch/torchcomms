@@ -4,7 +4,8 @@
 from typing import Any, List
 
 import torch
-from torch.distributed import ProcessGroup
+from torch.distributed import ProcessGroup, ReduceOp
+from torchcomms.distwrap.collectives import _convert_reduce_op
 from torchcomms.distwrap.pginfo import pg_info_get_data
 from torchcomms.distwrap.utils import (
     get_group,
@@ -191,5 +192,67 @@ def alltoallv_dynamic_combine(
         input_split_indices,
         input_split_indices_per_rank,
         D,
+        async_op,
+    )
+
+
+# =============================================================================
+# ReduceScatter-Quantized Operations (torchcomms/ncclx-only)
+# =============================================================================
+
+
+def reduce_scatter_quantized(
+    output: torch.Tensor,
+    input: torch.Tensor,
+    op: ReduceOp,
+    seed: torch.Tensor,
+    group: ProcessGroup | None = None,
+    async_op: bool = False,
+) -> Any:
+    """Reduce-scatter with stochastic quantization (FP32 input/output, BF16 transport).
+
+    Performs a reduce-scatter where data is stochastically rounded from FP32 to BF16
+    for transport between peers, then reduced in FP32 at the destination. Uses the
+    PAT algorithm with Philox-based stochastic rounding.
+
+    Args:
+        output: Output tensor (FP32). Will contain the reduced scatter result.
+        input: Input tensor (FP32). Size must be output.numel() * world_size.
+        op: Reduction operation (ReduceOp.SUM or ReduceOp.AVG).
+        seed: A single-element int64 CUDA tensor containing the Philox RNG seed.
+        group: Process group to use. Defaults to the default group.
+        async_op: Whether to perform the operation asynchronously.
+
+    Returns:
+        TorchWork object for tracking operation completion.
+    """
+    if not torchcomms_is_enabled():
+        raise AssertionError(
+            "reduce_scatter_quantized requires torchcomms to be enabled"
+        )
+
+    pg = get_group(group)
+    tc = get_torchcomms_instance(pg, device_type="cuda")
+
+    # Verify backend is ncclx
+    backend_name = tc.get_backend()
+    if backend_name != "ncclx":
+        raise AssertionError(
+            f"reduce_scatter_quantized requires ncclx backend, got {backend_name}"
+        )
+
+    ncclx_backend = tc.unsafe_get_backend()
+
+    # Capability check: verify method exists
+    if not hasattr(ncclx_backend, "reduce_scatter_quantized"):
+        raise AssertionError(
+            "ncclx_backend does not implement reduce_scatter_quantized"
+        )
+
+    return ncclx_backend.reduce_scatter_quantized(
+        output,
+        input,
+        _convert_reduce_op(op),
+        seed,
         async_op,
     )

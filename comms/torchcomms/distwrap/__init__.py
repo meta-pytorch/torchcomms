@@ -56,6 +56,7 @@ from torchcomms.distwrap.collectives_extension import (
     alltoallv_dynamic_combine,
     alltoallv_dynamic_dispatch,
     new_window,
+    reduce_scatter_quantized,
 )
 from torchcomms.distwrap.new_comm import (
     destroy_process_group,
@@ -169,6 +170,7 @@ __all__ = [
     "alltoallv_dedup_exec",
     "alltoallv_dynamic_dispatch",
     "alltoallv_dynamic_combine",
+    "reduce_scatter_quantized",
     # Re-exported from torch.distributed
     "ReduceOp",
     "P2POp",
