@@ -45,12 +45,12 @@ TEST(DumpNewCollTraceUT, dumpNewCollTraceEmptyState) {
   EXPECT_EQ(dumpMap.size(), 3);
   EXPECT_TRUE(dumpMap.find("CT_pastColls") != dumpMap.end());
   EXPECT_TRUE(dumpMap.find("CT_pendingColls") != dumpMap.end());
-  EXPECT_TRUE(dumpMap.find("CT_currentColl") != dumpMap.end());
+  EXPECT_TRUE(dumpMap.find("CT_currentColls") != dumpMap.end());
 
-  // Empty state should have empty arrays and null current collective
+  // Empty state should have empty arrays
   EXPECT_EQ(dumpMap["CT_pastColls"], "[]");
   EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
-  EXPECT_EQ(dumpMap["CT_currentColl"], "null");
+  EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
 }
 
 TEST(DumpNewCollTraceUT, dumpNewCollTraceWithCollectives) {
@@ -95,7 +95,7 @@ TEST(DumpNewCollTraceUT, dumpNewCollTraceWithCollectives) {
 
   // Verify pastColls is empty and currentColl should have one entry
   EXPECT_EQ(dumpMapPending["CT_pastColls"], "[]");
-  EXPECT_NE(dumpMapPending["CT_currentColl"], "null");
+  EXPECT_NE(dumpMapPending["CT_currentColls"], "[]");
   // Verify pendingColls is empty since the pending collective was moved to
   // current
   auto pendingCollsJson = folly::parseJson(dumpMapPending["CT_pendingColls"]);
@@ -115,7 +115,7 @@ TEST(DumpNewCollTraceUT, dumpNewCollTraceWithCollectives) {
   // Verify currentColl is set and pendingColls is empty
   EXPECT_EQ(dumpMapCurrent["CT_pastColls"], "[]");
   EXPECT_EQ(dumpMapCurrent["CT_pendingColls"], "[]");
-  EXPECT_NE(dumpMapCurrent["CT_currentColl"], "null");
+  EXPECT_NE(dumpMapCurrent["CT_currentColls"], "[]");
 
   // Trigger kernel finish
   ASSERT_TRUE(
@@ -128,8 +128,8 @@ TEST(DumpNewCollTraceUT, dumpNewCollTraceWithCollectives) {
   auto dumpMapPast = dumpNewCollTrace(*collTrace);
   ASSERT_FALSE(dumpMapPast.empty());
 
-  // Verify pastColls has one entry and currentColl is null
-  EXPECT_EQ(dumpMapPast["CT_currentColl"], "null");
+  // Verify pastColls has one entry and currentColls is empty
+  EXPECT_EQ(dumpMapPast["CT_currentColls"], "[]");
   auto pastCollsJson = folly::parseJson(dumpMapPast["CT_pastColls"]);
   EXPECT_EQ(pastCollsJson.size(), 1);
 }
@@ -221,7 +221,7 @@ TEST(DumpNewCollTraceUT, dumpNewCollTraceMultipleCollectives) {
   EXPECT_EQ(pastCollsJson.size(), 1);
 
   // Verify currentColl is the second collective
-  EXPECT_NE(dumpMap["CT_currentColl"], "null");
+  EXPECT_NE(dumpMap["CT_currentColls"], "[]");
 
   // Verify pendingColls has the third collective
   auto pendingCollsJson = folly::parseJson(dumpMap["CT_pendingColls"]);

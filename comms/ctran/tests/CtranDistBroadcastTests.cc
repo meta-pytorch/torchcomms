@@ -156,7 +156,7 @@ TEST_P(CtranTestBroadcastFixture, Broadcast) {
 
   EXPECT_NE(dumpMap["CT_pastColls"], "[]");
   EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
-  EXPECT_EQ(dumpMap["CT_currentColl"], "null");
+  EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
 
   auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
   EXPECT_EQ(pastCollsJson.size(), 1);
