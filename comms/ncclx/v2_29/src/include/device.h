@@ -307,6 +307,9 @@ struct alignas(16) ncclDevWorkColl {
     } collnet;
   };
   uint64_t redOpArg;
+  // [NCCLX-QuantizedColl] Device pointer to random seed for stochastic rounding.
+  // Non-nullptr indicates this collective uses quantized transport (FP32->BF16->FP32).
+  uint64_t* quantizeRandomSeedPtr{nullptr};
 };
 
 
