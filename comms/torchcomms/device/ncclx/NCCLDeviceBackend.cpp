@@ -77,23 +77,27 @@ NCCLDeviceBackend::Ptr NCCLDeviceBackend::create_device_window(
     signal_resource_reqs.outGinCounterStart = nullptr;
   }
 
-  // Set up ncclDevCommRequirements with GIN enabled using designated
-  // initializers
-  ncclDevCommRequirements reqs = {
-      .resourceRequirementsList =
-          (signal_buffer_size > 0) ? &signal_resource_reqs : nullptr,
-      .teamRequirementsList = nullptr,
-      .lsaMultimem = true,
-      .barrierCount = config.barrier_count,
-      .lsaBarrierCount = config.barrier_count,
-      .railGinBarrierCount = config.barrier_count,
-      .lsaLLA2ABlockCount = 0,
-      .lsaLLA2ASlotCount = 0,
-      .ginForceEnable = true,
-      .ginContextCount = 1,
-      .ginSignalCount = 0,
-      .ginCounterCount = config.counter_count,
-  };
+  // Initialize ncclDevCommRequirements. NCCLx 2.29+ prepends size/magic/version
+  // fields and validates them in ncclDevCommCreate, so we must use the
+  // NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER macro when available.
+#ifdef NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER
+  ncclDevCommRequirements reqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
+#else
+  ncclDevCommRequirements reqs = {};
+#endif
+  reqs.resourceRequirementsList =
+      (signal_buffer_size > 0) ? &signal_resource_reqs : nullptr;
+  reqs.teamRequirementsList = nullptr;
+  reqs.lsaMultimem = true;
+  reqs.barrierCount = config.barrier_count;
+  reqs.lsaBarrierCount = config.barrier_count;
+  reqs.railGinBarrierCount = config.barrier_count;
+  reqs.lsaLLA2ABlockCount = 0;
+  reqs.lsaLLA2ASlotCount = 0;
+  reqs.ginForceEnable = true;
+  reqs.ginContextCount = 1;
+  reqs.ginSignalCount = 0;
+  reqs.ginCounterCount = config.counter_count;
 
   // Create NCCL device communicator with GIN state
   ncclDevComm nccl_dev_comm{};
