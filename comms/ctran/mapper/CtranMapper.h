@@ -890,7 +890,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   }
 
   // Dump exported registration cache, for testing only
-  std::unordered_map<ctran::regcache::RegElem*, std::unordered_set<int>>
+  std::unordered_map<ctran::regcache::RegElem*, std::unordered_map<int, int>>
   dumpExportRegCache() const;
 
  protected:

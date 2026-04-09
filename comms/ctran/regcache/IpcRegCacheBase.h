@@ -52,10 +52,14 @@ struct IpcRelease {
   void* base{nullptr};
   // unique ID for tracking registrations
   uint32_t uid{0};
+  // Number of times this buffer was exported to the peer. The import side
+  // should decrement its refcount by this amount.
+  int32_t exportCount{1};
 
   std::string toString() const {
     std::stringstream ss;
-    ss << "[IPC_RELEASE_MEM] base: " << base << " uid: " << uid;
+    ss << "[IPC_RELEASE_MEM] base: " << base << " uid: " << uid
+       << " exportCount: " << exportCount;
     return ss.str();
   }
 };

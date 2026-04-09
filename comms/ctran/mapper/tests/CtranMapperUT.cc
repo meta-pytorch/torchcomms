@@ -1300,25 +1300,29 @@ TEST_F(CtranMapperTest, ExportRegCache) {
     cache->record(dummyRegElem0, peer);
   }
 
-  // Except dump gives full copy of the cache
+  // Expect dump gives full copy of the cache
   const auto dump = cache->dump();
   EXPECT_EQ(dump.size(), 1);
   auto it = dump.begin();
   EXPECT_EQ(it->first, dummyRegElem0);
   EXPECT_EQ(it->second.size(), peers.size());
+  for (auto peer : peers) {
+    EXPECT_EQ(it->second.at(peer), 1);
+  }
 
   const ctran::regcache::RegElem* dummyRegElem1 =
       reinterpret_cast<ctran::regcache::RegElem*>(0x12346);
 
-  // Expect return empty vector for non-existing regElem
+  // Expect return empty map for non-existing regElem
   auto cachedPeers = cache->remove(dummyRegElem1);
   EXPECT_EQ(cachedPeers.size(), 0);
 
-  // Expect return cached peers for existing regElem
+  // Expect return cached peers with export counts for existing regElem
   cachedPeers = cache->remove(dummyRegElem0);
   EXPECT_EQ(cachedPeers.size(), peers.size());
   for (auto peer : peers) {
     EXPECT_EQ(cachedPeers.count(peer), 1);
+    EXPECT_EQ(cachedPeers.at(peer), 1);
   }
 
   // Expect empty dump after remove
@@ -1346,21 +1350,21 @@ TEST_F(CtranMapperTest, ExportRegCacheMultipleElems) {
 
   EXPECT_EQ(cache.dump().size(), 2);
 
-  // Remove elem0 — should only return elem0's peers
+  // Remove elem0 — should only return elem0's peers with counts
   auto peers0 = cache.remove(elem0);
-  const std::unordered_set<int> expected0 = {0, 1, 2};
+  const std::unordered_map<int, int> expected0 = {{0, 1}, {1, 1}, {2, 1}};
   EXPECT_EQ(peers0, expected0);
   EXPECT_EQ(cache.dump().size(), 1);
 
-  // Remove elem1 — should only return elem1's peers
+  // Remove elem1 — should only return elem1's peers with counts
   auto peers1 = cache.remove(elem1);
-  const std::unordered_set<int> expected1 = {1, 2, 3};
+  const std::unordered_map<int, int> expected1 = {{1, 1}, {2, 1}, {3, 1}};
   EXPECT_EQ(peers1, expected1);
   EXPECT_EQ(cache.dump().size(), 0);
 }
 
-// Test ExportRegCache deduplication: recording the same peer twice for the
-// same regElem should not create duplicate entries.
+// Test ExportRegCache counting: recording the same peer multiple times for the
+// same regElem should increment the export count.
 TEST_F(CtranMapperTest, ExportRegCacheDuplicatePeer) {
   ctran::ExportRegCache cache;
   auto* elem = reinterpret_cast<ctran::regcache::RegElem*>(0x3000);
@@ -1371,7 +1375,27 @@ TEST_F(CtranMapperTest, ExportRegCacheDuplicatePeer) {
 
   auto peers = cache.remove(elem);
   EXPECT_EQ(peers.size(), 1);
-  EXPECT_EQ(peers.count(5), 1);
+  EXPECT_EQ(peers.at(5), 3);
+}
+
+// Test ExportRegCache with varying export counts per rank.
+TEST_F(CtranMapperTest, ExportRegCacheMultiExportCount) {
+  ctran::ExportRegCache cache;
+  auto* elem = reinterpret_cast<ctran::regcache::RegElem*>(0x4000);
+
+  // Export to rank 1 three times, rank 2 twice, rank 3 once
+  cache.record(elem, 1);
+  cache.record(elem, 1);
+  cache.record(elem, 1);
+  cache.record(elem, 2);
+  cache.record(elem, 2);
+  cache.record(elem, 3);
+
+  auto peers = cache.remove(elem);
+  EXPECT_EQ(peers.size(), 3);
+  EXPECT_EQ(peers.at(1), 3);
+  EXPECT_EQ(peers.at(2), 2);
+  EXPECT_EQ(peers.at(3), 1);
 }
 
 class CtranMapperTestDisjoint : public ::testing::Test {
