@@ -202,6 +202,19 @@ class NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) = 0;
 
+#ifdef NCCL_REDUCE_SCATTER_QUANTIZE_SUPPORTED
+  [[nodiscard]] virtual ncclResult_t reduceScatterQuantize(
+      const void* sendbuff,
+      void* recvbuff,
+      size_t recvcount,
+      ncclDataType_t inputType,
+      ncclDataType_t transportType,
+      ncclRedOp_t op,
+      uint64_t* seedPtr,
+      ncclComm_t comm,
+      cudaStream_t stream) = 0;
+#endif
+
   [[nodiscard]] virtual ncclResult_t allToAllv(
       const void* sendbuff,
       const size_t sendcounts[],
@@ -559,6 +572,19 @@ class DefaultNcclxApi : public NcclxApi {
       ncclDataType_t datatype,
       ncclComm_t comm,
       cudaStream_t stream) override;
+
+#ifdef NCCL_REDUCE_SCATTER_QUANTIZE_SUPPORTED
+  [[nodiscard]] ncclResult_t reduceScatterQuantize(
+      const void* sendbuff,
+      void* recvbuff,
+      size_t recvcount,
+      ncclDataType_t inputType,
+      ncclDataType_t transportType,
+      ncclRedOp_t op,
+      uint64_t* seedPtr,
+      ncclComm_t comm,
+      cudaStream_t stream) override;
+#endif
 
   [[nodiscard]] ncclResult_t allToAllv(
       const void* sendbuff,
