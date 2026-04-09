@@ -78,6 +78,14 @@ class TorchCommNCCLX:
         request: TorchCommNCCLXPersistentRequest,
         async_op: bool,
     ) -> TorchWork: ...
+    def reduce_scatter_quantized(
+        self,
+        output: torch.Tensor,
+        input: torch.Tensor,
+        op: torch.distributed.ReduceOp,
+        seed: torch.Tensor,
+        async_op: bool,
+    ) -> TorchWork: ...
     def comm_dump(self) -> dict[str, str]: ...
 
 def comm_dump_all() -> dict[str, dict[str, str]]: ...

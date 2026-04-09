@@ -1228,6 +1228,113 @@ TEST_F(TorchCommNCCLXTest, AlltoallvDedupExecCombine) {
   comm->finalize();
 }
 
+#ifdef NCCL_REDUCE_SCATTER_QUANTIZE_SUPPORTED
+TEST_F(TorchCommNCCLXTest, ReduceScatterQuantized) {
+  setupRankAndSize(0, 2);
+  setupCCAExpectations(1, 2, 1);
+
+  auto comm = createMockedTorchComm();
+
+  cuda_mock_->setupDefaultBehaviors();
+  nccl_mock_->setupDefaultBehaviors();
+
+  comm->init(*device_, "test_name", default_options_);
+
+  // Create FP32 input/output tensors with correct sizes
+  // input size = output size * comm_size
+  auto output = createTestTensor({50}, at::kFloat);
+  auto input = createTestTensor({50 * comm->getSize()}, at::kFloat);
+
+  // Create seed tensor (single-element int64)
+  auto seed = createTestTensor({1}, at::kLong);
+
+  EXPECT_CALL(*nccl_mock_, reduceScatterQuantize(_, _, _, _, _, _, _, _, _))
+      .WillOnce(Return(ncclSuccess));
+
+  auto work = comm->reduce_scatter_quantized(
+      output, input, ReduceOp::SUM, seed, /*async_op=*/true);
+  EXPECT_NE(work, nullptr);
+
+  setupNormalDestruction(*comm);
+  comm->finalize();
+}
+
+TEST_F(TorchCommNCCLXTest, ReduceScatterQuantizedInvalidInputType) {
+  setupRankAndSize(0, 2);
+  setupCCAExpectations(1, 2, 1);
+
+  auto comm = createMockedTorchComm();
+
+  cuda_mock_->setupDefaultBehaviors();
+  nccl_mock_->setupDefaultBehaviors();
+
+  comm->init(*device_, "test_name", default_options_);
+
+  // Use BF16 input (should fail — must be FP32)
+  auto output = createTestTensor({50}, at::kFloat);
+  auto input = createTestTensor({100}, at::kBFloat16);
+  auto seed = createTestTensor({1}, at::kLong);
+
+  EXPECT_THROW(
+      comm->reduce_scatter_quantized(
+          output, input, ReduceOp::SUM, seed, /*async_op=*/true),
+      c10::Error);
+
+  setupNormalDestruction(*comm);
+  comm->finalize();
+}
+
+TEST_F(TorchCommNCCLXTest, ReduceScatterQuantizedInvalidOp) {
+  setupRankAndSize(0, 2);
+  setupCCAExpectations(1, 2, 1);
+
+  auto comm = createMockedTorchComm();
+
+  cuda_mock_->setupDefaultBehaviors();
+  nccl_mock_->setupDefaultBehaviors();
+
+  comm->init(*device_, "test_name", default_options_);
+
+  auto output = createTestTensor({50}, at::kFloat);
+  auto input = createTestTensor({100}, at::kFloat);
+  auto seed = createTestTensor({1}, at::kLong);
+
+  // Use PRODUCT op (should fail — only SUM and AVG supported)
+  EXPECT_THROW(
+      comm->reduce_scatter_quantized(
+          output, input, ReduceOp::PRODUCT, seed, /*async_op=*/true),
+      c10::Error);
+
+  setupNormalDestruction(*comm);
+  comm->finalize();
+}
+
+TEST_F(TorchCommNCCLXTest, ReduceScatterQuantizedSizeMismatch) {
+  setupRankAndSize(0, 2);
+  setupCCAExpectations(1, 2, 1);
+
+  auto comm = createMockedTorchComm();
+
+  cuda_mock_->setupDefaultBehaviors();
+  nccl_mock_->setupDefaultBehaviors();
+
+  comm->init(*device_, "test_name", default_options_);
+
+  // input size (80) != output size (50) * comm_size (2) = 100
+  auto output = createTestTensor({50}, at::kFloat);
+  auto input = createTestTensor({80}, at::kFloat);
+  auto seed = createTestTensor({1}, at::kLong);
+
+  EXPECT_THROW(
+      comm->reduce_scatter_quantized(
+          output, input, ReduceOp::SUM, seed, /*async_op=*/true),
+      c10::Error);
+
+  setupNormalDestruction(*comm);
+  comm->finalize();
+}
+#endif
+
 // ============================================================================
 // NCCLXException TESTS
 // ============================================================================
