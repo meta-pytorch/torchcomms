@@ -350,6 +350,16 @@ class NcclxApi {
       size_t offset,
       int peer,
       void** outPtr) = 0;
+
+  // Get the LSA multimem (multicast) device pointer for a window.
+  // Returns the NVLS multicast address that can be used with
+  // multimem.ld_reduce / multimem.st PTX instructions for hardware-fused
+  // all-reduce across all LSA-connected peers.
+  // Requires NCCLX 2.29+ and lsaMultimem enabled in ncclDevCommRequirements.
+  [[nodiscard]] virtual ncclResult_t winGetLsaMultimemDevicePointer(
+      NcclxWindow win,
+      size_t offset,
+      void** outPtr) = 0;
 #endif
 #endif
 
@@ -695,6 +705,11 @@ class DefaultNcclxApi : public NcclxApi {
       NcclxWindow win,
       size_t offset,
       int peer,
+      void** outPtr) override;
+
+  [[nodiscard]] ncclResult_t winGetLsaMultimemDevicePointer(
+      NcclxWindow win,
+      size_t offset,
       void** outPtr) override;
 #endif
 #endif

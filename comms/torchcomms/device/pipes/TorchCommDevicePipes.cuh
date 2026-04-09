@@ -370,6 +370,18 @@ TorchCommDeviceWindow<PipesDeviceBackend>::get_nvlink_address(int peer) {
   return window_->get_nvlink_address(peer);
 }
 
+// =============================================================================
+// TorchCommDeviceWindow<PipesDeviceBackend> Multimem Address Query
+// =============================================================================
+
+template <>
+__device__ inline void*
+TorchCommDeviceWindow<PipesDeviceBackend>::get_multimem_address(
+    size_t /*offset*/) {
+  // Multimem (NVLS multicast) is an NCCL/GIN feature, not available via Pipes.
+  return nullptr;
+}
+
 } // namespace torchcomms::device
 
 #endif // ENABLE_PIPES

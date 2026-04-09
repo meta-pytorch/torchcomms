@@ -222,4 +222,16 @@ __device__ void* torchcomms_get_nvlink_address(void* win_ptr, int peer) {
   return win->get_nvlink_address(peer);
 }
 
+// =============================================================================
+// Multimem Address Query
+// Thread-scope (idempotent)
+// =============================================================================
+
+__device__ void* torchcomms_get_multimem_address(
+    void* win_ptr,
+    unsigned long long offset) {
+  auto* win = reinterpret_cast<DeviceWindow*>(win_ptr);
+  return win->get_multimem_address(static_cast<size_t>(offset));
+}
+
 } // extern "C"

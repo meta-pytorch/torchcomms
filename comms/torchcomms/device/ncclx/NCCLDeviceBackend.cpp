@@ -83,7 +83,7 @@ NCCLDeviceBackend::Ptr NCCLDeviceBackend::create_device_window(
       .resourceRequirementsList =
           (signal_buffer_size > 0) ? &signal_resource_reqs : nullptr,
       .teamRequirementsList = nullptr,
-      .lsaMultimem = false,
+      .lsaMultimem = true,
       .barrierCount = config.barrier_count,
       .lsaBarrierCount = config.barrier_count,
       .railGinBarrierCount = config.barrier_count,

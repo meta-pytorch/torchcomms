@@ -120,4 +120,12 @@ void launchStressPutHalfKernel(
     int* results,
     cudaStream_t stream);
 
+// Get multimem address kernel: calls win->get_multimem_address(offset) from
+// device and stores the result as int64 for host-side comparison.
+void launchGetMultimemAddressKernel(
+    DeviceWindowNCCL* win,
+    size_t offset,
+    int64_t* result,
+    cudaStream_t stream);
+
 } // namespace torchcomms::device::test
