@@ -32,20 +32,22 @@ add_compile_definitions(MOCK_SCUBA_DATA CTRAN_DISABLE_TCPDM FMT_USE_CONSTEXPR)
 add_subdirectory(comms/utils)
 add_subdirectory(comms/ctran)
 
-# Get folly LDFLAGS using pkg-config
-set(ENV{PKG_CONFIG_PATH} "${CONDA_LIB}/pkgconfig")
-execute_process(
-    COMMAND pkg-config --libs --static libfolly
-    OUTPUT_VARIABLE FOLLY_LDFLAGS_RAW
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    RESULT_VARIABLE PKG_RESULT
-)
-if(NOT PKG_RESULT EQUAL 0)
-    message(FATAL_ERROR "pkg-config for libfolly failed")
+# Get folly LDFLAGS — use cmake targets when available, else pkg-config.
+if(NOT TARGET Folly::folly)
+    set(ENV{PKG_CONFIG_PATH} "${CONDA_LIB}/pkgconfig")
+    execute_process(
+        COMMAND pkg-config --libs --static libfolly
+        OUTPUT_VARIABLE FOLLY_LDFLAGS_RAW
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE PKG_RESULT
+    )
+    if(NOT PKG_RESULT EQUAL 0)
+        message(FATAL_ERROR "pkg-config for libfolly failed")
+    endif()
+    separate_arguments(FOLLY_LDFLAGS NATIVE_COMMAND "${FOLLY_LDFLAGS_RAW}")
+    # Remove any -l:libglog.a from FOLLY_LDFLAGS
+    list(FILTER FOLLY_LDFLAGS EXCLUDE REGEX ".*libglog.*")
 endif()
-separate_arguments(FOLLY_LDFLAGS NATIVE_COMMAND "${FOLLY_LDFLAGS_RAW}")
-# Remove any -l:libglog.a from FOLLY_LDFLAGS
-list(FILTER FOLLY_LDFLAGS EXCLUDE REGEX ".*libglog.*")
 
 add_library(torchcomms_transport MODULE
     ${TORCHCOMMS_TRANSPORT_SOURCES}
@@ -73,11 +75,18 @@ target_link_libraries(torchcomms_transport PRIVATE
     ${TORCH_PYTHON_LIB}
     ctran
     utils
-    ${FOLLY_LDFLAGS}
 )
 
-if(USE_SYSTEM_LIBS)
+if(TARGET Folly::folly)
+    # FetchContent-built folly — use cmake targets directly.
     target_link_libraries(torchcomms_transport PRIVATE
+        Folly::folly
+        fmt::fmt glog::glog gflags
+        Boost::program_options Boost::filesystem Boost::context
+    )
+elseif(USE_SYSTEM_LIBS)
+    target_link_libraries(torchcomms_transport PRIVATE
+        ${FOLLY_LDFLAGS}
         "-lfolly"
         "-lgflags"
         "-lglog"
@@ -88,6 +97,7 @@ if(USE_SYSTEM_LIBS)
     )
 else()
     target_link_libraries(torchcomms_transport PRIVATE
+        ${FOLLY_LDFLAGS}
         "-l:libfolly.a"
         "-l:libgflags.a"
         "-l:libglog.a"
@@ -102,6 +112,6 @@ if(CUDA_FOUND)
     target_link_libraries(torchcomms_transport PRIVATE CUDA::cudart)
 endif()
 
-install(TARGETS torchcomms_transport
+_install(TARGETS torchcomms_transport
     LIBRARY DESTINATION .
 )

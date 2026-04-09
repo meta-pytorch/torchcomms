@@ -1,8 +1,21 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 cmake_minimum_required(VERSION 3.22)
+# Allow FetchContent deps with old cmake_minimum_required (e.g. glog 0.4.0,
+# gflags 2.2.2 use VERSION 3.0) to configure on CMake 4.x without error.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 project(torchcomms_ncclx)
 set(CMAKE_VERBOSE_MAKEFILE ON)
+# Static libs must be compiled with -fPIC when linked into shared modules.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+# Build third-party deps as static libs so they're linked into the
+# Python extension modules without needing runtime shared lib paths.
+set(BUILD_SHARED_LIBS OFF)
+
+# Use CONFIG mode for Boost (FindBoost module removed in CMake 3.31+).
+if(POLICY CMP0167)
+    cmake_policy(SET CMP0167 NEW)
+endif()
 set(FETCHCONTENT_BASE_DIR "build/fetchcontent")
 
 # Options
@@ -108,7 +121,7 @@ set(USE_SYSTEM_LIBS $ENV{USE_SYSTEM_LIBS})
 
 message(STATUS "Python3_ROOT_DIR : ${Python3_ROOT_DIR}")
 
-# Find CONDA_PREFIX
+# Find CONDA_PREFIX (needed by third-party modules for prebuilt detection)
 if(DEFINED ENV{BUILD_PREFIX})
     set(CONDA_PREFIX $ENV{PREFIX})
 elseif(DEFINED ENV{CONDA_PREFIX})
@@ -119,7 +132,54 @@ else()
 endif()
 set(CONDA_LIB "${CONDA_PREFIX}/lib")
 set(CONDA_INCLUDE "${CONDA_PREFIX}/include")
+
+# Config stubs for FB OSS libs so find_package(<pkg> CONFIG) succeeds.
+list(PREPEND CMAKE_PREFIX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/config-stubs")
+
+# Override install() and export() to no-ops to suppress EXPORT validation
+# errors from third-party libs. The originals are accessible as _install()
+# and _export() for torchcomms targets below.
+macro(install)
+endmacro()
+macro(export)
+endmacro()
+
+# Third-party dependencies — core deps needed by all builds.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/third_party/versions.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/third_party/fmt.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/third_party/gflags.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/third_party/glog.cmake)
+
+# Heavy third-party deps only needed when building NCCLX from source
+# (i.e., USE_NCCLX=ON and not USE_SYSTEM_LIBS). These include folly, fbthrift,
+# and their transitive deps (boost, openssl, zstd, etc.).
+if(USE_NCCLX AND NOT USE_SYSTEM_LIBS)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/third_party/zlib.cmake)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/third_party/boost.cmake)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/third_party/openssl.cmake)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/third_party/xxhash.cmake)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/third_party/zstd.cmake)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/third_party/sodium.cmake)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/third_party/fast_float.cmake)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/third_party/libevent.cmake)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/third_party/double-conversion.cmake)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/third_party/folly.cmake)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/third_party/fizz.cmake)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/third_party/mvfst.cmake)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/third_party/wangle.cmake)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/third_party/fbthrift.cmake)
+endif()
+
 set(TORCH_PYTHON_LIB "${TORCH_INSTALL_PREFIX}/lib/libtorch_python.so")
+
+# Shared libs and modules need $ORIGIN RPATH to find deps in the same directory.
+set(CMAKE_INSTALL_RPATH "$ORIGIN")
+if(USE_SYSTEM_LIBS)
+    # Include conda/system lib dir in RPATH so shared libs (glog, fmt, etc.)
+    # are found at runtime.
+    list(APPEND CMAKE_INSTALL_RPATH "${CONDA_LIB}")
+endif()
+set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
 
 # Core libtorchcomms
 add_library(torchcomms SHARED ${TORCHCOMMS_SOURCES})
@@ -134,22 +194,15 @@ target_include_directories(torchcomms PRIVATE
 )
 target_compile_features(torchcomms PRIVATE cxx_std_20)
 target_link_directories(torchcomms PRIVATE ${CONDA_LIB})
-target_link_libraries(torchcomms PRIVATE ${TORCH_LIBRARIES} nlohmann_json::nlohmann_json)
+target_link_libraries(torchcomms PRIVATE
+    ${TORCH_LIBRARIES}
+    nlohmann_json::nlohmann_json
+)
 if(USE_SYSTEM_LIBS)
-    target_link_libraries(torchcomms PRIVATE
-        "-lglog"
-        "-lgflags"
-        "-lfmt"
-    )
+    # Link against system/conda shared libs directly.
+    target_link_libraries(torchcomms PRIVATE "-lglog" "-lgflags" "-lfmt")
 else()
-    target_include_directories(torchcomms PRIVATE
-        ${ROOT}/third-party/fmt/include
-    )
-    target_link_libraries(torchcomms PRIVATE
-        "-l:libglog.a"
-        "-l:libgflags.a"
-        "-l:libfmt.a"
-    )
+    target_link_libraries(torchcomms PRIVATE fmt::fmt glog::glog gflags)
 endif()
 
 # Flight Recorder sources (compiled into _comms)
@@ -187,6 +240,11 @@ if (USE_NCCL)
     include(comms/torchcomms/nccl/CMakeLists.txt)
 endif()
 if (USE_NCCLX)
+    # Build comms tracing service (thrift-generated) when building NCCLX from
+    # source.  USE_SYSTEM_LIBS implies the tracing service is prebuilt.
+    if(NOT USE_SYSTEM_LIBS)
+        add_subdirectory(comms/analyzer/if)
+    endif()
     include(comms/torchcomms/ncclx/CMakeLists.txt)
 endif()
 if (USE_GLOO)
@@ -208,10 +266,10 @@ if (USE_TRITON)
     include(comms/torchcomms/triton/CMakeLists.txt)
 endif()
 # Install targets to Python package structure
-install(TARGETS torchcomms
+_install(TARGETS torchcomms
     LIBRARY DESTINATION .
 )
-install(TARGETS torchcomms_comms
+_install(TARGETS torchcomms_comms
     LIBRARY DESTINATION .
 )
 

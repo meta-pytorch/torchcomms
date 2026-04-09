@@ -22,7 +22,9 @@ else()
     )
 endif()
 
-set(FMT_INCLUDE "${ROOT}/third-party/fmt/include")
+if(NOT TARGET fmt::fmt)
+    set(FMT_INCLUDE "${ROOT}/third-party/fmt/include")
+endif()
 
 add_library(torchcomms_comms_nccl MODULE
     ${TORCHCOMMS_NCCL_SOURCES}
@@ -48,7 +50,17 @@ target_link_libraries(torchcomms_comms_nccl PRIVATE
     ${TORCH_PYTHON_LIB}
     torchcomms
 )
-if(USE_SYSTEM_LIBS)
+if(TARGET fmt::fmt AND TARGET glog::glog)
+    # FetchContent-built deps — use cmake targets directly.
+    target_link_libraries(torchcomms_comms_nccl PRIVATE
+        fmt::fmt glog::glog
+    )
+    if(NCCL_SHARED_LIB)
+        target_link_libraries(torchcomms_comms_nccl PRIVATE ${NCCL_SHARED_LIB})
+    elseif(NCCL_STATIC_LIB)
+        target_link_libraries(torchcomms_comms_nccl PRIVATE ${NCCL_STATIC_LIB})
+    endif()
+elseif(USE_SYSTEM_LIBS)
     target_link_libraries(torchcomms_comms_nccl PRIVATE
         ${NCCL_SHARED_LIB}
         "-lfmt"
@@ -64,6 +76,6 @@ if(CUDA_FOUND)
     target_link_libraries(torchcomms_comms_nccl PRIVATE CUDA::cudart)
 endif()
 
-install(TARGETS torchcomms_comms_nccl
+_install(TARGETS torchcomms_comms_nccl
     LIBRARY DESTINATION .
 )

@@ -69,6 +69,6 @@ message(STATUS "XCCL compile options : ${XCCL_COMPILE_OPTIONS}")
 
 target_compile_options(torchcomms_comms_xccl PRIVATE ${XCCL_COMPILE_OPTIONS})
 
-install(TARGETS torchcomms_comms_xccl
+_install(TARGETS torchcomms_comms_xccl
     LIBRARY DESTINATION .
 )
