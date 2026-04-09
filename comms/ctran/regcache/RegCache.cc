@@ -582,12 +582,41 @@ bool ctran::RegCache::isRegistered(const void* ptr, const size_t len) {
   return regHdl != nullptr;
 }
 
-void* ctran::RegCache::searchIbRegElem(const void* ptr, const size_t len) {
-  auto* regElem = searchRegElem(ptr, len);
-  if (regElem == nullptr || regElem->ibRegElem == nullptr) {
+void* ctran::RegCache::searchIbRegHandle(
+    const void* ptr,
+    const size_t len,
+    int deviceId) {
+  int cudaDev = 0;
+  if (deviceId != -1) {
+    cudaDev = deviceId;
+  } else {
+    // Same as globalRegister, auto-detect cudaDev from buffer pointer.
+    commResult_t devResult = getCudaDevFromPtr(ptr, cudaDev);
+    if (devResult != commSuccess) {
+      // Fall back to current CUDA device for CPU memory
+      FB_CUDACHECK_RETURN(cudaGetDevice(&cudaDev), nullptr);
+    }
+  }
+
+  ctran::regcache::RegElem* regHdl = nullptr;
+  bool didRegister = false;
+  CommLogData logMetaData{};
+  logMetaData.commDesc = "global";
+
+  auto res = regRange(
+      ptr,
+      len,
+      cudaDev,
+      "searchIbRegHandle",
+      logMetaData,
+      globalBackends_,
+      didRegister,
+      &regHdl);
+
+  if (res != commSuccess || regHdl == nullptr || regHdl->ibRegElem == nullptr) {
     return nullptr;
   }
-  return regElem->ibRegElem;
+  return regHdl->ibRegElem;
 }
 
 std::vector<void*> ctran::RegCache::getSegments() const {

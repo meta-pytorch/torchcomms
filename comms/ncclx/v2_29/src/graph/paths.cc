@@ -698,7 +698,19 @@ ncclResult_t ncclTopoGetPxnRanks(struct ncclComm* comm, int** intermediateRanks,
   return ncclSuccess;
 }
 
-NCCL_PARAM(PxnC2c, "PXN_C2C", 1);
+// Hand-expanded NCCL_PARAM with externally visible cache so that
+// the NCCL_TOPO_BOND_V228 override in initEnv() can pre-seed it.
+int64_t ncclParamPxnC2cCache = INT64_MIN;
+
+int64_t ncclParamPxnC2c() {
+  constexpr int64_t uninitialized = INT64_MIN;
+  static int8_t noCache = /*uninitialized*/ -1;
+  static_assert(1 != uninitialized, "default value cannot be the uninitialized value.");
+  if (COMPILER_EXPECT(COMPILER_ATOMIC_LOAD(&ncclParamPxnC2cCache, std::memory_order_relaxed) == uninitialized, false)) {
+    return ncclLoadParam("NCCL_PXN_C2C", 1, uninitialized, &ncclParamPxnC2cCache, &noCache);
+  }
+  return ncclParamPxnC2cCache;
+}
 
 ncclResult_t ncclTopoComputePaths(struct ncclTopoSystem* system, struct ncclComm* comm) {
   // Precompute paths between GPUs/NICs.
