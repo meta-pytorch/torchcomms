@@ -182,6 +182,9 @@ ncclResult_t ncclCollPreconnectFunc(struct ncclAsyncJob* job_) {
         case NCCL_ALGO_NVLS: {
           /* If we are using NVLS_TREE algo, we must mark NVLS algo to set up
            * NVLS intra-node buffer */
+          if (comm->nvlsResources == NULL) {
+            NCCLCHECKGOTO(ncclNvlsSetup(comm, NULL), ret, fail);
+          }
           NCCLCHECKGOTO(ncclNvlsBufferSetup(comm), ret, fail);
           break;
         }
