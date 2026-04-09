@@ -32,7 +32,7 @@ def child_process_func(device_id: int):
 
     try:
         import torch
-    except ModuleNotFoundError as e:
+    except ImportError as e:
         # forkserver/spawn may not inherit PAR module paths
         print(f"Skipping: {e} (expected with forkserver/spawn in PAR)")
         sys.exit(0)
