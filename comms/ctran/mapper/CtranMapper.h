@@ -1088,6 +1088,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       const void* buf,
       void* hdl,
       ControlMsg& msg,
+      std::vector<ctran::utils::CtranIpcSegDesc>* extraSegments,
       CtranMapperBackend backend = CtranMapperBackend::UNSET) {
     auto regElem = reinterpret_cast<ctran::regcache::RegElem*>(hdl);
     // TODO: Enforce that a communicator can only export memory it registered
@@ -1104,17 +1105,23 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
 
     if (backend == CtranMapperBackend::NVL) {
       msg.setType(ControlMsgType::NVL_EXPORT_MEM);
-      std::vector<ctran::utils::CtranIpcSegDesc> extraSegments;
-      FB_COMMCHECK(
-          ctran::IpcRegCache::getInstance()->exportMem(
-              buf, regElem->ipcRegElem, msg.ipcDesc, extraSegments));
-      if (!extraSegments.empty()) {
-        CLOGF(
-            ERR,
-            "CTRAN-MAPPER: exportMem to rank {} has overflow segments, which is "
-            "not supported in this path.",
-            rank);
-        return commInternalError;
+      if (extraSegments) {
+        FB_COMMCHECK(
+            ctran::IpcRegCache::getInstance()->exportMem(
+                buf, regElem->ipcRegElem, msg.ipcDesc, *extraSegments));
+      } else {
+        std::vector<ctran::utils::CtranIpcSegDesc> tmpExtraSegments;
+        FB_COMMCHECK(
+            ctran::IpcRegCache::getInstance()->exportMem(
+                buf, regElem->ipcRegElem, msg.ipcDesc, tmpExtraSegments));
+        if (!tmpExtraSegments.empty()) {
+          CLOGF(
+              ERR,
+              "CTRAN-MAPPER: exportMem to rank {} has overflow segments, which is "
+              "not supported in this path.",
+              rank);
+          return commInternalError;
+        }
       }
 
       // Record the exported remote rank to notify at deregistration
@@ -1137,6 +1144,15 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       return commInvalidUsage;
     }
     return commSuccess;
+  }
+
+  inline commResult_t exportMem(
+      int rank,
+      const void* buf,
+      void* hdl,
+      ControlMsg& msg,
+      CtranMapperBackend backend = CtranMapperBackend::UNSET) {
+    return exportMem(rank, buf, hdl, msg, nullptr, backend);
   }
 
   inline commResult_t importMem(
