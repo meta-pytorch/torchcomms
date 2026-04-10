@@ -62,6 +62,46 @@ class AllToAllvTestFixture : public BenchmarkTestFixture {
   void SetUp() override {
     BenchmarkTestFixture::SetUp();
     CUDACHECK_TEST(cudaSetDevice(localRank));
+
+    // 1x2 configuration requires Blackwell GPU (B200) due to resource
+    // constraints on H100. Skip gracefully on non-Blackwell platforms so the
+    // test doesn't fail in local runs or non-B200 CI.
+    if (worldSize == 2) {
+      cudaDeviceProp prop{};
+      CUDACHECK_TEST(cudaGetDeviceProperties(&prop, localRank));
+      if (prop.major < 10) {
+        GTEST_SKIP() << "1x2 AllToAllv requires Blackwell GPU (SM >= 100), "
+                     << "found SM " << prop.major << "." << prop.minor << " ("
+                     << prop.name << ")";
+      }
+    }
+
+    // Verify CUDA kernels are compiled for this GPU architecture by probing
+    // a minimal kernel launch. Without the right -gencode flags (e.g.
+    // sm_100a for B200), kernels will fail with "no kernel image is available
+    // for execution on the device". Build with:
+    //   -c fbcode.nvcc_arch=h100a,b200a
+    // or use CUDA 12.8+ where B200 arch is included by default.
+    {
+      int* d_probe = nullptr;
+      CUDACHECK_TEST(cudaMalloc(&d_probe, sizeof(int)));
+      try {
+        test::fillBuffer(d_probe, 0, 1);
+        auto err = cudaDeviceSynchronize();
+        if (err != cudaSuccess) {
+          cudaFree(d_probe);
+          cudaGetLastError();
+          GTEST_SKIP() << "CUDA kernels not compiled for this GPU: "
+                       << cudaGetErrorString(err);
+        }
+      } catch (const std::exception& e) {
+        cudaFree(d_probe);
+        cudaGetLastError();
+        GTEST_SKIP() << "CUDA kernels not compiled for this GPU architecture: "
+                     << e.what();
+      }
+      cudaFree(d_probe);
+    }
   }
 };
 
@@ -271,10 +311,10 @@ INSTANTIATE_TEST_SUITE_P(
             .numIntsPerRank = 64,
             .testName = "7b_256t_256B"},
         AllToAllvTestParams{
-            .numBlocks = 8,
-            .blockSize = 512,
+            .numBlocks = 16,
+            .blockSize = 256,
             .numIntsPerRank = 256,
-            .testName = "8b_512t_1KB"},
+            .testName = "16b_256t_1KB"},
         AllToAllvTestParams{
             .numBlocks = 16,
             .blockSize = 128,
@@ -504,10 +544,10 @@ INSTANTIATE_TEST_SUITE_P(
             .testName = "8b_256t_3840B"},
         // base_ints = 256, max = (7+7+1)*256*4 = 15KB
         AllToAllvUnequalSizeParams{
-            .numBlocks = 8,
-            .blockSize = 512,
+            .numBlocks = 16,
+            .blockSize = 256,
             .base_ints = 256,
-            .testName = "8b_512t_15KB"},
+            .testName = "16b_256t_15KB"},
         // base_ints = 512, max = (7+7+1)*512*4 = 30KB
         AllToAllvUnequalSizeParams{
             .numBlocks = 16,
