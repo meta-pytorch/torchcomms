@@ -18,7 +18,10 @@ P2pIbgdaTransportDevice* buildDeviceTransportsOnGpu(
 
   for (int i = 0; i < numPeers; ++i) {
     hostTransports.emplace_back(
-        params[i].gpuQp, params[i].companionGpuQp, params[i].sinkLkey);
+        params[i].gpuQp,
+        params[i].companionGpuQp,
+        params[i].sinkLkey,
+        params[i].sinkAddr);
   }
 
   // Allocate GPU memory
