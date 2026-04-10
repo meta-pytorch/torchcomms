@@ -11,14 +11,16 @@
 namespace comms::pipes {
 
 /**
- * Host wrapper for AllToAllv collective communication.
+ * Unified host wrapper for AllToAllv collective communication.
  *
  * Performs variable-sized all-to-all data exchange among multiple ranks.
  * Each rank sends a potentially different amount of data to every other rank,
  * and receives a potentially different amount of data from every other rank.
  *
- * This is a host function that launches the AllToAllv kernel. All device
- * pointers and DeviceSpans must already be allocated and populated on the GPU.
+ * Supports both NVLink and IBGDA transports via a single entry point.
+ * IBGDA staging state is embedded in each P2pIbgdaTransportDevice — the
+ * kernel dispatches per-peer based on transport type without needing
+ * separate ibgda_peer_states or iteration_counter parameters.
  *
  * This overload creates a Timeout internally per call. For pipelined usage
  * (multiple back-to-back calls), prefer the Timeout overload below to avoid
@@ -36,8 +38,8 @@ namespace comms::pipes {
  * @param num_blocks Number of thread blocks to launch (default: 4)
  * @param num_threads Number of threads per block (default: 256)
  * @param cluster_dim Cluster dimensions for spread cluster launch.
- *                    Default: dim3{4, 1, 1} for better load balancing.
- *                    Set to std::nullopt to use standard kernel launch.
+ *                    Default: dim3{4, 1, 1}. Set to std::nullopt to use
+ *                    standard kernel launch.
  */
 void all_to_allv(
     void* recvbuff_d,
@@ -53,7 +55,7 @@ void all_to_allv(
     std::optional<dim3> cluster_dim = dim3{4, 1, 1});
 
 /**
- * Host wrapper for AllToAllv with pre-built Timeout.
+ * Unified host wrapper for AllToAllv with pre-built Timeout.
  *
  * Use this overload for pipelined/multi-call usage (e.g., benchmarks) where
  * Timeout is created once outside the loop (avoids per-call CUDA API
@@ -71,5 +73,21 @@ void all_to_allv(
     int num_blocks = 4,
     int num_threads = 256,
     std::optional<dim3> cluster_dim = dim3{4, 1, 1});
+
+/**
+ * Resolve a WarpReserveConfig into a WarpReserveDeviceConfig.
+ *
+ * Auto-computes warp counts when config values are 0, computes cumulative
+ * boundaries, and populates device pointers. Returns an unconfigured config
+ * (isConfigured() == false) when both peer counts are 0.
+ */
+WarpReserveDeviceConfig resolveWarpReserve(
+    const WarpReserveConfig& config,
+    int numNvlPeers,
+    int numIbgdaPeers,
+    const int* d_nvlPeerRanks,
+    const int* d_ibgdaPeerRanks,
+    int numThreadsPerBlock = 256,
+    int maxChannelsPerPeer = 1);
 
 } // namespace comms::pipes
