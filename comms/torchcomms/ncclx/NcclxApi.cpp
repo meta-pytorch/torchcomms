@@ -664,6 +664,10 @@ ncclResult_t DefaultNcclxApi::winGetLsaMultimemDevicePointer(
   return ncclGetLsaMultimemDevicePointer(win, offset, outPtr);
 }
 #endif
+
+ncclTeam_t DefaultNcclxApi::teamLsa(ncclComm_t comm) {
+  return ncclTeamLsa(comm);
+}
 #endif // TORCHCOMMS_HAS_NCCL_DEVICE_API
 
 } // namespace torch::comms
