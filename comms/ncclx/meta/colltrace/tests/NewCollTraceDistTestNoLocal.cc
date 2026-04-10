@@ -184,7 +184,7 @@ TEST_F(CollTraceTest, NewCollTraceAllReduce) {
 
   EXPECT_NE(dumpMap["CT_pastColls"], "[]");
   EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
-  EXPECT_EQ(dumpMap["CT_currentColl"], "null");
+  EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
 
   auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
   EXPECT_EQ(pastCollsJson.size(), nColl);
@@ -229,7 +229,7 @@ TEST_F(CollTraceTest, MixedCtranBaseline) {
 
   EXPECT_NE(dumpMap["CT_pastColls"], "[]");
   EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
-  EXPECT_EQ(dumpMap["CT_currentColl"], "null");
+  EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
 
   auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
   EXPECT_EQ(pastCollsJson.size(), nColl * 2);
@@ -293,7 +293,7 @@ TEST_F(CollTraceTest, TestBcastCtranEx) {
       meta::comms::ncclx::dumpNewCollTrace(*actualComm->newCollTrace);
 
   EXPECT_EQ(folly::parseJson(dumpMap["CT_pastColls"]).size(), nColl);
-  EXPECT_EQ(dumpMap["CT_currentColl"], "null");
+  EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
   EXPECT_EQ(folly::parseJson(dumpMap["CT_pendingColls"]).size(), 0);
   auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
   for (const auto& coll : pastCollsJson) {
@@ -343,7 +343,7 @@ TEST_F(CollTraceTest, GroupedSendRecv) {
 
   auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
   EXPECT_EQ(folly::parseJson(dumpMap["CT_pendingColls"]).size(), 0);
-  EXPECT_EQ(dumpMap["CT_currentColl"], "null");
+  EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
   EXPECT_EQ(folly::parseJson(dumpMap["CT_pastColls"]).size(), nColl);
   auto curOpCount = 0;
   for (const auto& coll : folly::parseJson(dumpMap["CT_pastColls"])) {
@@ -401,7 +401,7 @@ TEST_F(CollTraceTest, GroupedSendRecvCtran) {
 
   auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
   EXPECT_EQ(folly::parseJson(dumpMap["CT_pendingColls"]).size(), 0);
-  EXPECT_EQ(dumpMap["CT_currentColl"], "null");
+  EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
   EXPECT_EQ(folly::parseJson(dumpMap["CT_pastColls"]).size(), nColl);
   auto curOpCount = 0;
   for (const auto& coll : folly::parseJson(dumpMap["CT_pastColls"])) {
@@ -453,7 +453,7 @@ TEST_F(CollTraceTest, SimulatePPSendRecv) {
 
   auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
   EXPECT_EQ(folly::parseJson(dumpMap["CT_pendingColls"]).size(), 0);
-  EXPECT_EQ(dumpMap["CT_currentColl"], "null");
+  EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
   if (this->globalRank == 0 || this->globalRank == comm->nRanks - 1) {
     EXPECT_EQ(folly::parseJson(dumpMap["CT_pastColls"]).size(), nColl);
   } else {
@@ -523,7 +523,7 @@ TEST_F(CollTraceTest, SimulateCtranPPSendRecv) {
 
   auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
   EXPECT_EQ(folly::parseJson(dumpMap["CT_pendingColls"]).size(), 0);
-  EXPECT_EQ(dumpMap["CT_currentColl"], "null");
+  EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
   if (this->globalRank == 0 || this->globalRank == comm->nRanks - 1) {
     EXPECT_EQ(folly::parseJson(dumpMap["CT_pastColls"]).size(), nColl);
   } else {
@@ -657,10 +657,10 @@ TEST_F(CollTraceTest, winPutWait) {
   // Parse the dumpMap JSON to check values, similar to previous tests
   auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
   auto pendingCollsJson = folly::parseJson(dumpMap["CT_pendingColls"]);
-  auto currentCollJson = dumpMap["CT_currentColl"];
+  auto currentCollJson = dumpMap["CT_currentColls"];
 
   EXPECT_EQ(pendingCollsJson.size(), 0);
-  EXPECT_EQ(currentCollJson, "null");
+  EXPECT_EQ(currentCollJson, "[]");
   // 1 put + 1 wait + 1 allreduce per iteration
   EXPECT_EQ(pastCollsJson.size(), 3 * kNumIters);
 
@@ -723,12 +723,12 @@ TEST_F(CollTraceTest, DumpWithUnfinished) {
 
   auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
   auto pendingCollsJson = folly::parseJson(dumpMap["CT_pendingColls"]);
-  auto currentCollJson = dumpMap["CT_currentColl"];
+  auto currentCollJson = dumpMap["CT_currentColls"];
 
   EXPECT_EQ(pastCollsJson.size(), nColl);
   // We will have 1 coll as current coll
   EXPECT_EQ(pendingCollsJson.size(), nColl - 1);
-  EXPECT_NE(currentCollJson, "null");
+  EXPECT_NE(currentCollJson, "[]");
 
   for (const auto& coll : pastCollsJson) {
     EXPECT_GT(coll["startTs"].asInt(), 0);
@@ -778,12 +778,12 @@ TEST_F(CollTraceTest, DumpWithUnfinishedCtran) {
 
   auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
   auto pendingCollsJson = folly::parseJson(dumpMap["CT_pendingColls"]);
-  auto currentCollJson = dumpMap["CT_currentColl"];
+  auto currentCollJson = dumpMap["CT_currentColls"];
 
   EXPECT_EQ(pastCollsJson.size(), nColl);
   // We will have 1 coll as current coll
   EXPECT_EQ(pendingCollsJson.size(), nColl - 1);
-  EXPECT_NE(currentCollJson, "null");
+  EXPECT_NE(currentCollJson, "[]");
 
   for (const auto& coll : pastCollsJson) {
     EXPECT_GT(coll["startTs"].asInt(), 0);
@@ -824,7 +824,7 @@ TEST_F(CollTraceTest, GroupedAllReduce) {
 
   EXPECT_NE(dumpMap["CT_pastColls"], "[]");
   EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
-  EXPECT_EQ(dumpMap["CT_currentColl"], "null");
+  EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
 
   auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
   EXPECT_EQ(pastCollsJson.size(), nColl);
@@ -867,7 +867,7 @@ TEST_F(CollTraceTest, GroupedSendRecvAllReduce) {
 
   EXPECT_NE(dumpMap["CT_pastColls"], "[]");
   EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
-  EXPECT_EQ(dumpMap["CT_currentColl"], "null");
+  EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
 
   auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
   EXPECT_EQ(pastCollsJson.size(), nColl);
@@ -898,7 +898,7 @@ TEST_F(CollTraceTest, CollTraceQueryInCapture) {
 
   EXPECT_NE(dumpMap["CT_pastColls"], "[]");
   EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
-  EXPECT_EQ(dumpMap["CT_currentColl"], "null");
+  EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
 
   auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
   EXPECT_EQ(pastCollsJson.size(), nColl);

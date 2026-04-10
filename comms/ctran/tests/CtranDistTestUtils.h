@@ -56,7 +56,7 @@ class CtranDistTestFixture : public CtranTestFixtureBase,
 
 // Dump colltrace records from a standalone CtranComm's colltraceNew_.
 // Returns a map with keys like "CT_pastColls", "CT_pendingColls",
-// "CT_currentColl". Returns empty map if colltrace is not initialized.
+// "CT_currentColls". Returns empty map if colltrace is not initialized.
 std::unordered_map<std::string, std::string> dumpCollTrace(CtranComm* comm);
 
 } // namespace ctran
