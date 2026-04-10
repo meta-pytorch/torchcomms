@@ -57,17 +57,32 @@ Raw API Usage (Advanced):
 from typing import TYPE_CHECKING
 
 import torch
-import triton  # @manual
-import triton.language as tl  # @manual
-from torchcomms.triton.fb import (
-    flush_block,
-    put_block_direct,
-    put_warp_chunked_direct,
-    requires_torchcomms,
-    self_copy_block,
-    signal_block,
-    wait_signal_from,
-)
+
+try:
+    import triton  # @manual
+    import triton.language as tl  # @manual
+    from torchcomms.triton.fb import (
+        flush_block,
+        put_block_direct,
+        put_warp_chunked_direct,
+        requires_torchcomms,
+        self_copy_block,
+        signal_block,
+        wait_signal_from,
+    )
+except ImportError:
+    import types
+
+    # Provide no-op stubs so the module can be imported even when
+    # triton/torchcomms is unavailable.  The @triton.jit and
+    # @requires_torchcomms decorators execute at module-load time, so
+    # they need valid callables.  The decorated functions will be
+    # defined but non-functional; callers check availability before use.
+    triton = types.SimpleNamespace(jit=lambda fn: fn)  # type: ignore[assignment]
+    tl = types.SimpleNamespace(constexpr=int)  # type: ignore[assignment]
+
+    def requires_torchcomms(fn):  # type: ignore[misc]
+        return fn
 
 
 if TYPE_CHECKING:

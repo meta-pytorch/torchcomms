@@ -24,15 +24,20 @@ memory. This enables fused compute + communication pipelines without CPU
 roundtrips.
 """
 
-from comms.pipes.collectives.triton.alltoallv_op import AlltoallvOp
-from comms.pipes.collectives.triton.device_alltoallv_dynamic import (
-    auto_tune_alltoallv_params,
-    compute_offsets_from_sizes,
-    device_alltoallv_dynamic,
-    exchange_offsets,
-    prewarm_completion_counters,
-)
 from comms.pipes.collectives.triton.utils import alloc_comms_buffer
+
+try:
+    from comms.pipes.collectives.triton.alltoallv_op import AlltoallvOp
+    from comms.pipes.collectives.triton.device_alltoallv_dynamic import (
+        auto_tune_alltoallv_params,
+        compute_offsets_from_sizes,
+        device_alltoallv_dynamic,
+        exchange_offsets,
+        prewarm_completion_counters,
+    )
+except ImportError:
+    # Triton or torchcomms.triton.fb not available (e.g. no GPU in CI)
+    pass
 
 
 __all__ = [
