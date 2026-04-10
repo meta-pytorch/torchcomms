@@ -38,7 +38,6 @@ class DeviceAllToAllvSingleTest(unittest.TestCase):
         """Set up test environment before each test."""
         os.environ["NCCL_CTRAN_ENABLE"] = "1"
         os.environ["NCCL_CTRAN_USE_PIPES"] = "1"
-        os.environ["NCCL_CTRAN_PIPES_DISABLE_IB"] = "1"
         self.wrapper = self.get_wrapper()
         self.torchcomm = self.wrapper.get_torchcomm()
         self.rank = self.torchcomm.get_rank()
