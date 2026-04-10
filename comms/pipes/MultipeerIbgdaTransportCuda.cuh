@@ -21,6 +21,7 @@ struct P2pIbgdaTransportBuildParams {
   doca_gpu_dev_verbs_qp* gpuQp{nullptr};
   doca_gpu_dev_verbs_qp* companionGpuQp{nullptr};
   NetworkLKey sinkLkey{};
+  uint64_t sinkAddr{0};
 };
 
 /**
