@@ -39,6 +39,8 @@ ReduceOp toReduceOp(const c10d::ReduceOp& op) {
       return ReduceOp::MIN;
     case c10d::ReduceOp::MAX:
       return ReduceOp::MAX;
+    case c10d::ReduceOp::PRODUCT:
+      return ReduceOp::PRODUCT;
     case c10d::ReduceOp::BAND:
       return ReduceOp::BAND;
     case c10d::ReduceOp::BOR:

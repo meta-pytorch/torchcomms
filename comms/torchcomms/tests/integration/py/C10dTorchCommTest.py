@@ -23,6 +23,7 @@ class TestC10dTorchCommsBasic(unittest.TestCase):
         subtest(dist.ReduceOp.AVG, name="AVG"),
         subtest(dist.ReduceOp.MIN, name="MIN"),
         subtest(dist.ReduceOp.MAX, name="MAX"),
+        subtest(dist.ReduceOp.PRODUCT, name="PRODUCT"),
     ]
 
     @classmethod
@@ -50,6 +51,11 @@ class TestC10dTorchCommsBasic(unittest.TestCase):
             return 1
         elif op == dist.ReduceOp.MAX:
             return dist.get_world_size()
+        elif op == dist.ReduceOp.PRODUCT:
+            product = 1
+            for i in range(1, dist.get_world_size() + 1):
+                product *= i
+            return product
         raise ValueError(f"Unsupported op: {op}")
 
     @parametrize("op", REDUCE_OPS)
