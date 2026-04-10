@@ -38,6 +38,16 @@ struct AllToAllvAutoConfig {
   /// nranks.
   int ll128NumBlocks{0};
   int ll128NumThreads{512};
+
+  /// IBGDA protocol settings (used when IBGDA peers are present).
+  /// Benchmark data: 1 block is optimal (each doubling of blocks doubles
+  /// latency). Thread count is computed dynamically in all_to_allv_auto()
+  /// as 2 * nranks * 32 (minimum for partition_interleaved chain).
+  int ibgdaNumBlocks{1};
+  int ibgdaNumThreads{128};
+
+  /// Warp reservation for hybrid NVLink+IBGDA (0 = auto for all fields).
+  WarpReserveConfig warpReserve;
 };
 
 /**
@@ -47,6 +57,12 @@ struct AllToAllvAutoConfig {
  * all_to_allv() for large messages (> threshold). The decision is based on
  * max_bytes_per_peer, which the caller must provide (since chunk infos live
  * in device memory).
+ *
+ * When IBGDA peers are present (detected via transport types in the
+ * transports array), automatically selects the IBGDA-capable path with
+ * appropriate block/thread configuration. IBGDA staging state is embedded
+ * in each P2pIbgdaTransportDevice — no separate ibgda_peer_states or
+ * iteration_counter parameters are needed.
  *
  * @param recvbuff_d Device pointer to receive buffer
  * @param sendbuff_d Device pointer to send buffer (const)
@@ -58,6 +74,7 @@ struct AllToAllvAutoConfig {
  * @param max_bytes_per_peer Maximum bytes sent to any single peer (caller
  *                           provides this since chunk infos are in device
  *                           memory)
+ * @param has_ibgda_peers Whether any peer uses IBGDA transport
  * @param config Auto-selector configuration
  * @param timeout Timeout duration (0ms = no timeout, default)
  * @param stream CUDA stream for kernel execution
@@ -71,6 +88,7 @@ void all_to_allv_auto(
     DeviceSpan<ChunkInfo> send_chunk_infos,
     DeviceSpan<ChunkInfo> recv_chunk_infos,
     std::size_t max_bytes_per_peer,
+    bool has_ibgda_peers = false,
     const AllToAllvAutoConfig& config = {},
     std::chrono::milliseconds timeout = std::chrono::milliseconds{0},
     cudaStream_t stream = nullptr);

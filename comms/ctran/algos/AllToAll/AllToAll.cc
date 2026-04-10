@@ -10,8 +10,10 @@
 #include "comms/ctran/algos/AllToAll/AllToAllvImpl.h"
 #if defined(ENABLE_PIPES)
 #include "comms/ctran/algos/AllToAll/DeviceAllToAllvPipesImpl.h"
+#include "comms/pipes/MultiPeerDeviceHandle.cuh"
 #include "comms/pipes/MultiPeerTransport.h"
 #include "comms/pipes/Transport.cuh"
+#include "comms/pipes/collectives/AllToAllv.h" // resolveWarpReserve, WarpReserveConfig
 #endif
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/gpe/CtranGpe.h"
@@ -21,6 +23,10 @@
 #if defined(ENABLE_PIPES)
 template <PipeProtocol Proto>
 extern __global__ void ncclKernelDeviceAllToAllvPipes(
+    int* flag,
+    CtranAlgoDeviceState* devState,
+    ctran::device_alltoallv_pipes::KernArgs args);
+extern __global__ void ncclKernelDeviceAllToAllvPipesUnified(
     int* flag,
     CtranAlgoDeviceState* devState,
     ctran::device_alltoallv_pipes::KernArgs args);
@@ -214,6 +220,80 @@ commResult_t ctranDeviceAllToAllv(
     int64_t sendcountsMultiplier,
     int64_t recvcountsMultiplier,
     const std::unordered_map<std::string, std::string>& hints) {
+  if (NCCL_CTRAN_PIPES_DEVICE_ALLTOALLV_ENABLE) {
+    auto opCount = comm->ctran_->getOpCount();
+    auto* mpt = comm->multiPeerTransport_.get();
+    auto deviceHandle = mpt->get_device_handle();
+
+    KernelConfig config = KernelConfig(
+        KernelConfig::KernelType::DEVICE_ALLTOALLV,
+        stream,
+        "DeviceAllToAllvPipesUnified",
+        opCount);
+    config.numBlocks = 4;
+    config.numThreads = 256;
+    config.args.devState_d = comm->ctran_->algo->getDevState();
+
+    ctran::device_alltoallv_pipes::KernArgs kernArgs{};
+    kernArgs.sendbuff = sendbuff;
+    kernArgs.recvbuff = recvbuff;
+    kernArgs.myRank = mpt->my_rank();
+    kernArgs.nRanks = mpt->n_ranks();
+    kernArgs.elementSize = commTypeSize(datatype);
+    kernArgs.sendcounts_d = sendcounts_d;
+    kernArgs.recvcounts_d = recvcounts_d;
+    kernArgs.sendcountsMultiplier = sendcountsMultiplier;
+    kernArgs.recvcountsMultiplier = recvcountsMultiplier;
+    kernArgs.transports = deviceHandle.transports.data();
+
+    // Resolve warp reserve config: read CVARs directly and build
+    // WarpReserveConfig, then resolve to device config using peer rank
+    // arrays from the device handle.
+    comms::pipes::WarpReserveConfig warpReserveCfg{};
+    warpReserveCfg.nvlSendWarps =
+        static_cast<int>(NCCL_CTRAN_PIPES_WARP_RESERVE_NVL_SEND);
+    warpReserveCfg.nvlRecvWarps =
+        static_cast<int>(NCCL_CTRAN_PIPES_WARP_RESERVE_NVL_RECV);
+    warpReserveCfg.ibgdaSendWarps =
+        static_cast<int>(NCCL_CTRAN_PIPES_WARP_RESERVE_IBGDA_SEND);
+    warpReserveCfg.ibgdaRecvWarps =
+        static_cast<int>(NCCL_CTRAN_PIPES_WARP_RESERVE_IBGDA_RECV);
+    warpReserveCfg.selfWarps =
+        static_cast<int>(NCCL_CTRAN_PIPES_WARP_RESERVE_SELF);
+
+    kernArgs.warpReserve = comms::pipes::resolveWarpReserve(
+        warpReserveCfg,
+        deviceHandle.nvlPeerRanks.size(),
+        deviceHandle.ibgdaPeerRanks.size(),
+        deviceHandle.nvlPeerRanks.data(),
+        deviceHandle.ibgdaPeerRanks.data());
+    kernArgs.warpReserve.maxChannelsPerPeer =
+        static_cast<uint32_t>(mpt->maxChannelsPerPeer());
+
+    // When warp reserve is configured, derive thread count from total warps
+    if (kernArgs.warpReserve.isConfigured()) {
+      int ibgdaRecvW = warpReserveCfg.ibgdaRecvWarps > 0
+          ? warpReserveCfg.ibgdaRecvWarps
+          : static_cast<int>(deviceHandle.ibgdaPeerRanks.size());
+      int totalWarps =
+          static_cast<int>(kernArgs.warpReserve.ibgdaSendEnd) + ibgdaRecvW;
+      config.numThreads = totalWarps * 32;
+    }
+
+    config.algoArgs = &kernArgs;
+
+    std::vector<std::unique_ptr<struct OpElem>> opGroup;
+    FB_COMMCHECK(comm->ctran_->gpe->submit(
+        std::move(opGroup),
+        nullptr,
+        config,
+        reinterpret_cast<void*>(ncclKernelDeviceAllToAllvPipesUnified)));
+
+    return commSuccess;
+  }
+
+  // Ctran kernel path: GPE, block scheduling, tunable hints.
+  // Currently NVLink-only.
   auto opCount = comm->ctran_->getOpCount();
 
   KernelConfig config = KernelConfig(
@@ -278,14 +358,15 @@ bool ctranDeviceAllToAllvSupport(CtranComm* comm) {
     return false;
   }
 
-  // NVLink domain only: verify ALL peers are reachable via NVLink (or self).
-  // Reject communicators with any IB-only peers to prevent silent data loss.
+  // Verify ALL peers are reachable via a supported transport.
+  // Supported: NVLink (P2P_NVL), IBGDA (P2P_IBGDA), or self (SELF).
   // Use host-side API — getMultiPeerTransportsPtr() returns a device pointer
   // that cannot be dereferenced on the host.
   const auto statex = comm->statex_.get();
   for (int rank = 0; rank < statex->nRanks(); rank++) {
     auto type = comm->multiPeerTransport_->get_transport_type(rank);
     if (type != comms::pipes::TransportType::P2P_NVL &&
+        type != comms::pipes::TransportType::P2P_IBGDA &&
         type != comms::pipes::TransportType::SELF) {
       return false;
     }
