@@ -131,9 +131,15 @@ inline NvmlFabricInfo NvmlFabricInfo::query(const char* busId) {
   fabricInfo.version = kNvmlGpuFabricInfoV2;
   if (nvmlApi.getGpuFabricInfoV(nvmlDev, &fabricInfo) == NVML_SUCCESS &&
       fabricInfo.state == NVML_GPU_FABRIC_STATE_COMPLETED) {
-    std::memcpy(info.clusterUuid, fabricInfo.clusterUuid, kUuidLen);
-    info.cliqueId = fabricInfo.cliqueId;
-    info.available = true;
+    // Reject all-zero cluster UUID: on H100 (non-MNNVL), NVML may report
+    // state=COMPLETED with a zeroed UUID. Treating this as valid would
+    // incorrectly group cross-node GPUs into the same NVL domain.
+    char zeroUuid[kUuidLen]{};
+    if (std::memcmp(fabricInfo.clusterUuid, zeroUuid, kUuidLen) != 0) {
+      std::memcpy(info.clusterUuid, fabricInfo.clusterUuid, kUuidLen);
+      info.cliqueId = fabricInfo.cliqueId;
+      info.available = true;
+    }
   }
 
   return info;
