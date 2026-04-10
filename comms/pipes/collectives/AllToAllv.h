@@ -74,4 +74,20 @@ void all_to_allv(
     int num_threads = 256,
     std::optional<dim3> cluster_dim = dim3{4, 1, 1});
 
+/**
+ * Resolve a WarpReserveConfig into a WarpReserveDeviceConfig.
+ *
+ * Auto-computes warp counts when config values are 0, computes cumulative
+ * boundaries, and populates device pointers. Returns an unconfigured config
+ * (isConfigured() == false) when both peer counts are 0.
+ */
+WarpReserveDeviceConfig resolveWarpReserve(
+    const WarpReserveConfig& config,
+    int numNvlPeers,
+    int numIbgdaPeers,
+    const int* d_nvlPeerRanks,
+    const int* d_ibgdaPeerRanks,
+    int numThreadsPerBlock = 256,
+    int maxChannelsPerPeer = 1);
+
 } // namespace comms::pipes
