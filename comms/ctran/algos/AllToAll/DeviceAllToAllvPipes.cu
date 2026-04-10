@@ -3,11 +3,13 @@
 #if defined(ENABLE_PIPES)
 
 #include <cstddef>
+#include <new>
 #include "comms/ctran/algos/AllToAll/Types.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/pipes/DeviceSpan.cuh"
 #include "comms/pipes/Timeout.cuh"
 #include "comms/pipes/Transport.cuh"
+#include "comms/pipes/collectives/AllToAllv.cuh"
 #include "comms/pipes/ll128/Ll128Packet.cuh"
 
 // Compute the exclusive prefix sum of counts[0..rank-1] to get the
@@ -67,6 +69,51 @@ __device__ __forceinline__ void recv_peer(
   } else {
     transport.p2p_nvl.recv(group, dst, bytes, timeout);
   }
+}
+
+// Unified NVL+IBGDA kernel launched through GPE submit.
+// Builds ChunkInfos in static shared memory from device-side counts,
+// then delegates to the pipes all_to_allv() device function which
+// dispatches per-peer based on transport type.
+// No GPE device-side handshake (flag is always nullptr with empty opGroup).
+__global__ void ncclKernelDeviceAllToAllvPipesUnified(
+    int* /* flag */,
+    CtranAlgoDeviceState* /* devState */,
+    ctran::device_alltoallv_pipes::KernArgs args) {
+  __shared__ char
+      smem[2 * CTRAN_MAX_TOTAL_RANK * sizeof(comms::pipes::ChunkInfo)];
+  auto* sendChunks = reinterpret_cast<comms::pipes::ChunkInfo*>(smem);
+  auto* recvChunks = sendChunks + args.nRanks;
+
+  if (threadIdx.x == 0) {
+    size_t sOff = 0, rOff = 0;
+    for (int r = 0; r < args.nRanks; r++) {
+      size_t sBytes = static_cast<size_t>(
+                          args.sendcounts_d[r] * args.sendcountsMultiplier) *
+          args.elementSize;
+      size_t rBytes = static_cast<size_t>(
+                          args.recvcounts_d[r] * args.recvcountsMultiplier) *
+          args.elementSize;
+      new (&sendChunks[r]) comms::pipes::ChunkInfo(sOff, sBytes);
+      new (&recvChunks[r]) comms::pipes::ChunkInfo(rOff, rBytes);
+      sOff += sBytes;
+      rOff += rBytes;
+    }
+  }
+  __syncthreads();
+
+  comms::pipes::Timeout timeout{};
+  comms::pipes::all_to_allv(
+      args.recvbuff,
+      args.sendbuff,
+      args.myRank,
+      comms::pipes::DeviceSpan<comms::pipes::Transport>(
+          args.transports, static_cast<uint32_t>(args.nRanks)),
+      comms::pipes::DeviceSpan<comms::pipes::ChunkInfo>(
+          sendChunks, static_cast<uint32_t>(args.nRanks)),
+      comms::pipes::DeviceSpan<comms::pipes::ChunkInfo>(
+          recvChunks, static_cast<uint32_t>(args.nRanks)),
+      timeout);
 }
 
 template <PipeProtocol Proto>
