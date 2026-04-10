@@ -222,6 +222,172 @@ class AllToAllvIbgdaE2eTestFixture : public MpiBaseTestFixture {
     MPI_Barrier(MPI_COMM_WORLD);
     cudaFree(d_transports);
   }
+  // Helper to run an equal-size alltoallv with a WarpReserveDeviceConfig
+  // and verify correctness. Builds IBGDA peer rank device arrays and
+  // constructs the reserve config from the given warp counts.
+  // threadsPerBlock controls cooperative memcpy granularity:
+  //   32  = 1 warp/block, WARP scope (no cooperation)
+  //   256 = 8 warps/block, MULTIWARP scope (cooperative memcpy)
+  void runWarpReserveTest(
+      MultipeerIbgdaTransport& ibgdaTransport,
+      MultiPeerIbgdaTransportSetup& setup,
+      size_t numIntsPerRank,
+      int ibgdaSendWarps,
+      int ibgdaRecvWarps,
+      int selfWarps = 1,
+      int maxChannelsPerPeer = 1,
+      int threadsPerBlock = 32) {
+    const int numIbgdaPeers = numRanks - 1;
+    const int warpsPerBlock = threadsPerBlock / 32;
+
+    // Compute block-aligned boundaries matching resolveWarpReserve().
+    // IBGDA categories start at block-aligned warp indices so all warps
+    // for a peer are guaranteed to be in the same block.
+    int selfEnd = selfWarps;
+    int nvlRecvEnd = selfEnd; // no NVL peers in this test
+    int ibgdaSendBase =
+        ((nvlRecvEnd + warpsPerBlock - 1) / warpsPerBlock) * warpsPerBlock;
+    int ibgdaSendEnd = ibgdaSendBase + ibgdaSendWarps;
+    int ibgdaRecvBase =
+        ((ibgdaSendEnd + warpsPerBlock - 1) / warpsPerBlock) * warpsPerBlock;
+    int ibgdaRecvEnd = ibgdaRecvBase + ibgdaRecvWarps;
+    int totalWarps = ibgdaRecvEnd;
+
+    // Launch with enough blocks to cover all warps including padding.
+    const int numBlocks = (totalWarps + warpsPerBlock - 1) / warpsPerBlock;
+
+    const size_t totalInts = numIntsPerRank * numRanks;
+    const size_t bufferSize = totalInts * sizeof(int32_t);
+    const size_t perPeerBytes = numIntsPerRank * sizeof(int32_t);
+
+    Transport* d_transports =
+        buildTransportsArray(ibgdaTransport, setup, globalRank, numRanks);
+
+    // Build IBGDA peer rank array (all non-self ranks)
+    std::vector<int> ibgdaPeerRanks;
+    for (int r = 0; r < numRanks; ++r) {
+      if (r != globalRank) {
+        ibgdaPeerRanks.push_back(r);
+      }
+    }
+    int* d_ibgdaPeerRanks = nullptr;
+    CUDACHECK_TEST(cudaMalloc(&d_ibgdaPeerRanks, numIbgdaPeers * sizeof(int)));
+    CUDACHECK_TEST(cudaMemcpy(
+        d_ibgdaPeerRanks,
+        ibgdaPeerRanks.data(),
+        numIbgdaPeers * sizeof(int),
+        cudaMemcpyHostToDevice));
+
+    // Build WarpReserveDeviceConfig
+    WarpReserveDeviceConfig reserveConfig;
+    reserveConfig.selfEnd = static_cast<uint32_t>(selfWarps);
+    reserveConfig.nvlSendEnd = reserveConfig.selfEnd;
+    reserveConfig.nvlRecvEnd = reserveConfig.nvlSendEnd;
+    reserveConfig.ibgdaSendBase = static_cast<uint32_t>(ibgdaSendBase);
+    reserveConfig.ibgdaSendEnd = static_cast<uint32_t>(ibgdaSendEnd);
+    reserveConfig.ibgdaRecvBase = static_cast<uint32_t>(ibgdaRecvBase);
+    reserveConfig.ibgdaRecvEnd = static_cast<uint32_t>(ibgdaRecvEnd);
+    reserveConfig.nvlPeerRanks = nullptr;
+    reserveConfig.numNvlPeers = 0;
+    reserveConfig.ibgdaPeerRanks = d_ibgdaPeerRanks;
+    reserveConfig.numIbgdaPeers = static_cast<uint32_t>(numIbgdaPeers);
+    reserveConfig.maxChannelsPerPeer =
+        static_cast<uint32_t>(maxChannelsPerPeer);
+
+    DeviceBuffer sendBuffer(bufferSize);
+    DeviceBuffer recvBuffer(bufferSize);
+
+    // Fill send buffer: rank R sending to peer P: R*1000 + P*100 + i
+    std::vector<int32_t> h_send(totalInts);
+    for (int peer = 0; peer < numRanks; peer++) {
+      for (size_t i = 0; i < numIntsPerRank; i++) {
+        h_send[peer * numIntsPerRank + i] =
+            globalRank * 1000 + peer * 100 + static_cast<int32_t>(i);
+      }
+    }
+    CUDACHECK_TEST(cudaMemcpy(
+        sendBuffer.get(), h_send.data(), bufferSize, cudaMemcpyHostToDevice));
+
+    std::vector<int32_t> h_recv_init(totalInts, -1);
+    CUDACHECK_TEST(cudaMemcpy(
+        recvBuffer.get(),
+        h_recv_init.data(),
+        bufferSize,
+        cudaMemcpyHostToDevice));
+
+    // Build ChunkInfo arrays on device
+    std::vector<ChunkInfo> h_chunks;
+    h_chunks.reserve(numRanks);
+    for (int rank = 0; rank < numRanks; rank++) {
+      h_chunks.emplace_back(rank * perPeerBytes, perPeerBytes);
+    }
+    DeviceBuffer d_send_chunks(sizeof(ChunkInfo) * numRanks);
+    DeviceBuffer d_recv_chunks(sizeof(ChunkInfo) * numRanks);
+    CUDACHECK_TEST(cudaMemcpy(
+        d_send_chunks.get(),
+        h_chunks.data(),
+        sizeof(ChunkInfo) * numRanks,
+        cudaMemcpyHostToDevice));
+    CUDACHECK_TEST(cudaMemcpy(
+        d_recv_chunks.get(),
+        h_chunks.data(),
+        sizeof(ChunkInfo) * numRanks,
+        cudaMemcpyHostToDevice));
+
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    all_to_allv(
+        recvBuffer.get(),
+        sendBuffer.get(),
+        globalRank,
+        DeviceSpan<Transport>(d_transports, static_cast<uint32_t>(numRanks)),
+        DeviceSpan<ChunkInfo>(
+            static_cast<ChunkInfo*>(d_send_chunks.get()), numRanks),
+        DeviceSpan<ChunkInfo>(
+            static_cast<ChunkInfo*>(d_recv_chunks.get()), numRanks),
+        std::chrono::milliseconds{30000},
+        nullptr,
+        numBlocks,
+        threadsPerBlock,
+        std::nullopt,
+        reserveConfig);
+
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    // Verify received data
+    std::vector<int32_t> h_recv(totalInts);
+    CUDACHECK_TEST(cudaMemcpy(
+        h_recv.data(), recvBuffer.get(), bufferSize, cudaMemcpyDeviceToHost));
+
+    int errorCount = 0;
+    for (int peer = 0; peer < numRanks; peer++) {
+      for (size_t i = 0; i < numIntsPerRank; i++) {
+        int32_t expected =
+            peer * 1000 + globalRank * 100 + static_cast<int32_t>(i);
+        int32_t actual = h_recv[peer * numIntsPerRank + i];
+        if (expected != actual) {
+          errorCount++;
+          if (errorCount <= 10) {
+            XLOGF(
+                ERR,
+                "Rank {}: WarpReserve error at peer {} pos {}: expected {}, got {}",
+                globalRank,
+                peer,
+                i,
+                expected,
+                actual);
+          }
+        }
+      }
+    }
+
+    EXPECT_EQ(errorCount, 0) << "Rank " << globalRank << " found " << errorCount
+                             << " verification errors";
+
+    MPI_Barrier(MPI_COMM_WORLD);
+    (void)cudaFree(d_ibgdaPeerRanks);
+    (void)cudaFree(d_transports);
+  }
 };
 
 // =============================================================================
@@ -694,6 +860,7 @@ INSTANTIATE_TEST_SUITE_P(
 // These tests verify that the block-group scheduling path works correctly.
 // When IBGDA peers are present, all_to_allv() uses make_block_group() where
 // all threads in a block cooperatively memcpy to staging via named barriers.
+// ======================================================================
 // =============================================================================
 
 TEST_F(AllToAllvIbgdaE2eTestFixture, BlockScope_MinBlocks) {
@@ -777,7 +944,7 @@ TEST_F(AllToAllvIbgdaE2eTestFixture, BlockScope_MultiBlockPerPeer_2Blocks) {
       *transport, globalRank, numRanks, setupConfig, maxChannels);
   setup.exchangeBuffers();
 
-  // 4*nranks blocks: after send/recv split → 2*nranks per direction.
+  // 4*nranks blocks: after send/recv split -> 2*nranks per direction.
   // With maxChannelsPerPeer=2, numActiveBlocks=2 per peer.
   runEqualSizeTest(*transport, setup, 1024, 4 * numRanks, 256);
 }
@@ -802,7 +969,7 @@ TEST_F(AllToAllvIbgdaE2eTestFixture, BlockScope_MultiBlockPerPeer_4Blocks) {
       *transport, globalRank, numRanks, setupConfig, maxChannels);
   setup.exchangeBuffers();
 
-  // 8*nranks blocks: after send/recv split → 4*nranks per direction.
+  // 8*nranks blocks: after send/recv split -> 4*nranks per direction.
   // With maxChannelsPerPeer=4, numActiveBlocks=4 per peer.
   runEqualSizeTest(*transport, setup, 1024, 8 * numRanks, 256);
 }
@@ -811,7 +978,7 @@ TEST_F(
     AllToAllvIbgdaE2eTestFixture,
     BlockScope_MultiBlockPerPeer_WithThreadChannels) {
   // Combines multi-block and multi-channel-within-block:
-  //   maxChannelsPerPeer=8, 256 threads → 8 warps/block → channelsPerBlock=8.
+  //   maxChannelsPerPeer=8, 256 threads -> 8 warps/block -> channelsPerBlock=8.
   //   numActiveBlocks=1 (maxChannelsPerPeer / channelsPerBlock = 1).
   // This is the thread-channel path exercised across realistic block counts.
   if (numRanks < 2) {
@@ -832,12 +999,13 @@ TEST_F(
       *transport, globalRank, numRanks, setupConfig, maxChannels);
   setup.exchangeBuffers();
 
-  // 4*nranks blocks, 256 threads/block: 8 warps → channelsPerBlock=8,
-  // maxBlocks=1 → all threads in one block split across 8 channels.
+  // 4*nranks blocks, 256 threads/block: 8 warps -> channelsPerBlock=8,
+  // maxBlocks=1 -> all threads in one block split across 8 channels.
   runEqualSizeTest(*transport, setup, 1024, 4 * numRanks, 256);
 }
 
-// =============================================================================
+//
+
 // True multi-block per peer tests: exercise numActiveBlocks > 1.
 //
 // The tests above use 256 threads/block (8 warps), so channelsPerBlock =
@@ -956,6 +1124,400 @@ TEST_F(AllToAllvIbgdaE2eTestFixture, BlockScope_TrueMultiBlock_ExcessBlocks) {
 
   // 8*nranks blocks × 32 threads: 4 blocks/peer, but only 2 active.
   runEqualSizeTest(*transport, setup, 1024, 8 * numRanks, 32);
+}
+
+// Warp reserve config tests -- uses the category-based warp partition path
+// =============================================================================
+
+TEST_F(AllToAllvIbgdaE2eTestFixture, WarpReserve_MinimumConfig) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Need at least 2 ranks";
+  }
+  auto transport = createTransport();
+  if (shouldSkip(transport)) {
+    GTEST_SKIP() << "IBGDA transport not available (collective skip)";
+  }
+
+  MultiPeerIbgdaTransportSetupConfig setupConfig{
+      .dataBufferSize = 4096,
+      .chunkSize = 4096,
+      .pipelineDepth = 4,
+  };
+
+  MultiPeerIbgdaTransportSetup setup(
+      *transport, globalRank, numRanks, setupConfig);
+  setup.exchangeBuffers();
+
+  // 1 IBGDA send warp per peer, 1 IBGDA recv warp per peer
+  const int numIbgdaPeers = numRanks - 1;
+  runWarpReserveTest(*transport, setup, 256, numIbgdaPeers, numIbgdaPeers);
+}
+
+TEST_F(AllToAllvIbgdaE2eTestFixture, WarpReserve_IbgdaHeavySend) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Need at least 2 ranks";
+  }
+  auto transport = createTransport();
+  if (shouldSkip(transport)) {
+    GTEST_SKIP() << "IBGDA transport not available (collective skip)";
+  }
+
+  MultiPeerIbgdaTransportSetupConfig setupConfig{
+      .dataBufferSize = 4096,
+      .chunkSize = 4096,
+      .pipelineDepth = 4,
+  };
+
+  MultiPeerIbgdaTransportSetup setup(
+      *transport, globalRank, numRanks, setupConfig);
+  setup.exchangeBuffers();
+
+  // 4 IBGDA send warps per peer, 4 IBGDA recv warps per peer (symmetric)
+  const int numIbgdaPeers = numRanks - 1;
+  runWarpReserveTest(
+      *transport, setup, 256, 4 * numIbgdaPeers, 4 * numIbgdaPeers);
+}
+
+// Reserve path with multi-warp blocks -- exercises MULTIWARP cooperative
+// memcpy. With threadsPerBlock=256 (8 warps/block) and 4 warps per peer, all 4
+// warps for a peer are in the same block and cooperate via named barrier.
+TEST_F(AllToAllvIbgdaE2eTestFixture, WarpReserve_MultiWarpCooperative) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Need at least 2 ranks";
+  }
+  auto transport = createTransport();
+  if (shouldSkip(transport)) {
+    GTEST_SKIP() << "IBGDA transport not available (collective skip)";
+  }
+
+  MultiPeerIbgdaTransportSetupConfig setupConfig{
+      .dataBufferSize = 4096,
+      .chunkSize = 4096,
+      .pipelineDepth = 4,
+  };
+
+  MultiPeerIbgdaTransportSetup setup(
+      *transport, globalRank, numRanks, setupConfig);
+  setup.exchangeBuffers();
+
+  // 4 warps per peer with 256 threads/block (8 warps/block).
+  // This triggers MULTIWARP scope in the reserve path: all 4 warps for a peer
+  // cooperatively memcpy to staging, then the leader posts RDMA.
+  const int numIbgdaPeers = numRanks - 1;
+  runWarpReserveTest(
+      *transport,
+      setup,
+      256,
+      4 * numIbgdaPeers,
+      4 * numIbgdaPeers,
+      1, // selfWarps
+      1, // maxChannelsPerPeer
+      256); // threadsPerBlock -- 8 warps/block, cooperative
+}
+
+// =============================================================================
+// Multi-channel E2E tests -- Option B: pass maxChannelsPerPeer directly to
+// MultiPeerIbgdaTransportSetup constructor, bypassing autotune derivation.
+// =============================================================================
+
+TEST_F(AllToAllvIbgdaE2eTestFixture, MultiChannel_TwoChannels) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Need at least 2 ranks";
+  }
+  auto transport = createTransport();
+  if (shouldSkip(transport)) {
+    GTEST_SKIP() << "IBGDA transport not available (collective skip)";
+  }
+
+  const int maxChannels = 2;
+  MultiPeerIbgdaTransportSetupConfig setupConfig{
+      .dataBufferSize = 4096,
+      .chunkSize = 4096,
+      .pipelineDepth = 4,
+  };
+  MultiPeerIbgdaTransportSetup setup(
+      *transport, globalRank, numRanks, setupConfig, maxChannels);
+  setup.exchangeBuffers();
+
+  // 2 warps per peer -> 1:1 warp-to-channel mapping
+  const int numIbgdaPeers = numRanks - 1;
+  runWarpReserveTest(
+      *transport,
+      setup,
+      256,
+      2 * numIbgdaPeers,
+      2 * numIbgdaPeers,
+      1,
+      maxChannels);
+}
+
+TEST_F(AllToAllvIbgdaE2eTestFixture, MultiChannel_Overflow) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Need at least 2 ranks";
+  }
+  auto transport = createTransport();
+  if (shouldSkip(transport)) {
+    GTEST_SKIP() << "IBGDA transport not available (collective skip)";
+  }
+
+  const int maxChannels = 2;
+  MultiPeerIbgdaTransportSetupConfig setupConfig{
+      .dataBufferSize = 4096,
+      .chunkSize = 4096,
+      .pipelineDepth = 4,
+  };
+  MultiPeerIbgdaTransportSetup setup(
+      *transport, globalRank, numRanks, setupConfig, maxChannels);
+  setup.exchangeBuffers();
+
+  // 4 warps per peer, but only 2 channels -> 2 warps cooperate per channel
+  const int numIbgdaPeers = numRanks - 1;
+  runWarpReserveTest(
+      *transport,
+      setup,
+      256,
+      4 * numIbgdaPeers,
+      4 * numIbgdaPeers,
+      1,
+      maxChannels);
+}
+
+TEST_F(AllToAllvIbgdaE2eTestFixture, MultiChannel_UnderSubscription) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Need at least 2 ranks";
+  }
+  auto transport = createTransport();
+  if (shouldSkip(transport)) {
+    GTEST_SKIP() << "IBGDA transport not available (collective skip)";
+  }
+
+  const int maxChannels = 4;
+  MultiPeerIbgdaTransportSetupConfig setupConfig{
+      .dataBufferSize = 4096,
+      .chunkSize = 4096,
+      .pipelineDepth = 4,
+  };
+  MultiPeerIbgdaTransportSetup setup(
+      *transport, globalRank, numRanks, setupConfig, maxChannels);
+  setup.exchangeBuffers();
+
+  // 1 warp per peer, 4 channels available -> only channel 0 used, ch1-3 idle
+  const int numIbgdaPeers = numRanks - 1;
+  runWarpReserveTest(
+      *transport,
+      setup,
+      256,
+      1 * numIbgdaPeers,
+      1 * numIbgdaPeers,
+      1,
+      maxChannels);
+}
+
+TEST_F(AllToAllvIbgdaE2eTestFixture, MultiChannel_Remainder) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Need at least 2 ranks";
+  }
+  auto transport = createTransport();
+  if (shouldSkip(transport)) {
+    GTEST_SKIP() << "IBGDA transport not available (collective skip)";
+  }
+
+  const int maxChannels = 2;
+  MultiPeerIbgdaTransportSetupConfig setupConfig{
+      .dataBufferSize = 4096,
+      .chunkSize = 4096,
+      .pipelineDepth = 4,
+  };
+  MultiPeerIbgdaTransportSetup setup(
+      *transport, globalRank, numRanks, setupConfig, maxChannels);
+  setup.exchangeBuffers();
+
+  // 257 ints = 1028 bytes -> not evenly divisible by 2 channels.
+  // Channel 0 gets 514 bytes, channel 1 gets 514 bytes (last gets remainder).
+  const int numIbgdaPeers = numRanks - 1;
+  runWarpReserveTest(
+      *transport,
+      setup,
+      257,
+      2 * numIbgdaPeers,
+      2 * numIbgdaPeers,
+      1,
+      maxChannels);
+}
+
+TEST_F(AllToAllvIbgdaE2eTestFixture, MultiChannel_BackwardCompat) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Need at least 2 ranks";
+  }
+  auto transport = createTransport();
+  if (shouldSkip(transport)) {
+    GTEST_SKIP() << "IBGDA transport not available (collective skip)";
+  }
+
+  // maxChannelsPerPeer=1 -> identical to single-channel mode
+  const int maxChannels = 1;
+  MultiPeerIbgdaTransportSetupConfig setupConfig{
+      .dataBufferSize = 4096,
+      .chunkSize = 4096,
+      .pipelineDepth = 4,
+  };
+  MultiPeerIbgdaTransportSetup setup(
+      *transport, globalRank, numRanks, setupConfig, maxChannels);
+  setup.exchangeBuffers();
+
+  const int numIbgdaPeers = numRanks - 1;
+  runWarpReserveTest(
+      *transport,
+      setup,
+      256,
+      2 * numIbgdaPeers,
+      2 * numIbgdaPeers,
+      1,
+      maxChannels);
+}
+
+TEST_F(AllToAllvIbgdaE2eTestFixture, MultiChannel_BackToBack) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Need at least 2 ranks";
+  }
+  auto transport = createTransport();
+  if (shouldSkip(transport)) {
+    GTEST_SKIP() << "IBGDA transport not available (collective skip)";
+  }
+
+  const int maxChannels = 4;
+  MultiPeerIbgdaTransportSetupConfig setupConfig{
+      .dataBufferSize = 4096,
+      .chunkSize = 4096,
+      .pipelineDepth = 4,
+  };
+  MultiPeerIbgdaTransportSetup setup(
+      *transport, globalRank, numRanks, setupConfig, maxChannels);
+  setup.exchangeBuffers();
+
+  // 3 successive calls with different warp counts.
+  // Validates counter/signal persistence across varying channel usage.
+  const int numIbgdaPeers = numRanks - 1;
+
+  // Call 1: 1 warp per peer (under-subscribed, only ch0)
+  runWarpReserveTest(
+      *transport,
+      setup,
+      256,
+      1 * numIbgdaPeers,
+      1 * numIbgdaPeers,
+      1,
+      maxChannels);
+
+  // Call 2: 4 warps per peer (1:1 mapping, all 4 channels)
+  runWarpReserveTest(
+      *transport,
+      setup,
+      256,
+      4 * numIbgdaPeers,
+      4 * numIbgdaPeers,
+      1,
+      maxChannels);
+
+  // Call 3: 2 warps per peer (under-subscribed, ch0-1 used, ch2-3 idle)
+  runWarpReserveTest(
+      *transport,
+      setup,
+      256,
+      2 * numIbgdaPeers,
+      2 * numIbgdaPeers,
+      1,
+      maxChannels);
+}
+
+TEST_F(AllToAllvIbgdaE2eTestFixture, MultiChannel_Stress) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Need at least 2 ranks";
+  }
+  auto transport = createTransport();
+  if (shouldSkip(transport)) {
+    GTEST_SKIP() << "IBGDA transport not available (collective skip)";
+  }
+
+  const int maxChannels = 2;
+  MultiPeerIbgdaTransportSetupConfig setupConfig{
+      .dataBufferSize = 4096,
+      .chunkSize = 4096,
+      .pipelineDepth = 4,
+  };
+  MultiPeerIbgdaTransportSetup setup(
+      *transport, globalRank, numRanks, setupConfig, maxChannels);
+  setup.exchangeBuffers();
+
+  // 100+ iterations -- verify no counter drift or signal corruption
+  const int numIbgdaPeers = numRanks - 1;
+  for (int iter = 0; iter < 100; iter++) {
+    runWarpReserveTest(
+        *transport,
+        setup,
+        64,
+        2 * numIbgdaPeers,
+        2 * numIbgdaPeers,
+        1,
+        maxChannels);
+  }
+}
+
+// =============================================================================
+// Error guard: warps_per_peer > warps_per_block must be rejected
+// =============================================================================
+
+TEST_F(AllToAllvIbgdaE2eTestFixture, WarpReserve_WarpsPerPeerExceedsBlock) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Need at least 2 ranks";
+  }
+  auto transport = createTransport();
+  if (shouldSkip(transport)) {
+    GTEST_SKIP() << "IBGDA transport not available (collective skip)";
+  }
+
+  const int numIbgdaPeers = numRanks - 1;
+  // Request 16 warps per peer with only 8 warps per block (256 threads).
+  // resolveWarpReserve should throw because warps_per_peer > warps_per_block.
+  WarpReserveConfig config;
+  config.ibgdaSendWarps = 16 * numIbgdaPeers;
+  config.ibgdaRecvWarps = 16 * numIbgdaPeers;
+
+  EXPECT_THROW(
+      resolveWarpReserve(config, 0, numIbgdaPeers, nullptr, nullptr, 256),
+      std::runtime_error);
+}
+
+// =============================================================================
+// Block-scope multi-channel: multiple channels within a single block
+// =============================================================================
+
+TEST_F(AllToAllvIbgdaE2eTestFixture, BlockScope_MultiChannel) {
+  // Tests the named-barrier multi-channel path within a single block.
+  // With block-group scheduling and maxChannelsPerPeer=2, each block
+  // splits threads into 2 channel sub-groups with independent named barriers.
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Need at least 2 ranks";
+  }
+  auto transport = createTransport();
+  if (shouldSkip(transport)) {
+    GTEST_SKIP() << "IBGDA transport not available";
+  }
+
+  const int maxChannels = 2;
+  MultiPeerIbgdaTransportSetupConfig setupConfig{
+      .dataBufferSize = 4096,
+      .chunkSize = 4096,
+      .pipelineDepth = 4,
+  };
+  MultiPeerIbgdaTransportSetup setup(
+      *transport, globalRank, numRanks, setupConfig, maxChannels);
+  setup.exchangeBuffers();
+
+  // Use block-group scheduling (uniform path) with enough blocks.
+  // Each block handles one peer, with 2 channels inside via named barriers.
+  int minBlocks = 2 * numRanks;
+  runEqualSizeTest(*transport, setup, 1024, minBlocks, 256);
 }
 
 } // namespace comms::pipes
