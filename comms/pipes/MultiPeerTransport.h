@@ -314,6 +314,15 @@ class MultiPeerTransport {
   ChunkInfo* chunkInfoSendBuf_{nullptr};
   ChunkInfo* chunkInfoRecvBuf_{nullptr};
 
+  // --- GPU-allocated peer rank arrays for WarpReserveDeviceConfig ---
+  int* nvlPeerRanksGpu_{nullptr};
+  int* ibgdaPeerRanksGpu_{nullptr};
+
+  // Transport-type-based peer counts (from typePerRank_, not topology).
+  // These track the sizes of the device arrays for WarpReserveDeviceConfig.
+  int numNvlTransportPeers_{0};
+  int numIbgdaTransportPeers_{0};
+
   // --- Private helpers ---
   void initFromTopology(
       TopologyResult topo,
