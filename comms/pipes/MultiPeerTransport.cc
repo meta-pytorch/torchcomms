@@ -65,6 +65,7 @@ MultiPeerTransport::MultiPeerTransport(
         myRank_, nRanks_, deviceId_, *bootstrap_, config.topoConfig);
   }
   ibgdaSetupConfig_ = config.ibgdaSetupConfig;
+  maxChannelsPerPeer_ = config.maxChannelsPerPeer;
   initFromTopology(std::move(*topo), config);
 }
 
@@ -202,7 +203,11 @@ void MultiPeerTransport::exchange() {
   if (ibgdaTransport_) {
     ibgdaTransport_->exchange();
     ibgdaSetup_ = std::make_unique<MultiPeerIbgdaTransportSetup>(
-        *ibgdaTransport_, myRank_, nRanks_, ibgdaSetupConfig_);
+        *ibgdaTransport_,
+        myRank_,
+        nRanks_,
+        ibgdaSetupConfig_,
+        maxChannelsPerPeer_);
     ibgdaSetup_->exchangeBuffers();
   }
 

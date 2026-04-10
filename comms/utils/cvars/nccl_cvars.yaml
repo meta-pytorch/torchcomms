@@ -1764,6 +1764,41 @@ cvars:
      allow more overlap between RDMA transfers and GPU copies but use more
      staging buffer memory.
 
+ - name        : NCCL_CTRAN_PIPES_WARP_RESERVE_NVL_SEND
+   type        : int64_t
+   default     : 0
+   description : |-
+     Total warps for NVLink send direction in device alltoallv warp reserve.
+     0 = auto (2 per NVL peer).
+
+ - name        : NCCL_CTRAN_PIPES_WARP_RESERVE_NVL_RECV
+   type        : int64_t
+   default     : 0
+   description : |-
+     Total warps for NVLink recv direction in device alltoallv warp reserve.
+     0 = auto (2 per NVL peer).
+
+ - name        : NCCL_CTRAN_PIPES_WARP_RESERVE_IBGDA_SEND
+   type        : int64_t
+   default     : 0
+   description : |-
+     Total warps for IBGDA send direction in device alltoallv warp reserve.
+     0 = auto (1 per IBGDA peer).
+
+ - name        : NCCL_CTRAN_PIPES_WARP_RESERVE_IBGDA_RECV
+   type        : int64_t
+   default     : 0
+   description : |-
+     Total warps for IBGDA recv direction in device alltoallv warp reserve.
+     0 = auto (1 per IBGDA peer).
+
+ - name        : NCCL_CTRAN_PIPES_WARP_RESERVE_SELF
+   type        : int64_t
+   default     : 0
+   description : |-
+     Warps for self-copy in device alltoallv warp reserve.
+     0 = auto (1 warp).
+
  - name        : NCCL_CTRAN_IBGDA_QP_DEPTH
    type        : uint64_t
    default     : 1024

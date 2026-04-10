@@ -113,7 +113,8 @@ __global__ void ncclKernelDeviceAllToAllvPipesUnified(
           sendChunks, static_cast<uint32_t>(args.nRanks)),
       comms::pipes::DeviceSpan<comms::pipes::ChunkInfo>(
           recvChunks, static_cast<uint32_t>(args.nRanks)),
-      timeout);
+      timeout,
+      args.warpReserve);
 }
 
 template <PipeProtocol Proto>
