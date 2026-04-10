@@ -4,15 +4,37 @@
 
 #include <atomic>
 #include <chrono>
+#include <optional>
 
 #include "comms/uniflow/controller/Controller.h"
 
 namespace uniflow::controller {
 
+/// Socket configuration for TcpServer and TcpClient.
+/// Optional fields: valued → setsockopt, nullopt → OS kernel default.
+/// Default-constructed with production-tuned values.
+struct TcpSocketConfig {
+  std::optional<std::chrono::seconds> connTimeout{std::chrono::seconds{30}};
+  std::optional<int> socketBufSize{1 << 20}; // 1MB
+  std::optional<bool> tcpNoDelay{true};
+  std::optional<bool> enableKeepalive{true};
+  std::optional<std::chrono::seconds> keepaliveIdle{std::chrono::seconds{60}};
+  std::optional<std::chrono::seconds> keepaliveInterval{
+      std::chrono::seconds{5}};
+  std::optional<int> keepaliveCount{3};
+  std::optional<std::chrono::milliseconds> userTimeout{
+      std::chrono::milliseconds{60000}};
+
+  int acceptRetryCnt{5};
+  size_t connectRetries{10};
+  std::chrono::milliseconds retryTimeout{std::chrono::milliseconds{1000}};
+
+  static TcpSocketConfig osDefaults();
+  Status validate() const;
+};
+
 class TcpConn : public Conn {
  public:
-  // Factory: creates a TcpConn and validates the peer via magic exchange.
-  // Returns nullptr and closes the socket if the handshake fails.
   static std::unique_ptr<TcpConn> create(int sock);
 
   TcpConn(const TcpConn&) = delete;
@@ -42,7 +64,7 @@ class TcpConn : public Conn {
 
 class TcpServer : public Server {
  public:
-  explicit TcpServer(std::string id, int acceptRetryCnt = 5);
+  explicit TcpServer(std::string id, TcpSocketConfig config = {});
   TcpServer(const TcpServer&) = delete;
   TcpServer& operator=(const TcpServer&) = delete;
   TcpServer(TcpServer&&) = delete;
@@ -56,8 +78,7 @@ class TcpServer : public Server {
   Status init() override;
   std::unique_ptr<Conn> accept() override;
 
-  // Gracefully shut down the listening socket. After this call, accept()
-  // will return nullptr. Safe to call from a different thread than accept().
+  // Thread-safe: can be called from a different thread than accept().
   void shutdown();
 
  private:
@@ -69,28 +90,23 @@ class TcpServer : public Server {
   std::string host_;
   int port_{-1};
   std::atomic<int> listenSock_{-1};
-  int acceptRetryCnt_;
+  TcpSocketConfig config_;
 };
 
 class TcpClient : public Client {
  public:
-  TcpClient() = default;
+  explicit TcpClient(TcpSocketConfig config = {});
   TcpClient(const TcpClient&) = delete;
   TcpClient& operator=(const TcpClient&) = delete;
   TcpClient(TcpClient&&) = delete;
   TcpClient& operator=(TcpClient&&) = delete;
 
-  // Configure retry behavior for connect().
-  TcpClient(size_t numRetries, std::chrono::milliseconds retryTimeout)
-      : numRetries_(numRetries), retryTimeout_(retryTimeout) {}
-
   std::unique_ptr<Conn> connect(std::string id) override;
 
  private:
-  static Status configureClientSocket(int sock);
+  Status configureClientSocket(int sock);
 
-  size_t numRetries_{10};
-  std::chrono::milliseconds retryTimeout_{1000};
+  TcpSocketConfig config_;
 };
 
 } // namespace uniflow::controller
