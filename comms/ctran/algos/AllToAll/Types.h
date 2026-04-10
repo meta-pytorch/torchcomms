@@ -4,6 +4,9 @@
 
 #include <cstdint>
 #include "comms/ctran/algos/CtranAlgoDev.h" // for CTRAN_MAX_NVL_PEERS
+#if defined(ENABLE_PIPES)
+#include "comms/pipes/collectives/AllToAllv.cuh" // for WarpReserveDeviceConfig
+#endif
 #include "comms/utils/commSpecs.h"
 
 // Forward declarations
@@ -73,6 +76,9 @@ struct KernArgs {
   // Unified NVL+IBGDA kernel fields (used by
   // ncclKernelDeviceAllToAllvPipesUnified)
   int nRanks;
+#if defined(ENABLE_PIPES)
+  comms::pipes::WarpReserveDeviceConfig warpReserve;
+#endif
 };
 
 } // namespace device_alltoallv_pipes

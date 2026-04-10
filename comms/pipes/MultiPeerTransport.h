@@ -47,6 +47,12 @@ struct MultiPeerTransportConfig {
   // travels through real NICs (GPU → PCIe → NIC → IB switch → NIC → PCIe →
   // GPU). Set via TEST_IBGDA_SINGLE_NODE=1 env var.
   bool forceIbgda{false};
+
+  // Maximum IBGDA channels per peer (derived from autotune table).
+  // Each channel gets independent staging, signals, and counters.
+  // 1 = single channel (backward compatible). Set by Ctran from
+  // getMaxIbgdaChannelsPerPeer() at init time.
+  int maxChannelsPerPeer{1};
 };
 
 /**
@@ -136,6 +142,11 @@ class MultiPeerTransport {
   /** @return Global ranks of all non-self peers (IBGDA covers everyone). */
   const std::vector<int>& ibgda_peer_ranks() const {
     return ibgdaPeerRanks_;
+  }
+
+  /** @return Maximum IBGDA channels per peer (from autotune). */
+  int maxChannelsPerPeer() const {
+    return maxChannelsPerPeer_;
   }
 
   /** @return NVL bootstrap adapter for NVL-scoped collective ops.
@@ -300,6 +311,7 @@ class MultiPeerTransport {
   std::unique_ptr<MultipeerIbgdaTransport> ibgdaTransport_;
   std::unique_ptr<MultiPeerIbgdaTransportSetup> ibgdaSetup_;
   MultiPeerIbgdaTransportSetupConfig ibgdaSetupConfig_;
+  int maxChannelsPerPeer_{1};
 
   // --- GPU-allocated transport array for device handle ---
   Transport* transportsGpu_{nullptr};
