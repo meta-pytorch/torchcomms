@@ -52,6 +52,9 @@ class AlgoImpl {
     }
   }
 
+  // Allocate pipeSync and other internal resources.
+  commResult_t initResources();
+
  private:
   // Wait till either the async initialization is done or hit async error.
   // It is called before execution scheduling any CE copy to the stream.

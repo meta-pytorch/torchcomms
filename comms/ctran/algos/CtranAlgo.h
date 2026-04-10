@@ -257,6 +257,7 @@ class CtranPersistentRequest {
     ALLTOALL_DEDUP,
     ALLTOALL_P,
     ALLTOALLV_DEDUP,
+    ALLGATHER_P_WIN,
   };
 
   Type type;

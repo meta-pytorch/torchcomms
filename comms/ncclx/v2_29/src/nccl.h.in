@@ -1359,6 +1359,36 @@ std::shared_ptr<const std::unordered_map<std::string, std::string>> getNcclxInfo
 // initialization depends on the receiver of the hints.
 ncclResult_t setGlobalHint(std::string key, std::string val);
 
+/*
+ * Check whether the given window supports persistent allgatherP.
+ * Returns ncclSuccess and sets *supported to true if the window's communicator
+ * has CTRAN enabled and all peers have configured backends.
+ */
+ncclResult_t winAllGatherPSupported(ncclWindow_t win, bool* supported);
+
+/*
+ * Window-based persistent AllGather.
+ * Uses the window's registered buffer as the recv buffer.
+ * The window must have been exchanged (via ncclWinRegister) before calling Init.
+ *
+ * winAllGatherInit: Initialize persistent allgather state from a window.
+ * winAllGatherExec: Execute an allgather using a previously initialized request.
+ * winAllGatherDestroy: Free persistent allgather resources.
+ */
+ncclResult_t winAllGatherInit(
+    ncclWindow_t win,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    void** request);
+
+ncclResult_t winAllGatherExec(
+    const void* sendbuff,
+    size_t count,
+    ncclDataType_t datatype,
+    void* request);
+
+ncclResult_t winAllGatherDestroy(void* request);
+
 } // namespace ncclx
 
 #else
