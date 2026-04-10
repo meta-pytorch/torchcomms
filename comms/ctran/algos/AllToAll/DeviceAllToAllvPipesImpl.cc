@@ -4,6 +4,7 @@
 
 #include "comms/ctran/algos/AllToAll/DeviceAllToAllvPipesImpl.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
+#include "comms/pipes/collectives/AllToAllvAutoTuneConfig.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 #include <algorithm>
