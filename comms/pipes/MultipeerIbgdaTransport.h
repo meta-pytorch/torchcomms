@@ -142,7 +142,7 @@ struct IbgdaTransportExchInfo {
  * Maximum number of ranks supported for allGather-based exchange.
  * This limit exists because we use fixed-size arrays for QPN exchange.
  */
-constexpr int kMaxRanksForAllGather = 128;
+constexpr int kMaxRanksForAllGather = 2048;
 
 /**
  * Transport exchange info for allGather-based exchange.
