@@ -1,6 +1,7 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include "comms/uniflow/MultiTransport.h"
+#include "comms/uniflow/Result.h"
 #include "comms/uniflow/logging/Logger.h"
 #include "comms/uniflow/transport/nvlink/NVLinkTransport.h"
 #include "comms/uniflow/transport/rdma/RdmaTransport.h"
@@ -482,6 +483,7 @@ std::vector<uint8_t> MultiTransportFactory::getTopology() {
   totalSize += (sizeof(uint8_t) + sizeof(uint32_t)) * numTransport;
   for (auto& f : factories_) {
     topoData.emplace_back(f->getTopology());
+    CHECK_THROW_EXCEPTION(!topoData.back().empty(), std::runtime_error);
     totalSize += topoData.back().size();
   }
 

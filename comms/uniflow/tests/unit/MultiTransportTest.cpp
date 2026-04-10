@@ -663,7 +663,7 @@ TEST_F(MultiTransportFactoryTest, GetTopologyAssertsOnEmptyTopoData) {
   auto rdma = makeFactory(TransportType::RDMA, {0x01}, {});
   MultiTransportFactory mtf = makeMultiTransportFactory({rdma});
 
-  EXPECT_DEATH(mtf.getTopology(), "");
+  EXPECT_THROW(mtf.getTopology(), std::runtime_error);
 }
 
 TEST_F(
