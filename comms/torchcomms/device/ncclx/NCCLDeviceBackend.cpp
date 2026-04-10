@@ -88,7 +88,7 @@ NCCLDeviceBackend::Ptr NCCLDeviceBackend::create_device_window(
   reqs.resourceRequirementsList =
       (signal_buffer_size > 0) ? &signal_resource_reqs : nullptr;
   reqs.teamRequirementsList = nullptr;
-  reqs.lsaMultimem = true;
+  reqs.lsaMultimem = false;
   reqs.barrierCount = config.barrier_count;
   reqs.lsaBarrierCount = config.barrier_count;
   reqs.railGinBarrierCount = config.barrier_count;
