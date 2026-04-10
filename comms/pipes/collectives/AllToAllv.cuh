@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 
+#include "comms/pipes/CopyUtils.cuh"
 #include "comms/pipes/DeviceCheck.cuh"
 #include "comms/pipes/DeviceSpan.cuh"
 #include "comms/pipes/Timeout.cuh"
@@ -161,10 +162,13 @@ __device__ __forceinline__ void ibgda_send_helper(
     [[maybe_unused]] Timeout timeout,
     [[maybe_unused]] uint32_t maxChannelsPerPeer = 1) {
 #ifdef __CUDA_ARCH__
-  if (group_per_peer.scope == SyncScope::BLOCK) {
+  if (group_per_peer.scope == SyncScope::BLOCK ||
+      group_per_peer.scope == SyncScope::MULTIWARP) {
     // Two-level partitioning: each block gets a disjoint channel range and
     // a disjoint data slice so all active blocks do meaningful work in
     // parallel.
+    // When scope == MULTIWARP (warp reserve path), total_groups is always 1,
+    // so numActiveBlocks = 1 and behavior is identical to single-block mode.
     uint32_t warpsPerGroup = group_per_peer.group_size / 32;
     uint32_t channelsPerBlock = (warpsPerGroup < maxChannelsPerPeer)
         ? warpsPerGroup
@@ -192,14 +196,14 @@ __device__ __forceinline__ void ibgda_send_helper(
         : blockBytes;
 
     if (channelsPerBlock <= 1) {
-      // Single channel per block: all threads cooperate via named barrier 0.
+      // Single channel per block: all threads cooperate via named barrier.
       ThreadGroup channel_group = {
           .thread_id_in_group = group_per_peer.thread_id_in_group,
           .group_size = group_per_peer.group_size,
           .group_id = 0,
           .total_groups = 1,
           .scope = SyncScope::MULTIWARP,
-          .barrier_id = 0};
+          .barrier_id = group_per_peer.barrier_id};
       transport.p2p_ibgda->send(
           channel_group,
           static_cast<char*>(const_cast<void*>(sendbuff_d)) + send_info.offset +
@@ -211,8 +215,8 @@ __device__ __forceinline__ void ibgda_send_helper(
     }
 
     // Multi-channel within block: split threads into per-channel sub-groups.
-    // barrier_id = threadChannelId (named barriers are block-local, no
-    // collision).
+    // barrier_id = group_per_peer.barrier_id + threadChannelId: base peer
+    // barrier offset (from warp reserve path) plus within-block channel index.
     uint32_t threadsPerChannel = group_per_peer.group_size / channelsPerBlock;
     uint32_t threadChannelId =
         group_per_peer.thread_id_in_group / threadsPerChannel;
@@ -229,7 +233,7 @@ __device__ __forceinline__ void ibgda_send_helper(
         .group_id = 0,
         .total_groups = 1,
         .scope = SyncScope::MULTIWARP,
-        .barrier_id = threadChannelId};
+        .barrier_id = group_per_peer.barrier_id + threadChannelId};
 
     size_t bytesPerChannel = myBlockBytes / channelsPerBlock;
     size_t channelOffset = threadChannelId * bytesPerChannel;
@@ -294,7 +298,8 @@ __device__ __forceinline__ void ibgda_recv_helper(
     [[maybe_unused]] Timeout timeout,
     [[maybe_unused]] uint32_t maxChannelsPerPeer = 1) {
 #ifdef __CUDA_ARCH__
-  if (group_per_peer.scope == SyncScope::BLOCK) {
+  if (group_per_peer.scope == SyncScope::BLOCK ||
+      group_per_peer.scope == SyncScope::MULTIWARP) {
     // Symmetric to ibgda_send_helper: two-level block+thread partitioning.
     uint32_t warpsPerGroup = group_per_peer.group_size / 32;
     uint32_t channelsPerBlock = (warpsPerGroup < maxChannelsPerPeer)
@@ -326,7 +331,7 @@ __device__ __forceinline__ void ibgda_recv_helper(
           .group_id = 0,
           .total_groups = 1,
           .scope = SyncScope::MULTIWARP,
-          .barrier_id = 0};
+          .barrier_id = group_per_peer.barrier_id};
       transport.p2p_ibgda->recv(
           channel_group,
           static_cast<char*>(recvbuff_d) + recv_info.offset + blockOffset,
@@ -351,7 +356,7 @@ __device__ __forceinline__ void ibgda_recv_helper(
         .group_id = 0,
         .total_groups = 1,
         .scope = SyncScope::MULTIWARP,
-        .barrier_id = threadChannelId};
+        .barrier_id = group_per_peer.barrier_id + threadChannelId};
 
     size_t bytesPerChannel = myBlockBytes / channelsPerBlock;
     size_t channelOffset = threadChannelId * bytesPerChannel;
@@ -403,20 +408,65 @@ __device__ __forceinline__ void ibgda_recv_helper(
 #endif
 }
 
+// =============================================================================
+// Per-transport-type dispatch helpers
+// =============================================================================
+// These are called from both the existing uniform path and the new reserve
+// path to avoid code duplication.
+
+#ifdef __CUDA_ARCH__
+
+__device__ __forceinline__ void self_copy_helper(
+    ThreadGroup group,
+    Transport& transport,
+    const void* sendbuff_d,
+    void* recvbuff_d,
+    const ChunkInfo& send_info,
+    const ChunkInfo& recv_info) {
+  PIPES_DEVICE_CHECK(transport.type == TransportType::SELF);
+  PIPES_DEVICE_CHECK(send_info.nbytes == recv_info.nbytes);
+  const char* src = static_cast<const char*>(sendbuff_d) + send_info.offset;
+  char* dst = static_cast<char*>(recvbuff_d) + recv_info.offset;
+  transport.self.put(group, dst, src, send_info.nbytes);
+}
+
+__device__ __forceinline__ void nvl_send_helper(
+    ThreadGroup group_per_peer,
+    Transport& transport,
+    const void* sendbuff_d,
+    const ChunkInfo& send_info,
+    Timeout timeout) {
+  transport.p2p_nvl.send(
+      group_per_peer,
+      static_cast<char*>(const_cast<void*>(sendbuff_d)) + send_info.offset,
+      send_info.nbytes,
+      timeout);
+}
+
+__device__ __forceinline__ void nvl_recv_helper(
+    ThreadGroup group_per_peer,
+    Transport& transport,
+    void* recvbuff_d,
+    const ChunkInfo& recv_info,
+    Timeout timeout) {
+  transport.p2p_nvl.recv(
+      group_per_peer,
+      static_cast<char*>(recvbuff_d) + recv_info.offset,
+      recv_info.nbytes,
+      timeout);
+}
+
+#endif // __CUDA_ARCH__
 /**
- * AllToAllv collective communication primitive.
+ * AllToAllv collective
  *
  * Performs variable-sized all-to-all data exchange among multiple ranks.
  * Each rank sends a potentially different amount of data to every other rank,
  * and receives a potentially different amount of data from every other rank.
  *
- * Algorithm:
- * 1. First weighted partition: Distribute warps across ranks based on total
- *    communication workload (send+recv bytes for peers, send only for self)
- * 2. For self-rank: Perform local memory copy within the same GPU
- * 3. For peer ranks: Second weighted partition to split warps between send
- *    and recv operations based on their respective data sizes
- * 4. Execute send or recv using P2P NVL or P2P IBGDA transport
+ * When reserveConfig.isConfigured() is true, uses a 5-category warp partition
+ * (self, NVL-send, NVL-recv, IBGDA-send, IBGDA-recv) with exact warp counts.
+ * Otherwise, falls back to the existing uniform partition_interleaved logic.
  *
  * Parameters:
  *   @param recvbuff_d: Device pointer to receive buffer
@@ -428,14 +478,8 @@ __device__ __forceinline__ void ibgda_recv_helper(
  * rank
  *   @param recv_chunk_infos: Array of recv chunk metadata, one per source rank
  *   @param timeout: Timeout configuration
- *
- * Requirements:
- * - Must be called from device code with sufficient threads
- * - transports_per_rank.size() == send_chunk_infos.size() ==
- *   recv_chunk_infos.size()
- * - send_chunk_infos[i].nbytes == recv_chunk_infos[i].nbytes for i ==
- *   my_rank_id
- * - Max 8 ranks supported (stack-allocated weights)
+ *   @param reserveConfig: Optional warp reserve configuration for
+ *                         category-based warp partition
  */
 __device__ __forceinline__ void all_to_allv(
     [[maybe_unused]] void* recvbuff_d,
@@ -444,7 +488,8 @@ __device__ __forceinline__ void all_to_allv(
     [[maybe_unused]] DeviceSpan<Transport> transports_per_rank,
     [[maybe_unused]] DeviceSpan<ChunkInfo> send_chunk_infos,
     [[maybe_unused]] DeviceSpan<ChunkInfo> recv_chunk_infos,
-    [[maybe_unused]] Timeout timeout
+    [[maybe_unused]] Timeout timeout,
+    [[maybe_unused]] WarpReserveDeviceConfig reserveConfig = {}
     // all arguments below will eventually come from communicator
 ) {
 #ifdef __CUDA_ARCH__
@@ -470,14 +515,167 @@ __device__ __forceinline__ void all_to_allv(
   if (nranks == 1) {
     const auto& send_info = send_chunk_infos[my_rank_id];
     const auto& recv_info = recv_chunk_infos[my_rank_id];
-    const char* src = static_cast<const char*>(sendbuff_d) + send_info.offset;
-    char* dst = static_cast<char*>(recvbuff_d) + recv_info.offset;
-
     auto& transport = transports_per_rank[my_rank_id];
     PIPES_DEVICE_CHECK(transport.type == TransportType::SELF);
-    transport.self.put(group, dst, src, send_info.nbytes);
+    self_copy_helper(
+        group, transport, sendbuff_d, recvbuff_d, send_info, recv_info);
     return;
   }
+
+  // Extract to local pointer to avoid aliasing (see DeviceSpan.cuh:228).
+  auto transports = transports_per_rank.data();
+
+  // =========================================================================
+  // Category-based warp partition (warp reserve path)
+  // =========================================================================
+  if (reserveConfig.isConfigured()) {
+    // Compute warp_id directly from block/thread indices — not from
+    // group.group_id which is blockIdx.x (block index) under make_block_group.
+    // Reserve config boundaries are in warp counts, so we need the actual
+    // global warp index.
+    const uint32_t warpsPerBlock = blockDim.x / 32;
+    const uint32_t warp_id = blockIdx.x * warpsPerBlock + threadIdx.x / 32;
+    const uint32_t lane = threadIdx.x % 32;
+
+    if (warp_id < reserveConfig.selfEnd) {
+      // --- Self-copy category ---
+      ThreadGroup self_group = {
+          lane, 32, warp_id, reserveConfig.selfEnd, SyncScope::WARP};
+      auto& transport = transports[my_rank_id];
+      const auto& send_info = send_chunk_infos[my_rank_id];
+      const auto& recv_info = recv_chunk_infos[my_rank_id];
+      self_copy_helper(
+          self_group, transport, sendbuff_d, recvbuff_d, send_info, recv_info);
+
+    } else if (warp_id < reserveConfig.nvlSendEnd) {
+      // --- NVL send category ---
+      uint32_t local_id = warp_id - reserveConfig.selfEnd;
+      uint32_t cat_size = reserveConfig.nvlSendEnd - reserveConfig.selfEnd;
+      ThreadGroup cat_group = {lane, 32, local_id, cat_size, SyncScope::WARP};
+      auto [peer_idx, peer_group] =
+          cat_group.partition_interleaved(reserveConfig.numNvlPeers);
+      int peer_rank = reserveConfig.nvlPeerRanks[peer_idx];
+      auto& transport = transports[peer_rank];
+      const auto& send_info = send_chunk_infos[peer_rank];
+      nvl_send_helper(peer_group, transport, sendbuff_d, send_info, timeout);
+
+    } else if (warp_id < reserveConfig.nvlRecvEnd) {
+      // --- NVL recv category ---
+      uint32_t local_id = warp_id - reserveConfig.nvlSendEnd;
+      uint32_t cat_size = reserveConfig.nvlRecvEnd - reserveConfig.nvlSendEnd;
+      ThreadGroup cat_group = {lane, 32, local_id, cat_size, SyncScope::WARP};
+      auto [peer_idx, peer_group] =
+          cat_group.partition_interleaved(reserveConfig.numNvlPeers);
+      int peer_rank = reserveConfig.nvlPeerRanks[peer_idx];
+      auto& transport = transports[peer_rank];
+      const auto& recv_info = recv_chunk_infos[peer_rank];
+      nvl_recv_helper(peer_group, transport, recvbuff_d, recv_info, timeout);
+
+    } else if (
+        warp_id >= reserveConfig.ibgdaSendBase &&
+        warp_id < reserveConfig.ibgdaSendEnd) {
+      // --- IBGDA send category (block-aligned) ---
+      // With block-aligned boundaries, all warps for a peer are guaranteed
+      // to be in the same block, enabling MULTIWARP named barrier sync.
+      uint32_t local_id = warp_id - reserveConfig.ibgdaSendBase;
+      uint32_t cat_size =
+          reserveConfig.ibgdaSendEnd - reserveConfig.ibgdaSendBase;
+      uint32_t warpsPerPeer = cat_size / reserveConfig.numIbgdaPeers;
+      uint32_t peer_idx = local_id / warpsPerPeer;
+      uint32_t warpInPeer = local_id % warpsPerPeer;
+
+      int peer_rank = reserveConfig.ibgdaPeerRanks[peer_idx];
+      auto& transport = transports[peer_rank];
+      const auto& send_info = send_chunk_infos[peer_rank];
+
+      if (warpsPerPeer > 1 && warpsPerPeer <= warpsPerBlock) {
+        // Multiple warps per peer, all fit in one block — MULTIWARP
+        // cooperative memcpy. barrier_id = block-local peer index
+        // (unique per peer within block, IBGDA category is block-aligned).
+        uint32_t peerInBlock = (warp_id % warpsPerBlock) / warpsPerPeer;
+        ThreadGroup peer_group = {
+            .thread_id_in_group = warpInPeer * 32 + lane,
+            .group_size = warpsPerPeer * 32,
+            .group_id = 0,
+            .total_groups = 1,
+            .scope = SyncScope::MULTIWARP,
+            .barrier_id = peerInBlock};
+        ibgda_send_helper(
+            peer_group,
+            transport,
+            sendbuff_d,
+            send_info,
+            timeout,
+            reserveConfig.maxChannelsPerPeer);
+      } else {
+        // Single warp per peer — WARP scope, no cooperation needed.
+        // (warpsPerPeer > warpsPerBlock is rejected by resolveWarpReserve.)
+        ThreadGroup peer_group = {
+            lane, 32, warpInPeer, warpsPerPeer, SyncScope::WARP};
+        ibgda_send_helper(
+            peer_group,
+            transport,
+            sendbuff_d,
+            send_info,
+            timeout,
+            reserveConfig.maxChannelsPerPeer);
+      }
+
+    } else if (
+        warp_id >= reserveConfig.ibgdaRecvBase &&
+        warp_id < reserveConfig.ibgdaRecvEnd &&
+        reserveConfig.numIbgdaPeers > 0) {
+      // --- IBGDA recv category (block-aligned, symmetric to send) ---
+      uint32_t local_id = warp_id - reserveConfig.ibgdaRecvBase;
+      uint32_t cat_size =
+          reserveConfig.ibgdaRecvEnd - reserveConfig.ibgdaRecvBase;
+      uint32_t warpsPerPeer = cat_size / reserveConfig.numIbgdaPeers;
+      uint32_t peer_idx = local_id / warpsPerPeer;
+      uint32_t warpInPeer = local_id % warpsPerPeer;
+
+      int peer_rank = reserveConfig.ibgdaPeerRanks[peer_idx];
+      auto& transport = transports[peer_rank];
+      const auto& recv_info = recv_chunk_infos[peer_rank];
+
+      if (warpsPerPeer > 1 && warpsPerPeer <= warpsPerBlock) {
+        uint32_t peerInBlock = (warp_id % warpsPerBlock) / warpsPerPeer;
+        ThreadGroup peer_group = {
+            .thread_id_in_group = warpInPeer * 32 + lane,
+            .group_size = warpsPerPeer * 32,
+            .group_id = 0,
+            .total_groups = 1,
+            .scope = SyncScope::MULTIWARP,
+            .barrier_id = peerInBlock};
+        ibgda_recv_helper(
+            peer_group,
+            transport,
+            recvbuff_d,
+            recv_info,
+            timeout,
+            reserveConfig.maxChannelsPerPeer);
+      } else {
+        // Single warp per peer — WARP scope, no cooperation needed.
+        // (warpsPerPeer > warpsPerBlock is rejected by resolveWarpReserve.)
+        ThreadGroup peer_group = {
+            lane, 32, warpInPeer, warpsPerPeer, SyncScope::WARP};
+        ibgda_recv_helper(
+            peer_group,
+            transport,
+            recvbuff_d,
+            recv_info,
+            timeout,
+            reserveConfig.maxChannelsPerPeer);
+      }
+    }
+    // Padding warps (between nvlRecvEnd..ibgdaSendBase or
+    // ibgdaSendEnd..ibgdaRecvBase) and excess warps beyond ibgdaRecvEnd
+    // fall through all branches and return here.
+    return;
+  }
+
+  // =========================================================================
+  // Uniform partition path (existing behavior, backward compatible)
+  // =========================================================================
 
   // 1. First partition by SEND/RECV using interleaved partitioning
   // partition_id: 0 = send, 1 = recv
@@ -490,9 +688,6 @@ __device__ __forceinline__ void all_to_allv(
   uint32_t concurrent = (nranks < avail) ? nranks : avail;
   auto [slot_id, group_per_peer] =
       send_recv_group.partition_interleaved(concurrent);
-
-  // Extract to local pointer to avoid aliasing (see DeviceSpan.cuh:228).
-  auto transports = transports_per_rank.data();
 
   for (uint32_t batch = 0; batch * concurrent < nranks; batch++) {
     uint32_t peer_rank_id = slot_id + batch * concurrent;
@@ -512,11 +707,6 @@ __device__ __forceinline__ void all_to_allv(
     if (peer_rank_id == static_cast<uint32_t>(my_rank_id)) {
       // Self partition
       auto& transport = transports[my_rank_id];
-      PIPES_DEVICE_CHECK(transport.type == TransportType::SELF);
-      PIPES_DEVICE_CHECK(send_info.nbytes == recv_info.nbytes);
-
-      const char* src = static_cast<const char*>(sendbuff_d) + send_info.offset;
-      char* dst = static_cast<char*>(recvbuff_d) + recv_info.offset;
 
 #ifdef DEBUG_ALLTOALLV
       if (group_per_peer.is_global_leader()) {
@@ -534,7 +724,13 @@ __device__ __forceinline__ void all_to_allv(
 
       // Only one partition is active for self-copy
       if (partition_id == 0) {
-        transport.self.put(group_per_peer, dst, src, send_info.nbytes);
+        self_copy_helper(
+            group_per_peer,
+            transport,
+            sendbuff_d,
+            recvbuff_d,
+            send_info,
+            recv_info);
       }
       continue;
     }
@@ -558,18 +754,11 @@ __device__ __forceinline__ void all_to_allv(
     // Dispatch based on transport type
     if (transport.type == TransportType::P2P_NVL) {
       if (is_send) {
-        transport.p2p_nvl.send(
-            group_per_peer,
-            static_cast<char*>(const_cast<void*>(sendbuff_d)) +
-                send_info.offset,
-            send_info.nbytes,
-            timeout);
+        nvl_send_helper(
+            group_per_peer, transport, sendbuff_d, send_info, timeout);
       } else {
-        transport.p2p_nvl.recv(
-            group_per_peer,
-            static_cast<char*>(recvbuff_d) + recv_info.offset,
-            recv_info.nbytes,
-            timeout);
+        nvl_recv_helper(
+            group_per_peer, transport, recvbuff_d, recv_info, timeout);
       }
     } else if (transport.type == TransportType::P2P_IBGDA) {
       uint32_t maxCh = transport.p2p_ibgda->getMaxChannelsPerPeer();

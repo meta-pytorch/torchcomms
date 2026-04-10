@@ -52,7 +52,8 @@ void all_to_allv(
     cudaStream_t stream = nullptr,
     int num_blocks = 4,
     int num_threads = 256,
-    std::optional<dim3> cluster_dim = dim3{4, 1, 1});
+    std::optional<dim3> cluster_dim = dim3{4, 1, 1},
+    WarpReserveDeviceConfig reserve_config = {});
 
 /**
  * Unified host wrapper for AllToAllv with pre-built Timeout.
@@ -72,7 +73,8 @@ void all_to_allv(
     cudaStream_t stream = nullptr,
     int num_blocks = 4,
     int num_threads = 256,
-    std::optional<dim3> cluster_dim = dim3{4, 1, 1});
+    std::optional<dim3> cluster_dim = dim3{4, 1, 1},
+    WarpReserveDeviceConfig reserve_config = {});
 
 /**
  * Resolve a WarpReserveConfig into a WarpReserveDeviceConfig.
