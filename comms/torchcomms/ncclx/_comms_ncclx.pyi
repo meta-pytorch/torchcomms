@@ -8,6 +8,7 @@ from torchcomms._comms import TorchCommWindow
 
 class TorchCommWindowNCCLXGin(TorchCommWindow):
     def get_nvlink_address(self, peer: int, offset: int = 0) -> int: ...
+    def get_multimem_address(self, offset: int = 0) -> int: ...
 
 class TorchCommWindowNCCLXPipes(TorchCommWindow): ...
 
@@ -75,6 +76,14 @@ class TorchCommNCCLX:
         forward_indices: torch.Tensor,
         recv_indices: torch.Tensor,
         request: TorchCommNCCLXPersistentRequest,
+        async_op: bool,
+    ) -> TorchWork: ...
+    def reduce_scatter_quantized(
+        self,
+        output: torch.Tensor,
+        input: torch.Tensor,
+        op: torch.distributed.ReduceOp,
+        seed: torch.Tensor,
         async_op: bool,
     ) -> TorchWork: ...
     def comm_dump(self) -> dict[str, str]: ...

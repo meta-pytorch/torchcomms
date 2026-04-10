@@ -502,4 +502,14 @@ TorchCommDeviceWindow<NCCLDeviceBackend>::get_nvlink_address(int peer) {
   return ncclGetPeerPointer(window_, 0, peer);
 }
 
+// =============================================================================
+// TorchCommDeviceWindow<NCCLDeviceBackend> Multimem Address Query
+// =============================================================================
+
+template <>
+__device__ inline void*
+TorchCommDeviceWindow<NCCLDeviceBackend>::get_multimem_address(size_t offset) {
+  return ncclGetLsaMultimemPointer(window_, offset, comm_);
+}
+
 } // namespace torchcomms::device

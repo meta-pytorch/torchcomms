@@ -3,6 +3,7 @@
 #include "AsyncSocket.h"
 
 #include <folly/logging/xlog.h>
+#include <cstring>
 
 namespace ctran::bootstrap {
 
@@ -115,13 +116,15 @@ void AsyncClientSocket::finish(const folly::AsyncSocketException* err) {
 
 folly::SemiFuture<folly::SocketAddress> AsyncServerSocket::start(
     folly::SocketAddress bindAddr,
-    size_t msgSize,
+    size_t headerSize,
+    MsgSizeCalculator sizeCalc,
     RecvCb onRecv,
     std::chrono::milliseconds timeout) {
   auto [p, f] = folly::makePromiseContract<folly::SocketAddress>();
   evb_.runInEventBaseThread([this,
                              bindAddr = std::move(bindAddr),
-                             msgSize,
+                             headerSize,
+                             sizeCalc = std::move(sizeCalc),
                              onRecv = std::move(onRecv),
                              timeout,
                              p = std::move(p)]() mutable {
@@ -130,7 +133,8 @@ folly::SemiFuture<folly::SocketAddress> AsyncServerSocket::start(
       p.setValue(server_->getAddress());
       return;
     }
-    msgSize_ = msgSize;
+    headerSize_ = headerSize;
+    sizeCalc_ = std::move(sizeCalc);
     timeout_ = timeout;
     onRecv_ = std::move(onRecv);
     bindAddr_ = std::move(bindAddr);
@@ -149,6 +153,22 @@ folly::SemiFuture<folly::SocketAddress> AsyncServerSocket::start(
     p.setValue(addr);
   });
   return std::move(f);
+}
+
+folly::SemiFuture<folly::SocketAddress> AsyncServerSocket::start(
+    folly::SocketAddress bindAddr,
+    size_t msgSize,
+    RecvCb onRecv,
+    std::chrono::milliseconds timeout) {
+  // Fixed-size convenience: size calculator always returns msgSize
+  return start(
+      std::move(bindAddr),
+      msgSize,
+      [msgSize](const void* /*headerBuf*/, size_t /*headerSize*/) -> size_t {
+        return msgSize;
+      },
+      std::move(onRecv),
+      timeout);
 }
 
 folly::SemiFuture<folly::Unit> AsyncServerSocket::stop() {
@@ -201,7 +221,8 @@ void AsyncServerSocket::connectionAccepted(
       [this](OneShotRecv* self) {
         conns_.erase(self); // destroys it
       },
-      msgSize_,
+      headerSize_,
+      sizeCalc_,
       timeout_);
   OneShotRecv* raw = up.get();
   conns_.emplace(raw, std::move(up));
@@ -222,9 +243,9 @@ void AsyncServerSocket::OneShotRecv::begin() {
     return;
   }
   sock_->setNoDelay(true);
-  // Preallocate required IOBuf for receiving.
+  // Preallocate for the header; may grow after computing total size.
   if (!buf_) {
-    buf_ = folly::IOBuf::create(msgSize_);
+    buf_ = folly::IOBuf::create(headerSize_);
   }
 
   // Schedule timeout if specified
@@ -238,7 +259,7 @@ void AsyncServerSocket::OneShotRecv::begin() {
 }
 
 void AsyncServerSocket::OneShotRecv::getReadBuffer(void** buf, size_t* len) {
-  size_t remaining = msgSize_ - got_;
+  size_t remaining = totalSize_ - got_;
   *buf = buf_->writableTail();
   *len = std::min(remaining, buf_->tailroom());
 }
@@ -246,8 +267,14 @@ void AsyncServerSocket::OneShotRecv::getReadBuffer(void** buf, size_t* len) {
 void AsyncServerSocket::OneShotRecv::readDataAvailable(size_t n) noexcept {
   buf_->append(n);
   got_ += n;
-  if (got_ >= msgSize_) {
-    // We have at least msgSize_ bytes; stop further reads first.
+
+  // Phase 1: once we have the header, compute total message size
+  if (got_ >= headerSize_ && totalSize_ == headerSize_ && sizeCalc_) {
+    computeTotalSize();
+  }
+
+  if (got_ >= totalSize_) {
+    // Complete message received; stop further reads.
     cancelTimeout();
     sock_->setReadCB(nullptr);
     if (onRecv_) {
@@ -288,6 +315,18 @@ void AsyncServerSocket::OneShotRecv::notifyDone() {
     // Ensure this object stays alive during callback
     folly::DestructorCheck::Safety safety(*this);
     cb(this);
+  }
+}
+
+void AsyncServerSocket::OneShotRecv::computeTotalSize() {
+  size_t newTotal = sizeCalc_(buf_->data(), headerSize_);
+  if (newTotal > totalSize_) {
+    totalSize_ = newTotal;
+    // Grow the IOBuf to accommodate the full message if needed
+    size_t needed = totalSize_ - got_;
+    if (buf_->tailroom() < needed) {
+      buf_->reserve(0, needed - buf_->tailroom());
+    }
   }
 }
 

@@ -202,6 +202,19 @@ class NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) = 0;
 
+#ifdef NCCL_REDUCE_SCATTER_QUANTIZE_SUPPORTED
+  [[nodiscard]] virtual ncclResult_t reduceScatterQuantize(
+      const void* sendbuff,
+      void* recvbuff,
+      size_t recvcount,
+      ncclDataType_t inputType,
+      ncclDataType_t transportType,
+      ncclRedOp_t op,
+      uint64_t* seedPtr,
+      ncclComm_t comm,
+      cudaStream_t stream) = 0;
+#endif
+
   [[nodiscard]] virtual ncclResult_t allToAllv(
       const void* sendbuff,
       const size_t sendcounts[],
@@ -349,6 +362,16 @@ class NcclxApi {
       NcclxWindow win,
       size_t offset,
       int peer,
+      void** outPtr) = 0;
+
+  // Get the LSA multimem (multicast) device pointer for a window.
+  // Returns the NVLS multicast address that can be used with
+  // multimem.ld_reduce / multimem.st PTX instructions for hardware-fused
+  // all-reduce across all LSA-connected peers.
+  // Requires NCCLX 2.29+ and lsaMultimem enabled in ncclDevCommRequirements.
+  [[nodiscard]] virtual ncclResult_t winGetLsaMultimemDevicePointer(
+      NcclxWindow win,
+      size_t offset,
       void** outPtr) = 0;
 #endif
 #endif
@@ -550,6 +573,19 @@ class DefaultNcclxApi : public NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) override;
 
+#ifdef NCCL_REDUCE_SCATTER_QUANTIZE_SUPPORTED
+  [[nodiscard]] ncclResult_t reduceScatterQuantize(
+      const void* sendbuff,
+      void* recvbuff,
+      size_t recvcount,
+      ncclDataType_t inputType,
+      ncclDataType_t transportType,
+      ncclRedOp_t op,
+      uint64_t* seedPtr,
+      ncclComm_t comm,
+      cudaStream_t stream) override;
+#endif
+
   [[nodiscard]] ncclResult_t allToAllv(
       const void* sendbuff,
       const size_t sendcounts[],
@@ -695,6 +731,11 @@ class DefaultNcclxApi : public NcclxApi {
       NcclxWindow win,
       size_t offset,
       int peer,
+      void** outPtr) override;
+
+  [[nodiscard]] ncclResult_t winGetLsaMultimemDevicePointer(
+      NcclxWindow win,
+      size_t offset,
       void** outPtr) override;
 #endif
 #endif

@@ -168,6 +168,9 @@ class ExportedFunctionsTest(unittest.TestCase):
     def test_alltoallv_dynamic_combine_is_exported(self) -> None:
         self.assertTrue(callable(torchcomms.distwrap.alltoallv_dynamic_combine))
 
+    def test_reduce_scatter_quantized_is_exported(self) -> None:
+        self.assertTrue(callable(torchcomms.distwrap.reduce_scatter_quantized))
+
 
 class AllExportsTest(unittest.TestCase):
     """Tests that __all__ matches actual exports."""

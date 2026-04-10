@@ -23,7 +23,7 @@ TEST(ConfigHintsUT, NoHintsCreatesDefaults) {
   EXPECT_EQ(ncclxCfg->commDesc, "undefined");
   EXPECT_TRUE(ncclxCfg->splitGroupRanks.empty());
   EXPECT_EQ(ncclxCfg->ncclAllGatherAlgo, "undefined");
-  EXPECT_FALSE(ncclxCfg->lazyConnect);
+  EXPECT_TRUE(ncclxCfg->lazyConnect);
 
   // Upstream NCCL fields should be untouched
   EXPECT_EQ(config.blocking, NCCL_CONFIG_UNDEF_INT);

@@ -372,8 +372,17 @@ commResult_t allGatherPInit(
     cudaStream_t stream,
     CtranPersistentRequest*& request);
 
-/* Selector for different allgatherp algorithms.
- * Currently only the direct algorithm is implemented for allgatherp
+/* Execute a persistent allgather operation.
+ *
+ * Operations are submitted on the stream provided to allGatherPInit
+ * (request->stream). To capture into a CUDA graph, fork request->stream
+ * into the capture before calling this function, then join back after:
+ *
+ *   cudaEventRecord(forkEv, captureStream);
+ *   cudaStreamWaitEvent(request->stream, forkEv, 0);
+ *   allGatherPExec(sendbuff, count, datatype, request);
+ *   cudaEventRecord(joinEv, request->stream);
+ *   cudaStreamWaitEvent(captureStream, joinEv, 0);
  */
 commResult_t allGatherPExec(
     const void* sendbuff,

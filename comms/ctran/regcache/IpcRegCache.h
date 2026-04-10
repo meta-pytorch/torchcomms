@@ -121,8 +121,13 @@ class IpcRegCache {
   }
 
   // Release a specific remote registration for a given peer.
-  commResult_t
-  releaseRemReg(const std::string& peerId, void* basePtr, uint32_t uid);
+  // exportCount specifies how many times the buffer was exported to this peer;
+  // the refcount is decremented by this amount.
+  commResult_t releaseRemReg(
+      const std::string& peerId,
+      void* basePtr,
+      uint32_t uid,
+      int32_t exportCount = 1);
 
   // Get the number of existing remote registrations for a given peer
   size_t getNumRemReg(const std::string& peerId) const;
@@ -142,6 +147,8 @@ class IpcRegCache {
   }
 
   // Notify remote peers to release their imported NVL memory.
+  // exportCount specifies how many times this buffer was exported to the peer,
+  // so the remote side decrements its refcount by the correct amount.
   // Output argument:
   //   - reqCb: IpcReqCb that the caller can track for completion.
   //            Caller must ensure reqCb remains valid until completed.
@@ -149,7 +156,8 @@ class IpcRegCache {
       const std::string& myId,
       const folly::SocketAddress& peerAddr,
       regcache::IpcRegElem* ipcRegElem,
-      regcache::IpcReqCb* reqCb);
+      regcache::IpcReqCb* reqCb,
+      int32_t exportCount = 1);
 
   // Notify remote peer to import our exported NVL memory.
   // The peer will call importMem upon receiving this request.
@@ -163,6 +171,7 @@ class IpcRegCache {
       const std::string& myId,
       const folly::SocketAddress& peerAddr,
       const regcache::IpcDesc& ipcDesc,
+      const std::vector<ctran::utils::CtranIpcSegDesc>& extraSegments,
       regcache::IpcReqCb* reqCb);
 
   // Register an IpcExportClient with the registry. The client will be

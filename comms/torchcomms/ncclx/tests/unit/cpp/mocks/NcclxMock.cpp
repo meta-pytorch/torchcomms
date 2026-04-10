@@ -72,6 +72,11 @@ void NcclxMock::setupDefaultBehaviors() {
   ON_CALL(*this, reduceScatter(_, _, _, _, _, _, _))
       .WillByDefault(Return(ncclSuccess));
 
+#ifdef NCCL_REDUCE_SCATTER_QUANTIZE_SUPPORTED
+  ON_CALL(*this, reduceScatterQuantize(_, _, _, _, _, _, _, _, _))
+      .WillByDefault(Return(ncclSuccess));
+#endif
+
   ON_CALL(*this, alltoallvDedupInit(_, _, _, _, _, _, _, _))
       .WillByDefault(Return(ncclSuccess));
   ON_CALL(*this, alltoallvDedupExec(_, _, _, _, _, _, _))

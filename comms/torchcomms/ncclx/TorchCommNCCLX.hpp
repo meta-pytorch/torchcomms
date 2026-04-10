@@ -241,6 +241,15 @@ class TorchCommNCCLX : public TorchCommBackend,
       const AllGatherPExecOptions& options = {}) override;
   void all_gather_p_free(AllGatherPHandle handle) override;
 
+#ifdef NCCL_REDUCE_SCATTER_QUANTIZE_SUPPORTED
+  c10::intrusive_ptr<TorchWork> reduce_scatter_quantized(
+      at::Tensor& output,
+      const at::Tensor& input,
+      const ReduceOp& op,
+      const at::Tensor& seed,
+      bool async_op);
+#endif
+
   c10::intrusive_ptr<TorchWork> barrier(
       bool async_op,
       const BarrierOptions& options = {}) override;

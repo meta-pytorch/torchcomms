@@ -218,6 +218,31 @@ ncclResult_t DefaultNcclxApi::allToAll(
   return ncclAllToAll(sendbuff, recvbuff, count, datatype, comm, stream);
 }
 
+#ifdef NCCL_REDUCE_SCATTER_QUANTIZE_SUPPORTED
+ncclResult_t DefaultNcclxApi::reduceScatterQuantize(
+    const void* sendbuff,
+    void* recvbuff,
+    size_t recvcount,
+    ncclDataType_t inputType,
+    ncclDataType_t transportType,
+    ncclRedOp_t op,
+    uint64_t* seedPtr,
+    ncclComm_t comm,
+    cudaStream_t stream) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+  return ncclReduceScatterQuantize(
+      sendbuff,
+      recvbuff,
+      recvcount,
+      inputType,
+      transportType,
+      op,
+      seedPtr,
+      comm,
+      stream);
+}
+#endif
+
 ncclResult_t DefaultNcclxApi::allToAllv(
     const void* sendbuff,
     const size_t sendcounts[],
@@ -630,6 +655,13 @@ ncclResult_t DefaultNcclxApi::winGetPeerDevicePointer(
     int peer,
     void** outPtr) {
   return ncclGetPeerDevicePointer(win, offset, peer, outPtr);
+}
+
+ncclResult_t DefaultNcclxApi::winGetLsaMultimemDevicePointer(
+    NcclxWindow win,
+    size_t offset,
+    void** outPtr) {
+  return ncclGetLsaMultimemDevicePointer(win, offset, outPtr);
 }
 #endif
 #endif // TORCHCOMMS_HAS_NCCL_DEVICE_API

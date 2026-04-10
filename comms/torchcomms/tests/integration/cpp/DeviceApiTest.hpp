@@ -62,6 +62,13 @@ class DeviceApiTest : public ::testing::Test {
   // Repeated window create/register/operate/deregister/destroy
   void testWindowLifecycle();
 
+  // --- Address query tests ---
+
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
+  // Verify that device-side get_multimem_address matches host-side result
+  void testGetMultimemAddress();
+#endif
+
   // Member variables
   torchcomms::device::test::StressTestConfig config_;
   std::unique_ptr<TorchCommTestWrapper> wrapper_;

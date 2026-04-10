@@ -7,6 +7,7 @@
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
+#include "comms/ctran/tests/CtranNcclTestUtils.h"
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/testinfra/TestUtils.h"
 #include "nccl.h"
@@ -847,6 +848,156 @@ TEST_P(CtranDistMapperBufExportParam, BufExportCtrl) {
 }
 
 // Tests for PerfConfig
+
+// Parameterized test class for allGatherCtrl with different segment counts.
+// Tests both the inline path (numSegments <= CTRAN_IPC_INLINE_SEGMENTS)
+// and the multi-packet path (numSegments > CTRAN_IPC_INLINE_SEGMENTS).
+class CtranDistMapperMultiSegmentParam
+    : public CtranDistMapperTest,
+      public ::testing::WithParamInterface<int> {};
+
+// E2E test: allGatherCtrl exercising a mix of IB (inter-node) and NVL
+// (intra-node) backends. When numSegments > CTRAN_IPC_INLINE_SEGMENTS (2),
+// extra segments are packed densely as raw CtranIpcSegDesc data (Phase 2).
+// When numSegments <= 2, the inline path is used. By using the all-ranks
+// allGatherCtrl (backend=UNSET), intra-node peers use NVL while
+// inter-node peers use IB, validating the mixed-backend path end-to-end.
+TEST_P(CtranDistMapperMultiSegmentParam, allGatherCtrlMultiSegment) {
+  auto mapper = comm_->ctran_->mapper.get();
+  const auto& statex = comm_->statex_.get();
+
+  if (statex->nLocalRanks() < 2) {
+    GTEST_SKIP()
+        << "Test requires at least 2 localRanks on each node.  Skip test.";
+  }
+
+  if (!ncclIsCuMemSupported()) {
+    GTEST_SKIP() << "CuMem not supported, skip multi-segment test";
+  }
+
+  const int numSegments = GetParam();
+  constexpr size_t segSize = 1 * 1024; // 1KB
+  size_t totalSize = segSize * numSegments;
+
+  std::vector<TestMemSegment> segments;
+  void* buf = ctran::CtranNcclTestHelpers::prepareBuf(
+      totalSize, kCuMemAllocDisjoint, segments, numSegments);
+  ASSERT_NE(buf, nullptr);
+
+  // Fill local buffer with a rank-specific pattern so we can verify
+  // remote imports. Each rank writes its rank value to every int element.
+  const size_t count = totalSize / sizeof(int);
+  std::vector<int> fillVals(count, statex->rank());
+  CUDACHECK_TEST(
+      cudaMemcpy(buf, fillVals.data(), totalSize, cudaMemcpyHostToDevice));
+
+  void* handle = nullptr;
+  COMMCHECK_TEST(comm_->ctran_->commRegister(buf, totalSize, &handle));
+
+  void* sendHdl = nullptr;
+  bool localReg = false;
+  COMMCHECK_TEST(mapper->searchRegHandle(buf, totalSize, &sendHdl, &localReg));
+  ASSERT_NE(sendHdl, nullptr);
+
+  std::vector<void*> remoteBufs(statex->nRanks(), nullptr);
+  std::vector<struct CtranMapperRemoteAccessKey> remoteAccessKeys(
+      statex->nRanks());
+  for (auto& key : remoteAccessKeys) {
+    key.backend = CtranMapperBackend::UNSET;
+  }
+
+  // Use the all-ranks allGatherCtrl (backend=UNSET) so that intra-node
+  // peers are exchanged via NVL and inter-node peers via IB.
+  {
+    CtranMapperEpochRAII epochRAII(mapper);
+    ASSERT_EQ(
+        mapper->allGatherCtrl(buf, sendHdl, remoteBufs, remoteAccessKeys),
+        commSuccess);
+  }
+
+  const int nodeId = statex->node();
+  bool hasIbPeer = false;
+  bool hasNvlPeer = false;
+
+  for (int i = 0; i < statex->nRanks(); i++) {
+    if (i == statex->rank()) {
+      ASSERT_EQ(remoteBufs[i], buf);
+      ASSERT_EQ(remoteAccessKeys[i].backend, CtranMapperBackend::UNSET);
+    } else {
+      ASSERT_NE(remoteBufs[i], nullptr);
+      ASSERT_NE(remoteAccessKeys[i].backend, CtranMapperBackend::UNSET);
+
+      if (statex->node(i) == nodeId) {
+        // Intra-node peer: NVL backend expected for cuMem buffers
+        ASSERT_EQ(remoteAccessKeys[i].backend, CtranMapperBackend::NVL)
+            << "Intra-node peer " << i << " should use NVL backend";
+        hasNvlPeer = true;
+      } else {
+        // Inter-node peer: IB backend expected
+        ASSERT_EQ(remoteAccessKeys[i].backend, CtranMapperBackend::IB)
+            << "Inter-node peer " << i << " should use IB backend";
+        hasIbPeer = true;
+      }
+    }
+  }
+
+  // Verify imported remote memory contents for NVL (intra-node) peers only.
+  // NVL peers have locally-mapped memory via CUDA IPC, so we can read back
+  // directly. IB (inter-node) peers only provide a remote virtual address
+  // for RDMA operations; it is not mapped into local address space.
+  for (int i = 0; i < statex->nRanks(); i++) {
+    if (i == statex->rank()) {
+      continue;
+    }
+    if (remoteAccessKeys[i].backend != CtranMapperBackend::NVL) {
+      continue;
+    }
+    std::vector<int> readBack(count);
+    CUDACHECK_TEST(cudaMemcpy(
+        readBack.data(), remoteBufs[i], totalSize, cudaMemcpyDeviceToHost));
+    const std::vector<int> expected(count, i);
+    ASSERT_EQ(readBack, expected)
+        << "Remote buf from rank " << i << " (node " << statex->node(i)
+        << ", backend " << static_cast<int>(remoteAccessKeys[i].backend)
+        << ") has unexpected contents";
+  }
+
+  if (statex->nNodes() > 1) {
+    ASSERT_TRUE(hasIbPeer)
+        << "Multi-node test should have at least one IB peer";
+    ASSERT_TRUE(hasNvlPeer)
+        << "Multi-node test should have at least one NVL peer";
+    LOG(INFO) << "Verified mixed IB+NVL backends across " << statex->nNodes()
+              << " nodes";
+  } else {
+    ASSERT_TRUE(hasNvlPeer)
+        << "Single-node test should have at least one NVL peer";
+    LOG(INFO) << "Single-node run: only NVL backend exercised. "
+              << "Run with multiple nodes to test mixed IB+NVL path.";
+  }
+
+  // Ensure all local ranks have finished importing remote NVL buffer before
+  // deregister
+  barrierNvlDomain(comm_.get());
+
+  COMMCHECK_TEST(comm_->ctran_->commDeregister(handle));
+  ctran::CtranNcclTestHelpers::releaseBuf(
+      buf, totalSize, kCuMemAllocDisjoint, numSegments);
+}
+
+// Parameterize allGatherCtrlMultiSegment with different segment counts:
+// - 2 segments: Tests the inline path (numSegments <=
+// CTRAN_IPC_INLINE_SEGMENTS)
+// - 100 segments: Tests the multi-packet path (numSegments > 2)
+INSTANTIATE_TEST_SUITE_P(
+    CtranDistMapperTest,
+    CtranDistMapperMultiSegmentParam,
+    ::testing::Values(2, 100),
+    [](const testing::TestParamInfo<
+        CtranDistMapperMultiSegmentParam::ParamType>& info) {
+      return "numSegments_" + std::to_string(info.param);
+    });
+
 INSTANTIATE_TEST_SUITE_P(
     CtranDistMapperTest,
     CtranDistMapperPerfConfigTestParam,

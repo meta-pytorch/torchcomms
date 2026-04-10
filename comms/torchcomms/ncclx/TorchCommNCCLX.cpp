@@ -1983,6 +1983,82 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dedup_combine(
   return work;
 }
 
+#ifdef NCCL_REDUCE_SCATTER_QUANTIZE_SUPPORTED
+c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_quantized(
+    at::Tensor& output,
+    const at::Tensor& input,
+    const ReduceOp& op,
+    const at::Tensor& seed,
+    bool async_op) {
+  checkInitialized();
+  checkAndAbortIfTimedOutOrError();
+  ensureTensorContiguous(output);
+  ensureTensorContiguous(input);
+
+  TORCH_CHECK(
+      input.scalar_type() == at::kFloat,
+      "reduce_scatter_quantized: input tensor must be FP32, got ",
+      input.scalar_type());
+  TORCH_CHECK(
+      output.scalar_type() == at::kFloat,
+      "reduce_scatter_quantized: output tensor must be FP32, got ",
+      output.scalar_type());
+  TORCH_CHECK(
+      input.numel() == output.numel() * comm_size_,
+      "reduce_scatter_quantized: input tensor size must be output_size * comm_size; got input.numel()=",
+      input.numel(),
+      ", output.numel()=",
+      output.numel(),
+      ", comm_size_=",
+      comm_size_,
+      ", expected=",
+      output.numel() * comm_size_);
+  TORCH_CHECK(
+      seed.scalar_type() == at::kLong && seed.numel() == 1 && seed.is_cuda(),
+      fmt::format(
+          "reduce_scatter_quantized: seed must be a single-element int64 CUDA tensor; got dtype={}, numel={}, device={}",
+          c10::toString(seed.scalar_type()),
+          seed.numel(),
+          seed.device().str()));
+  TORCH_CHECK(
+      op.type() == ReduceOp::RedOpType::SUM ||
+          op.type() == ReduceOp::RedOpType::AVG,
+      "reduce_scatter_quantized: only SUM and AVG reduction ops are supported; got ",
+      static_cast<int>(op.type()))
+
+  TracingGuard tracingGuard(
+      name_, comm_size_, "reduce_scatter_quantized", rank_, input, output);
+
+  cudaStream_t stream = getOperationStream(async_op);
+  auto work = async_op ? createWork(stream, options_.timeout, {input, seed})
+                       : createWork(stream, options_.timeout);
+
+  work->recordStart("reduce_scatter_quantized");
+
+  const auto inputType = getNcclDataType(input);
+  NCCLX_CHECK(
+      nccl_api_,
+      nccl_comm_,
+      nccl_api_->reduceScatterQuantize(
+          input.data_ptr(),
+          output.data_ptr(),
+          output.numel(),
+          inputType,
+          ncclBfloat16,
+          getNcclReduceOp(op, nccl_comm_, inputType),
+          reinterpret_cast<uint64_t*>(seed.data_ptr()),
+          nccl_comm_,
+          stream),
+      "NCCLX ReduceScatterQuantize failed");
+
+  work->recordEnd();
+
+  enqueueWork(work, stream);
+
+  return work;
+}
+#endif
+
 c10::intrusive_ptr<TorchWork> TorchCommNCCLX::barrier(
     bool async_op,
     const BarrierOptions& options) {

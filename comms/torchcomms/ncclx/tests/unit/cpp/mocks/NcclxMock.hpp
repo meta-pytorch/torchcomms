@@ -197,6 +197,22 @@ class NcclxMock : public NcclxApi {
        cudaStream_t stream),
       (override));
 
+#ifdef NCCL_REDUCE_SCATTER_QUANTIZE_SUPPORTED
+  MOCK_METHOD(
+      ncclResult_t,
+      reduceScatterQuantize,
+      (const void* sendbuff,
+       void* recvbuff,
+       size_t recvcount,
+       ncclDataType_t inputType,
+       ncclDataType_t transportType,
+       ncclRedOp_t op,
+       uint64_t* seedPtr,
+       ncclComm_t comm,
+       cudaStream_t stream),
+      (override));
+#endif
+
   MOCK_METHOD(
       ncclResult_t,
       allToAllv,
