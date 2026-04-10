@@ -21,6 +21,7 @@ struct P2pIbgdaTransportBuildParams {
   doca_gpu_dev_verbs_qp* gpuQp{nullptr};
   doca_gpu_dev_verbs_qp* companionGpuQp{nullptr};
   NetworkLKey sinkLkey{};
+  uint64_t sinkAddr{0};
 };
 
 /**
@@ -49,5 +50,29 @@ void freeDeviceTransportsOnGpu(P2pIbgdaTransportDevice* ptr);
  * Used for memory allocation calculations.
  */
 std::size_t getP2pIbgdaTransportDeviceSize();
+
+// Forward declaration
+struct P2pIbgdaTransportState;
+
+/**
+ * Build a fully-formed P2pIbgdaTransportDevice on the host with QP handles
+ * AND staging state. Used by
+ * MultipeerIbgdaTransport::buildP2pTransportDevice().
+ *
+ * This free function exists because P2pIbgdaTransportDevice.cuh includes DOCA
+ * device headers with CUDA-only intrinsics that can't compile in .cc files.
+ * The .cu file can include the full definition.
+ *
+ * @param params QP build parameters
+ * @param stagingState Pre-built staging state for this peer
+ * @param sendCounter Pointer to per-peer send iteration counter
+ * @param recvCounter Pointer to per-peer recv iteration counter
+ * @return Fully-formed P2pIbgdaTransportDevice, allocated on GPU (cudaMalloc)
+ */
+P2pIbgdaTransportDevice* buildFullP2pIbgdaTransportDeviceOnGpu(
+    const P2pIbgdaTransportBuildParams& params,
+    const P2pIbgdaTransportState& stagingState,
+    uint64_t* sendCounter,
+    uint64_t* recvCounter);
 
 } // namespace comms::pipes

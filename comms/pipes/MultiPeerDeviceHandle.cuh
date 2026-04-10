@@ -60,6 +60,11 @@ struct MultiPeerDeviceHandle {
   // Number of IBGDA peers (= nRanks - 1, all non-self)
   int numIbPeers{0};
 
+  // Peer rank mappings: local category index → global rank.
+  // Used by warp reserve config to translate category-local peer index
+  // (e.g., "NVL peer #2") to global rank for indexing into transports[].
+  DeviceSpan<const int> nvlPeerRanks;
+  DeviceSpan<const int> ibgdaPeerRanks;
 #ifdef __CUDACC__
   /** @return Transport type for the given global rank. */
   __device__ __forceinline__ TransportType get_type(int rank) const {

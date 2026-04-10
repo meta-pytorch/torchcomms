@@ -14,6 +14,7 @@
 #if defined(ENABLE_PIPES)
 
 #include "comms/pipes/MultiPeerTransport.h"
+#include "comms/pipes/collectives/AllToAllvAutoTuneConfig.h"
 #include "comms/pipes/ll128/Ll128Packet.cuh"
 
 commResult_t ctranInitializePipes(CtranComm* comm) {
@@ -108,9 +109,41 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
           static_cast<uint8_t>(NCCL_CTRAN_IBGDA_RNR_RETRY);
     }
 
+    // IBGDA device alltoallv staging: start from autotune defaults, then
+    // allow CVARs to override individual fields.
+    {
+      comms::pipes::AllToAllvAutoTuneConfig autoDefaults;
+      config.ibgdaSetupConfig.dataBufferSize =
+          autoDefaults.ibgdaInit.stagingBufferSize;
+      config.ibgdaSetupConfig.chunkSize = autoDefaults.ibgdaInit.ibgdaChunkSize;
+      config.ibgdaSetupConfig.pipelineDepth =
+          autoDefaults.ibgdaInit.pipelineDepth;
+    }
+    if (NCCL_CTRAN_PIPES_DEVICE_ALLTOALLV_STAGING_BUFFER_SIZE > 0) {
+      config.ibgdaSetupConfig.dataBufferSize =
+          NCCL_CTRAN_PIPES_DEVICE_ALLTOALLV_STAGING_BUFFER_SIZE;
+    }
+    if (NCCL_CTRAN_PIPES_DEVICE_ALLTOALLV_CHUNK_SIZE > 0) {
+      config.ibgdaSetupConfig.chunkSize =
+          NCCL_CTRAN_PIPES_DEVICE_ALLTOALLV_CHUNK_SIZE;
+    }
+    if (NCCL_CTRAN_PIPES_DEVICE_ALLTOALLV_PIPELINE_DEPTH > 0) {
+      config.ibgdaSetupConfig.pipelineDepth =
+          static_cast<int>(NCCL_CTRAN_PIPES_DEVICE_ALLTOALLV_PIPELINE_DEPTH);
+    }
+
     config.disableIb = NCCL_CTRAN_PIPES_DISABLE_IB;
     config.topoConfig.p2pDisable = NCCL_P2P_DISABLE ||
         NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::nolocal;
+
+    // TEST_IBGDA_SINGLE_NODE=1: Force all peers to IBGDA even on single node.
+    // Data travels through real NICs (GPU→PCIe→NIC→IB switch→NIC→PCIe→GPU).
+    // For testing IBGDA alltoallv correctness without multi-node cluster.
+    const char* forceIbgdaEnv = std::getenv("TEST_IBGDA_SINGLE_NODE");
+    if (forceIbgdaEnv && std::string(forceIbgdaEnv) == "1") {
+      config.forceIbgda = true;
+      config.disableIb = false; // Override — can't force IBGDA with IB disabled
+    }
 
     // Topology config: MNNVL mode and overrides
     config.topoConfig.mnnvlMode =
@@ -137,6 +170,11 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
       config.topoConfig.mnnvlCliqueId = static_cast<int>(NCCL_MNNVL_CLIQUE_ID);
     }
 
+    // Derive maxChannelsPerPeer from autotune table (worst-case with
+    // numIbgdaPeers=1 — gives the maximum possible channel count, safe to
+    // oversize since unused channels are inert).
+    config.maxChannelsPerPeer = comms::pipes::getMaxIbgdaChannelsPerPeer(1);
+
     comm->multiPeerTransport_ =
         std::make_unique<comms::pipes::MultiPeerTransport>(
             comm->statex_->rank(),
@@ -150,6 +188,23 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
         comm->multiPeerTransport_->nvl_n_ranks() - 1,
         comm->multiPeerTransport_->ibgda_peer_ranks().size(),
         config.topoConfig.p2pDisable);
+
+    // Populate AllToAllvAutoTuneConfig with in-code defaults.
+    // CVAR overrides take priority over the in-code defaults.
+    auto& autoTune = comm->alltoallvAutoTuneConfig_;
+
+    // NVL init-time defaults (from lookup table), overridden by CVARs
+    autoTune.nvlInit.nvlChunkSize = config.nvlConfig.chunkSize;
+    autoTune.nvlInit.nvlDataBufferSize =
+        config.nvlConfig.dataBufferSize * config.nvlConfig.pipelineDepth;
+    autoTune.nvlInit.pipelineDepth =
+        static_cast<int>(config.nvlConfig.pipelineDepth);
+
+    // IBGDA init-time defaults (from lookup table), overridden by CVARs
+    autoTune.ibgdaInit.stagingBufferSize =
+        config.ibgdaSetupConfig.dataBufferSize;
+    autoTune.ibgdaInit.pipelineDepth = config.ibgdaSetupConfig.pipelineDepth;
+    autoTune.ibgdaInit.ibgdaChunkSize = config.ibgdaSetupConfig.chunkSize;
   } catch (const std::exception& e) {
     CLOGF(ERR, "Failed to initialize Pipes MultiPeerTransport: {}", e.what());
     return commInternalError;

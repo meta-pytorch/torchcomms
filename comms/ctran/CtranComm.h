@@ -16,6 +16,8 @@
 #include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/utils/commSpecs.h"
 
+#include "comms/pipes/collectives/AllToAllvAutoTuneConfig.h"
+
 namespace comms::pipes {
 class MultiPeerTransport;
 struct Transport;
@@ -177,6 +179,7 @@ class CtranComm {
   std::unique_ptr<ncclx::CommStateX> statex_;
 #if defined(ENABLE_PIPES)
   std::unique_ptr<comms::pipes::MultiPeerTransport> multiPeerTransport_;
+  comms::pipes::AllToAllvAutoTuneConfig alltoallvAutoTuneConfig_;
 #endif // defined(ENABLE_PIPES)
 
  private:
