@@ -63,6 +63,8 @@ class CommDumpPlugin : public ICollTracePlugin {
 
   CommsMaybeVoid afterCollKernelEnd(CollTraceEvent& curEvent) noexcept override;
 
+  int64_t maxEventRetention() const noexcept override;
+
   // CommDump specific API, supposed to be called by the dump (user) thread
   CommsMaybe<CollTraceDump> dump() noexcept;
 
