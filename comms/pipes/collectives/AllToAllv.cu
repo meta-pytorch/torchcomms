@@ -17,8 +17,10 @@
 namespace comms::pipes {
 
 /**
- * AllToAllv kernel.
- * Wrapper kernel that calls the device all_to_allv function.
+ * Unified AllToAllv kernel.
+ * Handles both NVL-only and IBGDA transports — the device-side all_to_allv()
+ * dispatches per-peer based on transport type. IBGDA staging state is now
+ * embedded in each P2pIbgdaTransportDevice (via send()/recv() APIs).
  */
 __global__ void allToAllvKernel(
     void* recvbuff_d,
@@ -38,6 +40,8 @@ __global__ void allToAllvKernel(
       recv_chunk_infos,
       timeout);
 }
+
+// --- Unified host wrappers ---
 
 void all_to_allv(
     void* recvbuff_d,
