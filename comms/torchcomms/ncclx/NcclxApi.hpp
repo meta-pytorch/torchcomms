@@ -374,6 +374,9 @@ class NcclxApi {
       size_t offset,
       void** outPtr) = 0;
 #endif
+
+  // Get the LSA team info (rank count, local rank) for a communicator.
+  [[nodiscard]] virtual ncclTeam_t teamLsa(ncclComm_t comm) = 0;
 #endif
 
 #if defined(ENABLE_PIPES)
@@ -738,6 +741,8 @@ class DefaultNcclxApi : public NcclxApi {
       size_t offset,
       void** outPtr) override;
 #endif
+
+  [[nodiscard]] ncclTeam_t teamLsa(ncclComm_t comm) override;
 #endif
 
 #if defined(ENABLE_PIPES)

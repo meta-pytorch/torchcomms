@@ -390,6 +390,8 @@ class NcclxMock : public NcclxApi {
       devCommDestroy,
       (ncclComm_t comm, const ncclDevComm_t* devComm),
       (override));
+
+  MOCK_METHOD(ncclTeam_t, teamLsa, (ncclComm_t comm), (override));
 #endif
 
 #if defined(ENABLE_PIPES)

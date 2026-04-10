@@ -509,6 +509,9 @@ TorchCommDeviceWindow<NCCLDeviceBackend>::get_nvlink_address(int peer) {
 template <>
 __device__ inline void*
 TorchCommDeviceWindow<NCCLDeviceBackend>::get_multimem_address(size_t offset) {
+  if (comm_.lsaMultimem.mcBasePtr == nullptr) {
+    return nullptr;
+  }
   return ncclGetLsaMultimemPointer(window_, offset, comm_);
 }
 
