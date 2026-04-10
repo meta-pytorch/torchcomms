@@ -117,16 +117,17 @@ void Reporter::printCSV(
     const std::vector<BenchmarkResult>& results,
     std::ostream& os) {
   os << "benchmark,transport,direction,size_bytes,iterations,"
+        "batch_size,chunk_size,"
         "bw_gbps,lat_avg_us,lat_p50_us,lat_p99_us,"
         "lat_min_us,lat_max_us,msg_rate_mops,num_streams\n";
 
   for (const auto& r : results) {
     os << r.benchmarkName << "," << r.transport << "," << r.direction << ","
-       << r.messageSize << "," << r.iterations << "," << std::fixed
-       << std::setprecision(4) << r.bandwidthGBs << "," << r.latency.avg << ","
-       << r.latency.p50 << "," << r.latency.p99 << "," << r.latency.min << ","
-       << r.latency.max << "," << r.messageRateMops << "," << r.numStreams
-       << "\n";
+       << r.messageSize << "," << r.iterations << "," << r.batchSize << ","
+       << r.chunkSize << "," << std::fixed << std::setprecision(4)
+       << r.bandwidthGBs << "," << r.latency.avg << "," << r.latency.p50 << ","
+       << r.latency.p99 << "," << r.latency.min << "," << r.latency.max << ","
+       << r.messageRateMops << "," << r.numStreams << "\n";
   }
 }
 

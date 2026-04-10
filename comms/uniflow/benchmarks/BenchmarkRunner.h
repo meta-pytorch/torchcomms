@@ -18,6 +18,9 @@ struct BenchmarkConfig {
   int iterations{100};
   int warmupIterations{10};
   int loopCount{1};
+  int batchSize{1};
+  size_t chunkSize{512 * 1024};
+  int cudaDevice{-1};
   bool bidirectional{false};
   std::string direction{"both"};
   std::vector<int> numStreams{1, 2, 4, 8};
@@ -33,7 +36,6 @@ class Benchmark {
       const BootstrapConfig& bootstrap) = 0;
 };
 
-/// Registry and runner for benchmarks.
 class BenchmarkRunner {
  public:
   void registerBenchmark(std::unique_ptr<Benchmark> bench);
@@ -44,7 +46,6 @@ class BenchmarkRunner {
       std::vector<PeerConnection>& peers,
       const BootstrapConfig& bootstrap);
 
-  /// Returns empty vector if name not found.
   std::vector<BenchmarkResult> runByName(
       const std::string& name,
       const BenchmarkConfig& config,
@@ -55,7 +56,6 @@ class BenchmarkRunner {
   std::vector<std::unique_ptr<Benchmark>> benchmarks_;
 };
 
-/// Generate message sizes as powers of 2 from minSize to maxSize (inclusive).
 std::vector<size_t> generateSizes(size_t minSize, size_t maxSize);
 
 } // namespace uniflow::benchmark

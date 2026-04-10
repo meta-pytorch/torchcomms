@@ -30,6 +30,9 @@ struct CliOptions {
   int iterations{100};
   int warmup{10};
   int loopCount{1};
+  int batchSize{1};
+  size_t chunkSize{512 * 1024};
+  int cudaDevice{-1};
   bool bidirectional{false};
   std::vector<int> numStreams{1, 2, 4, 8};
   std::vector<std::string> rdmaDevices;
@@ -80,6 +83,9 @@ void printUsage(const char* prog) {
       << "  --output <path>        CSV output file path\n"
       << "  --format <fmt>         table|csv|both (default: table)\n"
       << "  --rdma-devices <list>  Comma-separated RDMA device names (default: auto-discover)\n"
+      << "  --batch-size <n>       Number of requests per transport call (default: 1)\n"
+      << "  --chunk-size <bytes>   RDMA transfer chunk size in bytes (default: 524288)\n"
+      << "  --cuda-device <id>     GPU device index for buffer allocation (default: CPU memory)\n"
       << "  --list                 List available benchmarks\n"
       << "  --help                 Show this help message\n"
       << "\n"
@@ -109,15 +115,19 @@ CliOptions parseArgs(int argc, char** argv) {
       {"output", required_argument, nullptr, 'o'},
       {"format", required_argument, nullptr, 'f'},
       {"rdma-devices", required_argument, nullptr, 'r'},
+      {"batch-size", required_argument, nullptr, 'T'},
+      {"chunk-size", required_argument, nullptr, 256},
+      {"cuda-device", required_argument, nullptr, 'c'},
       {"list", no_argument, nullptr, 'l'},
       {"help", no_argument, nullptr, 'h'},
       {nullptr, 0, nullptr, 0},
   };
 
   int opt;
-  while ((opt = getopt_long(
-              argc, argv, "b:t:m:M:i:w:L:Bd:s:o:f:r:lh", longOpts, nullptr)) !=
-         -1) {
+  while (
+      (opt = getopt_long(
+           argc, argv, "b:t:m:M:i:w:L:Bd:s:o:f:r:T:c:lh", longOpts, nullptr)) !=
+      -1) {
     switch (opt) {
       case 'b':
         opts.benchmark = optarg;
@@ -183,6 +193,38 @@ CliOptions parseArgs(int argc, char** argv) {
       case 'r':
         opts.rdmaDevices = parseStringList(optarg);
         break;
+      case 'T':
+        try {
+          opts.batchSize = std::stoi(optarg);
+          if (opts.batchSize < 1) {
+            std::cerr << "Invalid value for --batch-size: must be >= 1\n";
+            std::exit(1);
+          }
+        } catch (const std::exception&) {
+          std::cerr << "Invalid value for --batch-size: '" << optarg << "'\n";
+          std::exit(1);
+        }
+        break;
+      case 256:
+        try {
+          opts.chunkSize = std::stoull(optarg);
+          if (opts.chunkSize < 1) {
+            std::cerr << "Invalid value for --chunk-size: must be >= 1\n";
+            std::exit(1);
+          }
+        } catch (const std::exception&) {
+          std::cerr << "Invalid value for --chunk-size: '" << optarg << "'\n";
+          std::exit(1);
+        }
+        break;
+      case 'c':
+        try {
+          opts.cudaDevice = std::stoi(optarg);
+        } catch (const std::exception&) {
+          std::cerr << "Invalid value for --cuda-device: '" << optarg << "'\n";
+          std::exit(1);
+        }
+        break;
       case 'l':
         listMode = true;
         break;
@@ -203,6 +245,11 @@ CliOptions parseArgs(int argc, char** argv) {
 } // namespace
 
 int main(int argc, char** argv) {
+  // Default to error-only. Override with SPDLOG_LEVEL="uniflow=info".
+  // getLogger() lazy-init calls spdlog::cfg::load_env_levels(), so env
+  // overrides take effect automatically; set_level just sets the default.
+  uniflow::logging::getLogger()->set_level(spdlog::level::err);
+
   auto opts = parseArgs(argc, argv);
 
   uniflow::benchmark::BenchmarkRunner runner;
@@ -238,6 +285,9 @@ int main(int argc, char** argv) {
   config.loopCount = opts.loopCount;
   config.bidirectional = opts.bidirectional;
   config.direction = opts.direction;
+  config.batchSize = opts.batchSize;
+  config.chunkSize = opts.chunkSize;
+  config.cudaDevice = opts.cudaDevice;
   config.numStreams = opts.numStreams;
 
   UNIFLOW_LOG_INFO(

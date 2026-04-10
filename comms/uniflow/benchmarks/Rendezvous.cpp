@@ -2,6 +2,8 @@
 
 #include "comms/uniflow/benchmarks/Rendezvous.h"
 
+#include <algorithm>
+#include <cerrno>
 #include <cstring>
 
 #include "comms/uniflow/controller/TcpController.h"
@@ -15,7 +17,6 @@ std::string serverAddr(const BootstrapConfig& config) {
   return config.masterAddr + ":" + std::to_string(config.masterPort);
 }
 
-/// Serialize an int32 to bytes for exchange over the control channel.
 std::vector<uint8_t> serializeInt(int32_t val) {
   std::vector<uint8_t> buf(sizeof(val));
   std::memcpy(buf.data(), &val, sizeof(val));
@@ -45,7 +46,8 @@ Result<std::vector<PeerConnection>> Rendezvous::establish(
   }
 
   if (config.isRank0()) {
-    controller::TcpServer server(serverAddr(config));
+    controller::TcpServer server(
+        serverAddr(config), controller::TcpSocketConfig{});
     auto status = server.init();
     if (!status) {
       return Err(
@@ -86,12 +88,11 @@ Result<std::vector<PeerConnection>> Rendezvous::establish(
       peers.push_back(std::move(pc));
     }
 
-    // Deterministic ordering by rank.
     std::sort(peers.begin(), peers.end(), [](const auto& a, const auto& b) {
       return a.peerRank < b.peerRank;
     });
   } else {
-    controller::TcpClient client;
+    controller::TcpClient client(controller::TcpSocketConfig{});
     auto conn = client.connect(serverAddr(config));
     if (!conn) {
       return Err(
@@ -118,6 +119,37 @@ Result<std::vector<PeerConnection>> Rendezvous::establish(
   return peers;
 }
 
+/// Retry recv on EAGAIN — the peer may be slow to reach the barrier during
+/// long benchmark runs, causing SO_RCVTIMEO to fire.
+/// With a 1-second SO_RCVTIMEO, 300 retries ≈ 5 minutes before giving up.
+static Result<size_t> recvRetryEagain(
+    controller::Conn& conn,
+    std::vector<uint8_t>& buf) {
+  constexpr int kMaxRetries = 300;
+  int retries = 0;
+  for (;;) {
+    auto result = conn.recv(buf);
+    if (result) {
+      return result;
+    }
+    if ((errno == EAGAIN || errno == EWOULDBLOCK) && retries < kMaxRetries) {
+      ++retries;
+      UNIFLOW_LOG_INFO(
+          "barrier: recv got EAGAIN, retrying ({}/{})...",
+          retries,
+          kMaxRetries);
+      continue;
+    }
+    if (retries >= kMaxRetries) {
+      return Err(
+          ErrCode::ConnectionFailed,
+          "barrier: recv timed out after " + std::to_string(kMaxRetries) +
+              " EAGAIN retries (~5 minutes)");
+    }
+    return result;
+  }
+}
+
 Status barrier(
     std::vector<PeerConnection>& peers,
     const BootstrapConfig& config) {
@@ -126,8 +158,12 @@ Status barrier(
 
   if (config.isRank0()) {
     for (auto& peer : peers) {
-      auto result = peer.ctrl->recv(buf);
+      auto result = recvRetryEagain(*peer.ctrl, buf);
       if (!result) {
+        UNIFLOW_LOG_ERROR(
+            "barrier: recv from rank {} failed: {}",
+            peer.peerRank,
+            result.error().toString());
         return Err(
             ErrCode::ConnectionFailed,
             "barrier: recv from rank " + std::to_string(peer.peerRank) +
@@ -137,6 +173,10 @@ Status barrier(
     for (auto& peer : peers) {
       auto result = peer.ctrl->send(token);
       if (!result) {
+        UNIFLOW_LOG_ERROR(
+            "barrier: send to rank {} failed: {}",
+            peer.peerRank,
+            result.error().toString());
         return Err(
             ErrCode::ConnectionFailed,
             "barrier: send to rank " + std::to_string(peer.peerRank) +
@@ -145,16 +185,22 @@ Status barrier(
     }
   } else {
     if (peers.empty()) {
+      UNIFLOW_LOG_ERROR("barrier: no peers for non-rank0");
       return Err(ErrCode::InvalidArgument, "barrier: no peers for non-rank0");
     }
     auto sendResult = peers[0].ctrl->send(token);
     if (!sendResult) {
+      UNIFLOW_LOG_ERROR(
+          "barrier: send to rank 0 failed: {}", sendResult.error().toString());
       return Err(
           ErrCode::ConnectionFailed,
           "barrier: send to rank 0 failed: " + sendResult.error().toString());
     }
-    auto recvResult = peers[0].ctrl->recv(buf);
+    auto recvResult = recvRetryEagain(*peers[0].ctrl, buf);
     if (!recvResult) {
+      UNIFLOW_LOG_ERROR(
+          "barrier: recv from rank 0 failed: {}",
+          recvResult.error().toString());
       return Err(
           ErrCode::ConnectionFailed,
           "barrier: recv from rank 0 failed: " + recvResult.error().toString());
