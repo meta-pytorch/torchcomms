@@ -16,11 +16,13 @@
 #include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/pipes/IbgdaBuffer.h"
 #include "comms/pipes/IbverbsLazy.h"
+#include "comms/pipes/MultipeerIbgdaTransportCuda.cuh"
 
 // Forward declarations for device types (defined in .cuh files)
 namespace comms::pipes {
 class P2pIbgdaTransportDevice;
 struct MultipeerIbgdaDeviceTransport;
+struct P2pIbgdaTransportState;
 } // namespace comms::pipes
 
 namespace comms::pipes {
@@ -140,7 +142,7 @@ struct IbgdaTransportExchInfo {
  * Maximum number of ranks supported for allGather-based exchange.
  * This limit exists because we use fixed-size arrays for QPN exchange.
  */
-constexpr int kMaxRanksForAllGather = 128;
+constexpr int kMaxRanksForAllGather = 2048;
 
 /**
  * Transport exchange info for allGather-based exchange.
@@ -266,6 +268,28 @@ class MultipeerIbgdaTransport {
    * @return MultipeerIbgdaDeviceTransport wrapper (include .cuh header to use)
    */
   MultipeerIbgdaDeviceTransport getDeviceTransport() const;
+
+  /**
+   * buildP2pTransportDevice - Build a fully-formed P2pIbgdaTransportDevice
+   *
+   * Constructs a P2pIbgdaTransportDevice on the HOST with both QP handles
+   * AND staging state. Returns by value — NVLink-symmetric with
+   * MultiPeerNvlTransport::buildP2pTransportDevice().
+   *
+   * Called from MultiPeerTransport::build_device_handle() after staging
+   * buffers have been exchanged.
+   *
+   * @param peerRank Global rank of the peer
+   * @param stagingState Pre-built staging state for this peer
+   * @param sendCounter Pointer to per-peer send iteration counter
+   * @param recvCounter Pointer to per-peer recv iteration counter
+   * @return Fully-formed P2pIbgdaTransportDevice, allocated on GPU
+   */
+  P2pIbgdaTransportDevice* buildP2pTransportDevice(
+      int peerRank,
+      const P2pIbgdaTransportState& stagingState,
+      uint64_t* sendCounter,
+      uint64_t* recvCounter) const;
 
   /**
    * getP2pTransportDevice - Get P2P transport for a specific peer rank
@@ -426,6 +450,9 @@ class MultipeerIbgdaTransport {
   // Per-peer device transports (GPU accessible)
   P2pIbgdaTransportDevice* peerTransportsGpu_{nullptr};
   std::size_t peerTransportSize_{0};
+
+  // Host-side build params saved from exchange() for buildP2pTransportDevice()
+  std::vector<P2pIbgdaTransportBuildParams> buildParams_;
 
   // Exchange info received from peers
   std::vector<IbgdaTransportExchInfo> peerExchInfo_;
