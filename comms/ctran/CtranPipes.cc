@@ -108,9 +108,32 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
           static_cast<uint8_t>(NCCL_CTRAN_IBGDA_RNR_RETRY);
     }
 
+    // IBGDA device alltoallv staging buffer overrides
+    if (NCCL_CTRAN_PIPES_DEVICE_ALLTOALLV_STAGING_BUFFER_SIZE > 0) {
+      config.ibgdaSetupConfig.dataBufferSize =
+          NCCL_CTRAN_PIPES_DEVICE_ALLTOALLV_STAGING_BUFFER_SIZE;
+    }
+    if (NCCL_CTRAN_PIPES_DEVICE_ALLTOALLV_CHUNK_SIZE > 0) {
+      config.ibgdaSetupConfig.chunkSize =
+          NCCL_CTRAN_PIPES_DEVICE_ALLTOALLV_CHUNK_SIZE;
+    }
+    if (NCCL_CTRAN_PIPES_DEVICE_ALLTOALLV_PIPELINE_DEPTH > 0) {
+      config.ibgdaSetupConfig.pipelineDepth =
+          static_cast<int>(NCCL_CTRAN_PIPES_DEVICE_ALLTOALLV_PIPELINE_DEPTH);
+    }
+
     config.disableIb = NCCL_CTRAN_PIPES_DISABLE_IB;
     config.topoConfig.p2pDisable = NCCL_P2P_DISABLE ||
         NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::nolocal;
+
+    // TEST_IBGDA_SINGLE_NODE=1: Force all peers to IBGDA even on single node.
+    // Data travels through real NICs (GPU→PCIe→NIC→IB switch→NIC→PCIe→GPU).
+    // For testing IBGDA alltoallv correctness without multi-node cluster.
+    const char* forceIbgdaEnv = std::getenv("TEST_IBGDA_SINGLE_NODE");
+    if (forceIbgdaEnv && std::string(forceIbgdaEnv) == "1") {
+      config.forceIbgda = true;
+      config.disableIb = false; // Override — can't force IBGDA with IB disabled
+    }
 
     // Topology config: MNNVL mode and overrides
     config.topoConfig.mnnvlMode =
