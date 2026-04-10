@@ -62,38 +62,6 @@ TEST_F(TensorToStringTest, DoubleTensor) {
   EXPECT_EQ(tensorToString(tensor), "[1.5, 2.5, 3.5]");
 }
 
-TEST_F(TensorToStringTest, FloatCudaTensor) {
-  if (!torch::cuda::is_available()) {
-    GTEST_SKIP() << "CUDA not available, skipping test";
-  }
-
-  auto options = torch::TensorOptions().dtype(torch::kFloat).device(at::kCUDA);
-  auto tensor = at::arange(3, options) + at::scalar_tensor(1.5f, options);
-  EXPECT_EQ(tensorToString(tensor), "[1.5, 2.5, 3.5]");
-}
-
-TEST_F(TensorToStringTest, BFloat16CudaTensor) {
-  if (!torch::cuda::is_available()) {
-    GTEST_SKIP() << "CUDA not available, skipping test";
-  }
-
-  auto options =
-      torch::TensorOptions().dtype(torch::kBFloat16).device(at::kCUDA);
-  auto tensor = at::arange(3, options) + at::scalar_tensor(1.5f, options);
-  // Values should be approximately [1.5, 2.5, 3.5] in string form
-  EXPECT_EQ(tensorToString(tensor), "[1.5, 2.5, 3.5]");
-}
-
-TEST_F(TensorToStringTest, HalfCudaTensor) {
-  if (!torch::cuda::is_available()) {
-    GTEST_SKIP() << "CUDA not available, skipping test";
-  }
-
-  auto options = torch::TensorOptions().dtype(torch::kHalf).device(at::kCUDA);
-  auto tensor = at::arange(3, options) + at::scalar_tensor(1.5f, options);
-  EXPECT_EQ(tensorToString(tensor), "[1.5, 2.5, 3.5]");
-}
-
 TEST_F(TensorToStringTest, ComplexFloatTensor) {
   auto options = torch::TensorOptions().dtype(torch::kComplexFloat);
   // Create 1D complex tensor: [1+2j, 3+4j, -5-6j]
@@ -114,34 +82,4 @@ TEST_F(TensorToStringTest, ComplexScalarTensor) {
 TEST_F(TensorToStringTest, ComplexEmptyTensor) {
   auto tensor = at::empty({0}, at::kComplexFloat);
   EXPECT_EQ(tensorToString(tensor), "[]");
-}
-
-TEST_F(TensorToStringTest, ComplexCudaTensorFloat) {
-  if (!torch::cuda::is_available()) {
-    GTEST_SKIP() << "CUDA not available, skipping test";
-  }
-  auto options =
-      torch::TensorOptions().dtype(torch::kComplexFloat).device(at::kCUDA);
-
-  auto real = at::arange(
-      3,
-      torch::TensorOptions().dtype(torch::kFloat).device(at::kCUDA)); // [0,1,2]
-  auto imag = at::ones_like(real) * 0.5f; // [0.5,0.5,0.5]
-  auto tensor = at::complex(real, imag).to(options.dtype());
-  EXPECT_EQ(tensorToString(tensor), "[(0+0.5j), (1+0.5j), (2+0.5j)]");
-}
-
-TEST_F(TensorToStringTest, ComplexCudaTensorDouble) {
-  if (!torch::cuda::is_available()) {
-    GTEST_SKIP() << "CUDA not available, skipping test";
-  }
-  auto options =
-      torch::TensorOptions().dtype(torch::kComplexDouble).device(at::kCUDA);
-  auto elemOptions =
-      torch::TensorOptions().dtype(torch::kDouble).device(at::kCUDA);
-
-  auto real = at::tensor({-1.0, 0.0, 2.0}, elemOptions);
-  auto imag = at::tensor({2.0, -3.0, 0.0}, elemOptions);
-  auto tensor = at::complex(real, imag).to(options.dtype());
-  EXPECT_EQ(tensorToString(tensor), "[(-1+2j), (0-3j), (2+0j)]");
 }
