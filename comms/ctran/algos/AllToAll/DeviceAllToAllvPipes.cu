@@ -9,7 +9,7 @@
 #include "comms/pipes/DeviceSpan.cuh"
 #include "comms/pipes/Timeout.cuh"
 #include "comms/pipes/Transport.cuh"
-#include "comms/pipes/collectives/AllToAllv.h"
+#include "comms/pipes/collectives/AllToAllv.cuh"
 #include "comms/pipes/ll128/Ll128Packet.cuh"
 
 // Compute the exclusive prefix sum of counts[0..rank-1] to get the
@@ -71,80 +71,49 @@ __device__ __forceinline__ void recv_peer(
   }
 }
 
-// Helper kernel: compute ChunkInfo (offsets via prefix sum) from device counts
-static __global__ void buildChunkInfosKernel(
-    comms::pipes::ChunkInfo* send_chunks,
-    comms::pipes::ChunkInfo* recv_chunks,
-    const int64_t* sendcounts_d,
-    const int64_t* recvcounts_d,
-    int nRanks,
-    size_t elementSize,
-    int64_t sendMultiplier,
-    int64_t recvMultiplier) {
-  if (threadIdx.x == 0 && blockIdx.x == 0) {
-    size_t sendOffset = 0;
-    size_t recvOffset = 0;
-    for (int r = 0; r < nRanks; ++r) {
-      size_t sendBytes =
-          static_cast<size_t>(sendcounts_d[r] * sendMultiplier) * elementSize;
-      size_t recvBytes =
-          static_cast<size_t>(recvcounts_d[r] * recvMultiplier) * elementSize;
-      new (&send_chunks[r]) comms::pipes::ChunkInfo(sendOffset, sendBytes);
-      new (&recv_chunks[r]) comms::pipes::ChunkInfo(recvOffset, recvBytes);
-      sendOffset += sendBytes;
-      recvOffset += recvBytes;
+// Unified NVL+IBGDA kernel launched through GPE submit.
+// Builds ChunkInfos in static shared memory from device-side counts,
+// then delegates to the pipes all_to_allv() device function which
+// dispatches per-peer based on transport type.
+// No GPE device-side handshake (flag is always nullptr with empty opGroup).
+__global__ void ncclKernelDeviceAllToAllvPipesUnified(
+    int* /* flag */,
+    CtranAlgoDeviceState* /* devState */,
+    ctran::device_alltoallv_pipes::KernArgs args) {
+  __shared__ char
+      smem[2 * CTRAN_MAX_TOTAL_RANK * sizeof(comms::pipes::ChunkInfo)];
+  auto* sendChunks = reinterpret_cast<comms::pipes::ChunkInfo*>(smem);
+  auto* recvChunks = sendChunks + args.nRanks;
+
+  if (threadIdx.x == 0) {
+    size_t sOff = 0, rOff = 0;
+    for (int r = 0; r < args.nRanks; r++) {
+      size_t sBytes = static_cast<size_t>(
+                          args.sendcounts_d[r] * args.sendcountsMultiplier) *
+          args.elementSize;
+      size_t rBytes = static_cast<size_t>(
+                          args.recvcounts_d[r] * args.recvcountsMultiplier) *
+          args.elementSize;
+      new (&sendChunks[r]) comms::pipes::ChunkInfo(sOff, sBytes);
+      new (&recvChunks[r]) comms::pipes::ChunkInfo(rOff, rBytes);
+      sOff += sBytes;
+      rOff += rBytes;
     }
   }
-}
+  __syncthreads();
 
-// ---------------------------------------------------------------------------
-// Pipes-direct bypass: builds ChunkInfo from device counts and calls the
-// unified pipes all_to_allv() which handles both NVLink and IBGDA.
-// Called from ctranDeviceAllToAllv() to avoid the old NVLink-only kernel.
-// ---------------------------------------------------------------------------
-commResult_t pipesDirectDeviceAllToAllv(
-    const void* sendbuff,
-    void* recvbuff,
-    const int64_t* sendcounts_d,
-    const int64_t* recvcounts_d,
-    size_t elementSize,
-    int myRank,
-    int nRanks,
-    comms::pipes::DeviceSpan<comms::pipes::Transport> transports,
-    int64_t sendMultiplier,
-    int64_t recvMultiplier,
-    comms::pipes::ChunkInfo* d_sendChunks,
-    comms::pipes::ChunkInfo* d_recvChunks,
-    cudaStream_t stream) {
-  buildChunkInfosKernel<<<1, 1, 0, stream>>>(
-      d_sendChunks,
-      d_recvChunks,
-      sendcounts_d,
-      recvcounts_d,
-      nRanks,
-      elementSize,
-      sendMultiplier,
-      recvMultiplier);
-
-  comms::pipes::DeviceSpan<comms::pipes::ChunkInfo> sendSpan(
-      d_sendChunks, static_cast<uint32_t>(nRanks));
-  comms::pipes::DeviceSpan<comms::pipes::ChunkInfo> recvSpan(
-      d_recvChunks, static_cast<uint32_t>(nRanks));
-
+  comms::pipes::Timeout timeout{};
   comms::pipes::all_to_allv(
-      recvbuff,
-      sendbuff,
-      myRank,
-      transports,
-      sendSpan,
-      recvSpan,
-      std::chrono::milliseconds{0},
-      stream,
-      4,
-      256,
-      dim3{4, 1, 1});
-
-  return commSuccess;
+      args.recvbuff,
+      args.sendbuff,
+      args.myRank,
+      comms::pipes::DeviceSpan<comms::pipes::Transport>(
+          args.transports, static_cast<uint32_t>(args.nRanks)),
+      comms::pipes::DeviceSpan<comms::pipes::ChunkInfo>(
+          sendChunks, static_cast<uint32_t>(args.nRanks)),
+      comms::pipes::DeviceSpan<comms::pipes::ChunkInfo>(
+          recvChunks, static_cast<uint32_t>(args.nRanks)),
+      timeout);
 }
 
 template <PipeProtocol Proto>
