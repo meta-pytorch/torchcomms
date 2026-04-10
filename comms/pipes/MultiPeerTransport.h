@@ -13,6 +13,7 @@
 
 #include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/pipes/GpuMemHandler.h"
+#include "comms/pipes/MultiPeerIbgdaTransportSetup.h"
 #include "comms/pipes/MultiPeerNvlTransport.h"
 #include "comms/pipes/MultipeerIbgdaTransport.h"
 #include "comms/pipes/P2pSelfTransportDevice.cuh"
@@ -25,9 +26,13 @@ namespace comms::pipes {
 // get_device_handle()
 struct MultiPeerDeviceHandle;
 
+// Forward declaration — defined in collectives/AllToAllv.cuh
+struct ChunkInfo;
+
 struct MultiPeerTransportConfig {
   MultiPeerNvlTransportConfig nvlConfig;
   MultipeerIbgdaTransportConfig ibgdaConfig;
+  MultiPeerIbgdaTransportSetupConfig ibgdaSetupConfig;
 
   // MNNVL topology overrides for UUID and clique ID.
   // See TopologyConfig for field-level documentation.
@@ -36,6 +41,12 @@ struct MultiPeerTransportConfig {
   // When true, IBGDA transport is never constructed and all non-self peers
   // are routed over NVLink. Requires all ranks in the same NVL domain.
   bool disableIb{false};
+
+  // When true, force all non-self peers to use IBGDA transport even if
+  // NVLink is available. Used for single-node IBGDA testing where data
+  // travels through real NICs (GPU → PCIe → NIC → IB switch → NIC → PCIe →
+  // GPU). Set via TEST_IBGDA_SINGLE_NODE=1 env var.
+  bool forceIbgda{false};
 };
 
 /**
@@ -192,6 +203,24 @@ class MultiPeerTransport {
    */
   MultiPeerDeviceHandle get_device_handle() const;
 
+  // --- Scratch buffers for collectives ---
+
+  /**
+   * @return Pre-allocated device buffer for send ChunkInfo (nRanks elements).
+   * Allocated during exchange(), safe for CUDA graph capture.
+   */
+  ChunkInfo* getChunkInfoSendBuf() const {
+    return chunkInfoSendBuf_;
+  }
+
+  /**
+   * @return Pre-allocated device buffer for recv ChunkInfo (nRanks elements).
+   * Allocated during exchange(), safe for CUDA graph capture.
+   */
+  ChunkInfo* getChunkInfoRecvBuf() const {
+    return chunkInfoRecvBuf_;
+  }
+
   // --- IBGDA buffer registration (delegates to ibgdaTransport_) ---
 
   /**
@@ -269,10 +298,21 @@ class MultiPeerTransport {
   std::shared_ptr<meta::comms::IBootstrap> nvlBootstrapAdapter_;
   std::unique_ptr<MultiPeerNvlTransport> nvlTransport_;
   std::unique_ptr<MultipeerIbgdaTransport> ibgdaTransport_;
+  std::unique_ptr<MultiPeerIbgdaTransportSetup> ibgdaSetup_;
+  MultiPeerIbgdaTransportSetupConfig ibgdaSetupConfig_;
 
   // --- GPU-allocated transport array for device handle ---
   Transport* transportsGpu_{nullptr};
   bool deviceHandleBuilt_{false};
+
+  // Individually-allocated IBGDA device pointers on GPU (for cleanup)
+  std::vector<P2pIbgdaTransportDevice*> ibgdaDevicePtrsGpu_;
+
+  // Pre-allocated device arrays for AllToAllv ChunkInfo, sized for nRanks_.
+  // Allocated once during build_device_handle() (called from exchange()) so
+  // they are ready before any CUDA graph capture.
+  ChunkInfo* chunkInfoSendBuf_{nullptr};
+  ChunkInfo* chunkInfoRecvBuf_{nullptr};
 
   // --- Private helpers ---
   void initFromTopology(

@@ -91,8 +91,16 @@ struct ThreadGroup {
 
   // scope - Synchronization scope for sync() calls
   // WARP: uses __syncwarp() (fast). BLOCK: uses __syncthreads() (block-wide).
+  // MULTIWARP: uses named barriers (bar.sync barrierId, groupSize).
   // CLUSTER: uses cluster.sync().
   SyncScope scope;
+
+  // barrier_id - Named barrier ID for MULTIWARP scope [0, 15].
+  // Each MULTIWARP group within a block must have a unique barrier_id.
+  // Hardware supports up to 16 named barriers per block.
+  // Set by make_multiwarp_group() or manually when constructing
+  // per-channel sub-groups for IBGDA multi-channel dispatch.
+  uint32_t barrier_id{0};
 
   __device__ inline void sync() {
 #ifdef __CUDA_ARCH__
@@ -110,14 +118,17 @@ struct ThreadGroup {
         __syncwarp();
         break;
       case SyncScope::MULTIWARP: {
-        // Multiwarp = 4 warps = 128 threads
-        // Uses named barriers for synchronization within a multiwarp
-        uint32_t tid = threadIdx.x + threadIdx.y * blockDim.x +
-            threadIdx.z * blockDim.x * blockDim.y;
-        uint32_t barrierId = tid / kMultiwarpSize;
-        asm volatile("bar.sync %0, %1;"
-                     :
-                     : "r"(barrierId), "r"(kMultiwarpSize));
+        // Uses named barriers (bar.sync) for sub-block synchronization.
+        // barrier_id and group_size are set by the creator
+        // (make_multiwarp_group or manual construction for per-channel IBGDA
+        // groups). Hardware supports up to 16 named barriers per block.
+        if (barrier_id >= 16) {
+          printf(
+              "ThreadGroup::sync MULTIWARP: barrier_id (%u) must be < 16\n",
+              barrier_id);
+          __trap();
+        }
+        asm volatile("bar.sync %0, %1;" : : "r"(barrier_id), "r"(group_size));
         break;
       }
       case SyncScope::BLOCK:
@@ -248,15 +259,13 @@ struct ThreadGroup {
         // Always use uint64_t shared memory so that broadcast<uint32_t> and
         // broadcast<uint64_t> share the same __shared__ allocation (CUDA
         // deduplicates by name).
+        // Uses barrier_id as shared memory index (matches the named barrier).
         __shared__ uint64_t __tg_broadcast_scratch[kMaxMultiwarpsPerBlock];
-        uint32_t tid = threadIdx.x + threadIdx.y * blockDim.x +
-            threadIdx.z * blockDim.x * blockDim.y;
-        uint32_t scratch_idx = tid / kMultiwarpSize;
         if (is_leader()) {
-          __tg_broadcast_scratch[scratch_idx] = static_cast<uint64_t>(val);
+          __tg_broadcast_scratch[barrier_id] = static_cast<uint64_t>(val);
         }
         sync();
-        T result = static_cast<T>(__tg_broadcast_scratch[scratch_idx]);
+        T result = static_cast<T>(__tg_broadcast_scratch[barrier_id]);
         sync(); // Prevent leader overwriting before all threads read
         return result;
       }
@@ -549,7 +558,8 @@ __device__ inline PartitionResult ThreadGroup::partition(
           .group_size = group_size,
           .group_id = group_id - partition_start,
           .total_groups = partition_size,
-          .scope = scope}};
+          .scope = scope,
+          .barrier_id = barrier_id}};
 #endif
   return PartitionResult{};
 }
@@ -638,7 +648,8 @@ __device__ inline PartitionResult ThreadGroup::partition(
             .group_size = group_size,
             .group_id = group_id,
             .total_groups = total_groups,
-            .scope = scope}};
+            .scope = scope,
+            .barrier_id = barrier_id}};
   }
 
   // Calculate distributable groups (after guaranteeing 1 per non-zero
@@ -679,7 +690,8 @@ __device__ inline PartitionResult ThreadGroup::partition(
               .group_size = group_size,
               .group_id = group_id - partition_start,
               .total_groups = partition_end - partition_start,
-              .scope = scope}};
+              .scope = scope,
+              .barrier_id = barrier_id}};
     }
     partition_start = partition_end;
   }
@@ -739,7 +751,8 @@ __device__ inline PartitionResult ThreadGroup::partition_interleaved(
           .group_size = group_size,
           .group_id = new_group_id,
           .total_groups = groups_in_partition,
-          .scope = scope}};
+          .scope = scope,
+          .barrier_id = barrier_id}};
 #endif
   return PartitionResult{};
 }
@@ -950,7 +963,8 @@ __device__ inline ThreadGroup make_multiwarp_group() {
       .group_size = kMultiwarpSize,
       .group_id = global_multiwarp_id,
       .total_groups = total_multiwarps,
-      .scope = SyncScope::MULTIWARP};
+      .scope = SyncScope::MULTIWARP,
+      .barrier_id = multiwarp_id_in_block};
 #else
   return ThreadGroup{};
 #endif
