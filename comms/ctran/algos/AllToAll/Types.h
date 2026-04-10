@@ -2,7 +2,11 @@
 
 #pragma once
 
+#include <cstdint>
 #include "comms/ctran/algos/CtranAlgoDev.h" // for CTRAN_MAX_NVL_PEERS
+#if defined(ENABLE_PIPES)
+#include "comms/pipes/collectives/AllToAllv.cuh" // for WarpReserveDeviceConfig
+#endif
 #include "comms/utils/commSpecs.h"
 
 // Forward declarations
@@ -10,7 +14,7 @@ struct KernelElem;
 
 namespace comms::pipes {
 struct Transport;
-}
+} // namespace comms::pipes
 
 #define CTRAN_MAX_TOTAL_RANK (128)
 
@@ -68,6 +72,13 @@ struct KernArgs {
   // When > 0, use LL128 for transfers <= this size (if alignment is met),
   // Simple otherwise. When 0, always use Simple.
   size_t ll128ThresholdBytes;
+
+  // Unified NVL+IBGDA kernel fields (used by
+  // ncclKernelDeviceAllToAllvPipesUnified)
+  int nRanks;
+#if defined(ENABLE_PIPES)
+  comms::pipes::WarpReserveDeviceConfig warpReserve;
+#endif
 };
 
 } // namespace device_alltoallv_pipes

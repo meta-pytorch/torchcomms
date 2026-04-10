@@ -369,44 +369,40 @@ void MultipeerIbgdaTransport::registerMemory() {
   int accessFlags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
       IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC;
 
-  // Register sink buffer as a zero-based MR (iova=0).
+  // Register sink buffer with its actual GPU virtual address as IOVA.
   //
   // The sink buffer receives the discarded return value from RDMA atomic
-  // fetch-add operations. Device code uses sinkAddr.addr=0 with the sink
-  // lkey, so the MR must be zero-based: addr=0 maps to offset 0 within the
-  // MR (i.e., the actual sinkBuffer_ GPU address).
+  // fetch-add operations. Device code uses sinkAddr_ (the actual GPU virtual
+  // address) with the sink lkey.
   //
-  // With a standard ibv_reg_mr(), the IOVA equals the virtual address, so
-  // addr=0 would be outside the MR's valid range → NIC local protection
-  // error → QP error state → hang.
-  //
-  // ibv_reg_mr_iova2(pd, addr, length, iova=0, access) creates a zero-based
-  // MR where IOVA range [0, length) maps to [addr, addr+length). This
-  // matches GIN's gdakiRegMr() pattern (gin_host_gdaki.cc).
+  // NOTE: We previously used iova=0 (zero-based MR) here, but
+  // ibv_reg_dmabuf_mr does not support iova=0 on ARM64/GB200 platforms.
+  // Using the actual GPU virtual address as the IOVA works universally
+  // (same pattern as user buffer registration in registerBuffer()).
+  auto sinkIova = reinterpret_cast<uint64_t>(sinkBuffer_);
   auto sinkDmabuf =
       export_gpu_dmabuf_aligned(docaGpu_, sinkBuffer_, sinkBufferSize_);
   if (sinkDmabuf) {
-    // ibv_reg_dmabuf_mr: 4th param is iova — set to 0 for zero-based MR
     sinkMr_ = lazy_ibv_reg_dmabuf_mr(
         ibvPd_,
         sinkDmabuf->alignment.dmabufOffset,
         sinkBufferSize_,
-        0, // iova=0: zero-based MR
+        sinkIova,
         sinkDmabuf->fd,
         accessFlags);
     close(sinkDmabuf->fd);
   }
   if (!sinkMr_) {
-    // Fallback: use ibv_reg_mr_iova2 with iova=0 for zero-based MR
-    sinkMr_ = lazy_ibv_reg_mr_iova2(
-        ibvPd_, sinkBuffer_, sinkBufferSize_, 0, accessFlags);
-    if (!sinkMr_) {
+    doca_error_t regErr = doca_verbs_wrapper_ibv_reg_mr(
+        ibvPd_, sinkBuffer_, sinkBufferSize_, accessFlags, &sinkMr_);
+    if (regErr != DOCA_SUCCESS || !sinkMr_) {
       throw std::runtime_error("Failed to register sink memory region");
     }
   }
 
   VLOG(1) << "MultipeerIbgdaTransport: registered sink buffer"
-          << " lkey=" << sinkMr_->lkey << " (zero-based MR, iova=0)";
+          << " lkey=" << sinkMr_->lkey << " iova=0x" << std::hex << sinkIova
+          << std::dec;
 }
 void MultipeerIbgdaTransport::createQpGroups() {
   const int numPeers = nRanks_ - 1;
@@ -839,8 +835,8 @@ void MultipeerIbgdaTransport::exchange() {
     }
   }
 
-  // Build device transports on GPU
-  std::vector<P2pIbgdaTransportBuildParams> buildParams(numPeers);
+  // Build QP params and save host-side for buildP2pTransportDevice()
+  buildParams_.resize(numPeers);
   for (int i = 0; i < numPeers; i++) {
     // Get GPU-accessible QP handle for main QP
     doca_gpu_dev_verbs_qp* gpuQp = nullptr;
@@ -854,11 +850,16 @@ void MultipeerIbgdaTransport::exchange() {
         qpGroupHlList_[i]->qp_companion.qp_gverbs, &companionGpuQp);
     checkDocaError(err, "Failed to get companion GPU QP handle");
 
-    buildParams[i] = P2pIbgdaTransportBuildParams{
-        gpuQp, companionGpuQp, NetworkLKey(HostLKey(sinkMr_->lkey))};
+    buildParams_[i] = P2pIbgdaTransportBuildParams{
+        gpuQp,
+        companionGpuQp,
+        NetworkLKey(HostLKey(sinkMr_->lkey)),
+        reinterpret_cast<uint64_t>(sinkBuffer_)};
   }
 
-  peerTransportsGpu_ = buildDeviceTransportsOnGpu(buildParams.data(), numPeers);
+  // Upload QP-only devices to GPU for backward compat (getP2pTransportDevice)
+  peerTransportsGpu_ =
+      buildDeviceTransportsOnGpu(buildParams_.data(), numPeers);
   peerTransportSize_ = getP2pIbgdaTransportDeviceSize();
 
   VLOG(1) << "MultipeerIbgdaTransport: rank " << myRank_
@@ -871,6 +872,16 @@ MultipeerIbgdaDeviceTransport MultipeerIbgdaTransport::getDeviceTransport()
       myRank_,
       nRanks_,
       DeviceSpan<P2pIbgdaTransportDevice>(peerTransportsGpu_, nRanks_ - 1));
+}
+
+P2pIbgdaTransportDevice* MultipeerIbgdaTransport::buildP2pTransportDevice(
+    int peerRank,
+    const P2pIbgdaTransportState& stagingState,
+    uint64_t* sendCounter,
+    uint64_t* recvCounter) const {
+  int peerIndex = rankToPeerIndex(peerRank);
+  return buildFullP2pIbgdaTransportDeviceOnGpu(
+      buildParams_[peerIndex], stagingState, sendCounter, recvCounter);
 }
 
 P2pIbgdaTransportDevice* MultipeerIbgdaTransport::getP2pTransportDevice(

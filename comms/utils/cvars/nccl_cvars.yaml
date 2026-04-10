@@ -1728,6 +1728,77 @@ cvars:
      to be NVL-connected. All data movement and sync operations go over
      NVLink. Requires that all ranks are in the same NVL domain.
 
+ - name        : NCCL_CTRAN_PIPES_DEVICE_ALLTOALLV_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Use the pipes all_to_allv kernel for device alltoallv instead of the
+     ctran kernel. The pipes kernel supports both NVLink and IBGDA transports.
+     The ctran kernel currently supports NVLink only. This knob is independent
+     of transport configuration (NCCL_CTRAN_PIPES_DISABLE_IB).
+
+ - name        : NCCL_CTRAN_PIPES_DEVICE_ALLTOALLV_STAGING_BUFFER_SIZE
+   type        : uint64_t
+   default     : 0
+   description : |-
+     Per-pipeline-slot staging buffer size in bytes for IBGDA transport in
+     device alltoallv. Overrides the default (2048 bytes) when set to a
+     non-zero value. Larger values reduce the number of pipeline steps but
+     use more GPU memory.
+
+ - name        : NCCL_CTRAN_PIPES_DEVICE_ALLTOALLV_CHUNK_SIZE
+   type        : uint64_t
+   default     : 0
+   description : |-
+     Chunk size in bytes for sub-pipeline RDMA puts in IBGDA device alltoallv.
+     Overrides the default (512 bytes) when set to a non-zero value. Controls
+     the granularity of individual RDMA write operations within each pipeline
+     step.
+
+ - name        : NCCL_CTRAN_PIPES_DEVICE_ALLTOALLV_PIPELINE_DEPTH
+   type        : int64_t
+   default     : 0
+   description : |-
+     Number of pipeline slots for latency hiding in IBGDA device alltoallv.
+     Overrides the default (4) when set to a non-zero value. Higher values
+     allow more overlap between RDMA transfers and GPU copies but use more
+     staging buffer memory.
+
+ - name        : NCCL_CTRAN_PIPES_WARP_RESERVE_NVL_SEND
+   type        : int64_t
+   default     : 0
+   description : |-
+     Total warps for NVLink send direction in device alltoallv warp reserve.
+     0 = auto (2 per NVL peer).
+
+ - name        : NCCL_CTRAN_PIPES_WARP_RESERVE_NVL_RECV
+   type        : int64_t
+   default     : 0
+   description : |-
+     Total warps for NVLink recv direction in device alltoallv warp reserve.
+     0 = auto (2 per NVL peer).
+
+ - name        : NCCL_CTRAN_PIPES_WARP_RESERVE_IBGDA_SEND
+   type        : int64_t
+   default     : 0
+   description : |-
+     Total warps for IBGDA send direction in device alltoallv warp reserve.
+     0 = auto (1 per IBGDA peer).
+
+ - name        : NCCL_CTRAN_PIPES_WARP_RESERVE_IBGDA_RECV
+   type        : int64_t
+   default     : 0
+   description : |-
+     Total warps for IBGDA recv direction in device alltoallv warp reserve.
+     0 = auto (1 per IBGDA peer).
+
+ - name        : NCCL_CTRAN_PIPES_WARP_RESERVE_SELF
+   type        : int64_t
+   default     : 0
+   description : |-
+     Warps for self-copy in device alltoallv warp reserve.
+     0 = auto (1 warp).
+
  - name        : NCCL_CTRAN_IBGDA_QP_DEPTH
    type        : uint64_t
    default     : 1024
