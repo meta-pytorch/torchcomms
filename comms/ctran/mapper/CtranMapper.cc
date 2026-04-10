@@ -529,7 +529,7 @@ commResult_t CtranMapper::remReleaseMem(ctran::regcache::RegElem* regElem) {
         exportedNvlRanks.size());
   }
 
-  for (auto peerRank : exportedNvlRanks) {
+  for (auto& [peerRank, exportCount] : exportedNvlRanks) {
     // Warning: the remote rank may release the memory after the next import,
     // becase exportMem msgs are transferred over CtranIB&CtranSocket while
     // releaseMem msgs are transferred over AsyncSocket. To prevent the remote
@@ -544,9 +544,14 @@ commResult_t CtranMapper::remReleaseMem(ctran::regcache::RegElem* regElem) {
             comm->statex_->gPid(),
             peerAddr,
             reinterpret_cast<ctran::regcache::IpcRegElem*>(regElem->ipcRegElem),
-            req.get()));
+            req.get(),
+            exportCount));
 
-    CLOGF_TRACE(COLL, "CTRAN-MAPPER: Posted IPC release to rank {}", peerRank);
+    CLOGF_TRACE(
+        COLL,
+        "CTRAN-MAPPER: Posted IPC release to rank {} with exportCount {}",
+        peerRank,
+        exportCount);
 
     // IPC release requests will be checked in progress and erased at
     // completion. Mapper needs to free up all requests at destruction.
@@ -1225,7 +1230,7 @@ commResult_t CtranMapper::intraBarrier() {
   return commSuccess;
 }
 
-std::unordered_map<ctran::regcache::RegElem*, std::unordered_set<int>>
+std::unordered_map<ctran::regcache::RegElem*, std::unordered_map<int, int>>
 CtranMapper::dumpExportRegCache() const {
   return exportRegCache_.rlock()->dump();
 }

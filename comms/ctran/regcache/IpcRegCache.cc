@@ -182,7 +182,8 @@ commResult_t ctran::IpcRegCache::importRemMemImpl(
 commResult_t ctran::IpcRegCache::releaseRemReg(
     const std::string& peerId,
     void* basePtr,
-    uint32_t uid) {
+    uint32_t uid,
+    int32_t exportCount) {
   auto lockedMap = ipcRemRegMap_.wlock();
   uint64_t base = reinterpret_cast<uint64_t>(basePtr);
   IpcRemRegKey key{base, uid};
@@ -199,8 +200,21 @@ commResult_t ctran::IpcRegCache::releaseRemReg(
   }
 
   auto& elem = (*lockedMap)[peerId][key];
-  int prevCount = elem->refCount.fetch_sub(1, std::memory_order_acq_rel);
-  if (prevCount > 1) {
+  int prevCount =
+      elem->refCount.fetch_sub(exportCount, std::memory_order_acq_rel);
+
+  if (prevCount < exportCount) {
+    CLOGF(
+        WARN,
+        "CTRAN-REGCACHE: over-release detected for IPC remote registration "
+        "peer:base:uid=<{}:{}:{}>, prevCount {} < exportCount {}",
+        peerId,
+        basePtr,
+        uid,
+        prevCount,
+        exportCount);
+    // Fall through to erase — the entry is invalid regardless
+  } else if (prevCount > exportCount) {
     CLOGF_TRACE(
         COLL,
         "CTRAN-REGCACHE: decremented refCount for IPC remote registration "
@@ -208,7 +222,7 @@ commResult_t ctran::IpcRegCache::releaseRemReg(
         peerId,
         basePtr,
         uid,
-        prevCount - 1);
+        prevCount - exportCount);
     return commSuccess;
   }
 
@@ -265,7 +279,8 @@ commResult_t ctran::IpcRegCache::notifyRemoteIpcRelease(
     const std::string& myId,
     const folly::SocketAddress& peerAddr,
     ctran::regcache::IpcRegElem* ipcRegElem,
-    ctran::regcache::IpcReqCb* reqCb) {
+    ctran::regcache::IpcReqCb* reqCb,
+    int32_t exportCount) {
   // Check if AsyncSocket is initialized
   if (!asyncSocketEvbThread_ || !asyncServerSocket_) {
     CLOGF(
@@ -279,6 +294,7 @@ commResult_t ctran::IpcRegCache::notifyRemoteIpcRelease(
       ctran::regcache::IpcReq(ctran::regcache::IpcReqType::kRelease, myId);
   reqCb->completed.store(false);
   remReleaseMem(ipcRegElem, reqCb->req.release);
+  reqCb->req.release.exportCount = exportCount;
 
   CLOGF_TRACE(
       COLL,
@@ -421,8 +437,11 @@ commResult_t ctran::IpcRegCache::initAsyncSocket() {
                 peerId,
                 ipcReq.release.toString());
 
-            FB_COMMCHECKIGNORE(
-                releaseRemReg(peerId, ipcReq.release.base, ipcReq.release.uid));
+            FB_COMMCHECKIGNORE(releaseRemReg(
+                peerId,
+                ipcReq.release.base,
+                ipcReq.release.uid,
+                ipcReq.release.exportCount));
             break;
           }
           case ctran::regcache::IpcReqType::kDesc: {
