@@ -419,7 +419,7 @@ TEST_F(MultiTransportFactoryTest, RegisterSegmentFailsIfFactoryFails) {
   auto result = mtf.registerSegment(seg);
 
   ASSERT_TRUE(result.hasError());
-  EXPECT_EQ(result.error().code(), ErrCode::DriverError);
+  EXPECT_EQ(result.error().code(), ErrCode::MemoryRegistrationError);
 }
 
 TEST_F(MultiTransportFactoryTest, RegisterSegmentFailsOnSecondFactory) {
@@ -543,7 +543,7 @@ TEST_F(MultiTransportFactoryTest, RegisterSegmentZeroFactories) {
   auto result = mtf.registerSegment(seg);
 
   ASSERT_TRUE(result.hasError());
-  EXPECT_EQ(result.error().code(), ErrCode::DriverError);
+  EXPECT_EQ(result.error().code(), ErrCode::MemoryRegistrationError);
 }
 
 TEST_F(MultiTransportFactoryTest, ImportSegmentHandlePayloadIntegrity) {

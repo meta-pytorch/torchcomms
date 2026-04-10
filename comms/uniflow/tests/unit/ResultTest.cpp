@@ -19,8 +19,8 @@ TEST(ErrCodeTest, ErrorCodeToStringReturnsCorrectNames) {
   EXPECT_STREQ(
       errorCodeToString(ErrCode::ConnectionFailed), "ConnectionFailed");
   EXPECT_STREQ(
-      errorCodeToString(ErrCode::MemoryRegistrationFailed),
-      "MemoryRegistrationFailed");
+      errorCodeToString(ErrCode::MemoryRegistrationError),
+      "MemoryRegistrationError");
   EXPECT_STREQ(errorCodeToString(ErrCode::Timeout), "Timeout");
   EXPECT_STREQ(
       errorCodeToString(ErrCode::ResourceExhausted), "ResourceExhausted");

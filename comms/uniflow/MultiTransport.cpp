@@ -366,7 +366,8 @@ Result<RegisteredSegment> MultiTransportFactory::registerSegment(
   }
   if (regSeg.handles_.empty()) {
     return Err(
-        ErrCode::DriverError, "no transport can register the given segment");
+        ErrCode::MemoryRegistrationError,
+        "no transport backend could register this segment");
   }
   return regSeg;
 }
