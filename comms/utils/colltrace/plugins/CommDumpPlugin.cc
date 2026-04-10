@@ -2,6 +2,8 @@
 
 #include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
 
+#include <algorithm>
+
 #include <folly/Unit.h>
 #include <folly/json.h>
 #include <folly/logging/xlog.h>
@@ -87,27 +89,28 @@ CommsMaybeVoid CommDumpPlugin::afterCollKernelStart(
           lockedCollTraceDump->pendingColls,
           config_.pendingCollSize + 1));
 
-  // ----- Get the first pending event -----
-  if (lockedCollTraceDump->pendingColls.empty()) [[unlikely]] {
-    XLOG_FIRST_N(ERR, 2, "Pending colls queue is empty in CommDumpPlugin");
-    return folly::makeUnexpected(CommsError(
-        "Pending colls queue is empty in CommDumpPlugin", commInternalError));
-  }
+  // Find the matching pending collective.
+  // With deferred graph polling, completions may arrive out of enqueue order
+  auto it = std::find_if(
+      lockedCollTraceDump->pendingColls.begin(),
+      lockedCollTraceDump->pendingColls.end(),
+      [&curEvent](const std::shared_ptr<CollRecord>& record) {
+        return record.get() == curEvent.collRecord.get();
+      });
 
-  // ----- Check whether the pending event matches the current event -----
-  if (lockedCollTraceDump->pendingColls.front().get() !=
-      curEvent.collRecord.get()) [[unlikely]] {
+  if (it == lockedCollTraceDump->pendingColls.end()) [[unlikely]] {
     XLOG_FIRST_N(
-        ERR, 2, "Got event with mismatched collRecord in CommDumpPlugin");
+        ERR,
+        2,
+        "Could not find matching collRecord in pendingColls in CommDumpPlugin");
     return folly::makeUnexpected(CommsError(
-        "Got event with mismatched collRecord in CommDumpPlugin",
+        "Could not find matching collRecord in pendingColls in CommDumpPlugin",
         commInternalError));
   }
 
-  // ----- Move from pending to current -----
-  lockedCollTraceDump->currentColls.push_back(
-      std::move(lockedCollTraceDump->pendingColls.front()));
-  lockedCollTraceDump->pendingColls.pop_front();
+  // ----- Move to active collectives -----
+  lockedCollTraceDump->currentColls.push_back(std::move(*it));
+  lockedCollTraceDump->pendingColls.erase(it);
 
   return folly::unit;
 }
