@@ -139,6 +139,7 @@ c10::intrusive_ptr<TorchWork> TorchComm::send(
   postHook(
       PostHookArgs{
           .name = OpName::send,
+          .async_op = async_op,
           .work = c10::weak_intrusive_ptr<TorchWork>(work),
           .op_id = op_id,
       });
@@ -167,6 +168,7 @@ c10::intrusive_ptr<TorchWork> TorchComm::recv(
   postHook(
       PostHookArgs{
           .name = OpName::recv,
+          .async_op = async_op,
           .work = c10::weak_intrusive_ptr<TorchWork>(work),
           .op_id = op_id,
       });
@@ -196,6 +198,7 @@ c10::intrusive_ptr<TorchWork> TorchComm::broadcast(
   postHook(
       PostHookArgs{
           .name = OpName::broadcast,
+          .async_op = async_op,
           .work = c10::weak_intrusive_ptr<TorchWork>(work),
           .op_id = op_id,
       });
@@ -222,6 +225,7 @@ c10::intrusive_ptr<TorchWork> TorchComm::all_reduce(
   postHook(
       PostHookArgs{
           .name = OpName::all_reduce,
+          .async_op = async_op,
           .work = c10::weak_intrusive_ptr<TorchWork>(work),
           .op_id = op_id,
       });
@@ -251,6 +255,7 @@ c10::intrusive_ptr<TorchWork> TorchComm::reduce(
   postHook(
       PostHookArgs{
           .name = OpName::reduce,
+          .async_op = async_op,
           .work = c10::weak_intrusive_ptr<TorchWork>(work),
           .op_id = op_id,
       });
@@ -277,6 +282,7 @@ c10::intrusive_ptr<TorchWork> TorchComm::all_gather(
   postHook(
       PostHookArgs{
           .name = OpName::all_gather,
+          .async_op = async_op,
           .work = c10::weak_intrusive_ptr<TorchWork>(work),
           .op_id = op_id,
       });
@@ -303,6 +309,7 @@ c10::intrusive_ptr<TorchWork> TorchComm::all_gather_v(
   postHook(
       PostHookArgs{
           .name = OpName::all_gather_v,
+          .async_op = async_op,
           .work = c10::weak_intrusive_ptr<TorchWork>(work),
           .op_id = op_id,
       });
@@ -330,6 +337,7 @@ c10::intrusive_ptr<TorchWork> TorchComm::all_gather_single(
   postHook(
       PostHookArgs{
           .name = OpName::all_gather_single,
+          .async_op = async_op,
           .work = c10::weak_intrusive_ptr<TorchWork>(work),
           .op_id = op_id,
       });
@@ -357,6 +365,7 @@ c10::intrusive_ptr<TorchWork> TorchComm::reduce_scatter(
   postHook(
       PostHookArgs{
           .name = OpName::reduce_scatter,
+          .async_op = async_op,
           .work = c10::weak_intrusive_ptr<TorchWork>(work),
           .op_id = op_id,
       });
@@ -385,6 +394,7 @@ c10::intrusive_ptr<TorchWork> TorchComm::reduce_scatter_v(
   postHook(
       PostHookArgs{
           .name = OpName::reduce_scatter_v,
+          .async_op = async_op,
           .work = c10::weak_intrusive_ptr<TorchWork>(work),
           .op_id = op_id,
       });
@@ -414,6 +424,7 @@ c10::intrusive_ptr<TorchWork> TorchComm::reduce_scatter_single(
   postHook(
       PostHookArgs{
           .name = OpName::reduce_scatter_single,
+          .async_op = async_op,
           .work = c10::weak_intrusive_ptr<TorchWork>(work),
           .op_id = op_id,
       });
@@ -441,6 +452,7 @@ c10::intrusive_ptr<TorchWork> TorchComm::all_to_all_single(
   postHook(
       PostHookArgs{
           .name = OpName::all_to_all_single,
+          .async_op = async_op,
           .work = c10::weak_intrusive_ptr<TorchWork>(work),
           .op_id = op_id,
       });
@@ -473,6 +485,7 @@ c10::intrusive_ptr<TorchWork> TorchComm::all_to_all_v_single(
   postHook(
       PostHookArgs{
           .name = OpName::all_to_all_v_single,
+          .async_op = async_op,
           .work = c10::weak_intrusive_ptr<TorchWork>(work),
           .op_id = op_id,
       });
@@ -499,6 +512,7 @@ c10::intrusive_ptr<TorchWork> TorchComm::all_to_all(
   postHook(
       PostHookArgs{
           .name = OpName::all_to_all,
+          .async_op = async_op,
           .work = c10::weak_intrusive_ptr<TorchWork>(work),
           .op_id = op_id,
       });
@@ -522,6 +536,7 @@ c10::intrusive_ptr<TorchWork> TorchComm::barrier(
   postHook(
       PostHookArgs{
           .name = OpName::barrier,
+          .async_op = async_op,
           .work = c10::weak_intrusive_ptr<TorchWork>(work),
           .op_id = op_id,
       });
@@ -553,6 +568,7 @@ c10::intrusive_ptr<TorchWork> TorchComm::scatter(
   postHook(
       PostHookArgs{
           .name = OpName::scatter,
+          .async_op = async_op,
           .work = c10::weak_intrusive_ptr<TorchWork>(work),
           .op_id = op_id,
       });
@@ -583,6 +599,7 @@ c10::intrusive_ptr<TorchWork> TorchComm::gather(
   postHook(
       PostHookArgs{
           .name = OpName::gather,
+          .async_op = async_op,
           .work = c10::weak_intrusive_ptr<TorchWork>(work),
           .op_id = op_id,
       });
@@ -613,6 +630,7 @@ c10::intrusive_ptr<TorchWork> TorchComm::gather_single(
   postHook(
       PostHookArgs{
           .name = OpName::gather_single,
+          .async_op = async_op,
           .work = c10::weak_intrusive_ptr<TorchWork>(work),
           .op_id = op_id,
       });
@@ -792,15 +810,17 @@ void TorchComm::preHook(PreHookArgs&& args) {
 
 void TorchComm::postHook(PostHookArgs&& args) {
   // For operations without a work object (like split and new_window),
-  // invoke hooks synchronously
-  if (!args.work) {
+  // or synchronous operations (async_op=false), invoke hooks synchronously.
+  // Synchronous ops run on the current CUDA stream and are considered
+  // complete from the user's perspective when the function returns.
+  if (!args.work || !args.async_op) {
     for (auto& hook : postHooks_) {
       hook.second(args);
     }
     return;
   }
-  // For operations with a work object, set a callback to invoke hooks
-  // when the work completes
+  // For asynchronous operations with a work object, set a callback to invoke
+  // hooks when the work completes
   if (auto work = args.work->lock()) {
     work->setCallback([self = weak_from_this(), args = std::move(args)]() {
       if (auto selfPtr = self.lock()) {
