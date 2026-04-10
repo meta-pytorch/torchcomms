@@ -489,9 +489,8 @@ __device__ __forceinline__ void all_to_allv(
     [[maybe_unused]] DeviceSpan<ChunkInfo> send_chunk_infos,
     [[maybe_unused]] DeviceSpan<ChunkInfo> recv_chunk_infos,
     [[maybe_unused]] Timeout timeout,
-    [[maybe_unused]] WarpReserveDeviceConfig reserveConfig = {}
-    // all arguments below will eventually come from communicator
-) {
+    [[maybe_unused]] WarpReserveDeviceConfig reserveConfig = {},
+    uint32_t effectiveTotalWarps = 0) {
 #ifdef __CUDA_ARCH__
   const auto nranks = transports_per_rank.size();
   PIPES_DEVICE_CHECK(nranks == send_chunk_infos.size());
@@ -510,6 +509,17 @@ __device__ __forceinline__ void all_to_allv(
   }
 
   auto group = hasIbgdaPeers ? make_block_group() : make_warp_group();
+  if (effectiveTotalWarps > 0) {
+    if (hasIbgdaPeers) {
+      // Block-group: convert warp count to block count
+      uint32_t warpsPerBlock = blockDim.x / 32;
+      uint32_t effectiveBlocks =
+          (effectiveTotalWarps + warpsPerBlock - 1) / warpsPerBlock;
+      group.total_groups = effectiveBlocks;
+    } else {
+      group.total_groups = effectiveTotalWarps;
+    }
+  }
 
   // Single rank case - just do self-copy
   if (nranks == 1) {

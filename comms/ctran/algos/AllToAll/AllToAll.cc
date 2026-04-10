@@ -13,7 +13,7 @@
 #include "comms/pipes/MultiPeerDeviceHandle.cuh"
 #include "comms/pipes/MultiPeerTransport.h"
 #include "comms/pipes/Transport.cuh"
-#include "comms/pipes/collectives/AllToAllv.h" // resolveWarpReserve, WarpReserveConfig
+#include "comms/pipes/collectives/AllToAllv.h" // WarpReserveConfig
 #endif
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/gpe/CtranGpe.h"
@@ -230,55 +230,55 @@ commResult_t ctranDeviceAllToAllv(
         stream,
         "DeviceAllToAllvPipesUnified",
         opCount);
-    config.numBlocks = 4;
-    config.numThreads = 256;
     config.args.devState_d = comm->ctran_->algo->getDevState();
+
+    const int nRanks = mpt->n_ranks();
+    const size_t elementSize = commTypeSize(datatype);
+
+    // Launch with max grid dimensions from autotune tables.
+    // The kernel determines effective warps via kernel-side autotune
+    // and excess warps early-return. This avoids cudaMemcpy D2H of
+    // sendcounts/recvcounts which is illegal during CUDA graph capture.
+    config.numBlocks = comms::pipes::kMaxAutotuneBlocks;
+    config.numThreads = comms::pipes::kMaxAutotuneThreads;
 
     ctran::device_alltoallv_pipes::KernArgs kernArgs{};
     kernArgs.sendbuff = sendbuff;
     kernArgs.recvbuff = recvbuff;
     kernArgs.myRank = mpt->my_rank();
-    kernArgs.nRanks = mpt->n_ranks();
-    kernArgs.elementSize = commTypeSize(datatype);
+    kernArgs.nRanks = nRanks;
+    kernArgs.elementSize = elementSize;
     kernArgs.sendcounts_d = sendcounts_d;
     kernArgs.recvcounts_d = recvcounts_d;
     kernArgs.sendcountsMultiplier = sendcountsMultiplier;
     kernArgs.recvcountsMultiplier = recvcountsMultiplier;
     kernArgs.transports = deviceHandle.transports.data();
+    kernArgs.hasIbgdaPeers = !deviceHandle.ibgdaPeerRanks.empty();
 
-    // Resolve warp reserve config: read CVARs directly and build
-    // WarpReserveConfig, then resolve to device config using peer rank
-    // arrays from the device handle.
-    comms::pipes::WarpReserveConfig warpReserveCfg{};
-    warpReserveCfg.nvlSendWarps =
-        static_cast<int>(NCCL_CTRAN_PIPES_WARP_RESERVE_NVL_SEND);
-    warpReserveCfg.nvlRecvWarps =
-        static_cast<int>(NCCL_CTRAN_PIPES_WARP_RESERVE_NVL_RECV);
-    warpReserveCfg.ibgdaSendWarps =
-        static_cast<int>(NCCL_CTRAN_PIPES_WARP_RESERVE_IBGDA_SEND);
-    warpReserveCfg.ibgdaRecvWarps =
-        static_cast<int>(NCCL_CTRAN_PIPES_WARP_RESERVE_IBGDA_RECV);
-    warpReserveCfg.selfWarps =
-        static_cast<int>(NCCL_CTRAN_PIPES_WARP_RESERVE_SELF);
+    // Pass CVAR overrides to kernel for merge with per-msg autotune
+    kernArgs.warpReserveCvars = comms::pipes::WarpReserveConfig{
+        .nvlSendWarps =
+            static_cast<int>(NCCL_CTRAN_PIPES_WARP_RESERVE_NVL_SEND),
+        .nvlRecvWarps =
+            static_cast<int>(NCCL_CTRAN_PIPES_WARP_RESERVE_NVL_RECV),
+        .ibgdaSendWarps =
+            static_cast<int>(NCCL_CTRAN_PIPES_WARP_RESERVE_IBGDA_SEND),
+        .ibgdaRecvWarps =
+            static_cast<int>(NCCL_CTRAN_PIPES_WARP_RESERVE_IBGDA_RECV),
+        .selfWarps = static_cast<int>(NCCL_CTRAN_PIPES_WARP_RESERVE_SELF),
+    };
 
-    kernArgs.warpReserve = comms::pipes::resolveWarpReserve(
-        warpReserveCfg,
-        deviceHandle.nvlPeerRanks.size(),
-        deviceHandle.ibgdaPeerRanks.size(),
-        deviceHandle.nvlPeerRanks.data(),
-        deviceHandle.ibgdaPeerRanks.data());
+    // Pass only peer info; kernel resolves boundaries via kernel-side
+    // autotune + resolveWarpReserve logic
+    kernArgs.warpReserve = {};
+    kernArgs.warpReserve.nvlPeerRanks = deviceHandle.nvlPeerRanks.data();
+    kernArgs.warpReserve.numNvlPeers =
+        static_cast<uint32_t>(deviceHandle.nvlPeerRanks.size());
+    kernArgs.warpReserve.ibgdaPeerRanks = deviceHandle.ibgdaPeerRanks.data();
+    kernArgs.warpReserve.numIbgdaPeers =
+        static_cast<uint32_t>(deviceHandle.ibgdaPeerRanks.size());
     kernArgs.warpReserve.maxChannelsPerPeer =
         static_cast<uint32_t>(mpt->maxChannelsPerPeer());
-
-    // When warp reserve is configured, derive thread count from total warps
-    if (kernArgs.warpReserve.isConfigured()) {
-      int ibgdaRecvW = warpReserveCfg.ibgdaRecvWarps > 0
-          ? warpReserveCfg.ibgdaRecvWarps
-          : static_cast<int>(deviceHandle.ibgdaPeerRanks.size());
-      int totalWarps =
-          static_cast<int>(kernArgs.warpReserve.ibgdaSendEnd) + ibgdaRecvW;
-      config.numThreads = totalWarps * 32;
-    }
 
     config.algoArgs = &kernArgs;
 
