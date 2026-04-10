@@ -300,16 +300,13 @@ TEST_F(AllToAllvIbgdaBenchmarkFixture, MessageSizeSweep) {
       134217728,
   };
 
-  // Block-group scheduling requires numBlocks >= 2 for send/recv split.
-  // Distribute threads across blocks, capping at 256 threads/block.
+  // Use 1 block baseline. Minimum threads = 2 (send/recv) * nranks * 32
+  // (warpSize) for partition_interleaved to have enough groups.
   const int minThreads = 2 * numRanks * 32;
-  const int benchTPB = std::min(minThreads, 256);
-  const int benchBlocks = std::max(2, minThreads / benchTPB);
   for (size_t msgSize : messageSizes) {
     std::string label = "MsgSweep_" + std::to_string(msgSize / 1024) + "KB";
     int iters = (msgSize <= 65536) ? 1000 : (msgSize <= 4194304 ? 100 : 10);
-    runBenchmark(
-        *transport, setup, msgSize, benchBlocks, benchTPB, iters, label);
+    runBenchmark(*transport, setup, msgSize, 1, minThreads, iters, label);
   }
 }
 
@@ -333,14 +330,13 @@ TEST_F(AllToAllvIbgdaBenchmarkFixture, BlockCountSweep) {
   setup.exchangeBuffers();
 
   const size_t msgSize = 1048576; // 1MB per peer
-  // Cap threads per block at 256 to avoid register pressure issues.
+  // Minimum threads = 2 (send/recv) * nranks * 32 (warpSize)
   const int minThreads = 2 * numRanks * 32;
-  const int benchTPB = std::min(minThreads, 256);
-  const std::vector<int> blockCounts = {2, 4, 8, 16, 32};
+  const std::vector<int> blockCounts = {1, 2, 4, 8, 16, 32};
 
   for (int blocks : blockCounts) {
     std::string label = "BlockSweep_" + std::to_string(blocks) + "b";
-    runBenchmark(*transport, setup, msgSize, blocks, benchTPB, 100, label);
+    runBenchmark(*transport, setup, msgSize, blocks, minThreads, 100, label);
   }
 }
 
@@ -371,9 +367,7 @@ TEST_F(AllToAllvIbgdaBenchmarkFixture, ThreadCountSweep) {
   for (int totalThreads : threadCounts) {
     const int maxTPB = 256;
     const int tpb = std::min(totalThreads, maxTPB);
-    // Block-group scheduling requires at least 2 blocks for
-    // partition_interleaved(2) send/recv split.
-    const int blocks = std::max(2, totalThreads / tpb);
+    const int blocks = std::max(1, totalThreads / tpb);
     std::string label = "ThreadSweep_" + std::to_string(totalThreads) + "t";
     runBenchmark(*transport, setup, msgSize, blocks, tpb, 100, label);
   }
@@ -407,9 +401,7 @@ TEST_F(AllToAllvIbgdaBenchmarkFixture, PipelineDepthSweep) {
     std::string label = "PipeDepth_" + std::to_string(depth);
     // Minimum threads = 2 (send/recv) * nranks * 32 (warpSize)
     int minThreads = 2 * numRanks * 32;
-    int tpb = std::min(minThreads, 256);
-    int blocks = std::max(2, minThreads / tpb);
-    runBenchmark(*transport, setup, msgSize, blocks, tpb, 100, label);
+    runBenchmark(*transport, setup, msgSize, 1, minThreads, 100, label);
   }
 }
 
@@ -454,9 +446,7 @@ TEST_F(AllToAllvIbgdaBenchmarkFixture, ChunkSizeSweep) {
     std::string label = "ChunkSweep_" + sizeLabel;
 
     int minThreads = 2 * numRanks * 32;
-    int tpb = std::min(minThreads, 256);
-    int blocks = std::max(2, minThreads / tpb);
-    runBenchmark(*transport, setup, msgSize, blocks, tpb, 100, label);
+    runBenchmark(*transport, setup, msgSize, 1, minThreads, 100, label);
   }
 }
 
@@ -469,7 +459,7 @@ TEST_F(AllToAllvIbgdaBenchmarkFixture, P2pSendRecvSweep) {
 
   constexpr int kSenderRank = 0;
   const int kRecverRank = numRanks - 1;
-  constexpr size_t kMsgBytes = 1024 * 1024; // 1MB
+  constexpr size_t kMsgBytes = 1024ULL * 1024 * 1024; // 1GB
   constexpr int kWarmupIter = 10;
   constexpr int kTimedIter = 100;
 
@@ -483,28 +473,40 @@ TEST_F(AllToAllvIbgdaBenchmarkFixture, P2pSendRecvSweep) {
     int pipelineDepth;
     int numBlocks;
     int numThreads;
+    int maxChannelsPerPeer = 1;
   };
 
   std::vector<P2pConfig> configs = {
-      // Chunk size sweep (pipelineDepth=4, 2 blocks × 256 threads)
-      {"chunk_64KB_pipe4_2x256", 64 * 1024, 4, 2, 256},
-      {"chunk_256KB_pipe4_2x256", 256 * 1024, 4, 2, 256},
-      {"chunk_512KB_pipe4_2x256", 512 * 1024, 4, 2, 256},
-      {"chunk_1MB_pipe4_2x256", 1024 * 1024, 4, 2, 256},
+      // Chunk size sweep (pipelineDepth=4, 2 blocks x 256 threads)
+      {"chunk_64KB_pipe4_2x256_2ch", 64 * 1024, 4, 2, 256, 2},
+      {"chunk_256KB_pipe4_2x256_2ch", 256 * 1024, 4, 2, 256, 2},
+      {"chunk_512KB_pipe4_2x256_2ch", 512 * 1024, 4, 2, 256, 2},
+      {"chunk_1MB_pipe4_2x256_2ch", 1024 * 1024, 4, 2, 256, 2},
 
-      // Pipeline depth sweep (chunkSize=1MB, 2 blocks × 256 threads)
-      {"chunk_1MB_pipe1_2x256", 1024 * 1024, 1, 2, 256},
-      {"chunk_1MB_pipe2_2x256", 1024 * 1024, 2, 2, 256},
-      {"chunk_1MB_pipe8_2x256", 1024 * 1024, 8, 2, 256},
+      // Pipeline depth sweep (chunkSize=1MB, 2 blocks x 256 threads)
+      {"chunk_1MB_pipe1_2x256_2ch", 1024 * 1024, 1, 2, 256, 2},
+      {"chunk_1MB_pipe2_2x256_2ch", 1024 * 1024, 2, 2, 256, 2},
+      {"chunk_1MB_pipe8_2x256_2ch", 1024 * 1024, 8, 2, 256, 2},
 
       // Thread count sweep (chunkSize=1MB, pipelineDepth=4, 256 tpb)
-      {"chunk_1MB_pipe4_2x128", 1024 * 1024, 4, 2, 128},
-      {"chunk_1MB_pipe4_2x256_t", 1024 * 1024, 4, 2, 256},
-      {"chunk_1MB_pipe4_4x256", 1024 * 1024, 4, 4, 256},
+      {"chunk_1MB_pipe4_2x128_2ch", 1024 * 1024, 4, 2, 128, 2},
+      {"chunk_1MB_pipe4_2x256_2ch_t", 1024 * 1024, 4, 2, 256, 2},
+      {"chunk_1MB_pipe4_4x256_4ch", 1024 * 1024, 4, 4, 256, 4},
 
       // Multi-block sweep (chunkSize=1MB, pipelineDepth=4, 256 threads/block)
-      {"chunk_1MB_pipe4_8x256", 1024 * 1024, 4, 8, 256},
-      {"chunk_1MB_pipe4_16x256", 1024 * 1024, 4, 16, 256},
+      {"chunk_1MB_pipe4_8x256_8ch", 1024 * 1024, 4, 8, 256, 8},
+      {"chunk_1MB_pipe4_16x256_16ch", 1024 * 1024, 4, 16, 256, 16},
+
+      // Multi-block per peer sweep: blocks x channels coverage
+      // (chunkSize=1MB, pipelineDepth=4, 256 threads/block)
+      // channelsPerBlock = min(warpsPerBlock, maxChannelsPerPeer)
+      //   256 threads = 8 warps -> channelsPerBlock = min(8, maxCh)
+      {"chunk_1MB_pipe4_1x256_1ch", 1024 * 1024, 4, 1, 256, 1},
+      {"chunk_1MB_pipe4_2x256_2ch_b", 1024 * 1024, 4, 2, 256, 2},
+      {"chunk_1MB_pipe4_4x256_4ch_b", 1024 * 1024, 4, 4, 256, 4},
+      {"chunk_1MB_pipe4_2x256_8ch", 1024 * 1024, 4, 2, 256, 8},
+      {"chunk_1MB_pipe4_4x256_8ch", 1024 * 1024, 4, 4, 256, 8},
+      {"chunk_1MB_pipe4_8x256_8ch_b", 1024 * 1024, 4, 8, 256, 8},
   };
 
   for (const auto& cfg : configs) {
@@ -522,7 +524,7 @@ TEST_F(AllToAllvIbgdaBenchmarkFixture, P2pSendRecvSweep) {
     };
 
     MultiPeerIbgdaTransportSetup setup(
-        *transport, globalRank, numRanks, setupConfig);
+        *transport, globalRank, numRanks, setupConfig, cfg.maxChannelsPerPeer);
     setup.exchangeBuffers();
 
     P2pIbgdaTransportDevice* dev = nullptr;
@@ -545,10 +547,22 @@ TEST_F(AllToAllvIbgdaBenchmarkFixture, P2pSendRecvSweep) {
     MPI_Barrier(MPI_COMM_WORLD);
     if (isSender) {
       benchmark::launchIbgdaSendBench(
-          dev, buf.get(), kMsgBytes, kWarmupIter, nullptr);
+          dev,
+          buf.get(),
+          kMsgBytes,
+          kWarmupIter,
+          nullptr,
+          cfg.numBlocks,
+          cfg.numThreads);
     } else if (isRecver) {
       benchmark::launchIbgdaRecvBench(
-          dev, buf.get(), kMsgBytes, kWarmupIter, nullptr);
+          dev,
+          buf.get(),
+          kMsgBytes,
+          kWarmupIter,
+          nullptr,
+          cfg.numBlocks,
+          cfg.numThreads);
     }
     if (isParticipant) {
       CUDACHECK_BENCH(cudaDeviceSynchronize());
@@ -566,13 +580,25 @@ TEST_F(AllToAllvIbgdaBenchmarkFixture, P2pSendRecvSweep) {
     if (isSender) {
       CUDACHECK_BENCH(cudaEventRecord(start));
       benchmark::launchIbgdaSendBench(
-          dev, buf.get(), kMsgBytes, kTimedIter, nullptr);
+          dev,
+          buf.get(),
+          kMsgBytes,
+          kTimedIter,
+          nullptr,
+          cfg.numBlocks,
+          cfg.numThreads);
       CUDACHECK_BENCH(cudaEventRecord(stop));
       CUDACHECK_BENCH(cudaEventSynchronize(stop));
     } else if (isRecver) {
       CUDACHECK_BENCH(cudaEventRecord(start));
       benchmark::launchIbgdaRecvBench(
-          dev, buf.get(), kMsgBytes, kTimedIter, nullptr);
+          dev,
+          buf.get(),
+          kMsgBytes,
+          kTimedIter,
+          nullptr,
+          cfg.numBlocks,
+          cfg.numThreads);
       CUDACHECK_BENCH(cudaEventRecord(stop));
       CUDACHECK_BENCH(cudaEventSynchronize(stop));
     }
@@ -602,7 +628,6 @@ TEST_F(AllToAllvIbgdaBenchmarkFixture, P2pSendRecvSweep) {
         cudaFree(dev);
       }
     }
-
     MPI_Barrier(MPI_COMM_WORLD);
   }
 }
