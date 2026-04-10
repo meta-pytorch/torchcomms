@@ -3,6 +3,7 @@
 #include "comms/pipes/collectives/AllToAllvAuto.h"
 
 #include "comms/pipes/collectives/AllToAllv.h"
+#include "comms/pipes/collectives/AllToAllvAutoTuneConfig.h"
 #include "comms/pipes/collectives/AllToAllvLl128.h"
 #include "comms/pipes/ll128/Ll128AutoTune.cuh"
 
@@ -26,9 +27,14 @@ void all_to_allv_auto(
     // scheduling. The kernel detects IBGDA peers and uses make_block_group(),
     // where each block cooperatively handles one peer. Need at least
     // 2 * nranks blocks (send + recv × peers).
+    //
+    // Use autotune lookup table for per-msg-size config when no explicit
+    // override is provided (ibgdaNumBlocks <= 0 means use autotune).
+    auto hybridCfg = getHybridConfigForMsgSize(max_bytes_per_peer);
+    int autotunedBlocks = (config.ibgdaNumBlocks > 0) ? config.ibgdaNumBlocks
+                                                      : hybridCfg.numBlocks;
     int minBlocks = 2 * nranks;
-    int blocks =
-        (config.ibgdaNumBlocks > minBlocks) ? config.ibgdaNumBlocks : minBlocks;
+    int blocks = (autotunedBlocks > minBlocks) ? autotunedBlocks : minBlocks;
     all_to_allv(
         recvbuff_d,
         sendbuff_d,
