@@ -155,7 +155,7 @@ PYBIND11_MODULE(_core, m) {
       .value("NotConnected", ErrCode::NotConnected)
       .value("TransportError", ErrCode::TransportError)
       .value("ConnectionFailed", ErrCode::ConnectionFailed)
-      .value("MemoryRegistrationFailed", ErrCode::MemoryRegistrationFailed)
+      .value("MemoryRegistrationError", ErrCode::MemoryRegistrationError)
       .value("Timeout", ErrCode::Timeout)
       .value("ResourceExhausted", ErrCode::ResourceExhausted);
 
