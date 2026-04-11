@@ -6,7 +6,10 @@
 
 #include <cuda_runtime.h>
 
+#include <folly/synchronization/CallOnce.h>
+
 #include <comms/ctran/utils/CudaWrap.h>
+#include <comms/utils/cvars/nccl_cvars.h>
 
 #include <fmt/core.h>
 
@@ -14,6 +17,13 @@
 using namespace ibverbx; // NOLINT(google-build-using-namespace)
 
 namespace {
+
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
+folly::once_flag initOnceFlag;
+
+void initEnvironment() {
+  folly::call_once(initOnceFlag, [] { ncclCvarInit(); });
+}
 
 #define CUDA_CHECK(cmd)                     \
   do {                                      \
@@ -110,6 +120,80 @@ StagedBuffer& StagedBuffer::operator=(StagedBuffer&& other) noexcept {
     other.dmabufFd_ = -1;
   }
   return *this;
+}
+
+// --- StagedRdmaTransportBase ---
+
+StagedRdmaTransportBase::StagedRdmaTransportBase(
+    int cudaDev,
+    folly::EventBase* evb,
+    StagedTransferConfig config)
+    : cudaDev_(cudaDev), config_(config), evb_(evb) {
+  initEnvironment();
+}
+
+StagedRdmaTransportBase::~StagedRdmaTransportBase() {
+  if (stream_) {
+    cudaStreamSynchronize(stream_);
+    cudaStreamDestroy(stream_);
+  }
+}
+
+int32_t StagedRdmaTransportBase::getDeviceId() const {
+  if (!pd_.has_value()) {
+    throw std::runtime_error(
+        "getDeviceId() called before setupLocalTransport()");
+  }
+  return pd_->getDeviceId();
+}
+
+void StagedRdmaTransportBase::initIbResources() {
+  throw std::runtime_error("initIbResources() not yet implemented");
+}
+
+void StagedRdmaTransportBase::connectQp(const std::string& /*peerConnInfo*/) {
+  throw std::runtime_error("connectQp() not yet implemented");
+}
+
+std::string StagedRdmaTransportBase::serializeConnInfo(
+    const StagingRendezvousInfo& /*localStaging*/) {
+  throw std::runtime_error("serializeConnInfo() not yet implemented");
+}
+
+// --- StagedRdmaServerTransport ---
+
+StagedRdmaServerTransport::~StagedRdmaServerTransport() = default;
+
+std::string StagedRdmaServerTransport::setupLocalTransport() {
+  throw std::runtime_error("setupLocalTransport() not yet implemented");
+}
+
+void StagedRdmaServerTransport::connectRemoteTransport(
+    const std::string& /*peerConnInfo*/) {
+  throw std::runtime_error("connectRemoteTransport() not yet implemented");
+}
+
+folly::SemiFuture<commResult_t> StagedRdmaServerTransport::send(
+    const ScatterGatherDescriptor& /*src*/) {
+  throw std::runtime_error("send() not yet implemented");
+}
+
+// --- StagedRdmaClientTransport ---
+
+StagedRdmaClientTransport::~StagedRdmaClientTransport() = default;
+
+std::string StagedRdmaClientTransport::setupLocalTransport() {
+  throw std::runtime_error("setupLocalTransport() not yet implemented");
+}
+
+void StagedRdmaClientTransport::connectRemoteTransport(
+    const std::string& /*peerConnInfo*/) {
+  throw std::runtime_error("connectRemoteTransport() not yet implemented");
+}
+
+folly::SemiFuture<commResult_t> StagedRdmaClientTransport::recv(
+    const ScatterGatherDescriptor& /*dst*/) {
+  throw std::runtime_error("recv() not yet implemented");
 }
 
 } // namespace torch::comms
