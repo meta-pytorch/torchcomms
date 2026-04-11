@@ -145,6 +145,30 @@ __device__ int torchcomms_barrier_block(
     int barrier_id);
 
 // =============================================================================
+// Block-scope Wait Operations
+//
+// ALL threads in the calling block must call these together (convergently).
+// Thread 0 polls the signal/counter; remaining threads synchronize via
+// __syncthreads__ (CoopScope::BLOCK). Reduces spin-poll traffic from N
+// independent acquire loads (thread-scope) to 1 poll + __syncthreads__.
+// =============================================================================
+
+// Block-scope wait for signal from a specific peer (>=).
+// Returns: 0 on success, negative on error
+__device__ int torchcomms_wait_signal_from_block(
+    TorchCommsWindowHandle win,
+    int peer,
+    int signal_id,
+    unsigned long long expected_value);
+
+// Block-scope wait for local counter (>=).
+// Returns: 0 on success, negative on error
+__device__ int torchcomms_wait_counter_block(
+    TorchCommsWindowHandle win,
+    int counter_id,
+    unsigned long long expected_value);
+
+// =============================================================================
 // Signal Operations (Remote Notification)
 // Thread-scope (idempotent) — all 128 threads call these; same result from any
 // count.
