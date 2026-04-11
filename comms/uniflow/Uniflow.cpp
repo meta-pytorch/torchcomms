@@ -16,9 +16,10 @@ UniflowAgent::UniflowAgent(
       server_(std::move(server)) {
   // Auto-create TcpClient if not provided
   if (!client_) {
-    client_ = std::make_unique<controller::TcpClient>(
-        config.connectRetries,
-        std::chrono::milliseconds(config.connectTimeoutMs));
+    controller::TcpSocketConfig tcpCfg;
+    tcpCfg.connectRetries = config.connectRetries;
+    tcpCfg.retryTimeout = std::chrono::milliseconds(config.connectTimeoutMs);
+    client_ = std::make_unique<controller::TcpClient>(std::move(tcpCfg));
   }
 
   // Auto-create TcpServer if listenAddress is specified
