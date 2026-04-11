@@ -88,7 +88,12 @@ NCCLDeviceBackend::Ptr NCCLDeviceBackend::create_device_window(
   reqs.resourceRequirementsList =
       (signal_buffer_size > 0) ? &signal_resource_reqs : nullptr;
   reqs.teamRequirementsList = nullptr;
-  reqs.lsaMultimem = true;
+
+  // Mirror NCCL's internal gating (sym_kernels.cc): only request NVLS
+  // multicast when the LSA team has more than 2 members.  Without this
+  // check ncclDevCommCreate returns ncclInvalidArgument on topologies
+  // where multicast is unavailable (e.g. 1x2 configurations).
+  reqs.lsaMultimem = nccl_api->teamLsa(nccl_comm).nRanks > 2;
   reqs.barrierCount = config.barrier_count;
   reqs.lsaBarrierCount = config.barrier_count;
   reqs.railGinBarrierCount = config.barrier_count;
