@@ -5,6 +5,7 @@
 #include "comms/utils/colltrace/CollTracePlugin.h"
 
 #include <thread>
+#include <unordered_map>
 
 #include <folly/stop_watch.h>
 
@@ -55,9 +56,16 @@ class WatchdogPlugin : public ICollTracePlugin {
  private:
   const WatchdogPluginConfig config_;
 
-  // Fields to track timeout
-  CollTraceEvent* lastEvent_{nullptr};
-  folly::stop_watch<> timer_;
+  // Per-event timeout tracking. Each in-flight event gets its own timer
+  // so a stuck collective is detected even when others progress normally.
+  // The startTs is used to detect new replays of graph collectives — when
+  // the start timestamp changes, we know a new replay started and reset
+  // the timer (even without seeing the previous replay's end event).
+  struct EventTimer {
+    folly::stop_watch<> timer;
+    ICollWaitEvent::system_clock_time_point startTs{};
+  };
+  std::unordered_map<CollTraceEvent*, EventTimer> eventTimers_;
 };
 
 } // namespace meta::comms::colltrace

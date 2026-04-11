@@ -218,7 +218,7 @@ class CtranReduceScatterTest : public ctran::CtranDistTestFixture,
     auto dumpMap = ctran::dumpCollTrace(ctranComm.get());
 
     EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
-    EXPECT_EQ(dumpMap["CT_currentColl"], "null");
+    EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
 
     // Only verify CollTrace records if count > 0 (operation was executed)
     if (count > 0) {

@@ -157,7 +157,7 @@ TEST_F(CollTraceTestLocal, winSignal) {
       meta::comms::ncclx::dumpNewCollTrace(*comm->ctranComm_->colltraceNew_);
   EXPECT_NE(dumpMap["CT_pastColls"], "[]");
   EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
-  EXPECT_EQ(dumpMap["CT_currentColl"], "null");
+  EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
 
   CUDACHECK_TEST(cudaStreamDestroy(sig_stream));
   CUDACHECK_TEST(cudaStreamDestroy(wait_stream));
@@ -247,7 +247,7 @@ TEST_F(CollTraceTestLocal, winPutOnly) {
       meta::comms::ncclx::dumpNewCollTrace(*comm->ctranComm_->colltraceNew_);
   EXPECT_NE(dumpMap["CT_pastColls"], "[]");
   EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
-  EXPECT_EQ(dumpMap["CT_currentColl"], "null");
+  EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
 
   CUDACHECK_TEST(cudaStreamDestroy(put_stream));
   EXPECT_EQ(errs, 0);

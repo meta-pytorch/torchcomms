@@ -64,7 +64,7 @@ namespace uniflow {
   X(NotConnected)              \
   X(TransportError)            \
   X(ConnectionFailed)          \
-  X(MemoryRegistrationFailed)  \
+  X(MemoryRegistrationError)   \
   X(Timeout)                   \
   X(ResourceExhausted)
 

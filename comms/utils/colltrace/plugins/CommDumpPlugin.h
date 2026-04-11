@@ -4,6 +4,7 @@
 
 #include <deque>
 #include <memory>
+#include <vector>
 
 #include <folly/MPMCQueue.h>
 #include <folly/Synchronized.h>
@@ -38,7 +39,7 @@ struct CommDumpConfig {
 
 struct CollTraceDump {
   std::deque<std::shared_ptr<CollRecord>> pastColls;
-  std::shared_ptr<CollRecord> currentColl;
+  std::deque<std::shared_ptr<CollRecord>> currentColls;
   std::deque<std::shared_ptr<CollRecord>> pendingColls;
 };
 
@@ -61,6 +62,8 @@ class CommDumpPlugin : public ICollTracePlugin {
       CollTraceEvent& curEvent) noexcept override;
 
   CommsMaybeVoid afterCollKernelEnd(CollTraceEvent& curEvent) noexcept override;
+
+  int64_t maxEventRetention() const noexcept override;
 
   // CommDump specific API, supposed to be called by the dump (user) thread
   CommsMaybe<CollTraceDump> dump() noexcept;

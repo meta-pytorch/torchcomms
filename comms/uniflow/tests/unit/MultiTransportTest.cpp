@@ -419,7 +419,7 @@ TEST_F(MultiTransportFactoryTest, RegisterSegmentFailsIfFactoryFails) {
   auto result = mtf.registerSegment(seg);
 
   ASSERT_TRUE(result.hasError());
-  EXPECT_EQ(result.error().code(), ErrCode::DriverError);
+  EXPECT_EQ(result.error().code(), ErrCode::MemoryRegistrationError);
 }
 
 TEST_F(MultiTransportFactoryTest, RegisterSegmentFailsOnSecondFactory) {
@@ -543,7 +543,7 @@ TEST_F(MultiTransportFactoryTest, RegisterSegmentZeroFactories) {
   auto result = mtf.registerSegment(seg);
 
   ASSERT_TRUE(result.hasError());
-  EXPECT_EQ(result.error().code(), ErrCode::DriverError);
+  EXPECT_EQ(result.error().code(), ErrCode::MemoryRegistrationError);
 }
 
 TEST_F(MultiTransportFactoryTest, ImportSegmentHandlePayloadIntegrity) {
@@ -663,7 +663,7 @@ TEST_F(MultiTransportFactoryTest, GetTopologyAssertsOnEmptyTopoData) {
   auto rdma = makeFactory(TransportType::RDMA, {0x01}, {});
   MultiTransportFactory mtf = makeMultiTransportFactory({rdma});
 
-  EXPECT_DEATH(mtf.getTopology(), "");
+  EXPECT_THROW(mtf.getTopology(), std::runtime_error);
 }
 
 TEST_F(

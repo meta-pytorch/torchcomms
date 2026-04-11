@@ -366,7 +366,8 @@ Result<RegisteredSegment> MultiTransportFactory::registerSegment(
   }
   if (regSeg.handles_.empty()) {
     return Err(
-        ErrCode::DriverError, "no transport can register the given segment");
+        ErrCode::MemoryRegistrationError,
+        "no transport backend could register this segment");
   }
   return regSeg;
 }
@@ -481,8 +482,10 @@ std::vector<uint8_t> MultiTransportFactory::getTopology() {
   // header for each transport
   totalSize += (sizeof(uint8_t) + sizeof(uint32_t)) * numTransport;
   for (auto& f : factories_) {
-    topoData.emplace_back(f->getTopology());
-    totalSize += topoData.back().size();
+    auto topo = f->getTopology();
+    CHECK_THROW_EXCEPTION(!topo.empty(), std::runtime_error);
+    totalSize += topo.size();
+    topoData.emplace_back(std::move(topo));
   }
 
   size_t pos = 0;

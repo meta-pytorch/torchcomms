@@ -9,14 +9,9 @@
 using namespace uniflow;
 using namespace uniflow::controller;
 
-// ---------------------------------------------------------------------------
-// Parameterized fixture: runs server/client lifecycle tests over both
-// IPv4 (127.0.0.1) and IPv6 (::1). IPv6 tests are skipped if not available.
-// ---------------------------------------------------------------------------
-
 struct AddrFamily {
-  std::string serverAddr; // e.g., "127.0.0.1:0" or ":::0"
-  std::string clientHost; // e.g., "127.0.0.1" or "::1"
+  std::string serverAddr;
+  std::string clientHost;
 };
 
 class TcpServerClientTest : public ::testing::TestWithParam<AddrFamily> {
@@ -98,11 +93,6 @@ INSTANTIATE_TEST_SUITE_P(
       return info.param.clientHost == "127.0.0.1" ? "IPv4" : "IPv6";
     });
 
-// ---------------------------------------------------------------------------
-// Non-parameterized tests: address parsing, wildcards, and edge cases that
-// are not address-family-specific.
-// ---------------------------------------------------------------------------
-
 class TcpServerClientMiscTest : public ::testing::Test {};
 
 TEST_F(TcpServerClientMiscTest, DoubleInitFails) {
@@ -141,8 +131,10 @@ TEST_F(TcpServerClientMiscTest, AddressParsingErrors) {
   EXPECT_THROW(TcpServer("::1:invalid"), std::invalid_argument);
   EXPECT_THROW(TcpServer(":::"), std::invalid_argument);
 
-  // Client parsing
-  TcpClient client(0, std::chrono::milliseconds(0));
+  TcpSocketConfig noRetryCfg = TcpSocketConfig{};
+  noRetryCfg.connectRetries = 0;
+  noRetryCfg.retryTimeout = std::chrono::milliseconds(0);
+  TcpClient client(noRetryCfg);
   EXPECT_EQ(client.connect("127.0.0.1:invalid"), nullptr);
   EXPECT_EQ(client.connect("127.0.0.1"), nullptr);
   EXPECT_EQ(client.connect("localhost:8080"), nullptr);
@@ -168,7 +160,10 @@ TEST_F(TcpServerClientMiscTest, InvalidHostAddress) {
 }
 
 TEST_F(TcpServerClientMiscTest, ConnectFailsWhenNoServerListening) {
-  TcpClient client(0, std::chrono::milliseconds(0));
+  TcpSocketConfig noRetryCfg = TcpSocketConfig{};
+  noRetryCfg.connectRetries = 0;
+  noRetryCfg.retryTimeout = std::chrono::milliseconds(0);
+  TcpClient client(noRetryCfg);
 
   // IPv4
   EXPECT_EQ(client.connect("127.0.0.1:59999"), nullptr);
@@ -200,7 +195,6 @@ TEST_F(TcpServerClientMiscTest, WildcardAddresses) {
         << "init() failed with 0.0.0.0: " << status.error().toString();
   }
 
-  // Asterisk wildcard (maps to IPv6 dual-stack)
   {
     TcpServer server("*:0");
     Status status = server.init();
@@ -226,4 +220,140 @@ TEST_F(TcpServerClientMiscTest, EmptyHostBindsWildcard) {
   Status status = server.init();
   EXPECT_TRUE(status.hasValue())
       << "init() failed with empty host: " << status.error().toString();
+}
+
+class TcpSocketConfigTest : public ::testing::Test {};
+
+TEST_F(TcpSocketConfigTest, DefaultConstructedMatchesProduction) {
+  TcpSocketConfig cfg;
+  EXPECT_EQ(cfg.connTimeout, std::chrono::seconds{30});
+  EXPECT_EQ(cfg.socketBufSize, 1 << 20);
+  EXPECT_EQ(cfg.tcpNoDelay, true);
+  EXPECT_EQ(cfg.enableKeepalive, true);
+  EXPECT_EQ(cfg.keepaliveIdle, std::chrono::seconds{60});
+  EXPECT_EQ(cfg.keepaliveInterval, std::chrono::seconds{5});
+  EXPECT_EQ(cfg.keepaliveCount, 3);
+  EXPECT_EQ(cfg.userTimeout, std::chrono::milliseconds{60000});
+  EXPECT_EQ(cfg.acceptRetryCnt, 5);
+  EXPECT_EQ(cfg.connectRetries, 10u);
+  EXPECT_EQ(cfg.retryTimeout, std::chrono::milliseconds{1000});
+}
+
+TEST_F(TcpSocketConfigTest, OsDefaultsIsAllNullopt) {
+  auto cfg = TcpSocketConfig::osDefaults();
+  EXPECT_FALSE(cfg.connTimeout.has_value());
+  EXPECT_FALSE(cfg.socketBufSize.has_value());
+  EXPECT_FALSE(cfg.tcpNoDelay.has_value());
+  EXPECT_FALSE(cfg.enableKeepalive.has_value());
+  EXPECT_FALSE(cfg.keepaliveIdle.has_value());
+  EXPECT_FALSE(cfg.keepaliveInterval.has_value());
+  EXPECT_FALSE(cfg.keepaliveCount.has_value());
+  EXPECT_FALSE(cfg.userTimeout.has_value());
+}
+
+TEST_F(TcpSocketConfigTest, ValidateAcceptsDefaults) {
+  TcpSocketConfig cfg;
+  EXPECT_TRUE(cfg.validate().hasValue());
+}
+
+TEST_F(TcpSocketConfigTest, ValidateAcceptsOsDefaults) {
+  auto cfg = TcpSocketConfig::osDefaults();
+  EXPECT_TRUE(cfg.validate().hasValue());
+}
+
+TEST_F(TcpSocketConfigTest, OsDefaultConfigConnectionSucceeds) {
+  auto cfg = TcpSocketConfig::osDefaults();
+
+  TcpServer server("127.0.0.1:0", cfg);
+  auto status = server.init();
+  ASSERT_TRUE(status.hasValue()) << status.error().toString();
+
+  std::unique_ptr<Conn> serverConn;
+  std::thread acceptThread([&]() { serverConn = server.accept(); });
+
+  TcpClient client(cfg);
+  auto clientConn =
+      client.connect("127.0.0.1:" + std::to_string(server.getPort()));
+  EXPECT_NE(clientConn, nullptr);
+
+  acceptThread.join();
+  EXPECT_NE(serverConn, nullptr);
+}
+
+TEST_F(TcpSocketConfigTest, ValidateRejectsNegativeTimeout) {
+  auto cfg = TcpSocketConfig{};
+  cfg.connTimeout = std::chrono::seconds{-1};
+  auto status = cfg.validate();
+  EXPECT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::InvalidArgument);
+}
+
+TEST_F(TcpSocketConfigTest, ValidateRejectsZeroBufferSize) {
+  auto cfg = TcpSocketConfig{};
+  cfg.socketBufSize = 0;
+  auto status = cfg.validate();
+  EXPECT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::InvalidArgument);
+}
+
+TEST_F(TcpSocketConfigTest, ValidateRejectsZeroAcceptRetry) {
+  auto cfg = TcpSocketConfig{};
+  cfg.acceptRetryCnt = 0;
+  auto status = cfg.validate();
+  EXPECT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::InvalidArgument);
+}
+
+TEST_F(TcpSocketConfigTest, InvalidConfigThrowsInServerConstructor) {
+  auto cfg = TcpSocketConfig{};
+  cfg.connTimeout = std::chrono::seconds{-1};
+  EXPECT_THROW(TcpServer("127.0.0.1:0", cfg), std::invalid_argument);
+}
+
+TEST_F(TcpSocketConfigTest, InvalidConfigThrowsInClientConstructor) {
+  auto cfg = TcpSocketConfig{};
+  cfg.socketBufSize = -1;
+  EXPECT_THROW(TcpClient{cfg}, std::invalid_argument);
+}
+
+TEST_F(TcpSocketConfigTest, CustomConfigConnectionSucceeds) {
+  auto cfg = TcpSocketConfig{};
+  cfg.connTimeout = std::chrono::seconds{10};
+  cfg.socketBufSize = 256 * 1024;
+
+  TcpServer server("127.0.0.1:0", cfg);
+  auto status = server.init();
+  ASSERT_TRUE(status.hasValue()) << status.error().toString();
+
+  std::unique_ptr<Conn> serverConn;
+  std::thread acceptThread([&]() { serverConn = server.accept(); });
+
+  TcpClient client(cfg);
+  auto clientConn =
+      client.connect("127.0.0.1:" + std::to_string(server.getPort()));
+  EXPECT_NE(clientConn, nullptr);
+
+  acceptThread.join();
+  EXPECT_NE(serverConn, nullptr);
+}
+
+TEST_F(TcpSocketConfigTest, ExplicitKeepaliveDisableIsValid) {
+  auto cfg = TcpSocketConfig{};
+  cfg.enableKeepalive = false;
+  EXPECT_TRUE(cfg.validate().hasValue());
+
+  TcpServer server("127.0.0.1:0", cfg);
+  auto status = server.init();
+  ASSERT_TRUE(status.hasValue()) << status.error().toString();
+
+  std::unique_ptr<Conn> serverConn;
+  std::thread acceptThread([&]() { serverConn = server.accept(); });
+
+  TcpClient client(cfg);
+  auto clientConn =
+      client.connect("127.0.0.1:" + std::to_string(server.getPort()));
+  EXPECT_NE(clientConn, nullptr);
+
+  acceptThread.join();
+  EXPECT_NE(serverConn, nullptr);
 }

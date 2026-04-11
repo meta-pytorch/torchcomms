@@ -201,7 +201,7 @@ class ctranAllToAllDedupTest : public ctran::CtranDistTestFixture,
 
     EXPECT_NE(dumpMap["CT_pastColls"], "[]");
     EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
-    EXPECT_EQ(dumpMap["CT_currentColl"], "null");
+    EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
 
     auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
     // make sure we are collecting enough records

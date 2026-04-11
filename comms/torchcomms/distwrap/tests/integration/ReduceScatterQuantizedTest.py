@@ -42,6 +42,18 @@ class ReduceScatterQuantizedTest(unittest.TestCase):
         """Clean up distwrap after all tests."""
         dist.destroy_process_group()
 
+    def setUp(self) -> None:
+        """Skip if reduce_scatter_quantized is not available in this NCCLX version."""
+        from torchcomms.distwrap.utils import get_group, get_torchcomms_instance
+
+        pg = get_group(None)
+        tc = get_torchcomms_instance(pg, device_type="cuda")
+        ncclx_backend = tc.unsafe_get_backend()
+        if not hasattr(ncclx_backend, "reduce_scatter_quantized"):
+            self.skipTest(
+                "reduce_scatter_quantized not available in this NCCLX version"
+            )
+
     def test_reduce_scatter_quantized_sum(self) -> None:
         """Test reduce_scatter_quantized with SUM reduction.
 

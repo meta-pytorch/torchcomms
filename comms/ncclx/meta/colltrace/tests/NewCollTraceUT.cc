@@ -105,7 +105,7 @@ TEST_F(NewCollTraceUT, dumpNewCollTraceWithCollectives) {
 
   // Verify pastColls is empty and currentColl should have one entry
   EXPECT_EQ(dumpMapPending["CT_pastColls"], "[]");
-  EXPECT_NE(dumpMapPending["CT_currentColl"], "null");
+  EXPECT_NE(dumpMapPending["CT_currentColls"], "[]");
   EXPECT_EQ(dumpMapPending["CT_pendingColls"], "[]");
 
   // Trigger kernel start
@@ -122,7 +122,7 @@ TEST_F(NewCollTraceUT, dumpNewCollTraceWithCollectives) {
   // Verify currentColl is set and pendingColls is empty
   EXPECT_EQ(dumpMapCurrent["CT_pastColls"], "[]");
   EXPECT_EQ(dumpMapCurrent["CT_pendingColls"], "[]");
-  EXPECT_NE(dumpMapCurrent["CT_currentColl"], "null");
+  EXPECT_NE(dumpMapCurrent["CT_currentColls"], "[]");
 
   // Trigger kernel finish
   ASSERT_TRUE(
@@ -136,7 +136,7 @@ TEST_F(NewCollTraceUT, dumpNewCollTraceWithCollectives) {
   ASSERT_FALSE(dumpMapPast.empty());
 
   // Verify pastColls has one entry and currentColl is null
-  EXPECT_EQ(dumpMapPast["CT_currentColl"], "null");
+  EXPECT_EQ(dumpMapPast["CT_currentColls"], "[]");
   auto pastCollsJson = folly::parseJson(dumpMapPast["CT_pastColls"]);
   EXPECT_EQ(pastCollsJson.size(), 1);
 

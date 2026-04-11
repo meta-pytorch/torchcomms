@@ -2,6 +2,8 @@
 
 #include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
 
+#include <algorithm>
+
 #include <folly/Unit.h>
 #include <folly/json.h>
 #include <folly/logging/xlog.h>
@@ -87,36 +89,28 @@ CommsMaybeVoid CommDumpPlugin::afterCollKernelStart(
           lockedCollTraceDump->pendingColls,
           config_.pendingCollSize + 1));
 
-  // ----- Get the first pending event -----
-  if (lockedCollTraceDump->pendingColls.empty()) [[unlikely]] {
-    XLOG_FIRST_N(ERR, 2, "Pending colls queue is empty in CommDumpPlugin");
-    return folly::makeUnexpected(CommsError(
-        "Pending colls queue is empty in CommDumpPlugin", commInternalError));
-  }
+  // Find the matching pending collective.
+  // With deferred graph polling, completions may arrive out of enqueue order
+  auto it = std::find_if(
+      lockedCollTraceDump->pendingColls.begin(),
+      lockedCollTraceDump->pendingColls.end(),
+      [&curEvent](const std::shared_ptr<CollRecord>& record) {
+        return record.get() == curEvent.collRecord.get();
+      });
 
-  // ----- Check whether the pending event matches the current event -----
-  if (lockedCollTraceDump->pendingColls.front().get() !=
-      curEvent.collRecord.get()) [[unlikely]] {
+  if (it == lockedCollTraceDump->pendingColls.end()) [[unlikely]] {
     XLOG_FIRST_N(
-        ERR, 2, "Got event with mismatched collRecord in CommDumpPlugin");
+        ERR,
+        2,
+        "Could not find matching collRecord in pendingColls in CommDumpPlugin");
     return folly::makeUnexpected(CommsError(
-        "Got event with mismatched collRecord in CommDumpPlugin",
+        "Could not find matching collRecord in pendingColls in CommDumpPlugin",
         commInternalError));
   }
 
-  // ----- Check whether the current event is not empty -----
-  if (lockedCollTraceDump->currentColl != nullptr) [[unlikely]] {
-    XLOG_FIRST_N(
-        ERR, 2, "Got event with non-empty currentColl in CommDumpPlugin");
-    return folly::makeUnexpected(CommsError(
-        "Got event with non-empty currentColl in CommDumpPlugin",
-        commInternalError));
-  }
-
-  // ----- Set the pending event and current event -----
-  lockedCollTraceDump->currentColl =
-      std::move(lockedCollTraceDump->pendingColls.front());
-  lockedCollTraceDump->pendingColls.pop_front();
+  // ----- Move to active collectives -----
+  lockedCollTraceDump->currentColls.push_back(std::move(*it));
+  lockedCollTraceDump->pendingColls.erase(it);
 
   return folly::unit;
 }
@@ -143,25 +137,30 @@ CommsMaybeVoid CommDumpPlugin::afterCollKernelEnd(
           lockedCollTraceDump->pendingColls,
           config_.pendingCollSize + 1));
 
-  // ----- Ensure CollRecord matches -----
-  if (lockedCollTraceDump->currentColl.get() != curEvent.collRecord.get())
-      [[unlikely]] {
+  // ----- Find and move from currentColls to pastColls -----
+  auto it = std::find_if(
+      lockedCollTraceDump->currentColls.begin(),
+      lockedCollTraceDump->currentColls.end(),
+      [&curEvent](const std::shared_ptr<CollRecord>& record) {
+        return record.get() == curEvent.collRecord.get();
+      });
+
+  if (it == lockedCollTraceDump->currentColls.end()) [[unlikely]] {
     XLOG_FIRST_N(
         ERR,
         2,
-        "Got event with mismatched collRecord in CommDumpPlugin during coll end");
+        "Could not find matching collRecord in currentColls during coll end");
     return folly::makeUnexpected(CommsError(
-        "Got event with mismatched collRecord in CommDumpPlugin during coll end",
+        "Could not find matching collRecord in currentColls during coll end",
         commInternalError));
   }
 
-  // ----- Move the coll to pastColls -----
   while (config_.pastCollSize >= 0 &&
          lockedCollTraceDump->pastColls.size() >= config_.pastCollSize) {
     lockedCollTraceDump->pastColls.pop_front();
   }
-  lockedCollTraceDump->pastColls.emplace_back(
-      std::move(lockedCollTraceDump->currentColl));
+  lockedCollTraceDump->pastColls.emplace_back(std::move(*it));
+  lockedCollTraceDump->currentColls.erase(it);
 
   return folly::unit;
 }
@@ -205,14 +204,14 @@ CommsMaybe<CollTraceDump> CommDumpPlugin::dump() noexcept {
   // Create a copy of the current state of collTraceDump_
   CollTraceDump dumpCopy = *readLockedCollTraceDump;
 
-  // Temporary fix: Currently we use currentColl to also track the next
+  // Temporary fix: Currently we use currentColls to also track the next
   // pending collective, this logic is being used in Analyzer to detect
   // dependencies between collectives. Without making the next pending
   // collective current, Analyzer will not work. For now we temporarily
   // track next pending collective as current, until we fully deprecate
   // old colltrace and change Analyzer logic
-  if (dumpCopy.currentColl == nullptr && !dumpCopy.pendingColls.empty()) {
-    dumpCopy.currentColl = std::move(dumpCopy.pendingColls.front());
+  if (dumpCopy.currentColls.empty() && !dumpCopy.pendingColls.empty()) {
+    dumpCopy.currentColls.push_back(std::move(dumpCopy.pendingColls.front()));
     dumpCopy.pendingColls.pop_front();
   }
 
@@ -235,13 +234,17 @@ std::unordered_map<std::string, std::string> commDumpToMap(
   }
   map["CT_pendingColls"] = folly::toJson(pendingColls);
 
-  if (dump.currentColl != nullptr) {
-    map["CT_currentColl"] = folly::toJson(dump.currentColl->toDynamic());
-  } else {
-    map["CT_currentColl"] = "null";
+  auto currentColls = folly::dynamic::array();
+  for (const auto& coll : dump.currentColls) {
+    currentColls.push_back(coll->toDynamic());
   }
+  map["CT_currentColls"] = folly::toJson(currentColls);
 
   return map;
+}
+
+int64_t CommDumpPlugin::maxEventRetention() const noexcept {
+  return config_.pastCollSize;
 }
 
 CommsMaybeVoid CommDumpPlugin::testOnlyClearColls() noexcept {

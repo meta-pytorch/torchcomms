@@ -37,12 +37,12 @@ TEST_F(CommDumpToMapTest, EmptyDump) {
   EXPECT_EQ(map.size(), 3);
   EXPECT_TRUE(map.find("CT_pastColls") != map.end());
   EXPECT_TRUE(map.find("CT_pendingColls") != map.end());
-  EXPECT_TRUE(map.find("CT_currentColl") != map.end());
+  EXPECT_TRUE(map.find("CT_currentColls") != map.end());
 
   // Verify the values are as expected for an empty dump
   EXPECT_EQ(map["CT_pastColls"], "[]");
   EXPECT_EQ(map["CT_pendingColls"], "[]");
-  EXPECT_EQ(map["CT_currentColl"], "null");
+  EXPECT_EQ(map["CT_currentColls"], "[]");
 }
 
 // Test commDumpToMap with only pastColls
@@ -66,7 +66,7 @@ TEST_F(CommDumpToMapTest, WithPastColls) {
 
   // Verify other values
   EXPECT_EQ(map["CT_pendingColls"], "[]");
-  EXPECT_EQ(map["CT_currentColl"], "null");
+  EXPECT_EQ(map["CT_currentColls"], "[]");
 }
 
 // Test commDumpToMap with only currentColl
@@ -74,7 +74,7 @@ TEST_F(CommDumpToMapTest, WithCurrentColl) {
   CollTraceDump dump;
 
   // Set current collective
-  dump.currentColl = createCollRecord(3);
+  dump.currentColls = {createCollRecord(3)};
 
   auto map = commDumpToMap(dump);
 
@@ -85,9 +85,10 @@ TEST_F(CommDumpToMapTest, WithCurrentColl) {
   EXPECT_EQ(map["CT_pastColls"], "[]");
   EXPECT_EQ(map["CT_pendingColls"], "[]");
 
-  // Parse the JSON for currentColl and verify it contains the expected data
-  auto currentCollJson = folly::parseJson(map["CT_currentColl"]);
-  EXPECT_EQ(currentCollJson["collId"], 3);
+  // Parse the JSON for currentColls and verify it contains the expected data
+  auto currentCollsJson = folly::parseJson(map["CT_currentColls"]);
+  ASSERT_EQ(currentCollsJson.size(), 1u);
+  EXPECT_EQ(currentCollsJson[0]["collId"], 3);
 }
 
 // Test commDumpToMap with only pendingColls
@@ -106,7 +107,7 @@ TEST_F(CommDumpToMapTest, WithPendingColls) {
 
   // Verify pastColls is empty and currentColl is null
   EXPECT_EQ(map["CT_pastColls"], "[]");
-  EXPECT_EQ(map["CT_currentColl"], "null");
+  EXPECT_EQ(map["CT_currentColls"], "[]");
 
   // Parse the JSON for pendingColls and verify it contains the expected data
   auto pendingCollsJson = folly::parseJson(map["CT_pendingColls"]);
@@ -125,7 +126,7 @@ TEST_F(CommDumpToMapTest, FullDump) {
   dump.pastColls.push_back(createCollRecord(2));
 
   // Set current collective
-  dump.currentColl = createCollRecord(3);
+  dump.currentColls = {createCollRecord(3)};
 
   // Add pending collectives
   dump.pendingColls.push_back(createCollRecord(4));
@@ -142,9 +143,10 @@ TEST_F(CommDumpToMapTest, FullDump) {
   EXPECT_EQ(pastCollsJson[0]["collId"], 1);
   EXPECT_EQ(pastCollsJson[1]["collId"], 2);
 
-  // Parse the JSON for currentColl and verify it contains the expected data
-  auto currentCollJson = folly::parseJson(map["CT_currentColl"]);
-  EXPECT_EQ(currentCollJson["collId"], 3);
+  // Parse the JSON for currentColls and verify it contains the expected data
+  auto currentCollsJson = folly::parseJson(map["CT_currentColls"]);
+  ASSERT_EQ(currentCollsJson.size(), 1u);
+  EXPECT_EQ(currentCollsJson[0]["collId"], 3);
 
   // Parse the JSON for pendingColls and verify it contains the expected data
   auto pendingCollsJson = folly::parseJson(map["CT_pendingColls"]);

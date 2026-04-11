@@ -7,6 +7,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <cerrno>
+#include <charconv>
 #include <cstring>
 #include <stdexcept>
 #include <system_error>
@@ -16,24 +17,56 @@
 
 namespace uniflow::controller {
 
+TcpSocketConfig TcpSocketConfig::osDefaults() {
+  TcpSocketConfig cfg;
+  cfg.connTimeout = std::nullopt;
+  cfg.socketBufSize = std::nullopt;
+  cfg.tcpNoDelay = std::nullopt;
+  cfg.enableKeepalive = std::nullopt;
+  cfg.keepaliveIdle = std::nullopt;
+  cfg.keepaliveInterval = std::nullopt;
+  cfg.keepaliveCount = std::nullopt;
+  cfg.userTimeout = std::nullopt;
+  return cfg;
+}
+
+Status TcpSocketConfig::validate() const {
+  if (connTimeout && connTimeout->count() <= 0) {
+    return Err(ErrCode::InvalidArgument, "connTimeout must be positive");
+  }
+  if (socketBufSize && *socketBufSize <= 0) {
+    return Err(ErrCode::InvalidArgument, "socketBufSize must be positive");
+  }
+  if (keepaliveIdle && keepaliveIdle->count() <= 0) {
+    return Err(ErrCode::InvalidArgument, "keepaliveIdle must be positive");
+  }
+  if (keepaliveInterval && keepaliveInterval->count() <= 0) {
+    return Err(ErrCode::InvalidArgument, "keepaliveInterval must be positive");
+  }
+  if (keepaliveCount && *keepaliveCount <= 0) {
+    return Err(ErrCode::InvalidArgument, "keepaliveCount must be positive");
+  }
+  if (userTimeout && userTimeout->count() <= 0) {
+    return Err(ErrCode::InvalidArgument, "userTimeout must be positive");
+  }
+  if (acceptRetryCnt <= 0) {
+    return Err(ErrCode::InvalidArgument, "acceptRetryCnt must be positive");
+  }
+  if (retryTimeout.count() < 0) {
+    return Err(ErrCode::InvalidArgument, "retryTimeout must be non-negative");
+  }
+  return Ok();
+}
+
 namespace {
 
-constexpr int kUserTimeoutMs = 60000;
-constexpr int kKeepaliveIdleSec = 60;
-constexpr int kKeepaliveIntervalSec = 5;
-constexpr int kKeepaliveCount = 3;
-constexpr int kSocketBufSize = 1 << 20; // 1MB send/recv buffer
 constexpr uint32_t kMaxMessageSize = 64 << 20; // 64MB max message size
 constexpr int kAcceptTimeoutSec = 5; // accept() wakeup interval
-constexpr int kConnectedTimeoutSec =
-    30; // send/recv timeout on connected sockets
 
 // Magic value exchanged during connection handshake to validate that both
 // endpoints are uniflow controllers (rejects stray connections).
 constexpr uint32_t kMagic = 0x554E4946; // "UNIF" in ASCII
 
-// Helper for setting socket options with error collection. Accumulates the
-// names of all failed options and produces a single Status at the end.
 class SockOptSetter {
   int sock_;
   std::string failures_;
@@ -41,7 +74,6 @@ class SockOptSetter {
  public:
   explicit SockOptSetter(int sock) : sock_(sock) {}
 
-  // Checked — collects failure name if setsockopt fails.
   template <typename T>
   void set(int level, int optname, const T& value, const char* name) {
     if (::setsockopt(sock_, level, optname, &value, sizeof(value)) < 0) {
@@ -52,7 +84,7 @@ class SockOptSetter {
     }
   }
 
-  // Optional — best-effort, failure is silently ignored.
+  // Best-effort, failure silently ignored.
   template <typename T>
   void trySet(int level, int optname, const T& value) {
     ::setsockopt(sock_, level, optname, &value, sizeof(value));
@@ -66,8 +98,7 @@ class SockOptSetter {
   }
 };
 
-// Returns true if the given errno indicates a transient error that should
-// be retried. Aligned with ctran/bootstrap/Socket.cc::shouldRetry().
+// Aligned with ctran/bootstrap/Socket.cc::shouldRetry().
 bool shouldRetry(int errcode) {
   return (
       errcode == ENETDOWN || errcode == EPROTO || errcode == ENOPROTOOPT ||
@@ -91,9 +122,9 @@ Result<std::pair<std::string, int>> parseHostPort(std::string_view id) {
   }
 
   int port = 0;
-  try {
-    port = std::stoi(std::string(portStr));
-  } catch (const std::exception&) {
+  auto [ptr, ec] =
+      std::from_chars(portStr.data(), portStr.data() + portStr.size(), port);
+  if (ec != std::errc{} || ptr != portStr.data() + portStr.size()) {
     return Err(
         ErrCode::InvalidArgument, "Invalid port: " + std::string(portStr));
   }
@@ -106,22 +137,18 @@ Result<std::pair<std::string, int>> parseHostPort(std::string_view id) {
 }
 
 Result<int> detectAddressFamily(std::string_view host) {
-  // Empty host and "*" are wildcards — use IPv6 dual-stack (AF_INET6 with
-  // in6addr_any accepts both IPv4 and IPv6 when IPV6_V6ONLY is not set,
-  // which is the Linux default)
+  // Wildcard → IPv6 dual-stack (accepts both v4 and v6 on Linux).
   if (host.empty() || host == "*") {
     return AF_INET6;
   }
 
   std::string hostStr(host);
 
-  // Try IPv6 first
   in6_addr addr6{};
   if (::inet_pton(AF_INET6, hostStr.c_str(), &addr6) == 1) {
     return AF_INET6;
   }
 
-  // Try IPv4
   in_addr addr4{};
   if (::inet_pton(AF_INET, hostStr.c_str(), &addr4) == 1) {
     return AF_INET;
@@ -130,8 +157,6 @@ Result<int> detectAddressFamily(std::string_view host) {
   return Err(ErrCode::InvalidArgument, "Invalid host address: " + hostStr);
 }
 
-// Build a sockaddr for the given host/port/domain, handling wildcard addresses
-// for bind. Returns the sockaddr size.
 Result<socklen_t> buildSockAddr(
     std::string_view host,
     int port,
@@ -169,7 +194,6 @@ Result<socklen_t> buildSockAddr(
   return static_cast<socklen_t>(sizeof(sockaddr_in));
 }
 
-// Format a sockaddr as "host:port" for logging.
 std::string formatAddr(const sockaddr_storage& addr) {
   char buf[INET6_ADDRSTRLEN] = {};
   if (addr.ss_family == AF_INET6) {
@@ -184,10 +208,6 @@ std::string formatAddr(const sockaddr_storage& addr) {
 
 } // namespace
 
-// ---------------------------------------------------------------------------
-// TcpConn
-// ---------------------------------------------------------------------------
-
 bool TcpConn::sendAll(const void* buf, size_t len) {
   auto* ptr = static_cast<const uint8_t*>(buf);
   size_t remaining = len;
@@ -197,11 +217,13 @@ bool TcpConn::sendAll(const void* buf, size_t len) {
       if (errno == EINTR) {
         continue;
       }
+      int savedErrno = errno;
       UNIFLOW_LOG_ERROR(
           "sendAll failed: fd={} errno={} ({})",
           sock_,
-          errno,
-          std::system_category().message(errno));
+          savedErrno,
+          std::system_category().message(savedErrno));
+      errno = savedErrno;
       return false;
     }
     ptr += n;
@@ -219,11 +241,13 @@ bool TcpConn::recvAll(void* buf, size_t len) {
       if (errno == EINTR) {
         continue;
       }
+      int savedErrno = errno;
       UNIFLOW_LOG_ERROR(
           "recvAll failed: fd={} errno={} ({})",
           sock_,
-          errno,
-          std::system_category().message(errno));
+          savedErrno,
+          std::system_category().message(savedErrno));
+      errno = savedErrno;
       return false;
     }
     if (n == 0) {
@@ -286,8 +310,6 @@ Result<size_t> TcpConn::send(std::span<const uint8_t> data) {
 
   UNIFLOW_LOG_DEBUG("TcpConn::send: fd={} bytes={}", sock_, data.size());
 
-  // Length-prefixed framing: send 4-byte size header in network byte order
-  // then payload
   uint32_t len = htonl(static_cast<uint32_t>(data.size()));
   if (!sendAll(&len, sizeof(len))) {
     return Err(
@@ -309,8 +331,6 @@ Result<size_t> TcpConn::recv(std::vector<uint8_t>& data) {
     return Err(ErrCode::NotConnected, "Socket is not connected");
   }
 
-  // Length-prefixed framing: read 4-byte size header in network byte order
-  // then payload
   uint32_t rawLen = 0;
   if (!recvAll(&rawLen, sizeof(rawLen))) {
     return Err(
@@ -364,7 +384,7 @@ Result<int> TcpServer::createListenSocket(int domain) {
 
   SockOptSetter opt(sock);
   opt.set(SOL_SOCKET, SO_REUSEADDR, 1, "SO_REUSEADDR");
-  opt.set(SOL_SOCKET, SO_REUSEPORT, 1, "SO_REUSEPORT"); // optional
+  opt.trySet(SOL_SOCKET, SO_REUSEPORT, 1);
 
   // Set accept timeout so accept() wakes up periodically, allowing
   // shutdown checks instead of blocking indefinitely
@@ -384,19 +404,42 @@ Result<int> TcpServer::createListenSocket(int domain) {
 
 Status TcpServer::configureAcceptedSocket(int sock) {
   SockOptSetter opt(sock);
-  opt.set(SOL_SOCKET, SO_SNDBUF, kSocketBufSize, "SO_SNDBUF");
-  opt.set(SOL_SOCKET, SO_RCVBUF, kSocketBufSize, "SO_RCVBUF");
-  opt.set(IPPROTO_TCP, TCP_NODELAY, 1, "TCP_NODELAY");
-  opt.set(SOL_SOCKET, SO_KEEPALIVE, 1, "SO_KEEPALIVE");
-  opt.set(IPPROTO_TCP, TCP_KEEPIDLE, kKeepaliveIdleSec, "TCP_KEEPIDLE");
-  opt.set(IPPROTO_TCP, TCP_KEEPINTVL, kKeepaliveIntervalSec, "TCP_KEEPINTVL");
-  opt.set(IPPROTO_TCP, TCP_KEEPCNT, kKeepaliveCount, "TCP_KEEPCNT");
-  opt.set(IPPROTO_TCP, TCP_USER_TIMEOUT, kUserTimeoutMs, "TCP_USER_TIMEOUT");
 
-  struct timeval tv{};
-  tv.tv_sec = kConnectedTimeoutSec;
-  opt.set(SOL_SOCKET, SO_SNDTIMEO, tv, "SO_SNDTIMEO");
-  opt.set(SOL_SOCKET, SO_RCVTIMEO, tv, "SO_RCVTIMEO");
+  if (config_.socketBufSize) {
+    opt.set(SOL_SOCKET, SO_SNDBUF, *config_.socketBufSize, "SO_SNDBUF");
+    opt.set(SOL_SOCKET, SO_RCVBUF, *config_.socketBufSize, "SO_RCVBUF");
+  }
+  if (config_.tcpNoDelay) {
+    int val = *config_.tcpNoDelay ? 1 : 0;
+    opt.set(IPPROTO_TCP, TCP_NODELAY, val, "TCP_NODELAY");
+  }
+  if (config_.enableKeepalive) {
+    int val = *config_.enableKeepalive ? 1 : 0;
+    opt.set(SOL_SOCKET, SO_KEEPALIVE, val, "SO_KEEPALIVE");
+  }
+  if (config_.enableKeepalive && *config_.enableKeepalive) {
+    if (config_.keepaliveIdle) {
+      int val = static_cast<int>(config_.keepaliveIdle->count());
+      opt.set(IPPROTO_TCP, TCP_KEEPIDLE, val, "TCP_KEEPIDLE");
+    }
+    if (config_.keepaliveInterval) {
+      int val = static_cast<int>(config_.keepaliveInterval->count());
+      opt.set(IPPROTO_TCP, TCP_KEEPINTVL, val, "TCP_KEEPINTVL");
+    }
+    if (config_.keepaliveCount) {
+      opt.set(IPPROTO_TCP, TCP_KEEPCNT, *config_.keepaliveCount, "TCP_KEEPCNT");
+    }
+  }
+  if (config_.userTimeout) {
+    int val = static_cast<int>(config_.userTimeout->count());
+    opt.set(IPPROTO_TCP, TCP_USER_TIMEOUT, val, "TCP_USER_TIMEOUT");
+  }
+  if (config_.connTimeout) {
+    struct timeval tv{};
+    tv.tv_sec = config_.connTimeout->count();
+    opt.set(SOL_SOCKET, SO_SNDTIMEO, tv, "SO_SNDTIMEO");
+    opt.set(SOL_SOCKET, SO_RCVTIMEO, tv, "SO_RCVTIMEO");
+  }
 
   return opt.status();
 }
@@ -420,8 +463,8 @@ Status TcpServer::resolveAndBind(int domain) {
   return Ok();
 }
 
-TcpServer::TcpServer(std::string id, int acceptRetryCnt)
-    : id_(std::move(id)), acceptRetryCnt_(acceptRetryCnt) {
+TcpServer::TcpServer(std::string id, TcpSocketConfig config)
+    : id_(std::move(id)), config_(std::move(config)) {
   auto result = parseHostPort(id_);
   if (!result) {
     throw std::invalid_argument(
@@ -430,6 +473,12 @@ TcpServer::TcpServer(std::string id, int acceptRetryCnt)
   auto [host, port] = result.value();
   host_ = host;
   port_ = port;
+
+  auto status = config_.validate();
+  if (!status) {
+    throw std::invalid_argument(
+        "Invalid socket config: " + status.error().toString());
+  }
 }
 
 TcpServer::~TcpServer() {
@@ -479,7 +528,7 @@ Status TcpServer::init() {
     return bindStatus;
   }
 
-  // Retrieve the actual bound port (needed when binding to port 0)
+  // Retrieve actual bound port (needed when binding to port 0).
   sockaddr_storage boundAddr{};
   socklen_t boundLen = sizeof(boundAddr);
   if (::getsockname(
@@ -493,15 +542,16 @@ Status TcpServer::init() {
   }
 
   if (::listen(listenSock_, SOMAXCONN) < 0) {
+    int savedErrno = errno;
     UNIFLOW_LOG_ERROR(
         "TcpServer: listen failed on {}: {}",
         id_,
-        std::system_category().message(errno));
+        std::system_category().message(savedErrno));
     ::close(listenSock_);
     listenSock_ = -1;
     return Err(
         ErrCode::ConnectionFailed,
-        "listen failed: " + std::system_category().message(errno));
+        "listen failed: " + std::system_category().message(savedErrno));
   }
 
   // Resolve wildcard host to connectable loopback address so that getId()
@@ -525,12 +575,8 @@ std::unique_ptr<Conn> TcpServer::accept() {
   sockaddr_storage clientAddr{};
   socklen_t clientLen = sizeof(clientAddr);
 
-  // Retry accept on transient errors, aligned with ctran
-  // ServerSocket::accept(). EAGAIN/EWOULDBLOCK from SO_RCVTIMEO timeout are
-  // handled separately — they loop back to allow periodic shutdown checks
-  // without counting as a transient failure.
   int retryCnt = 0;
-  while (retryCnt < acceptRetryCnt_) {
+  while (retryCnt < config_.acceptRetryCnt) {
     clientLen = sizeof(clientAddr);
     int clientSock = ::accept4(
         listenSock_,
@@ -542,7 +588,6 @@ std::unique_ptr<Conn> TcpServer::accept() {
           "TcpServer: accepted fd={} from {}",
           clientSock,
           formatAddr(clientAddr));
-      // Sockopt failure is a system-level issue — return immediately
       auto status = configureAcceptedSocket(clientSock);
       if (!status) {
         UNIFLOW_LOG_ERROR(
@@ -556,27 +601,26 @@ std::unique_ptr<Conn> TcpServer::accept() {
       if (conn) {
         return conn;
       }
-      // Magic handshake failed (non-uniflow client) — keep accepting.
-      // Socket was already closed by TcpConn destructor inside create().
+      // Non-uniflow client — socket closed by TcpConn dtor, keep accepting.
       UNIFLOW_LOG_WARN(
           "TcpServer: rejecting non-uniflow client, fd={}", clientSock);
       continue;
     }
 
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
-      // Timeout fired — check if shutdown was called
       if (listenSock_ < 0) {
         UNIFLOW_LOG_INFO("TcpServer: accept interrupted by shutdown");
         return nullptr;
       }
-      continue; // don't count timeouts as retries
+      continue;
     }
 
-    if (!shouldRetry(errno)) {
+    int savedErrno = errno;
+    if (!shouldRetry(savedErrno)) {
       UNIFLOW_LOG_ERROR(
           "TcpServer: accept failed (non-retryable): errno={} ({})",
-          errno,
-          std::system_category().message(errno));
+          savedErrno,
+          std::system_category().message(savedErrno));
       return nullptr;
     }
 
@@ -584,30 +628,64 @@ std::unique_ptr<Conn> TcpServer::accept() {
     UNIFLOW_LOG_WARN(
         "TcpServer: accept retry {}/{}: errno={} ({})",
         retryCnt,
-        acceptRetryCnt_,
-        errno,
-        std::system_category().message(errno));
+        config_.acceptRetryCnt,
+        savedErrno,
+        std::system_category().message(savedErrno));
   }
 
   UNIFLOW_LOG_ERROR(
-      "TcpServer: accept exhausted {} retries on {}", acceptRetryCnt_, id_);
+      "TcpServer: accept exhausted {} retries on {}",
+      config_.acceptRetryCnt,
+      id_);
   return nullptr;
 }
 
-// ---------------------------------------------------------------------------
-// TcpClient
-// ---------------------------------------------------------------------------
+TcpClient::TcpClient(TcpSocketConfig config) : config_(std::move(config)) {
+  auto status = config_.validate();
+  if (!status) {
+    throw std::invalid_argument(
+        "Invalid socket config: " + status.error().toString());
+  }
+}
 
 Status TcpClient::configureClientSocket(int sock) {
   SockOptSetter opt(sock);
-  opt.set(SOL_SOCKET, SO_SNDBUF, kSocketBufSize, "SO_SNDBUF");
-  opt.set(SOL_SOCKET, SO_RCVBUF, kSocketBufSize, "SO_RCVBUF");
-  opt.set(IPPROTO_TCP, TCP_NODELAY, 1, "TCP_NODELAY");
 
-  struct timeval tv{};
-  tv.tv_sec = kConnectedTimeoutSec;
-  opt.set(SOL_SOCKET, SO_SNDTIMEO, tv, "SO_SNDTIMEO");
-  opt.set(SOL_SOCKET, SO_RCVTIMEO, tv, "SO_RCVTIMEO");
+  if (config_.socketBufSize) {
+    opt.set(SOL_SOCKET, SO_SNDBUF, *config_.socketBufSize, "SO_SNDBUF");
+    opt.set(SOL_SOCKET, SO_RCVBUF, *config_.socketBufSize, "SO_RCVBUF");
+  }
+  if (config_.tcpNoDelay) {
+    int val = *config_.tcpNoDelay ? 1 : 0;
+    opt.set(IPPROTO_TCP, TCP_NODELAY, val, "TCP_NODELAY");
+  }
+  if (config_.enableKeepalive) {
+    int val = *config_.enableKeepalive ? 1 : 0;
+    opt.set(SOL_SOCKET, SO_KEEPALIVE, val, "SO_KEEPALIVE");
+  }
+  if (config_.enableKeepalive && *config_.enableKeepalive) {
+    if (config_.keepaliveIdle) {
+      int val = static_cast<int>(config_.keepaliveIdle->count());
+      opt.set(IPPROTO_TCP, TCP_KEEPIDLE, val, "TCP_KEEPIDLE");
+    }
+    if (config_.keepaliveInterval) {
+      int val = static_cast<int>(config_.keepaliveInterval->count());
+      opt.set(IPPROTO_TCP, TCP_KEEPINTVL, val, "TCP_KEEPINTVL");
+    }
+    if (config_.keepaliveCount) {
+      opt.set(IPPROTO_TCP, TCP_KEEPCNT, *config_.keepaliveCount, "TCP_KEEPCNT");
+    }
+  }
+  if (config_.userTimeout) {
+    int val = static_cast<int>(config_.userTimeout->count());
+    opt.set(IPPROTO_TCP, TCP_USER_TIMEOUT, val, "TCP_USER_TIMEOUT");
+  }
+  if (config_.connTimeout) {
+    struct timeval tv{};
+    tv.tv_sec = config_.connTimeout->count();
+    opt.set(SOL_SOCKET, SO_SNDTIMEO, tv, "SO_SNDTIMEO");
+    opt.set(SOL_SOCKET, SO_RCVTIMEO, tv, "SO_RCVTIMEO");
+  }
 
   return opt.status();
 }
@@ -627,7 +705,6 @@ std::unique_ptr<Conn> TcpClient::connect(std::string id) {
   }
   int domain = domainResult.value();
 
-  // Build the destination sockaddr once
   sockaddr_storage serverAddr{};
   auto addrLenResult = buildSockAddr(host, port, domain, serverAddr);
   if (!addrLenResult) {
@@ -637,19 +714,17 @@ std::unique_ptr<Conn> TcpClient::connect(std::string id) {
 
   UNIFLOW_LOG_INFO("TcpClient: connecting to {}", id);
 
-  // Retry connect on transient errors with linear backoff,
-  // aligned with ctran Socket::connect()
-  for (size_t attempt = 0; attempt <= numRetries_; ++attempt) {
+  for (size_t attempt = 0; attempt <= config_.connectRetries; ++attempt) {
     if (attempt > 0) {
       UNIFLOW_LOG_WARN(
           "TcpClient: retry {}/{} to {} (backoff {}ms)",
           attempt,
-          numRetries_,
+          config_.connectRetries,
           id,
-          (attempt * retryTimeout_).count());
+          (attempt * config_.retryTimeout).count());
       // Intentional linear backoff between connect retries
       // NOLINTNEXTLINE(facebook-hte-BadCall-sleep_for)
-      std::this_thread::sleep_for(attempt * retryTimeout_);
+      std::this_thread::sleep_for(attempt * config_.retryTimeout);
     }
 
     // Create a fresh socket for each attempt (connect on a failed socket
@@ -690,7 +765,9 @@ std::unique_ptr<Conn> TcpClient::connect(std::string id) {
   }
 
   UNIFLOW_LOG_ERROR(
-      "TcpClient: connect to {} failed after {} retries", id, numRetries_);
+      "TcpClient: connect to {} failed after {} retries",
+      id,
+      config_.connectRetries);
   return nullptr;
 }
 
