@@ -112,7 +112,6 @@ using PreHook = std::function<void(PreHookArgs)>;
 
 struct PostHookArgs {
   OpName name;
-  bool async_op{true};
   std::optional<c10::weak_intrusive_ptr<TorchWork>> work{};
   std::weak_ptr<TorchComm> new_comm{};
   std::weak_ptr<TorchCommWindow> new_window{};

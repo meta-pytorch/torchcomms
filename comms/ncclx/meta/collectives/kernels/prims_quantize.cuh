@@ -370,16 +370,31 @@ class PrimitivesQuantized {
     }
     patBarrier();
 
-    // [QUANTIZED] Determine src/dst type configuration for this step + Replace
-    // original reduceCopy with type-aware dispatch.
-    // Original code was:
-    //   int nSrcs = 2;
-    //   void** srcs = ncclShmem.groups[group].srcs;
-    //   if (ps->recvDim < 0) { srcs++; nSrcs--; }
-    //   reduceCopy<Unroll, RedOp, T, 0, 1, 2, 0, 1, 1, 0>
-    //     (tid, nthreads, redOpArgs, postOp, nSrcs, srcs, 1, dsts, workSize);
-    auto typeConfig =
-        determineQuantizedTypeConfig<TransportType>(ps, shmem, nelem);
+    // [QUANTIZED] Determine src/dst type configuration from the pointer values
+    // set by the source selection above (now visible after the barrier).
+    //
+    // We derive the type config from actual pointer equality rather than
+    // re-reading sendPeer->step and sendPeer->accSize from shared memory.
+    // This avoids a TOCTOU race: with parallelFactor > 1, another group's
+    // post-step updates (peer->step increment, accSize atomicMax) can modify
+    // sendPeer state between the source selection (before this barrier) and
+    // here (after the barrier). If the re-read produces a different
+    // new-vs-reaccumulation decision, the type dispatch would cast srcs[1]
+    // as the wrong type (e.g., FP32 data interpreted as BF16), producing
+    // garbage values like 1.25e38 or NaN.
+    QuantizedTypeConfig typeConfig;
+    typeConfig.dstIsOutput = (ps->sendDim < 0);
+    if (ps->sendDim >= 0) {
+      // Send path: if srcs[1] == dsts[0], the source selection chose
+      // re-accumulation (TransportType). Otherwise it's new data (InputType).
+      typeConfig.src1IsAccumType =
+          (ncclShmem.groups[group].srcs[1] != ncclShmem.groups[group].dsts[0]);
+    } else {
+      // Output path: local src is always InputType — both userInput and
+      // userOutput are InputType buffers.
+      typeConfig.src1IsAccumType = true;
+    }
+
     int workSize = ncclShmem.aborted ? 0 : nelem;
     uint64_t seed = randomSeedPtr ? *randomSeedPtr : 0;
     quantizedPatReduceCopy<Unroll, InputType, TransportType>(
