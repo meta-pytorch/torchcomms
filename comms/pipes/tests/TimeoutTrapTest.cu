@@ -33,7 +33,7 @@ __global__ void chunkStateTimeoutKernel(ChunkState* state, Timeout timeout) {
 
   // State is initialized to READY_TO_SEND (-1), so waiting for stepId=0
   // will spin forever unless timeout triggers
-  state->wait_ready_to_recv(group, 0, 0, timeout);
+  state->wait_ready_to_recv(group, 0, timeout);
 }
 
 // Kernel that waits on SignalState that will never be signaled
@@ -135,7 +135,7 @@ __global__ void chunkStateThreadGroupTimeoutKernel(
   // State is initialized to READY_TO_SEND (-1), so waiting for stepId=0
   // will spin forever unless timeout triggers
   // Uses ThreadGroup-based wait which calls timeout.check(group)
-  state->wait_ready_to_recv(group, 0, 0, timeout);
+  state->wait_ready_to_recv(group, 0, timeout);
 }
 
 // Kernel that uses ThreadGroup-based timeout checking for SignalState
