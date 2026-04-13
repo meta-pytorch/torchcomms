@@ -67,19 +67,39 @@ std::shared_ptr<CtranIbSingleton> CtranIbSingleton::getInstance() {
 
 CtranIbSingleton::CtranIbSingleton() {
   auto ibvInitResult = ibverbx::ibvInit();
-  FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM(ibvInitResult);
+  try {
+    FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM(ibvInitResult);
+  } catch (const ctran::utils::Exception& e) {
+    CLOGF(
+        ERR,
+        "CTRAN-IB: Failed to initialize ibverbs (libibverbs.so): {}. "
+        "Set NCCL_CTRAN_BACKENDS=nvl,socket to use alternative backends.",
+        e.what());
+    throw;
+  }
   auto maybeDeviceList = ibverbx::IbvDevice::ibvGetDeviceList(
       NCCL_IB_HCA, NCCL_IB_HCA_PREFIX, CTRAN_IB_ANY_PORT, NCCL_IB_DATA_DIRECT);
-  FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM(maybeDeviceList);
+  try {
+    FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM(maybeDeviceList);
+  } catch (const ctran::utils::Exception& e) {
+    CLOGF(
+        ERR,
+        "CTRAN-IB: Failed to get InfiniBand device list: {}. "
+        "Set NCCL_CTRAN_BACKENDS=nvl,socket to use alternative backends.",
+        e.what());
+    throw;
+  }
   ibvDevices = std::move(*maybeDeviceList);
 
   if (ibvDevices.size() < NCCL_CTRAN_IB_DEVICES_PER_RANK) {
-    CLOGF(
-        WARN,
-        "CTRAN-IB : active device found {} is less than requested device count {}",
+    std::string msg = fmt::format(
+        "CTRAN-IB: Found {} InfiniBand device(s) but {} required "
+        "(NCCL_CTRAN_IB_DEVICES_PER_RANK). "
+        "Set NCCL_CTRAN_BACKENDS=nvl,socket to use alternative backends.",
         ibvDevices.size(),
         NCCL_CTRAN_IB_DEVICES_PER_RANK);
-    throw std::bad_alloc();
+    CLOGF(ERR, msg);
+    throw ctran::utils::Exception(msg, commSystemError);
   }
 
   for (auto i = 0; i < this->ibvDevices.size(); i++) {
@@ -98,8 +118,6 @@ CtranIbSingleton::CtranIbSingleton() {
   for (auto& p : this->devBytes_) {
     p = std::make_unique<std::atomic<size_t>>(0);
   }
-
-  return;
 }
 
 commResult_t CtranIbSingleton::destroy() {
