@@ -39,7 +39,7 @@ class HRDWRingBufferReader {
 
  public:
   explicit HRDWRingBufferReader(const HRDWRingBuffer<DataT>& buffer)
-      : ring_(static_cast<Entry*>(buffer.ring_)),
+      : ring_(buffer.ring_),
         writeIndex_(buffer.writeIndex_),
         size_(buffer.size_),
         mask_(buffer.mask_) {
