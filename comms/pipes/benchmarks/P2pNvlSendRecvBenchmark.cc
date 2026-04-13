@@ -6,9 +6,11 @@
 
 #include "comms/common/CudaWrap.h"
 #include "comms/pipes/MultiPeerNvlTransport.h"
+#include "comms/pipes/TiledBuffer.cuh"
 #include "comms/pipes/benchmarks/BenchmarkKernel.cuh"
 #include "comms/pipes/benchmarks/BenchmarkMacros.h"
 #include "comms/pipes/benchmarks/P2pNvlBenchmarkUtils.h"
+#include "comms/pipes/benchmarks/TileSendRecv.cuh"
 #include "comms/testinfra/BenchmarkTestFixture.h"
 #include "comms/utils/CudaRAII.h"
 
@@ -128,6 +130,65 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     return bandwidth_GBps;
   }
 
+  // Verify correctness of a P2P transfer by filling src with a pattern,
+  // running one send/recv, and checking the received data matches.
+  bool verifyP2pCorrectness(
+      comms::pipes::P2pNvlTransportDevice* p2pDevicePtr,
+      const BenchmarkConfig& config) {
+    DeviceBuffer sendBuff(config.nBytes);
+    DeviceBuffer recvBuff(config.nBytes);
+
+    bool isSend = (globalRank == 0);
+    const int testValue = 0xAB;
+
+    if (isSend) {
+      CUDA_CHECK_BOOL(cudaMemset(sendBuff.get(), testValue, config.nBytes));
+    } else {
+      CUDA_CHECK_BOOL(cudaMemset(recvBuff.get(), 0, config.nBytes));
+    }
+
+    dim3 gridDim(config.numBlocks);
+    dim3 blockDim(config.numThreads);
+    SyncScope groupScope = config.groupScope;
+    void* devicePtr = isSend ? sendBuff.get() : recvBuff.get();
+    std::size_t nBytes = config.nBytes;
+    Timeout timeout;
+    void* args[] = {p2pDevicePtr, &devicePtr, &nBytes, &groupScope, &timeout};
+
+    void* kernelFunc = isSend ? (void*)comms::pipes::benchmark::p2pSend
+                              : (void*)comms::pipes::benchmark::p2pRecv;
+
+    bootstrap->barrierAll();
+    CUDA_CHECK_BOOL(
+        cudaLaunchKernel(kernelFunc, gridDim, blockDim, args, 0, nullptr));
+    CUDA_CHECK_BOOL(cudaDeviceSynchronize());
+    bootstrap->barrierAll();
+
+    if (!isSend) {
+      // Verify received data
+      std::vector<char> hostBuf(config.nBytes);
+      CUDA_CHECK_BOOL(cudaMemcpy(
+          hostBuf.data(),
+          recvBuff.get(),
+          config.nBytes,
+          cudaMemcpyDeviceToHost));
+      for (size_t i = 0; i < config.nBytes; i++) {
+        if (static_cast<unsigned char>(hostBuf[i]) != testValue) {
+          XLOGF(
+              ERR,
+              "VERIFY FAILED {}: byte {} expected 0x{:02X} got 0x{:02X}",
+              config.name,
+              i,
+              testValue,
+              static_cast<unsigned int>(
+                  static_cast<unsigned char>(hostBuf[i])));
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
   // Helper function to run P2P NVL benchmark - returns bandwidth
   // p2pDevicePtr must point to a P2pNvlTransportDevice in host memory
   // (e.g. obtained from buildP2pTransportDevice()).
@@ -166,6 +227,7 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     // cudaLaunchKernel reads the struct by value from host memory for the
     // kernel parameter.
     void* args[] = {p2pDevicePtr, &devicePtr, &nBytes, &groupScope, &timeout};
+
     void* kernelFunc = isSend ? (void*)comms::pipes::benchmark::p2pSend
                               : (void*)comms::pipes::benchmark::p2pRecv;
     cudaStream_t stream = isSend ? sendStream : recvStream;
@@ -202,6 +264,121 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
 
     bootstrap->barrierAll();
 
+    return bandwidth_GBps;
+  }
+
+  // Tile sendrecv — Triton-style head/tail counter protocol.
+  // Uses 16MB slots with per-slot signaling (not per-chunk).
+  float runTileBenchmark(
+      comms::pipes::P2pNvlTransportDevice* p2pDevicePtr,
+      const BenchmarkConfig& config,
+      float& timeUs) {
+    XLOGF(DBG1, "=== Running Tile benchmark: {} ===", config.name);
+
+    DeviceBuffer sendBuff(config.nBytes);
+    DeviceBuffer recvBuff(config.nBytes);
+
+    // Fill send with rank-specific pattern, clear recv
+    const int sendPattern = 0xA0 + globalRank;
+    const int peerPattern = 0xA0 + (1 - globalRank);
+    CUDA_CHECK(cudaMemset(sendBuff.get(), sendPattern, config.nBytes));
+    CUDA_CHECK(cudaMemset(recvBuff.get(), 0, config.nBytes));
+
+    int numSendBlocks = config.numBlocks;
+    int totalBlocks = numSendBlocks * 2;
+    dim3 gridDim(totalBlocks);
+    dim3 blockDim(config.numThreads);
+
+    CudaEvent start, stop;
+    Timeout timeout;
+
+    // Create TiledBuffer views for send and recv
+    comms::pipes::TiledBuffer<char> sendTiles(
+        static_cast<char*>(sendBuff.get()), config.nBytes, numSendBlocks);
+    comms::pipes::TiledBuffer<char> recvTiles(
+        static_cast<char*>(recvBuff.get()), config.nBytes, numSendBlocks);
+
+    int chunksPerSlot = config.chunksPerSlot;
+    void* kernelFunc = (void*)comms::pipes::benchmark::p2pTileSendRecv;
+    void* args[] = {
+        p2pDevicePtr,
+        &sendTiles,
+        &recvTiles,
+        &numSendBlocks,
+        &chunksPerSlot,
+        &timeout};
+
+    dim3 defaultClusterDim(comms::common::kDefaultClusterSize, 1, 1);
+    std::optional<dim3> clusterDimOpt = config.spreadClusterLaunch
+        ? std::optional{defaultClusterDim}
+        : std::nullopt;
+
+    // Correctness verification: run one exchange and check received data
+    bootstrap->barrierAll();
+    CUDA_CHECK(
+        comms::common::launchKernel(
+            kernelFunc, gridDim, blockDim, args, nullptr, clusterDimOpt));
+    CUDA_CHECK(cudaDeviceSynchronize());
+    bootstrap->barrierAll();
+
+    // Verify recv buffer has peer's pattern
+    {
+      std::vector<char> hostBuf(config.nBytes);
+      CUDA_CHECK(cudaMemcpy(
+          hostBuf.data(),
+          recvBuff.get(),
+          config.nBytes,
+          cudaMemcpyDeviceToHost));
+      for (size_t i = 0; i < config.nBytes; i++) {
+        if (static_cast<unsigned char>(hostBuf[i]) !=
+            static_cast<unsigned char>(peerPattern)) {
+          XLOGF(
+              ERR,
+              "TILE VERIFY FAILED {}: byte {} expected 0x{:02X} got 0x{:02X}",
+              config.name,
+              i,
+              peerPattern,
+              static_cast<unsigned int>(
+                  static_cast<unsigned char>(hostBuf[i])));
+          bootstrap->barrierAll();
+          timeUs = 0;
+          return 0;
+        }
+      }
+    }
+
+    // Re-init buffers for benchmark
+    CUDA_CHECK(cudaMemset(sendBuff.get(), sendPattern, config.nBytes));
+    CUDA_CHECK(cudaMemset(recvBuff.get(), 0, config.nBytes));
+
+    // Warmup
+    bootstrap->barrierAll();
+    for (int i = 0; i < kWarmupIters; i++) {
+      CUDA_CHECK(
+          comms::common::launchKernel(
+              kernelFunc, gridDim, blockDim, args, nullptr, clusterDimOpt));
+      CUDA_CHECK(cudaDeviceSynchronize());
+    }
+    bootstrap->barrierAll();
+
+    // Benchmark
+    CUDA_CHECK(cudaEventRecord(start.get()));
+    for (int i = 0; i < kBenchmarkIters; i++) {
+      CUDA_CHECK(
+          comms::common::launchKernel(
+              kernelFunc, gridDim, blockDim, args, nullptr, clusterDimOpt));
+    }
+    CUDA_CHECK(cudaEventRecord(stop.get()));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    float totalTime_ms = 0.0f;
+    CUDA_CHECK(cudaEventElapsedTime(&totalTime_ms, start.get(), stop.get()));
+    float avgTime_ms = totalTime_ms / kBenchmarkIters;
+    timeUs = avgTime_ms * 1000.0f;
+    float bandwidth_GBps =
+        (2.0f * config.nBytes / 1e9f) / (avgTime_ms / 1000.0f);
+
+    bootstrap->barrierAll();
     return bandwidth_GBps;
   }
 
@@ -322,12 +499,12 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     // kernel parameter.
     void* args[] = {
         p2pDevicePtr, &sendPtr, &recvPtr, &nBytes, &groupScope, &timeout};
+
     void* kernelFunc = (void*)comms::pipes::benchmark::p2pBidirectional;
 
     // Warmup - no reset needed, recv() signals -1 after each transfer
     bootstrap->barrierAll();
 
-    // Use pointer to cluster dimension for clustered launch
     dim3 defaultClusterDim(comms::common::kDefaultClusterSize, 1, 1);
     std::optional<dim3> clusterDimOpt = config.spreadClusterLaunch
         ? std::optional{defaultClusterDim}
@@ -341,8 +518,7 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     }
     bootstrap->barrierAll();
 
-    // Benchmark - measure time across all iterations
-    // No barrier between iterations - ChunkState provides synchronization
+    // Benchmark
     CUDA_CHECK(cudaEventRecord(start.get()));
     for (int i = 0; i < kBenchmarkIters; i++) {
       CUDA_CHECK(
@@ -553,12 +729,20 @@ TEST_F(P2pSendRecvBenchmarkFixture, UnidirectionalBenchmark) {
     result.numBlocks = config.numBlocks;
     result.numThreads = config.numThreads;
 
+    // Verify correctness before benchmarking
+    if (!verifyP2pCorrectness(&p2pHost, config)) {
+      XLOGF(ERR, "CORRECTNESS CHECK FAILED for config: {}", config.name);
+      if (globalRank == 0) {
+        std::cout << "*** VERIFY FAILED: " << config.name << " ***\n";
+      }
+      continue;
+    }
+
     // Run NCCL benchmark
     result.ncclBandwidth = runNcclBenchmark(config, result.ncclTime);
 
     // Run P2P NVL benchmark
-    result.p2pBandwidth =
-        runP2pNvlBenchmark(&p2pHost, config, result.p2pTime);
+    result.p2pBandwidth = runP2pNvlBenchmark(&p2pHost, config, result.p2pTime);
 
     // Calculate speedup
     result.p2pSpeedup = (result.ncclBandwidth > 0)
@@ -581,77 +765,171 @@ TEST_F(P2pSendRecvBenchmarkFixture, BidirectionalBenchmark) {
 
   int peerRank = (globalRank == 0) ? 1 : 0;
 
-  // Bidirectional test configurations using NCCL-like parameters
+  // Bidirectional test configurations
   std::vector<BenchmarkConfig> configs;
 
-  // 2MB: 256 warps, 128 chunks (16KB each) - matches optimal unidirectional
-  configs.push_back({
-      .nBytes = 2 * 1024 * 1024,
-      .stagedBufferSize = 2 * 1024 * 1024,
-      .numBlocks = 64,
-      .numThreads = 128,
-      .pipelineDepth = 2,
-      .chunkSize = 16 * 1024,
-      .name = "Bidir_2MB",
-  });
+  // NCCL-like bidirectional configs at all message sizes
+  std::vector<std::pair<std::size_t, std::string>> bidiSizes = {
+      {8 * 1024, "8K"},
+      {16 * 1024, "16K"},
+      {64 * 1024, "64K"},
+      {128 * 1024, "128K"},
+      {256 * 1024, "256K"},
+      {512 * 1024, "512K"},
+      {1024 * 1024, "1M"},
+      {2 * 1024 * 1024, "2M"},
+      {4 * 1024 * 1024, "4M"},
+      {8 * 1024 * 1024, "8M"},
+      {16 * 1024 * 1024, "16M"},
+      {32 * 1024 * 1024, "32M"},
+      {64 * 1024 * 1024, "64M"},
+      {128 * 1024 * 1024, "128M"},
+      {256 * 1024 * 1024, "256M"},
+      {512 * 1024 * 1024, "512M"},
+      {1024 * 1024 * 1024, "1G"},
+  };
+  for (const auto& [sz, nm] : bidiSizes) {
+    configs.push_back({
+        .nBytes = sz,
+        .stagedBufferSize = 8 * 1024 * 1024,
+        .numBlocks = 32,
+        .numThreads = 512,
+        .pipelineDepth = 2,
+        .chunkSize = 512 * 1024,
+        .groupScope = SyncScope::BLOCK,
+        .name = "Bidir_" + nm,
+    });
+  }
 
-  // 64MB: 512 warps, 256 chunks (128KB each)
-  configs.push_back({
-      .nBytes = 64 * 1024 * 1024,
-      .stagedBufferSize = 8 * 1024 * 1024,
-      .numBlocks = 32,
-      .numThreads = 512,
-      .pipelineDepth = 2,
-      .chunkSize = 512 * 1024,
-      .groupScope = SyncScope::BLOCK,
-      .name = "Bidir_64MB",
-  });
+  // === TILE CONFIGS (Triton-style: 8MB slots, head/tail counters) ===
+  auto addTileConfig = [&](std::size_t sizeBytes, const std::string& name) {
+    constexpr std::size_t kSlot = 8 * 1024 * 1024; // 8MB per slot
+    configs.push_back({
+        .nBytes = sizeBytes,
+        .stagedBufferSize = kSlot,
+        .numBlocks = 16,
+        .numThreads = 512,
+        .pipelineDepth = 2, // 2 slots = 16MB total
+        .chunkSize = kSlot,
+        .groupScope = SyncScope::BLOCK,
+        .useTiled = true,
+        .name = name,
+    });
+  };
 
-  configs.push_back({
-      .nBytes = 128 * 1024 * 1024,
-      .stagedBufferSize = 8 * 1024 * 1024,
-      .numBlocks = 32,
-      .numThreads = 512,
-      .pipelineDepth = 2,
-      .chunkSize = 512 * 1024,
-      .groupScope = SyncScope::BLOCK,
-      .name = "Bidir_128MB",
-  });
+  std::vector<std::pair<std::size_t, std::string>> tileSizes = {
+      {8 * 1024, "8K"},
+      {16 * 1024, "16K"},
+      {64 * 1024, "64K"},
+      {128 * 1024, "128K"},
+      {256 * 1024, "256K"},
+      {512 * 1024, "512K"},
+      {1 * 1024 * 1024, "1M"},
+      {2 * 1024 * 1024, "2M"},
+      {4 * 1024 * 1024, "4M"},
+      {8 * 1024 * 1024, "8M"},
+      {16 * 1024 * 1024, "16M"},
+      {32 * 1024 * 1024, "32M"},
+      {64 * 1024 * 1024, "64M"},
+      {128 * 1024 * 1024, "128M"},
+      {256 * 1024 * 1024, "256M"},
+      {512 * 1024 * 1024, "512M"},
+      {1024 * 1024 * 1024, "1G"},
+  };
+  for (const auto& [sz, nm] : tileSizes) {
+    addTileConfig(sz, "Tile_" + nm);
+  }
 
-  // 256MB: 512 warps, 256 chunks (256KB each)
-  configs.push_back({
-      .nBytes = 256 * 1024 * 1024,
-      .stagedBufferSize = 8 * 1024 * 1024,
-      .numBlocks = 32,
-      .numThreads = 512,
-      .pipelineDepth = 2,
-      .chunkSize = 512 * 1024,
-      .groupScope = SyncScope::BLOCK,
-      .name = "Bidir_256MB",
-  });
+  // === CLUSTERED TILE CONFIGS ===
+  for (const auto& [sz, nm] : tileSizes) {
+    constexpr std::size_t kSlot = 8 * 1024 * 1024;
+    configs.push_back({
+        .nBytes = sz,
+        .stagedBufferSize = kSlot,
+        .numBlocks = 16,
+        .numThreads = 512,
+        .pipelineDepth = 2,
+        .chunkSize = kSlot,
+        .groupScope = SyncScope::BLOCK,
+        .spreadClusterLaunch = true,
+        .useTiled = true,
+        .name = "TileClus_" + nm,
+    });
+  }
 
-  configs.push_back({
-      .nBytes = 512 * 1024 * 1024,
-      .stagedBufferSize = 8 * 1024 * 1024,
-      .numBlocks = 32,
-      .numThreads = 512,
-      .pipelineDepth = 2,
-      .chunkSize = 512 * 1024,
-      .groupScope = SyncScope::BLOCK,
-      .name = "Bidir_512MB",
-  });
+  // === CHUNKS PER SLOT SWEEP (clustered, 8MB staging, pd=2) ===
+  for (int cps : {2, 4, 8}) {
+    for (const auto& [sz, nm] : tileSizes) {
+      if (sz < 1 * 1024 * 1024)
+        continue; // only test >= 1MB
+      constexpr std::size_t kSlot2 = 8 * 1024 * 1024;
+      configs.push_back({
+          .nBytes = sz,
+          .stagedBufferSize = kSlot2,
+          .numBlocks = 16,
+          .numThreads = 512,
+          .pipelineDepth = 2,
+          .chunkSize = kSlot2,
+          .groupScope = SyncScope::BLOCK,
+          .spreadClusterLaunch = true,
+          .useTiled = true,
+          .chunksPerSlot = cps,
+          .name = "CPS" + std::to_string(cps) + "_" + nm,
+      });
+    }
+  }
 
-  // 1GB with 256MB staging
-  configs.push_back({
-      .nBytes = 1024 * 1024 * 1024,
-      .stagedBufferSize = 8 * 1024 * 1024,
-      .numBlocks = 32,
-      .numThreads = 512,
-      .pipelineDepth = 2,
-      .chunkSize = 512 * 1024,
-      .groupScope = SyncScope::BLOCK,
-      .name = "Bidir_1GB",
-  });
+  // Sweep staging buffer configurations with 128KB signal granularity (best
+  // from signal sweep) Baseline: 8MB slot × pd=2 = 16MB total (already covered
+  // by Tile_*) Variant A: 16MB slot × pd=2 = 32MB total (larger slots, fewer
+  // round-trips) Variant B: 8MB slot × pd=4 = 32MB total (deeper pipeline, same
+  // slot size)
+  struct StagingConfig {
+    std::size_t slotSize;
+    std::size_t pipelineDepth;
+    std::string prefix;
+  };
+  std::vector<StagingConfig> stagingConfigs = {
+      {16 * 1024 * 1024, 2, "Stg32M_"}, // 16MB×2 = 32MB total
+      {8 * 1024 * 1024, 4, "Pd4_"}, // 8MB×4 = 32MB total
+  };
+
+  for (const auto& sc : stagingConfigs) {
+    for (const auto& [sz, nm] : tileSizes) {
+      if (sz < 4 * 1024 * 1024)
+        continue; // only test >= 4MB
+
+      configs.push_back({
+          .nBytes = sz,
+          .stagedBufferSize = sc.slotSize,
+          .numBlocks = 16,
+          .numThreads = 512,
+          .pipelineDepth = sc.pipelineDepth,
+          .chunkSize = 128 * 1024, // best signal granularity
+          .groupScope = SyncScope::BLOCK,
+          .useTiled = true,
+          .name = sc.prefix + nm,
+      });
+    }
+  }
+
+  // Also test best signal granularity (128KB) with baseline staging for
+  // comparison
+  for (const auto& [sz, nm] : tileSizes) {
+    if (sz < 4 * 1024 * 1024)
+      continue;
+    configs.push_back({
+        .nBytes = sz,
+        .stagedBufferSize = 8 * 1024 * 1024,
+        .numBlocks = 16,
+        .numThreads = 512,
+        .pipelineDepth = 2,
+        .chunkSize = 128 * 1024,
+        .groupScope = SyncScope::BLOCK,
+        .useTiled = true,
+        .name = "Sig128K_" + nm,
+    });
+  }
 
   std::vector<BenchmarkResult> results;
 
@@ -668,7 +946,6 @@ TEST_F(P2pSendRecvBenchmarkFixture, BidirectionalBenchmark) {
         globalRank, worldSize, bootstrap, p2pConfig);
     transport.exchange();
 
-    // Build host-side P2pNvlTransportDevice (passed by value to kernel)
     auto p2pHost = transport.buildP2pTransportDevice(peerRank);
 
     BenchmarkResult result;
@@ -684,9 +961,13 @@ TEST_F(P2pSendRecvBenchmarkFixture, BidirectionalBenchmark) {
     result.ncclBandwidth =
         runNcclBidirectionalBenchmark(config, result.ncclTime);
 
-    // Run P2P NVL bidirectional benchmark
-    result.p2pBandwidth =
-        runP2pNvlBidirectionalBenchmark(&p2pHost, config, result.p2pTime);
+    // Run P2P benchmark
+    if (config.useTiled) {
+      result.p2pBandwidth = runTileBenchmark(&p2pHost, config, result.p2pTime);
+    } else {
+      result.p2pBandwidth =
+          runP2pNvlBidirectionalBenchmark(&p2pHost, config, result.p2pTime);
+    }
 
     // Calculate speedup
     result.p2pSpeedup = (result.ncclBandwidth > 0)
