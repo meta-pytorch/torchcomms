@@ -10,7 +10,6 @@
 #include "comms/pipes/benchmarks/BenchmarkMacros.h"
 #include "comms/pipes/benchmarks/P2pNvlBenchmarkUtils.h"
 #include "comms/testinfra/BenchmarkTestFixture.h"
-#include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/utils/CudaRAII.h"
 
 #include <iomanip>
@@ -130,8 +129,8 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
   }
 
   // Helper function to run P2P NVL benchmark - returns bandwidth
-  // p2pDevicePtr must point to a P2pNvlTransportDevice in device memory
-  // (e.g. obtained from getDeviceTransports()).
+  // p2pDevicePtr must point to a P2pNvlTransportDevice in host memory
+  // (e.g. obtained from buildP2pTransportDevice()).
   float runP2pNvlBenchmark(
       comms::pipes::P2pNvlTransportDevice* p2pDevicePtr,
       const BenchmarkConfig& config,
@@ -163,7 +162,10 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     SyncScope groupScope = config.groupScope;
     void* devicePtr = (isSend ? sendBuff.get() : recvBuff.get());
     Timeout timeout; // Default timeout (disabled)
-    void* args[] = {&p2pDevicePtr, &devicePtr, &nBytes, &groupScope, &timeout};
+    // p2pDevicePtr points to a host-side P2pNvlTransportDevice;
+    // cudaLaunchKernel reads the struct by value from host memory for the
+    // kernel parameter.
+    void* args[] = {p2pDevicePtr, &devicePtr, &nBytes, &groupScope, &timeout};
     void* kernelFunc = isSend ? (void*)comms::pipes::benchmark::p2pSend
                               : (void*)comms::pipes::benchmark::p2pRecv;
     cudaStream_t stream = isSend ? sendStream : recvStream;
@@ -286,8 +288,8 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
   }
 
   // Helper function to run P2P NVL bidirectional benchmark - returns algorithm
-  // BW. p2pDevicePtr must point to a P2pNvlTransportDevice in device memory
-  // (e.g. obtained from getDeviceTransports()).
+  // BW. p2pDevicePtr must point to a P2pNvlTransportDevice in host memory
+  // (e.g. obtained from buildP2pTransportDevice()).
   float runP2pNvlBidirectionalBenchmark(
       comms::pipes::P2pNvlTransportDevice* p2pDevicePtr,
       const BenchmarkConfig& config,
@@ -315,8 +317,11 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     void* recvPtr = recvBuff.get();
     SyncScope groupScope = config.groupScope;
     Timeout timeout; // Default timeout (disabled)
+    // p2pDevicePtr points to a host-side P2pNvlTransportDevice;
+    // cudaLaunchKernel reads the struct by value from host memory for the
+    // kernel parameter.
     void* args[] = {
-        &p2pDevicePtr, &sendPtr, &recvPtr, &nBytes, &groupScope, &timeout};
+        p2pDevicePtr, &sendPtr, &recvPtr, &nBytes, &groupScope, &timeout};
     void* kernelFunc = (void*)comms::pipes::benchmark::p2pBidirectional;
 
     // Warmup - no reset needed, recv() signals -1 after each transfer
@@ -536,10 +541,8 @@ TEST_F(P2pSendRecvBenchmarkFixture, UnidirectionalBenchmark) {
         globalRank, worldSize, bootstrap, p2pConfig);
     transport.exchange();
 
-    // Get device pointer to the pre-allocated P2pNvlTransportDevice
-    // from the device-side Transport array (indexed by global rank).
-    auto deviceTransports = transport.getDeviceTransports();
-    auto* p2pDevicePtr = &deviceTransports.data()[peerRank].p2p_nvl;
+    // Build host-side P2pNvlTransportDevice (passed by value to kernel)
+    auto p2pHost = transport.buildP2pTransportDevice(peerRank);
 
     BenchmarkResult result;
     result.testName = config.name;
@@ -555,7 +558,7 @@ TEST_F(P2pSendRecvBenchmarkFixture, UnidirectionalBenchmark) {
 
     // Run P2P NVL benchmark
     result.p2pBandwidth =
-        runP2pNvlBenchmark(p2pDevicePtr, config, result.p2pTime);
+        runP2pNvlBenchmark(&p2pHost, config, result.p2pTime);
 
     // Calculate speedup
     result.p2pSpeedup = (result.ncclBandwidth > 0)
@@ -665,10 +668,8 @@ TEST_F(P2pSendRecvBenchmarkFixture, BidirectionalBenchmark) {
         globalRank, worldSize, bootstrap, p2pConfig);
     transport.exchange();
 
-    // Get device pointer to the pre-allocated P2pNvlTransportDevice
-    // from the device-side Transport array (indexed by global rank).
-    auto deviceTransports = transport.getDeviceTransports();
-    auto* p2pDevicePtr = &deviceTransports.data()[peerRank].p2p_nvl;
+    // Build host-side P2pNvlTransportDevice (passed by value to kernel)
+    auto p2pHost = transport.buildP2pTransportDevice(peerRank);
 
     BenchmarkResult result;
     result.testName = config.name;
@@ -685,7 +686,7 @@ TEST_F(P2pSendRecvBenchmarkFixture, BidirectionalBenchmark) {
 
     // Run P2P NVL bidirectional benchmark
     result.p2pBandwidth =
-        runP2pNvlBidirectionalBenchmark(p2pDevicePtr, config, result.p2pTime);
+        runP2pNvlBidirectionalBenchmark(&p2pHost, config, result.p2pTime);
 
     // Calculate speedup
     result.p2pSpeedup = (result.ncclBandwidth > 0)
