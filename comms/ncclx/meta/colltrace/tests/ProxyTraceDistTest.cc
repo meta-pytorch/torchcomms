@@ -28,8 +28,14 @@ class ProxyTraceTest : public NcclxBaseTestFixture {
  public:
   ProxyTraceTest() = default;
   void SetUp() override {
+    // All NCCL cvars must be set here because NcclxBaseTestFixture::SetUp
+    // calls initEnv() (call_once) + ncclCvarInit(). Per-test EnvRAII overrides
+    // won't take effect for cvars read during init.
     NcclxBaseTestFixture::SetUp({
         {"NCCL_CTRAN_ENABLE", "1"},
+        {"NCCL_PROXYTRACE", "trace"},
+        {"NCCL_DEBUG", "INFO"},
+        {"NCCL_DEBUG_SUBSYS", "INIT,COLL"},
     });
     CUDACHECK_TEST(cudaStreamCreate(&stream));
   }
@@ -527,7 +533,8 @@ TEST_F(ProxyTraceTest, QueryFinishedSendRecv) {
 TEST_F(ProxyTraceTest, QueryHangAllReduce) {
   auto traceGuard = EnvRAII(NCCL_PROXYTRACE, {"trace"});
 
-  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
   if (!checkTestRequirement(comm)) {
     GTEST_SKIP();
   }
@@ -543,12 +550,6 @@ TEST_F(ProxyTraceTest, QueryHangAllReduce) {
       30 /*delay*/
   };
   setMockConfig(failureConfig);
-
-  ncclx::test::NcclCommRAII comm{
-      globalRank, numRanks, localRank, bootstrap_.get()};
-  if (!checkTestRequirement(comm)) {
-    GTEST_SKIP();
-  }
 
   EXPECT_NE(comm->proxyState->trace, nullptr);
 
@@ -663,7 +664,8 @@ TEST_F(ProxyTraceTest, CTAndPTOpCountsMatch) {
   auto recordGuard = EnvRAII(
       NCCL_PROXYTRACE_RECORD_MAX, std::max(NCCL_PROXYTRACE_RECORD_MAX, 100));
 
-  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
   if (!checkTestRequirement(comm)) {
     GTEST_SKIP();
   }
