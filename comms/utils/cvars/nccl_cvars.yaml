@@ -2952,6 +2952,16 @@ cvars:
      For example, setting MCCL_SCUBA_LOG_LEVEL=HIGH means only HIGH and
      CRITICAL priority logs will be forwarded to Scuba.
 
+ - name        : MCCL_CTRAN_TRANSPORT_PROFILER
+   type        : bool
+   default     : true
+   description : |-
+     Enable ctran transport profiling for MCCL. When true, MCCL overrides
+     NCCL_CTRAN_TRANSPORT_PROFILER to true during init so that the ctran
+     Profiler is created and algo profiling data flows to the
+     mccl_operation_trace Scuba table via McclAlgoProfilerReporter. Set to
+     false to disable ctran profiling from the MCCL level.
+
  - name        : NCCL_GIN_GDAKI_NIC_HANDLER
    type        : int
    default     : 0
