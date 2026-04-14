@@ -164,6 +164,12 @@ class CtranComm {
   // algorithms are used.
   uint64_t* opCount_{nullptr};
 
+  // Sample count source for profiler sampling decisions.
+  // - nullptr (default): profiler uses opCount for sampling
+  // - When set: points to an external counter (e.g., collectiveCount)
+  //   allowing the caller to control sampling independently of opCount.
+  uint64_t* profilingSampleCount_{nullptr};
+
   // TODO: confirm with Ctran stakeholders if we need to keep this field
   // TODO: move to stateX?
   // Depending on this flag CtranAlgo initialized resources differently

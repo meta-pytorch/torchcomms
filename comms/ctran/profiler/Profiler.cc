@@ -37,7 +37,10 @@ Profiler::Profiler(CtranComm* comm, std::unique_ptr<IProfilerReporter> reporter)
 Profiler::~Profiler() = default;
 
 void Profiler::initForEachColl(int opCount) {
-  samplingRegistry_.setSampleCount(opCount);
+  int sampleCount = comm_->profilingSampleCount_
+      ? static_cast<int>(*comm_->profilingSampleCount_)
+      : opCount;
+  samplingRegistry_.setSampleCount(sampleCount);
   shouldTrace_ = samplingRegistry_.shouldTrace();
   if (shouldTrace_) {
     opCount_ = opCount;

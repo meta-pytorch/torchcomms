@@ -70,6 +70,45 @@ TEST_F(ProfilerTest, testInitForEachColl) {
   EXPECT_NE(p5->getOpCount(), opCount);
 }
 
+TEST_F(ProfilerTest, testProfilingSampleCountOverridesOpCount) {
+  // When profilingSampleCount_ is set, profiler samples on that counter
+  // instead of opCount
+  uint64_t collectiveCount = 0;
+  comm_->profilingSampleCount_ = &collectiveCount;
+
+  auto p = makeProfiler(10); // trace every 10th
+
+  // opCount=10 would normally trace, but collectiveCount=0 traces (0 % 10 == 0)
+  collectiveCount = 0;
+  p->initForEachColl(10);
+  EXPECT_TRUE(p->shouldTrace());
+
+  // collectiveCount=5 should not trace (5 % 10 != 0)
+  collectiveCount = 5;
+  p->initForEachColl(10);
+  EXPECT_FALSE(p->shouldTrace());
+
+  // collectiveCount=20 should trace (20 % 10 == 0), even though opCount=7
+  collectiveCount = 20;
+  p->initForEachColl(7);
+  EXPECT_TRUE(p->shouldTrace());
+}
+
+TEST_F(ProfilerTest, testNullProfilingSampleCountFallsBackToOpCount) {
+  // When profilingSampleCount_ is nullptr (default), profiler uses opCount
+  EXPECT_EQ(comm_->profilingSampleCount_, nullptr);
+
+  auto p = makeProfiler(10);
+
+  // opCount=10 should trace
+  p->initForEachColl(10);
+  EXPECT_TRUE(p->shouldTrace());
+
+  // opCount=7 should not trace
+  p->initForEachColl(7);
+  EXPECT_FALSE(p->shouldTrace());
+}
+
 TEST_F(ProfilerTest, testDefaultReporterType) {
   // Default constructor should use default reporter (no crash on reportToScuba)
   profiler_->initForEachColl(100);
