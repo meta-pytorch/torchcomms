@@ -4,6 +4,7 @@
 
 #include <comms/torchcomms/TorchCommBackend.hpp>
 #include <comms/torchcomms/TorchWork.hpp>
+#include <unordered_set>
 #include <vector>
 
 namespace torch::comms {
@@ -146,6 +147,19 @@ class TorchCommDummy : public TorchCommBackend {
     runAbortHooks();
   }
 
+  // Memory registration — tracks registered addresses for test verification
+  void tensor_register(const at::Tensor& tensor) override {
+    registered_addrs_.insert(tensor.data_ptr());
+  }
+
+  void tensor_deregister(const at::Tensor& tensor) override {
+    registered_addrs_.erase(tensor.data_ptr());
+  }
+
+  bool is_tensor_registered(const at::Tensor& tensor) const {
+    return registered_addrs_.count(tensor.data_ptr()) > 0;
+  }
+
  private:
   bool initialized_;
   at::Device device_;
@@ -153,6 +167,7 @@ class TorchCommDummy : public TorchCommBackend {
   int rank_;
   int size_;
   std::string name_;
+  std::unordered_set<void*> registered_addrs_;
 };
 
 } // namespace torch::comms

@@ -16,7 +16,7 @@
 
 namespace torch::comms {
 
-inline constexpr const char* TORCHCOMM_BACKEND_ABI_VERSION = "1.0";
+inline constexpr const char* TORCHCOMM_BACKEND_ABI_VERSION = "1.1";
 
 /**
  * TorchCommBackend - Abstract base class for communication backends.
@@ -291,6 +291,38 @@ class TorchCommBackend {
   virtual int64_t get_device_transport() {
     throw std::runtime_error(
         "[TorchCommBackend]: get_device_transport not implemented for "
+        "communicator:" +
+        std::string(getCommName()));
+  }
+
+  /**
+   * Register a tensor's memory with the backend for optimized data transfer.
+   *
+   * Pre-registers the memory region for zero-copy RDMA or similar transport
+   * optimizations. Backends that support registration must override this.
+   *
+   * The caller is responsible for calling tensor_deregister() before the
+   * tensor is freed. Failing to deregister leaks the backend registration
+   * handle but does not cause a crash — the transport layer will clean up
+   * on communicator finalization.
+   *
+   * @param tensor The tensor whose memory to register.
+   */
+  virtual void tensor_register(const at::Tensor& /*tensor*/) {
+    throw std::runtime_error(
+        "[TorchCommBackend]: tensor_register not implemented for "
+        "communicator:" +
+        std::string(getCommName()));
+  }
+
+  /**
+   * Deregister a tensor's previously registered memory.
+   *
+   * @param tensor The tensor whose memory to deregister.
+   */
+  virtual void tensor_deregister(const at::Tensor& /*tensor*/) {
+    throw std::runtime_error(
+        "[TorchCommBackend]: tensor_deregister not implemented for "
         "communicator:" +
         std::string(getCommName()));
   }

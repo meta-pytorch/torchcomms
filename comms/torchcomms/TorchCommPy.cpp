@@ -1190,6 +1190,37 @@ Raises:
     RuntimeError: If the backend does not support device transport.
 )",
           py::call_guard<py::gil_scoped_release>())
+      .def(
+          "tensor_register",
+          [](TorchComm& self, const at::Tensor& tensor) {
+            self.tensor_register(tensor);
+          },
+          R"(
+Register a tensor's memory with the communication backend.
+
+Pre-registers the memory region for optimized data transfer (e.g.,
+RDMA zero-copy). The caller must call tensor_deregister() before
+freeing the tensor. Omitting deregistration leaks the backend handle
+but does not crash; cleanup occurs on communicator finalization.
+
+Args:
+    tensor: The tensor whose memory to register.
+          )",
+          py::arg("tensor"),
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "tensor_deregister",
+          [](TorchComm& self, const at::Tensor& tensor) {
+            self.tensor_deregister(tensor);
+          },
+          R"(
+Deregister a tensor's previously registered memory.
+
+Args:
+    tensor: The tensor whose memory to deregister.
+          )",
+          py::arg("tensor"),
+          py::call_guard<py::gil_scoped_release>())
 
       // Point-to-Point Operations
       .def(
