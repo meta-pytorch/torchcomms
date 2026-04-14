@@ -34,10 +34,12 @@ class CommRegisterTestParam
 
 TEST_P(CommRegisterTestParam, RegularUsage) {
   const auto& [nbytes, memType, ctranRegist] = GetParam();
+  // Set NCCL_LOCAL_REGISTER before comm creation to avoid a race condition
+  // with internal threads spawned during comm init that may call getenv.
+  SysEnvRAII env2("NCCL_LOCAL_REGISTER", "0");
   ncclx::test::NcclCommRAII comm(
       globalRank, numRanks, localRank, bootstrap_.get());
   EnvRAII env(NCCL_CTRAN_REGISTER, ctranRegist);
-  EnvRAII env2(NCCL_LOCAL_REGISTER, (int64_t)0);
 
   if ((memType == kMemNcclMemAlloc || memType == kCuMemAllocDisjoint) &&
       ncclIsCuMemSupported() == false) {
@@ -69,10 +71,12 @@ TEST_P(CommRegisterTestParam, RegularUsage) {
 }
 
 TEST_F(CommRegisterTest, InvalidHybridUsage) {
+  // Set NCCL_LOCAL_REGISTER before comm creation to avoid a race condition
+  // with internal threads spawned during comm init that may call getenv.
+  SysEnvRAII env2("NCCL_LOCAL_REGISTER", "1");
   ncclx::test::NcclCommRAII comm(
       globalRank, numRanks, localRank, bootstrap_.get());
   EnvRAII env1(NCCL_CTRAN_REGISTER, NCCL_CTRAN_REGISTER::lazy);
-  EnvRAII env2(NCCL_LOCAL_REGISTER, (int64_t)1);
   constexpr size_t nbytes = 8192;
 
   std::vector<TestMemSegment> segments;
@@ -138,6 +142,9 @@ INSTANTIATE_TEST_SUITE_P(
     });
 
 int main(int argc, char* argv[]) {
+  // Disable NCCL_PARAM caching for NCCL_LOCAL_REGISTER so tests can
+  // dynamically toggle it between test cases via setenv/unsetenv.
+  setenv("NCCL_NO_CACHE", "NCCL_LOCAL_REGISTER", 0);
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
   folly::Init init(&argc, &argv);
