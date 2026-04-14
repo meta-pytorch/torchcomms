@@ -68,6 +68,23 @@ extern __global__ void ncclKernelAllGatherPInit(
     int* flag,
     CtranAlgoDeviceState* devState);
 
+commResult_t AlgoImpl::initResources() {
+  if (resource_.pipeSync != nullptr) {
+    CLOGF(
+        WARN,
+        "initResources: pipeSync already allocated, freeing before realloc");
+    FB_CUDACHECK(cudaFreeHost(resource_.pipeSync));
+    resource_.pipeSync = nullptr;
+  }
+  void* base = nullptr;
+  FB_CUDACHECK(
+      cudaHostAlloc(&base, sizeof(GpeKernelSync), cudaHostAllocDefault));
+
+  resource_.pipeSync = reinterpret_cast<GpeKernelSync*>(base);
+  new (resource_.pipeSync) GpeKernelSync(1 /* numWorkers */);
+  return commSuccess;
+}
+
 commResult_t AlgoImpl::initialize() {
   auto opCount = comm_->ctran_->getOpCount();
   CTRAN_COLL_INFO(
@@ -80,12 +97,7 @@ commResult_t AlgoImpl::initialize() {
       comm_,
       stream_);
 
-  void* base = nullptr;
-  FB_CUDACHECK(
-      cudaHostAlloc(&base, sizeof(GpeKernelSync), cudaHostAllocDefault));
-
-  resource_.pipeSync = reinterpret_cast<GpeKernelSync*>(base);
-  new (resource_.pipeSync) GpeKernelSync(1 /* numWorkers */);
+  FB_COMMCHECK(initResources());
 
   KernelConfig config = KernelConfig(
       KernelConfig::KernelType::ALLGATHERP_INIT,

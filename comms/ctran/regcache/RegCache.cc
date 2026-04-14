@@ -218,8 +218,16 @@ void ctran::RegCache::init() {
   // CtranIb::deregMem(). When IB is not configured, no IB registrations will
   // exist, so the lifetime dependency is not needed.
   if (globalBackends_[CommBackend::IB]) {
-    ibSingleton_ = CtranIbSingleton::getInstance();
-    CHECK_VALID_IB_SINGLETON(ibSingleton_);
+    try {
+      ibSingleton_ = CtranIbSingleton::getInstance();
+    } catch (const ctran::utils::Exception& e) {
+      CLOGF_SUBSYS(
+          WARN,
+          INIT,
+          "CTRAN-REGCACHE: IB backend not available, disabling. {}",
+          e.what());
+      globalBackends_[CommBackend::IB] = false;
+    }
   }
 
   if (NCCL_CTRAN_REGISTER == NCCL_CTRAN_REGISTER::async &&

@@ -798,7 +798,6 @@ static ncclResult_t scheduleCollTasksToPlan(
         proxyOp->ringAlgo = NULL;
         if (proxyOp->reg && task->algorithm == NCCL_ALGO_RING && (task->recvNetHandles[c] || task->sendNetHandles[c])) {
           if (task->func == ncclFuncAllGather) {
-        ncclx::colltrace::proxyTraceAddBasicInfo(*proxyOp, nMaxChannels[kind], proxyOp->task.coll->func);
             proxyOp->ringAlgo = new RingAGAlgorithm(task->sendbuff, task->recvbuff, comm->nRanks, comm->channels[c].ring.userRanks, proxyOp->chunkSteps, proxyOp->sliceSteps, proxyOp->chunkSize, proxyOp->sliceSize, proxyOp->loopOffset, proxyOp->channelSize, elementSize, task->count * elementSize, task->sendNetHandles[c], task->recvNetHandles[c], task->srecvNetHandles[c]);
           } else if (task->func == ncclFuncAllReduce) {
             proxyOp->ringAlgo = new RingARAlgorithm(task->sendbuff, task->recvbuff, comm->nRanks, comm->channels[c].ring.index, proxyOp->chunkSteps, proxyOp->sliceSteps, proxyOp->chunkSize, proxyOp->sliceSize, proxyOp->loopOffset, proxyOp->channelSize, elementSize, task->sendNetHandles[c], task->recvNetHandles[c], task->srecvNetHandles[c]);
@@ -811,6 +810,7 @@ static ncclResult_t scheduleCollTasksToPlan(
         proxyOp->incWorkCounter = true;
         proxyOp->nChannels = nChannels;
         ncclAddWorkBatchToPlan(comm, plan, c, workNode->workType, task->devFuncId, plan->workBytes);
+        ncclx::colltrace::proxyTraceAddBasicInfo(*proxyOp, nMaxChannels[kind], proxyOp->task.coll->func);
         // Coverity reports "proxyOp->connection" as being possibly uninitialized.  It's hard to
         // determine if that's actually true but it's also not clear if that would be an issue.
         // coverity[uninit_use_in_call:FALSE]
@@ -1560,6 +1560,13 @@ ncclResult_t ncclLaunchPrepare(struct ncclComm* comm) {
       !ncclIntruQueueEmpty(&planner->collCeTaskQueue) ||
       planner->nTasksRma != 0) {
     do {
+      // Bump opCount before creating proxy ops for this plan, so that
+      // ProxyTrace and CollTrace both capture the same opCount value.
+      // Previously opCount was incremented in doLaunches (group.cc) after
+      // each kernel launch, but proxy ops are created here in Prepare
+      // before any launches, causing PT to capture a stale value.
+      comm->opCount++;
+
       memset(&planner->wipPlan, 0, sizeof(planner->wipPlan));
 
       struct ncclKernelPlan* plan = ncclMemoryPoolAlloc<struct ncclKernelPlan>(&comm->memPool_ncclKernelPlan, &comm->memPermanent);
