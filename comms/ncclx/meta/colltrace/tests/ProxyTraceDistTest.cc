@@ -8,12 +8,14 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <set>
 #include <unordered_map>
 
 #include "comms/ctran/Ctran.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "meta/colltrace/CollTrace.h"
 #include "meta/colltrace/ProxyMock.h"
 #include "meta/colltrace/ProxyTrace.h"
 
@@ -632,6 +634,74 @@ TEST_F(ProxyTraceTest, QueryHangSendRecv) {
 
   // Now let's wait for all communication to finish
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
+}
+
+// Verify that CollTrace (CT) and ProxyTrace (PT) record the same opCount
+// for the same collective. A bug introduced by D83294734 caused opCount to be
+// incremented in doLaunches (after kernel launch) instead of in
+// ncclLaunchPrepare (before proxy ops are created), causing PT to capture a
+// stale value when multiple plans exist in a single group.
+TEST_F(ProxyTraceTest, CTAndPTOpCountsMatch) {
+  auto traceGuard = EnvRAII(NCCL_PROXYTRACE, {"trace"});
+  auto recordGuard = EnvRAII(
+      NCCL_PROXYTRACE_RECORD_MAX, std::max(NCCL_PROXYTRACE_RECORD_MAX, 100));
+
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
+  if (!checkTestRequirement(comm)) {
+    GTEST_SKIP();
+  }
+
+  EXPECT_THAT(comm->proxyState->trace, ::testing::NotNull());
+  EXPECT_THAT(comm->ctranComm_->collTrace_, ::testing::NotNull());
+
+  const int count = 1048500;
+  const int nColl = 20;
+
+  runAllReduce(count, nColl, comm);
+  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+
+  // Wait for proxy ops to finish
+  sleep(3);
+
+  // Dump both CT and PT
+  auto ptDump = comm->proxyState->trace->dump(comm->commHash);
+  comm->ctranComm_->collTrace_->waitForWorkerFinishQueue();
+  auto ctDump = comm->ctranComm_->collTrace_->dump();
+
+  // Build sets of opCounts from CT and PT pastColls
+  std::set<uint64_t> ctOpCounts;
+  for (const auto& coll : ctDump.pastColls) {
+    ctOpCounts.insert(coll.opCount);
+  }
+
+  std::set<uint64_t> ptOpCounts;
+  for (const auto& coll : ptDump.pastColls) {
+    ptOpCounts.insert(coll.collInfo.opCount);
+  }
+
+  // The set of opCounts in CT and PT should be identical — both should have
+  // recorded the same operations under the same opCount values.
+  // A mismatch here means PT captured stale/wrong opCount values.
+  if (comm->rank == 0 && VERBOSE) {
+    printf(
+        "Rank %d: CT pastColls=%zu (opCounts %lu-%lu), "
+        "PT pastColls=%zu (opCounts %lu-%lu)\n",
+        comm->rank,
+        ctDump.pastColls.size(),
+        ctOpCounts.empty() ? 0UL : *ctOpCounts.begin(),
+        ctOpCounts.empty() ? 0UL : *ctOpCounts.rbegin(),
+        ptDump.pastColls.size(),
+        ptOpCounts.empty() ? 0UL : *ptOpCounts.begin(),
+        ptOpCounts.empty() ? 0UL : *ptOpCounts.rbegin());
+  }
+
+  // Verify the opCount sets match
+  EXPECT_EQ(ctOpCounts, ptOpCounts)
+      << "CT and PT pastColls have different opCount sets. "
+      << "CT range: [" << (ctOpCounts.empty() ? 0UL : *ctOpCounts.begin())
+      << ", " << (ctOpCounts.empty() ? 0UL : *ctOpCounts.rbegin()) << "], "
+      << "PT range: [" << (ptOpCounts.empty() ? 0UL : *ptOpCounts.begin())
+      << ", " << (ptOpCounts.empty() ? 0UL : *ptOpCounts.rbegin()) << "]";
 }
 
 int main(int argc, char* argv[]) {
