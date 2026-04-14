@@ -15,34 +15,29 @@
 #include "nccl.h" // @manual
 
 #include "comms/ctran/Ctran.h"
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
+#include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
 #include "meta/commDump.h"
 
-class CollTraceTestLocal : public NcclxBaseTest {
+class CollTraceTestLocal : public NcclxBaseTestFixture {
  public:
   CollTraceTestLocal() = default;
   void SetUp() override {
-    // Set up dummy values for environment variables for Scuba test
-    setenv("WORLD_SIZE", "4", 0);
-    setenv("HPC_JOB_NAME", "CollTraceUT", 0);
-    setenv("HPC_JOB_VERSION", "1", 0);
-    setenv("HPC_JOB_ATTEMPT_INDEX", "2", 0);
-    setenv(
-        "NCCL_HPC_JOB_IDS",
-        "HPC_JOB_NAME,HPC_JOB_VERSION,HPC_JOB_ATTEMPT_INDEX",
-        0);
-    setenv("NCCL_COLLTRACE", "trace", 0);
-    setenv("NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1", 0);
+    NcclxBaseTestFixture::SetUp({
+        {"WORLD_SIZE", "4"},
+        {"HPC_JOB_NAME", "CollTraceUT"},
+        {"HPC_JOB_VERSION", "1"},
+        {"HPC_JOB_ATTEMPT_INDEX", "2"},
+        {"NCCL_HPC_JOB_IDS",
+         "HPC_JOB_NAME,HPC_JOB_VERSION,HPC_JOB_ATTEMPT_INDEX"},
+        {"NCCL_COLLTRACE", "trace"},
+        {"NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1"},
+        {"NCCL_CTRAN_ENABLE", "1"},
+        {"NCCL_CTRAN_IB_EPOCH_LOCK_ENFORCE_CHECK", "true"},
+    });
 
-    // Enable Ctran
-    setenv("NCCL_CTRAN_ENABLE", "1", 0);
-    setenv("NCCL_CTRAN_IB_EPOCH_LOCK_ENFORCE_CHECK", "true", 0);
-
-    NcclxBaseTest::SetUp();
-
-    CUDACHECK_TEST(cudaSetDevice(this->localRank));
     CUDACHECK_TEST(cudaStreamCreate(&this->stream));
   }
 
@@ -55,6 +50,7 @@ class CollTraceTestLocal : public NcclxBaseTest {
     if (recvBuf) {
       CUDACHECK_TEST(cudaFree(recvBuf));
     }
+    NcclxBaseTestFixture::TearDown();
   }
 
   // Use MPI to ensure that we don't see additional all reduce for that nccl
@@ -75,7 +71,8 @@ class CollTraceTestLocal : public NcclxBaseTest {
 TEST_F(CollTraceTestLocal, winSignal) {
   const int kNumIters = 16;
 
-  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
 
   auto statex = comm->ctranComm_->statex_.get();
   ASSERT_NE(statex, nullptr);
@@ -167,7 +164,8 @@ TEST_F(CollTraceTestLocal, winPutOnly) {
   const int kNumElements = 8192;
   const int kNumIters = 500;
 
-  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
 
   EXPECT_GE(kNumElements, 8192);
   EXPECT_GE(kNumIters, 1);

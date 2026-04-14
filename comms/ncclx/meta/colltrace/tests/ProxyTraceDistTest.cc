@@ -12,8 +12,9 @@
 #include <unordered_map>
 
 #include "comms/ctran/Ctran.h"
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
+#include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/colltrace/CollTrace.h"
 #include "meta/colltrace/ProxyMock.h"
@@ -23,14 +24,13 @@
 
 static bool VERBOSE = true;
 
-class ProxyTraceTest : public NcclxBaseTest {
+class ProxyTraceTest : public NcclxBaseTestFixture {
  public:
   ProxyTraceTest() = default;
   void SetUp() override {
-    setenv("NCCL_CTRAN_ENABLE", "1", 0); // enable ctran
-    // Initialize CVAR so that we can overwrite global variable in each test
-    initEnv();
-    NcclxBaseTest::SetUp();
+    NcclxBaseTestFixture::SetUp({
+        {"NCCL_CTRAN_ENABLE", "1"},
+    });
     CUDACHECK_TEST(cudaStreamCreate(&stream));
   }
 
@@ -38,7 +38,7 @@ class ProxyTraceTest : public NcclxBaseTest {
     CUDACHECK_TEST(cudaStreamDestroy(stream));
     CUDACHECK_TEST(cudaFree(sendBuf));
     CUDACHECK_TEST(cudaFree(recvBuf));
-    NcclxBaseTest::TearDown();
+    NcclxBaseTestFixture::TearDown();
   }
 
   void runAllReduce(const int count, const int nColl, ncclComm_t comm) {
@@ -301,7 +301,8 @@ TEST_F(ProxyTraceTest, PastCollNoDropUnderLimit) {
   auto recordGuard = EnvRAII(
       NCCL_PROXYTRACE_RECORD_MAX, std::max(NCCL_PROXYTRACE_RECORD_MAX, 100));
 
-  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
   if (!checkTestRequirement(comm)) {
     GTEST_SKIP();
   }
@@ -327,7 +328,8 @@ TEST_F(ProxyTraceTest, TestRecordNoDropByEnv) {
   auto traceGuard = EnvRAII(NCCL_PROXYTRACE, {"trace"});
   auto recordGuard = EnvRAII(NCCL_PROXYTRACE_RECORD_MAX, -1);
 
-  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
   if (!checkTestRequirement(comm)) {
     GTEST_SKIP();
   }
@@ -356,7 +358,8 @@ TEST_F(ProxyTraceTest, TestRecordDropExceedLimit) {
       NCCL_PROXYTRACE_RECORD_MAX,
       std::max(NCCL_PROXYTRACE_RECORD_MAX_DEFAULTCVARVALUE, 100));
 
-  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
   if (!checkTestRequirement(comm)) {
     GTEST_SKIP();
   }
@@ -380,7 +383,8 @@ TEST_F(ProxyTraceTest, TestRecordDropExceedLimit) {
 
 TEST_F(ProxyTraceTest, QueryFinishedAllReduce) {
   auto traceGuard = EnvRAII(NCCL_PROXYTRACE, {"trace"});
-  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
   if (!checkTestRequirement(comm)) {
     GTEST_SKIP();
   }
@@ -420,7 +424,8 @@ TEST_F(ProxyTraceTest, QueryFinishedAllToAll) {
   // ensure we use default proxy path
   NCCL_ALLTOALL_ALGO = NCCL_ALLTOALL_ALGO::orig;
 
-  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
   if (!checkTestRequirement(comm)) {
     GTEST_SKIP();
   }
@@ -471,7 +476,8 @@ TEST_F(ProxyTraceTest, QueryFinishedSendRecv) {
   // ensure we use default proxy path
   NCCL_SENDRECV_ALGO = NCCL_SENDRECV_ALGO::orig;
 
-  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
   if (!checkTestRequirement(comm)) {
     GTEST_SKIP();
   }
@@ -538,6 +544,12 @@ TEST_F(ProxyTraceTest, QueryHangAllReduce) {
   };
   setMockConfig(failureConfig);
 
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
+  if (!checkTestRequirement(comm)) {
+    GTEST_SKIP();
+  }
+
   EXPECT_NE(comm->proxyState->trace, nullptr);
 
   const int count = 1048500;
@@ -581,7 +593,8 @@ TEST_F(ProxyTraceTest, QueryHangSendRecv) {
   // ensure we use default proxy path
   NCCL_SENDRECV_ALGO = NCCL_SENDRECV_ALGO::orig;
 
-  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
   if (!checkTestRequirement(comm)) {
     GTEST_SKIP();
   }
