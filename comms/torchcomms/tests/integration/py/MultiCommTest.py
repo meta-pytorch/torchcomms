@@ -234,12 +234,17 @@ class MultiCommTest(unittest.TestCase):
         wrappers = []
         comms = []
 
-        # Create first communicator with no store
-        wrappers.append(TorchCommTestWrapper())
+        # Create first communicator with a store
+        store = create_store()
+        wrappers.append(TorchCommTestWrapper(store=store))
         comms.append(wrappers[-1].get_torchcomm())
 
-        # Create second communicator with no store
-        wrappers.append(TorchCommTestWrapper())
+        store = None
+        store_deletion_barrier(comms[-1])
+
+        # Create second communicator with a store
+        store = create_store()
+        wrappers.append(TorchCommTestWrapper(store=store))
         comms.append(wrappers[-1].get_torchcomm())
 
         # Test communication on each communicator individually
@@ -248,6 +253,9 @@ class MultiCommTest(unittest.TestCase):
 
         # Test simultaneous communication across all communicators
         self._verify_simultaneous_communication(wrappers)
+
+        store = None
+        store_deletion_barrier(comms[-1])
 
     def test_three_comms_no_store(self):
         """Test with three communicators with no store."""
@@ -255,16 +263,25 @@ class MultiCommTest(unittest.TestCase):
         wrappers = []
         comms = []
 
-        # Create first communicator with no store
-        wrappers.append(TorchCommTestWrapper())
+        # Create first communicator with a store
+        store = create_store()
+        wrappers.append(TorchCommTestWrapper(store=store))
         comms.append(wrappers[-1].get_torchcomm())
 
-        # Create second communicator with no store
-        wrappers.append(TorchCommTestWrapper())
+        store = None
+        store_deletion_barrier(comms[-1])
+
+        # Create second communicator with a store
+        store = create_store()
+        wrappers.append(TorchCommTestWrapper(store=store))
         comms.append(wrappers[-1].get_torchcomm())
 
-        # Create third communicator with no store
-        wrappers.append(TorchCommTestWrapper())
+        store = None
+        store_deletion_barrier(comms[-1])
+
+        # Create third communicator with a store
+        store = create_store()
+        wrappers.append(TorchCommTestWrapper(store=store))
         comms.append(wrappers[-1].get_torchcomm())
 
         # Test communication on each communicator individually
@@ -274,18 +291,26 @@ class MultiCommTest(unittest.TestCase):
         # Test simultaneous communication across all communicators
         self._verify_simultaneous_communication(wrappers)
 
+        store = None
+        store_deletion_barrier(comms[-1])
+
     def test_mixed_ops_no_store(self):
         """Test mixed operations across multiple communicators with no store."""
         # Create two communicators
         wrappers = []
         comms = []
 
-        # Create first communicator with no store
-        wrappers.append(TorchCommTestWrapper())
+        # Create first communicator with a store
+        store = create_store()
+        wrappers.append(TorchCommTestWrapper(store=store))
         comms.append(wrappers[-1].get_torchcomm())
 
-        # Create second communicator with no store
-        wrappers.append(TorchCommTestWrapper())
+        store = None
+        store_deletion_barrier(comms[-1])
+
+        # Create second communicator with a store
+        store = create_store()
+        wrappers.append(TorchCommTestWrapper(store=store))
         comms.append(wrappers[-1].get_torchcomm())
 
         # Prepare tensors for different operations
@@ -316,6 +341,9 @@ class MultiCommTest(unittest.TestCase):
         verify_tensor_equality(input1.cpu(), expected1, "comm_0 all_reduce result")
         verify_tensor_equality(input2.cpu(), broadcast_value, "comm_1 broadcast result")
 
+        store = None
+        store_deletion_barrier(comms[-1])
+
     def test_two_comms_mixed_store(self):
         """Test with two communicators with mixed store (one explicit, one None)."""
         # Create two communicators
@@ -333,8 +361,9 @@ class MultiCommTest(unittest.TestCase):
         store = None
         store_deletion_barrier(comms[0])
 
-        # Create second communicator with no store
-        wrappers.append(TorchCommTestWrapper())
+        # Create second communicator with a new store
+        store = create_store()
+        wrappers.append(TorchCommTestWrapper(store=store))
         comms.append(wrappers[-1].get_torchcomm())
 
         # Test communication on each communicator individually
@@ -343,6 +372,9 @@ class MultiCommTest(unittest.TestCase):
 
         # Test simultaneous communication across all communicators
         self._verify_simultaneous_communication(wrappers)
+
+        store = None
+        store_deletion_barrier(comms[-1])
 
     def test_three_comms_mixed_store(self):
         """Test with three communicators with mixed store (two explicit, one None)."""
@@ -370,8 +402,9 @@ class MultiCommTest(unittest.TestCase):
         store = None
         store_deletion_barrier(comms[0])
 
-        # Create third communicator with no store
-        wrappers.append(TorchCommTestWrapper())
+        # Create third communicator with a new store
+        store = create_store()
+        wrappers.append(TorchCommTestWrapper(store=store))
         comms.append(wrappers[-1].get_torchcomm())
 
         # Test communication on each communicator individually
@@ -380,6 +413,9 @@ class MultiCommTest(unittest.TestCase):
 
         # Test simultaneous communication across all communicators
         self._verify_simultaneous_communication(wrappers)
+
+        store = None
+        store_deletion_barrier(comms[-1])
 
     def test_mixed_ops_mixed_store(self):
         """Test mixed operations across multiple communicators with mixed store."""
@@ -398,8 +434,9 @@ class MultiCommTest(unittest.TestCase):
         store = None
         store_deletion_barrier(comms[0])
 
-        # Create second communicator with no store
-        wrappers.append(TorchCommTestWrapper())
+        # Create second communicator with a new store
+        store = create_store()
+        wrappers.append(TorchCommTestWrapper(store=store))
         comms.append(wrappers[-1].get_torchcomm())
 
         device0 = comms[0].get_device()
@@ -427,6 +464,9 @@ class MultiCommTest(unittest.TestCase):
         # Verify results
         verify_tensor_equality(input1.cpu(), expected1, "comm_0 all_reduce result")
         verify_tensor_equality(input2.cpu(), broadcast_value, "comm_1 broadcast result")
+
+        store = None
+        store_deletion_barrier(comms[-1])
 
 
 if __name__ == "__main__":
