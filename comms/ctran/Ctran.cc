@@ -32,7 +32,7 @@ Ctran::Ctran(
 
   algo = std::make_unique<CtranAlgo>(comm, this);
 
-  if (NCCL_CTRAN_TRANSPORT_PROFILER) {
+  if (comm->config_.enableProfiler) {
     profiler = std::make_unique<ctran::Profiler>(comm, std::move(reporter));
   }
 }
