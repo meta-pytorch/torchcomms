@@ -7,6 +7,7 @@
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/profiler/AlgoProfilerReport.h"
 #include "comms/ctran/profiler/IProfilerReporter.h"
+#include "comms/ctran/profiler/SamplingRegistry.h"
 #include "comms/ctran/utils/StopWatch.h"
 
 namespace ctran {
@@ -47,7 +48,7 @@ class Profiler {
   ~Profiler();
 
   // This should be called at the beginning of the collective
-  void initForEachColl(int opCount, int samplingWeight);
+  void initForEachColl(int opCount);
 
   bool shouldTrace() const {
     return shouldTrace_;
@@ -85,6 +86,7 @@ class Profiler {
  private:
   AlgoProfilerReport buildReport() const;
   CtranComm* comm_{nullptr};
+  SamplingRegistry samplingRegistry_;
   bool shouldTrace_{false};
   uint64_t opCount_{std::numeric_limits<uint64_t>::max()};
   EventDurationArray durations_{};
