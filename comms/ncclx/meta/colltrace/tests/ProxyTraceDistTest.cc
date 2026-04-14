@@ -521,8 +521,15 @@ TEST_F(ProxyTraceTest, QueryFinishedSendRecv) {
 TEST_F(ProxyTraceTest, QueryHangAllReduce) {
   auto traceGuard = EnvRAII(NCCL_PROXYTRACE, {"trace"});
 
+  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
+  if (!checkTestRequirement(comm)) {
+    GTEST_SKIP();
+  }
+
+  // Configure mock failure relative to current opCount to account for
+  // init-phase operations (e.g., fast-init) that consume opCounts.
   SendFailureConfig failureConfig = {
-      8 /*opCount*/,
+      static_cast<int>(comm->opCount) + 8 /*opCount*/,
       0 /*rank*/,
       -1 /*remoteRank*/,
       1 /*step*/,
@@ -530,11 +537,6 @@ TEST_F(ProxyTraceTest, QueryHangAllReduce) {
       30 /*delay*/
   };
   setMockConfig(failureConfig);
-
-  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
-  if (!checkTestRequirement(comm)) {
-    GTEST_SKIP();
-  }
 
   EXPECT_NE(comm->proxyState->trace, nullptr);
 
@@ -584,8 +586,10 @@ TEST_F(ProxyTraceTest, QueryHangSendRecv) {
     GTEST_SKIP();
   }
 
+  // Configure mock failure relative to current opCount to account for
+  // init-phase operations (e.g., fast-init) that consume opCounts.
   SendFailureConfig failureConfig = {
-      8 /*opCount*/,
+      static_cast<int>(comm->opCount) + 8 /*opCount*/,
       0 /*rank*/,
       comm->localRanks /*remoteRank*/,
       1 /*step*/,
