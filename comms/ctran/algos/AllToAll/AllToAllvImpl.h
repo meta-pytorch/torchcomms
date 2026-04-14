@@ -87,8 +87,7 @@ commResult_t ctranAllToAllvIbImpl(
 
   ctran::Profiler* profiler = comm->ctran_->profiler.get();
   if (profiler) {
-    profiler->initForEachColl(
-        opCount, NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT);
+    profiler->initForEachColl(opCount);
   }
 
   if (sendCounts.size() > 0) {

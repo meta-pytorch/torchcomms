@@ -28,8 +28,7 @@ static commResult_t impl(
 
   ctran::Profiler* profiler = comm->ctran_->profiler.get();
   if (profiler) {
-    profiler->initForEachColl(
-        op->opCount, NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT);
+    profiler->initForEachColl(op->opCount);
   }
 
   const auto statex = comm->statex_.get();
