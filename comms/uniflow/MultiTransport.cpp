@@ -484,8 +484,10 @@ std::vector<uint8_t> MultiTransportFactory::getTopology() {
   for (auto& f : factories_) {
     auto topo = f->getTopology();
     CHECK_THROW_EXCEPTION(!topo.empty(), std::runtime_error);
-    totalSize += topo.size();
+    auto size = topo.size();
     topoData.emplace_back(std::move(topo));
+    CHECK_THROW_EXCEPTION(size > 0, std::runtime_error);
+    totalSize += size;
   }
 
   size_t pos = 0;
