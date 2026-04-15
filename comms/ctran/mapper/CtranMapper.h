@@ -369,7 +369,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
    * Input argument:
    *   - buf: the local buffer to be remotely accessed
    *   - hdl: the handle of the local buffer
-   *   - backend: the backend to be used for data transfer. If not specified,
+   *   - backend: the backend to be used for memory export. If not specified,
    *              use internal default based on peer rank and memory type.
    * Output arguments:
    *   - remoteBufs: the allgathered remote buffers from all local ranks
@@ -391,7 +391,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
    *   - buf: the local buffer to be remotely accessed
    *   - hdl: the handle of the local buffer
    *   - ranks: the ranks to be used for the AllGather
-   *   - backend: the backend to be used for data transfer. If not specified,
+   *   - backend: the backend to be used for memory export. If not specified,
    *              use internal default based on peer rank and memory type.
    * Output arguments:
    *   - remoteBufs: the allgathered remote buffers from all local ranks
@@ -414,7 +414,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
    * Input argument:
    *   - buf: the local buffer to be remotely accessed
    *   - hdl: the handle of the local buffer
-   *   - backend: the backend to be used for data transfer. If not specified,
+   *   - backend: the backend to be used for memory export. If not specified,
    *              use internal default based on peer rank and memory type.
    * Output arguments:
    *   - remoteBufs: the allgathered remote buffers from all local ranks

@@ -1023,14 +1023,22 @@ commResult_t CtranMapper::allGatherCtrl(
 
     if (peerBackends[i] == CtranMapperBackend::NVL) {
       if (nvlSendMsg.type == ControlMsgType::UNSPECIFIED) {
+        // exportMem records in exportRegCache_ for this peer
         FB_COMMCHECK(this->exportMem(
-            peerList[i], buf, hdl, nvlSendMsg, &nvlExtraSegments));
+            peerList[i],
+            buf,
+            hdl,
+            nvlSendMsg,
+            &nvlExtraSegments,
+            peerBackends[i]));
+      } else if (NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET) {
+        // exportMem not called for this peer, record explicitly
+        exportRegCache_.wlock()->record(regElem, peerList[i]);
       }
-      exportRegCache_.wlock()->record(regElem, peerList[i]);
     } else {
       if (ibSendMsg.type == ControlMsgType::UNSPECIFIED) {
-        FB_COMMCHECK(
-            this->exportMem(peerList[i], buf, hdl, ibSendMsg, nullptr));
+        FB_COMMCHECK(this->exportMem(
+            peerList[i], buf, hdl, ibSendMsg, nullptr, peerBackends[i]));
       }
     }
   }
