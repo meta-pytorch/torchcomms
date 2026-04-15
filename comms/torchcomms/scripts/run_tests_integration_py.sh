@@ -27,9 +27,13 @@ run_tests () {
 export TEST_BACKEND=nccl
 run_tests
 
-# NCCLX
-export TEST_BACKEND=ncclx
-run_tests
+# NCCLX (skip if built with USE_NCCLX=0)
+if [ "${USE_NCCLX}" != "0" ] && [ "${USE_NCCLX}" != "OFF" ]; then
+    export TEST_BACKEND=ncclx
+    run_tests
+else
+    echo "Skipping ncclx tests (USE_NCCLX=${USE_NCCLX})"
+fi
 
 # Gloo with CPU
 export TEST_BACKEND=gloo

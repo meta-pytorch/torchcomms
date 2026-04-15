@@ -17,3 +17,4 @@ target_include_directories(test_utils PUBLIC
     ${CONDA_INCLUDE}
     ${CUDA_INCLUDE_DIRS}
 )
+target_link_libraries(test_utils PUBLIC fmt::fmt)
