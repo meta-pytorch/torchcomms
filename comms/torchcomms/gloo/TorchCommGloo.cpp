@@ -2,10 +2,10 @@
 
 #include "comms/torchcomms/gloo/TorchCommGloo.hpp"
 
-#include <set>
 #include <string>
 
 #include <fmt/core.h>
+
 #include <gloo/algorithm.h>
 #include <gloo/allgather.h>
 #include <gloo/allreduce.h>
@@ -308,21 +308,23 @@ void TorchCommGloo::init(
     const std::string& name,
     const CommOptions& options) {
   TC_LOG(INFO, this) << "Initializing TorchCommGloo for device: " << device;
-  // Initialize private members
   device_ = device;
   name_ = name;
   options_ = options;
-  // Avoid retaining the reference to store object here
-  // We handle it separately in this function
   options_.store = nullptr;
 
-  // Only initialize once
   if (init_state_ == InitializationState::INITIALIZED) {
     throw std::runtime_error("TorchCommGloo already initialized");
   } else if (init_state_ == InitializationState::FINALIZED) {
     throw std::runtime_error("TorchCommGloo already finalized");
   }
-  init_state_ = InitializationState::INITIALIZED;
+
+  if (options.enable_reconfigure) {
+    options_.enable_reconfigure = true;
+    TC_LOG(INFO, this)
+        << "TorchCommGloo dynamic regime enabled, deferring initialization";
+    return;
+  }
 
   if (rank_ == -1 || comm_size_ == -1) {
     auto [rank, comm_size] = query_ranksize();
@@ -330,6 +332,17 @@ void TorchCommGloo::init(
     comm_size_ = comm_size;
   }
 
+  connectGlooContext(options);
+
+  init_state_ = InitializationState::INITIALIZED;
+  TracingGuard tracingGuard(name_, comm_size_, "init", rank_);
+
+  TC_LOG(INFO, this) << "TorchCommGloo initialized for rank: " << rank_;
+}
+
+void TorchCommGloo::connectGlooContext(
+    const CommOptions& options,
+    const std::string& storePrefix) {
   ::gloo::transport::tcp::attr attr;
   attr.hostname = env_to_value<std::string>("TORCHCOMM_GLOO_HOSTNAME", "");
   attr.iface = env_to_value<std::string>("TORCHCOMM_GLOO_INTERFACE", "");
@@ -347,33 +360,24 @@ void TorchCommGloo::init(
       std::make_shared<::gloo::rendezvous::Context>(rank_, comm_size_);
   context->setTimeout(options.timeout);
 
-  // If the caller sets the "persistent_store" hint to true, the store
-  // is used directly without duping.  Defaults to false.
+  auto prefix = storePrefix.empty() ? name_ : storePrefix;
+
   bool persistentStore = kDefaultPersistentStore;
   if (options.hints.contains("persistent_store")) {
     persistentStore = string_to_bool(options.hints.at("persistent_store"));
   }
-  // bootstrapStore keeps the bootstrap TCPStore alive until all ranks
-  // have finished the port exchange inside dupPrefixStore.  We release
-  // it after a barrier below.
   c10::intrusive_ptr<c10d::Store> bootstrapStore;
 
   if (options.store) {
     if (persistentStore) {
-      // Caller guarantees the store will outlive the communicator —
-      // use it directly without duping.
       store_ = options.store;
     } else {
-      // Dup so we don't hold on to the caller's store.
       bootstrapStore = options.store;
-      store_ = dupPrefixStore(name_, bootstrapStore, options.timeout);
+      store_ = dupPrefixStore(prefix, bootstrapStore, options.timeout);
     }
   } else {
-    // No store provided — create a bootstrap store on MASTER_PORT,
-    // dup it so we don't hold the port for the communicator's
-    // lifetime, and wrap with a prefix to avoid key collisions.
-    bootstrapStore = createPrefixStore(name_, options.timeout);
-    store_ = dupPrefixStore(name_, bootstrapStore, options.timeout);
+    bootstrapStore = createPrefixStore(prefix, options.timeout);
+    store_ = dupPrefixStore(prefix, bootstrapStore, options.timeout);
   }
 
   if (rank_ == 0) {
@@ -387,18 +391,49 @@ void TorchCommGloo::init(
 
   context_ = std::move(context);
 
-  // Barrier to ensure all ranks have finished the store exchange,
-  // then release the bootstrap store so MASTER_PORT is freed.
   {
     gloo::BarrierOptions opts(context_);
     opts.setTimeout(options.timeout);
     gloo::barrier(opts);
   }
   bootstrapStore.reset();
+}
 
-  TracingGuard tracingGuard(name_, comm_size_, "init", rank_);
+InitHandle TorchCommGloo::getInitHandle() const {
+  return "gloo";
+}
 
-  TC_LOG(INFO, this) << "TorchCommGloo initialized for rank: " << rank_;
+c10::intrusive_ptr<TorchWork> TorchCommGloo::reconfigure(
+    const ReconfigureOptions& opts) {
+  context_.reset();
+  store_.reset();
+  collectiveCounter_ = 0;
+  comm_state_ = CommState::NORMAL;
+
+  comm_size_ = static_cast<int>(
+      std::visit([](const auto& h) { return h.size(); }, opts.handles));
+
+  auto [rank, envCommSize] = query_ranksize();
+  (void)envCommSize;
+  rank_ = rank;
+
+  auto reconfigureTimeout = opts.timeout.value_or(options_.timeout);
+
+  auto storePrefix = fmt::format("{}/reconfigure/{}", name_, opts.uuid);
+
+  CommOptions connectOpts = options_;
+  connectOpts.timeout = reconfigureTimeout;
+
+  connectGlooContext(connectOpts, storePrefix);
+
+  init_state_ = InitializationState::INITIALIZED;
+
+  TracingGuard tracingGuard(name_, comm_size_, "reconfigure", rank_);
+
+  TC_LOG(INFO, this) << "TorchCommGloo reconfigure completed for rank: "
+                     << rank_;
+
+  return c10::make_intrusive<TorchWorkCompleted>();
 }
 
 void TorchCommGloo::finalize() {
