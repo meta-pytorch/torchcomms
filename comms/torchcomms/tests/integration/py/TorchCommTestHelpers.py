@@ -181,6 +181,17 @@ def wrap_prefix_store(name, store):
     return PrefixStore(name, store)
 
 
+def destroy_root_store():
+    """Destroy the global _root_store so the MASTER_PORT can be reused.
+
+    Call this in tearDown() of test classes that mix store-based and no-store
+    tests. Without this, the persistent _root_store holds MASTER_PORT and
+    prevents the no-store bootstrap path from creating its own TCPStore.
+    """
+    global _root_store
+    _root_store = None
+
+
 def verify_tensor_equality(
     output: torch.Tensor,
     expected: Union[torch.Tensor, int, float],
