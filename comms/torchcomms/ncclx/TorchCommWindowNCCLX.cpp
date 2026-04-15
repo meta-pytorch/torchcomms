@@ -36,6 +36,9 @@ TorchCommWindowNCCLX<Backend>::TorchCommWindowNCCLX(
 
 template <typename Backend>
 TorchCommWindowNCCLX<Backend>::~TorchCommWindowNCCLX() noexcept {
+  // Destroy persistent allgather request if active
+  allgather_destroy();
+
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
   // Free device-side buffer handles (cudaMalloc'd in
   // register_local_buffer_handle). The host-side RegisteredBuffer cleanup is
@@ -343,6 +346,83 @@ std::shared_ptr<TorchCommWindowAttr> TorchCommWindowNCCLX<Backend>::get_attr(
       throw std::runtime_error("Unsupported NCCL window access type");
   }
   return attr;
+}
+
+// =============================================================================
+// Window-based Persistent AllGather
+// =============================================================================
+
+template <typename Backend>
+void TorchCommWindowNCCLX<Backend>::allgather_init(
+    const WinAllGatherInitOptions& /*options*/) {
+  checkCommAndThrow();
+  checkWindowAndThrow();
+
+  if (allgather_request_ != nullptr) {
+    throw std::runtime_error(
+        "[TorchCommWindowNCCLX]: allgather already initialized. "
+        "Call allgather_destroy() first.");
+  }
+
+  auto stream = torch_comm_->getOperationStream(/*asyncOp=*/false);
+  NCCLX_CHECK(
+      nccl_api_,
+      nccl_comm_,
+      nccl_api_->winAllGatherInit(
+          win_, nccl_comm_, stream, &allgather_request_),
+      "winAllGatherInit failed");
+}
+
+template <typename Backend>
+c10::intrusive_ptr<TorchWork> TorchCommWindowNCCLX<Backend>::allgather(
+    const at::Tensor& sendbuff,
+    bool asyncOp,
+    const WinAllGatherOptions& options) {
+  checkCommAndThrow();
+  checkWindowAndThrow();
+
+  if (allgather_request_ == nullptr) {
+    throw std::runtime_error(
+        "[TorchCommWindowNCCLX]: allgather not initialized. "
+        "Call allgather_init() first.");
+  }
+
+  if (!sendbuff.defined() || !sendbuff.is_contiguous()) {
+    throw std::runtime_error(
+        "[TorchCommWindowNCCLX]: allgather requires a defined, contiguous tensor");
+  }
+  checkDeviceAndThrow(sendbuff);
+
+  auto stream = torch_comm_->getOperationStream(asyncOp);
+  torch_comm_->graph_event_tracker_.initOnGraphStart(stream);
+  auto work = torch_comm_->createWork(stream, options.timeout, {sendbuff});
+  work->recordStart("win_allgather");
+  NCCLX_CHECK(
+      nccl_api_,
+      nccl_comm_,
+      nccl_api_->winAllGatherExec(
+          sendbuff.data_ptr(),
+          sendbuff.numel(),
+          torch_comm_->getNcclDataType(sendbuff),
+          allgather_request_),
+      "winAllGatherExec failed");
+  work->recordEnd();
+  torch_comm_->enqueueWork(work, stream);
+
+  return work;
+}
+
+template <typename Backend>
+void TorchCommWindowNCCLX<Backend>::allgather_destroy() {
+  if (allgather_request_ == nullptr) {
+    return;
+  }
+
+  NCCLX_CHECK_IGNORE(
+      nccl_api_,
+      nccl_api_->winAllGatherDestroy(allgather_request_),
+      "winAllGatherDestroy failed");
+  allgather_request_ = nullptr;
 }
 
 // =============================================================================

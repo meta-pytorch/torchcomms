@@ -843,7 +843,84 @@ Args:
 Raises:
     RuntimeError: If this backend does not yet support the device API.
 )",
-          py::arg("handle"));
+          py::arg("handle"))
+      .def(
+          "allgather_init",
+          [](TorchCommWindow& self,
+             std::optional<std::unordered_map<std::string, std::string>> hints,
+             std::optional<std::chrono::milliseconds> timeout) {
+            py::gil_scoped_release release;
+            WinAllGatherInitOptions opts;
+            if (hints) {
+              opts.hints = *hints;
+            }
+            if (timeout) {
+              opts.timeout = *timeout;
+            }
+            self.allgather_init(opts);
+          },
+          R"(
+Initialize persistent allgather using the window's registered buffer as recv.
+Must be called after tensor_register(). COLLECTIVE — all ranks must call.
+
+Args:
+    hints: Dictionary of string hints for backend-specific options.
+    timeout: Timeout for the operation.
+
+Raises:
+    RuntimeError: If this backend does not yet support window allgather.
+)",
+          py::arg("hints") = std::nullopt,
+          py::arg("timeout") = std::nullopt)
+      .def(
+          "allgather",
+          [](TorchCommWindow& self,
+             const at::Tensor& sendbuff,
+             bool async_op,
+             std::optional<std::unordered_map<std::string, std::string>> hints,
+             std::optional<std::chrono::milliseconds> timeout) {
+            py::gil_scoped_release release;
+            WinAllGatherOptions opts;
+            if (hints) {
+              opts.hints = *hints;
+            }
+            if (timeout) {
+              opts.timeout = *timeout;
+            }
+            return self.allgather(sendbuff, async_op, opts);
+          },
+          R"(
+Execute persistent allgather: each rank contributes sendbuff into the window buffer.
+Must be called after allgather_init().
+
+Args:
+    sendbuff: Input tensor to contribute to the allgather.
+    async_op: If True, the operation runs asynchronously.
+    hints: Dictionary of string hints for backend-specific options.
+    timeout: Timeout for the operation.
+
+Returns:
+    TorchWork: Work handle for the operation.
+
+Raises:
+    RuntimeError: If allgather is not initialized or backend does not support it.
+)",
+          py::arg("sendbuff"),
+          py::arg("async_op") = false,
+          py::arg("hints") = std::nullopt,
+          py::arg("timeout") = std::nullopt)
+      .def(
+          "allgather_destroy",
+          [](TorchCommWindow& self) {
+            py::gil_scoped_release release;
+            self.allgather_destroy();
+          },
+          R"(
+Destroy persistent allgather resources. Safe to call if not initialized (no-op).
+
+Raises:
+    RuntimeError: If this backend does not yet support window allgather.
+)");
 
   // Bind BatchSendRecv::P2POp class
   py::class_<BatchSendRecv::P2POp>(

@@ -216,4 +216,20 @@ class AllGatherPExecOptions {
   AllGatherPExecOptions() : timeout(kNoTimeout) {}
 };
 
+class WinAllGatherInitOptions {
+ public:
+  std::unordered_map<std::string, std::string> hints;
+  std::chrono::milliseconds timeout;
+
+  WinAllGatherInitOptions() : timeout(kNoTimeout) {}
+};
+
+class WinAllGatherOptions {
+ public:
+  std::unordered_map<std::string, std::string> hints;
+  std::chrono::milliseconds timeout;
+
+  WinAllGatherOptions() : timeout(kNoTimeout) {}
+};
+
 } // namespace torch::comms

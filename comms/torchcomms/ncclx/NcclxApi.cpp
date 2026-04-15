@@ -536,6 +536,29 @@ ncclResult_t DefaultNcclxApi::winGetAttributes(
   return ncclWinGetAttributes(peer, win, attrPtr);
 }
 
+ncclResult_t DefaultNcclxApi::winAllGatherInit(
+    NcclxWindow win,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    void** request) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+  return ncclx::winAllGatherInit(win, comm, stream, request);
+}
+
+ncclResult_t DefaultNcclxApi::winAllGatherExec(
+    const void* sendbuff,
+    size_t count,
+    ncclDataType_t datatype,
+    void* request) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+  return ncclx::winAllGatherExec(sendbuff, count, datatype, request);
+}
+
+ncclResult_t DefaultNcclxApi::winAllGatherDestroy(void* request) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+  return ncclx::winAllGatherDestroy(request);
+}
+
 ncclResult_t DefaultNcclxApi::memAlloc(void** buff, size_t size) {
   std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclMemAlloc(buff, size);

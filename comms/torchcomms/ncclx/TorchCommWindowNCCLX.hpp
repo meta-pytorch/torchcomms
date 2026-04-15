@@ -100,6 +100,14 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
 
   std::shared_ptr<TorchCommWindowAttr> get_attr(int peerRank) override;
 
+  // Window-based persistent AllGather
+  void allgather_init(const WinAllGatherInitOptions& options = {}) override;
+  c10::intrusive_ptr<TorchWork> allgather(
+      const at::Tensor& sendbuff,
+      bool asyncOp = false,
+      const WinAllGatherOptions& options = {}) override;
+  void allgather_destroy() override;
+
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
   // ==========================================================================
   // Device API Support (requires NCCLX 2.28+)
@@ -202,6 +210,9 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
   // raw data_ptr so that get_device_window() can pass it to
   // create_device_window() without requiring an at::Tensor reference.
   void* buf_data_ptr_{nullptr};
+
+  // Persistent allgather request (opaque handle from ncclx)
+  void* allgather_request_{nullptr};
 
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
   // Device API state (only available with NCCLX 2.28+)
