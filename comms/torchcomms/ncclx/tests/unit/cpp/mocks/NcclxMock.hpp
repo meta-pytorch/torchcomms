@@ -372,6 +372,24 @@ class NcclxMock : public NcclxApi {
       (int peer, NcclxWindow win, NcclxWindowAttr* attrPtr),
       (override));
 
+  // Window-based persistent AllGather operations
+  MOCK_METHOD(
+      ncclResult_t,
+      winAllGatherInit,
+      (NcclxWindow win, ncclComm_t comm, cudaStream_t stream, void** request),
+      (override));
+
+  MOCK_METHOD(
+      ncclResult_t,
+      winAllGatherExec,
+      (const void* sendbuff,
+       size_t count,
+       ncclDataType_t datatype,
+       void* request),
+      (override));
+
+  MOCK_METHOD(ncclResult_t, winAllGatherDestroy, (void* request), (override));
+
   MOCK_METHOD(ncclResult_t, memAlloc, (void** buff, size_t size), (override));
   MOCK_METHOD(ncclResult_t, memFree, (void* buff), (override));
 

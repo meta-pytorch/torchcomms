@@ -140,6 +140,22 @@ commResult_t CtranWin::exchange() {
   return commSuccess;
 }
 
+bool CtranWin::allGatherPSupported() const {
+  if (!ctranInitialized(comm)) {
+    return false;
+  }
+  auto statex = comm->statex_.get();
+  auto mapper = comm->ctran_->mapper.get();
+  const auto myRank = statex->rank();
+  for (int rank = 0; rank < statex->nRanks(); rank++) {
+    if (rank != myRank &&
+        mapper->getBackend(rank) == CtranMapperBackend::UNSET) {
+      return false;
+    }
+  }
+  return true;
+}
+
 commResult_t CtranWin::allocate(void* userBufPtr) {
   auto statex = comm->statex_.get();
   const auto myRank = statex->rank();

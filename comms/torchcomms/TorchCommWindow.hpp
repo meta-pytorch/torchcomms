@@ -70,6 +70,33 @@ class TorchCommWindow {
   virtual std::shared_ptr<TorchCommWindowAttr> get_attr(int peerRank) = 0;
 
   // ==========================================================================
+  // Collective operations on windows.
+  //
+  // Default implementations throw so that existing backends continue to build.
+  // ==========================================================================
+
+  // Initialize persistent allgather using the window's registered buffer as
+  // recv. Must be called after tensor_register().
+  virtual void allgather_init(const WinAllGatherInitOptions& /*options*/ = {}) {
+    throw std::runtime_error(
+        "allgather_init is not yet supported by this backend");
+  }
+
+  // Execute allgather: each rank contributes sendbuff into the window buffer.
+  virtual c10::intrusive_ptr<TorchWork> allgather(
+      const at::Tensor& /*sendbuff*/,
+      bool /*asyncOp*/ = false,
+      const WinAllGatherOptions& /*options*/ = {}) {
+    throw std::runtime_error("allgather is not yet supported by this backend");
+  }
+
+  // Destroy persistent allgather resources.
+  virtual void allgather_destroy() {
+    throw std::runtime_error(
+        "allgather_destroy is not yet supported by this backend");
+  }
+
+  // ==========================================================================
   // Device API — virtual methods for GPU-initiated communication.
   //
   // Default implementations throw so that existing backends (NCCL, Gloo, RCCL)

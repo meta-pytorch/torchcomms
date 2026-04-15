@@ -340,6 +340,19 @@ class NcclxApi {
   [[nodiscard]] virtual ncclResult_t
   winGetAttributes(int peer, NcclxWindow win, NcclxWindowAttr* attrPtr) = 0;
 
+  // Window-based persistent AllGather
+  [[nodiscard]] virtual ncclResult_t winAllGatherInit(
+      NcclxWindow win,
+      ncclComm_t comm,
+      cudaStream_t stream,
+      void** request) = 0;
+  [[nodiscard]] virtual ncclResult_t winAllGatherExec(
+      const void* sendbuff,
+      size_t count,
+      ncclDataType_t datatype,
+      void* request) = 0;
+  [[nodiscard]] virtual ncclResult_t winAllGatherDestroy(void* request) = 0;
+
   [[nodiscard]] virtual ncclResult_t memAlloc(void** buff, size_t size) = 0;
   [[nodiscard]] virtual ncclResult_t memFree(void* buff) = 0;
 
@@ -715,6 +728,18 @@ class DefaultNcclxApi : public NcclxApi {
       int peer,
       NcclxWindow win,
       NcclxWindowAttr* attrPtr) override;
+
+  [[nodiscard]] ncclResult_t winAllGatherInit(
+      NcclxWindow win,
+      ncclComm_t comm,
+      cudaStream_t stream,
+      void** request) override;
+  [[nodiscard]] ncclResult_t winAllGatherExec(
+      const void* sendbuff,
+      size_t count,
+      ncclDataType_t datatype,
+      void* request) override;
+  [[nodiscard]] ncclResult_t winAllGatherDestroy(void* request) override;
 
   [[nodiscard]] ncclResult_t memAlloc(void** buff, size_t size) override;
   [[nodiscard]] ncclResult_t memFree(void* buff) override;
