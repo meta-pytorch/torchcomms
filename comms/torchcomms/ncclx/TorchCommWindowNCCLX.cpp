@@ -320,6 +320,7 @@ c10::intrusive_ptr<TorchWork> TorchCommWindowNCCLX<Backend>::wait_signal(
 template <typename Backend>
 std::shared_ptr<TorchCommWindowAttr> TorchCommWindowNCCLX<Backend>::get_attr(
     int peerRank) {
+#ifdef NCCL_RMA_SUPPORTED
   checkWindowAndThrow();
   NcclxWindowAttr nccl_attr_raw = nullptr;
   CHECK_EQ(
@@ -343,6 +344,10 @@ std::shared_ptr<TorchCommWindowAttr> TorchCommWindowNCCLX<Backend>::get_attr(
       throw std::runtime_error("Unsupported NCCL window access type");
   }
   return attr;
+#else
+  throw std::runtime_error(
+      "Window attributes are not supported without NCCL_RMA_SUPPORTED");
+#endif
 }
 
 // =============================================================================
