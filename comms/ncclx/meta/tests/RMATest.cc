@@ -144,6 +144,63 @@ TEST_F(RMATest, winPutOnly) {
   EXPECT_EQ(errs, 0u);
 }
 
+TEST_F(RMATest, winAllGather) {
+  const size_t kNumElements = 8192;
+  const size_t kNumIters = 10;
+
+  size_t sizeBytes = kNumElements * sizeof(int) * numRanks;
+
+  void* winBase = nullptr;
+  ASSERT_EQ(ncclMemAlloc(&winBase, sizeBytes), ncclSuccess);
+  ASSERT_NE(winBase, nullptr);
+
+  ncclWindow_t win = nullptr;
+  auto res =
+      ncclCommWindowRegister(comm, winBase, sizeBytes, &win, NCCL_WIN_DEFAULT);
+  ASSERT_EQ(res, ncclSuccess);
+
+  bool supported = false;
+  ASSERT_EQ(ncclx::winAllGatherPSupported(win, &supported), ncclSuccess);
+  if (!supported) {
+    GTEST_SKIP() << "Window AllGatherP not supported";
+  }
+
+  void* agpRequest = nullptr;
+  ASSERT_EQ(
+      ncclx::winAllGatherInit(win, comm, stream, &agpRequest), ncclSuccess);
+  ASSERT_NE(agpRequest, nullptr);
+
+  // Fill each rank's chunk with its rank value
+  int* winBuf = reinterpret_cast<int*>(winBase);
+  assignChunkValue(
+      winBuf + kNumElements * globalRank, kNumElements, globalRank + 1, 0);
+
+  for (size_t iter = 0; iter < kNumIters; iter++) {
+    ASSERT_EQ(
+        ncclx::winAllGatherExec(
+            winBuf + kNumElements * globalRank,
+            kNumElements,
+            ncclInt32,
+            agpRequest),
+        ncclSuccess);
+  }
+
+  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+
+  // Verify all chunks
+  for (int r = 0; r < numRanks; r++) {
+    int errs = checkChunkValue(winBuf + kNumElements * r, kNumElements, r + 1);
+    EXPECT_EQ(errs, 0) << "rank " << globalRank << " checked chunk " << r
+                       << " with " << errs << " errors";
+  }
+
+  ASSERT_EQ(ncclx::winAllGatherDestroy(agpRequest), ncclSuccess);
+
+  res = ncclWinFree(comm, win);
+  EXPECT_EQ(res, ncclSuccess);
+  ASSERT_EQ(ncclMemFree(winBase), ncclSuccess);
+}
+
 // Parameterized test: (kNumElements, ctranAllReduce, bufType)
 class RMATestParam : public RMATest,
                      public ::testing::WithParamInterface<

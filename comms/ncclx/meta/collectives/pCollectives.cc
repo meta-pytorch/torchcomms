@@ -225,6 +225,9 @@ __attribute__((visibility("default"))) ncclResult_t pFree(void* request) {
     case CtranPersistentRequest::Type::ALLTOALLV_DEDUP:
       NCCLCHECK(metaCommToNccl(::ctran::allToAllvDedupDestroy(pReq)));
       break;
+    case CtranPersistentRequest::Type::ALLGATHER_P_WIN:
+      NCCLCHECK(metaCommToNccl(::ctran::allGatherWinDestroy(pReq)));
+      break;
     default:
       FB_ERRORRETURN(
           ncclInvalidArgument,
