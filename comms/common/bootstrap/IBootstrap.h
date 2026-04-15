@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <memory>
 #include <stdexcept>
 #include <vector>
 
@@ -91,6 +92,23 @@ class IBootstrap {
       }
     }
     return folly::makeSemiFuture(0);
+  }
+
+  /**
+   * Create a new bootstrap instance whose send/recv operations are isolated
+   * from this one.
+   *
+   * For store-backed bootstraps (e.g. TcpStoreBootstrap), this creates a
+   * PrefixStore wrapper so that keys never collide with the original.
+   * For MPI bootstraps, this duplicates the communicator via MPI_Comm_dup
+   * so that tags on the new communicator are independent.
+   *
+   * Returns nullptr if isolation is not needed or not supported.
+   * Callers should fall back to the original bootstrap when nullptr is
+   * returned.
+   */
+  virtual std::unique_ptr<IBootstrap> duplicate() {
+    return nullptr;
   }
 };
 
