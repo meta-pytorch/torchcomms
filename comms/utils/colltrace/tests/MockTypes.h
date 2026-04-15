@@ -24,7 +24,7 @@ class MockCollTrace : public ICollTrace {
       (noexcept, override));
 
   MOCK_METHOD(
-      CommsMaybe<std::shared_ptr<CollTraceHandle>>,
+      CommsMaybe<std::shared_ptr<ICollTraceHandle>>,
       recordCollective,
       (std::unique_ptr<ICollMetadata> metadata,
        std::unique_ptr<ICollWaitEvent> waitEvent),
@@ -71,6 +71,24 @@ class MockCollTracePlugin : public ICollTracePlugin {
 // Mock CollWaitEvent for testing
 class MockCollWaitEvent : public ICollWaitEvent {
  public:
+  MockCollWaitEvent() {
+    ON_CALL(*this, getCollStartTime())
+        .WillByDefault(
+            ::testing::Return(
+                CommsMaybe<system_clock_time_point>(
+                    std::chrono::system_clock::now())));
+    ON_CALL(*this, getCollEndTime())
+        .WillByDefault(
+            ::testing::Return(
+                CommsMaybe<system_clock_time_point>(
+                    std::chrono::system_clock::now())));
+    ON_CALL(*this, getCollEnqueueTime())
+        .WillByDefault(
+            ::testing::Return(
+                CommsMaybe<system_clock_time_point>(
+                    std::chrono::system_clock::now())));
+  }
+
   MOCK_METHOD(
       CommsMaybeVoid,
       beforeCollKernelScheduled,

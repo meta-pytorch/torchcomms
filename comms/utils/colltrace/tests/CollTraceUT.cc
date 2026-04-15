@@ -1,5 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <set>
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
@@ -305,10 +307,10 @@ TEST_F(CollTraceTest, PluginCallbacks) {
   EXPECT_VALUE(
       handle->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel));
 
-  EXPECT_CALL(*mockPluginPtr, collEventProgressing(_)).Times(AtLeast(1));
-  // Sleep briefly to trigger collEventProgressing
-  std::this_thread::sleep_for(std::chrono::milliseconds(20));
   EXPECT_VALUE(handle->trigger(CollTraceHandleTriggerState::KernelStarted));
+
+  // wait for progressing to fire after started
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
 
   EXPECT_CALL(*mockPluginPtr, collEventProgressing(_)).Times(AtLeast(1));
   // Sleep briefly to trigger collEventProgressing
@@ -456,4 +458,172 @@ TEST_F(CollTraceTest, CheckHandleValidityOverMultipleEnqueues) {
       EXPECT_NE(res.value(), nullptr);
     }
   }
+}
+
+// Test that collEventProgressing fires only for the collective that has
+// started but not finished, verifying per-collective start detection.
+TEST_F(CollTraceTest, PerCollectiveProgressingForInFlightCollective) {
+  // Set up coll1 with controllable start/end signals so we can hold it
+  // in the "started but not finished" state.
+  auto metadata1 = std::make_unique<::testing::StrictMock<MockCollMetadata>>();
+  auto waitEvent1 = std::make_unique<NiceMock<MockCollWaitEvent>>();
+
+  std::atomic_flag coll1Started;
+  std::atomic_flag coll1Ended;
+  {
+    ::testing::InSequence seq;
+    EXPECT_CALL(*waitEvent1, beforeCollKernelScheduled())
+        .WillOnce(Return(folly::unit));
+    EXPECT_CALL(*waitEvent1, afterCollKernelScheduled())
+        .WillOnce(Return(folly::unit));
+    EXPECT_CALL(*waitEvent1, waitCollStart(_)).WillRepeatedly([&]() {
+      return coll1Started.test();
+    });
+    EXPECT_CALL(*waitEvent1, waitCollEnd(_)).WillRepeatedly([&]() {
+      return coll1Ended.test();
+    });
+  }
+  EXPECT_CALL(*waitEvent1, signalCollStart()).WillOnce([&]() {
+    coll1Started.test_and_set();
+    return folly::unit;
+  });
+  EXPECT_CALL(*waitEvent1, signalCollEnd()).WillOnce([&]() {
+    coll1Ended.test_and_set();
+    return folly::unit;
+  });
+
+  // Record and enqueue coll1.
+  auto handle1 =
+      *collTrace->recordCollective(std::move(metadata1), std::move(waitEvent1));
+  EXPECT_VALUE(
+      handle1->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel));
+  EXPECT_VALUE(
+      handle1->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel));
+
+  // Signal coll1 start but NOT end — it's now "in flight".
+  handle1->trigger(CollTraceHandleTriggerState::KernelStarted);
+
+  // Expect collEventProgressing to be called at least once for coll1.
+  std::atomic<int> coll1ProgressCount{0};
+  auto coll1Id = handle1->getCollRecord().value()->getCollId();
+  EXPECT_CALL(*mockPluginPtr, collEventProgressing(_))
+      .WillRepeatedly([&](CollTraceEvent& event) {
+        if (event.collRecord->getCollId() == coll1Id) {
+          coll1ProgressCount++;
+        }
+        return folly::unit;
+      });
+
+  // Wait for the poll thread to detect the in-flight state.
+  // NOLINTNEXTLINE(facebook-hte-BadCall-sleep_for)
+  while (coll1ProgressCount.load() == 0) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+
+  EXPECT_GT(coll1ProgressCount.load(), 0)
+      << "collEventProgressing should fire for the in-flight collective";
+
+  // Complete coll1.
+  std::atomic<bool> coll1Completed{false};
+  EXPECT_CALL(*mockPluginPtr, afterCollKernelEnd(_))
+      .WillRepeatedly([&](CollTraceEvent& event) {
+        if (event.collRecord->getCollId() == coll1Id) {
+          coll1Completed.store(true);
+        }
+        return folly::unit;
+      });
+
+  handle1->trigger(CollTraceHandleTriggerState::KernelFinished);
+  // NOLINTNEXTLINE(facebook-hte-BadCall-sleep_for)
+  while (!coll1Completed.load()) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+
+  EXPECT_TRUE(coll1Completed.load())
+      << "afterCollKernelEnd should fire after KernelFinished";
+}
+
+// ---------------------------------------------------------------------------
+// PendingAction ordering tests — verify the multiset merge-by-timestamp
+// logic that ensures events from both eager and graph pipelines are
+// processed in chronological order.
+// ---------------------------------------------------------------------------
+
+TEST(PendingActionOrdering, SortsByTimestamp) {
+  auto t1 = std::chrono::system_clock::now();
+  auto t2 = t1 + std::chrono::milliseconds(10);
+  auto t3 = t1 + std::chrono::milliseconds(20);
+
+  std::multiset<PendingAction> actions;
+  // Insert out of order.
+  actions.insert({nullptr, PendingActionType::kEnd, t3});
+  actions.insert({nullptr, PendingActionType::kStart, t1});
+  actions.insert({nullptr, PendingActionType::kProgressing, t2});
+
+  std::vector<PendingActionType> order;
+  for (const auto& a : actions) {
+    order.push_back(a.type);
+  }
+  const std::vector<PendingActionType> expected{
+      PendingActionType::kStart,
+      PendingActionType::kProgressing,
+      PendingActionType::kEnd,
+  };
+  EXPECT_EQ(order, expected);
+}
+
+TEST(PendingActionOrdering, SameTimestampOrderedByType) {
+  auto t = std::chrono::system_clock::now();
+
+  std::multiset<PendingAction> actions;
+  // All same timestamp, insert in reverse type order.
+  actions.insert({nullptr, PendingActionType::kEnd, t});
+  actions.insert({nullptr, PendingActionType::kProgressing, t});
+  actions.insert({nullptr, PendingActionType::kStart, t});
+  actions.insert({nullptr, PendingActionType::kScheduleAndStart, t});
+
+  std::vector<PendingActionType> order;
+  for (const auto& a : actions) {
+    order.push_back(a.type);
+  }
+  // kScheduleAndStart < kStart < kProgressing < kEnd
+  const std::vector<PendingActionType> expected{
+      PendingActionType::kScheduleAndStart,
+      PendingActionType::kStart,
+      PendingActionType::kProgressing,
+      PendingActionType::kEnd,
+  };
+  EXPECT_EQ(order, expected);
+}
+
+TEST(PendingActionOrdering, MixedTimestampsAndTypes) {
+  auto t1 = std::chrono::system_clock::now();
+  auto t2 = t1 + std::chrono::milliseconds(5);
+
+  std::multiset<PendingAction> actions;
+  // Graph start at t1, eager start at t1 (same timestamp — graph first).
+  actions.insert({nullptr, PendingActionType::kStart, t1});
+  actions.insert({nullptr, PendingActionType::kScheduleAndStart, t1});
+  // Eager end at t2, graph end at t2 (same timestamp — same type, either
+  // order).
+  actions.insert({nullptr, PendingActionType::kEnd, t2});
+  actions.insert({nullptr, PendingActionType::kEnd, t2});
+
+  std::vector<PendingActionType> order;
+  std::vector<std::chrono::system_clock::time_point> times;
+  for (const auto& a : actions) {
+    order.push_back(a.type);
+    times.push_back(a.timestamp);
+  }
+
+  // First two should be the t1 actions (schedule+start before start).
+  EXPECT_EQ(order[0], PendingActionType::kScheduleAndStart);
+  EXPECT_EQ(order[1], PendingActionType::kStart);
+  EXPECT_EQ(times[0], t1);
+  EXPECT_EQ(times[1], t1);
+  // Last two should be the t2 end actions.
+  EXPECT_EQ(order[2], PendingActionType::kEnd);
+  EXPECT_EQ(order[3], PendingActionType::kEnd);
+  EXPECT_EQ(times[2], t2);
+  EXPECT_EQ(times[3], t2);
 }

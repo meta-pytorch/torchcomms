@@ -5,11 +5,17 @@ find_package(CUDA REQUIRED)
 file(GLOB_RECURSE UTILS_SOURCES
     "*.cc"
 )
+file(GLOB_RECURSE UTILS_CU_SOURCES
+    "*.cu"
+)
 list(FILTER UTILS_SOURCES EXCLUDE REGEX ".*/tests/.*")
 list(FILTER UTILS_SOURCES EXCLUDE REGEX ".*/test_utils/.*")
+list(FILTER UTILS_CU_SOURCES EXCLUDE REGEX ".*/tests/.*")
+list(FILTER UTILS_CU_SOURCES EXCLUDE REGEX ".*/test_utils/.*")
 
 add_library(utils OBJECT
     ${UTILS_SOURCES}
+    ${UTILS_CU_SOURCES}
 )
 
 target_compile_features(utils PRIVATE cxx_std_20)

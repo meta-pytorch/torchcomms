@@ -48,9 +48,13 @@ CudaReferencePoint::CudaReferencePoint() {
 
 CommsMaybe<ICollWaitEvent::system_clock_time_point>
 CudaReferencePoint::getTimeViaEvent(const CudaEvent& event) {
+  return getTimeViaEvent(event.get());
+}
+
+CommsMaybe<ICollWaitEvent::system_clock_time_point>
+CudaReferencePoint::getTimeViaEvent(cudaEvent_t event) {
   float offsetMs;
-  CUDA_CHECK_EXPECTED(
-      cudaEventElapsedTime(&offsetMs, this->event_, event.get()));
+  CUDA_CHECK_EXPECTED(cudaEventElapsedTime(&offsetMs, this->event_, event));
   auto eventTime = this->time_ +
       std::chrono::duration_cast<std::chrono::microseconds>(
                        std::chrono::duration<float, std::milli>{offsetMs});

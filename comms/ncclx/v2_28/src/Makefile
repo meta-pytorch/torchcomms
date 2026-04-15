@@ -73,6 +73,9 @@ LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/logger/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/*.cc)
 ## CollTrace source files
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/colltrace/*.cc)
+## CollTrace CUDA source files (host-side kernel launchers)
+LIBSRCFILES += ${BASE_DIR}/comms/utils/colltrace/GpuClockCalibration.cu
+LIBSRCFILES += ${BASE_DIR}/comms/utils/colltrace/HRDWRingBufferInstantiations.cu
 ## CollTrace plugin source files
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/colltrace/plugins/*.cc)
 ## Include ibverbx files
@@ -190,10 +193,12 @@ PKGTARGET  := $(PKGCONFIGFILE)
 LIBSRCFILES_CC  := $(filter %.cc,$(LIBSRCFILES))
 LIBSRCFILES_CPP := $(filter %.cpp,$(LIBSRCFILES))
 LIBSRCFILES_C   := $(filter %.c,$(LIBSRCFILES))
+LIBSRCFILES_CU  := $(filter %.cu,$(LIBSRCFILES))
 LIBOBJ_CC       := $(LIBSRCFILES_CC:%.cc=$(OBJDIR)/%.o)
 LIBOBJ_CPP      := $(LIBSRCFILES_CPP:%.cpp=$(OBJDIR)/%.o)
 LIBOBJ_C        := $(LIBSRCFILES_C:%.c=$(OBJDIR)/%.o)
-LIBOBJ          := $(LIBOBJ_CC) $(LIBOBJ_CPP) $(LIBOBJ_C)
+LIBOBJ_CU       := $(LIBSRCFILES_CU:%.cu=$(OBJDIR)/%.o)
+LIBOBJ          := $(LIBOBJ_CC) $(LIBOBJ_CPP) $(LIBOBJ_C) $(LIBOBJ_CU)
 BINOBJ     := $(BINSRCFILES:%.cc=$(OBJDIR)/%.o)
 DEPFILES   := $(LIBOBJ:%.o=%.d) $(BINOBJ:%.o=%.d)
 LDFLAGS    += -Wl,--no-undefined
@@ -372,6 +377,11 @@ $(OBJDIR)/%.o : %.c $(INCTARGETS)
 	@sed -e 's/.*://' -e 's/\\$$//' < $(@:%.o=%.d.tmp) | fmt -1 | \
                 sed -e 's/^ *//' -e 's/$$/:/' >> $(@:%.o=%.d)
 	@rm -f $(@:%.o=%.d.tmp)
+
+$(OBJDIR)/%.o : %.cu $(INCTARGETS)
+	@printf "Compiling  %-35s > %s\n" $< $@
+	mkdir -p `dirname $@`
+	$(NVCC) $(NVCC_GENCODE) $(CXXSTD) -Xcompiler -fPIC -Xcompiler -fvisibility=hidden -I. -I$(INCDIR) $(INCLUDES) -I$(INCPLUGIN) -I$(DOCA_HOME)/include -c $< -o $@
 
 $(DOCA_OBJDIR)/%.o : $(DOCA_HOME)/src/%.cpp
 	@printf "Compiling  %-35s > %s\n" $< $@
