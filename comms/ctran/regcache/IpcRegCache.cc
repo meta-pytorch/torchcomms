@@ -108,7 +108,7 @@ commResult_t ctran::IpcRegCache::importMem(
   // import from baseAddr of a remote segment, return buf at offset from
   // baseAddr
   *buf = reinterpret_cast<char*>(basePtr) + ipcDesc.offset;
-  remKey->peerId = peerId;
+  std::snprintf(remKey->peerId, regcache::kMaxPeerIdLen, "%s", peerId.c_str());
   remKey->basePtr = ipcDesc.desc.base;
   remKey->uid = ipcDesc.uid;
   CLOGF_TRACE(

@@ -1273,7 +1273,8 @@ TEST_F(CtranMapperTest, RemoteAccessKeyToString) {
     rkey1.ibKey.rkeys[i] = 291 + i;
   }
   rkey1.ibKey.nKeys = CTRAN_MAX_IB_DEVICES_PER_RANK;
-  rkey1.nvlKey.peerId = "host1:1234";
+  std::strncpy(
+      rkey1.nvlKey.peerId, "host1:1234", ctran::regcache::kMaxPeerIdLen);
   rkey1.nvlKey.basePtr = (void*)0x4567890;
   EXPECT_EQ(rkey1.toString(), "backend=IB, ibKey=[291, 292]");
 

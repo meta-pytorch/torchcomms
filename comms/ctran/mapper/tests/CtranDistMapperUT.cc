@@ -813,7 +813,8 @@ TEST_P(CtranDistMapperBufExportParam, BufExportCtrl) {
     if (remoteAccessKeys.backend == CtranMapperBackend::IB) {
       ASSERT_NE(remoteAccessKeys.ibKey.rkeys[0], 0);
     } else if (remoteAccessKeys.backend == CtranMapperBackend::NVL) {
-      ASSERT_EQ(remoteAccessKeys.nvlKey.peerId, statex->gPid(recvPeer));
+      ASSERT_STREQ(
+          remoteAccessKeys.nvlKey.peerId, statex->gPid(recvPeer).c_str());
       ASSERT_NE(remoteAccessKeys.nvlKey.basePtr, nullptr);
     }
 
