@@ -89,10 +89,10 @@ def create_tensor(
     return torch.ones(num_elements, dtype=dtype, device=device) * float(rank + 1)
 
 
-def sync_device(device: torch.device) -> None:
-    """Synchronize the device stream if it's a CUDA device."""
-    if device.type == "cuda":
-        torch.cuda.synchronize()
+def sync_device() -> None:
+    """Synchronize the device stream if it's a accelerator device."""
+    if torch.accelerator.is_available():
+        torch.accelerator.synchronize()
 
 
 def print_usage(program_name: str) -> None:
