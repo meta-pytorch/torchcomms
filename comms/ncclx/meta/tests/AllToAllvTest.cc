@@ -44,6 +44,7 @@ class AllToAllvTest
   void TearDown() override {
     NCCLCHECK_TEST(ncclCommDestroy(this->comm));
     CUDACHECK_TEST(cudaStreamDestroy(this->stream));
+    NcclxBaseTestFixture::TearDown();
   }
 
   void runReuseSharedBuffer(bool registFlag = false) {

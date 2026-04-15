@@ -37,6 +37,7 @@ class AllToAllTest : public NcclxBaseTestFixture {
   void TearDown() override {
     NCCLCHECK_TEST(ncclCommDestroy(this->comm));
     CUDACHECK_TEST(cudaStreamDestroy(this->stream));
+    NcclxBaseTestFixture::TearDown();
   }
 
   void run(bool registFlag = false) {
