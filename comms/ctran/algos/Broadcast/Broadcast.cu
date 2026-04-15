@@ -22,16 +22,28 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelBroadcast(
     ctran::broadcast::KernelArgs args) {
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
 
-  if (flag && gtIdx == 0) {
-    ctran::device::devLoadAbortFlags(flag, devState);
-    ctran::device::KernelStartGpe(flag);
+  if (UNPACK) {
+    // Per-block flag management (matches SendRecv pattern) to avoid race
+    // where block 0 clears the shared flag before other blocks exit waitUnpack.
+    if (flag && threadIdx.x == 0) {
+      ctran::device::KernelStartGpe(&flag[blockIdx.x]);
+    }
+    devStateLoadToShm(&flag[blockIdx.x], devState);
+  } else {
+    if (flag && gtIdx == 0) {
+      ctran::device::devLoadAbortFlags(flag, devState);
+      ctran::device::KernelStartGpe(flag);
+    }
+    devStateLoadToShm(devState);
   }
 
-  devStateLoadToShm(devState);
 #ifndef CTRAN_DISABLE_TCPDM
   if (UNPACK) {
     waitUnpack(
-        args.unpack.sq[blockIdx.x], &broadcastUnpack, flag, KERNEL_TERMINATE);
+        args.unpack.sq[blockIdx.x],
+        &broadcastUnpack,
+        &flag[blockIdx.x],
+        KERNEL_TERMINATE);
   }
 #endif
 
@@ -49,8 +61,14 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelBroadcast(
         args.putNotifyList);
   }
 
-  if (flag && gtIdx == 0) {
-    ctran::device::KernelWaitGpeTerminate(flag);
+  if (UNPACK) {
+    if (flag && threadIdx.x == 0) {
+      ctran::device::KernelWaitGpeTerminate(&flag[blockIdx.x]);
+    }
+  } else {
+    if (flag && gtIdx == 0) {
+      ctran::device::KernelWaitGpeTerminate(flag);
+    }
   }
 }
 

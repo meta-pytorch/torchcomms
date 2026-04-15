@@ -276,6 +276,7 @@ commResult_t CtranGpe::Impl::submit(
             KernelConfig::KernelType::SENDRECV,
             KernelConfig::KernelType::RECV_UNPACK,
             KernelConfig::KernelType::SENDRECV_UNPACK,
+            KernelConfig::KernelType::BROADCAST_UNPACK,
         };
     if (perBlockFlagEnabledKernels.contains(kernelConfig.type)) {
       kernelFlag->numGroups_ = kernelConfig.numBlocks;
