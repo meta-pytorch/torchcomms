@@ -11,6 +11,8 @@
 
 #include "comms/pipes/MultiPeerNvlTransport.h"
 #include "comms/pipes/P2pNvlTransportDevice.cuh"
+#include "comms/pipes/TiledBuffer.cuh"
+#include "comms/pipes/benchmarks/TileSendRecv.cuh"
 #include "comms/pipes/tests/P2pNvlTransportTest.cuh"
 #include "comms/pipes/tests/Utils.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
@@ -371,6 +373,582 @@ void runBasicSendRecvTest(
     CUDACHECK_TEST(cudaGraphDestroy(graph));
     CUDACHECK_TEST(cudaStreamDestroy(stream));
   }
+}
+
+// =============================================================================
+// Tile sendrecv multi-call correctness test
+// =============================================================================
+
+TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCall) {
+  if (numRanks != 2) {
+    XLOGF(WARNING, "Skipping: requires 2 ranks, got {}", numRanks);
+    return;
+  }
+
+  int peerRank = (globalRank == 0) ? 1 : 0;
+  const size_t nBytes = 8 * 1024 * 1024; // 8MB
+  const int numSendBlocks = 4;
+  const int nIters = 5; // call sendrecv 5 times with different data
+
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = 8 * 1024 * 1024, // 8MB slot
+      .chunkSize = 8 * 1024 * 1024,
+      .pipelineDepth = 2,
+  };
+
+  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  transport.exchange();
+  auto p2pHost = transport.buildP2pTransportDevice(peerRank);
+
+  DeviceBuffer sendBuf(nBytes);
+  DeviceBuffer recvBuf(nBytes);
+
+  dim3 grid(numSendBlocks * 2);
+  dim3 block(256);
+
+  Timeout timeout;
+
+  for (int iter = 0; iter < nIters; iter++) {
+    const int pattern = 0x10 + globalRank + iter * 0x20;
+    const int peerPattern = 0x10 + peerRank + iter * 0x20;
+
+    CUDACHECK_TEST(cudaMemset(sendBuf.get(), pattern, nBytes));
+    CUDACHECK_TEST(cudaMemset(recvBuf.get(), 0, nBytes));
+
+    comms::pipes::TiledBuffer<char> sendTiles(
+        static_cast<char*>(sendBuf.get()), nBytes, numSendBlocks);
+    comms::pipes::TiledBuffer<char> recvTiles(
+        static_cast<char*>(recvBuf.get()), nBytes, numSendBlocks);
+    int numBlocksArg = numSendBlocks;
+    int chunksPerSlot = 1;
+    void* args[] = {
+        &p2pHost,
+        &sendTiles,
+        &recvTiles,
+        &numBlocksArg,
+        &chunksPerSlot,
+        &timeout};
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    CUDACHECK_TEST(cudaLaunchKernel(
+        (void*)comms::pipes::benchmark::p2pTileSendRecv,
+        grid,
+        block,
+        args,
+        0,
+        nullptr));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    // Verify received data
+    std::vector<char> hostBuf(nBytes);
+    CUDACHECK_TEST(cudaMemcpy(
+        hostBuf.data(), recvBuf.get(), nBytes, cudaMemcpyDeviceToHost));
+
+    for (size_t i = 0; i < nBytes; i++) {
+      EXPECT_EQ(
+          static_cast<unsigned char>(hostBuf[i]),
+          static_cast<unsigned char>(peerPattern))
+          << "Iter " << iter << ": Mismatch at byte " << i;
+      if (static_cast<unsigned char>(hostBuf[i]) !=
+          static_cast<unsigned char>(peerPattern)) {
+        break;
+      }
+    }
+  }
+}
+
+// =============================================================================
+// send_tile / recv_tile Tests
+// =============================================================================
+
+// Helper: run tile sendrecv with given params and verify correctness
+static void runTileTest(
+    int globalRank,
+    int numRanks,
+    std::shared_ptr<meta::comms::MpiBootstrap> bootstrap,
+    size_t nBytes,
+    size_t dataBufferSize,
+    size_t chunkSize,
+    size_t pipelineDepth,
+    int numSendBlocks,
+    int nIters,
+    int threadCount = 256) {
+  int peerRank = (globalRank == 0) ? 1 : 0;
+
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = dataBufferSize,
+      .chunkSize = chunkSize,
+      .pipelineDepth = pipelineDepth,
+  };
+
+  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  transport.exchange();
+  auto p2pHost = transport.buildP2pTransportDevice(peerRank);
+
+  DeviceBuffer sendBuf(nBytes);
+  DeviceBuffer recvBuf(nBytes);
+
+  dim3 grid(numSendBlocks * 2);
+  dim3 block(threadCount);
+
+  Timeout timeout;
+
+  for (int iter = 0; iter < nIters; iter++) {
+    const int pattern = 0x10 + globalRank + iter * 0x20;
+    const int peerPattern = 0x10 + peerRank + iter * 0x20;
+
+    CUDACHECK_TEST(cudaMemset(sendBuf.get(), pattern, nBytes));
+    CUDACHECK_TEST(cudaMemset(recvBuf.get(), 0, nBytes));
+
+    comms::pipes::TiledBuffer<char> sendTiles(
+        static_cast<char*>(sendBuf.get()), nBytes, numSendBlocks);
+    comms::pipes::TiledBuffer<char> recvTiles(
+        static_cast<char*>(recvBuf.get()), nBytes, numSendBlocks);
+    int numBlocksArg = numSendBlocks;
+    int chunksPerSlot = 1;
+    void* args[] = {
+        &p2pHost,
+        &sendTiles,
+        &recvTiles,
+        &numBlocksArg,
+        &chunksPerSlot,
+        &timeout};
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    CUDACHECK_TEST(cudaLaunchKernel(
+        (void*)comms::pipes::benchmark::p2pTileSendRecv,
+        grid,
+        block,
+        args,
+        0,
+        nullptr));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    std::vector<char> hostBuf(nBytes);
+    CUDACHECK_TEST(cudaMemcpy(
+        hostBuf.data(), recvBuf.get(), nBytes, cudaMemcpyDeviceToHost));
+
+    for (size_t i = 0; i < nBytes; i++) {
+      EXPECT_EQ(
+          static_cast<unsigned char>(hostBuf[i]),
+          static_cast<unsigned char>(peerPattern))
+          << "Iter " << iter << ": Mismatch at byte " << i
+          << " (nBytes=" << nBytes << ", blocks=" << numSendBlocks
+          << ", slot=" << dataBufferSize << ", chunk=" << chunkSize
+          << ", pd=" << pipelineDepth << ")";
+      if (static_cast<unsigned char>(hostBuf[i]) !=
+          static_cast<unsigned char>(peerPattern)) {
+        return; // stop on first failure
+      }
+    }
+  }
+}
+
+// Test various message sizes with default config
+TEST_F(P2pNvlTransportTestFixture, TileSendRecvMessageSizes) {
+  if (numRanks != 2) {
+    return;
+  }
+  auto bs = std::make_shared<meta::comms::MpiBootstrap>();
+
+  // Small sizes
+  runTileTest(
+      globalRank,
+      numRanks,
+      bs,
+      4096,
+      8 * 1024 * 1024,
+      8 * 1024 * 1024,
+      2,
+      4,
+      1);
+  runTileTest(
+      globalRank,
+      numRanks,
+      bs,
+      16384,
+      8 * 1024 * 1024,
+      8 * 1024 * 1024,
+      2,
+      4,
+      1);
+  runTileTest(
+      globalRank,
+      numRanks,
+      bs,
+      65536,
+      8 * 1024 * 1024,
+      8 * 1024 * 1024,
+      2,
+      4,
+      1);
+
+  // Medium sizes
+  runTileTest(
+      globalRank,
+      numRanks,
+      bs,
+      1 * 1024 * 1024,
+      8 * 1024 * 1024,
+      8 * 1024 * 1024,
+      2,
+      8,
+      1);
+  runTileTest(
+      globalRank,
+      numRanks,
+      bs,
+      8 * 1024 * 1024,
+      8 * 1024 * 1024,
+      8 * 1024 * 1024,
+      2,
+      16,
+      1);
+
+  // Large sizes
+  runTileTest(
+      globalRank,
+      numRanks,
+      bs,
+      64 * 1024 * 1024,
+      8 * 1024 * 1024,
+      8 * 1024 * 1024,
+      2,
+      16,
+      1);
+  runTileTest(
+      globalRank,
+      numRanks,
+      bs,
+      256 * 1024 * 1024,
+      8 * 1024 * 1024,
+      8 * 1024 * 1024,
+      2,
+      16,
+      1);
+}
+
+// Test signal granularity (chunkSize < slotSize)
+TEST_F(P2pNvlTransportTestFixture, TileSendRecvSignalGranularity) {
+  if (numRanks != 2) {
+    return;
+  }
+  auto bs = std::make_shared<meta::comms::MpiBootstrap>();
+  const size_t nBytes = 32 * 1024 * 1024; // 32MB
+
+  // Per-slot signaling (chunkSize == slotSize)
+  runTileTest(
+      globalRank,
+      numRanks,
+      bs,
+      nBytes,
+      8 * 1024 * 1024,
+      8 * 1024 * 1024,
+      2,
+      16,
+      1);
+
+  // 128KB signal granularity
+  runTileTest(
+      globalRank, numRanks, bs, nBytes, 8 * 1024 * 1024, 128 * 1024, 2, 16, 1);
+
+  // 512KB signal granularity
+  runTileTest(
+      globalRank, numRanks, bs, nBytes, 8 * 1024 * 1024, 512 * 1024, 2, 16, 1);
+
+  // 1MB signal granularity
+  runTileTest(
+      globalRank, numRanks, bs, nBytes, 8 * 1024 * 1024, 1024 * 1024, 2, 16, 1);
+}
+
+// Test different block counts
+TEST_F(P2pNvlTransportTestFixture, TileSendRecvBlockCounts) {
+  if (numRanks != 2) {
+    return;
+  }
+  auto bs = std::make_shared<meta::comms::MpiBootstrap>();
+  const size_t nBytes = 16 * 1024 * 1024; // 16MB
+
+  runTileTest(
+      globalRank,
+      numRanks,
+      bs,
+      nBytes,
+      8 * 1024 * 1024,
+      8 * 1024 * 1024,
+      2,
+      1,
+      1);
+  runTileTest(
+      globalRank,
+      numRanks,
+      bs,
+      nBytes,
+      8 * 1024 * 1024,
+      8 * 1024 * 1024,
+      2,
+      2,
+      1);
+  runTileTest(
+      globalRank,
+      numRanks,
+      bs,
+      nBytes,
+      8 * 1024 * 1024,
+      8 * 1024 * 1024,
+      2,
+      4,
+      1);
+  runTileTest(
+      globalRank,
+      numRanks,
+      bs,
+      nBytes,
+      8 * 1024 * 1024,
+      8 * 1024 * 1024,
+      2,
+      8,
+      1);
+  runTileTest(
+      globalRank,
+      numRanks,
+      bs,
+      nBytes,
+      8 * 1024 * 1024,
+      8 * 1024 * 1024,
+      2,
+      16,
+      1);
+  runTileTest(
+      globalRank,
+      numRanks,
+      bs,
+      nBytes,
+      8 * 1024 * 1024,
+      8 * 1024 * 1024,
+      2,
+      32,
+      1);
+}
+
+// Test pipeline depth variations
+TEST_F(P2pNvlTransportTestFixture, TileSendRecvPipelineDepth) {
+  if (numRanks != 2) {
+    return;
+  }
+  auto bs = std::make_shared<meta::comms::MpiBootstrap>();
+  const size_t nBytes = 32 * 1024 * 1024;
+
+  runTileTest(
+      globalRank, numRanks, bs, nBytes, 8 * 1024 * 1024, 128 * 1024, 2, 16, 1);
+  runTileTest(
+      globalRank, numRanks, bs, nBytes, 8 * 1024 * 1024, 128 * 1024, 4, 16, 1);
+}
+
+// Test multi-call with persistent step state
+TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCallPersistentStep) {
+  if (numRanks != 2) {
+    return;
+  }
+  auto bs = std::make_shared<meta::comms::MpiBootstrap>();
+
+  // 5 iterations with same size — tests step counter persistence
+  runTileTest(
+      globalRank,
+      numRanks,
+      bs,
+      8 * 1024 * 1024,
+      8 * 1024 * 1024,
+      8 * 1024 * 1024,
+      2,
+      4,
+      5);
+
+  // 5 iterations with 128KB signal — more steps per call
+  runTileTest(
+      globalRank,
+      numRanks,
+      bs,
+      8 * 1024 * 1024,
+      8 * 1024 * 1024,
+      128 * 1024,
+      2,
+      4,
+      5);
+}
+
+// Test multi-call with different message sizes per call
+TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCallDifferentSizes) {
+  if (numRanks != 2) {
+    return;
+  }
+  int peerRank = (globalRank == 0) ? 1 : 0;
+
+  const int numSendBlocks = 4;
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = 8 * 1024 * 1024,
+      .chunkSize = 8 * 1024 * 1024,
+      .pipelineDepth = 2,
+  };
+
+  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  transport.exchange();
+  auto p2pHost = transport.buildP2pTransportDevice(peerRank);
+
+  // Different sizes for each call
+  std::vector<size_t> sizes = {
+      2 * 1024 * 1024, // 2MB
+      8 * 1024 * 1024, // 8MB
+      1 * 1024 * 1024, // 1MB (smaller than first)
+      16 * 1024 * 1024, // 16MB
+  };
+
+  dim3 grid(numSendBlocks * 2);
+  dim3 block(256);
+  Timeout timeout;
+
+  for (size_t callIdx = 0; callIdx < sizes.size(); callIdx++) {
+    size_t nBytes = sizes[callIdx];
+    const int pattern = 0x30 + globalRank + static_cast<int>(callIdx) * 0x10;
+    const int peerPattern = 0x30 + peerRank + static_cast<int>(callIdx) * 0x10;
+
+    DeviceBuffer sendBuf(nBytes);
+    DeviceBuffer recvBuf(nBytes);
+    CUDACHECK_TEST(cudaMemset(sendBuf.get(), pattern, nBytes));
+    CUDACHECK_TEST(cudaMemset(recvBuf.get(), 0, nBytes));
+
+    comms::pipes::TiledBuffer<char> sendTiles(
+        static_cast<char*>(sendBuf.get()), nBytes, numSendBlocks);
+    comms::pipes::TiledBuffer<char> recvTiles(
+        static_cast<char*>(recvBuf.get()), nBytes, numSendBlocks);
+    int numBlocksArg = numSendBlocks;
+    int chunksPerSlot = 1;
+    void* args[] = {
+        &p2pHost,
+        &sendTiles,
+        &recvTiles,
+        &numBlocksArg,
+        &chunksPerSlot,
+        &timeout};
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    CUDACHECK_TEST(cudaLaunchKernel(
+        (void*)comms::pipes::benchmark::p2pTileSendRecv,
+        grid,
+        block,
+        args,
+        0,
+        nullptr));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    std::vector<char> hostBuf(nBytes);
+    CUDACHECK_TEST(cudaMemcpy(
+        hostBuf.data(), recvBuf.get(), nBytes, cudaMemcpyDeviceToHost));
+
+    for (size_t i = 0; i < nBytes; i++) {
+      EXPECT_EQ(
+          static_cast<unsigned char>(hostBuf[i]),
+          static_cast<unsigned char>(peerPattern))
+          << "Call " << callIdx << " (size=" << nBytes << "): Mismatch at byte "
+          << i;
+      if (static_cast<unsigned char>(hostBuf[i]) !=
+          static_cast<unsigned char>(peerPattern)) {
+        break;
+      }
+    }
+  }
+}
+
+// Test partial tiles (nbytes not evenly divisible by numBlocks)
+TEST_F(P2pNvlTransportTestFixture, TileSendRecvPartialTiles) {
+  if (numRanks != 2) {
+    return;
+  }
+  auto bs = std::make_shared<meta::comms::MpiBootstrap>();
+
+  // nBytes not divisible by numBlocks — last block gets fewer bytes
+  runTileTest(
+      globalRank,
+      numRanks,
+      bs,
+      1000000,
+      8 * 1024 * 1024,
+      8 * 1024 * 1024,
+      2,
+      4,
+      1);
+  runTileTest(
+      globalRank,
+      numRanks,
+      bs,
+      3000000,
+      8 * 1024 * 1024,
+      8 * 1024 * 1024,
+      2,
+      8,
+      1);
+
+  // Odd sizes
+  runTileTest(
+      globalRank,
+      numRanks,
+      bs,
+      7 * 1024 * 1024 + 12345,
+      8 * 1024 * 1024,
+      8 * 1024 * 1024,
+      2,
+      4,
+      1);
+}
+
+// Test with different staging buffer sizes
+TEST_F(P2pNvlTransportTestFixture, TileSendRecvStagingSizes) {
+  if (numRanks != 2) {
+    return;
+  }
+  auto bs = std::make_shared<meta::comms::MpiBootstrap>();
+  const size_t nBytes = 16 * 1024 * 1024;
+
+  // 4MB staging
+  runTileTest(
+      globalRank,
+      numRanks,
+      bs,
+      nBytes,
+      4 * 1024 * 1024,
+      4 * 1024 * 1024,
+      2,
+      8,
+      1);
+
+  // 8MB staging
+  runTileTest(
+      globalRank,
+      numRanks,
+      bs,
+      nBytes,
+      8 * 1024 * 1024,
+      8 * 1024 * 1024,
+      2,
+      8,
+      1);
+
+  // 16MB staging
+  runTileTest(
+      globalRank,
+      numRanks,
+      bs,
+      nBytes,
+      16 * 1024 * 1024,
+      16 * 1024 * 1024,
+      2,
+      8,
+      1);
 }
 
 // =============================================================================
@@ -2889,6 +3467,113 @@ TEST_F(P2pNvlTransportTestFixture, Ll128BufferWiring_Disabled) {
       << ": remoteState.ll128Buffer should be null when ll128BufferSize == 0";
 
   XLOGF(INFO, "Rank {}: Ll128BufferWiring_Disabled test completed", globalRank);
+}
+
+// =============================================================================
+// Dynamic block count tests
+// =============================================================================
+// Verify that changing numBlocks between send_tile/recv_tile rounds works
+// correctly with the maxBlocks layout and host-side barrier.
+
+TEST_F(P2pNvlTransportTestFixture, TileSendRecvDynamicBlockCount) {
+  if (numRanks != 2) {
+    XLOGF(WARNING, "Skipping: requires 2 ranks, got {}", numRanks);
+    return;
+  }
+
+  int peerRank = (globalRank == 0) ? 1 : 0;
+  constexpr int maxBlocks = 32;
+
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = 8 * 1024 * 1024, // 8MB slot
+      .chunkSize = 8 * 1024 * 1024,
+      .pipelineDepth = 2,
+      .p2pBarrierCount = static_cast<std::size_t>(maxBlocks),
+      .tileMaxBlocks = maxBlocks,
+  };
+
+  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  transport.exchange();
+  auto p2pHost = transport.buildP2pTransportDevice(peerRank);
+
+  // Sequence of rounds with different block counts and message sizes
+  struct Round {
+    int numBlocks;
+    size_t nBytes;
+  };
+  std::vector<Round> rounds = {
+      {16, 8 * 1024 * 1024}, // 16 blocks, 8MB
+      {32, 16 * 1024 * 1024}, // 32 blocks, 16MB (increase blocks)
+      {8, 4 * 1024 * 1024}, // 8 blocks, 4MB (decrease blocks)
+      {16, 8 * 1024 * 1024}, // 16 blocks again, 8MB
+      {32, 32 * 1024 * 1024}, // 32 blocks, 32MB
+      {4, 1 * 1024 * 1024}, // 4 blocks, 1MB (small)
+      {16, 64 * 1024 * 1024}, // 16 blocks, 64MB (large)
+  };
+
+  Timeout timeout;
+  int prevBlocks = 0;
+
+  for (size_t roundIdx = 0; roundIdx < rounds.size(); roundIdx++) {
+    int numBlocks = rounds[roundIdx].numBlocks;
+    size_t nBytes = rounds[roundIdx].nBytes;
+    int totalBlocks = numBlocks * 2;
+
+    // Unique pattern per round
+    const int pattern = 0x10 + globalRank + static_cast<int>(roundIdx) * 0x20;
+    const int peerPattern = 0x10 + peerRank + static_cast<int>(roundIdx) * 0x20;
+
+    DeviceBuffer sendBuf(nBytes);
+    DeviceBuffer recvBuf(nBytes);
+    CUDACHECK_TEST(cudaMemset(sendBuf.get(), pattern, nBytes));
+    CUDACHECK_TEST(cudaMemset(recvBuf.get(), 0, nBytes));
+
+    comms::pipes::TiledBuffer<char> sendTiles(
+        static_cast<char*>(sendBuf.get()), nBytes, numBlocks);
+    comms::pipes::TiledBuffer<char> recvTiles(
+        static_cast<char*>(recvBuf.get()), nBytes, numBlocks);
+
+    bool needsBarrier = (prevBlocks != 0 && prevBlocks != numBlocks);
+    int numBlocksArg = numBlocks;
+    void* args[] = {
+        &p2pHost,
+        &sendTiles,
+        &recvTiles,
+        &numBlocksArg,
+        &needsBarrier,
+        &timeout};
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    CUDACHECK_TEST(cudaLaunchKernel(
+        (void*)comms::pipes::benchmark::p2pTileSendRecvDynamic,
+        dim3(totalBlocks),
+        dim3(256),
+        args,
+        0,
+        nullptr));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    // Verify received data
+    std::vector<char> hostBuf(nBytes);
+    CUDACHECK_TEST(cudaMemcpy(
+        hostBuf.data(), recvBuf.get(), nBytes, cudaMemcpyDeviceToHost));
+
+    for (size_t i = 0; i < nBytes; i++) {
+      EXPECT_EQ(
+          static_cast<unsigned char>(hostBuf[i]),
+          static_cast<unsigned char>(peerPattern))
+          << "Round " << roundIdx << " (blocks=" << numBlocks
+          << ", size=" << nBytes << "): Mismatch at byte " << i;
+      if (static_cast<unsigned char>(hostBuf[i]) !=
+          static_cast<unsigned char>(peerPattern)) {
+        break;
+      }
+    }
+
+    prevBlocks = numBlocks;
+  }
 }
 
 } // namespace comms::pipes::tests

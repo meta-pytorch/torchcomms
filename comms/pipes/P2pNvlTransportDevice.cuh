@@ -1112,12 +1112,305 @@ class P2pNvlTransportDevice {
 #endif
   }
 
+  /**
+   * send_tile (maxBlocks overload) — For dynamic block count support.
+   *
+   * Uses maxBlocks for signal/stepState layout (fixed) and numBlocks
+   * for the staging buffer partition (variable). This allows changing
+   * numBlocks between calls without corrupting the signal mapping,
+   * provided the caller performs an epoch drain (see TileSendRecvContext).
+   *
+   * @param maxBlocks Layout size for signals/stepState (fixed at setup)
+   * @param numBlocks Active block count (controls perBlockSlotSize)
+   */
+  /**
+   * @param chunksPerSlot Number of sub-chunks per pipeline slot (default 1).
+   *   When > 1, the per-block staging slot is subdivided and signaled
+   *   at finer granularity. The receiver can start reading the first
+   *   sub-chunk while the sender is still writing subsequent ones.
+   *   Increases signal traffic but reduces pipeline latency.
+   */
+  __device__ __forceinline__ void send_tile(
+      ThreadGroup& group,
+      void* __restrict__ src,
+      std::size_t nbytes,
+      int maxBlocks,
+      int numBlocks,
+      int64_t* __restrict__ stepState,
+      SignalState* __restrict__ localSignals,
+      SignalState* __restrict__ remoteSignals,
+      const Timeout& timeout = Timeout(),
+      int chunksPerSlot = 1) {
+#ifdef __CUDA_ARCH__
+    const int blockId = group.group_id;
+    char* __restrict__ srcPtr = reinterpret_cast<char*>(src);
+    char* __restrict__ stagBuf = remoteState_.dataBuffer;
+
+    const std::size_t slotSize = options_.dataBufferSize;
+    const std::size_t perBlockSlotSize = (slotSize / numBlocks) & ~15ULL;
+    if (perBlockSlotSize == 0) {
+      printf(
+          "send_tile/recv_tile: perBlockSlotSize is 0 "
+          "(slotSize=%llu, numBlocks=%d). "
+          "Increase dataBufferSize or decrease numBlocks.\n",
+          (unsigned long long)slotSize,
+          numBlocks);
+      __trap();
+    }
+    const std::size_t stagingOff = blockId * perBlockSlotSize;
+    const std::size_t chunkSize = (perBlockSlotSize / chunksPerSlot) & ~15ULL;
+    const std::size_t effectiveChunk =
+        chunkSize > 0 ? chunkSize : perBlockSlotSize;
+
+    // Total steps = total data / chunk size
+    const std::size_t totalSteps =
+        (nbytes + effectiveChunk - 1) / effectiveChunk;
+    // Steps per pipeline slot = chunks per slot
+    const std::size_t stepsPerSlot =
+        (perBlockSlotSize + effectiveChunk - 1) / effectiveChunk;
+
+    const uint64_t tailSignalId = blockId;
+    const uint64_t headSignalId = maxBlocks + blockId;
+
+    int64_t step = stepState[blockId];
+
+    for (std::size_t s = 0; s < totalSteps; ++s) {
+      // Slot and offset within slot
+      const std::size_t slotStep = s / stepsPerSlot;
+      const std::size_t subStep = s % stepsPerSlot;
+      const std::size_t slot = slotStep % options_.pipelineDepth;
+      const std::size_t slotOff = slot * slotSize;
+      const std::size_t chunkOff = subStep * effectiveChunk;
+
+      const std::size_t dataOff = s * effectiveChunk;
+      const std::size_t copyBytes = (dataOff + effectiveChunk <= nbytes)
+          ? effectiveChunk
+          : (dataOff < nbytes ? nbytes - dataOff : 0);
+
+      // Backpressure: wait for receiver to free this slot
+      // Only wait at the start of each slot (first sub-step)
+      if (subStep == 0 &&
+          step >= static_cast<int64_t>(stepsPerSlot * options_.pipelineDepth)) {
+        localSignals[headSignalId].wait_until(
+            group,
+            CmpOp::CMP_GE,
+            static_cast<uint64_t>(
+                step - stepsPerSlot * options_.pipelineDepth + 1),
+            timeout);
+      }
+
+      if (copyBytes > 0) {
+        memcpy_vectorized(
+            stagBuf + slotOff + stagingOff + chunkOff,
+            srcPtr + dataOff,
+            copyBytes,
+            group);
+      }
+
+      group.sync();
+      if (group.is_leader()) {
+        remoteSignals[tailSignalId].signal(
+            SignalOp::SIGNAL_SET, static_cast<uint64_t>(step + 1));
+      }
+
+      step++;
+    }
+
+    if (group.is_leader()) {
+      stepState[blockId] = step;
+    }
+    group.sync();
+#endif
+  }
+
+  /**
+   * recv_tile (maxBlocks overload) — For dynamic block count support.
+   */
+  __device__ __forceinline__ void recv_tile(
+      ThreadGroup& group,
+      void* __restrict__ dst,
+      std::size_t nbytes,
+      int maxBlocks,
+      int numBlocks,
+      int64_t* __restrict__ stepState,
+      SignalState* __restrict__ localSignals,
+      SignalState* __restrict__ remoteSignals,
+      const Timeout& timeout = Timeout(),
+      int chunksPerSlot = 1) {
+#ifdef __CUDA_ARCH__
+    const int blockId = group.group_id;
+    char* __restrict__ dstPtr = reinterpret_cast<char*>(dst);
+    char* __restrict__ stagBuf = localState_.dataBuffer;
+
+    const std::size_t slotSize = options_.dataBufferSize;
+    const std::size_t perBlockSlotSize = (slotSize / numBlocks) & ~15ULL;
+    if (perBlockSlotSize == 0) {
+      printf(
+          "send_tile/recv_tile: perBlockSlotSize is 0 "
+          "(slotSize=%llu, numBlocks=%d). "
+          "Increase dataBufferSize or decrease numBlocks.\n",
+          (unsigned long long)slotSize,
+          numBlocks);
+      __trap();
+    }
+    const std::size_t stagingOff = blockId * perBlockSlotSize;
+    const std::size_t chunkSize = (perBlockSlotSize / chunksPerSlot) & ~15ULL;
+    const std::size_t effectiveChunk =
+        chunkSize > 0 ? chunkSize : perBlockSlotSize;
+
+    const std::size_t totalSteps =
+        (nbytes + effectiveChunk - 1) / effectiveChunk;
+    const std::size_t stepsPerSlot =
+        (perBlockSlotSize + effectiveChunk - 1) / effectiveChunk;
+
+    const uint64_t tailSignalId = blockId;
+    const uint64_t headSignalId = maxBlocks + blockId;
+
+    int64_t step = stepState[maxBlocks + blockId];
+
+    for (std::size_t s = 0; s < totalSteps; ++s) {
+      const std::size_t slotStep = s / stepsPerSlot;
+      const std::size_t subStep = s % stepsPerSlot;
+      const std::size_t slot = slotStep % options_.pipelineDepth;
+      const std::size_t slotOff = slot * slotSize;
+      const std::size_t chunkOff = subStep * effectiveChunk;
+
+      const std::size_t dataOff = s * effectiveChunk;
+      const std::size_t copyBytes = (dataOff + effectiveChunk <= nbytes)
+          ? effectiveChunk
+          : (dataOff < nbytes ? nbytes - dataOff : 0);
+
+      // Wait for sender to fill this sub-chunk
+      localSignals[tailSignalId].wait_until(
+          group, CmpOp::CMP_GE, static_cast<uint64_t>(step + 1), timeout);
+
+      if (copyBytes > 0) {
+        memcpy_vectorized(
+            dstPtr + dataOff,
+            stagBuf + slotOff + stagingOff + chunkOff,
+            copyBytes,
+            group);
+      }
+
+      group.sync();
+      if (group.is_leader()) {
+        // Signal head only at the end of each slot (last sub-step)
+        // to release the slot for sender reuse
+        if (subStep == stepsPerSlot - 1 || s == totalSteps - 1) {
+          remoteSignals[headSignalId].signal(
+              SignalOp::SIGNAL_SET, static_cast<uint64_t>(step + 1));
+        }
+      }
+
+      step++;
+    }
+
+    if (group.is_leader()) {
+      stepState[maxBlocks + blockId] = step;
+    }
+    group.sync();
+#endif
+  }
+
+  /**
+   * send_tile (internal state) — Uses transport-managed stepState.
+   *
+   * Requires tileMaxBlocks > 0 in transport config.
+   * numBlocks controls staging partition, tileMaxBlocks_ controls layout.
+   */
+  __device__ __forceinline__ void send_tile(
+      ThreadGroup& group,
+      void* __restrict__ src,
+      std::size_t nbytes,
+      int numBlocks,
+      const Timeout& timeout = Timeout(),
+      int chunksPerSlot = 1) {
+    send_tile(
+        group,
+        src,
+        nbytes,
+        tileMaxBlocks_,
+        numBlocks,
+        tileStepState_,
+        tileLocalSignals_,
+        tileRemoteSignals_,
+        timeout,
+        chunksPerSlot);
+  }
+
+  /**
+   * recv_tile (internal state) — Uses transport-managed stepState.
+   */
+  __device__ __forceinline__ void recv_tile(
+      ThreadGroup& group,
+      void* __restrict__ dst,
+      std::size_t nbytes,
+      int numBlocks,
+      const Timeout& timeout = Timeout(),
+      int chunksPerSlot = 1) {
+    recv_tile(
+        group,
+        dst,
+        nbytes,
+        tileMaxBlocks_,
+        numBlocks,
+        tileStepState_,
+        tileLocalSignals_,
+        tileRemoteSignals_,
+        timeout,
+        chunksPerSlot);
+  }
+
+  // Getters for tile protocol internal state
+  __host__ __device__ int64_t* tile_step_state() const {
+    return tileStepState_;
+  }
+  __host__ __device__ int tile_max_blocks() const {
+    return tileMaxBlocks_;
+  }
+  __device__ SignalState* tile_local_signals() const {
+    return tileLocalSignals_;
+  }
+  __device__ SignalState* tile_remote_signals() const {
+    return tileRemoteSignals_;
+  }
+
+  // Device accessors for 2D tile kernel (inlined pipeline)
+  __host__ __device__ const P2pNvlTransportOptions& options() const {
+    return options_;
+  }
+  __device__ LocalState& local_state() {
+    return localState_;
+  }
+  __device__ RemoteState& remote_state() {
+    return remoteState_;
+  }
+
+  // Set tile state (called by MultiPeerNvlTransport during construction)
+  __host__ void set_tile_state(
+      int64_t* stepState,
+      int maxBlocks,
+      SignalState* localSignals,
+      SignalState* remoteSignals) {
+    tileStepState_ = stepState;
+    tileMaxBlocks_ = maxBlocks;
+    tileLocalSignals_ = localSignals;
+    tileRemoteSignals_ = remoteSignals;
+  }
+
  private:
   const int myRank_{-1};
   const int peerRank_{-1};
   const P2pNvlTransportOptions options_;
   LocalState localState_;
   RemoteState remoteState_;
+  // Tile protocol state (set by MultiPeerNvlTransport when tileMaxBlocks > 0)
+  int64_t* tileStepState_{nullptr};
+  int tileMaxBlocks_{0};
+  // Dedicated signal buffer for tile tail/head signals
+  // Layout: [0..maxBlocks-1] = tail, [maxBlocks..2*maxBlocks-1] = head
+  SignalState* tileLocalSignals_{nullptr};
+  SignalState* tileRemoteSignals_{nullptr};
 };
 
 } // namespace comms::pipes
