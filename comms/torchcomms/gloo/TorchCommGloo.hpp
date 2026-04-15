@@ -153,6 +153,14 @@ class TorchCommGloo : public TorchCommBackend,
       const std::string& name,
       const CommOptions& options = {}) override;
 
+  // Fault Tolerance API
+  bool supportsReconfigure() const override {
+    return true;
+  }
+  InitHandle getInitHandle() const override;
+  c10::intrusive_ptr<TorchWork> reconfigure(
+      const ReconfigureOptions& opts) override;
+
   // Friend access for TorchWorkGloo
   friend class TorchWorkGloo;
 
@@ -182,6 +190,9 @@ class TorchCommGloo : public TorchCommBackend,
 
   void checkInitialized();
   void checkAndAbortIfTimedOutOrError();
+  void connectGlooContext(
+      const CommOptions& options,
+      const std::string& storePrefix = {});
 
   uint32_t nextTag() {
     return collectiveCounter_++;

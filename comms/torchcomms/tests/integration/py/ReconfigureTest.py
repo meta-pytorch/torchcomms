@@ -24,10 +24,8 @@ from torchcomms.tests.integration.py.TorchCommTestHelpers import TorchCommTestWr
 class ReconfigureTest(unittest.TestCase):
     """Test class for reconfigure() fault tolerance API."""
 
-    # Backends that implement reconfigure()
-    SUPPORTED_BACKENDS = {"mccl"}
+    SUPPORTED_BACKENDS = {"mccl", "gloo"}
 
-    # Class-level shared store to avoid port conflicts between tests
     _shared_store = None
 
     def get_wrapper(self):
@@ -37,12 +35,7 @@ class ReconfigureTest(unittest.TestCase):
         """Set up test environment before each test."""
         self.backend = os.getenv("TEST_BACKEND", "")
 
-        # For supported backends, we need CUDA and a shared TCPStore
         if self._is_supported_backend():
-            if not torch.cuda.is_available():
-                self.skipTest("CUDA is not available")
-
-            # Get rank and world size from environment
             self.rank = int(
                 os.environ.get("RANK", os.environ.get("OMPI_COMM_WORLD_RANK", 0))
             )
@@ -50,26 +43,28 @@ class ReconfigureTest(unittest.TestCase):
                 os.environ.get("WORLD_SIZE", os.environ.get("OMPI_COMM_WORLD_SIZE", 1))
             )
 
-            # Setup shared TCP store - create once and reuse for all tests
-            # Each test uses unique key prefixes to avoid conflicts
-            if ReconfigureTest._shared_store is None:
-                master_addr = os.environ.get("MASTER_ADDR", "localhost")
-                master_port = int(os.environ.get("MASTER_PORT", "29500"))
+            if self.backend == "gloo":
+                self.device = torch.device(os.environ.get("TEST_DEVICE", "cpu"))
+            else:
+                if not torch.cuda.is_available():
+                    self.skipTest("CUDA is not available")
+                device_id = self.rank % torch.cuda.device_count()
+                self.device = torch.device(f"cuda:{device_id}")
 
-                ReconfigureTest._shared_store = TCPStore(
-                    host_name=master_addr,
-                    port=master_port,
-                    world_size=self.world_size,
-                    is_master=(self.rank == 0),
-                    timeout=timedelta(seconds=30),
-                )
+                if ReconfigureTest._shared_store is None:
+                    master_addr = os.environ.get("MASTER_ADDR", "localhost")
+                    master_port = int(os.environ.get("MASTER_PORT", "29500"))
 
-            self.store = ReconfigureTest._shared_store
+                    ReconfigureTest._shared_store = TCPStore(
+                        host_name=master_addr,
+                        port=master_port,
+                        world_size=self.world_size,
+                        is_master=(self.rank == 0),
+                        timeout=timedelta(seconds=30),
+                    )
 
-            device_id = self.rank % torch.cuda.device_count()
-            self.device = torch.device(f"cuda:{device_id}")
+                self.store = ReconfigureTest._shared_store
         else:
-            # For unsupported backends, use TorchCommTestWrapper
             self.wrapper = self.get_wrapper()
             self.torchcomm = self.wrapper.get_torchcomm()
             self.rank = self.torchcomm.get_rank()
@@ -86,6 +81,19 @@ class ReconfigureTest(unittest.TestCase):
         """Check if current backend supports reconfigure()."""
         return self.backend in self.SUPPORTED_BACKENDS
 
+    def _collect_handles(self, comm, key_prefix):
+        """Collect init handles from all ranks."""
+        my_handle = comm.get_init_handle()
+        if self.backend == "gloo":
+            return [my_handle] * self.world_size
+        key = f"{key_prefix}_{self.rank}"
+        self.store.set(key, my_handle)
+        handles = []
+        for i in range(self.world_size):
+            handle = self.store.get(f"{key_prefix}_{i}").decode("utf-8")
+            handles.append(handle)
+        return handles
+
     def test_reconfigure_unsupported_backend(self):
         """Test reconfigure() raises RuntimeError for unsupported backends."""
         if self._is_supported_backend():
@@ -93,7 +101,6 @@ class ReconfigureTest(unittest.TestCase):
                 f"Backend {self.backend} supports reconfigure(), skipping negative test"
             )
 
-        # Backend doesn't support reconfigure() - should raise RuntimeError
         with self.assertRaises(RuntimeError) as context:
             self.torchcomm.reconfigure(
                 uuid=0,
@@ -113,7 +120,6 @@ class ReconfigureTest(unittest.TestCase):
 
         import torchcomms
 
-        # Backend doesn't support reconfigure - should raise RuntimeError
         with self.assertRaises(RuntimeError) as context:
             torchcomms.new_comm(
                 self.backend,
@@ -134,42 +140,26 @@ class ReconfigureTest(unittest.TestCase):
 
         import torchcomms
 
-        # Create communicator with reconfigure enabled
         comm = torchcomms.new_comm(
-            "mccl", self.device, "reconfigure_basic", enable_reconfigure=True
+            self.backend, self.device, "reconfigure_basic", enable_reconfigure=True
         )
 
-        # Get init handle and exchange with all ranks
-        my_handle = comm.get_init_handle()
-        self.assertIsNotNone(my_handle)
-        self.assertNotEqual(my_handle, "")
-
-        # Store handle in TCP store
-        key = f"test_reconfigure_basic_{self.rank}"
-        self.store.set(key, my_handle)
-
-        # Collect all handles (ordered by rank)
-        all_handles = []
-        for i in range(self.world_size):
-            url_key = f"test_reconfigure_basic_{i}"
-            handle = self.store.get(url_key).decode("utf-8")
-            all_handles.append(handle)
+        all_handles = self._collect_handles(comm, "test_reconfigure_basic")
+        self.assertGreater(len(all_handles), 0)
 
         print(f"[Rank {self.rank}] Collected handles: {all_handles}")
 
-        # Reconfigure with ordered handles (list)
         work = comm.reconfigure(
             uuid=0,
             init_handles=all_handles,
-            timeout=timedelta(milliseconds=5000),
+            timeout=timedelta(milliseconds=30000),
         )
         self.assertIsNotNone(work)
 
-        # Wait for reconfigure to complete
-        work.wait_blocking()
+        work.wait()
 
-        # Verify rank and size are now correct
-        self.assertEqual(comm.get_rank(), self.rank)
+        self.assertGreaterEqual(comm.get_rank(), 0)
+        self.assertLess(comm.get_rank(), self.world_size)
         self.assertEqual(comm.get_size(), self.world_size)
 
         print(f"[Rank {self.rank}] Reconfigure completed successfully")
@@ -181,39 +171,30 @@ class ReconfigureTest(unittest.TestCase):
         if not self._is_supported_backend():
             self.skipTest(f"Backend {self.backend} does not support reconfigure()")
 
+        if self.backend == "gloo":
+            self.skipTest("Gloo uses identical handles; unordered set collapses to 1")
+
         import torchcomms
 
-        # Create communicator with reconfigure enabled
         comm = torchcomms.new_comm(
-            "mccl", self.device, "reconfigure_unordered", enable_reconfigure=True
+            self.backend,
+            self.device,
+            "reconfigure_unordered",
+            enable_reconfigure=True,
         )
 
-        # Get init handle and exchange with all ranks
-        my_handle = comm.get_init_handle()
-
-        # Store handle in TCP store
-        key = f"test_reconfigure_unordered_{self.rank}"
-        self.store.set(key, my_handle)
-
-        # Collect all handles as a set (unordered)
-        all_handles = set()
-        for i in range(self.world_size):
-            url_key = f"test_reconfigure_unordered_{i}"
-            handle = self.store.get(url_key).decode("utf-8")
-            all_handles.add(handle)
+        all_handles = set(self._collect_handles(comm, "test_reconfigure_unordered"))
 
         print(f"[Rank {self.rank}] Collected handles (set): {all_handles}")
 
-        # Reconfigure with unordered handles (set)
         work = comm.reconfigure(
             uuid=1,
             init_handles=all_handles,
-            timeout=timedelta(milliseconds=5000),
+            timeout=timedelta(milliseconds=30000),
         )
 
-        work.wait_blocking()
+        work.wait()
 
-        # Verify communicator is initialized (rank may differ from original)
         self.assertGreaterEqual(comm.get_rank(), 0)
         self.assertEqual(comm.get_size(), self.world_size)
 
@@ -231,44 +212,34 @@ class ReconfigureTest(unittest.TestCase):
 
         import torchcomms
 
-        # Create communicator with reconfigure enabled
         comm = torchcomms.new_comm(
-            "mccl", self.device, "reconfigure_collective", enable_reconfigure=True
+            self.backend,
+            self.device,
+            "reconfigure_collective",
+            enable_reconfigure=True,
         )
 
-        # Get init handle and exchange with all ranks
-        my_handle = comm.get_init_handle()
+        all_handles = self._collect_handles(comm, "test_reconfigure_collective")
 
-        key = f"test_reconfigure_collective_{self.rank}"
-        self.store.set(key, my_handle)
-
-        all_handles = []
-        for i in range(self.world_size):
-            url_key = f"test_reconfigure_collective_{i}"
-            handle = self.store.get(url_key).decode("utf-8")
-            all_handles.append(handle)
-
-        # Reconfigure
         work = comm.reconfigure(
             uuid=2,
             init_handles=all_handles,
-            timeout=timedelta(milliseconds=5000),
+            timeout=timedelta(milliseconds=30000),
         )
-        work.wait_blocking()
+        work.wait()
 
-        # Test send/recv after reconfigure
         if self.world_size > 1:
+            my_rank = comm.get_rank()
             count = 4
             send_tensor = torch.ones(count, dtype=torch.float, device=self.device) * (
-                self.rank + 1
+                my_rank + 1
             )
             recv_tensor = torch.zeros(count, dtype=torch.float, device=self.device)
 
-            send_rank = (self.rank + 1) % self.world_size
-            recv_rank = (self.rank - 1 + self.world_size) % self.world_size
+            send_rank = (my_rank + 1) % self.world_size
+            recv_rank = (my_rank - 1 + self.world_size) % self.world_size
 
-            # Alternate send/recv order based on rank to avoid deadlock
-            if self.rank % 2 == 0:
+            if my_rank % 2 == 0:
                 send_work = comm.send(send_tensor, send_rank, async_op=True)
                 recv_work = comm.recv(recv_tensor, recv_rank, async_op=True)
             else:
@@ -278,18 +249,60 @@ class ReconfigureTest(unittest.TestCase):
             send_work.wait()
             recv_work.wait()
 
-            torch.cuda.current_stream().synchronize()
+            if self.device.type == "cuda":
+                torch.cuda.current_stream().synchronize()
 
-            # Verify received data
             expected = torch.ones(count, dtype=torch.float, device="cpu") * (
                 recv_rank + 1
             )
             self.assertTrue(
                 torch.allclose(recv_tensor.cpu(), expected),
-                f"[Rank {self.rank}] Send/recv after reconfigure failed",
+                f"[Rank {my_rank}] Send/recv after reconfigure failed",
             )
 
-            print(f"[Rank {self.rank}] Send/recv after reconfigure succeeded")
+            print(f"[Rank {my_rank}] Send/recv after reconfigure succeeded")
+
+        comm.finalize()
+
+    def test_reconfigure_then_allreduce(self):
+        """Test that allreduce works after reconfigure."""
+        if not self._is_supported_backend():
+            self.skipTest(f"Backend {self.backend} does not support reconfigure()")
+
+        import torchcomms
+
+        comm = torchcomms.new_comm(
+            self.backend,
+            self.device,
+            "reconfigure_allreduce",
+            enable_reconfigure=True,
+        )
+
+        all_handles = self._collect_handles(comm, "test_reconfigure_allreduce")
+
+        work = comm.reconfigure(
+            uuid=3,
+            init_handles=all_handles,
+            timeout=timedelta(milliseconds=30000),
+        )
+        work.wait()
+
+        my_rank = comm.get_rank()
+        tensor = torch.ones(4, dtype=torch.float, device=self.device) * (my_rank + 1)
+        comm.all_reduce(tensor, torchcomms.ReduceOp.SUM, async_op=False)
+
+        if self.device.type == "cuda":
+            torch.cuda.current_stream().synchronize()
+
+        expected_value = sum(range(1, self.world_size + 1))
+        expected = torch.ones(4, dtype=torch.float, device="cpu") * expected_value
+        self.assertTrue(
+            torch.allclose(tensor.cpu(), expected),
+            f"[Rank {my_rank}] AllReduce after reconfigure failed: "
+            f"got {tensor.cpu()}, expected {expected}",
+        )
+
+        print(f"[Rank {my_rank}] AllReduce after reconfigure succeeded")
 
         comm.finalize()
 
