@@ -138,9 +138,11 @@ class RdmaMemory : folly::MoveOnly {
    * @param buf Pointer to the memory buffer to register
    * @param len Length of the memory buffer in bytes
    * @param cudaDev CUDA device ID associated with this memory buffer
-   * @param cacheReg Whether to cache the IB registration of the memory buffer.
-   *        When true, the registration is cached in regCache. Useful if the
-   *        same buffer is used to construct RdmaMemory for multiple times
+   * @param cacheReg Whether the buffer is already registered in regCache.
+   *        When true, the constructor expects the buffer to be pre-registered
+   *        and will throw if the handle is not found. When false, the
+   *        constructor will register the buffer itself and deregister it on
+   *        destruction
    */
   RdmaMemory(const void* buf, size_t len, int cudaDev, bool cacheReg = false);
   RdmaMemory(RdmaMemory&& other) noexcept;

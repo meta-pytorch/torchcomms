@@ -35,17 +35,29 @@ namespace torch::comms {
 RdmaMemory::RdmaMemory(const void* buf, size_t len, int cudaDev, bool cacheReg)
     : buf_(buf), len_(len), cudaDev_(cudaDev), cacheReg_(cacheReg) {
   initEnvironment();
-  if (cacheReg_) {
-    // Hold a shared_ptr to ensure RegCache lifetime while RdmaMemory is in
-    // scope
-    regCache_ = ctran::RegCache::getInstance();
+  // Hold a shared_ptr to ensure RegCache lifetime while RdmaMemory is in
+  // scope
+  regCache_ = ctran::RegCache::getInstance();
+
+  // Try to find an existing registration first.
+  regHdl_ = regCache_->searchIbRegHandle(buf_, len_, cudaDev_);
+
+  if (regHdl_ != nullptr) {
+    // Buffer is already registered. If caller didn't expect that, upgrade to
+    // cache-managed so the destructor won't deregister a handle it doesn't own.
+    cacheReg_ = true;
+  } else if (cacheReg_) {
+    // Caller asserted the buffer is pre-registered, but it wasn't found.
+    throw std::runtime_error(
+        "Failed to fetch the IB handle from regCache. The buffer may not be registered");
+  } else {
+    // Not registered yet; do it now.
+    FB_COMMCHECKTHROW(regCache_->globalRegister(buf_, len_, true, cudaDev_));
     regHdl_ = regCache_->searchIbRegHandle(buf_, len_, cudaDev_);
     if (regHdl_ == nullptr) {
-      throw std::runtime_error(
-          "Failed to fetch the IB handle from regCache. The buffer may not be registered");
+      FB_COMMCHECKIGNORE(regCache_->globalDeregister(buf_, len_, cudaDev_));
+      throw std::runtime_error("Failed to fetch the IB handle from regCache.");
     }
-  } else {
-    FB_COMMCHECKTHROW(CtranIb::regMem(buf_, len_, cudaDev_, &regHdl_));
   }
   remoteKey_ = CtranIb::getRemoteAccessKey(regHdl_).toString();
 }
@@ -74,7 +86,8 @@ RdmaMemory::~RdmaMemory() noexcept {
     return;
   }
   if (remoteKey_.size() > 0 && regHdl_) {
-    FB_COMMCHECKIGNORE(CtranIb::deregMem(regHdl_));
+    FB_COMMCHECKIGNORE(regCache_->globalDeregister(buf_, len_, cudaDev_));
+    regHdl_ = nullptr;
   }
 }
 
