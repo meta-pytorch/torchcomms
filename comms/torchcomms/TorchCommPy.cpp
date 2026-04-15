@@ -918,11 +918,7 @@ Args:
           py::arg("async_op"),
           py::arg("options") = BatchP2POptions(),
           py::call_guard<py::gil_scoped_release>())
-      .def_readwrite(
-          "ops",
-          &BatchSendRecv::ops,
-          "List of P2P operations",
-          py::call_guard<py::gil_scoped_release>());
+      .def_readwrite("ops", &BatchSendRecv::ops, "List of P2P operations");
 
   m.def(
       "new_comm",
@@ -2180,9 +2176,10 @@ Note:
       .def("name", &BackendWrapper::getBackendName)
       .def_property_readonly(
           "options",
-          &BackendWrapper::getOptions,
-          R"(Return the options used to create the torchComm under the hood.)",
-          py::call_guard<py::gil_scoped_release>())
+          py::cpp_function(
+              &BackendWrapper::getOptions,
+              py::call_guard<py::gil_scoped_release>()),
+          R"(Return the options used to create the torchComm under the hood.)")
       .def(
           "_verify_work_timeout",
           &BackendWrapper::verifyWorkTimeoutForTest,

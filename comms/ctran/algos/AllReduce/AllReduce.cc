@@ -49,14 +49,14 @@ commResult_t ctranAllReduce(
         // TODO(T242570177): this is a temp workaround for nRanks == 1. Remove
         // the warning below if fixed.
         CLOGF(
-            WARN,
+            DBG,
             "AllReduce ctring currently requires nRanks > 1, fallback to ctdirect");
         return ctranAllReduceDirect(
             sendbuff, recvbuff, count, datatype, redOp, comm, stream, timeout);
       }
       if (count < comm->statex_->nRanks()) {
         CLOGF(
-            WARN,
+            DBG,
             "AllReduce ctring requires count {} > nRanks {}, fallback to ctdirect",
             count,
             comm->statex_->nRanks());
