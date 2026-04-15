@@ -108,16 +108,10 @@ __device__ __forceinline__ void nvl_memcpy_ptx(
 __device__ __noinline__ int gin_put_fallback(
     DeviceWindow* win,
     size_t dst_offset,
-    void* src_base_ptr,
-    size_t src_size,
-    void* src_nccl_win,
+    const RegisteredBuffer& src_buf,
     size_t src_offset,
     int dst_rank,
     size_t bytes) {
-  RegisteredBuffer src_buf;
-  src_buf.base_ptr = src_base_ptr;
-  src_buf.size = src_size;
-  src_buf.backend_window = src_nccl_win;
   return win->put(
       dst_offset,
       src_buf,
@@ -132,16 +126,10 @@ __device__ __noinline__ int gin_put_fallback(
 __device__ __noinline__ int gin_put_warp_fallback(
     DeviceWindow* win,
     size_t dst_offset,
-    void* src_base_ptr,
-    size_t src_size,
-    void* src_nccl_win,
+    const RegisteredBuffer& src_buf,
     size_t src_offset,
     int dst_rank,
     size_t bytes) {
-  RegisteredBuffer src_buf;
-  src_buf.base_ptr = src_base_ptr;
-  src_buf.size = src_size;
-  src_buf.backend_window = src_nccl_win;
   return win->put(
       dst_offset,
       src_buf,
@@ -168,21 +156,24 @@ __device__ __noinline__ int gin_put_warp_fallback(
 __device__ int torchcomms_put_block_direct(
     void* win_ptr,
     unsigned long long dst_offset,
-    void* src_nccl_win,
+    void* src_registered_buf_ptr,
     unsigned long long src_offset,
     int dst_rank,
     unsigned long long bytes) {
   auto* win = reinterpret_cast<DeviceWindow*>(win_ptr);
+  auto* src_buf =
+      reinterpret_cast<const RegisteredBuffer*>(src_registered_buf_ptr);
   const ncclDevComm& dev_comm = win->comm();
 
   if (ncclTeamRankIsMember(
           ncclTeamLsa(dev_comm), ncclTeamWorld(dev_comm), dst_rank)) {
-    // NVLink path: inline PTX memcpy, zero allocas, zero spills.
+    // NVLink path: use base_ptr directly from RegisteredBuffer.
+    // base_ptr == ncclGetLocalPointer(backend_window, 0), avoiding the
+    // indirection through ncclWindow_t.
     ncclWindow_t dst_win = win->window();
-    ncclWindow_t src_win = static_cast<ncclWindow_t>(src_nccl_win);
     char* dst_base =
         static_cast<char*>(ncclGetPeerPointer(dst_win, 0, dst_rank));
-    char* src_base = static_cast<char*>(ncclGetLocalPointer(src_win, 0));
+    char* src_base = static_cast<char*>(src_buf->base_ptr);
 
     nvl_memcpy_ptx(
         dst_base + static_cast<size_t>(dst_offset),
@@ -191,13 +182,11 @@ __device__ int torchcomms_put_block_direct(
         threadIdx.x,
         blockDim.x);
   } else {
-    // GIN (RDMA) fallback: __noinline__ to isolate register pressure.
+    // GIN (RDMA) fallback: pass the full RegisteredBuffer.
     gin_put_fallback(
         win,
         static_cast<size_t>(dst_offset),
-        nullptr,
-        0,
-        src_nccl_win,
+        *src_buf,
         static_cast<size_t>(src_offset),
         dst_rank,
         static_cast<size_t>(bytes));
@@ -210,12 +199,14 @@ __device__ int torchcomms_put_block_direct(
 __device__ int torchcomms_put_warp_chunked_direct(
     void* win_ptr,
     unsigned long long dst_offset,
-    void* src_nccl_win,
+    void* src_registered_buf_ptr,
     unsigned long long src_offset,
     int dst_rank,
     unsigned long long total_bytes,
     unsigned long long chunk_size) {
   auto* win = reinterpret_cast<DeviceWindow*>(win_ptr);
+  auto* src_buf =
+      reinterpret_cast<const RegisteredBuffer*>(src_registered_buf_ptr);
   const ncclDevComm& dev_comm = win->comm();
 
   auto total = static_cast<size_t>(total_bytes);
@@ -224,12 +215,11 @@ __device__ int torchcomms_put_warp_chunked_direct(
 
   if (ncclTeamRankIsMember(
           ncclTeamLsa(dev_comm), ncclTeamWorld(dev_comm), dst_rank)) {
-    // NVLink path: inline PTX memcpy, zero allocas, zero spills.
+    // NVLink path: use base_ptr directly from RegisteredBuffer.
     ncclWindow_t dst_win = win->window();
-    ncclWindow_t src_win = static_cast<ncclWindow_t>(src_nccl_win);
     char* dst_base =
         static_cast<char*>(ncclGetPeerPointer(dst_win, 0, dst_rank));
-    char* src_base = static_cast<char*>(ncclGetLocalPointer(src_win, 0));
+    char* src_base = static_cast<char*>(src_buf->base_ptr);
 
     auto warp_id = threadIdx.x / 32;
     auto num_warps = blockDim.x / 32;
@@ -245,7 +235,7 @@ __device__ int torchcomms_put_warp_chunked_direct(
           32);
     }
   } else {
-    // GIN (RDMA) fallback: __noinline__ to isolate register pressure.
+    // GIN (RDMA) fallback: pass the full RegisteredBuffer.
     auto warp_id = threadIdx.x / 32;
     auto num_warps = blockDim.x / 32;
 
@@ -255,9 +245,7 @@ __device__ int torchcomms_put_warp_chunked_direct(
       gin_put_warp_fallback(
           win,
           static_cast<size_t>(dst_offset) + off,
-          nullptr,
-          0,
-          src_nccl_win,
+          *src_buf,
           static_cast<size_t>(src_offset) + off,
           dst_rank,
           len);
