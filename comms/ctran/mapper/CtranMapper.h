@@ -32,11 +32,6 @@
 #include "comms/ctran/backends/tcpdevmem/CtranTcpDm.h"
 #endif
 
-// Forward declaration for MapperTrace due to NVCC's lack of concepts support
-namespace ncclx::colltrace {
-class MapperTrace;
-}
-
 class CtranMapperImpl;
 
 const std::string getReqTypeStr(CtranMapperRequest::ReqType type);

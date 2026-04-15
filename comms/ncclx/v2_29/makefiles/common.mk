@@ -70,10 +70,10 @@ else
 endif
 $(info NVCC_GENCODE is ${NVCC_GENCODE})
 
-CXXSTD ?= -std=c++17
+CXXSTD ?= -std=c++20
 
 CXXFLAGS   := -DCUDA_MAJOR=$(CUDA_MAJOR) -DCUDA_MINOR=$(CUDA_MINOR) -fPIC -fvisibility=hidden \
-              -Wall -Wno-unused-function -Wno-sign-compare -std=c++2a -Wvla \
+              -Wall -Wno-unused-function -Wno-sign-compare -std=c++20 -Wvla \
               -isystem $(CUDA_INC) -isystem $(CUDA_INC)/cccl \
               $(CXXFLAGS)
 # Maxrregcount needs to be set accordingly to NCCL_MAX_NTHREADS (otherwise it will cause kernel launch errors)
