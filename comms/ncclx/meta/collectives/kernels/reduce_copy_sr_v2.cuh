@@ -67,9 +67,7 @@ struct ApplyStochasticRound<float, __nv_bfloat16, 1> {
       BytePack<sizeof(float)> a,
       uint16_t rand16) {
     float val = fromPack<float>(a);
-    // TODO: Currently we don't use hareware accelerated BF16 rounding.
-    // This is due to issue in the conda build. Will investigate and fix it
-    return toPack(stochastic_round_bf16<false>(val, rand16));
+    return toPack(stochastic_round_bf16<kHasHardwareSR>(val, rand16));
   }
 };
 
@@ -79,9 +77,7 @@ struct ApplyStochasticRound<float, __nv_bfloat16, 2> {
       BytePack<2 * sizeof(float)> a,
       uint32_t rand_packed) {
     float2 vals = fromPack<float2>(a);
-    // TODO: Currently we don't use hareware accelerated BF16 rounding.
-    // This is due to issue in the conda build. Will investigate and fix it
-    return toPack(stochastic_round_bf16x2<false>(vals, rand_packed));
+    return toPack(stochastic_round_bf16x2<kHasHardwareSR>(vals, rand_packed));
   }
 };
 
@@ -91,12 +87,12 @@ struct ApplyStochasticRound<float, __nv_bfloat16, 4> {
   cast(BytePack<4 * sizeof(float)> a, uint32_t rand_lo, uint32_t rand_hi) {
     float4 vals = fromPack<float4>(a);
     BytePack<4 * sizeof(__nv_bfloat16)> result;
-    // TODO: Currently we don't use hareware accelerated BF16 rounding.
-    // This is due to issue in the conda build. Will investigate and fix it
     result.half[0] = toPack(
-        stochastic_round_bf16x2<false>(make_float2(vals.x, vals.y), rand_lo));
+        stochastic_round_bf16x2<kHasHardwareSR>(
+            make_float2(vals.x, vals.y), rand_lo));
     result.half[1] = toPack(
-        stochastic_round_bf16x2<false>(make_float2(vals.z, vals.w), rand_hi));
+        stochastic_round_bf16x2<kHasHardwareSR>(
+            make_float2(vals.z, vals.w), rand_hi));
     return result;
   }
 };
