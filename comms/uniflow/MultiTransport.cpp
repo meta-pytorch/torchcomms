@@ -1,6 +1,7 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include "comms/uniflow/MultiTransport.h"
+#include "comms/uniflow/Result.h"
 #include "comms/uniflow/logging/Logger.h"
 #include "comms/uniflow/transport/nvlink/NVLinkTransport.h"
 #include "comms/uniflow/transport/rdma/RdmaTransport.h"
