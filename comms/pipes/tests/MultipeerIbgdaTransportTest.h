@@ -362,6 +362,23 @@ void testPutSignalCounter(
     int blockSize);
 
 /**
+ * Test kernel: Put with ringDb=false + signal_remote (doorbell batching)
+ *
+ * put(ringDb=false) posts the WQE without ringing; the subsequent
+ * signal_remote() rings the doorbell and submits both WQEs in one batch.
+ */
+void testPutNoDbAndSignal(
+    P2pIbgdaTransportDevice* deviceTransportPtr,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t nbytes,
+    const IbgdaRemoteBuffer& remoteSignalBuf,
+    int signalId,
+    uint64_t signalVal,
+    int numBlocks,
+    int blockSize);
+
+/**
  * Test kernel: Wait for local counter to reach expected value
  *
  * GPU thread spins on volatile counter until it reaches expectedVal.

@@ -956,12 +956,18 @@ class DeviceWindow {
    * constructor). Source is a registered buffer (from
    * HostWindow::registerLocalBuffer).
    *
+   * By default, rings the NIC doorbell after posting the WQE. Set
+   * ringDb=false to skip the doorbell for batching multiple puts.
+   * The caller must ensure the doorbell is rung afterward (e.g.,
+   * via a subsequent put(ringDb=true) or signal_peer()).
+   *
    * @param group        ThreadGroup for group coordination.
    * @param target_rank  Rank to put to (must not be self).
    * @param dst_offset   Byte offset into the target peer's window buffer.
    * @param src_buf      Registered source buffer.
    * @param src_offset   Byte offset into the source buffer.
    * @param nbytes       Number of bytes to transfer.
+   * @param ringDb      Whether to ring the NIC doorbell (default: true).
    */
   __device__ __forceinline__ void put(
       ThreadGroup& group,
@@ -969,7 +975,8 @@ class DeviceWindow {
       std::size_t dst_offset,
       const LocalBufferRegistration& src_buf,
       std::size_t src_offset,
-      std::size_t nbytes) {
+      std::size_t nbytes,
+      bool ringDb = true) {
     DEVICE_WINDOW_CHECK_RANK(target_rank, handle_.nRanks);
     DEVICE_WINDOW_CHECK_NOT_SELF(target_rank, handle_.myRank);
     const auto* localSrc = static_cast<const char*>(src_buf.base) + src_offset;
@@ -987,7 +994,7 @@ class DeviceWindow {
           remoteBufferRegistry_[ibgdaPeerIdx].rkey);
       handle_.get_ibgda(target_rank)
           .put_group_global(
-              group, localBuf, remoteBuf.subBuffer(dst_offset), nbytes);
+              group, localBuf, remoteBuf.subBuffer(dst_offset), nbytes, ringDb);
     }
   }
 
