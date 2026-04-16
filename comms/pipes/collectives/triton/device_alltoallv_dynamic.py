@@ -69,7 +69,6 @@ from torchcomms.triton.fb import (
     wait_signal_from,
 )
 
-
 if TYPE_CHECKING:
     from torchcomms import TorchComm
 
