@@ -40,6 +40,13 @@ class TestC10dTorchCommsBasic(unittest.TestCase):
     def tearDownClass(cls):
         dist.destroy_process_group()
 
+    def _rank_value(self):
+        return dist.get_rank() + 1
+
+    def _skip_if_product_overflows(self, op):
+        if op == dist.ReduceOp.PRODUCT and dist.get_world_size() > 34:
+            self.skipTest("PRODUCT reduction overflows float32 for world_size > 34")
+
     def _expected_reduce_result(self, op):
         """Return the expected scalar result for a rank+1 input reduced across all ranks."""
         total = sum(range(1, dist.get_world_size() + 1))
@@ -60,28 +67,29 @@ class TestC10dTorchCommsBasic(unittest.TestCase):
 
     @parametrize("op", REDUCE_OPS)
     def test_allreduce(self, op):
-        tensor = torch.tensor([dist.get_rank() + 1], dtype=torch.float32)
+        self._skip_if_product_overflows(op)
+        tensor = torch.tensor([self._rank_value()], dtype=torch.float32)
         dist.all_reduce(tensor, op=op)
         self.assertEqual(tensor.item(), self._expected_reduce_result(op))
 
     def test_all_gather(self):
-        input_tensor = torch.tensor([dist.get_rank()], dtype=torch.float32)
+        input_tensor = torch.tensor([self._rank_value()], dtype=torch.float32)
         gather_list = [
             torch.empty_like(input_tensor) for _ in range(dist.get_world_size())
         ]
         dist.all_gather(gather_list, input_tensor)
-        expected = list(range(dist.get_world_size()))
+        expected = list(range(1, dist.get_world_size() + 1))
         self.assertEqual([t.item() for t in gather_list], expected)
 
     def test_all_gather_into_tensor(self):
-        input_tensor = torch.tensor([dist.get_rank()], dtype=torch.float32)
+        input_tensor = torch.tensor([self._rank_value()], dtype=torch.float32)
         output_tensor = torch.empty(dist.get_world_size(), dtype=torch.float32)
         dist.all_gather_into_tensor(output_tensor, input_tensor)
-        expected = list(range(dist.get_world_size()))
+        expected = list(range(1, dist.get_world_size() + 1))
         self.assertEqual([t.item() for t in output_tensor], expected)
 
     def test_broadcast(self):
-        tensor = torch.tensor([dist.get_rank() + 1], dtype=torch.float32)
+        tensor = torch.tensor([self._rank_value()], dtype=torch.float32)
         dist.broadcast(tensor, src=0)
         self.assertEqual(tensor.item(), 1)
 
@@ -112,15 +120,17 @@ class TestC10dTorchCommsBasic(unittest.TestCase):
 
     @parametrize("op", REDUCE_OPS)
     def test_reduce(self, op):
-        input_tensor = torch.tensor([dist.get_rank() + 1], dtype=torch.float32)
+        self._skip_if_product_overflows(op)
+        input_tensor = torch.tensor([self._rank_value()], dtype=torch.float32)
         dist.reduce(input_tensor, dst=0, op=op)
         if dist.get_rank() == 0:
             self.assertEqual(input_tensor.item(), self._expected_reduce_result(op))
 
     @parametrize("op", REDUCE_OPS)
     def test_reduce_scatter(self, op):
+        self._skip_if_product_overflows(op)
         input_tensor = [
-            torch.tensor([dist.get_rank() + 1], dtype=torch.float32)
+            torch.tensor([self._rank_value()], dtype=torch.float32)
             for _ in range(dist.get_world_size())
         ]
         output_tensor = torch.empty(1, dtype=torch.float32)
@@ -129,8 +139,9 @@ class TestC10dTorchCommsBasic(unittest.TestCase):
 
     @parametrize("op", REDUCE_OPS)
     def test_reduce_scatter_tensor(self, op):
+        self._skip_if_product_overflows(op)
         input_tensor = torch.full(
-            (dist.get_world_size(),), dist.get_rank() + 1, dtype=torch.float32
+            (dist.get_world_size(),), self._rank_value(), dtype=torch.float32
         )
         output_tensor = torch.empty(1, dtype=torch.float32)
         dist.reduce_scatter_tensor(output_tensor, input_tensor, op=op)
@@ -138,7 +149,7 @@ class TestC10dTorchCommsBasic(unittest.TestCase):
 
     def test_all_to_all(self):
         input_tensor = [
-            torch.tensor([dist.get_rank() + 1], dtype=torch.float32)
+            torch.tensor([self._rank_value()], dtype=torch.float32)
             for _ in range(dist.get_world_size())
         ]
         output_tensor = [
@@ -150,7 +161,7 @@ class TestC10dTorchCommsBasic(unittest.TestCase):
 
     def test_all_to_all_single(self):
         input_tensor = torch.full(
-            (dist.get_world_size(),), dist.get_rank() + 1, dtype=torch.float32
+            (dist.get_world_size(),), self._rank_value(), dtype=torch.float32
         )
         output_tensor = torch.empty([dist.get_world_size()], dtype=torch.float32)
         dist.all_to_all_single(output_tensor, input_tensor)
