@@ -53,7 +53,7 @@ PipesDeviceBackend::Ptr PipesDeviceBackend::create_device_window(
     torch::comms::NcclxApi* nccl_api,
     torch::comms::CudaApi* cuda_api,
     const DeviceBackendConfig& config,
-    ncclWindow_t nccl_win,
+    NcclWin nccl_win,
     void* base,
     size_t size) {
   if (nccl_api == nullptr) {
