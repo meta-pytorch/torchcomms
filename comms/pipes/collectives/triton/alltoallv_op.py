@@ -366,7 +366,7 @@ class AlltoallvOp:
         # Internal comms state (populated by setup()).
         self._window: Any = None
         self._dev_win_ptr: Optional[int] = None
-        self._src_info: Optional[tuple[int, int, int]] = None
+        self._src_info: Optional[int] = None
         self._remote_write_offsets: Optional[torch.Tensor] = None
 
     # ------------------------------------------------------------------
@@ -525,7 +525,7 @@ class AlltoallvOp:
         """Release comms resources and all buffers.  Safe to call multiple times."""
         # First deregister comms buffers
         if self._src_info is not None:
-            self._window.deregister_local_buffer(*self._src_info)
+            self._window.deregister_local_buffer(self._src_info)
             self._src_info = None
         if self._window is not None:
             self._window.tensor_deregister()

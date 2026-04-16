@@ -106,7 +106,7 @@ __device__ int torchcomms_self_copy_block(
 __device__ int torchcomms_put_block_direct(
     TorchCommsWindowHandle win,
     unsigned long long dst_offset,
-    void* src_nccl_win,
+    TorchCommsBufferHandle src_registered_buf,
     unsigned long long src_offset,
     int dst_rank,
     unsigned long long bytes);
@@ -118,7 +118,7 @@ __device__ int torchcomms_put_block_direct(
 __device__ int torchcomms_put_warp_chunked_direct(
     TorchCommsWindowHandle win,
     unsigned long long dst_offset,
-    void* src_nccl_win,
+    TorchCommsBufferHandle src_registered_buf,
     unsigned long long src_offset,
     int dst_rank,
     unsigned long long total_bytes,
