@@ -28,8 +28,14 @@ class ProxyTraceTest : public NcclxBaseTestFixture {
  public:
   ProxyTraceTest() = default;
   void SetUp() override {
+    // All NCCL cvars must be set here because NcclxBaseTestFixture::SetUp
+    // calls initEnv() (call_once) + ncclCvarInit(). Per-test EnvRAII overrides
+    // won't take effect for cvars read during init.
     NcclxBaseTestFixture::SetUp({
         {"NCCL_CTRAN_ENABLE", "1"},
+        {"NCCL_PROXYTRACE", "trace"},
+        {"NCCL_DEBUG", "INFO"},
+        {"NCCL_DEBUG_SUBSYS", "INIT,COLL"},
     });
     CUDACHECK_TEST(cudaStreamCreate(&stream));
   }

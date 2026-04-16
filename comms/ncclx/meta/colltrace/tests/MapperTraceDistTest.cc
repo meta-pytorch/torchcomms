@@ -32,9 +32,6 @@ class MapperTraceTest : public NcclxBaseTestFixture {
  public:
   MapperTraceTest() = default;
   void SetUp() override {
-    // Allow user to change via command line (don't overwrite)
-    setenv("NCCL_DEBUG_SUBSYS", "INIT,COLL", 0);
-
     NcclxBaseTestFixture::SetUp({
         {"WORLD_SIZE", "4"},
         {"HPC_JOB_NAME", "CollTraceUT"},
@@ -43,6 +40,9 @@ class MapperTraceTest : public NcclxBaseTestFixture {
         {"NCCL_HPC_JOB_IDS",
          "HPC_JOB_NAME,HPC_JOB_VERSION,HPC_JOB_ATTEMPT_INDEX"},
         {"NCCL_CTRAN_ENABLE", "1"},
+        {"NCCL_COLLTRACE", "trace"},
+        {"NCCL_DEBUG", "INFO"},
+        {"NCCL_DEBUG_SUBSYS", "INIT,COLL"},
     });
 
     CUDACHECK_TEST(cudaStreamCreate(&this->stream));

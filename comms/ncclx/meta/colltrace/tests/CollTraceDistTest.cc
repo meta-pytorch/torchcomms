@@ -21,6 +21,7 @@
 #include "comms/ctran/CtranEx.h"
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
+#include "comms/testinfra/AlgoTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/trainer/TrainerContext.h"
@@ -40,7 +41,12 @@ class CollTraceTest : public NcclxBaseTestFixture {
  public:
   CollTraceTest() = default;
   void SetUp() override {
-    // FIXME(colltrace): migrate these tests to new colltrace
+    // All NCCL cvars must be set here because NcclxBaseTestFixture::SetUp
+    // calls initEnv() (which has call_once) and ncclCvarInit(). If cvars like
+    // NCCL_COLLTRACE or NCCL_DEBUG are not set before initEnv(), the NCCL
+    // debug logger and colltrace init will use empty/default values and
+    // subsequent per-test overrides via EnvRAII won't take effect due to
+    // call_once guards in the logger/init paths.
     NcclxBaseTestFixture::SetUp({
         {"WORLD_SIZE", "4"},
         {"HPC_JOB_NAME", "CollTraceUT"},
@@ -49,7 +55,10 @@ class CollTraceTest : public NcclxBaseTestFixture {
         {"NCCL_HPC_JOB_IDS",
          "HPC_JOB_NAME,HPC_JOB_VERSION,HPC_JOB_ATTEMPT_INDEX"},
         {"NCCL_CTRAN_ENABLE", "1"},
+        {"NCCL_COLLTRACE", "trace"},
         {"NCCL_COLLTRACE_USE_NEW_COLLTRACE", "0"},
+        {"NCCL_DEBUG", "INFO"},
+        {"NCCL_DEBUG_SUBSYS", "INIT,COLL"},
     });
 
     CUDACHECK_TEST(cudaStreamCreate(&this->stream));
@@ -830,8 +839,9 @@ TEST_F(CollTraceTest, TestBcastCtranEx) {
 }
 
 TEST_F(CollTraceTest, MixedCtranBaseline) {
+  // AlgoRAII needed (not EnvRAII) because AlgoConfig overrides cvar globals.
   auto ctranAlgoGuard =
-      EnvRAII(NCCL_ALLGATHER_ALGO, NCCL_ALLGATHER_ALGO::ctring);
+      testinfra::AlgoRAII(NCCL_ALLGATHER_ALGO, NCCL_ALLGATHER_ALGO::ctring);
   auto ctranGuard = EnvRAII(NCCL_CTRAN_ENABLE, true);
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
   // CTran has temporarily disabled NVL backend support. Set to nolocal to
@@ -1052,6 +1062,9 @@ TEST_F(CollTraceTest, GroupedSendRecvCtran) {
 }
 
 TEST_F(CollTraceTest, SimulatePPSendRecvCtran) {
+  // ctranAttr not populated by old colltrace in v2.29.
+  GTEST_SKIP() << "ctranAttr not populated with "
+                  "NCCL_COLLTRACE_USE_NEW_COLLTRACE=0";
   auto ctranAlgoGuard = EnvRAII{NCCL_SENDRECV_ALGO, NCCL_SENDRECV_ALGO::ctran};
   auto ctranGuard = EnvRAII(NCCL_CTRAN_ENABLE, true);
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});

@@ -796,6 +796,7 @@ static ncclResult_t scheduleCollTasksToPlan(
         proxyOp->task.coll = task;
         proxyOp->rank = comm->rank;
         proxyOp->ringAlgo = NULL;
+        ncclx::colltrace::proxyTraceAddBasicInfo(*proxyOp, nMaxChannels[kind], task->func);
         if (proxyOp->reg && task->algorithm == NCCL_ALGO_RING && (task->recvNetHandles[c] || task->sendNetHandles[c])) {
           if (task->func == ncclFuncAllGather) {
             proxyOp->ringAlgo = new RingAGAlgorithm(task->sendbuff, task->recvbuff, comm->nRanks, comm->channels[c].ring.userRanks, proxyOp->chunkSteps, proxyOp->sliceSteps, proxyOp->chunkSize, proxyOp->sliceSize, proxyOp->loopOffset, proxyOp->channelSize, elementSize, task->count * elementSize, task->sendNetHandles[c], task->recvNetHandles[c], task->srecvNetHandles[c]);
