@@ -65,6 +65,11 @@ class CtranWinAllGatherTest : public ctran::CtranDistTestFixture {
     const size_t sendBytes = sendCount * commTypeSize(dt);
     const size_t recvBytes = sendBytes * nRanks;
 
+    // Check support before allocating resources
+    if (!CtranWin::allGatherPSupported(comm.get())) {
+      GTEST_SKIP() << "allGatherP not supported on this topology";
+    }
+
     cudaStream_t stream;
     CUDACHECK_TEST(cudaStreamCreate(&stream));
 
@@ -74,13 +79,6 @@ class CtranWinAllGatherTest : public ctran::CtranDistTestFixture {
     CtranWin* win = nullptr;
     auto res = ctranWinRegister(winBase, recvBytes, comm.get(), &win);
     ASSERT_EQ(res, commSuccess);
-
-    if (!win->allGatherPSupported()) {
-      CUDACHECK_TEST(cudaFree(winBase));
-      ASSERT_EQ(ctranWinFree(win), commSuccess);
-      CUDACHECK_TEST(cudaStreamDestroy(stream));
-      GTEST_SKIP() << "allGatherP not supported on this topology";
-    }
 
     // Allocate separate send buffer
     void* sendbuf = nullptr;
