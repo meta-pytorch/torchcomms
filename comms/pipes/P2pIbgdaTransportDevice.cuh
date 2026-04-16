@@ -96,16 +96,23 @@ class P2pIbgdaTransportDevice {
    * Performs an RDMA Write from local buffer to remote buffer.
    * Returns immediately with a work handle for optional completion tracking.
    *
+   * By default, rings the NIC doorbell after posting the WQE. Set
+   * ringDb=false to skip the doorbell for batching multiple puts.
+   * The caller must ensure the doorbell is rung afterward (e.g.,
+   * via a subsequent put(ringDb=true) or ring_doorbell()).
+   *
    * @param localBuf Source buffer in local GPU memory
    * @param remoteBuf Destination buffer in remote GPU memory
    * @param nbytes Number of bytes to transfer
+   * @param ringDb Whether to ring the NIC doorbell (default: true)
    *
    * @return IbgdaWork for tracking local completion via wait_local()
    */
   __device__ IbgdaWork
   put(const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
-      std::size_t nbytes) {
+      std::size_t nbytes,
+      bool ringDb = true) {
     doca_gpu_dev_verbs_ticket_t ticket;
 
     doca_gpu_dev_verbs_addr localAddr = {
@@ -115,11 +122,14 @@ class P2pIbgdaTransportDevice {
         .addr = reinterpret_cast<uint64_t>(remoteBuf.ptr),
         .key = remoteBuf.rkey.value};
 
+    uint32_t code_opt = ringDb
+        ? DOCA_GPUNETIO_VERBS_GPU_CODE_OPT_DEFAULT
+        : DOCA_GPUNETIO_VERBS_GPU_CODE_OPT_SKIP_DB_RINGING;
     doca_gpu_dev_verbs_put<
         DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
         DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO,
         DOCA_GPUNETIO_VERBS_EXEC_SCOPE_THREAD>(
-        qp_, remoteAddr, localAddr, nbytes, &ticket);
+        qp_, remoteAddr, localAddr, nbytes, &ticket, code_opt);
 
     return IbgdaWork(ticket);
   }
@@ -142,6 +152,10 @@ class P2pIbgdaTransportDevice {
    * @param remoteBuf Destination buffer in remote GPU memory (this group's
    * chunk)
    * @param nbytes Number of bytes to transfer (partitioned across lanes)
+   * @param ringDb Whether to ring the NIC doorbell (default: true). Set to
+   *   false to batch with subsequent puts; caller must ensure the doorbell is
+   *   eventually rung via a later put(ringDb=true), signal_peer(), or
+   *   ring_doorbell().
    *
    * @return IbgdaWork for tracking local completion via wait_local() (per-lane)
    */
@@ -149,7 +163,8 @@ class P2pIbgdaTransportDevice {
       ThreadGroup& group,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
-      std::size_t nbytes) {
+      std::size_t nbytes,
+      bool ringDb = true) {
     std::size_t chunkSize = nbytes / group.group_size;
     std::size_t offset = group.thread_id_in_group * chunkSize;
     // Last thread picks up any remainder bytes
@@ -161,9 +176,9 @@ class P2pIbgdaTransportDevice {
     IbgdaRemoteBuffer laneRemoteBuf = remoteBuf.subBuffer(offset);
 
     if (group.group_size == 1) {
-      return put(laneBuf, laneRemoteBuf, laneBytes);
+      return put(laneBuf, laneRemoteBuf, laneBytes, ringDb);
     }
-    return put_group_impl(group, laneBuf, laneRemoteBuf, laneBytes);
+    return put_group_impl(group, laneBuf, laneRemoteBuf, laneBytes, ringDb);
   }
 
   /**
@@ -183,6 +198,10 @@ class P2pIbgdaTransportDevice {
    *   by all groups)
    * @param nbytes Total number of bytes to transfer (partitioned across groups,
    *   then across lanes within each group)
+   * @param ringDb Whether to ring the NIC doorbell (default: true). Set to
+   *   false to batch with subsequent puts; caller must ensure the doorbell is
+   *   eventually rung via a later put(ringDb=true), signal_peer(), or
+   *   ring_doorbell().
    *
    * @return IbgdaWork for tracking local completion via wait_local() (per-lane)
    */
@@ -190,7 +209,8 @@ class P2pIbgdaTransportDevice {
       ThreadGroup& group,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
-      std::size_t nbytes) {
+      std::size_t nbytes,
+      bool ringDb = true) {
     // Partition across groups; last group picks up remainder
     std::size_t chunkPerGroup = nbytes / group.total_groups;
     std::size_t groupOffset = group.group_id * chunkPerGroup;
@@ -201,7 +221,8 @@ class P2pIbgdaTransportDevice {
     IbgdaLocalBuffer groupLocalBuf = localBuf.subBuffer(groupOffset);
     IbgdaRemoteBuffer groupRemoteBuf = remoteBuf.subBuffer(groupOffset);
 
-    return put_group_local(group, groupLocalBuf, groupRemoteBuf, groupBytes);
+    return put_group_local(
+        group, groupLocalBuf, groupRemoteBuf, groupBytes, ringDb);
   }
 
   // ===========================================================================
@@ -754,6 +775,23 @@ class P2pIbgdaTransportDevice {
     return qp_;
   }
 
+  /**
+   * ring_doorbell - Ring doorbell for all pending WQEs up to lastWork
+   *
+   * Call after one or more put(..., ringDb=false) to notify the NIC of
+   * all pending WQEs in a single doorbell ring. Pass the IbgdaWork returned
+   * by the most recent put — the doorbell will cover that WQE and any
+   * earlier ones still pending.
+   *
+   * @param lastWork IbgdaWork returned by the last put(ringDb=false)
+   */
+  __device__ void ring_doorbell(IbgdaWork lastWork) {
+    doca_gpu_dev_verbs_submit<
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
+        DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU,
+        DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(qp_, lastWork.value + 1);
+  }
+
  private:
   /**
    * put_group_impl - Generic group-collaborative RDMA Write
@@ -772,6 +810,8 @@ class P2pIbgdaTransportDevice {
    * @param laneBuf Source buffer for this thread's chunk
    * @param laneRemoteBuf Destination buffer for this thread's chunk
    * @param laneBytes Number of bytes for this thread's chunk
+   * @param ringDb Whether to ring the NIC doorbell after submit (default:
+   * true)
    *
    * @return IbgdaWork for tracking local completion via wait_local()
    */
@@ -779,7 +819,8 @@ class P2pIbgdaTransportDevice {
       ThreadGroup& group,
       const IbgdaLocalBuffer& laneBuf,
       const IbgdaRemoteBuffer& laneRemoteBuf,
-      std::size_t laneBytes) {
+      std::size_t laneBytes,
+      bool ringDb = true) {
     // Guard: group_size must fit within the QP send queue depth.
     // The leader reserves group_size WQE slots atomically. If group_size
     // exceeds the QP ring buffer depth (sq_wqe_num), the DOCA backpressure
@@ -830,16 +871,19 @@ class P2pIbgdaTransportDevice {
     // 4. Sync — all WQEs prepared
     group.sync();
 
-    // 5. Leader marks ready and rings doorbell
+    // 5. Leader marks ready and rings doorbell (skipped if ringDb=false)
     if (group.is_leader()) {
       doca_gpu_dev_verbs_mark_wqes_ready<
           DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
           qp_, base_wqe_idx, base_wqe_idx + group.group_size - 1);
+      uint32_t code_opt = ringDb
+          ? DOCA_GPUNETIO_VERBS_GPU_CODE_OPT_DEFAULT
+          : DOCA_GPUNETIO_VERBS_GPU_CODE_OPT_SKIP_DB_RINGING;
       doca_gpu_dev_verbs_submit<
           DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
           DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU,
           DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(
-          qp_, base_wqe_idx + group.group_size);
+          qp_, base_wqe_idx + group.group_size, code_opt);
     }
 
     // 6. Sync — ensure submit done before threads proceed
