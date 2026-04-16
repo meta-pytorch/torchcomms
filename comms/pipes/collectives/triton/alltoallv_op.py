@@ -95,6 +95,7 @@ call. If the caller needs the data to persist beyond that point it must
 ``.clone()`` the output.
 """
 
+import os
 from typing import Any, Optional, TYPE_CHECKING, Union
 
 import torch
@@ -368,6 +369,8 @@ class AlltoallvOp:
         self._dev_win_ptr: Optional[int] = None
         self._src_info: Optional[int] = None
         self._remote_write_offsets: Optional[torch.Tensor] = None
+        self._per_peer_blocks: Optional[torch.Tensor] = None
+        self._peer_is_nvl: list[bool] = []
 
     # ------------------------------------------------------------------
     # Factory / caching
@@ -503,6 +506,31 @@ class AlltoallvOp:
         self._window.tensor_register(self.recv_buf)
         self.comm.barrier(False)
 
+        # Detect topology: classify peers as NVL or IB.
+        # Gated behind TRITON_ALLTOALLV_ENABLE_IB=1 — when disabled (default),
+        # all peers are treated as NVL and the kernel uses NVLink-only tuning.
+        self._peer_is_nvl = [True] * self.world_size  # default: all NVL
+        ib_enabled = os.environ.get("TRITON_ALLTOALLV_ENABLE_IB", "0") == "1"
+        if ib_enabled and hasattr(self._window, "get_nvlink_address"):
+            for peer in range(self.world_size):
+                if peer != self.rank:
+                    self._peer_is_nvl[peer] = self._window.get_nvlink_address(peer) != 0
+
+        # Re-tune with topology info for per-peer block counts.
+        worst_case_msg_bytes = self.max_input_tokens * self._bytes_per_token
+        params = auto_tune_alltoallv_params(worst_case_msg_bytes, self._peer_is_nvl)
+        self._blocks_per_peer = params["blocks_per_peer"]
+        self._num_warps = params["num_warps"]
+        self._chunk_size = params["chunk_size"]
+
+        # Build per_peer_blocks tensor if topology is mixed.
+        if params["per_peer_blocks"] is not None:
+            self._per_peer_blocks = torch.tensor(
+                params["per_peer_blocks"], dtype=torch.int32, device=self.device
+            )
+        else:
+            self._per_peer_blocks = None
+
         # get_device_window triggers ncclDevCommCreate (enables GIN).
         # When sync_buffer is enabled, allocate 2x signal slots:
         # signal_id=0 for DATA_COMPLETE, signal_id=1 for BUFFER_READY
@@ -531,6 +559,8 @@ class AlltoallvOp:
             self._window.tensor_deregister()
             self._window = None
         self._dev_win_ptr = None
+        self._per_peer_blocks = None
+        self._peer_is_nvl = []
 
         # Release all GPU buffers to free memory immediately.
         # Without this, Python GC may defer collection and cause OOM.
@@ -912,6 +942,7 @@ class AlltoallvOp:
             num_warps=self._num_warps,
             chunk_size=self._chunk_size,
             sync_buffer=self.sync_buffer,
+            per_peer_blocks=self._per_peer_blocks,
         )
 
         # NOTE: Iteration counter is now managed internally by
