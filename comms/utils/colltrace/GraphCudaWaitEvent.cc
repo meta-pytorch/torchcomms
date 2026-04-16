@@ -34,11 +34,11 @@ GraphCudaWaitEvent::GraphCudaWaitEvent(cudaStream_t stream, uint32_t collId)
 GraphCudaWaitEvent::~GraphCudaWaitEvent() {
   if (timestampStream_) {
     // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-    cudaStreamDestroy(timestampStream_);
+    (void)cudaStreamDestroy(timestampStream_);
   }
   if (depEvent_) {
     // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-    cudaEventDestroy(depEvent_);
+    (void)cudaEventDestroy(depEvent_);
   }
 }
 
