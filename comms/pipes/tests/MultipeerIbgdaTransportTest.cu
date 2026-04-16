@@ -55,6 +55,55 @@ void testPutAndSignal(
 }
 
 // =============================================================================
+// Kernel: Put with ringDb=false + signal_remote (doorbell batching)
+//
+// put(ringDb=false) prepares and marks the WQE ready in the QP ring buffer,
+// but skips the submit step entirely — the local sq_wqe_pi is not advanced
+// and the NIC is never notified. The subsequent signal_remote() submits its
+// own WQE, which atomic_max's sq_wqe_pi past both WQEs and rings a single
+// doorbell — covering the held-back put and the signal in one ring.
+// =============================================================================
+
+__global__ void putNoDbAndSignalKernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    std::size_t nbytes,
+    IbgdaRemoteBuffer remoteSignalBuf,
+    int signalId,
+    uint64_t signalVal) {
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    transport->put(localBuf, remoteBuf, nbytes, /*ringDb=*/false);
+    transport->signal_remote(remoteSignalBuf, signalId, signalVal);
+  }
+}
+
+void testPutNoDbAndSignal(
+    P2pIbgdaTransportDevice* deviceTransportPtr,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t nbytes,
+    const IbgdaRemoteBuffer& remoteSignalBuf,
+    int signalId,
+    uint64_t signalVal,
+    int numBlocks,
+    int blockSize) {
+  putNoDbAndSignalKernel<<<numBlocks, blockSize>>>(
+      deviceTransportPtr,
+      localBuf,
+      remoteBuf,
+      nbytes,
+      remoteSignalBuf,
+      signalId,
+      signalVal);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
+// =============================================================================
 // Kernel: Group-collaborative put + signal (warp group)
 // =============================================================================
 

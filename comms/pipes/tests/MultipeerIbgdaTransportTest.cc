@@ -225,6 +225,102 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalBasic) {
 }
 
 // =============================================================================
+// Put with ringDb=false + Signal — Verifies doorbell batching codepath
+//
+// Sender posts put(ringDb=false) to hold the WQE back, then signal_remote()
+// to ring the doorbell. Receiver waits for the signal and verifies the
+// data arrived — proving the held-back put was successfully batched into the
+// signal's doorbell ring on the same QP.
+// =============================================================================
+
+TEST_F(MultipeerIbgdaTransportTestFixture, PutNoDbBatching) {
+  if (numRanks != 2) {
+    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    return;
+  }
+
+  const std::size_t nbytes = 64 * 1024;
+  const int numBlocks = 1;
+  const int blockSize = 1;
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  const uint8_t testPattern = 0x55;
+
+  try {
+    auto transport = createTransport();
+
+    DeviceBuffer dataBuffer(nbytes);
+    auto localDataBuf = transport->registerBuffer(dataBuffer.get(), nbytes);
+    auto remoteDataBufs = transport->exchangeBuffer(localDataBuf);
+    int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
+    auto remoteDataBuf = remoteDataBufs[peerIndex];
+
+    const std::size_t signalBufSize = sizeof(uint64_t);
+    DeviceBuffer signalBuffer(signalBufSize);
+    CUDACHECK_TEST(cudaMemset(signalBuffer.get(), 0, signalBufSize));
+    auto localSignalBuf =
+        transport->registerBuffer(signalBuffer.get(), signalBufSize);
+    auto remoteSignalBufs = transport->exchangeBuffer(localSignalBuf);
+    auto remoteSignalBuf = remoteSignalBufs[peerIndex];
+
+    P2pIbgdaTransportDevice* peerTransportPtr =
+        transport->getP2pTransportDevice(peerRank);
+
+    if (globalRank == 0) {
+      test::fillBufferWithPattern(
+          localDataBuf.ptr, nbytes, testPattern, numBlocks, blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      test::testPutNoDbAndSignal(
+          peerTransportPtr,
+          localDataBuf,
+          remoteDataBuf,
+          nbytes,
+          remoteSignalBuf,
+          0,
+          1,
+          numBlocks,
+          blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    } else {
+      CUDACHECK_TEST(cudaMemset(localDataBuf.ptr, 0, nbytes));
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      test::testWaitSignal(
+          static_cast<uint64_t*>(signalBuffer.get()),
+          0,
+          1,
+          numBlocks,
+          blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      DeviceBuffer errorCountBuf(sizeof(int));
+      auto* d_errorCount = static_cast<int*>(errorCountBuf.get());
+      CUDACHECK_TEST(cudaMemset(d_errorCount, 0, sizeof(int)));
+      test::verifyBufferPattern(
+          localDataBuf.ptr,
+          nbytes,
+          testPattern,
+          d_errorCount,
+          numBlocks,
+          blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      int h_errorCount = 0;
+      CUDACHECK_TEST(cudaMemcpy(
+          &h_errorCount, d_errorCount, sizeof(int), cudaMemcpyDeviceToHost));
+      EXPECT_EQ(h_errorCount, 0) << "put(ringDb=false): " << h_errorCount
+                                 << " byte mismatches out of " << nbytes;
+    }
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+  }
+}
+
+// =============================================================================
 // Group-Level Put/Signal Basic Test - Verifies group-collaborative RDMA
 // =============================================================================
 
