@@ -33,12 +33,16 @@ GraphCudaWaitEvent::GraphCudaWaitEvent(cudaStream_t stream, uint32_t collId)
 
 GraphCudaWaitEvent::~GraphCudaWaitEvent() {
   if (timestampStream_) {
-    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-    cudaStreamDestroy(timestampStream_);
+    CUDA_CHECK_WITH_IGNORE(
+        cudaStreamDestroy(timestampStream_),
+        cudaErrorCudartUnloading,
+        cudaErrorContextIsDestroyed);
   }
   if (depEvent_) {
-    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-    cudaEventDestroy(depEvent_);
+    CUDA_CHECK_WITH_IGNORE(
+        cudaEventDestroy(depEvent_),
+        cudaErrorCudartUnloading,
+        cudaErrorContextIsDestroyed);
   }
 }
 

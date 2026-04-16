@@ -12,6 +12,7 @@
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 
 #include "comms/utils/CommsMaybeChecks.h"
+#include "comms/utils/checks.h"
 #include "comms/utils/colltrace/GpuClockCalibration.h"
 #include "comms/utils/colltrace/GraphCollTraceHandle.h"
 #include "comms/utils/colltrace/GraphCollTraceState.h"
@@ -191,8 +192,10 @@ std::shared_ptr<GraphCollTraceState> CollTrace::getOrCreateGraphState(
   auto retainRes =
       cudaGraphRetainUserObject(graph, userObject, 1, cudaGraphUserObjectMove);
   if (retainRes != cudaSuccess) {
-    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-    cudaUserObjectRelease(userObject, 1);
+    CUDA_CHECK_WITH_IGNORE(
+        cudaUserObjectRelease(userObject, 1),
+        cudaErrorCudartUnloading,
+        cudaErrorContextIsDestroyed);
     XLOG_FIRST_N(WARN, 1) << "Failed to retain graph user object: "
                           << cudaGetErrorString(retainRes);
     return nullptr;
