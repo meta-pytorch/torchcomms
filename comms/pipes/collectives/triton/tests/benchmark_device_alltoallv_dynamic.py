@@ -160,7 +160,7 @@ class AlltoallvDynamicBenchmark:
     def _deregister_src(self) -> None:
         """Deregister send buffer so it can be modified."""
         if self.src_info is not None:
-            self.window.deregister_local_buffer(*self.src_info)
+            self.window.deregister_local_buffer(self.src_info)
             self.src_info = None
 
     def _register_src(self) -> None:
@@ -185,7 +185,7 @@ class AlltoallvDynamicBenchmark:
         # 2. Clean up class-level window and pools
         self.comm.barrier(False)
         if self.src_info is not None:
-            self.window.deregister_local_buffer(*self.src_info)
+            self.window.deregister_local_buffer(self.src_info)
             self.src_info = None
         if self.window is not None:
             self.window.tensor_deregister()

@@ -284,9 +284,7 @@ def prewarm_completion_counters(world_size: int, device: torch.device) -> None:
 def _device_alltoallv_dynamic_kernel(
     # Window handles
     dst_win_ptr,
-    src_base_ptr,
-    src_size,
-    src_nccl_win,
+    src_registered_buf,  # device ptr to RegisteredBuffer (from register_local_buffer)
     # Buffer pointers for self-copy (typed by Triton from tensors)
     send_buf_ptr,
     recv_buf_ptr,
@@ -366,9 +364,10 @@ def _device_alltoallv_dynamic_kernel(
 
     Args:
         dst_win_ptr: TorchComms device window handle for destination
-        src_base_ptr: Base pointer of registered source buffer
-        src_size: Size of source buffer in bytes
-        src_nccl_win: NCCL window handle for source buffer
+        src_registered_buf: Device pointer to RegisteredBuffer struct
+                           (from register_local_buffer()). Passed directly to
+                           put_block_direct / put_warp_chunked_direct which
+                           read base_ptr from the struct internally.
         send_offsets_ptr: GPU tensor [world_size] - byte offsets into src
         send_sizes_ptr: GPU tensor [world_size] - bytes to send per peer
         recv_offsets_ptr: GPU tensor [world_size] - byte offsets into local dst
@@ -533,7 +532,7 @@ def _device_alltoallv_dynamic_kernel(
                 put_block_direct(
                     dst_win_ptr,
                     dst_offset + block_start,
-                    src_nccl_win,
+                    src_registered_buf,
                     send_offset + block_start,
                     peer,
                     block_portion,
@@ -542,7 +541,7 @@ def _device_alltoallv_dynamic_kernel(
                 put_warp_chunked_direct(
                     dst_win_ptr,
                     dst_offset + block_start,
-                    src_nccl_win,
+                    src_registered_buf,
                     send_offset + block_start,
                     peer,
                     block_portion,
@@ -658,7 +657,7 @@ def device_alltoallv_dynamic(
     local_recv_slot_offsets: torch.Tensor,
     remote_write_offsets: torch.Tensor,
     dev_win_ptr: int,
-    src_info: tuple,
+    src_info: int,
     my_rank: int,
     world_size: int,
     num_warps: int = 16,
@@ -738,7 +737,7 @@ def device_alltoallv_dynamic(
         >>> # Cleanup
         >>> deregister_local_buffer(src_info, window)
     """
-    src_base_ptr, src_size, src_nccl_win = src_info
+    src_registered_buf = src_info
 
     # Get internal iteration tensor (cached per device/world_size).
     # This is managed internally - users don't need to create or track it.
@@ -781,9 +780,7 @@ def device_alltoallv_dynamic(
 
     _device_alltoallv_dynamic_kernel[grid](
         dev_win_ptr,
-        src_base_ptr,
-        src_size,
-        src_nccl_win,
+        src_registered_buf,
         send_buf,
         recv_buf,
         send_offsets,
