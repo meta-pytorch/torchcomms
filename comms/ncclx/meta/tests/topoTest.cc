@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include "comms/testinfra/TestUtils.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 #include "graph.h"
 #include "nccl.h"
 
@@ -48,8 +49,14 @@ TEST_F(topoTest, defaultTopoXmlNotFound) {
 }
 
 TEST_F(topoTest, userTopoXmlFileNotFound) {
+  // Starting NCCLX 2.29, we started fully relying on the Nvidia PARAM
+  // infrastructure for the Nvidia-provided control variables.
+#if NCCL_VERSION_CODE >= 22900
+  SysEnvRAII topoFileEnv("NCCL_TOPO_FILE", "/tmp/nccl_topo_not_exist.xml");
+#else
   EnvRAII<std::string> topoFileEnv(
       NCCL_TOPO_FILE, "/tmp/nccl_topo_not_exist.xml");
+#endif
   folly::test::TemporaryFile dumpXmlFile;
 
   testing::internal::CaptureStdout();

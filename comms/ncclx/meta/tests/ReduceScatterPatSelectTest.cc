@@ -39,13 +39,6 @@ class ReduceScatterPatSelectTest : public NcclxBaseTestFixture {
 
   void SetUp() override {
     NcclxBaseTestFixture::SetUp();
-    // [META:PAT] Enable PAT algorithm for all tests in this suite.
-    // This must be set BEFORE any communicator is created because
-    // ncclParamPatEnable() uses a static cache that is only populated once.
-    // Setting it here ensures the cache is populated with the correct value
-    // regardless of test execution order.
-    patEnableGuard_ =
-        std::make_unique<EnvRAII<int64_t>>(NCCL_PAT_ENABLE, (int64_t)1);
     // Enable AlgoStats for algorithm validation (must be before comm creation)
     algoStats_.enable();
     CUDACHECK_TEST(cudaStreamCreate(&stream));
@@ -53,7 +46,6 @@ class ReduceScatterPatSelectTest : public NcclxBaseTestFixture {
 
   void TearDown() override {
     CUDACHECK_TEST(cudaStreamDestroy(stream));
-    patEnableGuard_.reset();
     // Reset global hint to avoid affecting subsequent tests
     ncclx::resetGlobalHint(
         std::string(ncclx::HintKeys::kCommAlgoReduceScatter));
@@ -130,7 +122,6 @@ class ReduceScatterPatSelectTest : public NcclxBaseTestFixture {
 
   cudaStream_t stream{nullptr};
   ncclx::test::VerifyAlgoStatsHelper algoStats_;
-  std::unique_ptr<EnvRAII<int64_t>> patEnableGuard_;
 };
 
 /**
@@ -300,9 +291,16 @@ TEST_P(ReduceScatterPatAlgoSelectionTest, AlgoSelection) {
 
   // Enforce PAT algorithm selection via env vars for SUM (both NCCL_ALGO,
   // NCCL_PROTO and NCCL_PAT_ENABLE must be set, NCCL_PAT_ENABLE=1 is set in
-  // base fixture SetUp()). AVG requires PAT AVG CVAR or hint.
-  auto algoGuard = EnvRAII<std::string>(NCCL_ALGO, "reducescatter:pat");
-  auto protoGuard = EnvRAII<std::string>(NCCL_PROTO, "Simple");
+  // main()). AVG requires PAT AVG CVAR or hint.
+  // Starting NCCLX 2.29, we started fully relying on the Nvidia PARAM
+  // infrastructure for the Nvidia-provided control variables.
+#if NCCL_VERSION_CODE >= 22900
+  SysEnvRAII algoGuard("NCCL_ALGO", "reducescatter:pat");
+  SysEnvRAII protoGuard("NCCL_PROTO", "Simple");
+#else
+  EnvRAII<std::string> algoGuard(NCCL_ALGO, std::string("reducescatter:pat"));
+  EnvRAII<std::string> protoGuard(NCCL_PROTO, std::string("Simple"));
+#endif
 
   // Enable PAT AVG via CVAR before comm creation
   auto patAvgGuard = EnvRAII(NCCL_REDUCESCATTER_PAT_AVG_ENABLE, patAvgEnable);
@@ -652,6 +650,7 @@ TEST_F(ReduceScatterPatSelectTest, ComputePatAvgChannelsScalesWithMsgSize) {
 }
 
 int main(int argc, char* argv[]) {
+  setenv("NCCL_PAT_ENABLE", "1", 0);
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
   folly::Init init(&argc, &argv);
