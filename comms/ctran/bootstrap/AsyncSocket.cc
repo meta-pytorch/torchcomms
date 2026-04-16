@@ -325,7 +325,7 @@ void AsyncServerSocket::OneShotRecv::computeTotalSize() {
     // Grow the IOBuf to accommodate the full message if needed
     size_t needed = totalSize_ - got_;
     if (buf_->tailroom() < needed) {
-      buf_->reserve(0, needed - buf_->tailroom());
+      buf_->reserve(0, needed);
     }
   }
 }

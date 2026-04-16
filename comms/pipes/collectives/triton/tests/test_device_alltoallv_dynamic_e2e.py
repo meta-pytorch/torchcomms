@@ -119,7 +119,7 @@ class _SingleTestBase(unittest.TestCase):
     def _deregister_send_buf(self) -> None:
         """Deregister send_buf after collective, before next data fill."""
         if self.src_info is not None:
-            self.window.deregister_local_buffer(*self.src_info)
+            self.window.deregister_local_buffer(self.src_info)
             self.src_info = None
 
     def tearDown(self) -> None:
@@ -131,7 +131,7 @@ class _SingleTestBase(unittest.TestCase):
         if cls.torchcomm is not None:
             cls.torchcomm.barrier(False)
         if hasattr(cls, "src_info") and cls.src_info is not None:
-            cls.window.deregister_local_buffer(*cls.src_info)
+            cls.window.deregister_local_buffer(cls.src_info)
             cls.src_info = None
         if hasattr(cls, "window") and cls.window is not None:
             cls.window.tensor_deregister()

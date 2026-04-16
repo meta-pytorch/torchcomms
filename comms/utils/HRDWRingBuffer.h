@@ -9,7 +9,9 @@
 #endif
 
 #include <algorithm>
+#if __cplusplus >= 202002L
 #include <bit>
+#endif
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
@@ -182,7 +184,15 @@ class HRDWRingBuffer {
       return; // valid() will return false
     }
     if ((size & (size - 1)) != 0) {
+#if __cplusplus >= 202002L
       uint32_t nextPowerOf2 = 1U << (std::bit_width(size - 1));
+#else
+      // C++17 fallback for std::bit_width
+      uint32_t nextPowerOf2 = 1;
+      while (nextPowerOf2 < size) {
+        nextPowerOf2 <<= 1;
+      }
+#endif
       fprintf(
           stderr,
           "HRDWRingBuffer: size %u is not a power of 2, rounding up to %u\n",

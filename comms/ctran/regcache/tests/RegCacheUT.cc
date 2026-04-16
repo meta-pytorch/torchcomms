@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 
 #include "comms/ctran/backends/ib/CtranIbSingleton.h"
@@ -1363,6 +1364,26 @@ TEST_F(RegCacheTest, ImportMemWithExtraSegments) {
 
   ctran::IpcRegCache::deregMem(ipcRegElem);
   COMMCHECK_TEST(ctran::commMemFreeDisjoint(buf, segSizes));
+}
+
+// Verify IpcRemHandle is trivially destructible and survives heap corruption.
+// Simulates the scenario from the IB double-completion bug: construct a valid
+// IpcRemHandle, corrupt its memory, then destroy it. With std::string peerId,
+// the destructor tries to free a corrupted pointer and segfaults. With a
+// fixed-size char[], the destructor is trivial and this is safe.
+TEST(IpcRemHandleTest, CorruptedDestroyDoesNotCrash) {
+  alignas(ctran::regcache::IpcRemHandle) char
+      buf[sizeof(ctran::regcache::IpcRemHandle)];
+  auto* handle = new (buf) ctran::regcache::IpcRemHandle();
+
+  // Corrupt the entire struct — simulates heap corruption
+  std::memset(buf, 0xAB, sizeof(ctran::regcache::IpcRemHandle));
+  // Prevent the compiler from optimizing away the corruption or destructor
+  asm volatile("" ::: "memory");
+
+  // Destructor must not crash. With std::string this segfaults;
+  // with char[] this is a no-op.
+  handle->~IpcRemHandle();
 }
 
 int main(int argc, char* argv[]) {

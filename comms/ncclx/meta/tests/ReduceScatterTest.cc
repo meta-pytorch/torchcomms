@@ -60,7 +60,6 @@ class ReduceScatterTest : public NcclxBaseTestFixture {
     envs.push_back({"NCCL_CTRAN_ENABLE", "1"});
     envs.push_back({"NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET", "1"});
     NcclxBaseTestFixture::SetUp(envs);
-    patEnableGuard_.emplace(NCCL_PAT_ENABLE, (int64_t)1);
     algoStats_.enable();
     CUDACHECK_TEST(cudaStreamCreate(&stream));
   }
@@ -223,7 +222,6 @@ class ReduceScatterTest : public NcclxBaseTestFixture {
  protected:
   ncclComm_t comm{nullptr};
   cudaStream_t stream{nullptr};
-  std::optional<EnvRAII<int64_t>> patEnableGuard_;
   ncclx::test::VerifyAlgoStatsHelper algoStats_;
 };
 
@@ -278,7 +276,13 @@ TEST_P(ReduceScatterOrigTestParam, OrigTest) {
   (void)envs_; // applied in SetUp
   auto rsAlgoGuard =
       EnvRAII(NCCL_REDUCESCATTER_ALGO, NCCL_REDUCESCATTER_ALGO::orig);
-  auto algoGuard = EnvRAII<std::string>(NCCL_ALGO, ncclAlgo);
+  // Starting NCCLX 2.29, we started fully relying on the Nvidia PARAM
+  // infrastructure for the Nvidia-provided control variables.
+#if NCCL_VERSION_CODE >= 22900
+  SysEnvRAII algoGuard("NCCL_ALGO", ncclAlgo);
+#else
+  EnvRAII<std::string> algoGuard(NCCL_ALGO, ncclAlgo);
+#endif
 
   ReduceScatterTestParams param{
       .algo = NCCL_REDUCESCATTER_ALGO::orig,
@@ -455,6 +459,7 @@ INSTANTIATE_TEST_SUITE_P(
     rsPatAvgTestNameGen);
 
 int main(int argc, char* argv[]) {
+  setenv("NCCL_PAT_ENABLE", "1", 0);
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
   folly::Init init(&argc, &argv);

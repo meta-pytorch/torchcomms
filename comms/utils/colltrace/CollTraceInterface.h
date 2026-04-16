@@ -16,7 +16,10 @@ class ICollTrace {
  public:
   virtual ~ICollTrace() = default;
 
-  virtual CommsMaybe<std::shared_ptr<CollTraceHandle>> recordCollective(
+  // Record a collective event. If the waitEvent is a GraphCudaWaitEvent,
+  // the collective is recorded for graph-mode polling. Otherwise it's
+  // recorded as an eager collective.
+  virtual CommsMaybe<std::shared_ptr<ICollTraceHandle>> recordCollective(
       std::unique_ptr<ICollMetadata> metadata,
       std::unique_ptr<ICollWaitEvent> waitEvent) noexcept = 0;
 

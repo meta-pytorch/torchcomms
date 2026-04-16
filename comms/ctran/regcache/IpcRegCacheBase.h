@@ -129,10 +129,14 @@ struct IpcRemRegElem {
   }
 };
 
+// Maximum length for peer ID string (including null terminator)
+// Format: "hostname:pid" - hostname can be up to 255 chars (DNS limit)
+constexpr size_t kMaxPeerIdLen = 272;
+
 struct IpcRemHandle {
   // use peerId, basePtr and uid on peer to lookup the imported memory handle
-  // in local cache
-  std::string peerId;
+  // in local cache.
+  char peerId[kMaxPeerIdLen]{};
   void* basePtr;
   uint32_t uid;
 
@@ -147,10 +151,6 @@ enum class IpcReqType : uint8_t {
   kDesc = 0, // Memory descriptor for export
   kRelease = 1, // Release notification
 };
-
-// Maximum length for peer ID string (including null terminator)
-// Format: "hostname:pid" - hostname can be up to 255 chars (DNS limit)
-constexpr size_t kMaxPeerIdLen = 272;
 
 // Unified IPC request structure sent over the network.
 // Used for both memory export (IpcDesc) and release (IpcRelease) requests.
