@@ -860,8 +860,9 @@ TEST_F(P2pSendRecvBenchmarkFixture, BidirectionalBenchmark) {
   // === CHUNKS PER SLOT SWEEP (clustered, 8MB staging, pd=2) ===
   for (int cps : {2, 4, 8}) {
     for (const auto& [sz, nm] : tileSizes) {
-      if (sz < 1 * 1024 * 1024)
+      if (sz < 1 * 1024 * 1024) {
         continue; // only test >= 1MB
+      }
       constexpr std::size_t kSlot2 = 8 * 1024 * 1024;
       configs.push_back({
           .nBytes = sz,
@@ -896,8 +897,9 @@ TEST_F(P2pSendRecvBenchmarkFixture, BidirectionalBenchmark) {
 
   for (const auto& sc : stagingConfigs) {
     for (const auto& [sz, nm] : tileSizes) {
-      if (sz < 4 * 1024 * 1024)
+      if (sz < 4 * 1024 * 1024) {
         continue; // only test >= 4MB
+      }
 
       configs.push_back({
           .nBytes = sz,
@@ -916,8 +918,9 @@ TEST_F(P2pSendRecvBenchmarkFixture, BidirectionalBenchmark) {
   // Also test best signal granularity (128KB) with baseline staging for
   // comparison
   for (const auto& [sz, nm] : tileSizes) {
-    if (sz < 4 * 1024 * 1024)
+    if (sz < 4 * 1024 * 1024) {
       continue;
+    }
     configs.push_back({
         .nBytes = sz,
         .stagedBufferSize = 8 * 1024 * 1024,
