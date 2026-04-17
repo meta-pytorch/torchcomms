@@ -25,6 +25,7 @@ const std::string kUniqueidXchgMethodAuto = "auto";
 const std::string kUniqueidXchgMethodTCPStore = "tcpstore";
 const std::string kUniqueidXchgMethodDefault = kUniqueidXchgMethodAuto;
 
+#ifdef NCCLX_CONFIG_SUPPORTED
 bool isFastInitEnable(const ncclx::Hints& hints) {
   std::string fastInitVal;
   if (hints.get("ncclx::fastInitMode", fastInitVal) == ncclSuccess &&
@@ -37,6 +38,7 @@ bool isFastInitEnable(const ncclx::Hints& hints) {
   }
   return std::string(env) == "ring_hybrid";
 }
+#endif
 
 } // namespace
 
@@ -219,7 +221,9 @@ void populateNcclConfig(
     ncclConfig_t& config,
     const CommOptions& options,
     const std::string& name) {
+#ifdef NCCLX_CONFIG_SUPPORTED
   auto* hints = static_cast<ncclx::Hints*>(config.hints);
+#endif
   constexpr std::string_view kNcclxPrefix = "ncclx::";
 
   // Iterate over the hints and set the corresponding fields.  Keys with
@@ -232,6 +236,7 @@ void populateNcclConfig(
   for (const auto& [key, val] : options.hints) {
     // NCCLx-specific fields -- pass via ncclx::Hints
     if (key.compare(0, kNcclxPrefix.size(), kNcclxPrefix) == 0) {
+#ifdef NCCLX_CONFIG_SUPPORTED
       if (key == "ncclx::commDesc") {
         throw std::invalid_argument(
             "ncclx::commDesc must not be set in hints; "
@@ -245,6 +250,11 @@ void populateNcclConfig(
       hints->set(key, val);
       TC_LOG(INFO, nullptr)
           << "[comm=" << name << "] Setting hint " << key << "=" << val;
+#else
+      TC_LOG(WARNING)
+          << "NCCLx hints are not supported in this NCCL version, ignoring '"
+          << key << "' for comm '" << name << "'";
+#endif
     }
     // Upstream NCCL config fields -- set directly on the config struct
     else if (kTorchCommLayerHints.count(key)) {
@@ -312,6 +322,7 @@ void populateNcclConfig(
   }
 }
 
+#ifdef NCCLX_CONFIG_SUPPORTED
 bool TorchCommNCCLXBootstrap::useFastInit(const ncclx::Hints& hints) {
   if (isFastInitEnable(hints)) {
     // Use raw dynamic_cast instead of c10::dynamic_intrusive_pointer_cast
@@ -336,6 +347,7 @@ bool TorchCommNCCLXBootstrap::useFastInit(const ncclx::Hints& hints) {
   }
   return false;
 }
+#endif
 
 ncclComm_t TorchCommNCCLXBootstrap::createNcclComm(
     const std::string& name,
@@ -349,9 +361,12 @@ ncclComm_t TorchCommNCCLXBootstrap::createNcclComm(
   createStore(name);
 
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+#ifdef NCCLX_CONFIG_SUPPORTED
   ncclx::Hints hints;
   config.hints = &hints;
+#endif
   populateNcclConfig(config, options, name);
+#ifdef NCCLX_CONFIG_SUPPORTED
   hints.set("ncclx::commDesc", name);
 
   if (useFastInit(hints)) {
@@ -359,6 +374,9 @@ ncclComm_t TorchCommNCCLXBootstrap::createNcclComm(
   } else {
     uniqueId = exchangeUniqueId();
   }
+#else
+  uniqueId = exchangeUniqueId();
+#endif
 
   ncclResult_t ncclErr = nccl_api_->commInitRankConfig(
       &nccl_comm, comm_size_, uniqueId, rank_, &config);

@@ -2382,6 +2382,7 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
       "{}::split::{}_{}_{}", name_, color, split_name, split_counter_++);
 
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+#ifdef NCCLX_CONFIG_SUPPORTED
   ncclx::Hints hints;
   config.hints = &hints;
   populateNcclConfig(config, options, commDesc);
@@ -2398,6 +2399,9 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
     }
     hints.set("ncclx::splitGroupRanks", rankStr);
   }
+#else
+  populateNcclConfig(config, options, commDesc);
+#endif
 
   // Verify the correct CUDA device is set before calling ncclCommSplit.
   // NCCL expects the caller to have set the device matching the communicator.
