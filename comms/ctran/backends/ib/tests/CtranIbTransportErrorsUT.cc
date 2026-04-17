@@ -10,34 +10,31 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#include <folly/dynamic.h>
 #include <folly/init/Init.h>
-#include <folly/json/json.h>
 
 #include "comm.h"
 #include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/backends/ib/ibutils.h"
 #include "comms/ctran/ibverbx/Ibverbx.h"
+
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/logger/ProcessGlobalErrorsUtil.h"
-#include "nccl.h"
 
 using namespace ::testing;
 using namespace ctran::ibvwrap;
 
 // Environment is set up once for all tests.
-class MPIEnvironment : public DistEnvironmentBase {
+class IbTestEnvironment : public ctran::CtranDistEnvironment {
  public:
   void SetUp() override {
-    DistEnvironmentBase::SetUp();
+    ctran::CtranDistEnvironment::SetUp();
     setenv("NCCL_HEALTH_WATCHER_ENABLE", "False", 1);
     setenv("NCCL_IB_ENABLE_REPORT_TO_PROCESS_GLOBAL_ERRORS", "True", 1);
     setenv("NCCL_COMM_DUMP_ENABLE_PROCESS_GLOBAL_ERRORS", "True", 1);
     setenv("NCCL_IB_ASYNC_EVENT_LOOP", "ctran", 1);
     setenv("NCCL_ERROR_TRACE_ENABLE", "True", 0);
-    setenv("NCCL_CTRAN_ENABLE", "1", 0);
     // Initialize ctran::ibvwrap symbols so that wrap_ibv_event_type_str
     // (called from triageIbAsyncEvents) does not crash on a null function
     // pointer. ibverbx::ibvInit() only initializes ibverbx::ibvSymbols,
@@ -77,14 +74,13 @@ class MockIbVerbsWrapper : public IVerbsWrapper {
 };
 
 // CtranIbTest is instantiated per test.
-class CtranIbTest : public NcclxBaseTest {
+class CtranIbTest : public ctran::CtranDistTestFixture {
  public:
   CtranIbTest() = default;
   void SetUp() override {
-    NcclxBaseTest::SetUp();
-    this->commDeprecated = createNcclComm(
-        globalRank, numRanks, localRank, false, nullptr, server.get());
-    this->comm = this->commDeprecated->ctranComm_.get();
+    ctran::CtranDistTestFixture::SetUp();
+    ctranComm_ = makeCtranComm();
+    this->comm = ctranComm_.get();
     this->ctrlMgr = std::make_unique<CtranCtrlManager>();
     auto s = CtranIbSingleton::getInstance();
     CHECK_VALID_IB_SINGLETON(s);
@@ -95,11 +91,9 @@ class CtranIbTest : public NcclxBaseTest {
     auto s = CtranIbSingleton::getInstance();
     CHECK_VALID_IB_SINGLETON(s);
     s->verbsUtils->setVerbs<VerbsWrapper>();
-    ncclCommSetAsyncError(this->commDeprecated, ncclSuccess);
-    finalizeNcclComm(globalRank, server.get());
-    NCCLCHECK_TEST(ncclCommDestroy(this->commDeprecated));
     this->ctrlMgr.reset();
-    NcclxBaseTest::TearDown();
+    ctranComm_.reset();
+    ctran::CtranDistTestFixture::TearDown();
   }
 
   void printTestDesc(const std::string& testName, const std::string& testDesc) {
@@ -113,26 +107,10 @@ class CtranIbTest : public NcclxBaseTest {
   MockIbVerbsWrapper* installedVerbs;
 
  protected:
+  std::unique_ptr<CtranComm> ctranComm_;
   CtranComm* comm{nullptr};
-  // TODO: remove this once refatoring is finished
-  // !!! DO NOT USE !!!
-  ncclComm_t commDeprecated{nullptr};
   std::unique_ptr<CtranCtrlManager> ctrlMgr{nullptr};
 };
-
-static std::unordered_map<std::string, std::string> pullNcclCommDump(
-    ncclComm_t comm) {
-  std::unordered_map<std::string, std::string> dump;
-  ncclResult_t res = ncclCommDump(comm, dump);
-  EXPECT_EQ(res, ncclSuccess);
-  // Check if all the values can be parsed as json entries
-  for (const auto& [key, val] : dump) {
-    folly::dynamic js;
-    EXPECT_NO_THROW(js = folly::parseJson(val));
-    std::cout << key << ": " << js << std::endl;
-  }
-  return dump;
-}
 
 /* function extracts the difference in timestamps between
  * badNics and
@@ -140,40 +118,29 @@ static std::unordered_map<std::string, std::string> pullNcclCommDump(
  * where n = occurrence
  */
 static int64_t extractDeltaTsBadNicStackTrace(
-    const std::unordered_map<std::string, std::string>& dump,
+    const ProcessGlobalErrorsUtil::State& state,
     const std::string& errMsg,
     const int occurrence) {
   int64_t timestampMsTrace = 0, timestampMsBadNic = 0;
-  for (const auto& [key, val] : dump) {
-    if (key == "processGlobalErrors") {
-      auto js = folly::parseJson(val);
 
-      // extract the timestamp from badNics
-      auto& badNics = js["badNics"];
-      // Iterate over the interface name in 'badNics'
-      for (auto& nicEntry : badNics.items()) {
-        // Iterate over the port numbers
-        for (auto& portEntry : nicEntry.second.items()) {
-          timestampMsBadNic = portEntry.second["timestampMs"].asInt();
-        }
-      }
-
-      // extract the timestamp for the specified event
-      auto& stackTraces = js["errorAndStackTraces"];
-      int count = 0;
-      // Iterate over the array
-      for (const auto& item : stackTraces) {
-        std::string errorMessage = item["errorMessage"].asString();
-        if (errorMessage.find(errMsg) != std::string::npos) {
-          if (count++ == (occurrence - 1)) {
-            timestampMsTrace = item["timestampMs"].asInt();
-            break;
-          }
-        }
-      }
-      break;
+  // extract the timestamp from badNics
+  for (const auto& [nicName, ports] : state.badNics) {
+    for (const auto& [port, nicError] : ports) {
+      timestampMsBadNic = nicError.timestampMs.count();
     }
   }
+
+  // extract the timestamp for the specified event
+  int count = 0;
+  for (const auto& entry : state.errorAndStackTraces) {
+    if (entry.errorMessage.find(errMsg) != std::string::npos) {
+      if (count++ == (occurrence - 1)) {
+        timestampMsTrace = entry.timestampMs.count();
+        break;
+      }
+    }
+  }
+
   return timestampMsBadNic - timestampMsTrace;
 }
 
@@ -255,7 +222,6 @@ TEST_F(CtranIbTest, PollError) {
   } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
-  pullNcclCommDump(this->commDeprecated);
   s->stopIbAsyncEventHandler();
 }
 
@@ -311,7 +277,6 @@ TEST_F(CtranIbTest, AsyncEventFound) {
 
   // Fatal events are recorded in process global errors via
   // ProcessGlobalErrorsUtil::setNic
-  auto dump = pullNcclCommDump(this->commDeprecated);
   s->stopIbAsyncEventHandler();
 
   // Verify the fatal event was recorded in process global errors
@@ -418,13 +383,12 @@ TEST_F(CtranIbTest, AsyncEventLinkFlap) {
   EXPECT_FALSE(state.badNics.empty())
       << "Expected badNics to be non-empty after link down timeout";
 
-  auto dump = pullNcclCommDump(this->commDeprecated);
   s->stopIbAsyncEventHandler();
 
   // there are two link down events in this test. Only the second
   // one is long enough to trigger a timeout.
   auto deltaTimestampMs =
-      extractDeltaTsBadNicStackTrace(dump, "Got async event: port error", 2);
+      extractDeltaTsBadNicStackTrace(state, "Got async event: port error", 2);
 
   // check that timeout is as configured
   std::cout << "Actual timeout was " << deltaTimestampMs << "ms" << std::endl;
@@ -518,17 +482,14 @@ TEST_F(CtranIbTest, LinkFlapZeroTimeout) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
 
-  ncclResult_t asyncStatus;
-  ncclCommGetAsyncError(this->commDeprecated, &asyncStatus);
-  EXPECT_EQ(asyncStatus, ncclSuccess);
+  EXPECT_EQ(this->comm->getAsyncResult(), commSuccess);
 
-  auto dump = pullNcclCommDump(this->commDeprecated);
   s->stopIbAsyncEventHandler();
 }
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new MPIEnvironment);
+  ::testing::AddGlobalTestEnvironment(new IbTestEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }
