@@ -140,7 +140,7 @@ commResult_t CtranWin::exchange() {
   return commSuccess;
 }
 
-bool CtranWin::allGatherPSupported() const {
+bool CtranWin::allGatherPSupported(CtranComm* comm) {
   if (!ctranInitialized(comm)) {
     return false;
   }

@@ -6,10 +6,12 @@
 #include <stdlib.h>
 #include <cmath>
 #include <cstddef>
+#include <optional>
 
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
+#include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
 
 // Compute the number of PAT reduction steps = log2(numRanks).
 static int patSteps(int numRanks) {
@@ -34,26 +36,26 @@ static float bf16Ulp(float value) {
 // Test fixture for ReduceScatterQuantize tests.
 // Sets NCCL_PAT_ENABLE=1 and NCCL_ALGO=PAT, creates an NCCL communicator
 // and a CUDA stream.
-class ReduceScatterQuantizeTest : public NcclxBaseTest {
+class ReduceScatterQuantizeTest : public NcclxBaseTestFixture {
  public:
   ReduceScatterQuantizeTest() = default;
   void SetUp() override {
-    setenv("NCCL_PAT_ENABLE", "1", 1);
-    setenv("NCCL_ALGO", "PAT", 1);
-
-    NcclxBaseTest::SetUp();
-    comm = createNcclComm(
-        globalRank, numRanks, localRank, false, nullptr, server.get());
+    NcclxBaseTestFixture::SetUp({
+        {"NCCL_PAT_ENABLE", "1"},
+        {"NCCL_ALGO", "PAT"},
+    });
+    commRAII_.emplace(globalRank, numRanks, localRank, bootstrap_.get());
+    comm = commRAII_->get();
     CUDACHECK_TEST(cudaStreamCreate(&stream));
   }
 
   void TearDown() override {
-    NCCLCHECK_TEST(ncclCommDestroy(comm));
     CUDACHECK_TEST(cudaStreamDestroy(stream));
-    NcclxBaseTest::TearDown();
+    commRAII_.reset();
+    NcclxBaseTestFixture::TearDown();
   }
 
  protected:
-  ncclComm_t comm;
+  std::optional<ncclx::test::NcclCommRAII> commRAII_;
   cudaStream_t stream;
 };

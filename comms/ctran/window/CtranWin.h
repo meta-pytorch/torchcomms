@@ -146,10 +146,13 @@ struct CtranWin {
         bufType_ == DevMemType::kCumem;
   }
 
-  // Check whether this window supports persistent allgather (allgatherP).
+  // Check whether persistent allgather (allgatherP) is supported.
   // Returns true if ctran is initialized and all peers have configured
-  // backends.
-  bool allGatherPSupported() const;
+  // backends. Static variant allows checking before a window is created.
+  static bool allGatherPSupported(CtranComm* comm);
+  bool allGatherPSupported() const {
+    return allGatherPSupported(comm);
+  }
 
  private:
   DevMemType bufType_{DevMemType::kCumem};

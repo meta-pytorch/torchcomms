@@ -8,33 +8,34 @@
 #include <nccl.h>
 #include <stdlib.h>
 #include <cstddef>
+#include <optional>
 #include "comms/ctran/Ctran.h"
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
+#include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 #include "comms/ctran/algos/ReduceScatter/ReduceScatterImpl.h"
 
-class ReduceScatterTest : public NcclxBaseTest {
+class ReduceScatterTest : public NcclxBaseTestFixture {
  public:
   ReduceScatterTest() = default;
   void SetUp() override {
-    NcclxBaseTest::SetUp();
-    comm = ncclx::test::createNcclComm(
-        globalRank, numRanks, localRank, bootstrap_.get());
+    NcclxBaseTestFixture::SetUp();
+    commRAII_.emplace(globalRank, numRanks, localRank, bootstrap_.get());
+    comm = commRAII_->get();
     CUDACHECK_TEST(cudaStreamCreate(&stream));
   }
 
   void TearDown() override {
-    NCCLCHECK_TEST(ncclCommDestroy(comm));
     CUDACHECK_TEST(cudaStreamDestroy(stream));
-    NcclxBaseTest::TearDown();
+    commRAII_.reset();
+    NcclxBaseTestFixture::TearDown();
   }
 
  protected:
-  ncclComm_t comm;
+  std::optional<ncclx::test::NcclCommRAII> commRAII_;
   cudaStream_t stream;
 };
 

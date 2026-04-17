@@ -67,7 +67,9 @@ using NcclxWindowAttr = ncclWinAttr_t;
 using NcclxWindow = void*;
 using NcclxWindowAccessType = int;
 using NcclxWindowAttr = void*;
-constexpr int NCCL_WIN_DEFAULT = 0;
+#ifndef NCCL_WIN_DEFAULT
+#define NCCL_WIN_DEFAULT 0x00
+#endif
 #endif
 
 /**
