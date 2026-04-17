@@ -99,6 +99,7 @@ HostWindow::HostWindow(
     if (nNvlPeers > 0) {
       auto nvlPeerSignalSize = getSignalBufferSize(
           static_cast<int>(nNvlPeers * config_.peerSignalCount));
+      nvlPeerSignalInboxSize_ = nvlPeerSignalSize;
       auto nvlBootstrap = transport_.nvl_bootstrap();
       if (nvlBootstrap) {
         nvlPeerSignalHandler_ = std::make_unique<GpuMemHandler>(
@@ -115,6 +116,7 @@ HostWindow::HostWindow(
 
     if (nIbgdaPeers > 0) {
       auto size = nIbgdaPeers * config_.peerSignalCount * sizeof(uint64_t);
+      ibgdaPeerSignalInboxSize_ = size;
       ibgdaPeerSignalLocalBuf_ = allocateIbgdaBuffer(size);
 
       ibgdaPeerSignalRemoteBufsDevice_ =
@@ -316,6 +318,21 @@ std::optional<NetworkLKey> HostWindow::registerLocalBuffer(
   auto ibgdaBuf = transport_.localRegisterIbgdaBuffer(ptr, size);
   registeredLocalBuffers_.push_back(ptr);
   return ibgdaBuf.lkey;
+}
+
+void HostWindow::reset_signals(cudaStream_t stream) const {
+  // Reset IBGDA signal inbox (written by remote NICs via RDMA atomics)
+  if (ibgdaPeerSignalLocalBuf_.ptr && ibgdaPeerSignalInboxSize_ > 0) {
+    CUDA_CHECK(cudaMemsetAsync(
+        ibgdaPeerSignalLocalBuf_.ptr, 0, ibgdaPeerSignalInboxSize_, stream));
+  }
+  // Reset NVL signal inbox (written by NVLink peers via store)
+  if (nvlPeerSignalHandler_ && nvlPeerSignalInboxSize_ > 0) {
+    auto* ptr = nvlPeerSignalHandler_->getLocalDeviceMemPtr();
+    if (ptr) {
+      CUDA_CHECK(cudaMemsetAsync(ptr, 0, nvlPeerSignalInboxSize_, stream));
+    }
+  }
 }
 
 void HostWindow::registerAndExchangeBuffer(void* ptr, std::size_t size) {

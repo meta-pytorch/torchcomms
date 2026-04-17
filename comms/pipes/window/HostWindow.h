@@ -171,6 +171,17 @@ class HostWindow {
   }
 
   /**
+   * reset_signals - Reset all signal inboxes to zero.
+   *
+   * Enqueues cudaMemsetAsync to zero both NVL and IBGDA signal inbox
+   * buffers on the given stream. Use before wait_signal_from in CUDA
+   * graph capture to ensure each replay starts with clean signal state.
+   *
+   * @param stream  CUDA stream for the async memset
+   */
+  void reset_signals(cudaStream_t stream) const;
+
+  /**
    * get_nvlink_address - Get the NVLink-mapped pointer to a peer's window buf.
    *
    * Returns the IPC-mapped device pointer for the given peer's registered
@@ -218,10 +229,12 @@ class HostWindow {
 
   // --- Per-peer signals (NVL side) ---
   std::unique_ptr<GpuMemHandler> nvlPeerSignalHandler_;
+  std::size_t nvlPeerSignalInboxSize_{0};
   std::unique_ptr<meta::comms::DeviceBuffer> nvlPeerSignalSpansDevice_;
 
   // --- Per-peer signals (IBGDA side) ---
   IbgdaLocalBuffer ibgdaPeerSignalLocalBuf_;
+  std::size_t ibgdaPeerSignalInboxSize_{0};
   std::unique_ptr<meta::comms::DeviceBuffer> ibgdaPeerSignalRemoteBufsDevice_;
 
   // --- Per-peer counters (IBGDA-only, local — no exchange) ---
