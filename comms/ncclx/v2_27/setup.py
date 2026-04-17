@@ -39,7 +39,7 @@ def get_cmdclass():
 ext_modules = [
     Pybind11Extension(
         "ncclx_trainer_context",
-        ["meta/py/wrapper.cc"],
+        ["../meta/py/wrapper.cc"],
         library_dirs=[LIBDIR],
         libraries=["nccl"],
     ),
