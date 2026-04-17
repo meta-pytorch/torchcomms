@@ -1703,14 +1703,12 @@ ncclResult_t ncclTopoGetLocalNetType(struct ncclTopoSystem* system, int type, in
     return ncclInternalError;
   }
 
-  int netsPerGpu = 0;
-  int policyCount = 0;
+  int localGpuCount = 0, netsPerGpu = 0, policyCount = 0;
+  int localGpus[NCCL_TOPO_MAX_NODES];
   enum netDevsPolicy policy;
   NCCLCHECK(ncclTopoGetNetDevsPolicy(&policy, &policyCount));
+  NCCLCHECK(ncclTopoGetLocal(system, type, localNets[0], GPU, localGpus, &localGpuCount, NULL));
   if (policy == NETDEVS_POLICY_AUTO) {
-    int localGpus[NCCL_TOPO_MAX_NODES];
-    int localGpuCount;
-    NCCLCHECK(ncclTopoGetLocal(system, type, localNets[0], GPU, localGpus, &localGpuCount, NULL));
     netsPerGpu = DIVUP(localNetCount, localGpuCount);
   } else if (policy == NETDEVS_POLICY_ALL) {
     netsPerGpu = localNetCount;
@@ -1721,9 +1719,11 @@ ncclResult_t ncclTopoGetLocalNetType(struct ncclTopoSystem* system, int type, in
     return ncclInternalError;
   }
 
-  int net = system->nodes[GPU].nodes[gpu].gpu.dev;
+  // Starting net is chosen to avoid collision and follow a similar pattern for all GPUs.
+  // localGpuCount GPUs share localNetCount NET devs; each GPU using netsPerGpu NET devs.
+  int net = system->nodes[GPU].nodes[gpu].gpu.dev % localGpuCount;
   if (isPow2(localNetCount)) net = mirrorBits(net, localNetCount);
-  net += channelId%(netsPerGpu);
+  net += channelId % (netsPerGpu);
   if (id) *id = system->nodes[type].nodes[localNets[net%localNetCount]].id;
   if (dev) *dev = system->nodes[type].nodes[localNets[net%localNetCount]].net.dev;
   return ncclSuccess;
