@@ -370,6 +370,7 @@ bool isP2PKernel(KernelConfig::KernelType kernelType) {
       KernelConfig::KernelType::SENDRECV,
       KernelConfig::KernelType::RECV_UNPACK,
       KernelConfig::KernelType::SENDRECV_UNPACK,
+      KernelConfig::KernelType::SENDRECV_P2P,
   };
 
   return p2pKernels.contains(kernelType);

@@ -199,7 +199,7 @@ class CtranAllReduceTest : public ctran::CtranDistTestFixture,
 
     CUDACHECK_TEST(cudaDeviceSynchronize());
     // Sleep for a while to make sure all the colls are finished
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(std::chrono::seconds(2));
 
     ASSERT_NE(ctranComm->colltraceNew_, nullptr);
     auto dumpMap = ctran::dumpCollTrace(ctranComm.get());

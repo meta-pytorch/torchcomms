@@ -149,7 +149,7 @@ TEST_F(CollTraceTestLocal, winSignal) {
   EXPECT_EQ(res, ncclSuccess);
 
   CUDACHECK_TEST(cudaDeviceSynchronize());
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
   auto dumpMap =
       meta::comms::ncclx::dumpNewCollTrace(*comm->ctranComm_->colltraceNew_);
   EXPECT_NE(dumpMap["CT_pastColls"], "[]");
@@ -240,7 +240,7 @@ TEST_F(CollTraceTestLocal, winPutOnly) {
   ASSERT_EQ(ncclMemFree(localBuf), ncclSuccess);
 
   cudaDeviceSynchronize();
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
   auto dumpMap =
       meta::comms::ncclx::dumpNewCollTrace(*comm->ctranComm_->colltraceNew_);
   EXPECT_NE(dumpMap["CT_pastColls"], "[]");

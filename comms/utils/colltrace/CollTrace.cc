@@ -504,6 +504,7 @@ void CollTrace::pollEagerEvents(
   }
 
   static constexpr auto kEpoch = ICollWaitEvent::system_clock_time_point{};
+  static constexpr auto kPollTimeout = std::chrono::milliseconds(10);
 
   for (auto& event : eagerEvents_) {
     if (event == nullptr) {
@@ -515,8 +516,7 @@ void CollTrace::pollEagerEvents(
     bool ended = timing.getCollEndTs() != kEpoch;
 
     if (!started) {
-      if (event->waitEvent->waitCollStart(config_.maxCheckCancelInterval)
-              .value_or(false)) {
+      if (event->waitEvent->waitCollStart(kPollTimeout).value_or(false)) {
         auto now = std::chrono::system_clock::now();
         auto startTimeRes = event->waitEvent->getCollStartTime();
         auto startTs = startTimeRes.hasValue() ? startTimeRes.value() : now;
@@ -534,8 +534,7 @@ void CollTrace::pollEagerEvents(
     }
 
     if (started && !ended) {
-      if (event->waitEvent->waitCollEnd(config_.maxCheckCancelInterval)
-              .value_or(false)) {
+      if (event->waitEvent->waitCollEnd(kPollTimeout).value_or(false)) {
         auto now = std::chrono::system_clock::now();
         auto endTimeRes = event->waitEvent->getCollEndTime();
         auto endTs = endTimeRes.hasValue() ? endTimeRes.value() : now;
