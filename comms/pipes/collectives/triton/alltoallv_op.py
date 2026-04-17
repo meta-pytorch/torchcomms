@@ -551,6 +551,14 @@ class AlltoallvOp:
 
     def teardown(self) -> None:
         """Release comms resources and all buffers.  Safe to call multiple times."""
+        # Barrier ensures all ranks have completed their kernel launches
+        # before any rank deregisters buffers. Without this, fast ranks
+        # can deregister recv_buf (RDMA-unmap) while slow ranks' kernels
+        # are still writing to it via one-sided put operations, corrupting
+        # NCCL state and causing subsequent window lifecycles to hang.
+        if self._window is not None:
+            torch.cuda.synchronize()
+            self.comm.barrier(False)
         # First deregister comms buffers
         if self._src_info is not None:
             self._window.deregister_local_buffer(self._src_info)
