@@ -52,15 +52,16 @@ TEST_P(ReduceScatterQuantizeTestParam, CorrectReduction) {
   CUDACHECK_TEST(cudaMalloc(&sendBufBf16, sendSizeBf16));
   CUDACHECK_TEST(cudaMalloc(&recvBufBf16, recvSizeBf16));
 
-  // Initialize send buffer with deterministic values
-  // Each rank r sends: sendBuf[chunk_for_rank_c][i] = r * numRanks + c + i *
-  // 0.001 This allows us to compute expected values after reduce scatter
+  // Base value between BF16 representable values 1.328125 and 1.3359375,
+  // chosen so every element exercises stochastic rounding.
+  const float kBase = 1.33f;
+  const float kBaseUlp = bf16Ulp(kBase);
+
   std::vector<float> hostSendBuf(count * numRanks);
   std::vector<__nv_bfloat16> hostSendBufBf16(count * numRanks);
   for (int c = 0; c < numRanks; c++) {
     for (size_t i = 0; i < count; i++) {
-      float val = static_cast<float>(globalRank * numRanks + c) +
-          static_cast<float>(i) * 0.001f;
+      float val = varianceTestValue(kBase, kBaseUlp, i, globalRank, c);
       hostSendBuf[c * count + i] = val;
       hostSendBufBf16[c * count + i] = __float2bfloat16(val);
     }
@@ -132,11 +133,8 @@ TEST_P(ReduceScatterQuantizeTestParam, CorrectReduction) {
   int quantizeUlpViolations = 0;
 
   for (size_t i = 0; i < count; i++) {
-    float expectedSum = static_cast<float>(numRanks) *
-            static_cast<float>(numRanks) * static_cast<float>(numRanks - 1) /
-            2.0f +
-        static_cast<float>(numRanks * globalRank) +
-        static_cast<float>(i) * 0.001f * static_cast<float>(numRanks);
+    float expectedSum =
+        varianceTestExpectedSum(kBase, kBaseUlp, i, globalRank, numRanks);
 
     float expected = expectedSum;
     if (redOp == ncclAvg) {
@@ -202,10 +200,10 @@ TEST_P(ReduceScatterQuantizeTestParam, CorrectReduction) {
       << ", max BF16 error: " << maxBf16Err;
 
   // Check 2: Quantized path's MAE should be no worse than the BF16 baseline.
-  EXPECT_LE(meanQuantizeErr, meanBf16Err * 1.5)
+  EXPECT_LE(meanQuantizeErr, meanBf16Err * 1.2)
       << "Rank " << globalRank << ": quantized mean absolute error ("
-      << meanQuantizeErr << ") exceeds BF16 baseline * 1.5 ("
-      << meanBf16Err * 1.5 << ")"
+      << meanQuantizeErr << ") exceeds BF16 baseline * 1.2 ("
+      << meanBf16Err * 1.2 << ")"
       << ". Max quantize error: " << maxQuantizeErr
       << ", max BF16 error: " << maxBf16Err
       << ", mean signed error: " << meanSignedErr;
@@ -222,9 +220,9 @@ INSTANTIATE_TEST_SUITE_P(
     ReduceScatterQuantizeTestParam,
     ::testing::Values(
         // redOp, count, seed
-        std::make_tuple(ncclSum, 1024, 0UL),
-        std::make_tuple(ncclSum, 8192, 42UL),
-        std::make_tuple(ncclSum, 65536, 12345UL)),
+        std::make_tuple(ncclSum, 16384, 0UL),
+        std::make_tuple(ncclSum, 65536, 42UL),
+        std::make_tuple(ncclSum, 262144, 12345UL)),
     [](const testing::TestParamInfo<ReduceScatterQuantizeTestParam::ParamType>&
            info) {
       const char* opName;

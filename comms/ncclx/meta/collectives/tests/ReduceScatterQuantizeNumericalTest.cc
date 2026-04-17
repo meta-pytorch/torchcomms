@@ -26,39 +26,29 @@ static uint64_t trialSeed(int trial, int rank) {
   return static_cast<uint64_t>(trial) * 9973 + static_cast<uint64_t>(rank) * 31;
 }
 
-// Compute a test value for a given (index, rank, chunk) triple.
-// base must not be exactly BF16-representable so that every element
-// exercises stochastic rounding. Perturbation scales are fractions of the
-// BF16 ULP at the base magnitude, ensuring values span multiple BF16
-// intervals across elements.
-static float
-varianceTestValue(float base, float ulp, size_t i, int rank, int chunk) {
-  return base + static_cast<float>(i) * (ulp / 16.0f) +
-      static_cast<float>(rank) * ulp + static_cast<float>(chunk) * (ulp * 2.0f);
-}
-
 // ---------------------------------------------------------------------------
 // MultiTrialVarianceReduction: prove that averaging multiple RSQ runs
 // (with different seeds) reduces error, while BF16 RS (deterministic) cannot
 // benefit from averaging.
 //
 // This test exploits the fundamental property that stochastic rounding errors
-// are independent across seeds. With K trials, the MAE should shrink by
-// ~1/sqrt(K). If RSQ is replaced by native BF16 RS, all trials produce
-// identical output, so averaging changes nothing and the assertion fails.
+// are independent across seeds. The deterministic (RNE) rounding error provides
+// a stable baseline. With K SR trials averaged, the MAE should drop well below
+// this baseline. BF16 RS is deterministic, so averaging produces no
+// improvement.
 // ---------------------------------------------------------------------------
 TEST_F(ReduceScatterQuantizeTest, MultiTrialVarianceReduction) {
-  const size_t count = 8192;
-  const int numTrials = 16;
+  const size_t count = 65536;
+  const int numTrials = 10000;
 
   // Base value between BF16 representable values 1.328125 and 1.3359375,
   // chosen so every element exercises stochastic rounding.
   const float kBase = 1.33f;
   const float kBaseUlp = bf16Ulp(kBase);
 
-  // With 16 trials, theoretical MAE reduction is 1/sqrt(16) = 0.25.
-  // Threshold 0.6 gives 2.4x safety margin against statistical variance.
-  const double kVarianceReductionThreshold = 0.6;
+  // Theoretical MAE reduction is 1/sqrt(numTrials).
+  // Add 1.3x safety margin against statistical variance.
+  const double kVarianceReductionThreshold = 1 / sqrt(numTrials) * 1.3;
 
   const size_t sendSize = count * numRanks * sizeof(float);
   const size_t recvSize = count * sizeof(float);
@@ -97,43 +87,36 @@ TEST_F(ReduceScatterQuantizeTest, MultiTrialVarianceReduction) {
   ASSERT_EQ(res, ncclSuccess);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
-  std::vector<float> hostRS(count);
+  std::vector<float> hostFp32Ref(count);
   CUDACHECK_TEST(
-      cudaMemcpy(hostRS.data(), recvRS, recvSize, cudaMemcpyDeviceToHost));
+      cudaMemcpy(hostFp32Ref.data(), recvRS, recvSize, cudaMemcpyDeviceToHost));
 
-  // ---- RSQ path: single trial + multi-trial averaging ----
-
-  uint64_t seed = trialSeed(0, globalRank);
-  CUDACHECK_TEST(
-      cudaMemcpy(seedBuf, &seed, sizeof(uint64_t), cudaMemcpyHostToDevice));
-  CUDACHECK_TEST(cudaMemset(recvBuf, 0, recvSize));
-  res = ncclReduceScatterQuantize(
-      sendBuf,
-      recvBuf,
-      count,
-      ncclFloat32,
-      ncclBfloat16,
-      ncclSum,
-      seedBuf,
-      comm,
-      stream);
+  // ---- BF16 RS: deterministic (RNE) rounding as stable baseline ----
+  // RNE error is constant across runs, providing a reproducible baseline
+  // to measure SR improvement against.
+  CUDACHECK_TEST(cudaMemset(recvBufBf16, 0, recvSizeBf16));
+  res = ncclReduceScatter(
+      sendBufBf16, recvBufBf16, count, ncclBfloat16, ncclSum, comm, stream);
   ASSERT_EQ(res, ncclSuccess);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
-  std::vector<float> hostSingle(count);
-  CUDACHECK_TEST(
-      cudaMemcpy(hostSingle.data(), recvBuf, recvSize, cudaMemcpyDeviceToHost));
+  std::vector<__nv_bfloat16> hostBf16Rne(count);
+  CUDACHECK_TEST(cudaMemcpy(
+      hostBf16Rne.data(), recvBufBf16, recvSizeBf16, cudaMemcpyDeviceToHost));
 
-  double singleTrialMAE = 0.0;
+  double rsBf16RneMAE = 0.0;
   for (size_t i = 0; i < count; i++) {
-    singleTrialMAE += std::abs(static_cast<double>(hostSingle[i]) - hostRS[i]);
+    rsBf16RneMAE += std::abs(
+        static_cast<double>(__bfloat162float(hostBf16Rne[i])) - hostFp32Ref[i]);
   }
-  singleTrialMAE /= count;
+  rsBf16RneMAE /= count;
 
-  // Run numTrials RSQ invocations with different seeds and accumulate in FP64.
+  // ---- RSQ path: multi-trial averaging should reduce error below
+  // the deterministic RNE baseline ----
   std::vector<double> accumulated(count, 0.0);
+  std::vector<double> accumulatedSq(count, 0.0);
   for (int t = 0; t < numTrials; t++) {
-    seed = trialSeed(t, globalRank);
+    uint64_t seed = trialSeed(t, globalRank);
     CUDACHECK_TEST(
         cudaMemcpy(seedBuf, &seed, sizeof(uint64_t), cudaMemcpyHostToDevice));
     CUDACHECK_TEST(cudaMemset(recvBuf, 0, recvSize));
@@ -155,55 +138,69 @@ TEST_F(ReduceScatterQuantizeTest, MultiTrialVarianceReduction) {
     CUDACHECK_TEST(cudaMemcpy(
         hostTrial.data(), recvBuf, recvSize, cudaMemcpyDeviceToHost));
     for (size_t i = 0; i < count; i++) {
-      accumulated[i] += static_cast<double>(hostTrial[i]);
+      double val = static_cast<double>(hostTrial[i]);
+      accumulated[i] += val;
+      accumulatedSq[i] += val * val;
     }
   }
 
   double averagedMAE = 0.0;
   for (size_t i = 0; i < count; i++) {
     double avg = accumulated[i] / numTrials;
-    averagedMAE += std::abs(avg - static_cast<double>(hostRS[i]));
+    averagedMAE += std::abs(avg - static_cast<double>(hostFp32Ref[i]));
   }
   averagedMAE /= count;
 
-  double rsqRatio = singleTrialMAE > 0 ? averagedMAE / singleTrialMAE : 0.0;
+  double rsqRatio = rsBf16RneMAE > 0 ? averagedMAE / rsBf16RneMAE : 0.0;
   printf(
-      "Rank %d: MultiTrialVarianceReduction (RSQ): singleMAE=%.10f, "
+      "Rank %d: MultiTrialVarianceReduction (RSQ): rsBf16RneMAE=%.10f, "
       "averagedMAE=%.10f, ratio=%.4f\n",
       globalRank,
-      singleTrialMAE,
+      rsBf16RneMAE,
       averagedMAE,
       rsqRatio);
 
-  EXPECT_LT(averagedMAE, singleTrialMAE * kVarianceReductionThreshold)
+  EXPECT_LT(averagedMAE, rsBf16RneMAE * kVarianceReductionThreshold)
       << "Rank " << globalRank << ": averaging " << numTrials
-      << " RSQ trials did not reduce MAE. ratio=" << rsqRatio;
+      << " RSQ trials did not reduce MAE below deterministic baseline. "
+      << "ratio=" << rsqRatio;
 
-  // ---- BF16 RS path: verify that native BF16 RS cannot pass this test ----
-  // BF16 RS is deterministic — all trials produce identical output, so
-  // averaging cannot reduce error.
-
-  CUDACHECK_TEST(cudaMemset(recvBufBf16, 0, recvSizeBf16));
-  res = ncclReduceScatter(
-      sendBufBf16, recvBufBf16, count, ncclBfloat16, ncclSum, comm, stream);
-  ASSERT_EQ(res, ncclSuccess);
-  CUDACHECK_TEST(cudaDeviceSynchronize());
-
-  std::vector<__nv_bfloat16> hostSingleBf16(count);
-  CUDACHECK_TEST(cudaMemcpy(
-      hostSingleBf16.data(),
-      recvBufBf16,
-      recvSizeBf16,
-      cudaMemcpyDeviceToHost));
-
-  double bf16SingleMAE = 0.0;
+  // Per-element unbiasedness check: the sample mean should be consistent
+  // with the FP32 reference within a confidence interval. Uses 6-sigma
+  // threshold giving P(false positive) ≈ 2e-9 per element, ≈~10⁻⁴ expected
+  // across 65536 elements. Increasing numTrials tightens the interval
+  // (detects smaller biases) without increasing false positive rate.
+  const double kZScore = 6.0;
+  size_t numOutliers = 0;
   for (size_t i = 0; i < count; i++) {
-    bf16SingleMAE += std::abs(
-        static_cast<double>(__bfloat162float(hostSingleBf16[i])) - hostRS[i]);
+    double mean = accumulated[i] / numTrials;
+    double meanSq = accumulatedSq[i] / numTrials;
+    double variance = meanSq - mean * mean;
+    double stderr = std::sqrt(std::max(variance, 0.0) / numTrials);
+    double avgErr = std::abs(mean - static_cast<double>(hostFp32Ref[i]));
+    if (avgErr > kZScore * stderr) {
+      if (numOutliers < 10) {
+        printf(
+            "Rank %d: per-element unbiasedness check failed at index %zu: "
+            "avgErr=%.10e, %.1f-sigma threshold=%.10e, stderr=%.10e\n",
+            globalRank,
+            i,
+            avgErr,
+            kZScore,
+            kZScore * stderr,
+            stderr);
+      }
+      numOutliers++;
+    }
   }
-  bf16SingleMAE /= count;
 
-  // Run BF16 RS numTrials times and accumulate (all trials are identical).
+  EXPECT_EQ(numOutliers, 0)
+      << "Rank " << globalRank << ": Per-element unbiasedness check failed. "
+      << numOutliers << " / " << count << " elements exceeded " << kZScore
+      << "-sigma confidence interval over " << numTrials << " trials.";
+
+  // ---- BF16 RS negative control: deterministic RS cannot benefit from
+  // averaging since all trials produce identical output ----
   std::vector<double> bf16Accumulated(count, 0.0);
   for (int t = 0; t < numTrials; t++) {
     CUDACHECK_TEST(cudaMemset(recvBufBf16, 0, recvSizeBf16));
@@ -227,23 +224,23 @@ TEST_F(ReduceScatterQuantizeTest, MultiTrialVarianceReduction) {
   double bf16AveragedMAE = 0.0;
   for (size_t i = 0; i < count; i++) {
     double avg = bf16Accumulated[i] / numTrials;
-    bf16AveragedMAE += std::abs(avg - static_cast<double>(hostRS[i]));
+    bf16AveragedMAE += std::abs(avg - static_cast<double>(hostFp32Ref[i]));
   }
   bf16AveragedMAE /= count;
 
-  double bf16Ratio = bf16SingleMAE > 0 ? bf16AveragedMAE / bf16SingleMAE : 1.0;
+  double bf16Ratio = rsBf16RneMAE > 0 ? bf16AveragedMAE / rsBf16RneMAE : 1.0;
 
   printf(
-      "Rank %d: MultiTrialVarianceReduction (BF16): singleMAE=%.10f, "
+      "Rank %d: MultiTrialVarianceReduction (BF16): rsBf16RneMAE=%.10f, "
       "averagedMAE=%.10f, ratio=%.4f\n",
       globalRank,
-      bf16SingleMAE,
+      rsBf16RneMAE,
       bf16AveragedMAE,
       bf16Ratio);
 
   // BF16 RS is deterministic: averaging identical outputs does not reduce
   // error. Assert it does NOT pass the variance reduction threshold.
-  EXPECT_GE(bf16AveragedMAE, bf16SingleMAE * kVarianceReductionThreshold)
+  EXPECT_GE(bf16AveragedMAE, rsBf16RneMAE * kVarianceReductionThreshold)
       << "Rank " << globalRank
       << ": BF16 RS unexpectedly passed the variance reduction test. "
       << "ratio=" << bf16Ratio
