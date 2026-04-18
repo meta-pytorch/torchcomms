@@ -15,6 +15,7 @@
 #include "comms/pipes/window/DeviceWindow.cuh"
 #include "comms/pipes/window/HostWindow.h"
 #endif
+#include "comms/utils/CudaRAII.h"
 #include "comms/utils/logger/LogUtils.h"
 
 using ctran::window::RemWinInfo;
@@ -99,6 +100,7 @@ commResult_t CtranWin::exchange() {
         winDataPtr, dataRegHdl, remoteUserBufs, remoteUserBufAccessKeys));
   }
 
+  auto signalBytes = signalSize * sizeof(uint64_t);
   for (auto r = 0; r < nRanks; r++) {
     remWinInfo[r].dataBytes = allRankSizes[r];
     if (allocDataBuf_) {
@@ -106,11 +108,16 @@ commResult_t CtranWin::exchange() {
       remWinInfo[r].dataRkey = remoteBaseBufAccessKeys[r];
       remWinInfo[r].signalAddr = reinterpret_cast<uint64_t*>(
           reinterpret_cast<size_t>(remoteBaseBufs[r]) + allRankSizes[r]);
+      remWinInfo[r].graphSignalAddr = reinterpret_cast<uint64_t*>(
+          reinterpret_cast<size_t>(remoteBaseBufs[r]) + allRankSizes[r] +
+          signalBytes);
       remWinInfo[r].signalRkey = remoteBaseBufAccessKeys[r];
     } else {
       remWinInfo[r].dataAddr = remoteUserBufs[r];
       remWinInfo[r].dataRkey = remoteUserBufAccessKeys[r];
       remWinInfo[r].signalAddr = reinterpret_cast<uint64_t*>(remoteBaseBufs[r]);
+      remWinInfo[r].graphSignalAddr = reinterpret_cast<uint64_t*>(
+          reinterpret_cast<size_t>(remoteBaseBufs[r]) + signalBytes);
       remWinInfo[r].signalRkey = remoteBaseBufAccessKeys[r];
     }
   }
@@ -171,7 +178,9 @@ commResult_t CtranWin::allocate(void* userBufPtr) {
   void* addr = nullptr;
   CUmemGenericAllocationHandle allocHandle;
   auto signalBytes = signalSize * sizeof(uint64_t);
-  size_t allocSize = allocDataBuf_ ? dataBytes + signalBytes : signalBytes;
+  auto graphSignalBytes = signalBytes;
+  size_t allocSize = allocDataBuf_ ? dataBytes + signalBytes + graphSignalBytes
+                                   : signalBytes + graphSignalBytes;
   if (isGpuMem()) {
     FB_COMMCHECK(
         utils::commCuMemAlloc(
@@ -196,9 +205,36 @@ commResult_t CtranWin::allocate(void* userBufPtr) {
     winDataPtr = addr;
     winSignalPtr =
         reinterpret_cast<uint64_t*>(reinterpret_cast<size_t>(addr) + dataBytes);
+    winGraphSignalPtr = reinterpret_cast<uint64_t*>(
+        reinterpret_cast<size_t>(addr) + dataBytes + signalBytes);
   } else {
     winDataPtr = userBufPtr;
     winSignalPtr = reinterpret_cast<uint64_t*>(reinterpret_cast<size_t>(addr));
+    winGraphSignalPtr = reinterpret_cast<uint64_t*>(
+        reinterpret_cast<size_t>(addr) + signalBytes);
+  }
+
+  {
+    meta::comms::StreamCaptureModeGuard captureGuard{
+        cudaStreamCaptureModeRelaxed};
+    // Allocate replay counter in mapped pinned host memory. Accessible from:
+    //   - GPU kernels (NVL: atomicAdd to increment, WaitSignal: load to read)
+    //   - CPU GPE thread (IB: direct pointer read for RDMA atomicSet value)
+    // Initialized to 0; gives each graph replay a unique monotonic signal
+    // value without needing signal resets.
+    FB_CUDACHECK(cudaHostAlloc(
+        &graphReplayCounter, sizeof(uint64_t), cudaHostAllocMapped));
+    *graphReplayCounter = 0;
+
+    // Zero-initialize both signal buffers.
+    // commCuMemAlloc (cuMemCreate/cuMemMap) does NOT zero memory.
+    // The graph signal buffer must start at 0 so the spinning kernel wait
+    // blocks correctly on first replay.
+    if (isGpuMem()) {
+      FB_CUDACHECK(cudaMemset(winSignalPtr, 0, signalBytes + graphSignalBytes));
+    } else {
+      memset(winSignalPtr, 0, signalBytes + graphSignalBytes);
+    }
   }
 
   CLOGF_SUBSYS(
@@ -291,6 +327,10 @@ commResult_t CtranWin::free() {
   hostWindow_.reset();
 #endif
 
+  if (graphReplayCounter) {
+    cudaFreeHost(graphReplayCounter);
+    graphReplayCounter = nullptr;
+  }
   freeMem(winBasePtr);
 
   return commSuccess;
