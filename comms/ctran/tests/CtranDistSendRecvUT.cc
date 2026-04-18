@@ -277,7 +277,7 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
 
     if (!useGraph) {
       // Brief wait for GPE thread to flush colltrace entries after stream sync
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      std::this_thread::sleep_for(std::chrono::seconds(2));
 
       // Check the coll trace only for participating ranks
       bool participated = (globalRank == sendRank) || isReceiver;

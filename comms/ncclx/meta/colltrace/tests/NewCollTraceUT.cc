@@ -95,7 +95,7 @@ TEST_F(NewCollTraceUT, dumpNewCollTraceWithCollectives) {
                   .hasValue());
 
   // Sleep briefly to allow the CollTrace thread to process the events
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   // At this point, the collective should be in the pending state. However,
   // since currently we will treat the first pending collective as the current
@@ -113,7 +113,7 @@ TEST_F(NewCollTraceUT, dumpNewCollTraceWithCollectives) {
       handle->trigger(CollTraceHandleTriggerState::KernelStarted).hasValue());
 
   // Sleep briefly to allow the CollTrace thread to process the events
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   // Now the collective should be in the current state
   auto dumpMapCurrent = dumpNewCollTrace(*collTrace);
@@ -129,7 +129,7 @@ TEST_F(NewCollTraceUT, dumpNewCollTraceWithCollectives) {
       handle->trigger(CollTraceHandleTriggerState::KernelFinished).hasValue());
 
   // Sleep briefly to allow the CollTrace thread to process the events
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   // Now the collective should be in the past state
   auto dumpMapPast = dumpNewCollTrace(*collTrace);

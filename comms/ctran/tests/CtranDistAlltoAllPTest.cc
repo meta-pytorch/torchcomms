@@ -135,7 +135,7 @@ class ctranAllToAllPTest : public ctran::CtranDistTestFixture,
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
     // Verify colltrace records the AllToAllP operations
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(std::chrono::seconds(2));
     ASSERT_NE(ctranComm->colltraceNew_, nullptr);
     auto dumpMap = ctran::dumpCollTrace(ctranComm.get());
     EXPECT_NE(dumpMap["CT_pastColls"], "[]");

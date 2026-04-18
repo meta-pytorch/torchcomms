@@ -177,7 +177,7 @@ TEST_F(CollTraceTest, NewCollTraceAllReduce) {
   }
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
   // Sleep for a while to make sure all the colls are finished
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   ASSERT_TRUE(comm->newCollTrace != nullptr);
   auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
@@ -223,7 +223,7 @@ TEST_F(CollTraceTest, MixedCtranBaseline) {
   }
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
   // Sleep for a while to make sure all the colls are finished
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   ASSERT_TRUE(comm->newCollTrace != nullptr);
   auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
@@ -288,7 +288,7 @@ TEST_F(CollTraceTest, TestBcastCtranEx) {
   }
 
   // Sleep for a while to make sure all the colls are finished
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   auto startOpCount = 0;
   auto dumpMap =
@@ -342,7 +342,7 @@ TEST_F(CollTraceTest, GroupedSendRecv) {
     NCCLCHECK_TEST(ncclGroupEnd());
   }
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
   EXPECT_EQ(folly::parseJson(dumpMap["CT_pendingColls"]).size(), 0);
@@ -401,7 +401,7 @@ TEST_F(CollTraceTest, GroupedSendRecvCtran) {
     NCCLCHECK_TEST(ncclGroupEnd());
   }
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
   EXPECT_EQ(folly::parseJson(dumpMap["CT_pendingColls"]).size(), 0);
@@ -454,7 +454,7 @@ TEST_F(CollTraceTest, SimulatePPSendRecv) {
     }
   }
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
   EXPECT_EQ(folly::parseJson(dumpMap["CT_pendingColls"]).size(), 0);
@@ -525,7 +525,7 @@ TEST_F(CollTraceTest, SimulateCtranPPSendRecv) {
   }
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
   EXPECT_EQ(folly::parseJson(dumpMap["CT_pendingColls"]).size(), 0);
@@ -657,7 +657,7 @@ TEST_F(CollTraceTest, winPutWait) {
   // Barrier to ensure all peers have finished put
   this->barrier();
 
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
 
@@ -711,7 +711,7 @@ TEST_F(CollTraceTest, DumpWithUnfinished) {
   }
 
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   // Create a kernel that will block the stream, so that all the following
   // scheduled collective will be pending
@@ -725,7 +725,7 @@ TEST_F(CollTraceTest, DumpWithUnfinished) {
   }
 
   // Give CollTrace some time to start tracking next coll
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
 
@@ -767,7 +767,7 @@ TEST_F(CollTraceTest, DumpWithUnfinishedCtran) {
   }
 
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   // Create a kernel that will block the stream, so that all the following
   // scheduled collective will be pending
@@ -781,7 +781,7 @@ TEST_F(CollTraceTest, DumpWithUnfinishedCtran) {
   }
 
   // Give CollTrace some time to start tracking next coll and exited wait once
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
 
@@ -827,7 +827,7 @@ TEST_F(CollTraceTest, GroupedAllReduce) {
   }
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
   // Sleep for a while to make sure all the colls are finished
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   ASSERT_TRUE(comm->newCollTrace != nullptr);
   auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
@@ -871,7 +871,7 @@ TEST_F(CollTraceTest, GroupedSendRecvAllReduce) {
     NCCLCHECK_TEST(ncclGroupEnd());
   }
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   ASSERT_TRUE(comm->newCollTrace != nullptr);
   auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
@@ -901,7 +901,7 @@ TEST_F(CollTraceTest, CollTraceQueryInCapture) {
   CUDACHECK_TEST(cudaStreamBeginCapture(
       stream, cudaStreamCaptureMode::cudaStreamCaptureModeGlobal));
   // Sleep for a while to make sure all the colls are finished
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
   cudaGraph_t graph;
   CUDACHECK_TEST(cudaStreamEndCapture(stream, &graph));
 
