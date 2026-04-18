@@ -143,6 +143,19 @@ commResult_t AlgoImpl::execPipeline(
   const auto myRank = statex->rank();
   const auto nNodes = statex->nNodes();
 
+  if (nLocalRanks > 1 && nRanks % nLocalRanks != 0) {
+    FB_ERRORRETURN(
+        commInvalidUsage,
+        "AllGatherP pipeline requires nRanks ({}) to be evenly divisible by "
+        "nLocalRanks ({}), nNodes={}, nvlFabricEnabled={}, "
+        "nvlFabricCliqueEnabled={}",
+        nRanks,
+        nLocalRanks,
+        nNodes,
+        statex->nvlFabricEnabled(),
+        statex->nvlFabricCliqueEnabled());
+  }
+
   CTRAN_COLL_INFO(
       AlgoImpl::algoName(myAlgo),
       sendbuff,
