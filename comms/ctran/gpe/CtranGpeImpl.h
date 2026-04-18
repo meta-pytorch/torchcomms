@@ -257,7 +257,6 @@ class OrderedWorkStreamGuard {
   unsigned long long lastCaptureId_{0};
   bool everCaptured_{false};
   cudaStream_t lastUserStream_{nullptr};
-  bool lastWasCaptured_{false};
   cudaGraphNode_t lastRecordNode_{};
 
   const CommLogData* logMetaData_{nullptr};
