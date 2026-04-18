@@ -7,6 +7,7 @@
 #include <folly/Unit.h>
 #include <folly/stop_watch.h>
 
+#include "comms/utils/CudaRAII.h"
 #include "comms/utils/checks.h"
 #include "comms/utils/colltrace/CudaEventPool.h"
 #include "comms/utils/cvars/nccl_cvars.h" // @manual=fbcode//comms/utils/cvars:ncclx-cvars
@@ -17,6 +18,7 @@ namespace {
 CommsMaybe<bool> waitCudaEventFinish(
     const CudaEvent& event,
     std::chrono::milliseconds sleepTimeMs) {
+  StreamCaptureModeGuard guard{cudaStreamCaptureModeRelaxed};
   // async polling case, query cuda whether event is ready every
   // NCCL_COLLTRACE_CHECK_INTERVAL_MS milliseconds
   folly::stop_watch<std::chrono::milliseconds> timer;
