@@ -37,7 +37,9 @@ struct StagedTransferConfig {
   size_t stagingBufSize = 4 * 1024 * 1024; // 4 MB
 
   // Timeout for waiting on the recvReady flag or CQ poll between chunks.
-  std::chrono::milliseconds chunkTimeout{30000};
+  // TODO: 300s is temporary to unblock prototyping. Use a much smaller
+  // timeout for production runs.
+  std::chrono::milliseconds chunkTimeout{300000};
 };
 
 // Information exchanged between server and client during setupLocalTransport()
