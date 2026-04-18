@@ -179,13 +179,25 @@ commResult_t OrderedWorkStreamGuard::doAcquire(
     return commSuccess; // first submit ever
   }
 
-  if (userStream == lastUserStream_ && lastWasCaptured_ == isCapturing &&
-      !isCapturing) {
-    return commSuccess; // same stream, same mode, no capture -- ordering
-                        // implicit
+  if (!isCapturing) {
+    if (everCaptured_) {
+      // Graph replays bypass submit(), so we cannot know for certain whether
+      // the previous operation was a graph replay or eager. CPU-side sync
+      // ensures any in-flight graph host node (which enqueues a GPE command)
+      // has fired before the caller can cmdEnqueue. Without this, the eager
+      // command lands in the GPE queue first and the single-threaded GPE
+      // deadlocks.
+      FB_CUDACHECK(cudaEventSynchronize(execModeSyncEvent_));
+    } else if (userStream != lastUserStream_) {
+      // Cross-stream eager, no graphs: GPU-side ordering only.
+      // We don't make any thread-safety guarantees for submit()
+      // so this is sufficient.
+      FB_COMMCHECK(doWait());
+    }
+    return commSuccess;
   }
 
-  if (isCapturing && !isNewCapture && lastWasCaptured_) {
+  if (!isNewCapture) {
     // Intra-capture cross-stream: add the RECORD node from the previous
     // doRelease as a capture dependency of this stream. This creates an
     // explicit graph edge, since cudaStreamWaitEvent cannot see RECORD
@@ -223,7 +235,6 @@ commResult_t OrderedWorkStreamGuard::doRelease(
   }
 
   lastUserStream_ = userStream;
-  lastWasCaptured_ = isCapturing;
 
   return commSuccess;
 }
@@ -308,6 +319,22 @@ commResult_t CtranGpe::Impl::submit(
   cudaStream_t launchStream = kernelConfig.stream;
   std::optional<OrderedWorkStreamGuard::Scope> wsScope;
 
+  // Acquire the work-stream baton before adding the host node so that
+  // during graph replay the host node (which enqueues a GPE command) only
+  // fires after the previous operation's kernel has completed. Without this
+  // ordering, a subsequent eager submit could enqueue its GPE command before
+  // the graph's host node fires, causing the single-threaded GPE to deadlock
+  // (spinning on the eager kernel's KERNEL_STARTED while the graph's command
+  // is stuck behind it in the queue).
+  auto maybeAcquireWorkStreamScope = [&]() {
+    if (!kernelConfig.canConcurrent) {
+      wsScope = ws_.acquire(kernelConfig.stream, streamCaptureInfo);
+      FB_COMMCHECK(wsScope->status());
+      launchStream = wsScope->stream();
+    }
+    return commSuccess;
+  };
+
   size_t opGroupSize = 0;
   // Enqueue op to gpeThread if any op is appended, or if there is a
   // postKernelCleanup that needs to run after the kernel completes.
@@ -329,6 +356,9 @@ commResult_t CtranGpe::Impl::submit(
       }
       cmd->coll.comm = comm;
     }
+
+    maybeAcquireWorkStreamScope();
+
     if (isCapturing) {
       FB_COMMCHECK(preLaunchGraphPrepare(cmd, graphPrepareFn));
       cmd->persistent = true;
@@ -351,6 +381,8 @@ commResult_t CtranGpe::Impl::submit(
     } else {
       cmdEnqueue(cmd);
     }
+  } else {
+    maybeAcquireWorkStreamScope();
   }
 
   // For the no-cmd path during graph capture, retain cleanup on the graph.
@@ -396,12 +428,6 @@ commResult_t CtranGpe::Impl::submit(
           res,
           fail);
     }
-  }
-
-  if (!kernelConfig.canConcurrent) {
-    wsScope = ws_.acquire(kernelConfig.stream, streamCaptureInfo);
-    FB_COMMCHECK(wsScope->status());
-    launchStream = wsScope->stream();
   }
 
   if (NCCL_CTRAN_ENALBE_CLUSTER_KERNEL_LAUNCH) {
