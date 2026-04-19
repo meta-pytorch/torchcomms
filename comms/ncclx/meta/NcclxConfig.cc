@@ -214,3 +214,15 @@ Config::Config(const ncclConfig_t* config) {
 }
 
 } // namespace ncclx
+
+// C-style wrapper around the ncclx::Config parsing constructor.
+// Most NCCL code is C-based, so this function translates C++
+// exceptions into ncclResult_t error codes for the C callers.
+ncclResult_t ncclxParseCommConfig(ncclConfig_t* config) {
+  try {
+    config->ncclxConfig = new ncclx::Config(config);
+    return ncclSuccess;
+  } catch (const std::exception&) {
+    return ncclInvalidArgument;
+  }
+}
