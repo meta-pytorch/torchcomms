@@ -147,6 +147,10 @@ class CtranGpeCmd {
   std::shared_ptr<std::atomic_flag> cpuFlag{nullptr};
 
   bool persistent{false};
+  // Count of queued-but-not-yet-processed instances of this cmd. Used by
+  // cmdDestroy to wait for the GPE to drain stale queue entries before
+  // deleting the cmd.
+  std::atomic_uint32_t inFlight{0};
   CtranGpe* gpe{nullptr};
 
   std::optional<std::chrono::milliseconds> timeout{std::nullopt};
@@ -257,7 +261,6 @@ class OrderedWorkStreamGuard {
   unsigned long long lastCaptureId_{0};
   bool everCaptured_{false};
   cudaStream_t lastUserStream_{nullptr};
-  bool lastWasCaptured_{false};
   cudaGraphNode_t lastRecordNode_{};
 
   const CommLogData* logMetaData_{nullptr};
