@@ -21,7 +21,6 @@
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/utils/CudaWrap.h"
-#include "comms/testinfra/TestUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 
@@ -124,7 +123,7 @@ TEST_F(GlobalRegistrationTest, MultipleRegistrationsBeforeComm) {
 }
 
 /**
- * Test: Multi-segment registration via ncclMemAllocDisjoint.
+ * Test: Multi-segment registration via ctran::commMemAllocDisjoint.
  *
  * This test verifies that cacheSegment correctly handles disjoint memory
  * allocations (multiple physical segments mapped to a contiguous virtual
@@ -132,7 +131,8 @@ TEST_F(GlobalRegistrationTest, MultipleRegistrationsBeforeComm) {
  * feature in CUDACachingAllocator.
  *
  * The test:
- * 1. Allocates memory with ncclMemAllocDisjoint (creates 2 physical segments)
+ * 1. Allocates memory with ctran::commMemAllocDisjoint (creates 2 physical
+ * segments)
  * 2. Registers the full virtual range via global registration
  * 3. Verifies that pinRange discovers all physical segments
  * 4. Deregisters and frees the memory
@@ -144,7 +144,8 @@ TEST_F(GlobalRegistrationTest, MultiSegmentDisjointRegistration) {
   std::vector<TestMemSegment> segments;
   void* disjointBuf = nullptr;
 
-  NCCLCHECK_TEST(ncclMemAllocDisjoint(&disjointBuf, segmentSizes, segments));
+  COMMCHECK_TEST(
+      ctran::commMemAllocDisjoint(&disjointBuf, segmentSizes, segments));
   ASSERT_NE(disjointBuf, nullptr);
   ASSERT_EQ(segments.size(), 2) << "Should have 2 physical segments";
 
@@ -179,7 +180,7 @@ TEST_F(GlobalRegistrationTest, MultiSegmentDisjointRegistration) {
       << "Buffer should no longer be registered after deregistration";
 
   // Free the disjoint memory
-  NCCLCHECK_TEST(ncclMemFreeDisjoint(disjointBuf, segmentSizes));
+  COMMCHECK_TEST(ctran::commMemFreeDisjoint(disjointBuf, segmentSizes));
 }
 
 /**
@@ -199,7 +200,8 @@ TEST_F(GlobalRegistrationTest, MultiSegmentManyChunks) {
   std::vector<TestMemSegment> segments;
   void* disjointBuf = nullptr;
 
-  NCCLCHECK_TEST(ncclMemAllocDisjoint(&disjointBuf, segmentSizes, segments));
+  COMMCHECK_TEST(
+      ctran::commMemAllocDisjoint(&disjointBuf, segmentSizes, segments));
   ASSERT_NE(disjointBuf, nullptr);
   ASSERT_EQ(segments.size(), numSegments)
       << "Should have " << numSegments << " physical segments";
@@ -221,7 +223,7 @@ TEST_F(GlobalRegistrationTest, MultiSegmentManyChunks) {
   EXPECT_EQ(result, commSuccess);
 
   // Free the disjoint memory
-  NCCLCHECK_TEST(ncclMemFreeDisjoint(disjointBuf, segmentSizes));
+  COMMCHECK_TEST(ctran::commMemFreeDisjoint(disjointBuf, segmentSizes));
 }
 
 /**
