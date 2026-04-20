@@ -12,8 +12,8 @@
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 
 #include "comms/utils/CommsMaybeChecks.h"
+#include "comms/utils/GpuClockCalibration.h"
 #include "comms/utils/checks.h"
-#include "comms/utils/colltrace/GpuClockCalibration.h"
 #include "comms/utils/colltrace/GraphCollTraceHandle.h"
 #include "comms/utils/colltrace/GraphCollTraceState.h"
 #include "comms/utils/colltrace/GraphCudaWaitEvent.h"

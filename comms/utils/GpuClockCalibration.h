@@ -4,13 +4,17 @@
 
 #include <cuda_runtime.h>
 
-#include <chrono>
 #include <cstdint>
+
+#if not defined(__CUDACC__) and not defined(__HIPCC__)
+#include <chrono>
+#endif // not defined(__CUDACC__) and not defined(__HIPCC__)
 
 namespace meta::comms::colltrace {
 
 // One-time calibration point mapping globaltimer nanoseconds to system_clock.
 // Thread-safe; lazily initialized on first call.
+#if not defined(__CUDACC__) and not defined(__HIPCC__)
 struct GlobaltimerCalibration {
   uint64_t device_ns{};
   std::chrono::system_clock::time_point host_time;
@@ -24,6 +28,7 @@ struct GlobaltimerCalibration {
 
 // Launch a single-thread kernel that writes globaltimer() to *out.
 cudaError_t launchReadGlobaltimer(cudaStream_t stream, uint64_t* out);
+#endif // not defined(__CUDACC__) and not defined(__HIPCC__)
 
 #if defined(__CUDACC__) || defined(__HIPCC__)
 // Device-side globaltimer read. Returns nanoseconds since device boot.

@@ -20,10 +20,10 @@
 #include <gtest/gtest.h>
 
 #include "comms/testinfra/TestXPlatUtils.h"
+#include "comms/utils/GpuClockCalibration.h"
 #include "comms/utils/colltrace/CollTrace.h"
 #include "comms/utils/colltrace/CollTraceHandle.h"
 #include "comms/utils/colltrace/CudaWaitEvent.h"
-#include "comms/utils/colltrace/GpuClockCalibration.h"
 #include "comms/utils/colltrace/GraphCudaWaitEvent.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
