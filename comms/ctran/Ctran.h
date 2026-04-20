@@ -75,7 +75,10 @@ commResult_t ctranGroupEndHook(
     enum NCCL_SENDRECV_ALGO algo,
     std::optional<std::chrono::milliseconds> timeout = std::nullopt);
 
-bool ctranAllGatherSupport(CtranComm* comm, enum NCCL_ALLGATHER_ALGO algo);
+bool ctranAllGatherSupport(
+    CtranComm* comm,
+    enum NCCL_ALLGATHER_ALGO algo,
+    cudaStream_t stream = nullptr);
 commResult_t ctranAllGather(
     const void* sendbuff,
     void* recvbuff,
