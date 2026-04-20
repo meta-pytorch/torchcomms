@@ -95,10 +95,17 @@ _ITERATION_TENSOR_CACHE: dict = {}
 
 
 def _get_iteration_tensor(world_size: int, device: torch.device) -> torch.Tensor:
-    """Return a cached int32 scalar tensor for iteration counting.
+    """Return a cached int64 scalar tensor for iteration counting.
 
     The tensor is allocated once on first use and reused across all
     subsequent calls. The iteration value grows monotonically.
+
+    Uses int64 to prevent overflow in signal value calculations. The
+    kernel computes ``sender_bpp * (iteration + 1)`` which is passed to
+    ``wait_signal_from`` and compared against uint64 signal memory. With
+    int32, this expression overflows after ~134M iterations (with
+    blocks_per_peer=16), causing the sign-extended value to become a huge
+    uint64 that can never be reached — a silent deadlock.
 
     IMPORTANT: This must be called BEFORE GIN (GPU-Initiated NCCL) is
     activated via get_device_window(). Once GIN is active, regular CUDA
@@ -106,7 +113,7 @@ def _get_iteration_tensor(world_size: int, device: torch.device) -> torch.Tensor
     """
     key = (device, world_size)
     if key not in _ITERATION_TENSOR_CACHE:
-        _ITERATION_TENSOR_CACHE[key] = torch.zeros(1, dtype=torch.int32, device=device)
+        _ITERATION_TENSOR_CACHE[key] = torch.zeros(1, dtype=torch.int64, device=device)
     return _ITERATION_TENSOR_CACHE[key]
 
 
@@ -140,7 +147,7 @@ def _reset_iteration_counter(world_size: int, device: torch.device) -> None:
     key = (device, world_size)
     if key in _ITERATION_TENSOR_CACHE:
         # Use a GIN-safe kernel to reset the counter
-        _fill_int32_kernel[(1,)](_ITERATION_TENSOR_CACHE[key], 0, N=1)
+        _fill_int64_kernel[(1,)](_ITERATION_TENSOR_CACHE[key], 0, N=1)
 
 
 @requires_torchcomms
@@ -162,14 +169,14 @@ def _increment_iteration_kernel(iteration_ptr):
 
 
 # Pre-allocated completion counters cache to avoid per-call CUDA allocator
-# overhead.  Keyed by (device, world_size) → torch.Tensor(int32).
+# overhead.  Keyed by (device, world_size) → torch.Tensor(int64).
 _COMPLETION_COUNTERS_CACHE: dict = {}
 
 
 @requires_torchcomms
 @triton.jit
-def _fill_int32_kernel(ptr, value, N: tl.constexpr):
-    """GIN-safe kernel to fill an int32 tensor with a scalar value."""
+def _fill_int64_kernel(ptr, value, N: tl.constexpr):
+    """GIN-safe kernel to fill an int64 tensor with a scalar value."""
     idx = tl.program_id(0)
     if idx < N:
         tl.store(ptr + idx, value)
@@ -212,7 +219,7 @@ def _fill_completion_counters_gin_safe(
     (cudaErrorHostMemoryAlreadyRegistered).  This function uses a Triton
     kernel which only does device-side stores and is GIN-safe.
     """
-    _fill_int32_kernel[(world_size,)](counters, value, N=world_size)
+    _fill_int64_kernel[(world_size,)](counters, value, N=world_size)
 
 
 def _fill_completion_counters_from_iteration(
@@ -232,7 +239,7 @@ def _fill_completion_counters_from_iteration(
     counters are reset uniformly to blocks_per_peer * iteration.
 
     Args:
-        counters: GPU tensor [world_size] of int32 counters.
+        counters: GPU tensor [world_size] of int64 counters.
         iteration_tensor: GPU scalar tensor containing iteration count.
         blocks_per_peer: Number of blocks per peer (constexpr upper bound).
         world_size: Number of ranks.
@@ -250,12 +257,16 @@ def _fill_completion_counters_from_iteration(
 
 
 def _get_completion_counters(world_size: int, device: torch.device) -> torch.Tensor:
-    """Return a cached int32 tensor of shape [world_size] on device.
+    """Return a cached int64 tensor of shape [world_size] on device.
 
     The tensor is allocated once (via torch.zeros) on first use and reused
     across all subsequent calls.  Counters grow monotonically with each
     iteration (no in-kernel reset) to avoid race conditions with CUDA
     block scheduling.
+
+    Uses int64 to match the iteration tensor dtype and prevent overflow
+    in the multi-block completion coordination logic, where counters
+    accumulate ``blocks_per_peer * iteration`` values.
 
     IMPORTANT: This must be called BEFORE GIN (GPU-Initiated NCCL) is
     activated via get_device_window().  Once GIN is active, regular CUDA
@@ -264,7 +275,7 @@ def _get_completion_counters(world_size: int, device: torch.device) -> torch.Ten
     key = (device, world_size)
     if key not in _COMPLETION_COUNTERS_CACHE:
         _COMPLETION_COUNTERS_CACHE[key] = torch.zeros(
-            world_size, dtype=torch.int32, device=device
+            world_size, dtype=torch.int64, device=device
         )
     return _COMPLETION_COUNTERS_CACHE[key]
 

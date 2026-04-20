@@ -423,7 +423,7 @@ class TestMonotonicSignalCounter(unittest.TestCase):
         counters = _get_completion_counters(world_size, device)
 
         # Counters should be zeros
-        expected = torch.zeros(world_size, dtype=torch.int32, device=device)
+        expected = torch.zeros(world_size, dtype=torch.int64, device=device)
         torch.testing.assert_close(counters, expected)
 
     @unittest.skipUnless(TRITON_AVAILABLE, "Triton not available")
