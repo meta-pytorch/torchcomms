@@ -15,11 +15,16 @@ if [ ! -d /sys/class/infiniband ] || [ -z "$(ls /sys/class/infiniband 2>/dev/nul
     export NCCL_CTRAN_BACKENDS="socket"
 fi
 
-cd "$(dirname "$0")/../tests/integration/py"
+TORCHCOMMS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+INTEGRATION_TEST_DIRS=$(find "$TORCHCOMMS_ROOT" -path '*/tests/integration/py' -type d | sort -u)
 
 run_tests () {
-    for file in *Test.py; do
-        torchrun --nnodes 1 --nproc_per_node 4 "$file" --verbose
+    for dir in $INTEGRATION_TEST_DIRS; do
+        for file in "$dir"/*Test.py; do
+            [ -f "$file" ] || continue
+            torchrun --nnodes 1 --nproc_per_node 4 "$file" --verbose
+        done
     done
 }
 
