@@ -73,6 +73,11 @@ CollTrace::CollTrace(
               config_.maxPendingQueueSize}),
       plugins_(std::move(plugins)) {
   if (NCCL_COLLTRACE_TRACE_CUDA_GRAPH) {
+    // Eagerly initialize the globaltimer calibration singleton now (outside
+    // graph capture) so it is ready when GraphCudaWaitEvent is constructed
+    // during capture.
+    GlobaltimerCalibration::get();
+
     // 2x the max plugin retention ensures the ring holds at least the last
     // max_retention collective entries (each collective has 1x start + 1x end
     // event). The ring ctor rounds up to the next power of 2.
