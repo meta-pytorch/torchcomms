@@ -1,227 +1,122 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include <cstdlib>
+#include <set>
 #include <string>
-#include <vector>
 
-#include <fmt/format.h>
-#include <glog/logging.h>
+#include <folly/init/Init.h>
 #include <gtest/gtest.h>
 
-#include "comms/testinfra/TestUtils.h"
+#include "comm.h"
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
+#include "comms/ncclx/meta/tests/NcclxBaseTest.h"
+#include "meta/hints/GlobalHints.h" // @manual
+#include "nccl.h"
 
-#include "comms/ctran/commstate/CommStateX.h"
-#include "meta/NcclxConfig.h"
-#include "param.h" // @manual
-
-#include "comms/utils/cvars/nccl_cvars.h"
-
-namespace ncclx {
-
-RankTopology
-createRankTopology(int rank, const std::string& host, const std::string& rtsw) {
-  RankTopology topo;
-  topo.rank = rank;
-  std::strcpy(topo.host, host.c_str());
-  std::strcpy(topo.rtsw, rtsw.c_str());
-  return topo;
-}
-
-class CommStateXTest : public ::testing::Test {
- protected:
+class CommStateXDistTest : public NcclxBaseTestFixture {
+ public:
   void SetUp() override {
-    initEnv();
+    NcclxBaseTestFixture::SetUp();
+    ASSERT_EQ(
+        ncclx::setGlobalHint(std::string(ncclx::HintKeys::kCommUseCtran), "1"),
+        ncclSuccess);
   }
 
-  void TearDown() override {}
+  void TearDown() override {
+    ncclx::resetGlobalHint(std::string(ncclx::HintKeys::kCommUseCtran));
+    ncclx::resetGlobalHint(std::string(ncclx::HintKeys::kCommNoLocal));
+    NcclxBaseTestFixture::TearDown();
+  }
 };
 
-static void fillDummyComm(ncclComm& comm, int numNvlDomain = 1) {
-  comm.rank = 0;
-  comm.nRanks = 16;
-  comm.cudaDev = 0;
-  comm.commHash = 123456789;
-  comm.config = NCCL_CONFIG_INITIALIZER;
-  ncclx::Hints dummyHints({{"commDesc", "default_pg:0"}});
-  comm.config.hints = &dummyHints;
-  ncclxParseCommConfig(&comm.config);
+TEST_F(CommStateXDistTest, CreateFromNcclComm) {
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
+  ASSERT_NE(comm.get(), nullptr);
+  ASSERT_TRUE(ctranInitialized(comm->ctranComm_.get()));
 
-  comm.localRank = 0;
-  comm.localRanks = 8 / numNvlDomain; // local ranks in the same NVL domain
-  comm.nNodes = comm.nRanks / comm.localRanks;
-  comm.rankToNode = new int[comm.nRanks];
-  comm.localRankToRank = new int[comm.localRanks];
-  comm.rankToLocalRank = new int[comm.nRanks];
-  comm.peerInfo = new struct ncclPeerInfo[comm.nRanks];
+  const auto* statex = comm->ctranComm_->statex_.get();
+  ASSERT_NE(statex, nullptr);
 
-  for (int i = 0; i < comm.nRanks; ++i) {
-    comm.rankToNode[i] = i / comm.localRanks;
-    comm.rankToLocalRank[i] = i % comm.localRanks;
-    snprintf(
-        comm.peerInfo[i].hostname,
-        kMaxHostNameLen,
-        "host%d",
-        // assign the same physical node for every numNvlDomain number of
-        // logical nodes
-        comm.rankToNode[i] / numNvlDomain);
+  EXPECT_EQ(statex->rank(), globalRank);
+  EXPECT_EQ(statex->nRanks(), numRanks);
+  EXPECT_EQ(statex->nLocalRanks(), numRanks);
+  EXPECT_EQ(statex->nNodes(), 1);
+
+  // Single node: all ranks share the same hostname
+  const std::string myHost = statex->host(globalRank);
+  EXPECT_FALSE(myHost.empty());
+  for (int r = 0; r < numRanks; r++) {
+    EXPECT_EQ(statex->host(r), myHost)
+        << "rank " << r << " should have same host on single node";
   }
 
-  for (int i = 0; i < comm.localRanks; ++i) {
-    comm.localRankToRank[i] = i;
-  }
-
-  comm.nChannels = 4;
-  for (int i = 0; i < comm.nChannels; ++i) {
-    // create a dummy channel
-    comm.channels[i] = ncclChannel();
-    comm.channels[i].ring = ncclRing();
-    comm.channels[i].ring.userRanks = new int[comm.nRanks];
-    for (int j = 0; j < comm.nRanks; ++j) {
-      comm.channels[i].ring.userRanks[j] = j;
-    }
+  // gPid (<host>:<pid>) should be unique across all ranks, verifying
+  // that each rank has a distinct PID (separate processes on same host)
+  std::set<std::string> gPids;
+  for (int r = 0; r < numRanks; r++) {
+    EXPECT_FALSE(statex->gPid(r).empty());
+    auto [it, inserted] = gPids.insert(statex->gPid(r));
+    EXPECT_TRUE(inserted) << "gPid collision at rank " << r << ": "
+                          << statex->gPid(r);
   }
 }
 
-TEST(CommStateXTest, CreateVNodeFromNcclComm) {
-  // Create a dummy ncclComm
-  ncclComm comm;
-  fillDummyComm(comm);
+TEST_F(CommStateXDistTest, CreateNoLocalFromNcclComm) {
+  // FIXME: replace with per-comm ncclx::Hints config once noLocal is
+  // supported as a per-comm hint field (global hints will be deprecated)
+  ASSERT_EQ(
+      ncclx::setGlobalHint(std::string(ncclx::HintKeys::kCommNoLocal), "1"),
+      ncclSuccess);
 
-  // Create CommStateX from ncclComm with noLocal mode
-  // Expect CommStateX to generate nLocalRanks=1 topo
-  int nLocalRanks = 2;
-  auto env1 =
-      EnvRAII(NCCL_COMM_STATE_DEBUG_TOPO, NCCL_COMM_STATE_DEBUG_TOPO::vnode);
-  auto env2 =
-      EnvRAII(NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS, nLocalRanks);
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
+  ASSERT_NE(comm.get(), nullptr);
+  ASSERT_TRUE(ctranInitialized(comm->ctranComm_.get()));
 
-  auto state = ncclx::createCommStateXFromNcclComm(&comm);
+  const auto* statex = comm->ctranComm_->statex_.get();
+  ASSERT_NE(statex, nullptr);
 
-  EXPECT_EQ(state->rank(), 0);
-  EXPECT_EQ(state->nRanks(), comm.nRanks);
-  EXPECT_EQ(state->cudaDev(), comm.cudaDev);
-  EXPECT_EQ(state->cudaArch(), comm.cudaArch);
-  EXPECT_EQ(state->busId(), comm.busId);
-  EXPECT_EQ(state->localRank(), state->rank() % nLocalRanks);
-  EXPECT_EQ(state->nLocalRanks(), nLocalRanks);
-  EXPECT_EQ(state->nNodes(), comm.nRanks / nLocalRanks);
-  EXPECT_EQ(state->commHash(), comm.commHash);
-  EXPECT_EQ(state->commDesc(), NCCLX_CONFIG_FIELD(comm.config, commDesc));
-  for (int i = 0; i < state->nRanks(); ++i) {
-    EXPECT_EQ(state->node(i), i / nLocalRanks);
-  }
-  for (int i = 0; i < state->nRanks(); ++i) {
-    EXPECT_EQ(state->localRank(i), i % nLocalRanks);
-  }
-  for (int nodeId = 0; nodeId < state->nNodes(); ++nodeId) {
-    for (int localRankId = 0; localRankId < nLocalRanks; ++localRankId) {
-      EXPECT_EQ(
-          state->localRankToRank(localRankId, nodeId),
-          nodeId * nLocalRanks + localRankId);
-    }
+  EXPECT_EQ(statex->nLocalRanks(), 1);
+  EXPECT_EQ(statex->nNodes(), numRanks);
+  for (int r = 0; r < numRanks; r++) {
+    EXPECT_EQ(statex->node(r), r);
   }
 
-  delete[] comm.rankToNode;
-  delete[] comm.localRankToRank;
-  delete[] comm.peerInfo;
-  delete[] comm.rankToLocalRank;
-  for (int i = 0; i < comm.nChannels; ++i) {
-    delete[] comm.channels[i].ring.userRanks;
+  std::set<std::string> gPids;
+  for (int r = 0; r < numRanks; r++) {
+    auto [it, inserted] = gPids.insert(statex->gPid(r));
+    EXPECT_TRUE(inserted) << "gPid collision at rank " << r << ": "
+                          << statex->gPid(r);
   }
 }
 
-TEST(CommStateXTest, CreateNoLocalFromNcclComm) {
-  // Create a dummy ncclComm
-  ncclComm comm;
-  fillDummyComm(comm);
+TEST_F(CommStateXDistTest, CreateVCliqueSizeFromNcclComm) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints({{"vCliqueSize", "2"}});
+  config.hints = &hints;
 
-  // Create CommStateX from ncclComm with noLocal mode
-  // Expect CommStateX to generate nLocalRanks=1 topo
-  EnvRAII env(NCCL_COMM_STATE_DEBUG_TOPO, NCCL_COMM_STATE_DEBUG_TOPO::nolocal);
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
+  ASSERT_NE(comm.get(), nullptr);
+  ASSERT_TRUE(ctranInitialized(comm->ctranComm_.get()));
 
-  auto state = ncclx::createCommStateXFromNcclComm(&comm);
+  const auto* statex = comm->ctranComm_->statex_.get();
+  ASSERT_NE(statex, nullptr);
 
-  EXPECT_EQ(state->rank(), 0);
-  EXPECT_EQ(state->nRanks(), comm.nRanks);
-  EXPECT_EQ(state->cudaDev(), comm.cudaDev);
-  EXPECT_EQ(state->cudaArch(), comm.cudaArch);
-  EXPECT_EQ(state->busId(), comm.busId);
-  EXPECT_EQ(state->localRank(), 0);
-  EXPECT_EQ(state->nLocalRanks(), 1);
-  EXPECT_EQ(state->nNodes(), comm.nRanks);
-  EXPECT_EQ(state->commHash(), comm.commHash);
-  EXPECT_EQ(state->commDesc(), NCCLX_CONFIG_FIELD(comm.config, commDesc));
-  for (int i = 0; i < state->nRanks(); ++i) {
-    EXPECT_EQ(state->node(i), i);
-  }
-  for (int i = 0; i < state->nRanks(); ++i) {
-    EXPECT_EQ(state->localRank(i), 0);
-  }
-  for (int nodeId = 0; nodeId < state->nNodes(); ++nodeId) {
-    EXPECT_EQ(state->localRankToRank(0, nodeId), nodeId);
-  }
+  EXPECT_EQ(statex->nLocalRanks(), 2);
+  EXPECT_EQ(statex->nNodes(), numRanks / 2);
 
-  delete[] comm.rankToNode;
-  delete[] comm.localRankToRank;
-  delete[] comm.peerInfo;
-  delete[] comm.rankToLocalRank;
-  for (int i = 0; i < comm.nChannels; ++i) {
-    delete[] comm.channels[i].ring.userRanks;
+  std::set<std::string> gPids;
+  for (int r = 0; r < numRanks; r++) {
+    auto [it, inserted] = gPids.insert(statex->gPid(r));
+    EXPECT_TRUE(inserted) << "gPid collision at rank " << r << ": "
+                          << statex->gPid(r);
   }
 }
 
-class CommStateXNcclCommTestParamFixture
-    : public CommStateXTest,
-      public ::testing::WithParamInterface<int> {};
-
-TEST_P(CommStateXNcclCommTestParamFixture, CreateFromNcclComm) {
-  auto numNvlDomain = GetParam();
-  // create a dummy ncclComm
-  ncclComm comm;
-  fillDummyComm(comm, numNvlDomain);
-
-  // create CommStateX from ncclComm
-  auto state = ncclx::createCommStateXFromNcclComm(&comm);
-  EXPECT_EQ(state->rank(), 0);
-  EXPECT_EQ(state->nRanks(), comm.nRanks);
-  EXPECT_EQ(state->cudaDev(), comm.cudaDev);
-  EXPECT_EQ(state->commHash(), comm.commHash);
-  EXPECT_EQ(state->commDesc(), NCCLX_CONFIG_FIELD(comm.config, commDesc));
-  EXPECT_EQ(state->localRank(), comm.localRank);
-  EXPECT_EQ(state->nLocalRanks(), comm.localRanks);
-  for (int i = 0; i < state->nRanks(); ++i) {
-    EXPECT_EQ(state->node(i), comm.rankToNode[i]);
-  }
-  for (int i = 0; i < state->nRanks(); ++i) {
-    EXPECT_EQ(state->localRank(i), comm.rankToLocalRank[i]);
-  }
-  for (int i = 0; i < state->nLocalRanks(); ++i) {
-    EXPECT_EQ(state->localRankToRank(i), comm.localRankToRank[i]);
-  }
-  for (int nodeId = 0; nodeId < state->nNodes(); ++nodeId) {
-    for (int i = 0; i < state->nLocalRanks(); ++i) {
-      EXPECT_EQ(
-          state->localRankToRank(i, nodeId), nodeId * comm.localRanks + i);
-    }
-  }
-  EXPECT_EQ(state->nNodes(), comm.nNodes);
-
-  delete[] comm.rankToNode;
-  delete[] comm.localRankToRank;
-  delete[] comm.peerInfo;
-  delete[] comm.rankToLocalRank;
-  for (int i = 0; i < comm.nChannels; ++i) {
-    delete[] comm.channels[i].ring.userRanks;
-  }
+int main(int argc, char* argv[]) {
+  ::testing::InitGoogleTest(&argc, argv);
+  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  folly::Init init(&argc, &argv);
+  return RUN_ALL_TESTS();
 }
-
-INSTANTIATE_TEST_SUITE_P(
-    CommStateXNcclCommTest,
-    CommStateXNcclCommTestParamFixture,
-    ::testing::Values(1, 2),
-    [&](const testing::TestParamInfo<
-        CommStateXNcclCommTestParamFixture::ParamType>& info) {
-      return std::to_string(info.param) + "nvlDomains";
-    });
-
-} // namespace ncclx

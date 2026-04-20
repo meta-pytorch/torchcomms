@@ -1636,8 +1636,6 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
    */
   NCCLCHECKGOTO(meta::comms::ncclx::newCollTraceInit(comm), res, fail);
 
-  // TODO: remove all ncclx fields and leave only ctranComm_
-  // (we are working on refactoring now, when it's done only ctranComm_ must be used)
 
   // TODO: replace this dirty init code with CtranComm constructor.
   // There is an issue with the order of initialization. We need to initialize stateX
@@ -1649,16 +1647,10 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   // when we develop CtranComm constuctor.
   NCCLCHECKGOTO(metaCommToNccl(setCtranCommBase(comm)), res, fail);
 
-  comm->ctranComm_->bootstrap_ = std::make_unique<ncclx::BaselineBootstrap>(comm);
-
-  comm->ctranComm_->statex_ = ncclx::createCommStateXFromNcclComm(comm);
-
   comm->ctranComm_->memCache_ = comm->memCache;
 
-  // TODO: remove the following two lines once new colltrace is stable
+  // TODO: remove the following line once new colltrace is stable
   NCCLCHECKGOTO(ncclx::colltrace::collTraceInit(comm), res, fail);
-  comm->ctranComm_->collTrace_ = comm->collTrace;
-
 
   NCCLCHECKGOTO(
       metaCommToNccl(ncclx::transport::tranportProxyInit(comm, job->parent)),
@@ -1666,12 +1658,12 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
       fail);
 
   if (comm->useCtran_) {
-    // TODO: move initialization to CtranComm constructor once we finish all ctran refactor
-    NCCLCHECK(ncclx::initCtranCommStatexFromNcclComm(comm, comm->ctranComm_.get()));
+    comm->ctranComm_->bootstrap_ = std::make_unique<ncclx::BaselineBootstrap>(comm);
+    NCCLCHECK(ncclx::createCommStateXFromNcclComm(comm, comm->ctranComm_.get()));
+    comm->ctranComm_->collTrace_ = comm->collTrace;
     comm->ctranComm_->colltraceNew_ = comm->newCollTrace;
     NCCLCHECKGOTO(metaCommToNccl(ctranInit(comm->ctranComm_.get())), res, fail);
   }
-  NCCLCHECKGOTO(metaCommToNccl(ctranConfigCommAlgoOverride(comm->ctranComm_.get())), res, fail);
   // --------------------- done
 
 

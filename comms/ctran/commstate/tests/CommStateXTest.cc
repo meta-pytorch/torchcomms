@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <cstdlib>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -552,48 +553,119 @@ TEST(CommStateXTest, CommRankToWorldRanks) {
   EXPECT_EQ(commState->gRank(3), 7);
 }
 
-TEST(CommStateXTest, gPidTest) {
-  const int nRanks = 4;
-  const int cudaDev = 0;
-  const int cudaArch = 90;
-  const int64_t busId = 25;
-  const uint64_t commHash = 0;
-  const std::string kSu;
+// Parameterized test: verify host()/gPid() preserve real values and node
+// grouping is correct across all virtual topology modes.
+enum class TopoMode { kSystem, kNolocal, kVnode, kVClique };
 
-  std::vector<RankTopology> rankTopologies{};
-  rankTopologies.emplace_back(
-      createRankTopology(0, kDc, kZone, kSu, kRtsw0, kHost0, -1, 1000));
-  rankTopologies.emplace_back(
-      createRankTopology(1, kDc, kZone, kSu, kRtsw0, kHost0, -1, 1001));
-  rankTopologies.emplace_back(
-      createRankTopology(2, kDc, kZone, kSu, kRtsw0, kHost1, -1, 2000));
-  rankTopologies.emplace_back(
-      createRankTopology(3, kDc, kZone, kSu, kRtsw0, kHost1, -1, 2001));
+struct TopoTestParam {
+  TopoMode mode;
+  int vCliqueSize; // only used for kVClique
+  int expectedNNodes;
+  int expectedNLocalRanks; // for rank 0
+};
 
-  for (int rank = 0; rank < nRanks; ++rank) {
-    auto commState = std::make_unique<CommStateX>(
-        rank,
-        nRanks,
-        cudaDev,
-        cudaArch,
-        busId,
-        commHash,
-        rankTopologies,
-        std::vector<int>{});
+std::string topoTestName(const testing::TestParamInfo<TopoTestParam>& info) {
+  switch (info.param.mode) {
+    case TopoMode::kSystem:
+      return "system";
+    case TopoMode::kNolocal:
+      return "nolocal";
+    case TopoMode::kVnode:
+      return "vnode4";
+    case TopoMode::kVClique:
+      return "vclique" + std::to_string(info.param.vCliqueSize);
+  }
+  return "unknown";
+}
 
-    // Test gPid() for default (current) rank
-    std::string expectedGPid = std::string(rankTopologies[rank].host) + ":" +
-        std::to_string(rankTopologies[rank].pid) + ":" + std::to_string(rank);
-    EXPECT_EQ(commState->gPid(), expectedGPid);
+class GpidTopoTest : public ::testing::TestWithParam<TopoTestParam> {
+ protected:
+  static constexpr int kRanksPerHost = 4;
+  static constexpr int kNumHosts = 2;
+  static constexpr int kNRanks = kRanksPerHost * kNumHosts;
+  static constexpr int kCudaDev = 0;
+  static constexpr int kCudaArch = 90;
+  static constexpr int64_t kBusId = 25;
+  static constexpr uint64_t kCommHash = 0;
 
-    // Test gPid(rank) for all ranks
-    for (int r = 0; r < nRanks; ++r) {
-      std::string expected = std::string(rankTopologies[r].host) + ":" +
-          std::to_string(rankTopologies[r].pid) + ":" + std::to_string(r);
-      EXPECT_EQ(commState->gPid(r), expected);
+  std::vector<RankTopology> makeRankTopologies() {
+    const std::string kSu;
+    const std::array<std::pair<const char*, const char*>, kNumHosts> hostInfo =
+        {{{kHost0, kRtsw0}, {kHost1, kRtsw1}}};
+    std::vector<RankTopology> topos;
+    topos.reserve(kNRanks);
+    for (int r = 0; r < kNRanks; r++) {
+      const auto& [host, rtsw] = hostInfo[r / kRanksPerHost];
+      const int pid = 1000 * (r / kRanksPerHost + 1) + r % kRanksPerHost;
+      topos.emplace_back(
+          createRankTopology(r, kDc, kZone, kSu, rtsw, host, -1, pid));
     }
+    return topos;
+  }
+};
+
+TEST_P(GpidTopoTest, HostAndGpidPreserved) {
+  const auto& [mode, vCliqueSize, expectedNNodes, expectedNLocalRanks] =
+      GetParam();
+  auto rankTopologies = makeRankTopologies();
+
+  // Set CVAR for vnode mode (needs ncclx EnvRAII, not SysEnvRAII)
+  // nolocal and vClique are passed via constructor params instead.
+  std::unique_ptr<SysEnvRAII> envTopo, envPpn;
+  if (mode == TopoMode::kVnode) {
+    envTopo =
+        std::make_unique<SysEnvRAII>("NCCL_COMM_STATE_DEBUG_TOPO", "vnode");
+    envPpn = std::make_unique<SysEnvRAII>(
+        "NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS", "4");
+  }
+
+  const bool noLocal = (mode == TopoMode::kNolocal);
+  auto commState = std::make_unique<CommStateX>(
+      0,
+      kNRanks,
+      kCudaDev,
+      kCudaArch,
+      kBusId,
+      kCommHash,
+      rankTopologies,
+      std::vector<int>{},
+      "" /* commDesc */,
+      noLocal,
+      vCliqueSize);
+
+  // Node grouping matches expected virtual topology
+  EXPECT_EQ(commState->nNodes(), expectedNNodes);
+  EXPECT_EQ(commState->nLocalRanks(0), expectedNLocalRanks);
+
+  // Real hostname and gPid preserved for all ranks
+  std::set<std::string> gPids;
+  for (int r = 0; r < kNRanks; ++r) {
+    EXPECT_EQ(commState->host(r), std::string(rankTopologies[r].host))
+        << "rank " << r << " should have real host";
+
+    std::string expected = std::string(rankTopologies[r].host) + ":" +
+        std::to_string(rankTopologies[r].pid);
+    EXPECT_EQ(commState->gPid(r), expected)
+        << "rank " << r << " should have real gPid";
+
+    auto [it, inserted] = gPids.insert(commState->gPid(r));
+    EXPECT_TRUE(inserted) << "gPid collision at rank " << r;
   }
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    CommStateXTest,
+    GpidTopoTest,
+    ::testing::Values(
+        // system: 2 real hosts × 4 ranks each
+        TopoTestParam{TopoMode::kSystem, 0, 2, 4},
+        // nolocal: each rank is its own node
+        TopoTestParam{TopoMode::kNolocal, 0, 8, 1},
+        // vnode with nLocalRanks=4: 2 virtual nodes
+        TopoTestParam{TopoMode::kVnode, 0, 2, 4},
+        // vClique size=2: 4 virtual nodes of 2 ranks each
+        TopoTestParam{TopoMode::kVClique, 2, 4, 2}),
+    topoTestName);
 
 TEST(CommStateXTest, TopologySetInvalidNvlFabricTopos) {
   const int rank = 0;
@@ -663,9 +735,7 @@ TEST(CommStateXTest, nvlFabricWithNoLocal) {
       "" /* commDesc */,
       true /* noLocal */);
 
-  // noLocal is set at construction; initRankStatesTopology delegates to
-  // initRankTopologyNolocal
-  commState->initRankStatesTopology(nullptr);
+  commState->initRankTopologyNolocal();
 
   // Set up NVL fabric with 2 clusters of 4 ranks each (e.g. GB200 2-GPU trays)
   std::vector<NvlFabricTopology> nvlFabricTopologies{};

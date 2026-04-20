@@ -118,15 +118,9 @@ std::unique_ptr<CtranComm> CtranDistTestFixture::makeCtranComm() {
   std::unique_ptr<meta::comms::IBootstrap> commBootstrap(
       meta::comms::createBootstrap("ctrancomm"));
 
-  // Initialize topology
-  if (NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::nolocal) {
-    comm->statex_->initRankTopologyNolocal();
-  } else if (NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::vnode) {
-    comm->statex_->initRankTopologyVnode(
-        NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS);
-  } else {
-    comm->statex_->initRankStatesTopology(commBootstrap.get());
-  }
+  // Always use bootstrap to get real pids. Virtual topology overrides
+  // (nolocal, vnode, vClique) are applied inside setRankStatesTopologies.
+  comm->statex_->initRankStatesTopology(commBootstrap.get());
 
   comm->bootstrap_ = std::make_unique<ctran::testing::CtranTestBootstrap>(
       std::move(commBootstrap));

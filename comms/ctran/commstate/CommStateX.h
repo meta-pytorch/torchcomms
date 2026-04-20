@@ -90,7 +90,6 @@ class CommStateX {
 
   void initRankTopologyNolocal();
   void initRankTopologyVnode(const int nLocalRanks);
-  friend void initRankTopologyFrom(CommStateX* _CommStateX, void* _comm);
   void initRankStatesTopology(meta::comms::IBootstrap* bootstrap);
 
   /* Setters */
@@ -267,12 +266,9 @@ class CommStateX {
   // and an associated communicator.
   std::vector<int> commRanksToWorldRanks_{};
 
-  // e.g map<host-name, localRankToRank>
-  // e.g map<host1: [0, 1, 2, 3], host2: [4, 5, 6, 7]>
-  std::unordered_map<std::string, std::vector<int>> hostToRanks_{};
-
-  // similar to hostToRanks_ but access by nodeId
-  // e.g vector<0: [0, 1, 2, 3], 1: [0, 1, 2, 3]>
+  // Node grouping: nodeRanks_[nodeId] = [rank0, rank1, ...]
+  // For virtual topologies (nolocal, vnode, vClique), node grouping may differ
+  // from physical host grouping.
   std::vector<std::vector<int>> nodeRanks_{};
 
   // similar to nodeRanks, but at nvlDomain level. e.g vector<0: [0, 1, 2, 3],
