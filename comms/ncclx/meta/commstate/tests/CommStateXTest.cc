@@ -90,7 +90,7 @@ TEST_F(CommStateXDistTest, CreateNoLocalFromNcclComm) {
   }
 }
 
-TEST_F(CommStateXDistTest, DISABLED_CreateVCliqueSizeFromNcclComm) {
+TEST_F(CommStateXDistTest, CreateVCliqueSizeFromNcclComm) {
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   ncclx::Hints hints({{"vCliqueSize", "2"}});
   config.hints = &hints;
