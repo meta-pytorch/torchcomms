@@ -2,6 +2,7 @@
 
 #include <fstream>
 #include <memory>
+#include <set>
 
 #include <folly/init/Init.h>
 #include <gmock/gmock.h>
@@ -50,6 +51,35 @@ TEST_F(CommWithCtranTest, CtranEnable) {
   ASSERT_NE(comm.get(), nullptr);
   ASSERT_NE(comm->ctranComm_.get(), nullptr);
   ASSERT_TRUE(ctranInitialized(comm->ctranComm_.get()));
+}
+
+// Verify that CommStateX preserves real hostname and has unique gPid for all
+// ranks after ctran initialization via createCommStateXFromNcclComm.
+TEST_F(CommWithCtranTest, StatexHostAndGpidPreserved) {
+  EnvRAII env(NCCL_CTRAN_ENABLE, true);
+  ncclComm_t comm = ncclx::test::createNcclComm(
+      globalRank, numRanks, localRank, bootstrap_.get());
+  ASSERT_NE(comm, nullptr);
+  ASSERT_TRUE(ctranInitialized(comm->ctranComm_.get()));
+
+  auto* statex = comm->ctranComm_->statex_.get();
+  ASSERT_NE(statex, nullptr);
+
+  // host() should return real hostname (not empty, not fake vnode/nolocal name)
+  for (int r = 0; r < numRanks; r++) {
+    EXPECT_FALSE(statex->host(r).empty())
+        << "rank " << r << " should have non-empty host";
+  }
+
+  // gPid should be unique across all ranks
+  std::set<std::string> gPids;
+  for (int r = 0; r < numRanks; r++) {
+    auto [it, inserted] = gPids.insert(statex->gPid(r));
+    EXPECT_TRUE(inserted) << "gPid collision at rank " << r << ": "
+                          << statex->gPid(r);
+  }
+
+  ASSERT_EQ(ncclCommDestroy(comm), ncclSuccess);
 }
 
 TEST_F(CommWithCtranTest, CtranDisable) {
