@@ -68,4 +68,5 @@ inline const std::vector<std::string>& knownHintKeys() {
 // exceptions into ncclResult_t error codes for the C callers.
 // Stores the result in config->ncclxConfig.  Must be called
 // exactly once per config.
+// TODO: Move into ncclx namespace as ncclx::parseCommConfig and update callers.
 ncclResult_t ncclxParseCommConfig(ncclConfig_t* config);

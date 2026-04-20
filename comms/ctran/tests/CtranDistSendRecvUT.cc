@@ -276,13 +276,10 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
     verifyGpeLeak(ctranComm->ctran_.get());
 
     if (!useGraph) {
-      // Brief wait for GPE thread to flush colltrace entries after stream sync
-      std::this_thread::sleep_for(std::chrono::seconds(2));
-
       // Check the coll trace only for participating ranks
       bool participated = (globalRank == sendRank) || isReceiver;
       if (participated) {
-        auto dumpMap = ctran::dumpCollTrace(ctranComm.get());
+        auto dumpMap = ctran::waitForCollTraceDrain(ctranComm.get());
         ASSERT_FALSE(dumpMap.empty()) << "Colltrace should be initialized";
 
         int numSendPeers = oneToOne ? 1 : (numRanks - 1);

@@ -10,7 +10,6 @@
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
 
 class RegCacheBench : public ctran::CtranDistTestFixture {
  public:

@@ -15,7 +15,6 @@
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranNcclTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
 
 class DistRegCacheTest : public ctran::CtranDistTestFixture {
  public:

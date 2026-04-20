@@ -1,5 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <folly/init/Init.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
@@ -1388,5 +1389,6 @@ TEST(IpcRemHandleTest, CorruptedDestroyDoesNotCrash) {
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
+  folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }
