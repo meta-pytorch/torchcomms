@@ -26,6 +26,10 @@ HOT ncclResult_t ncclLowPrecisionReduceScatter(
   NCCLCHECK(ncclCommCount(comm, &nRanks));
   NCCLCHECK(ncclCommUserRank(comm, &rank));
 
+  if (!rcclGpuSupportsAmdFp8LpKernels()) {
+    return ncclInvalidUsage;
+  }
+
   // Early exit for empty data
   if (count == 0) {
     return ncclSuccess;

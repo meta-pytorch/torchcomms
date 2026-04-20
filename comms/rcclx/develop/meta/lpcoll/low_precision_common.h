@@ -10,11 +10,43 @@
 
 #include <cstdlib>
 #include <cstring>
+
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
+#include <hip/hip_runtime_api.h>
+#endif
+
 #include "low_precision_kernels.h"
 #include "low_precision_utility.h"
 
-// Helper function to check if low precision FP8 E4M3 is enabled
+/**
+ * True when the current HIP device has CDNA3+ FP8 convert instructions used
+ * by low-precision collectives (gfx940–gfx950 family). Always false on CUDA
+ * builds and pre-CDNA3 AMD GPUs.
+ */
+inline bool rcclGpuSupportsAmdFp8LpKernels() {
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
+  int d = 0;
+  if (hipGetDevice(&d) != hipSuccess) {
+    return false;
+  }
+  hipDeviceProp_t p{};
+  if (hipGetDeviceProperties(&p, d) != hipSuccess) {
+    return false;
+  }
+  const char* n = p.gcnArchName ? p.gcnArchName : "";
+  return strstr(n, "gfx940") != nullptr || strstr(n, "gfx941") != nullptr ||
+      strstr(n, "gfx942") != nullptr || strstr(n, "gfx943") != nullptr ||
+      strstr(n, "gfx950") != nullptr;
+#else
+  return false;
+#endif
+}
+
+/** FP8 low-precision path: env RCCL_LOW_PRECISION_ENABLE=1 and HW support. */
 inline bool isLowPrecisionFp8E4M3Enabled() {
+  if (!rcclGpuSupportsAmdFp8LpKernels()) {
+    return false;
+  }
   const char* lowPrecisionEnable = getenv("RCCL_LOW_PRECISION_ENABLE");
   return (lowPrecisionEnable && strcmp(lowPrecisionEnable, "1") == 0);
 }

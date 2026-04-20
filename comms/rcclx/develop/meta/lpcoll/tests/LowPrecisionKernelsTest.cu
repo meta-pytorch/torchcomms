@@ -19,6 +19,9 @@ class LowPrecisionKernelsTest : public ::testing::Test {
   LowPrecisionKernelsTest() = default;
 
   void SetUp() override {
+    if (!rcclGpuSupportsAmdFp8LpKernels()) {
+      GTEST_SKIP() << "FP8 low-precision requires CDNA3+ (gfx940-gfx950)";
+    }
     setenv("RCCL_LOW_PRECISION_ENABLE", "1", 1);
 
     std::tie(this->localRank, this->globalRank, this->numRanks) = getMpiInfo();
@@ -28,16 +31,20 @@ class LowPrecisionKernelsTest : public ::testing::Test {
   }
 
   void TearDown() override {
-    CUDACHECK_TEST(cudaStreamDestroy(this->stream));
-    NCCLCHECK_TEST(ncclCommDestroy(this->comm));
+    if (this->comm) {
+      NCCLCHECK_TEST(ncclCommDestroy(this->comm));
+    }
+    if (this->stream) {
+      CUDACHECK_TEST(cudaStreamDestroy(this->stream));
+    }
     unsetenv("RCCL_LOW_PRECISION_ENABLE");
   }
 
   int localRank{0};
   int globalRank{0};
   int numRanks{0};
-  ncclComm_t comm;
-  cudaStream_t stream;
+  ncclComm_t comm{nullptr};
+  cudaStream_t stream{};
 };
 
 TEST_F(LowPrecisionKernelsTest, QuantizeFloatToFp8Basic) {

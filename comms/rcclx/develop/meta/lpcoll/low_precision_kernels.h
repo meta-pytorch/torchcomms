@@ -22,6 +22,13 @@ __global__ void quantizeFloatToFp8Kernel(
     size_t totalCount,
     size_t chunkStart,
     size_t chunkSize) {
+#if !defined(RCCL_AMD_FP8_HW)
+  (void)input;
+  (void)output;
+  (void)totalCount;
+  (void)chunkStart;
+  (void)chunkSize;
+#else
   rccl_float8* fp8_output = static_cast<rccl_float8*>(output);
 
   // Calculate thread indexing for parallel processing
@@ -91,6 +98,7 @@ __global__ void quantizeFloatToFp8Kernel(
       fp8_output[globalIdx] = quantize_float_to_fp8_e4m3(input[globalIdx]);
     }
   }
+#endif
 }
 
 /**
@@ -105,6 +113,13 @@ __global__ void quantizeBF16ToFp8Kernel(
     size_t totalOutputCount,
     size_t chunkStart,
     size_t chunkSize) {
+#if !defined(RCCL_AMD_FP8_HW)
+  (void)bf16Input;
+  (void)fp8Output;
+  (void)totalOutputCount;
+  (void)chunkStart;
+  (void)chunkSize;
+#else
   rccl_float8* fp8_output = static_cast<rccl_float8*>(fp8Output);
 
   // Calculate thread indexing for parallel processing
@@ -203,6 +218,7 @@ __global__ void quantizeBF16ToFp8Kernel(
       fp8_output[globalIdx] = quantize_float_to_fp8_e4m3(temp_float);
     }
   }
+#endif
 }
 
 /**
@@ -313,6 +329,15 @@ __global__ void localReductionKernel(
     size_t chunkSize,
     int nRanks,
     int myRank) {
+#if !defined(RCCL_AMD_FP8_HW)
+  (void)fp8Input;
+  (void)floatOutput;
+  (void)totalCount;
+  (void)chunkStart;
+  (void)chunkSize;
+  (void)nRanks;
+  (void)myRank;
+#else
   const rccl_float8* fp8_input = static_cast<const rccl_float8*>(fp8Input);
 
   // Calculate thread indexing and grid configuration
@@ -352,6 +377,7 @@ __global__ void localReductionKernel(
       floatOutput[elemIdx] = accumulator;
     }
   }
+#endif
 }
 
 /**
@@ -366,6 +392,13 @@ __global__ void dequantizeFp8ToFloatKernel(
     size_t totalCount,
     size_t chunkStart,
     size_t chunkSize) {
+#if !defined(RCCL_AMD_FP8_HW)
+  (void)fp8Input;
+  (void)floatOutput;
+  (void)totalCount;
+  (void)chunkStart;
+  (void)chunkSize;
+#else
   const rccl_float8* fp8_input = static_cast<const rccl_float8*>(fp8Input);
 
   // Calculate thread indexing for parallel processing
@@ -437,6 +470,7 @@ __global__ void dequantizeFp8ToFloatKernel(
           dequantize_fp8_e4m3_to_float(fp8_input[globalIdx]);
     }
   }
+#endif
 }
 
 /**
@@ -451,6 +485,13 @@ __global__ void dequantizeFp8ToBF16Kernel(
     size_t totalCount,
     size_t chunkStart,
     size_t chunkSize) {
+#if !defined(RCCL_AMD_FP8_HW)
+  (void)fp8Input;
+  (void)bf16Output;
+  (void)totalCount;
+  (void)chunkStart;
+  (void)chunkSize;
+#else
   const rccl_float8* fp8_input = static_cast<const rccl_float8*>(fp8Input);
 
   // Calculate thread indexing for parallel processing
@@ -542,4 +583,5 @@ __global__ void dequantizeFp8ToBF16Kernel(
       bf16Output[globalIdx] = *reinterpret_cast<const T*>(&bf16_value);
     }
   }
+#endif
 }
