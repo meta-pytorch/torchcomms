@@ -75,7 +75,79 @@ class CtranNcclTestHelpers : public CtranTestHelpers {
       void* buf,
       size_t bufSize,
       MemAllocType memType,
-      size_t numSegments = 2);
+      size_t numSegments = 2,
+      bool refCheck = true);
+};
+
+// RAII wrapper around prepareBuf/releaseBuf for automatic lifetime management.
+// Defaults to kMemNcclMemAlloc for NVL-registered buffers.
+class TestDeviceBuffer {
+ public:
+  explicit TestDeviceBuffer(
+      size_t size,
+      MemAllocType memType = kMemNcclMemAlloc,
+      size_t numSegments = 2,
+      bool refCheck = false)
+      : size_(size),
+        memType_(memType),
+        numSegments_(numSegments),
+        refCheck_(refCheck) {
+    ptr_ =
+        CtranNcclTestHelpers::prepareBuf(size, memType, segments_, numSegments);
+  }
+
+  ~TestDeviceBuffer() {
+    if (ptr_) {
+      CtranNcclTestHelpers::releaseBuf(
+          ptr_, size_, memType_, numSegments_, refCheck_);
+    }
+  }
+
+  TestDeviceBuffer(const TestDeviceBuffer&) = delete;
+  TestDeviceBuffer& operator=(const TestDeviceBuffer&) = delete;
+
+  TestDeviceBuffer(TestDeviceBuffer&& other) noexcept
+      : ptr_(other.ptr_),
+        size_(other.size_),
+        memType_(other.memType_),
+        numSegments_(other.numSegments_),
+        refCheck_(other.refCheck_),
+        segments_(std::move(other.segments_)) {
+    other.ptr_ = nullptr;
+    other.size_ = 0;
+  }
+
+  TestDeviceBuffer& operator=(TestDeviceBuffer&& other) noexcept {
+    if (this != &other) {
+      if (ptr_) {
+        CtranNcclTestHelpers::releaseBuf(
+            ptr_, size_, memType_, numSegments_, refCheck_);
+      }
+      ptr_ = other.ptr_;
+      size_ = other.size_;
+      memType_ = other.memType_;
+      segments_ = std::move(other.segments_);
+      other.ptr_ = nullptr;
+      other.size_ = 0;
+    }
+    return *this;
+  }
+
+  void* get() const {
+    return ptr_;
+  }
+
+  size_t size() const {
+    return size_;
+  }
+
+ private:
+  void* ptr_{nullptr};
+  size_t size_{0};
+  MemAllocType memType_{};
+  size_t numSegments_{2};
+  bool refCheck_{true};
+  std::vector<TestMemSegment> segments_{};
 };
 
 } // namespace ctran
