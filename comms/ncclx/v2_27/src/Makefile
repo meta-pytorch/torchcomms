@@ -49,14 +49,14 @@ LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/logger/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/tcpstore/*.cc)
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/transport/*.cc)
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/utilx/*.cc)
-LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/commstate/*.cc)
+LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/commstate/*.cc)
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/rma/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/collectives/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/comms-monitor/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/ctran-integration/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/hints/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/algoconf/*.cc)
-LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/wrapper/*.cc)
+LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/wrapper/*.cc)
 
 #### Start of fbcode source files
 ## Trainer Context for getting/setting trainer steps.
@@ -113,7 +113,7 @@ INCLUDES += -I${NCCLDIR}/
 INCLUDES += -I${SHAREDDIR}/
 INCLUDES += -I${NCCLDIR}/meta
 INCLUDES += -I${SHAREDDIR}/meta
-INCLUDES += -I${NCCLDIR}/meta/wrapper
+INCLUDES += -I${SHAREDDIR}/meta/wrapper
 INCLUDES += -Idevice
 INCLUDES += -I$(BASE_DIR)
 INCLUDES += -I$(CONDA_INCLUDE_DIR)
@@ -310,7 +310,7 @@ $(INCDIR)/CtranEx.h : ${BASE_DIR}/comms/ctran/CtranEx.h
 	mkdir -p $(INCDIR)
 	install -m 644 $< $@
 
-$(INCDIR)/CtranExComm.h : ${NCCLDIR}/meta/wrapper/CtranExComm.h
+$(INCDIR)/CtranExComm.h : ${SHAREDDIR}/meta/wrapper/CtranExComm.h
 	@printf "Grabbing   %-35s > %s\n" $< $@
 	mkdir -p $(INCDIR)
 	install -m 644 $< $@

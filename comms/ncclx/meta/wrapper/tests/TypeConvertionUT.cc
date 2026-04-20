@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
-#include "meta/wrapper/DataTypeConv.h" // @manual=//comms/ncclx:nccl2.27-internal
-#include "meta/wrapper/MetaFactory.h" // @manual=//comms/ncclx:nccl2.27-internal
+#include "meta/wrapper/DataTypeConv.h" // @manual
+#include "meta/wrapper/MetaFactory.h" // @manual
 
 TEST(MetaFactoryTest, CommToNccl) {
   auto commResult = commInProgress;
