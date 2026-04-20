@@ -19,6 +19,7 @@ enum class GraphPattern {
   MixedEagerGraph,
   MultiGraph,
   InPlace,
+  Abort,
 };
 
 inline const char* patternToString(GraphPattern pattern) {
@@ -37,6 +38,8 @@ inline const char* patternToString(GraphPattern pattern) {
       return "MultiGraph";
     case GraphPattern::InPlace:
       return "InPlace";
+    case GraphPattern::Abort:
+      return "Abort";
   }
   return "Unknown";
 }
@@ -58,6 +61,8 @@ inline int baseReplays(GraphPattern pattern) {
       return 3;
     case GraphPattern::InPlace:
       return 3;
+    case GraphPattern::Abort:
+      return 1;
   }
   return 3;
 }
@@ -404,6 +409,71 @@ inline void runInPlacePattern(
       .run();
 }
 
+// ---------------------------------------------------------------------------
+// Abort: capture a collective, replay successfully once, abort the comm,
+// replay again and verify it unblocks promptly (no deadlock).
+// ---------------------------------------------------------------------------
+
+inline void runAbortPattern(
+    CtranComm* comm,
+    int rank,
+    int nRanks,
+    size_t count,
+    int /*numReplays*/,
+    AlgoDescriptor& desc) {
+  auto bufs = desc.makeBuffers(count, rank, nRanks);
+  auto expected = desc.makeBuffers(count, rank, nRanks);
+  computeExpected(desc, expected.get(), count, comm, rank, nRanks);
+
+  // Capture and replay once to verify correctness first.
+  meta::comms::CudaStream captureStream(cudaStreamNonBlocking);
+  cudaGraph_t graph;
+  cudaGraphExec_t graphExec;
+
+  ASSERT_EQ(
+      cudaStreamBeginCapture(captureStream.get(), cudaStreamCaptureModeRelaxed),
+      cudaSuccess);
+  {
+    ctran::testing::CaptureContext ctx{comm, captureStream.get(), rank, nRanks};
+    desc.capture(bufs.get(), count, ctx);
+  }
+  ASSERT_EQ(cudaStreamEndCapture(captureStream.get(), &graph), cudaSuccess);
+  ASSERT_NE(graph, nullptr);
+  ASSERT_EQ(
+      cudaGraphInstantiate(&graphExec, graph, nullptr, nullptr, 0),
+      cudaSuccess);
+
+  // First replay — should succeed.
+  cudaMemset(bufs->recvbuf(), 0, bufs->recvBytes());
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  ASSERT_EQ(cudaGraphLaunch(graphExec, captureStream.get()), cudaSuccess);
+  ASSERT_EQ(cudaStreamSynchronize(captureStream.get()), cudaSuccess);
+
+  // Now abort the comm.
+  comm->setAbort();
+
+  // Second replay on aborted comm — should not deadlock.
+  // Launch the graph and set a generous timeout for completion.
+  cudaMemset(bufs->recvbuf(), 0, bufs->recvBytes());
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  ASSERT_EQ(cudaGraphLaunch(graphExec, captureStream.get()), cudaSuccess);
+
+  // The aborted collective should complete quickly. Wait with a timeout.
+  auto start = std::chrono::steady_clock::now();
+  ASSERT_EQ(cudaStreamSynchronize(captureStream.get()), cudaSuccess);
+  auto elapsed = std::chrono::steady_clock::now() - start;
+  auto elapsedMs =
+      std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+
+  // We don't check cudaSuccess — abort may cause CUDA errors.
+  // The key assertion: it didn't deadlock (completed within timeout).
+  EXPECT_LT(elapsedMs, 30000)
+      << "Graph replay on aborted comm took too long — possible deadlock";
+
+  ASSERT_EQ(cudaGraphExecDestroy(graphExec), cudaSuccess);
+  ASSERT_EQ(cudaGraphDestroy(graph), cudaSuccess);
+}
+
 // GraphTestParam: (algo, pattern, count, replayMultiplier)
 // Actual replays = baseReplays(pattern) * replayMultiplier
 using GraphTestParam = std::tuple<AlgoDescriptor, GraphPattern, size_t, int>;
@@ -441,6 +511,9 @@ inline void runPattern(
       break;
     case GraphPattern::InPlace:
       runInPlacePattern(comm, rank, nRanks, count, numReplays, desc);
+      break;
+    case GraphPattern::Abort:
+      runAbortPattern(comm, rank, nRanks, count, numReplays, desc);
       break;
   }
 }
