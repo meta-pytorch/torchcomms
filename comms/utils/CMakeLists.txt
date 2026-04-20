@@ -4,6 +4,7 @@ find_package(CUDA REQUIRED)
 
 file(GLOB_RECURSE UTILS_SOURCES
     "*.cc"
+    "*.cpp"
 )
 file(GLOB_RECURSE UTILS_CU_SOURCES
     "*.cu"
