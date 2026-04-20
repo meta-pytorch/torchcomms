@@ -883,21 +883,18 @@ TEST_F(RegCacheTest, IpcRemRegElemRefCount) {
   ASSERT_NE(ipcRegCache, nullptr);
   ipcRegCache->init();
 
-  // Allocate and register a buffer for IPC export
+  // Allocate buffer using cuMem APIs so IPC export is supported
   size_t bufSize = 4096;
-  void* buf = nullptr;
-  CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
+  std::vector<TestMemSegment> segments;
+  void* buf = ctran::commMemAlloc(bufSize, kMemCuMemAlloc, segments);
+  ASSERT_NE(buf, nullptr);
 
   void* ipcRegElem = nullptr;
   EXPECT_EQ(
       ctran::IpcRegCache::regMem(buf, bufSize, cudaDev, &ipcRegElem),
       commSuccess);
-
-  // If IPC registration is not supported (e.g., no NVLink), skip
-  if (ipcRegElem == nullptr) {
-    CUDACHECK_TEST(cudaFree(buf));
-    GTEST_SKIP() << "IPC memory not supported on this device, skipping";
-  }
+  ASSERT_NE(ipcRegElem, nullptr)
+      << "IPC regMem should succeed with cuMem buffer";
 
   // Export the memory to get an IPC descriptor
   ctran::regcache::IpcDesc ipcDesc;
@@ -942,10 +939,10 @@ TEST_F(RegCacheTest, IpcRemRegElemRefCount) {
 
   // Cleanup
   ctran::IpcRegCache::deregMem(ipcRegElem);
-  CUDACHECK_TEST(cudaFree(buf));
+  ctran::commMemFree(buf, bufSize, kMemCuMemAlloc);
 }
 
-// Test that releasing an IpcRemRegElem that has already been fully released
+// Test that releasing an IpcRemRegElem
 // returns an error (unknown registration).
 TEST_F(RegCacheTest, IpcRemRegElemReleaseUnknown) {
   auto ipcRegCache = ctran::IpcRegCache::getInstance();
@@ -1163,18 +1160,16 @@ TEST_F(RegCacheTest, IpcRemRegElemConstructorNoExtraSegments) {
   ipcRegCache->init();
 
   size_t bufSize = 4096;
-  void* buf = nullptr;
-  CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
+  std::vector<TestMemSegment> segments;
+  void* buf = ctran::commMemAlloc(bufSize, kMemCuMemAlloc, segments);
+  ASSERT_NE(buf, nullptr);
 
   void* ipcRegElem = nullptr;
   EXPECT_EQ(
       ctran::IpcRegCache::regMem(buf, bufSize, cudaDev, &ipcRegElem),
       commSuccess);
-
-  if (ipcRegElem == nullptr) {
-    CUDACHECK_TEST(cudaFree(buf));
-    GTEST_SKIP() << "IPC memory not supported on this device, skipping";
-  }
+  ASSERT_NE(ipcRegElem, nullptr)
+      << "IPC regMem should succeed with cuMem buffer";
 
   ctran::regcache::IpcDesc ipcDesc;
   std::vector<ctran::utils::CtranIpcSegDesc> extraSegments;
@@ -1189,7 +1184,7 @@ TEST_F(RegCacheTest, IpcRemRegElemConstructorNoExtraSegments) {
   EXPECT_EQ(remRegElem->refCount.load(), 1);
 
   ctran::IpcRegCache::deregMem(ipcRegElem);
-  CUDACHECK_TEST(cudaFree(buf));
+  ctran::commMemFree(buf, bufSize, kMemCuMemAlloc);
 }
 
 // Test IpcRemRegElem 4-arg constructor (with explicit extraSegments).
@@ -1200,18 +1195,16 @@ TEST_F(RegCacheTest, IpcRemRegElemConstructorWithExtraSegments) {
   ipcRegCache->init();
 
   size_t bufSize = 4096;
-  void* buf = nullptr;
-  CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
+  std::vector<TestMemSegment> segments;
+  void* buf = ctran::commMemAlloc(bufSize, kMemCuMemAlloc, segments);
+  ASSERT_NE(buf, nullptr);
 
   void* ipcRegElem = nullptr;
   EXPECT_EQ(
       ctran::IpcRegCache::regMem(buf, bufSize, cudaDev, &ipcRegElem),
       commSuccess);
-
-  if (ipcRegElem == nullptr) {
-    CUDACHECK_TEST(cudaFree(buf));
-    GTEST_SKIP() << "IPC memory not supported on this device, skipping";
-  }
+  ASSERT_NE(ipcRegElem, nullptr)
+      << "IPC regMem should succeed with cuMem buffer";
 
   ctran::regcache::IpcDesc ipcDesc;
   std::vector<ctran::utils::CtranIpcSegDesc> extraSegments;
@@ -1228,7 +1221,7 @@ TEST_F(RegCacheTest, IpcRemRegElemConstructorWithExtraSegments) {
   EXPECT_EQ(remRegElem->refCount.load(), 1);
 
   ctran::IpcRegCache::deregMem(ipcRegElem);
-  CUDACHECK_TEST(cudaFree(buf));
+  ctran::commMemFree(buf, bufSize, kMemCuMemAlloc);
 }
 
 // Test that IpcRegCache::exportMem populates extraSegments for multi-segment
