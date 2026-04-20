@@ -424,6 +424,12 @@ class CtranGpe {
   // Used to check potential flag leak in UT due to inproper usage in ctran
   size_t numInUseKernelFlags();
 
+  // Return number of inuse checksums.
+  size_t numInUseChecksums();
+
+  // Return number of inuse GPE kernel syncs.
+  size_t numInUseGpeKernelSyncs();
+
   commResult_t allocGpeKernelSyncs(
       size_t count,
       int nworkers,
