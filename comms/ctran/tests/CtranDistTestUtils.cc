@@ -174,6 +174,28 @@ std::unordered_map<std::string, std::string> dumpCollTrace(CtranComm* comm) {
   return commDumpToMap(dump.value());
 }
 
+std::unordered_map<std::string, std::string> waitForCollTraceDrain(
+    CtranComm* comm,
+    int timeoutMs) {
+  if (comm->colltraceNew_ == nullptr) {
+    return {};
+  }
+  constexpr int kPollIntervalMs = 50;
+  auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+  std::unordered_map<std::string, std::string> dumpMap;
+  while (std::chrono::steady_clock::now() < deadline) {
+    dumpMap = dumpCollTrace(comm);
+    auto it = dumpMap.find("CT_currentColls");
+    if (it != dumpMap.end() && it->second == "[]") {
+      return dumpMap;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(kPollIntervalMs));
+  }
+  // Return whatever we have after timeout
+  return dumpMap.empty() ? dumpCollTrace(comm) : dumpMap;
+}
+
 void CtranDistTestFixture::barrierNvlDomain(CtranComm* comm) {
   auto resFuture = comm->bootstrap_->barrierNvlDomain(
       comm->statex_->localRank(),
