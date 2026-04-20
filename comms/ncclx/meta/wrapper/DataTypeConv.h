@@ -4,6 +4,9 @@
 
 #include "info.h"
 #include "nccl_common.h"
+#if NCCL_MINOR >= 28
+#include "proxy.h"
+#endif
 
 #include "comms/utils/commSpecs.h"
 
