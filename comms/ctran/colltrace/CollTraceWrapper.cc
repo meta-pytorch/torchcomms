@@ -368,6 +368,7 @@ bool isP2PKernel(KernelConfig::KernelType kernelType) {
       KernelConfig::KernelType::SEND,
       KernelConfig::KernelType::RECV,
       KernelConfig::KernelType::SENDRECV,
+      KernelConfig::KernelType::SENDRECV_P2P,
       KernelConfig::KernelType::RECV_UNPACK,
       KernelConfig::KernelType::SENDRECV_UNPACK,
       KernelConfig::KernelType::SENDRECV_P2P,
