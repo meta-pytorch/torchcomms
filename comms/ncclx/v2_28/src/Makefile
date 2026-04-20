@@ -49,6 +49,7 @@ LIBSRCFILES := \
 
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/commDump.cc)
+LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/NcclxConfig.cc)
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/analyzer/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/colltrace/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/logger/*.cc)
@@ -118,6 +119,7 @@ INCLUDES += -Iinclude/plugin
 INCLUDES += -I${NCCLDIR}/
 INCLUDES += -I${SHAREDDIR}/
 INCLUDES += -I${NCCLDIR}/meta
+INCLUDES += -I${SHAREDDIR}/meta
 INCLUDES += -I${NCCLDIR}/meta/wrapper
 INCLUDES += -Idevice
 INCLUDES += -I$(BASE_DIR)
