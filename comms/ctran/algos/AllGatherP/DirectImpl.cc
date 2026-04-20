@@ -144,9 +144,17 @@ commResult_t AlgoImpl::execDirect(
     FB_COMMCHECK(waitInit());
   }
 
-  // Copy data to other local ranks
-  FB_COMMCHECK(
-      nvlCeBcast(comm_, sendbuff, sendSize, myRank * sendSize, pArgs, stream_));
+  // Copy data to other local ranks via NVL CE broadcast, if NVL is available
+  const auto statex = comm_->statex_.get();
+  const auto actualNLocalRanks = statex->nLocalRanks();
+  if (actualNLocalRanks > 1) {
+    const auto localPeer =
+        statex->localRankToRank((statex->localRank() + 1) % actualNLocalRanks);
+    if (pArgs.remoteAccessKeys[localPeer].backend == CtranMapperBackend::NVL) {
+      FB_COMMCHECK(nvlCeBcast(
+          comm_, sendbuff, sendSize, myRank * sendSize, pArgs, stream_));
+    }
+  }
 
   auto op = std::make_unique<OpElem>(
       OpElem::opType::ALLGATHERP, stream_, comm_, opCount);
