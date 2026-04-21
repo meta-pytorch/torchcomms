@@ -102,12 +102,18 @@ TEST_P(MultiGraph, InputDeleted) {
 
 auto allReduceParamValues() {
   return ::testing::Combine(
+#if TEST_FULL_SWEEP
       ::testing::Values(0, 4, 1024, 1024 * 1024),
       ::testing::Values(at::kFloat, at::kInt, at::kChar),
       ::testing::Values(
           torch::comms::ReduceOp::SUM,
           torch::comms::ReduceOp::MAX,
           torch::comms::ReduceOp::AVG));
+#else
+      ::testing::Values(4, 1024 * 1024),
+      ::testing::Values(at::kFloat),
+      ::testing::Values(torch::comms::ReduceOp::SUM));
+#endif
 }
 
 auto allReduceGraphParamValues() {
