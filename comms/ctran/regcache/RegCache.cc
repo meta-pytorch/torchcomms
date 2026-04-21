@@ -311,6 +311,7 @@ commResult_t ctran::RegCache::globalRegister(
     const void* buf,
     size_t len,
     bool forceReg,
+    bool ncclManaged,
     int deviceId) {
   if (buf == nullptr || len == 0) {
     return commSuccess;
@@ -337,7 +338,7 @@ commResult_t ctran::RegCache::globalRegister(
       buf,
       len,
       cudaDev,
-      false /* ncclManaged */,
+      ncclManaged,
       0 /* commHash - not used for global registration */,
       segments,
       segHdls));
@@ -357,14 +358,17 @@ commResult_t ctran::RegCache::globalRegister(
         globalBackends_,
         didRegister,
         &regHdl,
-        false /* ncclManaged */));
+        ncclManaged));
   }
 
   return commSuccess;
 }
 
-commResult_t
-ctran::RegCache::globalDeregister(const void* buf, size_t len, int deviceId) {
+commResult_t ctran::RegCache::globalDeregister(
+    const void* buf,
+    size_t len,
+    bool skipRemRelease,
+    int deviceId) {
   if (buf == nullptr || len == 0) {
     return commSuccess;
   }
@@ -390,13 +394,13 @@ ctran::RegCache::globalDeregister(const void* buf, size_t len, int deviceId) {
   std::vector<ctran::regcache::RegElem*> regElems;
   FB_COMMCHECK(lookupSegmentsForBuffer(buf, len, cudaDev, segHdls, regElems));
 
-  // Call releaseFromAllClients on regElems before freeing segments.
-  // This iterates all registered IpcExportClients (mappers) and notifies
-  // remote peers to release their imported NVL memory.
-  auto ipcRegCache = ctran::IpcRegCache::getInstance();
-  for (auto& regElem : regElems) {
-    if (regElem->ipcRegElem != nullptr) {
-      FB_COMMCHECK(ipcRegCache->releaseFromAllClients(regElem));
+  if (!skipRemRelease) {
+    // Notify remote peers to release their imported NVL memory.
+    auto ipcRegCache = ctran::IpcRegCache::getInstance();
+    for (auto& regElem : regElems) {
+      if (regElem->ipcRegElem != nullptr) {
+        FB_COMMCHECK(ipcRegCache->releaseFromAllClients(regElem));
+      }
     }
   }
 

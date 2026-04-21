@@ -118,6 +118,13 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
    */
   commResult_t deregDynamic(void* regHdl);
 
+  /* Remove a registration handle from the export tracking cache.
+   * Used when the caller handles deregistration separately (e.g., via
+   * globalDeregisterWithPtr) and needs to prevent the mapper destructor
+   * from accessing a freed RegElem.
+   */
+  void removeFromExportCache(void* regHdl);
+
   /* Deregister an imported buffer registration from remote peer.
    * Input arguments:
    *  - rkey: the remoteAccessKey of the imported remote buffer received in
