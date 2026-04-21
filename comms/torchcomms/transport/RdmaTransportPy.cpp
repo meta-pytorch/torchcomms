@@ -23,7 +23,7 @@ folly::ScopedEventBaseThread& getScopedEventBaseThread() {
 }
 } // namespace
 
-PYBIND11_MODULE(_transport, m) {
+PYBIND11_MODULE(_transport, m, py::mod_gil_not_used()) {
   m.doc() = "RdmaTransport python bindings for TorchComm";
 
   py::class_<RdmaRemoteBuffer, std::shared_ptr<RdmaRemoteBuffer>>(
