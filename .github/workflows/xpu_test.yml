@@ -44,6 +44,7 @@ jobs:
         if: always()
         shell: bash
         run: |
+          echo "ZE_AFFINITY_MASK=$ZE_AFFINITY_MASK"
           timeout 30 xpu-smi discovery || true
           xpu-smi topology -m
 
@@ -79,6 +80,7 @@ jobs:
       - name: Get docker image
         run: |
           docker pull "${{ env.DOCKER_IMAGE }}"
+          echo
 
       - name: Test
         id: test
