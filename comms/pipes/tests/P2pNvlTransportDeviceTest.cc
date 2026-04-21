@@ -1046,6 +1046,196 @@ TEST_F(P2pNvlTransportDeviceTwoGpuFixture, DeviceSignalTwoGpuPingPong) {
   CUDACHECK_TEST(cudaFree(transport1_d));
 }
 
+TEST_F(P2pNvlTransportDeviceTestFixture, PutTilePerGroup) {
+  const std::size_t tileSize = 4096;
+  const int numGroups = 4;
+
+  // Allocate per-group src and dst buffers
+  char* src_d;
+  char* dst_d;
+  CUDACHECK_TEST(cudaMalloc(&src_d, tileSize * numGroups));
+  CUDACHECK_TEST(cudaMalloc(&dst_d, tileSize * numGroups));
+  CUDACHECK_TEST(cudaMemset(dst_d, 0, tileSize * numGroups));
+
+  // Fill each group's tile with a distinct pattern
+  std::vector<char> srcPattern(tileSize * numGroups);
+  for (int g = 0; g < numGroups; ++g) {
+    for (std::size_t i = 0; i < tileSize; ++i) {
+      srcPattern[g * tileSize + i] = static_cast<char>((g + 1) * 10 + (i % 64));
+    }
+  }
+  CUDACHECK_TEST(cudaMemcpy(
+      src_d, srcPattern.data(), tileSize * numGroups, cudaMemcpyHostToDevice));
+
+  // Minimal transport — put_tile doesn't use any transport buffers
+  P2pNvlTransportOptions options{
+      .dataBufferSize = 1024,
+      .chunkSize = 512,
+      .pipelineDepth = 2,
+  };
+  LocalState localState{
+      .dataBuffer = nullptr,
+      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
+  };
+  RemoteState remoteState{
+      .dataBuffer = nullptr,
+      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
+  };
+  P2pNvlTransportDevice transport(0, 0, options, localState, remoteState);
+
+  P2pNvlTransportDevice* transport_d;
+  CUDACHECK_TEST(cudaMalloc(&transport_d, sizeof(P2pNvlTransportDevice)));
+  CUDACHECK_TEST(cudaMemcpy(
+      transport_d,
+      &transport,
+      sizeof(P2pNvlTransportDevice),
+      cudaMemcpyHostToDevice));
+
+  // Launch numGroups blocks, each copying its own tile independently
+  // Each group offsets by group.group_id * tileSize into src/dst
+  test::testDevicePutTile(
+      transport_d,
+      dst_d,
+      src_d,
+      tileSize,
+      numGroups,
+      256,
+      test::GroupType::BLOCK);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Verify all data was copied correctly
+  std::vector<char> result(tileSize * numGroups);
+  CUDACHECK_TEST(cudaMemcpy(
+      result.data(), dst_d, tileSize * numGroups, cudaMemcpyDeviceToHost));
+
+  for (std::size_t i = 0; i < tileSize * numGroups; ++i) {
+    ASSERT_EQ(result[i], srcPattern[i]) << "Mismatch at byte " << i;
+  }
+
+  CUDACHECK_TEST(cudaFree(src_d));
+  CUDACHECK_TEST(cudaFree(dst_d));
+  CUDACHECK_TEST(cudaFree(transport_d));
+}
+
+TEST_F(P2pNvlTransportDeviceTwoGpuFixture, DeviceResetSignalTwoGpu) {
+  const int numSignals = 8;
+
+  CUDACHECK_TEST(cudaSetDevice(kGpu0));
+  SignalState* signalBuffer0;
+  CUDACHECK_TEST(cudaMalloc(&signalBuffer0, numSignals * sizeof(SignalState)));
+  CUDACHECK_TEST(
+      cudaMemset(signalBuffer0, 0, numSignals * sizeof(SignalState)));
+
+  CUDACHECK_TEST(cudaSetDevice(kGpu1));
+  SignalState* signalBuffer1;
+  CUDACHECK_TEST(cudaMalloc(&signalBuffer1, numSignals * sizeof(SignalState)));
+  CUDACHECK_TEST(
+      cudaMemset(signalBuffer1, 0, numSignals * sizeof(SignalState)));
+
+  P2pNvlTransportOptions options{
+      .dataBufferSize = 1024,
+      .chunkSize = 512,
+      .pipelineDepth = 2,
+  };
+
+  LocalState localState0{
+      .dataBuffer = nullptr,
+      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .signalBuffer = DeviceSpan<SignalState>(signalBuffer0, numSignals),
+  };
+  RemoteState remoteState0{
+      .dataBuffer = nullptr,
+      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .signalBuffer = DeviceSpan<SignalState>(signalBuffer1, numSignals),
+  };
+  P2pNvlTransportDevice transport0(
+      kGpu0, kGpu1, options, localState0, remoteState0);
+
+  P2pNvlTransportDevice* transport0_d;
+  CUDACHECK_TEST(cudaMalloc(&transport0_d, sizeof(P2pNvlTransportDevice)));
+  CUDACHECK_TEST(cudaMemcpy(
+      transport0_d,
+      &transport0,
+      sizeof(P2pNvlTransportDevice),
+      cudaMemcpyHostToDevice));
+
+  LocalState localState1{
+      .dataBuffer = nullptr,
+      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .signalBuffer = DeviceSpan<SignalState>(signalBuffer1, numSignals),
+  };
+  RemoteState remoteState1{
+      .dataBuffer = nullptr,
+      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .signalBuffer = DeviceSpan<SignalState>(signalBuffer0, numSignals),
+  };
+  P2pNvlTransportDevice transport1(
+      kGpu1, kGpu0, options, localState1, remoteState1);
+
+  CUDACHECK_TEST(cudaSetDevice(kGpu1));
+  P2pNvlTransportDevice* transport1_d;
+  CUDACHECK_TEST(cudaMalloc(&transport1_d, sizeof(P2pNvlTransportDevice)));
+  CUDACHECK_TEST(cudaMemcpy(
+      transport1_d,
+      &transport1,
+      sizeof(P2pNvlTransportDevice),
+      cudaMemcpyHostToDevice));
+
+  const int numBlocks = 1;
+  const int blockSize = 32;
+  const uint64_t signalId = 0;
+
+  // GPU 0 signals value 42 to GPU 1
+  CUDACHECK_TEST(cudaSetDevice(kGpu0));
+  test::testDeviceSignal(
+      transport0_d, signalId, SignalOp::SIGNAL_SET, 42, numBlocks, blockSize);
+
+  // GPU 1 waits for signal, then resets it
+  CUDACHECK_TEST(cudaSetDevice(kGpu1));
+  test::testDeviceWaitSignal(
+      transport1_d, signalId, CmpOp::CMP_EQ, 42, numBlocks, blockSize);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  test::testDeviceResetSignal(transport1_d, signalId, numBlocks, blockSize);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Verify signal is back to 0 by reading the raw buffer
+  uint64_t* result_d;
+  CUDACHECK_TEST(cudaMalloc(&result_d, sizeof(uint64_t)));
+  test::testReadSignal(&signalBuffer1[signalId], result_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  uint64_t result_h;
+  CUDACHECK_TEST(cudaMemcpy(
+      &result_h, result_d, sizeof(uint64_t), cudaMemcpyDeviceToHost));
+  ASSERT_EQ(result_h, 0) << "Signal should be 0 after reset";
+
+  // GPU 0 signals again with a new value — verifies the slot is reusable
+  CUDACHECK_TEST(cudaSetDevice(kGpu0));
+  test::testDeviceSignal(
+      transport0_d, signalId, SignalOp::SIGNAL_SET, 99, numBlocks, blockSize);
+
+  // GPU 1 waits for the new value
+  CUDACHECK_TEST(cudaSetDevice(kGpu1));
+  test::testDeviceWaitSignal(
+      transport1_d, signalId, CmpOp::CMP_EQ, 99, numBlocks, blockSize);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  CUDACHECK_TEST(cudaFree(result_d));
+  CUDACHECK_TEST(cudaSetDevice(kGpu0));
+  CUDACHECK_TEST(cudaFree(signalBuffer0));
+  CUDACHECK_TEST(cudaFree(transport0_d));
+  CUDACHECK_TEST(cudaSetDevice(kGpu1));
+  CUDACHECK_TEST(cudaFree(signalBuffer1));
+  CUDACHECK_TEST(cudaFree(transport1_d));
+}
+
 // =============================================================================
 // LL128 Transport Send/Recv Tests
 // These test the ll128_send()/ll128_recv() methods on P2pNvlTransportDevice

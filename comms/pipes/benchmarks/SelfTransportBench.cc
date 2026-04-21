@@ -91,6 +91,71 @@ static void selfTransportPut(
 }
 
 /**
+ * Benchmark P2pSelfTransportDevice::put_tile() for per-group local copies.
+ * Each block independently copies its own tile (totalBytes / nBlocks).
+ */
+static void selfTransportPutTile(
+    uint32_t iters,
+    size_t nBytes,
+    int nBlocks,
+    folly::UserCounters& counters) {
+  const int nRunsPerIter = 50;
+  const int nThreads = 256;
+
+  CHECK_EQ(cudaSetDevice(0), cudaSuccess);
+  CudaBenchBase bench;
+
+  DeviceBuffer srcBuffer(nBytes);
+  DeviceBuffer dstBuffer(nBytes);
+
+  char* srcPtr = static_cast<char*>(srcBuffer.get());
+  char* dstPtr = static_cast<char*>(dstBuffer.get());
+
+  size_t tileSize = nBytes / nBlocks;
+
+  dim3 grid{static_cast<unsigned int>(nBlocks), 1, 1};
+  dim3 blocks{static_cast<unsigned int>(nThreads), 1, 1};
+  void* kernArgs[4] = {
+      (void*)&dstPtr, (void*)&srcPtr, (void*)&tileSize, (void*)&nRunsPerIter};
+
+  for (int w = 0; w < kWarmupIters; ++w) {
+    CHECK_EQ(
+        cudaLaunchKernel(
+            (const void*)selfTransportPutTileKernel,
+            grid,
+            blocks,
+            kernArgs,
+            0,
+            bench.stream),
+        cudaSuccess);
+  }
+  CHECK_EQ(cudaStreamSynchronize(bench.stream), cudaSuccess);
+
+  bench.startTiming();
+  for (uint32_t i = 0; i < iters; ++i) {
+    CHECK_EQ(
+        cudaLaunchKernel(
+            (const void*)selfTransportPutTileKernel,
+            grid,
+            blocks,
+            kernArgs,
+            0,
+            bench.stream),
+        cudaSuccess);
+  }
+  bench.stopTiming();
+  float totalTimeMs = bench.measureTime();
+
+  float avgTimeUs = (totalTimeMs / iters / nRunsPerIter) * 1000.0f;
+  float busBwGBps = (nBytes / 1e9f) / (avgTimeUs / 1e6f);
+
+  counters["latency (us)"] =
+      folly::UserMetric(avgTimeUs, folly::UserMetric::Type::METRIC);
+  counters["bandwidth (GB/s)"] =
+      folly::UserMetric(busBwGBps, folly::UserMetric::Type::METRIC);
+}
+
+/**
  * Benchmark cudaMemcpyAsync as a baseline for comparison
  */
 static void cudaMemcpyBaseline(
@@ -272,6 +337,150 @@ BENCHMARK_MULTI_PARAM_COUNTERS(
     size_512MB_64blocks,
     512 * 1024 * 1024,
     64);
+
+// Self transport benchmarks - 1GB with 32 blocks
+BENCHMARK_MULTI_PARAM_COUNTERS(
+    selfTransportPut,
+    size_1GB_32blocks,
+    1024UL * 1024 * 1024,
+    32);
+
+BENCHMARK_DRAW_LINE();
+
+// Self transport put_tile benchmarks - 8MB with different block counts
+BENCHMARK_MULTI_PARAM_COUNTERS(
+    selfTransportPutTile,
+    size_8MB_2blocks,
+    8 * 1024 * 1024,
+    2);
+BENCHMARK_MULTI_PARAM_COUNTERS(
+    selfTransportPutTile,
+    size_8MB_4blocks,
+    8 * 1024 * 1024,
+    4);
+BENCHMARK_MULTI_PARAM_COUNTERS(
+    selfTransportPutTile,
+    size_8MB_8blocks,
+    8 * 1024 * 1024,
+    8);
+BENCHMARK_MULTI_PARAM_COUNTERS(
+    selfTransportPutTile,
+    size_8MB_16blocks,
+    8 * 1024 * 1024,
+    16);
+BENCHMARK_MULTI_PARAM_COUNTERS(
+    selfTransportPutTile,
+    size_8MB_32blocks,
+    8 * 1024 * 1024,
+    32);
+BENCHMARK_MULTI_PARAM_COUNTERS(
+    selfTransportPutTile,
+    size_8MB_64blocks,
+    8 * 1024 * 1024,
+    64);
+
+// Self transport put_tile benchmarks - 64MB with different block counts
+BENCHMARK_MULTI_PARAM_COUNTERS(
+    selfTransportPutTile,
+    size_64MB_2blocks,
+    64 * 1024 * 1024,
+    2);
+BENCHMARK_MULTI_PARAM_COUNTERS(
+    selfTransportPutTile,
+    size_64MB_4blocks,
+    64 * 1024 * 1024,
+    4);
+BENCHMARK_MULTI_PARAM_COUNTERS(
+    selfTransportPutTile,
+    size_64MB_8blocks,
+    64 * 1024 * 1024,
+    8);
+BENCHMARK_MULTI_PARAM_COUNTERS(
+    selfTransportPutTile,
+    size_64MB_16blocks,
+    64 * 1024 * 1024,
+    16);
+BENCHMARK_MULTI_PARAM_COUNTERS(
+    selfTransportPutTile,
+    size_64MB_32blocks,
+    64 * 1024 * 1024,
+    32);
+BENCHMARK_MULTI_PARAM_COUNTERS(
+    selfTransportPutTile,
+    size_64MB_64blocks,
+    64 * 1024 * 1024,
+    64);
+
+// Self transport put_tile benchmarks - 256MB with different block counts
+BENCHMARK_MULTI_PARAM_COUNTERS(
+    selfTransportPutTile,
+    size_256MB_2blocks,
+    256 * 1024 * 1024,
+    2);
+BENCHMARK_MULTI_PARAM_COUNTERS(
+    selfTransportPutTile,
+    size_256MB_4blocks,
+    256 * 1024 * 1024,
+    4);
+BENCHMARK_MULTI_PARAM_COUNTERS(
+    selfTransportPutTile,
+    size_256MB_8blocks,
+    256 * 1024 * 1024,
+    8);
+BENCHMARK_MULTI_PARAM_COUNTERS(
+    selfTransportPutTile,
+    size_256MB_16blocks,
+    256 * 1024 * 1024,
+    16);
+BENCHMARK_MULTI_PARAM_COUNTERS(
+    selfTransportPutTile,
+    size_256MB_32blocks,
+    256 * 1024 * 1024,
+    32);
+BENCHMARK_MULTI_PARAM_COUNTERS(
+    selfTransportPutTile,
+    size_256MB_64blocks,
+    256 * 1024 * 1024,
+    64);
+
+// Self transport put_tile benchmarks - 512MB with different block counts
+BENCHMARK_MULTI_PARAM_COUNTERS(
+    selfTransportPutTile,
+    size_512MB_2blocks,
+    512 * 1024 * 1024,
+    2);
+BENCHMARK_MULTI_PARAM_COUNTERS(
+    selfTransportPutTile,
+    size_512MB_4blocks,
+    512 * 1024 * 1024,
+    4);
+BENCHMARK_MULTI_PARAM_COUNTERS(
+    selfTransportPutTile,
+    size_512MB_8blocks,
+    512 * 1024 * 1024,
+    8);
+BENCHMARK_MULTI_PARAM_COUNTERS(
+    selfTransportPutTile,
+    size_512MB_16blocks,
+    512 * 1024 * 1024,
+    16);
+BENCHMARK_MULTI_PARAM_COUNTERS(
+    selfTransportPutTile,
+    size_512MB_32blocks,
+    512 * 1024 * 1024,
+    32);
+BENCHMARK_MULTI_PARAM_COUNTERS(
+    selfTransportPutTile,
+    size_512MB_64blocks,
+    512 * 1024 * 1024,
+    64);
+
+// Self transport put_tile benchmarks - 1GB with 32 blocks
+BENCHMARK_MULTI_PARAM_COUNTERS(
+    selfTransportPutTile,
+    size_1GB_32blocks,
+    1024UL * 1024 * 1024,
+    32);
 
 BENCHMARK_DRAW_LINE();
 

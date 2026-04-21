@@ -18,4 +18,18 @@ __global__ void selfTransportPutKernel(
   }
 }
 
+__global__ void selfTransportPutTileKernel(
+    char* dst,
+    const char* src,
+    std::size_t tileSize,
+    int nRuns) {
+  P2pSelfTransportDevice transport;
+  auto group = make_block_group();
+  std::size_t offset = group.group_id * tileSize;
+
+  for (int run = 0; run < nRuns; ++run) {
+    transport.put_tile(group, dst + offset, src + offset, tileSize);
+  }
+}
+
 } // namespace comms::pipes::benchmark

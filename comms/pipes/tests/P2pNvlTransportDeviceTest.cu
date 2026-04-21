@@ -96,6 +96,49 @@ void testDeviceSignalThenWait(
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
+__global__ void testDevicePutTileKernel(
+    P2pNvlTransportDevice* p2p,
+    char* dst_d,
+    const char* src_d,
+    std::size_t tileSize,
+    GroupType groupType) {
+  auto group = make_group(groupType);
+  std::size_t offset = group.group_id * tileSize;
+  p2p->put_tile(group, dst_d + offset, src_d + offset, tileSize);
+}
+
+void testDevicePutTile(
+    P2pNvlTransportDevice* p2p,
+    char* dst_d,
+    const char* src_d,
+    std::size_t tileSize,
+    int numBlocks,
+    int blockSize,
+    GroupType groupType) {
+  testDevicePutTileKernel<<<numBlocks, blockSize>>>(
+      p2p, dst_d, src_d, tileSize, groupType);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+__global__ void testDeviceResetSignalKernel(
+    P2pNvlTransportDevice* p2p,
+    uint64_t signalId,
+    GroupType groupType) {
+  auto group = make_group(groupType);
+  p2p->reset_signal_threadgroup(group, signalId);
+}
+
+void testDeviceResetSignal(
+    P2pNvlTransportDevice* p2p,
+    uint64_t signalId,
+    int numBlocks,
+    int blockSize,
+    GroupType groupType) {
+  testDeviceResetSignalKernel<<<numBlocks, blockSize>>>(
+      p2p, signalId, groupType);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
 // =============================================================================
 // Direct Signal struct test kernels
 // =============================================================================
