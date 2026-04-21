@@ -147,6 +147,83 @@ INSTANTIATE_TEST_SUITE_P(
           std::get<1>(info.param);
     });
 
+// Test window allgather with disjoint (multi-segment) memory allocation,
+// simulating expandable segments. Verifies that ctranWinRegister works with
+// globalRegisterWithPtr for buffers backed by multiple physical segments.
+TEST_F(CtranWinAllGatherTest, DisjointMemory) {
+  SysEnvRAII algoEnv("NCCL_ALLGATHER_P_ALGO", "ctdirect");
+
+  auto comm = makeCtranComm();
+  ASSERT_NE(comm, nullptr);
+
+  auto statex = comm->statex_.get();
+  ASSERT_NE(statex, nullptr);
+
+  const auto nRanks = statex->nRanks();
+  const auto myRank = statex->rank();
+  const commDataType_t dt = commFloat;
+  // sendCount must be large enough that recvBytes (sendCount * 4 * nRanks)
+  // spans multiple 2MB-aligned cuMem segments to trigger the multi-segment
+  // path in pinRange. With 8 ranks: 1M * 4 * 8 = 32MB > 2MB.
+  const size_t sendCount = 1024 * 1024;
+  const size_t sendBytes = sendCount * commTypeSize(dt);
+  const size_t recvBytes = sendBytes * nRanks;
+
+  if (!CtranWin::allGatherPSupported(comm.get())) {
+    GTEST_SKIP() << "allGatherP not supported on this topology";
+  }
+
+  cudaStream_t stream;
+  CUDACHECK_TEST(cudaStreamCreate(&stream));
+
+  // Allocate recv buffer as disjoint segments (simulates expandable segments)
+  constexpr int kNumSegments = 4;
+  size_t segSize = recvBytes / kNumSegments;
+  std::vector<size_t> segSizes(kNumSegments, segSize);
+  std::vector<TestMemSegment> segments;
+  void* winBase = nullptr;
+  ASSERT_EQ(commMemAllocDisjoint(&winBase, segSizes, segments), commSuccess);
+
+  CtranWin* win = nullptr;
+  auto res = ctranWinRegister(winBase, recvBytes, comm.get(), &win);
+  ASSERT_EQ(res, commSuccess);
+
+  void* sendbuf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&sendbuf, sendBytes));
+
+  CtranPersistentRequest* request = nullptr;
+  ASSERT_EQ(
+      ctran::allGatherWinInit(win, comm.get(), stream, request), commSuccess);
+  ASSERT_NE(request, nullptr);
+  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+
+  constexpr int nIter = 3;
+  for (int iter = 0; iter < nIter; iter++) {
+    const float sendVal = static_cast<float>(myRank * 100 + iter);
+    std::vector<float> sendVals(sendCount, sendVal);
+    CUDACHECK_TEST(cudaMemcpyAsync(
+        sendbuf, sendVals.data(), sendBytes, cudaMemcpyHostToDevice, stream));
+    CUDACHECK_TEST(cudaMemsetAsync(winBase, 0, recvBytes, stream));
+
+    ASSERT_EQ(
+        ctran::allGatherWinExec(sendbuf, sendCount, dt, request), commSuccess);
+    CUDACHECK_TEST(cudaStreamSynchronize(stream));
+
+    verifyAllGather(winBase, sendCount, sendBytes, nRanks, myRank, iter);
+  }
+
+  ASSERT_EQ(comm->ctran_->gpe->numInUseKernelElems(), 0);
+  ASSERT_EQ(comm->ctran_->gpe->numInUseKernelFlags(), 0);
+
+  ASSERT_EQ(ctran::allGatherWinDestroy(request), commSuccess);
+  delete request;
+
+  CUDACHECK_TEST(cudaFree(sendbuf));
+  ASSERT_EQ(ctranWinFree(win), commSuccess);
+  ASSERT_EQ(commMemFreeDisjoint(winBase, segSizes), commSuccess);
+  CUDACHECK_TEST(cudaStreamDestroy(stream));
+}
+
 class CtranWinAllGatherTestEnv : public ctran::CtranEnvironmentBase {
  public:
   void SetUp() override {

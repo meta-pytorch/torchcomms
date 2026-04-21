@@ -280,11 +280,16 @@ class RegCache {
       const void* buf,
       size_t len,
       bool forceReg = false,
+      bool ncclManaged = false,
       int deviceId = -1);
 
   // Global deregistration using pointer lookup.
   // Frees cached segments and their associated registrations.
-  commResult_t globalDeregister(const void* buf, size_t len, int deviceId = -1);
+  commResult_t globalDeregister(
+      const void* buf,
+      size_t len,
+      bool skipRemRelease = false,
+      int deviceId = -1);
 
   // Thread-safe functions to cache a buffer range into the global cache.
   // This function uses pinRange to discover all physical segments underlying
