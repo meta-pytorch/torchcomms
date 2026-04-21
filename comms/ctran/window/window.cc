@@ -221,7 +221,7 @@ commResult_t CtranWin::allocate(void* userBufPtr) {
   return commSuccess;
 }
 
-commResult_t CtranWin::free() {
+commResult_t CtranWin::free(bool skipBarrier) {
   auto statex = comm->statex_.get();
   if (statex == nullptr) {
     FB_ERRORRETURN(commInternalError, "Empty communicator statex.");
@@ -239,11 +239,14 @@ commResult_t CtranWin::free() {
       statex->commHash());
 
   // A barrier among ranks before freeing window to prevent peer ranks accessing
-  // the window after it is freed.
+  // the window after it is freed. Skipped when called from deferred cleanup at
+  // comm destruction (all communication is already finalized).
   // NOTE: the window object is not aware of CUDA streams, users need to
   // ensure the host process waits for CUDA streams where put/wait operations
   // are launched.
-  FB_COMMCHECK(mapper->barrier());
+  if (!skipBarrier) {
+    FB_COMMCHECK(mapper->barrier());
+  }
 
   auto nRanks = statex->nRanks();
 

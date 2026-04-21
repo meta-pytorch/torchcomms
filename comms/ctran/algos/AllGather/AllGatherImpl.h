@@ -53,12 +53,24 @@ static inline const std::string allGatherAlgoName(
       return "CtranBrucksFF";
     case NCCL_ALLGATHER_ALGO::ctran:
       return "CtranAuto";
+    case NCCL_ALLGATHER_ALGO::ctgraph:
+      return "CtranCudagraphAware";
     case NCCL_ALLGATHER_ALGO::orig:
       return "Baseline";
     default:
       return "Unknown";
   }
 }
+
+// Cudagraph-aware path: transparently converts a regular allgather to the
+// persistent window-based AGP algorithm during CUDA graph capture.
+commResult_t ctranAllGatherCudagraphAware(
+    const void* sendbuff,
+    void* recvbuff,
+    size_t sendcount,
+    commDataType_t datatype,
+    CtranComm* comm,
+    cudaStream_t stream);
 
 commResult_t prepareAllGatherArgs(
     std::vector<std::unique_ptr<struct OpElem>>& opGroup,
