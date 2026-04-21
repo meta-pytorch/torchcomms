@@ -44,6 +44,7 @@ jobs:
         if: always()
         shell: bash
         run: |
+          echo "ZE_AFFINITY_MASK=${ZE_AFFINITY_MASK}" >> $GITHUB_ENV
           timeout 30 xpu-smi discovery || true
           xpu-smi topology -m
 
@@ -93,7 +94,7 @@ jobs:
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
           GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
           SHA1: ${{ github.event.pull_request.head.sha || github.sha }}
-          ZE_AFFINITY_MASK: ${{ env. ZE_AFFINITY_MASK }}
+          ZE_AFFINITY_MASK: ${{ env.ZE_AFFINITY_MASK }}
         timeout-minutes: 120
         run: |
           set -x
@@ -111,7 +112,7 @@ jobs:
             -e GITHUB_RUN_ID \
             -e GITHUB_RUN_NUMBER \
             -e GITHUB_RUN_ATTEMPT \
-            -e ZE_AFFINITY_MASK=${ZE_AFFINITY_MASK} \
+            -e ZE_AFFINITY_MASK \
             -e JOB_ID \
             -e BRANCH \
             -e SHA1 \
