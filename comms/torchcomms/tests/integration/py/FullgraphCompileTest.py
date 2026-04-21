@@ -21,9 +21,12 @@ if is_torch_compile_supported_and_enabled():
     from torchcomms.tests.integration.py.TorchCommTestHelpers import (  # noqa: E402
         get_dtype_name,
         get_op_name,
+        is_full_sweep,
         TorchCommTestWrapper,
     )
 else:
+    from torchcomms.tests.integration.py.TorchCommTestHelpers import is_full_sweep
+
     ReduceOp = None
 
 logger = logging.getLogger(__name__)
@@ -36,8 +39,12 @@ class FullgraphCompileTest(unittest.TestCase):
 
     # Class variables for test parameters
     counts = [4, 1024]
-    dtypes = [torch.float, torch.int]
-    ops = [ReduceOp.SUM, ReduceOp.MAX] if ReduceOp is not None else []
+    dtypes = [torch.float, torch.int] if is_full_sweep() else [torch.float]
+    ops = (
+        ([ReduceOp.SUM, ReduceOp.MAX] if is_full_sweep() else [ReduceOp.SUM])
+        if ReduceOp is not None
+        else []
+    )
 
     def get_wrapper(self):
         return TorchCommTestWrapper()

@@ -12,6 +12,16 @@ from torch.distributed import PrefixStore, TCPStore
 from torchcomms import new_comm, RedOpType, ReduceOp
 
 
+def is_full_sweep():
+    """Check if the test should run the full parameter sweep.
+
+    When TEST_FULL_SWEEP=0, tests use a reduced set of parameters
+    (fewer counts, dtypes, ops) for a faster smoke test. The full
+    sweep runs all parameter combinations.
+    """
+    return os.environ.get("TEST_FULL_SWEEP", "1") == "1"
+
+
 def get_dtype_name(dtype):
     """Helper function to get a string representation of the datatype."""
     if dtype == torch.half:

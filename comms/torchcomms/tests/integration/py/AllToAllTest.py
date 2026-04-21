@@ -9,6 +9,7 @@ import unittest
 import torch
 from torchcomms.tests.integration.py.TorchCommTestHelpers import (
     get_dtype_name,
+    is_full_sweep,
     TorchCommTestWrapper,
 )
 
@@ -17,8 +18,8 @@ class AllToAllTest(unittest.TestCase):
     """Test class for all_to_all operations in TorchComm."""
 
     # Class variables for test parameters
-    counts = [0, 4, 1024, 1024 * 1024]
-    dtypes = [torch.float, torch.int, torch.int8]
+    counts = [0, 4, 1024, 1024 * 1024] if is_full_sweep() else [4, 1024 * 1024]
+    dtypes = [torch.float, torch.int, torch.int8] if is_full_sweep() else [torch.float]
     num_replays = 4
 
     def get_wrapper(self):
