@@ -45,7 +45,7 @@ std::chrono::system_clock::time_point GlobaltimerCalibration::toWallClock(
         cudaHostAllocDefault));
     *mapped_ptr = 0;
 
-    launchReadGlobaltimer(nullptr, mapped_ptr);
+    CUDA_CHECK_CC(launchReadGlobaltimer(nullptr, mapped_ptr));
     CUDA_CHECK_CC(cudaDeviceSynchronize());
 
     cal.device_ns = *mapped_ptr;
