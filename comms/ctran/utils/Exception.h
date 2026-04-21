@@ -34,7 +34,7 @@ class Exception : public std::exception {
     if (desc) {
       vec.emplace_back(fmt::format("desc: {}", *desc));
     }
-    msg_ = fmt::format(
+    msg = fmt::format(
         "Exception: {}, {}, result: {} ({})",
         context,
         fmt::join(vec, ", "),
@@ -43,7 +43,7 @@ class Exception : public std::exception {
   };
 
   const char* what() const noexcept override {
-    return msg_.c_str();
+    return msg.c_str();
   }
 
   int rank() const {
@@ -62,8 +62,10 @@ class Exception : public std::exception {
     return result_;
   }
 
+ protected:
+  std::string msg;
+
  private:
-  std::string msg_;
   commResult_t result_{commSuccess};
   std::optional<int> rank_;
   std::optional<uint64_t> commHash_;
