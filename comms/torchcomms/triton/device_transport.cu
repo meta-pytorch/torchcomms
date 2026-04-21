@@ -22,7 +22,7 @@ __device__ __noinline__ int torchcomms_transport_send(
     unsigned long long nbytes) {
   auto* handle = reinterpret_cast<MultiPeerDeviceHandle*>(handle_ptr);
   auto group = make_block_group();
-  handle->get_nvl(peer).send(group, src_ptr, static_cast<size_t>(nbytes));
+  handle->get_nvl(peer).send_group(group, src_ptr, static_cast<size_t>(nbytes));
   return 0;
 }
 
@@ -33,7 +33,7 @@ __device__ __noinline__ int torchcomms_transport_recv(
     unsigned long long nbytes) {
   auto* handle = reinterpret_cast<MultiPeerDeviceHandle*>(handle_ptr);
   auto group = make_block_group();
-  handle->get_nvl(peer).recv(group, dst_ptr, static_cast<size_t>(nbytes));
+  handle->get_nvl(peer).recv_group(group, dst_ptr, static_cast<size_t>(nbytes));
   return 0;
 }
 

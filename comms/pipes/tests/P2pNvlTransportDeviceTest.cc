@@ -87,9 +87,9 @@ class P2pNvlTransportDeviceTwoGpuFixture : public ::testing::Test {
   }
 
   /**
-   * Runs an LL128 loopback test: GPU0 ll128_send → GPU1 ll128_recv, verifies
-   * data. Handles LL128 buffer allocation, transport setup, kernel launch,
-   * verify, cleanup.
+   * Runs an LL128 loopback test: GPU0 ll128_send_group → GPU1
+   * ll128_recv_group, verifies data. Handles LL128 buffer allocation,
+   * transport setup, kernel launch, verify, cleanup.
    */
   void runLl128LoopbackTest(
       std::size_t nbytes,
@@ -1046,7 +1046,7 @@ TEST_F(P2pNvlTransportDeviceTwoGpuFixture, DeviceSignalTwoGpuPingPong) {
   CUDACHECK_TEST(cudaFree(transport1_d));
 }
 
-TEST_F(P2pNvlTransportDeviceTestFixture, PutTilePerGroup) {
+TEST_F(P2pNvlTransportDeviceTestFixture, PutPerGroup) {
   const std::size_t tileSize = 4096;
   const int numGroups = 4;
 
@@ -1067,7 +1067,7 @@ TEST_F(P2pNvlTransportDeviceTestFixture, PutTilePerGroup) {
   CUDACHECK_TEST(cudaMemcpy(
       src_d, srcPattern.data(), tileSize * numGroups, cudaMemcpyHostToDevice));
 
-  // Minimal transport — put_tile doesn't use any transport buffers
+  // Minimal transport — put doesn't use any transport buffers
   P2pNvlTransportOptions options{
       .dataBufferSize = 1024,
       .chunkSize = 512,
@@ -1097,7 +1097,7 @@ TEST_F(P2pNvlTransportDeviceTestFixture, PutTilePerGroup) {
 
   // Launch numGroups blocks, each copying its own tile independently
   // Each group offsets by group.group_id * tileSize into src/dst
-  test::testDevicePutTile(
+  test::testDevicePut(
       transport_d,
       dst_d,
       src_d,
@@ -1238,7 +1238,8 @@ TEST_F(P2pNvlTransportDeviceTwoGpuFixture, DeviceResetSignalTwoGpu) {
 
 // =============================================================================
 // LL128 Transport Send/Recv Tests
-// These test the ll128_send()/ll128_recv() methods on P2pNvlTransportDevice
+// These test the ll128_send_group()/ll128_recv_group() methods on
+// P2pNvlTransportDevice
 // =============================================================================
 
 TEST_F(P2pNvlTransportDeviceTwoGpuFixture, Ll128SendRecv_4KB) {

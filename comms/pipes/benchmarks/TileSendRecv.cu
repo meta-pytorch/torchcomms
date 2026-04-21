@@ -1,7 +1,7 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 //
 // Tile send/recv kernels — caller partitions data across blocks,
-// each block calls P2pNvlTransportDevice::send_tile/recv_tile.
+// each block calls P2pNvlTransportDevice::send/recv.
 
 #include "comms/pipes/benchmarks/TileSendRecv.cuh"
 
@@ -22,7 +22,7 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecv(
   const int blockId = sub.group_id;
 
   if (role == 0) {
-    p2p.send_tile(
+    p2p.send(
         sub,
         sendTiles.tile_data(blockId),
         sendTiles.tile_bytes(blockId),
@@ -30,7 +30,7 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecv(
         max_signal_bytes,
         timeout);
   } else {
-    p2p.recv_tile(
+    p2p.recv(
         sub,
         recvTiles.tile_data(blockId),
         recvTiles.tile_bytes(blockId),
@@ -109,7 +109,7 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecvDynamic(
   }
 
   if (role == 0) {
-    p2p.send_tile(
+    p2p.send(
         sub,
         sendTiles.tile_data(blockId),
         sendTiles.tile_bytes(blockId),
@@ -117,7 +117,7 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecvDynamic(
         /*max_signal_bytes=*/0,
         timeout);
   } else {
-    p2p.recv_tile(
+    p2p.recv(
         sub,
         recvTiles.tile_data(blockId),
         recvTiles.tile_bytes(blockId),

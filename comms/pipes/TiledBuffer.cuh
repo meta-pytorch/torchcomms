@@ -21,12 +21,12 @@ struct ThreadGroup;
  *
  *   // Mode 1: explicit tile count (host or device)
  *   TiledBuffer<char> tiles(ptr, nbytes, numBlocks);
- *   p2p.send_tile(sub, tiles.tile_data(blockId), tiles.tile_bytes(blockId),
+ *   p2p.send(sub, tiles.tile_data(blockId), tiles.tile_bytes(blockId),
  * ...);
  *
  *   // Mode 2: bind to ThreadGroup (device only, preferred)
  *   TiledBuffer<char> tile(ptr, nbytes, sub);
- *   p2p.send_tile(sub, tile.data(), tile.bytes(), ...);
+ *   p2p.send(sub, tile.data(), tile.bytes(), ...);
  *
  * Mode 2 derives num_tiles from group.total_groups and indexes by
  * group.group_id, eliminating manual blockId bookkeeping.
