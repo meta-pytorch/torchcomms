@@ -106,45 +106,58 @@ static commResult_t putSignalImpl(
       reinterpret_cast<size_t>(win->remWinInfo[peerRank].dataAddr) +
       targetDispNbytes);
 
-  // Get registration handle for local send buffer
+  // Skip data transfer if count is 0 (signal-only, e.g. ready barrier)
   void* localMemHdl = nullptr;
   bool localReg = false;
-  FB_COMMCHECK(comm->ctran_->mapper->searchRegHandle(
-      op->putsignal.sendbuff, putSize, &localMemHdl, &localReg));
+  if (putSize > 0) {
+    // Get registration handle for local send buffer
+    FB_COMMCHECK(comm->ctran_->mapper->searchRegHandle(
+        op->putsignal.sendbuff, putSize, &localMemHdl, &localReg));
 
-  CLOGF_TRACE(
-      COLL,
-      "putSignalImpl: sbuf {}, rbuf {} (base {} + offset {}), size {}, signalAddr {} signalVal {}",
-      op->putsignal.sendbuff,
-      dstPtr,
-      win->remWinInfo[peerRank].dataAddr,
-      targetDispNbytes,
-      putSize,
-      (void*)op->putsignal.signalAddr,
-      op->putsignal.signalVal);
+    CLOGF_TRACE(
+        COLL,
+        "putSignalImpl: sbuf {}, rbuf {} (base {} + offset {}), size {}, signalAddr {} signalVal {}",
+        op->putsignal.sendbuff,
+        dstPtr,
+        win->remWinInfo[peerRank].dataAddr,
+        targetDispNbytes,
+        putSize,
+        (void*)op->putsignal.signalAddr,
+        op->putsignal.signalVal);
 
-  CtranMapperRequest* req = nullptr;
+    CtranMapperRequest* req = nullptr;
 
-  FB_COMMCHECK(comm->ctran_->mapper->iput(
-      op->putsignal.sendbuff,
-      dstPtr,
-      putSize,
-      peerRank,
-      CtranMapperConfig{
-          .memHdl_ = localMemHdl,
-          .remoteAccessKey_ = win->remWinInfo[peerRank].dataRkey,
-      },
-      &req));
+    FB_COMMCHECK(comm->ctran_->mapper->iput(
+        op->putsignal.sendbuff,
+        dstPtr,
+        putSize,
+        peerRank,
+        CtranMapperConfig{
+            .memHdl_ = localMemHdl,
+            .remoteAccessKey_ = win->remWinInfo[peerRank].dataRkey,
+        },
+        &req));
 
-  auto putReq = std::unique_ptr<CtranMapperRequest>(req);
-  FB_COMMCHECK(comm->ctran_->mapper->waitRequest(putReq.get()));
+    auto putReq = std::unique_ptr<CtranMapperRequest>(req);
+    FB_COMMCHECK(comm->ctran_->mapper->waitRequest(putReq.get()));
+  }
 
   CtranMapperRequest signalReq = CtranMapperRequest();
   if (op->putsignal.signalAddr != nullptr) {
+    // For graph replay, read the replay counter to get a fresh monotonic
+    // signal value. The counter is in mapped pinned host memory, so the
+    // GPE host thread can read it directly. For eager, use the baked value.
+    uint64_t signalVal = op->putsignal.signalVal;
+    if (signalVal == 0 && win->graphReplayCounter != nullptr) {
+      // Read with volatile to ensure we see the GPU kernel's write to
+      // this mapped pinned host memory. Without volatile, the CPU may
+      // read a cached stale value.
+      signalVal = *static_cast<volatile uint64_t*>(win->graphReplayCounter);
+    }
     // flush the iput to make sure the signal is sent after the data
     FB_COMMCHECK(comm->ctran_->mapper->atomicSet(
         op->putsignal.signalAddr,
-        op->putsignal.signalVal,
+        signalVal,
         peerRank,
         CtranMapperConfig{
             .remoteAccessKey_ = win->remWinInfo[peerRank].signalRkey},
@@ -181,10 +194,16 @@ static commResult_t signalImpl(
       (void*)op->signal.signalAddr,
       op->signal.signalVal);
 
+  // For graph replay, read the replay counter for a fresh signal value.
+  uint64_t signalVal = op->signal.signalVal;
+  if (signalVal == 0 && win->graphReplayCounter != nullptr) {
+    signalVal = *static_cast<volatile uint64_t*>(win->graphReplayCounter);
+  }
+
   CtranMapperRequest signalReq = CtranMapperRequest();
   FB_COMMCHECK(comm->ctran_->mapper->atomicSet(
       op->signal.signalAddr,
-      op->signal.signalVal,
+      signalVal,
       peerRank,
       CtranMapperConfig{
           .remoteAccessKey_ = win->remWinInfo[peerRank].signalRkey},
@@ -252,9 +271,20 @@ commResult_t ctranPutSignal(
   size_t countNbytes = count * commTypeSize(datatype);
   uint64_t* signalAddr = nullptr;
   uint64_t signalVal = 0;
+  cudaStreamCaptureStatus captureStatus{};
+  cudaStreamGetCaptureInfo(stream, &captureStatus, nullptr);
+  bool isCapturing = (captureStatus == cudaStreamCaptureStatusActive);
   if (signal) {
-    signalVal = win->ctranNextSignalVal(peer);
-    signalAddr = win->remWinInfo[peer].signalAddr + statex->rank();
+    if (isCapturing) {
+      // During graph capture, use the graph signal buffer. The actual
+      // signal value comes from a device-side replay counter read by the
+      // kernel at runtime (not baked into graph args).
+      signalVal = 0; // unused — kernel reads replayCounter instead
+      signalAddr = win->remWinInfo[peer].graphSignalAddr + statex->rank();
+    } else {
+      signalVal = win->ctranNextSignalVal(peer);
+      signalAddr = win->remWinInfo[peer].signalAddr + statex->rank();
+    }
   }
 
   KernelConfig config = KernelConfig(
@@ -266,8 +296,15 @@ commResult_t ctranPutSignal(
 
   // Use direct copy if peer is on the same host and has NVL enabled.
   // Otherwise, do put & signal via network
-  CtranKernelPutSignalArgs kernArgs = {.signalAddr = nullptr, .signalVal = 0};
-  if (statex->node(peer) == statex->node() && win->nvlEnabled(peer)) {
+  bool isNvl = statex->node(peer) == statex->node() && win->nvlEnabled(peer);
+  CtranKernelPutSignalArgs kernArgs = {
+      .signalAddr = nullptr,
+      .signalVal = 0,
+      .replayCounter = isCapturing ? win->graphReplayCounter : nullptr,
+      // NVL: only same-device kernels read the counter (device scope).
+      // IB: the GPE host thread also reads it (system scope).
+      .replayCounterSystemScope = !isNvl};
+  if (isNvl) {
     // Single-node direct cudaMemcpy
     if (count > 0) {
       void* dstPtr = reinterpret_cast<void*>(
@@ -336,53 +373,25 @@ waitSignalDriverApi(int peer, CtranWin* win, cudaStream_t stream) {
     return commInvalidUsage;
   }
 
-  // Get the signal address
-  const uint64_t* signalAddr = win->winSignalPtr + peer;
-  // Get the expected compare value
-  uint64_t cmpVal = win->ctranNextWaitSignalVal(peer);
-
   cudaStreamCaptureStatus captureStatus{};
   cudaStreamGetCaptureInfo(stream, &captureStatus, nullptr);
 
-  CUresult result;
-
   if (captureStatus == cudaStreamCaptureStatusActive) {
-    if (!ctran::utils::canUseCuStreamBatchMemOp()) {
-      return commInvalidUsage;
-    }
-
-    // During CUDA graph capture, use cuStreamBatchMemOp to atomically
-    // wait for the signal and then reset it to 0.  The reset prepares
-    // the slot for the next graph replay.
-    //
-    // This follows the pattern established by NCCL's CE collective path
-    // in ncclMemOpSync() (comms/ncclx/v2_28/src/ce_coll.cc lines 212-222),
-    // which batches waits + resets in a single cuStreamBatchMemOp during
-    // graph capture.  The batch is atomic on the stream — the wait
-    // completes before the reset runs, and no remote signal for the next
-    // replay can interleave.
-    CUstreamBatchMemOpParams ops[2] = {};
-
-    // wait for signal GEQ cmpVal
-    ops[0].waitValue.operation = CU_STREAM_MEM_OP_WAIT_VALUE_64;
-    ops[0].waitValue.address = (CUdeviceptr)signalAddr;
-    ops[0].waitValue.value64 = cmpVal;
-    ops[0].waitValue.flags = CU_STREAM_WAIT_VALUE_GEQ;
-
-    // reset signal to 0
-    ops[1].writeValue.operation = CU_STREAM_MEM_OP_WRITE_VALUE_64;
-    ops[1].writeValue.address = (CUdeviceptr)signalAddr;
-    ops[1].writeValue.value64 = 0;
-    ops[1].writeValue.flags = CU_STREAM_WRITE_VALUE_DEFAULT;
-
-    result = FB_CUPFN(cuStreamBatchMemOp)((CUstream)stream, 2, ops, 0);
-  } else {
-    result = FB_CUPFN(cuStreamWaitValue64)(
-        (CUstream)stream,
-        (CUdeviceptr)signalAddr,
-        cmpVal,
-        CU_STREAM_WAIT_VALUE_GEQ);
+    // During graph capture, fall back to the spinning kernel which uses
+    // a device-side replay counter for monotonically increasing signal
+    // values. Don't advance the eager counter.
+    return commInvalidUsage;
   }
+
+  // Eager path only below
+  const uint64_t* signalAddr = win->winSignalPtr + peer;
+  uint64_t cmpVal = win->ctranNextWaitSignalVal(peer);
+
+  CUresult result = FB_CUPFN(cuStreamWaitValue64)(
+      (CUstream)stream,
+      (CUdeviceptr)signalAddr,
+      cmpVal,
+      CU_STREAM_WAIT_VALUE_GEQ);
 
   if (result != CUDA_SUCCESS) {
     const char* errStr = nullptr;
@@ -421,9 +430,20 @@ commResult_t waitSignalSpinningKernel(
     cudaStream_t stream,
     uint64_t waitOpCount) {
   CtranComm* comm = win->comm;
-  auto waitSignalVal = win->ctranNextWaitSignalVal(peer);
 
-  const uint64_t* signalAddr = win->winSignalPtr + peer;
+  cudaStreamCaptureStatus spinCaptureCheck{};
+  cudaStreamGetCaptureInfo(stream, &spinCaptureCheck, nullptr);
+  bool isCapturing = (spinCaptureCheck == cudaStreamCaptureStatusActive);
+
+  uint64_t waitSignalVal;
+  const uint64_t* signalAddr;
+  if (isCapturing) {
+    waitSignalVal = 0; // unused — kernel reads replayCounter instead
+    signalAddr = win->winGraphSignalPtr + peer;
+  } else {
+    waitSignalVal = win->ctranNextWaitSignalVal(peer);
+    signalAddr = win->winSignalPtr + peer;
+  }
 
   KernelConfig config = KernelConfig(
       KernelConfig::KernelType::WAITSIGNAL, stream, "WaitSignal", waitOpCount);
@@ -436,6 +456,7 @@ commResult_t waitSignalSpinningKernel(
   CtranKernelWaitSignalArgs kernArgs = {
       .signalAddr = nullptr,
       .cmpVal = waitSignalVal,
+      .replayCounter = isCapturing ? win->graphReplayCounter : nullptr,
   };
   config.algoArgs = reinterpret_cast<void*>(&kernArgs);
   if (win->isGpuMem()) {
@@ -469,7 +490,20 @@ commResult_t ctranSignal(int peer, CtranWin* win, cudaStream_t stream) {
       win->updateOpCount(peer, window::OpCountType::kSignal);
   auto statex = comm->statex_.get();
 
-  auto signalVal = win->ctranNextSignalVal(peer);
+  cudaStreamCaptureStatus sigCaptureStatus{};
+  cudaStreamGetCaptureInfo(stream, &sigCaptureStatus, nullptr);
+  bool isCapturing = (sigCaptureStatus == cudaStreamCaptureStatusActive);
+
+  uint64_t signalVal;
+  uint64_t* signalAddr;
+  if (isCapturing) {
+    signalVal = 0; // unused — kernel reads replayCounter
+    signalAddr = win->remWinInfo[peer].graphSignalAddr + statex->rank();
+  } else {
+    signalVal = win->ctranNextSignalVal(peer);
+    signalAddr = win->remWinInfo[peer].signalAddr + statex->rank();
+  }
+
   CTRAN_RMA_INFO(
       "ctranSignal",
       sigOpCount,
@@ -484,8 +518,6 @@ commResult_t ctranSignal(int peer, CtranWin* win, cudaStream_t stream) {
       comm,
       stream);
 
-  uint64_t* signalAddr = win->remWinInfo[peer].signalAddr + statex->rank();
-
   KernelConfig config = KernelConfig(
       KernelConfig::KernelType::SIGNAL, stream, "Signal", sigOpCount);
   config.args.devState_d = comm->ctran_->algo->getDevState();
@@ -495,9 +527,14 @@ commResult_t ctranSignal(int peer, CtranWin* win, cudaStream_t stream) {
 
   // Use cuda atomic store if peer is on the same host and has NVL enabled.
   // Otherwise, do signal via IB in GPE thread
-  CtranKernelSignalArgs kernArgs = {.signalAddr = nullptr, .signalVal = 0};
+  bool isSigNvl = statex->node(peer) == statex->node() && win->nvlEnabled(peer);
+  CtranKernelSignalArgs kernArgs = {
+      .signalAddr = nullptr,
+      .signalVal = 0,
+      .replayCounter = isCapturing ? win->graphReplayCounter : nullptr,
+      .replayCounterSystemScope = !isSigNvl};
   config.algoArgs = reinterpret_cast<void*>(&kernArgs);
-  if (statex->node(peer) == statex->node() && win->nvlEnabled(peer)) {
+  if (isSigNvl) {
     kernArgs.signalAddr = signalAddr;
     kernArgs.signalVal = signalVal;
   } else {
