@@ -11,8 +11,8 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecv(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
-    int numBlocks,
-    int chunksPerSlot,
+    int active_blocks,
+    std::size_t max_signal_bytes,
     Timeout timeout) {
   timeout.start();
 
@@ -26,17 +26,17 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecv(
         sub,
         sendTiles.tile_data(blockId),
         sendTiles.tile_bytes(blockId),
-        numBlocks,
-        timeout,
-        chunksPerSlot);
+        active_blocks,
+        max_signal_bytes,
+        timeout);
   } else {
     p2p.recv_tile(
         sub,
         recvTiles.tile_data(blockId),
         recvTiles.tile_bytes(blockId),
-        numBlocks,
-        timeout,
-        chunksPerSlot);
+        active_blocks,
+        max_signal_bytes,
+        timeout);
   }
 }
 
@@ -44,7 +44,7 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecv(
 // Dynamic block count variant — uses transport-internal tile state
 // =============================================================================
 //
-// Requires tileMaxBlocks > 0 and p2pBarrierCount >= tileMaxBlocks in
+// Requires tile_max_groups > 0 and p2pBarrierCount >= tile_max_groups in
 // transport config.
 //
 // DYNAMIC BLOCK COUNT: BARRIER CORRECTNESS
@@ -95,7 +95,7 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecvDynamic(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
-    int numBlocks,
+    int active_blocks,
     bool needsBarrier,
     Timeout timeout) {
   timeout.start();
@@ -104,30 +104,25 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecvDynamic(
   auto [role, sub] = group.partition(2);
   const int blockId = sub.group_id;
 
-  // If block count changed, each block barriers with its peer.
-  // Since kernels are on the same stream, the peer's current kernel can't
-  // start until its previous kernel finished. So when any peer block
-  // reaches the barrier, ALL of the peer's old-round work is done.
-  // Each block uses its own barrier slot — all barriers complete in parallel.
-  // Requires p2pBarrierCount >= tileMaxBlocks.
   if (needsBarrier) {
     p2p.barrier_sync_threadgroup(sub, blockId, timeout);
   }
 
-  // Uses transport-internal tile signals, stepState, and maxBlocks
   if (role == 0) {
     p2p.send_tile(
         sub,
         sendTiles.tile_data(blockId),
         sendTiles.tile_bytes(blockId),
-        numBlocks,
+        active_blocks,
+        /*max_signal_bytes=*/0,
         timeout);
   } else {
     p2p.recv_tile(
         sub,
         recvTiles.tile_data(blockId),
         recvTiles.tile_bytes(blockId),
-        numBlocks,
+        active_blocks,
+        /*max_signal_bytes=*/0,
         timeout);
   }
 }

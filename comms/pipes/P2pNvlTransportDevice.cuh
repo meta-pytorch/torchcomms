@@ -85,6 +85,19 @@ struct RemoteState {
 };
 
 /**
+ * NvlinkTransportTileState — Per-peer tile protocol state.
+ *
+ * Bundled by the host transport at construction and passed to
+ * P2pNvlTransportDevice via set_tile_state(). Invisible to users.
+ */
+struct NvlinkTransportTileState {
+  DeviceSpan<int64_t> step_state;
+  int tile_max_groups{0};
+  DeviceSpan<SignalState> local_signals;
+  DeviceSpan<SignalState> remote_signals;
+};
+
+/**
  * P2pNvlTransportOptions - Configuration for P2P NVLink transport
  *
  * Defines the buffer sizes and chunking parameters for staged transfers.
@@ -337,12 +350,14 @@ class P2pNvlTransportDevice {
       int peerRank,
       const P2pNvlTransportOptions& options,
       const LocalState& localState,
-      const RemoteState& remoteState)
+      const RemoteState& remoteState,
+      const NvlinkTransportTileState& tileState = {})
       : myRank_(myRank),
         peerRank_(peerRank),
         options_(options),
         localState_(localState),
-        remoteState_(remoteState) {}
+        remoteState_(remoteState),
+        tile_state_(tileState) {}
 
   __host__ __device__ ~P2pNvlTransportDevice() = default;
 
@@ -1113,69 +1128,79 @@ class P2pNvlTransportDevice {
   }
 
   /**
-   * send_tile (maxBlocks overload) — For dynamic block count support.
-   *
-   * Uses maxBlocks for signal/stepState layout (fixed) and numBlocks
-   * for the staging buffer partition (variable). This allows changing
-   * numBlocks between calls without corrupting the signal mapping,
-   * provided the caller performs an epoch drain (see TileSendRecvContext).
-   *
-   * @param maxBlocks Layout size for signals/stepState (fixed at setup)
-   * @param numBlocks Active block count (controls perBlockSlotSize)
-   */
-  /**
-   * @param chunksPerSlot Number of sub-chunks per pipeline slot (default 1).
-   *   When > 1, the per-block staging slot is subdivided and signaled
-   *   at finer granularity. The receiver can start reading the first
-   *   sub-chunk while the sender is still writing subsequent ones.
-   *   Increases signal traffic but reduces pipeline latency.
+   * @param active_blocks Number of blocks calling send_tile concurrently.
+   *   0 means use tile_max_groups from transport config.
+   * @param max_signal_bytes Hint for max bytes between DATA_READY signals.
+   *   0 means one signal per slot fill. Capped at per_block_slot_size.
    */
   __device__ __forceinline__ void send_tile(
       ThreadGroup& group,
-      void* __restrict__ src,
+      const void* __restrict__ src,
       std::size_t nbytes,
-      int maxBlocks,
-      int numBlocks,
-      int64_t* __restrict__ stepState,
-      SignalState* __restrict__ localSignals,
-      SignalState* __restrict__ remoteSignals,
-      const Timeout& timeout = Timeout(),
-      int chunksPerSlot = 1) {
+      int active_blocks = 0,
+      std::size_t max_signal_bytes = 0,
+      const Timeout& timeout = Timeout()) {
 #ifdef __CUDA_ARCH__
-    const int blockId = group.group_id;
-    char* __restrict__ srcPtr = reinterpret_cast<char*>(src);
+    if (nbytes == 0) {
+      return;
+    }
+
+    const int max_groups = tile_state_.tile_max_groups;
+    const int groupId = group.group_id;
+    const int effActive = active_blocks > 0 ? active_blocks : max_groups;
+
+    if (effActive > max_groups) {
+      printf(
+          "send_tile: active_blocks=%d > tile_max_groups=%d. "
+          "Signal and step_state arrays would be accessed out of bounds.\n",
+          effActive,
+          max_groups);
+      __trap();
+    }
+
+    if (groupId >= effActive) {
+      printf(
+          "send_tile: groupId=%d >= active_blocks=%d. "
+          "Too many groups calling send_tile.\n",
+          groupId,
+          effActive);
+      __trap();
+    }
+
+    const char* __restrict__ srcPtr = reinterpret_cast<const char*>(src);
     char* __restrict__ stagBuf = remoteState_.dataBuffer;
 
     const std::size_t slotSize = options_.dataBufferSize;
-    const std::size_t perBlockSlotSize = (slotSize / numBlocks) & ~15ULL;
+    const std::size_t perBlockSlotSize = (slotSize / effActive) & ~15ULL;
     if (perBlockSlotSize == 0) {
       printf(
           "send_tile/recv_tile: perBlockSlotSize is 0 "
-          "(slotSize=%llu, numBlocks=%d). "
-          "Increase dataBufferSize or decrease numBlocks.\n",
+          "(dataBufferSize=%llu, active_blocks=%d). "
+          "Increase dataBufferSize or decrease active_blocks.\n",
           (unsigned long long)slotSize,
-          numBlocks);
+          effActive);
       __trap();
     }
-    const std::size_t stagingOff = blockId * perBlockSlotSize;
-    const std::size_t chunkSize = (perBlockSlotSize / chunksPerSlot) & ~15ULL;
+    const std::size_t stagingOff = groupId * perBlockSlotSize;
+
+    const std::size_t chunkSize =
+        max_signal_bytes > 0 && max_signal_bytes < perBlockSlotSize
+        ? (max_signal_bytes & ~15ULL)
+        : perBlockSlotSize;
     const std::size_t effectiveChunk =
         chunkSize > 0 ? chunkSize : perBlockSlotSize;
 
-    // Total steps = total data / chunk size
     const std::size_t totalSteps =
         (nbytes + effectiveChunk - 1) / effectiveChunk;
-    // Steps per pipeline slot = chunks per slot
     const std::size_t stepsPerSlot =
         (perBlockSlotSize + effectiveChunk - 1) / effectiveChunk;
 
-    const uint64_t tailSignalId = blockId;
-    const uint64_t headSignalId = maxBlocks + blockId;
+    const uint64_t tailSignalId = groupId;
+    const uint64_t headSignalId = max_groups + groupId;
 
-    int64_t step = stepState[blockId];
+    int64_t step = tile_state_.step_state[groupId];
 
     for (std::size_t s = 0; s < totalSteps; ++s) {
-      // Slot and offset within slot
       const std::size_t slotStep = s / stepsPerSlot;
       const std::size_t subStep = s % stepsPerSlot;
       const std::size_t slot = slotStep % options_.pipelineDepth;
@@ -1187,11 +1212,9 @@ class P2pNvlTransportDevice {
           ? effectiveChunk
           : (dataOff < nbytes ? nbytes - dataOff : 0);
 
-      // Backpressure: wait for receiver to free this slot
-      // Only wait at the start of each slot (first sub-step)
       if (subStep == 0 &&
           step >= static_cast<int64_t>(stepsPerSlot * options_.pipelineDepth)) {
-        localSignals[headSignalId].wait_until(
+        tile_state_.local_signals[headSignalId].wait_until(
             group,
             CmpOp::CMP_GE,
             static_cast<uint64_t>(
@@ -1209,7 +1232,7 @@ class P2pNvlTransportDevice {
 
       group.sync();
       if (group.is_leader()) {
-        remoteSignals[tailSignalId].signal(
+        tile_state_.remote_signals[tailSignalId].signal(
             SignalOp::SIGNAL_SET, static_cast<uint64_t>(step + 1));
       }
 
@@ -1217,44 +1240,66 @@ class P2pNvlTransportDevice {
     }
 
     if (group.is_leader()) {
-      stepState[blockId] = step;
+      tile_state_.step_state[groupId] = step;
     }
     group.sync();
 #endif
   }
 
-  /**
-   * recv_tile (maxBlocks overload) — For dynamic block count support.
-   */
   __device__ __forceinline__ void recv_tile(
       ThreadGroup& group,
       void* __restrict__ dst,
       std::size_t nbytes,
-      int maxBlocks,
-      int numBlocks,
-      int64_t* __restrict__ stepState,
-      SignalState* __restrict__ localSignals,
-      SignalState* __restrict__ remoteSignals,
-      const Timeout& timeout = Timeout(),
-      int chunksPerSlot = 1) {
+      int active_blocks = 0,
+      std::size_t max_signal_bytes = 0,
+      const Timeout& timeout = Timeout()) {
 #ifdef __CUDA_ARCH__
-    const int blockId = group.group_id;
+    if (nbytes == 0) {
+      return;
+    }
+
+    const int max_groups = tile_state_.tile_max_groups;
+    const int groupId = group.group_id;
+    const int effActive = active_blocks > 0 ? active_blocks : max_groups;
+
+    if (effActive > max_groups) {
+      printf(
+          "recv_tile: active_blocks=%d > tile_max_groups=%d. "
+          "Signal and step_state arrays would be accessed out of bounds.\n",
+          effActive,
+          max_groups);
+      __trap();
+    }
+
+    if (groupId >= effActive) {
+      printf(
+          "recv_tile: groupId=%d >= active_blocks=%d. "
+          "Too many groups calling recv_tile.\n",
+          groupId,
+          effActive);
+      __trap();
+    }
+
     char* __restrict__ dstPtr = reinterpret_cast<char*>(dst);
     char* __restrict__ stagBuf = localState_.dataBuffer;
 
     const std::size_t slotSize = options_.dataBufferSize;
-    const std::size_t perBlockSlotSize = (slotSize / numBlocks) & ~15ULL;
+    const std::size_t perBlockSlotSize = (slotSize / effActive) & ~15ULL;
     if (perBlockSlotSize == 0) {
       printf(
           "send_tile/recv_tile: perBlockSlotSize is 0 "
-          "(slotSize=%llu, numBlocks=%d). "
-          "Increase dataBufferSize or decrease numBlocks.\n",
+          "(dataBufferSize=%llu, active_blocks=%d). "
+          "Increase dataBufferSize or decrease active_blocks.\n",
           (unsigned long long)slotSize,
-          numBlocks);
+          effActive);
       __trap();
     }
-    const std::size_t stagingOff = blockId * perBlockSlotSize;
-    const std::size_t chunkSize = (perBlockSlotSize / chunksPerSlot) & ~15ULL;
+    const std::size_t stagingOff = groupId * perBlockSlotSize;
+
+    const std::size_t chunkSize =
+        max_signal_bytes > 0 && max_signal_bytes < perBlockSlotSize
+        ? (max_signal_bytes & ~15ULL)
+        : perBlockSlotSize;
     const std::size_t effectiveChunk =
         chunkSize > 0 ? chunkSize : perBlockSlotSize;
 
@@ -1263,10 +1308,10 @@ class P2pNvlTransportDevice {
     const std::size_t stepsPerSlot =
         (perBlockSlotSize + effectiveChunk - 1) / effectiveChunk;
 
-    const uint64_t tailSignalId = blockId;
-    const uint64_t headSignalId = maxBlocks + blockId;
+    const uint64_t tailSignalId = groupId;
+    const uint64_t headSignalId = max_groups + groupId;
 
-    int64_t step = stepState[maxBlocks + blockId];
+    int64_t step = tile_state_.step_state[max_groups + groupId];
 
     for (std::size_t s = 0; s < totalSteps; ++s) {
       const std::size_t slotStep = s / stepsPerSlot;
@@ -1280,8 +1325,7 @@ class P2pNvlTransportDevice {
           ? effectiveChunk
           : (dataOff < nbytes ? nbytes - dataOff : 0);
 
-      // Wait for sender to fill this sub-chunk
-      localSignals[tailSignalId].wait_until(
+      tile_state_.local_signals[tailSignalId].wait_until(
           group, CmpOp::CMP_GE, static_cast<uint64_t>(step + 1), timeout);
 
       if (copyBytes > 0) {
@@ -1294,10 +1338,8 @@ class P2pNvlTransportDevice {
 
       group.sync();
       if (group.is_leader()) {
-        // Signal head only at the end of each slot (last sub-step)
-        // to release the slot for sender reuse
         if (subStep == stepsPerSlot - 1 || s == totalSteps - 1) {
-          remoteSignals[headSignalId].signal(
+          tile_state_.remote_signals[headSignalId].signal(
               SignalOp::SIGNAL_SET, static_cast<uint64_t>(step + 1));
         }
       }
@@ -1306,73 +1348,14 @@ class P2pNvlTransportDevice {
     }
 
     if (group.is_leader()) {
-      stepState[maxBlocks + blockId] = step;
+      tile_state_.step_state[max_groups + groupId] = step;
     }
     group.sync();
 #endif
   }
 
-  /**
-   * send_tile (internal state) — Uses transport-managed stepState.
-   *
-   * Requires tileMaxBlocks > 0 in transport config.
-   * numBlocks controls staging partition, tileMaxBlocks_ controls layout.
-   */
-  __device__ __forceinline__ void send_tile(
-      ThreadGroup& group,
-      void* __restrict__ src,
-      std::size_t nbytes,
-      int numBlocks,
-      const Timeout& timeout = Timeout(),
-      int chunksPerSlot = 1) {
-    send_tile(
-        group,
-        src,
-        nbytes,
-        tileMaxBlocks_,
-        numBlocks,
-        tileStepState_,
-        tileLocalSignals_,
-        tileRemoteSignals_,
-        timeout,
-        chunksPerSlot);
-  }
-
-  /**
-   * recv_tile (internal state) — Uses transport-managed stepState.
-   */
-  __device__ __forceinline__ void recv_tile(
-      ThreadGroup& group,
-      void* __restrict__ dst,
-      std::size_t nbytes,
-      int numBlocks,
-      const Timeout& timeout = Timeout(),
-      int chunksPerSlot = 1) {
-    recv_tile(
-        group,
-        dst,
-        nbytes,
-        tileMaxBlocks_,
-        numBlocks,
-        tileStepState_,
-        tileLocalSignals_,
-        tileRemoteSignals_,
-        timeout,
-        chunksPerSlot);
-  }
-
-  // Getters for tile protocol internal state
-  __host__ __device__ int64_t* tile_step_state() const {
-    return tileStepState_;
-  }
-  __host__ __device__ int tile_max_blocks() const {
-    return tileMaxBlocks_;
-  }
-  __device__ SignalState* tile_local_signals() const {
-    return tileLocalSignals_;
-  }
-  __device__ SignalState* tile_remote_signals() const {
-    return tileRemoteSignals_;
+  __host__ __device__ const NvlinkTransportTileState& tile_state() const {
+    return tile_state_;
   }
 
   // Device accessors for 2D tile kernel (inlined pipeline)
@@ -1386,31 +1369,13 @@ class P2pNvlTransportDevice {
     return remoteState_;
   }
 
-  // Set tile state (called by MultiPeerNvlTransport during construction)
-  __host__ void set_tile_state(
-      int64_t* stepState,
-      int maxBlocks,
-      SignalState* localSignals,
-      SignalState* remoteSignals) {
-    tileStepState_ = stepState;
-    tileMaxBlocks_ = maxBlocks;
-    tileLocalSignals_ = localSignals;
-    tileRemoteSignals_ = remoteSignals;
-  }
-
  private:
   const int myRank_{-1};
   const int peerRank_{-1};
   const P2pNvlTransportOptions options_;
   LocalState localState_;
   RemoteState remoteState_;
-  // Tile protocol state (set by MultiPeerNvlTransport when tileMaxBlocks > 0)
-  int64_t* tileStepState_{nullptr};
-  int tileMaxBlocks_{0};
-  // Dedicated signal buffer for tile tail/head signals
-  // Layout: [0..maxBlocks-1] = tail, [maxBlocks..2*maxBlocks-1] = head
-  SignalState* tileLocalSignals_{nullptr};
-  SignalState* tileRemoteSignals_{nullptr};
+  NvlinkTransportTileState tile_state_;
 };
 
 } // namespace comms::pipes

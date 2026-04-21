@@ -55,7 +55,7 @@ struct MultiPeerNvlTransportConfig {
   // Maximum block count for the tile sendrecv protocol.
   // Allocates persistent step state and dedicated tile signals internally.
   // send_tile/recv_tile use these without user-managed state.
-  int tileMaxBlocks{128};
+  int tile_max_groups{128};
 
   // If true, use dual chunk state buffers (one on each side) for local polling
   // on both sender and receiver. If false (default), use single chunk state
@@ -384,7 +384,7 @@ class MultiPeerNvlTransport {
   std::size_t perPeerLl128BufferSize_{0};
   std::size_t perPeerBarrierBufferSize_{0};
 
-  // Tile protocol state (allocated when tileMaxBlocks > 0)
+  // Tile protocol state (allocated when tile_max_groups > 0)
   std::unique_ptr<meta::comms::DeviceBuffer>
       tileStepStateBuffer_; // not exchanged
   std::unique_ptr<GpuMemHandler>

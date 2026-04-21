@@ -284,6 +284,7 @@ primitives are used.
 ```text
 block_id        = group.group_id
 eff_active      = active_blocks > 0 ? active_blocks : tile_max_groups
+trap if eff_active > tile_max_groups   // signal/step_state arrays are sized to tile_max_groups
 trap if block_id >= eff_active
 
 per_block_slot  = (data_buffer_size / eff_active) & ~15ULL
