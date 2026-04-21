@@ -40,6 +40,7 @@ python3 -m pip install --no-deps --pre torch pytorch-triton-xpu --index-url http
 cd torchcomms && pip install . --no-deps --no-build-isolation && cd ..
 
 #Check Intel XPU visibility
+echo $ZE_AFFINITY_MASK
 python3 -c "import torch; import torchcomms; print(f'Torch version: {torch.__version__}')"
 python3 -c "import torch;print(\"XPU device available\"); print(torch.xpu.is_available())"
 python3 -c "import torch;[print(f'[{i}]: {torch.xpu.get_device_properties(i)}') for i in range(torch.xpu.device_count())];"
