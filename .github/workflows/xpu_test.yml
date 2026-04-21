@@ -23,6 +23,7 @@ jobs:
     runs-on: linux.idc.xpu.dist
     env:
       DOCKER_IMAGE: intelgpu/ubuntu-24.04-lts2:2523.40
+      ZE_AFFINITY_MASK: ${{ env.ZE_AFFINITY_MASK }}
     steps:
       - name: Checkout Torchcomms
         uses: actions/checkout@v4
@@ -44,7 +45,6 @@ jobs:
         if: always()
         shell: bash
         run: |
-          echo "ZE_AFFINITY_MASK=$ZE_AFFINITY_MASK"
           timeout 30 xpu-smi discovery || true
           xpu-smi topology -m
 
@@ -95,6 +95,7 @@ jobs:
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
           GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
           SHA1: ${{ github.event.pull_request.head.sha || github.sha }}
+          ZE_AFFINITY_MASK: ${{ env. ZE_AFFINITY_MASK }}
         timeout-minutes: 120
         run: |
           set -x
@@ -112,6 +113,7 @@ jobs:
             -e GITHUB_RUN_ID \
             -e GITHUB_RUN_NUMBER \
             -e GITHUB_RUN_ATTEMPT \
+            -e ZE_AFFINITY_MASK \
             -e JOB_ID \
             -e BRANCH \
             -e SHA1 \

@@ -43,7 +43,7 @@ cd torchcomms && pip install . --no-deps --no-build-isolation && cd ..
 echo $ZE_AFFINITY_MASK
 python3 -c "import torch; import torchcomms; print(f'Torch version: {torch.__version__}')"
 python3 -c "import torch;print(\"XPU device available\"); print(torch.xpu.is_available())"
-python3 -c "import torch;[print(f'[{i}]: {torch.xpu.get_device_properties(i)}') for i in range(torch.xpu.device_count())];"
+ZE_AFFINITY_MASK=${ZE_AFFINITY_MASK} python3 -c "import torch;[print(f'[{i}]: {torch.xpu.get_device_properties(i)}') for i in range(torch.xpu.device_count())];"
 
 #Run XCCL Python Integration Tests
-torchcomms/comms/torchcomms/scripts/run_tests_integration_xccl_py.sh
+ZE_AFFINITY_MASK=${ZE_AFFINITY_MASK} torchcomms/comms/torchcomms/scripts/run_tests_integration_xccl_py.sh
