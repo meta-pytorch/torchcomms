@@ -190,6 +190,16 @@ def _flatten_with_comm(
         global_ranks_mapping=global_ranks_mapping,
     )
 
+    # Coalesce the layout for the flattened mesh dimension.
+    # New PyTorch API (2.13+): _MeshLayout has collapse() instead of coalesce(),
+    # and auto-coalesces _FlatLayouts in the constructor.
+    if hasattr(layout, "coalesce"):
+        coalesced_layout = layout.coalesce()
+    else:
+        from torch.distributed._mesh_layout import _MeshLayout
+
+        coalesced_layout = _MeshLayout([layout.collapse()])  # pyre-ignore[19]
+
     # Compatibility layer for DeviceMesh API changes. The new API uses _rank_map
     # while the older API requires passing mesh tensor directly. This conditional
     # can be removed once all supported PyTorch versions include _rank_map support.
@@ -199,7 +209,7 @@ def _flatten_with_comm(
             mesh_dim_names=(mesh_dim_name,),
             _init_backend=False,
             _rank=comm.get_rank(),
-            _layout=layout.coalesce(),
+            _layout=coalesced_layout,
             _rank_map=mesh._rank_map,
             _root_mesh=mesh,
         )
@@ -210,7 +220,7 @@ def _flatten_with_comm(
             mesh_dim_names=(mesh_dim_name,),
             _init_backend=False,
             _rank=comm.get_rank(),
-            _layout=layout.coalesce(),
+            _layout=coalesced_layout,
         )
     flattened_device_mesh._dim_group_names = [mesh_dim_name]
 
