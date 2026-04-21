@@ -322,6 +322,7 @@ TEST_F(IbgdaBenchmarkFixture, PutWaitLocal) {
 
   try {
     MultipeerIbgdaTransportConfig transportConfig{
+        .numCounterSlots = 1,
         .cudaDevice = localRank,
     };
 
@@ -439,6 +440,7 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalWaitLocal) {
 
   try {
     MultipeerIbgdaTransportConfig transportConfig{
+        .numCounterSlots = 1,
         .cudaDevice = localRank,
     };
 
@@ -558,6 +560,7 @@ TEST_F(IbgdaBenchmarkFixture, SignalOnly) {
 
   try {
     MultipeerIbgdaTransportConfig transportConfig{
+        .numCounterSlots = 1,
         .cudaDevice = localRank,
     };
 
@@ -667,6 +670,7 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalComparison) {
 
   try {
     MultipeerIbgdaTransportConfig transportConfig{
+        .numCounterSlots = 1,
         .cudaDevice = localRank,
     };
 
@@ -809,6 +813,7 @@ TEST_F(IbgdaBenchmarkFixture, MultiPeerCounterFanOut) {
 
   try {
     MultipeerIbgdaTransportConfig transportConfig{
+        .numCounterSlots = 1,
         .cudaDevice = localRank,
     };
 

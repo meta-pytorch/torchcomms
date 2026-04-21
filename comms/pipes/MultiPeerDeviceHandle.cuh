@@ -87,6 +87,7 @@ struct MultiPeerDeviceHandle {
       int rank) const {
     return *transports[rank].p2p_ibgda;
   }
+
 #endif
 };
 

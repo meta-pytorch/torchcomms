@@ -9,6 +9,7 @@
 #include <device/doca_gpunetio_dev_verbs_counter.cuh>
 #include <device/doca_gpunetio_dev_verbs_onesided.cuh>
 
+#include "comms/pipes/DeviceSpan.cuh"
 #include "comms/pipes/DocaVerbsUtils.cuh"
 #include "comms/pipes/IbgdaBuffer.h"
 #include "comms/pipes/ThreadGroup.cuh"
@@ -77,17 +78,19 @@ class P2pIbgdaTransportDevice {
  public:
   // Default ctor required so an array of these can be cudaMemcpy'd from host
   // (see MultipeerIbgdaTransportCuda.cu::buildDeviceTransportsOnGpu). Do not
-  // call methods on a default-constructed instance — qp_ is null.
+  // call methods on a default-constructed instance — qpArray_ is null.
   P2pIbgdaTransportDevice() = default;
 
   /**
    * Construct a per-peer device transport handle.
    *
-   * @param qp                    Primary GPU-initiated QP for this peer. All
-   *                              put/signal WQEs are posted here.
-   * @param companionQp           Optional loopback QP for compound
-   *                              put+signal+counter ops. May be nullptr if
-   *                              counters are not used.
+   * @param qpArray               GPU array of N primary QP pointers. WQEs for
+   *                              a block/group are posted to
+   *                              qpArray[group_id % numQps].
+   * @param companionArray        GPU array of N companion QP pointers for
+   *                              compound put+signal+counter ops. May be
+   *                              nullptr if counters are not used.
+   * @param numQps                Number of QPs in qpArray/companionArray.
    * @param sinkLkey              LKey of a scratch buffer used as the atomic
    *                              fetch-add response sink (value is discarded).
    * @param ownedRemoteSignalBuf  Remote-side signal outbox: writing here
@@ -113,8 +116,8 @@ class P2pIbgdaTransportDevice {
    *                              slot-index counter API.
    */
   __host__ __device__ P2pIbgdaTransportDevice(
-      doca_gpu_dev_verbs_qp* qp,
-      doca_gpu_dev_verbs_qp* companionQp = nullptr,
+      DeviceSpan<doca_gpu_dev_verbs_qp*> qpArray,
+      DeviceSpan<doca_gpu_dev_verbs_qp*> companionArray,
       NetworkLKey sinkLkey = NetworkLKey{},
       IbgdaRemoteBuffer ownedRemoteSignalBuf = {},
       IbgdaLocalBuffer ownedLocalSignalBuf = {},
@@ -122,8 +125,8 @@ class P2pIbgdaTransportDevice {
       int numSignalSlots = 0,
       int numCounterSlots = 0,
       IbgdaRemoteBuffer discardSignalSlot = {})
-      : qp_(qp),
-        companionQp_(companionQp),
+      : qpArray_(qpArray),
+        companionArray_(companionArray),
         sinkLkey_(sinkLkey),
         ownedRemoteSignalBuf_(ownedRemoteSignalBuf),
         ownedLocalSignalBuf_(ownedLocalSignalBuf),
@@ -433,7 +436,7 @@ class P2pIbgdaTransportDevice {
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal = 1) {
     if (group.is_leader()) {
-      signal_fenced(signalBuf, signalVal);
+      signal_fenced(group.group_id, signalBuf, signalVal);
     }
     group.sync();
   }
@@ -513,14 +516,14 @@ class P2pIbgdaTransportDevice {
    */
   __device__ void fence(ThreadGroup& group) {
     if (group.is_leader()) {
-      fence_impl();
+      fence_impl(group.group_id);
     }
     group.sync();
   }
 
   /** fence (thread-scope) - Drain QP 0. Single-thread variant. */
   __device__ void fence() {
-    fence_impl();
+    fence_impl(0);
   }
 
   /**
@@ -650,11 +653,13 @@ class P2pIbgdaTransportDevice {
     // the hot path.
     if (group.is_leader()) {
       if (hasSignal && hasCounter) {
-        signal_counter(signalBuf, signalVal, counterBuf, counterVal);
+        signal_counter(
+            group.group_id, signalBuf, signalVal, counterBuf, counterVal);
       } else if (hasSignal) {
-        signal_fenced(signalBuf, signalVal);
+        signal_fenced(group.group_id, signalBuf, signalVal);
       } else if (hasCounter) {
-        signal_counter(discardSignalSlot_, 0, counterBuf, counterVal);
+        signal_counter(
+            group.group_id, discardSignalSlot_, 0, counterBuf, counterVal);
       }
     }
     group.sync();
@@ -747,13 +752,13 @@ class P2pIbgdaTransportDevice {
     IbgdaRemoteBuffer laneRemoteBuf = remoteBuf.subBuffer(offset);
 
     if (group.group_size == 1) {
-      put_single_impl(laneBuf, laneRemoteBuf, laneBytes);
+      put_single_impl(group.group_id, laneBuf, laneRemoteBuf, laneBytes);
       return;
     }
 
     // Guard: group_size must fit within QP send queue depth
     if (group.is_leader()) {
-      const uint16_t qp_depth = __ldg(&qp_->sq_wqe_num);
+      const uint16_t qp_depth = __ldg(&active_qp(group.group_id)->sq_wqe_num);
       if (group.group_size > qp_depth) {
         printf(
             "[PIPES] FATAL: put group_size (%u) > QP depth (%u). "
@@ -769,17 +774,18 @@ class P2pIbgdaTransportDevice {
     uint64_t base_wqe_idx = 0;
     if (group.is_leader()) {
       base_wqe_idx = doca_gpu_dev_verbs_reserve_wq_slots<
-          DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(qp_, group.group_size);
+          DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
+          active_qp(group.group_id), group.group_size);
     }
     base_wqe_idx = group.broadcast<uint64_t>(base_wqe_idx);
 
     // Each thread prepares its WQE
     uint64_t wqe_idx = base_wqe_idx + group.thread_id_in_group;
     struct doca_gpu_dev_verbs_wqe* wqe_ptr =
-        doca_gpu_dev_verbs_get_wqe_ptr(qp_, wqe_idx);
+        doca_gpu_dev_verbs_get_wqe_ptr(active_qp(group.group_id), wqe_idx);
 
     doca_gpu_dev_verbs_wqe_prepare_write(
-        qp_,
+        active_qp(group.group_id),
         wqe_ptr,
         static_cast<uint16_t>(wqe_idx),
         DOCA_GPUNETIO_IB_MLX5_OPCODE_RDMA_WRITE,
@@ -797,12 +803,14 @@ class P2pIbgdaTransportDevice {
     if (group.is_leader()) {
       doca_gpu_dev_verbs_mark_wqes_ready<
           DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
-          qp_, base_wqe_idx, base_wqe_idx + group.group_size - 1);
+          active_qp(group.group_id),
+          base_wqe_idx,
+          base_wqe_idx + group.group_size - 1);
       doca_gpu_dev_verbs_submit<
           DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
           DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU,
           DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(
-          qp_, base_wqe_idx + group.group_size);
+          active_qp(group.group_id), base_wqe_idx + group.group_size);
     }
 
     group.sync();
@@ -811,6 +819,7 @@ class P2pIbgdaTransportDevice {
   // --- put_single_impl: one thread, one WQE ---
 
   __device__ void put_single_impl(
+      uint32_t group_id,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes) {
@@ -826,27 +835,29 @@ class P2pIbgdaTransportDevice {
         DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
         DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO,
         DOCA_GPUNETIO_VERBS_EXEC_SCOPE_THREAD>(
-        qp_, remoteAddr, localAddr, nbytes, &ticket);
+        active_qp(group_id), remoteAddr, localAddr, nbytes, &ticket);
   }
 
   // --- signal_fenced: atomic fetch-add with NIC FENCE (always fenced) ---
 
   __device__ void signal_fenced(
+      uint32_t group_id,
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal) {
+    doca_gpu_dev_verbs_qp* qp = active_qp(group_id);
     doca_gpu_dev_verbs_addr remoteAddr = {
         .addr = reinterpret_cast<uint64_t>(signalBuf.ptr),
         .key = signalBuf.rkey.value};
     doca_gpu_dev_verbs_addr sinkAddr = {.addr = 0, .key = sinkLkey_.value};
 
     uint64_t wqe_idx = doca_gpu_dev_verbs_reserve_wq_slots<
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(qp_, 1);
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(qp, 1);
 
     struct doca_gpu_dev_verbs_wqe* wqe_ptr =
-        doca_gpu_dev_verbs_get_wqe_ptr(qp_, wqe_idx);
+        doca_gpu_dev_verbs_get_wqe_ptr(qp, wqe_idx);
 
     doca_gpu_dev_verbs_wqe_prepare_atomic(
-        qp_,
+        qp,
         wqe_ptr,
         static_cast<uint16_t>(wqe_idx),
         DOCA_GPUNETIO_IB_MLX5_OPCODE_ATOMIC_FA,
@@ -862,17 +873,18 @@ class P2pIbgdaTransportDevice {
         0);
 
     doca_gpu_dev_verbs_mark_wqes_ready<
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(qp_, wqe_idx, wqe_idx);
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(qp, wqe_idx, wqe_idx);
 
     doca_gpu_dev_verbs_submit<
         DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
         DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU,
-        DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(qp_, wqe_idx + 1);
+        DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(qp, wqe_idx + 1);
   }
 
   // --- signal_counter: fenced signal + companion QP loopback counter ---
 
   __device__ void signal_counter(
+      uint32_t group_id,
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal,
       const IbgdaLocalBuffer& counterBuf,
@@ -892,11 +904,11 @@ class P2pIbgdaTransportDevice {
         DOCA_GPUNETIO_VERBS_SIGNAL_OP_ADD,
         DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
         DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(
-        qp_,
+        active_qp(group_id),
         sigRemoteAddr,
         sigSinkAddr,
         signalVal,
-        companionQp_,
+        active_companion_qp(group_id),
         counterRemoteAddr,
         counterSinkAddr,
         counterVal);
@@ -904,27 +916,28 @@ class P2pIbgdaTransportDevice {
 
   // --- fence_impl: NOP WQE + wait ---
 
-  __device__ void fence_impl() {
+  __device__ void fence_impl(uint32_t group_id) {
     doca_fence<
         DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
-        DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(qp_);
+        DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(active_qp(group_id));
   }
 
   // --- wait_local_impl: CQ poll for specific WQE (internal use only) ---
 
   __device__ void wait_local_impl(
+      uint32_t group_id,
       doca_gpu_dev_verbs_ticket_t ticket,
       Timeout timeout = Timeout()) {
     if (!timeout.isEnabled()) {
       doca_gpu_dev_verbs_wait<
           DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
-          DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(qp_, ticket);
+          DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(active_qp(group_id), ticket);
     } else {
       int status;
       do {
         status = doca_gpu_dev_verbs_poll_one_cq_at<
             DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
-            doca_gpu_dev_verbs_qp_get_cq_sq(qp_), ticket);
+            doca_gpu_dev_verbs_qp_get_cq_sq(active_qp(group_id)), ticket);
         if (status == EBUSY) {
           TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
               timeout,
@@ -962,9 +975,33 @@ class P2pIbgdaTransportDevice {
         ownedCounterBuf_.lkey);
   }
 
+  /**
+   * active_qp - Select the QP for the calling group
+   *
+   * Maps group_id → QP via group_id % numQps_. Every leaf helper takes a
+   * group_id argument so that all WQEs belonging to one logical operation
+   * (e.g. put + signal_fenced inside put_impl) land on the same QP — this
+   * is required for the FENCE bit to actually order them. Thread-scope
+   * public methods pass 0.
+   */
+  __device__ doca_gpu_dev_verbs_qp* active_qp(uint32_t group_id) const {
+    if (qpArray_.empty()) {
+      return nullptr;
+    }
+    return qpArray_[group_id % qpArray_.size()];
+  }
+
+  __device__ doca_gpu_dev_verbs_qp* active_companion_qp(
+      uint32_t group_id) const {
+    if (companionArray_.empty()) {
+      return nullptr;
+    }
+    return companionArray_[group_id % companionArray_.size()];
+  }
+
   // --- Members ---
-  doca_gpu_dev_verbs_qp* qp_{nullptr};
-  doca_gpu_dev_verbs_qp* companionQp_{nullptr};
+  DeviceSpan<doca_gpu_dev_verbs_qp*> qpArray_{};
+  DeviceSpan<doca_gpu_dev_verbs_qp*> companionArray_{};
   NetworkLKey sinkLkey_{};
 
   // Owned signal/counter buffers (set by transport during construction)

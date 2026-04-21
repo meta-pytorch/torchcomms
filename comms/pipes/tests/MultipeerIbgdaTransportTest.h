@@ -213,4 +213,33 @@ void testWaitCounter(
     int numBlocks,
     int blockSize);
 
+/**
+ * Test kernel: Multi-QP put + signal with per-block QP selection
+ *
+ * Each block selects its QP via blockIdx.x % numQps, puts its chunk
+ * of totalBytes, then signals. Tests that independent QPs work correctly
+ * when blocks use different QPs.
+ *
+ * @param transports Base pointer to N contiguous P2pIbgdaTransportDevice
+ * @param numQps Number of QPs (transports array length)
+ * @param localBuf Local source buffer
+ * @param remoteBuf Remote destination buffer
+ * @param totalBytes Total bytes (split across blocks)
+ * @param remoteSignalBuf Remote signal buffer
+ * @param signalId Signal slot index
+ * @param signalVal Signal value per block
+ * @param numBlocks Grid dimension
+ * @param blockSize Block dimension
+ */
+void testMultiQpPutAndSignal(
+    P2pIbgdaTransportDevice* transports,
+    int numQps,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t totalBytes,
+    int signalId,
+    uint64_t signalVal,
+    int numBlocks,
+    int blockSize);
+
 } // namespace comms::pipes::test

@@ -14,7 +14,7 @@ namespace comms::pipes::tests {
 
 __global__ void testP2pTransportConstruction(bool* success) {
   // Create transport on device with null QPs
-  P2pIbgdaTransportDevice transport(nullptr, nullptr);
+  P2pIbgdaTransportDevice transport({}, {});
 
   // If we get here, construction succeeded
   *success = true;
@@ -35,8 +35,8 @@ __global__ void testP2pTransportReadSignal(
   // Construct transport with ownedLocalSignalBuf pointing to d_signalBuf
   IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKey(0));
   P2pIbgdaTransportDevice transport(
-      nullptr,
-      nullptr,
+      {},
+      {},
       NetworkLKey{},
       IbgdaRemoteBuffer{},
       localSigBuf,
@@ -64,8 +64,8 @@ testWaitSignalGE(uint64_t* d_signalBuf, uint64_t targetValue, bool* success) {
   // Construct transport with ownedLocalSignalBuf
   IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKey(0));
   P2pIbgdaTransportDevice transport(
-      nullptr,
-      nullptr,
+      {},
+      {},
       NetworkLKey{},
       IbgdaRemoteBuffer{},
       localSigBuf,
@@ -87,8 +87,8 @@ __global__ void testWaitSignalMultipleSlots(
   // Construct transport with ownedLocalSignalBuf
   IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKey(0));
   P2pIbgdaTransportDevice transport(
-      nullptr,
-      nullptr,
+      {},
+      {},
       NetworkLKey{},
       IbgdaRemoteBuffer{},
       localSigBuf,
@@ -337,8 +337,8 @@ __global__ void testWaitSignalTimeout(uint64_t* d_signalBuf, Timeout timeout) {
   // Construct transport with ownedLocalSignalBuf
   IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKey(0));
   P2pIbgdaTransportDevice transport(
-      nullptr,
-      nullptr,
+      {},
+      {},
       NetworkLKey{},
       IbgdaRemoteBuffer{},
       localSigBuf,
@@ -358,8 +358,8 @@ testWaitSignalNoTimeout(uint64_t* d_signalBuf, Timeout timeout, bool* success) {
   // Construct transport with ownedLocalSignalBuf
   IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKey(0));
   P2pIbgdaTransportDevice transport(
-      nullptr,
-      nullptr,
+      {},
+      {},
       NetworkLKey{},
       IbgdaRemoteBuffer{},
       localSigBuf,
