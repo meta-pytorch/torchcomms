@@ -71,6 +71,16 @@ struct MultipeerIbgdaTransportConfig {
   // This determines the maximum transfer size per put call.
   std::size_t dataBufferSize{0};
 
+  // Number of signal slots managed by the transport (per peer).
+  // If > 0, transport allocates, registers, and exchanges signal buffers
+  // automatically. Slot-index API on P2pIbgdaTransportDevice becomes usable.
+  int numSignalSlots{0};
+
+  // Number of counter slots managed by the transport (per peer).
+  // If > 0, transport allocates and registers counter buffers (local only,
+  // no exchange). Slot-index API for counters becomes usable.
+  int numCounterSlots{0};
+
   // Queue pair depth (number of outstanding WQEs per peer).
   // Higher values allow more pipelining but use more memory.
   uint32_t qpDepth{1024};
@@ -429,6 +439,50 @@ class MultipeerIbgdaTransport {
 
   // Exchange info received from peers
   std::vector<IbgdaTransportExchInfo> peerExchInfo_;
+
+  // Transport-owned signal buffers (allocated if numSignalSlots > 0)
+  void* signalInboxGpu_{nullptr}; // local inbox: peers write here via RDMA
+  std::vector<IbgdaRemoteBuffer> signalRemoteViews_; // per-peer outbox views
+  std::vector<IbgdaLocalBuffer> signalLocalViews_; // per-peer inbox views
+
+  // Transport-owned counter buffers (allocated if numCounterSlots > 0)
+  void* counterGpu_{nullptr};
+  std::vector<IbgdaLocalBuffer> counterViews_; // per-peer local views
+
+  // Transport-owned discard-signal buffer.
+  //
+  // Why this exists
+  // ---------------
+  // DOCA verbs exposes two relevant compound WQEs:
+  //   * signal_fenced  - remote atomic FA, FENCEd against the prior put
+  //   * signal_counter - signal_fenced on the primary QP + a companion-QP
+  //                      loopback atomic for the local counter (both ordered
+  //                      against the prior put)
+  // It does NOT expose a "counter-only" primitive (counter atomic without a
+  // remote signal). Counter-only put() callers therefore have two choices:
+  //   (a) fence the QP and then bump the counter from the GPU - synchronous,
+  //       adds a CQ-poll round-trip on the hot path.
+  //   (b) reuse signal_counter with a throwaway remote signal target so the
+  //       counter atomic stays piggy-backed on the same async WQE compound.
+  // We pick (b). The "discard signal" is that throwaway target: a real
+  // remote-addressable uint64_t whose value nobody ever reads.
+  //
+  // Layout
+  // ------
+  // numPeers slots, one uint64_t per peer that may write to us. Each rank
+  // exchanges (addr, rkey) with all peers; per-peer remote view is built
+  // pointing at *our* slot in the peer's discard buffer (offset =
+  // myPeerIndexOnPeer * sizeof(uint64_t)) so our primary QP can post a
+  // throwaway atomic into it. The peer never reads its local slots, so the
+  // accumulated value is garbage by design.
+  //
+  // Lifecycle
+  // ---------
+  // Allocated only when numCounterSlots > 0 (no counters => no counter-only
+  // puts => discard slot is never targeted). See
+  // P2pIbgdaTransportDevice::put_impl for the consumer.
+  void* discardSignalGpu_{nullptr};
+  std::vector<IbgdaRemoteBuffer> discardSignalRemoteViews_;
 };
 
 } // namespace comms::pipes

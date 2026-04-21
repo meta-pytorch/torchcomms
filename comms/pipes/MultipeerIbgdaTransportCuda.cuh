@@ -21,6 +21,15 @@ struct P2pIbgdaTransportBuildParams {
   doca_gpu_dev_verbs_qp* gpuQp{nullptr};
   doca_gpu_dev_verbs_qp* companionGpuQp{nullptr};
   NetworkLKey sinkLkey{};
+  IbgdaRemoteBuffer remoteSignalBuf{};
+  IbgdaLocalBuffer localSignalBuf{};
+  IbgdaLocalBuffer counterBuf{};
+  // Throwaway remote uint64_t slot used as the signal target for counter-only
+  // puts. Required when counterBuf is set; ignored otherwise. See
+  // P2pIbgdaTransportDevice::put_impl for rationale.
+  IbgdaRemoteBuffer discardSignalSlot{};
+  int numSignalSlots{0};
+  int numCounterSlots{0};
 };
 
 /**

@@ -18,14 +18,12 @@ __global__ void putAndSignalKernel(
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
     std::size_t nbytes,
-    IbgdaRemoteBuffer remoteSignalBuf,
     int signalId,
     uint64_t signalVal) {
   auto group = make_block_group();
   if (group.is_global_leader()) {
-    auto work = transport->put_signal(
-        localBuf, remoteBuf, nbytes, remoteSignalBuf, signalId, signalVal);
-    transport->wait_local(work);
+    transport->put(localBuf, remoteBuf, nbytes, signalId, signalVal);
+    transport->fence();
   }
 }
 
@@ -34,19 +32,12 @@ void testPutAndSignal(
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
-    const IbgdaRemoteBuffer& remoteSignalBuf,
     int signalId,
     uint64_t signalVal,
     int numBlocks,
     int blockSize) {
   putAndSignalKernel<<<numBlocks, blockSize>>>(
-      deviceTransportPtr,
-      localBuf,
-      remoteBuf,
-      nbytes,
-      remoteSignalBuf,
-      signalId,
-      signalVal);
+      deviceTransportPtr, localBuf, remoteBuf, nbytes, signalId, signalVal);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(
@@ -63,19 +54,14 @@ __global__ void putAndSignalGroupKernel(
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
     std::size_t nbytes,
-    IbgdaRemoteBuffer remoteSignalBuf,
     int signalId,
     uint64_t signalVal) {
   auto group = make_warp_group();
 
-  transport->put_group_local(group, localBuf, remoteBuf, nbytes);
+  // Group-cooperative put with signal (single put+signal, not two puts)
+  transport->put(group, localBuf, remoteBuf, nbytes, signalId, signalVal);
 
-  auto work = transport->put_signal_group_local(
-      group, localBuf, remoteBuf, nbytes, remoteSignalBuf, signalId, signalVal);
-
-  if (group.is_leader()) {
-    transport->wait_local(work);
-  }
+  transport->fence(group);
 }
 
 void testPutAndSignalGroup(
@@ -83,19 +69,12 @@ void testPutAndSignalGroup(
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
-    const IbgdaRemoteBuffer& remoteSignalBuf,
     int signalId,
     uint64_t signalVal,
     int numBlocks,
     int blockSize) {
   putAndSignalGroupKernel<<<numBlocks, blockSize>>>(
-      deviceTransportPtr,
-      localBuf,
-      remoteBuf,
-      nbytes,
-      remoteSignalBuf,
-      signalId,
-      signalVal);
+      deviceTransportPtr, localBuf, remoteBuf, nbytes, signalId, signalVal);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(
@@ -105,7 +84,7 @@ void testPutAndSignalGroup(
 
 // =============================================================================
 // Kernel: Multi-warp group-collaborative put + signal
-// Multiple warps use put_group_global, each leader signals
+// Each warp partitions data manually, then calls group-scope put + signal
 // =============================================================================
 
 __global__ void putAndSignalGroupMultiWarpKernel(
@@ -113,17 +92,24 @@ __global__ void putAndSignalGroupMultiWarpKernel(
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
     std::size_t nbytes,
-    IbgdaRemoteBuffer remoteSignalBuf,
     int signalId,
     uint64_t signalVal) {
   auto group = make_warp_group();
 
-  auto work = transport->put_signal_group_global(
-      group, localBuf, remoteBuf, nbytes, remoteSignalBuf, signalId, signalVal);
+  // Manually partition data across all warp groups
+  std::size_t chunkSize = nbytes / group.total_groups;
+  std::size_t offset = group.group_id * chunkSize;
+  std::size_t myBytes = (group.group_id == group.total_groups - 1)
+      ? (nbytes - offset)
+      : chunkSize;
 
-  if (group.is_leader()) {
-    transport->wait_local(work);
-  }
+  IbgdaLocalBuffer myLocalBuf = localBuf.subBuffer(offset);
+  IbgdaRemoteBuffer myRemoteBuf = remoteBuf.subBuffer(offset);
+
+  // Each warp group does put + signal (each signal adds signalVal)
+  transport->put(group, myLocalBuf, myRemoteBuf, myBytes, signalId, signalVal);
+
+  transport->fence(group);
 }
 
 void testPutAndSignalGroupMultiWarp(
@@ -131,19 +117,12 @@ void testPutAndSignalGroupMultiWarp(
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
-    const IbgdaRemoteBuffer& remoteSignalBuf,
     int signalId,
     uint64_t signalVal,
     int numBlocks,
     int blockSize) {
   putAndSignalGroupMultiWarpKernel<<<numBlocks, blockSize>>>(
-      deviceTransportPtr,
-      localBuf,
-      remoteBuf,
-      nbytes,
-      remoteSignalBuf,
-      signalId,
-      signalVal);
+      deviceTransportPtr, localBuf, remoteBuf, nbytes, signalId, signalVal);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(
@@ -153,7 +132,7 @@ void testPutAndSignalGroupMultiWarp(
 
 // =============================================================================
 // Kernel: Block-scope group-collaborative put + signal
-// Multiple blocks use put_group_global, each leader signals
+// Each block partitions data manually, then calls group-scope put + signal
 // =============================================================================
 
 __global__ void putAndSignalGroupBlockKernel(
@@ -161,17 +140,24 @@ __global__ void putAndSignalGroupBlockKernel(
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
     std::size_t nbytes,
-    IbgdaRemoteBuffer remoteSignalBuf,
     int signalId,
     uint64_t signalVal) {
   auto group = make_block_group();
 
-  auto work = transport->put_signal_group_global(
-      group, localBuf, remoteBuf, nbytes, remoteSignalBuf, signalId, signalVal);
+  // Manually partition data across all block groups
+  std::size_t chunkSize = nbytes / group.total_groups;
+  std::size_t offset = group.group_id * chunkSize;
+  std::size_t myBytes = (group.group_id == group.total_groups - 1)
+      ? (nbytes - offset)
+      : chunkSize;
 
-  if (group.is_leader()) {
-    transport->wait_local(work);
-  }
+  IbgdaLocalBuffer myLocalBuf = localBuf.subBuffer(offset);
+  IbgdaRemoteBuffer myRemoteBuf = remoteBuf.subBuffer(offset);
+
+  // Each block group does put + signal (each signal adds signalVal)
+  transport->put(group, myLocalBuf, myRemoteBuf, myBytes, signalId, signalVal);
+
+  transport->flush(group);
 }
 
 void testPutAndSignalGroupBlock(
@@ -179,19 +165,12 @@ void testPutAndSignalGroupBlock(
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
-    const IbgdaRemoteBuffer& remoteSignalBuf,
     int signalId,
     uint64_t signalVal,
     int numBlocks,
     int blockSize) {
   putAndSignalGroupBlockKernel<<<numBlocks, blockSize>>>(
-      deviceTransportPtr,
-      localBuf,
-      remoteBuf,
-      nbytes,
-      remoteSignalBuf,
-      signalId,
-      signalVal);
+      deviceTransportPtr, localBuf, remoteBuf, nbytes, signalId, signalVal);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(
@@ -204,24 +183,22 @@ void testPutAndSignalGroupBlock(
 // =============================================================================
 
 __global__ void waitSignalKernel(
-    volatile uint64_t* localSignalBuf,
+    P2pIbgdaTransportDevice* transport,
     int signalId,
     uint64_t expectedSignal) {
   if (threadIdx.x == 0 && blockIdx.x == 0) {
-    while (localSignalBuf[signalId] < expectedSignal) {
-      // spin
-    }
+    transport->wait_signal(signalId, expectedSignal);
   }
 }
 
 void testWaitSignal(
-    uint64_t* localSignalBuf,
+    P2pIbgdaTransportDevice* transport,
     int signalId,
     uint64_t expectedSignal,
     int numBlocks,
     int blockSize) {
   waitSignalKernel<<<numBlocks, blockSize>>>(
-      localSignalBuf, signalId, expectedSignal);
+      transport, signalId, expectedSignal);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(
@@ -238,7 +215,6 @@ __global__ void multiplePutAndSignalKernel(
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
     std::size_t bytesPerPut,
-    IbgdaRemoteBuffer remoteSignalBuf,
     int signalId,
     int numPuts) {
   auto group = make_block_group();
@@ -247,9 +223,8 @@ __global__ void multiplePutAndSignalKernel(
       IbgdaLocalBuffer srcBuf = localBuf.subBuffer(i * bytesPerPut);
       IbgdaRemoteBuffer dstBuf = remoteBuf.subBuffer(i * bytesPerPut);
 
-      auto work = transport->put_signal(
-          srcBuf, dstBuf, bytesPerPut, remoteSignalBuf, signalId, 1);
-      transport->wait_local(work);
+      transport->put(srcBuf, dstBuf, bytesPerPut, signalId, 1);
+      transport->fence();
     }
   }
 }
@@ -259,19 +234,12 @@ void testMultiplePutAndSignal(
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t bytesPerPut,
-    const IbgdaRemoteBuffer& remoteSignalBuf,
     int signalId,
     int numPuts,
     int numBlocks,
     int blockSize) {
   multiplePutAndSignalKernel<<<numBlocks, blockSize>>>(
-      deviceTransportPtr,
-      localBuf,
-      remoteBuf,
-      bytesPerPut,
-      remoteSignalBuf,
-      signalId,
-      numPuts);
+      deviceTransportPtr, localBuf, remoteBuf, bytesPerPut, signalId, numPuts);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(
@@ -285,25 +253,23 @@ void testMultiplePutAndSignal(
 
 __global__ void signalOnlyKernel(
     P2pIbgdaTransportDevice* transport,
-    IbgdaRemoteBuffer remoteSignalBuf,
     int signalId,
     uint64_t signalVal) {
   auto group = make_block_group();
   if (group.is_global_leader()) {
-    auto work = transport->signal_remote(remoteSignalBuf, signalId, signalVal);
-    transport->wait_local(work);
+    transport->signal(signalId, signalVal);
+    transport->flush();
   }
 }
 
 void testSignalOnly(
     P2pIbgdaTransportDevice* deviceTransportPtr,
-    const IbgdaRemoteBuffer& remoteSignalBuf,
     int signalId,
     uint64_t signalVal,
     int numBlocks,
     int blockSize) {
   signalOnlyKernel<<<numBlocks, blockSize>>>(
-      deviceTransportPtr, remoteSignalBuf, signalId, signalVal);
+      deviceTransportPtr, signalId, signalVal);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(
@@ -322,8 +288,8 @@ __global__ void putOnlyKernel(
     std::size_t nbytes) {
   auto group = make_block_group();
   if (group.is_global_leader()) {
-    auto work = transport->put(localBuf, remoteBuf, nbytes);
-    transport->wait_local(work);
+    transport->put(localBuf, remoteBuf, nbytes);
+    transport->flush();
   }
 }
 
@@ -420,28 +386,18 @@ __global__ void waitReadyThenPutAndSignalKernel(
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
     std::size_t nbytes,
-    volatile uint64_t* localSignalBuf,
     int readySignalId,
     uint64_t readySignalVal,
-    IbgdaRemoteBuffer remoteSignalBuf,
     int dataSignalId,
     uint64_t dataSignalVal) {
   auto group = make_block_group();
   if (group.is_global_leader()) {
-    // Wait for receiver to signal that its buffer is ready
-    while (localSignalBuf[readySignalId] < readySignalVal) {
-      // spin
-    }
+    // Wait for receiver to signal that its buffer is ready (local inbox)
+    transport->wait_signal(readySignalId, readySignalVal);
 
-    // Now put data and signal completion
-    auto work = transport->put_signal(
-        localBuf,
-        remoteBuf,
-        nbytes,
-        remoteSignalBuf,
-        dataSignalId,
-        dataSignalVal);
-    transport->wait_local(work);
+    // Now put data and signal completion (remote outbox)
+    transport->put(localBuf, remoteBuf, nbytes, dataSignalId, dataSignalVal);
+    transport->flush();
   }
 }
 
@@ -450,10 +406,8 @@ void testWaitReadyThenPutAndSignal(
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
-    uint64_t* localSignalBuf,
     int readySignalId,
     uint64_t readySignalVal,
-    const IbgdaRemoteBuffer& remoteSignalBuf,
     int dataSignalId,
     uint64_t dataSignalVal,
     int numBlocks,
@@ -463,10 +417,8 @@ void testWaitReadyThenPutAndSignal(
       localBuf,
       remoteBuf,
       nbytes,
-      localSignalBuf,
       readySignalId,
       readySignalVal,
-      remoteSignalBuf,
       dataSignalId,
       dataSignalVal);
   cudaError_t err = cudaGetLastError();
@@ -485,29 +437,19 @@ __global__ void bidirectionalPutAndWaitKernel(
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
     std::size_t nbytes,
-    IbgdaRemoteBuffer remoteSignalBuf,
     int sendSignalId,
     uint64_t sendSignalVal,
-    volatile uint64_t* localSignalBuf,
     int recvSignalId,
     uint64_t recvSignalVal) {
   auto group = make_block_group();
   if (group.group_id == 0) {
     if (group.is_leader()) {
-      // Send data to peer
-      auto work = transport->put_signal(
-          localBuf,
-          remoteBuf,
-          nbytes,
-          remoteSignalBuf,
-          sendSignalId,
-          sendSignalVal);
-      transport->wait_local(work);
+      // Send data to peer (remote outbox)
+      transport->put(localBuf, remoteBuf, nbytes, sendSignalId, sendSignalVal);
+      transport->flush();
     } else if (group.thread_id_in_group == 1) {
-      // Wait for data from peer
-      while (localSignalBuf[recvSignalId] < recvSignalVal) {
-        // spin
-      }
+      // Wait for data from peer (local inbox)
+      transport->wait_signal(recvSignalId, recvSignalVal);
     }
   }
 }
@@ -517,10 +459,8 @@ void testBidirectionalPutAndWait(
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
-    const IbgdaRemoteBuffer& remoteSignalBuf,
     int sendSignalId,
     uint64_t sendSignalVal,
-    uint64_t* localSignalBuf,
     int recvSignalId,
     uint64_t recvSignalVal,
     int numBlocks,
@@ -530,10 +470,8 @@ void testBidirectionalPutAndWait(
       localBuf,
       remoteBuf,
       nbytes,
-      remoteSignalBuf,
       sendSignalId,
       sendSignalVal,
-      localSignalBuf,
       recvSignalId,
       recvSignalVal);
   cudaError_t err = cudaGetLastError();
@@ -551,7 +489,6 @@ __global__ void allToAllSendKernel(
     P2pIbgdaTransportDevice** peerTransports,
     IbgdaLocalBuffer* localSendBufs,
     IbgdaRemoteBuffer* peerRecvBufs,
-    IbgdaRemoteBuffer* remoteSignalBufs,
     int myRank,
     std::size_t nbytes,
     int numPeers) {
@@ -561,32 +498,26 @@ __global__ void allToAllSendKernel(
   P2pIbgdaTransportDevice* transport = peerTransports[peerId];
 
   if (perPeerGroup.is_leader()) {
-    // Send data to this peer
-    auto work = transport->put_signal(
+    // Send data to this peer with signal (slot 0)
+    transport->put(
         localSendBufs[peerId],
         peerRecvBufs[peerId],
         nbytes,
-        remoteSignalBufs[peerId],
-        myRank,
+        0, // signalId
         1);
-    transport->wait_local(work);
+    transport->flush();
   }
 }
 
 __global__ void allToAllWaitKernel(
-    volatile uint64_t* localSignalBuf,
-    int* peerRanks,
+    P2pIbgdaTransportDevice** peerTransports,
     int numPeers) {
   auto group = make_block_group();
   auto [peerId, perPeerGroup] = group.partition(numPeers);
 
   if (perPeerGroup.is_leader()) {
-    // Wait for signal from this peer
-    // Signal ID = peerRank (sender's rank)
-    int peerRank = peerRanks[peerId];
-    while (localSignalBuf[peerRank] < 1) {
-      // spin
-    }
+    // Wait for signal from this peer (local inbox, slot 0)
+    peerTransports[peerId]->wait_signal(0, 1);
   }
 }
 
@@ -594,20 +525,13 @@ void testAllToAll(
     P2pIbgdaTransportDevice** peerTransports,
     IbgdaLocalBuffer* localSendBufs,
     IbgdaRemoteBuffer* peerRecvBufs,
-    IbgdaRemoteBuffer* remoteSignalBufs,
     int myRank,
     std::size_t nbytes,
     int numPeers,
     int numBlocks,
     int blockSize) {
   allToAllSendKernel<<<numBlocks, blockSize>>>(
-      peerTransports,
-      localSendBufs,
-      peerRecvBufs,
-      remoteSignalBufs,
-      myRank,
-      nbytes,
-      numPeers);
+      peerTransports, localSendBufs, peerRecvBufs, myRank, nbytes, numPeers);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(
@@ -616,13 +540,11 @@ void testAllToAll(
 }
 
 void testAllToAllWait(
-    uint64_t* localSignalBuf,
-    int* peerRanks,
+    P2pIbgdaTransportDevice** peerTransports,
     int numPeers,
     int numBlocks,
     int blockSize) {
-  allToAllWaitKernel<<<numBlocks, blockSize>>>(
-      localSignalBuf, peerRanks, numPeers);
+  allToAllWaitKernel<<<numBlocks, blockSize>>>(peerTransports, numPeers);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(
@@ -639,24 +561,21 @@ __global__ void putSignalCounterKernel(
     IbgdaLocalBuffer localDataBuf,
     IbgdaRemoteBuffer remoteDataBuf,
     std::size_t nbytes,
-    IbgdaRemoteBuffer remoteSignalBuf,
     int signalId,
     uint64_t signalVal,
-    IbgdaLocalBuffer localCounterBuf,
     int counterId,
     uint64_t counterVal) {
   auto group = make_block_group();
   if (group.is_global_leader()) {
-    transport->put_signal_counter_remote(
+    transport->put(
         localDataBuf,
         remoteDataBuf,
         nbytes,
-        remoteSignalBuf,
         signalId,
         signalVal,
-        localCounterBuf,
         counterId,
         counterVal);
+    transport->wait_counter(counterId, counterVal);
   }
 }
 
@@ -665,10 +584,8 @@ void testPutSignalCounter(
     const IbgdaLocalBuffer& localDataBuf,
     const IbgdaRemoteBuffer& remoteDataBuf,
     std::size_t nbytes,
-    const IbgdaRemoteBuffer& remoteSignalBuf,
     int signalId,
     uint64_t signalVal,
-    const IbgdaLocalBuffer& localCounterBuf,
     int counterId,
     uint64_t counterVal,
     int numBlocks,
@@ -678,10 +595,8 @@ void testPutSignalCounter(
       localDataBuf,
       remoteDataBuf,
       nbytes,
-      remoteSignalBuf,
       signalId,
       signalVal,
-      localCounterBuf,
       counterId,
       counterVal);
   cudaError_t err = cudaGetLastError();
@@ -696,24 +611,22 @@ void testPutSignalCounter(
 // =============================================================================
 
 __global__ void waitCounterKernel(
-    volatile uint64_t* counterBuf,
+    P2pIbgdaTransportDevice* transport,
     int counterId,
     uint64_t expectedVal) {
   if (threadIdx.x == 0 && blockIdx.x == 0) {
-    volatile uint64_t* ctr = counterBuf + counterId;
-    while (*ctr < expectedVal) {
-    }
+    transport->wait_counter(counterId, expectedVal);
   }
 }
 
 void testWaitCounter(
-    uint64_t* counterBuf,
+    P2pIbgdaTransportDevice* transport,
     int counterId,
     uint64_t expectedVal,
     int numBlocks,
     int blockSize) {
   waitCounterKernel<<<numBlocks, blockSize>>>(
-      counterBuf, counterId, expectedVal);
+      transport, counterId, expectedVal);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(

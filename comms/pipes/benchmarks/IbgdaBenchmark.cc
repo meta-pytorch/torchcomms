@@ -114,17 +114,19 @@ class IbgdaBenchmarkFixture : public MpiBaseTestFixture {
     return ss.str();
   }
 
-  // Run put + signal_remote_with_fence + fence benchmark using batched
-  // kernel. Populates latencyUs, excludes kernel launch overhead
+  // Run put + signal + counter benchmark using batched kernel. Populates
+  // latencyUs, excludes kernel launch overhead.
   void runPutSignalBenchmark(
       P2pIbgdaTransportDevice* deviceTransportPtr,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       const IbgdaRemoteBuffer& remoteSignalBuf,
+      const IbgdaLocalBuffer& localCounterBuf,
       const IbgdaBenchmarkConfig& config,
       unsigned long long* d_totalCycles,
       float& latencyUs) {
     constexpr int kSignalId = 0;
+    constexpr int kCounterId = 0;
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
@@ -137,6 +139,8 @@ class IbgdaBenchmarkFixture : public MpiBaseTestFixture {
           config.nBytes,
           remoteSignalBuf,
           kSignalId,
+          localCounterBuf,
+          kCounterId,
           kIbgdaBatchIters,
           d_totalCycles,
           stream_);
@@ -220,9 +224,10 @@ class IbgdaBenchmarkFixture : public MpiBaseTestFixture {
   cudaStream_t stream_{};
   float clockRateGHz_{0.0f};
 
-  // Verify that a put+signal method correctly transfers data to the remote
-  // peer. Fills the sender's buffer with fillPattern, zeros the receiver's
-  // buffer, runs exactly one put+signal, then checks the receiver's buffer.
+  // Verify that a put+signal+counter method correctly transfers data to the
+  // remote peer. Fills the sender's buffer with fillPattern, zeros the
+  // receiver's buffer, runs exactly one put+signal+counter, then checks the
+  // receiver's buffer.
   template <typename LaunchFn>
   void verifyPutDataCorrectness(
       LaunchFn launchFn,
@@ -232,9 +237,11 @@ class IbgdaBenchmarkFixture : public MpiBaseTestFixture {
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes,
       const IbgdaRemoteBuffer& remoteSignalBuf,
+      const IbgdaLocalBuffer& localCounterBuf,
       uint8_t fillPattern,
       const std::string& methodName) {
     constexpr int kSignalId = 0;
+    constexpr int kCounterId = 0;
 
     // Sender: fill source buffer with pattern
     // Receiver: zero destination buffer
@@ -246,8 +253,12 @@ class IbgdaBenchmarkFixture : public MpiBaseTestFixture {
     CUDA_CHECK_VOID(cudaDeviceSynchronize());
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-    // Sender: exactly one put+signal (no warmup, no loop)
+    // Sender: exactly one put+signal+counter (no warmup, no loop). The
+    // sender resets its local counter to 0 first so the kernel's spin sees
+    // the fresh increment.
     if (globalRank == 0) {
+      CUDA_CHECK_VOID(
+          cudaMemsetAsync(localCounterBuf.ptr, 0, sizeof(uint64_t), stream_));
       launchFn(
           deviceTransportPtr,
           localBuf,
@@ -255,6 +266,8 @@ class IbgdaBenchmarkFixture : public MpiBaseTestFixture {
           nbytes,
           remoteSignalBuf,
           kSignalId,
+          localCounterBuf,
+          kCounterId,
           stream_);
       CUDA_CHECK_VOID(cudaStreamSynchronize(stream_));
     }
@@ -290,7 +303,7 @@ class IbgdaBenchmarkFixture : public MpiBaseTestFixture {
 };
 
 TEST_F(IbgdaBenchmarkFixture, PutWaitLocal) {
-  // Measures raw RDMA Write latency (put + fence)
+  // Measures raw RDMA Write latency (put + counter wait via companion QP)
   if (numRanks != 2) {
     XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
@@ -298,6 +311,7 @@ TEST_F(IbgdaBenchmarkFixture, PutWaitLocal) {
 
   int peerRank = (globalRank == 0) ? 1 : 0;
   auto configs = getFullConfigs();
+  constexpr int kCounterId = 0;
 
   std::size_t maxBufferSize = 0;
   for (const auto& config : configs) {
@@ -324,6 +338,13 @@ TEST_F(IbgdaBenchmarkFixture, PutWaitLocal) {
     int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
     auto remoteDataBuf = remoteDataBufs[peerIndex];
 
+    // Counter buffer (local only — companion QP atomically increments via
+    // loopback when each put completes at the NIC).
+    DeviceBuffer counterBuffer(sizeof(uint64_t));
+    CUDA_CHECK_VOID(cudaMemset(counterBuffer.get(), 0, sizeof(uint64_t)));
+    auto localCounterBuf =
+        transport.registerBuffer(counterBuffer.get(), sizeof(uint64_t));
+
     P2pIbgdaTransportDevice* deviceTransportPtr =
         transport.getP2pTransportDevice(peerRank);
 
@@ -340,6 +361,13 @@ TEST_F(IbgdaBenchmarkFixture, PutWaitLocal) {
     for (const auto& config : configs) {
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
+      // Reset counter buffer before each size — kernel uses an absolute
+      // expected sequence (1, 2, 3, ...) starting from 0.
+      if (globalRank == 0) {
+        CUDA_CHECK_VOID(cudaMemset(counterBuffer.get(), 0, sizeof(uint64_t)));
+        CUDA_CHECK_VOID(cudaDeviceSynchronize());
+      }
+
       // Only rank 0 sends
       if (globalRank == 0) {
         launchIbgdaPutWaitLocalBatch(
@@ -347,6 +375,8 @@ TEST_F(IbgdaBenchmarkFixture, PutWaitLocal) {
             localDataBuf,
             remoteDataBuf,
             config.nBytes,
+            localCounterBuf,
+            kCounterId,
             kIbgdaBatchIters,
             d_totalCycles,
             stream_);
@@ -389,7 +419,7 @@ TEST_F(IbgdaBenchmarkFixture, PutWaitLocal) {
 }
 
 TEST_F(IbgdaBenchmarkFixture, PutSignalWaitLocal) {
-  // Measures RDMA Write + atomic signal latency (put + signal + fence)
+  // Measures RDMA Write + atomic signal latency (put + signal + counter wait)
   if (numRanks != 2) {
     XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
@@ -398,6 +428,7 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalWaitLocal) {
   int peerRank = (globalRank == 0) ? 1 : 0;
   auto configs = getFullConfigs();
   constexpr int kSignalId = 0;
+  constexpr int kCounterId = 0;
 
   std::size_t maxBufferSize = 0;
   for (const auto& config : configs) {
@@ -432,6 +463,13 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalWaitLocal) {
     auto remoteSignalBufs = transport.exchangeBuffer(localSignalBuf);
     auto remoteSignalBuf = remoteSignalBufs[peerIndex];
 
+    // Counter buffer (local only — companion QP atomically increments via
+    // loopback when each put+signal completes at the NIC).
+    DeviceBuffer counterBuffer(sizeof(uint64_t));
+    CUDA_CHECK_VOID(cudaMemset(counterBuffer.get(), 0, sizeof(uint64_t)));
+    auto localCounterBuf =
+        transport.registerBuffer(counterBuffer.get(), sizeof(uint64_t));
+
     P2pIbgdaTransportDevice* deviceTransportPtr =
         transport.getP2pTransportDevice(peerRank);
 
@@ -448,6 +486,13 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalWaitLocal) {
     for (const auto& config : configs) {
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
+      // Reset counter buffer before each size — kernel uses an absolute
+      // expected sequence (1, 2, 3, ...) starting from 0.
+      if (globalRank == 0) {
+        CUDA_CHECK_VOID(cudaMemset(counterBuffer.get(), 0, sizeof(uint64_t)));
+        CUDA_CHECK_VOID(cudaDeviceSynchronize());
+      }
+
       // Only rank 0 sends
       if (globalRank == 0) {
         launchIbgdaPutSignalWaitLocalBatch(
@@ -457,6 +502,8 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalWaitLocal) {
             config.nBytes,
             remoteSignalBuf,
             kSignalId,
+            localCounterBuf,
+            kCounterId,
             kIbgdaBatchIters,
             d_totalCycles,
             stream_);
@@ -585,8 +632,8 @@ TEST_F(IbgdaBenchmarkFixture, SignalOnly) {
   }
 }
 
-// put+signal_remote_with_fence latency benchmark
-// Fence = put + signal_remote_with_fence (NIC-level fence, adaptive safe)
+// put+signal+counter latency benchmark
+// Counter = put + signal + companion-QP counter loopback + local poll
 TEST_F(IbgdaBenchmarkFixture, PutSignalComparison) {
   if (numRanks != 2) {
     XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
@@ -643,6 +690,12 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalComparison) {
     auto remoteSignalBufs = transport.exchangeBuffer(localSignalBuf);
     auto remoteSignalBuf = remoteSignalBufs[peerIndex];
 
+    // Counter buffer (local only — companion QP loopback target).
+    DeviceBuffer counterBuffer(sizeof(uint64_t));
+    CUDA_CHECK_VOID(cudaMemset(counterBuffer.get(), 0, sizeof(uint64_t)));
+    auto localCounterBuf =
+        transport.registerBuffer(counterBuffer.get(), sizeof(uint64_t));
+
     P2pIbgdaTransportDevice* deviceTransportPtr =
         transport.getP2pTransportDevice(peerRank);
 
@@ -668,39 +721,48 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalComparison) {
           remoteDataBuf,
           cfg.nBytes,
           remoteSignalBuf,
+          localCounterBuf,
           static_cast<uint8_t>(basePattern + 1),
-          "put+signal_remote_with_fence [" + cfg.name + "]");
+          "put+signal+counter [" + cfg.name + "]");
     }
 
     if (globalRank == 0) {
       XLOGF(
           INFO,
           "\n================================================================================");
-      XLOGF(INFO, "    put+signal_remote_with_fence latency");
+      XLOGF(INFO, "    put+signal+counter latency");
       XLOGF(INFO, "    (Using batched kernels - no kernel launch overhead)");
       XLOGF(
           INFO,
           "================================================================================");
-      XLOGF(INFO, "{:>10} {:>18}", "Size", "Fence Lat (us)");
+      XLOGF(INFO, "{:>10} {:>18}", "Size", "Counter Lat (us)");
       XLOGF(
           INFO,
           "--------------------------------------------------------------------------------");
     }
 
     for (const auto& config : configs) {
-      float fenceLatency = 0.0f;
+      float counterLatency = 0.0f;
+
+      // Reset counter buffer before each size — kernel uses an absolute
+      // expected sequence (1, 2, 3, ...) starting from 0.
+      if (globalRank == 0) {
+        CUDA_CHECK_VOID(cudaMemset(counterBuffer.get(), 0, sizeof(uint64_t)));
+        CUDA_CHECK_VOID(cudaDeviceSynchronize());
+      }
 
       runPutSignalBenchmark(
           deviceTransportPtr,
           localDataBuf,
           remoteDataBuf,
           remoteSignalBuf,
+          localCounterBuf,
           config,
           d_totalCycles,
-          fenceLatency);
+          counterLatency);
 
       if (globalRank == 0) {
-        XLOGF(INFO, "{:>10} {:>18.2f}", config.name, fenceLatency);
+        XLOGF(INFO, "{:>10} {:>18.2f}", config.name, counterLatency);
       }
     }
 
@@ -710,199 +772,7 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalComparison) {
           "================================================================================");
       XLOGF(
           INFO,
-          "Fence = put + signal_remote_with_fence (NIC-level fence, adaptive safe)");
-      XLOGF(
-          INFO,
-          "================================================================================\n");
-    }
-
-    CUDA_CHECK_VOID(cudaFree(d_totalCycles));
-
-  } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
-  }
-}
-
-// Head-to-head comparison: wait_local (CQ-based) vs companion QP counter wait
-// CQ-poll   = put() + wait_local() (CQ poll at work handle's WQE index)
-// Counter   = put_signal_counter_remote() + volatile counter poll — GPU polls
-//             local memory
-TEST_F(IbgdaBenchmarkFixture, WaitLocalVsCounterComparison) {
-  if (numRanks != 2) {
-    XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
-
-  int peerRank = (globalRank == 0) ? 1 : 0;
-
-  std::vector<IbgdaBenchmarkConfig> configs = {
-      {.nBytes = 8, .name = "8B"},
-      {.nBytes = 64, .name = "64B"},
-      {.nBytes = 1024, .name = "1KB"},
-      {.nBytes = 64 * 1024, .name = "64KB"},
-      {.nBytes = 1024 * 1024, .name = "1MB"},
-      {.nBytes = 16 * 1024 * 1024, .name = "16MB"},
-  };
-
-  std::size_t maxBufferSize = 0;
-  for (const auto& config : configs) {
-    maxBufferSize = std::max(maxBufferSize, config.nBytes);
-  }
-
-  try {
-    MultipeerIbgdaTransportConfig transportConfig{
-        .cudaDevice = localRank,
-    };
-
-    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
-    MultipeerIbgdaTransport transport(
-        globalRank, numRanks, bootstrap, transportConfig);
-    transport.exchange();
-
-    int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
-
-    // Data buffer (both paths use)
-    DeviceBuffer dataBuffer(maxBufferSize);
-    auto localDataBuf =
-        transport.registerBuffer(dataBuffer.get(), maxBufferSize);
-    auto remoteDataBufs = transport.exchangeBuffer(localDataBuf);
-    auto remoteDataBuf = remoteDataBufs[peerIndex];
-
-    // Signal buffer (counter path's remote signal)
-    DeviceBuffer signalBuffer(sizeof(uint64_t));
-    CUDA_CHECK_VOID(cudaMemset(signalBuffer.get(), 0, sizeof(uint64_t)));
-    auto localSignalBuf =
-        transport.registerBuffer(signalBuffer.get(), sizeof(uint64_t));
-    auto remoteSignalBufs = transport.exchangeBuffer(localSignalBuf);
-    auto remoteSignalBuf = remoteSignalBufs[peerIndex];
-
-    // Counter buffer (local only, no exchange needed)
-    DeviceBuffer counterBuffer(sizeof(uint64_t));
-    CUDA_CHECK_VOID(cudaMemset(counterBuffer.get(), 0, sizeof(uint64_t)));
-    auto localCounterBuf =
-        transport.registerBuffer(counterBuffer.get(), sizeof(uint64_t));
-
-    P2pIbgdaTransportDevice* deviceTransportPtr =
-        transport.getP2pTransportDevice(peerRank);
-
-    // Allocate device memory for cycle counter output
-    unsigned long long* d_totalCycles;
-    CUDA_CHECK_VOID(cudaMalloc(&d_totalCycles, sizeof(unsigned long long)));
-
-    if (globalRank == 0) {
-      XLOGF(
-          INFO,
-          "\n================================================================================");
-      XLOGF(INFO, "    CQ-poll wait_local vs Companion QP Counter Wait");
-      XLOGF(INFO, "    (Using batched kernels - no kernel launch overhead)");
-      XLOGF(
-          INFO,
-          "================================================================================");
-      XLOGF(
-          INFO,
-          "{:>10} {:>18} {:>18} {:>12}",
-          "Size",
-          "CQ-poll (us)",
-          "Counter (us)",
-          "Delta (us)");
-      XLOGF(
-          INFO,
-          "--------------------------------------------------------------------------------");
-    }
-
-    constexpr int kSignalId = 0;
-    constexpr int kCounterId = 0;
-
-    for (const auto& config : configs) {
-      float cqLatency = 0.0f;
-      float counterLatency = 0.0f;
-
-      // --- Run CQ-poll path ---
-      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-      if (globalRank == 0) {
-        launchIbgdaPutCqPollWaitBatch(
-            deviceTransportPtr,
-            localDataBuf,
-            remoteDataBuf,
-            config.nBytes,
-            kIbgdaBatchIters,
-            d_totalCycles,
-            stream_);
-        CUDA_CHECK_VOID(cudaStreamSynchronize(stream_));
-
-        unsigned long long totalCycles;
-        CUDA_CHECK_VOID(cudaMemcpy(
-            &totalCycles,
-            d_totalCycles,
-            sizeof(unsigned long long),
-            cudaMemcpyDeviceToHost));
-
-        cqLatency = cyclesToUs(totalCycles) / kIbgdaBatchIters;
-      }
-
-      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-      // Reset counter buffer before counter path
-      CUDA_CHECK_VOID(cudaMemset(counterBuffer.get(), 0, sizeof(uint64_t)));
-      CUDA_CHECK_VOID(cudaDeviceSynchronize());
-
-      // --- Run counter path ---
-      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-      if (globalRank == 0) {
-        launchIbgdaPutSignalCounterBatch(
-            deviceTransportPtr,
-            localDataBuf,
-            remoteDataBuf,
-            config.nBytes,
-            remoteSignalBuf,
-            kSignalId,
-            localCounterBuf,
-            kCounterId,
-            kIbgdaBatchIters,
-            d_totalCycles,
-            stream_);
-        CUDA_CHECK_VOID(cudaStreamSynchronize(stream_));
-
-        unsigned long long totalCycles;
-        CUDA_CHECK_VOID(cudaMemcpy(
-            &totalCycles,
-            d_totalCycles,
-            sizeof(unsigned long long),
-            cudaMemcpyDeviceToHost));
-
-        counterLatency = cyclesToUs(totalCycles) / kIbgdaBatchIters;
-      }
-
-      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-      if (globalRank == 0) {
-        float delta = counterLatency - cqLatency;
-        XLOGF(
-            INFO,
-            "{:>10} {:>18.2f} {:>18.2f} {:>+12.2f}",
-            config.name,
-            cqLatency,
-            counterLatency,
-            delta);
-      }
-    }
-
-    if (globalRank == 0) {
-      XLOGF(
-          INFO,
-          "================================================================================");
-      XLOGF(INFO, "CQ-poll  = put() + wait_local() (CQ poll at WQE index)");
-      XLOGF(
-          INFO,
-          "Counter  = put_signal_counter_remote() + volatile counter poll");
-      XLOGF(INFO, "Delta    = Counter - CQ-poll (positive = CQ-poll wins)");
-      XLOGF(
-          INFO,
-          "Batch iterations: {}, GPU clock: {:.2f} GHz",
-          kIbgdaBatchIters,
-          clockRateGHz_);
+          "Counter = put + signal + counter (companion-QP loopback) + local poll");
       XLOGF(
           INFO,
           "================================================================================\n");
@@ -918,14 +788,14 @@ TEST_F(IbgdaBenchmarkFixture, WaitLocalVsCounterComparison) {
 // Multi-peer counter fan-out: validates O(1) amortized scaling.
 //
 // Each rank puts to ALL other peers simultaneously.
-// CQ-poll:  put() to all peers, then wait_local() on each QP serially — O(N)
-// PCIe CQ polls
-// polls Counter:  put_signal_counter_remote() to all peers (all companion QPs
+// Serial:   put()+signal()+counter to each peer with its OWN counter slot,
+//           then wait_counter on each slot serially — O(N) wait_counter calls
+// FanOut:   put() with signal+counter to all peers (all companion QPs
 //           atomically increment the SAME counter slot via loopback), then
-//           single volatile poll until counter reaches numPeers — O(1) poll
+//           single wait_counter until slot reaches numPeers — O(1) wait
 //
-// Expected: Counter per-iter latency stays roughly constant as numPeers grows,
-//           while CQ-poll scales linearly with numPeers.
+// Expected: FanOut per-iter latency stays roughly constant as numPeers grows,
+//           while Serial scales linearly with numPeers.
 TEST_F(IbgdaBenchmarkFixture, MultiPeerCounterFanOut) {
   const int numPeers = numRanks - 1;
   if (numPeers < 1) {
@@ -935,7 +805,7 @@ TEST_F(IbgdaBenchmarkFixture, MultiPeerCounterFanOut) {
 
   constexpr std::size_t kDataSize = 64 * 1024; // 64KB per peer
   constexpr int kSignalId = 0;
-  constexpr int kCounterId = 0;
+  constexpr int kSharedCounterId = 0;
 
   try {
     MultipeerIbgdaTransportConfig transportConfig{
@@ -959,11 +829,14 @@ TEST_F(IbgdaBenchmarkFixture, MultiPeerCounterFanOut) {
         transport.registerBuffer(signalBuffer.get(), sizeof(uint64_t));
     auto remoteSignalBufsVec = transport.exchangeBuffer(localSignalBuf);
 
-    // Counter buffer (local only — shared by all companion QPs)
-    DeviceBuffer counterBuffer(sizeof(uint64_t));
-    CUDA_CHECK_VOID(cudaMemset(counterBuffer.get(), 0, sizeof(uint64_t)));
+    // Counter buffer (local only). Sized for numPeers slots: the Serial path
+    // uses one slot per peer; the FanOut path uses slot 0 only (all
+    // companion QPs increment the same slot via loopback).
+    const std::size_t counterBytes = numPeers * sizeof(uint64_t);
+    DeviceBuffer counterBuffer(counterBytes);
+    CUDA_CHECK_VOID(cudaMemset(counterBuffer.get(), 0, counterBytes));
     auto localCounterBuf =
-        transport.registerBuffer(counterBuffer.get(), sizeof(uint64_t));
+        transport.registerBuffer(counterBuffer.get(), counterBytes);
 
     // Copy per-peer remote buffer arrays to device memory
     DeviceBuffer remoteDataBufsDevice(numPeers * sizeof(IbgdaRemoteBuffer));
@@ -1007,12 +880,12 @@ TEST_F(IbgdaBenchmarkFixture, MultiPeerCounterFanOut) {
     unsigned long long* d_totalCycles;
     CUDA_CHECK_VOID(cudaMalloc(&d_totalCycles, sizeof(unsigned long long)));
 
-    // --- Run CQ-poll path ---
-    float cqLatency = 0.0f;
+    // --- Run Serial (per-peer counter) path ---
+    float serialLatency = 0.0f;
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
     if (globalRank == 0) {
-      launchMultiPeerCqPollFanOutBatch(
+      launchMultiPeerSerialCounterFanOutBatch(
           transportsBase,
           transportStride,
           numPeers,
@@ -1021,6 +894,7 @@ TEST_F(IbgdaBenchmarkFixture, MultiPeerCounterFanOut) {
           kDataSize,
           static_cast<IbgdaRemoteBuffer*>(remoteSignalBufsDevice.get()),
           kSignalId,
+          localCounterBuf,
           kIbgdaBatchIters,
           d_totalCycles,
           stream_);
@@ -1032,17 +906,18 @@ TEST_F(IbgdaBenchmarkFixture, MultiPeerCounterFanOut) {
           d_totalCycles,
           sizeof(unsigned long long),
           cudaMemcpyDeviceToHost));
-      cqLatency = cyclesToUs(totalCycles) / kIbgdaBatchIters;
+      serialLatency = cyclesToUs(totalCycles) / kIbgdaBatchIters;
     }
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-    // Reset counter buffer
-    CUDA_CHECK_VOID(cudaMemset(counterBuffer.get(), 0, sizeof(uint64_t)));
+    // Reset counter buffer (Serial path used slots 0..numPeers-1; FanOut
+    // path uses slot 0 starting from 0)
+    CUDA_CHECK_VOID(cudaMemset(counterBuffer.get(), 0, counterBytes));
     CUDA_CHECK_VOID(cudaDeviceSynchronize());
 
-    // --- Run counter fan-out path ---
-    float counterLatency = 0.0f;
+    // --- Run shared counter fan-out path ---
+    float fanOutLatency = 0.0f;
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
     if (globalRank == 0) {
@@ -1056,7 +931,7 @@ TEST_F(IbgdaBenchmarkFixture, MultiPeerCounterFanOut) {
           static_cast<IbgdaRemoteBuffer*>(remoteSignalBufsDevice.get()),
           kSignalId,
           localCounterBuf,
-          kCounterId,
+          kSharedCounterId,
           kIbgdaBatchIters,
           d_totalCycles,
           stream_);
@@ -1068,13 +943,13 @@ TEST_F(IbgdaBenchmarkFixture, MultiPeerCounterFanOut) {
           d_totalCycles,
           sizeof(unsigned long long),
           cudaMemcpyDeviceToHost));
-      counterLatency = cyclesToUs(totalCycles) / kIbgdaBatchIters;
+      fanOutLatency = cyclesToUs(totalCycles) / kIbgdaBatchIters;
     }
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
     if (globalRank == 0) {
-      float delta = counterLatency - cqLatency;
+      float delta = fanOutLatency - serialLatency;
       XLOGF(
           INFO,
           "\n================================================================================");
@@ -1086,26 +961,28 @@ TEST_F(IbgdaBenchmarkFixture, MultiPeerCounterFanOut) {
       XLOGF(
           INFO,
           "================================================================================");
-      XLOGF(INFO, "  CQ-poll (N wait_local):     {:>8.2f} us", cqLatency);
-      XLOGF(INFO, "  Counter fan-out (1 poll):    {:>8.2f} us", counterLatency);
-      XLOGF(INFO, "  Delta (Counter - CQ-poll):   {:>+8.2f} us", delta);
+      XLOGF(
+          INFO, "  Serial (N wait_counter calls): {:>8.2f} us", serialLatency);
+      XLOGF(
+          INFO, "  FanOut (1 wait_counter call):  {:>8.2f} us", fanOutLatency);
+      XLOGF(INFO, "  Delta (FanOut - Serial):       {:>+8.2f} us", delta);
       XLOGF(
           INFO,
-          "  CQ-poll / peer:              {:>8.2f} us",
-          cqLatency / numPeers);
+          "  Serial / peer:                 {:>8.2f} us",
+          serialLatency / numPeers);
       XLOGF(
           INFO,
-          "  Counter / peer (amortized):  {:>8.2f} us",
-          counterLatency / numPeers);
+          "  FanOut / peer (amortized):     {:>8.2f} us",
+          fanOutLatency / numPeers);
       XLOGF(
           INFO,
           "--------------------------------------------------------------------------------");
       XLOGF(
           INFO,
-          "  CQ-poll:  put()+signal() to all peers + wait_local() on each QP (O(N) CQ polls)");
+          "  Serial:  put+signal+counter (per-peer slot) + wait_counter per peer (O(N))");
       XLOGF(
           INFO,
-          "  Counter:  put_signal_counter() to all peers + single volatile poll (O(1))");
+          "  FanOut:  put+signal+counter (shared slot) + single wait_counter (O(1))");
       XLOGF(
           INFO,
           "  Batch iterations: {}, GPU clock: {:.2f} GHz",

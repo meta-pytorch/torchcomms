@@ -680,6 +680,30 @@ void MultipeerIbgdaTransport::cleanup() {
   }
   loopbackCompanionQpHlList_.clear();
 
+  // Deregister and free transport-owned signal/counter buffers.
+  // MRs must be deregistered BEFORE cudaFree (correct RDMA teardown order).
+  if (signalInboxGpu_ != nullptr) {
+    deregisterBuffer(signalInboxGpu_);
+    cudaFree(signalInboxGpu_);
+    signalInboxGpu_ = nullptr;
+  }
+  signalRemoteViews_.clear();
+  signalLocalViews_.clear();
+
+  if (counterGpu_ != nullptr) {
+    deregisterBuffer(counterGpu_);
+    cudaFree(counterGpu_);
+    counterGpu_ = nullptr;
+  }
+  counterViews_.clear();
+
+  if (discardSignalGpu_ != nullptr) {
+    deregisterBuffer(discardSignalGpu_);
+    cudaFree(discardSignalGpu_);
+    discardSignalGpu_ = nullptr;
+  }
+  discardSignalRemoteViews_.clear();
+
   // Destroy user buffer MRs
   for (auto& [_, cached] : registeredBuffers_) {
     doca_verbs_wrapper_ibv_dereg_mr(cached.mr);
@@ -839,6 +863,134 @@ void MultipeerIbgdaTransport::exchange() {
     }
   }
 
+  // ---- Allocate transport-owned signal buffers (if configured) ----
+  if (config_.numSignalSlots > 0) {
+    // Signal inbox: one contiguous buffer with numSignalSlots per peer.
+    // Total size = numPeers * numSignalSlots * sizeof(uint64_t).
+    // Each peer writes to its own region via RDMA atomic fetch-add.
+    const std::size_t slotsPerPeer =
+        static_cast<std::size_t>(config_.numSignalSlots);
+    const std::size_t totalSignalBytes =
+        static_cast<std::size_t>(numPeers) * slotsPerPeer * sizeof(uint64_t);
+
+    cudaError_t cudaErr = cudaMalloc(&signalInboxGpu_, totalSignalBytes);
+    if (cudaErr != cudaSuccess) {
+      throw std::runtime_error(
+          "Failed to allocate signal inbox: " +
+          std::string(cudaGetErrorString(cudaErr)));
+    }
+    cudaErr = cudaMemset(signalInboxGpu_, 0, totalSignalBytes);
+    if (cudaErr != cudaSuccess) {
+      throw std::runtime_error("Failed to zero signal inbox");
+    }
+
+    // Register and exchange signal inbox
+    auto localSignalBuf = registerBuffer(signalInboxGpu_, totalSignalBytes);
+    auto remoteSignalBufs = exchangeBuffer(localSignalBuf);
+
+    // Build per-peer views:
+    // - remoteSignalViews_[peerIndex] = remote view into peer's inbox at the
+    //   region reserved for us (offset = myPeerIndexOnPeer * slotsPerPeer)
+    // - signalLocalViews_[peerIndex] = local view into our inbox at the
+    //   region where this peer writes (offset = peerIndex * slotsPerPeer)
+    signalRemoteViews_.resize(numPeers);
+    signalLocalViews_.resize(numPeers);
+    for (int peerIndex = 0; peerIndex < numPeers; peerIndex++) {
+      int peerRank = peerIndexToRank(peerIndex);
+      int myPeerIndexOnPeer = (myRank_ < peerRank) ? myRank_ : (myRank_ - 1);
+      signalRemoteViews_[peerIndex] = remoteSignalBufs[peerIndex].subBuffer(
+          static_cast<std::size_t>(myPeerIndexOnPeer) * slotsPerPeer *
+          sizeof(uint64_t));
+      signalLocalViews_[peerIndex] = localSignalBuf.subBuffer(
+          static_cast<std::size_t>(peerIndex) * slotsPerPeer *
+          sizeof(uint64_t));
+    }
+
+    VLOG(1) << "MultipeerIbgdaTransport: allocated signal inbox "
+            << totalSignalBytes << " bytes (" << config_.numSignalSlots
+            << " slots/peer, " << numPeers << " peers)";
+  }
+
+  // ---- Allocate transport-owned counter buffers (if configured) ----
+  if (config_.numCounterSlots > 0) {
+    // Counter buffer: local only, no exchange needed.
+    // Each peer's companion QP writes to its own counter region.
+    const std::size_t slotsPerPeer =
+        static_cast<std::size_t>(config_.numCounterSlots);
+    const std::size_t totalCounterBytes =
+        static_cast<std::size_t>(numPeers) * slotsPerPeer * sizeof(uint64_t);
+
+    cudaError_t cudaErr = cudaMalloc(&counterGpu_, totalCounterBytes);
+    if (cudaErr != cudaSuccess) {
+      throw std::runtime_error(
+          "Failed to allocate counter buffer: " +
+          std::string(cudaGetErrorString(cudaErr)));
+    }
+    cudaErr = cudaMemset(counterGpu_, 0, totalCounterBytes);
+    if (cudaErr != cudaSuccess) {
+      throw std::runtime_error("Failed to zero counter buffer");
+    }
+
+    auto localCounterBuf = registerBuffer(counterGpu_, totalCounterBytes);
+
+    // Build per-peer views (local only)
+    counterViews_.resize(numPeers);
+    for (int peerIndex = 0; peerIndex < numPeers; peerIndex++) {
+      counterViews_[peerIndex] = localCounterBuf.subBuffer(
+          static_cast<std::size_t>(peerIndex) * slotsPerPeer *
+          sizeof(uint64_t));
+    }
+
+    VLOG(1) << "MultipeerIbgdaTransport: allocated counter buffer "
+            << totalCounterBytes << " bytes (" << config_.numCounterSlots
+            << " slots/peer, " << numPeers << " peers)";
+  }
+
+  // ---- Allocate transport-owned discard-signal buffer (if counter used) ----
+  //
+  // The discard-signal buffer exists solely so that counter-only puts can be
+  // routed through the async signal_counter compound (see
+  // P2pIbgdaTransportDevice::put_impl). DOCA verbs has no "counter-only"
+  // primitive: signal_counter posts the counter atomic on the companion QP
+  // ordered against a FENCEd signal on the primary QP. To use it without a
+  // real signal recipient, we need a remote-addressable uint64_t to act as
+  // the signal target — peers never read these slots, so the value is
+  // garbage by design.
+  //
+  // Layout: numPeers slots, one per peer that may write to us. Each rank
+  // exchanges the buffer addr/rkey; per-peer remote view points to *our*
+  // slot in the peer's discard buffer (offset = myPeerIndexOnPeer).
+  if (config_.numCounterSlots > 0) {
+    const std::size_t totalDiscardBytes =
+        static_cast<std::size_t>(numPeers) * sizeof(uint64_t);
+
+    cudaError_t cudaErr = cudaMalloc(&discardSignalGpu_, totalDiscardBytes);
+    if (cudaErr != cudaSuccess) {
+      throw std::runtime_error(
+          "Failed to allocate discard-signal buffer: " +
+          std::string(cudaGetErrorString(cudaErr)));
+    }
+    cudaErr = cudaMemset(discardSignalGpu_, 0, totalDiscardBytes);
+    if (cudaErr != cudaSuccess) {
+      throw std::runtime_error("Failed to zero discard-signal buffer");
+    }
+
+    auto localDiscardBuf = registerBuffer(discardSignalGpu_, totalDiscardBytes);
+    auto remoteDiscardBufs = exchangeBuffer(localDiscardBuf);
+
+    discardSignalRemoteViews_.resize(numPeers);
+    for (int peerIndex = 0; peerIndex < numPeers; peerIndex++) {
+      int peerRank = peerIndexToRank(peerIndex);
+      int myPeerIndexOnPeer = (myRank_ < peerRank) ? myRank_ : (myRank_ - 1);
+      discardSignalRemoteViews_[peerIndex] =
+          remoteDiscardBufs[peerIndex].subBuffer(
+              static_cast<std::size_t>(myPeerIndexOnPeer) * sizeof(uint64_t));
+    }
+
+    VLOG(1) << "MultipeerIbgdaTransport: allocated discard-signal buffer "
+            << totalDiscardBytes << " bytes (" << numPeers << " peers)";
+  }
+
   // Build device transports on GPU
   std::vector<P2pIbgdaTransportBuildParams> buildParams(numPeers);
   for (int i = 0; i < numPeers; i++) {
@@ -855,7 +1007,19 @@ void MultipeerIbgdaTransport::exchange() {
     checkDocaError(err, "Failed to get companion GPU QP handle");
 
     buildParams[i] = P2pIbgdaTransportBuildParams{
-        gpuQp, companionGpuQp, NetworkLKey(HostLKey(sinkMr_->lkey))};
+        gpuQp,
+        companionGpuQp,
+        NetworkLKey(HostLKey(sinkMr_->lkey)),
+        (config_.numSignalSlots > 0) ? signalRemoteViews_[i]
+                                     : IbgdaRemoteBuffer{},
+        (config_.numSignalSlots > 0) ? signalLocalViews_[i]
+                                     : IbgdaLocalBuffer{},
+        (config_.numCounterSlots > 0) ? counterViews_[i] : IbgdaLocalBuffer{},
+        (config_.numCounterSlots > 0) ? discardSignalRemoteViews_[i]
+                                      : IbgdaRemoteBuffer{},
+        config_.numSignalSlots,
+        config_.numCounterSlots,
+    };
   }
 
   peerTransportsGpu_ = buildDeviceTransportsOnGpu(buildParams.data(), numPeers);
