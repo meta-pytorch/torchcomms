@@ -165,7 +165,7 @@ __global__ void selfTransportPutKernel(
     const char* src_d,
     std::size_t nbytes) {
   auto group = make_warp_group();
-  transport->self.put(group, dst_d, src_d, nbytes);
+  transport->self.put_group(group, dst_d, src_d, nbytes);
 }
 
 void testSelfTransportPut(

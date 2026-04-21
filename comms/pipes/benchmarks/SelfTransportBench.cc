@@ -91,7 +91,7 @@ static void selfTransportPut(
 }
 
 /**
- * Benchmark P2pSelfTransportDevice::put_tile() for per-group local copies.
+ * Benchmark P2pSelfTransportDevice::put() for per-group local copies.
  * Each block independently copies its own tile (totalBytes / nBlocks).
  */
 static void selfTransportPutTile(
@@ -347,7 +347,7 @@ BENCHMARK_MULTI_PARAM_COUNTERS(
 
 BENCHMARK_DRAW_LINE();
 
-// Self transport put_tile benchmarks - 8MB with different block counts
+// Self transport put benchmarks (per-group) - 8MB with different block counts
 BENCHMARK_MULTI_PARAM_COUNTERS(
     selfTransportPutTile,
     size_8MB_2blocks,
@@ -379,7 +379,7 @@ BENCHMARK_MULTI_PARAM_COUNTERS(
     8 * 1024 * 1024,
     64);
 
-// Self transport put_tile benchmarks - 64MB with different block counts
+// Self transport put benchmarks (per-group) - 64MB with different block counts
 BENCHMARK_MULTI_PARAM_COUNTERS(
     selfTransportPutTile,
     size_64MB_2blocks,
@@ -411,7 +411,7 @@ BENCHMARK_MULTI_PARAM_COUNTERS(
     64 * 1024 * 1024,
     64);
 
-// Self transport put_tile benchmarks - 256MB with different block counts
+// Self transport put benchmarks (per-group) - 256MB with different block counts
 BENCHMARK_MULTI_PARAM_COUNTERS(
     selfTransportPutTile,
     size_256MB_2blocks,
@@ -443,7 +443,7 @@ BENCHMARK_MULTI_PARAM_COUNTERS(
     256 * 1024 * 1024,
     64);
 
-// Self transport put_tile benchmarks - 512MB with different block counts
+// Self transport put benchmarks (per-group) - 512MB with different block counts
 BENCHMARK_MULTI_PARAM_COUNTERS(
     selfTransportPutTile,
     size_512MB_2blocks,
@@ -475,7 +475,7 @@ BENCHMARK_MULTI_PARAM_COUNTERS(
     512 * 1024 * 1024,
     64);
 
-// Self transport put_tile benchmarks - 1GB with 32 blocks
+// Self transport put benchmarks (per-group) - 1GB with 32 blocks
 BENCHMARK_MULTI_PARAM_COUNTERS(
     selfTransportPutTile,
     size_1GB_32blocks,

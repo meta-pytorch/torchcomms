@@ -460,7 +460,7 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCall) {
 }
 
 // =============================================================================
-// send_tile / recv_tile Tests
+// send / recv (per-group) Tests
 // =============================================================================
 
 // Helper: run tile sendrecv with given params and verify correctness
@@ -3472,7 +3472,7 @@ TEST_F(P2pNvlTransportTestFixture, Ll128BufferWiring_Disabled) {
 // =============================================================================
 // Dynamic block count tests
 // =============================================================================
-// Verify that changing numBlocks between send_tile/recv_tile rounds works
+// Verify that changing numBlocks between send/recv rounds works
 // correctly with the maxBlocks layout and host-side barrier.
 
 TEST_F(P2pNvlTransportTestFixture, TileSendRecvDynamicBlockCount) {

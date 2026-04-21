@@ -31,7 +31,7 @@
 // Each sender block i sends tile i; each receiver block i receives tile i.
 // Sender block i is paired with receiver block i on the remote GPU.
 //
-// PIPELINING (inside send_tile / recv_tile)
+// PIPELINING (inside send / recv)
 // =========================================
 // Each block's tile may be larger than the per-block staging area. The tile
 // is therefore pipelined through the staging buffer in multiple steps:

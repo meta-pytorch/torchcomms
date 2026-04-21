@@ -482,9 +482,9 @@ struct PartitionResult {
  * ==================================
  *   auto [partition_id, subgroup] = warp.partition(2);
  *   if (partition_id == 0) {
- *     p2p.send(subgroup, sendBuff, nBytes);  // warps 0-15
+ *     p2p.send_group(subgroup, sendBuff, nBytes);  // warps 0-15
  *   } else {
- *     p2p.recv(subgroup, recvBuff, nBytes);  // warps 16-31
+ *     p2p.recv_group(subgroup, recvBuff, nBytes);  // warps 16-31
  *   }
  *
  * @param num_partitions Number of partitions to create (must be <=
@@ -591,11 +591,11 @@ __device__ inline PartitionResult ThreadGroup::partition(
  *   uint32_t weights[] = {3, 0, 1};
  *   auto [partition_id, subgroup] = warp.partition(weights);
  *   if (partition_id == 0) {
- *     p2p.send(subgroup, sendBuff, nBytes);  // 24 warps
+ *     p2p.send_group(subgroup, sendBuff, nBytes);  // 24 warps
  *   } else if (partition_id == 1) {
  *     // No warps assigned (zero weight)
  *   } else {
- *     p2p.recv(subgroup, recvBuff, nBytes);  // 8 warps
+ *     p2p.recv_group(subgroup, recvBuff, nBytes);  // 8 warps
  *   }
  *
  * @param weights Span of relative weights (non-zero count must be <=
@@ -702,9 +702,9 @@ __device__ inline PartitionResult ThreadGroup::partition(
  * =================================
  *   auto [partition_id, subgroup] = group.partition_interleaved(2);
  *   if (partition_id == 0) {
- *     p2p.recv(subgroup, recvBuff, nBytes);  // blocks 0,2,4,...,30
+ *     p2p.recv_group(subgroup, recvBuff, nBytes);  // blocks 0,2,4,...,30
  *   } else {
- *     p2p.send(subgroup, sendBuff, nBytes);  // blocks 1,3,5,...,31
+ *     p2p.send_group(subgroup, sendBuff, nBytes);  // blocks 1,3,5,...,31
  *   }
  *
  * @param num_partitions Number of partitions (typically 2 for send/recv)
