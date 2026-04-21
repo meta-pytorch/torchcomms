@@ -630,7 +630,8 @@ static const std::unordered_map<std::string, enum NCCL_ALLGATHER_ALGO>
         {"ctdirect", NCCL_ALLGATHER_ALGO::ctdirect},
         {"ctring", NCCL_ALLGATHER_ALGO::ctring},
         {"ctrd", NCCL_ALLGATHER_ALGO::ctrd},
-        {"ctbrucks", NCCL_ALLGATHER_ALGO::ctbrucks}};
+        {"ctbrucks", NCCL_ALLGATHER_ALGO::ctbrucks},
+        {"ctgraph", NCCL_ALLGATHER_ALGO::ctgraph}};
 
 commResult_t ctranConfigCommAlgoOverride(CtranComm* comm) {
   if (!ctranInitialized(comm)) {
