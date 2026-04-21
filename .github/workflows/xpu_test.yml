@@ -80,7 +80,6 @@ jobs:
       - name: Get docker image
         run: |
           docker pull "${{ env.DOCKER_IMAGE }}"
-          echo
 
       - name: Test
         id: test
