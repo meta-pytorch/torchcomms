@@ -49,14 +49,14 @@ LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/logger/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/tcpstore/*.cc)
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/transport/*.cc)
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/utilx/*.cc)
-LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/commstate/*.cc)
+LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/commstate/*.cc)
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/rma/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/collectives/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/comms-monitor/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/ctran-integration/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/hints/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/algoconf/*.cc)
-LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/wrapper/*.cc)
+LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/wrapper/*.cc)
 
 #### Start of fbcode source files
 ## Trainer Context for getting/setting trainer steps.
@@ -68,7 +68,7 @@ LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/*.cc)
 ## CollTrace source files
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/colltrace/*.cc)
 ## CollTrace CUDA source files (host-side kernel launchers)
-LIBSRCFILES += ${BASE_DIR}/comms/utils/colltrace/GpuClockCalibration.cu
+LIBSRCFILES += ${BASE_DIR}/comms/utils/GpuClockCalibration.cu
 LIBSRCFILES += ${BASE_DIR}/comms/utils/colltrace/HRDWRingBufferInstantiations.cu
 ## CollTrace plugin source files
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/colltrace/plugins/*.cc)
@@ -113,7 +113,7 @@ INCLUDES += -I${NCCLDIR}/
 INCLUDES += -I${SHAREDDIR}/
 INCLUDES += -I${NCCLDIR}/meta
 INCLUDES += -I${SHAREDDIR}/meta
-INCLUDES += -I${NCCLDIR}/meta/wrapper
+INCLUDES += -I${SHAREDDIR}/meta/wrapper
 INCLUDES += -Idevice
 INCLUDES += -I$(BASE_DIR)
 INCLUDES += -I$(CONDA_INCLUDE_DIR)
@@ -225,7 +225,7 @@ LIBSRCFILES_CU  := $(filter %.cu,$(LIBSRCFILES))
 LIBOBJ_CC       := $(LIBSRCFILES_CC:%.cc=$(OBJDIR)/%.o)
 LIBOBJ_CPP      := $(LIBSRCFILES_CPP:%.cpp=$(OBJDIR)/%.o)
 LIBOBJ_C        := $(LIBSRCFILES_C:%.c=$(OBJDIR)/%.o)
-LIBOBJ_CU       := $(LIBSRCFILES_CU:%.cu=$(OBJDIR)/%.o)
+LIBOBJ_CU       := $(LIBSRCFILES_CU:%.cu=$(OBJDIR)/%.cu.o)
 LIBOBJ          := $(LIBOBJ_CC) $(LIBOBJ_CPP) $(LIBOBJ_C) $(LIBOBJ_CU)
 BINOBJ     := $(BINSRCFILES:%.cc=$(OBJDIR)/%.o)
 DEPFILES   := $(LIBOBJ:%.o=%.d) $(BINOBJ:%.o=%.d)
@@ -310,7 +310,7 @@ $(INCDIR)/CtranEx.h : ${BASE_DIR}/comms/ctran/CtranEx.h
 	mkdir -p $(INCDIR)
 	install -m 644 $< $@
 
-$(INCDIR)/CtranExComm.h : ${NCCLDIR}/meta/wrapper/CtranExComm.h
+$(INCDIR)/CtranExComm.h : ${SHAREDDIR}/meta/wrapper/CtranExComm.h
 	@printf "Grabbing   %-35s > %s\n" $< $@
 	mkdir -p $(INCDIR)
 	install -m 644 $< $@
@@ -355,7 +355,7 @@ $(OBJDIR)/%.o : %.c $(INCTARGETS)
                 sed -e 's/^ *//' -e 's/$$/:/' >> $(@:%.o=%.d)
 	@rm -f $(@:%.o=%.d.tmp)
 
-$(OBJDIR)/%.o : %.cu $(INCTARGETS)
+$(OBJDIR)/%.cu.o : %.cu $(INCTARGETS)
 	@printf "Compiling  %-35s > %s\n" $< $@
 	mkdir -p `dirname $@`
 	$(NVCC) $(NVCC_GENCODE) $(CXXSTD) -Xcompiler -fPIC -Xcompiler -fvisibility=hidden -I. -I$(INCDIR) $(INCLUDES) -c $< -o $@

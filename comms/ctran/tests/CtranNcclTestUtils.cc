@@ -69,12 +69,17 @@ void CtranNcclTestHelpers::releaseBuf(
     void* buf,
     size_t bufSize,
     MemAllocType memType,
-    size_t numSegments) {
+    size_t numSegments,
+    bool refCheck) {
   if (memType == kMemCudaMalloc) {
     CUDACHECK_TEST(cudaFree(buf));
   } else if (memType == kMemNcclMemAlloc) {
 #if !defined(USE_ROCM)
-    NCCLCHECK_TEST(ncclMemFreeWithRefCheck(buf));
+    if (refCheck) {
+      NCCLCHECK_TEST(ncclMemFreeWithRefCheck(buf));
+    } else {
+      ncclMemFree(buf);
+    }
 #else
     XLOG(FATAL) << "kMemNcclMemAlloc is not supported on AMD/HIP";
 #endif

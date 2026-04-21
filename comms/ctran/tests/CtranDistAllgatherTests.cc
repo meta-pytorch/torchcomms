@@ -5,6 +5,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <stdlib.h>
+#include <algorithm>
 #include <thread>
 
 #include "CtranUtUtils.h"
@@ -129,6 +130,23 @@ class CtranAllgatherTest : public ctran::CtranDistTestFixture,
     }
   }
 
+  // Drain colltrace, parse pastColls, and sort by collId (submission order).
+  folly::dynamic getPastColls() {
+    EXPECT_NE(ctranComm->colltraceNew_, nullptr);
+    auto dumpMap = ctran::waitForCollTraceDrain(ctranComm.get());
+    EXPECT_NE(dumpMap["CT_pastColls"], "[]");
+    EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
+    EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
+    auto pastColls = folly::parseJson(dumpMap["CT_pastColls"]);
+    std::sort(
+        pastColls.begin(),
+        pastColls.end(),
+        [](const folly::dynamic& a, const folly::dynamic& b) {
+          return a["collId"].asInt() < b["collId"].asInt();
+        });
+    return pastColls;
+  }
+
  protected:
   cudaStream_t testStream{0};
   std::unique_ptr<CtranComm> ctranComm{nullptr};
@@ -227,17 +245,7 @@ TEST_P(CtranAllgatherTestParam, AllgatherAlgo) {
   verifyGpeLeak(ctranComm->ctran_.get());
 
   CUDACHECK_TEST(cudaDeviceSynchronize());
-  // Sleep for a while to make sure all the colls are finished
-  std::this_thread::sleep_for(std::chrono::seconds(2));
-
-  ASSERT_NE(ctranComm->colltraceNew_, nullptr);
-  auto dumpMap = ctran::dumpCollTrace(ctranComm.get());
-
-  EXPECT_NE(dumpMap["CT_pastColls"], "[]");
-  EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
-  EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
-
-  auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
+  auto pastCollsJson = getPastColls();
   EXPECT_EQ(pastCollsJson.size(), expOpNames.size());
   int idx = 0;
   for (const auto& coll : pastCollsJson) {
@@ -465,17 +473,7 @@ TEST_P(CtranSocketAllgatherTestParam, AllgatherAlgo) {
   verifyGpeLeak(ctranComm->ctran_.get());
 
   CUDACHECK_TEST(cudaDeviceSynchronize());
-  // Sleep for a while to make sure all the colls are finished
-  std::this_thread::sleep_for(std::chrono::seconds(2));
-
-  ASSERT_NE(ctranComm->colltraceNew_, nullptr);
-  auto dumpMap = ctran::dumpCollTrace(ctranComm.get());
-
-  EXPECT_NE(dumpMap["CT_pastColls"], "[]");
-  EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
-  EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
-
-  auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
+  auto pastCollsJson = getPastColls();
   EXPECT_EQ(pastCollsJson.size(), expOpNames.size());
   int idx = 0;
   for (const auto& coll : pastCollsJson) {

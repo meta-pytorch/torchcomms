@@ -472,6 +472,18 @@ size_t CtranGpe::numInUseKernelFlags() {
       this->pimpl->kernelFlagPool->size();
 }
 
+size_t CtranGpe::numInUseChecksums() {
+  this->pimpl->checksumPool->reclaim();
+  return this->pimpl->checksumPool->capacity() -
+      this->pimpl->checksumPool->size();
+}
+
+size_t CtranGpe::numInUseGpeKernelSyncs() {
+  this->pimpl->gpeKernelSyncPool->reclaim();
+  return this->pimpl->gpeKernelSyncPool->capacity() -
+      this->pimpl->gpeKernelSyncPool->size();
+}
+
 commResult_t CtranGpe::allocGpeKernelSyncs(
     size_t count,
     int nworkers,

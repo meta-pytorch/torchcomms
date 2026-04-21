@@ -722,6 +722,11 @@ commResult_t CtranMapper::deregDynamic(void* regHdl) {
   return commSuccess;
 }
 
+void CtranMapper::removeFromExportCache(void* regHdl) {
+  auto* regElem = reinterpret_cast<ctran::regcache::RegElem*>(regHdl);
+  exportRegCache_.wlock()->remove(regElem);
+}
+
 commResult_t CtranMapper::deregRemReg(struct CtranMapperRemoteAccessKey* rkey) {
   switch (rkey->backend) {
     case CtranMapperBackend::NVL: {

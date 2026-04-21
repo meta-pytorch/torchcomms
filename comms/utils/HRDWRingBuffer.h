@@ -5,7 +5,7 @@
 #include <cuda_runtime.h> // @manual
 
 #if defined(__CUDACC__) || defined(__HIPCC__)
-#include "comms/utils/colltrace/GpuClockCalibration.h"
+#include "comms/utils/GpuClockCalibration.h"
 #endif
 
 #include <algorithm>

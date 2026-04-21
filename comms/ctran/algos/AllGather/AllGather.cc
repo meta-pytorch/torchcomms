@@ -1,15 +1,20 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 // #include <mutex>
+#include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 // Check if CTRAN is supported and if a specific algo is supported by CTRAN.
 // If user sets a specific algo, it should check to avoid unexpected abort in
 // ctranAllGather.
-bool ctranAllGatherSupport(CtranComm* comm, enum NCCL_ALLGATHER_ALGO algo) {
+bool ctranAllGatherSupport(
+    CtranComm* comm,
+    enum NCCL_ALLGATHER_ALGO algo,
+    cudaStream_t stream) {
   if (!ctranInitialized(comm) || !comm->ctran_->mapper->hasBackend()) {
     return false;
   }
@@ -33,6 +38,26 @@ bool ctranAllGatherSupport(CtranComm* comm, enum NCCL_ALLGATHER_ALGO algo) {
     case NCCL_ALLGATHER_ALGO::ctran:
       supported = true;
       break;
+    case NCCL_ALLGATHER_ALGO::ctgraph: {
+      if (stream == nullptr) {
+        supported = false;
+        break;
+      }
+      ctran::utils::cudagraph::StreamCaptureInfo captureInfo;
+      auto err =
+          ctran::utils::cudagraph::getStreamCaptureInfo(stream, captureInfo);
+      supported = (err == cudaSuccess) &&
+          (captureInfo.status == cudaStreamCaptureStatusActive) &&
+          ctran::allGatherPSupport(comm);
+      if (!supported) {
+        CLOGF_SUBSYS(
+            INFO,
+            COLL,
+            "AllGather ctgraph: not in capture mode or AGP not supported. "
+            "Falling back to baseline");
+      }
+      break;
+    }
     case NCCL_ALLGATHER_ALGO::orig: // invalid query
       supported = false;
       break;
@@ -49,11 +74,25 @@ commResult_t ctranAllGather(
     CtranComm* comm,
     cudaStream_t stream,
     enum NCCL_ALLGATHER_ALGO algo) {
+  // Cudagraph-aware optimization: when capturing and AGP is supported,
+  // transparently convert to the persistent window-based AGP algorithm.
+  if (algo == NCCL_ALLGATHER_ALGO::ctgraph) {
+    ctran::utils::cudagraph::StreamCaptureInfo captureInfo;
+    FB_CUDACHECK(
+        ctran::utils::cudagraph::getStreamCaptureInfo(stream, captureInfo));
+    if (captureInfo.status == cudaStreamCaptureStatusActive &&
+        ctran::allGatherPSupport(comm)) {
+      return ctranAllGatherCudagraphAware(
+          sendbuff, recvbuff, sendcount, datatype, comm, stream);
+    }
+  }
+
   const auto statex = comm->statex_.get();
 
   // Only ctdirect supports nLocalRanks>1 case.
   // Force to use ctdirect if nLocalRanks>1.
-  if (algo == NCCL_ALLGATHER_ALGO::ctran) {
+  if (algo == NCCL_ALLGATHER_ALGO::ctran ||
+      algo == NCCL_ALLGATHER_ALGO::ctgraph) {
     if (statex->nLocalRanks() > 1) {
       algo = NCCL_ALLGATHER_ALGO::ctdirect;
       CLOGF_SUBSYS(

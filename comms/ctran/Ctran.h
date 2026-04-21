@@ -75,7 +75,10 @@ commResult_t ctranGroupEndHook(
     enum NCCL_SENDRECV_ALGO algo,
     std::optional<std::chrono::milliseconds> timeout = std::nullopt);
 
-bool ctranAllGatherSupport(CtranComm* comm, enum NCCL_ALLGATHER_ALGO algo);
+bool ctranAllGatherSupport(
+    CtranComm* comm,
+    enum NCCL_ALLGATHER_ALGO algo,
+    cudaStream_t stream = nullptr);
 commResult_t ctranAllGather(
     const void* sendbuff,
     void* recvbuff,
@@ -459,11 +462,18 @@ commResult_t AllToAllPDestroy(CtranPersistentRequest* request);
 
 // Global pointer-based memory registration (does not require a comm).
 // If forceReg is true, registration happens even in async/lazy mode.
-commResult_t
-globalRegisterWithPtr(void* buff, size_t size, bool forceReg = false);
+commResult_t globalRegisterWithPtr(
+    void* buff,
+    size_t size,
+    bool forceReg = false,
+    bool ncclManaged = false);
 
 // Global pointer-based memory deregistration (does not require a comm).
-commResult_t globalDeregisterWithPtr(void* buff, size_t size);
+// If skipRemRelease is true, skip remote IPC release notifications and
+// just remove from exportRegCache. Use this during shutdown when remote
+// peers may have already exited.
+commResult_t
+globalDeregisterWithPtr(void* buff, size_t size, bool skipRemRelease = false);
 
 // Global APIs for bulk registration/deregistration of cached segments.
 // These are global operations that work on the singleton RegCache.
