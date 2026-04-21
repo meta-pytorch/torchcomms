@@ -129,7 +129,7 @@ struct CtranWin {
   }
 #endif
 
-  commResult_t free();
+  commResult_t free(bool skipBarrier = false);
 
   bool nvlEnabled(int rank) const;
 
