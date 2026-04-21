@@ -10,6 +10,7 @@ MAKEFLAGS += -r
 .SECONDARY:
 
 NCCLDIR := ../..
+SHAREDDIR := $(abspath $(NCCLDIR)/..)
 include $(NCCLDIR)/makefiles/common.mk
 include $(NCCLDIR)/makefiles/version.mk
 
@@ -21,6 +22,7 @@ DEVGLUE_OBJ  := $(OBJDIR)/device_glue.o
 
 INCFLAGS  = -I. -I.. -I$(BUILDDIR)/include -I../include -I../include/plugin
 INCFLAGS += -I../../
+INCFLAGS += -I${SHAREDDIR}/
 
 INCFLAGS  += -I$(BASE_DIR)
 INCFLAGS  += -I$(CONDA_INCLUDE_DIR)
