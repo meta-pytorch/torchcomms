@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cuda.h>
+
 #include <cuda_runtime.h>
 #include <cstddef>
 #include <cstring>
@@ -10,6 +11,7 @@
 #include "comms/pipes/CopyUtils.cuh"
 #include "comms/pipes/DeviceCheck.cuh"
 #include "comms/pipes/DeviceSpan.cuh"
+#include "comms/pipes/HipCompat.cuh"
 #include "comms/pipes/SignalState.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
 #include "comms/pipes/Timeout.cuh"
@@ -421,7 +423,7 @@ class P2pNvlTransportDevice {
       void* srcbuff,
       std::size_t nbytes,
       const Timeout& timeout = Timeout()) {
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
     if (options_.dataBufferSize == 0) {
       printf(
           "P2pNvlTransportDevice::send() requires staging buffer"
@@ -687,7 +689,7 @@ class P2pNvlTransportDevice {
       void* dstbuff,
       std::size_t nbytes,
       const Timeout& timeout = Timeout()) {
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
     if (options_.dataBufferSize == 0) {
       printf(
           "P2pNvlTransportDevice::recv() requires staging buffer"
@@ -881,7 +883,7 @@ class P2pNvlTransportDevice {
    */
   __device__ __forceinline__ std::size_t
   put(ThreadGroup& group, char* dst_d, const char* src_d, std::size_t nbytes) {
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
     // Early return for no-op cases
     if (nbytes == 0) {
       return 0;
