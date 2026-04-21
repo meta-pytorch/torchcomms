@@ -6,8 +6,16 @@
 #include <unordered_map>
 
 #include "comms/ctran/window/CtranWin.h"
+#include "nccl.h" // @manual
 
+#if NCCL_MINOR >= 28
+// forward declare ncclWindow_vidmem
+struct ncclWindow_vidmem;
+using NcclWinHandle = ncclWindow_vidmem;
+#else
 struct ncclWindow;
+using NcclWinHandle = ncclWindow;
+#endif
 
 struct ncclWin {
   // communicator associated with this window
@@ -17,12 +25,11 @@ struct ncclWin {
   ctran::CtranWin* ctranWindow;
 };
 
-// Thread-safe wrapper for ncclWindow -> ncclWin mapping
+// Thread-safe wrapper for NcclWinHandle -> ncclWin mapping
 //
-// Design Note: We use a global map because ncclWindow_vidmem (in v2_28) is a
-// device-side structure that cannot store host pointers or be accessed by the
-// host. The map is per-process, which is correct for NCCL's
-// one-process-per-rank model.
+// Design Note: We use a global map because the window handle is a device-side
+// structure that cannot store host pointers or be accessed by the host. The map
+// is per-process, which is correct for NCCL's one-process-per-rank model.
 //
 // Thread Safety: All methods are thread-safe using folly::Synchronized with
 // read-write locks. Multiple threads can safely call find() concurrently
@@ -37,7 +44,7 @@ struct ncclWin {
 //             mapping and allow cleanup
 //
 // Usage Pattern:
-//   ncclWindow_t handle = allocate_window(...);
+//   NcclWinHandle* handle = allocate_window(...);
 //   ncclWinMap().insert(handle, ncclWin_ptr);  // On allocation
 //   ...
 //   ncclWin* ptr = ncclWinMap().find(handle);  // During RMA ops (check for
@@ -53,18 +60,18 @@ class NcclWinMap {
     return map;
   }
 
-  void insert(ncclWindow* handle, ncclWin* win) {
+  void insert(NcclWinHandle* handle, ncclWin* win) {
     auto locked = map_.wlock();
     (*locked)[handle] = win;
   }
 
-  ncclWin* find(ncclWindow* handle) const {
+  ncclWin* find(NcclWinHandle* handle) const {
     auto locked = map_.rlock();
     auto it = locked->find(handle);
     return (it != locked->end()) ? it->second : nullptr;
   }
 
-  void erase(ncclWindow* handle) {
+  void erase(NcclWinHandle* handle) {
     auto locked = map_.wlock();
     locked->erase(handle);
   }
@@ -75,7 +82,7 @@ class NcclWinMap {
   NcclWinMap(const NcclWinMap&) = delete;
   NcclWinMap& operator=(const NcclWinMap&) = delete;
 
-  folly::Synchronized<std::unordered_map<ncclWindow*, ncclWin*>> map_;
+  folly::Synchronized<std::unordered_map<NcclWinHandle*, ncclWin*>> map_;
 };
 
 // Convenience function to access the map

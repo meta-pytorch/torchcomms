@@ -58,8 +58,7 @@ ncclResult_t ncclWinAllocate(
           &win_->ctranWindow,
           ncclToMetaComm(hints))));
 
-  // Create empty ncclWindow as handle and register mapping
-  ncclWindow_t handle = new ncclWindow();
+  ncclWindow_t handle = new NcclWinHandle();
   ncclWinMap().insert(handle, win_);
   *win = handle;
   guard.dismiss();
@@ -99,8 +98,7 @@ ncclResult_t ncclWinRegister(
           &win_->ctranWindow,
           ncclToMetaComm(hints))));
 
-  // Create empty ncclWindow as handle and register mapping
-  ncclWindow_t handle = new ncclWindow();
+  ncclWindow_t handle = new NcclWinHandle();
   ncclWinMap().insert(handle, win_);
   *win = handle;
   guard.dismiss();
@@ -116,8 +114,8 @@ NCCL_API(
     void** addr);
 ncclResult_t
 ncclWinSharedQuery(int rank, ncclComm_t comm, ncclWindow_t win, void** addr) {
-  ncclWin* w = ncclWinMap().find(win);
-  if (!comm || !win || !w || comm != w->comm) {
+  ncclWin* ncclWinPtr = ncclWinMap().find(win);
+  if (!comm || !win || !ncclWinPtr || comm != ncclWinPtr->comm) {
     FB_ERRORRETURN(
         ncclInvalidUsage,
         "Invalid parameter(s) to query shared buffer in ncclWinSharedQuery: comm {}, win {}",
@@ -130,8 +128,8 @@ ncclWinSharedQuery(int rank, ncclComm_t comm, ncclWindow_t win, void** addr) {
     FB_ERRORRETURN(ncclInternalError, "Empty communicator statex.");
   }
 
-  NCCLCHECK(
-      metaCommToNccl(ctran::ctranWinSharedQuery(rank, w->ctranWindow, addr)));
+  NCCLCHECK(metaCommToNccl(
+      ctran::ctranWinSharedQuery(rank, ncclWinPtr->ctranWindow, addr)));
   return ncclSuccess;
 }
 
@@ -304,6 +302,7 @@ ncclResult_t ncclWinDestroyDeviceWin(void* devicePtr) {
   cudaError_t err = cudaFree(devicePtr);
   return (err == cudaSuccess) ? ncclSuccess : ncclInternalError;
 }
+
 NCCL_API(
     ncclResult_t,
     ncclWinLocalRegisterBuffer,
