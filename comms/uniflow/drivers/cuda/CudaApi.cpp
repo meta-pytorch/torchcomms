@@ -80,6 +80,25 @@ Status CudaApi::memcpyAsync(
   return Ok();
 }
 
+#if CUDART_VERSION >= 12080
+Status CudaApi::memcpyBatchAsync(
+    void** dsts,
+    void** srcs,
+    size_t* sizes,
+    size_t count,
+    cudaStream_t stream) {
+  cudaMemcpyAttributes attr{};
+  attr.srcAccessOrder = cudaMemcpySrcAccessOrderStream;
+  size_t attrsIdx = 0;
+  size_t failIdx = SIZE_MAX;
+  CUDA_CHECK(
+      cudaMemcpyBatchAsync(
+          dsts, srcs, sizes, count, &attr, &attrsIdx, 1, &failIdx, stream),
+      ErrCode::DriverError);
+  return Ok();
+}
+#endif
+
 Status CudaApi::memcpyPeerAsync(
     void* dst,
     int dstDevice,

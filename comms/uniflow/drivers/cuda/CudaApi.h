@@ -38,6 +38,15 @@ class CudaApi {
       cudaMemcpyKind kind,
       cudaStream_t stream);
 
+#if CUDART_VERSION >= 12080
+  virtual Status memcpyBatchAsync(
+      void** dsts,
+      void** srcs,
+      size_t* sizes,
+      size_t count,
+      cudaStream_t stream);
+#endif
+
   virtual Status memcpyPeerAsync(
       void* dst,
       int dstDevice,

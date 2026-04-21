@@ -38,6 +38,17 @@ class MockCudaApi : public CudaApi {
        cudaMemcpyKind kind,
        cudaStream_t stream),
       (override));
+#if CUDART_VERSION >= 12080
+  MOCK_METHOD(
+      Status,
+      memcpyBatchAsync,
+      (void** dsts,
+       void** srcs,
+       size_t* sizes,
+       size_t count,
+       cudaStream_t stream),
+      (override));
+#endif
   MOCK_METHOD(
       Status,
       memcpyPeerAsync,
