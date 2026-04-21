@@ -362,11 +362,16 @@ class P2pNvlTransportDevice {
   __host__ __device__ ~P2pNvlTransportDevice() = default;
 
   /**
-   * send - Transfer data to peer GPU over NVLink
+   * send - Cooperative transfer to peer GPU over NVLink
    *
    * Sends 'nbytes' bytes from srcbuff to the peer GPU using pipelined staged
-   * transfer with fine-grained chunk-level synchronization. All threads in the
-   * group cooperate to transfer the data in parallel.
+   * transfer with fine-grained chunk-level synchronization. Multiple groups
+   * collaborate to transfer the data in parallel — work is distributed across
+   * all calling groups via for_each_item_contiguous/strided.
+   *
+   * All calling groups must pass the same src/nbytes. Unlike send_tile(),
+   * which has each group independently send its own partition of data, this
+   * version has all groups cooperate on the entire buffer.
    *
    * ALGORITHM:
    * ==========
@@ -852,23 +857,25 @@ class P2pNvlTransportDevice {
   }
 
   /**
-   * put - Direct local memory copy using vectorized operations
+   * put - Cooperative local memory copy using vectorized operations
    *
-   * Performs a high-performance vectorized copy from src_d to dst_d using
-   * memcpy_vectorized. The work is distributed across ALL thread groups
-   * using for_each_item_contiguous, so each group processes only its portion
-   * of the data.
+   * Performs a high-performance vectorized copy from src_d to dst_d.
+   * Multiple groups collaborate on the same src/dst/nbytes — work is
+   * distributed across all calling groups via for_each_item_contiguous
+   * by global group_id.
    *
-   * The chunk size is computed dynamically as (nbytes / total_groups) to
-   * ensure good parallelism, with a minimum of 16 bytes per chunk for
-   * vectorized access efficiency.
+   * All calling groups must pass the same src/dst/nbytes. Unlike put_tile(),
+   * which has each group independently copy its own partition of data, this
+   * version has all groups cooperate on the entire buffer.
    *
-   * NOTE: only support no overlap copy for now
+   * Contrast with send(): send() writes to the peer GPU's staging buffer
+   * via NVLink with pipelined flow control. put() copies within local memory
+   * without any signaling or flow control.
    *
    * @param group ThreadGroup for cooperative processing
    * @param dst_d Destination pointer (device memory)
    * @param src_d Source pointer (device memory)
-   * @param nbytes Number of bytes to write
+   * @param nbytes Number of bytes to copy
    *
    * @return Number of bytes written by the current thread group
    */
@@ -914,6 +921,39 @@ class P2pNvlTransportDevice {
     return totalBytesWritten;
 #endif
     return 0;
+  }
+
+  /**
+   * put_tile - Independent per-group local memory copy
+   *
+   * Performs a vectorized copy from src_d to dst_d using only threads within
+   * the calling group. Each group operates independently on its own data,
+   * so different groups can call put_tile() with different src/dst/nbytes.
+   *
+   * Unlike put(), which has all groups cooperate on the same buffer,
+   * put_tile() has each group work on its own partition independently.
+   *
+   * Contrast with send_tile(): send_tile() writes to the peer GPU's staging
+   * buffer via NVLink with pipelined flow control and signaling. put_tile()
+   * copies within local memory without any signaling or flow control.
+   *
+   * @param group ThreadGroup for cooperative processing (group-local)
+   * @param dst_d Destination pointer (device memory)
+   * @param src_d Source pointer (device memory)
+   * @param nbytes Number of bytes to copy
+   */
+  __device__ __forceinline__ void put_tile(
+      ThreadGroup& group,
+      char* __restrict__ dst_d,
+      const char* __restrict__ src_d,
+      std::size_t nbytes) {
+#ifdef __CUDA_ARCH__
+    if (nbytes == 0) {
+      return;
+    }
+    assert_buffer_non_overlap(dst_d, src_d, nbytes);
+    memcpy_vectorized(dst_d, src_d, nbytes, group);
+#endif
   }
 
   /**
@@ -963,6 +1003,28 @@ class P2pNvlTransportDevice {
       uint64_t value,
       const Timeout& timeout = Timeout()) {
     localState_.signalBuffer[signal_id].wait_until(group, op, value, timeout);
+  }
+
+  /**
+   * reset_signal_threadgroup - Reset a local signal slot to zero
+   *
+   * Resets the local signal counter at the specified index to zero.
+   * This is safe to call from the receiver side after processing the signal,
+   * since the receiver owns the local inbox buffer.
+   *
+   * The caller must ensure the signal has already been consumed (waited on)
+   * before resetting, and that no peer is concurrently signaling the same slot.
+   *
+   * @param group ThreadGroup for cooperative thread synchronization
+   * @param signal_id Index into the signalBuffer array
+   */
+  __device__ __forceinline__ void reset_signal_threadgroup(
+      ThreadGroup& group,
+      uint64_t signal_id) {
+    if (group.is_leader()) {
+      localState_.signalBuffer[signal_id].store(0);
+    }
+    group.sync();
   }
 
   /**
@@ -1128,6 +1190,16 @@ class P2pNvlTransportDevice {
   }
 
   /**
+   * send_tile - Independent per-group transfer to peer GPU over NVLink
+   *
+   * Each group independently sends its own tile of data to the peer GPU's
+   * staging buffer via NVLink, with per-group pipelined flow control and
+   * signaling. Different groups can call send_tile() with different
+   * src/nbytes.
+   *
+   * Unlike send(), which has all groups cooperate on the same buffer,
+   * send_tile() has each group work on its own partition independently.
+   *
    * @param active_blocks Number of blocks calling send_tile concurrently.
    *   0 means use tile_max_groups from transport config.
    * @param max_signal_bytes Hint for max bytes between DATA_READY signals.

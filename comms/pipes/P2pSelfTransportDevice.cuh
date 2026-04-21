@@ -123,6 +123,34 @@ class P2pSelfTransportDevice {
     });
 #endif
   }
+  /**
+   * put_tile - Per-group local memory copy using vectorized operations
+   *
+   * Performs a vectorized copy from src_d to dst_d using only threads within
+   * the calling group. Each group operates independently on its own data,
+   * so different groups can call put_tile() with different src/dst/nbytes.
+   *
+   * Contrast with put(): put() is a grid-collective where all groups must
+   * cooperate on the same data. put_tile() is per-group.
+   *
+   * @param group ThreadGroup for cooperative processing (group-local)
+   * @param dst_d Destination pointer (device memory)
+   * @param src_d Source pointer (device memory)
+   * @param nbytes Number of bytes to copy
+   */
+  __device__ __forceinline__ void put_tile(
+      ThreadGroup& group,
+      char* __restrict__ dst_d,
+      const char* __restrict__ src_d,
+      std::size_t nbytes) {
+#ifdef __CUDA_ARCH__
+    if (nbytes == 0 || dst_d == src_d) {
+      return;
+    }
+    assert_buffer_non_overlap(dst_d, src_d, nbytes);
+    memcpy_vectorized(dst_d, src_d, nbytes, group);
+#endif
+  }
 };
 
 } // namespace comms::pipes
