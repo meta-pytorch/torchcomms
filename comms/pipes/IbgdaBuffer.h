@@ -7,6 +7,8 @@
 
 #include <endian.h>
 
+#include "comms/pipes/IbgdaNicConfig.h"
+
 // Allow compilation in both host (C++) and device (CUDA) contexts
 #ifdef __CUDACC__
 #define IBGDA_HOST_DEVICE __host__ __device__
@@ -136,24 +138,57 @@ struct NetworkRKey {
  *
  * Represents a buffer in the local GPU's memory that can be used
  * as a source for RDMA writes or destination for RDMA reads.
- * Uses lkey (local key) in network byte order for memory registration.
+ * Carries one local key per NIC (lkeys[kMaxIbgdaNics]) for multi-NIC
+ * IBGDA support — each NIC has its own ibv_pd with a distinct lkey for
+ * the same physical buffer. The kernel-side P2pIbgdaTransportDevice
+ * selects lkeys[transportIdx_] based on the rail it dispatches to.
+ *
+ * Backward compatibility:
+ *   - lkey aliases lkeys[0] via anonymous union — existing call sites
+ *     using `.lkey.value` continue to work unchanged.
+ *   - The single-key constructor is [[deprecated]] (sets lkeys[0]=key,
+ *     lkeys[1..N-1]=zero) — safe at numNics=1 (transportIdx_ always 0)
+ *     but unsafe at numNics>1. Migrate to multi-key constructor.
  *
  * This struct is usable from both host and device code.
  */
 struct IbgdaLocalBuffer {
   void* ptr{nullptr};
-  NetworkLKey lkey{};
+  union {
+    NetworkLKey lkey; // legacy alias for lkeys[0] (zero-init via lkeys{})
+    NetworkLKey lkeys[kMaxIbgdaNics];
+  };
 
-  IbgdaLocalBuffer() = default;
+  IBGDA_HOST_DEVICE IbgdaLocalBuffer() : ptr(nullptr), lkeys{} {}
 
+  // Single-key constructor — DEPRECATED. Sets lkeys[0]=key; lkeys[1..N-1]=0.
+  // Safe only when consumed by a P2p with transportIdx_=0 (single-NIC). For
+  // multi-NIC transports, use the multi-key constructor below.
+  [[deprecated("Use multi-key constructor (ptr, keys) for multi-NIC support")]]
   IBGDA_HOST_DEVICE IbgdaLocalBuffer(void* p, NetworkLKey key)
-      : ptr(p), lkey(key) {}
+      : ptr(p), lkeys{key} {}
+
+  // Multi-key constructor — preferred. Caller passes the per-NIC lkeys
+  // array by reference (type-checked, fixed size = kMaxIbgdaNics).
+  // Single-NIC callers may zero-initialize the unused slots (NetworkLKey{}):
+  //   NetworkLKey keys[kMaxIbgdaNics]{lkey};  // {lkey, NetworkLKey{}}
+  //   IbgdaLocalBuffer buf(ptr, keys);
+  // since lkeys[1..N-1] are never read when numNics=1 (transportIdx_=0).
+  IBGDA_HOST_DEVICE IbgdaLocalBuffer(
+      void* p,
+      const NetworkLKey (&keys)[kMaxIbgdaNics])
+      : ptr(p) {
+    for (int n = 0; n < kMaxIbgdaNics; n++) {
+      lkeys[n] = keys[n];
+    }
+  }
 
   /**
-   * Create a sub-buffer at the given byte offset
+   * Create a sub-buffer at the given byte offset.
+   * Propagates all NICs' lkeys via the array-ref constructor.
    */
   IBGDA_HOST_DEVICE IbgdaLocalBuffer subBuffer(std::size_t offset) const {
-    return IbgdaLocalBuffer(static_cast<char*>(ptr) + offset, lkey);
+    return IbgdaLocalBuffer(static_cast<char*>(ptr) + offset, lkeys);
   }
 };
 
@@ -161,25 +196,48 @@ struct IbgdaLocalBuffer {
  * IbgdaRemoteBuffer - Remote buffer descriptor for RDMA operations
  *
  * Represents a buffer in a remote GPU's memory that can be accessed
- * via RDMA operations. Uses rkey (remote key) in network byte order
- * for memory registration.
+ * via RDMA operations. Carries one remote key per NIC
+ * (rkeys[kMaxIbgdaNics]) for multi-NIC IBGDA support — each NIC has
+ * its own ibv_pd with a distinct rkey for the same physical remote
+ * buffer. The kernel-side P2pIbgdaTransportDevice selects
+ * rkeys[transportIdx_] based on the rail it dispatches to.
+ *
+ * Backward compatibility: same pattern as IbgdaLocalBuffer (rkey aliases
+ * rkeys[0] via union; single-key constructor is [[deprecated]]).
  *
  * This struct is usable from both host and device code.
  */
 struct IbgdaRemoteBuffer {
   void* ptr{nullptr};
-  NetworkRKey rkey{};
+  union {
+    NetworkRKey rkey; // legacy alias for rkeys[0]
+    NetworkRKey rkeys[kMaxIbgdaNics];
+  };
 
-  IbgdaRemoteBuffer() = default;
+  IBGDA_HOST_DEVICE IbgdaRemoteBuffer() : ptr(nullptr), rkeys{} {}
 
+  // Single-key constructor — DEPRECATED. Sets rkeys[0]=key; rkeys[1..N-1]=0.
+  [[deprecated("Use multi-key constructor (ptr, keys) for multi-NIC support")]]
   IBGDA_HOST_DEVICE IbgdaRemoteBuffer(void* p, NetworkRKey key)
-      : ptr(p), rkey(key) {}
+      : ptr(p), rkeys{key} {}
+
+  // Multi-key constructor — preferred. Caller passes the per-NIC rkeys
+  // array by reference (type-checked, fixed size = kMaxIbgdaNics).
+  IBGDA_HOST_DEVICE IbgdaRemoteBuffer(
+      void* p,
+      const NetworkRKey (&keys)[kMaxIbgdaNics])
+      : ptr(p) {
+    for (int n = 0; n < kMaxIbgdaNics; n++) {
+      rkeys[n] = keys[n];
+    }
+  }
 
   /**
-   * Create a sub-buffer at the given byte offset
+   * Create a sub-buffer at the given byte offset.
+   * Propagates all NICs' rkeys via the array-ref constructor.
    */
   IBGDA_HOST_DEVICE IbgdaRemoteBuffer subBuffer(std::size_t offset) const {
-    return IbgdaRemoteBuffer(static_cast<char*>(ptr) + offset, rkey);
+    return IbgdaRemoteBuffer(static_cast<char*>(ptr) + offset, rkeys);
   }
 };
 
@@ -240,9 +298,15 @@ struct IbgdaBufferExchInfo {
   /**
    * Convert to IbgdaRemoteBuffer for RDMA operations.
    * The HostRKey is implicitly converted to NetworkRKey.
+   *
+   * Single-NIC path: populates rkeys[0] with the exchanged rkey;
+   * rkeys[1..N-1] left zero (never read at numNics=1 because
+   * transportIdx_=0). Multi-NIC code uses IbgdaBufferExchInfoMultiNic
+   * (added in Group 1) instead of this struct.
    */
   IbgdaRemoteBuffer toRemoteBuffer() const {
-    return IbgdaRemoteBuffer(reinterpret_cast<void*>(addr), rkey);
+    NetworkRKey keys[kMaxIbgdaNics]{NetworkRKey(rkey)};
+    return IbgdaRemoteBuffer(reinterpret_cast<void*>(addr), keys);
   }
 
   /**
