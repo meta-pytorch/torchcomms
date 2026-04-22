@@ -3,11 +3,56 @@
 #pragma once
 
 #include <cuda_runtime.h>
+
 #include <cstddef>
+#include "comms/pipes/HipCompat.cuh"
 
 #include "comms/pipes/ThreadGroup.cuh"
 
 namespace comms::pipes {
+
+// =============================================================================
+// AMD system-coherent store for P2P writes over XGMI
+// =============================================================================
+// On AMD GPUs, regular stores to remote GPU memory go through L1/L2 cache
+// and may not be visible to the remote GPU until a cache flush. For P2P
+// transfers, we need system-coherent stores that bypass/flush caches.
+#if defined(__HIP_DEVICE_COMPILE__) && !defined(__CUDA_ARCH__)
+
+/**
+ * Requires: dst and src must be 8-byte aligned (guaranteed when called via
+ * uint4* from memcpy_vectorized_aligned_sys). Misaligned pointers cause
+ * undefined behavior on AMD flat_store_dwordx2.
+ */
+__device__ __forceinline__ void store_sys_u128(uint4* dst, const uint4* src) {
+  // Note: 128-bit store is split into two 64-bit stores. Atomicity is not
+  // required — callers synchronize the full transfer via signal/barrier
+  // primitives before the consumer reads.
+#if defined(__gfx942__) || defined(__gfx950__)
+  // 16-byte system-coherent store via 2x dwordx2 with sc0 sc1
+  const uint64_t* s = reinterpret_cast<const uint64_t*>(src);
+  uint64_t* d = reinterpret_cast<uint64_t*>(dst);
+  uint64_t v0 = s[0];
+  uint64_t v1 = s[1];
+  asm volatile("flat_store_dwordx2 %0, %1 sc0 sc1" : : "v"(d), "v"(v0));
+  asm volatile("flat_store_dwordx2 %0, %1 sc0 sc1" : : "v"(d + 1), "v"(v1));
+#elif defined(__gfx90a__)
+  const uint64_t* s = reinterpret_cast<const uint64_t*>(src);
+  uint64_t* d = reinterpret_cast<uint64_t*>(dst);
+  uint64_t v0 = s[0];
+  uint64_t v1 = s[1];
+  asm volatile("flat_store_dwordx2 %0, %1 glc slc" : : "v"(d), "v"(v0));
+  asm volatile("flat_store_dwordx2 %0, %1 glc slc" : : "v"(d + 1), "v"(v1));
+#else
+  // Unsupported AMD architecture — plain store lacks system coherence and
+  // would silently break P2P correctness. Fail at compile time so new
+  // architectures get an explicit implementation.
+#error \
+    "store_sys_u128: no system-coherent store implementation for this AMD GPU architecture"
+#endif
+}
+
+#endif // __HIP_DEVICE_COMPILE__
 
 /**
  * memcpy_vectorized_aligned - High-performance vectorized memory copy
@@ -50,7 +95,7 @@ __device__ __forceinline__ void memcpy_vectorized_aligned(
     const VecType* src_p,
     std::size_t nelems,
     const ThreadGroup& group) {
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   // Loop stride: group_size threads × kUnroll elements each
   const std::size_t kLoopStride = group.group_size * kUnroll;
   const std::size_t numVecsAligned = (nelems / kLoopStride) * kLoopStride;
@@ -77,8 +122,43 @@ __device__ __forceinline__ void memcpy_vectorized_aligned(
        i += group.group_size) {
     dst[i] = src[i];
   }
-#endif // __CUDA_ARCH__
+#endif // defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
 }
+
+// AMD-optimized uint4 copy with system-coherent stores for P2P over XGMI.
+// NVIDIA NVLink provides hardware cache coherence for P2P writes, so the
+// standard memcpy_vectorized_aligned() is sufficient. AMD XGMI does not
+// guarantee coherence — remote stores may remain in local L1/L2 caches —
+// so this variant uses explicit cache-bypassing stores (sc0 sc1 / glc slc).
+#if defined(__HIP_DEVICE_COMPILE__) && !defined(__CUDA_ARCH__)
+template <int kUnroll = 8>
+__device__ __forceinline__ void memcpy_vectorized_aligned_sys(
+    uint4* dst,
+    const uint4* src,
+    std::size_t nelems,
+    const ThreadGroup& group) {
+  const std::size_t kLoopStride = group.group_size * kUnroll;
+  const std::size_t numVecsAligned = (nelems / kLoopStride) * kLoopStride;
+
+  for (std::size_t i = group.thread_id_in_group; i < numVecsAligned;
+       i += kLoopStride) {
+    uint4 v[kUnroll];
+#pragma unroll
+    for (int j = 0; j < kUnroll; ++j) {
+      v[j] = src[i + j * group.group_size];
+    }
+#pragma unroll
+    for (int j = 0; j < kUnroll; ++j) {
+      store_sys_u128(&dst[i + j * group.group_size], &v[j]);
+    }
+  }
+
+  for (std::size_t i = numVecsAligned + group.thread_id_in_group; i < nelems;
+       i += group.group_size) {
+    store_sys_u128(&dst[i], &src[i]);
+  }
+}
+#endif
 
 template <int kUnroll = 8>
 __device__ __forceinline__ void memcpy_vectorized(
@@ -86,7 +166,7 @@ __device__ __forceinline__ void memcpy_vectorized(
     const char* src,
     std::size_t len,
     const ThreadGroup& group) {
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   constexpr std::size_t kAlignment = sizeof(uint4);
   if ((uintptr_t)dst % kAlignment == 0 && (uintptr_t)src % kAlignment == 0) {
     const std::size_t nelems = len / kAlignment;
@@ -102,7 +182,7 @@ __device__ __forceinline__ void memcpy_vectorized(
   }
 
   memcpy_vectorized_aligned<char, kUnroll>(dst, src, len, group);
-#endif // __CUDA_ARCH__
+#endif // defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
 }
 
 /**
@@ -121,15 +201,16 @@ __device__ __forceinline__ void memcpy_vectorized(
  * @param src_d Source buffer pointer
  * @param nbytes Size of both buffers in bytes
  *
- * Note: Only active on device (__CUDA_ARCH__). No-op on host.
+ * Note: Only active on device (__CUDA_ARCH__ / __HIP_DEVICE_COMPILE__). No-op
+ * on host.
  */
 __device__ __forceinline__ void
 assert_buffer_non_overlap(char* dst_d, const char* src_d, std::size_t nbytes) {
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   if (!(src_d + nbytes <= dst_d || dst_d + nbytes <= src_d)) {
     __trap(); // Abort kernel if buffers overlap
   }
-#endif // __CUDA_ARCH__
+#endif // defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
 }
 
 } // namespace comms::pipes
