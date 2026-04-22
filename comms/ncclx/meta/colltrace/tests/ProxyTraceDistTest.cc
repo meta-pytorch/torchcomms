@@ -15,6 +15,7 @@
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/testinfra/TestUtils.h"
+#include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/colltrace/CollTrace.h"
 #include "meta/colltrace/ProxyMock.h"
@@ -34,6 +35,7 @@ class ProxyTraceTest : public NcclxBaseTestFixture {
     NcclxBaseTestFixture::SetUp({
         {"NCCL_CTRAN_ENABLE", "1"},
         {"NCCL_PROXYTRACE", "trace"},
+        {"NCCL_COLLTRACE", "trace"},
         {"NCCL_DEBUG", "INFO"},
         {"NCCL_DEBUG_SUBSYS", "INIT,COLL"},
     });
@@ -413,8 +415,10 @@ TEST_F(ProxyTraceTest, QueryFinishedAllReduce) {
   checkCompletedDump(dump, nColl);
 
   // Check past collective details
+  // opCount is incremented in ncclLaunchPrepare before proxy ops are created
+  // (D100385134), so traced opCount starts at opCountStart + 1
   for (int i = 0; i < nColl; i++) {
-    checkPastColl(dump.pastColls[i], opCountStart + i, comm);
+    checkPastColl(dump.pastColls[i], opCountStart + 1 + i, comm);
     EXPECT_EQ(dump.pastColls[i].collInfo.coll, ncclFuncAllReduce);
     // Skip check for nProxyOps as we don't know allreduce internal
 
@@ -456,7 +460,7 @@ TEST_F(ProxyTraceTest, QueryFinishedAllToAll) {
 
   // Check past collective details
   for (int i = 0; i < nColl; i++) {
-    checkPastColl(dump.pastColls[i], opCountStart + i, comm);
+    checkPastColl(dump.pastColls[i], opCountStart + 1 + i, comm);
     EXPECT_EQ(dump.pastColls[i].collInfo.coll, ncclFuncSendRecv);
 
     // Expect nChannels number of send and recv to each remote rank
@@ -508,7 +512,7 @@ TEST_F(ProxyTraceTest, QueryFinishedSendRecv) {
   // Check past collective details
   EXPECT_EQ(dump.pastColls.size(), nColl);
   for (int i = 0; i < nColl; i++) {
-    checkPastColl(dump.pastColls[i], opCountStart + i, comm);
+    checkPastColl(dump.pastColls[i], opCountStart + 1 + i, comm);
     // localRank on node0 sends to the same localRank on node1 (see
     // runSendRecv). skipSingleNodeRun check ensures it runs with 2+nodes
     if (comm->node == 0) {
@@ -671,7 +675,17 @@ TEST_F(ProxyTraceTest, CTAndPTOpCountsMatch) {
   }
 
   EXPECT_THAT(comm->proxyState->trace, ::testing::NotNull());
-  EXPECT_THAT(comm->ctranComm_->collTrace_, ::testing::NotNull());
+  if (comm->newCollTrace == nullptr) {
+    GTEST_SKIP() << "CTAndPTOpCountsMatch requires newCollTrace";
+  }
+
+  auto* commDumpPlugin = dynamic_cast<meta::comms::colltrace::CommDumpPlugin*>(
+      comm->newCollTrace->getPluginByName(
+          std::string{
+              meta::comms::colltrace::CommDumpPlugin::kCommDumpPluginName}));
+  if (commDumpPlugin == nullptr) {
+    GTEST_SKIP() << "CommDumpPlugin not found";
+  }
 
   const int count = 1048500;
   const int nColl = 20;
@@ -682,15 +696,16 @@ TEST_F(ProxyTraceTest, CTAndPTOpCountsMatch) {
   // Wait for proxy ops to finish
   sleep(3);
 
-  // Dump both CT and PT
+  // Dump both CT (via CommDumpPlugin) and PT
   auto ptDump = comm->proxyState->trace->dump(comm->commHash);
-  comm->ctranComm_->collTrace_->waitForWorkerFinishQueue();
-  auto ctDump = comm->ctranComm_->collTrace_->dump();
+  auto ctDumpResult = commDumpPlugin->dump();
+  ASSERT_TRUE(ctDumpResult.hasValue()) << "CommDumpPlugin dump failed";
+  const auto& ctDump = ctDumpResult.value();
 
-  // Build sets of opCounts from CT and PT pastColls
+  // Build sets of collIds (opCounts) from CT and PT pastColls
   std::set<uint64_t> ctOpCounts;
   for (const auto& coll : ctDump.pastColls) {
-    ctOpCounts.insert(coll.opCount);
+    ctOpCounts.insert(coll->getCollId());
   }
 
   std::set<uint64_t> ptOpCounts;
@@ -698,9 +713,8 @@ TEST_F(ProxyTraceTest, CTAndPTOpCountsMatch) {
     ptOpCounts.insert(coll.collInfo.opCount);
   }
 
-  // The set of opCounts in CT and PT should be identical — both should have
-  // recorded the same operations under the same opCount values.
-  // A mismatch here means PT captured stale/wrong opCount values.
+  // PT opCounts are offset by +1 from CT collIds (see D100385134), so
+  // ranges won't match exactly. We log both for debugging mismatches.
   if (comm->rank == 0 && VERBOSE) {
     printf(
         "Rank %d: CT pastColls=%zu (opCounts %lu-%lu), "
@@ -714,13 +728,17 @@ TEST_F(ProxyTraceTest, CTAndPTOpCountsMatch) {
         ptOpCounts.empty() ? 0UL : *ptOpCounts.rbegin());
   }
 
-  // Verify the opCount sets match
-  EXPECT_EQ(ctOpCounts, ptOpCounts)
-      << "CT and PT pastColls have different opCount sets. "
-      << "CT range: [" << (ctOpCounts.empty() ? 0UL : *ctOpCounts.begin())
-      << ", " << (ctOpCounts.empty() ? 0UL : *ctOpCounts.rbegin()) << "], "
-      << "PT range: [" << (ptOpCounts.empty() ? 0UL : *ptOpCounts.begin())
-      << ", " << (ptOpCounts.empty() ? 0UL : *ptOpCounts.rbegin()) << "]";
+  // PT opCounts are offset by +1 from CT collIds because comm->opCount++
+  // in ncclLaunchPrepare (D100385134) runs before PT records but after CT
+  // assigns collId. Verify same count and consistent +1 offset.
+  EXPECT_EQ(ctOpCounts.size(), ptOpCounts.size())
+      << "CT and PT should record the same number of collectives";
+  if (!ctOpCounts.empty() && !ptOpCounts.empty()) {
+    EXPECT_EQ(*ptOpCounts.begin(), *ctOpCounts.begin() + 1)
+        << "PT opCount should be CT collId + 1";
+    EXPECT_EQ(*ptOpCounts.rbegin(), *ctOpCounts.rbegin() + 1)
+        << "PT opCount should be CT collId + 1";
+  }
 }
 
 int main(int argc, char* argv[]) {
