@@ -150,7 +150,7 @@ class EpollEventBase : public EventBase {
   }
 
   void registerFd(int fd, uint32_t events, IOCallback cb) override {
-    dispatch([this, fd, events, cb = std::move(cb)]() mutable noexcept {
+    auto work = [this, fd, events, cb = std::move(cb)]() mutable noexcept {
       struct epoll_event ev{};
       ev.events = events;
       ev.data.fd = fd;
@@ -178,21 +178,33 @@ class EpollEventBase : public EventBase {
         }
         assert(ret == 0);
       }
-    });
+    };
+    if (inLoopThread()) {
+      work();
+    } else {
+      dispatch(std::move(work));
+    }
   }
 
   void unregisterFd(int fd) override {
+    // Always deferred — never inline, even on the loop thread. An IO
+    // callback may call unregisterFd on its own fd, which would erase
+    // the ioEntries_ entry containing the currently-executing callback.
+    // Deferring ensures the erase happens after the callback returns.
     dispatch([this, fd]() noexcept {
       if (ioEntries_.erase(fd) > 0) {
         int ret = epoll_ctl(epollFd_, EPOLL_CTL_DEL, fd, nullptr);
         if (ret != 0) {
-          UNIFLOW_LOG_ERROR(
-              "epoll_ctl DEL failed: fd={} errno={} ({})",
+          // Tolerate already-closed fds — closing an fd auto-removes it
+          // from epoll, so DEL on a closed fd returns EBADF. This happens
+          // when unregisterFd is called after the fd is closed (e.g.,
+          // EPOLLONESHOT callback cleanup).
+          UNIFLOW_LOG_WARN(
+              "epoll_ctl DEL failed (fd may be closed): fd={} errno={} ({})",
               fd,
               errno,
               std::system_category().message(errno));
         }
-        assert(ret == 0);
       }
     });
   }
