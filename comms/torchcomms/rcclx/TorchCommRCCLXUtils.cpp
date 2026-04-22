@@ -133,11 +133,11 @@ TorchCommRCCLX::RedOpRAII TorchCommRCCLX::getNcclReduceOp(
     case ReduceOp::RedOpType::MAX:
       return ncclMax;
     case ReduceOp::RedOpType::BAND:
-      return ncclSum; // RCCLX doesn't have bitwise AND, using SUM as fallback
+      throw std::runtime_error("Cannot use ReduceOp.BAND with RCCLX");
     case ReduceOp::RedOpType::BOR:
-      return ncclSum; // RCCLX doesn't have bitwise OR, using SUM as fallback
+      throw std::runtime_error("Cannot use ReduceOp.BOR with RCCLX");
     case ReduceOp::RedOpType::BXOR:
-      return ncclSum; // RCCLX doesn't have bitwise XOR, using SUM as fallback
+      throw std::runtime_error("Cannot use ReduceOp.BXOR with RCCLX");
     case ReduceOp::RedOpType::PREMUL_SUM:
       return RedOpRAII(op, comm, dataType, rcclx_api_);
     case ReduceOp::RedOpType::AVG:
