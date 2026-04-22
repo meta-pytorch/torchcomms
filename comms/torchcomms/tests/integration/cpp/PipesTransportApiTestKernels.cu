@@ -56,7 +56,7 @@ __global__ void transportStressSendRecvKernel(
       // Fill src with identifiable pattern
       fillPattern(buf, count, rank, iter);
       group.sync();
-      nvl.send(group, buf, nbytes);
+      nvl.send_group(group, buf, nbytes);
       // Sender always passes
       if (group.thread_id_in_group == 0) {
         results[iter] = 1;
@@ -68,7 +68,7 @@ __global__ void transportStressSendRecvKernel(
         buf[i] = 0.0f;
       }
       group.sync();
-      nvl.recv(group, buf, nbytes);
+      nvl.recv_group(group, buf, nbytes);
       // Verify received data matches sender's pattern
       verifyPattern(buf, count, peer, iter, &results[iter]);
     }
@@ -157,14 +157,14 @@ __global__ void transportStressCombinedKernel(
     if (rank % 2 == 0) {
       fillPattern(buf, count, rank, iter);
       group.sync();
-      nvl.send(group, buf, nbytes);
+      nvl.send_group(group, buf, nbytes);
     } else {
       for (size_t i = group.thread_id_in_group; i < count;
            i += group.group_size) {
         buf[i] = 0.0f;
       }
       group.sync();
-      nvl.recv(group, buf, nbytes);
+      nvl.recv_group(group, buf, nbytes);
     }
 
     // Phase 3: Signal/wait (confirms both ranks finished send/recv)
@@ -234,7 +234,7 @@ __global__ void transportStressLl128Kernel(
         buf[i] = pattern;
       }
       __syncthreads();
-      nvl.ll128_send(group, buf, nbytes);
+      nvl.ll128_send_group(group, buf, nbytes);
       if (threadIdx.x == 0) {
         results[iter] = 1;
       }
@@ -244,7 +244,7 @@ __global__ void transportStressLl128Kernel(
         buf[i] = 0;
       }
       __syncthreads();
-      nvl.ll128_recv(group, buf, nbytes);
+      nvl.ll128_recv_group(group, buf, nbytes);
       // Verify
       __shared__ int any_mismatch;
       if (threadIdx.x == 0) {

@@ -20,8 +20,6 @@
 #include "comms/pipes/MultipeerIbgdaTransportCuda.cuh"
 #include "comms/pipes/rdma/NicDiscovery.h"
 
-#include "doca_verbs_net_wrapper.h"
-
 namespace comms::pipes {
 
 namespace {
@@ -410,7 +408,9 @@ void MultipeerIbgdaTransport::registerMemory() {
 }
 void MultipeerIbgdaTransport::createQpGroups() {
   const int numPeers = nRanks_ - 1;
-  qpGroupHlList_.resize(numPeers, nullptr);
+  const int numQps = config_.numQpsPerPeer;
+  const int totalQpGroups = numPeers * numQps;
+  qpGroupHlList_.resize(totalQpGroups, nullptr);
 
   // Verify CUDA device is still set correctly
   int currentDevice = -1;
@@ -438,35 +438,42 @@ void MultipeerIbgdaTransport::createQpGroups() {
   initAttr.nic_handler = DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO;
   initAttr.mreg_type = DOCA_GPUNETIO_VERBS_MEM_REG_TYPE_DEFAULT;
 
-  VLOG(1) << "MultipeerIbgdaTransport: creating " << numPeers
-          << " QP groups (main + companion)"
-          << " gpu_dev=" << (void*)docaGpu_ << " ibpd=" << (void*)initAttr.ibpd
-          << " sq_nwqe=" << config_.qpDepth
+  VLOG(1) << "MultipeerIbgdaTransport: creating " << totalQpGroups
+          << " QP groups (" << numQps << " per peer, " << numPeers
+          << " peers) gpu_dev=" << (void*)docaGpu_
+          << " ibpd=" << (void*)initAttr.ibpd << " sq_nwqe=" << config_.qpDepth
           << " nic_handler=AUTO mreg_type=DEFAULT";
 
-  for (int i = 0; i < numPeers; i++) {
-    doca_error_t err =
-        doca_gpu_verbs_create_qp_group_hl(&initAttr, &qpGroupHlList_[i]);
-    if (err != DOCA_SUCCESS) {
-      LOG(ERROR) << "MultipeerIbgdaTransport: QP group " << i
-                 << " creation failed: " << docaErrorToString(err) << " (code "
-                 << (int)err << ")";
-      checkDocaError(err, "Failed to create QP group");
-    }
+  for (int peer = 0; peer < numPeers; peer++) {
+    for (int q = 0; q < numQps; q++) {
+      int idx = peer * numQps + q;
+      doca_error_t err =
+          doca_gpu_verbs_create_qp_group_hl(&initAttr, &qpGroupHlList_[idx]);
+      if (err != DOCA_SUCCESS) {
+        LOG(ERROR) << "MultipeerIbgdaTransport: QP group " << idx
+                   << " (peer=" << peer << " qp=" << q
+                   << ") creation failed: " << docaErrorToString(err)
+                   << " (code " << (int)err << ")";
+        checkDocaError(err, "Failed to create QP group");
+      }
 
-    VLOG(1) << "MultipeerIbgdaTransport: created QP group " << i << " main_qpn="
-            << doca_verbs_qp_get_qpn(qpGroupHlList_[i]->qp_main.qp)
-            << " companion_qpn="
-            << doca_verbs_qp_get_qpn(qpGroupHlList_[i]->qp_companion.qp);
+      VLOG(1) << "MultipeerIbgdaTransport: created QP group " << idx
+              << " (peer=" << peer << " qp=" << q << ") main_qpn="
+              << doca_verbs_qp_get_qpn(qpGroupHlList_[idx]->qp_main.qp)
+              << " companion_qpn="
+              << doca_verbs_qp_get_qpn(qpGroupHlList_[idx]->qp_companion.qp);
+    }
   }
 }
 
 void MultipeerIbgdaTransport::createLoopbackCompanionQps() {
   const int numPeers = nRanks_ - 1;
-  // Create one self-loop responder companion QP per peer.
+  const int numQps = config_.numQpsPerPeer;
+  const int totalLoopback = numPeers * numQps;
+  // Create one self-loop responder companion QP per QP group.
   // These are passive endpoints connected to the active companion QPs
   // (from the QP groups) to form loopback pairs for counter atomics.
-  loopbackCompanionQpHlList_.resize(numPeers, nullptr);
+  loopbackCompanionQpHlList_.resize(totalLoopback, nullptr);
 
   doca_gpu_verbs_qp_init_attr_hl initAttr{};
   initAttr.gpu_dev = docaGpu_;
@@ -475,10 +482,11 @@ void MultipeerIbgdaTransport::createLoopbackCompanionQps() {
   initAttr.nic_handler = DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO;
   initAttr.mreg_type = DOCA_GPUNETIO_VERBS_MEM_REG_TYPE_DEFAULT;
 
-  VLOG(1) << "MultipeerIbgdaTransport: creating " << numPeers
-          << " loopback companion QPs with depth=" << kCompanionQpDepth;
+  VLOG(1) << "MultipeerIbgdaTransport: creating " << totalLoopback
+          << " loopback companion QPs (" << numQps
+          << " per peer) with depth=" << kCompanionQpDepth;
 
-  for (int i = 0; i < numPeers; i++) {
+  for (int i = 0; i < totalLoopback; i++) {
     doca_error_t err =
         doca_gpu_verbs_create_qp_hl(&initAttr, &loopbackCompanionQpHlList_[i]);
     if (err != DOCA_SUCCESS) {
@@ -621,6 +629,19 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
   if (nRanks < 2) {
     throw std::invalid_argument("Need at least 2 ranks");
   }
+  if (config.numQpsPerPeer < 1 || config.numQpsPerPeer > kMaxQpsPerPeer) {
+    throw std::invalid_argument(
+        fmt::format(
+            "numQpsPerPeer must be in [1, {}], got {}",
+            kMaxQpsPerPeer,
+            config.numQpsPerPeer));
+  }
+  if (config.numQpsPerPeer * (nRanks - 1) * 3 > 1000) {
+    LOG(WARNING) << "MultipeerIbgdaTransport: high QP count: "
+                 << config.numQpsPerPeer << " QPs/peer * " << (nRanks - 1)
+                 << " peers * 3 = " << config.numQpsPerPeer * (nRanks - 1) * 3
+                 << " total QPs";
+  }
   try {
     // Resolve CUDA driver function pointers
     if (cuda_driver_lazy_init() != 0) {
@@ -658,11 +679,18 @@ MultipeerIbgdaTransport::~MultipeerIbgdaTransport() {
 }
 
 void MultipeerIbgdaTransport::cleanup() {
-  // Free GPU transport memory
-  if (peerTransportsGpu_ != nullptr) {
-    freeDeviceTransportsOnGpu(peerTransportsGpu_);
-    peerTransportsGpu_ = nullptr;
+  // Free all GPU memory (transport objects + QP pointer arrays)
+  for (auto* ptr : gpuAllocations_) {
+    if (ptr != nullptr) {
+      cudaError_t err = cudaFree(ptr);
+      if (err != cudaSuccess) {
+        LOG(WARNING) << "Failed to free GPU memory: "
+                     << cudaGetErrorString(err);
+      }
+    }
   }
+  gpuAllocations_.clear();
+  peerTransportsGpu_ = nullptr;
 
   // Destroy QP groups (main + companion)
   for (auto* qpGroup : qpGroupHlList_) {
@@ -679,6 +707,30 @@ void MultipeerIbgdaTransport::cleanup() {
     }
   }
   loopbackCompanionQpHlList_.clear();
+
+  // Deregister and free transport-owned signal/counter buffers.
+  // MRs must be deregistered BEFORE cudaFree (correct RDMA teardown order).
+  if (signalInboxGpu_ != nullptr) {
+    deregisterBuffer(signalInboxGpu_);
+    cudaFree(signalInboxGpu_);
+    signalInboxGpu_ = nullptr;
+  }
+  signalRemoteViews_.clear();
+  signalLocalViews_.clear();
+
+  if (counterGpu_ != nullptr) {
+    deregisterBuffer(counterGpu_);
+    cudaFree(counterGpu_);
+    counterGpu_ = nullptr;
+  }
+  counterViews_.clear();
+
+  if (discardSignalGpu_ != nullptr) {
+    deregisterBuffer(discardSignalGpu_);
+    cudaFree(discardSignalGpu_);
+    discardSignalGpu_ = nullptr;
+  }
+  discardSignalRemoteViews_.clear();
 
   // Destroy user buffer MRs
   for (auto& [_, cached] : registeredBuffers_) {
@@ -729,6 +781,7 @@ void MultipeerIbgdaTransport::cleanup() {
 
 void MultipeerIbgdaTransport::exchange() {
   const int numPeers = nRanks_ - 1;
+  const int numQps = config_.numQpsPerPeer;
 
   // Validate rank count for allGather-based exchange
   if (nRanks_ > kMaxRanksForAllGather) {
@@ -740,7 +793,6 @@ void MultipeerIbgdaTransport::exchange() {
   }
 
   // Build local exchange info for allGather
-  // Allocate buffer for allGather: one entry per rank
   std::vector<IbgdaTransportExchInfoAll> allInfo(nRanks_);
 
   // Fill in my info at my rank's slot
@@ -748,6 +800,7 @@ void MultipeerIbgdaTransport::exchange() {
   memcpy(myInfo.gid, localGid_.raw, sizeof(myInfo.gid));
   myInfo.gidIndex = gidIndex_;
   myInfo.mtu = localMtu_;
+  myInfo.numQpsPerPeer = numQps;
 
   // Query port for LID (IB only)
   ibv_port_attr exchPortAttr{};
@@ -758,17 +811,19 @@ void MultipeerIbgdaTransport::exchange() {
     myInfo.lid = exchPortAttr.lid;
   }
 
-  // Fill in per-target QPNs
-  // qpnForRank[j] = QPN I use to connect to rank j
+  // Fill in per-target QPNs (N QPNs per peer)
+  // qpnForRank[j][q] = QPN of q-th QP I use to connect to rank j
   for (int peerIndex = 0; peerIndex < numPeers; peerIndex++) {
     int peerRank = peerIndexToRank(peerIndex);
-    myInfo.qpnForRank[peerRank] =
-        doca_verbs_qp_get_qpn(qpGroupHlList_[peerIndex]->qp_main.qp);
+    for (int q = 0; q < numQps; q++) {
+      int idx = peerIndex * numQps + q;
+      myInfo.qpnForRank[peerRank][q] =
+          doca_verbs_qp_get_qpn(qpGroupHlList_[idx]->qp_main.qp);
+    }
   }
-  myInfo.qpnForRank[myRank_] = 0; // Unused (self)
 
   VLOG(1) << "MultipeerIbgdaTransport: rank " << myRank_
-          << " performing allGather exchange";
+          << " performing allGather exchange (" << numQps << " QPs/peer)";
 
   // Use allGather to exchange transport info with all ranks
   auto result = bootstrap_
@@ -784,85 +839,247 @@ void MultipeerIbgdaTransport::exchange() {
   }
 
   // Convert allGather results to per-peer IbgdaTransportExchInfo
-  // For each peer, extract their info and the QPN they use to connect to me
+  // For multi-QP, we extract N QPNs per peer
   peerExchInfo_.resize(numPeers);
   for (int peerIndex = 0; peerIndex < numPeers; peerIndex++) {
     int peerRank = peerIndexToRank(peerIndex);
     const IbgdaTransportExchInfoAll& peerInfo = allInfo[peerRank];
 
-    // Extract transport info
-    // The QPN we need is the one peer uses to connect to us:
-    // peerInfo.qpnForRank[myRank_]
-    peerExchInfo_[peerIndex].qpn = peerInfo.qpnForRank[myRank_];
+    CHECK_EQ(peerInfo.numQpsPerPeer, numQps)
+        << "Rank " << peerRank
+        << " has numQpsPerPeer=" << peerInfo.numQpsPerPeer << " but local rank "
+        << myRank_ << " has " << numQps
+        << ". All ranks must use the same numQpsPerPeer.";
+
+    // Store common connection info (from QP 0 — same GID/LID for all QPs)
+    peerExchInfo_[peerIndex].qpn = peerInfo.qpnForRank[myRank_][0];
     memcpy(peerExchInfo_[peerIndex].gid, peerInfo.gid, sizeof(peerInfo.gid));
     peerExchInfo_[peerIndex].gidIndex = peerInfo.gidIndex;
     peerExchInfo_[peerIndex].lid = peerInfo.lid;
     peerExchInfo_[peerIndex].mtu = peerInfo.mtu;
 
     VLOG(1) << "MultipeerIbgdaTransport: received from peer " << peerRank
-            << " qpn=" << peerExchInfo_[peerIndex].qpn;
+            << " numQps=" << peerInfo.numQpsPerPeer
+            << " qpn[0]=" << peerExchInfo_[peerIndex].qpn;
   }
 
-  // Connect main QPs to peers
+  // Connect main QPs to peers (N QPs per peer)
   for (int peerIndex = 0; peerIndex < numPeers; peerIndex++) {
-    connectQp(&qpGroupHlList_[peerIndex]->qp_main, peerExchInfo_[peerIndex]);
+    int peerRank = peerIndexToRank(peerIndex);
+    const IbgdaTransportExchInfoAll& peerInfo = allInfo[peerRank];
+
+    for (int q = 0; q < numQps; q++) {
+      int idx = peerIndex * numQps + q;
+      IbgdaTransportExchInfo qpPeerInfo = peerExchInfo_[peerIndex];
+      qpPeerInfo.qpn = peerInfo.qpnForRank[myRank_][q];
+      connectQp(&qpGroupHlList_[idx]->qp_main, qpPeerInfo);
+    }
   }
 
   // Connect companion QPs as loopback pairs on the local NIC.
-  // Active companion (from QP group) <-> loopback responder (standalone).
-  // The companion QP in the group has core_direct=true (required for WAIT WQE).
+  // N loopback pairs per peer (one per QP group).
   {
     IbgdaTransportExchInfo selfInfo{};
     memcpy(selfInfo.gid, localGid_.raw, sizeof(selfInfo.gid));
     selfInfo.gidIndex = gidIndex_;
     selfInfo.mtu = localMtu_;
 
-    // Query port for local LID (IB fabrics)
     ibv_port_attr loopbackPortAttr{};
     if (doca_verbs_wrapper_ibv_query_port(ibvCtx_, 1, &loopbackPortAttr) ==
         DOCA_SUCCESS) {
       selfInfo.lid = loopbackPortAttr.lid;
     }
 
-    for (int i = 0; i < numPeers; i++) {
-      // Connect active companion → loopback responder
-      selfInfo.qpn = doca_verbs_qp_get_qpn(loopbackCompanionQpHlList_[i]->qp);
-      connectQp(&qpGroupHlList_[i]->qp_companion, selfInfo);
+    for (int peer = 0; peer < numPeers; peer++) {
+      for (int q = 0; q < numQps; q++) {
+        int idx = peer * numQps + q;
+        // Connect active companion → loopback responder
+        selfInfo.qpn =
+            doca_verbs_qp_get_qpn(loopbackCompanionQpHlList_[idx]->qp);
+        connectQp(&qpGroupHlList_[idx]->qp_companion, selfInfo);
 
-      // Connect loopback responder → active companion
-      selfInfo.qpn = doca_verbs_qp_get_qpn(qpGroupHlList_[i]->qp_companion.qp);
-      connectQp(loopbackCompanionQpHlList_[i], selfInfo);
+        // Connect loopback responder → active companion
+        selfInfo.qpn =
+            doca_verbs_qp_get_qpn(qpGroupHlList_[idx]->qp_companion.qp);
+        connectQp(loopbackCompanionQpHlList_[idx], selfInfo);
 
-      VLOG(1) << "MultipeerIbgdaTransport: connected companion QP loopback "
-                 "pair "
-              << i;
+        VLOG(1)
+            << "MultipeerIbgdaTransport: connected companion QP loopback pair "
+            << idx << " (peer=" << peer << " qp=" << q << ")";
+      }
     }
   }
 
-  // Build device transports on GPU
-  std::vector<P2pIbgdaTransportBuildParams> buildParams(numPeers);
-  for (int i = 0; i < numPeers; i++) {
-    // Get GPU-accessible QP handle for main QP
-    doca_gpu_dev_verbs_qp* gpuQp = nullptr;
-    doca_error_t err =
-        doca_gpu_verbs_get_qp_dev(qpGroupHlList_[i]->qp_main.qp_gverbs, &gpuQp);
-    checkDocaError(err, "Failed to get GPU QP handle");
+  // ---- Allocate transport-owned signal buffers (if configured) ----
+  if (config_.numSignalSlots > 0) {
+    // Signal inbox: one contiguous buffer with numSignalSlots per peer.
+    // Total size = numPeers * numSignalSlots * sizeof(uint64_t).
+    // Each peer writes to its own region via RDMA atomic fetch-add.
+    const std::size_t slotsPerPeer =
+        static_cast<std::size_t>(config_.numSignalSlots);
+    const std::size_t totalSignalBytes =
+        static_cast<std::size_t>(numPeers) * slotsPerPeer * sizeof(uint64_t);
 
-    // Get GPU-accessible QP handle for companion QP (core_direct enabled)
-    doca_gpu_dev_verbs_qp* companionGpuQp = nullptr;
-    err = doca_gpu_verbs_get_qp_dev(
-        qpGroupHlList_[i]->qp_companion.qp_gverbs, &companionGpuQp);
-    checkDocaError(err, "Failed to get companion GPU QP handle");
+    cudaError_t cudaErr = cudaMalloc(&signalInboxGpu_, totalSignalBytes);
+    if (cudaErr != cudaSuccess) {
+      throw std::runtime_error(
+          "Failed to allocate signal inbox: " +
+          std::string(cudaGetErrorString(cudaErr)));
+    }
+    cudaErr = cudaMemset(signalInboxGpu_, 0, totalSignalBytes);
+    if (cudaErr != cudaSuccess) {
+      throw std::runtime_error("Failed to zero signal inbox");
+    }
 
-    buildParams[i] = P2pIbgdaTransportBuildParams{
-        gpuQp, companionGpuQp, NetworkLKey(HostLKey(sinkMr_->lkey))};
+    // Register and exchange signal inbox
+    auto localSignalBuf = registerBuffer(signalInboxGpu_, totalSignalBytes);
+    auto remoteSignalBufs = exchangeBuffer(localSignalBuf);
+
+    // Build per-peer views:
+    // - remoteSignalViews_[peerIndex] = remote view into peer's inbox at the
+    //   region reserved for us (offset = myPeerIndexOnPeer * slotsPerPeer)
+    // - signalLocalViews_[peerIndex] = local view into our inbox at the
+    //   region where this peer writes (offset = peerIndex * slotsPerPeer)
+    signalRemoteViews_.resize(numPeers);
+    signalLocalViews_.resize(numPeers);
+    for (int peerIndex = 0; peerIndex < numPeers; peerIndex++) {
+      int peerRank = peerIndexToRank(peerIndex);
+      int myPeerIndexOnPeer = (myRank_ < peerRank) ? myRank_ : (myRank_ - 1);
+      signalRemoteViews_[peerIndex] = remoteSignalBufs[peerIndex].subBuffer(
+          static_cast<std::size_t>(myPeerIndexOnPeer) * slotsPerPeer *
+          sizeof(uint64_t));
+      signalLocalViews_[peerIndex] = localSignalBuf.subBuffer(
+          static_cast<std::size_t>(peerIndex) * slotsPerPeer *
+          sizeof(uint64_t));
+    }
+
+    VLOG(1) << "MultipeerIbgdaTransport: allocated signal inbox "
+            << totalSignalBytes << " bytes (" << config_.numSignalSlots
+            << " slots/peer, " << numPeers << " peers)";
   }
 
-  peerTransportsGpu_ = buildDeviceTransportsOnGpu(buildParams.data(), numPeers);
+  // ---- Allocate transport-owned counter buffers (if configured) ----
+  if (config_.numCounterSlots > 0) {
+    // Counter buffer: local only, no exchange needed.
+    // Each peer's companion QP writes to its own counter region.
+    const std::size_t slotsPerPeer =
+        static_cast<std::size_t>(config_.numCounterSlots);
+    const std::size_t totalCounterBytes =
+        static_cast<std::size_t>(numPeers) * slotsPerPeer * sizeof(uint64_t);
+
+    cudaError_t cudaErr = cudaMalloc(&counterGpu_, totalCounterBytes);
+    if (cudaErr != cudaSuccess) {
+      throw std::runtime_error(
+          "Failed to allocate counter buffer: " +
+          std::string(cudaGetErrorString(cudaErr)));
+    }
+    cudaErr = cudaMemset(counterGpu_, 0, totalCounterBytes);
+    if (cudaErr != cudaSuccess) {
+      throw std::runtime_error("Failed to zero counter buffer");
+    }
+
+    auto localCounterBuf = registerBuffer(counterGpu_, totalCounterBytes);
+
+    // Build per-peer views (local only)
+    counterViews_.resize(numPeers);
+    for (int peerIndex = 0; peerIndex < numPeers; peerIndex++) {
+      counterViews_[peerIndex] = localCounterBuf.subBuffer(
+          static_cast<std::size_t>(peerIndex) * slotsPerPeer *
+          sizeof(uint64_t));
+    }
+
+    VLOG(1) << "MultipeerIbgdaTransport: allocated counter buffer "
+            << totalCounterBytes << " bytes (" << config_.numCounterSlots
+            << " slots/peer, " << numPeers << " peers)";
+  }
+
+  // ---- Allocate transport-owned discard-signal buffer (if counter used) ----
+  //
+  // The discard-signal buffer exists solely so that counter-only puts can be
+  // routed through the async signal_counter compound (see
+  // P2pIbgdaTransportDevice::put_impl). DOCA verbs has no "counter-only"
+  // primitive: signal_counter posts the counter atomic on the companion QP
+  // ordered against a FENCEd signal on the primary QP. To use it without a
+  // real signal recipient, we need a remote-addressable uint64_t to act as
+  // the signal target — peers never read these slots, so the value is
+  // garbage by design.
+  //
+  // Layout: numPeers slots, one per peer that may write to us. Each rank
+  // exchanges the buffer addr/rkey; per-peer remote view points to *our*
+  // slot in the peer's discard buffer (offset = myPeerIndexOnPeer).
+  if (config_.numCounterSlots > 0) {
+    const std::size_t totalDiscardBytes =
+        static_cast<std::size_t>(numPeers) * sizeof(uint64_t);
+
+    cudaError_t cudaErr = cudaMalloc(&discardSignalGpu_, totalDiscardBytes);
+    if (cudaErr != cudaSuccess) {
+      throw std::runtime_error(
+          "Failed to allocate discard-signal buffer: " +
+          std::string(cudaGetErrorString(cudaErr)));
+    }
+    cudaErr = cudaMemset(discardSignalGpu_, 0, totalDiscardBytes);
+    if (cudaErr != cudaSuccess) {
+      throw std::runtime_error("Failed to zero discard-signal buffer");
+    }
+
+    auto localDiscardBuf = registerBuffer(discardSignalGpu_, totalDiscardBytes);
+    auto remoteDiscardBufs = exchangeBuffer(localDiscardBuf);
+
+    discardSignalRemoteViews_.resize(numPeers);
+    for (int peerIndex = 0; peerIndex < numPeers; peerIndex++) {
+      int peerRank = peerIndexToRank(peerIndex);
+      int myPeerIndexOnPeer = (myRank_ < peerRank) ? myRank_ : (myRank_ - 1);
+      discardSignalRemoteViews_[peerIndex] =
+          remoteDiscardBufs[peerIndex].subBuffer(
+              static_cast<std::size_t>(myPeerIndexOnPeer) * sizeof(uint64_t));
+    }
+
+    VLOG(1) << "MultipeerIbgdaTransport: allocated discard-signal buffer "
+            << totalDiscardBytes << " bytes (" << numPeers << " peers)";
+  }
+
+  // Build device transports on GPU. Collect host-side QP handles,
+  // then let buildDeviceTransportsOnGpu handle all GPU allocation + memcpy.
+  const NetworkLKey sinkLkey(HostLKey(sinkMr_->lkey));
+  std::vector<P2pIbgdaTransportBuildParams> buildParams(numPeers);
+
+  for (int peer = 0; peer < numPeers; peer++) {
+    buildParams[peer].mainQps.resize(numQps);
+    buildParams[peer].companionQps.resize(numQps);
+    buildParams[peer].sinkLkey = sinkLkey;
+
+    for (int q = 0; q < numQps; q++) {
+      int idx = peer * numQps + q;
+      doca_error_t err = doca_gpu_verbs_get_qp_dev(
+          qpGroupHlList_[idx]->qp_main.qp_gverbs,
+          &buildParams[peer].mainQps[q]);
+      checkDocaError(err, "Failed to get GPU QP handle");
+
+      err = doca_gpu_verbs_get_qp_dev(
+          qpGroupHlList_[idx]->qp_companion.qp_gverbs,
+          &buildParams[peer].companionQps[q]);
+      checkDocaError(err, "Failed to get companion GPU QP handle");
+    }
+
+    if (config_.numSignalSlots > 0) {
+      buildParams[peer].remoteSignalBuf = signalRemoteViews_[peer];
+      buildParams[peer].localSignalBuf = signalLocalViews_[peer];
+      buildParams[peer].numSignalSlots = config_.numSignalSlots;
+    }
+    if (config_.numCounterSlots > 0) {
+      buildParams[peer].counterBuf = counterViews_[peer];
+      buildParams[peer].discardSignalSlot = discardSignalRemoteViews_[peer];
+      buildParams[peer].numCounterSlots = config_.numCounterSlots;
+    }
+  }
+
+  peerTransportsGpu_ =
+      buildDeviceTransportsOnGpu(buildParams, numPeers, gpuAllocations_);
   peerTransportSize_ = getP2pIbgdaTransportDeviceSize();
 
   VLOG(1) << "MultipeerIbgdaTransport: rank " << myRank_
-          << " exchange complete, connected to " << numPeers << " peers";
+          << " exchange complete, connected to " << numPeers << " peers"
+          << " (" << numQps << " QPs/peer)";
 }
 
 MultipeerIbgdaDeviceTransport MultipeerIbgdaTransport::getDeviceTransport()
@@ -897,6 +1114,10 @@ int MultipeerIbgdaTransport::myRank() const {
 
 int MultipeerIbgdaTransport::getGidIndex() const {
   return gidIndex_;
+}
+
+int MultipeerIbgdaTransport::numQpsPerPeer() const {
+  return config_.numQpsPerPeer;
 }
 
 IbgdaLocalBuffer MultipeerIbgdaTransport::registerBuffer(

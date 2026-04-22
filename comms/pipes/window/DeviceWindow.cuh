@@ -392,8 +392,10 @@ class DeviceWindow {
       // (computed once at exchange time in HostWindow), so signal_id
       // is the only offset needed here.
       handle_.get_ibgda(target_rank)
-          .signal_remote(
-              ibgdaPeerSignalRemoteBufs_[ibgdaIdx], signal_id, value);
+          .signal(
+              ibgdaPeerSignalRemoteBufs_[ibgdaIdx].subBuffer(
+                  signal_id * sizeof(uint64_t)),
+              value);
     }
   }
 
@@ -457,8 +459,10 @@ class DeviceWindow {
         nvlPeerSignalSpans_[nvlIdx][signal_id].signal(op, value);
       } else {
         DEVICE_WINDOW_CHECK_IBGDA_SIGNAL_ADD(op);
-        handle_.get_ibgda(r).signal_remote(
-            ibgdaPeerSignalRemoteBufs_[peer_index], signal_id, value);
+        handle_.get_ibgda(r).signal(
+            ibgdaPeerSignalRemoteBufs_[peer_index].subBuffer(
+                signal_id * sizeof(uint64_t)),
+            value);
       }
     }
     group.sync();
@@ -863,8 +867,10 @@ class DeviceWindow {
         int nvlIdx = rankToNvlPeerIndex_[r];
         nvlBarrierPeerPtrs_[nvlIdx][barrier_id].signal(SignalOp::SIGNAL_ADD, 1);
       } else {
-        handle_.get_ibgda(r).signal_remote(
-            ibgdaBarrierRemoteBufs_[peer_index], barrier_id, 1);
+        handle_.get_ibgda(r).signal(
+            ibgdaBarrierRemoteBufs_[peer_index].subBuffer(
+                barrier_id * sizeof(uint64_t)),
+            1);
       }
     }
     group.sync();
@@ -892,7 +898,10 @@ class DeviceWindow {
       } else {
         int ibgdaIdx = rank_to_peer_index(target_rank);
         handle_.get_ibgda(target_rank)
-            .signal_remote(ibgdaBarrierRemoteBufs_[ibgdaIdx], barrier_id, 1);
+            .signal(
+                ibgdaBarrierRemoteBufs_[ibgdaIdx].subBuffer(
+                    barrier_id * sizeof(uint64_t)),
+                1);
       }
     }
     group.sync();
@@ -986,8 +995,7 @@ class DeviceWindow {
           const_cast<void*>(remoteBufferRegistry_[ibgdaPeerIdx].base),
           remoteBufferRegistry_[ibgdaPeerIdx].rkey);
       handle_.get_ibgda(target_rank)
-          .put_group_global(
-              group, localBuf, remoteBuf.subBuffer(dst_offset), nbytes);
+          .put(group, localBuf, remoteBuf.subBuffer(dst_offset), nbytes);
     }
   }
 
@@ -1040,15 +1048,16 @@ class DeviceWindow {
           const_cast<void*>(remoteBufferRegistry_[ibgdaPeerIdx].base),
           remoteBufferRegistry_[ibgdaPeerIdx].rkey);
       handle_.get_ibgda(target_rank)
-          .put_group_global(
-              group, localBuf, remoteBuf.subBuffer(dst_offset), nbytes);
-      handle_.get_ibgda(target_rank)
-          .signal_remote_with_fence(
+          .put(
               group,
-              ibgdaPeerSignalRemoteBufs_[ibgdaPeerIdx],
-              signalId,
-              signalVal);
-      group.sync();
+              localBuf,
+              remoteBuf.subBuffer(dst_offset),
+              nbytes,
+              ibgdaPeerSignalRemoteBufs_[ibgdaPeerIdx].subBuffer(
+                  signalId * sizeof(uint64_t)),
+              signalVal,
+              {},
+              1);
     }
   }
   // ===========================================================================
@@ -1107,17 +1116,16 @@ class DeviceWindow {
       IbgdaLocalBuffer counterBuf(ibgdaPeerCounterBuf_, ibgdaPeerCounterLkey_);
       int counterSlot = ibgdaPeerIdx * peerCounterCount_ + counterId;
       handle_.get_ibgda(target_rank)
-          .put_signal_counter_remote(
+          .put(
+              group,
               localBuf,
               remoteBuf.subBuffer(dst_offset),
               nbytes,
-              ibgdaPeerSignalRemoteBufs_[ibgdaPeerIdx],
-              signalId,
+              ibgdaPeerSignalRemoteBufs_[ibgdaPeerIdx].subBuffer(
+                  signalId * sizeof(uint64_t)),
               signalVal,
-              counterBuf,
-              counterSlot,
+              counterBuf.subBuffer(counterSlot * sizeof(uint64_t)),
               counterVal);
-      group.sync();
     }
   }
 
@@ -1170,12 +1178,14 @@ class DeviceWindow {
       IbgdaLocalBuffer counterBuf(ibgdaPeerCounterBuf_, ibgdaPeerCounterLkey_);
       int counterSlot = ibgdaPeerIdx * peerCounterCount_ + counterId;
       handle_.get_ibgda(target_rank)
-          .put_counter_local(
+          .put(
+              group,
               localBuf,
               remoteBuf.subBuffer(dst_offset),
               nbytes,
-              counterBuf,
-              counterSlot,
+              {},
+              1,
+              counterBuf.subBuffer(counterSlot * sizeof(uint64_t)),
               counterVal);
     }
   }

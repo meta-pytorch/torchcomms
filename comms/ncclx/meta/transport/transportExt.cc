@@ -272,7 +272,11 @@ ncclResult_t ncclTransportP2pSetupExt(
   if (!comm->channelMetadataOnHost) {
     NCCLCHECKGOTO(
         ncclStrongStreamAcquire(
+#if NCCL_MINOR >= 29
+            ncclCudaGraphNone(comm->config.graphUsageMode),
+#else
             ncclCudaGraphNone(),
+#endif
             &comm->sharedRes->hostStream,
             /*concurrent=*/false,
             &hostStream),
@@ -280,7 +284,11 @@ ncclResult_t ncclTransportP2pSetupExt(
         fail);
     NCCLCHECKGOTO(
         ncclStrongStreamAcquire(
+#if NCCL_MINOR >= 29
+            ncclCudaGraphNone(comm->config.graphUsageMode),
+#else
             ncclCudaGraphNone(),
+#endif
             &comm->sharedRes->deviceStream,
             /*concurrent=*/false,
             &deviceStream),
@@ -612,11 +620,19 @@ exit:
     NCCLCHECK(ncclStreamWaitStream(
         deviceStream, hostStream, comm->sharedRes->scratchEvent));
     NCCLCHECK(ncclStrongStreamRelease(
+#if NCCL_MINOR >= 29
+        ncclCudaGraphNone(comm->config.graphUsageMode),
+#else
         ncclCudaGraphNone(),
+#endif
         &comm->sharedRes->hostStream,
         /*concurrent=*/false));
     NCCLCHECK(ncclStrongStreamRelease(
+#if NCCL_MINOR >= 29
+        ncclCudaGraphNone(comm->config.graphUsageMode),
+#else
         ncclCudaGraphNone(),
+#endif
         &comm->sharedRes->deviceStream,
         /*concurrent=*/false));
   }

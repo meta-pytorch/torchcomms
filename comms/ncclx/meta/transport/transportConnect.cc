@@ -300,15 +300,26 @@ ncclResult_t devCommSetupChannels(ncclComm_t comm) {
       comm ? &comm->logMetaData : nullptr);
   ncclResult_t ret = ncclSuccess;
   int nRanks = comm->nRanks;
+#if NCCL_MINOR >= 28
   struct ncclKernelCommAndChannels tmpCommAndChans;
   memset(&tmpCommAndChans, '\0', sizeof(tmpCommAndChans));
   struct ncclKernelCommAndChannels* devCommAndChans =
       comm->devCommAndChans.value();
+#else
+  struct ncclDevCommAndChannels tmpCommAndChans;
+  memset(&tmpCommAndChans, '\0', sizeof(tmpCommAndChans));
+  struct ncclDevCommAndChannels* devCommAndChans =
+      comm->devCommAndChans.value();
+#endif
   cudaStream_t deviceStream;
 
   NCCLCHECKGOTO(
       ncclStrongStreamAcquire(
+#if NCCL_MINOR >= 29
           ncclCudaGraphNone(comm->config.graphUsageMode),
+#else
+          ncclCudaGraphNone(),
+#endif
           &comm->sharedRes->deviceStream,
           /*concurrent=*/false,
           &deviceStream),
@@ -348,7 +359,11 @@ ncclResult_t devCommSetupChannels(ncclComm_t comm) {
 
 exit:
   NCCLCHECK(ncclStrongStreamRelease(
+#if NCCL_MINOR >= 29
       ncclCudaGraphNone(comm->config.graphUsageMode),
+#else
+      ncclCudaGraphNone(),
+#endif
       &comm->sharedRes->deviceStream,
       /*concurrent=*/false));
   NCCLCHECK(ncclStrongStreamSynchronize(&comm->sharedRes->deviceStream));

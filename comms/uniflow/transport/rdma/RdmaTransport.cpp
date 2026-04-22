@@ -1230,8 +1230,9 @@ RdmaTransportFactory::importSegment(
   std::memcpy(
       rkeys.data(), payload.data() + offset, sizeof(uint32_t) * header.numMrs);
 
+  uint64_t domainId = header.domainId;
   return std::make_unique<RdmaRemoteRegistrationHandle>(
-      std::move(rkeys), header.domainId);
+      std::move(rkeys), domainId);
 }
 
 Result<std::unique_ptr<Transport>> RdmaTransportFactory::createTransport(

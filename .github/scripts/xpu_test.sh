@@ -35,7 +35,7 @@ export USE_GLOO=OFF
 export USE_TRANSPORT=OFF
 export USE_SYSTEM_LIBS=1
 
-python3 -m pip install typing-extensions numpy sympy
+python3 -m pip install typing-extensions numpy sympy expecttest
 python3 -m pip install --no-deps --pre torch pytorch-triton-xpu --index-url https://download.pytorch.org/whl/nightly/xpu --force-reinstall --no-cache-dir 
 cd torchcomms && pip install . --no-deps --no-build-isolation && cd ..
 

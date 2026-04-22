@@ -232,10 +232,9 @@ class EpollEventBase : public EventBase {
           // ioEntries_ is not modified during this iteration.
           [&]() noexcept { it->second.cb(events[i].events); }();
         } else {
+          uint32_t revents = events[i].events;
           UNIFLOW_LOG_WARN(
-              "epoll event for unknown fd={}, revents={:#x}",
-              fd,
-              events[i].events);
+              "epoll event for unknown fd={}, revents={:#x}", fd, revents);
         }
       }
     }

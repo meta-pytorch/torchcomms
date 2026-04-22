@@ -39,6 +39,8 @@ ReduceOp toReduceOp(const c10d::ReduceOp& op) {
       return ReduceOp::MIN;
     case c10d::ReduceOp::MAX:
       return ReduceOp::MAX;
+    case c10d::ReduceOp::PRODUCT:
+      return ReduceOp::PRODUCT;
     case c10d::ReduceOp::BAND:
       return ReduceOp::BAND;
     case c10d::ReduceOp::BOR:
@@ -466,35 +468,40 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::alltoall_base(
     std::vector<int64_t>& outputSplitSizes,
     std::vector<int64_t>& inputSplitSizes,
     const c10d::AllToAllOptions& opts) {
-  AllToAllvSingleOptions bopts;
-  if (opts.timeout != kUnsetTimeout) {
-    bopts.timeout = opts.timeout;
+  if (outputSplitSizes.empty() && inputSplitSizes.empty()) {
+    AllToAllSingleOptions bopts;
+    if (opts.timeout != kUnsetTimeout) {
+      bopts.timeout = opts.timeout;
+    } else {
+      bopts.timeout = options_->timeout;
+    }
+    return c10::make_intrusive<WorkWrapper>(
+        backend_->all_to_all_single(
+            outputTensor, inputTensor, opts.asyncOp, bopts),
+        std::vector<at::Tensor>{outputTensor});
   } else {
-    bopts.timeout = options_->timeout;
+    AllToAllvSingleOptions bopts;
+    if (opts.timeout != kUnsetTimeout) {
+      bopts.timeout = opts.timeout;
+    } else {
+      bopts.timeout = options_->timeout;
+    }
+    return c10::make_intrusive<WorkWrapper>(
+        backend_->all_to_all_v_single(
+            outputTensor,
+            inputTensor,
+            toVecUint64(outputSplitSizes),
+            toVecUint64(inputSplitSizes),
+            opts.asyncOp,
+            bopts),
+        std::vector<at::Tensor>{outputTensor});
   }
-  return c10::make_intrusive<WorkWrapper>(
-      backend_->all_to_all_v_single(
-          outputTensor,
-          inputTensor,
-          toVecUint64(outputSplitSizes),
-          toVecUint64(inputSplitSizes),
-          opts.asyncOp,
-          bopts),
-      std::vector<at::Tensor>{outputTensor});
 }
 
 c10::intrusive_ptr<c10d::Work> BackendWrapper::alltoall(
     std::vector<at::Tensor>& outputTensors,
     std::vector<at::Tensor>& inputTensors,
     const c10d::AllToAllOptions& opts) {
-  TORCH_CHECK(
-      outputTensors.size() == 1,
-      "Only single output tensor supported, but got ",
-      outputTensors.size());
-  TORCH_CHECK(
-      inputTensors.size() == 1,
-      "Only single input tensor supported, but got ",
-      inputTensors.size());
   AllToAllOptions bopts;
   if (opts.timeout != kUnsetTimeout) {
     bopts.timeout = opts.timeout;

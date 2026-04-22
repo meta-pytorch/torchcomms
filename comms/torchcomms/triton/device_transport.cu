@@ -15,25 +15,25 @@ extern "C" {
 
 // --- Data Transfer ---
 
-__device__ __noinline__ int torchcomms_transport_send(
+__device__ __noinline__ int torchcomms_transport_send_groups(
     void* handle_ptr,
     int peer,
     void* src_ptr,
     unsigned long long nbytes) {
   auto* handle = reinterpret_cast<MultiPeerDeviceHandle*>(handle_ptr);
   auto group = make_block_group();
-  handle->get_nvl(peer).send(group, src_ptr, static_cast<size_t>(nbytes));
+  handle->get_nvl(peer).send_group(group, src_ptr, static_cast<size_t>(nbytes));
   return 0;
 }
 
-__device__ __noinline__ int torchcomms_transport_recv(
+__device__ __noinline__ int torchcomms_transport_recv_groups(
     void* handle_ptr,
     int peer,
     void* dst_ptr,
     unsigned long long nbytes) {
   auto* handle = reinterpret_cast<MultiPeerDeviceHandle*>(handle_ptr);
   auto group = make_block_group();
-  handle->get_nvl(peer).recv(group, dst_ptr, static_cast<size_t>(nbytes));
+  handle->get_nvl(peer).recv_group(group, dst_ptr, static_cast<size_t>(nbytes));
   return 0;
 }
 
@@ -68,6 +68,44 @@ __device__ int torchcomms_transport_wait_signal(
       static_cast<uint64_t>(signal_id),
       static_cast<CmpOp>(op),
       static_cast<uint64_t>(value));
+  return 0;
+}
+
+// --- Send/Recv ---
+
+__device__ __noinline__ int torchcomms_transport_send(
+    void* handle_ptr,
+    int peer,
+    void* src_ptr,
+    unsigned long long nbytes,
+    int active_blocks,
+    unsigned long long max_signal_bytes) {
+  auto* handle = reinterpret_cast<MultiPeerDeviceHandle*>(handle_ptr);
+  auto group = make_block_group();
+  handle->get_nvl(peer).send(
+      group,
+      src_ptr,
+      static_cast<size_t>(nbytes),
+      active_blocks,
+      static_cast<size_t>(max_signal_bytes));
+  return 0;
+}
+
+__device__ __noinline__ int torchcomms_transport_recv(
+    void* handle_ptr,
+    int peer,
+    void* dst_ptr,
+    unsigned long long nbytes,
+    int active_blocks,
+    unsigned long long max_signal_bytes) {
+  auto* handle = reinterpret_cast<MultiPeerDeviceHandle*>(handle_ptr);
+  auto group = make_block_group();
+  handle->get_nvl(peer).recv(
+      group,
+      dst_ptr,
+      static_cast<size_t>(nbytes),
+      active_blocks,
+      static_cast<size_t>(max_signal_bytes));
   return 0;
 }
 

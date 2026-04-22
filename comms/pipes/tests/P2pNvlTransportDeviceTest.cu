@@ -96,6 +96,49 @@ void testDeviceSignalThenWait(
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
+__global__ void testDevicePutKernel(
+    P2pNvlTransportDevice* p2p,
+    char* dst_d,
+    const char* src_d,
+    std::size_t tileSize,
+    GroupType groupType) {
+  auto group = make_group(groupType);
+  std::size_t offset = group.group_id * tileSize;
+  p2p->put(group, dst_d + offset, src_d + offset, tileSize);
+}
+
+void testDevicePut(
+    P2pNvlTransportDevice* p2p,
+    char* dst_d,
+    const char* src_d,
+    std::size_t tileSize,
+    int numBlocks,
+    int blockSize,
+    GroupType groupType) {
+  testDevicePutKernel<<<numBlocks, blockSize>>>(
+      p2p, dst_d, src_d, tileSize, groupType);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+__global__ void testDeviceResetSignalKernel(
+    P2pNvlTransportDevice* p2p,
+    uint64_t signalId,
+    GroupType groupType) {
+  auto group = make_group(groupType);
+  p2p->reset_signal_threadgroup(group, signalId);
+}
+
+void testDeviceResetSignal(
+    P2pNvlTransportDevice* p2p,
+    uint64_t signalId,
+    int numBlocks,
+    int blockSize,
+    GroupType groupType) {
+  testDeviceResetSignalKernel<<<numBlocks, blockSize>>>(
+      p2p, signalId, groupType);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
 // =============================================================================
 // Direct Signal struct test kernels
 // =============================================================================
@@ -163,7 +206,7 @@ testLl128SendKernel(P2pNvlTransportDevice p2p, const char* src, size_t nbytes) {
   auto group = make_warp_group();
   Timeout timeout;
   timeout.start();
-  p2p.ll128_send(group, src, nbytes, timeout);
+  p2p.ll128_send_group(group, src, nbytes, timeout);
 }
 
 __global__ void
@@ -171,7 +214,7 @@ testLl128RecvKernel(P2pNvlTransportDevice p2p, char* dst, size_t nbytes) {
   auto group = make_warp_group();
   Timeout timeout;
   timeout.start();
-  p2p.ll128_recv(group, dst, nbytes, timeout);
+  p2p.ll128_recv_group(group, dst, nbytes, timeout);
 }
 
 void testLl128SendRecv(

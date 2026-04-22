@@ -71,9 +71,26 @@ struct MultipeerIbgdaTransportConfig {
   // This determines the maximum transfer size per put call.
   std::size_t dataBufferSize{0};
 
+  // Number of signal slots managed by the transport (per peer).
+  // If > 0, transport allocates, registers, and exchanges signal buffers
+  // automatically. Slot-index API on P2pIbgdaTransportDevice becomes usable.
+  int numSignalSlots{0};
+
+  // Number of counter slots managed by the transport (per peer).
+  // If > 0, transport allocates and registers counter buffers (local only,
+  // no exchange). Slot-index API for counters becomes usable.
+  int numCounterSlots{0};
+
   // Queue pair depth (number of outstanding WQEs per peer).
   // Higher values allow more pipelining but use more memory.
   uint32_t qpDepth{1024};
+
+  // Number of QP sets per peer (each set = main QP + companion QP + loopback).
+  // Multiple QPs per peer allow different GPU blocks to use independent QPs,
+  // eliminating O(N) cross-block WQE serialization in DOCA's mark_wqes_ready.
+  // Block-to-QP mapping: blockIdx.x % numQpsPerPeer.
+  // Default 1 preserves current single-QP-per-peer behavior.
+  int numQpsPerPeer{1};
 
   // InfiniBand Verbs Timeout for QP ACK timeout.
   // Timeout is computed as 4.096 µs * 2^timeout.
@@ -143,6 +160,11 @@ struct IbgdaTransportExchInfo {
 constexpr int kMaxRanksForAllGather = 128;
 
 /**
+ * Maximum number of QP sets per peer for multi-QP support.
+ */
+constexpr int kMaxQpsPerPeer = 128;
+
+/**
  * Transport exchange info for allGather-based exchange.
  *
  * Each rank contributes this structure containing:
@@ -158,10 +180,13 @@ struct IbgdaTransportExchInfoAll {
   // Port active MTU.
   enum ibv_mtu mtu { IBV_MTU_4096 };
 
+  // Number of QPs per peer used by this rank
+  int numQpsPerPeer{1};
+
   // Per-target-rank QPNs
-  // qpnForRank[j] = QPN that this rank uses to connect to rank j
-  // qpnForRank[myRank] is unused (set to 0)
-  uint32_t qpnForRank[kMaxRanksForAllGather]{};
+  // qpnForRank[j][q] = QPN of q-th QP that this rank uses to connect to rank j
+  // qpnForRank[myRank][*] is unused (set to 0)
+  uint32_t qpnForRank[kMaxRanksForAllGather][kMaxQpsPerPeer]{};
 };
 
 /**
@@ -343,6 +368,11 @@ class MultipeerIbgdaTransport {
       const IbgdaLocalBuffer& localBuf);
 
   /**
+   * Get the number of QP sets per peer
+   */
+  int numQpsPerPeer() const;
+
+  /**
    * Get the GID index being used
    */
   int getGidIndex() const;
@@ -427,8 +457,55 @@ class MultipeerIbgdaTransport {
   P2pIbgdaTransportDevice* peerTransportsGpu_{nullptr};
   std::size_t peerTransportSize_{0};
 
+  // All GPU allocations from buildDeviceTransportsOnGpu (freed in cleanup)
+  std::vector<void*> gpuAllocations_;
+
   // Exchange info received from peers
   std::vector<IbgdaTransportExchInfo> peerExchInfo_;
+
+  // Transport-owned signal buffers (allocated if numSignalSlots > 0)
+  void* signalInboxGpu_{nullptr}; // local inbox: peers write here via RDMA
+  std::vector<IbgdaRemoteBuffer> signalRemoteViews_; // per-peer outbox views
+  std::vector<IbgdaLocalBuffer> signalLocalViews_; // per-peer inbox views
+
+  // Transport-owned counter buffers (allocated if numCounterSlots > 0)
+  void* counterGpu_{nullptr};
+  std::vector<IbgdaLocalBuffer> counterViews_; // per-peer local views
+
+  // Transport-owned discard-signal buffer.
+  //
+  // Why this exists
+  // ---------------
+  // DOCA verbs exposes two relevant compound WQEs:
+  //   * signal_fenced  - remote atomic FA, FENCEd against the prior put
+  //   * signal_counter - signal_fenced on the primary QP + a companion-QP
+  //                      loopback atomic for the local counter (both ordered
+  //                      against the prior put)
+  // It does NOT expose a "counter-only" primitive (counter atomic without a
+  // remote signal). Counter-only put() callers therefore have two choices:
+  //   (a) fence the QP and then bump the counter from the GPU - synchronous,
+  //       adds a CQ-poll round-trip on the hot path.
+  //   (b) reuse signal_counter with a throwaway remote signal target so the
+  //       counter atomic stays piggy-backed on the same async WQE compound.
+  // We pick (b). The "discard signal" is that throwaway target: a real
+  // remote-addressable uint64_t whose value nobody ever reads.
+  //
+  // Layout
+  // ------
+  // numPeers slots, one uint64_t per peer that may write to us. Each rank
+  // exchanges (addr, rkey) with all peers; per-peer remote view is built
+  // pointing at *our* slot in the peer's discard buffer (offset =
+  // myPeerIndexOnPeer * sizeof(uint64_t)) so our primary QP can post a
+  // throwaway atomic into it. The peer never reads its local slots, so the
+  // accumulated value is garbage by design.
+  //
+  // Lifecycle
+  // ---------
+  // Allocated only when numCounterSlots > 0 (no counters => no counter-only
+  // puts => discard slot is never targeted). See
+  // P2pIbgdaTransportDevice::put_impl for the consumer.
+  void* discardSignalGpu_{nullptr};
+  std::vector<IbgdaRemoteBuffer> discardSignalRemoteViews_;
 };
 
 } // namespace comms::pipes
