@@ -21,7 +21,7 @@ from __future__ import annotations
 from typing import Any
 
 import torch
-from torchcomms._comms import PreHookArgs, RemovableHandle
+from torchcomms._comms import OpName, RemovableHandle
 
 
 # Lazily resolved reference to torch.ops.c10d.check_for_nan.
@@ -47,6 +47,63 @@ def _check_tensor(tensor: Any, label: str, op_name: str, comm_name: str) -> None
         raise RuntimeError(
             f"NaN detected in {label} tensor for '{op_name}' on comm '{comm_name}': {e}"
         ) from None
+
+
+def _check_single(tensor: Any, label: str, op_name: str, comm_name: str) -> None:
+    if tensor.is_floating_point():
+        _check_tensor(tensor, label, op_name, comm_name)
+
+
+def _check_list(tensors: Any, label: str, op_name: str, comm_name: str) -> None:
+    for tensor in tensors:
+        if tensor.is_floating_point():
+            _check_tensor(tensor, label, op_name, comm_name)
+
+
+# Ops with a single .tensor field that is both input and output (in-place)
+_INPLACE_OPS: frozenset[OpName] = frozenset(
+    {
+        OpName.broadcast,
+        OpName.all_reduce,
+        OpName.reduce,
+    }
+)
+
+# Ops with .input (single tensor) and .output (single tensor)
+_SINGLE_IO_OPS: frozenset[OpName] = frozenset(
+    {
+        OpName.all_gather_single,
+        OpName.reduce_scatter_single,
+        OpName.all_to_all_single,
+        OpName.all_to_all_v_single,
+        OpName.gather_single,
+    }
+)
+
+# Ops with .input (single tensor) and .output (tensor list)
+_SINGLE_IN_LIST_OUT_OPS: frozenset[OpName] = frozenset(
+    {
+        OpName.all_gather,
+        OpName.all_gather_v,
+        OpName.gather,
+    }
+)
+
+# Ops with .input (tensor list) and .output (single tensor)
+_LIST_IN_SINGLE_OUT_OPS: frozenset[OpName] = frozenset(
+    {
+        OpName.reduce_scatter,
+        OpName.reduce_scatter_v,
+        OpName.scatter,
+    }
+)
+
+# Ops with .input (tensor list) and .output (tensor list)
+_LIST_IO_OPS: frozenset[OpName] = frozenset(
+    {
+        OpName.all_to_all,
+    }
+)
 
 
 class NanCheckHook:
@@ -79,28 +136,46 @@ class NanCheckHook:
         """
         comm_name: str = comm.get_name()
 
-        def _pre_hook(args: PreHookArgs) -> None:
-            op_name = str(args.name).rsplit(".", 1)[-1]
+        def _pre_hook(name: OpName, op_id: int, args: Any) -> None:
+            op_str = str(name).rsplit(".", 1)[-1]
 
-            if self._check_inputs:
-                t = args.input_tensor
-                if t is not None and t.is_floating_point():
-                    _check_tensor(t, "input", op_name, comm_name)
-                ts = args.input_tensors
-                if ts is not None:
-                    for tensor in ts:
-                        if tensor.is_floating_point():
-                            _check_tensor(tensor, "input", op_name, comm_name)
+            if name == OpName.send:
+                if self._check_inputs:
+                    _check_single(args.tensor, "input", op_str, comm_name)
 
-            if self._check_outputs:
-                t = args.output_tensor
-                if t is not None and t.is_floating_point():
-                    _check_tensor(t, "output", op_name, comm_name)
-                ts = args.output_tensors
-                if ts is not None:
-                    for tensor in ts:
-                        if tensor.is_floating_point():
-                            _check_tensor(tensor, "output", op_name, comm_name)
+            elif name == OpName.recv:
+                if self._check_outputs:
+                    _check_single(args.tensor, "output", op_str, comm_name)
+
+            elif name in _INPLACE_OPS:
+                if self._check_inputs or self._check_outputs:
+                    _check_single(args.tensor, "input", op_str, comm_name)
+
+            elif name in _SINGLE_IO_OPS:
+                if self._check_inputs:
+                    _check_single(args.input, "input", op_str, comm_name)
+                if self._check_outputs:
+                    _check_single(args.output, "output", op_str, comm_name)
+
+            elif name in _SINGLE_IN_LIST_OUT_OPS:
+                if self._check_inputs:
+                    _check_single(args.input, "input", op_str, comm_name)
+                if self._check_outputs:
+                    _check_list(args.output, "output", op_str, comm_name)
+
+            elif name in _LIST_IN_SINGLE_OUT_OPS:
+                if self._check_inputs:
+                    _check_list(args.input, "input", op_str, comm_name)
+                if self._check_outputs:
+                    _check_single(args.output, "output", op_str, comm_name)
+
+            elif name in _LIST_IO_OPS:
+                if self._check_inputs:
+                    _check_list(args.input, "input", op_str, comm_name)
+                if self._check_outputs:
+                    _check_list(args.output, "output", op_str, comm_name)
+
+            # barrier, split, new_window: no tensors to check
 
         handle = comm.register_pre_hook(_pre_hook)
         self._handles.append((comm, handle))
