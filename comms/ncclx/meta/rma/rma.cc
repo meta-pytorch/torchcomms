@@ -28,9 +28,23 @@ getValidatedNcclWin(ncclWindow_t win, ncclWin** outWin, const char* funcName) {
 
 } // namespace
 
+#if NCCL_MINOR >= 29
 namespace ncclx {
 
 __attribute__((visibility("default"))) ncclResult_t ncclPutSignal(
+#else
+NCCL_API(
+    ncclResult_t,
+    ncclPutSignal,
+    const void* origin_buff,
+    size_t count,
+    ncclDataType_t datatype,
+    int peer,
+    size_t target_disp,
+    ncclWindow_t win,
+    cudaStream_t stream);
+ncclResult_t ncclPutSignal(
+#endif
     const void* origin_buff,
     size_t count,
     ncclDataType_t datatype,
@@ -51,7 +65,21 @@ __attribute__((visibility("default"))) ncclResult_t ncclPutSignal(
       true));
 }
 
+#if NCCL_MINOR >= 29
 __attribute__((visibility("default"))) ncclResult_t ncclPut(
+#else
+NCCL_API(
+    ncclResult_t,
+    ncclPut,
+    const void* origin_buff,
+    size_t count,
+    ncclDataType_t datatype,
+    int peer,
+    size_t target_disp,
+    ncclWindow_t win,
+    cudaStream_t stream);
+ncclResult_t ncclPut(
+#endif
     const void* origin_buff,
     size_t count,
     ncclDataType_t datatype,
@@ -72,7 +100,21 @@ __attribute__((visibility("default"))) ncclResult_t ncclPut(
       false));
 }
 
+#if NCCL_MINOR >= 29
 __attribute__((visibility("default"))) ncclResult_t ncclGet(
+#else
+NCCL_API(
+    ncclResult_t,
+    ncclGet,
+    void* target_buff,
+    size_t target_disp,
+    size_t count,
+    ncclDataType_t datatype,
+    int peer,
+    ncclWindow_t win,
+    cudaStream_t stream);
+ncclResult_t ncclGet(
+#endif
     void* target_buff,
     size_t target_disp,
     size_t count,
@@ -94,18 +136,40 @@ __attribute__((visibility("default"))) ncclResult_t ncclGet(
       stream));
 }
 
+#if NCCL_MINOR >= 29
 __attribute__((visibility("default"))) ncclResult_t
 ncclWaitSignal(int peer, ncclWindow_t win, cudaStream_t stream) {
+#else
+NCCL_API(
+    ncclResult_t,
+    ncclWaitSignal,
+    int peer,
+    ncclWindow_t win,
+    cudaStream_t stream);
+ncclResult_t ncclWaitSignal(int peer, ncclWindow_t win, cudaStream_t stream) {
+#endif
   ncclWin* ncclWinPtr = nullptr;
   NCCLCHECK(getValidatedNcclWin(win, &ncclWinPtr, "ncclWaitSignal"));
   return metaCommToNccl(ctranWaitSignal(peer, ncclWinPtr->ctranWindow, stream));
 }
 
+#if NCCL_MINOR >= 29
 __attribute__((visibility("default"))) ncclResult_t
 ncclSignal(int peer, ncclWindow_t win, cudaStream_t stream) {
+#else
+NCCL_API(
+    ncclResult_t,
+    ncclSignal,
+    int peer,
+    ncclWindow_t win,
+    cudaStream_t stream);
+ncclResult_t ncclSignal(int peer, ncclWindow_t win, cudaStream_t stream) {
+#endif
   ncclWin* ncclWinPtr = nullptr;
   NCCLCHECK(getValidatedNcclWin(win, &ncclWinPtr, "ncclSignal"));
   return metaCommToNccl(ctranSignal(peer, ncclWinPtr->ctranWindow, stream));
 }
 
+#if NCCL_MINOR >= 29
 } // namespace ncclx
+#endif
