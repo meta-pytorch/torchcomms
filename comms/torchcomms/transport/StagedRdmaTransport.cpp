@@ -3,8 +3,12 @@
 #include "StagedRdmaTransport.h"
 
 #include <unistd.h>
+#include <mutex>
+#include <unordered_map>
 
 #include <cuda_runtime.h>
+
+#include <comms/utils/CudaRAII.h>
 
 #include <folly/dynamic.h>
 #include <folly/json.h>
@@ -268,6 +272,27 @@ StagedBuffer& StagedBuffer::operator=(StagedBuffer&& other) noexcept {
 
 // --- StagedRdmaTransportBase ---
 
+// Process-global CUDA stream pool — one stream per device, lazily created.
+// Transports share the stream to avoid per-instance cudaStreamCreate overhead.
+static cudaStream_t getSharedStagedStream(int cudaDev) {
+  static std::mutex mu;
+  static std::unordered_map<int, meta::comms::CudaStream> streams;
+  {
+    std::lock_guard<std::mutex> lock(mu);
+    auto it = streams.find(cudaDev);
+    if (it != streams.end()) {
+      return it->second.get();
+    }
+    CUDA_CHECK(cudaSetDevice(cudaDev));
+    auto [inserted, ok] = streams.emplace(
+        std::piecewise_construct,
+        std::forward_as_tuple(cudaDev),
+        std::forward_as_tuple(cudaStreamNonBlocking));
+    XLOGF(INFO, "Created shared staged RDMA stream for cudaDev={}", cudaDev);
+    return inserted->second.get();
+  }
+}
+
 StagedRdmaTransportBase::StagedRdmaTransportBase(
     int cudaDev,
     folly::EventBase* evb,
@@ -278,8 +303,9 @@ StagedRdmaTransportBase::StagedRdmaTransportBase(
 
 StagedRdmaTransportBase::~StagedRdmaTransportBase() {
   if (stream_) {
+    // Sync to ensure pending cudaMemcpyAsync completes before staging
+    // buffer is freed. Don't destroy — stream is shared (process lifetime).
     cudaStreamSynchronize(stream_);
-    cudaStreamDestroy(stream_);
   }
 }
 
@@ -407,8 +433,7 @@ void StagedRdmaTransportBase::initIbResources() {
 
 void StagedRdmaTransportBase::ensureCudaStream() {
   if (!stream_) {
-    CUDA_CHECK(cudaSetDevice(cudaDev_));
-    CUDA_CHECK(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking));
+    stream_ = getSharedStagedStream(cudaDev_);
   }
 }
 
