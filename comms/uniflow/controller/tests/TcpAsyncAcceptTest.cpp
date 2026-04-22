@@ -43,7 +43,7 @@ TEST_P(TcpAsyncAcceptTest, SingleAsyncAccept) {
   auto future = server.accept();
 
   TcpClient client;
-  auto clientConn = client.connect(clientAddr(port));
+  auto clientConn = client.connect(clientAddr(port)).get();
   ASSERT_NE(clientConn, nullptr) << "Client failed to connect";
 
   auto conn = future.get();
@@ -70,7 +70,7 @@ TEST_P(TcpAsyncAcceptTest, MultipleAsyncAccepts) {
   TcpClient client;
   std::vector<std::unique_ptr<Conn>> clientConns;
   for (int i = 0; i < kNumClients; ++i) {
-    auto c = client.connect(clientAddr(port));
+    auto c = client.connect(clientAddr(port)).get();
     ASSERT_NE(c, nullptr) << "Client " << i << " failed to connect";
     clientConns.push_back(std::move(c));
   }
@@ -95,9 +95,9 @@ TEST_P(TcpAsyncAcceptTest, ConnectionQueueing) {
   auto future1 = server.accept();
 
   TcpClient client;
-  auto c1 = client.connect(clientAddr(port));
-  auto c2 = client.connect(clientAddr(port));
-  auto c3 = client.connect(clientAddr(port));
+  auto c1 = client.connect(clientAddr(port)).get();
+  auto c2 = client.connect(clientAddr(port)).get();
+  auto c3 = client.connect(clientAddr(port)).get();
   ASSERT_NE(c1, nullptr);
   ASSERT_NE(c2, nullptr);
   ASSERT_NE(c3, nullptr);
@@ -127,8 +127,8 @@ TEST_P(TcpAsyncAcceptTest, PromiseQueueing) {
   auto future2 = server.accept();
 
   TcpClient client;
-  auto c1 = client.connect(clientAddr(port));
-  auto c2 = client.connect(clientAddr(port));
+  auto c1 = client.connect(clientAddr(port)).get();
+  auto c2 = client.connect(clientAddr(port)).get();
   ASSERT_NE(c1, nullptr);
   ASSERT_NE(c2, nullptr);
 
@@ -219,7 +219,7 @@ TEST_P(TcpAsyncAcceptTest, AsyncAcceptRejectsNonUniflowClient) {
 
   // Now connect a valid uniflow client — should still be accepted
   TcpClient client;
-  auto clientConn = client.connect(clientAddr(port));
+  auto clientConn = client.connect(clientAddr(port)).get();
   ASSERT_NE(clientConn, nullptr) << "Valid client failed after bad client";
 
   auto conn = future.get();
@@ -238,7 +238,7 @@ TEST_P(TcpAsyncAcceptTest, SendRecvAfterAsyncAccept) {
   auto future = server.accept();
 
   TcpClient client;
-  auto clientConn = client.connect(clientAddr(port));
+  auto clientConn = client.connect(clientAddr(port)).get();
   ASSERT_NE(clientConn, nullptr);
 
   auto serverConn = future.get();
