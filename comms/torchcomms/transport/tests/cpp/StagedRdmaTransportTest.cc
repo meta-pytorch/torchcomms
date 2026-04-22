@@ -50,10 +50,12 @@ std::pair<bool, size_t> verifyPositionalPattern(
 // --- Construction tests (no MPI needed, run independently on each rank) ---
 
 TEST(StagedRdmaTransportTest, ConstructAndDestroy) {
-  StagedRdmaServerTransport server(0);
-  StagedRdmaClientTransport client(0);
-  EXPECT_EQ(server.stagingBufSize(), 64 * 1024 * 1024);
-  EXPECT_EQ(client.stagingBufSize(), 64 * 1024 * 1024);
+  StagedTransferConfig config;
+  config.stagingBufSize = 2 * 1024 * 1024;
+  StagedRdmaServerTransport server(0, nullptr, config);
+  StagedRdmaClientTransport client(0, nullptr, config);
+  EXPECT_EQ(server.stagingBufSize(), config.stagingBufSize);
+  EXPECT_EQ(client.stagingBufSize(), config.stagingBufSize);
 }
 
 TEST(StagedRdmaTransportTest, ConstructWithConfig) {
@@ -63,16 +65,18 @@ TEST(StagedRdmaTransportTest, ConstructWithConfig) {
 
   StagedRdmaServerTransport server(0, nullptr, config);
   StagedRdmaClientTransport client(0, nullptr, config);
-  EXPECT_EQ(server.stagingBufSize(), 1024 * 1024);
-  EXPECT_EQ(client.stagingBufSize(), 1024 * 1024);
+  EXPECT_EQ(server.stagingBufSize(), config.stagingBufSize);
+  EXPECT_EQ(client.stagingBufSize(), config.stagingBufSize);
 }
 
 TEST(StagedRdmaTransportTest, ConstructWithEventBase) {
+  StagedTransferConfig config;
+  config.stagingBufSize = 8 * 1024 * 1024;
   folly::ScopedEventBaseThread evbThread("test-evb");
-  StagedRdmaServerTransport server(0, evbThread.getEventBase());
-  StagedRdmaClientTransport client(0, evbThread.getEventBase());
-  EXPECT_EQ(server.stagingBufSize(), 64 * 1024 * 1024);
-  EXPECT_EQ(client.stagingBufSize(), 64 * 1024 * 1024);
+  StagedRdmaServerTransport server(0, evbThread.getEventBase(), config);
+  StagedRdmaClientTransport client(0, evbThread.getEventBase(), config);
+  EXPECT_EQ(server.stagingBufSize(), config.stagingBufSize);
+  EXPECT_EQ(client.stagingBufSize(), config.stagingBufSize);
 }
 
 // --- Distributed test fixture (MPI-based, 2 ranks) ---
