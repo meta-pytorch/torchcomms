@@ -48,6 +48,11 @@ class ReconfigureTest(unittest.TestCase):
             else:
                 if not torch.cuda.is_available():
                     self.skipTest("CUDA is not available")
+
+                if self.backend == "mccl":
+                    os.environ["NCCL_COMM_STATE_DEBUG_TOPO"] = "nolocal"
+                    os.environ["NCCL_IGNORE_TOPO_LOAD_FAILURE"] = "1"
+
                 device_id = self.rank % torch.cuda.device_count()
                 self.device = torch.device(f"cuda:{device_id}")
 
