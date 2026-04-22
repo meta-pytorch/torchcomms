@@ -183,6 +183,7 @@ class TorchCommXCCL : public TorchCommBackend,
 
   // Friend access for TorchCommXCCL
   friend class TorchWorkXCCL;
+  friend class CachingAllocatorHookImpl;
 
   // Getter for XPU API (for friend classes)
   XpuApi* getXpuApi() const {
@@ -218,6 +219,15 @@ class TorchCommXCCL : public TorchCommBackend,
   void returnEvent(xpuEvent_t&& event);
   void abortXcclComm();
 
+  struct Address {
+    void* addr;
+  };
+
+  struct AddressWithLen {
+    void* addr;
+    size_t len;
+  };
+
   enum class CommState {
     NORMAL,
     ERROR,
@@ -227,6 +237,8 @@ class TorchCommXCCL : public TorchCommBackend,
   std::atomic<CommState> comm_state_{
       CommState::NORMAL}; // State of the communicator
 
+  void register_address(const AddressWithLen& addr);
+  void deregister_address(const Address& addr);
   onecclDataType_t getXcclDataType(const at::Tensor& tensor);
   c10::intrusive_ptr<TorchWorkXCCL> createWork(
       xpuStream_t stream,
@@ -265,6 +277,31 @@ class TorchCommXCCL : public TorchCommBackend,
     std::shared_ptr<XcclApi> xccl_api_;
   };
 
+  // Struct to hold the registration handle for a buffer
+  struct RegistrationHandle {
+    void* regHandle;
+
+    explicit RegistrationHandle(void* regHandle) : regHandle{regHandle} {}
+
+    RegistrationHandle(RegistrationHandle&& other) noexcept
+        : regHandle{other.regHandle} {
+      other.regHandle = nullptr;
+    }
+
+    RegistrationHandle(const RegistrationHandle&) = delete;
+    RegistrationHandle& operator=(const RegistrationHandle&) = delete;
+
+    RegistrationHandle& operator=(RegistrationHandle&& other) noexcept {
+      if (this != &other) {
+        regHandle = other.regHandle;
+        other.regHandle = nullptr;
+      }
+      return *this;
+    }
+
+    ~RegistrationHandle() = default;
+  };
+
   // Constructor for split communicators
   explicit TorchCommXCCL(const onecclComm_t xccl_comm);
 
@@ -282,6 +319,9 @@ class TorchCommXCCL : public TorchCommBackend,
   xpuStream_t getOperationStream(bool async_op);
   void ensureTensorContiguous(const at::Tensor& tensor);
 
+  void attachMemoryHook();
+  void detachMemoryHook();
+
   // Member variables
   onecclComm_t xccl_comm_{};
   at::Device device_;
@@ -298,6 +338,10 @@ class TorchCommXCCL : public TorchCommBackend,
     INITIALIZED,
     FINALIZED,
   } init_state_;
+
+  // List of [comm, regHandlesMap] pairs.  Each regHandlesMap is a map from the
+  // buffer address to the registeration handle
+  std::map<void*, RegistrationHandle> memoryRegistrationHandles_;
 
   // XCCL API abstraction
   std::shared_ptr<XcclApi> xccl_api_;
