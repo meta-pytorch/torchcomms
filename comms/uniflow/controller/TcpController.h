@@ -4,9 +4,17 @@
 
 #include <atomic>
 #include <chrono>
+#include <future>
+#include <memory>
+#include <mutex>
 #include <optional>
+#include <queue>
 
 #include "comms/uniflow/controller/Controller.h"
+
+namespace uniflow {
+class EventBase;
+} // namespace uniflow
 
 namespace uniflow::controller {
 
@@ -62,36 +70,124 @@ class TcpConn : public Conn {
   int sock_;
 };
 
-class TcpServer : public Server {
- public:
-  explicit TcpServer(std::string id, TcpSocketConfig config = {});
-  TcpServer(const TcpServer&) = delete;
-  TcpServer& operator=(const TcpServer&) = delete;
-  TcpServer(TcpServer&&) = delete;
-  TcpServer& operator=(TcpServer&&) = delete;
-  ~TcpServer() override;
+// ---------------------------------------------------------------------------
+// Accept policies — compile-time dispatch for BasicTcpServer<AcceptPolicy>.
+// ---------------------------------------------------------------------------
 
-  const std::string& getId() const override;
+/// Blocks the calling thread until a connection arrives, then returns a
+/// ready future. No EventBase dependency. Zero async state.
+struct SyncAccept {
+  std::future<std::unique_ptr<Conn>> accept(
+      std::atomic<int>& listenSock,
+      int acceptRetryCnt,
+      const std::string& id);
+
+  /// Blocks until any in-flight accept() has returned, then closes the
+  /// listen socket. Safe to destroy the server after shutdown() returns.
+  void shutdown(std::atomic<int>& listenSock, const std::string& id);
+
+ private:
+  std::mutex mutex_;
+};
+
+/// Non-blocking accept via EventBase fd-watching. The first call lazily
+/// sets up non-blocking mode and registers the listen socket with the
+/// EventBase. Subsequent calls queue promises that are resolved as
+/// connections arrive. All async state is accessed exclusively on the
+/// loop thread via dispatch() — no atomics needed.
+///
+/// Lifetime: The EventBase must outlive all calls to shutdown(). The
+/// BasicTcpServer destructor calls shutdown(), so either:
+///   (a) the EventBase outlives the BasicTcpServer, OR
+///   (b) the caller calls shutdown() before the EventBase is destroyed.
+struct AsyncAccept {
+  explicit AsyncAccept(EventBase& evb) : evb_(evb) {}
+
+  std::future<std::unique_ptr<Conn>> accept(
+      std::atomic<int>& listenSock,
+      int acceptRetryCnt,
+      const std::string& id);
+
+  void shutdown(std::atomic<int>& listenSock, const std::string& id);
+
+ private:
+  // All private methods run on the loop thread only.
+  void acceptPendingConnections(std::atomic<int>& listenSock);
+  void teardown(int fd);
+
+  EventBase& evb_;
+  bool accepting_{false}; // loop-thread-only
+  std::queue<std::unique_ptr<Conn>> readyConns_;
+  std::queue<std::promise<std::unique_ptr<Conn>>> pendingPromises_;
+};
+
+// ---------------------------------------------------------------------------
+// BasicTcpServer<AcceptPolicy> — policy-based TCP server template.
+// ---------------------------------------------------------------------------
+
+template <typename AcceptPolicy>
+class BasicTcpServer : public Server {
+ public:
+  // Sync:  TcpServer("host:0")
+  // Async: AsyncTcpServer("host:0", {}, evb)
+  template <typename... PolicyArgs>
+  explicit BasicTcpServer(
+      std::string id,
+      TcpSocketConfig config = {},
+      PolicyArgs&&... args)
+      : id_(std::move(id)),
+        config_(std::move(config)),
+        policy_(std::forward<PolicyArgs>(args)...) {
+    parseId();
+  }
+
+  ~BasicTcpServer() override {
+    shutdown();
+  }
+  BasicTcpServer(const BasicTcpServer&) = delete;
+  BasicTcpServer& operator=(const BasicTcpServer&) = delete;
+  BasicTcpServer(BasicTcpServer&&) = delete;
+  BasicTcpServer& operator=(BasicTcpServer&&) = delete;
+
+  Status init() override;
+
+  const std::string& getId() const override {
+    return id_;
+  }
+
+  std::future<std::unique_ptr<Conn>> accept() override {
+    return policy_.accept(listenSock_, config_.acceptRetryCnt, id_);
+  }
+
   int getPort() const {
     return port_;
   }
-  Status init() override;
-  std::unique_ptr<Conn> accept() override;
 
   // Thread-safe: can be called from a different thread than accept().
-  void shutdown();
+  void shutdown() {
+    policy_.shutdown(listenSock_, id_);
+  }
 
  private:
-  static Result<int> createListenSocket(int domain);
-  Status configureAcceptedSocket(int sock);
-  Status resolveAndBind(int domain);
+  void parseId();
 
   std::string id_;
   std::string host_;
   int port_{-1};
   std::atomic<int> listenSock_{-1};
   TcpSocketConfig config_;
+  AcceptPolicy policy_;
 };
+
+extern template class BasicTcpServer<SyncAccept>;
+extern template class BasicTcpServer<AsyncAccept>;
+
+using TcpServer = BasicTcpServer<SyncAccept>;
+using AsyncTcpServer = BasicTcpServer<AsyncAccept>;
+
+// ---------------------------------------------------------------------------
+// TcpClient
+// ---------------------------------------------------------------------------
 
 class TcpClient : public Client {
  public:

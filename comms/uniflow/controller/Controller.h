@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <future>
 #include <memory>
 #include <span>
 #include <vector>
@@ -28,7 +29,7 @@ class Server {
 
   virtual const std::string& getId() const = 0;
 
-  virtual std::unique_ptr<Conn> accept() = 0;
+  [[nodiscard]] virtual std::future<std::unique_ptr<Conn>> accept() = 0;
 };
 
 class Client {

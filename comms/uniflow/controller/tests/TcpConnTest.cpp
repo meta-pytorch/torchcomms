@@ -80,7 +80,7 @@ class TcpConnTest : public ::testing::TestWithParam<AddrFamily> {
   std::pair<std::unique_ptr<Conn>, std::unique_ptr<Conn>> connectPair() {
     std::unique_ptr<Conn> serverConn;
     std::thread acceptThread(
-        [this, &serverConn]() { serverConn = server_->accept(); });
+        [this, &serverConn]() { serverConn = server_->accept().get(); });
 
     TcpClient client;
     auto clientConn = client.connect(clientAddr());
@@ -95,7 +95,6 @@ TEST_P(TcpConnTest, SendRecvBidirectional) {
   ASSERT_NE(clientConn, nullptr);
   ASSERT_NE(serverConn, nullptr);
 
-  // Client → Server (small message)
   std::vector<uint8_t> ping = {'P', 'I', 'N', 'G'};
   ASSERT_TRUE(clientConn->send(ping).hasValue());
 
@@ -104,7 +103,6 @@ TEST_P(TcpConnTest, SendRecvBidirectional) {
   ASSERT_TRUE(result1.hasValue()) << result1.error().toString();
   EXPECT_EQ(recv1, ping);
 
-  // Server → Client (small message)
   std::vector<uint8_t> pong = {'P', 'O', 'N', 'G'};
   ASSERT_TRUE(serverConn->send(pong).hasValue());
 
@@ -113,7 +111,6 @@ TEST_P(TcpConnTest, SendRecvBidirectional) {
   ASSERT_TRUE(result2.hasValue()) << result2.error().toString();
   EXPECT_EQ(recv2, pong);
 
-  // Empty message
   std::vector<uint8_t> empty;
   ASSERT_TRUE(clientConn->send(empty).hasValue());
 
@@ -153,7 +150,7 @@ TEST_P(TcpConnTest, MultipleClientsConnect) {
 
   std::thread acceptThread([this, &serverConns]() {
     for (int i = 0; i < kNumClients; ++i) {
-      serverConns[i] = server_->accept();
+      serverConns[i] = server_->accept().get();
     }
   });
 
@@ -165,7 +162,6 @@ TEST_P(TcpConnTest, MultipleClientsConnect) {
 
   acceptThread.join();
 
-  // Verify all connections are valid and can exchange data
   for (int i = 0; i < kNumClients; ++i) {
     ASSERT_NE(serverConns[i], nullptr) << "Server conn " << i << " null";
     std::vector<uint8_t> msg = {static_cast<uint8_t>(i)};
@@ -182,10 +178,8 @@ TEST_P(TcpConnTest, ConnectionClosedByPeer) {
   ASSERT_NE(clientConn, nullptr);
   ASSERT_NE(serverConn, nullptr);
 
-  // Close client side
   clientConn.reset();
 
-  // Server recv should detect the closed connection
   std::vector<uint8_t> buffer;
   auto result = serverConn->recv(buffer);
   EXPECT_TRUE(result.hasError())
@@ -197,10 +191,8 @@ TEST_P(TcpConnTest, SendOnClosedConnection) {
   ASSERT_NE(clientConn, nullptr);
   ASSERT_NE(serverConn, nullptr);
 
-  // Close server side
   serverConn.reset();
 
-  // Give the FIN time to propagate
   std::vector<uint8_t> data(1024, 0xAA);
 
   // First send may succeed (kernel buffers), but repeated sends on a
@@ -227,7 +219,6 @@ TEST_P(TcpConnTest, RecvMultipleMessagesThenClose) {
     ASSERT_TRUE(clientConn->send(msg).hasValue());
   }
 
-  // Only drain 2 of 3
   for (int i = 0; i < 2; ++i) {
     std::vector<uint8_t> recv;
     auto result = serverConn->recv(recv);
@@ -245,7 +236,6 @@ TEST_P(TcpConnTest, SendRecvMultipleMessages) {
   ASSERT_NE(clientConn, nullptr);
   ASSERT_NE(serverConn, nullptr);
 
-  // Send multiple messages and verify FIFO ordering
   for (int i = 0; i < 10; ++i) {
     std::vector<uint8_t> msg = {static_cast<uint8_t>(i)};
     ASSERT_TRUE(clientConn->send(msg).hasValue());
@@ -262,13 +252,11 @@ TEST_P(TcpConnTest, SendRecvMultipleMessages) {
 TEST_P(TcpConnTest, RejectsWrongMagic) {
   std::unique_ptr<Conn> serverConn;
   std::thread acceptThread(
-      [this, &serverConn]() { serverConn = server_->accept(); });
+      [this, &serverConn]() { serverConn = server_->accept().get(); });
 
-  // Connect with a raw socket (bypassing TcpClient/TcpConn)
   int rawSock = connectRawSocket();
   ASSERT_GE(rawSock, 0);
 
-  // Send wrong magic — server's exchangeMagic() should reject
   uint32_t wrongMagic = htonl(0xDEADBEEF);
   ::send(rawSock, &wrongMagic, sizeof(wrongMagic), MSG_NOSIGNAL);
 
@@ -289,9 +277,8 @@ TEST_P(TcpConnTest, RejectsWrongMagic) {
 TEST_P(TcpConnTest, RejectsPeerClosedBeforeMagic) {
   std::unique_ptr<Conn> serverConn;
   std::thread acceptThread(
-      [this, &serverConn]() { serverConn = server_->accept(); });
+      [this, &serverConn]() { serverConn = server_->accept().get(); });
 
-  // Connect then immediately close — no magic sent
   int rawSock = connectRawSocket();
   ASSERT_GE(rawSock, 0);
   ::close(rawSock);

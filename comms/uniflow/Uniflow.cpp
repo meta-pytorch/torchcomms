@@ -14,7 +14,6 @@ UniflowAgent::UniflowAgent(
       factory_(std::make_shared<MultiTransportFactory>(config.deviceId)),
       client_(std::move(client)),
       server_(std::move(server)) {
-  // Auto-create TcpClient if not provided
   if (!client_) {
     controller::TcpSocketConfig tcpCfg;
     tcpCfg.connectRetries = config.connectRetries;
@@ -22,7 +21,6 @@ UniflowAgent::UniflowAgent(
     client_ = std::make_unique<controller::TcpClient>(std::move(tcpCfg));
   }
 
-  // Auto-create TcpServer if listenAddress is specified
   if (!server_ && !config.listenAddress.empty()) {
     auto tcpServer =
         std::make_unique<controller::TcpServer>(config.listenAddress);
@@ -56,7 +54,7 @@ Result<std::unique_ptr<Connection>> UniflowAgent::accept() {
     return Err(ErrCode::InvalidArgument, "no server configured");
   }
 
-  auto ctrl = server_->accept();
+  auto ctrl = server_->accept().get();
   if (!ctrl) {
     return Err(ErrCode::ConnectionFailed, "accept failed");
   }
