@@ -1231,7 +1231,6 @@ TEST_F(TorchCommNCCLXTest, AlltoallvDedupExecCombine) {
 #ifdef NCCL_REDUCE_SCATTER_QUANTIZE_SUPPORTED
 TEST_F(TorchCommNCCLXTest, ReduceScatterQuantized) {
   setupRankAndSize(0, 2);
-  setupCCAExpectations(1, 2, 1);
 
   auto comm = createMockedTorchComm();
 
@@ -1261,7 +1260,6 @@ TEST_F(TorchCommNCCLXTest, ReduceScatterQuantized) {
 
 TEST_F(TorchCommNCCLXTest, ReduceScatterQuantizedInvalidInputType) {
   setupRankAndSize(0, 2);
-  setupCCAExpectations(1, 2, 1);
 
   auto comm = createMockedTorchComm();
 
@@ -1286,7 +1284,6 @@ TEST_F(TorchCommNCCLXTest, ReduceScatterQuantizedInvalidInputType) {
 
 TEST_F(TorchCommNCCLXTest, ReduceScatterQuantizedInvalidOp) {
   setupRankAndSize(0, 2);
-  setupCCAExpectations(1, 2, 1);
 
   auto comm = createMockedTorchComm();
 
@@ -1311,7 +1308,6 @@ TEST_F(TorchCommNCCLXTest, ReduceScatterQuantizedInvalidOp) {
 
 TEST_F(TorchCommNCCLXTest, ReduceScatterQuantizedSizeMismatch) {
   setupRankAndSize(0, 2);
-  setupCCAExpectations(1, 2, 1);
 
   auto comm = createMockedTorchComm();
 
