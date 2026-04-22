@@ -2,12 +2,12 @@
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../" >
+<html lang="en" data-content_root="../../../../" >
 
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>torchcomms.hooks.nan_check &#8212; meta-pytorch/torchcomms main documentation</title>
+    <title>torchcomms.hooks.nan_check.nan_check &#8212; meta-pytorch/torchcomms main documentation</title>
   
   
   
@@ -17,31 +17,31 @@
   </script>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../../../_static/styles/theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
-<link href="../../../_static/styles/bootstrap.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
-<link href="../../../_static/styles/pydata-sphinx-theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+  <link href="../../../../_static/styles/theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../../../_static/styles/bootstrap.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../../../_static/styles/pydata-sphinx-theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
 
   
-  <link href="../../../_static/vendor/fontawesome/6.5.2/css/all.min.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
-  <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-solid-900.woff2" />
-<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
-<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
+  <link href="../../../../_static/vendor/fontawesome/6.5.2/css/all.min.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-solid-900.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=03e43079" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=047068a3" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/custom.css?v=e14e8605" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/custom.css?v=e14e8605" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=047068a3" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=e14e8605" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=e14e8605" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
-<link rel="preload" as="script" href="../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
-  <script src="../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
+  <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
+<link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
+  <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../_static/documentation_options.js?v=a8da1a53"></script>
-    <script src="../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script src="../../../../_static/documentation_options.js?v=a8da1a53"></script>
+    <script src="../../../../_static/doctools.js?v=888ff710"></script>
+    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
     <script type="module" src="https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs"></script>
     <script type="module" src="https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs"></script>
     <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";import elkLayouts from "https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs";mermaid.registerLayoutLoaders(elkLayouts);mermaid.initialize({startOnLoad:false});</script>
@@ -50,11 +50,11 @@
 import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";
 window.addEventListener("load", () => mermaid.run());
 </script>
-    <script>DOCUMENTATION_OPTIONS.pagename = '_modules/torchcomms/hooks/nan_check';</script>
-    <link rel="canonical" href="https://meta-pytorch.org/torchcomms/main/_modules/torchcomms/hooks/nan_check.html" />
-    <link rel="icon" href="../../../_static/torchcomms-logo-favicon.png"/>
-    <link rel="index" title="Index" href="../../../genindex.html" />
-    <link rel="search" title="Search" href="../../../search.html" />
+    <script>DOCUMENTATION_OPTIONS.pagename = '_modules/torchcomms/hooks/nan_check/nan_check';</script>
+    <link rel="canonical" href="https://meta-pytorch.org/torchcomms/main/_modules/torchcomms/hooks/nan_check/nan_check.html" />
+    <link rel="icon" href="../../../../_static/torchcomms-logo-favicon.png"/>
+    <link rel="index" title="Index" href="../../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../../search.html" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -102,13 +102,13 @@ window.addEventListener("load", () => mermaid.run());
   }
 </style>
 
-<link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css" crossorigin="anonymous">
-<script type="text/javascript" src="../../../_static/js/theme.js"></script>
+<link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" crossorigin="anonymous">
+<script type="text/javascript" src="../../../../_static/js/theme.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400&display=swap" rel="stylesheet">
 <meta property="og:image" content="https://docs.pytorch.org/docs/stable/_static/img/pytorch_seo.png" />
-<link rel="stylesheet" href="../../../_static/webfonts/all.min.css" crossorigin="anonymous">
+<link rel="stylesheet" href="../../../../_static/webfonts/all.min.css" crossorigin="anonymous">
 <meta http-equiv="Content-Security-Policy"
   content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; style-src * 'unsafe-inline'; script-src * 'unsafe-inline' 'unsafe-eval' blob:;">
 <meta name="pytorch_project" content="torchcomms">
@@ -229,7 +229,7 @@ window.addEventListener("load", () => mermaid.run());
     <div class="search-button__overlay"></div>
     <div class="search-button__search-container">
 <form class="bd-search d-flex align-items-center"
-      action="../../../search.html"
+      action="../../../../search.html"
       method="get">
   <i class="fa-solid fa-magnifying-glass"></i>
   <input type="search"
@@ -266,7 +266,7 @@ window.addEventListener("load", () => mermaid.run());
     
   
 
-<a class="navbar-brand logo" href="../../../index.html">
+<a class="navbar-brand logo" href="../../../../index.html">
   
   
   
@@ -277,8 +277,8 @@ window.addEventListener("load", () => mermaid.run());
       
     
     
-    <img src="../../../_static/logo-light.png" class="logo__image only-light" alt="meta-pytorch/torchcomms main documentation - Home"/>
-    <script>document.write(`<img src="../../../_static/logo-dark.png" class="logo__image only-dark" alt="meta-pytorch/torchcomms main documentation - Home"/>`);</script>
+    <img src="../../../../_static/logo-light.png" class="logo__image only-light" alt="meta-pytorch/torchcomms main documentation - Home"/>
+    <script>document.write(`<img src="../../../../_static/logo-dark.png" class="logo__image only-dark" alt="meta-pytorch/torchcomms main documentation - Home"/>`);</script>
   
   
 </a></div>
@@ -294,21 +294,21 @@ window.addEventListener("load", () => mermaid.run());
   <ul class="bd-navbar-elements navbar-nav">
     
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../getting_started.html">
+  <a class="nav-link nav-internal" href="../../../../getting_started.html">
     Getting Started
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../api.html">
+  <a class="nav-link nav-internal" href="../../../../api.html">
     API Reference
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../hooks.html">
+  <a class="nav-link nav-internal" href="../../../../hooks.html">
     Hooks
   </a>
 </li>
@@ -325,7 +325,7 @@ window.addEventListener("load", () => mermaid.run());
         <div class="navbar-item">
   
 <form class="bd-search d-flex align-items-center"
-      action="../../../search.html"
+      action="../../../../search.html"
       method="get">
   <i class="fa-solid fa-magnifying-glass"></i>
   <input type="search"
@@ -429,21 +429,21 @@ document.write(`
   <ul class="bd-navbar-elements navbar-nav">
     
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../getting_started.html">
+  <a class="nav-link nav-internal" href="../../../../getting_started.html">
     Getting Started
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../api.html">
+  <a class="nav-link nav-internal" href="../../../../api.html">
     API Reference
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../hooks.html">
+  <a class="nav-link nav-internal" href="../../../../hooks.html">
     Hooks
   </a>
 </li>
@@ -461,7 +461,7 @@ document.write(`
           <div class="navbar-item">
   
 <form class="bd-search d-flex align-items-center"
-      action="../../../search.html"
+      action="../../../../search.html"
       method="get">
   <i class="fa-solid fa-magnifying-glass"></i>
   <input type="search"
@@ -562,15 +562,15 @@ document.write(`
   <ul class="bd-breadcrumbs">
     
     <li class="breadcrumb-item breadcrumb-home">
-      <a href="../../../index.html" class="nav-link" aria-label="Home">
+      <a href="../../../../index.html" class="nav-link" aria-label="Home">
         <i class="fa-solid fa-home"></i>
       </a>
     </li>
     
-    <li class="breadcrumb-item"><a href="../../index.html" class="nav-link">Module code</a></li>
+    <li class="breadcrumb-item"><a href="../../../index.html" class="nav-link">Module code</a></li>
     
     
-    <li class="breadcrumb-item"><a href="../../torchcomms.html" class="nav-link">torchcomms</a></li>
+    <li class="breadcrumb-item"><a href="../../../torchcomms.html" class="nav-link">torchcomms</a></li>
     
     <li class="breadcrumb-item active" aria-current="page">torchcomms.h...</li>
   </ul>
@@ -614,19 +614,19 @@ document.write(`
     <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
       
       <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
-        <link itemprop="item" href="../../index.html">
+        <link itemprop="item" href="../../../index.html">
         <meta itemprop="name" content="Module code">
         <meta itemprop="position" content="1">
       </div>
       
       <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
-        <link itemprop="item" href="../../torchcomms.html">
+        <link itemprop="item" href="../../../torchcomms.html">
         <meta itemprop="name" content="torchcomms">
         <meta itemprop="position" content="2">
       </div>
       
       <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
-        <meta itemprop="name" content="torchcomms.hooks.nan_check">
+        <meta itemprop="name" content="torchcomms.hooks.nan_check.nan_check">
         <meta itemprop="position" content="3">
       </div>
     </div>
@@ -640,7 +640,7 @@ document.write(`
 <div id="searchbox"></div>
                 <article class="bd-article">
                   
-  <h1>Source code for torchcomms.hooks.nan_check</h1><div class="highlight"><pre>
+  <h1>Source code for torchcomms.hooks.nan_check.nan_check</h1><div class="highlight"><pre>
 <span></span><span class="c1"># Copyright (c) Meta Platforms, Inc. and affiliates.</span>
 
 <span class="c1"># pyre-strict</span>
@@ -706,7 +706,7 @@ document.write(`
 <span class="sd">    &quot;&quot;&quot;</span>
 
 <div class="viewcode-block" id="NanCheckHook.__init__">
-<a class="viewcode-back" href="../../../hooks.html#torchcomms.hooks.NanCheckHook.__init__">[docs]</a>
+<a class="viewcode-back" href="../../../../hooks.html#torchcomms.hooks.NanCheckHook.__init__">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
         <span class="bp">self</span><span class="p">,</span>
         <span class="n">check_inputs</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
@@ -718,7 +718,7 @@ document.write(`
 
 
 <div class="viewcode-block" id="NanCheckHook.register_with_comm">
-<a class="viewcode-back" href="../../../hooks.html#torchcomms.hooks.NanCheckHook.register_with_comm">[docs]</a>
+<a class="viewcode-back" href="../../../../hooks.html#torchcomms.hooks.NanCheckHook.register_with_comm">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">register_with_comm</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">comm</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Register the NaN check hook with a communicator.</span>
 
@@ -755,7 +755,7 @@ document.write(`
 
 
 <div class="viewcode-block" id="NanCheckHook.unregister">
-<a class="viewcode-back" href="../../../hooks.html#torchcomms.hooks.NanCheckHook.unregister">[docs]</a>
+<a class="viewcode-back" href="../../../../hooks.html#torchcomms.hooks.NanCheckHook.unregister">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">unregister</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Remove all registered hooks.&quot;&quot;&quot;</span>
         <span class="k">for</span> <span class="n">_comm</span><span class="p">,</span> <span class="n">handle</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_handles</span><span class="p">:</span>
@@ -764,7 +764,7 @@ document.write(`
 
 
 <div class="viewcode-block" id="NanCheckHook.is_enabled">
-<a class="viewcode-back" href="../../../hooks.html#torchcomms.hooks.NanCheckHook.is_enabled">[docs]</a>
+<a class="viewcode-back" href="../../../../hooks.html#torchcomms.hooks.NanCheckHook.is_enabled">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">is_enabled</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Return whether any communicators are registered.&quot;&quot;&quot;</span>
         <span class="k">return</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_handles</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">0</span></div>
@@ -851,8 +851,8 @@ document.write(`
   </div>
   
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script src="../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b"></script>
-<script src="../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b"></script>
+  <script src="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b"></script>
+<script src="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b"></script>
 
   
 
@@ -899,7 +899,7 @@ document.write(`
 <div class="cookie-banner-wrapper">
   <div class="container">
     <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://www.facebook.com/policies/cookies/">Cookies Policy</a>.</p>
-    <img class="close-button" src="../../../_static/img/pytorch-x.svg">
+    <img class="close-button" src="../../../../_static/img/pytorch-x.svg">
   </div>
 </div>
   
@@ -946,11 +946,11 @@ document.write(`
     {
        "@context": "https://schema.org",
        "@type": "Article",
-       "name": "torchcomms.hooks.nan_check",
-       "headline": "torchcomms.hooks.nan_check",
+       "name": "torchcomms.hooks.nan_check.nan_check",
+       "headline": "torchcomms.hooks.nan_check.nan_check",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment. Discover tutorials, API references, and guides to help you build and deploy deep learning models efficiently.",
-       "url": "/_modules/torchcomms/hooks/nan_check.html",
-       "articleBody": "Source code for torchcomms.hooks.nan_check # Copyright (c) Meta Platforms, Inc. and affiliates. # pyre-strict \"\"\" NanCheckHook for detecting NaN values in tensors before collective operations. Catches numerical instability early before it propagates across ranks. Example: \u003e\u003e\u003e from torchcomms.hooks import NanCheckHook \u003e\u003e\u003e import torchcomms \u003e\u003e\u003e comm = torchcomms.new_comm(\"nccl\", device, \"world\") \u003e\u003e\u003e nan_check = NanCheckHook() \u003e\u003e\u003e nan_check.register_with_comm(comm) \u003e\u003e\u003e # NaN in tensors will now raise RuntimeError before collective runs \"\"\" from __future__ import annotations from typing import Any import torch from torchcomms._comms import PreHookArgs, RemovableHandle # Lazily resolved reference to torch.ops.c10d.check_for_nan. # The op is registered when torch.distributed is imported (which happens # before any communicator is created), so we resolve on first use to # avoid a circular import at module load time. # pyre-ignore[5]: Global has no type annotation. _check_for_nan = None def _get_check_for_nan() -\u003e Any: global _check_for_nan if _check_for_nan is None: _check_for_nan = torch.ops.c10d.check_for_nan return _check_for_nan def _check_tensor(tensor: Any, label: str, op_name: str, comm_name: str) -\u003e None: \"\"\"Check a single tensor for NaN values using c10d::check_for_nan.\"\"\" try: _get_check_for_nan()(tensor) except RuntimeError as e: raise RuntimeError( f\"NaN detected in {label} tensor for \u0027{op_name}\u0027 on comm \u0027{comm_name}\u0027: {e}\" ) from None class NanCheckHook: \"\"\"Hook that checks for NaN values in tensors before collective operations. Registers a pre-hook on communicators that inspects input and/or output tensors for NaN values using the dispatched ``c10d::check_for_nan`` op (works on both CPU and CUDA). If detected, raises a ``RuntimeError`` with context about which operation and communicator triggered the check. Args: check_inputs: Whether to check input tensors. Default: True. check_outputs: Whether to check output tensors. Default: False. \"\"\" [docs] def __init__( self, check_inputs: bool = True, check_outputs: bool = False, ) -\u003e None: self._check_inputs = check_inputs self._check_outputs = check_outputs self._handles: list[tuple[Any, RemovableHandle]] = [] [docs] def register_with_comm(self, comm: Any) -\u003e None: \"\"\"Register the NaN check hook with a communicator. Args: comm: A TorchComm communicator instance. \"\"\" comm_name: str = comm.get_name() def _pre_hook(args: PreHookArgs) -\u003e None: op_name = str(args.name).rsplit(\".\", 1)[-1] if self._check_inputs: t = args.input_tensor if t is not None and t.is_floating_point(): _check_tensor(t, \"input\", op_name, comm_name) ts = args.input_tensors if ts is not None: for tensor in ts: if tensor.is_floating_point(): _check_tensor(tensor, \"input\", op_name, comm_name) if self._check_outputs: t = args.output_tensor if t is not None and t.is_floating_point(): _check_tensor(t, \"output\", op_name, comm_name) ts = args.output_tensors if ts is not None: for tensor in ts: if tensor.is_floating_point(): _check_tensor(tensor, \"output\", op_name, comm_name) handle = comm.register_pre_hook(_pre_hook) self._handles.append((comm, handle)) [docs] def unregister(self) -\u003e None: \"\"\"Remove all registered hooks.\"\"\" for _comm, handle in self._handles: handle.remove() self._handles.clear() [docs] def is_enabled(self) -\u003e bool: \"\"\"Return whether any communicators are registered.\"\"\" return len(self._handles) \u003e 0",
+       "url": "/_modules/torchcomms/hooks/nan_check/nan_check.html",
+       "articleBody": "Source code for torchcomms.hooks.nan_check.nan_check # Copyright (c) Meta Platforms, Inc. and affiliates. # pyre-strict \"\"\" NanCheckHook for detecting NaN values in tensors before collective operations. Catches numerical instability early before it propagates across ranks. Example: \u003e\u003e\u003e from torchcomms.hooks import NanCheckHook \u003e\u003e\u003e import torchcomms \u003e\u003e\u003e comm = torchcomms.new_comm(\"nccl\", device, \"world\") \u003e\u003e\u003e nan_check = NanCheckHook() \u003e\u003e\u003e nan_check.register_with_comm(comm) \u003e\u003e\u003e # NaN in tensors will now raise RuntimeError before collective runs \"\"\" from __future__ import annotations from typing import Any import torch from torchcomms._comms import PreHookArgs, RemovableHandle # Lazily resolved reference to torch.ops.c10d.check_for_nan. # The op is registered when torch.distributed is imported (which happens # before any communicator is created), so we resolve on first use to # avoid a circular import at module load time. # pyre-ignore[5]: Global has no type annotation. _check_for_nan = None def _get_check_for_nan() -\u003e Any: global _check_for_nan if _check_for_nan is None: _check_for_nan = torch.ops.c10d.check_for_nan return _check_for_nan def _check_tensor(tensor: Any, label: str, op_name: str, comm_name: str) -\u003e None: \"\"\"Check a single tensor for NaN values using c10d::check_for_nan.\"\"\" try: _get_check_for_nan()(tensor) except RuntimeError as e: raise RuntimeError( f\"NaN detected in {label} tensor for \u0027{op_name}\u0027 on comm \u0027{comm_name}\u0027: {e}\" ) from None class NanCheckHook: \"\"\"Hook that checks for NaN values in tensors before collective operations. Registers a pre-hook on communicators that inspects input and/or output tensors for NaN values using the dispatched ``c10d::check_for_nan`` op (works on both CPU and CUDA). If detected, raises a ``RuntimeError`` with context about which operation and communicator triggered the check. Args: check_inputs: Whether to check input tensors. Default: True. check_outputs: Whether to check output tensors. Default: False. \"\"\" [docs] def __init__( self, check_inputs: bool = True, check_outputs: bool = False, ) -\u003e None: self._check_inputs = check_inputs self._check_outputs = check_outputs self._handles: list[tuple[Any, RemovableHandle]] = [] [docs] def register_with_comm(self, comm: Any) -\u003e None: \"\"\"Register the NaN check hook with a communicator. Args: comm: A TorchComm communicator instance. \"\"\" comm_name: str = comm.get_name() def _pre_hook(args: PreHookArgs) -\u003e None: op_name = str(args.name).rsplit(\".\", 1)[-1] if self._check_inputs: t = args.input_tensor if t is not None and t.is_floating_point(): _check_tensor(t, \"input\", op_name, comm_name) ts = args.input_tensors if ts is not None: for tensor in ts: if tensor.is_floating_point(): _check_tensor(tensor, \"input\", op_name, comm_name) if self._check_outputs: t = args.output_tensor if t is not None and t.is_floating_point(): _check_tensor(t, \"output\", op_name, comm_name) ts = args.output_tensors if ts is not None: for tensor in ts: if tensor.is_floating_point(): _check_tensor(tensor, \"output\", op_name, comm_name) handle = comm.register_pre_hook(_pre_hook) self._handles.append((comm, handle)) [docs] def unregister(self) -\u003e None: \"\"\"Remove all registered hooks.\"\"\" for _comm, handle in self._handles: handle.remove() self._handles.clear() [docs] def is_enabled(self) -\u003e bool: \"\"\"Return whether any communicators are registered.\"\"\" return len(self._handles) \u003e 0",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",
@@ -959,7 +959,7 @@ document.write(`
        "image": "https://pytorch.org/docs/stable/_static/img/pytorch_seo.png",
        "mainEntityOfPage": {
          "@type": "WebPage",
-         "@id": "/_modules/torchcomms/hooks/nan_check.html"
+         "@id": "/_modules/torchcomms/hooks/nan_check/nan_check.html"
        },
        "datePublished": "2023-01-01T00:00:00Z",
        "dateModified": "2023-01-01T00:00:00Z"
