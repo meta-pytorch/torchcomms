@@ -392,6 +392,20 @@ class NcclxMock : public NcclxApi {
       (override));
 
   MOCK_METHOD(ncclTeam_t, teamLsa, (ncclComm_t comm), (override));
+
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
+  MOCK_METHOD(
+      ncclResult_t,
+      winGetPeerDevicePointer,
+      (NcclxWindow win, size_t offset, int peer, void** outPtr),
+      (override));
+
+  MOCK_METHOD(
+      ncclResult_t,
+      winGetLsaMultimemDevicePointer,
+      (NcclxWindow win, size_t offset, void** outPtr),
+      (override));
+#endif
 #endif
 
 #if defined(ENABLE_PIPES)
