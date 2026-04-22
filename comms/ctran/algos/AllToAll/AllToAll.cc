@@ -137,9 +137,10 @@ commResult_t ctranAllToAll(
       stream,
       allToAllAlgoName(algo),
       opCount);
+  void* kernel = nullptr;
   FB_COMMCHECK(
       ctran::alltoall::setupKernelConfig(
-          sendbuff, recvbuff, count, datatype, comm, stream, config));
+          sendbuff, recvbuff, count, datatype, comm, stream, config, kernel));
 
   // prepare operation for IB path
   std::vector<std::unique_ptr<struct OpElem>> opGroup;
@@ -153,7 +154,7 @@ commResult_t ctranAllToAll(
       std::move(opGroup),
       opIbImpl,
       config,
-      reinterpret_cast<void*>(ctran::alltoall::alltoallKerns[datatype]),
+      kernel,
       std::nullopt, /* timeout */
       graphPrepareFn));
 

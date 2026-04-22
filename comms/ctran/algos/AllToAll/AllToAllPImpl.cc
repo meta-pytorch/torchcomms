@@ -344,12 +344,13 @@ commResult_t AlgoImpl::exec(const void* sendbuff, const size_t count) {
         pArgs.maxRecvCount);
   }
 
-  // prepare kernel config for NVL copies, reuse the alltoall kernel
   KernelConfig config = KernelConfig(
       KernelConfig::KernelType::ALLTOALL, stream_, algoName(myAlgo), opCount);
+  void* kernel = nullptr;
   FB_COMMCHECK(
       ctran::alltoall::setupKernelConfig(
-          sendbuff, recvbuff, count, datatype, comm_, stream_, config));
+          sendbuff, recvbuff, count, datatype, comm_, stream_, config, kernel));
+
   std::vector<std::unique_ptr<struct OpElem>> opGroup;
   // Passing op only when remote peers are present
   if (comm_->statex_->nNodes() > 1) {
@@ -367,11 +368,8 @@ commResult_t AlgoImpl::exec(const void* sendbuff, const size_t count) {
         opGroup.front().get()->alltoallP.count);
   }
 
-  FB_COMMCHECK(comm_->ctran_->gpe->submit(
-      std::move(opGroup),
-      gpeFn,
-      config,
-      reinterpret_cast<void*>(ctran::alltoall::alltoallKerns[datatype])));
+  FB_COMMCHECK(
+      comm_->ctran_->gpe->submit(std::move(opGroup), gpeFn, config, kernel));
   return commSuccess;
 }
 
