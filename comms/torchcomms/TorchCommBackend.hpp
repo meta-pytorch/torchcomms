@@ -254,6 +254,19 @@ class TorchCommBackend {
   }
 
   /**
+   * Check if the backend is fully initialized and ready for collective
+   * operations. In dynamic regime, the backend transitions to initialized
+   * state after a successful reconfigure().
+   *
+   * This method is non-throwing and safe to call regardless of backend state.
+   *
+   * @return True if the backend is initialized, false otherwise.
+   */
+  virtual bool isInitialized() const {
+    return true;
+  }
+
+  /**
    * Get the initialization handle for this backend.
    * In dynamic regime, this URL encodes information required by the backend
    * to complete the initialization process via reconfigure().
