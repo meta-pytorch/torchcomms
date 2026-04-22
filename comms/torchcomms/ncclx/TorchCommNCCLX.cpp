@@ -1663,6 +1663,9 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_dispatch(
     bool async_op) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
+  TORCH_CHECK(
+      !output_tensor_list.empty(),
+      "alltoallv_dynamic_dispatch: output_tensor_list must not be empty");
   ensureTensorContiguous(input_tensor);
   ensureTensorContiguous(input_chunk_sizes);
   ensureTensorContiguous(input_chunk_indices);
