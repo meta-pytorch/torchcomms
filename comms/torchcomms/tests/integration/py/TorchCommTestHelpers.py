@@ -355,14 +355,14 @@ class TorchCommTestWrapper:
         return self.torchcomm
 
 
-def skipBackend(backend, msg="Skipping test for backend: "):
+def skip_backend(backend, msg="Skipping test for backend: "):
     def dec_fn(fn):
         reason = f"{msg}{backend}"
 
         @wraps(fn)
         def wrapper(*args, **kwargs):
             if os.environ["TEST_BACKEND"] == backend:
-                raise unittest.SkipTest(reason)
+                return unittest.skip(reason)(*args, **kwargs)
 
             return fn(*args, **kwargs)
 
