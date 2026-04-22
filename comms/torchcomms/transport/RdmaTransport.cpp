@@ -52,10 +52,12 @@ RdmaMemory::RdmaMemory(const void* buf, size_t len, int cudaDev, bool cacheReg)
         "Failed to fetch the IB handle from regCache. The buffer may not be registered");
   } else {
     // Not registered yet; do it now.
-    FB_COMMCHECKTHROW(regCache_->globalRegister(buf_, len_, true, cudaDev_));
+    FB_COMMCHECKTHROW(regCache_->globalRegister(
+        buf_, len_, true /* forceReg */, false /* ncclManaged */, cudaDev_));
     regHdl_ = regCache_->searchIbRegHandle(buf_, len_, cudaDev_);
     if (regHdl_ == nullptr) {
-      FB_COMMCHECKIGNORE(regCache_->globalDeregister(buf_, len_, cudaDev_));
+      FB_COMMCHECKIGNORE(regCache_->globalDeregister(
+          buf_, len_, false /* skipRemRelease */, cudaDev_));
       throw std::runtime_error("Failed to fetch the IB handle from regCache.");
     }
   }
@@ -86,7 +88,8 @@ RdmaMemory::~RdmaMemory() noexcept {
     return;
   }
   if (remoteKey_.size() > 0 && regHdl_) {
-    FB_COMMCHECKIGNORE(regCache_->globalDeregister(buf_, len_, cudaDev_));
+    FB_COMMCHECKIGNORE(regCache_->globalDeregister(
+        buf_, len_, false /* skipRemRelease */, cudaDev_));
     regHdl_ = nullptr;
   }
 }

@@ -455,7 +455,12 @@ TEST_F(RdmaMemoryTest, CacheRegConstruction) {
   // After globalRegister, RdmaMemory should succeed
   auto regCache = ctran::RegCache::getInstance();
   EXPECT_EQ(
-      regCache->globalRegister(buffer_, bufferSize_, false, cudaDev_),
+      regCache->globalRegister(
+          buffer_,
+          bufferSize_,
+          false /* forceReg */,
+          false /* ncclManaged */,
+          cudaDev_),
       commSuccess);
   RdmaMemory memory(buffer_, bufferSize_, cudaDev_, true /* cacheReg */);
   EXPECT_EQ(memory.getDevice(), cudaDev_);
