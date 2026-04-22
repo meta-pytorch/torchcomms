@@ -407,6 +407,39 @@ void testDeviceWindowNvlOffsetPut(
 }
 
 // =============================================================================
+// DeviceWindow Offset-Based NVL Per-Group Put Test
+// =============================================================================
+
+__global__ void nvlOffsetPutPerGroupKernel(
+    DeviceWindow dw,
+    int targetPeerRank,
+    LocalBufferRegistration src_buf,
+    std::size_t tileSize) {
+  auto group = make_block_group();
+  std::size_t offset = group.group_id * tileSize;
+  dw.put(group, targetPeerRank, offset, src_buf, offset, tileSize);
+}
+
+void testDeviceWindowNvlOffsetPutPerGroup(
+    int myRank,
+    int nRanks,
+    char* windowBuf_d,
+    const char* srcBuf_d,
+    std::size_t srcBufSize,
+    std::size_t tileSize,
+    int numTiles) {
+  NvlOffsetPutDeviceWindowBuffers bufs;
+  auto dw = bufs.create_with_offset_put(myRank, nRanks, windowBuf_d);
+
+  int targetPeerRank = (myRank == 0) ? 1 : 0;
+  LocalBufferRegistration src_buf{srcBuf_d, srcBufSize, NetworkLKey{}};
+  nvlOffsetPutPerGroupKernel<<<numTiles, 256>>>(
+      dw, targetPeerRank, src_buf, tileSize);
+  CUDACHECK_TEST(cudaGetLastError());
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+}
+
+// =============================================================================
 // DeviceWindow Offset-Based NVL Put + Signal Test
 // =============================================================================
 

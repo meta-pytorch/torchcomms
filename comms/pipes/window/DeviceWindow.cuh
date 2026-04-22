@@ -986,8 +986,7 @@ class DeviceWindow {
       int nvlPeerIdx = rankToNvlPeerIndex_[target_rank];
       auto* remoteDst =
           static_cast<char*>(windowNvlPeerPtrs_[nvlPeerIdx]) + dst_offset;
-      handle_.get_nvl(target_rank)
-          .put_group(group, remoteDst, localSrc, nbytes);
+      handle_.get_nvl(target_rank).put(group, remoteDst, localSrc, nbytes);
     } else {
       int ibgdaPeerIdx = rank_to_peer_index(target_rank);
       IbgdaLocalBuffer localBuf(
@@ -1037,8 +1036,7 @@ class DeviceWindow {
       int nvlPeerIdx = rankToNvlPeerIndex_[target_rank];
       auto* remoteDst =
           static_cast<char*>(windowNvlPeerPtrs_[nvlPeerIdx]) + dst_offset;
-      handle_.get_nvl(target_rank)
-          .put_group(group, remoteDst, localSrc, nbytes);
+      handle_.get_nvl(target_rank).put(group, remoteDst, localSrc, nbytes);
       signal_peer(
           group, target_rank, signalId, SignalOp::SIGNAL_ADD, signalVal);
       group.sync();
@@ -1104,8 +1102,7 @@ class DeviceWindow {
       int nvlPeerIdx = rankToNvlPeerIndex_[target_rank];
       auto* remoteDst =
           static_cast<char*>(windowNvlPeerPtrs_[nvlPeerIdx]) + dst_offset;
-      handle_.get_nvl(target_rank)
-          .put_group(group, remoteDst, localSrc, nbytes);
+      handle_.get_nvl(target_rank).put(group, remoteDst, localSrc, nbytes);
       signal_peer(
           group, target_rank, signalId, SignalOp::SIGNAL_ADD, signalVal);
       group.sync();
@@ -1170,8 +1167,7 @@ class DeviceWindow {
       int nvlPeerIdx = rankToNvlPeerIndex_[target_rank];
       auto* remoteDst =
           static_cast<char*>(windowNvlPeerPtrs_[nvlPeerIdx]) + dst_offset;
-      handle_.get_nvl(target_rank)
-          .put_group(group, remoteDst, localSrc, nbytes);
+      handle_.get_nvl(target_rank).put(group, remoteDst, localSrc, nbytes);
     } else {
       int ibgdaPeerIdx = rank_to_peer_index(target_rank);
       IbgdaLocalBuffer localBuf(
