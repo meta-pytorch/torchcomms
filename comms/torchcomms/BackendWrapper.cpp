@@ -91,9 +91,9 @@ WorkWrapper::WorkWrapper(
     // resolve now.
     future_->markCompleted(c10::IValue(outputTensors_));
   } else {
-    // For other device types (CPU) async: register callback so
+    // For other device types (CPU) async: register end hook so
     // future completes when setStatus fires.
-    work_->setCallback([future = future_, tensors = outputTensors_]() {
+    work_->registerWorkEndHook([future = future_, tensors = outputTensors_]() {
       if (!future->completed()) {
         future->markCompleted(c10::IValue(tensors));
       }
