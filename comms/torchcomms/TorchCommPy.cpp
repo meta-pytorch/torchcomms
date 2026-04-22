@@ -9,7 +9,9 @@
 #include <torch/csrc/utils/pybind.h>
 
 #include "comms/torchcomms/BackendWrapper.hpp"
+#include "comms/torchcomms/PyTorchCommBackend.hpp"
 #include "comms/torchcomms/TorchComm.hpp"
+#include "comms/torchcomms/TorchCommFactory.hpp"
 #include "comms/torchcomms/TorchWork.hpp"
 
 // Forward declaration for flight recorder submodule init
@@ -251,7 +253,55 @@ completed before proceeding.
 Raises:
     RuntimeError: If not implemented by the backend.
           )",
-          py::call_guard<py::gil_scoped_release>());
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "_set_status",
+          [](TorchWork& self, TorchWork::WorkStatus status) {
+            auto* py_work = dynamic_cast<PyTorchWork*>(&self);
+            if (py_work) {
+              py_work->publicSetStatus(status);
+            } else {
+              throw std::runtime_error(
+                  "_set_status is only supported on Python-created work objects");
+            }
+          },
+          R"(
+Set the status of this work object.
+
+This is intended for use by Python backend implementations that return
+custom work objects. Call this to update the work status (e.g., to COMPLETED
+after the operation finishes).
+
+Args:
+    status (WorkStatus): The new status to set.
+          )",
+          py::arg("status"));
+
+  py::enum_<TorchWork::WorkStatus>(
+      m,
+      "WorkStatus",
+      R"(
+Status of a TorchWork object.
+
+Used to track the lifecycle of an asynchronous operation.
+      )")
+      .value(
+          "NOT_STARTED",
+          TorchWork::WorkStatus::NOT_STARTED,
+          "Work has not started yet.")
+      .value(
+          "INPROGRESS",
+          TorchWork::WorkStatus::INPROGRESS,
+          "Work is still in progress.")
+      .value(
+          "COMPLETED",
+          TorchWork::WorkStatus::COMPLETED,
+          "Work has completed successfully.")
+      .value("TIMEDOUT", TorchWork::WorkStatus::TIMEDOUT, "Work has timed out.")
+      .value(
+          "ERROR",
+          TorchWork::WorkStatus::ERROR,
+          "Work has encountered an error.");
 
   py::enum_<TorchCommWinAccessType>(
       m, "TorchCommWinAccessType", "Window attribute.")
@@ -931,8 +981,10 @@ Args:
          std::optional<c10::intrusive_ptr<c10d::Store>> store,
          bool enable_reconfigure,
          std::optional<std::unordered_map<std::string, std::string>> hints) {
-        py::module_ torchcomms = py::module_::import("torchcomms");
-        torchcomms.attr("_load_backend")(backend);
+        if (!TorchCommFactory::get().is_backend_registered(backend)) {
+          py::module_ torchcomms = py::module_::import("torchcomms");
+          torchcomms.attr("_load_backend")(backend);
+        }
 
         {
           py::gil_scoped_release release{};
@@ -998,16 +1050,34 @@ Args:
       py::arg("enable_reconfigure") = false,
       py::arg("hints") = std::nullopt);
 
-  py::class_<TorchCommBackend, std::shared_ptr<TorchCommBackend>>(
+  py::class_<
+      TorchCommBackend,
+      PyTorchCommBackend,
+      std::shared_ptr<TorchCommBackend>>(
       m,
       "TorchCommBackend",
-      "Abstract class that all torchcomms Backends implement.");
+      R"(
+Base class for Python-implemented TorchComm backends.
+
+Subclass this to implement a custom communication backend in Python.
+Register it with :func:`register_backend`, then create communicators
+via :func:`new_comm`.
+
+Override the required methods: ``init``, ``finalize``, ``get_rank``,
+``get_size``, ``get_backend_name``, ``get_comm_name``, ``split``, and
+the collective operations (``all_reduce``, ``broadcast``, etc.).
+
+Each collective method should return ``None`` for synchronous completion,
+or an object with a ``wait()`` method for asynchronous operations.
+          )")
+      .def(py::init<>());
 
   // Bind TorchComm class
   py_opaque_class<TorchComm, std::shared_ptr<TorchComm>>(m, "TorchComm")
       // NOTE: copy/deepcopy return the same object (not a clone).
       // Actually cloning the underlying communicator would be extremely
-      // expensive (requires collective operations to create new comm groups).
+      // expensive (requires collective operations to create new comm
+      // groups).
       .def(
           "__copy__",
           [](const std::shared_ptr<TorchComm>& self) { return self; })
@@ -2054,7 +2124,8 @@ Raises: RuntimeError if the ranks list is non-empty and the current rank is not 
       // NOTE: This property is kept temporarily to avoid breaking upstream
       // callers. The allocator is actually a global static per backend
       // (accessed via get_mem_allocator(backend)), not tied to the comm
-      // instance lifetime. Future code should use the global function directly.
+      // instance lifetime. Future code should use the global function
+      // directly.
       .def_property_readonly(
           "mem_allocator",
           [](TorchComm& self) { return get_mem_allocator(self.getBackend()); },
@@ -2236,4 +2307,7 @@ Args:
   auto hooks_mod = m.def_submodule("hooks");
   auto fr_mod = hooks_mod.def_submodule("fr");
   init_flight_recorder_bindings(fr_mod);
+
+  // Python backend registration
+  initPyBackendBindings(m);
 }
