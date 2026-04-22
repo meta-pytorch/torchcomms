@@ -58,7 +58,7 @@ Result<std::vector<PeerConnection>> Rendezvous::establish(
     UNIFLOW_LOG_INFO("Rendezvous: rank 0 listening on {}", serverAddr(config));
 
     for (int i = 1; i < config.worldSize; ++i) {
-      auto conn = server.accept();
+      auto conn = server.accept().get();
       if (!conn) {
         return Err(
             ErrCode::ConnectionFailed,

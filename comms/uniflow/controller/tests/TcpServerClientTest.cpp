@@ -30,7 +30,7 @@ TEST_P(TcpServerClientTest, SuccessfulConnection) {
   int port = server.getPort();
 
   std::unique_ptr<Conn> serverConn;
-  std::thread acceptThread([&]() { serverConn = server.accept(); });
+  std::thread acceptThread([&]() { serverConn = server.accept().get(); });
 
   TcpClient client;
   auto clientConn = client.connect(clientAddr(port));
@@ -49,7 +49,7 @@ TEST_P(TcpServerClientTest, ServerShutdownWhileClientConnected) {
   int port = server->getPort();
 
   std::unique_ptr<Conn> serverConn;
-  std::thread acceptThread([&]() { serverConn = server->accept(); });
+  std::thread acceptThread([&]() { serverConn = server->accept().get(); });
 
   TcpClient client;
   auto clientConn = client.connect(clientAddr(port));
@@ -71,7 +71,7 @@ TEST_P(TcpServerClientTest, ExplicitShutdownUnblocksAccept) {
   }
 
   std::unique_ptr<Conn> serverConn;
-  std::thread acceptThread([&]() { serverConn = server.accept(); });
+  std::thread acceptThread([&]() { serverConn = server.accept().get(); });
 
   // Brief pause to let accept() enter its blocking state before shutdown
   // NOLINTNEXTLINE(facebook-hte-BadCall-sleep_for)
@@ -176,14 +176,35 @@ TEST_F(TcpServerClientMiscTest, AcceptReturnsNullBeforeInit) {
   // IPv4
   {
     TcpServer server("127.0.0.1:0");
-    EXPECT_EQ(server.accept(), nullptr);
+    EXPECT_EQ(server.accept().get(), nullptr);
   }
 
   // IPv6
   {
     TcpServer server(":::0");
-    EXPECT_EQ(server.accept(), nullptr);
+    EXPECT_EQ(server.accept().get(), nullptr);
   }
+}
+
+TEST_F(TcpServerClientMiscTest, SyncAcceptReturnsReadyFuture) {
+  TcpServer server("127.0.0.1:0");
+  ASSERT_TRUE(server.init().hasValue());
+
+  // accept() on a sync server with no client should eventually return
+  // (after timeout/shutdown), and the future should be immediately ready.
+  std::future<std::unique_ptr<Conn>> future;
+  std::thread acceptThread([&]() { future = server.accept(); });
+
+  // NOLINTNEXTLINE(facebook-hte-BadCall-sleep_for)
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  server.shutdown();
+  acceptThread.join();
+
+  // SyncAccept always returns a ready future
+  ASSERT_TRUE(future.valid());
+  EXPECT_EQ(
+      future.wait_for(std::chrono::seconds(0)), std::future_status::ready);
+  EXPECT_EQ(future.get(), nullptr);
 }
 
 TEST_F(TcpServerClientMiscTest, WildcardAddresses) {
@@ -269,7 +290,7 @@ TEST_F(TcpSocketConfigTest, OsDefaultConfigConnectionSucceeds) {
   ASSERT_TRUE(status.hasValue()) << status.error().toString();
 
   std::unique_ptr<Conn> serverConn;
-  std::thread acceptThread([&]() { serverConn = server.accept(); });
+  std::thread acceptThread([&]() { serverConn = server.accept().get(); });
 
   TcpClient client(cfg);
   auto clientConn =
@@ -307,7 +328,7 @@ TEST_F(TcpSocketConfigTest, ValidateRejectsZeroAcceptRetry) {
 TEST_F(TcpSocketConfigTest, InvalidConfigThrowsInServerConstructor) {
   auto cfg = TcpSocketConfig{};
   cfg.connTimeout = std::chrono::seconds{-1};
-  EXPECT_THROW(TcpServer("127.0.0.1:0", cfg), std::invalid_argument);
+  EXPECT_THROW((TcpServer("127.0.0.1:0", cfg)), std::invalid_argument);
 }
 
 TEST_F(TcpSocketConfigTest, InvalidConfigThrowsInClientConstructor) {
@@ -326,7 +347,7 @@ TEST_F(TcpSocketConfigTest, CustomConfigConnectionSucceeds) {
   ASSERT_TRUE(status.hasValue()) << status.error().toString();
 
   std::unique_ptr<Conn> serverConn;
-  std::thread acceptThread([&]() { serverConn = server.accept(); });
+  std::thread acceptThread([&]() { serverConn = server.accept().get(); });
 
   TcpClient client(cfg);
   auto clientConn =
@@ -347,7 +368,7 @@ TEST_F(TcpSocketConfigTest, ExplicitKeepaliveDisableIsValid) {
   ASSERT_TRUE(status.hasValue()) << status.error().toString();
 
   std::unique_ptr<Conn> serverConn;
-  std::thread acceptThread([&]() { serverConn = server.accept(); });
+  std::thread acceptThread([&]() { serverConn = server.accept().get(); });
 
   TcpClient client(cfg);
   auto clientConn =
