@@ -62,7 +62,8 @@ P2pIbgdaTransportDevice* buildDeviceTransportsOnGpu(
         params[i].counterBuf,
         params[i].numSignalSlots,
         params[i].numCounterSlots,
-        params[i].discardSignalSlot);
+        params[i].discardSignalSlot,
+        params[i].sendRecvState);
   }
 
   // 3. Allocate and copy transport objects to GPU
