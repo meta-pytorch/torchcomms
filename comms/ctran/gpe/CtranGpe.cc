@@ -479,7 +479,9 @@ size_t CtranGpe::numInUseChecksums() {
 }
 
 size_t CtranGpe::numInUseGpeKernelSyncs() {
+  // Last chance to cleanup
   this->pimpl->gpeKernelSyncPool->reclaim();
+  // Return the number of inuse elements
   return this->pimpl->gpeKernelSyncPool->capacity() -
       this->pimpl->gpeKernelSyncPool->size();
 }

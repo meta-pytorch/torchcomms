@@ -427,7 +427,9 @@ class CtranGpe {
   // Return number of inuse checksums.
   size_t numInUseChecksums();
 
-  // Return number of inuse GPE kernel syncs.
+  // Return number of inuse GpeKernelSync elements.
+  // Used to verify that CUDA graph cmdDestroy callbacks have released all pool
+  // elements before pool destruction (async cmdDestroy race).
   size_t numInUseGpeKernelSyncs();
 
   commResult_t allocGpeKernelSyncs(
