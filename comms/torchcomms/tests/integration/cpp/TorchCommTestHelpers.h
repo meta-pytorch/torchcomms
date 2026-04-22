@@ -7,6 +7,12 @@
 #include <string>
 #include <tuple>
 
+// Default to full parameter sweep if not specified via compiler flag.
+// Build with -DTEST_FULL_SWEEP=0 for a reduced smoke test.
+#ifndef TEST_FULL_SWEEP
+#define TEST_FULL_SWEEP 1
+#endif
+
 #include <ATen/ATen.h>
 #include <c10/core/Device.h>
 #include <c10/util/intrusive_ptr.h>

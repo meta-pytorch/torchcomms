@@ -90,8 +90,12 @@ TEST_P(MultiGraph, InputDeleted) {
 
 auto allGatherVParamValues() {
   return ::testing::Combine(
+#if TEST_FULL_SWEEP
       ::testing::Values(0, 4, 1024, 1024 * 1024),
       ::testing::Values(at::kFloat, at::kInt, at::kChar));
+#else
+      ::testing::Values(4, 1024 * 1024), ::testing::Values(at::kFloat));
+#endif
 }
 
 auto allGatherVGraphParamValues() {
