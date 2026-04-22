@@ -55,6 +55,7 @@ LIBSRCFILES := \
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/commDump.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/NcclxConfig.cc)
+LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/RankUtil.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/analyzer/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/colltrace/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/logger/*.cc)
