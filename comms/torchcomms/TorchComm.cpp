@@ -819,16 +819,17 @@ void TorchComm::postHook(PostHookArgs&& args) {
     }
     return;
   }
-  // For asynchronous operations with a work object, set a callback to invoke
-  // hooks when the work completes
+  // For asynchronous operations with a work object, register an end hook
+  // to invoke post-hooks when the work completes
   if (auto work = args.work->lock()) {
-    work->setCallback([self = weak_from_this(), args = std::move(args)]() {
-      if (auto selfPtr = self.lock()) {
-        for (auto& hook : selfPtr->postHooks_) {
-          hook.second(args);
-        }
-      }
-    });
+    work->registerWorkEndHook(
+        [self = weak_from_this(), args = std::move(args)]() {
+          if (auto selfPtr = self.lock()) {
+            for (auto& hook : selfPtr->postHooks_) {
+              hook.second(args);
+            }
+          }
+        });
   }
 }
 

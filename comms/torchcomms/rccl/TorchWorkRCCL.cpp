@@ -147,6 +147,8 @@ TorchWorkRCCL::WorkStatus TorchWorkRCCL::checkStatus() {
 }
 
 void TorchWorkRCCL::wait() {
+  runWaitHooks();
+
   // If already completed, return immediately
   WorkStatus local_state = status();
   if (local_state == WorkStatus::COMPLETED ||
