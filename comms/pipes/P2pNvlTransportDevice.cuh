@@ -960,7 +960,7 @@ class P2pNvlTransportDevice {
   }
 
   /**
-   * signal_threadgroup - Signal peer GPU via NVLink
+   * signal - Signal peer GPU via NVLink
    *
    * Sends a signal to the peer's Signal object at the specified index.
    * Only the group leader performs the signal after synchronizing all threads.
@@ -975,16 +975,13 @@ class P2pNvlTransportDevice {
    * @param op SIGNAL_SET to store value, SIGNAL_ADD to atomically add value
    * @param value The value to set or add to peer's signal counter
    */
-  __device__ __forceinline__ void signal_threadgroup(
-      ThreadGroup& group,
-      uint64_t signal_id,
-      SignalOp op,
-      uint64_t value) {
+  __device__ __forceinline__ void
+  signal(ThreadGroup& group, uint64_t signal_id, SignalOp op, uint64_t value) {
     remoteState_.signalBuffer[signal_id].signal(group, op, value);
   }
 
   /**
-   * wait_signal_until_threadgroup - Wait for signal from peer GPU
+   * wait_signal_until - Wait for signal from peer GPU
    *
    * Waits until the local Signal object at the specified index satisfies
    * the given condition. All threads in the group poll the signal.
@@ -999,7 +996,7 @@ class P2pNvlTransportDevice {
    * @param op The comparison operation (CMP_EQ, CMP_GE, etc.)
    * @param value The value to compare against
    */
-  __device__ __forceinline__ void wait_signal_until_threadgroup(
+  __device__ __forceinline__ void wait_signal_until(
       ThreadGroup& group,
       uint64_t signal_id,
       CmpOp op,
@@ -1009,7 +1006,7 @@ class P2pNvlTransportDevice {
   }
 
   /**
-   * reset_signal_threadgroup - Reset a local signal slot to zero
+   * reset_signal - Reset a local signal slot to zero
    *
    * Resets the local signal counter at the specified index to zero.
    * This is safe to call from the receiver side after processing the signal,
@@ -1021,7 +1018,7 @@ class P2pNvlTransportDevice {
    * @param group ThreadGroup for cooperative thread synchronization
    * @param signal_id Index into the signalBuffer array
    */
-  __device__ __forceinline__ void reset_signal_threadgroup(
+  __device__ __forceinline__ void reset_signal(
       ThreadGroup& group,
       uint64_t signal_id) {
     if (group.is_leader()) {
@@ -1031,7 +1028,7 @@ class P2pNvlTransportDevice {
   }
 
   /**
-   * barrier_sync_threadgroup - Two-sided barrier synchronization with peer GPU
+   * barrier_sync - Two-sided barrier synchronization with peer GPU
    *
    * Performs a full barrier synchronization between this GPU and the peer GPU
    * over NVLink. Both sides must call this function to complete the barrier.
@@ -1051,7 +1048,7 @@ class P2pNvlTransportDevice {
    * All threads in the group must call this function (collective operation).
    * Both GPUs must call with the same barrier_id to synchronize.
    */
-  __device__ __forceinline__ void barrier_sync_threadgroup(
+  __device__ __forceinline__ void barrier_sync(
       ThreadGroup& group,
       uint64_t barrier_id,
       const Timeout& timeout = Timeout()) {

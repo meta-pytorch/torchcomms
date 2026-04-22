@@ -47,7 +47,7 @@ __device__ int torchcomms_transport_signal(
     unsigned long long value) {
   auto* handle = reinterpret_cast<MultiPeerDeviceHandle*>(handle_ptr);
   auto group = make_block_group();
-  handle->get_nvl(peer).signal_threadgroup(
+  handle->get_nvl(peer).signal(
       group,
       static_cast<uint64_t>(signal_id),
       static_cast<SignalOp>(op),
@@ -63,7 +63,7 @@ __device__ int torchcomms_transport_wait_signal(
     unsigned long long value) {
   auto* handle = reinterpret_cast<MultiPeerDeviceHandle*>(handle_ptr);
   auto group = make_block_group();
-  handle->get_nvl(peer).wait_signal_until_threadgroup(
+  handle->get_nvl(peer).wait_signal_until(
       group,
       static_cast<uint64_t>(signal_id),
       static_cast<CmpOp>(op),
@@ -115,8 +115,7 @@ __device__ int
 torchcomms_transport_barrier(void* handle_ptr, int peer, int barrier_id) {
   auto* handle = reinterpret_cast<MultiPeerDeviceHandle*>(handle_ptr);
   auto group = make_block_group();
-  handle->get_nvl(peer).barrier_sync_threadgroup(
-      group, static_cast<uint64_t>(barrier_id));
+  handle->get_nvl(peer).barrier_sync(group, static_cast<uint64_t>(barrier_id));
   return 0;
 }
 

@@ -77,8 +77,8 @@ __global__ void transportStressSendRecvKernel(
     // Signal-based barrier: both ranks signal and wait before next iteration.
     // Barrier buffers are not available via get_device_transport(), so we use
     // monotonic signal ADD/GE on signal_id 0 as a barrier replacement.
-    nvl.signal_threadgroup(group, 0, SignalOp::SIGNAL_ADD, 1);
-    nvl.wait_signal_until_threadgroup(
+    nvl.signal(group, 0, SignalOp::SIGNAL_ADD, 1);
+    nvl.wait_signal_until(
         group, 0, CmpOp::CMP_GE, static_cast<uint64_t>(iter + 1));
   }
 }
@@ -111,9 +111,9 @@ __global__ void transportStressSignalKernel(
 
   for (int iter = 0; iter < iterations; iter++) {
     // Signal peer: add 1 to signal_id 0
-    nvl.signal_threadgroup(group, 0, SignalOp::SIGNAL_ADD, 1);
+    nvl.signal(group, 0, SignalOp::SIGNAL_ADD, 1);
     // Wait for peer's signal: expect monotonically increasing value
-    nvl.wait_signal_until_threadgroup(
+    nvl.wait_signal_until(
         group, 0, CmpOp::CMP_GE, static_cast<uint64_t>(iter + 1));
   }
 }
@@ -149,8 +149,8 @@ __global__ void transportStressCombinedKernel(
     // Phase 1: Signal-based barrier (barrier buffers not available via
     // get_device_transport(), so use signal ADD/GE on signal_id 0).
     // Two signals per iteration: one here, one after send/recv.
-    nvl.signal_threadgroup(group, 0, SignalOp::SIGNAL_ADD, 1);
-    nvl.wait_signal_until_threadgroup(
+    nvl.signal(group, 0, SignalOp::SIGNAL_ADD, 1);
+    nvl.wait_signal_until(
         group, 0, CmpOp::CMP_GE, static_cast<uint64_t>(2 * iter + 1));
 
     // Phase 2: Send/recv
@@ -168,8 +168,8 @@ __global__ void transportStressCombinedKernel(
     }
 
     // Phase 3: Signal/wait (confirms both ranks finished send/recv)
-    nvl.signal_threadgroup(group, 0, SignalOp::SIGNAL_ADD, 1);
-    nvl.wait_signal_until_threadgroup(
+    nvl.signal(group, 0, SignalOp::SIGNAL_ADD, 1);
+    nvl.wait_signal_until(
         group, 0, CmpOp::CMP_GE, static_cast<uint64_t>(2 * iter + 2));
 
     // Phase 4: Verify on receiver
@@ -264,8 +264,8 @@ __global__ void transportStressLl128Kernel(
 
     // Signal-based barrier before next iteration (barrier buffers not
     // available via get_device_transport())
-    nvl.signal_threadgroup(group, 0, SignalOp::SIGNAL_ADD, 1);
-    nvl.wait_signal_until_threadgroup(
+    nvl.signal(group, 0, SignalOp::SIGNAL_ADD, 1);
+    nvl.wait_signal_until(
         group, 0, CmpOp::CMP_GE, static_cast<uint64_t>(iter + 1));
   }
 }

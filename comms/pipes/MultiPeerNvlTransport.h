@@ -47,7 +47,7 @@ struct MultiPeerNvlTransportConfig {
   std::size_t p2pSignalCount{1};
 
   // Number of barrier slots per peer for cross-GPU synchronization.
-  // Used by barrier_sync_threadgroup() for device-side barriers.
+  // Used by barrier_sync() for device-side barriers.
   // Set to 0 (default) to skip barrier buffer allocation.
   // Typical: 1 for tile sendrecv dynamic block count support.
   std::size_t p2pBarrierCount{0};

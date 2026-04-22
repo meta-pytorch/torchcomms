@@ -54,7 +54,7 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecv(
 // creates a cross-GPU race: the new sender on GPU A may overwrite
 // staging positions that the old receiver on GPU B is still reading.
 //
-// The per-block barrier_sync_threadgroup prevents this race:
+// The per-block barrier_sync prevents this race:
 //
 //   Stream ordering guarantee:
 //     Both kernels execute on the same CUDA stream per GPU. So on each
@@ -105,7 +105,7 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecvDynamic(
   const int blockId = sub.group_id;
 
   if (needsBarrier) {
-    p2p.barrier_sync_threadgroup(sub, blockId, timeout);
+    p2p.barrier_sync(sub, blockId, timeout);
   }
 
   if (role == 0) {
