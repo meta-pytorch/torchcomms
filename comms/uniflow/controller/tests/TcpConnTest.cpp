@@ -96,26 +96,26 @@ TEST_P(TcpConnTest, SendRecvBidirectional) {
   ASSERT_NE(serverConn, nullptr);
 
   std::vector<uint8_t> ping = {'P', 'I', 'N', 'G'};
-  ASSERT_TRUE(clientConn->send(ping).hasValue());
+  ASSERT_TRUE(clientConn->send(ping).get().hasValue());
 
   std::vector<uint8_t> recv1;
-  auto result1 = serverConn->recv(recv1);
+  auto result1 = serverConn->recv(recv1).get();
   ASSERT_TRUE(result1.hasValue()) << result1.error().toString();
   EXPECT_EQ(recv1, ping);
 
   std::vector<uint8_t> pong = {'P', 'O', 'N', 'G'};
-  ASSERT_TRUE(serverConn->send(pong).hasValue());
+  ASSERT_TRUE(serverConn->send(pong).get().hasValue());
 
   std::vector<uint8_t> recv2;
-  auto result2 = clientConn->recv(recv2);
+  auto result2 = clientConn->recv(recv2).get();
   ASSERT_TRUE(result2.hasValue()) << result2.error().toString();
   EXPECT_EQ(recv2, pong);
 
   std::vector<uint8_t> empty;
-  ASSERT_TRUE(clientConn->send(empty).hasValue());
+  ASSERT_TRUE(clientConn->send(empty).get().hasValue());
 
   std::vector<uint8_t> recv3;
-  auto result3 = serverConn->recv(recv3);
+  auto result3 = serverConn->recv(recv3).get();
   ASSERT_TRUE(result3.hasValue());
   EXPECT_TRUE(recv3.empty());
 }
@@ -132,12 +132,12 @@ TEST_P(TcpConnTest, SendRecvLargeData) {
     sendData[i] = static_cast<uint8_t>(i & 0xFF);
   }
 
-  auto sendResult = clientConn->send(sendData);
+  auto sendResult = clientConn->send(sendData).get();
   ASSERT_TRUE(sendResult.hasValue()) << sendResult.error().toString();
   EXPECT_EQ(sendResult.value(), kSize);
 
   std::vector<uint8_t> recvData;
-  auto recvResult = serverConn->recv(recvData);
+  auto recvResult = serverConn->recv(recvData).get();
   ASSERT_TRUE(recvResult.hasValue()) << recvResult.error().toString();
   EXPECT_EQ(recvData.size(), kSize);
   EXPECT_EQ(recvData, sendData);
@@ -165,10 +165,10 @@ TEST_P(TcpConnTest, MultipleClientsConnect) {
   for (int i = 0; i < kNumClients; ++i) {
     ASSERT_NE(serverConns[i], nullptr) << "Server conn " << i << " null";
     std::vector<uint8_t> msg = {static_cast<uint8_t>(i)};
-    ASSERT_TRUE(clientConns[i]->send(msg).hasValue());
+    ASSERT_TRUE(clientConns[i]->send(msg).get().hasValue());
 
     std::vector<uint8_t> recv;
-    ASSERT_TRUE(serverConns[i]->recv(recv).hasValue());
+    ASSERT_TRUE(serverConns[i]->recv(recv).get().hasValue());
     EXPECT_EQ(recv, msg);
   }
 }
@@ -181,7 +181,7 @@ TEST_P(TcpConnTest, ConnectionClosedByPeer) {
   clientConn.reset();
 
   std::vector<uint8_t> buffer;
-  auto result = serverConn->recv(buffer);
+  auto result = serverConn->recv(buffer).get();
   EXPECT_TRUE(result.hasError())
       << "recv should fail when peer has closed the connection";
 }
@@ -199,7 +199,7 @@ TEST_P(TcpConnTest, SendOnClosedConnection) {
   // connection with a closed peer will eventually fail with EPIPE/ECONNRESET.
   bool gotError = false;
   for (int i = 0; i < 100 && !gotError; ++i) {
-    auto result = clientConn->send(data);
+    auto result = clientConn->send(data).get();
     if (result.hasError()) {
       gotError = true;
       EXPECT_EQ(result.error().code(), ErrCode::ConnectionFailed);
@@ -216,12 +216,12 @@ TEST_P(TcpConnTest, RecvMultipleMessagesThenClose) {
   // Send 3 messages, only recv 2, then close — verify no hang
   for (int i = 0; i < 3; ++i) {
     std::vector<uint8_t> msg = {static_cast<uint8_t>(i), 0xAA, 0xBB};
-    ASSERT_TRUE(clientConn->send(msg).hasValue());
+    ASSERT_TRUE(clientConn->send(msg).get().hasValue());
   }
 
   for (int i = 0; i < 2; ++i) {
     std::vector<uint8_t> recv;
-    auto result = serverConn->recv(recv);
+    auto result = serverConn->recv(recv).get();
     ASSERT_TRUE(result.hasValue()) << result.error().toString();
     EXPECT_EQ(recv[0], static_cast<uint8_t>(i));
   }
@@ -238,12 +238,12 @@ TEST_P(TcpConnTest, SendRecvMultipleMessages) {
 
   for (int i = 0; i < 10; ++i) {
     std::vector<uint8_t> msg = {static_cast<uint8_t>(i)};
-    ASSERT_TRUE(clientConn->send(msg).hasValue());
+    ASSERT_TRUE(clientConn->send(msg).get().hasValue());
   }
 
   for (int i = 0; i < 10; ++i) {
     std::vector<uint8_t> recv;
-    ASSERT_TRUE(serverConn->recv(recv).hasValue());
+    ASSERT_TRUE(serverConn->recv(recv).get().hasValue());
     ASSERT_EQ(recv.size(), 1u);
     EXPECT_EQ(recv[0], static_cast<uint8_t>(i));
   }

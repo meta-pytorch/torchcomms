@@ -104,20 +104,20 @@ TEST_P(TcpAsyncConnectTest, SendRecvAfterAsyncConnect) {
   ASSERT_NE(serverConn, nullptr);
 
   const std::vector<uint8_t> msg = {0x01, 0x02, 0x03, 0x04};
-  auto sendResult = clientConn->send(msg);
+  auto sendResult = clientConn->send(msg).get();
   ASSERT_TRUE(sendResult.hasValue()) << sendResult.error().toString();
 
   std::vector<uint8_t> buf;
-  auto recvResult = serverConn->recv(buf);
+  auto recvResult = serverConn->recv(buf).get();
   ASSERT_TRUE(recvResult.hasValue()) << recvResult.error().toString();
   EXPECT_EQ(buf, msg);
 
   const std::vector<uint8_t> reply = {0x05, 0x06};
-  sendResult = serverConn->send(reply);
+  sendResult = serverConn->send(reply).get();
   ASSERT_TRUE(sendResult.hasValue()) << sendResult.error().toString();
 
   buf.clear();
-  recvResult = clientConn->recv(buf);
+  recvResult = clientConn->recv(buf).get();
   ASSERT_TRUE(recvResult.hasValue()) << recvResult.error().toString();
   EXPECT_EQ(buf, reply);
 }

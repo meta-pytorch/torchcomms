@@ -4,11 +4,14 @@
 
 #include <atomic>
 #include <chrono>
+#include <concepts>
 #include <future>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <queue>
+#include <span>
+#include <vector>
 
 #include "comms/uniflow/controller/Controller.h"
 
@@ -41,9 +44,77 @@ struct TcpSocketConfig {
   Status validate() const;
 };
 
+// ---------------------------------------------------------------------------
+// IO policies — compile-time dispatch for TcpConn<IOPolicy>.
+// ---------------------------------------------------------------------------
+
+/// Sync-only I/O. No EventBase, no async state. Zero size via
+/// [[no_unique_address]].
+struct SyncIO {};
+
+/// Async I/O via EventBase. Holds the EventBase reference and all async
+/// operation state. Lifetime: EventBase must outlive the TcpConn.
+struct AsyncIO {
+  struct SendState {
+    std::span<const uint8_t> payload; // caller keeps buffer alive
+    std::promise<Result<size_t>> promise;
+    uint8_t header[4]{};
+    size_t headerSent{0};
+    size_t payloadSent{0};
+  };
+
+  struct RecvState {
+    uint8_t header[4]{};
+    size_t headerRecvd{0};
+    size_t payloadRecvd{0};
+    uint32_t payloadLen{0};
+    bool headerDone{false};
+    bool isSpanMode{false};
+
+    // Span mode: caller's pre-allocated buffer
+    std::span<uint8_t> callerBuf;
+
+    // Alloc mode: TcpConn allocates
+    std::vector<uint8_t>* callerVec{nullptr};
+
+    std::promise<Result<size_t>> promise;
+
+    uint8_t* target() {
+      return isSpanMode ? callerBuf.data() : callerVec->data();
+    }
+  };
+
+  EventBase& evb;
+  std::optional<SendState> sendState;
+  std::optional<RecvState> recvState;
+  explicit AsyncIO(EventBase& evb) : evb(evb) {}
+};
+
+// ---------------------------------------------------------------------------
+// TcpConn<IOPolicy> — policy-based TCP connection.
+//
+//   TcpConn<SyncIO>  — blocking send/recv, returns ready futures
+//   TcpConn<AsyncIO> — non-blocking send/recv via EventBase, returns
+//                       pending futures
+//
+// Both policies return std::future<Result<size_t>> — the caller doesn't
+// need to know whether I/O is sync or async.
+// ---------------------------------------------------------------------------
+
+template <typename IOPolicy = SyncIO>
 class TcpConn : public Conn {
  public:
-  static std::unique_ptr<TcpConn> create(int sock);
+  /// Factory: creates a sync-only TcpConn and validates the peer via
+  /// magic exchange. Returns nullptr if the handshake fails.
+  static std::unique_ptr<TcpConn> create(int sock)
+    requires std::same_as<IOPolicy, SyncIO>;
+
+  /// Factory: creates an async-capable TcpConn with an EventBase and
+  /// validates the peer via magic exchange. Sets the socket to
+  /// non-blocking mode. Returns nullptr if the handshake fails.
+  /// Lifetime: The EventBase must outlive this TcpConn.
+  static std::unique_ptr<TcpConn> create(int sock, EventBase& evb)
+    requires std::same_as<IOPolicy, AsyncIO>;
 
   TcpConn(const TcpConn&) = delete;
   TcpConn& operator=(const TcpConn&) = delete;
@@ -52,8 +123,9 @@ class TcpConn : public Conn {
 
   ~TcpConn() override;
 
-  Result<size_t> send(std::span<const uint8_t> data) override;
-  Result<size_t> recv(std::vector<uint8_t>& data) override;
+  std::future<Result<size_t>> send(std::span<const uint8_t> data) override;
+  std::future<Result<size_t>> recv(std::vector<uint8_t>& data) override;
+  std::future<Result<size_t>> recv(std::span<uint8_t> buf) override;
   void close() override;
 
   int getFd() const {
@@ -61,14 +133,57 @@ class TcpConn : public Conn {
   }
 
  private:
-  explicit TcpConn(int sock) : sock_(sock) {}
+  TcpConn(int sock, IOPolicy io) : sock_(sock), io_(std::move(io)) {}
 
   bool sendAll(const void* buf, size_t len);
   bool recvAll(void* buf, size_t len);
   bool exchangeMagic();
+  Result<size_t> syncSend(std::span<const uint8_t> data);
+  Result<size_t> syncRecv(std::vector<uint8_t>& data);
+  Result<size_t> syncRecv(std::span<uint8_t> buf);
+
+  // Async internals — only instantiated for AsyncIO
+  void updateFdRegistration()
+    requires std::same_as<IOPolicy, AsyncIO>;
+  void onFdReady(uint32_t revents)
+    requires std::same_as<IOPolicy, AsyncIO>;
+  void onSendReady()
+    requires std::same_as<IOPolicy, AsyncIO>;
+  void onRecvReady()
+    requires std::same_as<IOPolicy, AsyncIO>;
+  std::optional<bool> trySend(const uint8_t* buf, size_t len, size_t& sent)
+    requires std::same_as<IOPolicy, AsyncIO>;
+  std::optional<bool> tryRecv(uint8_t* buf, size_t len, size_t& recvd)
+    requires std::same_as<IOPolicy, AsyncIO>;
+  void failSend(const char* msg)
+    requires std::same_as<IOPolicy, AsyncIO>;
+  void failRecv(const char* msg)
+    requires std::same_as<IOPolicy, AsyncIO>;
+  void failAllOps(const char* msg)
+    requires std::same_as<IOPolicy, AsyncIO>;
+  void poisonConnection(const char* msg)
+    requires std::same_as<IOPolicy, AsyncIO>;
 
   int sock_;
+  [[no_unique_address]] IOPolicy io_;
 };
+
+// Explicit specialization declarations — must appear before extern template.
+template <>
+std::future<Result<size_t>> TcpConn<SyncIO>::send(std::span<const uint8_t>);
+template <>
+std::future<Result<size_t>> TcpConn<SyncIO>::recv(std::vector<uint8_t>&);
+template <>
+std::future<Result<size_t>> TcpConn<SyncIO>::recv(std::span<uint8_t>);
+template <>
+std::future<Result<size_t>> TcpConn<AsyncIO>::send(std::span<const uint8_t>);
+template <>
+std::future<Result<size_t>> TcpConn<AsyncIO>::recv(std::vector<uint8_t>&);
+template <>
+std::future<Result<size_t>> TcpConn<AsyncIO>::recv(std::span<uint8_t>);
+
+extern template class TcpConn<SyncIO>;
+extern template class TcpConn<AsyncIO>;
 
 // ---------------------------------------------------------------------------
 // Accept policies — compile-time dispatch for BasicTcpServer<AcceptPolicy>.

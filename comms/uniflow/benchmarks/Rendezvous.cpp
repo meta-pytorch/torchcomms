@@ -66,7 +66,7 @@ Result<std::vector<PeerConnection>> Rendezvous::establish(
       }
 
       std::vector<uint8_t> peerRankBuf;
-      auto recvResult = conn->recv(peerRankBuf);
+      auto recvResult = conn->recv(peerRankBuf).get();
       if (!recvResult) {
         return Err(
             ErrCode::ConnectionFailed,
@@ -101,7 +101,7 @@ Result<std::vector<PeerConnection>> Rendezvous::establish(
               " failed to connect to rank 0 at " + serverAddr(config));
     }
 
-    auto sendResult = conn->send(serializeInt(config.rank));
+    auto sendResult = conn->send(serializeInt(config.rank)).get();
     if (!sendResult) {
       return Err(
           ErrCode::ConnectionFailed,
@@ -128,7 +128,7 @@ static Result<size_t> recvRetryEagain(
   constexpr int kMaxRetries = 300;
   int retries = 0;
   for (;;) {
-    auto result = conn.recv(buf);
+    auto result = conn.recv(buf).get();
     if (result) {
       return result;
     }
@@ -171,7 +171,7 @@ Status barrier(
       }
     }
     for (auto& peer : peers) {
-      auto result = peer.ctrl->send(token);
+      auto result = peer.ctrl->send(token).get();
       if (!result) {
         UNIFLOW_LOG_ERROR(
             "barrier: send to rank {} failed: {}",
@@ -188,7 +188,7 @@ Status barrier(
       UNIFLOW_LOG_ERROR("barrier: no peers for non-rank0");
       return Err(ErrCode::InvalidArgument, "barrier: no peers for non-rank0");
     }
-    auto sendResult = peers[0].ctrl->send(token);
+    auto sendResult = peers[0].ctrl->send(token).get();
     if (!sendResult) {
       UNIFLOW_LOG_ERROR(
           "barrier: send to rank 0 failed: {}", sendResult.error().toString());
@@ -215,26 +215,26 @@ Result<std::vector<uint8_t>> exchangeMetadata(
     bool isRank0) {
   std::vector<uint8_t> remoteData;
   if (isRank0) {
-    auto s = ctrl.send(localData);
+    auto s = ctrl.send(localData).get();
     if (!s) {
       return Err(
           ErrCode::ConnectionFailed,
           "exchangeMetadata: send failed: " + s.error().toString());
     }
-    auto r = ctrl.recv(remoteData);
+    auto r = ctrl.recv(remoteData).get();
     if (!r) {
       return Err(
           ErrCode::ConnectionFailed,
           "exchangeMetadata: recv failed: " + r.error().toString());
     }
   } else {
-    auto r = ctrl.recv(remoteData);
+    auto r = ctrl.recv(remoteData).get();
     if (!r) {
       return Err(
           ErrCode::ConnectionFailed,
           "exchangeMetadata: recv failed: " + r.error().toString());
     }
-    auto s = ctrl.send(localData);
+    auto s = ctrl.send(localData).get();
     if (!s) {
       return Err(
           ErrCode::ConnectionFailed,

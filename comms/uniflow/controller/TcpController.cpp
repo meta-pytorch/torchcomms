@@ -301,7 +301,12 @@ Status setHandshakeTimeout(int sock) {
 
 } // namespace
 
-bool TcpConn::sendAll(const void* buf, size_t len) {
+// ---------------------------------------------------------------------------
+// TcpConn<IOPolicy> — shared sync methods
+// ---------------------------------------------------------------------------
+
+template <typename IOPolicy>
+bool TcpConn<IOPolicy>::sendAll(const void* buf, size_t len) {
   auto* ptr = static_cast<const uint8_t*>(buf);
   size_t remaining = len;
   while (remaining > 0) {
@@ -325,7 +330,8 @@ bool TcpConn::sendAll(const void* buf, size_t len) {
   return true;
 }
 
-bool TcpConn::recvAll(void* buf, size_t len) {
+template <typename IOPolicy>
+bool TcpConn<IOPolicy>::recvAll(void* buf, size_t len) {
   auto* ptr = static_cast<uint8_t*>(buf);
   size_t remaining = len;
   while (remaining > 0) {
@@ -354,7 +360,8 @@ bool TcpConn::recvAll(void* buf, size_t len) {
   return true;
 }
 
-bool TcpConn::exchangeMagic() {
+template <typename IOPolicy>
+bool TcpConn<IOPolicy>::exchangeMagic() {
   uint32_t magic = htonl(kMagic);
   if (!sendAll(&magic, sizeof(magic))) {
     UNIFLOW_LOG_ERROR("magic exchange: send failed, fd={}", sock_);
@@ -378,9 +385,13 @@ bool TcpConn::exchangeMagic() {
   return true;
 }
 
-std::unique_ptr<TcpConn> TcpConn::create(int sock) {
+template <typename IOPolicy>
+// NOLINTNEXTLINE(facebook-hte-NullableReturn)
+std::unique_ptr<TcpConn<IOPolicy>> TcpConn<IOPolicy>::create(int sock)
+  requires std::same_as<IOPolicy, SyncIO>
+{
   UNIFLOW_LOG_DEBUG("TcpConn: handshake starting, fd={}", sock);
-  auto conn = std::unique_ptr<TcpConn>(new TcpConn(sock));
+  auto conn = std::unique_ptr<TcpConn>(new TcpConn(sock, SyncIO{}));
   if (!conn->exchangeMagic()) {
     UNIFLOW_LOG_ERROR("TcpConn: handshake failed, fd={}", sock);
     return nullptr;
@@ -389,11 +400,42 @@ std::unique_ptr<TcpConn> TcpConn::create(int sock) {
   return conn;
 }
 
-Result<size_t> TcpConn::send(std::span<const uint8_t> data) {
+template <typename IOPolicy>
+// NOLINTNEXTLINE(facebook-hte-NullableReturn)
+std::unique_ptr<TcpConn<IOPolicy>> TcpConn<IOPolicy>::create(
+    int sock,
+    EventBase& evb)
+  requires std::same_as<IOPolicy, AsyncIO>
+{
+  UNIFLOW_LOG_DEBUG("TcpConn: handshake starting (async), fd={}", sock);
+  auto conn = std::unique_ptr<TcpConn>(new TcpConn(sock, AsyncIO{evb}));
+  if (!conn->exchangeMagic()) {
+    UNIFLOW_LOG_ERROR("TcpConn: handshake failed, fd={}", sock);
+    return nullptr;
+  }
+
+  int flags = fcntl(sock, F_GETFL);
+  if (flags < 0 || fcntl(sock, F_SETFL, flags | O_NONBLOCK) < 0) {
+    UNIFLOW_LOG_ERROR(
+        "TcpConn: fcntl O_NONBLOCK failed, fd={}: {}",
+        sock,
+        std::system_category().message(errno));
+    return nullptr;
+  }
+
+  UNIFLOW_LOG_INFO("TcpConn: established (async), fd={}", sock);
+  return conn;
+}
+
+// ---------------------------------------------------------------------------
+// TcpConn send/recv — SyncIO blocks + ready future, AsyncIO dispatches
+// ---------------------------------------------------------------------------
+
+template <typename IOPolicy>
+Result<size_t> TcpConn<IOPolicy>::syncSend(std::span<const uint8_t> data) {
   if (sock_ < 0) {
     return Err(ErrCode::NotConnected, "Socket is not connected");
   }
-
   if (data.size() > kMaxMessageSize) {
     return Err(
         ErrCode::InvalidArgument,
@@ -403,24 +445,22 @@ Result<size_t> TcpConn::send(std::span<const uint8_t> data) {
 
   UNIFLOW_LOG_DEBUG("TcpConn::send: fd={} bytes={}", sock_, data.size());
 
-  // Length-prefixed framing: 4-byte network-order size header + payload
   uint32_t len = htonl(static_cast<uint32_t>(data.size()));
   if (!sendAll(&len, sizeof(len))) {
     return Err(
         ErrCode::ConnectionFailed,
         "send header failed: " + std::system_category().message(errno));
   }
-
   if (!data.empty() && !sendAll(data.data(), data.size())) {
     return Err(
         ErrCode::ConnectionFailed,
         "send payload failed: " + std::system_category().message(errno));
   }
-
   return data.size();
 }
 
-Result<size_t> TcpConn::recv(std::vector<uint8_t>& data) {
+template <typename IOPolicy>
+Result<size_t> TcpConn<IOPolicy>::syncRecv(std::vector<uint8_t>& data) {
   if (sock_ < 0) {
     return Err(ErrCode::NotConnected, "Socket is not connected");
   }
@@ -434,6 +474,7 @@ Result<size_t> TcpConn::recv(std::vector<uint8_t>& data) {
 
   uint32_t len = ntohl(rawLen);
   if (len > kMaxMessageSize) {
+    ::shutdown(sock_, SHUT_RDWR);
     return Err(
         ErrCode::InvalidArgument,
         "message size " + std::to_string(len) + " exceeds maximum " +
@@ -448,10 +489,448 @@ Result<size_t> TcpConn::recv(std::vector<uint8_t>& data) {
   }
 
   UNIFLOW_LOG_DEBUG("TcpConn::recv: fd={} bytes={}", sock_, len);
-  return len;
+  return static_cast<size_t>(len);
 }
 
-void TcpConn::close() {
+template <typename IOPolicy>
+Result<size_t> TcpConn<IOPolicy>::syncRecv(std::span<uint8_t> buf) {
+  if (sock_ < 0) {
+    return Err(ErrCode::NotConnected, "Socket is not connected");
+  }
+
+  uint32_t rawLen = 0;
+  if (!recvAll(&rawLen, sizeof(rawLen))) {
+    return Err(
+        ErrCode::ConnectionFailed,
+        "recv header failed: " + std::system_category().message(errno));
+  }
+
+  uint32_t len = ntohl(rawLen);
+  if (len > kMaxMessageSize) {
+    ::shutdown(sock_, SHUT_RDWR);
+    return Err(
+        ErrCode::InvalidArgument,
+        "message size " + std::to_string(len) + " exceeds maximum " +
+            std::to_string(kMaxMessageSize));
+  }
+  if (len > buf.size()) {
+    ::shutdown(sock_, SHUT_RDWR);
+    return Err(
+        ErrCode::InvalidArgument,
+        "payload size " + std::to_string(len) + " exceeds buffer size " +
+            std::to_string(buf.size()));
+  }
+
+  if (len != 0 && !recvAll(buf.data(), len)) {
+    return Err(
+        ErrCode::ConnectionFailed,
+        "recv payload failed: " + std::system_category().message(errno));
+  }
+
+  UNIFLOW_LOG_DEBUG("TcpConn::recv(span): fd={} bytes={}", sock_, len);
+  return static_cast<size_t>(len);
+}
+
+// ---------------------------------------------------------------------------
+// TcpConn<SyncIO> — blocking send/recv, returns ready futures
+// ---------------------------------------------------------------------------
+
+template <>
+std::future<Result<size_t>> TcpConn<SyncIO>::send(
+    std::span<const uint8_t> data) {
+  return make_ready_future(syncSend(data));
+}
+
+template <>
+std::future<Result<size_t>> TcpConn<SyncIO>::recv(std::vector<uint8_t>& data) {
+  return make_ready_future(syncRecv(data));
+}
+
+template <>
+std::future<Result<size_t>> TcpConn<SyncIO>::recv(std::span<uint8_t> buf) {
+  return make_ready_future(syncRecv(buf));
+}
+
+// ---------------------------------------------------------------------------
+// TcpConn<AsyncIO> — non-blocking send/recv via EventBase
+// ---------------------------------------------------------------------------
+
+template <>
+std::future<Result<size_t>> TcpConn<AsyncIO>::send(
+    std::span<const uint8_t> data) {
+  std::promise<Result<size_t>> promise;
+  auto future = promise.get_future();
+
+  io_.evb.dispatch([this, data, p = std::move(promise)]() mutable noexcept {
+    if (sock_ < 0) {
+      p.set_value(Err(ErrCode::NotConnected, "Socket is not connected"));
+      return;
+    }
+    if (data.size() > kMaxMessageSize) {
+      p.set_value(
+          Err(ErrCode::InvalidArgument,
+              "message size " + std::to_string(data.size()) +
+                  " exceeds maximum " + std::to_string(kMaxMessageSize)));
+      return;
+    }
+    if (io_.sendState) {
+      p.set_value(Err(ErrCode::ResourceExhausted, "send already in flight"));
+      return;
+    }
+
+    AsyncIO::SendState state;
+    state.payload = data;
+    state.promise = std::move(p);
+    uint32_t len = htonl(static_cast<uint32_t>(data.size()));
+    std::memcpy(state.header, &len, sizeof(len));
+    io_.sendState = std::move(state);
+
+    // Eager send — try before registering for EPOLLOUT
+    onSendReady();
+    if (io_.sendState) {
+      updateFdRegistration();
+    }
+  });
+
+  return future;
+}
+
+template <>
+std::future<Result<size_t>> TcpConn<AsyncIO>::recv(std::vector<uint8_t>& data) {
+  std::promise<Result<size_t>> promise;
+  auto future = promise.get_future();
+
+  io_.evb.dispatch([this, &data, p = std::move(promise)]() mutable noexcept {
+    if (sock_ < 0) {
+      p.set_value(Err(ErrCode::NotConnected, "Socket is not connected"));
+      return;
+    }
+    if (io_.recvState) {
+      p.set_value(Err(ErrCode::ResourceExhausted, "recv already in flight"));
+      return;
+    }
+
+    AsyncIO::RecvState state;
+    state.isSpanMode = false;
+    state.callerVec = &data;
+    state.promise = std::move(p);
+    io_.recvState = std::move(state);
+
+    // Eager recv — try before registering for EPOLLIN
+    onRecvReady();
+    if (io_.recvState) {
+      updateFdRegistration();
+    }
+  });
+
+  return future;
+}
+
+template <>
+std::future<Result<size_t>> TcpConn<AsyncIO>::recv(std::span<uint8_t> buf) {
+  std::promise<Result<size_t>> promise;
+  auto future = promise.get_future();
+
+  io_.evb.dispatch([this, buf, p = std::move(promise)]() mutable noexcept {
+    if (sock_ < 0) {
+      p.set_value(Err(ErrCode::NotConnected, "Socket is not connected"));
+      return;
+    }
+    if (io_.recvState) {
+      p.set_value(Err(ErrCode::ResourceExhausted, "recv already in flight"));
+      return;
+    }
+
+    AsyncIO::RecvState state;
+    state.isSpanMode = true;
+    state.callerBuf = buf;
+    state.promise = std::move(p);
+    io_.recvState = std::move(state);
+
+    // Eager recv — try before registering for EPOLLIN
+    onRecvReady();
+    if (io_.recvState) {
+      updateFdRegistration();
+    }
+  });
+
+  return future;
+}
+
+// ---------------------------------------------------------------------------
+// TcpConn<AsyncIO> — async internals (loop-thread-only)
+// ---------------------------------------------------------------------------
+
+template <typename IOPolicy>
+void TcpConn<IOPolicy>::updateFdRegistration()
+  requires std::same_as<IOPolicy, AsyncIO>
+{
+  uint32_t events = 0;
+  if (io_.sendState) {
+    events |= EPOLLOUT;
+  }
+  if (io_.recvState) {
+    events |= EPOLLIN;
+  }
+
+  if (events == 0) {
+    io_.evb.unregisterFd(sock_);
+    return;
+  }
+
+  io_.evb.registerFd(
+      sock_, events, [this](uint32_t revents) { onFdReady(revents); });
+}
+
+template <typename IOPolicy>
+void TcpConn<IOPolicy>::onFdReady(uint32_t revents)
+  requires std::same_as<IOPolicy, AsyncIO>
+{
+  bool hasData = revents & (EPOLLIN | EPOLLOUT);
+  bool hasError = revents & (EPOLLERR | EPOLLHUP);
+
+  if (hasError && !hasData) {
+    failAllOps("socket error or hangup");
+    return;
+  }
+
+  if ((revents & EPOLLOUT) && io_.sendState) {
+    onSendReady();
+  }
+  if ((revents & EPOLLIN) && io_.recvState) {
+    onRecvReady();
+  }
+}
+
+template <typename IOPolicy>
+void TcpConn<IOPolicy>::failAllOps(const char* msg)
+  requires std::same_as<IOPolicy, AsyncIO>
+{
+  if (io_.recvState) {
+    io_.recvState->promise.set_value(Err(ErrCode::ConnectionFailed, msg));
+    io_.recvState.reset();
+  }
+  poisonConnection(msg);
+}
+
+template <typename IOPolicy>
+void TcpConn<IOPolicy>::poisonConnection(const char* msg)
+  requires std::same_as<IOPolicy, AsyncIO>
+{
+  if (io_.sendState) {
+    io_.sendState->promise.set_value(
+        Err(ErrCode::ConnectionFailed,
+            "send aborted: recv error: " + std::string(msg)));
+    io_.sendState.reset();
+  }
+  io_.evb.unregisterFd(sock_);
+  ::shutdown(sock_, SHUT_RDWR);
+}
+
+template <typename IOPolicy>
+void TcpConn<IOPolicy>::failSend(const char* msg)
+  requires std::same_as<IOPolicy, AsyncIO>
+{
+  UNIFLOW_LOG_ERROR(
+      "send: {} fd={}: {}", msg, sock_, std::system_category().message(errno));
+  io_.sendState->promise.set_value(Err(ErrCode::ConnectionFailed, msg));
+  io_.sendState.reset();
+  updateFdRegistration();
+}
+
+template <typename IOPolicy>
+void TcpConn<IOPolicy>::failRecv(const char* msg)
+  requires std::same_as<IOPolicy, AsyncIO>
+{
+  UNIFLOW_LOG_ERROR(
+      "recv: {} fd={}: {}", msg, sock_, std::system_category().message(errno));
+  io_.recvState->promise.set_value(Err(ErrCode::ConnectionFailed, msg));
+  io_.recvState.reset();
+  updateFdRegistration();
+}
+
+template <typename IOPolicy>
+std::optional<bool>
+TcpConn<IOPolicy>::trySend(const uint8_t* buf, size_t len, size_t& sent)
+  requires std::same_as<IOPolicy, AsyncIO>
+{
+  while (sent < len) {
+    ssize_t n =
+        ::send(sock_, buf + sent, len - sent, MSG_NOSIGNAL | MSG_DONTWAIT);
+    if (n <= 0) {
+      if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        return false;
+      }
+      if (n < 0 && errno == EINTR) {
+        continue;
+      }
+      if (n == 0) {
+        errno = ECONNRESET;
+      }
+      return std::nullopt;
+    }
+    sent += static_cast<size_t>(n);
+  }
+  return true;
+}
+
+template <typename IOPolicy>
+void TcpConn<IOPolicy>::onSendReady()
+  requires std::same_as<IOPolicy, AsyncIO>
+{
+  auto result = trySend(
+      io_.sendState->header,
+      sizeof(io_.sendState->header),
+      io_.sendState->headerSent);
+  if (!result) {
+    failSend("send header failed");
+    return;
+  }
+  if (!*result) {
+    return;
+  }
+
+  size_t payloadSize = io_.sendState->payload.size();
+  result = trySend(
+      io_.sendState->payload.data(), payloadSize, io_.sendState->payloadSent);
+  if (!result) {
+    failSend("send payload failed");
+    return;
+  }
+  if (!*result) {
+    return;
+  }
+
+  UNIFLOW_LOG_DEBUG("send: complete, fd={} bytes={}", sock_, payloadSize);
+  io_.sendState->promise.set_value(payloadSize);
+  io_.sendState.reset();
+  updateFdRegistration();
+}
+
+template <typename IOPolicy>
+std::optional<bool>
+TcpConn<IOPolicy>::tryRecv(uint8_t* buf, size_t len, size_t& recvd)
+  requires std::same_as<IOPolicy, AsyncIO>
+{
+  while (recvd < len) {
+    ssize_t n = ::recv(sock_, buf + recvd, len - recvd, MSG_DONTWAIT);
+    if (n < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        return false;
+      }
+      return std::nullopt;
+    }
+    if (n == 0) {
+      errno = ECONNRESET;
+      return std::nullopt;
+    }
+    recvd += static_cast<size_t>(n);
+  }
+  return true;
+}
+
+template <typename IOPolicy>
+void TcpConn<IOPolicy>::onRecvReady()
+  requires std::same_as<IOPolicy, AsyncIO>
+{
+  auto result = tryRecv(
+      io_.recvState->header,
+      sizeof(io_.recvState->header),
+      io_.recvState->headerRecvd);
+  if (!result) {
+    failRecv("recv header failed");
+    return;
+  }
+  if (!*result) {
+    return;
+  }
+
+  if (!io_.recvState->headerDone) {
+    io_.recvState->headerDone = true;
+    uint32_t rawLen = 0;
+    std::memcpy(&rawLen, io_.recvState->header, sizeof(rawLen));
+    io_.recvState->payloadLen = ntohl(rawLen);
+    if (io_.recvState->payloadLen > kMaxMessageSize) {
+      UNIFLOW_LOG_ERROR(
+          "recv: message size {} exceeds maximum {}, fd={}",
+          io_.recvState->payloadLen,
+          kMaxMessageSize,
+          sock_);
+      io_.recvState->promise.set_value(
+          Err(ErrCode::InvalidArgument, "message size exceeds maximum"));
+      io_.recvState.reset();
+      poisonConnection("protocol error: message size exceeds maximum");
+      return;
+    }
+
+    if (io_.recvState->isSpanMode) {
+      if (io_.recvState->payloadLen > io_.recvState->callerBuf.size()) {
+        io_.recvState->promise.set_value(
+            Err(ErrCode::InvalidArgument,
+                "payload size " + std::to_string(io_.recvState->payloadLen) +
+                    " exceeds buffer size " +
+                    std::to_string(io_.recvState->callerBuf.size())));
+        io_.recvState.reset();
+        poisonConnection("protocol error: payload exceeds buffer");
+        return;
+      }
+    } else {
+      io_.recvState->callerVec->resize(io_.recvState->payloadLen);
+    }
+  }
+
+  if (io_.recvState->payloadLen > 0) {
+    result = tryRecv(
+        io_.recvState->target(),
+        io_.recvState->payloadLen,
+        io_.recvState->payloadRecvd);
+    if (!result) {
+      failRecv("recv payload failed");
+      return;
+    }
+    if (!*result) {
+      return;
+    }
+  }
+
+  UNIFLOW_LOG_DEBUG(
+      "recv: complete, fd={} bytes={}", sock_, io_.recvState->payloadLen);
+  io_.recvState->promise.set_value(
+      static_cast<size_t>(io_.recvState->payloadLen));
+  io_.recvState.reset();
+  updateFdRegistration();
+}
+
+// ---------------------------------------------------------------------------
+// TcpConn destructor
+// ---------------------------------------------------------------------------
+
+template <typename IOPolicy>
+TcpConn<IOPolicy>::~TcpConn() {
+  if constexpr (std::same_as<IOPolicy, AsyncIO>) {
+    // Always drain — queued dispatch lambdas from prior send/recv calls
+    // capture `this` and may still be pending even after close().
+    auto cleanupFn = [this]() noexcept { failAllOps("TcpConn destroyed"); };
+
+    if (io_.evb.inLoopThread()) {
+      cleanupFn();
+    } else if (io_.evb.isLoopRunning()) {
+      io_.evb.dispatchAndWait(std::move(cleanupFn));
+      // Drain: unregisterFd is deferred — wait for it to complete.
+      io_.evb.dispatchAndWait([]() noexcept {});
+    } else {
+      // Loop stopped — closing the fd auto-removes it from epoll.
+      cleanupFn();
+    }
+  }
+  close();
+}
+
+template <typename IOPolicy>
+void TcpConn<IOPolicy>::close() {
   if (sock_ >= 0) {
     UNIFLOW_LOG_DEBUG("TcpConn: close, fd={}", sock_);
     ::shutdown(sock_, SHUT_RDWR);
@@ -460,10 +939,8 @@ void TcpConn::close() {
   }
 }
 
-TcpConn::~TcpConn() {
-  close();
-}
-
+template class TcpConn<SyncIO>;
+template class TcpConn<AsyncIO>;
 // ---------------------------------------------------------------------------
 // SyncAccept
 // ---------------------------------------------------------------------------
@@ -505,7 +982,7 @@ std::future<std::unique_ptr<Conn>> SyncAccept::accept(
         ::close(clientSock);
         return make_ready_future(std::unique_ptr<Conn>(nullptr));
       }
-      auto conn = TcpConn::create(clientSock);
+      auto conn = TcpConn<SyncIO>::create(clientSock);
       if (conn) {
         return make_ready_future(std::unique_ptr<Conn>(std::move(conn)));
       }
@@ -637,7 +1114,7 @@ void AsyncAccept::acceptPendingConnections(std::atomic<int>& listenSock) {
       continue;
     }
 
-    auto conn = TcpConn::create(clientSock);
+    auto conn = TcpConn<SyncIO>::create(clientSock);
     if (!conn) {
       continue;
     }
@@ -919,7 +1396,7 @@ std::unique_ptr<Conn> finishConnect(int sock, const TcpSocketConfig& config) {
     ::close(sock);
     return nullptr;
   }
-  return TcpConn::create(sock);
+  return TcpConn<SyncIO>::create(sock);
 }
 
 std::unique_ptr<Conn> completeAsyncConnect(
@@ -948,7 +1425,7 @@ std::unique_ptr<Conn> completeAsyncConnect(
   // Handshake first with 500ms timeout, then configure production timeouts.
   // configureClientSocket sets 30s SO_SNDTIMEO/SO_RCVTIMEO which would
   // override the handshake timeout if called before TcpConn::create.
-  auto conn = TcpConn::create(fd);
+  auto conn = TcpConn<SyncIO>::create(fd);
   if (!conn) {
     return nullptr;
   }
