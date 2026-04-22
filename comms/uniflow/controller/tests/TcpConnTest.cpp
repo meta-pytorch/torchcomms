@@ -83,7 +83,7 @@ class TcpConnTest : public ::testing::TestWithParam<AddrFamily> {
         [this, &serverConn]() { serverConn = server_->accept().get(); });
 
     TcpClient client;
-    auto clientConn = client.connect(clientAddr());
+    auto clientConn = client.connect(clientAddr()).get();
 
     acceptThread.join();
     return {std::move(clientConn), std::move(serverConn)};
@@ -156,7 +156,7 @@ TEST_P(TcpConnTest, MultipleClientsConnect) {
 
   TcpClient client;
   for (int i = 0; i < kNumClients; ++i) {
-    clientConns[i] = client.connect(clientAddr());
+    clientConns[i] = client.connect(clientAddr()).get();
     ASSERT_NE(clientConns[i], nullptr) << "Client " << i << " failed";
   }
 

@@ -93,7 +93,7 @@ Result<std::vector<PeerConnection>> Rendezvous::establish(
     });
   } else {
     controller::TcpClient client(controller::TcpSocketConfig{});
-    auto conn = client.connect(serverAddr(config));
+    auto conn = client.connect(serverAddr(config)).get();
     if (!conn) {
       return Err(
           ErrCode::ConnectionFailed,

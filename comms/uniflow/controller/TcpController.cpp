@@ -831,49 +831,47 @@ Status BasicTcpServer<AcceptPolicy>::init() {
 template class BasicTcpServer<SyncAccept>;
 template class BasicTcpServer<AsyncAccept>;
 
-TcpClient::TcpClient(TcpSocketConfig config) : config_(std::move(config)) {
-  auto status = config_.validate();
-  if (!status) {
-    throw std::invalid_argument(
-        "Invalid socket config: " + status.error().toString());
-  }
-}
+// ---------------------------------------------------------------------------
+// Shared client helpers
+// ---------------------------------------------------------------------------
 
-Status TcpClient::configureClientSocket(int sock) {
+namespace {
+
+Status configureClientSocket(int sock, const TcpSocketConfig& config) {
   SockOptSetter opt(sock);
 
-  if (config_.socketBufSize) {
-    opt.set(SOL_SOCKET, SO_SNDBUF, *config_.socketBufSize, "SO_SNDBUF");
-    opt.set(SOL_SOCKET, SO_RCVBUF, *config_.socketBufSize, "SO_RCVBUF");
+  if (config.socketBufSize) {
+    opt.set(SOL_SOCKET, SO_SNDBUF, *config.socketBufSize, "SO_SNDBUF");
+    opt.set(SOL_SOCKET, SO_RCVBUF, *config.socketBufSize, "SO_RCVBUF");
   }
-  if (config_.tcpNoDelay) {
-    int val = *config_.tcpNoDelay ? 1 : 0;
+  if (config.tcpNoDelay) {
+    int val = *config.tcpNoDelay ? 1 : 0;
     opt.set(IPPROTO_TCP, TCP_NODELAY, val, "TCP_NODELAY");
   }
-  if (config_.enableKeepalive) {
-    int val = *config_.enableKeepalive ? 1 : 0;
+  if (config.enableKeepalive) {
+    int val = *config.enableKeepalive ? 1 : 0;
     opt.set(SOL_SOCKET, SO_KEEPALIVE, val, "SO_KEEPALIVE");
   }
-  if (config_.enableKeepalive && *config_.enableKeepalive) {
-    if (config_.keepaliveIdle) {
-      int val = static_cast<int>(config_.keepaliveIdle->count());
+  if (config.enableKeepalive && *config.enableKeepalive) {
+    if (config.keepaliveIdle) {
+      int val = static_cast<int>(config.keepaliveIdle->count());
       opt.set(IPPROTO_TCP, TCP_KEEPIDLE, val, "TCP_KEEPIDLE");
     }
-    if (config_.keepaliveInterval) {
-      int val = static_cast<int>(config_.keepaliveInterval->count());
+    if (config.keepaliveInterval) {
+      int val = static_cast<int>(config.keepaliveInterval->count());
       opt.set(IPPROTO_TCP, TCP_KEEPINTVL, val, "TCP_KEEPINTVL");
     }
-    if (config_.keepaliveCount) {
-      opt.set(IPPROTO_TCP, TCP_KEEPCNT, *config_.keepaliveCount, "TCP_KEEPCNT");
+    if (config.keepaliveCount) {
+      opt.set(IPPROTO_TCP, TCP_KEEPCNT, *config.keepaliveCount, "TCP_KEEPCNT");
     }
   }
-  if (config_.userTimeout) {
-    int val = static_cast<int>(config_.userTimeout->count());
+  if (config.userTimeout) {
+    int val = static_cast<int>(config.userTimeout->count());
     opt.set(IPPROTO_TCP, TCP_USER_TIMEOUT, val, "TCP_USER_TIMEOUT");
   }
-  if (config_.connTimeout) {
+  if (config.connTimeout) {
     struct timeval tv{};
-    tv.tv_sec = config_.connTimeout->count();
+    tv.tv_sec = config.connTimeout->count();
     opt.set(SOL_SOCKET, SO_SNDTIMEO, tv, "SO_SNDTIMEO");
     opt.set(SOL_SOCKET, SO_RCVTIMEO, tv, "SO_RCVTIMEO");
   }
@@ -881,63 +879,136 @@ Status TcpClient::configureClientSocket(int sock) {
   return opt.status();
 }
 
-std::unique_ptr<Conn> TcpClient::connect(std::string id) {
+struct ResolvedAddr {
+  int domain;
+  sockaddr_storage addr;
+  socklen_t addrLen;
+};
+
+Result<ResolvedAddr> resolveConnectAddr(const std::string& id) {
   auto result = parseHostPort(id);
   if (!result) {
-    UNIFLOW_LOG_ERROR("TcpClient: invalid address: {}", id);
-    return nullptr;
+    return Err(ErrCode::InvalidArgument, "Invalid address: " + id);
   }
   auto [host, port] = std::move(result).value();
 
   auto domainResult = detectAddressFamily(host);
   if (!domainResult) {
-    UNIFLOW_LOG_ERROR("TcpClient: invalid host: {}", host);
-    return nullptr;
+    return Err(ErrCode::InvalidArgument, "Invalid host: " + host);
   }
-  int domain = domainResult.value();
 
-  sockaddr_storage serverAddr{};
-  auto addrLenResult = buildSockAddr(host, port, domain, serverAddr);
+  ResolvedAddr resolved{};
+  resolved.domain = domainResult.value();
+
+  auto addrLenResult =
+      buildSockAddr(host, port, resolved.domain, resolved.addr);
   if (!addrLenResult) {
+    return std::move(addrLenResult).error();
+  }
+  resolved.addrLen = addrLenResult.value();
+  return resolved;
+}
+
+std::unique_ptr<Conn> finishConnect(int sock, const TcpSocketConfig& config) {
+  auto status = configureClientSocket(sock, config);
+  if (!status) {
+    UNIFLOW_LOG_ERROR(
+        "TcpClient: socket config failed fd={}: {}",
+        sock,
+        status.error().toString());
+    ::close(sock);
     return nullptr;
   }
-  socklen_t addrLen = addrLenResult.value();
+  return TcpConn::create(sock);
+}
+
+std::unique_ptr<Conn> completeAsyncConnect(
+    int fd,
+    const TcpSocketConfig& config) {
+  int flags = fcntl(fd, F_GETFL);
+  if (flags < 0 || fcntl(fd, F_SETFL, flags & ~O_NONBLOCK) < 0) {
+    UNIFLOW_LOG_ERROR(
+        "TcpClient: fcntl O_NONBLOCK clear failed fd={}: {}",
+        fd,
+        std::system_category().message(errno));
+    ::close(fd);
+    return nullptr;
+  }
+
+  auto timeoutStatus = setHandshakeTimeout(fd);
+  if (!timeoutStatus) {
+    UNIFLOW_LOG_ERROR(
+        "TcpClient: handshake timeout failed fd={}: {}",
+        fd,
+        timeoutStatus.error().toString());
+    ::close(fd);
+    return nullptr;
+  }
+
+  // Handshake first with 500ms timeout, then configure production timeouts.
+  // configureClientSocket sets 30s SO_SNDTIMEO/SO_RCVTIMEO which would
+  // override the handshake timeout if called before TcpConn::create.
+  auto conn = TcpConn::create(fd);
+  if (!conn) {
+    return nullptr;
+  }
+
+  auto status = configureClientSocket(conn->getFd(), config);
+  if (!status) {
+    UNIFLOW_LOG_ERROR(
+        "TcpClient: socket config failed fd={}: {}",
+        conn->getFd(),
+        status.error().toString());
+    return nullptr;
+  }
+  return conn;
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// SyncConnect
+// ---------------------------------------------------------------------------
+
+std::future<std::unique_ptr<Conn>> SyncConnect::connect(
+    const std::string& id,
+    const TcpSocketConfig& config) {
+  auto resolved = resolveConnectAddr(id);
+  if (!resolved) {
+    UNIFLOW_LOG_ERROR("TcpClient: {}", resolved.error().toString());
+    return make_ready_future(std::unique_ptr<Conn>(nullptr));
+  }
 
   UNIFLOW_LOG_INFO("TcpClient: connecting to {}", id);
 
-  for (size_t attempt = 0; attempt <= config_.connectRetries; ++attempt) {
+  for (size_t attempt = 0; attempt <= config.connectRetries; ++attempt) {
     if (attempt > 0) {
       UNIFLOW_LOG_WARN(
           "TcpClient: retry {}/{} to {} (backoff {}ms)",
           attempt,
-          config_.connectRetries,
+          config.connectRetries,
           id,
-          (attempt * config_.retryTimeout).count());
+          (attempt * config.retryTimeout).count());
       // NOLINTNEXTLINE(facebook-hte-BadCall-sleep_for)
-      std::this_thread::sleep_for(attempt * config_.retryTimeout);
+      std::this_thread::sleep_for(attempt * config.retryTimeout);
     }
 
     // Fresh socket per attempt — connect on a failed socket is UB on Linux
-    int sock = ::socket(domain, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    int sock = ::socket(resolved->domain, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (sock < 0) {
       UNIFLOW_LOG_ERROR(
           "TcpClient: socket creation failed: {}",
           std::system_category().message(errno));
-      return nullptr;
+      return make_ready_future(std::unique_ptr<Conn>(nullptr));
     }
 
-    if (::connect(sock, reinterpret_cast<sockaddr*>(&serverAddr), addrLen) ==
-        0) {
-      auto status = configureClientSocket(sock);
-      if (!status) {
-        UNIFLOW_LOG_ERROR(
-            "TcpClient: socket config failed fd={}: {}",
+    if (::connect(
             sock,
-            status.error().toString());
-        ::close(sock);
-        return nullptr;
-      }
-      return TcpConn::create(sock);
+            reinterpret_cast<sockaddr*>(&resolved->addr),
+            resolved->addrLen) == 0) {
+      // @lint-ignore PULSE_RESOURCE_LEAK fd ownership transfers to
+      // finishConnect which closes on failure or passes to TcpConn
+      return make_ready_future(finishConnect(sock, config));
     }
 
     int savedErrno = errno;
@@ -949,15 +1020,90 @@ std::unique_ptr<Conn> TcpClient::connect(std::string id) {
           id,
           savedErrno,
           std::system_category().message(savedErrno));
-      return nullptr;
+      return make_ready_future(std::unique_ptr<Conn>(nullptr));
     }
   }
 
   UNIFLOW_LOG_ERROR(
       "TcpClient: connect to {} failed after {} retries",
       id,
-      config_.connectRetries);
-  return nullptr;
+      config.connectRetries);
+  return make_ready_future(std::unique_ptr<Conn>(nullptr));
 }
+
+// ---------------------------------------------------------------------------
+// AsyncConnect
+// ---------------------------------------------------------------------------
+
+std::future<std::unique_ptr<Conn>> AsyncConnect::connect(
+    const std::string& id,
+    const TcpSocketConfig& config) {
+  auto resolved = resolveConnectAddr(id);
+  if (!resolved) {
+    UNIFLOW_LOG_ERROR("TcpClient: {}", resolved.error().toString());
+    return make_ready_future(std::unique_ptr<Conn>(nullptr));
+  }
+
+  int sock =
+      ::socket(resolved->domain, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+  if (sock < 0) {
+    UNIFLOW_LOG_ERROR(
+        "TcpClient: socket creation failed: {}",
+        std::system_category().message(errno));
+    return make_ready_future(std::unique_ptr<Conn>(nullptr));
+  }
+
+  int rc = ::connect(
+      sock, reinterpret_cast<sockaddr*>(&resolved->addr), resolved->addrLen);
+  if (rc == 0) {
+    return make_ready_future(completeAsyncConnect(sock, config));
+  }
+  if (errno != EINPROGRESS) {
+    UNIFLOW_LOG_ERROR(
+        "TcpClient: connect failed: {}", std::system_category().message(errno));
+    ::close(sock);
+    return make_ready_future(std::unique_ptr<Conn>(nullptr));
+  }
+
+  auto promise = std::make_shared<std::promise<std::unique_ptr<Conn>>>();
+  auto future = promise->get_future();
+
+  evb_.registerFd(
+      sock,
+      EPOLLOUT | EPOLLONESHOT,
+      [&evb = evb_, fd = sock, promise = std::move(promise), config = config](
+          uint32_t) mutable {
+        int err = 0;
+        socklen_t errLen = sizeof(err);
+        if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &errLen) < 0) {
+          UNIFLOW_LOG_ERROR(
+              "TcpClient: getsockopt SO_ERROR failed fd={}: {} ({})",
+              fd,
+              errno,
+              std::system_category().message(errno));
+          ::close(fd);
+          promise->set_value(nullptr);
+        } else if (err != 0) {
+          UNIFLOW_LOG_ERROR(
+              "TcpClient: async connect failed fd={}: {} ({})",
+              fd,
+              err,
+              std::system_category().message(err));
+          ::close(fd);
+          promise->set_value(nullptr);
+        } else {
+          auto conn = completeAsyncConnect(fd, config);
+          promise->set_value(std::move(conn));
+        }
+        // Clean up the ioEntries_ entry to release captured state.
+        // The fd may already be closed — unregisterFd tolerates this.
+        evb.unregisterFd(fd);
+      });
+
+  return future;
+}
+
+template class BasicTcpClient<SyncConnect>;
+template class BasicTcpClient<AsyncConnect>;
 
 } // namespace uniflow::controller
