@@ -11,6 +11,15 @@
 
 namespace torch::comms {
 
+// Snapshot of communicator metadata captured at construction time.
+// Stored by work handles to avoid calling checked comm accessors that
+// may throw after the communicator transitions to UNINITIALIZED or FINALIZED.
+struct TracingGuardInfo {
+  std::string commName;
+  int commSize{0};
+  int rank{-1};
+};
+
 class TracingGuard {
  public:
   TracingGuard(
@@ -26,6 +35,18 @@ class TracingGuard {
       int comm_size,
       std::string_view collective_name,
       int collective_rank,
+      const at::Tensor& input_tensor,
+      const at::Tensor& output_tensor);
+
+  TracingGuard(
+      const TracingGuardInfo& info,
+      std::string_view collective_name,
+      const std::vector<at::Tensor>& input_tensor_list = {},
+      const std::vector<at::Tensor>& output_tensor_list = {});
+
+  TracingGuard(
+      const TracingGuardInfo& info,
+      std::string_view collective_name,
       const at::Tensor& input_tensor,
       const at::Tensor& output_tensor);
 

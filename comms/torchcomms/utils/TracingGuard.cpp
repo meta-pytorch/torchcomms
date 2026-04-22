@@ -149,4 +149,40 @@ TracingGuard::TracingGuard(
       output_tensor_list);
 }
 
+TracingGuard::TracingGuard(
+    const TracingGuardInfo& info,
+    std::string_view collective_name,
+    const std::vector<at::Tensor>& input_tensor_list,
+    const std::vector<at::Tensor>& output_tensor_list) {
+  record_function_guard_.emplace(at::RecordScope::FUNCTION);
+  if (!record_function_guard_->isActive()) {
+    return;
+  }
+  initializeTracingCommon(
+      info.commName,
+      info.commSize,
+      collective_name,
+      info.rank,
+      input_tensor_list,
+      output_tensor_list);
+}
+
+TracingGuard::TracingGuard(
+    const TracingGuardInfo& info,
+    std::string_view collective_name,
+    const at::Tensor& input_tensor,
+    const at::Tensor& output_tensor) {
+  record_function_guard_.emplace(at::RecordScope::FUNCTION);
+  if (!record_function_guard_->isActive()) {
+    return;
+  }
+  initializeTracingCommon(
+      info.commName,
+      info.commSize,
+      collective_name,
+      info.rank,
+      {input_tensor},
+      {output_tensor});
+}
+
 } // namespace torch::comms
