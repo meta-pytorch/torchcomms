@@ -25,7 +25,7 @@ __global__ void test_multi_peer_nvl_send_kernel(
     size_t nbytes) {
   auto group = make_warp_group();
   auto& nvl = handle.get_nvl(peerRank);
-  nvl.send(group, src_d, nbytes);
+  nvl.send_group(group, src_d, nbytes);
 }
 
 __global__ void test_multi_peer_nvl_recv_kernel(
@@ -35,7 +35,7 @@ __global__ void test_multi_peer_nvl_recv_kernel(
     size_t nbytes) {
   auto group = make_warp_group();
   auto& nvl = handle.get_nvl(peerRank);
-  nvl.recv(group, dst_d, nbytes);
+  nvl.recv_group(group, dst_d, nbytes);
 }
 
 __global__ void test_multi_peer_self_put_kernel(
@@ -47,10 +47,10 @@ __global__ void test_multi_peer_self_put_kernel(
   if (handle.get_type(handle.myRank) != TransportType::SELF) {
     return;
   }
-  // Use P2pSelfTransportDevice::put() through the device handle
+  // Use P2pSelfTransportDevice::put_group() through the device handle
   auto group = make_warp_group();
   P2pSelfTransportDevice selfTransport;
-  selfTransport.put(
+  selfTransport.put_group(
       group,
       reinterpret_cast<char*>(dst_d),
       reinterpret_cast<const char*>(src_d),

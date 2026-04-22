@@ -54,7 +54,7 @@ struct MultiPeerNvlTransportConfig {
 
   // Maximum block count for the tile sendrecv protocol.
   // Allocates persistent step state and dedicated tile signals internally.
-  // send_tile/recv_tile use these without user-managed state.
+  // send/recv use these without user-managed state.
   int tile_max_groups{128};
 
   // If true, use dual chunk state buffers (one on each side) for local polling
@@ -90,9 +90,10 @@ struct MultiPeerNvlTransportConfig {
   bool useDualStateBuffer{false};
 
   // Size of LL128 packet buffer per peer (bytes).
-  // When > 0, allocates LL128 buffers and enables ll128_send/recv/forward
-  // on P2pNvlTransportDevice. When 0 (default), LL128 is disabled.
-  // Use ll128_buffer_size() from Ll128Packet.cuh to compute from message size.
+  // When > 0, allocates LL128 buffers and enables
+  // ll128_send_group/recv_group/forward_groups on P2pNvlTransportDevice. When
+  // 0 (default), LL128 is disabled. Use ll128_buffer_size() from
+  // Ll128Packet.cuh to compute from message size.
   std::size_t ll128BufferSize{0};
 };
 

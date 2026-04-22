@@ -39,9 +39,8 @@ namespace comms::pipes {
  *     for (int rank = 0; rank < handle.nRanks; ++rank) {
  *       switch (handle.get_type(rank)) {
  *         case TransportType::SELF: ... break;
- *         case TransportType::P2P_NVL: handle.get_nvl(rank).send(...); break;
- *         case TransportType::P2P_IBGDA: handle.get_ibgda(rank).put(...);
- * break;
+ *         case TransportType::P2P_NVL: handle.get_nvl(rank).send_group(...);
+ * break; case TransportType::P2P_IBGDA: handle.get_ibgda(rank).put(...); break;
  *       }
  *     }
  *   }
