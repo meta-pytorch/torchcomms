@@ -86,7 +86,12 @@ set(UNIFLOW_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/Uniflow.h
 )
 
-set(UNIFLOW_LIB_TYPE STATIC)
+# Included via add_subdirectory: build STATIC library for parent to consume
+if(UNIFLOW_STANDALONE)
+  set(UNIFLOW_LIB_TYPE SHARED)
+else()
+  set(UNIFLOW_LIB_TYPE STATIC)
+endif()
 
 add_library(uniflow ${UNIFLOW_LIB_TYPE}
     ${UNIFLOW_SOURCES}
