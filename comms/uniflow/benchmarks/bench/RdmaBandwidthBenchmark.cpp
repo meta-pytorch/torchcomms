@@ -3,6 +3,7 @@
 #include "comms/uniflow/benchmarks/bench/RdmaBandwidthBenchmark.h"
 
 #include <algorithm>
+#include <cassert>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -15,12 +16,12 @@
 
 #include "comms/uniflow/Segment.h"
 #include "comms/uniflow/benchmarks/Rendezvous.h"
-#include "comms/uniflow/benchmarks/SegmentHelper.h"
 #include "comms/uniflow/benchmarks/Stats.h"
 #include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
 #include "comms/uniflow/drivers/ibverbs/IbvApi.h"
 #include "comms/uniflow/executor/ScopedEventBaseThread.h"
 #include "comms/uniflow/logging/Logger.h"
+#include "comms/uniflow/transport/Topology.h"
 #include "comms/uniflow/transport/rdma/RdmaTransport.h"
 
 namespace uniflow::benchmark {
@@ -47,8 +48,10 @@ std::vector<std::string> discoverRdmaDevices(
 }
 
 struct BenchmarkBuffers {
-  void* src{nullptr};
-  void* dst{nullptr};
+  // Per-NIC separate allocations to avoid PCIe DMA contention when
+  // multiple NICs read from the same GPU memory region simultaneously.
+  std::vector<void*> srcs;
+  std::vector<void*> dsts;
   bool useGpu{false}; // Controls deallocation path (cudaFree vs std::free).
   MemoryType memType{MemoryType::DRAM};
   int gpuDevice{0};
@@ -59,8 +62,8 @@ struct BenchmarkBuffers {
   }
 
   BenchmarkBuffers(BenchmarkBuffers&& o) noexcept
-      : src(std::exchange(o.src, nullptr)),
-        dst(std::exchange(o.dst, nullptr)),
+      : srcs(std::move(o.srcs)),
+        dsts(std::move(o.dsts)),
         useGpu(o.useGpu),
         memType(o.memType),
         gpuDevice(o.gpuDevice) {}
@@ -71,27 +74,59 @@ struct BenchmarkBuffers {
 
  private:
   void release() noexcept {
-    if (useGpu) {
-      if (src) {
-        cudaFree(src);
+    auto freeOne = [this](void* p) {
+      if (p) {
+        if (useGpu) {
+          cudaFree(p);
+        } else {
+          std::free(p);
+        }
       }
-      if (dst) {
-        cudaFree(dst);
-      }
-    } else {
-      std::free(src);
-      std::free(dst);
+    };
+    for (auto* p : srcs) {
+      freeOne(p);
     }
-    src = dst = nullptr;
+    for (auto* p : dsts) {
+      freeOne(p);
+    }
+    srcs.clear();
+    dsts.clear();
   }
 };
 
 std::optional<BenchmarkBuffers>
-allocateBuffers(size_t maxSize, int cudaDevice, int rank) {
+allocateBuffers(size_t maxSize, int cudaDevice, int rank, int numBuffers) {
   BenchmarkBuffers bufs;
   bufs.useGpu = cudaDevice >= 0;
   bufs.memType = bufs.useGpu ? MemoryType::VRAM : MemoryType::DRAM;
   bufs.gpuDevice = bufs.useGpu ? cudaDevice : 0;
+
+  auto allocOne = [&](void** out, uint8_t fill) -> bool {
+    if (bufs.useGpu) {
+      auto ret = cudaMalloc(out, maxSize);
+      if (ret != cudaSuccess || *out == nullptr) {
+        UNIFLOW_LOG_ERROR("RdmaBandwidthBenchmark: cudaMalloc failed");
+        return false;
+      }
+      ret = cudaMemset(*out, fill, maxSize);
+      if (ret != cudaSuccess) {
+        UNIFLOW_LOG_ERROR(
+            "RdmaBandwidthBenchmark: cudaMemset failed: {}",
+            cudaGetErrorString(ret));
+        cudaFree(*out);
+        *out = nullptr;
+        return false;
+      }
+    } else {
+      *out = std::malloc(maxSize);
+      if (*out == nullptr) {
+        UNIFLOW_LOG_ERROR("RdmaBandwidthBenchmark: malloc failed");
+        return false;
+      }
+      std::memset(*out, fill, maxSize);
+    }
+    return true;
+  };
 
   if (bufs.useGpu) {
     auto cudaRet = cudaSetDevice(bufs.gpuDevice);
@@ -102,54 +137,36 @@ allocateBuffers(size_t maxSize, int cudaDevice, int rank) {
           cudaGetErrorString(cudaRet));
       return std::nullopt;
     }
-    cudaRet = cudaMalloc(&bufs.src, maxSize);
-    if (cudaRet != cudaSuccess || bufs.src == nullptr) {
-      UNIFLOW_LOG_ERROR("RdmaBandwidthBenchmark: cudaMalloc(src) failed");
+  }
+
+  for (int i = 0; i < numBuffers; ++i) {
+    void* src = nullptr;
+    if (!allocOne(&src, 0xAB)) {
       return std::nullopt;
     }
-    cudaRet = cudaMalloc(&bufs.dst, maxSize);
-    if (cudaRet != cudaSuccess || bufs.dst == nullptr) {
-      UNIFLOW_LOG_ERROR("RdmaBandwidthBenchmark: cudaMalloc(dst) failed");
+    bufs.srcs.push_back(src);
+    void* dst = nullptr;
+    if (!allocOne(&dst, 0x00)) {
       return std::nullopt;
     }
-    cudaRet = cudaMemset(bufs.src, 0xAB, maxSize);
-    if (cudaRet != cudaSuccess) {
-      UNIFLOW_LOG_ERROR(
-          "RdmaBandwidthBenchmark: cudaMemset(src) failed: {}",
-          cudaGetErrorString(cudaRet));
-      return std::nullopt;
-    }
-    cudaRet = cudaMemset(bufs.dst, 0, maxSize);
-    if (cudaRet != cudaSuccess) {
-      UNIFLOW_LOG_ERROR(
-          "RdmaBandwidthBenchmark: cudaMemset(dst) failed: {}",
-          cudaGetErrorString(cudaRet));
-      return std::nullopt;
-    }
-    cudaRet = cudaDeviceSynchronize();
+    bufs.dsts.push_back(dst);
+  }
+
+  if (bufs.useGpu) {
+    auto cudaRet = cudaDeviceSynchronize();
     if (cudaRet != cudaSuccess) {
       UNIFLOW_LOG_ERROR(
           "RdmaBandwidthBenchmark: cudaDeviceSynchronize failed: {}",
           cudaGetErrorString(cudaRet));
       return std::nullopt;
     }
-    UNIFLOW_LOG_INFO(
-        "RdmaBandwidthBenchmark: rank {} using GPU {} memory",
-        rank,
-        bufs.gpuDevice);
-  } else {
-    bufs.src = std::malloc(maxSize);
-    bufs.dst = std::malloc(maxSize);
-    if (bufs.src == nullptr || bufs.dst == nullptr) {
-      UNIFLOW_LOG_ERROR("RdmaBandwidthBenchmark: malloc failed");
-      return std::nullopt;
-    }
-    std::memset(bufs.src, 0xAB, maxSize);
-    std::memset(bufs.dst, 0, maxSize);
-    UNIFLOW_LOG_INFO(
-        "RdmaBandwidthBenchmark: rank {} using CPU (DRAM) memory", rank);
   }
 
+  UNIFLOW_LOG_INFO(
+      "RdmaBandwidthBenchmark: rank {} allocated {} buffer pairs ({} memory)",
+      rank,
+      numBuffers,
+      bufs.useGpu ? "GPU" : "CPU");
   return bufs;
 }
 
@@ -161,16 +178,153 @@ struct TransportSession {
   // associated QPs/MRs/CQs).
   std::unique_ptr<RdmaTransportFactory> factory;
   std::unique_ptr<Transport> transport;
-  RegisteredSegment localReg;
-  RemoteRegisteredSegment remoteReg;
-  // The local destination MR must stay alive so the remote side's rkey
-  // remains valid for RDMA writes.  Without this, ibv_dereg_mr fires
-  // when setupTransport returns and the remote gets R_Key violation.
-  std::unique_ptr<RegistrationHandle> localDstReg;
+  std::vector<RegisteredSegment> localRegs;
+  std::vector<RemoteRegisteredSegment> remoteRegs;
+  std::vector<std::unique_ptr<RegistrationHandle>> localDstRegs;
 };
 
+// Wire format for registration payload exchange between ranks.
+// Layout: [uint64_t dstAddr | registration payload bytes]
+struct RegistrationExchange {
+  static std::vector<uint8_t> serialize(
+      uint64_t dstAddr,
+      const std::vector<uint8_t>& regPayload) {
+    std::vector<uint8_t> buf(sizeof(dstAddr) + regPayload.size());
+    std::memcpy(buf.data(), &dstAddr, sizeof(dstAddr));
+    std::memcpy(
+        buf.data() + sizeof(dstAddr), regPayload.data(), regPayload.size());
+    return buf;
+  }
+
+  static std::optional<std::pair<uint64_t, std::vector<uint8_t>>> deserialize(
+      const std::vector<uint8_t>& data) {
+    if (data.size() < sizeof(uint64_t)) {
+      return std::nullopt;
+    }
+    uint64_t addr = 0;
+    std::memcpy(&addr, data.data(), sizeof(addr));
+    return std::make_pair(
+        addr, std::vector<uint8_t>(data.begin() + sizeof(addr), data.end()));
+  }
+};
+
+// Register per-NIC buffer pairs and exchange registration payloads with the
+// remote peer.
+bool registerBuffers(
+    RdmaTransportFactory& factory,
+    const BenchmarkBuffers& bufs,
+    size_t maxSize,
+    controller::Conn& ctrl,
+    const BootstrapConfig& bootstrap,
+    TransportSession& session) {
+  int numBufs = static_cast<int>(bufs.srcs.size());
+  if (numBufs == 0) {
+    return true;
+  }
+
+  // Validate both ranks selected the same number of NICs. The loop below
+  // calls exchangeMetadata once per NIC — a mismatch would deadlock.
+  int32_t localCount = numBufs;
+  std::vector<uint8_t> countPayload(sizeof(localCount));
+  std::memcpy(countPayload.data(), &localCount, sizeof(localCount));
+  auto remoteCountResult =
+      exchangeMetadata(ctrl, countPayload, bootstrap.isRank0());
+  if (!remoteCountResult ||
+      remoteCountResult.value().size() < sizeof(int32_t)) {
+    UNIFLOW_LOG_ERROR("registerBuffers: NIC count exchange failed");
+    return false;
+  }
+  int32_t remoteCount = 0;
+  std::memcpy(
+      &remoteCount, remoteCountResult.value().data(), sizeof(remoteCount));
+  if (localCount != remoteCount) {
+    UNIFLOW_LOG_ERROR(
+        "registerBuffers: NIC count mismatch (local={}, remote={})",
+        localCount,
+        remoteCount);
+    return false;
+  }
+
+  for (int b = 0; b < numBufs; ++b) {
+    Segment srcSeg(bufs.srcs[b], maxSize, bufs.memType, bufs.gpuDevice);
+    Segment dstSeg(bufs.dsts[b], maxSize, bufs.memType, bufs.gpuDevice);
+
+    auto srcRegResult = factory.registerSegment(srcSeg);
+    if (!srcRegResult) {
+      UNIFLOW_LOG_ERROR(
+          "registerSegment(src[{}]) failed: {}",
+          b,
+          srcRegResult.error().toString());
+      return false;
+    }
+
+    auto dstRegResult = factory.registerSegment(dstSeg);
+    if (!dstRegResult) {
+      UNIFLOW_LOG_ERROR(
+          "registerSegment(dst[{}]) failed: {}",
+          b,
+          dstRegResult.error().toString());
+      return false;
+    }
+
+    auto localPayload = RegistrationExchange::serialize(
+        reinterpret_cast<uint64_t>(bufs.dsts[b]),
+        dstRegResult.value()->serialize());
+
+    auto remotePayloadResult =
+        exchangeMetadata(ctrl, localPayload, bootstrap.isRank0());
+    if (!remotePayloadResult) {
+      UNIFLOW_LOG_ERROR(
+          "registration exchange[{}] failed: {}",
+          b,
+          remotePayloadResult.error().toString());
+      return false;
+    }
+
+    auto parsed =
+        RegistrationExchange::deserialize(remotePayloadResult.value());
+    if (!parsed) {
+      UNIFLOW_LOG_ERROR(
+          "remote payload[{}] too small: {}",
+          b,
+          remotePayloadResult.value().size());
+      return false;
+    }
+    auto& [remoteDstAddr, remoteRegPayload] = *parsed;
+
+    auto remoteHandleResult =
+        factory.importSegment(maxSize, std::move(remoteRegPayload));
+    if (!remoteHandleResult) {
+      UNIFLOW_LOG_ERROR(
+          "importSegment[{}] failed: {}",
+          b,
+          remoteHandleResult.error().toString());
+      return false;
+    }
+
+    session.localRegs.push_back(
+        RegisteredSegment::fromHandle(srcSeg, std::move(srcRegResult.value())));
+    session.remoteRegs.push_back(
+        RemoteRegisteredSegment::fromHandle(
+            // NOLINTNEXTLINE(performance-no-int-to-ptr)
+            reinterpret_cast<void*>(remoteDstAddr),
+            maxSize,
+            std::move(remoteHandleResult.value())));
+    session.localDstRegs.push_back(std::move(dstRegResult.value()));
+
+    UNIFLOW_LOG_INFO(
+        "registerBuffers: buf[{}] src={:#x} dst={:#x} remoteDst={:#x}",
+        b,
+        reinterpret_cast<uintptr_t>(bufs.srcs[b]),
+        reinterpret_cast<uintptr_t>(bufs.dsts[b]),
+        remoteDstAddr);
+  }
+
+  return true;
+}
+
 std::optional<TransportSession> setupTransport(
-    const std::string& device,
+    const std::vector<std::string>& devices,
     const BenchmarkBuffers& bufs,
     size_t maxSize,
     ScopedEventBaseThread& evbThread,
@@ -180,14 +334,11 @@ std::optional<TransportSession> setupTransport(
     size_t chunkSize) {
   RdmaTransportConfig rdmaConfig{};
   rdmaConfig.chunkSize = chunkSize;
+  rdmaConfig.numQps = static_cast<uint32_t>(devices.size());
 
   auto cudaDriverApi = std::make_shared<CudaDriverApi>();
   auto factory = std::make_unique<RdmaTransportFactory>(
-      std::vector<std::string>{device},
-      evbThread.getEventBase(),
-      rdmaConfig,
-      ibvApi,
-      cudaDriverApi);
+      devices, evbThread.getEventBase(), rdmaConfig, ibvApi, cudaDriverApi);
 
   auto localTopology = factory->getTopology();
   auto remoteTopologyResult =
@@ -229,102 +380,24 @@ std::optional<TransportSession> setupTransport(
     return std::nullopt;
   }
 
-  Segment srcSeg(bufs.src, maxSize, bufs.memType, bufs.gpuDevice);
-  Segment dstSeg(bufs.dst, maxSize, bufs.memType, bufs.gpuDevice);
-
-  auto srcRegResult = factory->registerSegment(srcSeg);
-  if (!srcRegResult) {
-    UNIFLOW_LOG_ERROR(
-        "RdmaBandwidthBenchmark: registerSegment(src) failed: {}",
-        srcRegResult.error().toString());
+  TransportSession session;
+  if (!registerBuffers(
+          *factory, bufs, maxSize, *peer.ctrl, bootstrap, session)) {
     transport->shutdown();
     return std::nullopt;
   }
 
-  auto dstRegResult = factory->registerSegment(dstSeg);
-  if (!dstRegResult) {
-    UNIFLOW_LOG_ERROR(
-        "RdmaBandwidthBenchmark: registerSegment(dst) failed: {}",
-        dstRegResult.error().toString());
-    transport->shutdown();
-    return std::nullopt;
-  }
-
-  UNIFLOW_LOG_INFO(
-      "setupTransport: src={:#x} dst={:#x} maxSize={} memType={}",
-      reinterpret_cast<uintptr_t>(bufs.src),
-      reinterpret_cast<uintptr_t>(bufs.dst),
-      maxSize,
-      static_cast<int>(bufs.memType));
-  auto dstPayload = dstRegResult.value()->serialize();
-  uint64_t dstAddr = reinterpret_cast<uint64_t>(bufs.dst);
-  std::vector<uint8_t> dstPayloadWithAddr(sizeof(dstAddr) + dstPayload.size());
-  std::memcpy(dstPayloadWithAddr.data(), &dstAddr, sizeof(dstAddr));
-  std::memcpy(
-      dstPayloadWithAddr.data() + sizeof(dstAddr),
-      dstPayload.data(),
-      dstPayload.size());
-
-  auto remotePayloadResult =
-      exchangeMetadata(*peer.ctrl, dstPayloadWithAddr, bootstrap.isRank0());
-  if (!remotePayloadResult) {
-    UNIFLOW_LOG_ERROR(
-        "RdmaBandwidthBenchmark: registration exchange failed: {}",
-        remotePayloadResult.error().toString());
-    transport->shutdown();
-    return std::nullopt;
-  }
-
-  auto& remotePayload = remotePayloadResult.value();
-  if (remotePayload.size() < sizeof(uint64_t)) {
-    UNIFLOW_LOG_ERROR(
-        "RdmaBandwidthBenchmark: remote payload too small: {}",
-        remotePayload.size());
-    transport->shutdown();
-    return std::nullopt;
-  }
-  uint64_t remoteDstAddr = 0;
-  std::memcpy(&remoteDstAddr, remotePayload.data(), sizeof(remoteDstAddr));
-  UNIFLOW_LOG_INFO(
-      "setupTransport: remoteDstAddr={:#x} payloadSize={}",
-      remoteDstAddr,
-      remotePayload.size());
-  std::vector<uint8_t> remoteRegPayload(
-      remotePayload.begin() + sizeof(remoteDstAddr), remotePayload.end());
-
-  auto remoteHandleResult =
-      factory->importSegment(maxSize, std::move(remoteRegPayload));
-  if (!remoteHandleResult) {
-    UNIFLOW_LOG_ERROR(
-        "RdmaBandwidthBenchmark: importSegment failed: {}",
-        remoteHandleResult.error().toString());
-    transport->shutdown();
-    return std::nullopt;
-  }
-
-  auto localReg =
-      SegmentTest::makeRegistered(srcSeg, std::move(srcRegResult.value()));
-  auto remoteReg = SegmentTest::makeRemote(
-      // NOLINTNEXTLINE(performance-no-int-to-ptr)
-      reinterpret_cast<void*>(remoteDstAddr),
-      maxSize,
-      std::move(remoteHandleResult.value()));
-
-  return TransportSession{
-      std::move(factory),
-      std::move(transport),
-      std::move(localReg),
-      std::move(remoteReg),
-      std::move(dstRegResult.value()),
-  };
+  session.factory = std::move(factory);
+  session.transport = std::move(transport);
+  return session;
 }
 
 /// Batched put/get: pass batchSize requests per put() call, measure the
 /// latency of the whole batch, divide by batchSize for per-op latency.
 std::vector<BenchmarkResult> runBenchmarkLoop(
     Transport& transport,
-    RegisteredSegment& localReg,
-    RemoteRegisteredSegment& remoteReg,
+    std::vector<RegisteredSegment>& localRegs,
+    std::vector<RemoteRegisteredSegment>& remoteRegs,
     const BenchmarkConfig& config,
     std::vector<PeerConnection>& peers,
     const BootstrapConfig& bootstrap,
@@ -332,6 +405,7 @@ std::vector<BenchmarkResult> runBenchmarkLoop(
   auto sizes = generateSizes(config.minSize, config.maxSize);
   std::vector<BenchmarkResult> results;
   const int batchSize = std::max(1, config.batchSize);
+  const int numBufs = static_cast<int>(localRegs.size());
 
   const bool isActiveRank = config.bidirectional || bootstrap.isRank0();
 
@@ -349,12 +423,21 @@ std::vector<BenchmarkResult> runBenchmarkLoop(
         continue;
       }
 
-      std::vector<TransferRequest> batch(
-          batchSize,
-          TransferRequest{
-              .local = localReg.span(size_t{0}, size),
-              .remote = remoteReg.span(size_t{0}, size),
-          });
+      // Map each request to its NIC's buffer. Must match spray()'s
+      // contiguous chunk-to-QP assignment in the transport layer.
+      auto nicForRequest = [&](int requestIdx) {
+        return requestIdx * numBufs / batchSize;
+      };
+      std::vector<TransferRequest> batch;
+      batch.reserve(batchSize);
+      for (int i = 0; i < batchSize; ++i) {
+        int bufIdx = nicForRequest(i);
+        batch.push_back(
+            TransferRequest{
+                .local = localRegs[bufIdx].span(size_t{0}, size),
+                .remote = remoteRegs[bufIdx].span(size_t{0}, size),
+            });
+      }
 
       int numBatches =
           std::max(1, (config.iterations + batchSize - 1) / batchSize);
@@ -428,12 +511,11 @@ std::vector<BenchmarkResult> runBenchmarkLoop(
           .messageRateMops = msgRateMops,
       });
 
-      fprintf(
-          stderr,
-          "[rank %d] %s size=%-10zu batch=%-3d iters=%-6d "
-          "bw=%.2f GB/s  avg=%.1f us  %s\n",
+      UNIFLOW_LOG_WARN(
+          "[rank {}] {} size={:<10} batch={:<3} iters={:<6} "
+          "bw={:.2f} GB/s  avg={:.1f} us  {}",
           bootstrap.rank,
-          dir.c_str(),
+          dir,
           size,
           batchSize,
           totalOps,
@@ -482,27 +564,51 @@ std::vector<BenchmarkResult> RdmaBandwidthBenchmark::run(
     return {};
   }
 
-  std::string myDevice;
-  if (static_cast<size_t>(bootstrap.localRank) < deviceNames.size()) {
-    myDevice = deviceNames[bootstrap.localRank];
+  std::vector<std::string> myDevices;
+  if (!rdmaDevices_.empty()) {
+    myDevices = rdmaDevices_;
   } else {
-    myDevice = deviceNames[0];
+    auto& topo = Topology::get();
+    if (topo.available()) {
+      myDevices = (config.cudaDevice < 0)
+          ? topo.selectCpuNics()
+          : topo.selectGpuNics(config.cudaDevice);
+    }
+    if (myDevices.empty()) {
+      myDevices = deviceNames;
+    }
   }
-  UNIFLOW_LOG_INFO(
-      "RdmaBandwidthBenchmark: rank {} using RDMA device {}",
-      bootstrap.rank,
-      myDevice);
+  {
+    std::string devList;
+    for (const auto& d : myDevices) {
+      if (!devList.empty()) {
+        devList += ", ";
+      }
+      devList += d;
+    }
+    UNIFLOW_LOG_WARN(
+        "RdmaBandwidthBenchmark: rank {} RDMA device(s): {}",
+        bootstrap.rank,
+        devList);
+  }
 
-  auto bufs =
-      allocateBuffers(config.maxSize, config.cudaDevice, bootstrap.rank);
+  int numNics = static_cast<int>(myDevices.size());
+  auto bufs = allocateBuffers(
+      config.maxSize, config.cudaDevice, bootstrap.rank, numNics);
   if (!bufs) {
     return {};
   }
 
+  // Sanity check: we allocate one buffer pair per NIC and create one QP per
+  // NIC.  A mismatch would cause out-of-bounds accesses in runBenchmarkLoop.
+  assert(
+      bufs->srcs.size() == myDevices.size() &&
+      "Buffer count must equal NIC/QP count");
+
   // evbThread must outlive the transport (transport posts async work to it).
   ScopedEventBaseThread evbThread("bench-evb");
   auto session = setupTransport(
-      myDevice,
+      myDevices,
       *bufs,
       config.maxSize,
       evbThread,
@@ -516,8 +622,8 @@ std::vector<BenchmarkResult> RdmaBandwidthBenchmark::run(
 
   auto results = runBenchmarkLoop(
       *session->transport,
-      session->localReg,
-      session->remoteReg,
+      session->localRegs,
+      session->remoteRegs,
       config,
       peers,
       bootstrap,

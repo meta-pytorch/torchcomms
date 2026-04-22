@@ -9,7 +9,6 @@
 
 #include "comms/uniflow/Segment.h"
 #include "comms/uniflow/benchmarks/Rendezvous.h"
-#include "comms/uniflow/benchmarks/SegmentHelper.h"
 #include "comms/uniflow/benchmarks/Stats.h"
 #include "comms/uniflow/drivers/cuda/CudaApi.h"
 #include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
@@ -278,7 +277,7 @@ std::unique_ptr<TransportSession> setupTransport(
   }
 
   session->localReg = std::make_unique<RegisteredSegment>(
-      SegmentTest::makeRegistered(srcSeg, std::move(srcRegResult.value())));
+      RegisteredSegment::fromHandle(srcSeg, std::move(srcRegResult.value())));
 
   auto* nvlinkRemote = dynamic_cast<NVLinkRemoteRegistrationHandle*>(
       remoteHandleResult.value().get());
@@ -287,8 +286,8 @@ std::unique_ptr<TransportSession> setupTransport(
     return nullptr;
   }
 
-  session->remoteReg =
-      std::make_unique<RemoteRegisteredSegment>(SegmentTest::makeRemote(
+  session->remoteReg = std::make_unique<RemoteRegisteredSegment>(
+      RemoteRegisteredSegment::fromHandle(
           nvlinkRemote->mappedPtr(),
           nvlinkRemote->mappedSize(),
           std::move(remoteHandleResult.value())));

@@ -201,6 +201,15 @@ class RegisteredSegment : public SegmentBase<RegisteredSegment> {
 
   Result<std::vector<uint8_t>> exportId() const;
 
+  /// Construct from a Segment and a single backend registration handle.
+  static RegisteredSegment fromHandle(
+      Segment& segment,
+      std::unique_ptr<RegistrationHandle> handle) {
+    RegisteredSegment reg(segment);
+    reg.handles_.push_back(std::move(handle));
+    return reg;
+  }
+
   friend class SegmentTest;
   friend class MultiTransportFactory;
 
@@ -248,6 +257,16 @@ class RemoteRegisteredSegment : public SegmentBase<RemoteRegisteredSegment> {
     size_t nvlinkOffset_;
   };
 
+  /// Construct from a remote buffer address and a single backend handle.
+  static RemoteRegisteredSegment fromHandle(
+      void* buf,
+      size_t len,
+      std::unique_ptr<RemoteRegistrationHandle> handle) {
+    RemoteRegisteredSegment remote(buf, len);
+    remote.handles_.push_back(std::move(handle));
+    return remote;
+  }
+
   friend class SegmentTest;
   friend class MultiTransportFactory;
   friend class MultiTransportFactoryTest;
@@ -260,9 +279,6 @@ class RemoteRegisteredSegment : public SegmentBase<RemoteRegisteredSegment> {
           remoteHandleT(TransportType, size_t, std::span<const uint8_t>)>&
           getHandle);
 
-  friend class SegmentTest;
-
- private:
   explicit RemoteRegisteredSegment(Segment& segment)
       : SegmentBase(
             segment.mutable_data(),
