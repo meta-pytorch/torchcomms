@@ -2,7 +2,7 @@
 
 A **tile** is the smallest unit of work that all threads in a block process concurrently at one time. A user is free to choose how big or small a tile is. Smaller tiles allow more pipelining but incur more signaling overhead; larger tiles amortize signaling costs. Data is divided amongst blocks by creating tiles of data — each block may handle multiple tiles sequentially, and different blocks may handle different tiles in parallel.
 
-A unified `send_tile` / `recv_tile` API for pipelined point-to-point transfers
+A unified `send` / `recv` API for pipelined point-to-point transfers
 on `P2pNvlTransportDevice` and `P2pIbgdaTransportDevice`, callable from CUDA
 and Triton kernels. Composable building blocks for collectives (allgather,
 alltoall, sendrecv) without users needing to manage staging, signals, slot
@@ -11,8 +11,7 @@ rotation, or pipeline depth.
 **Target backends (all 4 share this contract):** NVLink cpp, NVLink Triton, IB
 cpp, IB Triton.
 
-**In scope:** per-block tile send/recv with cooperative memcpy + pipelined
-staging.
+**In scope:** per-block tile send/recv with cooperative memcpy + pipelined staging.
 **Out of scope:** explicit user-visible drain (handled internally), multi-stream
 concurrency on the same transport, buffer registration (transport-owned), and
 cross-rank rendezvous (separate barrier primitive).
@@ -34,7 +33,7 @@ The existing config already carries all three knobs:
 |---|---|
 | `data_buffer_size` | Bytes per pipeline slot, per peer, per direction. Tile staging is allocated from this. |
 | `pipeline_depth` | Number of slots in the pipeline ring. |
-| `tile_max_blocks` (renamed → `tile_max_groups`) | Upper bound on the number of groups that may call `send_tile`/`recv_tile`. Sizes signal pad and step state arrays. |
+| `tile_max_blocks` (renamed → `tile_max_groups`) | Upper bound on the number of groups that may call `send`/`recv`. Sizes signal pad and step state arrays. |
 
 No new fields are needed on the NVL side.
 
@@ -51,7 +50,7 @@ struct MultipeerIbgdaTransportConfig {
   // Default 2 (double-buffered). Must be >= 1.
   std::size_t tile_pipeline_depth{2};
 
-  // Upper bound on the number of groups calling send_tile/recv_tile.
+  // Upper bound on the number of groups calling send/recv.
   // Sizes signal pad and step state arrays. Must be >= 1.
   int tile_max_groups{128};
 };
@@ -83,7 +82,7 @@ send staging that NVLink does not need.
 
 ```cpp
 struct NvlinkTransportTileState {
-  // Per-block step counters. Persistent across send_tile/recv_tile calls.
+  // Per-block step counters. Persistent across send/recv calls.
   // Required for monotonic signal values and slot-rotation continuity.
   DeviceSpan<int64_t> step_state;   // [2 * max_groups]
                                     //   [0..max_groups)         = sender step per block
@@ -103,7 +102,7 @@ struct NvlinkTransportTileState {
 
 ```cpp
 struct IbTransportTileState {
-  // Per-block step counters. Persistent across send_tile/recv_tile calls.
+  // Per-block step counters. Persistent across send/recv calls.
   DeviceSpan<int64_t> step_state;   // [2 * max_groups]
                                     //   [0..max_groups)         = sender step per block
                                     //   [max_groups..2*max_groups) = receiver step per block
@@ -159,7 +158,7 @@ caller's responsibility (kernel must finish before the host destructor runs).
 ```cpp
 class P2pIbgdaTransportDevice {
  public:
-  __device__ void send_tile(
+  __device__ void send(
       ThreadGroup& group,
       const void* src,
       size_t nbytes,
@@ -167,7 +166,7 @@ class P2pIbgdaTransportDevice {
       size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout());
 
-  __device__ void recv_tile(
+  __device__ void recv(
       ThreadGroup& group,
       void* dst,
       size_t nbytes,
@@ -182,7 +181,7 @@ class P2pIbgdaTransportDevice {
 
 ```python
 @core.extern
-def send_tile(
+def send(
     src_ptr, nbytes,
     block_id, active_blocks,
     max_signal_bytes,
@@ -195,7 +194,7 @@ def send_tile(
     ...
 
 @core.extern
-def recv_tile(dst_ptr, nbytes, block_id, active_blocks, max_signal_bytes, timeout_ns,
+def recv(dst_ptr, nbytes, block_id, active_blocks, max_signal_bytes, timeout_ns,
               transport_handle: tl.constexpr):
     ...
 ```
@@ -207,7 +206,7 @@ def recv_tile(dst_ptr, nbytes, block_id, active_blocks, max_signal_bytes, timeou
 | `group` (cpp) / `block_id` (Triton) | yes | — | Identifies this calling block. Slot routing uses `group.group_id` (cpp) or the `block_id` arg (Triton). |
 | `src` / `dst` | yes | — | This block's pre-sliced data pointer. Caller computes per-block offset (see `TiledBuffer`). |
 | `nbytes` | yes | — | This block's data size. May exceed `per_block_slot_size` — chunked internally over pipeline slots. |
-| `active_blocks` | no | `0` → `tile_max_groups` | Number of blocks calling `send_tile`/`recv_tile` concurrently. Determines `per_block_slot_size = data_buffer_size / active_blocks`. |
+| `active_blocks` | no | `0` → `tile_max_groups` | Number of blocks calling `send`/`recv` concurrently. Determines `per_block_slot_size = data_buffer_size / active_blocks`. |
 | `max_signal_bytes` | no | `0` → `per_block_slot_size` | Hint for the maximum number of bytes between consecutive DATA_READY signals. The transport may signal more frequently if too many blocks share the data buffer. Capped at `per_block_slot_size` if larger (sub-slot signaling only). |
 | `timeout` | no | `Timeout()` (no limit) | Per-wait timeout. Reuses `comms::pipes::Timeout`. On expiry: `__trap()`. |
 
@@ -229,13 +228,13 @@ def recv_tile(dst_ptr, nbytes, block_id, active_blocks, max_signal_bytes, timeou
 
 ### Per-call contract
 
-1. **CTA-cooperative.** All threads in `group` MUST call `send_tile` /
-   `recv_tile` convergently. Cooperative memcpy across the block; leader thread
+1. **CTA-cooperative.** All threads in `group` MUST call `send` /
+   `recv` convergently. Cooperative memcpy across the block; leader thread
    issues signals and RDMA puts.
 2. **Slot routing index = `group.group_id`** (cpp) / `block_id` extern arg
    (Triton). The *logical index within the calling group*, not raw `blockIdx.x`.
    So a kernel that does `auto [role, sub] = group.partition(2)` passes `sub`
-   to `send_tile` / `recv_tile`, and `sub.group_id` (range `[0, sub.total_groups)`)
+   to `send` / `recv`, and `sub.group_id` (range `[0, sub.total_groups)`)
    is the slot row index.
 3. **Trap precondition (debug-mode `__trap`):**
    `group.group_id < (active_blocks > 0 ? active_blocks : tile_max_groups)`.
@@ -253,7 +252,7 @@ def recv_tile(dst_ptr, nbytes, block_id, active_blocks, max_signal_bytes, timeou
 
 ### Changing `active_blocks` between calls
 
-If `active_blocks` changes between consecutive `send_tile`/`recv_tile` calls on the same transport, a **cross-rank barrier** is required between the two calls. Changing `active_blocks` alters `per_block_slot_size` and therefore the slot row layout; without a barrier, the receiver may still be draining the old layout while the sender begins writing the new one, corrupting staging data.
+If `active_blocks` changes between consecutive `send`/`recv` calls on the same transport, a **cross-rank barrier** is required between the two calls. Changing `active_blocks` alters `per_block_slot_size` and therefore the slot row layout; without a barrier, the receiver may still be draining the old layout while the sender begins writing the new one, corrupting staging data.
 
 ### Concurrency
 
@@ -298,7 +297,7 @@ tail_signal_id  = block_id                         // DATA_READY (sender → rec
 head_signal_id  = tile_max_groups + block_id         // SLOT_FREE  (receiver → sender)
 ```
 
-### `send_tile` (NVL)
+### `send` (NVL)
 
 ```text
 if nbytes == 0: return
@@ -348,7 +347,7 @@ completes, all threads have finished their stores, so the data is visible on the
 remote side and local `src` is immediately safe. No outstanding async operations
 remain.
 
-### `recv_tile` (NVL)
+### `recv` (NVL)
 
 ```text
 if nbytes == 0: return
@@ -390,7 +389,7 @@ step_state.receiver[block_id] = step
 group.sync()
 ```
 
-### `send_tile` (IB)
+### `send` (IB)
 
 ```text
 if nbytes == 0: return
@@ -448,7 +447,7 @@ wait_counter(group, nic_done_counter[block_id], step, timeout)
 group.sync()
 ```
 
-### `recv_tile` (IB)
+### `recv` (IB)
 
 ```text
 if nbytes == 0: return
@@ -494,12 +493,12 @@ group.sync()
 
 | Step | Backend | Why it is needed |
 |---|---|---|
-| `send_tile (1)` backpressure | NVL | Receiver may still be reading its local staging. Writing new data via NVLink would corrupt the receiver's in-progress memcpy. Slot-boundary only — sub-steps within a slot share the same slot. |
-| `send_tile (1)` NIC drain | IB | NIC may still be reading local staging from a prior put. Memcpying new data would corrupt the in-flight RDMA. |
-| `send_tile (3)` backpressure | IB | Receiver may still be reading remote staging. Putting new data would corrupt the receiver's read. Slot-boundary only. |
-| `send_tile (5)` drain | IB | Without the drain, returning from `send_tile` would leave outstanding RDMA puts in flight. Internal drain makes the postcondition crisp: on return, all RDMA is delivered. |
-| `recv_tile (1)` | Both | Receiver cannot consume staging until the sender has signaled DATA_READY. |
-| `recv_tile (3)` | Both | Sender's backpressure relies on this signal. Slot-boundary only, matching sender's wait granularity. |
+| `send (1)` backpressure | NVL | Receiver may still be reading its local staging. Writing new data via NVLink would corrupt the receiver's in-progress memcpy. Slot-boundary only — sub-steps within a slot share the same slot. |
+| `send (1)` NIC drain | IB | NIC may still be reading local staging from a prior put. Memcpying new data would corrupt the in-flight RDMA. |
+| `send (3)` backpressure | IB | Receiver may still be reading remote staging. Putting new data would corrupt the receiver's read. Slot-boundary only. |
+| `send (5)` drain | IB | Without the drain, returning from `send` would leave outstanding RDMA puts in flight. Internal drain makes the postcondition crisp: on return, all RDMA is delivered. |
+| `recv (1)` | Both | Receiver cannot consume staging until the sender has signaled DATA_READY. |
+| `recv (3)` | Both | Sender's backpressure relies on this signal. Slot-boundary only, matching sender's wait granularity. |
 
 ---
 
@@ -530,7 +529,7 @@ __global__ void bidirectional_send_recv_kernel(
   TiledBuffer<char> tiles(is_sender ? src : dst, total_bytes, sub);
 
   if (is_sender) {
-    transport->send_tile(
+    transport->send(
         sub,
         tiles.data(),
         tiles.bytes(),
@@ -538,7 +537,7 @@ __global__ void bidirectional_send_recv_kernel(
         /*max_signal_bytes=*/  0,                   // default = one signal per slot fill
         timeout);
   } else {
-    transport->recv_tile(
+    transport->recv(
         sub,
         tiles.data(),
         tiles.bytes(),
@@ -579,15 +578,15 @@ Notes on the example:
 
 ## 7. Out of Scope / Future Work
 
-- **Explicit `drain_tile` API.** Drain is currently internal to `send_tile`
+- **Explicit `drain_tile` API.** Drain is currently internal to `send`
   (step 5). May be exposed if users want to overlap NIC drain with other
-  device-side work between consecutive `send_tile` calls.
+  device-side work between consecutive `send` calls.
 - **Multi-stream concurrency on the same transport.** Currently undefined.
   Would require per-stream `step_state` and `signal_pad` arenas.
 - **Per-call config overrides.** `pipeline_depth` and `data_buffer_size` are
   construction-time only. Per-call overrides would require dynamic staging
   re-allocation.
 - **Cross-rank rendezvous.** Use a separate barrier primitive; not coupled to
-  send/recv_tile.
+  send/recv.
 - **Error reporting on timeout.** Currently traps. Future: device flag +
   host-readable error code for graceful recovery in long-running services.
