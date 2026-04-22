@@ -201,6 +201,8 @@ std::shared_ptr<GraphCollTraceState> CollTrace::getOrCreateGraphState(
         cudaUserObjectRelease(userObject, 1),
         cudaErrorCudartUnloading,
         cudaErrorContextIsDestroyed);
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+    (void)cudaUserObjectRelease(userObject, 1);
     XLOG_FIRST_N(WARN, 1) << "Failed to retain graph user object: "
                           << cudaGetErrorString(retainRes);
     return nullptr;
