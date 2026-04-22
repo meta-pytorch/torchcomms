@@ -575,7 +575,19 @@ void BatchSendRecv::recv(at::Tensor& tensor, int src) {
 c10::intrusive_ptr<TorchWork> BatchSendRecv::issue(
     bool async_op,
     const BatchP2POptions& options) {
-  return parent_->getBackendImpl()->batch_op_issue(ops, async_op, options);
+  auto op_id = GlobalOpIdGenerator::instance().nextOpId();
+  parent_->preHook(
+      OpName::batch_op_issue,
+      op_id,
+      BatchOpIssuePreHookArgs(ops.size(), async_op));
+
+  auto work = parent_->getBackendImpl()->batch_op_issue(ops, async_op, options);
+
+  parent_->postHook(
+      op_id,
+      BatchOpIssuePostHookArgs(c10::weak_intrusive_ptr<TorchWork>(work)));
+
+  return work;
 }
 
 // Global memory allocator function implementation

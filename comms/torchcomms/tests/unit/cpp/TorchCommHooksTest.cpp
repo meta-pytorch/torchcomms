@@ -264,6 +264,46 @@ TEST_F(TorchCommHooksTest, PreHookAllReduceArgsAccessible) {
   EXPECT_TRUE(hook_called);
 }
 
+TEST_F(TorchCommHooksTest, BatchOpIssueHooksFired) {
+  at::Device device(at::kCPU);
+  auto torchcomm = new_comm(kBackendName, device, "test_comm", {});
+  ASSERT_NE(torchcomm, nullptr);
+
+  bool pre_hook_called = false;
+  bool post_hook_called = false;
+  size_t pre_op_id = 0;
+  size_t post_op_id = 0;
+
+  torchcomm->registerPreHook(
+      [&](OpName name, size_t op_id, const PreHookArgs& args) {
+        if (name == OpName::batch_op_issue) {
+          pre_hook_called = true;
+          pre_op_id = op_id;
+          auto* ba = std::get_if<BatchOpIssuePreHookArgs>(&args);
+          ASSERT_NE(ba, nullptr);
+          EXPECT_EQ(ba->num_ops, 2);
+          EXPECT_TRUE(ba->async_op);
+        }
+      });
+
+  torchcomm->registerPostHook([&](size_t op_id, const PostHookArgs& args) {
+    if (std::get_if<BatchOpIssuePostHookArgs>(&args)) {
+      post_hook_called = true;
+      post_op_id = op_id;
+    }
+  });
+
+  auto tensor = at::ones({4}, at::kFloat);
+  auto batch = torchcomm->batch_op_create();
+  batch.send(tensor, 0);
+  batch.recv(tensor, 0);
+  batch.issue(true);
+
+  EXPECT_TRUE(pre_hook_called);
+  EXPECT_TRUE(post_hook_called);
+  EXPECT_EQ(pre_op_id, post_op_id);
+}
+
 TEST_F(TorchCommHooksTest, AbortHookNotCalledAfterRemoval) {
   at::Device device(at::kCPU);
   auto torchcomm = new_comm(kBackendName, device, "test_comm", {});
