@@ -161,7 +161,7 @@ __global__ void p2pTileSendRecv(
  * partition uses numBlocks (variable) for efficient use of staging memory.
  *
  * When numBlocks changes, the caller must set needsBarrier=true. Each block
- * does barrier_sync_threadgroup with its peer to ensure the remote GPU's
+ * does barrier_sync with its peer to ensure the remote GPU's
  * previous kernel completed all staging reads before the new layout takes
  * effect. See TileSendRecv.cu for the full correctness analysis.
  *

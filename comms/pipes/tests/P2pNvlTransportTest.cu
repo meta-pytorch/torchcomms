@@ -258,7 +258,7 @@ __global__ void testPutWithSignalKernel(
     GroupType groupType) {
   auto group = make_group(groupType);
   auto writtenBytes = p2p->put_group(group, dst_d, src_d, nbytes);
-  p2p->signal_threadgroup(group, signal_id, SignalOp::SIGNAL_ADD, writtenBytes);
+  p2p->signal(group, signal_id, SignalOp::SIGNAL_ADD, writtenBytes);
 }
 
 void testPutWithSignal(
@@ -286,7 +286,7 @@ __global__ void testWaitKernel(
     uint64_t expected,
     GroupType groupType) {
   auto group = make_group(groupType);
-  p2p->wait_signal_until_threadgroup(group, signal_id, op, expected);
+  p2p->wait_signal_until(group, signal_id, op, expected);
 }
 
 void testWait(

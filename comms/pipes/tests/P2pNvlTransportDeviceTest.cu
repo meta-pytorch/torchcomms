@@ -29,7 +29,7 @@ __global__ void testDeviceSignalKernel(
     uint64_t value,
     GroupType groupType) {
   auto group = make_group(groupType);
-  p2p->signal_threadgroup(group, signalId, op, value);
+  p2p->signal(group, signalId, op, value);
 }
 
 __global__ void testDeviceWaitSignalKernel(
@@ -39,7 +39,7 @@ __global__ void testDeviceWaitSignalKernel(
     uint64_t value,
     GroupType groupType) {
   auto group = make_group(groupType);
-  p2p->wait_signal_until_threadgroup(group, signalId, op, value);
+  p2p->wait_signal_until(group, signalId, op, value);
 }
 
 __global__ void testDeviceSignalThenWaitKernel(
@@ -51,8 +51,8 @@ __global__ void testDeviceSignalThenWaitKernel(
     uint64_t waitValue,
     GroupType groupType) {
   auto group = make_group(groupType);
-  p2p->signal_threadgroup(group, signalId, signalOp, signalValue);
-  p2p->wait_signal_until_threadgroup(group, signalId, waitOp, waitValue);
+  p2p->signal(group, signalId, signalOp, signalValue);
+  p2p->wait_signal_until(group, signalId, waitOp, waitValue);
 }
 
 void testDeviceSignal(
@@ -125,7 +125,7 @@ __global__ void testDeviceResetSignalKernel(
     uint64_t signalId,
     GroupType groupType) {
   auto group = make_group(groupType);
-  p2p->reset_signal_threadgroup(group, signalId);
+  p2p->reset_signal(group, signalId);
 }
 
 void testDeviceResetSignal(

@@ -112,8 +112,8 @@ __global__ void p2pSignalBenchKernel(
   // - Wait on local signal buffer (local read)
   // multiple times before the other reads.
   for (int step = 1; step <= nSteps; ++step) {
-    p2p.signal_threadgroup(group, signal_id, SignalOp::SIGNAL_ADD, 1);
-    p2p.wait_signal_until_threadgroup(
+    p2p.signal(group, signal_id, SignalOp::SIGNAL_ADD, 1);
+    p2p.wait_signal_until(
         group, signal_id, CmpOp::CMP_EQ, static_cast<uint64_t>(step));
   }
 }
