@@ -85,6 +85,13 @@ struct MultipeerIbgdaTransportConfig {
   // Higher values allow more pipelining but use more memory.
   uint32_t qpDepth{1024};
 
+  // Number of QP sets per peer (each set = main QP + companion QP + loopback).
+  // Multiple QPs per peer allow different GPU blocks to use independent QPs,
+  // eliminating O(N) cross-block WQE serialization in DOCA's mark_wqes_ready.
+  // Block-to-QP mapping: blockIdx.x % numQpsPerPeer.
+  // Default 1 preserves current single-QP-per-peer behavior.
+  int numQpsPerPeer{1};
+
   // InfiniBand Verbs Timeout for QP ACK timeout.
   // Timeout is computed as 4.096 µs * 2^timeout.
   // Increasing this value can help on very large networks (e.g., if
@@ -153,6 +160,11 @@ struct IbgdaTransportExchInfo {
 constexpr int kMaxRanksForAllGather = 128;
 
 /**
+ * Maximum number of QP sets per peer for multi-QP support.
+ */
+constexpr int kMaxQpsPerPeer = 128;
+
+/**
  * Transport exchange info for allGather-based exchange.
  *
  * Each rank contributes this structure containing:
@@ -168,10 +180,13 @@ struct IbgdaTransportExchInfoAll {
   // Port active MTU.
   enum ibv_mtu mtu { IBV_MTU_4096 };
 
+  // Number of QPs per peer used by this rank
+  int numQpsPerPeer{1};
+
   // Per-target-rank QPNs
-  // qpnForRank[j] = QPN that this rank uses to connect to rank j
-  // qpnForRank[myRank] is unused (set to 0)
-  uint32_t qpnForRank[kMaxRanksForAllGather]{};
+  // qpnForRank[j][q] = QPN of q-th QP that this rank uses to connect to rank j
+  // qpnForRank[myRank][*] is unused (set to 0)
+  uint32_t qpnForRank[kMaxRanksForAllGather][kMaxQpsPerPeer]{};
 };
 
 /**
@@ -353,6 +368,11 @@ class MultipeerIbgdaTransport {
       const IbgdaLocalBuffer& localBuf);
 
   /**
+   * Get the number of QP sets per peer
+   */
+  int numQpsPerPeer() const;
+
+  /**
    * Get the GID index being used
    */
   int getGidIndex() const;
@@ -436,6 +456,9 @@ class MultipeerIbgdaTransport {
   // Per-peer device transports (GPU accessible)
   P2pIbgdaTransportDevice* peerTransportsGpu_{nullptr};
   std::size_t peerTransportSize_{0};
+
+  // All GPU allocations from buildDeviceTransportsOnGpu (freed in cleanup)
+  std::vector<void*> gpuAllocations_;
 
   // Exchange info received from peers
   std::vector<IbgdaTransportExchInfo> peerExchInfo_;

@@ -634,4 +634,57 @@ void testWaitCounter(
   }
 }
 
+// =============================================================================
+// Kernel: Multi-QP put + signal (Level 1 — transparent QP selection)
+// =============================================================================
+//
+// Each block puts its chunk of totalBytes using block-scope group put.
+// QP selection is handled internally by active_qp() inside the transport —
+// no manual blockIdx % numQps needed. This verifies that the Level 1
+// multi-QP design works transparently.
+
+__global__ void multiQpPutAndSignalKernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    std::size_t totalBytes,
+    int signalId,
+    uint64_t signalVal) {
+  auto nBlocks = gridDim.x;
+  std::size_t chunkSize = totalBytes / nBlocks;
+  std::size_t myOffset = blockIdx.x * chunkSize;
+  std::size_t myBytes =
+      (blockIdx.x == nBlocks - 1) ? (totalBytes - myOffset) : chunkSize;
+
+  IbgdaLocalBuffer myLocalBuf = localBuf.subBuffer(myOffset);
+  IbgdaRemoteBuffer myRemoteBuf = remoteBuf.subBuffer(myOffset);
+
+  auto group = make_block_group();
+
+  // QP selection is transparent — transport->active_qp() selects per blockIdx
+  transport->put(group, myLocalBuf, myRemoteBuf, myBytes, signalId, signalVal);
+
+  transport->fence(group);
+}
+
+void testMultiQpPutAndSignal(
+    P2pIbgdaTransportDevice* transport,
+    int numQps,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t totalBytes,
+    int signalId,
+    uint64_t signalVal,
+    int numBlocks,
+    int blockSize) {
+  (void)numQps; // unused with Level 1 — QP selection is internal
+  multiQpPutAndSignalKernel<<<numBlocks, blockSize>>>(
+      transport, localBuf, remoteBuf, totalBytes, signalId, signalVal);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
 } // namespace comms::pipes::test

@@ -1434,6 +1434,147 @@ TEST_F(MultipeerIbgdaTransportTestFixture, AllToAll) {
       numPeers);
 }
 
+// =============================================================================
+// Multi-QP Tests
+// =============================================================================
+
+TEST_F(MultipeerIbgdaTransportTestFixture, MultiQpConstructAndExchange) {
+  if (numRanks < 2) {
+    XLOGF(
+        WARNING, "Skipping test: requires at least 2 ranks, got {}", numRanks);
+    return;
+  }
+
+  try {
+    MultipeerIbgdaTransportConfig config{
+        .cudaDevice = localRank,
+        .numQpsPerPeer = 4,
+    };
+    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+    auto transport = std::make_unique<MultipeerIbgdaTransport>(
+        globalRank, numRanks, bootstrap, config);
+    transport->exchange();
+
+    EXPECT_EQ(transport->numQpsPerPeer(), 4);
+    EXPECT_NE(transport->getDeviceTransportPtr(), nullptr);
+
+    // Verify each peer has a valid transport pointer
+    for (int r = 0; r < numRanks; r++) {
+      if (r == globalRank)
+        continue;
+      P2pIbgdaTransportDevice* ptr = transport->getP2pTransportDevice(r);
+      EXPECT_NE(ptr, nullptr)
+          << "getP2pTransportDevice(" << r << ") returned null";
+    }
+
+    XLOGF(
+        INFO,
+        "Rank {}: Multi-QP transport created with {} QPs/peer",
+        globalRank,
+        transport->numQpsPerPeer());
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+  }
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+}
+
+TEST_F(MultipeerIbgdaTransportTestFixture, MultiQpPutSignalBasic) {
+  if (numRanks != 2) {
+    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    return;
+  }
+
+  // 4 blocks, 4 QPs — each block gets its own QP
+  const int numQps = 4;
+  const int numBlocks = 4;
+  const int blockSize = 32;
+  const std::size_t nbytes = 64 * 1024; // 64KB total, 16KB per block
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  const uint8_t testPattern = 0x77;
+
+  try {
+    MultipeerIbgdaTransportConfig config{
+        .cudaDevice = localRank,
+        .numQpsPerPeer = numQps,
+        .numSignalSlots = 1,
+        .numCounterSlots = 1,
+    };
+    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+    auto transport = std::make_unique<MultipeerIbgdaTransport>(
+        globalRank, numRanks, bootstrap, config);
+    transport->exchange();
+
+    DeviceBuffer dataBuffer(nbytes);
+    auto localDataBuf = transport->registerBuffer(dataBuffer.get(), nbytes);
+    auto remoteDataBufs = transport->exchangeBuffer(localDataBuf);
+    int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
+    auto remoteDataBuf = remoteDataBufs[peerIndex];
+
+    P2pIbgdaTransportDevice* peerTransportPtr =
+        transport->getP2pTransportDevice(peerRank);
+
+    if (globalRank == 0) {
+      test::fillBufferWithPattern(
+          localDataBuf.ptr, nbytes, testPattern, numBlocks, blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      // Multi-QP kernel: each block selects QP via blockIdx % numQps,
+      // puts its chunk of data, then signals (slot-index API)
+      test::testMultiQpPutAndSignal(
+          peerTransportPtr,
+          numQps,
+          localDataBuf,
+          remoteDataBuf,
+          nbytes,
+          0, // signalId
+          1, // each block signals 1, total = numBlocks
+          numBlocks,
+          blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    } else {
+      CUDACHECK_TEST(cudaMemset(localDataBuf.ptr, 0, nbytes));
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      // Wait for all numBlocks signals on slot 0
+      test::testWaitSignal(peerTransportPtr, 0, numBlocks, 1, blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      // Verify data correctness
+      DeviceBuffer errorCountBuf(sizeof(int));
+      auto* d_errorCount = static_cast<int*>(errorCountBuf.get());
+      CUDACHECK_TEST(cudaMemset(d_errorCount, 0, sizeof(int)));
+      test::verifyBufferPattern(
+          localDataBuf.ptr,
+          nbytes,
+          testPattern,
+          d_errorCount,
+          numBlocks,
+          blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      int h_errorCount = 0;
+      CUDACHECK_TEST(cudaMemcpy(
+          &h_errorCount, d_errorCount, sizeof(int), cudaMemcpyDeviceToHost));
+      EXPECT_EQ(h_errorCount, 0)
+          << "MultiQpPutSignalBasic: data corruption with " << numQps
+          << " QPs and " << numBlocks << " blocks";
+    }
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+  }
+
+  XLOGF(INFO, "Rank {}: MultiQpPutSignalBasic test completed", globalRank);
+}
+
 } // namespace comms::pipes::tests
 
 int main(int argc, char* argv[]) {

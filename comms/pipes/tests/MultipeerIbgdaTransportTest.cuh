@@ -127,4 +127,14 @@ __global__ void waitCounterKernel(
     int counterId,
     uint64_t expectedVal);
 
+// Multi-QP kernel: QP selection is transparent via active_qp() inside transport
+__global__ void multiQpPutAndSignalKernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    std::size_t totalBytes,
+    IbgdaRemoteBuffer remoteSignalBuf,
+    int signalId,
+    uint64_t signalVal);
+
 } // namespace comms::pipes::test
