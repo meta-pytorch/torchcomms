@@ -7,14 +7,26 @@
 
 #include <endian.h>
 
-// Allow compilation in both host (C++) and device (CUDA) contexts
-#ifdef __CUDACC__
+// Allow compilation in both host (C++) and device (CUDA/HIP) contexts
+#if defined(__CUDACC__) || defined(__HIPCC__)
 #define IBGDA_HOST_DEVICE __host__ __device__
 #else
 #define IBGDA_HOST_DEVICE
 #endif
 
 namespace comms::pipes {
+
+// NIC-aware byte order conversion for RDMA memory keys.
+// mlx5 requires big-endian keys; bnxt/ionic use native byte order.
+namespace detail {
+inline uint32_t ibgdaNetworkByteOrderKey(uint32_t hostValue) {
+#if defined(NIC_BNXT) || defined(NIC_IONIC)
+  return hostValue; // Native byte order for non-mlx5 NICs
+#else
+  return htobe32(hostValue); // mlx5: big-endian
+#endif
+}
+} // namespace detail
 
 // =============================================================================
 // Strong Types for RDMA Memory Keys
@@ -63,10 +75,10 @@ struct NetworkLKey {
   NetworkLKey() = default;
   IBGDA_HOST_DEVICE explicit NetworkLKey(uint32_t v) : value(v) {}
 
-  // Implicit conversion from HostLKey (performs htobe32)
+  // Implicit conversion from HostLKey (performs byte order conversion)
   // NOLINTNEXTLINE(google-explicit-constructor)
   /* implicit */ NetworkLKey(HostLKey hostKey)
-      : value(htobe32(hostKey.value)) {}
+      : value(detail::ibgdaNetworkByteOrderKey(hostKey.value)) {}
 
   IBGDA_HOST_DEVICE bool operator==(const NetworkLKey& other) const {
     return value == other.value;
@@ -110,14 +122,14 @@ struct NetworkRKey {
   NetworkRKey() = default;
   IBGDA_HOST_DEVICE explicit NetworkRKey(uint32_t v) : value(v) {}
 
-  // Implicit conversion from HostRKey (performs htobe32)
+  // Implicit conversion from HostRKey (performs byte order conversion)
   // Note: This constructor is intentionally NOT explicit - implicit conversion
   // is the desired behavior. It is also intentionally host-only (no
-  // IBGDA_HOST_DEVICE) because htobe32() is not available on GPU. The
-  // conversion happens on the host before passing to device code.
+  // IBGDA_HOST_DEVICE) because the conversion happens on the host before
+  // passing to device code.
   // NOLINTNEXTLINE(google-explicit-constructor)
   /* implicit */ NetworkRKey(HostRKey hostKey)
-      : value(htobe32(hostKey.value)) {}
+      : value(detail::ibgdaNetworkByteOrderKey(hostKey.value)) {}
 
   IBGDA_HOST_DEVICE bool operator==(const NetworkRKey& other) const {
     return value == other.value;
@@ -251,6 +263,54 @@ struct IbgdaBufferExchInfo {
   IbgdaBufferExchInfo subBuffer(std::size_t offset) const {
     return IbgdaBufferExchInfo(addr + offset, rkey);
   }
+};
+
+/**
+ * IbSendRecvState — device-side state for pipelined RDMA send/recv.
+ *
+ * Holds all buffer handles and config needed by send/recv.
+ * All physical memory is allocated by MultipeerIbgdaTransport on the host;
+ * this struct contains only pointers/handles into those allocations.
+ *
+ * Buffer layout:
+ *   sendStaging / recvStaging: pipelineDepth * dataBufferSize bytes each.
+ *     Logically divided into pipelineDepth slots of dataBufferSize bytes.
+ *     For one send()/recv() call, a caller chooses active_blocks
+ *     (1 <= active_blocks <= maxGroups). Each slot is then partitioned into
+ *     active_blocks per-block regions:
+ *       perBlockSlot = (dataBufferSize / active_blocks) & ~15ULL
+ *     If max_signal_bytes is smaller than perBlockSlot, each per-block region
+ *     is further subdivided into signaled sub-chunks:
+ *       chunkSize = floor16(min(perBlockSlot, max_signal_bytes))
+ *       chunksPerSlot = perBlockSlot / chunkSize
+ *     stepState counts these sub-chunks, not whole slots.
+ *
+ *   signalBuf: 2 * maxGroups * sizeof(uint64_t).
+ *     [0, maxGroups)             — DATA_READY (sender -> receiver)
+ *     [maxGroups, 2*maxGroups)   — SLOT_FREE (receiver -> sender)
+ *
+ *   counterBuf: maxGroups * sizeof(uint64_t).
+ *     [0, maxGroups)             — NIC_DONE counters (loopback atomic)
+ *
+ *   stepState: 2 * maxGroups * sizeof(int64_t).
+ *     [0, maxGroups)             — sender step counters
+ *     [maxGroups, 2*maxGroups)   — receiver step counters
+ */
+struct IbSendRecvState {
+  IbgdaLocalBuffer
+      sendStagingBuf; ///< Registered sendStaging (lkey for put src)
+  IbgdaRemoteBuffer recvStagingBuf; ///< Peer's recvStaging (rkey for put dst)
+  char* sendStagingPtr{
+      nullptr}; ///< Raw sendStaging pointer (memcpy addressing)
+  char* recvStagingPtr{
+      nullptr}; ///< Raw local recvStaging pointer (recv memcpy)
+  IbgdaLocalBuffer localSignalBuf; ///< Signal inbox (DATA_READY + SLOT_FREE)
+  IbgdaRemoteBuffer remoteSignalBuf; ///< Peer's signal inbox
+  IbgdaLocalBuffer localCounterBuf; ///< NIC_DONE counter inbox
+  int64_t* stepState{nullptr}; ///< Per-group step counters
+  int maxGroups{0}; ///< Layout size for signals/step arrays
+  int pipelineDepth{0}; ///< Number of pipeline slots in the ring
+  std::size_t dataBufferSize{0}; ///< Size of one pipeline slot in bytes
 };
 
 } // namespace comms::pipes

@@ -340,12 +340,12 @@ TEST_F(CommDumpPluginTest, OutOfOrderScheduling) {
   EXPECT_VALUE(plugin->afterCollKernelStart(event3));
   EXPECT_VALUE(plugin->afterCollKernelEnd(event3));
 
-  // Final dump: all three in pastColls in completion order (2, 1, 3)
+  // Final dump: all three in pastColls in collId order (1, 2, 3)
   auto dump3 = plugin->dump();
   EXPECT_VALUE(dump3);
   EXPECT_EQ(dump3.value().pastColls.size(), 3);
-  EXPECT_EQ(dump3.value().pastColls[0]->getCollId(), 2);
-  EXPECT_EQ(dump3.value().pastColls[1]->getCollId(), 1);
+  EXPECT_EQ(dump3.value().pastColls[0]->getCollId(), 1);
+  EXPECT_EQ(dump3.value().pastColls[1]->getCollId(), 2);
   EXPECT_EQ(dump3.value().pastColls[2]->getCollId(), 3);
   EXPECT_TRUE(dump3.value().currentColls.empty());
   EXPECT_TRUE(dump3.value().pendingColls.empty());

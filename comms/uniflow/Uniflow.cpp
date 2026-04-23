@@ -14,7 +14,6 @@ UniflowAgent::UniflowAgent(
       factory_(std::make_shared<MultiTransportFactory>(config.deviceId)),
       client_(std::move(client)),
       server_(std::move(server)) {
-  // Auto-create TcpClient if not provided
   if (!client_) {
     controller::TcpSocketConfig tcpCfg;
     tcpCfg.connectRetries = config.connectRetries;
@@ -22,7 +21,6 @@ UniflowAgent::UniflowAgent(
     client_ = std::make_unique<controller::TcpClient>(std::move(tcpCfg));
   }
 
-  // Auto-create TcpServer if listenAddress is specified
   if (!server_ && !config.listenAddress.empty()) {
     auto tcpServer =
         std::make_unique<controller::TcpServer>(config.listenAddress);
@@ -56,7 +54,7 @@ Result<std::unique_ptr<Connection>> UniflowAgent::accept() {
     return Err(ErrCode::InvalidArgument, "no server configured");
   }
 
-  auto ctrl = server_->accept();
+  auto ctrl = server_->accept().get();
   if (!ctrl) {
     return Err(ErrCode::ConnectionFailed, "accept failed");
   }
@@ -70,7 +68,7 @@ Result<std::unique_ptr<Connection>> UniflowAgent::connect(std::string peerId) {
     return Err(ErrCode::InvalidArgument, "no client configured");
   }
 
-  auto ctrl = client_->connect(std::move(peerId));
+  auto ctrl = client_->connect(std::move(peerId)).get();
   if (!ctrl) {
     return Err(ErrCode::ConnectionFailed, "connect failed");
   }
@@ -87,11 +85,11 @@ Result<std::unique_ptr<Connection>> UniflowAgent::establishConnection(
   // Exchange topology
   std::vector<uint8_t> peerTopo;
   if (sendFirst) {
-    CHECK_EXPR(ctrl->send({myTopo.begin(), myTopo.end()}));
-    CHECK_EXPR(ctrl->recv(peerTopo));
+    CHECK_EXPR(ctrl->send({myTopo.begin(), myTopo.end()}).get());
+    CHECK_EXPR(ctrl->recv(peerTopo).get());
   } else {
-    CHECK_EXPR(ctrl->recv(peerTopo));
-    CHECK_EXPR(ctrl->send({myTopo.begin(), myTopo.end()}));
+    CHECK_EXPR(ctrl->recv(peerTopo).get());
+    CHECK_EXPR(ctrl->send({myTopo.begin(), myTopo.end()}).get());
   }
 
   // Create transport from peer topology
@@ -106,11 +104,11 @@ Result<std::unique_ptr<Connection>> UniflowAgent::establishConnection(
 
   std::vector<uint8_t> remoteInfo;
   if (sendFirst) {
-    CHECK_EXPR(ctrl->send(localInfo));
-    CHECK_EXPR(ctrl->recv(remoteInfo));
+    CHECK_EXPR(ctrl->send(localInfo).get());
+    CHECK_EXPR(ctrl->recv(remoteInfo).get());
   } else {
-    CHECK_EXPR(ctrl->recv(remoteInfo));
-    CHECK_EXPR(ctrl->send(localInfo));
+    CHECK_EXPR(ctrl->recv(remoteInfo).get());
+    CHECK_EXPR(ctrl->send(localInfo).get());
   }
 
   // Connect transport with remote endpoint info

@@ -112,7 +112,7 @@ __device__ __forceinline__ void all_to_allv(
     Timeout timeout
     // all arguments below will eventually come from communicator
 ) {
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   auto group = make_warp_group();
   const auto nranks = transports_per_rank.size();
   PIPES_DEVICE_CHECK(nranks == send_chunk_infos.size());

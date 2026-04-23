@@ -836,14 +836,17 @@ void FlightRecorderHook::registerWithComm(std::shared_ptr<TorchComm> comm) {
 
   // Register pre-hook - records the operation
   auto pre_hook_handle = comm->registerPreHook(
-      [this, comm_name, pg_id, pg_desc](const TorchComm::PreHookArgs& args) {
-        this->onPreHook(comm_name, pg_id, pg_desc, args);
+      [this, comm_name, pg_id, pg_desc](
+          OpName name, size_t op_id, const PreHookArgs& args) {
+        this->onPreHook(comm_name, pg_id, pg_desc, name, op_id, args);
       });
 
   // Register post-hook - called via work callback when work completes
   // The post-hook is invoked by TorchComm when the work's callback fires
-  auto post_hook_handle = comm->registerPostHook(
-      [this](const TorchComm::PostHookArgs& args) { this->onPostHook(args); });
+  auto post_hook_handle =
+      comm->registerPostHook([this](size_t op_id, const PostHookArgs& args) {
+        this->onPostHook(op_id, args);
+      });
 
   // Register abort hook - called before aborting to dump flight recorder data
   int rank = comm->getRank();
@@ -877,7 +880,9 @@ void FlightRecorderHook::onPreHook(
     const std::string& comm_name,
     size_t pg_id,
     const std::string& pg_desc,
-    const TorchComm::PreHookArgs& args) {
+    OpName name,
+    size_t op_id,
+    const PreHookArgs& args) {
   if (!enabled_) {
     return;
   }
@@ -885,36 +890,57 @@ void FlightRecorderHook::onPreHook(
   std::vector<at::Tensor> inputs;
   std::vector<at::Tensor> outputs;
 
-  // Extract input tensors
-  if (args.input_tensor != nullptr) {
-    inputs.push_back(*args.input_tensor);
-  }
-  if (args.input_tensors != nullptr) {
-    for (const auto& tensor : *args.input_tensors) {
-      inputs.push_back(tensor);
-    }
-  }
-
-  // Extract output tensors
-  if (args.output_tensor != nullptr) {
-    outputs.push_back(*args.output_tensor);
-  }
-  if (args.output_tensors != nullptr) {
-    for (const auto& tensor : *args.output_tensors) {
-      outputs.push_back(tensor);
-    }
-  }
-
-  // For in-place operations where input == output, copy input to output
-  if (outputs.empty() && !inputs.empty()) {
-    outputs = inputs;
-  }
+  // Extract input/output tensors from the per-collective variant args
+  std::visit(
+      [&inputs, &outputs](const auto& a) {
+        using T = std::decay_t<decltype(a)>;
+        if constexpr (
+            std::is_same_v<T, SendPreHookArgs> ||
+            std::is_same_v<T, BroadcastPreHookArgs> ||
+            std::is_same_v<T, AllReducePreHookArgs> ||
+            std::is_same_v<T, ReducePreHookArgs>) {
+          inputs.push_back(a.tensor);
+          outputs.push_back(a.tensor);
+        } else if constexpr (std::is_same_v<T, RecvPreHookArgs>) {
+          outputs.push_back(a.tensor);
+        } else if constexpr (
+            std::is_same_v<T, AllGatherSinglePreHookArgs> ||
+            std::is_same_v<T, ReduceScatterSinglePreHookArgs> ||
+            std::is_same_v<T, AllToAllSinglePreHookArgs> ||
+            std::is_same_v<T, AllToAllVSinglePreHookArgs> ||
+            std::is_same_v<T, GatherSinglePreHookArgs>) {
+          inputs.push_back(a.input);
+          outputs.push_back(a.output);
+        } else if constexpr (
+            std::is_same_v<T, AllGatherPreHookArgs> ||
+            std::is_same_v<T, AllGatherVPreHookArgs>) {
+          inputs.push_back(a.input);
+          outputs.insert(outputs.end(), a.output.begin(), a.output.end());
+        } else if constexpr (
+            std::is_same_v<T, ReduceScatterPreHookArgs> ||
+            std::is_same_v<T, ReduceScatterVPreHookArgs>) {
+          inputs.insert(inputs.end(), a.input.begin(), a.input.end());
+          outputs.push_back(a.output);
+        } else if constexpr (std::is_same_v<T, AllToAllPreHookArgs>) {
+          inputs.insert(inputs.end(), a.input.begin(), a.input.end());
+          outputs.insert(outputs.end(), a.output.begin(), a.output.end());
+        } else if constexpr (std::is_same_v<T, ScatterPreHookArgs>) {
+          inputs.insert(inputs.end(), a.input.begin(), a.input.end());
+          outputs.push_back(a.output);
+        } else if constexpr (std::is_same_v<T, GatherPreHookArgs>) {
+          inputs.push_back(a.input);
+          outputs.insert(outputs.end(), a.output.begin(), a.output.end());
+        }
+        // BarrierPreHookArgs, SplitPreHookArgs, NewWindowPreHookArgs: no
+        // tensors
+      },
+      args);
 
   auto pg_name = std::make_tuple(comm_name, pg_desc);
 
   // Use "<backend>:<op>" format as expected by the FR trace analyzer
   std::string profiling_name =
-      std::string(pg_desc) + ":" + std::string(opToString(args.name));
+      std::string(pg_desc) + ":" + std::string(opToString(name));
 
   // TODO: Create start/end events for accurate timing
   // For now, pass nullptr - timing will be based on CPU timestamps
@@ -922,7 +948,7 @@ void FlightRecorderHook::onPreHook(
   recorder_->record(
       pg_id,
       pg_name,
-      args.op_id,
+      op_id,
       std::move(profiling_name),
       inputs,
       outputs,
@@ -933,16 +959,16 @@ void FlightRecorderHook::onPreHook(
   );
 }
 
-void FlightRecorderHook::onPostHook(const TorchComm::PostHookArgs& args) {
+void FlightRecorderHook::onPostHook(size_t op_id, const PostHookArgs& args) {
   if (!enabled_) {
     return;
   }
-  recorder_->retire_id(args.op_id, false);
+  recorder_->retire_id(op_id, false);
 
   // Handle split operations - register the new communicator with flight
   // recorder
-  if (args.name == OpName::split) {
-    if (auto new_comm = args.new_comm.lock()) {
+  if (auto* split = std::get_if<SplitPostHookArgs>(&args)) {
+    if (auto new_comm = split->new_comm.lock()) {
       splitHook(new_comm);
     }
   }

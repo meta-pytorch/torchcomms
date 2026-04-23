@@ -62,13 +62,12 @@ TEST_F(CtranIbHcaTest, IbHcaExcludeDev) {
   // Rank 0 creates comm with differen local GPU, to check whether all used
   // devices match the condition
   for (int devId = 0; devId < nDevices; devId++) {
-    auto ctrlMgr = std::make_unique<CtranCtrlManager>();
     CtranComm* comm = this->comm_.get();
 
     EXPECT_EQ(NCCL_IB_HCA_PREFIX, "^");
 
     try {
-      auto ctranIb = std::make_unique<CtranIb>(comm, ctrlMgr.get());
+      auto ctranIb = std::make_unique<CtranIb>(comm);
       for (auto& dev : ibHcaExcludeDevs) {
         EXPECT_NE(ctranIb->getIbDevName(), dev);
       }

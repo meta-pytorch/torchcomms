@@ -1230,6 +1230,58 @@ bool Topology::filterNic(int nicIndex, const NicFilter& filter) const {
   return filter.matches(nodes_[nicNodeIds_[nicIndex]].name);
 }
 
+std::vector<std::string> Topology::selectCpuNics(
+    const NicFilter& filter) const {
+  int count = static_cast<int>(nicCount());
+  std::vector<std::string> nics;
+  PathType bestType = PathType::DIS;
+  uint32_t maxBw = 0;
+  for (int i = 0; i < count; ++i) {
+    if (!filterNic(i, filter)) {
+      continue;
+    }
+    const auto& nicNode = getNicNode(i);
+    const auto& numaNode =
+        getCpuNode(std::get<TopoNode::NicData>(nicNode.data).numaNode);
+    const auto& path = getPath(numaNode.id, nicNode.id, {.allowC2C = true});
+    if (path.type < bestType || (path.type == bestType && path.bw > maxBw)) {
+      nics.clear();
+      nics.push_back(nicNode.name);
+      bestType = path.type;
+      maxBw = path.bw;
+    } else if (path.type == bestType && path.bw == maxBw) {
+      nics.push_back(nicNode.name);
+    }
+  }
+  return nics;
+}
+
+std::vector<std::string> Topology::selectGpuNics(
+    int cudaDeviceId,
+    const NicFilter& filter) const {
+  const auto& gpuNode = getGpuNode(cudaDeviceId);
+  int count = static_cast<int>(nicCount());
+  std::vector<std::string> nics;
+  PathType bestType = PathType::DIS;
+  uint32_t maxBw = 0;
+  for (int i = 0; i < count; ++i) {
+    if (!filterNic(i, filter)) {
+      continue;
+    }
+    const auto& nicNode = getNicNode(i);
+    const auto& path = getPath(gpuNode.id, nicNode.id, {.allowC2C = true});
+    if (path.type < bestType || (path.type == bestType && path.bw > maxBw)) {
+      nics.clear();
+      nics.push_back(nicNode.name);
+      bestType = path.type;
+      maxBw = path.bw;
+    } else if (path.type == bestType && path.bw == maxBw) {
+      nics.push_back(nicNode.name);
+    }
+  }
+  return nics;
+}
+
 // --- NicFilter ---
 
 NicFilter::NicFilter(std::string_view filterStr) {

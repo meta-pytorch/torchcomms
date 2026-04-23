@@ -3,9 +3,12 @@
 #include "comms/uniflow/controller/TcpController.h"
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/tcp.h>
+#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <cassert>
 #include <cerrno>
 #include <charconv>
 #include <cstring>
@@ -13,6 +16,10 @@
 #include <system_error>
 #include <thread>
 
+#include <fmt/core.h>
+
+#include "comms/uniflow/Result.h"
+#include "comms/uniflow/executor/EventBase.h"
 #include "comms/uniflow/logging/Logger.h"
 
 namespace uniflow::controller {
@@ -60,13 +67,21 @@ Status TcpSocketConfig::validate() const {
 
 namespace {
 
-constexpr uint32_t kMaxMessageSize = 64 << 20; // 64MB max message size
-constexpr int kAcceptTimeoutSec = 5; // accept() wakeup interval
+constexpr uint32_t kMaxMessageSize = 64 << 20;
+constexpr int kSocketBufSize = 1 << 20;
+constexpr int kAcceptTimeoutSec = 5;
+constexpr int kConnectedTimeoutSec = 30;
+constexpr int kKeepaliveIdleSec = 60;
+constexpr int kKeepaliveIntervalSec = 5;
+constexpr int kKeepaliveCount = 3;
+constexpr int kUserTimeoutMs = 60000;
 
 // Magic value exchanged during connection handshake to validate that both
 // endpoints are uniflow controllers (rejects stray connections).
 constexpr uint32_t kMagic = 0x554E4946; // "UNIF" in ASCII
 
+// Accumulates the names of all failed setsockopt calls and produces a single
+// Status at the end.
 class SockOptSetter {
   int sock_;
   std::string failures_;
@@ -84,7 +99,7 @@ class SockOptSetter {
     }
   }
 
-  // Best-effort, failure silently ignored.
+  // Best-effort — failure silently ignored.
   template <typename T>
   void trySet(int level, int optname, const T& value) {
     ::setsockopt(sock_, level, optname, &value, sizeof(value));
@@ -206,9 +221,92 @@ std::string formatAddr(const sockaddr_storage& addr) {
   return std::string(buf) + ":" + std::to_string(ntohs(sa->sin_port));
 }
 
+Result<int> createListenSocket(int domain) {
+  int sock = ::socket(domain, SOCK_STREAM | SOCK_CLOEXEC, 0);
+  if (sock < 0) {
+    return Err(
+        ErrCode::ConnectionFailed,
+        "socket creation failed: " + std::system_category().message(errno));
+  }
+
+  SockOptSetter opt(sock);
+  opt.set(SOL_SOCKET, SO_REUSEADDR, 1, "SO_REUSEADDR");
+  opt.trySet(SOL_SOCKET, SO_REUSEPORT, 1);
+
+  // Periodic wakeup for shutdown checks during blocking accept()
+  struct timeval tv{};
+  tv.tv_sec = kAcceptTimeoutSec;
+  opt.set(SOL_SOCKET, SO_RCVTIMEO, tv, "SO_RCVTIMEO");
+
+  auto status = opt.status();
+  if (!status) {
+    ::close(sock);
+    return std::move(status).error();
+  }
+  // @lint-ignore PULSE_RESOURCE_LEAK fd ownership transfers to caller via
+  // Result
+  return sock;
+}
+
+Status configureAcceptedSocket(int sock) {
+  SockOptSetter opt(sock);
+  opt.set(SOL_SOCKET, SO_SNDBUF, kSocketBufSize, "SO_SNDBUF");
+  opt.set(SOL_SOCKET, SO_RCVBUF, kSocketBufSize, "SO_RCVBUF");
+  opt.set(IPPROTO_TCP, TCP_NODELAY, 1, "TCP_NODELAY");
+  opt.set(SOL_SOCKET, SO_KEEPALIVE, 1, "SO_KEEPALIVE");
+  opt.set(IPPROTO_TCP, TCP_KEEPIDLE, kKeepaliveIdleSec, "TCP_KEEPIDLE");
+  opt.set(IPPROTO_TCP, TCP_KEEPINTVL, kKeepaliveIntervalSec, "TCP_KEEPINTVL");
+  opt.set(IPPROTO_TCP, TCP_KEEPCNT, kKeepaliveCount, "TCP_KEEPCNT");
+  opt.set(IPPROTO_TCP, TCP_USER_TIMEOUT, kUserTimeoutMs, "TCP_USER_TIMEOUT");
+
+  struct timeval tv{};
+  tv.tv_sec = kConnectedTimeoutSec;
+  opt.set(SOL_SOCKET, SO_SNDTIMEO, tv, "SO_SNDTIMEO");
+  opt.set(SOL_SOCKET, SO_RCVTIMEO, tv, "SO_RCVTIMEO");
+
+  return opt.status();
+}
+
+Status
+resolveAndBind(const std::string& host, int port, int domain, int listenFd) {
+  sockaddr_storage addr{};
+  auto addrLenResult = buildSockAddr(host, port, domain, addr);
+  if (!addrLenResult) {
+    return std::move(addrLenResult).error();
+  }
+
+  if (::bind(
+          listenFd, reinterpret_cast<sockaddr*>(&addr), addrLenResult.value()) <
+      0) {
+    return Err(
+        ErrCode::ConnectionFailed,
+        "bind failed: " + std::system_category().message(errno));
+  }
+
+  return Ok();
+}
+
+// 500ms bound prevents the 8-byte magic exchange from blocking the loop
+// thread indefinitely. Caller must close the socket if this fails.
+Status setHandshakeTimeout(int sock) {
+  constexpr int kHandshakeTimeoutMs = 500;
+  struct timeval tv{};
+  tv.tv_sec = 0;
+  tv.tv_usec = kHandshakeTimeoutMs * 1000;
+  SockOptSetter opt(sock);
+  opt.set(SOL_SOCKET, SO_SNDTIMEO, tv, "SO_SNDTIMEO");
+  opt.set(SOL_SOCKET, SO_RCVTIMEO, tv, "SO_RCVTIMEO");
+  return opt.status();
+}
+
 } // namespace
 
-bool TcpConn::sendAll(const void* buf, size_t len) {
+// ---------------------------------------------------------------------------
+// TcpConn<IOPolicy> — shared sync methods
+// ---------------------------------------------------------------------------
+
+template <typename IOPolicy>
+bool TcpConn<IOPolicy>::sendAll(const void* buf, size_t len) {
   auto* ptr = static_cast<const uint8_t*>(buf);
   size_t remaining = len;
   while (remaining > 0) {
@@ -232,7 +330,8 @@ bool TcpConn::sendAll(const void* buf, size_t len) {
   return true;
 }
 
-bool TcpConn::recvAll(void* buf, size_t len) {
+template <typename IOPolicy>
+bool TcpConn<IOPolicy>::recvAll(void* buf, size_t len) {
   auto* ptr = static_cast<uint8_t*>(buf);
   size_t remaining = len;
   while (remaining > 0) {
@@ -252,7 +351,7 @@ bool TcpConn::recvAll(void* buf, size_t len) {
     }
     if (n == 0) {
       UNIFLOW_LOG_WARN("recvAll: peer closed connection, fd={}", sock_);
-      errno = ECONNRESET; // peer closed
+      errno = ECONNRESET;
       return false;
     }
     ptr += n;
@@ -261,7 +360,8 @@ bool TcpConn::recvAll(void* buf, size_t len) {
   return true;
 }
 
-bool TcpConn::exchangeMagic() {
+template <typename IOPolicy>
+bool TcpConn<IOPolicy>::exchangeMagic() {
   uint32_t magic = htonl(kMagic);
   if (!sendAll(&magic, sizeof(magic))) {
     UNIFLOW_LOG_ERROR("magic exchange: send failed, fd={}", sock_);
@@ -285,9 +385,13 @@ bool TcpConn::exchangeMagic() {
   return true;
 }
 
-std::unique_ptr<TcpConn> TcpConn::create(int sock) {
+template <typename IOPolicy>
+// NOLINTNEXTLINE(facebook-hte-NullableReturn)
+std::unique_ptr<TcpConn<IOPolicy>> TcpConn<IOPolicy>::create(int sock)
+  requires std::same_as<IOPolicy, SyncIO>
+{
   UNIFLOW_LOG_DEBUG("TcpConn: handshake starting, fd={}", sock);
-  auto conn = std::unique_ptr<TcpConn>(new TcpConn(sock));
+  auto conn = std::unique_ptr<TcpConn>(new TcpConn(sock, SyncIO{}));
   if (!conn->exchangeMagic()) {
     UNIFLOW_LOG_ERROR("TcpConn: handshake failed, fd={}", sock);
     return nullptr;
@@ -296,11 +400,42 @@ std::unique_ptr<TcpConn> TcpConn::create(int sock) {
   return conn;
 }
 
-Result<size_t> TcpConn::send(std::span<const uint8_t> data) {
+template <typename IOPolicy>
+// NOLINTNEXTLINE(facebook-hte-NullableReturn)
+std::unique_ptr<TcpConn<IOPolicy>> TcpConn<IOPolicy>::create(
+    int sock,
+    EventBase& evb)
+  requires std::same_as<IOPolicy, AsyncIO>
+{
+  UNIFLOW_LOG_DEBUG("TcpConn: handshake starting (async), fd={}", sock);
+  auto conn = std::unique_ptr<TcpConn>(new TcpConn(sock, AsyncIO{evb}));
+  if (!conn->exchangeMagic()) {
+    UNIFLOW_LOG_ERROR("TcpConn: handshake failed, fd={}", sock);
+    return nullptr;
+  }
+
+  int flags = fcntl(sock, F_GETFL);
+  if (flags < 0 || fcntl(sock, F_SETFL, flags | O_NONBLOCK) < 0) {
+    UNIFLOW_LOG_ERROR(
+        "TcpConn: fcntl O_NONBLOCK failed, fd={}: {}",
+        sock,
+        std::system_category().message(errno));
+    return nullptr;
+  }
+
+  UNIFLOW_LOG_INFO("TcpConn: established (async), fd={}", sock);
+  return conn;
+}
+
+// ---------------------------------------------------------------------------
+// TcpConn send/recv — SyncIO blocks + ready future, AsyncIO dispatches
+// ---------------------------------------------------------------------------
+
+template <typename IOPolicy>
+Result<size_t> TcpConn<IOPolicy>::syncSend(std::span<const uint8_t> data) {
   if (sock_ < 0) {
     return Err(ErrCode::NotConnected, "Socket is not connected");
   }
-
   if (data.size() > kMaxMessageSize) {
     return Err(
         ErrCode::InvalidArgument,
@@ -316,17 +451,16 @@ Result<size_t> TcpConn::send(std::span<const uint8_t> data) {
         ErrCode::ConnectionFailed,
         "send header failed: " + std::system_category().message(errno));
   }
-
   if (!data.empty() && !sendAll(data.data(), data.size())) {
     return Err(
         ErrCode::ConnectionFailed,
         "send payload failed: " + std::system_category().message(errno));
   }
-
   return data.size();
 }
 
-Result<size_t> TcpConn::recv(std::vector<uint8_t>& data) {
+template <typename IOPolicy>
+Result<size_t> TcpConn<IOPolicy>::syncRecv(std::vector<uint8_t>& data) {
   if (sock_ < 0) {
     return Err(ErrCode::NotConnected, "Socket is not connected");
   }
@@ -340,6 +474,7 @@ Result<size_t> TcpConn::recv(std::vector<uint8_t>& data) {
 
   uint32_t len = ntohl(rawLen);
   if (len > kMaxMessageSize) {
+    ::shutdown(sock_, SHUT_RDWR);
     return Err(
         ErrCode::InvalidArgument,
         "message size " + std::to_string(len) + " exceeds maximum " +
@@ -354,10 +489,448 @@ Result<size_t> TcpConn::recv(std::vector<uint8_t>& data) {
   }
 
   UNIFLOW_LOG_DEBUG("TcpConn::recv: fd={} bytes={}", sock_, len);
-  return len;
+  return static_cast<size_t>(len);
 }
 
-void TcpConn::close() {
+template <typename IOPolicy>
+Result<size_t> TcpConn<IOPolicy>::syncRecv(std::span<uint8_t> buf) {
+  if (sock_ < 0) {
+    return Err(ErrCode::NotConnected, "Socket is not connected");
+  }
+
+  uint32_t rawLen = 0;
+  if (!recvAll(&rawLen, sizeof(rawLen))) {
+    return Err(
+        ErrCode::ConnectionFailed,
+        "recv header failed: " + std::system_category().message(errno));
+  }
+
+  uint32_t len = ntohl(rawLen);
+  if (len > kMaxMessageSize) {
+    ::shutdown(sock_, SHUT_RDWR);
+    return Err(
+        ErrCode::InvalidArgument,
+        "message size " + std::to_string(len) + " exceeds maximum " +
+            std::to_string(kMaxMessageSize));
+  }
+  if (len > buf.size()) {
+    ::shutdown(sock_, SHUT_RDWR);
+    return Err(
+        ErrCode::InvalidArgument,
+        "payload size " + std::to_string(len) + " exceeds buffer size " +
+            std::to_string(buf.size()));
+  }
+
+  if (len != 0 && !recvAll(buf.data(), len)) {
+    return Err(
+        ErrCode::ConnectionFailed,
+        "recv payload failed: " + std::system_category().message(errno));
+  }
+
+  UNIFLOW_LOG_DEBUG("TcpConn::recv(span): fd={} bytes={}", sock_, len);
+  return static_cast<size_t>(len);
+}
+
+// ---------------------------------------------------------------------------
+// TcpConn<SyncIO> — blocking send/recv, returns ready futures
+// ---------------------------------------------------------------------------
+
+template <>
+std::future<Result<size_t>> TcpConn<SyncIO>::send(
+    std::span<const uint8_t> data) {
+  return make_ready_future(syncSend(data));
+}
+
+template <>
+std::future<Result<size_t>> TcpConn<SyncIO>::recv(std::vector<uint8_t>& data) {
+  return make_ready_future(syncRecv(data));
+}
+
+template <>
+std::future<Result<size_t>> TcpConn<SyncIO>::recv(std::span<uint8_t> buf) {
+  return make_ready_future(syncRecv(buf));
+}
+
+// ---------------------------------------------------------------------------
+// TcpConn<AsyncIO> — non-blocking send/recv via EventBase
+// ---------------------------------------------------------------------------
+
+template <>
+std::future<Result<size_t>> TcpConn<AsyncIO>::send(
+    std::span<const uint8_t> data) {
+  std::promise<Result<size_t>> promise;
+  auto future = promise.get_future();
+
+  io_.evb.dispatch([this, data, p = std::move(promise)]() mutable noexcept {
+    if (sock_ < 0) {
+      p.set_value(Err(ErrCode::NotConnected, "Socket is not connected"));
+      return;
+    }
+    if (data.size() > kMaxMessageSize) {
+      p.set_value(
+          Err(ErrCode::InvalidArgument,
+              "message size " + std::to_string(data.size()) +
+                  " exceeds maximum " + std::to_string(kMaxMessageSize)));
+      return;
+    }
+    if (io_.sendState) {
+      p.set_value(Err(ErrCode::ResourceExhausted, "send already in flight"));
+      return;
+    }
+
+    AsyncIO::SendState state;
+    state.payload = data;
+    state.promise = std::move(p);
+    uint32_t len = htonl(static_cast<uint32_t>(data.size()));
+    std::memcpy(state.header, &len, sizeof(len));
+    io_.sendState = std::move(state);
+
+    // Eager send — try before registering for EPOLLOUT
+    onSendReady();
+    if (io_.sendState) {
+      updateFdRegistration();
+    }
+  });
+
+  return future;
+}
+
+template <>
+std::future<Result<size_t>> TcpConn<AsyncIO>::recv(std::vector<uint8_t>& data) {
+  std::promise<Result<size_t>> promise;
+  auto future = promise.get_future();
+
+  io_.evb.dispatch([this, &data, p = std::move(promise)]() mutable noexcept {
+    if (sock_ < 0) {
+      p.set_value(Err(ErrCode::NotConnected, "Socket is not connected"));
+      return;
+    }
+    if (io_.recvState) {
+      p.set_value(Err(ErrCode::ResourceExhausted, "recv already in flight"));
+      return;
+    }
+
+    AsyncIO::RecvState state;
+    state.isSpanMode = false;
+    state.callerVec = &data;
+    state.promise = std::move(p);
+    io_.recvState = std::move(state);
+
+    // Eager recv — try before registering for EPOLLIN
+    onRecvReady();
+    if (io_.recvState) {
+      updateFdRegistration();
+    }
+  });
+
+  return future;
+}
+
+template <>
+std::future<Result<size_t>> TcpConn<AsyncIO>::recv(std::span<uint8_t> buf) {
+  std::promise<Result<size_t>> promise;
+  auto future = promise.get_future();
+
+  io_.evb.dispatch([this, buf, p = std::move(promise)]() mutable noexcept {
+    if (sock_ < 0) {
+      p.set_value(Err(ErrCode::NotConnected, "Socket is not connected"));
+      return;
+    }
+    if (io_.recvState) {
+      p.set_value(Err(ErrCode::ResourceExhausted, "recv already in flight"));
+      return;
+    }
+
+    AsyncIO::RecvState state;
+    state.isSpanMode = true;
+    state.callerBuf = buf;
+    state.promise = std::move(p);
+    io_.recvState = std::move(state);
+
+    // Eager recv — try before registering for EPOLLIN
+    onRecvReady();
+    if (io_.recvState) {
+      updateFdRegistration();
+    }
+  });
+
+  return future;
+}
+
+// ---------------------------------------------------------------------------
+// TcpConn<AsyncIO> — async internals (loop-thread-only)
+// ---------------------------------------------------------------------------
+
+template <typename IOPolicy>
+void TcpConn<IOPolicy>::updateFdRegistration()
+  requires std::same_as<IOPolicy, AsyncIO>
+{
+  uint32_t events = 0;
+  if (io_.sendState) {
+    events |= EPOLLOUT;
+  }
+  if (io_.recvState) {
+    events |= EPOLLIN;
+  }
+
+  if (events == 0) {
+    io_.evb.unregisterFd(sock_);
+    return;
+  }
+
+  io_.evb.registerFd(
+      sock_, events, [this](uint32_t revents) { onFdReady(revents); });
+}
+
+template <typename IOPolicy>
+void TcpConn<IOPolicy>::onFdReady(uint32_t revents)
+  requires std::same_as<IOPolicy, AsyncIO>
+{
+  bool hasData = revents & (EPOLLIN | EPOLLOUT);
+  bool hasError = revents & (EPOLLERR | EPOLLHUP);
+
+  if (hasError && !hasData) {
+    failAllOps("socket error or hangup");
+    return;
+  }
+
+  if ((revents & EPOLLOUT) && io_.sendState) {
+    onSendReady();
+  }
+  if ((revents & EPOLLIN) && io_.recvState) {
+    onRecvReady();
+  }
+}
+
+template <typename IOPolicy>
+void TcpConn<IOPolicy>::failAllOps(const char* msg)
+  requires std::same_as<IOPolicy, AsyncIO>
+{
+  if (io_.recvState) {
+    io_.recvState->promise.set_value(Err(ErrCode::ConnectionFailed, msg));
+    io_.recvState.reset();
+  }
+  poisonConnection(msg);
+}
+
+template <typename IOPolicy>
+void TcpConn<IOPolicy>::poisonConnection(const char* msg)
+  requires std::same_as<IOPolicy, AsyncIO>
+{
+  if (io_.sendState) {
+    io_.sendState->promise.set_value(
+        Err(ErrCode::ConnectionFailed,
+            "send aborted: recv error: " + std::string(msg)));
+    io_.sendState.reset();
+  }
+  io_.evb.unregisterFd(sock_);
+  ::shutdown(sock_, SHUT_RDWR);
+}
+
+template <typename IOPolicy>
+void TcpConn<IOPolicy>::failSend(const char* msg)
+  requires std::same_as<IOPolicy, AsyncIO>
+{
+  UNIFLOW_LOG_ERROR(
+      "send: {} fd={}: {}", msg, sock_, std::system_category().message(errno));
+  io_.sendState->promise.set_value(Err(ErrCode::ConnectionFailed, msg));
+  io_.sendState.reset();
+  updateFdRegistration();
+}
+
+template <typename IOPolicy>
+void TcpConn<IOPolicy>::failRecv(const char* msg)
+  requires std::same_as<IOPolicy, AsyncIO>
+{
+  UNIFLOW_LOG_ERROR(
+      "recv: {} fd={}: {}", msg, sock_, std::system_category().message(errno));
+  io_.recvState->promise.set_value(Err(ErrCode::ConnectionFailed, msg));
+  io_.recvState.reset();
+  updateFdRegistration();
+}
+
+template <typename IOPolicy>
+std::optional<bool>
+TcpConn<IOPolicy>::trySend(const uint8_t* buf, size_t len, size_t& sent)
+  requires std::same_as<IOPolicy, AsyncIO>
+{
+  while (sent < len) {
+    ssize_t n =
+        ::send(sock_, buf + sent, len - sent, MSG_NOSIGNAL | MSG_DONTWAIT);
+    if (n <= 0) {
+      if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        return false;
+      }
+      if (n < 0 && errno == EINTR) {
+        continue;
+      }
+      if (n == 0) {
+        errno = ECONNRESET;
+      }
+      return std::nullopt;
+    }
+    sent += static_cast<size_t>(n);
+  }
+  return true;
+}
+
+template <typename IOPolicy>
+void TcpConn<IOPolicy>::onSendReady()
+  requires std::same_as<IOPolicy, AsyncIO>
+{
+  auto result = trySend(
+      io_.sendState->header,
+      sizeof(io_.sendState->header),
+      io_.sendState->headerSent);
+  if (!result) {
+    failSend("send header failed");
+    return;
+  }
+  if (!*result) {
+    return;
+  }
+
+  size_t payloadSize = io_.sendState->payload.size();
+  result = trySend(
+      io_.sendState->payload.data(), payloadSize, io_.sendState->payloadSent);
+  if (!result) {
+    failSend("send payload failed");
+    return;
+  }
+  if (!*result) {
+    return;
+  }
+
+  UNIFLOW_LOG_DEBUG("send: complete, fd={} bytes={}", sock_, payloadSize);
+  io_.sendState->promise.set_value(payloadSize);
+  io_.sendState.reset();
+  updateFdRegistration();
+}
+
+template <typename IOPolicy>
+std::optional<bool>
+TcpConn<IOPolicy>::tryRecv(uint8_t* buf, size_t len, size_t& recvd)
+  requires std::same_as<IOPolicy, AsyncIO>
+{
+  while (recvd < len) {
+    ssize_t n = ::recv(sock_, buf + recvd, len - recvd, MSG_DONTWAIT);
+    if (n < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        return false;
+      }
+      return std::nullopt;
+    }
+    if (n == 0) {
+      errno = ECONNRESET;
+      return std::nullopt;
+    }
+    recvd += static_cast<size_t>(n);
+  }
+  return true;
+}
+
+template <typename IOPolicy>
+void TcpConn<IOPolicy>::onRecvReady()
+  requires std::same_as<IOPolicy, AsyncIO>
+{
+  auto result = tryRecv(
+      io_.recvState->header,
+      sizeof(io_.recvState->header),
+      io_.recvState->headerRecvd);
+  if (!result) {
+    failRecv("recv header failed");
+    return;
+  }
+  if (!*result) {
+    return;
+  }
+
+  if (!io_.recvState->headerDone) {
+    io_.recvState->headerDone = true;
+    uint32_t rawLen = 0;
+    std::memcpy(&rawLen, io_.recvState->header, sizeof(rawLen));
+    io_.recvState->payloadLen = ntohl(rawLen);
+    if (io_.recvState->payloadLen > kMaxMessageSize) {
+      UNIFLOW_LOG_ERROR(
+          "recv: message size {} exceeds maximum {}, fd={}",
+          io_.recvState->payloadLen,
+          kMaxMessageSize,
+          sock_);
+      io_.recvState->promise.set_value(
+          Err(ErrCode::InvalidArgument, "message size exceeds maximum"));
+      io_.recvState.reset();
+      poisonConnection("protocol error: message size exceeds maximum");
+      return;
+    }
+
+    if (io_.recvState->isSpanMode) {
+      if (io_.recvState->payloadLen > io_.recvState->callerBuf.size()) {
+        io_.recvState->promise.set_value(
+            Err(ErrCode::InvalidArgument,
+                "payload size " + std::to_string(io_.recvState->payloadLen) +
+                    " exceeds buffer size " +
+                    std::to_string(io_.recvState->callerBuf.size())));
+        io_.recvState.reset();
+        poisonConnection("protocol error: payload exceeds buffer");
+        return;
+      }
+    } else {
+      io_.recvState->callerVec->resize(io_.recvState->payloadLen);
+    }
+  }
+
+  if (io_.recvState->payloadLen > 0) {
+    result = tryRecv(
+        io_.recvState->target(),
+        io_.recvState->payloadLen,
+        io_.recvState->payloadRecvd);
+    if (!result) {
+      failRecv("recv payload failed");
+      return;
+    }
+    if (!*result) {
+      return;
+    }
+  }
+
+  UNIFLOW_LOG_DEBUG(
+      "recv: complete, fd={} bytes={}", sock_, io_.recvState->payloadLen);
+  io_.recvState->promise.set_value(
+      static_cast<size_t>(io_.recvState->payloadLen));
+  io_.recvState.reset();
+  updateFdRegistration();
+}
+
+// ---------------------------------------------------------------------------
+// TcpConn destructor
+// ---------------------------------------------------------------------------
+
+template <typename IOPolicy>
+TcpConn<IOPolicy>::~TcpConn() {
+  if constexpr (std::same_as<IOPolicy, AsyncIO>) {
+    // Always drain — queued dispatch lambdas from prior send/recv calls
+    // capture `this` and may still be pending even after close().
+    auto cleanupFn = [this]() noexcept { failAllOps("TcpConn destroyed"); };
+
+    if (io_.evb.inLoopThread()) {
+      cleanupFn();
+    } else if (io_.evb.isLoopRunning()) {
+      io_.evb.dispatchAndWait(std::move(cleanupFn));
+      // Drain: unregisterFd is deferred — wait for it to complete.
+      io_.evb.dispatchAndWait([]() noexcept {});
+    } else {
+      // Loop stopped — closing the fd auto-removes it from epoll.
+      cleanupFn();
+    }
+  }
+  close();
+}
+
+template <typename IOPolicy>
+void TcpConn<IOPolicy>::close() {
   if (sock_ >= 0) {
     UNIFLOW_LOG_DEBUG("TcpConn: close, fd={}", sock_);
     ::shutdown(sock_, SHUT_RDWR);
@@ -366,105 +939,290 @@ void TcpConn::close() {
   }
 }
 
-TcpConn::~TcpConn() {
-  close();
+template class TcpConn<SyncIO>;
+template class TcpConn<AsyncIO>;
+// ---------------------------------------------------------------------------
+// SyncAccept
+// ---------------------------------------------------------------------------
+
+std::future<std::unique_ptr<Conn>> SyncAccept::accept(
+    std::atomic<int>& listenSock,
+    int acceptRetryCnt,
+    const std::string& id) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (listenSock.load() < 0) {
+    return make_ready_future(std::unique_ptr<Conn>(nullptr));
+  }
+
+  UNIFLOW_LOG_DEBUG("TcpServer: waiting for connection on {}", id);
+
+  sockaddr_storage clientAddr{};
+
+  // EAGAIN from SO_RCVTIMEO loops back for shutdown checks without
+  // counting as a retry. Transient errors retry up to acceptRetryCnt.
+  int retryCnt = 0;
+  while (retryCnt < acceptRetryCnt) {
+    socklen_t clientLen = sizeof(clientAddr);
+    int clientSock = ::accept4(
+        listenSock.load(),
+        reinterpret_cast<sockaddr*>(&clientAddr),
+        &clientLen,
+        SOCK_CLOEXEC);
+    if (clientSock >= 0) {
+      UNIFLOW_LOG_INFO(
+          "TcpServer: accepted fd={} from {}",
+          clientSock,
+          formatAddr(clientAddr));
+      auto status = configureAcceptedSocket(clientSock);
+      if (!status) {
+        UNIFLOW_LOG_ERROR(
+            "TcpServer: socket config failed fd={}: {}",
+            clientSock,
+            status.error().toString());
+        ::close(clientSock);
+        return make_ready_future(std::unique_ptr<Conn>(nullptr));
+      }
+      auto conn = TcpConn<SyncIO>::create(clientSock);
+      if (conn) {
+        return make_ready_future(std::unique_ptr<Conn>(std::move(conn)));
+      }
+      // Handshake failed (non-uniflow client) — keep accepting.
+      // Socket was already closed by TcpConn destructor inside create().
+      UNIFLOW_LOG_WARN(
+          "TcpServer: rejecting non-uniflow client, fd={}", clientSock);
+      if (listenSock.load() < 0) {
+        UNIFLOW_LOG_INFO("TcpServer: accept interrupted by shutdown");
+        return make_ready_future(std::unique_ptr<Conn>(nullptr));
+      }
+      continue;
+    }
+
+    int savedErrno = errno;
+    if (savedErrno == EAGAIN || savedErrno == EWOULDBLOCK) {
+      if (listenSock.load() < 0) {
+        UNIFLOW_LOG_INFO("TcpServer: accept interrupted by shutdown");
+        return make_ready_future(std::unique_ptr<Conn>(nullptr));
+      }
+      continue; // don't count timeouts as retries
+    }
+
+    if (!shouldRetry(savedErrno)) {
+      UNIFLOW_LOG_ERROR(
+          "TcpServer: accept failed (non-retryable): errno={} ({})",
+          savedErrno,
+          std::system_category().message(savedErrno));
+      return make_ready_future(std::unique_ptr<Conn>(nullptr));
+    }
+
+    ++retryCnt;
+    UNIFLOW_LOG_WARN(
+        "TcpServer: accept retry {}/{}: errno={} ({})",
+        retryCnt,
+        acceptRetryCnt,
+        savedErrno,
+        std::system_category().message(savedErrno));
+  }
+
+  UNIFLOW_LOG_ERROR(
+      "TcpServer: accept exhausted {} retries on {}", acceptRetryCnt, id);
+  return make_ready_future(std::unique_ptr<Conn>(nullptr));
+}
+
+void SyncAccept::shutdown(std::atomic<int>& listenSock, const std::string& id) {
+  // SHUT_RDWR unblocks any thread blocked in accept(). The mutex
+  // ensures we wait for accept() to return before closing the fd,
+  // preventing use-after-free on listenSock after destruction.
+  int fd = listenSock.exchange(-1);
+  if (fd >= 0) {
+    UNIFLOW_LOG_INFO("TcpServer: shutting down {}, fd={}", id, fd);
+    ::shutdown(fd, SHUT_RDWR);
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (fd >= 0) {
+    ::close(fd);
+  }
 }
 
 // ---------------------------------------------------------------------------
-// TcpServer
+// AsyncAccept
 // ---------------------------------------------------------------------------
 
-Result<int> TcpServer::createListenSocket(int domain) {
-  int sock = ::socket(domain, SOCK_STREAM | SOCK_CLOEXEC, 0);
-  if (sock < 0) {
-    return Err(
-        ErrCode::ConnectionFailed,
-        "socket creation failed: " + std::system_category().message(errno));
+void AsyncAccept::teardown(int fd) {
+  accepting_ = false;
+  evb_.unregisterFd(fd);
+  // Deliver any pre-accepted connections to waiting consumers.
+  while (!readyConns_.empty() && !pendingPromises_.empty()) {
+    pendingPromises_.front().set_value(std::move(readyConns_.front()));
+    readyConns_.pop();
+    pendingPromises_.pop();
   }
-
-  SockOptSetter opt(sock);
-  opt.set(SOL_SOCKET, SO_REUSEADDR, 1, "SO_REUSEADDR");
-  opt.trySet(SOL_SOCKET, SO_REUSEPORT, 1);
-
-  // Set accept timeout so accept() wakes up periodically, allowing
-  // shutdown checks instead of blocking indefinitely
-  struct timeval tv{};
-  tv.tv_sec = kAcceptTimeoutSec;
-  opt.set(SOL_SOCKET, SO_RCVTIMEO, tv, "SO_RCVTIMEO");
-
-  auto status = opt.status();
-  if (!status) {
-    ::close(sock);
-    return std::move(status).error();
+  while (!pendingPromises_.empty()) {
+    pendingPromises_.front().set_value(nullptr);
+    pendingPromises_.pop();
   }
-  // @lint-ignore PULSE_RESOURCE_LEAK fd ownership transfers to caller via
-  // Result
-  return sock;
+  readyConns_ = {};
 }
 
-Status TcpServer::configureAcceptedSocket(int sock) {
-  SockOptSetter opt(sock);
-
-  if (config_.socketBufSize) {
-    opt.set(SOL_SOCKET, SO_SNDBUF, *config_.socketBufSize, "SO_SNDBUF");
-    opt.set(SOL_SOCKET, SO_RCVBUF, *config_.socketBufSize, "SO_RCVBUF");
-  }
-  if (config_.tcpNoDelay) {
-    int val = *config_.tcpNoDelay ? 1 : 0;
-    opt.set(IPPROTO_TCP, TCP_NODELAY, val, "TCP_NODELAY");
-  }
-  if (config_.enableKeepalive) {
-    int val = *config_.enableKeepalive ? 1 : 0;
-    opt.set(SOL_SOCKET, SO_KEEPALIVE, val, "SO_KEEPALIVE");
-  }
-  if (config_.enableKeepalive && *config_.enableKeepalive) {
-    if (config_.keepaliveIdle) {
-      int val = static_cast<int>(config_.keepaliveIdle->count());
-      opt.set(IPPROTO_TCP, TCP_KEEPIDLE, val, "TCP_KEEPIDLE");
-    }
-    if (config_.keepaliveInterval) {
-      int val = static_cast<int>(config_.keepaliveInterval->count());
-      opt.set(IPPROTO_TCP, TCP_KEEPINTVL, val, "TCP_KEEPINTVL");
-    }
-    if (config_.keepaliveCount) {
-      opt.set(IPPROTO_TCP, TCP_KEEPCNT, *config_.keepaliveCount, "TCP_KEEPCNT");
-    }
-  }
-  if (config_.userTimeout) {
-    int val = static_cast<int>(config_.userTimeout->count());
-    opt.set(IPPROTO_TCP, TCP_USER_TIMEOUT, val, "TCP_USER_TIMEOUT");
-  }
-  if (config_.connTimeout) {
-    struct timeval tv{};
-    tv.tv_sec = config_.connTimeout->count();
-    opt.set(SOL_SOCKET, SO_SNDTIMEO, tv, "SO_SNDTIMEO");
-    opt.set(SOL_SOCKET, SO_RCVTIMEO, tv, "SO_RCVTIMEO");
+void AsyncAccept::acceptPendingConnections(std::atomic<int>& listenSock) {
+  if (!accepting_) {
+    return;
   }
 
-  return opt.status();
+  while (!readyConns_.empty() && !pendingPromises_.empty()) {
+    pendingPromises_.front().set_value(std::move(readyConns_.front()));
+    readyConns_.pop();
+    pendingPromises_.pop();
+  }
+
+  int listenFd = listenSock.load();
+  if (listenFd < 0) {
+    return;
+  }
+
+  // Drain all pending connections from the non-blocking listen socket.
+  for (;;) {
+    sockaddr_storage addr{};
+    socklen_t len = sizeof(addr);
+    int clientSock = accept4(
+        listenFd, reinterpret_cast<sockaddr*>(&addr), &len, SOCK_CLOEXEC);
+    if (clientSock < 0) {
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        break;
+      }
+      if (errno == EINTR) {
+        continue;
+      }
+      UNIFLOW_LOG_ERROR(
+          "TcpServer: async accept4 failed: errno={} ({})",
+          errno,
+          std::system_category().message(errno));
+      break;
+    }
+
+    UNIFLOW_LOG_INFO(
+        "TcpServer: async accepted fd={} from {}",
+        clientSock,
+        formatAddr(addr));
+
+    auto timeoutStatus = setHandshakeTimeout(clientSock);
+    if (!timeoutStatus) {
+      UNIFLOW_LOG_WARN(
+          "TcpServer: handshake timeout failed, fd={}: {}",
+          clientSock,
+          timeoutStatus.error().toString());
+      ::close(clientSock);
+      continue;
+    }
+
+    auto conn = TcpConn<SyncIO>::create(clientSock);
+    if (!conn) {
+      continue;
+    }
+
+    // configureAcceptedSocket sets 30s timeouts — must come after the
+    // 500ms handshake timeout to avoid overriding it.
+    auto status = configureAcceptedSocket(conn->getFd());
+    if (!status) {
+      UNIFLOW_LOG_ERROR(
+          "TcpServer: async socket config failed fd={}: {}",
+          conn->getFd(),
+          status.error().toString());
+      continue;
+    }
+
+    if (!pendingPromises_.empty()) {
+      pendingPromises_.front().set_value(std::move(conn));
+      pendingPromises_.pop();
+    } else {
+      readyConns_.push(std::move(conn));
+    }
+  }
 }
 
-Status TcpServer::resolveAndBind(int domain) {
-  sockaddr_storage addr{};
-  auto addrLenResult = buildSockAddr(host_, port_, domain, addr);
-  if (!addrLenResult) {
-    return std::move(addrLenResult).error();
+std::future<std::unique_ptr<Conn>> AsyncAccept::accept(
+    std::atomic<int>& listenSock,
+    int /*acceptRetryCnt*/,
+    const std::string& /*id*/) {
+  if (listenSock.load() < 0) {
+    return make_ready_future(std::unique_ptr<Conn>(nullptr));
   }
 
-  if (::bind(
-          listenSock_,
-          reinterpret_cast<sockaddr*>(&addr),
-          addrLenResult.value()) < 0) {
-    return Err(
-        ErrCode::ConnectionFailed,
-        "bind failed: " + std::system_category().message(errno));
-  }
+  std::promise<std::unique_ptr<Conn>> promise;
+  auto future = promise.get_future();
 
-  return Ok();
+  evb_.dispatch([this, &listenSock, p = std::move(promise)]() mutable noexcept {
+    int sock = listenSock.load();
+    if (sock < 0) {
+      p.set_value(nullptr);
+      return;
+    }
+
+    // Lazy setup: fcntl + registerFd both on the loop thread.
+    if (!accepting_) {
+      int flags = fcntl(sock, F_GETFL);
+      if (flags < 0 || fcntl(sock, F_SETFL, flags | O_NONBLOCK) < 0) {
+        UNIFLOW_LOG_ERROR(
+            "TcpServer: fcntl O_NONBLOCK failed, fd={}: {}",
+            sock,
+            std::system_category().message(errno));
+        p.set_value(nullptr);
+        return;
+      }
+      evb_.registerFd(sock, EPOLLIN, [this, &listenSock](uint32_t /*events*/) {
+        acceptPendingConnections(listenSock);
+      });
+      accepting_ = true;
+    }
+
+    pendingPromises_.push(std::move(p));
+
+    // Deliver any pre-accepted connections waiting in readyConns_.
+    while (!readyConns_.empty() && !pendingPromises_.empty()) {
+      pendingPromises_.front().set_value(std::move(readyConns_.front()));
+      readyConns_.pop();
+      pendingPromises_.pop();
+    }
+  });
+
+  return future;
 }
 
-TcpServer::TcpServer(std::string id, TcpSocketConfig config)
-    : id_(std::move(id)), config_(std::move(config)) {
+void AsyncAccept::shutdown(
+    std::atomic<int>& listenSock,
+    const std::string& id) {
+  int fd = listenSock.exchange(-1);
+  if (fd < 0) {
+    return;
+  }
+
+  auto closeFd = [fd, &id]() {
+    UNIFLOW_LOG_INFO("TcpServer: shutting down {}, fd={}", id, fd);
+    ::shutdown(fd, SHUT_RDWR);
+    ::close(fd);
+  };
+
+  if (evb_.inLoopThread()) {
+    teardown(fd);
+    closeFd();
+  } else if (evb_.isLoopRunning()) {
+    evb_.dispatchAndWait([this, fd]() noexcept { teardown(fd); });
+    // Drain: unregisterFd inside teardown is deferred —
+    // wait for it to complete before closing the fd.
+    evb_.dispatchAndWait([]() noexcept {});
+    closeFd();
+  } else {
+    // Loop stopped — closing the fd auto-removes it from epoll.
+    teardown(fd);
+    closeFd();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// BasicTcpServer<AcceptPolicy> — template methods
+// ---------------------------------------------------------------------------
+
+template <typename AcceptPolicy>
+void BasicTcpServer<AcceptPolicy>::parseId() {
   auto result = parseHostPort(id_);
   if (!result) {
     throw std::invalid_argument(
@@ -481,25 +1239,8 @@ TcpServer::TcpServer(std::string id, TcpSocketConfig config)
   }
 }
 
-TcpServer::~TcpServer() {
-  shutdown();
-}
-
-const std::string& TcpServer::getId() const {
-  return id_;
-}
-
-void TcpServer::shutdown() {
-  int sock = listenSock_.exchange(-1);
-  if (sock >= 0) {
-    UNIFLOW_LOG_INFO("TcpServer: shutting down {}, fd={}", id_, sock);
-    // SHUT_RDWR unblocks any thread blocked in accept()
-    ::shutdown(sock, SHUT_RDWR);
-    ::close(sock);
-  }
-}
-
-Status TcpServer::init() {
+template <typename AcceptPolicy>
+Status BasicTcpServer<AcceptPolicy>::init() {
   if (listenSock_ >= 0) {
     return Err(ErrCode::InvalidArgument, "Server already initialized");
   }
@@ -519,7 +1260,7 @@ Status TcpServer::init() {
   }
   listenSock_ = sockResult.value();
 
-  auto bindStatus = resolveAndBind(domain);
+  auto bindStatus = resolveAndBind(host_, port_, domain, listenSock_.load());
   if (!bindStatus) {
     UNIFLOW_LOG_ERROR(
         "TcpServer: bind failed on {}: {}", id_, bindStatus.error().toString());
@@ -528,7 +1269,6 @@ Status TcpServer::init() {
     return bindStatus;
   }
 
-  // Retrieve actual bound port (needed when binding to port 0).
   sockaddr_storage boundAddr{};
   socklen_t boundLen = sizeof(boundAddr);
   if (::getsockname(
@@ -565,124 +1305,50 @@ Status TcpServer::init() {
   return Ok();
 }
 
-std::unique_ptr<Conn> TcpServer::accept() {
-  if (listenSock_ < 0) {
-    return nullptr;
-  }
+template class BasicTcpServer<SyncAccept>;
+template class BasicTcpServer<AsyncAccept>;
 
-  UNIFLOW_LOG_DEBUG("TcpServer: waiting for connection on {}", id_);
+// ---------------------------------------------------------------------------
+// Shared client helpers
+// ---------------------------------------------------------------------------
 
-  sockaddr_storage clientAddr{};
-  socklen_t clientLen = sizeof(clientAddr);
+namespace {
 
-  int retryCnt = 0;
-  while (retryCnt < config_.acceptRetryCnt) {
-    clientLen = sizeof(clientAddr);
-    int clientSock = ::accept4(
-        listenSock_,
-        reinterpret_cast<sockaddr*>(&clientAddr),
-        &clientLen,
-        SOCK_CLOEXEC);
-    if (clientSock >= 0) {
-      UNIFLOW_LOG_INFO(
-          "TcpServer: accepted fd={} from {}",
-          clientSock,
-          formatAddr(clientAddr));
-      auto status = configureAcceptedSocket(clientSock);
-      if (!status) {
-        UNIFLOW_LOG_ERROR(
-            "TcpServer: socket config failed fd={}: {}",
-            clientSock,
-            status.error().toString());
-        ::close(clientSock);
-        return nullptr;
-      }
-      auto conn = TcpConn::create(clientSock);
-      if (conn) {
-        return conn;
-      }
-      // Non-uniflow client — socket closed by TcpConn dtor, keep accepting.
-      UNIFLOW_LOG_WARN(
-          "TcpServer: rejecting non-uniflow client, fd={}", clientSock);
-      continue;
-    }
-
-    if (errno == EAGAIN || errno == EWOULDBLOCK) {
-      if (listenSock_ < 0) {
-        UNIFLOW_LOG_INFO("TcpServer: accept interrupted by shutdown");
-        return nullptr;
-      }
-      continue;
-    }
-
-    int savedErrno = errno;
-    if (!shouldRetry(savedErrno)) {
-      UNIFLOW_LOG_ERROR(
-          "TcpServer: accept failed (non-retryable): errno={} ({})",
-          savedErrno,
-          std::system_category().message(savedErrno));
-      return nullptr;
-    }
-
-    ++retryCnt;
-    UNIFLOW_LOG_WARN(
-        "TcpServer: accept retry {}/{}: errno={} ({})",
-        retryCnt,
-        config_.acceptRetryCnt,
-        savedErrno,
-        std::system_category().message(savedErrno));
-  }
-
-  UNIFLOW_LOG_ERROR(
-      "TcpServer: accept exhausted {} retries on {}",
-      config_.acceptRetryCnt,
-      id_);
-  return nullptr;
-}
-
-TcpClient::TcpClient(TcpSocketConfig config) : config_(std::move(config)) {
-  auto status = config_.validate();
-  if (!status) {
-    throw std::invalid_argument(
-        "Invalid socket config: " + status.error().toString());
-  }
-}
-
-Status TcpClient::configureClientSocket(int sock) {
+Status configureClientSocket(int sock, const TcpSocketConfig& config) {
   SockOptSetter opt(sock);
 
-  if (config_.socketBufSize) {
-    opt.set(SOL_SOCKET, SO_SNDBUF, *config_.socketBufSize, "SO_SNDBUF");
-    opt.set(SOL_SOCKET, SO_RCVBUF, *config_.socketBufSize, "SO_RCVBUF");
+  if (config.socketBufSize) {
+    opt.set(SOL_SOCKET, SO_SNDBUF, *config.socketBufSize, "SO_SNDBUF");
+    opt.set(SOL_SOCKET, SO_RCVBUF, *config.socketBufSize, "SO_RCVBUF");
   }
-  if (config_.tcpNoDelay) {
-    int val = *config_.tcpNoDelay ? 1 : 0;
+  if (config.tcpNoDelay) {
+    int val = *config.tcpNoDelay ? 1 : 0;
     opt.set(IPPROTO_TCP, TCP_NODELAY, val, "TCP_NODELAY");
   }
-  if (config_.enableKeepalive) {
-    int val = *config_.enableKeepalive ? 1 : 0;
+  if (config.enableKeepalive) {
+    int val = *config.enableKeepalive ? 1 : 0;
     opt.set(SOL_SOCKET, SO_KEEPALIVE, val, "SO_KEEPALIVE");
   }
-  if (config_.enableKeepalive && *config_.enableKeepalive) {
-    if (config_.keepaliveIdle) {
-      int val = static_cast<int>(config_.keepaliveIdle->count());
+  if (config.enableKeepalive && *config.enableKeepalive) {
+    if (config.keepaliveIdle) {
+      int val = static_cast<int>(config.keepaliveIdle->count());
       opt.set(IPPROTO_TCP, TCP_KEEPIDLE, val, "TCP_KEEPIDLE");
     }
-    if (config_.keepaliveInterval) {
-      int val = static_cast<int>(config_.keepaliveInterval->count());
+    if (config.keepaliveInterval) {
+      int val = static_cast<int>(config.keepaliveInterval->count());
       opt.set(IPPROTO_TCP, TCP_KEEPINTVL, val, "TCP_KEEPINTVL");
     }
-    if (config_.keepaliveCount) {
-      opt.set(IPPROTO_TCP, TCP_KEEPCNT, *config_.keepaliveCount, "TCP_KEEPCNT");
+    if (config.keepaliveCount) {
+      opt.set(IPPROTO_TCP, TCP_KEEPCNT, *config.keepaliveCount, "TCP_KEEPCNT");
     }
   }
-  if (config_.userTimeout) {
-    int val = static_cast<int>(config_.userTimeout->count());
+  if (config.userTimeout) {
+    int val = static_cast<int>(config.userTimeout->count());
     opt.set(IPPROTO_TCP, TCP_USER_TIMEOUT, val, "TCP_USER_TIMEOUT");
   }
-  if (config_.connTimeout) {
+  if (config.connTimeout) {
     struct timeval tv{};
-    tv.tv_sec = config_.connTimeout->count();
+    tv.tv_sec = config.connTimeout->count();
     opt.set(SOL_SOCKET, SO_SNDTIMEO, tv, "SO_SNDTIMEO");
     opt.set(SOL_SOCKET, SO_RCVTIMEO, tv, "SO_RCVTIMEO");
   }
@@ -690,65 +1356,136 @@ Status TcpClient::configureClientSocket(int sock) {
   return opt.status();
 }
 
-std::unique_ptr<Conn> TcpClient::connect(std::string id) {
+struct ResolvedAddr {
+  int domain;
+  sockaddr_storage addr;
+  socklen_t addrLen;
+};
+
+Result<ResolvedAddr> resolveConnectAddr(const std::string& id) {
   auto result = parseHostPort(id);
   if (!result) {
-    UNIFLOW_LOG_ERROR("TcpClient: invalid address: {}", id);
-    return nullptr;
+    return Err(ErrCode::InvalidArgument, "Invalid address: " + id);
   }
   auto [host, port] = std::move(result).value();
 
   auto domainResult = detectAddressFamily(host);
   if (!domainResult) {
-    UNIFLOW_LOG_ERROR("TcpClient: invalid host: {}", host);
-    return nullptr;
+    return Err(ErrCode::InvalidArgument, "Invalid host: " + host);
   }
-  int domain = domainResult.value();
 
-  sockaddr_storage serverAddr{};
-  auto addrLenResult = buildSockAddr(host, port, domain, serverAddr);
+  ResolvedAddr resolved{};
+  resolved.domain = domainResult.value();
+
+  auto addrLenResult =
+      buildSockAddr(host, port, resolved.domain, resolved.addr);
   if (!addrLenResult) {
+    return std::move(addrLenResult).error();
+  }
+  resolved.addrLen = addrLenResult.value();
+  return resolved;
+}
+
+std::unique_ptr<Conn> finishConnect(int sock, const TcpSocketConfig& config) {
+  auto status = configureClientSocket(sock, config);
+  if (!status) {
+    UNIFLOW_LOG_ERROR(
+        "TcpClient: socket config failed fd={}: {}",
+        sock,
+        status.error().toString());
+    ::close(sock);
     return nullptr;
   }
-  socklen_t addrLen = addrLenResult.value();
+  return TcpConn<SyncIO>::create(sock);
+}
+
+std::unique_ptr<Conn> completeAsyncConnect(
+    int fd,
+    const TcpSocketConfig& config) {
+  int flags = fcntl(fd, F_GETFL);
+  if (flags < 0 || fcntl(fd, F_SETFL, flags & ~O_NONBLOCK) < 0) {
+    UNIFLOW_LOG_ERROR(
+        "TcpClient: fcntl O_NONBLOCK clear failed fd={}: {}",
+        fd,
+        std::system_category().message(errno));
+    ::close(fd);
+    return nullptr;
+  }
+
+  auto timeoutStatus = setHandshakeTimeout(fd);
+  if (!timeoutStatus) {
+    UNIFLOW_LOG_ERROR(
+        "TcpClient: handshake timeout failed fd={}: {}",
+        fd,
+        timeoutStatus.error().toString());
+    ::close(fd);
+    return nullptr;
+  }
+
+  // Handshake first with 500ms timeout, then configure production timeouts.
+  // configureClientSocket sets 30s SO_SNDTIMEO/SO_RCVTIMEO which would
+  // override the handshake timeout if called before TcpConn::create.
+  auto conn = TcpConn<SyncIO>::create(fd);
+  if (!conn) {
+    return nullptr;
+  }
+
+  auto status = configureClientSocket(conn->getFd(), config);
+  if (!status) {
+    UNIFLOW_LOG_ERROR(
+        "TcpClient: socket config failed fd={}: {}",
+        conn->getFd(),
+        status.error().toString());
+    return nullptr;
+  }
+  return conn;
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// SyncConnect
+// ---------------------------------------------------------------------------
+
+std::future<std::unique_ptr<Conn>> SyncConnect::connect(
+    const std::string& id,
+    const TcpSocketConfig& config) {
+  auto resolved = resolveConnectAddr(id);
+  if (!resolved) {
+    UNIFLOW_LOG_ERROR("TcpClient: {}", resolved.error().toString());
+    return make_ready_future(std::unique_ptr<Conn>(nullptr));
+  }
 
   UNIFLOW_LOG_INFO("TcpClient: connecting to {}", id);
 
-  for (size_t attempt = 0; attempt <= config_.connectRetries; ++attempt) {
+  for (size_t attempt = 0; attempt <= config.connectRetries; ++attempt) {
     if (attempt > 0) {
       UNIFLOW_LOG_WARN(
           "TcpClient: retry {}/{} to {} (backoff {}ms)",
           attempt,
-          config_.connectRetries,
+          config.connectRetries,
           id,
-          (attempt * config_.retryTimeout).count());
-      // Intentional linear backoff between connect retries
+          (attempt * config.retryTimeout).count());
       // NOLINTNEXTLINE(facebook-hte-BadCall-sleep_for)
-      std::this_thread::sleep_for(attempt * config_.retryTimeout);
+      std::this_thread::sleep_for(attempt * config.retryTimeout);
     }
 
-    // Create a fresh socket for each attempt (connect on a failed socket
-    // is undefined behavior on Linux)
-    int sock = ::socket(domain, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    // Fresh socket per attempt — connect on a failed socket is UB on Linux
+    int sock = ::socket(resolved->domain, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (sock < 0) {
       UNIFLOW_LOG_ERROR(
           "TcpClient: socket creation failed: {}",
           std::system_category().message(errno));
-      return nullptr;
+      return make_ready_future(std::unique_ptr<Conn>(nullptr));
     }
 
-    if (::connect(sock, reinterpret_cast<sockaddr*>(&serverAddr), addrLen) ==
-        0) {
-      auto status = configureClientSocket(sock);
-      if (!status) {
-        UNIFLOW_LOG_ERROR(
-            "TcpClient: socket config failed fd={}: {}",
+    if (::connect(
             sock,
-            status.error().toString());
-        ::close(sock);
-        return nullptr;
-      }
-      return TcpConn::create(sock);
+            reinterpret_cast<sockaddr*>(&resolved->addr),
+            resolved->addrLen) == 0) {
+      // @lint-ignore PULSE_RESOURCE_LEAK fd ownership transfers to
+      // finishConnect which closes on failure or passes to TcpConn
+      return make_ready_future(finishConnect(sock, config));
     }
 
     int savedErrno = errno;
@@ -760,15 +1497,90 @@ std::unique_ptr<Conn> TcpClient::connect(std::string id) {
           id,
           savedErrno,
           std::system_category().message(savedErrno));
-      return nullptr;
+      return make_ready_future(std::unique_ptr<Conn>(nullptr));
     }
   }
 
   UNIFLOW_LOG_ERROR(
       "TcpClient: connect to {} failed after {} retries",
       id,
-      config_.connectRetries);
-  return nullptr;
+      config.connectRetries);
+  return make_ready_future(std::unique_ptr<Conn>(nullptr));
 }
+
+// ---------------------------------------------------------------------------
+// AsyncConnect
+// ---------------------------------------------------------------------------
+
+std::future<std::unique_ptr<Conn>> AsyncConnect::connect(
+    const std::string& id,
+    const TcpSocketConfig& config) {
+  auto resolved = resolveConnectAddr(id);
+  if (!resolved) {
+    UNIFLOW_LOG_ERROR("TcpClient: {}", resolved.error().toString());
+    return make_ready_future(std::unique_ptr<Conn>(nullptr));
+  }
+
+  int sock =
+      ::socket(resolved->domain, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+  if (sock < 0) {
+    UNIFLOW_LOG_ERROR(
+        "TcpClient: socket creation failed: {}",
+        std::system_category().message(errno));
+    return make_ready_future(std::unique_ptr<Conn>(nullptr));
+  }
+
+  int rc = ::connect(
+      sock, reinterpret_cast<sockaddr*>(&resolved->addr), resolved->addrLen);
+  if (rc == 0) {
+    return make_ready_future(completeAsyncConnect(sock, config));
+  }
+  if (errno != EINPROGRESS) {
+    UNIFLOW_LOG_ERROR(
+        "TcpClient: connect failed: {}", std::system_category().message(errno));
+    ::close(sock);
+    return make_ready_future(std::unique_ptr<Conn>(nullptr));
+  }
+
+  auto promise = std::make_shared<std::promise<std::unique_ptr<Conn>>>();
+  auto future = promise->get_future();
+
+  evb_.registerFd(
+      sock,
+      EPOLLOUT | EPOLLONESHOT,
+      [&evb = evb_, fd = sock, promise = std::move(promise), config = config](
+          uint32_t) mutable {
+        int err = 0;
+        socklen_t errLen = sizeof(err);
+        if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &errLen) < 0) {
+          UNIFLOW_LOG_ERROR(
+              "TcpClient: getsockopt SO_ERROR failed fd={}: {} ({})",
+              fd,
+              errno,
+              std::system_category().message(errno));
+          ::close(fd);
+          promise->set_value(nullptr);
+        } else if (err != 0) {
+          UNIFLOW_LOG_ERROR(
+              "TcpClient: async connect failed fd={}: {} ({})",
+              fd,
+              err,
+              std::system_category().message(err));
+          ::close(fd);
+          promise->set_value(nullptr);
+        } else {
+          auto conn = completeAsyncConnect(fd, config);
+          promise->set_value(std::move(conn));
+        }
+        // Clean up the ioEntries_ entry to release captured state.
+        // The fd may already be closed — unregisterFd tolerates this.
+        evb.unregisterFd(fd);
+      });
+
+  return future;
+}
+
+template class BasicTcpClient<SyncConnect>;
+template class BasicTcpClient<AsyncConnect>;
 
 } // namespace uniflow::controller

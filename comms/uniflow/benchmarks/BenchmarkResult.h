@@ -15,6 +15,7 @@ struct BenchmarkResult {
   size_t messageSize{0};
   int iterations{0};
   int batchSize{0};
+  int txDepth{0};
   size_t chunkSize{0};
   double bandwidthGBs{0};
   Stats latency{}; // in microseconds

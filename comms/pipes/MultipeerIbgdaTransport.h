@@ -16,6 +16,7 @@
 #include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/pipes/IbgdaBuffer.h"
 #include "comms/pipes/IbverbsLazy.h"
+#include "comms/utils/CudaRAII.h"
 
 // Forward declarations for device types (defined in .cuh files)
 namespace comms::pipes {
@@ -68,18 +69,46 @@ struct MultipeerIbgdaTransportConfig {
   std::string ibHca;
 
   // Per-peer data buffer size in bytes.
-  // This determines the maximum transfer size per put call.
+  //
+  // Raw put()/signal() users interpret this as the exported per-peer RDMA
+  // buffer size. send()/recv() users interpret it as the size of one logical
+  // staging slot. The send/recv ring therefore has:
+  //   pipelineDepth slots
+  //   each slot is dataBufferSize bytes
+  //   each slot is partitioned across active_blocks block-groups at runtime
+  //
+  // For one send()/recv() call:
+  //   perBlockSlot = (dataBufferSize / active_blocks) & ~15ULL
+  //
+  // In the benchmark, one "section" is exactly one dataBufferSize-sized slot.
   std::size_t dataBufferSize{0};
 
   // Number of signal slots managed by the transport (per peer).
-  // If > 0, transport allocates, registers, and exchanges signal buffers
-  // automatically. Slot-index API on P2pIbgdaTransportDevice becomes usable.
+  // Used by the slot-index API (put/signal/wait_signal by slot ID).
+  // Independent of send/recv which uses its own private signal buffers.
   int numSignalSlots{0};
 
   // Number of counter slots managed by the transport (per peer).
-  // If > 0, transport allocates and registers counter buffers (local only,
-  // no exchange). Slot-index API for counters becomes usable.
+  // Used by the slot-index API (wait_counter by slot ID).
+  // Independent of send/recv which uses its own private counter buffers.
   int numCounterSlots{0};
+
+  // Send/recv configuration. When set, the transport allocates a private
+  // pipelined staging ring plus private signal/counter state for send()/recv().
+  // When nullopt (default), send/recv is disabled and only the raw put/signal
+  // APIs are available.
+  struct SendRecvConfig {
+    // Maximum number of block-groups that may participate in one send()/recv()
+    // call. This sizes the private signal/counter/step arrays and defines the
+    // maximum active_blocks accepted at runtime.
+    int maxGroups{128};
+
+    // Number of logical slots in the send/recv staging ring.
+    // Total staging bytes per peer per direction:
+    //   pipelineDepth * dataBufferSize
+    int pipelineDepth{2};
+  };
+  std::optional<SendRecvConfig> sendRecv;
 
   // Queue pair depth (number of outstanding WQEs per peer).
   // Higher values allow more pipelining but use more memory.
@@ -385,6 +414,9 @@ class MultipeerIbgdaTransport {
   void registerMemory();
   void createQpGroups();
   void createLoopbackCompanionQps();
+  void allocate_send_recv_buffers();
+  void exchange_send_recv_buffers();
+  void cleanup_send_recv_buffers();
   void cleanup();
   void connectQp(
       doca_gpu_verbs_qp_hl* qpHl,
@@ -464,48 +496,37 @@ class MultipeerIbgdaTransport {
   std::vector<IbgdaTransportExchInfo> peerExchInfo_;
 
   // Transport-owned signal buffers (allocated if numSignalSlots > 0)
-  void* signalInboxGpu_{nullptr}; // local inbox: peers write here via RDMA
-  std::vector<IbgdaRemoteBuffer> signalRemoteViews_; // per-peer outbox views
-  std::vector<IbgdaLocalBuffer> signalLocalViews_; // per-peer inbox views
+  void* signalInboxGpu_{nullptr};
+  std::vector<IbgdaRemoteBuffer> signalRemoteViews_;
+  std::vector<IbgdaLocalBuffer> signalLocalViews_;
 
   // Transport-owned counter buffers (allocated if numCounterSlots > 0)
   void* counterGpu_{nullptr};
-  std::vector<IbgdaLocalBuffer> counterViews_; // per-peer local views
+  std::vector<IbgdaLocalBuffer> counterViews_;
 
-  // Transport-owned discard-signal buffer.
-  //
-  // Why this exists
-  // ---------------
-  // DOCA verbs exposes two relevant compound WQEs:
-  //   * signal_fenced  - remote atomic FA, FENCEd against the prior put
-  //   * signal_counter - signal_fenced on the primary QP + a companion-QP
-  //                      loopback atomic for the local counter (both ordered
-  //                      against the prior put)
-  // It does NOT expose a "counter-only" primitive (counter atomic without a
-  // remote signal). Counter-only put() callers therefore have two choices:
-  //   (a) fence the QP and then bump the counter from the GPU - synchronous,
-  //       adds a CQ-poll round-trip on the hot path.
-  //   (b) reuse signal_counter with a throwaway remote signal target so the
-  //       counter atomic stays piggy-backed on the same async WQE compound.
-  // We pick (b). The "discard signal" is that throwaway target: a real
-  // remote-addressable uint64_t whose value nobody ever reads.
-  //
-  // Layout
-  // ------
-  // numPeers slots, one uint64_t per peer that may write to us. Each rank
-  // exchanges (addr, rkey) with all peers; per-peer remote view is built
-  // pointing at *our* slot in the peer's discard buffer (offset =
-  // myPeerIndexOnPeer * sizeof(uint64_t)) so our primary QP can post a
-  // throwaway atomic into it. The peer never reads its local slots, so the
-  // accumulated value is garbage by design.
-  //
-  // Lifecycle
-  // ---------
-  // Allocated only when numCounterSlots > 0 (no counters => no counter-only
-  // puts => discard slot is never targeted). See
-  // P2pIbgdaTransportDevice::put_impl for the consumer.
   void* discardSignalGpu_{nullptr};
   std::vector<IbgdaRemoteBuffer> discardSignalRemoteViews_;
+
+  // Send/recv buffers (allocated when maxGroups > 0)
+  struct SendRecvPeerBuffers {
+    IbgdaLocalBuffer sendStaging;
+    IbgdaLocalBuffer recvStaging;
+    IbgdaLocalBuffer signal;
+    IbgdaLocalBuffer counter;
+    int64_t* stepState{nullptr};
+    IbgdaRemoteBuffer remoteRecvStaging;
+    IbgdaRemoteBuffer remoteSignal;
+  };
+  std::vector<SendRecvPeerBuffers> sendRecvPeerBuffers_;
+
+  std::unique_ptr<meta::comms::DeviceBuffer> sendStagingBulk_;
+  std::unique_ptr<meta::comms::DeviceBuffer> recvStagingBulk_;
+  std::unique_ptr<meta::comms::DeviceBuffer> signalBulk_;
+  std::unique_ptr<meta::comms::DeviceBuffer> counterBulk_;
+  std::unique_ptr<meta::comms::DeviceBuffer> stepStateBulk_;
+
+  IbgdaLocalBuffer recvStagingBulkReg_;
+  IbgdaLocalBuffer signalBulkReg_;
 };
 
 } // namespace comms::pipes

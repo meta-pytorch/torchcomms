@@ -28,12 +28,10 @@ struct P2pIbgdaTransportBuildParams {
   IbgdaRemoteBuffer remoteSignalBuf{};
   IbgdaLocalBuffer localSignalBuf{};
   IbgdaLocalBuffer counterBuf{};
-  // Throwaway remote uint64_t slot used as the signal target for counter-only
-  // puts. Required when counterBuf is set; ignored otherwise. See
-  // P2pIbgdaTransportDevice::put_impl for rationale.
   IbgdaRemoteBuffer discardSignalSlot{};
   int numSignalSlots{0};
   int numCounterSlots{0};
+  IbSendRecvState sendRecvState{};
 };
 
 /**
@@ -42,6 +40,8 @@ struct P2pIbgdaTransportBuildParams {
  * For each peer, allocates GPU arrays for QP pointers, copies them,
  * then constructs P2pIbgdaTransportDevice objects in GPU memory.
  * All GPU allocations are pushed into outGpuAllocations for cleanup.
+ * If sendRecvState is populated in the build params, it is passed through
+ * the transport constructor before copying to GPU.
  *
  * @param params Build parameters (one per peer)
  * @param numPeers Number of peers

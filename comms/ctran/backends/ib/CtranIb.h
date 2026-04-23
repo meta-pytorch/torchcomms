@@ -42,14 +42,10 @@ class CtranIb {
   // to the local rank.
   // Input arguments:
   //   - comm: the Ctran communicator
-  //   - ctrlMgr: the ctranCtrlManager that manages control message callback
-  //              functions registered by other modules. Passed to VC for
-  //              calling callback when receiving control message.
   //   - enableLocalFlush: whether to support local flush. If not specified, use
   //              default config based on cuda arch.
   CtranIb(
       CtranComm* comm,
-      CtranCtrlManager* ctrlMgr,
       std::optional<bool> enableLocalFlush = std::nullopt,
       std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory = nullptr,
       std::optional<int> maxNumCqe = std::nullopt);
@@ -64,7 +60,6 @@ class CtranIb {
   //              mapping NIC
   //   - commHash: for logging only.
   //   - commDesc: for logging only.
-  //   - ctrlMgr: same as in comm-based CtranIb constructor.
   //   - enableLocalFlush: whether to support local flush.
   //   - bootstrapMode: defines the needed bootstrap mode. If kDefaultServer,
   //                    it launches internal listen thread which binds and
@@ -80,7 +75,6 @@ class CtranIb {
       int cudaDev,
       uint64_t commHash,
       const std::string& commDesc,
-      CtranCtrlManager* ctrlMgr,
       bool enableLocalFlush,
       const BootstrapMode bootstrapMode = BootstrapMode::kDefaultServer,
       std::optional<const SocketServerAddr*> qpServerAddr = std::nullopt,
@@ -113,11 +107,6 @@ class CtranIb {
 
   // Unlock the entire CtranIb instance.
   commResult_t epochUnlock();
-
-  // Register control message callback function if have any.
-  // Input arguments:
-  //   - ctrlMgr: the ctranCtrlManager to manage the control message
-  void regCtrlCb(std::unique_ptr<CtranCtrlManager>& ctrlMgr);
 
   // Register memory to be used for IB operations.
   // Input arguments:
@@ -508,7 +497,6 @@ class CtranIb {
       int cudaDev,
       uint64_t commHash,
       const std::string& commDesc,
-      CtranCtrlManager* ctrlMgr,
       bool enableLocalFlush,
       const BootstrapMode bootstrapMode = BootstrapMode::kDefaultServer,
       std::optional<const SocketServerAddr*> qpServerAddr = std::nullopt,
@@ -1140,8 +1128,6 @@ class CtranIb {
 
   folly::F14FastMap<int, PendingOpQueue> rankToPendingOpsMap;
   std::mutex pendingOpsMutex;
-
-  CtranCtrlManager* ctrlMgr{nullptr};
 
   std::unordered_map<std::string, uint32_t> pgToTrafficClassMap_;
 
