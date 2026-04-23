@@ -33,7 +33,7 @@ TEST_P(TcpServerClientTest, SuccessfulConnection) {
   std::thread acceptThread([&]() { serverConn = server.accept().get(); });
 
   TcpClient client;
-  auto clientConn = client.connect(clientAddr(port));
+  auto clientConn = client.connect(clientAddr(port)).get();
   EXPECT_NE(clientConn, nullptr) << "Client failed to connect";
 
   acceptThread.join();
@@ -52,7 +52,7 @@ TEST_P(TcpServerClientTest, ServerShutdownWhileClientConnected) {
   std::thread acceptThread([&]() { serverConn = server->accept().get(); });
 
   TcpClient client;
-  auto clientConn = client.connect(clientAddr(port));
+  auto clientConn = client.connect(clientAddr(port)).get();
   ASSERT_NE(clientConn, nullptr) << "Client failed to connect";
 
   acceptThread.join();
@@ -135,10 +135,10 @@ TEST_F(TcpServerClientMiscTest, AddressParsingErrors) {
   noRetryCfg.connectRetries = 0;
   noRetryCfg.retryTimeout = std::chrono::milliseconds(0);
   TcpClient client(noRetryCfg);
-  EXPECT_EQ(client.connect("127.0.0.1:invalid"), nullptr);
-  EXPECT_EQ(client.connect("127.0.0.1"), nullptr);
-  EXPECT_EQ(client.connect("localhost:8080"), nullptr);
-  EXPECT_EQ(client.connect("::1:invalid"), nullptr);
+  EXPECT_EQ(client.connect("127.0.0.1:invalid").get(), nullptr);
+  EXPECT_EQ(client.connect("127.0.0.1").get(), nullptr);
+  EXPECT_EQ(client.connect("localhost:8080").get(), nullptr);
+  EXPECT_EQ(client.connect("::1:invalid").get(), nullptr);
 }
 
 TEST_F(TcpServerClientMiscTest, InvalidHostAddress) {
@@ -166,10 +166,10 @@ TEST_F(TcpServerClientMiscTest, ConnectFailsWhenNoServerListening) {
   TcpClient client(noRetryCfg);
 
   // IPv4
-  EXPECT_EQ(client.connect("127.0.0.1:59999"), nullptr);
+  EXPECT_EQ(client.connect("127.0.0.1:59999").get(), nullptr);
 
   // IPv6
-  EXPECT_EQ(client.connect("::1:59999"), nullptr);
+  EXPECT_EQ(client.connect("::1:59999").get(), nullptr);
 }
 
 TEST_F(TcpServerClientMiscTest, AcceptReturnsNullBeforeInit) {
@@ -294,7 +294,7 @@ TEST_F(TcpSocketConfigTest, OsDefaultConfigConnectionSucceeds) {
 
   TcpClient client(cfg);
   auto clientConn =
-      client.connect("127.0.0.1:" + std::to_string(server.getPort()));
+      client.connect("127.0.0.1:" + std::to_string(server.getPort())).get();
   EXPECT_NE(clientConn, nullptr);
 
   acceptThread.join();
@@ -334,7 +334,7 @@ TEST_F(TcpSocketConfigTest, InvalidConfigThrowsInServerConstructor) {
 TEST_F(TcpSocketConfigTest, InvalidConfigThrowsInClientConstructor) {
   auto cfg = TcpSocketConfig{};
   cfg.socketBufSize = -1;
-  EXPECT_THROW(TcpClient{cfg}, std::invalid_argument);
+  EXPECT_THROW((TcpClient{cfg}), std::invalid_argument);
 }
 
 TEST_F(TcpSocketConfigTest, CustomConfigConnectionSucceeds) {
@@ -351,7 +351,7 @@ TEST_F(TcpSocketConfigTest, CustomConfigConnectionSucceeds) {
 
   TcpClient client(cfg);
   auto clientConn =
-      client.connect("127.0.0.1:" + std::to_string(server.getPort()));
+      client.connect("127.0.0.1:" + std::to_string(server.getPort())).get();
   EXPECT_NE(clientConn, nullptr);
 
   acceptThread.join();
@@ -372,7 +372,7 @@ TEST_F(TcpSocketConfigTest, ExplicitKeepaliveDisableIsValid) {
 
   TcpClient client(cfg);
   auto clientConn =
-      client.connect("127.0.0.1:" + std::to_string(server.getPort()));
+      client.connect("127.0.0.1:" + std::to_string(server.getPort())).get();
   EXPECT_NE(clientConn, nullptr);
 
   acceptThread.join();

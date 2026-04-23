@@ -37,7 +37,8 @@ class Client {
   Client() = default;
   virtual ~Client() = default;
 
-  virtual std::unique_ptr<Conn> connect(std::string id) = 0;
+  [[nodiscard]] virtual std::future<std::unique_ptr<Conn>> connect(
+      std::string id) = 0;
 };
 
 } // namespace uniflow::controller

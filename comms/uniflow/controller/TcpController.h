@@ -186,23 +186,71 @@ using TcpServer = BasicTcpServer<SyncAccept>;
 using AsyncTcpServer = BasicTcpServer<AsyncAccept>;
 
 // ---------------------------------------------------------------------------
-// TcpClient
+// Connect policies — compile-time dispatch for BasicTcpClient<ConnectPolicy>.
 // ---------------------------------------------------------------------------
 
-class TcpClient : public Client {
- public:
-  explicit TcpClient(TcpSocketConfig config = {});
-  TcpClient(const TcpClient&) = delete;
-  TcpClient& operator=(const TcpClient&) = delete;
-  TcpClient(TcpClient&&) = delete;
-  TcpClient& operator=(TcpClient&&) = delete;
+/// Blocking connect with linear backoff retries. Returns a ready future.
+struct SyncConnect {
+  std::future<std::unique_ptr<Conn>> connect(
+      const std::string& id,
+      const TcpSocketConfig& config);
+};
 
-  std::unique_ptr<Conn> connect(std::string id) override;
+/// Non-blocking connect via EventBase EPOLLOUT watching. The EventBase must
+/// outlive the TcpClient.
+///
+/// Note: This policy makes a single connect attempt. If the connect fails
+/// immediately (e.g., ECONNREFUSED) no retry is performed.
+/// TODO: Retry-with-backoff for async connects requires an EventBase timer.
+struct AsyncConnect {
+  explicit AsyncConnect(EventBase& evb) : evb_(evb) {}
+
+  std::future<std::unique_ptr<Conn>> connect(
+      const std::string& id,
+      const TcpSocketConfig& config);
 
  private:
-  Status configureClientSocket(int sock);
-
-  TcpSocketConfig config_;
+  EventBase& evb_;
 };
+
+// ---------------------------------------------------------------------------
+// BasicTcpClient<ConnectPolicy> — policy-based TCP client template.
+// ---------------------------------------------------------------------------
+
+template <typename ConnectPolicy>
+class BasicTcpClient : public Client {
+ public:
+  // Sync:  TcpClient()
+  // Async: AsyncTcpClient({}, evb)
+  template <typename... PolicyArgs>
+  explicit BasicTcpClient(TcpSocketConfig config = {}, PolicyArgs&&... args)
+      : config_(std::move(config)), policy_(std::forward<PolicyArgs>(args)...) {
+    auto status = config_.validate();
+    if (!status) {
+      throw std::invalid_argument(
+          "Invalid socket config: " + status.error().toString());
+    }
+  }
+
+  ~BasicTcpClient() override = default;
+  BasicTcpClient(const BasicTcpClient&) = delete;
+  BasicTcpClient& operator=(const BasicTcpClient&) = delete;
+  BasicTcpClient(BasicTcpClient&&) = delete;
+  BasicTcpClient& operator=(BasicTcpClient&&) = delete;
+
+  std::future<std::unique_ptr<Conn>> connect(std::string id) override {
+    return policy_.connect(id, config_);
+  }
+
+ private:
+  TcpSocketConfig config_;
+  ConnectPolicy policy_;
+};
+
+extern template class BasicTcpClient<SyncConnect>;
+extern template class BasicTcpClient<AsyncConnect>;
+
+using TcpClient = BasicTcpClient<SyncConnect>;
+using AsyncTcpClient = BasicTcpClient<AsyncConnect>;
 
 } // namespace uniflow::controller

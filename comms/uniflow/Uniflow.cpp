@@ -68,7 +68,7 @@ Result<std::unique_ptr<Connection>> UniflowAgent::connect(std::string peerId) {
     return Err(ErrCode::InvalidArgument, "no client configured");
   }
 
-  auto ctrl = client_->connect(std::move(peerId));
+  auto ctrl = client_->connect(std::move(peerId)).get();
   if (!ctrl) {
     return Err(ErrCode::ConnectionFailed, "connect failed");
   }
