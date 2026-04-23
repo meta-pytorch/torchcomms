@@ -35,6 +35,7 @@ pip wheel ./torchcomms --no-deps --no-build-isolation --wheel-dir build-${RUNNER
 rm -rf build-${RUNNER_NAME}
 
 #Check Intel XPU visibility
+
 #Expose ZE_AFFINITY_MASK to explicitly expose the number of Intel GPUs assigned to the runner for all tests.
 
 echo "ZE_AFFINITY_MASK=$ZE_AFFINITY_MASK"
