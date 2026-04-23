@@ -1303,6 +1303,45 @@ Example:
           py::arg("hints") = std::nullopt,
           py::call_guard<py::gil_scoped_release>())
       .def(
+          "abort",
+          &TorchComm::abort,
+          R"(
+Abort the communicator.
+
+Marks the communicator as aborting. The effect may be asynchronous —
+pending operations may not fail immediately. After abort, all pending
+work handles should be waited on to confirm the abort has completed.
+After abort, the communicator transitions to an uninitialized state;
+call reconfigure() before issuing further collectives.
+
+This is a no-op if the backend does not support abort.
+          )",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "abort_enabled",
+          &TorchComm::abortEnabled,
+          R"(
+Check if abort/fault-tolerance is enabled on this communicator.
+
+Returns:
+    bool: True if abort is enabled, False otherwise.
+          )",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "is_aborted",
+          &TorchComm::isAborted,
+          R"(
+Check if the communicator is in an aborted state.
+
+Useful in CUDA graph mode where per-operation work handles are
+unavailable and polling the communicator state is the only way to
+detect failures.
+
+Returns:
+    bool: True if the communicator has been aborted.
+          )",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
           "get_device_transport",
           &TorchComm::get_device_transport,
           R"(
@@ -2057,7 +2096,7 @@ Example:
           R"(
 Initialize a persistent AllGather operation.
 
-This is a SM free collective operation where the memory is pre-registered and uses 
+This is a SM free collective operation where the memory is pre-registered and uses
 Copy Engine or DMA to move data from one rank to the other.
 
 Args:

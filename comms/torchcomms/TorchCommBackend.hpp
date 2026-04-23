@@ -16,7 +16,7 @@
 
 namespace torch::comms {
 
-inline constexpr const char* TORCHCOMM_BACKEND_ABI_VERSION = "1.0";
+inline constexpr const char* TORCHCOMM_BACKEND_ABI_VERSION = "1.1";
 
 /**
  * TorchCommBackend - Abstract base class for communication backends.
@@ -250,6 +250,45 @@ class TorchCommBackend {
    * @return True if the backend supports reconfigure, false otherwise.
    */
   virtual bool supportsReconfigure() const {
+    return false;
+  }
+
+  /**
+   * Abort the communicator.
+   *
+   * Must be non-blocking and return immediately. Implementations must ensure
+   * all pending operations transition to CANCELED status on their work
+   * handles.
+   *
+   * After abort(), the communicator is in an uninitialized state;
+   * reconfigure() must be called before issuing further collectives.
+   *
+   * Must be thread-safe; may be called from a background watchdog thread.
+   *
+   * Note that the default implementation is a no-op for backends that do not
+   * support abort.
+   */
+  virtual void abort() {}
+
+  /**
+   * Check if abort/fault-tolerance is enabled on this communicator.
+   *
+   * @return True if abort is enabled, false otherwise.
+   */
+  virtual bool abortEnabled() const {
+    return false;
+  }
+
+  /**
+   * Check if the communicator is in an aborted state.
+   *
+   * Useful in CUDA graph mode where per-operation work handles are
+   * unavailable and polling the communicator state is the only way to
+   * detect failures.
+   *
+   * @return True if the communicator has been aborted.
+   */
+  virtual bool isAborted() const {
     return false;
   }
 

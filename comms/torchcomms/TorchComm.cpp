@@ -512,6 +512,18 @@ c10::intrusive_ptr<TorchWork> TorchComm::reconfigure(
   return work;
 }
 
+void TorchComm::abort() {
+  impl_->abort();
+}
+
+bool TorchComm::abortEnabled() const {
+  return impl_->abortEnabled();
+}
+
+bool TorchComm::isAborted() const {
+  return impl_->isAborted();
+}
+
 int64_t TorchComm::get_device_transport() {
   return impl_->get_device_transport();
 }
