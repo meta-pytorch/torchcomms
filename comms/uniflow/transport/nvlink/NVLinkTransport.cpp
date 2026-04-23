@@ -92,11 +92,47 @@ std::future<Status> NVLinkTransport::transfer(
                   cudaStream]() mutable noexcept {
     CudaDeviceGuard deviceGuard(*cudaApi, deviceId);
 
-    for (auto& op : ops) {
+#if CUDART_VERSION >= 12080
+    if (ops.size() > 1) {
+      static bool logged = false;
+      if (!logged) {
+        fprintf(
+            stderr,
+            "[uniflow] using cudaMemcpyBatchAsync (CUDART_VERSION=%d, ops=%zu)\n",
+            CUDART_VERSION,
+            ops.size());
+        logged = true;
+      }
+      std::vector<void*> dsts(ops.size());
+      std::vector<void*> srcs(ops.size());
+      std::vector<size_t> sizes(ops.size());
+      for (size_t i = 0; i < ops.size(); ++i) {
+        dsts[i] = ops[i].dst;
+        srcs[i] = const_cast<void*>(ops[i].src);
+        sizes[i] = ops[i].size;
+      }
       CHECK_SET_PROMISE(
           promise,
-          cudaApi->memcpyAsync(
-              op.dst, op.src, op.size, cudaMemcpyDeviceToDevice, cudaStream));
+          cudaApi->memcpyBatchAsync(
+              dsts.data(), srcs.data(), sizes.data(), ops.size(), cudaStream));
+    } else
+#endif
+    {
+      static bool logged = false;
+      if (!logged && ops.size() > 1) {
+        fprintf(
+            stderr,
+            "[uniflow] using cudaMemcpyAsync loop (CUDART_VERSION=%d, ops=%zu)\n",
+            CUDART_VERSION,
+            ops.size());
+        logged = true;
+      }
+      for (auto& op : ops) {
+        CHECK_SET_PROMISE(
+            promise,
+            cudaApi->memcpyAsync(
+                op.dst, op.src, op.size, cudaMemcpyDeviceToDevice, cudaStream));
+      }
     }
 
     // Record a CUDA event after the last memcpy.
