@@ -104,12 +104,12 @@ jobs:
           DLE_VER=2025.3.2.36
           DLE_ROOT=/tmp/${RUNNER_NAME}/dle-${DLE_VER}
           DLE_PATH=${DLE_ROOT}/dle
-          if [[ ! -d ${DLE_ROOT} ]]; then
+          if [[ ! -f ${DLE_ROOT} ]]; then
             mkdir -p ${DLE_ROOT}
             DLE_URL="https://registrationcenter-download.intel.com/akdlm/IRC_NAS/b3e6c1bf-a6d5-4580-8b1d-80cbfd38c8af/intel-deep-learning-essentials-${DLE_VER}_offline.sh"
             wget -qO ${DLE_ROOT}/intel-deep-learning-essentials.sh ${DLE_URL}
             chmod +x ${DLE_ROOT}/intel-deep-learning-essentials.sh
-            ${DLE_ROOT}/intel-deep-learning-essentials.sh -a --silent --eula accept --install-dir ${DLE_PATH} --instance=custom-id-1
+            ${DLE_ROOT}/intel-deep-learning-essentials.sh -a --silent --eula accept --install-dir ${DLE_PATH} --instance=custom-id-${GITHUB_RUN_NUMBER}
             rm -f ${DLE_ROOT}/intel-deep-learning-essentials.sh
           fi
           
