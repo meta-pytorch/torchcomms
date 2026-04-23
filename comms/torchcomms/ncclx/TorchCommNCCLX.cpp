@@ -2215,6 +2215,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_quantized(
       name_, comm_size_, "reduce_scatter_quantized", rank_, input, output);
 
   cudaStream_t stream = getOperationStream(async_op);
+  graph_event_tracker_.initOnGraphStart(stream);
   auto work = async_op ? createWork(stream, options_.timeout, {input, seed})
                        : createWork(stream, options_.timeout);
 
