@@ -94,6 +94,7 @@ jobs:
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
           GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
           SHA1: ${{ github.event.pull_request.head.sha || github.sha }}
+          RUNNER_NAME: ${{ runner.name }}
           ZE_AFFINITY_MASK: ${{ env.ZE_AFFINITY_MASK }}
         timeout-minutes: 120
         run: |
@@ -130,6 +131,7 @@ jobs:
             -e JOB_ID \
             -e BRANCH \
             -e SHA1 \
+            -e RUNNER_NAME \
             --ulimit stack=10485760:83886080 \
             --ulimit core=0 \
             --security-opt seccomp=unconfined \
