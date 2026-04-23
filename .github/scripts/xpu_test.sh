@@ -40,7 +40,6 @@ python3 -m pip install --no-deps --pre torch pytorch-triton-xpu --index-url http
 cd torchcomms && pip install . --no-deps --no-build-isolation && cd ..
 
 #Check Intel XPU visibility
-
 #Expose ZE_AFFINITY_MASK to explicitly expose the number of Intel GPUs assigned to the runner for all tests.
 
 echo "ZE_AFFINITY_MASK=$ZE_AFFINITY_MASK"
