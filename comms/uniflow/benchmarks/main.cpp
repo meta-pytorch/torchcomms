@@ -31,6 +31,8 @@ struct CliOptions {
   int warmup{10};
   int loopCount{1};
   int batchSize{1};
+  int txDepth{1};
+  int numNics{0};
   size_t chunkSize{512 * 1024};
   int cudaDevice{-1};
   bool bidirectional{false};
@@ -84,6 +86,8 @@ void printUsage(const char* prog) {
       << "  --format <fmt>         table|csv|both (default: table)\n"
       << "  --rdma-devices <list>  Comma-separated RDMA device names (default: auto-discover)\n"
       << "  --batch-size <n>       Number of requests per transport call (default: 1)\n"
+      << "  --tx-depth <n>         Outstanding transport calls before waiting (default: 1)\n"
+      << "  --num-nics <n>         Cap number of NICs to use (default: 0 = all)\n"
       << "  --chunk-size <bytes>   RDMA transfer chunk size in bytes (default: 524288)\n"
       << "  --cuda-device <id>     GPU device index for buffer allocation (default: CPU memory)\n"
       << "  --list                 List available benchmarks\n"
@@ -116,6 +120,8 @@ CliOptions parseArgs(int argc, char** argv) {
       {"format", required_argument, nullptr, 'f'},
       {"rdma-devices", required_argument, nullptr, 'r'},
       {"batch-size", required_argument, nullptr, 'T'},
+      {"tx-depth", required_argument, nullptr, 257},
+      {"num-nics", required_argument, nullptr, 258},
       {"chunk-size", required_argument, nullptr, 256},
       {"cuda-device", required_argument, nullptr, 'c'},
       {"list", no_argument, nullptr, 'l'},
@@ -205,6 +211,30 @@ CliOptions parseArgs(int argc, char** argv) {
           std::exit(1);
         }
         break;
+      case 257:
+        try {
+          opts.txDepth = std::stoi(optarg);
+          if (opts.txDepth < 1) {
+            std::cerr << "Invalid value for --tx-depth: must be >= 1\n";
+            std::exit(1);
+          }
+        } catch (const std::exception&) {
+          std::cerr << "Invalid value for --tx-depth: '" << optarg << "'\n";
+          std::exit(1);
+        }
+        break;
+      case 258:
+        try {
+          opts.numNics = std::stoi(optarg);
+          if (opts.numNics < 0) {
+            std::cerr << "Invalid value for --num-nics: must be >= 0\n";
+            std::exit(1);
+          }
+        } catch (const std::exception&) {
+          std::cerr << "Invalid value for --num-nics: '" << optarg << "'\n";
+          std::exit(1);
+        }
+        break;
       case 256:
         try {
           opts.chunkSize = std::stoull(optarg);
@@ -287,6 +317,8 @@ int main(int argc, char** argv) {
   config.bidirectional = opts.bidirectional;
   config.direction = opts.direction;
   config.batchSize = opts.batchSize;
+  config.txDepth = opts.txDepth;
+  config.numNics = opts.numNics;
   config.chunkSize = opts.chunkSize;
   config.cudaDevice = opts.cudaDevice;
   config.numStreams = opts.numStreams;
