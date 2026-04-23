@@ -15,7 +15,6 @@
 
 #include <gmock/gmock.h>
 #include "comms/ctran/algos/common/GpeKernelSync.h"
-#include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/backends/ib/CtranIbBase.h"
 #include "comms/ctran/bootstrap/Socket.h"
@@ -45,12 +44,10 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
     CtranDistTestFixture::SetUp();
     this->comm_ = makeCtranComm();
     this->comm = this->comm_.get();
-    this->ctrlMgr = std::make_unique<CtranCtrlManager>();
     this->commIbRegCount = getIbRegCount();
   }
 
   void TearDown() override {
-    this->ctrlMgr.reset();
     this->comm_.reset();
     CtranDistTestFixture::TearDown();
     ASSERT_EQ(getIbRegCount(), 0);
@@ -99,7 +96,7 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
       bool issueFastPut = false) {
     if (!ctranIb) {
       try {
-        ctranIb = std::make_unique<CtranIb>(comm, ctrlMgr.get());
+        ctranIb = std::make_unique<CtranIb>(comm);
       } catch (const std::bad_alloc&) {
         GTEST_SKIP() << "IB backend not enabled. Skip test";
       }
@@ -290,7 +287,7 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
       bool issueFastGet = false) {
     if (!ctranIb) {
       try {
-        ctranIb = std::make_unique<CtranIb>(comm, ctrlMgr.get());
+        ctranIb = std::make_unique<CtranIb>(comm);
       } catch (const std::bad_alloc&) {
         GTEST_SKIP() << "IB backend not enabled. Skip test";
       }
@@ -425,7 +422,7 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
 
   void runNotify(const int numNotifies, bool localSignal) {
     try {
-      ctranIb = std::make_unique<CtranIb>(this->comm, this->ctrlMgr.get());
+      ctranIb = std::make_unique<CtranIb>(this->comm);
     } catch (const std::bad_alloc&) {
       GTEST_SKIP() << "IB backend not enabled. Skip test";
     }
@@ -488,7 +485,7 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
       bool fallbackPut = false) {
     if (!ctranIb) {
       try {
-        ctranIb = std::make_unique<CtranIb>(comm, ctrlMgr.get());
+        ctranIb = std::make_unique<CtranIb>(comm);
       } catch (const std::bad_alloc&) {
         GTEST_SKIP() << "IB backend not enabled. Skip test";
       }
@@ -731,7 +728,7 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
       bool isGpuMem = false,
       bool isFetchAdd = true) {
     try {
-      ctranIb = std::make_unique<CtranIb>(this->comm, this->ctrlMgr.get());
+      ctranIb = std::make_unique<CtranIb>(this->comm);
     } catch (const std::bad_alloc&) {
       GTEST_SKIP() << "IB backend not enabled. Skip test";
     }
@@ -923,7 +920,6 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
   std::unique_ptr<CtranComm> comm_{nullptr};
   CtranComm* comm{nullptr};
   std::unique_ptr<CtranIb> ctranIb{nullptr};
-  std::unique_ptr<CtranCtrlManager> ctrlMgr{nullptr};
   size_t commIbRegCount{0};
   const int sendRank{0}, recvRank{1};
 };
@@ -934,7 +930,7 @@ TEST_F(CtranIbTest, NormalInitialize) {
       "Expect CtranIb to be initialized without internal error.");
 
   try {
-    auto ctranIb = std::make_unique<CtranIb>(this->comm, this->ctrlMgr.get());
+    auto ctranIb = std::make_unique<CtranIb>(this->comm);
   } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
@@ -976,7 +972,6 @@ TEST_F(CtranIbTest, InitializeWithoutComm) {
         cudaDev,
         commHash,
         commDesc,
-        this->ctrlMgr.get(),
         true /*enableLocalFlush*/,
         CtranIb::BootstrapMode::kSpecifiedServer,
         &qpServerAddr);
@@ -1059,7 +1054,6 @@ TEST_F(CtranIbTest, InitializeWithoutCommAndExternalBootstrap) {
         cudaDev,
         commHash,
         commDesc,
-        this->ctrlMgr.get(),
         false /*enableLocalFlush*/,
         CtranIb::BootstrapMode::kExternal);
   } catch (const std::bad_alloc&) {
@@ -1075,7 +1069,7 @@ TEST_F(CtranIbTest, RegMem) {
       "Expect RegMem and deregMem can be finished without internal error.");
 
   try {
-    auto ctranIb = std::make_unique<CtranIb>(this->comm, this->ctrlMgr.get());
+    auto ctranIb = std::make_unique<CtranIb>(this->comm);
     size_t len = 2048576;
     constexpr int numThreads = 10;
     std::vector<void*> bufs(numThreads, nullptr);
@@ -1118,7 +1112,7 @@ TEST_F(CtranIbTest, ExportMem) {
       "Expect ExportMem generates control message with the correct content.");
 
   try {
-    auto ctranIb = std::make_unique<CtranIb>(this->comm, this->ctrlMgr.get());
+    auto ctranIb = std::make_unique<CtranIb>(this->comm);
     void* buf = nullptr;
     size_t len = 2048576;
     void* handle = nullptr;
@@ -1154,7 +1148,7 @@ TEST_F(CtranIbTest, SmallRegMem) {
 
   // Expect registration fails due to small size <= pageSize
   try {
-    auto ctranIb = std::make_unique<CtranIb>(this->comm, this->ctrlMgr.get());
+    auto ctranIb = std::make_unique<CtranIb>(this->comm);
 
     for (size_t len : {4096, 512}) {
       void* handle = nullptr;
@@ -1180,7 +1174,7 @@ TEST_F(CtranIbTest, MatchAnyCtrlMsg) {
       "Expect rank 0 can issue a send control msg to rank 1 and matches to the UNSPECIFIED recv on rank1");
 
   try {
-    auto ctranIb = std::make_unique<CtranIb>(this->comm, this->ctrlMgr.get());
+    auto ctranIb = std::make_unique<CtranIb>(this->comm);
     const int nCtrl = 300; // exceed MAX_CONTROL_MSGS
     std::vector<CtranIbRequest> reqs(nCtrl);
     std::vector<ControlMsg> smsgs(nCtrl);
@@ -1228,63 +1222,6 @@ TEST_F(CtranIbTest, MatchAnyCtrlMsg) {
   }
 }
 
-namespace {
-constexpr int testRkey = 9;
-constexpr uint64_t testRemoteAddr = 100;
-bool testCbFlag = false;
-commResult_t testCtrlMsgCb(int peer, void* msgPtr, void* ctx) {
-  bool* testCbFlagPtr = reinterpret_cast<bool*>(ctx);
-  *testCbFlagPtr = true;
-  EXPECT_EQ(peer, 0);
-
-  auto msg = reinterpret_cast<ControlMsg*>(msgPtr);
-  EXPECT_EQ(msg->type, ControlMsgType::IB_EXPORT_MEM);
-  EXPECT_EQ(msg->ibDesc.rkeys[0], testRkey);
-  EXPECT_EQ(msg->ibDesc.remoteAddr, testRemoteAddr);
-  return commSuccess;
-}
-} // namespace
-
-TEST_F(CtranIbTest, CbCtrlMsg) {
-  this->printTestDesc(
-      "CbCtrlMsg",
-      "Expect rank 0 can issue a send control msg that triggers corresponding callback on rank 1");
-
-  try {
-    // Register callback
-    this->ctrlMgr->regCb(
-        ControlMsgType::IB_EXPORT_MEM, testCtrlMsgCb, &testCbFlag);
-
-    auto ctranIb = std::make_unique<CtranIb>(this->comm, this->ctrlMgr.get());
-    CtranIbRequest req;
-    ControlMsg smsg(ControlMsgType::IB_EXPORT_MEM);
-
-    CtranIbEpochRAII epochRAII(ctranIb.get());
-
-    smsg.ibDesc.remoteAddr = testRemoteAddr;
-    smsg.ibDesc.rkeys[0] = testRkey;
-    smsg.ibDesc.nKeys = 1;
-    if (this->globalRank == 0) {
-      COMMCHECK_TEST(
-          ctranIb->isendCtrlMsg(smsg.type, &smsg, sizeof(smsg), 1, req));
-
-      // Wait until send finishes
-      waitIbReq(req, ctranIb);
-    } else if (this->globalRank == 1) {
-      // Wait until callback is triggered
-      do {
-        COMMCHECK_TEST(ctranIb->progress());
-      } while (!testCbFlag);
-    } else {
-      // no-op for non-communicating ranks
-      COMMCHECK_TEST(req.complete());
-    }
-
-  } catch (const std::bad_alloc&) {
-    GTEST_SKIP() << "IB backend not enabled. Skip test";
-  }
-}
-
 TEST_F(CtranIbTest, LocalFlush) {
   this->printTestDesc("LocalFlush", "Expect rank 0 can issue a local flush");
 
@@ -1294,7 +1231,6 @@ TEST_F(CtranIbTest, LocalFlush) {
         localRank,
         0,
         "ib_dist_test",
-        this->ctrlMgr.get(),
         true /*enableLocalFlush*/,
         CtranIb::BootstrapMode::kDefaultServer);
 
@@ -1604,8 +1540,8 @@ TEST_F(CtranIbTest, MultiPutTrafficProfiler) {
 #undef BUF_COUNT
 #define BUF_COUNT 8192
   try {
-    auto ctranIb = std::make_unique<CtranIb>(
-        this->comm, this->ctrlMgr.get(), true /* enableLocalFlush */);
+    auto ctranIb =
+        std::make_unique<CtranIb>(this->comm, true /* enableLocalFlush */);
     int* buf;
     void* handle = nullptr;
     ControlMsg sendMsg;
@@ -1721,7 +1657,7 @@ TEST_F(CtranIbTest, MultiPutTrafficProfiler) {
 
 TEST_F(CtranIbTest, InvalidPeer) {
   try {
-    auto ctranIb = std::make_unique<CtranIb>(this->comm, this->ctrlMgr.get());
+    auto ctranIb = std::make_unique<CtranIb>(this->comm);
     auto invalidPeer = this->comm->statex_->nRanks();
 
     CtranIbEpochRAII epochRAII(ctranIb.get());
@@ -1762,7 +1698,7 @@ TEST_F(CtranIbTest, InvalidPeer) {
 
 TEST_F(CtranIbTest, NotReadyPeer) {
   try {
-    auto ctranIb = std::make_unique<CtranIb>(this->comm, this->ctrlMgr.get());
+    auto ctranIb = std::make_unique<CtranIb>(this->comm);
     constexpr int peerRank = 0;
 
     CtranIbEpochRAII epochRAII(ctranIb.get());
@@ -1794,7 +1730,7 @@ TEST_F(CtranIbTest, InvalidMemoryWaitNotify) {
   this->printTestDesc(
       "InvalidMemoryWaitNotify",
       "Expect waitNotify to return error when called after put with invalid remote memory (wrong rkey or remote address)");
-  ctranIb = std::make_unique<CtranIb>(comm, ctrlMgr.get());
+  ctranIb = std::make_unique<CtranIb>(comm);
   CtranIbEpochRAII epochRAII(ctranIb.get());
 
   if (this->globalRank == recvRank) {
@@ -1911,7 +1847,7 @@ TEST_F(CtranIbTest, envQpConfig) {
 
   std::unique_ptr<CtranIb> ctranIb = nullptr;
   try {
-    ctranIb = std::make_unique<CtranIb>(comm, ctrlMgr.get());
+    ctranIb = std::make_unique<CtranIb>(comm);
   } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
@@ -1998,7 +1934,7 @@ TEST_F(CtranIbTest, ValidBeTopology) {
 
   std::unique_ptr<CtranIb> ctranIb = nullptr;
   try {
-    ctranIb = std::make_unique<CtranIb>(comm, ctrlMgr.get());
+    ctranIb = std::make_unique<CtranIb>(comm);
   } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
@@ -2048,7 +1984,7 @@ TEST_F(CtranIbTest, InvalidBeTopology) {
 
   std::unique_ptr<CtranIb> ctranIb = nullptr;
   try {
-    ctranIb = std::make_unique<CtranIb>(comm, ctrlMgr.get());
+    ctranIb = std::make_unique<CtranIb>(comm);
   } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   } catch (const ctran::utils::Exception& e) {
@@ -2062,7 +1998,7 @@ TEST_F(CtranIbTest, pgTrafficClassConfig) {
   std::vector<std::string> pgTrafficClass = {"PP_P2P_0:200", "PP_P2P_1:208"};
   EnvRAII env1(NCCL_CTRAN_IB_PG_TRAFFIC_CLASS, pgTrafficClass);
   try {
-    auto ctranIb = std::make_unique<CtranIb>(this->comm, this->ctrlMgr.get());
+    auto ctranIb = std::make_unique<CtranIb>(this->comm);
     constexpr int peerRank = 0;
 
     CtranIbEpochRAII epochRAII(ctranIb.get());
@@ -2119,7 +2055,6 @@ TEST_F(CtranIbTest, pgTrafficClassConfigWithoutComm) {
         cudaDev,
         commHash,
         commDesc,
-        this->ctrlMgr.get(),
         true /*enableLocalFlush*/,
         CtranIb::BootstrapMode::kSpecifiedServer,
         &qpServerAddr);
@@ -2152,7 +2087,7 @@ TEST_F(CtranIbTest, AccessWithoutEpochLock) {
   try {
     EnvRAII env1(NCCL_CTRAN_IB_EPOCH_LOCK_ENFORCE_CHECK, true);
 
-    auto ctranIb = std::make_unique<CtranIb>(comm, this->ctrlMgr.get());
+    auto ctranIb = std::make_unique<CtranIb>(comm);
     int peerRank = (globalRank + 1) % numRanks;
     CtranIbRequest ctrlReq;
     ControlMsg msg;
@@ -2168,7 +2103,7 @@ TEST_F(CtranIbTest, AccessWithoutEpochLock) {
 
 TEST_F(CtranIbTest, EpochUnlockWithoutLock) {
   try {
-    auto ctranIb = std::make_unique<CtranIb>(comm, this->ctrlMgr.get());
+    auto ctranIb = std::make_unique<CtranIb>(comm);
     EXPECT_EQ(ctranIb->epochUnlock(), commInternalError);
 
   } catch (const std::bad_alloc& e) {
@@ -2178,7 +2113,7 @@ TEST_F(CtranIbTest, EpochUnlockWithoutLock) {
 
 TEST_F(CtranIbTest, DoubleEpochLock) {
   try {
-    auto ctranIb = std::make_unique<CtranIb>(comm, this->ctrlMgr.get());
+    auto ctranIb = std::make_unique<CtranIb>(comm);
     EXPECT_EQ(ctranIb->epochLock(), commSuccess);
 
     // Expect inProgress is returned if epochLock is called by another thread
@@ -2201,7 +2136,7 @@ TEST_F(CtranIbTest, CtrlMsgAndPreConnect) {
       "the preConnect is expected to be a no-op");
 
   try {
-    auto ctranIb = std::make_unique<CtranIb>(this->comm, this->ctrlMgr.get());
+    auto ctranIb = std::make_unique<CtranIb>(this->comm);
     CtranIbRequest req;
     ControlMsg smsg(ControlMsgType::IB_EXPORT_MEM);
     ControlMsg rmsg(ControlMsgType::IB_EXPORT_MEM);
@@ -2253,7 +2188,7 @@ TEST_P(CtranIbTestParam, InvalidIputFastNotify) {
       "2. the number of outstanding fast iput is equal to NCCL_CTRAN_IB_QP_MAX_MSGS;"
       "3. issuing fast iput without waiting on regular put completion;"
       "In any of the case, expect fast iput to return systemError");
-  ctranIb = std::make_unique<CtranIb>(comm, ctrlMgr.get());
+  ctranIb = std::make_unique<CtranIb>(comm);
 
   auto bufCount = NCCL_CTRAN_IB_QP_SCALING_THRESHOLD / sizeof(int);
   // NCCL_CTRAN_IB_QP_SCALING_THRESHOLD can be overridden internally in Ctran.
@@ -2441,7 +2376,7 @@ TEST_P(CtranIbTestParam, GpuMemPutNoSignalMixedFastRegular) {
       "GpuMemPutNoSignalMixedFastRegular",
       "Expect rank 0 issue iputFast (w/ notify w/o signal) followed by iput (w/o notify w/o signal).");
 
-  ctranIb = std::make_unique<CtranIb>(comm, ctrlMgr.get());
+  ctranIb = std::make_unique<CtranIb>(comm);
 
   auto bufCount = NCCL_CTRAN_IB_QP_SCALING_THRESHOLD / sizeof(int);
 
@@ -2542,7 +2477,7 @@ TEST_P(CtranIbTestParam, GpuMemPutNotifyLastMixedFastRegular) {
       "GpuMemPutNotifyLastMixedFastRegular",
       "Expect rank 0 issue iputFast (w/o notify w/o signal) followed by iput (notifyLast w/o signal).");
 
-  ctranIb = std::make_unique<CtranIb>(comm, ctrlMgr.get());
+  ctranIb = std::make_unique<CtranIb>(comm);
 
   auto bufCount = NCCL_CTRAN_IB_QP_SCALING_THRESHOLD / sizeof(int);
 
@@ -2665,7 +2600,7 @@ TEST_F(CtranIbTestWithQueuePairProfiler, GpuMemPutNotifyMixedFastRegular) {
   comm->ctran_->mapper->setContext(std::move(context));
 
   // create ib + register profiler
-  ctranIb = std::make_unique<CtranIb>(comm, ctrlMgr.get());
+  ctranIb = std::make_unique<CtranIb>(comm);
 
   // Sanity check default VC Mode == spray
   // A dummy control message exchange to ensure QP connection
