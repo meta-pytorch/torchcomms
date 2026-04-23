@@ -217,6 +217,35 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
    */
   c10::intrusive_ptr<TorchWork> reconfigure(const ReconfigureOptions& opts);
 
+  /**
+   * Abort the communicator.
+   *
+   * Non-blocking: signals the communicator to cancel and returns immediately.
+   * All pending operations are canceled; their corresponding work handles
+   * complete with a CANCELED status. The caller must wait on all outstanding
+   * work handles after calling abort().
+   *
+   * After abort(), the communicator transitions to an uninitialized state;
+   * call reconfigure() before issuing further collectives.
+   *
+   * Thread-safe - may be called from a background watchdog thread.
+   */
+  void abort();
+
+  /**
+   * Check if abort/fault-tolerance is enabled on this communicator.
+   *
+   * @return True if abort is enabled, false otherwise.
+   */
+  bool abortEnabled() const;
+
+  /**
+   * Check if the communicator is in an aborted state.
+   *
+   * @return True if the communicator has been aborted.
+   */
+  bool isAborted() const;
+
   // Hook types (defined in TorchCommHooks.hpp; aliased for backward compat)
   using PreHook = ::torch::comms::PreHook;
   using PostHook = ::torch::comms::PostHook;
