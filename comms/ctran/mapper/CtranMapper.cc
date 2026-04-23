@@ -178,8 +178,7 @@ CtranMapper::CtranMapper(CtranComm* comm) {
     }
   }
   if (enableBackends_[CtranMapperBackend::TCPDM]) {
-    this->ctranTcpDm =
-        std::make_unique<class ctran::CtranTcpDm>(comm, this->ctrlMgr.get());
+    this->ctranTcpDm = std::make_unique<class ctran::CtranTcpDm>(comm);
     CLOGF(WARN, "CTRAN-MAPPER: TCPDM backend is enabled");
   }
 

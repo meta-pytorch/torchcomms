@@ -16,7 +16,7 @@ namespace ctran {
 
 class CtranTcpDm {
  public:
-  CtranTcpDm(CtranComm* comm, CtranCtrlManager* ctrlMgr);
+  explicit CtranTcpDm(CtranComm* comm);
   ~CtranTcpDm();
 
   commResult_t preConnect(const std::unordered_set<int>& peerRanks);
