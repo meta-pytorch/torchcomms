@@ -142,7 +142,7 @@ message(STATUS "Using CUDA_ARCHITECTURES: ${CMAKE_CUDA_ARCHITECTURES}")
 if(NCCL_COMPILER_GCC)
     # GCC/Clang-specific flags
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC -fvisibility=hidden -Wall -Wno-unused-function -Wno-sign-compare -Wvla -g")
-    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --expt-extended-lambda -Xptxas -maxrregcount=96 -Xfatbin -compress-all -fPIC")
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --expt-extended-lambda --expt-relaxed-constexpr -Xptxas -maxrregcount=96 -Xfatbin -compress-all -fPIC")
 elseif(NCCL_COMPILER_MSVC)
     # MSVC-specific flags
     # /Zc:preprocessor enables conformant preprocessor for proper variadic macro handling (needed for NVTX)
@@ -152,7 +152,7 @@ elseif(NCCL_COMPILER_MSVC)
     # /wd4805 disables "unsafe mix of type 'bool' and type 'int'" - intentional bool/int mixing for flags
     # /wd4018 disables "signed/unsigned mismatch" - safe comparisons where signed value is always positive
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W3 /wd4267 /wd4244 /wd4996 /wd4146 /wd4197 /wd5105 /wd4805 /wd4018 /FS /Zc:preprocessor")
-    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --expt-extended-lambda -Xptxas -maxrregcount=96 --compress-mode=balance")
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --expt-extended-lambda --expt-relaxed-constexpr -Xptxas -maxrregcount=96 --compress-mode=balance")
 endif()
 
 # Sanitizer options (GCC/Clang only)

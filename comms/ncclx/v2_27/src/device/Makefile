@@ -29,7 +29,7 @@ INCFLAGS  += -I$(CONDA_INCLUDE_DIR)
 NVCUFLAGS += $(INCFLAGS) --compiler-options "-fPIC -fvisibility=hidden"
 CXXFLAGS  += $(INCFLAGS)
 
-NVCUFLAGS_SYM := -ccbin $(CXX) $(CXXSTD) --expt-extended-lambda -Xptxas -maxrregcount=128 -Xfatbin -compress-all
+NVCUFLAGS_SYM := -ccbin $(CXX) $(CXXSTD) --expt-extended-lambda --expt-relaxed-constexpr -Xptxas -maxrregcount=128 -Xfatbin -compress-all
 NVCUFLAGS_SYM += $(INCFLAGS) --compiler-options "-fPIC -fvisibility=hidden"
 
 ifneq ($(ENABLE_TCPDM),1)
