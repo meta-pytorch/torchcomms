@@ -8,7 +8,6 @@
 #include <string>
 
 #include "comms/ctran/CtranEx.h"
-#include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/utils/AsyncError.h"
 
@@ -25,7 +24,6 @@ class CtranExImpl {
   int rank{-1};
   int cudaDev{-1};
   std::string desc{"undefined"};
-  std::unique_ptr<CtranCtrlManager> ctrlMgr{nullptr};
   std::unique_ptr<CtranIb> ctranIb{nullptr};
 
   std::string describe() const {
