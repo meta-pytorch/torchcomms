@@ -16,9 +16,16 @@
 namespace ncclx::comms_monitor {
 ::comms::CommsTopologyInfo getTopoInfoFromNcclComm(ncclComm_t comm);
 
+struct CommStateInfo {
+  int localRank{0};
+  int node{0};
+  int nLocalRanks{1};
+  int nNodes{1};
+};
+
 struct NcclCommMonitorInfo {
   CommLogData logMetaData;
-  ncclx::CommStateX commState;
+  CommStateInfo stateInfo;
   ::comms::CommsTopologyInfo topoInfo;
   // This one will be deprecated soon.
   std::shared_ptr<CollTrace> collTrace;
