@@ -82,35 +82,17 @@ __attribute__((visibility("default"))) ncclResult_t allGatherExec(
 }
 
 __attribute__((visibility("default"))) ncclResult_t allToAllvDedupInit(
-    const size_t totalNumSendBlocks, // number of blocks (tokens) per batch
-    const size_t blockCount, // number of elements per block (token)
-    const size_t blockNumRecvBuckets, // number of receiving buckets for each
-                                      // block (experts per token, topK)
-    const int numRecvBuckets, // number of receiving buckets per rank (expert
-                              // per rank)
+    const size_t totalNumSendBlocks,
+    const size_t blockCount,
+    const size_t blockNumRecvBuckets,
+    const int numRecvBuckets,
     const ncclx::Hints& hints,
     ncclDataType_t datatype,
     ncclComm_t comm,
     cudaStream_t stream,
     void** request) {
-  CHECK_VALID_CTRAN(comm->ctranComm_.get());
-
-  SetCudaDevRAII setCudaDev(comm->cudaDev);
-  CtranPersistentRequest* pReq = nullptr;
-
-  NCCLCHECK(metaCommToNccl(
-      ::ctran::allToAllvDedupInit(
-          totalNumSendBlocks,
-          blockCount,
-          blockNumRecvBuckets,
-          numRecvBuckets,
-          ncclToMetaComm(hints),
-          ncclToMetaComm(datatype),
-          comm->ctranComm_.get(),
-          stream,
-          pReq)));
-  *request = reinterpret_cast<void*>(pReq);
-  return ncclSuccess;
+  WARN("allToAllvDedupInit: experimental API moved to comms/experiments/algos");
+  return ncclInvalidUsage;
 }
 
 __attribute__((visibility("default"))) ncclResult_t allToAllvDedupExec(
@@ -121,14 +103,8 @@ __attribute__((visibility("default"))) ncclResult_t allToAllvDedupExec(
     void* recvBuff,
     int recvBlockIds[],
     void* request) {
-  CtranPersistentRequest* pReq = nullptr;
-  GET_VALID_PREQ_OR_ERRRETURN(request, &pReq);
-  CHECK_PREQ_TYPE(pReq, CtranPersistentRequest::Type::ALLTOALLV_DEDUP);
-  CHECK_VALID_CTRAN(pReq->comm_);
-
-  return metaCommToNccl(
-      ::ctran::allToAllvDedupExec(
-          sendBuff, sendIdx, fwdIdx, recvIdx, recvBuff, recvBlockIds, pReq));
+  WARN("allToAllvDedupExec: experimental API moved to comms/experiments/algos");
+  return ncclInvalidUsage;
 }
 
 __attribute__((visibility("default"))) ncclResult_t pExec(void* request) {
@@ -223,8 +199,9 @@ __attribute__((visibility("default"))) ncclResult_t pFree(void* request) {
     case CtranPersistentRequest::Type::ALLTOALL_P:
       return metaCommToNccl(ctran::AllToAllPDestroy(pReq));
     case CtranPersistentRequest::Type::ALLTOALLV_DEDUP:
-      NCCLCHECK(metaCommToNccl(::ctran::allToAllvDedupDestroy(pReq)));
-      break;
+      WARN(
+          "allToAllvDedupDestroy: experimental API moved to comms/experiments/algos");
+      return ncclInvalidUsage;
     default:
       FB_ERRORRETURN(
           ncclInvalidArgument,
