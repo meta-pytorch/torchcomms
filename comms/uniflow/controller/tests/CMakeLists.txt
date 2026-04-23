@@ -55,3 +55,17 @@ target_link_libraries(uniflow_tcp_async_connect_test PRIVATE
     Threads::Threads
 )
 add_test(NAME TcpAsyncConnectTest COMMAND uniflow_tcp_async_connect_test)
+
+add_executable(uniflow_tcp_async_send_recv_test
+    ${CMAKE_CURRENT_SOURCE_DIR}/TcpAsyncSendRecvTest.cpp
+)
+target_compile_features(uniflow_tcp_async_send_recv_test PRIVATE cxx_std_20)
+target_include_directories(uniflow_tcp_async_send_recv_test PRIVATE ${ROOT})
+target_link_libraries(uniflow_tcp_async_send_recv_test PRIVATE
+    uniflow_controller
+    uniflow_executor
+    GTest::gtest
+    GTest::gtest_main
+    Threads::Threads
+)
+add_test(NAME TcpAsyncSendRecvTest COMMAND uniflow_tcp_async_send_recv_test)

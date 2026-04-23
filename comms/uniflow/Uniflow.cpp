@@ -85,11 +85,11 @@ Result<std::unique_ptr<Connection>> UniflowAgent::establishConnection(
   // Exchange topology
   std::vector<uint8_t> peerTopo;
   if (sendFirst) {
-    CHECK_EXPR(ctrl->send({myTopo.begin(), myTopo.end()}));
-    CHECK_EXPR(ctrl->recv(peerTopo));
+    CHECK_EXPR(ctrl->send({myTopo.begin(), myTopo.end()}).get());
+    CHECK_EXPR(ctrl->recv(peerTopo).get());
   } else {
-    CHECK_EXPR(ctrl->recv(peerTopo));
-    CHECK_EXPR(ctrl->send({myTopo.begin(), myTopo.end()}));
+    CHECK_EXPR(ctrl->recv(peerTopo).get());
+    CHECK_EXPR(ctrl->send({myTopo.begin(), myTopo.end()}).get());
   }
 
   // Create transport from peer topology
@@ -104,11 +104,11 @@ Result<std::unique_ptr<Connection>> UniflowAgent::establishConnection(
 
   std::vector<uint8_t> remoteInfo;
   if (sendFirst) {
-    CHECK_EXPR(ctrl->send(localInfo));
-    CHECK_EXPR(ctrl->recv(remoteInfo));
+    CHECK_EXPR(ctrl->send(localInfo).get());
+    CHECK_EXPR(ctrl->recv(remoteInfo).get());
   } else {
-    CHECK_EXPR(ctrl->recv(remoteInfo));
-    CHECK_EXPR(ctrl->send(localInfo));
+    CHECK_EXPR(ctrl->recv(remoteInfo).get());
+    CHECK_EXPR(ctrl->send(localInfo).get());
   }
 
   // Connect transport with remote endpoint info
