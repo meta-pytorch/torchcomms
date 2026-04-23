@@ -663,6 +663,9 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
     // Allocate and register sink buffer for atomic return values
     allocateResources();
     registerMemory();
+
+    // Allocate tile sendrecv buffers (if configured)
+    allocate_send_recv_buffers();
   } catch (const std::exception&) {
     // Destructor won't run for a partially-constructed object, so clean up
     // all resources allocated by the init methods above.
@@ -691,6 +694,9 @@ void MultipeerIbgdaTransport::cleanup() {
   }
   gpuAllocations_.clear();
   peerTransportsGpu_ = nullptr;
+
+  // Free tile sendrecv buffers
+  cleanup_send_recv_buffers();
 
   // Destroy QP groups (main + companion)
   for (auto* qpGroup : qpGroupHlList_) {
@@ -1038,8 +1044,8 @@ void MultipeerIbgdaTransport::exchange() {
             << totalDiscardBytes << " bytes (" << numPeers << " peers)";
   }
 
-  // Build device transports on GPU. Collect host-side QP handles,
-  // then let buildDeviceTransportsOnGpu handle all GPU allocation + memcpy.
+  exchange_send_recv_buffers();
+
   const NetworkLKey sinkLkey(HostLKey(sinkMr_->lkey));
   std::vector<P2pIbgdaTransportBuildParams> buildParams(numPeers);
 
@@ -1070,6 +1076,22 @@ void MultipeerIbgdaTransport::exchange() {
       buildParams[peer].counterBuf = counterViews_[peer];
       buildParams[peer].discardSignalSlot = discardSignalRemoteViews_[peer];
       buildParams[peer].numCounterSlots = config_.numCounterSlots;
+    }
+    if (!sendRecvPeerBuffers_.empty()) {
+      const auto& pb = sendRecvPeerBuffers_[peer];
+      buildParams[peer].sendRecvState = IbSendRecvState{
+          .sendStagingBuf = pb.sendStaging,
+          .recvStagingBuf = pb.remoteRecvStaging,
+          .sendStagingPtr = static_cast<char*>(pb.sendStaging.ptr),
+          .recvStagingPtr = static_cast<char*>(pb.recvStaging.ptr),
+          .localSignalBuf = pb.signal,
+          .remoteSignalBuf = pb.remoteSignal,
+          .localCounterBuf = pb.counter,
+          .stepState = pb.stepState,
+          .maxGroups = config_.sendRecv->maxGroups,
+          .pipelineDepth = config_.sendRecv->pipelineDepth,
+          .dataBufferSize = config_.dataBufferSize,
+      };
     }
   }
 
@@ -1272,6 +1294,140 @@ std::vector<IbgdaRemoteBuffer> MultipeerIbgdaTransport::exchangeBuffer(
 }
 int MultipeerIbgdaTransport::nRanks() const {
   return nRanks_;
+}
+
+// =============================================================================
+// Send/recv buffer lifecycle
+// =============================================================================
+
+void MultipeerIbgdaTransport::allocate_send_recv_buffers() {
+  if (!config_.sendRecv.has_value()) {
+    return;
+  }
+  const auto& sr = *config_.sendRecv;
+  if (sr.pipelineDepth < 1) {
+    throw std::invalid_argument("sendRecv.pipelineDepth must be >= 1");
+  }
+  if (sr.maxGroups < 1) {
+    throw std::invalid_argument("sendRecv.maxGroups must be >= 1");
+  }
+  if (config_.dataBufferSize == 0) {
+    throw std::invalid_argument(
+        "dataBufferSize must be > 0 when sendRecv is enabled");
+  }
+  if ((config_.dataBufferSize / sr.maxGroups) < 16) {
+    throw std::invalid_argument(
+        fmt::format(
+            "dataBufferSize / maxGroups must be >= 16, got {} / {} = {}",
+            config_.dataBufferSize,
+            sr.maxGroups,
+            config_.dataBufferSize / sr.maxGroups));
+  }
+
+  const int numPeers = nRanks_ - 1;
+  const std::size_t stagingPerPeer = sr.pipelineDepth * config_.dataBufferSize;
+  const std::size_t signalPerPeer = 2 * sr.maxGroups * sizeof(uint64_t);
+  const std::size_t counterPerPeer = sr.maxGroups * sizeof(uint64_t);
+  const std::size_t stepStatePerPeer = 2 * sr.maxGroups * sizeof(int64_t);
+
+  auto allocateBulk = [&](std::size_t perPeer) {
+    auto buf = std::make_unique<meta::comms::DeviceBuffer>(perPeer * numPeers);
+    auto err = cudaMemset(buf->get(), 0, perPeer * numPeers);
+    if (err != cudaSuccess) {
+      throw std::runtime_error(
+          fmt::format(
+              "Failed to zero send/recv buffer: {}", cudaGetErrorString(err)));
+    }
+    return buf;
+  };
+
+  sendStagingBulk_ = allocateBulk(stagingPerPeer);
+  recvStagingBulk_ = allocateBulk(stagingPerPeer);
+  signalBulk_ = allocateBulk(signalPerPeer);
+  counterBulk_ = allocateBulk(counterPerPeer);
+  stepStateBulk_ = allocateBulk(stepStatePerPeer);
+
+  auto sendStagingBulkReg =
+      registerBuffer(sendStagingBulk_->get(), stagingPerPeer * numPeers);
+  recvStagingBulkReg_ =
+      registerBuffer(recvStagingBulk_->get(), stagingPerPeer * numPeers);
+  signalBulkReg_ = registerBuffer(signalBulk_->get(), signalPerPeer * numPeers);
+  auto counterBulkReg =
+      registerBuffer(counterBulk_->get(), counterPerPeer * numPeers);
+
+  sendRecvPeerBuffers_.resize(numPeers);
+  for (int i = 0; i < numPeers; ++i) {
+    auto& pb = sendRecvPeerBuffers_[i];
+    pb.sendStaging = IbgdaLocalBuffer{
+        static_cast<char*>(sendStagingBulk_->get()) + i * stagingPerPeer,
+        sendStagingBulkReg.lkey};
+    pb.recvStaging = IbgdaLocalBuffer{
+        static_cast<char*>(recvStagingBulk_->get()) + i * stagingPerPeer,
+        recvStagingBulkReg_.lkey};
+    pb.signal = IbgdaLocalBuffer{
+        static_cast<char*>(signalBulk_->get()) + i * signalPerPeer,
+        signalBulkReg_.lkey};
+    pb.counter = IbgdaLocalBuffer{
+        static_cast<char*>(counterBulk_->get()) + i * counterPerPeer,
+        counterBulkReg.lkey};
+    pb.stepState = reinterpret_cast<int64_t*>(
+        static_cast<char*>(stepStateBulk_->get()) + i * stepStatePerPeer);
+  }
+
+  VLOG(1) << "MultipeerIbgdaTransport: allocated tile buffers for " << numPeers
+          << " peers (staging=" << stagingPerPeer << "B per peer)";
+}
+
+void MultipeerIbgdaTransport::exchange_send_recv_buffers() {
+  if (!config_.sendRecv.has_value() || sendRecvPeerBuffers_.empty()) {
+    return;
+  }
+
+  const int numPeers = nRanks_ - 1;
+  const std::size_t stagingPerPeer =
+      config_.sendRecv->pipelineDepth * config_.dataBufferSize;
+
+  const std::size_t signalPerPeer =
+      2 * config_.sendRecv->maxGroups * sizeof(uint64_t);
+
+  auto recvStagingRemotes = exchangeBuffer(recvStagingBulkReg_);
+  auto signalRemotes = exchangeBuffer(signalBulkReg_);
+
+  for (int i = 0; i < numPeers; ++i) {
+    int peerRank = peerIndexToRank(i);
+    int remotePeerIndex = (myRank_ < peerRank) ? myRank_ : (myRank_ - 1);
+
+    sendRecvPeerBuffers_[i].remoteRecvStaging =
+        recvStagingRemotes[i].subBuffer(remotePeerIndex * stagingPerPeer);
+    sendRecvPeerBuffers_[i].remoteSignal =
+        signalRemotes[i].subBuffer(remotePeerIndex * signalPerPeer);
+  }
+
+  VLOG(1) << "MultipeerIbgdaTransport: exchanged tile buffers with " << numPeers
+          << " peers";
+}
+
+void MultipeerIbgdaTransport::cleanup_send_recv_buffers() {
+  sendRecvPeerBuffers_.clear();
+
+  if (sendStagingBulk_) {
+    deregisterBuffer(sendStagingBulk_->get());
+  }
+  if (recvStagingBulk_) {
+    deregisterBuffer(recvStagingBulk_->get());
+  }
+  if (signalBulk_) {
+    deregisterBuffer(signalBulk_->get());
+  }
+  if (counterBulk_) {
+    deregisterBuffer(counterBulk_->get());
+  }
+
+  sendStagingBulk_.reset();
+  recvStagingBulk_.reset();
+  signalBulk_.reset();
+  counterBulk_.reset();
+  stepStateBulk_.reset();
 }
 
 } // namespace comms::pipes

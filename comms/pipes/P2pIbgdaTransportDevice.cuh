@@ -9,6 +9,7 @@
 #include <device/doca_gpunetio_dev_verbs_counter.cuh>
 #include <device/doca_gpunetio_dev_verbs_onesided.cuh>
 
+#include "comms/pipes/CopyUtils.cuh"
 #include "comms/pipes/DeviceSpan.cuh"
 #include "comms/pipes/DocaVerbsUtils.cuh"
 #include "comms/pipes/IbgdaBuffer.h"
@@ -114,6 +115,8 @@ class P2pIbgdaTransportDevice {
    * @param numCounterSlots       Number of uint64_t slots in the owned
    *                              counter buffer. Zero disables the
    *                              slot-index counter API.
+   * @param sendRecvState         Optional pipelined send/recv protocol state.
+   *                              When empty, send()/recv() are unavailable.
    */
   __host__ __device__ P2pIbgdaTransportDevice(
       DeviceSpan<doca_gpu_dev_verbs_qp*> qpArray,
@@ -124,7 +127,8 @@ class P2pIbgdaTransportDevice {
       IbgdaLocalBuffer ownedCounterBuf = {},
       int numSignalSlots = 0,
       int numCounterSlots = 0,
-      IbgdaRemoteBuffer discardSignalSlot = {})
+      IbgdaRemoteBuffer discardSignalSlot = {},
+      IbSendRecvState sendRecvState = {})
       : qpArray_(qpArray),
         companionArray_(companionArray),
         sinkLkey_(sinkLkey),
@@ -133,7 +137,8 @@ class P2pIbgdaTransportDevice {
         ownedCounterBuf_(ownedCounterBuf),
         discardSignalSlot_(discardSignalSlot),
         numSignalSlots_(numSignalSlots),
-        numCounterSlots_(numCounterSlots) {}
+        numCounterSlots_(numCounterSlots),
+        sendRecvState_(sendRecvState) {}
 
   // =========================================================================
   // Slot-Index API (resolves owned buffers, forwards to explicit-buffer API)
@@ -975,6 +980,401 @@ class P2pIbgdaTransportDevice {
         ownedCounterBuf_.lkey);
   }
 
+ public:
+  // ===========================================================================
+  // Pipelined Send/Recv (using transport-managed staging buffers)
+  // ===========================================================================
+  //
+  // Public composable primitives for pipelined RDMA data transfer. Each block
+  // owns one tile (a partition of the user's data). The transport manages
+  // staging buffers internally — the user only provides src/dst pointers.
+  //
+  // Data flow:
+  //
+  //   SENDER (GPU A)                              RECEIVER (GPU B)
+  //   ┌──────────┐                                ┌──────────┐
+  //   │ user src │                                │ user dst │
+  //   └────┬─────┘                                └────▲─────┘
+  //        │ memcpy                                    │ memcpy
+  //        ▼                                           │
+  //   ┌────────────┐       RDMA put              ┌─────┴──────┐
+  //   │sendStaging │ ─────────────────────────▶  │recvStaging │
+  //   │  (GPU A)   │  + DATA_READY signal        │  (GPU B)   │
+  //   └────────────┘  + NIC_DONE counter         └────────────┘
+  //        ▲                                           │
+  //        └───────────── SLOT_FREE signal ────────────┘
+  //
+  // Signal protocol (per block, 3 primitives):
+  //   DATA_READY  — piggybacked on put (sender → receiver's signalBuf)
+  //   SLOT_FREE   — explicit signal    (receiver → sender's signalBuf)
+  //   NIC_DONE    — loopback counter   (NIC → sender's counterBuf)
+  //
+  // Terminology used below:
+  //   slot             = one logical staging-ring entry of dataBufferSize
+  //                      bytes. There are pipelineDepth slots in the ring.
+  //   active_blocks    = number of participating block-groups in one
+  //                      send()/recv() call. Must be <= maxGroups.
+  //   perBlockSlot     = one block-group's partition within a slot:
+  //                      (dataBufferSize / active_blocks) & ~15ULL
+  //   sub-chunk        = one signaled piece within a perBlockSlot. When
+  //                      max_signal_bytes == 0, a sub-chunk is the whole
+  //                      perBlockSlot. Otherwise:
+  //                        chunkSize = floor16(min(perBlockSlot,
+  //                                             max_signal_bytes))
+  //                        chunksPerSlot = perBlockSlot / chunkSize
+  //   stepState        = persistent sub-chunk cursor. It advances by one per
+  //                      DATA_READY / SLOT_FREE / NIC_DONE event, not one per
+  //                      whole slot.
+  //
+  // Typical usage:
+  //   auto [role, sub] = group.partition(2);
+  //   std::size_t sectionBytes = transport->send_recv_state().dataBufferSize;
+  //   for (std::size_t s = 0; s < totalBytes / sectionBytes; ++s) {
+  //     TiledBuffer<char> tiles(data + s * sectionBytes, sectionBytes, sub);
+  //     if (role == 0)
+  //       transport->send(sub, tiles.data(), tiles.bytes(), active_blocks);
+  //     else
+  //       transport->recv(sub, tiles.data(), tiles.bytes(), active_blocks);
+  //   }
+
+  /**
+   * send — send one block's tile via pipelined RDMA.
+   *
+   * Copies src → sendStaging, then RDMA puts sendStaging → peer's recvStaging.
+   * For this call, each logical slot contributes one perBlockSlot-sized region
+   * for this group. If nbytes > perBlockSlot, send() advances through multiple
+   * ring positions. max_signal_bytes can further subdivide each perBlockSlot
+   * into multiple signaled sub-chunks, enabling finer-grained overlap at the
+   * receiver.
+   *
+   * Signaling protocol (per group):
+   *   NIC_DONE   — loopback counter incremented by NIC after each RDMA put.
+   *                send waits on this before overwriting local sendStaging.
+   *   SLOT_FREE  — receiver increments per sub-chunk (symmetric with
+   *                DATA_READY). send waits before overwriting recvStaging.
+   *   DATA_READY — sender increments per sub-chunk, piggybacked on put.
+   *                recv waits on this before reading recvStaging.
+   *
+   * stepState persists across calls, so send() resumes the staging-ring cursor
+   * and protocol sequence numbers on each invocation. This allows callers to
+   * pipeline across repeated send() calls without a separate drain.
+   *
+   * The caller must keep the staging layout stable while a sequence is in
+   * flight. If active_blocks, max_signal_bytes, or any other parameter that
+   * changes the slot/sub-chunk mapping is modified, both sides must perform a
+   * higher-level barrier/quiescence step before issuing the next send()/recv().
+   *
+   * @param group           ThreadGroup (all threads participate in memcpy,
+   *                        leader does RDMA ops).
+   * @param src             Source data for this block's tile.
+   * @param nbytes          Bytes to send for this group. Internally consumed
+   *                        in perBlockSlot-sized pieces, or smaller sub-chunks
+   *                        when max_signal_bytes is set.
+   * @param active_blocks   Number of block-groups sharing each logical slot in
+   *                        this call. 0 means use maxGroups.
+   * @param max_signal_bytes Max bytes per signaled sub-chunk within one
+   *                        perBlockSlot. 0 means one signal per perBlockSlot.
+   * @param timeout         Optional timeout for wait operations.
+   */
+  __device__ __forceinline__ void send(
+      ThreadGroup& group,
+      void* __restrict__ src,
+      std::size_t nbytes,
+      int active_blocks = 0,
+      std::size_t max_signal_bytes = 0,
+      const Timeout& timeout = Timeout()) {
+#ifndef __CUDA_ARCH__
+    (void)group;
+    (void)src;
+    (void)nbytes;
+    (void)active_blocks;
+    (void)max_signal_bytes;
+    (void)timeout;
+#else
+    if (nbytes == 0) {
+      return;
+    }
+
+    const int groupId = group.group_id;
+    const int effActive =
+        active_blocks > 0 ? active_blocks : sendRecvState_.maxGroups;
+
+    if (effActive > sendRecvState_.maxGroups) {
+      if (group.is_leader()) {
+        printf(
+            "[PIPES] FATAL: send active_blocks=%d > maxGroups=%d\n",
+            effActive,
+            sendRecvState_.maxGroups);
+      }
+      __trap();
+    }
+    if (groupId >= effActive) {
+      if (group.is_leader()) {
+        printf(
+            "[PIPES] FATAL: send group_id=%u >= active_blocks=%d\n",
+            groupId,
+            effActive);
+      }
+      __trap();
+    }
+
+    const std::size_t perBlockSlot =
+        (sendRecvState_.dataBufferSize / effActive) & ~15ULL;
+    if (perBlockSlot == 0) {
+      if (group.is_leader()) {
+        printf(
+            "[PIPES] FATAL: send perBlockSlot=0 "
+            "(dataBufferSize=%llu, active_blocks=%d)\n",
+            (unsigned long long)sendRecvState_.dataBufferSize,
+            effActive);
+      }
+      __trap();
+    }
+
+    std::size_t chunkSize =
+        (max_signal_bytes > 0 && max_signal_bytes < perBlockSlot)
+        ? (max_signal_bytes & ~15ULL)
+        : perBlockSlot;
+    if (chunkSize == 0) {
+      chunkSize = perBlockSlot;
+    }
+    const std::size_t chunksPerSlot = perBlockSlot / chunkSize;
+    const std::size_t totalChunks = (nbytes + chunkSize - 1) / chunkSize;
+
+    const int64_t baseStep = sendRecvState_.stepState[groupId];
+    const int pipelineDepth = sendRecvState_.pipelineDepth;
+    const std::size_t dataBufferSize = sendRecvState_.dataBufferSize;
+    const int maxGroups = sendRecvState_.maxGroups;
+    const int64_t chunksPerSlot64 = static_cast<int64_t>(chunksPerSlot);
+    const int64_t pipelineChunks =
+        static_cast<int64_t>(pipelineDepth) * chunksPerSlot64;
+
+    for (std::size_t s = 0; s < totalChunks; ++s) {
+      const int64_t chunkStep = baseStep + static_cast<int64_t>(s);
+      const int64_t slotStep = chunkStep / chunksPerSlot64;
+      const int64_t subStep = chunkStep % chunksPerSlot64;
+      const int slot = static_cast<int>(slotStep % pipelineDepth);
+      const std::size_t slotOff = slot * dataBufferSize;
+      const std::size_t chunkOff =
+          static_cast<std::size_t>(subStep) * chunkSize;
+      const std::size_t stagingOff =
+          slotOff + groupId * perBlockSlot + chunkOff;
+      const std::size_t dataOff = s * chunkSize;
+      const std::size_t bytesThis =
+          (dataOff + chunkSize <= nbytes) ? chunkSize : (nbytes - dataOff);
+
+      // (1) Wait for NIC to finish with this slot's local sendStaging.
+      if (chunkStep >= pipelineChunks) {
+        wait_counter(
+            group,
+            sendRecvState_.localCounterBuf.subBuffer(
+                groupId * sizeof(uint64_t)),
+            static_cast<uint64_t>(chunkStep - pipelineChunks + 1),
+            timeout);
+      }
+
+      // (2) Cooperative memcpy: src → local sendStaging.
+      memcpy_vectorized(
+          sendRecvState_.sendStagingPtr + stagingOff,
+          static_cast<char*>(src) + dataOff,
+          bytesThis,
+          group);
+      group.sync();
+
+      // (3) Backpressure: wait for receiver to free this sub-chunk's
+      //     recvStaging offset. Symmetric with DATA_READY (per sub-chunk).
+      if (chunkStep >= pipelineChunks) {
+        wait_signal(
+            group,
+            sendRecvState_.localSignalBuf.subBuffer(
+                (maxGroups + groupId) * sizeof(uint64_t)),
+            static_cast<uint64_t>(chunkStep - pipelineChunks + 1),
+            timeout);
+      }
+
+      // (4) threadfence_system + leader-only single-WQE RDMA put with
+      //     fused signal+counter. All threads fence to ensure memcpy
+      //     stores are visible to the NIC before the leader posts the WQE.
+      __threadfence_system();
+      group.sync();
+      if (group.is_leader()) {
+        ThreadGroup solo{0, 1, group.group_id, 1, SyncScope::THREAD};
+        put(solo,
+            sendRecvState_.sendStagingBuf.subBuffer(stagingOff),
+            sendRecvState_.recvStagingBuf.subBuffer(stagingOff),
+            bytesThis,
+            sendRecvState_.remoteSignalBuf.subBuffer(
+                groupId * sizeof(uint64_t)),
+            1ULL,
+            sendRecvState_.localCounterBuf.subBuffer(
+                groupId * sizeof(uint64_t)),
+            1ULL);
+      }
+      group.sync();
+    }
+
+    if (group.is_leader()) {
+      sendRecvState_.stepState[groupId] =
+          baseStep + static_cast<int64_t>(totalChunks);
+    }
+    group.sync();
+#endif
+  }
+
+  /**
+   * recv — receive one block's tile from pipelined RDMA.
+   *
+   * Waits for data to arrive in recvStaging, then copies recvStaging → dst.
+   * For this call, each logical slot contributes one perBlockSlot-sized region
+   * for this group. If nbytes > perBlockSlot, recv() advances through multiple
+   * ring positions. max_signal_bytes controls sub-chunk granularity and must
+   * match the sender.
+   *
+   * Signaling protocol (per group, symmetric with send):
+   *   DATA_READY — sender increments per sub-chunk after RDMA put completes.
+   *                recv waits on this before copying from recvStaging.
+   *   SLOT_FREE  — recv increments per sub-chunk (symmetric with DATA_READY)
+   *                to release backpressure on sender.
+   *
+   * @param group           ThreadGroup (all threads participate in memcpy,
+   *                        leader does signal ops).
+   * @param dst             Destination for this block's tile.
+   * @param nbytes          Bytes to receive for this group. Internally
+   *                        consumed in perBlockSlot-sized pieces, or smaller
+   *                        sub-chunks when max_signal_bytes is set.
+   * @param active_blocks   Number of block-groups sharing each logical slot in
+   *                        this call. 0 means use maxGroups.
+   * @param max_signal_bytes Max bytes per signaled sub-chunk within one
+   *                        perBlockSlot. 0 means one signal per perBlockSlot.
+   *                        Must match the sender's value.
+   * @param timeout         Optional timeout for wait operations.
+   */
+  __device__ __forceinline__ void recv(
+      ThreadGroup& group,
+      void* __restrict__ dst,
+      std::size_t nbytes,
+      int active_blocks = 0,
+      std::size_t max_signal_bytes = 0,
+      const Timeout& timeout = Timeout()) {
+#ifndef __CUDA_ARCH__
+    (void)group;
+    (void)dst;
+    (void)nbytes;
+    (void)active_blocks;
+    (void)max_signal_bytes;
+    (void)timeout;
+#else
+    if (nbytes == 0) {
+      return;
+    }
+
+    const int groupId = group.group_id;
+    const int effActive =
+        active_blocks > 0 ? active_blocks : sendRecvState_.maxGroups;
+
+    if (effActive > sendRecvState_.maxGroups) {
+      if (group.is_leader()) {
+        printf(
+            "[PIPES] FATAL: recv active_blocks=%d > maxGroups=%d\n",
+            effActive,
+            sendRecvState_.maxGroups);
+      }
+      __trap();
+    }
+    if (groupId >= effActive) {
+      if (group.is_leader()) {
+        printf(
+            "[PIPES] FATAL: recv group_id=%u >= active_blocks=%d\n",
+            groupId,
+            effActive);
+      }
+      __trap();
+    }
+
+    const std::size_t perBlockSlot =
+        (sendRecvState_.dataBufferSize / effActive) & ~15ULL;
+    if (perBlockSlot == 0) {
+      if (group.is_leader()) {
+        printf(
+            "[PIPES] FATAL: recv perBlockSlot=0 "
+            "(dataBufferSize=%llu, active_blocks=%d)\n",
+            (unsigned long long)sendRecvState_.dataBufferSize,
+            effActive);
+      }
+      __trap();
+    }
+
+    std::size_t chunkSize =
+        (max_signal_bytes > 0 && max_signal_bytes < perBlockSlot)
+        ? (max_signal_bytes & ~15ULL)
+        : perBlockSlot;
+    if (chunkSize == 0) {
+      chunkSize = perBlockSlot;
+    }
+    const std::size_t chunksPerSlot = perBlockSlot / chunkSize;
+    const std::size_t totalChunks = (nbytes + chunkSize - 1) / chunkSize;
+
+    const int64_t baseStep =
+        sendRecvState_.stepState[sendRecvState_.maxGroups + groupId];
+    const int pipelineDepth = sendRecvState_.pipelineDepth;
+    const std::size_t dataBufferSize = sendRecvState_.dataBufferSize;
+    const int maxGroups = sendRecvState_.maxGroups;
+    const int64_t chunksPerSlot64 = static_cast<int64_t>(chunksPerSlot);
+
+    for (std::size_t s = 0; s < totalChunks; ++s) {
+      const int64_t chunkStep = baseStep + static_cast<int64_t>(s);
+      const int64_t slotStep = chunkStep / chunksPerSlot64;
+      const int64_t subStep = chunkStep % chunksPerSlot64;
+      const int slot = static_cast<int>(slotStep % pipelineDepth);
+      const std::size_t slotOff = slot * dataBufferSize;
+      const std::size_t chunkOff =
+          static_cast<std::size_t>(subStep) * chunkSize;
+      const std::size_t stagingOff =
+          slotOff + groupId * perBlockSlot + chunkOff;
+      const std::size_t dataOff = s * chunkSize;
+      const std::size_t bytesThis =
+          (dataOff + chunkSize <= nbytes) ? chunkSize : (nbytes - dataOff);
+
+      // (1) Wait for sender's DATA_READY signal.
+      wait_signal(
+          group,
+          sendRecvState_.localSignalBuf.subBuffer(groupId * sizeof(uint64_t)),
+          static_cast<uint64_t>(chunkStep + 1),
+          timeout);
+
+      // (2) Cooperative memcpy: local recvStaging → dst.
+      memcpy_vectorized(
+          static_cast<char*>(dst) + dataOff,
+          sendRecvState_.recvStagingPtr + stagingOff,
+          bytesThis,
+          group);
+      group.sync();
+
+      // (3) Signal SLOT_FREE to sender — per sub-chunk (symmetric with
+      //     DATA_READY). Sender waits per sub-chunk before reusing remote
+      //     recvStaging at the same offset.
+      signal(
+          group,
+          sendRecvState_.remoteSignalBuf.subBuffer(
+              (maxGroups + groupId) * sizeof(uint64_t)),
+          1ULL);
+    }
+
+    if (group.is_leader()) {
+      sendRecvState_.stepState[sendRecvState_.maxGroups + groupId] =
+          baseStep + static_cast<int64_t>(totalChunks);
+    }
+    group.sync();
+#endif
+  }
+
+  // Send/recv state accessors
+
+  __host__ __device__ const IbSendRecvState& send_recv_state() const {
+    return sendRecvState_;
+  }
+
+ private:
   /**
    * active_qp - Select the QP for the calling group
    *
@@ -1009,17 +1409,12 @@ class P2pIbgdaTransportDevice {
   IbgdaLocalBuffer ownedLocalSignalBuf_{}; // inbox: receive signals from peers
   IbgdaLocalBuffer ownedCounterBuf_{}; // local counter for companion QP
 
-  // Throwaway remote slot used as the signal target when put_impl needs to
-  // increment a counter without a real signal. The peer never reads this
-  // slot — we only need somewhere addressable so signal_counter has a place
-  // to land its atomic FA. See put_impl for the rationale.
   IbgdaRemoteBuffer discardSignalSlot_{};
 
-  // Slot counts for bounds-checking the slot-index API. Zero means the
-  // transport was not configured with that buffer; any slot-index call
-  // traps via IBGDA_CHECK_SLOT_ID.
   int numSignalSlots_{0};
   int numCounterSlots_{0};
+
+  IbSendRecvState sendRecvState_{};
 };
 
 } // namespace comms::pipes
