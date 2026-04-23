@@ -412,36 +412,6 @@ commResult_t allGatherWinExec(
     CtranPersistentRequest* request);
 
 commResult_t allGatherWinDestroy(CtranPersistentRequest* request);
-
-// All array inout arguments are merely pointer without value at init time;
-// value will be updated at execution
-commResult_t allToAllvDedupInit(
-    const int totalNumSendBlocks, // number of blocks (tokens) per batch
-    const int blockCount, // number of elements per block (token)
-    const int blockNumRecvBuckets, // number of receiving buckets for each
-                                   // block (experts per token, topK)
-    const int numRecvBuckets, // number of receiving buckets per rank (expert
-                              // per rank)
-    meta::comms::Hints hints, // unused
-    commDataType_t datatype,
-    CtranComm* comm,
-    cudaStream_t stream,
-    CtranPersistentRequest*& request);
-
-commResult_t allToAllvDedupDestroy(CtranPersistentRequest* request);
-
-bool allToAllvDedupSupport(CtranComm* comm, meta::comms::Hints hints);
-
-commResult_t allToAllvDedupExec(
-    const void* sendBuff,
-    const int* sendIdx,
-    const int* fwdIdx,
-    const int* recvIdx,
-    void* recvBuff,
-    // number of blocks in recvBuff
-    int recvBlockIds[],
-    CtranPersistentRequest* request);
-
 bool AllToAllPSupport(CtranComm* comm);
 
 commResult_t AllToAllPInit(
