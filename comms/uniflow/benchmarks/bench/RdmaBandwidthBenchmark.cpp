@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <future>
 #include <optional>
 #include <utility>
@@ -53,7 +54,7 @@ struct BenchmarkBuffers {
   // multiple NICs read from the same GPU memory region simultaneously.
   std::vector<void*> srcs;
   std::vector<void*> dsts;
-  bool useGpu{false}; // Controls deallocation path (cudaFree vs std::free).
+  bool useGpu{false};
   MemoryType memType{MemoryType::DRAM};
   int gpuDevice{0};
 
@@ -393,8 +394,7 @@ std::optional<TransportSession> setupTransport(
   return session;
 }
 
-/// Batched put/get: pass batchSize requests per put() call, measure the
-/// latency of the whole batch, divide by batchSize for per-op latency.
+/// Run batched put/get with pipelined submission (txDepth in-flight batches).
 std::vector<BenchmarkResult> runBenchmarkLoop(
     Transport& transport,
     std::vector<RegisteredSegment>& localRegs,
@@ -403,9 +403,13 @@ std::vector<BenchmarkResult> runBenchmarkLoop(
     std::vector<PeerConnection>& peers,
     const BootstrapConfig& bootstrap,
     const std::string& benchmarkName) {
+  using Clock = std::chrono::steady_clock;
+  using TimePoint = Clock::time_point;
+
   auto sizes = generateSizes(config.minSize, config.maxSize);
   std::vector<BenchmarkResult> results;
   const int batchSize = std::max(1, config.batchSize);
+  const int txDepth = std::max(1, config.txDepth);
   const int numBufs = static_cast<int>(localRegs.size());
 
   const bool isActiveRank = config.bidirectional || bootstrap.isRank0();
@@ -442,18 +446,15 @@ std::vector<BenchmarkResult> runBenchmarkLoop(
 
       int numBatches =
           std::max(1, (config.iterations + batchSize - 1) / batchSize);
-      // totalOps may exceed config.iterations when iterations is not evenly
-      // divisible by batchSize (we round up to complete batches).
       int totalOps = numBatches * batchSize;
 
-      auto submitBatch = [&]() -> Status {
-        auto fut = (dir == "put") ? transport.put(batch, {})
-                                  : transport.get(batch, {});
-        return fut.get();
+      auto submitBatchAsync = [&]() -> std::future<Status> {
+        return (dir == "put") ? transport.put(batch, {})
+                              : transport.get(batch, {});
       };
 
       for (int iter = 0; iter < config.warmupIterations; ++iter) {
-        auto status = submitBatch();
+        auto status = submitBatchAsync().get();
         if (status.hasError()) {
           UNIFLOW_LOG_ERROR(
               "RdmaBandwidthBenchmark: warmup {} failed at size {}: {}",
@@ -464,29 +465,56 @@ std::vector<BenchmarkResult> runBenchmarkLoop(
         }
       }
 
+      // Sliding window: keep up to txDepth batches in-flight.
+      // txDepth=1 degenerates to synchronous behavior.
+      std::deque<std::pair<std::future<Status>, TimePoint>> inflight;
       std::vector<double> latenciesUs;
       latenciesUs.reserve(numBatches);
 
-      auto overallStart = std::chrono::steady_clock::now();
-
-      for (int b = 0; b < numBatches; ++b) {
-        auto t0 = std::chrono::steady_clock::now();
-        auto status = submitBatch();
-        auto t1 = std::chrono::steady_clock::now();
+      // Complete the oldest in-flight batch: get result, record latency.
+      // Returns false on error after draining all remaining futures.
+      auto completeOne = [&]() -> bool {
+        auto& [fut, submitTime] = inflight.front();
+        auto status = fut.get();
+        auto completeTime = Clock::now();
         if (status.hasError()) {
+          inflight.pop_front();
           UNIFLOW_LOG_ERROR(
               "RdmaBandwidthBenchmark: {} failed at size {}: {}",
               dir,
               size,
               status.error().message());
-          return;
+          for (auto& [f, _] : inflight) {
+            f.wait();
+          }
+          return false;
         }
         double batchUs =
-            std::chrono::duration<double, std::micro>(t1 - t0).count();
+            std::chrono::duration<double, std::micro>(completeTime - submitTime)
+                .count();
         latenciesUs.push_back(batchUs / batchSize);
+        inflight.pop_front();
+        return true;
+      };
+
+      auto overallStart = Clock::now();
+
+      for (int b = 0; b < numBatches; ++b) {
+        if (static_cast<int>(inflight.size()) >= txDepth) {
+          if (!completeOne()) {
+            return;
+          }
+        }
+        inflight.emplace_back(submitBatchAsync(), Clock::now());
       }
 
-      auto overallEnd = std::chrono::steady_clock::now();
+      while (!inflight.empty()) {
+        if (!completeOne()) {
+          return;
+        }
+      }
+
+      auto overallEnd = Clock::now();
 
       double totalTimeSec =
           std::chrono::duration<double>(overallEnd - overallStart).count();
@@ -506,6 +534,7 @@ std::vector<BenchmarkResult> runBenchmarkLoop(
           .messageSize = size,
           .iterations = totalOps,
           .batchSize = batchSize,
+          .txDepth = txDepth,
           .chunkSize = config.chunkSize,
           .bandwidthGBs = bandwidthGBs,
           .latency = stats,
@@ -513,12 +542,13 @@ std::vector<BenchmarkResult> runBenchmarkLoop(
       });
 
       UNIFLOW_LOG_WARN(
-          "[rank {}] {} size={:<10} batch={:<3} iters={:<6} "
+          "[rank {}] {} size={:<10} batch={:<3} txdepth={:<3} iters={:<6} "
           "bw={:.2f} GB/s  avg={:.1f} us  {}",
           bootstrap.rank,
           dir,
           size,
           batchSize,
+          txDepth,
           totalOps,
           bandwidthGBs,
           stats.avg,
@@ -578,6 +608,10 @@ std::vector<BenchmarkResult> RdmaBandwidthBenchmark::run(
     if (myDevices.empty()) {
       myDevices = deviceNames;
     }
+    if (config.numNics > 0 &&
+        config.numNics < static_cast<int>(myDevices.size())) {
+      myDevices.resize(config.numNics);
+    }
   }
   {
     std::string devList;
@@ -600,13 +634,10 @@ std::vector<BenchmarkResult> RdmaBandwidthBenchmark::run(
     return {};
   }
 
-  // Sanity check: we allocate one buffer pair per NIC and create one QP per
-  // NIC.  A mismatch would cause out-of-bounds accesses in runBenchmarkLoop.
   assert(
       bufs->srcs.size() == myDevices.size() &&
       "Buffer count must equal NIC/QP count");
 
-  // evbThread must outlive the transport (transport posts async work to it).
   ScopedEventBaseThread evbThread("bench-evb");
   auto session = setupTransport(
       myDevices,

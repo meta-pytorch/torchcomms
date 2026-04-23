@@ -19,6 +19,8 @@ struct BenchmarkConfig {
   int warmupIterations{10};
   int loopCount{1};
   int batchSize{1};
+  int txDepth{1};
+  int numNics{0}; // 0 = use all topology-selected NICs
   size_t chunkSize{512 * 1024};
   int cudaDevice{-1};
   bool bidirectional{false};
