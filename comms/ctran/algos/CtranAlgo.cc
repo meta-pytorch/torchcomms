@@ -633,12 +633,14 @@ static const std::unordered_map<std::string, enum NCCL_ALLGATHER_ALGO>
         {"ctbrucks", NCCL_ALLGATHER_ALGO::ctbrucks},
         {"ctgraph", NCCL_ALLGATHER_ALGO::ctgraph}};
 
+// FIXME: consolidate ctranConfigCommAlgoOverride with the algo config
 commResult_t ctranConfigCommAlgoOverride(CtranComm* comm) {
   if (!ctranInitialized(comm)) {
     return commSuccess;
   }
 
-  if (std::strcmp(comm->config_.ncclAllGatherAlgo, "undefined") == 0) {
+  if (comm->config_.ncclAllGatherAlgo == nullptr ||
+      std::strcmp(comm->config_.ncclAllGatherAlgo, "undefined") == 0) {
     return commSuccess;
   }
 
