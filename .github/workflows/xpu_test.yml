@@ -94,10 +94,24 @@ jobs:
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
           GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
           SHA1: ${{ github.event.pull_request.head.sha || github.sha }}
+          RUNNER_NAME: ${{ runner.name }}
           ZE_AFFINITY_MASK: ${{ env.ZE_AFFINITY_MASK }}
         timeout-minutes: 120
         run: |
           set -x
+
+          #Install Intel Deep Learning Essentials
+          DLE_VER=2025.3.2.36
+          DLE_ROOT=/tmp/${RUNNER_NAME}/dle-${DLE_VER}
+          DLE_PATH=${DLE_ROOT}/dle
+          if [[ ! -d ${DLE_ROOT} ]]; then
+            mkdir -p ${DLE_ROOT}
+            DLE_URL="https://registrationcenter-download.intel.com/akdlm/IRC_NAS/b3e6c1bf-a6d5-4580-8b1d-80cbfd38c8af/intel-deep-learning-essentials-${DLE_VER}_offline.sh"
+            wget -qO ${DLE_ROOT}/intel-deep-learning-essentials.sh ${DLE_URL}
+            chmod +x ${DLE_ROOT}/intel-deep-learning-essentials.sh
+            ${DLE_ROOT}/intel-deep-learning-essentials.sh -a --silent --eula accept --install-dir ${DLE_PATH} --instance=custom-id-${GITHUB_RUN_NUMBER}
+            rm -f ${DLE_ROOT}/intel-deep-learning-essentials.sh
+          fi
 
           # detached container should get cleaned up by teardown_ec2_linux
           # Used for GPU_FLAG since that doesn't play nice
@@ -113,9 +127,11 @@ jobs:
             -e GITHUB_RUN_NUMBER \
             -e GITHUB_RUN_ATTEMPT \
             -e ZE_AFFINITY_MASK \
+            -e DLE_PATH=${DLE_PATH} \
             -e JOB_ID \
             -e BRANCH \
             -e SHA1 \
+            -e RUNNER_NAME \
             --ulimit stack=10485760:83886080 \
             --ulimit core=0 \
             --security-opt seccomp=unconfined \
@@ -125,6 +141,7 @@ jobs:
             --detach \
             --privileged \
             -v "${GITHUB_WORKSPACE}:/var/lib/jenkins/workspace" \
+            -v "${DLE_PATH}:${DLE_PATH}" \
             -w /var/lib/jenkins/workspace \
             "${DOCKER_IMAGE}"
           )
