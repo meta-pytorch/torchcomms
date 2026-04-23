@@ -2183,7 +2183,7 @@ TEST_F(CtranGpeTest, PostKernelCleanupGraphWithOpGroup) {
 // terminate(), the pool destructor can free pinned memory while those elements
 // are still "in use", causing use-after-free when the background release runs.
 
-TEST_F(CtranGpeTest, DISABLED_TerminateWaitsForGpeKernelSyncPoolDrain) {
+TEST_F(CtranGpeTest, TerminateWaitsForGpeKernelSyncPoolDrain) {
   auto gpe = std::make_unique<CtranGpe>(cudaDev, dummyComm);
 
   // Allocate syncs from the pool — they are now "in use".
