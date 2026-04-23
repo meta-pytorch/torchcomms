@@ -4,13 +4,14 @@
 
 #include <ATen/ATen.h>
 #include <c10/util/intrusive_ptr.h>
+#include <comms/torchcomms/TorchCommTypes.hpp>
 #include <comms/torchcomms/TorchWork.hpp>
 #include <cstddef>
 #include <functional>
 #include <memory>
-#include <optional>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 namespace torch::comms {
@@ -90,37 +91,360 @@ constexpr std::string_view opToString(OpName name) {
   return "unknown";
 }
 
-struct PreHookArgs {
-  OpName name{};
-  bool async_op{false};
-  std::vector<at::Tensor>* input_tensors{nullptr};
-  std::vector<at::Tensor>* output_tensors{nullptr};
-  const at::Tensor* input_tensor{nullptr};
-  const at::Tensor* output_tensor{nullptr};
-  int root{-1};
-  // For all_to_all_v_single
-  const std::vector<uint64_t>* output_split_sizes{nullptr};
-  const std::vector<uint64_t>* input_split_sizes{nullptr};
-  // For split
-  const std::vector<int>* ranks{nullptr};
-  const std::string* split_name{nullptr};
-  // Unique operation ID to correlate pre-hook and post-hook calls
-  size_t op_id{0};
+// -- Per-collective pre-hook argument structs --
+//
+// Each collective operation has its own typed args struct carrying exactly
+// the parameters relevant to that operation. All structs use explicit
+// constructors so that omitting or reordering parameters is a compile
+// error. References are valid for the duration of the hook call (they
+// point to the caller's stack).
+
+// Point-to-point
+struct SendPreHookArgs {
+  SendPreHookArgs(const at::Tensor& tensor, int peer, bool async_op)
+      : tensor(tensor), peer(peer), async_op(async_op) {}
+  const at::Tensor& tensor;
+  int peer;
+  bool async_op;
 };
 
-using PreHook = std::function<void(PreHookArgs)>;
-
-struct PostHookArgs {
-  OpName name;
-  bool async_op{true};
-  std::optional<c10::weak_intrusive_ptr<TorchWork>> work{};
-  std::weak_ptr<TorchComm> new_comm{};
-  std::weak_ptr<TorchCommWindow> new_window{};
-  // Unique operation ID to correlate pre-hook and post-hook calls
-  size_t op_id{0};
+struct RecvPreHookArgs {
+  RecvPreHookArgs(at::Tensor& tensor, int peer, bool async_op)
+      : tensor(tensor), peer(peer), async_op(async_op) {}
+  at::Tensor& tensor;
+  int peer;
+  bool async_op;
 };
 
-using PostHook = std::function<void(PostHookArgs)>;
+// In-place collectives (input == output)
+struct BroadcastPreHookArgs {
+  BroadcastPreHookArgs(at::Tensor& tensor, int root, bool async_op)
+      : tensor(tensor), root(root), async_op(async_op) {}
+  at::Tensor& tensor;
+  int root;
+  bool async_op;
+};
+
+struct AllReducePreHookArgs {
+  AllReducePreHookArgs(at::Tensor& tensor, const ReduceOp& op, bool async_op)
+      : tensor(tensor), op(op), async_op(async_op) {}
+  at::Tensor& tensor;
+  const ReduceOp& op;
+  bool async_op;
+};
+
+struct ReducePreHookArgs {
+  ReducePreHookArgs(
+      const at::Tensor& tensor,
+      int root,
+      const ReduceOp& op,
+      bool async_op)
+      : tensor(tensor), root(root), op(op), async_op(async_op) {}
+  const at::Tensor& tensor;
+  int root;
+  const ReduceOp& op;
+  bool async_op;
+};
+
+// Gather-style (input tensor -> output tensor list)
+struct AllGatherPreHookArgs {
+  AllGatherPreHookArgs(
+      const at::Tensor& input,
+      const std::vector<at::Tensor>& output,
+      bool async_op)
+      : input(input), output(output), async_op(async_op) {}
+  const at::Tensor& input;
+  const std::vector<at::Tensor>& output;
+  bool async_op;
+};
+
+struct AllGatherVPreHookArgs {
+  AllGatherVPreHookArgs(
+      const at::Tensor& input,
+      const std::vector<at::Tensor>& output,
+      bool async_op)
+      : input(input), output(output), async_op(async_op) {}
+  const at::Tensor& input;
+  const std::vector<at::Tensor>& output;
+  bool async_op;
+};
+
+struct AllGatherSinglePreHookArgs {
+  AllGatherSinglePreHookArgs(
+      const at::Tensor& input,
+      at::Tensor& output,
+      bool async_op)
+      : input(input), output(output), async_op(async_op) {}
+  const at::Tensor& input;
+  at::Tensor& output;
+  bool async_op;
+};
+
+// Scatter-style (input tensor list -> output tensor)
+struct ReduceScatterPreHookArgs {
+  ReduceScatterPreHookArgs(
+      const std::vector<at::Tensor>& input,
+      at::Tensor& output,
+      const ReduceOp& op,
+      bool async_op)
+      : input(input), output(output), op(op), async_op(async_op) {}
+  const std::vector<at::Tensor>& input;
+  at::Tensor& output;
+  const ReduceOp& op;
+  bool async_op;
+};
+
+struct ReduceScatterVPreHookArgs {
+  ReduceScatterVPreHookArgs(
+      const std::vector<at::Tensor>& input,
+      at::Tensor& output,
+      const ReduceOp& op,
+      bool async_op)
+      : input(input), output(output), op(op), async_op(async_op) {}
+  const std::vector<at::Tensor>& input;
+  at::Tensor& output;
+  const ReduceOp& op;
+  bool async_op;
+};
+
+struct ReduceScatterSinglePreHookArgs {
+  ReduceScatterSinglePreHookArgs(
+      const at::Tensor& input,
+      at::Tensor& output,
+      const ReduceOp& op,
+      bool async_op)
+      : input(input), output(output), op(op), async_op(async_op) {}
+  const at::Tensor& input;
+  at::Tensor& output;
+  const ReduceOp& op;
+  bool async_op;
+};
+
+// All-to-all
+struct AllToAllSinglePreHookArgs {
+  AllToAllSinglePreHookArgs(
+      const at::Tensor& input,
+      at::Tensor& output,
+      bool async_op)
+      : input(input), output(output), async_op(async_op) {}
+  const at::Tensor& input;
+  at::Tensor& output;
+  bool async_op;
+};
+
+struct AllToAllVSinglePreHookArgs {
+  AllToAllVSinglePreHookArgs(
+      const at::Tensor& input,
+      at::Tensor& output,
+      const std::vector<uint64_t>& input_split_sizes,
+      const std::vector<uint64_t>& output_split_sizes,
+      bool async_op)
+      : input(input),
+        output(output),
+        input_split_sizes(input_split_sizes),
+        output_split_sizes(output_split_sizes),
+        async_op(async_op) {}
+  const at::Tensor& input;
+  at::Tensor& output;
+  const std::vector<uint64_t>& input_split_sizes;
+  const std::vector<uint64_t>& output_split_sizes;
+  bool async_op;
+};
+
+struct AllToAllPreHookArgs {
+  AllToAllPreHookArgs(
+      const std::vector<at::Tensor>& input,
+      const std::vector<at::Tensor>& output,
+      bool async_op)
+      : input(input), output(output), async_op(async_op) {}
+  const std::vector<at::Tensor>& input;
+  const std::vector<at::Tensor>& output;
+  bool async_op;
+};
+
+// Barrier (no tensors)
+struct BarrierPreHookArgs {
+  explicit BarrierPreHookArgs(bool async_op) : async_op(async_op) {}
+  bool async_op;
+};
+
+// Scatter/gather with root
+struct ScatterPreHookArgs {
+  ScatterPreHookArgs(
+      at::Tensor& output,
+      const std::vector<at::Tensor>& input,
+      int root,
+      bool async_op)
+      : output(output), input(input), root(root), async_op(async_op) {}
+  at::Tensor& output;
+  const std::vector<at::Tensor>& input;
+  int root;
+  bool async_op;
+};
+
+struct GatherPreHookArgs {
+  GatherPreHookArgs(
+      const at::Tensor& input,
+      const std::vector<at::Tensor>& output,
+      int root,
+      bool async_op)
+      : input(input), output(output), root(root), async_op(async_op) {}
+  const at::Tensor& input;
+  const std::vector<at::Tensor>& output;
+  int root;
+  bool async_op;
+};
+
+struct GatherSinglePreHookArgs {
+  GatherSinglePreHookArgs(
+      const at::Tensor& input,
+      at::Tensor& output,
+      int root,
+      bool async_op)
+      : input(input), output(output), root(root), async_op(async_op) {}
+  const at::Tensor& input;
+  at::Tensor& output;
+  int root;
+  bool async_op;
+};
+
+// Communicator management
+struct SplitPreHookArgs {
+  SplitPreHookArgs(const std::vector<int>& ranks, const std::string& name)
+      : ranks(ranks), name(name) {}
+  const std::vector<int>& ranks;
+  const std::string& name;
+};
+
+struct NewWindowPreHookArgs {};
+
+// Variant of all per-collective pre-hook argument types
+using PreHookArgs = std::variant<
+    SendPreHookArgs,
+    RecvPreHookArgs,
+    BroadcastPreHookArgs,
+    AllReducePreHookArgs,
+    ReducePreHookArgs,
+    AllGatherPreHookArgs,
+    AllGatherVPreHookArgs,
+    AllGatherSinglePreHookArgs,
+    ReduceScatterPreHookArgs,
+    ReduceScatterVPreHookArgs,
+    ReduceScatterSinglePreHookArgs,
+    AllToAllSinglePreHookArgs,
+    AllToAllVSinglePreHookArgs,
+    AllToAllPreHookArgs,
+    BarrierPreHookArgs,
+    ScatterPreHookArgs,
+    GatherPreHookArgs,
+    GatherSinglePreHookArgs,
+    SplitPreHookArgs,
+    NewWindowPreHookArgs>;
+
+using PreHook =
+    std::function<void(OpName name, size_t op_id, const PreHookArgs& args)>;
+
+// -- Per-collective post-hook argument structs --
+//
+// Base struct for collectives that produce a work object.
+// Split and new_window have their own result types.
+
+struct CollectivePostHookArgs {
+  explicit CollectivePostHookArgs(c10::weak_intrusive_ptr<TorchWork> work)
+      : work(std::move(work)) {}
+  c10::weak_intrusive_ptr<TorchWork> work;
+};
+
+struct SendPostHookArgs : CollectivePostHookArgs {
+  using CollectivePostHookArgs::CollectivePostHookArgs;
+};
+struct RecvPostHookArgs : CollectivePostHookArgs {
+  using CollectivePostHookArgs::CollectivePostHookArgs;
+};
+struct BroadcastPostHookArgs : CollectivePostHookArgs {
+  using CollectivePostHookArgs::CollectivePostHookArgs;
+};
+struct AllReducePostHookArgs : CollectivePostHookArgs {
+  using CollectivePostHookArgs::CollectivePostHookArgs;
+};
+struct ReducePostHookArgs : CollectivePostHookArgs {
+  using CollectivePostHookArgs::CollectivePostHookArgs;
+};
+struct AllGatherPostHookArgs : CollectivePostHookArgs {
+  using CollectivePostHookArgs::CollectivePostHookArgs;
+};
+struct AllGatherVPostHookArgs : CollectivePostHookArgs {
+  using CollectivePostHookArgs::CollectivePostHookArgs;
+};
+struct AllGatherSinglePostHookArgs : CollectivePostHookArgs {
+  using CollectivePostHookArgs::CollectivePostHookArgs;
+};
+struct ReduceScatterPostHookArgs : CollectivePostHookArgs {
+  using CollectivePostHookArgs::CollectivePostHookArgs;
+};
+struct ReduceScatterVPostHookArgs : CollectivePostHookArgs {
+  using CollectivePostHookArgs::CollectivePostHookArgs;
+};
+struct ReduceScatterSinglePostHookArgs : CollectivePostHookArgs {
+  using CollectivePostHookArgs::CollectivePostHookArgs;
+};
+struct AllToAllSinglePostHookArgs : CollectivePostHookArgs {
+  using CollectivePostHookArgs::CollectivePostHookArgs;
+};
+struct AllToAllVSinglePostHookArgs : CollectivePostHookArgs {
+  using CollectivePostHookArgs::CollectivePostHookArgs;
+};
+struct AllToAllPostHookArgs : CollectivePostHookArgs {
+  using CollectivePostHookArgs::CollectivePostHookArgs;
+};
+struct BarrierPostHookArgs : CollectivePostHookArgs {
+  using CollectivePostHookArgs::CollectivePostHookArgs;
+};
+struct ScatterPostHookArgs : CollectivePostHookArgs {
+  using CollectivePostHookArgs::CollectivePostHookArgs;
+};
+struct GatherPostHookArgs : CollectivePostHookArgs {
+  using CollectivePostHookArgs::CollectivePostHookArgs;
+};
+struct GatherSinglePostHookArgs : CollectivePostHookArgs {
+  using CollectivePostHookArgs::CollectivePostHookArgs;
+};
+
+struct SplitPostHookArgs {
+  explicit SplitPostHookArgs(std::weak_ptr<TorchComm> new_comm)
+      : new_comm(std::move(new_comm)) {}
+  std::weak_ptr<TorchComm> new_comm;
+};
+
+struct NewWindowPostHookArgs {
+  explicit NewWindowPostHookArgs(std::weak_ptr<TorchCommWindow> new_window)
+      : new_window(std::move(new_window)) {}
+  std::weak_ptr<TorchCommWindow> new_window;
+};
+
+using PostHookArgs = std::variant<
+    SendPostHookArgs,
+    RecvPostHookArgs,
+    BroadcastPostHookArgs,
+    AllReducePostHookArgs,
+    ReducePostHookArgs,
+    AllGatherPostHookArgs,
+    AllGatherVPostHookArgs,
+    AllGatherSinglePostHookArgs,
+    ReduceScatterPostHookArgs,
+    ReduceScatterVPostHookArgs,
+    ReduceScatterSinglePostHookArgs,
+    AllToAllSinglePostHookArgs,
+    AllToAllVSinglePostHookArgs,
+    AllToAllPostHookArgs,
+    BarrierPostHookArgs,
+    ScatterPostHookArgs,
+    GatherPostHookArgs,
+    GatherSinglePostHookArgs,
+    SplitPostHookArgs,
+    NewWindowPostHookArgs>;
+
+using PostHook = std::function<void(size_t op_id, const PostHookArgs& args)>;
 
 // Abort hook - called before aborting when a collective times out or fails.
 // This allows users to capture debug information before the abort.
