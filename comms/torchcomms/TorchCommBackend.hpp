@@ -54,6 +54,20 @@ class TorchCommBackend {
   // Unique name for this instance of the communicator.
   virtual std::string_view getCommName() const = 0;
 
+  virtual void register_address(void* addr, size_t len) {
+    throw std::runtime_error(
+        "[TorchCommBackend]: register_address not implemented for "
+        "communicator:" +
+        std::string(getCommName()));
+  }
+
+  virtual void deregister_address(void* addr) {
+    throw std::runtime_error(
+        "[TorchCommBackend]: deregister_address not implemented for "
+        "communicator:" +
+        std::string(getCommName()));
+  }
+
   // Point-to-Point Operations
   virtual c10::intrusive_ptr<TorchWork> send(
       const at::Tensor& tensor,
