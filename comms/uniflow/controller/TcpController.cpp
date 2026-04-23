@@ -3,9 +3,12 @@
 #include "comms/uniflow/controller/TcpController.h"
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/tcp.h>
+#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <cassert>
 #include <cerrno>
 #include <charconv>
 #include <cstring>
@@ -13,6 +16,10 @@
 #include <system_error>
 #include <thread>
 
+#include <fmt/core.h>
+
+#include "comms/uniflow/Result.h"
+#include "comms/uniflow/executor/EventBase.h"
 #include "comms/uniflow/logging/Logger.h"
 
 namespace uniflow::controller {
@@ -60,13 +67,21 @@ Status TcpSocketConfig::validate() const {
 
 namespace {
 
-constexpr uint32_t kMaxMessageSize = 64 << 20; // 64MB max message size
-constexpr int kAcceptTimeoutSec = 5; // accept() wakeup interval
+constexpr uint32_t kMaxMessageSize = 64 << 20;
+constexpr int kSocketBufSize = 1 << 20;
+constexpr int kAcceptTimeoutSec = 5;
+constexpr int kConnectedTimeoutSec = 30;
+constexpr int kKeepaliveIdleSec = 60;
+constexpr int kKeepaliveIntervalSec = 5;
+constexpr int kKeepaliveCount = 3;
+constexpr int kUserTimeoutMs = 60000;
 
 // Magic value exchanged during connection handshake to validate that both
 // endpoints are uniflow controllers (rejects stray connections).
 constexpr uint32_t kMagic = 0x554E4946; // "UNIF" in ASCII
 
+// Accumulates the names of all failed setsockopt calls and produces a single
+// Status at the end.
 class SockOptSetter {
   int sock_;
   std::string failures_;
@@ -84,7 +99,7 @@ class SockOptSetter {
     }
   }
 
-  // Best-effort, failure silently ignored.
+  // Best-effort — failure silently ignored.
   template <typename T>
   void trySet(int level, int optname, const T& value) {
     ::setsockopt(sock_, level, optname, &value, sizeof(value));
@@ -206,6 +221,84 @@ std::string formatAddr(const sockaddr_storage& addr) {
   return std::string(buf) + ":" + std::to_string(ntohs(sa->sin_port));
 }
 
+Result<int> createListenSocket(int domain) {
+  int sock = ::socket(domain, SOCK_STREAM | SOCK_CLOEXEC, 0);
+  if (sock < 0) {
+    return Err(
+        ErrCode::ConnectionFailed,
+        "socket creation failed: " + std::system_category().message(errno));
+  }
+
+  SockOptSetter opt(sock);
+  opt.set(SOL_SOCKET, SO_REUSEADDR, 1, "SO_REUSEADDR");
+  opt.trySet(SOL_SOCKET, SO_REUSEPORT, 1);
+
+  // Periodic wakeup for shutdown checks during blocking accept()
+  struct timeval tv{};
+  tv.tv_sec = kAcceptTimeoutSec;
+  opt.set(SOL_SOCKET, SO_RCVTIMEO, tv, "SO_RCVTIMEO");
+
+  auto status = opt.status();
+  if (!status) {
+    ::close(sock);
+    return std::move(status).error();
+  }
+  // @lint-ignore PULSE_RESOURCE_LEAK fd ownership transfers to caller via
+  // Result
+  return sock;
+}
+
+Status configureAcceptedSocket(int sock) {
+  SockOptSetter opt(sock);
+  opt.set(SOL_SOCKET, SO_SNDBUF, kSocketBufSize, "SO_SNDBUF");
+  opt.set(SOL_SOCKET, SO_RCVBUF, kSocketBufSize, "SO_RCVBUF");
+  opt.set(IPPROTO_TCP, TCP_NODELAY, 1, "TCP_NODELAY");
+  opt.set(SOL_SOCKET, SO_KEEPALIVE, 1, "SO_KEEPALIVE");
+  opt.set(IPPROTO_TCP, TCP_KEEPIDLE, kKeepaliveIdleSec, "TCP_KEEPIDLE");
+  opt.set(IPPROTO_TCP, TCP_KEEPINTVL, kKeepaliveIntervalSec, "TCP_KEEPINTVL");
+  opt.set(IPPROTO_TCP, TCP_KEEPCNT, kKeepaliveCount, "TCP_KEEPCNT");
+  opt.set(IPPROTO_TCP, TCP_USER_TIMEOUT, kUserTimeoutMs, "TCP_USER_TIMEOUT");
+
+  struct timeval tv{};
+  tv.tv_sec = kConnectedTimeoutSec;
+  opt.set(SOL_SOCKET, SO_SNDTIMEO, tv, "SO_SNDTIMEO");
+  opt.set(SOL_SOCKET, SO_RCVTIMEO, tv, "SO_RCVTIMEO");
+
+  return opt.status();
+}
+
+Status
+resolveAndBind(const std::string& host, int port, int domain, int listenFd) {
+  sockaddr_storage addr{};
+  auto addrLenResult = buildSockAddr(host, port, domain, addr);
+  if (!addrLenResult) {
+    return std::move(addrLenResult).error();
+  }
+
+  if (::bind(
+          listenFd, reinterpret_cast<sockaddr*>(&addr), addrLenResult.value()) <
+      0) {
+    return Err(
+        ErrCode::ConnectionFailed,
+        "bind failed: " + std::system_category().message(errno));
+  }
+
+  return Ok();
+}
+
+// 500ms bound prevents the 8-byte magic exchange from blocking the loop
+// thread indefinitely. Caller must close the socket if this fails.
+Status setHandshakeTimeout(int sock) {
+  constexpr int kHandshakeTimeoutMs = 500;
+  struct timeval tv{};
+  tv.tv_sec = 0;
+  tv.tv_usec = kHandshakeTimeoutMs * 1000;
+  SockOptSetter opt(sock);
+  opt.set(SOL_SOCKET, SO_SNDTIMEO, tv, "SO_SNDTIMEO");
+  opt.set(SOL_SOCKET, SO_RCVTIMEO, tv, "SO_RCVTIMEO");
+  return opt.status();
+}
+
 } // namespace
 
 bool TcpConn::sendAll(const void* buf, size_t len) {
@@ -252,7 +345,7 @@ bool TcpConn::recvAll(void* buf, size_t len) {
     }
     if (n == 0) {
       UNIFLOW_LOG_WARN("recvAll: peer closed connection, fd={}", sock_);
-      errno = ECONNRESET; // peer closed
+      errno = ECONNRESET;
       return false;
     }
     ptr += n;
@@ -310,6 +403,7 @@ Result<size_t> TcpConn::send(std::span<const uint8_t> data) {
 
   UNIFLOW_LOG_DEBUG("TcpConn::send: fd={} bytes={}", sock_, data.size());
 
+  // Length-prefixed framing: 4-byte network-order size header + payload
   uint32_t len = htonl(static_cast<uint32_t>(data.size()));
   if (!sendAll(&len, sizeof(len))) {
     return Err(
@@ -371,100 +465,287 @@ TcpConn::~TcpConn() {
 }
 
 // ---------------------------------------------------------------------------
-// TcpServer
+// SyncAccept
 // ---------------------------------------------------------------------------
 
-Result<int> TcpServer::createListenSocket(int domain) {
-  int sock = ::socket(domain, SOCK_STREAM | SOCK_CLOEXEC, 0);
-  if (sock < 0) {
-    return Err(
-        ErrCode::ConnectionFailed,
-        "socket creation failed: " + std::system_category().message(errno));
+std::future<std::unique_ptr<Conn>> SyncAccept::accept(
+    std::atomic<int>& listenSock,
+    int acceptRetryCnt,
+    const std::string& id) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (listenSock.load() < 0) {
+    return make_ready_future(std::unique_ptr<Conn>(nullptr));
   }
 
-  SockOptSetter opt(sock);
-  opt.set(SOL_SOCKET, SO_REUSEADDR, 1, "SO_REUSEADDR");
-  opt.trySet(SOL_SOCKET, SO_REUSEPORT, 1);
+  UNIFLOW_LOG_DEBUG("TcpServer: waiting for connection on {}", id);
 
-  // Set accept timeout so accept() wakes up periodically, allowing
-  // shutdown checks instead of blocking indefinitely
-  struct timeval tv{};
-  tv.tv_sec = kAcceptTimeoutSec;
-  opt.set(SOL_SOCKET, SO_RCVTIMEO, tv, "SO_RCVTIMEO");
+  sockaddr_storage clientAddr{};
 
-  auto status = opt.status();
-  if (!status) {
-    ::close(sock);
-    return std::move(status).error();
+  // EAGAIN from SO_RCVTIMEO loops back for shutdown checks without
+  // counting as a retry. Transient errors retry up to acceptRetryCnt.
+  int retryCnt = 0;
+  while (retryCnt < acceptRetryCnt) {
+    socklen_t clientLen = sizeof(clientAddr);
+    int clientSock = ::accept4(
+        listenSock.load(),
+        reinterpret_cast<sockaddr*>(&clientAddr),
+        &clientLen,
+        SOCK_CLOEXEC);
+    if (clientSock >= 0) {
+      UNIFLOW_LOG_INFO(
+          "TcpServer: accepted fd={} from {}",
+          clientSock,
+          formatAddr(clientAddr));
+      auto status = configureAcceptedSocket(clientSock);
+      if (!status) {
+        UNIFLOW_LOG_ERROR(
+            "TcpServer: socket config failed fd={}: {}",
+            clientSock,
+            status.error().toString());
+        ::close(clientSock);
+        return make_ready_future(std::unique_ptr<Conn>(nullptr));
+      }
+      auto conn = TcpConn::create(clientSock);
+      if (conn) {
+        return make_ready_future(std::unique_ptr<Conn>(std::move(conn)));
+      }
+      // Handshake failed (non-uniflow client) — keep accepting.
+      // Socket was already closed by TcpConn destructor inside create().
+      UNIFLOW_LOG_WARN(
+          "TcpServer: rejecting non-uniflow client, fd={}", clientSock);
+      if (listenSock.load() < 0) {
+        UNIFLOW_LOG_INFO("TcpServer: accept interrupted by shutdown");
+        return make_ready_future(std::unique_ptr<Conn>(nullptr));
+      }
+      continue;
+    }
+
+    int savedErrno = errno;
+    if (savedErrno == EAGAIN || savedErrno == EWOULDBLOCK) {
+      if (listenSock.load() < 0) {
+        UNIFLOW_LOG_INFO("TcpServer: accept interrupted by shutdown");
+        return make_ready_future(std::unique_ptr<Conn>(nullptr));
+      }
+      continue; // don't count timeouts as retries
+    }
+
+    if (!shouldRetry(savedErrno)) {
+      UNIFLOW_LOG_ERROR(
+          "TcpServer: accept failed (non-retryable): errno={} ({})",
+          savedErrno,
+          std::system_category().message(savedErrno));
+      return make_ready_future(std::unique_ptr<Conn>(nullptr));
+    }
+
+    ++retryCnt;
+    UNIFLOW_LOG_WARN(
+        "TcpServer: accept retry {}/{}: errno={} ({})",
+        retryCnt,
+        acceptRetryCnt,
+        savedErrno,
+        std::system_category().message(savedErrno));
   }
-  // @lint-ignore PULSE_RESOURCE_LEAK fd ownership transfers to caller via
-  // Result
-  return sock;
+
+  UNIFLOW_LOG_ERROR(
+      "TcpServer: accept exhausted {} retries on {}", acceptRetryCnt, id);
+  return make_ready_future(std::unique_ptr<Conn>(nullptr));
 }
 
-Status TcpServer::configureAcceptedSocket(int sock) {
-  SockOptSetter opt(sock);
-
-  if (config_.socketBufSize) {
-    opt.set(SOL_SOCKET, SO_SNDBUF, *config_.socketBufSize, "SO_SNDBUF");
-    opt.set(SOL_SOCKET, SO_RCVBUF, *config_.socketBufSize, "SO_RCVBUF");
+void SyncAccept::shutdown(std::atomic<int>& listenSock, const std::string& id) {
+  // SHUT_RDWR unblocks any thread blocked in accept(). The mutex
+  // ensures we wait for accept() to return before closing the fd,
+  // preventing use-after-free on listenSock after destruction.
+  int fd = listenSock.exchange(-1);
+  if (fd >= 0) {
+    UNIFLOW_LOG_INFO("TcpServer: shutting down {}, fd={}", id, fd);
+    ::shutdown(fd, SHUT_RDWR);
   }
-  if (config_.tcpNoDelay) {
-    int val = *config_.tcpNoDelay ? 1 : 0;
-    opt.set(IPPROTO_TCP, TCP_NODELAY, val, "TCP_NODELAY");
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (fd >= 0) {
+    ::close(fd);
   }
-  if (config_.enableKeepalive) {
-    int val = *config_.enableKeepalive ? 1 : 0;
-    opt.set(SOL_SOCKET, SO_KEEPALIVE, val, "SO_KEEPALIVE");
-  }
-  if (config_.enableKeepalive && *config_.enableKeepalive) {
-    if (config_.keepaliveIdle) {
-      int val = static_cast<int>(config_.keepaliveIdle->count());
-      opt.set(IPPROTO_TCP, TCP_KEEPIDLE, val, "TCP_KEEPIDLE");
-    }
-    if (config_.keepaliveInterval) {
-      int val = static_cast<int>(config_.keepaliveInterval->count());
-      opt.set(IPPROTO_TCP, TCP_KEEPINTVL, val, "TCP_KEEPINTVL");
-    }
-    if (config_.keepaliveCount) {
-      opt.set(IPPROTO_TCP, TCP_KEEPCNT, *config_.keepaliveCount, "TCP_KEEPCNT");
-    }
-  }
-  if (config_.userTimeout) {
-    int val = static_cast<int>(config_.userTimeout->count());
-    opt.set(IPPROTO_TCP, TCP_USER_TIMEOUT, val, "TCP_USER_TIMEOUT");
-  }
-  if (config_.connTimeout) {
-    struct timeval tv{};
-    tv.tv_sec = config_.connTimeout->count();
-    opt.set(SOL_SOCKET, SO_SNDTIMEO, tv, "SO_SNDTIMEO");
-    opt.set(SOL_SOCKET, SO_RCVTIMEO, tv, "SO_RCVTIMEO");
-  }
-
-  return opt.status();
 }
 
-Status TcpServer::resolveAndBind(int domain) {
-  sockaddr_storage addr{};
-  auto addrLenResult = buildSockAddr(host_, port_, domain, addr);
-  if (!addrLenResult) {
-    return std::move(addrLenResult).error();
-  }
+// ---------------------------------------------------------------------------
+// AsyncAccept
+// ---------------------------------------------------------------------------
 
-  if (::bind(
-          listenSock_,
-          reinterpret_cast<sockaddr*>(&addr),
-          addrLenResult.value()) < 0) {
-    return Err(
-        ErrCode::ConnectionFailed,
-        "bind failed: " + std::system_category().message(errno));
+void AsyncAccept::teardown(int fd) {
+  accepting_ = false;
+  evb_.unregisterFd(fd);
+  // Deliver any pre-accepted connections to waiting consumers.
+  while (!readyConns_.empty() && !pendingPromises_.empty()) {
+    pendingPromises_.front().set_value(std::move(readyConns_.front()));
+    readyConns_.pop();
+    pendingPromises_.pop();
   }
-
-  return Ok();
+  while (!pendingPromises_.empty()) {
+    pendingPromises_.front().set_value(nullptr);
+    pendingPromises_.pop();
+  }
+  readyConns_ = {};
 }
 
-TcpServer::TcpServer(std::string id, TcpSocketConfig config)
-    : id_(std::move(id)), config_(std::move(config)) {
+void AsyncAccept::acceptPendingConnections(std::atomic<int>& listenSock) {
+  if (!accepting_) {
+    return;
+  }
+
+  while (!readyConns_.empty() && !pendingPromises_.empty()) {
+    pendingPromises_.front().set_value(std::move(readyConns_.front()));
+    readyConns_.pop();
+    pendingPromises_.pop();
+  }
+
+  int listenFd = listenSock.load();
+  if (listenFd < 0) {
+    return;
+  }
+
+  // Drain all pending connections from the non-blocking listen socket.
+  for (;;) {
+    sockaddr_storage addr{};
+    socklen_t len = sizeof(addr);
+    int clientSock = accept4(
+        listenFd, reinterpret_cast<sockaddr*>(&addr), &len, SOCK_CLOEXEC);
+    if (clientSock < 0) {
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        break;
+      }
+      if (errno == EINTR) {
+        continue;
+      }
+      UNIFLOW_LOG_ERROR(
+          "TcpServer: async accept4 failed: errno={} ({})",
+          errno,
+          std::system_category().message(errno));
+      break;
+    }
+
+    UNIFLOW_LOG_INFO(
+        "TcpServer: async accepted fd={} from {}",
+        clientSock,
+        formatAddr(addr));
+
+    auto timeoutStatus = setHandshakeTimeout(clientSock);
+    if (!timeoutStatus) {
+      UNIFLOW_LOG_WARN(
+          "TcpServer: handshake timeout failed, fd={}: {}",
+          clientSock,
+          timeoutStatus.error().toString());
+      ::close(clientSock);
+      continue;
+    }
+
+    auto conn = TcpConn::create(clientSock);
+    if (!conn) {
+      continue;
+    }
+
+    // configureAcceptedSocket sets 30s timeouts — must come after the
+    // 500ms handshake timeout to avoid overriding it.
+    auto status = configureAcceptedSocket(conn->getFd());
+    if (!status) {
+      UNIFLOW_LOG_ERROR(
+          "TcpServer: async socket config failed fd={}: {}",
+          conn->getFd(),
+          status.error().toString());
+      continue;
+    }
+
+    if (!pendingPromises_.empty()) {
+      pendingPromises_.front().set_value(std::move(conn));
+      pendingPromises_.pop();
+    } else {
+      readyConns_.push(std::move(conn));
+    }
+  }
+}
+
+std::future<std::unique_ptr<Conn>> AsyncAccept::accept(
+    std::atomic<int>& listenSock,
+    int /*acceptRetryCnt*/,
+    const std::string& /*id*/) {
+  if (listenSock.load() < 0) {
+    return make_ready_future(std::unique_ptr<Conn>(nullptr));
+  }
+
+  std::promise<std::unique_ptr<Conn>> promise;
+  auto future = promise.get_future();
+
+  evb_.dispatch([this, &listenSock, p = std::move(promise)]() mutable noexcept {
+    int sock = listenSock.load();
+    if (sock < 0) {
+      p.set_value(nullptr);
+      return;
+    }
+
+    // Lazy setup: fcntl + registerFd both on the loop thread.
+    if (!accepting_) {
+      int flags = fcntl(sock, F_GETFL);
+      if (flags < 0 || fcntl(sock, F_SETFL, flags | O_NONBLOCK) < 0) {
+        UNIFLOW_LOG_ERROR(
+            "TcpServer: fcntl O_NONBLOCK failed, fd={}: {}",
+            sock,
+            std::system_category().message(errno));
+        p.set_value(nullptr);
+        return;
+      }
+      evb_.registerFd(sock, EPOLLIN, [this, &listenSock](uint32_t /*events*/) {
+        acceptPendingConnections(listenSock);
+      });
+      accepting_ = true;
+    }
+
+    pendingPromises_.push(std::move(p));
+
+    // Deliver any pre-accepted connections waiting in readyConns_.
+    while (!readyConns_.empty() && !pendingPromises_.empty()) {
+      pendingPromises_.front().set_value(std::move(readyConns_.front()));
+      readyConns_.pop();
+      pendingPromises_.pop();
+    }
+  });
+
+  return future;
+}
+
+void AsyncAccept::shutdown(
+    std::atomic<int>& listenSock,
+    const std::string& id) {
+  int fd = listenSock.exchange(-1);
+  if (fd < 0) {
+    return;
+  }
+
+  auto closeFd = [fd, &id]() {
+    UNIFLOW_LOG_INFO("TcpServer: shutting down {}, fd={}", id, fd);
+    ::shutdown(fd, SHUT_RDWR);
+    ::close(fd);
+  };
+
+  if (evb_.inLoopThread()) {
+    teardown(fd);
+    closeFd();
+  } else if (evb_.isLoopRunning()) {
+    evb_.dispatchAndWait([this, fd]() noexcept { teardown(fd); });
+    // Drain: unregisterFd inside teardown is deferred —
+    // wait for it to complete before closing the fd.
+    evb_.dispatchAndWait([]() noexcept {});
+    closeFd();
+  } else {
+    // Loop stopped — closing the fd auto-removes it from epoll.
+    teardown(fd);
+    closeFd();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// BasicTcpServer<AcceptPolicy> — template methods
+// ---------------------------------------------------------------------------
+
+template <typename AcceptPolicy>
+void BasicTcpServer<AcceptPolicy>::parseId() {
   auto result = parseHostPort(id_);
   if (!result) {
     throw std::invalid_argument(
@@ -481,25 +762,8 @@ TcpServer::TcpServer(std::string id, TcpSocketConfig config)
   }
 }
 
-TcpServer::~TcpServer() {
-  shutdown();
-}
-
-const std::string& TcpServer::getId() const {
-  return id_;
-}
-
-void TcpServer::shutdown() {
-  int sock = listenSock_.exchange(-1);
-  if (sock >= 0) {
-    UNIFLOW_LOG_INFO("TcpServer: shutting down {}, fd={}", id_, sock);
-    // SHUT_RDWR unblocks any thread blocked in accept()
-    ::shutdown(sock, SHUT_RDWR);
-    ::close(sock);
-  }
-}
-
-Status TcpServer::init() {
+template <typename AcceptPolicy>
+Status BasicTcpServer<AcceptPolicy>::init() {
   if (listenSock_ >= 0) {
     return Err(ErrCode::InvalidArgument, "Server already initialized");
   }
@@ -519,7 +783,7 @@ Status TcpServer::init() {
   }
   listenSock_ = sockResult.value();
 
-  auto bindStatus = resolveAndBind(domain);
+  auto bindStatus = resolveAndBind(host_, port_, domain, listenSock_.load());
   if (!bindStatus) {
     UNIFLOW_LOG_ERROR(
         "TcpServer: bind failed on {}: {}", id_, bindStatus.error().toString());
@@ -528,7 +792,6 @@ Status TcpServer::init() {
     return bindStatus;
   }
 
-  // Retrieve actual bound port (needed when binding to port 0).
   sockaddr_storage boundAddr{};
   socklen_t boundLen = sizeof(boundAddr);
   if (::getsockname(
@@ -565,80 +828,8 @@ Status TcpServer::init() {
   return Ok();
 }
 
-std::unique_ptr<Conn> TcpServer::accept() {
-  if (listenSock_ < 0) {
-    return nullptr;
-  }
-
-  UNIFLOW_LOG_DEBUG("TcpServer: waiting for connection on {}", id_);
-
-  sockaddr_storage clientAddr{};
-  socklen_t clientLen = sizeof(clientAddr);
-
-  int retryCnt = 0;
-  while (retryCnt < config_.acceptRetryCnt) {
-    clientLen = sizeof(clientAddr);
-    int clientSock = ::accept4(
-        listenSock_,
-        reinterpret_cast<sockaddr*>(&clientAddr),
-        &clientLen,
-        SOCK_CLOEXEC);
-    if (clientSock >= 0) {
-      UNIFLOW_LOG_INFO(
-          "TcpServer: accepted fd={} from {}",
-          clientSock,
-          formatAddr(clientAddr));
-      auto status = configureAcceptedSocket(clientSock);
-      if (!status) {
-        UNIFLOW_LOG_ERROR(
-            "TcpServer: socket config failed fd={}: {}",
-            clientSock,
-            status.error().toString());
-        ::close(clientSock);
-        return nullptr;
-      }
-      auto conn = TcpConn::create(clientSock);
-      if (conn) {
-        return conn;
-      }
-      // Non-uniflow client — socket closed by TcpConn dtor, keep accepting.
-      UNIFLOW_LOG_WARN(
-          "TcpServer: rejecting non-uniflow client, fd={}", clientSock);
-      continue;
-    }
-
-    if (errno == EAGAIN || errno == EWOULDBLOCK) {
-      if (listenSock_ < 0) {
-        UNIFLOW_LOG_INFO("TcpServer: accept interrupted by shutdown");
-        return nullptr;
-      }
-      continue;
-    }
-
-    int savedErrno = errno;
-    if (!shouldRetry(savedErrno)) {
-      UNIFLOW_LOG_ERROR(
-          "TcpServer: accept failed (non-retryable): errno={} ({})",
-          savedErrno,
-          std::system_category().message(savedErrno));
-      return nullptr;
-    }
-
-    ++retryCnt;
-    UNIFLOW_LOG_WARN(
-        "TcpServer: accept retry {}/{}: errno={} ({})",
-        retryCnt,
-        config_.acceptRetryCnt,
-        savedErrno,
-        std::system_category().message(savedErrno));
-  }
-
-  UNIFLOW_LOG_ERROR(
-      "TcpServer: accept exhausted {} retries on {}",
-      config_.acceptRetryCnt,
-      id_);
-  return nullptr;
-}
+template class BasicTcpServer<SyncAccept>;
+template class BasicTcpServer<AsyncAccept>;
 
 TcpClient::TcpClient(TcpSocketConfig config) : config_(std::move(config)) {
   auto status = config_.validate();
@@ -722,13 +913,11 @@ std::unique_ptr<Conn> TcpClient::connect(std::string id) {
           config_.connectRetries,
           id,
           (attempt * config_.retryTimeout).count());
-      // Intentional linear backoff between connect retries
       // NOLINTNEXTLINE(facebook-hte-BadCall-sleep_for)
       std::this_thread::sleep_for(attempt * config_.retryTimeout);
     }
 
-    // Create a fresh socket for each attempt (connect on a failed socket
-    // is undefined behavior on Linux)
+    // Fresh socket per attempt — connect on a failed socket is UB on Linux
     int sock = ::socket(domain, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (sock < 0) {
       UNIFLOW_LOG_ERROR(
