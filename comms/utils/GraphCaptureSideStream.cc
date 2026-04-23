@@ -32,8 +32,30 @@ cudaError_t GraphSideStream::fork_from(
     return cudaErrorInvalidResourceHandle;
   }
 
-  // 1. Fork main → side.
-  cudaError_t err = cudaEventRecord(dep_event_, stream);
+  // 1. Check whether the stream is being captured. If not, run the user
+  // fn directly on main — no fork/rejoin overhead needed.
+  cudaStreamCaptureStatus status = cudaStreamCaptureStatusNone;
+  const cudaGraphNode_t* deps = nullptr;
+  size_t num_deps = 0;
+#if CUDART_VERSION >= 13000
+  const cudaGraphEdgeData* edge_data = nullptr;
+  cudaError_t err = cudaStreamGetCaptureInfo(
+      stream, &status, nullptr, nullptr, &deps, &edge_data, &num_deps);
+#else
+  cudaError_t err = cudaStreamGetCaptureInfo_v2(
+      stream, &status, nullptr, nullptr, &deps, &num_deps);
+#endif
+  if (err != cudaSuccess) {
+    return err;
+  }
+
+  if (status != cudaStreamCaptureStatusActive) {
+    fn(stream);
+    return cudaSuccess;
+  }
+
+  // 2. Fork main → side.
+  err = cudaEventRecord(dep_event_, stream);
   if (err != cudaSuccess) {
     return err;
   }
@@ -42,14 +64,14 @@ cudaError_t GraphSideStream::fork_from(
     return err;
   }
 
-  // 2. Capture main's current dependency set — used in step 5 to rewind
-  // main past the rejoin so subsequent main-stream ops aren't bound to
-  // the side stream.
-  cudaStreamCaptureStatus status = cudaStreamCaptureStatusNone;
-  const cudaGraphNode_t* deps = nullptr;
-  size_t num_deps = 0;
+  // Re-query capture info after the fork. The pointers returned by
+  // cudaStreamGetCaptureInfo are only valid until the next API call on
+  // the stream, so the earlier query's pointers were invalidated by
+  // cudaEventRecord above.
+  deps = nullptr;
+  num_deps = 0;
 #if CUDART_VERSION >= 13000
-  const cudaGraphEdgeData* edge_data = nullptr;
+  edge_data = nullptr;
   err = cudaStreamGetCaptureInfo(
       stream, &status, nullptr, nullptr, &deps, &edge_data, &num_deps);
 #else
@@ -58,14 +80,6 @@ cudaError_t GraphSideStream::fork_from(
 #endif
   if (err != cudaSuccess) {
     return err;
-  }
-
-  if (status != cudaStreamCaptureStatusActive) {
-    // Not capturing — run the user fn directly on main. The upstream
-    // eventRecord/streamWaitEvent calls above were no-ops for capture but
-    // are still valid stream ops; they just added a side-stream sync point.
-    fn(stream);
-    return cudaSuccess;
   }
 
   // Snapshot the captured deps; cudaStreamUpdateCaptureDependencies
