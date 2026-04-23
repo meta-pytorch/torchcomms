@@ -42,6 +42,7 @@ enum class OpName {
   gather_single,
   split,
   new_window,
+  batch_op_issue,
 };
 
 // Convert OpName enum to string
@@ -87,6 +88,8 @@ constexpr std::string_view opToString(OpName name) {
       return "split";
     case OpName::new_window:
       return "new_window";
+    case OpName::batch_op_issue:
+      return "batch_op_issue";
   }
   return "unknown";
 }
@@ -308,6 +311,14 @@ struct GatherSinglePreHookArgs {
   bool async_op;
 };
 
+// Batch operations
+struct BatchOpIssuePreHookArgs {
+  BatchOpIssuePreHookArgs(size_t num_ops, bool async_op)
+      : num_ops(num_ops), async_op(async_op) {}
+  size_t num_ops;
+  bool async_op;
+};
+
 // Communicator management
 struct SplitPreHookArgs {
   SplitPreHookArgs(const std::vector<int>& ranks, const std::string& name)
@@ -339,7 +350,8 @@ using PreHookArgs = std::variant<
     GatherPreHookArgs,
     GatherSinglePreHookArgs,
     SplitPreHookArgs,
-    NewWindowPreHookArgs>;
+    NewWindowPreHookArgs,
+    BatchOpIssuePreHookArgs>;
 
 using PreHook =
     std::function<void(OpName name, size_t op_id, const PreHookArgs& args)>;
@@ -422,6 +434,10 @@ struct NewWindowPostHookArgs {
   std::weak_ptr<TorchCommWindow> new_window;
 };
 
+struct BatchOpIssuePostHookArgs : CollectivePostHookArgs {
+  using CollectivePostHookArgs::CollectivePostHookArgs;
+};
+
 using PostHookArgs = std::variant<
     SendPostHookArgs,
     RecvPostHookArgs,
@@ -442,7 +458,8 @@ using PostHookArgs = std::variant<
     GatherPostHookArgs,
     GatherSinglePostHookArgs,
     SplitPostHookArgs,
-    NewWindowPostHookArgs>;
+    NewWindowPostHookArgs,
+    BatchOpIssuePostHookArgs>;
 
 using PostHook = std::function<void(size_t op_id, const PostHookArgs& args)>;
 

@@ -404,11 +404,16 @@ unregistered when the handle is garbage collected if remove() was not called.
     std::string name;
   };
   struct PyNewWindowPreHookArgs {};
+  struct PyBatchOpIssuePreHookArgs {
+    size_t num_ops;
+    bool async_op;
+  };
 
   // Post-hook args (value types)
   struct PyCollectivePostHookArgs {};
   struct PySplitPostHookArgs {};
   struct PyNewWindowPostHookArgs {};
+  struct PyBatchOpIssuePostHookArgs {};
 
   // Register pre-hook arg types
   py::class_<PySendPreHookArgs>(m, "SendPreHookArgs")
@@ -493,11 +498,15 @@ unregistered when the handle is garbage collected if remove() was not called.
       .def_readonly("ranks", &PySplitPreHookArgs::ranks)
       .def_readonly("name", &PySplitPreHookArgs::name);
   py::class_<PyNewWindowPreHookArgs>(m, "NewWindowPreHookArgs");
+  py::class_<PyBatchOpIssuePreHookArgs>(m, "BatchOpIssuePreHookArgs")
+      .def_readonly("num_ops", &PyBatchOpIssuePreHookArgs::num_ops)
+      .def_readonly("async_op", &PyBatchOpIssuePreHookArgs::async_op);
 
   // Post-hook arg types
   py::class_<PyCollectivePostHookArgs>(m, "CollectivePostHookArgs");
   py::class_<PySplitPostHookArgs>(m, "SplitPostHookArgs");
   py::class_<PyNewWindowPostHookArgs>(m, "NewWindowPostHookArgs");
+  py::class_<PyBatchOpIssuePostHookArgs>(m, "BatchOpIssuePostHookArgs");
 
   py::class_<TorchCommWindowAttr, std::shared_ptr<TorchCommWindowAttr>>(
       m, "TorchCommWindowAttr", "Window attributes.")
@@ -2321,6 +2330,11 @@ Raises: RuntimeError if the ranks list is non-empty and the current rank is not 
                                              T,
                                              NewWindowPreHookArgs>) {
                       return py::cast(PyNewWindowPreHookArgs{});
+                    } else if constexpr (std::is_same_v<
+                                             T,
+                                             BatchOpIssuePreHookArgs>) {
+                      return py::cast(
+                          PyBatchOpIssuePreHookArgs{a.num_ops, a.async_op});
                     } else {
                       return py::none();
                     }
@@ -2369,6 +2383,10 @@ Note:
                                              T,
                                              NewWindowPostHookArgs>) {
                       return py::cast(PyNewWindowPostHookArgs{});
+                    } else if constexpr (std::is_same_v<
+                                             T,
+                                             BatchOpIssuePostHookArgs>) {
+                      return py::cast(PyBatchOpIssuePostHookArgs{});
                     } else {
                       return py::cast(PyCollectivePostHookArgs{});
                     }
