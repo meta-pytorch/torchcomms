@@ -723,6 +723,7 @@ bool CtranTestHelpers::isBackendValid(
 void CtranTestHelpers::verifyGpeLeak(ICtran* ctran) {
   ASSERT_EQ(ctran->gpe->numInUseKernelElems(), 0);
   ASSERT_EQ(ctran->gpe->numInUseKernelFlags(), 0);
+  ASSERT_EQ(ctran->gpe->numInUseGpeKernelSyncs(), 0);
 }
 
 void CtranTestHelpers::resetBackendsUsed(ICtran* ctran) {
