@@ -11,7 +11,6 @@
 #include <set>
 #include <unordered_map>
 
-#include "comms/ctran/Ctran.h"
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/testinfra/TestUtils.h"
@@ -33,11 +32,14 @@ class ProxyTraceTest : public NcclxBaseTestFixture {
     // calls initEnv() (call_once) + ncclCvarInit(). Per-test EnvRAII overrides
     // won't take effect for cvars read during init.
     NcclxBaseTestFixture::SetUp({
-        {"NCCL_CTRAN_ENABLE", "1"},
         {"NCCL_PROXYTRACE", "trace"},
         {"NCCL_COLLTRACE", "trace"},
         {"NCCL_DEBUG", "INFO"},
         {"NCCL_DEBUG_SUBSYS", "INIT,COLL"},
+        // Simulate 2 nodes on single physical node: ranks 0-1 on node_0,
+        // ranks 2-3 on node_1. NCCL uses NCCL_HOSTID to determine node
+        // membership, so different hostids produce different comm->node values.
+        {"NCCL_HOSTID", "node_" + std::to_string(globalRank / 2)},
     });
     CUDACHECK_TEST(cudaStreamCreate(&stream));
   }
@@ -270,19 +272,9 @@ class ProxyTraceTest : public NcclxBaseTestFixture {
   };
 
   bool checkTestRequirement(ncclComm_t comm) {
-    // FIXME: this check seems flaky on RE when using with socket transport
-    // Disable it for now to unblock other DIFF landing. More investigation is
-    // needed.
-    //
-    // We don't have a good way to detect whether baseline IB transport is
-    // turned on. Thus, use ctran IB backend to valid for now.
-    if (comm->nNodes < 2 || !ctranInitialized(comm->ctranComm_.get()) ||
-        !comm->ctranComm_->ctran_->mapper->hasBackend()) {
+    if (comm->nNodes < 2) {
       std::cout
-          << "This test requires 2+ nodes and valid IB transport, but nNodes="
-          << comm->nNodes << ", ctranInitialized(comm)="
-          << ctranInitialized(comm->ctranComm_.get())
-          << ", hasBackend()=" << comm->ctranComm_->ctran_->mapper->hasBackend()
+          << "This test requires 2+ nodes, but nNodes=" << comm->nNodes
           << ". Skip test "
           << ::testing::UnitTest::GetInstance()->current_test_info()->name()
           << std::endl;
@@ -702,7 +694,7 @@ TEST_F(ProxyTraceTest, CTAndPTOpCountsMatch) {
   ASSERT_TRUE(ctDumpResult.hasValue()) << "CommDumpPlugin dump failed";
   const auto& ctDump = ctDumpResult.value();
 
-  // Build sets of collIds (opCounts) from CT and PT pastColls
+  // Build sets of collIds (opCounts) (collId) from CT and PT pastColls
   std::set<uint64_t> ctOpCounts;
   for (const auto& coll : ctDump.pastColls) {
     ctOpCounts.insert(coll->getCollId());
