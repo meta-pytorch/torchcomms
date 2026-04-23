@@ -245,10 +245,11 @@ CliOptions parseArgs(int argc, char** argv) {
 } // namespace
 
 int main(int argc, char** argv) {
-  // Default to error-only. Override with SPDLOG_LEVEL="uniflow=info".
-  // getLogger() lazy-init calls spdlog::cfg::load_env_levels(), so env
-  // overrides take effect automatically; set_level just sets the default.
-  uniflow::logging::getLogger()->set_level(spdlog::level::err);
+  // Default to error-only unless SPDLOG_LEVEL env var is set.
+  auto* logger = uniflow::logging::getLogger();
+  if (std::getenv("SPDLOG_LEVEL") == nullptr) {
+    logger->set_level(spdlog::level::err);
+  }
 
   auto opts = parseArgs(argc, argv);
 
