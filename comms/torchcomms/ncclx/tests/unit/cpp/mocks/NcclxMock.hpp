@@ -65,6 +65,34 @@ class NcclxMock : public NcclxApi {
        ncclConfig_t* config),
       (override));
 
+  MOCK_METHOD(
+      ncclResult_t,
+      commShrink,
+      (ncclComm_t comm,
+       int* excludeRanksList,
+       int excludeRanksCount,
+       ncclComm_t* newcomm,
+       ncclConfig_t* config,
+       int shrinkFlags),
+      (override));
+
+  MOCK_METHOD(
+      ncclResult_t,
+      commGetUniqueId,
+      (ncclComm_t comm, ncclUniqueId* uniqueId),
+      (override));
+
+  MOCK_METHOD(
+      ncclResult_t,
+      commGrow,
+      (ncclComm_t comm,
+       int nRanks,
+       const ncclUniqueId* uniqueId,
+       int rank,
+       ncclComm_t* newcomm,
+       ncclConfig_t* config),
+      (override));
+
   // Memory registration
   MOCK_METHOD(
       ncclResult_t,

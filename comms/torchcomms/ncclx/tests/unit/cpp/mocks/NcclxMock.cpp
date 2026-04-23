@@ -41,6 +41,20 @@ void NcclxMock::setupDefaultBehaviors() {
           SetArgPointee<3>(reinterpret_cast<ncclComm_t>(0x4000)),
           Return(ncclSuccess)));
 
+  ON_CALL(*this, commShrink(_, _, _, _, _, _))
+      .WillByDefault(DoAll(
+          SetArgPointee<3>(reinterpret_cast<ncclComm_t>(0x6000)),
+          Return(ncclSuccess)));
+
+  ON_CALL(*this, commGetUniqueId(_, _))
+      .WillByDefault(
+          DoAll(SetArgPointee<1>(ncclUniqueId{}), Return(ncclSuccess)));
+
+  ON_CALL(*this, commGrow(_, _, _, _, _, _))
+      .WillByDefault(DoAll(
+          SetArgPointee<4>(reinterpret_cast<ncclComm_t>(0x7000)),
+          Return(ncclSuccess)));
+
   // Memory registration - return success by default
   ON_CALL(*this, commRegister(_, _, _, _))
       .WillByDefault(DoAll(

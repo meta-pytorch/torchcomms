@@ -69,6 +69,68 @@ ncclResult_t DefaultNcclApi::commSplit(
   return ncclCommSplit(comm, color, key, newcomm, config);
 }
 
+ncclResult_t DefaultNcclApi::commShrink(
+    ncclComm_t comm,
+    int* excludeRanksList,
+    int excludeRanksCount,
+    ncclComm_t* newcomm,
+    ncclConfig_t* config,
+    int shrinkFlags) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 27, 0)
+  return ncclCommShrink(
+      comm, excludeRanksList, excludeRanksCount, newcomm, config, shrinkFlags);
+#else
+  (void)comm;
+  (void)excludeRanksList;
+  (void)excludeRanksCount;
+  (void)newcomm;
+  (void)config;
+  (void)shrinkFlags;
+  TC_LOG(ERROR) << "NCCL version " << NCCL_VERSION_CODE
+                << " does not support ncclCommShrink API";
+  return ncclInvalidUsage;
+#endif
+}
+
+ncclResult_t DefaultNcclApi::commGetUniqueId(
+    ncclComm_t comm,
+    ncclUniqueId* uniqueId) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
+  return ncclCommGetUniqueId(comm, uniqueId);
+#else
+  (void)comm;
+  (void)uniqueId;
+  TC_LOG(ERROR) << "NCCL version " << NCCL_VERSION_CODE
+                << " does not support ncclCommGetUniqueId API";
+  return ncclInvalidUsage;
+#endif
+}
+
+ncclResult_t DefaultNcclApi::commGrow(
+    ncclComm_t comm,
+    int nRanks,
+    const ncclUniqueId* uniqueId,
+    int rank,
+    ncclComm_t* newcomm,
+    ncclConfig_t* config) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
+  return ncclCommGrow(comm, nRanks, uniqueId, rank, newcomm, config);
+#else
+  (void)comm;
+  (void)nRanks;
+  (void)uniqueId;
+  (void)rank;
+  (void)newcomm;
+  (void)config;
+  TC_LOG(ERROR) << "NCCL version " << NCCL_VERSION_CODE
+                << " does not support ncclCommGrow API";
+  return ncclInvalidUsage;
+#endif
+}
+
 ncclResult_t DefaultNcclApi::commRegister(
     ncclComm_t comm,
     void* buffer,
