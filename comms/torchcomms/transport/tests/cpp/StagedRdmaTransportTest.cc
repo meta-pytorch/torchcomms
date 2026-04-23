@@ -138,6 +138,9 @@ class StagedRdmaTransportDistributedTest : public MpiBaseTestFixture {
     return value;
   }
 
+  // Run a transfer with specified source/destination memory types.
+  void runTransferWithMemType(bool srcOnGpu, bool dstOnGpu);
+
   // Run a contiguous transfer: server fills + sends, client recvs + verifies.
   // Both ranks must call this. Internally branches on globalRank.
   void runTransfer(
@@ -873,6 +876,119 @@ TEST_F(StagedRdmaTransportDistributedTest, ScatterRecvUnevenEntries) {
   }
 
   MPI_Barrier(MPI_COMM_WORLD);
+}
+
+// --- CPU/GPU memory type transfer tests ---
+
+namespace {
+
+void* allocBuffer(size_t bytes, bool onGpu, int cudaDev) {
+  if (onGpu) {
+    void* ptr = nullptr;
+    EXPECT_EQ(cudaSetDevice(cudaDev), cudaSuccess);
+    EXPECT_EQ(cudaMalloc(&ptr, bytes), cudaSuccess);
+    return ptr;
+  }
+  void* ptr = malloc(bytes);
+  EXPECT_NE(ptr, nullptr);
+  return ptr;
+}
+
+void freeBuffer(void* ptr, bool onGpu) {
+  if (onGpu) {
+    cudaFree(ptr);
+  } else {
+    free(ptr);
+  }
+}
+
+void copyToBuffer(void* dst, const void* src, size_t bytes, bool dstOnGpu) {
+  if (dstOnGpu) {
+    EXPECT_EQ(cudaMemcpy(dst, src, bytes, cudaMemcpyHostToDevice), cudaSuccess);
+  } else {
+    memcpy(dst, src, bytes);
+  }
+}
+
+void copyFromBuffer(void* dst, const void* src, size_t bytes, bool srcOnGpu) {
+  if (srcOnGpu) {
+    EXPECT_EQ(cudaMemcpy(dst, src, bytes, cudaMemcpyDeviceToHost), cudaSuccess);
+  } else {
+    memcpy(dst, src, bytes);
+  }
+}
+
+} // namespace
+
+// Transfers 1MB with positional pattern, parameterized by source/destination
+// memory type (CPU or GPU). Both ranks must call this.
+void StagedRdmaTransportDistributedTest::runTransferWithMemType(
+    bool srcOnGpu,
+    bool dstOnGpu) {
+  const size_t totalBytes = 1024 * 1024;
+  int cudaDev = localRank;
+  ASSERT_EQ(cudaSetDevice(cudaDev), cudaSuccess);
+
+  folly::ScopedEventBaseThread evbThread("RDMA-Worker");
+
+  if (globalRank == 0) {
+    StagedRdmaServerTransport transport(cudaDev, evbThread.getEventBase());
+    auto connInfo = transport.setupLocalTransport();
+    auto peerConnInfo = exchangeConnInfo(connInfo);
+    transport.connectRemoteTransport(peerConnInfo);
+    broadcastSize(totalBytes);
+
+    void* src = allocBuffer(totalBytes, srcOnGpu, cudaDev);
+    std::vector<uint8_t> pattern(totalBytes);
+    fillPositionalPattern(pattern);
+    copyToBuffer(src, pattern.data(), totalBytes, srcOnGpu);
+
+    ScatterGatherDescriptor sgDesc;
+    sgDesc.entries.push_back({src, totalBytes});
+    EXPECT_EQ(transport.send(sgDesc).get(), commSuccess);
+    freeBuffer(src, srcOnGpu);
+  } else {
+    StagedRdmaClientTransport transport(cudaDev, evbThread.getEventBase());
+    auto connInfo = transport.setupLocalTransport();
+    auto peerConnInfo = exchangeConnInfo(connInfo);
+    transport.connectRemoteTransport(peerConnInfo);
+    auto recvBytes = broadcastSize(0);
+
+    void* dst = allocBuffer(recvBytes, dstOnGpu, cudaDev);
+    if (dstOnGpu) {
+      EXPECT_EQ(cudaMemset(dst, 0, recvBytes), cudaSuccess);
+    } else {
+      memset(dst, 0, recvBytes);
+    }
+
+    ScatterGatherDescriptor sgDesc;
+    sgDesc.entries.push_back({dst, recvBytes});
+    EXPECT_EQ(transport.recv(sgDesc).get(), commSuccess);
+
+    std::vector<uint8_t> hostBuf(recvBytes);
+    copyFromBuffer(hostBuf.data(), dst, recvBytes, dstOnGpu);
+    auto [valid, idx] = verifyPositionalPattern(hostBuf);
+    EXPECT_TRUE(valid) << "Mismatch at byte " << idx;
+    freeBuffer(dst, dstOnGpu);
+  }
+
+  MPI_Barrier(MPI_COMM_WORLD);
+}
+
+TEST_F(StagedRdmaTransportDistributedTest, CpuSrcGpuDst) {
+  runTransferWithMemType(/*srcOnGpu=*/false, /*dstOnGpu=*/true);
+}
+
+TEST_F(StagedRdmaTransportDistributedTest, CpuSrcCpuDst) {
+  runTransferWithMemType(/*srcOnGpu=*/false, /*dstOnGpu=*/false);
+}
+
+TEST_F(StagedRdmaTransportDistributedTest, GpuSrcCpuDst) {
+  runTransferWithMemType(/*srcOnGpu=*/true, /*dstOnGpu=*/false);
+}
+
+TEST_F(StagedRdmaTransportDistributedTest, GpuSrcGpuDst) {
+  runTransferWithMemType(/*srcOnGpu=*/true, /*dstOnGpu=*/true);
 }
 
 // --- main ---
