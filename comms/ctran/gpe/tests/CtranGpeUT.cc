@@ -2176,12 +2176,13 @@ TEST_F(CtranGpeTest, PostKernelCleanupGraphWithOpGroup) {
   CUDACHECK_TEST(cudaStreamDestroy(stream));
 }
 
-// Verify that terminate() drains the GpeKernelSyncPool before returning.
+// Verify that CtranGpe destruction drains the GpeKernelSyncPool before freeing
+// pinned memory.
 //
 // Simulates the production race: CUDA graph cmdDestroy callbacks release pool
-// elements asynchronously after cudaGraphDestroy. Without the spin-wait in
-// terminate(), the pool destructor can free pinned memory while those elements
-// are still "in use", causing use-after-free when the background release runs.
+// elements asynchronously after cudaGraphDestroy. Without drainUntilEmpty() in
+// the pool destructor, cudaFreeHost runs while elements are still "in use",
+// causing use-after-free when the background release runs.
 
 TEST_F(CtranGpeTest, TerminateWaitsForGpeKernelSyncPoolDrain) {
   auto gpe = std::make_unique<CtranGpe>(cudaDev, dummyComm);
@@ -2193,34 +2194,35 @@ TEST_F(CtranGpeTest, TerminateWaitsForGpeKernelSyncPoolDrain) {
   ASSERT_EQ(gpe->allocGpeKernelSyncs(kNumSyncs, kNworkers, syncs), commSuccess);
   ASSERT_EQ(gpe->numInUseGpeKernelSyncs(), kNumSyncs);
 
-  // Run terminate() in a background thread so main can control when the pool
+  // Run gpe.reset() in a background thread so main can control when the pool
   // is drained. Use a promise to signal when gpe.reset() completes.
   std::promise<void> gpeResetDone;
   std::thread gpeThread([&]() {
-    gpe.reset(); // With fix: blocks until pool drained; without fix: returns
-                 // fast
+    gpe.reset(); // With fix: blocks in pool destructor until drained;
+                 // without fix: cudaFreeHost runs immediately → use-after-free
     gpeResetDone.set_value();
   });
 
   // Wait for gpe.reset() to complete, with a short deadline.
-  // With fix: terminate() is blocked in spin-wait → future times out → we
-  // release Without fix: terminate() returns immediately → future is ready →
-  // FAIL
+  // With fix: pool destructor is blocked in drainUntilEmpty() → future times
+  // out → we release. Without fix: destructor returns immediately → future is
+  // ready → FAIL.
   constexpr auto kDrainWait = std::chrono::milliseconds(200);
   auto status = gpeResetDone.get_future().wait_for(kDrainWait);
 
   if (status == std::future_status::ready) {
     // gpe.reset() returned while pool elements were still in use.
     gpeThread.join();
-    FAIL() << "terminate() returned in < " << kDrainWait.count()
+    FAIL() << "CtranGpe destruction returned in < " << kDrainWait.count()
            << "ms while GpeKernelSync pool elements were still in use. "
               "Pool destructor freed pinned memory before async callbacks "
               "could release elements, causing use-after-free.";
   }
 
-  // terminate() is blocked in spin-wait — release elements to unblock it.
+  // Pool destructor is blocked in drainUntilEmpty() — release elements to
+  // unblock it.
   for (auto* sync : syncs) {
-    sync->reset(); // inUse() → false; spin-wait reclaims and exits
+    sync->reset(); // inUse() → false; drainUntilEmpty() reclaims and exits
   }
   gpeThread.join();
 }

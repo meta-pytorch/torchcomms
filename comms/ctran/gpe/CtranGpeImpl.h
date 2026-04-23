@@ -183,6 +183,9 @@ class KernelElemPool {
   // Reclaim any unused KernelElem objects back to the free pool.
   void reclaim();
 
+  // Spin until all in-use elements are returned, logging every 5s.
+  void drainUntilEmpty();
+
   // Return the number of KernelElem objects in the free pool.
   size_t size();
 
