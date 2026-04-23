@@ -159,9 +159,7 @@ CtranMapper::CtranMapper(CtranComm* comm) {
   /* enable available backends */
   if (enableBackends_[CtranMapperBackend::IB]) {
     try {
-      this->ctranIb =
-          std::make_unique<class CtranIb>(comm, this->ctrlMgr.get());
-      this->ctranIb->regCtrlCb(this->ctrlMgr);
+      this->ctranIb = std::make_unique<class CtranIb>(comm);
     } catch ([[maybe_unused]] const std::bad_alloc& e) {
       ctranIb = nullptr;
       enableBackends_[CtranMapperBackend::IB] = false;

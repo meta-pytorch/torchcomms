@@ -316,14 +316,12 @@ CtranIbVirtualConn::CtranIbVirtualConn(
     std::vector<CtranIbDevice>& devices,
     int peerRank,
     CtranComm* comm,
-    CtranCtrlManager* ctrlMgr,
     uint32_t pgTrafficClass,
     int cudaDev)
     : peerRank(peerRank),
       devices_(devices),
       maxNumQps_(NCCL_CTRAN_IB_MAX_QPS),
       comm_(comm),
-      ctrlMgr_(ctrlMgr),
       pgTrafficClass_(pgTrafficClass),
       cudaDev_(cudaDev) {
   // set default QP configs based on topology and user-specified CVARs, if

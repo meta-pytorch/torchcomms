@@ -125,7 +125,6 @@ RdmaTransport::RdmaTransport(
       cudaDev,
       -1 /* commHash */,
       "RDMA-Transport",
-      nullptr /* ctrlManager */,
       true /* enableLocalFlush */,
       CtranIb::BootstrapMode::kExternal,
       std::nullopt /* qpServerAddr */,
@@ -179,7 +178,6 @@ bool queryRdmaSupport() {
           kDummyDevice,
           -1 /* commHash */,
           "Query-RDMA-Support",
-          nullptr /* ctrlManager */,
           true /* enableLocalFlush */,
           CtranIb::BootstrapMode::kExternal);
     } catch (const std::exception& e) {

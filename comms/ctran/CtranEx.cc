@@ -73,7 +73,6 @@ void CtranExImpl::initialize(
               cudaDev,
               0,
               desc,
-              ctrlMgr.get(),
               true, /* enableLocalFlush */
               bootstrapMode,
               serverAddrOpt);
