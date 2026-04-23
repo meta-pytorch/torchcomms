@@ -325,17 +325,11 @@ TEST_F(NcclCommsTest, AnalyzerSuccess) {
     // Rank 0 creates the unique id
     NCCLCHECK(ncclGetUniqueId(&ncclUniqueID));
     mccl::McclIntegrationTestUtil::setKey(
-        uniqueIDKey,
-        std::string(ncclUniqueID.internal, NCCL_UNIQUE_ID_BYTES),
-        std::nullopt);
+        uniqueIDKey, std::string(ncclUniqueID.internal, NCCL_UNIQUE_ID_BYTES));
   } else {
     // Everyone else waits for it
-    auto value = mccl::McclIntegrationTestUtil::waitForKey(
-        uniqueIDKey, [](const auto& versionAndValue) {
-          return versionAndValue.has_value();
-        });
-    std::memcpy(
-        ncclUniqueID.internal, value.value.data(), NCCL_UNIQUE_ID_BYTES);
+    auto value = mccl::McclIntegrationTestUtil::waitForKey(uniqueIDKey);
+    std::memcpy(ncclUniqueID.internal, value.data(), NCCL_UNIQUE_ID_BYTES);
   }
 
   // Initialize NCCL communicator
@@ -365,7 +359,7 @@ TEST_F(NcclCommsTest, AnalyzerSuccess) {
       size, recvBuff.raw(), worldSize);
 
   mccl::McclIntegrationTestUtil::setKey(
-      fmt::format("done_with_collective_rank_{}", rank), "1", std::nullopt);
+      fmt::format("done_with_collective_rank_{}", rank), "1");
 
   // Rank 0 checks state of collectives
   if (rank == 0) {
@@ -373,10 +367,7 @@ TEST_F(NcclCommsTest, AnalyzerSuccess) {
     for (int i = 0; i < worldSize; ++i) {
       // Wait for the rank to be done with collectives
       mccl::McclIntegrationTestUtil::waitForKey(
-          fmt::format("done_with_collective_rank_{}", rank),
-          [](const auto& versionAndValue) {
-            return versionAndValue.has_value();
-          });
+          fmt::format("done_with_collective_rank_{}", rank));
 
       // Get the comm dump state for each rank
       auto analyzerPortForRank = getCommServicePortNumberForRank(i);
@@ -417,14 +408,11 @@ TEST_F(NcclCommsTest, AnalyzerSuccess) {
         analyzerExpectedResult, std::chrono::milliseconds(10000)));
 
     // Notify other ranks to finish
-    mccl::McclIntegrationTestUtil::setKey(
-        "analyzer_check_0", "1", std::nullopt);
+    mccl::McclIntegrationTestUtil::setKey("analyzer_check_0", "1");
   }
 
   // All ranks wait for the collectives check to complete
-  mccl::McclIntegrationTestUtil::waitForKey(
-      "analyzer_check_0",
-      [](const auto& versionAndValue) { return versionAndValue.has_value(); });
+  mccl::McclIntegrationTestUtil::waitForKey("analyzer_check_0");
 }
 
 // Rank 0 doesn't join the second
@@ -449,17 +437,11 @@ TEST_F(NcclCommsTest, OneRankHangs) {
     // Rank 0 creates the unique id
     NCCLCHECK(ncclGetUniqueId(&ncclUniqueID));
     mccl::McclIntegrationTestUtil::setKey(
-        uniqueIDKey,
-        std::string(ncclUniqueID.internal, NCCL_UNIQUE_ID_BYTES),
-        std::nullopt);
+        uniqueIDKey, std::string(ncclUniqueID.internal, NCCL_UNIQUE_ID_BYTES));
   } else {
     // Everyone else waits for it
-    auto value = mccl::McclIntegrationTestUtil::waitForKey(
-        uniqueIDKey, [](const auto& versionAndValue) {
-          return versionAndValue.has_value();
-        });
-    std::memcpy(
-        ncclUniqueID.internal, value.value.data(), NCCL_UNIQUE_ID_BYTES);
+    auto value = mccl::McclIntegrationTestUtil::waitForKey(uniqueIDKey);
+    std::memcpy(ncclUniqueID.internal, value.data(), NCCL_UNIQUE_ID_BYTES);
   }
 
   // Initialize NCCL communicator
@@ -574,17 +556,11 @@ TEST_F(NcclCommsTest, DISABLED_OneRankHangsCudaGraph) {
     // Rank 0 creates the unique id
     NCCLCHECK(ncclGetUniqueId(&ncclUniqueID));
     mccl::McclIntegrationTestUtil::setKey(
-        uniqueIDKey,
-        std::string(ncclUniqueID.internal, NCCL_UNIQUE_ID_BYTES),
-        std::nullopt);
+        uniqueIDKey, std::string(ncclUniqueID.internal, NCCL_UNIQUE_ID_BYTES));
   } else {
     // Everyone else waits for it
-    auto value = mccl::McclIntegrationTestUtil::waitForKey(
-        uniqueIDKey, [](const auto& versionAndValue) {
-          return versionAndValue.has_value();
-        });
-    std::memcpy(
-        ncclUniqueID.internal, value.value.data(), NCCL_UNIQUE_ID_BYTES);
+    auto value = mccl::McclIntegrationTestUtil::waitForKey(uniqueIDKey);
+    std::memcpy(ncclUniqueID.internal, value.data(), NCCL_UNIQUE_ID_BYTES);
   }
 
   // Initialize NCCL communicator
@@ -764,17 +740,11 @@ TEST_F(NcclCommsTest, CollectiveMetadataMismatch) {
     // Rank 0 creates the unique id
     NCCLCHECK(ncclGetUniqueId(&ncclUniqueID));
     mccl::McclIntegrationTestUtil::setKey(
-        uniqueIDKey,
-        std::string(ncclUniqueID.internal, NCCL_UNIQUE_ID_BYTES),
-        std::nullopt);
+        uniqueIDKey, std::string(ncclUniqueID.internal, NCCL_UNIQUE_ID_BYTES));
   } else {
     // Everyone else waits for it
-    auto value = mccl::McclIntegrationTestUtil::waitForKey(
-        uniqueIDKey, [](const auto& versionAndValue) {
-          return versionAndValue.has_value();
-        });
-    std::memcpy(
-        ncclUniqueID.internal, value.value.data(), NCCL_UNIQUE_ID_BYTES);
+    auto value = mccl::McclIntegrationTestUtil::waitForKey(uniqueIDKey);
+    std::memcpy(ncclUniqueID.internal, value.data(), NCCL_UNIQUE_ID_BYTES);
   }
 
   // Initialize NCCL communicator. Could not use RAII because we need to abort
@@ -810,8 +780,7 @@ TEST_F(NcclCommsTest, CollectiveMetadataMismatch) {
   if (rank == 0) {
     // Always make sure notify other ranks before exiting
     auto finishGuard = folly::makeGuard([&comm]() {
-      mccl::McclIntegrationTestUtil::setKey(
-          "test_return_baton", "Finished", std::nullopt);
+      mccl::McclIntegrationTestUtil::setKey("test_return_baton", "Finished");
     });
     // Wait for analyzer to report rank 0 is missing
     PullOneJobResult analyzerExpectedResult{
@@ -823,10 +792,7 @@ TEST_F(NcclCommsTest, CollectiveMetadataMismatch) {
 
   } else {
     // Wait for analyzer from rank 0 from returning
-    mccl::McclIntegrationTestUtil::waitForKey(
-        "test_return_baton", [](const auto& versionAndValue) {
-          return versionAndValue.has_value();
-        });
+    mccl::McclIntegrationTestUtil::waitForKey("test_return_baton");
   }
   XLOG(INFO) << "Test finished, start to abort NCCL comm";
 }
@@ -862,27 +828,17 @@ TEST_F(NcclCommsTest, CollectiveCircularDependency) {
     NCCLCHECK(ncclGetUniqueId(&ncclUniqueID1));
     mccl::McclIntegrationTestUtil::setKey(
         uniqueIDKey1,
-        std::string(ncclUniqueID1.internal, NCCL_UNIQUE_ID_BYTES),
-        std::nullopt);
+        std::string(ncclUniqueID1.internal, NCCL_UNIQUE_ID_BYTES));
     NCCLCHECK(ncclGetUniqueId(&ncclUniqueID2));
     mccl::McclIntegrationTestUtil::setKey(
         uniqueIDKey2,
-        std::string(ncclUniqueID2.internal, NCCL_UNIQUE_ID_BYTES),
-        std::nullopt);
+        std::string(ncclUniqueID2.internal, NCCL_UNIQUE_ID_BYTES));
   } else {
     // Everyone else waits for it
-    auto value1 = mccl::McclIntegrationTestUtil::waitForKey(
-        uniqueIDKey1, [](const auto& versionAndValue) {
-          return versionAndValue.has_value();
-        });
-    std::memcpy(
-        ncclUniqueID1.internal, value1.value.data(), NCCL_UNIQUE_ID_BYTES);
-    auto value2 = mccl::McclIntegrationTestUtil::waitForKey(
-        uniqueIDKey2, [](const auto& versionAndValue) {
-          return versionAndValue.has_value();
-        });
-    std::memcpy(
-        ncclUniqueID2.internal, value2.value.data(), NCCL_UNIQUE_ID_BYTES);
+    auto value1 = mccl::McclIntegrationTestUtil::waitForKey(uniqueIDKey1);
+    std::memcpy(ncclUniqueID1.internal, value1.data(), NCCL_UNIQUE_ID_BYTES);
+    auto value2 = mccl::McclIntegrationTestUtil::waitForKey(uniqueIDKey2);
+    std::memcpy(ncclUniqueID2.internal, value2.data(), NCCL_UNIQUE_ID_BYTES);
     ASSERT_NE(
         strncmp(
             ncclUniqueID1.internal,
@@ -975,8 +931,7 @@ TEST_F(NcclCommsTest, CollectiveCircularDependency) {
   if (rank == 0) {
     // Always make sure notify other ranks before exiting
     auto finishGuard = folly::makeGuard([]() {
-      mccl::McclIntegrationTestUtil::setKey(
-          "test_return_baton", "Finished", std::nullopt);
+      mccl::McclIntegrationTestUtil::setKey("test_return_baton", "Finished");
     });
     // Wait for analyzer to report rank 0 is missing
     PullOneJobResult analyzerExpectedResult{
@@ -988,10 +943,7 @@ TEST_F(NcclCommsTest, CollectiveCircularDependency) {
 
   } else {
     // Wait for analyzer from rank 0 from returning
-    mccl::McclIntegrationTestUtil::waitForKey(
-        "test_return_baton", [](const auto& versionAndValue) {
-          return versionAndValue.has_value();
-        });
+    mccl::McclIntegrationTestUtil::waitForKey("test_return_baton");
   }
   XLOG(INFO) << "Test finished, start to abort NCCL comm";
 }
