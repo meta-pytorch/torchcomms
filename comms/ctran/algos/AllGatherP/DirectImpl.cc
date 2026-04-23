@@ -136,7 +136,7 @@ commResult_t AlgoImpl::execDirect(
   const auto sendSize = count * commTypeSize(datatype);
 
   // Copy data to self for out-of-place allgather
-  FB_COMMCHECK(copyToSelf(comm_, sendbuff, sendSize, pArgs, stream_));
+  FB_COMMCHECK(copyToSelf(comm_, sendbuff, sendSize, pArgs.recvbuff, stream_));
 
   // Wait till async init is done, so that we can schedule copy operations with
   // the remote address
@@ -145,8 +145,14 @@ commResult_t AlgoImpl::execDirect(
   }
 
   // Copy data to other local ranks
-  FB_COMMCHECK(
-      nvlCeBcast(comm_, sendbuff, sendSize, myRank * sendSize, pArgs, stream_));
+  FB_COMMCHECK(nvlCeBcast(
+      comm_,
+      sendbuff,
+      sendSize,
+      myRank * sendSize,
+      pArgs.remoteRecvBuffs,
+      pArgs.remoteAccessKeys,
+      stream_));
 
   auto op = std::make_unique<OpElem>(
       OpElem::opType::ALLGATHERP, stream_, comm_, opCount);

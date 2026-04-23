@@ -46,7 +46,8 @@ inline commResult_t nvlCeBcast(
     const void* sendBuff,
     const size_t sendSize,
     const size_t recvOffset,
-    PersistArgs& pArgs,
+    const std::vector<void*>& remoteRecvBuffs,
+    const std::vector<CtranMapperRemoteAccessKey>& remoteAccessKeys,
     cudaStream_t stream,
     bool barrier = true) {
   const auto statex = comm->statex_.get();
@@ -71,14 +72,14 @@ inline commResult_t nvlCeBcast(
     const auto localPeer = (localRank + r) % nLocalRanks;
     const auto peer = statex->localRankToRank(localPeer);
 
-    if (pArgs.remoteAccessKeys[peer].backend != CtranMapperBackend::NVL) {
+    if (remoteAccessKeys[peer].backend != CtranMapperBackend::NVL) {
       FB_ERRORRETURN(
           commInvalidArgument,
           "Peer {} has non-NVL backend in nvlCeBcast",
           peer);
     }
 
-    auto recvPtr = getPtr(pArgs.remoteRecvBuffs[peer], recvOffset);
+    auto recvPtr = getPtr(remoteRecvBuffs[peer], recvOffset);
     CLOGF_TRACE(
         COLL,
         "Rank {} CE copy to peer {}, sendBuff {} -> recvBuff {} ({} + recvOffset {}), sendSize {}",
@@ -86,7 +87,7 @@ inline commResult_t nvlCeBcast(
         peer,
         sendBuff,
         recvPtr,
-        pArgs.remoteRecvBuffs[peer],
+        remoteRecvBuffs[peer],
         recvOffset,
         sendSize);
     dsts.at(r - 1) = recvPtr;
@@ -142,14 +143,14 @@ inline commResult_t copyToSelf(
     CtranComm* comm,
     const void* sendBuff,
     const size_t sendSize,
-    PersistArgs& pArgs,
+    void* recvbuff,
     cudaStream_t stream) {
   const auto statex = comm->statex_.get();
   const auto rank = statex->rank();
   const auto recvOffset = rank * sendSize;
 
   // Copy data to self for out-of-place allgather
-  auto recvPtr = getPtr(pArgs.recvbuff, recvOffset);
+  auto recvPtr = getPtr(recvbuff, recvOffset);
   if (recvPtr != sendBuff) {
     CLOGF_TRACE(
         COLL,
@@ -157,7 +158,7 @@ inline commResult_t copyToSelf(
         rank,
         sendBuff,
         recvPtr,
-        pArgs.recvbuff,
+        recvbuff,
         recvOffset,
         sendSize);
     FB_COMMCHECK(
