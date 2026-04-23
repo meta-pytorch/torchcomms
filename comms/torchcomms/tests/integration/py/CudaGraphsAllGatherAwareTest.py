@@ -176,6 +176,93 @@ class TestAllGatherCudaGraphAware(CudaGraphTestBase):
             graph.reset()
             torch.cuda.synchronize()
 
+    @skip_unless_ncclx
+    def test_allgather_cudagraph_aware_large_expseg(self) -> None:
+        """40MB allgather with expandable segments.
+
+        Tests the auto-conversion path with a larger message size using
+        the default PyTorch allocator (expandable segments). The window
+        registration path handles multi-segment buffers via
+        globalRegisterWithPtr.
+        """
+        os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
+        rank, _ = get_rank_and_size()
+        profile_dir = os.environ.get("TORCH_PROFILE_DIR")
+
+        # 40MB per rank: 10M float32 elements = 40MB
+        count = 10 * 1024 * 1024
+
+        with self.create_comms(1) as comms:
+            comm = comms[0]
+            size = comm.get_size()
+
+            sendbuf = torch.zeros(count, dtype=torch.float32, device=self.device)
+            recvbuf = torch.zeros(count * size, dtype=torch.float32, device=self.device)
+
+            profile_ctx = (
+                profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA])
+                if profile_dir
+                else contextlib.nullcontext()
+            )
+            with profile_ctx as prof:
+                # Eager warmup
+                NUM_WARMUP = 3
+                for w in range(NUM_WARMUP):
+                    sendbuf.fill_(float(rank))
+                    _wait(comm.all_gather_single(recvbuf, sendbuf, async_op=True))
+                torch.cuda.synchronize()
+
+                # Graph capture
+                graph = torch.cuda.CUDAGraph()
+                with torch.cuda.graph(graph):
+                    _wait(comm.all_gather_single(recvbuf, sendbuf, async_op=True))
+
+                comm.barrier(False)
+
+                # Graph replay with changing data
+                for replay in range(self.NUM_REPLAYS):
+                    val = float(rank * 100 + replay)
+                    sendbuf.fill_(val)
+                    recvbuf.zero_()
+                    torch.cuda.synchronize()
+                    comm.barrier(False)
+
+                    graph.replay()
+                    torch.cuda.synchronize()
+                    comm.barrier(False)
+
+                    for r in range(size):
+                        expected_val = float(r * 100 + replay)
+                        chunk = recvbuf[r * count : (r + 1) * count]
+                        expected = torch.full(
+                            (count,),
+                            expected_val,
+                            dtype=torch.float32,
+                            device=self.device,
+                        )
+                        torch.testing.assert_close(
+                            chunk,
+                            expected,
+                            rtol=1e-5,
+                            atol=1e-5,
+                            msg=(
+                                f"Replay {replay}: rank {rank} expected {expected_val} "
+                                f"from rank {r}, got {chunk[:4].tolist()}"
+                            ),
+                        )
+
+            if profile_dir and prof:
+                os.makedirs(profile_dir, exist_ok=True)
+                trace_path = os.path.join(
+                    profile_dir,
+                    f"test_allgather_cudagraph_aware_large_expseg_rank{rank}.json",
+                )
+                prof.export_chrome_trace(trace_path)
+
+            graph.reset()
+            torch.cuda.synchronize()
+
 
 if __name__ == "__main__":
     unittest.main()
