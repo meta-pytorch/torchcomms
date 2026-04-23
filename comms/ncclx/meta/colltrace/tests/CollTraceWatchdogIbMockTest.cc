@@ -7,11 +7,9 @@
 #include "comm.h" // @manual
 #include "nccl.h" // @manual
 
-#include "comms/mccl/integration_tests/CollectiveIntegrationTestMixin.h"
-#include "comms/mccl/integration_tests/McclIntegrationTestUtil.h"
-#include "comms/mccl/tests/CudaStream.h"
-#include "comms/mccl/tests/CudaTestUtil.h"
+#include "comms/ncclx/meta/tests/ForkBasedTestDriver.h"
 #include "comms/testinfra/IbverbMockTestUtils.h"
+#include "comms/utils/CudaRAII.h"
 #include "ftar/DynMemGpuBuffer.h"
 
 #define NCCLCHECK_FATAL(cmd)                                            \
@@ -41,12 +39,12 @@ class NcclComm {
     if (globalRank == 0) {
       // Rank 0 creates the unique id
       NCCLCHECK_FATAL(ncclGetUniqueId(&ncclUniqueID));
-      mccl::McclIntegrationTestUtil::setKey(
+      ncclx::test::ForkBasedTestDriver::setKey(
           uniqueIDKey,
           std::string(ncclUniqueID.internal, NCCL_UNIQUE_ID_BYTES));
     } else {
       // Everyone else waits for it
-      auto value = mccl::McclIntegrationTestUtil::waitForKey(uniqueIDKey);
+      auto value = ncclx::test::ForkBasedTestDriver::waitForKey(uniqueIDKey);
       std::memcpy(ncclUniqueID.internal, value.data(), NCCL_UNIQUE_ID_BYTES);
     }
     NCCLCHECK_FATAL(
@@ -71,7 +69,7 @@ class NcclComm {
   ncclComm_t comm_{};
 };
 
-class CollTraceWatchdogTest : public mccl::CollectiveIntegrationTestMixin,
+class CollTraceWatchdogTest : public ncclx::test::ForkBasedTestDriver,
                               public ::testing::Test {
  public:
   void SetUp() override {
@@ -102,8 +100,8 @@ class CollTraceWatchdogTest : public mccl::CollectiveIntegrationTestMixin,
       envList.emplace_back(fmt::format("NCCL_IBVERBS_PATH={}", hookIbVerbs));
     }
 
-    mccl::CollectiveIntegrationTestMixin::SetUp(
-        mccl::CollectiveIntegrationTestMixin::Config{
+    ncclx::test::ForkBasedTestDriver::SetUp(
+        ncclx::test::ForkBasedTestDriver::Config{
             .numRanks = numRanks,
             .shouldExitOnFailure = false,
             .env = envList});
@@ -115,10 +113,9 @@ class CollTraceWatchdogTest : public mccl::CollectiveIntegrationTestMixin,
   void testDriverCheckCrashedWithWatchdog() {
     ASSERT_TRUE(
         std::holds_alternative<
-            mccl::CollectiveIntegrationTestMixin::TestDriverState>(
-            this->state_));
+            ncclx::test::ForkBasedTestDriver::TestDriverState>(this->state_));
     auto& testDriverState =
-        std::get<mccl::CollectiveIntegrationTestMixin::TestDriverState>(
+        std::get<ncclx::test::ForkBasedTestDriver::TestDriverState>(
             this->state_);
     // Check that all ranks exited with non-zero exit code
     EXPECT_THAT(
@@ -149,9 +146,9 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorWithIbVerbMock) {
           "ncclx.colltrace.crashOnAsyncError", folly::to<std::string>(true)));
 
   // Initialize CUDA state
-  auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
+  auto deviceId = ncclx::test::ForkBasedTestDriver::getCudaDeviceId(rank);
   XLOG(INFO) << "CUDA device id: " << deviceId;
-  mccl::cuda::CudaStream stream;
+  meta::comms::CudaStream stream;
 
   // Initialize NCCL communicator
   NcclComm comm(worldSize, rank);
@@ -175,7 +172,7 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorWithIbVerbMock) {
       ncclFloat,
       ncclSum,
       comm.raw(),
-      stream.raw()));
+      stream.get()));
 
-  CUDACHECK_FATAL(cudaStreamSynchronize(stream.raw()));
+  CUDACHECK_FATAL(cudaStreamSynchronize(stream.get()));
 }
