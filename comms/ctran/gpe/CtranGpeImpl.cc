@@ -639,47 +639,7 @@ void CtranGpe::Impl::terminate() {
   cmdEnqueue(cmd);
   thread_.join();
 
-  // Pool elements are released by CUDA's async cmdDestroy callback
-  // (cudaUserObjectNoDestructorSync). Spin until all pools drain before
-  // returning, to avoid freeing pinned memory from under an in-flight callback.
   const auto& statex = comm->statex_;
-  const auto start = std::chrono::steady_clock::now();
-  auto nextLog = start + std::chrono::seconds(5);
-  while (true) {
-    this->kernelFlagPool->reclaim();
-    this->kernelElemPool->reclaim();
-    this->gpeKernelSyncPool->reclaim();
-    if (this->kernelFlagPool->capacity() == this->kernelFlagPool->size() &&
-        this->kernelElemPool->capacity() == this->kernelElemPool->size() &&
-        this->gpeKernelSyncPool->capacity() ==
-            this->gpeKernelSyncPool->size()) {
-      break;
-    }
-    const auto now = std::chrono::steady_clock::now();
-    if (now >= nextLog) {
-      const auto elapsedSec =
-          std::chrono::duration_cast<std::chrono::seconds>(now - start).count();
-      CLOGF_SUBSYS(
-          WARNING,
-          INIT,
-          "terminate() spin-wait: pools still draining after {}s on rank {} commHash {:x}"
-          " -- kernelFlag {}/{} kernelElem {}/{} gpeKernelSync {}/{}."
-          " Most likely cudaGraphDestroy() was not called on all CUDA graphs"
-          " that captured CTranGPE operations.",
-          elapsedSec,
-          statex->rank(),
-          statex->commHash(),
-          this->kernelFlagPool->size(),
-          this->kernelFlagPool->capacity(),
-          this->kernelElemPool->size(),
-          this->kernelElemPool->capacity(),
-          this->gpeKernelSyncPool->size(),
-          this->gpeKernelSyncPool->capacity());
-      nextLog = now + std::chrono::seconds(5);
-    }
-    std::this_thread::yield();
-  }
-
   CLOGF_SUBSYS(
       INFO,
       INIT,
@@ -1081,18 +1041,38 @@ KernelElemPool::KernelElemPool(size_t capacity) : capacity_(capacity) {
 }
 
 KernelElemPool::~KernelElemPool() {
-  this->reclaim();
-  if (this->inuseWorkElems_.size()) {
-    CLOGF(
-        WARN,
-        "CTRAN-GPE: Internal KernelElem pool has {} inuse elements",
-        this->inuseWorkElems_.size());
-  }
+  drainUntilEmpty();
   FB_CUDACHECKIGNORE(cudaFreeHost(this->memPtr_));
 
-  // Dot not throw exception in destructor to avoid early termination in stack
+  // Do not throw exception in destructor to avoid early termination in stack
   // unwind. See discussion in
   // https://stackoverflow.com/questions/130117/if-you-shouldnt-throw-exceptions-in-a-destructor-how-do-you-handle-errors-in-i
+}
+
+void KernelElemPool::drainUntilEmpty() {
+  const auto start = std::chrono::steady_clock::now();
+  auto nextLog = start + std::chrono::seconds(5);
+  while (true) {
+    this->reclaim();
+    if (this->inuseWorkElems_.empty()) {
+      break;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= nextLog) {
+      const auto elapsedSec =
+          std::chrono::duration_cast<std::chrono::seconds>(now - start).count();
+      CLOGF(
+          WARN,
+          "CTRAN-GPE: KernelElem pool drain spin-wait: {} inuse / {} total after {}s."
+          " Most likely cudaGraphDestroy() was not called on all CUDA graphs"
+          " that captured CTranGPE operations.",
+          this->inuseWorkElems_.size(),
+          capacity_,
+          elapsedSec);
+      nextLog = now + std::chrono::seconds(5);
+    }
+    std::this_thread::yield();
+  }
 }
 
 void KernelElemPool::resetWorkElem(KernelElem* workElem) {
