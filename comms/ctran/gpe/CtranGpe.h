@@ -91,6 +91,9 @@ struct OpElem {
     struct {
       // reference to pre-initialized persistent arguments and resource
       void* pArgs;
+      // non-null for window-based init; used by GPE callback to populate
+      // pArgs from window remote info
+      ctran::CtranWin* win;
     } allgatherp_init;
     struct {
       // reference to pre-initialized persistent arguments and resource
