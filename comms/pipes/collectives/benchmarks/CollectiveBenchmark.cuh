@@ -4,7 +4,7 @@
 
 #include <cuda_runtime.h>
 
-#include "comms/pipes/Timeout.cuh"
+#include "comms/pipes/Timeout.h"
 #include "comms/pipes/collectives/AllGather.cuh"
 #include "comms/pipes/collectives/AllToAllv.cuh"
 
