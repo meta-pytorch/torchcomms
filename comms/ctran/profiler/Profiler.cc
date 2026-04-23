@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/profiler/DefaultAlgoProfilerReporter.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 
 namespace {
 
@@ -28,14 +29,16 @@ namespace ctran {
 
 Profiler::Profiler(CtranComm* comm, std::unique_ptr<IProfilerReporter> reporter)
     : comm_(comm),
+      samplingRegistry_(NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT),
       reporter_(
           reporter ? std::move(reporter)
                    : std::make_unique<DefaultAlgoProfilerReporter>()) {}
 
 Profiler::~Profiler() = default;
 
-void Profiler::initForEachColl(int opCount, int samplingWeight) {
-  shouldTrace_ = samplingWeight > 0 && (opCount % samplingWeight) == 0;
+void Profiler::initForEachColl(int opCount) {
+  samplingRegistry_.setSampleCount(opCount);
+  shouldTrace_ = samplingRegistry_.shouldTrace();
   if (shouldTrace_) {
     opCount_ = opCount;
     durations_.fill(0);

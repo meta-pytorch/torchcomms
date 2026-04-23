@@ -127,8 +127,7 @@ inline commResult_t sendRecvImpl(
   std::vector<void*> tmpRegHdls;
   ctran::Profiler* profiler = comm->ctran_->profiler.get();
   if (profiler) {
-    profiler->initForEachColl(
-        opCount, NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT);
+    profiler->initForEachColl(opCount);
   }
 
   if (sendOpGroup.size() > 0 || recvOpGroup.size() > 0) {
