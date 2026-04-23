@@ -364,7 +364,7 @@ if [[ -z "${NVCC_GENCODE-}" ]]; then
             arch_gencode="$arch_gencode -gencode=arch=compute_90,code=sm_90"
         ;;
         "b200")
-            arch_gencode="$arch_gencode -gencode=arch=compute_100,code=sm_100"
+            arch_gencode="$arch_gencode -gencode=arch=compute_100a,code=sm_100a"
         ;;
         "b300")
             arch_gencode="$arch_gencode -gencode=arch=compute_103a,code=sm_103a"
