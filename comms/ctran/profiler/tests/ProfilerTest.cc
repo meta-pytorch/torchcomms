@@ -3,6 +3,7 @@
 #include "comms/ctran/profiler/Profiler.h"
 #include <gtest/gtest.h>
 #include "comms/ctran/profiler/tests/MockProfilerReporter.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 
 using namespace ::testing;
 
@@ -16,14 +17,18 @@ class ProfilerTest : public ::testing::Test {
     // comm_->logMetaData_ which is a trivial POD struct, so zero-init is safe.
     commBuf_.resize(sizeof(CtranComm), 0);
     comm_ = reinterpret_cast<CtranComm*>(commBuf_.data());
+    // Default: sample every op
+    NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT = 1;
     profiler_ = std::make_unique<ctran::Profiler>(comm_);
   }
   void TearDown() override {
     comm_ = nullptr;
   }
 
-  uint64_t getOpCount() {
-    return profiler_->getOpCount();
+  // Create a Profiler with a specific sampling weight
+  std::unique_ptr<ctran::Profiler> makeProfiler(int samplingWeight) {
+    NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT = samplingWeight;
+    return std::make_unique<ctran::Profiler>(comm_);
   }
 
  protected:
@@ -34,44 +39,86 @@ class ProfilerTest : public ::testing::Test {
 
 TEST_F(ProfilerTest, testInitForEachColl) {
   uint64_t opCount = 100;
+
   // test negative sampling weight
-  profiler_->initForEachColl(opCount, -1);
-  EXPECT_FALSE(profiler_->shouldTrace());
-  EXPECT_NE(profiler_->getOpCount(), opCount);
+  auto p1 = makeProfiler(-1);
+  p1->initForEachColl(opCount);
+  EXPECT_FALSE(p1->shouldTrace());
 
   // test zero sampling weight
-  profiler_->initForEachColl(opCount, 0);
-  EXPECT_FALSE(profiler_->shouldTrace());
-  EXPECT_NE(profiler_->getOpCount(), opCount);
+  auto p2 = makeProfiler(0);
+  p2->initForEachColl(opCount);
+  EXPECT_FALSE(p2->shouldTrace());
 
   // test sampling weight = 1
-  profiler_->initForEachColl(opCount, 1);
-  EXPECT_TRUE(profiler_->shouldTrace());
-  EXPECT_EQ(profiler_->getOpCount(), opCount);
+  auto p3 = makeProfiler(1);
+  p3->initForEachColl(opCount);
+  EXPECT_TRUE(p3->shouldTrace());
+  EXPECT_EQ(p3->getOpCount(), opCount);
 
   // test opCount is the multiple of sampling weight
-  profiler_->initForEachColl(opCount, 20);
-  EXPECT_TRUE(profiler_->shouldTrace());
-  EXPECT_EQ(profiler_->getOpCount(), opCount);
+  auto p4 = makeProfiler(20);
+  p4->initForEachColl(opCount);
+  EXPECT_TRUE(p4->shouldTrace());
+  EXPECT_EQ(p4->getOpCount(), opCount);
 
   // test opCount is not the multiple of sampling weight
   ++opCount;
-  profiler_->initForEachColl(opCount, 20);
-  EXPECT_FALSE(profiler_->shouldTrace());
-  EXPECT_NE(profiler_->getOpCount(), opCount);
+  auto p5 = makeProfiler(20);
+  p5->initForEachColl(opCount);
+  EXPECT_FALSE(p5->shouldTrace());
+  EXPECT_NE(p5->getOpCount(), opCount);
+}
+
+TEST_F(ProfilerTest, testProfilingSampleCountOverridesOpCount) {
+  // When profilingSampleCount_ is set, profiler samples on that counter
+  // instead of opCount
+  uint64_t collectiveCount = 0;
+  comm_->profilingSampleCount_ = &collectiveCount;
+
+  auto p = makeProfiler(10); // trace every 10th
+
+  // opCount=10 would normally trace, but collectiveCount=0 traces (0 % 10 == 0)
+  collectiveCount = 0;
+  p->initForEachColl(10);
+  EXPECT_TRUE(p->shouldTrace());
+
+  // collectiveCount=5 should not trace (5 % 10 != 0)
+  collectiveCount = 5;
+  p->initForEachColl(10);
+  EXPECT_FALSE(p->shouldTrace());
+
+  // collectiveCount=20 should trace (20 % 10 == 0), even though opCount=7
+  collectiveCount = 20;
+  p->initForEachColl(7);
+  EXPECT_TRUE(p->shouldTrace());
+}
+
+TEST_F(ProfilerTest, testNullProfilingSampleCountFallsBackToOpCount) {
+  // When profilingSampleCount_ is nullptr (default), profiler uses opCount
+  EXPECT_EQ(comm_->profilingSampleCount_, nullptr);
+
+  auto p = makeProfiler(10);
+
+  // opCount=10 should trace
+  p->initForEachColl(10);
+  EXPECT_TRUE(p->shouldTrace());
+
+  // opCount=7 should not trace
+  p->initForEachColl(7);
+  EXPECT_FALSE(p->shouldTrace());
 }
 
 TEST_F(ProfilerTest, testDefaultReporterType) {
   // Default constructor should use default reporter (no crash on reportToScuba)
-  auto profiler = std::make_unique<ctran::Profiler>(comm_);
-  profiler->initForEachColl(100, 1);
-  profiler->startEvent(ctran::ProfilerEvent::BUF_REG);
-  profiler->endEvent(ctran::ProfilerEvent::BUF_REG);
-  profiler->startEvent(ctran::ProfilerEvent::ALGO_CTRL);
-  profiler->endEvent(ctran::ProfilerEvent::ALGO_CTRL);
-  profiler->startEvent(ctran::ProfilerEvent::ALGO_DATA);
-  profiler->endEvent(ctran::ProfilerEvent::ALGO_DATA);
-  EXPECT_NO_THROW(profiler->reportToScuba());
+  profiler_->initForEachColl(100);
+  profiler_->startEvent(ctran::ProfilerEvent::BUF_REG);
+  profiler_->endEvent(ctran::ProfilerEvent::BUF_REG);
+  profiler_->startEvent(ctran::ProfilerEvent::ALGO_CTRL);
+  profiler_->endEvent(ctran::ProfilerEvent::ALGO_CTRL);
+  profiler_->startEvent(ctran::ProfilerEvent::ALGO_DATA);
+  profiler_->endEvent(ctran::ProfilerEvent::ALGO_DATA);
+  EXPECT_NO_THROW(profiler_->reportToScuba());
 }
 
 TEST_F(ProfilerTest, testReportToScubaCallsReporter) {
@@ -80,7 +127,7 @@ TEST_F(ProfilerTest, testReportToScubaCallsReporter) {
   profiler_ = std::make_unique<ctran::Profiler>(comm_, std::move(mockReporter));
 
   // Set up profiler state
-  profiler_->initForEachColl(100, 1);
+  profiler_->initForEachColl(100);
   ASSERT_TRUE(profiler_->shouldTrace());
 
   // Set algo context
