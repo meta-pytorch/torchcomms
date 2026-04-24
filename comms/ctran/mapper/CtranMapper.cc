@@ -168,8 +168,7 @@ CtranMapper::CtranMapper(CtranComm* comm) {
   }
   if (enableBackends_[CtranMapperBackend::SOCKET]) {
     if (!this->ctranIb) {
-      this->ctranSock =
-          std::make_unique<class CtranSocket>(comm, this->ctrlMgr.get());
+      this->ctranSock = std::make_unique<class CtranSocket>(comm);
     } else {
       enableBackends_[CtranMapperBackend::SOCKET] = false;
       CLOGF_SUBSYS(
