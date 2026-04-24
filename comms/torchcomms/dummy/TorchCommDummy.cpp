@@ -242,6 +242,11 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::gather(
   return c10::make_intrusive<TorchWorkCompleted>();
 }
 
+c10::intrusive_ptr<TorchWork> TorchCommDummy::reconfigure(
+    const ReconfigureOptions& /*opts*/) {
+  return c10::make_intrusive<TorchWorkCompleted>();
+}
+
 std::shared_ptr<TorchCommWindow> TorchCommDummy::new_window(
     const std::optional<at::Tensor>& tensor) {
   auto win = std::make_shared<DummyTorchCommWindow>();
