@@ -237,8 +237,10 @@ __global__ void testPutLatency(
 
   initMockQp(mock);
 
-  IbgdaLocalBuffer localDataBuf(mock->wqeBuf, NetworkLKey(0x3333));
-  IbgdaRemoteBuffer remoteDataBuf(mock->wqeBuf, NetworkRKey(0x4444));
+  IbgdaLocalBuffer localDataBuf(
+      mock->wqeBuf, NetworkLKeys{NetworkLKey(0x3333)});
+  IbgdaRemoteBuffer remoteDataBuf(
+      mock->wqeBuf, NetworkRKeys{NetworkRKey(0x4444)});
 
   P2pIbgdaTransportDevice transport(&mock->qp);
 
@@ -337,9 +339,9 @@ __global__ void testPutGroupPartitioning(bool* success) {
   char dummyLocal[8];
   char dummyRemote[8];
   pipes_gda::IbgdaLocalBuffer localBuf(
-      dummyLocal, pipes_gda::NetworkLKey(0x1111));
+      dummyLocal, pipes_gda::NetworkLKeys{pipes_gda::NetworkLKey(0x1111)});
   pipes_gda::IbgdaRemoteBuffer remoteBuf(
-      dummyRemote, pipes_gda::NetworkRKey(0x2222));
+      dummyRemote, pipes_gda::NetworkRKeys{pipes_gda::NetworkRKey(0x2222)});
 
   std::size_t chunkSize = totalBytes / group.group_size;
   std::size_t expectedOffset = group.thread_id_in_group * chunkSize;
@@ -361,10 +363,10 @@ __global__ void testPutGroupPartitioning(bool* success) {
   if (laneRemoteBuf.ptr != expectedRemotePtr) {
     *success = false;
   }
-  if (laneBuf.lkey != localBuf.lkey) {
+  if (laneBuf.lkey_per_device[0] != localBuf.lkey_per_device[0]) {
     *success = false;
   }
-  if (laneRemoteBuf.rkey != remoteBuf.rkey) {
+  if (laneRemoteBuf.rkey_per_device[0] != remoteBuf.rkey_per_device[0]) {
     *success = false;
   }
 }
@@ -484,9 +486,9 @@ __global__ void testPutGroupPartitioningBlock(bool* success) {
   char dummyLocal[8];
   char dummyRemote[8];
   pipes_gda::IbgdaLocalBuffer localBuf(
-      dummyLocal, pipes_gda::NetworkLKey(0x1111));
+      dummyLocal, pipes_gda::NetworkLKeys{pipes_gda::NetworkLKey(0x1111)});
   pipes_gda::IbgdaRemoteBuffer remoteBuf(
-      dummyRemote, pipes_gda::NetworkRKey(0x2222));
+      dummyRemote, pipes_gda::NetworkRKeys{pipes_gda::NetworkRKey(0x2222)});
 
   std::size_t chunkSize = totalBytes / group.group_size;
   std::size_t expectedOffset = group.thread_id_in_group * chunkSize;
@@ -497,7 +499,7 @@ __global__ void testPutGroupPartitioningBlock(bool* success) {
   if (laneBuf.ptr != expectedPtr) {
     atomicExch(reinterpret_cast<int*>(success), 0);
   }
-  if (laneBuf.lkey != localBuf.lkey) {
+  if (laneBuf.lkey_per_device[0] != localBuf.lkey_per_device[0]) {
     atomicExch(reinterpret_cast<int*>(success), 0);
   }
 }

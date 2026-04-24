@@ -103,8 +103,9 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, BufferSubBuffer) {
   char remoteSignalData[128];
 
   // Create base buffers
-  IbgdaLocalBuffer baseLBuf(localSignalData, NetworkLKey(0x7777));
-  IbgdaRemoteBuffer baseRBuf(remoteSignalData, NetworkRKey(0x8888));
+  IbgdaLocalBuffer baseLBuf(localSignalData, NetworkLKeys{NetworkLKey(0x7777)});
+  IbgdaRemoteBuffer baseRBuf(
+      remoteSignalData, NetworkRKeys{NetworkRKey(0x8888)});
 
   // Create sub-buffers at offset
   IbgdaLocalBuffer subLBuf = baseLBuf.subBuffer(offset);
@@ -115,8 +116,8 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, BufferSubBuffer) {
   EXPECT_EQ(subRBuf.ptr, remoteSignalData + offset);
 
   // Verify keys are preserved
-  EXPECT_EQ(subLBuf.lkey, baseLBuf.lkey);
-  EXPECT_EQ(subRBuf.rkey, baseRBuf.rkey);
+  EXPECT_EQ(subLBuf.lkey_per_device[0], baseLBuf.lkey_per_device[0]);
+  EXPECT_EQ(subRBuf.rkey_per_device[0], baseRBuf.rkey_per_device[0]);
 }
 
 // =============================================================================
