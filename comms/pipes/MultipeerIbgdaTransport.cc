@@ -1588,18 +1588,10 @@ void MultipeerIbgdaTransport::allocate_send_recv_buffers() {
   sendRecvPeerBuffers_.resize(numPeers);
   for (int i = 0; i < numPeers; ++i) {
     auto& pb = sendRecvPeerBuffers_[i];
-    pb.sendStaging = IbgdaLocalBuffer{
-        static_cast<char*>(sendStagingBulk_->get()) + i * stagingPerPeer,
-        sendStagingBulkReg.lkey_per_device};
-    pb.recvStaging = IbgdaLocalBuffer{
-        static_cast<char*>(recvStagingBulk_->get()) + i * stagingPerPeer,
-        recvStagingBulkReg_.lkey_per_device};
-    pb.signal = IbgdaLocalBuffer{
-        static_cast<char*>(signalBulk_->get()) + i * signalPerPeer,
-        signalBulkReg_.lkey_per_device};
-    pb.counter = IbgdaLocalBuffer{
-        static_cast<char*>(counterBulk_->get()) + i * counterPerPeer,
-        counterBulkReg.lkey_per_device};
+    pb.sendStaging = sendStagingBulkReg.subBuffer(i * stagingPerPeer);
+    pb.recvStaging = recvStagingBulkReg_.subBuffer(i * stagingPerPeer);
+    pb.signal = signalBulkReg_.subBuffer(i * signalPerPeer);
+    pb.counter = counterBulkReg.subBuffer(i * counterPerPeer);
     pb.stepState = reinterpret_cast<int64_t*>(
         static_cast<char*>(stepStateBulk_->get()) + i * stepStatePerPeer);
   }
