@@ -129,11 +129,20 @@ __device__ inline int TorchCommDeviceWindow<PipesDeviceBackend>::put(
   auto group = detail::make_pipes_thread_group(scope);
 
   // Build Pipes LocalBufferRegistration from RegisteredBuffer.
-  // Pipes uses lkey (IBGDA local key); GIN uses backend_window.
+  // Pipes uses per-NIC lkeys (IBGDA local keys); GIN uses backend_window.
+  // The kernel-side put selects lkeys[nic] based on slot dispatch, so all
+  // per-NIC keys must be forwarded — partial population would leave
+  // NIC[1..size-1] keys zero and corrupt WQEs on multi-NIC HW.
+  // Loop bounded by src_buf.lkey_per_device.size (the populated NIC count
+  // returned by the backend); on a 1-NIC host only slot 0 is read.
+  const int numNics = src_buf.lkey_per_device.size;
+  ::comms::pipes::NetworkLKeys pipes_lkeys(numNics);
+  for (int n = 0; n < numNics; ++n) {
+    pipes_lkeys[n] =
+        ::comms::pipes::NetworkLKey{src_buf.lkey_per_device.values[n]};
+  }
   ::comms::pipes::LocalBufferRegistration pipes_src{
-      src_buf.base_ptr,
-      src_buf.size,
-      ::comms::pipes::NetworkLKeys{::comms::pipes::NetworkLKey{src_buf.lkey}}};
+      src_buf.base_ptr, src_buf.size, pipes_lkeys};
 
   bool has_signal = signal_id >= 0;
   bool has_counter = counter_id >= 0;

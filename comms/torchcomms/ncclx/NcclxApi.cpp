@@ -674,8 +674,8 @@ ncclResult_t DefaultNcclxApi::winLocalRegisterBuffer(
     ncclComm_t comm,
     void* ptr,
     size_t size,
-    uint32_t* outLkey) {
-  return ncclWinLocalRegisterBuffer(comm, ptr, size, outLkey);
+    ncclLkeyPerDevice* outLkeys) {
+  return ncclWinLocalRegisterBuffer(comm, ptr, size, outLkeys);
 }
 
 ncclResult_t DefaultNcclxApi::winLocalDeregisterBuffer(
