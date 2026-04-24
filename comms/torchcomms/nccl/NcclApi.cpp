@@ -52,6 +52,18 @@ ncclResult_t DefaultNcclApi::commAbort(ncclComm_t comm) {
   return ncclCommAbort(comm);
 }
 
+ncclResult_t DefaultNcclApi::commRevoke(ncclComm_t comm) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 28, 0)
+  return ncclCommRevoke(comm, 0);
+#else
+  (void)comm;
+  TC_LOG(ERROR) << "NCCL version " << NCCL_VERSION_CODE
+                << " does not support ncclCommRevoke API";
+  return ncclInvalidUsage;
+#endif
+}
+
 ncclResult_t DefaultNcclApi::commGetAsyncError(
     ncclComm_t comm,
     ncclResult_t* asyncError) {
