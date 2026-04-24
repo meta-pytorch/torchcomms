@@ -33,7 +33,7 @@ __global__ void testP2pTransportReadSignal(
     int numSignals,
     bool* success) {
   // Construct transport with ownedLocalSignalBuf pointing to d_signalBuf
-  IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{NetworkLKey(0)});
+  IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{});
   P2pIbgdaTransportDevice transport(
       DeviceSpan<NicDeviceIbgdaResources>{},
       IbgdaRemoteBuffer{},
@@ -60,7 +60,7 @@ __global__ void testP2pTransportReadSignal(
 __global__ void
 testWaitSignalGE(uint64_t* d_signalBuf, uint64_t targetValue, bool* success) {
   // Construct transport with ownedLocalSignalBuf
-  IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{NetworkLKey(0)});
+  IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{});
   P2pIbgdaTransportDevice transport(
       DeviceSpan<NicDeviceIbgdaResources>{},
       IbgdaRemoteBuffer{},
@@ -81,7 +81,7 @@ __global__ void testWaitSignalMultipleSlots(
     int numSignals,
     bool* success) {
   // Construct transport with ownedLocalSignalBuf
-  IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{NetworkLKey(0)});
+  IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{});
   P2pIbgdaTransportDevice transport(
       DeviceSpan<NicDeviceIbgdaResources>{},
       IbgdaRemoteBuffer{},
@@ -329,7 +329,7 @@ __global__ void testWaitSignalTimeout(uint64_t* d_signalBuf, Timeout timeout) {
   timeout.start();
 
   // Construct transport with ownedLocalSignalBuf
-  IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{NetworkLKey(0)});
+  IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{});
   P2pIbgdaTransportDevice transport(
       DeviceSpan<NicDeviceIbgdaResources>{},
       IbgdaRemoteBuffer{},
@@ -348,7 +348,7 @@ testWaitSignalNoTimeout(uint64_t* d_signalBuf, Timeout timeout, bool* success) {
   timeout.start();
 
   // Construct transport with ownedLocalSignalBuf
-  IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{NetworkLKey(0)});
+  IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{});
   P2pIbgdaTransportDevice transport(
       DeviceSpan<NicDeviceIbgdaResources>{},
       IbgdaRemoteBuffer{},
