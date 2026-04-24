@@ -133,7 +133,7 @@ __device__ inline int TorchCommDeviceWindow<PipesDeviceBackend>::put(
   ::comms::pipes::LocalBufferRegistration pipes_src{
       src_buf.base_ptr,
       src_buf.size,
-      ::comms::pipes::NetworkLKey{src_buf.lkey}};
+      ::comms::pipes::NetworkLKeys{::comms::pipes::NetworkLKey{src_buf.lkey}}};
 
   bool has_signal = signal_id >= 0;
   bool has_counter = counter_id >= 0;

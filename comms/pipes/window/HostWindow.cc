@@ -16,8 +16,8 @@ namespace comms::pipes {
 namespace {
 
 // Allocate zeroed GPU memory via cudaMalloc and wrap in IbgdaLocalBuffer.
-// The .ptr field holds the raw GPU pointer; lkey_per_device is empty
-// (size=0) until registerIbgdaBuffer() is called in exchange().
+// The .ptr field holds the raw GPU pointer; .lkey_per_device are unset until
+// localRegisterIbgdaBuffer() is called in exchange().
 IbgdaLocalBuffer allocateIbgdaBuffer(std::size_t size) {
   void* ptr = nullptr;
   CUDA_CHECK(cudaMalloc(&ptr, size));
@@ -309,7 +309,7 @@ void HostWindow::exchange() {
   exchanged_ = true;
 }
 
-std::optional<NetworkLKey> HostWindow::registerLocalBuffer(
+std::optional<NetworkLKeys> HostWindow::registerLocalBuffer(
     void* ptr,
     std::size_t size) {
   if (ibgdaPeerRanks_.empty()) {
@@ -317,7 +317,7 @@ std::optional<NetworkLKey> HostWindow::registerLocalBuffer(
   }
   auto ibgdaBuf = transport_.localRegisterIbgdaBuffer(ptr, size);
   registeredLocalBuffers_.push_back(ptr);
-  return ibgdaBuf.lkey_per_device[0];
+  return ibgdaBuf.lkey_per_device;
 }
 
 void HostWindow::reset_signals(cudaStream_t stream) const {
@@ -351,10 +351,9 @@ void HostWindow::registerAndExchangeBuffer(void* ptr, std::size_t size) {
     auto ibgdaBuf = transport_.localRegisterIbgdaBuffer(ptr, size);
     registeredLocalBuffers_.push_back(ptr);
     auto remoteBufs = transport_.exchangeIbgdaBuffer(ibgdaBuf);
-    for (int i = 0; i < nIbgdaPeers; ++i) {
-      remoteRegistrations_.push_back(
-          RemoteBufferRegistration{
-              remoteBufs[i].ptr, size, remoteBufs[i].rkey_per_device[0]});
+    for (const auto& remoteBuf : remoteBufs) {
+      remoteRegistrations_.emplace_back(
+          remoteBuf.ptr, size, remoteBuf.rkey_per_device);
     }
   }
 
@@ -448,7 +447,7 @@ DeviceWindow HostWindow::getDeviceWindow() const {
   if (ibgdaPeerCounterLocalBuf_.ptr) {
     dw.ibgdaPeerCounterBuf_ =
         static_cast<uint64_t*>(ibgdaPeerCounterLocalBuf_.ptr);
-    dw.ibgdaPeerCounterLkey_ = ibgdaPeerCounterLocalBuf_.lkey_per_device[0];
+    dw.ibgdaPeerCounterLkeys_ = ibgdaPeerCounterLocalBuf_.lkey_per_device;
   }
 
   // Barrier
