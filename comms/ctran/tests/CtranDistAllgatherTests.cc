@@ -15,6 +15,7 @@
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
+#include "comms/ctran/tests/VerifyAlgoStatsUtil.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -32,9 +33,12 @@ class CtranAllgatherTest : public ctran::CtranDistTestFixture,
   void *sCommBuf, *rCommBuf, *pCommBuf;
   std::vector<TestMemSegment> segments;
 
+  ctran::test::VerifyAlgoStatsHelper algoStats_;
+
   void SetUp() override {
     setenv("NCCL_CTRAN_TRANSPORT_PROFILER", "1", 0);
     setenv("NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT", "1", 0);
+    algoStats_.enable();
     ctran::CtranDistTestFixture::SetUp();
     ctranComm = makeCtranComm();
     segments.clear();
@@ -255,6 +259,8 @@ TEST_P(CtranAllgatherTestParam, AllgatherAlgo) {
         coll["algoName"].asString(), testing::HasSubstr(expAlgoNames.at(idx)));
     idx++;
   }
+
+  algoStats_.verify(ctranComm.get(), "AllGather", allGatherAlgoName(algo));
 
   for (auto& segment : segments) {
     COMMCHECK_TEST(ctran::globalDeregisterWithPtr(segment.ptr, segment.size));
