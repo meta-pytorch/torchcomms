@@ -65,7 +65,8 @@ __device__ __forceinline__ void all_to_allv_hybrid_amd(
           static_cast<char*>(ibgda_transport_base) +
           i * ibgda_transport_stride);
 
-      IbgdaLocalBuffer src(sendbuf + send_info.offset, ibgda_send_buf.lkey);
+      IbgdaLocalBuffer src(
+          sendbuf + send_info.offset, ibgda_send_buf.lkey_per_device);
 
       // Remote recv buf points to peer's recvbuff base. Add offset for
       // where this rank's data goes (= recv_chunk_infos[my_rank_id] on

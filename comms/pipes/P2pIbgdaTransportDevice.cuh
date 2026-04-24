@@ -796,9 +796,9 @@ class P2pIbgdaTransportDevice {
         DOCA_GPUNETIO_IB_MLX5_WQE_CTRL_CQ_UPDATE,
         0,
         reinterpret_cast<uint64_t>(laneRemoteBuf.ptr),
-        laneRemoteBuf.rkey.value,
+        laneRemoteBuf.rkey_per_device[0].value,
         reinterpret_cast<uint64_t>(laneBuf.ptr),
-        laneBuf.lkey.value,
+        laneBuf.lkey_per_device[0].value,
         static_cast<uint32_t>(laneBytes));
 
     group.sync();
@@ -830,10 +830,10 @@ class P2pIbgdaTransportDevice {
     doca_gpu_dev_verbs_ticket_t ticket;
     doca_gpu_dev_verbs_addr localAddr = {
         .addr = reinterpret_cast<uint64_t>(localBuf.ptr),
-        .key = localBuf.lkey.value};
+        .key = localBuf.lkey_per_device[0].value};
     doca_gpu_dev_verbs_addr remoteAddr = {
         .addr = reinterpret_cast<uint64_t>(remoteBuf.ptr),
-        .key = remoteBuf.rkey.value};
+        .key = remoteBuf.rkey_per_device[0].value};
 
     doca_gpu_dev_verbs_put<
         DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
@@ -851,7 +851,7 @@ class P2pIbgdaTransportDevice {
     doca_gpu_dev_verbs_qp* qp = active_qp(group_id);
     doca_gpu_dev_verbs_addr remoteAddr = {
         .addr = reinterpret_cast<uint64_t>(signalBuf.ptr),
-        .key = signalBuf.rkey.value};
+        .key = signalBuf.rkey_per_device[0].value};
     doca_gpu_dev_verbs_addr sinkAddr = {.addr = 0, .key = sinkLkey_.value};
 
     uint64_t wqe_idx = doca_gpu_dev_verbs_reserve_wq_slots<
@@ -895,12 +895,12 @@ class P2pIbgdaTransportDevice {
       uint64_t counterVal) {
     doca_gpu_dev_verbs_addr sigRemoteAddr = {
         .addr = reinterpret_cast<uint64_t>(signalBuf.ptr),
-        .key = signalBuf.rkey.value};
+        .key = signalBuf.rkey_per_device[0].value};
     doca_gpu_dev_verbs_addr sigSinkAddr = {.addr = 0, .key = sinkLkey_.value};
 
     doca_gpu_dev_verbs_addr counterRemoteAddr = {
         .addr = reinterpret_cast<uint64_t>(counterBuf.ptr),
-        .key = counterBuf.lkey.value};
+        .key = counterBuf.lkey_per_device[0].value};
     doca_gpu_dev_verbs_addr counterSinkAddr = {
         .addr = 0, .key = sinkLkey_.value};
 
@@ -962,21 +962,21 @@ class P2pIbgdaTransportDevice {
     IBGDA_CHECK_SLOT_ID(id, numSignalSlots_, "signal");
     return IbgdaRemoteBuffer(
         static_cast<uint64_t*>(ownedRemoteSignalBuf_.ptr) + id,
-        ownedRemoteSignalBuf_.rkey);
+        ownedRemoteSignalBuf_.rkey_per_device);
   }
 
   __device__ IbgdaLocalBuffer local_signal_slot(int id) const {
     IBGDA_CHECK_SLOT_ID(id, numSignalSlots_, "signal");
     return IbgdaLocalBuffer(
         static_cast<uint64_t*>(ownedLocalSignalBuf_.ptr) + id,
-        ownedLocalSignalBuf_.lkey);
+        ownedLocalSignalBuf_.lkey_per_device);
   }
 
   __device__ IbgdaLocalBuffer counter_slot(int id) const {
     IBGDA_CHECK_SLOT_ID(id, numCounterSlots_, "counter");
     return IbgdaLocalBuffer(
         static_cast<uint64_t*>(ownedCounterBuf_.ptr) + id,
-        ownedCounterBuf_.lkey);
+        ownedCounterBuf_.lkey_per_device);
   }
 
  public:

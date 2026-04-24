@@ -33,7 +33,7 @@ __global__ void testP2pTransportReadSignal(
     int numSignals,
     bool* success) {
   // Construct transport with ownedLocalSignalBuf pointing to d_signalBuf
-  IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKey(0));
+  IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{NetworkLKey(0)});
   P2pIbgdaTransportDevice transport(
       {},
       {},
@@ -62,7 +62,7 @@ __global__ void testP2pTransportReadSignal(
 __global__ void
 testWaitSignalGE(uint64_t* d_signalBuf, uint64_t targetValue, bool* success) {
   // Construct transport with ownedLocalSignalBuf
-  IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKey(0));
+  IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{NetworkLKey(0)});
   P2pIbgdaTransportDevice transport(
       {},
       {},
@@ -85,7 +85,7 @@ __global__ void testWaitSignalMultipleSlots(
     int numSignals,
     bool* success) {
   // Construct transport with ownedLocalSignalBuf
-  IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKey(0));
+  IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{NetworkLKey(0)});
   P2pIbgdaTransportDevice transport(
       {},
       {},
@@ -167,7 +167,7 @@ __global__ void testPutGroupPartitioning(bool* success) {
   void* basePtr = baseData;
 
   comms::pipes::IbgdaLocalBuffer baseBuf(
-      basePtr, comms::pipes::NetworkLKey(0x1111));
+      basePtr, comms::pipes::NetworkLKeys{comms::pipes::NetworkLKey(0x1111)});
   comms::pipes::IbgdaLocalBuffer laneBuf = baseBuf.subBuffer(expectedOffset);
 
   auto* expectedPtr = static_cast<char*>(basePtr) + expectedOffset;
@@ -175,7 +175,7 @@ __global__ void testPutGroupPartitioning(bool* success) {
     *success = false;
   }
 
-  if (laneBuf.lkey != baseBuf.lkey) {
+  if (laneBuf.lkey_per_device[0] != baseBuf.lkey_per_device[0]) {
     *success = false;
   }
 
@@ -289,7 +289,7 @@ __global__ void testPutGroupPartitioningBlock(bool* success) {
   void* basePtr = baseData;
 
   comms::pipes::IbgdaLocalBuffer baseBuf(
-      basePtr, comms::pipes::NetworkLKey(0x1111));
+      basePtr, comms::pipes::NetworkLKeys{comms::pipes::NetworkLKey(0x1111)});
   comms::pipes::IbgdaLocalBuffer laneBuf = baseBuf.subBuffer(expectedOffset);
 
   auto* expectedPtr = static_cast<char*>(basePtr) + expectedOffset;
@@ -297,7 +297,7 @@ __global__ void testPutGroupPartitioningBlock(bool* success) {
     *success = false;
   }
 
-  if (laneBuf.lkey != baseBuf.lkey) {
+  if (laneBuf.lkey_per_device[0] != baseBuf.lkey_per_device[0]) {
     *success = false;
   }
 }
@@ -335,7 +335,7 @@ __global__ void testWaitSignalTimeout(uint64_t* d_signalBuf, Timeout timeout) {
   timeout.start();
 
   // Construct transport with ownedLocalSignalBuf
-  IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKey(0));
+  IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{NetworkLKey(0)});
   P2pIbgdaTransportDevice transport(
       {},
       {},
@@ -356,7 +356,7 @@ testWaitSignalNoTimeout(uint64_t* d_signalBuf, Timeout timeout, bool* success) {
   timeout.start();
 
   // Construct transport with ownedLocalSignalBuf
-  IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKey(0));
+  IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{NetworkLKey(0)});
   P2pIbgdaTransportDevice transport(
       {},
       {},
