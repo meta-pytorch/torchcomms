@@ -83,6 +83,8 @@ class CtranNcclTestHelpers : public CtranTestHelpers {
 // Defaults to kMemNcclMemAlloc for NVL-registered buffers.
 class TestDeviceBuffer {
  public:
+  TestDeviceBuffer() = default;
+
   explicit TestDeviceBuffer(
       size_t size,
       MemAllocType memType = kMemNcclMemAlloc,
@@ -126,6 +128,8 @@ class TestDeviceBuffer {
       ptr_ = other.ptr_;
       size_ = other.size_;
       memType_ = other.memType_;
+      numSegments_ = other.numSegments_;
+      refCheck_ = other.refCheck_;
       segments_ = std::move(other.segments_);
       other.ptr_ = nullptr;
       other.size_ = 0;
