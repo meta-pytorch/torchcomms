@@ -33,6 +33,8 @@ void NcclxMock::setupDefaultBehaviors() {
 
   ON_CALL(*this, commAbort(_)).WillByDefault(Return(ncclSuccess));
 
+  ON_CALL(*this, commRevoke(_)).WillByDefault(Return(ncclSuccess));
+
   ON_CALL(*this, commGetAsyncError(_, _))
       .WillByDefault(DoAll(SetArgPointee<1>(ncclSuccess), Return(ncclSuccess)));
 

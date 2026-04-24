@@ -606,6 +606,18 @@ void TorchCommNCCLX::abortNcclComm() {
   }
 }
 
+void TorchCommNCCLX::revokeNcclComm() {
+  TC_LOG(INFO, this) << "Calling abort hooks before commRevoke.";
+  runAbortHooks();
+  if (nccl_comm_) {
+    NCCLX_CHECK(
+        nccl_api_,
+        nccl_comm_,
+        nccl_api_->commRevoke(nccl_comm_),
+        "NCCLX Revoke failed");
+  }
+}
+
 int TorchCommNCCLX::getRank() const {
   checkInitialized();
 

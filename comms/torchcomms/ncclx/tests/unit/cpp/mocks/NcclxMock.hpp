@@ -49,6 +49,8 @@ class NcclxMock : public NcclxApi {
 
   MOCK_METHOD(ncclResult_t, commAbort, (ncclComm_t comm), (override));
 
+  MOCK_METHOD(ncclResult_t, commRevoke, (ncclComm_t comm), (override));
+
   MOCK_METHOD(
       ncclResult_t,
       commGetAsyncError,

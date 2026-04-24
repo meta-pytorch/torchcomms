@@ -36,6 +36,8 @@ class NcclApi {
 
   [[nodiscard]] virtual ncclResult_t commAbort(ncclComm_t comm) = 0;
 
+  [[nodiscard]] virtual ncclResult_t commRevoke(ncclComm_t comm) = 0;
+
   [[nodiscard]] virtual ncclResult_t commGetAsyncError(
       ncclComm_t comm,
       ncclResult_t* asyncError) = 0;
@@ -204,6 +206,8 @@ class DefaultNcclApi : public NcclApi {
   [[nodiscard]] ncclResult_t commDestroy(ncclComm_t comm) override;
 
   [[nodiscard]] ncclResult_t commAbort(ncclComm_t comm) override;
+
+  [[nodiscard]] ncclResult_t commRevoke(ncclComm_t comm) override;
 
   [[nodiscard]] ncclResult_t commGetAsyncError(
       ncclComm_t comm,
