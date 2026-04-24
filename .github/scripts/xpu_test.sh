@@ -31,8 +31,7 @@ export USE_SYSTEM_LIBS=1
 python3 -m pip install typing-extensions numpy sympy
 python3 -m pip install --no-deps --pre torch pytorch-triton-xpu --index-url https://download.pytorch.org/whl/nightly/xpu --force-reinstall --no-cache-dir 
 
-pip wheel ./torchcomms --no-deps --no-build-isolation --wheel-dir build-${RUNNER_NAME} && pip install --no-deps build-${RUNNER_NAME}/*.whl
-rm -rf build-${RUNNER_NAME}
+cd torchcomms && pip install . --no-deps --no-build-isolation && cd ..
 
 #Check Intel XPU visibility
 #Expose ZE_AFFINITY_MASK to explicitly expose the number of Intel GPUs assigned to the runner for all tests.
