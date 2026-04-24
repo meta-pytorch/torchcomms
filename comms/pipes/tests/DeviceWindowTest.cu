@@ -399,7 +399,7 @@ void testDeviceWindowNvlOffsetPut(
   auto dw = bufs.create_with_offset_put(myRank, nRanks, windowBuf_d);
 
   int targetPeerRank = (myRank == 0) ? 1 : 0;
-  LocalBufferRegistration src_buf{srcBuf_d, srcBufSize, NetworkLKey{}};
+  LocalBufferRegistration src_buf{srcBuf_d, srcBufSize};
   nvlOffsetPutKernel<<<4, 256>>>(
       dw, targetPeerRank, dst_offset, src_buf, src_offset, nbytes);
   CUDACHECK_TEST(cudaGetLastError());
@@ -432,7 +432,7 @@ void testDeviceWindowNvlOffsetPutPerGroup(
   auto dw = bufs.create_with_offset_put(myRank, nRanks, windowBuf_d);
 
   int targetPeerRank = (myRank == 0) ? 1 : 0;
-  LocalBufferRegistration src_buf{srcBuf_d, srcBufSize, NetworkLKey{}};
+  LocalBufferRegistration src_buf{srcBuf_d, srcBufSize, NetworkLKeys{}};
   nvlOffsetPutPerGroupKernel<<<numTiles, 256>>>(
       dw, targetPeerRank, src_buf, tileSize);
   CUDACHECK_TEST(cudaGetLastError());
@@ -470,7 +470,7 @@ void testDeviceWindowNvlOffsetPutSignal(
   auto dw = bufs.create_with_offset_put(myRank, nRanks, windowBuf_d);
 
   int targetPeerRank = (myRank == 0) ? 1 : 0;
-  LocalBufferRegistration src_buf{srcBuf_d, srcBufSize, NetworkLKey{}};
+  LocalBufferRegistration src_buf{srcBuf_d, srcBufSize};
   nvlOffsetPutSignalKernel<<<4, 256>>>(
       dw, targetPeerRank, dst_offset, src_buf, src_offset, nbytes, signalId);
   CUDACHECK_TEST(cudaGetLastError());
@@ -501,8 +501,8 @@ void testDeviceWindowNvlBidirectionalOffsetPutSignal(
   NvlOffsetPutDeviceWindowBuffers bufs1;
   auto dw1 = bufs1.create_with_offset_put(1, nRanks, windowBuf0_d);
 
-  LocalBufferRegistration srcReg0{srcBuf0_d, srcBufSize, NetworkLKey{}};
-  LocalBufferRegistration srcReg1{srcBuf1_d, srcBufSize, NetworkLKey{}};
+  LocalBufferRegistration srcReg0{srcBuf0_d, srcBufSize};
+  LocalBufferRegistration srcReg1{srcBuf1_d, srcBufSize};
 
   // Rank 0 puts to rank 1's window buffer
   nvlOffsetPutSignalKernel<<<4, 256>>>(
@@ -783,7 +783,7 @@ void testDeviceWindowNvlOffsetPutSignalCounter(
   auto dw = bufs.create_with_offset_put(myRank, nRanks, windowBuf_d);
 
   int targetPeerRank = (myRank == 0) ? 1 : 0;
-  LocalBufferRegistration src_buf{srcBuf_d, srcBufSize, NetworkLKey{}};
+  LocalBufferRegistration src_buf{srcBuf_d, srcBufSize};
   nvlOffsetPutSignalCounterKernel<<<4, 256>>>(
       dw,
       targetPeerRank,
@@ -839,7 +839,7 @@ void testDeviceWindowNvlOffsetPutCounter(
   auto dw = bufs.create_with_offset_put(myRank, nRanks, windowBuf_d);
 
   int targetPeerRank = (myRank == 0) ? 1 : 0;
-  LocalBufferRegistration src_buf{srcBuf_d, srcBufSize, NetworkLKey{}};
+  LocalBufferRegistration src_buf{srcBuf_d, srcBufSize};
   nvlOffsetPutCounterKernel<<<4, 256>>>(
       dw,
       targetPeerRank,
