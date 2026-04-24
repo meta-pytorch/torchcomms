@@ -2011,7 +2011,6 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   std::unique_ptr<class CtranNvl> ctranNvl{nullptr};
   std::unique_ptr<class CtranSocket> ctranSock{nullptr};
   std::unique_ptr<class ctran::CtranTcpDm> ctranTcpDm{nullptr};
-  std::unique_ptr<class CtranCtrlManager> ctrlMgr{nullptr};
 
   // holds enabled backends when the mapper is created.
   // A unified struct for holding all available backends.
