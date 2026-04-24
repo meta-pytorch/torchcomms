@@ -1046,24 +1046,32 @@ void MultipeerIbgdaTransport::exchange() {
 
   exchange_send_recv_buffers();
 
+  // Build device transports on GPU. Collect host-side QP handles,
+  // then let buildDeviceTransportsOnGpu handle all GPU allocation + memcpy.
+  // Single-NIC: numNics=1 (default), sinkLkeys[0] = sink lkey, sinkLkeys[1]
+  // unused (never read since active_nic() returns 0 at numNics=1).
+  // Multi-NIC plumbing (numNics > 1, nicSlotMap, nicToSlot, per-NIC sinkLkeys)
+  // lands in Group 1's MultipeerIbgdaTransport.cc rewrite.
   const NetworkLKey sinkLkey(HostLKey(sinkMr_->lkey));
   std::vector<P2pIbgdaTransportBuildParams> buildParams(numPeers);
 
   for (int peer = 0; peer < numPeers; peer++) {
-    buildParams[peer].mainQps.resize(numQps);
-    buildParams[peer].companionQps.resize(numQps);
-    buildParams[peer].sinkLkey = sinkLkey;
+    buildParams[peer].h_nicDeviceIbgdaResources.resize(1);
+    auto& nicSpec = buildParams[peer].h_nicDeviceIbgdaResources[0];
+    nicSpec.qps.resize(numQps);
+    nicSpec.companionQps.resize(numQps);
+    nicSpec.sinkLkey = sinkLkey;
+    nicSpec.deviceId = 0;
 
     for (int q = 0; q < numQps; q++) {
       int idx = peer * numQps + q;
       doca_error_t err = doca_gpu_verbs_get_qp_dev(
-          qpGroupHlList_[idx]->qp_main.qp_gverbs,
-          &buildParams[peer].mainQps[q]);
+          qpGroupHlList_[idx]->qp_main.qp_gverbs, &nicSpec.qps[q]);
       checkDocaError(err, "Failed to get GPU QP handle");
 
       err = doca_gpu_verbs_get_qp_dev(
           qpGroupHlList_[idx]->qp_companion.qp_gverbs,
-          &buildParams[peer].companionQps[q]);
+          &nicSpec.companionQps[q]);
       checkDocaError(err, "Failed to get companion GPU QP handle");
     }
 
