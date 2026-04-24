@@ -17,6 +17,14 @@
 namespace torch::comms {
 
 inline constexpr const char* TORCHCOMM_BACKEND_ABI_VERSION = "1.0";
+struct Address {
+    void* addr;
+  };
+
+  struct AddressWithLen {
+    void* addr;
+    size_t len;
+  };
 
 /**
  * TorchCommBackend - Abstract base class for communication backends.
@@ -54,14 +62,14 @@ class TorchCommBackend {
   // Unique name for this instance of the communicator.
   virtual std::string_view getCommName() const = 0;
 
-  virtual void register_address(void* addr, size_t len) {
+  virtual void register_address(const AddressWithLen& address) {
     throw std::runtime_error(
         "[TorchCommBackend]: register_address not implemented for "
         "communicator:" +
         std::string(getCommName()));
   }
 
-  virtual void deregister_address(void* addr) {
+  virtual void deregister_address(const Address& address) {
     throw std::runtime_error(
         "[TorchCommBackend]: deregister_address not implemented for "
         "communicator:" +

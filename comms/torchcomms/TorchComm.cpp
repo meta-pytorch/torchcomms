@@ -83,12 +83,12 @@ std::shared_ptr<TorchComm> new_comm(
       new TorchComm(backend_name, std::move(backend_impl)));
 }
 
-void TorchComm::register_address(void* addr, size_t len) {
-  impl_->register_address(addr, len);
+void TorchComm::register_address(const AddressWithLen& address) {
+  impl_->register_address(address);
 }
 
-void TorchComm::deregister_address(void* addr) {
-  impl_->deregister_address(addr);
+void TorchComm::deregister_address(const Address& address) {
+  impl_->deregister_address(address);
 }
 
 void TorchComm::finalize() {
