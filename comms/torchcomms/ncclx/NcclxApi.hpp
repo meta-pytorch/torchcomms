@@ -430,13 +430,16 @@ class NcclxApi {
       int* outNumIbPeers) = 0;
 
   // Register a local buffer for device-side RDMA put operations.
-  // NON-COLLECTIVE — purely local memory registration (lkey only).
-  // Returns lkey in network byte order via outLkey.
+  // NON-COLLECTIVE — purely local memory registration (per-NIC lkeys only).
+  // Fills *outLkeys with per-NIC lkeys + populated NIC count. Multi-NIC:
+  // device put selects outLkeys->values[nic] based on slot dispatch —
+  // populating only values[0] would corrupt WQEs for slots landing on
+  // NIC[1..size-1] on GB200/GB300.
   [[nodiscard]] virtual ncclResult_t winLocalRegisterBuffer(
       ncclComm_t comm,
       void* ptr,
       size_t size,
-      uint32_t* outLkey) = 0;
+      ncclLkeyPerDevice* outLkeys) = 0;
 
   // Deregister a buffer previously registered with winLocalRegisterBuffer.
   // NON-COLLECTIVE.
@@ -810,7 +813,7 @@ class DefaultNcclxApi : public NcclxApi {
       ncclComm_t comm,
       void* ptr,
       size_t size,
-      uint32_t* outLkey) override;
+      ncclLkeyPerDevice* outLkeys) override;
   [[nodiscard]] ncclResult_t winLocalDeregisterBuffer(
       ncclComm_t comm,
       void* ptr) override;

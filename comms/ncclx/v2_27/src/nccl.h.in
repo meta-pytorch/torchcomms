@@ -815,10 +815,41 @@ ncclResult_t ncclGetMultiPeerDeviceHandle(
     int* outNumIbPeers);
 
 /*
- * Register a local buffer for use as source in device-side RDMA put operations.
- * NON-COLLECTIVE — purely local memory registration (lkey only, no rkey exchange).
+ * NCCLX_MAX_NICS_PER_GPU — maximum number of IBGDA NICs per GPU exposed to
+ * ncclWinLocalRegisterBuffer. Must match comms::pipes::kMaxNicsPerGpu and
+ * torch::comms::kMaxNicsPerGpu (verified by static_assert in
+ * PipesDeviceBackend.cpp). Increase only if a future platform supports
+ * > 2 NICs per GPU; update all three constants in lockstep.
+ */
+#define NCCLX_MAX_NICS_PER_GPU 2
+
+/*
+ * Per-NIC lkey result for ncclWinLocalRegisterBuffer.
  *
- * The returned lkey is in network byte order, suitable for IBGDA WQE construction.
+ *   values[0..size) — per-NIC RDMA local keys in network byte order.
+ *   size            — actual NIC count populated [0, NCCLX_MAX_NICS_PER_GPU].
+ *                     0 indicates no IBGDA peers (NVL-only topology); the
+ *                     caller must NOT index into values[] in that case.
+ *
+ * The device-side put selects values[nic] based on the slot it dispatches
+ * on, so consumers MUST forward all `size` per-NIC keys to
+ * LocalBufferRegistration. Populating only values[0] would corrupt WQEs
+ * for any slot landing on NIC[1..size-1] on multi-NIC hardware
+ * (GB200/GB300).
+ */
+typedef struct {
+  uint32_t values[NCCLX_MAX_NICS_PER_GPU];
+  int size;
+} ncclLkeyPerDevice;
+
+/*
+ * Register a local buffer for use as source in device-side RDMA put operations.
+ * NON-COLLECTIVE — purely local memory registration (per-NIC lkeys only, no
+ * rkey exchange).
+ *
+ * Fills *outLkeys with per-NIC lkeys + populated NIC count. See
+ * ncclLkeyPerDevice for layout.
+ *
  * Deregister with ncclWinLocalDeregisterBuffer() when no longer needed.
  *
  * Requires NCCL_CTRAN_USE_PIPES=1 during communicator init.
@@ -828,7 +859,7 @@ ncclResult_t ncclWinLocalRegisterBuffer(
     ncclComm_t comm,
     void* ptr,
     size_t size,
-    uint32_t* outLkey);
+    ncclLkeyPerDevice* outLkeys);
 
 /*
  * Deregister a buffer previously registered with ncclWinLocalRegisterBuffer().
