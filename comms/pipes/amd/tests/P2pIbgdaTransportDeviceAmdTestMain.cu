@@ -100,7 +100,7 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, ReadSignal) {
       numSignals * sizeof(uint64_t),
       hipMemcpyHostToDevice));
 
-  IbgdaLocalBuffer localBuf(d_signalBuf, NetworkLKey(0x5555));
+  IbgdaLocalBuffer localBuf(d_signalBuf, NetworkLKeys{NetworkLKey(0x5555)});
 
   runAndVerify([&](bool* d_success) {
     runTestP2pTransportReadSignal(d_signalBuf, localBuf, numSignals, d_success);
@@ -116,16 +116,17 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, BufferSubBufferWithTransport) {
   char localSignalData[128];
   char remoteSignalData[128];
 
-  IbgdaLocalBuffer baseLBuf(localSignalData, NetworkLKey(0x7777));
-  IbgdaRemoteBuffer baseRBuf(remoteSignalData, NetworkRKey(0x8888));
+  IbgdaLocalBuffer baseLBuf(localSignalData, NetworkLKeys{NetworkLKey(0x7777)});
+  IbgdaRemoteBuffer baseRBuf(
+      remoteSignalData, NetworkRKeys{NetworkRKey(0x8888)});
 
   IbgdaLocalBuffer subLBuf = baseLBuf.subBuffer(offset);
   IbgdaRemoteBuffer subRBuf = baseRBuf.subBuffer(offset);
 
   EXPECT_EQ(subLBuf.ptr, localSignalData + offset);
   EXPECT_EQ(subRBuf.ptr, remoteSignalData + offset);
-  EXPECT_EQ(subLBuf.lkey, baseLBuf.lkey);
-  EXPECT_EQ(subRBuf.rkey, baseRBuf.rkey);
+  EXPECT_EQ(subLBuf.lkey_per_device[0], baseLBuf.lkey_per_device[0]);
+  EXPECT_EQ(subRBuf.rkey_per_device[0], baseRBuf.rkey_per_device[0]);
 }
 
 // =============================================================================
@@ -141,7 +142,7 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalGE_Equal) {
   HIPCHECK_TEST(hipMemcpy(
       d_signalBuf, &targetValue, sizeof(uint64_t), hipMemcpyHostToDevice));
 
-  IbgdaLocalBuffer localBuf(d_signalBuf, NetworkLKey(0x1111));
+  IbgdaLocalBuffer localBuf(d_signalBuf, NetworkLKeys{NetworkLKey(0x1111)});
 
   runAndVerify([&](bool* d_success) {
     runTestWaitSignalGE(d_signalBuf, localBuf, targetValue, d_success);
@@ -158,7 +159,7 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalGE_Greater) {
   HIPCHECK_TEST(hipMemcpy(
       d_signalBuf, &signalValue, sizeof(uint64_t), hipMemcpyHostToDevice));
 
-  IbgdaLocalBuffer localBuf(d_signalBuf, NetworkLKey(0x1111));
+  IbgdaLocalBuffer localBuf(d_signalBuf, NetworkLKeys{NetworkLKey(0x1111)});
 
   runAndVerify([&](bool* d_success) {
     runTestWaitSignalGE(d_signalBuf, localBuf, targetValue, d_success);
@@ -181,7 +182,7 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalMultipleSlots) {
       numSignals * sizeof(uint64_t),
       hipMemcpyHostToDevice));
 
-  IbgdaLocalBuffer localBuf(d_signalBuf, NetworkLKey(0x3333));
+  IbgdaLocalBuffer localBuf(d_signalBuf, NetworkLKeys{NetworkLKey(0x3333)});
 
   runAndVerify([&](bool* d_success) {
     runTestWaitSignalMultipleSlots(
@@ -197,7 +198,7 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalZeroValue) {
 
   HIPCHECK_TEST(hipMemset(d_signalBuf, 0, sizeof(uint64_t)));
 
-  IbgdaLocalBuffer localBuf(d_signalBuf, NetworkLKey(0x1111));
+  IbgdaLocalBuffer localBuf(d_signalBuf, NetworkLKeys{NetworkLKey(0x1111)});
 
   runAndVerify([&](bool* d_success) {
     runTestWaitSignalGE(d_signalBuf, localBuf, targetValue, d_success);
@@ -213,7 +214,7 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalMaxValue) {
   HIPCHECK_TEST(hipMemcpy(
       d_signalBuf, &targetValue, sizeof(uint64_t), hipMemcpyHostToDevice));
 
-  IbgdaLocalBuffer localBuf(d_signalBuf, NetworkLKey(0x1111));
+  IbgdaLocalBuffer localBuf(d_signalBuf, NetworkLKeys{NetworkLKey(0x1111)});
 
   runAndVerify([&](bool* d_success) {
     runTestWaitSignalGE(d_signalBuf, localBuf, targetValue, d_success);
@@ -292,7 +293,7 @@ TEST_F(P2pIbgdaWaitSignalTimeoutTest, WaitSignalNoTimeoutWhenSatisfied) {
   HIPCHECK_TEST(hipMemcpy(
       d_signalBuf, &signalValue, sizeof(uint64_t), hipMemcpyHostToDevice));
 
-  IbgdaLocalBuffer localBuf(d_signalBuf, NetworkLKey(0x1111));
+  IbgdaLocalBuffer localBuf(d_signalBuf, NetworkLKeys{NetworkLKey(0x1111)});
 
   HipDeviceBuffer successBuf(sizeof(bool));
   auto* d_success = static_cast<bool*>(successBuf.get());

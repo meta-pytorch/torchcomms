@@ -191,4 +191,43 @@ TEST(NicDiscoveryTest, DataDirectAncestorChainForTopology) {
   EXPECT_EQ(nicHops, 1);
 }
 
+// =============================================================================
+// getBestAffinityNics Determinism Test
+// =============================================================================
+
+namespace {
+class TestableNicDiscovery : public NicDiscovery {
+ public:
+  TestableNicDiscovery() : NicDiscovery("") {}
+  using NicDiscovery::candidates_;
+  using NicDiscovery::sortCandidates;
+
+ protected:
+  std::pair<PathType, int> computePathType(const std::string&, int)
+      const override {
+    return {PathType::PIX, 0};
+  }
+  std::string anchorDescription() const override {
+    return "test";
+  }
+};
+} // namespace
+
+// NICs at the same affinity tier (same pathType + bandwidth + isDataDirect)
+// must be returned in a deterministic order independent of insertion /
+// ibv_get_device_list() enumeration. Otherwise, multi-NIC pairing across
+// ranks falls apart on GB200/GB300 where each GPU has 2 equivalent PIX NICs.
+TEST(NicDiscoveryTest, GetBestAffinityNicsDeterministic) {
+  TestableNicDiscovery d;
+  d.candidates_ = {
+      {.name = "mlx5_1", .pathType = PathType::PIX, .bandwidthGbps = 400},
+      {.name = "mlx5_0", .pathType = PathType::PIX, .bandwidthGbps = 400}};
+  d.sortCandidates();
+
+  auto best = d.getBestAffinityNics();
+  ASSERT_EQ(best.size(), 2);
+  EXPECT_EQ(best[0].name, "mlx5_0");
+  EXPECT_EQ(best[1].name, "mlx5_1");
+}
+
 } // namespace comms::pipes::tests
