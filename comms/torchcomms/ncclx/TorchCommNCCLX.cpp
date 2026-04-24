@@ -229,6 +229,14 @@ void TorchCommNCCLX::initNcclxResources() {
             "Failed to create dependency event on device {}", device_.index()));
   }
 
+  // Side stream used by recordStart/recordEnd to host external EVENT_RECORD
+  // nodes off the main stream's critical path during CUDA graph capture.
+  // Only allocated when monitoring is enabled — nothing else uses it.
+  if (isGraphTimeoutMonitoringEnabled()) {
+    graph_monitor_side_stream_ =
+        std::make_unique<meta::comms::GraphSideStream>(stream_priority);
+  }
+
   if (!barrier_buffer_) {
     CUDA_CHECK(
         cuda_api_,
@@ -555,6 +563,9 @@ void TorchCommNCCLX::finalize() {
         "Failed to destroy dependency event");
     dependency_event_ = nullptr;
   }
+
+  // Destroy graph-monitor side stream (RAII in unique_ptr).
+  graph_monitor_side_stream_.reset();
 
   // Destroy internal stream
   if (internal_stream_) {
