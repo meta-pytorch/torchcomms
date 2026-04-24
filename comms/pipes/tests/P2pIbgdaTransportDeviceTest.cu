@@ -13,8 +13,8 @@ namespace comms::pipes::tests {
 // =============================================================================
 
 __global__ void testP2pTransportConstruction(bool* success) {
-  // Create transport on device with null QPs
-  P2pIbgdaTransportDevice transport({}, {});
+  // Create transport on device with empty NIC span
+  P2pIbgdaTransportDevice transport(DeviceSpan<NicDeviceIbgdaResources>{});
 
   // If we get here, construction succeeded
   *success = true;
@@ -35,9 +35,7 @@ __global__ void testP2pTransportReadSignal(
   // Construct transport with ownedLocalSignalBuf pointing to d_signalBuf
   IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{NetworkLKey(0)});
   P2pIbgdaTransportDevice transport(
-      {},
-      {},
-      NetworkLKey{},
+      DeviceSpan<NicDeviceIbgdaResources>{},
       IbgdaRemoteBuffer{},
       localSigBuf,
       IbgdaLocalBuffer{},
@@ -64,9 +62,7 @@ testWaitSignalGE(uint64_t* d_signalBuf, uint64_t targetValue, bool* success) {
   // Construct transport with ownedLocalSignalBuf
   IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{NetworkLKey(0)});
   P2pIbgdaTransportDevice transport(
-      {},
-      {},
-      NetworkLKey{},
+      DeviceSpan<NicDeviceIbgdaResources>{},
       IbgdaRemoteBuffer{},
       localSigBuf,
       IbgdaLocalBuffer{},
@@ -87,9 +83,7 @@ __global__ void testWaitSignalMultipleSlots(
   // Construct transport with ownedLocalSignalBuf
   IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{NetworkLKey(0)});
   P2pIbgdaTransportDevice transport(
-      {},
-      {},
-      NetworkLKey{},
+      DeviceSpan<NicDeviceIbgdaResources>{},
       IbgdaRemoteBuffer{},
       localSigBuf,
       IbgdaLocalBuffer{},
@@ -337,9 +331,7 @@ __global__ void testWaitSignalTimeout(uint64_t* d_signalBuf, Timeout timeout) {
   // Construct transport with ownedLocalSignalBuf
   IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{NetworkLKey(0)});
   P2pIbgdaTransportDevice transport(
-      {},
-      {},
-      NetworkLKey{},
+      DeviceSpan<NicDeviceIbgdaResources>{},
       IbgdaRemoteBuffer{},
       localSigBuf,
       IbgdaLocalBuffer{},
@@ -358,9 +350,7 @@ testWaitSignalNoTimeout(uint64_t* d_signalBuf, Timeout timeout, bool* success) {
   // Construct transport with ownedLocalSignalBuf
   IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{NetworkLKey(0)});
   P2pIbgdaTransportDevice transport(
-      {},
-      {},
-      NetworkLKey{},
+      DeviceSpan<NicDeviceIbgdaResources>{},
       IbgdaRemoteBuffer{},
       localSigBuf,
       IbgdaLocalBuffer{},
