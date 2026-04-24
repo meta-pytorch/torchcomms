@@ -37,9 +37,7 @@ void initEnvCtranEx() {
 }
 
 CtranExImpl::CtranExImpl(int rank, int cudaDev, const std::string& desc)
-    : rank(rank), cudaDev(cudaDev), desc(desc) {
-  ctrlMgr = std::make_unique<CtranCtrlManager>();
-};
+    : rank(rank), cudaDev(cudaDev), desc(desc) {};
 
 void CtranExImpl::initialize(
     std::optional<const CtranExHostInfo*> hostInfo,

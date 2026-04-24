@@ -10,7 +10,6 @@
 #include <sstream>
 #include <string>
 
-#include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
@@ -153,8 +152,6 @@ CtranMapper::CtranMapper(CtranComm* comm) {
         comm->logMetaData_,
         "CTRAN-MAPPER: TCPDM can not be enabled with IB, NVL or Socket backends");
   }
-
-  this->ctrlMgr = std::make_unique<CtranCtrlManager>();
 
   /* enable available backends */
   if (enableBackends_[CtranMapperBackend::IB]) {
