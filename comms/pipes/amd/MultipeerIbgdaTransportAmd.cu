@@ -714,10 +714,9 @@ std::vector<IbgdaRemoteBuffer> MultipeerIbgdaTransportAmd::exchangeBuffer(
 
   // AllGather with ALL ranks (even in filtered mode)
   std::vector<IbgdaBufferExchInfo> allInfo(nRanks_);
-  allInfo[myRank_] = IbgdaBufferExchInfo{
-      reinterpret_cast<uint64_t>(localBuf.ptr),
-      HostRKey(it->second->rkey),
-  };
+  allInfo[myRank_].addr = reinterpret_cast<uint64_t>(localBuf.ptr);
+  allInfo[myRank_].numNics = 1;
+  allInfo[myRank_].rkey_per_device[0] = HostRKey(it->second->rkey);
 
   auto result =
       bootstrap_
