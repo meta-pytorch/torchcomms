@@ -466,7 +466,7 @@ void MultipeerIbgdaTransport::registerMemory() {
 }
 void MultipeerIbgdaTransport::createQpGroups() {
   const int numPeers = nRanks_ - 1;
-  const int numQps = config_.numQpsPerPeer;
+  const int numQps = config_.numQpsPerPeerPerNic;
   const int totalQpsPerPeer = numNics_ * numQps;
   const int totalQpGroups = numPeers * totalQpsPerPeer;
   for (auto& nic : nicDevices_) {
@@ -534,7 +534,7 @@ void MultipeerIbgdaTransport::createQpGroups() {
 
 void MultipeerIbgdaTransport::createLoopbackCompanionQps() {
   const int numPeers = nRanks_ - 1;
-  const int numQps = config_.numQpsPerPeer;
+  const int numQps = config_.numQpsPerPeerPerNic;
   // One self-loop responder companion QP per QP group, on the SAME NIC's
   // PD as the active companion (loopback only works within a single NIC).
   for (auto& nic : nicDevices_) {
@@ -706,18 +706,20 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
   if (nRanks < 2) {
     throw std::invalid_argument("Need at least 2 ranks");
   }
-  if (config.numQpsPerPeer < 1 || config.numQpsPerPeer > kMaxQpsPerPeer) {
+  if (config.numQpsPerPeerPerNic < 1 ||
+      config.numQpsPerPeerPerNic > kMaxQpsPerPeerPerNic) {
     throw std::invalid_argument(
         fmt::format(
-            "numQpsPerPeer must be in [1, {}], got {}",
-            kMaxQpsPerPeer,
-            config.numQpsPerPeer));
+            "numQpsPerPeerPerNic must be in [1, {}], got {}",
+            kMaxQpsPerPeerPerNic,
+            config.numQpsPerPeerPerNic));
   }
-  if (config.numQpsPerPeer * (nRanks - 1) * 3 > 1000) {
+  if (config.numQpsPerPeerPerNic * (nRanks - 1) * 3 > 1000) {
     LOG(WARNING) << "MultipeerIbgdaTransport: high QP count: "
-                 << config.numQpsPerPeer << " QPs/peer * " << (nRanks - 1)
-                 << " peers * 3 = " << config.numQpsPerPeer * (nRanks - 1) * 3
-                 << " total QPs";
+                 << config.numQpsPerPeerPerNic << " QPs/(peer,NIC) * "
+                 << (nRanks - 1) << " peers * 3 = "
+                 << config.numQpsPerPeerPerNic * (nRanks - 1) * 3
+                 << " total QPs (per NIC)";
   }
 
   // Resolve numNics_ from the available NIC sources. No numeric knob —
@@ -926,7 +928,7 @@ void MultipeerIbgdaTransport::cleanup() {
 
 void MultipeerIbgdaTransport::exchange() {
   const int numPeers = nRanks_ - 1;
-  const int numQps = config_.numQpsPerPeer;
+  const int numQps = config_.numQpsPerPeerPerNic;
 
   // Validate rank count for allGather-based exchange
   if (nRanks_ > kMaxRanksForAllGather) {
@@ -947,7 +949,7 @@ void MultipeerIbgdaTransport::exchange() {
   myInfo.gidIndex = gidIndex_;
   myInfo.mtu = localMtu_;
   myInfo.numNics = numNics_;
-  myInfo.numQpsPerNic = numQps;
+  myInfo.numQpsPerPeerPerNic = numQps;
   for (int n = 0; n < numNics_; ++n) {
     memcpy(
         myInfo.nicInfo[n].gid,
@@ -1019,10 +1021,11 @@ void MultipeerIbgdaTransport::exchange() {
     int peerRank = peerIndexToRank(peerIndex);
     const IbgdaTransportExchInfoAll& peerInfo = allInfo[peerRank];
 
-    CHECK_EQ(peerInfo.numQpsPerNic, numQps)
-        << "Rank " << peerRank << " has numQpsPerNic=" << peerInfo.numQpsPerNic
+    CHECK_EQ(peerInfo.numQpsPerPeerPerNic, numQps)
+        << "Rank " << peerRank
+        << " has numQpsPerPeerPerNic=" << peerInfo.numQpsPerPeerPerNic
         << " but local rank " << myRank_ << " has " << numQps
-        << ". All ranks must use the same numQpsPerNic.";
+        << ". All ranks must use the same numQpsPerPeerPerNic.";
 
     // Store common connection info (from QP 0 — same GID/LID for all QPs)
     peerExchInfo_[peerIndex].qpn = peerInfo.nicInfo[0].qpnForRank[myRank_][0];
@@ -1036,7 +1039,7 @@ void MultipeerIbgdaTransport::exchange() {
 
     VLOG(1) << "MultipeerIbgdaTransport: received from peer " << peerRank
             << " numNics=" << peerInfo.numNics
-            << " numQps=" << peerInfo.numQpsPerNic
+            << " numQps=" << peerInfo.numQpsPerPeerPerNic
             << " slot0_qpn=" << peerExchInfo_[peerIndex].qpn;
   }
 
@@ -1301,7 +1304,7 @@ void MultipeerIbgdaTransport::exchange() {
 
   VLOG(1) << "MultipeerIbgdaTransport: rank " << myRank_
           << " exchange complete, connected to " << numPeers << " peers"
-          << " (" << numQps << " QPs/peer)";
+          << " (" << numQps << " QPs/(peer,NIC) × " << numNics_ << " NICs)";
 }
 
 MultipeerIbgdaDeviceTransport MultipeerIbgdaTransport::getDeviceTransport()
@@ -1339,8 +1342,8 @@ int MultipeerIbgdaTransport::getGidIndex() const {
   return gidIndex_;
 }
 
-int MultipeerIbgdaTransport::numQpsPerPeer() const {
-  return config_.numQpsPerPeer;
+int MultipeerIbgdaTransport::numQpsPerPeerPerNic() const {
+  return config_.numQpsPerPeerPerNic;
 }
 
 IbgdaLocalBuffer MultipeerIbgdaTransport::registerBuffer(
