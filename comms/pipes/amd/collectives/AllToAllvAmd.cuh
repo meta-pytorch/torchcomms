@@ -65,7 +65,8 @@ __device__ __forceinline__ void all_to_allv_hybrid_amd(
           static_cast<char*>(ibgda_transport_base) +
           i * ibgda_transport_stride);
 
-      IbgdaLocalBuffer src(sendbuf + send_info.offset, ibgda_send_buf.lkey);
+      IbgdaLocalBuffer src(
+          sendbuf + send_info.offset, ibgda_send_buf.lkey_per_device);
 
       // Remote recv buf points to peer's recvbuff base. Add offset for
       // where this rank's data goes (= recv_chunk_infos[my_rank_id] on
@@ -138,12 +139,16 @@ __device__ __forceinline__ void all_to_allv_hybrid_amd(
             static_cast<char*>(const_cast<void*>(sendbuff_d)) +
                 send_info.offset,
             send_info.nbytes,
+            /*active_blocks=*/0,
+            /*max_signal_bytes=*/0,
             timeout);
       } else {
         transport.p2p_nvl.recv(
             group_per_peer,
             static_cast<char*>(recvbuff_d) + recv_info.offset,
             recv_info.nbytes,
+            /*active_blocks=*/0,
+            /*max_signal_bytes=*/0,
             timeout);
       }
     }
