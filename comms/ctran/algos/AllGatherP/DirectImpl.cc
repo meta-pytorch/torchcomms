@@ -6,6 +6,7 @@
 #include "comms/ctran/algos/AllGatherP/AlgoImpl.h"
 #include "comms/ctran/algos/AllGatherP/CommUtils.h"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/utils/ExtUtils.h"
 #include "comms/utils/checks.h"
 
@@ -29,6 +30,19 @@ commResult_t gpnFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
 
   CtranAlgoLogger logger(AlgoImpl::algoName(myAlgo), op->opCount, comm);
 
+  ctran::Profiler* profiler = comm->ctran_->profiler.get();
+  if (profiler) {
+    profiler->initForEachColl(
+        op->opCount, NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT);
+  }
+
+  CTRAN_PROFILER_IF(profiler, {
+    auto& algoContext = profiler->algoContext;
+    algoContext.algorithmName = AlgoImpl::algoName(myAlgo);
+    algoContext.sendContext.messageSizes = std::to_string(sendSize);
+    algoContext.recvContext.messageSizes = std::to_string(sendSize * nRanks);
+  });
+
   std::vector<std::unique_ptr<CtranMapperRequest>> pReqs;
   std::vector<std::unique_ptr<CtranMapperRequest>> sReqs;
   std::vector<std::unique_ptr<CtranMapperRequest>> rReqs;
@@ -41,14 +55,20 @@ commResult_t gpnFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
 
   void* sendHdl = nullptr;
   bool localReg = false;
+  CTRAN_PROFILER_IF(
+      profiler, profiler->startEvent(ctran::ProfilerEvent::BUF_REG));
   FB_COMMCHECK(
       mapper->searchRegHandle(sendBuff, sendSize, &sendHdl, &localReg));
+  CTRAN_PROFILER_IF(
+      profiler, profiler->endEvent(ctran::ProfilerEvent::BUF_REG));
   auto guard = folly::makeGuard([sendHdl, localReg, mapper]() {
     if (localReg) {
       FB_COMMCHECKIGNORE(mapper->deregDynamic(sendHdl));
     }
   });
 
+  CTRAN_PROFILER_IF(
+      profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_CTRL));
   // Sync to make sure ib peers are ready to receive
   for (int p = 1; p < nRanks; p++) {
     CtranMapperRequest* req = nullptr;
@@ -66,7 +86,11 @@ commResult_t gpnFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
   for (auto& req : sReqs) {
     FB_COMMCHECK(mapper->waitRequest(req.get()));
   }
+  CTRAN_PROFILER_IF(
+      profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_CTRL));
 
+  CTRAN_PROFILER_IF(
+      profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_DATA));
   // Issue PUT operations
   for (auto p = 1; p < nRanks; p++) {
     CtranMapperRequest* req = nullptr;
@@ -101,8 +125,13 @@ commResult_t gpnFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
   for (auto& req : pReqs) {
     FB_COMMCHECK(mapper->waitRequest(req.get()));
   }
+  CTRAN_PROFILER_IF(
+      profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_DATA));
+
   mapper->timestamps.emplace_back(std::move(timestamp));
   mapper->reportProfiling();
+
+  CTRAN_PROFILER_IF(profiler, { profiler->reportToScuba(); });
 
   return commSuccess;
 }

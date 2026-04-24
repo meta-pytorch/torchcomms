@@ -16,7 +16,7 @@ using namespace torch::comms;
 template <typename T, typename... TOptions>
 using intrusive_ptr_class_ = py::class_<T, c10::intrusive_ptr<T>, TOptions...>;
 
-PYBIND11_MODULE(_comms_ncclx, m) {
+PYBIND11_MODULE(_comms_ncclx, m, py::mod_gil_not_used()) {
   m.doc() = "NCCLX specific python bindings for TorchComm";
 
   intrusive_ptr_class_<TorchCommNCCLXPersistentRequest>(
