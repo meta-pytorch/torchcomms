@@ -1790,7 +1790,6 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
     comm->ctranComm_->colltraceNew_ = comm->newCollTrace;
     NCCLCHECKGOTO(metaCommToNccl(ctranInit(comm->ctranComm_.get())), res, fail);
   }
-  NCCLCHECKGOTO(metaCommToNccl(ctranConfigCommAlgoOverride(comm->ctranComm_.get())), res, fail);
   // --------------------- done
 
   ncclx::comms_monitor::CommsMonitor::registerComm(comm);
