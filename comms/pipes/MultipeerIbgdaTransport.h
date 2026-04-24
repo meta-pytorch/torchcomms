@@ -411,6 +411,15 @@ class MultipeerIbgdaTransport {
   int numQpsPerPeer() const;
 
   /**
+   * Get the number of NICs (rails) actually in use after auto-detection.
+   * Resolved at construction time from `gpuNicMap` or topology discovery;
+   * see ctor doc for the resolution rules.
+   */
+  int numNics() const {
+    return numNics_;
+  }
+
+  /**
    * Get the GID index being used
    */
   int getGidIndex() const;
