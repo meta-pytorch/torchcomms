@@ -67,7 +67,7 @@ inline constexpr uint64_t kDefaultDeviceTimeoutCycles = 10'000'000'000ULL;
  *   put(group,...) -> signal(group,0) is CORRECT (same QP).
  *
  * Signal is always fenced (NIC completes prior WQEs before signal).
- * put() returns void — completion via wait_signal/wait_counter/fence.
+ * put() returns void — completion via wait_signal/wait_counter/flush.
  *
  * Two API layers:
  *   1. Slot-index API: resolve owned buffers by slot index, then forward
@@ -356,7 +356,7 @@ class P2pIbgdaTransportDevice {
    *   group_size == 1: single thread posts one WQE
    *   group_size > 1: threads cooperatively construct WQEs (one per thread)
    *
-   * Returns void; completion is observed via wait_signal/wait_counter/fence.
+   * Returns void; completion is observed via wait_signal/wait_counter/flush.
    *
    * NOTE: signalBuf is intentionally NOT defaulted, even though `= {}` would
    * mean "no signal". Defaulting it would make put(group, local, remote, n)
@@ -511,44 +511,43 @@ class P2pIbgdaTransportDevice {
   }
 
   /**
-   * fence (group-scope) - Drain all pending WQEs on this group's QP.
+   * flush (group-scope) - Wait for all in-flight transport operations to
+   * complete on this group's QP.
    *
-   * Returns once a NOP WQE posted after all currently-pending WQEs has
-   * completed at the NIC. Useful when no signal/counter is desired.
+   * Drains the QP via a NOP WQE. Use this when callers want "wait for
+   * completion" semantics independent of the underlying mechanism, so the
+   * implementation can later evolve (e.g. cross-QP flush) without churning
+   * call sites.
    *
    * @param group Thread group; all threads must call. Leader issues NOP
    *              WQE and waits, all sync.
    */
-  __device__ void fence(ThreadGroup& group) {
+  __device__ void flush(ThreadGroup& group) {
     if (group.is_leader()) {
-      fence_impl(group.group_id);
+      flush_impl(group.group_id);
     }
     group.sync();
   }
 
-  /** fence (thread-scope) - Drain QP 0. Single-thread variant. */
-  __device__ void fence() {
-    fence_impl(0);
+  /** flush (thread-scope) - Single-thread variant. */
+  __device__ void flush() {
+    flush_impl(0);
   }
 
   /**
-   * flush (group-scope) - Wait for all in-flight transport operations to
-   * complete on this group's QP.
+   * fence (group-scope) - Drain all pending WQEs on this group's QP.
    *
-   * Currently aliased to fence() — drains the QP via a NOP WQE. Use this
-   * when callers want "wait for completion" semantics independent of the
-   * underlying mechanism, so the implementation can later evolve (e.g.
-   * cross-QP flush) without churning call sites.
+   * Aliased to flush(). Prefer flush() in new code.
    *
    * @param group Thread group; all threads must call.
    */
-  __device__ void flush(ThreadGroup& group) {
-    fence(group);
+  __device__ void fence(ThreadGroup& group) {
+    flush(group);
   }
 
-  /** flush (thread-scope) - Single-thread variant. */
-  __device__ void flush() {
-    fence();
+  /** fence (thread-scope) - Single-thread variant. */
+  __device__ void fence() {
+    flush();
   }
 
   // =========================================================================
@@ -653,7 +652,7 @@ class P2pIbgdaTransportDevice {
     // reads it, so the signal value is garbage by design.
     //
     // The discard-slot trick lets every put_impl branch be a single async
-    // WQE post; the alternative (fence_impl + GPU atomicAdd) would silently
+    // WQE post; the alternative (flush_impl + GPU atomicAdd) would silently
     // make counter-only puts synchronous and add a CQ-poll round-trip on
     // the hot path.
     if (group.is_leader()) {
@@ -919,9 +918,9 @@ class P2pIbgdaTransportDevice {
         counterVal);
   }
 
-  // --- fence_impl: NOP WQE + wait ---
+  // --- flush_impl: NOP WQE + wait ---
 
-  __device__ void fence_impl(uint32_t group_id) {
+  __device__ void flush_impl(uint32_t group_id) {
     doca_fence<
         DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
         DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(active_qp(group_id));
