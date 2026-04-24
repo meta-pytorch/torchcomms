@@ -1,7 +1,7 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 //
 // Tile send/recv kernels — caller partitions data across blocks,
-// each block calls P2pNvlTransportDevice::send_tile/recv_tile.
+// each block calls P2pNvlTransportDevice::send/recv.
 
 #include "comms/pipes/benchmarks/TileSendRecv.cuh"
 
@@ -11,8 +11,8 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecv(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
-    int numBlocks,
-    int chunksPerSlot,
+    int active_blocks,
+    std::size_t max_signal_bytes,
     Timeout timeout) {
   timeout.start();
 
@@ -22,21 +22,21 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecv(
   const int blockId = sub.group_id;
 
   if (role == 0) {
-    p2p.send_tile(
+    p2p.send(
         sub,
         sendTiles.tile_data(blockId),
         sendTiles.tile_bytes(blockId),
-        numBlocks,
-        timeout,
-        chunksPerSlot);
+        active_blocks,
+        max_signal_bytes,
+        timeout);
   } else {
-    p2p.recv_tile(
+    p2p.recv(
         sub,
         recvTiles.tile_data(blockId),
         recvTiles.tile_bytes(blockId),
-        numBlocks,
-        timeout,
-        chunksPerSlot);
+        active_blocks,
+        max_signal_bytes,
+        timeout);
   }
 }
 
@@ -44,7 +44,7 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecv(
 // Dynamic block count variant — uses transport-internal tile state
 // =============================================================================
 //
-// Requires tileMaxBlocks > 0 and p2pBarrierCount >= tileMaxBlocks in
+// Requires tile_max_groups > 0 and p2pBarrierCount >= tile_max_groups in
 // transport config.
 //
 // DYNAMIC BLOCK COUNT: BARRIER CORRECTNESS
@@ -54,7 +54,7 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecv(
 // creates a cross-GPU race: the new sender on GPU A may overwrite
 // staging positions that the old receiver on GPU B is still reading.
 //
-// The per-block barrier_sync_threadgroup prevents this race:
+// The per-block barrier_sync prevents this race:
 //
 //   Stream ordering guarantee:
 //     Both kernels execute on the same CUDA stream per GPU. So on each
@@ -95,7 +95,7 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecvDynamic(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
-    int numBlocks,
+    int active_blocks,
     bool needsBarrier,
     Timeout timeout) {
   timeout.start();
@@ -104,30 +104,25 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecvDynamic(
   auto [role, sub] = group.partition(2);
   const int blockId = sub.group_id;
 
-  // If block count changed, each block barriers with its peer.
-  // Since kernels are on the same stream, the peer's current kernel can't
-  // start until its previous kernel finished. So when any peer block
-  // reaches the barrier, ALL of the peer's old-round work is done.
-  // Each block uses its own barrier slot — all barriers complete in parallel.
-  // Requires p2pBarrierCount >= tileMaxBlocks.
   if (needsBarrier) {
-    p2p.barrier_sync_threadgroup(sub, blockId, timeout);
+    p2p.barrier_sync(sub, blockId, timeout);
   }
 
-  // Uses transport-internal tile signals, stepState, and maxBlocks
   if (role == 0) {
-    p2p.send_tile(
+    p2p.send(
         sub,
         sendTiles.tile_data(blockId),
         sendTiles.tile_bytes(blockId),
-        numBlocks,
+        active_blocks,
+        /*max_signal_bytes=*/0,
         timeout);
   } else {
-    p2p.recv_tile(
+    p2p.recv(
         sub,
         recvTiles.tile_data(blockId),
         recvTiles.tile_bytes(blockId),
-        numBlocks,
+        active_blocks,
+        /*max_signal_bytes=*/0,
         timeout);
   }
 }

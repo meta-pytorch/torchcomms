@@ -450,4 +450,46 @@ TYPED_TEST(EventBaseTypedTest, RegisterFdEpollhup) {
   close(fds[0]);
 }
 
+TYPED_TEST(EventBaseTypedTest, UnregisterClosedFdDoesNotCrash) {
+  int efd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+  ASSERT_GE(efd, 0);
+
+  this->evb_.registerFd(efd, EPOLLIN, [](uint32_t) {});
+  this->evb_.dispatchAndWait([]() noexcept {});
+
+  // Close the fd first, then unregister — should log a warning, not crash.
+  close(efd);
+  this->evb_.unregisterFd(efd);
+  this->evb_.dispatchAndWait([]() noexcept {});
+}
+
+TYPED_TEST(EventBaseTypedTest, RegisterFdFromLoopThreadIsImmediate) {
+  int efd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+  ASSERT_GE(efd, 0);
+
+  std::promise<void> p;
+  auto f = p.get_future();
+
+  // Register from inside a dispatch lambda (on the loop thread).
+  // With the inLoopThread optimization, registerFd executes inline —
+  // the callback should fire on the very next epoll iteration.
+  this->evb_.dispatch([&]() noexcept {
+    this->evb_.registerFd(efd, EPOLLIN, [&p, efd](uint32_t) {
+      uint64_t drain = 0;
+      ::read(efd, &drain, sizeof(drain));
+      p.set_value();
+    });
+    // Write from the loop thread — the callback should fire immediately
+    // on the next epoll iteration (no extra dispatch round-trip).
+    uint64_t val = 1;
+    ::write(efd, &val, sizeof(val));
+  });
+
+  f.get();
+
+  this->evb_.unregisterFd(efd);
+  this->evb_.dispatchAndWait([]() noexcept {});
+  close(efd);
+}
+
 } // namespace uniflow

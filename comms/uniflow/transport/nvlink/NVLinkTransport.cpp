@@ -10,6 +10,14 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
+// Fallback definitions for older kernel headers.
+#ifndef SYS_pidfd_open
+#define SYS_pidfd_open 434
+#endif
+#ifndef SYS_pidfd_getfd
+#define SYS_pidfd_getfd 438
+#endif
+
 #include <cerrno>
 #include <cstring>
 
@@ -570,6 +578,7 @@ Status NVLinkTransportFactory::canConnect(
 
   auto peer = NVLinkTopology::deserialize(peerTopology);
   CHECK_RETURN(peer);
+  int peerDevId = peer.value().cudaDeviceId;
 
   // MNNVL fabric path: both have non-zero cluster UUIDs in the same domain.
   if (!isZeroUUid(topo->clusterId) && !isZeroUUid(peer.value().clusterId)) {
@@ -577,7 +586,7 @@ Status NVLinkTransportFactory::canConnect(
       UNIFLOW_LOG_INFO(
           "canConnect: MNNVL fabric path, device {} -> peer device {}",
           deviceId_,
-          peer.value().cudaDeviceId);
+          peerDevId);
       return Ok();
     }
     // Different MNNVL domains — fall through to intra-node check in case
@@ -586,15 +595,12 @@ Status NVLinkTransportFactory::canConnect(
 
   // Intra-node path: check same host via hostHash, then verify P2P access.
   if (!topo->sameHost(peer.value())) {
-    UNIFLOW_LOG_WARN(
-        "canConnect: peer device {} not on same host",
-        peer.value().cudaDeviceId);
+    UNIFLOW_LOG_WARN("canConnect: peer device {} not on same host", peerDevId);
     return Err(
         ErrCode::TopologyDisconnect, "NVLink: peer is not on the same host");
   }
 
-  auto canAccess =
-      cuda_api_->deviceCanAccessPeer(deviceId_, peer.value().cudaDeviceId);
+  auto canAccess = cuda_api_->deviceCanAccessPeer(deviceId_, peerDevId);
   if (canAccess.hasError()) {
     UNIFLOW_LOG_ERROR(
         "canConnect: deviceCanAccessPeer failed: {}",
@@ -605,7 +611,7 @@ Status NVLinkTransportFactory::canConnect(
     UNIFLOW_LOG_WARN(
         "canConnect: P2P not supported between device {} and {}",
         deviceId_,
-        peer.value().cudaDeviceId);
+        peerDevId);
     return Err(
         ErrCode::TopologyDisconnect,
         "NVLink: P2P access not supported between devices");

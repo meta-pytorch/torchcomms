@@ -7,10 +7,10 @@
 #include "meta/colltrace/ProxyTrace.h"
 
 namespace ncclx::colltrace {
-void proxyTraceInfoCopy(ncclProxyOp& proxyOp, CtranComm* comm) {
-  proxyOp.traceArgs.collInfo.commHash = comm->statex_->commHash();
-  proxyOp.traceArgs.collInfo.opCount = *comm->opCount_;
-  proxyOp.traceArgs.rank = comm->statex_->rank();
+void proxyTraceInfoCopy(ncclProxyOp& proxyOp, ncclComm* comm) {
+  proxyOp.traceArgs.collInfo.commHash = comm->commHash;
+  proxyOp.traceArgs.collInfo.opCount = comm->opCount;
+  proxyOp.traceArgs.rank = comm->rank;
 
   proxyOp.traceArgs.remoteRank = proxyOp.root;
 }
@@ -23,7 +23,7 @@ void proxyTraceAddBasicInfo(
   proxyOp.traceArgs.collInfo.coll = coll;
 }
 
-ncclResult_t proxyTraceInit(struct ncclProxyState* state, CtranComm* comm) {
+ncclResult_t proxyTraceInit(struct ncclProxyState* state, ncclComm* comm) {
   if (NCCL_PROXYTRACE.empty()) {
     return ncclSuccess;
   }
@@ -31,7 +31,7 @@ ncclResult_t proxyTraceInit(struct ncclProxyState* state, CtranComm* comm) {
       ncclx::colltrace::NetworkPerfMonitor::getInstance();
   if (networkPerfMonitorPtr != nullptr && comm != nullptr) {
     networkPerfMonitorPtr->storeCommInfo(
-        comm->logMetaData_, comm->statex_->cudaDev(), comm->statex_->busId());
+        comm->logMetaData, comm->cudaDev, comm->busId);
   }
   try {
     state->trace = std::make_unique<ProxyTrace>();
@@ -39,7 +39,7 @@ ncclResult_t proxyTraceInit(struct ncclProxyState* state, CtranComm* comm) {
     WARN(
         "PROXYTRACE: failed to initialize ProxyTrace, comm %p commDesc %s: %s",
         comm,
-        comm->config_.commDesc.c_str(),
+        comm->config.commDesc ? comm->config.commDesc : "",
         e.what());
     return ncclInternalError;
   }

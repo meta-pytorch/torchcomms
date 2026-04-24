@@ -6,7 +6,6 @@
 #include "comms/ctran/commstate/CommStateX.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
 
 using ncclx::CommStateX;
 

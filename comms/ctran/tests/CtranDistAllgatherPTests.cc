@@ -15,6 +15,7 @@
 #include <nccl.h>
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/AllGatherP/AlgoImpl.h"
+#include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
@@ -58,6 +59,8 @@ class CtranAllgatherPTest : public ctran::CtranDistTestFixture {
 
   void SetUp() override {
     setenv("NCCL_CTRAN_ENABLE", "1", 0);
+    setenv("NCCL_CTRAN_TRANSPORT_PROFILER", "1", 0);
+    setenv("NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT", "1", 0);
     CtranDistTestFixture::SetUp();
 
     CUDACHECK_TEST(cudaStreamCreate(&stream));
@@ -75,6 +78,29 @@ class CtranAllgatherPTest : public ctran::CtranDistTestFixture {
   void verifyGpeLeak(ICtran* ctran) {
     ASSERT_EQ(ctran->gpe->numInUseKernelElems(), 0);
     ASSERT_EQ(ctran->gpe->numInUseKernelFlags(), 0);
+  }
+
+  static void checkProfiler(ctran::Profiler* profiler) {
+    if (!profiler) {
+      return;
+    }
+    uint64_t algoTotal =
+        profiler->getEventDurationUs(ctran::ProfilerEvent::ALGO_TOTAL);
+    uint64_t algoCtrl =
+        profiler->getEventDurationUs(ctran::ProfilerEvent::ALGO_CTRL);
+    uint64_t algoData =
+        profiler->getEventDurationUs(ctran::ProfilerEvent::ALGO_DATA);
+    uint64_t bufReg =
+        profiler->getEventDurationUs(ctran::ProfilerEvent::BUF_REG);
+    uint64_t oneMinUs = 1000 * 1000 * 60;
+    EXPECT_GE(algoTotal, 0);
+    EXPECT_LE(algoTotal, oneMinUs);
+    EXPECT_GE(algoCtrl, 0);
+    EXPECT_LE(algoCtrl, oneMinUs);
+    EXPECT_GE(algoData, 0);
+    EXPECT_LE(algoData, oneMinUs);
+    EXPECT_GE(bufReg, 0);
+    EXPECT_LE(bufReg, oneMinUs);
   }
 
   char* prepareBuf(size_t bufSize, MemAllocType memType) {
@@ -226,6 +252,9 @@ class CtranAllgatherPTest : public ctran::CtranDistTestFixture {
             << " at chunk received from peer " << i;
       }
     }
+
+    // Verify profiler event durations are populated
+    checkProfiler(testComm->ctran_->profiler.get());
 
     verifyGpeLeak(testComm->ctran_.get());
 

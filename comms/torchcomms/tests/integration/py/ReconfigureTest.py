@@ -24,7 +24,7 @@ from torchcomms.tests.integration.py.TorchCommTestHelpers import TorchCommTestWr
 class ReconfigureTest(unittest.TestCase):
     """Test class for reconfigure() fault tolerance API."""
 
-    SUPPORTED_BACKENDS = {"mccl", "gloo"}
+    SUPPORTED_BACKENDS = {"mccl", "gloo", "nccl", "ncclx"}
 
     _shared_store = None
 
@@ -48,6 +48,11 @@ class ReconfigureTest(unittest.TestCase):
             else:
                 if not torch.cuda.is_available():
                     self.skipTest("CUDA is not available")
+
+                if self.backend == "mccl":
+                    os.environ["NCCL_COMM_STATE_DEBUG_TOPO"] = "nolocal"
+                    os.environ["NCCL_IGNORE_TOPO_LOAD_FAILURE"] = "1"
+
                 device_id = self.rank % torch.cuda.device_count()
                 self.device = torch.device(f"cuda:{device_id}")
 
@@ -80,6 +85,10 @@ class ReconfigureTest(unittest.TestCase):
     def _is_supported_backend(self):
         """Check if current backend supports reconfigure()."""
         return self.backend in self.SUPPORTED_BACKENDS
+
+    def _get_store_for_comm(self):
+        """Get the store to pass to new_comm for NCCL/NCCLx bootstrap."""
+        return getattr(self, "store", None)
 
     def _collect_handles(self, comm, key_prefix):
         """Collect init handles from all ranks."""
@@ -141,7 +150,11 @@ class ReconfigureTest(unittest.TestCase):
         import torchcomms
 
         comm = torchcomms.new_comm(
-            self.backend, self.device, "reconfigure_basic", enable_reconfigure=True
+            self.backend,
+            self.device,
+            "reconfigure_basic",
+            enable_reconfigure=True,
+            store=self._get_store_for_comm(),
         )
 
         all_handles = self._collect_handles(comm, "test_reconfigure_basic")
@@ -181,6 +194,7 @@ class ReconfigureTest(unittest.TestCase):
             self.device,
             "reconfigure_unordered",
             enable_reconfigure=True,
+            store=self._get_store_for_comm(),
         )
 
         all_handles = set(self._collect_handles(comm, "test_reconfigure_unordered"))
@@ -217,6 +231,7 @@ class ReconfigureTest(unittest.TestCase):
             self.device,
             "reconfigure_collective",
             enable_reconfigure=True,
+            store=self._get_store_for_comm(),
         )
 
         all_handles = self._collect_handles(comm, "test_reconfigure_collective")
@@ -276,6 +291,7 @@ class ReconfigureTest(unittest.TestCase):
             self.device,
             "reconfigure_allreduce",
             enable_reconfigure=True,
+            store=self._get_store_for_comm(),
         )
 
         all_handles = self._collect_handles(comm, "test_reconfigure_allreduce")

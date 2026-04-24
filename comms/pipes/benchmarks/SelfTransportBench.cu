@@ -14,7 +14,21 @@ __global__ void selfTransportPutKernel(
   auto group = make_warp_group();
 
   for (int run = 0; run < nRuns; ++run) {
-    transport.put(group, dst, src, nBytes);
+    transport.put_group(group, dst, src, nBytes);
+  }
+}
+
+__global__ void selfTransportPutTileKernel(
+    char* dst,
+    const char* src,
+    std::size_t tileSize,
+    int nRuns) {
+  P2pSelfTransportDevice transport;
+  auto group = make_block_group();
+  std::size_t offset = group.group_id * tileSize;
+
+  for (int run = 0; run < nRuns; ++run) {
+    transport.put(group, dst + offset, src + offset, tileSize);
   }
 }
 

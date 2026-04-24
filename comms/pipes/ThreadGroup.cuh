@@ -9,6 +9,7 @@
 #include "comms/common/AtomicUtils.cuh"
 #include "comms/common/DeviceConstants.cuh"
 #include "comms/pipes/DeviceSpan.cuh"
+#include "comms/pipes/HipCompat.cuh"
 
 namespace comms::pipes {
 
@@ -95,7 +96,7 @@ struct ThreadGroup {
   SyncScope scope;
 
   __device__ inline void sync() {
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
     switch (scope) {
       case SyncScope::THREAD:
         // Single-thread group: emit a compiler barrier to prevent reordering
@@ -107,17 +108,27 @@ struct ThreadGroup {
         asm volatile("" ::: "memory");
         break;
       case SyncScope::WARP:
+#if defined(__CUDA_ARCH__)
         __syncwarp();
+#else
+        // AMD wavefronts are implicitly lockstep; agent-scope fence suffices
+        __builtin_amdgcn_fence(__ATOMIC_SEQ_CST, "agent");
+#endif
         break;
       case SyncScope::MULTIWARP: {
         // Multiwarp = 4 warps = 128 threads
-        // Uses named barriers for synchronization within a multiwarp
+#if defined(__CUDA_ARCH__)
+        // Uses CUDA named barriers for synchronization within a multiwarp
         uint32_t tid = threadIdx.x + threadIdx.y * blockDim.x +
             threadIdx.z * blockDim.x * blockDim.y;
         uint32_t barrierId = tid / kMultiwarpSize;
         asm volatile("bar.sync %0, %1;"
                      :
                      : "r"(barrierId), "r"(kMultiwarpSize));
+#else
+        // AMD: no named barriers, fall back to block-level sync
+        __syncthreads();
+#endif
         break;
       }
       case SyncScope::BLOCK:
@@ -185,7 +196,7 @@ struct ThreadGroup {
    * @return Warp-scoped ThreadGroup with renumbered group_id/total_groups
    */
   __device__ inline ThreadGroup to_warp_group() const {
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
     if (scope == SyncScope::WARP && group_size == kWarpSize) {
       return *this;
     }
@@ -240,8 +251,10 @@ struct ThreadGroup {
    */
   template <typename T>
   __device__ inline T broadcast(T val) {
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
     switch (scope) {
+      case SyncScope::THREAD:
+        return val; // Single thread, nothing to broadcast
       case SyncScope::WARP:
         return shfl(val, 0);
       case SyncScope::MULTIWARP: {
@@ -342,7 +355,7 @@ struct ThreadGroup {
   __device__ inline void for_each_item_contiguous(
       uint32_t total_items,
       Func&& func) {
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
     const uint32_t items_per_group =
         (total_items + total_groups - 1) / total_groups;
     const uint32_t start_item = group_id * items_per_group;
@@ -406,7 +419,7 @@ struct ThreadGroup {
   __device__ inline void for_each_item_strided(
       uint32_t total_items,
       Func&& func) {
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
     for (uint32_t item_id = group_id; item_id < total_items;
          item_id += total_groups) {
       func(item_id);
@@ -482,9 +495,9 @@ struct PartitionResult {
  * ==================================
  *   auto [partition_id, subgroup] = warp.partition(2);
  *   if (partition_id == 0) {
- *     p2p.send(subgroup, sendBuff, nBytes);  // warps 0-15
+ *     p2p.send_group(subgroup, sendBuff, nBytes);  // warps 0-15
  *   } else {
- *     p2p.recv(subgroup, recvBuff, nBytes);  // warps 16-31
+ *     p2p.recv_group(subgroup, recvBuff, nBytes);  // warps 16-31
  *   }
  *
  * @param num_partitions Number of partitions to create (must be <=
@@ -493,7 +506,7 @@ struct PartitionResult {
  */
 __device__ inline PartitionResult ThreadGroup::partition(
     uint32_t num_partitions) const {
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   // More partitions than groups is invalid - some partitions would be empty
   // and group assignment would skip partitions non-deterministically.
   // Use __trap() instead of assert() to ensure this check is active in both
@@ -591,11 +604,11 @@ __device__ inline PartitionResult ThreadGroup::partition(
  *   uint32_t weights[] = {3, 0, 1};
  *   auto [partition_id, subgroup] = warp.partition(weights);
  *   if (partition_id == 0) {
- *     p2p.send(subgroup, sendBuff, nBytes);  // 24 warps
+ *     p2p.send_group(subgroup, sendBuff, nBytes);  // 24 warps
  *   } else if (partition_id == 1) {
  *     // No warps assigned (zero weight)
  *   } else {
- *     p2p.recv(subgroup, recvBuff, nBytes);  // 8 warps
+ *     p2p.recv_group(subgroup, recvBuff, nBytes);  // 8 warps
  *   }
  *
  * @param weights Span of relative weights (non-zero count must be <=
@@ -604,7 +617,7 @@ __device__ inline PartitionResult ThreadGroup::partition(
  */
 __device__ inline PartitionResult ThreadGroup::partition(
     DeviceSpan<const uint32_t> weights) const {
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   const uint32_t num_partitions = static_cast<uint32_t>(weights.size());
 
   // Count non-zero weights and calculate total weight
@@ -702,9 +715,9 @@ __device__ inline PartitionResult ThreadGroup::partition(
  * =================================
  *   auto [partition_id, subgroup] = group.partition_interleaved(2);
  *   if (partition_id == 0) {
- *     p2p.recv(subgroup, recvBuff, nBytes);  // blocks 0,2,4,...,30
+ *     p2p.recv_group(subgroup, recvBuff, nBytes);  // blocks 0,2,4,...,30
  *   } else {
- *     p2p.send(subgroup, sendBuff, nBytes);  // blocks 1,3,5,...,31
+ *     p2p.send_group(subgroup, sendBuff, nBytes);  // blocks 1,3,5,...,31
  *   }
  *
  * @param num_partitions Number of partitions (typically 2 for send/recv)
@@ -712,7 +725,7 @@ __device__ inline PartitionResult ThreadGroup::partition(
  */
 __device__ inline PartitionResult ThreadGroup::partition_interleaved(
     uint32_t num_partitions) const {
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   if (num_partitions > total_groups) {
     printf(
         "partition_interleaved: num_partitions (%u) must be <= total_groups (%u)\n",
@@ -756,7 +769,7 @@ __device__ inline PartitionResult ThreadGroup::partition_interleaved(
  * thread index and count respectively.
  */
 __device__ inline ThreadGroup make_thread_solo() {
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   uint32_t tid = threadIdx.x + threadIdx.y * blockDim.x +
       threadIdx.z * blockDim.x * blockDim.y;
   uint32_t threads_per_block = blockDim.x * blockDim.y * blockDim.z;
@@ -791,7 +804,7 @@ __device__ inline ThreadGroup make_thread_solo() {
  * ThreadGroup into warp subgroups, preserving group context.
  */
 __device__ inline ThreadGroup make_warp_group() {
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   uint32_t warps_per_block = blockDim.x / comms::device::kWarpSize;
   uint32_t warp_id_in_block = threadIdx.x / comms::device::kWarpSize;
   uint32_t global_warp_id = blockIdx.x * warps_per_block + warp_id_in_block;
@@ -836,11 +849,12 @@ __device__ inline ThreadGroup make_warp_group() {
  * - ~16 SMs per GPC, 8 GPCs total -> 132 SMs
  * - Maximum cluster size: 16 blocks (limited by GPC)
  *
- * NOTE: On architectures before SM90, falls back to single-block behavior
- * where cluster_size is effectively 1.
+ * NOTE: On architectures before SM90 (and on HIP/AMD where clusters are not
+ * supported), falls back to single-block behavior where cluster_size is
+ * effectively 1.
  */
 __device__ inline ThreadGroup make_cluster_group() {
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
 #if __CUDA_ARCH__ >= 900
   // Get cluster grid dimensions using PTX instructions
   uint32_t num_clusters_x, cluster_rank;
@@ -868,7 +882,8 @@ __device__ inline ThreadGroup make_cluster_group() {
       .total_groups = num_clusters_x,
       .scope = SyncScope::CLUSTER};
 #else
-  // Fallback for non-Hopper: treat each block as its own cluster
+  // Fallback for non-Hopper (and HIP — clusters not supported on AMD):
+  // treat each block as its own cluster
   return ThreadGroup{
       .thread_id_in_group = threadIdx.x,
       .group_size = blockDim.x,
@@ -894,7 +909,7 @@ __device__ inline ThreadGroup make_cluster_group() {
  *   - Each block processes work items cooperatively
  */
 __device__ inline ThreadGroup make_block_group() {
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   return ThreadGroup{
       .thread_id_in_group = threadIdx.x,
       .group_size = blockDim.x,
@@ -932,7 +947,7 @@ __device__ inline ThreadGroup make_block_group() {
 // TODO: Add support for configurable multiwarp size, 4/8/16.. warps as a
 // multiwarp.
 __device__ inline ThreadGroup make_multiwarp_group() {
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   uint32_t threads_per_block = blockDim.x * blockDim.y * blockDim.z;
   uint32_t tid = threadIdx.x + threadIdx.y * blockDim.x +
       threadIdx.z * blockDim.x * blockDim.y;
@@ -979,7 +994,7 @@ __device__ inline ThreadGroup make_multiwarp_group() {
  *   }
  */
 __device__ inline ThreadGroup make_thread_group(SyncScope scope) {
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   switch (scope) {
     case SyncScope::THREAD:
       return make_thread_solo();

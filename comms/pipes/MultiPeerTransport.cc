@@ -725,6 +725,11 @@ void MultiPeerTransport::build_device_handle() {
         new (&transportsHost[r]) Transport(devPtr);
         break;
       }
+
+      case TransportType::P2P_IBGDA_AMD:
+        throw std::runtime_error(
+            "P2P_IBGDA_AMD transport not supported in MultiPeerTransport "
+            "(use MultipeerIbgdaTransportAmd instead)");
     }
   }
 

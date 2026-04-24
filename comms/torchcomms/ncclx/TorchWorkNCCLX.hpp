@@ -108,6 +108,14 @@ class TorchWorkNCCLX : public TorchWork {
   void initEvents();
   void releaseEvents();
 
+  // Record a cudaEventRecordExternal on the graph-monitor side stream
+  // (fork/rejoin pattern) if available, falling back to recording directly
+  // on stream_. Used by both recordStart() and recordEnd() to keep the
+  // external event's release fence off the main stream's critical path.
+  void recordExternalEventViaSideStream(
+      cudaEvent_t event,
+      const char* event_label);
+
   std::shared_ptr<TorchCommNCCLX> comm_;
   cudaEvent_t start_event_{};
   // Completion detection event. In both eager and graph modes, this event is

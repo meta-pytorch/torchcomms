@@ -77,13 +77,18 @@ class CtranRMATest : public ctran::CtranDistTestFixture, public CtranBaseTest {
   freeWinBuf(bool isUserBuf, void* ptr, size_t size, MemAllocType bufType) {
     if (isUserBuf) {
       commMemFree(ptr, size, bufType);
-      // Remove the segment from the tracking vector
-      segments.erase(
-          std::remove_if(
-              segments.begin(),
-              segments.end(),
-              [ptr](const TestMemSegment& seg) { return seg.ptr == ptr; }),
-          segments.end());
+      if (bufType == MemAllocType::kCuMemAllocDisjoint) {
+        // Disjoint allocations create multiple sub-segment entries in the
+        // tracking vector. Clear all since commMemFree handles the actual free.
+        segments.clear();
+      } else {
+        segments.erase(
+            std::remove_if(
+                segments.begin(),
+                segments.end(),
+                [ptr](const TestMemSegment& seg) { return seg.ptr == ptr; }),
+            segments.end());
+      }
     }
   }
   std::vector<TestMemSegment> segments;
@@ -664,6 +669,7 @@ INSTANTIATE_TEST_SUITE_P(
         ::testing::Values(true, false),
         ::testing::Values(
             MemAllocType::kMemCuMemAlloc,
+            MemAllocType::kCuMemAllocDisjoint,
             MemAllocType::kMemCudaMalloc,
             MemAllocType::kMemHostManaged,
             MemAllocType::kMemHostUnregistered),

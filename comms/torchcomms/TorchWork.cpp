@@ -24,7 +24,7 @@ TorchWorkCompleted::TorchWorkCompleted() {
 }
 
 void TorchWorkCompleted::wait() {
-  return;
+  runWaitHooks();
 }
 
 TorchWorkThread::TorchWorkThread(std::function<void()> fn)
@@ -39,6 +39,8 @@ TorchWorkThread::TorchWorkThread(std::function<void()> fn)
       })) {}
 
 void TorchWorkThread::wait() {
+  runWaitHooks();
+
   if (!future_.valid()) {
     // already waited on
     return;

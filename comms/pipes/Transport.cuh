@@ -35,6 +35,7 @@ enum class TransportType : uint8_t {
   SELF,
   P2P_NVL,
   P2P_IBGDA,
+  P2P_IBGDA_AMD,
 };
 
 /// Human-readable name for TransportType (host-only).
@@ -46,6 +47,8 @@ inline const char* transport_type_name(TransportType t) {
       return "P2P_NVL";
     case TransportType::P2P_IBGDA:
       return "P2P_IBGDA";
+    case TransportType::P2P_IBGDA_AMD:
+      return "P2P_IBGDA_AMD";
   }
   return "UNKNOWN";
 }
@@ -79,6 +82,10 @@ struct Transport {
     // etc.) that cannot compile in .cc translation units. A forward declaration
     // + non-owning pointer avoids pulling those headers into Transport.cuh.
     P2pIbgdaTransportDevice* p2p_ibgda;
+    // AMD IBGDA transport (pipes_gda::P2pIbgdaTransportDevice).
+    // Stored as void* to avoid including AMD device headers (HIP intrinsics)
+    // in CUDA compilation units. Cast to the correct type in kernel dispatch.
+    void* p2p_ibgda_amd;
   };
 
   /** Constructor for SelfTransportDevice */
@@ -92,6 +99,12 @@ struct Transport {
   /** Constructor for P2pIbgdaTransportDevice (non-owning pointer) */
   __host__ __device__ explicit Transport(P2pIbgdaTransportDevice* p)
       : type(TransportType::P2P_IBGDA), p2p_ibgda(p) {}
+
+  /** Constructor for AMD IBGDA transport (non-owning void pointer) */
+  struct IbgdaAmdTag {};
+  __host__ __device__ Transport(void* p, IbgdaAmdTag)
+      : type(TransportType::P2P_IBGDA_AMD), p2p_ibgda_amd(p) {}
+
   /**
    * Delete copy constructor and copy assignment.
    * Transport objects contain device pointers and IPC handles that should not
@@ -109,8 +122,10 @@ struct Transport {
       new (&self) P2pSelfTransportDevice(std::move(other.self));
     } else if (type == TransportType::P2P_NVL) {
       new (&p2p_nvl) P2pNvlTransportDevice(std::move(other.p2p_nvl));
-    } else {
+    } else if (type == TransportType::P2P_IBGDA) {
       p2p_ibgda = other.p2p_ibgda;
+    } else {
+      p2p_ibgda_amd = other.p2p_ibgda_amd;
     }
   }
 
@@ -134,8 +149,10 @@ struct Transport {
         new (&self) P2pSelfTransportDevice(std::move(other.self));
       } else if (type == TransportType::P2P_NVL) {
         new (&p2p_nvl) P2pNvlTransportDevice(std::move(other.p2p_nvl));
-      } else {
+      } else if (type == TransportType::P2P_IBGDA) {
         p2p_ibgda = other.p2p_ibgda;
+      } else {
+        p2p_ibgda_amd = other.p2p_ibgda_amd;
       }
     }
     return *this;

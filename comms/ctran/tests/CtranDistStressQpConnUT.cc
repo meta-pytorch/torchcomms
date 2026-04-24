@@ -1,32 +1,28 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include <comm.h>
 #include <folly/init/Init.h>
 #include <gtest/gtest.h>
-#include <nccl.h>
 #include <stdlib.h>
-#include "CtranUtUtils.h"
+#include "comms/ctran/tests/CtranNcclTestUtils.h"
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
 
-class CtranStressQpConnTest : public ctran::CtranDistTestFixture,
-                              public CtranBaseTest {
+class CtranStressQpConnTest : public ctran::CtranDistTestFixture {
  public:
   // Times to repeat the test
   int repeat{5};
   // Number of comms to create in each iteration
   int numComms{10};
-  ncclComm_t commWorld;
+  std::unique_ptr<CtranComm> commWorld_;
+  CtranComm* commWorld{nullptr};
 
   CtranStressQpConnTest() = default;
 
   void SetUp() override {
     setenv("NCCL_CTRAN_ENABLE", "1", 0);
     ctran::CtranDistTestFixture::SetUp();
-    CUDACHECK_TEST(cudaSetDevice(localRank));
 
     // Allow overriding the number of comms and repeat count
     char* repeatStr = getenv("NUM_REPEAT");
@@ -39,24 +35,27 @@ class CtranStressQpConnTest : public ctran::CtranDistTestFixture,
       numComms = atoi(numCommsStr);
     }
 
-    commWorld = createNcclComm(globalRank, numRanks, localRank);
+    commWorld_ = makeCtranComm();
+    commWorld = commWorld_.get();
   }
 
   void TearDown() override {
+    commWorld = nullptr;
+    commWorld_.reset();
     ctran::CtranDistTestFixture::TearDown();
-    NCCLCHECK_TEST(ncclCommDestroy(commWorld));
   }
 
-  void* allocBuf(size_t nbytes, void** handle, ncclComm_t comm) {
-    void* buf = nullptr;
-    NCCLCHECK_TEST(ncclMemAlloc(&buf, nbytes));
-    NCCLCHECK_TEST(ncclCommRegister(comm, buf, nbytes, handle));
+  void* allocBuf(size_t nbytes, void** handle, CtranComm* comm) {
+    std::vector<TestMemSegment> segments;
+    void* buf = ctran::CtranNcclTestHelpers::prepareBuf(
+        nbytes, kMemNcclMemAlloc, segments);
+    COMMCHECK_TEST(comm->ctran_->commRegister(buf, nbytes, handle));
     return buf;
   }
 
-  void releaseBuf(void* buf, void* handle, ncclComm_t comm) {
-    NCCLCHECK_TEST(ncclCommDeregister(comm, handle));
-    NCCLCHECK_TEST(ncclMemFree(buf));
+  void releaseBuf(void* buf, size_t nbytes, void* handle, CtranComm* comm) {
+    COMMCHECK_TEST(comm->ctran_->commDeregister(handle));
+    ctran::CtranNcclTestHelpers::releaseBuf(buf, nbytes, kMemNcclMemAlloc);
   }
 };
 
@@ -65,7 +64,7 @@ TEST_F(CtranStressQpConnTest, AllToAll) {
   // Repeat it multiple times to catch potential race in QP connection
   const int count = 65536;
 
-  if (!commWorld->ctranComm_->ctran_->mapper->hasBackend()) {
+  if (!commWorld->ctran_->mapper->hasBackend()) {
     GTEST_SKIP() << "No backend available. Skip test";
   }
 
@@ -78,19 +77,12 @@ TEST_F(CtranStressQpConnTest, AllToAll) {
           << " of total " << repeat << std::endl;
     }
 
-    const int groupSize = commWorld->ctranComm_->statex_.get()->nRanks();
-    std::vector<int> groupRanks(groupSize);
-    for (int i = 0; i < groupSize; ++i) {
-      groupRanks[i] = i;
-    }
-
     size_t bufCount = count * numRanks;
 
-    // One stream per communicator
-    std::vector<ncclComm_t> comms(numComms, NCCL_COMM_NULL);
+    std::vector<std::unique_ptr<CtranComm>> comms;
+    comms.reserve(numComms);
     std::vector<cudaStream_t> streams(numComms, 0);
 
-    // Separate buffers for each communicator to allow concurrent collectives
     std::vector<void*> sendBufs(numComms, nullptr);
     std::vector<void*> sendHdls(numComms, nullptr);
     std::vector<void*> recvBufs(numComms, nullptr);
@@ -98,19 +90,14 @@ TEST_F(CtranStressQpConnTest, AllToAll) {
 
     // Create all communicators and streams
     for (int i = 0; i < numComms; ++i) {
-      ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
-      const std::string commDest = std::string("test_comm") + std::to_string(i);
-      config.commDesc = commDest.c_str();
-      config.splitGroupRanks = groupRanks.data();
-      config.splitGroupSize = groupSize;
-
-      NCCLCHECK_TEST(
-          ncclCommSplit(commWorld, 1, globalRank, &comms[i], &config));
+      comms.push_back(makeCtranComm());
       CUDACHECK_TEST(cudaStreamCreate(&streams[i]));
 
-      sendBufs[i] = allocBuf(bufCount * sizeof(int), &sendHdls[i], comms[i]);
+      sendBufs[i] =
+          allocBuf(bufCount * sizeof(int), &sendHdls[i], comms[i].get());
       ASSERT_NE(sendBufs[i], nullptr);
-      recvBufs[i] = allocBuf(bufCount * sizeof(int), &recvHdls[i], comms[i]);
+      recvBufs[i] =
+          allocBuf(bufCount * sizeof(int), &recvHdls[i], comms[i].get());
       ASSERT_NE(recvBufs[i], nullptr);
     }
 
@@ -121,7 +108,7 @@ TEST_F(CtranStressQpConnTest, AllToAll) {
           recvBufs[i],
           count,
           commInt,
-          comms[i]->ctranComm_.get(),
+          comms[i].get(),
           streams[i],
           NCCL_ALLTOALL_ALGO::ctran);
       ASSERT_EQ(res, commSuccess);
@@ -131,9 +118,9 @@ TEST_F(CtranStressQpConnTest, AllToAll) {
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
     for (int i = 0; i < numComms; ++i) {
-      releaseBuf(sendBufs[i], sendHdls[i], comms[i]);
-      releaseBuf(recvBufs[i], recvHdls[i], comms[i]);
-      NCCLCHECK_TEST(ncclCommDestroy(comms[i]));
+      const size_t bufSize = bufCount * sizeof(int);
+      releaseBuf(sendBufs[i], bufSize, sendHdls[i], comms[i].get());
+      releaseBuf(recvBufs[i], bufSize, recvHdls[i], comms[i].get());
       CUDACHECK_TEST(cudaStreamDestroy(streams[i]));
     }
   }

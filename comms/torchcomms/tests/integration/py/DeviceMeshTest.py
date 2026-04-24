@@ -24,6 +24,15 @@ try:
 except ImportError:
     HAS_MESH_LAYOUT = False
 
+try:
+    from torch.distributed._mesh_layout import (  # noqa: F401  # pyre-ignore[21]
+        _FlatLayout,
+    )
+
+    HAS_FLAT_LAYOUT = True
+except ImportError:
+    HAS_FLAT_LAYOUT = False
+
 
 class DeviceMeshTest(unittest.TestCase):
     """Test class for DeviceMesh compatibility in torchcomms."""
@@ -176,15 +185,23 @@ class DeviceMeshTest(unittest.TestCase):
         self, device_mesh_3d, flatten_dim_name, flatten_mesh_dim_names, comm, ranks
     ):
         """Set up a flattened mesh dimension with proper layout."""
-        sizes = []
-        strides = []
-        # This is important because we need to make sure the layout is correct
-        for dim_name in flatten_mesh_dim_names[flatten_dim_name]:
-            layout = device_mesh_3d[dim_name]._layout
-            sizes.append(layout.sizes)
-            strides.append(layout.strides)
-        # pyre-fixme[19]: _MeshLayout dataclass accepts positional args
-        flatten_layout = _MeshLayout(tuple(sizes), tuple(strides))
+        if HAS_FLAT_LAYOUT:
+            # New PyTorch API (2.13+): _MeshLayout is a Sequence[_FlatLayout]
+            flat_layouts = []
+            for dim_name in flatten_mesh_dim_names[flatten_dim_name]:
+                sub_layout = device_mesh_3d[dim_name]._layout
+                flat_layouts.append(sub_layout[0])
+            flatten_layout = _MeshLayout(flat_layouts)
+        else:
+            # Old PyTorch API: _MeshLayout has .shape and .stride fields
+            sizes = []
+            strides = []
+            for dim_name in flatten_mesh_dim_names[flatten_dim_name]:
+                layout = device_mesh_3d[dim_name]._layout
+                sizes.append(layout.shape)
+                strides.append(layout.stride)
+            # pyre-fixme[19]: _MeshLayout dataclass accepts positional args
+            flatten_layout = _MeshLayout(tuple(sizes), tuple(strides))
         _flatten_with_comm(
             device_mesh_3d,
             flatten_dim_name,

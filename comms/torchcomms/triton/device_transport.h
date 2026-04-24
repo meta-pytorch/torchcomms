@@ -20,15 +20,15 @@ extern "C" {
 
 typedef void* TorchCommsTransportHandle;
 
-// --- Data Transfer (block-cooperative, pipelined NVLink) ---
+// --- Data Transfer (grid-collective, pipelined NVLink) ---
 
-__device__ int torchcomms_transport_send(
+__device__ int torchcomms_transport_send_groups(
     TorchCommsTransportHandle handle,
     int peer,
     void* src_ptr,
     unsigned long long nbytes);
 
-__device__ int torchcomms_transport_recv(
+__device__ int torchcomms_transport_recv_groups(
     TorchCommsTransportHandle handle,
     int peer,
     void* dst_ptr,
@@ -51,6 +51,26 @@ __device__ int torchcomms_transport_wait_signal(
     int signal_id,
     int op,
     unsigned long long value);
+
+// --- Send/Recv (block-cooperative, pipelined NVLink) ---
+// active_blocks: number of groups calling concurrently (0 = tile_max_groups)
+// max_signal_bytes: hint for signaling granularity (0 = one signal per slot)
+
+__device__ int torchcomms_transport_send(
+    TorchCommsTransportHandle handle,
+    int peer,
+    void* src_ptr,
+    unsigned long long nbytes,
+    int active_blocks,
+    unsigned long long max_signal_bytes);
+
+__device__ int torchcomms_transport_recv(
+    TorchCommsTransportHandle handle,
+    int peer,
+    void* dst_ptr,
+    unsigned long long nbytes,
+    int active_blocks,
+    unsigned long long max_signal_bytes);
 
 // --- Barrier ---
 

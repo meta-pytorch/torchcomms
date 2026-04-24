@@ -20,7 +20,7 @@ class GetInitHandleTest(unittest.TestCase):
     """Test class for get_init_handle() fault tolerance API."""
 
     # Backends that implement get_init_handle()
-    SUPPORTED_BACKENDS = {"mccl", "gloo"}
+    SUPPORTED_BACKENDS = {"mccl", "gloo", "nccl", "ncclx"}
 
     def get_wrapper(self):
         return TorchCommTestWrapper()

@@ -178,6 +178,46 @@ TEST_F(DeviceWindowTestFixture, NvlOffsetPut) {
 }
 
 // =============================================================================
+// Per-Group NVL Put via DeviceWindow
+// Regression test: each block independently puts its own tile. With the old
+// grid-collective put(), each block would only copy 1/numTiles of its tile
+// because for_each_item_contiguous distributes work across all blocks.
+// =============================================================================
+
+TEST_F(DeviceWindowTestFixture, NvlOffsetPutPerGroup) {
+  const int numTiles = 4;
+  const std::size_t tileSize = 4096;
+  const std::size_t totalSize = numTiles * tileSize;
+
+  DeviceBuffer srcBuffer(totalSize);
+  DeviceBuffer windowBuffer(totalSize);
+  auto src_d = static_cast<char*>(srcBuffer.get());
+  auto window_d = static_cast<char*>(windowBuffer.get());
+
+  // Fill each tile with a distinct byte pattern
+  std::vector<char> srcHost(totalSize);
+  for (int t = 0; t < numTiles; ++t) {
+    for (std::size_t i = 0; i < tileSize; ++i) {
+      srcHost[t * tileSize + i] = static_cast<char>((t + 1) * 37 + (i % 251));
+    }
+  }
+  CUDACHECK_TEST(
+      cudaMemcpy(src_d, srcHost.data(), totalSize, cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(cudaMemset(window_d, 0, totalSize));
+
+  test::testDeviceWindowNvlOffsetPutPerGroup(
+      0, 2, window_d, src_d, totalSize, tileSize, numTiles);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<char> result(totalSize);
+  CUDACHECK_TEST(
+      cudaMemcpy(result.data(), window_d, totalSize, cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(result, srcHost)
+      << "Per-group put should copy each tile independently and completely";
+}
+
+// =============================================================================
 // Offset-Based NVL Put + Signal via DeviceWindow
 // =============================================================================
 

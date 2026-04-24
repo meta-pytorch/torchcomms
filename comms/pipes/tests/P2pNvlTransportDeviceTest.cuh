@@ -81,17 +81,36 @@ void testRawWaitSignal(
 // Read the signal value (for verification)
 void testReadSignal(SignalState* signal_d, uint64_t* result_d);
 
+// Per-group put copy (each block copies its own tile at blockIdx.x offset)
+void testDevicePut(
+    P2pNvlTransportDevice* p2p,
+    char* dst_d,
+    const char* src_d,
+    std::size_t tileSize,
+    int numBlocks,
+    int blockSize,
+    GroupType groupType = GroupType::BLOCK);
+
+// Reset signal on a transport (resets local signal state)
+void testDeviceResetSignal(
+    P2pNvlTransportDevice* p2p,
+    uint64_t signalId,
+    int numBlocks,
+    int blockSize,
+    GroupType groupType = GroupType::WARP);
+
 // =============================================================================
 // LL128 transport send/recv test helpers
-// These test the ll128_send()/ll128_recv() methods on P2pNvlTransportDevice
+// These test the ll128_send_group()/ll128_recv_group() methods on
+// P2pNvlTransportDevice
 // =============================================================================
 
 /**
  * Test LL128 send/recv via P2pNvlTransportDevice transport wrappers.
  *
  * Uses two transports in a loopback configuration where transport0 sends
- * to transport1. The sender calls p2p.ll128_send() and the receiver calls
- * p2p.ll128_recv().
+ * to transport1. The sender calls p2p.ll128_send_group() and the receiver
+ * calls p2p.ll128_recv_group().
  *
  * @param sender Sender transport (writes to receiver's LL128 buffer)
  * @param receiver Receiver transport (reads from its local LL128 buffer)

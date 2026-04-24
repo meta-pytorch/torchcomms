@@ -16,6 +16,7 @@
 #include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/pipes/IbgdaBuffer.h"
 #include "comms/pipes/IbverbsLazy.h"
+#include "comms/utils/CudaRAII.h"
 
 // Forward declarations for device types (defined in .cuh files)
 namespace comms::pipes {
@@ -68,12 +69,57 @@ struct MultipeerIbgdaTransportConfig {
   std::string ibHca;
 
   // Per-peer data buffer size in bytes.
-  // This determines the maximum transfer size per put call.
+  //
+  // Raw put()/signal() users interpret this as the exported per-peer RDMA
+  // buffer size. send()/recv() users interpret it as the size of one logical
+  // staging slot. The send/recv ring therefore has:
+  //   pipelineDepth slots
+  //   each slot is dataBufferSize bytes
+  //   each slot is partitioned across active_blocks block-groups at runtime
+  //
+  // For one send()/recv() call:
+  //   perBlockSlot = (dataBufferSize / active_blocks) & ~15ULL
+  //
+  // In the benchmark, one "section" is exactly one dataBufferSize-sized slot.
   std::size_t dataBufferSize{0};
+
+  // Number of signal slots managed by the transport (per peer).
+  // Used by the slot-index API (put/signal/wait_signal by slot ID).
+  // Independent of send/recv which uses its own private signal buffers.
+  int numSignalSlots{0};
+
+  // Number of counter slots managed by the transport (per peer).
+  // Used by the slot-index API (wait_counter by slot ID).
+  // Independent of send/recv which uses its own private counter buffers.
+  int numCounterSlots{0};
+
+  // Send/recv configuration. When set, the transport allocates a private
+  // pipelined staging ring plus private signal/counter state for send()/recv().
+  // When nullopt (default), send/recv is disabled and only the raw put/signal
+  // APIs are available.
+  struct SendRecvConfig {
+    // Maximum number of block-groups that may participate in one send()/recv()
+    // call. This sizes the private signal/counter/step arrays and defines the
+    // maximum active_blocks accepted at runtime.
+    int maxGroups{128};
+
+    // Number of logical slots in the send/recv staging ring.
+    // Total staging bytes per peer per direction:
+    //   pipelineDepth * dataBufferSize
+    int pipelineDepth{2};
+  };
+  std::optional<SendRecvConfig> sendRecv;
 
   // Queue pair depth (number of outstanding WQEs per peer).
   // Higher values allow more pipelining but use more memory.
   uint32_t qpDepth{1024};
+
+  // Number of QP sets per peer (each set = main QP + companion QP + loopback).
+  // Multiple QPs per peer allow different GPU blocks to use independent QPs,
+  // eliminating O(N) cross-block WQE serialization in DOCA's mark_wqes_ready.
+  // Block-to-QP mapping: blockIdx.x % numQpsPerPeer.
+  // Default 1 preserves current single-QP-per-peer behavior.
+  int numQpsPerPeer{1};
 
   // InfiniBand Verbs Timeout for QP ACK timeout.
   // Timeout is computed as 4.096 µs * 2^timeout.
@@ -143,6 +189,11 @@ struct IbgdaTransportExchInfo {
 constexpr int kMaxRanksForAllGather = 128;
 
 /**
+ * Maximum number of QP sets per peer for multi-QP support.
+ */
+constexpr int kMaxQpsPerPeer = 128;
+
+/**
  * Transport exchange info for allGather-based exchange.
  *
  * Each rank contributes this structure containing:
@@ -158,10 +209,13 @@ struct IbgdaTransportExchInfoAll {
   // Port active MTU.
   enum ibv_mtu mtu { IBV_MTU_4096 };
 
+  // Number of QPs per peer used by this rank
+  int numQpsPerPeer{1};
+
   // Per-target-rank QPNs
-  // qpnForRank[j] = QPN that this rank uses to connect to rank j
-  // qpnForRank[myRank] is unused (set to 0)
-  uint32_t qpnForRank[kMaxRanksForAllGather]{};
+  // qpnForRank[j][q] = QPN of q-th QP that this rank uses to connect to rank j
+  // qpnForRank[myRank][*] is unused (set to 0)
+  uint32_t qpnForRank[kMaxRanksForAllGather][kMaxQpsPerPeer]{};
 };
 
 /**
@@ -343,6 +397,11 @@ class MultipeerIbgdaTransport {
       const IbgdaLocalBuffer& localBuf);
 
   /**
+   * Get the number of QP sets per peer
+   */
+  int numQpsPerPeer() const;
+
+  /**
    * Get the GID index being used
    */
   int getGidIndex() const;
@@ -355,6 +414,9 @@ class MultipeerIbgdaTransport {
   void registerMemory();
   void createQpGroups();
   void createLoopbackCompanionQps();
+  void allocate_send_recv_buffers();
+  void exchange_send_recv_buffers();
+  void cleanup_send_recv_buffers();
   void cleanup();
   void connectQp(
       doca_gpu_verbs_qp_hl* qpHl,
@@ -427,8 +489,44 @@ class MultipeerIbgdaTransport {
   P2pIbgdaTransportDevice* peerTransportsGpu_{nullptr};
   std::size_t peerTransportSize_{0};
 
+  // All GPU allocations from buildDeviceTransportsOnGpu (freed in cleanup)
+  std::vector<void*> gpuAllocations_;
+
   // Exchange info received from peers
   std::vector<IbgdaTransportExchInfo> peerExchInfo_;
+
+  // Transport-owned signal buffers (allocated if numSignalSlots > 0)
+  void* signalInboxGpu_{nullptr};
+  std::vector<IbgdaRemoteBuffer> signalRemoteViews_;
+  std::vector<IbgdaLocalBuffer> signalLocalViews_;
+
+  // Transport-owned counter buffers (allocated if numCounterSlots > 0)
+  void* counterGpu_{nullptr};
+  std::vector<IbgdaLocalBuffer> counterViews_;
+
+  void* discardSignalGpu_{nullptr};
+  std::vector<IbgdaRemoteBuffer> discardSignalRemoteViews_;
+
+  // Send/recv buffers (allocated when maxGroups > 0)
+  struct SendRecvPeerBuffers {
+    IbgdaLocalBuffer sendStaging;
+    IbgdaLocalBuffer recvStaging;
+    IbgdaLocalBuffer signal;
+    IbgdaLocalBuffer counter;
+    int64_t* stepState{nullptr};
+    IbgdaRemoteBuffer remoteRecvStaging;
+    IbgdaRemoteBuffer remoteSignal;
+  };
+  std::vector<SendRecvPeerBuffers> sendRecvPeerBuffers_;
+
+  std::unique_ptr<meta::comms::DeviceBuffer> sendStagingBulk_;
+  std::unique_ptr<meta::comms::DeviceBuffer> recvStagingBulk_;
+  std::unique_ptr<meta::comms::DeviceBuffer> signalBulk_;
+  std::unique_ptr<meta::comms::DeviceBuffer> counterBulk_;
+  std::unique_ptr<meta::comms::DeviceBuffer> stepStateBulk_;
+
+  IbgdaLocalBuffer recvStagingBulkReg_;
+  IbgdaLocalBuffer signalBulkReg_;
 };
 
 } // namespace comms::pipes

@@ -68,6 +68,7 @@ void OrderedWorkStreamGuard::init(const CommLogData& logMetaData) {
   FB_CUDACHECKTHROW_EX(
       cudaEventCreateWithFlags(&execModeSyncEvent_, cudaEventDisableTiming),
       logMetaData);
+  sideStream_ = std::make_unique<meta::comms::GraphSideStream>();
 }
 
 OrderedWorkStreamGuard::~OrderedWorkStreamGuard() {
@@ -239,9 +240,22 @@ commResult_t OrderedWorkStreamGuard::doRelease(
   if (!isCapturing) {
     FB_CUDACHECK(cudaEventRecord(execModeSyncEvent_, userStream));
   } else {
-    FB_COMMCHECK(
-        utils::cudagraph::addEventRecordNodeToCapture(
-            userStream, captureInfo.g, execModeSyncEvent_, &lastRecordNode_));
+    // Route the external EVENT_RECORD node onto a side stream so its
+    // release fence doesn't stall unrelated work on userStream between
+    // ctran submissions. The next doAcquire on userStream still sees
+    // lastRecordNode_ via cudaStreamUpdateCaptureDependencies, which
+    // reinstates the explicit DAG edge ordering the next ctran op after
+    // this record. Non-ctran work on userStream is not serialized
+    // behind the record.
+    commResult_t innerRes = commSuccess;
+    FB_CUDACHECK(
+        sideStream_->fork_from(userStream, [&](cudaStream_t sideStream) {
+          innerRes = utils::cudagraph::addEventRecordNodeToCapture(
+              sideStream, captureInfo.g, execModeSyncEvent_, &lastRecordNode_);
+        }));
+    if (innerRes != commSuccess) {
+      return innerRes;
+    }
   }
 
   lastUserStream_ = userStream;
@@ -639,7 +653,47 @@ void CtranGpe::Impl::terminate() {
   cmdEnqueue(cmd);
   thread_.join();
 
+  // Pool elements are released by CUDA's async cmdDestroy callback
+  // (cudaUserObjectNoDestructorSync). Spin until all pools drain before
+  // returning, to avoid freeing pinned memory from under an in-flight callback.
   const auto& statex = comm->statex_;
+  const auto start = std::chrono::steady_clock::now();
+  auto nextLog = start + std::chrono::seconds(5);
+  while (true) {
+    this->kernelFlagPool->reclaim();
+    this->kernelElemPool->reclaim();
+    this->gpeKernelSyncPool->reclaim();
+    if (this->kernelFlagPool->capacity() == this->kernelFlagPool->size() &&
+        this->kernelElemPool->capacity() == this->kernelElemPool->size() &&
+        this->gpeKernelSyncPool->capacity() ==
+            this->gpeKernelSyncPool->size()) {
+      break;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= nextLog) {
+      const auto elapsedSec =
+          std::chrono::duration_cast<std::chrono::seconds>(now - start).count();
+      CLOGF_SUBSYS(
+          WARNING,
+          INIT,
+          "terminate() spin-wait: pools still draining after {}s on rank {} commHash {:x}"
+          " -- kernelFlag {}/{} kernelElem {}/{} gpeKernelSync {}/{}."
+          " Most likely cudaGraphDestroy() was not called on all CUDA graphs"
+          " that captured CTranGPE operations.",
+          elapsedSec,
+          statex->rank(),
+          statex->commHash(),
+          this->kernelFlagPool->size(),
+          this->kernelFlagPool->capacity(),
+          this->kernelElemPool->size(),
+          this->kernelElemPool->capacity(),
+          this->gpeKernelSyncPool->size(),
+          this->gpeKernelSyncPool->capacity());
+      nextLog = now + std::chrono::seconds(5);
+    }
+    std::this_thread::yield();
+  }
+
   CLOGF_SUBSYS(
       INFO,
       INIT,
