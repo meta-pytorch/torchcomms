@@ -96,6 +96,7 @@ add_library(torchcomms_comms_ncclx MODULE
     ${TORCHCOMMS_DEVICE_NCCLX_SOURCE}
     ${TORCHCOMMS_DEVICE_PIPES_SOURCE}
     comms/utils/CudaRAII.cc
+    comms/utils/GraphCaptureSideStream.cc
 )
 set_target_properties(torchcomms_comms_ncclx PROPERTIES
     PREFIX ""

@@ -24,6 +24,7 @@
 #include "comms/torchcomms/ncclx/TorchCommNCCLXPersistentRequest.hpp"
 #include "comms/torchcomms/ncclx/TorchCommWindowNCCLX.hpp"
 #include "comms/torchcomms/ncclx/TorchWorkNCCLX.hpp"
+#include "comms/utils/GraphCaptureSideStream.h"
 
 #if defined(ENABLE_PIPES)
 #include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
@@ -353,7 +354,18 @@ class TorchCommNCCLX : public TorchCommBackend,
   cudaEvent_t
       dependency_event_{}; // Pre-allocated event for stream dependencies
 
+  // Side stream used to host the graph timeout monitoring's external
+  // cudaEventRecord nodes off the main collective stream's critical path
+  // during CUDA graph capture. See TorchWorkNCCLX::recordStart/recordEnd.
+  // Owns its own dep event internally. Lazily instantiated only when
+  // ``isGraphTimeoutMonitoringEnabled()``.
+  std::unique_ptr<meta::comms::GraphSideStream> graph_monitor_side_stream_;
+
  public:
+  meta::comms::GraphSideStream* getGraphMonitorSideStream() {
+    return graph_monitor_side_stream_.get();
+  }
+
   struct Address {
     void* addr;
   };
