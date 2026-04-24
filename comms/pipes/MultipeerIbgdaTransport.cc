@@ -1161,7 +1161,7 @@ IbgdaLocalBuffer MultipeerIbgdaTransport::registerBuffer(
       VLOG(1) << "MultipeerIbgdaTransport: cache hit for ptr=" << ptr
               << " allocBase=0x" << std::hex << it->first << std::dec
               << " refs=" << it->second.refs;
-      return IbgdaLocalBuffer(ptr, HostLKey(it->second.mr->lkey));
+      return IbgdaLocalBuffer(ptr, NetworkLKeys{HostLKey(it->second.mr->lkey)});
     }
   }
 
@@ -1212,7 +1212,7 @@ IbgdaLocalBuffer MultipeerIbgdaTransport::registerBuffer(
           << " lkey=" << mr->lkey << " rkey=" << mr->rkey
           << " (requested ptr=" << ptr << " size=" << size << ")";
 
-  return IbgdaLocalBuffer(ptr, HostLKey(mr->lkey));
+  return IbgdaLocalBuffer(ptr, NetworkLKeys{HostLKey(mr->lkey)});
 }
 
 void MultipeerIbgdaTransport::deregisterBuffer(void* ptr) {
@@ -1360,16 +1360,16 @@ void MultipeerIbgdaTransport::allocate_send_recv_buffers() {
     auto& pb = sendRecvPeerBuffers_[i];
     pb.sendStaging = IbgdaLocalBuffer{
         static_cast<char*>(sendStagingBulk_->get()) + i * stagingPerPeer,
-        sendStagingBulkReg.lkey};
+        sendStagingBulkReg.lkey_per_device};
     pb.recvStaging = IbgdaLocalBuffer{
         static_cast<char*>(recvStagingBulk_->get()) + i * stagingPerPeer,
-        recvStagingBulkReg_.lkey};
+        recvStagingBulkReg_.lkey_per_device};
     pb.signal = IbgdaLocalBuffer{
         static_cast<char*>(signalBulk_->get()) + i * signalPerPeer,
-        signalBulkReg_.lkey};
+        signalBulkReg_.lkey_per_device};
     pb.counter = IbgdaLocalBuffer{
         static_cast<char*>(counterBulk_->get()) + i * counterPerPeer,
-        counterBulkReg.lkey};
+        counterBulkReg.lkey_per_device};
     pb.stepState = reinterpret_cast<int64_t*>(
         static_cast<char*>(stepStateBulk_->get()) + i * stepStatePerPeer);
   }
