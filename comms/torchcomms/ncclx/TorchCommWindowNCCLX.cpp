@@ -403,10 +403,7 @@ void TorchCommWindowNCCLX<Backend>::deregister_local_buffer(
   Backend::deregister_local_buffer(nccl_api_, nccl_comm_, buf);
 
   // Clear the caller's buffer to indicate it's no longer registered
-  buf.base_ptr = nullptr;
-  buf.size = 0;
-  buf.backend_window = nullptr;
-  buf.lkey = 0;
+  buf = RegisteredBuffer{};
 }
 
 template <typename Backend>
