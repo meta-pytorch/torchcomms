@@ -132,6 +132,18 @@ class TorchCommDummy : public TorchCommBackend {
   std::shared_ptr<TorchCommWindow> new_window(
       const std::optional<at::Tensor>& tensor = std::nullopt) override;
 
+  // Fault Tolerance
+  bool supportsReconfigure() const override {
+    return true;
+  }
+  c10::intrusive_ptr<TorchWork> reconfigure(
+      const ReconfigureOptions& opts) override;
+
+  // Test helpers
+  void setSize(int size) {
+    size_ = size;
+  }
+
   // Communicator Management
   std::shared_ptr<TorchCommBackend> split(
       const std::vector<int>& ranks,
