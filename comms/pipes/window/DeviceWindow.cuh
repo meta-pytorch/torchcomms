@@ -990,10 +990,11 @@ class DeviceWindow {
     } else {
       int ibgdaPeerIdx = rank_to_peer_index(target_rank);
       IbgdaLocalBuffer localBuf(
-          const_cast<void*>(static_cast<const void*>(localSrc)), src_buf.lkey);
+          const_cast<void*>(static_cast<const void*>(localSrc)),
+          NetworkLKeys{src_buf.lkey});
       IbgdaRemoteBuffer remoteBuf(
           const_cast<void*>(remoteBufferRegistry_[ibgdaPeerIdx].base),
-          remoteBufferRegistry_[ibgdaPeerIdx].rkey);
+          NetworkRKeys{remoteBufferRegistry_[ibgdaPeerIdx].rkey});
       handle_.get_ibgda(target_rank)
           .put(group, localBuf, remoteBuf.subBuffer(dst_offset), nbytes);
     }
@@ -1043,10 +1044,11 @@ class DeviceWindow {
     } else {
       int ibgdaPeerIdx = rank_to_peer_index(target_rank);
       IbgdaLocalBuffer localBuf(
-          const_cast<void*>(static_cast<const void*>(localSrc)), src_buf.lkey);
+          const_cast<void*>(static_cast<const void*>(localSrc)),
+          NetworkLKeys{src_buf.lkey});
       IbgdaRemoteBuffer remoteBuf(
           const_cast<void*>(remoteBufferRegistry_[ibgdaPeerIdx].base),
-          remoteBufferRegistry_[ibgdaPeerIdx].rkey);
+          NetworkRKeys{remoteBufferRegistry_[ibgdaPeerIdx].rkey});
       handle_.get_ibgda(target_rank)
           .put(
               group,
@@ -1109,11 +1111,13 @@ class DeviceWindow {
     } else {
       int ibgdaPeerIdx = rank_to_peer_index(target_rank);
       IbgdaLocalBuffer localBuf(
-          const_cast<void*>(static_cast<const void*>(localSrc)), src_buf.lkey);
+          const_cast<void*>(static_cast<const void*>(localSrc)),
+          NetworkLKeys{src_buf.lkey});
       IbgdaRemoteBuffer remoteBuf(
           const_cast<void*>(remoteBufferRegistry_[ibgdaPeerIdx].base),
-          remoteBufferRegistry_[ibgdaPeerIdx].rkey);
-      IbgdaLocalBuffer counterBuf(ibgdaPeerCounterBuf_, ibgdaPeerCounterLkey_);
+          NetworkRKeys{remoteBufferRegistry_[ibgdaPeerIdx].rkey});
+      IbgdaLocalBuffer counterBuf(
+          ibgdaPeerCounterBuf_, NetworkLKeys{ibgdaPeerCounterLkey_});
       int counterSlot = ibgdaPeerIdx * peerCounterCount_ + counterId;
       handle_.get_ibgda(target_rank)
           .put(
@@ -1171,11 +1175,13 @@ class DeviceWindow {
     } else {
       int ibgdaPeerIdx = rank_to_peer_index(target_rank);
       IbgdaLocalBuffer localBuf(
-          const_cast<void*>(static_cast<const void*>(localSrc)), src_buf.lkey);
+          const_cast<void*>(static_cast<const void*>(localSrc)),
+          NetworkLKeys{src_buf.lkey});
       IbgdaRemoteBuffer remoteBuf(
           const_cast<void*>(remoteBufferRegistry_[ibgdaPeerIdx].base),
-          remoteBufferRegistry_[ibgdaPeerIdx].rkey);
-      IbgdaLocalBuffer counterBuf(ibgdaPeerCounterBuf_, ibgdaPeerCounterLkey_);
+          NetworkRKeys{remoteBufferRegistry_[ibgdaPeerIdx].rkey});
+      IbgdaLocalBuffer counterBuf(
+          ibgdaPeerCounterBuf_, NetworkLKeys{ibgdaPeerCounterLkey_});
       int counterSlot = ibgdaPeerIdx * peerCounterCount_ + counterId;
       handle_.get_ibgda(target_rank)
           .put(

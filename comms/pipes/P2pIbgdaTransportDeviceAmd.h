@@ -88,10 +88,10 @@ class P2pIbgdaTransportDeviceImpl {
 
     pipes_gda_gpu_dev_verbs_addr localAddr = {
         .addr = reinterpret_cast<uint64_t>(localBuf.ptr),
-        .key = localBuf.lkey.value};
+        .key = localBuf.lkey_per_device[0].value};
     pipes_gda_gpu_dev_verbs_addr remoteAddr = {
         .addr = reinterpret_cast<uint64_t>(remoteBuf.ptr),
-        .key = remoteBuf.rkey.value};
+        .key = remoteBuf.rkey_per_device[0].value};
 
     pipes_gda_gpu_dev_verbs_put(
         nic_, qp_, remoteAddr, localAddr, nbytes, &ticket);
@@ -256,7 +256,7 @@ class P2pIbgdaTransportDeviceImpl {
     pipes_gda_gpu_dev_verbs_addr remoteAddr = {
         .addr = reinterpret_cast<uint64_t>(
             static_cast<uint64_t*>(remoteSignalBuf.ptr) + signalId),
-        .key = remoteSignalBuf.rkey.value};
+        .key = remoteSignalBuf.rkey_per_device[0].value};
 
     pipes_gda_gpu_dev_verbs_p<uint64_t>(
         nic_, qp_, remoteAddr, static_cast<uint64_t>(0), &ticket);
@@ -279,7 +279,7 @@ class P2pIbgdaTransportDeviceImpl {
     pipes_gda_gpu_dev_verbs_addr remoteAddr = {
         .addr = reinterpret_cast<uint64_t>(
             static_cast<uint64_t*>(remoteBuf.ptr) + signalId),
-        .key = remoteBuf.rkey.value};
+        .key = remoteBuf.rkey_per_device[0].value};
     pipes_gda_gpu_dev_verbs_addr sinkAddr = {
         .addr = reinterpret_cast<uint64_t>(sinkBufPtr_),
         .key = sinkLkey_.value};
@@ -297,7 +297,7 @@ class P2pIbgdaTransportDeviceImpl {
     pipes_gda_gpu_dev_verbs_addr remoteAddr = {
         .addr = reinterpret_cast<uint64_t>(
             static_cast<uint64_t*>(remoteBuf.ptr) + signalId),
-        .key = remoteBuf.rkey.value};
+        .key = remoteBuf.rkey_per_device[0].value};
     pipes_gda_gpu_dev_verbs_addr sinkAddr = {
         .addr = reinterpret_cast<uint64_t>(sinkBufPtr_),
         .key = sinkLkey_.value};
@@ -339,22 +339,22 @@ class P2pIbgdaTransportDeviceImpl {
       uint64_t counterVal) {
     pipes_gda_gpu_dev_verbs_addr laddr = {
         .addr = reinterpret_cast<uint64_t>(localDataBuf.ptr),
-        .key = localDataBuf.lkey.value};
+        .key = localDataBuf.lkey_per_device[0].value};
     pipes_gda_gpu_dev_verbs_addr raddr = {
         .addr = reinterpret_cast<uint64_t>(remoteDataBuf.ptr),
-        .key = remoteDataBuf.rkey.value};
+        .key = remoteDataBuf.rkey_per_device[0].value};
 
     pipes_gda_gpu_dev_verbs_addr sigRemoteAddr = {
         .addr = reinterpret_cast<uint64_t>(
             static_cast<uint64_t*>(remoteSignalBuf.ptr) + signalId),
-        .key = remoteSignalBuf.rkey.value};
+        .key = remoteSignalBuf.rkey_per_device[0].value};
     pipes_gda_gpu_dev_verbs_addr sigSinkAddr = {
         .addr = 0, .key = sinkLkey_.value};
 
     pipes_gda_gpu_dev_verbs_addr counterRemoteAddr = {
         .addr = reinterpret_cast<uint64_t>(
             static_cast<uint64_t*>(localCounterBuf.ptr) + counterId),
-        .key = localCounterBuf.lkey.value};
+        .key = localCounterBuf.lkey_per_device[0].value};
     pipes_gda_gpu_dev_verbs_addr counterSinkAddr = {
         .addr = 0, .key = sinkLkey_.value};
 
@@ -383,14 +383,14 @@ class P2pIbgdaTransportDeviceImpl {
     pipes_gda_gpu_dev_verbs_addr sigRemoteAddr = {
         .addr = reinterpret_cast<uint64_t>(
             static_cast<uint64_t*>(remoteSignalBuf.ptr) + signalId),
-        .key = remoteSignalBuf.rkey.value};
+        .key = remoteSignalBuf.rkey_per_device[0].value};
     pipes_gda_gpu_dev_verbs_addr sigSinkAddr = {
         .addr = 0, .key = sinkLkey_.value};
 
     pipes_gda_gpu_dev_verbs_addr counterRemoteAddr = {
         .addr = reinterpret_cast<uint64_t>(
             static_cast<uint64_t*>(localCounterBuf.ptr) + counterId),
-        .key = localCounterBuf.lkey.value};
+        .key = localCounterBuf.lkey_per_device[0].value};
     pipes_gda_gpu_dev_verbs_addr counterSinkAddr = {
         .addr = 0, .key = sinkLkey_.value};
 
@@ -468,9 +468,9 @@ class P2pIbgdaTransportDeviceImpl {
         wqeIdx,
         PIPES_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE,
         reinterpret_cast<uint64_t>(laneRemoteBuf.ptr),
-        laneRemoteBuf.rkey.value,
+        laneRemoteBuf.rkey_per_device[0].value,
         reinterpret_cast<uint64_t>(laneBuf.ptr),
-        laneBuf.lkey.value,
+        laneBuf.lkey_per_device[0].value,
         static_cast<uint32_t>(laneBytes));
 
     group.sync();

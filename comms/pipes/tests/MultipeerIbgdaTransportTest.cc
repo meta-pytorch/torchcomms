@@ -124,9 +124,9 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalBasic) {
         "Rank {}: localDataBuf ptr={} lkey={}, remoteDataBuf ptr={} rkey={}",
         globalRank,
         localDataBuf.ptr,
-        localDataBuf.lkey.value,
+        localDataBuf.lkey_per_device[0].value,
         remoteDataBuf.ptr,
-        remoteDataBuf.rkey.value);
+        remoteDataBuf.rkey_per_device[0].value);
 
     // Get peer transport for explicit peer selection
     P2pIbgdaTransportDevice* peerTransportPtr =

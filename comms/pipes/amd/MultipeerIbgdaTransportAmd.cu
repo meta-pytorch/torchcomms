@@ -676,7 +676,7 @@ IbgdaLocalBuffer MultipeerIbgdaTransportAmd::registerBuffer(
 
   auto it = registeredBuffers_.find(ptr);
   if (it != registeredBuffers_.end())
-    return IbgdaLocalBuffer(ptr, HostLKey(it->second->lkey));
+    return IbgdaLocalBuffer(ptr, NetworkLKeys{HostLKey(it->second->lkey)});
 
   int accessFlags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
       IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC;
@@ -693,7 +693,7 @@ IbgdaLocalBuffer MultipeerIbgdaTransportAmd::registerBuffer(
   VLOG(1) << "MultipeerIbgdaTransportAmd: registered buffer ptr=" << ptr
           << " size=" << size << " lkey=" << mr->lkey;
 
-  return IbgdaLocalBuffer(ptr, HostLKey(mr->lkey));
+  return IbgdaLocalBuffer(ptr, NetworkLKeys{HostLKey(mr->lkey)});
 }
 
 void MultipeerIbgdaTransportAmd::deregisterBuffer(void* ptr) {

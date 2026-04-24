@@ -344,7 +344,7 @@ ncclResult_t ncclWinLocalRegisterBuffer(
 
   try {
     auto ibgdaBuf = mpt->localRegisterIbgdaBuffer(ptr, size);
-    *outLkey = ibgdaBuf.lkey.value;
+    *outLkey = ibgdaBuf.lkey_per_device[0].value;
     return ncclSuccess;
   } catch (const std::exception& e) {
     WARN("ncclWinLocalRegisterBuffer: %s", e.what());
