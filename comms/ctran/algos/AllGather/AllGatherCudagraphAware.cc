@@ -10,7 +10,7 @@
 //      captured into the graph.
 //   2. allGatherWinInit() — create persistent AGP state from window metadata.
 //      Synchronous, no async handle exchange needed. Uses
-//      cudaThreadExchangeStreamCaptureMode to temporarily allow cudaHostAlloc
+//      StreamCaptureModeGuard to temporarily allow cudaHostAlloc
 //      (blocked under cudaStreamCaptureModeGlobal used by PyTorch).
 //   3. allGatherWinExec() — dry-run exec that IS captured into the graph.
 //      CE copies (NVL intra-node) and GPE host-node callbacks (IB inter-node)
@@ -33,6 +33,7 @@
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/ctran/window/CtranWin.h"
+#include "comms/utils/CudaRAII.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 commResult_t ctranAllGatherCudagraphAware(
@@ -66,16 +67,12 @@ commResult_t ctranAllGatherCudagraphAware(
   //    Single-threaded-per-comm assumption (standard for NCCL).
   auto winGuard = folly::makeGuard([win]() { delete win; });
 
-  cudaStreamCaptureMode prevMode = cudaStreamCaptureModeRelaxed;
-  FB_CUDACHECK(cudaThreadExchangeStreamCaptureMode(&prevMode));
-
   CtranPersistentRequest* request = nullptr;
-  // Store result instead of FB_COMMCHECK — must restore capture mode before
-  // any early return.
-  auto initResult = ctran::allGatherWinInit(win, comm, stream, request);
-
-  FB_CUDACHECK(cudaThreadExchangeStreamCaptureMode(&prevMode));
-  FB_COMMCHECK(initResult);
+  {
+    meta::comms::StreamCaptureModeGuard captureGuard{
+        cudaStreamCaptureModeRelaxed};
+    FB_COMMCHECK(ctran::allGatherWinInit(win, comm, stream, request));
+  }
 
   // 3. Dry-run exec — CE copies and GPE host-node callbacks are captured.
   FB_COMMCHECK(ctran::allGatherWinExec(sendbuff, sendcount, datatype, request));

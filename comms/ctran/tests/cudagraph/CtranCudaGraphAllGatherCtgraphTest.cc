@@ -6,6 +6,8 @@
 // ctranAllGather transparently converts to the persistent window-based AGP
 // algorithm.
 
+#include <random>
+
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
 #include "comms/ctran/tests/cudagraph/CtranCudaGraphParamTest.h"
 
@@ -61,6 +63,87 @@ static AlgoDescriptor makeAllGatherCtgraph() {
 }
 
 DEFINE_CUDAGRAPH_PARAM_TEST(CudaGraphAllGatherCtgraph, makeAllGatherCtgraph());
+
+// Expandable segment test: verifies cudagraph-aware AllGather with
+// kCuMemAllocDisjoint memory (multiple disjoint physical segments per buffer,
+// 20MB each) and a random offset from the allocation base.
+class CudaGraphAllGatherCtgraphExpandable
+    : public CtranCudaGraphTestBase,
+      public ::testing::WithParamInterface<size_t> {};
+
+static constexpr size_t kSegmentSize = 20UL * 1024 * 1024;
+
+static size_t segmentsNeeded(size_t bytes) {
+  return (bytes + kSegmentSize - 1) / kSegmentSize;
+}
+
+TEST_P(CudaGraphAllGatherCtgraphExpandable, CaptureReplayVerify) {
+  auto comm = makeCtranComm();
+  ASSERT_NE(comm, nullptr);
+
+  if (!ctran::allGatherPSupport(comm.get())) {
+    GTEST_SKIP() << "allGatherP not supported";
+  }
+
+  const size_t count = GetParam();
+  const int nRanks = numRanks;
+
+  std::mt19937 rng(globalRank);
+  const size_t offsetElems = rng() % 4096 + 1;
+  const size_t offsetBytes = offsetElems * sizeof(int32_t);
+
+  const size_t sendDataBytes = count * sizeof(int32_t);
+  const size_t recvDataBytes = count * nRanks * sizeof(int32_t);
+
+  const size_t sendNumSeg = segmentsNeeded(sendDataBytes + offsetBytes);
+  const size_t recvNumSeg = segmentsNeeded(recvDataBytes + offsetBytes);
+
+  ctran::TestDeviceBuffer send(
+      sendNumSeg * kSegmentSize, kCuMemAllocDisjoint, sendNumSeg);
+  ctran::TestDeviceBuffer recv(
+      recvNumSeg * kSegmentSize, kCuMemAllocDisjoint, recvNumSeg);
+
+  auto* sendbuf = static_cast<char*>(send.get()) + offsetBytes;
+  auto* recvbuf = static_cast<char*>(recv.get()) + offsetBytes;
+
+  fillSendBuf(sendbuf, count, globalRank);
+
+  meta::comms::CudaStream stream(cudaStreamNonBlocking);
+
+  // Capture
+  cudaGraph_t graph;
+  cudaGraphExec_t exec;
+  ASSERT_EQ(
+      cudaStreamBeginCapture(stream.get(), cudaStreamCaptureModeGlobal),
+      cudaSuccess);
+  ASSERT_EQ(
+      ctranAllGather(
+          sendbuf,
+          recvbuf,
+          count,
+          commInt32,
+          comm.get(),
+          stream.get(),
+          NCCL_ALLGATHER_ALGO::ctgraph),
+      commSuccess);
+  ASSERT_EQ(cudaStreamEndCapture(stream.get(), &graph), cudaSuccess);
+  ASSERT_EQ(cudaGraphInstantiate(&exec, graph, 0), cudaSuccess);
+
+  // Replay
+  ASSERT_EQ(cudaGraphLaunch(exec, stream.get()), cudaSuccess);
+  ASSERT_EQ(cudaStreamSynchronize(stream.get()), cudaSuccess);
+
+  // Verify
+  verifyAllGather(recvbuf, count, nRanks);
+
+  ASSERT_EQ(cudaGraphExecDestroy(exec), cudaSuccess);
+  ASSERT_EQ(cudaGraphDestroy(graph), cudaSuccess);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    CudaGraphAllGatherCtgraphExpandableTests,
+    CudaGraphAllGatherCtgraphExpandable,
+    ::testing::Values(2097152UL, 10485760UL));
 
 // Verifies that graph destruction cleans up without CUDA API errors.
 // The retainUserObject destructor callback defers cleanup to comm destruction

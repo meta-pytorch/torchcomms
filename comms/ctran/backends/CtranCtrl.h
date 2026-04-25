@@ -6,31 +6,18 @@
 #include <comms/utils/cvars/nccl_cvars.h>
 #include <fmt/format.h>
 #include <cstddef>
-#include <functional>
-#include <optional>
 #include <sstream>
-#include <unordered_map>
 
 #include "comms/ctran/backends/CtranAux.h"
 #include "comms/ctran/regcache/IpcRegCacheBase.h"
 #include "comms/ctran/utils/CtranIpc.h"
 
 /**
- * Define all control message types used in CTran backends.
+ * Define all control message types and packet format used in CTran backends.
  *
- * Support two protocols to transfer control message:
- * 1. Explicitly exchanged bewteen two sides via a control message channel's
- *    send/recv API. This can be used when need explicit synchronization (e.g.,
- *    handshake in zero-copy algorithms)
- * 2. Sent from one side via the send API, and the remote side handles it
- *    implicitly via pre-registered callback. The callback will be called by the
- *    control message channel whenever progressed. It is useful for asynchronous
- *    request where the sender doesn't need blockingly wait for
- *    the ack from receiver. The callback must be pre-registered to
- *    CtranCtrlManager.
- *
- * All control message types and packet format must be defined in this header
- * file for centralized management.
+ * Control messages are explicitly exchanged between two sides via a control
+ * message channel's send/recv API, used for synchronization (e.g., handshake
+ * in zero-copy algorithms).
  */
 enum ControlMsgType {
   NVL_EXPORT_MEM = 1,
@@ -132,25 +119,6 @@ struct ControlMsg {
     }
     return ss.str();
   }
-};
-
-using ContrlMsgCbFn =
-    std::function<commResult_t(int rank, void* msg, void* ctx)>;
-
-struct ControlMsgCb {
-  ContrlMsgCbFn fn;
-  // contains comm specific pointer to find the corresponding instance
-  void* ctx;
-};
-
-class CtranCtrlManager {
- public:
-  commResult_t regCb(int type, ContrlMsgCbFn fn, void* ctx);
-  commResult_t runCb(int rank, int type, void* msg) const;
-  bool hasCb(int type) const;
-
- private:
-  std::unordered_map<int, ControlMsgCb> ctrlMsgCbMap_;
 };
 
 #endif
