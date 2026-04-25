@@ -385,24 +385,32 @@ enum class IbgdaCmpOp {
  */
 struct IbgdaBufferExchInfo {
   uint64_t addr{0};
-  HostRKey rkey{};
+  // Number of valid entries in rkey_per_device. All peers exchange the
+  // same numNics (uniform topology assumption).
+  int numNics{0};
+  HostRKey rkey_per_device[kMaxNicsPerGpu]{};
 
   IbgdaBufferExchInfo() = default;
-  IbgdaBufferExchInfo(uint64_t a, HostRKey r) : addr(a), rkey(r) {}
 
   /**
    * Convert to IbgdaRemoteBuffer for RDMA operations.
-   * Single-NIC: rkey_per_device.size = 1, values[0] = rkey.
+   * The result's NetworkRKeys.size matches this->numNics.
    */
   IbgdaRemoteBuffer toRemoteBuffer() const {
-    return IbgdaRemoteBuffer(reinterpret_cast<void*>(addr), NetworkRKeys{rkey});
+    NetworkRKeys keys(numNics);
+    for (int n = 0; n < numNics; ++n) {
+      keys[n] = NetworkRKey(rkey_per_device[n]);
+    }
+    return IbgdaRemoteBuffer(reinterpret_cast<void*>(addr), keys);
   }
 
   /**
    * Create a sub-buffer at the given byte offset.
    */
   IbgdaBufferExchInfo subBuffer(std::size_t offset) const {
-    return IbgdaBufferExchInfo(addr + offset, rkey);
+    IbgdaBufferExchInfo sub = *this;
+    sub.addr += offset;
+    return sub;
   }
 };
 

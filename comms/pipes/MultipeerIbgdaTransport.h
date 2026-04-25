@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -196,26 +197,34 @@ constexpr int kMaxQpsPerPeer = 128;
 /**
  * Transport exchange info for allGather-based exchange.
  *
- * Each rank contributes this structure containing:
- * - Common connection info (GID, lid) shared with all peers
- * - Per-target QPNs: qpnForRank[j] = QPN this rank uses to connect to rank j
+ * Each rank contributes this structure containing per-NIC GID/LID and the
+ * per-(target_rank, q) QPN this rank uses on that NIC.
  */
 struct IbgdaTransportExchInfoAll {
-  // Common info (same for all connections from this rank)
-  uint8_t gid[16]{};
-  int gidIndex{0};
-  uint16_t lid{0};
+  // Per-NIC public info shared with peers (wire format). nicInfo[n] holds
+  // this rank's NIC n's GID, LID, and the QPNs it uses to connect to each
+  // (target_rank, q). Indices [numNics .. kMaxNicsPerGpu) are zero-init and
+  // never read by peers (both ranks must agree on numNics — validated at
+  // exchange time).
+  struct NicWireInfo {
+    uint8_t gid[16]{};
+    uint16_t lid{0};
+    // QPN this rank uses on this NIC to connect to (target_rank, q).
+    // qpnForRank[myRank][*] is unused (set to 0).
+    uint32_t qpnForRank[kMaxRanksForAllGather][kMaxQpsPerPeer]{};
+  };
+  NicWireInfo nicInfo[kMaxNicsPerGpu]{};
 
-  // Port active MTU.
+  // Common (shared across NICs on this rank).
+  int gidIndex{0};
   enum ibv_mtu mtu { IBV_MTU_4096 };
 
-  // Number of QPs per peer used by this rank
-  int numQpsPerPeer{1};
+  // Number of NICs (rails) used by this rank.
+  // Must match across all ranks (validated at exchange time).
+  int numNics{1};
 
-  // Per-target-rank QPNs
-  // qpnForRank[j][q] = QPN of q-th QP that this rank uses to connect to rank j
-  // qpnForRank[myRank][*] is unused (set to 0)
-  uint32_t qpnForRank[kMaxRanksForAllGather][kMaxQpsPerPeer]{};
+  // Number of QPs per (peer, NIC) used by this rank.
+  int numQpsPerNic{1};
 };
 
 /**
@@ -418,9 +427,13 @@ class MultipeerIbgdaTransport {
   void exchange_send_recv_buffers();
   void cleanup_send_recv_buffers();
   void cleanup();
+  // Connect a QP to a peer (or self for loopback). The nic argument selects
+  // which local NIC's AH attrs / port to use; the peerInfo carries the
+  // remote-side GID / LID / qpn. At numNics_=1 nic is always 0.
   void connectQp(
       doca_gpu_verbs_qp_hl* qpHl,
-      const IbgdaTransportExchInfo& peerInfo);
+      const IbgdaTransportExchInfo& peerInfo,
+      int nic);
   int rankToPeerIndex(int rank) const;
   int peerIndexToRank(int peerIndex) const;
 
@@ -434,23 +447,26 @@ class MultipeerIbgdaTransport {
   // Configuration
   MultipeerIbgdaTransportConfig config_;
 
-  // DOCA GPU context
+  // DOCA GPU context (shared across NICs).
   doca_gpu* docaGpu_{nullptr};
 
-  // IB verbs resources (raw rdma-core)
-  ibv_context* ibvCtx_{nullptr};
-  ibv_pd* ibvPd_{nullptr};
-  doca_verbs_ah_attr* ahAttr_{nullptr};
-  union ibv_gid localGid_{};
+  // Number of NICs (rails) actually in use. <= kMaxNicsPerGpu.
+  // nicDevices_.size() == numNics_ after openIbDevice().
+  int numNics_{1};
 
-  // QP groups (one per peer): main QP + companion QP with shared UAR.
-  // The companion QP is created with core_direct=true (required for WAIT WQE).
-  std::vector<doca_gpu_verbs_qp_group_hl*> qpGroupHlList_;
-
-  // Self-loop responder companion QPs (one per peer, passive endpoints)
-  // These are connected to the active companion QPs in each group,
-  // forming loopback pairs for counter-based completion tracking.
-  std::vector<doca_gpu_verbs_qp_hl*> loopbackCompanionQpHlList_;
+  // Per-NIC host-side IB verbs resources. qpGroups and loopbackCompanionQps
+  // are indexed [peer * numQpsPerPeer + q].
+  struct NicHostIbgdaResources {
+    std::string deviceName;
+    ibv_context* ibvCtx{nullptr};
+    ibv_pd* ibvPd{nullptr};
+    doca_verbs_ah_attr* ahAttr{nullptr};
+    union ibv_gid localGid{};
+    ibv_mr* sinkMr{nullptr};
+    std::vector<doca_gpu_verbs_qp_group_hl*> qpGroups;
+    std::vector<doca_gpu_verbs_qp_hl*> loopbackCompanionQps;
+  };
+  std::vector<NicHostIbgdaResources> nicDevices_;
 
   // Sink buffer for RDMA atomic return values (discarded).
   // DOCA's OPCODE_ATOMIC_FA requires a local address for the fetch-add
@@ -461,14 +477,14 @@ class MultipeerIbgdaTransport {
   std::size_t sinkBufferSize_{0};
   std::size_t sinkBufferAllocSize_{0};
   std::uint64_t sinkBufferHandle_{0};
-  ibv_mr* sinkMr_{nullptr};
 
-  // Cached MR entry: one MR per CUDA allocation, refcounted.
-  // Multiple user buffers within the same cudaMalloc allocation share one MR.
+  // Cached MR entry: one MR per (CUDA allocation, NIC), refcounted.
+  // Multiple user buffers within the same cudaMalloc allocation share one
+  // MR per NIC; the MR set covers all NICs for the same physical buffer.
   struct CachedMr {
-    ibv_mr* mr;
-    size_t allocSize;
-    int refs;
+    std::array<ibv_mr*, kMaxNicsPerGpu> mrs{};
+    size_t allocSize{0};
+    int refs{0};
   };
 
   // Maps CUDA allocation base address -> cached MR covering the full
@@ -479,10 +495,11 @@ class MultipeerIbgdaTransport {
   // the memory).
   std::map<uintptr_t, CachedMr> registeredBuffers_;
 
-  // GPU PCIe bus ID and NIC device name
+  // GPU PCIe bus ID.
   std::string gpuPciBusId_;
-  std::string nicDeviceName_;
-  int gidIndex_{3}; // Default GID index
+  // GID index + active MTU are common across NICs (same config knob, same
+  // fabric/HCA generation in multi-NIC platforms like GB200/GB300).
+  int gidIndex_{3};
   enum ibv_mtu localMtu_ { IBV_MTU_4096 };
 
   // Per-peer device transports (GPU accessible)
