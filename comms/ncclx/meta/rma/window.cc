@@ -309,15 +309,22 @@ NCCL_API(
     ncclComm_t comm,
     void* ptr,
     size_t size,
-    uint32_t* outLkey);
+    ncclLkeyPerDevice* outLkeys);
 ncclResult_t ncclWinLocalRegisterBuffer(
     ncclComm_t comm,
     void* ptr,
     size_t size,
-    uint32_t* outLkey) {
-  if (comm == nullptr || ptr == nullptr || outLkey == nullptr) {
+    ncclLkeyPerDevice* outLkeys) {
+  static_assert(
+      NCCLX_MAX_NICS_PER_GPU == ::comms::pipes::kMaxNicsPerGpu,
+      "NCCLX_MAX_NICS_PER_GPU in nccl.h must match comms::pipes::kMaxNicsPerGpu");
+  if (comm == nullptr || ptr == nullptr || outLkeys == nullptr) {
     return ncclInvalidArgument;
   }
+
+  // Initialize the result so failure paths leave a well-defined empty
+  // (size=0) result rather than uninitialized data.
+  *outLkeys = ncclLkeyPerDevice{};
 
   if (!ctranInitialized(comm->ctranComm_.get())) {
     WARN("ncclWinLocalRegisterBuffer: ctran not initialized");
@@ -333,18 +340,20 @@ ncclResult_t ncclWinLocalRegisterBuffer(
   }
 
   // If no IBGDA peers exist (e.g. IB disabled, NVLink-only topology),
-  // skip registration and return success with a zero lkey. The lkey is
-  // only used for IBGDA WQE construction during RDMA writes; NVLink puts
-  // never read it.  This mirrors HostWindow::registerLocalBuffer which
-  // guards the same call with nIbgdaPeers > 0.
+  // skip registration and return success with size=0. The lkeys are only
+  // used for IBGDA WQE construction during RDMA writes; NVLink puts never
+  // read them. This mirrors HostWindow::registerLocalBuffer which guards
+  // the same call with nIbgdaPeers > 0.
   if (mpt->ibgda_peer_ranks().empty()) {
-    *outLkey = 0;
     return ncclSuccess;
   }
 
   try {
     auto ibgdaBuf = mpt->localRegisterIbgdaBuffer(ptr, size);
-    *outLkey = ibgdaBuf.lkey_per_device[0].value;
+    outLkeys->size = ibgdaBuf.lkey_per_device.size;
+    for (int n = 0; n < outLkeys->size; ++n) {
+      outLkeys->values[n] = ibgdaBuf.lkey_per_device[n].value;
+    }
     return ncclSuccess;
   } catch (const std::exception& e) {
     WARN("ncclWinLocalRegisterBuffer: %s", e.what());
