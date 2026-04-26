@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <vector>
 
 #include <folly/Synchronized.h>
@@ -15,6 +16,7 @@
 #include "comms/ctran/utils/Abort.h"
 #include "comms/ctran/utils/AsyncError.h"
 #include "comms/ctran/utils/Exception.h"
+#include "comms/utils/colltrace/AlgoStats.h"
 #include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/utils/commSpecs.h"
 
@@ -57,6 +59,7 @@ struct ctranConfig {
 // Forward declaration to avoid circular dependency
 class CollTrace;
 struct ncclComm;
+class CtranGpe;
 namespace ncclx::memory {
 class memCacheAllocator;
 }
@@ -154,6 +157,10 @@ class CtranComm {
   // initialized.
   comms::pipes::Transport* getMultiPeerTransportsPtr() const;
 
+  // Returns a snapshot of the algo stats, or std::nullopt if stats are
+  // disabled.
+  std::optional<meta::comms::colltrace::AlgoStatDump> dumpAlgoStats() const;
+
   // fields are public to allow access from external code and tests
   // TODO: remove config_, it's redundant
   ctranConfig config_;
@@ -205,6 +212,8 @@ class CtranComm {
   CudagraphDeferredCleanup cudagraphDeferredCleanup;
 
  private:
+  friend class CtranGpe;
+  std::unique_ptr<meta::comms::colltrace::AlgoStats> algoStats_;
   // TODO: define proper constructor to make CtranComm be independent of
   // ncclComm.
   // While doing refactoring we always create CtranComm from ncclComm and it
