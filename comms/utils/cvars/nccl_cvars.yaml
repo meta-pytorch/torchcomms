@@ -2004,12 +2004,15 @@ cvars:
  - name        : NCCL_ALLGATHER_P_ALGO
    type        : enum
    default     : ctpipeline
-   choices     : ctdirect, ctpipeline
+   choices     : ctdirect, ctpipeline, ctrdpipeline
    description : |-
      The algorithm to use for AllgatherP communication
      ctdirect - Ctran-based direct point-to-point algorithm
      ctpipeline - Ctran-based pipeline algorithm that pipelines
                   inter-node rail ring and intra-node CopyEngine based copy
+     ctrdpipeline - Ctran-based hybrid algorithm that does recursive doubling across
+                    rails for inter-node exchange and CopyEngine based broadcast
+                    within the NVLink domain. Requires nNodes to be a power of 2.
 
  - name        : NCCL_ALLGATHER_ALGO
    type        : enum
