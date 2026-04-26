@@ -279,16 +279,35 @@ class CtranAllgatherPTestParam
           MemAllocType,
           enum NCCL_ALLGATHER_P_ALGO>> {};
 
+static std::string algoToStr(enum NCCL_ALLGATHER_P_ALGO algo) {
+  switch (algo) {
+    case NCCL_ALLGATHER_P_ALGO::ctdirect:
+      return "ctdirect";
+    case NCCL_ALLGATHER_P_ALGO::ctpipeline:
+      return "ctpipeline";
+    case NCCL_ALLGATHER_P_ALGO::ctrdpipeline:
+      return "ctrdpipeline";
+    default:
+      return "unknown";
+  }
+}
+
 TEST_P(CtranAllgatherPTestParam, Basic) {
   const auto& [maxSendCount, count, inplace, memType, algo] = GetParam();
-  const std::string algoStr =
-      (algo == NCCL_ALLGATHER_P_ALGO::ctdirect) ? "ctdirect" : "ctpipeline";
+  const std::string algoStr = algoToStr(algo);
   SysEnvRAII algoEnv("NCCL_ALLGATHER_P_ALGO", algoStr);
 
   if (memType == kMemNcclMemAlloc && ncclIsCuMemSupported() == false) {
     GTEST_SKIP() << "CuMem not supported, skipping this test";
   } else if (ctranComm->ctran_->mapper->ctranIbPtr() == nullptr) {
     GTEST_SKIP() << "No IB Backend found, skip test";
+  } else if (
+      algo == NCCL_ALLGATHER_P_ALGO::ctrdpipeline &&
+      ctranComm->statex_->nNodes() > 1 &&
+      (ctranComm->statex_->nNodes() & (ctranComm->statex_->nNodes() - 1)) !=
+          0) {
+    GTEST_SKIP()
+        << "ctrdpipeline requires nNodes to be a power of 2, skip test";
   } else {
     run(maxSendCount, count, inplace, memType, ctranComm.get());
   }
@@ -296,8 +315,7 @@ TEST_P(CtranAllgatherPTestParam, Basic) {
 
 TEST_P(CtranAllgatherPTestParam, VnodeBasic) {
   const auto& [maxSendCount, count, inplace, memType, algo] = GetParam();
-  const std::string algoStr =
-      (algo == NCCL_ALLGATHER_P_ALGO::ctdirect) ? "ctdirect" : "ctpipeline";
+  const std::string algoStr = algoToStr(algo);
   SysEnvRAII algoEnv("NCCL_ALLGATHER_P_ALGO", algoStr);
   EnvRAII vnodeEnv(
       NCCL_COMM_STATE_DEBUG_TOPO, NCCL_COMM_STATE_DEBUG_TOPO::vnode);
@@ -315,7 +333,48 @@ TEST_P(CtranAllgatherPTestParam, VnodeBasic) {
     // Create a new communicator with virtual node + 4 local ranks setup
     auto testComm = makeCtranComm();
     ASSERT_EQ(testComm->statex_->nLocalRanks(), 4);
-    ASSERT_EQ(testComm->statex_->nNodes(), numRanks / 4);
+    const auto vnodeNNodes = numRanks / 4;
+    ASSERT_EQ(testComm->statex_->nNodes(), vnodeNNodes);
+    if (algo == NCCL_ALLGATHER_P_ALGO::ctrdpipeline && vnodeNNodes > 1 &&
+        (vnodeNNodes & (vnodeNNodes - 1)) != 0) {
+      GTEST_SKIP()
+          << "ctrdpipeline requires nNodes to be a power of 2, skip test";
+    }
+    run(maxSendCount, count, inplace, memType, testComm.get());
+  }
+}
+
+// Exercises the log2(nNodes) striping with nLocalRanks=2, nNodes=numRanks/2,
+// which forces ctrdpipeline through 2+ recursive-doubling steps and thus the
+// j >= 1 path of rankChunkOffset and the step > 0 recvbuff-read path that the
+// 1-step VnodeBasic never hits. Other algos also run through this config
+// so the extra parameterization is cheap.
+TEST_P(CtranAllgatherPTestParam, VnodeBasicMultiStep) {
+  const auto& [maxSendCount, count, inplace, memType, algo] = GetParam();
+  const std::string algoStr = algoToStr(algo);
+  SysEnvRAII algoEnv("NCCL_ALLGATHER_P_ALGO", algoStr);
+  EnvRAII vnodeEnv(
+      NCCL_COMM_STATE_DEBUG_TOPO, NCCL_COMM_STATE_DEBUG_TOPO::vnode);
+  EnvRAII ppnEnv(NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS, 2);
+  if (ctranComm->statex_->nLocalRanks() % 2 != 0 || numRanks / 2 < 4) {
+    GTEST_SKIP()
+        << "VnodeBasicMultiStep requires nLocalRanks divisible by 2 and nNodes >= 4";
+  }
+
+  if (memType == kMemNcclMemAlloc && ncclIsCuMemSupported() == false) {
+    GTEST_SKIP() << "CuMem not supported, skipping this test";
+  } else if (ctranComm->ctran_->mapper->ctranIbPtr() == nullptr) {
+    GTEST_SKIP() << "No IB Backend found, skip test";
+  } else {
+    auto testComm = makeCtranComm();
+    ASSERT_EQ(testComm->statex_->nLocalRanks(), 2);
+    const auto vnodeNNodes = numRanks / 2;
+    ASSERT_EQ(testComm->statex_->nNodes(), vnodeNNodes);
+    if (algo == NCCL_ALLGATHER_P_ALGO::ctrdpipeline && vnodeNNodes > 1 &&
+        (vnodeNNodes & (vnodeNNodes - 1)) != 0) {
+      GTEST_SKIP()
+          << "ctrdpipeline requires nNodes to be a power of 2, skip test";
+    }
     run(maxSendCount, count, inplace, memType, testComm.get());
   }
 }
@@ -646,7 +705,8 @@ INSTANTIATE_TEST_SUITE_P(
         testing::Values(kMemNcclMemAlloc),
         testing::Values(
             NCCL_ALLGATHER_P_ALGO::ctdirect,
-            NCCL_ALLGATHER_P_ALGO::ctpipeline)),
+            NCCL_ALLGATHER_P_ALGO::ctpipeline,
+            NCCL_ALLGATHER_P_ALGO::ctrdpipeline)),
     getTestName);
 
 int main(int argc, char* argv[]) {
