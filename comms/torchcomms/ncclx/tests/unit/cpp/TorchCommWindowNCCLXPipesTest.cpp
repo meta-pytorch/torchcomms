@@ -163,16 +163,31 @@ TEST_F(TorchCommWindowNCCLXPipesTest, RegisterLocalBufferSuccess) {
   auto* dev_win = win->get_device_window();
   ASSERT_NE(dev_win, nullptr) << "Device window should not be null";
 
-  // Mock winLocalRegisterBuffer to return a specific lkey
-  const uint32_t expected_lkey = 0x12345678;
+  // Mock winLocalRegisterBuffer to return per-NIC lkeys (one per NIC up to
+  // NCCLX_MAX_NICS_PER_GPU). Distinct values per NIC catch any caller that
+  // accidentally treats values[0] as the only key.
+  const uint32_t expected_lkeys[NCCLX_MAX_NICS_PER_GPU] = {
+      0x12345678, 0xCAFEBABE};
   EXPECT_CALL(*nccl_mock_, winLocalRegisterBuffer(_, _, _, _))
-      .WillOnce(DoAll(SetArgPointee<3>(expected_lkey), Return(ncclSuccess)));
+      .WillOnce(
+          Invoke([&](ncclComm_t, void*, size_t, ncclLkeyPerDevice* outLkeys) {
+            outLkeys->size = NCCLX_MAX_NICS_PER_GPU;
+            for (int n = 0; n < NCCLX_MAX_NICS_PER_GPU; ++n) {
+              outLkeys->values[n] = expected_lkeys[n];
+            }
+            return ncclSuccess;
+          }));
 
   auto src_tensor = createTestTensor({5, 5});
   auto buf = win->register_local_buffer(src_tensor);
 
-  // Pipes backend: lkey is set, backend_window is nullptr
-  EXPECT_EQ(buf.lkey, expected_lkey);
+  // Pipes backend: per-NIC lkeys all set, size populated, backend_window null
+  EXPECT_EQ(buf.lkey_per_device.size, NCCLX_MAX_NICS_PER_GPU)
+      << "size should match the count returned by the backend";
+  for (int n = 0; n < NCCLX_MAX_NICS_PER_GPU; ++n) {
+    EXPECT_EQ(buf.lkey_per_device.values[n], expected_lkeys[n])
+        << "lkeys[" << n << "] mismatch";
+  }
   EXPECT_EQ(buf.backend_window, nullptr)
       << "Pipes backend should not set backend_window";
   EXPECT_NE(buf.base_ptr, nullptr);
@@ -185,7 +200,8 @@ TEST_F(TorchCommWindowNCCLXPipesTest, RegisterLocalBufferSuccess) {
 
   EXPECT_EQ(buf.base_ptr, nullptr)
       << "base_ptr should be cleared after deregister";
-  EXPECT_EQ(buf.lkey, 0u) << "lkey should be cleared after deregister";
+  EXPECT_EQ(buf.lkey_per_device.size, 0)
+      << "size should be cleared after deregister";
 
   // Cleanup mocks for destruction — use ON_CALL since finalize() also
   // triggers other free/destroy calls (barrier buffer, etc.)

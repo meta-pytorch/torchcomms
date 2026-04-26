@@ -462,7 +462,7 @@ class NcclxMock : public NcclxApi {
   MOCK_METHOD(
       ncclResult_t,
       winLocalRegisterBuffer,
-      (ncclComm_t comm, void* ptr, size_t size, uint32_t* outLkey),
+      (ncclComm_t comm, void* ptr, size_t size, ncclLkeyPerDevice* outLkeys),
       (override));
   MOCK_METHOD(
       ncclResult_t,

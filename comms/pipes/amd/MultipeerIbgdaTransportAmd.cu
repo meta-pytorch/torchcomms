@@ -676,7 +676,7 @@ IbgdaLocalBuffer MultipeerIbgdaTransportAmd::registerBuffer(
 
   auto it = registeredBuffers_.find(ptr);
   if (it != registeredBuffers_.end())
-    return IbgdaLocalBuffer(ptr, HostLKey(it->second->lkey));
+    return IbgdaLocalBuffer(ptr, NetworkLKeys{HostLKey(it->second->lkey)});
 
   int accessFlags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
       IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC;
@@ -693,7 +693,7 @@ IbgdaLocalBuffer MultipeerIbgdaTransportAmd::registerBuffer(
   VLOG(1) << "MultipeerIbgdaTransportAmd: registered buffer ptr=" << ptr
           << " size=" << size << " lkey=" << mr->lkey;
 
-  return IbgdaLocalBuffer(ptr, HostLKey(mr->lkey));
+  return IbgdaLocalBuffer(ptr, NetworkLKeys{HostLKey(mr->lkey)});
 }
 
 void MultipeerIbgdaTransportAmd::deregisterBuffer(void* ptr) {
@@ -714,10 +714,9 @@ std::vector<IbgdaRemoteBuffer> MultipeerIbgdaTransportAmd::exchangeBuffer(
 
   // AllGather with ALL ranks (even in filtered mode)
   std::vector<IbgdaBufferExchInfo> allInfo(nRanks_);
-  allInfo[myRank_] = IbgdaBufferExchInfo{
-      reinterpret_cast<uint64_t>(localBuf.ptr),
-      HostRKey(it->second->rkey),
-  };
+  allInfo[myRank_].addr = reinterpret_cast<uint64_t>(localBuf.ptr);
+  allInfo[myRank_].numNics = 1;
+  allInfo[myRank_].rkey_per_device[0] = HostRKey(it->second->rkey);
 
   auto result =
       bootstrap_

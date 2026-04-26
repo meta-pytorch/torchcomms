@@ -33,16 +33,68 @@ struct IbgdaOnlyDeviceWindowBuffers;
 // Buffer Registration Types (for DeviceWindow generic put)
 // ===========================================================================
 
+/**
+ * LocalBufferRegistration - Source buffer + per-NIC local keys
+ *
+ * Carries one local key per NIC (`lkey_per_device`, a NetworkLKeys aggregate)
+ * for multi-NIC IBGDA — each NIC has its own ibv_pd with a distinct lkey
+ * for the same physical buffer. The kernel-side P2pIbgdaTransportDevice
+ * selects `lkey_per_device[nic]` based on the slot it dispatches on.
+ *
+ * Construction:
+ *   - {ptr, size}                  — NVL-only path, lkey_per_device empty
+ *   - {ptr, size, NetworkLKeys{…}} — IBGDA path, full per-NIC keys
+ *
+ * No single-key ctor: at numNics>1 a single-key value would silently leave
+ * NIC[1..N-1] keys zero and trap on first multi-NIC use. Single-NIC IBGDA
+ * callers use `NetworkLKeys{lkey}` to express the intent explicitly.
+ */
 struct LocalBufferRegistration {
   const void* base{nullptr};
   std::size_t size{0};
-  NetworkLKey lkey{};
+  NetworkLKeys lkey_per_device{};
+
+  IBGDA_HOST_DEVICE LocalBufferRegistration() = default;
+
+  // NVL-only — leaves lkey_per_device empty. Will trap if used in IBGDA path.
+  IBGDA_HOST_DEVICE LocalBufferRegistration(const void* b, std::size_t s)
+      : base(b), size(s) {}
+
+  // Multi-key — preferred for IBGDA paths.
+  IBGDA_HOST_DEVICE LocalBufferRegistration(
+      const void* b,
+      std::size_t s,
+      const NetworkLKeys& keys)
+      : base(b), size(s), lkey_per_device(keys) {}
 };
 
+/**
+ * RemoteBufferRegistration - Destination buffer + per-NIC remote keys
+ *
+ * Same multi-NIC pattern as LocalBufferRegistration. The `(ptr, size)` ctor
+ * leaves rkey_per_device empty (NVL-only path); the
+ * `(ptr, size, NetworkRKeys{…})` ctor accepts the per-NIC rkey_per_device
+ * for IBGDA.
+ * No single-key ctor — same silent-misuse rationale as
+ * LocalBufferRegistration.
+ */
 struct RemoteBufferRegistration {
   const void* base{nullptr};
   std::size_t size{0};
-  NetworkRKey rkey{};
+  NetworkRKeys rkey_per_device{};
+
+  IBGDA_HOST_DEVICE RemoteBufferRegistration() = default;
+
+  // NVL-only — leaves rkey_per_device empty. Will trap if used in IBGDA path.
+  IBGDA_HOST_DEVICE RemoteBufferRegistration(const void* b, std::size_t s)
+      : base(b), size(s) {}
+
+  // Multi-key — preferred for IBGDA paths.
+  IBGDA_HOST_DEVICE RemoteBufferRegistration(
+      const void* b,
+      std::size_t s,
+      const NetworkRKeys& keys)
+      : base(b), size(s), rkey_per_device(keys) {}
 };
 
 // Bounds checking macros for device code
@@ -990,10 +1042,11 @@ class DeviceWindow {
     } else {
       int ibgdaPeerIdx = rank_to_peer_index(target_rank);
       IbgdaLocalBuffer localBuf(
-          const_cast<void*>(static_cast<const void*>(localSrc)), src_buf.lkey);
+          const_cast<void*>(static_cast<const void*>(localSrc)),
+          src_buf.lkey_per_device);
       IbgdaRemoteBuffer remoteBuf(
           const_cast<void*>(remoteBufferRegistry_[ibgdaPeerIdx].base),
-          remoteBufferRegistry_[ibgdaPeerIdx].rkey);
+          remoteBufferRegistry_[ibgdaPeerIdx].rkey_per_device);
       handle_.get_ibgda(target_rank)
           .put(group, localBuf, remoteBuf.subBuffer(dst_offset), nbytes);
     }
@@ -1043,10 +1096,11 @@ class DeviceWindow {
     } else {
       int ibgdaPeerIdx = rank_to_peer_index(target_rank);
       IbgdaLocalBuffer localBuf(
-          const_cast<void*>(static_cast<const void*>(localSrc)), src_buf.lkey);
+          const_cast<void*>(static_cast<const void*>(localSrc)),
+          src_buf.lkey_per_device);
       IbgdaRemoteBuffer remoteBuf(
           const_cast<void*>(remoteBufferRegistry_[ibgdaPeerIdx].base),
-          remoteBufferRegistry_[ibgdaPeerIdx].rkey);
+          remoteBufferRegistry_[ibgdaPeerIdx].rkey_per_device);
       handle_.get_ibgda(target_rank)
           .put(
               group,
@@ -1109,11 +1163,12 @@ class DeviceWindow {
     } else {
       int ibgdaPeerIdx = rank_to_peer_index(target_rank);
       IbgdaLocalBuffer localBuf(
-          const_cast<void*>(static_cast<const void*>(localSrc)), src_buf.lkey);
+          const_cast<void*>(static_cast<const void*>(localSrc)),
+          src_buf.lkey_per_device);
       IbgdaRemoteBuffer remoteBuf(
           const_cast<void*>(remoteBufferRegistry_[ibgdaPeerIdx].base),
-          remoteBufferRegistry_[ibgdaPeerIdx].rkey);
-      IbgdaLocalBuffer counterBuf(ibgdaPeerCounterBuf_, ibgdaPeerCounterLkey_);
+          remoteBufferRegistry_[ibgdaPeerIdx].rkey_per_device);
+      IbgdaLocalBuffer counterBuf(ibgdaPeerCounterBuf_, ibgdaPeerCounterLkeys_);
       int counterSlot = ibgdaPeerIdx * peerCounterCount_ + counterId;
       handle_.get_ibgda(target_rank)
           .put(
@@ -1171,11 +1226,12 @@ class DeviceWindow {
     } else {
       int ibgdaPeerIdx = rank_to_peer_index(target_rank);
       IbgdaLocalBuffer localBuf(
-          const_cast<void*>(static_cast<const void*>(localSrc)), src_buf.lkey);
+          const_cast<void*>(static_cast<const void*>(localSrc)),
+          src_buf.lkey_per_device);
       IbgdaRemoteBuffer remoteBuf(
           const_cast<void*>(remoteBufferRegistry_[ibgdaPeerIdx].base),
-          remoteBufferRegistry_[ibgdaPeerIdx].rkey);
-      IbgdaLocalBuffer counterBuf(ibgdaPeerCounterBuf_, ibgdaPeerCounterLkey_);
+          remoteBufferRegistry_[ibgdaPeerIdx].rkey_per_device);
+      IbgdaLocalBuffer counterBuf(ibgdaPeerCounterBuf_, ibgdaPeerCounterLkeys_);
       int counterSlot = ibgdaPeerIdx * peerCounterCount_ + counterId;
       handle_.get_ibgda(target_rank)
           .put(
@@ -1250,7 +1306,7 @@ class DeviceWindow {
   // --- Per-peer counter buffers (IBGDA-only, local) ---
   int peerCounterCount_{0};
   uint64_t* ibgdaPeerCounterBuf_{nullptr};
-  NetworkLKey ibgdaPeerCounterLkey_{};
+  NetworkLKeys ibgdaPeerCounterLkeys_{};
 
   // --- Barrier buffers (flat, per-peer-type) ---
   int barrierCount_{0};

@@ -1,24 +1,21 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-// Cudagraph-aware AllGather: when a regular ctranAllGather() is called during
-// CUDA graph capture and this path is enabled, the collective is transparently
-// converted to the persistent AllGatherP (window-based) algorithm.
+// Cudagraph-aware AllGather: when ctranAllGather() is called during CUDA graph
+// capture with a ctgraph* algorithm, this module handles buffer registration
+// and algorithm dispatch. The algo is either explicitly specified
+// (ctgraph_pipeline, ctgraph_ring, ctgraph_rd) or auto-selected by
+// selectCtgraphAlgo() based on topology and message size.
 //
-// Flow:
-//   1. ctranWinRegister() — register recvbuff as a window, exchange handles
-//      with all peers. This is a collective CPU-side operation and is NOT
-//      captured into the graph.
-//   2. allGatherWinInit() — create persistent AGP state from window metadata.
-//      Synchronous, no async handle exchange needed. Uses
-//      StreamCaptureModeGuard to temporarily allow cudaHostAlloc
-//      (blocked under cudaStreamCaptureModeGlobal used by PyTorch).
-//   3. allGatherWinExec() — dry-run exec that IS captured into the graph.
-//      CE copies (NVL intra-node) and GPE host-node callbacks (IB inter-node)
-//      are recorded as graph nodes.
-//   4. Register cleanup on comm's cudagraphDeferredCleanup.
+// Two registration strategies:
 //
-// On graph replay, only the captured CE + host-node operations re-execute.
-// The result is SM-free replay (no GPU kernels for NVL copies).
+//   winPersistBuffReg (ctgraph_pipeline, nLocalRanks > 1):
+//     Both local and remote addresses must be stable across replays.
+//     Uses window: ctranWinRegister → allGatherWinInit → allGatherWinExec.
+//
+//   localPersistBuffReg (ctgraph_ring/rd, nLocalRanks == 1):
+//     Only local registration persists; remote exchange happens at each replay
+//     via IB isendCtrl/irecvCtrl inside the GPE host node.
+//     Uses globalRegisterWithPtr so searchRegHandle hits the fast path.
 //
 // Cleanup: Resources are registered for deferred cleanup at capture time
 // (not at graph destruction). This ensures cleanup runs during comm
@@ -36,62 +33,160 @@
 #include "comms/utils/CudaRAII.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
+namespace {
+
+// winPersistBuffReg: register recvbuff as a window, exchange handles with
+// all peers. Both local and remote addresses must be stable across replays.
+commResult_t winPersistBuffReg(
+    void* recvbuff,
+    size_t recvBytes,
+    CtranComm* comm,
+    cudaStream_t stream,
+    ctran::CtranWin** winOut,
+    CtranPersistentRequest** requestOut) {
+  FB_COMMCHECK(ctran::ctranWinRegister(recvbuff, recvBytes, comm, winOut));
+
+  auto winGuard = folly::makeGuard([winOut]() { delete *winOut; });
+
+  CtranPersistentRequest* request = nullptr;
+  {
+    meta::comms::StreamCaptureModeGuard captureGuard{
+        cudaStreamCaptureModeRelaxed};
+    FB_COMMCHECK(ctran::allGatherWinInit(*winOut, comm, stream, request));
+  }
+
+  winGuard.dismiss();
+  *requestOut = request;
+  return commSuccess;
+}
+
+// localPersistBuffReg: register recvbuff locally via globalRegisterWithPtr.
+// Only local registration persists; remote exchange happens at each replay.
+commResult_t localPersistBuffReg(void* recvbuff, size_t recvBytes) {
+  meta::comms::StreamCaptureModeGuard captureGuard{
+      cudaStreamCaptureModeRelaxed};
+  FB_COMMCHECK(ctran::globalRegisterWithPtr(recvbuff, recvBytes, true, true));
+  return commSuccess;
+}
+
+enum NCCL_ALLGATHER_ALGO selectCtgraphAlgo(
+    size_t sendBytes,
+    const ncclx::CommStateX* statex) {
+  if (statex->nLocalRanks() > 1) {
+    return NCCL_ALLGATHER_ALGO::ctgraph_pipeline;
+  }
+  return (sendBytes >= NCCL_CTGRAPH_ALLGATHER_RING_THRESHOLD)
+      ? NCCL_ALLGATHER_ALGO::ctgraph_ring
+      : NCCL_ALLGATHER_ALGO::ctgraph_rd;
+}
+
+} // namespace
+
 commResult_t ctranAllGatherCudagraphAware(
     const void* sendbuff,
     void* recvbuff,
     size_t sendcount,
     commDataType_t datatype,
     CtranComm* comm,
-    cudaStream_t stream) {
+    cudaStream_t stream,
+    enum NCCL_ALLGATHER_ALGO algo) {
   const auto statex = comm->statex_.get();
   const int nRanks = statex->nRanks();
   const size_t recvBytes = sendcount * commTypeSize(datatype) * nRanks;
 
+  // auto-select algo if not specified
+  if (algo == NCCL_ALLGATHER_ALGO::ctgraph) {
+    algo = selectCtgraphAlgo(sendcount * commTypeSize(datatype), statex);
+  }
+
   CLOGF_SUBSYS(
       INFO,
       COLL,
-      "AllGather cudagraph-aware: converting to window-based AGP "
-      "(sendcount={}, nRanks={}, recvBytes={})",
+      "AllGather cudagraph-aware: algo={} "
+      "(sendcount={}, nRanks={}, nLocalRanks={}, recvBytes={})",
+      allGatherAlgoName(algo),
       sendcount,
       nRanks,
+      statex->nLocalRanks(),
       recvBytes);
 
-  // 1. Register recvbuff as a window and exchange handles with all peers.
-  //    Collective and CPU-side — NOT captured into the graph.
+  // Buffer registration + cleanup guard
   ctran::CtranWin* win = nullptr;
-  FB_COMMCHECK(ctran::ctranWinRegister(recvbuff, recvBytes, comm, &win));
-
-  // 2. Init persistent AGP from window metadata.
-  //    Switch to relaxed capture mode so initResources() can cudaHostAlloc
-  //    (blocked under cudaStreamCaptureModeGlobal used by PyTorch).
-  //    Single-threaded-per-comm assumption (standard for NCCL).
-  auto winGuard = folly::makeGuard([win]() { delete win; });
-
   CtranPersistentRequest* request = nullptr;
-  {
-    meta::comms::StreamCaptureModeGuard captureGuard{
-        cudaStreamCaptureModeRelaxed};
-    FB_COMMCHECK(ctran::allGatherWinInit(win, comm, stream, request));
+
+  switch (algo) {
+    case NCCL_ALLGATHER_ALGO::ctgraph_pipeline:
+      FB_COMMCHECK(
+          winPersistBuffReg(recvbuff, recvBytes, comm, stream, &win, &request));
+      break;
+    case NCCL_ALLGATHER_ALGO::ctgraph_ring:
+    case NCCL_ALLGATHER_ALGO::ctgraph_rd:
+      FB_COMMCHECK(localPersistBuffReg(recvbuff, recvBytes));
+      break;
+    default:
+      FB_ERRORRETURN(
+          commInvalidArgument,
+          "Unexpected algo {} in ctranAllGatherCudagraphAware",
+          allGatherAlgoName(algo));
   }
 
-  // 3. Dry-run exec — CE copies and GPE host-node callbacks are captured.
-  FB_COMMCHECK(ctran::allGatherWinExec(sendbuff, sendcount, datatype, request));
+  // Cleanup lambda: shared between error guard and deferred cleanup.
+  std::function<void()> cleanup;
+  switch (algo) {
+    case NCCL_ALLGATHER_ALGO::ctgraph_pipeline:
+      cleanup = [request, win]() {
+        if (request) {
+          ctran::allGatherWinDestroy(request);
+          delete request;
+        }
+        if (win) {
+          win->free(true /* skipBarrier */);
+          delete win;
+        }
+      };
+      break;
+    case NCCL_ALLGATHER_ALGO::ctgraph_ring:
+    case NCCL_ALLGATHER_ALGO::ctgraph_rd:
+      cleanup = [recvbuff, recvBytes]() {
+        ctran::globalDeregisterWithPtr(recvbuff, recvBytes);
+      };
+      break;
+    default:
+      break;
+  }
 
-  // 4. Register cleanup on comm at capture time. Resources live for the
-  //    comm's lifetime and are cleaned up during CtranComm::destroy() on
-  //    the main thread. This avoids depending on retainUserObject callbacks
-  //    which run on CUDA's internal thread where CUDA APIs are forbidden.
-  winGuard.dismiss();
-  comm->cudagraphDeferredCleanup.add([request, win]() {
-    if (request) {
-      ctran::allGatherWinDestroy(request);
-      delete request;
-    }
-    if (win) {
-      win->free(true /* skipBarrier */);
-      delete win;
+  auto cleanupGuard = folly::makeGuard([&cleanup]() {
+    if (cleanup) {
+      cleanup();
     }
   });
+
+  // Execute (captured into graph)
+  switch (algo) {
+    case NCCL_ALLGATHER_ALGO::ctgraph_pipeline: {
+      auto savedPAlgo = NCCL_ALLGATHER_P_ALGO;
+      NCCL_ALLGATHER_P_ALGO = NCCL_ALLGATHER_P_ALGO::ctpipeline;
+      auto pAlgoGuard = folly::makeGuard(
+          [savedPAlgo]() { NCCL_ALLGATHER_P_ALGO = savedPAlgo; });
+      FB_COMMCHECK(
+          ctran::allGatherWinExec(sendbuff, sendcount, datatype, request));
+      break;
+    }
+    case NCCL_ALLGATHER_ALGO::ctgraph_ring:
+      FB_COMMCHECK(ctranAllGatherRing(
+          sendbuff, recvbuff, sendcount, datatype, comm, stream));
+      break;
+    case NCCL_ALLGATHER_ALGO::ctgraph_rd:
+      FB_COMMCHECK(ctranAllGatherRd(
+          sendbuff, recvbuff, sendcount, datatype, comm, stream));
+      break;
+    default:
+      break;
+  }
+
+  // Success — transfer ownership to deferred cleanup
+  cleanupGuard.dismiss();
+  comm->cudagraphDeferredCleanup.add(std::move(cleanup));
 
   return commSuccess;
 }

@@ -49,6 +49,26 @@ inline constexpr uint64_t kDefaultDeviceTimeoutCycles = 10'000'000'000ULL;
 #endif
 
 /**
+ * NicDeviceIbgdaResources - Per-NIC bundle of QPs and sink lkey
+ *
+ * Owns the QPs (primary + companion for compound put+signal+counter ops)
+ * and the sink lkey for atomic FA responses on a single NIC. The
+ * P2pIbgdaTransportDevice holds a `DeviceSpan<NicDeviceIbgdaResources>` indexed
+ * by NIC slot (peer-rotated on the host side so that `nic_qp_for_group(g)`'s
+ * nic_id (= g % numNics) yields balanced per-peer scatter).
+ */
+struct NicDeviceIbgdaResources {
+  DeviceSpan<doca_gpu_dev_verbs_qp*> qps{};
+  DeviceSpan<doca_gpu_dev_verbs_qp*> companion_qps{};
+  NetworkLKey sink_lkey{};
+  int device_id{0};
+
+  __host__ __device__ int get_nic_id() const {
+    return device_id;
+  }
+};
+
+/**
  * P2pIbgdaTransportDevice - Device-side per-peer RDMA transport handle
  *
  * Every method has two overloads:
@@ -79,49 +99,51 @@ class P2pIbgdaTransportDevice {
  public:
   // Default ctor required so an array of these can be cudaMemcpy'd from host
   // (see MultipeerIbgdaTransportCuda.cu::buildDeviceTransportsOnGpu). Do not
-  // call methods on a default-constructed instance — qpArray_ is null.
+  // call methods on a default-constructed instance — nicDevices_ is empty.
   P2pIbgdaTransportDevice() = default;
 
   /**
    * Construct a per-peer device transport handle.
    *
-   * @param qpArray               GPU array of N primary QP pointers. WQEs for
-   *                              a block/group are posted to
-   *                              qpArray[group_id % numQps].
-   * @param companionArray        GPU array of N companion QP pointers for
-   *                              compound put+signal+counter ops. May be
-   *                              nullptr if counters are not used.
-   * @param numQps                Number of QPs in qpArray/companionArray.
-   * @param sinkLkey              LKey of a scratch buffer used as the atomic
-   *                              fetch-add response sink (value is discarded).
+   * Each P2p instance owns one peer's NICs. Each NicDeviceIbgdaResources
+   * carries its own primary and companion QPs and a sink lkey. The host-side
+   * builder is responsible for peer-rotating the NicDeviceIbgdaResources[]
+   * order so that `nic_qp_for_group(g)`'s nic_id (= g % nicDevices.size())
+   * produces balanced thread-per-peer scatter when nicDevices.size() > 1.
+   *
+   * Single-NIC usage: pass a 1-element nicDevices span. All ops fall through
+   * to NIC 0.
+   *
+   * @param nicDevices          GPU span of per-NIC bundles (length =
+   *                              numNics). Each NicDeviceIbgdaResources owns
+   *                              numQpsPerPeer primary + companion QP
+   *                              pointers and the per-NIC sink lkey.
    * @param ownedRemoteSignalBuf  Remote-side signal outbox: writing here
-   *                              targets the peer's local signal inbox. Used
-   *                              by the slot-index signal API.
+   *                              targets the peer's local signal inbox.
+   *                              Used by the slot-index signal API.
    * @param ownedLocalSignalBuf   Local signal inbox: receives signals from
    *                              the peer. Used by the slot-index
    *                              wait_signal/reset_signal/read_signal APIs.
    * @param ownedCounterBuf       Local counter buffer for compound
    *                              put+signal+counter and the slot-index
    *                              counter APIs. May be empty if not used.
+   * @param numSignalSlots        Number of uint64_t slots in the owned
+   *                              signal buffers. Used to bounds-check
+   *                              signalId. Zero disables the slot-index
+   *                              signal API.
+   * @param numCounterSlots       Number of uint64_t slots in the owned
+   *                              counter buffer. Zero disables the
+   *                              slot-index counter API.
    * @param discardSignalSlot     Remote uint64_t slot used as a "throwaway"
    *                              signal target for counter-only puts (see
    *                              put_impl for rationale). The peer never
    *                              reads this slot. Required when counter is
    *                              used; ignored otherwise.
-   * @param numSignalSlots        Number of uint64_t slots in the owned signal
-   *                              buffers. Used to bounds-check signalId
-   *                              args. Zero disables the slot-index signal
-   *                              API.
-   * @param numCounterSlots       Number of uint64_t slots in the owned
-   *                              counter buffer. Zero disables the
-   *                              slot-index counter API.
    * @param sendRecvState         Optional pipelined send/recv protocol state.
    *                              When empty, send()/recv() are unavailable.
    */
   __host__ __device__ P2pIbgdaTransportDevice(
-      DeviceSpan<doca_gpu_dev_verbs_qp*> qpArray,
-      DeviceSpan<doca_gpu_dev_verbs_qp*> companionArray,
-      NetworkLKey sinkLkey = NetworkLKey{},
+      DeviceSpan<NicDeviceIbgdaResources> nicDevices,
       IbgdaRemoteBuffer ownedRemoteSignalBuf = {},
       IbgdaLocalBuffer ownedLocalSignalBuf = {},
       IbgdaLocalBuffer ownedCounterBuf = {},
@@ -129,9 +151,7 @@ class P2pIbgdaTransportDevice {
       int numCounterSlots = 0,
       IbgdaRemoteBuffer discardSignalSlot = {},
       IbSendRecvState sendRecvState = {})
-      : qpArray_(qpArray),
-        companionArray_(companionArray),
-        sinkLkey_(sinkLkey),
+      : nicDevices_(nicDevices),
         ownedRemoteSignalBuf_(ownedRemoteSignalBuf),
         ownedLocalSignalBuf_(ownedLocalSignalBuf),
         ownedCounterBuf_(ownedCounterBuf),
@@ -760,9 +780,13 @@ class P2pIbgdaTransportDevice {
       return;
     }
 
+    auto idx = nic_qp_for_group(group.group_id);
+    const NicDeviceIbgdaResources& nic = nicDevices_[idx.nic_id];
+    auto* qp = nic.qps[idx.qp_id];
+
     // Guard: group_size must fit within QP send queue depth
     if (group.is_leader()) {
-      const uint16_t qp_depth = __ldg(&active_qp(group.group_id)->sq_wqe_num);
+      const uint16_t qp_depth = __ldg(&qp->sq_wqe_num);
       if (group.group_size > qp_depth) {
         printf(
             "[PIPES] FATAL: put group_size (%u) > QP depth (%u). "
@@ -778,27 +802,26 @@ class P2pIbgdaTransportDevice {
     uint64_t base_wqe_idx = 0;
     if (group.is_leader()) {
       base_wqe_idx = doca_gpu_dev_verbs_reserve_wq_slots<
-          DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
-          active_qp(group.group_id), group.group_size);
+          DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(qp, group.group_size);
     }
     base_wqe_idx = group.broadcast<uint64_t>(base_wqe_idx);
 
     // Each thread prepares its WQE
     uint64_t wqe_idx = base_wqe_idx + group.thread_id_in_group;
     struct doca_gpu_dev_verbs_wqe* wqe_ptr =
-        doca_gpu_dev_verbs_get_wqe_ptr(active_qp(group.group_id), wqe_idx);
+        doca_gpu_dev_verbs_get_wqe_ptr(qp, wqe_idx);
 
     doca_gpu_dev_verbs_wqe_prepare_write(
-        active_qp(group.group_id),
+        qp,
         wqe_ptr,
         static_cast<uint16_t>(wqe_idx),
         DOCA_GPUNETIO_IB_MLX5_OPCODE_RDMA_WRITE,
         DOCA_GPUNETIO_IB_MLX5_WQE_CTRL_CQ_UPDATE,
         0,
         reinterpret_cast<uint64_t>(laneRemoteBuf.ptr),
-        laneRemoteBuf.rkey.value,
+        laneRemoteBuf.rkey_per_device[idx.nic_id].value,
         reinterpret_cast<uint64_t>(laneBuf.ptr),
-        laneBuf.lkey.value,
+        laneBuf.lkey_per_device[idx.nic_id].value,
         static_cast<uint32_t>(laneBytes));
 
     group.sync();
@@ -807,14 +830,12 @@ class P2pIbgdaTransportDevice {
     if (group.is_leader()) {
       doca_gpu_dev_verbs_mark_wqes_ready<
           DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
-          active_qp(group.group_id),
-          base_wqe_idx,
-          base_wqe_idx + group.group_size - 1);
+          qp, base_wqe_idx, base_wqe_idx + group.group_size - 1);
       doca_gpu_dev_verbs_submit<
           DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
           DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU,
           DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(
-          active_qp(group.group_id), base_wqe_idx + group.group_size);
+          qp, base_wqe_idx + group.group_size);
     }
 
     group.sync();
@@ -827,19 +848,21 @@ class P2pIbgdaTransportDevice {
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes) {
+    auto idx = nic_qp_for_group(group_id);
+    const NicDeviceIbgdaResources& nic = nicDevices_[idx.nic_id];
     doca_gpu_dev_verbs_ticket_t ticket;
     doca_gpu_dev_verbs_addr localAddr = {
         .addr = reinterpret_cast<uint64_t>(localBuf.ptr),
-        .key = localBuf.lkey.value};
+        .key = localBuf.lkey_per_device[idx.nic_id].value};
     doca_gpu_dev_verbs_addr remoteAddr = {
         .addr = reinterpret_cast<uint64_t>(remoteBuf.ptr),
-        .key = remoteBuf.rkey.value};
+        .key = remoteBuf.rkey_per_device[idx.nic_id].value};
 
     doca_gpu_dev_verbs_put<
         DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
         DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO,
         DOCA_GPUNETIO_VERBS_EXEC_SCOPE_THREAD>(
-        active_qp(group_id), remoteAddr, localAddr, nbytes, &ticket);
+        nic.qps[idx.qp_id], remoteAddr, localAddr, nbytes, &ticket);
   }
 
   // --- signal_fenced: atomic fetch-add with NIC FENCE (always fenced) ---
@@ -848,11 +871,13 @@ class P2pIbgdaTransportDevice {
       uint32_t group_id,
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal) {
-    doca_gpu_dev_verbs_qp* qp = active_qp(group_id);
+    auto idx = nic_qp_for_group(group_id);
+    const NicDeviceIbgdaResources& nic = nicDevices_[idx.nic_id];
+    doca_gpu_dev_verbs_qp* qp = nic.qps[idx.qp_id];
     doca_gpu_dev_verbs_addr remoteAddr = {
         .addr = reinterpret_cast<uint64_t>(signalBuf.ptr),
-        .key = signalBuf.rkey.value};
-    doca_gpu_dev_verbs_addr sinkAddr = {.addr = 0, .key = sinkLkey_.value};
+        .key = signalBuf.rkey_per_device[idx.nic_id].value};
+    doca_gpu_dev_verbs_addr sinkAddr = {.addr = 0, .key = nic.sink_lkey.value};
 
     uint64_t wqe_idx = doca_gpu_dev_verbs_reserve_wq_slots<
         DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(qp, 1);
@@ -893,26 +918,29 @@ class P2pIbgdaTransportDevice {
       uint64_t signalVal,
       const IbgdaLocalBuffer& counterBuf,
       uint64_t counterVal) {
+    auto idx = nic_qp_for_group(group_id);
+    const NicDeviceIbgdaResources& nic = nicDevices_[idx.nic_id];
     doca_gpu_dev_verbs_addr sigRemoteAddr = {
         .addr = reinterpret_cast<uint64_t>(signalBuf.ptr),
-        .key = signalBuf.rkey.value};
-    doca_gpu_dev_verbs_addr sigSinkAddr = {.addr = 0, .key = sinkLkey_.value};
+        .key = signalBuf.rkey_per_device[idx.nic_id].value};
+    doca_gpu_dev_verbs_addr sigSinkAddr = {
+        .addr = 0, .key = nic.sink_lkey.value};
 
     doca_gpu_dev_verbs_addr counterRemoteAddr = {
         .addr = reinterpret_cast<uint64_t>(counterBuf.ptr),
-        .key = counterBuf.lkey.value};
+        .key = counterBuf.lkey_per_device[idx.nic_id].value};
     doca_gpu_dev_verbs_addr counterSinkAddr = {
-        .addr = 0, .key = sinkLkey_.value};
+        .addr = 0, .key = nic.sink_lkey.value};
 
     doca_gpu_dev_verbs_signal_counter<
         DOCA_GPUNETIO_VERBS_SIGNAL_OP_ADD,
         DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
         DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(
-        active_qp(group_id),
+        nic.qps[idx.qp_id],
         sigRemoteAddr,
         sigSinkAddr,
         signalVal,
-        active_companion_qp(group_id),
+        nic.companion_qps[idx.qp_id],
         counterRemoteAddr,
         counterSinkAddr,
         counterVal);
@@ -962,21 +990,21 @@ class P2pIbgdaTransportDevice {
     IBGDA_CHECK_SLOT_ID(id, numSignalSlots_, "signal");
     return IbgdaRemoteBuffer(
         static_cast<uint64_t*>(ownedRemoteSignalBuf_.ptr) + id,
-        ownedRemoteSignalBuf_.rkey);
+        ownedRemoteSignalBuf_.rkey_per_device);
   }
 
   __device__ IbgdaLocalBuffer local_signal_slot(int id) const {
     IBGDA_CHECK_SLOT_ID(id, numSignalSlots_, "signal");
     return IbgdaLocalBuffer(
         static_cast<uint64_t*>(ownedLocalSignalBuf_.ptr) + id,
-        ownedLocalSignalBuf_.lkey);
+        ownedLocalSignalBuf_.lkey_per_device);
   }
 
   __device__ IbgdaLocalBuffer counter_slot(int id) const {
     IBGDA_CHECK_SLOT_ID(id, numCounterSlots_, "counter");
     return IbgdaLocalBuffer(
         static_cast<uint64_t*>(ownedCounterBuf_.ptr) + id,
-        ownedCounterBuf_.lkey);
+        ownedCounterBuf_.lkey_per_device);
   }
 
  public:
@@ -1374,34 +1402,76 @@ class P2pIbgdaTransportDevice {
   }
 
  private:
+  struct NicQpIndex {
+    int nic_id;
+    int qp_id;
+  };
+
   /**
-   * active_qp - Select the QP for the calling group
+   * nic_qp_for_group - Single lookup: returns {nic_id, qp_id} for a group.
    *
-   * Maps group_id → QP via group_id % numQps_. Every leaf helper takes a
-   * group_id argument so that all WQEs belonging to one logical operation
-   * (e.g. put + signal_fenced inside put_impl) land on the same QP — this
-   * is required for the FENCE bit to actually order them. Thread-scope
-   * public methods pass 0.
+   * Round-robin over nicDevices_, then within the chosen NIC round-robin
+   * over its qps. All WQEs for one logical operation share the same
+   * group_id and therefore land on the same NIC + QP — required for the
+   * FENCE bit to order them. Host-side population is responsible for
+   * peer-rotating the NicDeviceIbgdaResources[] order so adjacent peers
+   * land on different NICs. Traps if nicDevices_ is empty or the chosen
+   * NIC has no qps (programming error: device op on a default-constructed
+   * transport).
    */
-  __device__ doca_gpu_dev_verbs_qp* active_qp(uint32_t group_id) const {
-    if (qpArray_.empty()) {
-      return nullptr;
+  __device__ NicQpIndex nic_qp_for_group(uint32_t group_id) const {
+    if (nicDevices_.empty()) {
+      printf(
+          "P2pIbgdaTransportDevice: nicDevices_ is empty at "
+          "%s:%d block=(%u,%u,%u) thread=(%u,%u,%u)\n",
+          __FILE__,
+          __LINE__,
+          blockIdx.x,
+          blockIdx.y,
+          blockIdx.z,
+          threadIdx.x,
+          threadIdx.y,
+          threadIdx.z);
+      __trap();
     }
-    return qpArray_[group_id % qpArray_.size()];
+    int nic_id = group_id % nicDevices_.size();
+    const auto& qps = nicDevices_[nic_id].qps;
+    if (qps.empty()) {
+      printf(
+          "P2pIbgdaTransportDevice: NIC %d has no qps at "
+          "%s:%d block=(%u,%u,%u) thread=(%u,%u,%u)\n",
+          nic_id,
+          __FILE__,
+          __LINE__,
+          blockIdx.x,
+          blockIdx.y,
+          blockIdx.z,
+          threadIdx.x,
+          threadIdx.y,
+          threadIdx.z);
+      __trap();
+    }
+    int qp_id = (group_id / nicDevices_.size()) % qps.size();
+    return {nic_id, qp_id};
+  }
+
+  __device__ doca_gpu_dev_verbs_qp* active_qp(uint32_t group_id) const {
+    auto idx = nic_qp_for_group(group_id);
+    return nicDevices_[idx.nic_id].qps[idx.qp_id];
   }
 
   __device__ doca_gpu_dev_verbs_qp* active_companion_qp(
       uint32_t group_id) const {
-    if (companionArray_.empty()) {
-      return nullptr;
-    }
-    return companionArray_[group_id % companionArray_.size()];
+    auto idx = nic_qp_for_group(group_id);
+    return nicDevices_[idx.nic_id].companion_qps[idx.qp_id];
   }
 
   // --- Members ---
-  DeviceSpan<doca_gpu_dev_verbs_qp*> qpArray_{};
-  DeviceSpan<doca_gpu_dev_verbs_qp*> companionArray_{};
-  NetworkLKey sinkLkey_{};
+  // Per-NIC bundles (qps + companion_qps + sink_lkey + device_id). Host-side
+  // builder peer-rotates the order so nic_qp_for_group(g)'s nic_id (= g %
+  // nicDevices_.size()) produces balanced scatter. At single-NIC:
+  // nicDevices_.size() == 1.
+  DeviceSpan<NicDeviceIbgdaResources> nicDevices_{};
 
   // Owned signal/counter buffers (set by transport during construction)
   IbgdaRemoteBuffer ownedRemoteSignalBuf_{}; // outbox: signal peer's inbox
