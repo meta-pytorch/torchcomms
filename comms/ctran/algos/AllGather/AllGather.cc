@@ -123,7 +123,7 @@ commResult_t ctranAllGather(
           sendbuff, recvbuff, sendcount, datatype, comm, stream, algo);
     }
     FB_ERRORRETURN(
-        commInternalError,
+        commInvalidUsage,
         "AllGather {} called outside CUDA graph capture. "
         "ctranAllGatherSupport should have returned false.",
         allGatherAlgoName(algo));
