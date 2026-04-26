@@ -1993,13 +1993,14 @@ cvars:
  - name        : NCCL_SENDRECV_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctzcopy, ctp2p
+   choices     : orig, ctran, ctzcopy, ctp2p, ctgraph
    description : |-
      The algorithm to use for sendrecv communication
      orig - Copy-based communication
      ctran - Ctran-based communication auto-select
      ctzcopy - Ctran-based zero-copy kernel for NVL
      ctp2p - Ctran-based point-to-point kernel for NVL
+     ctgraph - Cudagraph-aware: pre-registers buffers during graph capture, falls back to baseline otherwise
 
  - name        : NCCL_ALLGATHER_P_ALGO
    type        : enum

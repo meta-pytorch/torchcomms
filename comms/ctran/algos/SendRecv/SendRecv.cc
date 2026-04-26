@@ -4,9 +4,11 @@
 #include <deque>
 #include <optional>
 
+#include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/SendRecv/SendRecvImpl.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/ctran/utils/ExtUtils.h"
 
 static thread_local std::deque<OpElem*> CtranOpGroup;
@@ -27,18 +29,42 @@ std::unordered_map<KernelConfig::KernelType, void*> kernelFns = {
 
 static const auto myAlgo = NCCL_SENDRECV_ALGO::ctran;
 
-bool ctranSendRecvSupport(int peer, CtranComm* comm) {
+bool ctranSendRecvSupport(
+    int peer,
+    CtranComm* comm,
+    enum NCCL_SENDRECV_ALGO algo,
+    cudaStream_t stream) {
   const auto statex = comm->statex_.get();
+
+  if (!ctranInitialized(comm)) {
+    return false;
+  }
+
+  if (algo == NCCL_SENDRECV_ALGO::ctgraph) {
+    if (peer != statex->rank() &&
+        comm->ctran_->mapper->getBackend(peer) != CtranMapperBackend::IB) {
+      return false;
+    }
+    if (stream == nullptr) {
+      return false;
+    }
+    ctran::utils::cudagraph::StreamCaptureInfo captureInfo;
+    auto err =
+        ctran::utils::cudagraph::getStreamCaptureInfo(stream, captureInfo);
+    if (err != cudaSuccess ||
+        captureInfo.status != cudaStreamCaptureStatusActive) {
+      return false;
+    }
+    return true;
+  }
 
   // Self peer is handled by CE directly, other peers require a valid ctran
   // backend
-  if (ctranInitialized(comm) &&
-      (peer == statex->rank() ||
-       comm->ctran_->mapper->getBackend(peer) != CtranMapperBackend::UNSET)) {
+  if (peer == statex->rank() ||
+      comm->ctran_->mapper->getBackend(peer) != CtranMapperBackend::UNSET) {
     return true;
-  } else {
-    return false;
   }
+  return false;
 }
 
 commResult_t ctranSend(
@@ -84,14 +110,15 @@ commResult_t ctranRecv(
   return commSuccess;
 }
 
-commResult_t ctranGroupEndHook(
+commResult_t ctranGroupEndHookImpl(
+    std::deque<OpElem*>& opGroup,
     enum NCCL_SENDRECV_ALGO algo,
     std::optional<std::chrono::milliseconds> timeout) {
   // By default, use zero-copy kernel for sendrecv.
   if (algo == NCCL_SENDRECV_ALGO::ctran) {
     algo = NCCL_SENDRECV_ALGO::ctzcopy;
   }
-  while (!CtranOpGroup.empty()) {
+  while (!opGroup.empty()) {
     // TODO: clean up duplicate info in allops, nvlOps and ibOps
     std::vector<OpElem*> allOps;
     std::vector<OpElem*> selfSends, selfRecvs, nvlOps, ibOps;
@@ -101,13 +128,13 @@ commResult_t ctranGroupEndHook(
     bool hasTcpDmRecv = false;
 
     // Submit ops with the same comm and stream in a single batch
-    CtranComm* comm = CtranOpGroup.front()->comm_;
-    cudaStream_t stream = CtranOpGroup.front()->stream;
+    CtranComm* comm = opGroup.front()->comm_;
+    cudaStream_t stream = opGroup.front()->stream;
     const auto statex = comm->statex_.get();
     auto mapper = comm->ctran_->mapper.get();
 
-    while (!CtranOpGroup.empty()) {
-      auto op = dequeFront(CtranOpGroup);
+    while (!opGroup.empty()) {
+      auto op = dequeFront(opGroup);
 
       if (op->comm_ == comm && op->stream == stream) {
         if (op->type == OpElem::opType::SEND) {
@@ -217,10 +244,34 @@ commResult_t ctranGroupEndHook(
     comm->ctran_->numGroupedDefaultOps = 0;
 
     // handle next batch
-    CtranOpGroup = std::move(pending);
+    opGroup = std::move(pending);
   }
 
   return commSuccess;
+}
+
+commResult_t ctranGroupEndHook(
+    enum NCCL_SENDRECV_ALGO algo,
+    std::optional<std::chrono::milliseconds> timeout) {
+  if (algo == NCCL_SENDRECV_ALGO::ctgraph) {
+    if (CtranOpGroup.empty()) {
+      return commSuccess;
+    }
+    cudaStream_t stream = CtranOpGroup.front()->stream;
+    ctran::utils::cudagraph::StreamCaptureInfo captureInfo;
+    FB_CUDACHECK(
+        ctran::utils::cudagraph::getStreamCaptureInfo(stream, captureInfo));
+    if (captureInfo.status == cudaStreamCaptureStatusActive) {
+      return ctranSendRecvCudagraphAware(
+          CtranOpGroup, CtranOpGroup.front()->comm_, stream, timeout);
+    }
+    FB_ERRORRETURN(
+        commInvalidUsage,
+        "SendRecv ctgraph called outside CUDA graph capture. "
+        "ctranSendRecvSupport should have returned false.");
+  } else {
+    return ctranGroupEndHookImpl(CtranOpGroup, algo, timeout);
+  }
 }
 
 void ctranGroupTrackDefaultOp(CtranComm* comm) {
