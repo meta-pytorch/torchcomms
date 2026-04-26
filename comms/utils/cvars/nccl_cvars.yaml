@@ -2014,7 +2014,7 @@ cvars:
  - name        : NCCL_ALLGATHER_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctdirect, ctring, ctrd, ctbrucks, ctgraph
+   choices     : orig, ctran, ctdirect, ctring, ctrd, ctbrucks, ctgraph, ctgraph_pipeline, ctgraph_ring, ctgraph_rd
    description : |-
      The algorithm to use for Allgather communication
      orig - Copy-based ring algorithm
@@ -2022,7 +2022,16 @@ cvars:
      ctdirect - Ctran-based direct point-to-point algorithm
      ctring - Ctran-based ring algorithm
      ctrd - Ctran-based recursive doubling algorithm
-     ctgraph - Cudagraph-aware: uses ctran persistent AGP during graph capture, falls back to baseline otherwise
+     ctgraph - Cudagraph-aware: auto-selects pipeline/ring/rd based on topology during graph capture
+     ctgraph_pipeline - Cudagraph-aware: forces persistent pipeline algorithm (nLocalRanks>1)
+     ctgraph_ring - Cudagraph-aware: forces ring algorithm (nLocalRanks==1, large messages)
+     ctgraph_rd - Cudagraph-aware: forces recursive doubling algorithm (nLocalRanks==1, small messages)
+
+ - name        : NCCL_CTGRAPH_ALLGATHER_RING_THRESHOLD
+   type        : uint64_t
+   default     : 134217728
+   description : |-
+     Minimum send size in bytes for ctgraph auto-select to choose ring over recursive doubling when nLocalRanks==1. Default 128MB.
 
  - name        : NCCL_REDUCESCATTER_ALGO
    type        : enum
