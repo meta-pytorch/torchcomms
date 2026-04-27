@@ -58,6 +58,16 @@ class DummyTorchCommWindow : public TorchCommWindow {
     return std::make_shared<DummyTorchCommWindow>();
   }
 };
+
+class TorchWorkError : public torch::comms::TorchWork {
+ public:
+  TorchWorkError() {
+    setStatus(WorkStatus::ERROR);
+  }
+  void wait() override {}
+  // No need to checkStatus as the constructor sets the status to ERROR.
+  void waitBlocking() override {}
+};
 } // namespace
 
 TorchCommDummy::TorchCommDummy()
@@ -239,6 +249,16 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::gather(
     int /* root */,
     bool /* async_op */,
     const GatherOptions& /* options */) {
+  return c10::make_intrusive<TorchWorkCompleted>();
+}
+
+c10::intrusive_ptr<TorchWork> TorchCommDummy::reconfigure(
+    const ReconfigureOptions& /*opts*/) {
+  if (shouldFailReconfigure_) {
+    initialized_ = false;
+    return c10::make_intrusive<TorchWorkError>();
+  }
+  initialized_ = true;
   return c10::make_intrusive<TorchWorkCompleted>();
 }
 
