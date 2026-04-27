@@ -168,32 +168,20 @@ bool ctranAllToAllSupport(
   // Currently there is only one ctran algo for alltoall, but we pass algo as a
   // parameter for future extension and consistency across collectives.
   // Currently just return false if algo is set to orig
-  if (algo == NCCL_ALLTOALL_ALGO::orig) {
+  if (algo == NCCL_ALLTOALL_ALGO::orig || !ctranInitialized(comm)) {
     return false;
   }
-  bool ctranSupport = false;
+
   const auto statex = comm->statex_.get();
-  if (ctranInitialized(comm)) {
-    ctranSupport = true;
-    // Check if all remote peers are supported by ctran
-    // For intra-node peers, ctranAlgo supports copy based path;
-    // for inter-node peers, we need a mapper backend to support.
-    const int myNode = statex->node();
-    for (int rank = 0; rank < statex->nRanks(); rank++) {
-      if (statex->node(rank) != myNode &&
-          comm->ctran_->mapper->getBackend(rank) == CtranMapperBackend::UNSET) {
-        ctranSupport = false;
-        break;
-      }
+  const int myNode = statex->node();
+  for (int rank = 0; rank < statex->nRanks(); rank++) {
+    if (statex->node(rank) != myNode &&
+        comm->ctran_->mapper->getBackend(rank) == CtranMapperBackend::UNSET) {
+      return false;
     }
   }
 
-  if (ctranSupport &&
-      commTypeSize(datatype) * count >= NCCL_CTRAN_ALLTOALL_THRESHOLD) {
-    return true;
-  } else {
-    return false;
-  }
+  return commTypeSize(datatype) * count >= NCCL_CTRAN_ALLTOALL_THRESHOLD;
 }
 
 #if defined(ENABLE_PIPES)

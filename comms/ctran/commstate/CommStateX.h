@@ -90,7 +90,6 @@ class CommStateX {
 
   void initRankTopologyNolocal();
   void initRankTopologyVnode(const int nLocalRanks);
-  friend void initRankTopologyFrom(CommStateX* _CommStateX, void* _comm);
   void initRankStatesTopology(meta::comms::IBootstrap* bootstrap);
 
   /* Setters */
