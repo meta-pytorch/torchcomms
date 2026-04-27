@@ -228,6 +228,44 @@ Config::Config(const ncclConfig_t* config) {
       }
     }
   }
+
+  // ibSplitDataOnQps: hint only, 0 or 1
+  {
+    std::string val = getHintStr("ibSplitDataOnQps");
+    if (!val.empty()) {
+      try {
+        int parsed = std::stoi(val);
+        if (parsed != 0 && parsed != 1) {
+          WARN(
+              "NCCLX hint 'ibSplitDataOnQps': value %d must be 0 or 1", parsed);
+        } else {
+          ibSplitDataOnQps = parsed;
+        }
+      } catch (const std::exception&) {
+        WARN("NCCLX hint 'ibSplitDataOnQps': invalid value '%s'", val.c_str());
+      }
+    }
+  }
+
+  // ibQpsPerConnection: hint only, positive integer
+  {
+    std::string val = getHintStr("ibQpsPerConnection");
+    if (!val.empty()) {
+      try {
+        int parsed = std::stoi(val);
+        if (parsed <= 0) {
+          WARN(
+              "NCCLX hint 'ibQpsPerConnection': value %d must be positive",
+              parsed);
+        } else {
+          ibQpsPerConnection = parsed;
+        }
+      } catch (const std::exception&) {
+        WARN(
+            "NCCLX hint 'ibQpsPerConnection': invalid value '%s'", val.c_str());
+      }
+    }
+  }
 }
 
 } // namespace ncclx
