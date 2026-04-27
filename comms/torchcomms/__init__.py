@@ -86,3 +86,12 @@ def _load_backend(backend: str) -> None:
         )
     wheel = next(iter(found))
     wheel.load()
+
+
+def is_backend_built(backend: str) -> bool:
+    """True if the wheel was built with this backend's extension."""
+    return bool(entry_points(group="torchcomms.backends", name=backend))
+
+
+def built_backends() -> list[str]:
+    return [ep.name for ep in entry_points(group="torchcomms.backends")]

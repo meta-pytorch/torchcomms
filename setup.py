@@ -188,6 +188,20 @@ if USE_TRANSPORT:
         CMakeExtension("torchcomms._transport"),
     ]
 
+backend_entry_points = ["dummy = torchcomms._comms"]
+if USE_NCCL:
+    backend_entry_points.append("nccl = torchcomms._comms_nccl")
+if USE_NCCLX:
+    backend_entry_points.append("ncclx = torchcomms._comms_ncclx")
+if USE_GLOO:
+    backend_entry_points.append("gloo = torchcomms._comms_gloo")
+if USE_RCCL:
+    backend_entry_points.append("rccl = torchcomms._comms_rccl")
+if USE_RCCLX:
+    backend_entry_points.append("rcclx = torchcomms._comms_rcclx")
+if USE_XCCL:
+    backend_entry_points.append("xccl = torchcomms._comms_xccl")
+
 setup(
     name="torchcomms",
     version=get_version(),
@@ -197,15 +211,7 @@ setup(
         "torchcomms.triton.fb": ["*.bc"],
     },
     entry_points={
-        "torchcomms.backends": [
-            "nccl = torchcomms._comms_nccl",
-            "ncclx = torchcomms._comms_ncclx",
-            "gloo = torchcomms._comms_gloo",
-            "rccl = torchcomms._comms_rccl",
-            "rcclx = torchcomms._comms_rcclx",
-            "xccl = torchcomms._comms_xccl",
-            "dummy = torchcomms._comms",
-        ]
+        "torchcomms.backends": backend_entry_points,
     },
     ext_modules=ext_modules,
     cmdclass={"build_ext": build_ext},
