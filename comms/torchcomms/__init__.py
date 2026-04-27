@@ -94,4 +94,5 @@ def is_backend_built(backend: str) -> bool:
 
 
 def built_backends() -> list[str]:
+    """Names of all backends the wheel was built with."""
     return [ep.name for ep in entry_points(group="torchcomms.backends")]
