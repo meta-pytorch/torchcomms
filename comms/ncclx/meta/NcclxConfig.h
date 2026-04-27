@@ -36,6 +36,11 @@ class Config {
   std::optional<size_t> pipesNvlChunkSize;
   std::optional<bool> pipesUseDualStateBuffer;
   int vCliqueSize = 0;
+
+  // Per-communicator buffer size override (Simple protocol).
+  // When set, overrides the global NCCL_BUFFSIZE for this communicator.
+  // Only supported with splitShare=0.
+  std::optional<int> ncclBuffSize;
 };
 
 // Hint keys corresponding to Config fields above.  Used by
@@ -51,6 +56,7 @@ inline const std::vector<std::string>& knownHintKeys() {
       "pipesNvlChunkSize",
       "pipesUseDualStateBuffer",
       "vCliqueSize",
+      "ncclBuffSize",
   };
   return keys;
 }
