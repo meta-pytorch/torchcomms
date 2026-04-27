@@ -404,7 +404,8 @@ class P2pIbgdaTransportDevice {
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal = 1,
       const IbgdaLocalBuffer& counterBuf = {},
-      uint64_t counterVal = 1) {
+      uint64_t counterVal = 1,
+      int nicIdx = -1) {
     put_impl(
         group,
         localBuf,
@@ -413,7 +414,8 @@ class P2pIbgdaTransportDevice {
         signalBuf,
         signalVal,
         counterBuf,
-        counterVal);
+        counterVal,
+        nicIdx);
   }
 
   /**
@@ -428,7 +430,8 @@ class P2pIbgdaTransportDevice {
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal = 1,
       const IbgdaLocalBuffer& counterBuf = {},
-      uint64_t counterVal = 1) {
+      uint64_t counterVal = 1,
+      int nicIdx = -1) {
     ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
     put(solo,
         localBuf,
@@ -437,7 +440,8 @@ class P2pIbgdaTransportDevice {
         signalBuf,
         signalVal,
         counterBuf,
-        counterVal);
+        counterVal,
+        nicIdx);
   }
 
   // =========================================================================
@@ -459,9 +463,10 @@ class P2pIbgdaTransportDevice {
   __device__ void signal(
       ThreadGroup& group,
       const IbgdaRemoteBuffer& signalBuf,
-      uint64_t signalVal = 1) {
+      uint64_t signalVal = 1,
+      int nicIdx = -1) {
     if (group.is_leader()) {
-      signal_fenced(group.group_id, signalBuf, signalVal);
+      signal_fenced(group.group_id, signalBuf, signalVal, nicIdx);
     }
     group.sync();
   }
@@ -469,9 +474,10 @@ class P2pIbgdaTransportDevice {
   /** signal (thread-scope) - Single-thread variant. Uses QP 0. */
   __device__ void signal(
       const IbgdaRemoteBuffer& signalBuf,
-      uint64_t signalVal = 1) {
+      uint64_t signalVal = 1,
+      int nicIdx = -1) {
     ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
-    signal(solo, signalBuf, signalVal);
+    signal(solo, signalBuf, signalVal, nicIdx);
   }
 
   // =========================================================================
@@ -652,12 +658,13 @@ class P2pIbgdaTransportDevice {
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal,
       const IbgdaLocalBuffer& counterBuf,
-      uint64_t counterVal) {
+      uint64_t counterVal,
+      int nicIdx = -1) {
     bool hasSignal = signalBuf.ptr != nullptr;
     bool hasCounter = counterBuf.ptr != nullptr;
 
     // Step 1: ALWAYS group-cooperative data transfer
-    put_cooperative(group, localBuf, remoteBuf, nbytes);
+    put_cooperative(group, localBuf, remoteBuf, nbytes, nicIdx);
 
     // Step 2: Leader posts signal/counter WQE(s).
     //
@@ -678,12 +685,22 @@ class P2pIbgdaTransportDevice {
     if (group.is_leader()) {
       if (hasSignal && hasCounter) {
         signal_counter(
-            group.group_id, signalBuf, signalVal, counterBuf, counterVal);
+            group.group_id,
+            signalBuf,
+            signalVal,
+            counterBuf,
+            counterVal,
+            nicIdx);
       } else if (hasSignal) {
-        signal_fenced(group.group_id, signalBuf, signalVal);
+        signal_fenced(group.group_id, signalBuf, signalVal, nicIdx);
       } else if (hasCounter) {
         signal_counter(
-            group.group_id, discardSignalSlot_, 0, counterBuf, counterVal);
+            group.group_id,
+            discardSignalSlot_,
+            0,
+            counterBuf,
+            counterVal,
+            nicIdx);
       }
     }
     group.sync();
@@ -765,7 +782,8 @@ class P2pIbgdaTransportDevice {
       ThreadGroup& group,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
-      std::size_t nbytes) {
+      std::size_t nbytes,
+      int nicIdx = -1) {
     std::size_t chunkSize = nbytes / group.group_size;
     std::size_t offset = group.thread_id_in_group * chunkSize;
     std::size_t laneBytes = (group.thread_id_in_group == group.group_size - 1)
@@ -776,11 +794,12 @@ class P2pIbgdaTransportDevice {
     IbgdaRemoteBuffer laneRemoteBuf = remoteBuf.subBuffer(offset);
 
     if (group.group_size == 1) {
-      put_single_impl(group.group_id, laneBuf, laneRemoteBuf, laneBytes);
+      put_single_impl(
+          group.group_id, laneBuf, laneRemoteBuf, laneBytes, nicIdx);
       return;
     }
 
-    auto idx = nic_qp_for_group(group.group_id);
+    auto idx = resolve_nic_qp(group.group_id, nicIdx);
     const NicDeviceIbgdaResources& nic = nicDevices_[idx.nic_id];
     auto* qp = nic.qps[idx.qp_id];
 
@@ -847,8 +866,9 @@ class P2pIbgdaTransportDevice {
       uint32_t group_id,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
-      std::size_t nbytes) {
-    auto idx = nic_qp_for_group(group_id);
+      std::size_t nbytes,
+      int nic_idx = -1) {
+    auto idx = resolve_nic_qp(group_id, nic_idx);
     const NicDeviceIbgdaResources& nic = nicDevices_[idx.nic_id];
     doca_gpu_dev_verbs_ticket_t ticket;
     doca_gpu_dev_verbs_addr localAddr = {
@@ -870,8 +890,9 @@ class P2pIbgdaTransportDevice {
   __device__ void signal_fenced(
       uint32_t group_id,
       const IbgdaRemoteBuffer& signalBuf,
-      uint64_t signalVal) {
-    auto idx = nic_qp_for_group(group_id);
+      uint64_t signalVal,
+      int nic_idx = -1) {
+    auto idx = resolve_nic_qp(group_id, nic_idx);
     const NicDeviceIbgdaResources& nic = nicDevices_[idx.nic_id];
     doca_gpu_dev_verbs_qp* qp = nic.qps[idx.qp_id];
     doca_gpu_dev_verbs_addr remoteAddr = {
@@ -917,8 +938,9 @@ class P2pIbgdaTransportDevice {
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal,
       const IbgdaLocalBuffer& counterBuf,
-      uint64_t counterVal) {
-    auto idx = nic_qp_for_group(group_id);
+      uint64_t counterVal,
+      int nic_idx = -1) {
+    auto idx = resolve_nic_qp(group_id, nic_idx);
     const NicDeviceIbgdaResources& nic = nicDevices_[idx.nic_id];
     doca_gpu_dev_verbs_addr sigRemoteAddr = {
         .addr = reinterpret_cast<uint64_t>(signalBuf.ptr),
@@ -1109,7 +1131,8 @@ class P2pIbgdaTransportDevice {
       std::size_t nbytes,
       int active_blocks = 0,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout()) {
+      const Timeout& timeout = Timeout(),
+      int nic_idx = -1) {
 #ifndef __CUDA_ARCH__
     (void)group;
     (void)src;
@@ -1117,6 +1140,7 @@ class P2pIbgdaTransportDevice {
     (void)active_blocks;
     (void)max_signal_bytes;
     (void)timeout;
+    (void)nic_idx;
 #else
     if (nbytes == 0) {
       return;
@@ -1235,7 +1259,8 @@ class P2pIbgdaTransportDevice {
             1ULL,
             sendRecvState_.localCounterBuf.subBuffer(
                 groupId * sizeof(uint64_t)),
-            1ULL);
+            1ULL,
+            nic_idx);
       }
       group.sync();
     }
@@ -1282,7 +1307,8 @@ class P2pIbgdaTransportDevice {
       std::size_t nbytes,
       int active_blocks = 0,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout()) {
+      const Timeout& timeout = Timeout(),
+      int nic_idx = -1) {
 #ifndef __CUDA_ARCH__
     (void)group;
     (void)dst;
@@ -1290,6 +1316,7 @@ class P2pIbgdaTransportDevice {
     (void)active_blocks;
     (void)max_signal_bytes;
     (void)timeout;
+    (void)nic_idx;
 #else
     if (nbytes == 0) {
       return;
@@ -1384,7 +1411,8 @@ class P2pIbgdaTransportDevice {
           group,
           sendRecvState_.remoteSignalBuf.subBuffer(
               (maxGroups + groupId) * sizeof(uint64_t)),
-          1ULL);
+          1ULL,
+          nic_idx);
     }
 
     if (group.is_leader()) {
@@ -1453,6 +1481,36 @@ class P2pIbgdaTransportDevice {
     }
     int qp_id = (group_id / nicDevices_.size()) % qps.size();
     return {nic_id, qp_id};
+  }
+
+  /**
+   * resolve_nic_qp - Pick {nic_id, qp_id} from explicit NIC override or
+   * group_id-based round-robin.
+   *
+   * When nic_idx < 0: identical to nic_qp_for_group(group_id).
+   * When nic_idx >= 0: pins nic_id to the override; qp_id is still
+   * rotated by group_id within that NIC's QPs (group_id % qps_per_nic), so
+   * multiple calls with different group_ids spread across the QPs on the
+   * chosen NIC. Bounds-checks the NIC.
+   */
+  __device__ NicQpIndex resolve_nic_qp(uint32_t group_id, int nic_idx) const {
+    if (nic_idx < 0) {
+      return nic_qp_for_group(group_id);
+    }
+    if (nic_idx >= static_cast<int>(nicDevices_.size())) {
+      printf(
+          "[PIPES] FATAL: nic_idx=%d >= numNics=%d\n",
+          nic_idx,
+          static_cast<int>(nicDevices_.size()));
+      __trap();
+    }
+    const auto& qps = nicDevices_[nic_idx].qps;
+    if (qps.empty()) {
+      printf("[PIPES] FATAL: NIC %d has no qps (override path)\n", nic_idx);
+      __trap();
+    }
+    int qp_id = group_id % static_cast<int>(qps.size());
+    return {nic_idx, qp_id};
   }
 
   __device__ doca_gpu_dev_verbs_qp* active_qp(uint32_t group_id) const {
