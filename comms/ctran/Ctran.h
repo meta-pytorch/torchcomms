@@ -48,7 +48,11 @@ class Ctran : public ICtran {
   CtranComm* comm_{nullptr};
 };
 
-bool ctranSendRecvSupport(int peer, CtranComm* comm);
+bool ctranSendRecvSupport(
+    int peer,
+    CtranComm* comm,
+    enum NCCL_SENDRECV_ALGO algo = NCCL_SENDRECV_ALGO::ctran,
+    cudaStream_t stream = nullptr);
 
 commResult_t ctranSend(
     const void* sendbuff,

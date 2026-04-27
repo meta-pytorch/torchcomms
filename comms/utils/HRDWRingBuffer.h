@@ -117,6 +117,22 @@ __device__ __forceinline__ void hrdwRingBufferWrite(
 }
 #endif
 
+// Lightweight, trivially-copyable handle for writing into an HRDWRingBuffer
+// from device code. Pass by value to GPU kernels. See
+// HRDWRingBufferDeviceHandle.cuh for full documentation and usage examples.
+template <typename DataT>
+struct HRDWRingBufferDeviceHandle {
+  HRDWEntry<DataT>* ring;
+  uint64_t* writeIndex;
+  uint32_t mask;
+
+#if defined(__CUDACC__) || defined(__HIPCC__)
+  __device__ __forceinline__ void write(DataT data) {
+    hrdwRingBufferWrite(ring, writeIndex, mask, data);
+  }
+#endif
+};
+
 // Templated kernel launch for host-side write(). The template definition
 // is available in .cu compilation units; .cc files link against explicit
 // instantiations provided by consumers (see
@@ -265,6 +281,14 @@ class HRDWRingBuffer {
     assert(valid());
     return launchRingBufferWrite<DataT>(
         stream, ring_, writeIndex_, mask_, data);
+  }
+
+  // Return a lightweight, trivially-copyable handle that can be passed by
+  // value to GPU kernels for inline device-side writes. See
+  // HRDWRingBufferDeviceHandle.cuh for usage.
+  HRDWRingBufferDeviceHandle<DataT> deviceHandle() const {
+    assert(valid());
+    return {ring_, writeIndex_, mask_};
   }
 
  private:
