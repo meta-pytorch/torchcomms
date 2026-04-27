@@ -12,6 +12,7 @@ static bool isGraphAwareAlgo(enum NCCL_ALLGATHER_ALGO algo) {
   switch (algo) {
     case NCCL_ALLGATHER_ALGO::ctgraph:
     case NCCL_ALLGATHER_ALGO::ctgraph_pipeline:
+    case NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline:
     case NCCL_ALLGATHER_ALGO::ctgraph_ring:
     case NCCL_ALLGATHER_ALGO::ctgraph_rd:
       return true;
@@ -58,6 +59,7 @@ bool ctranAllGatherSupport(
       break;
     case NCCL_ALLGATHER_ALGO::ctgraph:
     case NCCL_ALLGATHER_ALGO::ctgraph_pipeline:
+    case NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline:
     case NCCL_ALLGATHER_ALGO::ctgraph_ring:
     case NCCL_ALLGATHER_ALGO::ctgraph_rd: {
       // Check stream capture status

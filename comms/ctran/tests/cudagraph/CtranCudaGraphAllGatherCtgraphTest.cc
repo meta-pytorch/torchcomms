@@ -1,9 +1,9 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 // Tests for the ctgraph AllGather algorithm variants.
-// ctgraph auto-selects based on topology; ctgraph_pipeline, ctgraph_ring,
-// ctgraph_rd allow explicit selection. All variants are only active during
-// CUDA graph capture and fall back to baseline otherwise.
+// ctgraph auto-selects based on topology; ctgraph_pipeline, ctgraph_rdpipeline,
+// ctgraph_ring, ctgraph_rd allow explicit selection. All variants are only
+// active during CUDA graph capture and fall back to baseline otherwise.
 
 #include <random>
 
@@ -45,6 +45,12 @@ static AlgoDescriptor makeAllGatherCtgraph(
         statex->nLocalRanks() > 1) {
       return false;
     }
+    if (algo == NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline) {
+      const auto nNodes = statex->nNodes();
+      if (nNodes > 1 && (nNodes & (nNodes - 1)) != 0) {
+        return false;
+      }
+    }
     return true;
   };
   desc.expectsHostNodes = [](CtranComm* comm, size_t) {
@@ -83,6 +89,7 @@ DEFINE_CUDAGRAPH_PARAM_TEST(
     CudaGraphAllGatherCtgraph,
     makeAllGatherCtgraph(),
     makeAllGatherCtgraph(NCCL_ALLGATHER_ALGO::ctgraph_pipeline),
+    makeAllGatherCtgraph(NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline),
     makeAllGatherCtgraph(NCCL_ALLGATHER_ALGO::ctgraph_ring),
     makeAllGatherCtgraph(NCCL_ALLGATHER_ALGO::ctgraph_rd));
 
@@ -114,6 +121,13 @@ TEST_P(CudaGraphAllGatherCtgraphExpandable, CaptureReplayVerify) {
        algo == NCCL_ALLGATHER_ALGO::ctgraph_rd) &&
       statex->nLocalRanks() > 1) {
     GTEST_SKIP() << allGatherAlgoName(algo) << " requires nLocalRanks == 1";
+  }
+  if (algo == NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline) {
+    const auto nNodes = statex->nNodes();
+    if (nNodes > 1 && (nNodes & (nNodes - 1)) != 0) {
+      GTEST_SKIP() << allGatherAlgoName(algo)
+                   << " requires nNodes to be a power of 2";
+    }
   }
 
   const int nRanks = numRanks;
@@ -178,6 +192,7 @@ INSTANTIATE_TEST_SUITE_P(
         ::testing::Values(
             NCCL_ALLGATHER_ALGO::ctgraph,
             NCCL_ALLGATHER_ALGO::ctgraph_pipeline,
+            NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline,
             NCCL_ALLGATHER_ALGO::ctgraph_ring,
             NCCL_ALLGATHER_ALGO::ctgraph_rd),
         ::testing::Values(2097152UL, 10485760UL)),

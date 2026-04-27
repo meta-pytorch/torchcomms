@@ -116,6 +116,7 @@ commResult_t ctranAllGatherCudagraphAware(
 
   switch (algo) {
     case NCCL_ALLGATHER_ALGO::ctgraph_pipeline:
+    case NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline:
       FB_COMMCHECK(
           winPersistBuffReg(recvbuff, recvBytes, comm, stream, &win, &request));
       break;
@@ -134,6 +135,7 @@ commResult_t ctranAllGatherCudagraphAware(
   std::function<void()> cleanup;
   switch (algo) {
     case NCCL_ALLGATHER_ALGO::ctgraph_pipeline:
+    case NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline:
       cleanup = [request, win]() {
         if (request) {
           ctran::allGatherWinDestroy(request);
@@ -163,9 +165,12 @@ commResult_t ctranAllGatherCudagraphAware(
 
   // Execute (captured into graph)
   switch (algo) {
-    case NCCL_ALLGATHER_ALGO::ctgraph_pipeline: {
+    case NCCL_ALLGATHER_ALGO::ctgraph_pipeline:
+    case NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline: {
       auto savedPAlgo = NCCL_ALLGATHER_P_ALGO;
-      NCCL_ALLGATHER_P_ALGO = NCCL_ALLGATHER_P_ALGO::ctpipeline;
+      NCCL_ALLGATHER_P_ALGO = (algo == NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline)
+          ? NCCL_ALLGATHER_P_ALGO::ctrdpipeline
+          : NCCL_ALLGATHER_P_ALGO::ctpipeline;
       auto pAlgoGuard = folly::makeGuard(
           [savedPAlgo]() { NCCL_ALLGATHER_P_ALGO = savedPAlgo; });
       FB_COMMCHECK(
