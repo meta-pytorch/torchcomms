@@ -2018,7 +2018,7 @@ cvars:
  - name        : NCCL_ALLGATHER_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctdirect, ctring, ctrd, ctbrucks, ctgraph, ctgraph_pipeline, ctgraph_ring, ctgraph_rd
+   choices     : orig, ctran, ctdirect, ctring, ctrd, ctbrucks, ctgraph, ctgraph_pipeline, ctgraph_rdpipeline, ctgraph_ring, ctgraph_rd
    description : |-
      The algorithm to use for Allgather communication
      orig - Copy-based ring algorithm
@@ -2028,6 +2028,7 @@ cvars:
      ctrd - Ctran-based recursive doubling algorithm
      ctgraph - Cudagraph-aware: auto-selects pipeline/ring/rd based on topology during graph capture
      ctgraph_pipeline - Cudagraph-aware: forces persistent pipeline algorithm (nLocalRanks>1)
+     ctgraph_rdpipeline - Cudagraph-aware: forces persistent recursive-doubling pipeline algorithm (nLocalRanks>1, nNodes power of 2)
      ctgraph_ring - Cudagraph-aware: forces ring algorithm (nLocalRanks==1, large messages)
      ctgraph_rd - Cudagraph-aware: forces recursive doubling algorithm (nLocalRanks==1, small messages)
 

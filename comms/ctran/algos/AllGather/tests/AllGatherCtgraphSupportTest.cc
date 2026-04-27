@@ -26,6 +26,8 @@ TEST_F(AllGatherCtgraphSupportTest, NullStream) {
   EXPECT_FALSE(ctranAllGatherSupport(
       comm_.get(), NCCL_ALLGATHER_ALGO::ctgraph_pipeline, nullptr));
   EXPECT_FALSE(ctranAllGatherSupport(
+      comm_.get(), NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline, nullptr));
+  EXPECT_FALSE(ctranAllGatherSupport(
       comm_.get(), NCCL_ALLGATHER_ALGO::ctgraph_ring, nullptr));
   EXPECT_FALSE(ctranAllGatherSupport(
       comm_.get(), NCCL_ALLGATHER_ALGO::ctgraph_rd, nullptr));
