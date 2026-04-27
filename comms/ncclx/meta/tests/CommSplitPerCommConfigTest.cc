@@ -7,12 +7,17 @@
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "meta/NcclxConfig.h" // @manual
+#include "meta/hints/GlobalHints.h" // @manual
+#include "meta/transport/NcclxIbNetCommConfig.h" // @manual
 #include "nccl.h" // @manual
 
 class CommSplitPerCommConfigTest : public NcclxBaseTestFixture {
  public:
   void SetUp() override {
     NcclxBaseTestFixture::SetUp();
+    ASSERT_EQ(
+        ncclx::setGlobalHint(std::string(ncclx::HintKeys::kCommNoLocal), "1"),
+        ncclSuccess);
     comm = ncclx::test::createNcclComm(
         globalRank, numRanks, localRank, bootstrap_.get());
     CUDACHECK_TEST(cudaStreamCreate(&stream));
@@ -23,6 +28,7 @@ class CommSplitPerCommConfigTest : public NcclxBaseTestFixture {
     CUDACHECK_TEST(cudaFree(dataBuf));
     CUDACHECK_TEST(cudaStreamDestroy(stream));
     NCCLCHECK_TEST(ncclCommDestroy(comm));
+    ncclx::resetGlobalHint(std::string(ncclx::HintKeys::kCommNoLocal));
     NcclxBaseTestFixture::TearDown();
   }
 
@@ -87,18 +93,75 @@ TEST_F(CommSplitPerCommConfigTest, NcclBuffSizeOverride) {
   runAllReduce(child.get());
 }
 
-TEST_F(CommSplitPerCommConfigTest, DefaultBuffSizeWithoutHint) {
+// --- IB config tests ---
+
+TEST_F(CommSplitPerCommConfigTest, IbConfigOverride) {
+  ncclConfig_t splitConfig = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints({
+      {"ibQpsPerConnection", "2"},
+      {"ibSplitDataOnQps", "1"},
+  });
+  splitConfig.hints = &hints;
+
+  ncclx::test::NcclCommSplitRAII child(comm, 0, globalRank, &splitConfig);
+
+  auto* childCtx = static_cast<ncclx::NcclxIbNetCommConfig*>(child->netContext);
+  ASSERT_NE(childCtx, nullptr);
+  EXPECT_EQ(childCtx->ibQpsPerConnection, 2);
+  EXPECT_EQ(childCtx->ibSplitDataOnQps, 1);
+
+  auto* parentCtx = static_cast<ncclx::NcclxIbNetCommConfig*>(comm->netContext);
+  ASSERT_NE(parentCtx, nullptr);
+  EXPECT_EQ(parentCtx->ibQpsPerConnection, NCCL_CONFIG_UNDEF_INT);
+  EXPECT_EQ(parentCtx->ibSplitDataOnQps, NCCL_CONFIG_UNDEF_INT);
+
+  runAllReduce(comm);
+  runAllReduce(child.get());
+}
+
+TEST_F(CommSplitPerCommConfigTest, DefaultHintsMatchParent) {
   int parentBuffSize = comm->buffSizes[NCCL_PROTO_SIMPLE];
 
   ncclx::test::NcclCommSplitRAII child(comm, 0, globalRank);
 
   EXPECT_EQ(child->buffSizes[NCCL_PROTO_SIMPLE], parentBuffSize);
+
+  auto* childCtx = static_cast<ncclx::NcclxIbNetCommConfig*>(child->netContext);
+  ASSERT_NE(childCtx, nullptr);
+  EXPECT_EQ(childCtx->ibQpsPerConnection, NCCL_CONFIG_UNDEF_INT);
+  EXPECT_EQ(childCtx->ibSplitDataOnQps, NCCL_CONFIG_UNDEF_INT);
+
+  runAllReduce(child.get());
 }
+
+// --- splitShare=1 rejection tests ---
 
 TEST_F(CommSplitPerCommConfigTest, SplitShareRejectsNcclBuffSize) {
   ncclConfig_t splitConfig = NCCL_CONFIG_INITIALIZER;
   splitConfig.splitShare = 1;
   ncclx::Hints hints({{"ncclBuffSize", "8388608"}});
+  splitConfig.hints = &hints;
+
+  ncclComm_t child = nullptr;
+  ncclResult_t res = ncclCommSplit(comm, 0, globalRank, &child, &splitConfig);
+  EXPECT_EQ(res, ncclInvalidArgument);
+}
+
+TEST_F(CommSplitPerCommConfigTest, SplitShareRejectsIbSplitDataOnQps) {
+  ncclConfig_t splitConfig = NCCL_CONFIG_INITIALIZER;
+  splitConfig.splitShare = 1;
+  ncclx::Hints hints({{"ibSplitDataOnQps", "1"}});
+  splitConfig.hints = &hints;
+
+  ncclComm_t child = nullptr;
+  ncclResult_t res = ncclCommSplit(comm, 0, globalRank, &child, &splitConfig);
+  EXPECT_EQ(res, ncclInvalidArgument);
+}
+
+TEST_F(CommSplitPerCommConfigTest, SplitShareRejectsIbQpsPerConnection) {
+  ncclConfig_t splitConfig = NCCL_CONFIG_INITIALIZER;
+  splitConfig.splitShare = 1;
+  ncclx::Hints hints({{"ibQpsPerConnection", "2"}});
   splitConfig.hints = &hints;
 
   ncclComm_t child = nullptr;
