@@ -32,7 +32,7 @@ from torchcomms.hooks import FlightRecorderHook
 from torchcomms.objcol import all_gather_object
 from torchcomms.tests.integration.py.TorchCommTestHelpers import (
     get_rank_and_size,
-    skipBackend,
+    skip_backend,
 )
 
 
@@ -874,7 +874,7 @@ class TestFlightRecorderHook(unittest.TestCase):
         recorder.unregister()
         comm.finalize()
 
-    @skipBackend("xccl", "XCCL backend does not support comm abort")
+    @skip_backend("xccl", "XCCL backend does not support comm abort")
     def test_fr_abort_hook_writes_traces_on_simulated_rank_failure(self) -> None:
         """Test abort hook writes traces when simulating a rank failure with threads.
 
