@@ -51,6 +51,7 @@ class TracingGuard {
       const at::Tensor& input_tensor,
       const at::Tensor& output_tensor);
 
+ private:
   void initializeTracingCommon(
       std::string_view comm_name,
       std::string_view comm_id,
@@ -71,7 +72,6 @@ class TracingGuard {
       const std::vector<int64_t>& input_split_sizes,
       const std::vector<int64_t>& output_split_sizes);
 
- private:
   std::unique_ptr<c10::DebugInfoGuard> debug_info_guard_;
   std::optional<at::RecordFunction> record_function_guard_;
 
