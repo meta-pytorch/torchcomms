@@ -207,3 +207,186 @@ TEST(ConfigHintsUT, SplitGroupRanksSingleRank) {
 
   delete ncclxCfg;
 }
+
+// ----- ncclBuffSize tests -----
+
+TEST(ConfigHintsUT, NcclBuffSizeSetViaHint) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ncclBuffSize", "8388608");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  ASSERT_TRUE(ncclxCfg->ncclBuffSize.has_value());
+  EXPECT_EQ(ncclxCfg->ncclBuffSize.value(), 8388608);
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, NcclBuffSizeDefaultUnset) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_FALSE(ncclxCfg->ncclBuffSize.has_value());
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, NcclBuffSizeRejectsNegative) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ncclBuffSize", "-1");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_FALSE(ncclxCfg->ncclBuffSize.has_value());
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, NcclBuffSizeRejectsZero) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ncclBuffSize", "0");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_FALSE(ncclxCfg->ncclBuffSize.has_value());
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, NcclBuffSizeRejectsInvalidString) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ncclBuffSize", "notanumber");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_FALSE(ncclxCfg->ncclBuffSize.has_value());
+
+  delete ncclxCfg;
+}
+
+// ----- ibSplitDataOnQps tests -----
+
+TEST(ConfigHintsUT, IbSplitDataOnQpsSetViaHint) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ibSplitDataOnQps", "1");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  ASSERT_TRUE(ncclxCfg->ibSplitDataOnQps.has_value());
+  EXPECT_EQ(ncclxCfg->ibSplitDataOnQps.value(), 1);
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, IbSplitDataOnQpsAcceptsZero) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ibSplitDataOnQps", "0");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  ASSERT_TRUE(ncclxCfg->ibSplitDataOnQps.has_value());
+  EXPECT_EQ(ncclxCfg->ibSplitDataOnQps.value(), 0);
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, IbSplitDataOnQpsRejectsInvalid) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ibSplitDataOnQps", "2");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_FALSE(ncclxCfg->ibSplitDataOnQps.has_value());
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, IbSplitDataOnQpsDefaultUnset) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_FALSE(ncclxCfg->ibSplitDataOnQps.has_value());
+
+  delete ncclxCfg;
+}
+
+// ----- ibQpsPerConnection tests -----
+
+TEST(ConfigHintsUT, IbQpsPerConnectionSetViaHint) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ibQpsPerConnection", "4");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  ASSERT_TRUE(ncclxCfg->ibQpsPerConnection.has_value());
+  EXPECT_EQ(ncclxCfg->ibQpsPerConnection.value(), 4);
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, IbQpsPerConnectionRejectsZero) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ibQpsPerConnection", "0");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_FALSE(ncclxCfg->ibQpsPerConnection.has_value());
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, IbQpsPerConnectionRejectsNegative) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ibQpsPerConnection", "-1");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_FALSE(ncclxCfg->ibQpsPerConnection.has_value());
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, IbQpsPerConnectionDefaultUnset) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_FALSE(ncclxCfg->ibQpsPerConnection.has_value());
+
+  delete ncclxCfg;
+}

@@ -11,7 +11,7 @@
 namespace py = pybind11;
 using namespace torch::comms;
 
-PYBIND11_MODULE(_comms_rccl, m) {
+PYBIND11_MODULE(_comms_rccl, m, py::mod_gil_not_used()) {
   m.doc() = "RCCL specific python bindings for TorchComm";
 
   py::class_<TorchCommRCCL, std::shared_ptr<TorchCommRCCL>>(m, "TorchCommRCCL");

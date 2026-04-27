@@ -1042,13 +1042,6 @@ ncclResult_t ncclTopoMakeVnic(struct ncclXml* xml, struct ncclTopoNetInfo* netIn
     return ret;
   }
 
-  // Mark original NICs as keep="0" in the topology
-  for (int i = 0; i < vProps->ndevs; i++) {
-    int dev = vProps->devs[i];
-    struct ncclXmlNode* netNode = physNetNodes[dev];
-    NCCLCHECK(xmlSetAttrInt(netNode, "keep", 0));
-  }
-
   INFO(NCCL_GRAPH, "TOPO/NET : Made vNic %d", vDevIndex);
   return ncclSuccess;
 }
@@ -1410,7 +1403,7 @@ ncclResult_t ncclTopoProcessNet(ncclXml* xml, const char* dumpXmlFile, struct nc
   bool usePhysicalDevices = (dumpXmlFile || net->makeVDevice == NULL);
   int nPhysicalNics, nVirtualNics;
   NCCLCHECK(net->getDevCount(net->netPluginIndex, &nPhysicalNics, &nVirtualNics));
-  // List the physical devices in the topo
+  // List the physical devices in the topo and set keep = 1
   NCCLCHECK(ncclTopoPopulateNics(xml, 0, nPhysicalNics, net, /*virtual=*/false));
   if (!usePhysicalDevices) {
     // Virtual devices are only created once per network
@@ -1425,8 +1418,32 @@ ncclResult_t ncclTopoProcessNet(ncclXml* xml, const char* dumpXmlFile, struct nc
     }
     // populate the virtual devices if any
     if (nVirtualNics > 0) {
+      INFO(NCCL_GRAPH, "TOPO/NET : Processing %d vNICs (phys=%d), marking fused phys NICs as keep=0", nVirtualNics, nPhysicalNics);
+      // All fused devices are marked as keep = 0.
+      // Note: ncclTopoMakeVnic doesn't create a vNic if ndevs = 1; no special case needed
+      for (int n = nPhysicalNics; n < nPhysicalNics + nVirtualNics; n++) {
+        ncclNetProperties_t vProps;
+        NCCLCHECK(net->getProperties(n, &vProps));
+        for (int i = 0; i < vProps.vProps.ndevs; i++) {
+          ncclNetProperties_t physProps;
+          NCCLCHECK(net->getProperties(vProps.vProps.devs[i], &physProps));
+          struct ncclXmlNode* physNetNode = NULL;
+          NCCLCHECK(xmlFindTagKv(xml, "net", &physNetNode, "name", physProps.name));
+          if (physNetNode) {
+            NCCLCHECK(xmlSetAttrInt(physNetNode, "keep", 0));
+            INFO(NCCL_GRAPH, "TOPO/NET : Marking fused phys NIC %s as keep=0 (vNic %d)", physProps.name, n);
+          } else {
+            WARN("TOPO/NET : Could not find XML node for fused phys NIC %s (vNic %d) — keep=0 NOT set", physProps.name, n);
+          }
+        }
+      }
+      // Populate the virtual devices and set keep = 1
       NCCLCHECK(ncclTopoPopulateNics(xml, nPhysicalNics, nPhysicalNics + nVirtualNics, net, /*virtual=*/true));
+    } else {
+      INFO(NCCL_GRAPH, "TOPO/NET : No vNICs present (nVirtualNics=%d), skipping keep=0 marking", nVirtualNics);
     }
+  } else {
+    INFO(NCCL_GRAPH, "TOPO/NET : Using physical devices only (dumpXml=%d, makeVDevice=%p), skipping vNIC processing", dumpXmlFile != NULL, net->makeVDevice);
   }
 
   return ncclSuccess;

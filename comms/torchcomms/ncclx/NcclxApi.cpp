@@ -71,6 +71,11 @@ ncclResult_t DefaultNcclxApi::commAbort(ncclComm_t comm) {
   return ncclCommAbort(comm);
 }
 
+ncclResult_t DefaultNcclxApi::commRevoke(ncclComm_t comm) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+  return ncclCommRevoke(comm, 0);
+}
+
 ncclResult_t DefaultNcclxApi::commGetAsyncError(
     ncclComm_t comm,
     ncclResult_t* asyncError) {
@@ -669,8 +674,8 @@ ncclResult_t DefaultNcclxApi::winLocalRegisterBuffer(
     ncclComm_t comm,
     void* ptr,
     size_t size,
-    uint32_t* outLkey) {
-  return ncclWinLocalRegisterBuffer(comm, ptr, size, outLkey);
+    ncclLkeyPerDevice* outLkeys) {
+  return ncclWinLocalRegisterBuffer(comm, ptr, size, outLkeys);
 }
 
 ncclResult_t DefaultNcclxApi::winLocalDeregisterBuffer(

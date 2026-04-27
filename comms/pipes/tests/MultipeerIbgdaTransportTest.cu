@@ -10,7 +10,7 @@
 namespace comms::pipes::test {
 
 // =============================================================================
-// Kernel: Put data + signal remote (adaptive-routing safe, with NIC fence)
+// Kernel: Put data + signal remote (adaptive-routing safe, with NIC flush)
 // =============================================================================
 
 __global__ void putAndSignalKernel(
@@ -23,7 +23,7 @@ __global__ void putAndSignalKernel(
   auto group = make_block_group();
   if (group.is_global_leader()) {
     transport->put(localBuf, remoteBuf, nbytes, signalId, signalVal);
-    transport->fence();
+    transport->flush();
   }
 }
 
@@ -61,7 +61,7 @@ __global__ void putAndSignalGroupKernel(
   // Group-cooperative put with signal (single put+signal, not two puts)
   transport->put(group, localBuf, remoteBuf, nbytes, signalId, signalVal);
 
-  transport->fence(group);
+  transport->flush(group);
 }
 
 void testPutAndSignalGroup(
@@ -109,7 +109,7 @@ __global__ void putAndSignalGroupMultiWarpKernel(
   // Each warp group does put + signal (each signal adds signalVal)
   transport->put(group, myLocalBuf, myRemoteBuf, myBytes, signalId, signalVal);
 
-  transport->fence(group);
+  transport->flush(group);
 }
 
 void testPutAndSignalGroupMultiWarp(
@@ -224,7 +224,7 @@ __global__ void multiplePutAndSignalKernel(
       IbgdaRemoteBuffer dstBuf = remoteBuf.subBuffer(i * bytesPerPut);
 
       transport->put(srcBuf, dstBuf, bytesPerPut, signalId, 1);
-      transport->fence();
+      transport->flush();
     }
   }
 }
@@ -664,7 +664,7 @@ __global__ void multiQpPutAndSignalKernel(
   // QP selection is transparent — transport->active_qp() selects per blockIdx
   transport->put(group, myLocalBuf, myRemoteBuf, myBytes, signalId, signalVal);
 
-  transport->fence(group);
+  transport->flush(group);
 }
 
 void testMultiQpPutAndSignal(

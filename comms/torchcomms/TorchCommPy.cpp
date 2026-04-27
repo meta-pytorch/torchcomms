@@ -48,7 +48,7 @@ auto py_opaque_class(py::module_& m, const char* name, Extra&&... extra) {
   }
 }
 
-PYBIND11_MODULE(_comms, m) {
+PYBIND11_MODULE(_comms, m, py::mod_gil_not_used()) {
   m.doc() = "Python bindings for TorchComm";
 
   // Bind RedOpType enum

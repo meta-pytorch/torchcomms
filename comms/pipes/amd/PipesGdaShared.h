@@ -27,7 +27,9 @@ using comms::pipes::IbgdaLocalBuffer;
 using comms::pipes::IbgdaRemoteBuffer;
 using comms::pipes::IbgdaSignalOp;
 using comms::pipes::NetworkLKey;
+using comms::pipes::NetworkLKeys;
 using comms::pipes::NetworkRKey;
+using comms::pipes::NetworkRKeys;
 
 // ---------------------------------------------------------------------------
 // ThreadGroup types and factory functions

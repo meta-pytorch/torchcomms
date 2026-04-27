@@ -4,6 +4,7 @@
 
 #include <deque>
 #include <memory>
+#include <queue>
 #include <vector>
 
 #include <folly/MPMCQueue.h>
@@ -37,7 +38,21 @@ struct CommDumpConfig {
   std::chrono::milliseconds dumpLockAcquireTimeout{kDumpLockAcquireTimeout};
 };
 
+struct CollRecordGreaterCollId {
+  bool operator()(
+      const std::shared_ptr<CollRecord>& a,
+      const std::shared_ptr<CollRecord>& b) const {
+    return a->getCollId() > b->getCollId();
+  }
+};
+
+using PastCollsHeap = std::priority_queue<
+    std::shared_ptr<CollRecord>,
+    std::vector<std::shared_ptr<CollRecord>>,
+    CollRecordGreaterCollId>;
+
 struct CollTraceDump {
+  PastCollsHeap pastCollsHeap;
   std::deque<std::shared_ptr<CollRecord>> pastColls;
   std::deque<std::shared_ptr<CollRecord>> currentColls;
   std::deque<std::shared_ptr<CollRecord>> pendingColls;

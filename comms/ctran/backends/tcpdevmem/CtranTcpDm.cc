@@ -182,9 +182,7 @@ commResult_t CtranTcpDm::bootstrapConnect(
   return res;
 }
 
-CtranTcpDm::CtranTcpDm(
-    [[maybe_unused]] CtranComm* comm,
-    [[maybe_unused]] CtranCtrlManager* ctrlMgr) {
+CtranTcpDm::CtranTcpDm([[maybe_unused]] CtranComm* comm) {
   transport_ = CtranTcpDmSingleton::getTransport();
 
   cudaDev_ = comm->statex_->cudaDev();

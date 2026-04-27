@@ -1,7 +1,9 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #pragma once
 
+#include <deque>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -33,6 +35,20 @@ commResult_t setupKernelConfig(
     KernelConfig& config,
     ctran::sendrecv::KernArgs& kernArgs);
 } // namespace ctran::sendrecv
+
+// Inner dispatch: batches ops, submits to GPE. Used by both eager and
+// cudagraph-aware paths.
+commResult_t ctranGroupEndHookImpl(
+    std::deque<OpElem*>& opGroup,
+    enum NCCL_SENDRECV_ALGO algo,
+    std::optional<std::chrono::milliseconds> timeout = std::nullopt);
+
+// Cudagraph-aware SendRecv: pre-registers all send/recv buffers during capture.
+commResult_t ctranSendRecvCudagraphAware(
+    std::deque<OpElem*>& opGroup,
+    CtranComm* comm,
+    cudaStream_t stream,
+    std::optional<std::chrono::milliseconds> timeout = std::nullopt);
 
 inline const std::string sendRecvAlgoName(
     enum NCCL_SENDRECV_ALGO algo,

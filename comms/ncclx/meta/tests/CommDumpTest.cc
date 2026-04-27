@@ -979,7 +979,7 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTrace) {
   }
 
   if (dump.count("CT_currentColls")) {
-    XLOG(DBG1) << "Entered CT_currentColl if statement";
+    XLOG(DBG1) << "Entered CT_currentColls if statement";
     EXPECT_EQ(dump["CT_currentColls"], "[]");
   }
 
@@ -1083,7 +1083,7 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTraceWithCommsMonitor) {
   }
 
   if (dump.count("CT_currentColls")) {
-    XLOG(DBG1) << "Entered CT_currentColl if statement";
+    XLOG(DBG1) << "Entered CT_currentColls if statement";
     EXPECT_EQ(dump["CT_currentColls"], "[]");
   }
 

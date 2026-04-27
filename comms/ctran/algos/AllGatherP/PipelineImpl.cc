@@ -7,6 +7,7 @@
 #include "comms/ctran/algos/AllGatherP/Types.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/utils/ExtUtils.h"
 
 using ctran::allgatherp::AlgoImpl;
@@ -41,6 +42,19 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
 
   CtranAlgoLogger logger(AlgoImpl::algoName(myAlgo), op->opCount, comm);
 
+  ctran::Profiler* profiler = comm->ctran_->profiler.get();
+  if (profiler) {
+    profiler->initForEachColl(
+        op->opCount, NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT);
+  }
+
+  CTRAN_PROFILER_IF(profiler, {
+    auto& algoContext = profiler->algoContext;
+    algoContext.algorithmName = AlgoImpl::algoName(myAlgo);
+    algoContext.sendContext.messageSizes = std::to_string(sendSize);
+    algoContext.recvContext.messageSizes = std::to_string(sendSize * nRanks);
+  });
+
   // Receive data from upPeer, and put to downPeer
   const int downPeer = (nRanks + rank + nLocalRanks) % nRanks;
   const int upPeer = (nRanks + rank - nLocalRanks) % nRanks;
@@ -49,8 +63,12 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
 
   void* sendHdl = nullptr;
   bool localReg;
+  CTRAN_PROFILER_IF(
+      profiler, profiler->startEvent(ctran::ProfilerEvent::BUF_REG));
   FB_COMMCHECK(
       mapper->searchRegHandle(sendBuff, sendSize, &sendHdl, &localReg));
+  CTRAN_PROFILER_IF(
+      profiler, profiler->endEvent(ctran::ProfilerEvent::BUF_REG));
   auto guard = folly::makeGuard([sendHdl, localReg, mapper]() {
     if (localReg) {
       FB_COMMCHECKIGNORE(mapper->deregDynamic(sendHdl));
@@ -59,16 +77,22 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
 
   CtranMapperRequest syncSreq, syncRreq;
 
+  CTRAN_PROFILER_IF(
+      profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_CTRL));
   // Sync to notify upPeer that I am ready to receive data
   FB_COMMCHECK(mapper->isendCtrl(upPeer, &syncSreq));
   FB_COMMCHECK(mapper->irecvCtrl(downPeer, &syncRreq));
 
   FB_COMMCHECK(mapper->waitRequest(&syncRreq));
+  CTRAN_PROFILER_IF(
+      profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_CTRL));
 
   // Initialize notify flag to receive from upstream peer
   auto notify = std::make_unique<CtranMapperNotify>();
   FB_COMMCHECK(mapper->initNotify(upPeer, pArgs->recvHdl, notify.get()));
 
+  CTRAN_PROFILER_IF(
+      profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_DATA));
   std::vector<CtranMapperRequest> putReqs(nNodes - 1);
   for (auto step = 0; step < nNodes - 1; step++) {
     const auto offset =
@@ -104,9 +128,13 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
   for (auto& putReq : putReqs) {
     FB_COMMCHECK(mapper->waitRequest(&putReq));
   }
+  CTRAN_PROFILER_IF(
+      profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_DATA));
 
   // Wait till the isendCtrl has completed so we don't have leak
   FB_COMMCHECK(mapper->waitRequest(&syncSreq));
+
+  CTRAN_PROFILER_IF(profiler, { profiler->reportToScuba(); });
 
   return commSuccess;
 }

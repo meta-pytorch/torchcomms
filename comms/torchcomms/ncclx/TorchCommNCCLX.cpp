@@ -229,6 +229,14 @@ void TorchCommNCCLX::initNcclxResources() {
             "Failed to create dependency event on device {}", device_.index()));
   }
 
+  // Side stream used by recordStart/recordEnd to host external EVENT_RECORD
+  // nodes off the main stream's critical path during CUDA graph capture.
+  // Only allocated when monitoring is enabled — nothing else uses it.
+  if (isGraphTimeoutMonitoringEnabled()) {
+    graph_monitor_side_stream_ =
+        std::make_unique<meta::comms::GraphSideStream>(stream_priority);
+  }
+
   if (!barrier_buffer_) {
     CUDA_CHECK(
         cuda_api_,
@@ -556,6 +564,9 @@ void TorchCommNCCLX::finalize() {
     dependency_event_ = nullptr;
   }
 
+  // Destroy graph-monitor side stream (RAII in unique_ptr).
+  graph_monitor_side_stream_.reset();
+
   // Destroy internal stream
   if (internal_stream_) {
     CUDA_CHECK(
@@ -592,6 +603,18 @@ void TorchCommNCCLX::abortNcclComm() {
         nccl_api_->commAbort(nccl_comm_),
         "NCCLX Abort failed");
     nccl_comm_ = nullptr;
+  }
+}
+
+void TorchCommNCCLX::revokeNcclComm() {
+  TC_LOG(INFO, this) << "Calling abort hooks before commRevoke.";
+  runAbortHooks();
+  if (nccl_comm_) {
+    NCCLX_CHECK(
+        nccl_api_,
+        nccl_comm_,
+        nccl_api_->commRevoke(nccl_comm_),
+        "NCCLX Revoke failed");
   }
 }
 
@@ -2215,6 +2238,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_quantized(
       name_, comm_size_, "reduce_scatter_quantized", rank_, input, output);
 
   cudaStream_t stream = getOperationStream(async_op);
+  graph_event_tracker_.initOnGraphStart(stream);
   auto work = async_op ? createWork(stream, options_.timeout, {input, seed})
                        : createWork(stream, options_.timeout);
 

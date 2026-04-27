@@ -5,6 +5,8 @@
 #include <cuda_runtime.h>
 #include <glog/logging.h>
 
+#include <cstring>
+
 #include "comms/pipes/P2pIbgdaTransportDevice.cuh"
 
 namespace comms::pipes {
@@ -13,50 +15,111 @@ P2pIbgdaTransportDevice* buildDeviceTransportsOnGpu(
     const std::vector<P2pIbgdaTransportBuildParams>& params,
     int numPeers,
     std::vector<void*>& outGpuAllocations) {
-  // All peers must have the same numQps
-  int numQps = static_cast<int>(params[0].mainQps.size());
-  std::size_t arraySize = numQps * sizeof(doca_gpu_dev_verbs_qp*);
-
-  // 1. Allocate one contiguous GPU buffer for all QP pointer arrays:
-  //    [peer0_main][peer0_comp][peer1_main][peer1_comp]...
-  std::size_t totalArraySize = numPeers * 2 * arraySize;
-  char* d_allArrays = nullptr;
-  cudaError_t err = cudaMalloc(&d_allArrays, totalArraySize);
-  CHECK(err == cudaSuccess)
-      << "Failed to allocate GPU QP arrays: " << cudaGetErrorString(err);
-  outGpuAllocations.push_back(d_allArrays);
-
-  // Build contiguous host buffer with all QP pointer arrays
-  std::vector<doca_gpu_dev_verbs_qp*> hostArrays;
-  hostArrays.reserve(numPeers * 2 * numQps);
+  // All peers must have the same shape: same numNics, and same per-NIC QP
+  // counts. Take peer 0's layout as canonical and validate the rest.
+  CHECK(!params.empty() && !params[0].h_nicDeviceIbgdaResources.empty())
+      << "buildDeviceTransportsOnGpu: empty params or zero NICs";
+  int numNics = static_cast<int>(params[0].h_nicDeviceIbgdaResources.size());
+  int qpsPerNic =
+      static_cast<int>(params[0].h_nicDeviceIbgdaResources[0].qps.size());
   for (int i = 0; i < numPeers; ++i) {
-    hostArrays.insert(
-        hostArrays.end(), params[i].mainQps.begin(), params[i].mainQps.end());
-    hostArrays.insert(
-        hostArrays.end(),
-        params[i].companionQps.begin(),
-        params[i].companionQps.end());
+    CHECK_EQ(
+        static_cast<int>(params[i].h_nicDeviceIbgdaResources.size()), numNics)
+        << "All peers must have the same numNics";
+    for (int n = 0; n < numNics; ++n) {
+      CHECK_EQ(
+          static_cast<int>(params[i].h_nicDeviceIbgdaResources[n].qps.size()),
+          qpsPerNic)
+          << "All peers' NICs must have the same QP count";
+      CHECK_EQ(
+          static_cast<int>(
+              params[i].h_nicDeviceIbgdaResources[n].companionQps.size()),
+          qpsPerNic)
+          << "qps and companionQps must match per NIC";
+    }
   }
 
-  // One memcpy for all QP pointer arrays
-  err = cudaMemcpy(
-      d_allArrays, hostArrays.data(), totalArraySize, cudaMemcpyHostToDevice);
+  // Each NIC has two QP kinds packed back-to-back: primary + companion.
+  constexpr int kQpKindsPerNic = 2;
+
+  // 1. Allocate one contiguous GPU buffer for all QP pointer arrays.
+  //    Layout per peer: [nic0_main][nic0_comp][nic1_main][nic1_comp]...
+  //    Total: numPeers * numNics * kQpKindsPerNic * qpsPerNic pointers.
+  std::size_t qpsPerPeer =
+      static_cast<std::size_t>(kQpKindsPerNic) * numNics * qpsPerNic;
+  std::size_t totalQpBytes =
+      numPeers * qpsPerPeer * sizeof(doca_gpu_dev_verbs_qp*);
+  doca_gpu_dev_verbs_qp** d_allQps = nullptr;
+  cudaError_t err = cudaMalloc(&d_allQps, totalQpBytes);
+  CHECK(err == cudaSuccess)
+      << "Failed to allocate GPU QP arrays: " << cudaGetErrorString(err);
+  outGpuAllocations.push_back(d_allQps);
+
+  std::vector<doca_gpu_dev_verbs_qp*> h_qps;
+  h_qps.reserve(numPeers * qpsPerPeer);
+  for (int i = 0; i < numPeers; ++i) {
+    for (int n = 0; n < numNics; ++n) {
+      const auto& nicSpec = params[i].h_nicDeviceIbgdaResources[n];
+      h_qps.insert(h_qps.end(), nicSpec.qps.begin(), nicSpec.qps.end());
+      h_qps.insert(
+          h_qps.end(),
+          nicSpec.companionQps.begin(),
+          nicSpec.companionQps.end());
+    }
+  }
+  err =
+      cudaMemcpy(d_allQps, h_qps.data(), totalQpBytes, cudaMemcpyHostToDevice);
   CHECK(err == cudaSuccess)
       << "Failed to copy QP arrays to GPU: " << cudaGetErrorString(err);
 
-  // 2. Build transport objects pointing into the contiguous GPU buffer
-  //    Each peer gets 2 * numQps entries: [main QPs][companion QPs]
-  auto* basePtr = reinterpret_cast<doca_gpu_dev_verbs_qp**>(d_allArrays);
-  std::vector<P2pIbgdaTransportDevice> hostTransports;
-  hostTransports.reserve(numPeers);
+  // 2. Allocate one contiguous GPU buffer for all NicDeviceIbgdaResources
+  // structs:
+  //    [peer0_nic0..nicN-1][peer1_nic0..nicN-1]...
+  std::size_t totalNicBytes =
+      numPeers * numNics * sizeof(NicDeviceIbgdaResources);
+  NicDeviceIbgdaResources* d_allNicResources = nullptr;
+  err = cudaMalloc(&d_allNicResources, totalNicBytes);
+  CHECK(err == cudaSuccess)
+      << "Failed to allocate GPU NicDeviceIbgdaResources array: "
+      << cudaGetErrorString(err);
+  outGpuAllocations.push_back(d_allNicResources);
 
+  std::vector<NicDeviceIbgdaResources> h_nicResources;
+  h_nicResources.reserve(numPeers * numNics);
   for (int i = 0; i < numPeers; ++i) {
-    auto* d_mainQps = basePtr + (i * 2 * numQps);
-    auto* d_companionQps = basePtr + (i * 2 * numQps + numQps);
-    hostTransports.emplace_back(
-        DeviceSpan<doca_gpu_dev_verbs_qp*>(d_mainQps, numQps),
-        DeviceSpan<doca_gpu_dev_verbs_qp*>(d_companionQps, numQps),
-        params[i].sinkLkey,
+    for (int n = 0; n < numNics; ++n) {
+      // QP pointers for this peer/NIC start at offset:
+      //   (i * qpsPerPeer) + (n * kQpKindsPerNic * qpsPerNic) within d_allQps.
+      auto* d_mainQps =
+          d_allQps + (i * qpsPerPeer) + (n * kQpKindsPerNic * qpsPerNic);
+      auto* d_companionQps = d_mainQps + qpsPerNic;
+      h_nicResources.push_back(
+          NicDeviceIbgdaResources{
+              DeviceSpan<doca_gpu_dev_verbs_qp*>(d_mainQps, qpsPerNic),
+              DeviceSpan<doca_gpu_dev_verbs_qp*>(d_companionQps, qpsPerNic),
+              params[i].h_nicDeviceIbgdaResources[n].sinkLkey,
+              params[i].h_nicDeviceIbgdaResources[n].deviceId,
+          });
+    }
+  }
+  err = cudaMemcpy(
+      d_allNicResources,
+      h_nicResources.data(),
+      totalNicBytes,
+      cudaMemcpyHostToDevice);
+  CHECK(err == cudaSuccess)
+      << "Failed to copy NicDeviceIbgdaResources array to GPU: "
+      << cudaGetErrorString(err);
+
+  // 3. Build transport objects pointing into the contiguous
+  // NicDeviceIbgdaResources array.
+  std::vector<P2pIbgdaTransportDevice> h_transports;
+  h_transports.reserve(numPeers);
+  for (int i = 0; i < numPeers; ++i) {
+    NicDeviceIbgdaResources* d_peerNicResources =
+        d_allNicResources + i * numNics;
+    h_transports.emplace_back(
+        DeviceSpan<NicDeviceIbgdaResources>(d_peerNicResources, numNics),
         params[i].remoteSignalBuf,
         params[i].localSignalBuf,
         params[i].counterBuf,
@@ -66,7 +129,7 @@ P2pIbgdaTransportDevice* buildDeviceTransportsOnGpu(
         params[i].sendRecvState);
   }
 
-  // 3. Allocate and copy transport objects to GPU
+  // 4. Allocate and copy transport objects to GPU.
   P2pIbgdaTransportDevice* gpuPtr = nullptr;
   std::size_t transportSize = numPeers * sizeof(P2pIbgdaTransportDevice);
   err = cudaMalloc(&gpuPtr, transportSize);
@@ -74,7 +137,7 @@ P2pIbgdaTransportDevice* buildDeviceTransportsOnGpu(
                             << cudaGetErrorString(err);
   outGpuAllocations.push_back(gpuPtr); // track before memcpy for leak safety
   err = cudaMemcpy(
-      gpuPtr, hostTransports.data(), transportSize, cudaMemcpyHostToDevice);
+      gpuPtr, h_transports.data(), transportSize, cudaMemcpyHostToDevice);
   CHECK(err == cudaSuccess)
       << "Failed to copy device transports to GPU: " << cudaGetErrorString(err);
 

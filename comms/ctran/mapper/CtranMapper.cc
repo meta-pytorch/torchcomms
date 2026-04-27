@@ -10,7 +10,6 @@
 #include <sstream>
 #include <string>
 
-#include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
@@ -154,14 +153,10 @@ CtranMapper::CtranMapper(CtranComm* comm) {
         "CTRAN-MAPPER: TCPDM can not be enabled with IB, NVL or Socket backends");
   }
 
-  this->ctrlMgr = std::make_unique<CtranCtrlManager>();
-
   /* enable available backends */
   if (enableBackends_[CtranMapperBackend::IB]) {
     try {
-      this->ctranIb =
-          std::make_unique<class CtranIb>(comm, this->ctrlMgr.get());
-      this->ctranIb->regCtrlCb(this->ctrlMgr);
+      this->ctranIb = std::make_unique<class CtranIb>(comm);
     } catch ([[maybe_unused]] const std::bad_alloc& e) {
       ctranIb = nullptr;
       enableBackends_[CtranMapperBackend::IB] = false;
@@ -170,8 +165,7 @@ CtranMapper::CtranMapper(CtranComm* comm) {
   }
   if (enableBackends_[CtranMapperBackend::SOCKET]) {
     if (!this->ctranIb) {
-      this->ctranSock =
-          std::make_unique<class CtranSocket>(comm, this->ctrlMgr.get());
+      this->ctranSock = std::make_unique<class CtranSocket>(comm);
     } else {
       enableBackends_[CtranMapperBackend::SOCKET] = false;
       CLOGF_SUBSYS(
@@ -181,8 +175,7 @@ CtranMapper::CtranMapper(CtranComm* comm) {
     }
   }
   if (enableBackends_[CtranMapperBackend::TCPDM]) {
-    this->ctranTcpDm =
-        std::make_unique<class ctran::CtranTcpDm>(comm, this->ctrlMgr.get());
+    this->ctranTcpDm = std::make_unique<class ctran::CtranTcpDm>(comm);
     CLOGF(WARN, "CTRAN-MAPPER: TCPDM backend is enabled");
   }
 

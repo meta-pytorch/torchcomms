@@ -68,6 +68,7 @@ void OrderedWorkStreamGuard::init(const CommLogData& logMetaData) {
   FB_CUDACHECKTHROW_EX(
       cudaEventCreateWithFlags(&execModeSyncEvent_, cudaEventDisableTiming),
       logMetaData);
+  sideStream_ = std::make_unique<meta::comms::GraphSideStream>();
 }
 
 OrderedWorkStreamGuard::~OrderedWorkStreamGuard() {
@@ -239,9 +240,22 @@ commResult_t OrderedWorkStreamGuard::doRelease(
   if (!isCapturing) {
     FB_CUDACHECK(cudaEventRecord(execModeSyncEvent_, userStream));
   } else {
-    FB_COMMCHECK(
-        utils::cudagraph::addEventRecordNodeToCapture(
-            userStream, captureInfo.g, execModeSyncEvent_, &lastRecordNode_));
+    // Route the external EVENT_RECORD node onto a side stream so its
+    // release fence doesn't stall unrelated work on userStream between
+    // ctran submissions. The next doAcquire on userStream still sees
+    // lastRecordNode_ via cudaStreamUpdateCaptureDependencies, which
+    // reinstates the explicit DAG edge ordering the next ctran op after
+    // this record. Non-ctran work on userStream is not serialized
+    // behind the record.
+    commResult_t innerRes = commSuccess;
+    FB_CUDACHECK(
+        sideStream_->fork_from(userStream, [&](cudaStream_t sideStream) {
+          innerRes = utils::cudagraph::addEventRecordNodeToCapture(
+              sideStream, captureInfo.g, execModeSyncEvent_, &lastRecordNode_);
+        }));
+    if (innerRes != commSuccess) {
+      return innerRes;
+    }
   }
 
   lastUserStream_ = userStream;

@@ -5,6 +5,7 @@
 #include <folly/init/Init.h>
 #include <folly/logging/xlog.h>
 
+#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
@@ -124,9 +125,9 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalBasic) {
         "Rank {}: localDataBuf ptr={} lkey={}, remoteDataBuf ptr={} rkey={}",
         globalRank,
         localDataBuf.ptr,
-        localDataBuf.lkey.value,
+        localDataBuf.lkey_per_device[0].value,
         remoteDataBuf.ptr,
-        remoteDataBuf.rkey.value);
+        remoteDataBuf.rkey_per_device[0].value);
 
     // Get peer transport for explicit peer selection
     P2pIbgdaTransportDevice* peerTransportPtr =
@@ -1573,6 +1574,153 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultiQpPutSignalBasic) {
   }
 
   XLOGF(INFO, "Rank {}: MultiQpPutSignalBasic test completed", globalRank);
+}
+
+// =============================================================================
+// Multi-NIC Aggregate Bandwidth Test
+// =============================================================================
+//
+// Drives put_signal traffic through every (NIC × QP) slot for a single peer
+// pair, then measures aggregate bandwidth across all slots. The slot→NIC
+// commutative hash distributes blocks across both NICs at numNics_>1, so
+// aggregate BW ~doubles vs single-NIC if multi-NIC is wired correctly.
+//
+// Runs on 2 ranks (1 peer pair); uses numQpsPerPeer=4 so the slot space
+// is 4 × numNics_ (4 slots on H100, 8 on GB200/GB300). The kernel launches
+// numBlocks > total slots so block-driven dispatch saturates every slot.
+//
+// Acceptance threshold is conservative — picks a floor that single-NIC
+// (~46 GB/s on 400 Gb/s ConnectX-7) cannot exceed but multi-NIC (~80-92
+// GB/s expected on GB200) clears comfortably.
+
+TEST_F(MultipeerIbgdaTransportTestFixture, MultiNicAggregateBandwidth) {
+  if (numRanks != 2) {
+    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    return;
+  }
+
+  const int numQps = 4;
+  const std::size_t nbytes = 256ULL << 20; // 256 MiB per put
+  const int warmupIters = 5;
+  const int measureIters = 20;
+  const int numBlocks = 16; // > numQps × kMaxNicsPerGpu so all slots fire
+  const int blockSize = 256;
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+
+  std::unique_ptr<MultipeerIbgdaTransport> transport;
+  try {
+    MultipeerIbgdaTransportConfig config{
+        .cudaDevice = localRank,
+        .numQpsPerPeer = numQps,
+        .numSignalSlots = 1,
+    };
+    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+    transport = std::make_unique<MultipeerIbgdaTransport>(
+        globalRank, numRanks, bootstrap, config);
+    transport->exchange();
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+  }
+
+  const int detectedNics = transport->numNics();
+  // Floor at ~70% of single-NIC linerate (~46 GB/s × 0.7 ≈ 32 GB/s) for
+  // numNics=1; ~70% of dual-NIC linerate (~92 GB/s × 0.7 ≈ 64 GB/s) for
+  // numNics=2. Tunable if hardware shows consistently lower numbers.
+  const double minExpectedBwGbps = (detectedNics == 1) ? 32.0 : 64.0;
+
+  DeviceBuffer dataBuffer(nbytes);
+  CUDACHECK_TEST(cudaMemset(dataBuffer.get(), 0, nbytes));
+  auto localDataBuf = transport->registerBuffer(dataBuffer.get(), nbytes);
+  auto remoteDataBufs = transport->exchangeBuffer(localDataBuf);
+  int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
+  auto remoteDataBuf = remoteDataBufs[peerIndex];
+
+  const std::size_t signalBufSize = sizeof(uint64_t);
+  DeviceBuffer signalBuffer(signalBufSize);
+  CUDACHECK_TEST(cudaMemset(signalBuffer.get(), 0, signalBufSize));
+  auto localSignalBuf =
+      transport->registerBuffer(signalBuffer.get(), signalBufSize);
+  auto remoteSignalBufs = transport->exchangeBuffer(localSignalBuf);
+  (void)remoteSignalBufs;
+
+  P2pIbgdaTransportDevice* peerTransportPtr =
+      transport->getP2pTransportDevice(peerRank);
+
+  if (globalRank == 0) {
+    // Sender: warmup then timed loop.
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    for (int i = 0; i < warmupIters; ++i) {
+      test::testMultiQpPutAndSignal(
+          peerTransportPtr,
+          numQps,
+          localDataBuf,
+          remoteDataBuf,
+          nbytes,
+          /*signalId=*/0,
+          /*signalVal=*/1,
+          numBlocks,
+          blockSize);
+    }
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    auto start = std::chrono::high_resolution_clock::now();
+    for (int i = 0; i < measureIters; ++i) {
+      test::testMultiQpPutAndSignal(
+          peerTransportPtr,
+          numQps,
+          localDataBuf,
+          remoteDataBuf,
+          nbytes,
+          /*signalId=*/0,
+          /*signalVal=*/1,
+          numBlocks,
+          blockSize);
+    }
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    auto end = std::chrono::high_resolution_clock::now();
+
+    const double elapsedSec =
+        std::chrono::duration<double>(end - start).count();
+    const double totalBytes =
+        static_cast<double>(nbytes) * static_cast<double>(measureIters);
+    const double bwGbps = (totalBytes / elapsedSec) / 1e9;
+
+    XLOGF(
+        INFO,
+        "MultiNicAggregateBandwidth: numNics={} numQpsPerPeer={} numBlocks={}",
+        detectedNics,
+        numQps,
+        numBlocks);
+    XLOGF(
+        INFO,
+        "  transferred {:.2f} GB in {:.2f} ms ({} iters × {} MiB)",
+        totalBytes / 1e9,
+        elapsedSec * 1000.0,
+        measureIters,
+        nbytes >> 20);
+    XLOGF(
+        INFO,
+        "  aggregate BW = {:.2f} GB/s (min expected = {:.0f} GB/s)",
+        bwGbps,
+        minExpectedBwGbps);
+
+    EXPECT_GE(bwGbps, minExpectedBwGbps)
+        << "Aggregate BW " << bwGbps
+        << " GB/s is below the multi-NIC threshold for numNics=" << detectedNics
+        << "; check whether all slot→NIC pairs are actually firing traffic";
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  } else {
+    // Receiver is a passive target — just match barriers.
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  }
+
+  XLOGF(INFO, "Rank {}: MultiNicAggregateBandwidth test completed", globalRank);
 }
 
 } // namespace comms::pipes::tests

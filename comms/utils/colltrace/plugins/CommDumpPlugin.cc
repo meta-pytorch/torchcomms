@@ -155,11 +155,12 @@ CommsMaybeVoid CommDumpPlugin::afterCollKernelEnd(
         commInternalError));
   }
 
+  lockedCollTraceDump->pastCollsHeap.push(std::move(*it));
   while (config_.pastCollSize >= 0 &&
-         lockedCollTraceDump->pastColls.size() >= config_.pastCollSize) {
-    lockedCollTraceDump->pastColls.pop_front();
+         static_cast<int64_t>(lockedCollTraceDump->pastCollsHeap.size()) >
+             config_.pastCollSize) {
+    lockedCollTraceDump->pastCollsHeap.pop();
   }
-  lockedCollTraceDump->pastColls.emplace_back(std::move(*it));
   lockedCollTraceDump->currentColls.erase(it);
 
   return folly::unit;
@@ -203,6 +204,12 @@ CommsMaybe<CollTraceDump> CommDumpPlugin::dump() noexcept {
 
   // Create a copy of the current state of collTraceDump_
   CollTraceDump dumpCopy = *readLockedCollTraceDump;
+
+  // Drain the min-heap into pastColls deque in ascending collId order
+  while (!dumpCopy.pastCollsHeap.empty()) {
+    dumpCopy.pastColls.push_back(dumpCopy.pastCollsHeap.top());
+    dumpCopy.pastCollsHeap.pop();
+  }
 
   // Temporary fix: Currently we use currentColls to also track the next
   // pending collective, this logic is being used in Analyzer to detect

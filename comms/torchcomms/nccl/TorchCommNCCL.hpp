@@ -248,6 +248,7 @@ class TorchCommNCCL : public TorchCommBackend,
   [[nodiscard]] cudaEvent_t getEvent();
   void returnEvent(cudaEvent_t event);
   void abortNcclComm();
+  void revokeNcclComm();
 
   enum class CommState {
     NORMAL,

@@ -3,9 +3,11 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 #include "comms/pipes/IbgdaBuffer.h"
+#include "comms/pipes/rdma/NicConstants.h"
 
 // Forward declarations
 struct doca_gpu_dev_verbs_qp;
@@ -16,15 +18,34 @@ namespace comms::pipes {
 class P2pIbgdaTransportDevice;
 
 /**
+ * Per-NIC build spec for one peer's transport.
+ *
+ * Each entry corresponds to a physical NIC. The build function packs
+ * these into a GPU-resident DeviceSpan<NicDeviceIbgdaResources> for the device
+ * transport. Host callers are responsible for ordering the vector with
+ * peer-specific NIC rotation so device-side `nic_for_group(g) = g % numNics`
+ * produces balanced thread-per-peer scatter.
+ */
+struct NicDeviceIbgdaResourcesBuildSpec {
+  std::vector<doca_gpu_dev_verbs_qp*> qps; // primary QPs on this NIC
+  std::vector<doca_gpu_dev_verbs_qp*> companionQps; // companion QPs on this NIC
+  NetworkLKey sinkLkey{}; // sink lkey for this NIC's PD
+  int deviceId{0}; // physical NIC device id (informational)
+};
+
+/**
  * Parameters for building a single P2pIbgdaTransportDevice.
  *
- * Contains host-side vectors of QP pointers (one per QP set).
- * The build function handles copying these to GPU memory.
+ * The build function reads `nicResources` (one entry per NIC), copies QP
+ * pointers to GPU memory, and constructs a DeviceSpan<NicDeviceIbgdaResources>
+ * for the device transport.
+ *
+ * Single-NIC callers populate `nicResources` with one element.
+ * Multi-NIC callers populate `nicResources` with one element per NIC; qps and
+ * companionQps within a NicDeviceIbgdaResourcesBuildSpec must be the same size.
  */
 struct P2pIbgdaTransportBuildParams {
-  std::vector<doca_gpu_dev_verbs_qp*> mainQps;
-  std::vector<doca_gpu_dev_verbs_qp*> companionQps;
-  NetworkLKey sinkLkey{};
+  std::vector<NicDeviceIbgdaResourcesBuildSpec> h_nicDeviceIbgdaResources;
   IbgdaRemoteBuffer remoteSignalBuf{};
   IbgdaLocalBuffer localSignalBuf{};
   IbgdaLocalBuffer counterBuf{};
