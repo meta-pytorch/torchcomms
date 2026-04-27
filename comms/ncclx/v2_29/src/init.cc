@@ -884,6 +884,19 @@ static ncclResult_t computeBuffSizes(struct ncclComm* comm) {
     comm->buffSizes[p] = envs[p] != -2 ? envs[p] : defaults[p];
   }
 
+  // [NCCLX] Per comm buffer size overwrite logic
+  if (comm->config.ncclxConfig) {
+    auto& configBuffSize = NCCLX_CONFIG_FIELD(comm->config, ncclBuffSize);
+    if (configBuffSize.has_value()) {
+      if (comm->config.splitShare) {
+        ERR("Per-comm buffSize override is not supported with splitShare=1");
+        return ncclInvalidArgument;
+      }
+      comm->buffSizes[NCCL_PROTO_SIMPLE] = configBuffSize.value();
+      INFO(NCCL_INIT, "Per-comm SIMPLE buffSize overridden to %d", configBuffSize.value());
+    }
+  }
+
   if (comm->nNodes > 1) {
     // GBx platforms only have 4 GPUs per host, which reduces the aggregation factor.
     // Increase the ratio by a factor of 2 to compensate.

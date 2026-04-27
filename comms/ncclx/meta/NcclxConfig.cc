@@ -211,6 +211,23 @@ Config::Config(const ncclConfig_t* config) {
       }
     }
   }
+
+  // ncclBuffSize: hint only (no flat ncclConfig_t field)
+  {
+    std::string val = getHintStr("ncclBuffSize");
+    if (!val.empty()) {
+      try {
+        int parsed = std::stoi(val);
+        if (parsed <= 0) {
+          WARN("NCCLX hint 'ncclBuffSize': value %d must be positive", parsed);
+        } else {
+          ncclBuffSize = parsed;
+        }
+      } catch (const std::exception&) {
+        WARN("NCCLX hint 'ncclBuffSize': invalid value '%s'", val.c_str());
+      }
+    }
+  }
 }
 
 } // namespace ncclx

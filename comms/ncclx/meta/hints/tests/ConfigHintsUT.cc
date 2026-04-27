@@ -207,3 +207,73 @@ TEST(ConfigHintsUT, SplitGroupRanksSingleRank) {
 
   delete ncclxCfg;
 }
+
+// ----- ncclBuffSize tests -----
+
+TEST(ConfigHintsUT, NcclBuffSizeSetViaHint) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ncclBuffSize", "8388608");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  ASSERT_TRUE(ncclxCfg->ncclBuffSize.has_value());
+  EXPECT_EQ(ncclxCfg->ncclBuffSize.value(), 8388608);
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, NcclBuffSizeDefaultUnset) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_FALSE(ncclxCfg->ncclBuffSize.has_value());
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, NcclBuffSizeRejectsNegative) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ncclBuffSize", "-1");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_FALSE(ncclxCfg->ncclBuffSize.has_value());
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, NcclBuffSizeRejectsZero) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ncclBuffSize", "0");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_FALSE(ncclxCfg->ncclBuffSize.has_value());
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, NcclBuffSizeRejectsInvalidString) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ncclBuffSize", "notanumber");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_FALSE(ncclxCfg->ncclBuffSize.has_value());
+
+  delete ncclxCfg;
+}
