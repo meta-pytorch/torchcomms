@@ -34,11 +34,11 @@ bool ctranSendRecvSupport(
     CtranComm* comm,
     enum NCCL_SENDRECV_ALGO algo,
     cudaStream_t stream) {
-  const auto statex = comm->statex_.get();
-
   if (!ctranInitialized(comm)) {
     return false;
   }
+
+  const auto statex = comm->statex_.get();
 
   if (algo == NCCL_SENDRECV_ALGO::ctgraph) {
     if (peer != statex->rank() &&
