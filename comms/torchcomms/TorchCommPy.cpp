@@ -1320,29 +1320,8 @@ Returns:
 
 Raises:
     RuntimeError: If the backend does not support device transport.
-) ",
+)",
           py::call_guard<py::gil_scoped_release>())
-
-          .def(
-            "register_address",
-            [](TorchComm& self, uint64_t addr, size_t len) {
-              self.register_address(AddressWithLen{
-                  reinterpret_cast<void*>(addr),
-                  len,
-              });
-            },
-            py::arg("addr"),
-            py::arg("len"),
-            py::call_guard<py::gil_scoped_release>())
-        .def(
-            "deregister_address",
-            [](TorchComm& self, uint64_t addr) {
-              self.deregister_address(Address{
-                  reinterpret_cast<void*>(addr),
-              });
-            },
-            py::arg("addr"),
-            py::call_guard<py::gil_scoped_release>())
 
       // Point-to-Point Operations
       .def(
@@ -2078,7 +2057,7 @@ Example:
           R"(
 Initialize a persistent AllGather operation.
 
-This is a SM free collective operation where the memory is pre-registered and uses
+This is a SM free collective operation where the memory is pre-registered and uses 
 Copy Engine or DMA to move data from one rank to the other.
 
 Args:

@@ -44,9 +44,6 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
   std::vector<int> getRanks() const;
   std::string_view getCommName() const;
 
-  void register_address(const AddressWithLen& address);
-  void deregister_address(const Address& address);
-
   // Point-to-Point Operations
   c10::intrusive_ptr<TorchWork> send(
       const at::Tensor& tensor,
