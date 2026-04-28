@@ -209,6 +209,7 @@ class TorchCommNCCL : public TorchCommBackend,
   InitHandle getInitHandle() const override;
   c10::intrusive_ptr<TorchWork> reconfigure(
       const ReconfigureOptions& opts) override;
+  void abort() override;
 
   // Friend access for TorchCommNCCL
   friend class TorchWorkNCCL;

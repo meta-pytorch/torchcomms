@@ -334,7 +334,7 @@ void TorchCommNCCLX::checkAndAbortIfTimedOutOrError() {
       abortNcclComm();
       if (options_.abort_process_on_timeout_or_error) {
         TC_LOG(ERROR, this) << "Aborting process due to timeout";
-        abort();
+        ::abort();
       } else {
         throw std::runtime_error("NCCLX operation timed out");
       }
@@ -352,7 +352,7 @@ void TorchCommNCCLX::checkAndAbortIfTimedOutOrError() {
     if (options_.abort_process_on_timeout_or_error) {
       TC_LOG(ERROR, this) << "Aborting process due to error: "
                           << ncclException.what();
-      abort();
+      ::abort();
     } else {
       throw ncclException;
     }

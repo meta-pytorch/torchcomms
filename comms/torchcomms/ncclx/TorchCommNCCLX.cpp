@@ -465,6 +465,15 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reconfigure(
   return c10::make_intrusive<TorchWorkCompleted>();
 }
 
+void TorchCommNCCLX::abort() {
+  if (options_.enable_reconfigure) {
+    revokeNcclComm();
+  } else {
+    abortNcclComm();
+  }
+  comm_state_ = CommState::ERROR;
+}
+
 void TorchCommNCCLX::finalize() {
   // If initialized and in normal state, nccl_comm_ must be valid.
   // However, if comm was aborted (ERROR or TIMEOUT state), nccl_comm_ will be

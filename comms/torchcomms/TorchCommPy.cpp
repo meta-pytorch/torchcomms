@@ -1304,6 +1304,23 @@ Example:
           py::arg("hints") = std::nullopt,
           py::call_guard<py::gil_scoped_release>())
       .def(
+          "abort",
+          &TorchComm::abort,
+          R"(
+Abort the communicator, stopping all in-flight operations.
+
+In reconfigurable mode (enable_reconfigure=True), this performs a graceful
+revoke of the NCCL communicator and sets the error state. The communicator
+can then be recovered via reconfigure().
+
+In non-reconfigurable mode, this performs a destructive abort of the NCCL
+communicator.
+
+Does not raise exceptions. After calling abort(), subsequent collective
+operations will fail until reconfigure() is called (in reconfigurable mode).
+          )",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
           "get_device_transport",
           &TorchComm::get_device_transport,
           R"(
