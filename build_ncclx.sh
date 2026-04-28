@@ -337,11 +337,6 @@ THRIFT_SERVICE_LDFLAGS+=(
 )
 THIRD_PARTY_LDFLAGS+="${THRIFT_SERVICE_LDFLAGS[*]} "
 THIRD_PARTY_LDFLAGS+="$(pkg-config --libs --static libfolly) "
-# liburing: folly's cmake config declares this dependency but pkg-config omits
-# it. Add -luring if the system has liburing (folly uses io_uring for async I/O).
-if pkg-config --exists liburing 2>/dev/null; then
-  THIRD_PARTY_LDFLAGS+="-luring "
-fi
 if [[ -z "${USE_SYSTEM_LIBS}" ]]; then
   THIRD_PARTY_LDFLAGS+="-l:libglog.a -l:libgflags.a -l:libboost_context.a -l:libfmt.a -l:libssl.a -l:libcrypto.a"
 else
