@@ -75,8 +75,14 @@ bool ctranAllGatherSupport(
             INFO,
             COLL,
             "AllGather {}: not in capture mode. "
-            "Falling back to baseline",
-            allGatherAlgoName(algo));
+            "Falling back to baseline. "
+            "commHash {:x} commDesc {} nRanks {} nLocalRanks {} nNodes {}",
+            allGatherAlgoName(algo),
+            statex->commHash(),
+            statex->commDesc(),
+            statex->nRanks(),
+            statex->nLocalRanks(),
+            statex->nNodes());
         break;
       }
 
