@@ -721,6 +721,10 @@ void CtranGpe::Impl::gpeThreadFn() {
 
       if (cmd->timeout.has_value()) {
         comm->setTimeout(cmd->timeout.value());
+      } else if (auto d = comm->getAbort()->GetDefaultTimeoutDuration();
+                 d.has_value()) {
+        // Fall back to comm-level default (CUDA-graph replay path).
+        comm->setTimeout(*d);
       }
       SCOPE_EXIT {
         // if comm is aborted for any reason, we mark it as aborted to avoid
