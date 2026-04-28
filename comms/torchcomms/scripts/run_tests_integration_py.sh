@@ -31,7 +31,7 @@ run_tests () {
     for dir in $dirs; do
         for file in "$dir"/*Test.py; do
             [ -f "$file" ] || continue
-            torchrun --nnodes 1 --nproc_per_node 4 "$file" --verbose
+            torchrun --nnodes 1 --nproc_per_node gpu --no-python pytest -s -v "$file"
         done
     done
 }
