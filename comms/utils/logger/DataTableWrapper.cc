@@ -120,7 +120,10 @@ DEFINE_scuba_table(nccl_structured_logging);
 DEFINE_scuba_table(nccl_slow_coll);
 DEFINE_scuba_table(nccl_collective_stats);
 
+extern void initLoggerProvider();
+
 void DataTableWrapper::init() {
+  initLoggerProvider();
   INIT_scuba_table(nccl_coll_signature);
   INIT_scuba_table(nccl_coll_timestamp);
   INIT_scuba_table(nccl_commdump);

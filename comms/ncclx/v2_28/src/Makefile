@@ -26,6 +26,10 @@ ifeq ($(ENABLE_PIPES),1)
 CXXFLAGS += -DENABLE_PIPES
 endif
 
+ifeq ($(ENABLE_OTEL),1)
+CXXFLAGS += -DENABLE_OTEL
+endif
+
 ##### src files
 INCEXPORTS  := nccl.h nccl_device.h CtranEx.h CtranExComm.h \
 	$(patsubst ${SRCDIR}/include/%,%,$(wildcard ${SRCDIR}/include/nccl_device/*.h ${SRCDIR}/include/nccl_device/*/*.h ${SRCDIR}/include/nccl_device/*/*/*.h))

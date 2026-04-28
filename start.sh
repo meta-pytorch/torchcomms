@@ -1,0 +1,24 @@
+#!/bin/bash
+
+export LD_LIBRARY_PATH=/checkpoint/fairinfra/xiaodongma/torchcomms/build/ncclx/lib:$LD_LIBRARY_PATH
+
+export NCCL_ERROR_TRACE_ENABLE=1
+export NCCL_SCUBA_STACK_TRACE_ON_ERROR_ENABLED=1
+export NCCL_COMM_ABORT_SCOPE=none
+export NCCL_COMM_DUMP_ENABLE_PROCESS_GLOBAL_ERRORS=1
+export NCCL_IB_ENABLE_REPORT_TO_PROCESS_GLOBAL_ERRORS=1
+export NCCL_PROCESS_GLOBAL_ERRORS_MAX_STACK_TRACES=20
+export NCCL_LOGGER_MODE=async
+export NCCL_COLLTRACE_SLOW_COLL_THRESHOLD_BY_PG=ANY:0
+export NCCL_COLL_EVENT_LOGGING=scuba:fair_nccl_coll_logging1
+export NCCL_COMM_EVENT_LOGGING=scuba:fair_nccl_structured_logging1
+export NCCL_ERROR_EVENT_LOGGING=scuba:fair_nccl_error_logging1
+export NCCL_MEM_USE_SLAB_ALLOCATOR=1
+export NCCL_MEMORY_EVENT_LOGGING=scuba:fair_nccl_memory_logging1
+export NCCL_SCUBA_LOG_FILE_PREFIX=/tmp
+export NCCL_SLOW_RANK_ENABLE=1
+export NCCL_SLOW_RANK_LOGGING=scuba:fair_nccl_profiler_slow_rank1
+export NCCL_DEBUG=INFO
+export NCCL_DEBUG_SUBSYS=INIT,ENV
+
+/checkpoint/fairinfra/xiaodongma/nccl-tests/build/all_reduce_perf -b 8 -e 128M -f 2 -g 8
