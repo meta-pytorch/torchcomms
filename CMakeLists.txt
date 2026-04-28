@@ -5,6 +5,12 @@ project(torchcomms_ncclx)
 set(CMAKE_VERBOSE_MAKEFILE ON)
 set(FETCHCONTENT_BASE_DIR "build/fetchcontent")
 
+# Some fetched third-party projects still declare pre-3.5 policy versions.
+# Newer CMake releases reject those unless we set a minimum policy floor.
+if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.31)
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+endif()
+
 # Options
 option(USE_NCCL "Whether to build NCCL or not" ON)
 option(USE_NCCLX "Whether to build NCCLX or not" ON)
