@@ -149,6 +149,11 @@ target_link_directories(torchcomms PRIVATE ${CONDA_LIB})
 target_link_libraries(torchcomms PRIVATE glog::glog gflags::gflags fmt::fmt)
 target_link_libraries(torchcomms PRIVATE ${TORCH_LIBRARIES} nlohmann_json::nlohmann_json)
 
+# Clog Hook sources (compiled into _comms)
+file(GLOB TORCHCOMMS_CLOG_SOURCES "comms/torchcomms/hooks/clog/ClogHook.cpp")
+file(GLOB TORCHCOMMS_CLOG_PYTHON_SOURCES
+    "comms/torchcomms/hooks/clog/ClogHookPy.cpp")
+
 # Flight Recorder sources (compiled into _comms)
 file(GLOB TORCHCOMMS_FR_SOURCES "comms/torchcomms/hooks/fr/FlightRecorder.cpp")
 file(GLOB TORCHCOMMS_FR_PYTHON_SOURCES "comms/torchcomms/hooks/fr/FlightRecorderPy.cpp")
@@ -157,6 +162,8 @@ file(GLOB TORCHCOMMS_FR_PYTHON_SOURCES "comms/torchcomms/hooks/fr/FlightRecorder
 add_library(torchcomms_comms MODULE
     ${TORCHCOMMS_PYTHON_SOURCES}
     ${HOOKS_PYTHON_SOURCES}
+    ${TORCHCOMMS_CLOG_SOURCES}
+    ${TORCHCOMMS_CLOG_PYTHON_SOURCES}
     ${TORCHCOMMS_FR_SOURCES}
     ${TORCHCOMMS_FR_PYTHON_SOURCES}
 )
@@ -169,12 +176,14 @@ set_target_properties(torchcomms_comms PROPERTIES
 target_include_directories(torchcomms_comms PRIVATE
     ${ROOT}
     ${CONDA_INCLUDE}
+    ${TORCH_INSTALL_PREFIX}/include
     ${Python3_INCLUDE_DIRS}
 )
 target_compile_features(torchcomms_comms PRIVATE cxx_std_20)
 target_link_directories(torchcomms_comms PRIVATE ${CONDA_LIB})
 target_link_libraries(torchcomms_comms PRIVATE
     torchcomms
+    fmt::fmt
     nlohmann_json::nlohmann_json
     ${TORCH_LIBRARIES}
     ${TORCH_PYTHON_LIB}

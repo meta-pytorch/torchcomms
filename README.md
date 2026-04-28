@@ -51,11 +51,11 @@ You can install torchcomms and PyTorch nightly builds using pip:
 # Cuda 12.6
 pip install --pre torch torchcomms --index-url https://download.pytorch.org/whl/nightly/cu126
 
-# Cuda 12.8
-pip install --pre torch torchcomms --index-url https://download.pytorch.org/whl/nightly/cu128
-
 # Cuda 13.0
 pip install --pre torch torchcomms --index-url https://download.pytorch.org/whl/nightly/cu130
+
+# Cuda 13.2
+pip install --pre torch torchcomms --index-url https://download.pytorch.org/whl/nightly/cu132
 ```
 
 ### Building from Source

@@ -7,6 +7,7 @@
 
 #include "nccl.h"
 #include "meta/NcclxConfig.h" // @manual
+#include "meta/NcclxPerCommConfig.h" // @manual
 #include "channel.h"
 #include "nvmlwrap.h"
 #include "gdrwrap.h"
@@ -882,6 +883,16 @@ static ncclResult_t computeBuffSizes(struct ncclComm* comm) {
 
   for (int p=0; p<NCCL_NUM_PROTOCOLS; p++) {
     comm->buffSizes[p] = envs[p] != -2 ? envs[p] : defaults[p];
+  }
+
+  // [NCCLX-PerCommConfig] Validate and apply per-comm overrides
+  NCCLCHECK(ncclxValidatePerCommConfig(comm->config));
+  if (comm->config.ncclxConfig) {
+    auto& configBuffSize = NCCLX_CONFIG_FIELD(comm->config, ncclBuffSize);
+    if (configBuffSize.has_value()) {
+      comm->buffSizes[NCCL_PROTO_SIMPLE] = configBuffSize.value();
+      INFO(NCCL_INIT, "Per-comm SIMPLE buffSize overridden to %d", configBuffSize.value());
+    }
   }
 
   if (comm->nNodes > 1) {
