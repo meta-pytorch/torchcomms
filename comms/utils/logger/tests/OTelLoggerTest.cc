@@ -5,8 +5,8 @@
 g++ -std=c++20 -fPIC \
   -I . \
   -I "$CONDA_PREFIX/include" \
-  comms/utils/logger/tests/ScubaOtelTest.cc \
-  comms/utils/logger/ScubaOtel.cc \
+  comms/utils/logger/tests/OTelLoggerTest.cc \
+  comms/utils/logger/OTelLogger.cc \
   -L "$CONDA_PREFIX/lib" \
   -l:libgtest.a -l:libgtest_main.a \
   -l:libfolly.a -l:libfmt.a -l:libglog.a -l:libgflags.a \
@@ -31,9 +31,9 @@ g++ -std=c++20 -fPIC \
   -l:libboost_context.a \
   -l:libevent.a \
   -lpthread -ldl \
-  -o /tmp/ScubaOtelTest
+  -o /tmp/OTelLoggerTest
 
-/tmp/ScubaOtelTest
+/tmp/OTelLoggerTest
 
 */
 
@@ -41,22 +41,22 @@ g++ -std=c++20 -fPIC \
 #include <folly/json.h>
 #include <folly/dynamic.h>
 
-#include "comms/utils/logger/ScubaOtel.h"
+#include "comms/utils/logger/OTelLogger.h"
 
-class ScubaOtelTest : public ::testing::Test {
+class OTelLoggerTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
     initLoggerProvider();
   }
 };
 
-TEST_F(ScubaOtelTest, ConstructorPrefixesDataset) {
+TEST_F(OTelLoggerTest, ConstructorPrefixesDataset) {
   // Should not throw; constructs with "fair_" + dataset.
-  EXPECT_NO_THROW(ScubaOtel otel("test_dataset"));
+  EXPECT_NO_THROW(OTelLogger otel("test_dataset"));
 }
 
-TEST_F(ScubaOtelTest, AddSampleReturnsOne) {
-  ScubaOtel otel("test_dataset");
+TEST_F(OTelLoggerTest, AddSampleReturnsOne) {
+  OTelLogger otel("test_dataset");
 
   std::unordered_map<std::string, std::string> normalMap = {
       {"key1", "value1"}, {"key2", "value2"}};
@@ -69,8 +69,8 @@ TEST_F(ScubaOtelTest, AddSampleReturnsOne) {
   EXPECT_EQ(result, 1);
 }
 
-TEST_F(ScubaOtelTest, AddSampleEmptyMaps) {
-  ScubaOtel otel("test_dataset");
+TEST_F(OTelLoggerTest, AddSampleEmptyMaps) {
+  OTelLogger otel("test_dataset");
 
   std::unordered_map<std::string, std::string> normalMap;
   std::unordered_map<std::string, int64_t> intMap;
@@ -80,8 +80,8 @@ TEST_F(ScubaOtelTest, AddSampleEmptyMaps) {
   EXPECT_EQ(result, 1);
 }
 
-TEST_F(ScubaOtelTest, AddRawDataValidJson) {
-  ScubaOtel otel("test_dataset");
+TEST_F(OTelLoggerTest, AddRawDataValidJson) {
+  OTelLogger otel("test_dataset");
 
   folly::dynamic message = folly::dynamic::object("normal",
       folly::dynamic::object("host", "myhost")("env", "prod"))("int",
@@ -97,8 +97,8 @@ TEST_F(ScubaOtelTest, AddRawDataValidJson) {
   EXPECT_EQ(result, 1);
 }
 
-TEST_F(ScubaOtelTest, AddRawDataMinimalJson) {
-  ScubaOtel otel("test_dataset");
+TEST_F(OTelLoggerTest, AddRawDataMinimalJson) {
+  OTelLogger otel("test_dataset");
 
   folly::dynamic message = folly::dynamic::object("normal",
       folly::dynamic::object())("int", folly::dynamic::object())("double",
@@ -110,16 +110,16 @@ TEST_F(ScubaOtelTest, AddRawDataMinimalJson) {
   EXPECT_EQ(result, 1);
 }
 
-TEST_F(ScubaOtelTest, AddRawDataInvalidJson) {
-  ScubaOtel otel("test_dataset");
+TEST_F(OTelLoggerTest, AddRawDataInvalidJson) {
+  OTelLogger otel("test_dataset");
 
   // Malformed JSON should be handled gracefully (caught exception, return 0).
   auto result = otel.addRawData("test_dataset", "not valid json{{{", folly::none);
   EXPECT_EQ(result, 0);
 }
 
-TEST_F(ScubaOtelTest, AddRawDataMissingFields) {
-  ScubaOtel otel("test_dataset");
+TEST_F(OTelLoggerTest, AddRawDataMissingFields) {
+  OTelLogger otel("test_dataset");
 
   // JSON missing expected fields should throw internally and be caught (return 0).
   folly::dynamic message = folly::dynamic::object("unexpected_field", 42);
@@ -129,8 +129,8 @@ TEST_F(ScubaOtelTest, AddRawDataMissingFields) {
   EXPECT_EQ(result, 0);
 }
 
-TEST_F(ScubaOtelTest, AddRawDataWithTimeout) {
-  ScubaOtel otel("test_dataset");
+TEST_F(OTelLoggerTest, AddRawDataWithTimeout) {
+  OTelLogger otel("test_dataset");
 
   folly::dynamic message = folly::dynamic::object("normal",
       folly::dynamic::object("key", "val"))("int",
@@ -145,8 +145,8 @@ TEST_F(ScubaOtelTest, AddRawDataWithTimeout) {
   EXPECT_EQ(result, 1);
 }
 
-TEST_F(ScubaOtelTest, AddRawDataEmptyNormvector) {
-  ScubaOtel otel("test_dataset");
+TEST_F(OTelLoggerTest, AddRawDataEmptyNormvector) {
+  OTelLogger otel("test_dataset");
 
   folly::dynamic message = folly::dynamic::object("normal",
       folly::dynamic::object("key", "val"))("int",
@@ -160,8 +160,8 @@ TEST_F(ScubaOtelTest, AddRawDataEmptyNormvector) {
   EXPECT_EQ(result, 1);
 }
 
-TEST_F(ScubaOtelTest, AddSampleLargeValues) {
-  ScubaOtel otel("test_dataset");
+TEST_F(OTelLoggerTest, AddSampleLargeValues) {
+  OTelLogger otel("test_dataset");
 
   std::unordered_map<std::string, std::string> normalMap;
   std::unordered_map<std::string, int64_t> intMap = {
@@ -175,10 +175,10 @@ TEST_F(ScubaOtelTest, AddSampleLargeValues) {
   EXPECT_EQ(result, 1);
 }
 
-TEST_F(ScubaOtelTest, MultipleDatasets) {
-  // Verify multiple ScubaOtel instances with different datasets can coexist.
-  ScubaOtel otel1("dataset_a");
-  ScubaOtel otel2("dataset_b");
+TEST_F(OTelLoggerTest, MultipleDatasets) {
+  // Verify multiple OTelLogger instances with different datasets can coexist.
+  OTelLogger otel1("dataset_a");
+  OTelLogger otel2("dataset_b");
 
   std::unordered_map<std::string, std::string> normalMap = {{"k", "v"}};
   std::unordered_map<std::string, int64_t> intMap;

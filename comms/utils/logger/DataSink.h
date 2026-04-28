@@ -10,8 +10,8 @@
 #include <folly/logging/xlog.h>
 
 #ifdef ENABLE_OTEL
-#include "comms/utils/logger/ScubaOtel.h"
-using DataSink = ScubaOtel;
+#include "comms/utils/logger/OTelLogger.h"
+using DataSink = OTelLogger;
 #else
 
 /**

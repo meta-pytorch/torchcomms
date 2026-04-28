@@ -12,11 +12,11 @@
 #include "opentelemetry/logs/provider.h"
 
 /**
- * Otel ScubaOtel for FB cloud infra, like fair-sc, coreweave, etc.
+ * OTel Logger for FB cloud infra, like aws, coreweave, etc.
  */
-class ScubaOtel {
+class OTelLogger {
  public:
-  explicit ScubaOtel(folly::StringPiece dataset);
+  explicit OTelLogger(folly::StringPiece dataset);
 
   size_t addRawData(
       const std::string& dataset,
