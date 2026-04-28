@@ -628,6 +628,17 @@ std::unique_ptr<RemovableHandle> TorchComm::registerAbortHook(
   });
 }
 
+std::unique_ptr<RemovableHandle> TorchComm::registerGraphReplayHook(
+    TorchComm::GraphReplayHook hook) {
+  auto hookId = nextHookId_++;
+  impl_->registerGraphReplayHook(hookId, std::move(hook));
+  return RemovableHandle::create([self = weak_from_this(), hookId]() {
+    if (auto selfPtr = self.lock()) {
+      selfPtr->impl_->unregisterGraphReplayHook(hookId);
+    }
+  });
+}
+
 void TorchComm::preHook(OpName name, size_t op_id, PreHookArgs&& args) {
   for (auto& hook : preHooks_) {
     hook.second(name, op_id, args);
