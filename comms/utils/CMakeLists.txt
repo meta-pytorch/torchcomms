@@ -33,3 +33,10 @@ target_include_directories(utils PUBLIC
     ${CONDA_INCLUDE}
     ${CUDA_INCLUDE_DIRS}
 )
+# Link folly for transitive include dirs (dwarf.h via Symbolizer.h).
+# Only in standalone builds where find_package(folly) provides the target.
+# In feedstock builds (USE_SYSTEM_LIBS=1), folly is resolved via pkg-config
+# and THIRD_PARTY_INCLUDE provides header coverage.
+if(NOT USE_SYSTEM_LIBS)
+    target_link_libraries(utils PRIVATE Folly::folly)
+endif()
