@@ -205,13 +205,15 @@ TEST_F(TopologyTest, DiscoverWithTwoGpusCreatesNodes) {
   EXPECT_EQ(std::get<TopoNode::GpuData>(gpu1.data).cudaDeviceId, 1);
 }
 
-TEST_F(TopologyTest, DiscoverFailsWhenNvmlFails) {
+TEST_F(TopologyTest, DiscoverContinuesWhenNvmlFails) {
   EXPECT_CALL(*nvml_, deviceCount())
       .WillOnce(Return(Err(ErrCode::DriverError, "nvml failed")));
   // CUDA should not be called if NVML fails first.
   EXPECT_CALL(*cuda_, getDevicePCIBusId(_, _, _)).Times(Exactly(0));
   auto topo = createTopology();
-  EXPECT_FALSE(topo->available());
+  // GPU failure is non-fatal; topology is still available with zero GPUs.
+  EXPECT_TRUE(topo->available());
+  EXPECT_EQ(topo->gpuCount(), 0u);
 }
 
 // --- P2P matrix tests ---
@@ -766,25 +768,48 @@ class TopologyNicTest : public TopologyTest {
     }
   }
 
+  // Entry for a NIC device: name, PCI sysfs path (empty for virtual), virtual.
+  struct NicEntry {
+    std::string name;
+    std::string pciSysfsPath; // empty for virtual devices
+    bool isVirtual = false;
+  };
+
   void setupNics(const std::vector<std::pair<std::string, std::string>>& nics) {
-    // nics = {{"mlx5_0", nicSysfsPath}, ...}
+    std::vector<NicEntry> entries;
+    entries.reserve(nics.size());
+    for (const auto& [name, path] : nics) {
+      entries.push_back({name, path, /*isVirtual=*/false});
+    }
+    setupNicsImpl(entries);
+  }
+
+  void setupNicsImpl(const std::vector<NicEntry>& nics) {
     nicDevices_.resize(nics.size());
     nicDevicePtrs_.resize(nics.size());
     nicNames_.clear();
 
     for (size_t i = 0; i < nics.size(); ++i) {
       std::memset(&nicDevices_[i], 0, sizeof(ibv_device));
-      std::string ibdevPath = "/sys/class/infiniband/" + nics[i].first;
+      std::string ibdevPath = "/sys/class/infiniband/" + nics[i].name;
       std::strncpy(
           nicDevices_[i].ibdev_path,
           ibdevPath.c_str(),
           sizeof(nicDevices_[i].ibdev_path) - 1);
       nicDevicePtrs_[i] = &nicDevices_[i];
-      nicNames_.push_back(nics[i].first);
+      nicNames_.push_back(nics[i].name);
 
-      // Resolve ibdev_path/device → PCI device path.
-      ON_CALL(*sysfs_, resolvePath(ibdevPath + "/device"))
-          .WillByDefault(Return(Result<std::string>(nics[i].second)));
+      if (nics[i].isVirtual) {
+        // Virtual device: resolvePath(ibdevPath) returns /devices/virtual/...
+        ON_CALL(*sysfs_, resolvePath(ibdevPath))
+            .WillByDefault(Return(
+                Result<std::string>(
+                    "/sys/devices/virtual/rdma_rxe/" + nics[i].name)));
+      } else {
+        // Physical device: resolvePath(ibdevPath/device) → PCI path.
+        ON_CALL(*sysfs_, resolvePath(ibdevPath + "/device"))
+            .WillByDefault(Return(Result<std::string>(nics[i].pciSysfsPath)));
+      }
     }
 
     int n = static_cast<int>(nics.size());
@@ -968,6 +993,121 @@ TEST_F(TopologyNicTest, PortSpeedIsCapturedFromIbverbs) {
   EXPECT_EQ(nic0Data.portSpeedMbps, 400000u); // NDR 4x
   EXPECT_EQ(nic1Data.portSpeedMbps, 200000u); // HDR 4x
   EXPECT_GT(nic0Data.portSpeedMbps, nic1Data.portSpeedMbps);
+}
+
+// --- Virtual RDMA device (RXE) tests ---
+
+TEST_F(TopologyNicTest, VirtualRdmaDeviceIsDiscovered) {
+  setupNicsImpl({
+      {.name = "rxe0", .pciSysfsPath = "", .isVirtual = true},
+  });
+
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+  ASSERT_EQ(topo->nicCount(), 1u);
+
+  const auto& nic = topo->getNicNode(0);
+  EXPECT_EQ(nic.name, "rxe0");
+
+  const auto& data = std::get<TopoNode::NicData>(nic.data);
+  EXPECT_EQ(data.bdf, "virtual");
+  EXPECT_EQ(data.numaNode, 0);
+  EXPECT_EQ(data.port, 1);
+  // Uses default queryPort mock (NDR 4x = 400000 Mbps).
+  EXPECT_EQ(data.portSpeedMbps, 400000u);
+}
+
+TEST_F(TopologyNicTest, VirtualRdmaDevicePreservesNonZeroSpeed) {
+  setupNicsImpl({
+      {.name = "rxe0", .pciSysfsPath = "", .isVirtual = true},
+  });
+
+  // Report a non-zero speed — should be preserved, not overridden.
+  // NOLINTNEXTLINE(performance-no-int-to-ptr)
+  auto* ctx0 = reinterpret_cast<ibv_context*>(static_cast<uintptr_t>(0x100));
+  ON_CALL(*ibv_, queryPort(ctx0, _, _))
+      .WillByDefault([](ibv_context*, uint8_t, ibv_port_attr* attr) {
+        attr->state = IBV_PORT_ACTIVE;
+        attr->active_speed = 64; // HDR
+        attr->active_width = 2; // 4x
+        return Ok();
+      });
+
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+  ASSERT_EQ(topo->nicCount(), 1u);
+
+  const auto& data = std::get<TopoNode::NicData>(topo->getNicNode(0).data);
+  EXPECT_EQ(data.bdf, "virtual");
+  EXPECT_EQ(data.portSpeedMbps, 200000u); // HDR 4x
+}
+
+TEST_F(TopologyNicTest, VirtualNicBandwidthUsesPortSpeed) {
+  setupNicsImpl({
+      {.name = "rxe0", .pciSysfsPath = "", .isVirtual = true},
+  });
+
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+  ASSERT_EQ(topo->nicCount(), 1u);
+
+  // Virtual NIC should be connected to CPU node with port speed as bandwidth
+  // (no PCIe bottleneck). NDR 4x = 400000 Mbps → 50000 MB/s.
+  int nicNodeId = topo->getNicNode(0).id;
+  int cpuNodeId = topo->getCpuNode(0).id;
+  const auto& path = topo->getPath(nicNodeId, cpuNodeId);
+  EXPECT_NE(path.type, PathType::DIS);
+  EXPECT_EQ(path.bw, 50000u); // 400000 Mbps / 8
+}
+
+TEST_F(TopologyNicTest, VirtualRdmaDeviceDefaultsSpeedWhenZero) {
+  setupNicsImpl({
+      {.name = "rxe0", .pciSysfsPath = "", .isVirtual = true},
+  });
+
+  // Report zero speed — should be overridden to 10 Gbps default.
+  // NOLINTNEXTLINE(performance-no-int-to-ptr)
+  auto* ctx0 = reinterpret_cast<ibv_context*>(static_cast<uintptr_t>(0x100));
+  ON_CALL(*ibv_, queryPort(ctx0, _, _))
+      .WillByDefault([](ibv_context*, uint8_t, ibv_port_attr* attr) {
+        attr->state = IBV_PORT_ACTIVE;
+        attr->active_speed = 0;
+        attr->active_width = 0;
+        return Ok();
+      });
+
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+  ASSERT_EQ(topo->nicCount(), 1u);
+
+  const auto& data = std::get<TopoNode::NicData>(topo->getNicNode(0).data);
+  EXPECT_EQ(data.bdf, "virtual");
+  EXPECT_EQ(data.portSpeedMbps, 10000u); // default RXE speed: 10 Gbps
+
+  // Bandwidth to CPU should use the default speed: 10000 Mbps / 8 = 1250 MB/s.
+  int nicNodeId = topo->getNicNode(0).id;
+  int cpuNodeId = topo->getCpuNode(0).id;
+  const auto& path = topo->getPath(nicNodeId, cpuNodeId);
+  EXPECT_NE(path.type, PathType::DIS);
+  EXPECT_EQ(path.bw, 1250u);
+}
+
+TEST_F(TopologyNicTest, MixedPhysicalAndVirtualNics) {
+  setupNicsImpl({
+      {.name = "mlx5_0", .pciSysfsPath = nic0_, .isVirtual = false},
+      {.name = "rxe0", .pciSysfsPath = "", .isVirtual = true},
+  });
+
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+  ASSERT_EQ(topo->nicCount(), 2u);
+
+  const auto& phys = std::get<TopoNode::NicData>(topo->getNicNode(0).data);
+  const auto& virt = std::get<TopoNode::NicData>(topo->getNicNode(1).data);
+
+  EXPECT_NE(phys.bdf, "virtual");
+  EXPECT_EQ(virt.bdf, "virtual");
+  EXPECT_EQ(virt.numaNode, 0);
 }
 
 } // namespace uniflow
