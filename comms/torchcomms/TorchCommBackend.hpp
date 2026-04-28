@@ -298,6 +298,18 @@ class TorchCommBackend {
         std::string(getCommName()));
   }
 
+  /**
+   * Abort the communicator, stopping all in-flight operations.
+   * In reconfigurable mode, calls ncclCommRevoke (graceful) and sets error
+   * state. Otherwise calls ncclCommAbort (destructive).
+   * Does not throw. Caller can recover via reconfigure().
+   */
+  virtual void abort() {
+    throw std::runtime_error(
+        "[TorchCommBackend]: abort not implemented for communicator:" +
+        std::string(getCommName()));
+  }
+
   // Device Transport API
   // Returns a device pointer (as int64) to a transport handle for use in
   // Triton/CUDA kernels. Only supported by backends with pipes transport.
