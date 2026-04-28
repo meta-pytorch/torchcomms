@@ -123,7 +123,9 @@ DEFINE_scuba_table(nccl_collective_stats);
 extern void initLoggerProvider();
 
 void DataTableWrapper::init() {
+#ifdef ENABLE_OTEL
   initLoggerProvider();
+#endif
   INIT_scuba_table(nccl_coll_signature);
   INIT_scuba_table(nccl_coll_timestamp);
   INIT_scuba_table(nccl_commdump);

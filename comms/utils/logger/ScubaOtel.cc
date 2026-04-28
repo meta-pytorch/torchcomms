@@ -1,6 +1,6 @@
-#include "ScubaOtel.h"
-
 #ifdef ENABLE_OTEL
+
+#include "ScubaOtel.h"
 #include <glog/logging.h>
 #include <memory>
 #include <folly/json.h>
