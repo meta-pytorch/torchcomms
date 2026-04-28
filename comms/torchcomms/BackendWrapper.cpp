@@ -101,38 +101,36 @@ WorkWrapper::WorkWrapper(
   }
 }
 
-bool WorkWrapper::isCompleted() {
-  return work_->isCompleted();
-}
-bool WorkWrapper::isSuccess() const {
-  // Note: Error state tracking is not implemented. This method returns
-  // isCompleted() as a simplification. The underlying TorchWork does not
-  // expose separate success/error states, so we assume completion implies
-  // success. Callers that need error detection should use try/catch around
-  // wait() instead.
-  return work_->isCompleted();
-}
-std::exception_ptr WorkWrapper::exception() const {
-  // Note: Exception capture is not implemented. The underlying TorchWork
-  // interface does not provide a mechanism to retrieve exceptions after
-  // completion. Errors are raised during wait() calls instead.
-  return nullptr;
-}
 bool WorkWrapper::wait(std::chrono::milliseconds timeout) {
   if (timeout != kNoTimeout) {
-    throw std::runtime_error("wait timeout not supported");
+    auto ex = std::make_exception_ptr(
+        std::runtime_error("wait timeout not supported"));
+    finish(ex);
+    std::rethrow_exception(ex);
   }
-  work_->wait();
+  try {
+    work_->wait();
+  } catch (...) {
+    finish(std::current_exception());
+    throw;
+  }
   if (!future_->completed()) {
     future_->markCompleted(c10::IValue(outputTensors_));
   }
+  finish();
   return true;
 }
 void WorkWrapper::synchronize() {
-  work_->wait();
+  try {
+    work_->wait();
+  } catch (...) {
+    finish(std::current_exception());
+    throw;
+  }
   if (!future_->completed()) {
     future_->markCompleted(c10::IValue(outputTensors_));
   }
+  finish();
 }
 std::vector<at::Tensor> WorkWrapper::result() {
   return outputTensors_;
