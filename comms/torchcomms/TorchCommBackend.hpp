@@ -205,6 +205,19 @@ class TorchCommBackend {
 
   std::unordered_map<int64_t, AbortHook> abortHooks_;
 
+  // Graph replay hook support (GraphReplayHook defined in TorchCommHooks.hpp)
+  // Called by backends when graph replay events are detected.
+
+  virtual void registerGraphReplayHook(int64_t hookId, GraphReplayHook hook) {
+    graphReplayHooks_.emplace(hookId, std::move(hook));
+  }
+
+  virtual void unregisterGraphReplayHook(int64_t hookId) {
+    graphReplayHooks_.erase(hookId);
+  }
+
+  std::unordered_map<int64_t, GraphReplayHook> graphReplayHooks_;
+
   // Persistent AllGather operations
   // Handle type for persistent AllGather (opaque pointer)
   using AllGatherPHandle = void*;
@@ -305,6 +318,25 @@ class TorchCommBackend {
                    << e.what();
       } catch (...) {
         LOG(ERROR) << "[TorchCommBackend] Abort hook threw unknown exception.";
+      }
+    }
+  }
+
+  void fireGraphReplayHook(
+      uint64_t graph_id,
+      uint64_t replay_id,
+      void* stream,
+      size_t collective_index,
+      std::string_view event) {
+    for (const auto& [_, hook] : graphReplayHooks_) {
+      try {
+        hook(graph_id, replay_id, stream, collective_index, event);
+      } catch (const std::exception& e) {
+        LOG(ERROR) << "[TorchCommBackend] Graph replay hook threw exception: "
+                   << e.what();
+      } catch (...) {
+        LOG(ERROR)
+            << "[TorchCommBackend] Graph replay hook threw unknown exception.";
       }
     }
   }

@@ -467,4 +467,15 @@ using PostHook = std::function<void(size_t op_id, const PostHookArgs& args)>;
 // This allows users to capture debug information before the abort.
 using AbortHook = std::function<void()>;
 
+// Graph replay hook - called by backends that support CUDA graph capture
+// when graph replays are detected. The hook receives the graph ID, replay
+// number, an opaque stream handle, a zero-based per-stream collective index,
+// and an event name ("S" or "E"). Backends call this from the watchdog thread.
+using GraphReplayHook = std::function<void(
+    uint64_t graph_id,
+    uint64_t replay_id,
+    void* stream,
+    size_t collective_index,
+    std::string_view event)>;
+
 } // namespace torch::comms
