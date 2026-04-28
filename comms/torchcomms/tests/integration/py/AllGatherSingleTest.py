@@ -293,5 +293,6 @@ class AllGatherSingleTest(unittest.TestCase):
             with self.subTest(count=count, dtype=dtype):
                 self._graph_all_gather_single_input_deleted(count, dtype)
 
+
 if __name__ == "__main__":
     unittest.main()
