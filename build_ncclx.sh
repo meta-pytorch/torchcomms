@@ -153,8 +153,8 @@ function build_third_party {
     build_fb_oss_library "https://github.com/gflags/gflags.git" "v2.2.2" gflags "-DBUILD_SHARED_LIBS=ON"
     # we need both static and dynamic glog since thrift generator can't
     # statically link against glog.
-    build_fb_oss_library "https://github.com/google/glog.git" "v0.4.0" glog "-DWITH_GFLAGS=OFF"
-    build_fb_oss_library "https://github.com/google/glog.git" "v0.4.0" glog "-DBUILD_SHARED_LIBS=ON -DWITH_GFLAGS=OFF"
+    build_fb_oss_library "https://github.com/google/glog.git" "v0.4.0" glog
+    build_fb_oss_library "https://github.com/google/glog.git" "v0.4.0" glog "-DBUILD_SHARED_LIBS=ON"
     build_fb_oss_library "https://github.com/facebook/zstd.git" "v1.5.6" zstd
     build_automake_library "https://github.com/jedisct1/libsodium.git" "1.0.20-RELEASE" sodium
     build_fb_oss_library "https://github.com/fastfloat/fast_float.git" "v8.0.2" fast_float "-DFASTFLOAT_INSTALL=ON"
@@ -162,6 +162,8 @@ function build_third_party {
     build_fb_oss_library "https://github.com/google/double-conversion.git" "v3.3.1" double-conversion
     build_fb_oss_library "https://github.com/facebook/folly.git" "$third_party_tag" folly "-DUSE_STATIC_DEPS_ON_UNIX=ON -DOPENSSL_USE_STATIC_LIBS=ON"
     if [[ "${ENABLE_OTEL}" == "1" ]]; then
+      build_fb_oss_library "https://github.com/google/glog.git" "v0.4.0" glog "-DWITH_GFLAGS=OFF"
+      build_fb_oss_library "https://github.com/google/glog.git" "v0.4.0" glog "-DBUILD_SHARED_LIBS=ON -DWITH_GFLAGS=OFF"
       build_fb_oss_library "https://github.com/google/googletest" "v1.15.0" "googletest" "-DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON"
       build_fb_oss_library "https://github.com/nghttp2/nghttp2.git" "v1.68.0" "libnghttp2" "-DENABLE_LIB_ONLY=ON -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON -DBUILD_TESTING=OFF"
       build_fb_oss_library "https://github.com/libssh2/libssh2.git" "libssh2-1.11.1" libssh2 "-DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF -DOPENSSL_USE_STATIC_LIBS=ON"
