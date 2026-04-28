@@ -33,3 +33,8 @@ target_include_directories(utils PUBLIC
     ${CONDA_INCLUDE}
     ${CUDA_INCLUDE_DIRS}
 )
+# Link folly for transitive include dirs (dwarf.h via Symbolizer.h).
+# Only when the Folly::folly CMake target exists (standalone builds).
+if(TARGET Folly::folly)
+    target_link_libraries(utils PRIVATE Folly::folly)
+endif()
