@@ -2656,14 +2656,6 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
   return new_torchcomm;
 }
 
-void TorchCommNCCLX::register_address(const AddressWithLen& addr) {
-  global_register_address(addr, nccl_api_.get());
-}
-
-void TorchCommNCCLX::deregister_address(const Address& addr) {
-  global_deregister_address(addr, nccl_api_.get());
-}
-
 void TorchCommNCCLX::global_register_address(
     const TorchCommNCCLX::AddressWithLen& addr,
     NcclxApi* nccl_api) {

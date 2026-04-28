@@ -93,8 +93,7 @@ class TorchCommNCCLX : public TorchCommBackend,
   int getSize() const override;
   std::string_view getBackendName() const override;
   std::string_view getCommName() const override;
-  void register_address(const AddressWithLen& addr) override;
-  void deregister_address(const Address& addr) override;
+
   // Point-to-Point Operations
   c10::intrusive_ptr<TorchWork> send(
       const at::Tensor& tensor,
@@ -367,6 +366,15 @@ class TorchCommNCCLX : public TorchCommBackend,
   meta::comms::GraphSideStream* getGraphMonitorSideStream() {
     return graph_monitor_side_stream_.get();
   }
+
+  struct Address {
+    void* addr;
+  };
+
+  struct AddressWithLen {
+    void* addr;
+    size_t len;
+  };
 
   // Global pointer-based registration that doesn't require a comm instance.
   // Used by CachingAllocatorHook for pre-comm memory registration.
