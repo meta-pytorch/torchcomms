@@ -79,7 +79,11 @@ function build_automake_library() {
 
   export LDFLAGS="-Wl,--allow-shlib-undefined"
   pushd "$library_name"
-  ./configure --prefix="$CMAKE_PREFIX_PATH" --disable-pie
+
+  if [ -f "./autogen.sh" ]; then
+    ./autogen.sh
+  fi
+  ./configure --prefix="$CMAKE_PREFIX_PATH" --disable-pie "CFLAGS=-fPIC" "CXXFLAGS=-fPIC"
 
   make -j$(nproc)
   make install
@@ -157,6 +161,18 @@ function build_third_party {
     build_fb_oss_library "https://github.com/libevent/libevent.git" "release-2.1.12-stable" event
     build_fb_oss_library "https://github.com/google/double-conversion.git" "v3.3.1" double-conversion
     build_fb_oss_library "https://github.com/facebook/folly.git" "$third_party_tag" folly "-DUSE_STATIC_DEPS_ON_UNIX=ON -DOPENSSL_USE_STATIC_LIBS=ON"
+    if [[ "${ENABLE_OTEL}" == "1" ]]; then
+      build_fb_oss_library "https://github.com/google/glog.git" "v0.4.0" glog "-DWITH_GFLAGS=OFF"
+      build_fb_oss_library "https://github.com/google/glog.git" "v0.4.0" glog "-DBUILD_SHARED_LIBS=ON -DWITH_GFLAGS=OFF"
+      build_fb_oss_library "https://github.com/google/googletest" "v1.15.0" "googletest" "-DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON"
+      build_fb_oss_library "https://github.com/nghttp2/nghttp2.git" "v1.68.0" "libnghttp2" "-DENABLE_LIB_ONLY=ON -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON -DBUILD_TESTING=OFF"
+      build_fb_oss_library "https://github.com/libssh2/libssh2.git" "libssh2-1.11.1" libssh2 "-DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF -DOPENSSL_USE_STATIC_LIBS=ON"
+      build_fb_oss_library "https://github.com/abseil/abseil-cpp" "20240116.2" abseil "-DABSL_BUILD_TEST_HELPERS=OFF"
+      build_automake_library "https://github.com/protocolbuffers/protobuf" "v3.20.3" protobuf
+      build_automake_library "https://github.com/rockdaboot/libpsl" "libpsl-0.21.0" psl
+      build_fb_oss_library "https://github.com/curl/curl" "curl-8_16_0" curl "-DBUILD_SHARED_LIBS=OFF -DCURL_BROTLI=OFF -DOPENSSL_USE_STATIC_LIBS=ON -DUSE_LIBIDN2=OFF -DBUILD_CURL_EXE=OFF"
+      build_fb_oss_library "https://github.com/open-telemetry/opentelemetry-cpp" "v1.19.0" opentelemetry-cpp "-DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=OFF -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DWITH_OTLP_HTTP=ON -DCMAKE_FIND_LIBRARY_SUFFIXES=.a -DWITH_EXAMPLES=OFF -DCMAKE_LIBRARY_PATH=${CONDA_PREFIX}/lib -DOPENSSL_USE_STATIC_LIBS=TRUE"
+    fi
   else
     if [[ -z "${NCCL_SKIP_CONDA_INSTALL}" ]]; then
       DEPS=(
@@ -343,6 +359,50 @@ else
   THIRD_PARTY_LDFLAGS+="-lglog -lgflags -lboost_context -lfmt -lssl -lcrypto"
 fi
 
+if [[ "${ENABLE_OTEL}" == "1" ]]; then
+  if [[ -z "${USE_SYSTEM_LIBS}" ]]; then
+    THIRD_PARTY_LDFLAGS+=" -l:libopentelemetry_exporter_otlp_http_log.a \
+        -l:libopentelemetry_otlp_recordable.a \
+        -l:libopentelemetry_exporter_otlp_http_client.a \
+        -l:libopentelemetry_http_client_curl.a \
+        -l:libopentelemetry_proto.a \
+        -l:libopentelemetry_logs.a \
+        -l:libopentelemetry_trace.a \
+        -l:libopentelemetry_metrics.a \
+        -l:libopentelemetry_resources.a \
+        -l:libopentelemetry_common.a \
+        -l:libprotobuf.a \
+        -l:libcurl.a \
+        -l:libzstd.a \
+        -l:libpsl.a \
+        -l:libz.a \
+        -l:libssh2.a \
+        -l:libnghttp2.a \
+        -l:libssl.a \
+        -l:libcrypto.a"
+  else
+    THIRD_PARTY_LDFLAGS+=" -lpentelemetry_exporter_otlp_http_log \
+        -lpentelemetry_otlp_recordable \
+        -lpentelemetry_exporter_otlp_http_client \
+        -lpentelemetry_http_client_curl \
+        -lpentelemetry_proto \
+        -lpentelemetry_logs \
+        -lpentelemetry_trace \
+        -lpentelemetry_metrics \
+        -lpentelemetry_resources \
+        -lpentelemetry_common \
+        -lprotobuf \
+        -lcurl \
+        -lzstd \
+        -lpsl \
+        -lz \
+        -lssh2 \
+        -lnghttp2 \
+        -lssh \
+        -lcrypto"
+  fi
+fi
+
 echo "$THIRD_PARTY_LDFLAGS"
 
 if [[ -z "${NVCC_GENCODE-}" ]]; then
@@ -418,7 +478,8 @@ function build_nccl {
     CONDA_LIB_DIR="$CONDA_LIB_DIR" \
     THIRD_PARTY_LDFLAGS="$THIRD_PARTY_LDFLAGS" \
     CUDARTLIB="$CUDARTLIB" \
-    ENABLE_PIPES="${ENABLE_PIPES:-0}"
+    ENABLE_PIPES="${ENABLE_PIPES:-0}" \
+    ENABLE_OTEL="${ENABLE_OTEL:-0}"
 }
 
 function build_and_install_nccl {
@@ -435,7 +496,8 @@ make VERBOSE=1 -j$(nproc) \
     CONDA_LIB_DIR="$CONDA_LIB_DIR" \
     THIRD_PARTY_LDFLAGS="$THIRD_PARTY_LDFLAGS" \
     CUDARTLIB="$CUDARTLIB" \
-    ENABLE_PIPES="${ENABLE_PIPES:-0}"
+    ENABLE_PIPES="${ENABLE_PIPES:-0}" \
+    ENABLE_OTEL="${ENABLE_OTEL:-0}"
 }
 
 if [[ -z "${NCCL_BUILD_AND_INSTALL}" ]]; then

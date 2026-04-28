@@ -34,6 +34,20 @@ struct JobFields {
 
 JobFields getJobFields() {
   JobFields jobFields;
+  if (auto jobName = getenv("SLURM_JOB_NAME"); jobName != nullptr) {
+    jobFields.jobName = jobName;
+    jobFields.jobVersion = 0;
+    jobFields.jobAttempt = RankUtils::getInt64FromEnv("SLURM_RESTART_COUNT").value_or(0);
+    jobFields.jobQuorumRestartId = -1;
+    jobFields.jobIdStr = getenv("SLURM_JOB_ID") == nullptr? "" : getenv("SLURM_JOB_ID");
+    if (auto arrayJobId = getenv("SLURM_ARRAY_JOB_ID");
+        arrayJobId != nullptr) {
+      const char* arrayTaskId = getenv("SLURM_ARRAY_TASK_ID");
+      jobFields.jobIdStr = fmt::format("{}_{}", arrayJobId, arrayTaskId);
+    }
+    return jobFields;
+  }
+
   if (NCCL_HPC_JOB_IDS.size() >= 3) {
     jobFields.jobName =
         meta::comms::getStrEnv(NCCL_HPC_JOB_IDS[0]).value_or("");

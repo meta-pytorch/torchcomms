@@ -9,6 +9,11 @@
 #include <folly/Range.h>
 #include <folly/logging/xlog.h>
 
+#ifdef ENABLE_OTEL
+#include "comms/utils/logger/OTelLogger.h"
+using DataSink = OTelLogger;
+#else
+
 /**
  * FB Infra is not fully in conda environment and we build NCCLX in conda
  * with CMake. To log to scuba, we write to files, and a separate
@@ -40,4 +45,5 @@ class DataSink {
 #include "rfe/scubadata/ScubaData.h"
 using DataSink = facebook::rfe::ScubaData;
 
-#endif
+#endif // End MOCK_SCUBA_DATA
+#endif // End ENABLE_OTEL
