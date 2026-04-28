@@ -25,6 +25,18 @@ commResult_t ctranSendRecvCudagraphAware(
     cudaStream_t stream,
     std::optional<std::chrono::milliseconds> timeout) {
   // Caller (ctranGroupEndHook) already verified active capture mode.
+  const auto statex = comm->statex_.get();
+
+  CLOGF_SUBSYS(
+      INFO,
+      COLL,
+      "SendRecv cudagraph-aware: nOps {} commHash {:x} commDesc {} nRanks {} nLocalRanks {} nNodes {}",
+      opGroup.size(),
+      statex->commHash(),
+      statex->commDesc(),
+      statex->nRanks(),
+      statex->nLocalRanks(),
+      statex->nNodes());
 
   // Pre-register all send/recv buffers
   std::vector<std::pair<void*, size_t>> registeredBufs;

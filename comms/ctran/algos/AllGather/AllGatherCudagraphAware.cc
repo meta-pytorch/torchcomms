@@ -102,13 +102,16 @@ commResult_t ctranAllGatherCudagraphAware(
   CLOGF_SUBSYS(
       INFO,
       COLL,
-      "AllGather cudagraph-aware: algo={} "
-      "(sendcount={}, nRanks={}, nLocalRanks={}, recvBytes={})",
+      "AllGather cudagraph-aware: algo {} "
+      "sendcount {} recvBytes {} commHash {:x} commDesc {} nRanks {} nLocalRanks {} nNodes {}",
       allGatherAlgoName(algo),
       sendcount,
+      recvBytes,
+      statex->commHash(),
+      statex->commDesc(),
       nRanks,
       statex->nLocalRanks(),
-      recvBytes);
+      statex->nNodes());
 
   // Buffer registration + cleanup guard
   ctran::CtranWin* win = nullptr;
