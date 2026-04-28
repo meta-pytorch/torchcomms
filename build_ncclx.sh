@@ -20,6 +20,7 @@ function do_cmake_build() {
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
     -DCMAKE_CXX_STANDARD=20 \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.22 \
+    -DCMAKE_CXX_FLAGS="-DFMT_HEADER_ONLY=1" \
     $extra_flags \
     -S "${source_dir}"
   ninja -j$(nproc)
@@ -336,11 +337,17 @@ THRIFT_SERVICE_LDFLAGS+=(
   "-l:libxxhash.a"
 )
 THIRD_PARTY_LDFLAGS+="${THRIFT_SERVICE_LDFLAGS[*]} "
-THIRD_PARTY_LDFLAGS+="$(pkg-config --libs --static libfolly) "
+# Filter -lfmt from folly's pkg-config: fmt is used header-only (FMT_HEADER_ONLY=1)
+THIRD_PARTY_LDFLAGS+="$(pkg-config --libs --static libfolly | sed 's/-lfmt\b//g') "
+# liburing: folly's cmake config declares this dependency but pkg-config omits
+# it. Add -luring if the system has liburing (folly uses io_uring for async I/O).
+if pkg-config --exists liburing 2>/dev/null; then
+  THIRD_PARTY_LDFLAGS+="-luring "
+fi
 if [[ -z "${USE_SYSTEM_LIBS}" ]]; then
-  THIRD_PARTY_LDFLAGS+="-l:libglog.a -l:libgflags.a -l:libboost_context.a -l:libfmt.a -l:libssl.a -l:libcrypto.a"
+  THIRD_PARTY_LDFLAGS+="-l:libglog.a -l:libgflags.a -l:libboost_context.a -l:libssl.a -l:libcrypto.a"
 else
-  THIRD_PARTY_LDFLAGS+="-lglog -lgflags -lboost_context -lfmt -lssl -lcrypto"
+  THIRD_PARTY_LDFLAGS+="-lglog -lgflags -lboost_context -lssl -lcrypto"
 fi
 
 echo "$THIRD_PARTY_LDFLAGS"
