@@ -533,7 +533,7 @@ BackendWrapper::send(std::vector<at::Tensor>& tensors, int dstRank, int tag) {
       tensors.size(),
       " tensors");
   return c10::make_intrusive<WorkWrapper>(
-      backend_->send(tensors.at(0), dstRank, tag), tensors);
+      backend_->send(tensors.at(0), dstRank, /*async_op=*/true), tensors);
 }
 
 c10::intrusive_ptr<c10d::Work>
@@ -544,7 +544,7 @@ BackendWrapper::recv(std::vector<at::Tensor>& tensors, int srcRank, int tag) {
       tensors.size(),
       " tensors");
   return c10::make_intrusive<WorkWrapper>(
-      backend_->recv(tensors.at(0), srcRank, tag), tensors);
+      backend_->recv(tensors.at(0), srcRank, /*async_op=*/true), tensors);
 }
 
 std::shared_ptr<TorchComm> BackendWrapper::getComm() const {
