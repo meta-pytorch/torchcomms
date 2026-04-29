@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <optional>
 
 namespace ctran::utils {
 
@@ -106,6 +107,30 @@ class Abort final {
     hasTimeout_.store(false, std::memory_order_release);
   }
 
+  // Stores a duration; GPE applies it as a per-iteration deadline when no
+  // per-op timeout is supplied. Safe to update concurrently.
+  inline void SetDefaultTimeoutDuration(std::chrono::milliseconds duration) {
+    if (!enabled_) {
+      return;
+    }
+
+    defaultTimeoutDurationMs_.store(
+        duration.count(), std::memory_order_release);
+  }
+
+  inline std::optional<std::chrono::milliseconds> GetDefaultTimeoutDuration()
+      const {
+    if (!enabled_) {
+      return std::nullopt;
+    }
+
+    auto v = defaultTimeoutDurationMs_.load(std::memory_order_acquire);
+    if (v < 0) {
+      return std::nullopt;
+    }
+    return std::chrono::milliseconds{v};
+  }
+
  private:
   const bool enabled_;
 
@@ -114,10 +139,13 @@ class Abort final {
   std::atomic<bool> timedOut_{false};
   std::atomic<std::chrono::steady_clock::time_point> timeoutTime_{
       std::chrono::steady_clock::time_point{}};
+  // -1 = unset.
+  std::atomic<int64_t> defaultTimeoutDurationMs_{-1};
 
   static_assert(std::atomic<bool>::is_always_lock_free);
   static_assert(
       std::atomic<std::chrono::steady_clock::time_point>::is_always_lock_free);
+  static_assert(std::atomic<int64_t>::is_always_lock_free);
 };
 
 std::shared_ptr<Abort> createAbort(bool enabled);

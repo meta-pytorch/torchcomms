@@ -155,38 +155,27 @@ extras_require = {
     ],
 }
 
-ext_modules = [
-    CMakeExtension("torchcomms._comms"),
+BACKEND_FLAGS = [
+    ("nccl", USE_NCCL),
+    ("ncclx", USE_NCCLX),
+    ("gloo", USE_GLOO),
+    ("rccl", USE_RCCL),
+    ("rcclx", USE_RCCLX),
+    ("xccl", USE_XCCL),
 ]
 
-if USE_NCCL:
-    ext_modules += [
-        CMakeExtension("torchcomms._comms_nccl"),
-    ]
-if USE_NCCLX:
-    ext_modules += [
-        CMakeExtension("torchcomms._comms_ncclx"),
-    ]
-if USE_GLOO:
-    ext_modules += [
-        CMakeExtension("torchcomms._comms_gloo"),
-    ]
-if USE_RCCL:
-    ext_modules += [
-        CMakeExtension("torchcomms._comms_rccl"),
-    ]
-if USE_RCCLX:
-    ext_modules += [
-        CMakeExtension("torchcomms._comms_rcclx"),
-    ]
-if USE_XCCL:
-    ext_modules += [
-        CMakeExtension("torchcomms._comms_xccl"),
-    ]
+ext_modules = [CMakeExtension("torchcomms._comms")]
+ext_modules += [
+    CMakeExtension(f"torchcomms._comms_{name}")
+    for name, enabled in BACKEND_FLAGS
+    if enabled
+]
 if USE_TRANSPORT:
-    ext_modules += [
-        CMakeExtension("torchcomms._transport"),
-    ]
+    ext_modules.append(CMakeExtension("torchcomms._transport"))
+
+backend_entry_points = ["dummy = torchcomms._comms"] + [
+    f"{name} = torchcomms._comms_{name}" for name, enabled in BACKEND_FLAGS if enabled
+]
 
 setup(
     name="torchcomms",
@@ -197,15 +186,7 @@ setup(
         "torchcomms.triton.fb": ["*.bc"],
     },
     entry_points={
-        "torchcomms.backends": [
-            "nccl = torchcomms._comms_nccl",
-            "ncclx = torchcomms._comms_ncclx",
-            "gloo = torchcomms._comms_gloo",
-            "rccl = torchcomms._comms_rccl",
-            "rcclx = torchcomms._comms_rcclx",
-            "xccl = torchcomms._comms_xccl",
-            "dummy = torchcomms._comms",
-        ]
+        "torchcomms.backends": backend_entry_points,
     },
     ext_modules=ext_modules,
     cmdclass={"build_ext": build_ext},
