@@ -166,7 +166,9 @@ BACKEND_FLAGS = [
 
 ext_modules = [CMakeExtension("torchcomms._comms")]
 ext_modules += [
-    CMakeExtension(f"torchcomms._comms_{name}") for name, enabled in BACKEND_FLAGS if enabled
+    CMakeExtension(f"torchcomms._comms_{name}")
+    for name, enabled in BACKEND_FLAGS
+    if enabled
 ]
 if USE_TRANSPORT:
     ext_modules.append(CMakeExtension("torchcomms._transport"))
