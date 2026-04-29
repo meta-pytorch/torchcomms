@@ -397,6 +397,15 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::reconfigure(
   return c10::make_intrusive<TorchWorkCompleted>();
 }
 
+void TorchCommNCCL::abort() {
+  if (options_.enable_reconfigure) {
+    revokeNcclComm();
+  } else {
+    abortNcclComm();
+  }
+  comm_state_ = CommState::ERROR;
+}
+
 void TorchCommNCCL::finalize() {
   if (init_state_ == InitializationState::UNINITIALIZED) {
     throw std::runtime_error("TorchCommNCCL not initialized");
@@ -516,7 +525,7 @@ void TorchCommNCCL::abortNcclComm() {
   }
   if (options_.abort_process_on_timeout_or_error) {
     TC_LOG(ERROR, this) << "Aborting process due to timeout";
-    abort();
+    ::abort();
   }
 }
 
