@@ -22,7 +22,7 @@ PYBIND11_MODULE(_comms_ncclx, m, py::mod_gil_not_used()) {
   intrusive_ptr_class_<TorchCommNCCLXPersistentRequest>(
       m, "TorchCommNCCLXPersistentRequest");
 
-  py::class_<TorchCommNCCLX, std::shared_ptr<TorchCommNCCLX>>(
+  py::class_<TorchCommNCCLX, TorchCommBackend, std::shared_ptr<TorchCommNCCLX>>(
       m, "TorchCommNCCLX")
       .def(
           "device_alltoallv_single",
