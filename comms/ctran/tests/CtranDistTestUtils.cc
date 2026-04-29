@@ -57,6 +57,19 @@ void CtranDistEnvironment::SetUp() {
 // ============================================================================
 
 void CtranDistTestFixture::SetUp() {
+  SetUp(CtranEnvs{});
+}
+
+void CtranDistTestFixture::SetUp(const CtranEnvs& envs) {
+  // Save old env values and apply overrides.
+  for (const auto& [key, value] : envs) {
+    const char* oldVal = getenv(key.c_str());
+    savedEnvs_[key] =
+        oldVal ? std::optional<std::string>(oldVal) : std::nullopt;
+    setenv(key.c_str(), value.c_str(), 1);
+  }
+
+  ncclCvarInit();
   distSetUp();
 
   cudaDev = localRank;
@@ -71,7 +84,7 @@ void CtranDistTestFixture::SetUp() {
 
   if (globalRank == 0) {
     XLOG(DBG) << "Testing with NCCL_COMM_STATE_DEBUG_TOPO="
-              << (enableNolocal ? "nolocal" : "default");
+              << (isNolocalTopo() ? "nolocal" : "default");
   }
 
   stream.emplace(cudaStreamNonBlocking);
@@ -79,6 +92,17 @@ void CtranDistTestFixture::SetUp() {
 
 void CtranDistTestFixture::TearDown() {
   stream.reset();
+
+  // Restore original env values.
+  for (const auto& [key, value] : savedEnvs_) {
+    if (value) {
+      setenv(key.c_str(), value->c_str(), 1);
+    } else {
+      unsetenv(key.c_str());
+    }
+  }
+  savedEnvs_.clear();
+
   distTearDown();
 }
 
