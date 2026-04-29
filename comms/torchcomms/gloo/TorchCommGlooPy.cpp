@@ -14,5 +14,6 @@ using namespace torch::comms;
 PYBIND11_MODULE(_comms_gloo, m, py::mod_gil_not_used()) {
   m.doc() = "Gloo specific python bindings for TorchComm";
 
-  py::class_<TorchCommGloo, std::shared_ptr<TorchCommGloo>>(m, "TorchCommGloo");
+  py::class_<TorchCommGloo, TorchCommBackend, std::shared_ptr<TorchCommGloo>>(
+      m, "TorchCommGloo");
 }
