@@ -583,13 +583,13 @@ TEST(CommStateXTest, gPidTest) {
 
     // Test gPid() for default (current) rank
     std::string expectedGPid = std::string(rankTopologies[rank].host) + ":" +
-        std::to_string(rankTopologies[rank].pid) + ":" + std::to_string(rank);
+        std::to_string(rankTopologies[rank].pid);
     EXPECT_EQ(commState->gPid(), expectedGPid);
 
     // Test gPid(rank) for all ranks
     for (int r = 0; r < nRanks; ++r) {
       std::string expected = std::string(rankTopologies[r].host) + ":" +
-          std::to_string(rankTopologies[r].pid) + ":" + std::to_string(r);
+          std::to_string(rankTopologies[r].pid);
       EXPECT_EQ(commState->gPid(r), expected);
     }
   }

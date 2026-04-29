@@ -221,12 +221,15 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
   using PreHook = ::torch::comms::PreHook;
   using PostHook = ::torch::comms::PostHook;
   using AbortHook = ::torch::comms::AbortHook;
+  using GraphReplayHook = ::torch::comms::GraphReplayHook;
 
   // Hook registration (not thread-safe; must not be called while a collective
   // is in progress)
   std::unique_ptr<RemovableHandle> registerPreHook(PreHook preHook);
   std::unique_ptr<RemovableHandle> registerPostHook(PostHook postHook);
   std::unique_ptr<RemovableHandle> registerAbortHook(AbortHook hook);
+  std::unique_ptr<RemovableHandle> registerGraphReplayHook(
+      GraphReplayHook hook);
 
   // Disable copy and move semantics
   TorchComm(const TorchComm&) = delete;

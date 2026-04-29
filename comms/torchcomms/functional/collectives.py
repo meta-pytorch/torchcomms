@@ -85,7 +85,7 @@ if lib is not None:  # noqa: C901
             work = _get_tensor_work(inputs[0])
             if work is not None:
                 work.wait()  # type: ignore[attr-defined]
-        return inputs
+        return [t.clone() for t in inputs]
 
     # === FUNCTIONALIZE IMPL FOR INPLACE WAIT ===
     # Register py_functionalize_impl to swap inplace for functional

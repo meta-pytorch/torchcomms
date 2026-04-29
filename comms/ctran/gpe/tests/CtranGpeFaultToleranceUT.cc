@@ -467,6 +467,46 @@ TEST_P(CtranGpeFTEnabledAbortTest, HostActiveAbort) {
   EXPECT_TRUE(ctranComm->testAbort());
 }
 
+// Submit with no per-op timeout; comm-level default fires the abort.
+TEST_P(CtranGpeFTEnabledAbortTest, HostDetectedTimeoutFromDefault) {
+  auto [name, kernelFn] = GetParam();
+
+  ASSERT_TRUE(ctranComm->abortEnabled());
+  FtTestSync sync;
+  sync.setTimeout();
+  ctranComm->getAbort()->SetDefaultTimeoutDuration(
+      kHostAlgoFnWait - std::chrono::milliseconds(500));
+  runTestWillAbort(
+      kernelFn,
+      stream,
+      &sync,
+      /*activeAbort=*/false,
+      /*statusCheckDelay=*/kHostAlgoFnWait + std::chrono::milliseconds(1000),
+      /*timeout=*/std::nullopt);
+  EXPECT_TRUE(ctranComm->testAbort());
+}
+
+// Per-op timeout wins when both per-op and comm-level default are set.
+// The default is set far longer than the test window; abort within window
+// proves the per-op value was used.
+TEST_P(CtranGpeFTEnabledAbortTest, HostDetectedTimeoutPerOpOverridesDefault) {
+  auto [name, kernelFn] = GetParam();
+
+  ASSERT_TRUE(ctranComm->abortEnabled());
+  FtTestSync sync;
+  sync.setTimeout();
+  ctranComm->getAbort()->SetDefaultTimeoutDuration(
+      kHostAlgoFnWait + std::chrono::milliseconds(5000));
+  runTestWillAbort(
+      kernelFn,
+      stream,
+      &sync,
+      /*activeAbort=*/false,
+      /*statusCheckDelay=*/kHostAlgoFnWait + std::chrono::milliseconds(1000),
+      /*timeout=*/kHostAlgoFnWait - std::chrono::milliseconds(500));
+  EXPECT_TRUE(ctranComm->testAbort());
+}
+
 INSTANTIATE_TEST_SUITE_P(
     CtranGpeFTEnabledAbortTest,
     CtranGpeFTEnabledAbortTest,

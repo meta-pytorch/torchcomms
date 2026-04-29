@@ -1662,6 +1662,108 @@ TEST_F(CtranGpeTest, GraphCaptureDestroyFreesResources) {
   CUDACHECK_TEST(cudaFreeHost(valPtr));
   CUDACHECK_TEST(cudaStreamDestroy(stream));
 }
+
+namespace {
+std::mutex g_replayOpCountsMutex;
+std::vector<uint64_t> g_replayOpCounts;
+
+commResult_t recordOpCountFunc(
+    const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
+  std::lock_guard<std::mutex> lock(g_replayOpCountsMutex);
+  g_replayOpCounts.push_back(opGroup.front()->opCount);
+  return commSuccess;
+}
+} // namespace
+
+// Verify cmdCb advances op->opCount on each graph replay so host-side
+// consumers (Profiler sampling, scuba, CtranAlgoLogger) see a fresh value
+// per replay rather than the frozen capture-time value. Regression guard
+// for opcount-mode profiler sampling under cuda-graph replay.
+TEST_F(CtranGpeTest, GraphReplayAdvancesOpCount) {
+  auto gpe = std::unique_ptr<CtranGpe>(new CtranGpe(cudaDev, dummyComm));
+  cudaStream_t stream;
+  CUDACHECK_TEST(cudaStreamCreate(&stream));
+
+  constexpr int kVal = 77;
+  int* buf = nullptr;
+  int* valPtr = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMemset(buf, 0, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMallocHost(&valPtr, sizeof(int)));
+  *valPtr = kVal;
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  {
+    std::lock_guard<std::mutex> lock(g_replayOpCountsMutex);
+    g_replayOpCounts.clear();
+  }
+
+  constexpr uint64_t kCaptureOpCount = 100;
+
+  CUDACHECK_TEST(cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed));
+  {
+    std::vector<std::unique_ptr<struct OpElem>> ops;
+    auto& op = ops.emplace_back(
+        std::make_unique<OpElem>(
+            OpElem::opType::RECV, dummyComm, kCaptureOpCount));
+    op->recv.recvbuff = nullptr;
+    op->recv.count = 0;
+    op->recv.datatype = commInt8;
+    op->recv.peerRank = 0;
+
+    auto config = KernelConfig(
+        KernelConfig::KernelType::ALLGATHER,
+        stream,
+        "dummyAlgo",
+        kCaptureOpCount);
+    ctranKernelSetAllGatherArgs(
+        buf, valPtr, commInt8, count, dummyDevState_d, &config.args);
+
+    ASSERT_EQ(
+        gpe->submit(
+            std::move(ops),
+            &recordOpCountFunc,
+            config,
+            reinterpret_cast<void*>(CtranGpeTestKernel)),
+        commSuccess);
+  }
+
+  cudaGraph_t graph;
+  CUDACHECK_TEST(cudaStreamEndCapture(stream, &graph));
+  ASSERT_NE(graph, nullptr);
+
+  cudaGraphExec_t graphExec;
+  CUDACHECK_TEST(cudaGraphInstantiate(&graphExec, graph, nullptr, nullptr, 0));
+
+  constexpr int kReplays = 3;
+  for (int i = 0; i < kReplays; ++i) {
+    CUDACHECK_TEST(cudaGraphLaunch(graphExec, stream));
+  }
+  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+
+  // Each replay's cmdCb increments op->opCount before the GPE thread runs
+  // recordOpCountFunc. With three replays starting from kCaptureOpCount=100,
+  // the func sees 101, 102, 103.
+  std::vector<uint64_t> seen;
+  {
+    std::lock_guard<std::mutex> lock(g_replayOpCountsMutex);
+    seen = g_replayOpCounts;
+  }
+  const std::vector<uint64_t> expected = {
+      kCaptureOpCount + 1, kCaptureOpCount + 2, kCaptureOpCount + 3};
+  EXPECT_EQ(seen, expected);
+
+  CUDACHECK_TEST(cudaGraphExecDestroy(graphExec));
+  CUDACHECK_TEST(cudaGraphDestroy(graph));
+  while (gpe->numInUseKernelFlags() > 0 || gpe->numInUseKernelElems() > 0 ||
+         gpe->numInUseGpeKernelSyncs() > 0) {
+    std::this_thread::yield();
+  }
+  CUDACHECK_TEST(cudaFree(buf));
+  CUDACHECK_TEST(cudaFreeHost(valPtr));
+  CUDACHECK_TEST(cudaStreamDestroy(stream));
+}
+
 TEST_F(CtranGpeTest, SubmitCustomKernArgs) {
   auto gpe = std::unique_ptr<CtranGpe>(new CtranGpe(cudaDev, dummyComm));
   cudaStream_t stream;

@@ -633,6 +633,7 @@ static const std::unordered_map<std::string, enum NCCL_ALLGATHER_ALGO>
         {"ctbrucks", NCCL_ALLGATHER_ALGO::ctbrucks},
         {"ctgraph", NCCL_ALLGATHER_ALGO::ctgraph},
         {"ctgraph_pipeline", NCCL_ALLGATHER_ALGO::ctgraph_pipeline},
+        {"ctgraph_rdpipeline", NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline},
         {"ctgraph_ring", NCCL_ALLGATHER_ALGO::ctgraph_ring},
         {"ctgraph_rd", NCCL_ALLGATHER_ALGO::ctgraph_rd}};
 

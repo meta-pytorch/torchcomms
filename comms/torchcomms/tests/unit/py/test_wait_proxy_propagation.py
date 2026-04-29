@@ -117,6 +117,8 @@ class TestWaitProxyPropagation(unittest.TestCase):
     """Test that wait_tensors output proxies are properly propagated."""
 
     def setUp(self):
+        from torchcomms.functional import collectives  # noqa: F401
+
         torch._dynamo.reset()
 
     def tearDown(self):

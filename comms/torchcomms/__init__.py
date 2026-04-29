@@ -10,11 +10,12 @@ from importlib.metadata import entry_points
 
 # We need to load this upfront since libtorchcomms depend on libtorch
 import torch  # noqa: F401
-from torchcomms.functional import is_torch_compile_supported_and_enabled
+from torchcomms.functional import (
+    is_torch_compile_supported,
+    is_torch_compile_supported_and_enabled,
+)
 
-torch_compile_supported_and_enabled: bool = is_torch_compile_supported_and_enabled()
-
-if torch_compile_supported_and_enabled:
+if is_torch_compile_supported():
     from torch._opaque_base import OpaqueBaseMeta
 
     # make the metaclass available to the pybind module
@@ -46,7 +47,7 @@ from torchcomms._comms import *  # noqa: E402, F401, F403
 import torchcomms.hooks as hooks  # noqa: E402, F401
 import torchcomms.objcol as objcol  # noqa: E402, F401, F403
 
-if torch_compile_supported_and_enabled:
+if is_torch_compile_supported_and_enabled():
     # Import collectives first to ensure all operations are registered
     # This must happen before patch_torchcomm() so that window operations
     # and other collectives are registered and can be patched
@@ -85,3 +86,13 @@ def _load_backend(backend: str) -> None:
         )
     wheel = next(iter(found))
     wheel.load()
+
+
+def is_backend_built(backend: str) -> bool:
+    """True if the wheel was built with this backend's extension."""
+    return bool(entry_points(group="torchcomms.backends", name=backend))
+
+
+def built_backends() -> list[str]:
+    """Names of all backends the wheel was built with."""
+    return [ep.name for ep in entry_points(group="torchcomms.backends")]

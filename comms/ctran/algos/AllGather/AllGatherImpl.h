@@ -57,6 +57,8 @@ static inline const std::string allGatherAlgoName(
       return "CtranCudagraphAware";
     case NCCL_ALLGATHER_ALGO::ctgraph_pipeline:
       return "CtranCudagraphPipeline";
+    case NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline:
+      return "CtranCudagraphRdPipeline";
     case NCCL_ALLGATHER_ALGO::ctgraph_ring:
       return "CtranCudagraphRing";
     case NCCL_ALLGATHER_ALGO::ctgraph_rd:

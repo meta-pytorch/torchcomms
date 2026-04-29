@@ -34,13 +34,14 @@ bool ctranSendRecvSupport(
     CtranComm* comm,
     enum NCCL_SENDRECV_ALGO algo,
     cudaStream_t stream) {
-  const auto statex = comm->statex_.get();
-
   if (!ctranInitialized(comm)) {
     return false;
   }
 
+  const auto statex = comm->statex_.get();
+
   if (algo == NCCL_SENDRECV_ALGO::ctgraph) {
+    // TODO: skip NVL peers for now; will add support based on window
     if (peer != statex->rank() &&
         comm->ctran_->mapper->getBackend(peer) != CtranMapperBackend::IB) {
       return false;
@@ -53,6 +54,18 @@ bool ctranSendRecvSupport(
         ctran::utils::cudagraph::getStreamCaptureInfo(stream, captureInfo);
     if (err != cudaSuccess ||
         captureInfo.status != cudaStreamCaptureStatusActive) {
+      CLOGF_SUBSYS(
+          INFO,
+          COLL,
+          "SendRecv ctgraph: not in capture mode. "
+          "Falling back to baseline. "
+          "commHash {:x} commDesc {} peer {} nRanks {} nLocalRanks {} nNodes {}",
+          statex->commHash(),
+          statex->commDesc(),
+          peer,
+          statex->nRanks(),
+          statex->nLocalRanks(),
+          statex->nNodes());
       return false;
     }
     return true;
