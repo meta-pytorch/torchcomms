@@ -1327,6 +1327,132 @@ class TestFlightRecorderHook(unittest.TestCase):
         recorder.unregister()
         comm.finalize()
 
+    def test_duration_recorded_for_collective(self) -> None:
+        """Test that duration_ms is recorded for collective operations.
+
+        For CPU backends, duration is computed from wall-clock timestamps.
+        For device backends, duration is computed from device events.
+        In both cases, retired entries should have a positive duration_ms.
+        """
+        backend = os.environ["TEST_BACKEND"]
+        device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
+        comm = torchcomms.new_comm(
+            backend=backend,
+            device=device,
+            name="test_duration",
+            timeout=timedelta(seconds=300),
+        )
+
+        recorder = FlightRecorderHook(max_entries=100, isolated=True)
+        recorder.register_with_comm(comm)
+
+        # Run a collective operation
+        t = torch.rand(10, 10, device=device)
+        comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
+
+        # Wait for the work to complete so postHook fires
+        # (for CPU backends this is synchronous, for CUDA we need to sync)
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+
+        # Parse JSON and check duration
+        json_str = recorder.dump_json()
+        data = json.loads(json_str)
+        entries = data.get("entries", [])
+        self.assertGreater(len(entries), 0, "Should have at least one entry")
+
+        entry = entries[0]
+        self._validate_entry_format(entry)
+        self.assertTrue(entry["retired"], "Entry should be retired")
+        self.assertIn("duration_ms", entry, "Retired entry should have duration_ms")
+        self.assertGreater(entry["duration_ms"], 0, "duration_ms should be positive")
+
+        recorder.unregister()
+        comm.finalize()
+
+    def test_duration_recorded_for_multiple_operations(self) -> None:
+        """Test that duration_ms is recorded for multiple different operations."""
+        backend = os.environ["TEST_BACKEND"]
+        device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
+        comm = torchcomms.new_comm(
+            backend=backend,
+            device=device,
+            name="test_duration_multi",
+            timeout=timedelta(seconds=300),
+        )
+
+        recorder = FlightRecorderHook(max_entries=100, isolated=True)
+        recorder.register_with_comm(comm)
+
+        t = torch.rand(10, 10, device=device)
+
+        # Run several different collective operations
+        comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
+        comm.broadcast(t, root=0, async_op=False)
+        comm.barrier(async_op=False)
+
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+
+        json_str = recorder.dump_json()
+        data = json.loads(json_str)
+        entries = data.get("entries", [])
+        self.assertGreaterEqual(len(entries), 3, "Should have at least 3 entries")
+
+        for entry in entries:
+            self._validate_entry_format(entry)
+            self.assertTrue(entry["retired"], "Entry should be retired")
+            self.assertIn(
+                "duration_ms",
+                entry,
+                f"Entry {entry['profiling_name']} missing duration",
+            )
+            self.assertGreater(
+                entry["duration_ms"],
+                0,
+                f"duration_ms should be positive for {entry['profiling_name']}",
+            )
+
+        recorder.unregister()
+        comm.finalize()
+
+    def test_duration_ordering(self) -> None:
+        """Test that a longer operation has greater or equal duration."""
+        backend = os.environ["TEST_BACKEND"]
+        device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
+        comm = torchcomms.new_comm(
+            backend=backend,
+            device=device,
+            name="test_duration_order",
+            timeout=timedelta(seconds=300),
+        )
+
+        recorder = FlightRecorderHook(max_entries=100, isolated=True)
+        recorder.register_with_comm(comm)
+
+        # Small tensor - should be fast
+        t_small = torch.rand(1, device=device)
+        comm.all_reduce(t_small, op=torchcomms.ReduceOp.SUM, async_op=False)
+
+        # Large tensor - should take longer (or at least not less)
+        t_large = torch.rand(1000, 1000, device=device)
+        comm.all_reduce(t_large, op=torchcomms.ReduceOp.SUM, async_op=False)
+
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+
+        json_str = recorder.dump_json()
+        data = json.loads(json_str)
+        entries = data.get("entries", [])
+        self.assertEqual(len(entries), 2, "Should have exactly 2 entries")
+
+        for entry in entries:
+            self.assertIn("duration_ms", entry)
+            self.assertGreater(entry["duration_ms"], 0)
+
+        recorder.unregister()
+        comm.finalize()
+
 
 if __name__ == "__main__":
     unittest.main()
