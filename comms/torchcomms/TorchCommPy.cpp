@@ -2520,7 +2520,18 @@ Args:
           )",
           py::arg("timeout"),
           py::call_guard<py::gil_scoped_release>());
-  intrusive_ptr_class_<WorkWrapper, c10d::Work>(m, "WorkWrapper");
+  intrusive_ptr_class_<WorkWrapper, c10d::Work>(m, "WorkWrapper")
+      .def("exception", [](WorkWrapper& self) -> py::object {
+        auto ep = self.exception();
+        if (!ep) {
+          return py::none();
+        }
+        try {
+          std::rethrow_exception(ep);
+        } catch (const std::exception& e) {
+          return py::handle(PyExc_RuntimeError)(e.what());
+        }
+      });
   // Register the backend Options
   intrusive_ptr_class_<BackendWrapper::Options, c10d::Backend::Options>(
       m, "_BackendWrapperOptions");
