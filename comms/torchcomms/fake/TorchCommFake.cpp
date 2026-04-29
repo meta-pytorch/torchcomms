@@ -2,13 +2,13 @@
 
 #include <comms/torchcomms/TorchCommFactory.hpp>
 #include <comms/torchcomms/TorchWork.hpp>
-#include <comms/torchcomms/dummy/TorchCommDummy.hpp>
+#include <comms/torchcomms/fake/TorchCommFake.hpp>
 #include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp-cpu
 
 namespace torch::comms {
 
 namespace {
-class DummyTorchCommWindow : public TorchCommWindow {
+class FakeTorchCommWindow : public TorchCommWindow {
  public:
   void tensor_register(const at::Tensor& tensor, bool owning = true) override {
     (void)tensor;
@@ -55,15 +55,15 @@ class DummyTorchCommWindow : public TorchCommWindow {
   }
 
   std::shared_ptr<TorchCommWindow> clone() override {
-    return std::make_shared<DummyTorchCommWindow>();
+    return std::make_shared<FakeTorchCommWindow>();
   }
 };
 } // namespace
 
-TorchCommDummy::TorchCommDummy()
+TorchCommFake::TorchCommFake()
     : initialized_(false), device_(at::kCPU), rank_(0), size_(1) {}
 
-void TorchCommDummy::init(
+void TorchCommFake::init(
     at::Device device,
     const std::string& name,
     const CommOptions& options) {
@@ -73,27 +73,27 @@ void TorchCommDummy::init(
   name_ = name;
 }
 
-void TorchCommDummy::finalize() {
+void TorchCommFake::finalize() {
   initialized_ = false;
 }
 
-int TorchCommDummy::getRank() const {
+int TorchCommFake::getRank() const {
   return rank_;
 }
 
-int TorchCommDummy::getSize() const {
+int TorchCommFake::getSize() const {
   return size_;
 }
 
-std::string_view TorchCommDummy::getCommName() const {
+std::string_view TorchCommFake::getCommName() const {
   return name_;
 }
 
-std::string_view TorchCommDummy::getBackendName() const {
+std::string_view TorchCommFake::getBackendName() const {
   return kBackendName;
 }
 
-c10::intrusive_ptr<TorchWork> TorchCommDummy::send(
+c10::intrusive_ptr<TorchWork> TorchCommFake::send(
     const at::Tensor& /* tensor */,
     int /* dst */,
     bool /* async_op */,
@@ -101,7 +101,7 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::send(
   return c10::make_intrusive<TorchWorkCompleted>();
 }
 
-c10::intrusive_ptr<TorchWork> TorchCommDummy::recv(
+c10::intrusive_ptr<TorchWork> TorchCommFake::recv(
     at::Tensor& /* tensor */,
     int /* src */,
     bool /* async_op */,
@@ -109,14 +109,14 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::recv(
   return c10::make_intrusive<TorchWorkCompleted>();
 }
 
-c10::intrusive_ptr<TorchWork> TorchCommDummy::batch_op_issue(
+c10::intrusive_ptr<TorchWork> TorchCommFake::batch_op_issue(
     const std::vector<BatchSendRecv::P2POp>& /* ops */,
     bool /* async_op */,
     const BatchP2POptions& /* options */) {
   return c10::make_intrusive<TorchWorkCompleted>();
 }
 
-c10::intrusive_ptr<TorchWork> TorchCommDummy::broadcast(
+c10::intrusive_ptr<TorchWork> TorchCommFake::broadcast(
     at::Tensor& /* tensor */,
     int /* root */,
     bool /* async_op */,
@@ -124,7 +124,7 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::broadcast(
   return c10::make_intrusive<TorchWorkCompleted>();
 }
 
-c10::intrusive_ptr<TorchWork> TorchCommDummy::all_reduce(
+c10::intrusive_ptr<TorchWork> TorchCommFake::all_reduce(
     at::Tensor& /* tensor */,
     const ReduceOp& /* op */,
     bool /* async_op */,
@@ -132,7 +132,7 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::all_reduce(
   return c10::make_intrusive<TorchWorkCompleted>();
 }
 
-c10::intrusive_ptr<TorchWork> TorchCommDummy::reduce(
+c10::intrusive_ptr<TorchWork> TorchCommFake::reduce(
     const at::Tensor& /* tensor */,
     int /* root */,
     const ReduceOp& /* op */,
@@ -141,7 +141,7 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::reduce(
   return c10::make_intrusive<TorchWorkCompleted>();
 }
 
-c10::intrusive_ptr<TorchWork> TorchCommDummy::all_gather(
+c10::intrusive_ptr<TorchWork> TorchCommFake::all_gather(
     const std::vector<at::Tensor>& /* tensor_list */,
     const at::Tensor& /* tensor */,
     bool /* async_op */,
@@ -149,7 +149,7 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::all_gather(
   return c10::make_intrusive<TorchWorkCompleted>();
 }
 
-c10::intrusive_ptr<TorchWork> TorchCommDummy::all_gather_v(
+c10::intrusive_ptr<TorchWork> TorchCommFake::all_gather_v(
     const std::vector<at::Tensor>& /* tensor_list */,
     const at::Tensor& /* tensor */,
     bool /* async_op */,
@@ -157,7 +157,7 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::all_gather_v(
   return c10::make_intrusive<TorchWorkCompleted>();
 }
 
-c10::intrusive_ptr<TorchWork> TorchCommDummy::all_gather_single(
+c10::intrusive_ptr<TorchWork> TorchCommFake::all_gather_single(
     at::Tensor& /* output */,
     const at::Tensor& /* input */,
     bool /* async_op */,
@@ -165,7 +165,7 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::all_gather_single(
   return c10::make_intrusive<TorchWorkCompleted>();
 }
 
-c10::intrusive_ptr<TorchWork> TorchCommDummy::reduce_scatter(
+c10::intrusive_ptr<TorchWork> TorchCommFake::reduce_scatter(
     at::Tensor& /* output */,
     const std::vector<at::Tensor>& /* input_list */,
     const ReduceOp& /* op */,
@@ -174,7 +174,7 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::reduce_scatter(
   return c10::make_intrusive<TorchWorkCompleted>();
 }
 
-c10::intrusive_ptr<TorchWork> TorchCommDummy::reduce_scatter_v(
+c10::intrusive_ptr<TorchWork> TorchCommFake::reduce_scatter_v(
     at::Tensor& /* output */,
     const std::vector<at::Tensor>& /* input_list */,
     const ReduceOp& /* op */,
@@ -183,7 +183,7 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::reduce_scatter_v(
   return c10::make_intrusive<TorchWorkCompleted>();
 }
 
-c10::intrusive_ptr<TorchWork> TorchCommDummy::reduce_scatter_single(
+c10::intrusive_ptr<TorchWork> TorchCommFake::reduce_scatter_single(
     at::Tensor& /* output */,
     const at::Tensor& /* input */,
     const ReduceOp& /* op */,
@@ -192,7 +192,7 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::reduce_scatter_single(
   return c10::make_intrusive<TorchWorkCompleted>();
 }
 
-c10::intrusive_ptr<TorchWork> TorchCommDummy::all_to_all_single(
+c10::intrusive_ptr<TorchWork> TorchCommFake::all_to_all_single(
     at::Tensor& /* output */,
     const at::Tensor& /* input */,
     bool /* async_op */,
@@ -200,7 +200,7 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::all_to_all_single(
   return c10::make_intrusive<TorchWorkCompleted>();
 }
 
-c10::intrusive_ptr<TorchWork> TorchCommDummy::all_to_all_v_single(
+c10::intrusive_ptr<TorchWork> TorchCommFake::all_to_all_v_single(
     at::Tensor& /* output */,
     const at::Tensor& /* input */,
     const std::vector<uint64_t>& /* output_split_sizes */,
@@ -210,7 +210,7 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::all_to_all_v_single(
   return c10::make_intrusive<TorchWorkCompleted>();
 }
 
-c10::intrusive_ptr<TorchWork> TorchCommDummy::all_to_all(
+c10::intrusive_ptr<TorchWork> TorchCommFake::all_to_all(
     const std::vector<at::Tensor>& /* output_tensor_list */,
     const std::vector<at::Tensor>& /* input_tensor_list */,
     bool /* async_op */,
@@ -218,13 +218,13 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::all_to_all(
   return c10::make_intrusive<TorchWorkCompleted>();
 }
 
-c10::intrusive_ptr<TorchWork> TorchCommDummy::barrier(
+c10::intrusive_ptr<TorchWork> TorchCommFake::barrier(
     bool /* async_op */,
     const BarrierOptions& /* options */) {
   return c10::make_intrusive<TorchWorkCompleted>();
 }
 
-c10::intrusive_ptr<TorchWork> TorchCommDummy::scatter(
+c10::intrusive_ptr<TorchWork> TorchCommFake::scatter(
     at::Tensor& /* output_tensor */,
     const std::vector<at::Tensor>& /* input_tensor_list */,
     int /* root */,
@@ -233,7 +233,7 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::scatter(
   return c10::make_intrusive<TorchWorkCompleted>();
 }
 
-c10::intrusive_ptr<TorchWork> TorchCommDummy::gather(
+c10::intrusive_ptr<TorchWork> TorchCommFake::gather(
     const std::vector<at::Tensor>& /* output_tensor_list */,
     const at::Tensor& /* input_tensor */,
     int /* root */,
@@ -242,43 +242,43 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::gather(
   return c10::make_intrusive<TorchWorkCompleted>();
 }
 
-std::shared_ptr<TorchCommWindow> TorchCommDummy::new_window(
+std::shared_ptr<TorchCommWindow> TorchCommFake::new_window(
     const std::optional<at::Tensor>& tensor) {
-  auto win = std::make_shared<DummyTorchCommWindow>();
+  auto win = std::make_shared<FakeTorchCommWindow>();
   if (tensor.has_value()) {
     win->tensor_register(tensor.value());
   }
   return win;
 }
 
-std::shared_ptr<TorchCommBackend> TorchCommDummy::split(
+std::shared_ptr<TorchCommBackend> TorchCommFake::split(
     const std::vector<int>& ranks,
     const std::string& name,
     const CommOptions& options) {
   (void)ranks;
   (void)name;
   (void)options;
-  return std::make_shared<TorchCommDummy>();
+  return std::make_shared<TorchCommFake>();
 }
 
-const CommOptions& TorchCommDummy::getOptions() const {
+const CommOptions& TorchCommFake::getOptions() const {
   return options_;
 }
 
-const at::Device& TorchCommDummy::getDevice() const {
+const at::Device& TorchCommFake::getDevice() const {
   return device_;
 }
 
 namespace {
-class DummyRegistration {
+class FakeRegistration {
  public:
-  DummyRegistration() {
+  FakeRegistration() {
     TorchCommFactory::get().register_backend(
-        "dummy", []() { return std::make_shared<TorchCommDummy>(); });
+        "fake", []() { return std::make_shared<TorchCommFake>(); });
   }
 };
 
-static const DummyRegistration registration{};
+static const FakeRegistration registration{};
 } // namespace
 
 } // namespace torch::comms
