@@ -18,13 +18,13 @@ namespace torch::comms {
 
 inline constexpr const char* TORCHCOMM_BACKEND_ABI_VERSION = "1.0";
 struct Address {
-    void* addr;
-  };
+  void* addr;
+};
 
-  struct AddressWithLen {
-    void* addr;
-    size_t len;
-  };
+struct AddressWithLen {
+  void* addr;
+  size_t len;
+};
 
 /**
  * TorchCommBackend - Abstract base class for communication backends.
