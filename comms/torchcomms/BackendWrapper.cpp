@@ -345,7 +345,8 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::gather(
           outputTensors.at(0),
           inputTensors.at(0),
           static_cast<int>(opts.rootRank),
-          opts.asyncOp),
+          opts.asyncOp,
+          bopts),
       outputTensors.at(0));
 }
 
@@ -379,7 +380,8 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::scatter(
           outputTensors.at(0),
           inputTensors.at(0),
           static_cast<int>(opts.rootRank),
-          opts.asyncOp),
+          opts.asyncOp,
+          bopts),
       outputTensors);
 }
 
