@@ -29,7 +29,7 @@ DEFINE_int32(bench_iters, 50, "Number of benchmark iterations (default: 20)");
 DEFINE_string(
     algo,
     "all",
-    "Algorithm to benchmark: 'ctdirect', 'ctpipeline', 'ctpat', 'nccl', or 'all' (default: all)");
+    "Algorithm to benchmark: 'ctdirect', 'ctpipeline', 'ctpat', 'ctpatcopy', 'nccl', or 'all' (default: all)");
 DEFINE_bool(in_place, false, "Run in-place allgather (default: false)");
 DEFINE_string(
     mem_type,
@@ -383,10 +383,9 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
     printHeader();
     printTableHeader();
 
-    // Check nNodes for pipeline support
     const auto statex = ctranComm_->statex_.get();
     const auto nNodes = statex->nNodes();
-    const bool pipelineSupported = nNodes > 1;
+    const bool pipelineSupported = nNodes > 1 && statex->nLocalRanks() > 1;
 
     // Generate size range (powers of 2)
     std::vector<size_t> sizes;
@@ -406,10 +405,10 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
     void* sendbuf = nullptr;
     void* recvbuf = nullptr;
     void *sendHdl = nullptr, *recvHdl = nullptr;
-    CtranPersistentRequest* request = nullptr;
 
     // Only allocate and initialize if running AllGatherP algorithms
     if (FLAGS_algo == "ctdirect" || FLAGS_algo == "ctpipeline" ||
+        FLAGS_algo == "ctpat" || FLAGS_algo == "ctpatcopy" ||
         FLAGS_algo == "all") {
       // Allocate and initialize buffers ONCE for max size
       sendbuf = allocateBuffer(maxSizeBytes);
@@ -427,25 +426,11 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
             ctranComm_->ctran_->commRegister(sendbuf, maxSizeBytes, &sendHdl));
       }
 
-      // Initialize AllGatherP ONCE globally with max size
-      meta::comms::Hints hints;
-      COMMCHECK_TEST(
-          ctran::allGatherPInit(
-              recvbuf,
-              maxCount * numRanks,
-              hints,
-              dt_,
-              ctranComm_.get(),
-              stream_,
-              request));
-
-      // Wait for async init to complete
-      CUDACHECK_TEST(cudaStreamSynchronize(stream_));
-      CUDACHECK_TEST(cudaDeviceSynchronize());
-      ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
+      // No shared request. With pinned algos, each algo branch creates
+      // its own dedicated persistent request below.
     }
 
-    // Run benchmarks for all sizes using the same persistent request
+    // Run benchmarks for all sizes. Each algo creates its own request.
     for (size_t sizeBytes : sizes) {
       size_t count = sizeBytes / typeSize_;
 
@@ -456,27 +441,61 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
         CUDACHECK_TEST(cudaDeviceSynchronize());
       }
 
-      // Benchmark AllgatherP Direct (reuses same request)
+      // Benchmark AllgatherP Direct (dedicated request)
       if (FLAGS_algo == "ctdirect" || FLAGS_algo == "all") {
         EnvRAII algoEnv(NCCL_ALLGATHER_P_ALGO, NCCL_ALLGATHER_P_ALGO::ctdirect);
+        meta::comms::Hints directHints;
+        CtranPersistentRequest* directRequest = nullptr;
+        COMMCHECK_TEST(
+            ctran::allGatherPInit(
+                recvbuf,
+                maxCount * numRanks,
+                directHints,
+                dt_,
+                ctranComm_.get(),
+                stream_,
+                directRequest));
+        CUDACHECK_TEST(cudaStreamSynchronize(stream_));
+        ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
+
         BenchmarkResult result = benchmarkAllgatherPWithRequest(
-            count, "AllGatherP_Direct", request, sendbuf, recvbuf);
+            count, "AllGatherP_Direct", directRequest, sendbuf, recvbuf);
         printResult(result);
+
+        COMMCHECK_TEST(ctran::allGatherPDestroy(directRequest));
+        delete directRequest;
         ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
       }
 
-      // Benchmark AllgatherP Pipeline (reuses same request)
+      // Benchmark AllgatherP Pipeline (dedicated request)
       if ((FLAGS_algo == "ctpipeline" || FLAGS_algo == "all") &&
           pipelineSupported) {
         EnvRAII algoEnv(
             NCCL_ALLGATHER_P_ALGO, NCCL_ALLGATHER_P_ALGO::ctpipeline);
+        meta::comms::Hints pipeHints;
+        CtranPersistentRequest* pipeRequest = nullptr;
+        COMMCHECK_TEST(
+            ctran::allGatherPInit(
+                recvbuf,
+                maxCount * numRanks,
+                pipeHints,
+                dt_,
+                ctranComm_.get(),
+                stream_,
+                pipeRequest));
+        CUDACHECK_TEST(cudaStreamSynchronize(stream_));
+        ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
+
         BenchmarkResult result = benchmarkAllgatherPWithRequest(
-            count, "AllGatherP_Pipeline", request, sendbuf, recvbuf);
+            count, "AllGatherP_Pipeline", pipeRequest, sendbuf, recvbuf);
         printResult(result);
+
+        COMMCHECK_TEST(ctran::allGatherPDestroy(pipeRequest));
+        delete pipeRequest;
         ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
       }
 
-      // Benchmark AllgatherP PAT (reuses same request)
+      // Benchmark AllgatherP PAT (needs its own request due to pinned algo)
       if (FLAGS_algo == "ctpat" || FLAGS_algo == "all") {
         const auto statex = ctranComm_->statex_.get();
         auto mapper = ctranComm_->ctran_->mapper.get();
@@ -495,9 +514,72 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
         }
         if (patSupported) {
           EnvRAII algoEnv(NCCL_ALLGATHER_P_ALGO, NCCL_ALLGATHER_P_ALGO::ctpat);
+          meta::comms::Hints patHints;
+          CtranPersistentRequest* patRequest = nullptr;
+          COMMCHECK_TEST(
+              ctran::allGatherPInit(
+                  recvbuf,
+                  maxCount * numRanks,
+                  patHints,
+                  dt_,
+                  ctranComm_.get(),
+                  stream_,
+                  patRequest));
+          CUDACHECK_TEST(cudaStreamSynchronize(stream_));
+          ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
+
           BenchmarkResult result = benchmarkAllgatherPWithRequest(
-              count, "AllGatherP_Pat", request, sendbuf, recvbuf);
+              count, "AllGatherP_Pat", patRequest, sendbuf, recvbuf);
           printResult(result);
+
+          COMMCHECK_TEST(ctran::allGatherPDestroy(patRequest));
+          delete patRequest;
+          ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
+        }
+      }
+
+      // Benchmark AllgatherP PatCopy (needs its own request due to staging
+      // init)
+      if (FLAGS_algo == "ctpatcopy" || FLAGS_algo == "all") {
+        const auto statex = ctranComm_->statex_.get();
+        auto mapper = ctranComm_->ctran_->mapper.get();
+        bool patcopySupported = statex->nNodes() > 1 &&
+            (statex->nNodes() & (statex->nNodes() - 1)) == 0 &&
+            statex->nRanks() % statex->nLocalRanks() == 0 &&
+            statex->nLocalRanks() > 1;
+        if (patcopySupported) {
+          for (int lr = 0; lr < statex->nLocalRanks(); lr++) {
+            const int peer = statex->localRankToRank(lr);
+            if (peer != statex->rank() &&
+                mapper->getBackend(peer) != CtranMapperBackend::NVL) {
+              patcopySupported = false;
+              break;
+            }
+          }
+        }
+        if (patcopySupported) {
+          EnvRAII algoEnv(
+              NCCL_ALLGATHER_P_ALGO, NCCL_ALLGATHER_P_ALGO::ctpatcopy);
+          meta::comms::Hints pcHints;
+          CtranPersistentRequest* pcRequest = nullptr;
+          COMMCHECK_TEST(
+              ctran::allGatherPInit(
+                  recvbuf,
+                  maxCount * numRanks,
+                  pcHints,
+                  dt_,
+                  ctranComm_.get(),
+                  stream_,
+                  pcRequest));
+          CUDACHECK_TEST(cudaStreamSynchronize(stream_));
+          ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
+
+          BenchmarkResult result = benchmarkAllgatherPWithRequest(
+              count, "AllGatherP_PatCopy", pcRequest, sendbuf, recvbuf);
+          printResult(result);
+
+          COMMCHECK_TEST(ctran::allGatherPDestroy(pcRequest));
+          delete pcRequest;
           ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
         }
       }
@@ -512,16 +594,6 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
       if (globalRank == 0) {
         std::cout << std::endl;
       }
-    }
-
-    // Cleanup ONCE at the very end after all sizes
-    if (request != nullptr) {
-      COMMCHECK_TEST(ctran::allGatherPDestroy(request));
-      delete request;
-
-      CUDACHECK_TEST(cudaStreamSynchronize(stream_));
-      CUDACHECK_TEST(cudaDeviceSynchronize());
-      ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
     }
 
     // Deregister memory ONCE

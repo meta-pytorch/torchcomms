@@ -76,7 +76,7 @@ commResult_t allGatherWinInit(
         win->remWinInfo.size());
   }
 
-  auto algo = std::make_unique<AlgoImpl>(comm, stream);
+  auto algo = std::make_unique<AlgoImpl>(comm, stream, NCCL_ALLGATHER_P_ALGO);
 
   algo->pArgs.recvbuff = win->winDataPtr;
   algo->pArgs.recvHdl = win->dataRegHdl;

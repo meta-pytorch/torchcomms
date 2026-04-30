@@ -289,6 +289,8 @@ static std::string algoToStr(enum NCCL_ALLGATHER_P_ALGO algo) {
       return "ctrdpipeline";
     case NCCL_ALLGATHER_P_ALGO::ctpat:
       return "ctpat";
+    case NCCL_ALLGATHER_P_ALGO::ctpatcopy:
+      return "ctpatcopy";
     default:
       return "unknown";
   }
@@ -305,15 +307,21 @@ TEST_P(CtranAllgatherPTestParam, Basic) {
     GTEST_SKIP() << "No IB Backend found, skip test";
   } else if (
       (algo == NCCL_ALLGATHER_P_ALGO::ctrdpipeline ||
-       algo == NCCL_ALLGATHER_P_ALGO::ctpat) &&
+       algo == NCCL_ALLGATHER_P_ALGO::ctpat ||
+       algo == NCCL_ALLGATHER_P_ALGO::ctpatcopy) &&
       ctranComm->statex_->nNodes() > 1 &&
       (ctranComm->statex_->nNodes() & (ctranComm->statex_->nNodes() - 1)) !=
           0) {
     GTEST_SKIP() << algoStr << " requires nNodes to be a power of 2, skip test";
   } else if (
-      algo == NCCL_ALLGATHER_P_ALGO::ctpat &&
+      (algo == NCCL_ALLGATHER_P_ALGO::ctpat ||
+       algo == NCCL_ALLGATHER_P_ALGO::ctpatcopy) &&
       ctranComm->statex_->nNodes() <= 1) {
-    GTEST_SKIP() << "ctpat requires nNodes > 1, skip test";
+    GTEST_SKIP() << algoStr << " requires nNodes > 1, skip test";
+  } else if (
+      algo == NCCL_ALLGATHER_P_ALGO::ctpatcopy &&
+      ctranComm->statex_->nLocalRanks() <= 1) {
+    GTEST_SKIP() << "ctpatcopy requires nLocalRanks > 1, skip test";
   } else {
     run(maxSendCount, count, inplace, memType, ctranComm.get());
   }
@@ -342,13 +350,16 @@ TEST_P(CtranAllgatherPTestParam, VnodeBasic) {
     const auto vnodeNNodes = numRanks / 4;
     ASSERT_EQ(testComm->statex_->nNodes(), vnodeNNodes);
     if ((algo == NCCL_ALLGATHER_P_ALGO::ctrdpipeline ||
-         algo == NCCL_ALLGATHER_P_ALGO::ctpat) &&
+         algo == NCCL_ALLGATHER_P_ALGO::ctpat ||
+         algo == NCCL_ALLGATHER_P_ALGO::ctpatcopy) &&
         vnodeNNodes > 1 && (vnodeNNodes & (vnodeNNodes - 1)) != 0) {
       GTEST_SKIP() << algoStr
                    << " requires nNodes to be a power of 2, skip test";
     }
-    if (algo == NCCL_ALLGATHER_P_ALGO::ctpat && vnodeNNodes <= 1) {
-      GTEST_SKIP() << "ctpat requires nNodes > 1, skip test";
+    if ((algo == NCCL_ALLGATHER_P_ALGO::ctpat ||
+         algo == NCCL_ALLGATHER_P_ALGO::ctpatcopy) &&
+        vnodeNNodes <= 1) {
+      GTEST_SKIP() << algoStr << " requires nNodes > 1, skip test";
     }
     run(maxSendCount, count, inplace, memType, testComm.get());
   }
@@ -381,13 +392,16 @@ TEST_P(CtranAllgatherPTestParam, VnodeBasicMultiStep) {
     const auto vnodeNNodes = numRanks / 2;
     ASSERT_EQ(testComm->statex_->nNodes(), vnodeNNodes);
     if ((algo == NCCL_ALLGATHER_P_ALGO::ctrdpipeline ||
-         algo == NCCL_ALLGATHER_P_ALGO::ctpat) &&
+         algo == NCCL_ALLGATHER_P_ALGO::ctpat ||
+         algo == NCCL_ALLGATHER_P_ALGO::ctpatcopy) &&
         vnodeNNodes > 1 && (vnodeNNodes & (vnodeNNodes - 1)) != 0) {
       GTEST_SKIP() << algoStr
                    << " requires nNodes to be a power of 2, skip test";
     }
-    if (algo == NCCL_ALLGATHER_P_ALGO::ctpat && vnodeNNodes <= 1) {
-      GTEST_SKIP() << "ctpat requires nNodes > 1, skip test";
+    if ((algo == NCCL_ALLGATHER_P_ALGO::ctpat ||
+         algo == NCCL_ALLGATHER_P_ALGO::ctpatcopy) &&
+        vnodeNNodes <= 1) {
+      GTEST_SKIP() << algoStr << " requires nNodes > 1, skip test";
     }
     run(maxSendCount, count, inplace, memType, testComm.get());
   }
@@ -442,7 +456,7 @@ TEST_F(CtranAllgatherPTestParam, DynamicSendRegPipeline) {
 
 TEST_F(CtranAllgatherPTest, CtpatRejectsSingleNode) {
   // ctpat requires nNodes > 1. On a single-node devgpu (nNodes == 1),
-  // allGatherPExec with ctpat should return an error.
+  // allGatherPExec with ctpat (pinned at init) should return an error.
   if (ctranComm->statex_->nNodes() > 1) {
     GTEST_SKIP() << "This test requires single-node topology (nNodes == 1)";
   }
@@ -457,6 +471,9 @@ TEST_F(CtranAllgatherPTest, CtpatRejectsSingleNode) {
   CtranPersistentRequest* request;
   const auto initMaxRecvCount =
       maxRecvCount * commTypeSize(dt) / commTypeSize(commInt8);
+
+  // Pin ctpat at init time -- it validates at exec time
+  EnvRAII algoEnv(NCCL_ALLGATHER_P_ALGO, NCCL_ALLGATHER_P_ALGO::ctpat);
   COMMCHECK_TEST(
       ctran::allGatherPInit(
           recvbuf,
@@ -468,7 +485,6 @@ TEST_F(CtranAllgatherPTest, CtpatRejectsSingleNode) {
           request));
   ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
 
-  SysEnvRAII algoEnv("NCCL_ALLGATHER_P_ALGO", "ctpat");
   ASSERT_EQ(
       ctran::allGatherPExec(sendbuf, count, dt, request), commInvalidUsage);
 
@@ -476,6 +492,116 @@ TEST_F(CtranAllgatherPTest, CtpatRejectsSingleNode) {
   delete request;
   COMMCHECK_TEST(ctranComm->ctran_->commDeregister(recvHdl));
   memoryCleanUp(kMemCudaMalloc);
+}
+
+TEST_F(CtranAllgatherPTest, CtpatcopyRejectsSingleNode) {
+  // ctpatcopy requires nNodes > 1 and nLocalRanks > 1.
+  // On a single-node devgpu, allGatherPInit should reject at init time.
+  if (ctranComm->statex_->nNodes() > 1) {
+    GTEST_SKIP() << "This test requires single-node topology (nNodes == 1)";
+  }
+
+  const auto count = 8192;
+  const auto maxSendCount = count;
+  const auto maxRecvCount = maxSendCount * numRanks;
+  memorySetUp(kMemCudaMalloc, count, maxRecvCount);
+
+  COMMCHECK_TEST(ctranComm->ctran_->commRegister(recvbuf, recvBytes, &recvHdl));
+  meta::comms::Hints hints;
+  CtranPersistentRequest* request = nullptr;
+  const auto initMaxRecvCount =
+      maxRecvCount * commTypeSize(dt) / commTypeSize(commInt8);
+
+  // Pin ctpatcopy at init time -- should fail at init
+  EnvRAII algoEnv(NCCL_ALLGATHER_P_ALGO, NCCL_ALLGATHER_P_ALGO::ctpatcopy);
+  ASSERT_EQ(
+      ctran::allGatherPInit(
+          recvbuf,
+          initMaxRecvCount,
+          hints,
+          commInt8,
+          ctranComm.get(),
+          stream,
+          request),
+      commInvalidUsage);
+
+  COMMCHECK_TEST(ctranComm->ctran_->commDeregister(recvHdl));
+  memoryCleanUp(kMemCudaMalloc);
+}
+
+TEST_F(CtranAllgatherPTest, CtpatcopyStagingFallback) {
+  // When staging buffer is too small, ctpatcopy should fall back to execPat()
+  // (zero-copy). We force this by setting a tiny staging buffer size.
+  if (ctranComm->statex_->nNodes() > 1) {
+    GTEST_SKIP() << "This test requires single-node topology to verify "
+                    "fallback returns error (no multi-node support)";
+  }
+
+  const auto count = 8192;
+  const auto maxSendCount = count;
+  const auto maxRecvCount = maxSendCount * numRanks;
+  memorySetUp(kMemCudaMalloc, count, maxRecvCount);
+
+  COMMCHECK_TEST(ctranComm->ctran_->commRegister(recvbuf, recvBytes, &recvHdl));
+
+  // ctpatcopy init should fail on single-node regardless of staging size
+  EnvRAII algoEnv(NCCL_ALLGATHER_P_ALGO, NCCL_ALLGATHER_P_ALGO::ctpatcopy);
+  SysEnvRAII stagingEnv(
+      "NCCL_CTRAN_ALLGATHERP_PATCOPY_STAGING_BUF_SIZE", "4096");
+  meta::comms::Hints hints;
+  CtranPersistentRequest* request = nullptr;
+  const auto initMaxRecvCount =
+      maxRecvCount * commTypeSize(dt) / commTypeSize(commInt8);
+  ASSERT_EQ(
+      ctran::allGatherPInit(
+          recvbuf,
+          initMaxRecvCount,
+          hints,
+          commInt8,
+          ctranComm.get(),
+          stream,
+          request),
+      commInvalidUsage);
+
+  COMMCHECK_TEST(ctranComm->ctran_->commDeregister(recvHdl));
+  memoryCleanUp(kMemCudaMalloc);
+}
+
+TEST_F(CtranAllgatherPTest, CtpatcopyVnodeFallback) {
+  // Exercise the ctpatcopy -> execPat() fallback on a supported NVL x IB
+  // topology. Use vnode to simulate multi-node with nLocalRanks=4, then
+  // set a tiny staging buffer so sendSize * nNodes/2 exceeds staging
+  // capacity, forcing execPatCopy to delegate to execPat (zero-copy).
+  if (ncclIsCuMemSupported() == false) {
+    GTEST_SKIP() << "CuMem not supported";
+  }
+  if (ctranComm->ctran_->mapper->ctranIbPtr() == nullptr) {
+    GTEST_SKIP() << "No IB Backend found";
+  }
+  if (ctranComm->statex_->nLocalRanks() % 4 != 0) {
+    GTEST_SKIP() << "Requires real nLocalRanks divisible by 4 for vnode=4";
+  }
+
+  EnvRAII vnodeEnv(
+      NCCL_COMM_STATE_DEBUG_TOPO, NCCL_COMM_STATE_DEBUG_TOPO::vnode);
+  EnvRAII ppnEnv(NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS, 4);
+
+  auto testComm = makeCtranComm();
+  ASSERT_EQ(testComm->statex_->nLocalRanks(), 4);
+  const auto vnodeNNodes = testComm->statex_->nNodes();
+  if (vnodeNNodes <= 1 || (vnodeNNodes & (vnodeNNodes - 1)) != 0) {
+    GTEST_SKIP() << "Requires power-of-2 nNodes > 1 under vnode, got "
+                 << vnodeNNodes;
+  }
+
+  // Pin ctpatcopy with tiny staging so fallback to execPat triggers
+  EnvRAII algoEnv(NCCL_ALLGATHER_P_ALGO, NCCL_ALLGATHER_P_ALGO::ctpatcopy);
+  SysEnvRAII stagingEnv(
+      "NCCL_CTRAN_ALLGATHERP_PATCOPY_STAGING_BUF_SIZE", "1024");
+
+  const auto count = 8192;
+  const auto maxSendCount = count;
+  run(maxSendCount, count, kTestOutOfPlace, kMemNcclMemAlloc, testComm.get());
 }
 
 TEST_F(CtranAllgatherPTest, InvalidPreq) {
@@ -759,7 +885,8 @@ INSTANTIATE_TEST_SUITE_P(
             NCCL_ALLGATHER_P_ALGO::ctdirect,
             NCCL_ALLGATHER_P_ALGO::ctpipeline,
             NCCL_ALLGATHER_P_ALGO::ctrdpipeline,
-            NCCL_ALLGATHER_P_ALGO::ctpat)),
+            NCCL_ALLGATHER_P_ALGO::ctpat,
+            NCCL_ALLGATHER_P_ALGO::ctpatcopy)),
     getTestName);
 
 int main(int argc, char* argv[]) {

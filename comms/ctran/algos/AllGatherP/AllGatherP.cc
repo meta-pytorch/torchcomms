@@ -6,6 +6,9 @@
 #include "comms/ctran/algos/common/GpeKernelSync.h"
 #include "comms/ctran/hints/Hints.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/utils/DevUtils.cuh"
+#include "comms/ctran/utils/ExtUtils.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 
 using ctran::algos::GpeKernelSync;
 using ctran::allgatherp::AlgoImpl;
@@ -58,6 +61,45 @@ commResult_t exchangeMemHdl(
     }
   }
 
+  // Exchange staging buffer addresses if ctpatcopy (use pinned algo, not
+  // global)
+  if (pArgs->pinnedAlgo == static_cast<int>(NCCL_ALLGATHER_P_ALGO::ctpatcopy)) {
+    auto* resource =
+        reinterpret_cast<Resource*>(op->allgatherp_init.algoResource);
+    if (resource->stagingBufMgr) {
+      const auto nLocalRanks = statex->nLocalRanks();
+      const auto nNodes = statex->nNodes();
+      const auto nodeId = statex->rank() / nLocalRanks;
+      const auto localRank = statex->localRank();
+      const auto nSteps = static_cast<int>(ctran::utils::log2i(nNodes));
+
+      std::vector<int> peerRanks;
+      for (int i = 0; i < nSteps; i++) {
+        const int dist = nNodes >> (i + 1);
+        const int pos = (nodeId / dist) % 2;
+        const int peerNode = pos == 0 ? nodeId + dist : nodeId - dist;
+        peerRanks.push_back(peerNode * nLocalRanks + localRank);
+      }
+
+      FB_COMMCHECK(resource->stagingBufMgr->exchange(peerRanks, nRanks));
+
+      resource->stagingBufMgr->assignRegBuf(
+          ctran::algos::bufmanager::MemType::kDevice,
+          StagingBufId::kSendBuf,
+          resource->stagingInfo.sendBuf);
+      resource->stagingBufMgr->assignRegBuf(
+          ctran::algos::bufmanager::MemType::kDevice,
+          StagingBufId::kRecvBuf,
+          resource->stagingInfo.recvBuf);
+      resource->stagingBufMgr->assignRemRegBuf(
+          ctran::algos::bufmanager::MemType::kDevice,
+          StagingBufId::kRecvBuf,
+          peerRanks,
+          resource->stagingInfo.remRecvBufs);
+      resource->stagingInfo.peerRanks = peerRanks;
+    }
+  }
+
   // Mark the remote registration as initialized, so that consequent execution
   // can schedule CE based NVL copy
   pArgs->initialized.store(true);
@@ -79,9 +121,39 @@ commResult_t AlgoImpl::initResources() {
   void* base = nullptr;
   FB_CUDACHECK(
       cudaHostAlloc(&base, sizeof(GpeKernelSync), cudaHostAllocDefault));
-
   resource_.pipeSync = reinterpret_cast<GpeKernelSync*>(base);
   new (resource_.pipeSync) GpeKernelSync(1 /* numWorkers */);
+
+  if (algo_ == NCCL_ALLGATHER_P_ALGO::ctpatcopy) {
+    void* stepDoneBase = nullptr;
+    FB_CUDACHECK(cudaHostAlloc(
+        &stepDoneBase, sizeof(GpeKernelSync), cudaHostAllocDefault));
+    resource_.stepDoneSync = reinterpret_cast<GpeKernelSync*>(stepDoneBase);
+    new (resource_.stepDoneSync) GpeKernelSync(1 /* numWorkers */);
+
+    const auto statex = comm_->statex_.get();
+    const size_t stagingBufSize =
+        NCCL_CTRAN_ALLGATHERP_PATCOPY_STAGING_BUF_SIZE;
+
+    const auto commHash = statex->commHash();
+    const std::string stagingKey = "AllGatherP_PatCopy_Staging_" +
+        std::to_string(commHash) + "_" +
+        std::to_string(reinterpret_cast<uintptr_t>(this));
+    resource_.stagingBufMgr = std::make_unique<
+        ctran::algos::BufManager<StagingBufId, StagingBufId::kNumBufs>>(
+        statex, comm_->ctran_->mapper.get(), &comm_->logMetaData_, stagingKey);
+
+    resource_.stagingBufMgr->insert(
+        ctran::algos::bufmanager::MemType::kDevice,
+        StagingBufId::kSendBuf,
+        stagingBufSize);
+    resource_.stagingBufMgr->insert(
+        ctran::algos::bufmanager::MemType::kDevice,
+        StagingBufId::kRecvBuf,
+        stagingBufSize);
+    FB_COMMCHECK(resource_.stagingBufMgr->commit());
+  }
+
   return commSuccess;
 }
 
@@ -112,6 +184,7 @@ commResult_t AlgoImpl::initialize() {
   auto op = std::make_unique<OpElem>(
       OpElem::opType::ALLGATHERP_INIT, stream_, comm_, opCount);
   op->allgatherp_init.pArgs = &pArgs;
+  op->allgatherp_init.algoResource = &resource_;
   opGroup.push_back(std::move(op));
 
   FB_COMMCHECK(comm_->ctran_->gpe->submit(
@@ -124,6 +197,14 @@ commResult_t AlgoImpl::initialize() {
 };
 
 commResult_t AlgoImpl::destroy() {
+  if (resource_.stagingBufMgr) {
+    FB_COMMCHECK(resource_.stagingBufMgr->release());
+    resource_.stagingBufMgr.reset();
+  }
+  if (resource_.stepDoneSync) {
+    FB_CUDACHECK(cudaFreeHost(resource_.stepDoneSync));
+    resource_.stepDoneSync = nullptr;
+  }
   if (resource_.pipeSync) {
     FB_CUDACHECK(cudaFreeHost(resource_.pipeSync));
     resource_.pipeSync = nullptr;
@@ -160,7 +241,49 @@ commResult_t allGatherPInit(
     CtranComm* comm,
     cudaStream_t stream,
     CtranPersistentRequest*& request) {
-  AlgoImpl* algo = new AlgoImpl(comm, stream);
+  const auto pinnedAlgo = NCCL_ALLGATHER_P_ALGO;
+
+  // ctpatcopy eligibility: fail fast at init
+  if (pinnedAlgo == NCCL_ALLGATHER_P_ALGO::ctpatcopy) {
+    const auto statex = comm->statex_.get();
+    const auto nNodes = statex->nNodes();
+    const auto nLocalRanks = statex->nLocalRanks();
+    if (nNodes <= 1) {
+      FB_ERRORRETURN(
+          commInvalidUsage,
+          "AllGatherP ctpatcopy requires nNodes > 1, got {}",
+          nNodes);
+    }
+    if ((nNodes & (nNodes - 1)) != 0) {
+      FB_ERRORRETURN(
+          commInvalidUsage,
+          "AllGatherP ctpatcopy requires power-of-2 nNodes, got {}",
+          nNodes);
+    }
+    if (statex->nRanks() % nLocalRanks != 0) {
+      FB_ERRORRETURN(
+          commInvalidUsage,
+          "AllGatherP ctpatcopy requires nRanks divisible by nLocalRanks");
+    }
+    if (nLocalRanks <= 1) {
+      FB_ERRORRETURN(
+          commInvalidUsage,
+          "AllGatherP ctpatcopy requires nLocalRanks > 1, got {}",
+          nLocalRanks);
+    }
+    auto mapper_check = comm->ctran_->mapper.get();
+    for (int lr = 0; lr < nLocalRanks; lr++) {
+      const int peer = statex->localRankToRank(lr);
+      if (peer != statex->rank() &&
+          mapper_check->getBackend(peer) != CtranMapperBackend::NVL) {
+        FB_ERRORRETURN(
+            commInvalidUsage,
+            "AllGatherP ctpatcopy requires NVL for local peers");
+      }
+    }
+  }
+
+  AlgoImpl* algo = new AlgoImpl(comm, stream, pinnedAlgo);
   if (!algo) {
     return commSystemError;
   }
@@ -194,6 +317,7 @@ commResult_t allGatherPInit(
   algo->pArgs.maxRecvCount = maxRecvCount;
   algo->pArgs.datatype = datatype;
   algo->pArgs.initialized.store(false);
+  algo->pArgs.pinnedAlgo = static_cast<int>(pinnedAlgo);
 
   // Initialize algo internal resource and schedule handle exchange on GPE
   // thread
@@ -231,7 +355,7 @@ commResult_t allGatherPExec(
         algo->pArgs.datatype);
   }
 
-  switch (NCCL_ALLGATHER_P_ALGO) {
+  switch (algo->pinnedAlgo()) {
     case NCCL_ALLGATHER_P_ALGO::ctdirect:
       return algo->execDirect(sendbuff, count, datatype);
     case NCCL_ALLGATHER_P_ALGO::ctpipeline:
@@ -240,6 +364,8 @@ commResult_t allGatherPExec(
       return algo->execRecursiveDoubling(sendbuff, count, datatype);
     case NCCL_ALLGATHER_P_ALGO::ctpat:
       return algo->execPat(sendbuff, count, datatype);
+    case NCCL_ALLGATHER_P_ALGO::ctpatcopy:
+      return algo->execPatCopy(sendbuff, count, datatype);
     default:
       return ErrorStackTraceUtil::log(commInternalError);
   }

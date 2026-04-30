@@ -11,9 +11,16 @@ class AlgoImpl {
  public:
   PersistArgs pArgs;
 
-  AlgoImpl(CtranComm* comm, cudaStream_t stream)
-      : comm_(comm), stream_(stream) {};
+  AlgoImpl(
+      CtranComm* comm,
+      cudaStream_t stream,
+      enum NCCL_ALLGATHER_P_ALGO algo)
+      : comm_(comm), stream_(stream), algo_(algo) {};
   ~AlgoImpl() {};
+
+  enum NCCL_ALLGATHER_P_ALGO pinnedAlgo() const {
+    return algo_;
+  }
 
   commResult_t initialize();
   commResult_t destroy();
@@ -69,6 +76,17 @@ class AlgoImpl {
       const size_t count,
       const commDataType_t datatype);
 
+  // Execute the copy-based PAT algorithm with staging buffers.
+  // Routes IB transfers through pre-registered staging buffers instead of
+  // putting directly to recvbuff. Step-granular staging with bidirectional
+  // sync (pipeSync GPE→stream, stepDoneSync stream→GPE).
+  // - Requires nNodes power of 2, nLocalRanks > 1, nRanks % nLocalRanks == 0.
+  // - Falls back to execPat() when sendSize exceeds staging capacity.
+  commResult_t execPatCopy(
+      const void* sendbuff,
+      const size_t count,
+      const commDataType_t datatype);
+
   static inline const std::string algoName(enum NCCL_ALLGATHER_P_ALGO algo) {
     switch (algo) {
       case NCCL_ALLGATHER_P_ALGO::ctdirect:
@@ -79,6 +97,8 @@ class AlgoImpl {
         return "CtranAllGatherPRecDbl";
       case NCCL_ALLGATHER_P_ALGO::ctpat:
         return "CtranAllGatherPPat";
+      case NCCL_ALLGATHER_P_ALGO::ctpatcopy:
+        return "CtranAllGatherPPatCopy";
       default:
         return "Unknown";
     }
@@ -100,5 +120,6 @@ class AlgoImpl {
   Resource resource_;
   CtranComm* comm_{nullptr};
   cudaStream_t stream_{nullptr};
+  enum NCCL_ALLGATHER_P_ALGO algo_;
 };
 } // namespace ctran::allgatherp

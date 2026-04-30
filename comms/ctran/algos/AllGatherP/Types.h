@@ -1,13 +1,25 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #pragma once
+#include <memory>
+#include <vector>
 #include "comms/ctran/algos/common/GpeKernelSync.h"
 #include "comms/utils/commSpecs.h"
+
+#if !defined(__CUDACC__)
+#include "comms/ctran/algos/common/BufManager.h"
+#endif
 
 using ctran::algos::GpeKernelSync;
 
 struct CtranMapperRemoteAccessKey;
 namespace ctran::allgatherp {
+
+enum class StagingBufId {
+  kSendBuf = 0,
+  kRecvBuf,
+  kNumBufs,
+};
 struct PersistArgs {
   void* recvbuff;
   void* recvHdl;
@@ -23,13 +35,29 @@ struct PersistArgs {
   // should wait for its completion via the initialized_ flag, before the main
   // thread can schedule copy engine copies
   std::atomic<bool> initialized{false};
+  int pinnedAlgo{0};
 };
 
+#if !defined(__CUDACC__)
+struct StagingInfo {
+  ctran::algos::bufmanager::RegBuf sendBuf;
+  ctran::algos::bufmanager::RegBuf recvBuf;
+  std::vector<ctran::algos::bufmanager::RemRegBuf> remRecvBufs;
+  std::vector<int> peerRanks;
+  size_t slotSize{0};
+  size_t numSlots{0};
+};
+#endif
+
 struct Resource {
-  // Used in the pipeline algorithm. Sync object for GPE thread to notify the
-  // wait kernel the completion of inter-node exchange, so that it can terminate
-  // and kick off CE bcast to forward the received data to the other local ranks
   GpeKernelSync* pipeSync{nullptr};
+  GpeKernelSync* stepDoneSync{nullptr};
+#if !defined(__CUDACC__)
+  std::unique_ptr<
+      ctran::algos::BufManager<StagingBufId, StagingBufId::kNumBufs>>
+      stagingBufMgr;
+  StagingInfo stagingInfo;
+#endif
 };
 
 struct PipeEndKernArgs {
@@ -39,5 +67,15 @@ struct PipeEndKernArgs {
 struct PipeSyncKernArgs {
   int stepId;
   GpeKernelSync* pipeSync;
+};
+
+struct StepDoneKernArgs {
+  int stepId;
+  GpeKernelSync* stepDoneSync;
+};
+
+struct PatCopyPipeEndKernArgs {
+  GpeKernelSync* pipeSync;
+  GpeKernelSync* stepDoneSync;
 };
 } // namespace ctran::allgatherp
