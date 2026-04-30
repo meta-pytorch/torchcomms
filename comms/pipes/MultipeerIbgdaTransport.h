@@ -115,12 +115,13 @@ struct MultipeerIbgdaTransportConfig {
   // Higher values allow more pipelining but use more memory.
   uint32_t qpDepth{1024};
 
-  // Number of QP sets per peer (each set = main QP + companion QP + loopback).
-  // Multiple QPs per peer allow different GPU blocks to use independent QPs,
+  // Number of QP sets per (peer, NIC). Each set = main QP + companion QP +
+  // loopback. With multi-NIC, total QPs to a peer = numQpsPerPeerPerNic *
+  // numNics. Multiple QPs allow different GPU blocks to use independent QPs,
   // eliminating O(N) cross-block WQE serialization in DOCA's mark_wqes_ready.
-  // Block-to-QP mapping: blockIdx.x % numQpsPerPeer.
-  // Default 1 preserves current single-QP-per-peer behavior.
-  int numQpsPerPeer{1};
+  // Block-to-QP mapping: blockIdx.x % numQpsPerPeerPerNic.
+  // Default 1 preserves current single-QP-per-(peer, NIC) behavior.
+  int numQpsPerPeerPerNic{1};
 
   // InfiniBand Verbs Timeout for QP ACK timeout.
   // Timeout is computed as 4.096 µs * 2^timeout.
@@ -190,9 +191,9 @@ struct IbgdaTransportExchInfo {
 constexpr int kMaxRanksForAllGather = 128;
 
 /**
- * Maximum number of QP sets per peer for multi-QP support.
+ * Maximum number of QP sets per (peer, NIC) for multi-QP support.
  */
-constexpr int kMaxQpsPerPeer = 128;
+constexpr int kMaxQpsPerPeerPerNic = 128;
 
 /**
  * Transport exchange info for allGather-based exchange.
@@ -211,7 +212,7 @@ struct IbgdaTransportExchInfoAll {
     uint16_t lid{0};
     // QPN this rank uses on this NIC to connect to (target_rank, q).
     // qpnForRank[myRank][*] is unused (set to 0).
-    uint32_t qpnForRank[kMaxRanksForAllGather][kMaxQpsPerPeer]{};
+    uint32_t qpnForRank[kMaxRanksForAllGather][kMaxQpsPerPeerPerNic]{};
   };
   NicWireInfo nicInfo[kMaxNicsPerGpu]{};
 
@@ -224,7 +225,7 @@ struct IbgdaTransportExchInfoAll {
   int numNics{1};
 
   // Number of QPs per (peer, NIC) used by this rank.
-  int numQpsPerNic{1};
+  int numQpsPerPeerPerNic{1};
 };
 
 /**
@@ -406,9 +407,10 @@ class MultipeerIbgdaTransport {
       const IbgdaLocalBuffer& localBuf);
 
   /**
-   * Get the number of QP sets per peer
+   * Get the number of QP sets per (peer, NIC).
+   * Total QPs to a peer = numQpsPerPeerPerNic() * numNics().
    */
-  int numQpsPerPeer() const;
+  int numQpsPerPeerPerNic() const;
 
   /**
    * Get the number of NICs (rails) actually in use after auto-detection.
@@ -464,7 +466,7 @@ class MultipeerIbgdaTransport {
   int numNics_{1};
 
   // Per-NIC host-side IB verbs resources. qpGroups and loopbackCompanionQps
-  // are indexed [peer * numQpsPerPeer + q].
+  // are indexed [peer * numQpsPerPeerPerNic + q].
   struct NicHostIbgdaResources {
     std::string deviceName;
     ibv_context* ibvCtx{nullptr};

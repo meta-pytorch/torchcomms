@@ -1449,14 +1449,14 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultiQpConstructAndExchange) {
   try {
     MultipeerIbgdaTransportConfig config{
         .cudaDevice = localRank,
-        .numQpsPerPeer = 4,
+        .numQpsPerPeerPerNic = 4,
     };
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
     auto transport = std::make_unique<MultipeerIbgdaTransport>(
         globalRank, numRanks, bootstrap, config);
     transport->exchange();
 
-    EXPECT_EQ(transport->numQpsPerPeer(), 4);
+    EXPECT_EQ(transport->numQpsPerPeerPerNic(), 4);
     EXPECT_NE(transport->getDeviceTransportPtr(), nullptr);
 
     // Verify each peer has a valid transport pointer
@@ -1470,9 +1470,9 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultiQpConstructAndExchange) {
 
     XLOGF(
         INFO,
-        "Rank {}: Multi-QP transport created with {} QPs/peer",
+        "Rank {}: Multi-QP transport created with {} QPs/(peer,NIC)",
         globalRank,
-        transport->numQpsPerPeer());
+        transport->numQpsPerPeerPerNic());
   } catch (const std::exception& e) {
     GTEST_SKIP() << "IBGDA transport not available: " << e.what();
   }
@@ -1497,7 +1497,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultiQpPutSignalBasic) {
   try {
     MultipeerIbgdaTransportConfig config{
         .cudaDevice = localRank,
-        .numQpsPerPeer = numQps,
+        .numQpsPerPeerPerNic = numQps,
         .numSignalSlots = 1,
         .numCounterSlots = 1,
     };
@@ -1585,7 +1585,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultiQpPutSignalBasic) {
 // commutative hash distributes blocks across both NICs at numNics_>1, so
 // aggregate BW ~doubles vs single-NIC if multi-NIC is wired correctly.
 //
-// Runs on 2 ranks (1 peer pair); uses numQpsPerPeer=4 so the slot space
+// Runs on 2 ranks (1 peer pair); uses numQpsPerPeerPerNic=4 so the slot space
 // is 4 × numNics_ (4 slots on H100, 8 on GB200/GB300). The kernel launches
 // numBlocks > total slots so block-driven dispatch saturates every slot.
 //
@@ -1611,7 +1611,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultiNicAggregateBandwidth) {
   try {
     MultipeerIbgdaTransportConfig config{
         .cudaDevice = localRank,
-        .numQpsPerPeer = numQps,
+        .numQpsPerPeerPerNic = numQps,
         .numSignalSlots = 1,
     };
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
@@ -1690,7 +1690,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultiNicAggregateBandwidth) {
 
     XLOGF(
         INFO,
-        "MultiNicAggregateBandwidth: numNics={} numQpsPerPeer={} numBlocks={}",
+        "MultiNicAggregateBandwidth: numNics={} numQpsPerPeerPerNic={} numBlocks={}",
         detectedNics,
         numQps,
         numBlocks);
