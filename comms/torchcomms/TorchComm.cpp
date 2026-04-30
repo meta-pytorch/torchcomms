@@ -516,6 +516,14 @@ void TorchComm::abort() {
   impl_->abort();
 }
 
+bool TorchComm::isAbortSupported() const {
+  return impl_->isAbortSupported();
+}
+
+bool TorchComm::isAborted() const {
+  return impl_->isAborted();
+}
+
 int64_t TorchComm::get_device_transport() {
   return impl_->get_device_transport();
 }

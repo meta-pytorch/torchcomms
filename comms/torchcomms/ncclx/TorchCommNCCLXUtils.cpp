@@ -3,6 +3,7 @@
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLXCCA.hpp"
 
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include "comms/torchcomms/utils/Logging.hpp"
@@ -284,7 +285,7 @@ void TorchCommNCCLX::timeoutWatchdog() noexcept {
         TC_LOG(ERROR, this) << "Aborting process due to error on rank " << rank_
                             << " - timeout watchdog detected operation error. ";
       }
-      ::abort();
+      std::abort();
     }
 
     // Check communicator for async error
@@ -300,7 +301,7 @@ void TorchCommNCCLX::timeoutWatchdog() noexcept {
         TC_LOG(ERROR, this)
             << "Aborting process due to error on rank " << rank_
             << " - nccl hit async error: " << ncclGetErrorString(asyncErr);
-        abort();
+        std::abort();
       }
     }
   }
@@ -334,7 +335,7 @@ void TorchCommNCCLX::checkAndAbortIfTimedOutOrError() {
       abortNcclComm();
       if (options_.abort_process_on_timeout_or_error) {
         TC_LOG(ERROR, this) << "Aborting process due to timeout";
-        ::abort();
+        std::abort();
       } else {
         throw std::runtime_error("NCCLX operation timed out");
       }
@@ -352,7 +353,7 @@ void TorchCommNCCLX::checkAndAbortIfTimedOutOrError() {
     if (options_.abort_process_on_timeout_or_error) {
       TC_LOG(ERROR, this) << "Aborting process due to error: "
                           << ncclException.what();
-      ::abort();
+      std::abort();
     } else {
       throw ncclException;
     }
