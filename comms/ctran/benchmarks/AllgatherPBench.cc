@@ -10,6 +10,7 @@
 #include <memory>
 #include <vector>
 #include "comms/ctran/Ctran.h"
+#include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
@@ -28,7 +29,7 @@ DEFINE_int32(bench_iters, 50, "Number of benchmark iterations (default: 20)");
 DEFINE_string(
     algo,
     "all",
-    "Algorithm to benchmark: 'ctdirect', 'ctpipeline', 'nccl', or 'all' (default: all)");
+    "Algorithm to benchmark: 'ctdirect', 'ctpipeline', 'ctpat', 'nccl', or 'all' (default: all)");
 DEFINE_bool(in_place, false, "Run in-place allgather (default: false)");
 DEFINE_string(
     mem_type,
@@ -473,6 +474,32 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
             count, "AllGatherP_Pipeline", request, sendbuf, recvbuf);
         printResult(result);
         ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
+      }
+
+      // Benchmark AllgatherP PAT (reuses same request)
+      if (FLAGS_algo == "ctpat" || FLAGS_algo == "all") {
+        const auto statex = ctranComm_->statex_.get();
+        auto mapper = ctranComm_->ctran_->mapper.get();
+        bool patSupported = statex->nNodes() > 1 &&
+            (statex->nNodes() & (statex->nNodes() - 1)) == 0 &&
+            statex->nRanks() % statex->nLocalRanks() == 0;
+        if (patSupported && statex->nLocalRanks() > 1) {
+          for (int lr = 0; lr < statex->nLocalRanks(); lr++) {
+            const int peer = statex->localRankToRank(lr);
+            if (peer != statex->rank() &&
+                mapper->getBackend(peer) != CtranMapperBackend::NVL) {
+              patSupported = false;
+              break;
+            }
+          }
+        }
+        if (patSupported) {
+          EnvRAII algoEnv(NCCL_ALLGATHER_P_ALGO, NCCL_ALLGATHER_P_ALGO::ctpat);
+          BenchmarkResult result = benchmarkAllgatherPWithRequest(
+              count, "AllGatherP_Pat", request, sendbuf, recvbuf);
+          printResult(result);
+          ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
+        }
       }
 
       // Benchmark NCCL baseline

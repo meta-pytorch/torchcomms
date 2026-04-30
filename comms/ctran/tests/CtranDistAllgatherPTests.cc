@@ -287,6 +287,8 @@ static std::string algoToStr(enum NCCL_ALLGATHER_P_ALGO algo) {
       return "ctpipeline";
     case NCCL_ALLGATHER_P_ALGO::ctrdpipeline:
       return "ctrdpipeline";
+    case NCCL_ALLGATHER_P_ALGO::ctpat:
+      return "ctpat";
     default:
       return "unknown";
   }
@@ -302,12 +304,16 @@ TEST_P(CtranAllgatherPTestParam, Basic) {
   } else if (ctranComm->ctran_->mapper->ctranIbPtr() == nullptr) {
     GTEST_SKIP() << "No IB Backend found, skip test";
   } else if (
-      algo == NCCL_ALLGATHER_P_ALGO::ctrdpipeline &&
+      (algo == NCCL_ALLGATHER_P_ALGO::ctrdpipeline ||
+       algo == NCCL_ALLGATHER_P_ALGO::ctpat) &&
       ctranComm->statex_->nNodes() > 1 &&
       (ctranComm->statex_->nNodes() & (ctranComm->statex_->nNodes() - 1)) !=
           0) {
-    GTEST_SKIP()
-        << "ctrdpipeline requires nNodes to be a power of 2, skip test";
+    GTEST_SKIP() << algoStr << " requires nNodes to be a power of 2, skip test";
+  } else if (
+      algo == NCCL_ALLGATHER_P_ALGO::ctpat &&
+      ctranComm->statex_->nNodes() <= 1) {
+    GTEST_SKIP() << "ctpat requires nNodes > 1, skip test";
   } else {
     run(maxSendCount, count, inplace, memType, ctranComm.get());
   }
@@ -335,10 +341,14 @@ TEST_P(CtranAllgatherPTestParam, VnodeBasic) {
     ASSERT_EQ(testComm->statex_->nLocalRanks(), 4);
     const auto vnodeNNodes = numRanks / 4;
     ASSERT_EQ(testComm->statex_->nNodes(), vnodeNNodes);
-    if (algo == NCCL_ALLGATHER_P_ALGO::ctrdpipeline && vnodeNNodes > 1 &&
-        (vnodeNNodes & (vnodeNNodes - 1)) != 0) {
-      GTEST_SKIP()
-          << "ctrdpipeline requires nNodes to be a power of 2, skip test";
+    if ((algo == NCCL_ALLGATHER_P_ALGO::ctrdpipeline ||
+         algo == NCCL_ALLGATHER_P_ALGO::ctpat) &&
+        vnodeNNodes > 1 && (vnodeNNodes & (vnodeNNodes - 1)) != 0) {
+      GTEST_SKIP() << algoStr
+                   << " requires nNodes to be a power of 2, skip test";
+    }
+    if (algo == NCCL_ALLGATHER_P_ALGO::ctpat && vnodeNNodes <= 1) {
+      GTEST_SKIP() << "ctpat requires nNodes > 1, skip test";
     }
     run(maxSendCount, count, inplace, memType, testComm.get());
   }
@@ -370,10 +380,14 @@ TEST_P(CtranAllgatherPTestParam, VnodeBasicMultiStep) {
     ASSERT_EQ(testComm->statex_->nLocalRanks(), 2);
     const auto vnodeNNodes = numRanks / 2;
     ASSERT_EQ(testComm->statex_->nNodes(), vnodeNNodes);
-    if (algo == NCCL_ALLGATHER_P_ALGO::ctrdpipeline && vnodeNNodes > 1 &&
-        (vnodeNNodes & (vnodeNNodes - 1)) != 0) {
-      GTEST_SKIP()
-          << "ctrdpipeline requires nNodes to be a power of 2, skip test";
+    if ((algo == NCCL_ALLGATHER_P_ALGO::ctrdpipeline ||
+         algo == NCCL_ALLGATHER_P_ALGO::ctpat) &&
+        vnodeNNodes > 1 && (vnodeNNodes & (vnodeNNodes - 1)) != 0) {
+      GTEST_SKIP() << algoStr
+                   << " requires nNodes to be a power of 2, skip test";
+    }
+    if (algo == NCCL_ALLGATHER_P_ALGO::ctpat && vnodeNNodes <= 1) {
+      GTEST_SKIP() << "ctpat requires nNodes > 1, skip test";
     }
     run(maxSendCount, count, inplace, memType, testComm.get());
   }
@@ -424,6 +438,44 @@ TEST_F(CtranAllgatherPTestParam, DynamicSendRegPipeline) {
         ctranComm.get(),
         false /* sendbufReg */);
   }
+}
+
+TEST_F(CtranAllgatherPTest, CtpatRejectsSingleNode) {
+  // ctpat requires nNodes > 1. On a single-node devgpu (nNodes == 1),
+  // allGatherPExec with ctpat should return an error.
+  if (ctranComm->statex_->nNodes() > 1) {
+    GTEST_SKIP() << "This test requires single-node topology (nNodes == 1)";
+  }
+
+  const auto count = 8192;
+  const auto maxSendCount = count;
+  const auto maxRecvCount = maxSendCount * numRanks;
+  memorySetUp(kMemCudaMalloc, count, maxRecvCount);
+
+  COMMCHECK_TEST(ctranComm->ctran_->commRegister(recvbuf, recvBytes, &recvHdl));
+  meta::comms::Hints hints;
+  CtranPersistentRequest* request;
+  const auto initMaxRecvCount =
+      maxRecvCount * commTypeSize(dt) / commTypeSize(commInt8);
+  COMMCHECK_TEST(
+      ctran::allGatherPInit(
+          recvbuf,
+          initMaxRecvCount,
+          hints,
+          commInt8,
+          ctranComm.get(),
+          stream,
+          request));
+  ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+
+  SysEnvRAII algoEnv("NCCL_ALLGATHER_P_ALGO", "ctpat");
+  ASSERT_EQ(
+      ctran::allGatherPExec(sendbuf, count, dt, request), commInvalidUsage);
+
+  ASSERT_EQ(ctran::allGatherPDestroy(request), commSuccess);
+  delete request;
+  COMMCHECK_TEST(ctranComm->ctran_->commDeregister(recvHdl));
+  memoryCleanUp(kMemCudaMalloc);
 }
 
 TEST_F(CtranAllgatherPTest, InvalidPreq) {
@@ -706,7 +758,8 @@ INSTANTIATE_TEST_SUITE_P(
         testing::Values(
             NCCL_ALLGATHER_P_ALGO::ctdirect,
             NCCL_ALLGATHER_P_ALGO::ctpipeline,
-            NCCL_ALLGATHER_P_ALGO::ctrdpipeline)),
+            NCCL_ALLGATHER_P_ALGO::ctrdpipeline,
+            NCCL_ALLGATHER_P_ALGO::ctpat)),
     getTestName);
 
 int main(int argc, char* argv[]) {

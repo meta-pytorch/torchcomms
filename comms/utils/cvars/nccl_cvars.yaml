@@ -2005,7 +2005,7 @@ cvars:
  - name        : NCCL_ALLGATHER_P_ALGO
    type        : enum
    default     : ctpipeline
-   choices     : ctdirect, ctpipeline, ctrdpipeline
+   choices     : ctdirect, ctpipeline, ctrdpipeline, ctpat
    description : |-
      The algorithm to use for AllgatherP communication
      ctdirect - Ctran-based direct point-to-point algorithm
@@ -2014,6 +2014,9 @@ cvars:
      ctrdpipeline - Ctran-based hybrid algorithm that does recursive doubling across
                     rails for inter-node exchange and CopyEngine based broadcast
                     within the NVLink domain. Requires nNodes to be a power of 2.
+     ctpat - PAT (Parallel Asynchronous Tiled) butterfly algorithm for NVL x IB.
+             Rail-parallel recursive doubling across nodes with NVL CE broadcast.
+             Requires nNodes to be a power of 2.
 
  - name        : NCCL_ALLGATHER_ALGO
    type        : enum

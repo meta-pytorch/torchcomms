@@ -58,6 +58,17 @@ class AlgoImpl {
       const size_t count,
       const commDataType_t datatype);
 
+  // Execute the PAT (Parallel Asynchronous Tiled) algorithm of allgatherP.
+  // Rail-parallel butterfly (recursive doubling) with NVL CE broadcast.
+  // Structurally identical to execRecursiveDoubling for v1, introduced as a
+  // separate method to allow future divergence (non-power-of-two support,
+  // step aggregation, auto-tuning).
+  // - Requires nNodes to be a power of 2 and nRanks % nLocalRanks == 0.
+  commResult_t execPat(
+      const void* sendbuff,
+      const size_t count,
+      const commDataType_t datatype);
+
   static inline const std::string algoName(enum NCCL_ALLGATHER_P_ALGO algo) {
     switch (algo) {
       case NCCL_ALLGATHER_P_ALGO::ctdirect:
@@ -66,6 +77,8 @@ class AlgoImpl {
         return "CtranAllGatherPPipeline";
       case NCCL_ALLGATHER_P_ALGO::ctrdpipeline:
         return "CtranAllGatherPRecDbl";
+      case NCCL_ALLGATHER_P_ALGO::ctpat:
+        return "CtranAllGatherPPat";
       default:
         return "Unknown";
     }

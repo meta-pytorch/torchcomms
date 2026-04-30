@@ -238,6 +238,8 @@ commResult_t allGatherPExec(
       return algo->execPipeline(sendbuff, count, datatype);
     case NCCL_ALLGATHER_P_ALGO::ctrdpipeline:
       return algo->execRecursiveDoubling(sendbuff, count, datatype);
+    case NCCL_ALLGATHER_P_ALGO::ctpat:
+      return algo->execPat(sendbuff, count, datatype);
     default:
       return ErrorStackTraceUtil::log(commInternalError);
   }
