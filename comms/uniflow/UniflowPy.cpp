@@ -511,7 +511,14 @@ PYBIND11_MODULE(_core, m) {
             auto v = f.getTopology();
             return py::bytes(reinterpret_cast<const char*>(v.data()), v.size());
           },
-          "Get the local topology as serialized bytes.");
+          "Get the local topology as serialized bytes.")
+      .def_static(
+          "supported",
+          [](TransportType type) {
+            return toResult(MultiTransportFactory::supported(type));
+          },
+          "Check if a transport type is supported on this host.",
+          py::arg("transport_type"));
 
   // ---------------------------------------------------------------------------
   // Connection
