@@ -50,12 +50,32 @@ std::optional<int64_t> RankUtils::getInt64FromEnv(const char* envVar) {
 
 /* static */
 std::optional<int64_t> RankUtils::getWorldSize() {
-  return getInt64FromEnv("WORLD_SIZE");
+  auto worldSize = getInt64FromEnv("WORLD_SIZE");
+  if (worldSize.has_value()) {
+    return worldSize;
+  }
+  // for mpirun
+  worldSize = getInt64FromEnv("OMPI_COMM_WORLD_SIZE");
+  if (worldSize.has_value()) {
+    return worldSize;
+  }
+  // for slurm
+  return getInt64FromEnv("SLURM_NTASKS");
 }
 
 /* static */
 std::optional<int64_t> RankUtils::getGlobalRank() {
-  return getInt64FromEnv("RANK");
+  auto rank = getInt64FromEnv("RANK");
+  if (rank.has_value()) {
+    return rank;
+  }
+  // for mpirun
+  rank = getInt64FromEnv("OMPI_COMM_WORLD_RANK");
+  if (rank.has_value()) {
+    return rank;
+  }
+  // for slurm
+  return getInt64FromEnv("SLURM_PROCID");
 }
 
 // Logic ported from scheduler
