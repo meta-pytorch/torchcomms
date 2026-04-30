@@ -106,6 +106,8 @@ class MultiTransportFactory {
 
   std::vector<uint8_t> getTopology();
 
+  static Status supported(TransportType type);
+
   friend class MultiTransportFactoryTest;
 
  private:

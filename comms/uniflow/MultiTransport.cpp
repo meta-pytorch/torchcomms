@@ -27,6 +27,21 @@ std::vector<std::string> MultiTransportFactory::selectNics() {
                           : topo.selectGpuNics(deviceId_, nicFilter_);
 }
 
+Status MultiTransportFactory::supported(TransportType type) {
+  switch (type) {
+    case TransportType::NVLink:
+      return NVLinkTransportFactory::supported();
+    case TransportType::RDMA:
+      return RdmaTransportFactory::supported();
+    case TransportType::TCP:
+      return Err(ErrCode::NotImplemented, "tcp transport is not implemented");
+    case TransportType::Mock:
+      return Ok();
+    default:
+      return Err(ErrCode::InvalidArgument, "unknown transport type");
+  }
+}
+
 Status MultiTransport::validateRequests(
     const std::vector<TransferRequest>& requests) {
   if (requests.empty()) {
