@@ -21,6 +21,64 @@
 
 namespace meta::comms::colltrace {
 
+namespace detail {
+template <std::size_t kAlign>
+constexpr std::size_t alignTo(std::size_t bytes) {
+  return (bytes + kAlign - 1) & ~(kAlign - 1);
+}
+
+template <std::size_t kAlign, typename T>
+static inline __attribute__((__always_inline__)) std::size_t allocAligned(
+    T*& ptr,
+    std::size_t num = 1) {
+  auto bytes = detail::alignTo<kAlign>(sizeof(T) * num);
+  ptr = static_cast<T*>(std::aligned_alloc(kAlign, bytes));
+  return ptr ? bytes : 0;
+}
+} // namespace detail
+
+// Memory allocation strategy for the ring buffer.
+enum class HRDWMemoryStrategy {
+  // cudaHostAlloc pinned mapped memory — works everywhere.
+  PinnedMapped,
+  // Plain malloc + cudaMemAdvise(SetAccessedBy) — on Grace Hopper (GB200),
+  // NVLink-C2C makes this as fast as device memory. Falls back to
+  // PinnedMapped on non-ATS systems.
+  AtsPageable,
+  // Automatically select the best strategy for the current platform.
+  Auto,
+};
+
+// Returns true if the current GPU supports hardware-backed ATS (Address
+// Translation Services) for pageable host memory access. True on Grace
+// Hopper (GB200) with NVLink-C2C.
+//
+// Two attributes must both be set: pageable memory access must be
+// available, AND it must be backed by hardware page tables rather than
+// software emulation. The latter distinguishes true ATS (NVLink-C2C) from
+// HMM-style software-managed access, which lacks the coherence guarantees
+// we rely on for the device-scope fence in hrdwRingBufferWrite.
+inline bool isAtsSupported() {
+  int device = 0;
+  if (cudaGetDevice(&device) != cudaSuccess) {
+    return false;
+  }
+  int pageableMemoryAccess = 0;
+  if (cudaDeviceGetAttribute(
+          &pageableMemoryAccess, cudaDevAttrPageableMemoryAccess, device) !=
+      cudaSuccess) {
+    return false;
+  }
+  int usesHostPageTables = 0;
+  if (cudaDeviceGetAttribute(
+          &usesHostPageTables,
+          cudaDevAttrPageableMemoryAccessUsesHostPageTables,
+          device) != cudaSuccess) {
+    return false;
+  }
+  return pageableMemoryAccess != 0 && usesHostPageTables != 0;
+}
+
 // ==========================================================================
 // HRDWRingBuffer — Host-Read Device-Write ring buffer for GPU-to-CPU
 // event transfer with lock-free, torn-read-safe polling.
@@ -95,7 +153,8 @@ __device__ __forceinline__ void hrdwRingBufferWrite(
     HRDWEntry<DataT>* ring,
     uint64_t* writeIndex,
     uint32_t mask,
-    DataT data) {
+    DataT data,
+    HRDWMemoryStrategy strategy) {
   uint64_t slot =
       atomicAdd(reinterpret_cast<unsigned long long*>(writeIndex), 1ULL);
   uint64_t idx = slot & mask;
@@ -112,7 +171,14 @@ __device__ __forceinline__ void hrdwRingBufferWrite(
   } else {
     new (&ring[idx].data) DataT(data);
   }
-  __threadfence_system();
+  // ATS (NVLink-C2C) provides hardware coherence between GPU and CPU,
+  // so a device-scope fence is sufficient. Non-coherent interconnects
+  // (PCIe) require a system-scope fence.
+  if (strategy == HRDWMemoryStrategy::AtsPageable) {
+    __threadfence();
+  } else {
+    __threadfence_system();
+  }
   ring[idx].sequence = slot;
 }
 #endif
@@ -125,10 +191,11 @@ struct HRDWRingBufferDeviceHandle {
   HRDWEntry<DataT>* ring;
   uint64_t* writeIndex;
   uint32_t mask;
+  HRDWMemoryStrategy strategy;
 
 #if defined(__CUDACC__) || defined(__HIPCC__)
   __device__ __forceinline__ void write(DataT data) {
-    hrdwRingBufferWrite(ring, writeIndex, mask, data);
+    hrdwRingBufferWrite(ring, writeIndex, mask, data, strategy);
   }
 #endif
 };
@@ -144,8 +211,9 @@ __global__ void ringBufferWriteKernel(
     HRDWEntry<DataT>* ring,
     uint64_t* writeIdx,
     uint32_t mask,
-    DataT data) {
-  hrdwRingBufferWrite(ring, writeIdx, mask, data);
+    DataT data,
+    HRDWMemoryStrategy strategy) {
+  hrdwRingBufferWrite(ring, writeIdx, mask, data, strategy);
 }
 } // namespace detail
 
@@ -155,10 +223,11 @@ cudaError_t launchRingBufferWrite(
     HRDWEntry<DataT>* ring,
     uint64_t* writeIdx,
     uint32_t mask,
-    DataT data) {
+    DataT data,
+    HRDWMemoryStrategy strategy) {
   // NOLINTNEXTLINE(facebook-cuda-safe-kernel-call-check)
   detail::ringBufferWriteKernel<<<1, 1, 0, stream>>>(
-      ring, writeIdx, mask, data);
+      ring, writeIdx, mask, data, strategy);
   return cudaGetLastError();
 }
 #else
@@ -169,7 +238,8 @@ cudaError_t launchRingBufferWrite(
     HRDWEntry<DataT>* ring,
     uint64_t* writeIdx,
     uint32_t mask,
-    DataT data);
+    DataT data,
+    HRDWMemoryStrategy strategy);
 #endif
 
 // Host-Read Device-Write (HRDW) ring buffer. Device kernels atomically claim
@@ -187,7 +257,9 @@ class HRDWRingBuffer {
  public:
   using Entry = HRDWEntry<DataT>;
 
-  explicit HRDWRingBuffer(uint32_t size) {
+  explicit HRDWRingBuffer(
+      uint32_t size,
+      HRDWMemoryStrategy strategy = HRDWMemoryStrategy::Auto) {
     // Round up to next power of 2 if needed.
     if (size == 0) {
       size = 1;
@@ -217,23 +289,43 @@ class HRDWRingBuffer {
       size = nextPowerOf2;
     }
 
+    // Resolve Auto strategy.
+    if (strategy == HRDWMemoryStrategy::Auto) {
+      strategy = isAtsSupported() ? HRDWMemoryStrategy::AtsPageable
+                                  : HRDWMemoryStrategy::PinnedMapped;
+    }
+    // Fallback if ATS requested but not supported.
+    if (strategy == HRDWMemoryStrategy::AtsPageable && !isAtsSupported()) {
+      strategy = HRDWMemoryStrategy::PinnedMapped;
+    }
+    strategy_ = strategy;
+
     // x & mask == x % size
     // but is just a single bitwise op
     size_ = size;
     mask_ = size - 1;
 
-    allocatePinnedMapped();
+    if (strategy_ == HRDWMemoryStrategy::AtsPageable) {
+      allocateAtsPageable();
+    } else {
+      allocatePinnedMapped();
+    }
   }
 
   ~HRDWRingBuffer() {
     destructLiveEntries();
-    if (ring_) {
-      // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-      (void)cudaFreeHost(ring_);
-    }
-    if (writeIndex_) {
-      // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-      (void)cudaFreeHost(writeIndex_);
+    if (strategy_ == HRDWMemoryStrategy::AtsPageable) {
+      std::free(ring_);
+      std::free(writeIndex_);
+    } else {
+      if (ring_) {
+        // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+        (void)cudaFreeHost(ring_);
+      }
+      if (writeIndex_) {
+        // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+        (void)cudaFreeHost(writeIndex_);
+      }
     }
   }
 
@@ -245,23 +337,31 @@ class HRDWRingBuffer {
       : ring_(std::exchange(other.ring_, nullptr)),
         writeIndex_(std::exchange(other.writeIndex_, nullptr)),
         size_(other.size_),
-        mask_(other.mask_) {}
+        mask_(other.mask_),
+        strategy_(other.strategy_) {}
 
   HRDWRingBuffer& operator=(HRDWRingBuffer&& other) noexcept {
     if (this != &other) {
       destructLiveEntries();
-      if (ring_) {
-        // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-        (void)cudaFreeHost(ring_);
-      }
-      if (writeIndex_) {
-        // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-        (void)cudaFreeHost(writeIndex_);
+      // Free current resources using the current strategy.
+      if (strategy_ == HRDWMemoryStrategy::AtsPageable) {
+        std::free(ring_);
+        std::free(writeIndex_);
+      } else {
+        if (ring_) {
+          // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+          (void)cudaFreeHost(ring_);
+        }
+        if (writeIndex_) {
+          // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+          (void)cudaFreeHost(writeIndex_);
+        }
       }
       ring_ = std::exchange(other.ring_, nullptr);
       writeIndex_ = std::exchange(other.writeIndex_, nullptr);
       size_ = other.size_;
       mask_ = other.mask_;
+      strategy_ = other.strategy_;
     }
     return *this;
   }
@@ -280,7 +380,7 @@ class HRDWRingBuffer {
   cudaError_t write(cudaStream_t stream, DataT data) {
     assert(valid());
     return launchRingBufferWrite<DataT>(
-        stream, ring_, writeIndex_, mask_, data);
+        stream, ring_, writeIndex_, mask_, data, strategy_);
   }
 
   // Return a lightweight, trivially-copyable handle that can be passed by
@@ -288,7 +388,7 @@ class HRDWRingBuffer {
   // HRDWRingBufferDeviceHandle.cuh for usage.
   HRDWRingBufferDeviceHandle<DataT> deviceHandle() const {
     assert(valid());
-    return {ring_, writeIndex_, mask_};
+    return {ring_, writeIndex_, mask_, strategy_};
   }
 
  private:
@@ -306,6 +406,49 @@ class HRDWRingBuffer {
           ring_[i].data.~DataT();
         }
       }
+    }
+  }
+
+  void allocateAtsPageable() {
+    int device = 0;
+    cudaGetDevice(&device);
+
+    constexpr std::size_t kAlign = 128;
+    {
+      auto bytesAllocated = detail::allocAligned<kAlign, Entry>(ring_, size_);
+      if (!bytesAllocated) {
+        fprintf(stderr, "HRDWRingBuffer: allocAligned failed for ring\n");
+        return;
+      }
+      initRing();
+#if CUDART_VERSION >= 13000
+      cudaMemLocation location{cudaMemLocationTypeDevice, device};
+      // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+      cudaMemAdvise(
+          ring_, bytesAllocated, cudaMemAdviseSetAccessedBy, location);
+#else
+      // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+      cudaMemAdvise(ring_, bytesAllocated, cudaMemAdviseSetAccessedBy, device);
+#endif
+    }
+
+    {
+      auto bytesAllocated = detail::allocAligned<kAlign, uint64_t>(writeIndex_);
+      if (!bytesAllocated) {
+        fprintf(stderr, "HRDWRingBuffer: allocAligned failed for writeIndex\n");
+        return;
+      }
+      *writeIndex_ = 0;
+#if CUDART_VERSION >= 13000
+      cudaMemLocation location{cudaMemLocationTypeDevice, device};
+      // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+      cudaMemAdvise(
+          writeIndex_, bytesAllocated, cudaMemAdviseSetAccessedBy, location);
+#else
+      // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+      cudaMemAdvise(
+          writeIndex_, bytesAllocated, cudaMemAdviseSetAccessedBy, device);
+#endif
     }
   }
 
@@ -352,6 +495,7 @@ class HRDWRingBuffer {
   uint64_t* writeIndex_{nullptr};
   uint32_t size_{0};
   uint32_t mask_{0};
+  HRDWMemoryStrategy strategy_{HRDWMemoryStrategy::PinnedMapped};
 };
 
 } // namespace meta::comms::colltrace

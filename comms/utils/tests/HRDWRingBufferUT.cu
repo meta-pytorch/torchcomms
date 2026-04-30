@@ -36,25 +36,38 @@ class HRDWRingBufferTestAccessor {
 using TestAccess =
     meta::comms::colltrace::HRDWRingBufferTestAccessor<TestEvent>;
 
-class HRDWRingBufferTest : public ::testing::Test {};
+using HRDWMemoryStrategy = meta::comms::colltrace::HRDWMemoryStrategy;
 
-TEST_F(HRDWRingBufferTest, ConstructionAndAccessors) {
-  TestBuffer buf(64);
+class HRDWRingBufferTest : public ::testing::TestWithParam<HRDWMemoryStrategy> {
+ protected:
+  HRDWMemoryStrategy strategy() const {
+    return GetParam();
+  }
+  void SetUp() override {
+    if (GetParam() == HRDWMemoryStrategy::AtsPageable &&
+        !meta::comms::colltrace::isAtsSupported()) {
+      GTEST_SKIP() << "ATS not supported on this platform";
+    }
+  }
+};
+
+TEST_P(HRDWRingBufferTest, ConstructionAndAccessors) {
+  TestBuffer buf(64, strategy());
   ASSERT_TRUE(buf.valid());
   EXPECT_EQ(buf.size(), 64u);
   EXPECT_NE(TestAccess::ring(buf), nullptr);
 }
 
-TEST_F(HRDWRingBufferTest, InitialEntriesMarkedSlotEmpty) {
-  TestBuffer buf(16);
+TEST_P(HRDWRingBufferTest, InitialEntriesMarkedSlotEmpty) {
+  TestBuffer buf(16, strategy());
   ASSERT_TRUE(buf.valid());
   for (uint32_t i = 0; i < 16; ++i) {
     EXPECT_EQ(TestAccess::ring(buf)[i].sequence, HRDW_RINGBUFFER_SLOT_EMPTY);
   }
 }
 
-TEST_F(HRDWRingBufferTest, MoveConstruction) {
-  TestBuffer buf(32);
+TEST_P(HRDWRingBufferTest, MoveConstruction) {
+  TestBuffer buf(32, strategy());
   ASSERT_TRUE(buf.valid());
 
   TestBuffer moved(std::move(buf));
@@ -65,7 +78,7 @@ TEST_F(HRDWRingBufferTest, MoveConstruction) {
   EXPECT_FALSE(buf.valid()); // NOLINT(bugprone-use-after-move)
 }
 
-TEST_F(HRDWRingBufferTest, MoveAssignment) {
+TEST_P(HRDWRingBufferTest, MoveAssignment) {
   TestBuffer buf1(32);
   TestBuffer buf2(64);
   ASSERT_TRUE(buf1.valid());
@@ -77,14 +90,14 @@ TEST_F(HRDWRingBufferTest, MoveAssignment) {
   EXPECT_FALSE(buf2.valid()); // NOLINT(bugprone-use-after-move)
 }
 
-TEST_F(HRDWRingBufferTest, RoundsUpZeroSize) {
-  TestBuffer buf(0);
+TEST_P(HRDWRingBufferTest, RoundsUpZeroSize) {
+  TestBuffer buf(0, strategy());
   EXPECT_TRUE(buf.valid());
   EXPECT_EQ(buf.size(), 1u);
 }
 
-TEST_F(HRDWRingBufferTest, RoundsUpNonPowerOfTwo) {
-  TestBuffer buf(10);
+TEST_P(HRDWRingBufferTest, RoundsUpNonPowerOfTwo) {
+  TestBuffer buf(10, strategy());
   EXPECT_TRUE(buf.valid());
   EXPECT_EQ(buf.size(), 16u);
 
@@ -98,12 +111,24 @@ TEST_F(HRDWRingBufferTest, RoundsUpNonPowerOfTwo) {
   EXPECT_EQ(buf3.size(), 8u);
 }
 
-class HRDWRingBufferReaderTest : public ::testing::Test {
+INSTANTIATE_TEST_SUITE_P(
+    MemoryStrategies,
+    HRDWRingBufferTest,
+    ::testing::Values(
+        HRDWMemoryStrategy::PinnedMapped,
+        HRDWMemoryStrategy::AtsPageable));
+
+class HRDWRingBufferReaderTest
+    : public ::testing::TestWithParam<HRDWMemoryStrategy> {
  protected:
   static constexpr uint32_t kRingSize = 16;
 
   void SetUp() override {
-    buf_.emplace(kRingSize);
+    if (GetParam() == HRDWMemoryStrategy::AtsPageable &&
+        !meta::comms::colltrace::isAtsSupported()) {
+      GTEST_SKIP() << "ATS not supported on this platform";
+    }
+    buf_.emplace(kRingSize, GetParam());
     ASSERT_TRUE(buf_->valid());
     reader_.emplace(*buf_);
     ASSERT_EQ(cudaStreamCreate(&stream_), cudaSuccess);
@@ -139,7 +164,7 @@ class HRDWRingBufferReaderTest : public ::testing::Test {
   cudaStream_t stream_{nullptr};
 };
 
-TEST_F(HRDWRingBufferReaderTest, EmptyBufferReturnsNothing) {
+TEST_P(HRDWRingBufferReaderTest, EmptyBufferReturnsNothing) {
   std::vector<uint32_t> seen;
   auto result = reader_->poll(
       [&](const TestEntry& e, uint64_t) { seen.push_back(e.data.tag); });
@@ -149,7 +174,7 @@ TEST_F(HRDWRingBufferReaderTest, EmptyBufferReturnsNothing) {
   EXPECT_TRUE(seen.empty());
 }
 
-TEST_F(HRDWRingBufferReaderTest, ReadsSingleEntry) {
+TEST_P(HRDWRingBufferReaderTest, ReadsSingleEntry) {
   writeEntry(42);
 
   std::vector<uint32_t> seen;
@@ -165,7 +190,7 @@ TEST_F(HRDWRingBufferReaderTest, ReadsSingleEntry) {
   EXPECT_EQ(seen, expected);
 }
 
-TEST_F(HRDWRingBufferReaderTest, ReadsMultipleEntries) {
+TEST_P(HRDWRingBufferReaderTest, ReadsMultipleEntries) {
   writeEntry(1);
   writeEntry(2);
   writeEntry(3);
@@ -179,7 +204,7 @@ TEST_F(HRDWRingBufferReaderTest, ReadsMultipleEntries) {
   EXPECT_EQ(seen, expected);
 }
 
-TEST_F(HRDWRingBufferReaderTest, DoesNotReReadOldEntries) {
+TEST_P(HRDWRingBufferReaderTest, DoesNotReReadOldEntries) {
   writeEntry(1);
   writeEntry(2);
 
@@ -199,7 +224,7 @@ TEST_F(HRDWRingBufferReaderTest, DoesNotReReadOldEntries) {
   EXPECT_EQ(seen, expected);
 }
 
-TEST_F(HRDWRingBufferReaderTest, UnstampedEntryStopsScanning) {
+TEST_P(HRDWRingBufferReaderTest, UnstampedEntryStopsScanning) {
   writeEntry(1);
   writeUnstampedSlot(); // writeIndex advanced but sequence not stamped
   writeEntry(3);
@@ -215,7 +240,7 @@ TEST_F(HRDWRingBufferReaderTest, UnstampedEntryStopsScanning) {
   EXPECT_EQ(seen, expected);
 }
 
-TEST_F(HRDWRingBufferReaderTest, WrapAroundReadsCorrectly) {
+TEST_P(HRDWRingBufferReaderTest, WrapAroundReadsCorrectly) {
   // Fill the entire ring.
   for (uint32_t i = 0; i < kRingSize; ++i) {
     writeEntry(i);
@@ -235,7 +260,7 @@ TEST_F(HRDWRingBufferReaderTest, WrapAroundReadsCorrectly) {
   EXPECT_EQ(seen, expected);
 }
 
-TEST_F(HRDWRingBufferReaderTest, CallbackReceivesCorrectSlot) {
+TEST_P(HRDWRingBufferReaderTest, CallbackReceivesCorrectSlot) {
   writeEntry(10);
   writeEntry(20);
 
@@ -247,7 +272,7 @@ TEST_F(HRDWRingBufferReaderTest, CallbackReceivesCorrectSlot) {
   EXPECT_EQ(slots, expected);
 }
 
-TEST_F(HRDWRingBufferReaderTest, MultiplePollCyclesAccumulate) {
+TEST_P(HRDWRingBufferReaderTest, MultiplePollCyclesAccumulate) {
   uint64_t totalRead = 0;
 
   for (int cycle = 0; cycle < 5; ++cycle) {
@@ -264,7 +289,7 @@ TEST_F(HRDWRingBufferReaderTest, MultiplePollCyclesAccumulate) {
 // Verify that callbacks receive copies of entries, not references to shared
 // memory. Mutate the ring entry after poll() captures it but before we
 // inspect what the callback received — the callback should see the original.
-TEST_F(HRDWRingBufferReaderTest, CallbackReceivesSnapshotNotReference) {
+TEST_P(HRDWRingBufferReaderTest, CallbackReceivesSnapshotNotReference) {
   writeEntry(42);
 
   uint64_t observedTimestamp = 0;
@@ -283,7 +308,7 @@ TEST_F(HRDWRingBufferReaderTest, CallbackReceivesSnapshotNotReference) {
 
 // Verify that overwritten entries (where sequence is a different valid
 // slot from a later wrap-around) are counted as lost and never delivered.
-TEST_F(HRDWRingBufferReaderTest, OverwrittenEntriesNeverDelivered) {
+TEST_P(HRDWRingBufferReaderTest, OverwrittenEntriesNeverDelivered) {
   // Write kRingSize entries to fill the buffer.
   for (uint32_t i = 0; i < kRingSize; ++i) {
     writeEntry(i);
@@ -310,7 +335,7 @@ TEST_F(HRDWRingBufferReaderTest, OverwrittenEntriesNeverDelivered) {
 }
 
 // Verify that data and timestamps are correctly preserved.
-TEST_F(HRDWRingBufferReaderTest, DataAndTimestampsPreserved) {
+TEST_P(HRDWRingBufferReaderTest, DataAndTimestampsPreserved) {
   writeEntry(10);
   writeEntry(20);
 
@@ -337,7 +362,7 @@ TEST_F(HRDWRingBufferReaderTest, DataAndTimestampsPreserved) {
 
 // Verify that unstamped entries stop scanning, and subsequent polls
 // pick up the entry once it's stamped.
-TEST_F(HRDWRingBufferReaderTest, UnstampedEntryResumesAfterStamp) {
+TEST_P(HRDWRingBufferReaderTest, UnstampedEntryResumesAfterStamp) {
   writeEntry(1);
   writeUnstampedSlot();
   writeEntry(3);
@@ -368,7 +393,7 @@ TEST_F(HRDWRingBufferReaderTest, UnstampedEntryResumesAfterStamp) {
   EXPECT_EQ(reader_->lastReadIndex(), 3u);
 }
 
-TEST_F(HRDWRingBufferReaderTest, TimeoutReturnsImmediatelyWhenNoEntries) {
+TEST_P(HRDWRingBufferReaderTest, TimeoutReturnsImmediatelyWhenNoEntries) {
   auto result = reader_->poll(
       [](const TestEntry&, uint64_t) {}, std::chrono::milliseconds{50});
   EXPECT_EQ(result.entriesRead, 0u);
@@ -376,14 +401,14 @@ TEST_F(HRDWRingBufferReaderTest, TimeoutReturnsImmediatelyWhenNoEntries) {
   EXPECT_FALSE(result.timedOut);
 }
 
-TEST_F(HRDWRingBufferReaderTest, ZeroTimeoutReturnsImmediatelyWhenEmpty) {
+TEST_P(HRDWRingBufferReaderTest, ZeroTimeoutReturnsImmediatelyWhenEmpty) {
   auto result = reader_->poll(
       [](const TestEntry&, uint64_t) {}, std::chrono::milliseconds{0});
   EXPECT_EQ(result.entriesRead, 0u);
   EXPECT_FALSE(result.timedOut);
 }
 
-TEST_F(HRDWRingBufferReaderTest, ZeroTimeoutStillReadsAvailableEntries) {
+TEST_P(HRDWRingBufferReaderTest, ZeroTimeoutStillReadsAvailableEntries) {
   writeEntry(1);
   writeEntry(2);
   writeEntry(3);
@@ -399,7 +424,7 @@ TEST_F(HRDWRingBufferReaderTest, ZeroTimeoutStillReadsAvailableEntries) {
   EXPECT_EQ(seen, expected);
 }
 
-TEST_F(HRDWRingBufferReaderTest, TimeoutBoundsOverwrittenProcessing) {
+TEST_P(HRDWRingBufferReaderTest, TimeoutBoundsOverwrittenProcessing) {
   // Fill the ring completely, then overwrite all entries multiple times.
   // This simulates the reader being heavily lapped.
   for (uint32_t lap = 0; lap < 10; ++lap) {
@@ -421,7 +446,7 @@ TEST_F(HRDWRingBufferReaderTest, TimeoutBoundsOverwrittenProcessing) {
   EXPECT_EQ(result.entriesRead + result.entriesLost, kTotalEntries);
 }
 
-TEST_F(HRDWRingBufferReaderTest, OnePastLapJumpsToTailLosesOne) {
+TEST_P(HRDWRingBufferReaderTest, OnePastLapJumpsToTailLosesOne) {
   // Write ringSize + 1 entries. Reader should jump to tail, losing 1.
   for (uint32_t i = 0; i < kRingSize + 1; ++i) {
     writeEntry(i);
@@ -436,7 +461,7 @@ TEST_F(HRDWRingBufferReaderTest, OnePastLapJumpsToTailLosesOne) {
   EXPECT_EQ(result.entriesRead + result.entriesLost, kRingSize + 1);
 }
 
-TEST_F(HRDWRingBufferReaderTest, JumpToTailAfterPartialRead) {
+TEST_P(HRDWRingBufferReaderTest, JumpToTailAfterPartialRead) {
   // Write some entries, poll to read them, then write enough to lap.
   for (uint32_t i = 0; i < 4; ++i) {
     writeEntry(i);
@@ -459,6 +484,13 @@ TEST_F(HRDWRingBufferReaderTest, JumpToTailAfterPartialRead) {
       result.entriesRead + result.entriesLost,
       static_cast<uint64_t>(kRingSize + 3));
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    MemoryStrategies,
+    HRDWRingBufferReaderTest,
+    ::testing::Values(
+        HRDWMemoryStrategy::PinnedMapped,
+        HRDWMemoryStrategy::AtsPageable));
 
 // ---------------------------------------------------------------------------
 // Destruction: verify ~HRDWRingBuffer destructs live entries.
