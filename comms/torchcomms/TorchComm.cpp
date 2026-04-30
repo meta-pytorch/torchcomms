@@ -516,8 +516,8 @@ void TorchComm::abort() {
   impl_->abort();
 }
 
-bool TorchComm::abortEnabled() const {
-  return impl_->abortEnabled();
+bool TorchComm::isAbortSupported() const {
+  return impl_->isAbortSupported();
 }
 
 bool TorchComm::isAborted() const {

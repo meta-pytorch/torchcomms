@@ -230,7 +230,7 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
    *
    * @return True if abort is enabled, false otherwise.
    */
-  bool abortEnabled() const;
+  bool isAbortSupported() const;
 
   /**
    * Check if the communicator is in an aborted state.

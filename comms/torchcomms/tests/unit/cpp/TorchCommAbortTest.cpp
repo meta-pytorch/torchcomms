@@ -32,8 +32,8 @@ class TorchCommAbortTest : public ::testing::Test {
   std::shared_ptr<TorchComm> comm_;
 };
 
-TEST_F(TorchCommAbortTest, AbortEnabledDefaultsFalse) {
-  EXPECT_FALSE(comm_->abortEnabled());
+TEST_F(TorchCommAbortTest, IsAbortSupportedDefaultsFalse) {
+  EXPECT_FALSE(comm_->isAbortSupported());
 }
 
 TEST_F(TorchCommAbortTest, IsAbortedDefaultsFalse) {
@@ -45,13 +45,13 @@ TEST_F(TorchCommAbortTest, AbortIsNoOpByDefault) {
   EXPECT_FALSE(comm_->isAborted());
 }
 
-TEST_F(TorchCommAbortTest, AbortEnabledReturnsTrue) {
+TEST_F(TorchCommAbortTest, IsAbortSupportedReturnsTrue) {
   auto backend =
       std::dynamic_pointer_cast<TorchCommDummy>(comm_->getBackendImpl());
   ASSERT_NE(backend, nullptr);
 
   backend->enableAbort();
-  EXPECT_TRUE(comm_->abortEnabled());
+  EXPECT_TRUE(comm_->isAbortSupported());
 }
 
 TEST_F(TorchCommAbortTest, AbortSetsAbortedStateWhenEnabled) {

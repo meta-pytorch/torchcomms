@@ -1397,8 +1397,8 @@ operations will fail until reconfigure() is called (in reconfigurable mode).
           )",
           py::call_guard<py::gil_scoped_release>())
       .def(
-          "abort_enabled",
-          &TorchComm::abortEnabled,
+          "is_abort_supported",
+          &TorchComm::isAbortSupported,
           R"(
 Check if abort/fault-tolerance is enabled on this communicator.
 

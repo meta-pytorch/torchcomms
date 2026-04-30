@@ -271,7 +271,7 @@ class TorchCommBackend {
    *
    * @return True if abort is enabled, false otherwise.
    */
-  virtual bool abortEnabled() const {
+  virtual bool isAbortSupported() const {
     return false;
   }
 
