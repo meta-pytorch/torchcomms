@@ -82,6 +82,8 @@ class TorchWorkNCCLXQueueCommTest : public ::testing::Test {
     ON_CALL(*ctran_mock_, getCtranComm(_))
         .WillByDefault(Return(static_cast<CtranComm*>(nullptr)));
     ON_CALL(*ctran_mock_, allGatherPSupport(_)).WillByDefault(Return(true));
+    ON_CALL(*ctran_mock_, deviceAllToAllvSupport(_))
+        .WillByDefault(Return(true));
 
     // Create communicator
     comm_ = std::make_shared<TorchCommNCCLX>();

@@ -1868,19 +1868,29 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::device_alltoallv_single(
   // Record start event before NCCL operation
   work->recordStart("device_alltoallv_single");
 
-  ncclResult_t result = nccl_api_->deviceAllToAllv(
+  if (ctran_comm_ == nullptr) {
+    throw std::runtime_error(
+        "device_alltoallv_single requires ctran (set NCCL_CTRAN_ENABLE=1)");
+  }
+  if (!ctran_api_->deviceAllToAllvSupport(ctran_comm_)) {
+    throw std::runtime_error(
+        "device_alltoallv_single is not supported on this comm. "
+        "Requires ctran with pipes transport support.");
+  }
+
+  ncclResult_t result = ctran_api_->deviceAllToAllv(
       input.data_ptr(),
       output.data_ptr(),
       input_split_sizes.data_ptr<int64_t>(),
       output_split_sizes.data_ptr<int64_t>(),
       getNcclDataType(input),
-      nccl_comm_,
+      ctran_comm_,
       stream,
       send_elements_per_slice,
       recv_elements_per_slice,
       hints);
 
-  NCCLX_CHECK(nccl_api_, nccl_comm_, result, "NCCLX deviceAllToAllv failed");
+  NCCLX_CHECK(nccl_api_, nccl_comm_, result, "ctran deviceAllToAllv failed");
 
   // Record end event after NCCL operation
   work->recordEnd();
