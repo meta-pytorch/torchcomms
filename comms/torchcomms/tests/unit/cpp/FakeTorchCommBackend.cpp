@@ -1,10 +1,10 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <comms/torchcomms/TorchCommBackend.hpp> // @manual=//comms/torchcomms:torchcomms-headers-cpp
-#include <comms/torchcomms/dummy/TorchCommDummy.hpp> // @manual=//comms/torchcomms/dummy:torchcomms-dummy-cpp
+#include <comms/torchcomms/fake/TorchCommFake.hpp> // @manual=//comms/torchcomms/fake:torchcomms-fake-cpp
 
 static torch::comms::TorchCommBackend* new_comm_impl() {
-  return new torch::comms::TorchCommDummy();
+  return new torch::comms::TorchCommFake();
 }
 
 static void destroy_comm_impl(torch::comms::TorchCommBackend* comm) {
@@ -16,7 +16,7 @@ static const char* get_supported_version_impl() {
 }
 
 extern "C" torch::comms::DynamicLoaderInterface
-create_dynamic_loader_dummy_test() {
+create_dynamic_loader_fake_test() {
   torch::comms::DynamicLoaderInterface interface{
       .new_comm = new_comm_impl,
       .destroy_comm = destroy_comm_impl,
