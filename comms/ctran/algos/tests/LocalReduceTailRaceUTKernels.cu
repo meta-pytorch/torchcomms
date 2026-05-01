@@ -52,7 +52,7 @@ __device__ __forceinline__ void block0Delay(unsigned long long totalNs) {
 
 } // namespace
 
-template <typename T>
+template <typename T, int Unroll16>
 __global__ void multiWriterTailRaceKernel(
     T* buf,
     T* out,
@@ -70,6 +70,7 @@ __global__ void multiWriterTailRaceKernel(
   // Phase 1: real `localReduceVectorized` writes `buf` from `src`. With
   // NSrcs=1 + commSum the reduction is identity, so `buf` should equal
   // `src` for every byte once all CTAs' writes have committed.
+  // localReduceVectorized's tail uses kUnroll=4 internally.
   {
     const T* srcs[1] = {src};
     T* dsts[1] = {buf};
@@ -80,22 +81,24 @@ __global__ void multiWriterTailRaceKernel(
   perCtaRelease(&perCtaFlag[blockIdx.x]);
   perCtaAcquireOwn(&perCtaFlag[blockIdx.x]);
 
-  // Phase 2: real `copyUnroll<4, T>` reads `buf` and writes `out`. Each
-  // CTA reads only the bytes it owns under copyUnroll's per-CTA
-  // partition. If localReduceVectorized's per-CTA partition assigned
-  // some of those bytes to a different CTA in phase 1 (the bug), this
-  // CTA's read may hit init sentinel because the writer CTA was still
-  // sleeping in `block0Delay` and hadn't issued its phase-1 writes yet.
-  copyUnroll<4, T>(out, buf, count, blockIdx.x, gridDim.x);
+  // Phase 2: real `copyUnroll<Unroll16, T>` reads `buf` and writes `out`.
+  // Each CTA reads only the bytes it owns under copyUnroll's per-CTA
+  // partition. If `Unroll16` differs from localReduceVectorized's
+  // hardcoded kUnroll=4, the per-CTA partitions disagree even at
+  // perfectly aligned counts, and the block-0 delay surfaces stale reads.
+  copyUnroll<Unroll16, T>(out, buf, count, blockIdx.x, gridDim.x);
 }
 
-#define DECL_MULTI_WRITER_KERN(T)                        \
-  template __global__ void multiWriterTailRaceKernel<T>( \
-      T * buf,                                           \
-      T * out,                                           \
-      const T* src,                                      \
-      size_t count,                                      \
-      int* perCtaFlag,                                   \
+#define DECL_MULTI_WRITER_KERN(T, U16)                        \
+  template __global__ void multiWriterTailRaceKernel<T, U16>( \
+      T * buf,                                                \
+      T * out,                                                \
+      const T* src,                                           \
+      size_t count,                                           \
+      int* perCtaFlag,                                        \
       unsigned long long block0DelayNs)
 
-DECL_MULTI_WRITER_KERN(int32_t);
+DECL_MULTI_WRITER_KERN(int32_t, 4);
+// Unroll16=2 is intentionally NOT what production uses; instantiated to
+// drive the unroll-mismatch test case.
+DECL_MULTI_WRITER_KERN(int32_t, 2);

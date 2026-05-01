@@ -17,7 +17,13 @@
 // copyUnroll's), block 1 owns its entire copyUnroll-tail range in BOTH
 // writers, so block 1's phase 2 read returns block 1's own phase 1
 // write — no dependency on block 0 — and the test passes.
-template <typename T>
+//
+// `Unroll16` controls the unroll factor passed to `copyUnroll<Unroll16, T>`
+// in phase 2. `localReduceVectorized` in phase 1 uses `kUnroll=4`
+// internally. When `Unroll16 != 4`, the per-CTA partitions of the two
+// writers disagree and the block-0 delay surfaces cross-CTA stale reads
+// even at counts where copyUnroll<4>'s tail is empty.
+template <typename T, int Unroll16>
 __global__ void multiWriterTailRaceKernel(
     T* buf,
     T* out,
