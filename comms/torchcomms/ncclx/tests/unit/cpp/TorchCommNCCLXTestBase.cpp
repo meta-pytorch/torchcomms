@@ -15,6 +15,15 @@ void TorchCommNCCLXTest::SetUp() {
   // Create fresh mocks for each test
   cuda_mock_ = std::make_shared<NiceMock<CudaMock>>();
   nccl_mock_ = std::make_shared<NiceMock<NcclxMock>>();
+  ctran_mock_ = std::make_shared<NiceMock<CtranMock>>();
+  // Default: ctran disabled. Tests that want to exercise the ctran branch
+  // override this with EXPECT_CALL/ON_CALL on getCtranComm.
+  ON_CALL(*ctran_mock_, getCtranComm(_))
+      .WillByDefault(Return(static_cast<CtranComm*>(nullptr)));
+  // Default: per-collective support fns return true. Tests that exercise
+  // the unsupported path override with EXPECT_CALL.
+  ON_CALL(*ctran_mock_, allGatherPSupport(_)).WillByDefault(Return(true));
+  ON_CALL(*ctran_mock_, deviceAllToAllvSupport(_)).WillByDefault(Return(true));
 
   // Force the global instance to be created on the CPU device
   auto hook_mock = std::make_unique<CachingAllocatorHookMock>();
@@ -106,6 +115,7 @@ TorchCommNCCLXTest::createMockedTorchComm() {
   // Inject the mocks
   comm->setCudaApi(cuda_mock_);
   comm->setNcclApi(nccl_mock_);
+  comm->setCtranApi(ctran_mock_);
 
   return comm;
 }
