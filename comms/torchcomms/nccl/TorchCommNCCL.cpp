@@ -1960,8 +1960,7 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCL::split(
   return new_torchcomm;
 }
 
-void TorchCommNCCL::register_address(
-    const TorchCommNCCL::AddressWithLen& addr) {
+void TorchCommNCCL::register_address(AddressWithLen& addr) {
   // We got a register after we got rid of the comm. Is this a fatal error?
   if (nccl_comm_ == nullptr) {
     return;
@@ -1979,7 +1978,7 @@ void TorchCommNCCL::register_address(
   memoryRegistrationHandles_.emplace(addr.addr, RegistrationHandle(handle));
 }
 
-void TorchCommNCCL::deregister_address(const TorchCommNCCL::Address& addr) {
+void TorchCommNCCL::deregister_address(const Address& addr) {
   // We got a deregister after we got rid of the comm. Is this a fatal error?
   if (nccl_comm_ == nullptr) {
     return;
