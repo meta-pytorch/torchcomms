@@ -170,8 +170,16 @@ struct __align__(16) T_NBytes {
   }
 };
 
-// Specialization for a fixed nvector count
-template <typename T, commRedOp_t RedOp, int NSrcs, int NDsts>
+// Specialization for a fixed nvector count.
+//
+// `Unroll16` controls the per-CTA partition shape. Within an algorithm
+// that uses both `localReduceVectorized` and `copyUnroll<Unroll16, T>`
+// on the same buffer with only per-CTA sync between them, the same
+// `Unroll16` MUST be passed to both — divergent values produce
+// mismatched per-CTA byte ownership, which opens a cross-CTA stale-read
+// window (D103324874). Define a single `static constexpr int kUnroll16`
+// inside the algorithm and pass it to every writer call site there.
+template <typename T, commRedOp_t RedOp, int NSrcs, int NDsts, int Unroll16 = 4>
 __device__ __forceinline__ void localReduceVectorized(
     const T** srcs,
     T** dsts,
@@ -181,21 +189,31 @@ __device__ __forceinline__ void localReduceVectorized(
     size_t nRanks = 1) {
   using TVec = T_NBytes<T, 16>;
   constexpr uint32_t kWordsPerVectorLoad = TVec::kWords;
-  constexpr uint32_t kUnroll = 4;
+  constexpr uint32_t kUnroll = Unroll16;
 
   // Each warp will handle kUnroll values (warp contiguous and sequential)
   // at a time, resulting in each warp processing this many T-word per iteration
   constexpr uint32_t kWordsPerWarp =
       comms::device::kWarpSize * kWordsPerVectorLoad * kUnroll;
 
+  // Per-block granularity matches `copyUnroll<4, T>`'s numPerBlock
+  // (`fbcode/comms/ctran/algos/DevCommon.cuh:391-442`):
+  // blockDim.x * (16/sizeof(T)) * 4 = warpsPerBlock * kWordsPerWarp.
+  // Rounding `limitCount` down to this granularity (instead of
+  // `kWordsPerWarp`) makes the per-CTA byte ownership of this main loop
+  // identical to copyUnroll's, so a single-designated-CTA tail (matching
+  // the fix Pavan applied in D69774173) is well-defined and avoids the
+  // cross-CTA read race when the same buffer is written by both writers
+  // in adjacent rounds with only per-CTA sync between them.
+  const uint32_t numPerBlock = blockDim.x * kWordsPerVectorLoad * kUnroll;
+
   const uint32_t linearThreadId = blockDim.x * workerId + threadIdx.x;
   const uint32_t warpId = linearThreadId / comms::device::kWarpSize;
   const uint32_t laneId = threadIdx.x % comms::device::kWarpSize;
   const uint32_t numWarps = numWorkers * blockDim.x / comms::device::kWarpSize;
-  const uint32_t reduceStride = numWorkers * blockDim.x;
 
   const uint32_t u32Count = uint32_t(count);
-  const uint32_t limitCount = ctran::utils::roundDown(u32Count, kWordsPerWarp);
+  const uint32_t limitCount = ctran::utils::roundDown(u32Count, numPerBlock);
 
   TVec s[kUnroll][NSrcs];
 
@@ -247,21 +265,29 @@ __device__ __forceinline__ void localReduceVectorized(
     }
   }
 
-  // Loop epilogue to handle remainder with a simple grid-stride loop
-  for (uint32_t i = limitCount + linearThreadId; i < count; i += reduceStride) {
-    T s = srcs[0][i];
+  // Loop epilogue to handle remainder. Single designated CTA mirrors
+  // `copyUnroll`'s tail (DevCommon.cuh:436-441): the worker whose main-loop
+  // stride covers this part of the buffer handles the entire tail. Required
+  // for per-CTA byte-ownership equality with the copyUnroll-family writers
+  // (`ctranKernCopyRaw`, `ctranKernCopyMultiDestRaw`) when both are invoked
+  // on the same buffer in adjacent rounds with per-CTA sync only.
+  if (count != limitCount &&
+      workerId == ((limitCount / numPerBlock) % numWorkers)) {
+    for (uint32_t i = limitCount + threadIdx.x; i < count; i += blockDim.x) {
+      T s = srcs[0][i];
 #pragma unroll
-    for (int j = 1; j < NSrcs; ++j) {
-      s = reduceNcclOp1<T, RedOp>(s, srcs[j][i]);
-    }
+      for (int j = 1; j < NSrcs; ++j) {
+        s = reduceNcclOp1<T, RedOp>(s, srcs[j][i]);
+      }
 
-    if constexpr (RedOp == commAvg) {
-      s = s / int(nRanks);
-    }
+      if constexpr (RedOp == commAvg) {
+        s = s / int(nRanks);
+      }
 
 #pragma unroll
-    for (int d = 0; d < NDsts; ++d) {
-      dsts[d][i] = s;
+      for (int d = 0; d < NDsts; ++d) {
+        dsts[d][i] = s;
+      }
     }
   }
 
@@ -299,13 +325,21 @@ __device__ __forceinline__ void localReduceFallback(
   // at a time
   constexpr uint32_t kWordsPerWarp = comms::device::kWarpSize * kUnroll;
 
+  // Per-block granularity = warpsPerBlock * kWordsPerWarp = blockDim.x *
+  // kUnroll. Rounding `limitCount` down to this (instead of `kWordsPerWarp`)
+  // makes the per-CTA byte ownership match copyUnroll's, so the
+  // single-designated-CTA tail below is well-defined and avoids the
+  // cross-CTA read race when this writer and a copyUnroll-family writer
+  // touch the same buffer in adjacent rounds with per-CTA sync only.
+  const uint32_t numPerBlock = blockDim.x * kUnroll;
+
   const uint32_t linearThreadId = blockDim.x * workerId + threadIdx.x;
   const uint32_t globalWarpId = linearThreadId / comms::device::kWarpSize;
   const uint32_t laneId = threadIdx.x % comms::device::kWarpSize;
   const uint32_t numGlobalWarps =
       numWorkers * blockDim.x / comms::device::kWarpSize;
 
-  const size_t limitCount = ctran::utils::roundDown(count, kWordsPerWarp);
+  const size_t limitCount = ctran::utils::roundDown(count, size_t(numPerBlock));
 
   T s[kUnroll][kVectors];
 
@@ -335,21 +369,25 @@ __device__ __forceinline__ void localReduceFallback(
     }
   }
 
-  // Loop epilogue to handle remainder with a simple grid-stride loop
-  for (uint32_t i = limitCount + linearThreadId; i < count;
-       i += numWorkers * blockDim.x) {
-    T s = srcs[0][i];
+  // Loop epilogue to handle remainder. Single designated CTA mirrors
+  // `copyUnroll`'s tail (DevCommon.cuh:436-441); see the matching comment
+  // in localReduceVectorized for the per-CTA byte-ownership rationale.
+  if (count != limitCount &&
+      workerId == ((limitCount / numPerBlock) % numWorkers)) {
+    for (size_t i = limitCount + threadIdx.x; i < count; i += blockDim.x) {
+      T s = srcs[0][i];
 #pragma unroll
-    for (int j = 1; j < nsrcs; ++j) {
-      s = reduceNcclOp1<T, RedOp>(s, srcs[j][i]);
-    }
+      for (int j = 1; j < nsrcs; ++j) {
+        s = reduceNcclOp1<T, RedOp>(s, srcs[j][i]);
+      }
 
-    if constexpr (RedOp == commAvg) {
-      s = s / int(nRanks);
-    }
+      if constexpr (RedOp == commAvg) {
+        s = s / int(nRanks);
+      }
 
-    for (int d = 0; d < ndsts; ++d) {
-      dsts[d][i] = s;
+      for (int d = 0; d < ndsts; ++d) {
+        dsts[d][i] = s;
+      }
     }
   }
 
@@ -364,7 +402,7 @@ constexpr uint32_t kMax_uint32_t = std::numeric_limits<uint32_t>::max();
 // If commAvg is passed, it will apply element-wise average with nRanks
 // following the same partition as the reduce computation. It avoids expensive
 // cross-thread-block sync.
-template <typename T, commRedOp_t RedOp>
+template <typename T, commRedOp_t RedOp, int Unroll16 = 4>
 __device__ __forceinline__ void localReduce(
     size_t nsrcs,
     const T** srcs,
@@ -390,57 +428,59 @@ __device__ __forceinline__ void localReduce(
 
   if (isAligned && isCountInBounds) {
     if (nsrcs == 8 && ndsts == 1) {
-      localReduceVectorized<T, RedOp, /*NSrcs=*/8, /*NDsts=*/1>(
+      localReduceVectorized<T, RedOp, /*NSrcs=*/8, /*NDsts=*/1, Unroll16>(
           srcs, dsts, count, workerId, numWorkers, nRanks);
       return;
     } else if (nsrcs == 4 && ndsts == 1) {
-      localReduceVectorized<T, RedOp, /*NSrcs=*/4, /*NDsts=*/1>(
+      localReduceVectorized<T, RedOp, /*NSrcs=*/4, /*NDsts=*/1, Unroll16>(
           srcs, dsts, count, workerId, numWorkers, nRanks);
       return;
     } else if (nsrcs == 2 && ndsts == 1) {
-      localReduceVectorized<T, RedOp, /*NSrcs=*/2, /*NDsts=*/1>(
+      localReduceVectorized<T, RedOp, /*NSrcs=*/2, /*NDsts=*/1, Unroll16>(
           srcs, dsts, count, workerId, numWorkers, nRanks);
       return;
     } else if (nsrcs == 8 && ndsts == 2) {
-      localReduceVectorized<T, RedOp, /*NSrcs=*/8, /*NDsts=*/2>(
+      localReduceVectorized<T, RedOp, /*NSrcs=*/8, /*NDsts=*/2, Unroll16>(
           srcs, dsts, count, workerId, numWorkers, nRanks);
       return;
     } else if (nsrcs == 2 && ndsts == 2) {
-      localReduceVectorized<T, RedOp, /*NSrcs=*/2, /*NDsts=*/2>(
+      localReduceVectorized<T, RedOp, /*NSrcs=*/2, /*NDsts=*/2, Unroll16>(
           srcs, dsts, count, workerId, numWorkers, nRanks);
       return;
     } else if (nsrcs == 1 && ndsts == 8) {
-      localReduceVectorized<T, RedOp, /*NSrcs=*/1, /*NDsts=*/8>(
+      localReduceVectorized<T, RedOp, /*NSrcs=*/1, /*NDsts=*/8, Unroll16>(
           srcs, dsts, count, workerId, numWorkers, nRanks);
       return;
     } else if (nsrcs == 8 && ndsts == 8) {
-      localReduceVectorized<T, RedOp, /*NSrcs=*/8, /*NDsts=*/8>(
+      localReduceVectorized<T, RedOp, /*NSrcs=*/8, /*NDsts=*/8, Unroll16>(
           srcs, dsts, count, workerId, numWorkers, nRanks);
       return;
     } else if (nsrcs == 1 && ndsts == 1) {
-      localReduceVectorized<T, RedOp, /*NSrcs=*/1, /*NDsts=*/1>(
+      localReduceVectorized<T, RedOp, /*NSrcs=*/1, /*NDsts=*/1, Unroll16>(
           srcs, dsts, count, workerId, numWorkers, nRanks);
       return;
     }
   }
 
-  // Fallback slow implementation
+  // Fallback slow implementation. Note: localReduceFallback uses its own
+  // hardcoded `kUnroll = 8` internally; it is only reached for unaligned
+  // inputs, which the AllReduce ring path does not encounter.
   localReduceFallback<T, RedOp>(
       nsrcs, srcs, ndsts, dsts, count, workerId, numWorkers, nRanks);
 }
 
-template <typename T, commRedOp_t RedOp>
+template <typename T, commRedOp_t RedOp, int Unroll16 = 4>
 __device__ __forceinline__ void localReduce(
     size_t nvectors,
     const T** srcs,
     T* dst,
     size_t count,
     size_t nRanks = 1) {
-  localReduce<T, RedOp>(
+  localReduce<T, RedOp, Unroll16>(
       nvectors, srcs, 1, &dst, count, blockIdx.x, gridDim.x, nRanks);
 }
 
-template <typename T, commRedOp_t RedOp>
+template <typename T, commRedOp_t RedOp, int Unroll16 = 4>
 __device__ __forceinline__ void localReduce(
     size_t nvectors,
     const T** srcs,
@@ -449,11 +489,11 @@ __device__ __forceinline__ void localReduce(
     int workerId,
     int numWorkers,
     size_t nRanks = 1) {
-  localReduce<T, RedOp>(
+  localReduce<T, RedOp, Unroll16>(
       nvectors, srcs, 1, &dst, count, workerId, numWorkers, nRanks);
 }
 
-template <typename T, commRedOp_t RedOp>
+template <typename T, commRedOp_t RedOp, int Unroll16 = 4>
 __device__ __forceinline__ void localReduce(
     size_t nsrcs,
     const T** srcs,
@@ -461,7 +501,7 @@ __device__ __forceinline__ void localReduce(
     T** dsts,
     size_t count,
     size_t nRanks = 1) {
-  localReduce<T, RedOp>(
+  localReduce<T, RedOp, Unroll16>(
       nsrcs, srcs, ndsts, dsts, count, blockIdx.x, gridDim.x, nRanks);
 }
 

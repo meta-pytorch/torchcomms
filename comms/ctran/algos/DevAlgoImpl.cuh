@@ -16,7 +16,13 @@
 
 // For cases where where sendbuff != recvbuff
 // D2D copy data between buffers within the same GPU.
-template <typename T>
+//
+// `Unroll16` controls the per-CTA partition shape passed through to
+// `copyUnroll<Unroll16, T>`. Within an algorithm that uses both this
+// copy and `localReduce` / `localReduceVectorized` on the same buffer
+// with only per-CTA sync between them, the same `Unroll16` MUST be
+// passed to both writers (D103324874).
+template <typename T, int Unroll16 = 4>
 __device__ __forceinline__ void ctranKernCopyRaw(
     const T* sendbuff,
     T* recvbuff,
@@ -24,20 +30,22 @@ __device__ __forceinline__ void ctranKernCopyRaw(
     int groupIdx,
     int ngroups) {
   if (canCopy16(sendbuff, recvbuff, count)) {
-    copy<uint4>(
+    copy<uint4, Unroll16>(
         reinterpret_cast<uint4*>(recvbuff),
         reinterpret_cast<const uint4*>(sendbuff),
         count * sizeof(T) / sizeof(uint4),
         groupIdx,
         ngroups);
   } else {
-    copy<T>(recvbuff, sendbuff, count, groupIdx, ngroups);
+    copy<T, Unroll16>(recvbuff, sendbuff, count, groupIdx, ngroups);
   }
 }
 
 // For cases where where src != dst1 != dst2
 // D2D copy data between buffers within the same GPU.
-template <typename T>
+//
+// `Unroll16` follows the same per-algorithm rule as `ctranKernCopyRaw`.
+template <typename T, int Unroll16 = 4>
 __device__ __forceinline__ void ctranKernCopyMultiDestRaw(
     const T* src,
     T* dst1,
@@ -46,7 +54,7 @@ __device__ __forceinline__ void ctranKernCopyMultiDestRaw(
     int groupIdx,
     int ngroups) {
   if (canCopy16(src, dst1, dst2, count)) {
-    copy<uint4>(
+    copy<uint4, Unroll16>(
         reinterpret_cast<uint4*>(dst1),
         reinterpret_cast<uint4*>(dst2),
         reinterpret_cast<const uint4*>(src),
@@ -54,7 +62,7 @@ __device__ __forceinline__ void ctranKernCopyMultiDestRaw(
         groupIdx,
         ngroups);
   } else {
-    copy<T>(dst1, dst2, src, count, groupIdx, ngroups);
+    copy<T, Unroll16>(dst1, dst2, src, count, groupIdx, ngroups);
   }
 }
 

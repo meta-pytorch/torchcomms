@@ -441,7 +441,12 @@ copyUnroll(T* dst, const T* src, size_t count, int groupIdx, int nGroups) {
   }
 }
 
-template <typename T>
+// `Unroll16` controls the per-CTA partition shape. Within an algorithm
+// that uses both `copy<T>` (this function) and `localReduceVectorized` on
+// the same buffer with only per-CTA sync between them, the same
+// `Unroll16` MUST be passed to both — see `localReduceVectorized`'s
+// header comment for the rationale.
+template <typename T, int Unroll16 = 4>
 __device__ __forceinline__ void
 copy(T* dst, const T* src, size_t count, int groupIdx, int nGroups) {
   // Skip if my group is not invovled
@@ -449,9 +454,9 @@ copy(T* dst, const T* src, size_t count, int groupIdx, int nGroups) {
     return;
   }
 
-  // Each thread handles 4 x uint4 = 64 bytes per loop iteration, regardless
-  // of sizeof(T)
-  copyUnroll<4, T>(dst, src, count, groupIdx, nGroups);
+  // Each thread handles Unroll16 * uint4-equivalents per loop iteration,
+  // regardless of sizeof(T).
+  copyUnroll<Unroll16, T>(dst, src, count, groupIdx, nGroups);
 }
 
 // Fused dual-destination copy: reads src once and writes to two destinations.
@@ -500,7 +505,9 @@ __device__ __forceinline__ void copyUnroll(
   }
 }
 
-template <typename T>
+// Dual-destination overload. `Unroll16` follows the same per-algorithm
+// rule as the single-dest `copy<T>` above.
+template <typename T, int Unroll16 = 4>
 __device__ __forceinline__ void
 copy(T* dst1, T* dst2, const T* src, size_t count, int groupIdx, int nGroups) {
   // Skip if my group is not invovled
@@ -508,9 +515,9 @@ copy(T* dst1, T* dst2, const T* src, size_t count, int groupIdx, int nGroups) {
     return;
   }
 
-  // Each thread handles 4 x uint4 = 64 bytes per loop iteration, regardless
-  // of sizeof(T)
-  copyUnroll<4, T>(dst1, dst2, src, count, groupIdx, nGroups);
+  // Each thread handles Unroll16 * uint4-equivalents per loop iteration,
+  // regardless of sizeof(T).
+  copyUnroll<Unroll16, T>(dst1, dst2, src, count, groupIdx, nGroups);
 }
 
 template <typename T>
