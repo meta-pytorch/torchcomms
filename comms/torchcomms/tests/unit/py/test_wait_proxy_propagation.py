@@ -146,7 +146,7 @@ class TestWaitProxyPropagation(unittest.TestCase):
         and returns the tensor. The FX graph should show that the returned tensor
         flows through wait_tensors, not directly from the collective.
         """
-        comm = new_comm("dummy", torch.device("cpu"), name="test_wait_return")
+        comm = new_comm("fake", torch.device("cpu"), name="test_wait_return")
         tensor = torch.ones(4, dtype=torch.float, device="cpu")
 
         def my_func(comm_arg, t):
@@ -187,7 +187,7 @@ class TestWaitProxyPropagation(unittest.TestCase):
     def test_list_return_uses_wait_output(self):
         """Test that list of tensors returned after wait uses wait outputs."""
 
-        comm = new_comm("dummy", torch.device("cpu"), name="test_wait_list")
+        comm = new_comm("fake", torch.device("cpu"), name="test_wait_list")
         num_ranks = comm.get_size()
         tensor = torch.ones(4, dtype=torch.float, device="cpu") * (comm.get_rank() + 1)
         output_list = [

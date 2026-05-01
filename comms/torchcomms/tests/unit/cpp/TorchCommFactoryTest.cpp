@@ -9,16 +9,16 @@
 namespace torch::comms {
 
 namespace {
-// Backend name must match the exported symbol in the dummy backend library
-constexpr const char* kBackendName = "dummy_test";
-constexpr const char* kBackendEnvKey = "TORCHCOMMS_BACKEND_LIB_PATH_DUMMY_TEST";
+// Backend name must match the exported symbol in the fake backend library
+constexpr const char* kBackendName = "fake_test";
+constexpr const char* kBackendEnvKey = "TORCHCOMMS_BACKEND_LIB_PATH_FAKE_TEST";
 } // namespace
 
 class TorchCommBackendFactoryTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    const char* lib_path = std::getenv("DUMMY_TEST_BACKEND_LIB_PATH");
-    ASSERT_NE(lib_path, nullptr) << "DUMMY_TEST_BACKEND_LIB_PATH not set";
+    const char* lib_path = std::getenv("FAKE_TEST_BACKEND_LIB_PATH");
+    ASSERT_NE(lib_path, nullptr) << "FAKE_TEST_BACKEND_LIB_PATH not set";
     setenv(kBackendEnvKey, lib_path, 1);
   }
 
@@ -38,7 +38,7 @@ TEST_F(TorchCommBackendFactoryTest, CreateGenericBackend) {
   at::Device device(at::kCPU);
   CommOptions options;
 
-  // Test creating generic backend (which loads the dummy backend)
+  // Test creating generic backend (which loads the fake backend)
   auto backend = TorchCommFactory::get().create_backend(
       kBackendName, device, "my_comm", options);
   ASSERT_NE(backend, nullptr);
@@ -47,7 +47,7 @@ TEST_F(TorchCommBackendFactoryTest, CreateGenericBackend) {
   EXPECT_EQ(backend->getRank(), 0);
   EXPECT_EQ(backend->getSize(), 1);
   EXPECT_EQ(backend->getDevice().type(), at::kCPU);
-  EXPECT_EQ(backend->getBackendName(), "dummy");
+  EXPECT_EQ(backend->getBackendName(), "fake");
 }
 
 TEST_F(TorchCommBackendFactoryTest, GenericBackendFunctionality) {
@@ -92,7 +92,7 @@ TEST_F(TorchCommBackendFactoryTest, GenericBackendSplit) {
       kBackendName, device, "my_comm", options);
   ASSERT_NE(backend, nullptr);
 
-  ASSERT_EQ(backend->getBackendName(), "dummy");
+  ASSERT_EQ(backend->getBackendName(), "fake");
 
   // Test split functionality
   std::vector<int> ranks = {0};
@@ -101,7 +101,7 @@ TEST_F(TorchCommBackendFactoryTest, GenericBackendSplit) {
 
   EXPECT_EQ(split_backend->getRank(), 0);
   EXPECT_EQ(split_backend->getSize(), 1);
-  ASSERT_EQ(split_backend->getBackendName(), "dummy");
+  ASSERT_EQ(split_backend->getBackendName(), "fake");
 }
 
 TEST_F(TorchCommBackendFactoryTest, UnsupportedBackend) {

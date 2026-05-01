@@ -8,12 +8,12 @@
 
 namespace torch::comms {
 
-class TorchCommDummy : public TorchCommBackend {
+class TorchCommFake : public TorchCommBackend {
  public:
-  static constexpr std::string_view kBackendName = "dummy";
+  static constexpr std::string_view kBackendName = "fake";
 
-  TorchCommDummy();
-  ~TorchCommDummy() override = default;
+  TorchCommFake();
+  ~TorchCommFake() override = default;
 
   // Initialize the communication backend
   void init(

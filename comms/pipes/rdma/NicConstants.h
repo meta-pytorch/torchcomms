@@ -27,7 +27,7 @@ namespace comms::pipes {
  * Increase this constant only if a future platform supports > 2 NICs per
  * GPU. At that point, also audit the IBGDA wire format
  * (IbgdaTransportExchInfoAll size scales with kMaxNicsPerGpu ×
- * kMaxQpsPerPeer × kMaxRanksForAllGather).
+ * kMaxQpsPerPeerPerNic × kMaxRanksForAllGather).
  *
  * Lives in its own minimal header (no doca/ibverbs deps) so lightweight
  * device-side headers like IbgdaBuffer.h can include it without dragging
