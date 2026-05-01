@@ -178,21 +178,18 @@ INSTANTIATE_TEST_SUITE_P(
 // `wcAcquireFence()` is present. The fix is hardware-correct but cannot be
 // validated by TSan without refactoring `GpeKernelSync` to use `std::atomic`.
 //
-// This test is `DISABLED_` so it does not run in CI by default. To reproduce
-// the bug it must be run on aarch64 hardware (rtptest GB200):
+// With `wcAcquireFence()` in `GpeKernelSync::isComplete()` / `waitComplete()`
+// (see D103040491), this test passes on aarch64 GB200. Without it the race
+// triggers and `mismatches` is non-zero. On x86 the test always passes
+// regardless of the fence (TSO masks the race architecturally).
+//
+// Run on aarch64 GB200:
 //
 //   buck2 run @fbcode//mode/opt -c hpc_comms.use_ncclx=stable \
 //     -c nvcc.arch=b200 -c fbcode.arch=aarch64 \
 //     fbcode//comms/ctran/algos/common/tests:ctran_algo_gpe_kernel_sync_test \
-//     -- --gtest_also_run_disabled_tests \
-//        --gtest_filter='*DISABLED_AcquireRaceManualOnAarch64*'
-//
-// Expected behaviour:
-//   - Without the `wcAcquireFence()` in `GpeKernelSync::isComplete()`:
-//       on aarch64 the mismatch counter is non-zero (race triggers).
-//   - With the fence: mismatches stays 0 across all iterations.
-//   - On x86: always passes regardless of the fence (TSO masks the race).
-TEST_F(CtranGpeKernelSyncTest, DISABLED_AcquireRaceManualOnAarch64) {
+//     -- --gtest_filter='*AcquireRaceManualOnAarch64*'
+TEST_F(CtranGpeKernelSyncTest, AcquireRaceManualOnAarch64) {
   constexpr int kNumWorkers = 8;
   constexpr int kPayloadPerWorker = 64;
   constexpr int kPayloadSize = kNumWorkers * kPayloadPerWorker;
