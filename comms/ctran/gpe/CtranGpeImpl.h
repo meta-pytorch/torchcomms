@@ -15,6 +15,7 @@
 #include <atomic>
 
 #include <folly/Synchronized.h>
+#include <folly/synchronization/Baton.h>
 #include "comms/ctran/algos/common/GpeKernel.h"
 #include "comms/ctran/algos/common/GpeKernelSync.h"
 #include "comms/ctran/gpe/CtranChecksum.h"
@@ -278,6 +279,10 @@ class OrderedWorkStreamGuard {
 
 class CtranGpe::Impl {
  public:
+  struct PersistentKernelElemRelease {
+    std::vector<KernelElem*> elems;
+    Impl* impl;
+  };
   Impl();
   ~Impl();
 
@@ -362,8 +367,12 @@ class CtranGpe::Impl {
     return cmd;
   }
 
+  std::atomic<uint32_t> pendingAsyncDestroys_{0};
+  folly::Baton<> asyncDestroysDrained_;
+
   static void CUDART_CB cmdCb(void* data);
   static void CUDART_CB cmdDestroy(void* data);
+  static void CUDART_CB persistentKernelElemDestroy(void* data);
 };
 
 #endif
