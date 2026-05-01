@@ -31,9 +31,7 @@ class LocalReduceTailRaceTest : public ::testing::Test {
   }
 };
 
-TEST_F(
-    LocalReduceTailRaceTest,
-    DISABLED_DelayedBlockZeroExposesBlockOneStaleRead) {
+TEST_F(LocalReduceTailRaceTest, DelayedBlockZeroExposesBlockOneStaleRead) {
   // count=2200, blockDim=128, gridDim=8, fp32:
   // - copyUnroll-tail designated CTA = (2048/2048) % 8 = 1, so block 1
   //   reads ALL of [2048, 2200) in phase 2.
