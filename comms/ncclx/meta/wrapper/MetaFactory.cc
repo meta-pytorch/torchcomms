@@ -82,3 +82,10 @@ commResult_t setCtranCommBase(ncclComm* ncclCommVal) {
 
   return commSuccess;
 }
+
+CtranComm* getCtranCommFromNcclComm(ncclComm* ncclComm) {
+  if (ncclComm && ncclComm->ctranComm_) {
+    return ncclComm->ctranComm_.get();
+  }
+  return nullptr;
+}
