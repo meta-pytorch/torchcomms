@@ -1771,6 +1771,16 @@ cvars:
      Number of times to retry after receiving an RNR NAK.
      7 means infinite retry.
 
+ - name        : NCCL_CTRAN_ASSUME_HIDDEN_LOCAL_PEERS_NVL
+   type        : bool
+   default     : false
+   description : |-
+     When a local peer's GPU is not visible to this process (e.g. under
+     CUDA_VISIBLE_DEVICES isolation from torchrun), assume the peer is
+     NVLink-reachable. Enable this only on hosts known to have full
+     intra-node NVLink mesh (e.g. HGX H100/H200 with NVSwitch).
+     Default false: invisible peers are conservatively not marked as NVL.
+
  - name        : NCCL_CTRAN_BACKENDS
    type        : enumlist
    default     : ib, nvl, socket

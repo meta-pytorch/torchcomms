@@ -81,7 +81,11 @@ commResult_t exchangeMemHdl(
         peerRanks.push_back(peerNode * nLocalRanks + localRank);
       }
 
-      FB_COMMCHECK(resource->stagingBufMgr->exchange(peerRanks, nRanks));
+      // Include self so allGatherCtrl doesn't skip this rank
+      std::vector<int> exchangeRanks = peerRanks;
+      exchangeRanks.push_back(statex->rank());
+      FB_COMMCHECK(
+          resource->stagingBufMgr->exchange(exchangeRanks, nRanks, true));
 
       resource->stagingBufMgr->assignRegBuf(
           ctran::algos::bufmanager::MemType::kDevice,

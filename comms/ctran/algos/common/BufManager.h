@@ -108,7 +108,8 @@ commResult_t exchangeBase(
     const std::vector<int>& peerRanks,
     const int maxNumRanks,
     const ncclx::CommStateX* statex,
-    CtranMapper* mapper);
+    CtranMapper* mapper,
+    bool epochHeld = false);
 }; // namespace ctran::algos::bufmanager
 
 namespace ctran::algos {
@@ -286,13 +287,16 @@ class BufManager {
   // Register the memory bases and exchange the registration with other ranks
   // specified in peerRanks. After this call, callsite can assign registered
   // buffers and remote buffers. See assignRegBuf() and assignRemRegBuf().
+  // Set epochHeld=true when the caller already holds the mapper epoch lock
+  // (e.g. when called from a GPE callback).
   inline commResult_t exchange(
       const std::vector<int>& peerRanks,
-      const int maxNumRanks) {
+      const int maxNumRanks,
+      bool epochHeld = false) {
     for (auto& base : memBases_) {
       // zero-sized base is skipped internally
-      FB_COMMCHECK(
-          exchangeBase(base, peerRanks, maxNumRanks, statex_, mapper_));
+      FB_COMMCHECK(exchangeBase(
+          base, peerRanks, maxNumRanks, statex_, mapper_, epochHeld));
     }
     isExchanged_ = true;
     return commSuccess;
