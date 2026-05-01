@@ -83,6 +83,16 @@ NVCUFLAGS  := -ccbin $(CXX) $(NVCC_GENCODE) $(CXXSTD) --expt-extended-lambda -Xp
 # Use addprefix so that we can specify more than one path
 NVLDFLAGS  := -L${CUDA_LIB} -lcudart -lrt -lstdc++fs
 
+# colltrace's HRDWRingBufferReader uses __atomic_load_n on a 128-bit value,
+# which the compiler lowers to __atomic_load_16 (libatomic). On x86_64 we
+# sidestep this in source via an SSE2 MOVDQA specialization (see
+# HRDWRingBufferReader.h), so no libatomic dep is needed there. On other
+# archs (e.g. aarch64) we fall back to linking libatomic.
+HOST_ARCH := $(shell uname -m)
+ifneq ($(HOST_ARCH),x86_64)
+LDFLAGS   += -latomic
+endif
+
 NVCUFLAGS_SYM :=
 
 ########## GCOV ##########
