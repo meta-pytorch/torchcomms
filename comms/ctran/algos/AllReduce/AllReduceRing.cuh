@@ -19,6 +19,16 @@ using ctran::algos::GpeKernelSyncDev::checkPost;
 using ctran::algos::GpeKernelSyncDev::complete;
 using ctran::algos::GpeKernelSyncDev::waitPost;
 
+// Per-CTA partition shape used by every writer in the ring AllReduce
+// kernel — `localReduce` (RS) and `ctranKernCopyRaw` /
+// `ctranKernCopyMultiDestRaw` (AG / rev-AG). Both writers must be
+// instantiated with the SAME `Unroll16` so their per-CTA byte ownership
+// matches; otherwise a CTA in a later round can read or overwrite bytes
+// a different CTA in the prior round hasn't yet committed (the only
+// inter-round sync is per-CTA via `GpeKernelSync.completeFlag[blockIdx]`).
+// See D103324874 for the matching tail fix in `localReduceVectorized`.
+static constexpr int kUnroll16 = 4;
+
 } // namespace
 
 #define ROUND_LOG_PREFIX_FMT "partition %d round %d/%d step %d/%d "
@@ -109,22 +119,23 @@ __device__ __forceinline__ void _progressRecv(
     if (isRecvFwd_ && !updateData) { // steps [0, n-1)
       // update only next step's sendBuf
       if constexpr (RedOp == commAvg) {
-        localReduce<T, commSum>(
+        localReduce<T, commSum, kUnroll16>(
             2, srcs, tmpSendBuf, roundArgs.numel, algoCtx.nRanks);
       } else {
-        localReduce<T, RedOp>(
+        localReduce<T, RedOp, kUnroll16>(
             2, srcs, tmpSendBuf, roundArgs.numel, algoCtx.nRanks);
       }
     } else if (isRecvFwd_ && updateData) { // step n-1
       // update both next step's sendBuf and data
       T* dsts[2] = {recv_data, tmpSendBuf};
-      localReduce<T, RedOp>(2, srcs, 2, dsts, roundArgs.numel, algoCtx.nRanks);
+      localReduce<T, RedOp, kUnroll16>(
+          2, srcs, 2, dsts, roundArgs.numel, algoCtx.nRanks);
     }
   } else {
     if (isRecvFwd_ && updateData) { // steps [n, 2n-2)
       // all gather pipelining
       // copy recvBuf to both sendBuf and data
-      ctranKernCopyMultiDestRaw<T>(
+      ctranKernCopyMultiDestRaw<T, kUnroll16>(
           tmpRecvBuf,
           recv_data,
           tmpSendBuf,
@@ -133,7 +144,7 @@ __device__ __forceinline__ void _progressRecv(
           gridDim.x);
     } else if (!isRecvFwd_ && updateData) { // step 2n-2
       // copy recvBuf to only data
-      ctranKernCopyRaw<T>(
+      ctranKernCopyRaw<T, kUnroll16>(
           tmpRecvBuf, recv_data, roundArgs.numel, blockIdx.x, gridDim.x);
     }
   }
@@ -187,7 +198,7 @@ __device__ __forceinline__ void _progressSend(
       tmpSendBuf,
       roundArgs.numel);
 
-  ctranKernCopyRaw<T>(
+  ctranKernCopyRaw<T, kUnroll16>(
       send_data, tmpSendBuf, roundArgs.numel, blockIdx.x, gridDim.x);
 
   // Notify host side its completion
@@ -222,7 +233,7 @@ __device__ __forceinline__ void _progressRevSend(
   T* tmpSendBufRev =
       getBufAtByteOffset<T>(args.tmpSendBufRev, tmpChunkId * args.chunkSize);
 
-  ctranKernCopyRaw<T>(
+  ctranKernCopyRaw<T, kUnroll16>(
       recv_data, tmpSendBufRev, roundArgs.numel, blockIdx.x, gridDim.x);
 
   complete(args.revSendCopySync, blockIdx.x, round);
@@ -265,7 +276,7 @@ __device__ __forceinline__ void _progressRevRecv(
 
   if (isRevFwd) {
     // Copy to both forward send buffer and output
-    ctranKernCopyMultiDestRaw<T>(
+    ctranKernCopyMultiDestRaw<T, kUnroll16>(
         tmpRecvBufRev,
         tmpSendBufRev,
         recv_data,
@@ -274,7 +285,7 @@ __device__ __forceinline__ void _progressRevRecv(
         gridDim.x);
   } else {
     // Last reverse step: copy to output only
-    ctranKernCopyRaw<T>(
+    ctranKernCopyRaw<T, kUnroll16>(
         tmpRecvBufRev, recv_data, roundArgs.numel, blockIdx.x, gridDim.x);
   }
 

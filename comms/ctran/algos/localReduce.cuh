@@ -170,8 +170,16 @@ struct __align__(16) T_NBytes {
   }
 };
 
-// Specialization for a fixed nvector count
-template <typename T, commRedOp_t RedOp, int NSrcs, int NDsts>
+// Specialization for a fixed nvector count.
+//
+// `Unroll16` controls the per-CTA partition shape. Within an algorithm
+// that uses both `localReduceVectorized` and `copyUnroll<Unroll16, T>`
+// on the same buffer with only per-CTA sync between them, the same
+// `Unroll16` MUST be passed to both — divergent values produce
+// mismatched per-CTA byte ownership, which opens a cross-CTA stale-read
+// window (D103324874). Define a single `static constexpr int kUnroll16`
+// inside the algorithm and pass it to every writer call site there.
+template <typename T, commRedOp_t RedOp, int NSrcs, int NDsts, int Unroll16 = 4>
 __device__ __forceinline__ void localReduceVectorized(
     const T** srcs,
     T** dsts,
@@ -181,7 +189,7 @@ __device__ __forceinline__ void localReduceVectorized(
     size_t nRanks = 1) {
   using TVec = T_NBytes<T, 16>;
   constexpr uint32_t kWordsPerVectorLoad = TVec::kWords;
-  constexpr uint32_t kUnroll = 4;
+  constexpr uint32_t kUnroll = Unroll16;
 
   // Each warp will handle kUnroll values (warp contiguous and sequential)
   // at a time, resulting in each warp processing this many T-word per iteration
@@ -394,7 +402,7 @@ constexpr uint32_t kMax_uint32_t = std::numeric_limits<uint32_t>::max();
 // If commAvg is passed, it will apply element-wise average with nRanks
 // following the same partition as the reduce computation. It avoids expensive
 // cross-thread-block sync.
-template <typename T, commRedOp_t RedOp>
+template <typename T, commRedOp_t RedOp, int Unroll16 = 4>
 __device__ __forceinline__ void localReduce(
     size_t nsrcs,
     const T** srcs,
@@ -420,57 +428,59 @@ __device__ __forceinline__ void localReduce(
 
   if (isAligned && isCountInBounds) {
     if (nsrcs == 8 && ndsts == 1) {
-      localReduceVectorized<T, RedOp, /*NSrcs=*/8, /*NDsts=*/1>(
+      localReduceVectorized<T, RedOp, /*NSrcs=*/8, /*NDsts=*/1, Unroll16>(
           srcs, dsts, count, workerId, numWorkers, nRanks);
       return;
     } else if (nsrcs == 4 && ndsts == 1) {
-      localReduceVectorized<T, RedOp, /*NSrcs=*/4, /*NDsts=*/1>(
+      localReduceVectorized<T, RedOp, /*NSrcs=*/4, /*NDsts=*/1, Unroll16>(
           srcs, dsts, count, workerId, numWorkers, nRanks);
       return;
     } else if (nsrcs == 2 && ndsts == 1) {
-      localReduceVectorized<T, RedOp, /*NSrcs=*/2, /*NDsts=*/1>(
+      localReduceVectorized<T, RedOp, /*NSrcs=*/2, /*NDsts=*/1, Unroll16>(
           srcs, dsts, count, workerId, numWorkers, nRanks);
       return;
     } else if (nsrcs == 8 && ndsts == 2) {
-      localReduceVectorized<T, RedOp, /*NSrcs=*/8, /*NDsts=*/2>(
+      localReduceVectorized<T, RedOp, /*NSrcs=*/8, /*NDsts=*/2, Unroll16>(
           srcs, dsts, count, workerId, numWorkers, nRanks);
       return;
     } else if (nsrcs == 2 && ndsts == 2) {
-      localReduceVectorized<T, RedOp, /*NSrcs=*/2, /*NDsts=*/2>(
+      localReduceVectorized<T, RedOp, /*NSrcs=*/2, /*NDsts=*/2, Unroll16>(
           srcs, dsts, count, workerId, numWorkers, nRanks);
       return;
     } else if (nsrcs == 1 && ndsts == 8) {
-      localReduceVectorized<T, RedOp, /*NSrcs=*/1, /*NDsts=*/8>(
+      localReduceVectorized<T, RedOp, /*NSrcs=*/1, /*NDsts=*/8, Unroll16>(
           srcs, dsts, count, workerId, numWorkers, nRanks);
       return;
     } else if (nsrcs == 8 && ndsts == 8) {
-      localReduceVectorized<T, RedOp, /*NSrcs=*/8, /*NDsts=*/8>(
+      localReduceVectorized<T, RedOp, /*NSrcs=*/8, /*NDsts=*/8, Unroll16>(
           srcs, dsts, count, workerId, numWorkers, nRanks);
       return;
     } else if (nsrcs == 1 && ndsts == 1) {
-      localReduceVectorized<T, RedOp, /*NSrcs=*/1, /*NDsts=*/1>(
+      localReduceVectorized<T, RedOp, /*NSrcs=*/1, /*NDsts=*/1, Unroll16>(
           srcs, dsts, count, workerId, numWorkers, nRanks);
       return;
     }
   }
 
-  // Fallback slow implementation
+  // Fallback slow implementation. Note: localReduceFallback uses its own
+  // hardcoded `kUnroll = 8` internally; it is only reached for unaligned
+  // inputs, which the AllReduce ring path does not encounter.
   localReduceFallback<T, RedOp>(
       nsrcs, srcs, ndsts, dsts, count, workerId, numWorkers, nRanks);
 }
 
-template <typename T, commRedOp_t RedOp>
+template <typename T, commRedOp_t RedOp, int Unroll16 = 4>
 __device__ __forceinline__ void localReduce(
     size_t nvectors,
     const T** srcs,
     T* dst,
     size_t count,
     size_t nRanks = 1) {
-  localReduce<T, RedOp>(
+  localReduce<T, RedOp, Unroll16>(
       nvectors, srcs, 1, &dst, count, blockIdx.x, gridDim.x, nRanks);
 }
 
-template <typename T, commRedOp_t RedOp>
+template <typename T, commRedOp_t RedOp, int Unroll16 = 4>
 __device__ __forceinline__ void localReduce(
     size_t nvectors,
     const T** srcs,
@@ -479,11 +489,11 @@ __device__ __forceinline__ void localReduce(
     int workerId,
     int numWorkers,
     size_t nRanks = 1) {
-  localReduce<T, RedOp>(
+  localReduce<T, RedOp, Unroll16>(
       nvectors, srcs, 1, &dst, count, workerId, numWorkers, nRanks);
 }
 
-template <typename T, commRedOp_t RedOp>
+template <typename T, commRedOp_t RedOp, int Unroll16 = 4>
 __device__ __forceinline__ void localReduce(
     size_t nsrcs,
     const T** srcs,
@@ -491,7 +501,7 @@ __device__ __forceinline__ void localReduce(
     T** dsts,
     size_t count,
     size_t nRanks = 1) {
-  localReduce<T, RedOp>(
+  localReduce<T, RedOp, Unroll16>(
       nsrcs, srcs, ndsts, dsts, count, blockIdx.x, gridDim.x, nRanks);
 }
 
