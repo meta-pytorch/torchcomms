@@ -12,6 +12,8 @@
 #include <stack>
 #include <thread>
 
+#include <atomic>
+
 #include <folly/Synchronized.h>
 #include "comms/ctran/algos/common/GpeKernel.h"
 #include "comms/ctran/algos/common/GpeKernelSync.h"
@@ -19,6 +21,7 @@
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/ctran/utils/ExtUtils.h"
+#include "comms/ctran/utils/MemFence.h"
 #include "comms/ctran/utils/PinnedHostPool.h"
 #include "comms/utils/GraphCaptureSideStream.h"
 
@@ -38,7 +41,7 @@ struct KernelFlagItem {
   }
 
   bool inUse() {
-    if (persistent_) {
+    if (persistent_.load(std::memory_order_acquire)) {
       return true;
     }
     for (int i = 0; i < numGroups_; i++) {
@@ -46,6 +49,7 @@ struct KernelFlagItem {
         return true;
       }
     }
+    wcAcquireFence();
     return false;
   }
 
@@ -62,6 +66,7 @@ struct KernelFlagItem {
         return false;
       }
     }
+    wcAcquireFence();
     return true;
   }
 
@@ -71,27 +76,23 @@ struct KernelFlagItem {
     }
   }
 
-  // Prevent pool reclaim between graph replays. The kernel writes
-  // KERNEL_UNSET after each replay, but persistent keeps inUse() true.
   void setPersistent() {
-    persistent_ = true;
+    persistent_.store(true, std::memory_order_release);
   }
 
-  // Allow pool reclaim. Called at graph destruction to release the flag.
   void clearPersistent() {
-    persistent_ = false;
+    persistent_.store(false, std::memory_order_release);
   }
 
   volatile int flag_[CTRAN_ALGO_MAX_THREAD_BLOCKS];
   int numGroups_{1};
-  // If true, inUse() always returns true — prevents reclaim() from stealing
-  // the flag while a persistent cmd (graph capture) still owns it.
-  // Not cleared by reset() — only cleared by clearPersistent().
-  bool persistent_{false};
+  // Atomic because it is set by cmdDestroy (CUDA callback thread) and read
+  // by reclaim() (main thread).
+  std::atomic<bool> persistent_{false};
   // padding for different KernelFlagItems to be on different cache lines.
   static constexpr int kCacheLineSizeBytes = 128;
-  // -2 ints: one for numGroups_, one for persistent_ (padded to int)
-  int unused[(kCacheLineSizeBytes - 2 * sizeof(int)) / sizeof(int)];
+  char unused_padding_
+      [kCacheLineSizeBytes - sizeof(int) - sizeof(std::atomic<bool>)];
 
   void _() {
     // Make sure KernelFlagItem satisfies the PinnedHostItem concept
@@ -100,7 +101,8 @@ struct KernelFlagItem {
     // The following compile-time check is a hint of the memory usage
     // KernelFlag uses 384 bytes of pinned memory
     static_assert(
-        sizeof(Self) == 4 * CTRAN_ALGO_MAX_THREAD_BLOCKS + kCacheLineSizeBytes);
+        sizeof(Self) == 4 * CTRAN_ALGO_MAX_THREAD_BLOCKS + kCacheLineSizeBytes,
+        "KernelFlagItem size must be flags + one cache line of metadata/padding");
 
     // Ensure two KernelFlagItems are on different cache lines.
     //
