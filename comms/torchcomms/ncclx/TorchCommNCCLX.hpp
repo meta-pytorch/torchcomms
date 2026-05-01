@@ -19,6 +19,7 @@
 #include "comms/torchcomms/TorchCommBackend.hpp"
 #include "comms/torchcomms/TorchCommBatch.hpp"
 #include "comms/torchcomms/device/cuda/CudaApi.hpp"
+#include "comms/torchcomms/ncclx/CtranApi.hpp"
 #include "comms/torchcomms/ncclx/GraphEventTracker.hpp"
 #include "comms/torchcomms/ncclx/NcclxApi.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLXPersistentRequest.hpp"
@@ -317,6 +318,16 @@ class TorchCommNCCLX : public TorchCommBackend,
     nccl_api_ = std::move(api);
   }
 
+  // Getter for ctran API (for friend classes / tests)
+  CtranApi* getCtranApi() const {
+    return ctran_api_.get();
+  }
+
+  // Method to override the ctran API implementation for testing
+  void setCtranApi(std::shared_ptr<CtranApi> api) {
+    ctran_api_ = std::move(api);
+  }
+
   // Method to override the CUDA API implementation for testing
   void setCudaApi(std::shared_ptr<CudaApi> api) {
     cuda_api_ = std::move(api);
@@ -548,6 +559,15 @@ class TorchCommNCCLX : public TorchCommBackend,
 
   // NCCL API abstraction
   std::shared_ptr<NcclxApi> nccl_api_;
+
+  // ctran API abstraction. Used for collectives that have no NCCL baseline
+  // and are therefore always served by ctran when ctran is enabled. The
+  // dispatch sites bypass nccl_api_ -> collectives.cc for these calls.
+  std::shared_ptr<CtranApi> ctran_api_;
+
+  // Per-comm CtranComm*. Resolved once after ncclCommInit; may be null if
+  // NCCL_CTRAN_ENABLE was not set at process start.
+  CtranComm* ctran_comm_{nullptr};
 
   // CUDA API abstraction
   std::shared_ptr<CudaApi> cuda_api_;
