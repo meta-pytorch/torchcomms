@@ -152,6 +152,10 @@ void TorchCommNCCLX::init(
     nccl_api_ = std::make_unique<DefaultNcclxApi>();
   }
 
+  if (!ctran_api_) {
+    ctran_api_ = std::make_shared<DefaultCtranApi>();
+  }
+
   if (!cuda_api_) {
     cuda_api_ = std::make_unique<DefaultCudaApi>();
   }
@@ -276,6 +280,13 @@ void TorchCommNCCLX::initNcclxResources() {
   }
 
   attachMemoryHook();
+
+  // Resolve the per-comm CtranComm* now that the underlying ncclComm
+  // exists. May be null if NCCL_CTRAN_ENABLE was not set; phase-1 dispatch
+  // sites validate this before each call.
+  if (ctran_api_) {
+    ctran_comm_ = ctran_api_->getCtranComm(nccl_comm_);
+  }
 
   init_state_ = InitializationState::INITIALIZED;
 }
@@ -1233,6 +1244,16 @@ TorchCommBackend::AllGatherPHandle TorchCommNCCLX::all_gather_p_init(
   size_t maxRecvCount = output.numel();
   size_t bufferSize = maxRecvCount * output.element_size();
 
+  if (ctran_comm_ == nullptr) {
+    throw std::runtime_error(
+        "all_gather_p_init requires ctran (set NCCL_CTRAN_ENABLE=1)");
+  }
+  if (!ctran_api_->allGatherPSupport(ctran_comm_)) {
+    throw std::runtime_error(
+        "Persistent AllGather is not supported on this comm. "
+        "Check that ctran is enabled and all peers have an assigned backend.");
+  }
+
   // Register the output buffer if not already registered
   void* dataPtr = output.data_ptr();
   auto it = memoryRegistrationHandles_.find(dataPtr);
@@ -1250,15 +1271,15 @@ TorchCommBackend::AllGatherPHandle TorchCommNCCLX::all_gather_p_init(
   NCCLX_CHECK(
       nccl_api_,
       nccl_comm_,
-      nccl_api_->allGatherInit(
+      ctran_api_->allGatherPInit(
           dataPtr,
           maxRecvCount,
           options.hints,
           getNcclDataType(output),
-          nccl_comm_,
+          ctran_comm_,
           getInternalStream(),
           &request),
-      "NCCLX allGatherInit failed");
+      "ctran allGatherPInit failed");
 
   return request;
 }
@@ -1285,9 +1306,9 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather_p_exec(
   NCCLX_CHECK(
       nccl_api_,
       nccl_comm_,
-      nccl_api_->allGatherExec(
+      ctran_api_->allGatherPExec(
           input.data_ptr(), input.numel(), getNcclDataType(input), handle),
-      "NCCLX allGatherExec failed");
+      "ctran allGatherPExec failed");
 
   work->recordEnd();
   enqueueWork(work, stream);
@@ -1299,7 +1320,10 @@ void TorchCommNCCLX::all_gather_p_free(AllGatherPHandle handle) {
   if (handle == nullptr) {
     return;
   }
-  NCCLX_CHECK_IGNORE(nccl_api_, nccl_api_->pFree(handle), "NCCLX pFree failed");
+  NCCLX_CHECK_IGNORE(
+      nccl_api_,
+      ctran_api_->allGatherPDestroy(handle),
+      "ctran allGatherPDestroy failed");
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter(
@@ -2659,6 +2683,7 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
   auto new_torchcomm =
       std::shared_ptr<TorchCommNCCLX>(new TorchCommNCCLX(new_comm));
   new_torchcomm->nccl_api_ = nccl_api_;
+  new_torchcomm->ctran_api_ = ctran_api_;
   new_torchcomm->cuda_api_ = cuda_api_;
   new_torchcomm->init(device_, commDesc, options);
 
