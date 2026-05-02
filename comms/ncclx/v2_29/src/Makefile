@@ -18,6 +18,8 @@ include ../makefiles/version.mk
 
 ##### Mock Scuba Data in CMake build
 CXXFLAGS += -DMOCK_SCUBA_DATA -DFOLLY_XLOG_STRIP_PREFIXES=\"${BASE_DIR}\"
+# Use header-only fmt to avoid runtime dependency on libfmt.so
+CXXFLAGS += -DFMT_HEADER_ONLY=1
 
 ifeq ($(ENABLE_TCPDM),0)
 CXXFLAGS += -DCTRAN_DISABLE_TCPDM

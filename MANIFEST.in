@@ -1,0 +1,28 @@
+include CMakeLists.txt
+include LICENSE
+include README.md
+include pyproject.toml
+include requirements.txt
+include setup.py
+include version.txt
+include build_ncclx.sh
+include build_rccl.sh
+include build_rcclx.sh
+include rename_symbols.sh
+include setup_rcclx.sh
+
+graft comms
+graft scripts
+
+prune build
+prune dist
+prune .venv
+prune .pytest_cache
+prune comms/torchcomms/__pycache__
+prune comms/torchcomms.egg-info
+
+global-exclude *.py[cod]
+global-exclude *.so
+global-exclude *.a
+global-exclude *.o
+global-exclude *.swp
