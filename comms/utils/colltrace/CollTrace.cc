@@ -444,7 +444,7 @@ void CollTrace::pollGraphEvents(
         }
 
         auto& collEntry = *(it->second);
-        auto timestamp = cal.toWallClock(entry.timestamp_ns);
+        auto timestamp = cal.toWallClock(entry.timestamp);
 
         if (isStartEvent) {
           // if we see a new start event before we observed this collectives

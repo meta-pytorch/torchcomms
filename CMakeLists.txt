@@ -11,6 +11,15 @@ if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.31)
     set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 endif()
 
+# colltrace's HRDWRingBufferReader uses __atomic_load_n on a 128-bit value,
+# which the compiler lowers to __atomic_load_16 (libatomic). On x86_64 we
+# sidestep this in source via an SSE2 MOVDQA specialization (see
+# HRDWRingBufferReader.h), so no libatomic dep is needed there. On other
+# archs (aarch64, etc.) we fall back to linking libatomic.
+if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+    add_link_options("LINKER:--push-state,--no-as-needed" "-latomic" "LINKER:--pop-state")
+endif()
+
 # Options
 option(USE_NCCL "Whether to build NCCL or not" ON)
 option(USE_NCCLX "Whether to build NCCLX or not" ON)

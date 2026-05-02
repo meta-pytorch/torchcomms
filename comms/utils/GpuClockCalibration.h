@@ -10,6 +10,12 @@
 #include <chrono>
 #endif // not defined(__CUDACC__) and not defined(__HIPCC__)
 
+// Globaltimer (ns) is reduced to ~1024ns ticks (`>> shift`) to fit in 32
+// bits when packed into HRDWEntry. 32 bits of 1024ns ticks wraps every
+// ~73 minutes; the host reader reconstructs the full value via
+// GlobaltimerCalibration::toWallClock(uint32_t).
+#define US_TICK_TIMESTAMP_SHIFT 10
+
 namespace meta::comms::colltrace {
 
 // One-time calibration point mapping globaltimer nanoseconds to system_clock.
@@ -21,6 +27,16 @@ struct GlobaltimerCalibration {
 
   // Convert a device globaltimer nanosecond value to a system_clock time_point.
   std::chrono::system_clock::time_point toWallClock(uint64_t gpu_ns) const;
+
+  // Convert a packed 32-bit timestamp (globaltimer_ns >> 10, i.e. ~1024ns
+  // ticks, as written by HRDWRingBuffer) into a system_clock time_point.
+  // Reconstructs the high 32 bits against the current wall-clock-derived
+  // "now" device time. Events are assumed to be in the past; a small
+  // future window (~10s) is allowed for host/device clock skew, and
+  // anything beyond is treated as a past wrap. Correct as long as the
+  // event is within ~73 minutes in the past of "now".
+  std::chrono::system_clock::time_point toWallClock(
+      uint32_t gpu_ticks_low32) const;
 
   // Get the process-global calibration singleton.
   static const GlobaltimerCalibration& get();
