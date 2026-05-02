@@ -20,7 +20,6 @@ function do_cmake_build() {
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
     -DCMAKE_CXX_STANDARD=20 \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.22 \
-    -DCMAKE_CXX_FLAGS="-DFMT_HEADER_ONLY=1" \
     $extra_flags \
     -S "${source_dir}"
   ninja -j$(nproc)
@@ -349,9 +348,9 @@ fi
 # thousands_sep_impl, locale_ref::get<std::locale>). The conda libfolly.pc
 # does not list fmt as a dep, so add -lfmt explicitly.
 if [[ -z "${USE_SYSTEM_LIBS}" ]]; then
-  THIRD_PARTY_LDFLAGS+="-l:libglog.a -l:libgflags.a -l:libboost_context.a -l:libssl.a -l:libcrypto.a -l:libfmt.a"
+  THIRD_PARTY_LDFLAGS+="-l:libglog.a -l:libgflags.a -l:libboost_context.a -l:libfmt.a -l:libssl.a -l:libcrypto.a -l:libfmt.a"
 else
-  THIRD_PARTY_LDFLAGS+="-lglog -lgflags -lboost_context -lssl -lcrypto -lfmt"
+  THIRD_PARTY_LDFLAGS+="-lglog -lgflags -lboost_context -lfmt -lssl -lcrypto -lfmt"
 fi
 
 echo "$THIRD_PARTY_LDFLAGS"

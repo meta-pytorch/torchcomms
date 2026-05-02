@@ -6,8 +6,6 @@
 include ../makefiles/common.mk
 include ../makefiles/version.mk
 
-CXXFLAGS += -DFMT_HEADER_ONLY=1
-
 ##### src files
 INCEXPORTS  := nccl.h
 LIBSRCFILES := \
