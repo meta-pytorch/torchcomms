@@ -1,0 +1,9 @@
+PAPI_FAQ.html -diff
+release_procedure.txt -diff
+gitlog2changelog.py -diff
+doc/DataRange.html -diff
+doc/PAPI-C.html -diff
+doc/README -diff
+src/buildbot_configure_with_components.sh -diff
+delete_before_release.sh -diff
+.gitattributes -diff

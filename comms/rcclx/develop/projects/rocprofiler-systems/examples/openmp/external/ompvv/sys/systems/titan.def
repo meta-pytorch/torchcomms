@@ -1,0 +1,39 @@
+# Definitions for the titan system
+
+#---------------------------------------------------------------------------
+# BATCH Scheduler
+#---------------------------------------------------------------------------
+APRUN_COMMAND = aprun -n 1 -d 1 
+BATCH_SCHEDULER = $(APRUN_COMMAND)
+
+CUDA_MODULE = cudatoolkit
+#---------------------------------------------------------------------------
+# C compilers
+#---------------------------------------------------------------------------
+CCOMPILERS?="cc, gcc"
+
+# CRAY compiler
+ifeq ($(CC), cc)
+  C_COMPILER_MODULE = PrgEnv-cray cce/8.6.5 craype-accel-nvidia35 cudatoolkit craype/2.5.13 cray-mpich/7.7.0
+  C_VERSION = cc -V 2>&1 | grep --color -o "Version [.0-9a-zA-Z]* " | sed "s/Version //g"
+endif
+
+# GCC compiler
+ifeq ($(CC), gcc)
+endif
+
+#---------------------------------------------------------------------------
+# C++ compilers
+#---------------------------------------------------------------------------
+CXXCOMPILERS="clang++, g++, xlc++"
+
+# CRAY compiler
+ifeq ($(CXX), CC)
+  CXX_COMPILER_MODULE = PrgEnv-cray cce/8.6.5 craype-accel-nvidia35 craype/2.5.13 cray-mpich/7.7.0
+  CXX_VERSION = CC -V 2>&1 | grep --color -o "Version [.0-9a-zA-Z]* " | sed "s/Version //g"
+endif
+
+# GCC compiler
+ifeq ($(CXX), g++)
+endif
+

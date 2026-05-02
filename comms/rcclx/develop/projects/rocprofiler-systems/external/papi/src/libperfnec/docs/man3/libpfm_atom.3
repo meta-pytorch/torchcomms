@@ -1,0 +1,70 @@
+.TH LIBPFM 3  "November, 2006" "" "Linux Programmer's Manual"
+.SH NAME
+libpfm_core - support for Intel Atom processor family
+.SH SYNOPSIS
+.nf
+.B #include <perfmon/pfmlib.h>
+.B #include <perfmon/pfmlib_intel_atom.h>
+.sp
+.SH DESCRIPTION
+The libpfm library provides full support for the Intel Atom processor. This
+processor implements Intel architectural perfmon v3 with Precise Event-Based
+Sampling (PEBS) support. It also implements all architected events to which
+it adds lots of Atom specific events.
+.sp
+The libpfm interface is defined in \fBpfmlib_intel_atom.h\fR. It consists
+of a set of functions and structures which describe and allow access to the
+Intel Atom processor specific PMU features.
+.sp
+When Intel Atom processor specific features are needed to support a measurement, their descriptions
+must be passed as model-specific input arguments to the \fBpfm_dispatch_events()\fR function. The Intel
+Atom processors specific input arguments are described in the \fBpfmlib_intel_atom_input_param_t\fR structure.
+No output parameters are currently defined. The input parameters are defined as follows:
+.sp
+.nf
+typedef struct {
+	unsigned int	cnt_mask;
+	unsigned int	flags;
+} pfmlib_intel_atom_counter_t;
+
+typedef struct {
+  pfmlib_intel_atom_counter_t pfp_intel_atom_counters[PMU_INTEL_ATOM_NUM_COUNTERS];
+  unsigned int                pfp_intel_atom_pebs_used;
+  uint64_t                    reserved[4];
+} pfmlib_core_input_param_t;
+.fi
+.sp
+.sp
+The Intel Atom processor provides several additional per-event features for 
+counters: thresholding, inversion, edge detection, monitoring both threads. They
+can be set using the \fBpfp_intel_atom_counters\fR data structure for each event.
+The \fBflags\fR field can be initialized with any combinations of the following
+values:
+.TP
+.B PFMLIB_INTEL_ATOM_SEL_INV
+Inverse the results of the \fBcnt_mask\fR comparison when set
+.TP
+.B PFMLIB_INTEL_ATOM_SEL_EDGE
+Enable edge detection of events. 
+.TP
+.B PFMLIB_INTEL_ATOM_SEL_ANYTHR
+Enable measuring the event in any of the two threads. By default only the current thread is measured.
+.LP
+The \fBcnt_mask\fR field is used to set the event threshold.
+The value of the counter is incremented each time the number of occurrences
+per cycle of the event is greater or equal to the value of the field.
+Thus the event is modified to actually measure the number of qualifying cycles.
+When zero all occurrences are counted (this is the default).
+.sp
+.SH Support for Precise-Event Based Sampling (PEBS)
+The library can be used to setup the PMC registers when using PEBS. In this case,
+the \fBpfp_intel_atom_pebs_used\fR field must be set to 1. When using PEBS, it is
+not possible to use more than one event.
+.LP
+.SH ERRORS
+Refer to the description of the \fBpfm_dispatch_events()\fR function for errors.
+.SH SEE ALSO
+pfm_dispatch_events(3) and set of examples shipped with the library
+.SH AUTHOR
+Stephane Eranian <eranian@gmail.com>
+.PP

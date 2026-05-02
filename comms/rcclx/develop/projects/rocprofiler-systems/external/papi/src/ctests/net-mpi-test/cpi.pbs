@@ -1,0 +1,44 @@
+#!/bin/bash
+############################################################
+## Template PBS Job Script for Parallel Job on Myrinet Nodes
+## 
+## Lines beginning with '#PBS' are PBS directives, see 
+## 'man qsub' for additional information.
+############################################################
+
+### Set the job name
+#PBS -N cpi
+
+### Set the queue to submit this job: ALWAYS use the default queue
+##PBS -q workq 
+
+### Set the number of nodes that will be used, 4 in this case, 
+### use a single processor per node (ppn=1), and use Myrinet
+#PBS -l nodes=4
+
+### The following command computes the number of processors requested 
+### from the file containing the list of nodes assigned to the job
+export NPROCS=`wc -l $PBS_NODEFILE |gawk '//{print $1}'`
+
+### The following statements dump some diagnostic information to 
+### the batch job's standard output.
+echo The master node of this job is `hostname`
+echo The working directory is `echo $PBS_O_WORKDIR`
+echo The node file is $PBS_NODEFILE
+echo "=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-"
+echo This job runs on the following nodes:
+echo `cat $PBS_NODEFILE`
+echo "=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-"
+echo This job has allocated $NPROCS nodes
+
+echo "=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-"
+
+### Change to the working directory of the qsub command. 
+cd $PBS_O_WORKDIR
+
+### Execute the MPI job --- NOTE: It is *crucial* that the proper 
+### 'mpirun' command (there are several versions of the command 
+### on the cluster) be used to launch the job---it is safest to use 
+### the full pathname as is done here.
+#/usr/local/mpich-mx/bin/mpirun -np $NPROCS -machinefile $PBS_NODEFILE cpi
+/usr/local/mpich/bin/mpirun -np $NPROCS -machinefile $PBS_NODEFILE cpi

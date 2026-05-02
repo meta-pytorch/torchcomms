@@ -1,0 +1,73 @@
+version: "3.3"
+
+# Building:
+#
+#   docker-compose build --pull --parallel <service>
+#
+
+services:
+  #--------------------------------------------------------------------------#
+  # timemory development container for CPU
+  #
+  timemory-cpu-dev:
+    image: nersc/timemory:dev-cpu
+    stdin_open: true
+    tty: true
+    build:
+      context: ./cpu
+      dockerfile: Dockerfile.dev
+      args:
+        COMPILER_SPEC: "gcc@9.3.0"
+        VERSION: "develop"
+        PYTHON_VERSION: "3.7.9"
+        GCC_VERSION: "9"
+        CLANG_VERSION: "11"
+
+  #--------------------------------------------------------------------------#
+  # timemory development container for GPU
+  #
+  timemory-gpu-dev:
+    image: nersc/timemory:dev-gpu
+    stdin_open: true
+    tty: true
+    build:
+      context: ./gpu
+      dockerfile: Dockerfile.dev
+      args:
+        COMPILER_SPEC: "gcc@8.4.0"
+        VERSION: "develop"
+        PYTHON_VERSION: "3.7.9"
+        CUDA_ARCH: "70"
+        CUDA_ARCH_NAME: "volta"
+        GCC_VERSION: "8"
+        CLANG_VERSION: "11"
+
+  #--------------------------------------------------------------------------#
+  # timemory release container for CPU
+  #
+  timemory-cpu:
+    image: nersc/timemory:cpu
+    stdin_open: true
+    tty: true
+    build:
+      context: ./cpu
+      dockerfile: Dockerfile
+      args:
+        COMPILER_SPEC: "gcc"
+        PYTHON_VERSION: "3.7.9"
+
+  #--------------------------------------------------------------------------#
+  # timemory release container for GPU
+  #
+  timemory-gpu:
+    image: nersc/timemory:gpu
+    stdin_open: true
+    tty: true
+    build:
+      context: ./gpu
+      dockerfile: Dockerfile
+      args:
+        COMPILER_SPEC: "gcc@7.5.0"
+        PYTHON_VERSION: "3.7.9"
+        CUDA_ARCH: "70"
+        CUDA_ARCH_NAME: "volta"

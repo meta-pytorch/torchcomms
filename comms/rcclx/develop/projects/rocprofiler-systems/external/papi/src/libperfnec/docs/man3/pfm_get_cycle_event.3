@@ -1,0 +1,54 @@
+.TH LIBPFM 3  "September, 2006" "" "Linux Programmer's Manual"
+.SH NAME
+pfm_get_cycle_event, pfm_get_inst_retired_event - get basic event
+descriptors
+
+.SH SYNOPSIS
+.nf
+.B #include <perfmon/pfmlib.h>
+.sp
+.BI "int pfm_get_cycle_event(pfmlib_event_t *"ev ");"
+.BI "int pfm_get_inst_retired_event(pfmlib_event_t *"ev ");"
+.sp
+.SH DESCRIPTION
+In order to build very simple generic examples that work across
+all PMU models, the library provides a way to retrieve information
+about two basic events that are present in most PMU models: cycles 
+and instruction retired. The first event, cycles, counts the number
+of elapsed cycles. The second event, instruction retired, counts the
+number of instructions that have executed and retired from the processor
+pipeline. Depending on the PMU model, there may be variations in the
+exact definition of those events. The library provides this information
+on a best effort basis. User must refer to PMU model specific documentation
+to validate the event definition.
+.sp
+The \fBpfm_get_cycle_event()\fR function returns in \fBev\fR the event
+and optional unit mask descriptors for the event that counts elapsed 
+cycles. Depending on the PMU model, there may be unit mask(s) necessary
+to count cycles. Application must check the value returned in
+\fBev->num_masks\fR.
+
+.sp
+The \fBpfm_get_inst_retired_event()\fR function returns in \fBev\fR the event
+and optional unit mask descriptors for the event that counts the number
+of returned instruction. Depending on the PMU model, there may be unit
+mask(s) necessary to count retired instructions. Application must check
+the value returned in \fBev->num_masks\fR.
+
+.SH RETURN
+All functions return whether or not the call was successful.
+A return value of \fBPFMLIB_SUCCESS\fR indicates success, 
+otherwise the value is the error code.
+.SH ERRORS
+.B PFMLIB_ERR_NOINIT
+the library has not been initialized properly.
+.TP
+.B PFMLIB_ERR_INVAL
+the \fBev\fR parameter is NULL.
+.TP
+.B PFMLIB_ERR_NOTSUPP
+the host PMU does not define an event to count cycles or instructions retired.
+.TP
+.SH AUTHOR
+Stephane Eranian <eranian@hpl.hp.com>
+.PP

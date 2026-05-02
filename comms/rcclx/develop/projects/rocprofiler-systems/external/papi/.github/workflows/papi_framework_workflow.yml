@@ -1,0 +1,78 @@
+name: papi framework
+
+on:
+  pull_request:
+    # run CI if framework receives an update excluding individual 
+    # components and counter analysis toolkit
+    paths:
+      - 'src/**'
+      - 'src/components/*'
+      - '!src/components/*/**'
+      - '!src/counter_analysis_toolkit/**'
+  # allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  # build PAPI with multiple components to simulate a users' workflow
+  # rocm, rocm_smi, powercap_ppc, rapl, sensors_ppc, infiniband, lustre, and mx should all
+  # be disabled upon the build finishing
+  papi_components_comprehensive:
+    strategy:
+      matrix:
+        components: [cuda nvml rocm rocm_smi powercap powercap_ppc rapl sensors_ppc infiniband net appio io lustre stealtime coretemp lmsensors mx sde]
+        debug: [yes, no]
+        shlib: [with, without]
+      fail-fast: false
+    runs-on: [self-hosted, cpu_intel, gpu_nvidia]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: comprehensive component tests 
+        run: .github/workflows/ci_papi_framework.sh "${{matrix.components}}" ${{matrix.debug}} ${{matrix.shlib}}
+  # build PAPI only with the amd components, as they will not be active in the above comprehensive job
+  papi_components_amd:
+    strategy:
+      matrix:
+        components: [rocm rocm_smi]
+        debug: [yes, no] 
+        shlib: [with, without]
+      fail-fast: false
+    runs-on: [self-hosted, gpu_amd]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: rocm and rocm_smi component tests
+        run: .github/workflows/ci_papi_framework.sh "${{matrix.components}}" ${{matrix.debug}} ${{matrix.shlib}}
+  # build PAPI only with the infiniband component, as it will not be active in the above comprehensive job
+  papi_component_infiniband:
+    strategy:
+      matrix:
+        components: [infiniband]
+        debug: [yes, no] 
+        shlib: [with, without]
+      fail-fast: false
+    runs-on: [self-hosted, infiniband]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: infiniband component tests
+        run: .github/workflows/ci_papi_framework.sh ${{matrix.components}} ${{matrix.debug}} ${{matrix.shlib}} 
+  papi_spack:
+    runs-on: cpu
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build/Test/Install via Spack
+        run: .github/workflows/spack.sh
+  papi_clang_analysis:
+    runs-on: cpu
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run static analysis
+        run: .github/workflows/clang_analysis.sh clang-analysis-output
+      - name: Archive analysis results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: clang-analysis-output
+          path: src/clang-analysis-output

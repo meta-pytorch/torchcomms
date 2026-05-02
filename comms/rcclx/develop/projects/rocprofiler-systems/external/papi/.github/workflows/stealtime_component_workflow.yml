@@ -1,0 +1,24 @@
+name: stealtime
+
+on:
+  pull_request:
+    # run CI only if stealtime directory or stealtime sub-directories receive updates
+    paths:
+      - 'src/components/stealtime/**'
+  # allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  component_tests:
+    strategy:
+      matrix:
+        component: [stealtime]
+        debug: [yes, no] 
+        shlib: [with, without]
+      fail-fast: false
+    runs-on: [self-hosted, cpu_intel]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: stealtime component tests
+        run: .github/workflows/ci_individual_component.sh ${{matrix.component}} ${{matrix.debug}} ${{matrix.shlib}}
