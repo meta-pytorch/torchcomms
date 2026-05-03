@@ -1,0 +1,75 @@
+# Definitions for a generic system
+
+$(info "Including generic.def file")
+
+#---------------------------------------------------------------------------
+# BATCH Scheduler
+#---------------------------------------------------------------------------
+BATCH_SCHEDULER =
+
+CUDA_MODULE ?= 
+#---------------------------------------------------------------------------
+# C compilers
+#---------------------------------------------------------------------------
+CCOMPILERS="clang, gcc, xlc"
+
+# GCC compiler
+ifeq ($(CC), gcc)
+  C_COMPILER_MODULE ?=
+  C_VERSION ?= gcc -dumpversion
+endif
+
+# IBM XL compiler
+ifeq ($(CC), xlc)
+  C_COMPILER_MODULE ?= 
+  C_VERSION ?= xlc -qversion | grep "Version: .*$$" | sed "s/Version: //g"
+endif
+
+# Clang compiler
+ifeq ($(CC), clang)
+  C_COMPILER_MODULE ?= 
+  C_VERSION ?= clang -v 2>&1 | grep -oh 'clang version [0-9.]* .*'| grep -oh 'version .*' | sed 's/version //g'
+endif
+
+#---------------------------------------------------------------------------
+# C++ compilers
+#---------------------------------------------------------------------------
+CXXCOMPILERS="clang++, g++, xlc++"
+
+# GCC compiler
+ifeq ($(CXX), g++)
+  CXX_COMPILER_MODULE ?= 
+  CXX_VERSION ?= g++ -dumpversion
+endif
+
+# IBM XL compiler
+ifeq ($(CXX), xlc++)
+  CXX_COMPILER_MODULE ?= 
+  CXX_VERSION ?= xlc -qversion | grep "Version: .*$$" | sed "s/Version: //g"
+endif
+
+# Clang compiler
+ifeq ($(CXX), clang++)
+  CXX_COMPILER_MODULE ?= 
+  CXX_VERSION ?= clang++ -v 2>&1 | grep -oh 'clang version [0-9.]* .*'| grep -oh 'version .*' | sed 's/version //g'
+endif
+
+#---------------------------------------------------------------------------
+# FORTRAN Compilers
+#---------------------------------------------------------------------------
+FCOMPILERS="gfortran, xlf"
+
+# GCC compiler
+ifeq ($(FC), gfortran)
+  F_COMPILER_MODULE ?= 
+  F_VERSION ?= gfortran -dumpversion
+endif
+
+# IBM XL compiler
+# Summitdev happens to have a wrapper that without it we cannot execute 
+# xlf with OMP 4.5 support. This wrapper is xlf_r
+ifeq ($(FC), $(filter $(FC), xlf xlf_r))
+  F_COMPILER_MODULE =
+  F_VERSION ?= xlf -qversion | grep 'Version: .*$$' | sed 's/Version: //g' 
+endif
+

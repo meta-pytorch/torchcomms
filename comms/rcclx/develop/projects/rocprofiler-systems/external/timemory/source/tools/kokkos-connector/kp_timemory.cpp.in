@@ -1,0 +1,432 @@
+// MIT License
+//
+// Copyright (c) 2020, The Regents of the University of California,
+// through Lawrence Berkeley National Laboratory (subject to receipt of any
+// required approvals from the U.S. Dept. of Energy).  All rights reserved.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
+#include "kp_timemory.hpp"
+#include "timemory/timemory.hpp"
+
+#include <cassert>
+#include <cstdlib>
+#include <execinfo.h>
+#include <iostream>
+#include <string>
+#include <vector>
+
+#if __cplusplus > 201402L  // C++17
+#    define if_constexpr if constexpr
+#else
+#    define if_constexpr if
+#endif
+
+static std::string spacer =
+    "#---------------------------------------------------------------------------#";
+
+// this just differentiates Kokkos from other user_bundles
+struct KokkosProfiler
+{};
+using KokkosUserBundle = tim::component::user_bundle<0, KokkosProfiler>;
+
+// set up the configuration of tools
+using namespace tim::component;
+// clang-format off
+using profile_entry_t = tim::component_tuple<@KP_COMPONENTS@>;
+// clang-format on
+
+// various data structurs used
+using section_entry_t = std::tuple<std::string, profile_entry_t>;
+using profile_stack_t = std::vector<profile_entry_t>;
+using profile_map_t   = std::unordered_map<uint64_t, profile_entry_t>;
+using section_map_t   = std::unordered_map<uint64_t, section_entry_t>;
+
+//--------------------------------------------------------------------------------------//
+
+struct kp_timemory_parallel_for
+{};
+struct kp_timemory_parallel_reduce
+{};
+struct kp_timemory_parallel_scan
+{};
+struct kp_timemory_fence
+{};
+struct kp_timemory_region
+{};
+struct kp_timemory_section
+{};
+
+//--------------------------------------------------------------------------------------//
+
+template <typename... Tp>
+std::enable_if_t<sizeof...(Tp) != 0, std::string> get_types_string(
+    tim::component_tuple<Tp...>)
+{
+    return TIMEMORY_JOIN(" + ", tim::demangle<Tp>()...);
+}
+
+//--------------------------------------------------------------------------------------//
+
+template <typename... Tp>
+std::enable_if_t<sizeof...(Tp) == 0, std::string> get_types_string(
+    tim::component_tuple<Tp...>)
+{
+    return TIMEMORY_JOIN("", "NONE [the requested types in ",
+                         tim::demangle<profile_entry_t>(),
+                         " were probably marked as disabled]");
+}
+
+//--------------------------------------------------------------------------------------//
+
+extern "C"
+{
+    TIMEMORY_WEAK_PREFIX
+    void timemory_mpip_library_ctor() TIMEMORY_WEAK_POSTFIX
+        TIMEMORY_VISIBILITY("default");
+    TIMEMORY_WEAK_PREFIX
+    void timemory_ompt_library_ctor() TIMEMORY_WEAK_POSTFIX
+        TIMEMORY_VISIBILITY("default");
+
+    void timemory_mpip_library_ctor() {}
+    void timemory_ompt_library_ctor() {}
+}
+
+//--------------------------------------------------------------------------------------//
+
+static profile_map_t&
+get_profile_map()
+{
+    return get_tl_static<profile_map_t>();
+}
+
+//--------------------------------------------------------------------------------------//
+
+static profile_stack_t&
+get_profile_stack()
+{
+    return get_tl_static<profile_stack_t>();
+}
+
+//--------------------------------------------------------------------------------------//
+
+static void
+create_profiler(const std::string& pname, uint64_t kernid)
+{
+    get_profile_map().insert(std::make_pair(kernid, profile_entry_t(pname, true)));
+}
+
+//--------------------------------------------------------------------------------------//
+
+static void
+destroy_profiler(uint64_t kernid)
+{
+    if(get_profile_map().find(kernid) != get_profile_map().end())
+        get_profile_map().erase(kernid);
+}
+
+//--------------------------------------------------------------------------------------//
+
+template <typename Tp, typename... Args>
+void
+start_profiler(uint64_t kernid, Tp, Args&&... _args)
+{
+    if(get_profile_map().find(kernid) != get_profile_map().end())
+    {
+        get_profile_map().at(kernid).audit(Tp{});
+        get_profile_map().at(kernid).audit(std::forward<Args>(_args)...);
+        get_profile_map().at(kernid).start();
+    }
+}
+
+//--------------------------------------------------------------------------------------//
+
+template <typename... Args>
+void
+stop_profiler(uint64_t kernid, Args&&... _args)
+{
+    if(get_profile_map().find(kernid) != get_profile_map().end())
+    {
+        get_profile_map().at(kernid).stop();
+        get_profile_map().at(kernid).audit(std::forward<Args>(_args)...);
+    }
+}
+
+//--------------------------------------------------------------------------------------//
+
+bool
+configure_environment()
+{
+    tim::set_env("TIMEMORY_TIME_OUTPUT", "ON", 0);
+    tim::set_env("TIMEMORY_COUT_OUTPUT", "OFF", 0);
+    tim::set_env("TIMEMORY_ADD_SECONDARY", "OFF", 0);
+    // clang-format off
+    @KP_ENVIRON@
+    return true;
+    // clang-format on
+}
+
+static auto env_configured = (configure_environment(), true);
+
+//======================================================================================//
+//
+//      Kokkos symbols
+//
+//======================================================================================//
+
+extern "C" void
+kokkosp_print_help(char* argv0)
+{
+    std::vector<std::string> _args = { argv0, "--help" };
+    tim::timemory_argparse(_args);
+}
+
+extern "C" void
+kokkosp_parse_args(int argc, char** argv)
+{
+    // tim::timemory_init(argc, argv);
+    std::vector<std::string> _args{};
+    _args.reserve(argc);
+    for(int i = 0; i < argc; ++i)
+        _args.emplace_back(argv[i]);
+    tim::timemory_argparse(_args);
+}
+
+extern "C" void
+kokkosp_declare_metadata(const char* key, const char* value)
+{
+    tim::manager::add_metadata(key, value);
+}
+
+extern "C" void
+kokkosp_init_library(const int loadSeq, const uint64_t interfaceVer,
+                     const uint32_t devInfoCount, void* deviceInfo)
+{
+    tim::consume_parameters(devInfoCount, deviceInfo);
+    timemory_mpip_library_ctor();
+    timemory_ompt_library_ctor();
+
+    printf("%s\n", spacer.c_str());
+    printf("# KokkosP: timemory Connector (sequence is %d, version: %llu, components: "
+           "%s)\n",
+           loadSeq, (unsigned long long) interfaceVer,
+           get_types_string(profile_entry_t{}).c_str());
+    printf("%s\n\n", spacer.c_str());
+
+    // timemory_init is expecting some args so generate some
+    tim::timemory_init("@KP_LIBNAME@");
+    assert(env_configured);
+
+    // clang-format off
+    tim::component::user_global_bundle::configure<@KP_COMPONENTS@>();
+    // clang-format on
+}
+
+extern "C" void
+kokkosp_finalize_library()
+{
+    printf("\n%s\n", spacer.c_str());
+    printf("KokkosP: Finalization of timemory Connector. Complete.\n");
+    printf("%s\n\n", spacer.c_str());
+
+    for(auto& itr : get_profile_map())
+        itr.second.stop();
+    get_profile_map().clear();
+
+    tim::timemory_finalize();
+}
+
+//--------------------------------------------------------------------------------------//
+
+extern "C" void
+kokkosp_begin_parallel_for(const char* name, uint32_t devid, uint64_t* kernid)
+{
+    if_constexpr(profile_entry_t::size() > 0)
+    {
+        auto pname =
+            (devid > std::numeric_limits<uint16_t>::max())  // junk device number
+                ? TIMEMORY_JOIN('/', "kokkos", name)
+                : TIMEMORY_JOIN('/', "kokkos", TIMEMORY_JOIN("", "dev", devid), name);
+        *kernid = get_unique_id();
+        create_profiler(pname, *kernid);
+        start_profiler(*kernid, kp_timemory_parallel_for{}, name, devid);
+    }
+}
+
+extern "C" void
+kokkosp_end_parallel_for(uint64_t kernid)
+{
+    if_constexpr(profile_entry_t::size() > 0)
+    {
+        stop_profiler(kernid);
+        destroy_profiler(kernid);
+    }
+}
+
+//--------------------------------------------------------------------------------------//
+
+extern "C" void
+kokkosp_begin_parallel_reduce(const char* name, uint32_t devid, uint64_t* kernid)
+{
+    if_constexpr(profile_entry_t::size() > 0)
+    {
+        auto pname =
+            (devid > std::numeric_limits<uint16_t>::max())  // junk device number
+                ? TIMEMORY_JOIN('/', "kokkos", name)
+                : TIMEMORY_JOIN('/', "kokkos", TIMEMORY_JOIN("", "dev", devid), name);
+        *kernid = get_unique_id();
+        create_profiler(pname, *kernid);
+        start_profiler(*kernid, kp_timemory_parallel_reduce{}, name, devid);
+    }
+}
+
+extern "C" void
+kokkosp_end_parallel_reduce(uint64_t kernid)
+{
+    if_constexpr(profile_entry_t::size() > 0)
+    {
+        stop_profiler(kernid);
+        destroy_profiler(kernid);
+    }
+}
+
+//--------------------------------------------------------------------------------------//
+
+extern "C" void
+kokkosp_begin_parallel_scan(const char* name, uint32_t devid, uint64_t* kernid)
+{
+    if_constexpr(profile_entry_t::size() > 0)
+    {
+        auto pname =
+            (devid > std::numeric_limits<uint16_t>::max())  // junk device number
+                ? TIMEMORY_JOIN('/', "kokkos", name)
+                : TIMEMORY_JOIN('/', "kokkos", TIMEMORY_JOIN("", "dev", devid), name);
+        *kernid = get_unique_id();
+        create_profiler(pname, *kernid);
+        start_profiler(*kernid, kp_timemory_parallel_scan{}, name, devid);
+    }
+}
+
+extern "C" void
+kokkosp_end_parallel_scan(uint64_t kernid)
+{
+    if_constexpr(profile_entry_t::size() > 0)
+    {
+        stop_profiler(kernid);
+        destroy_profiler(kernid);
+    }
+}
+
+//--------------------------------------------------------------------------------------//
+
+extern "C" void
+kokkosp_begin_fence(const char* name, uint32_t devid, uint64_t* kernid)
+{
+    if_constexpr(profile_entry_t::size() > 0)
+    {
+        auto pname =
+            (devid > std::numeric_limits<uint16_t>::max())  // junk device number
+                ? TIMEMORY_JOIN('/', "kokkos", name)
+                : TIMEMORY_JOIN('/', "kokkos", TIMEMORY_JOIN("", "dev", devid), name);
+        *kernid = get_unique_id();
+        create_profiler(pname, *kernid);
+        start_profiler(*kernid, kp_timemory_fence{}, name, devid);
+    }
+}
+
+extern "C" void
+kokkosp_end_fence(uint64_t kernid)
+{
+    if_constexpr(profile_entry_t::size() > 0)
+    {
+        stop_profiler(kernid);
+        destroy_profiler(kernid);
+    }
+}
+
+//--------------------------------------------------------------------------------------//
+
+extern "C" void
+kokkosp_push_profile_region(const char* name)
+{
+    if_constexpr(profile_entry_t::size() > 0)
+    {
+        get_profile_stack().push_back(profile_entry_t(name, true));
+        get_profile_stack().back().audit(kp_timemory_region{});
+        get_profile_stack().back().start();
+    }
+}
+
+extern "C" void
+kokkosp_pop_profile_region()
+{
+    if_constexpr(profile_entry_t::size() > 0)
+    {
+        if(get_profile_stack().empty())
+            return;
+        get_profile_stack().back().stop();
+        get_profile_stack().pop_back();
+    }
+}
+
+//--------------------------------------------------------------------------------------//
+
+extern "C" void
+kokkosp_create_profile_section(const char* name, uint32_t* secid)
+{
+    if_constexpr(profile_entry_t::size() > 0)
+    {
+        *secid     = get_unique_id();
+        auto pname = TIMEMORY_JOIN('/', "kokkos", name);
+        create_profiler(pname, *secid);
+    }
+}
+
+extern "C" void
+kokkosp_destroy_profile_section(uint32_t secid)
+{
+    if_constexpr(profile_entry_t::size() > 0) { destroy_profiler(secid); }
+}
+
+//--------------------------------------------------------------------------------------//
+
+extern "C" void
+kokkosp_start_profile_section(uint32_t secid)
+{
+    if_constexpr(profile_entry_t::size() > 0)
+    {
+        start_profiler(secid, kp_timemory_section{});
+    }
+}
+
+extern "C" void
+kokkosp_stop_profile_section(uint32_t secid)
+{
+    if_constexpr(profile_entry_t::size() > 0) { stop_profiler(secid); }
+}
+
+//--------------------------------------------------------------------------------------//
+
+extern "C" void
+kokkosp_profile_event(const char* name)
+{
+    profile_entry_t{}.mark(name);
+}
+
+//--------------------------------------------------------------------------------------//

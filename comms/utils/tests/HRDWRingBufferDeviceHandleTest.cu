@@ -109,7 +109,7 @@ TEST_F(DeviceHandleTest, BasicInlineWrite) {
   std::vector<uint32_t> tags;
   auto result = reader.poll([&](const auto& e, uint64_t) {
     tags.push_back(e.data.tag);
-    EXPECT_NE(e.timestamp_ns, 0u) << "GPU timestamp should be non-zero";
+    EXPECT_NE(e.timestamp, 0u) << "GPU timestamp should be non-zero";
   });
 
   EXPECT_EQ(result.entriesRead, kCount);
@@ -157,7 +157,7 @@ TEST_F(DeviceHandleTest, MultiBlockConcurrentWrite) {
   HRDWRingBufferReader<TestEvent> reader(buf);
   std::vector<uint32_t> tags;
   auto result = reader.poll([&](const auto& e, uint64_t) {
-    EXPECT_NE(e.timestamp_ns, 0u);
+    EXPECT_NE(e.timestamp, 0u);
     tags.push_back(e.data.tag);
   });
 
@@ -186,8 +186,8 @@ TEST_F(DeviceHandleTest, StartEndPairing) {
   ASSERT_EQ(cudaStreamSynchronize(stream_), cudaSuccess);
 
   struct OpTiming {
-    uint64_t startTs{0};
-    uint64_t endTs{0};
+    uint32_t startTs{0};
+    uint32_t endTs{0};
   };
   std::vector<OpTiming> timings(kNumOps);
 
@@ -197,11 +197,11 @@ TEST_F(DeviceHandleTest, StartEndPairing) {
     ASSERT_LT(evt.opId, kNumOps);
     switch (evt.phase) {
       case EventPhase::kStart: {
-        timings[evt.opId].startTs = e.timestamp_ns;
+        timings[evt.opId].startTs = e.timestamp;
         break;
       }
       case EventPhase::kEnd: {
-        timings[evt.opId].endTs = e.timestamp_ns;
+        timings[evt.opId].endTs = e.timestamp;
         break;
       }
     }
@@ -260,7 +260,7 @@ TEST_F(DeviceHandleTest, InterleavedWithHostWrites) {
   uint32_t inlineEntries = 0;
   auto result = reader.poll([&](const auto& e, uint64_t) {
     auto tag = e.data.tag;
-    EXPECT_NE(e.timestamp_ns, 0u);
+    EXPECT_NE(e.timestamp, 0u);
     if (tag >= 2000) {
       ++inlineEntries;
     } else if (tag >= 1000) {

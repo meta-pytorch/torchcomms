@@ -1,0 +1,70 @@
+# Definitions for the CORI GPU system
+
+$(info "Including cori.def file")
+
+#---------------------------------------------------------------------------
+# BATCH Scheduler
+#---------------------------------------------------------------------------
+JSRUN_COMMAND = srun -n 1 
+BATCH_SCHEDULER = $(JSRUN_COMMAND)
+
+CUDA_MODULE ?= 
+#---------------------------------------------------------------------------
+# C compilers
+#---------------------------------------------------------------------------
+CCOMPILERS="clang, gcc, xlc"
+
+# GCC compiler
+ifeq ($(CC), gcc)
+  C_COMPILER_MODULE = cuda/10.1.243 gcc/8.1.1-openacc-gcc-8-branch-20190215
+  C_VERSION = gcc -dumpversion
+endif
+
+# CRAY compiler
+ifeq ($(CC), cc)
+  C_COMPILER_MODULE = cdt/19.11 PrgEnv-cray; module switch cce cce/9.1.0;module load craype-x86-skylake; module unload cray-libsci; module load cudatoolkit craype-accel-nvidia70
+  C_VERSION = cc --version 2>&1 | grep -oh 'clang version [0-9.]*'| grep -oh 'version .*' | sed "s/version/cray/g"
+endif
+
+# Clang compiler
+ifeq ($(CC), clang)
+  C_COMPILER_MODULE = PrgEnv-llvm/10.0.0-git_20190828
+  C_VERSION = clang -v 2>&1 | grep -oh 'clang version [0-9.]*'| grep -oh 'version .*' 
+endif
+
+#---------------------------------------------------------------------------
+# C++ compilers
+#---------------------------------------------------------------------------
+CXXCOMPILERS="clang++, g++, xlc++"
+
+# GCC compiler
+ifeq ($(CXX), g++)
+  CXX_COMPILER_MODULE = cuda/10.1.243 gcc/8.1.1-openacc-gcc-8-branch-20190215
+  CXX_VERSION = g++ -dumpversion
+endif
+
+
+# IBM XL compiler
+ifeq ($(CXX), CC)
+  CXX_COMPILER_MODULE = cdt/19.11 PrgEnv-cray ; module switch cce cce/9.1.0;module load craype-x86-skylake; module unload cray-libsci; module load cudatoolkit craype-accel-nvidia70
+  CXX_VERSION = CC --version 2>&1 | grep -oh 'clang version [0-9.]*'| grep -oh 'version .*' | sed "s/version/cray/g"
+endif
+
+# Clang compiler
+ifeq ($(CXX), clang++)
+  CXX_COMPILER_MODULE = PrgEnv-llvm/10.0.0-git_20190828
+  CXX_VERSION = clang++ -v 2>&1 | grep -oh 'clang version [0-9.]*' | grep -oh 'version .*' 
+endif
+
+#---------------------------------------------------------------------------
+# FORTRAN Compilers
+#---------------------------------------------------------------------------
+FCOMPILERS="gfortran, xlf"
+
+# GCC compiler
+ifeq ($(FC), gfortran)
+  F_COMPILER_MODULE = cuda/10.1.243 gcc/8.1.1-openacc-gcc-8-branch-20190215
+  F_VERSION = gfortran -dumpversion
+endif
+
+

@@ -1,0 +1,14 @@
+COMPSRCS += components/rocp_sdk/rocp_sdk.c components/rocp_sdk/sdk_class.cpp
+
+COMPOBJS += rocp_sdk.o sdk_class.o
+
+ROCP_SDK_INCL=$(PAPI_ROCP_SDK_ROOT)/include
+
+CFLAGS  += -g -I$(ROCP_SDK_INCL) -D__HIP_PLATFORM_AMD__
+LDFLAGS += $(LDL)
+
+rocp_sdk.o: components/rocp_sdk/rocp_sdk.c $(HEADERS)
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c $< -o $@
+
+sdk_class.o: components/rocp_sdk/sdk_class.cpp $(HEADERS)
+	$(CXX) $(LIBCFLAGS) $(OPTFLAGS) -c $< -o $@

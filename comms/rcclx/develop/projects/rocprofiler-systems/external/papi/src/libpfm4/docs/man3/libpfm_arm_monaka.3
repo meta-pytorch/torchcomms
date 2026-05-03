@@ -1,0 +1,36 @@
+.TH LIBPFM 3  "October, 2024" "" "Linux Programmer's Manual"
+.SH NAME
+libpfm_arm_monaka - support for Fujitsu FUJITSU-MONAKA PMU
+.SH SYNOPSIS
+.nf
+.B #include <perfmon/pfmlib.h>
+.sp
+.B PMU name: arm_monaka
+.B PMU desc: Fujitsu FUJITSU-MONAKA
+.sp
+.SH DESCRIPTION
+The library supports the Fujitsu FUJITSU-MONAKA core PMU.
+
+This PMU supports 8 counters and privilege levels filtering.
+It can operate in 64 bit mode only.
+
+.SH MODIFIERS
+The following modifiers are supported on Fujitsu FUJITSU-MONAKA:
+.TP
+.B u
+Measure at the user level. This corresponds to \fBPFM_PLM3\fR.
+This is a boolean modifier.
+.TP
+.B k
+Measure at the kernel level. This corresponds to \fBPFM_PLM0\fR.
+This is a boolean modifier.
+.TP
+.B hv
+Measure at the hypervisor level. This corresponds to \fBPFM_PLMH\fR.
+This is a boolean modifier.
+
+.SH AUTHORS
+.nf
+Stephane Eranian <eranian@gmail.com>
+.if
+.PP

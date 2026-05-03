@@ -1,0 +1,7 @@
+# $Id$
+
+COMPSRCS += components/coretemp_freebsd/coretemp_freebsd.c 
+COMPOBJS += coretemp_freebsd.o
+
+coretemp_freebsd.o: components/coretemp_freebsd/coretemp_freebsd.c components/coretemp_freebsd/coretemp_freebsd.h 
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/coretemp_freebsd/coretemp_freebsd.c -o coretemp_freebsd.o 

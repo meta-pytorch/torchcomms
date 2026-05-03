@@ -1,0 +1,193 @@
+.TH LIBPFM 3  "November, 2003" "" "Linux Programmer's Manual"
+.SH NAME
+pfm_get_pmu_name, pfm_get_pmu_type, pfm_get_pmu_name_bytype, pfm_pmu_is_supported, pfm_force_pmu,pfm_list_supported_pmu \- query library about supported PMU models
+.SH SYNOPSIS
+.nf
+.B #include <perfmon/pfmlib.h>
+.sp
+.BI "int pfm_get_pmu_name(char *"name ", int " maxlen);
+.BI "int pfm_get_pmu_type(int *" type);
+.BI "int pfm_get_pmu_name_bytype(int " type ", char *" name ", int " maxlen);
+.BI "int pfm_pmu_is_supported(int " type);
+.BI "int pfm_force_pmu(int " type);
+.BI "int pfm_list_supported_pmus(int (*" pf ")(const char *"fmt ",...));"
+.sp
+.SH DESCRIPTION
+These functions retrieve information about the detected host PMU
+and the PMU models supported by the library. More than one model
+can be supported by the same library.
+
+Each PMU model is assigned a type and a name. The latter is just
+a string and the former is a unique identifier. The currently 
+supported types are:
+.TP
+.B PFMLIB_GENERIC_PMU
+Intel Itanium default architected PMU model, i.e., the basic model.
+.TP
+.B PFMLIB_ITANIUM_PMU
+Intel Itanium processor PMU model. The model is found in the first
+implementation of the IA-64 architecture, code name Merced.
+.TP
+.B PFMLIB_ITANIUM2_PMU
+Intel Itanium 2 processor PMU model. This is the model provided
+by McKinley, Madison, and Deerfield processors.
+.TP
+.B PFMLIB_MONTECITO_PMU
+Intel Dual-core Itanium 2 processor PMU model. This is the model provided
+by Montecito, Montvale processors.
+.TP
+.B PFMLIB_AMD64_PMU
+AMD AMD64 processors (family 15 and 16)
+.TP
+.B PFMLIB_GEN_IA32_PMU
+ Intel X86 architectural PMU v1, v2, v3
+.TP
+.B PFMLIB_I386_P6_PMU
+Intel P6 processors. That includes Pentium Pro, Pentium II, Pentium III, but excludes Pentium M
+.TP
+.B PFMLIB_I386_PM_PMU
+Intel Pentium M processors.
+.TP
+.B PFMLIB_INTEL_PII_PMU
+Intel Pentium II processors.
+.TP
+.B PFMLIB_PENTIUM4_PMU
+Intel processors based on Netburst micro-architecture. That includes Pentium 4.
+.TP
+.B PFMLIB_COREDUO_PMU
+Intel processors based on Yonah micro-architecture. That includes Intel Core Duo/Core Solo processors
+.TP
+.B PFMLIB_I386_PM_PMU
+Intel Pentium M processors
+.TP
+.B PFMLIB_INTEL_CORE_PMU
+Intel processors based on the Core micro-architecture. That includes Intel Core 2 Duo/Quad processors
+.TP
+.B PFMLIB_INTEL_ATOM_PMU
+Intel processors based on the Atom micro-architecture.
+.TP
+.B PFMLIB_INTEL_NHM_PMU
+Intel processors based on the Nehalem micro-architectures. That includes Intel Core i7 processors.
+.TP
+.B PFMLIB_MIPS_20KC_PMU
+MIPS 20KC  processors
+.TP
+.B PFMLIB_MIPS_24K_PMU
+MIPS 24K processors
+.TP
+.B PFMLIB_MIPS_25KF_PMU
+MIPS 25KF processors
+.TP
+.B PFMLIB_MIPS_34K_PMU
+MIPS 34K processors
+.TP
+.B PFMLIB_MIPS_5KC_PMU
+MIPS 5KC processors
+.TP
+.B PFMLIB_MIPS_74K_PMU
+MIPS 74K  processors
+.TP
+.B PFMLIB_MIPS_R10000_PMU
+MIPS R10000 processors
+.TP
+.B PFMLIB_MIPS_R12000_PMU
+MIPS R12000 processors
+.TP
+.B PFMLIB_MIPS_RM7000_PMU
+MIPS RM7000 processors
+.TP
+.B PFMLIB_MIPS_RM9000_PMU
+MIPS RM9000 processors
+.TP
+.B PFMLIB_MIPS_SB1_PMU
+MIPS SB1/SB1A processors
+.TP
+.B PFMLIB_MIPS_VR5432_PMU
+MIPS VR5432 processors
+.TP
+.B PFMLIB_MIPS_VR5500_PMU
+MIPS VR5500 processors
+.TP
+.B PFMLIB_MIPS_ICE9A_PMU
+SiCortex ICE9A
+.TP
+.B PFMLIB_MIPS_ICE9B_PMU
+SiCortex ICE9B
+.TP
+.B PFMLIB_POWERPC_PMU
+IBM POWERPC processors
+.TP
+.B PFMLIB_CRAYX2_PMU
+Cray X2  processors
+.TP
+.B PFMLIB_CELL_PMU
+IBM Cell processors
+.TP
+.B PFMLIB_PPC970_PMU
+IBM PowerPC 970(FX,GX) processors
+.TP
+.B PFMLIB_PPC970MP_PMU
+IBM PowerPC 970MP processors
+.TP
+.B PFMLIB_POWER3_PMU
+IBM POWER3  processors
+.TP
+.B PFMLIB_POWER4_PMU
+IBM POWER4 processors
+.TP
+.B PFMLIB_POWER5_PMU
+IBM POWER5 processors
+.TP
+.B PFMLIB_POWER5p_PMU
+BM POWER5+ processors
+.TP
+.B PFMLIB_POWER6_PMU
+IBM POWER6 processors
+.LP
+The \fBpfm_get_pmu_name()\fR function returns the name of the detected 
+host PMU. The library must have been initialized properly before making this
+call. The name is returned in the \fBname\fR argument. The \fBmaxlen\fR argument 
+indicates the maximum length of the buffer provided for \fBname\fR.
+Up to \fBmaxlen-1\fR characters will be returned, not including the
+termination character.
+
+.sp
+The \fBpfm_get_pmu_type()\fR function returns the type of the detected host
+PMU. The library must have been initialized properly before making this
+call. The type returned in  \fBtype\fR can be any one of the three listed above. 
+.sp
+The \fBpfm_get_pmu_name_bytype()\fR function returns the name of a PMU model in
+\fBname\fR given a type in the \fBtype\fR argument. The \fBmaxlen\fR argument 
+indicates the maximum length of the buffer provided for \fBname\fR.
+Up to \fBmaxlen-1\fR characters will be returned, not including the
+termination character.
+
+.sp
+The \fBpfm_pmu_is_supported()\fR function returns \fBPFMLIB_SUCCESS\fR if the given
+PMU type is supported by the library independently of what the host PMU model is.
+.sp
+The \fBpfm_force_pmu()\fR function is used to forced the library to use a particular
+PMU model compared to what it has detected. The library checks that the selected 
+type can be supported by the host PMU. This is mostly useful to force the
+library to the use generic PMU model \fBPFMLIB_GENERIC_PMU\fR.  This function can
+be called at any time and upon return the library is considered initialized.
+.sp
+The \fBpfm_list_supported_pmu()\fR function is used to print the list PMU types
+that the library supports. The results is printed using the function provided
+in the \fBpf\fR argument, which must be a printf-style function.
+.SH RETURN
+The function returns whether or not it was successful.
+A return value of \fBPFMLIB_SUCCESS\fR indicates success, 
+otherwise the value is the error code.
+.SH ERRORS
+.B PFMLIB_ERR_NOINIT
+the library has not been initialized properly.
+.TP
+.B PFMLIB_ERR_INVAL
+invalid argument was given, most likely invalid pointer or invalid PMU type.
+.TP
+.B PFMLIB_ERR_NOTSUPP
+the selected PMU type can be used on the host CPU.
+.SH AUTHOR
+Stephane Eranian <eranian@hpl.hp.com>
+.PP

@@ -1,0 +1,5 @@
+add_library(fnnum SHARED num.c)
+add_executable(test_fp test_function_ptr.c)
+target_link_libraries(test_fp gotcha fnnum)
+gotcha_add_test(fp_test test_fp)
+environment_add(fp_test TEST "GOTCHA_DEBUG=3")

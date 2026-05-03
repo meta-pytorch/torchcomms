@@ -1,0 +1,46 @@
+# Note: If PAPI_CUDA_ROOT environment variable is set then build using $PAPI_CUDA_ROOT/bin/nvcc.
+# If not set find nvcc installed on system and set it.
+PAPI_CUDA_ROOT ?= $(shell dirname $(shell dirname $(shell which nvcc)))
+
+# obtain user Cuda version to check if Cuda component currently supports it
+NVCC = $(PAPI_CUDA_ROOT)/bin/nvcc
+NVCC_VERSION := $(shell $(NVCC) --version | grep -oP '(?<=release )\d+\.\d+')
+ifneq ($(MAKECMDGOALS), clean)
+    ifeq ($(shell echo $(NVCC_VERSION) | awk '{print $$1 >= 12.6}'), 1)
+        $(error In Cuda 12.6, the MetricsContext API was replaced with the MetricsEvaluator API. Due to this, the Cuda component is currrently being refactored to support Cuda versions >= 12.6)
+    endif
+endif
+
+CUDA_MACS = -DPAPI_CUDA_MAIN=$(PAPI_CUDA_MAIN) -DPAPI_CUDA_RUNTIME=$(PAPI_CUDA_RUNTIME)
+CUDA_MACS+= -DPAPI_CUDA_CUPTI=$(PAPI_CUDA_CUPTI) -DPAPI_CUDA_PERFWORKS=$(PAPI_CUDA_PERFWORKS)
+
+COMPSRCS += components/cuda/linux-cuda.c \
+            components/cuda/cupti_dispatch.c \
+            components/cuda/cupti_utils.c \
+            components/cuda/papi_cupti_common.c \
+            components/cuda/cupti_profiler.c \
+            components/cuda/cupti_events.c \
+
+COMPOBJS += linux-cuda.o cupti_dispatch.o cupti_utils.o papi_cupti_common.o cupti_profiler.o cupti_events.o
+
+# CFLAGS specifies compile flags; need include files here, and macro defines.
+CFLAGS += -I$(PAPI_CUDA_ROOT)/include -I$(PAPI_CUDA_ROOT)/extras/CUPTI/include -g $(CUDA_MACS)
+LDFLAGS += $(LDL)
+
+linux-cuda.o: components/cuda/linux-cuda.c $(HEADERS)
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/cuda/linux-cuda.c -o linux-cuda.o
+
+cupti_dispatch.o: components/cuda/cupti_dispatch.c
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/cuda/cupti_dispatch.c -o cupti_dispatch.o
+
+cupti_utils.o: components/cuda/cupti_utils.c $(HEADERS)
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/cuda/cupti_utils.c -o cupti_utils.o
+
+papi_cupti_common.o: components/cuda/papi_cupti_common.c
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/cuda/papi_cupti_common.c -o papi_cupti_common.o
+
+cupti_profiler.o: components/cuda/cupti_profiler.c
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/cuda/cupti_profiler.c -o cupti_profiler.o
+
+cupti_events.o: components/cuda/cupti_events.c
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/cuda/cupti_events.c -o cupti_events.o

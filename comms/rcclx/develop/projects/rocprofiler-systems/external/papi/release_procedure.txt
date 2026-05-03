@@ -1,0 +1,415 @@
+Release Procedure for PAPI
+==========================
+
+Below is a step-wise procedure for making a PAPI release.
+This is a living document and may not be totally current or accurate.
+It is an attempt to capture the current practices in making a PAPI release.
+Please update it as appropriate.
+
+One way to use this procedure is to print a copy and check off
+the lines as they are completed to avoid confusion.
+================================================================================
+__ 0a. Notify developers that a release is imminent and the repository should be
+       considered frozen. Check the GitHub Actions / make fulltest results to make sure
+       the codebase is bug-free.
+
+       Before running 'make fulltest', ensure you do NOT configure PAPI using 
+       '--with-debug=yes'. This forces -O0 which will cause some of the papi_tot_cyc.c
+       tests to fail. We run our 'make fulltest' with no components installed (other
+       than the defaults). Several components require specialized hardware, operating systems, or
+       sudo privileges to operate. 
+
+       You should use '--with-debug=yes' if you wish to do any valgrind testing for
+       memory leaks. You can conduct such tests running the code
+       './validation_tests/memleak_check.c' using valgrind. You may need to load a
+       module to use valgrind.
+
+       BEFORE YOU BEGIN: Step 2d will require access to the papi website directory,
+       so all these steps should be done on a machine that has it. Most recently we
+       updated using methane.icl.utk.edu, where '/nfs/www/icl/projectsdev/papi/docs'
+       was accessible. The sysadmin must give you write permission. This directory 
+       should be available on all machines. You must also be on a machine that will 
+       let you rebuild the manual pages. This requires doxygen version 1.8.5 (See step 2a). 
+       You can check the version with 'doxygen -v' or 'doxygen --version'. 
+
+       The website directory may be 'automount'. That means you cannot see it with
+       'ls' and it will not be searched by 'find'. You must change to the directory 
+       for it to automount. For example, 'pushd /nfs/www/icl/projectsdev/papi/docs' 
+       to get it mounted (if this fails, you don't have access, discuss with your sysadmin). 
+       'popd' to return to your previous directory, THEN you can
+       'ls /nfs/www/icl/projectsdev/papi/docs' and see the files.
+
+       --- Modified with 6.0.0 to use a Pull Request, to allow review of changes
+           before committing.
+
+__ 0b. Fork the repository. It is located at: https://github.com/icl-utk-edu/papi.
+       GitHub only allows you to create a single fork. If you have not already created
+       a fork of the PAPI repository at this point then do so.i
+
+       For creating a fork on GitHub, click the Fork dropdown in the top right corner
+       of the PAPI repository and then select "+ Create a new fork". Fill out the boxes
+       that follow.
+
+__ 0c. Clone your fork and then execute 'cd papi' on the command line. 
+       Once inside the 'papi' directory, create a branch titled papi-release-X-Y-Z-t.
+       Replace X, Y, Z with the appropriate numerals. As a note, the branch title is
+       not necessarily restricted to papi-release-X-Y-Z-t.
+       Example: 
+       > git clone https://github.com/Treece-Burgess/papi.git
+       > cd papi
+       > git checkout -b papi-release-7-2-0b2
+
+__ 1.  Update any documentation that may have changed. Pay particular attention
+       to INSTALL.txt.
+
+__ 2.  Check/Change the version number in:
+           - papi.spec (i.e. Version:)
+           - src/papi.h (i.e. PAPI_VERSION)
+           - src/configure.in (i.e. AC_INIT)
+           - src/Makefile.in (i.e. PAPIVER, PAPIREV, PAPIAGE, PAPIINC)
+           - doc/Doxyfile-common (i.e. PROJECT_NUMBER)
+       Commit these version changes to the repo, along with any other changed files.
+
+       Do not "git push" until autoconf is run (Step 3). You will have to run it, 
+       you just changed configure.in, which is the reason to run autoconf.
+       The version number may already have been updated after the last release, 
+       if so you can skip these edits, but do commit any other files changed.
+
+-- 2a. Ensure you have doxygen 1.8.5. Execute 'doxygen -v' or 'doxygen --version' 
+       on the command line to see what doxygen version you are currently using.
+
+       If it isn't found, find the doxygen directories and add it to $PATH.
+       Example: 
+       > find /usr -name "doxygen" 2>/dev/null 
+       > export PATH=/[PathFound]:$PATH (use actual path for [PathFound].)
+       > doxygen -v      (To Test)
+
+-- 2b. Rebuild the doxygen manpages:
+       > cd doc && make && make install
+
+       You will want to check if anything needs to be committed to git.
+       (Usually the $(papi_dir)/man/man1 and man3 directories).
+       Doxygen may generate some extraneous files in man1 and man3; e.g. 
+       'man/man1/_home_youruserid_*.*' and 'man/man3/_home_youruserid_*.*' 
+
+       Remove these. Be careful of the directory! These ALSO exist in 
+       'doc/man/man1' and 'doc/man/man3' (where they were built).
+       Those are NOT the ones to remove, and not the ones to ADD in the next step.
+
+       Then you can go to each directory and add all files:
+       > cd papi/man/man1
+       > git add *
+       > cd papi/man/man3 
+       > git add *
+
+       ---- Step 2d will require access to the webdir. The website files are not
+       ---- saved as part of the repository, they are updated directly.
+
+-- 2c. Rebuild the website docs.
+       We use Doxyfile-html for this, that is a configuration file in 'papi/doc'
+       that will be used by the Makefile. Run the commands below:
+       > newgrp papi (newgrp is a linux command, it changes your defacto group to
+                      papi, starting a new shell.)
+       > cd doc && make clean html
+
+-- 2d. Update the web dir (currently /nfs/www/icl/projectsdev/papi/docs as of 10/28/24).
+       For the example below, 'webdir' = '/nfs/www/icl/projectsdev'.
+       You may wish to do a diff between this directory and the papi directory to
+       ensure you are replacing the correct files.
+       > diff webdir/papi/docs/* papi/doc/html/*
+
+       Cleanup web dir and add new files:
+       > ( /bin/rm -rf /webdir/papi/docs/* )
+       > ( cp -R doc/html/* /webdir/papi/docs )
+       > ( chmod -R 775 /webdir/papi/docs )
+
+__ 3.  If 'configure.in' is changed, we must generate a new 'configure' file.
+       Run autoconf (2.69), it reads configure.in and creates a new configure.
+       As of 10/28/24, you will need to module load autoconf version 2.69 from
+       autoconf-archive.
+       > module load autoconf-archive/2023.02.20/gcc-11.4.1-izt5hd
+       > autconf --version
+       > diff -u configure <(autoconf configure.in) (see first NOTE below on why to do this)
+       > autoconf configure.in > configure
+
+       NOTE: We have an issue with autoconf; on different machines the same version (2.69)
+       can produce different files. Due to this when generating a new configure, diff 
+       the master configure file vs your newly generated configure file. Delete any
+       excess lines that may appear. All new changes must now be done on login.icl.utk.edu.
+
+       NOTE: Using an autoconf version > 2.69 will work, but will produce an
+       inordinate number of extraneous differences between versions.
+       You can check the version # with 'autoconf -V' or 'autoconf --version'.
+       Release 6.0.0.1 was done on saturn.icl.utk.edu with autoconf 2.69.
+
+__ 4.  Create a ChangeLog for the current release.
+       We use a python script titled gitlog2changelog.py to generate this for us.
+       There are two command line arguments to pass to the python script:
+           1. --starting_commit, commit hash for the starting point of the desired range (non-inclusive). 
+           2. --fout, the filename to save the script output to.
+       Example: 
+       > ./gitlog2changelog.py --starting_commit=0f93aac0ad426a2a9dc2e5fb43c87e6f0cf656ef --fout=ChangeLogP800.txt 
+
+__ 5.  Scan the ChangeLog to remove extraneous fluff, like perfctr imports.
+
+__ 6.  Modify RELEASENOTES.txt to summarize the major changes listed in the log.
+
+__ 7.  Add ChangeLogPXYZ.txt to git and commit both ChangeLogPXYZ.txt and
+       RELEASENOTES.txt.
+
+__ 8.  Push the branch back to the remote fork. 'git push'.
+   
+__ 9.  Go to https://github.com/icl-utk-edu/papi and create a pull request.
+       Having just made a push, a yellow banner should appear right above
+       the green "Code" dropdown button. If this is not the case then follow
+       the steps outlined below.
+
+       1. Click on the "Pull requests" button located in the top left corner.
+       2. Click on the green "New pull request" button located in the middle
+          right corner.
+       3. Click on the blue "compare across forks" button located below the
+          "Compare changes" heading.
+       4. For the head repository select your PAPI fork and then for compare select
+          the branch that you would like to merge in.
+       5. Review the changes and if everything looks correct click "Create pull request".
+
+       Then wait for that to be reviewed, approved, and merged. 
+       Once it is merged, no other pull requests should be approved, until the
+       following steps are completed!
+
+       ------BRANCHING AND TAGGING 
+
+__ 10. After the pull request is merged: Clone the new PAPI.
+       First, remove or rename any existing papi/ directory. Then
+       'git clone https://github.com/icl-utk-edu/papi.git' 
+       
+__ 11. Change to the papi directory, 'cd papi'.
+       If this is not an incremental release, branch git.
+       'git checkout -b stable-6.0'  (change version as needed).
+
+__ 12. Tag git: papi-X-Y-Z-t.
+       Example: 
+       > git tag -a papi-6-0-0-t
+
+__ 13. Push the tag to the central repo. 
+       Examples:
+       > git push --tags origin stable-6.0 (if you created a new branch, should match step 11)
+       OTHERWISE
+       > git push --tags
+ 
+       You will be prompted for a comment on the tags. A tags comment should be able to be seen by
+       clicking "Tags" and then clicking the desired tag you would like to see.
+       For a comment, 'Release PAPI-6-0-0-t' is sufficient. (your own version of course).
+
+__ 13a. Double check. Go to the repository. Look at Branches; ensure you select 'all branches',
+        if you branched, the branch should be shown. 
+        Ensure your tag appears on the list of Tags.
+
+        ------BUILD A TARBALL. 
+__ 14.  Create a fresh clone of the papi repository, under a directory name including the 
+        release number. This is important, we will delete the '.git' file for the tarball,
+        so this new directory will no longer be under git. 
+        Example:
+	> git clone https://github.com/icl-utk-edu/papi.git papi-6.0.0 (your own version)
+	> cd papi-6.0.0 (your own version)
+       	Note: If you created a new branch, ensure the clone contains
+       	your last commit and ChangeLog. If not, something went wrong with steps 4-8.
+       
+__ 15. 	Delete any unneccessary files or directories particularly .doc and .pdf 
+        files in the /doc directory. We use a script for this, it deletes itself:
+        'sh delete_before_release.sh'.
+	NOTE: Running the above command deletes the .git directory! You will not be 
+        able to commit or push any changes in this directory once this script is run. 
+
+__ 16.  tar the directory. 
+        Example:
+        > tar -cvf papi-X.Y.Z.tar papi-X.Y.Z (using release number for X-Y-Z)
+
+__ 17.  zip the tarball.
+        Example:
+        > gzip papi-X.Y.Z.tar
+
+__ 18.  Copy the tarball to the website. 
+        Example:
+        > cp papi-X.Y.Z.tar /nfs/www/icl/projects/papi/downloads/.
+
+        current directory:  /nfs/www/icl/projects/papi/downloads
+        previously: gonzo:/mnt/papi/downloads
+        previously: /silk/homes/icl/projects/papi/downloads
+
+__ 19.  Check permissions on the tarball. 664 is good. (-rw-rw-r--).
+
+__ 19a. Check that the proper link where folks can download the tarball
+        is functional. It should look like:
+        http://icl.utk.edu/projects/papi/downloads/papi-X.Y.Z.tar.gz
+        Note: The landing page may look broken, but as long as the tarball is 
+        downloaded from your created link, then everything is working as expected.
+
+        ---- The following steps are typically done by the person responsible 
+        ---- for the website, NOT the programmer completing the release. But 
+        ---- final steps are done by the programmer, after these are completed.
+
+__ 20.  Create a link with supporting text on the PAPI software web page.
+        Create an entry on the PAPI wiki:
+        https://github.com/icl-utk-edu/papi/wiki/PAPI-Releases 
+        announcing the new release with details about the changes.
+
+__ 21.  Create a News item on the PAPI Web page.
+
+        ---- The following steps are typically done by the PAPI PIs or management. 
+        ---- At this writing, Heike Jagode and Anthony Danalis.
+
+__ 22.  Email the papi developer and discussion lists with an announcement (see emails below).
+        1. perfapi-devel@icl.utk.edu
+        2. ptools-perfapi@icl.utk.edu
+
+        ---- FINAL STEPS: To be done by the Programmer making the release.
+        ---- Bump version number, update release procedures (after you know they
+        ---- worked!) This is to ensure more development commits (that may not 
+        ---- be fully tested) will not be in the release version of the repository.
+
+        *WE WILL UPDATE THIS SECTION ONCE WE DO THESE STEPS DURING A RELEASE* 
+__ 23.  Using steps 0b and 0c make ANOTHER fork of the repository, clone it,
+        and change to that directory. Example, papi-6-0-1.
+
+__ 24.  Repeat Step 2 (ONLY Step 2, not 2a, etc) to bump the version number in 
+        the repository AFTER the release changing Z to Z+1. Example:
+        papi-6-0-0 to papi-6-0-1. The following files must be edited:
+        papi.spec,
+        src/papi.h, 
+        src/configure.in, 
+        src/Makefile.in, 
+        doc/Doxyfile-common (PROJECT_NUMBER)
+ 
+__ 25.  Repeat Step 3, to create a new configure, preserving runstatedir lines.
+
+__ 25a. If these 'release_procedure.txt' instructions need to be updated, fix them now.
+
+__ 26.  Add changed files, Commit and Push.
+        (use 'git status -uno' to see files that need to be added with 'git add filepath').
+
+        'git commit -m "Updated version to 6.0.1 after the release' 
+        'git push'.
+
+__ 27.  Repeat step 9, to create a pull request for review.
+
+As of PAPI 7.2.0b1, we began to add PAPI releases to the releases section on 
+GitHub, see the following link: https://github.com/icl-utk-edu/papi/releases.
+Steps 28 through 35 will outline how to create a release on GitHub.
+
+__ 28.  Go to the following link: https://github.com/icl-utk-edu/papi/releases.
+
+__ 29.  Select "Draft a new release" in the top right corner.
+
+__ 30.  From the "Choose a tag" dropdown, select the appropriate tag for this release.
+        Applying a tag was done at step 12.
+
+__ 31.  Select a Target, this should be the branch that was made in step 13 (e.g. stable-6.0).
+
+__ 32.  Add a release title, this should be PAPI followed by the release number (e.g. PAPI 7.2.0b1).
+
+__ 33.  Copy and paste the supporting text obtained at Steps 20 and 21. Along with the 
+        supporing text make sure to attach the release tarball.
+        Note: The text should be obtained from Heike and Anthony.
+
+__ 34.  Select the checkbox "Set as the latest release".
+
+__ 35.  Select the green "Publish Release" button.  
+
+================================================================================
+
+Patch Procedure for PAPI January 29, 2010
+
+Below is a step-wise procedure for making a PAPI patch.
+
+One way to use this procedure is to print a copy and check off
+the lines as they are completed to avoid confusion.
+================================================================================
+__ 0. Make sure you're on the branch you want to patch against.
+      > git clone https://github.com/icl-utk-edu/papi.git
+      > cd papi
+      > git checkout stable-5.0 (stable-5.0 would be replaced with the branch you want to patch against) 
+
+__1.  Generate the patch.
+      > git diff -p papi-5-0-0-t stable-5.0 > papi-5-0-1.patch
+
+__ 2. Apply the patch.
+      > wget http://icl.cs.utk.edu/projects/papi/downloads/papi-5.0.0.tar.gz
+      > tar xzf papi-5.0.0.tar.gz && cd papi-5.0.0
+      > patch -p1 ../papi-5-0-1.patch
+
+__ 3. If the patch applied cleanly, build and test on affected platforms;
+      otherwise clean up the patch and try again.
+
+__ 4. Copy the diff file to methane:/nfs/www/icl/projects/papi/downloads/patches/
+
+__ 5. Check permissions on the diff. 644 is good.
+
+__ 6. Create a link with supporting text on the PAPI software web page.
+
+__ 7. Create a News item on the PAPI Web page.
+
+__ 8. Email the papi discussion list with an announcement.
+
+__ 9. Post the announcement on the PAPI User Forum.
+
+
+================================================================================
+
+Bug Fix Release Procedure for PAPI
+
+Below is a step-wise procedure for creating a bug fix release tarball.
+
+One way to use this procedure is to print a copy and check off
+the lines as they are completed to avoid confusion.
+================================================================================
+__ 0.  Clone the PAPI repo and checkout the release branch.
+       > git clone https://github.com/icl-utk-edu/papi.git
+       For the first bug fix release do:
+       > git checkout stable-6.0
+       For further bug fix releases create a branch from the last bug fix release:
+       > git checkout tags/papi-6-0-0-1-t -b papi-6-0-0-2
+
+__ 1.  Make sure you're on the branch you want to apply bug fixes
+       > git branch
+       * stable-6.0
+
+__ 2.  Apply bug fixes. If those fixes are already applied in the master branch,
+       you can do 'git cherry-pick <commit#>'. If the commit was a merge use "-m 1",
+       Example:
+       > git cherry-pick -m 1 95c2b15
+       > git cherry-pick -m 1 7acc7a5
+
+__ 3.  Build and test your changes on different platforms.
+
+__ 4.  Create the tag papi-X-Y-Z-N-t (N is an incremental bug fix identifier)
+       Example:
+       > git tag -a papi-6-0-0-1-t
+      
+__ 5.  Push your changes:
+       > git push --tags
+
+__ 6.  Create a fresh clone of the papi repository, under a directory name including 
+       the release number.
+       > git clone https://github.com/icl-utk-edu/papi.git papi-6.0.0.1
+
+__ 7.  tar and zip the directory.
+       Example:
+       > tar -czf papi-6.0.0.1.tar.gz papi-6.0.0.1
+
+__ 8.  Copy the tarball to the webserver.
+       > scp papi-6.0.0.1.tar.gz methane:/nfs/www/icl/projects/papi/downloads
+
+__ 9.  ssh to methane and adjust permissions on the tarball. 664 is good. (-rw-rw-r--).
+       > ssh methane
+       > cd /nfs/www/icl/projects/papi/downloads
+       > chmod g+w papi-6.0.0.1.tar.gz
+
+__ 10. Check that the proper link where folks can download the tarball
+       is functional. Example:
+       > wget http://icl.utk.edu/projects/papi/downloads/papi-6.0.0.1.tar.gz
+
+__ 11. Create a link with supporting text on the PAPI software web page.
+       Create an entry on the PAPI wiki:
+       https://github.com/icl-utk-edu/papi/wiki/PAPI-Releases
+       announcing the new release with details about the changes.

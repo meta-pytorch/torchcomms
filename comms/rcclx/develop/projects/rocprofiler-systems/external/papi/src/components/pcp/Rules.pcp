@@ -1,0 +1,90 @@
+# Set default if the root environment variable is not already set.
+# Note PAPI_PCP_ROOT is an environment variable that must be set.
+# It is the ONLY environment variable that must be set, all other
+# settings are optional.
+PAPI_PCP_ROOT ?= /usr
+
+# For non-typical system configurations, the following 'runtime overrides' can
+# be set, as just a library name, or a full path and name. There cannot be any
+# spaces between the double quotes (which must be escaped as \"). An example:
+
+# PAPI_PCP_MAIN = \"$(PAPI_PCP_ROOT)/lib64/libpcp.so\"
+
+# By default, all overrides are empty strings.
+
+# If an override is not an empty string, it must work, or the component will be
+# disabled. 
+
+# Both at compile time and run time, the software depends on PAPI_PCP_ROOT.
+# There is one library used by the PCP component: 
+# libpcp.so
+
+# The standard installed locations for this library, with override:
+# $(PAPI_PCP_ROOT)/lib64/libpcp.so               #O.R. PAPI_PCP_MAIN
+# 
+# There are many ways to cause this path to be known. 
+# Spack is a package manager used on supercomputers, Linux and MacOS. If Spack
+# is aware of PCP, it encodes the path to the library.
+
+# The environment variable LD_LIBRARY_PATH encodes a list of paths to search for
+# libraries; separated by a colon (:). This path could be added to 
+# LD_LIBRARY_PATH. 
+#
+# Warning: LD_LIBRARY_PATH often contains a list of directories that are
+# searched for libraries, some of these may be needed by other packages you are
+# using. Always add to LD_LIBRARY_PATH recursively; for example: 
+# >export LD_LIBRARY_PATH=someNewLibraryDirectory:$LD_LIBRARY_PATH 
+# which would append the existing LD_LIBRARY_PATH to the new directory you wish
+# to add.  Alternatively, you can prepend it: 
+# >export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:someNewLibraryDirectory 
+# Which will search the existing libraries first, then your new directory.
+
+# You can check on the value of LD_LIBRARY_PATH with 
+# >echo $LD_LIBRARY_PATH
+
+# There may be other package managers or utilities, for example on a system with
+# modules; the command 'module load pcp' may modify LD_LIBRARY_PATH.
+
+# A Linux system will also search for libraries by default in the directories
+# listed by /etc/ld.so.conf, and /usr/lib64, /lib64, /usr/lib, /lib. 
+
+# OVERRIDES: These are by default empty strings (""), if set they must work.
+PAPI_PCP_MAIN = \"\"
+
+# An example of an override:
+# PAPI_PCP_MAIN = \"$(PAPI_PCP_ROOT)/lib64/libpcp.so.3\"
+
+# Note:  If you change this override, PAPI should be rebuilt from scratch.
+#        From papi/src/
+#        make clobber
+#        ./configure --with-components="pcp"
+#        make  
+
+# OPERATION, per library:
+# 1) If an override string is not empty, we will use it explicitly and fail if
+# it does not work. This means disabling the component; a reason for disabling
+# is shown using the papi utility, papi/src/utils/papi_component_avail
+
+# 2) We will attempt to open the library using the normal system library search
+# paths; if Spack is present and configured correctly it should deliver the
+# proper library. A failure here will be silent; we will proceed to (3).
+
+# 3) If that fails, we will try to find the library in the standard installed
+# locations listed above. If this fails, we disable the component, the reason
+# for disabling is shown using the papi utility,
+# papi/src/utils/papi_component_avail. 
+
+# DEFFLAGS is the macro defines for the three overrides. In the code we convert
+# these to string variables with the following lines:
+# static char pcp_main[]=PAPI_PCP_MAIN;
+
+PCP_MACS = -DPAPI_PCP_MAIN=$(PAPI_PCP_MAIN) 
+
+COMPSRCS += components/pcp/linux-pcp.c
+COMPOBJS += linux-pcp.o
+# CFLAGS specifies compile flags; need include files here, and macro defines.
+CFLAGS += -I$(PAPI_PCP_ROOT)/include -I$(PAPI_PCP_ROOT)/include/pcp -g $(PCP_MACS)
+LDFLAGS += $(LDL) -g
+
+linux-pcp.o: components/pcp/linux-pcp.c 
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/pcp/linux-pcp.c -o linux-pcp.o 
