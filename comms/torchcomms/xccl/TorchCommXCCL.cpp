@@ -228,6 +228,12 @@ TorchCommXCCL::~TorchCommXCCL() {
       xccl_comm_ = nullptr;
     }
   }
+
+  // Release the caller's store in case init() threw before it could drop
+  // our internal reference. No-op on the successful-init path.
+  if (options_.store) {
+    options_.store.reset();
+  }
 }
 
 void TorchCommXCCL::init(
@@ -451,6 +457,13 @@ void TorchCommXCCL::finalize() {
                     << xccl_api_->getErrorString(result);
     }
     xccl_comm_ = nullptr;
+  }
+
+  // Drop any lingering store reference. init() already releases on the
+  // happy path; this guards against future code paths that might retain it
+  // so callers can rely on finalize() to free the store.
+  if (options_.store) {
+    options_.store.reset();
   }
 }
 
