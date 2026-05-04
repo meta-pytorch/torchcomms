@@ -2,6 +2,7 @@
 
 #include <comm.h>
 #include <folly/init/Init.h>
+#include <folly/json/json.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <nccl.h>
@@ -13,7 +14,7 @@
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-// #include "meta/colltrace/CollTrace.h"
+#include "meta/commDump.h"
 
 static const int kTotalColls = 5;
 
@@ -22,9 +23,8 @@ class AllToAllTest : public NcclxBaseTestFixture {
   AllToAllTest() = default;
   void SetUp() override {
 #ifdef TEST_ENABLE_CTRAN
-    // setenv("NCCL_COLLTRACE", "trace", 0);
+    setenv("NCCL_COLLTRACE", "trace", 0);
 #endif
-
     NcclxBaseTestFixture::SetUp();
 
     this->comm = ncclx::test::createNcclComm(
@@ -91,33 +91,23 @@ class AllToAllTest : public NcclxBaseTestFixture {
     CUDACHECK_TEST(cudaFree(recvBuf));
 
 #ifdef TEST_ENABLE_CTRAN
-    // FIXME: Temp disable because causing test to segfault
-    /*
-    // CollTrace is updated by a separate thread, need wait for it to finish to
-    // avoid flaky test
-    comm->ctranComm_->collTrace_->waitForWorkerFinishQueue();
-    auto dump = comm->ctranComm_->collTrace_->dump();
-    int totalColls = kTotalColls;
-    if (totalColls > NCCL_COLLTRACE_RECORD_MAX) {
-      totalColls = NCCL_COLLTRACE_RECORD_MAX;
-    }
-    if (count == 0) {
-      totalColls = 0;
-    }
-    EXPECT_EQ(dump.pastColls.size(), totalColls);
+    sleep(3);
 
-    for (auto& coll : dump.pastColls) {
-      if (NCCL_ALLTOALL_ALGO == NCCL_ALLTOALL_ALGO::ctran) {
-        EXPECT_EQ(coll.count, count);
-        EXPECT_EQ(coll.dataType, commInt);
-        EXPECT_EQ(coll.opName, "AllToAll");
-        EXPECT_EQ(coll.codepath, CollTraceColl::Codepath::CTRAN);
-      } else {
-        EXPECT_EQ(coll.opName, "SendRecv");
-        EXPECT_EQ(coll.codepath, CollTraceColl::Codepath::BASELINE);
+    if (comm->newCollTrace) {
+      auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+      if (dumpMap.count("CT_pastColls")) {
+        auto ctPastColls = folly::parseJson(dumpMap["CT_pastColls"]);
+        int totalColls = kTotalColls;
+        if (count == 0) {
+          totalColls = 0;
+        }
+        EXPECT_EQ(ctPastColls.size(), totalColls);
+        for (int i = 0; i < static_cast<int>(ctPastColls.size()); i++) {
+          EXPECT_EQ(ctPastColls[i]["collId"].asInt(), i);
+          EXPECT_EQ(ctPastColls[i]["opCount"].asInt(), i);
+        }
       }
     }
-    */
 #endif
 #endif
   }

@@ -7,7 +7,6 @@
 #include "comms/ctran/Ctran.h" // @manual
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/NcclxConfig.h"
-#include "meta/colltrace/CollTrace.h" // @manual
 #include "meta/comms-monitor/CommsMonitor.h" // @manual
 #include "meta/wrapper/MetaFactory.h"
 

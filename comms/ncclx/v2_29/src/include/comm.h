@@ -41,7 +41,6 @@ class ICtran;
 namespace meta::comms {
 class IBootstrap;
 } // namespace meta::comms
-class CollTrace;
 namespace ncclx {
 class CommStateX;
 } // namespace ncclx
@@ -826,7 +825,6 @@ struct ncclComm {
    * NCCLX specific state
    */
   struct CommLogData logMetaData;
-  std::shared_ptr<CollTrace> collTrace;
   std::shared_ptr<meta::comms::colltrace::ICollTrace> newCollTrace;
   std::unique_ptr<meta::comms::colltrace::AlgoStats> algoStats;
   std::shared_ptr<meta::comms::IBootstrap> ctranBootstrap;

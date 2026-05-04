@@ -57,7 +57,6 @@ struct ctranConfig {
 };
 
 // Forward declaration to avoid circular dependency
-class CollTrace;
 struct ncclComm;
 class CtranGpe;
 namespace ncclx::memory {
@@ -182,7 +181,6 @@ class CtranComm {
   // CtranComm
   std::shared_ptr<ICtran> ctran_;
   std::unique_ptr<meta::comms::ICtranBootstrap> bootstrap_;
-  std::shared_ptr<CollTrace> collTrace_;
   std::shared_ptr<meta::comms::colltrace::ICollTrace> colltraceNew_;
   std::shared_ptr<ncclx::memory::memCacheAllocator> memCache_;
   std::unique_ptr<ncclx::CommStateX> statex_;

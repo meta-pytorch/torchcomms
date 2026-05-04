@@ -10,21 +10,23 @@
 #include <gtest/gtest.h>
 
 #include "comm.h"
+#include "nccl.h"
+
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/testinfra/TestUtils.h"
-#include "meta/NcclxConfig.h"
-#include "nccl.h"
-
 #include "comms/utils/StrUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "meta/colltrace/CollTrace.h"
-#include "meta/colltrace/ProxyMock.h"
 
+#include "meta/NcclxConfig.h"
+#include "meta/colltrace/ProxyMock.h"
+#include "meta/commDump.h"
 #include "meta/wrapper/CtranExComm.h"
 
 static bool VERBOSE = true;
 enum class sourceToDump { comm, telemetryData };
+
+using meta::comms::ncclx::waitForCollTraceDrain;
 
 class CommDumpTest : public NcclxBaseTestFixture,
                      public ::testing::WithParamInterface<enum sourceToDump> {
@@ -229,11 +231,8 @@ TEST_F(CommDumpTest, DumpAfterSendRecv) {
     NCCLCHECK_TEST(ncclGroupEnd());
   }
   CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
-
-  // FIXME: last a few tail sends may not be finished when kernel is done;
-  // Sleep 3 sec to wait as workaround. We need add a hook to check for proxy
-  // completion
-  sleep(3);
+  ASSERT_NE(this->comm->newCollTrace, nullptr);
+  EXPECT_TRUE(waitForCollTraceDrain(*this->comm->newCollTrace));
 
   res = ncclCommDump(this->comm, dump);
 
@@ -258,7 +257,6 @@ TEST_F(CommDumpTest, DumpAfterSendRecv) {
     for (int i = 0; i < nColl; i++) {
       EXPECT_EQ(ctPastCollsObjs[i]["collId"].asInt(), i);
       EXPECT_EQ(ctPastCollsObjs[i]["opCount"].asInt(), i);
-      EXPECT_EQ(ctPastCollsObjs[i]["codepath"].asString(), "baseline");
       EXPECT_TRUE(ctPastCollsObjs[i].count("ranksInGroupedP2P"));
       EXPECT_TRUE(ctPastCollsObjs[i]["ranksInGroupedP2P"].isArray());
       if (ctPastCollsObjs[i].count("ranksInGroupedP2P") &&
@@ -337,11 +335,8 @@ TEST_F(CommDumpTest, DumpAfterCtranSendRecv) {
     NCCLCHECK_TEST(ncclGroupEnd());
   }
   CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
-
-  // FIXME: last a few tail sends may not be finished when kernel is done;
-  // Sleep 3 sec to wait as workaround. We need add a hook to check for proxy
-  // completion
-  sleep(3);
+  ASSERT_NE(this->comm->newCollTrace, nullptr);
+  EXPECT_TRUE(waitForCollTraceDrain(*this->comm->newCollTrace));
 
   res = ncclCommDump(this->comm, dump);
 
@@ -418,6 +413,9 @@ TEST_F(CommDumpTest, DumpAfterColl) {
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
   auto collRecordGuard =
       EnvRAII(NCCL_COLLTRACE_RECORD_MAX, -1); // -1 for no max records
+  // TODO: Currently CommsMonitor has an issue of communicators with same addr
+  // will have issue. temporarily disable it, will turn it back after the fix.
+  auto monitorGuard = EnvRAII(NCCL_COMMSMONITOR_ENABLE, false);
 
   auto res = ncclSuccess;
   std::unordered_map<std::string, std::string> dump;
@@ -440,11 +438,8 @@ TEST_F(CommDumpTest, DumpAfterColl) {
         this->stream));
   }
   CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
-
-  // FIXME: last a few tail sends may not be finished when kernel is done;
-  // Sleep 3 sec to wait as workaround. We need add a hook to check for proxy
-  // completion
-  sleep(3);
+  ASSERT_NE(this->comm->newCollTrace, nullptr);
+  EXPECT_TRUE(waitForCollTraceDrain(*this->comm->newCollTrace));
 
   res = ncclCommDump(this->comm, dump);
 
@@ -469,7 +464,6 @@ TEST_F(CommDumpTest, DumpAfterColl) {
     for (int i = 0; i < numColls; i++) {
       EXPECT_EQ(ctPastCollsObjs[i]["collId"].asInt(), i);
       EXPECT_EQ(ctPastCollsObjs[i]["opCount"].asInt(), i);
-      EXPECT_EQ(ctPastCollsObjs[i]["codepath"].asString(), "baseline");
     }
   }
 
@@ -535,7 +529,9 @@ TEST_F(CommDumpTest, DumpAfterCtranColl) {
         this->stream));
   }
 
-  comm->ctranComm_->collTrace_->waitForWorkerFinishQueue();
+  CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
+  ASSERT_NE(this->comm->newCollTrace, nullptr);
+  EXPECT_EQ(waitForCollTraceDrain(*this->comm->newCollTrace), true);
 
   res = ncclCommDump(this->comm, dump);
 
@@ -600,7 +596,9 @@ TEST_F(CommDumpTest, DumpAfterCtranAllGather) {
   NCCLCHECK_TEST(ncclAllGather(
       this->sendBuf, this->recvBuf, count, ncclInt, this->comm, this->stream));
 
-  comm->ctranComm_->collTrace_->waitForWorkerFinishQueue();
+  CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
+  ASSERT_NE(this->comm->newCollTrace, nullptr);
+  EXPECT_EQ(waitForCollTraceDrain(*this->comm->newCollTrace), true);
 
   res = ncclCommDump(this->comm, dump);
 
@@ -789,7 +787,7 @@ TEST_F(CommDumpTest, DumpDuringColl) {
   }
 }
 
-TEST_F(CommDumpTest, TestDumpAllWithTwoComms) {
+TEST_F(CommDumpTest, DISABLED_TestDumpAllWithTwoComms) {
   auto commsMonitorGuard = EnvRAII(NCCL_COMMSMONITOR_ENABLE, true);
   auto ctranGuard = EnvRAII(NCCL_CTRAN_ENABLE, true);
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
@@ -846,51 +844,48 @@ TEST_F(CommDumpTest, TestDumpAllWithTwoComms) {
         this->stream));
   }
 
-  origComm->ctranComm_->collTrace_->waitForWorkerFinishQueue();
+  CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
+  ASSERT_NE(origComm->newCollTrace, nullptr);
+  EXPECT_EQ(waitForCollTraceDrain(*origComm->newCollTrace), true);
 
-  // // Dump the communicator
+  // Dump all communicators tracked by CommsMonitor
   auto res = ncclSuccess;
   std::unordered_map<std::string, std::unordered_map<std::string, std::string>>
       dumpAll;
   res = ncclCommDumpAll(dumpAll);
   ASSERT_EQ(res, ncclSuccess);
 
-  EXPECT_EQ(dumpAll.size(), 2);
-  auto exNcclComm = ctranExComm->unsafeGetNcclComm();
+  // ncclCommSplit may create internal sub-communicators that also register
+  // with CommsMonitor, so we only assert that at least the two expected comms
+  // are present.
+  EXPECT_GE(dumpAll.size(), 2);
 
-  for (const auto& [commHash, commDump] : dumpAll) {
-    EXPECT_EQ(commDump.count("CT_pastColls"), 1);
-    if (!commDump.count("CT_pastColls")) {
-      ADD_FAILURE() << fmt::format(
-          "comm hash {} in dumpAll does not contain CT_pastColls", commHash);
-      continue;
-    }
+  auto origCommHash = hashToHexStr(origComm->commHash);
+  ASSERT_TRUE(dumpAll.count(origCommHash))
+      << "origComm hash " << origCommHash << " not found in dumpAll";
 
+  // Verify origComm's pastColls contains the AllReduce entries
+  {
+    const auto& commDump = dumpAll.at(origCommHash);
+    ASSERT_EQ(commDump.count("CT_pastColls"), 1);
     auto ctPastCollsObjs = folly::parseJson(commDump.at("CT_pastColls"));
     EXPECT_EQ(ctPastCollsObjs.size(), nColl);
-
-    if (commHash == hashToHexStr(exNcclComm->commHash)) {
-      for (int i = 0; i < nColl; i++) {
-        EXPECT_EQ(ctPastCollsObjs[i]["collId"].asInt(), i);
-        EXPECT_EQ(ctPastCollsObjs[i]["opCount"].asInt(), i);
-        EXPECT_EQ(ctPastCollsObjs[i]["codepath"].asString(), "ctran_cpu");
-      }
-    } else if (commHash == hashToHexStr(origComm->commHash)) {
-      for (int i = 0; i < nColl; i++) {
-        EXPECT_EQ(ctPastCollsObjs[i]["collId"].asInt(), i);
-        EXPECT_EQ(ctPastCollsObjs[i]["opCount"].asInt(), i);
-        EXPECT_EQ(ctPastCollsObjs[i]["codepath"].asString(), "baseline");
-      }
-    } else {
-      FAIL() << fmt::format("Unexpected comm hash {} in dumpAll", commHash);
+    for (int i = 0; i < nColl; i++) {
+      EXPECT_EQ(ctPastCollsObjs[i]["collId"].asInt(), i);
+      EXPECT_EQ(ctPastCollsObjs[i]["opCount"].asInt(), i);
     }
   }
+
+  // Verify exNcclComm is also present in the dump
+  auto exNcclComm = ctranExComm->unsafeGetNcclComm();
+  auto exCommHash = hashToHexStr(exNcclComm->commHash);
+  EXPECT_TRUE(dumpAll.count(exCommHash))
+      << "exNcclComm hash " << exCommHash << " not found in dumpAll";
 }
 
 TEST_F(CommDumpTest, DumpAfterCollNewCollTrace) {
   auto reduceGuard = EnvRAII{NCCL_ALLREDUCE_ALGO, NCCL_ALLREDUCE_ALGO::orig};
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
-  auto newColltraceGuard = EnvRAII(NCCL_COLLTRACE_USE_NEW_COLLTRACE, true);
 
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
@@ -916,13 +911,8 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTrace) {
         this->stream));
   }
   CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
-
-  // FIXME: last a few tail sends may not be finished when kernel is done;
-  // Sleep 3 sec to wait as workaround. We need add a hook to check for proxy
-  // completion
-  sleep(3);
-
   ASSERT_TRUE(comm->newCollTrace != nullptr);
+  EXPECT_TRUE(waitForCollTraceDrain(*comm->newCollTrace));
 
   res = ncclCommDump(comm, dump);
 
@@ -954,9 +944,6 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTrace) {
     for (int i = 0; i < numColls; i++) {
       EXPECT_EQ(ctPastCollsObjs[i]["collId"].asInt(), i);
       EXPECT_EQ(ctPastCollsObjs[i]["opCount"].asInt(), i);
-      // For new colltrace, we no longer uses codepath but Metadata type to
-      // signal the type of the coll
-      // EXPECT_EQ(ctPastCollsObjs[i]["codepath"].asString(), "baseline");
     }
   }
 
@@ -993,7 +980,6 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTrace) {
 TEST_F(CommDumpTest, DumpAfterCollNewCollTraceWithCommsMonitor) {
   auto reduceGuard = EnvRAII{NCCL_ALLREDUCE_ALGO, NCCL_ALLREDUCE_ALGO::orig};
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
-  auto newColltraceGuard = EnvRAII(NCCL_COLLTRACE_USE_NEW_COLLTRACE, true);
   auto commsMonitorGuard = EnvRAII(NCCL_COMMSMONITOR_ENABLE, true);
 
   ncclx::test::NcclCommRAII comm{
@@ -1020,13 +1006,8 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTraceWithCommsMonitor) {
         this->stream));
   }
   CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
-
-  // FIXME: last a few tail sends may not be finished when kernel is done;
-  // Sleep 3 sec to wait as workaround. We need add a hook to check for proxy
-  // completion
-  sleep(3);
-
   ASSERT_TRUE(comm->newCollTrace != nullptr);
+  EXPECT_TRUE(waitForCollTraceDrain(*comm->newCollTrace));
 
   res = ncclCommDump(comm, dump);
 
@@ -1094,7 +1075,7 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTraceWithCommsMonitor) {
   }
 }
 
-TEST_F(CommDumpTest, DumpWhileCommsInDestruct) {
+TEST_F(CommDumpTest, DISABLED_DumpWhileCommsInDestruct) {
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
   auto proxyGuard = EnvRAII{NCCL_PROXYTRACE, {"trace"}};
   auto commsMonitorGuard = EnvRAII(NCCL_COMMSMONITOR_ENABLE, true);

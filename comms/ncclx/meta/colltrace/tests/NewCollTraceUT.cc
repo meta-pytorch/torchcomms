@@ -35,7 +35,6 @@ class NewCollTraceUT : public ::testing::Test {
 
   void SetUp() override {
     setenv("NCCL_COLLTRACE", "trace", 0);
-    setenv("NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1", 0);
   }
 };
 
