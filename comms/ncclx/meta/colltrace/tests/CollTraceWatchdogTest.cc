@@ -111,7 +111,6 @@ class CollTraceWatchdogTest : public mccl::CollectiveIntegrationTestMixin,
                     // enable commsDumpAll
                     "NCCL_COMMSMONITOR_ENABLE=1",
                     "NCCL_COLLTRACE=trace",
-                    "NCCL_COLLTRACE_USE_NEW_COLLTRACE=1",
                     // enable ctran
                     "NCCL_CTRAN_ENABLE=1",
                     "NCCL_CTRAN_REGISTRATION_SIZE_CHECK=1",

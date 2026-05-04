@@ -6,10 +6,6 @@
 
 namespace ncclx::colltrace {
 
-ncclResult_t collTraceInit(ncclComm* comm);
-
-ncclResult_t collTraceDestroy(ncclComm* comm);
-
 std::shared_ptr<meta::comms::colltrace::ICollTraceHandle>
 collTraceBaselineGetHandle(ncclKernelPlan* plan, cudaStream_t stream);
 

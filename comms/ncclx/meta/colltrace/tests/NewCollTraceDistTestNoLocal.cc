@@ -44,7 +44,6 @@ class CollTraceTest : public NcclxBaseTestFixture {
          "HPC_JOB_NAME,HPC_JOB_VERSION,HPC_JOB_ATTEMPT_INDEX"},
         {"NCCL_CTRAN_ENABLE", "1"},
         {"NCCL_COLLTRACE", "trace"},
-        {"NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1"},
     });
 
     CUDACHECK_TEST(cudaStreamCreate(&this->stream));

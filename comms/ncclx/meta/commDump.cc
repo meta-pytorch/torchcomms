@@ -18,7 +18,6 @@
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/ProcessGlobalErrorsUtil.h"
-#include "meta/colltrace/CollTrace.h"
 #include "meta/colltrace/ProxyTrace.h"
 #include "meta/commDump.h"
 #include "meta/comms-monitor/CommsMonitor.h"
@@ -141,33 +140,6 @@ static void dumpMapperTrace(
   map["MT_putFinishedByPeer"] = mapToJson(dump.putFinishedByPeer);
 }
 
-static void dumpCollTrace(
-    const CollTrace* collTrace,
-    std::unordered_map<std::string, std::string>& map) {
-  if (collTrace != nullptr) {
-    auto dump = collTrace->dump();
-
-    XLOGF(
-        DBG2,
-        "CommDump: COLLTRACE dump: {} past, {} pending, {} current collective records",
-        dump.pastColls.size(),
-        dump.pendingColls.size(),
-        dump.currentColl == nullptr ? 0 : 1);
-
-    // Copied from new comm dump implementation. Since we are deprecating
-    // old coll trace, we don't care too much about code reuse here.
-    map["CT_pastColls"] = folly::toJson(folly::toDynamic(dump.pastColls));
-    map["CT_pendingColls"] = folly::toJson(folly::toDynamic(dump.pendingColls));
-    auto currentColls = folly::dynamic::array();
-    if (dump.currentColl != nullptr) {
-      currentColls.push_back(dump.currentColl->toDynamic());
-    }
-    map["CT_currentColls"] = folly::toJson(currentColls);
-  } else {
-    XLOGF(DBG2, "CommDump: COLLTRACE is disabled. No trace to dump");
-  }
-}
-
 static void dumpProxyTrace(
     const ProxyTrace* ProxyTrace,
     uint64_t commHash,
@@ -195,9 +167,6 @@ std::unordered_map<std::string, std::string> commDumpByMonitorInfo(
   dumpCommInfo(&info.logMetaData, info.stateInfo, map);
   if (info.newCollTrace != nullptr) {
     map.merge(dumpNewCollTrace(*info.newCollTrace));
-    XLOGF(DBG2, "commDumpByMonitorInfo: Dumped from new colltrace");
-  } else {
-    dumpCollTrace(info.collTrace.get(), map);
     XLOGF(DBG2, "commDumpByMonitorInfo: Dumped from colltrace");
   }
   dumpProxyTrace(info.proxyTrace.get(), info.logMetaData.commHash, map);
@@ -235,15 +204,9 @@ __attribute__((visibility("default"))) ncclResult_t ncclCommDump(
         NCCLX_CONFIG_FIELD(comm->config, commDesc));
 
     dumpCommInfo(comm, map);
-    if (NCCL_COLLTRACE_USE_NEW_COLLTRACE) {
-      XLOGF(DBG2, "CommDump: Using new colltrace");
-      if (comm->newCollTrace != nullptr) {
-        map.merge(dumpNewCollTrace(*comm->newCollTrace));
-        XLOGF(DBG2, "CommDump: Dumped from new colltrace");
-      }
-    } else {
-      XLOGF(DBG2, "CommDump: Using old colltrace");
-      dumpCollTrace(comm->collTrace.get(), map);
+    if (comm->newCollTrace != nullptr) {
+      map.merge(dumpNewCollTrace(*comm->newCollTrace));
+      XLOGF(DBG2, "CommDump: Dumped from colltrace");
     }
     if (comm->proxyState != nullptr) {
       dumpProxyTrace(comm->proxyState->trace.get(), comm->commHash, map);

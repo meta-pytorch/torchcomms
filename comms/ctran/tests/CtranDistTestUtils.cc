@@ -24,7 +24,6 @@ void CtranDistEnvironment::SetUp() {
   setenv("NCCL_CTRAN_PROFILING", "none", 1);
   setenv("NCCL_CTRAN_ENABLE", "1", 0);
   setenv("NCCL_COLLTRACE", "trace", 0);
-  setenv("NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1", 0);
 
 #ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
   setenv("NCCL_COMM_STATE_DEBUG_TOPO", "nolocal", 1);

@@ -289,14 +289,6 @@ getEmptyKernelTaskMetadata(
 } // namespace
 
 ncclResult_t newCollTraceInit(ncclComm* comm) {
-  // TODO: this can be removed once new colltrace is fully rolled out
-  if (!NCCL_COLLTRACE_USE_NEW_COLLTRACE) {
-    XLOGF(
-        INFO,
-        "Skipping new CollTrace init, NCCL_COLLTRACE_USE_NEW_COLLTRACE is disabled");
-    return ncclSuccess;
-  }
-
   // TODO: Remove this guard once v2_27 is deprecated — v2_27's comm.h does not
   // have the algoStats field
 #if NCCL_MINOR >= 28
@@ -316,11 +308,10 @@ ncclResult_t newCollTraceInit(ncclComm* comm) {
 
   XLOGF(
       INFO,
-      "CollTrace init - NCCL_COLLTRACE: [algostat: {}, verbose: {}, trace: {}], NCCL_COLLTRACE_USE_NEW_COLLTRACE: {}",
+      "CollTrace init - NCCL_COLLTRACE: [algostat: {}, verbose: {}, trace: {}]",
       algoStatEnabled,
       verboseEnabled,
-      traceEnabled,
-      NCCL_COLLTRACE_USE_NEW_COLLTRACE);
+      traceEnabled);
 
   // Initialize standalone AlgoStats if algostat mode enabled
   // This is independent of which colltrace implementation is used
@@ -336,11 +327,7 @@ ncclResult_t newCollTraceInit(ncclComm* comm) {
   }
 #else
   if (NCCL_COLLTRACE.empty()) {
-    XLOGF(
-        INFO,
-        "Skipping CollTrace init. NCCL_COLLTRACE: {}, NCCL_COLLTRACE_USE_NEW_COLLTRACE: {}",
-        folly::join(", ", NCCL_COLLTRACE),
-        NCCL_COLLTRACE_USE_NEW_COLLTRACE);
+    XLOGF(INFO, "Skipping CollTrace init. NCCL_COLLTRACE is empty");
     return ncclSuccess;
   }
 #endif
@@ -478,12 +465,11 @@ getHandleFromNcclKernelPlan(ncclKernelPlan& plan, cudaStream_t stream) {
 std::unordered_map<std::string, std::string> collTraceGetInfo() {
   std::unordered_map<std::string, std::string> info;
   info["colltrace_enabled"] = folly::to<std::string>(!NCCL_COLLTRACE.empty());
-  info["colltrace_new_colltrace"] =
-      folly::to<std::string>(NCCL_COLLTRACE_USE_NEW_COLLTRACE);
+  info["colltrace_new_colltrace"] = folly::to<std::string>(true);
   info["colltrace_supports_check_async_error"] = folly::to<std::string>(true);
   // Only new colltrace supports checking timeout
-  info["colltrace_supports_check_timeout"] = folly::to<std::string>(
-      !NCCL_COLLTRACE.empty() && NCCL_COLLTRACE_USE_NEW_COLLTRACE);
+  info["colltrace_supports_check_timeout"] =
+      folly::to<std::string>(!NCCL_COLLTRACE.empty());
 
   return info;
 }
