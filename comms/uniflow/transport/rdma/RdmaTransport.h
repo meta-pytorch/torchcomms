@@ -8,6 +8,7 @@
 #include <queue>
 #include <unordered_map>
 
+#include "comms/uniflow/drivers/cuda/CudaApi.h"
 #include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
 #include "comms/uniflow/drivers/ibverbs/IbvApi.h"
 #include "comms/uniflow/executor/EventBase.h"
@@ -20,6 +21,7 @@ constexpr uint8_t kRdmaVersion{1};
 // Forward declarations.
 class RdmaRegistrationHandle;
 class RdmaRemoteRegistrationHandle;
+class RdmaSlabPool;
 
 /*
  * RDMA transport configuration.
@@ -42,14 +44,17 @@ struct RdmaTransportConfig {
   uint32_t maxSge{1}; /* Max scatter/gather entries per WR. */
   uint32_t maxInlineData{16}; /* Max inline data bytes per WR. */
   size_t chunkSize{512 * 1024}; /* Transfer chunk size in bytes (512KB). */
+  uint16_t pipelineDepth{2}; /* Send/recv pipeline depth (D staging slabs). */
 };
 
 /*
- * Per-NIC RDMA resources.
+ * Per-NIC RDMA resources with RAII lifetime management.
  *
- * Populated by RdmaTransportFactory during device initialization.
- * Ownership: the factory owns the underlying ibverbs objects (context, PD).
- * Transports borrow these resources — they must not outlive the factory.
+ * Full-init constructor: opens device, allocates PD, queries port/GID.
+ * Destructor deallocates PD and closes device.
+ *
+ * Non-copyable, move-only. Shared across factory, transports, and slab pool
+ * via shared_ptr<vector<NicResources>>.
  */
 struct NicResources {
   ibv_context* ctx{nullptr}; /* Opened device context. */
@@ -60,6 +65,23 @@ struct NicResources {
   int linkLayer{IBV_LINK_LAYER_ETHERNET}; /* IB or Ethernet (RoCE). */
   uint8_t portNum{1}; /* Physical port number on the HCA. */
   bool dmaBufSupported{false}; /* Kernel supports DMA-BUF MR registration. */
+
+  NicResources(
+      ibv_device* device,
+      std::shared_ptr<IbvApi> api,
+      uint8_t gidIndex = 3,
+      std::optional<uint8_t> port = std::nullopt);
+
+  ~NicResources();
+
+  NicResources(const NicResources&) = delete;
+  NicResources& operator=(const NicResources&) = delete;
+  NicResources(NicResources&& other) noexcept;
+  NicResources& operator=(NicResources&&) = delete;
+
+ private:
+  uint8_t findActivePort() const;
+  std::shared_ptr<IbvApi> ibvApi{nullptr};
 };
 
 /*
@@ -94,12 +116,33 @@ struct RdmaTransportInfo {
     uint32_t psn{0}; /* Starting packet sequence number (random). */
   };
 
+  struct RegisteredBuffer {
+    uint64_t addr{0};
+    uint32_t length{0};
+    std::vector<uint32_t> rkeys;
+
+    size_t size() const {
+      return sizeof(addr) + sizeof(length) + rkeys.size() * sizeof(uint32_t);
+    }
+
+    static constexpr size_t expectedSize(uint8_t numNics) {
+      return sizeof(addr) + sizeof(length) + numNics * sizeof(uint32_t);
+    }
+
+    void reset();
+    size_t serialize(uint8_t* data) const;
+    size_t deserialize(const uint8_t* data, uint8_t numNics);
+  };
+
   /* Header fields. */
   Header header;
 
   /* Deserialized per-NIC and per-QP data. */
   std::vector<NicInfo> nicInfos;
   std::vector<QpInfo> qpInfos;
+
+  RegisteredBuffer ctrl;
+  RegisteredBuffer slab;
 
   /*
    * Serialize this info into a TransportInfo byte vector.
@@ -150,9 +193,11 @@ class RdmaTransport : public Transport {
    */
   RdmaTransport(
       std::shared_ptr<IbvApi> ibvApi,
+      std::shared_ptr<CudaApi> cudaApi,
       EventBase* evb,
-      std::vector<NicResources> nics,
+      std::shared_ptr<std::vector<NicResources>> nics,
       uint64_t domainId,
+      std::shared_ptr<RdmaSlabPool> slabPool = nullptr,
       RdmaTransportConfig config = {});
 
   ~RdmaTransport() override;
@@ -365,11 +410,69 @@ class RdmaTransport : public Transport {
   /// Re-dispatches itself on EventBase if the given task is still in-flight.
   void pollCompletions(uint32_t taskId, bool retry);
 
+  // --- Copy-based send/recv pipeline (cursor model) ---
+  //
+  // Three shared cursors with symmetric meaning for send and recv:
+  //
+  //   Send: copied ≤ notified ≤ done ≤ copied + D
+  //     copied:   memcpy user buf → send slab
+  //     notified: data+notify WRs posted on all QPs (remote peer notified)
+  //     done:     CQEs reaped + CTS arrived (slot recyclable)
+  //
+  //   Recv: notified ≤ copied ≤ done ≤ notified + D
+  //     notified: all QP notify entries arrived (local peer notified)
+  //     copied:   memcpy recv slab → user buf
+  //     done:     slab released + new CTS posted (slot recyclable)
+  //
+  // Slot index = cursor % D. Each iteration advances one cursor by one step.
+
+  struct Pipeline {
+    void* data{nullptr};
+    size_t totalSize{0};
+    uint32_t totalChunks{0};
+
+    uint32_t copied{0};
+    uint32_t notified{0};
+    uint32_t done{0};
+
+    std::vector<uint16_t> localSlabs;
+    std::vector<uint16_t> remoteSlabs;
+  };
+
+  /// Ctrl buffer helpers.
+  /// Layout: [CTS: D entries] [Notify: D * numQps entries]
+  /// Each entry is a uint32_t holding a slab index (or kSlabIdxInvalid).
+  volatile uint32_t* ctrlCts(uint16_t slotIdx);
+  volatile uint32_t* ctrlNotify(uint16_t slotIdx, uint32_t qpIdx);
+  uint64_t remoteCtrlCtsAddr(uint16_t slotIdx) const;
+  uint64_t remoteCtrlNotifyAddr(uint16_t slotIdx, uint32_t qpIdx) const;
+  size_t ctrlBufferSize() const;
+
+  /// Send pipeline: wait for initial CTS, then drive phases.
+  void sendSetup(
+      std::shared_ptr<Pipeline> pipeline,
+      std::shared_ptr<std::promise<Status>> promise);
+  void sendStep(
+      std::shared_ptr<Pipeline> pipeline,
+      std::shared_ptr<std::promise<Status>> promise);
+
+  /// Recv pipeline: post initial CTS, then drive phases.
+  void recvSetup(
+      std::shared_ptr<Pipeline> pipeline,
+      std::shared_ptr<std::promise<Result<size_t>>> promise);
+  void recvStep(
+      std::shared_ptr<Pipeline> pipeline,
+      std::shared_ptr<std::promise<Result<size_t>>> promise);
+
+  /// Release pipeline slabs back to pool.
+  void pipelineCleanup(std::shared_ptr<Pipeline>& pipeline);
+
   const std::shared_ptr<IbvApi> ibvApi_;
+  std::shared_ptr<CudaApi> cudaApi_;
   EventBase* evb_{nullptr};
 
   std::string name_;
-  const std::vector<NicResources> nics_;
+  std::shared_ptr<std::vector<NicResources>> nics_;
   const RdmaTransportConfig config_;
 
   std::vector<ibv_cq*> cqs_;
@@ -408,6 +511,24 @@ class RdmaTransport : public Transport {
 
   /// guard for shutdown()
   std::atomic<bool> shutdown_{false};
+
+  // --- Send/recv state and pool ---
+
+  std::shared_ptr<RdmaSlabPool> slabPool_;
+
+  // Ctrl buffer for send/recv pipeline flow control.
+  void* ctrlBuffer_{nullptr};
+  std::vector<ibv_mr*> ctrlMrs_;
+
+  // Active pipeline (nullptr when no send/recv in progress).
+  std::shared_ptr<Pipeline> activePipeline_;
+
+  // Remote peer's channel info (populated by connect)
+  RdmaTransportInfo::RegisteredBuffer remoteCtrlBuffer_;
+  RdmaTransportInfo::RegisteredBuffer remoteSlabBuffer_;
+
+  uint64_t remoteSlabBaseAddr{0};
+  std::vector<uint32_t> remoteSlabRkeys_;
 };
 
 // ---------------------------------------------------------------------------
@@ -460,9 +581,10 @@ class RdmaTransportFactory : public TransportFactory {
       RdmaTransportConfig config = {},
       std::shared_ptr<IbvApi> ibvApi = nullptr,
       std::shared_ptr<CudaDriverApi> cudaDriverApi = nullptr,
+      std::shared_ptr<CudaApi> cudaApi = nullptr,
       std::optional<uint8_t> portNum = std::nullopt);
 
-  ~RdmaTransportFactory() override;
+  ~RdmaTransportFactory() override = default;
 
   RdmaTransportFactory(const RdmaTransportFactory&) = delete;
   RdmaTransportFactory& operator=(const RdmaTransportFactory&) = delete;
@@ -491,15 +613,13 @@ class RdmaTransportFactory : public TransportFactory {
  private:
   Status canConnect(std::span<const uint8_t> peerTopology) override;
 
-  /* Find the first active port on the device. Returns 0 on failure. */
-  uint8_t findActivePort(ibv_context* ctx);
-
   std::shared_ptr<IbvApi> ibvApi_;
   std::shared_ptr<CudaDriverApi> cudaDriverApi_;
+  std::shared_ptr<CudaApi> cudaApi_;
   EventBase* evb_{nullptr};
   uint64_t domainId_{0};
   size_t pageSize_{0};
-  std::vector<NicResources> nics_;
+  std::shared_ptr<std::vector<NicResources>> nics_;
   const RdmaTransportConfig config_;
 };
 
