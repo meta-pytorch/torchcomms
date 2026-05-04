@@ -112,7 +112,7 @@ __device__ __forceinline__ void all_to_allv(
     Timeout timeout
     // all arguments below will eventually come from communicator
 ) {
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   auto group = make_warp_group();
   const auto nranks = transports_per_rank.size();
   PIPES_DEVICE_CHECK(nranks == send_chunk_infos.size());
@@ -127,7 +127,7 @@ __device__ __forceinline__ void all_to_allv(
 
     auto& transport = transports_per_rank[my_rank_id];
     PIPES_DEVICE_CHECK(transport.type == TransportType::SELF);
-    transport.self.put(group, dst, src, send_info.nbytes);
+    transport.self.put_group(group, dst, src, send_info.nbytes);
     return;
   }
 
@@ -168,7 +168,7 @@ __device__ __forceinline__ void all_to_allv(
 
     // Only one partition is active for self-copy
     if (partition_id == 0) {
-      transport.self.put(group_per_peer, dst, src, send_info.nbytes);
+      transport.self.put_group(group_per_peer, dst, src, send_info.nbytes);
     }
     return;
   }
@@ -201,13 +201,13 @@ __device__ __forceinline__ void all_to_allv(
   // Perform peer send/recv based on partition_id from first partition
   bool is_send = (partition_id == 0);
   if (is_send) {
-    transport.p2p_nvl.send(
+    transport.p2p_nvl.send_group(
         group_per_peer,
         static_cast<char*>(const_cast<void*>(sendbuff_d)) + send_info.offset,
         send_info.nbytes,
         timeout);
   } else {
-    transport.p2p_nvl.recv(
+    transport.p2p_nvl.recv_group(
         group_per_peer,
         static_cast<char*>(recvbuff_d) + recv_info.offset,
         recv_info.nbytes,

@@ -1,0 +1,74 @@
+COMPSRCS += components/sysdetect/sysdetect.c  \
+			components/sysdetect/nvidia_gpu.c \
+			components/sysdetect/amd_gpu.c    \
+			components/sysdetect/cpu.c        \
+			components/sysdetect/cpu_utils.c  \
+			components/sysdetect/os_cpu_utils.c    \
+			components/sysdetect/linux_cpu_utils.c
+
+
+COMPOBJS += sysdetect.o  \
+			nvidia_gpu.o \
+			amd_gpu.o    \
+			cpu.o        \
+			cpu_utils.o  \
+			os_cpu_utils.o    \
+			linux_cpu_utils.o
+
+ifneq ($(PAPI_ROCM_ROOT),)
+CFLAGS += -I$(PAPI_ROCM_ROOT)/include                  \
+          -I$(PAPI_ROCM_ROOT)/include/hsa              \
+          -I$(PAPI_ROCM_ROOT)/hsa/include              \
+          -I$(PAPI_ROCM_ROOT)/hsa/include/hsa          \
+          -I$(PAPI_ROCM_ROOT)/include/rocm_smi         \
+          -I$(PAPI_ROCM_ROOT)/rocm_smi/include         \
+          -I$(PAPI_ROCM_ROOT)/rocm_smi/include/rocm_smi
+endif
+
+ifneq ($(PAPI_CUDA_ROOT),)
+CFLAGS += -I$(PAPI_CUDA_ROOT)/include
+endif
+
+sysdetect.o: components/sysdetect/sysdetect.c components/sysdetect/sysdetect.h $(HEADERS) 
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/sysdetect/sysdetect.c -o $@
+
+nvidia_gpu.o: components/sysdetect/nvidia_gpu.c components/sysdetect/sysdetect.h $(HEADERS)
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/sysdetect/nvidia_gpu.c -o $@
+
+amd_gpu.o: components/sysdetect/amd_gpu.c components/sysdetect/amd_gpu.h $(HEADERS)
+	$(CC) -I$(PAPI_ROCM_ROOT)/include/hsa $(LIBCFLAGS) $(OPTFLAGS) -c components/sysdetect/amd_gpu.c -o $@
+
+cpu.o: components/sysdetect/cpu.c components/sysdetect/sysdetect.h $(HEADERS)
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/sysdetect/cpu.c -o $@
+
+cpu_utils.o: components/sysdetect/cpu_utils.c $(HEADERS)
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/sysdetect/cpu_utils.c -o $@
+
+os_cpu_utils.o: components/sysdetect/os_cpu_utils.c $(HEADERS)
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/sysdetect/os_cpu_utils.c -o $@
+
+linux_cpu_utils.o: components/sysdetect/linux_cpu_utils.c $(HEADERS)
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/sysdetect/linux_cpu_utils.c -o $@
+
+ifeq ($(CPU), x86)
+COMPSRCS += components/sysdetect/x86_cpu_utils.c
+COMPOBJS += x86_cpu_utils.o
+
+x86_cpu_utils.o: components/sysdetect/x86_cpu_utils.c $(HEADERS)
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/sysdetect/x86_cpu_utils.c -o $@
+
+else ifneq (, $(filter $(CPU), POWER5 POWER5+ POWER6 POWER7 POWER8 POWER9 POWER10 PPC970))
+COMPSRCS += components/sysdetect/powerpc_cpu_utils.c
+COMPOBJS += powerpc_cpu_utils.o
+
+powerpc_cpu_utils.o: components/sysdetect/powerpc_cpu_utils.c $(HEADERS)
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/sysdetect/powerpc_cpu_utils.c -o $@
+
+else ifeq ($(CPU), arm)
+COMPSRCS += components/sysdetect/arm_cpu_utils.c
+COMPOBJS += arm_cpu_utils.o
+
+arm_cpu_utils.o: components/sysdetect/arm_cpu_utils.c $(HEADERS)
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/sysdetect/arm_cpu_utils.c -o $@
+
+endif

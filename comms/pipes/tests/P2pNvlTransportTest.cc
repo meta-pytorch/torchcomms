@@ -421,13 +421,13 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCall) {
     comms::pipes::TiledBuffer<char> recvTiles(
         static_cast<char*>(recvBuf.get()), nBytes, numSendBlocks);
     int numBlocksArg = numSendBlocks;
-    int chunksPerSlot = 1;
+    std::size_t maxSignalBytes = 0;
     void* args[] = {
         &p2pHost,
         &sendTiles,
         &recvTiles,
         &numBlocksArg,
-        &chunksPerSlot,
+        &maxSignalBytes,
         &timeout};
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -460,7 +460,7 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCall) {
 }
 
 // =============================================================================
-// send_tile / recv_tile Tests
+// send / recv (per-group) Tests
 // =============================================================================
 
 // Helper: run tile sendrecv with given params and verify correctness
@@ -507,13 +507,13 @@ static void runTileTest(
     comms::pipes::TiledBuffer<char> recvTiles(
         static_cast<char*>(recvBuf.get()), nBytes, numSendBlocks);
     int numBlocksArg = numSendBlocks;
-    int chunksPerSlot = 1;
+    std::size_t maxSignalBytes = 0;
     void* args[] = {
         &p2pHost,
         &sendTiles,
         &recvTiles,
         &numBlocksArg,
-        &chunksPerSlot,
+        &maxSignalBytes,
         &timeout};
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -826,13 +826,13 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCallDifferentSizes) {
     comms::pipes::TiledBuffer<char> recvTiles(
         static_cast<char*>(recvBuf.get()), nBytes, numSendBlocks);
     int numBlocksArg = numSendBlocks;
-    int chunksPerSlot = 1;
+    std::size_t maxSignalBytes = 0;
     void* args[] = {
         &p2pHost,
         &sendTiles,
         &recvTiles,
         &numBlocksArg,
-        &chunksPerSlot,
+        &maxSignalBytes,
         &timeout};
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -3472,7 +3472,7 @@ TEST_F(P2pNvlTransportTestFixture, Ll128BufferWiring_Disabled) {
 // =============================================================================
 // Dynamic block count tests
 // =============================================================================
-// Verify that changing numBlocks between send_tile/recv_tile rounds works
+// Verify that changing numBlocks between send/recv rounds works
 // correctly with the maxBlocks layout and host-side barrier.
 
 TEST_F(P2pNvlTransportTestFixture, TileSendRecvDynamicBlockCount) {
@@ -3489,7 +3489,7 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvDynamicBlockCount) {
       .chunkSize = 8 * 1024 * 1024,
       .pipelineDepth = 2,
       .p2pBarrierCount = static_cast<std::size_t>(maxBlocks),
-      .tileMaxBlocks = maxBlocks,
+      .tile_max_groups = maxBlocks,
   };
 
   auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();

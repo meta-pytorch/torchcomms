@@ -1,0 +1,31 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+
+# pyre-strict
+# patternlint-disable fbcode-nonempty-init-py
+
+"""
+clog module for TorchComm hooks.
+
+Logs collective operation signatures and lifecycle events to a
+pipe-delimited log file.
+
+Example:
+    >>> from torchcomms.hooks import clog
+    >>> logger = clog(output="/tmp/clog.log", events=["ALL"])
+    >>> logger.register_with_comm(comm)
+    >>> # ... run collectives ...
+    >>> logger.unregister()
+"""
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from torchcomms.hooks.clog._clog import clog
+else:
+    import torchcomms._comms as _comms_mod
+
+    clog = _comms_mod.hooks.clog.clog
+
+__all__ = [
+    "clog",
+]

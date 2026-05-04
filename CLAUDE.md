@@ -20,9 +20,8 @@ source .venv/bin/activate
 uv pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu126
 
 # Other CUDA versions available:
-# uv pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu128
-# uv pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu129
 # uv pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu130
+# uv pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu132
 
 # Install build and dev dependencies (setuptools/packaging needed for --no-build-isolation)
 uv pip install setuptools packaging pyyaml

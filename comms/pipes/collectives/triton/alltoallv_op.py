@@ -124,10 +124,16 @@ def _triton_copy_1d_kernel(src_ptr, dst_ptr, N, BLOCK_SIZE: tl.constexpr):
 
 
 @triton.jit
-def _sum_int64_kernel(input_ptr, output_ptr, N: tl.constexpr):
-    """GIN-safe kernel to compute sum of int64 tensor."""
-    offsets = tl.arange(0, N)
-    vals = tl.load(input_ptr + offsets)
+def _sum_int64_kernel(input_ptr, output_ptr, W, BLOCK_SIZE: tl.constexpr):
+    """GIN-safe kernel to compute sum of int64 tensor.
+
+    Uses BLOCK_SIZE (next power-of-2 of W) with masking to support
+    non-power-of-2 world sizes, matching the pattern used by
+    ``_prepare_alltoallv_kernel``.
+    """
+    offsets = tl.arange(0, BLOCK_SIZE)
+    mask = offsets < W
+    vals = tl.load(input_ptr + offsets, mask=mask, other=0)
     total = tl.sum(vals, axis=0)
     tl.store(output_ptr, total)
 
@@ -551,6 +557,14 @@ class AlltoallvOp:
 
     def teardown(self) -> None:
         """Release comms resources and all buffers.  Safe to call multiple times."""
+        # Barrier ensures all ranks have completed their kernel launches
+        # before any rank deregisters buffers. Without this, fast ranks
+        # can deregister recv_buf (RDMA-unmap) while slow ranks' kernels
+        # are still writing to it via one-sided put operations, corrupting
+        # NCCL state and causing subsequent window lifecycles to hang.
+        if self._window is not None:
+            torch.cuda.synchronize()
+            self.comm.barrier(False)
         # First deregister comms buffers
         if self._src_info is not None:
             self._window.deregister_local_buffer(self._src_info)
@@ -974,8 +988,9 @@ class AlltoallvOp:
             _sum_int64_kernel[(1,)](
                 output_split_sizes,
                 self._total_tokens_buf,
+                self.world_size,
                 # pyre-fixme[6]: Triton constexpr accepts int at runtime
-                N=self.world_size,
+                BLOCK_SIZE=self._prep_block_size,
             )
             total_tokens = int(self._total_tokens_buf.item())
 

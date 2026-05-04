@@ -5,6 +5,7 @@
 
 #include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
 #include "comms/pipes/MultiPeerDeviceHandle.cuh"
+#include "comms/pipes/rdma/NicConstants.h"
 #include "comms/torchcomms/device/DeviceBackendTraits.hpp"
 #include "comms/torchcomms/device/TorchCommDeviceWindow.hpp"
 #include "comms/torchcomms/device/cuda/CudaApi.hpp"
@@ -17,6 +18,16 @@
 namespace torchcomms::device {
 
 using torch::comms::RegisteredBuffer;
+
+// PipesDeviceBackend is the bridge layer where torchcomms, ncclx, and
+// pipes per-NIC IBGDA constants meet. Verify they all agree at compile
+// time so RegisteredBuffer.hpp can stay free of NCCLx and pipes deps.
+static_assert(
+    NCCLX_MAX_NICS_PER_GPU == ::comms::pipes::kMaxNicsPerGpu,
+    "NCCLX_MAX_NICS_PER_GPU must match comms::pipes::kMaxNicsPerGpu");
+static_assert(
+    torch::comms::kMaxNicsPerGpu == ::comms::pipes::kMaxNicsPerGpu,
+    "torch::comms::kMaxNicsPerGpu must match comms::pipes::kMaxNicsPerGpu");
 
 // =============================================================================
 // DeviceWindowDeleter Implementation
@@ -53,7 +64,7 @@ PipesDeviceBackend::Ptr PipesDeviceBackend::create_device_window(
     torch::comms::NcclxApi* nccl_api,
     torch::comms::CudaApi* cuda_api,
     const DeviceBackendConfig& config,
-    ncclWindow_t nccl_win,
+    NcclWin nccl_win,
     void* base,
     size_t size) {
   if (nccl_api == nullptr) {
@@ -154,21 +165,30 @@ RegisteredBuffer PipesDeviceBackend::register_local_buffer(
     ncclComm_t nccl_comm,
     void* ptr,
     size_t size) {
-  uint32_t lkey = 0;
-  auto result = nccl_api->winLocalRegisterBuffer(nccl_comm, ptr, size, &lkey);
+  // Pipes (IBGDA) put uses per-NIC lkeys for WQE construction during RDMA
+  // writes. The kernel-side put selects lkeys[nic] based on the slot it
+  // dispatches on, so the full per-NIC array must be populated (using only
+  // [0] would corrupt WQEs for slots landing on NIC[1..N-1] on multi-NIC HW).
+  // ABI returns into a C struct (ncclLkeyPerDevice) which we field-copy
+  // into the C++ wrapper (LkeyPerDevice) so the caller-visible
+  // RegisteredBuffer.lkey_per_device gets bounds-checked operator[] and a
+  // populated `size` field. backend_window is unused by Pipes — only the
+  // GIN backend needs it.
+  RegisteredBuffer buf;
+  ncclLkeyPerDevice raw{};
+  auto result = nccl_api->winLocalRegisterBuffer(nccl_comm, ptr, size, &raw);
   if (result != ncclSuccess) {
     throw std::runtime_error(
         "[PipesDeviceBackend::register_local_buffer]: "
         "winLocalRegisterBuffer failed");
   }
-
-  // Pipes (IBGDA) put uses lkey for WQE construction during RDMA writes.
-  // backend_window is unused by Pipes — only the GIN backend needs it.
-  RegisteredBuffer buf;
+  buf.lkey_per_device.size = raw.size;
+  for (int n = 0; n < raw.size; ++n) {
+    buf.lkey_per_device.values[n] = raw.values[n];
+  }
   buf.base_ptr = ptr;
   buf.size = size;
   buf.backend_window = nullptr;
-  buf.lkey = lkey;
   return buf;
 }
 
@@ -183,10 +203,7 @@ void PipesDeviceBackend::deregister_local_buffer(
   if (result != ncclSuccess) {
     TC_LOG(ERROR) << "[PipesDeviceBackend]: Failed to deregister local buffer";
   }
-  buf.backend_window = nullptr;
-  buf.base_ptr = nullptr;
-  buf.size = 0;
-  buf.lkey = 0;
+  buf = RegisteredBuffer{};
 }
 
 // =============================================================================

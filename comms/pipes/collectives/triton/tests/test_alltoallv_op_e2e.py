@@ -78,6 +78,7 @@ class _OpTestBase(unittest.TestCase):
         AlltoallvOp.clear_cache()
         if cls.torchcomm is not None:
             cls.torchcomm.barrier(False)
+            cls.torchcomm.finalize()
         cls.torchcomm = None
         cls.wrapper = None
         gc.collect()

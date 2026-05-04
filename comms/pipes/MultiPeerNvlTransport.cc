@@ -112,18 +112,25 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
       cudaMemcpyDefault));
 
   // Conditionally allocate tile protocol buffers (all internal)
-  if (config_.tileMaxBlocks > 0) {
+  if (config_.tile_max_groups > 0) {
+    if (config_.pipelineDepth < 1) {
+      throw std::runtime_error("tile send/recv requires pipelineDepth >= 1");
+    }
+    if (config_.dataBufferSize / config_.tile_max_groups < 16) {
+      throw std::runtime_error(
+          "tile send/recv requires (dataBufferSize / tile_max_groups) >= 16");
+    }
     // Step state (local only, not exchanged, per-peer)
     // Each peer gets 2*maxBlocks int64s: [sender steps | receiver steps]
     std::size_t perPeerStepStateBytes =
-        2 * config_.tileMaxBlocks * sizeof(int64_t);
+        2 * config_.tile_max_groups * sizeof(int64_t);
     std::size_t totalStepStateBytes = perPeerStepStateBytes * (nRanks_ - 1);
     tileStepStateBuffer_ =
         std::make_unique<meta::comms::DeviceBuffer>(totalStepStateBytes);
     CUDA_CHECK(cudaMemset(tileStepStateBuffer_->get(), 0, totalStepStateBytes));
 
     // Tile signal buffer (2*maxBlocks signals per peer, exchanged)
-    std::size_t tileSignalCount = 2 * config_.tileMaxBlocks;
+    std::size_t tileSignalCount = 2 * config_.tile_max_groups;
     perPeerTileSignalSize_ = getSignalBufferSize(tileSignalCount);
     std::size_t totalTileSignalSize = perPeerTileSignalSize_ * (nRanks_ - 1);
     tileSignalHandler_ = std::make_unique<GpuMemHandler>(
@@ -333,9 +340,10 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
         .signalBuffer = remoteSignalSpan,
         .barrierBuffer = remoteBarrierSpan,
     };
-    auto device = P2pNvlTransportDevice(
-        myRank_, peerRank, options, localState, remoteState);
-    if (tileStepStateBuffer_) {
+    auto buildTileState = [&]() -> NvlinkTransportTileState {
+      if (!tileStepStateBuffer_) {
+        return {};
+      }
       auto* tileLocalSig = reinterpret_cast<SignalState*>(
           static_cast<char*>(tileSignalHandler_->getLocalDeviceMemPtr()) +
           localPeerIndex * perPeerTileSignalSize_);
@@ -343,13 +351,21 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
           static_cast<char*>(
               tileSignalHandler_->getPeerDeviceMemPtr(peerRank)) +
           remotePeerIndex * perPeerTileSignalSize_);
-      // Each peer gets its own stepState region
       auto* stepBase = static_cast<int64_t*>(tileStepStateBuffer_->get());
       auto* peerStepState =
-          stepBase + localPeerIndex * 2 * config_.tileMaxBlocks;
-      device.set_tile_state(
-          peerStepState, config_.tileMaxBlocks, tileLocalSig, tileRemoteSig);
-    }
+          stepBase + localPeerIndex * 2 * config_.tile_max_groups;
+      const int max_groups = config_.tile_max_groups;
+      return {
+          .step_state = {peerStepState, static_cast<uint32_t>(2 * max_groups)},
+          .tile_max_groups = max_groups,
+          .local_signals =
+              {tileLocalSig, static_cast<uint32_t>(2 * max_groups)},
+          .remote_signals =
+              {tileRemoteSig, static_cast<uint32_t>(2 * max_groups)},
+      };
+    };
+    auto device = P2pNvlTransportDevice(
+        myRank_, peerRank, options, localState, remoteState, buildTileState());
     return device;
   }
 
@@ -437,9 +453,10 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
         .ll128Buffer = remoteLl128,
     };
 
-    auto device = P2pNvlTransportDevice(
-        myRank_, peerRank, options, localState, remoteState);
-    if (tileStepStateBuffer_) {
+    auto buildTileState = [&]() -> NvlinkTransportTileState {
+      if (!tileStepStateBuffer_) {
+        return {};
+      }
       auto* tileLocalSig = reinterpret_cast<SignalState*>(
           static_cast<char*>(tileSignalHandler_->getLocalDeviceMemPtr()) +
           localPeerIndex * perPeerTileSignalSize_);
@@ -447,13 +464,21 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
           static_cast<char*>(
               tileSignalHandler_->getPeerDeviceMemPtr(peerRank)) +
           remotePeerIndex * perPeerTileSignalSize_);
-      // Each peer gets its own stepState region
       auto* stepBase = static_cast<int64_t*>(tileStepStateBuffer_->get());
       auto* peerStepState =
-          stepBase + localPeerIndex * 2 * config_.tileMaxBlocks;
-      device.set_tile_state(
-          peerStepState, config_.tileMaxBlocks, tileLocalSig, tileRemoteSig);
-    }
+          stepBase + localPeerIndex * 2 * config_.tile_max_groups;
+      const int max_groups = config_.tile_max_groups;
+      return {
+          .step_state = {peerStepState, static_cast<uint32_t>(2 * max_groups)},
+          .tile_max_groups = max_groups,
+          .local_signals =
+              {tileLocalSig, static_cast<uint32_t>(2 * max_groups)},
+          .remote_signals =
+              {tileRemoteSig, static_cast<uint32_t>(2 * max_groups)},
+      };
+    };
+    auto device = P2pNvlTransportDevice(
+        myRank_, peerRank, options, localState, remoteState, buildTileState());
     return device;
   } else {
     // Single state mode: 1x chunk state per peer (on receiver side only)
@@ -480,9 +505,10 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
         .ll128Buffer = remoteLl128,
     };
 
-    auto device = P2pNvlTransportDevice(
-        myRank_, peerRank, options, localState, remoteState);
-    if (tileStepStateBuffer_) {
+    auto buildTileState = [&]() -> NvlinkTransportTileState {
+      if (!tileStepStateBuffer_) {
+        return {};
+      }
       auto* tileLocalSig = reinterpret_cast<SignalState*>(
           static_cast<char*>(tileSignalHandler_->getLocalDeviceMemPtr()) +
           localPeerIndex * perPeerTileSignalSize_);
@@ -490,13 +516,21 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
           static_cast<char*>(
               tileSignalHandler_->getPeerDeviceMemPtr(peerRank)) +
           remotePeerIndex * perPeerTileSignalSize_);
-      // Each peer gets its own stepState region
       auto* stepBase = static_cast<int64_t*>(tileStepStateBuffer_->get());
       auto* peerStepState =
-          stepBase + localPeerIndex * 2 * config_.tileMaxBlocks;
-      device.set_tile_state(
-          peerStepState, config_.tileMaxBlocks, tileLocalSig, tileRemoteSig);
-    }
+          stepBase + localPeerIndex * 2 * config_.tile_max_groups;
+      const int max_groups = config_.tile_max_groups;
+      return {
+          .step_state = {peerStepState, static_cast<uint32_t>(2 * max_groups)},
+          .tile_max_groups = max_groups,
+          .local_signals =
+              {tileLocalSig, static_cast<uint32_t>(2 * max_groups)},
+          .remote_signals =
+              {tileRemoteSig, static_cast<uint32_t>(2 * max_groups)},
+      };
+    };
+    auto device = P2pNvlTransportDevice(
+        myRank_, peerRank, options, localState, remoteState, buildTileState());
     return device;
   }
 }

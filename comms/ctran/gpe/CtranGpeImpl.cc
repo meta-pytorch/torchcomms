@@ -68,6 +68,7 @@ void OrderedWorkStreamGuard::init(const CommLogData& logMetaData) {
   FB_CUDACHECKTHROW_EX(
       cudaEventCreateWithFlags(&execModeSyncEvent_, cudaEventDisableTiming),
       logMetaData);
+  sideStream_ = std::make_unique<meta::comms::GraphSideStream>();
 }
 
 OrderedWorkStreamGuard::~OrderedWorkStreamGuard() {
@@ -122,6 +123,17 @@ OrderedWorkStreamGuard::Scope OrderedWorkStreamGuard::acquire(
 
 void CUDART_CB CtranGpe::Impl::cmdCb(void* data) {
   CtranGpeCmd* cmd = reinterpret_cast<CtranGpeCmd*>(data);
+  if (cmd->persistent) {
+    cmd->inFlight.fetch_add(1, std::memory_order_release);
+    // Each replay of a captured graph re-fires this callback. Bump the
+    // per-OpElem opCount so host-side consumers see a fresh value per replay
+    // rather than the frozen capture-time one. NOTE: this only advances the
+    // host-side opCount; kernel-side fields baked at capture time still see the
+    // capture-time value on every replay.
+    for (auto& op : cmd->coll.opGroup) {
+      ++op->opCount;
+    }
+  }
   cmd->gpe->pimpl->cmdEnqueue(cmd);
 }
 
@@ -149,6 +161,13 @@ void CUDART_CB CtranGpe::Impl::cmdDestroy(void* data) {
   CtranGpeCmd* cmd = reinterpret_cast<CtranGpeCmd*>(data);
   if (!cmd->persistent) {
     CLOGF(WARN, "CTranGPE: cmd desctructor called for non-persistent cmd");
+  }
+  // Wait for the GPE thread to finish processing any queued instances of
+  // this cmd before deleting. With KERNEL_STARTED_AND_EXIT persistent cmds,
+  // the GPE processes cmds instantly (stale flag), so cmdCb enqueues from
+  // graph replays may still be in the GPE queue when the graph is destroyed.
+  while (cmd->inFlight.load(std::memory_order_acquire) > 0) {
+    std::this_thread::yield();
   }
   delete cmd;
 }
@@ -179,13 +198,25 @@ commResult_t OrderedWorkStreamGuard::doAcquire(
     return commSuccess; // first submit ever
   }
 
-  if (userStream == lastUserStream_ && lastWasCaptured_ == isCapturing &&
-      !isCapturing) {
-    return commSuccess; // same stream, same mode, no capture -- ordering
-                        // implicit
+  if (!isCapturing) {
+    if (everCaptured_) {
+      // Graph replays bypass submit(), so we cannot know for certain whether
+      // the previous operation was a graph replay or eager. CPU-side sync
+      // ensures any in-flight graph host node (which enqueues a GPE command)
+      // has fired before the caller can cmdEnqueue. Without this, the eager
+      // command lands in the GPE queue first and the single-threaded GPE
+      // deadlocks.
+      FB_CUDACHECK(cudaEventSynchronize(execModeSyncEvent_));
+    } else if (userStream != lastUserStream_) {
+      // Cross-stream eager, no graphs: GPU-side ordering only.
+      // We don't make any thread-safety guarantees for submit()
+      // so this is sufficient.
+      FB_COMMCHECK(doWait());
+    }
+    return commSuccess;
   }
 
-  if (isCapturing && !isNewCapture && lastWasCaptured_) {
+  if (!isNewCapture) {
     // Intra-capture cross-stream: add the RECORD node from the previous
     // doRelease as a capture dependency of this stream. This creates an
     // explicit graph edge, since cudaStreamWaitEvent cannot see RECORD
@@ -217,13 +248,25 @@ commResult_t OrderedWorkStreamGuard::doRelease(
   if (!isCapturing) {
     FB_CUDACHECK(cudaEventRecord(execModeSyncEvent_, userStream));
   } else {
-    FB_COMMCHECK(
-        utils::cudagraph::addEventRecordNodeToCapture(
-            userStream, captureInfo.g, execModeSyncEvent_, &lastRecordNode_));
+    // Route the external EVENT_RECORD node onto a side stream so its
+    // release fence doesn't stall unrelated work on userStream between
+    // ctran submissions. The next doAcquire on userStream still sees
+    // lastRecordNode_ via cudaStreamUpdateCaptureDependencies, which
+    // reinstates the explicit DAG edge ordering the next ctran op after
+    // this record. Non-ctran work on userStream is not serialized
+    // behind the record.
+    commResult_t innerRes = commSuccess;
+    FB_CUDACHECK(
+        sideStream_->fork_from(userStream, [&](cudaStream_t sideStream) {
+          innerRes = utils::cudagraph::addEventRecordNodeToCapture(
+              sideStream, captureInfo.g, execModeSyncEvent_, &lastRecordNode_);
+        }));
+    if (innerRes != commSuccess) {
+      return innerRes;
+    }
   }
 
   lastUserStream_ = userStream;
-  lastWasCaptured_ = isCapturing;
 
   return commSuccess;
 }
@@ -308,6 +351,22 @@ commResult_t CtranGpe::Impl::submit(
   cudaStream_t launchStream = kernelConfig.stream;
   std::optional<OrderedWorkStreamGuard::Scope> wsScope;
 
+  // Acquire the work-stream baton before adding the host node so that
+  // during graph replay the host node (which enqueues a GPE command) only
+  // fires after the previous operation's kernel has completed. Without this
+  // ordering, a subsequent eager submit could enqueue its GPE command before
+  // the graph's host node fires, causing the single-threaded GPE to deadlock
+  // (spinning on the eager kernel's KERNEL_STARTED while the graph's command
+  // is stuck behind it in the queue).
+  auto maybeAcquireWorkStreamScope = [&]() {
+    if (!kernelConfig.canConcurrent) {
+      wsScope = ws_.acquire(kernelConfig.stream, streamCaptureInfo);
+      FB_COMMCHECK(wsScope->status());
+      launchStream = wsScope->stream();
+    }
+    return commSuccess;
+  };
+
   size_t opGroupSize = 0;
   // Enqueue op to gpeThread if any op is appended, or if there is a
   // postKernelCleanup that needs to run after the kernel completes.
@@ -329,6 +388,9 @@ commResult_t CtranGpe::Impl::submit(
       }
       cmd->coll.comm = comm;
     }
+
+    maybeAcquireWorkStreamScope();
+
     if (isCapturing) {
       FB_COMMCHECK(preLaunchGraphPrepare(cmd, graphPrepareFn));
       cmd->persistent = true;
@@ -351,6 +413,8 @@ commResult_t CtranGpe::Impl::submit(
     } else {
       cmdEnqueue(cmd);
     }
+  } else {
+    maybeAcquireWorkStreamScope();
   }
 
   // For the no-cmd path during graph capture, retain cleanup on the graph.
@@ -396,12 +460,6 @@ commResult_t CtranGpe::Impl::submit(
           res,
           fail);
     }
-  }
-
-  if (!kernelConfig.canConcurrent) {
-    wsScope = ws_.acquire(kernelConfig.stream, streamCaptureInfo);
-    FB_COMMCHECK(wsScope->status());
-    launchStream = wsScope->stream();
   }
 
   if (NCCL_CTRAN_ENALBE_CLUSTER_KERNEL_LAUNCH) {
@@ -603,7 +661,47 @@ void CtranGpe::Impl::terminate() {
   cmdEnqueue(cmd);
   thread_.join();
 
+  // Pool elements are released by CUDA's async cmdDestroy callback
+  // (cudaUserObjectNoDestructorSync). Spin until all pools drain before
+  // returning, to avoid freeing pinned memory from under an in-flight callback.
   const auto& statex = comm->statex_;
+  const auto start = std::chrono::steady_clock::now();
+  auto nextLog = start + std::chrono::seconds(5);
+  while (true) {
+    this->kernelFlagPool->reclaim();
+    this->kernelElemPool->reclaim();
+    this->gpeKernelSyncPool->reclaim();
+    if (this->kernelFlagPool->capacity() == this->kernelFlagPool->size() &&
+        this->kernelElemPool->capacity() == this->kernelElemPool->size() &&
+        this->gpeKernelSyncPool->capacity() ==
+            this->gpeKernelSyncPool->size()) {
+      break;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= nextLog) {
+      const auto elapsedSec =
+          std::chrono::duration_cast<std::chrono::seconds>(now - start).count();
+      CLOGF_SUBSYS(
+          WARNING,
+          INIT,
+          "terminate() spin-wait: pools still draining after {}s on rank {} commHash {:x}"
+          " -- kernelFlag {}/{} kernelElem {}/{} gpeKernelSync {}/{}."
+          " Most likely cudaGraphDestroy() was not called on all CUDA graphs"
+          " that captured CTranGPE operations.",
+          elapsedSec,
+          statex->rank(),
+          statex->commHash(),
+          this->kernelFlagPool->size(),
+          this->kernelFlagPool->capacity(),
+          this->kernelElemPool->size(),
+          this->kernelElemPool->capacity(),
+          this->gpeKernelSyncPool->size(),
+          this->gpeKernelSyncPool->capacity());
+      nextLog = now + std::chrono::seconds(5);
+    }
+    std::this_thread::yield();
+  }
+
   CLOGF_SUBSYS(
       INFO,
       INIT,
@@ -631,6 +729,10 @@ void CtranGpe::Impl::gpeThreadFn() {
 
       if (cmd->timeout.has_value()) {
         comm->setTimeout(cmd->timeout.value());
+      } else if (auto d = comm->getAbort()->GetDefaultTimeoutDuration();
+                 d.has_value()) {
+        // Fall back to comm-level default (CUDA-graph replay path).
+        comm->setTimeout(*d);
       }
       SCOPE_EXIT {
         // if comm is aborted for any reason, we mark it as aborted to avoid
@@ -763,7 +865,9 @@ void CtranGpe::Impl::gpeThreadFn() {
             std::this_thread::yield();
           }
           // After all blocks exited, we can safely reset.
-          kernelFlag->reset();
+          if (!cmd->persistent) {
+            kernelFlag->reset();
+          }
         } else {
           // In case of aborted comm, wait for kernel to start
           while (comm->testAbort() &&
@@ -796,7 +900,9 @@ void CtranGpe::Impl::gpeThreadFn() {
             cmd->coll.comm, ncclx::colltrace::CollEnd{});
       }
 
-      if (!cmd->persistent) {
+      if (cmd->persistent) {
+        cmd->inFlight.fetch_sub(1, std::memory_order_release);
+      } else {
         delete cmd;
       }
     }

@@ -1,0 +1,29 @@
+version: 0
+inputs:
+  - &CPUTIMEx20_x28_secx29_-sum-x5b_0x0x5d_-execution
+    metric: CPUTIME (sec)
+    scope: execution
+    formula: $$
+    combine: sum
+  - &CPUTIMEx20_x28_secx29_-sum-x5b_0x0x5d_-lex_aware
+    metric: CPUTIME (sec)
+    scope: lex_aware
+    formula: $$
+    combine: sum
+  - &CPUTIMEx20_x28_secx29_-sum-x5b_0x0x5d_-function
+    metric: CPUTIME (sec)
+    scope: function
+    formula: $$
+    combine: sum
+roots:
+  - name: CPUTIME (sec)
+    description: CPUTIME (sec)
+    variants:
+      Sum:
+        render: [number, percent]
+        formula:
+          inclusive:
+            standard: *CPUTIMEx20_x28_secx29_-sum-x5b_0x0x5d_-execution
+          exclusive:
+            custom: *CPUTIMEx20_x28_secx29_-sum-x5b_0x0x5d_-lex_aware
+            standard: *CPUTIMEx20_x28_secx29_-sum-x5b_0x0x5d_-function

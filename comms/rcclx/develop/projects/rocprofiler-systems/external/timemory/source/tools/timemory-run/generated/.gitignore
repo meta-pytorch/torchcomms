@@ -1,0 +1,3 @@
+
+# ignore changes in generated file
+/timemory-run-regex.cpp

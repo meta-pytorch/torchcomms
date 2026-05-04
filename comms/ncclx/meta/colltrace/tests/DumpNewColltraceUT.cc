@@ -85,7 +85,7 @@ TEST(DumpNewCollTraceUT, dumpNewCollTraceWithCollectives) {
                   .hasValue());
 
   // Sleep briefly to allow the CollTrace thread to process the events
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   // At this point, the collective should be in the pending state. However,
   // since currently we will treat the first pending collective as the current
@@ -106,7 +106,7 @@ TEST(DumpNewCollTraceUT, dumpNewCollTraceWithCollectives) {
       handle->trigger(CollTraceHandleTriggerState::KernelStarted).hasValue());
 
   // Sleep briefly to allow the CollTrace thread to process the events
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   // Now the collective should be in the current state
   auto dumpMapCurrent = dumpNewCollTrace(*collTrace);
@@ -122,7 +122,7 @@ TEST(DumpNewCollTraceUT, dumpNewCollTraceWithCollectives) {
       handle->trigger(CollTraceHandleTriggerState::KernelFinished).hasValue());
 
   // Sleep briefly to allow the CollTrace thread to process the events
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   // Now the collective should be in the past state
   auto dumpMapPast = dumpNewCollTrace(*collTrace);
@@ -167,7 +167,7 @@ TEST(DumpNewCollTraceUT, dumpNewCollTraceMultipleCollectives) {
                     .hasValue());
 
     // Sleep briefly to allow the CollTrace thread to process the events
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(std::chrono::seconds(2));
   }
 
   // Start second collective but don't finish it
@@ -189,7 +189,7 @@ TEST(DumpNewCollTraceUT, dumpNewCollTraceMultipleCollectives) {
     // Don't trigger KernelFinished
 
     // Sleep briefly to allow the CollTrace thread to process the events
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(std::chrono::seconds(2));
   }
 
   // Enqueue third collective but don't start it
@@ -209,7 +209,7 @@ TEST(DumpNewCollTraceUT, dumpNewCollTraceMultipleCollectives) {
     // Don't trigger KernelStarted
 
     // Sleep briefly to allow the CollTrace thread to process the events
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(std::chrono::seconds(2));
   }
 
   // Dump the state and verify

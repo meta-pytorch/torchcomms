@@ -628,12 +628,14 @@ TEST_F(IbSendRecvBenchmark, SendRecvParamSweep) {
 
   for (int nblk : block_counts) {
     for (size_t sec : section_sizes) {
-      if (sec > total)
+      if (sec > total) {
         continue;
+      }
       int total_steps = total / sec;
       for (int pd : pd_values) {
-        if (pd > total_steps)
+        if (pd > total_steps) {
           continue;
+        }
         size_t tile = sec / nblk;
         size_t staging = static_cast<size_t>(pd) * sec * 2; // send + recv
 
@@ -735,12 +737,14 @@ TEST_F(IbSendRecvBenchmark, SendRecvLargeTileSweep) {
   for (size_t total : totals) {
     for (size_t tile : tile_sizes) {
       size_t section = tile * nblk;
-      if (section > total)
+      if (section > total) {
         continue;
+      }
       int total_steps = total / section;
       for (int pd : pd_values) {
-        if (pd > total_steps)
+        if (pd > total_steps) {
           continue;
+        }
         // OOM guard: staging + window = 2 * pd * section, src + dst = 2 * total
         size_t ring_bytes = static_cast<size_t>(pd) * section;
         size_t mem_per_dir = total + ring_bytes * 2; // src/dst + staging + win

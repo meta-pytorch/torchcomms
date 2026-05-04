@@ -10,18 +10,22 @@
 #include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/utils/commSpecs.h"
-#include "meta/colltrace/CollTrace.h"
 #include "meta/colltrace/ProxyTrace.h"
 
 namespace ncclx::comms_monitor {
 ::comms::CommsTopologyInfo getTopoInfoFromNcclComm(ncclComm_t comm);
 
+struct CommStateInfo {
+  int localRank{0};
+  int node{0};
+  int nLocalRanks{1};
+  int nNodes{1};
+};
+
 struct NcclCommMonitorInfo {
   CommLogData logMetaData;
-  ncclx::CommStateX commState;
+  CommStateInfo stateInfo;
   ::comms::CommsTopologyInfo topoInfo;
-  // This one will be deprecated soon.
-  std::shared_ptr<CollTrace> collTrace;
   std::shared_ptr<colltrace::MapperTrace> mapperTrace;
   std::shared_ptr<ProxyTrace> proxyTrace;
   // ptr for the new colltrace interface.

@@ -27,6 +27,9 @@ class NcclxGlobalApi {
       std::unordered_map<
           std::string,
           std::unordered_map<std::string, std::string>>& map) = 0;
+
+  // Initialize the CUDA Caching Allocator memory hook of NCCLX.
+  virtual void initCachingAllocatorHook() = 0;
 };
 
 /**
@@ -42,6 +45,8 @@ class DefaultNcclxGlobalApi : public NcclxGlobalApi {
       std::unordered_map<
           std::string,
           std::unordered_map<std::string, std::string>>& map) override;
+
+  void initCachingAllocatorHook() override;
 
  private:
   mutable std::mutex api_mutex_;

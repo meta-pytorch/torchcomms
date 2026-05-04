@@ -54,7 +54,7 @@ void logGpuMemoryStats(int gpu) {
   CUDACHECK_TEST(cudaMemGetInfo(&free, &total));
   auto mbFree = static_cast<double>(free) / (1024 * 1024);
   auto mbTotal = static_cast<double>(total) / (1024 * 1024);
-  LOG(INFO) << "GPU " << gpu << " memory: " << "freeBytes=" << free << " ("
+  XLOG(DBG) << "GPU " << gpu << " memory: " << "freeBytes=" << free << " ("
             << mbFree << "MB), " << "totalBytes=" << total << "(" << mbTotal
             << "MB)";
 }
@@ -155,7 +155,7 @@ commResult_t commMemAllocDisjoint(
   for (int i = 0; i < numSegments; i++) {
     FB_CUCHECK(cuMemMap(curPtr, alignedSizes[i], 0, handles[i], 0));
     segments.emplace_back(reinterpret_cast<void*>(curPtr), alignedSizes[i]);
-    LOG(INFO) << "ncclMemAllocDisjoint maps segments[" << i << "] ptr "
+    XLOG(DBG) << "ncclMemAllocDisjoint maps segments[" << i << "] ptr "
               << reinterpret_cast<void*>(curPtr) << " size " << alignedSizes[i]
               << "/" << vaSize;
 
@@ -221,7 +221,7 @@ commResult_t commMemFreeDisjoint(
   CUdeviceptr curPtr = (CUdeviceptr)ptr;
   for (int i = 0; i < alignedSizes.size(); i++) {
     FB_CUCHECK(cuMemRetainAllocationHandle(&handle, (void*)curPtr));
-    LOG(INFO) << "ncclMemFreeDisjoint unmaps segments[" << i << "] ptr "
+    XLOG(DBG) << "ncclMemFreeDisjoint unmaps segments[" << i << "] ptr "
               << reinterpret_cast<void*>(curPtr) << " size " << alignedSizes[i]
               << "/" << vaSize;
     FB_CUCHECK(cuMemRelease(handle));
@@ -316,7 +316,7 @@ commResult_t commMemExpandBuffer(
     buf->segments.emplace_back(
         reinterpret_cast<void*>(curPtr), buf->segmentSize);
 
-    LOG(INFO) << "commMemExpandBuffer maps new segment ptr "
+    XLOG(DBG) << "commMemExpandBuffer maps new segment ptr "
               << reinterpret_cast<void*>(curPtr) << " size "
               << buf->segmentSize;
 
@@ -723,6 +723,7 @@ bool CtranTestHelpers::isBackendValid(
 void CtranTestHelpers::verifyGpeLeak(ICtran* ctran) {
   ASSERT_EQ(ctran->gpe->numInUseKernelElems(), 0);
   ASSERT_EQ(ctran->gpe->numInUseKernelFlags(), 0);
+  ASSERT_EQ(ctran->gpe->numInUseGpeKernelSyncs(), 0);
 }
 
 void CtranTestHelpers::resetBackendsUsed(ICtran* ctran) {

@@ -26,12 +26,20 @@ namespace torch::comms {
 
 // Configuration for staged RDMA transfers.
 struct StagedTransferConfig {
-  // Size of the GPU staging buffer on each side. Each chunk transfer moves
+  // Where to allocate the staging buffer.
+  // CPU: posix_memalign + ibv_reg_mr (no GPU memory, default)
+  // GPU: cudaMalloc + dmabuf + regDmabufMr (GPUDirect RDMA)
+  enum class StagingMode { CPU, GPU };
+  StagingMode stagingMode = StagingMode::CPU;
+
+  // Size of the staging buffer on each side. Each chunk transfer moves
   // at most this many bytes via a single RDMA_WRITE_WITH_IMM.
-  size_t stagingBufSize = 64 * 1024 * 1024; // 64 MB
+  size_t stagingBufSize = 4 * 1024 * 1024; // 4 MB
 
   // Timeout for waiting on the recvReady flag or CQ poll between chunks.
-  std::chrono::milliseconds chunkTimeout{30000};
+  // TODO: 300s is temporary to unblock prototyping. Use a much smaller
+  // timeout for production runs.
+  std::chrono::milliseconds chunkTimeout{300000};
 };
 
 // Information exchanged between server and client during setupLocalTransport()
@@ -52,14 +60,17 @@ struct StagingRendezvousInfo {
   std::optional<BufferInfo> recvReady;
 };
 
-// RAII wrapper for a GPU staging buffer registered for GPUDirect RDMA via
-// dmabuf. Allocates GPU memory with cudaMalloc, exports a dmabuf fd, and
-// registers it with the IB protection domain for zero-copy RDMA access.
-//
-// Destruction order: deregister MR → close dmabuf fd → cudaFree.
+// RAII wrapper for a staging buffer registered for RDMA.
+// CPU mode: posix_memalign + ibv_reg_mr (no GPU memory).
+// GPU mode: cudaMalloc + dmabuf + regDmabufMr (GPUDirect RDMA).
 class StagedBuffer {
  public:
-  StagedBuffer(size_t size, int cudaDev, ibverbx::IbvPd& pd);
+  StagedBuffer(
+      size_t size,
+      int cudaDev,
+      ibverbx::IbvPd& pd,
+      StagedTransferConfig::StagingMode mode =
+          StagedTransferConfig::StagingMode::CPU);
   ~StagedBuffer();
 
   // Move-only
@@ -77,6 +88,9 @@ class StagedBuffer {
   int cudaDev() const {
     return cudaDev_;
   }
+  bool isGpu() const {
+    return isGpu_;
+  }
   uint32_t lkey() const {
     return mr_->mr()->lkey;
   }
@@ -88,13 +102,14 @@ class StagedBuffer {
   void* buf_{nullptr};
   size_t size_{0};
   int cudaDev_{-1};
-  int dmabufFd_{-1};
+  bool isGpu_{false};
+  int dmabufFd_{-1}; // GPU mode only
   std::optional<ibverbx::IbvMr> mr_;
 };
 
-// Describes GPU memory regions for staged RDMA transfers. A single entry
+// Describes memory regions for staged RDMA transfers. A single entry
 // represents a contiguous buffer; multiple entries describe non-contiguous
-// regions for scatter/gather transfers.
+// regions for scatter/gather transfers. Pointers may be GPU or CPU memory.
 struct ScatterGatherDescriptor {
   struct Entry {
     void* ptr;
@@ -172,8 +187,12 @@ class StagedRdmaTransportBase {
 
   // Protected helpers — called explicitly by subclasses, no virtual dispatch.
 
-  // Initialize IB resources: device, PD, CQ, VirtualQP, staging buffer,
-  // CUDA stream. Must be called before connectQp().
+  // Lazily create CUDA stream on first use. Called by send()/recv() when
+  // GPU memory is involved. No-op if stream already exists.
+  void ensureCudaStream();
+
+  // Initialize IB resources: device, PD, CQ, VirtualQP, staging buffer.
+  // Must be called before connectQp().
   void initIbResources();
 
   // Connect to the peer using their serialized connection info. Deserializes
@@ -199,13 +218,13 @@ class StagedRdmaServerTransport : public StagedRdmaTransportBase {
   // Connect to the client using their serialized connection info.
   void connectRemoteTransport(const std::string& peerConnInfo);
 
-  // Transfer GPU memory regions described by src to the client's staging
-  // buffer, pipelining in stagingBufSize chunks. All entry pointers must be
-  // on cudaDev_. Requires evb_ (CHECK_THROW if nullptr).
+  // Transfer memory regions described by src to the client's staging
+  // buffer, pipelining in stagingBufSize chunks. Entry pointers may be
+  // GPU (on cudaDev_) or CPU memory. Requires evb_ (CHECK_THROW if nullptr).
   folly::SemiFuture<commResult_t> send(const ScatterGatherDescriptor& src);
 
  private:
-  // recvReady flag — CPU-pinned, cache-line aligned, RDMA-registered.
+  // readyToSend flag — CPU-pinned, cache-line aligned, RDMA-registered.
   // The client writes kRecvReadyValue here via RDMA_WRITE to signal that it
   // has finished copying data out of its staging buffer.
   // Pre-initialized to kRecvReadyValue so the first send() proceeds
@@ -215,7 +234,7 @@ class StagedRdmaServerTransport : public StagedRdmaTransportBase {
       ::operator delete(p, std::align_val_t{64});
     }
   };
-  std::unique_ptr<std::atomic<uint64_t>, AlignedDelete> recvReadyFlag_;
+  std::unique_ptr<std::atomic<uint64_t>, AlignedDelete> readyToSendFlag_;
   std::optional<ibverbx::IbvMr> recvReadyServerMr_;
 };
 
@@ -234,18 +253,27 @@ class StagedRdmaClientTransport : public StagedRdmaTransportBase {
   // recvReady source MR and posts initial recv WR.
   void connectRemoteTransport(const std::string& peerConnInfo);
 
-  // Receive into GPU memory regions described by dst from the server's
-  // staging buffer, pipelining in stagingBufSize chunks. All entry pointers
-  // must be on cudaDev_ (CPU buffers are not supported). numChunks is
-  // computed internally from totalBytes and the server's staging buffer
-  // size (exchanged during connectRemoteTransport()).
+  // Receive into memory regions described by dst from the server's
+  // staging buffer, pipelining in stagingBufSize chunks. Entry pointers
+  // may be GPU (on cudaDev_) or CPU memory. numChunks is computed
+  // internally from totalBytes and the server's staging buffer size
+  // (exchanged during connectRemoteTransport()).
   // Requires evb_ (CHECK_THROW if nullptr).
   folly::SemiFuture<commResult_t> recv(const ScatterGatherDescriptor& dst);
+
+  // Cancel a pending recv operation. The recv lambda will exit its CQ poll
+  // loop and return commUserAbort. Call this when the corresponding RPC
+  // fails so the caller can wait for the recv future to complete without
+  // blocking for the full chunkTimeout.
+  void cancelPendingRecv();
 
  private:
   // MR for &kRecvReadyValue — used as source for RDMA_WRITE to server's
   // recvReadyFlag_.
   std::optional<ibverbx::IbvMr> recvReadyClientMr_;
+
+  // Set by cancelPendingRecv() to interrupt the recv CQ poll loop.
+  std::atomic<bool> recvCancelled_{false};
 };
 
 } // namespace torch::comms

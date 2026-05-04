@@ -20,6 +20,7 @@
 #include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/ctran/utils/ExtUtils.h"
 #include "comms/ctran/utils/PinnedHostPool.h"
+#include "comms/utils/GraphCaptureSideStream.h"
 
 struct CommLogData;
 
@@ -147,6 +148,10 @@ class CtranGpeCmd {
   std::shared_ptr<std::atomic_flag> cpuFlag{nullptr};
 
   bool persistent{false};
+  // Count of queued-but-not-yet-processed instances of this cmd. Used by
+  // cmdDestroy to wait for the GPE to drain stale queue entries before
+  // deleting the cmd.
+  std::atomic_uint32_t inFlight{0};
   CtranGpe* gpe{nullptr};
 
   std::optional<std::chrono::milliseconds> timeout{std::nullopt};
@@ -257,8 +262,14 @@ class OrderedWorkStreamGuard {
   unsigned long long lastCaptureId_{0};
   bool everCaptured_{false};
   cudaStream_t lastUserStream_{nullptr};
-  bool lastWasCaptured_{false};
   cudaGraphNode_t lastRecordNode_{};
+
+  // Side stream used during capture to host the external cudaEventRecord
+  // node for execModeSyncEvent_ off the user stream's critical path, so
+  // its release fence doesn't stall compute between ctran submissions.
+  // The next doAcquire still adds lastRecordNode_ (now on the side) as
+  // an explicit capture dependency of userStream, preserving ordering.
+  std::unique_ptr<meta::comms::GraphSideStream> sideStream_;
 
   const CommLogData* logMetaData_{nullptr};
 };

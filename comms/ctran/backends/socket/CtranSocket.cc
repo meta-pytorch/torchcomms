@@ -14,13 +14,12 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 
-CtranSocket::CtranSocket(CtranComm* comm, CtranCtrlManager* ctrlMgr)
+CtranSocket::CtranSocket(CtranComm* comm)
     : comm(comm),
       rank_(comm->statex_->rank()),
       cudaDev_(comm->statex_->cudaDev()),
       commHash_(comm->statex_->commHash()),
-      commDesc_(comm->statex_->commDesc()),
-      ctrlMgr_(ctrlMgr) {
+      commDesc_(comm->statex_->commDesc()) {
   init(SocketServerAddr());
   CLOGF_SUBSYS(
       INFO,
@@ -35,14 +34,12 @@ CtranSocket::CtranSocket(
     int cudaDev,
     uint64_t commHash,
     const std::string& commDesc,
-    CtranCtrlManager* ctrlMgr,
     const SocketServerAddr& serverAddr)
     : comm(nullptr),
       rank_(rank),
       cudaDev_(cudaDev),
       commHash_(commHash),
-      commDesc_(commDesc),
-      ctrlMgr_(ctrlMgr) {
+      commDesc_(commDesc) {
   init(serverAddr);
   CLOGF_SUBSYS(
       INFO,
@@ -458,14 +455,7 @@ commResult_t CtranSocket::progressInternal() {
           continueWhileLoop = false;
           continue;
         }
-        if (ctrlMgr_ && ctrlMgr_->hasCb(msg->type)) {
-          CLOGF_TRACE(
-              COLL,
-              "CTRAN-SOCKET: received and invoke callback for msg [{}] peer {}",
-              msg->toString(),
-              peerRanks[fid]);
-          FB_COMMCHECK(ctrlMgr_->runCb(peerRanks[fid], msg->type, msg.get()));
-        } else if (recvQueue.postedOps_.empty()) {
+        if (recvQueue.postedOps_.empty()) {
           // no posted op, let's read it and store as unexpected msg
           CLOGF_TRACE(
               COLL,

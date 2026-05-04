@@ -331,22 +331,21 @@ commResult_t ctranAllToAllv(
 }
 
 bool ctranAllToAllvSupport(CtranComm* comm) {
-  bool ctranSupport = false;
+  if (!ctranInitialized(comm)) {
+    return false;
+  }
+
   const auto statex = comm->statex_.get();
-  if (ctranInitialized(comm)) {
-    ctranSupport = true;
-    // Check if all remote peers are supported by ctran
-    // For intra-node peers, ctranAlgo supports copy based path;
-    // for inter-node peers, we need a mapper backend to support.
-    const int myNode = statex->node();
-    for (int rank = 0; rank < statex->nRanks(); rank++) {
-      if (statex->node(rank) != myNode &&
-          comm->ctran_->mapper->getBackend(rank) == CtranMapperBackend::UNSET) {
-        ctranSupport = false;
-        break;
-      }
+  // Check if all remote peers are supported by ctran
+  // For intra-node peers, ctranAlgo supports copy based path;
+  // for inter-node peers, we need a mapper backend to support.
+  const int myNode = statex->node();
+  for (int rank = 0; rank < statex->nRanks(); rank++) {
+    if (statex->node(rank) != myNode &&
+        comm->ctran_->mapper->getBackend(rank) == CtranMapperBackend::UNSET) {
+      return false;
     }
   }
 
-  return ctranSupport;
+  return true;
 }

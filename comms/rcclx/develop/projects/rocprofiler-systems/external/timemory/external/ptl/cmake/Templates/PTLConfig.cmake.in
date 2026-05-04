@@ -1,0 +1,172 @@
+#------------------------------------------------------------------------------#
+#
+#
+cmake_minimum_required(VERSION 3.8 FATAL_ERROR)
+
+cmake_policy(SET CMP0012 NEW)
+
+get_filename_component(PTL_CMAKE_DIR "${CMAKE_CURRENT_LIST_FILE}" PATH)
+
+include(${CMAKE_CURRENT_LIST_DIR}/PTLConfigVersion.cmake)
+include(CMakeFindDependencyMacro)
+
+#------------------------------------------------------------------------------#
+#   available components
+#
+set(_PTL_AVAILABLE_COMPONENTS )
+
+if(@BUILD_SHARED_LIBS@)
+    set(_PTL_SHARED_COMPONENT shared)
+endif()
+
+if(@BUILD_STATIC_LIBS@)
+    set(_PTL_STATIC_COMPONENT static)
+endif()
+
+set(_PTL_PREFER_SHARED @BUILD_SHARED_LIBS@)
+
+if(BUILD_SHARED_LIBS OR "shared" IN_LIST PTL_FIND_COMPONENTS)
+    set(_PTL_PREFER_SHARED ON)
+endif()
+
+if("static" IN_LIST PTL_FIND_COMPONENTS)
+    set(_PTL_PREFER_SHARED OFF)
+endif()
+
+if(DEFINED BUILD_SHARED_LIBS AND NOT BUILD_SHARED_LIBS)
+    set(_PTL_PREFER_SHARED OFF)
+endif()
+
+if(_PTL_PREFER_SHARED)
+    # if parent package set BUILD_SHARED_LIBS, prefer shared library
+    list(APPEND _PTL_AVAILABLE_COMPONENTS
+        ${_PTL_SHARED_COMPONENT} ${_PTL_STATIC_COMPONENT})
+else()
+    # if parent package has not set BUILD_SHARED_LIBS, prefer static library
+    list(APPEND _PTL_AVAILABLE_COMPONENTS
+        ${_PTL_STATIC_COMPONENT} ${_PTL_SHARED_COMPONENT})
+endif()
+
+unset(_PTL_SHARED_COMPONENT)
+unset(_PTL_STATIC_COMPONENT)
+
+#------------------------------------------------------------------------------#
+#   package initialization
+#
+@PACKAGE_INIT@
+
+
+#------------------------------------------------------------------------------#
+#   configure lib and include
+#
+set_and_check(PTL_INCLUDE_DIR "@PACKAGE_INCLUDE_INSTALL_DIR@")
+set_and_check(PTL_LIB_DIR "@PACKAGE_LIB_INSTALL_DIR@")
+
+include(${PTL_CMAKE_DIR}/PTLTargets.cmake)
+check_required_components(PTL)
+
+# get target
+foreach(_COMPONENT ${_PTL_AVAILABLE_COMPONENTS})
+    # set the library
+    if(NOT PTL_LIBRARY AND TARGET PTL::ptl-${_COMPONENT})
+        set(PTL_LIBRARY PTL::ptl-${_COMPONENT})
+    endif()
+    if(TARGET PTL::ptl-${_COMPONENT})
+        set(PTL_${_COMPONENT}_FOUND ON)
+        set(PTL_${_COMPONENT}_LIBRARY PTL::ptl-${_COMPONENT})
+        if(WIN32)
+            target_compile_definitions(PTL::ptl-${_COMPONENT} PUBLIC _PTL_ARCHIVE)
+        endif()
+    endif()
+endforeach()
+unset(_PTL_AVAILABLE_COMPONENTS)
+
+# save original module path
+set(_MODULE_PATH ${CMAKE_MODULE_PATH})
+
+if(@Threads_FOUND@)
+    set(CMAKE_THREAD_PREFER_PTHREAD @CMAKE_THREAD_PREFER_PTHREAD@)
+    set(THREADS_PREFER_PTHREAD_FLAG @THREADS_PREFER_PTHREAD_FLAG@)
+    find_package(Threads REQUIRED)
+endif()
+
+if(@TBB_FOUND@)
+    set(TBB_ROOT_DIR @TBB_ROOT_DIR@)
+    set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_LIST_DIR}/Modules ${CMAKE_MODULE_PATH})
+    find_package(TBB @TBB_VERSION@ REQUIRED)
+endif()
+
+# restore original module path
+set(CMAKE_MODULE_PATH ${_MODULE_PATH})
+
+
+#------------------------------------------------------------------------------#
+# internal PTL include directory
+#
+set(PTL_INCLUDE_DIRS ${PTL_INCLUDE_DIR})
+
+
+#------------------------------------------------------------------------------#
+#   CXX standard
+#
+if(DEFINED CMAKE_CXX_STANDARD)
+    if("${CMAKE_CXX_STANDARD}" VERSION_LESS 11)
+        set(CMAKE_CXX_STANDARD 11)
+        set(CMAKE_CXX_STANDARD_REQUIRED ON)
+    endif()
+else(DEFINED CMAKE_CXX_STANDARD)
+    set(CMAKE_CXX_STANDARD @CMAKE_CXX_STANDARD@)
+endif(DEFINED CMAKE_CXX_STANDARD)
+
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+
+#------------------------------------------------------------------------------#
+#   link target
+#
+set(PTL_LIBRARIES ${PTL_LIBRARY})
+
+
+#------------------------------------------------------------------------------#
+#   Definitions
+#
+set(PTL_USE_TBB @PTL_USE_TBB@)
+set(PTL_USE_GPU @PTL_USE_GPU@)
+set(PTL_USE_CUDA @PTL_USE_CUDA@)
+
+if(NOT _PTL_INSTALL_TREE)
+    list(APPEND PTL_LIBRARIES "@EXTERNAL_LIBRARIES@")
+endif()
+
+if(NOT TARGET PTL::ptl)
+    add_library(PTL::ptl INTERFACE IMPORTED)
+    target_include_directories(PTL::ptl INTERFACE ${PTL_INCLUDE_DIRS})
+    target_link_libraries(PTL::ptl INTERFACE ${PTL_LIBRARIES})
+    set_target_properties(PTL::ptl PROPERTIES
+        INTERFACE_CXX_STANDARD @CMAKE_CXX_STANDARD@
+        INTERFACE_CXX_STANDARD_REQUIRED @CMAKE_CXX_STANDARD_REQUIRED@)
+    if(WIN32)
+        target_compile_definitions(PTL::ptl INTERFACE _PTL_ARCHIVE)
+    endif()
+    foreach(_OPT PTL_USE_TBB PTL_USE_GPU PTL_USE_CUDA)
+        if(${_OPT})
+            target_compile_definitions(PTL::ptl INTERFACE ${_OPT})
+        endif()
+    endforeach()
+endif()
+
+#------------------------------------------------------------------------------#
+#   find_package variables
+#
+include(FindPackageHandleStandardArgs)
+
+find_package_handle_standard_args(
+    PTL
+    VERSION_VAR
+        PTL_VERSION
+    REQUIRED_VARS
+        PTL_CMAKE_DIR
+        PTL_LIBRARIES
+        PTL_INCLUDE_DIRS
+    HANDLE_COMPONENTS
+)

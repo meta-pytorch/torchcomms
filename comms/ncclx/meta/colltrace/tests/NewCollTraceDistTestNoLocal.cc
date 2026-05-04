@@ -44,7 +44,6 @@ class CollTraceTest : public NcclxBaseTestFixture {
          "HPC_JOB_NAME,HPC_JOB_VERSION,HPC_JOB_ATTEMPT_INDEX"},
         {"NCCL_CTRAN_ENABLE", "1"},
         {"NCCL_COLLTRACE", "trace"},
-        {"NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1"},
     });
 
     CUDACHECK_TEST(cudaStreamCreate(&this->stream));
@@ -165,8 +164,7 @@ class CollTraceTest : public NcclxBaseTestFixture {
 TEST_F(CollTraceTest, NewCollTraceAllReduce) {
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
+
   const int count = 1048576;
   const int nColl = 10;
 
@@ -177,7 +175,7 @@ TEST_F(CollTraceTest, NewCollTraceAllReduce) {
   }
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
   // Sleep for a while to make sure all the colls are finished
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   ASSERT_TRUE(comm->newCollTrace != nullptr);
   auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
@@ -202,8 +200,6 @@ TEST_F(CollTraceTest, MixedCtranBaseline) {
       EnvRAII(NCCL_CTRAN_ALLGATHER_CHECKSUM_SAMPLE_RATE, 1);
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
 
   constexpr int count = 1048576;
   constexpr int nColl = 10;
@@ -223,7 +219,7 @@ TEST_F(CollTraceTest, MixedCtranBaseline) {
   }
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
   // Sleep for a while to make sure all the colls are finished
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   ASSERT_TRUE(comm->newCollTrace != nullptr);
   auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
@@ -250,8 +246,6 @@ TEST_F(CollTraceTest, TestBcastCtranEx) {
   auto ctranGuard = EnvRAII(NCCL_CTRAN_ENABLE, true);
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
 
   constexpr int count = 1048576;
   constexpr int nColl = 10;
@@ -288,7 +282,7 @@ TEST_F(CollTraceTest, TestBcastCtranEx) {
   }
 
   // Sleep for a while to make sure all the colls are finished
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   auto startOpCount = 0;
   auto dumpMap =
@@ -321,8 +315,6 @@ TEST_F(CollTraceTest, GroupedSendRecv) {
 
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
 
   const int count = 1048576;
   const int nColl = 10;
@@ -342,7 +334,7 @@ TEST_F(CollTraceTest, GroupedSendRecv) {
     NCCLCHECK_TEST(ncclGroupEnd());
   }
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
   EXPECT_EQ(folly::parseJson(dumpMap["CT_pendingColls"]).size(), 0);
@@ -372,8 +364,6 @@ TEST_F(CollTraceTest, GroupedSendRecvCtran) {
 
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
 
   const int count = 1048576;
   const int nColl = 10;
@@ -401,7 +391,7 @@ TEST_F(CollTraceTest, GroupedSendRecvCtran) {
     NCCLCHECK_TEST(ncclGroupEnd());
   }
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
   EXPECT_EQ(folly::parseJson(dumpMap["CT_pendingColls"]).size(), 0);
@@ -430,8 +420,6 @@ TEST_F(CollTraceTest, SimulatePPSendRecv) {
 
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
 
   const int count = 1048576;
   const int nColl = 10;
@@ -454,7 +442,7 @@ TEST_F(CollTraceTest, SimulatePPSendRecv) {
     }
   }
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
   EXPECT_EQ(folly::parseJson(dumpMap["CT_pendingColls"]).size(), 0);
@@ -494,8 +482,6 @@ TEST_F(CollTraceTest, SimulateCtranPPSendRecv) {
 
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
 
   const int count = 1048576;
   const int nColl = 10;
@@ -525,7 +511,7 @@ TEST_F(CollTraceTest, SimulateCtranPPSendRecv) {
   }
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
   EXPECT_EQ(folly::parseJson(dumpMap["CT_pendingColls"]).size(), 0);
@@ -569,8 +555,6 @@ TEST_F(CollTraceTest, winPutWait) {
 
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
 
   auto statex = comm->ctranComm_->statex_.get();
   ASSERT_NE(statex, nullptr);
@@ -657,7 +641,7 @@ TEST_F(CollTraceTest, winPutWait) {
   // Barrier to ensure all peers have finished put
   this->barrier();
 
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
 
@@ -699,8 +683,7 @@ TEST_F(CollTraceTest, DumpWithUnfinished) {
 
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
+
   const int count = 1048576;
   const int nColl = 10;
 
@@ -711,7 +694,7 @@ TEST_F(CollTraceTest, DumpWithUnfinished) {
   }
 
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   // Create a kernel that will block the stream, so that all the following
   // scheduled collective will be pending
@@ -725,7 +708,7 @@ TEST_F(CollTraceTest, DumpWithUnfinished) {
   }
 
   // Give CollTrace some time to start tracking next coll
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
 
@@ -755,8 +738,7 @@ TEST_F(CollTraceTest, DumpWithUnfinishedCtran) {
 
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
+
   const int count = 1048576;
   const int nColl = 10;
 
@@ -767,7 +749,7 @@ TEST_F(CollTraceTest, DumpWithUnfinishedCtran) {
   }
 
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   // Create a kernel that will block the stream, so that all the following
   // scheduled collective will be pending
@@ -781,7 +763,7 @@ TEST_F(CollTraceTest, DumpWithUnfinishedCtran) {
   }
 
   // Give CollTrace some time to start tracking next coll and exited wait once
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
 
@@ -808,8 +790,6 @@ TEST_F(CollTraceTest, GroupedAllReduce) {
   auto envGuard = EnvRAII(NCCL_ALLREDUCE_ALGO, NCCL_ALLREDUCE_ALGO::orig);
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
 
   const int count = 1048576;
   const int nColl = 10;
@@ -827,7 +807,7 @@ TEST_F(CollTraceTest, GroupedAllReduce) {
   }
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
   // Sleep for a while to make sure all the colls are finished
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   ASSERT_TRUE(comm->newCollTrace != nullptr);
   auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
@@ -846,8 +826,6 @@ TEST_F(CollTraceTest, GroupedSendRecvAllReduce) {
 
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
 
   const int count = 1048576;
   const int nColl = 10;
@@ -871,7 +849,7 @@ TEST_F(CollTraceTest, GroupedSendRecvAllReduce) {
     NCCLCHECK_TEST(ncclGroupEnd());
   }
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   ASSERT_TRUE(comm->newCollTrace != nullptr);
   auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
@@ -887,8 +865,7 @@ TEST_F(CollTraceTest, GroupedSendRecvAllReduce) {
 TEST_F(CollTraceTest, CollTraceQueryInCapture) {
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
+
   const int count = 1048576;
   const int nColl = 20;
 
@@ -901,7 +878,7 @@ TEST_F(CollTraceTest, CollTraceQueryInCapture) {
   CUDACHECK_TEST(cudaStreamBeginCapture(
       stream, cudaStreamCaptureMode::cudaStreamCaptureModeGlobal));
   // Sleep for a while to make sure all the colls are finished
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
   cudaGraph_t graph;
   CUDACHECK_TEST(cudaStreamEndCapture(stream, &graph));
 
@@ -925,8 +902,6 @@ TEST_F(CollTraceTest, CollTraceTestEnqueueMoreThanPendingQueue) {
 
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
 
   const auto kNumElements = 8388608;
   const auto kNumIters = CollTraceConfig::kDefaultMaxPendingQueueSize;

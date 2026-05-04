@@ -128,14 +128,19 @@ class HostWindow {
    * Register a local buffer for use as a source in
    * DeviceWindow::put/put_signal.
    *
-   * NOT collective: only registers locally for IBGDA (gets lkey).
+   * NOT collective: only registers locally for IBGDA (gets per-NIC lkeys).
    * Does not exchange with peers. Use for source-only buffers.
    *
    * @param ptr   Local GPU buffer pointer
    * @param size  Buffer size in bytes
-   * @return      lkey for the registered buffer, or nullopt if no IBGDA peers
+   * @return      Per-NIC lkeys for the registered buffer (one entry per NIC,
+   *              up to kMaxNicsPerGpu), or nullopt if no IBGDA peers. The
+   *              kernel-side IBGDA put selects lkeys[nic] based on the slot
+   *              it dispatches on, so passing only NIC0's lkey would corrupt
+   *              WQEs for any slot landing on NIC[1..N-1] on multi-NIC
+   *              hardware (GB200/GB300).
    */
-  std::optional<NetworkLKey> registerLocalBuffer(void* ptr, std::size_t size);
+  std::optional<NetworkLKeys> registerLocalBuffer(void* ptr, std::size_t size);
 
   /**
    * Register and exchange the window data buffer with all peers.
@@ -169,6 +174,17 @@ class HostWindow {
   int numIbgdaPeers() const {
     return static_cast<int>(ibgdaPeerRanks_.size());
   }
+
+  /**
+   * reset_signals - Reset all signal inboxes to zero.
+   *
+   * Enqueues cudaMemsetAsync to zero both NVL and IBGDA signal inbox
+   * buffers on the given stream. Use before wait_signal_from in CUDA
+   * graph capture to ensure each replay starts with clean signal state.
+   *
+   * @param stream  CUDA stream for the async memset
+   */
+  void reset_signals(cudaStream_t stream) const;
 
   /**
    * get_nvlink_address - Get the NVLink-mapped pointer to a peer's window buf.
@@ -218,10 +234,12 @@ class HostWindow {
 
   // --- Per-peer signals (NVL side) ---
   std::unique_ptr<GpuMemHandler> nvlPeerSignalHandler_;
+  std::size_t nvlPeerSignalInboxSize_{0};
   std::unique_ptr<meta::comms::DeviceBuffer> nvlPeerSignalSpansDevice_;
 
   // --- Per-peer signals (IBGDA side) ---
   IbgdaLocalBuffer ibgdaPeerSignalLocalBuf_;
+  std::size_t ibgdaPeerSignalInboxSize_{0};
   std::unique_ptr<meta::comms::DeviceBuffer> ibgdaPeerSignalRemoteBufsDevice_;
 
   // --- Per-peer counters (IBGDA-only, local — no exchange) ---

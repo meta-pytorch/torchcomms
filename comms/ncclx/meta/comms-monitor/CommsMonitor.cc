@@ -78,9 +78,13 @@ folly::Singleton<CommsMonitor, CommsMonitorSingletonTag>
   }
   return NcclCommMonitorInfo{
       .logMetaData = comm->logMetaData,
-      .commState = ncclx::CommStateX{*comm->ctranComm_->statex_},
+      .stateInfo =
+          CommStateInfo{
+              .localRank = comm->localRank,
+              .node = comm->rankToNode ? comm->rankToNode[comm->rank] : 0,
+              .nLocalRanks = comm->localRanks,
+              .nNodes = comm->nNodes},
       .topoInfo = getTopoInfoFromNcclComm(comm),
-      .collTrace = comm->collTrace,
       .mapperTrace = mapperTrace,
       .proxyTrace = proxyTrace,
       .newCollTrace = comm->newCollTrace};

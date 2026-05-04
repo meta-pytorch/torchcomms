@@ -321,7 +321,6 @@ TEST_P(CollTraceInitConfigTest, ConfigCombinations) {
 
   // Use EnvRAII for clean cvar override (always use new colltrace)
   EnvRAII colltraceGuard(NCCL_COLLTRACE, config);
-  EnvRAII useNewGuard(NCCL_COLLTRACE_USE_NEW_COLLTRACE, true);
 
   // Compute expected values based on config input
   bool expectAlgoStats =

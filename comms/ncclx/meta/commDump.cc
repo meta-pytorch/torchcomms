@@ -18,7 +18,6 @@
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/ProcessGlobalErrorsUtil.h"
-#include "meta/colltrace/CollTrace.h"
 #include "meta/colltrace/ProxyTrace.h"
 #include "meta/commDump.h"
 #include "meta/comms-monitor/CommsMonitor.h"
@@ -40,6 +39,27 @@ std::unordered_map<std::string, std::string> dumpNewCollTrace(
   }
 
   return meta::comms::colltrace::commDumpToMap(dump.value());
+}
+
+bool waitForCollTraceDrain(
+    meta::comms::colltrace::ICollTrace& colltrace,
+    int timeoutMs) {
+  constexpr int kPollIntervalMs = 50;
+  auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+  while (std::chrono::steady_clock::now() < deadline) {
+    std::unordered_map<std::string, std::string> dumpMap =
+        meta::comms::ncclx::dumpNewCollTrace(colltrace);
+    auto currentIt = dumpMap.find("CT_currentColls");
+    auto pendingIt = dumpMap.find("CT_pendingColls");
+    bool currentEmpty = currentIt != dumpMap.end() && currentIt->second == "[]";
+    bool pendingEmpty = pendingIt != dumpMap.end() && pendingIt->second == "[]";
+    if (currentEmpty && pendingEmpty) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(kPollIntervalMs));
+  }
+  return false;
 }
 } // namespace meta::comms::ncclx
 
@@ -96,12 +116,12 @@ static void dumpCommInfo(
   map["nRanks"] = std::to_string(comm->nRanks);
   map["localRanks"] = std::to_string(comm->localRanks);
   map["nNodes"] = std::to_string(comm->nNodes);
-  map["commDesc"] = NCCLX_CONFIG_FIELD(comm->config, commDesc);
+  map["commDesc"] = toQuotedString(NCCLX_CONFIG_FIELD(comm->config, commDesc));
 }
 
 static void dumpCommInfo(
     const CommLogData* logMetaData,
-    const ncclx::CommStateX* statex,
+    const ncclx::comms_monitor::CommStateInfo& stateInfo,
     std::unordered_map<std::string, std::string>& map) {
   if (logMetaData != nullptr) {
     map["commHash"] = toQuotedString(hashToHexStr(logMetaData->commHash));
@@ -113,14 +133,10 @@ static void dumpCommInfo(
     return;
   }
 
-  if (statex != nullptr) {
-    map["localRank"] = std::to_string(statex->localRank());
-    map["node"] = std::to_string(statex->node());
-    map["localRanks"] = std::to_string(statex->nLocalRanks());
-    map["nNodes"] = std::to_string(statex->nNodes());
-  } else {
-    XLOGF(DBG2, "CommDump: statex is disabled. No trace to dump");
-  }
+  map["localRank"] = std::to_string(stateInfo.localRank);
+  map["node"] = std::to_string(stateInfo.node);
+  map["localRanks"] = std::to_string(stateInfo.nLocalRanks);
+  map["nNodes"] = std::to_string(stateInfo.nNodes);
 }
 
 static void dumpMapperTrace(
@@ -143,33 +159,6 @@ static void dumpMapperTrace(
   map["MT_unfinishedRequests"] = serializeObjects(dump.unfinishedRequests);
   map["MT_recvNotifiedByPeer"] = mapToJson(dump.recvNotifiedByPeer);
   map["MT_putFinishedByPeer"] = mapToJson(dump.putFinishedByPeer);
-}
-
-static void dumpCollTrace(
-    const CollTrace* collTrace,
-    std::unordered_map<std::string, std::string>& map) {
-  if (collTrace != nullptr) {
-    auto dump = collTrace->dump();
-
-    XLOGF(
-        DBG2,
-        "CommDump: COLLTRACE dump: {} past, {} pending, {} current collective records",
-        dump.pastColls.size(),
-        dump.pendingColls.size(),
-        dump.currentColl == nullptr ? 0 : 1);
-
-    // Copied from new comm dump implementation. Since we are deprecating
-    // old coll trace, we don't care too much about code reuse here.
-    map["CT_pastColls"] = folly::toJson(folly::toDynamic(dump.pastColls));
-    map["CT_pendingColls"] = folly::toJson(folly::toDynamic(dump.pendingColls));
-    auto currentColls = folly::dynamic::array();
-    if (dump.currentColl != nullptr) {
-      currentColls.push_back(dump.currentColl->toDynamic());
-    }
-    map["CT_currentColls"] = folly::toJson(currentColls);
-  } else {
-    XLOGF(DBG2, "CommDump: COLLTRACE is disabled. No trace to dump");
-  }
 }
 
 static void dumpProxyTrace(
@@ -196,12 +185,9 @@ static void dumpProxyTrace(
 std::unordered_map<std::string, std::string> commDumpByMonitorInfo(
     const ncclx::comms_monitor::NcclCommMonitorInfo& info) {
   std::unordered_map<std::string, std::string> map;
-  dumpCommInfo(&info.logMetaData, &info.commState, map);
+  dumpCommInfo(&info.logMetaData, info.stateInfo, map);
   if (info.newCollTrace != nullptr) {
     map.merge(dumpNewCollTrace(*info.newCollTrace));
-    XLOGF(DBG2, "commDumpByMonitorInfo: Dumped from new colltrace");
-  } else {
-    dumpCollTrace(info.collTrace.get(), map);
     XLOGF(DBG2, "commDumpByMonitorInfo: Dumped from colltrace");
   }
   dumpProxyTrace(info.proxyTrace.get(), info.logMetaData.commHash, map);
@@ -239,15 +225,9 @@ __attribute__((visibility("default"))) ncclResult_t ncclCommDump(
         NCCLX_CONFIG_FIELD(comm->config, commDesc));
 
     dumpCommInfo(comm, map);
-    if (NCCL_COLLTRACE_USE_NEW_COLLTRACE) {
-      XLOGF(DBG2, "CommDump: Using new colltrace");
-      if (comm->newCollTrace != nullptr) {
-        map.merge(dumpNewCollTrace(*comm->newCollTrace));
-        XLOGF(DBG2, "CommDump: Dumped from new colltrace");
-      }
-    } else {
-      XLOGF(DBG2, "CommDump: Using old colltrace");
-      dumpCollTrace(comm->collTrace.get(), map);
+    if (comm->newCollTrace != nullptr) {
+      map.merge(dumpNewCollTrace(*comm->newCollTrace));
+      XLOGF(DBG2, "CommDump: Dumped from colltrace");
     }
     if (comm->proxyState != nullptr) {
       dumpProxyTrace(comm->proxyState->trace.get(), comm->commHash, map);

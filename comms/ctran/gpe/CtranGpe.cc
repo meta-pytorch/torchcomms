@@ -13,6 +13,51 @@
 
 using namespace ctran;
 
+namespace {
+std::string kernelTypeToOpName(KernelConfig::KernelType type) {
+  switch (type) {
+    case KernelConfig::ALLGATHER:
+    case KernelConfig::ALLGATHERP:
+    // ALLGATHERP_INIT goes through submitHost(), not submit(), so this
+    // case is currently unreachable. Included for completeness.
+    case KernelConfig::ALLGATHERP_INIT:
+      return "AllGather";
+    case KernelConfig::ALLREDUCE:
+      return "AllReduce";
+    case KernelConfig::SEND:
+    case KernelConfig::RECV:
+    case KernelConfig::SENDRECV:
+    case KernelConfig::SENDRECV_P2P:
+    case KernelConfig::RECV_UNPACK:
+    case KernelConfig::SENDRECV_UNPACK:
+      return "SendRecv";
+    case KernelConfig::ALLTOALL:
+    case KernelConfig::ALLTOALL_DEDUP:
+    case KernelConfig::DEVICE_ALLTOALLV:
+    case KernelConfig::ALLTOALLV:
+    case KernelConfig::ALLTOALLV_DYNAMIC:
+    case KernelConfig::ALLTOALLV_DYNAMIC_SPLIT:
+    case KernelConfig::ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG:
+    case KernelConfig::ALLTOALLV_DEDUP:
+      return "AllToAll";
+    case KernelConfig::BROADCAST:
+    case KernelConfig::BROADCAST_UNPACK:
+      return "Broadcast";
+    case KernelConfig::REDUCESCATTER:
+      return "ReduceScatter";
+    case KernelConfig::PUTNOTIFY:
+    case KernelConfig::WAITNOTIFY:
+    case KernelConfig::PUTSIGNAL:
+    case KernelConfig::WAITSIGNAL:
+    case KernelConfig::SIGNAL:
+    case KernelConfig::GET:
+      return "RMA";
+    default:
+      return "Unknown";
+  }
+}
+} // namespace
+
 OpElem::OpElem(enum opType type, CtranComm* comm, uint64_t opCount)
     : OpElem(type, nullptr, comm, nullptr, opCount) {};
 
@@ -394,6 +439,10 @@ commResult_t CtranGpe::submit(
     const void* ncclKernel,
     std::optional<std::chrono::milliseconds> timeout,
     PreLaunchGraphPrepareFn graphPrepareFn) {
+  if (this->pimpl->comm->algoStats_) {
+    this->pimpl->comm->algoStats_->record(
+        kernelTypeToOpName(kernelConfig.type), kernelConfig.algoName);
+  }
   return this->pimpl->submit(
       CtranGpeCmd::TypeEnum::GRAPH_ENQUEUE,
       std::move(opGroup),
@@ -470,6 +519,20 @@ size_t CtranGpe::numInUseKernelFlags() {
   // Return the number of inuse flags
   return this->pimpl->kernelFlagPool->capacity() -
       this->pimpl->kernelFlagPool->size();
+}
+
+size_t CtranGpe::numInUseChecksums() {
+  this->pimpl->checksumPool->reclaim();
+  return this->pimpl->checksumPool->capacity() -
+      this->pimpl->checksumPool->size();
+}
+
+size_t CtranGpe::numInUseGpeKernelSyncs() {
+  // Last chance to cleanup
+  this->pimpl->gpeKernelSyncPool->reclaim();
+  // Return the number of inuse elements
+  return this->pimpl->gpeKernelSyncPool->capacity() -
+      this->pimpl->gpeKernelSyncPool->size();
 }
 
 commResult_t CtranGpe::allocGpeKernelSyncs(

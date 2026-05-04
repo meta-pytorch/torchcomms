@@ -1,14 +1,20 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # Extension: torchcomms._comms_gloo
 
-include(FetchContent)
-FetchContent_Declare(
-  gloo
-  GIT_REPOSITORY https://github.com/pytorch/gloo.git
-  GIT_TAG        main
-)
-# fetch but don't build
-FetchContent_Populate(gloo)
+if(DEFINED PYTORCH_GLOO_SOURCE_DIR AND EXISTS "${PYTORCH_GLOO_SOURCE_DIR}/gloo")
+  set(gloo_SOURCE_DIR "${PYTORCH_GLOO_SOURCE_DIR}")
+elseif(EXISTS "${ROOT}/../gloo/gloo")
+  set(gloo_SOURCE_DIR "${ROOT}/../gloo")
+else()
+  include(FetchContent)
+  FetchContent_Declare(
+    gloo
+    GIT_REPOSITORY https://github.com/pytorch/gloo.git
+    GIT_TAG        main
+  )
+  # fetch but don't build
+  FetchContent_Populate(gloo)
+endif()
 
 file(GLOB TORCHCOMMS_GLOO_SOURCES "comms/torchcomms/gloo/*.cpp")
 

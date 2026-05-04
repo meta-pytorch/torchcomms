@@ -23,7 +23,7 @@
 #include "meta/transport/transportConnect.h"
 #include "meta/transport/transportProxy.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "meta/colltrace/CollTraceFunc.h"
+#include "meta/colltrace/CollTraceWrapper.h"
 #include "meta/colltrace/ProxyTraceFunc.h"
 #include "comms/utils/logger/EventsScubaUtil.h"
 

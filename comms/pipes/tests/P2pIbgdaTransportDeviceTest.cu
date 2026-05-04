@@ -13,70 +13,43 @@ namespace comms::pipes::tests {
 // =============================================================================
 
 __global__ void testP2pTransportConstruction(bool* success) {
-  // Create transport on device with null QP
-  P2pIbgdaTransportDevice transport(nullptr);
+  // Create transport on device with empty NIC span
+  P2pIbgdaTransportDevice transport(DeviceSpan<NicDeviceIbgdaResources>{});
 
+  // If we get here, construction succeeded
   *success = true;
-
-  // QP should be null in this test (no real DOCA setup)
-  if (transport.getQp() != nullptr) {
-    *success = false;
-  }
 }
 
 __global__ void testP2pTransportDefaultConstruction(bool* success) {
   // Default construction should initialize all members
   P2pIbgdaTransportDevice transport;
 
+  // If we get here, default construction succeeded
   *success = true;
-
-  // QP should be null
-  if (transport.getQp() != nullptr) {
-    *success = false;
-  }
 }
 
 __global__ void testP2pTransportReadSignal(
     uint64_t* d_signalBuf,
-    IbgdaLocalBuffer localBuf,
     int numSignals,
     bool* success) {
-  // The localBuf should point to d_signalBuf which is pre-initialized with
-  // known values: d_signalBuf[i] = (i + 1) * 100
-  P2pIbgdaTransportDevice transport(nullptr);
+  // Construct transport with ownedLocalSignalBuf pointing to d_signalBuf
+  IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{});
+  P2pIbgdaTransportDevice transport(
+      DeviceSpan<NicDeviceIbgdaResources>{},
+      IbgdaRemoteBuffer{},
+      localSigBuf,
+      IbgdaLocalBuffer{},
+      numSignals);
 
   *success = true;
 
-  // Test read_signal for each slot
+  // Test read_signal for each slot via slot-index API
   for (int i = 0; i < numSignals; ++i) {
     uint64_t expected = static_cast<uint64_t>(i + 1) * 100;
-    uint64_t actual = transport.read_signal(localBuf, i);
+    uint64_t actual = transport.read_signal(i);
     if (actual != expected) {
       *success = false;
     }
-  }
-}
-
-__global__ void testIbgdaWork(bool* success) {
-  *success = true;
-
-  // Test default construction
-  IbgdaWork defaultWork;
-  if (defaultWork.value != 0) {
-    *success = false;
-  }
-
-  // Test explicit construction with a value
-  doca_gpu_dev_verbs_ticket_t testTicket = 12345;
-  IbgdaWork workWithValue(testTicket);
-  if (workWithValue.value != testTicket) {
-    *success = false;
-  }
-
-  // Test copy
-  IbgdaWork copiedWork = workWithValue;
-  if (copiedWork.value != testTicket) {
-    *success = false;
   }
 }
 
@@ -84,16 +57,20 @@ __global__ void testIbgdaWork(bool* success) {
 // wait_signal test kernels
 // =============================================================================
 
-__global__ void testWaitSignalGE(
-    uint64_t* d_signalBuf,
-    IbgdaLocalBuffer localBuf,
-    uint64_t targetValue,
-    bool* success) {
-  P2pIbgdaTransportDevice transport(nullptr);
+__global__ void
+testWaitSignalGE(uint64_t* d_signalBuf, uint64_t targetValue, bool* success) {
+  // Construct transport with ownedLocalSignalBuf
+  IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{});
+  P2pIbgdaTransportDevice transport(
+      DeviceSpan<NicDeviceIbgdaResources>{},
+      IbgdaRemoteBuffer{},
+      localSigBuf,
+      IbgdaLocalBuffer{},
+      1);
 
   // Signal buffer is pre-set to a value >= targetValue by host
-  // wait_signal should return immediately
-  transport.wait_signal(localBuf, 0, targetValue);
+  // wait_signal should return immediately (slot 0)
+  transport.wait_signal(0, targetValue);
 
   // If we get here, the wait completed successfully
   *success = true;
@@ -101,10 +78,16 @@ __global__ void testWaitSignalGE(
 
 __global__ void testWaitSignalMultipleSlots(
     uint64_t* d_signalBuf,
-    IbgdaLocalBuffer localBuf,
     int numSignals,
     bool* success) {
-  P2pIbgdaTransportDevice transport(nullptr);
+  // Construct transport with ownedLocalSignalBuf
+  IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{});
+  P2pIbgdaTransportDevice transport(
+      DeviceSpan<NicDeviceIbgdaResources>{},
+      IbgdaRemoteBuffer{},
+      localSigBuf,
+      IbgdaLocalBuffer{},
+      numSignals);
 
   *success = true;
 
@@ -112,10 +95,10 @@ __global__ void testWaitSignalMultipleSlots(
   // Test wait_signal on each slot with matching GE condition
   for (int i = 0; i < numSignals; ++i) {
     uint64_t expectedValue = static_cast<uint64_t>(i + 1) * 100;
-    transport.wait_signal(localBuf, i, expectedValue);
+    transport.wait_signal(i, expectedValue);
 
     // Verify read_signal returns the same value
-    uint64_t readValue = transport.read_signal(localBuf, i);
+    uint64_t readValue = transport.read_signal(i);
     if (readValue != expectedValue) {
       *success = false;
     }
@@ -136,46 +119,32 @@ void runTestP2pTransportDefaultConstruction(bool* d_success) {
 
 void runTestP2pTransportReadSignal(
     uint64_t* d_signalBuf,
-    IbgdaLocalBuffer localBuf,
     int numSignals,
     bool* d_success) {
-  testP2pTransportReadSignal<<<1, 1>>>(
-      d_signalBuf, localBuf, numSignals, d_success);
-}
-
-void runTestIbgdaWork(bool* d_success) {
-  testIbgdaWork<<<1, 1>>>(d_success);
+  testP2pTransportReadSignal<<<1, 1>>>(d_signalBuf, numSignals, d_success);
 }
 
 void runTestWaitSignalGE(
     uint64_t* d_signalBuf,
-    IbgdaLocalBuffer localBuf,
     uint64_t targetValue,
     bool* d_success) {
-  testWaitSignalGE<<<1, 1>>>(d_signalBuf, localBuf, targetValue, d_success);
+  testWaitSignalGE<<<1, 1>>>(d_signalBuf, targetValue, d_success);
 }
 
 void runTestWaitSignalMultipleSlots(
     uint64_t* d_signalBuf,
-    IbgdaLocalBuffer localBuf,
     int numSignals,
     bool* d_success) {
-  testWaitSignalMultipleSlots<<<1, 1>>>(
-      d_signalBuf, localBuf, numSignals, d_success);
+  testWaitSignalMultipleSlots<<<1, 1>>>(d_signalBuf, numSignals, d_success);
 }
 
 // =============================================================================
 // Group-level API test kernels
 // =============================================================================
 
-// Test that put_group_local correctly partitions data across warp lanes.
-// We can't call the real DOCA put_warp without a real QP, so this test
-// verifies the partitioning logic (offset/chunk calculation and
-// subBuffer arithmetic) which is the GPU-side logic we can test.
 __global__ void testPutGroupPartitioning(bool* success) {
   *success = true;
 
-  // Simulate the partitioning logic that put_group_local does
   auto group = comms::pipes::make_warp_group();
   if (group.group_size != comms::pipes::kWarpSize) {
     *success = false;
@@ -185,39 +154,30 @@ __global__ void testPutGroupPartitioning(bool* success) {
   constexpr std::size_t kTotalBytes = 1024; // 1KB
   constexpr std::size_t kChunkSize = kTotalBytes / comms::pipes::kWarpSize;
 
-  // Verify each lane gets the right offset and chunk size
   std::size_t expectedOffset = group.thread_id_in_group * kChunkSize;
   std::size_t expectedChunk = kChunkSize;
 
-  // Create a mock buffer at a known base address
-  // Use a stack-local array as a stand-in for the buffer pointer
-  char baseData[8]; // just need an address
+  char baseData[8];
   void* basePtr = baseData;
 
   comms::pipes::IbgdaLocalBuffer baseBuf(
-      basePtr, comms::pipes::NetworkLKey(0x1111));
+      basePtr, comms::pipes::NetworkLKeys{comms::pipes::NetworkLKey(0x1111)});
   comms::pipes::IbgdaLocalBuffer laneBuf = baseBuf.subBuffer(expectedOffset);
 
-  // Verify the sub-buffer pointer is at the correct offset
   auto* expectedPtr = static_cast<char*>(basePtr) + expectedOffset;
   if (laneBuf.ptr != expectedPtr) {
     *success = false;
   }
 
-  // Verify the key is preserved
-  if (laneBuf.lkey != baseBuf.lkey) {
+  if (laneBuf.lkey_per_device[0] != baseBuf.lkey_per_device[0]) {
     *success = false;
   }
 
-  // Verify chunk size is correct
   if (expectedChunk != kChunkSize) {
     *success = false;
   }
 }
 
-// Test that put_signal_group_local correctly broadcasts the signal ticket
-// from lane 0 to all lanes. Simulates the broadcast pattern without
-// calling actual DOCA operations.
 __global__ void testPutSignalGroupBroadcast(bool* success) {
   *success = true;
 
@@ -227,17 +187,13 @@ __global__ void testPutSignalGroupBroadcast(bool* success) {
     return;
   }
 
-  // Simulate what put_signal_group_local does for the signal broadcast:
-  // Leader produces a ticket, broadcasts to all threads via broadcast<uint64_t>
   uint64_t signalTicket = 0;
   if (group.is_leader()) {
     signalTicket = 0xCAFEBABE12345678ULL;
   }
 
-  // Broadcast from leader to all threads
   signalTicket = group.broadcast<uint64_t>(signalTicket);
 
-  // Every thread should see the leader's value
   if (signalTicket != 0xCAFEBABE12345678ULL) {
     *success = false;
   }
@@ -261,13 +217,9 @@ void runTestPutSignalGroupBroadcast(bool* d_success) {
 // broadcast test kernels for BLOCK and MULTIWARP scopes
 // =============================================================================
 
-// Test broadcast<uint64_t> with BLOCK scope
-// Launched with multiple blocks: only writes false on failure (initialized to
-// true by host) to avoid inter-block data races.
 __global__ void testBroadcast64Block(bool* success) {
   auto group = comms::pipes::make_block_group();
 
-  // Leader produces a value, broadcasts to all threads
   uint64_t val = 0;
   if (group.is_leader()) {
     val = 0xDEADBEEF42424242ULL;
@@ -280,12 +232,9 @@ __global__ void testBroadcast64Block(bool* success) {
   }
 }
 
-// Test broadcast<uint64_t> with MULTIWARP scope
-// Launched with multiple blocks: only writes false on failure.
 __global__ void testBroadcast64Multiwarp(bool* success) {
   auto group = comms::pipes::make_multiwarp_group();
 
-  // Each multiwarp leader produces a unique value based on group_id
   uint64_t val = 0;
   if (group.is_leader()) {
     val = 0xAAAABBBB00000000ULL + group.group_id;
@@ -293,20 +242,15 @@ __global__ void testBroadcast64Multiwarp(bool* success) {
 
   val = group.broadcast<uint64_t>(val);
 
-  // All threads in the multiwarp should see their leader's value
   uint64_t expected = 0xAAAABBBB00000000ULL + group.group_id;
   if (val != expected) {
     *success = false;
   }
 }
 
-// Test double-broadcast safety (the double-sync pattern)
-// Two consecutive broadcasts with different values should not race.
-// Launched with multiple blocks: only writes false on failure.
 __global__ void testBroadcast64DoubleSafety(bool* success) {
   auto group = comms::pipes::make_block_group();
 
-  // First broadcast
   uint64_t val1 = 0;
   if (group.is_leader()) {
     val1 = 0x1111111111111111ULL;
@@ -317,7 +261,6 @@ __global__ void testBroadcast64DoubleSafety(bool* success) {
     *success = false;
   }
 
-  // Second broadcast with different value — must not race with first
   uint64_t val2 = 0;
   if (group.is_leader()) {
     val2 = 0x2222222222222222ULL;
@@ -329,8 +272,6 @@ __global__ void testBroadcast64DoubleSafety(bool* success) {
   }
 }
 
-// Test put_group_local partitioning logic with block-sized groups.
-// Launched with multiple blocks: only writes false on failure.
 __global__ void testPutGroupPartitioningBlock(bool* success) {
   auto group = comms::pipes::make_block_group();
 
@@ -338,22 +279,19 @@ __global__ void testPutGroupPartitioningBlock(bool* success) {
   std::size_t chunkSize = kTotalBytes / group.group_size;
   std::size_t expectedOffset = group.thread_id_in_group * chunkSize;
 
-  // Create a mock buffer at a known base address
-  char baseData[8]; // just need an address
+  char baseData[8];
   void* basePtr = baseData;
 
   comms::pipes::IbgdaLocalBuffer baseBuf(
-      basePtr, comms::pipes::NetworkLKey(0x1111));
+      basePtr, comms::pipes::NetworkLKeys{comms::pipes::NetworkLKey(0x1111)});
   comms::pipes::IbgdaLocalBuffer laneBuf = baseBuf.subBuffer(expectedOffset);
 
-  // Verify the sub-buffer pointer is at the correct offset
   auto* expectedPtr = static_cast<char*>(basePtr) + expectedOffset;
   if (laneBuf.ptr != expectedPtr) {
     *success = false;
   }
 
-  // Verify the key is preserved
-  if (laneBuf.lkey != baseBuf.lkey) {
+  if (laneBuf.lkey_per_device[0] != baseBuf.lkey_per_device[0]) {
     *success = false;
   }
 }
@@ -386,37 +324,41 @@ void runTestPutGroupPartitioningBlock(bool* d_success) {
 // wait_signal timeout test kernels
 // =============================================================================
 
-// Kernel that calls wait_signal with a short timeout on a signal that will
-// never satisfy the condition. Should trigger __trap() via timeout.
-__global__ void testWaitSignalTimeout(
-    uint64_t* d_signalBuf,
-    IbgdaLocalBuffer localBuf,
-    Timeout timeout) {
+__global__ void testWaitSignalTimeout(uint64_t* d_signalBuf, Timeout timeout) {
   // Start the timeout timer
   timeout.start();
 
-  P2pIbgdaTransportDevice transport(nullptr);
+  // Construct transport with ownedLocalSignalBuf
+  IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{});
+  P2pIbgdaTransportDevice transport(
+      DeviceSpan<NicDeviceIbgdaResources>{},
+      IbgdaRemoteBuffer{},
+      localSigBuf,
+      IbgdaLocalBuffer{},
+      1);
 
   // Signal buffer is pre-set to 0 by host.
   // Waiting for >= 999 will never succeed, so timeout should fire.
-  transport.wait_signal(localBuf, 0, 999, timeout);
+  transport.wait_signal(0, 999, timeout);
 }
 
-// Kernel that calls wait_signal with a long timeout on a signal that is
-// already satisfied. Should return immediately without trapping.
-__global__ void testWaitSignalNoTimeout(
-    uint64_t* d_signalBuf,
-    IbgdaLocalBuffer localBuf,
-    Timeout timeout,
-    bool* success) {
+__global__ void
+testWaitSignalNoTimeout(uint64_t* d_signalBuf, Timeout timeout, bool* success) {
   // Start the timeout timer
   timeout.start();
 
-  P2pIbgdaTransportDevice transport(nullptr);
+  // Construct transport with ownedLocalSignalBuf
+  IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{});
+  P2pIbgdaTransportDevice transport(
+      DeviceSpan<NicDeviceIbgdaResources>{},
+      IbgdaRemoteBuffer{},
+      localSigBuf,
+      IbgdaLocalBuffer{},
+      1);
 
   // Signal buffer is pre-set to 42 by host.
   // Waiting for >= 42 will succeed immediately, no timeout.
-  transport.wait_signal(localBuf, 0, 42, timeout);
+  transport.wait_signal(0, 42, timeout);
 
   *success = true;
 }
@@ -427,27 +369,25 @@ __global__ void testWaitSignalNoTimeout(
 
 void runTestWaitSignalTimeout(
     uint64_t* d_signalBuf,
-    IbgdaLocalBuffer localBuf,
     int device,
     uint32_t timeout_ms) {
   Timeout timeout = makeTimeout(timeout_ms, device);
 
   // Intentionally unchecked - we expect the kernel to trap
   // NOLINTNEXTLINE(facebook-cuda-safe-kernel-call-check)
-  testWaitSignalTimeout<<<1, 1>>>(d_signalBuf, localBuf, timeout);
+  testWaitSignalTimeout<<<1, 1>>>(d_signalBuf, timeout);
   // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
   cudaDeviceSynchronize();
 }
 
 void runTestWaitSignalNoTimeout(
     uint64_t* d_signalBuf,
-    IbgdaLocalBuffer localBuf,
     int device,
     uint32_t timeout_ms,
     bool* d_success) {
   Timeout timeout = makeTimeout(timeout_ms, device);
 
-  testWaitSignalNoTimeout<<<1, 1>>>(d_signalBuf, localBuf, timeout, d_success);
+  testWaitSignalNoTimeout<<<1, 1>>>(d_signalBuf, timeout, d_success);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 

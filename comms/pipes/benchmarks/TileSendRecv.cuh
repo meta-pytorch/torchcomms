@@ -31,7 +31,7 @@
 // Each sender block i sends tile i; each receiver block i receives tile i.
 // Sender block i is paired with receiver block i on the remote GPU.
 //
-// PIPELINING (inside send_tile / recv_tile)
+// PIPELINING (inside send / recv)
 // =========================================
 // Each block's tile may be larger than the per-block staging area. The tile
 // is therefore pipelined through the staging buffer in multiple steps:
@@ -145,15 +145,15 @@ __global__ void p2pTileSendRecv(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
-    int numBlocks,
-    int chunksPerSlot = 1,
+    int active_blocks,
+    std::size_t max_signal_bytes = 0,
     Timeout timeout = Timeout());
 
 /**
  * p2pTileSendRecvDynamic — Variant using transport-internal tile state
  * with support for dynamic block count changes.
  *
- * Requires tileMaxBlocks > 0 and p2pBarrierCount >= tileMaxBlocks.
+ * Requires tile_max_groups > 0 and p2pBarrierCount >= tile_max_groups.
  * StepState, signals, and maxBlocks are managed internally by the transport.
  *
  * Signal layout uses maxBlocks (constant across launches) so that block k
@@ -161,7 +161,7 @@ __global__ void p2pTileSendRecv(
  * partition uses numBlocks (variable) for efficient use of staging memory.
  *
  * When numBlocks changes, the caller must set needsBarrier=true. Each block
- * does barrier_sync_threadgroup with its peer to ensure the remote GPU's
+ * does barrier_sync with its peer to ensure the remote GPU's
  * previous kernel completed all staging reads before the new layout takes
  * effect. See TileSendRecv.cu for the full correctness analysis.
  *
@@ -175,7 +175,7 @@ __global__ void p2pTileSendRecvDynamic(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
-    int numBlocks,
+    int active_blocks,
     bool needsBarrier,
     Timeout timeout = Timeout());
 

@@ -1,3 +1,4 @@
+#include <folly/FileUtil.h>
 #include <folly/Random.h>
 #include <folly/testing/TestUtil.h>
 #include <gmock/gmock.h>
@@ -42,16 +43,11 @@ class NcclComm {
       NCCLCHECK_FATAL(ncclGetUniqueId(&ncclUniqueID));
       mccl::McclIntegrationTestUtil::setKey(
           uniqueIDKey,
-          std::string(ncclUniqueID.internal, NCCL_UNIQUE_ID_BYTES),
-          std::nullopt);
+          std::string(ncclUniqueID.internal, NCCL_UNIQUE_ID_BYTES));
     } else {
       // Everyone else waits for it
-      auto value = mccl::McclIntegrationTestUtil::waitForKey(
-          uniqueIDKey, [](const auto& versionAndValue) {
-            return versionAndValue.has_value();
-          });
-      std::memcpy(
-          ncclUniqueID.internal, value.value.data(), NCCL_UNIQUE_ID_BYTES);
+      auto value = mccl::McclIntegrationTestUtil::waitForKey(uniqueIDKey);
+      std::memcpy(ncclUniqueID.internal, value.data(), NCCL_UNIQUE_ID_BYTES);
     }
     NCCLCHECK_FATAL(
         ncclCommInitRank(&comm_, worldSize, ncclUniqueID, globalRank));
@@ -91,7 +87,6 @@ class CollTraceWatchdogTest : public mccl::CollectiveIntegrationTestMixin,
         // enable commsDumpAll
         "NCCL_COMMSMONITOR_ENABLE=1",
         "NCCL_COLLTRACE=trace",
-        "NCCL_COLLTRACE_USE_NEW_COLLTRACE=1",
         // enable ctran
         "NCCL_CTRAN_ENABLE=1",
         "NCCL_CTRAN_BACKENDS=ib",
@@ -161,7 +156,6 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorWithIbVerbMock) {
   NcclComm comm(worldSize, rank);
 
   // Ensure we are using new colltrace
-  ASSERT_EQ(comm.raw()->ctranComm_->collTrace_, nullptr);
   ASSERT_NE(comm.raw()->newCollTrace, nullptr);
 
   // Allocate memory on the GPU

@@ -16,5 +16,5 @@ docker run --name torchcomms \
     -i \
     -t \
     -v ".:/torchcomms" \
-    pytorch/manylinux2_28-builder:cuda12.8-main \
+    pytorch/manylinux2_28-builder:cuda13.2-main \
     bash /torchcomms/scripts/_emulate_build_wheel.sh

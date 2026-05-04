@@ -1,0 +1,12 @@
+AppIO component changelog:
+
+2012-01-19 Tushar Mohan
+ * Support for read/write/fread/fwrite added
+ * Test cases added
+ * Static and dynamic linkage tested
+ * Thread support enabled
+
+2011-12-01 Phil Mucci
+
+ * Initial skeleton
+

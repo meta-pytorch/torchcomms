@@ -1,0 +1,59 @@
+# Installation
+
+- Required
+    - C++14 compiler (GNU, MSVC, Clang, Intel, PGI)
+    - CMake >= 3.15
+- Optional
+    - C compiler (GNU, MSVC, Clang, Intel, PGI)
+    - Python libraries
+    - MPI
+    - UPC++
+    - PAPI
+    - CUDA
+    - CUPTI
+    - gperftools
+    - CrayPAT
+    - AllineaMap
+    - ittnotify
+    - TAU
+    - Caliper
+    - Dyninst
+    - LIKWID
+    - GOTCHA
+
+| Description                 | Command                                                                  |
+| :-------------------------- | :----------------------------------------------------------------------- |
+| Clone the repository        | `git clone https://github.com/NERSC/timemory.git timemory`               |
+| Create build directory      | `mkdir build-timemory && cd build-timemory`                              |
+| Run CMake                   | `cmake -DCMAKE_INSTALL_PREFIX=/opt/timemory <CMAKE_OPTIONS> ../timemory` |
+| Build and install (Windows) | `cmake --build . --target ALL && cmake --build . --target INSTALL`       |
+| Build and install (UNIX)    | `cmake --build . --target all && cmake --build . --target install`       |
+
+## CMake Options
+
+Timemory uses a standard CMake installation. Set the environment variables `CC`, `CXX`, `CUDACXX` before
+CMake is executed to define the specified compilers.
+By default, timemory disables all extensions and build a very minimal configuration.
+To enable auto-detection of packages, set `TIMEMORY_REQUIRE_PACKAGES=OFF` when there is no existing CMakeCache.txt
+in the build directory. For the various external packages, timemory will search the `CMAKE_PREFIX_PATH` in the
+environment and enable CUDA, CUPTI, PAPI, MPI, etc. if it can find those packages.
+
+For packages which are included as submodules (Caliper, GOTCHA, pybind11, etc.), there are two options:
+`TIMEMORY_USE_<PACKAGE>` and `TIMEMORY_BUILD_<PACKAGE>`. The former specifies that support for the package
+is desired, the latter specifies that this support should be enabled via the submodule. Thus,
+if `TIMEMORY_USE_<PACKAGE>=OFF` then `TIMEMORY_BUILD_<PACKAGE>` is ignored. If `TIMEMORY_USE_<PACKAGE>=ON`
+and `TIMEMORY_BUILD_<PACKAGE>=OFF`, then timemory will search for an external installation of the package.
+If `TIMEMORY_USE_<PACKAGE>=ON` and `TIMEMORY_BUILD_<PACKAGE>=ON`, then timemory will use the built-in
+submodule to enable support for the package.
+
+| Option | Description |
+| :----- | :---------- |
+@TIMEMORY_CMAKE_OPTIONS@
+
+## CMake Example
+
+```console
+mkdir build-timemory
+cd build-timemory
+cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo -DTIMEMORY_USE_PAPI=ON -DTIMEMORY_USE_CUDA=ON ..
+```

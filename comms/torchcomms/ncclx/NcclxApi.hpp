@@ -67,7 +67,9 @@ using NcclxWindowAttr = ncclWinAttr_t;
 using NcclxWindow = void*;
 using NcclxWindowAccessType = int;
 using NcclxWindowAttr = void*;
-constexpr int NCCL_WIN_DEFAULT = 0;
+#ifndef NCCL_WIN_DEFAULT
+#define NCCL_WIN_DEFAULT 0x00
+#endif
 #endif
 
 /**
@@ -98,6 +100,8 @@ class NcclxApi {
 
   [[nodiscard]] virtual ncclResult_t commAbort(ncclComm_t comm) = 0;
 
+  [[nodiscard]] virtual ncclResult_t commRevoke(ncclComm_t comm) = 0;
+
   [[nodiscard]] virtual ncclResult_t commGetAsyncError(
       ncclComm_t comm,
       ncclResult_t* asyncError) = 0;
@@ -106,6 +110,26 @@ class NcclxApi {
       ncclComm_t comm,
       int color,
       int key,
+      ncclComm_t* newcomm,
+      ncclConfig_t* config) = 0;
+
+  [[nodiscard]] virtual ncclResult_t commShrink(
+      ncclComm_t comm,
+      int* excludeRanksList,
+      int excludeRanksCount,
+      ncclComm_t* newcomm,
+      ncclConfig_t* config,
+      int shrinkFlags) = 0;
+
+  [[nodiscard]] virtual ncclResult_t commGetUniqueId(
+      ncclComm_t comm,
+      ncclUniqueId* uniqueId) = 0;
+
+  [[nodiscard]] virtual ncclResult_t commGrow(
+      ncclComm_t comm,
+      int nRanks,
+      const ncclUniqueId* uniqueId,
+      int rank,
       ncclComm_t* newcomm,
       ncclConfig_t* config) = 0;
 
@@ -406,13 +430,16 @@ class NcclxApi {
       int* outNumIbPeers) = 0;
 
   // Register a local buffer for device-side RDMA put operations.
-  // NON-COLLECTIVE — purely local memory registration (lkey only).
-  // Returns lkey in network byte order via outLkey.
+  // NON-COLLECTIVE — purely local memory registration (per-NIC lkeys only).
+  // Fills *outLkeys with per-NIC lkeys + populated NIC count. Multi-NIC:
+  // device put selects outLkeys->values[nic] based on slot dispatch —
+  // populating only values[0] would corrupt WQEs for slots landing on
+  // NIC[1..size-1] on GB200/GB300.
   [[nodiscard]] virtual ncclResult_t winLocalRegisterBuffer(
       ncclComm_t comm,
       void* ptr,
       size_t size,
-      uint32_t* outLkey) = 0;
+      ncclLkeyPerDevice* outLkeys) = 0;
 
   // Deregister a buffer previously registered with winLocalRegisterBuffer.
   // NON-COLLECTIVE.
@@ -473,6 +500,8 @@ class DefaultNcclxApi : public NcclxApi {
 
   [[nodiscard]] ncclResult_t commAbort(ncclComm_t comm) override;
 
+  [[nodiscard]] ncclResult_t commRevoke(ncclComm_t comm) override;
+
   [[nodiscard]] ncclResult_t commGetAsyncError(
       ncclComm_t comm,
       ncclResult_t* asyncError) override;
@@ -481,6 +510,26 @@ class DefaultNcclxApi : public NcclxApi {
       ncclComm_t comm,
       int color,
       int key,
+      ncclComm_t* newcomm,
+      ncclConfig_t* config) override;
+
+  [[nodiscard]] ncclResult_t commShrink(
+      ncclComm_t comm,
+      int* excludeRanksList,
+      int excludeRanksCount,
+      ncclComm_t* newcomm,
+      ncclConfig_t* config,
+      int shrinkFlags) override;
+
+  [[nodiscard]] ncclResult_t commGetUniqueId(
+      ncclComm_t comm,
+      ncclUniqueId* uniqueId) override;
+
+  [[nodiscard]] ncclResult_t commGrow(
+      ncclComm_t comm,
+      int nRanks,
+      const ncclUniqueId* uniqueId,
+      int rank,
       ncclComm_t* newcomm,
       ncclConfig_t* config) override;
 
@@ -764,7 +813,7 @@ class DefaultNcclxApi : public NcclxApi {
       ncclComm_t comm,
       void* ptr,
       size_t size,
-      uint32_t* outLkey) override;
+      ncclLkeyPerDevice* outLkeys) override;
   [[nodiscard]] ncclResult_t winLocalDeregisterBuffer(
       ncclComm_t comm,
       void* ptr) override;

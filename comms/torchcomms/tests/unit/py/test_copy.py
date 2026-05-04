@@ -46,7 +46,7 @@ class TestCommCopy(unittest.TestCase):
 
     def setUp(self):
         """Set up test environment before each test."""
-        self.torchcomm = new_comm("dummy", torch.device("cpu"), name="test_copy_comm")
+        self.torchcomm = new_comm("fake", torch.device("cpu"), name="test_copy_comm")
 
     def tearDown(self):
         """Clean up after each test."""

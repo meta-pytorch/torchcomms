@@ -23,7 +23,7 @@ __global__ void testSendKernel(
     size_t nbytes,
     GroupType groupType) {
   auto group = make_group(groupType);
-  p2p->send(group, src_d, nbytes);
+  p2p->send_group(group, src_d, nbytes);
 }
 
 __global__ void testRecvKernel(
@@ -32,7 +32,7 @@ __global__ void testRecvKernel(
     size_t nbytes,
     GroupType groupType) {
   auto group = make_group(groupType);
-  p2p->recv(group, dst_d, nbytes);
+  p2p->recv_group(group, dst_d, nbytes);
 }
 
 // Kernel that performs multiple sequential sends within a single kernel launch
@@ -45,7 +45,7 @@ __global__ void testMultiSendKernel(
   auto group = make_group(groupType);
   char* src = reinterpret_cast<char*>(src_d);
   for (int i = 0; i < numSends; i++) {
-    p2p->send(group, src + i * nbytes, nbytes);
+    p2p->send_group(group, src + i * nbytes, nbytes);
   }
 }
 
@@ -59,7 +59,7 @@ __global__ void testMultiRecvKernel(
   auto group = make_group(groupType);
   char* dst = reinterpret_cast<char*>(dst_d);
   for (int i = 0; i < numRecvs; i++) {
-    p2p->recv(group, dst + i * nbytes, nbytes);
+    p2p->recv_group(group, dst + i * nbytes, nbytes);
   }
 }
 
@@ -72,8 +72,8 @@ __global__ void testSendRecvKernel(
     size_t nbytes,
     GroupType groupType) {
   auto group = make_group(groupType);
-  p2p->send(group, send_d, nbytes);
-  p2p->recv(group, recv_d, nbytes);
+  p2p->send_group(group, send_d, nbytes);
+  p2p->recv_group(group, recv_d, nbytes);
 }
 
 // Kernel that performs recv then send within a single kernel launch
@@ -85,8 +85,8 @@ __global__ void testRecvSendKernel(
     size_t nbytes,
     GroupType groupType) {
   auto group = make_group(groupType);
-  p2p->recv(group, recv_d, nbytes);
-  p2p->send(group, send_d, nbytes);
+  p2p->recv_group(group, recv_d, nbytes);
+  p2p->send_group(group, send_d, nbytes);
 }
 
 // Kernel that performs weighted partition send/recv
@@ -104,9 +104,9 @@ __global__ void testWeightedSendRecvKernel(
   uint32_t weights[] = {sendWeight, recvWeight};
   auto [partition_id, subgroup] = group.partition(make_device_span(weights, 2));
   if (partition_id == 0) {
-    p2p->send(subgroup, send_d, nbytes);
+    p2p->send_group(subgroup, send_d, nbytes);
   } else {
-    p2p->recv(subgroup, recv_d, nbytes);
+    p2p->recv_group(subgroup, recv_d, nbytes);
   }
 }
 
@@ -125,9 +125,9 @@ __global__ void testWeightedRecvSendKernel(
   uint32_t weights[] = {recvWeight, sendWeight};
   auto [partition_id, subgroup] = group.partition(make_device_span(weights, 2));
   if (partition_id == 0) {
-    p2p->recv(subgroup, recv_d, nbytes);
+    p2p->recv_group(subgroup, recv_d, nbytes);
   } else {
-    p2p->send(subgroup, send_d, nbytes);
+    p2p->send_group(subgroup, send_d, nbytes);
   }
 }
 
@@ -257,8 +257,8 @@ __global__ void testPutWithSignalKernel(
     size_t nbytes,
     GroupType groupType) {
   auto group = make_group(groupType);
-  auto writtenBytes = p2p->put(group, dst_d, src_d, nbytes);
-  p2p->signal_threadgroup(group, signal_id, SignalOp::SIGNAL_ADD, writtenBytes);
+  auto writtenBytes = p2p->put_group(group, dst_d, src_d, nbytes);
+  p2p->signal(group, signal_id, SignalOp::SIGNAL_ADD, writtenBytes);
 }
 
 void testPutWithSignal(
@@ -286,7 +286,7 @@ __global__ void testWaitKernel(
     uint64_t expected,
     GroupType groupType) {
   auto group = make_group(groupType);
-  p2p->wait_signal_until_threadgroup(group, signal_id, op, expected);
+  p2p->wait_signal_until(group, signal_id, op, expected);
 }
 
 void testWait(

@@ -33,7 +33,6 @@ class CollTraceTestLocal : public NcclxBaseTestFixture {
         {"NCCL_HPC_JOB_IDS",
          "HPC_JOB_NAME,HPC_JOB_VERSION,HPC_JOB_ATTEMPT_INDEX"},
         {"NCCL_COLLTRACE", "trace"},
-        {"NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1"},
         {"NCCL_CTRAN_ENABLE", "1"},
         {"NCCL_CTRAN_IB_EPOCH_LOCK_ENFORCE_CHECK", "true"},
     });
@@ -149,7 +148,7 @@ TEST_F(CollTraceTestLocal, winSignal) {
   EXPECT_EQ(res, ncclSuccess);
 
   CUDACHECK_TEST(cudaDeviceSynchronize());
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
   auto dumpMap =
       meta::comms::ncclx::dumpNewCollTrace(*comm->ctranComm_->colltraceNew_);
   EXPECT_NE(dumpMap["CT_pastColls"], "[]");
@@ -240,7 +239,7 @@ TEST_F(CollTraceTestLocal, winPutOnly) {
   ASSERT_EQ(ncclMemFree(localBuf), ncclSuccess);
 
   cudaDeviceSynchronize();
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
   auto dumpMap =
       meta::comms::ncclx::dumpNewCollTrace(*comm->ctranComm_->colltraceNew_);
   EXPECT_NE(dumpMap["CT_pastColls"], "[]");

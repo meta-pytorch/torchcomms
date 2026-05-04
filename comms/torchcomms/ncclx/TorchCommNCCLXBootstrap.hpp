@@ -54,7 +54,9 @@ class TorchCommNCCLXBootstrap {
  private:
   ncclUniqueId exchangeUniqueId();
   void createStore(std::string_view name);
+#ifdef NCCLX_CONFIG_SUPPORTED
   bool useFastInit(const ncclx::Hints& hints);
+#endif
   void cleanupTCPStore(ncclComm_t nccl_comm);
 
  private:

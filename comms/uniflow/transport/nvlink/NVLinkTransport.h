@@ -97,6 +97,18 @@ class NVLinkTransport : public Transport {
 
 class NVLinkTransportFactory : public TransportFactory {
  public:
+  /*
+   * Query whether NVLink transport is available on this platform.
+   *
+   * Probes for CUDA devices by querying the CUDA runtime device count.
+   * Returns Ok() if at least one CUDA device exists, or an error
+   * describing why NVLink is not available.
+   *
+   * @param cudaApi  Optional CudaApi instance for dependency injection
+   *                 (testing). If nullptr, a default instance is created.
+   */
+  static Status supported(std::shared_ptr<CudaApi> cudaApi = nullptr);
+
   /// Construct a factory for the given CUDA device.
   /// Queries NVML for GPU fabric info to populate local NVLink topology.
   /// Falls back to POSIX FD-based IPC for single-node sharing when

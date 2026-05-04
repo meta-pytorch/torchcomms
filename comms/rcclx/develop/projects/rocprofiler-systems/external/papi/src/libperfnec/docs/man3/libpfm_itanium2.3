@@ -1,0 +1,456 @@
+.TH LIBPFM 3  "November, 2003" "" "Linux Programmer's Manual"
+.SH NAME
+libpfm_itanium2 - support for Itanium2 specific PMU features
+.SH SYNOPSIS
+.nf
+.B #include <perfmon/pfmlib.h>
+.B #include <perfmon/pfmlib_itanium2.h>
+.sp
+.BI "int pfm_ita2_is_ear(unsigned int " i ");"
+.BI "int pfm_ita2_is_dear(unsigned int " i ");"
+.BI "int pfm_ita2_is_dear_tlb(unsigned int " i ");"
+.BI "int pfm_ita2_is_dear_cache(unsigned int " i ");"
+.BI "int pfm_ita2_is_dear_alat(unsigned int " i ");"
+.BI "int pfm_ita2_is_iear(unsigned int " i ");"
+.BI "int pfm_ita2_is_iear_tlb(unsigned int " i ");"
+.BI "int pfm_ita2_is_iear_cache(unsigned int " i ");"
+.BI "int pfm_ita2_is_btb(unsigned int " i ");"
+.BI "int pfm_ita2_support_opcm(unsigned int " i ");"
+.BI "int pfm_ita2_support_iarr(unsigned int " i ");"
+.BI "int pfm_ita2_support_darr(unsigned int " i ");"
+.BI "int pfm_ita2_get_event_maxincr(unsigned int "i ", unsigned int *"maxincr ");"
+.BI "int pfm_ita2_get_event_umask(unsigned int "i ", unsigned long *"umask ");"
+.BI "int pfm_ita2_get_event_group(unsigned int "i ", int *"grp ");"
+.BI "int pfm_ita2_get_event_set(unsigned int "i ", int *"set ");"
+.BI "int pfm_ita2_get_ear_mode(unsigned int "i ", pfmlib_ita2_ear_mode_t *"mode ");"
+.BI "int pfm_ita2_irange_is_fine(pfmlib_output_param_t *"outp ", pfmlib_ita2_output_param_t *"mod_out ");"
+.sp
+.SH DESCRIPTION
+The libpfm library provides full support for all the Itanium 2 specific features
+of the PMU. The interface is defined in \fBpfmlib_itanium2.h\fR. It consists
+of a set of functions and structures which describe and allow access to the 
+Itanium 2 specific PMU features.
+.sp
+The Itanium 2 specific functions presented here are mostly used to retrieve
+the characteristics of an event. Given a opaque event descriptor, obtained
+by the \fBpfm_find_event()\fR or its derivative functions, they return a boolean value
+indicating whether this event support this feature or is of a particular
+kind.
+.sp
+The \fBpfm_ita2_is_ear()\fR function returns 1 if the event
+designated by \fBi\fR corresponds to a EAR event, i.e., an Event Address Register
+type of events. Otherwise 0 is returned. For instance, \fBDATA_EAR_CACHE_LAT4\fR is an ear event, but 
+\fBCPU_CYCLES\fR is not. It can be a data or instruction EAR event.
+.sp
+The \fBpfm_ita2_is_dear()\fR function returns 1 if the event
+designated by \fBi\fR corresponds to an Data EAR event. Otherwise 0 is returned. 
+It can be a cache or TLB EAR event.
+.sp
+The \fBpfm_ita2_is_dear_tlb()\fR function returns 1 if the event
+designated by \fBi\fR corresponds to a Data EAR TLB event. Otherwise 0 is returned.
+.sp
+The \fBpfm_ita2_is_dear_cache()\fR function returns 1 if the event
+designated by \fBi\fR corresponds to a Data EAR cache event. Otherwise 0 is returned.
+.sp
+The \fBpfm_ita2_is_dear_alat()\fR function returns 1 if the event
+designated by \fBi\fR corresponds to a ALAT EAR cache event. Otherwise 0 is returned.
+.sp
+The \fBpfm_ita2_is_iear()\fR function returns 1 if the event
+designated by \fBi\fR corresponds to an instruction EAR event. Otherwise 0 is returned. 
+It can be a cache or TLB instruction EAR event.
+.sp
+The \fBpfm_ita2_is_iear_tlb()\fR function returns 1 if the event
+designated by \fBi\fR corresponds to an instruction EAR TLB event. Otherwise 0 is returned.
+.sp
+The \fBpfm_ita2_is_iear_cache()\fR function returns 1 if the event
+designated by \fBi\fR corresponds to an instruction EAR cache event. Otherwise 0 is returned.
+.sp
+The \fBpfm_ita2_support_opcm()\fR function returns 1 if the event
+designated by \fBi\fR supports opcode matching, i.e., can this event be measured accurately 
+when opcode matching via PMC8/PMC9 is active. Not all events supports this feature.
+.sp
+The \fBpfm_ita2_support_iarr()\fR function returns 1 if the event
+designated by \fBi\fR supports code address range restrictions, i.e., can this event be measured accurately when 
+code range restriction is active. Otherwise 0 is returned. Not all events supports this feature.
+.sp
+The \fBpfm_ita2_support_darr()\fR function returns 1 if the event
+designated by \fBi\fR supports data address range restrictions, i.e., can this event be measured accurately when 
+data range restriction is active.  Otherwise 0 is returned. Not all events supports this feature.
+.sp
+The \fBpfm_ita2_get_event_maxincr()\fR function returns in \fBmaxincr\fR the maximum number of
+occurrences per cycle for the event designated by \fBi\fR. Certain Itanium 2 events can occur more than 
+once per cycle. When an event occurs more than once per cycle, the PMD counter will be incremented accordingly.
+It is possible to restrict measurement when event occur more than once per cycle. For instance, 
+\fBNOPS_RETIRED\fR can happen up to 6 times/cycle which means that the threshold can be adjusted between 0 and 5, 
+where 5 would mean that the PMD counter would be incremented by 1 only when the nop instruction is executed more 
+than 5 times/cycle. This function returns the maximum number of occurrences of the event per cycle, and
+is the non-inclusive upper bound for the threshold to program in the PMC register.
+.sp
+The \fBpfm_ita2_get_event_umask()\fR function returns in \fBumask\fR the umask for the event
+designated by \fBi\fR.
+.sp
+The \fBpfm_ita2_get_event_grp()\fR function returns in \fBgrp\fR the group to which the
+event designated by \fBi\fR belongs. The notion of group is used for L1 and L2 cache events only.
+For all other events, a group is irrelevant and can be ignored. If the event is an L2
+cache event then the value of \fBgrp\fR will be \fBPFMLIB_ITA2_EVT_L2_CACHE_GRP\fR. Similarly,
+if the event is an L1 cache event, the value of \fBgrp\fR will be \fBPFMLIB_ITA2_EVT_L1_CACHE_GRP\fR.
+In any other cases, the value of \fBgrp\fR will be \fBPFMLIB_ITA2_EVT_NO_GRP\fR.
+.sp
+The \fBpfm_ita2_get_event_set()\fR function returns in \fBset\fR the set to which the
+event designated by \fBi\fR belongs. A set is a subdivision of a group and is therefore
+only relevant for L1 and L2 cache events. An event can only belong to one group and
+one set. This partitioning of the cache events is due to some hardware limitations which
+impose some restrictions on events. For a given group, events from different sets 
+cannot be measured at the same time. If the event does not belong to a group
+then the value of \fBset\fR is \fBPFMLIB_MONT_EVT_NO_SET\fR.
+.sp
+The \fBpfm_ita2_irange_is_fine()\fR function returns 1 if the configuration description passed
+in \fBoutp\fR, the generic output parameters and \fBmod_out\fR, the Itanium2 specific output parameters, 
+use code range restriction in fine mode. Otherwise the function returns 0. This function can only be 
+called after a call to the \fBpfm_dispatch_events()\fR function returns successfully and had the data
+structures pointed to by \fBoutp\fR and \fBmod_out\fR as output parameters.
+.sp
+The \fBpfm_ita2_get_event_ear_mode()\fR function returns in \fBmode\fR the EAR mode of the
+event designated by \fBi\fR. If the event is not an EAR event, then \fBPFMLIB_ERR_INVAL\fR
+is returned and mode is not updated. Otherwise mode can have the following values:
+.TP
+.B PFMLIB_ITA2_EAR_TLB_MODE
+The event is an EAR TLB mode. It can be either data or instruction TLB EAR.
+.TP
+.B PFMLIB_ITA2_EAR_CACHE_MODE
+The event is a cache EAR. It can be either data or instruction cache EAR.
+.TP
+.B PFMLIB_ITA2_EAR_ALAT_MODE
+The event is an ALAT EAR. It can only be a data EAR event.
+.sp
+.LP
+When the Itanium 2 specific features are needed to support a measurement their descriptions must be passed
+as model-specific input arguments to the \fBpfm_dispatch_events()\fR function. The Itanium 2 specific 
+input arguments are described in the \fBpfmlib_ita2_input_param_t\fR structure and the output
+parameters in \fBpfmlib_ita2_output_param_t\fR. They are defined as follows:
+.sp
+.nf
+typedef enum { 
+	PFMLIB_ITA2_ISM_BOTH=0,
+	PFMLIB_ITA2_ISM_IA32=1,
+	PFMLIB_ITA2_ISM_IA64=2
+} pfmlib_ita2_ism_t;
+
+typedef struct {
+	unsigned int	  flags;
+	unsigned int 	  thres;
+	pfmlib_ita2_ism_t ism;
+} pfmlib_ita2_counter_t;
+
+typedef struct {
+	unsigned char	 opcm_used;
+	unsigned long	 pmc_val;
+} pfmlib_ita2_opcm_t;
+
+typedef struct {
+	unsigned char	 btb_used;
+
+	unsigned char	 btb_ds;
+	unsigned char	 btb_tm;
+	unsigned char	 btb_ptm;
+	unsigned char	 btb_ppm;
+	unsigned char	 btb_brt;
+	unsigned int	 btb_plm;
+} pfmlib_ita2_btb_t;
+
+typedef enum {
+	PFMLIB_ITA2_EAR_CACHE_MODE= 0,
+	PFMLIB_ITA2_EAR_TLB_MODE  = 1,
+	PFMLIB_ITA2_EAR_ALAT_MODE = 2
+} pfmlib_ita2_ear_mode_t; 
+
+typedef struct {
+    unsigned char          ear_used;
+
+    pfmlib_ita2_ear_mode_t ear_mode;
+    pfmlib_ita2_ism_t      ear_ism;
+    unsigned int           ear_plm;
+    unsigned long          ear_umask;
+} pfmlib_ita2_ear_t;
+
+typedef struct {
+    unsigned int  rr_plm;
+    unsigned long rr_start;
+    unsigned long rr_end;
+} pfmlib_ita2_input_rr_desc_t;
+
+typedef struct {
+    unsigned long rr_soff;
+    unsigned long rr_eoff;
+} pfmlib_ita2_output_rr_desc_t;
+
+
+typedef struct {
+    unsigned int                rr_flags;
+    pfmlib_ita2_input_rr_desc_t rr_limits[4];
+    unsigned char               rr_used;
+} pfmlib_ita2_input_rr_t;
+
+typedef struct {
+    unsigned int                 rr_nbr_used;
+    pfmlib_ita2_output_rr_desc_t rr_infos[4];
+    pfmlib_reg_t                 rr_br[8];
+} pfmlib_ita2_output_rr_t;
+
+typedef struct {
+    pfmlib_ita2_counter_t    pfp_ita2_counters[PMU_ITA2_NUM_COUNTERS];
+
+    unsigned long            pfp_ita2_flags;
+
+    pfmlib_ita2_opcm_t       pfp_ita2_pmc8;
+    pfmlib_ita2_opcm_t       pfp_ita2_pmc9;
+    pfmlib_ita2_ear_t        pfp_ita2_iear;
+    pfmlib_ita2_ear_t        pfp_ita2_dear;
+    pfmlib_ita2_btb_t        pfp_ita2_btb;
+    pfmlib_ita2_input_rr_t   pfp_ita2_drange;
+    pfmlib_ita2_input_rr_t   pfp_ita2_irange;
+} pfmlib_ita2_input_param_t;
+
+typedef struct {
+    pfmlib_ita2_output_rr_t pfp_ita2_drange;
+    pfmlib_ita2_output_rr_t pfp_ita2_irange;
+} pfmlib_ita2_output_param_t;
+
+.fi
+.sp
+.SH PER-EVENT OPTIONS
+.sp
+The Itanium 2 processor provides two additional per-event features for 
+counters: thresholding and instruction set selection. They can be set using the 
+\fBpfp_ita2_counters\fR data structure for each event.  The \fBism\fR
+field can be initialized as follows:
+.TP
+.B PFMLIB_ITA2_ISM_BOTH 
+The event will be monitored during IA-64 and IA-32 execution
+.TP
+.B PFMLIB_ITA2_ISM_IA32 
+The event will only be monitored during IA-32 execution
+.TP
+.B PFMLIB_ITA2_ISM_IA64 
+The event will only be monitored during IA-64 execution
+.sp
+.LP
+If \fBism\fR has a value of zero, it will default to PFMLIB_ITA2_ISM_BOTH.
+
+The \fBthres\fR indicates the threshold for the event. A threshold of \fBn\fR means
+that the counter will be incremented by one only when the event occurs more than \fBn\fR
+times per cycle.
+
+The \fBflags\fR field contains event-specific flags. The currently defined flags are:
+.sp
+.TP
+PFMLIB_ITA2_FL_EVT_NO_QUALCHECK
+When this flag is set it indicates that the library should ignore the qualifiers constraints
+for this event. Qualifiers includes opcode matching, code and data range restrictions. When an
+event is marked as not supporting a particular qualifier, it usually means that it is ignored, i.e.,
+the extra level of filtering is ignored. For instance, the CPU_CYCLES event does not support code
+range restrictions and by default the library will refuse to program it if range restriction is also 
+requested. Using the flag will override the check and the call to the \fBpfm_dispatch_events()\fR function will succeed. 
+In this case, CPU_CYCLES will be measured for the entire program and not just for the code range requested. 
+For certain measurements this is perfectly acceptable as the range restriction will only be applied relevant
+to events which support it. Make sure you understand which events do not support certain qualifiers before
+using this flag.
+.LP
+
+.SH OPCODE MATCHING
+.sp
+The \fBpfp_ita2_pmc8\fR and \fBpfp_ita2_pmc9\fR fields of type \fBpfmlib_ita2_opcm_t\fR contain 
+the description of what to do with the opcode matchers. Itanium 2 supports opcode matching via 
+PMC8 and PMC9. When this feature is used the \fBopcm_used\fR field must be set to 1, otherwise
+it is ignored by the library. The \fBpmc_val\fR simply contains the raw value to store in
+PMC8 or PMC9. The library may adjust the value to enable/disable some options depending on the set
+of features being used. The final value for PMC8 and PMC9 will be stored in the \fBpfp_pmcs\fR
+table of the generic output parameters.
+
+.SH EVENT ADDRESS REGISTERS
+.sp
+The \fBpfp_ita2_iear\fR field of type \fBpfmlib_ita2_ear_t\fR describes what to do with instruction
+Event Address Registers (I-EARs). Again if this feature is used the \fBear_used\fR must be set to 1, 
+otherwise it will be ignored by the library. The \fBear_mode\fR must be set to either one of 
+\fBPFMLIB_ITA2_EAR_TLB_MODE\fR, \fBPFMLIB_ITA2_EAR_CACHE_MODE\fRto indicate the type of EAR to program.  
+The umask to store into PMC10 must be in \fBear_umask\fR. The privilege level mask at which the I-EAR will be 
+monitored must be set in \fBear_plm\fR which can be any combination of \fBPFM_PLM0\fR, \fBPFM_PLM1\fR, 
+\fBPFM_PLM2\fR, \fBPFM_PLM3\fR.  If \fBear_plm\fR is 0 then the default privilege level mask in \fBpfp_dfl_plm\fR is used. 
+Finally the instruction set for which to monitor is in \fBear_ism\fR and can be any one of 
+\fBPFMLIB_ITA2_ISM_BOTH\fR, \fBPFMLIB_ITA2_ISM_IA32\fR, or \fBPFMLIB_ITA2_ISM_IA64\fR.
+.sp
+The \fBpfp_ita2_dear\fR field of type \fBpfmlib_ita2_ear_t\fR describes what to do with data Event Address 
+Registers (D-EARs).  The description is identical to the I-EARs except that it applies to PMC11 and
+that a \fBear_mode\fR of \fBPFMLIB_ITA2_EAR_ALAT_MODE\fR  is possible.
+
+In general, there are four different methods to program the EAR (data or instruction):
+.TP
+.B Method 1 
+There is an EAR event in the list of events to monitor and \fBear_used\fR is cleared. In this
+case the EAR will be programmed (PMC10 or PMC11) based on the information encoded in the event.
+A counting monitor (PMC4/PMD4-PMC7/PMD7) will be programmed to count \fBDATA_EAR_EVENT\fR or \fBL1I_EAR_EVENTS\fR
+depending on the type of EAR.
+.TP
+.B Method 2 
+There is an EAR event in the list of events to monitor and \fBear_used\fR is set. In this
+case the EAR will be programmed (PMC10 or PMC11) using the information in the \fBpfp_ita2_iear\fR or
+\fBpfp_ita2_dear\fR structure because it contains more detailed information, such as privilege level and
+instruction set.  A counting monitor (PMC4/PMD4-PMC7/PMD7) will be programmed to count DATA_EAR_EVENT or 
+L1I_EAR_EVENTS depending on the type of EAR.
+.TP
+.B Method 3 
+There is no EAR event in the list of events to monitor and and \fBear_used\fR is cleared. In this case
+no EAR is programmed.
+.TP
+.B Method 4 
+There is no EAR event in the list of events to monitor and and \fBear_used\fR is set. In this case
+case the EAR will be programmed (PMC10 or PMC11) using the information in the \fBpfp_ita2_iear\fR or
+\fBpfp_ita2_dear\fR structure. This is the free running mode for the EAR.
+.sp
+.SH BRANCH TRACE BUFFER
+The \fBpfp_ita2_btb\fR of type \fBpfmlib_ita2_btb_t\fR field is used to configure the Branch Trace Buffer (BTB). If the 
+\fBbtb_used\fR is set, then the library will take the configuration into account, otherwise any BTB configuration will be ignored.
+The various fields in this structure provide means to filter out the kind of branches that gets recorded in the BTB.
+Each one represents an element of the branch architecture of the Itanium 2 processor. Refer to the Itanium 2 specific
+documentation for more details on the branch architecture. The fields are as follows:
+.TP
+.B btb_ds
+If the value of this field is 1, then detailed information about the branch prediction are recorded in place of information about the target
+address. If the value is 0, then information about the target address of the branch is recorded instead.
+.TP
+.B btb_tm
+If this field is 0, then no branch is captured. If this field is 1, then non taken branches are captured. If this field is 2, then
+taken branches are captured. Finally if this field is 3 then all branches are captured.
+.TP
+.B btb_ptm
+If this field is 0, then no branch is captured. If this field is 1, then branches with a mispredicted target address are captured. If this field 
+is 2, then branches with correctly predicted target address are captured. Finally if this field is 3 then all branches are captured regardless of
+target address prediction.
+.TP
+.B btb_ppm
+If this field is 0, then no branch is captured. If this field is 1, then branches with a mispredicted path (taken/non taken) are captured. If this field 
+is 2, then branches with correctly predicted path are captured. Finally if this field is 3 then all branches are captured regardless of
+their path prediction.
+.TP
+.B btb_brt
+If this field is 0, then all branches are captured. If this field is 1, then only IP-relative branches are captured. If this field 
+is 2, then only return branches are captured. Finally if this field is 3 then only non-return indirect branches are captured.
+.TP
+.B btb_plm
+This is the privilege level mask at which the BTB captures branches. It can be any combination of \fBPFM_PLM0\fR, \fBPFM_PLM1\fR, \fBPFM_PLM2\fR, 
+\fBPFM_PLM3\fR. If \fBbtb_plm\fR is 0 then the default privilege level mask in \fBpfp_dfl_plm\fR is used.
+.sp
+There are 4 methods to program the BTB and they are as follows:
+.sp
+.TP
+.B Method 1
+The \fBBRANCH_EVENT\fR is in the list of event to monitor and \fBbtb_used\fR is cleared. In this case,
+the BTB will be configured (PMC12) to record ALL branches. A counting monitor (PMC4/PMD4-PMC7/PMD7) will be programmed to 
+count \fBBRANCH_EVENT\fR.
+.TP
+.B Method 2
+The \fBBRANCH_EVENT\fR is in the list of events to monitor and \fBbtb_used\fR is set. In this case,
+the BTB will be configured (PMC12) using the information in the \fBpfp_ita2_btb\fR structure. A counting monitor 
+(PMC4/PMD4-PMC7/PMD7) will be programmed to count \fBBRANCH_EVENT\fR.
+.TP
+.B Method 3
+The \fBBRANCH_EVENT\fR is not in the list of events to monitor and \fBbtb_used\fR is set. In this case,
+the BTB will be configured (PMC12) using the information in the \fBpfp_ita2_btb\fR structure. This is the
+free running mode for the BTB.
+.TP
+.B Method 4
+The \fBBRANCH_EVENT\fR is not in the list of events to monitor and \fBbtb_used\fR is cleared. In this case,
+the BTB is not programmed.
+
+.SH DATA AND CODE RANGE RESTRICTIONS
+The \fBpfp_ita2_drange\fR and \fBpfp_ita2_irange\fR fields control the range restrictions for the data and 
+code respectively. The idea is that the application passes a set of ranges, each designated by a start 
+and end address. Upon return from the \fBpfm_dispatch_events()\fR function, the application gets back the set of 
+registers and their values that needs to be programmed via a kernel interface.
+
+Range restriction is implemented using the debug registers. There is a limited number of debug registers and they go in pair. With
+8 data debug registers, a maximum of 4 distinct ranges can be specified. The same applies to code range restrictions. Moreover, there
+are some severe constraints on the alignment and size of the ranges. Given that the size of a range is specified using a bitmask, there can
+be situations where the actual range is larger than the requested range. For code ranges, the Itanium 2 processor can use what is called a fine mode,
+where a range is designated using two pairs of code debug registers. In this mode, the bitmask is not used, the start and end
+addresses are directly specified. Not all code ranges qualify for fine mode, the size of the range must be 4KB or less and the range
+cannot cross a 4KB page boundary. The library will make a best effort in choosing the right mode for each range. For code ranges,
+it will try the fine mode first and will default to using the bitmask mode otherwise. Fine mode applies to all code debug
+registers or none, i.e., you cannot have a range using fine mode and another using the bitmask. the Itanium 2 processor somehow limits the use 
+of multiple pairs to accurately cover a code range. This can only be done for \fBIA64_INST_RETIRED\fR and even then, you need several
+events to collect the counts. For all other events, only one pair can be used, which leads to more inaccuracy due to
+approximation. Data ranges can used multiple debug register pairs to gain more accuracy. The library will never cover less than what is
+requested. The algorithm will use more than one pair of debug registers
+whenever possible to get a more precise range. Hence, up to the 4 pairs can be used to describe a single range. 
+
+If range restriction is to be used, the \fBrr_used\fR field must be set to one, otherwise settings will be ignored. 
+The ranges are described by the \fBpfmlib_ita2_input_rr_t\fR structure. Up to 4 ranges can be defined. Each
+range is described in by a entry in \fBrr_limits\fR. Some flags for all ranges can be defined in \fBrr_flags\fR.
+Currently defined flags are:
+.sp
+.TP
+.B PFMLIB_ITA2_RR_INV
+Inverse the code ranges. The qualifying events will be measurement when executing outside the specified
+ranges.
+.TP
+.B PFMLIB_ITA2_RR_NO_FINE_MODE
+Force non fine mode for all code ranges (mostly for debug)
+.sp
+.LP
+The \fBpfmlib_ita2_input_rr_desc_t\fR structure is defined as follows:
+
+.TP
+.B rr_plm
+The privilege level at which the range is active. It can be any combinations of 
+\fBPFM_PLM0\fR, \fBPFM_PLM1\fR, \fBPFM_PLM2\fR, \fBPFM_PLM3\fR.  If \fBbtb_plm\fR is 0 then the 
+default privilege level mask in \fBpfp_dfl_plm\fR is used. The privilege level is only relevant
+for code ranges, data ranges ignores the setting.
+.TP
+.B rr_start
+This is the start address of the range. Any address is supported but for code range it
+must be bundle aligned, i.e., 16-byte aligned.
+.TP
+.B rr_end
+This is the end address of the range. Any address is supported but for code range it
+must be bundle aligned, i.e., 16-byte aligned.
+.sp
+.LP
+
+The library will provide the values for the debug registers as well as some information
+about the actual ranges in the output parameters and more precisely in the \fBpfmlib_ita2_output_rr_t\fR
+structure for each range. The structure is defined as follows:
+.TP
+.B rr_nbr_used
+Contains the number of debug registers used to cover the range. This is necessarily an even number
+as debug registers always go in pair. The value of this field  is between 0 and 7.
+.TP
+.B rr_br
+This table contains the list of debug registers necessary to cover the ranges. Each element is 
+of type \fBpfmlib_reg_t\fR. The \fBreg_num\fR field contains the debug register index while
+\fBreg_value\fR contains the debug register value. Both the index and value must be copied
+into the kernel specific argument to program the debug registers. The library never programs them.
+.TP
+.B rr_infos
+Contains information about the ranges defined. Because of alignment restrictions, the actual range
+covered by the debug registers may be larger than the requested range. This table describe the differences
+between the requested and actual ranges expressed as offsets:
+.TP
+.B rr_soff
+Contains the start offset of the actual range described by the debug registers. If zero, it means
+the library was able to match exactly the beginning of the range. Otherwise it represents the number
+of byte by which the actual range precedes the requested range.
+.TP
+.B rr_eoff
+Contains the end offset of the actual range described by the debug registers. If zero, it means
+the library was able to match exactly the end of the range. Otherwise it represents the number of 
+bytes by which the actual range exceeds the requested range.
+.sp
+.LP
+.SH ERRORS
+Refer to the description of the \fBpfm_dispatch_events()\fR function for errors when using the Itanium 2
+specific input and output arguments.
+.SH SEE ALSO
+pfm_dispatch_events(3) and set of examples shipped with the library
+.SH AUTHOR
+Stephane Eranian <eranian@hpl.hp.com>
+.PP

@@ -1231,7 +1231,6 @@ TEST_F(TorchCommNCCLXTest, AlltoallvDedupExecCombine) {
 #ifdef NCCL_REDUCE_SCATTER_QUANTIZE_SUPPORTED
 TEST_F(TorchCommNCCLXTest, ReduceScatterQuantized) {
   setupRankAndSize(0, 2);
-  setupCCAExpectations(1, 2, 1);
 
   auto comm = createMockedTorchComm();
 
@@ -1248,12 +1247,21 @@ TEST_F(TorchCommNCCLXTest, ReduceScatterQuantized) {
   // Create seed tensor (single-element int64)
   auto seed = createTestTensor({1}, at::kLong);
 
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
+  // v2_29 added a check that seed must be a CUDA tensor, which cannot
+  // be satisfied in the mocked CPU test environment.
+  EXPECT_THROW(
+      comm->reduce_scatter_quantized(
+          output, input, ReduceOp::SUM, seed, /*async_op=*/true),
+      c10::Error);
+#else
   EXPECT_CALL(*nccl_mock_, reduceScatterQuantize(_, _, _, _, _, _, _, _, _))
       .WillOnce(Return(ncclSuccess));
 
   auto work = comm->reduce_scatter_quantized(
       output, input, ReduceOp::SUM, seed, /*async_op=*/true);
   EXPECT_NE(work, nullptr);
+#endif
 
   setupNormalDestruction(*comm);
   comm->finalize();
@@ -1261,7 +1269,6 @@ TEST_F(TorchCommNCCLXTest, ReduceScatterQuantized) {
 
 TEST_F(TorchCommNCCLXTest, ReduceScatterQuantizedInvalidInputType) {
   setupRankAndSize(0, 2);
-  setupCCAExpectations(1, 2, 1);
 
   auto comm = createMockedTorchComm();
 
@@ -1286,7 +1293,6 @@ TEST_F(TorchCommNCCLXTest, ReduceScatterQuantizedInvalidInputType) {
 
 TEST_F(TorchCommNCCLXTest, ReduceScatterQuantizedInvalidOp) {
   setupRankAndSize(0, 2);
-  setupCCAExpectations(1, 2, 1);
 
   auto comm = createMockedTorchComm();
 
@@ -1311,7 +1317,6 @@ TEST_F(TorchCommNCCLXTest, ReduceScatterQuantizedInvalidOp) {
 
 TEST_F(TorchCommNCCLXTest, ReduceScatterQuantizedSizeMismatch) {
   setupRankAndSize(0, 2);
-  setupCCAExpectations(1, 2, 1);
 
   auto comm = createMockedTorchComm();
 

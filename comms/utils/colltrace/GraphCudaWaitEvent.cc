@@ -5,7 +5,6 @@
 #include <cstring>
 
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
-#include "comms/utils/colltrace/GpuClockCalibration.h"
 
 #include <folly/Unit.h>
 #include <folly/logging/xlog.h>
@@ -20,10 +19,6 @@ GraphCudaWaitEvent::GraphCudaWaitEvent(cudaStream_t stream, uint32_t collId)
     : stream_(stream),
       collId_(collId),
       enqueueTime_(std::chrono::system_clock::now()) {
-  // Eagerly initialize the globaltimer calibration singleton so that the
-  // calibration kernel doesn't fire during graph capture.
-  GlobaltimerCalibration::get();
-
   // Create per-collective CUDA resources using relaxed capture mode so
   // they don't interfere with the graph capture in progress.
   StreamCaptureModeGuard guard{cudaStreamCaptureModeRelaxed};
@@ -33,12 +28,16 @@ GraphCudaWaitEvent::GraphCudaWaitEvent(cudaStream_t stream, uint32_t collId)
 
 GraphCudaWaitEvent::~GraphCudaWaitEvent() {
   if (timestampStream_) {
-    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-    cudaStreamDestroy(timestampStream_);
+    CUDA_CHECK_WITH_IGNORE(
+        cudaStreamDestroy(timestampStream_),
+        cudaErrorCudartUnloading,
+        cudaErrorContextIsDestroyed);
   }
   if (depEvent_) {
-    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-    cudaEventDestroy(depEvent_);
+    CUDA_CHECK_WITH_IGNORE(
+        cudaEventDestroy(depEvent_),
+        cudaErrorCudartUnloading,
+        cudaErrorContextIsDestroyed);
   }
 }
 

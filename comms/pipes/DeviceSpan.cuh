@@ -9,10 +9,12 @@
 #include <cassert>
 #include <cstdint>
 
+#include "comms/pipes/HipCompat.cuh"
+
 namespace comms::pipes {
 
 // Device-side bounds check helper
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
 #define DEVICE_SPAN_CHECK_LT(val, bound)                          \
   do {                                                            \
     if (!((val) < (bound))) {                                     \

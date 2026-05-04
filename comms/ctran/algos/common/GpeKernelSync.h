@@ -3,6 +3,7 @@
 #pragma once
 
 #include "comms/ctran/algos/CtranAlgoDev.h"
+#include "comms/ctran/utils/MemFence.h"
 
 namespace ctran::algos {
 
@@ -33,17 +34,30 @@ struct alignas(16) GpeKernelSync {
     }
   }
 
-  // Check if all workers on kernel side has completed the specified step
+  // Check if all workers on kernel side has completed the specified step.
+  //
+  // Pairs with the kernel's st_release_sys_global on completeFlag in
+  // GpeKernelSyncDev::complete(). On aarch64 (GB200) the load-acquire fence
+  // after the polling load is required: aarch64 permits load->load
+  // reordering, so without dmb ishld here, subsequent loads of data
+  // released-by-this-flag (e.g. via the chained post() to another sync)
+  // are not guaranteed to observe the producer's writes.
   inline bool isComplete(const int step) {
     bool allComplete = true;
     for (unsigned int i = 0; i < nworkers; i++) {
       volatile int* flag = &completeFlag[i];
+      int val = *flag;
       // Kernel handles posted request in sequential, thus >= step indicates
       // completion of the checking step.
-      allComplete &= (*flag >= step);
+      allComplete &= (val >= step);
       if (!allComplete) {
         break;
       }
+    }
+    if (allComplete) {
+      // Acquire only after a successful observation; failed polls do not
+      // synchronise with the producer.
+      wcAcquireFence();
     }
     return allComplete;
   }
@@ -56,6 +70,8 @@ struct alignas(16) GpeKernelSync {
       while (*flag < step)
         ;
     }
+    // Acquire after observing all workers' completion releases.
+    wcAcquireFence();
   }
 
   // Post a request to kernel with specified step

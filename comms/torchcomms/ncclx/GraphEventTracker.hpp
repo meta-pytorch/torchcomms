@@ -29,6 +29,13 @@ struct GraphWork {
   std::chrono::milliseconds timeout;
   std::optional<std::chrono::steady_clock::time_point> start_completed_time;
   uint64_t last_seen_replay{0};
+  // Replay event logging state.
+  // Events are ordered: S=0, E=1 (W is not observable during replay).
+  // Initialized to (replay=0, event=E) — the counter starts at 0
+  // and the first g.replay() increments it to 1, which is the first
+  // replay execution that should be reported.
+  uint64_t notified_through_replay{0};
+  int notified_through_event{1};
 
   GraphWork(cudaEvent_t start, cudaEvent_t end, std::chrono::milliseconds t)
       : start_event(start), end_event(end), timeout(t) {}
@@ -130,6 +137,20 @@ class GraphEventTracker {
       unsigned long long graph_id,
       cudaGraph_t graph);
   void cleanupReleasedGraphs();
+
+  // Fire graph replay hooks for all events from the entry's last notified
+  // position up to (current_replay, current_event). Events are ordered
+  // S=0, E=1. Catches up missed replays automatically.
+  static constexpr int kEventS = 0;
+  static constexpr int kEventE = 1;
+
+  void notifyReplayProgress(
+      unsigned long long graph_id,
+      void* stream,
+      size_t collective_index,
+      GraphWork& entry,
+      uint64_t current_replay,
+      int current_event);
 
   TorchCommNCCLX* comm_; // raw pointer — parent owns this tracker
   std::mutex mutex_;

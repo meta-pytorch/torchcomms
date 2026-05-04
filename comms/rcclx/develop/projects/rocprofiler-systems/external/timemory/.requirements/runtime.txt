@@ -1,0 +1,10 @@
+IPython>=0.13
+numpy
+matplotlib
+pillow
+six
+pandas
+pydot
+multiprocess
+textx
+PyYAML

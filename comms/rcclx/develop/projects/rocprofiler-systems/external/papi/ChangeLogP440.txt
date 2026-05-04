@@ -1,0 +1,131 @@
+2012-04-17  
+
+  * 8782daed cvs2cl.pl delete_before_release.sh gitlog2changelog.py...: Update
+  the release machinery for git.  gitlog2changelog.py takes the output of git
+  log and parses it to something like a changelog.
+
+  * 80ff04a9 doc/Doxyfile-html: Cover up an instance of doxygen using full
+  paths.  Doxygen ( up to 1.8.0, the most recent at this writing ) would use
+  full paths in directory dependencies ignoring the use relative paths config
+  option.
+
+  * c556dad1 doc/Doxyfile-common papi.spec src/Makefile.in...: Bump the version
+  for the PAPI 4.4.0 release.
+
+2012-04-14  
+
+  * 27174c0b src/components/bgpm/CNKunit/CVS/Entries
+  src/components/bgpm/CNKunit/CVS/Repository
+  src/components/bgpm/CNKunit/CVS/Root...: Removed CVS stuff from Q code.
+
+  * 970a2d50 src/configure src/configure.in src/linux-bgq.c...: Removed
+  papi_events.csv parsing from Q code. (CVS stuff still needs to be taken care
+  of.)
+
+2012-04-13  
+
+  * 853d6c74 src/libpfm-3.y/lib/intel_corei7_events.h
+  src/libpfm-3.y/lib/intel_wsm_events.h src/libpfm-3.y/lib/pfmlib_intel_nhm.c:
+  Add missing update to libpfm3  Somehow during all of the troubles we had with
+  importing libpfm3 into CVS, we lost some Nehalem/Westmere updates.  Tested on
+  a Nehalem machine to make sure this doesn't break anything.
+
+2012-04-12  
+
+  * 07e4fcd6 INSTALL.txt: Updated INSTALL notes for Q
+
+  * 2a0f919e src/Makefile.in src/Makefile.inc src/components/README...: Added
+  missing files for Q merge.
+
+  * 0b0f1863 src/Rules.bgpm src/components/bgpm/CNKunit/CVS/Entries
+  src/components/bgpm/CNKunit/CVS/Repository...: Added PAPI support for Blue
+  Gene/Q.
+
+2012-02-17  
+
+  * 147a4969 src/perfctr-2.6.x/usr.lib/event_set_centaur.o
+  src/perfctr-2.6.x/usr.lib/event_set_p5.o
+  src/perfctr-2.6.x/usr.lib/event_set_p6.o: Remove a few binary files in
+  perfctr-2.6.x
+
+2012-02-23  
+
+  * 955bd899 src/perfctr-2.6.x/usr.lib/event_set_centaur.os
+  src/perfctr-2.6.x/usr.lib/event_set_p5.os
+  src/perfctr-2.6.x/usr.lib/event_set_p6.os: Removes the last of the binary
+  files from perfctr2.6.x  Some binary files were left out in the cold after a
+  mishap trying to configure perfctr for the build test.
+
+2012-02-17  
+
+  * 5fe239c8 src/perfctr-2.6.x/CHANGES src/perfctr-2.6.x/INSTALL
+  src/perfctr-2.6.x/Makefile...: More cleanups from the migration, latest
+  version of libpfm-3.y perfctr-2.[6,7]  Version numbers got really confused in
+  cvs and the git cvsimport didn't know that eg 1.1.1.28 > 1.1 ( see
+  perfctr-2.6.x/CHANGES revision 1.1.1.28.6.1 :~)
+
+2012-03-13  
+
+  * e7173952 src/libpfm-3.y/examples_v2.x/multiplex.c
+  src/libpfm-3.y/examples_v2.x/pfmsetup.c
+  src/libpfm-3.y/examples_v2.x/rtop.c...: Fix some libpfm3 warnings.  libpfm3
+  is not maintained anymore, so applied these changes locally.  libpfm3 is
+  compiled with -Werror so they broke the build with newer gcc even though they
+  are just warnings in example programs.
+
+2012-04-09  
+
+  * 10528517 src/libpfm-3.y/Makefile src/libpfm-3.y/README
+  src/libpfm-3.y/docs/Makefile...: Copy over libpfm-3.y from cvs.  libpfm3 was
+  another one of our skeletons in CVS. Thanks to Steve Kaufmann for keeping us
+  honest.
+
+2012-02-17  
+
+  * ec8c879e src/aix.c src/components/coretemp/linux-coretemp.c
+  src/components/coretemp_freebsd/coretemp_freebsd.c...: The git conversion
+  reset all of the CVS $Id$ lines to just $Id$  Since we depend on the $Id$
+  lines for the component names, I had to go back and fix all of them to be the
+  component names again.
+
+2012-03-09  
+
+  * 71a2ae4f src/components/lmsensors/linux-lmsensors.c: Fix buffer overrun in
+  lmsensors component  Conflicts:  src/components/lmsensors/linux-lmsensors.c
+
+  * ec0e1e9a src/libpfm4/config.mk
+  src/libpfm4/docs/man3/pfm_get_os_event_encoding.3
+  src/libpfm4/examples/showevtinfo.c...: Update to current git libpfm4 snapshot
+
+2012-02-15  
+
+  * 1312923e src/libpfm4/debian/changelog src/libpfm4/debian/control
+  src/libpfm4/debian/rules...: The git cvsimport didn't get the latest version
+  of the libpfm4 import. This should be the versions as were in cvs now.
+
+2012-02-24  
+
+  * 81847628 src/papi_events.csv: Fix broken Pentium 4 Prescott support  We
+  were missing the netbusrt_p declaration in papi_events.csv
+
+2012-03-01  
+
+  * 917afc7f src/papi_internal.c: Add some locking in
+  _papi_hwi_shutdown_global_internal  This caused a glibc double-free warning,
+  and was caught by the Valgrind helgrind tool in krentel_pthreads  There are
+  some other potential locking issues in PAPI_shutdown, especially when debug
+  is enabled.
+
+  * f85c092f src/papi.c: Fix possible race in _papi_hwi_gather_all_thrspec_data
+   The valgrind helgrind tool noticed this with the thrspecific test
+
+2012-03-09  
+
+  * 912311ed src/multiplex.c src/papi_internal.c src/papi_libpfm4_events.c...:
+  Fix issue when using more than 31 multiplexed events on perf_event  On
+  perf_event we were setting num_mpx_cntrs to 64.  This broke, as the
+  MPX_EventSet struct only allocates room for PAPI_MPX_DEF_DEG events, which is
+  32.  This patch makes perf_event use a value of 32 for num_mpx_cntrs,
+  especially as 64 was arbitrarily chosen at some point (the actual value
+  perf_event can support is static, but I'm pretty sure it is higher than 64). 
+  Conflicts:  src/papi_libpfm4_events.c

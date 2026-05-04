@@ -15,67 +15,6 @@ bool isCpu(int deviceId) {
   return deviceId == -1;
 }
 
-/// Return names of all NICs matching the filter.
-std::vector<std::string> selectCpuNics(
-    const Topology& topo,
-    const NicFilter& filter) {
-  int nicCount = static_cast<int>(topo.nicCount());
-  std::vector<std::string> nics;
-  nics.reserve(nicCount);
-  PathType bestType = PathType::DIS;
-  uint32_t maxBw = 0;
-  for (int nic = 0; nic < nicCount; ++nic) {
-    if (!topo.filterNic(nic, filter)) {
-      continue;
-    }
-    const auto& nicNode = topo.getNicNode(nic);
-    const auto& numaNode =
-        topo.getCpuNode(std::get<TopoNode::NicData>(nicNode.data).numaNode);
-    const auto& path =
-        topo.getPath(numaNode.id, nicNode.id, {.allowC2C = true});
-    if (path.type < bestType || (path.type == bestType && path.bw > maxBw)) {
-      nics.clear();
-      nics.push_back(nicNode.name);
-      bestType = path.type;
-      maxBw = path.bw;
-    } else if (path.type == bestType && path.bw == maxBw) {
-      nics.push_back(nicNode.name);
-    }
-  }
-  return nics;
-}
-
-/// Return names of filtered NICs closest to the given GPU.
-std::vector<std::string>
-selectGpuNics(const Topology& topo, int deviceId, const NicFilter& filter) {
-  int nicCount = static_cast<int>(topo.nicCount());
-  const auto& gpuNode = topo.getGpuNode(deviceId);
-
-  std::vector<std::string> nics;
-  nics.reserve(nicCount);
-  PathType bestType = PathType::DIS;
-  uint32_t maxBw = 0;
-  for (int i = 0; i < nicCount; ++i) {
-    if (!topo.filterNic(i, filter)) {
-      continue;
-    }
-    const auto& nicNode = topo.getNicNode(i);
-    // Enable C2C paths so GPU→CPU bandwidth reflects the real interconnect
-    // (e.g. 447 GB/s C2C on GB200) rather than the PCIe stub. Without this,
-    // the GPU's low PCIe bandwidth masks NIC speed differences.
-    const auto& path = topo.getPath(gpuNode.id, nicNode.id, {.allowC2C = true});
-    if (path.type < bestType || (path.type == bestType && path.bw > maxBw)) {
-      nics.clear();
-      nics.push_back(nicNode.name);
-      bestType = path.type;
-      maxBw = path.bw;
-    } else if (path.type == bestType && path.bw == maxBw) {
-      nics.push_back(nicNode.name);
-    }
-  }
-  return nics;
-}
-
 } // namespace
 
 // ============================================================================
@@ -84,8 +23,23 @@ selectGpuNics(const Topology& topo, int deviceId, const NicFilter& filter) {
 
 std::vector<std::string> MultiTransportFactory::selectNics() {
   auto& topo = Topology::get();
-  return isCpu(deviceId_) ? selectCpuNics(topo, nicFilter_)
-                          : selectGpuNics(topo, deviceId_, nicFilter_);
+  return isCpu(deviceId_) ? topo.selectCpuNics(nicFilter_)
+                          : topo.selectGpuNics(deviceId_, nicFilter_);
+}
+
+Status MultiTransportFactory::supported(TransportType type) {
+  switch (type) {
+    case TransportType::NVLink:
+      return NVLinkTransportFactory::supported();
+    case TransportType::RDMA:
+      return RdmaTransportFactory::supported();
+    case TransportType::TCP:
+      return Err(ErrCode::NotImplemented, "tcp transport is not implemented");
+    case TransportType::Mock:
+      return Ok();
+    default:
+      return Err(ErrCode::InvalidArgument, "unknown transport type");
+  }
 }
 
 Status MultiTransport::validateRequests(

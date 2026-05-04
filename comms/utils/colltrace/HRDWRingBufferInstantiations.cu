@@ -13,6 +13,7 @@ template cudaError_t launchRingBufferWrite<GraphCollTraceEvent>(
     HRDWEntry<GraphCollTraceEvent>*,
     uint64_t*,
     uint32_t,
+    uint32_t,
     GraphCollTraceEvent);
 
 } // namespace meta::comms::colltrace
