@@ -61,17 +61,17 @@ class GTestXMLTestCase(gtest_test_utils.TestCase):
     """
 
     if expected_node.nodeType == Node.CDATA_SECTION_NODE:
-      self.assertEquals(Node.CDATA_SECTION_NODE, actual_node.nodeType)
-      self.assertEquals(expected_node.nodeValue, actual_node.nodeValue)
+      self.assertEqual(Node.CDATA_SECTION_NODE, actual_node.nodeType)
+      self.assertEqual(expected_node.nodeValue, actual_node.nodeValue)
       return
 
-    self.assertEquals(Node.ELEMENT_NODE, actual_node.nodeType)
-    self.assertEquals(Node.ELEMENT_NODE, expected_node.nodeType)
-    self.assertEquals(expected_node.tagName, actual_node.tagName)
+    self.assertEqual(Node.ELEMENT_NODE, actual_node.nodeType)
+    self.assertEqual(Node.ELEMENT_NODE, expected_node.nodeType)
+    self.assertEqual(expected_node.tagName, actual_node.tagName)
 
     expected_attributes = expected_node.attributes
     actual_attributes = actual_node.attributes
-    self.assertEquals(
+    self.assertEqual(
         expected_attributes.length, actual_attributes.length,
         'attribute numbers differ in element %s:\nExpected: %r\nActual: %r' % (
             actual_node.tagName, expected_attributes.keys(),
@@ -83,7 +83,7 @@ class GTestXMLTestCase(gtest_test_utils.TestCase):
           actual_attr is not None,
           'expected attribute %s not found in element %s' %
           (expected_attr.name, actual_node.tagName))
-      self.assertEquals(
+      self.assertEqual(
           expected_attr.value, actual_attr.value,
           ' values of attribute %s in element %s differ: %s vs %s' %
           (expected_attr.name, actual_node.tagName,
@@ -91,7 +91,7 @@ class GTestXMLTestCase(gtest_test_utils.TestCase):
 
     expected_children = self._GetChildren(expected_node)
     actual_children = self._GetChildren(actual_node)
-    self.assertEquals(
+    self.assertEqual(
         len(expected_children), len(actual_children),
         'number of child elements differ in element ' + actual_node.tagName)
     for child_id, child in expected_children.items():
