@@ -281,6 +281,12 @@ extern __global__ void ncclKernelAllGatherPPatCopyPipeEnd(
     int* flag,
     CtranAlgoDeviceState* devState,
     PatCopyPipeEndKernArgs args);
+#if defined(ENABLE_PIPES)
+extern __global__ void ncclKernelAllGatherPNvlDissem(
+    int* flag,
+    CtranAlgoDeviceState* devState,
+    NvlDissemKernArgs args);
+#endif
 
 commResult_t AlgoImpl::execPatCopy(
     const void* sendbuff,
@@ -356,7 +362,7 @@ commResult_t AlgoImpl::execPatCopy(
   FB_COMMCHECK(
       nvlCeBcast(comm_, sendbuff, sendSize, myRank * sendSize, pArgs, stream_));
 
-  // Per-step: PipeSync -> CE staging->recvbuff -> nvlCeBcast -> StepDone
+  // Per-step: PipeSync -> local dissemination -> StepDone
   // After GPE has posted pipeSync, any stream-side failure must publish
   // async error so the GPE's stepDoneSync poll can exit.
   auto setAsyncErrAndReturn = [this](commResult_t err) -> commResult_t {
@@ -385,6 +391,48 @@ commResult_t AlgoImpl::execPatCopy(
     const int peerNode = pos == 0 ? myNode + distNodes : myNode - distNodes;
     const int nChunks = 1 << step;
 
+#if defined(ENABLE_PIPES)
+    // Pipes-based NVL dissemination: single kernel launch with
+    // per-peer matched send/recv subgroups (AllToAllv pattern).
+    NvlDissemKernArgs dissemArgs{};
+    dissemArgs.stagingRecvBuf = resource_.stagingInfo.recvBuf.ptr;
+    dissemArgs.recvbuff = pArgs.recvbuff;
+    dissemArgs.nChunks = nChunks;
+    dissemArgs.chunkSize = sendSize;
+    dissemArgs.nLocalRanks = nLocalRanks;
+    dissemArgs.localRank = localRank;
+    dissemArgs.peerNode = peerNode;
+    dissemArgs.nNodes = nNodes;
+    dissemArgs.step = step;
+    dissemArgs.nvlTransportsBase = ctran->algo->getNvlTransportsBase();
+    {
+      int clockRateKhz = 0;
+      cudaDeviceGetAttribute(
+          &clockRateKhz, cudaDevAttrClockRate, statex->cudaDev());
+      dissemArgs.timeoutCycles =
+          static_cast<uint64_t>(clockRateKhz) * 10000; // 10 second timeout
+    }
+
+    auto dissemConfig = KernelConfig(
+        KernelConfig::KernelType::ALLGATHERP,
+        stream_,
+        AlgoImpl::algoName(myAlgo),
+        opCount);
+    dissemConfig.numBlocks = std::max(1, nLocalRanks * 4);
+    dissemConfig.numThreads = 512;
+    dissemConfig.args.devState_d = ctran->algo->getDevState();
+    dissemConfig.algoArgs = reinterpret_cast<void*>(&dissemArgs);
+
+    rc = ctran->gpe->submit(
+        {},
+        nullptr,
+        dissemConfig,
+        reinterpret_cast<void*>(ncclKernelAllGatherPNvlDissem));
+    if (rc != commSuccess) {
+      return setAsyncErrAndReturn(rc);
+    }
+#else
+    // CE fallback: staging → recvbuff copy + nvlCeBcast
     for (int j = 0; j < nChunks; j++) {
       const size_t chunkIdx =
           rankChunkOffset(peerNode, localRank, nLocalRanks, nNodes, step, j);
@@ -413,6 +461,7 @@ commResult_t AlgoImpl::execPatCopy(
         return setAsyncErrAndReturn(rc);
       }
     }
+#endif
 
     StepDoneKernArgs doneArgs = {
         .stepId = step,

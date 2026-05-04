@@ -78,4 +78,26 @@ struct PatCopyPipeEndKernArgs {
   GpeKernelSync* pipeSync;
   GpeKernelSync* stepDoneSync;
 };
+
+} // namespace ctran::allgatherp
+
+namespace comms::pipes {
+class P2pNvlTransportDevice;
+}
+
+namespace ctran::allgatherp {
+
+struct NvlDissemKernArgs {
+  void* stagingRecvBuf;
+  void* recvbuff;
+  int nChunks;
+  size_t chunkSize;
+  int nLocalRanks;
+  int localRank;
+  int peerNode;
+  int nNodes;
+  int step;
+  ::comms::pipes::P2pNvlTransportDevice* nvlTransportsBase;
+  uint64_t timeoutCycles;
+};
 } // namespace ctran::allgatherp
