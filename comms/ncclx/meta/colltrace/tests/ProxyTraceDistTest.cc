@@ -16,7 +16,6 @@
 #include "comms/testinfra/TestUtils.h"
 #include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "meta/colltrace/CollTrace.h"
 #include "meta/colltrace/ProxyMock.h"
 #include "meta/colltrace/ProxyTrace.h"
 

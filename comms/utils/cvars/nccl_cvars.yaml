@@ -2371,12 +2371,6 @@ cvars:
      The default value is 10 minutes. The gloalhint from the user program takes
      precedence over this env var for the actual time colltrace will wait.
 
- - name        : NCCL_COLLTRACE_EVENT_BLOCKING_SYNC
-   type        : bool
-   default     : False
-   description : |-
-     DEPRECATED: Only used by old colltrace (to be removed).
-
  - name        : NCCL_MAPPERTRACE_COLL_RECORD_MAX
    type        : uint64_t
    default     : 20
