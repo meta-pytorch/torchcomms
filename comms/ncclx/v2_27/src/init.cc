@@ -44,7 +44,6 @@
 #include "comms/ctran/utils/Utils.h"
 #include "comms/ctran/utils/SkipDestroyUtil.h"
 #include "comms/utils/commSpecs.h"
-#include "meta/colltrace/CollTraceFunc.h"
 #include "meta/colltrace/CollTraceWrapper.h"
 #include "meta/comms-monitor/CommsMonitor.h"
 #include "meta/commstate/FactoryCommStateX.h"
@@ -1655,11 +1654,6 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
 
   comm->ctranComm_->memCache_ = comm->memCache;
 
-  // TODO: remove the following two lines once new colltrace is stable
-  NCCLCHECKGOTO(ncclx::colltrace::collTraceInit(comm), res, fail);
-  comm->ctranComm_->collTrace_ = comm->collTrace;
-
-
   NCCLCHECKGOTO(
       metaCommToNccl(ncclx::transport::tranportProxyInit(comm, job->parent)),
       res,
@@ -2329,7 +2323,6 @@ static ncclResult_t commDestroySync(struct ncclAsyncJob* job_) {
    * NCCLX - Resource Cleanup
    */
   NCCLCHECKGOTO(metaCommToNccl(ctranFinalize(comm->ctranComm_.get())), ret, fail);
-  NCCLCHECKGOTO(ncclx::colltrace::collTraceDestroy(comm), ret, fail);
   NCCLCHECKGOTO(meta::comms::ncclx::newCollTraceDestroy(comm), ret, fail);
 
   comm->logMetaData.commDesc.clear(); // free up memory associated with commDesc
