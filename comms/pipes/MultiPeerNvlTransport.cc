@@ -141,7 +141,8 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
 
   // Conditionally allocate barrier buffer
   if (config_.p2pBarrierCount > 0) {
-    perPeerBarrierBufferSize_ = getBarrierBufferSize(config_.p2pBarrierCount);
+    perPeerBarrierBufferSize_ =
+        get_barrier_buffer_size(config_.p2pBarrierCount);
     std::size_t totalBarrierSize = perPeerBarrierBufferSize_ * (nRanks_ - 1);
     barrierBufferHandler_ = std::make_unique<GpuMemHandler>(
         bootstrap_, myRank_, nRanks_, totalBarrierSize, memSharingMode_);
