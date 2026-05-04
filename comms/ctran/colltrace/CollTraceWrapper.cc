@@ -15,13 +15,6 @@
 
 namespace meta::comms::colltrace {
 
-static std::function<std::unique_ptr<ICollTraceHandle>(
-    CtranComm*,
-    const std::vector<std::unique_ptr<struct OpElem>>&,
-    const KernelConfig&,
-    const bool)>
-    legacyFunc = nullptr;
-
 bool isCapturingStream(cudaStream_t stream) {
   cudaStreamCaptureStatus status;
 
@@ -472,25 +465,7 @@ std::shared_ptr<ICollTraceHandle> getCollTraceHandle(
     return nullptr;
   }
 
-  if (NCCL_COLLTRACE_USE_NEW_COLLTRACE) {
-    return getNewCollTraceHandle(comm, opGroup, kernelConfig);
-  }
-
-  // Fall back to legacy colltrace logic
-  XLOG_IF(
-      FATAL,
-      legacyFunc == nullptr,
-      "Legacy colltrace logic is not configured!");
-  return legacyFunc(comm, opGroup, kernelConfig, ifchecksum);
-}
-
-void setCollTraceLegacyHandleFunc(
-    std::function<std::unique_ptr<ICollTraceHandle>(
-        CtranComm*,
-        const std::vector<std::unique_ptr<struct OpElem>>&,
-        const KernelConfig&,
-        const bool)> func) {
-  legacyFunc = func;
+  return getNewCollTraceHandle(comm, opGroup, kernelConfig);
 }
 
 bool testOnlyClearCollTraceRecords(CtranComm* comm) {
