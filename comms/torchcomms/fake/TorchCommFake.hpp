@@ -132,6 +132,26 @@ class TorchCommFake : public TorchCommBackend {
   std::shared_ptr<TorchCommWindow> new_window(
       const std::optional<at::Tensor>& tensor = std::nullopt) override;
 
+  // Fault Tolerance
+  bool supportsReconfigure() const override {
+    return true;
+  }
+  c10::intrusive_ptr<TorchWork> reconfigure(
+      const ReconfigureOptions& opts) override;
+
+  bool isInitialized() const override {
+    return initialized_;
+  }
+
+  // Test helpers
+  void setSize(int size) {
+    size_ = size;
+  }
+
+  void setReconfigureFailure(bool fail) {
+    shouldFailReconfigure_ = fail;
+  }
+
   // Communicator Management
   std::shared_ptr<TorchCommBackend> split(
       const std::vector<int>& ranks,
@@ -153,6 +173,7 @@ class TorchCommFake : public TorchCommBackend {
   int rank_;
   int size_;
   std::string name_;
+  bool shouldFailReconfigure_{false};
 };
 
 } // namespace torch::comms

@@ -55,6 +55,10 @@ TorchComm::TorchComm(
 }
 
 void TorchComm::initRanks() {
+  if (!impl_->isInitialized()) {
+    return;
+  }
+
   int size = impl_->getSize();
   ranks_.clear();
   ranks_.reserve(size);
@@ -508,7 +512,14 @@ InitHandle TorchComm::getInitHandle() const {
 c10::intrusive_ptr<TorchWork> TorchComm::reconfigure(
     const ReconfigureOptions& opts) {
   auto work = impl_->reconfigure(opts);
-  initRanks();
+  work->waitBlocking();
+
+  if (work->isCompleted()) {
+    initRanks();
+  } else {
+    ranks_.clear();
+  }
+
   return work;
 }
 
