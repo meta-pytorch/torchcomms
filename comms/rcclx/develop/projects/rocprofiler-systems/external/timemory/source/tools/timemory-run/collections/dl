@@ -1,0 +1,7 @@
+dladdr
+dladdr1
+dlclose
+dlinfo
+dlmopen
+dlopen
+dlvsym

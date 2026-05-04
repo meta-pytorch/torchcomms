@@ -1,0 +1,97 @@
+L1_per_core=32768
+L2_per_core=1048576
+L3_per_core=4194304
+
+SML_STRIDE=128
+BIG_STRIDE=256
+SML_PPB=16
+BIG_PPB=512
+
+DIR="sample_data/"
+EVENT="PM_DATA_FROM_L2"
+PLOT_TITLE="Measurements of event ".EVENT
+
+SUFFIX=".data.reads.stat"
+
+set label 1 at     6000+(L1_per_core-6000)/20, graph 1.020 "L1" font ",9"
+set label 2 at  L1_per_core+(L2_per_core-L1_per_core)/20, graph 1.020 "L2" font ",9"
+set label 3 at  L2_per_core+(L3_per_core-L2_per_core)/20, graph 1.020 "L3" font ",9"
+
+################################################################################
+set terminal pdfcairo noenhanced font "Sans,12"
+set output "single_plot.pdf"
+
+load "default_gnp.inc"
+set xtics   (""   L1_per_core, ""  L2_per_core, "" L3_per_core)
+
+FILE=DIR.EVENT.SUFFIX
+
+unset key
+
+set multiplot layout 1,6 title PLOT_TITLE."
+
+set margin 0,0,1.5,2.5
+set label 20 "Normalized Event Count" at screen 0.015,0.26 rotate by 90 # Y-label
+
+OFFSET=0.09
+GAP=0.015
+WIDTH=(1.0-(OFFSET+5.0*GAP+GAP/4.0))/6.0
+
+
+###
+set label 21 sprintf("RND:%d:%d",SML_STRIDE,BIG_PPB) at graph 0.1,-0.05 font ",10"   # X-label
+set size 0.1475,1
+set size WIDTH,1
+set origin OFFSET,0.0
+plot \
+     FILE every :::0::0 using 1:2 w lp ls 1
+
+unset title
+unset ylabel
+set format y ''
+set ytics scale 0.1,0.5
+unset label 20
+
+###
+set label 21 sprintf("RND:%d:%d",SML_STRIDE,SML_PPB) at graph 0.16,-0.05 font ",10"   # X-label
+set object 1 rectangle from graph 0,0 to graph 1,1 behind fillcolor rgb '#FFFAE8' fillstyle solid noborder
+set size WIDTH,1
+set origin OFFSET+(WIDTH+GAP)*1,0
+plot \
+     FILE every :::1::1 using 1:2 w lp ls 1
+
+unset object 1
+
+###
+set label 21 sprintf("RND:%d:%d",BIG_STRIDE,BIG_PPB) at graph 0.1,-0.05 font ",10"   # X-label
+set size WIDTH,1
+set origin OFFSET+(WIDTH+GAP)*2,0
+plot \
+     FILE every :::2::2 using 1:2 w lp ls 1
+
+###
+set label 21 sprintf("RND:%d:%d",BIG_STRIDE,SML_PPB) at graph 0.1,-0.05 font ",10"   # X-label
+set object rectangle from graph 0,0 to graph 1,1 behind fillcolor rgb '#FFFAE8' fillstyle solid noborder
+set size WIDTH,1
+set origin OFFSET+(WIDTH+GAP)*3,0
+plot \
+     FILE every :::3::3 using 1:2 w lp ls 1
+
+###
+set label 21 sprintf("SEQ:%d",SML_STRIDE) at graph 0.25,-0.05 font ",10"   # X-label
+set object rectangle from graph 0,0 to graph 1,1 behind fillcolor rgb '#F0F6FF' fillstyle solid noborder
+set size WIDTH,1
+set origin OFFSET+(WIDTH+GAP)*4,0
+plot \
+     FILE every :::4::4 using 1:2 w lp ls 1
+
+###
+set label 21 sprintf("SEQ:%d",BIG_STRIDE) at graph 0.2,-0.05 font ",10"   # X-label
+set object rectangle from graph 0,0 to graph 1,1 behind fillcolor rgb '#F0F6FF' fillstyle solid noborder
+set size WIDTH,1
+set origin OFFSET+(WIDTH+GAP)*5,0
+plot \
+     FILE every :::5::5 using 1:2 w lp ls 1
+
+unset multiplot
+

@@ -955,6 +955,60 @@ void RdmaTransport::shutdown() {
 // RdmaTransportFactory
 // ---------------------------------------------------------------------------
 
+Status RdmaTransportFactory::supported(std::shared_ptr<IbvApi> ibvApi) {
+  if (!ibvApi) {
+    ibvApi = std::make_shared<IbvApi>();
+  }
+
+  CHECK_EXPR(ibvApi->init());
+
+  int numDevices = 0;
+  auto devListResult = ibvApi->getDeviceList(&numDevices);
+  CHECK_RETURN(devListResult);
+  ibv_device** deviceList = devListResult.value();
+  struct DevListGuard {
+    std::shared_ptr<IbvApi> api;
+    ibv_device** list;
+    ~DevListGuard() {
+      api->freeDeviceList(list);
+    }
+  } devListGuard{ibvApi, deviceList};
+
+  if (numDevices == 0) {
+    UNIFLOW_LOG_INFO("RDMA not supported: no IB devices found");
+    return Err(ErrCode::ResourceExhausted, "No RDMA devices found");
+  }
+
+  for (int i = 0; i < numDevices; ++i) {
+    bool found = false;
+    auto ctxResult = ibvApi->openDevice(deviceList[i]);
+    CHECK_RETURN(ctxResult);
+    ibv_context* ctx = ctxResult.value();
+
+    ibv_device_attr devAttr{};
+    if (ibvApi->queryDevice(ctx, &devAttr)) {
+      for (uint8_t port = 1; port <= devAttr.phys_port_cnt; ++port) {
+        ibv_port_attr portAttr{};
+        auto portStatus = ibvApi->queryPort(ctx, port, &portAttr);
+        if (!portStatus.hasError() && portAttr.state == IBV_PORT_ACTIVE) {
+          found = true;
+          break;
+        }
+      }
+    }
+
+    ibvApi->closeDevice(ctx);
+    if (!found) {
+      return Err(
+          ErrCode::ResourceExhausted,
+          fmt::format(
+              "No active RDMA ports found for {}", deviceList[i]->name));
+    }
+  }
+
+  return Ok();
+}
+
 uint8_t RdmaTransportFactory::findActivePort(ibv_context* ctx) {
   ibv_device_attr devAttr{};
   auto status = ibvApi_->queryDevice(ctx, &devAttr);

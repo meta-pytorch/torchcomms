@@ -1010,45 +1010,6 @@ inline commResult_t completeHostResourceSetup(
         std::string(desc));                                                  \
   }
 
-// Dedicated ctrl exchange for straggler detection, separate from the data
-// credit flow. Each rank signals "I'm ready" to both ring neighbors and waits
-// for both to signal back. The measured duration captures pure setup latency
-// (how long until the slowest neighbor is ready) with no data transfer noise.
-static void neighborReadinessBarrier(
-    CtranComm* comm,
-    const ctran::allreduce::ring::HostArgs& args) {
-  CtranMapperRequest recvFromRight;
-  CtranMapperRequest recvFromLeft;
-  CtranMapperRequest sendToLeft;
-  CtranMapperRequest sendToRight;
-
-  // Post receives first to avoid missed signals
-  FB_COMMCHECKTHROW_EX(
-      comm->ctran_->mapper->irecvCtrl(args.rightRank, &recvFromRight),
-      comm->logMetaData_);
-  FB_COMMCHECKTHROW_EX(
-      comm->ctran_->mapper->irecvCtrl(args.leftRank, &recvFromLeft),
-      comm->logMetaData_);
-
-  // Signal both neighbors
-  FB_COMMCHECKTHROW_EX(
-      comm->ctran_->mapper->isendCtrl(args.leftRank, &sendToLeft),
-      comm->logMetaData_);
-  FB_COMMCHECKTHROW_EX(
-      comm->ctran_->mapper->isendCtrl(args.rightRank, &sendToRight),
-      comm->logMetaData_);
-
-  // Wait for peer readiness
-  FB_COMMCHECKTHROW_EX(
-      comm->ctran_->mapper->waitRequest(&recvFromRight), comm->logMetaData_);
-  FB_COMMCHECKTHROW_EX(
-      comm->ctran_->mapper->waitRequest(&recvFromLeft), comm->logMetaData_);
-  FB_COMMCHECKTHROW_EX(
-      comm->ctran_->mapper->waitRequest(&sendToLeft), comm->logMetaData_);
-  FB_COMMCHECKTHROW_EX(
-      comm->ctran_->mapper->waitRequest(&sendToRight), comm->logMetaData_);
-}
-
 static commResult_t impl(
     const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
   FB_CHECKTHROW_EX_NOCOMM(
@@ -1069,15 +1030,10 @@ static commResult_t impl(
   auto& args = op->allreduce.hostArgs;
   auto& resource = op->allreduce.hostResource;
 
-  CTRAN_PROFILER_IF(
-      profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_CTRL));
   if (!resource.setupComplete) {
     FB_COMMCHECK(completeHostResourceSetup(comm, args, resource));
     resource.setupComplete = true;
   }
-  neighborReadinessBarrier(comm, args);
-  CTRAN_PROFILER_IF(
-      profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_CTRL));
 
   // setup algoCtx
   AlgoContext algoCtx = {

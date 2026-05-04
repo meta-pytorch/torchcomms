@@ -2,7 +2,7 @@
 
 #include <comms/torchcomms/TorchComm.hpp>
 #include <comms/torchcomms/TorchCommFactory.hpp>
-#include <comms/torchcomms/dummy/TorchCommDummy.hpp>
+#include <comms/torchcomms/fake/TorchCommFake.hpp>
 #include <gtest/gtest.h>
 #include <cstdlib>
 #include <vector>
@@ -10,15 +10,15 @@
 namespace torch::comms {
 
 namespace {
-constexpr const char* kBackendName = "dummy_test";
-constexpr const char* kBackendEnvKey = "TORCHCOMMS_BACKEND_LIB_PATH_DUMMY_TEST";
+constexpr const char* kBackendName = "fake_test";
+constexpr const char* kBackendEnvKey = "TORCHCOMMS_BACKEND_LIB_PATH_FAKE_TEST";
 } // namespace
 
 class TorchCommHooksTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    const char* lib_path = std::getenv("DUMMY_TEST_BACKEND_LIB_PATH");
-    ASSERT_NE(lib_path, nullptr) << "DUMMY_TEST_BACKEND_LIB_PATH not set";
+    const char* lib_path = std::getenv("FAKE_TEST_BACKEND_LIB_PATH");
+    ASSERT_NE(lib_path, nullptr) << "FAKE_TEST_BACKEND_LIB_PATH not set";
     setenv(kBackendEnvKey, lib_path, 1);
   }
 
@@ -310,7 +310,7 @@ TEST_F(TorchCommHooksTest, AbortHookNotCalledAfterRemoval) {
   ASSERT_NE(torchcomm, nullptr);
 
   auto backend =
-      std::dynamic_pointer_cast<TorchCommDummy>(torchcomm->getBackendImpl());
+      std::dynamic_pointer_cast<TorchCommFake>(torchcomm->getBackendImpl());
   ASSERT_NE(backend, nullptr);
 
   int abortHookCallCount = 0;
@@ -335,7 +335,7 @@ TEST_F(TorchCommHooksTest, AbortHookInvoked) {
   ASSERT_NE(torchcomm, nullptr);
 
   auto backend =
-      std::dynamic_pointer_cast<TorchCommDummy>(torchcomm->getBackendImpl());
+      std::dynamic_pointer_cast<TorchCommFake>(torchcomm->getBackendImpl());
   ASSERT_NE(backend, nullptr);
 
   int abortHookCallCount = 0;
@@ -361,7 +361,7 @@ TEST_F(TorchCommHooksTest, MultipleAbortHooksInvoked) {
   ASSERT_NE(torchcomm, nullptr);
 
   auto backend =
-      std::dynamic_pointer_cast<TorchCommDummy>(torchcomm->getBackendImpl());
+      std::dynamic_pointer_cast<TorchCommFake>(torchcomm->getBackendImpl());
   ASSERT_NE(backend, nullptr);
 
   int hook1CallCount = 0;

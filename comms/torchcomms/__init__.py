@@ -67,6 +67,8 @@ __all__ = [  # noqa: F405
     "P2POp",
     "CommOptions",
     "TorchCommWindow",
+    "register_backend",
+    "TorchCommBackend",
 ]
 
 for name in __all__:
@@ -77,7 +79,8 @@ for name in __all__:
 def _load_backend(backend: str) -> None:
     """Used to load backends lazily from C++
 
-    If a backend is already loaded, this function is a no-op.
+    C++ calls this only when the backend is not already registered via
+    register_backend.
     """
     found = entry_points(group="torchcomms.backends", name=backend)
     if not found:

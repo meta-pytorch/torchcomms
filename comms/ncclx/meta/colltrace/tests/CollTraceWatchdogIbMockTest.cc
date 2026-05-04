@@ -87,7 +87,6 @@ class CollTraceWatchdogTest : public mccl::CollectiveIntegrationTestMixin,
         // enable commsDumpAll
         "NCCL_COMMSMONITOR_ENABLE=1",
         "NCCL_COLLTRACE=trace",
-        "NCCL_COLLTRACE_USE_NEW_COLLTRACE=1",
         // enable ctran
         "NCCL_CTRAN_ENABLE=1",
         "NCCL_CTRAN_BACKENDS=ib",
@@ -157,7 +156,6 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorWithIbVerbMock) {
   NcclComm comm(worldSize, rank);
 
   // Ensure we are using new colltrace
-  ASSERT_EQ(comm.raw()->ctranComm_->collTrace_, nullptr);
   ASSERT_NE(comm.raw()->newCollTrace, nullptr);
 
   // Allocate memory on the GPU

@@ -1,0 +1,20 @@
+snapshot_time             1211910176.321563 secs.usecs
+dirty_pages_hits          322117541 samples [regs]
+dirty_pages_misses        7250116 samples [regs]
+read_bytes                244645704 samples [bytes] 1 3539527 2698801595337
+write_bytes               322291704 samples [bytes] 1 2097152 29589854299
+brw_read                  563 samples [pages] 4096 4096 2306048
+ioctl                     15931 samples [regs]
+open                      275052 samples [regs]
+close                     294462 samples [regs]
+mmap                      33735 samples [regs]
+seek                      282797295 samples [regs]
+fsync                     1028 samples [regs]
+setattr                   22387 samples [regs]
+truncate                  4412 samples [regs]
+getattr                   1763011 samples [regs]
+statfs                    1708 samples [regs]
+alloc_inode               374613 samples [regs]
+setxattr                  693 samples [regs]
+getxattr                  4528 samples [regs]
+inode_permission          9269889 samples [regs]

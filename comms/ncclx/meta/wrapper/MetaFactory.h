@@ -197,3 +197,7 @@ inline commDataType_t ncclToMetaComm(ncclDataType_t dataType) {
 // initialization
 ctranConfig makeCtranConfigFrom(ncclComm* comm);
 commResult_t setCtranCommBase(ncclComm* ncclCommVal);
+
+// Public accessor returning the CtranComm* hanging off an ncclComm, or
+// nullptr if it isn't initialized (e.g. NCCL_CTRAN_ENABLE not set).
+CtranComm* getCtranCommFromNcclComm(ncclComm* ncclComm);

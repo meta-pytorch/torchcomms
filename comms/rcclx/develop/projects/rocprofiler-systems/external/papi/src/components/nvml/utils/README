@@ -1,0 +1,51 @@
+nvmlcap_plot: This is a utility that uses PAPI to read and record the power
+usage on one or more GPUS, and optionally to limit the power usage on the GPUs,
+if there is more than one, then the user can limit them all to the same value,
+or provide different values for each of the GPUs. 
+
+This program requires at least one argument. The first arg is the number of
+seconds to run. If it is 0, this program runs until it is killed. 
+
+KILLING THE PROGRAM: A graceful exit can be made by signalling SIGTSTP
+(Terminal Stop, like Ctrl-z). nvmlcap_plot traps this event, and will close the
+output files (thus ensuring all samples are flushed to disk). it will free
+memory and perform normal clean up. On SLURM, a signal is sent using
+
+> scancel -s SIGTSTP JOBID
+
+And if you did not record JOBID, it can be found using
+
+> squeue
+
+The 2nd (optional) argument is a global power limit to set on all GPUs. If 3
+or more arguments are given, then there must be a power limit argument for EACH
+GPU we find. Each will be the individual power limit for that GPU (in the order
+we report them).
+ 
+We report to stderr the hardware found and current power limit settings. If you
+change the power limit here, it WILL limit the performance of other programs
+using the GPU. On the development systems where this program was tested, the
+original power limits were automatically restored upon any exit of this
+program. 
+ 
+This program does NOT exercise the GPU. Typically, you will start this program
+on a node, then while it is running execute ANOTHER program on the node that
+does exercise the GPU. For testing, we used the MAGMA math library and dense
+matrix multiplies. 
+ 
+This code reads the spot power usage every 50ms, for all GPUs on the node, and
+reports those (tab-separated) to the file PowerReadGPUs.tsv. This file can be
+edited with a text editor.  For example, to delete leading records in the file
+that were recorded before the program of interest began.
+
+It will also output PowerReadGPU.gnuplot, a gnuplot script to plot the power
+usage for each GPU on the node. This is just an ascii file and can also be 
+edited if needed. 
+
+Be sure to configure PAPI with --with-components="nvml".
+
+To compile, you must have a valid PAPI_CUDA_ROOT environment variable.
+Typically, we do
+> module load cuda
+> export PAPI_CUDA_ROOT=$CUDA_ROOT
+

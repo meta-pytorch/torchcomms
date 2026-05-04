@@ -13,6 +13,7 @@ template cudaError_t launchRingBufferWrite<TestEvent>(
     HRDWEntry<TestEvent>*,
     uint64_t*,
     uint32_t,
+    uint32_t,
     TestEvent);
 
 } // namespace meta::comms::colltrace

@@ -1,0 +1,84 @@
+2014-06-30  
+
+  * 511d05bc man/man1/papi_avail.1 man/man1/papi_clockres.1
+  man/man1/papi_command_line.1...: Regenerate man pages for a pending 5.3.2
+  release
+
+  * a07adc91 doc/Doxyfile-common papi.spec src/Makefile.in...: Bump version
+  number for a 5.3.2 release
+
+2014-06-27  
+
+  * 43070347 src/components/coretemp/linux-coretemp.c
+  src/components/micpower/linux-micpower.c src/components/net/linux-net.c: Fix
+  a warning in component initialization  A copy/paste perpetuated a multiple
+  definition of available_domains
+
+2014-06-24  
+
+  * ea216f5a src/run_tests.sh src/run_tests_exclude.txt
+  src/run_tests_exclude_cuda.txt: Fix excluded files for run_tests  Gary Mohr
+  pointed out that in a Makefile refactor we neglected to update the tests
+  eclude creteria -------------------------------- It turns out that you guys
+  have made changes in the way the tests are built which have introduced errors
+  when running the scripts. The script attempted to automatically remove the
+  makefiles from the list of files it would execute but your build changes
+  broke the makefiles up into several files and renamed all of them. So the
+  script was trying to execute them.  I decided the most flexible way to handle
+  this is to remove the code from the script that looks for makefiles and just
+  add them to the exclude files used by the script. The script will not execute
+  any file listed in the exclude file.  The attached patch implements these
+  changes so the script runs correctly with the current papi build files.  Gary
+  --------------------------------
+
+2014-05-16  
+
+  * aacf9628 man/man3/PAPI_enum_cmp_event.3 man/man3/PAPI_enum_event.3
+  man/man3/PAPI_get_overflow_event_index.3...: Printf formatting change... 
+  Based upon a patch by Steve Kaufmann.  I took the liberty of removing all the
+  leading "0x" as part of formatting output strings. Now the "%#" syntax is
+  used to print out hexidecimal values with a leading "0x" (letting the printf
+  function do the work).
+
+2014-03-26  
+
+  * 0c93f0a1 src/components/nvml/linux-nvml.c src/components/nvml/linux-nvml.h:
+  Add units to NVML component  Thanks to Brian Lemke at Bull for the patch.
+
+2014-02-26  
+
+  * 2c79fab8 src/configure src/configure.in: configure: respect
+  --with-walltimer and virtualtimer  For whatever reason configure would not
+  check for the --with-walltimer argument if we had already determined one (See
+  BG/P and CLE sections also --with-mic option).  This is not desirable, kill
+  this behaviour.
+
+2014-01-30  
+
+  * 284f25c2 src/components/lustre/linux-lustre.c
+  src/components/net/linux-net.c: Use correct specification for signed and
+  unsigned int  A run of cppcheck showed that some mismatches between the
+  specfications for sscanf and the variables being used to store the values. 
+  This corrects those minor issues.
+
+2014-02-04  
+
+  * 291bad11 src/components/coretemp/linux-coretemp.c
+  src/components/coretemp_freebsd/coretemp_freebsd.c
+  src/components/host_micpower/linux-host_micpower.c...: Update the
+  domain/granularity of many components  Many PAPI components only report
+  system wide events, here we attempt to match up entries in the .cmp_info
+  struct with reality by only allowing PAPI_GRAN_SYS and PAPI_DOM_ALL.
+
+2013-12-30  
+
+  * eeefec5c src/ctests/attach2.c src/ctests/attach3.c: ctests/attach[2,3]: Fix
+  ptrace call for BSD  "The  SunOS  man page describes ptrace() as "unique and
+  arcane", which it is."
+
+  * 27d416c8 src/configure src/configure.in: Configure.in: Remove Bash-isms
+  from comp selection  Part of a patch set by Gleb Smirnoff
+
+  * 52f8979f src/configure src/configure.in: Configure.in: Correctly detect
+  FreeBSD OS version  The script incorrectly parsed "FreeBSD 10" as "FreeBSD
+  1". Part of a series of patches by Gleb Smirnoff

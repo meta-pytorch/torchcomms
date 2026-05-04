@@ -1,0 +1,2394 @@
+Tue Dec 5 20:10:50 2017 -0800  William Cohen <wcohen@redhat.com>
+
+	* src/libpfm4/lib/events/power9_events.h,
+	  src/libpfm4/tests/validate_power.c: Update libpfm4 Current with
+	  commit 206dea666e7c259c7ca53b16f934660344293475  Ensure unique
+	  names for IBM Power 9 events  Older versions of PAPI use the event
+	  name to look up the libpfm event number when doing the enumeration
+	  of the available events.  If there were multiple events with the
+	  same name in libpfm, the earliest one would be selected.  This
+	  selection would cause the enumeration of events in
+	  papi_native_avail to get stuck looping on the first duplicated
+	  named event in a pmu.  In the case of IBM Power 9 the enumeration
+	  would get stuck on PM_CO0_BUSY. Gave each event a unique name to
+	  avoid this unfortunate behavior.
+
+2017-11-16  Will Schmidt <will_schmidt@vnet.ibm.com>
+
+	* src/papi_events.csv: revised papi_derived patch.  [PATCH, papi]
+	  Updated derived entries for power9.  This is a re-implementation of
+	  the patch that Will Cohen posted earlier, which uses the (newly
+	  defined) PM_LD_MISS_ALT entry instead of the PM_LD_MISS_FIN .
+	  Thanks, -Will
+
+2017-12-05  Heike Jagode (jagode@icl.utk.edu) <jagode@saturn.icl.utk.edu>
+
+	* release_procedure.txt: Updated notes for release procedure.
+
+2017-12-05  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/extras.c: extras.c: add string.h include to make the ffsll
+	  warning go away
+
+2017-12-04  Heike Jagode (jagode@icl.utk.edu) <jagode@saturn.icl.utk.edu>
+
+	* src/configure, src/configure.in: Fixed configure bug:  Once ffsll
+	  support is detected, set HAVE_FFSLL to 1 in config.h.  Tested
+	  without configure flag --with-ffsll, with --with-ffsll=yes, --with-
+	  ffsll=no.
+
+2017-12-04  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/ctests/Makefile.recipies, src/ctests/locks_pthreads.c: ctests:
+	  locks_pthreads: adjust run count again  linear slowdown makes
+	  things run really quickly. This patch scales it down by the square
+	  root of the number of cores which is maybe a better compromise.
+	* src/ctests/locks_pthreads.c: ctests: locks_pthreads, minor cleanups
+
+2017-11-20  William Cohen <wcohen@redhat.com>
+
+	* src/ctests/locks_pthreads.c: Keep locks_pthreads test's amount of
+	  work reasonable on many core machines  The runtime of
+	  locks_pthreads test scaled by the number of processors on the
+	  machine because of the serialized increment operation in the test.
+	  As more machines are available with 100+ processors the runtime of
+	  locks_pthreads is becoming execessive.  Revised the test to specify
+	  the approximate total number of iterations and split the work the
+	  threads.
+
+Fri Dec 4 11:31:46 2015 -0500  sangamesh <sragate@vols.utk.edu>
+
+	* src/extras.c, src/papi.h: Revert change that added ffsll to papi.h
+	  This reverts commit 2f1ec33a9e585df1b6343a0ea735f79974c080df.
+	  commit 2f1ec33a9e585df1b6343a0ea735f79974c080df  changed #if
+	  (!defined(HAVE_FFSLL) || defined(__bgp__)) int ffsll( long long lli
+	  ); #endif --- to --- extern int ffsll( long long lli  in extras.c
+	  to avoid warning when --with-ffsll is used as config option
+
+Thu Apr 20 11:31:38 2017 -0400  Stephen Wood <swood@icl.utk.edu>
+
+	* src/extras.c, src/papi.h: revert part of patch that added extra
+	  attributes to ffsll  This manually reverts part of:  commit
+	  9e199a8aee48f5a2c62d891f0b2c1701b496a9ca  cast pointers
+	  appropriately to avoid warnings and errors
+
+Sun Dec 3 09:42:44 2017 -0800  Will Schmidt <will_schmidt@vnet.ibm.com>
+
+	* src/libpfm4/lib/events/power9_events.h,
+	  src/libpfm4/tests/validate_power.c: Updated libpfm4  Current with:
+	  ---------------- commit ed3f51c4690685675cf2766edb90acbc0c1cdb67
+	  (HEAD -> master, origin/master, origin/HEAD)  Add alternate event
+	  numbers for power9.  I had previously missed adding the _ALT
+	  entries, which allow some events to be specified on different
+	  counters. This patch fills those in.  This patch also adds a few
+	  validation tests for the ALT events.  ----------------
+
+2017-11-28  Heike Jagode (jagode@icl.utk.edu) <jagode@saturn.icl.utk.edu>
+
+	* src/utils/papi_avail.c, src/utils/papi_native_avail.c: Fixed
+	  utility option inconsistencies between papi_avail and
+	  papi_native_avail. There are more inconsistencies with other PAPI
+	  utilities, which will be addressed eventually.
+
+2017-11-28  Heike Jagode <jagode@icl.utk.edu>
+
+	* README.md: README.md edited online with Bitbucket
+	* README.md: README.md edited online with Bitbucket
+	* README.md: README.md edited online with Bitbucket
+	* README.md: README.md edited online with Bitbucket
+
+2017-11-27  Heike Jagode <jagode@icl.utk.edu>
+
+	* src/components/powercap/linux-powercap.c: More clean-ups and
+	  checking of return values.
+
+Mon Nov 13 23:15:53 2017 -0800  Thomas Richter <tmricht@linux.vnet.ibm.com>
+
+	* src/libpfm4/lib/pfmlib_common.c: Update libpfm4” > /tmp/commit-
+	  libpfm4-header.txt echo “Current with commit
+	  f5331b7cbc96d9f9441df6a54a6f3b6e0fab3fb9  better fix for
+	  pfmlib_getl()  The following commit:  commit
+	  9c69edf67f6899d9c6870e9cb54dcd0990974f81  better param check in
+	  pfmlib_getl()  Fixed paramter checking of pfmlib_getl() but missed
+	  one condition on the buffer argument. It is char **buffer.
+	  Therefore we need to check if *buffer is not NULL before we can
+	  check *len.
+
+2017-11-19  Asim YarKhan <yarkhan@icl.utk.edu>
+
+	* src/components/cuda/linux-cuda.c: CUDA component: Bug fix for
+	  releasing and resetting event list  When an event addition failed
+	  because the event (or metric) requires multiple-runs the eventlist
+	  and event-context structure was not being cleaned up properly.
+	  This fixes the event cleanup process.
+
+2017-11-17  Asim YarKhan <yarkhan@icl.utk.edu>
+
+	* src/components/powercap/tests/powercap_basic.c,
+	  src/components/powercap/tests/powercap_limit.c: Powercap component:
+	  Updated tests to handle no-event-counters (num_cntrs==0) and skip
+	  some compiler warnings (argv, argc unused)
+
+2017-11-16  William Cohen <wcohen@redhat.com>
+
+	* src/components/lmsensors/linux-lmsensors.c: Make more of lmsensors
+	  component internal state hidden  There are a number of functions
+	  pointers stored in variable that are only used within the lmsensors
+	  component.  Making those static ensures they are not visible
+	  outside the lmsensors component.
+	* src/components/lmsensors/linux-lmsensors.c: Make internal
+	  cached_counts variable static  Want to make as little information
+	  about the internals of the PAPI lmsensors component visible to the
+	  outside.  Thus, making cached_counts variable static.
+
+2017-11-15  William Cohen <wcohen@redhat.com>
+
+	* src/components/lmsensors/linux-lmsensors.c: Avoid statically
+	  limiting the number of lmsensor events allowed  Some high-end
+	  server machines provide more events than the 512 entries limit
+	  imposed by the LM_SENSORS_MAX_COUNTERS define in the lmsensor
+	  component (observed 577 entries on one machine).  When this limit
+	  was exceeded the lmsensor component would write beyond the array
+	  bounds causing ctests/all_native_events to crash.  Modified the
+	  lmsensor code to dynamically allocate the required space for all
+	  the available lmsensor entries on the machine. This allows
+	  ctests/all_native_events to run to completion.
+	* src/components/appio/appio.c, src/components/coretemp/linux-
+	  coretemp.c, src/components/example/example.c,
+	  src/components/infiniband/linux-infiniband.c, src/components/lustre
+	  /linux-lustre.c, src/components/rapl/linux-rapl.c: Use correct
+	  argument order for calloc function calls  Some calls to calloc in
+	  PAPI have the order of the arguments reversed. According to the
+	  calloc man page the number of elements is the first argument and
+	  the size of each element is the second argument.  Due to alignment
+	  constraints the second argument might be rounded up.  Thus, it is
+	  best not to not to swap the arguments to calloc.
+
+2017-11-15  Philip Vaccaro <pvaccaro@vols.utk.edu>
+
+	* src/components/powercap/linux-powercap.c,
+	  src/components/powercap/tests/powercap_basic.c: Updates and changes
+	  to the powercap component to address a few areas.. Various things
+	  were changed but mainly things were simplified and made more
+	  streamlined.  Main focus was on simpifying managing the sytem
+	  files.
+
+Mon Nov 13 23:15:53 2017 -0800  Thomas Richter <tmricht@linux.vnet.ibm.com>
+
+	* src/libpfm4/docs/man3/pfm_get_event_encoding.3,
+	  src/libpfm4/docs/man3/pfm_get_os_event_encoding.3,
+	  src/libpfm4/lib/events/amd64_events_fam11h.h,
+	  src/libpfm4/lib/events/amd64_events_fam12h.h,
+	  src/libpfm4/lib/pfmlib_common.c, src/libpfm4/lib/pfmlib_priv.h,
+	  src/libpfm4/tests/validate_x86.c: Update libpfm4  Current with
+	  commit 9c69edf67f6899d9c6870e9cb54dcd0990974f81  better param check
+	  in pfmlib_getl()  This patch ensures tha len >= 2 because we do: m
+	  = l - 2;  Reviewed-by: Hendrik Brueckner
+	  <brueckner@linux.vnet.ibm.com>
+
+2017-11-13  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/components/perf_event/pe_libpfm4_events.c: pe_libpfm4_events:
+	  properly notice if trying to add invalid umask  this passes the
+	  broken-event test case and all of the unit tests, but it would be
+	  good to test this on codes that do a lot of native event tests.
+	  the pe_libpfm4_events code *really* needs a once-over, it is
+	  currently a confusing mess.
+	* src/components/perf_event/tests/Makefile,
+	  src/components/perf_event/tests/broken_events.c,
+	  src/components/perf_event/tests/event_name_lib.c,
+	  src/components/perf_event/tests/event_name_lib.h: perf_event/tsts:
+	  add broken event name test  we were wrongly accepting event names
+	  with invalid umasks
+
+2017-11-13  Philip Mucci <mucci@icl.utk.edu>
+
+	* src/utils/print_header.c: Removed extraneous colon in VM vendor
+	  output
+
+2017-11-10  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/validation_tests/papi_l1_dcm.c,
+	  src/validation_tests/papi_l2_dcm.c,
+	  src/validation_tests/papi_l2_dcr.c,
+	  src/validation_tests/papi_l2_dcw.c: validation_tests: fix compiler
+	  warnings on arm32  On Raspberry Pi we were getting warnings where
+	  we were printing sizeof() valus with %ld.  Convert to %zu instead.
+
+2017-11-09  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/validation_tests/papi_l2_dca.c: validation_tests: papi_l2_dca
+	  fix crash on ARM32  On raspberry pi it's not possible to detect L2
+	  cache size so the test was dividing by zero.
+	* src/linux-common.c: linux-common: remove warning on not finding mhz
+	  in cpuinfo  This was added recently and is not needed. Most ARM32
+	  devices don't have MHz in the cpuinfo file and it's not really a
+	  bug.
+	* src/components/perf_event/perf_event.c: perf_event: disable the old
+	  pre-Linux-2.6.34 workarounds by default  There were a number of
+	  bugs in perf_event that PAPI had to work around, but most of these
+	  were fixed by 2.6.34  In order to hit these bugs you would need to
+	  be running a kernel from before 2010 which wouldn't support any
+	  recent hardware.  Unfortunately these bugs are hard to test for.
+	  We were enabling things based on kernel versions, but this caught
+	  vendors (such as Redhat) shipping 2.6.32 kernels that had
+	  backported fixes.  This fix just #ifdefs things out, if no one
+	  complains then we can fully remove the code.
+	* src/components/perf_event/perf_event.c: perf_event: decrement the
+	  available counter count if NMI_WATCHDOG is stealing one
+	* src/components/perf_event/perf_event.c: perf_event: move the
+	  paranoid handling code to its own function
+	* src/components/perf_event/perf_event.c: perf_event: centralize
+	  fast_counter_read flag  just use the component version of the flag,
+	  rather than having a shadow global version.
+
+2017-11-09  William Cohen <wcohen@redhat.com>
+
+	* src/linux-memory.c: Make the fallback generic_get_memory_info
+	  function more robust  On the aarch64 processor linux 4.11.0 kernels
+	  /sys/devices/system/cpu/cpu0/cache is available, but the index[0-9]
+	  subdirectories are not fully populated with information about cache
+	  and line size, associativity, or number of sets.  These missing
+	  files would cause the generic_get_memory_info function to attempt
+	  to read data using a NULL file descriptor causing the program to
+	  crash.  Added checks to see if every fopen was and fscan was
+	  successful and just say there is no cache if there is any failure.
+
+2017-11-09  Asim YarKhan <yarkhan@icl.utk.edu>
+
+	* src/components/cuda/linux-cuda.c,
+	  src/components/cuda/tests/Makefile,
+	  src/components/nvml/tests/Makefile, src/configure,
+	  src/configure.in: Enable icc and nvcc to work together in cuda and
+	  nvml components.  For nvcc to work with Intel icc to compile cuda
+	  and nvml components and tests , it needs to use nvcc -ccbin=<$CC-
+	  compilerbin> . The compiler name in CC also needs to be clean, so
+	  CC=<compilerbin> and any other flags are pushed to CFLAGS (changed
+	  in src/configure.in script).
+	* src/ctests/mpifirst.c: Minor correction to mpifirst.c test
+
+2017-11-09  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/utils/print_header.c: utils: print fast_counter_read (rdpmc)
+	  status in the utils header
+
+2017-11-08  William Cohen <wcohen@redhat.com>
+
+	* src/validation_tests/cache_helper.c: Ensure access to array within
+	  bounds  Coverity reported the following issues.  Need the test to
+	  be "type>=MAX_CACHE" rather than "type>MAX_CACHE".  Error: OVERRUN
+	  (CWE-119): papi-5.5.2/src/validation_tests/cache_helper.c:85:
+	  cond_at_most: Checking "type > 4" implies that "type" may be up to
+	  4 on the false branch.
+	  papi-5.5.2/src/validation_tests/cache_helper.c:90: overrun-local:
+	  Overrunning array "cache_info" of 4 24-byte elements at element
+	  index 4 (byte offset 96) using index "type" (which evaluates to 4).
+	  Error: OVERRUN (CWE-119):
+	  papi-5.5.2/src/validation_tests/cache_helper.c:101: cond_at_most:
+	  Checking "type > 4" implies that "type" may be up to 4 on the false
+	  branch. papi-5.5.2/src/validation_tests/cache_helper.c:106:
+	  overrun-local: Overrunning array "cache_info" of 4 24-byte elements
+	  at element index 4 (byte offset 96) using index "type" (which
+	  evaluates to 4).  Error: OVERRUN (CWE-119):
+	  papi-5.5.2/src/validation_tests/cache_helper.c:117: cond_at_most:
+	  Checking "type > 4" implies that "type" may be up to 4 on the false
+	  branch. papi-5.5.2/src/validation_tests/cache_helper.c:122:
+	  overrun-local: Overrunning array "cache_info" of 4 24-byte elements
+	  at element index 4 (byte offset 96) using index "type" (which
+	  evaluates to 4).
+	* src/ctests/overflow_pthreads.c: Eliminate coverity overflow warning
+	  about expression
+	* src/components/perf_event_uncore/tests/perf_event_uncore_lib.c:
+	  Remove dead code from perf_event_uncore_lib.c
+
+2017-11-09  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/components/perf_event/perf_event.c: perf_event: don't
+	  initialize globals statically  from the mucci-5.5.2 tree
+
+2017-11-08  phil@minimalmetrics.com <phil@minimalmetrics.com>
+
+	* src/linux-common.c: linux-common: clean up the /proc/cpuinfo
+	  parsing code  From the mucci-cleanup branch
+	* src/components/perf_event/perf_event.c,
+	  .../perf_event_uncore/perf_event_uncore.c,
+	  src/papi_libpfm4_events.c, src/papi_libpfm4_events.h: perf_event:
+	  clean up _papi_libpfm4_shutdown()  From the mucci-cleanup branch
+	* src/utils/print_header.c: utils: clean up the cpuinfo header  From
+	  the mucci-cleanup branch
+	* src/papi_internal.c, src/papi_internal.h: papi_internal: add
+	  PAPI_WARN() function  From the mucci-cleanup branch
+	* src/components/perf_event/pe_libpfm4_events.c: perf_event: clean up
+	  pe_libpfm4_events  From the mucci-cleanup branch  --
+
+2017-11-08  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/utils/papi_avail.c: utils/papi_avail: update the manpage info
+	  based on changes by Phil Mucci
+	* .../perf_event/tests/perf_event_system_wide.c: perf_event tests:
+	  perf_event_system_wide: don't fail if permissions restrict system-
+	  wide events  right now we just skip if we get EPERM, we should also
+	  maybe check the perf_event_paranoid setting and print a more
+	  meaningful report
+	* src/ctests/locks_pthreads.c: ctests/locks_pthreads: avoid printing
+	  values when in quiet mode
+
+2017-08-31  phil@minimalmetrics.com <phil@minimalmetrics.com>
+
+	* src/Makefile.inc: Better symlink creation for shared library in
+	  make phase
+
+2017-08-28  phil@minimalmetrics.com <phil@minimalmetrics.com>
+
+	* doc/Makefile, src/.gitignore, src/Makefile.inc,
+	  src/components/.gitignore, src/components/Makefile_comp_tests,
+	  src/ctests/.gitignore, src/ctests/Makefile.recipies,
+	  src/ftests/.gitignore, src/ftests/Makefile.recipies,
+	  src/testlib/.gitignore, src/utils/.gitignore, src/utils/Makefile,
+	  src/validation_tests/.gitignore,
+	  src/validation_tests/Makefile.recipies: Full cleanup, including
+	  removal of .gitignore files that prevented us from realizing we
+	  were really cleaning/clobbering properly
+	* src/validation_tests/.gitignore: .gitignore Makefile.target
+	* src/papi.c: Remove PAPI_VERB_ECONT setting by default from
+	  initialization path. This prints all kinds of needless errors on
+	  virtual platforms.
+	* src/x86_cpuid_info.c: Remove leftover printf
+
+2017-08-21  phil@minimalmetrics.com <phil@minimalmetrics.com>
+
+	* src/ctests/locks_pthreads.c: Test now performs a fixed number of
+	  iterations, and reports lock/unlock timings per thread.
+	* src/components/perf_event/perf_event.c: Added more descriptive
+	  error message to exclude_guest check
+	* src/papi_internal.c: Removed leading newline and trailing . from
+	  error messages
+	* src/papi_preset.c: Updated message for derived event failures
+
+2017-11-07  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/Makefile.inc, src/ctests/Makefile,
+	  src/ctests/Makefile.target.in, src/ftests/Makefile,
+	  src/ftests/Makefile.target.in, src/testlib/Makefile.target.in,
+	  src/utils/Makefile.target.in, src/validation_tests/Makefile,
+	  src/validation_tests/Makefile.target.in: tests: make sure DESTDIR
+	  and DATADIR are passed in when doing an install
+	* src/ctests/Makefile, src/ctests/Makefile.target.in,
+	  src/ftests/Makefile, src/ftests/Makefile.target.in,
+	  src/utils/Makefile, src/utils/Makefile.target.in,
+	  src/validation_tests/Makefile,
+	  src/validation_tests/Makefile.target.in:
+	  ctests/ftests/utils/validation_tests: get shared library linking
+	  working again  This should let the various tests and utils be
+	  linked as shared libraries again.
+	* src/validation_tests/Makefile: validation_tests: add an
+	  installation target  this makes the validation tests have an
+	  install target, like the ctests and ftests
+	* src/ctests/Makefile, src/ftests/Makefile: ctests/ftests: fix
+	  "install" target  at some point DATADIR was renamed datadir and the
+	  install targets were not updated.
+
+2017-11-07  Asim YarKhan <yarkhan@icl.utk.edu>
+
+	* bitbucket-pipelines.yml: Bitbucket pipeline testing: Inspired by
+	  Phil Mucci's branch; copied the functionalty tests run in that
+	  branch.
+	* src/components/lmsensors/linux-lmsensors.c: lmsensors component:
+	  Changed event names to use lm_sensors (only once) instead of
+	  LM_SENSORS (twice) to be consistent with other events
+
+2017-11-02  William Cohen <wcohen@redhat.com>
+
+	* src/components/appio/tests/iozone/gnu3d.dem: gnu3d.dem should not
+	  be executed by the test framework  This file is a gnuplot file and
+	  should not be executed as part of the tests. Removing the
+	  executable perms will signal to the testing framework that it
+	  shouldn't be executed.
+	* src/components/appio/tests/iozone/Gnuplot.txt: Gnuplot.txt should
+	  not be executed by the test framework  This file is a readme file
+	  and should not be executed as part of the tests. Removing the
+	  executable perms will signal to the testing framework that it
+	  shouldn't be executed.
+	* .../appio/tests/iozone/iozone_visualizer.pl,
+	  src/components/appio/tests/iozone/report.pl: Fix perl scripts so
+	  they run on Linux machines  The DOS style newlines were preventing
+	  Linux from selecting the appropriate interpreter for these scripts
+	  and causing these tests to fail.
+
+2017-11-07  Asim YarKhan <yarkhan@icl.utk.edu>
+
+	* src/components/lmsensors/configure: lmsensors component: Regenerate
+	  the configure file for the component
+
+2017-11-02  William Cohen <wcohen@redhat.com>
+
+	* src/components/lmsensors/Makefile.lmsensors.in,
+	  src/components/lmsensors/configure.in, src/components/lmsensors
+	  /linux-lmsensors.c: Make the lmsensors dynamically load the needed
+	  shared library  When attempting to build the current git repo of
+	  papi the build of the files in the utils subdirectory failed
+	  because the lmsensors libraries were not being linked in.  Rather
+	  than forcing the papi to link in the lmsensor library during the
+	  build the lmsensors component has been modified to dynamically load
+	  the needed libraries and enable the lmsensors events when
+	  available.  This allows machines missing the lmsensor libraries
+	  installed to still use papi.
+
+2017-11-06  Asim YarKhan <yarkhan@icl.utk.edu>
+
+	* src/components/cuda/linux-cuda.c: CUDA component: On architectures
+	  without CUDA Metrics (e.g. Tesla C2050), skip metric registration
+	  rather than returning errors
+
+2017-11-06  Vince Weaver <vince@deater.net>
+
+	* src/validation_tests/papi_l2_dca.c,
+	  src/validation_tests/papi_l2_dcm.c,
+	  src/validation_tests/papi_l2_dcr.c,
+	  src/validation_tests/papi_l2_dcw.c: validation_tests: make the
+	  papi_l2 tests fail with warnings  On Haswell/Broadwell and newer
+	  these tests fail for unknown reasons.  This isn't new behavior,
+	  it's just that the tests are new.  It's unlikely we will have time
+	  to completely sort this out before the upcoming release, so change
+	  the FAIL to WARN so testers won't be unnecessarily alarmed.
+
+2017-11-05  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/components/perf_event/perf_event.c, src/configure,
+	  src/configure.in: perf_event: enable rdpmc support by default  It
+	  can still be disabled at configure time with --enable-perfevent-
+	  rdpmc=no  This speeds up PAPI_read() by at least a factor of 5x
+	  (see the ESPT'17 workshop presentation)  It is only enabled on
+	  Linux 4.13 and newer due to bugs in previous versions.
+
+2017-11-03  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/ctests/sdsc-mpx.c: ctests: sdsc: fix issue where the error
+	  message is not printed correctly
+
+2017-11-01  Heike Jagode <jagode@icl.utk.edu>
+
+	* src/components/powercap/linux-powercap.c: Intermediate check-in:
+	  Fixed a whole bunch of careless file handling (missing closing of
+	  open files, missing setting of open/close flag, etc). Still more
+	  rigorous checks needed.
+
+Mon Oct 30 17:16:32 2017 -0700  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/lib/events/intel_skl_events.h: Update
+	  libpfm4\n\nCurrent with\n commit
+	  21405fb3c247a0d16861483daf0696cf4fa0cc43  update SW_PREFETCH event
+	  for Intel Skylake  Event was renamed SW_PREFETCH_ACCESS, but we
+	  keep SW_PREFETCH as an alias.  Added PREFETCHW umask.  Enabled
+	  suport for both Skylake client and server as per official event
+	  table from 10/27/2017. See download.01.org/perfmon/
+
+2017-10-30  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/validation_tests/Makefile.recipies,
+	  src/validation_tests/cycles.c,
+	  src/validation_tests/cycles_validation.c: validation_tests: add
+	  cycles_validation test  this is the old zero test, which does a
+	  number of cycles tests  It should be extended to add more.
+
+2017-10-30  Vince Weaver <vince@deater.net>
+
+	* src/ctests/attach2.c, src/ctests/attach3.c, src/ctests/calibrate.c,
+	  src/ctests/child_overflow.c, src/ctests/code2name.c,
+	  src/ctests/earprofile.c, src/ctests/exec_overflow.c,
+	  src/ctests/fork_overflow.c, src/ctests/hwinfo.c, src/ctests/mendes-
+	  alt.c, src/ctests/prof_utils.c, src/ctests/prof_utils.h,
+	  src/ctests/profile.c, src/ctests/remove_events.c,
+	  src/ctests/shlib.c, src/ctests/system_child_overflow.c,
+	  src/ctests/system_overflow.c, src/ctests/zero_named.c,
+	  src/testlib/papi_test.h, src/testlib/test_utils.c: papi: c++11
+	  fixes: fix various ctests that c++ complains on  mostly just const
+	  warnings, some K+R function declarations, and possibly an actual
+	  char/char* bug.
+	* src/papi.c, src/papi.h: papi: c++11 conversion:
+	  PAPI_get_component_index()
+	* src/papi.c, src/papi.h: papi: c++11 conversion: convert
+	  PAPI_perror()
+	* src/aix.c, src/components/appio/appio.c,
+	  src/components/bgpm/CNKunit/linux-CNKunit.c,
+	  src/components/bgpm/IOunit/linux-IOunit.c,
+	  src/components/bgpm/L2unit/linux-L2unit.c,
+	  src/components/bgpm/NWunit/linux-NWunit.c, src/components/emon
+	  /linux-emon.c, src/components/net/linux-net.c,
+	  src/components/perf_event/pe_libpfm4_events.c,
+	  src/components/perf_event/pe_libpfm4_events.h,
+	  src/components/perf_event/perf_event.c,
+	  .../perf_event_uncore/perf_event_uncore.c,
+	  src/components/perfmon_ia64/perfmon-ia64.c, src/freebsd.c, src
+	  /linux-bgq.c, src/papi.c, src/papi.h, src/papi_internal.c,
+	  src/papi_internal.h, src/papi_libpfm3_events.c,
+	  src/papi_libpfm_events.h, src/papi_vector.c, src/papi_vector.h:
+	  papi: start converting papi.h to be C++11 clean  Most of the issues
+	  have to do with string to char * conversion.  This first patch
+	  converts PAPI_event_name_to_code()  The issue was first reported by
+	  Brian Van Straalen
+	* src/validation_tests/papi_l2_dca.c: validation_tests/papi_l2_dca:
+	  update some comments
+	* src/ctests/zero.c, src/validation_tests/cycles.c: ctests/zero: make
+	  test pass on recent intel machines  The test was failing due to the
+	  PAPI_get_real_cycles() validation on recent Intel chips.  This is
+	  probably something that should be tested in a separate test and not
+	  in zero which is supposed to be a bare-bones are-things-working
+	  test.
+
+2017-10-27  Philip Vaccaro <pvaccaro@vols.utk.edu>
+
+	* src/components/powercap/README: updated powercap README to be more
+	  concise. includes more details on interacting with energy counters
+	  and power limits.
+
+2017-10-27  Asim YarKhan <yarkhan@icl.utk.edu>
+
+	* src/components/cuda/linux-cuda.c, src/components/nvml/linux-nvml.c:
+	  CUDA/NVML components: Handled segfault which can occur when
+	  dlclosing libcudart from both components by adding an additional
+	  flag to dlopen
+
+2017-10-24  Asim YarKhan <yarkhan@icl.utk.edu>
+
+	* src/components/cuda/linux-cuda.c,
+	  src/components/cuda/tests/simpleMultiGPU.cu: CUDA component: Clean
+	  up fulltest by moving some output from stdout to SUBDBG, removed
+	  some commented out lines
+	* src/components/nvml/linux-nvml.c: nvml component: To support V100
+	  (Volta) updated to get nvmlDevice handle ordered by index rather
+	  than pci busid.
+
+2017-10-23  Asim YarKhan <yarkhan@icl.utk.edu>
+
+	* src/components/cuda/linux-cuda.c: CUDA component: Minor fix to
+	  remove some unneeded stdout which shows up during fulltest
+
+2017-10-20  Asim YarKhan <yarkhan@icl.utk.edu>
+
+	* src/components/cuda/linux-cuda.c,
+	  src/components/cuda/tests/Makefile,
+	  src/components/cuda/tests/simpleMultiGPU.cu: CUDA component test
+	  update: Remove some debug output.  Do not build cupti_only test
+	  binary.
+
+Thu Oct 19 11:23:44 2017 -0700  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/examples/showevtinfo.c,
+	  src/libpfm4/lib/events/intel_skl_events.h: Update
+	  libpfm4\n\nCurrent with\n commit
+	  2e98642dd331b15382256caa380834d01b63bef8  Fix Intel Skylake
+	  EXE_ACTIVITY.1_PORTS_UTIL event  Was missing a umask name.
+
+2017-10-17  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/ctests/version.c: ctests: version, add INCREMENT field  at the
+	  request of Steve Kaufmann
+	* src/ctests/Makefile.recipies, src/ctests/version.c: ctests: re-
+	  enable version test  not sure why it was disabled
+	* src/ctests/Makefile.recipies: ctests: alphabetize SERIAL tests in
+	  Makefile.recipes
+
+2017-10-13  Philip Vaccaro <pvaccaro@vols.utk.edu>
+
+	* src/components/powercap/tests/Makefile,
+	  src/components/powercap/tests/powercap_limit.c: added simple limit
+	  test for the powercap component.
+
+2017-10-09  Asim YarKhan <yarkhan@icl.utk.edu>
+
+	* src/components/nvml/linux-nvml.c: Big Fix NVML component: Fix
+	  problem with names when there are multiple identical GPUs  If
+	  multiple identical GPUs were available, the names were not mapped
+	  correctly.  Fixed event names to be
+	  "nvml:::Tesla_K40c:device_0:myevent" rather than
+	  "nvml:::Tesla_K40c_0:myevent".
+
+Fri Sep 29 00:25:09 2017 -0700  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/include/perfmon/perf_event.h,
+	  src/libpfm4/lib/events/intel_skl_events.h,
+	  src/libpfm4/lib/events/s390x_cpumf_events.h,
+	  src/libpfm4/lib/pfmlib_s390x_cpumf.c,
+	  src/libpfm4/perf_examples/Makefile,
+	  src/libpfm4/perf_examples/branch_smpl.c,
+	  src/libpfm4/perf_examples/perf_util.c: Update libpfm4\n\nCurrent
+	  with\n commit d1e7c96df60a00a371fdaa3b635ad4a38cee4c2f  add new
+	  branch_smpl.c perf_events example  This patch adds a new example to
+	  demo how to sample and parse the PERF_SAMPLE_BRANCH_STACK record
+	  format of perf_events. It will dump branches taken from the sampled
+	  command.
+
+2017-10-05  Asim YarKhan <yarkhan@icl.utk.edu>
+
+	* src/components/nvml/README, src/components/nvml/linux-nvml.c,
+	  src/components/nvml/linux-nvml.h,
+	  src/components/nvml/tests/HelloWorld.cu,
+	  src/components/nvml/tests/Makefile,
+	  .../nvml/tests/nvml_power_limiting_test.cu: Update NVML component:
+	  Support for power limiting using NVML  PAPI has added support for
+	  power limiting using NVML (on supported devices from the Kepler
+	  family or later).  The executable needs to have root permissions to
+	  change the power limits on the device.  We have added new events to
+	  the NVML component to support power management limits.  The
+	  nvml:::DEVICE:power_management_limit can be written (as well as
+	  read), but requires higher permissions (root level).  The limit is
+	  constrainted between a min and a max value, which can be read.
+	  When the component is unloaded, the power_management_limit should
+	  be reset to the initial value.
+	  nvml:::DEVICE:power_management_limit
+	  nvml:::DEVICE:power_management_limit_constraint_min
+	  nvml:::DEVICE:power_management_limit_constraint_max  A new test
+	  (nvml/tests/nvml_power_limiting_test.cu)/ was written to check if
+	  the writing functionality works (with the proper hardware and
+	  permissions).
+
+2017-10-04  Asim YarKhan <yarkhan@icl.utk.edu>
+
+	* src/components/nvml/linux-nvml.c, src/components/nvml/linux-nvml.h,
+	  src/components/nvml/tests/HelloWorld.cu: Style consistency and
+	  refactoring via astyle command.  No changes to the actual code were
+	  made here.
+
+2017-10-04  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/components/rapl/linux-rapl.c: rapl: add support for some Intel
+	  Atom models Goldmont / Gemini_Lake / Denverton
+	* src/components/rapl/linux-rapl.c: rapl: fix skylake SoC measurement
+	  support
+	* src/components/rapl/linux-rapl.c: rapl: add support for skylake SoC
+	  energy measurements
+	* src/components/rapl/linux-rapl.c: rapl: add Skylake-X / Kabylake
+	  support
+	* src/components/rapl/linux-rapl.c: rapl: centralize the "different
+	  DRAM units" code
+	* src/components/rapl/linux-rapl.c: rapl: merge like processors
+	* src/components/rapl/linux-rapl.c: rapl: convert chip detection to a
+	  switch statement
+	* src/components/rapl/linux-rapl.c: rapl: update the whitespace a bit
+
+2017-09-12  Heike Jagode (jagode@icl.utk.edu) <jagode@saturn.icl.utk.edu>
+
+	* .../infiniband_umad/linux-infiniband_umad.c, .../infiniband_umad
+	  /linux-infiniband_umad.h: Fixed papi_vector for infiniband_umad
+	  component.  The array of function pointers that the component
+	  defines must use the naming convention papi_vector_t _x_vector
+	  where x is the name of the component directory.  In this case, the
+	  name of the component directory is infiniband_umad and not
+	  infiniband.  This change has not been tested yet due to OFED lib
+	  issues on our local machines. There may be more changes required in
+	  order to get the infiniband_umad component to work properly.
+
+2017-09-11  Hanumanth <fhanuman@vols.utk.edu>
+
+	* man/man1/papi_avail.1, man/man1/papi_native_avail.1,
+	  src/utils/papi_avail.c, src/utils/papi_native_avail.c: Updating man
+	  and help pages for papi_avail and papi_native_avail
+
+2017-09-07  Asim YarKhan <yarkhan@icl.utk.edu>
+
+	* src/components/cuda/tests/nvlink_bandwidth.cu,
+	  .../cuda/tests/nvlink_bandwidth_cupti_only.cu: Update to CUDA
+	  component to support NVLink.  The CUDA component has been cleaned
+	  up and updated to support NVLink. NVLink metrics can not be
+	  measured properly in KERNEL event collection mode, so the CUPTI
+	  EventCollectionMode is transparently set to
+	  CUPTI_EVENT_COLLECTION_MODE_CONTINUOUS when a NVLink metric is
+	  being measured in an eventset.  For all other events and metrics,
+	  the CUDA component uses the KERNEL event collection mode.  A bug in
+	  the earlier version was that repeated calls to add CUDA events were
+	  failing because some structures were not cleaned up.  This should
+	  now be fixed.  A new nvlink test was added to the CUDA component
+	  tests.
+
+2017-08-31  Phil Mucci <phil@minimalmetrics.com>
+
+	* man/man1/papi_avail.1, man/man1/papi_clockres.1,
+	  man/man1/papi_command_line.1, man/man1/papi_component_avail.1,
+	  man/man1/papi_cost.1, man/man1/papi_decode.1,
+	  man/man1/papi_error_codes.1, man/man1/papi_event_chooser.1,
+	  man/man1/papi_hybrid_native_avail.1, man/man1/papi_mem_info.1,
+	  man/man1/papi_multiplex_cost.1, man/man1/papi_native_avail.1,
+	  man/man1/papi_version.1, man/man1/papi_xml_event_info.1,
+	  man/man3/PAPI_cleanup_eventset.3, man/man3/PAPI_destroy_eventset.3:
+	  Updating options for papi_avail/native_avail as well as all
+	  references to old mailing list
+
+2017-08-31  Asim YarKhan <yarkhan@icl.utk.edu>
+
+	* src/components/nvml/linux-nvml.c,
+	  src/components/nvml/tests/HelloWorld.cu,
+	  src/components/nvml/tests/Makefile: Minor updates to NVML component
+	  to enable it to compile and run without complaints
+
+2017-08-30  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/validation_tests/papi_br_prc.c,
+	  src/validation_tests/papi_br_tkn.c: validation: update papi_br_prc
+	  and papi_br_tkn for amd fam15h  amd fam15h doesn't have a
+	  conditional branch event so the measures have to be against total.
+	  for now print warning, maybe we should let it go w/o a warning.
+	* src/papi_events.csv: papi_events: add PAPI_BR_PRC event to amd
+	  fam15h
+	* src/papi_events.csv: papi_events: update PAPI_BR_PRC and
+	  PAPI_BR_TKN on sandybridge/ivybridge  They were using TOTAL
+	  branches for the derived branch events rather than CONDITIONAL like
+	  the other modern x86 processors were using.
+	* src/validation_tests/papi_br_tkn.c: validation_tests: papi_br_tkn:
+	  update to only count conditional branches
+	* src/validation_tests/papi_br_prc.c: validation_tests: papi_br_prc:
+	  make sure it is comparing conditional branches  was doing total
+	  branches, which made the test fail on skylake
+
+Mon Aug 21 23:55:46 2017 -0700  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/lib/pfmlib_intel_x86.c: Update libpfm4\n\nCurrent
+	  with\n commit a290dead7c1f351f8269a265c0d4a5f38a60ba29  fix usage
+	  of is_model_event() for Intel X86  This patch fixes a couple of
+	  problems introduced by commit: 77a5ac9d43b1 add model field to
+	  intel_x86_entry_t  The code in pfm_intel_x86_get_event_first() was
+	  incorrect. It was calling is_model_event() before checking if the
+	  index was within bounds. It should have been the opposite. Same
+	  issue in pfm_intel_x86_get_next_event(). This could cause SEGFAULT
+	  as report by Phil Mucci.  The patch also fixes the return value of
+	  pfm_intel_x86_get_event_first(). It was not calculated correctly.
+	  Reported-by: Phil Mucci <mucci@icl.utk.edu>
+
+2017-08-20  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/ctests/Makefile.recipies, src/ctests/failed_events.c: ctests:
+	  add failed_events test  it tries to create invalid events to make
+	  sure the event parser properly handles invalid events.
+
+2017-08-19  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/components/perf_event_uncore/tests/Makefile,
+	  .../perf_event_uncore/tests/perf_event_uncore.c,
+	  .../tests/perf_event_uncore_attach.c: perf_event_uncore: tests:
+	  update perf_event_uncore to use :cpu=0  This is the more common way
+	  of specifying uncore events. Rename the old test that uses
+	  PAPI_set_opt() to perf_event_uncore_attach
+	* .../tests/perf_event_uncore_cbox.c,
+	  .../tests/perf_event_uncore_lib.c,
+	  .../tests/perf_event_uncore_lib.h: perf_event_uncore: tests: update
+	  uncore events for recent processors
+	* src/ctests/zero_pthreads.c: ctests: zero_pthreads: remove
+	  extraneous printf when in quiet mode
+	* .../tests/perf_event_uncore_lib.c: perf_event_uncore: event list,
+	  add recent processors  libpfm4 still doesn't support regular
+	  Haswell, Broadwell, or Skylake machines
+	* .../perf_event_uncore/tests/perf_event_uncore.c,
+	  .../tests/perf_event_uncore_cbox.c,
+	  .../tests/perf_event_uncore_multiple.c: perf_event_uncore: tests:
+	  print a message indicating the problem on skip  also some
+	  whitespace cleanups
+	* src/components/perf_event/tests/event_name_lib.c: perf_event:
+	  tests: update event_name_lib for recent Intel processors
+	* src/components/perf_event/tests/event_name_lib.c: perf_event:
+	  tests: event_name_lib, clean up whitespace
+	* .../perf_event/tests/perf_event_offcore_response.c: perf_event:
+	  tests: update perf_event_offcore_response test  print an indicator
+	  of why we are skipping the test also some gratuitous whitespace
+	  cleanups
+	* src/ctests/zero_shmem.c: ctests: zero_shmem: document the code a
+	  little better
+	* src/ctests/zero_smp.c: ctests: zero_smp: make it actually do
+	  something on Linux  Linux can use the pthread code just like AIX
+	  although we don't validate the results, so this test could be
+	  another candidate for not being necessary anymore.
+	* src/ctests/zero_shmem.c: ctests: zero_shmem: minor cleanups  we
+	  pretty much always skip this test.  Is it needed anymore? What was
+	  it testing in the first place?  The code it calls (start_pes() )
+	  doesn't seem to exist anymore
+	* src/ctests/zero_omp.c, src/ctests/zero_pthreads.c: ctests: zero_omp
+	  and zero_pthread were skipping due to a typo  when updating the
+	  code I had left a stray ! before PAPI_query_event()
+
+2017-08-19  Vince Weaver <vince@deater.net>
+
+	* src/papi_events.csv: papi_events: the skylake fixes broke hsw/bdw
+	  this skylake-x change is way more trouble than it was worth.
+
+2017-08-19  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/papi_events.csv: papi_events: on skylake the SNP_FWD umask was
+	  renamed to SNP_HIT_WITH_FWD  This broke presets on skylake,
+	  skylake-x
+	* src/components/perf_event/pe_libpfm4_events.c: perf_event: fix
+	  uninitialized descr issue reported by valgrind  I don't think this
+	  is the skylake-x bug though
+
+2017-08-18  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/components/perf_event/pe_libpfm4_events.c: perf_event: clean up
+	  some whitespace in pe_libpfm4_events.c
+	* src/linux-memory.c: linux-memory: various errors when compiling
+	  with debug enabled  the new proc memory code had some mistakes in
+	  the debug messages that only appeared when compiled with --with-
+	  debug  Reported-by: Steve Kaufmann <sbk@cray.com>
+
+2017-08-17  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/papi_events.csv: papi_events: missed one of the skx event
+	  locations
+
+2017-08-16  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/papi_events.csv: papi_events: enable Skylake X support
+
+Sun Aug 6 00:22:52 2017 -0700  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/include/perfmon/pfmlib.h,
+	  src/libpfm4/lib/events/intel_skl_events.h,
+	  src/libpfm4/lib/pfmlib_common.c,
+	  src/libpfm4/lib/pfmlib_intel_skl.c,
+	  src/libpfm4/lib/pfmlib_intel_snbep_unc.c,
+	  src/libpfm4/lib/pfmlib_intel_x86.c,
+	  src/libpfm4/lib/pfmlib_intel_x86_priv.h,
+	  src/libpfm4/lib/pfmlib_priv.h, src/libpfm4/tests/validate_x86.c:
+	  Update libpfm4\n\nCurrent with\n commit
+	  efd16920194999fdf1146e9dab3f7435608a9479  add support for Intel
+	  Skylake X  This patch adds support for Intel Skylake X core PMU
+	  events. Based on
+	  download.01.org/perfmon/SKX/skylakex_core_v25.json.  New PMU is
+	  called skx.
+
+2017-08-07  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/papi_events.csv: papi_events: add initial AMD fam17h support
+	  not tested on actual hardware yet
+	* src/papi_events.csv: papi_events: fix the amd_fam16h PMU name  The
+	  way libpfm4 reports fam16h was modified a bit from my initial
+	  patches.  fam16h seems to be working now.
+
+Thu Jul 27 23:30:20 2017 -0700  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/README, src/libpfm4/docs/Makefile,
+	  src/libpfm4/docs/man3/libpfm_amd64_fam16h.3,
+	  src/libpfm4/docs/man3/libpfm_amd64_fam17h.3,
+	  src/libpfm4/docs/man3/libpfm_intel_bdx_unc_cbo.3,
+	  src/libpfm4/docs/man3/libpfm_intel_bdx_unc_ha.3,
+	  src/libpfm4/docs/man3/libpfm_intel_bdx_unc_imc.3,
+	  src/libpfm4/docs/man3/libpfm_intel_bdx_unc_irp.3,
+	  src/libpfm4/docs/man3/libpfm_intel_bdx_unc_pcu.3,
+	  src/libpfm4/docs/man3/libpfm_intel_bdx_unc_qpi.3,
+	  .../docs/man3/libpfm_intel_bdx_unc_r2pcie.3,
+	  src/libpfm4/docs/man3/libpfm_intel_bdx_unc_r3qpi.3,
+	  src/libpfm4/docs/man3/libpfm_intel_bdx_unc_sbo.3,
+	  src/libpfm4/docs/man3/libpfm_intel_bdx_unc_ubo.3,
+	  src/libpfm4/examples/showevtinfo.c,
+	  src/libpfm4/include/perfmon/pfmlib.h, src/libpfm4/lib/Makefile,
+	  src/libpfm4/lib/events/amd64_events_fam16h.h,
+	  src/libpfm4/lib/events/amd64_events_fam17h.h,
+	  src/libpfm4/lib/events/intel_bdx_unc_cbo_events.h,
+	  src/libpfm4/lib/events/intel_bdx_unc_ha_events.h,
+	  src/libpfm4/lib/events/intel_bdx_unc_imc_events.h,
+	  src/libpfm4/lib/events/intel_bdx_unc_irp_events.h,
+	  src/libpfm4/lib/events/intel_bdx_unc_pcu_events.h,
+	  src/libpfm4/lib/events/intel_bdx_unc_qpi_events.h,
+	  .../lib/events/intel_bdx_unc_r2pcie_events.h,
+	  .../lib/events/intel_bdx_unc_r3qpi_events.h,
+	  src/libpfm4/lib/events/intel_bdx_unc_sbo_events.h,
+	  src/libpfm4/lib/events/intel_bdx_unc_ubo_events.h,
+	  src/libpfm4/lib/pfmlib_amd64.c,
+	  src/libpfm4/lib/pfmlib_amd64_fam16h.c,
+	  src/libpfm4/lib/pfmlib_amd64_fam17h.c,
+	  src/libpfm4/lib/pfmlib_amd64_priv.h,
+	  src/libpfm4/lib/pfmlib_common.c,
+	  src/libpfm4/lib/pfmlib_intel_bdx_unc_cbo.c,
+	  src/libpfm4/lib/pfmlib_intel_bdx_unc_ha.c,
+	  src/libpfm4/lib/pfmlib_intel_bdx_unc_imc.c,
+	  src/libpfm4/lib/pfmlib_intel_bdx_unc_irp.c,
+	  src/libpfm4/lib/pfmlib_intel_bdx_unc_pcu.c,
+	  src/libpfm4/lib/pfmlib_intel_bdx_unc_qpi.c,
+	  src/libpfm4/lib/pfmlib_intel_bdx_unc_r2pcie.c,
+	  src/libpfm4/lib/pfmlib_intel_bdx_unc_r3qpi.c,
+	  src/libpfm4/lib/pfmlib_intel_bdx_unc_sbo.c,
+	  src/libpfm4/lib/pfmlib_intel_bdx_unc_ubo.c,
+	  src/libpfm4/lib/pfmlib_intel_snbep_unc.c,
+	  src/libpfm4/lib/pfmlib_intel_snbep_unc_priv.h,
+	  src/libpfm4/lib/pfmlib_priv.h,
+	  src/libpfm4/perf_examples/self_count.c,
+	  src/libpfm4/tests/validate_x86.c: Update libpfm4  Current with
+	  commit 72474c59d88512e49d9be7c4baa4355e8d8ad10a  fix typo in AMd
+	  Fam17h man page  PMU name was mistyped.
+
+2017-08-04  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/validation_tests/papi_l1_dcm.c,
+	  src/validation_tests/papi_l2_dcm.c: validation_tests: for the DCM
+	  tests up the allowed error to 5%  We don't want to fail too easily,
+	  and 5% seems reasonable. This lets the test pass on ARM64
+	  Dragonboard 401c
+	* src/linux-memory.c: linux-memory: add fallback generic Linux /sys
+	  cache size detection  This will allow getting cache sizes on
+	  architectures we don't have custom code for.  Currently this mostly
+	  means ARM64.
+	* src/validation_tests/papi_l1_dcm.c,
+	  src/validation_tests/papi_l2_dcm.c: validation_tests: don't crash
+	  if cachesize reported as zero
+	* src/validation_tests/branches_testcode.c: branches_testcode: add
+	  arm64 support
+
+2017-07-27  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/papi_events.csv, src/validation_tests/papi_l2_dca.c:
+	  validation_tests: trying to find out why PAPI_L2_DCA fails on
+	  Haswell  it's a mystery still.  One alternative is to switch the
+	  event to be the same as PAPI_L1_DCM but that seems like it would be
+	  cheating.
+	* src/validation_tests/papi_l2_dcw.c: validation_tests: papi_l2_dcw:
+	  shorten a warning message
+	* src/papi_events.csv: papi_events: note that libpfm4 Kaby Lake
+	  support is treated as part of Skylake
+	* src/validation_tests/Makefile.recipies,
+	  src/validation_tests/papi_l2_dcw.c: validation_tests: add
+	  PAPI_L2_DCW test
+	* src/validation_tests/Makefile.recipies,
+	  src/validation_tests/papi_l2_dcr.c: validation_tests: add
+	  PAPI_L2_DCR test
+	* src/validation_tests/papi_l2_dcm.c: validation_tests: PAPI_L2_DCM
+	  figured out a test that made sense
+	* src/validation_tests/Makefile.recipies,
+	  src/validation_tests/papi_l1_dcm.c: validation_tests: add
+	  PAPI_L1_DCM test
+	* src/validation_tests/Makefile.recipies,
+	  src/validation_tests/cache_testcode.c,
+	  src/validation_tests/papi_l2_dcm.c,
+	  src/validation_tests/testcode.h: validation_tests: first attempt at
+	  papi_l2_dcm test  disabled for now, as it's really hard to make a
+	  workable cache miss test on modern hardware.
+
+2017-07-26  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/ctests/Makefile, src/ctests/Makefile.recipies,
+	  src/ctests/child_overflow.c, src/ctests/exec_overflow.c,
+	  src/validation_tests/Makefile.recipies,
+	  src/validation_tests/busy_work.c, src/validation_tests/testcode.h:
+	  ctests: clean up the exec/child overflow tests  The exec_overflow
+	  test segfaults when using rdpmc  This is a bug in Linux.  I'm
+	  working on getting it fixed.
+
+2017-07-21  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/validation_tests/Makefile.recipies,
+	  src/validation_tests/cache_helper.c,
+	  src/validation_tests/cache_helper.h,
+	  src/validation_tests/cache_testcode.c,
+	  src/validation_tests/papi_l1_dca.c,
+	  src/validation_tests/papi_l2_dca.c,
+	  src/validation_tests/testcode.h: validation_tests: add PAPI_L2_DCA
+	  test  also adds some generic cache testing infrastructure
+	* src/validation_tests/papi_l1_dca.c: validation_tests: PAPI_L1_DCA
+	  fixes  had to find a machine that actually supported the event.  On
+	  AMD Fam15h the write count is 3x expected?  Need to investigate
+	  further.
+	* src/validation_tests/papi_br_prc.c: validation_tests: papi_br_prc,
+	  properly skip if event not found
+	* src/validation_tests/Makefile.recipies,
+	  src/validation_tests/papi_l1_dca.c: validation_tests: add
+	  PAPI_L1_DCA test
+
+2017-07-20  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/validation_tests/Makefile.recipies,
+	  src/validation_tests/papi_br_msp.c,
+	  src/validation_tests/papi_br_prc.c: validation_tests: add
+	  PAPI_BR_PRC test
+	* src/validation_tests/Makefile.recipies,
+	  src/validation_tests/papi_br_tkn.c: validation_tests: add
+	  PAPI_BR_TKN test
+	* src/validation_tests/Makefile.recipies,
+	  src/validation_tests/papi_br_ntk.c: validation_tests: add
+	  PAPI_BR_NTK test
+
+2017-07-07  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/papi_events.csv: papi_events: move haswell, skylake, and
+	  broadwell to traditional PAPI_REF_CYC  there's a slight chance this
+	  might break things for people, if so we can revert it.
+	* src/linux-timer.c: linux-timer: fix build warning on non-power
+	  build
+	* src/ctests/flops.c, src/validation_tests/flops_testcode.c,
+	  src/validation_tests/papi_dp_ops.c,
+	  src/validation_tests/papi_fp_ops.c,
+	  src/validation_tests/papi_sp_ops.c: validation: make the flops
+	  tests handle that POWER has fused multiply-add  PAPI_DP_OPS and
+	  PAPI_SP_OPS still fail, need to audit what the event is doing
+	* src/papi_events.csv: POWER8: add a few branch preset events  they
+	  pass the validation tests, not sure why they weren't enabled
+	  originally
+	* src/validation_tests/branches_testcode.c: validation: add POWER
+	  branches testcode  not sure I got the clobbers right
+	* src/components/perf_event/perf_helpers.h,
+	  src/validation_tests/papi_tot_ins.c: POWER: fix some compiler
+	  warnings
+
+2016-10-18  Phil Mucci <phil@minimalmetrics.com>
+
+	* src/linux-timer.c: Ensure stdint gets included for all Linuxen.
+	* src/linux-timer.c: Some Linuxen need stdint to get the uint64_t
+	  type.
+
+2016-10-14  Phil Mucci <phil@minimalmetrics.com>
+
+	* src/linux-lock.h: Restructured unlock code to avoid warnings.
+	  Tested against 80 threads on Power8
+
+2016-10-12  Phil Mucci <phil@minimalmetrics.com>
+
+	* src/linux-timer.c: PPC64/PPC fast timer fixup.
+
+2017-07-07  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/linux-timer.c: linux-timer: allow using fast timer for
+	  get_real_cycles() on POWER
+
+2016-07-12  Phil Mucci <phil@minimalmetrics.com>
+
+	* src/linux-timer.c, src/linux-timer.h: First pass at good rdtsc for
+	  Power7/8
+
+2017-07-03  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/ctests/flops.c, src/ctests/hl_rates.c,
+	  src/validation_tests/Makefile.recipies,
+	  src/validation_tests/flops.c,
+	  src/validation_tests/flops_testcode.c,
+	  src/validation_tests/flops_validation.c,
+	  src/validation_tests/papi_dp_ops.c,
+	  src/validation_tests/papi_fp_ops.c,
+	  src/validation_tests/papi_sp_ops.c,
+	  src/validation_tests/testcode.h: validation_tests: add tests for
+	  PAPI_SP_OPS and PAPI_DP_OPS  extend the flops_testcode as well, to
+	  have both float and double versions.
+	* src/validation_tests/papi_ref_cyc.c: validation_tests:
+	  papi_ref_cyc: update test to work on older systems  it's actually
+	  the newer (haswell/broadwell/skylake) that are using a different
+	  event than the older systems.  Make the test check for the old
+	  behavior.
+
+2017-07-02  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/ctests/Makefile.recipies, src/ctests/cycle_ratio.c,
+	  src/validation_tests/Makefile.recipies,
+	  src/validation_tests/flops_testcode.c,
+	  src/validation_tests/papi_ref_cyc.c,
+	  src/validation_tests/testcode.h: validation_tests: move cycle_ratio
+	  test to be papi_ref_cyc test
+	* src/ctests/cycle_ratio.c: ctests: rewrite cycle_ratio test  on
+	  Intel platforms PAPI_REF_CYC is a fixed 100MHz cycle count  the
+	  test was making the assumption that PAPI_REF_CYC was equal to the
+	  max design freq (not turboboost) and thus as far as I can tell it
+	  never would return the right answer.  This test should probably be
+	  moved to validation_tests.
+
+2017-07-01  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/ctests/Makefile.recipies, src/ctests/branches.c, src/ctests
+	  /sdsc-mpx.c, src/ctests/sdsc2.c: ctests: migrate all other users of
+	  dummy3() workload
+	* src/ctests/Makefile.recipies, src/ctests/sdsc4-mpx.c,
+	  src/validation_tests/flops_testcode.c,
+	  src/validation_tests/testcode.h: ctests: move the "dummy3" workload
+	  to the common workload library
+	* src/ctests/sdsc4-mpx.c: ctests: sdsc4-mpx: fix failing on recent
+	  Intel machines  the multiplexing of an event with small results
+	  (PAPI_SR_INS in this case) has high variance, so don't use it for
+	  validation.  There was code trying to do this but it wasn't
+	  working.
+
+2017-06-30  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/ctests/first.c, src/ctests/matrix-hl.c, src/ctests/zero_omp.c,
+	  src/ctests/zero_pthreads.c: ctests: catch lack of CPU component
+	  earlier  gets rid of extreaneous SKIPPED in the output of
+	  run_tests.sh
+	* src/components/cuda/tests/HelloWorld.cu,
+	  src/components/cuda/tests/Makefile: tests:cuda: make the HelloWorld
+	  test more like a standard PAPI test
+	* src/validation_tests/Makefile.recipies: validation_tests: fix
+	  linking against a CUDA enabled PAPI  Fix suggested by Steve
+	  Kaufmann <sbk@cray.com>
+	* src/testlib/papi_test.h, src/testlib/test_utils.c: testlib: make it
+	  so it can compile with c++  this lets us link against it from the
+	  CUDA tests
+	* src/components/cuda/sampling/gpu_activity.c: tests: cuda: fix
+	  sampling/gpu_activity to compile without warnings
+	* src/Makefile.inc: tests: make the component tests build command be
+	  the same as ctests/ftests
+	* src/ctests/calibrate.c: ctests: calibrate: turn off printf if
+	  TEST_QUIET  missed this one when testing because test machine
+	  skipped it due to lack of floating point events
+
+2017-06-29  Vince Weaver <vincent.weaver@maine.edu>
+
+	* .../tests/perf_event_amd_northbridge.c,
+	  src/ctests/Makefile.recipies, src/ctests/cycle_ratio.c,
+	  src/ctests/derived.c, src/ctests/multiplex1_pthreads.c,
+	  src/ctests/multiplex3_pthreads.c, src/ctests/overflow.c,
+	  src/ctests/overflow_allcounters.c, src/ctests/overflow_index.c,
+	  src/ctests/overflow_pthreads.c, src/ctests/overflow_twoevents.c,
+	  src/ctests/prof_utils.c, src/ctests/prof_utils.h,
+	  src/ctests/profile.c, src/ctests/profile_twoevents.c,
+	  src/ctests/realtime.c, src/ctests/reset.c,
+	  src/ctests/reset_multiplex.c, src/ctests/sdsc-mpx.c,
+	  src/ctests/sdsc.c, src/ctests/sdsc4-mpx.c, src/ctests/sdsc4.c,
+	  src/ctests/shlib.c, src/ctests/tenth.c, src/ctests/thrspecific.c,
+	  src/testlib/papi_test.h: testlib: remove the hack where all
+	  printf's are #defined to something else  Explicitly check
+	  everywhere for TESTS_QUIET or equivelent, rather than using c-pre-
+	  processor macros to redefine printf
+	* src/papi.c, src/testlib/test_utils.c: tests: set the ctest debug
+	  mode to VERBOSE by default for tests  the TESTS_QUIET mode was
+	  turning *off* verbose debugging, which meant that PAPIERROR() calls
+	  wouldn't show up during a ./run_tests.sh
+	* src/components/perf_event/perf_event.c: perf_event: properly
+	  initialize the mmap_addr structure  It wasn't always being set to
+	  NULL, and so on some tests the code would try to munmap() it even
+	  though it wasn't mapped.
+	* src/testlib/test_utils.c: tests: enable color in test status
+	  messages  this has been an optional feature for a long time, if you
+	  enabled the environment variable TESTS_COLOR=y  this change makes
+	  it default to being on (you can disable with export TESTS_COLOR=n
+	  also it should automatically detect if you are piping to a file and
+	  disable colors in the case too
+	* src/validation_tests/Makefile,
+	  src/validation_tests/Makefile.recipies: validation_tests: always
+	  include -lrt on the tests  Should be harmless, and I don't always
+	  test on an old enough machine to trigger the problem.
+	* src/ctests/forkexec.c, src/ctests/forkexec2.c,
+	  src/ctests/forkexec3.c, src/ctests/forkexec4.c,
+	  src/ctests/multiplex3_pthreads.c,
+	  src/ctests/system_child_overflow.c: ctests: make the fork/exec
+	  tests only print "PASSED" once  this makes the run_test.sh input
+	  look a lot nicer
+	* src/run_tests.sh, src/testlib/test_utils.c: tests: make the output
+	  from run_tests.sh more compact
+
+2017-06-28  Vince Weaver <vincent.weaver@maine.edu>
+
+	* .../perf_event/tests/perf_event_system_wide.c: perf_event: tests,
+	  make perf_event_system_wide use INS rather than CYC  cycles varied
+	  too much, making the validation fail
+	* src/validation_tests/Makefile.recipies,
+	  src/validation_tests/papi_br_cn.c,
+	  src/validation_tests/papi_br_ucn.c: validation_tests: add tests for
+	  PAPI_BR_CN and PAPI_BR_UCN
+	* src/validation_tests/flops.c: validation_tests: flops: wasn't
+	  falling back properly if no FLOPS event
+	* src/utils/Makefile, src/validation_tests/Makefile.recipies: tests:
+	  clean up the Makefiles
+	* src/utils/print_header.c: utils: print_header: print the operating
+	  system version in the header
+	* .../tests/perf_event_amd_northbridge.c: perf_event_uncore: the
+	  perf_event_amd_northbridge test wasn't working  it maybe never
+	  worked at all?  It was hardcoded to thinking it was running on a
+	  3.9 kernel always.
+	* src/ctests/Makefile, src/ctests/Makefile.recipies,
+	  src/ctests/zero.c: ctests: zero: complete transition from FLOPS to
+	  INS as metric  this will make it more likely to be runnable on
+	  modern machines.
+	* src/ctests/vector.c, src/validation_tests/vector_testcode.c:
+	  validation_tests: move the unused vector.c code  maybe we should
+	  remove it.  It was never built as far as I can tell.
+	* src/validation_tests/Makefile.recipies,
+	  src/validation_tests/flops.c: validation_tests: add a generic flops
+	  test based on hl_rates  we do a lot of testing of the high-level
+	  interface but not as much of the regular PAPI interface.
+	* src/ctests/Makefile.recipies, src/ctests/hl_rates.c,
+	  src/validation_tests/flops_testcode.c,
+	  src/validation_tests/testcode.h: ctests: hl_rates: clean up and fix
+	  extraneous error message  the error message was due to the way
+	  TESTS_QUIET is passed as a command line argument.  also made it use
+	  the same matrix-multiply code that the flops test uses.  also added
+	  some validation to the results.
+	* src/ctests/all_events.c: ctests: all_events: issue warning if
+	  preset cannot be created  specifically this came up on an AMD
+	  fam15h system where the PAPI_L1_ICH event cannot be created due to
+	  Linux stealing a counter for the NMI watchdog
+	* src/validation_tests/papi_hw_int.c: validation_tests: papi_hw_int
+	  explicitly mark large constant as ULL  compiler was warning on
+	  32-bit machine
+	* src/validation_tests/papi_ld_ins.c,
+	  src/validation_tests/papi_sr_ins.c,
+	  src/validation_tests/papi_tot_cyc.c: validation_tests:  a few tests
+	  had the !quiet check inverted
+	* src/validation_tests/papi_hw_int.c: validation_tests: fix
+	  papi_hw_int looping forever  somehow the loop exit line got lost
+	* src/validation_tests/Makefile.recipies,
+	  src/validation_tests/matrix_multiply.c,
+	  src/validation_tests/matrix_multiply.h,
+	  src/validation_tests/papi_ld_ins.c,
+	  src/validation_tests/papi_sr_ins.c: validation_tests: add
+	  PAPI_SR_INS test
+	* src/validation_tests/Makefile.recipies,
+	  src/validation_tests/matrix_multiply.c,
+	  src/validation_tests/matrix_multiply.h,
+	  src/validation_tests/papi_hw_int.c,
+	  src/validation_tests/papi_ld_ins.c: validation_tests: add
+	  PAPI_LD_INS test
+	* src/run_tests.sh, src/validation_tests/Makefile.recipies,
+	  src/validation_tests/papi_hw_int.c: validation_tests: add
+	  PAPI_HW_INT test
+
+2017-06-27  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/run_tests_exclude.txt: run_tests_exclude: add attach_target
+	  not really a test so we shouldn't run it
+	* src/ctests/byte_profile.c, src/ctests/earprofile.c,
+	  src/ctests/prof_utils.c, src/ctests/prof_utils.h:
+	  ctests/prof_utils: remove prof_init() helper  It didn't do much
+	  more than a papi_init, probably better to have each file do that in
+	  the open.
+	* src/ctests/inherit.c, src/ctests/ipc.c, src/ctests/johnmay2.c,
+	  src/ctests/krentel_pthreads.c, src/ctests/kufrin.c, src/ctests/low-
+	  level.c, src/ctests/mendes-alt.c, src/ctests/multiplex1.c,
+	  src/ctests/multiplex1_pthreads.c, src/ctests/multiplex2.c,
+	  src/ctests/multiplex3_pthreads.c, src/ctests/overflow.c,
+	  src/ctests/overflow2.c, src/ctests/overflow3_pthreads.c,
+	  src/ctests/overflow_allcounters.c, src/ctests/overflow_index.c,
+	  src/ctests/overflow_one_and_read.c,
+	  src/ctests/overflow_single_event.c,
+	  src/ctests/overflow_twoevents.c, src/ctests/prof_utils.c,
+	  src/ctests/profile.c, src/ctests/profile_pthreads.c,
+	  src/ctests/profile_twoevents.c, src/ctests/remove_events.c,
+	  src/ctests/sprofile.c, src/ctests/zero.c, src/ctests/zero_flip.c,
+	  src/ctests/zero_named.c, src/testlib/test_utils.c: ctests: skip
+	  rather than fail if no events available
+
+2017-06-26  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/ctests/first.c, src/ctests/mpifirst.c,
+	  src/ctests/multiattach.c, src/ctests/multiattach2.c,
+	  src/testlib/test_utils.c: testlib: fix add_two_events()  was not
+	  setting some values, causing many tests to fail
+	* src/ctests/attach2.c, src/ctests/system_overflow.c: ctests:
+	  compiler warning caught two lack-of-braces mistakes
+	* src/ctests/byte_profile.c, src/ctests/code2name.c,
+	  src/ctests/describe.c, src/testlib/test_utils.c: tests: more
+	  changes to skip instead of fail if no events available
+	* src/ctests/Makefile.recipies, src/ctests/child_overflow.c,
+	  src/ctests/exec_overflow.c, src/ctests/fork_exec_overflow.c,
+	  src/ctests/fork_overflow.c, src/ctests/system_child_overflow.c,
+	  src/ctests/system_overflow.c: ctests: break up the
+	  for_exec_overflow test  it was really four benchmarks with some
+	  ifdefs  the proper way to do that would be to have a common C file
+	  and link against it for the shared routines, rather than using the
+	  pre-processor
+	* src/ctests/attach2.c, src/ctests/attach3.c,
+	  src/ctests/attach_cpu.c: ctests: have attach tests cleanly skip if
+	  no events available
+	* src/testlib/test_utils.c: testlib: update add_two_events to skip()
+	  if not events found
+	* src/ctests/mendes-alt.c, src/ctests/multiplex2.c,
+	  src/ctests/multiplex3_pthreads.c, src/ctests/sdsc.c,
+	  src/ctests/sdsc2.c, src/ctests/sdsc4.c, src/testlib/papi_test.h,
+	  src/testlib/test_utils.c: testutils: remove init_multiplex() test
+	  helper  the only benefit it had over calling PAPI_multiplex_init()
+	  was a domain workaround for perfctr+power6 systems.  Ideally not
+	  many of those systems are around anymore, an in any case a proper
+	  fix would have the perfctr component handle that, not the testing
+	  library.
+	* .../perf_event/tests/perf_event_system_wide.c,
+	  .../perf_event/tests/perf_event_user_kernel.c, src/ctests/api.c,
+	  src/ctests/byte_profile.c, src/ctests/high-level.c,
+	  src/ctests/hl_rates.c, src/validation_tests/papi_br_ins.c,
+	  src/validation_tests/papi_br_msp.c,
+	  src/validation_tests/papi_tot_cyc.c,
+	  src/validation_tests/papi_tot_ins.c: tests: try to "skip" rather
+	  than "fail" if no events available
+	* src/ctests/derived.c: ctests: derived: fix warning found on older
+	  gcc
+	* src/ctests/high-level2.c: ctests: clean up high-level2 test  skip
+	  on machine without flops/flips event
+	* src/components/Makefile_comp_tests.target.in: components test: fix
+	  another build issue  be sure to use local copy of papi.h
+	* src/components/Makefile_comp_tests.target.in: component tests: fix
+	  build issue  was trying to use the system version of libpapi.a
+	  instead of local version
+	* src/components/appio/tests/Makefile,
+	  src/components/appio/tests/appio_list_events.c,
+	  src/components/appio/tests/appio_values_by_code.c,
+	  src/components/coretemp/tests/Makefile,
+	  src/components/example/tests/Makefile,
+	  src/components/host_micpower/tests/Makefile,
+	  src/components/infiniband/tests/Makefile,
+	  .../infiniband/tests/infiniband_values_by_code.c,
+	  src/components/infiniband_umad/tests/Makefile,
+	  .../tests/infiniband_umad_values_by_code.c,
+	  src/components/lustre/tests/Makefile,
+	  src/components/micpower/tests/Makefile,
+	  src/components/mx/tests/Makefile,
+	  src/components/net/tests/Makefile,
+	  src/components/perf_event/tests/Makefile,
+	  src/components/perf_event_uncore/tests/Makefile,
+	  src/components/powercap/tests/Makefile,
+	  src/components/rapl/tests/Makefile,
+	  src/components/stealtime/tests/Makefile: components: update
+	  component test Makefiles to include Makefile_comp_test.target
+	* src/components/Makefile_comp_tests.target.in: components: update
+	  Makefile_comp_test.target.in  should now be usable by the
+	  components without many Makefile changes
+	* src/components/perf_event/tests/Makefile,
+	  src/components/perf_event/tests/nmi_watchdog.c,
+	  src/ctests/Makefile.recipies, src/ctests/nmi_watchdog.c: ctests:
+	  nmi_watchdog is a perf_event specific test, move it there
+	* src/components/Makefile_comp_tests.target.in,
+	  src/components/README, src/components/perf_event/tests/Makefile:
+	  components: update the autoconfigure to generate more useful
+	  Makefile.target.in  although I don't think most components are
+	  using it at all
+
+2017-06-26  Asim YarKhan <yarkhan@icl.utk.edu>
+
+	* src/components/cuda/Makefile.cuda.in, src/components/cuda/README,
+	  src/components/cuda/Rules.cuda, src/components/cuda/configure,
+	  src/components/cuda/configure.in, src/components/cuda/linux-cuda.c,
+	  src/components/cuda/sampling/Makefile,
+	  src/components/cuda/tests/HelloWorld.cu,
+	  src/components/cuda/tests/Makefile,
+	  src/components/cuda/tests/simpleMultiGPU.cu: CUDA component update:
+	  Support for CUPTI metrics (early release)  This commit adds support
+	  for CUPTI metrics, which are higher level measures that may be
+	  decompsed into multiple lower level CUPTI events.  Known problems
+	  and limitations in early release of metric support * Only sets of
+	  metrics and events that can be gathered in a single pass are
+	  supported.  Transparent multi-pass support is expected * All
+	  metrics are returned as long long integers, which means that CUPTI
+	  double precision values will be truncated, possibly severely. * The
+	  NVLink metrics have been disabled for this alpha release.
+
+2017-06-23  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/validation_tests/papi_fp_ops.c: validation: papi_fp_ops, skip
+	  (not fail) if PAPI_FP_OPS unavailable
+	* src/ctests/Makefile, src/ctests/Makefile.recipies,
+	  src/ctests/Makefile.target.in, src/ctests/flops.c: ctests: flops,
+	  update to use some of the validate_tests infrastructure
+	* src/validation_tests/Makefile.recipies,
+	  src/validation_tests/flops_testcode.c,
+	  src/validation_tests/papi_fp_ops.c,
+	  src/validation_tests/testcode.h: validation_tests: add papi_fp_ops
+	  test  tested on an AMD fam15h machine
+	* src/components/powercap/tests/powercap_basic.c: powercap: fix
+	  compiler warnings in the powercap_basic test
+	* src/ctests/flops.c: ctests: update flops test
+	* src/ctests/api.c: ctests: update api test  only seems to test the
+	  high-level API
+	* src/ctests/all_native_events.c: ctests: update all_native_events
+	  removed some ancient warnings about uncore/offcore events. Should
+	  not be a problem on libpfm4/perf_event
+	* src/ctests/all_events.c: ctests: clean up all_events test
+	* src/components/appio/tests/appio_list_events.c,
+	  src/components/appio/tests/appio_test_blocking.c,
+	  .../appio/tests/appio_test_fread_fwrite.c,
+	  src/components/appio/tests/appio_test_pthreads.c,
+	  src/components/appio/tests/appio_test_read_write.c,
+	  src/components/appio/tests/appio_test_recv.c,
+	  src/components/appio/tests/appio_test_seek.c,
+	  src/components/appio/tests/appio_test_select.c,
+	  src/components/appio/tests/appio_test_socket.c,
+	  src/components/appio/tests/appio_values_by_code.c,
+	  src/components/appio/tests/appio_values_by_name.c,
+	  src/components/coretemp/tests/coretemp_basic.c,
+	  src/components/coretemp/tests/coretemp_pretty.c,
+	  src/components/example/tests/example_basic.c,
+	  .../example/tests/example_multiple_components.c,
+	  .../host_micpower/tests/host_micpower_basic.c,
+	  .../infiniband/tests/infiniband_list_events.c,
+	  .../infiniband/tests/infiniband_values_by_code.c,
+	  .../tests/infiniband_umad_list_events.c,
+	  src/components/libmsr/tests/libmsr_basic.c,
+	  src/components/lustre/tests/lustre_basic.c,
+	  src/components/micpower/tests/micpower_basic.c,
+	  src/components/mx/tests/mx_basic.c,
+	  src/components/mx/tests/mx_elapsed.c,
+	  src/components/net/tests/net_list_events.c,
+	  src/components/net/tests/net_values_by_code.c,
+	  src/components/net/tests/net_values_by_name.c,
+	  .../perf_event/tests/perf_event_offcore_response.c,
+	  .../perf_event/tests/perf_event_system_wide.c,
+	  .../perf_event/tests/perf_event_user_kernel.c,
+	  .../tests/perf_event_amd_northbridge.c,
+	  .../perf_event_uncore/tests/perf_event_uncore.c,
+	  .../tests/perf_event_uncore_cbox.c,
+	  .../tests/perf_event_uncore_multiple.c,
+	  src/components/powercap/tests/powercap_basic.c,
+	  src/components/rapl/tests/rapl_basic.c,
+	  src/components/rapl/tests/rapl_overflow.c,
+	  src/components/stealtime/tests/stealtime_basic.c,
+	  src/components/vmware/tests/vmware_basic.c,
+	  src/ctests/all_events.c, src/ctests/all_native_events.c,
+	  src/ctests/api.c, src/ctests/attach2.c, src/ctests/attach3.c,
+	  src/ctests/attach_cpu.c, src/ctests/branches.c,
+	  src/ctests/byte_profile.c, src/ctests/calibrate.c,
+	  src/ctests/case1.c, src/ctests/case2.c,
+	  src/ctests/clockres_pthreads.c, src/ctests/cmpinfo.c,
+	  src/ctests/code2name.c, src/ctests/cycle_ratio.c,
+	  src/ctests/data_range.c, src/ctests/derived.c,
+	  src/ctests/describe.c, src/ctests/disable_component.c,
+	  src/ctests/dmem_info.c, src/ctests/earprofile.c,
+	  src/ctests/eventname.c, src/ctests/exec.c, src/ctests/exec2.c,
+	  src/ctests/exeinfo.c, src/ctests/first.c, src/ctests/flops.c,
+	  src/ctests/fork.c, src/ctests/fork2.c,
+	  src/ctests/fork_exec_overflow.c, src/ctests/forkexec.c,
+	  src/ctests/forkexec2.c, src/ctests/forkexec3.c,
+	  src/ctests/forkexec4.c, src/ctests/get_event_component.c,
+	  src/ctests/high-level.c, src/ctests/high-level2.c,
+	  src/ctests/hl_rates.c, src/ctests/hwinfo.c, src/ctests/inherit.c,
+	  src/ctests/ipc.c, src/ctests/johnmay2.c,
+	  src/ctests/krentel_pthreads.c, src/ctests/kufrin.c,
+	  src/ctests/locks_pthreads.c, src/ctests/low-level.c, src/ctests
+	  /matrix-hl.c, src/ctests/max_multiplex.c, src/ctests/memory.c,
+	  src/ctests/mendes-alt.c, src/ctests/multiattach.c,
+	  src/ctests/multiattach2.c, src/ctests/multiplex1.c,
+	  src/ctests/multiplex1_pthreads.c, src/ctests/multiplex2.c,
+	  src/ctests/multiplex3_pthreads.c, src/ctests/nmi_watchdog.c,
+	  src/ctests/omptough.c, src/ctests/overflow.c,
+	  src/ctests/overflow2.c, src/ctests/overflow3_pthreads.c,
+	  src/ctests/overflow_allcounters.c,
+	  src/ctests/overflow_force_software.c, src/ctests/overflow_index.c,
+	  src/ctests/overflow_one_and_read.c, src/ctests/overflow_pthreads.c,
+	  src/ctests/overflow_single_event.c,
+	  src/ctests/overflow_twoevents.c, src/ctests/p4_lst_ins.c,
+	  src/ctests/profile.c, src/ctests/profile_pthreads.c,
+	  src/ctests/profile_twoevents.c, src/ctests/pthrtough.c,
+	  src/ctests/pthrtough2.c, src/ctests/realtime.c,
+	  src/ctests/remove_events.c, src/ctests/reset.c,
+	  src/ctests/reset_multiplex.c, src/ctests/sdsc.c,
+	  src/ctests/sdsc2.c, src/ctests/sdsc4.c, src/ctests/second.c,
+	  src/ctests/shlib.c, src/ctests/sprofile.c, src/ctests/tenth.c,
+	  src/ctests/thrspecific.c, src/ctests/timer_overflow.c,
+	  src/ctests/virttime.c, src/ctests/zero.c, src/ctests/zero_attach.c,
+	  src/ctests/zero_flip.c, src/ctests/zero_fork.c,
+	  src/ctests/zero_named.c, src/ctests/zero_omp.c,
+	  src/ctests/zero_pthreads.c, src/ctests/zero_smp.c,
+	  src/testlib/papi_test.h, src/testlib/test_utils.c,
+	  src/validation_tests/papi_br_ins.c,
+	  src/validation_tests/papi_br_msp.c,
+	  src/validation_tests/papi_tot_cyc.c,
+	  src/validation_tests/papi_tot_ins.c: testlib: remove the "free
+	  variables" option from test_pass()  It was only used by a small
+	  handfull of tests, and wasn't really strictly necessary anyway.
+	  test_pass() should pass the test and that's all.
+	* src/ctests/zero.c: ctests: zero: start cleaning up this test
+	* src/validation_tests/Makefile.recipies: validation_tests:
+	  clock_gettime() requires -lrt on older versions of glibc
+
+2017-06-22  Will Schmidt <will_schmidt@vnet.ibm.com>
+
+	* src/linux-memory.c, src/papi_events.csv: PAPI power9 event list
+	  presets  Here is an initial set of events and changes to help
+	  support Power9.  This is based on similar changes that were made
+	  for power8 when initial support was added there.  I've updated the
+	  event names to match what we expect to have in power9, and have
+	  done compile/build/ sniff tests.
+
+2017-06-22  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/ftests/Makefile.target.in: ftests: fortran tests weren't
+	  getting the TOPTFLAGS var set
+	* src/testlib/test_utils.c: testlib: fix colors not turning off in
+	  pass/fail indicator
+	* src/ctests/api.c, src/ctests/attach2.c, src/ctests/attach3.c,
+	  src/ctests/attach_cpu.c, src/ctests/inherit.c,
+	  src/ctests/multiattach.c, src/ctests/multiattach2.c,
+	  src/ctests/zero_attach.c, src/testlib/papi_test.h,
+	  src/testlib/test_utils.c: testlib: update the way pass/fail is
+	  printed  It's been bugging me for years that they don't line up
+	* src/run_tests.sh: run_tests.sh: run the validation tests too
+	* src/Makefile.inc: Makefile.inc: make it compile the
+	  validation_tests
+	* src/validation_tests/Makefile.recipies,
+	  src/validation_tests/papi_br_msp.c: validation-tests: add
+	  papi_br_msp test
+	* src/validation_tests/Makefile.recipies,
+	  src/validation_tests/branches_testcode.c,
+	  src/validation_tests/matrix_multiply.c,
+	  src/validation_tests/matrix_multiply.h,
+	  src/validation_tests/papi_br_ins.c,
+	  src/validation_tests/testcode.h: validation_tests: add papi_br_ins
+	  test
+	* src/validation_tests/Makefile.recipies,
+	  src/validation_tests/papi_tot_cyc.c: validation_tests: add
+	  papi_tot_cyc test
+	* src/Makefile.inc: fix "make install-all"  had some extraneous ".."
+	  after some previous changes
+	* src/configure, src/configure.in,
+	  src/validation_tests/Makefile.target.in,
+	  src/validation_tests/papi_tot_ins.c: validation_tests: update
+	  configure so it sets up the Makefile
+	* src/testlib/papi_test.h, src/testlib/test_utils.c: testlib:
+	  papi_print_header() lives with the utils code now
+	* src/testlib/papi_test.h, src/testlib/test_utils.c: testlib: make
+	  tests_quiet() return an integer  This way we don't have to depend
+	  on the global var TESTS_QUIET if we don't want to.
+	* src/validation_tests/Makefile,
+	  src/validation_tests/Makefile.recipies,
+	  src/validation_tests/Makefile.target.in,
+	  src/validation_tests/display_error.c,
+	  src/validation_tests/display_error.h,
+	  src/validation_tests/instructions_testcode.c,
+	  src/validation_tests/papi_tot_ins.c,
+	  src/validation_tests/testcode.h: validation_tests: add initial
+	  papi_tot_ins test  it is not hooked up to the build system yet
+	* src/ctests/multiplex1.c, src/ctests/multiplex2.c,
+	  src/ctests/second.c, src/ctests/sprofile.c, src/ctests/virttime.c,
+	  src/ctests/zero_attach.c, src/ctests/zero_flip.c,
+	  src/ctests/zero_fork.c, src/ctests/zero_omp.c,
+	  src/ctests/zero_pthreads.c: ctests: more printf/TESTS_QUIET
+	  conversions
+	* src/testlib/fpapi_test.h: ftests: missing define was making
+	  second.F fail
+	* src/ctests/johnmay2.c, src/ctests/krentel_pthreads.c,
+	  src/ctests/kufrin.c, src/ctests/locks_pthreads.c,
+	  src/ctests/memory.c, src/ctests/multiattach.c,
+	  src/ctests/multiattach2.c, src/ctests/multiplex1.c: ctests: more
+	  printf/TESTS_QUIET fixes
+
+2017-06-21  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/ctests/all_events.c, src/ctests/all_native_events.c,
+	  src/ctests/attach2.c, src/ctests/attach3.c,
+	  src/ctests/attach_cpu.c, src/ctests/byte_profile.c,
+	  src/ctests/calibrate.c, src/ctests/cmpinfo.c,
+	  src/ctests/code2name.c, src/ctests/cycle_ratio.c,
+	  src/ctests/exeinfo.c, src/ctests/fork_exec_overflow.c,
+	  src/ctests/hl_rates.c, src/ctests/hwinfo.c: ctests: explicitly
+	  block printfs with TESTS_QUIET  There was some hackery with the
+	  preprocessor to avoid this but that wasn't a good solution.
+	* src/testlib/do_loops.h, src/testlib/papi_test.h,
+	  src/testlib/test_utils.c: testlib: minor papi_test.h cleanups
+	* .../perf_event/tests/perf_event_offcore_response.c,
+	  .../perf_event/tests/perf_event_system_wide.c,
+	  .../perf_event/tests/perf_event_user_kernel.c,
+	  .../tests/perf_event_amd_northbridge.c,
+	  .../perf_event_uncore/tests/perf_event_uncore.c,
+	  .../perf_event_uncore/tests/perf_event_uncore_cbox.c,
+	  .../tests/perf_event_uncore_multiple.c, src/ctests/attach2.c,
+	  src/ctests/attach3.c, src/ctests/attach_cpu.c,
+	  src/ctests/attach_target.c, src/ctests/branches.c,
+	  src/ctests/burn.c, src/ctests/byte_profile.c,
+	  src/ctests/cycle_ratio.c, src/ctests/derived.c,
+	  src/ctests/dmem_info.c, src/ctests/earprofile.c,
+	  src/ctests/first.c, src/ctests/high-level.c, src/ctests/inherit.c,
+	  src/ctests/johnmay2.c, src/ctests/krentel_pthreads.c,
+	  src/ctests/kufrin.c, src/ctests/locks_pthreads.c, src/ctests/low-
+	  level.c, src/ctests/matrix-hl.c, src/ctests/memory.c,
+	  src/ctests/multiattach.c, src/ctests/multiattach2.c,
+	  src/ctests/multiplex1.c, src/ctests/multiplex1_pthreads.c,
+	  src/ctests/multiplex2.c, src/ctests/multiplex3_pthreads.c,
+	  src/ctests/overflow.c, src/ctests/overflow2.c,
+	  src/ctests/overflow3_pthreads.c, src/ctests/overflow_allcounters.c,
+	  src/ctests/overflow_force_software.c, src/ctests/overflow_index.c,
+	  src/ctests/overflow_one_and_read.c,
+	  src/ctests/overflow_single_event.c,
+	  src/ctests/overflow_twoevents.c, src/ctests/p4_lst_ins.c,
+	  src/ctests/prof_utils.c, src/ctests/profile.c,
+	  src/ctests/profile_twoevents.c, src/ctests/remove_events.c,
+	  src/ctests/reset.c, src/ctests/reset_multiplex.c,
+	  src/ctests/sdsc.c, src/ctests/sdsc2.c, src/ctests/sdsc4.c,
+	  src/ctests/second.c, src/ctests/sprofile.c, src/ctests/tenth.c,
+	  src/ctests/zero.c, src/ctests/zero_attach.c,
+	  src/ctests/zero_flip.c, src/ctests/zero_fork.c,
+	  src/ctests/zero_named.c, src/ctests/zero_omp.c,
+	  src/ctests/zero_pthreads.c, src/ctests/zero_shmem.c,
+	  src/ctests/zero_smp.c, src/testlib/Makefile,
+	  src/testlib/fpapi_test.h, src/testlib/papi_test.h,
+	  src/testlib/test_utils.h: testlib: more papi_test.h reduction
+	* src/testlib/Makefile: testlib: turn off optimization on the
+	  validation loops  it's making tests fail, need to go back and be
+	  sure we are properly tricking the compiler.
+	* src/Makefile.inc, src/components/Makefile_comp_tests,
+	  src/components/perf_event/tests/Makefile,
+	  src/components/perf_event_uncore/tests/Makefile,
+	  src/components/rapl/tests/Makefile,
+	  src/components/rapl/tests/rapl_overflow.c, src/ctests/Makefile,
+	  src/ctests/Makefile.recipies, src/ctests/overflow_pthreads.c,
+	  src/ctests/profile_pthreads.c, src/ftests/Makefile,
+	  src/ftests/Makefile.recipies, src/ftests/Makefile.target.in,
+	  src/testlib/Makefile, src/testlib/do_loops.c,
+	  src/testlib/do_loops.h, src/testlib/papi_test.h: testlib: start
+	  splitting the validation code off from the pass/fail code
+	* src/components/perf_event/tests/perf_event_offcore_response.c,
+	  src/components/perf_event/tests/perf_event_system_wide.c,
+	  src/components/perf_event/tests/perf_event_user_kernel.c, src/compo
+	  nents/perf_event_uncore/tests/perf_event_amd_northbridge.c,
+	  src/components/perf_event_uncore/tests/perf_event_uncore.c,
+	  src/components/perf_event_uncore/tests/perf_event_uncore_cbox.c, sr
+	  c/components/perf_event_uncore/tests/perf_event_uncore_multiple.c,
+	  src/components/rapl/tests/rapl_basic.c,
+	  src/components/rapl/tests/rapl_overflow.c,
+	  src/ctests/all_native_events.c, src/ctests/attach2.c,
+	  src/ctests/attach3.c, src/ctests/attach_cpu.c,
+	  src/ctests/attach_target.c, src/ctests/branches.c,
+	  src/ctests/burn.c, src/ctests/byte_profile.c,
+	  src/ctests/calibrate.c, src/ctests/case1.c, src/ctests/case2.c,
+	  src/ctests/clockres_pthreads.c, src/ctests/cmpinfo.c,
+	  src/ctests/code2name.c, src/ctests/cycle_ratio.c,
+	  src/ctests/data_range.c, src/ctests/derived.c,
+	  src/ctests/describe.c, src/ctests/disable_component.c,
+	  src/ctests/dmem_info.c, src/ctests/earprofile.c,
+	  src/ctests/eventname.c, src/ctests/exec.c, src/ctests/exec2.c,
+	  src/ctests/exeinfo.c, src/ctests/first.c, src/ctests/flops.c,
+	  src/ctests/fork.c, src/ctests/fork2.c, src/ctests/forkexec.c,
+	  src/ctests/forkexec2.c, src/ctests/forkexec3.c,
+	  src/ctests/forkexec4.c, src/ctests/get_event_component.c,
+	  src/ctests/high-level.c, src/ctests/high-level2.c,
+	  src/ctests/hl_rates.c, src/ctests/hwinfo.c, src/ctests/inherit.c,
+	  src/ctests/ipc.c, src/ctests/johnmay2.c,
+	  src/ctests/krentel_pthreads.c, src/ctests/kufrin.c,
+	  src/ctests/locks_pthreads.c, src/ctests/low-level.c, src/ctests
+	  /matrix-hl.c, src/ctests/memory.c, src/ctests/mendes-alt.c,
+	  src/ctests/multiattach.c, src/ctests/multiattach2.c,
+	  src/ctests/multiplex1.c, src/ctests/multiplex1_pthreads.c,
+	  src/ctests/multiplex2.c, src/ctests/multiplex3_pthreads.c,
+	  src/ctests/nmi_watchdog.c, src/ctests/omptough.c,
+	  src/ctests/overflow.c, src/ctests/overflow2.c,
+	  src/ctests/overflow3_pthreads.c, src/ctests/overflow_allcounters.c,
+	  src/ctests/overflow_force_software.c, src/ctests/overflow_index.c,
+	  src/ctests/overflow_one_and_read.c, src/ctests/overflow_pthreads.c,
+	  src/ctests/overflow_single_event.c,
+	  src/ctests/overflow_twoevents.c, src/ctests/p4_lst_ins.c,
+	  src/ctests/prof_utils.c, src/ctests/profile.c,
+	  src/ctests/profile_pthreads.c, src/ctests/profile_twoevents.c,
+	  src/ctests/pthrtough.c, src/ctests/pthrtough2.c,
+	  src/ctests/realtime.c, src/ctests/remove_events.c,
+	  src/ctests/reset.c, src/ctests/reset_multiplex.c,
+	  src/ctests/sdsc.c, src/ctests/sdsc2.c, src/ctests/sdsc4.c,
+	  src/ctests/second.c, src/ctests/shlib.c, src/ctests/sprofile.c,
+	  src/ctests/tenth.c, src/ctests/thrspecific.c,
+	  src/ctests/timer_overflow.c, src/ctests/virttime.c,
+	  src/ctests/zero.c, src/ctests/zero_attach.c,
+	  src/ctests/zero_flip.c, src/ctests/zero_fork.c,
+	  src/ctests/zero_named.c, src/ctests/zero_omp.c,
+	  src/ctests/zero_pthreads.c, src/ctests/zero_shmem.c,
+	  src/ctests/zero_smp.c, src/testlib/do_loops.c,
+	  src/testlib/papi_test.h, src/testlib/test_utils.c: testlib: remove
+	  include of papi.h  Need to explicitly include it in your test if
+	  you need it.
+	* src/testlib/Makefile, src/testlib/do_loops.c,
+	  src/testlib/do_loops.h, src/testlib/dummy.c, src/utils/Makefile,
+	  src/utils/papi_command_line.c, src/utils/papi_cost.c: utils: remove
+	  last uses of testlib
+	* src/utils/Makefile, src/utils/papi_hybrid_native_avail.c: utils:
+	  update papi_hybrid_native_avail to not depend on testlib
+	* src/utils/papi_multiplex_cost.c: utils: clean up
+	  papi_multiplex_cost  remove dependeicnes on papi_test.h  print
+	  message warning that it can take a long time to run
+	* .../perf_event/tests/perf_event_offcore_response.c,
+	  .../perf_event/tests/perf_event_system_wide.c,
+	  .../perf_event/tests/perf_event_user_kernel.c,
+	  .../perf_event_uncore/perf_event_uncore.c,
+	  .../tests/perf_event_amd_northbridge.c,
+	  .../perf_event_uncore/tests/perf_event_uncore.c,
+	  .../tests/perf_event_uncore_cbox.c,
+	  .../tests/perf_event_uncore_multiple.c,
+	  src/components/rapl/tests/rapl_basic.c,
+	  src/components/rapl/tests/rapl_overflow.c,
+	  src/ctests/all_native_events.c, src/ctests/attach2.c,
+	  src/ctests/attach3.c, src/ctests/branches.c,
+	  src/ctests/byte_profile.c, src/ctests/calibrate.c,
+	  src/ctests/data_range.c, src/ctests/describe.c,
+	  src/ctests/disable_component.c, src/ctests/earprofile.c,
+	  src/ctests/exec.c, src/ctests/exec2.c, src/ctests/exeinfo.c,
+	  src/ctests/first.c, src/ctests/forkexec.c, src/ctests/forkexec2.c,
+	  src/ctests/forkexec3.c, src/ctests/forkexec4.c,
+	  src/ctests/get_event_component.c, src/ctests/inherit.c,
+	  src/ctests/krentel_pthreads.c, src/ctests/kufrin.c, src/ctests
+	  /matrix-hl.c, src/ctests/multiplex1.c,
+	  src/ctests/multiplex1_pthreads.c, src/ctests/multiplex2.c,
+	  src/ctests/nmi_watchdog.c, src/ctests/overflow_allcounters.c,
+	  src/ctests/overflow_force_software.c,
+	  src/ctests/overflow_pthreads.c, src/ctests/overflow_single_event.c,
+	  src/ctests/overflow_twoevents.c, src/ctests/prof_utils.c,
+	  src/ctests/profile_pthreads.c, src/ctests/remove_events.c,
+	  src/ctests/reset.c, src/ctests/reset_multiplex.c,
+	  src/ctests/sdsc.c, src/ctests/sdsc2.c, src/ctests/sdsc4.c,
+	  src/ctests/second.c, src/ctests/shlib.c,
+	  src/ctests/timer_overflow.c, src/ctests/zero_named.c,
+	  src/testlib/do_loops.c, src/testlib/papi_test.h,
+	  src/testlib/test_utils.c, src/utils/Makefile,
+	  src/utils/cost_utils.c, src/utils/papi_command_line.c,
+	  src/utils/papi_cost.c, src/utils/papi_event_chooser.c: testlib:
+	  more header removal from papi_test.h
+	* src/components/perf_event/tests/perf_event_system_wide.c,
+	  src/ctests/attach2.c, src/ctests/attach3.c,
+	  src/ctests/multiattach.c, src/ctests/multiattach2.c,
+	  src/ctests/zero_attach.c, src/testlib/papi_test.h,
+	  src/utils/cost_utils.c: testlib: remove a few more includes from
+	  papi_test.h
+	* src/components/rapl/tests/rapl_basic.c, src/ctests/all_events.c,
+	  src/ctests/all_native_events.c, src/ctests/api.c,
+	  src/ctests/attach2.c, src/ctests/attach3.c,
+	  src/ctests/attach_cpu.c, src/ctests/attach_target.c,
+	  src/ctests/branches.c, src/ctests/burn.c, src/ctests/calibrate.c,
+	  src/ctests/case1.c, src/ctests/case2.c,
+	  src/ctests/clockres_pthreads.c, src/ctests/code2name.c,
+	  src/ctests/cycle_ratio.c, src/ctests/data_range.c,
+	  src/ctests/derived.c, src/ctests/describe.c,
+	  src/ctests/dmem_info.c, src/ctests/earprofile.c,
+	  src/ctests/eventname.c, src/ctests/exec.c, src/ctests/exec2.c,
+	  src/ctests/exeinfo.c, src/ctests/flops.c, src/ctests/fork.c,
+	  src/ctests/fork2.c, src/ctests/forkexec.c, src/ctests/forkexec2.c,
+	  src/ctests/forkexec3.c, src/ctests/forkexec4.c, src/ctests/high-
+	  level.c, src/ctests/high-level2.c, src/ctests/hl_rates.c,
+	  src/ctests/hwinfo.c, src/ctests/inherit.c, src/ctests/ipc.c,
+	  src/ctests/johnmay2.c, src/ctests/kufrin.c,
+	  src/ctests/locks_pthreads.c, src/ctests/low-level.c,
+	  src/ctests/max_multiplex.c, src/ctests/memory.c,
+	  src/ctests/multiattach.c, src/ctests/multiattach2.c,
+	  src/ctests/multiplex1.c, src/ctests/multiplex1_pthreads.c,
+	  src/ctests/multiplex2.c, src/ctests/multiplex3_pthreads.c,
+	  src/ctests/overflow.c, src/ctests/overflow2.c,
+	  src/ctests/overflow3_pthreads.c, src/ctests/overflow_allcounters.c,
+	  src/ctests/overflow_force_software.c, src/ctests/overflow_index.c,
+	  src/ctests/overflow_one_and_read.c, src/ctests/overflow_pthreads.c,
+	  src/ctests/overflow_single_event.c,
+	  src/ctests/overflow_twoevents.c, src/ctests/p4_lst_ins.c,
+	  src/ctests/prof_utils.c, src/ctests/profile.c,
+	  src/ctests/profile_pthreads.c, src/ctests/profile_twoevents.c,
+	  src/ctests/pthrtough.c, src/ctests/pthrtough2.c,
+	  src/ctests/realtime.c, src/ctests/sdsc.c, src/ctests/sdsc2.c,
+	  src/ctests/sdsc4.c, src/ctests/second.c, src/ctests/shlib.c,
+	  src/ctests/sprofile.c, src/ctests/tenth.c,
+	  src/ctests/thrspecific.c, src/ctests/timer_overflow.c,
+	  src/ctests/virttime.c, src/ctests/zero.c, src/ctests/zero_attach.c,
+	  src/ctests/zero_flip.c, src/ctests/zero_fork.c,
+	  src/ctests/zero_omp.c, src/ctests/zero_pthreads.c,
+	  src/ctests/zero_shmem.c, src/ctests/zero_smp.c,
+	  src/testlib/do_loops.c, src/testlib/dummy.c,
+	  src/testlib/papi_test.h, src/testlib/test_utils.c,
+	  src/utils/papi_command_line.c, src/utils/papi_cost.c: testlib:
+	  split some headers out of papi_test.h  Too much is going on in that
+	  header, no need to have every include in the world in it.  Trying
+	  to make the testcode more standalone so it is easier to follow.
+	* src/testlib/Makefile, src/testlib/Makefile.target.in: testlib: let
+	  testlib build properly from within the testlib directory
+	* src/testlib/clockcore.c: testlib: clockcore wasn't protecting all
+	  the output with !quiet
+	* src/ctests/Makefile: ctests: make sure tests link against the right
+	  papi.h file
+	* src/Makefile.inc, src/ctests/Makefile,
+	  src/ctests/Makefile.target.in: ctests: allow running "make" in the
+	  ctests directory to work
+
+2017-06-20  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/Matlab/PAPI_Matlab.readme, src/papi.c, src/utils/papi_avail.c,
+	  src/utils/papi_clockres.c, src/utils/papi_command_line.c,
+	  src/utils/papi_component_avail.c, src/utils/papi_cost.c,
+	  src/utils/papi_decode.c, src/utils/papi_error_codes.c,
+	  src/utils/papi_event_chooser.c,
+	  src/utils/papi_hybrid_native_avail.c, src/utils/papi_mem_info.c,
+	  src/utils/papi_multiplex_cost.c, src/utils/papi_native_avail.c,
+	  src/utils/papi_version.c, src/utils/papi_xml_event_info.c: update
+	  the ptools-perfapi e-mail address  in the auto-generated manpages
+	  it was still using the old ptools.org address.
+	* doc/Makefile: docs: fix the manpage build after renaming the utils
+	  Thanks to Steve Kaufmann for catching this.
+	* src/utils/Makefile, src/utils/papi_native_avail.c: utils:
+	  papi_native_avail: remove extraneous testing code
+	* src/utils/Makefile, src/utils/papi_mem_info.c: utils:
+	  papi_mem_info: remove extraneous test code
+	* src/utils/Makefile, src/utils/papi_xml_event_info.c: utils:
+	  papi_xml_event_info: remove extraneous test code
+	* src/utils/Makefile, src/utils/papi_decode.c: utils: papi_decode:
+	  remove extraneous test code
+	* src/utils/Makefile, src/utils/papi_error_codes.c: utils:
+	  papi_error_codes: remove extraneous test code
+	* src/utils/Makefile, src/utils/papi_component_avail.c: utils:
+	  papi_component_avail: remove extraneous test code
+	* src/ctests/clockres_pthreads.c, src/testlib/clockcore.c,
+	  src/testlib/clockcore.h, src/testlib/papi_test.h,
+	  src/utils/Makefile, src/utils/papi_clockres.c: utils:
+	  papi_clockres, remove extraneous test code
+	* src/utils/Makefile, src/utils/papi_avail.c,
+	  src/utils/print_header.c, src/utils/print_header.h: utils: update
+	  papi_avail to not depend on testlibs  It's not a test.
+	* src/utils/Makefile: utils: add target for papi_hybrid_native_avail
+	  do not build it by default though?  Should only be built if
+	  compiling for MIC?
+	* src/utils/Makefile, src/utils/avail.c, src/utils/clockres.c,
+	  src/utils/command_line.c, src/utils/component.c, src/utils/cost.c,
+	  src/utils/decode.c, src/utils/error_codes.c,
+	  src/utils/event_chooser.c, src/utils/event_info.c,
+	  src/utils/hybrid_native_avail.c, src/utils/mem_info.c,
+	  src/utils/multiplex_cost.c, src/utils/native_avail.c,
+	  src/utils/papi_avail.c, src/utils/papi_clockres.c,
+	  src/utils/papi_command_line.c, src/utils/papi_component_avail.c,
+	  src/utils/papi_cost.c, src/utils/papi_decode.c,
+	  src/utils/papi_error_codes.c, src/utils/papi_event_chooser.c,
+	  src/utils/papi_hybrid_native_avail.c, src/utils/papi_mem_info.c,
+	  src/utils/papi_multiplex_cost.c, src/utils/papi_native_avail.c,
+	  src/utils/papi_xml_event_info.c: utils: rename the utils so the
+	  executable matches the filename  This has bothered me for years,
+	  you want to fix "papi_native_avail" but there is no file in the
+	  tree called "papi_native_avail.c"
+	* src/utils/Makefile, src/utils/papi_version.c, src/utils/version.c:
+	  utils: rename version.c to papi_version.c  Also minor cleanups to
+	  the utility.
+	* src/Makefile.inc, src/configure, src/configure.in,
+	  src/utils/Makefile, src/utils/Makefile.target.in: utils: clean up
+	  Makefile and build process of utils  Now should be able to run
+	  "make" in the utils subdir and have it build.  Also move the list
+	  of util files to build out of configure as I don't think there's
+	  any reason for having them there.
+	* src/components/perf_event/pe_libpfm4_events.c: perf: fall back to
+	  operating system default events if libpfm4 lacks support  This will
+	  allow use of PAPI on machines that Linux has support for, but
+	  libpfm4 has not added events yet.  Still some limitations, for
+	  example the PAPI preset events won't work.
+	* src/components/perf_event/pe_libpfm4_events.c,
+	  src/components/perf_event/perf_event.c: perf: report better errors
+	  if libpfm4 initialization fails
+	* src/components/perf_event/pe_libpfm4_events.c: perf:
+	  pe_libpfm4_events: minor whitespace fixup
+	* src/components/perf_event/pe_libpfm4_events.c: perf:
+	  pe_libpfm4_events: whitespace changes to make code easier to follow
+
+2017-06-19  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/ctests/code2name.c: ctests/code2name: fix uninitialized
+	  variable warning
+	* src/ctests/calibrate.c: ctests/calibrate: fix uninitialized
+	  variable warning
+	* src/ctests/thrspecific.c: ctests: thrspecific fix so it finishes
+	  It's actually really unclear what this code is trying to test, but
+	  with optimization enabled it hung forever.  Marking the variable
+	  being spun on as volatile fixes things but I think there is more
+	  wrong with the test than just that.
+	* src/ctests/branches.c, src/ctests/sdsc.c, src/ctests/sdsc4.c:
+	  ctests: fix tests using "dummy3()" as a workload  Now that we
+	  enable optimization on the ctests this breaks some of the
+	  benchmarks.  dummy3() was being optimized away which caused
+	  segfaults and other problems.  The tests don't crash now, but they
+	  still fail.  Still investigating.
+
+2016-10-12  Phil Mucci <phil@minimalmetrics.com>
+
+	* src/configure: Regenerated configure with recent autoconf
+	* src/configure.in: By default, we want -O1 on tests (TOPTFLAGS). -O0
+	  is too literal and causes a number of tests who depend on peephole
+	  optimization to run.
+	* src/utils/Makefile: Utils are installed therefore they should be
+	  built with production flags not test/debug flags
+	* src/Makefile.inc: Make clean should not clean up libpfm. Thats for
+	  make distclean. We're not developing libpfm!
+
+2016-07-04  Phil Mucci <phil@minimalmetrics.com>
+
+	* src/ctests/mendes-alt.c, src/ctests/zero.c: Moved functions
+	  definitions to top of file to eliminate non-ANSI-C prototypes
+	  inside main. Modified message in zero to not turbo boost will also
+	  cause errors (cycles > real-time-cycle
+	* src/Makefile.in, src/Makefile.inc, src/configure, src/configure.in:
+	  Remove EXTRA_CFLAGS, now CFLAGS. Added FTOPTS so compiling Fortran
+	  tests have same flags as ctests. Fix proper testing at configure
+	  time of libpfm for proper combinations of libpfm options
+	* src/ftests/Makefile: Homogenize include flags
+	* src/ctests/Makefile: Homogenize include flags
+	* src/testlib/Makefile: Removed unnecessary defs and options
+	* src/utils/Makefile: Removed unnecessary definitions and compiler
+	  options
+
+2016-07-01  Phil Mucci <phil@minimalmetrics.com>
+
+	* src/Makefile.in, src/Makefile.inc, src/Rules.perfctr-pfm,
+	  src/Rules.perfmon2, src/Rules.pfm4_pe,
+	  src/components/Makefile_comp_tests.target.in,
+	  src/components/perf_event/pe_libpfm4_events.c, src/configure,
+	  src/configure.in, src/ctests/Makefile,
+	  src/ctests/Makefile.target.in, src/ftests/Makefile,
+	  src/ftests/Makefile.target.in: Makefile.in: - Removed DEBUGFLAGS,
+	  NOTLS, PAPI_EVENTS_TABLE from being generated. These were not
+	  properly used. - Added LIBCFLAGS generated from configure for
+	  CFLAGS that ONLY apply to the library and the library code. NOT
+	  tests nor utilities. Previously we were propagating all kinds of
+	  bogus flags to the tests and utils. - CFLAGS is now properly set
+	  for compiler flags not defines etc.  Makefile.inc: - Put
+	  papi_events_table.h in the right place. This is always the same
+	  name. Previous attempts at parameterizing this were broken and/or
+	  unnecessary. - Added dependency for the above in the right place
+	  and ALWAYS generate it, regardless of whether we actually include
+	  it in the library (vs load the CSV at runtime).  Rules.perfctr-pfm
+	  - Removed conditional removal of events table during clean.
+	  Rules.perfmon2 - Removed conditional removal of events table during
+	  clean.  Rules.pfm4_pe - Stopped mussing with CFLAGS which would
+	  pollute child builds but refer to LIBCFLAGS. CFLAGS is for
+	  everything! - Removed conditional removal of events table during
+	  clean. - Removed duplicate reference to papi_events_table.h
+	  components/perf_event/pe_libpfm4_events.c: - Removed HARDCODED
+	  include of a libpfm4 private header file. Wrong path and
+	  unnecessary include. This would break if you linked against another
+	  libpfm using any of the config options.
+	  components/perf_event/peu_libpfm4_events.c: - Removed HARDCODED
+	  include of a libpfm4 private header file. Wrong path and
+	  unnecessary include. This would break if you linked against another
+	  libpfm using any of the config options.
+	  components/Makefile_comp_tests.target.in: - Refer to datarootdir to
+	  make autoconf happy  configure/configure.in: Regenerated using
+	  autoconf 2.69 and many modifications to serious brokennesss. Lots
+	  of fixes: - Sanitize options for static inclusion of user and papi
+	  presets - Fix options that do not print out a result - Fix
+	  debug=yes to not include PAPI_MEMORY_MANAGEMENT. That's only
+	  enabled with debug=memory. This will reduce false positives when we
+	  debug. We don't want our own malloc/free changing behavior when we
+	  are trying to debug! - Fix CFLAGS/LIBCFLAGS/DEBUGFLAGS. configure
+	  now exports a variable called PAPICFLAGS which gets stuffed into
+	  LIBCFLAGS in Makefile.in. This variable IS ONLY for compiler flags
+	  relevant to the library. Previously we were exporting all sorts of
+	  stuff that would make our passes behave differently that user code.
+	  _GNU_SOURCE and -D_REENTRANT. That stuff is for the library and
+	  components. Not user code. - Update compile tests to use
+	  AC_LANG_SOURCE as required. - Fix clock timer checking output to
+	  now say what timer we picked instead of just skipping an answer -
+	  Same for virtual clock timer - Remove broken --with-papi-events
+	  option. - Fixed --with-static-tools option - Fixed/added --with-
+	  static-papi-events option (default) and --with-static-user-events
+	  option. - Fixed modalities of configuring whether to build a
+	  static/shared or both. - Fixed link of tests with shared libraries
+	  when above options don't support it. Modality again. Remove
+	  SETPATH/LIBPATH define, which won't work for ANY combination of
+	  --with-pfm-prefix/root/libdir except our included library. Woefully
+	  broken and would result in many false positive failures. If you are
+	  going to run the tests on the shared library it is now the users
+	  responsibility to set LD_LIBRARY_PATH/LIBPATH correctly. I suspect
+	  this may irritate some, but broken 90% of the time is no excuse for
+	  correct 10% of the time especially when it could generate bug
+	  reports falsely. - Fixed with-static-tools, with-shlib-tools
+	  options to correct modalities. - Fixed all modalities with --with-
+	  pfm-prefix/root/libdir/incdir. Previously the build, configure and
+	  source files were still referring to pieces of code INSIDE our
+	  libpfm4 resulting in version skew and breakage. The way to test
+	  this stuff is to use --root or --prefix after removing the internal
+	  libpfm4 library. - Removed unnecessary and confusing
+	  force_pfm_incdir - Fixed with-pe-incdir option which, like before
+	  was most of the time referring to the libpfm4 included header file.
+	  Not good if one has a custom kernel! PECFLAGS now only appended to
+	  PAPICFLAGS(LIBCFLAGS). - Removal of DEBUGFLAGS. aix.c needs
+	  testing. Anyone have one? - Fixed CFLAGS for BSD - Add message for
+	  papi_events.csv  ctests/Makefile ftests/Makefile - Don't redefine
+	  CC/CC_R/CFLAGS/FFLAGS. - Make these files consistent
+	  ctests/Makefile.target.in ftests/Makefile.target.in - refer to
+	  datarootdir as required
+
+2016-06-27  Phil Mucci <phil@minimalmetrics.com>
+
+	* src/testlib/Makefile, src/testlib/Makefile.target.in: Added
+	  explicit target for libtestlib.a. The all target should have been
+	  markted as .PHONY as to avoid constant rebuilding.  Also, we really
+	  should merge these two files into a master and an include.
+	  Maintaining two makefiles stinks!
+
+2017-06-16  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/papi_fwrappers.c: fwrappers: papif_unregister_thread was
+	  misspelled as papif_unregster_thread  This was noticed by Vedran
+	  Novakovic  For an extremely long time (10+ years?) the fortran
+	  wrapper was misspelled as papif_unregster_thread()  It's probably
+	  too late to fix this without potentially breaking things, so just
+	  add a duplicate function with the proper spelling and leave the old
+	  one too.
+	* src/papi_preset.c: papi_preset: fix compiler warning  This really
+	  confusing warning has been around for a while.  gcc-6.3 reports it
+	  in a really odd way:  papi_preset.c: In function
+	  ‘check_derived_events’: papi_preset.c:513:19: warning:
+	  ‘__s’ may be used uninitialized in this function$ int val =
+	  atoi(&subtoken[1]); ^~~~~~~~~~~~ papi_preset.c:464:1: note:
+	  ‘__s’ was declared here ops_string_merge(char **original, char
+	  *insertion, int replaces, int start_ind$ ^~~~~~~~~~~~~~~~  But
+	  there is no __s variable, or anything to do with where the arrows
+	  are pointing.  gcc-5 gives a better warning:  papi_preset.c: In
+	  function ‘check_derived_events’: papi_preset.c:513:14: warning:
+	  ‘tok_save_ptr’ may be used uninitialized in this$ int val =
+	  atoi(&subtoken[1]); ^ papi_preset.c:472:8: note: ‘tok_save_ptr’
+	  was declared here char *tok_save_ptr;  So the thing it seems to be
+	  complaining about is that the *saveptr paramater to strtok_r() is
+	  not set to NULL.  According to the manpage I don't think this
+	  should be needed? But I think it should be safe to initialize it
+	  anyway.
+
+Tue Jun 6 11:09:17 2017 -0500  Will Schmidt <will_schmidt@vnet.ibm.com>
+
+	* src/libpfm4/lib/events/power9_events.h,
+	  src/libpfm4/perf_examples/self_count.c,
+	  src/libpfm4/tests/validate_power.c: Update libpfm4  Current with
+	  commit ce5b320031f75f9a9881333c13902d5541f91cc8  add power9 entries
+	  to validate_power.c  Hi,  Update the validate_power test to include
+	  power9 entries.  sniff-test run output: $ ./validate Libpfm
+	  structure tests: libpfm ABI version : 0 pfm_pmu_info_t : Passed
+	  pfm_event_info_t : Passed pfm_event_attr_info_t : Passed
+	  pfm_pmu_encode_arg_t : Passed pfm_perf_encode_arg_t : Passed Libpfm
+	  internal table tests: <snip...> checking power9 (946 events):
+	  Passed Architecture specific tests: 20 PowerPC events: 0 errors All
+	  tests passed
+
+2017-06-15  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/components/perf_event/pe_libpfm4_events.c,
+	  src/components/perf_event/pe_libpfm4_events.h,
+	  .../perf_event_uncore/Rules.perf_event_uncore,
+	  .../perf_event_uncore/perf_event_uncore.c,
+	  .../perf_event_uncore/peu_libpfm4_events.c,
+	  .../perf_event_uncore/peu_libpfm4_events.h: perf_event: merge the
+	  libpfm4 helper libraries  perf_event and perf_event_uncore had
+	  their own almost exactly the same libpfm4 helper libraries.
+	  Maintaining both was a chore, and it looks like it is possible to
+	  just share one copy.  This does mean that it is now not possible to
+	  configure the perf_event_uncore component without perf_event being
+	  enabled, but I am not sure if that was even possible to begin with.
+	* src/components/perf_event/pe_libpfm4_events.c,
+	  .../perf_event_uncore/perf_event_uncore.c,
+	  .../perf_event_uncore/peu_libpfm4_events.c,
+	  .../perf_event_uncore/peu_libpfm4_events.h: perf_event_uncore: make
+	  the libpfm4 routines match even more
+	* src/components/perf_event/pe_libpfm4_events.c,
+	  .../perf_event_uncore/peu_libpfm4_events.c: perf_event: make
+	  perf_event and perf_event uncore libpfm4 more similar  it's a bad
+	  idea to have more or less two copies of the same code
+	* src/components/perf_event/pe_libpfm4_events.c,
+	  .../perf_event_uncore/peu_libpfm4_events.c: perf_event: Avoid
+	  unintended libpfm build dependency due to PFM_PMU_MAX enum  This
+	  patch is based on one sent by William Cohen <wcohen@redhat.com>
+	  The libpfm pfmlib.h file enumerates the each of performance
+	  monitoring units (PMUs) it can program in pfm_pmu_t type.  The last
+	  enum in this type is PFM_PMU_MAX.  Depending on which specific
+	  version of libpfm being used this specific value could vary.  The
+	  problem is that PFM_PMU_MAX is statically defined in the pfmlib.h
+	  file and this was being used as a loop bounds when iterating to
+	  determine which PMUs are potentially available.  If PAPI was built
+	  with an older version of libpfm and then run with a newer libpfm
+	  shared library on a machine with a larger PFM_PMU_MAX value, none
+	  of the PMUs past the smaller PFM_PMU_MAX used for the the build
+	  would be examined or enabled.
+
+2017-06-15  Heike Jagode (jagode@icl.utk.edu) <jagode@d00.descartes>
+
+	* src/components/infiniband/linux-infiniband.c: Updated infiniband
+	  component so that it works for mofed driver version 4.0, where
+	  directory counters_ext in sysfs fs has changed to hw_counters.
+	  This update to the component makes it work for both directory
+	  names: - counters_ext for mofed driver version <4.0, and -
+	  hw_counters for mofed driver version =>4.0  This change has not
+	  been fully tested yet due to missing access to machine with updated
+	  version of mofed driver. (CORAL machines will have an updated
+	  version of this driver.)
+
+2017-05-04  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/components/rapl/linux-rapl.c: rapl: broadwell-ep DRAM units are
+	  special (like Haswell-EP)  The Linux kernel perf interface had this
+	  wrong too.  I noticed this in my cluster computing classs, the
+	  Broadwell-EP DRAM results were unrealistically high values.
+
+Fri Apr 21 17:33:15 2017 -0700  William Cohen <wcohen@redhat.com>
+
+	* src/libpfm4/README, src/libpfm4/include/perfmon/pfmlib.h,
+	  src/libpfm4/lib/Makefile, src/libpfm4/lib/events/power9_events.h,
+	  src/libpfm4/lib/pfmlib_common.c, src/libpfm4/lib/pfmlib_power9.c,
+	  src/libpfm4/lib/pfmlib_power_priv.h, src/libpfm4/lib/pfmlib_priv.h,
+	  src/libpfm4/lib/pfmlib_s390x_cpumf.c: Update libpfm4\n\nCurrent
+	  with\n commit 8385268c98553cb5dec9ca86bbad3e5c44a2ab16  fix
+	  internal pfm_event_attr_info_t use for S390X  Commit 321133e
+	  converted most of the architectures to use the internal
+	  perflib_event_attr_info_t type.  However, the s390 was missed in
+	  that previous commit.  This patch corrects the issue so libpfm
+	  compiles on s390.
+
+2017-04-20  Stephen Wood <swood@icl.utk.edu>
+
+	* src/extras.c, src/papi.h, src/papi_fwrappers.c, src/papi_hl.c,
+	  src/papi_internal.c: cast pointers appropriately to avoid warnings
+	  and errors
+
+2017-04-19  Sangamesh Ragate <sragate@minotaur.nic.uoregon.edu>
+
+	* src/papi_events.csv: Mapped PAPI_L2_ICM preset event to
+	  PM_INST_FROM_L2MISS native event for Power8
+
+2017-04-06  Asim YarKhan <yarkhan@icl.utk.edu>
+
+	* src/ftests/fmatrixlowpapi.F: Fixed: This fortran test exceeded 72
+	  columns and made the default Intel ifort compilation unhappy
+
+Wed Apr 5 23:35:44 2017 -0700  Andreas Beckmann <a.beckmann@fz-juelich.de>
+
+	* src/libpfm4/docs/man3/libpfm_arm_ac53.3,
+	  src/libpfm4/docs/man3/libpfm_arm_ac57.3,
+	  src/libpfm4/docs/man3/libpfm_arm_xgene.3, src/libpfm4/lib/Makefile,
+	  src/libpfm4/lib/events/arm_cortex_a53_events.h,
+	  src/libpfm4/lib/events/intel_glm_events.h,
+	  src/libpfm4/lib/events/intel_hswep_unc_imc_events.h,
+	  src/libpfm4/lib/events/intel_ivbep_unc_imc_events.h,
+	  src/libpfm4/lib/events/intel_knl_events.h,
+	  src/libpfm4/lib/events/intel_knl_unc_cha_events.h,
+	  src/libpfm4/lib/events/power4_events.h,
+	  src/libpfm4/lib/events/ppc970_events.h,
+	  src/libpfm4/lib/events/ppc970mp_events.h,
+	  src/libpfm4/perf_examples/self_smpl_multi.c: Update
+	  libpfm4\n\nCurrent with\n commit
+	  71a960d9c17b663137a2023ce63edd2f3ca115f5  fix various event
+	  description typos  This patch fixes the typos in several event
+	  description for Intel, Arm, and Power event tables.
+
+2017-03-30  William Cohen <wcohen@redhat.com>
+
+	* src/ftests/cost.F, src/ftests/first.F, src/ftests/fmatrixlowpapi.F,
+	  src/ftests/second.F: Eliminate warnings about implicit type
+	  conversions in Fortran tests  The gfortran compiler on Fedora 25
+	  was giving warnings indicating that a few of the tests were doing
+	  implicit type convertion between reals and ints.  Those implicit
+	  conversions have been made explicit to elminate the fortran
+	  compiler warning messages.
+
+Tue Apr 4 09:42:25 2017 -0700  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/include/perfmon/pfmlib.h,
+	  src/libpfm4/lib/pfmlib_amd64.c,
+	  src/libpfm4/lib/pfmlib_amd64_priv.h, src/libpfm4/lib/pfmlib_arm.c,
+	  src/libpfm4/lib/pfmlib_arm_priv.h, src/libpfm4/lib/pfmlib_common.c,
+	  src/libpfm4/lib/pfmlib_intel_netburst.c,
+	  src/libpfm4/lib/pfmlib_intel_nhm_unc.c,
+	  src/libpfm4/lib/pfmlib_intel_snbep_unc.c,
+	  src/libpfm4/lib/pfmlib_intel_snbep_unc_priv.h,
+	  src/libpfm4/lib/pfmlib_intel_x86.c,
+	  src/libpfm4/lib/pfmlib_intel_x86_perf_event.c,
+	  src/libpfm4/lib/pfmlib_intel_x86_priv.h,
+	  src/libpfm4/lib/pfmlib_mips.c, src/libpfm4/lib/pfmlib_mips_priv.h,
+	  src/libpfm4/lib/pfmlib_perf_event.c,
+	  src/libpfm4/lib/pfmlib_perf_event_pmu.c,
+	  src/libpfm4/lib/pfmlib_perf_event_raw.c,
+	  src/libpfm4/lib/pfmlib_power_priv.h,
+	  src/libpfm4/lib/pfmlib_powerpc.c, src/libpfm4/lib/pfmlib_priv.h,
+	  src/libpfm4/lib/pfmlib_sparc.c,
+	  src/libpfm4/lib/pfmlib_sparc_priv.h,
+	  src/libpfm4/lib/pfmlib_torrent.c, src/libpfm4/tests/validate.c,
+	  src/libpfm4/tests/validate_x86.c: Update libpfm4\n\nCurrent with\n
+	  commit 5e311841e5d70efb93d11826109cb5acab6e051c  enable 38-bit raw
+	  umasks for Intel offcore_response events  This patch enables
+	  support for passing and encoding of 38-bit offcore_response matrix
+	  umask. Without the patch, the raw umask was limited to 32-bit which
+	  is not enough to cover all the possible bits of the
+	  offcore_response event available since Intel SandyBridge.  $
+	  examples/check_events offcore_response_0:0xffffff Requested Event:
+	  offcore_response_0:0xffffff Actual    Event:
+	  ivb::OFFCORE_RESPONSE_0:0xffffff:k=1:u=1:e=0:i=0:c=0:t=0 PMU
+	  : Intel Ivy Bridge IDX            : 155189325 Codes          :
+	  0x5301b7 0xffffff  The patch also adds tests to the validation
+	  code.
+
+2017-03-29  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/components/perfctr/perfctr-x86.c: perfctr: fix perfctr
+	  component to actually work  Simple one-line typo means perfctr was
+	  not working, probably for years.  I've tested on a 2.6.32-perfctr
+	  kernel and it works again.
+
+2017-03-28  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/papi_events.csv: papi_events: add AMD fam16h jaguar events
+	  These will become useful if/when the contributed libpfm4 jaguar
+	  patches get applied.
+
+2017-03-27  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/papi_events.csv: events: p4: change the PAPI_TOT_CYC event
+	  PAPI_TOT_CYC wasn't working on Pentium4 because the
+	  GLOBAL_POWER_EVENT:RUNNING event was being grabbed by the hardware
+	  watchdog.  perf cycles:u was still working, that's because the
+	  kernel transparently remaps the cycles event to an alias when
+	  global_power_event's slot is taken.  The aliased event is the
+	  unwieldly: execution_event:nbogus0:nbogus1:nbogus2:nbogus3:bogus0:b
+	  ogus1:bogus2:bogus3:cmpl:thr=15 which does seem to give the right
+	  results.  Use this event instead by default on Pentium 4
+	* src/components/perf_event/perf_event.c: perf_event: fix warning
+	  when compiling with debug enabled  the flags field is an unsigned
+	  long, not an int
+
+2017-03-22  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/components/perf_event/perf_event.c: perf_event: don't allocate
+	  a mmap page if not rdpmc or sampling
+	* src/components/perf_event/perf_event.c: perf_event: only allocate 1
+	  mmap page (rather than 3) if not sampling  Next step is to allocate
+	  0 mmap pages unless rdpmc is enabled
+	* src/components/perf_event/perf_event.c,
+	  src/components/perf_event/perf_event_lib.h: perf_event: update the
+	  _pe_set_overflow() call  Working on making it more obvious which
+	  events are sampling (and thus need mmap buffers) or not.  Also
+	  there were some bugs in the handling of having multiple overflow
+	  sources per eventset, though I'm not sure if PAPI actually handles
+	  that.
+	* src/components/perf_event/perf_event.c: perf_event: turn off
+	  fast_counter_read if mmaps fail  By default on Linux perf_event
+	  can't use more than 516kB of mmap space.  So perf_event-rdpmc would
+	  fail after you added a large number (>32) of events.  This shows up
+	  on the kufrin benchmark on some machines.  This fix makes PAPI fall
+	  back to non-rdpmc if an mmap error happens. I'm also going to try
+	  to tune the mmap usage a bit to make the limits a bit higher.
+
+2017-03-21  Asim YarKhan <yarkhan@icl.utk.edu>
+
+	* src/configure: configure script updated using autoconf-2.59
+
+2017-03-20  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/components/perf_event/perf_event.c, src/configure.in:
+	  configure: enable rdpmc with --enable-perfevent-rdpmc=yes  Make
+	  this an option to configure.  Defaults to no.  Need to find a
+	  machine with autoconf 2.59 on and I'll regenerate configure as
+	  well.
+
+2017-03-16  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/components/perf_event/perf_event.c: perf_event: try to work
+	  around exclude_guest issue  run a test at startup to see if events
+	  with exclude_guest fail.  libpfm4 sets this by default, but older
+	  kernels will fail because this was previously a reserved (must be
+	  zero) field.
+
+2017-03-14  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/ctests/multiattach.c: tests: multiattach:
+	  whitespace/comments/clarifications  digging through the code trying
+	  to figure out why it fails with rdpmc enabled.  it turns out it is
+	  seeing wrong running/enabled multiplexing results even though we
+	  aren't multiplexing  tracking this down is a pain because we can't
+	  strace/ltrace due to the code using ptrace to start/stop processes.
+
+2017-03-09  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/components/perf_event/perf_event.c: perf_event: can't mmap() an
+	  inherited event  this is why the inherit test was failing
+	* src/components/perf_event/perf_event.c,
+	  src/components/perf_event/perf_helpers.h: perf_event: add rdpmc
+	  support (but disabled)  finally add the rdpmc code, but it still
+	  fails on a few tests so it is disabled by default.
+	* src/components/perf_event/perf_event.c,
+	  src/components/perf_event/perf_event_lib.h: perf_event: make all
+	  events come with a mmap buffer  This wastes some address space, but
+	  having separate codepaths for rdpmc/regular/sampling/profiling
+	  would be hard to maintain.  Had to remove some assumptions from the
+	  profiling/sampling code that mmap_buf means sampling is happening.
+	* src/components/perf_event/perf_event.c: perf_event: add check for
+	  paranoid==3  Recent distributions are *completely* disablng
+	  perf_event by default with their vendor kernels (this is not
+	  upstream yet).  Have PAPI detect and disable the perf_event
+	  component if this is detected.
+	* src/components/perf_event/perf_event.c: perf_event: split
+	  close_pe_events() into two functions
+	* src/components/perf_event/perf_event.c,
+	  src/components/perf_event/perf_helpers.h: perf_event: more
+	  whitespace / rearrangement  should not be any changes to actual
+	  code, is just whitespace/comment/function movement  I know changes
+	  like this make the git history harder to follow, but it really
+	  helps when trying to follow the code when working on major changes.
+
+2017-03-08  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/components/perf_event/perf_event.c: perf_event: more
+	  whitespace/comment cleanups  digging through the code, still
+	  prepping for rdpmc
+
+2017-03-07  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/components/perf_event/perf_helpers.h: perf_event: rdpmc: need
+	  to sign extend offset too  Otherwise things stop working after a
+	  PAPI_reset()
+	* src/components/perf_event/perf_event.c: perf_event: split up
+	  _pe_read()  makes the code a bit easier to follow.  also prep for
+	  rdpmc()
+	* src/components/perf_event/perf_event.c: perf_event: clean up
+	  whitespace in _pe_read
+
+2017-03-08  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/ctests/first.c: ctests: first: white space cleanups  minor
+	  things noticed when trying to figure out why it was failing with
+	  rdpmc (the answer was rdpmc code not handling PAPI_reset())
+
+2017-03-07  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/components/perf_event/perf_helpers.h: perf_event: recent
+	  changes broke build on non-x86  an ifdef was in the wrong location.
+	* src/components/perf_event/perf_event.c,
+	  src/components/perf_event/perf_helpers.h: perf_event: update rdpmc
+	  detection
+	* src/utils/component.c: utils: component_avail: clean up -d
+	  (detailed) results  print rdpmc status, as well as line things up.
+	  Also don't print redundant info, now that a lot more fields are
+	  printed by default.
+	* src/utils/component.c: utils: component_avail: whitespace/grammar
+	  fixes
+	* src/components/perf_event/Rules.perf_event,
+	  src/components/perf_event/perf_helpers.h: perf_event: add
+	  mmap/rdpmc routine  we don't use it yet
+
+2017-03-06  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/components/perf_event/perf_helpers.h: perf_event: add rdtsc()
+	  and rdpmc() inline-assembly
+	* src/components/perf_event/perf_event.c,
+	  src/components/perf_event/perf_helpers.h: perf_event: move
+	  perf_event_open() code to a helper file  We'll be adding some other
+	  helpers to this file too.
+
+2017-03-03  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/components/perf_event/perf_event.c: perf_event: move
+	  bug_sync_read() check out of line  we should eventually just phase
+	  out a lot of these checks for older kernels, but it gets tricky as
+	  long as RHEL is shipping 2.6.32.  With this change on my IVB
+	  machine PAPI_read() cost went from mean cycles  : 932.158549
+	  std deviation: 358.752461 to mean cycles  : 896.642644       std
+	  deviation:    305.568268
+	* src/components/perf_event/pe_libpfm4_events.c,
+	  src/components/perf_event/pe_libpfm4_events.h,
+	  src/components/perf_event/perf_event.c: perf_event: remove
+	  _pe_libpfm4_get_cidx() helper function  easier to explicitly pass
+	  it to the libpfm4 event code
+	* src/components/perf_event/perf_event_lib.h: perf_event: wakeup_mode
+	  field is no longer used
+	* src/components/perf_event/perf_event.c: perf_event: remove
+	  WAKEUP_MODE_ defines  These date back to initial perf_event
+	  support, but were never used.  Probably were meant in case advanced
+	  sampling/profiling was ever implemented, but it wasn't.
+	* src/components/perf_event/perf_event.c: perf_event.c: split
+	  setup_mmap() to its own function  non-sampling events will need to
+	  have mmap buffers when we move to rdpmc()
+	* src/components/perf_event/perf_event.c: perf_event: rename
+	  tune_up_fd to configure_fd_for_sampling  makes it a bit more clear
+	  what is going on
+	* src/components/perf_event/perf_event.c: perf_event: remove
+	  extraneous whitespace
+
+2017-02-24  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/utils/cost.c: papi_cost: wasn't properly resetting the event
+	  search after POSTFIX  This means some architectures could have
+	  skipped the ADD/SUB test even though such events were available.
+
+Wed Feb 22 01:16:42 2017 -0800  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/lib/events/intel_bdw_events.h,
+	  src/libpfm4/lib/events/intel_skl_events.h,
+	  src/libpfm4/lib/pfmlib_intel_rapl.c,
+	  src/libpfm4/tests/validate_x86.c: Update libpfm4\n\nCurrent with\n
+	  commit 1bd352eef242f53e130c3b025bbf7881a5fb5d1e  update Intel RAPL
+	  processor support  Added Kabylake, Skylake X  Added PSYS RAPL event
+	  for Skylake client.
+
+2017-02-17  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/utils/cost.c: papi_cost: clear eventset before derived add test
+	  we weren't clearing the eventset after the derived postfix test to
+	  the add test was actually measuring two derived events.  This was
+	  noticed on broadwell-ep where papi_cost would fail due to the lack
+	  of enough counters to have both the postfix and add events at the
+	  same time.
+
+2017-01-23  Asim YarKhan <yarkhan@icl.utk.edu>
+
+	* RELEASENOTES.txt: Fixing the date in the RELEASENOTES file.

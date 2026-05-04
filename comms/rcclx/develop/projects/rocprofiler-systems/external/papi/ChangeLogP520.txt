@@ -1,0 +1,1222 @@
+2013-08-02  
+
+  * 6b62d586 man/man1/papi_avail.1 man/man1/papi_clockres.1
+  man/man1/papi_command_line.1...: Update the manpages for a pending 5.2
+  release.  New pages for PAPI[F]_epc and papi_version.
+
+  * 1ae08835 src/linux-common.c: try to properly detect number of sockets  Use
+  totalcpus rather than ncpu in the calculation.  This change fixes things on a
+  Sandybridge-EP machine.  We should maybe find a more robust way to detect
+  this.
+
+  * 79c37fbf .../perf_event_uncore/tests/perf_event_uncore.c
+  .../tests/perf_event_uncore_multiple.c: perf_event_uncore: have tests skip if
+  component disabled rather than fail
+
+  * 638ccf6b .../perf_event_uncore/perf_event_uncore.c: perf_event_uncore:
+  change order of uncore detection logic  This way it will report an error of
+  "no uncore found" before it reports "not enough permissions".  That way a
+  user won't waste time getting permissions only to find out they didn't have
+  an uncore anyway.
+
+  * 30582773 src/components/perf_event/pe_libpfm4_events.c: perf_event: fix
+  papi_native_avail output  A recent change of mine that added stricter error
+  checking for libpfm4 event lookup broke event enumeration on perf_event,
+  specifically papi_native_avail output.  libpfm4 will return an error on some
+  events if no UMASK or improper UMASK is supplied, but papi_native_avail
+  always wants to print the root event and umasks separately.  this temporary
+  fix just ignores libpfm4 umask errors; we might in the future want to
+  properly indicate which events are only valid when certain umasks are
+  present.
+
+  * c7612326 src/utils/native_avail.c: papi_native_avail: fix empty component
+  case  If a component had no events, papi_native_avail would ignore the error
+  returned by PAPI_enum_cmp_event( PAPI_ENUM_FIRST ); and try to print a first
+  event anyway.
+
+  * e1b064eb .../perf_event_uncore/perf_event_uncore.c: perf_event_uncore:
+  disable component if no events found  This can happen on older (pre 3.6)
+  kernels with the new libpfm4 that does proper uncore detection.
+
+2013-08-01  
+
+  * 9a54633a src/components/host_micpower/linux-host_micpower.c
+  src/components/infiniband/linux-infiniband.c
+  src/components/nvml/linux-nvml.c...: Components: Use the cuda dlopen fix all
+  cases.  See 4cb76a9b for details, the short version is if you call dlopen
+  when you have been statically linked to libc, it gets ugly.
+
+2013-07-31  
+
+  * dbc44ed1 src/components/perf_event/pe_libpfm4_events.c
+  .../perf_event_uncore/perf_event_uncore.c
+  .../perf_event_uncore/peu_libpfm4_events.c: perf_event libpfm4 events --
+  correctly handle invalid events  It was possible for event names to be
+  obtained from libpfm4 during enumeration that were not valid events.  This
+  usually happens with uncore events, where the uncore is listed as available
+  based on cpuid but when libpfm4 tries to get the uncore type from the kernel
+  finds out it is unsupported.  This change makes this properly fail, instead
+  of just returning "0" for all the event paramaters (which is a valid event on
+  x86).  Also make this change in the regular perf_event component, even though
+  it is less likely to happen in practice.
+
+  * 4720890a .../perf_event_uncore/perf_event_uncore.c: perf_event_uncore:
+  remove check_permissions() test  It was trying to see if an EventSet was
+  runnable by using the current permissions and adding the PERF_HW_INSTRUCTIONS
+  event. That doesn't really make sense on uncore.  The perf_event component
+  uses this test to try to give errors early, at set_opt() time rather than at
+  the first run time, although in practice now we can probably make intelligent
+  guesses based on the current permission levels.
+
+  * 113d35f7 .../perf_event_uncore/perf_event_uncore.c: perf_event_uncore:
+  remove unused kernel workarounds  uncore only works on Linux 3.6 or newer so
+  all of the pre-2.6.35 workarounds aren't necessary.  If someone has
+  backported the uncore support to kernels that old, hopefully they've also
+  backported all the other bugfixes too.
+
+2013-07-25  
+
+  * 4cb76a9b src/components/cuda/linux-cuda.c: Trial fix for the cuda component
+  static libc linking issue.  Weak link against _dl_non_dynamic_init, this
+  appears in my limited testing to be in gnu libc.a and not in the so.  For
+  background, it was reported by Steve Kaufmann that statically linking tools
+  with a PAPI library configured with the CUDA component segfaulted. It appears
+  that calling any of the dynamic linker functions from a static executable is
+  asking for pain.  See Trac bug 182
+  https://icl.cs.utk.edu/trac/papi/ticket/182
+
+2013-07-24  
+
+  * ad47cfb9 src/configure src/configure.in: Add linux-pfm-ia64 to configure 
+  I'm not sure if this is enough to fix itanium support but it's a start.
+
+  * 098294c5 src/components/example/tests/example_basic.c
+  .../example/tests/example_multiple_components.c: Fixed tests for example
+  component. Both tests failed due to incorrect check of the components PAPI
+  has been configured with.
+
+2013-07-23  
+
+  * c0c4caf4 src/linux-memory.c src/papi_events.csv: Add initial support for
+  IBM POWER8 processor  Add initial support for IBM POWER8 processor  The IBM
+  POWER8 processor (to be publicly announced at some future date) has some
+  preliminary support in libpfm with a subset of native events.  These
+  POWER8-related libpfm changes were pulled into PAPI on July 3, so further
+  updates in PAPI were required to support this new processor.  This patch adds
+  that required support.  NOTE: Due to the fact that only a subset of native
+  events have been publicised at this point (and pushed into libpfm), not all
+  of the usual PAPI preset events have corresponding native events. The rest of
+  the POWER8 native events will be pushed upstream once they are verified, and
+  then we can flesh out the PAPI preset events.  With this initial POWER8
+  support patch, 5 of the ctests and ftests fail, compared to 3 when PAPI is
+  run on a POWER7. At least one of the failing testcases is due to testing
+  being done on an early POWER8 processor with some known hardware problems. We
+  presume the number of failing tests will decrease once we have GA-level
+  hardware to test on. 
+
+2013-07-22  
+
+  * 6c231d1a src/configure: Rerun autoconf  for f4ec143e Correct versioning of
+  libpapi.so
+
+  * f4ec143e src/configure.in: Correct versioning of libpapi.so  The configure
+  for linux always set the soname to libpapi.so.  This causes problems when
+  /sbin/ldconfig tries to update the library information on linux.  The shared
+  library is installed as /lib{64}/libpapi.so.$VERSION, but the shared library
+  has the soname of libpapi.so.  ldconfig makes a symbolic link from
+  /lib/libpapi.so to the actual versioned shared library,
+  /lib/{64}/libpapi.so$VERSION. The configure should get the soname correct to
+  avoid creating this symbolic link.  This patch only addresses the issues for
+  some of the possible platforms and similar patches may be needed for other
+  platforms. 
+
+2013-07-19  
+
+  * 92356bbd src/papi.c src/threads.c src/threads.h: Attempt to fix a memory
+  leak in fork2 test.  Fork2 does the following: PAPI_library_init() fork(); / 
+    \ parent   child wait()     PAPI_shutdown()	->
+  _papi_hwi_shutdown_global_threads() -> foreach(threadinfo we allocated):
+  _papi_hwi_shutdown_thread() PAPI_library_init()  _papi_hwi_shutdown_thread
+  checks who allocated a ThreadInfo entry in the global list, and will only
+  free it if our thread did the allocation.  When threading is not initialized,
+  we fall back to getpid(), now in the child process, the one ThreadInfo item
+  on the list was allocated by our parent, so at shutdown time we don't free
+  this, and thus leak it.  Solution is to add a parameter to
+  _hwi_shutdown_thread to force shutdown even if we didn't allocate it. At
+  _papi_hwi_shutdown_global_threads() time, who cares, its closing time.
+
+  * c04d908e src/cpus.c: Fix a deadlock in _papi_hwi_lookup_cpu().  If cpu_num
+  is not found by _papi_hwi_lookup_cpu(), _papi_hwi_initialize_cpu() calls
+  insert_cpu(), which locks CPUS_LOCK, which was already held by
+  _papi_hwi_lookup_cpu().
+
+  * efac24c4 src/components/micpower/linux-micpower.c: micpower: fix return
+  value check  Also add a time check at stop time.
+
+2013-07-16  
+
+  * b9fd9dd1 src/configure src/configure.in: configure: Fix AIX build 
+  perfctr_ppc was not the only system that relied on ppc64_events.h, power*.h,
+  and friends. First run at a fix is -Icomponents/perfctr_ppc for the C and F
+  flags...
+
+  * 46042e68 src/components/micpower/linux-micpower.c: micpower: update some
+  indexing code
+
+2013-07-15  
+
+  * 5220e7d2 INSTALL.txt: INSTALL.txt: typo  --with-arch=, not --arch=; Thanks
+  to Karl Schulz for catching this.
+
+  * 207e0ee0 src/papi_libpfm_events.h: papi_libpfm_events: needs include files
+  for types.  Include papi.h and papi_vector.h for papi_vector_t and
+  PAPI_component_info_t
+
+  * d96c01c7 src/components/perfctr/perfctr.c: perfctr: cleanup a warning 
+  Include papi_libpfm_events.h for _papi_libpfm_init() decl.
+
+  * 367e1b38 src/components/perfctr/perfctr-x86.c
+  src/components/perfctr/perfctr.c: perfctr: refactor out setup_x86_presets 
+  The setup_presets function served only to call _papi_libpfm_init, so we go
+  the rest of the way and completly remove the function, calling
+  _papi_libpfm_init directly from _perfctr_init_component.
+
+  * 1ba38ce5 src/components/perfctr/perfctr-x86.c: perfctr: cleanup unused
+  parameter warning.  The perfctr code was refactored to only call into the
+  table loading code one time. This had the side effect of removing most of
+  what setup_x86_presets does.
+
+  * 02710ced src/configure src/configure.in: configure: remove debugging
+  message  The compiler detection code had a stray AC_MSG_RESULT.
+
+2013-07-12  
+
+  * 028ce29d src/components/lustre/linux-lustre.c: lustre: use whole directory
+  name as event  Gary Mohr reported that on a trial system he was seeing many
+  events of the form fs3-* which were all chopped to fs3, not helpful.  I've
+  not actually been able to figure out exactly how lustre names things, I've
+  seen it described as  <fs>-<uid>  But have no clue what uid promisses.
+
+2013-07-15  
+
+  * 129d4587 src/papi.c: allow more than one EventSet attach to a CPU at a time
+   This is necessary for perf_event_uncore support, as multiple uncores will
+  want to attach to a CPU.  It looks like this change won't break anything, and
+  the tests pass on my test machines.  I am a bit concerned about
+  cpu->running_eventset, though no one seems to use that value...
+
+  * bcda5ddd src/components/perf_event_uncore/tests/Makefile
+  .../tests/perf_event_uncore_nogran.c: perf_event_uncore: remove
+  perf_event_uncore_nogran test  It is unnecessary after recent changes to the
+  uncore component.
+
+  * b1b9f654 src/components/perf_event_uncore/tests/Makefile
+  .../tests/perf_event_uncore_cbox.c: perf_event_uncore: add
+  perf_event_uncore_cbox test  This adds a non-trivial test of the CBOX
+  uncores. It turned up various bugs in the PAPI uncore implementation.
+
+  * df1b6453 src/linux-common.c: linux: properly set hwinfo->socket value  It
+  was being derived from hwinfo->ncpu but being calculated before hwinfo->ncpu
+  was set.
+
+2013-07-13  
+
+  * ee537448 .../perf_event_uncore/perf_event_uncore.c
+  .../perf_event_uncore/peu_libpfm4_events.c
+  .../perf_event_uncore/peu_libpfm4_events.h: perf_event_uncore: properly
+  report number of total counters available
+
+  * 7eb93917 src/components/perf_event/Rules.perf_event
+  src/components/perf_event/pe_libpfm4_events.c
+  src/components/perf_event/pe_libpfm4_events.h...:
+  perf_event/perf_event_uncore/libpfm4 -- rearrange files  Give perf_event and
+  perf_event_uncore copies of papi_libpfm4_events to work with, as they will
+  have different needs for the code.  Get rid of the perf_event_lib stuff.  It
+  was a hack to begin with and in the end not much code will be shared.  Maybe
+  we can re-share things once uncore support is complete.
+
+2013-07-12  
+
+  * 6810af2a src/components/perf_event/perf_event.c
+  .../perf_event_uncore/perf_event_uncore.c src/papi_libpfm4_events.c...:
+  papi_libpfm4: properly call pfm_terminate() in papi_libpfm4_shutdown
+
+  * 010497f4 src/components/perf_event/perf_event.c
+  .../perf_event_uncore/perf_event_uncore.c src/papi_libpfm4_events.c...: split
+  papi_libpfm4_init()  split this function because the perf_event_uncore()
+  component is going to want to initialize things differently than plain
+  perf_event
+
+  * d9023411 src/components/perf_event/perf_event.c: perf_event: on old kernels
+  if SW Multiplex enabled, then report proper number of MPX counters available 
+  it may be different than the amount HW supports
+
+  * 7595a840 src/components/perf_event/perf_event_lib.c: perf_event: use
+  PERF_IOC_FLAG_GROUP when resetting events  This ioctl argument specifies to
+  reset all events in a group, so we don't have to iterate.  This argument
+  dates back to the introduction of perf_event and it makes the code a bit
+  cleaner.
+
+  * f220fd19 src/ctests/Makefile src/ctests/reset_multiplex.c: Add
+  reset_multiplex.c  PAPI_reset() potentially exercises different paths when
+  resetting normal and multiplexed eventsets, so make sure we test both.
+
+  * f784a489 src/components/lustre/linux-lustre.c: lustre: botched a conflict
+  resolution  properly do error checking on addCounter()
+
+  * c1350fc8 src/components/perf_event/perf_event.c
+  src/components/perf_event/perf_event_lib.c
+  src/components/perf_event/perf_event_lib.h: perf_event: move overflow and
+  profile code out of common lib  the perf_event_uncore component doesn't need
+  it
+
+  * 8dde03fc .../perf_event_uncore/perf_event_uncore.c: perf_event_uncore:
+  remove profiling and overflow code  perf_event doesn't support sampling or
+  overflow on uncore
+
+  * 30d23636 src/components/lustre/linux-lustre.c: lustre component: Several
+  fixes  1. create a dynamic native events table in pathalogical cases, lustre
+  can have lots of events.  2. resolve some warnings change signature of
+  init_component properly error check addCounter  3. Add a preprocessor flag to
+  fake interface Set LIBCFLAGS="-DFAKE_LUSTRE"
+
+  * 7ef51566 .../perf_event_uncore/perf_event_uncore.c: perf_event_uncore:
+  remove dispatch timer call  perf_event  doesn't support sampling on uncore
+  events
+
+  * 667661c6 src/components/perf_event/perf_event.c
+  src/components/perf_event/perf_event_lib.c
+  src/components/perf_event/perf_event_lib.h: perf_event: move rdpmc detection
+  back into perf_event.c  It was in the perf_event_lib but uncore won't use the
+  feature.
+
+  * d46f01e1 .../perf_event_uncore/perf_event_uncore.c: perf_event_uncore:
+  check the paranoid file  Disable the component if paranoid isn't 0 or lower,
+  and we're not running as root.
+
+  * e4ec67d1 src/components/perf_event/perf_event.c: perf_event and paranoid
+  level 2  If paranoid level 2 (no kernel events) was set we were removing
+  PAPI_DOM_KERNEL from the allowable domains  We were doing this even if the
+  user was root.  This code checks for uid 0 and overrides the restriction.
+
+  * c5501081 src/components/perf_event/perf_event_lib.c
+  src/components/perf_event/perf_event_lib.h: rename sys_perf_event_open2()
+  call back to sys_perf_event_open()  This was changed when merging code to
+  avoid a conflict but wasn't renamed back whe the conflict was fixed.
+
+2013-07-11  
+
+  * e263ea60 src/configure src/configure.in: configure: libpfm selection logic
+  rework  If configure detected perfctr it would force libpfm3 to be used, even
+  with --with-perf_events, now force libpfm4 if perf_events is requested.
+
+2013-07-10  
+
+  * 7a3ce030 .../host_micpower/Makefile.host_micpower.in
+  src/components/host_micpower/Rules.host_micpower
+  src/components/host_micpower/configure...: Component: host_micpower  This is
+  a component that exports power information for Intel Xeon Phi cards (MIC).
+  The component makes use of the MicAccessAPI distributed with the Intel
+  Manycore Platform Software Stack.
+  
+  k-mpss)
+
+  * 9d9bd9c2 src/ctests/shlib.c: Fwd: Re: [Ptools-perfapi] ctests/shlib FAILED 
+  Should have sent this to the papi devel list. -Will  -------- Original
+  Message -------- Subject: Re: [Ptools-perfapi] ctests/shlib FAILED Date: Tue,
+  09 Jul 2013 23:20:10 -0400 From: William Cohen <wcohen@redhat.com> To:
+  ptools-perfapi@eecs.utk.edu  On 03/09/2012 03:40 PM, William Cohen wrote: > I
+  was looking through the test results and found that ctests/shlib FAILED on
+  all the machines I tested on because libm shared library is already linked
+  in. There is no difference in the number of shared libraries before and after
+  the dlopen. The test ctests/shlib fails as a reult of this. > > -Will >
+  _______________________________________________ > Ptools-perfapi mailing list
+  > Ptools-perfapi@eecs.utk.edu >
+  http://lists.eecs.utk.edu/mailman/listinfo/ptools-perfapi >  I did some more
+  investigation of this problem today.  I found that the lmsensor component
+  implicitly pulls in the libm.  As an alternative, I wrote the attached patch
+  that uses setkey() and encrypt() in libcrypt.so instead.  It works on various
+  linux machines, but I do not know whether it is going to work on other OS. 
+  -Will  >From c53c97e1de2d1c7dc0bca64d1906287ff73343c6 Mon Sep 17 00:00:00
+  2001 From: William Cohen <wcohen@redhat.com> Date: Tue, 9 Jul 2013 22:37:27
+  -0400 Subject: [PATCH] Avoid using libm.so for ctests/shlib because of
+  implicit use in some components  The lmsensors component can implicitly pull
+  in libm.so into the executable.  Unfortunately, the ctests/shlib test expects
+  that libm.so is not loaded and will fail because there is no change in the
+  count of shared libraries.  The patch uses libcrypt.so library setkey and
+  encrypt functions to test PAPI_get_shared_lib_info( ) instead of libm.so
+  library pow function. 
+
+2013-07-09  
+
+  * bdc9b34b .../tests/perf_event_amd_northbridge.c:
+  Perf_event_amd_northbridge_test: Use buffer event_name instead of
+  uncore_event  The variable uncore_event is initialized to NULL and is never
+  changed during execution of the test. PAPI_add_named_event fails and the
+  event set cannot be started. The correct event name is stored in event_name,
+  replacing all occurrences of uncore_event with event_name therefore fixes the
+  problem metioned above.
+
+2013-07-08  
+
+  * a1678388 src/components/micpower/linux-micpower.c: micpower:  Fix output in
+  native_avail and component_avail. It uses cmp_info.name, not .short_name? 
+  Native Events in Component: mic-power Name:   mic-power              
+  Component for reading power on Intel Xeon Phi (MIC)  Should both match what
+  is prepended to event names, so change .name from mic-power to micpower.
+
+  * e0582f2d src/components/micpower/linux-micpower.c: Micpower: fix a typo 
+  subsystem, not sybsystem...
+
+  * c7b357ec INSTALL.txt: INSTALL.txt: update instructions for MIC.
+
+  * 34a1124e src/components/perf_event_uncore/tests/Makefile
+  .../tests/perf_event_amd_northbridge.c: Add perf_event_amd_northbridge test 
+  The test should show how to write a program using AMD fam15h NB with a 3.9
+  kernel.  Once libpfm4 gets updated we can see if it's possible to also have
+  the test properly run on 3.10 kernels (in that case the regular
+  perf_event_uncore test should work w/o changes)
+
+  * 41b6507c .../perf_event_uncore/tests/perf_event_uncore.c
+  .../tests/perf_event_uncore_multiple.c: Make perf_event_uncore tests use
+  PAPI_get_component_index()  They were open-coding the component name search
+  for no good reason.
+
+2013-07-05  
+
+  * abf38945 src/papi_libpfm4_events.c: avoid having a "default" PMU for the
+  uncore component  on the main CPU component we have a "default" PMU where you
+  can leave out the PMU part of the event name.  This is unnecessary and
+  sometimes confusing on uncore, so always print the full event name if it's an
+  uncore PMU.
+
+  * b9fe5c3e .../perf_event_uncore/tests/perf_event_uncore.c
+  .../tests/perf_event_uncore_multiple.c: Update perf_event_uncore tests to
+  properly fail if they don't have enough permissions
+
+  * 32ae1686 .../perf_event_uncore/tests/perf_event_uncore.c:
+  perf_event_uncore_test : properly use uncore component  The sample code was
+  still hardcoding to component "0" which shouldn't have worked.  Thanks to
+  Claris Castillo for pointing out this problem.
+
+  * 59e73b51 src/papi_libpfm4_events.c: have _papi_libpfm4_ntv_name_to_code
+  properly check pmu_type  With the existing code, uncore events were being
+  found by the perf_event component even when that component has uncore events
+  distabled.
+
+2013-07-03  
+
+  * a01394eb .../tests/perf_event_uncore_lib.c: perf_event_uncore: fix ivb
+  event in uncore test  Now that libpfm4 officially supports plain ivb uncore,
+  make sure the test event we were using matches what libpfm4 supports.
+
+2013-07-01  
+
+  * f10342a8 src/utils/cost.c: Clean up option handling in papi_cost  The
+  papi_cost used strstr to seach for the substring that matched the option. 
+  this is pretty inexact.  Made sure that the options matched exactly and the
+  option argments for -b and -t were greater than 0. Also make papi_cost print
+  out the help if there was an option that it didn't understand. 
+
+  * b5adc561 src/utils/native_avail.c: Clean up option handling for
+  papi_native_avail  Corrected the help to reflect the name of the option
+  "--noumasks". Print error message if the "-i", "-e", and "-x" option
+  arguments are invalid. Avoid using strstr() for "-h", use strcmp instead.
+  Also check for "--help" option. 
+
+  * 8933be9b src/utils/decode.c: Clean up option handling in papi_decode 
+  papi_decode used strstr() to match options; this can lead to inexact matchs.
+  The code should used strcmp instead.  Make sure command name is not processed
+  as an option.  Also print help iformation is some argument is not understood.
+
+  * d94ac43a src/utils/component.c: Improve option matching in papi_component
+  and add "--help" option 
+
+  * bb63fe5c src/utils/command_line.c: Add options to papi_command_line man
+  page and improve opt handling  Add options mention in the -h to the man page.
+   Also improve the matching of the options. 
+
+  * 09059c82 doc/Makefile src/utils/version.c: Add information for papi_version
+  to be complete 
+
+  * 4f2eee8c src/configure src/configure.in: add a --disable-perf-event-uncore
+  option to configure
+
+2013-06-29  
+
+  * 901c5cc2 src/components/perf_event/perf_event.c
+  src/components/perf_event/perf_event_lib.c
+  .../perf_event_uncore/perf_event_uncore.c...: remove syscalls.h  it's no
+  longer needed
+
+  * 4d7e3666 src/Rules.perfmon2 src/components/perfmon2/Rules.perfmon2
+  src/components/perfmon2/perfmon.c...: move perfmon modules to their own
+  component directory
+
+  * a7e9c5f1 src/Rules.perfctr src/Rules.perfctr-pfm
+  src/components/perfctr/Rules.perfctr...: move perfctr files to
+  components/perfctr directory  verified that perfctr-x86 still builds and
+  works  perfctr_ppc has all the files to build, but it doesn't work. It looks
+  like no one has tried to build perfctr-ppc for a very very long time.
+
+2013-06-27  
+
+  * e9dec1fd src/ctests/hl_rates.c src/papi.h src/papi_fwrappers.c...: debugged
+  versions of these files
+
+  * e282034e src/utils/native_avail.c: native_avail: Fix parse_unit_mask code 
+  Reported by Steve Kaufmann -------------------------- I noticed while
+  developing a new component that the output from papi_native_avail was
+  incorrectly presented for the component. I believe this is because the ":::"
+  prefix is not being taken into account, so the base event name is interpreted
+  as a unit mask and is prepend with a : before each legitimate unit mask
+  associated with the event. I think this is just now happening because mine is
+  the first component that has unit masks. I have include a fix below. The
+  output of the unit masks by papi_native_avail now appears correctly for my
+  component.  Thanks, Steve
+
+2013-06-26  
+
+  * ff096786 src/ctests/fork2.c: fork2: Return fork2 test to its old
+  functionality  Once upon a time fork2 did: PAPI_library_init() … if (
+  fork() == 0) PAPI_shutdown() PAPI_library_init() …
+
+2013-06-25  
+
+  * 978d0d3d src/examples/PAPI_add_remove_event.c src/papi.c: Modify
+  PAPI_list_events functionality to match documentation. You can now pass in a
+  NULL event array and a zero count to get back the valid number of events.
+  This can then be used to allocate the array and retrieve the exact number of
+  events. Thanks to Nils Smeds and Alain Miniussi for pointing this out.
+
+  * 13c52402 src/examples/PAPI_add_remove_event.c src/papi.c: Modify
+  PAPI_list_events functionality to match documentation. You can now pass in a
+  NULL event array and a zero count to get back the valid number of events.
+  This can then be used to allocate the array and retrieve the exact number of
+  events. Thanks to Nils Smeds and Alain Miniussi for pointing this out.
+
+  * 656e703e src/ctests/zero_fork.c: zero_fork ctest : make documentation match
+  code
+
+  * 96aad0c7 src/ctests/forkexec.c: forkexec ctest : make comments match code
+
+  * b7c70953 src/ctests/forkexec4.c: forkexec4 ctest : make comments match the
+  code
+
+  * 7ffb0245 src/ctests/forkexec3.c: forkexec3 ctest : make documentation match
+  code
+
+  * 55ea846c src/ctests/forkexec2.c: forkexec2 ctest: have comments match what
+  source does
+
+  * 7a601e2a src/ctests/Makefile src/ctests/fork2.c: fork2 ctest: remove; was
+  an exact duplicate of fork
+
+  * 9deff49b src/ctests/fork.c: fork ctest: make comments match what file
+  actually does
+
+2013-06-24  
+
+  * 2770d2c5 src/components/perf_event/perf_event_lib.c: perf_event: fix
+  failure on ARM due to domain settings  forgot to git add the perf_event_lib.c
+  file :(
+
+  * bf7c4c50 src/components/perf_event/perf_event.c
+  src/components/perf_event/perf_event_lib.h: perf_event: fix failure on ARM
+  due to domain settings  On Cortex A8 and A9 it's not possible to set
+  exclude_kernel (hardware does not support it).  Make sure the rdpmc detection
+  code doesn't try to set exclude_kernel.
+
+2013-06-18  
+
+  * 2b1433d8 src/ctests/all_native_events.c src/ctests/get_event_component.c:
+  ctests: Skip calling into disabled components.  This patch fixes a problem
+  that was causing two test cases to abort when they were run on a system which
+  has disabled components.  Code was added to check if the component is
+  disabled and just go to the next component in the list when the check is
+  true.  This prevents calls to code in components which may abort because the
+  component was unable to initialize itself correctly.  Thanks to Gary Mohr and
+  Chuck LaCasse from Bull for reporting.
+
+2013-06-14  
+
+  * 1872453c src/testlib/do_loops.c: testlib: don't change the iter count  The
+  first argument to do_misses is an iteration count, for some reason the code
+  was dividing this in half before doing work. Most places that call do_misses
+  call it as do_misses ( 1, ...)  void do_misses( int n, int bytes ) { {...} n
+  = n / 2; for ( j = 0; j < n; j++ ) {  1/2 == 0; so our do_misses call was
+  usually not.  Thanks Nils Smeds for reporting.
+
+2013-06-12  
+
+  * c113e5b6 src/components/infiniband/Makefile.infiniband.in
+  src/components/infiniband/Rules.infiniband
+  src/components/infiniband/configure...: Infiniband component: switch over to
+  weak linking  Thnaks to Gary Mohr for the patch.
+  ---------------------------------- The infiniband component needs include
+  files and libraries from both the infiniband ibmad and ibumad packages.  When
+  these packages are installed on a system, both packages normally install
+  their files in the same place (includes in /usr/include/infiniband and
+  libraries in /usr/lib64).  The current component configure script allows you
+  to provide a single include path and a single library path which gets used to
+  access files from both packages.  If these two packages have different
+  install prefixes (or you are trying to build from install images of each
+  package which are not located under the same directory) then the configure
+  script fails because it can not find all the files it needs.  These changes
+  modify the configure script to replace the include and library dir's with an
+  ibmad_dir and ibumad_dir and then uses the correct packages directory when
+  looking for includes and libraries from that package.  This makes it work
+  like the cuda and nvml components with respect to configuring how to find
+  files from a package the component depends on.  There are also changes in
+  this patch file to remove an unneeded variable in the dlopen code to resolve
+  some defects reported by coverity.
+
+2013-06-11  
+
+  * d5be5643 src/components/rapl/tests/rapl_basic.c: rapl tests: make the error
+  messages a little more verbose
+
+  * 0c9f1a8c src/run_tests_exclude.txt src/run_tests_exclude_cuda.txt:
+  run_tests_exclude files: Exclude a template file 
+  ------------------------------------------- It also adds the cpi.pbs file to
+  the list of files to excluded when the tests are run. This file is just a
+  template and attempts to run it hang the run_tests script on our systems.
+  -------------------------------------------
+
+  * 0a063619 src/run_tests.sh: run_tests.sh: fix exclude check.  The script
+  failed to remove .cu files, this patch fixes the check. Thanks Gary Mohr for
+  reporting/patching.
+
+2013-06-10  
+
+  * 87399477 src/components/cuda/linux-cuda.c: cuda component: Address a
+  coverity issue  The library linking code saved return values in a local var
+  but never used them. Thanks to Gary Mohr for submitting this patch.
+
+  * 99b5b685 src/components/coretemp/tests/coretemp_basic.c: coretemp_basic:
+  update test to properly enumerate events  The code was old and was searching
+  the entire native event list for ones that started with "hwmon".  This
+  updates the test to first find the coretemp component, then enumerate all
+  events contained within.
+
+  * b5c0795b src/components/rapl/tests/rapl_overflow.c: rapl component: address
+  potential looping issue in test.  A rapl component test has a do/while which
+  only exited when PAPI_add_named_event returned 0 ( and only 0; the PAPI_E*
+  error codes would not terminate a while( retval ) loop), this felt fragile,
+  minimal checks are now inplace.
+
+  * 4e9484a5 src/components/rapl/tests/rapl_overflow.c: rapl components:
+  coverity fixes  Reported/patched by Gary Mohr -----------------------------
+  The rapl component also has 1 defect in a test case.  The complaint is that
+  there is code that can never be executed.  But this one is not as clear, it
+  says that you can not exit the do/while loop that preceeds a test of retval
+  until retval=0 which means the test can never be true.  The patch I am
+  providing is to again remove the if test and its contents.  But I am
+  concerned that the do/while loop preceeding the test could result in a hard
+  loop that would hang the test case forever.  It seems to me like something
+  should also be done to insure the loop will exit at some point.  Here is a
+  patch that provides at least part of the fix: -----------------------------
+
+  * 0a533810 src/components/net/tests/net_values_by_name.c: net components:
+  coverity fixes  Reported/patched by Gary Mohr -----------------------------
+  The net component has one defect in one of the test cases.  The complaint is
+  that there is code that can never be executed.  There is a test to see if
+  event_count == 0 which can never be true at that place in the code.  So I
+  removed the if statement and its contents.  Here is the patch:
+  -----------------------------
+
+2013-06-07  
+
+  * b784b063 src/components/nvml/Rules.nvml src/components/nvml/configure
+  src/components/nvml/configure.in...: nvml: Apply Gary Mohr's dlopen patch. 
+  Move the nvml component over to using the dlopen and weak linking
+  infrastructure of the cuda component. Thanks, Gary.
+
+  * d6505b76 src/components/rapl/utils/rapl_plot.c: rapl: update the rapl_plot
+  utility  Get the event names by enumerating the ones available with the RAPL
+  component rather than having a hard-coded list.
+
+  * 2094c5b1 src/components/rapl/linux-rapl.c: rapl: add better error messages
+  on component init failure
+
+  * d0e668fb src/ctests/Makefile src/ctests/high-level.c
+  src/ctests/hl_rates.c...: First round of changes to implement a PAPI high
+  level event per cycle call. Untested.
+
+2013-06-05  
+
+  * 63074f82 src/components/rapl/linux-rapl.c: rapl: Add Ivb-EP support  The
+  Intel docs are spotty on what is actually supported. They state: 14.7.2 RAPL
+  Domains and Platform Specificity The specific RAPL domains available in a
+  platform varies across product segments. Platforms targeting client segment
+  support the following RAPL domain hierarchy: * Package * Two power planes:
+  PP0 and PP1 (PP1 may reflect to uncore devices) Platforms targeting server
+  segment support the following RAPL domain hierarchy: * Package * Power plane:
+  PP0 * DRAM
+
+2013-05-31  
+
+  * 31b4702d src/cpus.c: cpus.c: Don't run init_thread/shutdown_thread for
+  disabled components.
+
+2013-05-29  
+
+  * c48087d2 ChangeLogP511.txt RELEASENOTES.txt: Grab the updated ChangeLog
+  from 5.1.1  Create a ChangeLog and update RELEASENOTES for a 5.1.1 release.
+
+2013-05-24  
+
+  * d1c8769e src/components/perf_event/tests/Makefile
+  src/components/perf_event/tests/event_name_lib.c
+  .../perf_event/tests/perf_event_user_kernel.c: Add perf_event user/kernel
+  domain test  This will be useful if/when we start handling domains properly.
+
+  * 89e1aeba src/components/perf_event/tests/Makefile
+  src/components/perf_event/tests/event_name_lib.c
+  src/components/perf_event/tests/event_name_lib.h...: Add perf_event offcore
+  response test  Does a quick check to see if offcore response events are
+  working.
+
+  * bda86616 .../perf_event_uncore/perf_event_uncore.c
+  src/ctests/get_event_component.c src/papi_internal.c: Some more ctest fixes
+  involving disabled components.  We enforce disabled components sometime in
+  the PAPI routines and sometimes in the components themselves.  A bit
+  confusing.  It is tough with perf_event and perf_event_uncore because we
+  share libpfm4 by both, so the naming library for perf_event_uncore will be
+  active even if the component is disabled, which can cause some confusing
+  results if your test code ignores PAPI_ENOCMP error messages and accesses a
+  disabled component anyway.  This at least fixes our test cases, we might have
+  to revisit this later.
+
+  * b596621e doc/Doxyfile-common papi.spec src/Makefile.in...: Bump version
+  numbers  Call this 5.2.0.0 simple because its greater than (and some
+  components are completely incompatible with) 5.1.1
+
+  * eb77a91e .../perf_event_uncore/perf_event_uncore.c src/papi.c: Disallow
+  enumerating events on disabled components.  This was causing segfaults on
+  tests where enumeration was trying to enumerate uncore events on machines w/o
+  uncores.
+
+  * 4e991a8a .../perf_event/tests/perf_event_system_wide.c:
+  perf_event_system_wide: SKIP instead of FAIL if we don't have proper
+  permissions
+
+  * 7654bb1f src/Makefile.inc src/components/perf_event/tests/Makefile
+  .../perf_event/tests/perf_event_system_wide.c...: move the perf_event
+  specific tests to be with their component  This means the perf_event tests
+  will only be run if perf_event is enabled
+
+  * d82e343f src/ctests/perf_event_uncore_multiple.c:
+  ctests/perf_event_uncore_multiple: Improve this test a bit
+
+  * b1a594bf src/perf_events.c src/sys_perf_event_open.c: Remove the no-longer
+  needed perf_events files  Now we use the versions in the
+  components/perf_event directory
+
+  * a9a277f3 src/Makefile.in src/Makefile.inc src/configure...: Split up
+  CPUCOMPONENT configure variable  Now it is CPUCOMPONENT_NAME CPUCOMPONENT_C
+  CPUCOMPONENT_OBJ This allows having setups with no CPUCOMPONENT set
+  (perf_event used as a component) while keeping backward compatible with
+  non-component CPU components.  This has been tested on perf_event and
+  perfctr.  It might break other architectures, so test if you can.
+
+  * 69e29526 src/configure src/configure.in: configure: have --with-components
+  append comonents to existing value  This allows configure to earlier set the
+  components value to include "perf_event" if detected and then later append
+  the values passed in with --with-components
+
+  * 9d28df4c src/components/perf_event/Rules.perf_event
+  src/components/perf_event/perf_event.c
+  src/components/perf_event/perf_event_lib.c...: add perf_event and
+  perf_event_uncore components  This adds perf_event as a standalone component.
+  Currently it is not compiled or built, some changes need to be made to the
+  build system before this will work.
+
+2013-05-21  
+
+  * ea996661 src/components/cuda/linux-cuda.c: eliminate warnings of unused
+  vars
+
+  * 691bf114 src/components/cuda/linux-cuda.c: eliminate warnings of unused
+  vars
+
+  * 221bfdab src/components/cuda/linux-cuda.c
+  src/components/cuda/tests/HelloWorld.cu: Problem with cleanup_eventset():
+  after destroying the CUDA eventset, update_control_state() is called again
+  which operates on the already destroyed eventset.
+
+2013-05-17  
+
+  * 84925f50 src/components/cuda/linux-cuda.c: When adding multiple CUDA events
+  to an event set, PAPI_add_event() error 14 (CUPTI_ERROR_NOT_COMPATIBLE) is
+  being raised from the CUPTI library.  Turns out that the CUDA update control
+  state wasn't cleaning the event set up properly before adding new events.
+  It's fixed now.
+
+  * 2337aa3a src/perf_events.c: perf_event: allow running with
+  perf_event_paranoid is 2  perf_event_paranoid set to 2 means allow user
+  monitoring only (no kernel domain).  The code before this mistakenly disabled
+  all events in this case. Also set the allowed domains to exclude
+  PAPI_DOM_KERNEL.
+
+2013-05-16  
+
+  * 617d9fbb src/papi_events.csv: papi_events.csv Revert a little mishap in
+  adding ivbep support  Somehow the contents of papi_hl.c ended up in the
+  events file.
+
+  * 2aff4596 src/papi_events.csv: Add identifier for ivb_ep
+
+  * 1810ddf9 src/papi_libpfm4_events.c src/papi_libpfm4_events.h
+  src/perf_events.c: papi_libpfm4_events: allow specifying
+  core/uncore/os_generic PMUs  This allows you to specify you only want your
+  perf_event/libpfm4 based component to only export the PMU types you want. 
+  Now we can have an uncore-only component.
+
+  * 6554f3f0 src/papi_libpfm4_events.c: papi_libpfm4_events.c: only enable
+  presets for component 0  If we have multiple events using libpfm4, we only
+  want to load the presets if it is component 0.
+
+  * 6a4a4594 src/papi.c: PAPI_get_component_index() was matching names
+  improperly  For example, it was matching perf_event and perf_event_uncore as
+  the same component.
+
+  * 1b94e157 src/papi_hl.c: papi_hl.c : fix IPC calculation  I broke it a while
+  back while trying to clear out use of MHz.  The code was uncommented and very
+  confusing.  It is slightly better now.
+
+  * 92d4552e src/papi_libpfm4_events.c src/papi_libpfm4_events.h
+  src/perf_events.c: papi_libpfm4_events: code changes to allow multiple
+  component access  the PAPI libpfm4 code has been modified to allow multiple
+  users at once.  This will allow multiple components to use libpfm4, for
+  example a CPU component and an uncore component.
+
+  * 7902b30e src/cpus.c: cpus: fix debug compile  I always forget to compile
+  with --with-debug and miss changes in the DEBUG statements.
+
+2013-05-15  
+
+  * 7ddc05ff src/cpus.c src/cpus.h: cpus.c: Add reference count to cpu
+  structure  It is possible to have multiple eventsets all attached to the same
+  CPU, as long as only one eventset is running at a time.  At EventSet cleanup,
+  PAPI would free the CpuInfo_t structure even if other EventSets were still
+  using it.  This patch adds a reference count to the structure and only frees
+  it after the last user is cleaned up.  I also fixed a few locking bugs,
+  hopefully I didn't introduce any new ones.
+
+  * 6a61f9a2 src/cpus.c: more cleanup of the cpus.c file  mostly formatting and
+  added comments.
+
+  * 710d269f src/cpus.c src/cpus.h src/papi.c...: cleanup cpus.h  It had a lot
+  of extraneous stuff in it.  Also make sure it only gets included in files
+  that need it.
+
+  * 422226c9 src/papi.c: papi.c: add some extra debug messages
+
+  * b1297058 src/cpus.c: Clean up cpus.c a bit  Tracking down a segfault in the
+  cpu attach cleanup code.
+
+  * 7b6023cf src/ctests/perf_event_system_wide.c:
+  ctests/perf_event_system_wide: much improved output  It segfaults at the end
+  though, unclear if this is a bug in the test or a bug in PAPI.  Will
+  investigate.
+
+  * 38397aa3 src/components/cuda/configure src/components/cuda/configure.in
+  src/components/cuda/linux-cuda.c...: Cuda component: Update library search
+  path  From Gary Mohr: It turns out that with the changes I gave you the path
+  to the libcuda.so library is still hard coded to /usr/lib64.  This assumes
+  that the NVIDIA-Linux package is installed on the system where the build is
+  being done.  In Bull's case (and probably other users also) this is not
+  always the case.  To add the flexibility we need, I have added a new
+  configure argument to the cuda configure script.  The new argument is
+  "--with-cudrv_dir" and it allows the user to specify where the cuda driver
+  package (ie: NVIDIA-Linux) to be used for the build can be found.  This new
+  argument is optional and if not provided a value of "/usr" will be used. This
+  allows existing configure calls to continue to work like before.
+
+  * f8873d1c src/ctests/perf_event_system_wide.c:
+  ctests/perf_event_system_wide: clean up the output a lot  Still working on
+  understanding it.
+
+  * ebf20589 src/ctests/perf_event_system_wide.c: perf_event_system_wide:
+  testing various DOMAIN and GRANULARITY settings  pushing the limits of
+  PAPI/perf_event trying to see why system-wide measurement doesn't work.
+
+2013-05-14  
+
+  * 0c1ef3f5 src/components/cuda/linux-cuda.c: CUDA component: Update
+  description field  Also removes a strcpy in the init code, which overwrote
+  the name field. Thanks to Gary Mohr
+
+  * 474fc00e src/ctests/perf_event_uncore_lib.c: Add AMD fam15h northbridge
+  event to ctests/perf_event_uncore_lib.c
+
+2013-05-13  
+
+  * cf56cdac src/perf_events.c: perf_event component: update error returns 
+  This passes more error return values back to PAPI. Before this change a lot
+  of places were hardcoded to PAPI_EPERM even if sys_perf_event_open() was
+  reporting a different error.
+
+  * c824471b src/ctests/Makefile src/ctests/perf_event_system_wide.c
+  src/ctests/perf_event_uncore.c...: Update the perf_event specific tests. 
+  This adds a few more uncore tests, which are currently showing some bugs in
+  the implementation.  The tests all need root permissions to run, so should
+  default to "SKIPPED" for most users.
+
+2013-05-08  
+
+  * e0204914 src/configure src/configure.in: Force the use of pthread_mutexes
+  on ARM  This lets the system libraries worry about the best way to define
+  mutexes, rather than trying to hand-code in assembly around all of the
+  various issues there are with atomic instructions in the ARM architecture. 
+  It might make sense to enable this for *all* Linux architectures, but for now
+  just do it for ARM.
+
+  * f21b1b27 src/linux-lock.h: Commit 59d3d7584b2925bd05b4b5d0f4fe89666eb8494a
+  removed the definition of mb().  mb() was defined as rmb().  This just
+  corrects it back.   (Note from VMW -- this fixes some things, but ARM still
+  won't build on a Cortex A9 pandaboard due to the use of the "swp"
+  instruction. Proper fix is probably to enforce posix-mutexes on ARM)
+
+2013-05-06  
+
+  * 913f0795 src/components/nvml/configure src/components/nvml/configure.in:
+  NVML: Update wording for configure options.  Thanks for pointing out the
+  ambigous wording, Heike.
+
+  * 81a86c2b src/components/infiniband/Rules.infiniband
+  src/components/infiniband/linux-infiniband.c
+  src/components/infiniband/tests/Makefile: Infiniband component: use
+  dlopen/dlsym for symbols  Apply Gary Mohr's patch to switch the infiniband
+  component over to dl* with the same motivations as the cuda component.
+
+2013-05-02  
+
+  * 2e6bcb2a src/utils/native_avail.c: Add two command line switches: -i
+  EVENTSTR includes only events whose names contain EVENTSTR; -x EVENTSTR
+  excludes all events whose names contain EVENTSTR.  These two switches can be
+  combined, but only one string per switch can be used. This allows you to, for
+  example, filter events by component name, or eliminate all uncore events on
+  Sandy Bridge…
+
+2013-05-01  
+
+  * 3163cc83 src/ctests/perf_event_uncore.c: ctests/perf_event_uncore: add
+  IvyBridge support  this needs an updated libpfm4 to work
+
+2013-04-30  
+
+  * 55c89673 src/examples/add_event/Papi_add_env_event.c
+  src/examples/overflow_pthreads.c: Examples: Missed two instances of %x printf
+  formating.
+
+2013-04-29  
+
+  * b3c5bd47 src/components/appio/tests/appio_list_events.c
+  src/components/appio/tests/appio_values_by_code.c
+  src/components/appio/tests/appio_values_by_name.c...: Address TRAC 174: Let
+  printf do the formatting  https://icl.cs.utk.edu/trac/papi/ticket/174 174:
+  PAPI's debuggin/info output should use %# conversions for octal and hex
+  ------------------------+-------------------- Reporter:  sbk@…        |    
+   Owner: Type:  enhancement  |     Status:  new Priority:  normal       | 
+  Component:  All Version:  HEAD         |   Severity:  normal Keywords:       
+         | ------------------------+-------------------- Email sent to James
+  Ralph:  Seeing your latest change reminded me: Anytime there is a value
+  issued in hex or octal the "%#" conversion should be used so the value is
+  always preceded with a "0" for octal or a "0x" for hex. Otherwise when a
+  value is printed one can not tell the base it is in (one shouldn't have to
+  rely on internal knowledge of the code or the context to tell). For variables
+  that are pointers the "%p" conversion can be used (this will always use an
+  hex syntax).  It would be nice to apply this to all PAPI print statements in
+  their entirety.
+
+2013-04-25  
+
+  * 87ec9286 src/components/vmware/Rules.vmware: Rules.vmware: Use $(LDL) no
+  -ldl  Minor cleanup, but configure sets it, so why not use it.
+
+2013-04-26  
+
+  * 8dddd587 src/papi_hl.c: papi_hl: Use PAPI_get_virt_usec() for process time 
+  The code was using cycles / MHz which is not guaranteed to work on modern
+  machines.  It also was sometimes using (instructions / estimated IPC) / MHz
+  which hopefully isn't necessary for any machine PAPI currently supports. 
+  Instead use PAPI_get_virt_usec() which should give the right value.
+
+2013-04-25  
+
+  * 9dd36088 src/ctests/perf_event_uncore.c: ctests/perf_event_uncore: make
+  more modular  Cleans up the code to make it easier to add tests for
+  architectures other than SandyBridge-EP.  I was doing this so I could add
+  support for IvyBridge but it turns out neither Linux nor libpfm4 supports
+  uncore on IvyBridge yet.  hmmm.
+
+  * 52ff0293 src/components/cuda/Rules.cuda: Rules.cuda:  The cuda component
+  now depend on the dynamic linking loader and on some systems one has to
+  explicitly link to it.  Add $(LDL) to LD_FLAGS, configure sets it if we need
+  it.
+
+  * 97a4a5ea src/components/cuda/Rules.cuda src/components/cuda/linux-cuda.c
+  src/components/cuda/tests/Makefile: Cuda component enhancement. 
+  ---------------- From Gary's submission--------------------------------- The
+  current packaging of the cuda component in PAPI has a fairly unfriendly side
+  effect.  When PAPI is built with the cuda component, then that copy of PAPI
+  can only be used on systems where the cuda libraries are installed. If it is
+  installed on a system without these libraries then all PAPI services fail
+  because they have references to libraries which can not be found.  Even
+  papi_avail which you would think has nothing to do with cuda reports the
+  error.  This issue significantly complicates the delivery and install of the
+  PAPI package on large clusters where some of the nodes have NVIDIA GPU's (and
+  the cuda libraries to talk to them) and other nodes do not have GPU's (and
+  therefore no software to access them).  I have been working with the help of
+  Phil Mucci to eliminate this dependency so that a copy of PAPI built with a
+  cuda component could be installed on all nodes in the cluster and if the node
+  had NVIDIA GPU's (and libraries available) then the cuda component would get
+  enabled and could be used.  If the node did not have the hardware or the
+  access libraries were not available, then the cuda component would just
+  disable itself at component initialization so it could not be used (but all
+  other PAPI services would still work).  Phil has provided some gentle
+  prodding and lots of valuable suggestions to assist this effort.  I now think
+  that I have a working version of this capability and am ready to share it
+  with the community.
+  -----------------------------------------------------------------------  Many
+  thanks to Gary Mohr and Phil Mucci for this much needed functionality.
+
+2013-04-23  
+
+  * 99c8e352 src/papi_internal.c: papi_internal.c: Print an eventcode in hex vs
+  decimal.  Thanks, Gary Mohr.
+
+2013-04-22  
+
+  * 1fc5dae2 src/run_tests.sh: The test for determining whether to run valgrind
+  was backwards. Correcting that allow the run_test.sh script to stay the same
+  and one just needs to define "VALGRIND=yes" (or any non-null string) to make
+  run_test.sh use valgrind.  --- src/run_tests.sh | 6 ++---- 1 file changed, 2
+  insertions(+), 4 deletions(-)  diff --git a/src/run_tests.sh
+  b/src/run_tests.sh index d1ce205..9337ff2 100755 --- a/src/run_tests.sh +++
+  b/src/run_tests.sh @@ -19,10 +19,8 @@ else export TESTS_QUIET fi  -if [
+  "x$VALGRIND" = "x" ]; then -# Uncomment the following line to run tests using
+  Valgrind -# VALGRIND="valgrind --leak-check=full"; -    VALGRIND=""; +if [
+  "x$VALGRIND" != "x" ]; then +    VALGRIND="valgrind --leak-check=full"; fi 
+  #CTESTS=`find ctests -maxdepth 1 -perm -u+x -type f`; --
+
+2013-04-19  
+
+  * 4cf16234 src/components/README src/components/bgpm/README
+  src/components/coretemp_freebsd/README...: Restructure README files for
+  components so that the file in the components directory doesn't document
+  individual component details. Add README files to each component directory
+  that requires further installation detail. Update RAPL instructions to
+  capture how to enable reading the MSRs. These files are supposedly configured
+  with Doxygen markup, but I don't think the master README ever got built. It
+  probably should.
+
+2013-04-17  
+
+  * bf75d226 src/components/cuda/tests/HelloWorld.cu: cuda/tests/HelloWorld.cu:
+  workaround a segfault.  Report from Gary Hohr
+  
+   I was running the Cuda test case on a system which did not actually have any
+  NVIDIA GPU's installed on it (but the cuda software was installed and papi
+  was built with the cuda component).  I modified the test case to put an real
+  cuda event in the source (as suggested in the source).  When I run the test
+  case the cuda component gets disabled in PAPI_library_init (because
+  detectDevice function can not find any GPU's) which is the correct behavior.
+  The test case then calls PAPI_event_name_to_code which failed because the
+  cuda component was disabled.  The test case then created an event set and
+  called PAPI_add_events with an empty list of events to be added.  This led to
+  a segfault somewhere inside libpfm4.  The attached patch makes some minor
+  changes to protect against this problem.  I noticed this test case does not
+  use the PAPI test framework utilities (test_xxxx functions) so I did not
+  modify the test to use them.
+
+2013-04-15  
+
+  * 457bfd74 src/components/cuda/linux-cuda.c: When creating two event sets -
+  one for the CUDA and one for the CPU component  - the order of event set
+  creation appears crucial. When the CPU event set has been created before the
+  CUDA event set then PAPI_start() for the CUDA event set works fine. However,
+  if the CUDA event set has been created before the CPU event set, then
+  PAPI_start(CUDA_event_set) forces the CUDA control state to be updated one
+  more time, even if the CUDA event set has not been modified. The CUDA control
+  state function did not properly handle this case and hence cause PAPI_start()
+  to fail. This has been fixed.
+
+  * 807120b6 src/components/cuda/linux-cuda.h: linux-cuda.c
+
+2013-03-28  
+
+  * 7b0eec7a src/run_tests.sh: run_tests.sh: further refine component test find
+   Exclude *.cu when looking for component tests.
+
+2013-03-25  
+
+  * 6a40c8ba src/run_tests.sh: run_tests.sh: File mode changes.  run_tests.sh
+  is now expected to run from the install location in addition to src. The
+  script tried to remove execute from *.[c|h], now it just excludes *.[c|h]
+  from the find commands.
+
+2013-03-18  
+
+  * 2ba9f473 src/perfctr-x86.c: perfctr: don't read in event table multiple
+  times  papi_libpfm3_events.c now reads in the predefined events, we don't
+  also need to do this in perfctr setup_x86_presets()
+
+  * 326401b1 src/perfctr.c: Fix segfault in perfctr.c  The preset lookup uses
+  the cidx index, but in perfctr.c we weren't passing a cidx value (it was
+  being left off).  The old perfctr code plays games with defining extern
+  functions so the compiler wasn't giving us a warning.
+
+2013-03-14  
+
+  * 50130c6f src/components/bgpm/L2unit/linux-L2unit.c src/linux-bgq.c: If a
+  counter is not set to overflow (threshold==0; happens when PAPI_shutdown is
+  called) then we do not want to rebuild the BGPM event set, even if the event
+  set has been used previously and hence "applied or attached". Usually if an
+  event set has been applied or attached prior to setting overflow, the BGPM
+  event set needs to be deleted and recreated (which implies malloc() from
+  within BGPM). Not so, though, if threshold is 0 which is the case when
+  PAPI_shutdown is called.  Note, this only applies to Punit and L2unit, not
+  IOunit since an IOunit event set in not applied or attached.
+
+2013-03-13  
+
+  * 1a143003 src/components/bgpm/IOunit/linux-IOunit.c
+  src/components/bgpm/IOunit/linux-IOunit.h
+  src/components/bgpm/L2unit/linux-L2unit.c...: Overflow issue on BG/Q
+  resolved. Overflow with multiple components worked; overflow with multiple
+  components and multiple events did not work as supposed to.
+
+  * 42741a40 src/components/cuda/Rules.cuda: Added one more library to linker
+  command.
+
+2013-03-12  
+
+  * 1431eb3f src/components/nvml/Makefile.nvml.in
+  src/components/nvml/Rules.nvml src/components/nvml/configure...: NVML
+  component: build system work  Adopt the cuda component's method for
+  specifying library location.
+
+2013-03-11  
+
+  * ce66feac src/components/mx/linux-mx.c: mx component: Modernize init
+  routine.  Add component index to _mx_component_init()s signarure and set the
+  bit in component info.
+
+  * 1c1bc177 src/components/cuda/Makefile.cuda.in
+  src/components/cuda/Rules.cuda src/components/cuda/configure...: Resolve
+  configure issues for CUDA component.
+
+2013-03-07  
+
+  * f3572537 src/linux-common.c src/linux-memory.c: Fix the build on
+  Linux-SPARC  I dug out an old SPARC machine and fixed the PAPI build on it.
+
+  * 2c7f102c src/perf_events.c: More comprehensive sys_perf_open to PAPI error
+  mappings  This tries to cover more of the errors returned by sys_perf_open
+  and map them to better results.  EINVAL is a problem because it can mean
+  Conflict as well as Event not found and many other things, so it's unclear
+  what to do with it.
+
+  * 299070ef src/perf_events.c src/sys_perf_event_open.c: Return proper error
+  codes for sys_perf_event_open  For some reason on x86 and x86_64 we were
+  trying to set errno manually and thus over-writing the proper errno value,
+  causing all errors to look like PAPI_EPERM  This removes that code, as well
+  as adds code to report ENOENT as PAPI_ENOEVENT.  With this change, on IVY
+  this happens which looks more correct.  ./utils/papi_command_line
+  perf::L1-ICACHE-PREFETCHES Failed adding: perf::L1-ICACHE-PREFETCHES because:
+  Event does not exist command_line.c                       PASSED
+
+2013-03-06  
+
+  * baa557ca src/papi_libpfm4_events.c src/papi_user_events.c: Coverity fixes: 
+  Coverity pointed out that there was a case where load_user_eent_table() could
+  leak memory.  The change in the location of the papi_free(foo) ensures that
+  the allocated memory is freed.  Coverity pointed out one path through the
+  code in _papi_libpfm4_ntv_code_to_descr() that did not free up memory
+  allocated in the function.  Added a free on the path in free up that memory. 
+  Thanks Will Cohen.
+
+2013-02-14  
+
+  * 395b7bc7 src/Makefile.inc src/components/README
+  src/components/appio/tests/Makefile...: Add component tests' to the
+  install-[all|tests] target.  Thanks to Gary Mohr. ------------------- This
+  makes a fairly small change to src/Makefile.inc to add logic that adds a new
+  install-comp_tests target which calls the install target for each component
+  being built. This new target is listed as a dependency on the install-tests
+  target so it will happen when the 'install-all', 'install-tests', or
+  'install-comp_tests' targets are used. A note about this change, I am not
+  real familiar with the auto make and auto conf tools. This change was enough
+  to make it work for me but if there is another file that should also be
+  changed for this modification, please help me out here.  The patch also adds
+  install targets to the Makefiles for all of the components which have 'tests'
+  directories and updates the README file which talks about how to create
+  component tests.  Another note, I only compile with a couple of components
+  (ours, rapl, and example) so if I fat fingered something in one of the other
+  components Makefiles I would not have noticed. Please keep me honest and make
+  sure you compile with them all enabled.  Thanks for adding this capability
+  for us. Gary ---------------------------  Makefile.inc: Add run_tests and
+  friends to install-tests target.  Component test Makefiles' get their install
+  location to mirror what runtests expects.
+
+2013-03-04  
+
+  * 448d21ab src/components/rapl/linux-rapl.c: Remove a stray debug statement.
+  Thanks to Harald Servat for catching this.
+
+2013-03-01  
+
+  * df1a75cc src/utils/command_line.c: Wrestled some horribly convoluted
+  indexing into shape. The -u and -x options now print as expected (I think).
+
+2013-01-31  
+
+  * b0f5f4d6 src/components/nvml/linux-nvml.c: linux-nvml.c: Fix type warning. 
+  CUDA and NVML have an signed vs unsigned thing going on in their returned
+  device counts, cast away the warning.
+
+2013-01-29  
+
+  * 8490b4ee src/papi.c: General doxygen cleanup: remove all "No known bugs"
+  messages; correct and cleanup examples for PAPI_code_to_name and
+  PAPI_name_to_code
+
+2013-01-23  
+
+  * 89e45a9b src/linux-memory.c src/linux-timer.c: ia64 fixes.  Thanks to Tony
+  Jones <tonyj@suse.de> for patches.
+
+2013-01-16  
+
+  * 23e0ba2d src/components/nvml/linux-nvml.c: nvml component: cleanup a memory
+  leak  We did not free a buffer at shutdown time.
+
+2013-01-15  
+
+  * f3db85fc src/papi.h: papi.h bump version number.
+
+  * dfa80287 src/buildbot_configure_with_components.sh: Buildbot configure
+  script.  Add cuda and nvml components, if configured, to the buildbot
+  coverage test. Note: Script now checks for existance of Makefile.cuda and
+  then Makefile.nvml so see if it can build the cuda component and then if it
+  can build the nvml component.
+
+  * cf416e27 src/threads.c: Cleaned up compiler warning (gcc version 4.4.6)
+
+  * 59cbc8fc src/components/bgpm/CNKunit/linux-CNKunit.c
+  src/components/bgpm/IOunit/linux-IOunit.c
+  src/components/bgpm/L2unit/linux-L2unit.c...: Cleaned up compiler warnings on
+  BG/Q (gcc version 4.4.6 (BGQ-V1R1M2-120920))
+
+2013-01-14  
+
+  * 3af71658 .../build/lib.linux-x86_64-2.7/perfmon/__init__.py
+  .../lib.linux-x86_64-2.7/perfmon/perfmon_int.py
+  .../build/lib.linux-x86_64-2.7/perfmon/pmu.py...: libpfm4: remove extraneous
+  build artifacts.  Steve Kaufmann reported differences between the libpfm4 I
+  imported into PAPI and the libpfm4 that can be attained with a git clone
+  git://perfmon2.git.sourceforge.net/gitroot/perfmon2/libpfm4  Self: Do libpfm4
+  imports from a fresh clone of libpfm4.

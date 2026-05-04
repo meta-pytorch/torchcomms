@@ -1,0 +1,6 @@
+
+COMPSRCS += components/powercap_ppc/linux-powercap-ppc.c
+COMPOBJS += linux-powercap-ppc.o
+
+linux-powercap-ppc.o: components/powercap_ppc/linux-powercap-ppc.c
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/powercap_ppc/linux-powercap-ppc.c -o linux-powercap-ppc.o

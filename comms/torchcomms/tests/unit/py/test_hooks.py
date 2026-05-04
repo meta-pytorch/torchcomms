@@ -16,8 +16,8 @@ from torchcomms._comms import (
 
 class TestHooks(unittest.TestCase):
     def _create_comm(self, name: str) -> torchcomms.TorchComm:
-        """Create a communicator using the dummy backend."""
-        return torchcomms.new_comm("dummy", torch.device("cpu"), name=name)
+        """Create a communicator using the fake backend."""
+        return torchcomms.new_comm("fake", torch.device("cpu"), name=name)
 
     def test_register_pre_hook(self) -> None:
         """Test that pre-hooks are called before collective operations."""

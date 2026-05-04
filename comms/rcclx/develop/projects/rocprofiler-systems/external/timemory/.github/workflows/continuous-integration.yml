@@ -1,0 +1,464 @@
+name: continuous-integration
+
+on:
+  push:
+    branches: [ master, develop, omnitrace ]
+  pull_request:
+    branches: [ master, develop, omnitrace ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-ci:
+    runs-on: ubuntu-20.04
+    continue-on-error: false
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - CC: clang-9
+            CXX: clang++-9
+            PYTHON_VERSION: '3.6'
+            BUILD_TYPE: 'MinSizeRel'
+            PACKAGES: 'clang-9 build-essential libopenmpi-dev openmpi-bin openmpi-common libfabric-dev ccache graphviz'
+            BUILD_ARGS: '--quick --build-libs shared --mpi --gotcha --tools mallocp mpip ompt --cxx-standard=17'
+            CTEST_ARGS: '-V --output-on-failure'
+            CONFIG_ARGS: '-DTIMEMORY_CCACHE_BUILD=ON'
+          - CC: clang-10
+            CXX: clang++-10
+            PYTHON_VERSION: '3.7'
+            BUILD_TYPE: 'Release'
+            PACKAGES: 'clang-10 build-essential ccache graphviz'
+            BUILD_ARGS: '--minimal --build-libs shared static --python --gotcha --stats --unwind --tools mallocp --cxx-standard=17'
+            CTEST_ARGS: '-V --output-on-failure'
+            CONFIG_ARGS: '-DTIMEMORY_CCACHE_BUILD=ON -DTIMEMORY_UNITY_BUILD=OFF -DTIMEMORY_BUILD_PYTHON_UNITY=OFF'
+          - CC: clang-11
+            CXX: clang++-11
+            PYTHON_VERSION: '3.7'
+            BUILD_TYPE: 'Release'
+            PACKAGES: 'clang-11 build-essential ccache graphviz'
+            BUILD_ARGS: '--minimal --build-libs shared static --stats --tools kokkos-config timem --cxx-standard=17'
+            CONFIG_ARGS: '-DTIMEMORY_CCACHE_BUILD=ON'
+          - CC: gcc-7
+            CXX: g++-7
+            FC: gfortran-7
+            PYTHON_VERSION: '3.6'
+            BUILD_TYPE: 'Debug'
+            PACKAGES: 'gcc-7 g++-7 gfortran-7 build-essential libmpich-dev mpich libtbb-dev libpapi-dev papi-tools lcov ccache graphviz'
+            BUILD_ARGS: '--minimal --build-libs shared --mpi --papi --gotcha --unwind --tools mpip --stats --cxx-standard=17 --coverage'
+            CTEST_ARGS: '-V --output-on-failure'
+            CONFIG_ARGS: '-DCMAKE_C_FLAGS=-Og -DCMAKE_CXX_FLAGS=-Og'
+          - CC: gcc-8
+            CXX: g++-8
+            FC: gfortran-8
+            PYTHON_VERSION: '3.7'
+            BUILD_TYPE: 'Release'
+            PACKAGES: 'gcc-8 g++-8 gfortran-8 build-essential libmpich-dev mpich ccache graphviz'
+            BUILD_ARGS: '--minimal --build-libs shared --mpi --gotcha --stats --tools compiler --cxx-standard=17'
+            CTEST_ARGS: '-V --output-on-failure'
+            CONFIG_ARGS: '-DTIMEMORY_CCACHE_BUILD=ON'
+          - CC: gcc-9
+            CXX: g++-9
+            FC: gfortran-9
+            PYTHON_VERSION: '3.7'
+            BUILD_TYPE: 'MinSizeRel'
+            PACKAGES: 'gcc-9 g++-9 gfortran-9 build-essential ccache graphviz'
+            BUILD_ARGS: '--minimal --build-libs shared --gotcha --stats --python --unwind --cxx-standard=17'
+            CTEST_ARGS: '-V --output-on-failure'
+            CONFIG_ARGS: '-DTIMEMORY_CCACHE_BUILD=ON -DTIMEMORY_BUILD_PYTHON_UNITY=OFF'
+          - CC: gcc-10
+            CXX: g++-10
+            FC: gfortran-10
+            PYTHON_VERSION: '3.7'
+            BUILD_TYPE: 'Release'
+            PACKAGES: 'gcc-10 g++-10 gfortran-10 build-essential libtbb-dev ccache graphviz'
+            BUILD_ARGS: '--minimal --build-libs shared --python --arch --extra-optimizations --caliper --unwind --cxx-standard=17'
+            CTEST_ARGS: '-V --output-on-failure'
+            CONFIG_ARGS: '-DTIMEMORY_CCACHE_BUILD=ON -DTIMEMORY_BUILD_PYTHON_UNITY=OFF'
+
+    env:
+      CC: ${{ matrix.CC }}
+      FC: ${{ matrix.FC }}
+      CXX: ${{ matrix.CXX }}
+      CTEST_ARGS: "${{ matrix.CTEST_ARGS }}"
+
+    steps:
+      - name: Setup Environment
+        run: |
+          echo "PATH=${HOME}/miniconda/bin:${PATH}" >> $GITHUB_ENV
+          echo "CMAKE_ARGS=-DCMAKE_INSTALL_PREFIX=${HOME}/timemory-install -DTIMEMORY_SOCKET_TESTS=OFF ${{ matrix.CONFIG_ARGS }}" >> $GITHUB_ENV
+          echo "PYCTEST_ARGS=-SF --pyctest-drop-site=my.cdash.org --pyctest-model=Continuous --pyctest-site=GitHub -j 1 --compile-time-perf ${HOME}/ctp -cc ${{ matrix.CC }} -cxx ${{ matrix.CXX }} --pyctest-build-type=${{ matrix.BUILD_TYPE }} ${{ matrix.BUILD_ARGS }}" >> $GITHUB_ENV
+          env | sort
+
+      - name: Checkout Code
+        uses: actions/checkout@v3
+        with:
+          clean: true
+
+      - name: Update container
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.PACKAGES }}
+          sudo scripts/linux-ci.sh
+
+      - name: Install PyCTest
+        run: |
+          wget https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda.sh
+          bash miniconda.sh -b -p ${HOME}/miniconda
+          conda config --set always_yes yes --set changeps1 no
+          conda create -c conda-forge -c defaults -n pyctest python=${{ matrix.PYTHON_VERSION }} pyctest
+
+      - name: Install Requirements
+        run: |
+          source activate
+          conda activate pyctest
+          python -m pip install -r requirements.txt
+          python -m pip install pytest
+
+      - name: Build and Test
+        run: |
+          source activate
+          conda activate pyctest
+          echo -e "Running command:\n$(which python) ./pyctest-runner.py ${PYCTEST_ARGS} -- ${CTEST_ARGS} -- ${CMAKE_ARGS}"
+          python ./pyctest-runner.py ${PYCTEST_ARGS} -- ${CTEST_ARGS} -- ${CMAKE_ARGS}
+
+      - name: Update Log
+        working-directory: ${{github.workspace}}/build-timemory/Linux
+        run: |
+          for i in $(find Testing | grep LastUpdate); do echo "##### File: ${i} #####"; cat ${i}; done
+
+      - name: Configure Log
+        working-directory: ${{github.workspace}}/build-timemory/Linux
+        run: |
+          for i in $(find Testing | grep LastConfigure); do echo "##### File: ${i} #####"; cat ${i}; done
+
+      - name: Build Log
+        working-directory: ${{github.workspace}}/build-timemory/Linux
+        run: |
+          for i in $(find Testing | grep LastBuild); do echo "##### File: ${i} #####"; cat ${i}; done
+
+      - name: Test Log
+        working-directory: ${{github.workspace}}/build-timemory/Linux
+        run: |
+          for i in $(find Testing | grep LastTest); do echo "##### File: ${i} #####"; cat ${i}; done
+
+      - name: Validate Build
+        working-directory: ${{github.workspace}}/build-timemory/Linux
+        run: |
+          source activate
+          conda activate pyctest
+          cmake --build . --target all --parallel $(nproc)
+
+      - name: Test Install
+        working-directory: ${{github.workspace}}/build-timemory/Linux
+        run: |
+          source activate
+          conda activate pyctest
+          cmake --build . --target install --parallel $(nproc)
+
+      - name: Validate Tests
+        working-directory: ${{github.workspace}}/build-timemory/Linux
+        run: |
+          source activate
+          conda activate pyctest
+          if [ -n "$(find Testing | grep LastTestsFailed.log)" ]; then
+              ctest --rerun-failed -V -N;
+              ctest --rerun-failed -V;
+          fi
+
+      - name: Test Python Build
+        if: ${{ matrix.BUILD_TYPE != 'Debug' }}
+        working-directory: ${{github.workspace}}/build-timemory/Linux
+        run: |
+          source activate
+          conda activate pyctest
+          if [ -f "tests/test-python-install-import.cmake" ]; then
+            cmake -P tests/test-python-install-import.cmake;
+            PYTHONPATH=. $(which pytest) -s;
+          fi
+
+      - name: Import Python Install
+        working-directory: ${{github.workspace}}/build-timemory/Linux
+        run: |
+          source activate
+          conda activate pyctest
+          if [ -f "tests/test-python-install-import.cmake" ]; then
+            cd;
+            export PYTHONPATH="${HOME}/timemory-install/lib/python${{ matrix.PYTHON_VERSION }}/site-packages:${PYTHONPATH}"
+            python -c "import timemory; print(timemory.__file__)";
+          fi
+
+      - name: Test Examples
+        working-directory: ${{github.workspace}}/examples
+        run: |
+          cmake -B build-examples -DTIMEMORY_BUILD_C_EXAMPLES=ON -Dtimemory_DIR=${HOME}/timemory-install/share/cmake/timemory .
+          cmake --build build-examples --target ex_array_of_bundles --parallel 2
+
+  ubuntu-latest:
+    runs-on: ubuntu-latest
+    continue-on-error: false
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - CC: clang
+            CXX: clang++
+            PYTHON_VERSION: '3.10'
+            BUILD_TYPE: 'Release'
+            PACKAGES: 'clang build-essential ccache graphviz'
+            BUILD_ARGS: '--minimal --build-libs shared --python --gotcha --unwind --stats --tools avail timem --cxx-standard=17'
+            CTEST_ARGS: '-V --output-on-failure'
+            CONFIG_ARGS: '-DTIMEMORY_CCACHE_BUILD=ON -DTIMEMORY_UNITY_BUILD=OFF -DTIMEMORY_BUILD_PYTHON_UNITY=OFF'
+          - CC: gcc
+            CXX: g++
+            FC: gfortran
+            PYTHON_VERSION: '3.10'
+            BUILD_TYPE: 'Release'
+            PACKAGES: 'gcc g++ gfortran build-essential ccache graphviz'
+            BUILD_ARGS: '--minimal --build-libs shared --python --gotcha --unwind --stats --tools avail timem --cxx-standard=17'
+            CTEST_ARGS: '-V --output-on-failure'
+            CONFIG_ARGS: '-DTIMEMORY_CCACHE_BUILD=ON -DTIMEMORY_UNITY_BUILD=OFF -DTIMEMORY_BUILD_PYTHON_UNITY=OFF'
+
+    env:
+      CC: ${{ matrix.CC }}
+      FC: ${{ matrix.FC }}
+      CXX: ${{ matrix.CXX }}
+      CTEST_ARGS: "${{ matrix.CTEST_ARGS }}"
+
+    steps:
+      - name: Setup Environment
+        run: |
+          echo "PATH=${HOME}/miniconda/bin:${PATH}" >> $GITHUB_ENV
+          echo "CMAKE_ARGS=-DCMAKE_INSTALL_PREFIX=${HOME}/timemory-install -DTIMEMORY_SOCKET_TESTS=OFF ${{ matrix.CONFIG_ARGS }}" >> $GITHUB_ENV
+          echo "PYCTEST_ARGS=-SF --pyctest-drop-site=my.cdash.org --pyctest-model=Continuous --pyctest-site=GitHub --pyctest-build-name ubuntu-latest-${{ matrix.CC }} -j 1 --compile-time-perf ${HOME}/ctp -cc ${{ matrix.CC }} -cxx ${{ matrix.CXX }} --pyctest-build-type=${{ matrix.BUILD_TYPE }} ${{ matrix.BUILD_ARGS }}" >> $GITHUB_ENV
+          env | sort
+
+      - name: Checkout Code
+        uses: actions/checkout@v3
+        with:
+          clean: true
+
+      - name: Update container
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.PACKAGES }} build-essential wget curl git-core cmake ninja-build python3-pip
+          sudo -H python3 -m pip install -U cmake
+
+      - name: Install PyCTest
+        run: |
+          wget https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda.sh
+          bash miniconda.sh -b -p ${HOME}/miniconda
+          conda config --set always_yes yes --set changeps1 no
+          conda create -c conda-forge -c defaults -n pyctest python=${{ matrix.PYTHON_VERSION }} pyctest
+
+      - name: Install Requirements
+        run: |
+          source activate
+          conda activate pyctest
+          python -m pip install -r requirements.txt
+          python -m pip install pytest
+
+      - name: Build and Test
+        run: |
+          source activate
+          conda activate pyctest
+          echo -e "Running command:\n$(which python) ./pyctest-runner.py ${PYCTEST_ARGS} -- ${CTEST_ARGS} -- ${CMAKE_ARGS}"
+          python ./pyctest-runner.py ${PYCTEST_ARGS} -- ${CTEST_ARGS} -- ${CMAKE_ARGS}
+
+      - name: Update Log
+        working-directory: ${{github.workspace}}/build-timemory/Linux
+        run: |
+          for i in $(find Testing | grep LastUpdate); do echo "##### File: ${i} #####"; cat ${i}; done
+
+      - name: Configure Log
+        working-directory: ${{github.workspace}}/build-timemory/Linux
+        run: |
+          for i in $(find Testing | grep LastConfigure); do echo "##### File: ${i} #####"; cat ${i}; done
+
+      - name: Build Log
+        working-directory: ${{github.workspace}}/build-timemory/Linux
+        run: |
+          for i in $(find Testing | grep LastBuild); do echo "##### File: ${i} #####"; cat ${i}; done
+
+      - name: Test Log
+        working-directory: ${{github.workspace}}/build-timemory/Linux
+        run: |
+          for i in $(find Testing | grep LastTest); do echo "##### File: ${i} #####"; cat ${i}; done
+
+      - name: Validate Build
+        working-directory: ${{github.workspace}}/build-timemory/Linux
+        run: |
+          source activate
+          conda activate pyctest
+          cmake --build . --target all --parallel $(nproc)
+
+      - name: Test Install
+        working-directory: ${{github.workspace}}/build-timemory/Linux
+        run: |
+          source activate
+          conda activate pyctest
+          cmake --build . --target install --parallel $(nproc)
+
+      - name: Validate Tests
+        working-directory: ${{github.workspace}}/build-timemory/Linux
+        run: |
+          source activate
+          conda activate pyctest
+          if [ -n "$(find Testing | grep LastTestsFailed.log)" ]; then
+              ctest --rerun-failed -V -N;
+              ctest --rerun-failed -V;
+          fi
+
+      - name: Test Python Build
+        if: ${{ matrix.BUILD_TYPE != 'Debug' }}
+        working-directory: ${{github.workspace}}/build-timemory/Linux
+        run: |
+          source activate
+          conda activate pyctest
+          if [ -f "tests/test-python-install-import.cmake" ]; then
+            cmake -P tests/test-python-install-import.cmake;
+            PYTHONPATH=. $(which pytest) -s;
+          fi
+
+      - name: Import Python Install
+        working-directory: ${{github.workspace}}/build-timemory/Linux
+        run: |
+          source activate
+          conda activate pyctest
+          if [ -f "tests/test-python-install-import.cmake" ]; then
+            cd;
+            export PYTHONPATH="${HOME}/timemory-install/lib/python${{ matrix.PYTHON_VERSION }}/site-packages:${PYTHONPATH}"
+            python -c "import timemory; print(timemory.__file__)";
+          fi
+
+      - name: Test Examples
+        working-directory: ${{github.workspace}}/examples
+        run: |
+          cmake -B build-examples -DTIMEMORY_BUILD_C_EXAMPLES=ON -Dtimemory_DIR=${HOME}/timemory-install/share/cmake/timemory .
+          cmake --build build-examples --target ex_array_of_bundles --parallel 2
+
+  macos-ci:
+    runs-on: macos-latest
+    continue-on-error: false
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - BUILD_TYPE: 'Release'
+            BUILD_ARGS: '--build-libs shared --tools avail timem --cxx-standard=17'
+            CTEST_ARGS: '-V --output-on-failure'
+            CONFIG_ARGS: '-DTIMEMORY_BUILD_{CALIPER,COMPILER_INSTRUMENTATION}=OFF -DTIMEMORY_BUILD_PYTHON_HATCHET=OFF'
+            PYTHON_VERSION: '3.8'
+    steps:
+      - name: Setup Environment
+        run: |
+          echo "PATH=${HOME}/miniconda/bin:${PATH}" >> $GITHUB_ENV
+          echo "CMAKE_ARGS=-DCMAKE_INSTALL_PREFIX=${HOME}/timemory-install -DTIMEMORY_SOCKET_TESTS=OFF -DCMAKE_CXX_FLAGS=-Wno-format ${{ matrix.CONFIG_ARGS }}" >> $GITHUB_ENV
+          echo "PYCTEST_ARGS=-SF --pyctest-drop-site=my.cdash.org --pyctest-model=Continuous --pyctest-site=GitHub -j 1 --compile-time-perf ${HOME}/ctp --pyctest-build-type=${{ matrix.BUILD_TYPE }} ${{ matrix.BUILD_ARGS }}" >> $GITHUB_ENV
+          env | sort
+
+      - name: Checkout Code
+        uses: actions/checkout@v3
+        with:
+          clean: true
+
+      - name: Install PyCTest
+        run: |
+          wget https://repo.continuum.io/miniconda/Miniconda3-latest-MacOSX-x86_64.sh -O miniconda.sh
+          bash miniconda.sh -b -p ${HOME}/miniconda
+          conda config --set always_yes yes --set changeps1 no
+          conda create -c defaults -c conda-forge -n pyctest python=${{ matrix.PYTHON_VERSION }} pyctest
+
+      - name: Install Requirements
+        run: |
+          source activate
+          conda activate pyctest
+          python -m pip install -r requirements.txt
+          python -m pip install pytest
+
+      - name: Checkout Code
+        uses: actions/checkout@v3
+        with:
+          clean: true
+
+      - name: Build and Test
+        run: |
+          export CONTINUOUS_INTEGRATION=true
+          source activate
+          conda activate pyctest
+          echo -e "Running command:\n$(which python) ./pyctest-runner.py ${PYCTEST_ARGS} -- ${CTEST_ARGS} -- ${CMAKE_ARGS}"
+          python ./pyctest-runner.py ${PYCTEST_ARGS} -- ${CTEST_ARGS} -- ${CMAKE_ARGS}
+
+      - name: Update Log
+        working-directory: ${{github.workspace}}/build-timemory/Darwin
+        run: |
+          for i in $(find Testing | grep LastUpdate); do echo "##### File: ${i} #####"; cat ${i}; done
+
+      - name: Configure Log
+        working-directory: ${{github.workspace}}/build-timemory/Darwin
+        run: |
+          for i in $(find Testing | grep LastConfigure); do echo "##### File: ${i} #####"; cat ${i}; done
+
+      - name: Build Log
+        working-directory: ${{github.workspace}}/build-timemory/Darwin
+        run: |
+          for i in $(find Testing | grep LastBuild); do echo "##### File: ${i} #####"; cat ${i}; done
+
+      - name: Test Log
+        working-directory: ${{github.workspace}}/build-timemory/Darwin
+        run: |
+          for i in $(find Testing | grep LastTest); do echo "##### File: ${i} #####"; cat ${i}; done
+
+      - name: Validate Build
+        working-directory: ${{github.workspace}}/build-timemory/Darwin
+        run: |
+          source activate
+          conda activate pyctest
+          cmake --build . --target all --parallel $(nproc)
+
+      - name: Test Install
+        working-directory: ${{github.workspace}}/build-timemory/Darwin
+        run: |
+          source activate
+          conda activate pyctest
+          cmake --build . --target install --parallel $(nproc)
+
+      - name: Validate Tests
+        working-directory: ${{github.workspace}}/build-timemory/Darwin
+        run: |
+          source activate
+          conda activate pyctest
+          if [ -n "$(find Testing | grep LastTestsFailed.log)" ]; then
+              ctest --rerun-failed -V -N;
+              ctest --rerun-failed -V;
+          fi
+
+      - name: Test Python Build
+        if: ${{ matrix.BUILD_TYPE != 'Debug' }}
+        working-directory: ${{github.workspace}}/build-timemory/Darwin
+        run: |
+          source activate
+          conda activate pyctest
+          if [ -f "tests/test-python-install-import.cmake" ]; then
+            cmake -P tests/test-python-install-import.cmake;
+            PYTHONPATH=. $(which pytest) -s;
+          fi
+
+      - name: Import Python Install
+        working-directory: ${{github.workspace}}/build-timemory/Darwin
+        run: |
+          source activate
+          conda activate pyctest
+          if [ -f "tests/test-python-install-import.cmake" ]; then
+            cd;
+            export PYTHONPATH="${HOME}/timemory-install/lib/python${{ matrix.PYTHON_VERSION }}/site-packages:${PYTHONPATH}"
+            python -c "import timemory; print(timemory.__file__)";
+          fi
+
+      - name: Test Examples
+        working-directory: ${{github.workspace}}/examples
+        run: |
+          cmake -B build-examples -DTIMEMORY_BUILD_C_EXAMPLES=ON -Dtimemory_DIR=${HOME}/timemory-install/share/cmake/timemory .
+          cmake --build build-examples --target ex_array_of_bundles --parallel 2

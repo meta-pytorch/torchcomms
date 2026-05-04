@@ -116,7 +116,7 @@ class P2pIbgdaTransportDevice {
    *
    * @param nicDevices          GPU span of per-NIC bundles (length =
    *                              numNics). Each NicDeviceIbgdaResources owns
-   *                              numQpsPerPeer primary + companion QP
+   *                              numQpsPerPeerPerNic primary + companion QP
    *                              pointers and the per-NIC sink lkey.
    * @param ownedRemoteSignalBuf  Remote-side signal outbox: writing here
    *                              targets the peer's local signal inbox.

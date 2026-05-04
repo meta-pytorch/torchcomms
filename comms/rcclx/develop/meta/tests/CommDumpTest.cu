@@ -21,8 +21,8 @@ ncclResult_t ncclCommDump(
     std::unordered_map<std::string, std::string>& map);
 
 // #include "comms/utils/cvars/nccl_cvars.h"
-#include "CollTrace.h"
 #include "comms/utils/StrUtils.h"
+#include "latency_profiler/CollTrace.h"
 // #include "meta/colltrace/ProxyMock.h"
 
 // #include "meta/wrapper/CtranExComm.h"

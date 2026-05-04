@@ -5,6 +5,21 @@ project(torchcomms_ncclx)
 set(CMAKE_VERBOSE_MAKEFILE ON)
 set(FETCHCONTENT_BASE_DIR "build/fetchcontent")
 
+# Some fetched third-party projects still declare pre-3.5 policy versions.
+# Newer CMake releases reject those unless we set a minimum policy floor.
+if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.31)
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+endif()
+
+# colltrace's HRDWRingBufferReader uses __atomic_load_n on a 128-bit value,
+# which the compiler lowers to __atomic_load_16 (libatomic). On x86_64 we
+# sidestep this in source via an SSE2 MOVDQA specialization (see
+# HRDWRingBufferReader.h), so no libatomic dep is needed there. On other
+# archs (aarch64, etc.) we fall back to linking libatomic.
+if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+    add_link_options("LINKER:--push-state,--no-as-needed" "-latomic" "LINKER:--pop-state")
+endif()
+
 # Options
 option(USE_NCCL "Whether to build NCCL or not" ON)
 option(USE_NCCLX "Whether to build NCCLX or not" ON)
@@ -107,7 +122,7 @@ find_package(Torch REQUIRED)
 
 # Helper to glob sources
 file(GLOB TORCHCOMMS_SOURCES "comms/torchcomms/*.cpp")
-file(GLOB TORCHCOMMS_DUMMY_SOURCES "comms/torchcomms/dummy/*.cpp")
+file(GLOB TORCHCOMMS_FAKE_SOURCES "comms/torchcomms/fake/*.cpp")
 file(GLOB TORCHCOMMS_PYTHON_SOURCES "comms/torchcomms/*Py.cpp")
 file(GLOB HOOKS_SOURCES "comms/torchcomms/hooks/*.cpp")
 file(GLOB HOOKS_PYTHON_SOURCES "comms/torchcomms/hooks/*Py.cpp")
@@ -118,7 +133,7 @@ list(REMOVE_ITEM TORCHCOMMS_SOURCES ${TORCHCOMMS_PYTHON_SOURCES})
 list(REMOVE_ITEM HOOKS_SOURCES ${HOOKS_PYTHON_SOURCES})
 list(REMOVE_ITEM UTILS_SOURCES ${UTILS_PYTHON_SOURCES})
 
-list(APPEND TORCHCOMMS_SOURCES ${TORCHCOMMS_DUMMY_SOURCES})
+list(APPEND TORCHCOMMS_SOURCES ${TORCHCOMMS_FAKE_SOURCES})
 
 list(APPEND TORCHCOMMS_SOURCES ${HOOKS_SOURCES})
 list(APPEND TORCHCOMMS_SOURCES ${UTILS_SOURCES})

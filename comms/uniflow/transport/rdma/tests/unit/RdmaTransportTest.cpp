@@ -490,6 +490,103 @@ TEST_F(RdmaTransportFactoryTest, CreateTransportRejectsOversizedTopology) {
   EXPECT_EQ(result.error().code(), ErrCode::InvalidArgument);
 }
 
+// --- supported() tests ---
+
+TEST_F(RdmaTransportFactoryTest, SupportedReturnsTrueWithActiveDevice) {
+  EXPECT_CALL(*mockApi_, getDeviceList(_)).WillOnce([this](int* numDevices) {
+    *numDevices = 1;
+    return Result<ibv_device**>(fakeDeviceList_);
+  });
+  EXPECT_CALL(*mockApi_, openDevice(&fakeDevice0_))
+      .WillOnce(Return(Result<ibv_context*>(&fakeCtx0_)));
+  EXPECT_CALL(*mockApi_, queryDevice(&fakeCtx0_, _))
+      .WillOnce([](ibv_context*, ibv_device_attr* attr) {
+        attr->phys_port_cnt = 1;
+        return Ok();
+      });
+  EXPECT_CALL(*mockApi_, queryPort(&fakeCtx0_, 1, _))
+      .WillOnce([](ibv_context*, uint8_t, ibv_port_attr* attr) {
+        attr->state = IBV_PORT_ACTIVE;
+        return Ok();
+      });
+  EXPECT_CALL(*mockApi_, closeDevice(&fakeCtx0_)).WillOnce(Return(Ok()));
+  EXPECT_CALL(*mockApi_, freeDeviceList(_)).WillOnce(Return(Ok()));
+
+  EXPECT_TRUE(RdmaTransportFactory::supported(mockApi_));
+}
+
+TEST_F(RdmaTransportFactoryTest, SupportedReturnsFalseWhenInitFails) {
+  EXPECT_CALL(*mockApi_, init())
+      .WillOnce(Return(Err(ErrCode::DriverError, "no libibverbs")));
+
+  EXPECT_FALSE(RdmaTransportFactory::supported(mockApi_));
+}
+
+TEST_F(RdmaTransportFactoryTest, SupportedReturnsFalseWhenNoDevices) {
+  EXPECT_CALL(*mockApi_, getDeviceList(_)).WillOnce([](int* numDevices) {
+    *numDevices = 0;
+    return Result<ibv_device**>(nullptr);
+  });
+
+  EXPECT_FALSE(RdmaTransportFactory::supported(mockApi_));
+}
+
+TEST_F(RdmaTransportFactoryTest, SupportedReturnsFalseWhenNoActivePort) {
+  EXPECT_CALL(*mockApi_, getDeviceList(_)).WillOnce([this](int* numDevices) {
+    *numDevices = 1;
+    return Result<ibv_device**>(fakeDeviceList_);
+  });
+  EXPECT_CALL(*mockApi_, openDevice(&fakeDevice0_))
+      .WillOnce(Return(Result<ibv_context*>(&fakeCtx0_)));
+  EXPECT_CALL(*mockApi_, queryDevice(&fakeCtx0_, _))
+      .WillOnce([](ibv_context*, ibv_device_attr* attr) {
+        attr->phys_port_cnt = 1;
+        return Ok();
+      });
+  EXPECT_CALL(*mockApi_, queryPort(&fakeCtx0_, 1, _))
+      .WillOnce([](ibv_context*, uint8_t, ibv_port_attr* attr) {
+        attr->state = IBV_PORT_DOWN;
+        return Ok();
+      });
+  EXPECT_CALL(*mockApi_, closeDevice(&fakeCtx0_)).WillOnce(Return(Ok()));
+  EXPECT_CALL(*mockApi_, freeDeviceList(_)).WillOnce(Return(Ok()));
+
+  auto status = RdmaTransportFactory::supported(mockApi_);
+  EXPECT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::ResourceExhausted);
+}
+
+TEST_F(RdmaTransportFactoryTest, SupportedReturnsFalseWhenOpenDeviceFails) {
+  EXPECT_CALL(*mockApi_, getDeviceList(_)).WillOnce([this](int* numDevices) {
+    *numDevices = 1;
+    return Result<ibv_device**>(fakeDeviceList_);
+  });
+  EXPECT_CALL(*mockApi_, openDevice(&fakeDevice0_))
+      .WillOnce(Return(Result<ibv_context*>(ErrCode::DriverError)));
+  EXPECT_CALL(*mockApi_, freeDeviceList(_)).WillOnce(Return(Ok()));
+
+  auto status = RdmaTransportFactory::supported(mockApi_);
+  EXPECT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::DriverError);
+}
+
+TEST_F(RdmaTransportFactoryTest, SupportedClosesDeviceWhenQueryDeviceFails) {
+  EXPECT_CALL(*mockApi_, getDeviceList(_)).WillOnce([this](int* numDevices) {
+    *numDevices = 1;
+    return Result<ibv_device**>(fakeDeviceList_);
+  });
+  EXPECT_CALL(*mockApi_, openDevice(&fakeDevice0_))
+      .WillOnce(Return(Result<ibv_context*>(&fakeCtx0_)));
+  EXPECT_CALL(*mockApi_, queryDevice(&fakeCtx0_, _))
+      .WillOnce(Return(Err(ErrCode::DriverError, "query failed")));
+  EXPECT_CALL(*mockApi_, closeDevice(&fakeCtx0_)).WillOnce(Return(Ok()));
+  EXPECT_CALL(*mockApi_, freeDeviceList(_)).WillOnce(Return(Ok()));
+
+  auto status = RdmaTransportFactory::supported(mockApi_);
+  EXPECT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::ResourceExhausted);
+}
+
 TEST_F(RdmaTransportFactoryTest, ConstructorByNameThrowsOnUnknownDevice) {
   EXPECT_CALL(*mockApi_, getDeviceList(_)).WillOnce([this](int* numDevices) {
     *numDevices = 1;

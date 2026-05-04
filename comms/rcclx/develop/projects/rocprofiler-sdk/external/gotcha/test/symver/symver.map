@@ -1,0 +1,10 @@
+GOTCHA_1 {
+  global:
+    retX;
+  local: *;
+};
+GOTCHA_2 {
+  global:
+    retX;
+  local: *;
+} GOTCHA_1;

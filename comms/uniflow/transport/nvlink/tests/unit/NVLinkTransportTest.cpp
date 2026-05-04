@@ -371,6 +371,39 @@ std::shared_ptr<::testing::NiceMock<MockCudaApi>>
 std::shared_ptr<::testing::NiceMock<MockCudaDriverApi>>
     NVLinkTransportFactoryTest::cudaDriverMock_;
 
+// --- supported() tests ---
+
+TEST(NVLinkTransportFactorySupportedTest, ReturnsTrueWithCudaDevices) {
+  auto cudaMock = std::make_shared<::testing::NiceMock<MockCudaApi>>();
+  EXPECT_CALL(*cudaMock, getDeviceCount())
+      .WillOnce(::testing::Return(Result<int>(8)));
+
+  auto status = NVLinkTransportFactory::supported(cudaMock);
+  EXPECT_FALSE(status.hasError());
+}
+
+TEST(NVLinkTransportFactorySupportedTest, ReturnsFalseWhenNoDevices) {
+  auto cudaMock = std::make_shared<::testing::NiceMock<MockCudaApi>>();
+  EXPECT_CALL(*cudaMock, getDeviceCount())
+      .WillOnce(::testing::Return(Result<int>(0)));
+
+  auto status = NVLinkTransportFactory::supported(cudaMock);
+  EXPECT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::ResourceExhausted);
+}
+
+TEST(NVLinkTransportFactorySupportedTest, ReturnsFalseWhenCudaFails) {
+  auto cudaMock = std::make_shared<::testing::NiceMock<MockCudaApi>>();
+  EXPECT_CALL(*cudaMock, getDeviceCount())
+      .WillOnce(
+          ::testing::Return(
+              Result<int>(Err(ErrCode::DriverError, "no CUDA driver"))));
+
+  auto status = NVLinkTransportFactory::supported(cudaMock);
+  EXPECT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::DriverError);
+}
+
 // --- bounds checking ---
 
 TEST_F(NVLinkTransportFactoryTest, ConstructorRejectsNegativeDevice) {

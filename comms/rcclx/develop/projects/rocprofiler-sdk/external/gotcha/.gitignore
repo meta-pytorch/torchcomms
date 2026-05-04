@@ -1,0 +1,10 @@
+*.sw*
+**/.envrc
+.envrc
+build
+tags
+**/tags
+*.core
+.cache
+.idea
+.vscode
