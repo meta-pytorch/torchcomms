@@ -141,7 +141,6 @@ def main() -> None:
             print(f"\nRank {rank}: Stopping debug server...")
 
     # Cleanup
-    recorder.unregister()
     comm.finalize()
 
 

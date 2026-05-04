@@ -60,11 +60,6 @@ that is not shared with other hooks::
           py::arg("comm"),
           py::call_guard<py::gil_scoped_release>())
       .def(
-          "unregister",
-          &FlightRecorderHook::unregister,
-          "Unregister this hook from all communicators.",
-          py::call_guard<py::gil_scoped_release>())
-      .def(
           "dump_json",
           &FlightRecorderHook::dump_json,
           R"(

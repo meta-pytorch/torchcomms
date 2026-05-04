@@ -84,7 +84,10 @@ std::shared_ptr<TorchComm> new_comm(
 }
 
 void TorchComm::finalize() {
+  auto op_id = GlobalOpIdGenerator::instance().nextOpId();
+  preHook(OpName::finalize, op_id, FinalizePreHookArgs{});
   impl_->finalize();
+  postHook(op_id, FinalizePostHookArgs{});
 }
 
 int TorchComm::getRank() const {

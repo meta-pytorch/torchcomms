@@ -180,9 +180,6 @@ class ClogHook : public std::enable_shared_from_this<ClogHook> {
   // and registers pre/post hooks for logging.
   void registerWithComm(std::shared_ptr<TorchComm> comm);
 
-  // Unregister from all communicators.
-  void unregister();
-
  private:
   void registerHooks(std::shared_ptr<TorchComm> comm);
 
@@ -298,9 +295,6 @@ class ClogHook : public std::enable_shared_from_this<ClogHook> {
   // Registration tracking for cleanup (main thread only, no lock needed)
   struct CommRegistration {
     std::weak_ptr<TorchComm> comm;
-    std::unique_ptr<RemovableHandle> pre_hook_handle;
-    std::unique_ptr<RemovableHandle> post_hook_handle;
-    std::unique_ptr<RemovableHandle> graph_replay_hook_handle;
   };
   std::vector<CommRegistration> registrations_;
 };
