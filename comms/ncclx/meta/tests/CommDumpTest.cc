@@ -890,7 +890,6 @@ TEST_F(CommDumpTest, TestDumpAllWithTwoComms) {
 TEST_F(CommDumpTest, DumpAfterCollNewCollTrace) {
   auto reduceGuard = EnvRAII{NCCL_ALLREDUCE_ALGO, NCCL_ALLREDUCE_ALGO::orig};
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
-  auto newColltraceGuard = EnvRAII(NCCL_COLLTRACE_USE_NEW_COLLTRACE, true);
 
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
@@ -993,7 +992,6 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTrace) {
 TEST_F(CommDumpTest, DumpAfterCollNewCollTraceWithCommsMonitor) {
   auto reduceGuard = EnvRAII{NCCL_ALLREDUCE_ALGO, NCCL_ALLREDUCE_ALGO::orig};
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
-  auto newColltraceGuard = EnvRAII(NCCL_COLLTRACE_USE_NEW_COLLTRACE, true);
   auto commsMonitorGuard = EnvRAII(NCCL_COMMSMONITOR_ENABLE, true);
 
   ncclx::test::NcclCommRAII comm{

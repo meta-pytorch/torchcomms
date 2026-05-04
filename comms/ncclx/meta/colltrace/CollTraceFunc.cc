@@ -164,25 +164,6 @@ std::optional<CollTraceColl> parseCollInfoFromNcclKernelPlan(
 
 } // namespace
 
-ncclResult_t collTraceInit(ncclComm* comm) {
-  // Do not init if using new colltrace
-  if (NCCL_COLLTRACE.empty() || NCCL_COLLTRACE_USE_NEW_COLLTRACE) {
-    return ncclSuccess;
-  }
-  XLOG(
-      FATAL,
-      "CollTrace is deprecated, please use new colltrace instead by specifying NCCL_COLLTRACE_USE_NEW_COLLTRACE=1");
-  return ncclInvalidUsage;
-}
-
-ncclResult_t collTraceDestroy(ncclComm* comm) {
-  if (comm->collTrace == nullptr) {
-    return ncclSuccess;
-  }
-  comm->collTrace.reset();
-  return ncclSuccess;
-}
-
 using meta::comms::colltrace::ICollTraceHandle;
 std::shared_ptr<ICollTraceHandle> collTraceBaselineGetHandle(
     ncclKernelPlan* plan,
