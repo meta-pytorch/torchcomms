@@ -4,10 +4,12 @@
 #include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
 #include "comms/uniflow/logging/Logger.h"
 #include "comms/uniflow/transport/rdma/RdmaRegistrationHandle.h"
+#include "comms/uniflow/transport/rdma/RdmaSlabPool.h"
 
 #include <unistd.h>
 #include <algorithm>
 #include <cassert>
+#include <cstdlib>
 #include <random>
 #include <stdexcept>
 
@@ -18,6 +20,8 @@ namespace uniflow {
 // ---------------------------------------------------------------------------
 
 namespace {
+
+constexpr uint32_t kSlabIdxInvalid{0xFFFFFFFF};
 
 struct RdmaTopologyInfo {
   uint8_t version{kRdmaVersion};
@@ -32,10 +36,47 @@ const char* getNicName(const NicResources& nic) {
 
 } // namespace
 
+size_t RdmaTransportInfo::RegisteredBuffer::serialize(uint8_t* data) const {
+  size_t offset = 0;
+  std::memcpy(data + offset, &addr, sizeof(addr));
+  offset += sizeof(addr);
+  std::memcpy(data + offset, &length, sizeof(length));
+  offset += sizeof(length);
+  if (!rkeys.empty()) {
+    size_t len = rkeys.size() * sizeof(uint32_t);
+    std::memcpy(data + offset, rkeys.data(), len);
+    offset += len;
+  }
+  return offset;
+}
+
+size_t RdmaTransportInfo::RegisteredBuffer::deserialize(
+    const uint8_t* data,
+    uint8_t numNics) {
+  size_t offset = 0;
+  std::memcpy(&addr, data + offset, sizeof(addr));
+  offset += sizeof(addr);
+  std::memcpy(&length, data + offset, sizeof(length));
+  offset += sizeof(length);
+  if (numNics > 0) {
+    size_t len = numNics * sizeof(uint32_t);
+    rkeys.resize(numNics);
+    std::memcpy(rkeys.data(), data + offset, len);
+    offset += len;
+  }
+  return offset;
+}
+
+void RdmaTransportInfo::RegisteredBuffer::reset() {
+  addr = 0;
+  length = 0;
+  rkeys.clear();
+}
+
 TransportInfo RdmaTransportInfo::serialize() const {
   constexpr size_t headerSize = sizeof(RdmaTransportInfo::Header);
   const size_t totalSize = headerSize + nicInfos.size() * sizeof(NicInfo) +
-      qpInfos.size() * sizeof(QpInfo);
+      qpInfos.size() * sizeof(QpInfo) + ctrl.size() + slab.size();
   TransportInfo data(totalSize);
 
   size_t offset = 0;
@@ -43,18 +84,19 @@ TransportInfo RdmaTransportInfo::serialize() const {
   offset += headerSize;
 
   if (!nicInfos.empty()) {
-    std::memcpy(
-        data.data() + offset,
-        nicInfos.data(),
-        nicInfos.size() * sizeof(NicInfo));
-    offset += nicInfos.size() * sizeof(NicInfo);
+    size_t len = nicInfos.size() * sizeof(NicInfo);
+    std::memcpy(data.data() + offset, nicInfos.data(), len);
+    offset += len;
   }
 
   if (!qpInfos.empty()) {
-    std::memcpy(
-        data.data() + offset, qpInfos.data(), qpInfos.size() * sizeof(QpInfo));
+    size_t len = qpInfos.size() * sizeof(QpInfo);
+    std::memcpy(data.data() + offset, qpInfos.data(), len);
+    offset += len;
   }
 
+  offset += ctrl.serialize(data.data() + offset);
+  slab.serialize(data.data() + offset);
   return data;
 }
 
@@ -76,7 +118,8 @@ Result<RdmaTransportInfo> RdmaTransportInfo::deserialize(
   }
 
   const size_t expectedSize = headerSize + header.numNics * sizeof(NicInfo) +
-      header.numQps * sizeof(QpInfo);
+      header.numQps * sizeof(QpInfo) +
+      RegisteredBuffer::expectedSize(header.numNics) * 2;
   if (data.size() < expectedSize) {
     return Err(ErrCode::InvalidArgument, "TransportInfo too small for payload");
   }
@@ -98,6 +141,12 @@ Result<RdmaTransportInfo> RdmaTransportInfo::deserialize(
         info.qpInfos.data(),
         data.data() + offset,
         header.numQps * sizeof(QpInfo));
+    offset += header.numQps * sizeof(QpInfo);
+  }
+
+  if (header.numNics > 0) {
+    offset += info.ctrl.deserialize(data.data() + offset, header.numNics);
+    offset += info.slab.deserialize(data.data() + offset, header.numNics);
   }
 
   return info;
@@ -107,6 +156,8 @@ void RdmaTransportInfo::reset() {
   header = {};
   nicInfos.clear();
   qpInfos.clear();
+  ctrl.reset();
+  slab.reset();
 }
 
 // ---------------------------------------------------------------------------
@@ -215,15 +266,19 @@ uint8_t NicResources::findActivePort() const {
 
 RdmaTransport::RdmaTransport(
     std::shared_ptr<IbvApi> ibvApi,
+    std::shared_ptr<CudaApi> cudaApi,
     EventBase* evb,
     std::shared_ptr<std::vector<NicResources>> nics,
     uint64_t domainId,
+    std::shared_ptr<RdmaSlabPool> slabPool,
     RdmaTransportConfig config)
     : ibvApi_(std::move(ibvApi)),
+      cudaApi_(std::move(cudaApi)),
       evb_(evb),
       nics_(std::move(nics)),
       config_(config),
-      domainId_(domainId) {
+      domainId_(domainId),
+      slabPool_(std::move(slabPool)) {
   CHECK_THROW_EXCEPTION(nics_ && !nics_->empty(), std::invalid_argument);
   CHECK_THROW_EXCEPTION(config_.numQps <= 255, std::invalid_argument);
   numPendingCqe_.resize(nics_->size());
@@ -245,12 +300,12 @@ TransportInfo RdmaTransport::bind() {
   }
 
   info_.reset();
-  const uint32_t numNics = static_cast<uint32_t>(nics_->size());
+  const uint8_t numNics = static_cast<uint8_t>(nics_->size());
   const uint32_t numQps = config_.numQps;
 
   cqs_.reserve(numNics);
   uint32_t qpsPerNic = (numQps + numNics - 1) / numNics;
-  for (uint32_t n = 0; n < numNics; ++n) {
+  for (uint8_t n = 0; n < numNics; ++n) {
     auto cqResult = ibvApi_->createCq(
         nics_->at(n).ctx, config_.maxWr * qpsPerNic, nullptr, nullptr, 0);
     if (cqResult.hasError()) {
@@ -270,9 +325,9 @@ TransportInfo RdmaTransport::bind() {
   psns_.reserve(numQps);
   numWrsPerQp_.resize(numQps, 0);
 
-  info_.header.version = 1;
+  info_.header.version = kRdmaVersion;
   info_.header.numQps = static_cast<uint8_t>(numQps);
-  info_.header.numNics = static_cast<uint8_t>(numNics);
+  info_.header.numNics = numNics;
   info_.header.domainId = domainId_;
   info_.qpInfos.reserve(numQps);
   info_.nicInfos.reserve(numNics);
@@ -338,6 +393,51 @@ TransportInfo RdmaTransport::bind() {
          .mtu = static_cast<uint8_t>(nic.mtu),
          .gid = nic.gid});
     UNIFLOW_LOG_INFO("Bind NIC {} successfully", getNicName(nic));
+  }
+
+  // Allocate and register ctrl buffer for send/recv slab index exchange.
+  // Layout: [CTS: D entries][Notify: D * numQps entries], all uint32_t.
+  const size_t ctrlSize = ctrlBufferSize();
+  info_.ctrl.length = static_cast<uint32_t>(ctrlSize);
+  auto ctrlAllocResult = cudaApi_->hostAlloc(ctrlSize, cudaHostAllocMapped);
+  if (!ctrlAllocResult) {
+    UNIFLOW_LOG_ERROR("bind: failed to allocate ctrl buffer");
+    state_ = TransportState::Error;
+    return {};
+  }
+  ctrlBuffer_ = ctrlAllocResult.value();
+  info_.ctrl.addr = reinterpret_cast<uint64_t>(ctrlBuffer_);
+  // Initialize all entries to kSlabIdxInvalid.
+  auto* ctrlEntries = static_cast<uint32_t*>(ctrlBuffer_);
+  const size_t numEntries = ctrlSize / sizeof(uint32_t);
+  for (size_t i = 0; i < numEntries; ++i) {
+    ctrlEntries[i] = kSlabIdxInvalid;
+  }
+  constexpr int kCtrlAccess =
+      IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ;
+  for (const auto& nic : *nics_) {
+    auto mrResult = ibvApi_->regMr(nic.pd, ctrlBuffer_, ctrlSize, kCtrlAccess);
+    if (!mrResult) {
+      throw std::runtime_error(
+          "RdmaTransport::bind: ctrl buffer ibv_reg_mr failed: " +
+          mrResult.error().toString());
+    }
+    auto* mr = mrResult.value();
+    ctrlMrs_.push_back(mr);
+    info_.ctrl.rkeys.push_back(mr->rkey);
+  }
+
+  if (slabPool_) {
+    info_.slab.addr = slabPool_->slabAddr(0);
+    info_.slab.length = static_cast<uint32_t>(slabPool_->slabSize());
+    info_.slab.rkeys.resize(numNics);
+    for (uint8_t n = 0; n < numNics; ++n) {
+      info_.slab.rkeys[n] = slabPool_->slabRkey(n);
+    }
+  } else {
+    info_.slab.addr = 0;
+    info_.slab.length = 0;
+    info_.slab.rkeys.resize(numNics, 0);
   }
 
   state_ = TransportState::Initialized;
@@ -434,6 +534,9 @@ Status RdmaTransport::connect(std::span<const uint8_t> remoteInfo) {
       return Err(ErrCode::ConnectionFailed, "Failed to transition QP to RTS");
     }
   }
+
+  remoteCtrlBuffer_ = std::move(remote.ctrl);
+  remoteSlabBuffer_ = std::move(remote.slab);
 
   state_ = TransportState::Connected;
   UNIFLOW_LOG_INFO(
@@ -991,6 +1094,51 @@ std::future<Result<size_t>> RdmaTransport::recv(
   return promise.get_future();
 }
 
+// ---------------------------------------------------------------------------
+// Ctrl buffer helpers
+// ---------------------------------------------------------------------------
+
+size_t RdmaTransport::ctrlBufferSize() const {
+  constexpr size_t align = alignof(uint64_t);
+  const size_t raw = config_.pipelineDepth * config_.numQps * sizeof(uint32_t);
+  return (raw + align - 1) & ~(align - 1);
+}
+
+volatile uint32_t* RdmaTransport::ctrlCts(uint16_t slotIdx) {
+  return static_cast<volatile uint32_t*>(ctrlBuffer_) + slotIdx;
+}
+
+volatile uint32_t* RdmaTransport::ctrlNotify(uint16_t slotIdx, uint32_t qpIdx) {
+  const uint32_t Q = config_.numQps;
+  return static_cast<volatile uint32_t*>(ctrlBuffer_) + slotIdx * Q + qpIdx;
+}
+
+uint64_t RdmaTransport::remoteCtrlCtsAddr(uint16_t slotIdx) const {
+  return remoteCtrlBuffer_.addr + slotIdx * sizeof(uint32_t);
+}
+
+uint64_t RdmaTransport::remoteCtrlNotifyAddr(uint16_t slotIdx, uint32_t qpIdx)
+    const {
+  const uint32_t Q = config_.numQps;
+  return remoteCtrlBuffer_.addr + (slotIdx * Q + qpIdx) * sizeof(uint32_t);
+}
+
+void RdmaTransport::pipelineCleanup(std::shared_ptr<Pipeline>& pipeline) {
+  if (!pipeline) {
+    return;
+  }
+  if (slabPool_) {
+    slabPool_->release(pipeline->localSlabs);
+  }
+  pipeline->localSlabs.clear();
+  pipeline->remoteSlabs.clear();
+  activePipeline_.reset();
+}
+
+// ---------------------------------------------------------------------------
+// Shutdown
+// ---------------------------------------------------------------------------
+
 void RdmaTransport::shutdown() {
   if (shutdown_.exchange(true)) {
     return;
@@ -999,6 +1147,7 @@ void RdmaTransport::shutdown() {
   // Make sure that there is no tasks in the evb loop thread related to this
   // transport instance
   if (!evb_->isLoopRunning()) {
+    state_ = TransportState::Disconnected;
     UNIFLOW_LOG_WARN("shutdown: event loop already stopped, skipping drain");
   } else {
     UNIFLOW_LOG_INFO("shutdown: draining inflight tasks");
@@ -1011,6 +1160,7 @@ void RdmaTransport::shutdown() {
     evb_->dispatch([this, &m, &cv, &done]() noexcept {
       auto drain = [this, &m, &cv, &done](auto& self) -> void {
         if (inflightTasks_.empty() && pendingRequests_.empty()) {
+          state_ = TransportState::Disconnected;
           {
             std::lock_guard<std::mutex> lock(m);
             done = true;
@@ -1047,7 +1197,16 @@ void RdmaTransport::shutdown() {
   }
   cqs_.clear();
 
-  state_ = TransportState::Disconnected;
+  for (auto* mr : ctrlMrs_) {
+    ibvApi_->deregMr(mr);
+  }
+  ctrlMrs_.clear();
+
+  if (ctrlBuffer_) {
+    cudaApi_->hostFree(ctrlBuffer_);
+    ctrlBuffer_ = nullptr;
+  }
+
   UNIFLOW_LOG_INFO("shutdown: complete");
 }
 
@@ -1115,10 +1274,12 @@ RdmaTransportFactory::RdmaTransportFactory(
     RdmaTransportConfig config,
     std::shared_ptr<IbvApi> ibvApi,
     std::shared_ptr<CudaDriverApi> cudaDriverApi,
+    std::shared_ptr<CudaApi> cudaApi,
     std::optional<uint8_t> portNum)
     : TransportFactory(TransportType::RDMA),
       ibvApi_(std::move(ibvApi)),
       cudaDriverApi_(std::move(cudaDriverApi)),
+      cudaApi_(std::move(cudaApi)),
       evb_(evb),
       nics_(std::make_shared<std::vector<NicResources>>()),
       config_(config) {
@@ -1131,6 +1292,9 @@ RdmaTransportFactory::RdmaTransportFactory(
   }
   if (!cudaDriverApi_) {
     cudaDriverApi_ = std::make_shared<CudaDriverApi>();
+  }
+  if (!cudaApi_) {
+    cudaApi_ = std::make_shared<CudaApi>();
   }
 
   // Generate a random domain id to identify handles from this factory.
@@ -1295,7 +1459,7 @@ Result<std::unique_ptr<Transport>> RdmaTransportFactory::createTransport(
     std::span<const uint8_t> peerTopology) {
   CHECK_EXPR(canConnect(peerTopology));
   return std::make_unique<RdmaTransport>(
-      ibvApi_, evb_, nics_, domainId_, config_);
+      ibvApi_, cudaApi_, evb_, nics_, domainId_, nullptr, config_);
 }
 
 // TODO: get ai_zone_name from fbwhoami / serfwhoami or develop a plugin for
