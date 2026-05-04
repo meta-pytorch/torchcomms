@@ -539,21 +539,18 @@ INSTANTIATE_TEST_SUITE_P(
              {"NCCL_FASTINIT_MODE", "ring_hybrid"},
              {"NCCL_CTRAN_ENABLE", "1"},
              {"NCCL_COLLTRACE", "trace"},
-             {"NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1"},
          }),
          NcclxEnvs({
              {"TEST_ENABLE_FASTINIT_CONFIG", "1"},
              {"NCCL_FASTINIT_MODE", "ring_hybrid"},
              {"NCCL_CTRAN_ENABLE", "1"},
              {"NCCL_COLLTRACE", "trace"},
-             {"NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1"},
          }),
          NcclxEnvs({
              {"TEST_ENABLE_FASTINIT_CONFIG", "1"},
              {"NCCL_FASTINIT_MODE", "none"},
              {"NCCL_CTRAN_ENABLE", "1"},
              {"NCCL_COLLTRACE", "trace"},
-             {"NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1"},
          })}),
     [](const testing::TestParamInfo<FastInitTestFixture::ParamType>& info) {
       // generate test-name for a given NcclxEnvs

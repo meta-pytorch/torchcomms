@@ -1993,28 +1993,32 @@ cvars:
  - name        : NCCL_SENDRECV_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctzcopy, ctp2p
+   choices     : orig, ctran, ctzcopy, ctp2p, ctgraph
    description : |-
      The algorithm to use for sendrecv communication
      orig - Copy-based communication
      ctran - Ctran-based communication auto-select
      ctzcopy - Ctran-based zero-copy kernel for NVL
      ctp2p - Ctran-based point-to-point kernel for NVL
+     ctgraph - Cudagraph-aware: pre-registers buffers during graph capture, falls back to baseline otherwise
 
  - name        : NCCL_ALLGATHER_P_ALGO
    type        : enum
    default     : ctpipeline
-   choices     : ctdirect, ctpipeline
+   choices     : ctdirect, ctpipeline, ctrdpipeline
    description : |-
      The algorithm to use for AllgatherP communication
      ctdirect - Ctran-based direct point-to-point algorithm
      ctpipeline - Ctran-based pipeline algorithm that pipelines
                   inter-node rail ring and intra-node CopyEngine based copy
+     ctrdpipeline - Ctran-based hybrid algorithm that does recursive doubling across
+                    rails for inter-node exchange and CopyEngine based broadcast
+                    within the NVLink domain. Requires nNodes to be a power of 2.
 
  - name        : NCCL_ALLGATHER_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctdirect, ctring, ctrd, ctbrucks, ctgraph
+   choices     : orig, ctran, ctdirect, ctring, ctrd, ctbrucks, ctgraph, ctgraph_pipeline, ctgraph_rdpipeline, ctgraph_ring, ctgraph_rd
    description : |-
      The algorithm to use for Allgather communication
      orig - Copy-based ring algorithm
@@ -2022,7 +2026,17 @@ cvars:
      ctdirect - Ctran-based direct point-to-point algorithm
      ctring - Ctran-based ring algorithm
      ctrd - Ctran-based recursive doubling algorithm
-     ctgraph - Cudagraph-aware: uses ctran persistent AGP during graph capture, falls back to baseline otherwise
+     ctgraph - Cudagraph-aware: auto-selects pipeline/ring/rd based on topology during graph capture
+     ctgraph_pipeline - Cudagraph-aware: forces persistent pipeline algorithm (nLocalRanks>1)
+     ctgraph_rdpipeline - Cudagraph-aware: forces persistent recursive-doubling pipeline algorithm (nLocalRanks>1, nNodes power of 2)
+     ctgraph_ring - Cudagraph-aware: forces ring algorithm (nLocalRanks==1, large messages)
+     ctgraph_rd - Cudagraph-aware: forces recursive doubling algorithm (nLocalRanks==1, small messages)
+
+ - name        : NCCL_CTGRAPH_ALLGATHER_RING_THRESHOLD
+   type        : uint64_t
+   default     : 134217728
+   description : |-
+     Minimum send size in bytes for ctgraph auto-select to choose ring over recursive doubling when nLocalRanks==1. Default 128MB.
 
  - name        : NCCL_REDUCESCATTER_ALGO
    type        : enum
@@ -2254,14 +2268,6 @@ cvars:
      algostat - lightweight algorithm counting (no CUDA events/worker thread).
                 Use ncclx::colltrace::dumpAlgoStat(comm) to retrieve stats.
 
- - name        : NCCL_COLLTRACE_USE_NEW_COLLTRACE
-   type        : bool
-   default     : true
-   description : |-
-     Use new colltrace implementation. This is a temporary flag to enable
-     new colltrace implementation. We will remove this flag once the new
-     colltrace implementation is fully tested and stable.
-
  - name        : NCCL_COLLTRACE_PENDING_QUEUE_SIZE
    type        : int
    default     : 4096
@@ -2364,15 +2370,6 @@ cvars:
      does not finish within the timeout, colltrace will crash the process.
      The default value is 10 minutes. The gloalhint from the user program takes
      precedence over this env var for the actual time colltrace will wait.
-
- - name        : NCCL_COLLTRACE_EVENT_BLOCKING_SYNC
-   type        : bool
-   default     : False
-   description : |-
-     Determines whether colltrace uses
-     1) cudaEventSynchronize + cudaEvent created with cudaEventBlockingSync; or
-     2) periodic cudaEventQuery + current thread sleep
-     to wait for reference events to finish. By default we use 2).
 
  - name        : NCCL_MAPPERTRACE_COLL_RECORD_MAX
    type        : uint64_t

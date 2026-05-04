@@ -1,5 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #include <memory>
+#include <optional>
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
@@ -111,6 +112,14 @@ comms::pipes::Transport* CtranComm::getMultiPeerTransportsPtr() const {
 }
 #endif // defined(ENABLE_PIPES)
 
+std::optional<meta::comms::colltrace::AlgoStatDump> CtranComm::dumpAlgoStats()
+    const {
+  if (!algoStats_) {
+    return std::nullopt;
+  }
+  return algoStats_->dump();
+}
+
 commResult_t ctranInit(
     CtranComm* comm,
     std::unique_ptr<ctran::IProfilerReporter> reporter) {
@@ -157,6 +166,13 @@ CtranComm::CtranComm(std::shared_ptr<Abort> abort, ctranConfig commConfig)
   }
   // Default points to internal opCount
   opCount_ = &ctranOpCount_;
+
+  for (const auto& opt : NCCL_COLLTRACE) {
+    if (opt == "algostat") {
+      algoStats_ = std::make_unique<meta::comms::colltrace::AlgoStats>();
+      break;
+    }
+  }
 }
 
 void CtranComm::destroy() {
@@ -173,7 +189,6 @@ void CtranComm::destroy() {
 #endif // defined(ENABLE_PIPES)
   ctran_.reset();
   bootstrap_.reset();
-  collTrace_.reset();
   colltraceNew_.reset();
   statex_.reset();
   // NOTE: memCache needs to be destroyed after transportProxy_ to release

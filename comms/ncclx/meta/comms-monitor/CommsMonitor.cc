@@ -85,7 +85,6 @@ folly::Singleton<CommsMonitor, CommsMonitorSingletonTag>
               .nLocalRanks = comm->localRanks,
               .nNodes = comm->nNodes},
       .topoInfo = getTopoInfoFromNcclComm(comm),
-      .collTrace = comm->collTrace,
       .mapperTrace = mapperTrace,
       .proxyTrace = proxyTrace,
       .newCollTrace = comm->newCollTrace};

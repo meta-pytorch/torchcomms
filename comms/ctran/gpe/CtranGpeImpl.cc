@@ -125,6 +125,14 @@ void CUDART_CB CtranGpe::Impl::cmdCb(void* data) {
   CtranGpeCmd* cmd = reinterpret_cast<CtranGpeCmd*>(data);
   if (cmd->persistent) {
     cmd->inFlight.fetch_add(1, std::memory_order_release);
+    // Each replay of a captured graph re-fires this callback. Bump the
+    // per-OpElem opCount so host-side consumers see a fresh value per replay
+    // rather than the frozen capture-time one. NOTE: this only advances the
+    // host-side opCount; kernel-side fields baked at capture time still see the
+    // capture-time value on every replay.
+    for (auto& op : cmd->coll.opGroup) {
+      ++op->opCount;
+    }
   }
   cmd->gpe->pimpl->cmdEnqueue(cmd);
 }
@@ -721,6 +729,10 @@ void CtranGpe::Impl::gpeThreadFn() {
 
       if (cmd->timeout.has_value()) {
         comm->setTimeout(cmd->timeout.value());
+      } else if (auto d = comm->getAbort()->GetDefaultTimeoutDuration();
+                 d.has_value()) {
+        // Fall back to comm-level default (CUDA-graph replay path).
+        comm->setTimeout(*d);
       }
       SCOPE_EXIT {
         // if comm is aborted for any reason, we mark it as aborted to avoid

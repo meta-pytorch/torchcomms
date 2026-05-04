@@ -272,6 +272,21 @@ void NVLinkTransport::shutdown() {
 // NVLinkTransportFactory
 // ---------------------------------------------------------------------------
 
+Status NVLinkTransportFactory::supported(std::shared_ptr<CudaApi> cudaApi) {
+  if (!cudaApi) {
+    cudaApi = std::make_shared<CudaApi>();
+  }
+
+  auto countResult = cudaApi->getDeviceCount();
+  CHECK_RETURN(countResult);
+
+  if (countResult.value() == 0) {
+    return Err(ErrCode::ResourceExhausted, "No CUDA devices found");
+  }
+
+  return Ok();
+}
+
 NVLinkTransportFactory::NVLinkTransportFactory(
     int device,
     EventBase* evb,

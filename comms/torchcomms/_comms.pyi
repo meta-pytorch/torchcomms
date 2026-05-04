@@ -4,7 +4,7 @@
 
 from datetime import timedelta
 from enum import auto, Enum
-from typing import Any, Callable, Dict, List, Set
+from typing import Any, Callable, Dict, List, Set, Type
 
 InitHandle = str
 
@@ -402,10 +402,18 @@ class AllGatherPExecOptions:
 # Opaque handle type for persistent AllGather
 AllGatherPHandle = Any
 
+class WorkStatus(Enum):
+    NOT_STARTED = auto()
+    INPROGRESS = auto()
+    COMPLETED = auto()
+    TIMEDOUT = auto()
+    ERROR = auto()
+
 class TorchWork:
     def is_completed(self) -> bool: ...
     def wait(self) -> None: ...
     def wait_blocking(self) -> None: ...
+    def _set_status(self, status: WorkStatus) -> None: ...
 
 class TorchCommWinAccessType(Enum):
     WIN_ACCESS_TYPE_UNIFIED = auto()
@@ -484,8 +492,6 @@ class BatchSendRecv:
     def send(self, tensor: Any, dst: int) -> None: ...
     def recv(self, tensor: Any, src: int) -> None: ...
     def issue(self, async_op: bool, options: BatchP2POptions = ...) -> TorchWork: ...
-
-class TorchCommBackend: ...
 
 class TorchComm:
     def finalize(self) -> None: ...
@@ -710,3 +716,9 @@ class _BackendWrapper:
     def get_comm(self) -> TorchComm: ...
 
 def get_mem_allocator(backend: str) -> Any: ...
+
+class TorchCommBackend:
+    def __init__(self) -> None: ...
+
+def register_backend(name: str, backend_class: Type[TorchCommBackend]) -> None: ...
+def _is_backend_registered(name: str) -> bool: ...

@@ -432,6 +432,18 @@ class RdmaTransport : public Transport {
 class RdmaTransportFactory : public TransportFactory {
  public:
   /*
+   * Query whether RDMA transport is available on this platform.
+   *
+   * Probes for RDMA hardware by loading libibverbs and verifying that
+   * every IB device has at least one active port. Returns Ok() on
+   * success, or an error describing why RDMA is not available.
+   *
+   * @param ibvApi  Optional IbvApi instance for dependency injection
+   *                (testing). If nullptr, a default instance is created.
+   */
+  static Status supported(std::shared_ptr<IbvApi> ibvApi = nullptr);
+
+  /*
    * Open RDMA devices and initialize per-NIC resources.
    *
    * @param deviceNames  List of IB device names (e.g., {"mlx5_0", "mlx5_1"}).

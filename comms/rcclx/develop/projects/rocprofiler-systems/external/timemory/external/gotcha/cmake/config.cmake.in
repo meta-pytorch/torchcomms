@@ -1,0 +1,13 @@
+@PACKAGE_INIT@
+
+set_and_check(gotcha_INCLUDE_DIR "@PACKAGE_gotcha_INSTALL_INCLUDE_DIR@")
+set(gotcha_LIBRARY_PATH "@PACKAGE_gotcha_INSTALL_LIBRARY_DIR@")
+link_directories(${gotcha_LIBRARY_PATH})
+if (NOT TARGET gotcha)
+  include(${CMAKE_CURRENT_LIST_DIR}/gotcha-targets.cmake)
+endif()
+
+set(gotcha_INCLUDE_DIRS ${gotcha_INCLUDE_DIR})
+set(gotcha_LIBRARIES gotcha)
+
+check_required_components(gotcha)

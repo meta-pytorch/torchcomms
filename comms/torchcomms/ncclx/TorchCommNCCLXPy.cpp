@@ -22,7 +22,7 @@ PYBIND11_MODULE(_comms_ncclx, m, py::mod_gil_not_used()) {
   intrusive_ptr_class_<TorchCommNCCLXPersistentRequest>(
       m, "TorchCommNCCLXPersistentRequest");
 
-  py::class_<TorchCommNCCLX, std::shared_ptr<TorchCommNCCLX>>(
+  py::class_<TorchCommNCCLX, TorchCommBackend, std::shared_ptr<TorchCommNCCLX>>(
       m, "TorchCommNCCLX")
       .def(
           "device_alltoallv_single",
@@ -362,6 +362,26 @@ Returns:
     dict[str, dict[str, str]]: Nested key-value pairs of all communicator states.
 )",
       py::call_guard<py::gil_scoped_release>());
+
+  m.def(
+      "init_caching_allocator_hook",
+      []() {
+        DefaultNcclxGlobalApi api;
+        api.initCachingAllocatorHook();
+      },
+      R"(
+Attach the CCA (CUDA Caching Allocator) memory hook for NCCLX.
+
+This initializes the global memory registration hook that automatically
+registers/deregisters GPU memory segments with the NCCLX transport layer
+(ctran) as they are allocated/freed by PyTorch's CUDACachingAllocator.
+
+This does not require creating a communicator. It is useful for P2P transfer
+cases where memory needs to be registered for RDMA without a communicator.
+
+The hook is a process-global singleton -- calling this multiple times is safe
+(subsequent calls are no-ops).
+)");
 
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
   // Device API methods (get_device_window, register_local_buffer,

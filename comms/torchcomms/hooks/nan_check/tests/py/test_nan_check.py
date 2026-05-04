@@ -20,8 +20,8 @@ def _has_check_for_nan() -> bool:
 @unittest.skipUnless(_has_check_for_nan(), "requires c10d::check_for_nan op (nightly)")
 class TestNanCheckHook(unittest.TestCase):
     def _create_comm(self, name: str) -> torchcomms.TorchComm:
-        """Create a communicator using the dummy backend."""
-        return torchcomms.new_comm("dummy", torch.device("cpu"), name=name)
+        """Create a communicator using the fake backend."""
+        return torchcomms.new_comm("fake", torch.device("cpu"), name=name)
 
     def test_clean_tensor_passes(self) -> None:
         """No error on clean tensors."""

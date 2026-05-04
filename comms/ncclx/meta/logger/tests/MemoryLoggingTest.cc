@@ -20,7 +20,6 @@
 #include "comms/utils/logger/EventMgr.h"
 #include "comms/utils/logger/Logger.h"
 #include "comms/utils/logger/tests/MockScubaTable.h"
-#include "meta/colltrace/CollTrace.h"
 
 #include "LoggerUtil.h"
 #include "comm.h" // @manual

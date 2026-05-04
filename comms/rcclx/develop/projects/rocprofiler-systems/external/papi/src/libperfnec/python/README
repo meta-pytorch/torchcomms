@@ -1,0 +1,8 @@
+Requirements:
+
+To use the python bindings, you need the following packages:
+
+1. swig (http://www.swig.org)
+2. python-dev (http://www.python.org)
+3. pycpuid (http://code.google.com/p/pycpuid)
+   linux.sched is python package that comes with pycpuid.

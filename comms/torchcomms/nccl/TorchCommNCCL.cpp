@@ -349,7 +349,12 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::reconfigure(
               static_cast<int>(excludeRanks.size()),
               &new_comm,
               nullptr,
-              NCCL_SHRINK_ABORT),
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 27, 0)
+              NCCL_SHRINK_ABORT
+#else
+              0
+#endif
+              ),
           "NCCL commShrink failed during reconfigure");
     } else {
       const ncclUniqueId* uniqueIdPtr = nullptr;
@@ -395,6 +400,15 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::reconfigure(
                      << rank_;
 
   return c10::make_intrusive<TorchWorkCompleted>();
+}
+
+void TorchCommNCCL::abort() {
+  if (options_.enable_reconfigure) {
+    revokeNcclComm();
+  } else {
+    abortNcclComm();
+  }
+  comm_state_ = CommState::ERROR;
 }
 
 void TorchCommNCCL::finalize() {
@@ -516,7 +530,7 @@ void TorchCommNCCL::abortNcclComm() {
   }
   if (options_.abort_process_on_timeout_or_error) {
     TC_LOG(ERROR, this) << "Aborting process due to timeout";
-    abort();
+    ::abort();
   }
 }
 

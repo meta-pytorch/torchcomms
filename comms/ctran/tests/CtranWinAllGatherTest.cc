@@ -69,6 +69,11 @@ class CtranWinAllGatherTest : public ctran::CtranDistTestFixture {
     if (!CtranWin::allGatherPSupported(comm.get())) {
       GTEST_SKIP() << "allGatherP not supported on this topology";
     }
+    const auto nNodes = statex->nNodes();
+    if (algoStr == "ctrdpipeline" && nNodes > 1 &&
+        (nNodes & (nNodes - 1)) != 0) {
+      GTEST_SKIP() << "ctrd requires nNodes to be a power of 2";
+    }
 
     cudaStream_t stream;
     CUDACHECK_TEST(cudaStreamCreate(&stream));
@@ -140,7 +145,7 @@ INSTANTIATE_TEST_SUITE_P(
     CtranWinAllGatherTestParam,
     ::testing::Combine(
         ::testing::Values(1024, 8192, 65536),
-        ::testing::Values("ctdirect", "ctpipeline")),
+        ::testing::Values("ctdirect", "ctpipeline", "ctrdpipeline")),
     [](const ::testing::TestParamInfo<CtranWinAllGatherTestParam::ParamType>&
            info) {
       return "count_" + std::to_string(std::get<0>(info.param)) + "_" +

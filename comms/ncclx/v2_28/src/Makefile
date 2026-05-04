@@ -17,6 +17,7 @@ include ../makefiles/version.mk
 
 ##### Mock Scuba Data in CMake build
 CXXFLAGS += -DMOCK_SCUBA_DATA -DFOLLY_XLOG_STRIP_PREFIXES=\"${BASE_DIR}\"
+CXXFLAGS += -DFMT_HEADER_ONLY=1
 
 ifeq ($(ENABLE_TCPDM),0)
 CXXFLAGS += -DCTRAN_DISABLE_TCPDM
@@ -144,6 +145,7 @@ LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/devmgr/devmgr.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/devmgr/bufmgr.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/devmgr/devmgr_client.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/common/*.cc)
+LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/logger/LogInit.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/unpack/external_unpack.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/unpack/internal_unpack.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/unpack/batch_unpack_state.cc)

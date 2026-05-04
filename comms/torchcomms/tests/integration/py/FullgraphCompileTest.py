@@ -6,15 +6,16 @@ import logging
 import os
 import unittest
 
+os.environ["TORCHCOMMS_PATCH_FOR_COMPILE"] = "1"
+
+import torch
 from torchcomms.functional import is_torch_compile_supported_and_enabled
 from torchcomms.tests.helpers.py.test_helpers import (
     skip_if_torch_compile_not_supported_or_enabled,
 )
-
-os.environ["TORCHCOMMS_PATCH_FOR_COMPILE"] = "1"
-
-import torch
-
+from torchcomms.tests.integration.py.TorchCommTestHelpers import (  # noqa: E402
+    skip_backend,
+)
 
 if is_torch_compile_supported_and_enabled():
     from torchcomms import ReduceOp, Timeout  # noqa: E402
@@ -2158,6 +2159,7 @@ class FullgraphCompileTest(unittest.TestCase):
                     count, dtype, op, async_op
                 )
 
+    @skip_backend("gloo")
     def test_fullgraph_compile_reduce(self):
         """Test torch.compile with fullgraph=True for reduce operation."""
         for count, dtype, op, async_op in itertools.product(
@@ -2196,6 +2198,9 @@ class FullgraphCompileTest(unittest.TestCase):
             with self.subTest(count=count, dtype=dtype, async_op=async_op):
                 self._test_fullgraph_compile_all_gather(count, dtype, async_op)
 
+    @unittest.skip(
+        "Window put/get requires ncclx backend but is broken",
+    )
     def test_fullgraph_compile_window_put_get(self):
         """Test torch.compile with fullgraph=True for window put/get operations."""
         for count, dtype, signal, async_op in itertools.product(

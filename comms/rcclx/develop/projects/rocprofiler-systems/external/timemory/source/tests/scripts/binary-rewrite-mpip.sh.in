@@ -1,0 +1,79 @@
+#!/bin/bash -e
+#
+# NOTE: remove '--mpi --mpip' after @PROJECT_BINARY_DIR@/timemory-run if application built without MPI
+#
+source $(dirname $(basename ${BASH_SOURCE[0]}))/common.sh
+
+TEST_NAME=$(basename ${BASH_SOURCE[0]})
+
+export TIMEMORY_OUTPUT_PATH=@CMAKE_CURRENT_BINARY_DIR@/dynamic/timemory-@TEST_NAME@-output
+export TIMEMORY_TEXT_OUTPUT=ON
+export TIMEMORY_FILE_OUTPUT=ON
+export TIMEMORY_AUTO_OUTPUT=ON
+export TIMEMORY_TREE_OUTPUT=OFF
+export TIMEMORY_JSON_OUTPUT=OFF
+export TIMEMORY_COUT_OUTPUT=ON
+export TIMEMORY_FLAMEGRAPH_OUTPUT=OFF
+
+rm -rf ${TIMEMORY_OUTPUT_PATH}
+
+export TIMEMORY_OUTPUT_PREFIX="orig"
+
+# append directories to path
+export PATH=@CMAKE_CURRENT_BINARY_DIR@:@PROJECT_BINARY_DIR@:${PATH}
+# add path to libtimemory to LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=@PROJECT_BINARY_DIR@:@PROJECT_BINARY_DIR@/external/dyninst/dyninstAPI_RT:${LD_LIBRARY_PATH}
+
+emit-separator "Executing non-instrumented run"
+
+# no instrumentation
+@MPIEXEC_EXECUTABLE@ -n 2 @COMMAND@
+
+ORIG_WALL_FILE="${TIMEMORY_OUTPUT_PATH}/${TIMEMORY_OUTPUT_PREFIX}-wall_clock.txt"
+
+export TIMEMORY_OUTPUT_PREFIX="mpip"
+
+emit-separator "Performing binary re-write"
+
+# add mpi and mpip instrumentation
+@PROJECT_BINARY_DIR@/timemory-run --mpip -o ./@TEST_NAME@.inst -I 'agasdf' -- @COMMAND@
+
+emit-separator "Executing instrumented binary"
+
+# run the application
+@MPIEXEC_EXECUTABLE@ -n 2 @LAUNCH@ ./@TEST_NAME@.inst
+
+emit-separator "Analyzing results in ${TIMEMORY_OUTPUT_PATH}"
+
+if [ -f "${ORIG_WALL_FILE}" ]; then
+    NORIG=$(count-lines ${TIMEMORY_OUTPUT_PATH}/orig-*.txt)
+    CORIG=$(cat ${TIMEMORY_OUTPUT_PATH}/orig-*.txt | grep '>>>')
+else
+    NORIG=0
+    CORIG=""
+fi
+
+NMPIP=$(count-lines ${TIMEMORY_OUTPUT_PATH}/mpip-*.txt)
+CMPIP=$(cat ${TIMEMORY_OUTPUT_PATH}/mpip-*.txt | grep '>>>')
+
+if [ "${NMPIP}" -le "${NORIG}" ]; then
+    echo -e "ORIG output line count: ${NORIG}"
+    echo -e "MPIP output line count: ${NMPIP}"
+    echo -e "MPIP should be > ORIG"
+    echo -e "\nORIG:\n"
+    echo -e "${CORIG}"
+    echo -e "\nMPIP:\n"
+    echo -e "${CMPIP}"
+    exit 1
+fi
+
+NALLR=$(cat ${TIMEMORY_OUTPUT_PATH}/mpip-*.txt | grep MPI_Allreduce | wc -l)
+
+if [ "${NALLR}" -eq 0 ]; then
+    echo -e "\nMPIP results did not contain MPI_Allreduce!:\n"
+    echo -e "$(cat ${TIMEMORY_OUTPUT_PATH}/mpip-*.txt | grep '>>>')"
+    exit 1
+fi
+
+echo "Instrumentation Test... Done"
+exit 0

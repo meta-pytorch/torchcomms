@@ -1,0 +1,11 @@
+add_library(cross_tool1 SHARED tool1.c)
+add_library(cross_tool2 SHARED tool2.c)
+add_executable(cross_app app.c)
+target_link_libraries(cross_app gotcha)
+target_link_libraries(cross_tool1 gotcha)
+target_link_libraries(cross_tool2 gotcha)
+set_target_properties(cross_tool1 PROPERTIES COMPILE_FLAGS "-fPIC")
+set_target_properties(cross_tool2 PROPERTIES COMPILE_FLAGS "-fPIC")
+target_link_libraries(cross_app cross_tool1 cross_tool2)
+add_test(test_cross cross_app)
+

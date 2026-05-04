@@ -1,0 +1,8 @@
+add_library(impl SHARED libimpl.c)
+add_library(dispatcher SHARED libdispatcher.c)
+target_link_libraries(dispatcher -ldl -lpthread)
+add_executable(test_dispatcher main.c)
+target_link_libraries(test_dispatcher gotcha dispatcher)
+gotcha_add_test(dispatcher_test test_dispatcher)
+set_property(TEST dispatcher_test APPEND PROPERTY ENVIRONMENT "GOTCHA_DEBUG=3")
+set_property(TEST dispatcher_test APPEND PROPERTY ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_CURRENT_BINARY_DIR}")

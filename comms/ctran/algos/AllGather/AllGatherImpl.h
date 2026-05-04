@@ -55,6 +55,14 @@ static inline const std::string allGatherAlgoName(
       return "CtranAuto";
     case NCCL_ALLGATHER_ALGO::ctgraph:
       return "CtranCudagraphAware";
+    case NCCL_ALLGATHER_ALGO::ctgraph_pipeline:
+      return "CtranCudagraphPipeline";
+    case NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline:
+      return "CtranCudagraphRdPipeline";
+    case NCCL_ALLGATHER_ALGO::ctgraph_ring:
+      return "CtranCudagraphRing";
+    case NCCL_ALLGATHER_ALGO::ctgraph_rd:
+      return "CtranCudagraphRd";
     case NCCL_ALLGATHER_ALGO::orig:
       return "Baseline";
     default:
@@ -70,7 +78,8 @@ commResult_t ctranAllGatherCudagraphAware(
     size_t sendcount,
     commDataType_t datatype,
     CtranComm* comm,
-    cudaStream_t stream);
+    cudaStream_t stream,
+    enum NCCL_ALLGATHER_ALGO algo = NCCL_ALLGATHER_ALGO::ctgraph);
 
 commResult_t prepareAllGatherArgs(
     std::vector<std::unique_ptr<struct OpElem>>& opGroup,

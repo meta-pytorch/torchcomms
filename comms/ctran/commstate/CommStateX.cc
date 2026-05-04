@@ -129,8 +129,10 @@ void CommStateX::initRankStatesTopology(meta::comms::IBootstrap* bootstrap) {
     CLOGF_SUBSYS(
         INFO,
         INIT,
-        "load topology rank: {}, nRanks: {}, host: {}, dc: {} zone: {} rtsw: {} scaling unit: {} rackSerial: {}",
+        "Load topology for rank {} commHash {:x} commDesc {}, nRanks {}, host {}, dc {} zone {} rtsw {} scaling unit {} rackSerial {}",
         rank_,
+        commHash_,
+        commDesc_,
         nRanks_,
         myTopo->host,
         myTopo->dc,
@@ -153,6 +155,17 @@ void CommStateX::initRankStatesTopology(meta::comms::IBootstrap* bootstrap) {
 
   // Create statex variable
   setRankStatesTopologies(std::move(allTopos));
+
+  CLOGF_SUBSYS(
+      INFO,
+      INIT,
+      "Rank topology for rank {} commHash {:x} commDesc {}, nRanks {}, nLocalRanks {}, nNodes {}",
+      rank_,
+      commHash_,
+      commDesc_,
+      nRanks_,
+      nLocalRanks(),
+      nNodes());
 }
 
 void CommStateX::setNvlFabricTopos(
@@ -308,6 +321,28 @@ void CommStateX::setNvlFabricTopos(
         "CommStateX: effectiveVCliqueSize={} override NVL fabric topology",
         effectiveVCliqueSize);
   }
+
+  CLOGF_SUBSYS(
+      INFO,
+      INIT,
+      "NVL fabric topology for rank {} commHash {:x} commDesc {}, nRanks {}, nLocalRanks {}, nNodes {}, nvlFabricEnabled {}, nvlFabricCliqueEnabled {}, nvlDomainIndex {}, nvlDomainRank {}, nNvlDomainRanks {}, nNvlDomains {}, clusterId {}, cliqueIndex {}, cliqueRank {}, nCliqueRanks {}, nCliques {}",
+      rank_,
+      commHash_,
+      commDesc_,
+      nRanks_,
+      nLocalRanks(),
+      nNodes(),
+      nvlFabricEnabled_,
+      nvlFabricCliqueEnabled_,
+      myNvlFabricRankState_.nvlDomainIndex,
+      myNvlFabricRankState_.nvlDomainRank,
+      myNvlFabricRankState_.nNvlDomainRanks,
+      nvlDomainRanks_.size(),
+      myNvlFabricRankState_.clusterId,
+      myNvlFabricRankState_.cliqueIndex,
+      myNvlFabricRankState_.cliqueRank,
+      myNvlFabricRankState_.nCliqueRanks,
+      cliqueRanks_.size());
 }
 
 void CommStateX::setRankStatesTopologies(

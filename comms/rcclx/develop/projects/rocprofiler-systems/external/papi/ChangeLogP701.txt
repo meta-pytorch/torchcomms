@@ -1,0 +1,701 @@
+2023-03-09  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/Makefile_comp_tests.target.in: tests: fix order of
+	  headers in makefile  The local includedir now has precedence over
+	  the install includedir.
+
+2023-02-14  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm_smi/rocs.c: rocm_smi: add support for XGMI
+	  events  Added events for XGMI on MI50 and MI100.  Also support P2P
+	  internode min and max bandwidth monitoring.
+
+2023-03-06  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm_smi/tests/Makefile: rocm_smi: fix test warning
+
+2023-02-14  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm_smi/rocs.c: rocm_smi: refactor component to
+	  support XGMI events (3/3)  Add infrastructure for supporting XGMI
+	  events.
+
+2023-02-07  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm_smi/Rules.rocm_smi, src/components/rocm_smi
+	  /linux-rocm-smi.c: rocm_smi: refactor rocm_smi frontend to use rocs
+	  API (2/3)  Replace old linux-rocm-smi.c logic with calls to the
+	  rocs layer interface.
+
+2023-01-18  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm_smi/htable.h, src/components/rocm_smi/rocs.c,
+	  src/components/rocm_smi/rocs.h: rocm_smi: refactor rocm_smi logic
+	  into rocs backend (1/3)  Refactors most of the code originally in
+	  linux-rocm-smi.c by moving it to a new layer name rocs (for
+	  ROCmSmi) and simplifying the original event detection logic.
+
+2023-03-02  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/ftests/Makefile: build system: accommodate Fortran compiler
+	  absence  These changes introduce clean/clobber targets in the
+	  ftests/Makefile to remove ftests/Makefile.target in the case that
+	  the Fortran tests were not built.  These changes were tested on
+	  platform containing the AMD Zen4 architecture.
+
+Sat Feb 25 18:01:45 2023 -0800  John Linford <jlinford@nvidia.com>
+
+	* src/libpfm4/README, src/libpfm4/docs/Makefile,
+	  src/libpfm4/docs/man3/libpfm_arm_neoverse_v1.3,
+	  src/libpfm4/docs/man3/libpfm_arm_neoverse_v2.3,
+	  src/libpfm4/include/perfmon/pfmlib.h, src/libpfm4/lib/Makefile,
+	  src/libpfm4/lib/events/arm_neoverse_n2_events.h,
+	  src/libpfm4/lib/events/arm_neoverse_v1_events.h,
+	  src/libpfm4/lib/events/arm_neoverse_v2_events.h,
+	  src/libpfm4/lib/events/intel_skl_events.h,
+	  src/libpfm4/lib/pfmlib_arm_armv8.c,
+	  src/libpfm4/lib/pfmlib_arm_armv9.c,
+	  src/libpfm4/lib/pfmlib_arm_priv.h, src/libpfm4/lib/pfmlib_common.c,
+	  src/libpfm4/lib/pfmlib_priv.h, src/libpfm4/tests/validate_arm64.c:
+	  libpfm4: update to commit c676419  Original commits:  commit
+	  c676419047f240468efd63407cf5e3fefa71752a  update Intel SKL/SKX/CLX
+	  event table  Based on github.com/Intel/perfmon/SKX version 1.29
+	  commit 098a39459fa0d0ed1d81f4c269a3b0ece46f9f27  add ARM Neoverse
+	  V2 core PMU support  Based on information from: github.com/ARM-
+	  software/data/blob/master/pmu/neoverse-v2.json   commit
+	  1307e234db0f3922d6854e9b84283c5f6c72d2d6  move ARM Neoverse N2 to
+	  ARMv9 support  Neoverse N2 is a ARMv9 implementation therefore it
+	  needs to be moved to the pfmlib_arm_armv9.c support file.
+	  Attributes are also updated to point to the V9 specific version.
+	  commit 61b49e0bbcc0906c54c17007faca91d0c62e6b38  add ARM v9
+	  support basic infrastructure  Adds the pmlib_arm_armv9.c support
+	  file and a few macros definitions to enable ARMv9 PMU support.
+	  commit 21895bae4e59936079b908c08787aa63fe485141  add Arm Neoverse
+	  V1 core PMU support  This patch adds support for Arm Neoverse V1
+	  core PMU.  Based on Arm information posted on github.com/ARM-
+	  software/data/blob/master/pmu/neoverse-v1.json
+
+2023-03-07  Anthony <adanalis@icl.utk.edu>
+
+	* src/components/sde/tests/Makefile,
+	  src/components/sde/tests/Simple2/Simple2_Lib++.cpp,
+	  src/components/sde/tests/Simple2/Simple2_Lib.c: Modified a non-
+	  compliant type aliasing code that gcc-12.2 treats as undefined
+	  behavior to conform to the C standard and be more portable.
+
+2023-02-27  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/configure, src/configure.in: rocm: define PAPI_ROCM_PROF if
+	  rocm component enabled
+	* src/components/sysdetect/tests/Makefile: sysdetect: enable fortran
+	  tests rules only if F77 is set
+
+Wed Feb 22 23:00:00 2023 -0800  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/lib/events/intel_icl_events.h,
+	  src/libpfm4/lib/events/intel_spr_events.h: libpfm4: update to
+	  commit b4361ca  Original commits:  commit
+	  b4361ca023198b9a96f1d824cfcd276f020bcac3  Update Intel
+	  SapphireRapid event table  Based on github.com/intel/perfmon
+	  version 1.11   commit f31c0f5ff0792d547eff436c577eac82d99b4e8b
+	  update Intel Icelake event table  Based on githib.com: - v1.19 for
+	  IcelakeX - v1.17 for Icelake
+
+2023-02-08  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/rocp.c: rocm: fix intercept mode shutdown bug
+	  (2/2)  Shutdown hash table in intercept mode path.
+	* src/components/rocm/rocm.c: rocm: fix init_private return code bug
+	  (1/2)  Check init_private return state in delay initialization
+	  functions (e.g. rocm_update_control_state).
+
+2023-02-20  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/Rules.rocm, src/components/rocm/htable.c,
+	  src/components/rocm/htable.h: rocm: refactor htable (28/28)  The
+	  htable data structure is used across multiple components and having
+	  it in a C file causes multiple definition errors. Instead move the
+	  implementation to the header and declare all function static
+	  inline.
+
+2023-01-26  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/Rules.rocm, src/components/rocm/common.h,
+	  src/components/rocm/rocd.c, src/components/rocm/rocd.h,
+	  src/components/rocm/rocm.c, src/components/rocm/rocp.c,
+	  src/components/rocm/rocp.h, src/configure, src/configure.in: rocm:
+	  add dispatch layer for future extensions (27/28)  Add dispatch
+	  layer for accomodating the integration of additional backend
+	  profiling tools (e.g. rocmtools).
+
+2023-01-23  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/common.h, src/components/rocm/rocp.h: rocm:
+	  refactor rocp backend header (26/28)  Move context state defines to
+	  rocp.h
+
+2023-01-10  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/rocp.c: rocm: add note to source code (25/28)
+	  Add fixme note to intercept code
+
+2023-01-09  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/rocp.c: rocm: remove same-event-number-per-
+	  device limitation (24/28)  The rocm component used to make some
+	  assumption when working in sampling mode. More specifically, in the
+	  case of a single eventset containing events from different devices,
+	  the component assumed every device had the same number of events.
+	  This is a reasonable assumption to make because in the typical case
+	  the user has a SIMD workload split across available devices. It
+	  makes sense therefore to monitor the same events on all devices, in
+	  order to make apple to apple comparisons. This assumption, however,
+	  does not allow for the case in which the user wants to monitor
+	  different events on different devices. This might be the case for a
+	  MIMD workload. This patch removes the limitation by allowing
+	  different number of events to be monitored on different devices
+	  using a single eventset.
+
+2023-01-05  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/rocm.c, src/components/rocm/rocp.c: rocm: sort
+	  events in component frontend (23/28)  The rocp layer needs events
+	  sorted by device. The sorting used to happen in the rocp layer and
+	  counters would be eventually assigned to the correct position in
+	  the user counter array. The same mechanism is already available in
+	  the frontend through the ntv_info ni_position attribute. Thus, do
+	  the sorting the in the rocm layer and set the ni_position to the
+	  remapped event/counter. This allows to simplify the rocp layer
+	  logic.
+
+2023-01-04  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/rocp.c, src/components/rocm/rocp.h: rocm: add
+	  comments for backend functions (22/28)  Explicitly separate
+	  interfaces by functionality in rocp.h and add descriptions in
+	  rocp.c
+
+2022-12-23  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/rocp.c: rocm: refactor static string lengths
+	  (21/28)  Use PATH_MAX instead of PAPI_MAX_STR_LEN for paths
+
+2022-12-19  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/rocp.c: rocm: refactor shutdown function names
+	  in backend (20/28)  Rename shutdown funcs in rocp layer
+
+2022-12-16  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/rocp.c: rocm: refactor event verification logic
+	  in intercept mode (19/28)  The verify_events function makes sure
+	  that, in intercept mode, all eventsets have the same events. This
+	  is dictated by rocprofiler that, currently, does not allow
+	  resetting intercept mode callbacks. The way this check is carried
+	  out is by going through a list of intercept events (kept internally
+	  by the rocp layer) and a list of user requested events. If the two
+	  differ, then there is a conflict and the new eventset cannot be
+	  monitored. Use the htable to log the name of the intercept events
+	  and check the presence/absence for conflict in verify_events.
+
+2022-12-15  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/rocm.c: rocm: refactor event duplication
+	  verification logic (18/28)  Currently, update_native_events removes
+	  event duplication whenever that happens. This is the case for
+	  events that differ by instance number. The rocp layer reports
+	  events instances as separate native events. The logic to remove
+	  duplicate events is messy and probably not even needed as the user
+	  will normally add events without indicating the instance of the
+	  event. This patch removes such logic.
+
+2022-12-14  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/rocp.c: rocm: refactor dispatch_counter logic
+	  (17/28)  dispatch_counter is used to keep track of what kernel has
+	  been dispatched by what thread. The current implementation relies
+	  on an array to keep the tid and the counter value. Using the hash
+	  table, currently also used for keeping events, simplifies the code
+	  significantly.
+
+2022-12-13  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/rocm.c, src/components/rocm/rocp.c,
+	  src/components/rocm/rocp.h: rocm: refactor rocp_ctx_open function
+	  name (16/28)  Rename rocp_ctx_open_v2 to rocp_ctx_open
+
+2022-12-09  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/common.h, src/components/rocm/rocm.c,
+	  src/components/rocm/rocp.c, src/components/rocm/rocp.h: rocm:
+	  handle event table in component backend (15/28)  No longer
+	  initialize and use the event table in the rocm layer. No longer
+	  pass the ntv_table around in the rocp layer.
+	* src/components/rocm/rocm.c: rocm: add event counting function in
+	  component frontend (14/28)  Add evt_get_count function to count
+	  events
+	* src/components/rocm/rocm.c: rocm: use rocp API to enumerate events
+	  in component (13/28)  Do not use ntv_table for enum events in
+	  rocm.c  Instead of using ntv_table for enum events use the new rocp
+	  exposed interfaces such as rocp_evt_code_to_name, etc.
+	* src/components/rocm/rocm.c: rocm: add event name tokenizer (12/28)
+	  Add tokenize_event_string function to extract device information
+	  from the event name.
+	* src/components/rocm/rocm.c, src/components/rocm/rocp.c,
+	  src/components/rocm/rocp.h: rocm: get errors through
+	  rocp_err_get_last (11/28)  Instead of returning error string
+	  explicitly during rocp_init/_environment, use rocp_err_get_last.
+	* src/components/rocm/rocm.c, src/components/rocm/rocp.c,
+	  src/components/rocm/rocp.h: rocm: add error code to string function
+	  (10/28)  Add error string return function: rocp_err_get_last().
+
+2022-12-08  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/rocm.c, src/components/rocm/rocp.c,
+	  src/components/rocm/rocp.h: rocm: refactor rocp_ctx_open function
+	  (9/28)  The goal of this patch is to remove the need for passing
+	  the event table reference to the rocp_ctx_open function. To avoid
+	  too many changes in the code here we introduce a new
+	  rocp_ctx_open_v2 function and replace rocp_ctx_open with it in a
+	  later commit.
+	* src/components/rocm/rocp.c, src/components/rocm/rocp.h: rocm:
+	  refactor component backend interface (8/28)  This patch does some
+	  preparatory work to make the rocp layer completely opaque to the
+	  component layer (rocm.c). These include storing a reference to the
+	  native table built at rocp_init time, and adding four new
+	  interfaces for enumerating events, getting event descriptors,
+	  converting event names to codes and viceversa.
+
+2022-12-06  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/rocp.c: rocm: refactor user to component event
+	  mapping (7/28)  The rocp_ctx already contains a reference to the
+	  events_id provided by the user. Remove explicit reference in
+	  get_user_counter_id arg list.
+	* src/components/rocm/rocp.c: rocm: refactor event sorting function
+	  name (6/28)  Rename sort_events_by_device to sort_events. Events
+	  are numbered starting from the first device to the last. Thus,
+	  events are always ordered by device, and the name of the function
+	  is a redundant statement of how events are sorted.
+	* src/components/rocm/rocp.c: rocm: refactor event collision
+	  detection (5/28)  Rename compare_events to verify_events to
+	  indicate the change in functionality for the function. Used to
+	  compare events, returning either 0 if they all matched or an
+	  integer if the did not. Now verify_events returns PAPI_OK if the
+	  events match and PAPI_ECNFLT if they don't. verify_events also
+	  checks whether the rocprofiler callbacks are set or not. If not the
+	  function exits immediately as there cannot be any event conflict.
+	* src/components/rocm/rocp.c: rocm: refactor intercept_ctx_open
+	  (4/28)  Move rocprofiler init_callbacks from intercept_ctx_open
+	  into ctx_init.
+	* src/components/rocm/rocp.c: rocm: quick sort component events by id
+	  (3/28)  Events from multiple GPUs can appear in any order in the
+	  eventset. However, rocprofiler needs events to be ordered by
+	  device. Previously, we were sorting events by device using a brute
+	  force approach. This is unnecessary because events are numbered
+	  according to device order anyway. Doing a quick sort of the events
+	  identifiers is sufficient.
+
+2022-12-05  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/rocm.c, src/components/rocm/rocp.c,
+	  src/components/rocm/rocp.h: rocm: refactor rocp_ctx_read (2/28)
+	  The events_id array, containing the id of the events requested by
+	  the user, is passed to rocp_ctx_open and can be saved in the
+	  rocp_ctx returned by this function. It is not necessary to pass the
+	  array again as argument to rocp_ctx_read. Thus, remove it from the
+	  argument list of rocp_ctx_read.
+
+2022-12-13  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/common.h, src/components/rocm/rocm.c,
+	  src/components/rocm/rocp.c, src/components/rocm/rocp.h: rocm:
+	  refactor variable types (1/28)  Variable type refactoring. Use
+	  unsigned int for ids (e.g. events_id and devs_id) and int for
+	  counts (e.g. num_events, num_devs).
+
+2023-02-21  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/perf_event/perf_helpers.h: perf_event: used unused
+	  attribute in mmap_read_self
+	* src/components/perf_event/perf_helpers.h: perf_event: add missing
+	  mmap_read_reset_count for non default cpus  Power cpus do not have
+	  a version of mmap_read_reset_count. Implement the missing function.
+	* src/components/perf_event/perf_helpers.h: perf_event: bug fix in
+	  mmap_read_self  Commit 9a1f2d897 broke the perf_event component for
+	  power cpus. The mmap_read_self function is missing one argument.
+	  This patch restores the missing argument in the function.
+
+2023-01-26  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/components/nvml/README.md, src/components/nvml/linux-nvml.c:
+	  nvml: fix support for multiple devices  Replace each
+	  cudaGetDevicePtr() call with a table lookup. This tracks the
+	  correct device ID when counting events; whereas, cudaGetDevicePtr()
+	  will only ever return a single ID with the way it was used.  The
+	  dependency on CUDA unnecessarily restricts multi-process jobs on
+	  Summit. Removing this dependency was necessary to properly support
+	  multiple devices.  These changes were tested on the Summit
+	  supercomputer, which contains the IBM POWER9 and NVIDIA Tesla V100
+	  architectures.
+
+2023-02-21  Masahiko, Yamada <yamada.masahiko@fujitsu.com>
+
+	* src/components/perf_event/perf_event.c,
+	  src/components/perf_event/perf_event_lib.h,
+	  src/components/perf_event/perf_helpers.h: PAPI_read performance
+	  improvement for the arm64 processor  We developed PAPI_read
+	  performance improvements for the arm64 processor with a plan to
+	  port direct user space PMU register access processing from libperf
+	  to the papi library without using libperf.  The workaround has been
+	  implemented that stores the counter value at the time of reset and
+	  subtracts the counter value at the time of reset from the read
+	  counter value at the next read. When reset processing is called,
+	  the value of pc->offset is cleared to 0, and only the counter value
+	  read from the PMU counter is referenced. There was no problem with
+	  the counters FAILED with negative values during the multiplex+reset
+	  test, except for sdsc2-mpx and sdsc4-mpx. To apply the workaround
+	  only during reset, the _pe_reset function call sets the reset_flag
+	  and the next _pe_start function call clears the reset_flag. The
+	  workaround works if the mmap_read_self function is called between
+	  calls to the _pe_reset function and the next call to the _pe_start
+	  function.  Switching PMU register direct access from user space
+	  from OFF to ON is done by changing the setting of the kernel
+	  variable "/proc/sys/kernel/perf_user_access".  Setting PMU Register
+	  Direct Access from User Space Off $ echo 0 >
+	  /proc/sys/kernel/perf_user_access $ cat
+	  /proc/sys/kernel/perf_user_access 0  Setting PMU Register Direct
+	  Access from User Space ON $ echo 1 >
+	  /proc/sys/kernel/perf_user_access $ cat
+	  /proc/sys/kernel/perf_user_access 1  Performance of PAPI_read has
+	  been improved as expected from the execution result of the
+	  papi_cost command.  Improvement effect of switching PMU register
+	  direct access from user space from OFF to ON  Total cost for
+	  PAPI_read (2 counters) over 1000000 iterations min cycles:  689
+	  ->   28 max cycles: 3876        -> 1323 mean cycles: 724.471979 ->
+	  28.888076  Total cost for PAPI_read_ts (2 counters) over 1000000
+	  iterations min cycles:  693        ->   29 max cycles: 4066
+	  -> 3718 mean cycles: 726.753003 ->   29.977226  Total cost for
+	  PAPI_read (1 derived_[add|sub] counter) over 1000000 iterations min
+	  cycles:  698        ->   28 max cycles: 7406        -> 2346 mean
+	  cycles: 728.527079 ->   28.880691
+
+Sun Feb 5 22:56:09 2023 -0800  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/lib/events/amd64_events_fam19h_zen4.h: libpfm4: update
+	  to commit 678bca9  Original commits:  commit
+	  678bca9bf803b089c089629661d457533a7705b0  Update AMD Zen4 event
+	  table  - Fix wrong encodings in for event RETIRED_FP_OPS_BY_TYPE -
+	  Fix INT256_OTHER bogus name - Add missing
+	  RETIRED_UCODE_INSTRUCTIONS - Fix Name and descripiton for event
+	  RETIRED_UNCONDITIONAL_INDIRECT_BRANCH_INSTRUCTIONS_MISPREDICTED
+	  commit dcb2f5e73d0343c87995919495c3c10252a7b0ca  remove useless
+	  combination in AMD Zen4 packed_int_ops_retired event  This
+	  combination is useless and does not match the rest of the logic for
+	  this event. libpfm4 allows one umask at a time.
+
+2023-01-26  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/ctests/all_native_events.c: ctests/all_native_events: bug
+	  workaround  Sampling mode fails in the presence of more than one
+	  rocm GPU. This is due to a bug in the rocprofiler library. To avoid
+	  the failure in the all_native_events test we skip rocm tests.
+
+2023-02-07  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/components/Makefile_comp_tests.target.in,
+	  src/components/cuda/sampling/Makefile,
+	  src/components/cuda/tests/BlackScholes/Makefile,
+	  src/components/cuda/tests/Makefile,
+	  src/components/nvml/tests/Makefile,
+	  src/components/nvml/utils/Makefile, src/configure,
+	  src/configure.in: build system: workaround for GCC8+CUDA10 bug on
+	  POWER9  When using CUDA 10 with GCC 8 on IBM POWER9, the following
+	  compile-time error occurs with 'nvcc': > error: identifier
+	  "__ieee128" is undefined  We work around this issue by passing the
+	  flags "-Xcompiler -mno-float128" to 'nvcc' invocations.  These
+	  changes have been tested on the ppc64le architecture and NVIDIA
+	  Tesla V100 GPUs.
+	* src/components/sysdetect/nvidia_gpu.c,
+	  src/components/sysdetect/nvidia_gpu.h: sysdetect: account for older
+	  CUDA versions  In CUDA 11.0 or greater, the macro
+	  "NVML_DEVICE_UUID_V2_BUFFER_SIZE" is defined. Older versions of
+	  CUDA define "NVML_DEVICE_UUID_BUFFER_SIZE."  In order to support
+	  older versions of CUDA, these changes apply the appropriate macro.
+	  These changes have been tested on the NVIDIA Tesla V100
+	  architecture.
+
+2023-01-26  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/components/nvml/README.md: nvml: fix small typo in README
+	  Remove extra underscore in the README.md file.
+
+2023-01-13  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/tests/sample_multi_thread_monitoring.cpp: rocm:
+	  skip sampling multi-thread tests  Sampling mode tests fail because
+	  of a still unresolved bug in rocm-5.3. Skip them until the bug is
+	  resolved.
+
+2023-01-09  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/rocp.c: rocm: fix bug in sampling_ctx_open  The
+	  function creates one profiling context per device. The way the
+	  agent corresponding to the device is selected was erroneous. This
+	  caused different threads monitoring different devices with
+	  different eventsets to all access the counters from the first
+	  device. The fix is not to select the agent using a for loop index
+	  but instead to use that index to get the device id from the devs_id
+	  array.
+
+Thu Jan 5 12:29:51 2023 -0800  Giuseppe Congiu <gcongi@icl.utk.edu>
+
+	* src/libpfm4/lib/pfmlib_amd64_fam19h.c: libpfm4: update to commit
+	  dd42292  Original commits:  commit
+	  dd422923f79a6c160e499f484212020ca2398f90  Fix AMD Zen4 cpu_family
+	  used in detection code  AMD Zen4 was expecting Zen3  CPU family
+	  number.
+
+2022-12-22  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/net/linux-net.c: net: fix warning in strncpy  The
+	  source and target string have the same length. If the source is
+	  null terminated (as expected in the absence of bugs) there is no
+	  need to null terminate the target manually.
+	* src/components/net/linux-net.c: net: fix warning in snprintf
+	  Compute the length of the source string instead of copying
+	  PAPI_MAX_STR_LEN characters regardless.
+	* src/components/coretemp/linux-coretemp.c: coretemp: fix warning in
+	  strncpy  Source and target are the same length. No need to null
+	  terminate if the source is already null terminated.
+	* src/components/powercap_ppc/tests/powercap_basic.c: powercap_ppc:
+	  fix warning in powercap_basic test  Copy the whole source string to
+	  the target.
+	* src/components/powercap_ppc/tests/powercap_basic.c: powercap_ppc:
+	  fix bug in powercap_basic test  Make target and source strings the
+	  same size.
+
+2022-12-20  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/libpfm4/docs/man3/libpfm_amd64_fam19h_zen4.3,
+	  src/libpfm4/lib/events/amd64_events_fam19h_zen4.h: libpfm4: add
+	  missing zen 4 files  Commit 2fe62da left out additional zen 4
+	  files. This patch adds them.
+
+2022-12-15  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/sensors_ppc/linux-sensors-ppc.c: sensors_ppc: fix
+	  typo in fall through comment  The compiler throws a warning because
+	  it does not recognize fallthrough as valid indication that the code
+	  can fall through in the case statement.
+	* src/components/powercap_ppc/linux-powercap-ppc.c: powercap-ppc: fix
+	  warning in strncpy  strncpy causes the following warning in linux-
+	  powercap-ppc.c:  warning: '__builtin_strncpy' specified bound 1024
+	  equals destination size 62 |     char *retval = strncpy( dst, src,
+	  size ); |                    ^~~~~~~  the problem is that size is
+	  the same size as dst. If src is also the same length, the null
+	  termination character will not be copied over. Instead copy only
+	  size - 1 and terminate the string manually.
+
+Fri Dec 2 00:01:47 2022 -0800  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/README, src/libpfm4/docs/Makefile,
+	  src/libpfm4/include/perfmon/pfmlib.h, src/libpfm4/lib/Makefile,
+	  src/libpfm4/lib/events/intel_icl_events.h,
+	  src/libpfm4/lib/pfmlib_amd64.c,
+	  src/libpfm4/lib/pfmlib_amd64_fam19h.c,
+	  src/libpfm4/lib/pfmlib_common.c, src/libpfm4/lib/pfmlib_priv.h,
+	  src/libpfm4/tests/validate_x86.c: libpfm4: update libpfm4 to commit
+	  c0116f9  Original commits:  commit
+	  c0116f9433f34e5953407036243af998c00fcc1f  Add AMD Zen4 core PMU
+	  support  Based on AMD PPR for Fam19h model 11 B1 rec 0.25   commit
+	  11f94169598b84a71fb9da4357baf3673f83038b  Correctly detect all AMD
+	  Zen3 processors  Fixes commit 79031f76f8a1 ("fix amd_get_revision()
+	  to identify AMD Zen3 uniquely")  The commit above broke the
+	  detection of certain AMD Zen3, such as: Vendor ID:
+	  AuthenticAMD BIOS Vendor ID:        Advanced Micro Devices, Inc.
+	  Model name:            AMD Ryzen 9 5950X 16-Core Processor BIOS
+	  Model name:     AMD Ryzen 9 5950X 16-Core Processor BIOS CPU
+	  family:     107 CPU family:          25 Model:               33
+	  commit c5100b69add67172366e897cef5b854c5348dc91  fix
+	  CPU_CLK_UNHALTED.REF_DISTRIBUTED on Intel Icelake  Had the wrong
+	  encoding of 0x8ec instead of 0x083c.
+
+2022-12-19  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/utils/papi_hardware_avail.c: sysdetect: fix typo in
+	  papi_hardware_avail
+
+2022-12-01  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/rocp.c: rocm: give precendence to new dir
+	  structure for metrics file
+
+2022-11-28  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/rocp.c: rocm: account for new directory tree
+	  structure in rocm  librocprofiler64.so is being moved from
+	  <rocm_root>/rocprofiler/lib to <rocm_root>/lib. This patch allow
+	  the rocm component to search in the new location if the old is
+	  empty/non-existant.
+
+2022-11-30  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/ftests/clockres.F, src/ftests/fmatrixlowpapi.F: ftest: fix
+	  warning in fortran tests  Arrays that are statically allocated
+	  cannot be placed in the stack if the exceed a certain size (-fmax-
+	  stack-var-size). The compilers moves them into static storage which
+	  might cause problems if the function is called recursively. Solve
+	  the warning by allocating the arrays dynamically.
+
+2022-12-08  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/components/infiniband/linux-infiniband.c: infiniband: fix
+	  compiler warnings  Recent versions of GCC (9.3.0 in this case)
+	  threw the following warnings:  components/infiniband/linux-
+	  infiniband.c: In function '_infiniband_ntv_code_to_info':
+	  components/infiniband/linux-infiniband.c:937:9: warning: 'strncpy'
+	  specified bound depends on the length of the source argument
+	  [-Wstringop-overflow=] 937 |         strncpy(info->symbol,
+	  infiniband_native_events[index].name, len); |
+	  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	  components/infiniband/linux-infiniband.c:935:28: note: length
+	  computed here 935 |         unsigned int len =
+	  strlen(infiniband_native_events[index].name); |
+	  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ components/infiniband
+	  /linux-infiniband.c:944:9: warning: 'strncpy' specified bound
+	  depends on the length of the source argument [-Wstringop-overflow=]
+	  944 |         strncpy(info->long_descr,
+	  infiniband_native_events[index].description, len); |         ^~~~~~
+	  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	  ~~ components/infiniband/linux-infiniband.c:942:28: note: length
+	  computed here 942 |         unsigned int len =
+	  strlen(infiniband_native_events[index].description); |
+	  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~  The changes in
+	  this commit fix these warnings by using the maximum possible length
+	  of the source arguments.  These changes were tested on Summit,
+	  which has the following IB device listing from 'lspci': Infiniband
+	  controller: Mellanox Technologies MT28800 Family [ConnectX-5 Ex].
+
+2022-11-29  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/sysdetect/Rules.sysdetect: sysdetect: fix order in
+	  include dirs
+	* src/components/sysdetect/Rules.sysdetect: sysdetect: fix typo in
+	  makefile Rules
+	* src/components/sysdetect/amd_gpu.c: sysdetect: explicit cast AMD
+	  hsa attributes to hsa_agent_info_t
+
+2022-11-28  Florian Weimer <fweimer@redhat.com>
+
+	* src/configure, src/configure.in: configure: Avoid implicit ints and
+	  implicit function declarations  Implicit ints and implicit function
+	  declarations were removed from the C language in 1999.  Relying on
+	  them can cause spurious autoconf check failures with compilers that
+	  do not support them in the default language mode.
+
+2022-12-02  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/components/infiniband/linux-infiniband.c: infiniband: increase
+	  max number of events  The maximum number of events
+	  ('INFINIBAND_MAX_COUNTERS') was hard-coded to be 128.  However,
+	  some Infiniband devices provide more than 128 events, causing the
+	  component test 'infiniband_values_by_code' to seg fault.  The IB
+	  devices on Summit nodes provide 188 events, so the macro needs to
+	  be greater than or equal to this number.  These changes were tested
+	  on Summit, which has the following IB device listing from 'lspci':
+	  Infiniband controller: Mellanox Technologies MT28800 Family
+	  [ConnectX-5 Ex].
+
+2022-05-26  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/cuda/Rules.cuda: cuda: remove untested dependency
+	  linux-cuda.o depends on cuda_sampling (directory). This contains
+	  untested code and does not seem to be an indispensable dependency
+	  for the cuda component. This patch removes the cuda_sampling
+	  dependency for now.
+
+2022-11-29  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/sysdetect/sysdetect.c: sysdetect: add missing numa
+	  memsize attr
+	* src/components/cuda/linux-cuda.c: cuda: use appropriate macro for
+	  perfworks API calls  Two perfworks API calls were made using
+	  CUPTI_CALL macro instead of NVPW_CALL. This patch uses the
+	  appropriate call macro.
+	* src/components/rocm_smi/Rules.rocm_smi: rsmi: fix warning in
+	  Makefile Rules  This warning shows up for rocm version 5.2 and
+	  later, which changed the directory structure and deprecated headers
+	  for the old structure. This patch prioritizes the new structure
+	  when looking for rocm_smi headers at build time.
+	* src/components/rocm_smi/linux-rocm-smi.c: rsmi: fix warning in
+	  strncpy  strncpy warning was caused by the len of the copy being
+	  equal to the target string len. Increasing the target string by one
+	  character leaves space for a termination character and fixes the
+	  warning.
+	* src/components/rocm/Rules.rocm: rocm: fix dependency priority in
+	  Makefile  Recent versions of ROCM have deprecated the old directory
+	  tree in favour of a different organization of headers and
+	  libraries. This patch gives priority to the new directory structure
+	  when searching for headers.
+	* src/components/rocm/tests/Makefile: rocm: fix deprecated warning in
+	  tests
+
+2022-11-28  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/rocp.c: rocm: fix miscellaneous warnings in
+	  rocp.c  Fix following warnings: - implicit cast from enum
+	  <anonymous> to rocprofiler_feature_kind_t: this is caused by
+	  rocprofiler and is solved by explicit cast of
+	  ROCPROFILER_FEATURE_KIND_METRIC to rocprofiler_feature_kind_t; -
+	  casting 'getpid' to (unsigned long (*)(void)) incompatible type:
+	  this is solved by using '_papi_getpid' instead of 'getpid'.
+
+2022-12-01  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/nvml/linux-nvml.c: nvml: also copy null termination
+	  character in strncpy  String literals are null terminated. When
+	  using strncpy the number of characters to be copied has to be the
+	  string length plus 1 in order to include the null termination
+	  character. Since the null termination is already included in the
+	  string literal, manually terminating the string is superflous.
+
+2022-11-29  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/nvml/linux-nvml.c: nvml: fix warning in strncpy  The
+	  code defines the source string twice as long as the target string
+	  in number of characters. This causes the warning. The warning is
+	  removed by making the target string PAPI_MAX_STR_LEN long and the
+	  source string PAPI_MIN_STR_LEN long.
+	* src/components/nvml/linux-nvml.c: nvml: trim excessive long
+	  description string  An excessive long description string for power
+	  managemenent upper bound limit does not fit into the 128 characters
+	  of PAPI_MAX_STR_LEN. This patch trims the description string to
+	  make it fit in the description string limit.
+	* src/components/nvml/linux-nvml.c: nvml: fix cuInit returned
+	  variable type  cuInit return result is of type CUresult and not
+	  cudaError_t. Fix the error to resolve the warning: implicit
+	  conversion from CUresult to cudaError_t.
+
+2022-11-22  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/cuda/linux-cuda.c: cuda: fix compile error with gcc
+	  10  Some of the symbols used by the cuda component clash with the
+	  nvml component as they are not defined static. This problem only
+	  affects latest versions of the gcc compiler (>= 10). This is due to
+	  how gcc places global variables that do not have an initializer
+	  (tentative definition variables in the C standard). These variables
+	  are placed in the .BSS section of the object file. This avoids the
+	  merging of tentative definition variables by the linker, which
+	  causes multiple definition errors. (This happens by default in gcc
+	  and corresponds to the -fno-common option).
+	* src/components/nvml/linux-nvml.c: nvml: fix compile error with gcc
+	  10  Some of the symbols used by the nvml component clash with the
+	  cuda component as they are not defined static. This problem only
+	  affects latest versions of the gcc compiler (>= 10). This is due to
+	  how gcc places global variables that do not have an initializer
+	  (tentative definition variables in the C standard). These variables
+	  are placed in the .BSS section of the object file. This avoids the
+	  merging of tentative definition variables by the linker, which
+	  causes multiple definition errors. (This happens by default in gcc
+	  and corresponds to the -fno-common option).

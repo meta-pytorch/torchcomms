@@ -286,6 +286,7 @@ class TorchCommNCCLX : public TorchCommBackend,
   InitHandle getInitHandle() const override;
   c10::intrusive_ptr<TorchWork> reconfigure(
       const ReconfigureOptions& opts) override;
+  void abort() override;
 
   std::unordered_map<std::string, std::string> comm_dump();
   // Friend access for TorchCommNCCLX

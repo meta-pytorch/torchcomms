@@ -1,0 +1,30 @@
+#!/bin/bash
+
+
+: ${TIMEMORY_MPIP_COMPONENTS:="wall_clock"}
+: ${TIMEMORY_TRACE_COMPONENTS:="wall_clock"}
+: ${TIMEMORY_GLOBAL_COMPONENTS:="wall_clock:cpu_clock"}
+
+export TIMEMORY_MPIP_COMPONENTS
+export TIMEMORY_TRACE_COMPONENTS
+export TIMEMORY_GLOBAL_COMPONENTS
+
+count-lines()
+{
+    local n=0
+    for i in $@
+    do
+        while read line
+        do
+            if [ -z "$(echo ${line} | grep -v '>>>')" ]; then n=$((${n}+1)); fi
+        done < ${i}
+    done
+    echo ${n}
+}
+
+emit-separator()
+{
+    echo -e "\n#########################################################################################"
+    echo -e "#\n#\n#\t$@\n#\n#"
+    echo -e "#########################################################################################\n"
+}
