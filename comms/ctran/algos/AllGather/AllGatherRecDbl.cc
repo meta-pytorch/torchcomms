@@ -159,6 +159,19 @@ static commResult_t impl(
     timestamp->putComplete.push_back(CtranMapperTimestampPoint(peer));
     FB_COMMCHECK(comm->ctran_->mapper->waitNotify(notifyVec[i].get()));
 
+    // Flush received data to ensure cross-NIC DMA visibility before next
+    // step reads it as iput source (multi-NIC platforms have no cross-device
+    // PCIe ordering guarantee). Skip last step — no forwarding after it.
+    if (i < nSteps - 1) {
+      CtranMapperRequest* rawFlushReq = nullptr;
+      FB_COMMCHECK(
+          comm->ctran_->mapper->iflush(recvbuff, memHdl, &rawFlushReq));
+      std::unique_ptr<CtranMapperRequest> flushReq(rawFlushReq);
+      if (flushReq) {
+        FB_COMMCHECK(comm->ctran_->mapper->waitRequest(flushReq.get()));
+      }
+    }
+
     CTRAN_PROFILER_IF(
         profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_DATA));
   }
