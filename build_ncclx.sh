@@ -337,20 +337,17 @@ THRIFT_SERVICE_LDFLAGS+=(
   "-l:libxxhash.a"
 )
 THIRD_PARTY_LDFLAGS+="${THRIFT_SERVICE_LDFLAGS[*]} "
-THIRD_PARTY_LDFLAGS+="$(pkg-config --libs --static libfolly) "
+THIRD_PARTY_LDFLAGS+="$(pkg-config --libs --static libfolly | sed 's/-lfmt\b//g') "
 # liburing: folly's cmake config declares this dependency but pkg-config omits
 # it. Add -luring if the system has liburing (folly uses io_uring for async I/O).
 if pkg-config --exists liburing 2>/dev/null; then
   THIRD_PARTY_LDFLAGS+="-luring "
 fi
-# libfmt: NCCLX's own objects use FMT_HEADER_ONLY=1, but the prebuilt
-# folly/thrift static libs were built without it and contain unresolved
-# references to non-inline fmt::v9::detail symbols (is_printable,
-# thousands_sep_impl, locale_ref::get<std::locale>). The conda libfolly.pc
-# does not list fmt as a dep, so add -lfmt explicitly.
 if [[ -z "${USE_SYSTEM_LIBS}" ]]; then
-  THIRD_PARTY_LDFLAGS+="-l:libglog.a -l:libgflags.a -l:libboost_context.a -l:libssl.a -l:libcrypto.a -l:libfmt.a"
+  THIRD_PARTY_LDFLAGS+="-l:libglog.a -l:libgflags.a -l:libboost_context.a -l:libssl.a -l:libcrypto.a"
 else
+  # libfmt: torchcomms+NCCLX's own objects use FMT_HEADER_ONLY=1, but the prebuilt
+  # folly/thrift static libs were built without it
   THIRD_PARTY_LDFLAGS+="-lglog -lgflags -lboost_context -lssl -lcrypto -lfmt"
 fi
 
