@@ -40,6 +40,27 @@ std::unordered_map<std::string, std::string> dumpNewCollTrace(
 
   return meta::comms::colltrace::commDumpToMap(dump.value());
 }
+
+bool waitForCollTraceDrain(
+    meta::comms::colltrace::ICollTrace& colltrace,
+    int timeoutMs) {
+  constexpr int kPollIntervalMs = 50;
+  auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+  while (std::chrono::steady_clock::now() < deadline) {
+    std::unordered_map<std::string, std::string> dumpMap =
+        meta::comms::ncclx::dumpNewCollTrace(colltrace);
+    auto currentIt = dumpMap.find("CT_currentColls");
+    auto pendingIt = dumpMap.find("CT_pendingColls");
+    bool currentEmpty = currentIt != dumpMap.end() && currentIt->second == "[]";
+    bool pendingEmpty = pendingIt != dumpMap.end() && pendingIt->second == "[]";
+    if (currentEmpty && pendingEmpty) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(kPollIntervalMs));
+  }
+  return false;
+}
 } // namespace meta::comms::ncclx
 
 using meta::comms::ncclx::dumpNewCollTrace;
