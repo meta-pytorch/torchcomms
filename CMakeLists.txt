@@ -40,34 +40,48 @@ message(STATUS "  USE_TRANSPORT  : ${USE_TRANSPORT}")
 message(STATUS "  USE_TRITON     : ${USE_TRITON}")
 message(STATUS "  BUILD_TESTS    : ${BUILD_TESTS}")
 
-if(DEFINED ENV{TORCH_CUDA_ARCH_LIST})
-    set(TORCH_CUDA_ARCH_LIST $ENV{TORCH_CUDA_ARCH_LIST})
+# NEEDS_CUDA: TRUE when any enabled backend requires CUDA. GLOO and XCCL
+# are the only non-CUDA backends; if no CUDA-dependent backend is enabled
+# we can skip CUDA-specific setup like TORCH_CUDA_ARCH_LIST detection.
+if(USE_NCCL OR USE_NCCLX OR USE_RCCL OR USE_RCCLX OR USE_TRANSPORT OR USE_TRITON)
+    set(NEEDS_CUDA TRUE)
 else()
-    # Auto-detect from nvidia-smi, fall back to 9.0.
-    # Without this, .cu kernels (e.g. AtomicAddKernel.cu) are compiled only
-    # for sm_90 and fail at runtime on other GPUs with
-    # "no kernel image is available for execution on the device".
-    # See also: comms/torchcomms/triton/CMakeLists.txt for the same pattern.
-    execute_process(
-        COMMAND nvidia-smi --query-gpu=compute_cap --format=csv,noheader
-        OUTPUT_VARIABLE _smi_output
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_QUIET
-        RESULT_VARIABLE _smi_result
-    )
-    if(_smi_result EQUAL 0 AND _smi_output)
-        # Deduplicate compute capabilities across all GPUs
-        # (e.g. "9.0\n9.0\n9.0\n9.0" -> "9.0")
-        string(REPLACE "\n" ";" _cc_list "${_smi_output}")
-        list(REMOVE_DUPLICATES _cc_list)
-        list(JOIN _cc_list ";" TORCH_CUDA_ARCH_LIST)
-        message(STATUS "Auto-detected CUDA architectures from nvidia-smi: ${TORCH_CUDA_ARCH_LIST}")
-    else()
-        set(TORCH_CUDA_ARCH_LIST "9.0")
-        message(STATUS "nvidia-smi not available, defaulting CUDA architecture to 9.0")
-    endif()
+    set(NEEDS_CUDA FALSE)
 endif()
-message(STATUS "TORCH_CUDA_ARCH_LIST : ${TORCH_CUDA_ARCH_LIST}")
+message(STATUS "  NEEDS_CUDA  : ${NEEDS_CUDA}")
+
+if(NOT NEEDS_CUDA)
+    message(STATUS "Skipping CUDA arch detection (no CUDA-dependent backends enabled)")
+else()
+    if(DEFINED ENV{TORCH_CUDA_ARCH_LIST})
+        set(TORCH_CUDA_ARCH_LIST $ENV{TORCH_CUDA_ARCH_LIST})
+    else()
+        # Auto-detect from nvidia-smi, fall back to 9.0.
+        # Without this, .cu kernels (e.g. AtomicAddKernel.cu) are compiled only
+        # for sm_90 and fail at runtime on other GPUs with
+        # "no kernel image is available for execution on the device".
+        # See also: comms/torchcomms/triton/CMakeLists.txt for the same pattern.
+        execute_process(
+            COMMAND nvidia-smi --query-gpu=compute_cap --format=csv,noheader
+            OUTPUT_VARIABLE _smi_output
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+            RESULT_VARIABLE _smi_result
+        )
+        if(_smi_result EQUAL 0 AND _smi_output)
+            # Deduplicate compute capabilities across all GPUs
+            # (e.g. "9.0\n9.0\n9.0\n9.0" -> "9.0")
+            string(REPLACE "\n" ";" _cc_list "${_smi_output}")
+            list(REMOVE_DUPLICATES _cc_list)
+            list(JOIN _cc_list ";" TORCH_CUDA_ARCH_LIST)
+            message(STATUS "Auto-detected CUDA architectures from nvidia-smi: ${TORCH_CUDA_ARCH_LIST}")
+        else()
+            set(TORCH_CUDA_ARCH_LIST "9.0")
+            message(STATUS "nvidia-smi not available, defaulting CUDA architecture to 9.0")
+        endif()
+    endif()
+    message(STATUS "TORCH_CUDA_ARCH_LIST : ${TORCH_CUDA_ARCH_LIST}")
+endif()
 
 # Set ROOT early — needed by build_ncclx.cmake and backend CMakeLists.
 set(ROOT ${CMAKE_CURRENT_SOURCE_DIR})
