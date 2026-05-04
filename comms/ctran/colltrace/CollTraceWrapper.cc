@@ -9,6 +9,7 @@
 #include "comms/utils/colltrace/CollMetadataImpl.h"
 #include "comms/utils/colltrace/CudaWaitEvent.h"
 #include "comms/utils/colltrace/DummyCollTraceHandle.h"
+#include "comms/utils/colltrace/GraphCudaWaitEvent.h"
 #include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
@@ -350,12 +351,8 @@ CollectiveMetadata getCollectiveMetadata(
     case KernelConfig::KernelType::SEND:
     case KernelConfig::KernelType::RECV:
     case KernelConfig::KernelType::SENDRECV:
-    case KernelConfig::KernelType::SEND_NOTIFY:
-    case KernelConfig::KernelType::RECV_NOTIFY:
-    case KernelConfig::KernelType::SENDRECV_NOTIFY:
     case KernelConfig::KernelType::RECV_UNPACK:
     case KernelConfig::KernelType::SENDRECV_UNPACK:
-    case KernelConfig::KernelType::SENDRECV_STAGED:
     case KernelConfig::KernelType::SENDRECV_P2P:
       XLOG_FIRST_N(ERR, 3, "P2P kernel types being handled by collective path");
       break;
@@ -372,12 +369,10 @@ bool isP2PKernel(KernelConfig::KernelType kernelType) {
       KernelConfig::KernelType::SEND,
       KernelConfig::KernelType::RECV,
       KernelConfig::KernelType::SENDRECV,
-      KernelConfig::KernelType::SEND_NOTIFY,
-      KernelConfig::KernelType::RECV_NOTIFY,
-      KernelConfig::KernelType::SENDRECV_NOTIFY,
+      KernelConfig::KernelType::SENDRECV_P2P,
       KernelConfig::KernelType::RECV_UNPACK,
       KernelConfig::KernelType::SENDRECV_UNPACK,
-      KernelConfig::KernelType::SENDRECV_STAGED,
+      KernelConfig::KernelType::SENDRECV_P2P,
   };
 
   return p2pKernels.contains(kernelType);
@@ -416,6 +411,9 @@ std::unique_ptr<ICollMetadata> getMetadata(
 std::unique_ptr<ICollWaitEvent> getWaitEvent(
     const std::vector<std::unique_ptr<struct OpElem>>& opGroup,
     cudaStream_t stream) {
+  if (isCapturingStream(stream)) {
+    return std::make_unique<GraphCudaWaitEvent>(stream);
+  }
   if (opGroup.size() > 0) {
     return std::make_unique<CPUWaitEvent>();
   }
@@ -433,18 +431,9 @@ std::shared_ptr<ICollTraceHandle> getNewCollTraceHandle(
     return std::make_unique<DummyCollTraceHandle>();
   }
 
-  if (isCapturingStream(kernelConfig.stream)) {
-    if (RankUtils::getGlobalRank().value_or(0) == 0) {
-      XLOG_FIRST_N(
-          WARN, 1, "CollTrace currently doesn't support capturing streams");
-    }
-    return std::make_unique<DummyCollTraceHandle>();
-  }
-
   auto metadata = getMetadata(comm, opGroup, kernelConfig);
-
   if (metadata == nullptr) {
-    return std::make_unique<meta::comms::colltrace::DummyCollTraceHandle>();
+    return std::make_unique<DummyCollTraceHandle>();
   }
 
   auto res = colltrace->recordCollective(
@@ -453,7 +442,7 @@ std::shared_ptr<ICollTraceHandle> getNewCollTraceHandle(
   if (res.hasError()) {
     XLOG_FIRST_N(
         ERR, 5, "Failed to get colltrace handle due to: ", res.error().message);
-    return std::make_unique<meta::comms::colltrace::DummyCollTraceHandle>();
+    return std::make_unique<DummyCollTraceHandle>();
   }
   return res.value();
 }

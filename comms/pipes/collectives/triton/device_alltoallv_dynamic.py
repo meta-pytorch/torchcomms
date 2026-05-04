@@ -95,10 +95,17 @@ _ITERATION_TENSOR_CACHE: dict = {}
 
 
 def _get_iteration_tensor(world_size: int, device: torch.device) -> torch.Tensor:
-    """Return a cached int32 scalar tensor for iteration counting.
+    """Return a cached int64 scalar tensor for iteration counting.
 
     The tensor is allocated once on first use and reused across all
     subsequent calls. The iteration value grows monotonically.
+
+    Uses int64 to prevent overflow in signal value calculations. The
+    kernel computes ``sender_bpp * (iteration + 1)`` which is passed to
+    ``wait_signal_from`` and compared against uint64 signal memory. With
+    int32, this expression overflows after ~134M iterations (with
+    blocks_per_peer=16), causing the sign-extended value to become a huge
+    uint64 that can never be reached — a silent deadlock.
 
     IMPORTANT: This must be called BEFORE GIN (GPU-Initiated NCCL) is
     activated via get_device_window(). Once GIN is active, regular CUDA
@@ -106,7 +113,7 @@ def _get_iteration_tensor(world_size: int, device: torch.device) -> torch.Tensor
     """
     key = (device, world_size)
     if key not in _ITERATION_TENSOR_CACHE:
-        _ITERATION_TENSOR_CACHE[key] = torch.zeros(1, dtype=torch.int32, device=device)
+        _ITERATION_TENSOR_CACHE[key] = torch.zeros(1, dtype=torch.int64, device=device)
     return _ITERATION_TENSOR_CACHE[key]
 
 
@@ -140,7 +147,7 @@ def _reset_iteration_counter(world_size: int, device: torch.device) -> None:
     key = (device, world_size)
     if key in _ITERATION_TENSOR_CACHE:
         # Use a GIN-safe kernel to reset the counter
-        _fill_int32_kernel[(1,)](_ITERATION_TENSOR_CACHE[key], 0, N=1)
+        _fill_int64_kernel[(1,)](_ITERATION_TENSOR_CACHE[key], 0, N=1)
 
 
 @requires_torchcomms
@@ -162,14 +169,14 @@ def _increment_iteration_kernel(iteration_ptr):
 
 
 # Pre-allocated completion counters cache to avoid per-call CUDA allocator
-# overhead.  Keyed by (device, world_size) → torch.Tensor(int32).
+# overhead.  Keyed by (device, world_size) → torch.Tensor(int64).
 _COMPLETION_COUNTERS_CACHE: dict = {}
 
 
 @requires_torchcomms
 @triton.jit
-def _fill_int32_kernel(ptr, value, N: tl.constexpr):
-    """GIN-safe kernel to fill an int32 tensor with a scalar value."""
+def _fill_int64_kernel(ptr, value, N: tl.constexpr):
+    """GIN-safe kernel to fill an int64 tensor with a scalar value."""
     idx = tl.program_id(0)
     if idx < N:
         tl.store(ptr + idx, value)
@@ -182,16 +189,24 @@ def _fill_completion_counters_from_iteration_kernel(
     iteration_ptr,
     BLOCKS_PER_PEER: tl.constexpr,
     N: tl.constexpr,
+    per_peer_blocks_ptr,
+    HAS_PER_PEER_BLOCKS: tl.constexpr,
 ):
     """GIN-safe kernel to reset completion counters based on iteration.
 
-    Reads iteration from GPU memory and computes expected_base = BLOCKS_PER_PEER * iteration.
-    This is CUDA graph compatible since iteration is read from GPU, not host.
+    Reads iteration from GPU memory and computes the expected base counter
+    value for each peer. When HAS_PER_PEER_BLOCKS is True, uses per-peer
+    block counts instead of the uniform BLOCKS_PER_PEER constexpr.
+    This is CUDA graph compatible since all values are read from GPU.
     """
     idx = tl.program_id(0)
     if idx < N:
         iteration = tl.load(iteration_ptr)
-        expected_base = BLOCKS_PER_PEER * iteration
+        if HAS_PER_PEER_BLOCKS:
+            bpp = tl.load(per_peer_blocks_ptr + idx)
+        else:
+            bpp = BLOCKS_PER_PEER
+        expected_base = bpp * iteration
         tl.store(counters_ptr + idx, expected_base)
 
 
@@ -204,7 +219,7 @@ def _fill_completion_counters_gin_safe(
     (cudaErrorHostMemoryAlreadyRegistered).  This function uses a Triton
     kernel which only does device-side stores and is GIN-safe.
     """
-    _fill_int32_kernel[(world_size,)](counters, value, N=world_size)
+    _fill_int64_kernel[(world_size,)](counters, value, N=world_size)
 
 
 def _fill_completion_counters_from_iteration(
@@ -212,33 +227,46 @@ def _fill_completion_counters_from_iteration(
     iteration_tensor: torch.Tensor,
     blocks_per_peer: int,
     world_size: int,
+    per_peer_blocks: "torch.Tensor | None" = None,
 ) -> None:
     """Reset completion counters based on iteration value from GPU tensor.
 
     This is CUDA graph compatible - reads iteration from GPU memory and
-    computes expected_base = blocks_per_peer * iteration entirely on GPU.
+    computes expected_base entirely on GPU.
+
+    When per_peer_blocks is provided, each counter is reset to
+    per_peer_blocks[i] * iteration (per-peer rate). Otherwise, all
+    counters are reset uniformly to blocks_per_peer * iteration.
 
     Args:
-        counters: GPU tensor [world_size] of int32 counters.
+        counters: GPU tensor [world_size] of int64 counters.
         iteration_tensor: GPU scalar tensor containing iteration count.
-        blocks_per_peer: Number of blocks per peer.
+        blocks_per_peer: Number of blocks per peer (constexpr upper bound).
         world_size: Number of ranks.
+        per_peer_blocks: Optional GPU tensor [world_size] of int32 per-peer
+            block counts. When provided, counters are reset per-peer.
     """
     _fill_completion_counters_from_iteration_kernel[(world_size,)](
         counters,
         iteration_tensor,
         BLOCKS_PER_PEER=blocks_per_peer,
         N=world_size,
+        per_peer_blocks_ptr=per_peer_blocks,
+        HAS_PER_PEER_BLOCKS=per_peer_blocks is not None,
     )
 
 
 def _get_completion_counters(world_size: int, device: torch.device) -> torch.Tensor:
-    """Return a cached int32 tensor of shape [world_size] on device.
+    """Return a cached int64 tensor of shape [world_size] on device.
 
     The tensor is allocated once (via torch.zeros) on first use and reused
     across all subsequent calls.  Counters grow monotonically with each
     iteration (no in-kernel reset) to avoid race conditions with CUDA
     block scheduling.
+
+    Uses int64 to match the iteration tensor dtype and prevent overflow
+    in the multi-block completion coordination logic, where counters
+    accumulate ``blocks_per_peer * iteration`` values.
 
     IMPORTANT: This must be called BEFORE GIN (GPU-Initiated NCCL) is
     activated via get_device_window().  Once GIN is active, regular CUDA
@@ -247,7 +275,7 @@ def _get_completion_counters(world_size: int, device: torch.device) -> torch.Ten
     key = (device, world_size)
     if key not in _COMPLETION_COUNTERS_CACHE:
         _COMPLETION_COUNTERS_CACHE[key] = torch.zeros(
-            world_size, dtype=torch.int32, device=device
+            world_size, dtype=torch.int64, device=device
         )
     return _COMPLETION_COUNTERS_CACHE[key]
 
@@ -284,9 +312,7 @@ def prewarm_completion_counters(world_size: int, device: torch.device) -> None:
 def _device_alltoallv_dynamic_kernel(
     # Window handles
     dst_win_ptr,
-    src_base_ptr,
-    src_size,
-    src_nccl_win,
+    src_registered_buf,  # device ptr to RegisteredBuffer (from register_local_buffer)
     # Buffer pointers for self-copy (typed by Triton from tensors)
     send_buf_ptr,
     recv_buf_ptr,
@@ -310,6 +336,9 @@ def _device_alltoallv_dynamic_kernel(
     # Sync buffer mode for buffer-ready synchronization
     SYNC_BUFFER: tl.constexpr,
     BUFFER_READY_SIGNAL_ID: tl.constexpr,
+    # Per-peer block counts for topology-aware scheduling (optional)
+    per_peer_blocks_ptr,
+    HAS_PER_PEER_BLOCKS: tl.constexpr,
 ):
     """
     Device-initiated AlltoAllv Dynamic kernel.
@@ -366,9 +395,10 @@ def _device_alltoallv_dynamic_kernel(
 
     Args:
         dst_win_ptr: TorchComms device window handle for destination
-        src_base_ptr: Base pointer of registered source buffer
-        src_size: Size of source buffer in bytes
-        src_nccl_win: NCCL window handle for source buffer
+        src_registered_buf: Device pointer to RegisteredBuffer struct
+                           (from register_local_buffer()). Passed directly to
+                           put_block_direct / put_warp_chunked_direct which
+                           read base_ptr from the struct internally.
         send_offsets_ptr: GPU tensor [world_size] - byte offsets into src
         send_sizes_ptr: GPU tensor [world_size] - bytes to send per peer
         recv_offsets_ptr: GPU tensor [world_size] - byte offsets into local dst
@@ -447,8 +477,14 @@ def _device_alltoallv_dynamic_kernel(
                 peer_recv_size = tl.load(recv_sizes_ptr + recv_peer)
                 if peer_recv_size > 0:
                     # Wait for monotonically increasing signal value.
-                    # Each iteration signals BLOCKS_PER_PEER * (iteration + 1).
-                    expected_signal = BLOCKS_PER_PEER * (iteration + 1)
+                    # The sender signals actual_bpp * (iteration + 1).
+                    # In symmetric topology, per_peer_blocks[recv_peer] equals
+                    # the sender's bpp for this rank.
+                    if HAS_PER_PEER_BLOCKS:
+                        sender_bpp = tl.load(per_peer_blocks_ptr + recv_peer)
+                    else:
+                        sender_bpp = BLOCKS_PER_PEER
+                    expected_signal = sender_bpp * (iteration + 1)
                     wait_signal_from(dst_win_ptr, recv_peer, signal_id, expected_signal)
 
         return
@@ -461,6 +497,16 @@ def _device_alltoallv_dynamic_kernel(
     # Skip if peer is out of range (grid may be larger than world_size)
     if peer >= world_size:
         return
+
+    # Per-peer block masking: IB peers may use fewer blocks than NVL peers.
+    # BLOCKS_PER_PEER is the constexpr upper bound; actual_bpp is the real
+    # count for this peer. Excess blocks early-return.
+    if HAS_PER_PEER_BLOCKS:
+        actual_bpp = tl.load(per_peer_blocks_ptr + peer)
+        if block_idx >= actual_bpp:
+            return
+    else:
+        actual_bpp = BLOCKS_PER_PEER
 
     # NOTE: No counter reset here. Counters grow monotonically with each
     # iteration to avoid race conditions from non-deterministic CUDA block
@@ -497,9 +543,9 @@ def _device_alltoallv_dynamic_kernel(
     # pressure on the hot memcpy path.
     if peer == my_rank and send_size > 0:
         dst_offset = tl.load(recv_offsets_ptr + my_rank)
-        block_bytes = send_size // BLOCKS_PER_PEER
+        block_bytes = send_size // actual_bpp
         block_start_bytes = block_bytes * block_idx
-        if block_idx == BLOCKS_PER_PEER - 1:
+        if block_idx == actual_bpp - 1:
             block_bytes = send_size - block_start_bytes
         if block_bytes > 0:
             self_copy_block(
@@ -513,11 +559,11 @@ def _device_alltoallv_dynamic_kernel(
     # Phase 1: Send data to peer (skip self and zero-length messages).
     # Send blocks NEVER call wait_signal_from — they run uninterrupted.
     if peer != my_rank and send_size > 0:
-        # Split send_size across BLOCKS_PER_PEER blocks.
-        block_portion = send_size // BLOCKS_PER_PEER
+        # Split send_size across actual_bpp blocks for this peer.
+        block_portion = send_size // actual_bpp
         block_start = block_portion * block_idx
         # Last block absorbs any remainder bytes from integer division
-        if block_idx == BLOCKS_PER_PEER - 1:
+        if block_idx == actual_bpp - 1:
             block_portion = send_size - block_start
 
         if block_portion > 0:
@@ -533,7 +579,7 @@ def _device_alltoallv_dynamic_kernel(
                 put_block_direct(
                     dst_win_ptr,
                     dst_offset + block_start,
-                    src_nccl_win,
+                    src_registered_buf,
                     send_offset + block_start,
                     peer,
                     block_portion,
@@ -542,7 +588,7 @@ def _device_alltoallv_dynamic_kernel(
                 put_warp_chunked_direct(
                     dst_win_ptr,
                     dst_offset + block_start,
-                    src_nccl_win,
+                    src_registered_buf,
                     send_offset + block_start,
                     peer,
                     block_portion,
@@ -556,18 +602,18 @@ def _device_alltoallv_dynamic_kernel(
             # expected value of BLOCKS_PER_PEER * (iteration + 1).
             flush_block(dst_win_ptr)
             if SYNC_BUFFER:
-                if BLOCKS_PER_PEER == 1:
-                    # Add BLOCKS_PER_PEER to signal, making cumulative value = BLOCKS_PER_PEER * (iteration + 1)
-                    signal_block(dst_win_ptr, peer, signal_id, BLOCKS_PER_PEER)
+                if actual_bpp == 1:
+                    # Add actual_bpp to signal, making cumulative value = actual_bpp * (iteration + 1)
+                    signal_block(dst_win_ptr, peer, signal_id, actual_bpp)
                 else:
                     # Atomically increment counter. Last block to complete signals.
-                    # Counter grows monotonically: iteration 0 ends at BLOCKS_PER_PEER,
-                    # iteration 1 ends at 2*BLOCKS_PER_PEER, etc.
+                    # Counter grows monotonically: iteration 0 ends at actual_bpp,
+                    # iteration 1 ends at 2*actual_bpp, etc.
                     old = tl.atomic_add(completion_counters_ptr + peer, 1)
-                    expected_count = BLOCKS_PER_PEER * (iteration + 1)
+                    expected_count = actual_bpp * (iteration + 1)
                     if old + 1 == expected_count:
-                        # Add BLOCKS_PER_PEER to signal, making cumulative value = BLOCKS_PER_PEER * (iteration + 1)
-                        signal_block(dst_win_ptr, peer, signal_id, BLOCKS_PER_PEER)
+                        # Add actual_bpp to signal, making cumulative value = actual_bpp * (iteration + 1)
+                        signal_block(dst_win_ptr, peer, signal_id, actual_bpp)
 
 
 def exchange_offsets(
@@ -598,55 +644,14 @@ def exchange_offsets(
     return remote_write_offsets
 
 
-def auto_tune_alltoallv_params(
-    max_msg_size_bytes: int,
-) -> dict:
-    """
-    Select optimal kernel parameters based on maximum per-peer message size.
-
-    Based on benchmark data across message sizes, the optimal configuration is:
-    - ≤1KB: 1 block/peer, 4 warps (Gw4)
-    - >1KB, ≤4KB: 1 block/peer, 8 warps (Gw8)
-    - >4KB, ≤8KB: 1 block/peer, 16 warps (Gw16)
-    - >8KB, ≤16KB: 1 block/peer, 32 warps (Gw32)
-    - >16KB, ≤256KB: 8 blocks/peer, 16 warps (GB8)
-    - >256KB: 16 blocks/peer, 16 warps, 64KB chunks (GB16c64)
-
-    Benchmark sweep (1MB-16MB) confirmed GB16c64 is consistently the best
-    config across all large message sizes.
-
-    Thread count (num_warps) rationale:
-    - Small messages (<4KB): fewer warps (4-8) reduce launch overhead
-    - Medium messages (4KB-64KB): moderate warps (16) balance occupancy
-    - Large messages (>64KB): more warps (32) maximize memory bandwidth
-    - Multi-block (>128KB): 16 warps/block with multiple blocks for parallelism
-
-    Args:
-        max_msg_size_bytes: Maximum per-peer message size in bytes.
-
-    Returns:
-        dict with keys: blocks_per_peer, num_warps, chunk_size
-    """
-    if max_msg_size_bytes <= 1 * 1024:
-        return {"blocks_per_peer": 1, "num_warps": 4, "chunk_size": 64 * 1024}
-    if max_msg_size_bytes <= 2 * 1024:
-        return {"blocks_per_peer": 1, "num_warps": 8, "chunk_size": 64 * 1024}
-    elif max_msg_size_bytes <= 4 * 1024:
-        return {"blocks_per_peer": 1, "num_warps": 8, "chunk_size": 64 * 1024}
-    elif max_msg_size_bytes <= 8 * 1024:
-        return {"blocks_per_peer": 1, "num_warps": 16, "chunk_size": 64 * 1024}
-    elif max_msg_size_bytes <= 16 * 1024:
-        return {"blocks_per_peer": 1, "num_warps": 16, "chunk_size": 64 * 1024}
-    elif max_msg_size_bytes <= 32 * 1024:
-        return {"blocks_per_peer": 1, "num_warps": 16, "chunk_size": 64 * 1024}
-    elif max_msg_size_bytes <= 64 * 1024:
-        return {"blocks_per_peer": 1, "num_warps": 32, "chunk_size": 64 * 1024}
-    elif max_msg_size_bytes <= 128 * 1024:
-        return {"blocks_per_peer": 8, "num_warps": 16, "chunk_size": 64 * 1024}
-    elif max_msg_size_bytes <= 256 * 1024:
-        return {"blocks_per_peer": 8, "num_warps": 16, "chunk_size": 64 * 1024}
-    else:
-        return {"blocks_per_peer": 16, "num_warps": 16, "chunk_size": 64 * 1024}
+# Re-export tuning functions from auto_tune_config (pure Python, no torch/triton deps).
+# This preserves all existing import paths while keeping the tuning logic in a
+# lightweight module that unit tests can import without GPU runtime side effects.
+from comms.pipes.collectives.triton.auto_tune_config import (  # noqa: F401
+    _tune_for_ib,
+    _tune_for_nvl,
+    auto_tune_alltoallv_params,
+)
 
 
 def device_alltoallv_dynamic(
@@ -658,7 +663,7 @@ def device_alltoallv_dynamic(
     local_recv_slot_offsets: torch.Tensor,
     remote_write_offsets: torch.Tensor,
     dev_win_ptr: int,
-    src_info: tuple,
+    src_info: int,
     my_rank: int,
     world_size: int,
     num_warps: int = 16,
@@ -666,6 +671,7 @@ def device_alltoallv_dynamic(
     chunk_size: int = 64 * 1024,
     auto_tune: bool = False,
     sync_buffer: bool = True,
+    per_peer_blocks: "torch.Tensor | None" = None,
 ) -> None:
     """
     Perform device-initiated AlltoAllv with dynamic per-rank counts.
@@ -738,7 +744,7 @@ def device_alltoallv_dynamic(
         >>> # Cleanup
         >>> deregister_local_buffer(src_info, window)
     """
-    src_base_ptr, src_size, src_nccl_win = src_info
+    src_registered_buf = src_info
 
     # Get internal iteration tensor (cached per device/world_size).
     # This is managed internally - users don't need to create or track it.
@@ -773,17 +779,21 @@ def device_alltoallv_dynamic(
     if blocks_per_peer > 1:
         # Reset each peer's counter using a GIN-safe Triton kernel that
         # reads iteration from GPU memory.  This is CUDA graph compatible.
+        # When per_peer_blocks is provided, each counter is reset to its
+        # own per_peer_blocks[i] * iteration (not the uniform max).
         _fill_completion_counters_from_iteration(
-            completion_counters, iteration_tensor, blocks_per_peer, world_size
+            completion_counters,
+            iteration_tensor,
+            blocks_per_peer,
+            world_size,
+            per_peer_blocks=per_peer_blocks,
         )
 
     grid = (world_size * blocks_per_peer + world_size,)
 
     _device_alltoallv_dynamic_kernel[grid](
         dev_win_ptr,
-        src_base_ptr,
-        src_size,
-        src_nccl_win,
+        src_registered_buf,
         send_buf,
         recv_buf,
         send_offsets,
@@ -807,6 +817,9 @@ def device_alltoallv_dynamic(
         # Sync buffer mode for buffer-ready synchronization
         SYNC_BUFFER=sync_buffer,
         BUFFER_READY_SIGNAL_ID=1,  # Use signal_id=1 for BUFFER_READY (signal_id=0 is DATA_COMPLETE)
+        # Per-peer block counts for topology-aware scheduling
+        per_peer_blocks_ptr=per_peer_blocks,
+        HAS_PER_PEER_BLOCKS=per_peer_blocks is not None,
     )
 
     # Auto-increment iteration counter on GPU.

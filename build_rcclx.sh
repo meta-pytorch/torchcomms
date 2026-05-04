@@ -25,6 +25,7 @@ function do_cmake_build() {
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
     -DCMAKE_CXX_STANDARD=20 \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.22 \
+    -DCMAKE_CXX_FLAGS="-DFMT_HEADER_ONLY=1" \
     $extra_flags \
     -S "${source_dir}"
   ninja
@@ -107,7 +108,7 @@ function build_boost() {
   export LDFLAGS="-Wl,--allow-shlib-undefined"
   pushd "$library_name"
   ./bootstrap.sh --prefix="$CMAKE_PREFIX_PATH" --libdir="$CMAKE_PREFIX_PATH/$LIB_SUFFIX" --without-libraries=python --without-icu
-  ./b2 -q cxxflags=-fPIC cflags=-fPIC install
+  ./b2 -q cxxflags=-fPIC cflags=-fPIC pch=off install
   popd
 }
 
@@ -294,11 +295,11 @@ THRIFT_SERVICE_LDFLAGS=(
   "-l:libxxhash.a"
 )
 THIRD_PARTY_LDFLAGS+="${THRIFT_SERVICE_LDFLAGS[*]} "
-THIRD_PARTY_LDFLAGS+="$(pkg-config --libs --static libfolly) "
+THIRD_PARTY_LDFLAGS+="$(pkg-config --libs --static libfolly | sed 's/-lfmt\b//g') "
 if [[ -z "${USE_SYSTEM_LIBS}" ]]; then
-  THIRD_PARTY_LDFLAGS+="-lglog -lgflags -l:libboost_context.a -l:libfmt.a -l:libssl.a -l:libcrypto.a"
+  THIRD_PARTY_LDFLAGS+="-lglog -lgflags -l:libboost_context.a -l:libssl.a -l:libcrypto.a"
 else
-  THIRD_PARTY_LDFLAGS+="-lglog -lgflags -lboost_context -lfmt -lssl -lcrypto"
+  THIRD_PARTY_LDFLAGS+="-lglog -lgflags -lboost_context -lssl -lcrypto"
 fi
 
 echo "$THIRD_PARTY_LDFLAGS"

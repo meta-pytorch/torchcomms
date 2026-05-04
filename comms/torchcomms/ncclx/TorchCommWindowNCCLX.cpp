@@ -320,6 +320,7 @@ c10::intrusive_ptr<TorchWork> TorchCommWindowNCCLX<Backend>::wait_signal(
 template <typename Backend>
 std::shared_ptr<TorchCommWindowAttr> TorchCommWindowNCCLX<Backend>::get_attr(
     int peerRank) {
+#ifdef NCCL_RMA_SUPPORTED
   checkWindowAndThrow();
   NcclxWindowAttr nccl_attr_raw = nullptr;
   CHECK_EQ(
@@ -343,6 +344,10 @@ std::shared_ptr<TorchCommWindowAttr> TorchCommWindowNCCLX<Backend>::get_attr(
       throw std::runtime_error("Unsupported NCCL window access type");
   }
   return attr;
+#else
+  throw std::runtime_error(
+      "Window attributes are not supported without NCCL_RMA_SUPPORTED");
+#endif
 }
 
 // =============================================================================
@@ -398,10 +403,7 @@ void TorchCommWindowNCCLX<Backend>::deregister_local_buffer(
   Backend::deregister_local_buffer(nccl_api_, nccl_comm_, buf);
 
   // Clear the caller's buffer to indicate it's no longer registered
-  buf.base_ptr = nullptr;
-  buf.size = 0;
-  buf.backend_window = nullptr;
-  buf.lkey = 0;
+  buf = RegisteredBuffer{};
 }
 
 template <typename Backend>
@@ -554,6 +556,26 @@ void* TorchCommWindowNCCLX<Backend>::get_nvlink_address(
 
   return outPtr;
 }
+
+template <typename Backend>
+void* TorchCommWindowNCCLX<Backend>::get_multimem_address(size_t offset) {
+  checkCommAndThrow();
+
+  if (nccl_orig_win_ == nullptr) {
+    throw std::runtime_error(
+        "[TorchCommWindowNCCLX]: NCCL orig window not initialized. "
+        "Call tensor_register first.");
+  }
+
+  void* outPtr = nullptr;
+  CHECK_EQ(
+      nccl_api_->winGetLsaMultimemDevicePointer(
+          nccl_orig_win_, offset, &outPtr),
+      ncclSuccess)
+      << "[TorchCommWindowNCCLX]: ncclGetLsaMultimemDevicePointer failed";
+
+  return outPtr;
+}
 #endif
 
 #endif // TORCHCOMMS_HAS_NCCL_DEVICE_API
@@ -615,11 +637,18 @@ void TorchCommWindowNCCLX<Backend>::checkWindowAndThrow() const {
 
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
 template class TorchCommWindowNCCLX<torchcomms::device::NCCLDeviceBackend>;
-#if defined(ENABLE_PIPES)
-template class TorchCommWindowNCCLX<torchcomms::device::PipesDeviceBackend>;
-#endif
 #else
 template class TorchCommWindowNCCLX<HostOnlyBackend>;
+#endif
+
+// Pipes instantiation is independent of the device API flag.
+// ENABLE_PIPES can be set without TORCHCOMMS_HAS_NCCL_DEVICE_API (e.g.,
+// NCCLX 2.27 CMake builds with ENABLE_PIPES=1). In that case, host-side
+// window operations (put, signal, wait_signal) work; device API methods
+// (get_device_window, register_local_buffer) fall back to the base class
+// default that throws "not yet supported".
+#if defined(ENABLE_PIPES)
+template class TorchCommWindowNCCLX<torchcomms::device::PipesDeviceBackend>;
 #endif
 
 } // namespace torch::comms

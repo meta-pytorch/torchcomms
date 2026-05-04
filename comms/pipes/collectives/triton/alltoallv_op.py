@@ -95,6 +95,7 @@ call. If the caller needs the data to persist beyond that point it must
 ``.clone()`` the output.
 """
 
+import os
 from typing import Any, Optional, TYPE_CHECKING, Union
 
 import torch
@@ -123,10 +124,16 @@ def _triton_copy_1d_kernel(src_ptr, dst_ptr, N, BLOCK_SIZE: tl.constexpr):
 
 
 @triton.jit
-def _sum_int64_kernel(input_ptr, output_ptr, N: tl.constexpr):
-    """GIN-safe kernel to compute sum of int64 tensor."""
-    offsets = tl.arange(0, N)
-    vals = tl.load(input_ptr + offsets)
+def _sum_int64_kernel(input_ptr, output_ptr, W, BLOCK_SIZE: tl.constexpr):
+    """GIN-safe kernel to compute sum of int64 tensor.
+
+    Uses BLOCK_SIZE (next power-of-2 of W) with masking to support
+    non-power-of-2 world sizes, matching the pattern used by
+    ``_prepare_alltoallv_kernel``.
+    """
+    offsets = tl.arange(0, BLOCK_SIZE)
+    mask = offsets < W
+    vals = tl.load(input_ptr + offsets, mask=mask, other=0)
     total = tl.sum(vals, axis=0)
     tl.store(output_ptr, total)
 
@@ -366,8 +373,10 @@ class AlltoallvOp:
         # Internal comms state (populated by setup()).
         self._window: Any = None
         self._dev_win_ptr: Optional[int] = None
-        self._src_info: Optional[tuple[int, int, int]] = None
+        self._src_info: Optional[int] = None
         self._remote_write_offsets: Optional[torch.Tensor] = None
+        self._per_peer_blocks: Optional[torch.Tensor] = None
+        self._peer_is_nvl: list[bool] = []
 
     # ------------------------------------------------------------------
     # Factory / caching
@@ -503,6 +512,31 @@ class AlltoallvOp:
         self._window.tensor_register(self.recv_buf)
         self.comm.barrier(False)
 
+        # Detect topology: classify peers as NVL or IB.
+        # Gated behind TRITON_ALLTOALLV_ENABLE_IB=1 — when disabled (default),
+        # all peers are treated as NVL and the kernel uses NVLink-only tuning.
+        self._peer_is_nvl = [True] * self.world_size  # default: all NVL
+        ib_enabled = os.environ.get("TRITON_ALLTOALLV_ENABLE_IB", "0") == "1"
+        if ib_enabled and hasattr(self._window, "get_nvlink_address"):
+            for peer in range(self.world_size):
+                if peer != self.rank:
+                    self._peer_is_nvl[peer] = self._window.get_nvlink_address(peer) != 0
+
+        # Re-tune with topology info for per-peer block counts.
+        worst_case_msg_bytes = self.max_input_tokens * self._bytes_per_token
+        params = auto_tune_alltoallv_params(worst_case_msg_bytes, self._peer_is_nvl)
+        self._blocks_per_peer = params["blocks_per_peer"]
+        self._num_warps = params["num_warps"]
+        self._chunk_size = params["chunk_size"]
+
+        # Build per_peer_blocks tensor if topology is mixed.
+        if params["per_peer_blocks"] is not None:
+            self._per_peer_blocks = torch.tensor(
+                params["per_peer_blocks"], dtype=torch.int32, device=self.device
+            )
+        else:
+            self._per_peer_blocks = None
+
         # get_device_window triggers ncclDevCommCreate (enables GIN).
         # When sync_buffer is enabled, allocate 2x signal slots:
         # signal_id=0 for DATA_COMPLETE, signal_id=1 for BUFFER_READY
@@ -523,14 +557,24 @@ class AlltoallvOp:
 
     def teardown(self) -> None:
         """Release comms resources and all buffers.  Safe to call multiple times."""
+        # Barrier ensures all ranks have completed their kernel launches
+        # before any rank deregisters buffers. Without this, fast ranks
+        # can deregister recv_buf (RDMA-unmap) while slow ranks' kernels
+        # are still writing to it via one-sided put operations, corrupting
+        # NCCL state and causing subsequent window lifecycles to hang.
+        if self._window is not None:
+            torch.cuda.synchronize()
+            self.comm.barrier(False)
         # First deregister comms buffers
         if self._src_info is not None:
-            self._window.deregister_local_buffer(*self._src_info)
+            self._window.deregister_local_buffer(self._src_info)
             self._src_info = None
         if self._window is not None:
             self._window.tensor_deregister()
             self._window = None
         self._dev_win_ptr = None
+        self._per_peer_blocks = None
+        self._peer_is_nvl = []
 
         # Release all GPU buffers to free memory immediately.
         # Without this, Python GC may defer collection and cause OOM.
@@ -912,6 +956,7 @@ class AlltoallvOp:
             num_warps=self._num_warps,
             chunk_size=self._chunk_size,
             sync_buffer=self.sync_buffer,
+            per_peer_blocks=self._per_peer_blocks,
         )
 
         # NOTE: Iteration counter is now managed internally by
@@ -943,8 +988,9 @@ class AlltoallvOp:
             _sum_int64_kernel[(1,)](
                 output_split_sizes,
                 self._total_tokens_buf,
+                self.world_size,
                 # pyre-fixme[6]: Triton constexpr accepts int at runtime
-                N=self.world_size,
+                BLOCK_SIZE=self._prep_block_size,
             )
             total_tokens = int(self._total_tokens_buf.item())
 

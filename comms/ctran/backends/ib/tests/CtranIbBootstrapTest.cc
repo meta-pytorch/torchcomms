@@ -140,7 +140,6 @@ std::unique_ptr<CtranIb> createCtranIb(
       rank, // Use rank as CUDA device identifier
       commHash,
       commDesc,
-      nullptr, // ctrlMgr
       false, // enableLocalFlush
       mode,
       qpServerAddr,
@@ -261,7 +260,6 @@ class CtranIbBootstrapTestBase : public ::testing::Test {
         rank, // Use rank as CUDA device identifier
         commHash,
         commDesc,
-        nullptr, // ctrlMgr
         false, // enableLocalFlush
         mode,
         qpServerAddr,

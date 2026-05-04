@@ -1,0 +1,21 @@
+PAPIINC = ..
+PAPILIB = ../libpapi.a
+CC = xlc
+CFLAGS = -I$(PAPIINC)
+LDFLAGS =  $(PAPILIB) -lpmapi
+LDFLAGS_PTHREAD =  $(PAPILIB) -lpthread -lpmapi
+
+TARGETS = PAPI_set_domain sprofile multiplex PAPI_state PAPI_reset PAPI_profil PAPI_perror PAPI_get_virt_cyc PAPI_get_real_cyc PAPI_get_opt PAPI_hw_info PAPI_get_executable_info PAPI_ipc PAPI_flops PAPI_flips PAPI_overflow PAPI_add_remove_event high_level PAPI_add_remove_events
+
+TARGETS_PTHREAD = locks_pthreads overflow_pthreads 
+
+all: $(TARGETS) $(TARGETS_PTHREAD)
+
+$(TARGETS):  $$@.c 
+	$(CC) $? -o $@ $(CFLAGS)  $(LDFLAGS)
+
+$(TARGETS_PTHREAD):  $$@.c 
+	$(CC) $? -o $@ $(CFLAGS)  $(LDFLAGS_PTHREAD)
+clean:
+	rm -f *.o $(TARGETS) $(TARGETS_PTHREAD)
+

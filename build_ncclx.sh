@@ -20,6 +20,7 @@ function do_cmake_build() {
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
     -DCMAKE_CXX_STANDARD=20 \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.22 \
+    -DCMAKE_CXX_FLAGS="-DFMT_HEADER_ONLY=1" \
     $extra_flags \
     -S "${source_dir}"
   ninja -j$(nproc)
@@ -337,10 +338,20 @@ THRIFT_SERVICE_LDFLAGS+=(
 )
 THIRD_PARTY_LDFLAGS+="${THRIFT_SERVICE_LDFLAGS[*]} "
 THIRD_PARTY_LDFLAGS+="$(pkg-config --libs --static libfolly) "
+# liburing: folly's cmake config declares this dependency but pkg-config omits
+# it. Add -luring if the system has liburing (folly uses io_uring for async I/O).
+if pkg-config --exists liburing 2>/dev/null; then
+  THIRD_PARTY_LDFLAGS+="-luring "
+fi
+# libfmt: NCCLX's own objects use FMT_HEADER_ONLY=1, but the prebuilt
+# folly/thrift static libs were built without it and contain unresolved
+# references to non-inline fmt::v9::detail symbols (is_printable,
+# thousands_sep_impl, locale_ref::get<std::locale>). The conda libfolly.pc
+# does not list fmt as a dep, so add -lfmt explicitly.
 if [[ -z "${USE_SYSTEM_LIBS}" ]]; then
-  THIRD_PARTY_LDFLAGS+="-l:libglog.a -l:libgflags.a -l:libboost_context.a -l:libfmt.a -l:libssl.a -l:libcrypto.a"
+  THIRD_PARTY_LDFLAGS+="-l:libglog.a -l:libgflags.a -l:libboost_context.a -l:libssl.a -l:libcrypto.a -l:libfmt.a"
 else
-  THIRD_PARTY_LDFLAGS+="-lglog -lgflags -lboost_context -lfmt -lssl -lcrypto"
+  THIRD_PARTY_LDFLAGS+="-lglog -lgflags -lboost_context -lssl -lcrypto -lfmt"
 fi
 
 echo "$THIRD_PARTY_LDFLAGS"
@@ -364,7 +375,7 @@ if [[ -z "${NVCC_GENCODE-}" ]]; then
             arch_gencode="$arch_gencode -gencode=arch=compute_90,code=sm_90"
         ;;
         "b200")
-            arch_gencode="$arch_gencode -gencode=arch=compute_100,code=sm_100"
+            arch_gencode="$arch_gencode -gencode=arch=compute_100a,code=sm_100a"
         ;;
         "b300")
             arch_gencode="$arch_gencode -gencode=arch=compute_103a,code=sm_103a"

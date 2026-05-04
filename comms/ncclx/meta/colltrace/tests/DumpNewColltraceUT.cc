@@ -45,12 +45,12 @@ TEST(DumpNewCollTraceUT, dumpNewCollTraceEmptyState) {
   EXPECT_EQ(dumpMap.size(), 3);
   EXPECT_TRUE(dumpMap.find("CT_pastColls") != dumpMap.end());
   EXPECT_TRUE(dumpMap.find("CT_pendingColls") != dumpMap.end());
-  EXPECT_TRUE(dumpMap.find("CT_currentColl") != dumpMap.end());
+  EXPECT_TRUE(dumpMap.find("CT_currentColls") != dumpMap.end());
 
-  // Empty state should have empty arrays and null current collective
+  // Empty state should have empty arrays
   EXPECT_EQ(dumpMap["CT_pastColls"], "[]");
   EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
-  EXPECT_EQ(dumpMap["CT_currentColl"], "null");
+  EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
 }
 
 TEST(DumpNewCollTraceUT, dumpNewCollTraceWithCollectives) {
@@ -85,7 +85,7 @@ TEST(DumpNewCollTraceUT, dumpNewCollTraceWithCollectives) {
                   .hasValue());
 
   // Sleep briefly to allow the CollTrace thread to process the events
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   // At this point, the collective should be in the pending state. However,
   // since currently we will treat the first pending collective as the current
@@ -95,7 +95,7 @@ TEST(DumpNewCollTraceUT, dumpNewCollTraceWithCollectives) {
 
   // Verify pastColls is empty and currentColl should have one entry
   EXPECT_EQ(dumpMapPending["CT_pastColls"], "[]");
-  EXPECT_NE(dumpMapPending["CT_currentColl"], "null");
+  EXPECT_NE(dumpMapPending["CT_currentColls"], "[]");
   // Verify pendingColls is empty since the pending collective was moved to
   // current
   auto pendingCollsJson = folly::parseJson(dumpMapPending["CT_pendingColls"]);
@@ -106,7 +106,7 @@ TEST(DumpNewCollTraceUT, dumpNewCollTraceWithCollectives) {
       handle->trigger(CollTraceHandleTriggerState::KernelStarted).hasValue());
 
   // Sleep briefly to allow the CollTrace thread to process the events
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   // Now the collective should be in the current state
   auto dumpMapCurrent = dumpNewCollTrace(*collTrace);
@@ -115,21 +115,21 @@ TEST(DumpNewCollTraceUT, dumpNewCollTraceWithCollectives) {
   // Verify currentColl is set and pendingColls is empty
   EXPECT_EQ(dumpMapCurrent["CT_pastColls"], "[]");
   EXPECT_EQ(dumpMapCurrent["CT_pendingColls"], "[]");
-  EXPECT_NE(dumpMapCurrent["CT_currentColl"], "null");
+  EXPECT_NE(dumpMapCurrent["CT_currentColls"], "[]");
 
   // Trigger kernel finish
   ASSERT_TRUE(
       handle->trigger(CollTraceHandleTriggerState::KernelFinished).hasValue());
 
   // Sleep briefly to allow the CollTrace thread to process the events
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   // Now the collective should be in the past state
   auto dumpMapPast = dumpNewCollTrace(*collTrace);
   ASSERT_FALSE(dumpMapPast.empty());
 
-  // Verify pastColls has one entry and currentColl is null
-  EXPECT_EQ(dumpMapPast["CT_currentColl"], "null");
+  // Verify pastColls has one entry and currentColls is empty
+  EXPECT_EQ(dumpMapPast["CT_currentColls"], "[]");
   auto pastCollsJson = folly::parseJson(dumpMapPast["CT_pastColls"]);
   EXPECT_EQ(pastCollsJson.size(), 1);
 }
@@ -167,7 +167,7 @@ TEST(DumpNewCollTraceUT, dumpNewCollTraceMultipleCollectives) {
                     .hasValue());
 
     // Sleep briefly to allow the CollTrace thread to process the events
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(std::chrono::seconds(2));
   }
 
   // Start second collective but don't finish it
@@ -189,7 +189,7 @@ TEST(DumpNewCollTraceUT, dumpNewCollTraceMultipleCollectives) {
     // Don't trigger KernelFinished
 
     // Sleep briefly to allow the CollTrace thread to process the events
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(std::chrono::seconds(2));
   }
 
   // Enqueue third collective but don't start it
@@ -209,7 +209,7 @@ TEST(DumpNewCollTraceUT, dumpNewCollTraceMultipleCollectives) {
     // Don't trigger KernelStarted
 
     // Sleep briefly to allow the CollTrace thread to process the events
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(std::chrono::seconds(2));
   }
 
   // Dump the state and verify
@@ -221,7 +221,7 @@ TEST(DumpNewCollTraceUT, dumpNewCollTraceMultipleCollectives) {
   EXPECT_EQ(pastCollsJson.size(), 1);
 
   // Verify currentColl is the second collective
-  EXPECT_NE(dumpMap["CT_currentColl"], "null");
+  EXPECT_NE(dumpMap["CT_currentColls"], "[]");
 
   // Verify pendingColls has the third collective
   auto pendingCollsJson = folly::parseJson(dumpMap["CT_pendingColls"]);

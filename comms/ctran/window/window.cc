@@ -2,6 +2,7 @@
 
 #include <memory>
 
+#include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/utils/Alloc.h"
@@ -62,14 +63,29 @@ commResult_t CtranWin::exchange() {
     dataSegHdl = baseSegHdl;
     dataRegHdl = baseRegHdl;
   } else {
-    // if data buffer is provided by user, we need to register it
-    FB_COMMCHECK(mapper->regMem(
+    // User-provided buffer: use globalRegisterWithPtr to cache and register
+    // multi-segment buffers (e.g., expandable segments) that mapper->regMem
+    // cannot handle (it asserts single-segment). forceReg=true ensures
+    // registration happens immediately; ncclManaged=true enables NVL IPC
+    // handle creation for cudaMalloc buffers. searchRegHandle then finds the
+    // RegElem via fast path for use in allGatherCtrl handle exchange.
+    FB_COMMCHECK(
+        ctran::globalRegisterWithPtr(
+            winDataPtr,
+            dataBytes,
+            true /* forceReg */,
+            true /* ncclManaged */));
+    bool dynamicRegist = false;
+    FB_COMMCHECK(mapper->searchRegHandle(
+        winDataPtr, dataBytes, &dataRegHdl, &dynamicRegist));
+    // globalRegisterWithPtr with forceReg=true guarantees the RegElem is
+    // already created, so searchRegHandle should find it via fast path
+    // (not dynamic registration).
+    FB_CHECKABORT(
+        !dynamicRegist,
+        "Unexpected dynamic registration for window data buffer {} len {}",
         winDataPtr,
-        dataBytes,
-        &(dataSegHdl),
-        true,
-        true, /* NCCL managed buffer */
-        &dataRegHdl));
+        dataBytes);
   }
 
   // Exchange each rank's data buffer size via bootstrap allGather
@@ -140,6 +156,22 @@ commResult_t CtranWin::exchange() {
   return commSuccess;
 }
 
+bool CtranWin::allGatherPSupported(CtranComm* comm) {
+  if (!ctranInitialized(comm)) {
+    return false;
+  }
+  auto statex = comm->statex_.get();
+  auto mapper = comm->ctran_->mapper.get();
+  const auto myRank = statex->rank();
+  for (int rank = 0; rank < statex->nRanks(); rank++) {
+    if (rank != myRank &&
+        mapper->getBackend(rank) == CtranMapperBackend::UNSET) {
+      return false;
+    }
+  }
+  return true;
+}
+
 commResult_t CtranWin::allocate(void* userBufPtr) {
   auto statex = comm->statex_.get();
   const auto myRank = statex->rank();
@@ -205,7 +237,7 @@ commResult_t CtranWin::allocate(void* userBufPtr) {
   return commSuccess;
 }
 
-commResult_t CtranWin::free() {
+commResult_t CtranWin::free(bool skipBarrier) {
   auto statex = comm->statex_.get();
   if (statex == nullptr) {
     FB_ERRORRETURN(commInternalError, "Empty communicator statex.");
@@ -223,11 +255,14 @@ commResult_t CtranWin::free() {
       statex->commHash());
 
   // A barrier among ranks before freeing window to prevent peer ranks accessing
-  // the window after it is freed.
+  // the window after it is freed. Skipped when called from deferred cleanup at
+  // comm destruction (all communication is already finalized).
   // NOTE: the window object is not aware of CUDA streams, users need to
   // ensure the host process waits for CUDA streams where put/wait operations
   // are launched.
-  FB_COMMCHECK(mapper->barrier());
+  if (!skipBarrier) {
+    FB_COMMCHECK(mapper->barrier());
+  }
 
   auto nRanks = statex->nRanks();
 
@@ -254,15 +289,19 @@ commResult_t CtranWin::free() {
   // deregister remote buf
   for (auto i = 0; i < nRanks; ++i) {
     if (i != statex->rank()) {
-      // the signal buffer is always allocated by window internally, so we only
-      // need to dereg using the signalRkey
       FB_COMMCHECK(mapper->deregRemReg(&remWinInfo[i].signalRkey));
     }
   }
 
-  // if data buffer is provided by user, we need to dereg the data buffer
+  // User-provided data buffer: deregister locally without remote IPC
+  // notifications. Remove from export cache first (so mapper destructor
+  // won't access the freed RegElem), then free segments locally, then
+  // release locally-imported remote handles.
   if (!allocDataBuf_) {
-    deregMemIfNotNull(dataSegHdl);
+    mapper->removeFromExportCache(dataRegHdl);
+    FB_COMMCHECK(
+        ctran::globalDeregisterWithPtr(
+            winDataPtr, dataBytes, true /* skipRemRelease */));
     for (auto i = 0; i < nRanks; ++i) {
       if (i != statex->rank()) {
         FB_COMMCHECK(mapper->deregRemReg(&remWinInfo[i].dataRkey));

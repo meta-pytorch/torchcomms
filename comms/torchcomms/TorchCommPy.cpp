@@ -9,10 +9,13 @@
 #include <torch/csrc/utils/pybind.h>
 
 #include "comms/torchcomms/BackendWrapper.hpp"
+#include "comms/torchcomms/PyTorchCommBackend.hpp"
 #include "comms/torchcomms/TorchComm.hpp"
+#include "comms/torchcomms/TorchCommFactory.hpp"
 #include "comms/torchcomms/TorchWork.hpp"
 
-// Forward declaration for flight recorder submodule init
+// Forward declarations for hook submodule init
+void init_clog_hook_bindings(py::module_& m);
 void init_flight_recorder_bindings(py::module_& m);
 
 namespace py = pybind11;
@@ -48,7 +51,7 @@ auto py_opaque_class(py::module_& m, const char* name, Extra&&... extra) {
   }
 }
 
-PYBIND11_MODULE(_comms, m) {
+PYBIND11_MODULE(_comms, m, py::mod_gil_not_used()) {
   m.doc() = "Python bindings for TorchComm";
 
   // Bind RedOpType enum
@@ -251,7 +254,55 @@ completed before proceeding.
 Raises:
     RuntimeError: If not implemented by the backend.
           )",
-          py::call_guard<py::gil_scoped_release>());
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "_set_status",
+          [](TorchWork& self, TorchWork::WorkStatus status) {
+            auto* py_work = dynamic_cast<PyTorchWork*>(&self);
+            if (py_work) {
+              py_work->publicSetStatus(status);
+            } else {
+              throw std::runtime_error(
+                  "_set_status is only supported on Python-created work objects");
+            }
+          },
+          R"(
+Set the status of this work object.
+
+This is intended for use by Python backend implementations that return
+custom work objects. Call this to update the work status (e.g., to COMPLETED
+after the operation finishes).
+
+Args:
+    status (WorkStatus): The new status to set.
+          )",
+          py::arg("status"));
+
+  py::enum_<TorchWork::WorkStatus>(
+      m,
+      "WorkStatus",
+      R"(
+Status of a TorchWork object.
+
+Used to track the lifecycle of an asynchronous operation.
+      )")
+      .value(
+          "NOT_STARTED",
+          TorchWork::WorkStatus::NOT_STARTED,
+          "Work has not started yet.")
+      .value(
+          "INPROGRESS",
+          TorchWork::WorkStatus::INPROGRESS,
+          "Work is still in progress.")
+      .value(
+          "COMPLETED",
+          TorchWork::WorkStatus::COMPLETED,
+          "Work has completed successfully.")
+      .value("TIMEDOUT", TorchWork::WorkStatus::TIMEDOUT, "Work has timed out.")
+      .value(
+          "ERROR",
+          TorchWork::WorkStatus::ERROR,
+          "Work has encountered an error.");
 
   py::enum_<TorchCommWinAccessType>(
       m, "TorchCommWinAccessType", "Window attribute.")
@@ -300,77 +351,213 @@ unregistered when the handle is garbage collected if remove() was not called.
           &RemovableHandle::remove,
           "Unregister the hook associated with this handle.");
 
-  // Bind PreHookArgs struct for pre-hook callbacks
-  py::class_<TorchComm::PreHookArgs>(
-      m,
-      "PreHookArgs",
-      R"(
-Arguments passed to pre-hook callbacks.
+  // -- Python-only pre-hook args structs (value types, no references) --
+  // These mirror the C++ PreHookArgs but with value members so pybind can
+  // handle them. Constructed in the hook registration lambda from the C++
+  // reference-based args.
 
-Pre-hooks are called before each collective operation starts.
-      )")
-      .def_readonly("name", &TorchComm::PreHookArgs::name, "Operation name")
-      .def_readonly(
-          "async_op",
-          &TorchComm::PreHookArgs::async_op,
-          "Whether the operation is asynchronous")
-      .def_readonly(
-          "root", &TorchComm::PreHookArgs::root, "Root rank for rooted ops")
-      .def_readonly(
-          "op_id",
-          &TorchComm::PreHookArgs::op_id,
-          "Unique operation ID for correlation with post-hook")
-      .def_property_readonly(
-          "input_tensor",
-          [](const TorchComm::PreHookArgs& self) -> py::object {
-            if (self.input_tensor) {
-              return py::cast(*self.input_tensor);
-            }
-            return py::none();
-          },
-          "Input tensor for the operation, or None if not applicable")
-      .def_property_readonly(
-          "output_tensor",
-          [](const TorchComm::PreHookArgs& self) -> py::object {
-            if (self.output_tensor) {
-              return py::cast(*self.output_tensor);
-            }
-            return py::none();
-          },
-          "Output tensor for the operation, or None if not applicable")
-      .def_property_readonly(
-          "input_tensors",
-          [](const TorchComm::PreHookArgs& self) -> py::object {
-            if (self.input_tensors) {
-              return py::cast(*self.input_tensors);
-            }
-            return py::none();
-          },
-          "Input tensor list for the operation, or None if not applicable")
-      .def_property_readonly(
-          "output_tensors",
-          [](const TorchComm::PreHookArgs& self) -> py::object {
-            if (self.output_tensors) {
-              return py::cast(*self.output_tensors);
-            }
-            return py::none();
-          },
-          "Output tensor list for the operation, or None if not applicable");
+  // In-place collectives
+  struct PySendPreHookArgs {
+    at::Tensor tensor;
+    int peer;
+    bool async_op;
+  };
+  struct PyRecvPreHookArgs {
+    at::Tensor tensor;
+    int peer;
+    bool async_op;
+  };
+  struct PyBroadcastPreHookArgs {
+    at::Tensor tensor;
+    int root;
+    bool async_op;
+  };
+  struct PyAllReducePreHookArgs {
+    at::Tensor tensor;
+    bool async_op;
+  };
+  struct PyReducePreHookArgs {
+    at::Tensor tensor;
+    int root;
+    bool async_op;
+  };
+  // Distinct input/output
+  struct PyAllGatherPreHookArgs {
+    at::Tensor input;
+    std::vector<at::Tensor> output;
+    bool async_op;
+  };
+  struct PyAllGatherVPreHookArgs {
+    at::Tensor input;
+    std::vector<at::Tensor> output;
+    bool async_op;
+  };
+  struct PyAllGatherSinglePreHookArgs {
+    at::Tensor input;
+    at::Tensor output;
+    bool async_op;
+  };
+  struct PyReduceScatterPreHookArgs {
+    std::vector<at::Tensor> input;
+    at::Tensor output;
+    bool async_op;
+  };
+  struct PyReduceScatterVPreHookArgs {
+    std::vector<at::Tensor> input;
+    at::Tensor output;
+    bool async_op;
+  };
+  struct PyReduceScatterSinglePreHookArgs {
+    at::Tensor input;
+    at::Tensor output;
+    bool async_op;
+  };
+  struct PyAllToAllSinglePreHookArgs {
+    at::Tensor input;
+    at::Tensor output;
+    bool async_op;
+  };
+  struct PyAllToAllVSinglePreHookArgs {
+    at::Tensor input;
+    at::Tensor output;
+    std::vector<uint64_t> input_split_sizes;
+    std::vector<uint64_t> output_split_sizes;
+    bool async_op;
+  };
+  struct PyAllToAllPreHookArgs {
+    std::vector<at::Tensor> input;
+    std::vector<at::Tensor> output;
+    bool async_op;
+  };
+  struct PyBarrierPreHookArgs {
+    bool async_op;
+  };
+  struct PyScatterPreHookArgs {
+    at::Tensor output;
+    std::vector<at::Tensor> input;
+    int root;
+    bool async_op;
+  };
+  struct PyGatherPreHookArgs {
+    at::Tensor input;
+    std::vector<at::Tensor> output;
+    int root;
+    bool async_op;
+  };
+  struct PyGatherSinglePreHookArgs {
+    at::Tensor input;
+    at::Tensor output;
+    int root;
+    bool async_op;
+  };
+  struct PySplitPreHookArgs {
+    std::vector<int> ranks;
+    std::string name;
+  };
+  struct PyNewWindowPreHookArgs {};
+  struct PyBatchOpIssuePreHookArgs {
+    size_t num_ops;
+    bool async_op;
+  };
 
-  // Bind PostHookArgs struct for post-hook callbacks
-  py::class_<TorchComm::PostHookArgs>(
-      m,
-      "PostHookArgs",
-      R"(
-Arguments passed to post-hook callbacks.
+  // Post-hook args (value types)
+  struct PyCollectivePostHookArgs {};
+  struct PySplitPostHookArgs {};
+  struct PyNewWindowPostHookArgs {};
+  struct PyBatchOpIssuePostHookArgs {};
 
-Post-hooks are called after each collective operation completes.
-      )")
-      .def_readonly("name", &TorchComm::PostHookArgs::name, "Operation name")
+  // Register pre-hook arg types
+  py::class_<PySendPreHookArgs>(m, "SendPreHookArgs")
+      .def_readonly("tensor", &PySendPreHookArgs::tensor)
+      .def_readonly("peer", &PySendPreHookArgs::peer)
+      .def_readonly("async_op", &PySendPreHookArgs::async_op);
+  py::class_<PyRecvPreHookArgs>(m, "RecvPreHookArgs")
+      .def_readonly("tensor", &PyRecvPreHookArgs::tensor)
+      .def_readonly("peer", &PyRecvPreHookArgs::peer)
+      .def_readonly("async_op", &PyRecvPreHookArgs::async_op);
+  py::class_<PyBroadcastPreHookArgs>(m, "BroadcastPreHookArgs")
+      .def_readonly("tensor", &PyBroadcastPreHookArgs::tensor)
+      .def_readonly("root", &PyBroadcastPreHookArgs::root)
+      .def_readonly("async_op", &PyBroadcastPreHookArgs::async_op);
+  py::class_<PyAllReducePreHookArgs>(m, "AllReducePreHookArgs")
+      .def_readonly("tensor", &PyAllReducePreHookArgs::tensor)
+      .def_readonly("async_op", &PyAllReducePreHookArgs::async_op);
+  py::class_<PyReducePreHookArgs>(m, "ReducePreHookArgs")
+      .def_readonly("tensor", &PyReducePreHookArgs::tensor)
+      .def_readonly("root", &PyReducePreHookArgs::root)
+      .def_readonly("async_op", &PyReducePreHookArgs::async_op);
+  py::class_<PyAllGatherPreHookArgs>(m, "AllGatherPreHookArgs")
+      .def_readonly("input", &PyAllGatherPreHookArgs::input)
+      .def_readonly("output", &PyAllGatherPreHookArgs::output)
+      .def_readonly("async_op", &PyAllGatherPreHookArgs::async_op);
+  py::class_<PyAllGatherVPreHookArgs>(m, "AllGatherVPreHookArgs")
+      .def_readonly("input", &PyAllGatherVPreHookArgs::input)
+      .def_readonly("output", &PyAllGatherVPreHookArgs::output)
+      .def_readonly("async_op", &PyAllGatherVPreHookArgs::async_op);
+  py::class_<PyAllGatherSinglePreHookArgs>(m, "AllGatherSinglePreHookArgs")
+      .def_readonly("input", &PyAllGatherSinglePreHookArgs::input)
+      .def_readonly("output", &PyAllGatherSinglePreHookArgs::output)
+      .def_readonly("async_op", &PyAllGatherSinglePreHookArgs::async_op);
+  py::class_<PyReduceScatterPreHookArgs>(m, "ReduceScatterPreHookArgs")
+      .def_readonly("input", &PyReduceScatterPreHookArgs::input)
+      .def_readonly("output", &PyReduceScatterPreHookArgs::output)
+      .def_readonly("async_op", &PyReduceScatterPreHookArgs::async_op);
+  py::class_<PyReduceScatterVPreHookArgs>(m, "ReduceScatterVPreHookArgs")
+      .def_readonly("input", &PyReduceScatterVPreHookArgs::input)
+      .def_readonly("output", &PyReduceScatterVPreHookArgs::output)
+      .def_readonly("async_op", &PyReduceScatterVPreHookArgs::async_op);
+  py::class_<PyReduceScatterSinglePreHookArgs>(
+      m, "ReduceScatterSinglePreHookArgs")
+      .def_readonly("input", &PyReduceScatterSinglePreHookArgs::input)
+      .def_readonly("output", &PyReduceScatterSinglePreHookArgs::output)
+      .def_readonly("async_op", &PyReduceScatterSinglePreHookArgs::async_op);
+  py::class_<PyAllToAllSinglePreHookArgs>(m, "AllToAllSinglePreHookArgs")
+      .def_readonly("input", &PyAllToAllSinglePreHookArgs::input)
+      .def_readonly("output", &PyAllToAllSinglePreHookArgs::output)
+      .def_readonly("async_op", &PyAllToAllSinglePreHookArgs::async_op);
+  py::class_<PyAllToAllVSinglePreHookArgs>(m, "AllToAllVSinglePreHookArgs")
+      .def_readonly("input", &PyAllToAllVSinglePreHookArgs::input)
+      .def_readonly("output", &PyAllToAllVSinglePreHookArgs::output)
       .def_readonly(
-          "op_id",
-          &TorchComm::PostHookArgs::op_id,
-          "Unique operation ID for correlation with pre-hook");
+          "input_split_sizes", &PyAllToAllVSinglePreHookArgs::input_split_sizes)
+      .def_readonly(
+          "output_split_sizes",
+          &PyAllToAllVSinglePreHookArgs::output_split_sizes)
+      .def_readonly("async_op", &PyAllToAllVSinglePreHookArgs::async_op);
+  py::class_<PyAllToAllPreHookArgs>(m, "AllToAllPreHookArgs")
+      .def_readonly("input", &PyAllToAllPreHookArgs::input)
+      .def_readonly("output", &PyAllToAllPreHookArgs::output)
+      .def_readonly("async_op", &PyAllToAllPreHookArgs::async_op);
+  py::class_<PyBarrierPreHookArgs>(m, "BarrierPreHookArgs")
+      .def_readonly("async_op", &PyBarrierPreHookArgs::async_op);
+  py::class_<PyScatterPreHookArgs>(m, "ScatterPreHookArgs")
+      .def_readonly("output", &PyScatterPreHookArgs::output)
+      .def_readonly("input", &PyScatterPreHookArgs::input)
+      .def_readonly("root", &PyScatterPreHookArgs::root)
+      .def_readonly("async_op", &PyScatterPreHookArgs::async_op);
+  py::class_<PyGatherPreHookArgs>(m, "GatherPreHookArgs")
+      .def_readonly("input", &PyGatherPreHookArgs::input)
+      .def_readonly("output", &PyGatherPreHookArgs::output)
+      .def_readonly("root", &PyGatherPreHookArgs::root)
+      .def_readonly("async_op", &PyGatherPreHookArgs::async_op);
+  py::class_<PyGatherSinglePreHookArgs>(m, "GatherSinglePreHookArgs")
+      .def_readonly("input", &PyGatherSinglePreHookArgs::input)
+      .def_readonly("output", &PyGatherSinglePreHookArgs::output)
+      .def_readonly("root", &PyGatherSinglePreHookArgs::root)
+      .def_readonly("async_op", &PyGatherSinglePreHookArgs::async_op);
+  py::class_<PySplitPreHookArgs>(m, "SplitPreHookArgs")
+      .def_readonly("ranks", &PySplitPreHookArgs::ranks)
+      .def_readonly("name", &PySplitPreHookArgs::name);
+  py::class_<PyNewWindowPreHookArgs>(m, "NewWindowPreHookArgs");
+  py::class_<PyBatchOpIssuePreHookArgs>(m, "BatchOpIssuePreHookArgs")
+      .def_readonly("num_ops", &PyBatchOpIssuePreHookArgs::num_ops)
+      .def_readonly("async_op", &PyBatchOpIssuePreHookArgs::async_op);
+
+  // Post-hook arg types
+  py::class_<PyCollectivePostHookArgs>(m, "CollectivePostHookArgs");
+  py::class_<PySplitPostHookArgs>(m, "SplitPostHookArgs");
+  py::class_<PyNewWindowPostHookArgs>(m, "NewWindowPostHookArgs");
+  py::class_<PyBatchOpIssuePostHookArgs>(m, "BatchOpIssuePostHookArgs");
 
   py::class_<TorchCommWindowAttr, std::shared_ptr<TorchCommWindowAttr>>(
       m, "TorchCommWindowAttr", "Window attributes.")
@@ -918,11 +1105,7 @@ Args:
           py::arg("async_op"),
           py::arg("options") = BatchP2POptions(),
           py::call_guard<py::gil_scoped_release>())
-      .def_readwrite(
-          "ops",
-          &BatchSendRecv::ops,
-          "List of P2P operations",
-          py::call_guard<py::gil_scoped_release>());
+      .def_readwrite("ops", &BatchSendRecv::ops, "List of P2P operations");
 
   m.def(
       "new_comm",
@@ -935,8 +1118,16 @@ Args:
          std::optional<c10::intrusive_ptr<c10d::Store>> store,
          bool enable_reconfigure,
          std::optional<std::unordered_map<std::string, std::string>> hints) {
-        py::module_ torchcomms = py::module_::import("torchcomms");
-        torchcomms.attr("_load_backend")(backend);
+        {
+          py::module_ torchcomms = py::module_::import("torchcomms");
+          try {
+            torchcomms.attr("_load_backend")(backend);
+          } catch (py::error_already_set&) {
+            if (!TorchCommFactory::get().is_backend_registered(backend)) {
+              throw;
+            }
+          }
+        }
 
         {
           py::gil_scoped_release release{};
@@ -1002,16 +1193,34 @@ Args:
       py::arg("enable_reconfigure") = false,
       py::arg("hints") = std::nullopt);
 
-  py::class_<TorchCommBackend, std::shared_ptr<TorchCommBackend>>(
+  py::class_<
+      TorchCommBackend,
+      PyTorchCommBackend,
+      std::shared_ptr<TorchCommBackend>>(
       m,
       "TorchCommBackend",
-      "Abstract class that all torchcomms Backends implement.");
+      R"(
+Base class for Python-implemented TorchComm backends.
+
+Subclass this to implement a custom communication backend in Python.
+Register it with :func:`register_backend`, then create communicators
+via :func:`new_comm`.
+
+Override the required methods: ``init``, ``finalize``, ``get_rank``,
+``get_size``, ``get_backend_name``, ``get_comm_name``, ``split``, and
+the collective operations (``all_reduce``, ``broadcast``, etc.).
+
+Each collective method should return ``None`` for synchronous completion,
+or an object with a ``wait()`` method for asynchronous operations.
+          )")
+      .def(py::init<>());
 
   // Bind TorchComm class
   py_opaque_class<TorchComm, std::shared_ptr<TorchComm>>(m, "TorchComm")
       // NOTE: copy/deepcopy return the same object (not a clone).
       // Actually cloning the underlying communicator would be extremely
-      // expensive (requires collective operations to create new comm groups).
+      // expensive (requires collective operations to create new comm
+      // groups).
       .def(
           "__copy__",
           [](const std::shared_ptr<TorchComm>& self) { return self; })
@@ -1169,6 +1378,23 @@ Example:
           py::arg("init_handles"),
           py::arg("timeout") = std::nullopt,
           py::arg("hints") = std::nullopt,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "abort",
+          &TorchComm::abort,
+          R"(
+Abort the communicator, stopping all in-flight operations.
+
+In reconfigurable mode (enable_reconfigure=True), this performs a graceful
+revoke of the NCCL communicator and sets the error state. The communicator
+can then be recovered via reconfigure().
+
+In non-reconfigurable mode, this performs a destructive abort of the NCCL
+communicator.
+
+Does not raise exceptions. After calling abort(), subsequent collective
+operations will fail until reconfigure() is called (in reconfigurable mode).
+          )",
           py::call_guard<py::gil_scoped_release>())
       .def(
           "get_device_transport",
@@ -2058,7 +2284,8 @@ Raises: RuntimeError if the ranks list is non-empty and the current rank is not 
       // NOTE: This property is kept temporarily to avoid breaking upstream
       // callers. The allocator is actually a global static per backend
       // (accessed via get_mem_allocator(backend)), not tied to the comm
-      // instance lifetime. Future code should use the global function directly.
+      // instance lifetime. Future code should use the global function
+      // directly.
       .def_property_readonly(
           "mem_allocator",
           [](TorchComm& self) { return get_mem_allocator(self.getBackend()); },
@@ -2068,27 +2295,166 @@ Raises: RuntimeError if the ranks list is non-empty and the current rank is not 
       .def(
           "register_pre_hook",
           [](TorchComm& self, const py::function& callback) {
-            auto hook = [callback](TorchComm::PreHookArgs args) {
+            auto hook = [callback](
+                            OpName name,
+                            size_t op_id,
+                            const PreHookArgs& args) {
               py::gil_scoped_acquire acquire;
-              callback(args);
+              py::object py_args = std::visit(
+                  [](const auto& a) -> py::object {
+                    using T = std::decay_t<decltype(a)>;
+                    if constexpr (std::is_same_v<T, SendPreHookArgs>) {
+                      return py::cast(
+                          PySendPreHookArgs{a.tensor, a.peer, a.async_op});
+                    } else if constexpr (std::is_same_v<T, RecvPreHookArgs>) {
+                      return py::cast(
+                          PyRecvPreHookArgs{a.tensor, a.peer, a.async_op});
+                    } else if constexpr (std::is_same_v<
+                                             T,
+                                             BroadcastPreHookArgs>) {
+                      return py::cast(
+                          PyBroadcastPreHookArgs{a.tensor, a.root, a.async_op});
+                    } else if constexpr (std::is_same_v<
+                                             T,
+                                             AllReducePreHookArgs>) {
+                      return py::cast(
+                          PyAllReducePreHookArgs{a.tensor, a.async_op});
+                    } else if constexpr (std::is_same_v<T, ReducePreHookArgs>) {
+                      return py::cast(
+                          PyReducePreHookArgs{a.tensor, a.root, a.async_op});
+                    } else if constexpr (std::is_same_v<
+                                             T,
+                                             AllGatherPreHookArgs>) {
+                      return py::cast(
+                          PyAllGatherPreHookArgs{
+                              a.input,
+                              {a.output.begin(), a.output.end()},
+                              a.async_op});
+                    } else if constexpr (std::is_same_v<
+                                             T,
+                                             AllGatherVPreHookArgs>) {
+                      return py::cast(
+                          PyAllGatherVPreHookArgs{
+                              a.input,
+                              {a.output.begin(), a.output.end()},
+                              a.async_op});
+                    } else if constexpr (std::is_same_v<
+                                             T,
+                                             AllGatherSinglePreHookArgs>) {
+                      return py::cast(
+                          PyAllGatherSinglePreHookArgs{
+                              a.input, a.output, a.async_op});
+                    } else if constexpr (std::is_same_v<
+                                             T,
+                                             ReduceScatterPreHookArgs>) {
+                      return py::cast(
+                          PyReduceScatterPreHookArgs{
+                              {a.input.begin(), a.input.end()},
+                              a.output,
+                              a.async_op});
+                    } else if constexpr (std::is_same_v<
+                                             T,
+                                             ReduceScatterVPreHookArgs>) {
+                      return py::cast(
+                          PyReduceScatterVPreHookArgs{
+                              {a.input.begin(), a.input.end()},
+                              a.output,
+                              a.async_op});
+                    } else if constexpr (std::is_same_v<
+                                             T,
+                                             ReduceScatterSinglePreHookArgs>) {
+                      return py::cast(
+                          PyReduceScatterSinglePreHookArgs{
+                              a.input, a.output, a.async_op});
+                    } else if constexpr (std::is_same_v<
+                                             T,
+                                             AllToAllSinglePreHookArgs>) {
+                      return py::cast(
+                          PyAllToAllSinglePreHookArgs{
+                              a.input, a.output, a.async_op});
+                    } else if constexpr (std::is_same_v<
+                                             T,
+                                             AllToAllVSinglePreHookArgs>) {
+                      return py::cast(
+                          PyAllToAllVSinglePreHookArgs{
+                              a.input,
+                              a.output,
+                              {a.input_split_sizes.begin(),
+                               a.input_split_sizes.end()},
+                              {a.output_split_sizes.begin(),
+                               a.output_split_sizes.end()},
+                              a.async_op});
+                    } else if constexpr (std::is_same_v<
+                                             T,
+                                             AllToAllPreHookArgs>) {
+                      return py::cast(
+                          PyAllToAllPreHookArgs{
+                              {a.input.begin(), a.input.end()},
+                              {a.output.begin(), a.output.end()},
+                              a.async_op});
+                    } else if constexpr (std::
+                                             is_same_v<T, BarrierPreHookArgs>) {
+                      return py::cast(PyBarrierPreHookArgs{a.async_op});
+                    } else if constexpr (std::
+                                             is_same_v<T, ScatterPreHookArgs>) {
+                      return py::cast(
+                          PyScatterPreHookArgs{
+                              a.output,
+                              {a.input.begin(), a.input.end()},
+                              a.root,
+                              a.async_op});
+                    } else if constexpr (std::is_same_v<T, GatherPreHookArgs>) {
+                      return py::cast(
+                          PyGatherPreHookArgs{
+                              a.input,
+                              {a.output.begin(), a.output.end()},
+                              a.root,
+                              a.async_op});
+                    } else if constexpr (std::is_same_v<
+                                             T,
+                                             GatherSinglePreHookArgs>) {
+                      return py::cast(
+                          PyGatherSinglePreHookArgs{
+                              a.input, a.output, a.root, a.async_op});
+                    } else if constexpr (std::is_same_v<T, SplitPreHookArgs>) {
+                      return py::cast(
+                          PySplitPreHookArgs{
+                              {a.ranks.begin(), a.ranks.end()},
+                              std::string(a.name)});
+                    } else if constexpr (std::is_same_v<
+                                             T,
+                                             NewWindowPreHookArgs>) {
+                      return py::cast(PyNewWindowPreHookArgs{});
+                    } else if constexpr (std::is_same_v<
+                                             T,
+                                             BatchOpIssuePreHookArgs>) {
+                      return py::cast(
+                          PyBatchOpIssuePreHookArgs{a.num_ops, a.async_op});
+                    } else {
+                      return py::none();
+                    }
+                  },
+                  args);
+              callback(name, op_id, py_args);
             };
             return self.registerPreHook(std::move(hook));
           },
           R"doc(
 Register a pre-hook callback that is called before each collective operation.
 
-The callback receives a PreHookArgs object containing operation metadata.
+The callback receives (name, op_id, args) where args is the typed
+per-collective pre-hook args object (e.g., AllReducePreHookArgs).
 
 Args:
-    callback: A callable that takes a PreHookArgs argument.
+    callback: A callable that takes (name, op_id, args).
 
 Returns:
     RemovableHandle: A handle that can be used to unregister the hook.
 
 Example::
 
-    def my_pre_hook(args):
-        print(f"Starting {args.name}")
+    def my_pre_hook(name, op_id, args):
+        print(f"Starting {name}")
     handle = comm.register_pre_hook(my_pre_hook)
     # ... run operations ...
     handle.remove()  # Unregister when done
@@ -2101,20 +2467,39 @@ Note:
       .def(
           "register_post_hook",
           [](TorchComm& self, const py::function& callback) {
-            auto hook = [callback](const TorchComm::PostHookArgs& args) {
+            auto hook = [callback](size_t op_id, const PostHookArgs& args) {
               py::gil_scoped_acquire acquire;
-              callback(args);
+              py::object py_args = std::visit(
+                  [](const auto& a) -> py::object {
+                    using T = std::decay_t<decltype(a)>;
+                    if constexpr (std::is_same_v<T, SplitPostHookArgs>) {
+                      return py::cast(PySplitPostHookArgs{});
+                    } else if constexpr (std::is_same_v<
+                                             T,
+                                             NewWindowPostHookArgs>) {
+                      return py::cast(PyNewWindowPostHookArgs{});
+                    } else if constexpr (std::is_same_v<
+                                             T,
+                                             BatchOpIssuePostHookArgs>) {
+                      return py::cast(PyBatchOpIssuePostHookArgs{});
+                    } else {
+                      return py::cast(PyCollectivePostHookArgs{});
+                    }
+                  },
+                  args);
+              callback(op_id, py_args);
             };
             return self.registerPostHook(std::move(hook));
           },
           R"doc(
 Register a post-hook callback that is called after each collective operation.
 
-The callback receives a PostHookArgs object containing operation metadata.
+The callback receives (op_id, args) where args is the typed
+per-collective post-hook args object (e.g., CollectivePostHookArgs).
 The op_id can be used to correlate with the corresponding pre-hook call.
 
 Args:
-    callback: A callable that takes a PostHookArgs argument.
+    callback: A callable that takes (op_id, args).
 
 Returns:
     RemovableHandle: A handle that can be used to unregister the hook.
@@ -2180,9 +2565,10 @@ Note:
       .def("name", &BackendWrapper::getBackendName)
       .def_property_readonly(
           "options",
-          &BackendWrapper::getOptions,
-          R"(Return the options used to create the torchComm under the hood.)",
-          py::call_guard<py::gil_scoped_release>())
+          py::cpp_function(
+              &BackendWrapper::getOptions,
+              py::call_guard<py::gil_scoped_release>()),
+          R"(Return the options used to create the torchComm under the hood.)")
       .def(
           "_verify_work_timeout",
           &BackendWrapper::verifyWorkTimeoutForTest,
@@ -2211,7 +2597,18 @@ Args:
           )",
           py::arg("timeout"),
           py::call_guard<py::gil_scoped_release>());
-  intrusive_ptr_class_<WorkWrapper, c10d::Work>(m, "WorkWrapper");
+  intrusive_ptr_class_<WorkWrapper, c10d::Work>(m, "WorkWrapper")
+      .def("exception", [](WorkWrapper& self) -> py::object {
+        auto ep = self.exception();
+        if (!ep) {
+          return py::none();
+        }
+        try {
+          std::rethrow_exception(ep);
+        } catch (const std::exception& e) {
+          return py::handle(PyExc_RuntimeError)(e.what());
+        }
+      });
   // Register the backend Options
   intrusive_ptr_class_<BackendWrapper::Options, c10d::Backend::Options>(
       m, "_BackendWrapperOptions");
@@ -2235,8 +2632,13 @@ Args:
       py::arg("backend"),
       py::call_guard<py::gil_scoped_release>());
 
-  // Flight Recorder submodule: torchcomms._comms.hooks.fr
+  // Hook submodules: torchcomms._comms.hooks.*
   auto hooks_mod = m.def_submodule("hooks");
+  auto clog_mod = hooks_mod.def_submodule("clog");
+  init_clog_hook_bindings(clog_mod);
   auto fr_mod = hooks_mod.def_submodule("fr");
   init_flight_recorder_bindings(fr_mod);
+
+  // Python backend registration
+  initPyBackendBindings(m);
 }

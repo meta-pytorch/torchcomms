@@ -205,14 +205,12 @@ class CtranAllToAllTest : public ctran::CtranDistTestFixture,
     }
 
     CUDACHECK_TEST(cudaDeviceSynchronize());
-    // Sleep for a while to make sure all the colls are finished
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     ASSERT_NE(ctranComm->colltraceNew_, nullptr);
-    auto dumpMap = ctran::dumpCollTrace(ctranComm.get());
+    auto dumpMap = ctran::waitForCollTraceDrain(ctranComm.get());
 
     EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
-    EXPECT_EQ(dumpMap["CT_currentColl"], "null");
+    EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
 
     auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
     if (count == 0) {

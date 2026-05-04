@@ -12,6 +12,16 @@ from torch.distributed import PrefixStore, TCPStore
 from torchcomms import new_comm, RedOpType, ReduceOp
 
 
+def is_full_sweep():
+    """Check if the test should run the full parameter sweep.
+
+    When TEST_FULL_SWEEP=0, tests use a reduced set of parameters
+    (fewer counts, dtypes, ops) for a faster smoke test. The full
+    sweep runs all parameter combinations.
+    """
+    return os.environ.get("TEST_FULL_SWEEP", "1") == "1"
+
+
 def get_dtype_name(dtype):
     """Helper function to get a string representation of the datatype."""
     if dtype == torch.half:
@@ -181,6 +191,17 @@ def wrap_prefix_store(name, store):
     return PrefixStore(name, store)
 
 
+def destroy_root_store():
+    """Destroy the global _root_store so the MASTER_PORT can be reused.
+
+    Call this in tearDown() of test classes that mix store-based and no-store
+    tests. Without this, the persistent _root_store holds MASTER_PORT and
+    prevents the no-store bootstrap path from creating its own TCPStore.
+    """
+    global _root_store
+    _root_store = None
+
+
 def verify_tensor_equality(
     output: torch.Tensor,
     expected: Union[torch.Tensor, int, float],
@@ -262,25 +283,29 @@ def verify_tensor_equality(
                 )
 
 
+def get_device(backend, rank) -> torch.device:
+    if device_str := os.environ.get("TEST_DEVICE"):
+        return torch.device(device_str)
+
+    if torch.accelerator.is_available():
+        device_count = torch.accelerator.device_count()
+        if device_count > 0:
+            device_id = rank % device_count
+            accelerator = torch.accelerator.current_accelerator()
+            assert accelerator is not None
+            device_type = accelerator.type
+            return torch.device(f"{device_type}:{device_id}")
+    # Fallback to CPU if an accelerator is not found or device_count is 0
+    return torch.device("cpu")
+
+
 class TorchCommTestWrapper:
     """Wrapper class for TorchComm tests, similar to the C++ TorchCommTestWrapper."""
 
     NEXT_COMM_ID = 0
 
     def get_device(self, backend, rank) -> torch.device:
-        if device_str := os.environ.get("TEST_DEVICE"):
-            return torch.device(device_str)
-
-        if torch.accelerator.is_available():
-            device_count = torch.accelerator.device_count()
-            if device_count > 0:
-                device_id = rank % device_count
-                accelerator = torch.accelerator.current_accelerator()
-                assert accelerator is not None
-                device_type = accelerator.type
-                return torch.device(f"{device_type}:{device_id}")
-        # Fallback to CPU if an accelerator is not found or device_count is 0
-        return torch.device("cpu")
+        return get_device(backend, rank)
 
     def get_hints_from_env(self):
         hints = {}
@@ -330,14 +355,14 @@ class TorchCommTestWrapper:
         return self.torchcomm
 
 
-def skipBackend(backend, msg="Skipping test for backend: "):
+def skip_backend(backend, msg="Skipping test for backend: "):
     def dec_fn(fn):
         reason = f"{msg}{backend}"
 
         @wraps(fn)
         def wrapper(*args, **kwargs):
             if os.environ["TEST_BACKEND"] == backend:
-                raise unittest.SkipTest(reason)
+                return unittest.skip(reason)(*args, **kwargs)
 
             return fn(*args, **kwargs)
 

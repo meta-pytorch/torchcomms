@@ -4,6 +4,8 @@
 
 #include <deque>
 #include <memory>
+#include <queue>
+#include <vector>
 
 #include <folly/MPMCQueue.h>
 #include <folly/Synchronized.h>
@@ -36,9 +38,23 @@ struct CommDumpConfig {
   std::chrono::milliseconds dumpLockAcquireTimeout{kDumpLockAcquireTimeout};
 };
 
+struct CollRecordGreaterCollId {
+  bool operator()(
+      const std::shared_ptr<CollRecord>& a,
+      const std::shared_ptr<CollRecord>& b) const {
+    return a->getCollId() > b->getCollId();
+  }
+};
+
+using PastCollsHeap = std::priority_queue<
+    std::shared_ptr<CollRecord>,
+    std::vector<std::shared_ptr<CollRecord>>,
+    CollRecordGreaterCollId>;
+
 struct CollTraceDump {
+  PastCollsHeap pastCollsHeap;
   std::deque<std::shared_ptr<CollRecord>> pastColls;
-  std::shared_ptr<CollRecord> currentColl;
+  std::deque<std::shared_ptr<CollRecord>> currentColls;
   std::deque<std::shared_ptr<CollRecord>> pendingColls;
 };
 
@@ -61,6 +77,8 @@ class CommDumpPlugin : public ICollTracePlugin {
       CollTraceEvent& curEvent) noexcept override;
 
   CommsMaybeVoid afterCollKernelEnd(CollTraceEvent& curEvent) noexcept override;
+
+  int64_t maxEventRetention() const noexcept override;
 
   // CommDump specific API, supposed to be called by the dump (user) thread
   CommsMaybe<CollTraceDump> dump() noexcept;

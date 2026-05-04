@@ -1,147 +1,109 @@
-# RCCL
+# ROCm Systems
 
-ROCm Communication Collectives Library
+Welcome to the ROCm Systems super-repo. This repository consolidates multiple ROCm systems projects into a single repository to streamline development, CI, and integration. The first set of projects focuses on requirements for building PyTorch.
 
-[![RCCL](https://dev.azure.com/ROCm-CI/ROCm-CI/_apis/build/status%2Frccl?repoName=ROCm%2Frccl&branchName=develop)](https://dev.azure.com/ROCm-CI/ROCm-CI/_build/latest?definitionId=107&repoName=ROCm%2Frccl&branchName=develop)
-[![TheRock CI](https://github.com/ROCm/rccl/actions/workflows/therock-ci.yml/badge.svg?branch=develop&event=push)](https://github.com/ROCm/rccl/actions/workflows/therock-ci.yml)
+# Super-repo Status and CI Health
 
-> **Note:** The published documentation is available at [RCCL](https://rocm.docs.amd.com/projects/rccl/en/latest/index.html) in an organized easy-to-read format that includes a table of contents and search functionality. The documentation source files reside in the [rccl/docs](https://github.com/ROCm/rccl/tree/develop/docs) folder in this repository. As with all ROCm projects, the documentation is open source. For more information, see [Contribute to ROCm documentation](https://rocm.docs.amd.com/en/latest/contribute/contributing.html).
+This table provides the current status of the migration of specific ROCm systems projects as well as a pointer to their current CI health.
 
-## Introduction
+**Key:**
+- **Completed**: Fully migrated and integrated. This super-repo should be considered the source of truth for this project. The old repo may still be used for release activities.
+- **In Progress**: Ongoing migration, tests, or integration. Please refrain from submitting new pull requests on the individual repo of the project, and develop on the super-repo.
+- **Pending**: Not yet started or in the early planning stages. The individual repo should be considered the source of truth for this project.
 
-RCCL (pronounced "Rickle") is a stand-alone library of standard collective communication routines for GPUs, implementing all-reduce, all-gather, reduce, broadcast, reduce-scatter, gather, scatter, and all-to-all. There is also initial support for direct GPU-to-GPU send and receive operations.  It has been optimized to achieve high bandwidth on platforms using PCIe, xGMI as well as networking using InfiniBand Verbs or TCP/IP sockets. RCCL supports an arbitrary number of GPUs installed in a single node or multiple nodes, and can be used in either single- or multi-process (e.g., MPI) applications.
+| Component              | Source of Truth | Migration Status | Azure CI Status                       | Component CI Status                   |
+|------------------------|-----------------|------------------|---------------------------------------|---------------------------------------|
+| `amdsmi`               | EMU             | Pending          |                                       |                                       |
+| `aqlprofile`           | Public          | Completed        | [![Azure Pipelines](https://dev.azure.com/ROCm-CI/ROCm-CI/_apis/build/status%2Fmonorepo%2Faqlprofile?repoName=ROCm%2Frocm-systems&branchName=refs%2Fpull%2F368%2Fmerge)](https://dev.azure.com/ROCm-CI/ROCm-CI/_build/latest?definitionId=365&repoName=ROCm%2Frocm-systems&branchName=refs%2Fpull%2F368%2Fmerge) | [![CodeQL](https://github.com/ROCm/rocm-systems/actions/workflows/aqlprofile-codeql.yml/badge.svg?branch=develop)](https://github.com/ROCm/rocm-systems/actions/workflows/aqlprofile-codeql.yml) <br> [![Continuous Integration](https://github.com/ROCm/rocm-systems/actions/workflows/aqlprofile-continuous_integration.yml/badge.svg?branch=develop)](https://github.com/ROCm/rocm-systems/actions/workflows/aqlprofile-continuous_integration.yml) |
+| `clr`                  | Public          | Completed        | [![Azure Pipelines](https://dev.azure.com/ROCm-CI/ROCm-CI/_apis/build/status%2Fmonorepo%2Fhip-clr?repoName=ROCm%2Frocm-systems&branchName=develop)](https://dev.azure.com/ROCm-CI/ROCm-CI/_build/latest?definitionId=335&repoName=ROCm%2Frocm-systems&branchName=develop) |                                       |
+| `hip`                  | Public          | Completed        | [![Azure Pipelines](https://dev.azure.com/ROCm-CI/ROCm-CI/_apis/build/status%2Fmonorepo%2Fhip-clr?repoName=ROCm%2Frocm-systems&branchName=develop)](https://dev.azure.com/ROCm-CI/ROCm-CI/_build/latest?definitionId=335&repoName=ROCm%2Frocm-systems&branchName=develop) |                                       |
+| `hipother`             | Public          | Completed        | [![Azure Pipelines](https://dev.azure.com/ROCm-CI/ROCm-CI/_apis/build/status%2Fmonorepo%2Fhip-clr?repoName=ROCm%2Frocm-systems&branchName=develop)](https://dev.azure.com/ROCm-CI/ROCm-CI/_build/latest?definitionId=335&repoName=ROCm%2Frocm-systems&branchName=develop) |                                       |
+| `hip-tests`            | Public          | Completed        | [![Azure Pipelines](https://dev.azure.com/ROCm-CI/ROCm-CI/_apis/build/status%2Fmonorepo%2Fhip-tests?repoName=ROCm%2Frocm-systems&branchName=develop)](https://dev.azure.com/ROCm-CI/ROCm-CI/_build/latest?definitionId=362&repoName=ROCm%2Frocm-systems&branchName=develop) |                                       |
+| `rdc`                  | Public          | Completed        | [![Azure Pipelines](https://dev.azure.com/ROCm-CI/ROCm-CI/_apis/build/status%2Fmonorepo%2Frdc?repoName=ROCm%2Frocm-systems&branchName=develop)](https://dev.azure.com/ROCm-CI/ROCm-CI/_build/latest?definitionId=360&repoName=ROCm%2Frocm-systems&branchName=develop) |                                       |
+| `rocm-core`            | Public          | Completed        | [![Azure Pipelines](https://dev.azure.com/ROCm-CI/ROCm-CI/_apis/build/status%2Fmonorepo%2Frocm-core?repoName=ROCm%2Frocm-systems&branchName=develop)](https://dev.azure.com/ROCm-CI/ROCm-CI/_build/latest?definitionId=349&repoName=ROCm%2Frocm-systems&branchName=develop) |                                       |
+| `rocminfo`             | Public          | Completed        | [![Azure Pipelines](https://dev.azure.com/ROCm-CI/ROCm-CI/_apis/build/status%2Fmonorepo%2Frocminfo?repoName=ROCm%2Frocm-systems&branchName=develop)](https://dev.azure.com/ROCm-CI/ROCm-CI/_build/latest?definitionId=356&repoName=ROCm%2Frocm-systems&branchName=develop) |                                       |
+| `rocm-smi-lib`         | Public          | Completed        | [![Azure Pipelines](https://dev.azure.com/ROCm-CI/ROCm-CI/_apis/build/status%2Fmonorepo%2Frocm-smi-lib?repoName=ROCm%2Frocm-systems&branchName=develop)](https://dev.azure.com/ROCm-CI/ROCm-CI/_build/latest?definitionId=358&repoName=ROCm%2Frocm-systems&branchName=develop) |                                       |
+| `rocprofiler`          | Public          | Completed        | [![Azure Pipelines](https://dev.azure.com/ROCm-CI/ROCm-CI/_apis/build/status%2Fmonorepo%2Frocprofiler?repoName=ROCm%2Frocm-systems&branchName=develop)](https://dev.azure.com/ROCm-CI/ROCm-CI/_build/latest?definitionId=329&repoName=ROCm%2Frocm-systems&branchName=develop) |                                       |
+| `rocprofiler-compute`  | Public          | Completed        | [![Azure Pipelines](https://dev.azure.com/ROCm-CI/ROCm-CI/_apis/build/status%2Fmonorepo%2Frocprofiler-compute?repoName=ROCm%2Frocm-systems&branchName=develop)](https://dev.azure.com/ROCm-CI/ROCm-CI/_build/latest?definitionId=344&repoName=ROCm%2Frocm-systems&branchName=develop) | [![Formatting](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-compute-formatting.yml/badge.svg?branch=develop)](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-compute-formatting.yml) <br> [![ rhel-8](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-compute-rhel-8.yml/badge.svg)](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-compute-rhel-8.yml) <br> [![tarball](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-compute-tarball.yml/badge.svg)](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-compute-tarball.yml) <br> [![ubuntu jammy](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-compute-ubuntu-jammy.yml/badge.svg)](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-compute-ubuntu-jammy.yml) |
+| `rocprofiler-register` | Public          | Completed        | [![Azure Pipelines](https://dev.azure.com/ROCm-CI/ROCm-CI/_apis/build/status%2Fmonorepo%2Frocprofiler-register?repoName=ROCm%2Frocm-systems&branchName=develop)](https://dev.azure.com/ROCm-CI/ROCm-CI/_build/latest?definitionId=327&repoName=ROCm%2Frocm-systems&branchName=develop) | [![Continuous Integration](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-register-continuous-integration.yml/badge.svg?branch=develop)](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-register-continuous-integration.yml) |
+| `rocprofiler-sdk`      | Public          | Completed        | [![Azure Pipelines](https://dev.azure.com/ROCm-CI/ROCm-CI/_apis/build/status%2Fmonorepo%2Frocprofiler-sdk?repoName=ROCm%2Frocm-systems&branchName=develop)](https://dev.azure.com/ROCm-CI/ROCm-CI/_build/latest?definitionId=347&repoName=ROCm%2Frocm-systems&branchName=develop) | [![Code Coverage Integration](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-sdk-code_coverage.yml/badge.svg?branch=develop)](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-sdk-code_coverage.yml) <br> [![CodeQL](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-sdk-codeql.yml/badge.svg?branch=develop)](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-sdk-codeql.yml) <br> [![Continuous Integration](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-sdk-continuous_integration.yml/badge.svg?branch=develop)](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-sdk-continuous_integration.yml) <br> [![Documentation](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-sdk-docs.yml/badge.svg?branch=develop)](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-sdk-docs.yml) <br> [![Formatting](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-sdk-formatting.yml/badge.svg?branch=develop)](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-sdk-formatting.yml) <br> [![Python Linting](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-sdk-python.yml/badge.svg?branch=develop)](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-sdk-python.yml) <br> [![Restrictions](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-sdk-restrictions.yml/badge.svg?branch=develop)](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-sdk-restrictions.yml) <br> [![Release Compatibility](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-sdk-rocm_release_compatibility.yml/badge.svg?branch=develop)](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-sdk-rocm_release_compatibility.yml) |
+| `rocprofiler-systems`  | Public          | Completed        | [![Azure Pipelines](https://dev.azure.com/ROCm-CI/ROCm-CI/_apis/build/status%2Fmonorepo%2Frocprofiler-systems?repoName=ROCm%2Frocm-systems&branchName=develop)](https://dev.azure.com/ROCm-CI/ROCm-CI/_build/latest?definitionId=345&repoName=ROCm%2Frocm-systems&branchName=develop) | [![Containers](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-systems-containers.yml/badge.svg?branch=develop)](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-systems-containers.yml) <br> [![rocprofiler-systems GHCR Packages for CI Images](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-systems-ghcr.yml/badge.svg)](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-systems-ghcr.yml) <br> [![CPack](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-systems-cpack.yml/badge.svg?branch=develop)](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-systems-cpack.yml) <br> [![Formatting](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-systems-formatting.yml/badge.svg?branch=develop)](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-systems-formatting.yml) <br> [![OpenSUSE](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-systems-opensuse.yml/badge.svg?branch=develop)](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-systems-opensuse.yml) <br> [![Python Linting](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-systems-python.yml/badge.svg?branch=develop)](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-systems-python.yml) <br> [![RedHat Linux](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-systems-redhat.yml/badge.svg?branch=develop)](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-systems-redhat.yml) <br> [![Ubuntu Jammy](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-systems-ubuntu-jammy.yml/badge.svg?branch=develop)](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-systems-ubuntu-jammy.yml) <br> [![Ubuntu Noble](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-systems-ubuntu-noble.yml/badge.svg?branch=develop)](https://github.com/ROCm/rocm-systems/actions/workflows/rocprofiler-systems-ubuntu-noble.yml) |
+| `rocr-runtime`         | Public          | Completed        | [![Azure Pipelines](https://dev.azure.com/ROCm-CI/ROCm-CI/_apis/build/status%2Fmonorepo%2Frocr-runtime?repoName=ROCm%2Frocm-systems&branchName=develop)](https://dev.azure.com/ROCm-CI/ROCm-CI/_build/latest?definitionId=354&repoName=ROCm%2Frocm-systems&branchName=develop) |                                       |
+| `roctracer`            | Public          | Completed        | [![Azure Pipelines](https://dev.azure.com/ROCm-CI/ROCm-CI/_apis/build/status%2Fmonorepo%2Froctracer?repoName=ROCm%2Frocm-systems&branchName=develop)](https://dev.azure.com/ROCm-CI/ROCm-CI/_build/latest?definitionId=331&repoName=ROCm%2Frocm-systems&branchName=develop) |                                       |
 
-The collective operations are implemented using ring and tree algorithms and have been optimized for throughput and latency. For best performance, small operations can be either batched into larger operations or aggregated through the API.
 
-## Requirements
+## Tentative migration schedule
 
-1. ROCm supported GPUs
-2. ROCm stack installed on the system (HIP runtime & HIP-Clang)
+| Component              | Tentative Date |
+|------------------------|----------------|
 
-## Quickstart RCCL Build
 
-RCCL directly depends on HIP runtime plus the HIP-Clang compiler, which are part of the ROCm software stack.
-For ROCm installation instructions, see https://github.com/ROCm/ROCm.
+*Remaining schedule to be determined.
 
-The root of this repository has a helper script `install.sh` to build and install RCCL with a single command. It hard-codes configurations that can be specified through invoking cmake directly, but it's a great way to get started quickly and can serve as an example of how to build/install RCCL.
+# TheRock CI Status
 
-### To build the library using the install script:
+Note TheRock CI performs multi-component testing on top of builds leveraging [TheRock](https://github.com/ROCm/TheRock) build system.
 
-```shell
-./install.sh
+[![The Rock CI](https://github.com/ROCm/rocm-systems/actions/workflows/therock-ci.yml/badge.svg?branch%3Adevelop+event%3Apush)](https://github.com/ROCm/rocm-systems/actions/workflows/therock-ci.yml?query=branch%3Adevelop+event%3Apush)
+
+---
+
+## Nomenclature
+
+Project names have been standardized to match the casing and punctuation of released packages. This removes inconsistent camel-casing and underscores used in legacy repositories.
+
+## Structure
+
+The repository is organized as follows:
+
+```
+projects/
+  amdsmi/
+  aqlprofile/
+  clr/
+  hip/
+  hipother/
+  hip-tests/
+  rccl/
+  rdc/
+  rocm-core
+  rocminfo/
+  rocmsmilib/
+  rocprofiler/
+  rocprofiler-compute/
+  rocprofiler-register/
+  rocprofiler-sdk/
+  rocprofiler-systems/
+  rocrruntime/
+  rocshmem/
+  roctracer/
 ```
 
-For more info on build options/flags when using the install script, use `./install.sh --help`
-```shell
-./install.sh --help
-RCCL build & installation helper script
- Options:
-       --address-sanitizer     Build with address sanitizer enabled
-    -c|--enable-code-coverage  Enable code coverage
-    -d|--dependencies          Install RCCL dependencies
-       --debug                 Build debug library
-       --enable_backtrace      Build with custom backtrace support
-       --disable-colltrace     Build without collective trace
-       --disable-msccl-kernel  Build without MSCCL kernels
-       --enable-mscclpp        Build with MSCCL++ support
-       --enable-mscclpp-clip   Build MSCCL++ with clip wrapper on bfloat16 and half addition routines
-       --disable-roctx         Build without ROCTX logging
-    -f|--fast                  Quick-build RCCL (local gpu arch only, no backtrace, and collective trace support)
-    -h|--help                  Prints this help message
-    -i|--install               Install RCCL library (see --prefix argument below)
-    -j|--jobs                  Specify how many parallel compilation jobs to run ($nproc by default)
-    -l|--local_gpu_only        Only compile for local GPU architecture
-       --amdgpu_targets        Only compile for specified GPU architecture(s). For multiple targets, separate by ';' (builds for all supported GPU architectures by default)
-       --no_clean              Don't delete files if they already exist
-       --npkit-enable          Compile with npkit enabled
-       --log-trace             Build with log trace enabled (i.e. NCCL_DEBUG=TRACE)
-       --openmp-test-enable    Enable OpenMP in rccl unit tests
-    -p|--package_build         Build RCCL package
-       --prefix                Specify custom directory to install RCCL to (default: `/opt/rocm`)
-       --run_tests_all         Run all rccl unit tests (must be built already)
-    -r|--run_tests_quick       Run small subset of rccl unit tests (must be built already)
-       --static                Build RCCL as a static library instead of shared library
-    -t|--tests_build           Build rccl unit tests, but do not run
-       --time-trace            Plot the build time of RCCL (requires `ninja-build` package installed on the system)
-       --verbose               Show compile commands
-```
+- Each folder under `projects/` corresponds to a ROCm systems project that was previously maintained in a standalone GitHub repository and released as distinct packages.
+- Each folder under `shared/` contains code that existed in its own repository and is used as a dependency by multiple projects, but does not produce its own distinct packages in previous ROCm releases.
 
-By default, RCCL builds for all GPU targets defined in `DEFAULT_GPUS` in `CMakeLists.txt`. To target specific GPU(s), and potentially reduce build time, use `--amdgpu_targets` as a `;` separated string listing GPU(s) to target.
+## Goals
 
-## Manual build
+- Enable unified build and test workflows across ROCm libraries.
+- Facilitate shared tooling, CI, and contributor experience.
+- Improve integration, visibility, and collaboration across ROCm library teams.
 
-### To build the library using CMake:
+## Getting Started
 
-```shell
-$ git clone --recursive https://github.com/ROCm/rccl.git
-$ cd rccl
-$ mkdir build
-$ cd build
-$ cmake ..
-$ make -j 16      # Or some other suitable number of parallel jobs
-```
-If you have already cloned, you can checkout the external submodules manually.
-```shell
-$ git submodule update --init --recursive --depth=1
-```
-You may substitute an installation path of your own choosing by passing `CMAKE_INSTALL_PREFIX`. For example:
-```shell
-$ cmake -DCMAKE_INSTALL_PREFIX=$PWD/rccl-install -DCMAKE_BUILD_TYPE=Release ..
-```
-Note: ensure rocm-cmake is installed, `apt install rocm-cmake`.
+To begin contributing or building, see the [CONTRIBUTING.md](./CONTRIBUTING.md) guide. It includes setup instructions, sparse-checkout configuration, development workflow, and pull request guidelines.
 
-### To build the RCCL package and install package :
+## License
 
-Assuming you have already cloned this repository and built the library as shown in the previous section:
+This super-repo contains multiple subprojects, each of which retains the license under which it was originally published.
 
-```shell
-$ cd rccl/build
-$ make package
-$ sudo dpkg -i *.deb
-```
+📁 Refer to the `LICENSE`, `LICENSE.md`, or `LICENSE.txt` file within each `projects/` or `shared/` directory for specific license terms.
+📄 Refer to the header notice in individual files outside `projects/` or `shared/` folders for their specific license terms.
 
-RCCL package install requires sudo/root access because it installs under `/opt/rocm/`. This is an optional step as RCCL can instead be used directly by including the path containing `librccl.so`.
+> **Note**: The root of this repository does not define a unified license across all components.
 
-## Docker build
+## Questions or Feedback?
 
-Refer to [docker/README.md](docker/README.md "docker/README.md")
+- 💬 [Start a discussion](https://github.com/ROCm/rocm-systems/discussions)
+- 🐞 [Open an issue](https://github.com/ROCm/rocm-systems/issues)
 
-## Tests
-
-There are rccl unit tests implemented with the Googletest framework in RCCL.  The rccl unit tests require Googletest 1.10 or higher to build and execute properly (installed with the -d option to install.sh).
-To invoke the rccl unit tests, go to the build folder, then the test subfolder, and execute the appropriate rccl unit test executable(s).
-
-rccl unit test names are now of the format:
-
-    CollectiveCall.[Type of test]
-
-Filtering of rccl unit tests should be done with environment variable and by passing the `--gtest_filter` command line flag, for example:
-
-```shell
-UT_DATATYPES=ncclBfloat16 UT_REDOPS=prod ./rccl-UnitTests --gtest_filter="AllReduce.C*"
-```
-
-will run only AllReduce correctness tests with float16 datatype. A list of available filtering environment variables appears at the top of every run. See "Running a Subset of the Tests" at https://google.github.io/googletest/advanced.html#running-a-subset-of-the-tests for more information on how to form more advanced filters.
-
-There are also other performance and error-checking tests for RCCL.  These are maintained separately at https://github.com/ROCm/rccl-tests.
-See the rccl-tests README for more information on how to build and run those tests.
-
-## Library and API Documentation
-
-Please refer to the [RCCL Documentation Site](https://rocm.docs.amd.com/projects/rccl/en/latest/) for current documentation.
-
-### How to build documentation
-
-Run the steps below to build documentation locally.
-
-```shell
-cd docs
-pip3 install -r sphinx/requirements.txt
-python3 -m sphinx -T -E -b html -d _build/doctrees -D language=en . _build/html
-```
-
-## Copyright
-
-All source code and accompanying documentation is copyright (c) 2015-2025, NVIDIA CORPORATION. All rights reserved.
-
-All modifications are copyright (c) 2019-2025 Advanced Micro Devices, Inc. All rights reserved.
+We're happy to help!

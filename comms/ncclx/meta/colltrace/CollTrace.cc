@@ -465,16 +465,10 @@ void CollTrace::addGraphEvent(std::unique_ptr<CollTraceEvent> event) {
 }
 
 void CollTrace::enqueueEvent(std::unique_ptr<CollTraceEvent> event) {
-  event->coll.collId = curCollId_.fetch_add(1);
-  if (event->coll.collId != event->coll.opCount) {
-    XLOG_FIRST_N(
-        WARN,
-        5,
-        fmt::format(
-            "CollId and OpCount is different! Collective info: {}",
-            event->coll.toString()));
-    event->coll.opCount = event->coll.collId;
-  }
+  // collId is kept in sync with opCount. Previously collId was used as a
+  // workaround for opCount being unreliable (D73568360), but opCount is now
+  // incremented at the correct point in ncclLaunchPrepare (D100385134).
+  event->coll.collId = event->coll.opCount;
   eventQueue_.push(std::move(event));
 }
 

@@ -129,7 +129,7 @@ struct CtranWin {
   }
 #endif
 
-  commResult_t free();
+  commResult_t free(bool skipBarrier = false);
 
   bool nvlEnabled(int rank) const;
 
@@ -144,6 +144,14 @@ struct CtranWin {
   inline bool isGpuMem() const {
     return bufType_ == DevMemType::kCudaMalloc ||
         bufType_ == DevMemType::kCumem;
+  }
+
+  // Check whether persistent allgather (allgatherP) is supported.
+  // Returns true if ctran is initialized and all peers have configured
+  // backends. Static variant allows checking before a window is created.
+  static bool allGatherPSupported(CtranComm* comm);
+  bool allGatherPSupported() const {
+    return allGatherPSupported(comm);
   }
 
  private:

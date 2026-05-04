@@ -57,6 +57,19 @@ void CtranDistEnvironment::SetUp() {
 // ============================================================================
 
 void CtranDistTestFixture::SetUp() {
+  SetUp(CtranEnvs{});
+}
+
+void CtranDistTestFixture::SetUp(const CtranEnvs& envs) {
+  // Save old env values and apply overrides.
+  for (const auto& [key, value] : envs) {
+    const char* oldVal = getenv(key.c_str());
+    savedEnvs_[key] =
+        oldVal ? std::optional<std::string>(oldVal) : std::nullopt;
+    setenv(key.c_str(), value.c_str(), 1);
+  }
+
+  ncclCvarInit();
   distSetUp();
 
   cudaDev = localRank;
@@ -71,7 +84,7 @@ void CtranDistTestFixture::SetUp() {
 
   if (globalRank == 0) {
     XLOG(DBG) << "Testing with NCCL_COMM_STATE_DEBUG_TOPO="
-              << (enableNolocal ? "nolocal" : "default");
+              << (isNolocalTopo() ? "nolocal" : "default");
   }
 
   stream.emplace(cudaStreamNonBlocking);
@@ -79,6 +92,17 @@ void CtranDistTestFixture::SetUp() {
 
 void CtranDistTestFixture::TearDown() {
   stream.reset();
+
+  // Restore original env values.
+  for (const auto& [key, value] : savedEnvs_) {
+    if (value) {
+      setenv(key.c_str(), value->c_str(), 1);
+    } else {
+      unsetenv(key.c_str());
+    }
+  }
+  savedEnvs_.clear();
+
   distTearDown();
 }
 
@@ -172,6 +196,28 @@ std::unordered_map<std::string, std::string> dumpCollTrace(CtranComm* comm) {
     return {};
   }
   return commDumpToMap(dump.value());
+}
+
+std::unordered_map<std::string, std::string> waitForCollTraceDrain(
+    CtranComm* comm,
+    int timeoutMs) {
+  if (comm->colltraceNew_ == nullptr) {
+    return {};
+  }
+  constexpr int kPollIntervalMs = 50;
+  auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+  std::unordered_map<std::string, std::string> dumpMap;
+  while (std::chrono::steady_clock::now() < deadline) {
+    dumpMap = dumpCollTrace(comm);
+    auto it = dumpMap.find("CT_currentColls");
+    if (it != dumpMap.end() && it->second == "[]") {
+      return dumpMap;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(kPollIntervalMs));
+  }
+  // Return whatever we have after timeout
+  return dumpMap.empty() ? dumpCollTrace(comm) : dumpMap;
 }
 
 void CtranDistTestFixture::barrierNvlDomain(CtranComm* comm) {

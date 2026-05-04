@@ -14,8 +14,9 @@
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/colltrace/MapperTrace.h"
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
+#include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/colltrace/CollTrace.h"
 
@@ -27,27 +28,23 @@
     std::cout << "Test failed with stdout being: " << output << std::endl; \
   };
 
-class MapperTraceTest : public NcclxBaseTest {
+class MapperTraceTest : public NcclxBaseTestFixture {
  public:
   MapperTraceTest() = default;
   void SetUp() override {
-    // Allow user to change via command line
-    setenv("NCCL_DEBUG_SUBSYS", "INIT,COLL", 0);
+    NcclxBaseTestFixture::SetUp({
+        {"WORLD_SIZE", "4"},
+        {"HPC_JOB_NAME", "CollTraceUT"},
+        {"HPC_JOB_VERSION", "1"},
+        {"HPC_JOB_ATTEMPT_INDEX", "2"},
+        {"NCCL_HPC_JOB_IDS",
+         "HPC_JOB_NAME,HPC_JOB_VERSION,HPC_JOB_ATTEMPT_INDEX"},
+        {"NCCL_CTRAN_ENABLE", "1"},
+        {"NCCL_COLLTRACE", "trace"},
+        {"NCCL_DEBUG", "INFO"},
+        {"NCCL_DEBUG_SUBSYS", "INIT,COLL"},
+    });
 
-    // Set up dummy values for environment variables for Scuba test
-    setenv("WORLD_SIZE", "4", 0);
-    setenv("HPC_JOB_NAME", "CollTraceUT", 0);
-    setenv("HPC_JOB_VERSION", "1", 0);
-    setenv("HPC_JOB_ATTEMPT_INDEX", "2", 0);
-    setenv(
-        "NCCL_HPC_JOB_IDS",
-        "HPC_JOB_NAME,HPC_JOB_VERSION,HPC_JOB_ATTEMPT_INDEX",
-        0);
-    setenv("NCCL_CTRAN_ENABLE", "1", 0);
-
-    NcclxBaseTest::SetUp();
-
-    CUDACHECK_TEST(cudaSetDevice(this->localRank));
     CUDACHECK_TEST(cudaStreamCreate(&this->stream));
   }
 
@@ -55,6 +52,7 @@ class MapperTraceTest : public NcclxBaseTest {
     CUDACHECK_TEST(cudaStreamDestroy(this->stream));
     CUDACHECK_TEST(cudaFree(sendBuf));
     CUDACHECK_TEST(cudaFree(recvBuf));
+    NcclxBaseTestFixture::TearDown();
   }
 
   void prepareCtranAllToAll(ncclComm* comm, const int count) {
@@ -79,7 +77,8 @@ TEST_F(MapperTraceTest, CtranAllToAll) {
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
   auto ctranOnGuard = EnvRAII(NCCL_CTRAN_ENABLE, true);
 
-  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  ncclx::test::NcclCommRAII comm{
+      this->globalRank, this->numRanks, this->localRank, bootstrap_.get()};
   const int count = 1048576;
   const int nColl = 10;
 

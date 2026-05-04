@@ -15,7 +15,6 @@
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranNcclTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
 
 class DistRegCacheTest : public ctran::CtranDistTestFixture {
  public:
@@ -195,8 +194,9 @@ TEST_P(DistRegCacheTestSuite, ExportImportMem) {
     ASSERT_NE(regHdl, nullptr);
 
     ControlMsg msg(ControlMsgType::NVL_EXPORT_MEM);
-    COMMCHECK_TEST(
-        ipcRegCache->exportMem(data, regHdl->ipcRegElem, msg.ipcDesc));
+    std::vector<ctran::utils::CtranIpcSegDesc> extraSegments;
+    COMMCHECK_TEST(ipcRegCache->exportMem(
+        data, regHdl->ipcRegElem, msg.ipcDesc, extraSegments));
     ctran::regcache::IpcRegElem* ipcRegElem =
         reinterpret_cast<ctran::regcache::IpcRegElem*>(regHdl->ipcRegElem);
     auto ipcMem = ipcRegElem->ipcMem.rlock();
@@ -294,13 +294,19 @@ TEST_F(DistRegCacheTest, ExportReleaseMemCb) {
     std::vector<ctran::regcache::IpcReqCb> exportReqs(numRanks - 1);
     for (int peer = 1; peer < numRanks; peer++) {
       struct ctran::regcache::IpcDesc IpcDesc;
-      COMMCHECK_TEST(ipcRegCache->exportMem(data, ipcRegElem, IpcDesc));
+      std::vector<ctran::utils::CtranIpcSegDesc> extraSegments;
+      COMMCHECK_TEST(
+          ipcRegCache->exportMem(data, ipcRegElem, IpcDesc, extraSegments));
       EXPECT_EQ(IpcDesc.desc.range, ipcMemSize);
       EXPECT_EQ(IpcDesc.desc.numInlineSegments(), 1);
       EXPECT_EQ(IpcDesc.desc.totalSegments, 1);
       EXPECT_GT(IpcDesc.desc.segments[0].range, 0);
       COMMCHECK_TEST(ipcRegCache->notifyRemoteIpcExport(
-          myId, peerServerAddrs[peer], IpcDesc, &exportReqs[peer - 1]));
+          myId,
+          peerServerAddrs[peer],
+          IpcDesc,
+          extraSegments,
+          &exportReqs[peer - 1]));
     }
     mapper->barrier();
     for (auto it = exportReqs.begin(); it != exportReqs.end(); it++) {
@@ -359,22 +365,25 @@ TEST_F(DistRegCacheTest, ExportMultiMem) {
 
     // register and export the same GPU buffer twice
     std::vector<ctran::regcache::IpcReqCb> reqs(2);
+    std::vector<ctran::utils::CtranIpcSegDesc> extraSegments;
     COMMCHECK_TEST(
         mapper->regMem(data, dataRange, &segHdl, true, true, (void**)&regHdl));
     ctran::regcache::IpcRegElem* ipcRegElem1 =
         reinterpret_cast<ctran::regcache::IpcRegElem*>(regHdl->ipcRegElem);
-    COMMCHECK_TEST(ipcRegCache->exportMem(data, ipcRegElem1, IpcDesc));
+    COMMCHECK_TEST(
+        ipcRegCache->exportMem(data, ipcRegElem1, IpcDesc, extraSegments));
     COMMCHECK_TEST(ipcRegCache->notifyRemoteIpcExport(
-        myId, peerServerAddrs[peer], IpcDesc, &reqs[0]));
+        myId, peerServerAddrs[peer], IpcDesc, extraSegments, &reqs[0]));
     COMMCHECK_TEST(mapper->deregMem(segHdl, true));
     // second register and export
     COMMCHECK_TEST(
         mapper->regMem(data, dataRange, &segHdl, true, true, (void**)&regHdl));
     ctran::regcache::IpcRegElem* ipcRegElem2 =
         reinterpret_cast<ctran::regcache::IpcRegElem*>(regHdl->ipcRegElem);
-    COMMCHECK_TEST(ipcRegCache->exportMem(data, ipcRegElem2, IpcDesc));
+    COMMCHECK_TEST(
+        ipcRegCache->exportMem(data, ipcRegElem2, IpcDesc, extraSegments));
     COMMCHECK_TEST(ipcRegCache->notifyRemoteIpcExport(
-        myId, peerServerAddrs[peer], IpcDesc, &reqs[1]));
+        myId, peerServerAddrs[peer], IpcDesc, extraSegments, &reqs[1]));
     for (auto it = reqs.begin(); it != reqs.end(); it++) {
       while (it->completed.load() == false) {
       }
@@ -393,6 +402,104 @@ TEST_F(DistRegCacheTest, ExportMultiMem) {
     EXPECT_EQ(ipcRegCache->getNumRemReg(peerId), 0);
   } else {
     mapper->barrier();
+  }
+}
+
+TEST_F(DistRegCacheTest, ExportMultiSegmentMem) {
+  // E2E test: rank 0 allocates disjoint memory with more segments than
+  // CTRAN_IPC_INLINE_SEGMENTS, registers via globalRegister (mapper->regMem
+  // doesn't support multi-segment), exports via notifyRemoteIpcExport(), and
+  // rank 1 verifies the imported registration matches what rank 0 sent.
+  auto& mapper = comm_->ctran_->mapper;
+  ASSERT_NE(mapper, nullptr);
+
+  constexpr size_t numSegments = CTRAN_IPC_INLINE_SEGMENTS + 1;
+  const size_t segSize = 1UL << 21;
+  const size_t bufSize = segSize * numSegments;
+
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+  folly::SocketAddress localServerAddr = ipcRegCache->getServerAddr();
+  std::vector<folly::SocketAddress> peerServerAddrs;
+  allGatherSocketAddress(localServerAddr, peerServerAddrs);
+
+  if (globalRank == 0) {
+    auto myId = comm_->statex_->gPid();
+    const int peer = 1;
+
+    std::vector<TestMemSegment> segments;
+    void* data = ctran::CtranNcclTestHelpers::prepareBuf(
+        bufSize, kCuMemAllocDisjoint, segments, numSegments);
+    ASSERT_NE(data, nullptr);
+
+    // Use globalRegister which supports multi-segment buffers
+    COMMCHECK_TEST(regCache->globalRegister(data, bufSize, true));
+
+    // Retrieve the RegElem to access ipcRegElem for export
+    std::vector<void*> segHdls;
+    std::vector<ctran::regcache::RegElem*> regElems;
+    COMMCHECK_TEST(regCache->lookupSegmentsForBuffer(
+        data, bufSize, localRank, segHdls, regElems));
+    ASSERT_FALSE(regElems.empty());
+    auto* regHdl = regElems[0];
+    ASSERT_NE(regHdl, nullptr);
+    ASSERT_NE(regHdl->ipcRegElem, nullptr);
+
+    // Export memory — should produce extraSegments
+    ctran::regcache::IpcDesc ipcDesc;
+    std::vector<ctran::utils::CtranIpcSegDesc> extraSegments;
+    COMMCHECK_TEST(ipcRegCache->exportMem(
+        data, regHdl->ipcRegElem, ipcDesc, extraSegments));
+
+    // Verify export produced the expected segment layout
+    ctran::regcache::IpcRegElem* ipcRegElem =
+        reinterpret_cast<ctran::regcache::IpcRegElem*>(regHdl->ipcRegElem);
+    auto ipcMem = ipcRegElem->ipcMem.rlock();
+    EXPECT_EQ(ipcDesc.desc.range, ipcMem->getRange());
+    EXPECT_EQ(ipcDesc.desc.totalSegments, static_cast<int>(numSegments));
+    EXPECT_EQ(ipcDesc.desc.numInlineSegments(), CTRAN_IPC_INLINE_SEGMENTS);
+    ASSERT_EQ(extraSegments.size(), numSegments - CTRAN_IPC_INLINE_SEGMENTS);
+    for (int i = 0; i < CTRAN_IPC_INLINE_SEGMENTS; i++) {
+      EXPECT_NE(ipcDesc.desc.segments[i].sharedHandle.fd, 0);
+      EXPECT_GT(ipcDesc.desc.segments[i].range, 0);
+    }
+    for (size_t i = 0; i < extraSegments.size(); i++) {
+      EXPECT_NE(extraSegments[i].sharedHandle.fd, 0);
+      EXPECT_GT(extraSegments[i].range, 0);
+    }
+
+    // Send via notifyRemoteIpcExport (async socket path)
+    ctran::regcache::IpcReqCb exportReqCb;
+    COMMCHECK_TEST(ipcRegCache->notifyRemoteIpcExport(
+        myId, peerServerAddrs[peer], ipcDesc, extraSegments, &exportReqCb));
+
+    while (!exportReqCb.completed.load()) {
+    }
+
+    oobBarrier();
+
+    // Cleanup
+    COMMCHECK_TEST(regCache->globalDeregister(data, bufSize));
+    ctran::CtranNcclTestHelpers::releaseBuf(
+        data, bufSize, kCuMemAllocDisjoint, numSegments);
+
+  } else if (globalRank == 1) {
+    const int peer = 0;
+    auto peerId = comm_->statex_->gPid(peer);
+
+    // Wait for the async socket import to complete
+    while (ipcRegCache->getNumRemReg(peerId) == 0) {
+      std::this_thread::yield();
+    }
+    EXPECT_EQ(ipcRegCache->getNumRemReg(peerId), 1);
+
+    oobBarrier();
+    // Cleanup remote registrations
+    ipcRegCache->clearAllRemReg();
+    EXPECT_EQ(ipcRegCache->getNumRemReg(peerId), 0);
+
+  } else {
+    oobBarrier();
   }
 }
 

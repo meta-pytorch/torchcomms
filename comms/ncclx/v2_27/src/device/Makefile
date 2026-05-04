@@ -10,6 +10,7 @@ MAKEFLAGS += -r
 .SECONDARY:
 
 NCCLDIR := ../..
+SHAREDDIR := $(abspath $(NCCLDIR)/..)
 include $(NCCLDIR)/makefiles/common.mk
 include $(NCCLDIR)/makefiles/version.mk
 
@@ -21,6 +22,7 @@ DEVGLUE_OBJ  := $(OBJDIR)/device_glue.o
 
 INCFLAGS  = -I. -I.. -I$(BUILDDIR)/include -I../include
 INCFLAGS += -I../../
+INCFLAGS += -I${SHAREDDIR}/
 
 INCFLAGS  += -I$(BASE_DIR)
 INCFLAGS  += -I$(CONDA_INCLUDE_DIR)
@@ -114,11 +116,8 @@ SRCS += ${BASE_DIR}/comms/ctran/algos/AllReduce/AllReduceShm.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/AllGatherP/DirectImpl.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/AllGatherP/PipelineImpl.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/AllGatherP/AllGatherP.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/AllToAllvDedup/PrepareImpl.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/AllToAllvDedup/ExecImpl.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/Broadcast/Broadcast.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/SendRecv/SendRecv.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/SendRecv/SendRecvStagedCopy.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/SendRecv/SendRecvP2p.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/Barrier.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/Checksum.cu

@@ -18,12 +18,17 @@ jobs:
         include:
           - runs-on: "linux.g5.12xlarge.nvidia.gpu"
             gpu-arch-type: "cuda"
-            gpu-arch-version: "12.8"
+            gpu-arch-version: "13.0"
             torch-version: "stable"
           - runs-on: "linux.g5.12xlarge.nvidia.gpu"
             gpu-arch-type: "cuda"
-            gpu-arch-version: "12.8"
+            gpu-arch-version: "13.0"
             torch-version: "nightly"
+          - runs-on: "linux.g5.12xlarge.nvidia.gpu"
+            gpu-arch-type: "cuda"
+            gpu-arch-version: "13.0"
+            torch-version: "nightly"
+            build-flags: "USE_NCCLX=0 USE_TRANSPORT=0"
 
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     permissions:
@@ -34,10 +39,12 @@ jobs:
       runner: ${{ matrix.runs-on }}
       gpu-arch-type: ${{ matrix.gpu-arch-type }}
       gpu-arch-version: ${{ matrix.gpu-arch-version }}
-      upload-artifact: build-artifacts-${{ matrix.torch-version }}-${{ matrix.gpu-arch-type }}-${{ matrix.gpu-arch-version }}
+      upload-artifact: build-artifacts-${{ matrix.torch-version }}-${{ matrix.gpu-arch-type }}-${{ matrix.gpu-arch-version }}-${{ matrix.build-flags }}
       script: |
         set -ex
         source .github/scripts/setup_env.sh --with-cmake --cuda-version "${{ matrix.gpu-arch-version }}" "${{ matrix.torch-version }}"
+
+        export ${{ matrix.build-flags }}
 
         # Build wheel
         pip install build
@@ -55,11 +62,11 @@ jobs:
         include:
           - runs-on: "linux.g5.12xlarge.nvidia.gpu"
             gpu-arch-type: "cuda"
-            gpu-arch-version: "12.8"
+            gpu-arch-version: "13.0"
             torch-version: "stable"
           - runs-on: "linux.g5.12xlarge.nvidia.gpu"
             gpu-arch-type: "cuda"
-            gpu-arch-version: "12.8"
+            gpu-arch-version: "13.0"
             torch-version: "nightly"
 
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
@@ -88,12 +95,17 @@ jobs:
         include:
           - runs-on: "linux.g5.12xlarge.nvidia.gpu"
             gpu-arch-type: "cuda"
-            gpu-arch-version: "12.8"
+            gpu-arch-version: "13.0"
             torch-version: "stable"
           - runs-on: "linux.g5.12xlarge.nvidia.gpu"
             gpu-arch-type: "cuda"
-            gpu-arch-version: "12.8"
+            gpu-arch-version: "13.0"
             torch-version: "nightly"
+          - runs-on: "linux.g5.12xlarge.nvidia.gpu"
+            gpu-arch-type: "cuda"
+            gpu-arch-version: "13.0"
+            torch-version: "nightly"
+            build-flags: "USE_NCCLX=0 USE_TRANSPORT=0"
 
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     permissions:
@@ -104,16 +116,18 @@ jobs:
       runner: ${{ matrix.runs-on }}
       gpu-arch-type: ${{ matrix.gpu-arch-type }}
       gpu-arch-version: ${{ matrix.gpu-arch-version }}
-      download-artifact: build-artifacts-${{ matrix.torch-version }}-${{ matrix.gpu-arch-type }}-${{ matrix.gpu-arch-version }}
+      download-artifact: build-artifacts-${{ matrix.torch-version }}-${{ matrix.gpu-arch-type }}-${{ matrix.gpu-arch-version }}-${{ matrix.build-flags }}
       script: |
         set -ex
         TORCH_VERSION=$(cat "${RUNNER_ARTIFACT_DIR}/torch_version.txt")
         source .github/scripts/setup_env.sh --cuda-version "${{ matrix.gpu-arch-version }}" --torch-version "$TORCH_VERSION" "${{ matrix.torch-version }}"
 
+        export ${{ matrix.build-flags }}
+
         # Install from pre-built wheel (skip build step)
         pip install "${RUNNER_ARTIFACT_DIR}"/*.whl pytest numpy psutil parameterized pydot requests urllib3 tabulate
 
-        python -c "import torchcomms; import torchcomms._transport"
+        python -c "import torchcomms"
 
         # Run Python tests
         comms/torchcomms/scripts/run_tests_unit_py.sh

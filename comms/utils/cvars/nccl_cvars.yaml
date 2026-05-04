@@ -1390,21 +1390,12 @@ cvars:
      Number of threads in each thread block used for intra-node zero-copy
      sendrecv kernel. Default -1 to use the recommended size by CUDA runtime
 
- - name        : NCCL_CTRAN_NVL_SENDRECV_STAGED_COPY_THREAD_BLOCK_SIZE
+ - name        : NCCL_CTRAN_NVL_SENDRECV_P2P_THREAD_BLOCK_SIZE
    type        : int
    default     : 512
    description : |-
-     Number of threads in each thread block used for intra-node staged-copy
+     Number of threads in each thread block used for intra-node p2p
      sendrecv kernel.
-
- # TODO: after refactoring of copy-engine, remove this and use NCCL_SENDRECV_ALGO
- # to select sendrecv copy engine
- - name        : NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE
-   type        : bool
-   default     : false
-   description : |-
-     Enable the use of copy engine in CTRAN NVL sendrecv.
-     Default to use SM based SEND/RECV for NVL.
 
  - name        : NCCL_CTRAN_REDUCESCATTER_RING_MAX_NUM_THREAD_BLOCKS
    type        : int
@@ -2002,29 +1993,32 @@ cvars:
  - name        : NCCL_SENDRECV_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctzcopy, ctstaged, ctp2p
+   choices     : orig, ctran, ctzcopy, ctp2p, ctgraph
    description : |-
      The algorithm to use for sendrecv communication
      orig - Copy-based communication
      ctran - Ctran-based communication auto-select
      ctzcopy - Ctran-based zero-copy kernel for NVL
-     ctstaged - Ctran-based staged-copy kernel for NVL
-     ctp2p - Experimental algo: Ctran-based point-to-point kernel for NVL
+     ctp2p - Ctran-based point-to-point kernel for NVL
+     ctgraph - Cudagraph-aware: pre-registers buffers during graph capture, falls back to baseline otherwise
 
  - name        : NCCL_ALLGATHER_P_ALGO
    type        : enum
    default     : ctpipeline
-   choices     : ctdirect, ctpipeline
+   choices     : ctdirect, ctpipeline, ctrdpipeline
    description : |-
      The algorithm to use for AllgatherP communication
      ctdirect - Ctran-based direct point-to-point algorithm
      ctpipeline - Ctran-based pipeline algorithm that pipelines
                   inter-node rail ring and intra-node CopyEngine based copy
+     ctrdpipeline - Ctran-based hybrid algorithm that does recursive doubling across
+                    rails for inter-node exchange and CopyEngine based broadcast
+                    within the NVLink domain. Requires nNodes to be a power of 2.
 
  - name        : NCCL_ALLGATHER_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctdirect, ctring, ctrd, ctbrucks
+   choices     : orig, ctran, ctdirect, ctring, ctrd, ctbrucks, ctgraph, ctgraph_pipeline, ctgraph_rdpipeline, ctgraph_ring, ctgraph_rd
    description : |-
      The algorithm to use for Allgather communication
      orig - Copy-based ring algorithm
@@ -2032,6 +2026,17 @@ cvars:
      ctdirect - Ctran-based direct point-to-point algorithm
      ctring - Ctran-based ring algorithm
      ctrd - Ctran-based recursive doubling algorithm
+     ctgraph - Cudagraph-aware: auto-selects pipeline/ring/rd based on topology during graph capture
+     ctgraph_pipeline - Cudagraph-aware: forces persistent pipeline algorithm (nLocalRanks>1)
+     ctgraph_rdpipeline - Cudagraph-aware: forces persistent recursive-doubling pipeline algorithm (nLocalRanks>1, nNodes power of 2)
+     ctgraph_ring - Cudagraph-aware: forces ring algorithm (nLocalRanks==1, large messages)
+     ctgraph_rd - Cudagraph-aware: forces recursive doubling algorithm (nLocalRanks==1, small messages)
+
+ - name        : NCCL_CTGRAPH_ALLGATHER_RING_THRESHOLD
+   type        : uint64_t
+   default     : 134217728
+   description : |-
+     Minimum send size in bytes for ctgraph auto-select to choose ring over recursive doubling when nLocalRanks==1. Default 128MB.
 
  - name        : NCCL_REDUCESCATTER_ALGO
    type        : enum
@@ -2941,7 +2946,7 @@ cvars:
 
  - name        : MCCL_SCUBA_ENABLED
    type        : bool
-   default     : false
+   default     : true
    description : |-
      Enable MCCL Scuba structured logging. When enabled, MCCL will log
      events to dedicated MCCL Scuba tables for observability and debugging.
@@ -2961,6 +2966,16 @@ cvars:
        LOW      - All logs including low-priority (verbose/debug)
      For example, setting MCCL_SCUBA_LOG_LEVEL=HIGH means only HIGH and
      CRITICAL priority logs will be forwarded to Scuba.
+
+ - name        : MCCL_CTRAN_TRANSPORT_PROFILER
+   type        : bool
+   default     : true
+   description : |-
+     Enable ctran transport profiling for MCCL. When true, MCCL overrides
+     NCCL_CTRAN_TRANSPORT_PROFILER to true during init so that the ctran
+     Profiler is created and algo profiling data flows to the
+     mccl_operation_trace Scuba table via McclAlgoProfilerReporter. Set to
+     false to disable ctran profiling from the MCCL level.
 
  - name        : NCCL_GIN_GDAKI_NIC_HANDLER
    type        : int

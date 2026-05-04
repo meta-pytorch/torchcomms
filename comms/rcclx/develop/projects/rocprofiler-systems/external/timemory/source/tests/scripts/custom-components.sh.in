@@ -1,0 +1,70 @@
+#!/bin/bash -e
+#
+# NOTE: remove '--mpi' after @PROJECT_BINARY_DIR@/timemory-run if applications built without MPI
+#
+source $(dirname $(basename ${BASH_SOURCE[0]}))/common.sh
+
+TEST_NAME=$(basename ${BASH_SOURCE[0]})
+USE_PAPI="@USE_PAPI@"
+
+export TIMEMORY_OUTPUT_PATH=@CMAKE_CURRENT_BINARY_DIR@/dynamic/timemory-@TEST_NAME@-output
+export TIMEMORY_OUTPUT_PREFIX="custom-components"
+export TIMEMORY_TEXT_OUTPUT=ON
+export TIMEMORY_FILE_OUTPUT=ON
+export TIMEMORY_AUTO_OUTPUT=ON
+export TIMEMORY_TREE_OUTPUT=OFF
+export TIMEMORY_JSON_OUTPUT=OFF
+export TIMEMORY_COUT_OUTPUT=ON
+export TIMEMORY_FLAMEGRAPH_OUTPUT=OFF
+
+rm -rf ${TIMEMORY_OUTPUT_PATH}
+
+# add path to custom lib in LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=@PROJECT_BINARY_DIR@:@PROJECT_BINARY_DIR@/external/dyninst/dyninstAPI_RT:${LD_LIBRARY_PATH}
+
+if [ ! -f "@PROJECT_BINARY_DIR@/libcustom_dynamic_instr.so" ]; then
+    emit-separator "Warning! \"@PROJECT_BINARY_DIR@/libcustom_dynamic_instr.so\" does not appear to exist"
+fi
+
+emit-separator "Performing binary re-write"
+
+# instrument using custom dynamic instrumentation library
+@PROJECT_BINARY_DIR@/timemory-run --load libcustom_dynamic_instr -o ./@TEST_NAME@.inst -- @COMMAND@
+
+emit-separator "Executing instrumented binary"
+
+# run the instrumented binary
+./@TEST_NAME@.inst
+
+emit-separator "Analyzing results in ${TIMEMORY_OUTPUT_PATH}"
+
+MONO_FILE="${TIMEMORY_OUTPUT_PATH}/${TIMEMORY_OUTPUT_PREFIX}-monotonic_clock.txt"
+IPC_FILE="${TIMEMORY_OUTPUT_PATH}/${TIMEMORY_OUTPUT_PREFIX}-inst_per_cycle.txt"
+
+if [ ! -f "${MONO_FILE}" ]; then
+    echo -e "Missing monotonic-clock output file: \"${MONO_FILE}\""
+    echo -e "File in ${TIMEMORY_OUTPUT_PATH}:\n$(ls ${TIMEMORY_OUTPUT_PATH})"
+    exit 1
+else
+    NMONO=$(count-lines ${MONO_FILE})
+    if [ "${NMONO}" -eq 0 ]; then
+        echo -e "\nMonotonic-clock results from \"${MONO_FILE}\" were empty:\n"
+        echo -e "$(cat ${MONO_FILE} | grep '>>>')"
+        exit 1
+    fi
+fi
+
+if [ "${USE_PAPI}" -ne 0 ]; then
+    if [ ! -f "${IPC_FILE}" ]; then
+        echo -e "Missing instructions-per-cycle output file: \"${IPC_FILE}\""
+        echo -e "File in ${TIMEMORY_OUTPUT_PATH}:\n$(ls ${TIMEMORY_OUTPUT_PATH})"
+        exit 1
+    else
+        NIPC=$(count-lines ${IPC_FILE})
+        if [ "${NIPC}" -eq 0 ]; then
+            echo -e "\nInstructions-per-cycle results from \"${IPC_FILE}\" were empty:\n"
+            echo -e "$(cat ${IPC_FILE} | grep '>>>')"
+            exit 1
+        fi
+    fi
+fi

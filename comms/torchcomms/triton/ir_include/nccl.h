@@ -29,7 +29,8 @@ typedef enum {
 /* Opaque handle to communicator */
 typedef struct ncclComm* ncclComm_t;
 
-/* Window type - pointer to ncclWindow_vidmem struct defined in core__types.h */
+/* Window/RMA types */
+#define NCCL_RMA_SUPPORTED
 struct ncclWindow_vidmem;
 typedef struct ncclWindow_vidmem* ncclWindow_t;
 

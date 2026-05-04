@@ -334,6 +334,10 @@ ncclResult_t ncclTasksRegAndEnqueue(struct ncclComm* comm) {
     devWork.nWarps = task->nWarps;
     devWork.redOpArg = task->opDev.scalarArg;
     devWork.redOpArgIsPtr = task->opDev.scalarArgIsPtr;
+    // [NCCLX-QuantizedColl] Pipe quantize seed pointer from InfoExt to device work
+    if (task->ext.has_value()) {
+      devWork.quantizeRandomSeedPtr = task->ext->quantizeRandomSeedPtr;
+    }
     devWork.oneNode = (comm->nNodes == 1);
     devWork.isOneRPN = comm->isOneRPN;
     devWork.netRegUsed = devWork.regUsed = 0;
@@ -792,9 +796,9 @@ static ncclResult_t scheduleCollTasksToPlan(
         proxyOp->task.coll = task;
         proxyOp->rank = comm->rank;
         proxyOp->ringAlgo = NULL;
+        ncclx::colltrace::proxyTraceAddBasicInfo(*proxyOp, nMaxChannels[kind], task->func);
         if (proxyOp->reg && task->algorithm == NCCL_ALGO_RING && (task->recvNetHandles[c] || task->sendNetHandles[c])) {
           if (task->func == ncclFuncAllGather) {
-        ncclx::colltrace::proxyTraceAddBasicInfo(*proxyOp, nMaxChannels[kind], proxyOp->task.coll->func);
             proxyOp->ringAlgo = new RingAGAlgorithm(task->sendbuff, task->recvbuff, comm->nRanks, comm->channels[c].ring.userRanks, proxyOp->chunkSteps, proxyOp->sliceSteps, proxyOp->chunkSize, proxyOp->sliceSize, proxyOp->loopOffset, proxyOp->channelSize, elementSize, task->count * elementSize, task->sendNetHandles[c], task->recvNetHandles[c], task->srecvNetHandles[c]);
           } else if (task->func == ncclFuncAllReduce) {
             proxyOp->ringAlgo = new RingARAlgorithm(task->sendbuff, task->recvbuff, comm->nRanks, comm->channels[c].ring.index, proxyOp->chunkSteps, proxyOp->sliceSteps, proxyOp->chunkSize, proxyOp->sliceSize, proxyOp->loopOffset, proxyOp->channelSize, elementSize, task->sendNetHandles[c], task->recvNetHandles[c], task->srecvNetHandles[c]);
@@ -807,6 +811,7 @@ static ncclResult_t scheduleCollTasksToPlan(
         proxyOp->incWorkCounter = true;
         proxyOp->nChannels = nChannels;
         ncclAddWorkBatchToPlan(comm, plan, c, workNode->workType, task->devFuncId, plan->workBytes);
+        ncclx::colltrace::proxyTraceAddBasicInfo(*proxyOp, nMaxChannels[kind], proxyOp->task.coll->func);
         // Coverity reports "proxyOp->connection" as being possibly uninitialized.  It's hard to
         // determine if that's actually true but it's also not clear if that would be an issue.
         // coverity[uninit_use_in_call:FALSE]
@@ -1556,6 +1561,13 @@ ncclResult_t ncclLaunchPrepare(struct ncclComm* comm) {
       !ncclIntruQueueEmpty(&planner->collCeTaskQueue) ||
       planner->nTasksRma != 0) {
     do {
+      // Bump opCount before creating proxy ops for this plan, so that
+      // ProxyTrace and CollTrace both capture the same opCount value.
+      // Previously opCount was incremented in doLaunches (group.cc) after
+      // each kernel launch, but proxy ops are created here in Prepare
+      // before any launches, causing PT to capture a stale value.
+      comm->opCount++;
+
       memset(&planner->wipPlan, 0, sizeof(planner->wipPlan));
 
       struct ncclKernelPlan* plan = ncclMemoryPoolAlloc<struct ncclKernelPlan>(&comm->memPool_ncclKernelPlan, &comm->memPermanent);
@@ -2182,6 +2194,15 @@ static ncclResult_t calcCollChunking(
   int chunkSize = stepSize*chunkSteps;
   if (info->protocol == NCCL_PROTO_LL) chunkSize /= 2;
   if (info->protocol == NCCL_PROTO_LL128) chunkSize = (chunkSize / NCCL_LL128_LINEELEMS) * NCCL_LL128_DATAELEMS;
+
+  // [NCCLX-Quantized]
+  // Quantized collectives (e.g., ReduceScatterQuantize) transport data in a
+  // smaller type (BF16, 2 bytes) than the input type (FP32, 4 bytes). The
+  // transport buffer step can hold 2x more elements, so double the chunk size
+  // to fully utilize the transport buffer and halve the number of PAT steps.
+  if (info->ext.has_value() && info->ext->quantizeRandomSeedPtr != nullptr) {
+    chunkSize *= 2;
+  }
 
   if (info->algorithm == NCCL_ALGO_COLLNET_DIRECT) {
     // Optimize chunkSize / nSteps

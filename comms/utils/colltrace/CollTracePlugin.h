@@ -54,6 +54,14 @@ class ICollTracePlugin {
 
   virtual CommsMaybeVoid afterCollKernelEnd(
       CollTraceEvent& curEvent) noexcept = 0;
+
+  // Return the maximum number of past events this plugin needs to retain.
+  // CollTrace uses max(all plugins) to size the shared GPU ring buffer to
+  // at least 2x this value, ensuring no data loss under normal operation.
+  // Default: 0 (no retention requirement — ring buffer uses its default size).
+  virtual int64_t maxEventRetention() const noexcept {
+    return 0;
+  }
 };
 
 } // namespace meta::comms::colltrace

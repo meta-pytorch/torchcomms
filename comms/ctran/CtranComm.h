@@ -5,6 +5,9 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
+#include <optional>
+#include <vector>
 
 #include <folly/Synchronized.h>
 #include "comms/ctran/bootstrap/ICtranBootstrap.h"
@@ -13,6 +16,7 @@
 #include "comms/ctran/utils/Abort.h"
 #include "comms/ctran/utils/AsyncError.h"
 #include "comms/ctran/utils/Exception.h"
+#include "comms/utils/colltrace/AlgoStats.h"
 #include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/utils/commSpecs.h"
 
@@ -41,18 +45,21 @@ struct ctranConfig {
   const char* ncclAllGatherAlgo{nullptr};
   std::vector<enum CommBackend> backends = {};
   ctranPipesConfig pipesConfig;
+  bool enableProfiler{NCCL_CTRAN_TRANSPORT_PROFILER};
 
   bool operator==(const ctranConfig& other) const {
     return (
         blocking == other.blocking && commDesc == other.commDesc &&
         ncclAllGatherAlgo == other.ncclAllGatherAlgo &&
-        backends == other.backends && pipesConfig == other.pipesConfig);
+        backends == other.backends && pipesConfig == other.pipesConfig &&
+        enableProfiler == other.enableProfiler);
   }
 };
 
 // Forward declaration to avoid circular dependency
 class CollTrace;
 struct ncclComm;
+class CtranGpe;
 namespace ncclx::memory {
 class memCacheAllocator;
 }
@@ -150,6 +157,10 @@ class CtranComm {
   // initialized.
   comms::pipes::Transport* getMultiPeerTransportsPtr() const;
 
+  // Returns a snapshot of the algo stats, or std::nullopt if stats are
+  // disabled.
+  std::optional<meta::comms::colltrace::AlgoStatDump> dumpAlgoStats() const;
+
   // fields are public to allow access from external code and tests
   // TODO: remove config_, it's redundant
   ctranConfig config_;
@@ -179,7 +190,30 @@ class CtranComm {
   std::unique_ptr<comms::pipes::MultiPeerTransport> multiPeerTransport_;
 #endif // defined(ENABLE_PIPES)
 
+  // Deferred cleanup for CUDA graph resources. CUDA user-object destructor
+  // callbacks cannot call CUDA APIs, so cleanup is enqueued here and
+  // executed at comm destruction where CUDA APIs are safe.
+  class CudagraphDeferredCleanup {
+   public:
+    void add(std::function<void()> fn) {
+      fns_.wlock()->push_back(std::move(fn));
+    }
+    void runAll() {
+      auto fns = fns_.wlock();
+      for (auto& fn : *fns) {
+        fn();
+      }
+      fns->clear();
+    }
+
+   private:
+    folly::Synchronized<std::vector<std::function<void()>>> fns_;
+  };
+  CudagraphDeferredCleanup cudagraphDeferredCleanup;
+
  private:
+  friend class CtranGpe;
+  std::unique_ptr<meta::comms::colltrace::AlgoStats> algoStats_;
   // TODO: define proper constructor to make CtranComm be independent of
   // ncclComm.
   // While doing refactoring we always create CtranComm from ncclComm and it

@@ -1460,6 +1460,13 @@ ncclResult_t ncclLaunchPrepare(struct ncclComm* comm) {
       !ncclIntruQueueEmpty(&planner->collSymTaskQueue) ||
       !ncclIntruQueueEmpty(&planner->collCeTaskQueue)) {
     do {
+      // Bump opCount before creating proxy ops for this plan, so that
+      // ProxyTrace and CollTrace both capture the same opCount value.
+      // Previously opCount was incremented in doLaunches (group.cc) after
+      // each kernel launch, but proxy ops are created here in Prepare
+      // before any launches, causing PT to capture a stale value.
+      comm->opCount++;
+
       memset(&planner->wipPlan, 0, sizeof(planner->wipPlan));
 
       struct ncclKernelPlan* plan = ncclMemoryPoolAlloc<struct ncclKernelPlan>(&comm->memPool_ncclKernelPlan, &comm->memPermanent);

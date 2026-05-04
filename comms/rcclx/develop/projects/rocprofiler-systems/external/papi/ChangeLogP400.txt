@@ -1,0 +1,418 @@
+2010-01-14	terpstra
+	* src/perf_events.c 1.18:
+		More tweaks from Corey for event rescheduling problem.
+		Also a syntax fix for POWER platforms.
+
+2010-01-13	sbk
+	* src/configure.in 1.166:
+		
+		Enable the static perf events static table to be created and compiled in
+		again for Cray XT CLE.
+
+2010-01-13	terpstra
+	* release_procedure.txt 1.13:
+		Bump the date.
+
+	* src/papi_internal.c 1.138:
+		Fix for rescheduling events after a failed add. This addresses the NULL pointer issue found in overflow_allcounters on i7.
+		Thanks to Corey Ashford of IBM for the fix.
+
+	* papi.spec 1.4:
+		Final changes from Will Cohen.
+
+	* src/libpfm-3.y/config.mk 1.3:
+	* src/libpfm-3.y/examples_v2.x/self_smpl_multi.c 1.3:
+	* src/libpfm-3.y/examples_v2.x/syst.c 1.3:
+	* src/libpfm-3.y/examples_v2.x/syst_multi_np.c 1.3:
+	* src/libpfm-3.y/examples_v2.x/syst_np.c 1.3:
+	* src/libpfm-3.y/lib/pfmlib_coreduo.c 1.3:
+	* src/libpfm-3.y/lib/power7_events.h 1.3:
+		*** empty log message ***
+
+	* src/utils/event_info.c 1.11:
+		Change test for version number to differentiate between PAPI-C 
+		and Classic PAPI. We were testing for versions >=3 && >= .9. 
+		This was missing versions >= 4.
+
+	* src/libpfm-3.y/include/perfmon/pfmlib_gen_mips64.h 1.1.1.4:
+	* src/libpfm-3.y/lib/intel_atom_events.h 1.1.1.5:
+	* src/libpfm-3.y/lib/intel_corei7_events.h 1.1.1.5:
+	* src/libpfm-3.y/lib/pfmlib_gen_mips64.c 1.1.1.6:
+	* src/libpfm-3.y/lib/pfmlib_intel_nhm.c 1.1.1.9:
+		Importing latest libpfm
+
+	* src/Makefile.in 1.44:
+	* src/papi.h 1.193:
+		Update version numbers for impending release of PAPI 4.0.0.
+
+2010-01-13	jagode
+	* src/Makefile.inc 1.152:
+		Avoid printing conditional 'if' statements while compiling (but 
+		they are performed).
+
+	* src/perf_events.h 1.7:
+		Seg fault on i7 with perf_events. This was fixed a while ago for 
+		perfmon and perfctr but perf-events was left behind.
+
+2010-01-13	bsheely
+	* src/configure 1.165:
+		Generated configure to correspond to ost recent change (Cray XT) 
+		to configure.in
+
+2010-01-12	terpstra
+	* src/linux-bgp.c 1.3:
+		Restore prior native naming convention: PNE_BGP_...
+		Needed to avoid conflict with system level naming conventions.
+
+	* src/ctests/bgp/Makefile 1.3:
+		Modifications to build test files for BGP.
+
+	* INSTALL.txt 1.42:
+		Update description for BGP.
+
+2010-01-08	terpstra
+	* src/Rules.perfctr-pfm 1.47:
+	* src/Rules.pfm_pe 1.10:
+		Eliminate duplicate definitions of environment variable for the compile line.
+		These are now defined in configure.
+
+	* src/ctests/test_utils.c 1.77:
+		Minor tweak to print native event codes in hex instead of 
+		decimal -- far more useful that way.
+
+	* src/perfctr-p4.c 1.106:
+		Minor tweak to get this file to compile with DEBUG turned on.
+
+2010-01-07	sbk
+	* src/Rules.pfm 1.50:
+		The libpfm flag CONFIG_PFMLIB_OLD_PFMV2 was correctly set for when compiling
+		and building libpfm, but it also needs to be set for installing also. The
+		header file libpfm-3.y/include/perfmon/perfmon.h uses this flag to
+		determine if a macro is prepended to perfmon.h when installing it.
+
+2010-01-07	jagode
+	* src/linux-acpi.c 1.16:
+	* src/linux-mx.c 1.15:
+	* src/linux-net.c 1.4:
+		Renamed identifier 'native_name' for net, mx, and acpi 
+		components because of conflicts on POWER machines. This variable 
+		has also been defined in powerX_events.h.
+
+2010-01-07	bsheely
+	* src/Rules.perfctr 1.57:
+		Added DEBUGFLAGS to OPTFLAGS since only OPTFLAGS gets used in 
+		Makefile.inc
+
+2010-01-05	terpstra
+	* src/multiplex.c 1.76:
+		Modified license language for John May's LLNL portion of this code to conform with BSD as provided by LLNL.
+		Thanks, Bronis, for bird-dogging this.
+
+2009-12-20	terpstra
+	* src/solaris-niagara2.c 1.4:
+		Changes to fix overflow/profile issues in niagara2.
+		Thanks to Fabian Gorsler.
+
+2009-12-18	terpstra
+	* src/ctests/bgp/papi_1.c 1.2:
+	* src/ctests/native.c 1.61:
+	* src/ctests/papi_test.h 1.37:
+	* src/extras.c 1.159:
+	* src/linux-bgp-memory.c 1.2:
+	* src/linux-bgp-native-events.h 1.2:
+	* src/linux-bgp-preset-events.c 1.2:
+	* src/linux-bgp.h 1.2:
+	* src/papi.c 1.337:
+	* src/papiStdEventDefs.h 1.38:
+	* src/papi_data.c 1.35:
+	* src/papi_internal.h 1.181:
+	* src/papi_preset.h 1.17:
+	* src/papi_protos.h 1.69:
+	* src/papi_vector.c 1.22:
+		Committing changes for BG/P.
+		Utilities and basic counting works;
+		Not fully tested.
+
+2009-12-16	terpstra
+	* LICENSE.txt 1.6:
+		Minor tweaks on the header of the license text.
+
+	* src/solaris-niagara2-memory.c 1.3:
+	* src/solaris-niagara2.h 1.3:
+		Commit initial changes for Niagara2 support for PAPI-C.
+		Thanks to Fabian Gorsler.
+		Basic counting works; some unresolved issues remain for overflow and profile.
+
+2009-12-11	terpstra
+	* src/papi_events.csv 1.3:
+		Add a synonym for Pentium M.
+
+2009-12-08	bsheely
+	* src/linux.c 1.69:
+		Fixed memory issue seen in testing on certain platforms
+
+2009-12-05	terpstra
+	* ChangeLogP372.txt 1.1:
+		file ChangeLogP372.txt was initially added on branch papi-3-7-0.
+
+2009-12-02	terpstra
+	* src/sys_perf_counter_open.c 1.10:
+	* src/syscalls.h 1.4:
+		Slightly cleaner syntax for redefinition of perf_event_attr in 
+		KERNEL31.
+
+2009-12-01	terpstra
+	* src/ctests/sdsc4.c 1.14:
+		Fix from Will Cohen to avoid round-off errors in computing small 
+		differences between large numbers, which occasionally resulted 
+		in sqrt of negative numbers. Originally applied to sdsc2; 
+		modified and applied to sdsc2.
+
+2009-11-30	terpstra
+	* src/x86_cache_info.c 1.7:
+		Strip the Windows version of cpuid out to make this version 
+		compatible with the 3.7.x branch.
+
+	* src/ctests/sdsc2.c 1.13:
+		Fix from Will Cohen to avoid round-off errors in computing small differences between large numbers, which occasionally resulted in sqrt of negative numbers.
+		Thanks Will
+
+2009-11-25	terpstra
+	* src/papi_hl.c 1.77:
+		PAPI_stop_counters was returning PAPI_OK even if PAPI_stop 
+		returned something other than PAPI_OK. Uncovered as part of the 
+		BG/P merge.
+
+2009-11-25	bsheely
+	* src/hwinfo_linux.c 1.2:
+		added test for topology/thread_siblings and topology/
+		core_siblings
+
+2009-11-24	terpstra
+	* src/papi_vector.h 1.10:
+		Fix a bug in assigning signals for overflow.
+		
+		Also expose a vector_find_dummy routine to allow testing for component functions. If the function pointer is a dummy, it isn't implemented in the component.
+		This is used in extras to test for the implementation of a name_to_code routine.
+
+2009-11-24	bsheely
+	* src/ctests/hwinfo.c 1.7:
+		Removed invalid code (zero can be a valid value for nnodes)
+
+2009-11-23	bsheely
+	* src/solaris-ultra.c 1.125:
+		resolved compile error
+
+	* src/run_tests.sh 1.37:
+	* src/run_valgrind_tests.sh 1.2:
+		valgrind code merged into run_tests.sh and commented out by 
+		default
+
+2009-11-20	bsheely
+	* src/genpapifdef.c 1.41:
+	* src/papi_events.xml 1.3:
+	* src/papi_fwrappers.c 1.81:
+		Applied patch from Steve Kaufmann at Cray. Removes the remaining 
+		Unicos, Catamount, T3E, X1 and X2 references. Only explicit 
+		support for XT4+/CLE remains.
+
+2009-11-18	mucci
+	* src/any-null.c 1.52:
+	* src/linux-bgl.c 1.9:
+	* src/perfmon.c 1.97:
+	* src/windows.c 1.4:
+		Renamed shutdown_global to shutdown_substrate to make it more obvious that
+		this is per substrate. This callback will be important for freeing some memory
+		up and making sure locks are reset. Looks like a big patch, but only a few lines.
+
+	* src/config.h.in 1.9:
+		Add support for detecting gettid and syscall(gettid) which results in
+		HAVE_GETTID and HAVE_SYSCALL_GETTID being defined in config.h
+		
+		This will be useful for Linux where we can remove all the special casing
+		for threads and locking and the errors with getpid. gettid all the time.
+
+	* src/papi_lock.h 1.1:
+		Beginnings of a single function with all PAPI/Linux locking functions.
+		
+		Note to PAPI-C developers. The multiple context concept of PAPI-C has failed
+		to include the lock data structure. PAPI currently only has one scope of
+		locks that span the high-level to the low-level. This will need to be revisited
+		and the locks split into high-level and per-context locks.
+
+2009-11-13	terpstra
+	* ChangeLogP371.txt 1.1:
+		file ChangeLogP371.txt was initially added on branch papi-3-7-0.
+
+2009-11-12	bsheely
+	* src/papi_events_table.sh 1.1:
+	* src/papi_pfm_events.c 1.35:
+	* src/papi_pfm_events.h 1.4:
+	* src/perfmon_events.csv 1.57:
+	* src/perfmon_events_table.sh 1.6:
+	* src/pmapi-ppc64_events.c 1.8:
+	* src/ppc64_events.h 1.10:
+		renamed perfmon_events.csv perfmon_events_table.h 
+		perfmon_events_table.sh to papi_events.csv papi_events_table.h 
+		papi_events_table.sh and made code changes required by the 
+		renaming
+
+2009-11-11	terpstra
+	* src/ctests/first.c 1.49:
+		Fix overly restrictive verification of results. In verifying 
+		that FP_INS/FP_OPS/TOT_INS was non-zero, we were requiring it to 
+		be near theoretical FP_OPS which caused false verification 
+		failures in some edge cases. Now we just require count >= 
+		iterations.
+
+2009-11-11	bsheely
+	* src/ctests/inherit.c 1.13:
+	* src/ctests/multiplex1_pthreads.c 1.49:
+	* src/ctests/overflow.c 1.66:
+	* src/ctests/overflow2.c 1.25:
+	* src/ctests/overflow3_pthreads.c 1.21:
+	* src/ctests/overflow_allcounters.c 1.5:
+	* src/ctests/overflow_force_software.c 1.24:
+	* src/ctests/overflow_index.c 1.9:
+	* src/ctests/overflow_one_and_read.c 1.5:
+	* src/ctests/overflow_single_event.c 1.45:
+	* src/ctests/overflow_twoevents.c 1.26:
+	* src/ctests/pthrtough2.c 1.7:
+	* src/ctests/zero_shmem.c 1.6:
+	* src/ftests/cost.F 1.18:
+	* src/ftests/fmultiplex1.F 1.37:
+	* src/ftests/ftests_util.F 1.49:
+	* src/ftests/native.F 1.55:
+	* src/perfmon.h 1.20:
+		removed code for obsolete cray builds
+
+	* src/ctests/do_loops.c 1.32:
+	* src/ctests/zero_fork.c 1.9:
+	* src/linux-memory.c 1.41:
+	* src/linux.h 1.3:
+	* src/perfctr-p3.c 1.91:
+	* src/perfctr-p3.h 1.50:
+	* src/run_cat_tests.sh 1.4:
+		removed Catamount code
+
+2009-11-09	bsheely
+	* src/linux-ia64-memory.c 1.23:
+	* src/linux-ia64.c 1.176:
+		created hwinfo_linux.c to encapsulate code to set _papi_hw_info 
+		struct on Linux platforms
+
+	* src/unicosmp-memory.c 1.4:
+		removed obsolete file
+
+2009-11-06	terpstra
+	* src/libpfm-3.y/examples_v2.x/x86/smpl_nhm_lbr.c 1.1.1.2:
+		libpfm nhm and atom fixes
+
+2009-11-05	bsheely
+	* src/alpha-memory.c 1.11:
+	* src/ckcatamount.c 1.3:
+	* src/dadd-alpha.c 1.43:
+	* src/dadd-alpha.h 1.14:
+	* src/irix-memory.c 1.20:
+	* src/irix-mips.c 1.116:
+	* src/irix-mips.h 1.34:
+	* src/irix.c 1.2:
+	* src/irix.h 1.3:
+	* src/linux-alpha.c 1.24:
+	* src/linux-alpha.h 1.9:
+	* src/power3.c 1.41:
+	* src/power3.h 1.19:
+	* src/power3_events.c 1.9:
+	* src/power3_events.h 1.8:
+	* src/power4_events.h 1.9:
+	* src/power4_events_map.c 1.6:
+	* src/t3e_events.c 1.11:
+	* src/tru64-alpha.c 1.66:
+	* src/tru64-alpha.h 1.22:
+	* src/unicos-ev5.c 1.69:
+	* src/unicos-ev5.h 1.20:
+	* src/unicos-memory.c 1.12:
+	* src/unicosmp.h 1.5:
+	* src/x1-native-presets.h 1.4:
+	* src/x1-native.h 1.5:
+	* src/x1-presets.h 1.7:
+	* src/x1.c 1.38:
+	* src/x1.h 1.11:
+		removed files related to obsolete builds
+
+2009-11-03	terpstra
+	* src/libpfm-3.y/examples_v2.x/x86/Makefile 1.1.1.3:
+	* src/libpfm-3.y/examples_v2.x/x86/smpl_core_pebs.c 1.1.1.3:
+	* src/libpfm-3.y/examples_v2.x/x86/smpl_pebs.c 1.1.1.1:
+	* src/libpfm-3.y/include/Makefile 1.1.1.9:
+	* src/libpfm-3.y/include/perfmon/perfmon_pebs_smpl.h 1.1.1.1:
+	* src/libpfm-3.y/include/perfmon/pfmlib_intel_nhm.h 1.1.1.2:
+	* src/libpfm-3.y/lib/amd64_events_fam10h.h 1.1.1.5:
+	* src/libpfm-3.y/lib/intel_corei7_unc_events.h 1.1.1.2:
+	* src/libpfm-3.y/lib/pfmlib_amd64.c 1.1.1.10:
+	* src/libpfm-3.y/lib/pfmlib_core.c 1.1.1.12:
+	* src/libpfm-3.y/lib/pfmlib_intel_atom.c 1.1.1.6:
+	* src/libpfm-3.y/lib/pfmlib_intel_nhm_priv.h 1.1.1.2:
+	* src/libpfm-3.y/lib/power6_events.h 1.1.1.4:
+		latest libpfm changes
+
+2009-11-02	terpstra
+	* src/utils/avail.c 1.49:
+	* src/utils/native_avail.c 1.42:
+		Fixes to eliminate strcpy on overlapping strings The offending 
+		calls were replaced with memmoves and encapsulated in a single 
+		function for better maintenance.
+
+2009-10-29	bsheely
+	* src/solaris-ultra.h 1.41:
+		resolved compile errors on solaris
+
+2009-10-23	bsheely
+	* src/Rules.pfm_pcl 1.13:
+	* src/pcl.c 1.12:
+	* src/pcl.h 1.5:
+		Naming convention change from PCL to Perf Events: renamed pcl.h 
+		and pcl.c to perf_events.h and perf_events.c, renamed 
+		Rules.pfm_pcl to Rules.pfm_pe, configure option --with-pcl 
+		changed to --with-perf-events
+
+2009-10-20	bsheely
+	* src/ctests/byte_profile.c 1.18:
+		corrected possible logic error in setting end point of profile 
+		buffer
+
+2009-10-15	bsheely
+	* src/perfctr-ppc32.c 1.9:
+		corrected possible init error
+
+2009-10-14	terpstra
+	* src/ctests/calibrate.c 1.39:
+		Error checking was missing undercount conditions.
+
+2009-10-13	terpstra
+	* src/run_tests_exclude.txt 1.6:
+		This file never existed on the PAPI-C branch.
+
+	* src/aix-memory.c 1.15:
+	* src/aix.c 1.84:
+	* src/aix.h 1.29:
+	* src/pmapi-ppc64.c 1.8:
+	* src/pmapi-ppc64.h 1.4:
+	* src/threads.c 1.33:
+		Conversion of AIX to PAPI-C. Most tests pass, except for some 
+		overflow related stuff. Haven't examined things closely yet, but 
+		thought I should check this stuff in.
+
+2009-10-12	bsheely
+	* src/ftests/fdmemtest.F 1.5:
+	* src/ftests/flops.F 1.14:
+		declare types explicitly
+
+	* src/ctests/multiattach.c 1.5:
+	* src/ctests/zero_attach.c 1.5:
+		corrected logic error with pid type
+
+2009-10-09	terpstra
+	* src/power6_events.h 1.3:
+	* src/power6_events_map.c 1.4:
+		Somehow these got removed from the repository.

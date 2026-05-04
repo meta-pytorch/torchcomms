@@ -48,7 +48,11 @@ class Ctran : public ICtran {
   CtranComm* comm_{nullptr};
 };
 
-bool ctranSendRecvSupport(int peer, CtranComm* comm);
+bool ctranSendRecvSupport(
+    int peer,
+    CtranComm* comm,
+    enum NCCL_SENDRECV_ALGO algo = NCCL_SENDRECV_ALGO::ctran,
+    cudaStream_t stream = nullptr);
 
 commResult_t ctranSend(
     const void* sendbuff,
@@ -75,7 +79,10 @@ commResult_t ctranGroupEndHook(
     enum NCCL_SENDRECV_ALGO algo,
     std::optional<std::chrono::milliseconds> timeout = std::nullopt);
 
-bool ctranAllGatherSupport(CtranComm* comm, enum NCCL_ALLGATHER_ALGO algo);
+bool ctranAllGatherSupport(
+    CtranComm* comm,
+    enum NCCL_ALLGATHER_ALGO algo,
+    cudaStream_t stream = nullptr);
 commResult_t ctranAllGather(
     const void* sendbuff,
     void* recvbuff,
@@ -372,8 +379,17 @@ commResult_t allGatherPInit(
     cudaStream_t stream,
     CtranPersistentRequest*& request);
 
-/* Selector for different allgatherp algorithms.
- * Currently only the direct algorithm is implemented for allgatherp
+/* Execute a persistent allgather operation.
+ *
+ * Operations are submitted on the stream provided to allGatherPInit
+ * (request->stream). To capture into a CUDA graph, fork request->stream
+ * into the capture before calling this function, then join back after:
+ *
+ *   cudaEventRecord(forkEv, captureStream);
+ *   cudaStreamWaitEvent(request->stream, forkEv, 0);
+ *   allGatherPExec(sendbuff, count, datatype, request);
+ *   cudaEventRecord(joinEv, request->stream);
+ *   cudaStreamWaitEvent(captureStream, joinEv, 0);
  */
 commResult_t allGatherPExec(
     const void* sendbuff,
@@ -383,35 +399,23 @@ commResult_t allGatherPExec(
 commResult_t allGatherPDestroy(CtranPersistentRequest* request);
 bool allGatherPSupport(CtranComm* comm);
 
-// All array inout arguments are merely pointer without value at init time;
-// value will be updated at execution
-commResult_t allToAllvDedupInit(
-    const int totalNumSendBlocks, // number of blocks (tokens) per batch
-    const int blockCount, // number of elements per block (token)
-    const int blockNumRecvBuckets, // number of receiving buckets for each
-                                   // block (experts per token, topK)
-    const int numRecvBuckets, // number of receiving buckets per rank (expert
-                              // per rank)
-    meta::comms::Hints hints, // unused
-    commDataType_t datatype,
+/* Window-based allgather using the same CE+IB algorithm as allGatherP.
+ * Buffer metadata is sourced from CtranWin (post-exchange) instead of
+ * PersistArgs. The window must have been allocated and exchanged before init.
+ */
+commResult_t allGatherWinInit(
+    CtranWin* win,
     CtranComm* comm,
     cudaStream_t stream,
     CtranPersistentRequest*& request);
 
-commResult_t allToAllvDedupDestroy(CtranPersistentRequest* request);
-
-bool allToAllvDedupSupport(CtranComm* comm, meta::comms::Hints hints);
-
-commResult_t allToAllvDedupExec(
-    const void* sendBuff,
-    const int* sendIdx,
-    const int* fwdIdx,
-    const int* recvIdx,
-    void* recvBuff,
-    // number of blocks in recvBuff
-    int recvBlockIds[],
+commResult_t allGatherWinExec(
+    const void* sendbuff,
+    const size_t count,
+    commDataType_t datatype,
     CtranPersistentRequest* request);
 
+commResult_t allGatherWinDestroy(CtranPersistentRequest* request);
 bool AllToAllPSupport(CtranComm* comm);
 
 commResult_t AllToAllPInit(
@@ -432,11 +436,18 @@ commResult_t AllToAllPDestroy(CtranPersistentRequest* request);
 
 // Global pointer-based memory registration (does not require a comm).
 // If forceReg is true, registration happens even in async/lazy mode.
-commResult_t
-globalRegisterWithPtr(void* buff, size_t size, bool forceReg = false);
+commResult_t globalRegisterWithPtr(
+    void* buff,
+    size_t size,
+    bool forceReg = false,
+    bool ncclManaged = false);
 
 // Global pointer-based memory deregistration (does not require a comm).
-commResult_t globalDeregisterWithPtr(void* buff, size_t size);
+// If skipRemRelease is true, skip remote IPC release notifications and
+// just remove from exportRegCache. Use this during shutdown when remote
+// peers may have already exited.
+commResult_t
+globalDeregisterWithPtr(void* buff, size_t size, bool skipRemRelease = false);
 
 // Global APIs for bulk registration/deregistration of cached segments.
 // These are global operations that work on the singleton RegCache.

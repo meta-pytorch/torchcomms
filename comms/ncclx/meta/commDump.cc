@@ -101,7 +101,7 @@ static void dumpCommInfo(
 
 static void dumpCommInfo(
     const CommLogData* logMetaData,
-    const ncclx::CommStateX* statex,
+    const ncclx::comms_monitor::CommStateInfo& stateInfo,
     std::unordered_map<std::string, std::string>& map) {
   if (logMetaData != nullptr) {
     map["commHash"] = toQuotedString(hashToHexStr(logMetaData->commHash));
@@ -113,14 +113,10 @@ static void dumpCommInfo(
     return;
   }
 
-  if (statex != nullptr) {
-    map["localRank"] = std::to_string(statex->localRank());
-    map["node"] = std::to_string(statex->node());
-    map["localRanks"] = std::to_string(statex->nLocalRanks());
-    map["nNodes"] = std::to_string(statex->nNodes());
-  } else {
-    XLOGF(DBG2, "CommDump: statex is disabled. No trace to dump");
-  }
+  map["localRank"] = std::to_string(stateInfo.localRank);
+  map["node"] = std::to_string(stateInfo.node);
+  map["localRanks"] = std::to_string(stateInfo.nLocalRanks);
+  map["nNodes"] = std::to_string(stateInfo.nNodes);
 }
 
 static void dumpMapperTrace(
@@ -162,11 +158,11 @@ static void dumpCollTrace(
     // old coll trace, we don't care too much about code reuse here.
     map["CT_pastColls"] = folly::toJson(folly::toDynamic(dump.pastColls));
     map["CT_pendingColls"] = folly::toJson(folly::toDynamic(dump.pendingColls));
+    auto currentColls = folly::dynamic::array();
     if (dump.currentColl != nullptr) {
-      map["CT_currentColl"] = folly::toJson(dump.currentColl->toDynamic());
-    } else {
-      map["CT_currentColl"] = "null";
+      currentColls.push_back(dump.currentColl->toDynamic());
     }
+    map["CT_currentColls"] = folly::toJson(currentColls);
   } else {
     XLOGF(DBG2, "CommDump: COLLTRACE is disabled. No trace to dump");
   }
@@ -196,7 +192,7 @@ static void dumpProxyTrace(
 std::unordered_map<std::string, std::string> commDumpByMonitorInfo(
     const ncclx::comms_monitor::NcclCommMonitorInfo& info) {
   std::unordered_map<std::string, std::string> map;
-  dumpCommInfo(&info.logMetaData, &info.commState, map);
+  dumpCommInfo(&info.logMetaData, info.stateInfo, map);
   if (info.newCollTrace != nullptr) {
     map.merge(dumpNewCollTrace(*info.newCollTrace));
     XLOGF(DBG2, "commDumpByMonitorInfo: Dumped from new colltrace");

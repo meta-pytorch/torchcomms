@@ -178,6 +178,46 @@ void GraphEventTracker::addEntry(TorchWorkNCCLX* work) {
 // Without the replay counter, case (2) could be missed if the watchdog
 // never observes end=success between consecutive replays, causing the
 // timer to span N replays and false-trigger a timeout.
+void GraphEventTracker::notifyReplayProgress(
+    unsigned long long graph_id,
+    void* stream,
+    size_t collective_index,
+    GraphWork& entry,
+    uint64_t current_replay,
+    int current_event) {
+  if (comm_->graphReplayHooks_.empty()) {
+    return;
+  }
+
+  static constexpr std::string_view kEvents[] = {"S", "E", "W"};
+
+  if (current_replay < entry.notified_through_replay ||
+      (current_replay == entry.notified_through_replay &&
+       current_event <= entry.notified_through_event)) {
+    return;
+  }
+
+  uint64_t r = entry.notified_through_replay;
+  int e = entry.notified_through_event + 1;
+
+  if (e > kEventE) {
+    r++;
+    e = kEventS;
+  }
+
+  for (; r <= current_replay; r++) {
+    int end_e = (r == current_replay) ? current_event : kEventE;
+    for (; e <= end_e; e++) {
+      comm_->fireGraphReplayHook(
+          graph_id, r, stream, collective_index, kEvents[e]);
+    }
+    e = kEventS;
+  }
+
+  entry.notified_through_replay = current_replay;
+  entry.notified_through_event = current_event;
+}
+
 GraphEventTracker::CheckResult GraphEventTracker::checkAll() {
   if (!isGraphTimeoutMonitoringEnabled()) {
     return CheckResult::OK;
@@ -186,7 +226,8 @@ GraphEventTracker::CheckResult GraphEventTracker::checkAll() {
   CudaApi* api = comm_->getCudaApi();
   std::lock_guard<std::mutex> lock(mutex_);
 
-  // Cleanup released graphs
+  // Cleanup released graphs — delivers final replay events before
+  // erasing each graph's state.
   cleanupReleasedGraphs();
 
   // Traverse remaining active graphs
@@ -225,12 +266,21 @@ GraphEventTracker::CheckResult GraphEventTracker::checkAll() {
         if (end_status == cudaSuccess) {
           // Collective completed or no replay in progress
           entry.start_completed_time.reset();
+
+          notifyReplayProgress(
+              graph_id, stream, i, entry, current_replay, kEventE);
           continue;
         }
 
         // end is notReady — this is the first incomplete collective on this
         // stream. All subsequent collectives on this stream cannot have
         // started, so we can skip them.
+
+        if (start_status == cudaSuccess) {
+          notifyReplayProgress(
+              graph_id, stream, i, entry, current_replay, kEventS);
+        }
+
         if (!entry.start_completed_time.has_value()) {
           if (start_status == cudaSuccess) {
             // observation of collective in progress — start timer
@@ -277,17 +327,42 @@ GraphState::~GraphState() {
 }
 
 void GraphEventTracker::cleanupReleasedGraphs() {
+  CudaApi* api = comm_->getCudaApi();
+
   for (auto it = graphs_.begin(); it != graphs_.end();) {
-    if (it->second.shared_->released.load(std::memory_order_relaxed)) {
-      it = graphs_.erase(it);
-    } else {
+    if (!it->second.shared_->released.load(std::memory_order_relaxed)) {
       ++it;
+      continue;
     }
+
+    // Deliver final replay events before erasing.  The graph has been
+    // destroyed so no more replays will occur; sweep all completed
+    // events that the watchdog has not yet reported.
+    auto& graph_state = it->second;
+    if (graph_state.replay_counter) {
+      uint64_t current_replay = graph_state.replay_counter->read();
+      for (auto& [stream, entries] : graph_state.stream_entries) {
+        for (size_t i = 0; i < entries.size(); ++i) {
+          auto& entry = entries[i];
+          cudaError_t end_status = api->eventQuery(entry.end_event);
+          if (end_status == cudaSuccess) {
+            notifyReplayProgress(
+                it->first, stream, i, entry, current_replay, kEventE);
+          }
+        }
+      }
+    }
+
+    it = graphs_.erase(it);
   }
 }
 
 void GraphEventTracker::destroyAll() {
   std::lock_guard<std::mutex> lock(mutex_);
+  // Deliver final replay events for any released graphs before
+  // destroying state.  This covers graphs destroyed after the
+  // watchdog has exited.
+  cleanupReleasedGraphs();
   graphs_.clear();
 }
 

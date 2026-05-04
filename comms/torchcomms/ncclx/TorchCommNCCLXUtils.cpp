@@ -150,11 +150,11 @@ TorchCommNCCLX::RedOpRAII TorchCommNCCLX::getNcclReduceOp(
     case ReduceOp::RedOpType::MAX:
       return ncclMax;
     case ReduceOp::RedOpType::BAND:
-      return ncclSum; // NCCL doesn't have bitwise AND, using SUM as fallback
+      throw std::runtime_error("Cannot use ReduceOp.BAND with NCCLX");
     case ReduceOp::RedOpType::BOR:
-      return ncclSum; // NCCL doesn't have bitwise OR, using SUM as fallback
+      throw std::runtime_error("Cannot use ReduceOp.BOR with NCCLX");
     case ReduceOp::RedOpType::BXOR:
-      return ncclSum; // NCCL doesn't have bitwise XOR, using SUM as fallback
+      throw std::runtime_error("Cannot use ReduceOp.BXOR with NCCLX");
     case ReduceOp::RedOpType::PREMUL_SUM:
       return RedOpRAII(op, comm, dataType, nccl_api_);
     case ReduceOp::RedOpType::AVG:
@@ -274,10 +274,8 @@ void TorchCommNCCLX::timeoutWatchdog() noexcept {
     }
 
     if (comm_state_ != CommState::NORMAL &&
-        options_.abort_process_on_timeout_or_error) {
-      // Log the error and abort the process.  We cannot abort the NCCL
-      // communicator as it is not safe to call NCCL operations from
-      // multiple threads at the same time.
+        options_.abort_process_on_timeout_or_error &&
+        !options_.enable_reconfigure) {
       if (comm_state_ == CommState::TIMEOUT) {
         TC_LOG(ERROR, this)
             << "Aborting process due to timeout on rank " << rank_
@@ -286,7 +284,7 @@ void TorchCommNCCLX::timeoutWatchdog() noexcept {
         TC_LOG(ERROR, this) << "Aborting process due to error on rank " << rank_
                             << " - timeout watchdog detected operation error. ";
       }
-      abort();
+      ::abort();
     }
 
     // Check communicator for async error
@@ -329,12 +327,17 @@ void TorchCommNCCLX::checkAndAbortIfTimedOutOrError() {
   // graph_timeout_check_interval_ms, so no synchronous check is needed here.
 
   if (comm_state_ == CommState::TIMEOUT) {
-    abortNcclComm();
-    if (options_.abort_process_on_timeout_or_error) {
-      TC_LOG(ERROR, this) << "Aborting process due to timeout";
-      abort();
-    } else {
+    if (options_.enable_reconfigure) {
+      revokeNcclComm();
       throw std::runtime_error("NCCLX operation timed out");
+    } else {
+      abortNcclComm();
+      if (options_.abort_process_on_timeout_or_error) {
+        TC_LOG(ERROR, this) << "Aborting process due to timeout";
+        ::abort();
+      } else {
+        throw std::runtime_error("NCCLX operation timed out");
+      }
     }
   } else if (comm_state_ == CommState::ERROR) {
     ncclResult_t asyncErr;
@@ -349,7 +352,7 @@ void TorchCommNCCLX::checkAndAbortIfTimedOutOrError() {
     if (options_.abort_process_on_timeout_or_error) {
       TC_LOG(ERROR, this) << "Aborting process due to error: "
                           << ncclException.what();
-      abort();
+      ::abort();
     } else {
       throw ncclException;
     }

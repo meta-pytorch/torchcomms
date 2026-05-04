@@ -1790,7 +1790,6 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
     comm->ctranComm_->colltraceNew_ = comm->newCollTrace;
     NCCLCHECKGOTO(metaCommToNccl(ctranInit(comm->ctranComm_.get())), res, fail);
   }
-  NCCLCHECKGOTO(metaCommToNccl(ctranConfigCommAlgoOverride(comm->ctranComm_.get())), res, fail);
   // --------------------- done
 
   ncclx::comms_monitor::CommsMonitor::registerComm(comm);
@@ -2026,17 +2025,6 @@ static ncclResult_t copyCommConfig(ncclComm_t childComm, ncclComm_t parent) {
   return ncclSuccess;
 }
 
-// C-style wrapper around the ncclx::Config parsing constructor.
-// Most NCCL code is C-based, so this function translates C++
-// exceptions into ncclResult_t error codes for the C callers.
-ncclResult_t ncclxParseCommConfig(ncclConfig_t* config) {
-  try {
-    config->ncclxConfig = new ncclx::Config(config);
-    return ncclSuccess;
-  } catch (const std::exception&) {
-    return ncclInvalidArgument;
-  }
-}
 
 static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t *config) {
   ncclResult_t ret = ncclSuccess;

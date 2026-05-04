@@ -111,6 +111,17 @@ static inline commResult_t setupKernelConfig(
       ngroups,
       &config.args.collective.alltoallv.recvElemsList);
 
+  KernelElem* sendElem = config.args.collective.alltoallv.sendElemsList;
+  KernelElem* recvElem = config.args.collective.alltoallv.recvElemsList;
+
+  // Collect persistent elems for graph cleanup in the no-cmd path.
+  for (auto* e = sendElem; e != nullptr; e = e->next) {
+    config.persistentKernelElems.push_back(e);
+  }
+  for (auto* e = recvElem; e != nullptr; e = e->next) {
+    config.persistentKernelElems.push_back(e);
+  }
+
   // Ensure each rank sends to different peer at a time to avoid alltoone P2P
   // write congestion. For example, with localRanks = 4, the following
   // schedule is used:
@@ -120,8 +131,6 @@ static inline commResult_t setupKernelConfig(
   // rank0: s(2)r(2); rank1: s(3)r(3); rank2: s(0)r(0); rank3: s(1)r(1)
   // - Round2:
   // rank0: s(3)r(1); rank1: s(0)r(2); rank2: s(1)r(3); rank3: s(2)r(0)
-  KernelElem* sendElem = config.args.collective.alltoallv.sendElemsList;
-  KernelElem* recvElem = config.args.collective.alltoallv.recvElemsList;
   for (int r = 0; r < statex->nLocalRanks() - 1; r++) {
     int sendPeer = (statex->localRank() + r + 1) % statex->nLocalRanks();
     int recvPeer = (statex->localRank() + statex->nLocalRanks() - r - 1) %
@@ -322,22 +331,21 @@ commResult_t ctranAllToAllv(
 }
 
 bool ctranAllToAllvSupport(CtranComm* comm) {
-  bool ctranSupport = false;
+  if (!ctranInitialized(comm)) {
+    return false;
+  }
+
   const auto statex = comm->statex_.get();
-  if (ctranInitialized(comm)) {
-    ctranSupport = true;
-    // Check if all remote peers are supported by ctran
-    // For intra-node peers, ctranAlgo supports copy based path;
-    // for inter-node peers, we need a mapper backend to support.
-    const int myNode = statex->node();
-    for (int rank = 0; rank < statex->nRanks(); rank++) {
-      if (statex->node(rank) != myNode &&
-          comm->ctran_->mapper->getBackend(rank) == CtranMapperBackend::UNSET) {
-        ctranSupport = false;
-        break;
-      }
+  // Check if all remote peers are supported by ctran
+  // For intra-node peers, ctranAlgo supports copy based path;
+  // for inter-node peers, we need a mapper backend to support.
+  const int myNode = statex->node();
+  for (int rank = 0; rank < statex->nRanks(); rank++) {
+    if (statex->node(rank) != myNode &&
+        comm->ctran_->mapper->getBackend(rank) == CtranMapperBackend::UNSET) {
+      return false;
     }
   }
 
-  return ctranSupport;
+  return true;
 }

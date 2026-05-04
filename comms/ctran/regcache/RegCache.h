@@ -280,11 +280,16 @@ class RegCache {
       const void* buf,
       size_t len,
       bool forceReg = false,
+      bool ncclManaged = false,
       int deviceId = -1);
 
   // Global deregistration using pointer lookup.
   // Frees cached segments and their associated registrations.
-  commResult_t globalDeregister(const void* buf, size_t len, int deviceId = -1);
+  commResult_t globalDeregister(
+      const void* buf,
+      size_t len,
+      bool skipRemRelease = false,
+      int deviceId = -1);
 
   // Thread-safe functions to cache a buffer range into the global cache.
   // This function uses pinRange to discover all physical segments underlying
@@ -430,8 +435,9 @@ class RegCache {
   bool isRegistered(const void* ptr, const size_t len);
 
   // Thread-safe function to search for a RegElem containing [ptr, ptr+len)
-  // and return its ibRegElem. Returns nullptr if not found.
-  void* searchIbRegElem(const void* ptr, size_t len);
+  // and return its ibRegElem. If the buffer is cached but not yet registered,
+  // it will perform registration via regRange(). Returns nullptr if not cached.
+  void* searchIbRegHandle(const void* ptr, size_t len, int deviceId = -1);
 
   // Thread-safe function to wait on all async registration requests to finish.
   // Used by test only.

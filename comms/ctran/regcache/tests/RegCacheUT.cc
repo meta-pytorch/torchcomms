@@ -1,9 +1,11 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <folly/init/Init.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 
 #include "comms/ctran/backends/ib/CtranIbSingleton.h"
@@ -881,25 +883,25 @@ TEST_F(RegCacheTest, IpcRemRegElemRefCount) {
   ASSERT_NE(ipcRegCache, nullptr);
   ipcRegCache->init();
 
-  // Allocate and register a buffer for IPC export
+  // Allocate buffer using cuMem APIs so IPC export is supported
   size_t bufSize = 4096;
-  void* buf = nullptr;
-  CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
+  std::vector<TestMemSegment> segments;
+  void* buf = ctran::commMemAlloc(bufSize, kMemCuMemAlloc, segments);
+  ASSERT_NE(buf, nullptr);
 
   void* ipcRegElem = nullptr;
   EXPECT_EQ(
       ctran::IpcRegCache::regMem(buf, bufSize, cudaDev, &ipcRegElem),
       commSuccess);
-
-  // If IPC registration is not supported (e.g., no NVLink), skip
-  if (ipcRegElem == nullptr) {
-    CUDACHECK_TEST(cudaFree(buf));
-    GTEST_SKIP() << "IPC memory not supported on this device, skipping";
-  }
+  ASSERT_NE(ipcRegElem, nullptr)
+      << "IPC regMem should succeed with cuMem buffer";
 
   // Export the memory to get an IPC descriptor
   ctran::regcache::IpcDesc ipcDesc;
-  EXPECT_EQ(ipcRegCache->exportMem(buf, ipcRegElem, ipcDesc), commSuccess);
+  std::vector<ctran::utils::CtranIpcSegDesc> extraSegments;
+  EXPECT_EQ(
+      ipcRegCache->exportMem(buf, ipcRegElem, ipcDesc, extraSegments),
+      commSuccess);
 
   const std::string peerId = "test_refcount_peer";
 
@@ -937,10 +939,10 @@ TEST_F(RegCacheTest, IpcRemRegElemRefCount) {
 
   // Cleanup
   ctran::IpcRegCache::deregMem(ipcRegElem);
-  CUDACHECK_TEST(cudaFree(buf));
+  ctran::commMemFree(buf, bufSize, kMemCuMemAlloc);
 }
 
-// Test that releasing an IpcRemRegElem that has already been fully released
+// Test that releasing an IpcRemRegElem
 // returns an error (unknown registration).
 TEST_F(RegCacheTest, IpcRemRegElemReleaseUnknown) {
   auto ipcRegCache = ctran::IpcRegCache::getInstance();
@@ -1149,7 +1151,237 @@ TEST_F(RegCacheTest, RegistrationDuringGraphCapture) {
   CUDACHECK_TEST(cudaFree(buf));
 }
 
+// Test IpcRemRegElem 3-arg constructor (without extraSegments).
+// This verifies the new overload that passes empty extraSegments
+// to CtranIpcRemMem.
+TEST_F(RegCacheTest, IpcRemRegElemConstructorNoExtraSegments) {
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+  ipcRegCache->init();
+
+  size_t bufSize = 4096;
+  std::vector<TestMemSegment> segments;
+  void* buf = ctran::commMemAlloc(bufSize, kMemCuMemAlloc, segments);
+  ASSERT_NE(buf, nullptr);
+
+  void* ipcRegElem = nullptr;
+  EXPECT_EQ(
+      ctran::IpcRegCache::regMem(buf, bufSize, cudaDev, &ipcRegElem),
+      commSuccess);
+  ASSERT_NE(ipcRegElem, nullptr)
+      << "IPC regMem should succeed with cuMem buffer";
+
+  ctran::regcache::IpcDesc ipcDesc;
+  std::vector<ctran::utils::CtranIpcSegDesc> extraSegments;
+  EXPECT_EQ(
+      ipcRegCache->exportMem(buf, ipcRegElem, ipcDesc, extraSegments),
+      commSuccess);
+
+  // Construct IpcRemRegElem using the 3-arg constructor (no extraSegments)
+  auto remRegElem = std::make_unique<ctran::regcache::IpcRemRegElem>(
+      ipcDesc.desc, cudaDev, nullptr);
+  EXPECT_NE(remRegElem, nullptr);
+  EXPECT_EQ(remRegElem->refCount.load(), 1);
+
+  ctran::IpcRegCache::deregMem(ipcRegElem);
+  ctran::commMemFree(buf, bufSize, kMemCuMemAlloc);
+}
+
+// Test IpcRemRegElem 4-arg constructor (with explicit extraSegments).
+// This verifies the constructor that takes an extraSegments parameter.
+TEST_F(RegCacheTest, IpcRemRegElemConstructorWithExtraSegments) {
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+  ipcRegCache->init();
+
+  size_t bufSize = 4096;
+  std::vector<TestMemSegment> segments;
+  void* buf = ctran::commMemAlloc(bufSize, kMemCuMemAlloc, segments);
+  ASSERT_NE(buf, nullptr);
+
+  void* ipcRegElem = nullptr;
+  EXPECT_EQ(
+      ctran::IpcRegCache::regMem(buf, bufSize, cudaDev, &ipcRegElem),
+      commSuccess);
+  ASSERT_NE(ipcRegElem, nullptr)
+      << "IPC regMem should succeed with cuMem buffer";
+
+  ctran::regcache::IpcDesc ipcDesc;
+  std::vector<ctran::utils::CtranIpcSegDesc> extraSegments;
+  EXPECT_EQ(
+      ipcRegCache->exportMem(buf, ipcRegElem, ipcDesc, extraSegments),
+      commSuccess);
+
+  // Construct IpcRemRegElem using the 4-arg constructor (with empty
+  // extraSegments)
+  std::vector<ctran::utils::CtranIpcSegDesc> emptyExtra;
+  auto remRegElem = std::make_unique<ctran::regcache::IpcRemRegElem>(
+      ipcDesc.desc, cudaDev, nullptr, emptyExtra);
+  EXPECT_NE(remRegElem, nullptr);
+  EXPECT_EQ(remRegElem->refCount.load(), 1);
+
+  ctran::IpcRegCache::deregMem(ipcRegElem);
+  ctran::commMemFree(buf, bufSize, kMemCuMemAlloc);
+}
+
+// Test that IpcRegCache::exportMem populates extraSegments for multi-segment
+// buffers (disjoint allocations with > CTRAN_IPC_INLINE_SEGMENTS segments).
+// This covers the condition at CtranMapper.h line 1113 where the mapper
+// returns commInternalError when extraSegments is non-empty.
+TEST_F(RegCacheTest, ExportMemPopulatesExtraSegments) {
+  if (!ctran::utils::getCuMemSysSupported()) {
+    GTEST_SKIP() << "CuMem not supported, skip multi-segment test";
+  }
+
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+
+  constexpr int numSegments = 3; // > CTRAN_IPC_INLINE_SEGMENTS (2)
+  constexpr size_t segmentSize = 1048576; // 1MB
+  std::vector<size_t> segSizes(numSegments, segmentSize);
+
+  void* buf = nullptr;
+  std::vector<TestMemSegment> memSegments;
+  auto allocResult =
+      ctran::commMemAllocDisjoint(&buf, segSizes, memSegments, true);
+  if (allocResult != commSuccess) {
+    GTEST_SKIP() << "Disjoint allocation not supported, skip test";
+  }
+  ASSERT_NE(buf, nullptr);
+
+  size_t totalSize = 0;
+  for (const auto& seg : memSegments) {
+    totalSize += seg.size;
+  }
+
+  void* ipcRegElem = nullptr;
+  EXPECT_EQ(
+      ctran::IpcRegCache::regMem(buf, totalSize, cudaDev, &ipcRegElem),
+      commSuccess);
+
+  if (ipcRegElem == nullptr) {
+    COMMCHECK_TEST(ctran::commMemFreeDisjoint(buf, segSizes));
+    GTEST_SKIP() << "IPC memory not supported for disjoint buffers, skipping";
+  }
+
+  ctran::regcache::IpcDesc ipcDesc;
+  std::vector<ctran::utils::CtranIpcSegDesc> extraSegments;
+  EXPECT_EQ(
+      ipcRegCache->exportMem(buf, ipcRegElem, ipcDesc, extraSegments),
+      commSuccess);
+
+  // Verify totalSegments == 3 and extraSegments has overflow entries
+  EXPECT_EQ(ipcDesc.desc.totalSegments, numSegments);
+  EXPECT_EQ(ipcDesc.desc.numInlineSegments(), CTRAN_IPC_INLINE_SEGMENTS);
+  EXPECT_EQ(
+      static_cast<int>(extraSegments.size()),
+      numSegments - CTRAN_IPC_INLINE_SEGMENTS);
+
+  // Each extra segment should have a valid (non-zero) range
+  for (const auto& seg : extraSegments) {
+    EXPECT_GT(seg.range, 0u);
+  }
+
+  ctran::IpcRegCache::deregMem(ipcRegElem);
+  COMMCHECK_TEST(ctran::commMemFreeDisjoint(buf, segSizes));
+}
+
+// Test that IpcRegCache::importMem works correctly with the extraSegments
+// parameter for multi-segment buffers.
+TEST_F(RegCacheTest, ImportMemWithExtraSegments) {
+  if (!ctran::utils::getCuMemSysSupported()) {
+    GTEST_SKIP() << "CuMem not supported, skip multi-segment test";
+  }
+
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+  ipcRegCache->init();
+
+  constexpr int numSegments = 3;
+  constexpr size_t segmentSize = 1048576;
+  std::vector<size_t> segSizes(numSegments, segmentSize);
+
+  void* buf = nullptr;
+  std::vector<TestMemSegment> memSegments;
+  auto allocResult =
+      ctran::commMemAllocDisjoint(&buf, segSizes, memSegments, true);
+  if (allocResult != commSuccess) {
+    GTEST_SKIP() << "Disjoint allocation not supported, skip test";
+  }
+  ASSERT_NE(buf, nullptr);
+
+  size_t totalSize = 0;
+  for (const auto& seg : memSegments) {
+    totalSize += seg.size;
+  }
+
+  void* ipcRegElem = nullptr;
+  EXPECT_EQ(
+      ctran::IpcRegCache::regMem(buf, totalSize, cudaDev, &ipcRegElem),
+      commSuccess);
+
+  if (ipcRegElem == nullptr) {
+    COMMCHECK_TEST(ctran::commMemFreeDisjoint(buf, segSizes));
+    GTEST_SKIP() << "IPC memory not supported for disjoint buffers, skipping";
+  }
+
+  // Export with extraSegments
+  ctran::regcache::IpcDesc ipcDesc;
+  std::vector<ctran::utils::CtranIpcSegDesc> extraSegments;
+  EXPECT_EQ(
+      ipcRegCache->exportMem(buf, ipcRegElem, ipcDesc, extraSegments),
+      commSuccess);
+  ASSERT_FALSE(extraSegments.empty());
+
+  // Import with extraSegments passed through
+  const std::string peerId = "test_extra_segments_peer";
+  void* importedBuf = nullptr;
+  ctran::regcache::IpcRemHandle remKey;
+  EXPECT_EQ(
+      ipcRegCache->importMem(
+          peerId,
+          ipcDesc,
+          cudaDev,
+          &importedBuf,
+          &remKey,
+          nullptr,
+          extraSegments),
+      commSuccess);
+  EXPECT_NE(importedBuf, nullptr);
+  EXPECT_EQ(ipcRegCache->getNumRemReg(peerId), 1);
+
+  // Release imported memory
+  EXPECT_EQ(
+      ipcRegCache->releaseRemReg(peerId, ipcDesc.desc.base, ipcDesc.uid),
+      commSuccess);
+  EXPECT_EQ(ipcRegCache->getNumRemReg(peerId), 0);
+
+  ctran::IpcRegCache::deregMem(ipcRegElem);
+  COMMCHECK_TEST(ctran::commMemFreeDisjoint(buf, segSizes));
+}
+
+// Verify IpcRemHandle is trivially destructible and survives heap corruption.
+// Simulates the scenario from the IB double-completion bug: construct a valid
+// IpcRemHandle, corrupt its memory, then destroy it. With std::string peerId,
+// the destructor tries to free a corrupted pointer and segfaults. With a
+// fixed-size char[], the destructor is trivial and this is safe.
+TEST(IpcRemHandleTest, CorruptedDestroyDoesNotCrash) {
+  alignas(ctran::regcache::IpcRemHandle) char
+      buf[sizeof(ctran::regcache::IpcRemHandle)];
+  auto* handle = new (buf) ctran::regcache::IpcRemHandle();
+
+  // Corrupt the entire struct — simulates heap corruption
+  std::memset(buf, 0xAB, sizeof(ctran::regcache::IpcRemHandle));
+  // Prevent the compiler from optimizing away the corruption or destructor
+  asm volatile("" ::: "memory");
+
+  // Destructor must not crash. With std::string this segfaults;
+  // with char[] this is a no-op.
+  handle->~IpcRemHandle();
+}
+
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
+  folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

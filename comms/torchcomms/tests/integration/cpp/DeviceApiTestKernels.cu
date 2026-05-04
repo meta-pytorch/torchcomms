@@ -407,4 +407,29 @@ void launchStressPutHalfKernel(
   KERNEL_LAUNCH_CHECK();
 }
 
+// ---------------------------------------------------------------------------
+// Get Multimem Address Kernel
+// ---------------------------------------------------------------------------
+// Calls win->get_multimem_address(offset) on device and stores the pointer
+// value for host-side comparison against the host API result.
+
+__global__ void getMultimemAddressKernel(
+    DeviceWindowNCCL* win,
+    size_t offset,
+    int64_t* result) {
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    void* ptr = win->get_multimem_address(offset);
+    *result = reinterpret_cast<int64_t>(ptr);
+  }
+}
+
+void launchGetMultimemAddressKernel(
+    DeviceWindowNCCL* win,
+    size_t offset,
+    int64_t* result,
+    cudaStream_t stream) {
+  getMultimemAddressKernel<<<1, 1, 0, stream>>>(win, offset, result);
+  KERNEL_LAUNCH_CHECK();
+}
+
 } // namespace torchcomms::device::test

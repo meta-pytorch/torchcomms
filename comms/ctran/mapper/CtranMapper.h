@@ -118,6 +118,13 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
    */
   commResult_t deregDynamic(void* regHdl);
 
+  /* Remove a registration handle from the export tracking cache.
+   * Used when the caller handles deregistration separately (e.g., via
+   * globalDeregisterWithPtr) and needs to prevent the mapper destructor
+   * from accessing a freed RegElem.
+   */
+  void removeFromExportCache(void* regHdl);
+
   /* Deregister an imported buffer registration from remote peer.
    * Input arguments:
    *  - rkey: the remoteAccessKey of the imported remote buffer received in
@@ -369,7 +376,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
    * Input argument:
    *   - buf: the local buffer to be remotely accessed
    *   - hdl: the handle of the local buffer
-   *   - backend: the backend to be used for data transfer. If not specified,
+   *   - backend: the backend to be used for memory export. If not specified,
    *              use internal default based on peer rank and memory type.
    * Output arguments:
    *   - remoteBufs: the allgathered remote buffers from all local ranks
@@ -391,7 +398,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
    *   - buf: the local buffer to be remotely accessed
    *   - hdl: the handle of the local buffer
    *   - ranks: the ranks to be used for the AllGather
-   *   - backend: the backend to be used for data transfer. If not specified,
+   *   - backend: the backend to be used for memory export. If not specified,
    *              use internal default based on peer rank and memory type.
    * Output arguments:
    *   - remoteBufs: the allgathered remote buffers from all local ranks
@@ -414,7 +421,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
    * Input argument:
    *   - buf: the local buffer to be remotely accessed
    *   - hdl: the handle of the local buffer
-   *   - backend: the backend to be used for data transfer. If not specified,
+   *   - backend: the backend to be used for memory export. If not specified,
    *              use internal default based on peer rank and memory type.
    * Output arguments:
    *   - remoteBufs: the allgathered remote buffers from all local ranks
@@ -890,7 +897,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   }
 
   // Dump exported registration cache, for testing only
-  std::unordered_map<ctran::regcache::RegElem*, std::unordered_set<int>>
+  std::unordered_map<ctran::regcache::RegElem*, std::unordered_map<int, int>>
   dumpExportRegCache() const;
 
  protected:
@@ -1088,6 +1095,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       const void* buf,
       void* hdl,
       ControlMsg& msg,
+      std::vector<ctran::utils::CtranIpcSegDesc>* extraSegments,
       CtranMapperBackend backend = CtranMapperBackend::UNSET) {
     auto regElem = reinterpret_cast<ctran::regcache::RegElem*>(hdl);
     // TODO: Enforce that a communicator can only export memory it registered
@@ -1104,12 +1112,29 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
 
     if (backend == CtranMapperBackend::NVL) {
       msg.setType(ControlMsgType::NVL_EXPORT_MEM);
-      FB_COMMCHECK(
-          ctran::IpcRegCache::getInstance()->exportMem(
-              buf, regElem->ipcRegElem, msg.ipcDesc));
+      if (extraSegments) {
+        FB_COMMCHECK(
+            ctran::IpcRegCache::getInstance()->exportMem(
+                buf, regElem->ipcRegElem, msg.ipcDesc, *extraSegments));
+      } else {
+        std::vector<ctran::utils::CtranIpcSegDesc> tmpExtraSegments;
+        FB_COMMCHECK(
+            ctran::IpcRegCache::getInstance()->exportMem(
+                buf, regElem->ipcRegElem, msg.ipcDesc, tmpExtraSegments));
+        if (!tmpExtraSegments.empty()) {
+          CLOGF(
+              ERR,
+              "CTRAN-MAPPER: exportMem to rank {} has overflow segments, which is "
+              "not supported in this path.",
+              rank);
+          return commInternalError;
+        }
+      }
 
       // Record the exported remote rank to notify at deregistration
-      exportRegCache_.wlock()->record(regElem, rank);
+      if (NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET) {
+        exportRegCache_.wlock()->record(regElem, rank);
+      }
 
     } else if (backend == CtranMapperBackend::IB) {
       FB_COMMCHECK(CtranIb::exportMem(buf, regElem->ibRegElem, msg));
@@ -1128,11 +1153,21 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     return commSuccess;
   }
 
+  inline commResult_t exportMem(
+      int rank,
+      const void* buf,
+      void* hdl,
+      ControlMsg& msg,
+      CtranMapperBackend backend = CtranMapperBackend::UNSET) {
+    return exportMem(rank, buf, hdl, msg, nullptr, backend);
+  }
+
   inline commResult_t importMem(
       int rank,
       const ControlMsg& msg,
       void** buf,
-      CtranMapperRemoteAccessKey* remKey) {
+      CtranMapperRemoteAccessKey* remKey,
+      const std::vector<ctran::utils::CtranIpcSegDesc>& extraSegments = {}) {
     switch (msg.type) {
       case ControlMsgType::IB_EXPORT_MEM:
         if (!this->ctranIb) {
@@ -1162,7 +1197,8 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
                 comm->statex_->cudaDev(),
                 buf,
                 &(remKey->nvlKey),
-                &this->logMetaData_));
+                &this->logMetaData_,
+                extraSegments));
         break;
       }
       default:
@@ -1975,7 +2011,6 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   std::unique_ptr<class CtranNvl> ctranNvl{nullptr};
   std::unique_ptr<class CtranSocket> ctranSock{nullptr};
   std::unique_ptr<class ctran::CtranTcpDm> ctranTcpDm{nullptr};
-  std::unique_ptr<class CtranCtrlManager> ctrlMgr{nullptr};
 
   // holds enabled backends when the mapper is created.
   // A unified struct for holding all available backends.

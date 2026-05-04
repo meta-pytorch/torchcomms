@@ -82,4 +82,28 @@ __device__ __forceinline__ void philox_randint4x(
   r3 = c3;
 }
 
+// 128-bit Philox result with typed access to 32-bit and 16-bit elements.
+union PhiloxResult {
+  uint32_t u32[4];
+  uint16_t u16[8];
+};
+
+// Overload returning PhiloxResult directly.
+__device__ __forceinline__ PhiloxResult
+philox_randint4x(uint64_t seed, uint64_t offset) {
+  PhiloxResult r;
+  r.u32[0] = static_cast<uint32_t>(offset);
+  r.u32[1] = static_cast<uint32_t>(offset >> 32);
+  r.u32[2] = 0;
+  r.u32[3] = 0;
+  philox4x32<7>(
+      r.u32[0],
+      r.u32[1],
+      r.u32[2],
+      r.u32[3],
+      static_cast<uint32_t>(seed),
+      static_cast<uint32_t>(seed >> 32));
+  return r;
+}
+
 #endif // NCCL_DEVICE_PHILOX_RNG_H_

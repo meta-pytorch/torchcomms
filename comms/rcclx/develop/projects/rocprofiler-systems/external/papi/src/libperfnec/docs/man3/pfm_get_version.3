@@ -1,0 +1,33 @@
+.TH LIBPFM 3  "November, 2003" "" "Linux Programmer's Manual"
+.SH NAME
+pfm_get_version \- get performance monitoring library version
+.SH SYNOPSIS
+.nf
+.B #include <perfmon/pfmlib.h>
+.sp
+.BI "int pfm_get_version(unsigned int *"version);
+.sp
+.SH DESCRIPTION
+This function can be called at any time to get the revision
+level of the library. The version is encoded into an
+unsigned integer and returned in the \fBversion\fR argument.
+A revision number is composed of two fields: a major number
+and a minor number. Both can be extracted from the returned
+argument using macros provided in the header file:
+.TP
+.B PFMLIB_MAJ_VERSION(v)
+returns the major number encoded in v.
+.TP
+.B PFMLIB_MIN_VERSION(v)
+returns the minor number encoded in v.
+.SH RETURN
+The function returns whether or not it was successful.
+A return value of \fBPFMLIB_SUCCESS\fR indicates success, 
+otherwise the value is the error code.
+.SH ERRORS
+.TP
+.B PFMLIB_ERR_INVAL 
+the argument is invalid, most likely a NULL pointer.
+.SH AUTHOR
+Stephane Eranian <eranian@hpl.hp.com>
+.PP

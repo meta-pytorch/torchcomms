@@ -104,6 +104,21 @@ struct alignas(16) KernelElem {
   volatile int stepDone{0};
   // allow kernel to access next element in the list
   KernelElem* next{nullptr};
+  // If true, isFree() always returns false — prevents reclaim() from stealing
+  // the elem while a persistent cmd (graph capture) still owns it.
+  // Not cleared by free()/unuse() — only cleared by clearPersistent().
+  std::atomic<bool> persistent_{false};
+
+  // Prevent pool reclaim between graph replays. The kernel resets status
+  // after each replay, but persistent keeps isFree() returning false.
+  void setPersistent() {
+    persistent_ = true;
+  }
+
+  // Allow pool reclaim. Called at graph destruction to release the elem.
+  void clearPersistent() {
+    persistent_ = false;
+  }
 
   // CPU side calls to manage the lifetime of the element and coordinate with
   // kernel. Check if the element is free and ready to be reclaimed.

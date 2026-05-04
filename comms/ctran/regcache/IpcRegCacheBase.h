@@ -52,10 +52,14 @@ struct IpcRelease {
   void* base{nullptr};
   // unique ID for tracking registrations
   uint32_t uid{0};
+  // Number of times this buffer was exported to the peer. The import side
+  // should decrement its refcount by this amount.
+  int32_t exportCount{1};
 
   std::string toString() const {
     std::stringstream ss;
-    ss << "[IPC_RELEASE_MEM] base: " << base << " uid: " << uid;
+    ss << "[IPC_RELEASE_MEM] base: " << base << " uid: " << uid
+       << " exportCount: " << exportCount;
     return ss.str();
   }
 };
@@ -103,7 +107,19 @@ struct IpcRemRegElem {
       const ctran::utils::CtranIpcDesc& ipcDesc,
       int cudaDev,
       const struct CommLogData* logMetaData)
-      : ipcRemMem(ipcDesc, cudaDev, logMetaData, "IPC RemRegElem") {};
+      : ipcRemMem(ipcDesc, cudaDev, logMetaData, "IPC RemRegElem", {}) {};
+
+  IpcRemRegElem(
+      const ctran::utils::CtranIpcDesc& ipcDesc,
+      int cudaDev,
+      const struct CommLogData* logMetaData,
+      const std::vector<ctran::utils::CtranIpcSegDesc>& extraSegments)
+      : ipcRemMem(
+            ipcDesc,
+            cudaDev,
+            logMetaData,
+            "IPC RemRegElem",
+            extraSegments) {};
 
   std::string toString() const {
     return fmt::format(
@@ -113,10 +129,14 @@ struct IpcRemRegElem {
   }
 };
 
+// Maximum length for peer ID string (including null terminator)
+// Format: "hostname:pid" - hostname can be up to 255 chars (DNS limit)
+constexpr size_t kMaxPeerIdLen = 272;
+
 struct IpcRemHandle {
   // use peerId, basePtr and uid on peer to lookup the imported memory handle
-  // in local cache
-  std::string peerId;
+  // in local cache.
+  char peerId[kMaxPeerIdLen]{};
   void* basePtr;
   uint32_t uid;
 
@@ -131,10 +151,6 @@ enum class IpcReqType : uint8_t {
   kDesc = 0, // Memory descriptor for export
   kRelease = 1, // Release notification
 };
-
-// Maximum length for peer ID string (including null terminator)
-// Format: "hostname:pid" - hostname can be up to 255 chars (DNS limit)
-constexpr size_t kMaxPeerIdLen = 272;
 
 // Unified IPC request structure sent over the network.
 // Used for both memory export (IpcDesc) and release (IpcRelease) requests.

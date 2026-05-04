@@ -660,6 +660,123 @@ TEST_F(CtranWinDistTest, signalResetAcrossGraphReplays) {
   oobBarrier();
 }
 
+// E2E test: ctranWinRegister with a disjoint multi-segment user buffer
+// (>CTRAN_IPC_INLINE_SEGMENTS physical allocations) that exercises the
+// multi-packet NVL export path introduced in D97017284 / D96228113.
+//
+// The window's exchange() calls mapper->allGatherCtrl(), which for NVL
+// (intra-node) peers exports the buffer's IPC descriptors. When the buffer
+// is backed by many physical segments, the extra segments are sent in
+// additional packets beyond the inline ControlMsg header.
+//
+// This test:
+//   1. Allocates a disjoint GPU buffer with many segments via
+//      ncclMemAllocDisjoint.
+//   2. Registers it as a user-provided window buffer via ctranWinRegister.
+//   3. Verifies remote window addresses are accessible for NVL peers via
+//      ctranWinSharedQuery.
+//   4. Writes a rank-specific pattern into each window and verifies that
+//      intra-node peers can read it back correctly (direct copy over NVL).
+TEST_F(CtranWinTest, multiSegmentWindowRegister) {
+  if (!ncclIsCuMemSupported()) {
+    GTEST_SKIP() << "CuMem not supported, skip multi-segment window test";
+  }
+
+  auto ctranComm = makeCtranComm();
+  ASSERT_NE(ctranComm, nullptr);
+
+  auto statex = ctranComm->statex_.get();
+  ASSERT_NE(statex, nullptr);
+
+  if (statex->nLocalRanks() < 2) {
+    GTEST_SKIP() << "Test requires at least 2 local GPUs to exercise NVL path";
+  }
+
+  // Allocate a disjoint buffer with many segments to trigger the
+  // multi-packet export path (CTRAN_IPC_INLINE_SEGMENTS == 2).
+  constexpr int kNumSegments = 100;
+  constexpr size_t kSegSize = 1024; // 1KB per segment
+  std::vector<size_t> segSizes(kNumSegments, kSegSize);
+  size_t totalSize = kSegSize * kNumSegments;
+
+  void* disjointBuf = nullptr;
+  std::vector<TestMemSegment> disjointSegments;
+  COMMCHECK_TEST(
+      commMemAllocDisjoint(&disjointBuf, segSizes, disjointSegments));
+  ASSERT_NE(disjointBuf, nullptr);
+
+  // Fill local buffer with a rank-specific pattern:
+  // every int element = globalRank * 10000 + element_index
+  const size_t count = totalSize / sizeof(int);
+  std::vector<int> fillVals(count);
+  for (size_t i = 0; i < count; ++i) {
+    fillVals[i] = this->globalRank * 10000 + static_cast<int>(i);
+  }
+  CUDACHECK_TEST(cudaMemcpy(
+      disjointBuf, fillVals.data(), totalSize, cudaMemcpyHostToDevice));
+
+  // Register the disjoint buffer as a user-provided window.
+  // This exercises: ctranWinRegister -> allocate(userBufPtr) -> exchange()
+  // -> allGatherCtrl() with multi-segment NVL export.
+  CtranWin* win = nullptr;
+  meta::comms::Hints hints;
+  auto res =
+      ctranWinRegister(disjointBuf, totalSize, ctranComm.get(), &win, hints);
+  ASSERT_EQ(res, commSuccess);
+  ASSERT_NE(win, nullptr);
+
+  // Verify remote addresses via ctranWinSharedQuery
+  for (int peer = 0; peer < this->numRanks; ++peer) {
+    void* remoteAddr = nullptr;
+    res = ctranWinSharedQuery(peer, win, &remoteAddr);
+    EXPECT_EQ(res, commSuccess);
+
+    if (peer == statex->rank()) {
+      EXPECT_EQ(remoteAddr, disjointBuf);
+    } else if (statex->node(peer) == statex->node() && win->nvlEnabled(peer)) {
+      // Intra-node NVL peer: remote address should be mapped
+      EXPECT_NE(remoteAddr, nullptr)
+          << "NVL peer " << peer << " should have non-null remote address";
+    }
+  }
+
+  // Barrier to ensure all ranks have finished window creation and data write
+  oobBarrier();
+
+  // Verify data integrity: read back remote window contents from NVL peers
+  for (int peer = 0; peer < this->numRanks; ++peer) {
+    if (peer == this->globalRank) {
+      continue;
+    }
+    if (!(statex->node(peer) == statex->node() && win->nvlEnabled(peer))) {
+      continue;
+    }
+
+    void* remoteAddr = nullptr;
+    res = ctranWinSharedQuery(peer, win, &remoteAddr);
+    ASSERT_EQ(res, commSuccess);
+    ASSERT_NE(remoteAddr, nullptr);
+
+    std::vector<int> readBack(count);
+    CUDACHECK_TEST(cudaMemcpy(
+        readBack.data(), remoteAddr, totalSize, cudaMemcpyDeviceToHost));
+
+    for (size_t i = 0; i < count; ++i) {
+      int expected = peer * 10000 + static_cast<int>(i);
+      EXPECT_EQ(readBack[i], expected)
+          << "Mismatch at index " << i << " reading from peer " << peer;
+    }
+  }
+
+  // Barrier before cleanup to ensure all peers finished remote reads
+  oobBarrier();
+
+  res = ctranWinFree(win);
+  EXPECT_EQ(res, commSuccess);
+
+  COMMCHECK_TEST(commMemFreeDisjoint(disjointBuf, segSizes));
+}
+
 INSTANTIATE_TEST_SUITE_P(
     CtranWinInstance,
     CtranWinTestParam,

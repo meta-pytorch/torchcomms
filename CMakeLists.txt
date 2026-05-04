@@ -5,6 +5,21 @@ project(torchcomms_ncclx)
 set(CMAKE_VERBOSE_MAKEFILE ON)
 set(FETCHCONTENT_BASE_DIR "build/fetchcontent")
 
+# Some fetched third-party projects still declare pre-3.5 policy versions.
+# Newer CMake releases reject those unless we set a minimum policy floor.
+if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.31)
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+endif()
+
+# colltrace's HRDWRingBufferReader uses __atomic_load_n on a 128-bit value,
+# which the compiler lowers to __atomic_load_16 (libatomic). On x86_64 we
+# sidestep this in source via an SSE2 MOVDQA specialization (see
+# HRDWRingBufferReader.h), so no libatomic dep is needed there. On other
+# archs (aarch64, etc.) we fall back to linking libatomic.
+if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+    add_link_options("LINKER:--push-state,--no-as-needed" "-latomic" "LINKER:--pop-state")
+endif()
+
 # Options
 option(USE_NCCL "Whether to build NCCL or not" ON)
 option(USE_NCCLX "Whether to build NCCLX or not" ON)
@@ -54,14 +69,37 @@ else()
 endif()
 message(STATUS "TORCH_CUDA_ARCH_LIST : ${TORCH_CUDA_ARCH_LIST}")
 
-# Fetch nlohmann/json
-include(FetchContent)
-FetchContent_Declare(
-    nlohmann_json
-    GIT_REPOSITORY https://github.com/nlohmann/json.git
-    GIT_TAG v3.11.3
-)
-FetchContent_MakeAvailable(nlohmann_json)
+# Set ROOT early — needed by build_ncclx.cmake and backend CMakeLists.
+set(ROOT ${CMAKE_CURRENT_SOURCE_DIR})
+
+set(USE_SYSTEM_LIBS $ENV{USE_SYSTEM_LIBS})
+
+# Find CONDA_PREFIX — must be set before third-party includes so find_package
+# can discover libs installed by build_ncclx.sh.
+if(DEFINED ENV{BUILD_PREFIX})
+    set(CONDA_PREFIX $ENV{PREFIX})
+elseif(DEFINED ENV{CONDA_PREFIX})
+    set(CONDA_PREFIX $ENV{CONDA_PREFIX})
+else()
+    set(CONDA_PREFIX "${ROOT}/build/conda")
+    set(ENV{CONDA_PREFIX} "${CONDA_PREFIX}")
+endif()
+set(CONDA_LIB "${CONDA_PREFIX}/lib")
+set(CONDA_INCLUDE "${CONDA_PREFIX}/include")
+
+# Third-party dependencies (find_package with FetchContent fallback)
+# Allow FetchContent_Populate() which we use to patch glog before add_subdirectory.
+if(POLICY CMP0169)
+    cmake_policy(SET CMP0169 OLD)
+endif()
+set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/comms/torchcomms/cmake/third_party ${CMAKE_MODULE_PATH})
+# When USE_NCCLX=ON, build_ncclx.sh installs gflags/glog/fmt/folly/etc. into
+# CONDA_PREFIX. Run it first so the find_package calls below find them.
+include(build_ncclx)
+include(nlohmann_json)
+include(gflags)
+include(glog)
+include(fmt)
 
 # Find Python and PyTorch
 find_package(Python3 COMPONENTS Interpreter Development.Module REQUIRED)
@@ -84,7 +122,7 @@ find_package(Torch REQUIRED)
 
 # Helper to glob sources
 file(GLOB TORCHCOMMS_SOURCES "comms/torchcomms/*.cpp")
-file(GLOB TORCHCOMMS_DUMMY_SOURCES "comms/torchcomms/dummy/*.cpp")
+file(GLOB TORCHCOMMS_FAKE_SOURCES "comms/torchcomms/fake/*.cpp")
 file(GLOB TORCHCOMMS_PYTHON_SOURCES "comms/torchcomms/*Py.cpp")
 file(GLOB HOOKS_SOURCES "comms/torchcomms/hooks/*.cpp")
 file(GLOB HOOKS_PYTHON_SOURCES "comms/torchcomms/hooks/*Py.cpp")
@@ -95,30 +133,14 @@ list(REMOVE_ITEM TORCHCOMMS_SOURCES ${TORCHCOMMS_PYTHON_SOURCES})
 list(REMOVE_ITEM HOOKS_SOURCES ${HOOKS_PYTHON_SOURCES})
 list(REMOVE_ITEM UTILS_SOURCES ${UTILS_PYTHON_SOURCES})
 
-list(APPEND TORCHCOMMS_SOURCES ${TORCHCOMMS_DUMMY_SOURCES})
+list(APPEND TORCHCOMMS_SOURCES ${TORCHCOMMS_FAKE_SOURCES})
 
 list(APPEND TORCHCOMMS_SOURCES ${HOOKS_SOURCES})
 list(APPEND TORCHCOMMS_SOURCES ${UTILS_SOURCES})
 list(APPEND TORCHCOMMS_PYTHON_SOURCES ${HOOKS_PYTHON_SOURCES})
 
-# Set include directories
-set(ROOT ${CMAKE_CURRENT_SOURCE_DIR})
-
-set(USE_SYSTEM_LIBS $ENV{USE_SYSTEM_LIBS})
-
 message(STATUS "Python3_ROOT_DIR : ${Python3_ROOT_DIR}")
 
-# Find CONDA_PREFIX
-if(DEFINED ENV{BUILD_PREFIX})
-    set(CONDA_PREFIX $ENV{PREFIX})
-elseif(DEFINED ENV{CONDA_PREFIX})
-  set(CONDA_PREFIX $ENV{CONDA_PREFIX})
-else()
-  set(CONDA_PREFIX "${ROOT}/build/conda")
-  set(ENV{CONDA_PREFIX} "${CONDA_PREFIX}")
-endif()
-set(CONDA_LIB "${CONDA_PREFIX}/lib")
-set(CONDA_INCLUDE "${CONDA_PREFIX}/include")
 set(TORCH_PYTHON_LIB "${TORCH_INSTALL_PREFIX}/lib/libtorch_python.so")
 
 # Core libtorchcomms
@@ -134,23 +156,18 @@ target_include_directories(torchcomms PRIVATE
 )
 target_compile_features(torchcomms PRIVATE cxx_std_20)
 target_link_directories(torchcomms PRIVATE ${CONDA_LIB})
+# glog/gflags/fmt must come before TORCH_LIBRARIES so our headers are found
+# before PyTorch's bundled (and potentially different-version) fmt headers.
+# PRIVATE: consumer extensions that need these link them explicitly.
+# Extensions that link torchcomms (gloo, nccl, ncclx) resolve glog/gflags
+# symbols from libtorchcomms.so at runtime via the DT_NEEDED chain.
+target_link_libraries(torchcomms PRIVATE glog::glog gflags::gflags fmt::fmt)
 target_link_libraries(torchcomms PRIVATE ${TORCH_LIBRARIES} nlohmann_json::nlohmann_json)
-if(USE_SYSTEM_LIBS)
-    target_link_libraries(torchcomms PRIVATE
-        "-lglog"
-        "-lgflags"
-        "-lfmt"
-    )
-else()
-    target_include_directories(torchcomms PRIVATE
-        ${ROOT}/third-party/fmt/include
-    )
-    target_link_libraries(torchcomms PRIVATE
-        "-l:libglog.a"
-        "-l:libgflags.a"
-        "-l:libfmt.a"
-    )
-endif()
+
+# Clog Hook sources (compiled into _comms)
+file(GLOB TORCHCOMMS_CLOG_SOURCES "comms/torchcomms/hooks/clog/ClogHook.cpp")
+file(GLOB TORCHCOMMS_CLOG_PYTHON_SOURCES
+    "comms/torchcomms/hooks/clog/ClogHookPy.cpp")
 
 # Flight Recorder sources (compiled into _comms)
 file(GLOB TORCHCOMMS_FR_SOURCES "comms/torchcomms/hooks/fr/FlightRecorder.cpp")
@@ -160,6 +177,8 @@ file(GLOB TORCHCOMMS_FR_PYTHON_SOURCES "comms/torchcomms/hooks/fr/FlightRecorder
 add_library(torchcomms_comms MODULE
     ${TORCHCOMMS_PYTHON_SOURCES}
     ${HOOKS_PYTHON_SOURCES}
+    ${TORCHCOMMS_CLOG_SOURCES}
+    ${TORCHCOMMS_CLOG_PYTHON_SOURCES}
     ${TORCHCOMMS_FR_SOURCES}
     ${TORCHCOMMS_FR_PYTHON_SOURCES}
 )
@@ -172,15 +191,17 @@ set_target_properties(torchcomms_comms PROPERTIES
 target_include_directories(torchcomms_comms PRIVATE
     ${ROOT}
     ${CONDA_INCLUDE}
+    ${TORCH_INSTALL_PREFIX}/include
     ${Python3_INCLUDE_DIRS}
 )
 target_compile_features(torchcomms_comms PRIVATE cxx_std_20)
 target_link_directories(torchcomms_comms PRIVATE ${CONDA_LIB})
 target_link_libraries(torchcomms_comms PRIVATE
+    torchcomms
+    fmt::fmt
+    nlohmann_json::nlohmann_json
     ${TORCH_LIBRARIES}
     ${TORCH_PYTHON_LIB}
-    torchcomms
-    nlohmann_json::nlohmann_json
 )
 
 if (USE_NCCL)

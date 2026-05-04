@@ -56,7 +56,7 @@ __global__ void transportStressSendRecvKernel(
       // Fill src with identifiable pattern
       fillPattern(buf, count, rank, iter);
       group.sync();
-      nvl.send(group, buf, nbytes);
+      nvl.send_group(group, buf, nbytes);
       // Sender always passes
       if (group.thread_id_in_group == 0) {
         results[iter] = 1;
@@ -68,7 +68,7 @@ __global__ void transportStressSendRecvKernel(
         buf[i] = 0.0f;
       }
       group.sync();
-      nvl.recv(group, buf, nbytes);
+      nvl.recv_group(group, buf, nbytes);
       // Verify received data matches sender's pattern
       verifyPattern(buf, count, peer, iter, &results[iter]);
     }
@@ -77,8 +77,8 @@ __global__ void transportStressSendRecvKernel(
     // Signal-based barrier: both ranks signal and wait before next iteration.
     // Barrier buffers are not available via get_device_transport(), so we use
     // monotonic signal ADD/GE on signal_id 0 as a barrier replacement.
-    nvl.signal_threadgroup(group, 0, SignalOp::SIGNAL_ADD, 1);
-    nvl.wait_signal_until_threadgroup(
+    nvl.signal(group, 0, SignalOp::SIGNAL_ADD, 1);
+    nvl.wait_signal_until(
         group, 0, CmpOp::CMP_GE, static_cast<uint64_t>(iter + 1));
   }
 }
@@ -111,9 +111,9 @@ __global__ void transportStressSignalKernel(
 
   for (int iter = 0; iter < iterations; iter++) {
     // Signal peer: add 1 to signal_id 0
-    nvl.signal_threadgroup(group, 0, SignalOp::SIGNAL_ADD, 1);
+    nvl.signal(group, 0, SignalOp::SIGNAL_ADD, 1);
     // Wait for peer's signal: expect monotonically increasing value
-    nvl.wait_signal_until_threadgroup(
+    nvl.wait_signal_until(
         group, 0, CmpOp::CMP_GE, static_cast<uint64_t>(iter + 1));
   }
 }
@@ -149,27 +149,27 @@ __global__ void transportStressCombinedKernel(
     // Phase 1: Signal-based barrier (barrier buffers not available via
     // get_device_transport(), so use signal ADD/GE on signal_id 0).
     // Two signals per iteration: one here, one after send/recv.
-    nvl.signal_threadgroup(group, 0, SignalOp::SIGNAL_ADD, 1);
-    nvl.wait_signal_until_threadgroup(
+    nvl.signal(group, 0, SignalOp::SIGNAL_ADD, 1);
+    nvl.wait_signal_until(
         group, 0, CmpOp::CMP_GE, static_cast<uint64_t>(2 * iter + 1));
 
     // Phase 2: Send/recv
     if (rank % 2 == 0) {
       fillPattern(buf, count, rank, iter);
       group.sync();
-      nvl.send(group, buf, nbytes);
+      nvl.send_group(group, buf, nbytes);
     } else {
       for (size_t i = group.thread_id_in_group; i < count;
            i += group.group_size) {
         buf[i] = 0.0f;
       }
       group.sync();
-      nvl.recv(group, buf, nbytes);
+      nvl.recv_group(group, buf, nbytes);
     }
 
     // Phase 3: Signal/wait (confirms both ranks finished send/recv)
-    nvl.signal_threadgroup(group, 0, SignalOp::SIGNAL_ADD, 1);
-    nvl.wait_signal_until_threadgroup(
+    nvl.signal(group, 0, SignalOp::SIGNAL_ADD, 1);
+    nvl.wait_signal_until(
         group, 0, CmpOp::CMP_GE, static_cast<uint64_t>(2 * iter + 2));
 
     // Phase 4: Verify on receiver
@@ -234,7 +234,7 @@ __global__ void transportStressLl128Kernel(
         buf[i] = pattern;
       }
       __syncthreads();
-      nvl.ll128_send(group, buf, nbytes);
+      nvl.ll128_send_group(group, buf, nbytes);
       if (threadIdx.x == 0) {
         results[iter] = 1;
       }
@@ -244,7 +244,7 @@ __global__ void transportStressLl128Kernel(
         buf[i] = 0;
       }
       __syncthreads();
-      nvl.ll128_recv(group, buf, nbytes);
+      nvl.ll128_recv_group(group, buf, nbytes);
       // Verify
       __shared__ int any_mismatch;
       if (threadIdx.x == 0) {
@@ -264,8 +264,8 @@ __global__ void transportStressLl128Kernel(
 
     // Signal-based barrier before next iteration (barrier buffers not
     // available via get_device_transport())
-    nvl.signal_threadgroup(group, 0, SignalOp::SIGNAL_ADD, 1);
-    nvl.wait_signal_until_threadgroup(
+    nvl.signal(group, 0, SignalOp::SIGNAL_ADD, 1);
+    nvl.wait_signal_until(
         group, 0, CmpOp::CMP_GE, static_cast<uint64_t>(iter + 1));
   }
 }

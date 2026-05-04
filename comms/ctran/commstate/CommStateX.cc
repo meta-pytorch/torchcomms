@@ -59,7 +59,9 @@ CommStateX::CommStateX(
       busId_(busId),
       commHash_(commHash),
       commDesc_(commDesc),
-      noLocal_(noLocal),
+      noLocal_(
+          noLocal ||
+          NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::nolocal),
       vCliqueSize_(vCliqueSize) {
   setRankStatesTopologies(std::move(rankTopologies));
   setCommRankToWorldRanks(std::move(commRanksToWorldRanks));
@@ -78,6 +80,7 @@ void CommStateX::initRankTopologyNolocal() {
     rankState.nLocalRanks = 1;
     rankState.localRankToRanks.assign(1, r);
     const std::string nolocalHost("nolocal_node_" + std::to_string(r));
+    rankState.host = nolocalHost;
     hostToRanks_[nolocalHost].emplace_back(r);
     nodeRanks_[rankState.nodeId].emplace_back(rankState.rank);
   }
@@ -99,6 +102,7 @@ void CommStateX::initRankTopologyVnode(const int nLocalRanks) {
     }
     const std::string vNodeHost(
         "vnode_node_" + std::to_string(rankState.nodeId));
+    rankState.host = vNodeHost;
     hostToRanks_[vNodeHost].emplace_back(r);
     nodeRanks_[rankState.nodeId].emplace_back(r);
   }
@@ -125,8 +129,10 @@ void CommStateX::initRankStatesTopology(meta::comms::IBootstrap* bootstrap) {
     CLOGF_SUBSYS(
         INFO,
         INIT,
-        "load topology rank: {}, nRanks: {}, host: {}, dc: {} zone: {} rtsw: {} scaling unit: {} rackSerial: {}",
+        "Load topology for rank {} commHash {:x} commDesc {}, nRanks {}, host {}, dc {} zone {} rtsw {} scaling unit {} rackSerial {}",
         rank_,
+        commHash_,
+        commDesc_,
         nRanks_,
         myTopo->host,
         myTopo->dc,
@@ -149,6 +155,17 @@ void CommStateX::initRankStatesTopology(meta::comms::IBootstrap* bootstrap) {
 
   // Create statex variable
   setRankStatesTopologies(std::move(allTopos));
+
+  CLOGF_SUBSYS(
+      INFO,
+      INIT,
+      "Rank topology for rank {} commHash {:x} commDesc {}, nRanks {}, nLocalRanks {}, nNodes {}",
+      rank_,
+      commHash_,
+      commDesc_,
+      nRanks_,
+      nLocalRanks(),
+      nNodes());
 }
 
 void CommStateX::setNvlFabricTopos(
@@ -304,6 +321,28 @@ void CommStateX::setNvlFabricTopos(
         "CommStateX: effectiveVCliqueSize={} override NVL fabric topology",
         effectiveVCliqueSize);
   }
+
+  CLOGF_SUBSYS(
+      INFO,
+      INIT,
+      "NVL fabric topology for rank {} commHash {:x} commDesc {}, nRanks {}, nLocalRanks {}, nNodes {}, nvlFabricEnabled {}, nvlFabricCliqueEnabled {}, nvlDomainIndex {}, nvlDomainRank {}, nNvlDomainRanks {}, nNvlDomains {}, clusterId {}, cliqueIndex {}, cliqueRank {}, nCliqueRanks {}, nCliques {}",
+      rank_,
+      commHash_,
+      commDesc_,
+      nRanks_,
+      nLocalRanks(),
+      nNodes(),
+      nvlFabricEnabled_,
+      nvlFabricCliqueEnabled_,
+      myNvlFabricRankState_.nvlDomainIndex,
+      myNvlFabricRankState_.nvlDomainRank,
+      myNvlFabricRankState_.nNvlDomainRanks,
+      nvlDomainRanks_.size(),
+      myNvlFabricRankState_.clusterId,
+      myNvlFabricRankState_.cliqueIndex,
+      myNvlFabricRankState_.cliqueRank,
+      myNvlFabricRankState_.nCliqueRanks,
+      cliqueRanks_.size());
 }
 
 void CommStateX::setRankStatesTopologies(
@@ -561,7 +600,7 @@ int CommStateX::gRank(int rank) const {
 std::string CommStateX::gPid(int rank) const {
   CHECK_TOPO_AND_SET_RANK(rank, rank_, rankStates_);
   return rankStates_.at(rank).host + ":" +
-      std::to_string(rankStates_.at(rank).pid) + ":" + std::to_string(rank);
+      std::to_string(rankStates_.at(rank).pid);
 }
 
 std::string CommStateX::dc(int rank) const {

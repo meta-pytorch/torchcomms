@@ -139,8 +139,6 @@ class CollTrace {
   SharedPool cudaEventPool_;
   EventQueue eventQueue_;
 
-  std::atomic<uint64_t> curCollId_{0};
-
   std::unique_ptr<CollTraceEvent> curEvent_;
   std::atomic<CurrentCollState> curCollState_{CurrentCollState::PENDING};
   std::deque<std::unique_ptr<CollTraceColl>> pastColls_;

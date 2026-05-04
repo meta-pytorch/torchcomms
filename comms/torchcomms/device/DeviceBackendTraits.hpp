@@ -56,7 +56,11 @@ class TorchCommDeviceWindow;
 
 struct NCCLDeviceBackend {
   using Comm = ncclDevComm;
+#ifdef NCCL_RMA_SUPPORTED
   using Window = ncclWindow_t;
+#else
+  using Window = void*;
+#endif
 
   // =========================================================================
   // DeviceWindowDeleter - Custom deleter for device window cleanup
@@ -135,7 +139,7 @@ struct NCCLDeviceBackend {
   static void register_extra_window(
       torch::comms::NcclxApi* nccl_api,
       ncclComm_t nccl_comm,
-      ncclWindow_t* out_win,
+      Window* out_win,
       void* ptr,
       size_t size);
 
@@ -143,16 +147,14 @@ struct NCCLDeviceBackend {
   static void deregister_extra_window(
       torch::comms::NcclxApi* nccl_api,
       ncclComm_t nccl_comm,
-      ncclWindow_t* win);
+      Window* win);
 
   // Destroy backend-specific device communicator (GIN ncclDevComm).
   static void destroy_device_comm(Ptr& device_window);
 
   // Select which window handle to use for device window creation.
   // GIN uses nccl_orig_win_ (device API flag).
-  static ncclWindow_t select_device_win(
-      ncclWindow_t /* win */,
-      ncclWindow_t nccl_orig_win) {
+  static Window select_device_win(Window /* win */, Window nccl_orig_win) {
     return nccl_orig_win;
   }
 

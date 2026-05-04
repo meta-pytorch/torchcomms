@@ -67,19 +67,39 @@ std::shared_ptr<CtranIbSingleton> CtranIbSingleton::getInstance() {
 
 CtranIbSingleton::CtranIbSingleton() {
   auto ibvInitResult = ibverbx::ibvInit();
-  FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM(ibvInitResult);
+  try {
+    FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM(ibvInitResult);
+  } catch (const ctran::utils::Exception& e) {
+    CLOGF(
+        ERR,
+        "CTRAN-IB: Failed to initialize ibverbs (libibverbs.so): {}. "
+        "Set NCCL_CTRAN_BACKENDS=nvl,socket to use alternative backends.",
+        e.what());
+    throw;
+  }
   auto maybeDeviceList = ibverbx::IbvDevice::ibvGetDeviceList(
       NCCL_IB_HCA, NCCL_IB_HCA_PREFIX, CTRAN_IB_ANY_PORT, NCCL_IB_DATA_DIRECT);
-  FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM(maybeDeviceList);
+  try {
+    FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM(maybeDeviceList);
+  } catch (const ctran::utils::Exception& e) {
+    CLOGF(
+        ERR,
+        "CTRAN-IB: Failed to get InfiniBand device list: {}. "
+        "Set NCCL_CTRAN_BACKENDS=nvl,socket to use alternative backends.",
+        e.what());
+    throw;
+  }
   ibvDevices = std::move(*maybeDeviceList);
 
   if (ibvDevices.size() < NCCL_CTRAN_IB_DEVICES_PER_RANK) {
-    CLOGF(
-        WARN,
-        "CTRAN-IB : active device found {} is less than requested device count {}",
+    std::string msg = fmt::format(
+        "CTRAN-IB: Found {} InfiniBand device(s) but {} required "
+        "(NCCL_CTRAN_IB_DEVICES_PER_RANK). "
+        "Set NCCL_CTRAN_BACKENDS=nvl,socket to use alternative backends.",
         ibvDevices.size(),
         NCCL_CTRAN_IB_DEVICES_PER_RANK);
-    throw std::bad_alloc();
+    CLOGF(ERR, msg);
+    throw ctran::utils::Exception(msg, commSystemError);
   }
 
   for (auto i = 0; i < this->ibvDevices.size(); i++) {
@@ -98,8 +118,6 @@ CtranIbSingleton::CtranIbSingleton() {
   for (auto& p : this->devBytes_) {
     p = std::make_unique<std::atomic<size_t>>(0);
   }
-
-  return;
 }
 
 commResult_t CtranIbSingleton::destroy() {
@@ -294,7 +312,6 @@ void CtranIbSingleton::ibAsyncEventHandler(const int cudaDev) {
 
 CtranIb::CtranIb(
     CtranComm* comm,
-    CtranCtrlManager* ctrlMgr,
     std::optional<bool> enableLocalFlush,
     std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory,
     std::optional<int> maxNumCqe)
@@ -321,7 +338,6 @@ CtranIb::CtranIb(
       comm->statex_->cudaDev(),
       comm->statex_->commHash(),
       comm->statex_->commDesc(),
-      ctrlMgr,
       enableLocalFlush_,
       BootstrapMode::kDefaultServer,
       std::nullopt,
@@ -341,7 +357,6 @@ CtranIb::CtranIb(
     int cudaDev,
     uint64_t commHash,
     const std::string& commDesc,
-    CtranCtrlManager* ctrlMgr,
     // FIXME: Unlike IB with comm, we require user to always specify
     // enableLocalFlush because we don't have access to statex->cudaArch() for
     // default config detection
@@ -357,7 +372,6 @@ CtranIb::CtranIb(
       cudaDev,
       commHash,
       commDesc,
-      ctrlMgr,
       enableLocalFlush,
       bootstrapMode,
       qpServerAddr,
@@ -382,7 +396,6 @@ void CtranIb::init(
     int cudaDev,
     uint64_t commHash,
     const std::string& commDesc,
-    CtranCtrlManager* ctrlMgr,
     bool enableLocalFlush,
     const BootstrapMode bootstrapMode,
     std::optional<const SocketServerAddr*> qpServerAddr,
@@ -396,7 +409,6 @@ void CtranIb::init(
   this->cudaDev = cudaDev;
   this->commHash = commHash;
   this->commDesc = commDesc;
-  this->ctrlMgr = ctrlMgr;
   this->ncclLogData = CommLogData{
       .commId = comm ? comm->logMetaData_.commId : 0,
       .commHash = commHash,
@@ -712,10 +724,6 @@ void CtranIb::bootstrapStart(
   }
 
   this->listenThread = std::thread{bootstrapAccept, this};
-}
-
-void CtranIb::regCtrlCb(std::unique_ptr<CtranCtrlManager>& ctrlMgr) {
-  // no control message callback to register; no-op.
 }
 
 std::string CtranIb::getIbDevName(int device) const {
@@ -1414,7 +1422,7 @@ std::shared_ptr<CtranIbVirtualConn> CtranIb::createVc(int peerRank) {
   }
   // Create a new VC and assign
   it.first->second = std::make_shared<CtranIbVirtualConn>(
-      devices, peerRank, comm, ctrlMgr, getPgToTrafficClassValue(), cudaDev);
+      devices, peerRank, comm, getPgToTrafficClassValue(), cudaDev);
   return it.first->second;
 }
 

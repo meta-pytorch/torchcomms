@@ -16,13 +16,13 @@ using namespace torch::comms;
 template <typename T, typename... TOptions>
 using intrusive_ptr_class_ = py::class_<T, c10::intrusive_ptr<T>, TOptions...>;
 
-PYBIND11_MODULE(_comms_ncclx, m) {
+PYBIND11_MODULE(_comms_ncclx, m, py::mod_gil_not_used()) {
   m.doc() = "NCCLX specific python bindings for TorchComm";
 
   intrusive_ptr_class_<TorchCommNCCLXPersistentRequest>(
       m, "TorchCommNCCLXPersistentRequest");
 
-  py::class_<TorchCommNCCLX, std::shared_ptr<TorchCommNCCLX>>(
+  py::class_<TorchCommNCCLX, TorchCommBackend, std::shared_ptr<TorchCommNCCLX>>(
       m, "TorchCommNCCLX")
       .def(
           "device_alltoallv_single",
@@ -291,7 +291,49 @@ rank, number of ranks, and collective trace information.
 Returns:
     dict[str, str]: Key-value pairs of communicator state.
 )",
-          py::call_guard<py::gil_scoped_release>());
+          py::call_guard<py::gil_scoped_release>())
+#ifdef NCCL_REDUCE_SCATTER_QUANTIZE_SUPPORTED
+      .def(
+          "reduce_scatter_quantized",
+          [](TorchCommNCCLX& self,
+             at::Tensor& output,
+             const at::Tensor& input,
+             const ReduceOp& op,
+             const at::Tensor& seed,
+             bool async_op) {
+            return self.reduce_scatter_quantized(
+                output, input, op, seed, async_op);
+          },
+          R"(
+Reduce-scatter with stochastic quantization (FP32 input/output, BF16 transport).
+
+Performs a reduce-scatter where data is stochastically rounded from FP32 to BF16
+for transport between peers, then reduced in FP32 at the destination. Uses the
+PAT algorithm with Philox-based stochastic rounding to provide unbiased precision
+reduction.
+
+The input tensor must be FP32, of size (world_size * output.numel()).
+The output tensor must be FP32.
+
+Args:
+    output: Output tensor (FP32). Will contain the reduced scatter result.
+    input: Input tensor (FP32). Size must be output.numel() * world_size.
+    op: Reduction operation. Only SUM and AVG are supported.
+    seed: A single-element int64 CUDA tensor containing the Philox RNG seed
+          for stochastic rounding. Must reside in GPU memory.
+    async_op: Whether to perform the operation asynchronously.
+
+Returns:
+    TorchWork object for tracking operation completion.
+)",
+          py::arg("output"),
+          py::arg("input"),
+          py::arg("op"),
+          py::arg("seed"),
+          py::arg("async_op"),
+          py::call_guard<py::gil_scoped_release>())
+#endif
+      ;
 
   m.def(
       "comm_dump_all",
@@ -320,6 +362,26 @@ Returns:
     dict[str, dict[str, str]]: Nested key-value pairs of all communicator states.
 )",
       py::call_guard<py::gil_scoped_release>());
+
+  m.def(
+      "init_caching_allocator_hook",
+      []() {
+        DefaultNcclxGlobalApi api;
+        api.initCachingAllocatorHook();
+      },
+      R"(
+Attach the CCA (CUDA Caching Allocator) memory hook for NCCLX.
+
+This initializes the global memory registration hook that automatically
+registers/deregisters GPU memory segments with the NCCLX transport layer
+(ctran) as they are allocated/freed by PyTorch's CUDACachingAllocator.
+
+This does not require creating a communicator. It is useful for P2P transfer
+cases where memory needs to be registered for RDMA without a communicator.
+
+The hook is a process-global singleton -- calling this multiple times is safe
+(subsequent calls are no-ops).
+)");
 
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
   // Device API methods (get_device_window, register_local_buffer,
@@ -357,6 +419,32 @@ Returns:
     int: NVLink-mapped device pointer as int64, or 0 if not accessible.
 )",
       py::arg("peer"),
+      py::arg("offset") = 0,
+      py::call_guard<py::gil_scoped_release>());
+
+  gin_cls.def(
+      "get_multimem_address",
+      [](TorchCommWindowNCCLXGin& self, int64_t offset) {
+        void* ptr = self.get_multimem_address(static_cast<size_t>(offset));
+        return reinterpret_cast<int64_t>(ptr);
+      },
+      R"(
+Get the NVLS multicast (multimem) device pointer for this window.
+
+Returns the multicast address that can be used with multimem.ld_reduce
+(hardware-fused all-reduce) and multimem.st (broadcast) PTX instructions
+across all LSA-connected peers.
+
+Requires sm_90+ (Hopper+) hardware with NVLS support.
+
+Prerequisites: Must call tensor_register() first.
+
+Args:
+    offset: Byte offset within the window (default 0).
+
+Returns:
+    int: Multimem device pointer as int64, or 0 if not supported.
+)",
       py::arg("offset") = 0,
       py::call_guard<py::gil_scoped_release>());
 #endif

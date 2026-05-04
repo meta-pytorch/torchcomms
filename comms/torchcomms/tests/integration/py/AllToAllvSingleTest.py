@@ -10,6 +10,7 @@ from enum import Enum
 import torch
 from torchcomms.tests.integration.py.TorchCommTestHelpers import (
     get_dtype_name,
+    is_full_sweep,
     TorchCommTestWrapper,
 )
 
@@ -18,8 +19,8 @@ class AllToAllvSingleTest(unittest.TestCase):
     """Test class for all_to_all_v_single operations in TorchComm."""
 
     # Class variables for test parameters
-    counts = [4, 1024, 1024 * 1024]
-    dtypes = [torch.float, torch.int, torch.int8]
+    counts = [4, 1024, 1024 * 1024] if is_full_sweep() else [4, 1024 * 1024]
+    dtypes = [torch.float, torch.int, torch.int8] if is_full_sweep() else [torch.float]
     num_replays = 4
 
     def get_wrapper(self):

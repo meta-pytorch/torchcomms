@@ -35,18 +35,31 @@ namespace torch::comms {
 RdmaMemory::RdmaMemory(const void* buf, size_t len, int cudaDev, bool cacheReg)
     : buf_(buf), len_(len), cudaDev_(cudaDev), cacheReg_(cacheReg) {
   initEnvironment();
-  if (cacheReg_) {
-    // Hold a shared_ptr to ensure RegCache lifetime while RdmaMemory is in
-    // scope
-    regCache_ = ctran::RegCache::getInstance();
-    FB_COMMCHECKTHROW(
-        regCache_->globalRegister(buf_, len_, true /* forceReg */, cudaDev_));
-    regHdl_ = regCache_->searchIbRegElem(buf_, len_);
-    if (regHdl_ == nullptr) {
-      throw std::runtime_error("Failed to fetch the IB regHdl from regCache");
-    }
+  // Hold a shared_ptr to ensure RegCache lifetime while RdmaMemory is in
+  // scope
+  regCache_ = ctran::RegCache::getInstance();
+
+  // Try to find an existing registration first.
+  regHdl_ = regCache_->searchIbRegHandle(buf_, len_, cudaDev_);
+
+  if (regHdl_ != nullptr) {
+    // Buffer is already registered. If caller didn't expect that, upgrade to
+    // cache-managed so the destructor won't deregister a handle it doesn't own.
+    cacheReg_ = true;
+  } else if (cacheReg_) {
+    // Caller asserted the buffer is pre-registered, but it wasn't found.
+    throw std::runtime_error(
+        "Failed to fetch the IB handle from regCache. The buffer may not be registered");
   } else {
-    FB_COMMCHECKTHROW(CtranIb::regMem(buf_, len_, cudaDev_, &regHdl_));
+    // Not registered yet; do it now.
+    FB_COMMCHECKTHROW(regCache_->globalRegister(
+        buf_, len_, true /* forceReg */, false /* ncclManaged */, cudaDev_));
+    regHdl_ = regCache_->searchIbRegHandle(buf_, len_, cudaDev_);
+    if (regHdl_ == nullptr) {
+      FB_COMMCHECKIGNORE(regCache_->globalDeregister(
+          buf_, len_, false /* skipRemRelease */, cudaDev_));
+      throw std::runtime_error("Failed to fetch the IB handle from regCache.");
+    }
   }
   remoteKey_ = CtranIb::getRemoteAccessKey(regHdl_).toString();
 }
@@ -71,13 +84,13 @@ RdmaMemory::RdmaMemory(RdmaMemory&& other) noexcept
 
 RdmaMemory::~RdmaMemory() noexcept {
   if (cacheReg_) {
-    // RegCache destructor handles deregistration; regCache_ shared_ptr
-    // release ensures RegCache outlives this RdmaMemory.
-    FB_COMMCHECKTHROW(regCache_->globalDeregister(buf_, len_));
+    // cacheReg path only queried the handle; caller owns registration lifetime
     return;
   }
   if (remoteKey_.size() > 0 && regHdl_) {
-    FB_COMMCHECKIGNORE(CtranIb::deregMem(regHdl_));
+    FB_COMMCHECKIGNORE(regCache_->globalDeregister(
+        buf_, len_, false /* skipRemRelease */, cudaDev_));
+    regHdl_ = nullptr;
   }
 }
 
@@ -112,7 +125,6 @@ RdmaTransport::RdmaTransport(
       cudaDev,
       -1 /* commHash */,
       "RDMA-Transport",
-      nullptr /* ctrlManager */,
       true /* enableLocalFlush */,
       CtranIb::BootstrapMode::kExternal,
       std::nullopt /* qpServerAddr */,
@@ -166,7 +178,6 @@ bool queryRdmaSupport() {
           kDummyDevice,
           -1 /* commHash */,
           "Query-RDMA-Support",
-          nullptr /* ctrlManager */,
           true /* enableLocalFlush */,
           CtranIb::BootstrapMode::kExternal);
     } catch (const std::exception& e) {

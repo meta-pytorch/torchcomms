@@ -246,59 +246,6 @@ __device__ __forceinline__ void ctranKernMultiPutNotify(KernelElem* elemList) {
   elemsFreeListByGroup(elemList, groupIdx, Free);
 }
 
-template <bool Complete, bool Free>
-__device__ __forceinline__ void ctranKernMultiNotifyOnly(KernelElem* elemList) {
-  const auto groupIdx = blockIdx.x;
-
-  // Traverse each element, handle posted put one by one; exit once
-  // completed all
-  KernelElem* elem = elemList;
-  while (elem != nullptr) {
-    // Optionally notify remote peer
-    if (elem->putNotify.notify) {
-      CtranAlgoDeviceSync* sync =
-          devSyncGetLoc<REMOTE>(elem->putNotify.peerLocalRank);
-      devSyncSetNotify(sync, groupIdx);
-    }
-    // Optionally mark completed per element to sync with GPE thread
-    if (Complete) {
-      elemCompleteByGroup(elem, groupIdx);
-    }
-
-    elem = elem->next;
-  }
-
-  // Free elements for host pool to reclaim.
-  // If Free == false, free only revoked elements.
-  elemsFreeListByGroup(elemList, groupIdx, Free);
-}
-
-template <int Complete, int Free>
-__device__ __forceinline__ void ctranKernMultiWaitNotifyOnly(
-    KernelElem* elemList) {
-  const auto groupIdx = blockIdx.x;
-
-  // Traverse each element, wait remote notification one by one; exit till
-  // completed all
-  KernelElem* elem = elemList;
-  while (elem != nullptr) {
-    CtranAlgoDeviceSync* sync =
-        devSyncGetLoc<LOCAL>(elem->waitNotify.peerLocalRank);
-    devSyncWaitNotify(sync, elem->waitNotify.ngroups);
-
-    // Optionally mark completed per element to sync with GPE thread
-    if (Complete) {
-      elemCompleteByGroup(elem, groupIdx);
-    }
-
-    elem = elem->next;
-  }
-
-  // Free elements for host pool to reclaim.
-  // If Free == false, free only revoked elements.
-  elemsFreeListByGroup(elemList, groupIdx, Free);
-}
-
 template <int Complete, int Free>
 __device__ __forceinline__ void ctranKernMultiWaitNotify(KernelElem* elemList) {
   // waitNotify should use only 1 thread block

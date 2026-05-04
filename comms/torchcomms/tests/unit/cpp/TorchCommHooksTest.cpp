@@ -2,7 +2,7 @@
 
 #include <comms/torchcomms/TorchComm.hpp>
 #include <comms/torchcomms/TorchCommFactory.hpp>
-#include <comms/torchcomms/dummy/TorchCommDummy.hpp>
+#include <comms/torchcomms/fake/TorchCommFake.hpp>
 #include <gtest/gtest.h>
 #include <cstdlib>
 #include <vector>
@@ -10,15 +10,15 @@
 namespace torch::comms {
 
 namespace {
-constexpr const char* kBackendName = "dummy_test";
-constexpr const char* kBackendEnvKey = "TORCHCOMMS_BACKEND_LIB_PATH_DUMMY_TEST";
+constexpr const char* kBackendName = "fake_test";
+constexpr const char* kBackendEnvKey = "TORCHCOMMS_BACKEND_LIB_PATH_FAKE_TEST";
 } // namespace
 
 class TorchCommHooksTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    const char* lib_path = std::getenv("DUMMY_TEST_BACKEND_LIB_PATH");
-    ASSERT_NE(lib_path, nullptr) << "DUMMY_TEST_BACKEND_LIB_PATH not set";
+    const char* lib_path = std::getenv("FAKE_TEST_BACKEND_LIB_PATH");
+    ASSERT_NE(lib_path, nullptr) << "FAKE_TEST_BACKEND_LIB_PATH not set";
     setenv(kBackendEnvKey, lib_path, 1);
   }
 
@@ -33,16 +33,16 @@ TEST_F(TorchCommHooksTest, PreAndPostHookCalledAfterRegistration) {
   ASSERT_NE(torchcomm, nullptr);
 
   std::vector<OpName> preHookCalls;
-  std::vector<OpName> postHookCalls;
+  int postHookCallCount = 0;
 
-  auto preHandle =
-      torchcomm->registerPreHook([&preHookCalls](TorchComm::PreHookArgs args) {
-        preHookCalls.push_back(args.name);
+  auto preHandle = torchcomm->registerPreHook(
+      [&preHookCalls](OpName name, size_t, const PreHookArgs&) {
+        preHookCalls.push_back(name);
       });
 
   auto postHandle = torchcomm->registerPostHook(
-      [&postHookCalls](const TorchComm::PostHookArgs& args) {
-        postHookCalls.push_back(args.name);
+      [&postHookCallCount](size_t, const PostHookArgs&) {
+        postHookCallCount++;
       });
 
   auto tensor = at::ones({2, 2}, at::kFloat);
@@ -50,9 +50,7 @@ TEST_F(TorchCommHooksTest, PreAndPostHookCalledAfterRegistration) {
 
   ASSERT_EQ(preHookCalls.size(), 1);
   EXPECT_EQ(preHookCalls[0], OpName::all_reduce);
-
-  ASSERT_EQ(postHookCalls.size(), 1);
-  EXPECT_EQ(postHookCalls[0], OpName::all_reduce);
+  EXPECT_EQ(postHookCallCount, 1);
 }
 
 TEST_F(TorchCommHooksTest, PreAndPostHookOpIdIncreases) {
@@ -63,14 +61,14 @@ TEST_F(TorchCommHooksTest, PreAndPostHookOpIdIncreases) {
   std::vector<size_t> preOpIds;
   std::vector<size_t> postOpIds;
 
-  auto preHandle =
-      torchcomm->registerPreHook([&preOpIds](TorchComm::PreHookArgs args) {
-        preOpIds.push_back(args.op_id);
+  auto preHandle = torchcomm->registerPreHook(
+      [&preOpIds](OpName, size_t op_id, const PreHookArgs&) {
+        preOpIds.push_back(op_id);
       });
 
   auto postHandle = torchcomm->registerPostHook(
-      [&postOpIds](const TorchComm::PostHookArgs& args) {
-        postOpIds.push_back(args.op_id);
+      [&postOpIds](size_t op_id, const PostHookArgs&) {
+        postOpIds.push_back(op_id);
       });
 
   auto tensor = at::ones({2, 2}, at::kFloat);
@@ -102,10 +100,12 @@ TEST_F(TorchCommHooksTest, PreAndPostHookNotCalledAfterRemoval) {
   int postHookCallCount = 0;
 
   auto preHandle = torchcomm->registerPreHook(
-      [&preHookCallCount](TorchComm::PreHookArgs) { preHookCallCount++; });
+      [&preHookCallCount](OpName, size_t, const PreHookArgs&) {
+        preHookCallCount++;
+      });
 
   auto postHandle = torchcomm->registerPostHook(
-      [&postHookCallCount](const TorchComm::PostHookArgs&) {
+      [&postHookCallCount](size_t, const PostHookArgs&) {
         postHookCallCount++;
       });
 
@@ -135,18 +135,22 @@ TEST_F(TorchCommHooksTest, MultiplePreAndPostHooksRegistered) {
   int postHook2CallCount = 0;
 
   auto preHandle1 = torchcomm->registerPreHook(
-      [&preHook1CallCount](TorchComm::PreHookArgs) { preHook1CallCount++; });
+      [&preHook1CallCount](OpName, size_t, const PreHookArgs&) {
+        preHook1CallCount++;
+      });
 
   auto preHandle2 = torchcomm->registerPreHook(
-      [&preHook2CallCount](TorchComm::PreHookArgs) { preHook2CallCount++; });
+      [&preHook2CallCount](OpName, size_t, const PreHookArgs&) {
+        preHook2CallCount++;
+      });
 
   auto postHandle1 = torchcomm->registerPostHook(
-      [&postHook1CallCount](const TorchComm::PostHookArgs&) {
+      [&postHook1CallCount](size_t, const PostHookArgs&) {
         postHook1CallCount++;
       });
 
   auto postHandle2 = torchcomm->registerPostHook(
-      [&postHook2CallCount](const TorchComm::PostHookArgs&) {
+      [&postHook2CallCount](size_t, const PostHookArgs&) {
         postHook2CallCount++;
       });
 
@@ -167,16 +171,16 @@ TEST_F(
   ASSERT_NE(torchcomm, nullptr);
 
   std::vector<std::pair<OpName, size_t>> preHookCalls;
-  std::vector<std::pair<OpName, size_t>> postHookCalls;
+  std::vector<size_t> postHookOpIds;
 
-  auto preHandle =
-      torchcomm->registerPreHook([&preHookCalls](TorchComm::PreHookArgs args) {
-        preHookCalls.emplace_back(args.name, args.op_id);
+  auto preHandle = torchcomm->registerPreHook(
+      [&preHookCalls](OpName name, size_t op_id, const PreHookArgs&) {
+        preHookCalls.emplace_back(name, op_id);
       });
 
   auto postHandle = torchcomm->registerPostHook(
-      [&postHookCalls](const TorchComm::PostHookArgs& args) {
-        postHookCalls.emplace_back(args.name, args.op_id);
+      [&postHookOpIds](size_t op_id, const PostHookArgs&) {
+        postHookOpIds.push_back(op_id);
       });
 
   auto tensor = at::ones({2, 2}, at::kFloat);
@@ -186,25 +190,118 @@ TEST_F(
   torchcomm->broadcast(tensor, 0, true);
 
   ASSERT_EQ(preHookCalls.size(), 3);
-  ASSERT_EQ(postHookCalls.size(), 3);
+  ASSERT_EQ(postHookOpIds.size(), 3);
 
   EXPECT_EQ(preHookCalls[0].first, OpName::all_reduce);
   EXPECT_EQ(preHookCalls[1].first, OpName::barrier);
   EXPECT_EQ(preHookCalls[2].first, OpName::broadcast);
 
-  EXPECT_EQ(postHookCalls[0].first, OpName::all_reduce);
-  EXPECT_EQ(postHookCalls[1].first, OpName::barrier);
-  EXPECT_EQ(postHookCalls[2].first, OpName::broadcast);
-
   EXPECT_LT(preHookCalls[0].second, preHookCalls[1].second);
   EXPECT_LT(preHookCalls[1].second, preHookCalls[2].second);
 
-  EXPECT_LT(postHookCalls[0].second, postHookCalls[1].second);
-  EXPECT_LT(postHookCalls[1].second, postHookCalls[2].second);
+  EXPECT_LT(postHookOpIds[0], postHookOpIds[1]);
+  EXPECT_LT(postHookOpIds[1], postHookOpIds[2]);
 
-  EXPECT_EQ(preHookCalls[0].second, postHookCalls[0].second);
-  EXPECT_EQ(preHookCalls[1].second, postHookCalls[1].second);
-  EXPECT_EQ(preHookCalls[2].second, postHookCalls[2].second);
+  EXPECT_EQ(preHookCalls[0].second, postHookOpIds[0]);
+  EXPECT_EQ(preHookCalls[1].second, postHookOpIds[1]);
+  EXPECT_EQ(preHookCalls[2].second, postHookOpIds[2]);
+}
+
+TEST_F(TorchCommHooksTest, PreHookArgsContainCorrectVariantTypes) {
+  at::Device device(at::kCPU);
+  auto torchcomm = new_comm(kBackendName, device, "test_comm", {});
+  ASSERT_NE(torchcomm, nullptr);
+
+  std::vector<const PreHookArgs*> captured_args;
+  // Store the variant index to verify the correct type was passed
+  std::vector<size_t> variant_indices;
+
+  auto preHandle = torchcomm->registerPreHook(
+      [&variant_indices](OpName, size_t, const PreHookArgs& args) {
+        variant_indices.push_back(args.index());
+      });
+
+  auto tensor = at::ones({2, 2}, at::kFloat);
+
+  // all_reduce should produce AllReducePreHookArgs
+  torchcomm->all_reduce(tensor, ReduceOp::SUM, true);
+  ASSERT_EQ(variant_indices.size(), 1);
+  // AllReducePreHookArgs is at index 3 in the variant (Send=0, Recv=1,
+  // Broadcast=2, AllReduce=3)
+
+  // barrier should produce BarrierPreHookArgs
+  torchcomm->barrier(true);
+  ASSERT_EQ(variant_indices.size(), 2);
+
+  // broadcast should produce BroadcastPreHookArgs
+  torchcomm->broadcast(tensor, 0, true);
+  ASSERT_EQ(variant_indices.size(), 3);
+
+  // Verify each call produced a different variant type
+  // (all_reduce, barrier, and broadcast are different variant alternatives)
+  EXPECT_NE(variant_indices[0], variant_indices[1]);
+  EXPECT_NE(variant_indices[1], variant_indices[2]);
+  EXPECT_NE(variant_indices[0], variant_indices[2]);
+}
+
+TEST_F(TorchCommHooksTest, PreHookAllReduceArgsAccessible) {
+  at::Device device(at::kCPU);
+  auto torchcomm = new_comm(kBackendName, device, "test_comm", {});
+  ASSERT_NE(torchcomm, nullptr);
+
+  bool hook_called = false;
+  auto preHandle = torchcomm->registerPreHook(
+      [&hook_called](OpName, size_t, const PreHookArgs& args) {
+        auto* ar = std::get_if<AllReducePreHookArgs>(&args);
+        ASSERT_NE(ar, nullptr);
+        EXPECT_EQ(ar->tensor.numel(), 4); // 2x2 tensor
+        EXPECT_TRUE(ar->async_op);
+        hook_called = true;
+      });
+
+  auto tensor = at::ones({2, 2}, at::kFloat);
+  torchcomm->all_reduce(tensor, ReduceOp::SUM, true);
+  EXPECT_TRUE(hook_called);
+}
+
+TEST_F(TorchCommHooksTest, BatchOpIssueHooksFired) {
+  at::Device device(at::kCPU);
+  auto torchcomm = new_comm(kBackendName, device, "test_comm", {});
+  ASSERT_NE(torchcomm, nullptr);
+
+  bool pre_hook_called = false;
+  bool post_hook_called = false;
+  size_t pre_op_id = 0;
+  size_t post_op_id = 0;
+
+  torchcomm->registerPreHook(
+      [&](OpName name, size_t op_id, const PreHookArgs& args) {
+        if (name == OpName::batch_op_issue) {
+          pre_hook_called = true;
+          pre_op_id = op_id;
+          auto* ba = std::get_if<BatchOpIssuePreHookArgs>(&args);
+          ASSERT_NE(ba, nullptr);
+          EXPECT_EQ(ba->num_ops, 2);
+          EXPECT_TRUE(ba->async_op);
+        }
+      });
+
+  torchcomm->registerPostHook([&](size_t op_id, const PostHookArgs& args) {
+    if (std::get_if<BatchOpIssuePostHookArgs>(&args)) {
+      post_hook_called = true;
+      post_op_id = op_id;
+    }
+  });
+
+  auto tensor = at::ones({4}, at::kFloat);
+  auto batch = torchcomm->batch_op_create();
+  batch.send(tensor, 0);
+  batch.recv(tensor, 0);
+  batch.issue(true);
+
+  EXPECT_TRUE(pre_hook_called);
+  EXPECT_TRUE(post_hook_called);
+  EXPECT_EQ(pre_op_id, post_op_id);
 }
 
 TEST_F(TorchCommHooksTest, AbortHookNotCalledAfterRemoval) {
@@ -213,7 +310,7 @@ TEST_F(TorchCommHooksTest, AbortHookNotCalledAfterRemoval) {
   ASSERT_NE(torchcomm, nullptr);
 
   auto backend =
-      std::dynamic_pointer_cast<TorchCommDummy>(torchcomm->getBackendImpl());
+      std::dynamic_pointer_cast<TorchCommFake>(torchcomm->getBackendImpl());
   ASSERT_NE(backend, nullptr);
 
   int abortHookCallCount = 0;
@@ -238,7 +335,7 @@ TEST_F(TorchCommHooksTest, AbortHookInvoked) {
   ASSERT_NE(torchcomm, nullptr);
 
   auto backend =
-      std::dynamic_pointer_cast<TorchCommDummy>(torchcomm->getBackendImpl());
+      std::dynamic_pointer_cast<TorchCommFake>(torchcomm->getBackendImpl());
   ASSERT_NE(backend, nullptr);
 
   int abortHookCallCount = 0;
@@ -264,7 +361,7 @@ TEST_F(TorchCommHooksTest, MultipleAbortHooksInvoked) {
   ASSERT_NE(torchcomm, nullptr);
 
   auto backend =
-      std::dynamic_pointer_cast<TorchCommDummy>(torchcomm->getBackendImpl());
+      std::dynamic_pointer_cast<TorchCommFake>(torchcomm->getBackendImpl());
   ASSERT_NE(backend, nullptr);
 
   int hook1CallCount = 0;

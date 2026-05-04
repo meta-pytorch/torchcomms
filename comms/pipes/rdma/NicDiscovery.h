@@ -108,6 +108,20 @@ class NicDiscovery {
   }
 
   /**
+   * Get all NIC candidates at the best-affinity tier — i.e., NICs that
+   * share the same {pathType, bandwidthGbps, isDataDirect} as the top
+   * candidate. Returns an empty vector if no candidates were discovered.
+   *
+   * Used by multi-NIC transports to count how many equally-good NICs the
+   * GPU has access to (e.g., GB200/GB300 typically expose 2 NICs at the
+   * same PIX path tier with identical bandwidth).
+   *
+   * Since `candidates_` is sorted best-to-worst, the iteration stops at
+   * the first divergence — no full scan needed past the best tier.
+   */
+  std::vector<NicCandidate> getBestAffinityNics() const;
+
+  /**
    * Get the anchor's NUMA node.
    * For GPU-anchored: the GPU's NUMA node.
    * For CPU-anchored: the NUMA node passed to the constructor.

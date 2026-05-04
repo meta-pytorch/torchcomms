@@ -18,6 +18,7 @@ TorchWorkGloo::~TorchWorkGloo() {
 }
 
 void TorchWorkGloo::wait() {
+  runWaitHooks();
   return;
 }
 

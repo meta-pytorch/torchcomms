@@ -15,11 +15,24 @@ if [ ! -d /sys/class/infiniband ] || [ -z "$(ls /sys/class/infiniband 2>/dev/nul
     export NCCL_CTRAN_BACKENDS="socket"
 fi
 
-cd "$(dirname "$0")/../tests/integration/py"
+TORCHCOMMS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+INTEGRATION_TEST_DIRS=$(find "$TORCHCOMMS_ROOT" -path '*/tests/integration/py' -type d \
+    ! -path '*/ncclx/*' \
+    ! -path '*/rccl/*' \
+    ! -path '*/rcclx/*' \
+    ! -path '*/fb/*' | sort -u)
+
+NCCLX_INTEGRATION_TEST_DIRS=$(find "$TORCHCOMMS_ROOT" -path '*/ncclx/tests/integration/py' -type d \
+    ! -path '*/fb/*' | sort -u)
 
 run_tests () {
-    for file in *Test.py; do
-        torchrun --nnodes 1 --nproc_per_node 4 "$file" --verbose
+    local dirs="${1:-$INTEGRATION_TEST_DIRS}"
+    for dir in $dirs; do
+        for file in "$dir"/*Test.py; do
+            [ -f "$file" ] || continue
+            torchrun --nnodes 1 --nproc_per_node 4 "$file" --verbose
+        done
     done
 }
 
@@ -27,9 +40,16 @@ run_tests () {
 export TEST_BACKEND=nccl
 run_tests
 
-# NCCLX
-export TEST_BACKEND=ncclx
-run_tests
+# NCCLX (skip if built with USE_NCCLX=0)
+if [ "${USE_NCCLX}" != "0" ] && [ "${USE_NCCLX}" != "OFF" ]; then
+    export TEST_BACKEND=ncclx
+    run_tests
+    # TODO(d4l3k): reenable once NCCLX tests are passing
+    # Failed to initialize NCCL communicator: internal error
+    #run_tests "$NCCLX_INTEGRATION_TEST_DIRS"
+else
+    echo "Skipping ncclx tests (USE_NCCLX=${USE_NCCLX})"
+fi
 
 # Gloo with CPU
 export TEST_BACKEND=gloo

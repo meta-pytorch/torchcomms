@@ -125,23 +125,11 @@ c10::intrusive_ptr<TorchWork> TorchComm::send(
     const SendOptions& options) {
   validateRank(dst, "dst");
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
-  preHook(
-      PreHookArgs{
-          .name = OpName::send,
-          .async_op = async_op,
-          .input_tensor = &tensor,
-          .root = dst,
-          .op_id = op_id,
-      });
+  preHook(OpName::send, op_id, SendPreHookArgs(tensor, dst, async_op));
 
   auto work = impl_->send(tensor, dst, async_op, options);
 
-  postHook(
-      PostHookArgs{
-          .name = OpName::send,
-          .work = c10::weak_intrusive_ptr<TorchWork>(work),
-          .op_id = op_id,
-      });
+  postHook(op_id, SendPostHookArgs(c10::weak_intrusive_ptr<TorchWork>(work)));
 
   return work;
 }
@@ -153,23 +141,11 @@ c10::intrusive_ptr<TorchWork> TorchComm::recv(
     const RecvOptions& options) {
   validateRank(src, "src");
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
-  preHook(
-      PreHookArgs{
-          .name = OpName::recv,
-          .async_op = async_op,
-          .output_tensor = &tensor,
-          .root = src,
-          .op_id = op_id,
-      });
+  preHook(OpName::recv, op_id, RecvPreHookArgs(tensor, src, async_op));
 
   auto work = impl_->recv(tensor, src, async_op, options);
 
-  postHook(
-      PostHookArgs{
-          .name = OpName::recv,
-          .work = c10::weak_intrusive_ptr<TorchWork>(work),
-          .op_id = op_id,
-      });
+  postHook(op_id, RecvPostHookArgs(c10::weak_intrusive_ptr<TorchWork>(work)));
 
   return work;
 }
@@ -183,22 +159,12 @@ c10::intrusive_ptr<TorchWork> TorchComm::broadcast(
   validateRank(root, "root");
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(
-      PreHookArgs{
-          .name = OpName::broadcast,
-          .async_op = async_op,
-          .input_tensor = &tensor,
-          .root = root,
-          .op_id = op_id,
-      });
+      OpName::broadcast, op_id, BroadcastPreHookArgs(tensor, root, async_op));
 
   auto work = impl_->broadcast(tensor, root, async_op, options);
 
   postHook(
-      PostHookArgs{
-          .name = OpName::broadcast,
-          .work = c10::weak_intrusive_ptr<TorchWork>(work),
-          .op_id = op_id,
-      });
+      op_id, BroadcastPostHookArgs(c10::weak_intrusive_ptr<TorchWork>(work)));
 
   return work;
 }
@@ -210,21 +176,12 @@ c10::intrusive_ptr<TorchWork> TorchComm::all_reduce(
     const AllReduceOptions& options) {
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(
-      PreHookArgs{
-          .name = OpName::all_reduce,
-          .async_op = async_op,
-          .input_tensor = &tensor,
-          .op_id = op_id,
-      });
+      OpName::all_reduce, op_id, AllReducePreHookArgs(tensor, op, async_op));
 
   auto work = impl_->all_reduce(tensor, op, async_op, options);
 
   postHook(
-      PostHookArgs{
-          .name = OpName::all_reduce,
-          .work = c10::weak_intrusive_ptr<TorchWork>(work),
-          .op_id = op_id,
-      });
+      op_id, AllReducePostHookArgs(c10::weak_intrusive_ptr<TorchWork>(work)));
 
   return work;
 }
@@ -237,23 +194,11 @@ c10::intrusive_ptr<TorchWork> TorchComm::reduce(
     const ReduceOptions& options) {
   validateRank(root, "root");
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
-  preHook(
-      PreHookArgs{
-          .name = OpName::reduce,
-          .async_op = async_op,
-          .input_tensor = &tensor,
-          .root = root,
-          .op_id = op_id,
-      });
+  preHook(OpName::reduce, op_id, ReducePreHookArgs(tensor, root, op, async_op));
 
   auto work = impl_->reduce(tensor, root, op, async_op, options);
 
-  postHook(
-      PostHookArgs{
-          .name = OpName::reduce,
-          .work = c10::weak_intrusive_ptr<TorchWork>(work),
-          .op_id = op_id,
-      });
+  postHook(op_id, ReducePostHookArgs(c10::weak_intrusive_ptr<TorchWork>(work)));
 
   return work;
 }
@@ -265,21 +210,14 @@ c10::intrusive_ptr<TorchWork> TorchComm::all_gather(
     const AllGatherOptions& options) {
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(
-      PreHookArgs{
-          .name = OpName::all_gather,
-          .async_op = async_op,
-          .input_tensor = &tensor,
-          .op_id = op_id,
-      });
+      OpName::all_gather,
+      op_id,
+      AllGatherPreHookArgs(tensor, tensor_list, async_op));
 
   auto work = impl_->all_gather(tensor_list, tensor, async_op, options);
 
   postHook(
-      PostHookArgs{
-          .name = OpName::all_gather,
-          .work = c10::weak_intrusive_ptr<TorchWork>(work),
-          .op_id = op_id,
-      });
+      op_id, AllGatherPostHookArgs(c10::weak_intrusive_ptr<TorchWork>(work)));
 
   return work;
 }
@@ -291,21 +229,14 @@ c10::intrusive_ptr<TorchWork> TorchComm::all_gather_v(
     const AllGatherOptions& options) {
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(
-      PreHookArgs{
-          .name = OpName::all_gather_v,
-          .async_op = async_op,
-          .input_tensor = &tensor,
-          .op_id = op_id,
-      });
+      OpName::all_gather_v,
+      op_id,
+      AllGatherVPreHookArgs(tensor, tensor_list, async_op));
 
   auto work = impl_->all_gather_v(tensor_list, tensor, async_op, options);
 
   postHook(
-      PostHookArgs{
-          .name = OpName::all_gather_v,
-          .work = c10::weak_intrusive_ptr<TorchWork>(work),
-          .op_id = op_id,
-      });
+      op_id, AllGatherVPostHookArgs(c10::weak_intrusive_ptr<TorchWork>(work)));
 
   return work;
 }
@@ -317,22 +248,15 @@ c10::intrusive_ptr<TorchWork> TorchComm::all_gather_single(
     const AllGatherSingleOptions& options) {
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(
-      PreHookArgs{
-          .name = OpName::all_gather_single,
-          .async_op = async_op,
-          .input_tensor = &input,
-          .output_tensor = &output,
-          .op_id = op_id,
-      });
+      OpName::all_gather_single,
+      op_id,
+      AllGatherSinglePreHookArgs(input, output, async_op));
 
   auto work = impl_->all_gather_single(output, input, async_op, options);
 
   postHook(
-      PostHookArgs{
-          .name = OpName::all_gather_single,
-          .work = c10::weak_intrusive_ptr<TorchWork>(work),
-          .op_id = op_id,
-      });
+      op_id,
+      AllGatherSinglePostHookArgs(c10::weak_intrusive_ptr<TorchWork>(work)));
 
   return work;
 }
@@ -345,21 +269,15 @@ c10::intrusive_ptr<TorchWork> TorchComm::reduce_scatter(
     const ReduceScatterOptions& options) {
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(
-      PreHookArgs{
-          .name = OpName::reduce_scatter,
-          .async_op = async_op,
-          .output_tensor = &output,
-          .op_id = op_id,
-      });
+      OpName::reduce_scatter,
+      op_id,
+      ReduceScatterPreHookArgs(input_list, output, op, async_op));
 
   auto work = impl_->reduce_scatter(output, input_list, op, async_op, options);
 
   postHook(
-      PostHookArgs{
-          .name = OpName::reduce_scatter,
-          .work = c10::weak_intrusive_ptr<TorchWork>(work),
-          .op_id = op_id,
-      });
+      op_id,
+      ReduceScatterPostHookArgs(c10::weak_intrusive_ptr<TorchWork>(work)));
 
   return work;
 }
@@ -372,22 +290,16 @@ c10::intrusive_ptr<TorchWork> TorchComm::reduce_scatter_v(
     const ReduceScatterOptions& options) {
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(
-      PreHookArgs{
-          .name = OpName::reduce_scatter_v,
-          .async_op = async_op,
-          .output_tensor = &output,
-          .op_id = op_id,
-      });
+      OpName::reduce_scatter_v,
+      op_id,
+      ReduceScatterVPreHookArgs(input_list, output, op, async_op));
 
   auto work =
       impl_->reduce_scatter_v(output, input_list, op, async_op, options);
 
   postHook(
-      PostHookArgs{
-          .name = OpName::reduce_scatter_v,
-          .work = c10::weak_intrusive_ptr<TorchWork>(work),
-          .op_id = op_id,
-      });
+      op_id,
+      ReduceScatterVPostHookArgs(c10::weak_intrusive_ptr<TorchWork>(work)));
 
   return work;
 }
@@ -400,23 +312,17 @@ c10::intrusive_ptr<TorchWork> TorchComm::reduce_scatter_single(
     const ReduceScatterSingleOptions& options) {
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(
-      PreHookArgs{
-          .name = OpName::reduce_scatter_single,
-          .async_op = async_op,
-          .input_tensor = &input,
-          .output_tensor = &output,
-          .op_id = op_id,
-      });
+      OpName::reduce_scatter_single,
+      op_id,
+      ReduceScatterSinglePreHookArgs(input, output, op, async_op));
 
   auto work =
       impl_->reduce_scatter_single(output, input, op, async_op, options);
 
   postHook(
-      PostHookArgs{
-          .name = OpName::reduce_scatter_single,
-          .work = c10::weak_intrusive_ptr<TorchWork>(work),
-          .op_id = op_id,
-      });
+      op_id,
+      ReduceScatterSinglePostHookArgs(
+          c10::weak_intrusive_ptr<TorchWork>(work)));
 
   return work;
 }
@@ -428,22 +334,15 @@ c10::intrusive_ptr<TorchWork> TorchComm::all_to_all_single(
     const AllToAllSingleOptions& options) {
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(
-      PreHookArgs{
-          .name = OpName::all_to_all_single,
-          .async_op = async_op,
-          .input_tensor = &input,
-          .output_tensor = &output,
-          .op_id = op_id,
-      });
+      OpName::all_to_all_single,
+      op_id,
+      AllToAllSinglePreHookArgs(input, output, async_op));
 
   auto work = impl_->all_to_all_single(output, input, async_op, options);
 
   postHook(
-      PostHookArgs{
-          .name = OpName::all_to_all_single,
-          .work = c10::weak_intrusive_ptr<TorchWork>(work),
-          .op_id = op_id,
-      });
+      op_id,
+      AllToAllSinglePostHookArgs(c10::weak_intrusive_ptr<TorchWork>(work)));
 
   return work;
 }
@@ -457,25 +356,17 @@ c10::intrusive_ptr<TorchWork> TorchComm::all_to_all_v_single(
     const AllToAllvSingleOptions& options) {
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(
-      PreHookArgs{
-          .name = OpName::all_to_all_v_single,
-          .async_op = async_op,
-          .input_tensor = &input,
-          .output_tensor = &output,
-          .output_split_sizes = &output_split_sizes,
-          .input_split_sizes = &input_split_sizes,
-          .op_id = op_id,
-      });
+      OpName::all_to_all_v_single,
+      op_id,
+      AllToAllVSinglePreHookArgs(
+          input, output, input_split_sizes, output_split_sizes, async_op));
 
   auto work = impl_->all_to_all_v_single(
       output, input, output_split_sizes, input_split_sizes, async_op, options);
 
   postHook(
-      PostHookArgs{
-          .name = OpName::all_to_all_v_single,
-          .work = c10::weak_intrusive_ptr<TorchWork>(work),
-          .op_id = op_id,
-      });
+      op_id,
+      AllToAllVSinglePostHookArgs(c10::weak_intrusive_ptr<TorchWork>(work)));
 
   return work;
 }
@@ -487,21 +378,15 @@ c10::intrusive_ptr<TorchWork> TorchComm::all_to_all(
     const AllToAllOptions& options) {
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(
-      PreHookArgs{
-          .name = OpName::all_to_all,
-          .async_op = async_op,
-          .op_id = op_id,
-      });
+      OpName::all_to_all,
+      op_id,
+      AllToAllPreHookArgs(input_tensor_list, output_tensor_list, async_op));
 
   auto work = impl_->all_to_all(
       output_tensor_list, input_tensor_list, async_op, options);
 
   postHook(
-      PostHookArgs{
-          .name = OpName::all_to_all,
-          .work = c10::weak_intrusive_ptr<TorchWork>(work),
-          .op_id = op_id,
-      });
+      op_id, AllToAllPostHookArgs(c10::weak_intrusive_ptr<TorchWork>(work)));
 
   return work;
 }
@@ -510,21 +395,12 @@ c10::intrusive_ptr<TorchWork> TorchComm::barrier(
     bool async_op,
     const BarrierOptions& options) {
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
-  preHook(
-      PreHookArgs{
-          .name = OpName::barrier,
-          .async_op = async_op,
-          .op_id = op_id,
-      });
+  preHook(OpName::barrier, op_id, BarrierPreHookArgs(async_op));
 
   auto work = impl_->barrier(async_op, options);
 
   postHook(
-      PostHookArgs{
-          .name = OpName::barrier,
-          .work = c10::weak_intrusive_ptr<TorchWork>(work),
-          .op_id = op_id,
-      });
+      op_id, BarrierPostHookArgs(c10::weak_intrusive_ptr<TorchWork>(work)));
 
   return work;
 }
@@ -539,23 +415,15 @@ c10::intrusive_ptr<TorchWork> TorchComm::scatter(
   validateRank(root, "root");
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(
-      PreHookArgs{
-          .name = OpName::scatter,
-          .async_op = async_op,
-          .output_tensor = &output_tensor,
-          .root = root,
-          .op_id = op_id,
-      });
+      OpName::scatter,
+      op_id,
+      ScatterPreHookArgs(output_tensor, input_tensor_list, root, async_op));
 
   auto work =
       impl_->scatter(output_tensor, input_tensor_list, root, async_op, options);
 
   postHook(
-      PostHookArgs{
-          .name = OpName::scatter,
-          .work = c10::weak_intrusive_ptr<TorchWork>(work),
-          .op_id = op_id,
-      });
+      op_id, ScatterPostHookArgs(c10::weak_intrusive_ptr<TorchWork>(work)));
 
   return work;
 }
@@ -569,23 +437,14 @@ c10::intrusive_ptr<TorchWork> TorchComm::gather(
   validateRank(root, "root");
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(
-      PreHookArgs{
-          .name = OpName::gather,
-          .async_op = async_op,
-          .input_tensor = &input_tensor,
-          .root = root,
-          .op_id = op_id,
-      });
+      OpName::gather,
+      op_id,
+      GatherPreHookArgs(input_tensor, output_tensor_list, root, async_op));
 
   auto work =
       impl_->gather(output_tensor_list, input_tensor, root, async_op, options);
 
-  postHook(
-      PostHookArgs{
-          .name = OpName::gather,
-          .work = c10::weak_intrusive_ptr<TorchWork>(work),
-          .op_id = op_id,
-      });
+  postHook(op_id, GatherPostHookArgs(c10::weak_intrusive_ptr<TorchWork>(work)));
 
   return work;
 }
@@ -599,23 +458,15 @@ c10::intrusive_ptr<TorchWork> TorchComm::gather_single(
   validateRank(root, "root");
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(
-      PreHookArgs{
-          .name = OpName::gather_single,
-          .async_op = async_op,
-          .input_tensor = &input,
-          .output_tensor = &output,
-          .root = root,
-          .op_id = op_id,
-      });
+      OpName::gather_single,
+      op_id,
+      GatherSinglePreHookArgs(input, output, root, async_op));
 
   auto work = impl_->gather_single(output, input, root, async_op, options);
 
   postHook(
-      PostHookArgs{
-          .name = OpName::gather_single,
-          .work = c10::weak_intrusive_ptr<TorchWork>(work),
-          .op_id = op_id,
-      });
+      op_id,
+      GatherSinglePostHookArgs(c10::weak_intrusive_ptr<TorchWork>(work)));
 
   return work;
 }
@@ -623,18 +474,10 @@ c10::intrusive_ptr<TorchWork> TorchComm::gather_single(
 std::shared_ptr<TorchCommWindow> TorchComm::new_window(
     const std::optional<at::Tensor>& tensor) {
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
-  preHook(
-      PreHookArgs{
-          .name = OpName::new_window,
-          .op_id = op_id,
-      });
+  preHook(OpName::new_window, op_id, NewWindowPreHookArgs());
   auto window = impl_->new_window(tensor);
   postHook(
-      PostHookArgs{
-          .name = OpName::new_window,
-          .new_window = std::weak_ptr<TorchCommWindow>(window),
-          .op_id = op_id,
-      });
+      op_id, NewWindowPostHookArgs(std::weak_ptr<TorchCommWindow>(window)));
   return window;
 }
 
@@ -669,6 +512,10 @@ c10::intrusive_ptr<TorchWork> TorchComm::reconfigure(
   return work;
 }
 
+void TorchComm::abort() {
+  impl_->abort();
+}
+
 int64_t TorchComm::get_device_transport() {
   return impl_->get_device_transport();
 }
@@ -679,13 +526,7 @@ std::shared_ptr<TorchComm> TorchComm::split(
     const std::string& name,
     const CommOptions& options) {
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
-  preHook(
-      PreHookArgs{
-          .name = OpName::split,
-          .ranks = &ranks,
-          .split_name = &name,
-          .op_id = op_id,
-      });
+  preHook(OpName::split, op_id, SplitPreHookArgs(ranks, name));
   auto new_impl = impl_->split(ranks, name, options);
   if (new_impl == nullptr) {
     return nullptr;
@@ -698,12 +539,7 @@ std::shared_ptr<TorchComm> TorchComm::split(
   }
   auto comm = std::shared_ptr<TorchComm>(
       new TorchComm(backend_, std::move(new_impl), std::move(global_ranks)));
-  postHook(
-      PostHookArgs{
-          .name = OpName::split,
-          .new_comm = std::weak_ptr<TorchComm>(comm),
-          .op_id = op_id,
-      });
+  postHook(op_id, SplitPostHookArgs(std::weak_ptr<TorchComm>(comm)));
   return comm;
 }
 
@@ -743,7 +579,19 @@ void BatchSendRecv::recv(at::Tensor& tensor, int src) {
 c10::intrusive_ptr<TorchWork> BatchSendRecv::issue(
     bool async_op,
     const BatchP2POptions& options) {
-  return parent_->getBackendImpl()->batch_op_issue(ops, async_op, options);
+  auto op_id = GlobalOpIdGenerator::instance().nextOpId();
+  parent_->preHook(
+      OpName::batch_op_issue,
+      op_id,
+      BatchOpIssuePreHookArgs(ops.size(), async_op));
+
+  auto work = parent_->getBackendImpl()->batch_op_issue(ops, async_op, options);
+
+  parent_->postHook(
+      op_id,
+      BatchOpIssuePostHookArgs(c10::weak_intrusive_ptr<TorchWork>(work)));
+
+  return work;
 }
 
 // Global memory allocator function implementation
@@ -784,31 +632,26 @@ std::unique_ptr<RemovableHandle> TorchComm::registerAbortHook(
   });
 }
 
-void TorchComm::preHook(PreHookArgs&& args) {
+std::unique_ptr<RemovableHandle> TorchComm::registerGraphReplayHook(
+    TorchComm::GraphReplayHook hook) {
+  auto hookId = nextHookId_++;
+  impl_->registerGraphReplayHook(hookId, std::move(hook));
+  return RemovableHandle::create([self = weak_from_this(), hookId]() {
+    if (auto selfPtr = self.lock()) {
+      selfPtr->impl_->unregisterGraphReplayHook(hookId);
+    }
+  });
+}
+
+void TorchComm::preHook(OpName name, size_t op_id, PreHookArgs&& args) {
   for (auto& hook : preHooks_) {
-    hook.second(args);
+    hook.second(name, op_id, args);
   }
 }
 
-void TorchComm::postHook(PostHookArgs&& args) {
-  // For operations without a work object (like split and new_window),
-  // invoke hooks synchronously
-  if (!args.work) {
-    for (auto& hook : postHooks_) {
-      hook.second(args);
-    }
-    return;
-  }
-  // For operations with a work object, set a callback to invoke hooks
-  // when the work completes
-  if (auto work = args.work->lock()) {
-    work->setCallback([self = weak_from_this(), args = std::move(args)]() {
-      if (auto selfPtr = self.lock()) {
-        for (auto& hook : selfPtr->postHooks_) {
-          hook.second(args);
-        }
-      }
-    });
+void TorchComm::postHook(size_t op_id, PostHookArgs&& args) {
+  for (auto& hook : postHooks_) {
+    hook.second(op_id, args);
   }
 }
 

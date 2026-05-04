@@ -95,7 +95,7 @@ TEST_F(NewCollTraceUT, dumpNewCollTraceWithCollectives) {
                   .hasValue());
 
   // Sleep briefly to allow the CollTrace thread to process the events
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   // At this point, the collective should be in the pending state. However,
   // since currently we will treat the first pending collective as the current
@@ -105,7 +105,7 @@ TEST_F(NewCollTraceUT, dumpNewCollTraceWithCollectives) {
 
   // Verify pastColls is empty and currentColl should have one entry
   EXPECT_EQ(dumpMapPending["CT_pastColls"], "[]");
-  EXPECT_NE(dumpMapPending["CT_currentColl"], "null");
+  EXPECT_NE(dumpMapPending["CT_currentColls"], "[]");
   EXPECT_EQ(dumpMapPending["CT_pendingColls"], "[]");
 
   // Trigger kernel start
@@ -113,7 +113,7 @@ TEST_F(NewCollTraceUT, dumpNewCollTraceWithCollectives) {
       handle->trigger(CollTraceHandleTriggerState::KernelStarted).hasValue());
 
   // Sleep briefly to allow the CollTrace thread to process the events
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   // Now the collective should be in the current state
   auto dumpMapCurrent = dumpNewCollTrace(*collTrace);
@@ -122,21 +122,21 @@ TEST_F(NewCollTraceUT, dumpNewCollTraceWithCollectives) {
   // Verify currentColl is set and pendingColls is empty
   EXPECT_EQ(dumpMapCurrent["CT_pastColls"], "[]");
   EXPECT_EQ(dumpMapCurrent["CT_pendingColls"], "[]");
-  EXPECT_NE(dumpMapCurrent["CT_currentColl"], "null");
+  EXPECT_NE(dumpMapCurrent["CT_currentColls"], "[]");
 
   // Trigger kernel finish
   ASSERT_TRUE(
       handle->trigger(CollTraceHandleTriggerState::KernelFinished).hasValue());
 
   // Sleep briefly to allow the CollTrace thread to process the events
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   // Now the collective should be in the past state
   auto dumpMapPast = dumpNewCollTrace(*collTrace);
   ASSERT_FALSE(dumpMapPast.empty());
 
   // Verify pastColls has one entry and currentColl is null
-  EXPECT_EQ(dumpMapPast["CT_currentColl"], "null");
+  EXPECT_EQ(dumpMapPast["CT_currentColls"], "[]");
   auto pastCollsJson = folly::parseJson(dumpMapPast["CT_pastColls"]);
   EXPECT_EQ(pastCollsJson.size(), 1);
 

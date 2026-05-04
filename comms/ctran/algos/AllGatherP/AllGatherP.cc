@@ -68,6 +68,23 @@ extern __global__ void ncclKernelAllGatherPInit(
     int* flag,
     CtranAlgoDeviceState* devState);
 
+commResult_t AlgoImpl::initResources() {
+  if (resource_.pipeSync != nullptr) {
+    CLOGF(
+        WARN,
+        "initResources: pipeSync already allocated, freeing before realloc");
+    FB_CUDACHECK(cudaFreeHost(resource_.pipeSync));
+    resource_.pipeSync = nullptr;
+  }
+  void* base = nullptr;
+  FB_CUDACHECK(
+      cudaHostAlloc(&base, sizeof(GpeKernelSync), cudaHostAllocDefault));
+
+  resource_.pipeSync = reinterpret_cast<GpeKernelSync*>(base);
+  new (resource_.pipeSync) GpeKernelSync(1 /* numWorkers */);
+  return commSuccess;
+}
+
 commResult_t AlgoImpl::initialize() {
   auto opCount = comm_->ctran_->getOpCount();
   CTRAN_COLL_INFO(
@@ -80,12 +97,7 @@ commResult_t AlgoImpl::initialize() {
       comm_,
       stream_);
 
-  void* base = nullptr;
-  FB_CUDACHECK(
-      cudaHostAlloc(&base, sizeof(GpeKernelSync), cudaHostAllocDefault));
-
-  resource_.pipeSync = reinterpret_cast<GpeKernelSync*>(base);
-  new (resource_.pipeSync) GpeKernelSync(1 /* numWorkers */);
+  FB_COMMCHECK(initResources());
 
   KernelConfig config = KernelConfig(
       KernelConfig::KernelType::ALLGATHERP_INIT,
@@ -122,23 +134,22 @@ commResult_t AlgoImpl::destroy() {
 
 namespace ctran {
 bool allGatherPSupport(CtranComm* comm) {
-  bool ctranSupport = false;
+  if (!ctranInitialized(comm)) {
+    return false;
+  }
+
   const auto statex = comm->statex_.get();
-  if (ctranInitialized(comm)) {
-    ctranSupport = true;
-    auto mapper = comm->ctran_->mapper.get();
-    const auto myRank = statex->rank();
-    // Check if all remote peers are supported by ctran
-    for (auto rank = 0; rank < statex->nRanks(); rank++) {
-      if (mapper->getBackend(rank) == CtranMapperBackend::UNSET &&
-          rank != myRank) {
-        ctranSupport = false;
-        break;
-      }
+  auto mapper = comm->ctran_->mapper.get();
+  const auto myRank = statex->rank();
+  // Check if all remote peers are supported by ctran
+  for (auto rank = 0; rank < statex->nRanks(); rank++) {
+    if (mapper->getBackend(rank) == CtranMapperBackend::UNSET &&
+        rank != myRank) {
+      return false;
     }
   }
 
-  return ctranSupport;
+  return true;
 }
 
 commResult_t allGatherPInit(
@@ -225,6 +236,8 @@ commResult_t allGatherPExec(
       return algo->execDirect(sendbuff, count, datatype);
     case NCCL_ALLGATHER_P_ALGO::ctpipeline:
       return algo->execPipeline(sendbuff, count, datatype);
+    case NCCL_ALLGATHER_P_ALGO::ctrdpipeline:
+      return algo->execRecursiveDoubling(sendbuff, count, datatype);
     default:
       return ErrorStackTraceUtil::log(commInternalError);
   }

@@ -23,15 +23,14 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
   std::vector<TestMemSegment> segments;
   std::shared_ptr<ctran::RegCache> regCache{nullptr};
 
-  void SetUp() override {
+  void setUpWithEnvs(const ctran::CtranEnvs& envs = {}) {
     setenv("NCCL_COLLTRACE", "trace", 0);
     setenv("NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1", 0);
-    // -1 for not limiting the number of colls to trace
     setenv("NCCL_COLLTRACE_RECORD_MAX", "-1", 0);
     setenv("NCCL_CTRAN_ENABLE", "1", 0);
     setenv("NCCL_CTRAN_TRANSPORT_PROFILER", "1", 0);
     setenv("NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT", "1", 0);
-    ctran::CtranDistTestFixture::SetUp();
+    ctran::CtranDistTestFixture::SetUp(envs);
     srand(time(NULL));
     ctran::logGpuMemoryStats(globalRank);
 
@@ -46,9 +45,7 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
 
   static void checkProfiler(ctran::Profiler* profiler, uint64_t opCount) {
     // algo profiler currently only enabled for IB backend
-    if (NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE ||
-        NCCL_SENDRECV_ALGO == NCCL_SENDRECV_ALGO::ctstaged ||
-        NCCL_SENDRECV_ALGO == NCCL_SENDRECV_ALGO::ctp2p) {
+    if (NCCL_SENDRECV_ALGO == NCCL_SENDRECV_ALGO::ctp2p) {
       return;
     }
     ASSERT_NE(profiler, nullptr);
@@ -269,7 +266,6 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
 
     if (!useGraph) {
       if (globalRank == sendRank &&
-          (NCCL_SENDRECV_ALGO != NCCL_SENDRECV_ALGO::ctstaged) &&
           (NCCL_SENDRECV_ALGO != NCCL_SENDRECV_ALGO::ctp2p)) {
         verifyBackendsUsed(
             ctranComm->ctran_.get(), ctranComm->statex_.get(), memType);
@@ -279,13 +275,10 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
     verifyGpeLeak(ctranComm->ctran_.get());
 
     if (!useGraph) {
-      // Brief wait for GPE thread to flush colltrace entries after stream sync
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
       // Check the coll trace only for participating ranks
       bool participated = (globalRank == sendRank) || isReceiver;
       if (participated) {
-        auto dumpMap = ctran::dumpCollTrace(ctranComm.get());
+        auto dumpMap = ctran::waitForCollTraceDrain(ctranComm.get());
         ASSERT_FALSE(dumpMap.empty()) << "Colltrace should be initialized";
 
         int numSendPeers = oneToOne ? 1 : (numRanks - 1);
@@ -313,17 +306,20 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
           // algoName is always populated
           EXPECT_EQ(algoName, expAlgoName);
           // opName and count are only populated when GPE opGroup is non-empty
-          // (i.e., the default algo). For ctstaged/ctp2p/CopyEngine notify
-          // kernels, the opGroup is empty so opName/count are not set.
+          // (i.e., the default algo). For ctp2p kernel, the opGroup is empty
+          // so opName/count are not set.
           if (!opName.empty() && coll.count("count")) {
             EXPECT_EQ(opName, globalRank == sendRank ? "Send" : "Recv");
-            if (globalRank == sendRank && numSendPeers > 1) {
+            if (globalRank == sendRank) {
               // getGroupedP2PMetaData sums counts across all send ops
               EXPECT_EQ(
                   coll["count"].asInt(),
-                  static_cast<int64_t>(count) * numSendPeers);
+                  static_cast<int64_t>(count) * numSendPeers *
+                      numOpPairsPerPeer);
             } else {
-              EXPECT_EQ(coll["count"].asInt(), count);
+              EXPECT_EQ(
+                  coll["count"].asInt(),
+                  static_cast<int64_t>(count) * numOpPairsPerPeer);
             }
           }
         }
@@ -345,26 +341,24 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
   }
 };
 
+// Param: (CtranEnvs, (offset, count, numMaxQp, memType))
+using CtranTestParams = std::tuple<size_t, ssize_t, int, MemAllocType>;
+
 class CtranTestParamFixture
     : public CtranTestFixture,
       public ::testing::WithParamInterface<
-          std::tuple<size_t, ssize_t, int, MemAllocType>> {};
+          std::tuple<ctran::CtranEnvs, CtranTestParams>> {
+ protected:
+  void SetUp() override {
+    setUpWithEnvs(std::get<0>(GetParam()));
+  }
+};
 
 TEST_P(CtranTestParamFixture, sendRecv) {
-  const auto& [offset, count, numMaxQp, memType] = GetParam();
+  const auto& [offset, count, numMaxQp, memType] = std::get<1>(GetParam());
 
   regCache->init();
 
-  runTest(offset, count, numMaxQp, 1 /* nIter */, memType);
-
-  // Destroy regCache for later test with different NCCL_CTRAN_REGISTER config.
-  COMMCHECK_TEST(regCache->destroy());
-}
-
-TEST_P(CtranTestParamFixture, sendRecvStagedCopyKernel) {
-  const auto& [offset, count, numMaxQp, memType] = GetParam();
-  EnvRAII env1(NCCL_SENDRECV_ALGO, NCCL_SENDRECV_ALGO::ctstaged);
-  regCache->init();
   runTest(offset, count, numMaxQp, 1 /* nIter */, memType);
 
   // Destroy regCache for later test with different NCCL_CTRAN_REGISTER config.
@@ -372,7 +366,7 @@ TEST_P(CtranTestParamFixture, sendRecvStagedCopyKernel) {
 }
 
 TEST_P(CtranTestParamFixture, sendRecvP2pCopyKernel) {
-  const auto& [offset, count, numMaxQp, memType] = GetParam();
+  const auto& [offset, count, numMaxQp, memType] = std::get<1>(GetParam());
   EnvRAII env1(NCCL_SENDRECV_ALGO, NCCL_SENDRECV_ALGO::ctp2p);
   regCache->init();
   runTest(offset, count, numMaxQp, 1 /* nIter */, memType);
@@ -383,10 +377,16 @@ TEST_P(CtranTestParamFixture, sendRecvP2pCopyKernel) {
 
 class CtranP2pUseListTestFixture
     : public CtranTestFixture,
-      public ::testing::WithParamInterface<size_t /* numOpPairsPerPeer */> {};
+      public ::testing::WithParamInterface<
+          std::tuple<ctran::CtranEnvs, size_t /* numOpPairsPerPeer */>> {
+ protected:
+  void SetUp() override {
+    setUpWithEnvs(std::get<0>(GetParam()));
+  }
+};
 
 TEST_P(CtranP2pUseListTestFixture, sendRecvP2pUseList) {
-  const size_t numOpPairsPerPeer = GetParam();
+  const size_t numOpPairsPerPeer = std::get<1>(GetParam());
 
   // Need enough total send ops to trigger useList (> kCtranMaxNvlSendRecvOps)
   if (numOpPairsPerPeer * (numRanks - 1) <=
@@ -412,15 +412,29 @@ TEST_P(CtranP2pUseListTestFixture, sendRecvP2pUseList) {
 INSTANTIATE_TEST_SUITE_P(
     CtranP2pUseListTest,
     CtranP2pUseListTestFixture,
-    ::testing::Values(
-        /* pool path */ 1,
-        /* ad-hoc alloc path */
-        ctran::sendrecv::kMaxSendRecvOpsPerPoolBuf + 1),
-    [](const testing::TestParamInfo<size_t>& info) {
-      return "numOpPairsPerPeer_" + std::to_string(info.param);
+    ::testing::Combine(
+        ::testing::Values(ctran::kDefaultEnvs, ctran::kNolocalEnvs),
+        ::testing::Values(
+            /* pool path */ 1,
+            /* ad-hoc alloc path */
+            ctran::sendrecv::kMaxSendRecvOpsPerPoolBuf + 1)),
+    [](const testing::TestParamInfo<CtranP2pUseListTestFixture::ParamType>&
+           info) {
+      return ctran::envSuffix(std::get<0>(info.param)) + "numOpPairsPerPeer_" +
+          std::to_string(std::get<1>(info.param));
     });
 
-TEST_F(CtranTestFixture, oneToOneSendRecv) {
+// Envs-only parameterized fixture for tests that have no other params
+class CtranTestEnvFixture
+    : public CtranTestFixture,
+      public ::testing::WithParamInterface<ctran::CtranEnvs> {
+ protected:
+  void SetUp() override {
+    setUpWithEnvs(GetParam());
+  }
+};
+
+TEST_P(CtranTestEnvFixture, oneToOneSendRecv) {
   const size_t offset = 0;
   const ssize_t count = 4096;
   const int numMaxQp = 1;
@@ -433,14 +447,31 @@ TEST_F(CtranTestFixture, oneToOneSendRecv) {
   COMMCHECK_TEST(regCache->destroy());
 }
 
+INSTANTIATE_TEST_SUITE_P(
+    CtranTest,
+    CtranTestEnvFixture,
+    ::testing::Values(ctran::kDefaultEnvs, ctran::kNolocalEnvs),
+    [](const testing::TestParamInfo<ctran::CtranEnvs>& info) {
+      auto s = ctran::envSuffix(info.param);
+      return s.empty() ? std::string("Default") : s;
+    });
+
+// Param: (CtranEnvs, (offset, count, memType))
+using CtranAsyncRegParams = std::tuple<size_t, ssize_t, MemAllocType>;
+
 class CtranAsyncRegTestParamFixture
     : public CtranTestFixture,
       public ::testing::WithParamInterface<
-          std::tuple<size_t, ssize_t, MemAllocType>> {};
+          std::tuple<ctran::CtranEnvs, CtranAsyncRegParams>> {
+ protected:
+  void SetUp() override {
+    setUpWithEnvs(std::get<0>(GetParam()));
+  }
+};
 
 TEST_P(CtranAsyncRegTestParamFixture, sendRecvWithAsyncReg) {
   constexpr int numMaxQp = 1;
-  const auto& [offset, count, memType] = GetParam();
+  const auto& [offset, count, memType] = std::get<1>(GetParam());
   EnvRAII env(NCCL_CTRAN_REGISTER, NCCL_CTRAN_REGISTER::async);
 
   // Reinitialize global cache to enable asyncReg thread (require
@@ -454,18 +485,26 @@ TEST_P(CtranAsyncRegTestParamFixture, sendRecvWithAsyncReg) {
   COMMCHECK_TEST(regCache->destroy());
 }
 
+// Param: (CtranEnvs, (offset, count, memType))
+using CtranSocketTestParams = std::tuple<size_t, ssize_t, MemAllocType>;
+
 class CtranSocketTestParamFixture
     : public CtranTestFixture,
       public ::testing::WithParamInterface<
-          std::tuple<size_t, ssize_t, MemAllocType>> {};
+          std::tuple<ctran::CtranEnvs, CtranSocketTestParams>> {
+ protected:
+  void SetUp() override {
+    setUpWithEnvs(std::get<0>(GetParam()));
+  }
+};
 
 TEST_P(CtranSocketTestParamFixture, nvlSendRecv) {
-  if (enableNolocal || localSize < numRanks) {
+  if (ctran::isNolocalTopo() || localSize < numRanks) {
     GTEST_SKIP()
         << "Ctran Socket + NVL backend require intra-node only environment. Skip test";
   }
   const int numMaxQp = 1;
-  const auto& [offset, count, memType] = GetParam();
+  const auto& [offset, count, memType] = std::get<1>(GetParam());
 
   regCache->init();
   EnvRAII env1(
@@ -479,84 +518,73 @@ TEST_P(CtranSocketTestParamFixture, nvlSendRecv) {
   COMMCHECK_TEST(regCache->destroy());
 }
 
-class CtranSendRecvCopyEngineTestParamFixture
-    : public CtranTestFixture,
-      public ::testing::WithParamInterface<
-          std::tuple<size_t, ssize_t, MemAllocType>> {};
-
-TEST_P(CtranSendRecvCopyEngineTestParamFixture, sendRecv) {
-  const int numMaxQp = 1;
-  const auto& [offset, count, memType] = GetParam();
-
-  regCache->init();
-  EnvRAII env1(NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE, true);
-  EnvRAII env2(NCCL_CTRAN_IB_EPOCH_LOCK_ENFORCE_CHECK, true);
-
-  runTest(offset, count, numMaxQp, 1 /* nIter */, memType);
-
-  // Destroy regCache for later test with different NCCL_CTRAN_REGISTER config.
-  COMMCHECK_TEST(regCache->destroy());
-}
-
 // test various size and various num of max QP, intentionally make some sizes
 // not aligned
 INSTANTIATE_TEST_SUITE_P(
     CtranTest,
     CtranTestParamFixture,
-    ::testing::Values(
-        // offset in bytes, count of float32, numMaxQp
-        // test cudaMalloc based memory
-        std::make_tuple(0, 4096, 1, kMemCudaMalloc),
-        std::make_tuple(0, 4096, 4, kMemCudaMalloc),
-        std::make_tuple(0, 65536, 1, kMemCudaMalloc),
-        std::make_tuple(0, 65536, 4, kMemCudaMalloc),
-        std::make_tuple(0, 65536, 8, kMemCudaMalloc),
-        // test ncclMemAlloc based memory
-        std::make_tuple(0, 4096, 1, kMemNcclMemAlloc),
-        std::make_tuple(0, 4096, 4, kMemNcclMemAlloc),
-        // unaligned addr and size
-        std::make_tuple(5, 2097155, 1, kMemNcclMemAlloc),
-        // unaligned size
-        std::make_tuple(0, 2097155, 1, kMemNcclMemAlloc),
-        // unaligned with multiple QPs
-        std::make_tuple(0, 2097155, 8, kMemNcclMemAlloc),
-        // large and unaligned
-        std::make_tuple(5, 1073741819, 1, kMemNcclMemAlloc),
-        // large with multiple QPs
-        std::make_tuple(0, 2147483648, 4, kMemNcclMemAlloc),
-        std::make_tuple(0, 2147483648, 16, kMemNcclMemAlloc),
-        // test ncclMemAllocDisjoint memory
-        std::make_tuple(0, 1UL << 21, 16, kCuMemAllocDisjoint)),
-    [&](const testing::TestParamInfo<CtranTestParamFixture::ParamType>& info) {
-      return std::to_string(std::get<0>(info.param)) + "offset_" +
-          std::to_string(std::get<1>(info.param)) + "int_" +
-          std::to_string(std::get<2>(info.param)) + "maxQp_" +
-          testMemAllocTypeToStr(std::get<3>(info.param));
+    ::testing::Combine(
+        ::testing::Values(ctran::kDefaultEnvs, ctran::kNolocalEnvs),
+        ::testing::Values(
+            // offset in bytes, count of float32, numMaxQp
+            // test cudaMalloc based memory
+            CtranTestParams(0, 4096, 1, kMemCudaMalloc),
+            CtranTestParams(0, 4096, 4, kMemCudaMalloc),
+            CtranTestParams(0, 65536, 1, kMemCudaMalloc),
+            CtranTestParams(0, 65536, 4, kMemCudaMalloc),
+            CtranTestParams(0, 65536, 8, kMemCudaMalloc),
+            // test ncclMemAlloc based memory
+            CtranTestParams(0, 4096, 1, kMemNcclMemAlloc),
+            CtranTestParams(0, 4096, 4, kMemNcclMemAlloc),
+            // unaligned addr and size
+            CtranTestParams(5, 2097155, 1, kMemNcclMemAlloc),
+            // unaligned size
+            CtranTestParams(0, 2097155, 1, kMemNcclMemAlloc),
+            // unaligned with multiple QPs
+            CtranTestParams(0, 2097155, 8, kMemNcclMemAlloc),
+            // large and unaligned
+            CtranTestParams(5, 1073741819, 1, kMemNcclMemAlloc),
+            // large with multiple QPs
+            CtranTestParams(0, 2147483648, 4, kMemNcclMemAlloc),
+            CtranTestParams(0, 2147483648, 16, kMemNcclMemAlloc),
+            // test ncclMemAllocDisjoint memory
+            CtranTestParams(0, 1UL << 21, 16, kCuMemAllocDisjoint))),
+    [](const testing::TestParamInfo<CtranTestParamFixture::ParamType>& info) {
+      const auto& inner = std::get<1>(info.param);
+      return ctran::envSuffix(std::get<0>(info.param)) +
+          std::to_string(std::get<0>(inner)) + "offset_" +
+          std::to_string(std::get<1>(inner)) + "int_" +
+          std::to_string(std::get<2>(inner)) + "maxQp_" +
+          testMemAllocTypeToStr(std::get<3>(inner));
     });
 
 INSTANTIATE_TEST_SUITE_P(
     CtranAsyncRegTest,
     CtranAsyncRegTestParamFixture,
-    ::testing::Values(
-        // offset in bytes, count of float32
-        // test cudaMalloc based memory
-        std::make_tuple(0, 4096, kMemCudaMalloc),
-        std::make_tuple(0, 65536, kMemCudaMalloc),
-        // // test ncclMemAlloc based memory
-        std::make_tuple(0, 4096, kMemNcclMemAlloc),
-        // // unaligned addr and size
-        std::make_tuple(5, 2097155, kMemNcclMemAlloc),
-        // // unaligned size
-        std::make_tuple(0, 2097155, kMemNcclMemAlloc),
-        // large and unaligned
-        std::make_tuple(5, 1073741819, kMemNcclMemAlloc),
-        // // test ncclMemAllocDisjoint memory
-        std::make_tuple(0, 1UL << 21, kCuMemAllocDisjoint)),
-    [&](const testing::TestParamInfo<CtranAsyncRegTestParamFixture::ParamType>&
-            info) {
-      return std::to_string(std::get<0>(info.param)) + "offset_" +
-          std::to_string(std::get<1>(info.param)) + "int_" +
-          testMemAllocTypeToStr(std::get<2>(info.param));
+    ::testing::Combine(
+        ::testing::Values(ctran::kDefaultEnvs, ctran::kNolocalEnvs),
+        ::testing::Values(
+            // offset in bytes, count of float32
+            // test cudaMalloc based memory
+            CtranAsyncRegParams(0, 4096, kMemCudaMalloc),
+            CtranAsyncRegParams(0, 65536, kMemCudaMalloc),
+            // test ncclMemAlloc based memory
+            CtranAsyncRegParams(0, 4096, kMemNcclMemAlloc),
+            // unaligned addr and size
+            CtranAsyncRegParams(5, 2097155, kMemNcclMemAlloc),
+            // unaligned size
+            CtranAsyncRegParams(0, 2097155, kMemNcclMemAlloc),
+            // large and unaligned
+            CtranAsyncRegParams(5, 1073741819, kMemNcclMemAlloc),
+            // test ncclMemAllocDisjoint memory
+            CtranAsyncRegParams(0, 1UL << 21, kCuMemAllocDisjoint))),
+    [](const testing::TestParamInfo<CtranAsyncRegTestParamFixture::ParamType>&
+           info) {
+      const auto& inner = std::get<1>(info.param);
+      return ctran::envSuffix(std::get<0>(info.param)) +
+          std::to_string(std::get<0>(inner)) + "offset_" +
+          std::to_string(std::get<1>(inner)) + "int_" +
+          testMemAllocTypeToStr(std::get<2>(inner));
     });
 
 // test various size and various num of max QP, intentionally make some sizes
@@ -564,94 +592,40 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     CtranTest,
     CtranSocketTestParamFixture,
-    ::testing::Values(
-        // // test ncclMemAlloc based memory
-        std::make_tuple(0, 4096, kMemNcclMemAlloc),
-        // // unaligned addr and size
-        std::make_tuple(0, 2097155, kMemNcclMemAlloc),
-        // // unaligned size
-        std::make_tuple(5, 2097155, kMemNcclMemAlloc),
-        // large and unaligned
-        std::make_tuple(5, 1073741819, kMemNcclMemAlloc)),
-    [&](const testing::TestParamInfo<CtranSocketTestParamFixture::ParamType>&
-            info) {
-      return std::to_string(std::get<0>(info.param)) + "offset_" +
-          std::to_string(std::get<1>(info.param)) + "int_" +
-          testMemAllocTypeToStr(std::get<2>(info.param));
+    ::testing::Combine(
+        ::testing::Values(ctran::kDefaultEnvs, ctran::kNolocalEnvs),
+        ::testing::Values(
+            // test ncclMemAlloc based memory
+            CtranSocketTestParams(0, 4096, kMemNcclMemAlloc),
+            // unaligned addr and size
+            CtranSocketTestParams(0, 2097155, kMemNcclMemAlloc),
+            // unaligned size
+            CtranSocketTestParams(5, 2097155, kMemNcclMemAlloc),
+            // large and unaligned
+            CtranSocketTestParams(5, 1073741819, kMemNcclMemAlloc))),
+    [](const testing::TestParamInfo<CtranSocketTestParamFixture::ParamType>&
+           info) {
+      const auto& inner = std::get<1>(info.param);
+      return ctran::envSuffix(std::get<0>(info.param)) +
+          std::to_string(std::get<0>(inner)) + "offset_" +
+          std::to_string(std::get<1>(inner)) + "int_" +
+          testMemAllocTypeToStr(std::get<2>(inner));
     });
-
-INSTANTIATE_TEST_SUITE_P(
-    CtranTest,
-    CtranSendRecvCopyEngineTestParamFixture,
-    ::testing::Values(
-        // // test ncclMemAlloc based memory
-        std::make_tuple(0, 4096, kMemNcclMemAlloc),
-        // // unaligned addr and size
-        std::make_tuple(0, 2097155, kMemNcclMemAlloc),
-        // // unaligned size
-        std::make_tuple(5, 2097155, kMemNcclMemAlloc),
-        // large and unaligned
-        std::make_tuple(5, 1073741819, kMemNcclMemAlloc),
-        std::make_tuple(0, 1UL << 21, kCuMemAllocDisjoint)),
-    [&](const testing::TestParamInfo<
-        CtranSendRecvCopyEngineTestParamFixture::ParamType>& info) {
-      return std::to_string(std::get<0>(info.param)) + "offset_" +
-          std::to_string(std::get<1>(info.param)) + "int_" +
-          testMemAllocTypeToStr(std::get<2>(info.param));
-    });
-
-// Test case for NVL zero-copy path with 3+ segments to expose
-// CTRAN_IPC_INLINE_SEGMENTS limitation. This test demonstrates the bug where
-// Ctran NVL zero-copy path fails when memory is backed by 3+ physical memory
-// allocations (expandable segments). The current implementation is limited to 2
-// segments due to fixed-size CtranIpcDesc.segments array.
-//
-// Expected behavior with current code: FAIL with error:
-// "CTRAN-IPC: tried to export CtranIpcMem backed by too many physical memory
-// allocations."
-//
-// After fix: Test should PASS
-TEST_F(CtranTestFixture, DISABLED_sendRecvCopyEngineMultiSegment) {
-  // Use kCuMemAllocDisjoint with 3 segments to trigger the bug
-  const MemAllocType memType = kCuMemAllocDisjoint;
-  constexpr size_t numSegments = 3;
-  const size_t offset = 0;
-  // Use 6MB buffer = 3 x 2MB segments to ensure 3 physical allocations
-  const ssize_t count = 6 * 1024 * 1024 / sizeof(int); // 6MB in int elements
-  const int numMaxQp = 1;
-
-  EnvRAII env1(NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE, true);
-
-  if (ctran::utils::isCuMemSupported() == false) {
-    GTEST_SKIP() << "CuMem not supported, skip test";
-  }
-
-  regCache->init();
-
-  // This test currently exposes a bug - the runTest will fail with:
-  // "CTRAN ERROR CTRAN-IPC: tried to export CtranIpcMem backed by too many
-  // physical memory allocations."
-  // The dmaBuf support check is done inside runTest after comm creation.
-  runTest(
-      offset,
-      count,
-      numMaxQp,
-      1 /* nIter */,
-      memType,
-      false /* oneToOne */,
-      numSegments);
-
-  COMMCHECK_TEST(regCache->destroy());
-}
 
 #if not defined(__HIP_PLATFORM_AMD__) and not defined(__HIP_PLATFORM_HCC__)
 
 class CtranP2pCudaGraphTestFixture
     : public CtranTestFixture,
-      public ::testing::WithParamInterface<bool /* oneToOne */> {};
+      public ::testing::WithParamInterface<
+          std::tuple<ctran::CtranEnvs, bool /* oneToOne */>> {
+ protected:
+  void SetUp() override {
+    setUpWithEnvs(std::get<0>(GetParam()));
+  }
+};
 
 TEST_P(CtranP2pCudaGraphTestFixture, sendRecvP2p) {
-  const bool oneToOne = GetParam();
+  const bool oneToOne = std::get<1>(GetParam());
   EnvRAII env1(NCCL_SENDRECV_ALGO, NCCL_SENDRECV_ALGO::ctp2p);
   regCache->init();
   runTest(
@@ -670,11 +644,15 @@ TEST_P(CtranP2pCudaGraphTestFixture, sendRecvP2p) {
 INSTANTIATE_TEST_SUITE_P(
     CtranP2pCudaGraphTest,
     CtranP2pCudaGraphTestFixture,
-    ::testing::Values(
-        /* useList path */ false,
-        /* non-useList path */ true),
-    [](const testing::TestParamInfo<bool>& info) {
-      return "useList_" + std::to_string(!info.param);
+    ::testing::Combine(
+        ::testing::Values(ctran::kDefaultEnvs, ctran::kNolocalEnvs),
+        ::testing::Values(
+            /* useList path */ false,
+            /* non-useList path */ true)),
+    [](const testing::TestParamInfo<CtranP2pCudaGraphTestFixture::ParamType>&
+           info) {
+      return ctran::envSuffix(std::get<0>(info.param)) + "useList_" +
+          std::to_string(!std::get<1>(info.param));
     });
 
 #endif

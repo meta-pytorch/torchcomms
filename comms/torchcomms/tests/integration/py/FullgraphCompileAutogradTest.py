@@ -11,6 +11,7 @@ from torchcomms.tests.helpers.py.test_helpers import (  # noqa: E402
     skip_if_torch_compile_not_supported_or_enabled,
 )
 from torchcomms.tests.integration.py.TorchCommTestHelpers import (  # noqa: E402
+    skip_backend,
     TorchCommTestWrapper,
 )
 
@@ -193,6 +194,7 @@ class FullgraphCompileAutogradTest(unittest.TestCase):
 
         torch.testing.assert_close(grad2.cpu(), torch.full((3,), 2.0))
 
+    @skip_backend("gloo")
     def test_all_reduce_backward_eager(self):
         from torchcomms import ReduceOp
 
@@ -206,6 +208,7 @@ class FullgraphCompileAutogradTest(unittest.TestCase):
         expected_grad = torch.full((4,), float(self.num_ranks), device=self.device)
         torch.testing.assert_close(x.grad.cpu(), expected_grad.cpu())
 
+    @skip_backend("gloo")
     def test_all_gather_backward_eager(self):
         x = torch.randn(4, requires_grad=True, device=self.device)
 
@@ -218,6 +221,7 @@ class FullgraphCompileAutogradTest(unittest.TestCase):
         expected_grad = torch.ones(4) * self.num_ranks
         torch.testing.assert_close(x.grad.cpu(), expected_grad)
 
+    @skip_backend("gloo")
     def test_reduce_scatter_backward_eager(self):
         from torchcomms import ReduceOp
 
@@ -238,6 +242,7 @@ class FullgraphCompileAutogradTest(unittest.TestCase):
         expected_grad = torch.ones(chunk_size * self.num_ranks)
         torch.testing.assert_close(x.grad.cpu(), expected_grad)
 
+    @skip_backend("gloo")
     def test_all_gather_single_backward_eager(self):
         chunk_size = 4
         x = torch.randn(chunk_size, requires_grad=True, device=self.device)
@@ -251,6 +256,7 @@ class FullgraphCompileAutogradTest(unittest.TestCase):
         expected_grad = torch.ones(chunk_size) * self.num_ranks
         torch.testing.assert_close(x.grad.cpu(), expected_grad)
 
+    @skip_backend("gloo")
     def test_reduce_scatter_single_backward_eager(self):
         from torchcomms import ReduceOp
 
@@ -270,6 +276,7 @@ class FullgraphCompileAutogradTest(unittest.TestCase):
         expected_grad = torch.ones(chunk_size * self.num_ranks)
         torch.testing.assert_close(x.grad.cpu(), expected_grad)
 
+    @skip_backend("gloo")
     def test_all_to_all_single_backward_eager(self):
         chunk_size = 4
         x = torch.randn(
@@ -285,6 +292,7 @@ class FullgraphCompileAutogradTest(unittest.TestCase):
         expected_grad = torch.ones(chunk_size * self.num_ranks)
         torch.testing.assert_close(x.grad.cpu(), expected_grad)
 
+    @skip_backend("gloo")
     def test_all_to_all_v_single_backward_eager(self):
         # amount sent to rank j = j + 1, amount received from rank j = self.rank + 1
         # e.g.,
@@ -312,6 +320,7 @@ class FullgraphCompileAutogradTest(unittest.TestCase):
         expected_grad = torch.ones(total_input)
         torch.testing.assert_close(x.grad.cpu(), expected_grad)
 
+    @skip_backend("gloo")
     def test_all_reduce_async_backward_eager(self):
         from torchcomms import ReduceOp
 

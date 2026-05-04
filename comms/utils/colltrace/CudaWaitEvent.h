@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include <cuda_runtime.h>
+#include <cuda_runtime.h> // @manual
 
 #include <folly/synchronization/Baton.h>
 
@@ -22,6 +22,7 @@ class CudaReferencePoint {
   CudaReferencePoint();
 
   CommsMaybe<system_clock_time_point> getTimeViaEvent(const CudaEvent& event);
+  CommsMaybe<system_clock_time_point> getTimeViaEvent(cudaEvent_t event);
 
  private:
   // We intentionally NOT using the RAII version to avoid segfault when calling

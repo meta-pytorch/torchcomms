@@ -8,6 +8,9 @@ if(USE_SYSTEM_LIBS)
     # Use system installed NCCL
     set(NCCL_INCLUDE "${CONDA_INCLUDE}")
     set(NCCL_SHARED_LIB "${CONDA_LIB}/libnccl.so")
+elseif(DEFINED TORCHCOMMS_NCCL_INCLUDE AND DEFINED TORCHCOMMS_NCCL_LIBRARY)
+    set(NCCL_INCLUDE "${TORCHCOMMS_NCCL_INCLUDE}")
+    set(NCCL_SHARED_LIB "${TORCHCOMMS_NCCL_LIBRARY}")
 elseif(EXISTS "${TORCH_INSTALL_PREFIX}/../build/nccl/include/nccl.h")
     # Use NCCL from PyTorch source build
     set(NCCL_INCLUDE "${TORCH_INSTALL_PREFIX}/../build/nccl/include")
@@ -22,8 +25,6 @@ else()
     )
 endif()
 
-set(FMT_INCLUDE "${ROOT}/third-party/fmt/include")
-
 add_library(torchcomms_comms_nccl MODULE
     ${TORCHCOMMS_NCCL_SOURCES}
     ${TORCHCOMMS_CUDA_API_SOURCE}
@@ -37,26 +38,29 @@ set_target_properties(torchcomms_comms_nccl PROPERTIES
 target_include_directories(torchcomms_comms_nccl PRIVATE
     ${ROOT}
     ${NCCL_INCLUDE}
-    ${FMT_INCLUDE}
     ${CONDA_INCLUDE}
     ${Python3_INCLUDE_DIRS}
 )
 target_compile_features(torchcomms_comms_nccl PRIVATE cxx_std_20)
 target_link_directories(torchcomms_comms_nccl PRIVATE ${CONDA_LIB})
 target_link_libraries(torchcomms_comms_nccl PRIVATE
+    glog::glog_headers
+    fmt::fmt
+    torchcomms
     ${TORCH_LIBRARIES}
     ${TORCH_PYTHON_LIB}
-    torchcomms
 )
 if(USE_SYSTEM_LIBS)
     target_link_libraries(torchcomms_comms_nccl PRIVATE
         ${NCCL_SHARED_LIB}
-        "-lfmt"
+    )
+elseif(DEFINED TORCHCOMMS_NCCL_INCLUDE AND DEFINED TORCHCOMMS_NCCL_LIBRARY)
+    target_link_libraries(torchcomms_comms_nccl PRIVATE
+        ${NCCL_SHARED_LIB}
     )
 else()
     target_link_libraries(torchcomms_comms_nccl PRIVATE
         ${NCCL_STATIC_LIB}
-        "-l:libfmt.a"
     )
 endif()
 

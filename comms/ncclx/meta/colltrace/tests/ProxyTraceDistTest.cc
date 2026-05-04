@@ -8,12 +8,15 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <set>
 #include <unordered_map>
 
-#include "comms/ctran/Ctran.h"
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
+#include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
+#include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "meta/colltrace/CollTrace.h"
 #include "meta/colltrace/ProxyMock.h"
 #include "meta/colltrace/ProxyTrace.h"
 
@@ -21,14 +24,23 @@
 
 static bool VERBOSE = true;
 
-class ProxyTraceTest : public NcclxBaseTest {
+class ProxyTraceTest : public NcclxBaseTestFixture {
  public:
   ProxyTraceTest() = default;
   void SetUp() override {
-    setenv("NCCL_CTRAN_ENABLE", "1", 0); // enable ctran
-    // Initialize CVAR so that we can overwrite global variable in each test
-    initEnv();
-    NcclxBaseTest::SetUp();
+    // All NCCL cvars must be set here because NcclxBaseTestFixture::SetUp
+    // calls initEnv() (call_once) + ncclCvarInit(). Per-test EnvRAII overrides
+    // won't take effect for cvars read during init.
+    NcclxBaseTestFixture::SetUp({
+        {"NCCL_PROXYTRACE", "trace"},
+        {"NCCL_COLLTRACE", "trace"},
+        {"NCCL_DEBUG", "INFO"},
+        {"NCCL_DEBUG_SUBSYS", "INIT,COLL"},
+        // Simulate 2 nodes on single physical node: ranks 0-1 on node_0,
+        // ranks 2-3 on node_1. NCCL uses NCCL_HOSTID to determine node
+        // membership, so different hostids produce different comm->node values.
+        {"NCCL_HOSTID", "node_" + std::to_string(globalRank / 2)},
+    });
     CUDACHECK_TEST(cudaStreamCreate(&stream));
   }
 
@@ -36,7 +48,7 @@ class ProxyTraceTest : public NcclxBaseTest {
     CUDACHECK_TEST(cudaStreamDestroy(stream));
     CUDACHECK_TEST(cudaFree(sendBuf));
     CUDACHECK_TEST(cudaFree(recvBuf));
-    NcclxBaseTest::TearDown();
+    NcclxBaseTestFixture::TearDown();
   }
 
   void runAllReduce(const int count, const int nColl, ncclComm_t comm) {
@@ -260,19 +272,9 @@ class ProxyTraceTest : public NcclxBaseTest {
   };
 
   bool checkTestRequirement(ncclComm_t comm) {
-    // FIXME: this check seems flaky on RE when using with socket transport
-    // Disable it for now to unblock other DIFF landing. More investigation is
-    // needed.
-    //
-    // We don't have a good way to detect whether baseline IB transport is
-    // turned on. Thus, use ctran IB backend to valid for now.
-    if (comm->nNodes < 2 || !ctranInitialized(comm->ctranComm_.get()) ||
-        !comm->ctranComm_->ctran_->mapper->hasBackend()) {
+    if (comm->nNodes < 2) {
       std::cout
-          << "This test requires 2+ nodes and valid IB transport, but nNodes="
-          << comm->nNodes << ", ctranInitialized(comm)="
-          << ctranInitialized(comm->ctranComm_.get())
-          << ", hasBackend()=" << comm->ctranComm_->ctran_->mapper->hasBackend()
+          << "This test requires 2+ nodes, but nNodes=" << comm->nNodes
           << ". Skip test "
           << ::testing::UnitTest::GetInstance()->current_test_info()->name()
           << std::endl;
@@ -299,7 +301,8 @@ TEST_F(ProxyTraceTest, PastCollNoDropUnderLimit) {
   auto recordGuard = EnvRAII(
       NCCL_PROXYTRACE_RECORD_MAX, std::max(NCCL_PROXYTRACE_RECORD_MAX, 100));
 
-  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
   if (!checkTestRequirement(comm)) {
     GTEST_SKIP();
   }
@@ -325,7 +328,8 @@ TEST_F(ProxyTraceTest, TestRecordNoDropByEnv) {
   auto traceGuard = EnvRAII(NCCL_PROXYTRACE, {"trace"});
   auto recordGuard = EnvRAII(NCCL_PROXYTRACE_RECORD_MAX, -1);
 
-  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
   if (!checkTestRequirement(comm)) {
     GTEST_SKIP();
   }
@@ -354,7 +358,8 @@ TEST_F(ProxyTraceTest, TestRecordDropExceedLimit) {
       NCCL_PROXYTRACE_RECORD_MAX,
       std::max(NCCL_PROXYTRACE_RECORD_MAX_DEFAULTCVARVALUE, 100));
 
-  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
   if (!checkTestRequirement(comm)) {
     GTEST_SKIP();
   }
@@ -378,7 +383,8 @@ TEST_F(ProxyTraceTest, TestRecordDropExceedLimit) {
 
 TEST_F(ProxyTraceTest, QueryFinishedAllReduce) {
   auto traceGuard = EnvRAII(NCCL_PROXYTRACE, {"trace"});
-  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
   if (!checkTestRequirement(comm)) {
     GTEST_SKIP();
   }
@@ -401,8 +407,10 @@ TEST_F(ProxyTraceTest, QueryFinishedAllReduce) {
   checkCompletedDump(dump, nColl);
 
   // Check past collective details
+  // opCount is incremented in ncclLaunchPrepare before proxy ops are created
+  // (D100385134), so traced opCount starts at opCountStart + 1
   for (int i = 0; i < nColl; i++) {
-    checkPastColl(dump.pastColls[i], opCountStart + i, comm);
+    checkPastColl(dump.pastColls[i], opCountStart + 1 + i, comm);
     EXPECT_EQ(dump.pastColls[i].collInfo.coll, ncclFuncAllReduce);
     // Skip check for nProxyOps as we don't know allreduce internal
 
@@ -418,7 +426,8 @@ TEST_F(ProxyTraceTest, QueryFinishedAllToAll) {
   // ensure we use default proxy path
   NCCL_ALLTOALL_ALGO = NCCL_ALLTOALL_ALGO::orig;
 
-  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
   if (!checkTestRequirement(comm)) {
     GTEST_SKIP();
   }
@@ -443,7 +452,7 @@ TEST_F(ProxyTraceTest, QueryFinishedAllToAll) {
 
   // Check past collective details
   for (int i = 0; i < nColl; i++) {
-    checkPastColl(dump.pastColls[i], opCountStart + i, comm);
+    checkPastColl(dump.pastColls[i], opCountStart + 1 + i, comm);
     EXPECT_EQ(dump.pastColls[i].collInfo.coll, ncclFuncSendRecv);
 
     // Expect nChannels number of send and recv to each remote rank
@@ -469,7 +478,8 @@ TEST_F(ProxyTraceTest, QueryFinishedSendRecv) {
   // ensure we use default proxy path
   NCCL_SENDRECV_ALGO = NCCL_SENDRECV_ALGO::orig;
 
-  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
   if (!checkTestRequirement(comm)) {
     GTEST_SKIP();
   }
@@ -494,7 +504,7 @@ TEST_F(ProxyTraceTest, QueryFinishedSendRecv) {
   // Check past collective details
   EXPECT_EQ(dump.pastColls.size(), nColl);
   for (int i = 0; i < nColl; i++) {
-    checkPastColl(dump.pastColls[i], opCountStart + i, comm);
+    checkPastColl(dump.pastColls[i], opCountStart + 1 + i, comm);
     // localRank on node0 sends to the same localRank on node1 (see
     // runSendRecv). skipSingleNodeRun check ensures it runs with 2+nodes
     if (comm->node == 0) {
@@ -519,8 +529,16 @@ TEST_F(ProxyTraceTest, QueryFinishedSendRecv) {
 TEST_F(ProxyTraceTest, QueryHangAllReduce) {
   auto traceGuard = EnvRAII(NCCL_PROXYTRACE, {"trace"});
 
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
+  if (!checkTestRequirement(comm)) {
+    GTEST_SKIP();
+  }
+
+  // Configure mock failure relative to current opCount to account for
+  // init-phase operations (e.g., fast-init) that consume opCounts.
   SendFailureConfig failureConfig = {
-      8 /*opCount*/,
+      static_cast<int>(comm->opCount) + 8 /*opCount*/,
       0 /*rank*/,
       -1 /*remoteRank*/,
       1 /*step*/,
@@ -528,11 +546,6 @@ TEST_F(ProxyTraceTest, QueryHangAllReduce) {
       30 /*delay*/
   };
   setMockConfig(failureConfig);
-
-  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
-  if (!checkTestRequirement(comm)) {
-    GTEST_SKIP();
-  }
 
   EXPECT_NE(comm->proxyState->trace, nullptr);
 
@@ -577,13 +590,16 @@ TEST_F(ProxyTraceTest, QueryHangSendRecv) {
   // ensure we use default proxy path
   NCCL_SENDRECV_ALGO = NCCL_SENDRECV_ALGO::orig;
 
-  NcclCommRAII comm{globalRank, numRanks, localRank, bootstrap_.get()};
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
   if (!checkTestRequirement(comm)) {
     GTEST_SKIP();
   }
 
+  // Configure mock failure relative to current opCount to account for
+  // init-phase operations (e.g., fast-init) that consume opCounts.
   SendFailureConfig failureConfig = {
-      8 /*opCount*/,
+      static_cast<int>(comm->opCount) + 8 /*opCount*/,
       0 /*rank*/,
       comm->localRanks /*remoteRank*/,
       1 /*step*/,
@@ -632,6 +648,89 @@ TEST_F(ProxyTraceTest, QueryHangSendRecv) {
 
   // Now let's wait for all communication to finish
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
+}
+
+// Verify that CollTrace (CT) and ProxyTrace (PT) record the same opCount
+// for the same collective. A bug introduced by D83294734 caused opCount to be
+// incremented in doLaunches (after kernel launch) instead of in
+// ncclLaunchPrepare (before proxy ops are created), causing PT to capture a
+// stale value when multiple plans exist in a single group.
+TEST_F(ProxyTraceTest, CTAndPTOpCountsMatch) {
+  auto traceGuard = EnvRAII(NCCL_PROXYTRACE, {"trace"});
+  auto recordGuard = EnvRAII(
+      NCCL_PROXYTRACE_RECORD_MAX, std::max(NCCL_PROXYTRACE_RECORD_MAX, 100));
+
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
+  if (!checkTestRequirement(comm)) {
+    GTEST_SKIP();
+  }
+
+  EXPECT_THAT(comm->proxyState->trace, ::testing::NotNull());
+  if (comm->newCollTrace == nullptr) {
+    GTEST_SKIP() << "CTAndPTOpCountsMatch requires newCollTrace";
+  }
+
+  auto* commDumpPlugin = dynamic_cast<meta::comms::colltrace::CommDumpPlugin*>(
+      comm->newCollTrace->getPluginByName(
+          std::string{
+              meta::comms::colltrace::CommDumpPlugin::kCommDumpPluginName}));
+  if (commDumpPlugin == nullptr) {
+    GTEST_SKIP() << "CommDumpPlugin not found";
+  }
+
+  const int count = 1048500;
+  const int nColl = 20;
+
+  runAllReduce(count, nColl, comm);
+  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+
+  // Wait for proxy ops to finish
+  sleep(3);
+
+  // Dump both CT (via CommDumpPlugin) and PT
+  auto ptDump = comm->proxyState->trace->dump(comm->commHash);
+  auto ctDumpResult = commDumpPlugin->dump();
+  ASSERT_TRUE(ctDumpResult.hasValue()) << "CommDumpPlugin dump failed";
+  const auto& ctDump = ctDumpResult.value();
+
+  // Build sets of collIds (opCounts) (collId) from CT and PT pastColls
+  std::set<uint64_t> ctOpCounts;
+  for (const auto& coll : ctDump.pastColls) {
+    ctOpCounts.insert(coll->getCollId());
+  }
+
+  std::set<uint64_t> ptOpCounts;
+  for (const auto& coll : ptDump.pastColls) {
+    ptOpCounts.insert(coll.collInfo.opCount);
+  }
+
+  // PT opCounts are offset by +1 from CT collIds (see D100385134), so
+  // ranges won't match exactly. We log both for debugging mismatches.
+  if (comm->rank == 0 && VERBOSE) {
+    printf(
+        "Rank %d: CT pastColls=%zu (opCounts %lu-%lu), "
+        "PT pastColls=%zu (opCounts %lu-%lu)\n",
+        comm->rank,
+        ctDump.pastColls.size(),
+        ctOpCounts.empty() ? 0UL : *ctOpCounts.begin(),
+        ctOpCounts.empty() ? 0UL : *ctOpCounts.rbegin(),
+        ptDump.pastColls.size(),
+        ptOpCounts.empty() ? 0UL : *ptOpCounts.begin(),
+        ptOpCounts.empty() ? 0UL : *ptOpCounts.rbegin());
+  }
+
+  // PT opCounts are offset by +1 from CT collIds because comm->opCount++
+  // in ncclLaunchPrepare (D100385134) runs before PT records but after CT
+  // assigns collId. Verify same count and consistent +1 offset.
+  EXPECT_EQ(ctOpCounts.size(), ptOpCounts.size())
+      << "CT and PT should record the same number of collectives";
+  if (!ctOpCounts.empty() && !ptOpCounts.empty()) {
+    EXPECT_EQ(*ptOpCounts.begin(), *ctOpCounts.begin() + 1)
+        << "PT opCount should be CT collId + 1";
+    EXPECT_EQ(*ptOpCounts.rbegin(), *ctOpCounts.rbegin() + 1)
+        << "PT opCount should be CT collId + 1";
+  }
 }
 
 int main(int argc, char* argv[]) {

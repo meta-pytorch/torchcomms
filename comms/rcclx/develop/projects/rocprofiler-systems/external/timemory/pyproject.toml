@@ -1,0 +1,42 @@
+[build-system]
+requires = [
+    "setuptools >= 40.0.4",
+    "setuptools_scm >= 2.0.0",
+    "wheel >= 0.29.0",
+    "scikit-build >= 0.8.0",
+    "cython",
+]
+build-backend = 'setuptools.build_meta'
+
+[tool.black]
+line-length = 80
+target-version = ['py37']
+include = '\.pyi?'
+exclude = '''
+
+(
+  /(
+      \.eggs         # exclude a few common directories in the
+    | \.git          # root of the project
+    | \.hg
+    | \.mypy_cache
+    | \.tox
+    | \.venv
+    | \.misc
+    | _build
+    | __pycache__
+    | _skbuild
+    | build
+    | build-timemory
+    | dist
+    | external
+    | scripts
+    | spack
+    | docker
+    | docs
+    | hatchet
+    | .pytest_cache
+  )/
+  | cmake/Templates/console-script.py.in
+)
+'''

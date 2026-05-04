@@ -186,7 +186,7 @@ TEST_F(CommDumpTest, SingleComm) {
 
   EXPECT_EQ(dump.count("CT_pastColls"), 1);
   EXPECT_EQ(dump.count("CT_pendingColls"), 1);
-  EXPECT_EQ(dump.count("CT_currentColl"), 1);
+  EXPECT_EQ(dump.count("CT_currentColls"), 1);
 
   EXPECT_EQ(dump.count("PT_pastColls"), 1);
   EXPECT_EQ(dump.count("PT_activeOps"), 1);
@@ -246,7 +246,7 @@ TEST_F(CommDumpTest, DumpAfterSendRecv) {
 
   EXPECT_EQ(dump.count("CT_pastColls"), 1);
   EXPECT_EQ(dump.count("CT_pendingColls"), 1);
-  EXPECT_EQ(dump.count("CT_currentColl"), 1);
+  EXPECT_EQ(dump.count("CT_currentColls"), 1);
   EXPECT_EQ(dump.count("PT_pastColls"), 1);
   EXPECT_EQ(dump.count("PT_activeOps"), 1);
 
@@ -287,8 +287,8 @@ TEST_F(CommDumpTest, DumpAfterSendRecv) {
     EXPECT_EQ(ctPendingCollsObjs.size(), 0);
   }
 
-  if (dump.count("CT_currentColl")) {
-    EXPECT_EQ(dump["CT_currentColl"], "null");
+  if (dump.count("CT_currentColls")) {
+    EXPECT_EQ(dump["CT_currentColls"], "[]");
   }
 
   if (dump.count("PT_activeOps")) {
@@ -354,7 +354,7 @@ TEST_F(CommDumpTest, DumpAfterCtranSendRecv) {
 
   EXPECT_EQ(dump.count("CT_pastColls"), 1);
   EXPECT_EQ(dump.count("CT_pendingColls"), 1);
-  EXPECT_EQ(dump.count("CT_currentColl"), 1);
+  EXPECT_EQ(dump.count("CT_currentColls"), 1);
   EXPECT_EQ(dump.count("PT_pastColls"), 1);
   EXPECT_EQ(dump.count("PT_activeOps"), 1);
 
@@ -397,8 +397,8 @@ TEST_F(CommDumpTest, DumpAfterCtranSendRecv) {
     EXPECT_EQ(ctPendingCollsObjs.size(), 0);
   }
 
-  if (dump.count("CT_currentColl")) {
-    EXPECT_EQ(dump["CT_currentColl"], "null");
+  if (dump.count("CT_currentColls")) {
+    EXPECT_EQ(dump["CT_currentColls"], "[]");
   }
 
   if (dump.count("PT_activeOps")) {
@@ -457,7 +457,7 @@ TEST_F(CommDumpTest, DumpAfterColl) {
 
   EXPECT_EQ(dump.count("CT_pastColls"), 1);
   EXPECT_EQ(dump.count("CT_pendingColls"), 1);
-  EXPECT_EQ(dump.count("CT_currentColl"), 1);
+  EXPECT_EQ(dump.count("CT_currentColls"), 1);
   EXPECT_EQ(dump.count("PT_pastColls"), 1);
   EXPECT_EQ(dump.count("PT_activeOps"), 1);
 
@@ -489,8 +489,8 @@ TEST_F(CommDumpTest, DumpAfterColl) {
     EXPECT_EQ(ctPendingCollsObjs.size(), 0);
   }
 
-  if (dump.count("CT_currentColl")) {
-    EXPECT_EQ(dump["CT_currentColl"], "null");
+  if (dump.count("CT_currentColls")) {
+    EXPECT_EQ(dump["CT_currentColls"], "[]");
   }
 
   if (dump.count("PT_activeOps")) {
@@ -560,7 +560,7 @@ TEST_F(CommDumpTest, DumpAfterCtranColl) {
   }
 
   EXPECT_EQ(dump.count("CT_pendingColls"), 1);
-  EXPECT_EQ(dump.count("CT_currentColl"), 1);
+  EXPECT_EQ(dump.count("CT_currentColls"), 1);
   EXPECT_EQ(dump.count("PT_pastColls"), 1);
   EXPECT_EQ(dump.count("PT_activeOps"), 1);
 
@@ -681,7 +681,7 @@ TEST_F(CommDumpTest, DumpDuringColl) {
 
   EXPECT_EQ(dump.count("CT_pastColls"), 1);
   EXPECT_EQ(dump.count("CT_pendingColls"), 1);
-  EXPECT_EQ(dump.count("CT_currentColl"), 1);
+  EXPECT_EQ(dump.count("CT_currentColls"), 1);
   EXPECT_EQ(dump.count("PT_pastColls"), 1);
   EXPECT_EQ(dump.count("PT_activeOps"), 1);
   EXPECT_EQ(dump.count("PT_activeColls"), 1);
@@ -725,13 +725,14 @@ TEST_F(CommDumpTest, DumpDuringColl) {
     }
   }
 
-  if (dump.count("CT_currentColl")) {
-    EXPECT_NE(dump["CT_currentColl"], "null");
-    auto ctCurrentCollsObj = folly::parseJson(dump["CT_currentColl"]);
+  if (dump.count("CT_currentColls")) {
+    EXPECT_NE(dump["CT_currentColls"], "[]");
+    auto ctCurrentCollsArr = folly::parseJson(dump["CT_currentColls"]);
+    ASSERT_GT(ctCurrentCollsArr.size(), 0);
     if (comm->rank == hangRank) {
-      EXPECT_EQ(ctCurrentCollsObj["collId"].asInt(), hangOpCount);
-      EXPECT_EQ(ctCurrentCollsObj["opCount"].asInt(), hangOpCount);
-      EXPECT_EQ(ctCurrentCollsObj["opName"], "AllReduce");
+      EXPECT_EQ(ctCurrentCollsArr[0]["collId"].asInt(), hangOpCount);
+      EXPECT_EQ(ctCurrentCollsArr[0]["opCount"].asInt(), hangOpCount);
+      EXPECT_EQ(ctCurrentCollsArr[0]["opName"], "AllReduce");
     }
   }
 
@@ -940,7 +941,7 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTrace) {
 
   EXPECT_EQ(dump.count("CT_pastColls"), 1);
   EXPECT_EQ(dump.count("CT_pendingColls"), 1);
-  EXPECT_EQ(dump.count("CT_currentColl"), 1);
+  EXPECT_EQ(dump.count("CT_currentColls"), 1);
   EXPECT_EQ(dump.count("PT_pastColls"), 1);
   EXPECT_EQ(dump.count("PT_activeOps"), 1);
 
@@ -977,9 +978,9 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTrace) {
     EXPECT_EQ(ctPendingCollsObjs.size(), 0);
   }
 
-  if (dump.count("CT_currentColl")) {
-    XLOG(DBG1) << "Entered CT_currentColl if statement";
-    EXPECT_EQ(dump["CT_currentColl"], "null");
+  if (dump.count("CT_currentColls")) {
+    XLOG(DBG1) << "Entered CT_currentColls if statement";
+    EXPECT_EQ(dump["CT_currentColls"], "[]");
   }
 
   if (dump.count("PT_activeOps")) {
@@ -1044,7 +1045,7 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTraceWithCommsMonitor) {
 
   EXPECT_EQ(dump.count("CT_pastColls"), 1);
   EXPECT_EQ(dump.count("CT_pendingColls"), 1);
-  EXPECT_EQ(dump.count("CT_currentColl"), 1);
+  EXPECT_EQ(dump.count("CT_currentColls"), 1);
   EXPECT_EQ(dump.count("PT_pastColls"), 1);
   EXPECT_EQ(dump.count("PT_activeOps"), 1);
 
@@ -1081,9 +1082,9 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTraceWithCommsMonitor) {
     EXPECT_EQ(ctPendingCollsObjs.size(), 0);
   }
 
-  if (dump.count("CT_currentColl")) {
-    XLOG(DBG1) << "Entered CT_currentColl if statement";
-    EXPECT_EQ(dump["CT_currentColl"], "null");
+  if (dump.count("CT_currentColls")) {
+    XLOG(DBG1) << "Entered CT_currentColls if statement";
+    EXPECT_EQ(dump["CT_currentColls"], "[]");
   }
 
   if (dump.count("PT_activeOps")) {

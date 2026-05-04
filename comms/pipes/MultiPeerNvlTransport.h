@@ -46,6 +46,17 @@ struct MultiPeerNvlTransportConfig {
   // Typical: 1-num of blocks for most workloads.
   std::size_t p2pSignalCount{1};
 
+  // Number of barrier slots per peer for cross-GPU synchronization.
+  // Used by barrier_sync() for device-side barriers.
+  // Set to 0 (default) to skip barrier buffer allocation.
+  // Typical: 1 for tile sendrecv dynamic block count support.
+  std::size_t p2pBarrierCount{0};
+
+  // Maximum block count for the tile sendrecv protocol.
+  // Allocates persistent step state and dedicated tile signals internally.
+  // send/recv use these without user-managed state.
+  int tile_max_groups{128};
+
   // If true, use dual chunk state buffers (one on each side) for local polling
   // on both sender and receiver. If false (default), use single chunk state
   // buffer on receiver side only.
@@ -79,9 +90,10 @@ struct MultiPeerNvlTransportConfig {
   bool useDualStateBuffer{false};
 
   // Size of LL128 packet buffer per peer (bytes).
-  // When > 0, allocates LL128 buffers and enables ll128_send/recv/forward
-  // on P2pNvlTransportDevice. When 0 (default), LL128 is disabled.
-  // Use ll128_buffer_size() from Ll128Packet.cuh to compute from message size.
+  // When > 0, allocates LL128 buffers and enables
+  // ll128_send_group/recv_group/forward_groups on P2pNvlTransportDevice. When
+  // 0 (default), LL128 is disabled. Use ll128_buffer_size() from
+  // Ll128Packet.cuh to compute from message size.
   std::size_t ll128BufferSize{0};
 };
 
@@ -354,6 +366,8 @@ class MultiPeerNvlTransport {
   std::unique_ptr<GpuMemHandler> signalBufferHandler_;
   std::unique_ptr<GpuMemHandler>
       ll128BufferHandler_; // nullptr when ll128BufferSize == 0
+  std::unique_ptr<GpuMemHandler>
+      barrierBufferHandler_; // nullptr when p2pBarrierCount == 0
 
   // External data buffer pointers (set via setExternalDataBuffers()).
   // When set, exchange() skips data buffer allocation/exchange.
@@ -369,6 +383,14 @@ class MultiPeerNvlTransport {
   std::size_t perPeerChunkStateBufferSize_{0};
   std::size_t perPeerSignalBufferSize_{0};
   std::size_t perPeerLl128BufferSize_{0};
+  std::size_t perPeerBarrierBufferSize_{0};
+
+  // Tile protocol state (allocated when tile_max_groups > 0)
+  std::unique_ptr<meta::comms::DeviceBuffer>
+      tileStepStateBuffer_; // not exchanged
+  std::unique_ptr<GpuMemHandler>
+      tileSignalHandler_; // 2*maxBlocks signals, exchanged
+  std::size_t perPeerTileSignalSize_{0};
 
   // Flag to track if multi-peer device arrays have been initialized
   bool multiPeerInitialized_{false};

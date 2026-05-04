@@ -1,0 +1,22 @@
+/*
+* File:    papi/src/examples/README
+* Author:  Min Zhou
+*          min@cs.utk.edu
+* Mods:    <your name here>
+*          <your email address>
+*/
+
+This directory contains:
+
+Makefile          example Makefile for platforms that support GNU make
+Makefile.AIX      example Makefile for AIX;
+Makefile.IRIX64   example Makefile for IRIX64;
+Makefile.OSF1     example Makefile for OSF1;
+*.c               various example programs
+run_examples.sh   shell script to test the example programs
+
+NOTE: not all the example program can be run successfully due to the
+availability of the events. For example, PAPI_FP_INS is a derived event
+in power3 and UltraSparc III, so overflow_pthreads can not be run successfully
+in these platforms. But these programs should help you understand how to
+use the PAPI functions.

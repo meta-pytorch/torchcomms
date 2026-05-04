@@ -95,7 +95,7 @@ ncclResult_t ncclAllGather(const void* sendbuff, void* recvbuff, size_t sendcoun
 
   auto algo = ncclx::algoconf::getAllGatherAlgo();
 
-  if (algo != NCCL_ALLGATHER_ALGO::orig && ctranAllGatherSupport(comm->ctranComm_.get(), algo)) {
+  if (algo != NCCL_ALLGATHER_ALGO::orig && ctranAllGatherSupport(comm->ctranComm_.get(), algo, stream)) {
     return metaCommToNccl(ctranAllGather(
         sendbuff, recvbuff, sendcount, ncclToMetaComm(datatype), comm->ctranComm_.get(), stream, algo));
   }
@@ -219,8 +219,9 @@ ncclResult_t ncclSend(const void* sendbuff, size_t count, ncclDataType_t datatyp
   }
   SetCudaDevRAII setCudaDev(comm->cudaDev);
 
-  if ((ncclx::algoconf::getSendRecvAlgo() != NCCL_SENDRECV_ALGO::orig) &&
-      ctranSendRecvSupport(peer, comm->ctranComm_.get())) {
+  auto algo = ncclx::algoconf::getSendRecvAlgo();
+  if ((algo != NCCL_SENDRECV_ALGO::orig) &&
+      ctranSendRecvSupport(peer, comm->ctranComm_.get(), algo, stream)) {
     // ctran send/recvs are enqueued within ctran wherease other non-ctran ones
     // are enqueued in the original queue. When reaching group end, these two
     // groups of ops will be issued separately.
@@ -261,8 +262,9 @@ ncclResult_t ncclRecv(void* recvbuff, size_t count, ncclDataType_t datatype, int
   }
   SetCudaDevRAII setCudaDev(comm->cudaDev);
 
-  if ((ncclx::algoconf::getSendRecvAlgo() != NCCL_SENDRECV_ALGO::orig) &&
-      ctranSendRecvSupport(peer, comm->ctranComm_.get())) {
+  auto algo = ncclx::algoconf::getSendRecvAlgo();
+  if ((algo != NCCL_SENDRECV_ALGO::orig) &&
+      ctranSendRecvSupport(peer, comm->ctranComm_.get(), algo, stream)) {
     // ctran send/recvs are enqueued within ctran wherease other non-ctran ones
     // are enqueued in the original queue. When reaching group end, these two
     // groups of ops will be issued separately.

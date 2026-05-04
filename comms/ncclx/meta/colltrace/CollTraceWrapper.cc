@@ -12,6 +12,7 @@
 #include "comms/utils/colltrace/CudaWaitEvent.h"
 #include "comms/utils/colltrace/DummyCollTraceHandle.h"
 #include "comms/utils/colltrace/GenericMetadata.h"
+#include "comms/utils/colltrace/GraphCudaWaitEvent.h"
 #include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
 #include "comms/utils/colltrace/plugins/WatchdogPlugin.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -450,21 +451,21 @@ getHandleFromNcclKernelPlan(ncclKernelPlan& plan, cudaStream_t stream) {
     return std::make_unique<meta::comms::colltrace::DummyCollTraceHandle>();
   }
 
-  if (isCapturingStream(stream)) {
-    if (RankUtils::getGlobalRank().value_or(0) == 0) {
-      XLOG_FIRST_N(
-          WARN, 1, "CollTrace currently doesn't support capturing streams");
-    }
-    return std::make_unique<meta::comms::colltrace::DummyCollTraceHandle>();
-  }
-
   auto metadata = getMetadataFromNcclKernelPlan(plan, stream);
   if (metadata == nullptr) {
     return std::make_unique<meta::comms::colltrace::DummyCollTraceHandle>();
   }
-  auto res = colltrace->recordCollective(
-      std::move(metadata),
-      std::make_unique<meta::comms::colltrace::CudaWaitEvent>(stream));
+
+  auto makeWaitEvent =
+      [&]() -> std::unique_ptr<meta::comms::colltrace::ICollWaitEvent> {
+    if (isCapturingStream(stream)) {
+      return std::make_unique<meta::comms::colltrace::GraphCudaWaitEvent>(
+          stream);
+    }
+    return std::make_unique<meta::comms::colltrace::CudaWaitEvent>(stream);
+  };
+
+  auto res = colltrace->recordCollective(std::move(metadata), makeWaitEvent());
 
   if (res.hasError()) {
     XLOG_FIRST_N(

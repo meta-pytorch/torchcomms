@@ -114,12 +114,21 @@ struct PipesDeviceBackend {
   //   - nccl_win:   NCCL window handle (ncclWindow_t from tensor_register)
   //   - base:       Window base pointer (local data buffer)
   //   - size:       Window size in bytes
+  // NcclWin is the NCCL host-side window handle type.
+  // When NCCL_RMA_SUPPORTED is defined, this is ncclWindow_t (ncclWindow*).
+  // Otherwise, it falls back to void* to match the NcclxWindow alias.
+#ifdef NCCL_RMA_SUPPORTED
+  using NcclWin = ncclWindow_t;
+#else
+  using NcclWin = void*;
+#endif
+
   static Ptr create_device_window(
       ncclComm_t nccl_comm,
       torch::comms::NcclxApi* nccl_api,
       torch::comms::CudaApi* cuda_api,
       const DeviceBackendConfig& config,
-      ncclWindow_t nccl_win,
+      NcclWin nccl_win,
       void* base,
       size_t size);
 
@@ -131,21 +140,19 @@ struct PipesDeviceBackend {
   static void register_extra_window(
       torch::comms::NcclxApi*,
       ncclComm_t,
-      ncclWindow_t*,
+      NcclWin*,
       void*,
       size_t) {}
 
   // No additional window to deregister for Pipes.
   static void
-  deregister_extra_window(torch::comms::NcclxApi*, ncclComm_t, ncclWindow_t*) {}
+  deregister_extra_window(torch::comms::NcclxApi*, ncclComm_t, NcclWin*) {}
 
   // Pipes deleter handles all cleanup via winDestroyDeviceWin.
   static void destroy_device_comm(Ptr&) {}
 
   // Pipes uses the regular ctran window for device window creation.
-  static ncclWindow_t select_device_win(
-      ncclWindow_t win,
-      ncclWindow_t /* nccl_orig_win */) {
+  static NcclWin select_device_win(NcclWin win, NcclWin /* nccl_orig_win */) {
     return win;
   }
 

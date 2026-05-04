@@ -3,9 +3,11 @@
 #include "comms/torchcomms/ncclx/TorchWorkNCCLX.hpp"
 #include <ATen/ThreadLocalState.h>
 #include <ATen/cuda/CUDAContext.h>
+#include <fmt/format.h>
 #include "TorchCommNCCLX.hpp"
 #include "comms/torchcomms/utils/Logging.hpp"
 #include "comms/torchcomms/utils/TracingGuard.hpp"
+#include "comms/utils/GraphCaptureSideStream.h"
 
 namespace torch::comms {
 
@@ -123,19 +125,49 @@ void TorchWorkNCCLX::recordFunctionStart(std::string_view coll_name) {
   }
 }
 
+void TorchWorkNCCLX::recordExternalEventViaSideStream(
+    cudaEvent_t event,
+    const char* event_label) {
+  auto* side = comm_->getGraphMonitorSideStream();
+  if (side && side->get()) {
+    // Capture the eventRecordWithFlags error instead of throwing inside
+    // the lambda so fork_from can complete its cleanup (rejoin + dep
+    // restore) even on failure.
+    cudaError_t record_err = cudaSuccess;
+    cudaError_t fork_err = side->fork_from(stream_, [&](cudaStream_t s) {
+      record_err = comm_->getCudaApi()->eventRecordWithFlags(
+          event, s, cudaEventRecordExternal);
+    });
+    CUDA_CHECK(
+        comm_->getCudaApi(),
+        fork_err,
+        fmt::format(
+            "Failed to fork graph-monitor side stream for event {}",
+            event_label));
+    CUDA_CHECK(
+        comm_->getCudaApi(),
+        record_err,
+        fmt::format("Failed to record event {} on side stream", event_label));
+  } else {
+    CUDA_CHECK(
+        comm_->getCudaApi(),
+        comm_->getCudaApi()->eventRecordWithFlags(
+            event, stream_, cudaEventRecordExternal),
+        fmt::format("Failed to record {}", event_label));
+  }
+}
+
 void TorchWorkNCCLX::recordStart(std::string_view coll_name) {
   recordFunctionStart(coll_name);
 
   if (comm_->getGraphCaptureMode()) {
     // Use cudaEventRecordExternal so start_event_ remains host-queryable
-    // during graph replay (for watchdog timeout detection).
-    // start_event_ is not used as a graph join point, so this is safe.
+    // during graph replay (for watchdog timeout detection). Route the
+    // external record onto the graph-monitor side stream so its release
+    // fence does NOT serialize the main collective stream at replay time.
+    // See comms/utils/GraphCaptureSideStream.h for the pattern.
     if (start_event_) {
-      CUDA_CHECK(
-          comm_->getCudaApi(),
-          comm_->getCudaApi()->eventRecordWithFlags(
-              start_event_, stream_, cudaEventRecordExternal),
-          "Failed to record start event");
+      recordExternalEventViaSideStream(start_event_, "START");
     }
   } else {
     CUDA_CHECK(
@@ -156,12 +188,11 @@ void TorchWorkNCCLX::recordEnd() {
   // sync_event_ is nullptr.
   if (graph_capture_mode_) {
     if (end_event_) {
-      CUDA_CHECK(
-          comm_->getCudaApi(),
-          comm_->getCudaApi()->eventRecordWithFlags(
-              end_event_, stream_, cudaEventRecordExternal),
-          "Failed to record end event");
+      recordExternalEventViaSideStream(end_event_, "END");
     }
+    // sync_event_ stays on the main stream — it's the join point that
+    // work.wait() uses via cudaStreamWaitEvent to make downstream ops wait
+    // for the collective to complete.
     CUDA_CHECK(
         comm_->getCudaApi(),
         comm_->getCudaApi()->eventRecord(sync_event_, stream_),
@@ -238,6 +269,8 @@ TorchWorkNCCLX::WorkStatus TorchWorkNCCLX::checkStatus() {
 }
 
 void TorchWorkNCCLX::wait() {
+  runWaitHooks();
+
   // If already completed, return immediately
   WorkStatus local_state = status();
   if (local_state == WorkStatus::COMPLETED ||

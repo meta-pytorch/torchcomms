@@ -24,6 +24,7 @@
 #include "comms/torchcomms/ncclx/TorchCommNCCLXPersistentRequest.hpp"
 #include "comms/torchcomms/ncclx/TorchCommWindowNCCLX.hpp"
 #include "comms/torchcomms/ncclx/TorchWorkNCCLX.hpp"
+#include "comms/utils/GraphCaptureSideStream.h"
 
 #if defined(ENABLE_PIPES)
 #include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
@@ -241,6 +242,15 @@ class TorchCommNCCLX : public TorchCommBackend,
       const AllGatherPExecOptions& options = {}) override;
   void all_gather_p_free(AllGatherPHandle handle) override;
 
+#ifdef NCCL_REDUCE_SCATTER_QUANTIZE_SUPPORTED
+  c10::intrusive_ptr<TorchWork> reduce_scatter_quantized(
+      at::Tensor& output,
+      const at::Tensor& input,
+      const ReduceOp& op,
+      const at::Tensor& seed,
+      bool async_op);
+#endif
+
   c10::intrusive_ptr<TorchWork> barrier(
       bool async_op,
       const BarrierOptions& options = {}) override;
@@ -268,6 +278,15 @@ class TorchCommNCCLX : public TorchCommBackend,
       const std::vector<int>& ranks,
       const std::string& name,
       const CommOptions& options = {}) override;
+
+  // Fault Tolerance API
+  bool supportsReconfigure() const override {
+    return true;
+  }
+  InitHandle getInitHandle() const override;
+  c10::intrusive_ptr<TorchWork> reconfigure(
+      const ReconfigureOptions& opts) override;
+  void abort() override;
 
   std::unordered_map<std::string, std::string> comm_dump();
   // Friend access for TorchCommNCCLX
@@ -323,6 +342,7 @@ class TorchCommNCCLX : public TorchCommBackend,
   [[nodiscard]] cudaEvent_t getEvent();
   void returnEvent(cudaEvent_t event);
   void abortNcclComm();
+  void revokeNcclComm();
 
   enum class CommState {
     NORMAL,
@@ -336,7 +356,18 @@ class TorchCommNCCLX : public TorchCommBackend,
   cudaEvent_t
       dependency_event_{}; // Pre-allocated event for stream dependencies
 
+  // Side stream used to host the graph timeout monitoring's external
+  // cudaEventRecord nodes off the main collective stream's critical path
+  // during CUDA graph capture. See TorchWorkNCCLX::recordStart/recordEnd.
+  // Owns its own dep event internally. Lazily instantiated only when
+  // ``isGraphTimeoutMonitoringEnabled()``.
+  std::unique_ptr<meta::comms::GraphSideStream> graph_monitor_side_stream_;
+
  public:
+  meta::comms::GraphSideStream* getGraphMonitorSideStream() {
+    return graph_monitor_side_stream_.get();
+  }
+
   struct Address {
     void* addr;
   };
@@ -478,6 +509,7 @@ class TorchCommNCCLX : public TorchCommBackend,
       const ncclDataType_t dataType);
   void timeoutWatchdog() noexcept;
   void checkInitialized() const;
+  void initNcclxResources();
   void checkAndAbortIfTimedOutOrError();
   void checkWorkQueue();
   bool getGraphCaptureMode();
@@ -498,6 +530,9 @@ class TorchCommNCCLX : public TorchCommBackend,
   int rank_{};
   size_t split_counter_{};
   CommOptions options_;
+
+  // Store held for reconfigure bootstrap (kept alive across reconfigure calls)
+  c10::intrusive_ptr<c10d::Store> reconfigure_store_;
 
   cudaStream_t internal_stream_{};
   void* barrier_buffer_{}; // Pre-allocated CUDA buffer for barrier operations

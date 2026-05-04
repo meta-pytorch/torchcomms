@@ -1,0 +1,302 @@
+version: 2.1
+
+orbs:
+  docker: circleci/docker@1.4.0
+
+jobs:
+  timem-install:
+    docker:
+      - image: jrmadsen/timemory:dev-cpu
+    steps:
+      - run:
+          name: apt-fixes
+          command: >
+            apt-get update &&
+            apt-get install -y git ssh autoconf libtool
+      - checkout
+      - run:
+          name: build
+          command: >
+            cmake -B build-timemory/timem-ci-install -DTIMEMORY_REQUIRE_PACKAGES=OFF -DTIMEMORY_BUILD_TIMEM=ON -DTIMEMORY_USE_PAPI=ON -DTIMEMORY_INSTALL_ALL=OFF -DTIMEMORY_INSTALL_HEADERS=OFF -DTIMEMORY_INSTALL_CONFIG=OFF -DCMAKE_INSTALL_PREFIX=/opt/user/timemory &&
+            cmake --build build-timemory/timem-ci-install --target timem
+      - run:
+          name: install
+          command: >
+            cmake --build build-timemory/timem-ci-install --target install | tee timem-install.log &&
+            if [ $(cat timem-install.log | wc -l) -gt 6 ]; then echo "Error! unexpected installation"; exit 1; fi
+      - run:
+          name: test
+          command: >
+            export PATH=/opt/user/timemory/bin:${PATH} &&
+            cd ${HOME} &&
+            timem -o timem-install-test/%p -- sleep 2 &&
+            cat timem-install-test/*
+  python-install:
+    docker:
+      - image: jrmadsen/timemory:dev-cpu
+    steps:
+      - run:
+          name: apt-fixes
+          command: >
+            apt-get update &&
+            apt-get install -y git ssh autoconf libtool texinfo zlib1g-dev
+      - checkout
+      - run:
+          name: conda-installation
+          command: >
+            wget https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ${HOME}/miniconda.sh &&
+            bash ${HOME}/miniconda.sh -b -p ${HOME}/miniconda &&
+            export PATH="${HOME}/miniconda/bin:${PATH}" &&
+            conda config --set always_yes yes &&
+            conda create -c defaults -c conda-forge -n timemory-ci python=3.7 scikit-build ninja cython matplotlib pillow six pandas pydot multiprocess pip &&
+            source activate timemory-ci &&
+            python -m pip install -r requirements.txt
+      - run:
+          name: build-and-test
+          command: >
+            touch .hold &&
+            (./scripts/report-memory.sh .hold 120 &) &&
+            export CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/view/targets/x86_64-linux &&
+            export PATH="${HOME}/miniconda/bin:${PATH}" &&
+            source activate timemory-ci &&
+            which -a python &&
+            export CC=$(which clang) &&
+            export CXX=$(which clang++) &&
+            python setup.py install
+            --disable-arch
+            --disable-c
+            --disable-caliper
+            --disable-cuda
+            --disable-cupti
+            --disable-dyninst
+            --disable-gotcha
+            --disable-gperftools
+            --disable-kokkos
+            --disable-likwid
+            --disable-mpi
+            --disable-ompt
+            --disable-papi
+            --disable-tools
+            --disable-vtune
+            --disable-build-caliper
+            --disable-build-gotcha
+            --cxx-standard=17
+            -- -DTIMEMORY_REQUIRE_PACKAGES=OFF -DTIMEMORY_BUILD_COMPILER_INSTRUMENTATION=OFF -DTIMEMORY_BUILD_KOKKOS_CONFIG=OFF -DTIMEMORY_UNITY_BUILD=OFF -DTIMEMORY_USE_LIBUNWIND=OFF -- -j1 &&
+            rm -f .hold &&
+            SUBPACKAGES="api bundle common component hardware_counters mpi bundle options plotting profiler region roofline settings signals trace units util";
+            python -c "import timemory";
+            for i in ${SUBPACKAGES}; do python -c "import timemory"; done;
+            python -c "import timemory.analyze";
+            python -c "import timemory.hatchet";
+  quick-build:
+    docker:
+      - image: jrmadsen/timemory:dev-cpu
+    steps:
+      - run:
+          name: apt-fixes
+          command: >
+            apt-get update &&
+            apt-get install -y git ssh autoconf libtool
+      - checkout
+      - run:
+          name: conda-installation
+          command: >
+            wget https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ${HOME}/miniconda.sh &&
+            bash ${HOME}/miniconda.sh -b -p ${HOME}/miniconda &&
+            export PATH="${HOME}/miniconda/bin:${PATH}" &&
+            conda config --set always_yes yes --set changeps1 no &&
+            conda create -c defaults -c conda-forge -n pyctest python=3.7.8 pyctest &&
+            source activate pyctest
+      - run:
+          name: build
+          command: >
+            export CONTINUOUS_INTEGRATION=true &&
+            export PATH="${HOME}/miniconda/bin:${PATH}" &&
+            source activate &&
+            conda activate pyctest &&
+            python ./pyctest-runner.py -SF --pyctest-drop-site=my.cdash.org --pyctest-site=CircleCI --pyctest-model=Continuous --pyctest-build-type=Debug -j 1
+            --quick
+            --build-libs shared
+            --dart
+            --mpi
+            --papi
+            --gotcha
+            --stats
+            --tools mpip mallocp dyninst kokkos
+            --cxx-standard=17
+            --compile-time-perf ${HOME}/ctp
+            -- -V --output-on-failure
+            -- -DTIMEMORY_BUILD_{CALIPER,GOTCHA,COMPILER_INSTRUMENTATION}=OFF -DTIMEMORY_UNITY_BUILD=OFF -DCMAKE_INSTALL_PREFIX=${HOME}/timemory-install
+      - run:
+          name: install
+          command: >
+            cmake --build build-timemory/Linux --target install --parallel 2 &&
+            export CMAKE_PREFIX_PATH=${HOME}/timemory-install:${CMAKE_PREFIX_PATH} &&
+            cmake -B build-examples -DUSE_MPI=ON examples &&
+            cmake --build build-examples --target ex_array_of_bundles
+      - run:
+          name: test
+          command: >
+            cd build-timemory/Linux &&
+            ctest --rerun-failed -V -N &&
+            ctest --rerun-failed -V
+  cpu-dev-build:
+    docker:
+      - image: jrmadsen/timemory:dev-cpu
+    steps:
+      - run:
+          name: apt-fixes
+          command: >
+            apt-get update &&
+            apt-get install -y git ssh autoconf libtool
+      - checkout
+      - run:
+          name: conda-installation
+          command: >
+            wget https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ${HOME}/miniconda.sh &&
+            bash ${HOME}/miniconda.sh -b -p ${HOME}/miniconda &&
+            export PATH="${HOME}/miniconda/bin:${PATH}" &&
+            conda config --set always_yes yes --set changeps1 no &&
+            conda create -c defaults -c conda-forge -n pyctest python=3.7.8 pyctest &&
+            source activate pyctest
+      - run:
+          name: build
+          command: >
+            export CTEST_PARALLEL_LEVEL=2 &&
+            export CONTINUOUS_INTEGRATION=true &&
+            export TIMEMORY_TEST_SKIP="mpi_tests.send_recv_overflow" &&
+            export PATH="${HOME}/miniconda/bin:${PATH}" &&
+            source activate &&
+            conda activate pyctest &&
+            python ./pyctest-runner.py -SF --pyctest-drop-site=my.cdash.org --pyctest-site=CircleCI --pyctest-model=Continuous --pyctest-build-type=Release
+            --build-libs shared
+            --dart
+            --mpi
+            --gotcha
+            --tools mpip mallocp dyninst
+            --cxx-standard=17
+            -j 2
+            -- -V --output-on-failure -E dynamic_instrument
+            -- -DTIMEMORY_BUILD_{CALIPER,GOTCHA,COMPILER_INSTRUMENTATION}=OFF -DCMAKE_INSTALL_PREFIX=${HOME}/timemory-install &&
+            cmake --build build-timemory/Linux --target all --parallel 2 &&
+            pushd build-timemory/Linux &&
+            ctest -VV -E dynamic_instrument --rerun-failed &&
+            popd
+      - run:
+          name: install
+          command: >
+            cmake --build build-timemory/Linux --target install --parallel 2 &&
+            export CMAKE_PREFIX_PATH=${HOME}/timemory-install:${CMAKE_PREFIX_PATH} &&
+            cmake -B build-examples -DUSE_MPI=ON examples
+      - run:
+          name: test
+          command: >
+            cd build-timemory/Linux &&
+            ctest --rerun-failed -V -E dynamic_instrument -N &&
+            ctest --rerun-failed -V -E dynamic_instrument
+    resource_class: large
+  gpu-dev-build:
+    docker:
+      - image: jrmadsen/timemory:dev-gpu
+    steps:
+      - run:
+          name: apt-fixes
+          command: >
+            apt-get update &&
+            apt-get install -y git ssh autoconf libtool
+      - checkout
+      - run:
+          name: conda-installation
+          command: >
+            wget https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ${HOME}/miniconda.sh &&
+            bash ${HOME}/miniconda.sh -b -p ${HOME}/miniconda &&
+            export PATH="${HOME}/miniconda/bin:${PATH}" &&
+            conda config --set always_yes yes --set changeps1 no &&
+            conda create -c defaults -c conda-forge -n pyctest python=3.7.8 pyctest &&
+            source activate pyctest
+      - run:
+          name: build
+          command: >
+            export CONTINUOUS_INTEGRATION=true &&
+            export PATH="${HOME}/miniconda/bin:${PATH}" &&
+            $(spack load --sh cuda) &&
+            source activate &&
+            conda activate pyctest &&
+            export CMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH}:$(dirname $(dirname $(find /opt/software/ | grep 'cuda-' | grep 'cuda\.h$')))" &&
+            python ./pyctest-runner.py -SF --pyctest-drop-site=my.cdash.org --pyctest-site=CircleCI --pyctest-model=Continuous --pyctest-build-type=Release -j 1
+            --quick
+            --build-libs shared
+            --dart
+            --cuda
+            --tools avail
+            --cxx-standard=17
+            --compile-time-perf ${HOME}/ctp
+            -- -V --output-on-failure -E cuda
+            -- -DTIMEMORY_BUILD_{CALIPER,GOTCHA,COMPILER_INSTRUMENTATION}=OFF -DPYTHON_EXECUTABLE=$(which python) -DTIMEMORY_BUILD_ERT=OFF -DCMAKE_INSTALL_PREFIX=${HOME}/timemory-install
+      - run:
+          name: install
+          command: >
+            cmake --build build-timemory/Linux --target install --parallel 2 &&
+            export CMAKE_PREFIX_PATH=${HOME}/timemory-install:${CMAKE_PREFIX_PATH} &&
+            cmake -B build-examples -DUSE_MPI=OFF examples
+      - run:
+          name: test
+          command: >
+            cd build-timemory/Linux &&
+            ctest --rerun-failed -V -N &&
+            ctest --rerun-failed -V
+  macos-dev-build:
+    macos:
+      xcode: 12.4.0
+    steps:
+      - checkout
+      - run:
+          name: conda-installation
+          command: >
+            wget https://repo.continuum.io/miniconda/Miniconda3-latest-MacOSX-x86_64.sh -O ${HOME}/miniconda.sh &&
+            bash ${HOME}/miniconda.sh -b -p ${HOME}/miniconda &&
+            export PATH="${HOME}/miniconda/bin:${PATH}" &&
+            conda config --set always_yes yes --set changeps1 no &&
+            conda create -c defaults -c conda-forge -n pyctest python=3.7 pyctest &&
+            source activate
+            conda activate pyctest
+            python -m pip install -r requirements.txt
+      - run:
+          name: build
+          command: >
+            export CONTINUOUS_INTEGRATION=true &&
+            export PATH="${HOME}/miniconda/bin:${PATH}" &&
+            source activate &&
+            conda activate pyctest &&
+            python ./pyctest-runner.py -SF --pyctest-drop-site=my.cdash.org --pyctest-site=CircleCI --pyctest-model=Continuous --pyctest-build-type=Release -j 1
+            --build-libs shared
+            --dart
+            --python
+            --tools avail timem
+            --cxx-standard=17
+            --compile-time-perf ${HOME}/ctp
+            -- -V --output-on-failure
+            -- -DTIMEMORY_BUILD_{CALIPER,COMPILER_INSTRUMENTATION}=OFF -DPYTHON_EXECUTABLE=$(which python) -DTIMEMORY_BUILD_PYTHON_HATCHET=OFF -DCMAKE_INSTALL_PREFIX=${HOME}/timemory-install
+      - run:
+          name: install
+          command: >
+            cmake --build build-timemory/Linux --target install --parallel 2 &&
+            export CMAKE_PREFIX_PATH=${HOME}/timemory-install:${CMAKE_PREFIX_PATH} &&
+            cmake -B build-examples -DUSE_MPI=OFF examples
+      - run:
+          name: test
+          command: >
+            cd build-timemory/Linux &&
+            ctest --rerun-failed -V -N &&
+            ctest --rerun-failed -V
+
+workflows:
+  version: 2
+  build:
+    jobs:
+      - timem-install
+      - python-install
+      - quick-build
+      - cpu-dev-build
+      # - gpu-dev-build
+      # - macos-dev-build

@@ -202,6 +202,15 @@ class TorchCommNCCL : public TorchCommBackend,
       const std::string& name,
       const CommOptions& options = {}) override;
 
+  // Fault Tolerance API
+  bool supportsReconfigure() const override {
+    return true;
+  }
+  InitHandle getInitHandle() const override;
+  c10::intrusive_ptr<TorchWork> reconfigure(
+      const ReconfigureOptions& opts) override;
+  void abort() override;
+
   // Friend access for TorchCommNCCL
   friend class TorchWorkNCCL;
   friend class CachingAllocatorHookImpl;
@@ -240,6 +249,7 @@ class TorchCommNCCL : public TorchCommBackend,
   [[nodiscard]] cudaEvent_t getEvent();
   void returnEvent(cudaEvent_t event);
   void abortNcclComm();
+  void revokeNcclComm();
 
   enum class CommState {
     NORMAL,
@@ -368,6 +378,7 @@ class TorchCommNCCL : public TorchCommBackend,
 
   void attachMemoryHook();
   void detachMemoryHook();
+  void initNcclResources();
 
   // Member variables
   ncclComm_t nccl_comm_{};
@@ -389,6 +400,9 @@ class TorchCommNCCL : public TorchCommBackend,
   // List of [comm, regHandlesMap] pairs.  Each regHandlesMap is a map from the
   // buffer address to the registeration handle
   std::map<void*, RegistrationHandle> memoryRegistrationHandles_;
+
+  // Store held for reconfigure bootstrap (kept alive across reconfigure calls)
+  c10::intrusive_ptr<c10d::Store> reconfigure_store_;
 
   // NCCL API abstraction
   std::shared_ptr<NcclApi> nccl_api_;

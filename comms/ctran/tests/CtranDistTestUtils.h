@@ -3,9 +3,12 @@
 #pragma once
 
 #include <atomic>
+#include <cstdlib>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "comms/ctran/CtranComm.h"
@@ -13,6 +16,32 @@
 #include "comms/testinfra/DistTestBase.h"
 
 namespace ctran {
+
+// Environment variable overrides for parameterized test topologies.
+// Reusable by all ctran test files migrating from compiler-flag nolocal.
+using CtranEnvs = std::vector<std::pair<std::string, std::string>>;
+
+inline const CtranEnvs kDefaultEnvs = {};
+inline const CtranEnvs kNolocalEnvs = {
+    {"NCCL_COMM_STATE_DEBUG_TOPO", "nolocal"}};
+
+// Returns a test-name prefix based on the env overrides (e.g. "Nolocal_").
+inline std::string envSuffix(const CtranEnvs& envs) {
+  std::string suffix;
+  for (const auto& [key, value] : envs) {
+    if (key == "NCCL_COMM_STATE_DEBUG_TOPO" && value == "nolocal") {
+      suffix += "Nolocal_";
+    }
+  }
+  return suffix;
+}
+
+// Runtime check for nolocal topology via the environment variable.
+// Replaces the compile-time enableNolocal member for migrated tests.
+inline bool isNolocalTopo() {
+  const char* env = getenv("NCCL_COMM_STATE_DEBUG_TOPO");
+  return env && std::string(env) == "nolocal";
+}
 
 // Ctran-specific environment that inherits DistEnvironmentBase and adds
 // ctran-specific env vars (NCCL_CTRAN_ENABLE, profiling, etc.)
@@ -32,6 +61,11 @@ class CtranDistTestFixture : public CtranTestFixtureBase,
  public:
  protected:
   void SetUp() override;
+
+  // SetUp with runtime env-var overrides. Saves old values, applies overrides,
+  // re-inits CVARs, then calls the base SetUp(). TearDown restores them.
+  void SetUp(const CtranEnvs& envs);
+
   void TearDown() override;
 
   std::unique_ptr<CtranComm> makeCtranComm();
@@ -52,11 +86,21 @@ class CtranDistTestFixture : public CtranTestFixtureBase,
   }
 
   bool enableNolocal{false};
+
+ private:
+  std::unordered_map<std::string, std::optional<std::string>> savedEnvs_;
 };
 
 // Dump colltrace records from a standalone CtranComm's colltraceNew_.
 // Returns a map with keys like "CT_pastColls", "CT_pendingColls",
-// "CT_currentColl". Returns empty map if colltrace is not initialized.
+// "CT_currentColls". Returns empty map if colltrace is not initialized.
 std::unordered_map<std::string, std::string> dumpCollTrace(CtranComm* comm);
+
+// Poll until CT_currentColls drains to "[]", then return the final dump.
+// On single-node configs, CudaWaitEvent may delay colltrace transitions,
+// so a fixed sleep is insufficient. Polls every 50ms up to timeoutMs.
+std::unordered_map<std::string, std::string> waitForCollTraceDrain(
+    CtranComm* comm,
+    int timeoutMs = 5000);
 
 } // namespace ctran

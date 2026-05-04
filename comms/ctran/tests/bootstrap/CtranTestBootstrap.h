@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <cassert>
 #include <cstdint>
 #include <memory>
 #include <unordered_map>
@@ -14,14 +15,24 @@ namespace ctran::testing {
 
 /**
  * Test-only ICtranBootstrap that wraps a single IBootstrap instance.
- * Global operations delegate directly; NVL-domain operations are implemented
- * via pairwise send/recv through the global bootstrap.
+ *
+ * Global collective operations (allGather, barrier, broadcast) and direct
+ * send/recv delegate to the wrapped bootstrap. NVL-domain operations are
+ * implemented via pairwise send/recv through a dedicated isolated bootstrap
+ * created via IBootstrap::duplicate(), ensuring complete send/recv
+ * key-space / communicator isolation from global operations.
  */
 class CtranTestBootstrap : public meta::comms::ICtranBootstrap {
  public:
   explicit CtranTestBootstrap(
       std::unique_ptr<meta::comms::IBootstrap> bootstrap)
-      : bootstrap_(std::move(bootstrap)) {}
+      : bootstrap_(std::move(bootstrap)),
+        nvlDomainBootstrap_(bootstrap_->duplicate()) {
+    assert(
+        nvlDomainBootstrap_ != nullptr &&
+        "IBootstrap::duplicate() must return a non-null bootstrap; "
+        "every bootstrap type in tests must implement duplicate()");
+  }
 
   // -- Global operations (delegated to bootstrap_) --
 
@@ -47,7 +58,7 @@ class CtranTestBootstrap : public meta::comms::ICtranBootstrap {
     return bootstrap_->broadcast(buf, len, root, rank, nranks);
   }
 
-  // -- NvlDomain operations (pairwise sendrecv via bootstrap_) --
+  // -- NvlDomain operations (pairwise send/recv via nvlDomainBootstrap_) --
 
   folly::SemiFuture<int> allGatherNvlDomain(
       void* buf,
@@ -66,20 +77,20 @@ class CtranTestBootstrap : public meta::comms::ICtranBootstrap {
           static_cast<char*>(buf) + static_cast<size_t>(nvlLocalRank) * len;
       auto* peerChunk = static_cast<char*>(buf) + static_cast<size_t>(nr) * len;
       if (myGlobalRank < peer) {
-        auto rc = bootstrap_->send(myChunk, len, peer, tag).get();
+        auto rc = nvlDomainBootstrap_->send(myChunk, len, peer, tag).get();
         if (rc != 0) {
           return folly::makeSemiFuture(rc);
         }
-        rc = bootstrap_->recv(peerChunk, len, peer, tag).get();
+        rc = nvlDomainBootstrap_->recv(peerChunk, len, peer, tag).get();
         if (rc != 0) {
           return folly::makeSemiFuture(rc);
         }
       } else {
-        auto rc = bootstrap_->recv(peerChunk, len, peer, tag).get();
+        auto rc = nvlDomainBootstrap_->recv(peerChunk, len, peer, tag).get();
         if (rc != 0) {
           return folly::makeSemiFuture(rc);
         }
-        rc = bootstrap_->send(myChunk, len, peer, tag).get();
+        rc = nvlDomainBootstrap_->send(myChunk, len, peer, tag).get();
         if (rc != 0) {
           return folly::makeSemiFuture(rc);
         }
@@ -101,20 +112,22 @@ class CtranTestBootstrap : public meta::comms::ICtranBootstrap {
       int peer = nvlRankToCommRank[nr];
       int tag = nextTag(peer);
       if (myGlobalRank < peer) {
-        auto rc = bootstrap_->send(&dummy, sizeof(dummy), peer, tag).get();
+        auto rc =
+            nvlDomainBootstrap_->send(&dummy, sizeof(dummy), peer, tag).get();
         if (rc != 0) {
           return folly::makeSemiFuture(rc);
         }
-        rc = bootstrap_->recv(&dummy, sizeof(dummy), peer, tag).get();
+        rc = nvlDomainBootstrap_->recv(&dummy, sizeof(dummy), peer, tag).get();
         if (rc != 0) {
           return folly::makeSemiFuture(rc);
         }
       } else {
-        auto rc = bootstrap_->recv(&dummy, sizeof(dummy), peer, tag).get();
+        auto rc =
+            nvlDomainBootstrap_->recv(&dummy, sizeof(dummy), peer, tag).get();
         if (rc != 0) {
           return folly::makeSemiFuture(rc);
         }
-        rc = bootstrap_->send(&dummy, sizeof(dummy), peer, tag).get();
+        rc = nvlDomainBootstrap_->send(&dummy, sizeof(dummy), peer, tag).get();
         if (rc != 0) {
           return folly::makeSemiFuture(rc);
         }
@@ -124,15 +137,14 @@ class CtranTestBootstrap : public meta::comms::ICtranBootstrap {
   }
 
  private:
-  // IBootstrap internally uses (peer, tag) as the key to match send/recv
-  // pairs. By maintaining a per-peer monotonically increasing tag, concurrent
-  // communications across different subgroups (intra-node, NVL-domain) are
-  // guaranteed not to mismatch, since each peer pair always gets a unique tag.
+  // Per-peer monotonically increasing tag for unique send/recv keys used in
+  // nvldomain functions.
   int nextTag(int peer) {
     return peerTags_[peer]++;
   }
 
   std::unique_ptr<meta::comms::IBootstrap> bootstrap_;
+  std::unique_ptr<meta::comms::IBootstrap> nvlDomainBootstrap_;
   std::unordered_map<int, int> peerTags_;
 };
 

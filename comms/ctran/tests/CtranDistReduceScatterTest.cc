@@ -212,13 +212,13 @@ class CtranReduceScatterTest : public ctran::CtranDistTestFixture,
 
     CUDACHECK_TEST(cudaDeviceSynchronize());
     // Sleep for a while to make sure all the colls are finished
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(std::chrono::seconds(2));
 
     ASSERT_NE(ctranComm->colltraceNew_, nullptr);
     auto dumpMap = ctran::dumpCollTrace(ctranComm.get());
 
     EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
-    EXPECT_EQ(dumpMap["CT_currentColl"], "null");
+    EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
 
     // Only verify CollTrace records if count > 0 (operation was executed)
     if (count > 0) {

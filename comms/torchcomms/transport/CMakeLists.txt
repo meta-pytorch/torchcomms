@@ -44,8 +44,13 @@ if(NOT PKG_RESULT EQUAL 0)
     message(FATAL_ERROR "pkg-config for libfolly failed")
 endif()
 separate_arguments(FOLLY_LDFLAGS NATIVE_COMMAND "${FOLLY_LDFLAGS_RAW}")
-# Remove any -l:libglog.a from FOLLY_LDFLAGS
-list(FILTER FOLLY_LDFLAGS EXCLUDE REGEX ".*libglog.*")
+# Remove glog/gflags/fmt from FOLLY_LDFLAGS — they're already linked
+# statically via libtorchcomms.so from the third-party cmake modules.
+# pkg-config may output -lglog, -l:libglog.a, or full paths like
+# /path/to/libglog.a — the simple substring match handles all forms.
+list(FILTER FOLLY_LDFLAGS EXCLUDE REGEX "glog")
+list(FILTER FOLLY_LDFLAGS EXCLUDE REGEX "gflags")
+list(FILTER FOLLY_LDFLAGS EXCLUDE REGEX "libfmt")
 
 add_library(torchcomms_transport MODULE
     ${TORCHCOMMS_TRANSPORT_SOURCES}
@@ -73,28 +78,24 @@ target_link_libraries(torchcomms_transport PRIVATE
     ${TORCH_PYTHON_LIB}
     ctran
     utils
-    ${FOLLY_LDFLAGS}
 )
-
 if(USE_SYSTEM_LIBS)
     target_link_libraries(torchcomms_transport PRIVATE
         "-lfolly"
-        "-lgflags"
-        "-lglog"
+        glog::glog gflags::gflags fmt::fmt
         "-lboost_program_options"
         "-lboost_filesystem"
         "-lboost_context"
-        "-lfmt"
+        ${FOLLY_LDFLAGS}
     )
 else()
     target_link_libraries(torchcomms_transport PRIVATE
         "-l:libfolly.a"
-        "-l:libgflags.a"
-        "-l:libglog.a"
+        glog::glog gflags::gflags fmt::fmt
         "-l:libboost_program_options.a"
         "-l:libboost_filesystem.a"
         "-l:libboost_context.a"
-        "-l:libfmt.a"
+        ${FOLLY_LDFLAGS}
     )
 endif()
 

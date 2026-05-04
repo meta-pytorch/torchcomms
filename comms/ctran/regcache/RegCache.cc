@@ -218,8 +218,16 @@ void ctran::RegCache::init() {
   // CtranIb::deregMem(). When IB is not configured, no IB registrations will
   // exist, so the lifetime dependency is not needed.
   if (globalBackends_[CommBackend::IB]) {
-    ibSingleton_ = CtranIbSingleton::getInstance();
-    CHECK_VALID_IB_SINGLETON(ibSingleton_);
+    try {
+      ibSingleton_ = CtranIbSingleton::getInstance();
+    } catch (const ctran::utils::Exception& e) {
+      CLOGF_SUBSYS(
+          WARN,
+          INIT,
+          "CTRAN-REGCACHE: IB backend not available, disabling. {}",
+          e.what());
+      globalBackends_[CommBackend::IB] = false;
+    }
   }
 
   if (NCCL_CTRAN_REGISTER == NCCL_CTRAN_REGISTER::async &&
@@ -303,6 +311,7 @@ commResult_t ctran::RegCache::globalRegister(
     const void* buf,
     size_t len,
     bool forceReg,
+    bool ncclManaged,
     int deviceId) {
   if (buf == nullptr || len == 0) {
     return commSuccess;
@@ -329,7 +338,7 @@ commResult_t ctran::RegCache::globalRegister(
       buf,
       len,
       cudaDev,
-      false /* ncclManaged */,
+      ncclManaged,
       0 /* commHash - not used for global registration */,
       segments,
       segHdls));
@@ -349,14 +358,17 @@ commResult_t ctran::RegCache::globalRegister(
         globalBackends_,
         didRegister,
         &regHdl,
-        false /* ncclManaged */));
+        ncclManaged));
   }
 
   return commSuccess;
 }
 
-commResult_t
-ctran::RegCache::globalDeregister(const void* buf, size_t len, int deviceId) {
+commResult_t ctran::RegCache::globalDeregister(
+    const void* buf,
+    size_t len,
+    bool skipRemRelease,
+    int deviceId) {
   if (buf == nullptr || len == 0) {
     return commSuccess;
   }
@@ -382,13 +394,13 @@ ctran::RegCache::globalDeregister(const void* buf, size_t len, int deviceId) {
   std::vector<ctran::regcache::RegElem*> regElems;
   FB_COMMCHECK(lookupSegmentsForBuffer(buf, len, cudaDev, segHdls, regElems));
 
-  // Call releaseFromAllClients on regElems before freeing segments.
-  // This iterates all registered IpcExportClients (mappers) and notifies
-  // remote peers to release their imported NVL memory.
-  auto ipcRegCache = ctran::IpcRegCache::getInstance();
-  for (auto& regElem : regElems) {
-    if (regElem->ipcRegElem != nullptr) {
-      FB_COMMCHECK(ipcRegCache->releaseFromAllClients(regElem));
+  if (!skipRemRelease) {
+    // Notify remote peers to release their imported NVL memory.
+    auto ipcRegCache = ctran::IpcRegCache::getInstance();
+    for (auto& regElem : regElems) {
+      if (regElem->ipcRegElem != nullptr) {
+        FB_COMMCHECK(ipcRegCache->releaseFromAllClients(regElem));
+      }
     }
   }
 
@@ -582,12 +594,41 @@ bool ctran::RegCache::isRegistered(const void* ptr, const size_t len) {
   return regHdl != nullptr;
 }
 
-void* ctran::RegCache::searchIbRegElem(const void* ptr, const size_t len) {
-  auto* regElem = searchRegElem(ptr, len);
-  if (regElem == nullptr || regElem->ibRegElem == nullptr) {
+void* ctran::RegCache::searchIbRegHandle(
+    const void* ptr,
+    const size_t len,
+    int deviceId) {
+  int cudaDev = 0;
+  if (deviceId != -1) {
+    cudaDev = deviceId;
+  } else {
+    // Same as globalRegister, auto-detect cudaDev from buffer pointer.
+    commResult_t devResult = getCudaDevFromPtr(ptr, cudaDev);
+    if (devResult != commSuccess) {
+      // Fall back to current CUDA device for CPU memory
+      FB_CUDACHECK_RETURN(cudaGetDevice(&cudaDev), nullptr);
+    }
+  }
+
+  ctran::regcache::RegElem* regHdl = nullptr;
+  bool didRegister = false;
+  CommLogData logMetaData{};
+  logMetaData.commDesc = "global";
+
+  auto res = regRange(
+      ptr,
+      len,
+      cudaDev,
+      "searchIbRegHandle",
+      logMetaData,
+      globalBackends_,
+      didRegister,
+      &regHdl);
+
+  if (res != commSuccess || regHdl == nullptr || regHdl->ibRegElem == nullptr) {
     return nullptr;
   }
-  return regElem->ibRegElem;
+  return regHdl->ibRegElem;
 }
 
 std::vector<void*> ctran::RegCache::getSegments() const {

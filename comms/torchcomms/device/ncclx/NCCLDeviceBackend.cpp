@@ -77,23 +77,32 @@ NCCLDeviceBackend::Ptr NCCLDeviceBackend::create_device_window(
     signal_resource_reqs.outGinCounterStart = nullptr;
   }
 
-  // Set up ncclDevCommRequirements with GIN enabled using designated
-  // initializers
-  ncclDevCommRequirements reqs = {
-      .resourceRequirementsList =
-          (signal_buffer_size > 0) ? &signal_resource_reqs : nullptr,
-      .teamRequirementsList = nullptr,
-      .lsaMultimem = false,
-      .barrierCount = config.barrier_count,
-      .lsaBarrierCount = config.barrier_count,
-      .railGinBarrierCount = config.barrier_count,
-      .lsaLLA2ABlockCount = 0,
-      .lsaLLA2ASlotCount = 0,
-      .ginForceEnable = true,
-      .ginContextCount = 1,
-      .ginSignalCount = 0,
-      .ginCounterCount = config.counter_count,
-  };
+  // Initialize ncclDevCommRequirements. NCCLx 2.29+ prepends size/magic/version
+  // fields and validates them in ncclDevCommCreate, so we must use the
+  // NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER macro when available.
+#ifdef NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER
+  ncclDevCommRequirements reqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
+#else
+  ncclDevCommRequirements reqs = {};
+#endif
+  reqs.resourceRequirementsList =
+      (signal_buffer_size > 0) ? &signal_resource_reqs : nullptr;
+  reqs.teamRequirementsList = nullptr;
+
+  // Mirror NCCL's internal gating (sym_kernels.cc): only request NVLS
+  // multicast when the LSA team has more than 2 members.  Without this
+  // check ncclDevCommCreate returns ncclInvalidArgument on topologies
+  // where multicast is unavailable (e.g. 1x2 configurations).
+  reqs.lsaMultimem = nccl_api->teamLsa(nccl_comm).nRanks > 2;
+  reqs.barrierCount = config.barrier_count;
+  reqs.lsaBarrierCount = config.barrier_count;
+  reqs.railGinBarrierCount = config.barrier_count;
+  reqs.lsaLLA2ABlockCount = 0;
+  reqs.lsaLLA2ASlotCount = 0;
+  reqs.ginForceEnable = true;
+  reqs.ginContextCount = 1;
+  reqs.ginSignalCount = 0;
+  reqs.ginCounterCount = config.counter_count;
 
   // Create NCCL device communicator with GIN state
   ncclDevComm nccl_dev_comm{};
@@ -209,12 +218,12 @@ RegisteredBuffer NCCLDeviceBackend::register_local_buffer(
       << "[NCCLDeviceBackend]: Local buffer registration failed";
 
   // GIN put uses backend_window (ncclWindow_t) for RDMA/NVLink transfers.
-  // lkey is unused by GIN — only the Pipes (IBGDA) backend needs it.
+  // lkeys are unused by GIN — only the Pipes (IBGDA) backend needs them.
+  // Default-constructed RegisteredBuffer zero-initializes the lkeys array.
   RegisteredBuffer buf;
   buf.base_ptr = ptr;
   buf.size = size;
   buf.backend_window = static_cast<void*>(local_win);
-  buf.lkey = 0;
   return buf;
 }
 

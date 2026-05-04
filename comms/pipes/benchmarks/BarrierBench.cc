@@ -25,12 +25,12 @@ namespace comms::pipes::benchmark {
 /**
  * Benchmark P2P barrier synchronization using P2pNvlTransportDevice
  *
- * GPU 0 and GPU 1 perform barrier_sync_threadgroup operations concurrently.
- * Each call to barrier_sync_threadgroup:
+ * GPU 0 and GPU 1 perform barrier_sync operations concurrently.
+ * Each call to barrier_sync:
  *   - Arrives at peer's barrier via NVLink remote write
  *   - Waits on local barrier until peer arrives
  *
- * This measures the latency of the barrier_sync_threadgroup API over NVLink.
+ * This measures the latency of the barrier_sync API over NVLink.
  */
 static void barrierBench(
     uint32_t iters,

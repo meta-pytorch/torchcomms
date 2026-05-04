@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<title> OpenMP Validation & Verification Results Visualization</title>
+<meta charset="utf-8">
+<meta name="viewport" content"width=device-width, initial-scale=1">
+<link rel="shortcut icon" href="./img/favicon2.png" type="image/x-icon" />
+<!-- CSS Related stuff -->
+<link href="css/third_party/bootstrap.min.css" rel="stylesheet">
+<link href="css/results.css" rel="stylesheet">
+
+
+<!-- Angular related stuff -->
+<script src="js/third_party/jquery-2.x.min.js"></script>
+<script src="js/third_party/angular.min.js"></script>
+<script src="js/third_party/angular-animate.min.js"></script>
+<script src="js/third_party/angular-touch.min.js"></script>
+<script src="js/third_party/angular-sanitize.min.js"></script>
+<script src="js/third_party/angular-ui.min.js"></script>
+<script src="js/third_party/ui-bootstrap-tpls.min.js"></script>
+<script src="js/third_party/angular-route.min.js"></script>
+<script src="js/third_party/ansi2html.js"></script>
+
+<!-- Other libraries -->
+<script src="js/third_party/bootstrap.min.js"></script>
+<script src="js/third_party/moment.min.js"></script>
+
+<!-- Results file-->
+<script type="text/javascript" src="results.json"></script>
+
+<!-- Our library-->
+<script src="js/results.js"></script>
+
+<style>
+.container-fluid {
+  
+  overflow-y: auto;
+}
+</style>
+</head>
+
+<body>
+<div class="container-fluid" ng-app="ompvvSollve" ng-controller="ompvvSollveController">	
+	<div class="row content">
+		<div class="col-sm-12 sidenav">
+			<h4>OpenMP V&V Results</h4>
+			<div ng-model="repoUuid"></div>
+			<div class="alert alert-info alert-sm notificationMessage" ng-cloak="true" ng-show="displayMessage">You can click on each result to obtain more information</div>
+			<!-- File not found error -->
+			<div class="alert alert-danger alert-sm notificationMessage" ng-cloak="true" ng-if="errorMessage">
+				{{error}}
+			</div>
+
+			<!-- <ul class="nav nav-pills nav-stacked">
+				<li class="active"><a href="#">Results table</a></li>
+			</ul><br> -->
+			<ul class="list-group" style="width: 40%" ng-show="!loadingResults && ! errorMessage">
+				<li class="list-group-item list-group-item-info">Commits: 
+					<span ng-repeat="(commit, attr) in gitCommits"> 
+						<a target="_blank" href="{{SOLLVEgithubLink+'/tree/'+commit}}" ng-if="attr.isAccessible" >{{ commit }}{{$last ? "" : ","}}</a>
+						<span ng-if="!attr.isAccessible" style="color:red;"> {{commit}}{{$last ? "" : ","}}</span> </span>
+				</li>
+				<li class="list-group-item list-group-item-info">Filter results</li>
+				<li class="list-group-item">
+					<input type="text" class="form-control" ng-model="filters.searchFilter" placeholder="Search Results..">
+				</li>
+				<li class="list-group-item">
+					<label for="filterCompilers">Compilers</label>
+					<select multiple id="filterCompilers" style="margin-bottom: 0px;" class="form-control" ng-model="filters.compilerFilter" ng-options="compiler for compiler in filters.compilerOptions">
+						<option value="" selected="selected"></option>
+					</select>
+				</li>
+				<li class="list-group-item">
+					<label for="filterSystems">Systems</label>					
+					<select multiple id="filterSystems" style="margin-bottom: 0px;" class="form-control" ng-model="filters.systemFilter" ng-options="system for system in filters.systemOptions">
+						<option value="" selected="selected"></option>
+					</select>
+				</li>
+				<li class="list-group-item">
+					<span class="label label-primary">Compiler results</span>
+					<label class="radio-inline "> <input type="radio" ng-model="filters.compilerResultFilter" value="Both"> Both </label>
+					<label class="radio-inline "> <input type="radio" ng-model="filters.compilerResultFilter" value="FAIL"> FAIL </label>
+					<label class="radio-inline "> <input type="radio" ng-model="filters.compilerResultFilter" value="PASS"> PASS </label>
+				</li>
+				<li class="list-group-item">
+					<span class="label label-primary">Test run results</span>
+					<label class="radio-inline "> <input type="radio" ng-model="filters.runResultFilter" value="Both"> Both </label>
+					<label class="radio-inline "> <input type="radio" ng-model="filters.runResultFilter" value="FAIL"> FAIL </label>
+					<label class="radio-inline "> <input type="radio" ng-model="filters.runResultFilter" value="PASS"> PASS </label>
+				</li>
+			</ul>
+		</div>
+		<div class="col-sm-12">
+      			<hr>
+			<div class="row resultsContainer">
+				<!-- Loading bar-->
+				<div class="col-xs-3 col-xs-offset-5" ng-if="loadingResults">
+					<div id="loadbar" style="display: block;">
+						<div class="blockG" id="rotateG_01"></div>
+						<div class="blockG" id="rotateG_02"></div>
+						<div class="blockG" id="rotateG_03"></div>
+						<div class="blockG" id="rotateG_04"></div>
+						<div class="blockG" id="rotateG_05"></div>
+						<div class="blockG" id="rotateG_06"></div>
+						<div class="blockG" id="rotateG_07"></div>
+						<div class="blockG" id="rotateG_08"></div>
+					</div>
+				</div>
+				<div class="col text-center">
+				</div>
+				<div class="col">
+					<uib-tabset active="active">
+						<uib-tab index="0" heading="Results" disable="loadingResults">
+							<!-- Results table -->
+							<table class="table table-striped" ng-cloak="true" ng-if="!errorMessage && !loadingResults">
+								<thead>
+									<tr>
+										<th> # </th>
+										<th scope="col" ng-repeat="header in colsToDisplay">
+											<a href="#" ng-click="order.orderByField=header; order.reverseSort = !order.reverseSort;">
+												{{header}} <i class="glyphicon glyphicon-arrow-up" ng-show="order.reverseSort"></i><i class="glyphicon glyphicon-arrow-down" ng-show="!order.reverseSort"></i>
+											</a>
+										</th>
+									</tr>
+								</thead>
+								<tbody>
+								<tr ng-repeat="result in tableContent | applyResultsFilter:filters | orderBy:predicate:order.reverseSort" ng-click="openResultModal(result)">
+									<td> {{$index + 1}}
+										<span ng-click="$event.stopPropagation();" ng-if="result['Test gitCommit'] != '' && gitCommits[result['Test gitCommit']].isAccessible" style="font-size:1em">
+											<a ng-if="gitCommits[result['Test gitCommit']]" target="_blank" href="{{SOLLVEgithubLink+'/blob/'+result['Test gitCommit']+'/'+result['Test path']}}">
+											<span class="glyphicon glyphicon-file"> </span> </a>  
+										</span>
+									</td>
+									<td scope="col" ng-repeat="header in colsToDisplay" ng-class="{'passTest': testPassed(result[header]), 'failTest': testFailed(result[header])}">
+										{{result[header]}} 
+									</td>
+								</tr>
+								</tbody>
+							</table>
+						</uib-tab>
+						<uib-tab index="1" heading="Summary table" disable="loadingResults">
+							<!-- Summary table -->
+							<table class="table table-striped" ng-cloak="true" ng-if="!errorMessage && !loadingResults">
+								<thead>
+									<!-- System name row -->
+									<tr>
+										<th rowspan="2"> # </th> 
+										<th rowspan="2"> testName </th> 
+										<th style="text-align: center;" scope="col" ng-repeat="system in getListOfSystems()" colspan="{{compilerBySystems.get(system).length}}">
+												{{system}}
+										</th>
+									</tr>
+									<tr>
+											<th scope="col" ng-repeat="compiler in getListOfCompilersSystems() track by $index">
+												{{compiler}}
+											</th>
+										</tr>
+								</thead>
+								<tbody>
+									<tr ng-repeat="testName in getListOfTests()">
+									<td> {{$index + 1}} </td>
+									<td> {{testName}} </td>
+									<td style="text-align: center;" nowrap scope="col" ng-repeat="value in getResultsSystemCompiler(testName) track by $index" ng-click="value[0] != undefined && openResultModal(tableContent[value[1]])"ng-class="{'passTest': testPassed(value[0]), 'failTest': testFailed(value[0])}">
+										{{ value[0] || "-"}} 
+									</td>
+								</tr>
+								</tbody>
+							</table>
+						</uib-tab>
+					</uib-tabset>
+						</div>
+					</div>
+
+				</div>
+			</div>
+</div>
+</div>
+</body>
+</html>

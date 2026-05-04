@@ -422,9 +422,11 @@ class FlightRecorderHook {
       const std::string& comm_name,
       size_t pg_id,
       const std::string& pg_desc,
-      const TorchComm::PreHookArgs& args);
+      OpName name,
+      size_t op_id,
+      const PreHookArgs& args);
 
-  void onPostHook(const TorchComm::PostHookArgs& args);
+  void onPostHook(size_t op_id, const PostHookArgs& args);
 
   FlightRecorder* recorder_;
   bool owns_recorder_{false}; // True when using isolated instance

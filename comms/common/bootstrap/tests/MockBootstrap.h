@@ -52,6 +52,7 @@ class MockBootstrap : public meta::comms::IBootstrap {
       broadcast,
       (void* buf, int len, int root, int rank, int nranks),
       (override));
+  MOCK_METHOD(std::unique_ptr<IBootstrap>, duplicate, (), (override));
 };
 
 } // namespace meta::comms::testing

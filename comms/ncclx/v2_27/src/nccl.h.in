@@ -47,6 +47,7 @@ extern "C" {
 #define NCCL_COMM_GET_UNIQUE_HASH
 #define NCCL_COLLTRACE_CUDA_GRAPH_COMPATIBLE
 #define NCCLX_CONFIG_SUPPORTED
+#define NCCL_REDUCE_SCATTER_QUANTIZE_SUPPORTED
 
 /* Opaque handle to communicator */
 typedef struct ncclComm* ncclComm_t;
@@ -551,6 +552,38 @@ ncclResult_t pncclReduceScatter(const void* sendbuff, void* recvbuff,
     cudaStream_t stream);
 
 /*
+ * Reduce-Scatter with stochastic rounding.
+ *
+ * See ncclReduceScatter for how reduce scatter works in general. Data would
+ * be rounded using stochastic rounding to BF16, transported to a peer, reduce
+ * with the peer's existing data in FP32, repeat, until the algorithm finishes
+ * execution.
+ *
+ * More generically, the flow is:
+ * I = InputType, T = Transport Type
+ * ----> I (---> T ---------> T -----> FP32)repeat -----> I
+ * Input   SR     Transport    Reduce            SR? + Output
+ *
+ * Notes:
+ * Due to how PAT algorithm works, We will do multiple rounds of rounding. The
+ * random number used for the rounding of each element would be
+ * Philox(seed, element_id + num_elements * current_round_number), so we will
+ * not be reusing the same random numbers.
+ *
+ * Limitations:
+ * inputType: must be FP32, this will be the type of input/output
+ * transportType: must be BF16, provided to make extension easier.
+ * op: Only supports ncclSum and ncclAvg operations.
+ * seedPtr: must be a GPU MEMORY pointer. The pointer must outlive the collective.
+ * algo: Since Ring + SR doesn't make sense, we only support PAT algorithm.
+ *       If PAT is disabled, you will get an error during scheduling the
+ *       collective.
+ */
+ncclResult_t  ncclReduceScatterQuantize(const void* sendbuff, void* recvbuff,
+    size_t recvcount, ncclDataType_t inputType, ncclDataType_t transportType,
+    ncclRedOp_t op, uint64_t* seedPtr, ncclComm_t comm, cudaStream_t stream);
+
+/*
  * All-Gather
  *
  * Each device gathers sendcount values from other GPUs into recvbuff,
@@ -782,10 +815,41 @@ ncclResult_t ncclGetMultiPeerDeviceHandle(
     int* outNumIbPeers);
 
 /*
- * Register a local buffer for use as source in device-side RDMA put operations.
- * NON-COLLECTIVE — purely local memory registration (lkey only, no rkey exchange).
+ * NCCLX_MAX_NICS_PER_GPU — maximum number of IBGDA NICs per GPU exposed to
+ * ncclWinLocalRegisterBuffer. Must match comms::pipes::kMaxNicsPerGpu and
+ * torch::comms::kMaxNicsPerGpu (verified by static_assert in
+ * PipesDeviceBackend.cpp). Increase only if a future platform supports
+ * > 2 NICs per GPU; update all three constants in lockstep.
+ */
+#define NCCLX_MAX_NICS_PER_GPU 2
+
+/*
+ * Per-NIC lkey result for ncclWinLocalRegisterBuffer.
  *
- * The returned lkey is in network byte order, suitable for IBGDA WQE construction.
+ *   values[0..size) — per-NIC RDMA local keys in network byte order.
+ *   size            — actual NIC count populated [0, NCCLX_MAX_NICS_PER_GPU].
+ *                     0 indicates no IBGDA peers (NVL-only topology); the
+ *                     caller must NOT index into values[] in that case.
+ *
+ * The device-side put selects values[nic] based on the slot it dispatches
+ * on, so consumers MUST forward all `size` per-NIC keys to
+ * LocalBufferRegistration. Populating only values[0] would corrupt WQEs
+ * for any slot landing on NIC[1..size-1] on multi-NIC hardware
+ * (GB200/GB300).
+ */
+typedef struct {
+  uint32_t values[NCCLX_MAX_NICS_PER_GPU];
+  int size;
+} ncclLkeyPerDevice;
+
+/*
+ * Register a local buffer for use as source in device-side RDMA put operations.
+ * NON-COLLECTIVE — purely local memory registration (per-NIC lkeys only, no
+ * rkey exchange).
+ *
+ * Fills *outLkeys with per-NIC lkeys + populated NIC count. See
+ * ncclLkeyPerDevice for layout.
+ *
  * Deregister with ncclWinLocalDeregisterBuffer() when no longer needed.
  *
  * Requires NCCL_CTRAN_USE_PIPES=1 during communicator init.
@@ -795,7 +859,7 @@ ncclResult_t ncclWinLocalRegisterBuffer(
     ncclComm_t comm,
     void* ptr,
     size_t size,
-    uint32_t* outLkey);
+    ncclLkeyPerDevice* outLkeys);
 
 /*
  * Deregister a buffer previously registered with ncclWinLocalRegisterBuffer().
