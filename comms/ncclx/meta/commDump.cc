@@ -95,7 +95,7 @@ static void dumpCommInfo(
   map["nRanks"] = std::to_string(comm->nRanks);
   map["localRanks"] = std::to_string(comm->localRanks);
   map["nNodes"] = std::to_string(comm->nNodes);
-  map["commDesc"] = NCCLX_CONFIG_FIELD(comm->config, commDesc);
+  map["commDesc"] = toQuotedString(NCCLX_CONFIG_FIELD(comm->config, commDesc));
 }
 
 static void dumpCommInfo(
