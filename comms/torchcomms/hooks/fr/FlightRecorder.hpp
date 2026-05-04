@@ -340,7 +340,8 @@ class FlightRecorder {
  * It uses the pre/post hook mechanism from TorchComm to record operations
  * and their states into the FlightRecorder.
  */
-class FlightRecorderHook {
+class FlightRecorderHook
+    : public std::enable_shared_from_this<FlightRecorderHook> {
  public:
   /**
    * Create a FlightRecorderHook with the specified buffer size.
@@ -364,11 +365,6 @@ class FlightRecorderHook {
    * @param comm The communicator to register with.
    */
   void registerWithComm(std::shared_ptr<TorchComm> comm);
-
-  /**
-   * Unregister this hook from all communicators.
-   */
-  void unregister();
 
   /**
    * Dump all entries as a JSON string in the OSS FlightRecorder format.
@@ -431,25 +427,13 @@ class FlightRecorderHook {
   FlightRecorder* recorder_;
   bool owns_recorder_{false}; // True when using isolated instance
 
-  // Track registered communicators with their handles for unregistration
   struct CommRegistration {
     std::weak_ptr<TorchComm> comm;
     size_t pg_id;
     std::string pg_desc;
-    std::unique_ptr<RemovableHandle> pre_hook_handle;
-    std::unique_ptr<RemovableHandle> post_hook_handle;
 
-    CommRegistration(
-        std::weak_ptr<TorchComm> c,
-        size_t id,
-        std::string desc,
-        std::unique_ptr<RemovableHandle> pre,
-        std::unique_ptr<RemovableHandle> post)
-        : comm(std::move(c)),
-          pg_id(id),
-          pg_desc(std::move(desc)),
-          pre_hook_handle(std::move(pre)),
-          post_hook_handle(std::move(post)) {}
+    CommRegistration(std::weak_ptr<TorchComm> c, size_t id, std::string desc)
+        : comm(std::move(c)), pg_id(id), pg_desc(std::move(desc)) {}
   };
   std::vector<CommRegistration> registrations_;
   bool enabled_{false};

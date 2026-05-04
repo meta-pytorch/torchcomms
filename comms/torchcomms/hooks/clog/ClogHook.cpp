@@ -26,7 +26,8 @@ bool getAsyncOp(const PreHookArgs& args) {
         using T = std::decay_t<decltype(a)>;
         if constexpr (
             std::is_same_v<T, SplitPreHookArgs> ||
-            std::is_same_v<T, NewWindowPreHookArgs>) {
+            std::is_same_v<T, NewWindowPreHookArgs> ||
+            std::is_same_v<T, FinalizePreHookArgs>) {
           return false;
         } else {
           return a.async_op;
@@ -62,9 +63,7 @@ ClogHook::ClogHook(
       fmt::format("V|{}|base_timestamp={:.3f}", kLogVersion, base_ts_));
 }
 
-ClogHook::~ClogHook() {
-  unregister();
-}
+ClogHook::~ClogHook() = default;
 
 // -- Registration --
 
@@ -88,52 +87,32 @@ void ClogHook::registerHooks(std::shared_ptr<TorchComm> comm) {
   }
 
   std::string comm_name(comm->getCommName());
+  auto self = shared_from_this();
 
   int device_index = comm->getDevice().index();
   auto pre_hook_handle = comm->registerPreHook(
-      [this, comm_name, device_index](
+      [self, comm_name, device_index](
           OpName name, size_t op_id, const PreHookArgs& args) {
-        this->onPreHook(comm_name, device_index, name, op_id, args);
+        self->onPreHook(comm_name, device_index, name, op_id, args);
       });
 
   auto post_hook_handle =
-      comm->registerPostHook([this](size_t op_id, const PostHookArgs& args) {
-        this->onPostHook(op_id, args);
+      comm->registerPostHook([self](size_t op_id, const PostHookArgs& args) {
+        self->onPostHook(op_id, args);
       });
 
   auto graph_replay_hook_handle =
-      comm->registerGraphReplayHook([this, comm_name](
+      comm->registerGraphReplayHook([self, comm_name](
                                         uint64_t graph_id,
                                         uint64_t replay_id,
                                         void* stream,
                                         size_t collective_index,
                                         std::string_view event) {
-        this->onGraphReplayEvent(
+        self->onGraphReplayEvent(
             comm_name, graph_id, replay_id, stream, collective_index, event);
       });
 
-  registrations_.push_back(
-      CommRegistration{
-          .comm = comm,
-          .pre_hook_handle = std::move(pre_hook_handle),
-          .post_hook_handle = std::move(post_hook_handle),
-          .graph_replay_hook_handle = std::move(graph_replay_hook_handle),
-      });
-}
-
-void ClogHook::unregister() {
-  for (auto& reg : registrations_) {
-    if (reg.pre_hook_handle) {
-      reg.pre_hook_handle->remove();
-    }
-    if (reg.post_hook_handle) {
-      reg.post_hook_handle->remove();
-    }
-    if (reg.graph_replay_hook_handle) {
-      reg.graph_replay_hook_handle->remove();
-    }
-  }
-  registrations_.clear();
+  registrations_.push_back(CommRegistration{.comm = comm});
 }
 
 // -- Formatting helpers (static, identical to original Clog) --
@@ -620,6 +599,8 @@ std::string ClogHook::buildSignature(OpName name, const PreHookArgs& args)
           return std::string();
         } else if constexpr (std::is_same_v<T, NewWindowPreHookArgs>) {
           return std::string();
+        } else if constexpr (std::is_same_v<T, FinalizePreHookArgs>) {
+          return std::string();
         } else {
           return std::string();
         }
@@ -653,8 +634,9 @@ void ClogHook::onPreHook(
     return;
   }
 
-  // Skip new_window (no logging needed)
-  if (std::get_if<NewWindowPreHookArgs>(&args)) {
+  // Skip new_window and finalize (no logging needed)
+  if (std::get_if<NewWindowPreHookArgs>(&args) ||
+      std::get_if<FinalizePreHookArgs>(&args)) {
     return;
   }
 
@@ -685,7 +667,8 @@ void ClogHook::onPostHook(size_t op_id, const PostHookArgs& args) {
   }
 
   // TODO: add logging for window operations.
-  if (std::get_if<NewWindowPostHookArgs>(&args)) {
+  if (std::get_if<NewWindowPostHookArgs>(&args) ||
+      std::get_if<FinalizePostHookArgs>(&args)) {
     return;
   }
 
