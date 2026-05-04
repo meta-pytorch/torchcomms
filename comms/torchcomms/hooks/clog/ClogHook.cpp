@@ -96,9 +96,9 @@ void ClogHook::registerHooks(std::shared_ptr<TorchComm> comm) {
         self->onPreHook(comm_name, device_index, name, op_id, args);
       });
 
-  auto post_hook_handle =
-      comm->registerPostHook([self](size_t op_id, const PostHookArgs& args) {
-        self->onPostHook(op_id, args);
+  auto post_hook_handle = comm->registerPostHook(
+      [self, comm_name](size_t op_id, const PostHookArgs& args) {
+        self->onPostHook(comm_name, op_id, args);
       });
 
   auto graph_replay_hook_handle =
@@ -113,6 +113,7 @@ void ClogHook::registerHooks(std::shared_ptr<TorchComm> comm) {
       });
 
   registrations_.push_back(CommRegistration{.comm = comm});
+  active_comm_count_.fetch_add(1, std::memory_order_relaxed);
 }
 
 // -- Formatting helpers (static, identical to original Clog) --
@@ -311,7 +312,8 @@ WorkId ClogHook::logCollective(
 
   uint64_t work_id = next_work_id_.fetch_add(1, std::memory_order_relaxed);
   if (log_lifecycle_) {
-    work_corr_map_.insert(work_id, WorkInfo{corr_id, graph_id});
+    work_corr_map_.insert(
+        work_id, WorkInfo{corr_id, graph_id, std::string(comm_name)});
     work_events_map_.insert(
         work_id,
         async_op ? std::vector<std::string>{"S", "E", "W"}
@@ -657,7 +659,10 @@ void ClogHook::onPreHook(
 
 // -- Post-hook --
 
-void ClogHook::onPostHook(size_t op_id, const PostHookArgs& args) {
+void ClogHook::onPostHook(
+    const std::string& comm_name,
+    size_t op_id,
+    const PostHookArgs& args) {
   // For split, register the new communicator.
   if (auto* split = std::get_if<SplitPostHookArgs>(&args)) {
     if (auto new_comm = split->new_comm.lock()) {
@@ -667,8 +672,36 @@ void ClogHook::onPostHook(size_t op_id, const PostHookArgs& args) {
   }
 
   // TODO: add logging for window operations.
-  if (std::get_if<NewWindowPostHookArgs>(&args) ||
-      std::get_if<FinalizePostHookArgs>(&args)) {
+  if (std::get_if<NewWindowPostHookArgs>(&args)) {
+    return;
+  }
+
+  if (std::get_if<FinalizePostHookArgs>(&args)) {
+    auto remaining =
+        active_comm_count_.fetch_sub(1, std::memory_order_acq_rel) - 1;
+    if (remaining == 0) {
+      work_events_map_.forEach([&](uint64_t work_id,
+                                   const auto& pending_events) {
+        auto work_info = work_corr_map_.find(work_id);
+        if (!work_info) {
+          return;
+        }
+        std::string events_str;
+        for (size_t i = 0; i < pending_events.size(); ++i) {
+          if (i > 0) {
+            events_str += ',';
+          }
+          events_str += pending_events[i];
+        }
+        log_file_.writeLine(
+            fmt::format(
+                "WARN|comm={}|leaked work_id={}|corr_id={}|pending_events={}",
+                work_info->comm_name,
+                work_id,
+                work_info->corr_id,
+                events_str));
+      });
+    }
     return;
   }
 
