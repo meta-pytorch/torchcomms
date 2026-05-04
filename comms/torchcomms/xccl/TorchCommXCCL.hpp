@@ -280,7 +280,6 @@ class TorchCommXCCL : public TorchCommBackend,
   void checkWorkQueue();
   void enqueueWork(c10::intrusive_ptr<TorchWorkXCCL> work, xpuStream_t stream);
   xpuStream_t getOperationStream(bool async_op);
-  void ensureTensorContiguous(const at::Tensor& tensor);
 
   // Member variables
   onecclComm_t xccl_comm_{};

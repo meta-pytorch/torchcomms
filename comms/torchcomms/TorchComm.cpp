@@ -3,11 +3,62 @@
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/TorchCommFactory.hpp"
 
+#include <algorithm>
 #include <atomic>
+#include <set>
 
 namespace torch::comms {
 
 namespace {
+
+void ensureTensorContiguous(const at::Tensor& tensor) {
+  TORCH_CHECK(
+      tensor.is_contiguous(),
+      "Tensor must be contiguous for collective operations");
+}
+
+void ensureTensorsContiguous(const std::vector<at::Tensor>& tensors) {
+  for (const auto& t : tensors) {
+    ensureTensorContiguous(t);
+  }
+}
+
+void ensureTensorsSameNumel(
+    const std::vector<at::Tensor>& tensors,
+    const at::Tensor& reference,
+    const char* message) {
+  for (const auto& t : tensors) {
+    TORCH_CHECK(t.numel() == reference.numel(), message);
+  }
+}
+
+void ensureTensorsSameDtype(
+    const std::vector<at::Tensor>& tensors,
+    const at::Tensor& reference,
+    const char* message) {
+  for (const auto& t : tensors) {
+    TORCH_CHECK(t.scalar_type() == reference.scalar_type(), message);
+  }
+}
+
+void ensureTensorsSameDtype(
+    const at::Tensor& a,
+    const at::Tensor& b,
+    const char* message) {
+  TORCH_CHECK(a.scalar_type() == b.scalar_type(), message);
+}
+
+void ensureTensorsSameDtype(
+    const std::vector<at::Tensor>& a,
+    const std::vector<at::Tensor>& b,
+    const char* message) {
+  TORCH_CHECK(
+      a.size() == b.size(),
+      "Tensor lists must have the same size for dtype comparison");
+  for (size_t i = 0; i < a.size(); ++i) {
+    TORCH_CHECK(a[i].scalar_type() == b[i].scalar_type(), message);
+  }
+}
 
 // Singleton to generate globally unique increasing op_ids across all TorchComm
 // instances. This ensures that when multiple communicators share the same
@@ -124,6 +175,8 @@ c10::intrusive_ptr<TorchWork> TorchComm::send(
     bool async_op,
     const SendOptions& options) {
   validateRank(dst, "dst");
+  ensureTensorContiguous(tensor);
+
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(OpName::send, op_id, SendPreHookArgs(tensor, dst, async_op));
 
@@ -140,6 +193,8 @@ c10::intrusive_ptr<TorchWork> TorchComm::recv(
     bool async_op,
     const RecvOptions& options) {
   validateRank(src, "src");
+  ensureTensorContiguous(tensor);
+
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(OpName::recv, op_id, RecvPreHookArgs(tensor, src, async_op));
 
@@ -157,6 +212,8 @@ c10::intrusive_ptr<TorchWork> TorchComm::broadcast(
     bool async_op,
     const BroadcastOptions& options) {
   validateRank(root, "root");
+  ensureTensorContiguous(tensor);
+
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(
       OpName::broadcast, op_id, BroadcastPreHookArgs(tensor, root, async_op));
@@ -174,6 +231,8 @@ c10::intrusive_ptr<TorchWork> TorchComm::all_reduce(
     const ReduceOp& op,
     bool async_op,
     const AllReduceOptions& options) {
+  ensureTensorContiguous(tensor);
+
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(
       OpName::all_reduce, op_id, AllReducePreHookArgs(tensor, op, async_op));
@@ -193,6 +252,8 @@ c10::intrusive_ptr<TorchWork> TorchComm::reduce(
     bool async_op,
     const ReduceOptions& options) {
   validateRank(root, "root");
+  ensureTensorContiguous(tensor);
+
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(OpName::reduce, op_id, ReducePreHookArgs(tensor, root, op, async_op));
 
@@ -208,6 +269,20 @@ c10::intrusive_ptr<TorchWork> TorchComm::all_gather(
     const at::Tensor& tensor,
     bool async_op,
     const AllGatherOptions& options) {
+  ensureTensorContiguous(tensor);
+  ensureTensorsContiguous(tensor_list);
+  TORCH_CHECK(
+      tensor_list.size() == static_cast<size_t>(getSize()),
+      "tensor_list size must equal comm_size for all_gather");
+  ensureTensorsSameNumel(
+      tensor_list,
+      tensor,
+      "All tensors in tensor_list must have same size as input tensor for all_gather");
+  ensureTensorsSameDtype(
+      tensor_list,
+      tensor,
+      "All tensors in tensor_list must have same dtype as input tensor for all_gather");
+
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(
       OpName::all_gather,
@@ -227,6 +302,19 @@ c10::intrusive_ptr<TorchWork> TorchComm::all_gather_v(
     const at::Tensor& tensor,
     bool async_op,
     const AllGatherOptions& options) {
+  ensureTensorContiguous(tensor);
+  ensureTensorsContiguous(tensor_list);
+  TORCH_CHECK(
+      tensor_list.size() == static_cast<size_t>(getSize()),
+      "tensor_list size must equal comm_size for all_gather_v");
+  TORCH_CHECK(
+      tensor_list[getRank()].numel() == tensor.numel(),
+      "Output tensor size must equal input tensor size for all_gather_v");
+  ensureTensorsSameDtype(
+      tensor_list,
+      tensor,
+      "All tensors in tensor_list must have same dtype as input tensor for all_gather_v");
+
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(
       OpName::all_gather_v,
@@ -246,6 +334,16 @@ c10::intrusive_ptr<TorchWork> TorchComm::all_gather_single(
     const at::Tensor& input,
     bool async_op,
     const AllGatherSingleOptions& options) {
+  ensureTensorContiguous(input);
+  ensureTensorContiguous(output);
+  TORCH_CHECK(
+      output.numel() == input.numel() * getSize(),
+      "Output tensor size must be input_size * comm_size for all_gather_single");
+  ensureTensorsSameDtype(
+      input,
+      output,
+      "Input and output tensors must have same dtype for all_gather_single");
+
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(
       OpName::all_gather_single,
@@ -267,6 +365,20 @@ c10::intrusive_ptr<TorchWork> TorchComm::reduce_scatter(
     const ReduceOp& op,
     bool async_op,
     const ReduceScatterOptions& options) {
+  ensureTensorContiguous(output);
+  ensureTensorsContiguous(input_list);
+  TORCH_CHECK(
+      input_list.size() == static_cast<size_t>(getSize()),
+      "input_list size must equal comm_size for reduce_scatter");
+  ensureTensorsSameNumel(
+      input_list,
+      output,
+      "All input tensors must have same size as output tensor for reduce_scatter");
+  ensureTensorsSameDtype(
+      input_list,
+      output,
+      "All input tensors must have same dtype as output tensor for reduce_scatter");
+
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(
       OpName::reduce_scatter,
@@ -288,6 +400,19 @@ c10::intrusive_ptr<TorchWork> TorchComm::reduce_scatter_v(
     const ReduceOp& op,
     bool async_op,
     const ReduceScatterOptions& options) {
+  ensureTensorContiguous(output);
+  ensureTensorsContiguous(input_list);
+  TORCH_CHECK(
+      input_list.size() == static_cast<size_t>(getSize()),
+      "input_list size must equal comm_size for reduce_scatter_v");
+  TORCH_CHECK(
+      input_list[getRank()].numel() == output.numel(),
+      "Output tensor size must equal input tensor size for reduce_scatter_v");
+  ensureTensorsSameDtype(
+      input_list,
+      output,
+      "All input tensors must have same dtype as output tensor for reduce_scatter_v");
+
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(
       OpName::reduce_scatter_v,
@@ -310,6 +435,16 @@ c10::intrusive_ptr<TorchWork> TorchComm::reduce_scatter_single(
     const ReduceOp& op,
     bool async_op,
     const ReduceScatterSingleOptions& options) {
+  ensureTensorContiguous(input);
+  ensureTensorContiguous(output);
+  TORCH_CHECK(
+      input.numel() == output.numel() * getSize(),
+      "Input tensor size must be output_size * comm_size for reduce_scatter_single");
+  ensureTensorsSameDtype(
+      input,
+      output,
+      "Input and output tensors must have same dtype for reduce_scatter_single");
+
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(
       OpName::reduce_scatter_single,
@@ -332,6 +467,19 @@ c10::intrusive_ptr<TorchWork> TorchComm::all_to_all_single(
     const at::Tensor& input,
     bool async_op,
     const AllToAllSingleOptions& options) {
+  ensureTensorContiguous(input);
+  ensureTensorContiguous(output);
+  TORCH_CHECK(
+      input.numel() == output.numel(),
+      "Input and output tensors must have same size for all_to_all_single");
+  TORCH_CHECK(
+      input.numel() % getSize() == 0,
+      "Tensor size must be divisible by comm_size for all_to_all_single");
+  ensureTensorsSameDtype(
+      input,
+      output,
+      "Input and output tensors must have same dtype for all_to_all_single");
+
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(
       OpName::all_to_all_single,
@@ -354,6 +502,31 @@ c10::intrusive_ptr<TorchWork> TorchComm::all_to_all_v_single(
     const std::vector<uint64_t>& input_split_sizes,
     bool async_op,
     const AllToAllvSingleOptions& options) {
+  ensureTensorContiguous(input);
+  ensureTensorContiguous(output);
+  TORCH_CHECK(
+      input_split_sizes.size() == static_cast<size_t>(getSize()),
+      "input_split_sizes length must equal comm_size for all_to_all_v_single");
+  TORCH_CHECK(
+      output_split_sizes.size() == static_cast<size_t>(getSize()),
+      "output_split_sizes length must equal comm_size for all_to_all_v_single");
+  uint64_t input_total = 0;
+  uint64_t output_total = 0;
+  for (size_t i = 0; i < input_split_sizes.size(); ++i) {
+    input_total += input_split_sizes[i];
+    output_total += output_split_sizes[i];
+  }
+  TORCH_CHECK(
+      input_total <= static_cast<uint64_t>(input.size(0)),
+      "Sum of input_split_sizes exceeds input tensor size for all_to_all_v_single");
+  TORCH_CHECK(
+      output_total <= static_cast<uint64_t>(output.size(0)),
+      "Sum of output_split_sizes exceeds output tensor size for all_to_all_v_single");
+  ensureTensorsSameDtype(
+      input,
+      output,
+      "Input and output tensors must have same dtype for all_to_all_v_single");
+
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(
       OpName::all_to_all_v_single,
@@ -376,6 +549,17 @@ c10::intrusive_ptr<TorchWork> TorchComm::all_to_all(
     const std::vector<at::Tensor>& input_tensor_list,
     bool async_op,
     const AllToAllOptions& options) {
+  ensureTensorsContiguous(input_tensor_list);
+  ensureTensorsContiguous(output_tensor_list);
+  TORCH_CHECK(
+      input_tensor_list.size() == static_cast<size_t>(getSize()) &&
+          output_tensor_list.size() == static_cast<size_t>(getSize()),
+      "Tensor list sizes must equal comm_size for all_to_all");
+  ensureTensorsSameDtype(
+      input_tensor_list,
+      output_tensor_list,
+      "Input and output tensors must have same dtype at each index for all_to_all");
+
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(
       OpName::all_to_all,
@@ -413,6 +597,22 @@ c10::intrusive_ptr<TorchWork> TorchComm::scatter(
     bool async_op,
     const ScatterOptions& options) {
   validateRank(root, "root");
+  ensureTensorContiguous(output_tensor);
+  if (getRank() == root) {
+    TORCH_CHECK(
+        input_tensor_list.size() == static_cast<size_t>(getSize()),
+        "input_tensor_list size must equal comm_size for scatter");
+    ensureTensorsContiguous(input_tensor_list);
+    ensureTensorsSameNumel(
+        input_tensor_list,
+        output_tensor,
+        "All input tensors must have same size as output tensor for scatter");
+    ensureTensorsSameDtype(
+        input_tensor_list,
+        output_tensor,
+        "All input tensors must have same dtype as output tensor for scatter");
+  }
+
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(
       OpName::scatter,
@@ -435,6 +635,22 @@ c10::intrusive_ptr<TorchWork> TorchComm::gather(
     bool async_op,
     const GatherOptions& options) {
   validateRank(root, "root");
+  ensureTensorContiguous(input_tensor);
+  if (getRank() == root) {
+    TORCH_CHECK(
+        output_tensor_list.size() == static_cast<size_t>(getSize()),
+        "output_tensor_list size must equal comm_size for gather");
+    ensureTensorsContiguous(output_tensor_list);
+    ensureTensorsSameNumel(
+        output_tensor_list,
+        input_tensor,
+        "All output tensors must have same size as input tensor for gather");
+    ensureTensorsSameDtype(
+        output_tensor_list,
+        input_tensor,
+        "All output tensors must have same dtype as input tensor for gather");
+  }
+
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(
       OpName::gather,
@@ -456,6 +672,18 @@ c10::intrusive_ptr<TorchWork> TorchComm::gather_single(
     bool async_op,
     const GatherSingleOptions& options) {
   validateRank(root, "root");
+  ensureTensorContiguous(input);
+  if (getRank() == root) {
+    ensureTensorContiguous(output);
+    TORCH_CHECK(
+        output.numel() == input.numel() * getSize(),
+        "Output tensor size must be input_size * comm_size for gather_single");
+    ensureTensorsSameDtype(
+        input,
+        output,
+        "Input and output tensors must have same dtype for gather_single");
+  }
+
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(
       OpName::gather_single,
@@ -525,6 +753,14 @@ std::shared_ptr<TorchComm> TorchComm::split(
     const std::vector<int>& ranks,
     const std::string& name,
     const CommOptions& options) {
+  for (int rank : ranks) {
+    validateRank(rank, "rank in ranks");
+  }
+  std::set<int> unique_ranks(ranks.begin(), ranks.end());
+  TORCH_CHECK(
+      unique_ranks.size() == ranks.size(),
+      "Duplicate ranks found in ranks list");
+
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   preHook(OpName::split, op_id, SplitPreHookArgs(ranks, name));
   auto new_impl = impl_->split(ranks, name, options);
@@ -579,6 +815,11 @@ void BatchSendRecv::recv(at::Tensor& tensor, int src) {
 c10::intrusive_ptr<TorchWork> BatchSendRecv::issue(
     bool async_op,
     const BatchP2POptions& options) {
+  TORCH_CHECK(!ops.empty(), "Cannot issue empty batch operation");
+  for (const auto& op : ops) {
+    ensureTensorContiguous(op.tensor);
+  }
+
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();
   parent_->preHook(
       OpName::batch_op_issue,

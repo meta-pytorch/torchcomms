@@ -355,7 +355,6 @@ class TorchCommRCCL : public TorchCommBackend,
       const at::Tensor& inputTensor);
   void enqueueWork(c10::intrusive_ptr<TorchWorkRCCL> work, hipStream_t stream);
   hipStream_t getOperationStream(bool async_op);
-  void ensureTensorContiguous(const at::Tensor& tensor);
 
   void attachMemoryHook();
   void detachMemoryHook();

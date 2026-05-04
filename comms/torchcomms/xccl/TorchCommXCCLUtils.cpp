@@ -302,12 +302,6 @@ xpuStream_t TorchCommXCCL::getOperationStream(bool async_op) {
   }
 }
 
-void TorchCommXCCL::ensureTensorContiguous(const at::Tensor& tensor) {
-  if (!tensor.is_contiguous()) {
-    throw std::runtime_error("Tensor must be contiguous for XCCL operations");
-  }
-}
-
 // Protected methods (not in the private section of the header)
 xpuEvent_t TorchCommXCCL::getEvent() {
   std::lock_guard<std::mutex> lock(event_pool_mutex_);

@@ -517,7 +517,6 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::send(
     const SendOptions& options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
-  ensureTensorContiguous(tensor);
   checkAllTensorsOnXPUorCPU({tensor});
 
   TracingGuard tracingGuard(name_, comm_size_, "send", dst, tensor, tensor);
@@ -567,7 +566,6 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::recv(
     const RecvOptions& options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
-  ensureTensorContiguous(tensor);
   checkAllTensorsOnXPUorCPU({tensor});
 
   TracingGuard tracingGuard(name_, comm_size_, "recv", src, tensor, tensor);
@@ -613,10 +611,6 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::batch_op_issue(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
 
-  if (ops.empty()) [[unlikely]] {
-    throw std::runtime_error("Cannot issue empty batch operation");
-  }
-
   // Collect input and output tensors for work tracking
   std::vector<at::Tensor> input_tensors;
   std::vector<at::Tensor> output_tensors;
@@ -624,11 +618,9 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::batch_op_issue(
   for (const auto& op : ops) {
     if (op.type == BatchSendRecv::P2POp::OpType::SEND) {
       at::Tensor tensor = op.tensor;
-      ensureTensorContiguous(tensor);
       input_tensors.push_back(tensor);
     } else if (op.type == BatchSendRecv::P2POp::OpType::RECV) {
       at::Tensor tensor = op.tensor;
-      ensureTensorContiguous(tensor);
       output_tensors.push_back(tensor);
     } else {
       throw std::runtime_error("Unknown op type in batch_op_issue");
@@ -725,7 +717,6 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::broadcast(
     const BroadcastOptions& options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
-  ensureTensorContiguous(tensor);
   checkAllTensorsOnXPUorCPU({tensor});
 
   TracingGuard tracingGuard(
@@ -779,7 +770,6 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_reduce(
     const AllReduceOptions& options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
-  ensureTensorContiguous(tensor);
   checkAllTensorsOnXPUorCPU({tensor});
 
   TracingGuard tracingGuard(
@@ -873,7 +863,6 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce(
     const ReduceOptions& options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
-  ensureTensorContiguous(tensor);
   checkAllTensorsOnXPUorCPU({tensor});
 
   TracingGuard tracingGuard(name_, comm_size_, "reduce", root, tensor, tensor);
@@ -963,22 +952,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_gather(
     const AllGatherOptions& options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
-  ensureTensorContiguous(tensor);
   checkAllTensorsOnXPUorCPU({tensor});
-
-  if (tensor_list.size() != static_cast<size_t>(comm_size_)) [[unlikely]] {
-    throw std::runtime_error(
-        "tensor_list size must equal comm_size for all_gather");
-  }
-
-  // Check that all output tensors are contiguous and have correct size
-  for (const auto& t : tensor_list) {
-    ensureTensorContiguous(t);
-    if (t.numel() != tensor.numel()) [[unlikely]] {
-      throw std::runtime_error(
-          "All tensors in tensor_list must have same size as input tensor");
-    }
-  }
 
   TracingGuard tracingGuard(
       name_, comm_size_, "all_gather", rank_, tensor_list, {tensor});
@@ -1037,17 +1011,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_gather_v(
     const AllGatherOptions& options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
-  ensureTensorContiguous(tensor);
   checkAllTensorsOnXPUorCPU({tensor});
-
-  if (tensor_list.size() != static_cast<size_t>(comm_size_)) [[unlikely]] {
-    throw std::runtime_error(
-        "tensor_list size must equal comm_size for all_gather_v");
-  }
-
-  for (const auto& t : tensor_list) {
-    ensureTensorContiguous(t);
-  }
 
   TracingGuard tracingGuard(
       name_, comm_size_, "all_gather_v", rank_, tensor_list, {tensor});
@@ -1076,10 +1040,6 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_gather_v(
     // where unevenly sized inputs are gathered among participating ranks
     auto& output = tensor_list[i];
     auto& input = (i == rank_) ? tensor : output;
-    if (input.numel() != output.numel()) [[unlikely]] {
-      throw std::runtime_error(
-          "Output tensor size must equal input tensor size for all_gather_v");
-    }
 
     // No-op for empty tensor
     // TODO: Consider removing this check once oneCCL supports zero-sized
@@ -1131,14 +1091,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_gather_single(
     const AllGatherSingleOptions& options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
-  ensureTensorContiguous(output);
-  ensureTensorContiguous(input);
   checkAllTensorsOnXPUorCPU({input, output});
-
-  if (output.numel() != input.numel() * comm_size_) [[unlikely]] {
-    throw std::runtime_error(
-        "Output tensor size must be input_size * comm_size for all_gather_single");
-  }
 
   TracingGuard tracingGuard(
       name_, comm_size_, "all_gather_single", rank_, input, output);
@@ -1195,21 +1148,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter(
     const ReduceScatterOptions& options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
-  ensureTensorContiguous(output);
   checkAllTensorsOnXPUorCPU(input_list, {output});
-
-  if (input_list.size() != static_cast<size_t>(comm_size_)) [[unlikely]] {
-    throw std::runtime_error(
-        "reduce_scatter: input_list size must equal comm_size");
-  }
-
-  for (const auto& t : input_list) {
-    ensureTensorContiguous(t);
-    if (t.numel() != output.numel()) [[unlikely]] {
-      throw std::runtime_error(
-          "reduce_scatter: input tensor sizes must match output tensor size");
-    }
-  }
 
   TracingGuard tracingGuard(
       name_, comm_size_, "reduce_scatter", rank_, input_list, {output});
@@ -1294,23 +1233,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_v(
     const ReduceScatterOptions& options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
-  ensureTensorContiguous(output);
   checkAllTensorsOnXPUorCPU(input_list, {output});
-
-  if (input_list.size() != static_cast<size_t>(comm_size_)) [[unlikely]] {
-    throw std::runtime_error(
-        "input_list size must equal comm_size for reduce_scatter_v");
-  }
-
-  // Check that all input tensors are contiguous and have correct size
-  for (int i = 0; i < comm_size_; ++i) {
-    auto& t = input_list[i];
-    ensureTensorContiguous(t);
-    if (i == rank_ && t.numel() != output.numel()) [[unlikely]] {
-      throw std::runtime_error(
-          "Output tensor size must equal input tensor size at rank position for reduce_scatter_v");
-    }
-  }
 
   TracingGuard tracingGuard(
       name_, comm_size_, "reduce_scatter_v", rank_, input_list, {output});
@@ -1418,14 +1341,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_single(
     const ReduceScatterSingleOptions& options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
-  ensureTensorContiguous(output);
-  ensureTensorContiguous(input);
   checkAllTensorsOnXPUorCPU({input, output});
-
-  if (input.numel() != output.numel() * comm_size_) [[unlikely]] {
-    throw std::runtime_error(
-        "Input tensor size must be output_size * comm_size for reduce_scatter_single");
-  }
 
   TracingGuard tracingGuard(
       name_, comm_size_, "reduce_scatter_single", rank_, input, output);
@@ -1516,19 +1432,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_to_all_single(
     const AllToAllSingleOptions& options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
-  ensureTensorContiguous(output);
-  ensureTensorContiguous(input);
   checkAllTensorsOnXPUorCPU({input, output});
-
-  if (input.numel() != output.numel()) [[unlikely]] {
-    throw std::runtime_error(
-        "Input and output tensors must have same size for all_to_all_single");
-  }
-
-  if (input.numel() % comm_size_ != 0) [[unlikely]] {
-    throw std::runtime_error(
-        "Tensor size must be divisible by comm_size for all_to_all_single");
-  }
 
   TracingGuard tracingGuard(
       name_, comm_size_, "all_to_all_single", rank_, input, output);
@@ -1589,40 +1493,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_to_all_v_single(
     const AllToAllvSingleOptions& options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
-  ensureTensorContiguous(output);
-  ensureTensorContiguous(input);
   checkAllTensorsOnXPUorCPU({input, output});
-
-  // Validate split sizes vectors
-  if (input_split_sizes.size() != static_cast<size_t>(comm_size_))
-      [[unlikely]] {
-    throw std::runtime_error(
-        "input_split_sizes length must equal comm_size for all_to_all_v_single");
-  }
-
-  if (output_split_sizes.size() != static_cast<size_t>(comm_size_))
-      [[unlikely]] {
-    throw std::runtime_error(
-        "output_split_sizes length must equal comm_size for all_to_all_v_single");
-  }
-
-  // Validate that split sizes sum does not exceed tensor dimensions
-  uint64_t input_total = 0;
-  uint64_t output_total = 0;
-  for (int i = 0; i < comm_size_; ++i) {
-    input_total += input_split_sizes[i];
-    output_total += output_split_sizes[i];
-  }
-
-  if (input_total > static_cast<uint64_t>(input.size(0))) [[unlikely]] {
-    throw std::runtime_error(
-        "Sum of input_split_sizes exceeds input tensor size for all_to_all_v_single");
-  }
-
-  if (output_total > static_cast<uint64_t>(output.size(0))) [[unlikely]] {
-    throw std::runtime_error(
-        "Sum of output_split_sizes exceeds output tensor size for all_to_all_v_single");
-  }
 
   TracingGuard tracingGuard(
       name_, comm_size_, "all_to_all_v_single", rank_, input, output);
@@ -1762,24 +1633,6 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_to_all(
   checkAndAbortIfTimedOutOrError();
   checkAllTensorsOnXPUorCPU(input_tensor_list, output_tensor_list);
 
-  if (output_tensor_list.size() != static_cast<size_t>(comm_size_) ||
-      input_tensor_list.size() != static_cast<size_t>(comm_size_))
-      [[unlikely]] {
-    throw std::runtime_error(
-        "Tensor list sizes must equal comm_size for all_to_all");
-  }
-
-  // Validate all tensors
-  for (int i = 0; i < comm_size_; ++i) {
-    if (input_tensor_list[i].numel() != output_tensor_list[i].numel())
-        [[unlikely]] {
-      throw std::runtime_error(
-          "Input and output tensor sizes must match for all_to_all");
-    }
-    ensureTensorContiguous(input_tensor_list[i]);
-    ensureTensorContiguous(output_tensor_list[i]);
-  }
-
   TracingGuard tracingGuard(
       name_,
       comm_size_,
@@ -1812,7 +1665,12 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_to_all(
       continue;
     }
     if (i == rank_) {
-      // For own rank, use memcpyAsync
+      // For own rank, use memcpyAsync. The memcpy copies input.numel() *
+      // element_size bytes into output's buffer, so the two must have the same
+      // number of elements.
+      TORCH_CHECK(
+          input_tensor_list[i].numel() == output_tensor_list[i].numel(),
+          "Input and output tensor sizes must match at own rank for all_to_all");
       XPU_CHECK(
           xpu_api_,
           xpu_api_->memcpyAsync(
@@ -1925,25 +1783,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::scatter(
     const ScatterOptions& options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
-  ensureTensorContiguous(output_tensor);
   checkAllTensorsOnXPUorCPU(input_tensor_list, {output_tensor});
-
-  // Only the root rank needs valid tensors
-  if (rank_ == root) {
-    if (input_tensor_list.size() != static_cast<size_t>(comm_size_))
-        [[unlikely]] {
-      throw std::runtime_error(
-          "input_tensor_list must equal comm_size for scatter");
-    }
-
-    for (const auto& t : input_tensor_list) {
-      ensureTensorContiguous(t);
-      if (t.numel() != output_tensor.numel()) [[unlikely]] {
-        throw std::runtime_error(
-            "All input tensors must have same size as output tensor");
-      }
-    }
-  }
 
   TracingGuard tracingGuard(
       name_, comm_size_, "scatter", root, input_tensor_list, {output_tensor});
@@ -2060,31 +1900,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::gather(
     const GatherOptions& options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
-  ensureTensorContiguous(input_tensor);
   checkAllTensorsOnXPUorCPU({input_tensor}, output_tensor_list);
-
-  // Only the root rank needs valid output tensors
-  if (rank_ == root) {
-    if (output_tensor_list.size() != static_cast<size_t>(comm_size_))
-        [[unlikely]] {
-      throw std::runtime_error(
-          "output_tensor_list size (" +
-          std::to_string(output_tensor_list.size()) +
-          ") must equal comm_size (" + std::to_string(comm_size_) +
-          ") for gather operation");
-    }
-
-    for (size_t i = 0; i < output_tensor_list.size(); ++i) {
-      const auto& t = output_tensor_list[i];
-      ensureTensorContiguous(t);
-      if (t.numel() != input_tensor.numel()) [[unlikely]] {
-        throw std::runtime_error(
-            "Output tensor at index " + std::to_string(i) + " has size " +
-            std::to_string(t.numel()) + " but expected " +
-            std::to_string(input_tensor.numel()) + " to match input tensor");
-      }
-    }
-  }
 
   TracingGuard tracingGuard(
       name_, comm_size_, "gather", root, {input_tensor}, output_tensor_list);
@@ -2194,21 +2010,6 @@ std::shared_ptr<TorchCommBackend> TorchCommXCCL::split(
     const std::string& name,
     const CommOptions& options) {
   checkAndAbortIfTimedOutOrError();
-  std::unordered_set<int> rank_seen;
-  for (int rank : ranks) {
-    if (rank < 0 || rank >= comm_size_) {
-      throw std::runtime_error(
-          fmt::format(
-              "Invalid rank {} in ranks. Valid ranks are 0 to {}",
-              rank,
-              comm_size_ - 1));
-    }
-    if (rank_seen.find(rank) != rank_seen.end()) [[unlikely]] {
-      throw std::runtime_error(
-          "Rank " + std::to_string(rank) + " appears multiple times in ranks");
-    }
-    rank_seen.insert(rank);
-  }
 
   int color;
   int new_rank; // Rank within the new communicator
