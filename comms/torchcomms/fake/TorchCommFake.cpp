@@ -58,6 +58,15 @@ class FakeTorchCommWindow : public TorchCommWindow {
     return std::make_shared<FakeTorchCommWindow>();
   }
 };
+
+class TorchWorkFailed : public TorchWork {
+ public:
+  TorchWorkFailed() {
+    setStatus(WorkStatus::ERROR);
+  }
+  void wait() override {}
+  void waitBlocking() override {}
+};
 } // namespace
 
 TorchCommFake::TorchCommFake()
@@ -253,6 +262,11 @@ std::shared_ptr<TorchCommWindow> TorchCommFake::new_window(
 
 c10::intrusive_ptr<TorchWork> TorchCommFake::reconfigure(
     const ReconfigureOptions& /* opts */) {
+  if (shouldFailReconfigure_) {
+    initialized_ = false;
+    return c10::make_intrusive<TorchWorkFailed>();
+  }
+  initialized_ = true;
   return c10::make_intrusive<TorchWorkCompleted>();
 }
 
