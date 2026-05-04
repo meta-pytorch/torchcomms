@@ -29,6 +29,12 @@ class CudaApi {
 
   virtual Status getDevicePCIBusId(char* pciBusId, int len, int device);
 
+  // --- Host memory ---
+
+  virtual Result<void*> hostAlloc(size_t size, unsigned int flags);
+
+  virtual Status hostFree(void* ptr);
+
   // --- Memory copy ---
 
   virtual Status memcpyAsync(
