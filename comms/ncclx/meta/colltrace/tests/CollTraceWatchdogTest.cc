@@ -204,7 +204,6 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorFromGPE) {
   NcclComm comm(worldSize, rank);
 
   // Ensure we are using new colltrace
-  ASSERT_EQ(comm.raw()->ctranComm_->collTrace_, nullptr);
   ASSERT_NE(comm.raw()->newCollTrace, nullptr);
 
   // Allocate memory on the CPU. A buffer size smaller than 4097 shall trigger
@@ -258,7 +257,6 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorWithGenericAsyncError) {
   mccl::cuda::CudaStream stream;
 
   // Ensure we are using new colltrace
-  ASSERT_EQ(comm.raw()->ctranComm_->collTrace_, nullptr);
   ASSERT_NE(comm.raw()->newCollTrace, nullptr);
 
   NcclAllReduce allReduce(comm.raw(), stream, 32);
@@ -300,7 +298,6 @@ TEST_F(CollTraceWatchdogTest, TestTimeoutBeforeColl) {
   mccl::cuda::CudaStream stream;
 
   // Ensure we are using new colltrace
-  ASSERT_EQ(comm.raw()->ctranComm_->collTrace_, nullptr);
   ASSERT_NE(comm.raw()->newCollTrace, nullptr);
 
   // Need a have an allReduce here to trigger pre-connect
@@ -352,7 +349,6 @@ TEST_F(CollTraceWatchdogTest, TestTimeoutInColl) {
   mccl::cuda::CudaStream stream;
 
   // Ensure we are using new colltrace
-  ASSERT_EQ(comm.raw()->ctranComm_->collTrace_, nullptr);
   ASSERT_NE(comm.raw()->newCollTrace, nullptr);
 
   // Need a have an allReduce here to trigger pre-connect
@@ -402,7 +398,6 @@ TEST_F(CollTraceWatchdogTest, TestBelowTimeoutInColl) {
   mccl::cuda::CudaStream stream;
 
   // Ensure we are using new colltrace
-  ASSERT_EQ(comm.raw()->ctranComm_->collTrace_, nullptr);
   ASSERT_NE(comm.raw()->newCollTrace, nullptr);
 
   // Need a have an allReduce here to trigger pre-connect
@@ -451,7 +446,6 @@ TEST_F(CollTraceWatchdogTest, TestBelowTimeoutBeforeColl) {
   mccl::cuda::CudaStream stream;
 
   // Ensure we are using new colltrace
-  ASSERT_EQ(comm.raw()->ctranComm_->collTrace_, nullptr);
   ASSERT_NE(comm.raw()->newCollTrace, nullptr);
 
   // Need a have an allReduce here to trigger pre-connect

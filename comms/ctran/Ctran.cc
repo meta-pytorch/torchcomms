@@ -189,7 +189,6 @@ void CtranComm::destroy() {
 #endif // defined(ENABLE_PIPES)
   ctran_.reset();
   bootstrap_.reset();
-  collTrace_.reset();
   colltraceNew_.reset();
   statex_.reset();
   // NOTE: memCache needs to be destroyed after transportProxy_ to release
