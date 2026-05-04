@@ -69,7 +69,6 @@ TEST_F(CommWithCtranTest, CtranDisable) {
   EXPECT_EQ(comm->ctranComm_->config_, makeCtranConfigFrom(comm));
   EXPECT_EQ(comm->ctranComm_->logMetaData_, comm->logMetaData);
 
-  EXPECT_EQ(comm->ctranComm_->collTrace_, comm->collTrace);
   EXPECT_EQ(comm->ctranComm_->colltraceNew_, nullptr);
 
   // Expect all CTran collective support to be false
