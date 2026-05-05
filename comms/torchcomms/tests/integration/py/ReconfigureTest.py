@@ -24,7 +24,7 @@ from torchcomms.tests.integration.py.TorchCommTestHelpers import TorchCommTestWr
 class ReconfigureTest(unittest.TestCase):
     """Test class for reconfigure() fault tolerance API."""
 
-    SUPPORTED_BACKENDS = {"mccl", "gloo", "nccl", "ncclx"}
+    SUPPORTED_BACKENDS = {"mccl", "gloo", "nccl", "ncclx", "rccl", "rcclx"}
 
     _shared_store = None
 
