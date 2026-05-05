@@ -1528,6 +1528,16 @@ cvars:
      per CQ. For example, setting to 32768 keeps per-CQ memory at ~2MB.
      Default -1 to use the device-reported maximum.
 
+ - name        : NCCL_CTRAN_IB_MULTI_NIC_FLUSH
+   type        : int
+   default     : 1
+   description : |-
+     Enable PCIe flush (RDMA READ) when using multiple NICs per rank
+     (NCCL_CTRAN_IB_DEVICES_PER_RANK > 1). On platforms where each NIC is a
+     separate PCIe requester (e.g. GB200 ARM SoC), cross-NIC DMA writes have
+     no ordering guarantee. The flush drains pending writes before the next
+     step reads the received data. Set to 0 to disable for debugging.
+
  - name        : NCCL_CTRAN_IB_DEVICES_PER_RANK
    type        : int
    default     : 1
