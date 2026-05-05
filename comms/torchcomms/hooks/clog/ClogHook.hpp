@@ -134,6 +134,14 @@ class ThreadSafeMap {
     return true;
   }
 
+  template <typename F>
+  void forEach(F&& fn) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& [key, value] : map_) {
+      fn(key, value);
+    }
+  }
+
  private:
   using Map = std::unordered_map<K, V>;
   Map map_;
@@ -192,7 +200,10 @@ class ClogHook : public std::enable_shared_from_this<ClogHook> {
       const PreHookArgs& args);
 
   // Post-hook: register work lifecycle hooks for S/E/W events.
-  void onPostHook(size_t op_id, const PostHookArgs& args);
+  void onPostHook(
+      const std::string& comm_name,
+      size_t op_id,
+      const PostHookArgs& args);
 
   // Build signature string from typed pre-hook args via std::visit.
   std::string buildSignature(OpName name, const PreHookArgs& args) const;
@@ -252,6 +263,7 @@ class ClogHook : public std::enable_shared_from_this<ClogHook> {
   struct WorkInfo {
     uint64_t corr_id{};
     uint64_t graph_id{kNoGraphCapture};
+    std::string comm_name;
   };
   ThreadSafeMap<uint64_t, WorkInfo> work_corr_map_;
 
@@ -293,6 +305,8 @@ class ClogHook : public std::enable_shared_from_this<ClogHook> {
       std::string_view event);
 
   // Registration tracking for cleanup (main thread only, no lock needed)
+  std::atomic<size_t> active_comm_count_{0};
+
   struct CommRegistration {
     std::weak_ptr<TorchComm> comm;
   };
