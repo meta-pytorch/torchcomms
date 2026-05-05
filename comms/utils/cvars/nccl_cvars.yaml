@@ -1781,6 +1781,16 @@ cvars:
      Number of times to retry after receiving an RNR NAK.
      7 means infinite retry.
 
+ - name        : NCCL_CTRAN_ASSUME_HIDDEN_LOCAL_PEERS_NVL
+   type        : bool
+   default     : false
+   description : |-
+     When a local peer's GPU is not visible to this process (e.g. under
+     CUDA_VISIBLE_DEVICES isolation from torchrun), assume the peer is
+     NVLink-reachable. Enable this only on hosts known to have full
+     intra-node NVLink mesh (e.g. HGX H100/H200 with NVSwitch).
+     Default false: invisible peers are conservatively not marked as NVL.
+
  - name        : NCCL_CTRAN_BACKENDS
    type        : enumlist
    default     : ib, nvl, socket
@@ -2015,7 +2025,7 @@ cvars:
  - name        : NCCL_ALLGATHER_P_ALGO
    type        : enum
    default     : ctpipeline
-   choices     : ctdirect, ctpipeline, ctrdpipeline
+   choices     : ctdirect, ctpipeline, ctrdpipeline, ctpat, ctpatcopy
    description : |-
      The algorithm to use for AllgatherP communication
      ctdirect - Ctran-based direct point-to-point algorithm
@@ -2024,6 +2034,20 @@ cvars:
      ctrdpipeline - Ctran-based hybrid algorithm that does recursive doubling across
                     rails for inter-node exchange and CopyEngine based broadcast
                     within the NVLink domain. Requires nNodes to be a power of 2.
+     ctpat - PAT (Parallel Asynchronous Tiled) butterfly algorithm for NVL x IB.
+             Rail-parallel recursive doubling across nodes with NVL CE broadcast.
+             Requires nNodes to be a power of 2.
+     ctpatcopy - Copy-based PAT butterfly with staging buffers for NVL x IB.
+                 Routes IB transfers through pre-registered staging buffers.
+                 Requires nNodes power of 2 and nLocalRanks > 1.
+
+ - name        : NCCL_CTRAN_ALLGATHERP_PATCOPY_STAGING_BUF_SIZE
+   type        : int64_t
+   default     : 33554432
+   description : |-
+     Size in bytes of each staging buffer (send and recv) for the ctpatcopy
+     AllGatherP algorithm. Total staging memory is 2x this value.
+     Default is 32MB per buffer (64MB total).
 
  - name        : NCCL_ALLGATHER_ALGO
    type        : enum

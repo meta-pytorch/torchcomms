@@ -6,24 +6,46 @@
 #include "comms/ctran/backends/nvl/CtranNvl.h"
 #include "comms/ctran/backends/nvl/CtranNvlImpl.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CudaUtils.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/utils/StrUtils.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
+
+// Map a PCI bus ID to a locally visible CUDA device index.
+// Returns -1 if the bus ID does not match any visible device
+// (e.g. under CUDA_VISIBLE_DEVICES isolation).
+// Mirrors ncclx p2p.cc busIdToCudaDev().
+static int busIdToCudaDev(int64_t busId) {
+  int ndev;
+  if (cudaGetDeviceCount(&ndev) != cudaSuccess) {
+    return -1;
+  }
+  for (int i = 0; i < ndev; i++) {
+    auto devBusId = ctran::utils::BusId::makeFrom(i).toInt64();
+    if (busId == devBusId) {
+      return i;
+    }
+  }
+  return -1;
+}
 
 CtranNvl::CtranNvl(CtranComm* comm) {
   const auto statex = comm->statex_.get();
   int myRank = statex->rank();
   int myLocalRank = statex->localRank();
   int nLocalRanks = statex->nLocalRanks();
-  // Exchange device IDs used by each local rank
-  std::vector<int> peerDevs(nLocalRanks, 0);
+  // Exchange PCI bus IDs (hardware-level, process-independent) so we can
+  // correctly map peers to local CUDA device indices even under
+  // CUDA_VISIBLE_DEVICES isolation.
+  std::vector<int64_t> peerBusIds(nLocalRanks, 0);
   std::vector<std::string> supportedInraHostRanksStr;
   std::vector<std::string> nvlFabricSupportedRanksStr;
 
-  peerDevs[myLocalRank] = statex->cudaDev();
+  peerBusIds[myLocalRank] = statex->busId();
   auto resFuture = comm->bootstrap_->allGatherNvlDomain(
-      peerDevs.data(),
-      sizeof(int),
+      peerBusIds.data(),
+      sizeof(int64_t),
       myLocalRank,
       nLocalRanks,
       statex->localRankToRanks());
@@ -64,11 +86,26 @@ CtranNvl::CtranNvl(CtranComm* comm) {
             std::to_string(statex->localRankToRank(i)));
         continue;
       }
-      int canAccessPeer = 1;
-      FB_CUDACHECKTHROW_EX(
-          cudaDeviceCanAccessPeer(
-              &canAccessPeer, statex->cudaDev(), peerDevs[i]),
-          comm->logMetaData_);
+      // Map peer's bus ID to a locally visible CUDA device index.
+      // Under CUDA_VISIBLE_DEVICES isolation (e.g. torchrun), peer GPUs
+      // are not visible so this returns -1.
+      int peerLocalDev = busIdToCudaDev(peerBusIds[i]);
+      int canAccessPeer = 0;
+      if (peerLocalDev >= 0) {
+        FB_CUDACHECKTHROW_EX(
+            cudaDeviceCanAccessPeer(
+                &canAccessPeer, statex->cudaDev(), peerLocalDev),
+            comm->logMetaData_);
+      } else if (NCCL_CTRAN_ASSUME_HIDDEN_LOCAL_PEERS_NVL) {
+        canAccessPeer = 1;
+        CLOGF_SUBSYS(
+            INFO,
+            INIT,
+            "CTRAN-NVL: Peer {} (local rank {} busId {:x}) not visible locally, assuming NVL (NCCL_CTRAN_ASSUME_HIDDEN_LOCAL_PEERS_NVL=1)",
+            statex->localRankToRank(i),
+            i,
+            peerBusIds[i]);
+      }
       if (canAccessPeer) {
         this->pimpl_->nvlRankSupportMode[statex->localRankToRank(i)]
             .nvlIntraHost = true;
@@ -78,13 +115,13 @@ CtranNvl::CtranNvl(CtranComm* comm) {
         CLOGF_SUBSYS(
             INFO,
             INIT,
-            "CTRAN-NVL: Rank {} (local rank {} GPU {}) cannot access peer {} (local rank {} GPU {}), disable NVL support",
+            "CTRAN-NVL: Rank {} (local rank {} GPU {}) cannot access peer {} (local rank {} busId {:x}), disable NVL support",
             myRank,
             myLocalRank,
             statex->cudaDev(),
             statex->localRankToRank(i),
             i,
-            peerDevs[i]);
+            peerBusIds[i]);
       }
     }
   }

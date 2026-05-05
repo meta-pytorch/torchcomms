@@ -211,9 +211,9 @@ __device__ __forceinline__ void ChunkState::wait_ready_to_recv(
     TIMEOUT_TRAP_IF_EXPIRED(
         timeout,
         group,
-        "ChunkState::wait_ready_to_recv waiting for stepId=%zu "
+        "ChunkState::wait_ready_to_recv waiting for stepId=%llu "
         "(current=%d)",
-        stepId,
+        static_cast<unsigned long long>(stepId),
         current_value);
   }
 }

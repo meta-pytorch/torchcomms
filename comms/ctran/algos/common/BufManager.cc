@@ -93,13 +93,14 @@ commResult_t exchangeBase(
     const std::vector<int>& peerRanks,
     const int maxNumRanks,
     const ncclx::CommStateX* statex,
-    CtranMapper* mapper) {
+    CtranMapper* mapper,
+    bool epochHeld) {
   // Skip if base is not allocated
   if (base.size == 0 || !base.ptr) {
     return commSuccess;
   }
 
-  CtranMapperEpochRAII epochRAII(mapper);
+  CtranMapperEpochRAII epochRAII(epochHeld ? nullptr : mapper);
 
   // First register it locally
   FB_COMMCHECK(mapper->regMem(

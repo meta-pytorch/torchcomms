@@ -129,7 +129,7 @@ struct alignas(128) BarrierState {
 };
 
 /**
- * getBarrierBufferSize - Calculate buffer size for multiple barriers
+ * get_barrier_buffer_size - Calculate buffer size for multiple barriers
  *
  * Computes the total memory needed to store 'count' BarrierState objects,
  * aligned to 128 bytes for optimal GPU memory access.
@@ -137,7 +137,7 @@ struct alignas(128) BarrierState {
  * @param count Number of barriers to allocate
  * @return Size in bytes, aligned to 128-byte boundary
  */
-__host__ __device__ __forceinline__ std::size_t getBarrierBufferSize(
+__host__ __device__ __forceinline__ std::size_t get_barrier_buffer_size(
     int count) {
   return bitops::alignUp(count * sizeof(BarrierState), 128);
 }

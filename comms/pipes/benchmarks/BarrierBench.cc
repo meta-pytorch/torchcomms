@@ -13,7 +13,7 @@
 #include "comms/utils/CudaRAII.h"
 
 using comms::pipes::BarrierState;
-using comms::pipes::getBarrierBufferSize;
+using comms::pipes::get_barrier_buffer_size;
 using meta::comms::DeviceBuffer;
 
 namespace comms::pipes::benchmark {
@@ -47,7 +47,7 @@ static void barrierBench(
   // For block groups: 1 Barrier per block
   // For warp groups: 8 Barriers per block (256 threads / 32 threads per warp)
   int numBarriers = useBlockGroups ? nBlocks : nBlocks * (nThreads / 32);
-  std::size_t barrierBufferSize = getBarrierBufferSize(numBarriers);
+  std::size_t barrierBufferSize = get_barrier_buffer_size(numBarriers);
 
   // Allocate barrier buffers on each GPU
   CHECK_EQ(cudaSetDevice(gpu0), cudaSuccess);

@@ -1,5 +1,7 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
+#include <unistd.h>
+
 #include <folly/init/Init.h>
 #include <gflags/gflags.h>
 #include <nccl.h>
@@ -10,6 +12,7 @@
 #include <memory>
 #include <vector>
 #include "comms/ctran/Ctran.h"
+#include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
@@ -28,7 +31,7 @@ DEFINE_int32(bench_iters, 50, "Number of benchmark iterations (default: 20)");
 DEFINE_string(
     algo,
     "all",
-    "Algorithm to benchmark: 'ctdirect', 'ctpipeline', 'nccl', or 'all' (default: all)");
+    "Algorithm to benchmark: 'ctdirect', 'ctpipeline', 'ctpat', 'ctpatcopy', 'nccl', or 'all' (default: all)");
 DEFINE_bool(in_place, false, "Run in-place allgather (default: false)");
 DEFINE_string(
     mem_type,
@@ -179,16 +182,17 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
       CUDACHECK_TEST(cudaStreamSynchronize(stream_));
     }
 
-    // Benchmark iterations with timing
+    // Benchmark iterations with timing.
+    // Sync each iteration: pipelining algos (ctpatcopy) use stream↔GPE
+    // handshake objects that must be reset between executions.
     CUDACHECK_TEST(cudaDeviceSynchronize());
     auto start = std::chrono::high_resolution_clock::now();
 
     for (int i = 0; i < FLAGS_bench_iters; ++i) {
       COMMCHECK_TEST(ctran::allGatherPExec(usedSendBuf, count, dt_, request));
+      CUDACHECK_TEST(cudaStreamSynchronize(stream_));
     }
 
-    // Sync once after all iterations
-    CUDACHECK_TEST(cudaStreamSynchronize(stream_));
     auto end = std::chrono::high_resolution_clock::now();
 
     // Calculate total time and average per iteration
@@ -265,17 +269,18 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
       CUDACHECK_TEST(cudaStreamSynchronize(stream_));
     }
 
-    // Benchmark iterations with timing
+    // Benchmark iterations with timing.
+    // Sync each iteration for consistent per-collective latency measurement
+    // matching the AllGatherP timing loop.
     CUDACHECK_TEST(cudaDeviceSynchronize());
     auto start = std::chrono::high_resolution_clock::now();
 
     for (int i = 0; i < FLAGS_bench_iters; ++i) {
       NCCLCHECK_TEST(ncclAllGather(
           usedSendBuf, recvbuf, count, ncclBfloat16, ncclComm_, stream_));
+      CUDACHECK_TEST(cudaStreamSynchronize(stream_));
     }
 
-    // Sync once after all iterations
-    CUDACHECK_TEST(cudaStreamSynchronize(stream_));
     auto end = std::chrono::high_resolution_clock::now();
 
     // Calculate total time and average per iteration
@@ -382,10 +387,25 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
     printHeader();
     printTableHeader();
 
-    // Check nNodes for pipeline support
     const auto statex = ctranComm_->statex_.get();
     const auto nNodes = statex->nNodes();
-    const bool pipelineSupported = nNodes > 1;
+    auto mapper = ctranComm_->ctran_->mapper.get();
+
+    // Check NVL connectivity for local peers
+    bool nvlAvailable = true;
+    if (statex->nLocalRanks() > 1) {
+      for (int lr = 0; lr < statex->nLocalRanks(); lr++) {
+        const int peer = statex->localRankToRank(lr);
+        if (peer != statex->rank() &&
+            mapper->getBackend(peer) != CtranMapperBackend::NVL) {
+          nvlAvailable = false;
+          break;
+        }
+      }
+    }
+
+    const bool pipelineSupported =
+        nNodes > 1 && statex->nLocalRanks() > 1 && nvlAvailable;
 
     // Generate size range (powers of 2)
     std::vector<size_t> sizes;
@@ -405,10 +425,10 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
     void* sendbuf = nullptr;
     void* recvbuf = nullptr;
     void *sendHdl = nullptr, *recvHdl = nullptr;
-    CtranPersistentRequest* request = nullptr;
 
     // Only allocate and initialize if running AllGatherP algorithms
     if (FLAGS_algo == "ctdirect" || FLAGS_algo == "ctpipeline" ||
+        FLAGS_algo == "ctpat" || FLAGS_algo == "ctpatcopy" ||
         FLAGS_algo == "all") {
       // Allocate and initialize buffers ONCE for max size
       sendbuf = allocateBuffer(maxSizeBytes);
@@ -426,25 +446,11 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
             ctranComm_->ctran_->commRegister(sendbuf, maxSizeBytes, &sendHdl));
       }
 
-      // Initialize AllGatherP ONCE globally with max size
-      meta::comms::Hints hints;
-      COMMCHECK_TEST(
-          ctran::allGatherPInit(
-              recvbuf,
-              maxCount * numRanks,
-              hints,
-              dt_,
-              ctranComm_.get(),
-              stream_,
-              request));
-
-      // Wait for async init to complete
-      CUDACHECK_TEST(cudaStreamSynchronize(stream_));
-      CUDACHECK_TEST(cudaDeviceSynchronize());
-      ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
+      // No shared request. With pinned algos, each algo branch creates
+      // its own dedicated persistent request below.
     }
 
-    // Run benchmarks for all sizes using the same persistent request
+    // Run benchmarks for all sizes. Each algo creates its own request.
     for (size_t sizeBytes : sizes) {
       size_t count = sizeBytes / typeSize_;
 
@@ -455,24 +461,149 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
         CUDACHECK_TEST(cudaDeviceSynchronize());
       }
 
-      // Benchmark AllgatherP Direct (reuses same request)
-      if (FLAGS_algo == "ctdirect" || FLAGS_algo == "all") {
+      // Benchmark AllgatherP Direct (dedicated request)
+      // ctdirect uses nvlCeBcast for local peers, so skip if NVL unavailable
+      if ((FLAGS_algo == "ctdirect" || FLAGS_algo == "all") &&
+          (statex->nLocalRanks() <= 1 || nvlAvailable)) {
         EnvRAII algoEnv(NCCL_ALLGATHER_P_ALGO, NCCL_ALLGATHER_P_ALGO::ctdirect);
+        meta::comms::Hints directHints;
+        CtranPersistentRequest* directRequest = nullptr;
+        COMMCHECK_TEST(
+            ctran::allGatherPInit(
+                recvbuf,
+                maxCount * numRanks,
+                directHints,
+                dt_,
+                ctranComm_.get(),
+                stream_,
+                directRequest));
+        CUDACHECK_TEST(cudaStreamSynchronize(stream_));
+        ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
+
         BenchmarkResult result = benchmarkAllgatherPWithRequest(
-            count, "AllGatherP_Direct", request, sendbuf, recvbuf);
+            count, "AllGatherP_Direct", directRequest, sendbuf, recvbuf);
         printResult(result);
+
+        COMMCHECK_TEST(ctran::allGatherPDestroy(directRequest));
+        delete directRequest;
         ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
       }
 
-      // Benchmark AllgatherP Pipeline (reuses same request)
+      // Benchmark AllgatherP Pipeline (dedicated request)
       if ((FLAGS_algo == "ctpipeline" || FLAGS_algo == "all") &&
           pipelineSupported) {
         EnvRAII algoEnv(
             NCCL_ALLGATHER_P_ALGO, NCCL_ALLGATHER_P_ALGO::ctpipeline);
-        BenchmarkResult result = benchmarkAllgatherPWithRequest(
-            count, "AllGatherP_Pipeline", request, sendbuf, recvbuf);
-        printResult(result);
+        meta::comms::Hints pipeHints;
+        CtranPersistentRequest* pipeRequest = nullptr;
+        COMMCHECK_TEST(
+            ctran::allGatherPInit(
+                recvbuf,
+                maxCount * numRanks,
+                pipeHints,
+                dt_,
+                ctranComm_.get(),
+                stream_,
+                pipeRequest));
+        CUDACHECK_TEST(cudaStreamSynchronize(stream_));
         ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
+
+        BenchmarkResult result = benchmarkAllgatherPWithRequest(
+            count, "AllGatherP_Pipeline", pipeRequest, sendbuf, recvbuf);
+        printResult(result);
+
+        COMMCHECK_TEST(ctran::allGatherPDestroy(pipeRequest));
+        delete pipeRequest;
+        ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
+      }
+
+      // Benchmark AllgatherP PAT (needs its own request due to pinned algo)
+      if (FLAGS_algo == "ctpat" || FLAGS_algo == "all") {
+        const auto statex = ctranComm_->statex_.get();
+        auto mapper = ctranComm_->ctran_->mapper.get();
+        bool patSupported = statex->nNodes() > 1 &&
+            (statex->nNodes() & (statex->nNodes() - 1)) == 0 &&
+            statex->nRanks() % statex->nLocalRanks() == 0;
+        if (patSupported && statex->nLocalRanks() > 1) {
+          for (int lr = 0; lr < statex->nLocalRanks(); lr++) {
+            const int peer = statex->localRankToRank(lr);
+            if (peer != statex->rank() &&
+                mapper->getBackend(peer) != CtranMapperBackend::NVL) {
+              patSupported = false;
+              break;
+            }
+          }
+        }
+        if (patSupported) {
+          EnvRAII algoEnv(NCCL_ALLGATHER_P_ALGO, NCCL_ALLGATHER_P_ALGO::ctpat);
+          meta::comms::Hints patHints;
+          CtranPersistentRequest* patRequest = nullptr;
+          COMMCHECK_TEST(
+              ctran::allGatherPInit(
+                  recvbuf,
+                  maxCount * numRanks,
+                  patHints,
+                  dt_,
+                  ctranComm_.get(),
+                  stream_,
+                  patRequest));
+          CUDACHECK_TEST(cudaStreamSynchronize(stream_));
+          ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
+
+          BenchmarkResult result = benchmarkAllgatherPWithRequest(
+              count, "AllGatherP_Pat", patRequest, sendbuf, recvbuf);
+          printResult(result);
+
+          COMMCHECK_TEST(ctran::allGatherPDestroy(patRequest));
+          delete patRequest;
+          ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
+        }
+      }
+
+      // Benchmark AllgatherP PatCopy (needs its own request due to staging
+      // init)
+      if (FLAGS_algo == "ctpatcopy" || FLAGS_algo == "all") {
+        const auto statex = ctranComm_->statex_.get();
+        auto mapper = ctranComm_->ctran_->mapper.get();
+        bool patcopySupported = statex->nNodes() > 1 &&
+            (statex->nNodes() & (statex->nNodes() - 1)) == 0 &&
+            statex->nRanks() % statex->nLocalRanks() == 0 &&
+            statex->nLocalRanks() > 1;
+        if (patcopySupported) {
+          for (int lr = 0; lr < statex->nLocalRanks(); lr++) {
+            const int peer = statex->localRankToRank(lr);
+            if (peer != statex->rank() &&
+                mapper->getBackend(peer) != CtranMapperBackend::NVL) {
+              patcopySupported = false;
+              break;
+            }
+          }
+        }
+        if (patcopySupported) {
+          EnvRAII algoEnv(
+              NCCL_ALLGATHER_P_ALGO, NCCL_ALLGATHER_P_ALGO::ctpatcopy);
+          meta::comms::Hints pcHints;
+          CtranPersistentRequest* pcRequest = nullptr;
+          COMMCHECK_TEST(
+              ctran::allGatherPInit(
+                  recvbuf,
+                  maxCount * numRanks,
+                  pcHints,
+                  dt_,
+                  ctranComm_.get(),
+                  stream_,
+                  pcRequest));
+          CUDACHECK_TEST(cudaStreamSynchronize(stream_));
+          ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
+
+          BenchmarkResult result = benchmarkAllgatherPWithRequest(
+              count, "AllGatherP_PatCopy", pcRequest, sendbuf, recvbuf);
+          printResult(result);
+
+          COMMCHECK_TEST(ctran::allGatherPDestroy(pcRequest));
+          delete pcRequest;
+          ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
+        }
       }
 
       // Benchmark NCCL baseline
@@ -485,16 +616,6 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
       if (globalRank == 0) {
         std::cout << std::endl;
       }
-    }
-
-    // Cleanup ONCE at the very end after all sizes
-    if (request != nullptr) {
-      COMMCHECK_TEST(ctran::allGatherPDestroy(request));
-      delete request;
-
-      CUDACHECK_TEST(cudaStreamSynchronize(stream_));
-      CUDACHECK_TEST(cudaDeviceSynchronize());
-      ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
     }
 
     // Deregister memory ONCE
@@ -537,6 +658,10 @@ TEST_F(AllgatherPBenchmark, BenchmarkSuite) {
 }
 
 int main(int argc, char* argv[]) {
+  // Redirect stdout to stderr so MAST/AnyBench captures gtest output.
+  // MAST only collects /logs/stderr; without this, benchmark results are lost.
+  dup2(STDERR_FILENO, STDOUT_FILENO);
+
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new CtranAllgatherPBenchTestEnv);
   folly::Init init(&argc, &argv);
