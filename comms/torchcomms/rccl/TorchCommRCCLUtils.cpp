@@ -420,11 +420,11 @@ void TorchCommRCCL::returnEvent(hipEvent_t event) {
 }
 
 void TorchCommRCCL::attachMemoryHook() {
-  CachingAllocatorHook::getInstance().registerComm(this);
+  RcclCachingAllocatorHook::getInstance().registerComm(this);
 }
 
 void TorchCommRCCL::detachMemoryHook() {
-  CachingAllocatorHook::getInstance().deregisterComm(this);
+  RcclCachingAllocatorHook::getInstance().deregisterComm(this);
 }
 
 } // namespace torch::comms

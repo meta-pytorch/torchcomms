@@ -213,7 +213,7 @@ class TorchCommNCCL : public TorchCommBackend,
 
   // Friend access for TorchCommNCCL
   friend class TorchWorkNCCL;
-  friend class CachingAllocatorHookImpl;
+  friend class NcclCachingAllocatorHookImpl;
   friend class TorchCommWindowNCCL;
 
   // Getter for CUDA API (for friend classes)

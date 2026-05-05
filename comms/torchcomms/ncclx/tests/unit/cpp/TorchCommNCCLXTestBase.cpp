@@ -23,7 +23,7 @@ void TorchCommNCCLXTest::SetUp() {
   hook_mock->setNcclApi(nccl_mock_);
 
   mock_hook_ = hook_mock.get();
-  CachingAllocatorHook::setInstance(std::move(hook_mock));
+  NcclxCachingAllocatorHook::setInstance(std::move(hook_mock));
 
   // Create hash store for communication
   store_ = c10::make_intrusive<c10d::HashStore>();
@@ -50,7 +50,7 @@ void TorchCommNCCLXTest::TearDown() {
   unsetenv("TORCHCOMM_TIMEOUT_SECONDS");
 
   // Reset the instance to null to release the mock object
-  CachingAllocatorHook::setInstance(nullptr);
+  NcclxCachingAllocatorHook::setInstance(nullptr);
 }
 
 void TorchCommNCCLXTest::setupRankAndSize(int rank, int size) {

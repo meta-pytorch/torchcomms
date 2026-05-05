@@ -292,7 +292,7 @@ class TorchCommNCCLX : public TorchCommBackend,
   // Friend access for TorchCommNCCLX
   friend class TorchWorkNCCLX;
   friend class GraphEventTracker;
-  friend class CachingAllocatorHookImpl;
+  friend class NcclxCachingAllocatorHookImpl;
   template <typename B>
   friend class TorchCommWindowNCCLX;
   friend class TorchCommNCCLXPersistentRequest;
@@ -378,7 +378,7 @@ class TorchCommNCCLX : public TorchCommBackend,
   };
 
   // Global pointer-based registration that doesn't require a comm instance.
-  // Used by CachingAllocatorHook for pre-comm memory registration.
+  // Used by NcclxCachingAllocatorHook for pre-comm memory registration.
   // The caller provides the NcclxApi to use for the registration.
   static void global_register_address(
       const AddressWithLen& addr,
@@ -517,7 +517,7 @@ class TorchCommNCCLX : public TorchCommBackend,
   void checkTensorDevice(const at::Tensor& tensor) const;
   void checkTensorsDevice(const std::vector<at::Tensor>& tensors) const;
 
-  // Initialize the CachingAllocatorHook singleton
+  // Initialize the NcclxCachingAllocatorHook singleton
   void attachMemoryHook();
 
 #if defined(ENABLE_PIPES)

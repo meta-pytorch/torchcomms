@@ -18,9 +18,9 @@ using c10::cuda::CUDACachingAllocator::attachAllocatorTraceTracker;
 using c10::cuda::CUDACachingAllocator::snapshot;
 using c10::cuda::CUDACachingAllocator::TraceEntry;
 
-class CachingAllocatorHookImpl {
+class RcclxCachingAllocatorHookImpl {
  public:
-  virtual ~CachingAllocatorHookImpl() = default;
+  virtual ~RcclxCachingAllocatorHookImpl() = default;
   virtual void regDeregMem(const TraceEntry& te);
   virtual void registerComm(TorchCommRCCLX* comm);
   virtual void deregisterComm(TorchCommRCCLX* comm);
@@ -46,45 +46,49 @@ class CachingAllocatorHookImpl {
   std::set<TorchCommRCCLX*> registeredComms_;
 };
 
-class DefaultCachingAllocatorHookImpl : public CachingAllocatorHookImpl {
+class DefaultRcclxCachingAllocatorHookImpl
+    : public RcclxCachingAllocatorHookImpl {
  public:
-  DefaultCachingAllocatorHookImpl();
-  virtual ~DefaultCachingAllocatorHookImpl() = default;
+  DefaultRcclxCachingAllocatorHookImpl();
+  virtual ~DefaultRcclxCachingAllocatorHookImpl() = default;
 
   // Delete copy constructor and assignment operator
-  DefaultCachingAllocatorHookImpl(const DefaultCachingAllocatorHookImpl&) =
-      delete;
-  DefaultCachingAllocatorHookImpl& operator=(
-      const DefaultCachingAllocatorHookImpl&) = delete;
+  DefaultRcclxCachingAllocatorHookImpl(
+      const DefaultRcclxCachingAllocatorHookImpl&) = delete;
+  DefaultRcclxCachingAllocatorHookImpl& operator=(
+      const DefaultRcclxCachingAllocatorHookImpl&) = delete;
   // Delete move constructor and assignment operator
-  DefaultCachingAllocatorHookImpl(DefaultCachingAllocatorHookImpl&&) = delete;
-  DefaultCachingAllocatorHookImpl& operator=(
-      DefaultCachingAllocatorHookImpl&&) = delete;
+  DefaultRcclxCachingAllocatorHookImpl(DefaultRcclxCachingAllocatorHookImpl&&) =
+      delete;
+  DefaultRcclxCachingAllocatorHookImpl& operator=(
+      DefaultRcclxCachingAllocatorHookImpl&&) = delete;
 };
 
-class CachingAllocatorHook {
+class RcclxCachingAllocatorHook {
  public:
   // Get the singleton instance
-  static CachingAllocatorHookImpl& getInstance();
+  static RcclxCachingAllocatorHookImpl& getInstance();
 
   // only for use by tests
-  static void setInstance(std::unique_ptr<CachingAllocatorHookImpl> instance) {
+  static void setInstance(
+      std::unique_ptr<RcclxCachingAllocatorHookImpl> instance) {
     instance_ = std::move(instance);
   }
 
  protected:
   static void createInstance() {
     if (!instance_) {
-      instance_ = std::make_unique<DefaultCachingAllocatorHookImpl>();
+      instance_ = std::make_unique<DefaultRcclxCachingAllocatorHookImpl>();
     }
   }
 
-  inline static std::unique_ptr<CachingAllocatorHookImpl> instance_ = nullptr;
+  inline static std::unique_ptr<RcclxCachingAllocatorHookImpl> instance_ =
+      nullptr;
   // NOLINTNEXTLINE(facebook-hte-std::once_flag)
   inline static std::once_flag init_flag_;
 };
 
 // Global function to be registered as a hook
-void cachingAllocatorHookFn(const TraceEntry& te);
+void rcclxCachingAllocatorHookFn(const TraceEntry& te);
 
 } // namespace torch::comms
