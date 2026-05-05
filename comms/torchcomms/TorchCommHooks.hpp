@@ -43,6 +43,7 @@ enum class OpName {
   split,
   new_window,
   batch_op_issue,
+  finalize,
 };
 
 // Convert OpName enum to string
@@ -90,6 +91,8 @@ constexpr std::string_view opToString(OpName name) {
       return "new_window";
     case OpName::batch_op_issue:
       return "batch_op_issue";
+    case OpName::finalize:
+      return "finalize";
   }
   return "unknown";
 }
@@ -329,6 +332,8 @@ struct SplitPreHookArgs {
 
 struct NewWindowPreHookArgs {};
 
+struct FinalizePreHookArgs {};
+
 // Variant of all per-collective pre-hook argument types
 using PreHookArgs = std::variant<
     SendPreHookArgs,
@@ -351,7 +356,8 @@ using PreHookArgs = std::variant<
     GatherSinglePreHookArgs,
     SplitPreHookArgs,
     NewWindowPreHookArgs,
-    BatchOpIssuePreHookArgs>;
+    BatchOpIssuePreHookArgs,
+    FinalizePreHookArgs>;
 
 using PreHook =
     std::function<void(OpName name, size_t op_id, const PreHookArgs& args)>;
@@ -438,6 +444,8 @@ struct BatchOpIssuePostHookArgs : CollectivePostHookArgs {
   using CollectivePostHookArgs::CollectivePostHookArgs;
 };
 
+struct FinalizePostHookArgs {};
+
 using PostHookArgs = std::variant<
     SendPostHookArgs,
     RecvPostHookArgs,
@@ -459,7 +467,8 @@ using PostHookArgs = std::variant<
     GatherSinglePostHookArgs,
     SplitPostHookArgs,
     NewWindowPostHookArgs,
-    BatchOpIssuePostHookArgs>;
+    BatchOpIssuePostHookArgs,
+    FinalizePostHookArgs>;
 
 using PostHook = std::function<void(size_t op_id, const PostHookArgs& args)>;
 

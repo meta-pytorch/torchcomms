@@ -56,6 +56,7 @@ class OpName(Enum):
     gather_single = auto()
     split = auto()
     new_window = auto()
+    finalize = auto()
 
 class RemovableHandle:
     """Handle for removing a registered hook."""
@@ -214,6 +215,7 @@ class SplitPreHookArgs:
     def name(self) -> str: ...
 
 class NewWindowPreHookArgs: ...
+class FinalizePreHookArgs: ...
 
 # Pre-hook args union type
 PreHookArgs = (
@@ -237,6 +239,7 @@ PreHookArgs = (
     | GatherSinglePreHookArgs
     | SplitPreHookArgs
     | NewWindowPreHookArgs
+    | FinalizePreHookArgs
 )
 
 # Per-collective post-hook args
@@ -261,6 +264,7 @@ class GatherPostHookArgs(CollectivePostHookArgs): ...
 class GatherSinglePostHookArgs(CollectivePostHookArgs): ...
 class SplitPostHookArgs: ...
 class NewWindowPostHookArgs: ...
+class FinalizePostHookArgs: ...
 
 PostHookArgs = (
     SendPostHookArgs
@@ -283,6 +287,7 @@ PostHookArgs = (
     | GatherSinglePostHookArgs
     | SplitPostHookArgs
     | NewWindowPostHookArgs
+    | FinalizePostHookArgs
 )
 
 class CommOptions:
