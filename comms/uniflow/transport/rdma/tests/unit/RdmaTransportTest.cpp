@@ -156,6 +156,45 @@ TEST(RdmaTransportInfoTest, SerializeZeroQps) {
   ASSERT_EQ(result.value().nicInfos.size(), 1);
 }
 
+// --- Helpers ---
+
+NicResources makeNic(
+    ibv_device* dev,
+    ibv_context* ctx,
+    ibv_pd* pd,
+    std::shared_ptr<testing::NiceMock<MockIbvApi>> mockApi,
+    uint16_t lid = 0,
+    ibv_gid gid = {},
+    uint8_t port = 1) {
+  ON_CALL(*mockApi, openDevice(dev))
+      .WillByDefault(Return(Result<ibv_context*>(ctx)));
+  ON_CALL(*mockApi, allocPd(ctx)).WillByDefault(Return(Result<ibv_pd*>(pd)));
+  ON_CALL(*mockApi, isDmaBufSupported(pd))
+      .WillByDefault(Return(Result<bool>(false)));
+  ON_CALL(*mockApi, queryPort(ctx, port, _))
+      .WillByDefault([lid, gid](ibv_context*, uint8_t, ibv_port_attr* attr) {
+        attr->lid = lid;
+        attr->active_mtu = IBV_MTU_4096;
+        attr->link_layer = IBV_LINK_LAYER_ETHERNET;
+        attr->state = IBV_PORT_ACTIVE;
+        return Ok();
+      });
+  ON_CALL(*mockApi, queryGid(ctx, port, _, _))
+      .WillByDefault([gid](ibv_context*, uint8_t, int, ibv_gid* out) {
+        *out = gid;
+        return Ok();
+      });
+  ON_CALL(*mockApi, queryDevice(ctx, _))
+      .WillByDefault([port](ibv_context*, ibv_device_attr* attr) {
+        attr->phys_port_cnt = port;
+        return Ok();
+      });
+  ON_CALL(*mockApi, deallocPd(pd)).WillByDefault(Return(Ok()));
+  ON_CALL(*mockApi, closeDevice(ctx)).WillByDefault(Return(Ok()));
+
+  return NicResources(dev, mockApi, 3, port);
+}
+
 // --- Mock-based transport tests ---
 
 class RdmaTransportTest : public ::testing::Test {
@@ -193,8 +232,9 @@ TEST_F(RdmaTransportTest, SingleNicBindCreatesQPs) {
   EXPECT_CALL(*mockApi_, modifyQp(_, _, _)).WillRepeatedly(Return(Ok()));
 
   ibv_gid gid{};
-  std::vector<NicResources> nics = {
-      {.ctx = &fakeCtx0_, .pd = &fakePd0_, .lid = 0x1234, .gid = gid}};
+  auto nics = std::make_shared<std::vector<NicResources>>();
+  nics->push_back(
+      makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0x1234, gid));
   RdmaTransportConfig config{.numQps = 2};
   RdmaTransport transport(mockApi_, evbThread_.getEventBase(), nics, 0, config);
 
@@ -229,10 +269,11 @@ TEST_F(RdmaTransportTest, MultiNicBindDistributesQPsRoundRobin) {
   EXPECT_CALL(*mockApi_, modifyQp(_, _, _)).WillRepeatedly(Return(Ok()));
 
   ibv_gid gid0{}, gid1{};
-  std::vector<NicResources> nics = {
-      {.ctx = &fakeCtx0_, .pd = &fakePd0_, .lid = 0x1111, .gid = gid0},
-      {.ctx = &fakeCtx1_, .pd = &fakePd1_, .lid = 0x2222, .gid = gid1},
-  };
+  auto nics = std::make_shared<std::vector<NicResources>>();
+  nics->push_back(
+      makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0x1111, gid0));
+  nics->push_back(
+      makeNic(&fakeDev1_, &fakeCtx1_, &fakePd1_, mockApi_, 0x2222, gid1));
   RdmaTransportConfig config{.numQps = 4};
   RdmaTransport transport(mockApi_, evbThread_.getEventBase(), nics, 0, config);
 
@@ -259,8 +300,8 @@ TEST_F(RdmaTransportTest, BindReturnsEmptyOnCqFailure) {
       .WillOnce(Return(Result<ibv_cq*>(ErrCode::ResourceExhausted)));
 
   ibv_gid gid{};
-  std::vector<NicResources> nics = {
-      {.ctx = &fakeCtx0_, .pd = &fakePd0_, .lid = 0, .gid = gid}};
+  auto nics = std::make_shared<std::vector<NicResources>>();
+  nics->push_back(makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0, gid));
   RdmaTransport transport(mockApi_, evbThread_.getEventBase(), nics, 0);
 
   auto data = transport.bind();
@@ -275,8 +316,8 @@ TEST_F(RdmaTransportTest, BindReturnsEmptyOnQpFailure) {
       .WillOnce(Return(Result<ibv_qp*>(ErrCode::ResourceExhausted)));
 
   ibv_gid gid{};
-  std::vector<NicResources> nics = {
-      {.ctx = &fakeCtx0_, .pd = &fakePd0_, .lid = 0, .gid = gid}};
+  auto nics = std::make_shared<std::vector<NicResources>>();
+  nics->push_back(makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0, gid));
   RdmaTransport transport(mockApi_, evbThread_.getEventBase(), nics, 0);
 
   auto data = transport.bind();
@@ -294,8 +335,9 @@ TEST_F(RdmaTransportTest, ConnectTransitionsQPs) {
   EXPECT_CALL(*mockApi_, modifyQp(_, _, _)).WillRepeatedly(Return(Ok()));
 
   ibv_gid gid{};
-  std::vector<NicResources> nics = {
-      {.ctx = &fakeCtx0_, .pd = &fakePd0_, .lid = 0x1234, .gid = gid}};
+  auto nics = std::make_shared<std::vector<NicResources>>();
+  nics->push_back(
+      makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0x1234, gid));
   RdmaTransport transport(mockApi_, evbThread_.getEventBase(), nics, 0);
   transport.bind();
 
@@ -321,8 +363,8 @@ TEST_F(RdmaTransportTest, ConnectRejectsQpCountMismatch) {
   EXPECT_CALL(*mockApi_, modifyQp(_, _, _)).WillRepeatedly(Return(Ok()));
 
   ibv_gid gid{};
-  std::vector<NicResources> nics = {
-      {.ctx = &fakeCtx0_, .pd = &fakePd0_, .lid = 0, .gid = gid}};
+  auto nics = std::make_shared<std::vector<NicResources>>();
+  nics->push_back(makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0, gid));
   RdmaTransport transport(mockApi_, evbThread_.getEventBase(), nics, 0);
   transport.bind();
 
@@ -340,8 +382,8 @@ TEST_F(RdmaTransportTest, ConnectRejectsQpCountMismatch) {
 
 TEST_F(RdmaTransportTest, ConnectWithoutBindFails) {
   ibv_gid gid{};
-  std::vector<NicResources> nics = {
-      {.ctx = &fakeCtx0_, .pd = &fakePd0_, .lid = 0, .gid = gid}};
+  auto nics = std::make_shared<std::vector<NicResources>>();
+  nics->push_back(makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0, gid));
   RdmaTransport transport(mockApi_, evbThread_.getEventBase(), nics, 0);
 
   // Don't call bind() - go straight to connect()
@@ -370,8 +412,8 @@ TEST_F(RdmaTransportTest, ShutdownDestroysResources) {
   EXPECT_CALL(*mockApi_, destroyCq(&fakeCq0_)).WillOnce(Return(Ok()));
 
   ibv_gid gid{};
-  std::vector<NicResources> nics = {
-      {.ctx = &fakeCtx0_, .pd = &fakePd0_, .lid = 0, .gid = gid}};
+  auto nics = std::make_shared<std::vector<NicResources>>();
+  nics->push_back(makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0, gid));
   RdmaTransport transport(mockApi_, evbThread_.getEventBase(), nics, 0);
   transport.bind();
 
@@ -619,8 +661,9 @@ class RdmaTransportDataPathTest : public ::testing::Test {
     EXPECT_CALL(*mockApi_, modifyQp(_, _, _)).WillRepeatedly(Return(Ok()));
 
     ibv_gid gid{};
-    std::vector<NicResources> nics = {
-        {.ctx = &fakeCtx_, .pd = &fakePd_, .lid = 0x1234, .gid = gid}};
+    auto nics = std::make_shared<std::vector<NicResources>>();
+    nics->push_back(
+        makeNic(&fakeDev_, &fakeCtx_, &fakePd_, mockApi_, 0x1234, gid));
 
     transport_ = std::make_unique<RdmaTransport>(
         mockApi_, evbThread_->getEventBase(), nics, kLocalDomainId);
