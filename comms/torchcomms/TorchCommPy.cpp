@@ -13,9 +13,11 @@
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/TorchCommFactory.hpp"
 #include "comms/torchcomms/TorchWork.hpp"
+#include "comms/torchcomms/hooks/common/OpNameHelper.hpp"
 
 // Forward declarations for hook submodule init
 void init_clog_hook_bindings(py::module_& m);
+void init_chash_hook_bindings(py::module_& m);
 void init_flight_recorder_bindings(py::module_& m);
 
 namespace py = pybind11;
@@ -2300,10 +2302,8 @@ Raises: RuntimeError if the ranks list is non-empty and the current rank is not 
       .def(
           "register_pre_hook",
           [](TorchComm& self, const py::function& callback) {
-            auto hook = [callback](
-                            OpName name,
-                            size_t op_id,
-                            const PreHookArgs& args) {
+            auto hook = [callback](size_t op_id, const PreHookArgs& args) {
+              auto name = getOpName(args);
               py::gil_scoped_acquire acquire;
               py::object py_args = std::visit(
                   [](const auto& a) -> py::object {
@@ -2651,6 +2651,8 @@ Args:
   auto hooks_mod = m.def_submodule("hooks");
   auto clog_mod = hooks_mod.def_submodule("clog");
   init_clog_hook_bindings(clog_mod);
+  auto chash_mod = hooks_mod.def_submodule("chash");
+  init_chash_hook_bindings(chash_mod);
   auto fr_mod = hooks_mod.def_submodule("fr");
   init_flight_recorder_bindings(fr_mod);
 

@@ -165,9 +165,24 @@ target_link_libraries(torchcomms PRIVATE glog::glog gflags::gflags fmt::fmt)
 target_link_libraries(torchcomms PRIVATE ${TORCH_LIBRARIES} nlohmann_json::nlohmann_json)
 
 # Clog Hook sources (compiled into _comms)
+# Common hooks sources
+set(TORCHCOMMS_HOOKS_COMMON_SOURCES "comms/torchcomms/hooks/common/SignatureBuilder.cpp")
+
 file(GLOB TORCHCOMMS_CLOG_SOURCES "comms/torchcomms/hooks/clog/ClogHook.cpp")
 file(GLOB TORCHCOMMS_CLOG_PYTHON_SOURCES
     "comms/torchcomms/hooks/clog/ClogHookPy.cpp")
+
+# Chash Hook CUDA kernel — enable CUDA language for HashKernel.cu
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    set(CMAKE_CUDA_ARCHITECTURES 90)
+endif()
+enable_language(CUDA)
+file(GLOB TORCHCOMMS_CHASH_SOURCES
+    "comms/torchcomms/hooks/chash/ChashHook.cpp"
+    "comms/torchcomms/hooks/chash/ChashHookCallbacks.cpp")
+file(GLOB TORCHCOMMS_CHASH_PYTHON_SOURCES
+    "comms/torchcomms/hooks/chash/ChashHookPy.cpp")
+set(TORCHCOMMS_HASH_KERNEL_SOURCES "comms/torchcomms/device/cuda/HashKernel.cu")
 
 # Flight Recorder sources (compiled into _comms)
 file(GLOB TORCHCOMMS_FR_SOURCES "comms/torchcomms/hooks/fr/FlightRecorder.cpp")
@@ -177,8 +192,12 @@ file(GLOB TORCHCOMMS_FR_PYTHON_SOURCES "comms/torchcomms/hooks/fr/FlightRecorder
 add_library(torchcomms_comms MODULE
     ${TORCHCOMMS_PYTHON_SOURCES}
     ${HOOKS_PYTHON_SOURCES}
+    ${TORCHCOMMS_HOOKS_COMMON_SOURCES}
     ${TORCHCOMMS_CLOG_SOURCES}
     ${TORCHCOMMS_CLOG_PYTHON_SOURCES}
+    ${TORCHCOMMS_CHASH_SOURCES}
+    ${TORCHCOMMS_CHASH_PYTHON_SOURCES}
+    ${TORCHCOMMS_HASH_KERNEL_SOURCES}
     ${TORCHCOMMS_FR_SOURCES}
     ${TORCHCOMMS_FR_PYTHON_SOURCES}
 )
