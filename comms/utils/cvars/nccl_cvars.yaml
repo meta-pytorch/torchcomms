@@ -2268,14 +2268,6 @@ cvars:
      algostat - lightweight algorithm counting (no CUDA events/worker thread).
                 Use ncclx::colltrace::dumpAlgoStat(comm) to retrieve stats.
 
- - name        : NCCL_COLLTRACE_USE_NEW_COLLTRACE
-   type        : bool
-   default     : true
-   description : |-
-     Use new colltrace implementation. This is a temporary flag to enable
-     new colltrace implementation. We will remove this flag once the new
-     colltrace implementation is fully tested and stable.
-
  - name        : NCCL_COLLTRACE_PENDING_QUEUE_SIZE
    type        : int
    default     : 4096
@@ -2378,15 +2370,6 @@ cvars:
      does not finish within the timeout, colltrace will crash the process.
      The default value is 10 minutes. The gloalhint from the user program takes
      precedence over this env var for the actual time colltrace will wait.
-
- - name        : NCCL_COLLTRACE_EVENT_BLOCKING_SYNC
-   type        : bool
-   default     : False
-   description : |-
-     Determines whether colltrace uses
-     1) cudaEventSynchronize + cudaEvent created with cudaEventBlockingSync; or
-     2) periodic cudaEventQuery + current thread sleep
-     to wait for reference events to finish. By default we use 2).
 
  - name        : NCCL_MAPPERTRACE_COLL_RECORD_MAX
    type        : uint64_t

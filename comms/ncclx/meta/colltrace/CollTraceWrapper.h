@@ -4,6 +4,7 @@
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/utils/colltrace/CollMetadata.h"
+#include "comms/utils/colltrace/CollTraceHandle.h"
 
 #include "comm.h"
 #include "nccl.h"
@@ -23,3 +24,10 @@ getHandleFromNcclKernelPlan(ncclKernelPlan& plan, cudaStream_t stream);
 std::unordered_map<std::string, std::string> collTraceGetInfo();
 
 } // namespace meta::comms::ncclx
+
+namespace ncclx::colltrace {
+
+std::shared_ptr<meta::comms::colltrace::ICollTraceHandle>
+collTraceBaselineGetHandle(ncclKernelPlan* plan, cudaStream_t stream);
+
+} // namespace ncclx::colltrace

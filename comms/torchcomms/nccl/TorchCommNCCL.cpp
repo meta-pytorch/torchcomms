@@ -349,7 +349,12 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::reconfigure(
               static_cast<int>(excludeRanks.size()),
               &new_comm,
               nullptr,
-              NCCL_SHRINK_ABORT),
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 27, 0)
+              NCCL_SHRINK_ABORT
+#else
+              0
+#endif
+              ),
           "NCCL commShrink failed during reconfigure");
     } else {
       const ncclUniqueId* uniqueIdPtr = nullptr;

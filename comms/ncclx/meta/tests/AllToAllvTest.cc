@@ -2,6 +2,7 @@
 
 #include <comm.h>
 #include <folly/init/Init.h>
+#include <folly/json/json.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <nccl.h>
@@ -17,7 +18,7 @@
 
 #include "comms/testinfra/AlgoTestUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-// #include "meta/colltrace/CollTrace.h"
+#include "meta/commDump.h"
 #include "meta/hints/GlobalHints.h"
 
 using testinfra::AlgoRAII;
@@ -29,7 +30,7 @@ class AllToAllvTest
   AllToAllvTest() = default;
   void SetUp() override {
 #ifdef TEST_ENABLE_CTRAN
-    // setenv("NCCL_COLLTRACE", "trace", 0);
+    setenv("NCCL_COLLTRACE", "trace", 0);
 #endif
 
     NcclxBaseTestFixture::SetUp();
@@ -245,25 +246,20 @@ class AllToAllvTest
     CUDACHECK_TEST(cudaFree(recvBuf));
 
 #ifdef TEST_ENABLE_CTRAN
-    // FIXME: Temp disable because causing test to segfault
-    /*
-    // CollTrace is updated by a separate thread, need wait for it to finish to
-    // avoid flaky test
-    comm->ctranComm_->collTrace_->waitForWorkerFinishQueue();
-    auto dump = comm->ctranComm_->collTrace_->dump();
-    EXPECT_EQ(dump.pastColls.size(), 1);
+    if (comm->newCollTrace) {
+      EXPECT_TRUE(
+          meta::comms::ncclx::waitForCollTraceDrain(*comm->newCollTrace));
 
-    for (auto& coll : dump.pastColls) {
-      if (NCCL_ALLTOALLV_ALGO == NCCL_ALLTOALLV_ALGO::ctran) {
-        EXPECT_EQ(coll.dataType, ncclInt);
-        EXPECT_EQ(coll.opName, "AllToAllV");
-        EXPECT_EQ(coll.codepath, CollTraceColl::Codepath::CTRAN);
-      } else {
-        EXPECT_EQ(coll.opName, "SendRecv");
-        EXPECT_EQ(coll.codepath, CollTraceColl::Codepath::BASELINE);
+      auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+      if (dumpMap.count("CT_pastColls")) {
+        auto ctPastColls = folly::parseJson(dumpMap["CT_pastColls"]);
+        EXPECT_EQ(ctPastColls.size(), 1);
+        for (int i = 0; i < static_cast<int>(ctPastColls.size()); i++) {
+          EXPECT_EQ(ctPastColls[i]["collId"].asInt(), i);
+          EXPECT_EQ(ctPastColls[i]["opCount"].asInt(), i);
+        }
       }
     }
-    */
 #endif
   }
 
@@ -554,25 +550,19 @@ class AllToAllvTest
     CUDACHECK_TEST(cudaFree(recvBuf));
 
 #ifdef TEST_ENABLE_CTRAN
-    // FIXME: Temp disable because causing test to segfault
-    /*
-    // CollTrace is updated by a separate thread, need wait for it to finish to
-    // avoid flaky test
-    comm->ctranComm_->collTrace_->waitForWorkerFinishQueue();
-    auto dump = comm->ctranComm_->collTrace_->dump();
-    EXPECT_EQ(dump.pastColls.size(), 1);
+    if (comm->newCollTrace) {
+      EXPECT_TRUE(
+          meta::comms::ncclx::waitForCollTraceDrain(*comm->newCollTrace));
 
-    for (auto& coll : dump.pastColls) {
-      if (NCCL_ALLTOALLV_ALGO == NCCL_ALLTOALLV_ALGO::ctran) {
-        EXPECT_EQ(coll.dataType, getNcclDataType<T>());
-        EXPECT_EQ(coll.opName, "AllToAllV");
-        EXPECT_EQ(coll.codepath, CollTraceColl::Codepath::CTRAN);
-      } else {
-        EXPECT_EQ(coll.opName, "SendRecv");
-        EXPECT_EQ(coll.codepath, CollTraceColl::Codepath::BASELINE);
+      auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+      if (dumpMap.count("CT_pastColls")) {
+        auto ctPastColls = folly::parseJson(dumpMap["CT_pastColls"]);
+        // Don't assert exact size here because run<T>() can be called
+        // multiple times on the same comm (e.g., AllToAllvWithHintOverride),
+        // and newCollTrace accumulates entries across calls.
+        EXPECT_GE(ctPastColls.size(), 1);
       }
     }
-    */
 #endif
   }
   template <typename T>

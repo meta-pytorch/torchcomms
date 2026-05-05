@@ -10,4 +10,8 @@
 namespace meta::comms::ncclx {
 std::unordered_map<std::string, std::string> dumpNewCollTrace(
     meta::comms::colltrace::ICollTrace& colltrace);
-}
+
+bool waitForCollTraceDrain(
+    meta::comms::colltrace::ICollTrace& colltrace,
+    int timeoutMs = 3000);
+} // namespace meta::comms::ncclx

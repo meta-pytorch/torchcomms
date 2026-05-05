@@ -44,7 +44,6 @@ class CollTraceTest : public NcclxBaseTestFixture {
          "HPC_JOB_NAME,HPC_JOB_VERSION,HPC_JOB_ATTEMPT_INDEX"},
         {"NCCL_CTRAN_ENABLE", "1"},
         {"NCCL_COLLTRACE", "trace"},
-        {"NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1"},
     });
 
     CUDACHECK_TEST(cudaStreamCreate(&this->stream));
@@ -165,8 +164,7 @@ class CollTraceTest : public NcclxBaseTestFixture {
 TEST_F(CollTraceTest, NewCollTraceAllReduce) {
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
+
   const int count = 1048576;
   const int nColl = 10;
 
@@ -202,8 +200,6 @@ TEST_F(CollTraceTest, MixedCtranBaseline) {
       EnvRAII(NCCL_CTRAN_ALLGATHER_CHECKSUM_SAMPLE_RATE, 1);
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
 
   constexpr int count = 1048576;
   constexpr int nColl = 10;
@@ -250,8 +246,6 @@ TEST_F(CollTraceTest, TestBcastCtranEx) {
   auto ctranGuard = EnvRAII(NCCL_CTRAN_ENABLE, true);
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
 
   constexpr int count = 1048576;
   constexpr int nColl = 10;
@@ -321,8 +315,6 @@ TEST_F(CollTraceTest, GroupedSendRecv) {
 
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
 
   const int count = 1048576;
   const int nColl = 10;
@@ -372,8 +364,6 @@ TEST_F(CollTraceTest, GroupedSendRecvCtran) {
 
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
 
   const int count = 1048576;
   const int nColl = 10;
@@ -430,8 +420,6 @@ TEST_F(CollTraceTest, SimulatePPSendRecv) {
 
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
 
   const int count = 1048576;
   const int nColl = 10;
@@ -494,8 +482,6 @@ TEST_F(CollTraceTest, SimulateCtranPPSendRecv) {
 
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
 
   const int count = 1048576;
   const int nColl = 10;
@@ -569,8 +555,6 @@ TEST_F(CollTraceTest, winPutWait) {
 
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
 
   auto statex = comm->ctranComm_->statex_.get();
   ASSERT_NE(statex, nullptr);
@@ -699,8 +683,7 @@ TEST_F(CollTraceTest, DumpWithUnfinished) {
 
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
+
   const int count = 1048576;
   const int nColl = 10;
 
@@ -755,8 +738,7 @@ TEST_F(CollTraceTest, DumpWithUnfinishedCtran) {
 
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
+
   const int count = 1048576;
   const int nColl = 10;
 
@@ -808,8 +790,6 @@ TEST_F(CollTraceTest, GroupedAllReduce) {
   auto envGuard = EnvRAII(NCCL_ALLREDUCE_ALGO, NCCL_ALLREDUCE_ALGO::orig);
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
 
   const int count = 1048576;
   const int nColl = 10;
@@ -846,8 +826,6 @@ TEST_F(CollTraceTest, GroupedSendRecvAllReduce) {
 
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
 
   const int count = 1048576;
   const int nColl = 10;
@@ -887,8 +865,7 @@ TEST_F(CollTraceTest, GroupedSendRecvAllReduce) {
 TEST_F(CollTraceTest, CollTraceQueryInCapture) {
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
+
   const int count = 1048576;
   const int nColl = 20;
 
@@ -925,8 +902,6 @@ TEST_F(CollTraceTest, CollTraceTestEnqueueMoreThanPendingQueue) {
 
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
 
   const auto kNumElements = 8388608;
   const auto kNumIters = CollTraceConfig::kDefaultMaxPendingQueueSize;

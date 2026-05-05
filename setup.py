@@ -9,10 +9,34 @@ import pathlib
 import shlex
 import sys
 
-import torch
 from setuptools import Extension, find_packages, setup
 from setuptools.command.build_ext import build_ext as build_ext_orig
-from torch.utils.cpp_extension import _get_pybind11_abi_build_flags
+
+try:
+    import torch
+    from torch.utils.cpp_extension import _get_pybind11_abi_build_flags
+except ModuleNotFoundError:
+    # Fail with a helpful message — torch is required for all torchcomms builds.
+    print(
+        "\n"
+        "ERROR: PyTorch is required to build torchcomms but was not found.\n"
+        "\n"
+        "If PyTorch is already installed (e.g. in a conda env), use:\n"
+        "  pip install --no-build-isolation -e .\n"
+        "\n"
+        "Otherwise, install PyTorch first. For CUDA builds:\n"
+        "  pip install torch --index-url https://download.pytorch.org/whl/cu128\n"
+        "\n"
+        "  Adjust the CUDA suffix (cu118, cu121, cu124, cu126, cu128) to match your\n"
+        "  installed CUDA toolkit version (check with: nvcc --version).\n"
+        "\n"
+        "If using the oss conda env, install PyTorch with:\n"
+        "  pip install torch --index-url https://download.pytorch.org/whl/cu128\n"
+        "  (adjust cu128 to match your CUDA version: cu118, cu121, cu124, cu126, cu128)\n"
+        "  (check your CUDA version with: nvcc --version)\n",
+        file=sys.stderr,
+    )
+    raise
 
 
 def flag_enabled(flag: str, default: bool):
