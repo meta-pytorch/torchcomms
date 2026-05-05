@@ -26,6 +26,10 @@ namespace alltoall {
 struct KernelArgs {
   const void* sendbuff;
   void* recvbuff;
+  // count==0 signals a no-op to the kernel: skip self-copy and NVL send/recv
+  // and only perform GPE start/terminate sync. Set on the pure-IB path (no
+  // local NVL peers), where the self-copy is issued via cudaMemcpyAsync from
+  // the host.
   size_t count;
   commDataType_t datatype;
 };
