@@ -359,8 +359,7 @@ using PreHookArgs = std::variant<
     BatchOpIssuePreHookArgs,
     FinalizePreHookArgs>;
 
-using PreHook =
-    std::function<void(OpName name, size_t op_id, const PreHookArgs& args)>;
+using PreHook = std::function<void(size_t op_id, const PreHookArgs& args)>;
 
 // -- Per-collective post-hook argument structs --
 //
