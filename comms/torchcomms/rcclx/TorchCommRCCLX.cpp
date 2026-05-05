@@ -385,6 +385,15 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::reconfigure(
   return c10::make_intrusive<TorchWorkCompleted>();
 }
 
+void TorchCommRCCLX::abort() {
+  if (options_.enable_reconfigure) {
+    revokeRcclxComm();
+  } else {
+    abortRcclxComm();
+  }
+  comm_state_ = CommState::ERROR;
+}
+
 void TorchCommRCCLX::finalize() {
   if (init_state_ == InitializationState::UNINITIALIZED) {
     throw std::runtime_error("TorchCommRCCLX not initialized");
