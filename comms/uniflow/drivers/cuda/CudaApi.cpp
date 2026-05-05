@@ -80,6 +80,42 @@ Status CudaApi::memcpyAsync(
   return Ok();
 }
 
+#if CUDART_VERSION >= 12080
+Status CudaApi::memcpyBatchAsync(
+    void* const* dsts,
+    const void* const* srcs,
+    const size_t* sizes,
+    size_t count,
+    cudaStream_t stream) {
+  cudaMemcpyAttributes attr{};
+  attr.srcAccessOrder = cudaMemcpySrcAccessOrderStream;
+  size_t attrsIdx = 0;
+#if CUDART_VERSION < 13000
+  // CUDA 12.8 takes non-const dsts/srcs/sizes and a trailing failIdx.
+  size_t failIdx = SIZE_MAX;
+  CUDA_CHECK(
+      cudaMemcpyBatchAsync(
+          const_cast<void**>(dsts),
+          const_cast<void**>(srcs),
+          const_cast<size_t*>(sizes),
+          count,
+          &attr,
+          &attrsIdx,
+          1,
+          &failIdx,
+          stream),
+      ErrCode::DriverError);
+#else
+  // CUDA 13.0+ took const qualifiers and removed failIdx.
+  CUDA_CHECK(
+      cudaMemcpyBatchAsync(
+          dsts, srcs, sizes, count, &attr, &attrsIdx, 1, stream),
+      ErrCode::DriverError);
+#endif
+  return Ok();
+}
+#endif
+
 Status CudaApi::memcpyPeerAsync(
     void* dst,
     int dstDevice,

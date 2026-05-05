@@ -115,23 +115,23 @@ struct TransportSession {
   std::shared_ptr<CudaDriverApi> driverApi;
   std::unique_ptr<ScopedEventBaseThread> evbThread;
   std::unique_ptr<NVLinkTransportFactory> factory;
-  VmmAllocation srcAlloc;
-  VmmAllocation dstAlloc;
+  std::unique_ptr<VmmAllocation> srcAlloc;
+  std::unique_ptr<VmmAllocation> dstAlloc;
   std::unique_ptr<Transport> transport;
   std::unique_ptr<RegisteredSegment> localReg;
   std::unique_ptr<RemoteRegisteredSegment> remoteReg;
+  CUmemAllocationHandleType handleType{};
 };
 
-/// Create factory, allocate VMM buffers, create transport, connect,
-/// register segments, and exchange handles with peer.
-/// Returns nullptr on failure.
-std::unique_ptr<TransportSession> setupTransport(
-    const BenchmarkConfig& config,
+/// Create factory, create transport, and connect to peer.
+/// Buffer allocation and segment registration happen per-size via
+/// setupBuffersForSize() to avoid large VMM mappings inflating
+/// small-message latency through TLB pressure.
+std::unique_ptr<TransportSession> setupConnection(
     std::vector<PeerConnection>& peers,
     const BootstrapConfig& bootstrap) {
   auto session = std::make_unique<TransportSession>();
 
-  // --- Device & buffer init ---
   CudaApi cudaApi;
   auto setDevStatus = cudaApi.setDevice(bootstrap.localRank);
   if (!setDevStatus) {
@@ -145,53 +145,8 @@ std::unique_ptr<TransportSession> setupTransport(
   session->evbThread = std::make_unique<ScopedEventBaseThread>("bench-evb");
   session->factory = std::make_unique<NVLinkTransportFactory>(
       bootstrap.localRank, session->evbThread->getEventBase());
+  session->handleType = session->factory->handleType();
 
-  const auto handleType = session->factory->handleType();
-
-  auto srcStatus = session->srcAlloc.init(
-      *session->driverApi, bootstrap.localRank, config.maxSize, handleType);
-  if (srcStatus.hasError()) {
-    UNIFLOW_LOG_ERROR(
-        "NVLinkBandwidthBenchmark: src VmmAllocation failed: {}",
-        srcStatus.error().message());
-    return nullptr;
-  }
-
-  auto dstStatus = session->dstAlloc.init(
-      *session->driverApi, bootstrap.localRank, config.maxSize, handleType);
-  if (dstStatus.hasError()) {
-    UNIFLOW_LOG_ERROR(
-        "NVLinkBandwidthBenchmark: dst VmmAllocation failed: {}",
-        dstStatus.error().message());
-    return nullptr;
-  }
-
-  // Fill source with pattern, zero destination.
-  auto srcMemsetErr =
-      cudaMemset(session->srcAlloc.ptr(), 0xAB, session->srcAlloc.size());
-  if (srcMemsetErr != cudaSuccess) {
-    UNIFLOW_LOG_ERROR(
-        "NVLinkBandwidthBenchmark: cudaMemset(src) failed: {}",
-        cudaGetErrorString(srcMemsetErr));
-    return nullptr;
-  }
-  auto dstMemsetErr =
-      cudaMemset(session->dstAlloc.ptr(), 0, session->dstAlloc.size());
-  if (dstMemsetErr != cudaSuccess) {
-    UNIFLOW_LOG_ERROR(
-        "NVLinkBandwidthBenchmark: cudaMemset(dst) failed: {}",
-        cudaGetErrorString(dstMemsetErr));
-    return nullptr;
-  }
-  auto syncErr = cudaDeviceSynchronize();
-  if (syncErr != cudaSuccess) {
-    UNIFLOW_LOG_ERROR(
-        "NVLinkBandwidthBenchmark: cudaDeviceSynchronize failed: {}",
-        cudaGetErrorString(syncErr));
-    return nullptr;
-  }
-
-  // --- Transport connect ---
   auto localTopology = session->factory->getTopology();
   auto remoteTopologyResult =
       exchangeMetadata(*peers[0].ctrl, localTopology, bootstrap.isRank0());
@@ -231,31 +186,90 @@ std::unique_ptr<TransportSession> setupTransport(
     return nullptr;
   }
 
-  // --- Segment registration ---
+  return session;
+}
+
+/// Allocate VMM buffers of the given size, register segments, and
+/// exchange handles with the peer. Called per message size to ensure
+/// the VMM mapping size matches the transfer size.
+bool setupBuffersForSize(
+    TransportSession& session,
+    size_t bufferSize,
+    std::vector<PeerConnection>& peers,
+    const BootstrapConfig& bootstrap) {
+  session.localReg.reset();
+  session.remoteReg.reset();
+  session.srcAlloc.reset();
+  session.dstAlloc.reset();
+
+  session.srcAlloc = std::make_unique<VmmAllocation>();
+  auto srcStatus = session.srcAlloc->init(
+      *session.driverApi, bootstrap.localRank, bufferSize, session.handleType);
+  if (srcStatus.hasError()) {
+    UNIFLOW_LOG_ERROR(
+        "NVLinkBandwidthBenchmark: src VmmAllocation failed: {}",
+        srcStatus.error().message());
+    return false;
+  }
+
+  session.dstAlloc = std::make_unique<VmmAllocation>();
+  auto dstStatus = session.dstAlloc->init(
+      *session.driverApi, bootstrap.localRank, bufferSize, session.handleType);
+  if (dstStatus.hasError()) {
+    UNIFLOW_LOG_ERROR(
+        "NVLinkBandwidthBenchmark: dst VmmAllocation failed: {}",
+        dstStatus.error().message());
+    return false;
+  }
+
+  auto srcMemsetErr =
+      cudaMemset(session.srcAlloc->ptr(), 0xAB, session.srcAlloc->size());
+  if (srcMemsetErr != cudaSuccess) {
+    UNIFLOW_LOG_ERROR(
+        "NVLinkBandwidthBenchmark: cudaMemset(src) failed: {}",
+        cudaGetErrorString(srcMemsetErr));
+    return false;
+  }
+  auto dstMemsetErr =
+      cudaMemset(session.dstAlloc->ptr(), 0, session.dstAlloc->size());
+  if (dstMemsetErr != cudaSuccess) {
+    UNIFLOW_LOG_ERROR(
+        "NVLinkBandwidthBenchmark: cudaMemset(dst) failed: {}",
+        cudaGetErrorString(dstMemsetErr));
+    return false;
+  }
+  auto syncErr = cudaDeviceSynchronize();
+  if (syncErr != cudaSuccess) {
+    UNIFLOW_LOG_ERROR(
+        "NVLinkBandwidthBenchmark: cudaDeviceSynchronize failed: {}",
+        cudaGetErrorString(syncErr));
+    return false;
+  }
+
   Segment srcSeg(
-      session->srcAlloc.ptr(),
-      session->srcAlloc.size(),
+      session.srcAlloc->ptr(),
+      session.srcAlloc->size(),
       MemoryType::VRAM,
       bootstrap.localRank);
-  auto srcRegResult = session->factory->registerSegment(srcSeg);
+  auto srcRegResult = session.factory->registerSegment(srcSeg);
   if (!srcRegResult) {
     UNIFLOW_LOG_ERROR(
         "NVLinkBandwidthBenchmark: registerSegment(src) failed: {}",
         srcRegResult.error().toString());
-    return nullptr;
+    return false;
   }
 
   Segment dstSeg(
-      session->dstAlloc.ptr(),
-      session->dstAlloc.size(),
+      session.dstAlloc->ptr(),
+      session.dstAlloc->size(),
       MemoryType::VRAM,
       bootstrap.localRank);
-  auto dstRegResult = session->factory->registerSegment(dstSeg);
+  auto dstRegResult = session.factory->registerSegment(dstSeg);
   if (!dstRegResult) {
     UNIFLOW_LOG_ERROR(
         "NVLinkBandwidthBenchmark: registerSegment(dst) failed: {}",
         dstRegResult.error().toString());
-    return nullptr;
+    return false;
   }
 
   auto dstPayload = dstRegResult.value()->serialize();
@@ -265,35 +279,35 @@ std::unique_ptr<TransportSession> setupTransport(
     UNIFLOW_LOG_ERROR(
         "NVLinkBandwidthBenchmark: handle exchange failed: {}",
         remotePayloadResult.error().toString());
-    return nullptr;
+    return false;
   }
 
-  auto remoteHandleResult = session->factory->importSegment(
-      session->dstAlloc.size(), std::move(remotePayloadResult).value());
+  auto remoteHandleResult = session.factory->importSegment(
+      session.dstAlloc->size(), std::move(remotePayloadResult).value());
   if (!remoteHandleResult) {
     UNIFLOW_LOG_ERROR(
         "NVLinkBandwidthBenchmark: importSegment failed: {}",
         remoteHandleResult.error().toString());
-    return nullptr;
+    return false;
   }
 
-  session->localReg = std::make_unique<RegisteredSegment>(
+  session.localReg = std::make_unique<RegisteredSegment>(
       SegmentTest::makeRegistered(srcSeg, std::move(srcRegResult.value())));
 
   auto* nvlinkRemote = dynamic_cast<NVLinkRemoteRegistrationHandle*>(
       remoteHandleResult.value().get());
   if (!nvlinkRemote) {
     UNIFLOW_LOG_ERROR("NVLinkBandwidthBenchmark: failed to cast remote handle");
-    return nullptr;
+    return false;
   }
 
-  session->remoteReg =
+  session.remoteReg =
       std::make_unique<RemoteRegisteredSegment>(SegmentTest::makeRemote(
           nvlinkRemote->mappedPtr(),
           nvlinkRemote->mappedSize(),
           std::move(remoteHandleResult.value())));
 
-  return session;
+  return true;
 }
 
 /// Pre-fault VMM memory paths with a full-size put+get to populate page tables,
@@ -314,7 +328,7 @@ bool prefaultAndVerify(TransportSession& session, size_t maxSize) {
   }
 
   // 2. Zero srcAlloc so we can verify the get overwrites it.
-  auto memsetErr = cudaMemset(session.srcAlloc.ptr(), 0, maxSize);
+  auto memsetErr = cudaMemset(session.srcAlloc->ptr(), 0, maxSize);
   if (memsetErr != cudaSuccess) {
     UNIFLOW_LOG_ERROR(
         "NVLinkBandwidthBenchmark: verification cudaMemset failed: {}",
@@ -337,7 +351,7 @@ bool prefaultAndVerify(TransportSession& session, size_t maxSize) {
   uint8_t hostBuf[kCheckSize] = {};
   auto copyErr = cudaMemcpy(
       hostBuf,
-      session.srcAlloc.ptr(),
+      session.srcAlloc->ptr(),
       std::min(maxSize, kCheckSize),
       cudaMemcpyDeviceToHost);
   if (copyErr != cudaSuccess) {
@@ -360,7 +374,7 @@ bool prefaultAndVerify(TransportSession& session, size_t maxSize) {
 
   // Refill srcAlloc with 0xAB for the benchmark loop.
   auto refillErr =
-      cudaMemset(session.srcAlloc.ptr(), 0xAB, session.srcAlloc.size());
+      cudaMemset(session.srcAlloc->ptr(), 0xAB, session.srcAlloc->size());
   if (refillErr != cudaSuccess) {
     UNIFLOW_LOG_ERROR(
         "NVLinkBandwidthBenchmark: refill cudaMemset failed: {}",
@@ -407,22 +421,31 @@ std::vector<BenchmarkResult> runBenchmarkLoop(
 
   auto runDirection = [&](const std::string& dir) {
     for (auto size : sizes) {
+      if (!setupBuffersForSize(session, size, peers, bootstrap)) {
+        UNIFLOW_LOG_ERROR(
+            "NVLinkBandwidthBenchmark: setupBuffersForSize failed for size {}",
+            size);
+        return;
+      }
+
+      if (isActiveRank) {
+        if (!prefaultAndVerify(session, size)) {
+          UNIFLOW_LOG_ERROR(
+              "NVLinkBandwidthBenchmark: prefault failed for size {}", size);
+          return;
+        }
+      }
+
       const int totalIterations = config.warmupIterations + config.iterations;
       std::vector<double> latenciesUs;
       latenciesUs.reserve(config.iterations);
 
-      // Prepare transfer requests outside the timed region.
-      // Build loopCount identical requests so they can be batched into a
-      // single transport call, pipelining memcpys with one event — matching
-      // nvbandwidth's methodology.
       TransferRequest singleReq{
           .local = session.localReg->span(size_t{0}, size),
           .remote = session.remoteReg->span(size_t{0}, size),
       };
       std::vector<TransferRequest> batchReqs(config.loopCount, singleReq);
 
-      // Per-size barrier keeps rank 1 (passive in unidirectional mode)
-      // in sync with rank 0, preventing early exit and TCP disconnect.
       auto barrierStatus = barrier(peers, bootstrap);
       if (!barrierStatus) {
         UNIFLOW_LOG_ERROR(
@@ -527,13 +550,11 @@ std::vector<BenchmarkResult> NVLinkBandwidthBenchmark::run(
     return {};
   }
 
-  auto session = setupTransport(config, peers, bootstrap);
+  auto session = setupConnection(peers, bootstrap);
   if (!session) {
     return {};
   }
 
-  // In unidirectional mode only rank 0 issues transfers while rank 1 just
-  // participates in barriers (matching nvbandwidth methodology).
   const bool isActiveRank = config.bidirectional || bootstrap.isRank0();
 
   UNIFLOW_LOG_INFO(
@@ -545,12 +566,6 @@ std::vector<BenchmarkResult> NVLinkBandwidthBenchmark::run(
       config.loopCount,
       config.bidirectional ? "bi" : "uni",
       isActiveRank);
-
-  if (isActiveRank) {
-    if (!prefaultAndVerify(*session, config.maxSize)) {
-      return {};
-    }
-  }
 
   auto results = runBenchmarkLoop(
       config, peers, bootstrap, *session, name(), isActiveRank);
