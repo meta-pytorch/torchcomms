@@ -228,6 +228,10 @@ TorchCommXCCL::~TorchCommXCCL() {
       xccl_comm_ = nullptr;
     }
   }
+
+  // We need to detach the memory hook in case finalize is not called,
+  // so that we don't encounter a memory corruption.
+  detachMemoryHook();
 }
 
 void TorchCommXCCL::init(
@@ -357,6 +361,9 @@ void TorchCommXCCL::init(
 
   // Start timeout watchdog thread
   timeout_thread_ = std::thread(&TorchCommXCCL::timeoutWatchdog, this);
+
+  // Register comm with CachingAllocator
+  attachMemoryHook();
 }
 
 void TorchCommXCCL::finalize() {
@@ -445,6 +452,7 @@ void TorchCommXCCL::finalize() {
   // Destroy XCCL communicator
   // TODO: should probably not call this after calling abort.
   if (xccl_comm_) {
+    detachMemoryHook();
     onecclResult_t result = xccl_api_->commDestroy(xccl_comm_);
     if (result != onecclSuccess) [[unlikely]] {
       TC_LOG(ERROR) << "XCCL commDestroy failed: "
@@ -455,6 +463,7 @@ void TorchCommXCCL::finalize() {
 }
 
 void TorchCommXCCL::abortXcclComm() {
+  detachMemoryHook();
   if (xccl_comm_) {
     xccl_api_->commAbort(xccl_comm_);
     xccl_comm_ = nullptr;
@@ -2254,6 +2263,51 @@ std::shared_ptr<TorchCommBackend> TorchCommXCCL::split(
   new_torchcomm->xpu_api_ = xpu_api_;
   new_torchcomm->init(device_, name, options);
   return new_torchcomm;
+}
+
+void TorchCommXCCL::register_address(
+    const TorchCommXCCL::AddressWithLen& addr) {
+  // We got a register after we got rid of the comm. Is this a fatal error?
+  if (xccl_comm_ == nullptr) {
+    return;
+  }
+
+  if (memoryRegistrationHandles_.contains(addr.addr)) {
+    throw std::runtime_error("Memory already registered with XCCL");
+  }
+  void* handle = nullptr;
+  onecclResult_t result =
+      xccl_api_->commRegister(xccl_comm_, addr.addr, addr.len, &handle);
+
+  if (result != onecclSuccess) [[unlikely]] {
+    throw XCCLException(
+        *xccl_api_, "Failed to register memory with XCCL", result);
+  }
+  memoryRegistrationHandles_.emplace(addr.addr, RegistrationHandle(handle));
+}
+
+void TorchCommXCCL::deregister_address(const TorchCommXCCL::Address& addr) {
+  // We got a deregister after we got rid of the comm. Is this a fatal error?
+  if (xccl_comm_ == nullptr) {
+    return;
+  }
+
+  auto it = memoryRegistrationHandles_.find(addr.addr);
+  if (it == memoryRegistrationHandles_.end()) {
+    // it's possible that the memory was registered for a different comm,
+    // however failed registration for this comm.
+    return;
+  }
+
+  void* handle = it->second.regHandle;
+  onecclResult_t result = xccl_api_->commDeregister(xccl_comm_, handle);
+
+  if (result != onecclSuccess) [[unlikely]] {
+    throw XCCLException(
+        *xccl_api_, "Failed to deregister memory with XCCL", result);
+  }
+
+  memoryRegistrationHandles_.erase(it);
 }
 
 XCCLException::XCCLException(

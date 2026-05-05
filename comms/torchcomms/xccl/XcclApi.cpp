@@ -62,21 +62,17 @@ onecclResult_t DefaultXcclApi::commSplit(
 // Remove [[maybe_unused]] when implementing this function once
 // onecclCommRegister is available.
 onecclResult_t DefaultXcclApi::commRegister(
-    [[maybe_unused]] onecclComm_t comm,
-    [[maybe_unused]] void* buffer,
-    [[maybe_unused]] size_t size,
-    [[maybe_unused]] void** handle) {
-  // return onecclCommRegister(comm, buffer, size, handle);
-  return onecclNotImplemented;
+    onecclComm_t comm,
+    void* buffer,
+    size_t size,
+    void** handle) {
+  return onecclCommRegister(comm, buffer, size, handle);
 }
 
 // Remove [[maybe_unused]] when implementing this function once
 // onecclCommDeregister is available.
-onecclResult_t DefaultXcclApi::commDeregister(
-    [[maybe_unused]] onecclComm_t comm,
-    [[maybe_unused]] void* handle) {
-  // return onecclCommDeregister(comm, handle);
-  return onecclNotImplemented;
+onecclResult_t DefaultXcclApi::commDeregister(onecclComm_t comm, void* handle) {
+  return onecclCommDeregister(comm, handle);
 }
 
 onecclResult_t DefaultXcclApi::send(
