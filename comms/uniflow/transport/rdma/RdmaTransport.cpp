@@ -827,13 +827,13 @@ void RdmaTransport::pollCompletions(uint32_t id, bool retry) {
                 taskId,
                 numWrs,
                 wc.qp_num,
-                wc.status);
-            it->second->complete(
-                Err(ErrCode::DriverError,
-                    "RDMA WR failed: wr_id=" + std::to_string(wc.wr_id) +
-                        " taskId=" + std::to_string(taskId) +
-                        " numWrs=" + std::to_string(numWrs) +
-                        " status=" + std::to_string(wc.status)));
+                static_cast<int>(wc.status));
+            it->second->complete(Err(
+                ErrCode::DriverError,
+                "RDMA WR failed: wr_id=" + std::to_string(wc.wr_id) +
+                    " taskId=" + std::to_string(taskId) +
+                    " numWrs=" + std::to_string(numWrs) +
+                    " status=" + std::to_string(static_cast<int>(wc.status))));
           }
 
           // decrement counter

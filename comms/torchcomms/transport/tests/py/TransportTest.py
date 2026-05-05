@@ -2,268 +2,317 @@
 # pyre-unsafe
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
-import pickle
 import unittest
 
 import torch
-from torchcomms._transport import RdmaMemory, RdmaTransport
+from torchcomms._transport import (
+    MemoryType,
+    MultiTransportFactory,
+    Segment,
+    TransferRequest,
+)
 
 
 class TransportTest(unittest.TestCase):
-    def setUp(self):
-        if not RdmaTransport.supported():
-            self.skipTest("RdmaTransport is not supported on this system")
-
-    def test_construct(self) -> None:
-        _ = RdmaTransport(torch.device("cuda:0"))
-
-    def test_rdma_memory_from_tensor(self) -> None:
-        tensor = torch.arange(1024, dtype=torch.uint8, device="cuda:0")
-        compare_tensor = torch.zeros_like(tensor, device="cuda:1")
-
-        tensor_mem = RdmaMemory(tensor)
-        compare_mem = RdmaMemory(compare_tensor)
-
-        tensor_view = tensor_mem.to_view()
-        compare_view = compare_mem.to_view()
-
-        self.assertEqual(tensor_view.size(), tensor.nbytes)
-        self.assertAlmostEqual(tensor_view.size(), compare_view.size())
-
-    def bind_and_connect(self, server: RdmaTransport, client: RdmaTransport) -> None:
-        server_url = server.bind()
-        client_url = client.bind()
-
-        self.assertIsNotNone(server_url)
-        self.assertIsNotNone(client_url)
-        self.assertNotEqual(server_url, "")
-        self.assertNotEqual(client_url, "")
-
-        server_result = server.connect(client_url)
-        client_result = client.connect(server_url)
-
-        self.assertEqual(
-            server_result, 0, "Server connect should return commSuccess (0)"
-        )
-        self.assertEqual(
-            client_result, 0, "Client connect should return commSuccess (0)"
-        )
-
-        self.assertTrue(server.connected())
-        self.assertTrue(client.connected())
-
-    def test_bind_and_connect(self) -> None:
-        if torch.cuda.device_count() < 2:
-            self.skipTest(
-                f"Test requires at least 2 CUDA devices, found {torch.cuda.device_count()}"
-            )
-
-        server_device = torch.device("cuda:0")
-        client_device = torch.device("cuda:1")
-
-        server_transport = RdmaTransport(server_device)
-        client_transport = RdmaTransport(client_device)
-
-        self.bind_and_connect(server_transport, client_transport)
-
-    def run_send_recv(self, device1: str, device2: str, mode="WRITE") -> None:
-        transport_device_1 = "cuda:0" if device1 == "cpu" else device1
-        transport_device_2 = "cuda:0" if device2 == "cpu" else device2
-        transport1 = RdmaTransport(torch.device(transport_device_1))
-        transport2 = RdmaTransport(torch.device(transport_device_2))
-
-        self.bind_and_connect(transport1, transport2)
-
-        tensor1 = torch.arange(1024, dtype=torch.uint8, device=device1)
-        tensor2 = torch.zeros_like(tensor1, device=device2)
-
-        self.assertEqual(tensor1.nbytes, tensor2.nbytes)
-
-        tensor1_mem = RdmaMemory(tensor1)
-        tensor2_mem = RdmaMemory(tensor2)
-
-        if mode == "WRITE":
-            res = transport1.write(
-                tensor1_mem.to_view(), tensor2_mem.to_remote_buffer()
-            )
-        elif mode == "READ":
-            res = transport2.read(
-                tensor2_mem.to_mutable_view(), tensor1_mem.to_remote_buffer()
-            )
-        else:
-            raise ValueError(f"Invalid mode: {mode}")
-
-        self.assertEqual(res, 0)
-        self.assertTrue(torch.allclose(tensor1.cpu(), tensor2.cpu()))
-
-        del transport1
-        del transport2
-        del tensor1_mem
-        del tensor2_mem
-
     def check_multi_gpu(self) -> None:
         if torch.cuda.device_count() < 2:
             self.skipTest(
                 f"Test requires at least 2 CUDA devices, found {torch.cuda.device_count()}"
             )
 
-    def test_write_gpu_to_gpu(self) -> None:
-        self.check_multi_gpu()
-        self.run_send_recv("cuda:0", "cuda:1")
+    def setup_transport_pair(self, device0: int = 0, device1: int = 1):
+        """Create two MultiTransportFactory instances, exchange topology,
+        create transports, bind, and connect. Returns (factory0, factory1,
+        transport0, transport1)."""
+        factory0 = MultiTransportFactory(device_id=device0)
+        factory1 = MultiTransportFactory(device_id=device1)
 
-    def test_write_gpu_to_gpu_2(self) -> None:
-        self.check_multi_gpu()
-        self.run_send_recv("cuda:0", "cuda:0")
+        topo0 = factory0.get_topology()
+        topo1 = factory1.get_topology()
 
-    def test_write_cpu_to_gpu(self) -> None:
-        self.check_multi_gpu()
-        self.run_send_recv("cpu", "cuda:1")
-
-    def test_write_cpu_to_gpu_2(self) -> None:
-        self.check_multi_gpu()
-        self.run_send_recv("cpu", "cuda:0")
-
-    def test_write_gpu_to_cpu(self) -> None:
-        self.check_multi_gpu()
-        self.run_send_recv("cuda:1", "cpu")
-
-    def test_write_gpu_to_cpu_2(self) -> None:
-        self.check_multi_gpu()
-        self.run_send_recv("cuda:0", "cpu")
-
-    def test_write_cpu_to_cpu(self) -> None:
-        self.check_multi_gpu()
-        self.run_send_recv("cpu", "cpu")
-
-    def test_rdma_remote_buffer_pickle(self) -> None:
-        self.check_multi_gpu()
-
-        transport1 = RdmaTransport(torch.device("cuda:0"))
-        transport2 = RdmaTransport(torch.device("cuda:1"))
-        self.bind_and_connect(transport1, transport2)
-
-        tensor1 = torch.arange(1024, dtype=torch.uint8, device="cuda:0")
-        tensor2 = torch.zeros_like(tensor1, device="cuda:1")
-
-        tensor1_mem = RdmaMemory(tensor1)
-        tensor2_mem = RdmaMemory(tensor2)
-        remote_buffer = tensor2_mem.to_remote_buffer()
-
-        pickled = pickle.dumps(remote_buffer)
-        unpickled_remote_buffer = pickle.loads(pickled)
-
-        res = transport1.write(tensor1_mem.to_view(), unpickled_remote_buffer)
-
-        self.assertEqual(res, 0, "Write transfer should succeed")
+        transport0_result = factory0.create_transport(topo1)
         self.assertTrue(
-            torch.allclose(tensor1.cpu(), tensor2.cpu()),
-            "Data should be correctly transferred after unpickling",
+            transport0_result.has_value(),
+            transport0_result.error() if transport0_result.has_error() else "",
+        )
+        transport0 = transport0_result.value()
+
+        transport1_result = factory1.create_transport(topo0)
+        self.assertTrue(
+            transport1_result.has_value(),
+            transport1_result.error() if transport1_result.has_error() else "",
+        )
+        transport1 = transport1_result.value()
+
+        bind0_result = transport0.bind()
+        self.assertTrue(
+            bind0_result.has_value(),
+            bind0_result.error() if bind0_result.has_error() else "",
+        )
+        bind1_result = transport1.bind()
+        self.assertTrue(
+            bind1_result.has_value(),
+            bind1_result.error() if bind1_result.has_error() else "",
         )
 
-        del transport1
-        del transport2
-        del tensor1_mem
-        del tensor2_mem
+        connect0_result = transport0.connect(bind1_result.value())
+        self.assertTrue(
+            connect0_result.has_value(),
+            connect0_result.error() if connect0_result.has_error() else "",
+        )
+        connect1_result = transport1.connect(bind0_result.value())
+        self.assertTrue(
+            connect1_result.has_value(),
+            connect1_result.error() if connect1_result.has_error() else "",
+        )
 
-    def test_basic_read_gpu_to_gpu(self) -> None:
+        return factory0, factory1, transport0, transport1
+
+    def test_construct_factory(self) -> None:
+        _ = MultiTransportFactory(device_id=0)
+
+    def test_topology_exchange(self) -> None:
         self.check_multi_gpu()
-        self.run_send_recv("cuda:0", "cuda:1", mode="READ")
+        factory0 = MultiTransportFactory(device_id=0)
+        factory1 = MultiTransportFactory(device_id=1)
 
-    def test_basic_read_cpu_to_gpu(self) -> None:
+        topo0 = factory0.get_topology()
+        topo1 = factory1.get_topology()
+
+        self.assertIsInstance(topo0, bytes)
+        self.assertIsInstance(topo1, bytes)
+        self.assertGreater(len(topo0), 0)
+        self.assertGreater(len(topo1), 0)
+
+    def test_create_transport_and_connect(self) -> None:
         self.check_multi_gpu()
-        self.run_send_recv("cpu", "cuda:1", mode="READ")
+        factory0, factory1, transport0, transport1 = self.setup_transport_pair()
+        transport0.shutdown()
+        transport1.shutdown()
 
-    def test_basic_read_gpu_to_cpu(self) -> None:
-        self.check_multi_gpu()
-        self.run_send_recv("cuda:1", "cpu", mode="READ")
-
-    def test_basic_read_cpu_to_cpu(self) -> None:
-        self.check_multi_gpu()
-        self.run_send_recv("cpu", "cpu", mode="READ")
-
-    def test_to_view_with_offset_and_length(self) -> None:
-        """Test creating views and mutable views with explicit offset and length."""
-        tensor = torch.arange(1024, dtype=torch.uint8, device="cuda:0")
-        tensor_mem = RdmaMemory(tensor)
-
-        # Test both to_view and to_mutable_view with same patterns
-        for create_view in [tensor_mem.to_view, tensor_mem.to_mutable_view]:
-            # Full view (backward compatible)
-            full_view = create_view()
-            self.assertEqual(full_view.size(), 1024)
-
-            # View with offset only
-            offset_view = create_view(offset=256)
-            self.assertEqual(offset_view.size(), 768)  # 1024 - 256
-
-            # View with length only
-            length_view = create_view(length=512)
-            self.assertEqual(length_view.size(), 512)
-
-            # View with both offset and length
-            partial_view = create_view(offset=256, length=512)
-            self.assertEqual(partial_view.size(), 512)
-
-    def run_partial_view_transfer(self, mode: str) -> None:
-        """Helper for testing RDMA transfer using partial views."""
+    def run_put_transfer(self, device0: str, device1: str) -> None:
+        """Test put: write data from device0 to device1."""
         self.check_multi_gpu()
 
-        transport1 = RdmaTransport(torch.device("cuda:0"))
-        transport2 = RdmaTransport(torch.device("cuda:1"))
-        self.bind_and_connect(transport1, transport2)
+        cuda_dev0 = 0 if device0 == "cpu" else int(device0.split(":")[1])
+        cuda_dev1 = 0 if device1 == "cpu" else int(device1.split(":")[1])
 
-        # Source: 1024 bytes with values 0-255 repeated (wraps at 256)
-        tensor1 = torch.arange(1024, dtype=torch.uint8, device="cuda:0")
-        # Dest: zeros
-        tensor2 = torch.zeros(1024, dtype=torch.uint8, device="cuda:1")
+        factory0, factory1, transport0, transport1 = self.setup_transport_pair(
+            cuda_dev0, cuda_dev1
+        )
 
-        tensor1_mem = RdmaMemory(tensor1)
-        tensor2_mem = RdmaMemory(tensor2)
+        # Create source tensor with pattern, destination with zeros.
+        src_tensor = torch.arange(1024, dtype=torch.uint8, device=device0)
+        dst_tensor = torch.zeros(1024, dtype=torch.uint8, device=device1)
 
-        if mode == "WRITE":
-            # Transfer bytes 256-767 from source to start of dest
-            partial_view = tensor1_mem.to_view(offset=256, length=512)
-            remote_buffer = tensor2_mem.to_remote_buffer()
-            res = transport1.write(partial_view, remote_buffer)
-            self.assertEqual(res, 0)
+        src_mem_type = MemoryType.VRAM if device0 != "cpu" else MemoryType.DRAM
+        dst_mem_type = MemoryType.VRAM if device1 != "cpu" else MemoryType.DRAM
+        src_dev_id = int(device0.split(":")[1]) if device0 != "cpu" else -1
+        dst_dev_id = int(device1.split(":")[1]) if device1 != "cpu" else -1
 
-            # First 512 bytes of dest should match bytes 256-767 of source
-            expected = tensor1[256:768].cpu()
-            actual = tensor2[:512].cpu()
-            self.assertTrue(torch.allclose(expected, actual))
+        # Register local source segment on factory0.
+        src_seg = Segment(
+            ptr=src_tensor.data_ptr(),
+            length=src_tensor.nbytes,
+            mem_type=src_mem_type,
+            device_id=src_dev_id,
+        )
+        src_reg_result = factory0.register_segment(src_seg)
+        self.assertTrue(
+            src_reg_result.has_value(),
+            src_reg_result.error() if src_reg_result.has_error() else "",
+        )
+        src_reg = src_reg_result.value()
 
-            # Rest of dest should still be zeros
-            self.assertTrue(torch.all(tensor2[512:].cpu() == 0))
-        elif mode == "READ":
-            # Read from source into bytes 256-767 of dest
-            partial_mutable_view = tensor2_mem.to_mutable_view(offset=256, length=512)
-            remote_buffer = tensor1_mem.to_remote_buffer()
-            res = transport2.read(partial_mutable_view, remote_buffer)
-            self.assertEqual(res, 0)
+        # Register destination segment on factory1 and export for remote access.
+        dst_seg = Segment(
+            ptr=dst_tensor.data_ptr(),
+            length=dst_tensor.nbytes,
+            mem_type=dst_mem_type,
+            device_id=dst_dev_id,
+        )
+        dst_reg_result = factory1.register_segment(dst_seg)
+        self.assertTrue(
+            dst_reg_result.has_value(),
+            dst_reg_result.error() if dst_reg_result.has_error() else "",
+        )
+        dst_reg = dst_reg_result.value()
 
-            # First 256 bytes of dest should still be zeros
-            self.assertTrue(torch.all(tensor2[:256].cpu() == 0))
+        # Export destination's ID and import on factory0.
+        export_result = dst_reg.export_id()
+        self.assertTrue(
+            export_result.has_value(),
+            export_result.error() if export_result.has_error() else "",
+        )
+        remote_result = factory0.import_segment(export_result.value())
+        self.assertTrue(
+            remote_result.has_value(),
+            remote_result.error() if remote_result.has_error() else "",
+        )
+        remote_seg = remote_result.value()
 
-            # Bytes 256-767 of dest should match first 512 bytes of source
-            expected = tensor1[:512].cpu()
-            actual = tensor2[256:768].cpu()
-            self.assertTrue(torch.allclose(expected, actual))
+        # Build transfer request and execute put.
+        local_span = src_reg.span(0, src_tensor.nbytes)
+        remote_span = remote_seg.span(0, dst_tensor.nbytes)
+        req = TransferRequest(local_span, remote_span)
 
-            # Last 256 bytes of dest should still be zeros
-            self.assertTrue(torch.all(tensor2[768:].cpu() == 0))
+        future = transport0.put([req])
+        ready = future.wait_for(timeout_ms=10000)
+        self.assertTrue(ready, "Put timed out")
+        result = future.get()
+        self.assertTrue(
+            result.has_value(), result.error() if result.has_error() else ""
+        )
 
-        del transport1
-        del transport2
-        del tensor1_mem
-        del tensor2_mem
+        # Verify data was transferred correctly.
+        self.assertTrue(
+            torch.equal(src_tensor.cpu(), dst_tensor.cpu()),
+            "Data mismatch after put transfer",
+        )
 
-    def test_partial_view_write_transfer(self) -> None:
-        """Test RDMA write transfer using partial views."""
-        self.run_partial_view_transfer("WRITE")
+        transport0.shutdown()
+        transport1.shutdown()
 
-    def test_partial_view_read_transfer(self) -> None:
-        """Test RDMA read transfer using partial mutable views."""
-        self.run_partial_view_transfer("READ")
+    def test_put_gpu_to_gpu(self) -> None:
+        self.run_put_transfer("cuda:0", "cuda:1")
+
+    def test_put_gpu_to_gpu_same_device(self) -> None:
+        self.run_put_transfer("cuda:0", "cuda:0")
+
+    def run_get_transfer(self, device0: str, device1: str) -> None:
+        """Test get: read data from device0 into device1."""
+        self.check_multi_gpu()
+
+        cuda_dev0 = 0 if device0 == "cpu" else int(device0.split(":")[1])
+        cuda_dev1 = 0 if device1 == "cpu" else int(device1.split(":")[1])
+
+        factory0, factory1, transport0, transport1 = self.setup_transport_pair(
+            cuda_dev0, cuda_dev1
+        )
+
+        # Source has data, destination is zeroed.
+        src_tensor = torch.arange(1024, dtype=torch.uint8, device=device0)
+        dst_tensor = torch.zeros(1024, dtype=torch.uint8, device=device1)
+
+        src_mem_type = MemoryType.VRAM if device0 != "cpu" else MemoryType.DRAM
+        dst_mem_type = MemoryType.VRAM if device1 != "cpu" else MemoryType.DRAM
+        src_dev_id = int(device0.split(":")[1]) if device0 != "cpu" else -1
+        dst_dev_id = int(device1.split(":")[1]) if device1 != "cpu" else -1
+
+        # Register source on factory0 and export for remote access.
+        src_seg = Segment(
+            ptr=src_tensor.data_ptr(),
+            length=src_tensor.nbytes,
+            mem_type=src_mem_type,
+            device_id=src_dev_id,
+        )
+        src_reg_result = factory0.register_segment(src_seg)
+        self.assertTrue(
+            src_reg_result.has_value(),
+            src_reg_result.error() if src_reg_result.has_error() else "",
+        )
+        src_reg = src_reg_result.value()
+
+        export_result = src_reg.export_id()
+        self.assertTrue(
+            export_result.has_value(),
+            export_result.error() if export_result.has_error() else "",
+        )
+        remote_result = factory1.import_segment(export_result.value())
+        self.assertTrue(
+            remote_result.has_value(),
+            remote_result.error() if remote_result.has_error() else "",
+        )
+        remote_seg = remote_result.value()
+
+        # Register destination locally on factory1.
+        dst_seg = Segment(
+            ptr=dst_tensor.data_ptr(),
+            length=dst_tensor.nbytes,
+            mem_type=dst_mem_type,
+            device_id=dst_dev_id,
+        )
+        dst_reg_result = factory1.register_segment(dst_seg)
+        self.assertTrue(
+            dst_reg_result.has_value(),
+            dst_reg_result.error() if dst_reg_result.has_error() else "",
+        )
+        dst_reg = dst_reg_result.value()
+
+        # Build transfer request and execute get.
+        local_span = dst_reg.span(0, dst_tensor.nbytes)
+        remote_span = remote_seg.span(0, src_tensor.nbytes)
+        req = TransferRequest(local_span, remote_span)
+
+        future = transport1.get([req])
+        ready = future.wait_for(timeout_ms=10000)
+        self.assertTrue(ready, "Get timed out")
+        result = future.get()
+        self.assertTrue(
+            result.has_value(), result.error() if result.has_error() else ""
+        )
+
+        # Verify data was transferred correctly.
+        self.assertTrue(
+            torch.equal(src_tensor.cpu(), dst_tensor.cpu()),
+            "Data mismatch after get transfer",
+        )
+
+        transport0.shutdown()
+        transport1.shutdown()
+
+    def test_get_gpu_to_gpu(self) -> None:
+        self.run_get_transfer("cuda:0", "cuda:1")
+
+    def test_partial_put_transfer(self) -> None:
+        """Test put with partial spans (offset + length)."""
+        self.check_multi_gpu()
+
+        factory0, factory1, transport0, transport1 = self.setup_transport_pair()
+
+        src_tensor = torch.arange(1024, dtype=torch.uint8, device="cuda:0")
+        dst_tensor = torch.zeros(1024, dtype=torch.uint8, device="cuda:1")
+
+        src_seg = Segment(
+            ptr=src_tensor.data_ptr(),
+            length=src_tensor.nbytes,
+            mem_type=MemoryType.VRAM,
+            device_id=0,
+        )
+        src_reg = factory0.register_segment(src_seg).value()
+
+        dst_seg = Segment(
+            ptr=dst_tensor.data_ptr(),
+            length=dst_tensor.nbytes,
+            mem_type=MemoryType.VRAM,
+            device_id=1,
+        )
+        dst_reg = factory1.register_segment(dst_seg).value()
+
+        export_id = dst_reg.export_id().value()
+        remote_seg = factory0.import_segment(export_id).value()
+
+        # Transfer bytes 256-767 from source to start of destination.
+        local_span = src_reg.span(256, 512)
+        remote_span = remote_seg.span(0, 512)
+        req = TransferRequest(local_span, remote_span)
+
+        future = transport0.put([req])
+        result = future.get()
+        self.assertTrue(
+            result.has_value(), result.error() if result.has_error() else ""
+        )
+
+        # First 512 bytes of dest should match bytes 256-767 of source.
+        expected = src_tensor[256:768].cpu()
+        actual = dst_tensor[:512].cpu()
+        self.assertTrue(torch.equal(expected, actual))
+
+        # Rest of dest should still be zeros.
+        self.assertTrue(torch.all(dst_tensor[512:].cpu() == 0))
+
+        transport0.shutdown()
+        transport1.shutdown()
 
 
 if __name__ == "__main__":
