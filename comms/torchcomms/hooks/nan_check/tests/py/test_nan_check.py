@@ -110,7 +110,7 @@ class TestNanCheckHook(unittest.TestCase):
         hook.register_with_comm(comm)
 
         # For all_gather_single, the output tensor is exposed in PreHookArgs
-        output = torch.tensor([float("nan"), float("nan")])
+        output = torch.tensor([float("nan")] * comm.get_size())
         input_tensor = torch.tensor([1.0])
         with self.assertRaises(RuntimeError) as ctx:
             comm.all_gather_single(output, input_tensor, async_op=False)
