@@ -69,6 +69,18 @@ ncclResult_t DefaultRcclxApi::commSplit(
   return ncclCommSplit(comm, color, key, newcomm, config);
 }
 
+ncclResult_t DefaultRcclxApi::commShrink(
+    ncclComm_t comm,
+    int* excludeRanksList,
+    int excludeRanksCount,
+    ncclComm_t* newcomm,
+    ncclConfig_t* config,
+    int shrinkFlags) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+  return ncclCommShrink(
+      comm, excludeRanksList, excludeRanksCount, newcomm, config, shrinkFlags);
+}
+
 ncclResult_t DefaultRcclxApi::commRegister(
     ncclComm_t comm,
     void* buffer,

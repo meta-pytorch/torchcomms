@@ -62,6 +62,14 @@ class RcclxApi {
       ncclComm_t* newcomm,
       ncclConfig_t* config) = 0;
 
+  [[nodiscard]] virtual ncclResult_t commShrink(
+      ncclComm_t comm,
+      int* excludeRanksList,
+      int excludeRanksCount,
+      ncclComm_t* newcomm,
+      ncclConfig_t* config,
+      int shrinkFlags) = 0;
+
   // Memory registration
   [[nodiscard]] virtual ncclResult_t
   commRegister(ncclComm_t comm, void* buffer, size_t size, void** handle) = 0;
@@ -285,6 +293,14 @@ class DefaultRcclxApi : public RcclxApi {
       int key,
       ncclComm_t* newcomm,
       ncclConfig_t* config) override;
+
+  [[nodiscard]] ncclResult_t commShrink(
+      ncclComm_t comm,
+      int* excludeRanksList,
+      int excludeRanksCount,
+      ncclComm_t* newcomm,
+      ncclConfig_t* config,
+      int shrinkFlags) override;
 
   [[nodiscard]] ncclResult_t commRegister(
       ncclComm_t comm,
