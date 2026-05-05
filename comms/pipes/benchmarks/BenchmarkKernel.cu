@@ -157,4 +157,40 @@ __global__ void p2pLl128Bidirectional(
   }
 }
 
+__global__ void p2pLlSend(
+    P2pNvlTransportDevice p2p,
+    void* srcBuff,
+    std::size_t nBytes,
+    Timeout timeout) {
+  timeout.start();
+  auto group = make_warp_group();
+  p2p.ll_send(group, static_cast<const char*>(srcBuff), nBytes, timeout);
+}
+
+__global__ void p2pLlRecv(
+    P2pNvlTransportDevice p2p,
+    void* dstBuff,
+    std::size_t nBytes,
+    Timeout timeout) {
+  timeout.start();
+  auto group = make_warp_group();
+  p2p.ll_recv(group, static_cast<char*>(dstBuff), nBytes, timeout);
+}
+
+__global__ void p2pLlBidirectional(
+    P2pNvlTransportDevice p2p,
+    void* sendBuff,
+    void* recvBuff,
+    std::size_t nBytes,
+    Timeout timeout) {
+  timeout.start();
+  auto group = make_warp_group();
+  auto [partition_id, subgroup] = group.partition_interleaved(2);
+  if (partition_id == 0) {
+    p2p.ll_send(subgroup, static_cast<const char*>(sendBuff), nBytes, timeout);
+  } else {
+    p2p.ll_recv(subgroup, static_cast<char*>(recvBuff), nBytes, timeout);
+  }
+}
+
 } // namespace comms::pipes::benchmark

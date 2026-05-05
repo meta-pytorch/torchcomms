@@ -98,4 +98,30 @@ __global__ void p2pLl128Bidirectional(
     std::size_t nBytes,
     Timeout timeout = Timeout());
 
+// =============================================================================
+// LL benchmark kernels - per-thread LL protocol with inline flag signaling
+// =============================================================================
+
+// LL send kernel
+__global__ void p2pLlSend(
+    P2pNvlTransportDevice p2p,
+    void* srcBuff,
+    std::size_t nBytes,
+    Timeout timeout = Timeout());
+
+// LL recv kernel
+__global__ void p2pLlRecv(
+    P2pNvlTransportDevice p2p,
+    void* dstBuff,
+    std::size_t nBytes,
+    Timeout timeout = Timeout());
+
+// LL bidirectional kernel - half warps send, half recv
+__global__ void p2pLlBidirectional(
+    P2pNvlTransportDevice p2p,
+    void* sendBuff,
+    void* recvBuff,
+    std::size_t nBytes,
+    Timeout timeout = Timeout());
+
 } // namespace comms::pipes::benchmark
