@@ -441,6 +441,22 @@ void TorchCommNCCLX::ensureTensorContiguous(const at::Tensor& tensor) {
   }
 }
 
+void TorchCommNCCLX::checkTensorDevice(const at::Tensor& tensor) const {
+  TORCH_CHECK(
+      tensor.device().type() == device_.type(),
+      "Expected tensor on ",
+      device_.type(),
+      " but found tensor on ",
+      tensor.device());
+}
+
+void TorchCommNCCLX::checkTensorsDevice(
+    const std::vector<at::Tensor>& tensors) const {
+  for (const auto& t : tensors) {
+    checkTensorDevice(t);
+  }
+}
+
 // Protected methods (not in the private section of the header)
 cudaEvent_t TorchCommNCCLX::getEvent() {
   std::lock_guard<std::mutex> lock(event_pool_mutex_);

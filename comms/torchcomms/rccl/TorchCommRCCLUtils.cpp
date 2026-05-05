@@ -366,6 +366,31 @@ void TorchCommRCCL::ensureTensorContiguous(const at::Tensor& tensor) {
   }
 }
 
+void TorchCommRCCL::checkTensorDevice(const at::Tensor& tensor) const {
+  auto expected = device_.type();
+  auto actual = tensor.device().type();
+  // HIP masquerades as CUDA in ROCm builds
+  if (expected == c10::DeviceType::HIP) {
+    expected = c10::DeviceType::CUDA;
+  }
+  if (actual == c10::DeviceType::HIP) {
+    actual = c10::DeviceType::CUDA;
+  }
+  TORCH_CHECK(
+      actual == expected,
+      "Expected tensor on ",
+      device_.type(),
+      " but found tensor on ",
+      tensor.device());
+}
+
+void TorchCommRCCL::checkTensorsDevice(
+    const std::vector<at::Tensor>& tensors) const {
+  for (const auto& t : tensors) {
+    checkTensorDevice(t);
+  }
+}
+
 // Protected methods (not in the private section of the header)
 hipEvent_t TorchCommRCCL::getEvent() {
   std::lock_guard<std::mutex> lock(event_pool_mutex_);
