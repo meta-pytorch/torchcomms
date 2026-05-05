@@ -2568,7 +2568,9 @@ Note:
 
   intrusive_ptr_class_<BackendWrapper, c10d::Backend>(m, "_BackendWrapper")
       .def(
-          py::init<std::shared_ptr<TorchComm>>(),
+          py::init([](std::shared_ptr<TorchComm> comm) {
+            return createBackendWrapper(std::move(comm));
+          }),
           "Create BackendWrapper around a TorchCommBackend",
           py::arg("comm"),
           py::call_guard<py::gil_scoped_release>())
