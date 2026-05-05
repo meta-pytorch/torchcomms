@@ -95,6 +95,12 @@ struct MultiPeerNvlTransportConfig {
   // 0 (default), LL128 is disabled. Use ll128_buffer_size() from
   // Ll128Packet.cuh to compute from message size.
   std::size_t ll128BufferSize{0};
+
+  // Size of LL line buffer per peer (bytes).
+  // When > 0, allocates LL buffers and enables ll_send/recv/forward
+  // on P2pNvlTransportDevice. When 0 (default), LL is disabled.
+  // Use ll_buffer_size() from LlPacket.cuh to compute from message size.
+  std::size_t llBufferSize{0};
 };
 
 /**
@@ -368,6 +374,8 @@ class MultiPeerNvlTransport {
       ll128BufferHandler_; // nullptr when ll128BufferSize == 0
   std::unique_ptr<GpuMemHandler>
       barrierBufferHandler_; // nullptr when p2pBarrierCount == 0
+  std::unique_ptr<GpuMemHandler>
+      llBufferHandler_; // nullptr when llBufferSize == 0
 
   // External data buffer pointers (set via setExternalDataBuffers()).
   // When set, exchange() skips data buffer allocation/exchange.
@@ -391,6 +399,7 @@ class MultiPeerNvlTransport {
   std::unique_ptr<GpuMemHandler>
       tileSignalHandler_; // 2*maxBlocks signals, exchanged
   std::size_t perPeerTileSignalSize_{0};
+  std::size_t perPeerLlBufferSize_{0};
 
   // Flag to track if multi-peer device arrays have been initialized
   bool multiPeerInitialized_{false};
