@@ -813,6 +813,7 @@ void CtranGpe::Impl::gpeThreadFn() {
         SCOPE_EXIT {
           if (cmd->cpuFlag) {
             cmd->cpuFlag->test_and_set();
+            cmd->cpuFlag->notify_all();
           }
         };
 
