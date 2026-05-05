@@ -29,6 +29,18 @@ from torchcomms.distwrap.utils import (
 # Dictionary mapping dist PREMUL_SUM ops to their torchcomms equivalents
 _PREMUL_SUM_OPS: dict[ReduceOp, TcReduceOp] = {}
 
+# Static mapping from torch.distributed.ReduceOp to torchcomms.ReduceOp
+_REDUCE_OP_MAP: dict[ReduceOp, TcReduceOp] = {
+    ReduceOp.SUM: TcReduceOp.SUM,
+    ReduceOp.PRODUCT: TcReduceOp.PRODUCT,
+    ReduceOp.MIN: TcReduceOp.MIN,
+    ReduceOp.MAX: TcReduceOp.MAX,
+    ReduceOp.BAND: TcReduceOp.BAND,
+    ReduceOp.BOR: TcReduceOp.BOR,
+    ReduceOp.BXOR: TcReduceOp.BXOR,
+    ReduceOp.AVG: TcReduceOp.AVG,
+}
+
 
 # =============================================================================
 # Private Helper Functions
@@ -37,23 +49,10 @@ _PREMUL_SUM_OPS: dict[ReduceOp, TcReduceOp] = {}
 
 def _convert_reduce_op(op: ReduceOp) -> TcReduceOp:
     """Convert torch.distributed.ReduceOp to torchcomms.ReduceOp."""
-    # Check for PREMUL_SUM ops first
     if op in _PREMUL_SUM_OPS:
         return _PREMUL_SUM_OPS[op]
-
-    # Map from torch.distributed ReduceOp to torchcomms ReduceOp
-    op_map = {
-        ReduceOp.SUM: TcReduceOp.SUM,
-        ReduceOp.PRODUCT: TcReduceOp.PRODUCT,
-        ReduceOp.MIN: TcReduceOp.MIN,
-        ReduceOp.MAX: TcReduceOp.MAX,
-        ReduceOp.BAND: TcReduceOp.BAND,
-        ReduceOp.BOR: TcReduceOp.BOR,
-        ReduceOp.BXOR: TcReduceOp.BXOR,
-        ReduceOp.AVG: TcReduceOp.AVG,
-    }
-    if op in op_map:
-        return op_map[op]
+    if op in _REDUCE_OP_MAP:
+        return _REDUCE_OP_MAP[op]
     raise ValueError(f"Unsupported ReduceOp: {op}")
 
 
@@ -533,16 +532,19 @@ def irecv(
 
 def batch_isend_irecv(p2p_op_list: list[Any]) -> list[dist.Work]:
     if torchcomms_is_enabled():
+        if not p2p_op_list:
+            return []
+
+        first_op = getattr(p2p_op_list[0], "_p2p_op", p2p_op_list[0])
+        pg = get_group(first_op.group)
+        pg_info_assert_registered(pg)
+        tc = get_torchcomms_instance(pg, tensor=first_op.tensor)
+
         works: list[dist.Work] = []
         for p2p_op in p2p_op_list:
-            # Handle both distwrap P2POp and torch.distributed.P2POp
             actual_op = getattr(p2p_op, "_p2p_op", p2p_op)
-            pg = get_group(actual_op.group)
-            pg_info_assert_registered(pg)
-            tc = get_torchcomms_instance(pg, tensor=actual_op.tensor)
             op_name = actual_op.op.__name__
 
-            # Get group_peer, converting from global peer if needed
             group_peer = actual_op.group_peer
             if group_peer is None:
                 if actual_op.peer is not None:

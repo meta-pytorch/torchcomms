@@ -17,9 +17,11 @@ def pg_info_create(
 ) -> None:
     if pg in _PG_INFO_REGISTRY:
         raise AssertionError(f"Process group {pg} already registered")
+    ranks = global_ranks.copy() if global_ranks is not None else []
     pg_info = _PG_INFO(
-        global_ranks=global_ranks.copy() if global_ranks is not None else [],
+        global_ranks=ranks,
         group_desc=group_desc or "",
+        rank_to_group_rank={g: i for i, g in enumerate(ranks)},
     )
     _PG_INFO_REGISTRY[pg] = pg_info
 
@@ -43,6 +45,13 @@ def pg_info_get_global_ranks(pg: ProcessGroup) -> list[int]:
     if pg_info is None:
         raise AssertionError(f"Process group {pg} not registered")
     return pg_info.global_ranks
+
+
+def pg_info_get_rank_map(pg: ProcessGroup) -> dict[int, int]:
+    pg_info = _PG_INFO_REGISTRY.get(pg, None)
+    if pg_info is None:
+        raise AssertionError(f"Process group {pg} not registered")
+    return pg_info.rank_to_group_rank
 
 
 def pg_info_get_group_desc(pg: ProcessGroup) -> str:
@@ -76,6 +85,7 @@ def pg_info_get_data(pg: ProcessGroup, key: str) -> Any:
 class _PG_INFO:
     global_ranks: list[int]
     group_desc: str
+    rank_to_group_rank: dict[int, int] = field(default_factory=dict)
     data: dict[str, Any] = field(default_factory=dict)
 
 
