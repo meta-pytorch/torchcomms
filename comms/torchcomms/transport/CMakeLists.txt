@@ -1,8 +1,5 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
-# Extension: torchcomms._transport
-file(GLOB TORCHCOMMS_TRANSPORT_SOURCES
-    "comms/torchcomms/transport/*.cpp"
-)
+# Extension: torchcomms._transport (uniflow backend)
 
 find_package(CUDA)
 if(NOT CUDA_FOUND)
@@ -26,45 +23,19 @@ set(TORCH_CUDA_ARCH_LIST $ENV{TORCH_CUDA_ARCH_LIST})
 message(STATUS "TORCH_CUDA_ARCH_LIST: ${TORCH_CUDA_ARCH_LIST}")
 add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:${NVCC_GENCODE}>)
 
-add_compile_definitions(MOCK_SCUBA_DATA CTRAN_DISABLE_TCPDM FMT_USE_CONSTEXPR)
-
-# CTranIB
-add_subdirectory(comms/utils)
-add_subdirectory(comms/ctran)
-
-# Get folly LDFLAGS using pkg-config
-set(ENV{PKG_CONFIG_PATH} "${CONDA_LIB}/pkgconfig")
-execute_process(
-    COMMAND pkg-config --libs --static libfolly
-    OUTPUT_VARIABLE FOLLY_LDFLAGS_RAW
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    RESULT_VARIABLE PKG_RESULT
-)
-if(NOT PKG_RESULT EQUAL 0)
-    message(FATAL_ERROR "pkg-config for libfolly failed")
-endif()
-separate_arguments(FOLLY_LDFLAGS NATIVE_COMMAND "${FOLLY_LDFLAGS_RAW}")
-# Remove glog/gflags/fmt from FOLLY_LDFLAGS — they're already linked
-# statically via libtorchcomms.so from the third-party cmake modules.
-# pkg-config may output -lglog, -l:libglog.a, or full paths like
-# /path/to/libglog.a — the simple substring match handles all forms.
-list(FILTER FOLLY_LDFLAGS EXCLUDE REGEX "glog")
-list(FILTER FOLLY_LDFLAGS EXCLUDE REGEX "gflags")
-list(FILTER FOLLY_LDFLAGS EXCLUDE REGEX "libfmt")
+# Build uniflow as a sub-project.
+add_subdirectory(comms/uniflow)
 
 add_library(torchcomms_transport MODULE
-    ${TORCHCOMMS_TRANSPORT_SOURCES}
+    comms/torchcomms/transport/UniflowTransportPy.cpp
 )
 set_target_properties(torchcomms_transport PROPERTIES
     PREFIX ""
     OUTPUT_NAME "_transport"
     SUFFIX ".${Python3_SOABI}.so"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/comms/torchcomms"
-)
-set_target_properties(torchcomms_transport PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-    CUDA_RESOLVE_DEVICE_SYMBOLS ON
-    POSITION_INDEPENDENT_CODE ON
+    INSTALL_RPATH "$ORIGIN"
+    BUILD_WITH_INSTALL_RPATH ON
 )
 target_include_directories(torchcomms_transport PRIVATE
     ${ROOT}
@@ -72,32 +43,11 @@ target_include_directories(torchcomms_transport PRIVATE
     ${Python3_INCLUDE_DIRS}
 )
 target_compile_features(torchcomms_transport PRIVATE cxx_std_20)
-target_link_directories(torchcomms_transport PRIVATE ${CONDA_LIB})
 target_link_libraries(torchcomms_transport PRIVATE
     ${TORCH_LIBRARIES}
     ${TORCH_PYTHON_LIB}
-    ctran
-    utils
+    uniflow
 )
-if(USE_SYSTEM_LIBS)
-    target_link_libraries(torchcomms_transport PRIVATE
-        "-lfolly"
-        glog::glog gflags::gflags fmt::fmt
-        "-lboost_program_options"
-        "-lboost_filesystem"
-        "-lboost_context"
-        ${FOLLY_LDFLAGS}
-    )
-else()
-    target_link_libraries(torchcomms_transport PRIVATE
-        "-l:libfolly.a"
-        glog::glog gflags::gflags fmt::fmt
-        "-l:libboost_program_options.a"
-        "-l:libboost_filesystem.a"
-        "-l:libboost_context.a"
-        ${FOLLY_LDFLAGS}
-    )
-endif()
 
 if(CUDA_FOUND)
     target_link_libraries(torchcomms_transport PRIVATE CUDA::cudart)
@@ -106,3 +56,7 @@ endif()
 install(TARGETS torchcomms_transport
     LIBRARY DESTINATION .
 )
+
+# libuniflow.so is already in the output directory via LIBRARY_OUTPUT_DIRECTORY.
+# Copy it to the install destination so it's included in the wheel.
+install(FILES $<TARGET_FILE:uniflow> DESTINATION .)
