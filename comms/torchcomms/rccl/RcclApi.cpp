@@ -102,6 +102,35 @@ ncclResult_t DefaultRcclApi::commShrink(
 #endif
 }
 
+ncclResult_t DefaultRcclApi::commGetUniqueId(
+    ncclComm_t comm,
+    ncclUniqueId* uniqueId) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+  (void)comm;
+  (void)uniqueId;
+  TC_LOG(ERROR)
+      << "ncclCommGetUniqueId API is not implemented in RCCL backend";
+  return ncclInvalidUsage;
+}
+
+ncclResult_t DefaultRcclApi::commGrow(
+    ncclComm_t comm,
+    int nRanks,
+    const ncclUniqueId* uniqueId,
+    int rank,
+    ncclComm_t* newcomm,
+    ncclConfig_t* config) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+  (void)comm;
+  (void)nRanks;
+  (void)uniqueId;
+  (void)rank;
+  (void)newcomm;
+  (void)config;
+  TC_LOG(ERROR) << "ncclCommGrow API is not implemented in RCCL backend";
+  return ncclInvalidUsage;
+}
+
 ncclResult_t DefaultRcclApi::commRegister(
     ncclComm_t comm,
     void* buffer,
