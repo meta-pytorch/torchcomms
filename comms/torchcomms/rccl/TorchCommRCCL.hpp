@@ -232,6 +232,7 @@ class TorchCommRCCL : public TorchCommBackend,
   [[nodiscard]] hipEvent_t getEvent();
   void returnEvent(hipEvent_t event);
   void abortRcclComm();
+  void revokeRcclComm();
 
   enum class CommState {
     NORMAL,

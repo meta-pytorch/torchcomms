@@ -346,6 +346,18 @@ void TorchCommRCCLX::abortRcclxComm() {
   }
 }
 
+void TorchCommRCCLX::revokeRcclxComm() {
+  TC_LOG(INFO, this) << "Calling abort hooks before commRevoke.";
+  runAbortHooks();
+  if (nccl_comm_) {
+    RCCLX_CHECK(
+        rcclx_api_,
+        nccl_comm_,
+        rcclx_api_->commRevoke(nccl_comm_),
+        "RCCLX Revoke failed");
+  }
+}
+
 int TorchCommRCCLX::getRank() const {
   checkInitialized();
 

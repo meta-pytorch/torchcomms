@@ -24,6 +24,7 @@ class RcclMock : public RcclApi {
 
   MOCK_METHOD(ncclResult_t, commDestroy, (ncclComm_t comm), (override));
   MOCK_METHOD(ncclResult_t, commAbort, (ncclComm_t comm), (override));
+  MOCK_METHOD(ncclResult_t, commRevoke, (ncclComm_t comm), (override));
   MOCK_METHOD(
       ncclResult_t,
       commSplit,

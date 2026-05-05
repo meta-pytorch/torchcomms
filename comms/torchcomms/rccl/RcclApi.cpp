@@ -2,6 +2,8 @@
 
 #include "comms/torchcomms/rccl/RcclApi.hpp"
 
+#include "comms/torchcomms/utils/Logging.hpp"
+
 namespace torch::comms {
 
 // DefaultRcclApi implementation
@@ -45,6 +47,18 @@ ncclResult_t DefaultRcclApi::commDestroy(ncclComm_t comm) {
 ncclResult_t DefaultRcclApi::commAbort(ncclComm_t comm) {
   std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclCommAbort(comm);
+}
+
+ncclResult_t DefaultRcclApi::commRevoke(ncclComm_t comm) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 28, 0)
+  return ncclCommRevoke(comm, 0);
+#else
+  (void)comm;
+  TC_LOG(ERROR) << "NCCL version " << NCCL_VERSION_CODE
+                << " does not support ncclCommRevoke API";
+  return ncclInvalidUsage;
+#endif
 }
 
 ncclResult_t DefaultRcclApi::commGetAsyncError(

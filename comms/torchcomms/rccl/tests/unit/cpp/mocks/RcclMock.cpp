@@ -26,6 +26,8 @@ void RcclMock::setupDefaultBehaviors() {
   ON_CALL(*this, commDestroy(_)).WillByDefault(Return(ncclSuccess));
   ON_CALL(*this, commAbort(_)).WillByDefault(Return(ncclSuccess));
 
+  ON_CALL(*this, commRevoke(_)).WillByDefault(Return(ncclSuccess));
+
   ON_CALL(*this, commSplit(_, _, _, _, _))
       .WillByDefault(DoAll(
           SetArgPointee<3>(reinterpret_cast<ncclComm_t>(0x4000)),

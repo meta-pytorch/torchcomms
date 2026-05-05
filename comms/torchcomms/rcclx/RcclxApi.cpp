@@ -47,6 +47,11 @@ ncclResult_t DefaultRcclxApi::commAbort(ncclComm_t comm) {
   return ncclCommAbort(comm);
 }
 
+ncclResult_t DefaultRcclxApi::commRevoke(ncclComm_t comm) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+  return ncclCommRevoke(comm, 0);
+}
+
 ncclResult_t DefaultRcclxApi::commGetAsyncError(
     ncclComm_t comm,
     ncclResult_t* asyncError) {
