@@ -651,6 +651,13 @@ int TorchCommNCCLX::getSize() const {
   return comm_size;
 }
 
+void* TorchCommNCCLX::getNCCLCommPtr() const {
+  checkInitialized();
+  TORCH_CHECK(
+      nccl_comm_ != nullptr, "[TorchCommNCCLX]: NCCL communicator is null");
+  return nccl_comm_;
+}
+
 std::string_view TorchCommNCCLX::getBackendName() const {
   return kBackendName;
 }
