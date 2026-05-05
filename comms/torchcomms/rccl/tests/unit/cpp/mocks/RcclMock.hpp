@@ -36,6 +36,16 @@ class RcclMock : public RcclApi {
       (override));
   MOCK_METHOD(
       ncclResult_t,
+      commShrink,
+      (ncclComm_t comm,
+       int* excludeRanksList,
+       int excludeRanksCount,
+       ncclComm_t* newcomm,
+       ncclConfig_t* config,
+       int shrinkFlags),
+      (override));
+  MOCK_METHOD(
+      ncclResult_t,
       commCount,
       (const ncclComm_t comm, int* count),
       (override));
