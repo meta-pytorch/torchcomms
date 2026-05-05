@@ -24,7 +24,8 @@ TorchWorkCompleted::TorchWorkCompleted() {
 }
 
 void TorchWorkCompleted::wait() {
-  runWaitHooks();
+  runWaitPreHooks();
+  runWaitPostHooks();
 }
 
 TorchWorkThread::TorchWorkThread(std::function<void()> fn)
@@ -39,13 +40,15 @@ TorchWorkThread::TorchWorkThread(std::function<void()> fn)
       })) {}
 
 void TorchWorkThread::wait() {
-  runWaitHooks();
+  runWaitPreHooks();
 
   if (!future_.valid()) {
     // already waited on
+    runWaitPostHooks();
     return;
   }
   future_.get();
+  runWaitPostHooks();
 }
 
 } // namespace torch::comms

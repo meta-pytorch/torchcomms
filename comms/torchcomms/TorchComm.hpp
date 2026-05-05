@@ -264,7 +264,7 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
       std::shared_ptr<TorchCommBackend> impl,
       std::vector<int> ranks);
 
-  void preHook(OpName name, size_t op_id, PreHookArgs&& args);
+  void preHook(size_t op_id, PreHookArgs&& args);
   void postHook(size_t op_id, PostHookArgs&& args);
 
   // Rank validation helper
