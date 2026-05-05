@@ -3,6 +3,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 import os
+import time
 import unittest
 from functools import wraps
 from typing import List, Tuple, Union
@@ -200,6 +201,16 @@ def destroy_root_store():
     """
     global _root_store
     _root_store = None
+    # Dropping the ref closes the listening fd synchronously, but the kernel
+    # takes a few ms to finish tearing down the old server socket (FIN/ACK on
+    # accepted connections, pending accepts). If the next create_store() on
+    # rank 0 rebinds MASTER_PORT during that window, new connection attempts
+    # from client ranks can land on the stale socket and get reset, showing up
+    # as:
+    #   [c10d] TCP client failed to connect/validate to host ...:<MASTER_PORT>
+    #   - retrying (...): Connection reset by peer
+    # Sleep briefly so the old socket fully drains before rebind.
+    time.sleep(0.01)
 
 
 def verify_tensor_equality(
