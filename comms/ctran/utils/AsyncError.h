@@ -36,32 +36,37 @@ namespace ctran::utils {
         asyncErr, ctran::utils::Exception(e.what(), commRemoteError)); \
   }
 
-#define CTRAN_ASYNC_ERR_HANDLE_IMPL_FAULT_TOLERANCE(comm, e)       \
-  do {                                                             \
-    CTRAN_ASYNC_ERR_HANDLE_IMPL(comm->getAsyncError(), e);         \
-    if (comm->abortEnabled()) {                                    \
-      XLOGF(                                                       \
-          ERR,                                                     \
-          "Fault tolerance enabled; marking communicator aborted " \
-          "(rank={}, commHash={:x})",                              \
-          comm->logMetaData_.rank,                                 \
-          comm->logMetaData_.commHash);                            \
-      comm->setAbort();                                            \
-    } else {                                                       \
-      throw;                                                       \
-    }                                                              \
+#define CTRAN_ASYNC_ERR_HANDLE_IMPL_FAULT_TOLERANCE(comm, e, opType, opCount) \
+  do {                                                                        \
+    CTRAN_ASYNC_ERR_HANDLE_IMPL(comm->getAsyncError(), e);                    \
+    if (comm->abortEnabled()) {                                               \
+      XLOGF(                                                                  \
+          ERR,                                                                \
+          "Fault tolerance enabled; marking communicator aborted "            \
+          "(opType={}, opCount={}) on rank {} commHash {:x}",                 \
+          opType,                                                             \
+          opCount,                                                            \
+          comm->logMetaData_.rank,                                            \
+          comm->logMetaData_.commHash);                                       \
+      comm->setAbort();                                                       \
+    } else {                                                                  \
+      throw;                                                                  \
+    }                                                                         \
   } while (0)
 
-#define CTRAN_ASYNC_ERR_GUARD_FAULT_TOLERANCE(comm, code)          \
-  try {                                                            \
-    code;                                                          \
-  } catch (const ctran::utils::Exception& e) {                     \
-    CTRAN_ASYNC_ERR_HANDLE_IMPL_FAULT_TOLERANCE(comm, e);          \
-  } catch (const std::runtime_error& e) {                          \
-    /*TODO: replace remaining runtime_error with Exception */      \
-    /*TODO(T238821628): improve from simple commRemoteError */     \
-    CTRAN_ASYNC_ERR_HANDLE_IMPL_FAULT_TOLERANCE(                   \
-        comm, ctran::utils::Exception(e.what(), commRemoteError)); \
+#define CTRAN_ASYNC_ERR_GUARD_FAULT_TOLERANCE(comm, code, opType, opCount) \
+  try {                                                                    \
+    code;                                                                  \
+  } catch (const ctran::utils::Exception& e) {                             \
+    CTRAN_ASYNC_ERR_HANDLE_IMPL_FAULT_TOLERANCE(comm, e, opType, opCount); \
+  } catch (const std::runtime_error& e) {                                  \
+    /*TODO: replace remaining runtime_error with Exception */              \
+    /*TODO(T238821628): improve from simple commRemoteError */             \
+    CTRAN_ASYNC_ERR_HANDLE_IMPL_FAULT_TOLERANCE(                           \
+        comm,                                                              \
+        ctran::utils::Exception(e.what(), commRemoteError),                \
+        opType,                                                            \
+        opCount);                                                          \
   }
 
 class AsyncError {
