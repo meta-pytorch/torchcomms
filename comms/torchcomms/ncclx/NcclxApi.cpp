@@ -719,6 +719,19 @@ ncclResult_t DefaultNcclxApi::winGetLsaMultimemDevicePointer(
 ncclTeam_t DefaultNcclxApi::teamLsa(ncclComm_t comm) {
   return ncclTeamLsa(comm);
 }
+
+bool DefaultNcclxApi::multimemSupport(ncclComm_t comm) {
+#ifdef NCCL_COMM_PROPERTIES_INITIALIZER
+  ncclCommProperties_t props = NCCL_COMM_PROPERTIES_INITIALIZER;
+  if (ncclCommQueryProperties(comm, &props) != ncclSuccess) {
+    return false;
+  }
+  return props.multimemSupport;
+#else
+  (void)comm;
+  return false;
+#endif
+}
 #endif // TORCHCOMMS_HAS_NCCL_DEVICE_API
 
 } // namespace torch::comms
