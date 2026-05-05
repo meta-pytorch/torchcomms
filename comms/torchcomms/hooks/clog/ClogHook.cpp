@@ -2,6 +2,7 @@
 
 #include "comms/torchcomms/hooks/clog/ClogHook.hpp"
 #include "comms/torchcomms/TorchComm.hpp"
+#include "comms/torchcomms/hooks/common/OpNameHelper.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -91,9 +92,8 @@ void ClogHook::registerHooks(std::shared_ptr<TorchComm> comm) {
 
   int device_index = comm->getDevice().index();
   auto pre_hook_handle = comm->registerPreHook(
-      [self, comm_name, device_index](
-          OpName name, size_t op_id, const PreHookArgs& args) {
-        self->onPreHook(comm_name, device_index, name, op_id, args);
+      [self, comm_name, device_index](size_t op_id, const PreHookArgs& args) {
+        self->onPreHook(comm_name, device_index, op_id, args);
       });
 
   auto post_hook_handle = comm->registerPostHook(
@@ -332,12 +332,11 @@ WorkId ClogHook::logCollective(
 
 // -- Signature builder via std::visit --
 
-std::string ClogHook::buildSignature(OpName name, const PreHookArgs& args)
-    const {
+std::string ClogHook::buildSignature(const PreHookArgs& args) const {
+  auto op = opToString(getOpName(args));
   return std::visit(
-      [this, name](const auto& a) -> std::string {
+      [this, op](const auto& a) -> std::string {
         using T = std::decay_t<decltype(a)>;
-        auto op = opToString(name);
 
         // In-place collectives (single tensor is both input and output)
         if constexpr (std::is_same_v<T, AllReducePreHookArgs>) {
@@ -615,7 +614,6 @@ std::string ClogHook::buildSignature(OpName name, const PreHookArgs& args)
 void ClogHook::onPreHook(
     const std::string& comm_name,
     int device_index,
-    OpName name,
     size_t op_id,
     const PreHookArgs& args) {
   // Handle split specially: log the split event, not a signature.
@@ -642,7 +640,7 @@ void ClogHook::onPreHook(
     return;
   }
 
-  auto sig = buildSignature(name, args);
+  auto sig = buildSignature(args);
   if (sig.empty()) {
     return;
   }
