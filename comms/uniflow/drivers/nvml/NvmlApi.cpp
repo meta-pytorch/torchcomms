@@ -7,6 +7,7 @@
 #include <dlfcn.h>
 #endif
 
+#include <array>
 #include <mutex>
 #include <string>
 
