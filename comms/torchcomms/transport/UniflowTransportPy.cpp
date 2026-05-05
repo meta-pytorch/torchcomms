@@ -46,6 +46,16 @@ class PyResult {
     return *err_;
   }
 
+  // Pythonic accessor: returns the value on success, raises a Python
+  // exception on error. Allows callers to use idiomatic try/except
+  // instead of has_value()/value()/error() inspection.
+  py::object unwrap() const {
+    if (err_) {
+      throw std::runtime_error(err_->toString());
+    }
+    return val_;
+  }
+
  private:
   py::object val_;
   std::optional<Err> err_;
@@ -189,7 +199,8 @@ PYBIND11_MODULE(_transport, m) {
       .def("has_error", &PyResult::hasError)
       .def("__bool__", &PyResult::hasValue)
       .def("value", &PyResult::value)
-      .def("error", &PyResult::error);
+      .def("error", &PyResult::error)
+      .def("unwrap", &PyResult::unwrap);
 
   // -------------------------------------------------------------------------
   // Future
