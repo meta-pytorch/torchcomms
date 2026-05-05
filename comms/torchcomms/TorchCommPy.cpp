@@ -1402,6 +1402,30 @@ operations will fail until reconfigure() is called (in reconfigurable mode).
           )",
           py::call_guard<py::gil_scoped_release>())
       .def(
+          "abort_enabled",
+          &TorchComm::abortEnabled,
+          R"(
+Check if abort/fault-tolerance is enabled on this communicator.
+
+Returns:
+    bool: True if abort is enabled, False otherwise.
+          )",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "is_aborted",
+          &TorchComm::isAborted,
+          R"(
+Check if the communicator is in an aborted state.
+
+Useful in CUDA graph mode where per-operation work handles are
+unavailable and polling the communicator state is the only way to
+detect failures.
+
+Returns:
+    bool: True if the communicator has been aborted.
+          )",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
           "get_device_transport",
           &TorchComm::get_device_transport,
           R"(
@@ -2156,7 +2180,7 @@ Example:
           R"(
 Initialize a persistent AllGather operation.
 
-This is a SM free collective operation where the memory is pre-registered and uses 
+This is a SM free collective operation where the memory is pre-registered and uses
 Copy Engine or DMA to move data from one rank to the other.
 
 Args:
