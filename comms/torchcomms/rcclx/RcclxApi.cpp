@@ -365,4 +365,28 @@ ncclResult_t DefaultRcclxApi::memFree(void* ptr) {
   return ncclMemFree(ptr);
 }
 
+ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupAllReduce(
+    const void* const* sendBuffs,
+    void* const* recvBuffs,
+    const size_t* counts,
+    ncclDataType_t datatype,
+    ncclRedOp_t op,
+    ncclComm_t comm,
+    hipStream_t stream,
+    const int* const* allActiveRanks,
+    int nActiveRanksPerGroup,
+    int nGroups) {
+  return ncclShardedRelayMultiGroupAllReduce(
+      sendBuffs,
+      recvBuffs,
+      counts,
+      datatype,
+      op,
+      comm,
+      stream,
+      allActiveRanks,
+      nActiveRanksPerGroup,
+      nGroups);
+}
+
 } // namespace torch::comms
