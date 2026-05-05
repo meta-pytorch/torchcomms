@@ -61,6 +61,39 @@ static inline commResult_t setupKernelConfig(
     cudaStream_t stream,
     KernelConfig& config) {
   const auto statex = comm->statex_.get();
+
+  config.args.devState_d = comm->ctran_->algo->getDevState();
+  config.args.collective.alltoallv.sendbuff = sendbuff;
+  config.args.collective.alltoallv.recvbuff = recvbuff;
+  config.args.collective.alltoallv.datatype = datatype;
+  config.args.collective.alltoallv.selfCount = sendcounts[statex->rank()];
+  config.args.collective.alltoallv.selfSendDispl = sdispls[statex->rank()];
+  config.args.collective.alltoallv.selfRecvDispl = rdispls[statex->rank()];
+
+  // When no local NVL peers (ppn=1, pure IB path), the alltoallv kernel's
+  // send/recv loops are empty — only self-copy and GPE sync remain. Issue
+  // the self D2D copy via cudaMemcpyAsync and signal the kernel to skip
+  // its body by setting sendElemsList to nullptr. The kernel then runs as
+  // a 1-block/1-thread stub for GPE sync, freeing SMs for overlapping compute.
+  if (statex->nLocalRanks() <= 1) {
+    size_t selfBytes = sendcounts[statex->rank()] * commTypeSize(datatype);
+    if (selfBytes > 0) {
+      FB_COMMCHECK(comm->ctran_->mapper->icopy(
+          static_cast<char*>(recvbuff) +
+              rdispls[statex->rank()] * commTypeSize(datatype),
+          static_cast<const char*>(sendbuff) +
+              sdispls[statex->rank()] * commTypeSize(datatype),
+          selfBytes,
+          stream));
+    }
+    config.args.collective.alltoallv.selfCount = 0;
+    config.args.collective.alltoallv.sendElemsList = nullptr;
+    config.args.collective.alltoallv.recvElemsList = nullptr;
+    config.numBlocks = 1;
+    config.numThreads = 1;
+    return commSuccess;
+  }
+
   // Unlike alltoall, we cannot automatically detect grid size because each rank
   // may see different counts; use static gridSize for now.
   config.numThreads = NCCL_CTRAN_ALLTOALLV_THREAD_BLOCK_SIZE;
@@ -77,24 +110,6 @@ static inline commResult_t setupKernelConfig(
   //   states/flags holds at most CTRAN_ALGO_MAX_THREAD_BLOCKS blocks
   if (config.numBlocks < 2 || config.numBlocks > CTRAN_ALGO_MAX_THREAD_BLOCKS) {
     config.numBlocks = CTRAN_ALGO_MAX_THREAD_BLOCKS;
-  }
-
-  config.args.devState_d = comm->ctran_->algo->getDevState();
-  config.args.collective.alltoallv.sendbuff = sendbuff;
-  config.args.collective.alltoallv.recvbuff = recvbuff;
-  config.args.collective.alltoallv.datatype = datatype;
-  config.args.collective.alltoallv.selfCount = sendcounts[statex->rank()];
-  config.args.collective.alltoallv.selfSendDispl = sdispls[statex->rank()];
-  config.args.collective.alltoallv.selfRecvDispl = rdispls[statex->rank()];
-
-  // special case of ppn=1, simply set sendElemsList and recvElemsList to
-  // nullptr, and numBlocks to 1 to let alltoallv kernel skip copies over NVLink
-  // and only do self copy
-  if (statex->nLocalRanks() == 1) {
-    config.args.collective.alltoallv.sendElemsList = nullptr;
-    config.args.collective.alltoallv.recvElemsList = nullptr;
-    config.numBlocks = 1;
-    return commSuccess;
   }
 
   // Pass number of thread block groups to kernel p2p elements
