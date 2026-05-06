@@ -42,9 +42,7 @@ struct Memcpy {
       std::size_t /*byte_offset*/,
       Args...) {
     if (dst) {
-      memcpy_vectorized(dst, staging, nbytes, group);
-      group.sync();
-      memcpy_vectorized(fwd_staging, dst, nbytes, group);
+      memcpy_dual(dst, fwd_staging, staging, nbytes, group);
     } else {
       memcpy_vectorized(fwd_staging, staging, nbytes, group);
     }

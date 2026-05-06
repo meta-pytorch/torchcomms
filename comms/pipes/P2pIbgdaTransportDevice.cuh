@@ -1400,6 +1400,281 @@ class P2pIbgdaTransportDevice {
 #endif
   }
 
+  /**
+   * recv_forward — receive data and forward it to the next peer in a ring.
+   *
+   * Combines recv + send in a single method, sharing the staging buffer to
+   * avoid an extra copy. The CopyOp::recv_forward() method receives three
+   * buffers: dst (application output), fwd_staging (next peer's send staging),
+   * and staging (this transport's recv staging). This enables fused
+   * receive-reduce-forward patterns.
+   *
+   * Signal ordering invariant (critical for ring deadlock avoidance):
+   *   1. Wait DATA_READY from sender (this transport)
+   *   2. Wait NIC_DONE on fwd transport's sendStaging (backpressure)
+   *   3. CopyOp::recv_forward(dst, fwd_staging, staging, ...)
+   *   4. Signal SLOT_FREE to sender (this transport) — BEFORE step 5
+   *   5. Wait SLOT_FREE from fwd transport's receiver
+   *   6. threadfence_system + RDMA put via fwd transport
+   *
+   * Step 4 before step 5 breaks the circular dependency in rings: each rank
+   * releases its predecessor's staging before waiting on its successor.
+   *
+   * Protocol compatibility with send() and recv():
+   *
+   * recv_forward acts as a recv on "this" transport and a send on "fwd".
+   * The signal protocol is wire-compatible:
+   *
+   *   Recv side (this transport):
+   *     - Reads stepState[maxGroups + groupId] (same index as recv)
+   *     - Waits DATA_READY on localSignalBuf[groupId] (matches send's
+   *       piggybacked signal on remoteSignalBuf[groupId])
+   *     - Signals SLOT_FREE on remoteSignalBuf[maxGroups + groupId]
+   *       (matches send's backpressure wait on localSignalBuf[maxGroups +
+   *       groupId])
+   *
+   *   Fwd side (fwd transport):
+   *     - Reads stepState[groupId] (same index as send)
+   *     - Waits NIC_DONE on localCounterBuf[groupId] (matches send's
+   *       self-counter)
+   *     - Waits SLOT_FREE on localSignalBuf[maxGroups + groupId]
+   *       (matches recv's backpressure release)
+   *     - RDMA puts with DATA_READY on remoteSignalBuf[groupId]
+   *       + NIC_DONE on localCounterBuf[groupId]
+   *       (matches recv's DATA_READY wait)
+   *
+   * Any chain of send → recv_forward* → recv is therefore valid: each
+   * recv_forward consumes exactly the signals its predecessor produces
+   * and produces exactly the signals its successor expects.
+   *
+   * @param group           ThreadGroup (all threads participate).
+   * @param dst             Application destination (may be nullptr if
+   *                        CopyOp handles it, e.g. reduce-scatter).
+   * @param fwd             Forward transport (sends to next peer in ring).
+   * @param nbytes          Bytes to receive and forward.
+   * @param active_blocks   Number of block-groups sharing the slot. 0 =
+   * maxGroups.
+   * @param max_signal_bytes Max bytes per signaled sub-chunk. 0 = perBlockSlot.
+   * @param timeout         Optional timeout for wait operations.
+   * @param args            Extra args forwarded to CopyOp::recv_forward.
+   */
+  template <typename CopyOp = Memcpy, typename... Args>
+  __device__ __forceinline__ void recv_forward(
+      ThreadGroup& group,
+      void* __restrict__ dst,
+      P2pIbgdaTransportDevice& fwd,
+      std::size_t nbytes,
+      int active_blocks = 0,
+      std::size_t max_signal_bytes = 0,
+      const Timeout& timeout = Timeout(),
+      Args... args) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+#ifdef __HIP_PLATFORM_AMD__
+    static_assert(
+        false,
+        "P2pIbgdaTransportDevice::recv_forward() requires NVIDIA GPU (DOCA/IBGDA)");
+#endif
+    if (nbytes == 0) {
+      return;
+    }
+
+    const int groupId = group.group_id;
+
+    // --- recv side (this transport) ---
+    const int recvEffActive =
+        active_blocks > 0 ? active_blocks : sendRecvState_.maxGroups;
+    if (recvEffActive > sendRecvState_.maxGroups || groupId >= recvEffActive) {
+      if (group.is_leader()) {
+        printf(
+            "[PIPES] FATAL: recv_forward recv active_blocks=%d "
+            "maxGroups=%d groupId=%u\n",
+            recvEffActive,
+            sendRecvState_.maxGroups,
+            groupId);
+      }
+      __trap();
+    }
+
+    const std::size_t recvPerBlockSlot =
+        (sendRecvState_.dataBufferSize / recvEffActive) & ~15ULL;
+    if (recvPerBlockSlot == 0) {
+      if (group.is_leader()) {
+        printf("[PIPES] FATAL: recv_forward recvPerBlockSlot=0\n");
+      }
+      __trap();
+    }
+
+    // --- fwd side (fwd transport) ---
+    const int fwdEffActive =
+        active_blocks > 0 ? active_blocks : fwd.sendRecvState_.maxGroups;
+    if (fwdEffActive > fwd.sendRecvState_.maxGroups ||
+        groupId >= fwdEffActive) {
+      if (group.is_leader()) {
+        printf(
+            "[PIPES] FATAL: recv_forward fwd active_blocks=%d "
+            "maxGroups=%d groupId=%u\n",
+            fwdEffActive,
+            fwd.sendRecvState_.maxGroups,
+            groupId);
+      }
+      __trap();
+    }
+
+    const std::size_t fwdPerBlockSlot =
+        (fwd.sendRecvState_.dataBufferSize / fwdEffActive) & ~15ULL;
+    if (fwdPerBlockSlot == 0) {
+      if (group.is_leader()) {
+        printf("[PIPES] FATAL: recv_forward fwdPerBlockSlot=0\n");
+      }
+      __trap();
+    }
+
+    // Chunk sizes for recv and fwd sides
+    std::size_t recvChunkSize =
+        (max_signal_bytes > 0 && max_signal_bytes < recvPerBlockSlot)
+        ? (max_signal_bytes & ~15ULL)
+        : recvPerBlockSlot;
+    if (recvChunkSize == 0) {
+      recvChunkSize = recvPerBlockSlot;
+    }
+    std::size_t fwdChunkSize =
+        (max_signal_bytes > 0 && max_signal_bytes < fwdPerBlockSlot)
+        ? (max_signal_bytes & ~15ULL)
+        : fwdPerBlockSlot;
+    if (fwdChunkSize == 0) {
+      fwdChunkSize = fwdPerBlockSlot;
+    }
+
+    const std::size_t recvChunksPerSlot = recvPerBlockSlot / recvChunkSize;
+    const std::size_t fwdChunksPerSlot = fwdPerBlockSlot / fwdChunkSize;
+    const std::size_t totalRecvChunks =
+        (nbytes + recvChunkSize - 1) / recvChunkSize;
+    const std::size_t totalFwdChunks =
+        (nbytes + fwdChunkSize - 1) / fwdChunkSize;
+
+    // Step state
+    const int64_t recvBaseStep =
+        sendRecvState_.stepState[sendRecvState_.maxGroups + groupId];
+    const int recvPipelineDepth = sendRecvState_.pipelineDepth;
+    const std::size_t recvDataBufSize = sendRecvState_.dataBufferSize;
+    const int recvMaxGroups = sendRecvState_.maxGroups;
+    const int64_t recvChunksPerSlot64 = static_cast<int64_t>(recvChunksPerSlot);
+
+    const int64_t fwdBaseStep = fwd.sendRecvState_.stepState[groupId];
+    const int fwdPipelineDepth = fwd.sendRecvState_.pipelineDepth;
+    const std::size_t fwdDataBufSize = fwd.sendRecvState_.dataBufferSize;
+    const int fwdMaxGroups = fwd.sendRecvState_.maxGroups;
+    const int64_t fwdChunksPerSlot64 = static_cast<int64_t>(fwdChunksPerSlot);
+    const int64_t fwdPipelineChunks =
+        static_cast<int64_t>(fwdPipelineDepth) * fwdChunksPerSlot64;
+
+    // Process chunks. recv and fwd chunk sizes should match for simplicity.
+    for (std::size_t s = 0; s < totalRecvChunks; ++s) {
+      // --- Recv side offsets ---
+      const int64_t recvChunkStep = recvBaseStep + static_cast<int64_t>(s);
+      const int64_t recvSlotStep = recvChunkStep / recvChunksPerSlot64;
+      const int64_t recvSubStep = recvChunkStep % recvChunksPerSlot64;
+      const int recvSlot = static_cast<int>(recvSlotStep % recvPipelineDepth);
+      const std::size_t recvSlotOff = recvSlot * recvDataBufSize;
+      const std::size_t recvChunkOff =
+          static_cast<std::size_t>(recvSubStep) * recvChunkSize;
+      const std::size_t recvStagingOff =
+          recvSlotOff + groupId * recvPerBlockSlot + recvChunkOff;
+      const std::size_t dataOff = s * recvChunkSize;
+      const std::size_t bytesThis = (dataOff + recvChunkSize <= nbytes)
+          ? recvChunkSize
+          : (nbytes - dataOff);
+
+      // --- Fwd side offsets ---
+      const int64_t fwdChunkStep = fwdBaseStep + static_cast<int64_t>(s);
+      const int64_t fwdSlotStep = fwdChunkStep / fwdChunksPerSlot64;
+      const int64_t fwdSubStep = fwdChunkStep % fwdChunksPerSlot64;
+      const int fwdSlot = static_cast<int>(fwdSlotStep % fwdPipelineDepth);
+      const std::size_t fwdSlotOff = fwdSlot * fwdDataBufSize;
+      const std::size_t fwdChunkOff =
+          static_cast<std::size_t>(fwdSubStep) * fwdChunkSize;
+      const std::size_t fwdStagingOff =
+          fwdSlotOff + groupId * fwdPerBlockSlot + fwdChunkOff;
+
+      // (1) Wait for sender's DATA_READY.
+      wait_signal(
+          group,
+          sendRecvState_.localSignalBuf.subBuffer(groupId * sizeof(uint64_t)),
+          static_cast<uint64_t>(recvChunkStep + 1),
+          timeout);
+
+      // (2) Wait for NIC_DONE on fwd's sendStaging (backpressure).
+      if (fwdChunkStep >= fwdPipelineChunks) {
+        fwd.wait_counter(
+            group,
+            fwd.sendRecvState_.localCounterBuf.subBuffer(
+                groupId * sizeof(uint64_t)),
+            static_cast<uint64_t>(fwdChunkStep - fwdPipelineChunks + 1),
+            timeout);
+      }
+
+      // (3) CopyOp::recv_forward — transform recv staging → dst + fwd staging.
+      CopyOp::recv_forward(
+          dst ? static_cast<char*>(dst) + dataOff : nullptr,
+          fwd.sendRecvState_.sendStagingPtr + fwdStagingOff,
+          sendRecvState_.recvStagingPtr + recvStagingOff,
+          bytesThis,
+          group,
+          dataOff,
+          args...);
+      group.sync();
+
+      // (4) Signal SLOT_FREE to sender (this transport).
+      //     CRITICAL: must happen BEFORE waiting on fwd's SLOT_FREE (step 5)
+      //     to break circular ring dependency.
+      signal(
+          group,
+          sendRecvState_.remoteSignalBuf.subBuffer(
+              (recvMaxGroups + groupId) * sizeof(uint64_t)),
+          1ULL);
+
+      // (5) Wait for fwd receiver's SLOT_FREE (backpressure on fwd's
+      //     recvStaging).
+      if (fwdChunkStep >= fwdPipelineChunks) {
+        fwd.wait_signal(
+            group,
+            fwd.sendRecvState_.localSignalBuf.subBuffer(
+                (fwdMaxGroups + groupId) * sizeof(uint64_t)),
+            static_cast<uint64_t>(fwdChunkStep - fwdPipelineChunks + 1),
+            timeout);
+      }
+
+      // (6) threadfence_system + RDMA put via fwd transport.
+      __threadfence_system();
+      group.sync();
+      if (group.is_leader()) {
+        ThreadGroup solo{0, 1, group.group_id, 1, SyncScope::THREAD};
+        fwd.put(
+            solo,
+            fwd.sendRecvState_.sendStagingBuf.subBuffer(fwdStagingOff),
+            fwd.sendRecvState_.recvStagingBuf.subBuffer(fwdStagingOff),
+            bytesThis,
+            fwd.sendRecvState_.remoteSignalBuf.subBuffer(
+                groupId * sizeof(uint64_t)),
+            1ULL,
+            fwd.sendRecvState_.localCounterBuf.subBuffer(
+                groupId * sizeof(uint64_t)),
+            1ULL);
+      }
+      group.sync();
+    }
+
+    // Update step state for both recv and fwd sides.
+    if (group.is_leader()) {
+      sendRecvState_.stepState[sendRecvState_.maxGroups + groupId] =
+          recvBaseStep + static_cast<int64_t>(totalRecvChunks);
+      fwd.sendRecvState_.stepState[groupId] =
+          fwdBaseStep + static_cast<int64_t>(totalFwdChunks);
+    }
+    group.sync();
+#endif
+  }
+
   // Send/recv state accessors
 
   __host__ __device__ const IbSendRecvState& send_recv_state() const {
