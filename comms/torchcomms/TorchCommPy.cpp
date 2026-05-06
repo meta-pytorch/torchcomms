@@ -13,6 +13,7 @@
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/TorchCommFactory.hpp"
 #include "comms/torchcomms/TorchWork.hpp"
+#include "comms/torchcomms/hooks/common/OpNameHelper.hpp"
 
 // Forward declarations for hook submodule init
 void init_clog_hook_bindings(py::module_& m);
@@ -2300,10 +2301,8 @@ Raises: RuntimeError if the ranks list is non-empty and the current rank is not 
       .def(
           "register_pre_hook",
           [](TorchComm& self, const py::function& callback) {
-            auto hook = [callback](
-                            OpName name,
-                            size_t op_id,
-                            const PreHookArgs& args) {
+            auto hook = [callback](size_t op_id, const PreHookArgs& args) {
+              auto name = getOpName(args);
               py::gil_scoped_acquire acquire;
               py::object py_args = std::visit(
                   [](const auto& a) -> py::object {

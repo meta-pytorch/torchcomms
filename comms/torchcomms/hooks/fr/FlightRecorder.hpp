@@ -418,7 +418,6 @@ class FlightRecorderHook
       const std::string& comm_name,
       size_t pg_id,
       const std::string& pg_desc,
-      OpName name,
       size_t op_id,
       const PreHookArgs& args);
 

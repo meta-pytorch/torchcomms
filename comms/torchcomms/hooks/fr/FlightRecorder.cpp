@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/torchcomms/hooks/fr/FlightRecorder.hpp"
+#include "comms/torchcomms/hooks/common/OpNameHelper.hpp"
 
 #include <c10/util/ApproximateClock.h>
 #include <c10/util/WaitCounter.h>
@@ -837,9 +838,8 @@ void FlightRecorderHook::registerWithComm(std::shared_ptr<TorchComm> comm) {
 
   // Register pre-hook - records the operation
   auto pre_hook_handle = comm->registerPreHook(
-      [self, comm_name, pg_id, pg_desc](
-          OpName name, size_t op_id, const PreHookArgs& args) {
-        self->onPreHook(comm_name, pg_id, pg_desc, name, op_id, args);
+      [self, comm_name, pg_id, pg_desc](size_t op_id, const PreHookArgs& args) {
+        self->onPreHook(comm_name, pg_id, pg_desc, op_id, args);
       });
 
   // Register post-hook - called via work callback when work completes
@@ -861,9 +861,9 @@ void FlightRecorderHook::onPreHook(
     const std::string& comm_name,
     size_t pg_id,
     const std::string& pg_desc,
-    OpName name,
     size_t op_id,
     const PreHookArgs& args) {
+  auto name = getOpName(args);
   if (!enabled_) {
     return;
   }

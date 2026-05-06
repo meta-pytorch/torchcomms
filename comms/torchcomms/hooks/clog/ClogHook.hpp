@@ -160,7 +160,6 @@ class ClogHook : public std::enable_shared_from_this<ClogHook> {
   void onPreHook(
       const std::string& comm_name,
       int device_index,
-      OpName name,
       size_t op_id,
       const PreHookArgs& args);
 
@@ -171,7 +170,7 @@ class ClogHook : public std::enable_shared_from_this<ClogHook> {
       const PostHookArgs& args);
 
   // Build signature string from typed pre-hook args via std::visit.
-  std::string buildSignature(OpName name, const PreHookArgs& args) const;
+  std::string buildSignature(const PreHookArgs& args) const;
 
   // -- Formatting helpers --
   static double now();
