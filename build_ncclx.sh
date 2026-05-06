@@ -3,6 +3,30 @@
 
 set -x
 
+function ensure_conda_libdwarf_symlinks() {
+  local conda_lib_dir="${CMAKE_PREFIX_PATH}/lib"
+  local libdwarf_real=""
+  local soname=""
+
+  for candidate in "${conda_lib_dir}"/libdwarf.so "${conda_lib_dir}"/libdwarf.so.*; do
+    [[ -e "$candidate" ]] || continue
+    if [[ -f "$candidate" && ! -L "$candidate" ]]; then
+      libdwarf_real="$(basename "$candidate")"
+      break
+    fi
+  done
+
+  if [[ -z "$libdwarf_real" ]]; then
+    return
+  fi
+
+  ln -sf "$libdwarf_real" "${conda_lib_dir}/libdwarf.so"
+  soname=$(readelf -d "${conda_lib_dir}/${libdwarf_real}" 2>/dev/null | sed -n 's/.*Library soname: \[\(.*\)\]/\1/p' | head -n 1)
+  if [[ -n "$soname" ]]; then
+    ln -sf "$libdwarf_real" "${conda_lib_dir}/${soname}"
+  fi
+}
+
 function do_cmake_build() {
   local source_dir="$1"
   local extra_flags="$2"
@@ -182,6 +206,7 @@ function build_third_party {
         fmt
       )
       conda install "${DEPS[@]}" --yes
+      ensure_conda_libdwarf_symlinks
       build_fb_oss_library "https://github.com/facebook/folly.git" "$third_party_tag" folly
     fi
   fi
