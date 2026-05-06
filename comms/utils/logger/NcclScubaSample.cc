@@ -4,7 +4,9 @@
 
 #include <sstream>
 
+#if __has_include(<dwarf.h>)
 #include <folly/debugging/symbolizer/Symbolizer.h>
+#endif
 #include <folly/json/json.h>
 
 #include "comms/utils/cvars/nccl_cvars.h" // @manual=fbcode//comms/utils/cvars:ncclx-cvars
@@ -59,7 +61,8 @@ void NcclScubaSample::setExceptionInfo(const std::exception& ex) {
 }
 
 void NcclScubaSample::setError(const std::string& error) {
-  // Get stack trace
+  // Get stack trace (requires elfutils/libdwarf for folly Symbolizer)
+#if __has_include(<dwarf.h>)
   if (NCCL_SCUBA_STACK_TRACE_ON_ERROR_ENABLED) {
     std::stringstream ss;
     ss << folly::symbolizer::getStackTraceStr();
@@ -73,6 +76,7 @@ void NcclScubaSample::setError(const std::string& error) {
     this->stackTrace = stackTraceMangled;
     addNormVector("stack_trace", std::move(stackTraceMangled));
   }
+#endif
 
   // Set attributes locally
   this->hasException = true;
