@@ -62,7 +62,7 @@ void CachingAllocatorHookImpl::regDeregMem(const TraceEntry& te) {
     // Register the memory through ncclCommRegister and add to commRegHandles_
     for (auto& comm : registeredComms_) {
       if (te.device_ == comm->getDevice().index()) {
-        comm->register_address(TorchCommRCCL::AddressWithLen{addr, len});
+        comm->register_address(AddressWithLen{addr, len});
       }
     }
   } else if (unregister_mem) {
@@ -78,7 +78,7 @@ void CachingAllocatorHookImpl::regDeregMem(const TraceEntry& te) {
 
     for (auto& comm : registeredComms_) {
       if (te.device_ == comm->getDevice().index()) {
-        comm->deregister_address(TorchCommRCCL::Address{addr});
+        comm->deregister_address(Address{addr});
       }
     }
   }
@@ -95,7 +95,7 @@ void CachingAllocatorHookImpl::registerComm(TorchCommRCCL* comm) {
   // Register all memory that has already been allocated
   for (const auto& [addr, mem_info] : registeredMemMap_) {
     if (mem_info.device == comm->getDevice().index()) {
-      comm->register_address(TorchCommRCCL::AddressWithLen{addr, mem_info.len});
+      comm->register_address(AddressWithLen{addr, mem_info.len});
     }
   }
 
@@ -113,7 +113,7 @@ void CachingAllocatorHookImpl::deregisterComm(TorchCommRCCL* comm) {
   // De-register all memory that has already been allocated
   for (const auto& [addr, mem_info] : registeredMemMap_) {
     if (mem_info.device == comm->getDevice().index()) {
-      comm->deregister_address(TorchCommRCCL::Address{addr});
+      comm->deregister_address(Address{addr});
     }
   }
 
@@ -125,7 +125,7 @@ void CachingAllocatorHookImpl::clear() {
   for (auto& comm : registeredComms_) {
     for (const auto& [addr, mem_info] : registeredMemMap_) {
       if (mem_info.device == comm->getDevice().index()) {
-        comm->deregister_address(TorchCommRCCL::Address{addr});
+        comm->deregister_address(Address{addr});
       }
     }
   }

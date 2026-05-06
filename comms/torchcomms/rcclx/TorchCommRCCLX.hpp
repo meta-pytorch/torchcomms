@@ -253,20 +253,11 @@ class TorchCommRCCLX : public TorchCommBackend,
     TIMEOUT,
   };
 
-  struct Address {
-    void* addr;
-  };
-
-  struct AddressWithLen {
-    void* addr;
-    size_t len;
-  };
-
   std::atomic<CommState> comm_state_{
       CommState::NORMAL}; // State of the communicator
 
-  void register_address(const AddressWithLen& addr);
-  void deregister_address(const Address& addr);
+  void register_address(const AddressWithLen& addr) override;
+  void deregister_address(const Address& addr) override;
 
  protected:
   // Virtual to allow mocking in tests (D91705167)
