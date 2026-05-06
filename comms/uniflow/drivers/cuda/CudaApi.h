@@ -38,6 +38,18 @@ class CudaApi {
       cudaMemcpyKind kind,
       cudaStream_t stream);
 
+#if CUDART_VERSION >= 12080
+  // Batch DMA submission. Available on CUDA 12.8+; the underlying CUDA
+  // signature changed in CUDA 13.0 (failIdx removed), but the wrapper
+  // surface stays stable.
+  virtual Status memcpyBatchAsync(
+      void* const* dsts,
+      const void* const* srcs,
+      const size_t* sizes,
+      size_t count,
+      cudaStream_t stream);
+#endif
+
   virtual Status memcpyPeerAsync(
       void* dst,
       int dstDevice,
