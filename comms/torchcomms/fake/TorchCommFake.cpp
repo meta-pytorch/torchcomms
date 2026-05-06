@@ -251,6 +251,11 @@ std::shared_ptr<TorchCommWindow> TorchCommFake::new_window(
   return win;
 }
 
+c10::intrusive_ptr<TorchWork> TorchCommFake::reconfigure(
+    const ReconfigureOptions& /* opts */) {
+  return c10::make_intrusive<TorchWorkCompleted>();
+}
+
 std::shared_ptr<TorchCommBackend> TorchCommFake::split(
     const std::vector<int>& ranks,
     const std::string& name,

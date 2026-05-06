@@ -194,6 +194,8 @@ class TorchWorkCompleted : public TorchWork {
 
   // Override virtual functions from TorchWork
   void wait() override;
+
+  void waitBlocking() override;
 };
 
 class TorchWorkThread : public TorchWork {
