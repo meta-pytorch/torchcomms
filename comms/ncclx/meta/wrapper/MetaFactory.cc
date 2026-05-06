@@ -5,13 +5,19 @@
 #include "comm.h"
 #include "comms/ctran/algos/AllToAll/AllToAllPHintUtils.h"
 #include "comms/ctran/algos/AllToAll/AllToAllvDynamicHintUtils.h"
+#include "comms/ctran/interfaces/ICtran.h"
+#include "comms/ctran/memory/memCacheAllocator.h"
 #include "comms/ctran/window/WinHintUtils.h"
 #include "comms/utils/checks.h"
 #include "comms/utils/commSpecs.h"
 #include "meta/NcclxConfig.h" // @manual
+#include "meta/commstate/FactoryCommStateX.h"
+#include "meta/ctran-integration/BaselineBootstrap.h"
 #include "meta/wrapper/MetaFactory.h"
 
 using namespace ctran;
+
+#define NCCLCHECK_COMM(call) NCCLCHECK(metaCommToNccl(call))
 
 meta::comms::Hints ncclToMetaComm(const ncclx::Hints& hints) {
   meta::comms::Hints ret;
@@ -31,6 +37,8 @@ meta::comms::Hints ncclToMetaComm(const ncclx::Hints& hints) {
   return ret;
 }
 
+namespace {
+
 ctranConfig makeCtranConfigFrom(ncclComm* comm) {
   struct ctranConfig tconfig = {
       .blocking = comm->config.blocking,
@@ -38,7 +46,6 @@ ctranConfig makeCtranConfigFrom(ncclComm* comm) {
       .ncclAllGatherAlgo =
           NCCLX_CONFIG_FIELD(comm->config, ncclAllGatherAlgo).c_str(),
   };
-  // Wire per-comm pipes NVL transport config from ncclx::Config hints
   if (comm->config.ncclxConfig != nullptr) {
     const auto* ncclxCfg =
         static_cast<ncclx::Config*>(comm->config.ncclxConfig);
@@ -51,28 +58,14 @@ ctranConfig makeCtranConfigFrom(ncclComm* comm) {
           ncclxCfg->pipesUseDualStateBuffer.value() ? 1 : 0;
     }
   }
-
   return tconfig;
 }
 
-// TODO: remove this factory method once we have proper CtranComm initialization
-// Initialize all fields except Ctran. Since Ctran/Bootstra/Colltrace requires
-// stateX and other fields to be initialized beforehand, we split its
-// initialization into two parts:
-// 1. Pre-initialization to enable Ctran/Bootstra/Colltrace initialization.
-// 2. Final initialization (final-init) to set up the remaining fields.
 commResult_t setCtranCommBase(ncclComm* ncclCommVal) {
   if (!ncclCommVal) {
     return commInvalidArgument;
   }
-
-  // can not call make_unique with a private constructor
-  // CtranComm has provate constructor for sagety reasons for now
-  // no one should use CtranComm constructor until refactoring is finished
-  // TODO: move to make_unique after finish refactoring and defining a proper
-  // constructor
-  ncclCommVal->ctranComm_ =
-      std::unique_ptr<CtranComm>(std::move(new CtranComm()));
+  ncclCommVal->ctranComm_ = std::make_unique<CtranComm>();
 
   const auto tconfig = makeCtranConfigFrom(ncclCommVal);
   ncclCommVal->ctranComm_->config_ = tconfig;
@@ -83,9 +76,39 @@ commResult_t setCtranCommBase(ncclComm* ncclCommVal) {
   return commSuccess;
 }
 
-CtranComm* getCtranCommFromNcclComm(ncclComm* ncclComm) {
-  if (ncclComm && ncclComm->ctranComm_) {
-    return ncclComm->ctranComm_.get();
+} // namespace
+
+ncclResult_t createCtranComm(ncclComm* comm) {
+  NCCLCHECK_COMM(setCtranCommBase(comm));
+
+  if (NCCL_USE_MEM_CACHE) {
+    comm->ctranComm_->memCache_ =
+        ncclx::memory::memCacheAllocator::getInstance();
   }
-  return nullptr;
+
+  comm->ctranComm_->bootstrap_ =
+      std::make_unique<ncclx::BaselineBootstrap>(comm);
+
+  NCCLCHECK(ncclx::createCommStateXFromNcclComm(comm, comm->ctranComm_.get()));
+
+  comm->ctranComm_->colltraceNew_ = comm->newCollTrace;
+
+  NCCLCHECK_COMM(ctranInit(comm->ctranComm_.get()));
+
+  return ncclSuccess;
+}
+
+ncclResult_t destroyCtranComm(ncclComm* comm) {
+  if (!comm || !comm->ctranComm_) {
+    return ncclSuccess;
+  }
+  NCCLCHECK_COMM(ctranFinalize(comm->ctranComm_.get()));
+  try {
+    comm->ctranComm_->destroy();
+    comm->ctranComm_.reset();
+  } catch (const std::exception& e) {
+    CLOGF(ERR, "CtranComm destruction failed: {}", e.what());
+    return ncclInternalError;
+  }
+  return ncclSuccess;
 }
