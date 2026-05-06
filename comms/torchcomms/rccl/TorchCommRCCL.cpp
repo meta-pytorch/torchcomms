@@ -411,6 +411,8 @@ void TorchCommRCCL::finalize() {
   }
   init_state_ = InitializationState::FINALIZED;
 
+  auto comm_state_on_entry = comm_state_.load();
+
   // Signal shutdown to timeout watchdog
   shutdown_ = true;
 
@@ -437,7 +439,9 @@ void TorchCommRCCL::finalize() {
   if (comm_state_ == CommState::TIMEOUT) {
     abortRcclComm();
     throw std::runtime_error("Work timed out during finalize");
-  } else if (comm_state_ == CommState::ERROR) {
+  } else if (
+      comm_state_ == CommState::ERROR &&
+      comm_state_on_entry != CommState::ERROR) {
     ncclResult_t asyncErr;
     RCCL_CHECK(
         rccl_api_,
