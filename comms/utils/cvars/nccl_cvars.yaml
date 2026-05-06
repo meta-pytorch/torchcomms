@@ -2980,6 +2980,21 @@ cvars:
      mccl_operation_trace Scuba table via McclAlgoProfilerReporter. Set to
      false to disable ctran profiling from the MCCL level.
 
+ - name        : MCCL_FILTER_ALGO_PROFILER_LOGGING_BY_RANKS
+   type        : stringlist
+   default     : "0"
+   description : |-
+     Comma-separated list of global ranks allowed to write algo profiler
+     operation data to filter logs (mccl_operation_trace). Only effective
+     when MCCL_CTRAN_TRANSPORT_PROFILER is enabled (true by default),
+     which controls whether ctran algo profiling data flows to
+     mccl_operation_trace. This filter applies only to algo profiler
+     operation trace samples; other log types are not affected. When
+     this list is non-empty, only the specified ranks will have their
+     algo profiler samples written; all other ranks are silently skipped.
+     Default: "0" (only rank 0 logs). Set to an empty string to allow
+     all ranks to log.
+
  - name        : NCCL_GIN_GDAKI_NIC_HANDLER
    type        : int
    default     : 0
