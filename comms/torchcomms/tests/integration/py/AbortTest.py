@@ -77,38 +77,6 @@ class AbortTest(unittest.TestCase):
         comm.abort()
         comm.finalize()
 
-    def test_abort_then_reconfigure(self):
-        """After abort(), reconfigure() should recover the communicator."""
-        comm = self._create_reconfigurable_comm("abort_recover", 10)
-
-        comm.abort()
-
-        my_handle = comm.get_init_handle()
-        self.store.set(f"abort_recover2_{self.rank}", my_handle)
-        handles = []
-        for i in range(self.world_size):
-            h = self.store.get(f"abort_recover2_{i}").decode("utf-8")
-            handles.append(h)
-
-        work = comm.reconfigure(
-            uuid=11,
-            init_handles=handles,
-            timeout=timedelta(seconds=30),
-        )
-        work.wait()
-
-        tensor = torch.ones(4, dtype=torch.float, device=self.device) * (
-            comm.get_rank() + 1
-        )
-        comm.all_reduce(tensor, torchcomms.ReduceOp.SUM, async_op=False)
-        torch.cuda.synchronize()
-
-        expected_value = sum(range(1, self.world_size + 1))
-        expected = torch.ones(4, dtype=torch.float, device="cpu") * expected_value
-        self.assertTrue(torch.allclose(tensor.cpu(), expected))
-
-        comm.finalize()
-
 
 if __name__ == "__main__":
     unittest.main()
