@@ -240,6 +240,19 @@ class RcclxApi {
   // Memory allocation for NCCL-managed buffers
   virtual ncclResult_t memAlloc(void** ptr, size_t size) = 0;
   virtual ncclResult_t memFree(void* ptr) = 0;
+
+  // Fused multi-group sharded relay allreduce for 2D sparse parallelism
+  virtual ncclResult_t shardedRelayMultiGroupAllReduce(
+      const void* const* sendBuffs,
+      void* const* recvBuffs,
+      const size_t* counts,
+      ncclDataType_t datatype,
+      ncclRedOp_t op,
+      ncclComm_t comm,
+      hipStream_t stream,
+      const int* const* allActiveRanks,
+      int nActiveRanksPerGroup,
+      int nGroups) = 0;
 };
 
 /**
@@ -457,6 +470,19 @@ class DefaultRcclxApi : public RcclxApi {
   // Memory allocation for NCCL-managed buffers
   ncclResult_t memAlloc(void** ptr, size_t size) override;
   ncclResult_t memFree(void* ptr) override;
+
+  // Fused multi-group sharded relay allreduce for 2D sparse parallelism
+  ncclResult_t shardedRelayMultiGroupAllReduce(
+      const void* const* sendBuffs,
+      void* const* recvBuffs,
+      const size_t* counts,
+      ncclDataType_t datatype,
+      ncclRedOp_t op,
+      ncclComm_t comm,
+      hipStream_t stream,
+      const int* const* allActiveRanks,
+      int nActiveRanksPerGroup,
+      int nGroups) override;
 };
 
 } // namespace torch::comms
