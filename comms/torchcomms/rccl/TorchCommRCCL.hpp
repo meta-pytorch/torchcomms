@@ -90,6 +90,15 @@ class TorchCommRCCL : public TorchCommBackend,
   int getRank() const override;
   int getSize() const override;
 
+  // Fault Tolerance API
+  bool supportsReconfigure() const override {
+    return true;
+  }
+  InitHandle getInitHandle() const override;
+  c10::intrusive_ptr<TorchWork> reconfigure(
+      const ReconfigureOptions& opts) override;
+  void abort() override;
+
   // Point-to-Point Operations
   c10::intrusive_ptr<TorchWork> send(
       const at::Tensor& tensor,
@@ -232,6 +241,7 @@ class TorchCommRCCL : public TorchCommBackend,
   [[nodiscard]] hipEvent_t getEvent();
   void returnEvent(hipEvent_t event);
   void abortRcclComm();
+  void revokeRcclComm();
 
   enum class CommState {
     NORMAL,
@@ -361,6 +371,7 @@ class TorchCommRCCL : public TorchCommBackend,
 
   void attachMemoryHook();
   void detachMemoryHook();
+  void initRcclResources();
 
   // Member variables
   ncclComm_t nccl_comm_{};
@@ -381,6 +392,9 @@ class TorchCommRCCL : public TorchCommBackend,
   // List of [comm, regHandlesMap] pairs.  Each regHandlesMap is a map from the
   // buffer address to the registeration handle
   std::map<void*, RegistrationHandle> memoryRegistrationHandles_;
+
+  // Store held for reconfigure bootstrap (kept alive across reconfigure calls)
+  c10::intrusive_ptr<c10d::Store> reconfigure_store_;
 
   // RCCL API abstraction
   std::shared_ptr<RcclApi> rccl_api_;

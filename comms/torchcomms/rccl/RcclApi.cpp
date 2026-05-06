@@ -2,6 +2,8 @@
 
 #include "comms/torchcomms/rccl/RcclApi.hpp"
 
+#include "comms/torchcomms/utils/Logging.hpp"
+
 namespace torch::comms {
 
 // DefaultRcclApi implementation
@@ -47,6 +49,18 @@ ncclResult_t DefaultRcclApi::commAbort(ncclComm_t comm) {
   return ncclCommAbort(comm);
 }
 
+ncclResult_t DefaultRcclApi::commRevoke(ncclComm_t comm) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 28, 0)
+  return ncclCommRevoke(comm, 0);
+#else
+  (void)comm;
+  TC_LOG(ERROR) << "NCCL version " << NCCL_VERSION_CODE
+                << " does not support ncclCommRevoke API";
+  return ncclInvalidUsage;
+#endif
+}
+
 ncclResult_t DefaultRcclApi::commGetAsyncError(
     ncclComm_t comm,
     ncclResult_t* asyncError) {
@@ -62,6 +76,59 @@ ncclResult_t DefaultRcclApi::commSplit(
     ncclConfig_t* config) {
   std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclCommSplit(comm, color, key, newcomm, config);
+}
+
+ncclResult_t DefaultRcclApi::commShrink(
+    ncclComm_t comm,
+    int* excludeRanksList,
+    int excludeRanksCount,
+    ncclComm_t* newcomm,
+    ncclConfig_t* config,
+    int shrinkFlags) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 27, 0)
+  return ncclCommShrink(
+      comm, excludeRanksList, excludeRanksCount, newcomm, config, shrinkFlags);
+#else
+  (void)comm;
+  (void)excludeRanksList;
+  (void)excludeRanksCount;
+  (void)newcomm;
+  (void)config;
+  (void)shrinkFlags;
+  TC_LOG(ERROR) << "NCCL version " << NCCL_VERSION_CODE
+                << " does not support ncclCommShrink API";
+  return ncclInvalidUsage;
+#endif
+}
+
+ncclResult_t DefaultRcclApi::commGetUniqueId(
+    ncclComm_t comm,
+    ncclUniqueId* uniqueId) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+  (void)comm;
+  (void)uniqueId;
+  TC_LOG(ERROR)
+      << "ncclCommGetUniqueId API is not implemented in RCCL backend";
+  return ncclInvalidUsage;
+}
+
+ncclResult_t DefaultRcclApi::commGrow(
+    ncclComm_t comm,
+    int nRanks,
+    const ncclUniqueId* uniqueId,
+    int rank,
+    ncclComm_t* newcomm,
+    ncclConfig_t* config) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+  (void)comm;
+  (void)nRanks;
+  (void)uniqueId;
+  (void)rank;
+  (void)newcomm;
+  (void)config;
+  TC_LOG(ERROR) << "ncclCommGrow API is not implemented in RCCL backend";
+  return ncclInvalidUsage;
 }
 
 ncclResult_t DefaultRcclApi::commRegister(
