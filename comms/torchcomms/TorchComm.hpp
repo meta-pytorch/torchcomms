@@ -225,6 +225,20 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
    */
   void abort();
 
+  /**
+   * Check if abort/fault-tolerance is enabled on this communicator.
+   *
+   * @return True if abort is enabled, false otherwise.
+   */
+  bool abortEnabled() const;
+
+  /**
+   * Check if the communicator is in an aborted state.
+   *
+   * @return True if the communicator has been aborted.
+   */
+  bool isAborted() const;
+
   // Hook types (defined in TorchCommHooks.hpp; aliased for backward compat)
   using PreHook = ::torch::comms::PreHook;
   using PostHook = ::torch::comms::PostHook;
@@ -264,7 +278,7 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
       std::shared_ptr<TorchCommBackend> impl,
       std::vector<int> ranks);
 
-  void preHook(OpName name, size_t op_id, PreHookArgs&& args);
+  void preHook(size_t op_id, PreHookArgs&& args);
   void postHook(size_t op_id, PostHookArgs&& args);
 
   // Rank validation helper

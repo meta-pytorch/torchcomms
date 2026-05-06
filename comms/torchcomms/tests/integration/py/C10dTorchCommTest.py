@@ -44,8 +44,11 @@ class TestC10dTorchCommsBasic(unittest.TestCase):
         return dist.get_rank() + 1
 
     def _skip_if_product_overflows(self, op):
-        if op == dist.ReduceOp.PRODUCT and dist.get_world_size() > 34:
-            self.skipTest("PRODUCT reduction overflows float32 for world_size > 34")
+        if op == dist.ReduceOp.PRODUCT and dist.get_world_size() > 12:
+            self.skipTest(
+                f"world_size={dist.get_world_size()} > 12: PRODUCT is world_size! "
+                "and only up to 12! is exactly representable in float32"
+            )
 
     def _expected_reduce_result(self, op):
         """Return the expected scalar result for a rank+1 input reduced across all ranks."""

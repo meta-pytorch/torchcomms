@@ -40,6 +40,34 @@ commResult_t setupKernelConfig(
     CtranComm* comm,
     cudaStream_t stream,
     KernelConfig& config) {
+  config.args.devState_d = comm->ctran_->algo->getDevState();
+  config.args.collective.alltoall.sendbuff = sendbuff;
+  config.args.collective.alltoall.recvbuff = recvbuff;
+  config.args.collective.alltoall.datatype = datatype;
+  config.args.collective.alltoall.count = count;
+
+  // When no local NVL peers (ppn=1, pure IB path), the alltoall kernel's
+  // send/recv loops are empty — only self-copy and GPE sync remain. Issue
+  // the self D2D copy via cudaMemcpyAsync and signal the kernel to skip
+  // its body by zeroing count. The kernel then runs as a 1-block/1-thread
+  // stub for GPE sync, freeing SMs for overlapping compute.
+  if (comm->statex_->nLocalRanks() <= 1) {
+    int myRank = comm->statex_->rank();
+    size_t selfBytes = count * commTypeSize(datatype);
+    if (selfBytes > 0) {
+      FB_COMMCHECK(comm->ctran_->mapper->icopy(
+          static_cast<char*>(recvbuff) + selfBytes * myRank,
+          static_cast<const char*>(sendbuff) + selfBytes * myRank,
+          selfBytes,
+          stream));
+    }
+    config.args.collective.alltoall.count = 0;
+    config.numBlocks = 1;
+    config.numThreads = 1;
+    return commSuccess;
+  }
+
+  // Multi-GPU path: full multi-block alltoall kernel for NVL + self copy.
   // If first time call, query cuda recommended blockSize
   if (bestThreadBlockSize == 0) {
     int minGridSize = 0;
@@ -75,12 +103,6 @@ commResult_t setupKernelConfig(
   if (config.numBlocks % 2) {
     config.numBlocks += 1;
   }
-
-  config.args.devState_d = comm->ctran_->algo->getDevState();
-  config.args.collective.alltoall.sendbuff = sendbuff;
-  config.args.collective.alltoall.recvbuff = recvbuff;
-  config.args.collective.alltoall.datatype = datatype;
-  config.args.collective.alltoall.count = count;
 
   return commSuccess;
 }

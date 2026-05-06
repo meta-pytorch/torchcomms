@@ -138,6 +138,7 @@ void NcclxMock::setupDefaultBehaviors() {
   // easily mock SetArgPointee with ncclDevComm struct, so just return success
   ON_CALL(*this, devCommCreate(_, _, _)).WillByDefault(Return(ncclSuccess));
   ON_CALL(*this, devCommDestroy(_, _)).WillByDefault(Return(ncclSuccess));
+  ON_CALL(*this, multimemSupport(_)).WillByDefault(Return(false));
 #endif
 }
 

@@ -134,14 +134,14 @@ __device__ __forceinline__ void all_to_allv_hybrid_amd(
 
       bool is_send = (partition_id == 0);
       if (is_send) {
-        transport.p2p_nvl.send(
+        transport.p2p_nvl.send_group(
             group_per_peer,
             static_cast<char*>(const_cast<void*>(sendbuff_d)) +
                 send_info.offset,
             send_info.nbytes,
             timeout);
       } else {
-        transport.p2p_nvl.recv(
+        transport.p2p_nvl.recv_group(
             group_per_peer,
             static_cast<char*>(recvbuff_d) + recv_info.offset,
             recv_info.nbytes,

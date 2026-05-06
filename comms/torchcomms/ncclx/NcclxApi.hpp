@@ -401,6 +401,9 @@ class NcclxApi {
 
   // Get the LSA team info (rank count, local rank) for a communicator.
   [[nodiscard]] virtual ncclTeam_t teamLsa(ncclComm_t comm) = 0;
+
+  // Query whether the communicator supports NVLS multicast (multimem).
+  [[nodiscard]] virtual bool multimemSupport(ncclComm_t comm) = 0;
 #endif
 
 #if defined(ENABLE_PIPES)
@@ -792,6 +795,8 @@ class DefaultNcclxApi : public NcclxApi {
 #endif
 
   [[nodiscard]] ncclTeam_t teamLsa(ncclComm_t comm) override;
+
+  [[nodiscard]] bool multimemSupport(ncclComm_t comm) override;
 #endif
 
 #if defined(ENABLE_PIPES)

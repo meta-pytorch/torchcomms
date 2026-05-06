@@ -3,6 +3,7 @@
 #include <comms/torchcomms/TorchComm.hpp>
 #include <comms/torchcomms/TorchCommFactory.hpp>
 #include <comms/torchcomms/fake/TorchCommFake.hpp>
+#include <comms/torchcomms/hooks/common/OpNameHelper.hpp>
 #include <gtest/gtest.h>
 #include <cstdlib>
 #include <vector>
@@ -36,8 +37,8 @@ TEST_F(TorchCommHooksTest, PreAndPostHookCalledAfterRegistration) {
   int postHookCallCount = 0;
 
   auto preHandle = torchcomm->registerPreHook(
-      [&preHookCalls](OpName name, size_t, const PreHookArgs&) {
-        preHookCalls.push_back(name);
+      [&preHookCalls](size_t, const PreHookArgs& args) {
+        preHookCalls.push_back(getOpName(args));
       });
 
   auto postHandle = torchcomm->registerPostHook(
@@ -61,8 +62,8 @@ TEST_F(TorchCommHooksTest, PreAndPostHookOpIdIncreases) {
   std::vector<size_t> preOpIds;
   std::vector<size_t> postOpIds;
 
-  auto preHandle = torchcomm->registerPreHook(
-      [&preOpIds](OpName, size_t op_id, const PreHookArgs&) {
+  auto preHandle =
+      torchcomm->registerPreHook([&preOpIds](size_t op_id, const PreHookArgs&) {
         preOpIds.push_back(op_id);
       });
 
@@ -100,9 +101,7 @@ TEST_F(TorchCommHooksTest, PreAndPostHookNotCalledAfterRemoval) {
   int postHookCallCount = 0;
 
   auto preHandle = torchcomm->registerPreHook(
-      [&preHookCallCount](OpName, size_t, const PreHookArgs&) {
-        preHookCallCount++;
-      });
+      [&preHookCallCount](size_t, const PreHookArgs&) { preHookCallCount++; });
 
   auto postHandle = torchcomm->registerPostHook(
       [&postHookCallCount](size_t, const PostHookArgs&) {
@@ -135,12 +134,12 @@ TEST_F(TorchCommHooksTest, MultiplePreAndPostHooksRegistered) {
   int postHook2CallCount = 0;
 
   auto preHandle1 = torchcomm->registerPreHook(
-      [&preHook1CallCount](OpName, size_t, const PreHookArgs&) {
+      [&preHook1CallCount](size_t, const PreHookArgs&) {
         preHook1CallCount++;
       });
 
   auto preHandle2 = torchcomm->registerPreHook(
-      [&preHook2CallCount](OpName, size_t, const PreHookArgs&) {
+      [&preHook2CallCount](size_t, const PreHookArgs&) {
         preHook2CallCount++;
       });
 
@@ -174,8 +173,8 @@ TEST_F(
   std::vector<size_t> postHookOpIds;
 
   auto preHandle = torchcomm->registerPreHook(
-      [&preHookCalls](OpName name, size_t op_id, const PreHookArgs&) {
-        preHookCalls.emplace_back(name, op_id);
+      [&preHookCalls](size_t op_id, const PreHookArgs& args) {
+        preHookCalls.emplace_back(getOpName(args), op_id);
       });
 
   auto postHandle = torchcomm->registerPostHook(
@@ -217,7 +216,7 @@ TEST_F(TorchCommHooksTest, PreHookArgsContainCorrectVariantTypes) {
   std::vector<size_t> variant_indices;
 
   auto preHandle = torchcomm->registerPreHook(
-      [&variant_indices](OpName, size_t, const PreHookArgs& args) {
+      [&variant_indices](size_t, const PreHookArgs& args) {
         variant_indices.push_back(args.index());
       });
 
@@ -251,7 +250,7 @@ TEST_F(TorchCommHooksTest, PreHookAllReduceArgsAccessible) {
 
   bool hook_called = false;
   auto preHandle = torchcomm->registerPreHook(
-      [&hook_called](OpName, size_t, const PreHookArgs& args) {
+      [&hook_called](size_t, const PreHookArgs& args) {
         auto* ar = std::get_if<AllReducePreHookArgs>(&args);
         ASSERT_NE(ar, nullptr);
         EXPECT_EQ(ar->tensor.numel(), 4); // 2x2 tensor
@@ -274,17 +273,16 @@ TEST_F(TorchCommHooksTest, BatchOpIssueHooksFired) {
   size_t pre_op_id = 0;
   size_t post_op_id = 0;
 
-  torchcomm->registerPreHook(
-      [&](OpName name, size_t op_id, const PreHookArgs& args) {
-        if (name == OpName::batch_op_issue) {
-          pre_hook_called = true;
-          pre_op_id = op_id;
-          auto* ba = std::get_if<BatchOpIssuePreHookArgs>(&args);
-          ASSERT_NE(ba, nullptr);
-          EXPECT_EQ(ba->num_ops, 2);
-          EXPECT_TRUE(ba->async_op);
-        }
-      });
+  torchcomm->registerPreHook([&](size_t op_id, const PreHookArgs& args) {
+    if (getOpName(args) == OpName::batch_op_issue) {
+      pre_hook_called = true;
+      pre_op_id = op_id;
+      auto* ba = std::get_if<BatchOpIssuePreHookArgs>(&args);
+      ASSERT_NE(ba, nullptr);
+      EXPECT_EQ(ba->num_ops, 2);
+      EXPECT_TRUE(ba->async_op);
+    }
+  });
 
   torchcomm->registerPostHook([&](size_t op_id, const PostHookArgs& args) {
     if (std::get_if<BatchOpIssuePostHookArgs>(&args)) {

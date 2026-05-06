@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/torchcomms/hooks/fr/FlightRecorder.hpp"
+#include "comms/torchcomms/hooks/common/OpNameHelper.hpp"
 
 #include <c10/util/ApproximateClock.h>
 #include <c10/util/WaitCounter.h>
@@ -809,7 +810,6 @@ FlightRecorderHook::FlightRecorderHook(size_t max_entries, bool isolated) {
 }
 
 FlightRecorderHook::~FlightRecorderHook() {
-  unregister();
   if (owns_recorder_) {
     delete recorder_;
   }
@@ -834,56 +834,41 @@ void FlightRecorderHook::registerWithComm(std::shared_ptr<TorchComm> comm) {
   }
   recorder_->record_pg_ranks(pgName, pg_ranks);
 
+  auto self = shared_from_this();
+
   // Register pre-hook - records the operation
   auto pre_hook_handle = comm->registerPreHook(
-      [this, comm_name, pg_id, pg_desc](
-          OpName name, size_t op_id, const PreHookArgs& args) {
-        this->onPreHook(comm_name, pg_id, pg_desc, name, op_id, args);
+      [self, comm_name, pg_id, pg_desc](size_t op_id, const PreHookArgs& args) {
+        self->onPreHook(comm_name, pg_id, pg_desc, op_id, args);
       });
 
   // Register post-hook - called via work callback when work completes
   // The post-hook is invoked by TorchComm when the work's callback fires
   auto post_hook_handle =
-      comm->registerPostHook([this](size_t op_id, const PostHookArgs& args) {
-        this->onPostHook(op_id, args);
+      comm->registerPostHook([self](size_t op_id, const PostHookArgs& args) {
+        self->onPostHook(op_id, args);
       });
 
   // Register abort hook - called before aborting to dump flight recorder data
   int rank = comm->getRank();
-  comm->registerAbortHook([this, rank]() { this->dump_file(rank); });
+  comm->registerAbortHook([self, rank]() { self->dump_file(rank); });
 
-  // Store registration with handles for proper cleanup
-  registrations_.emplace_back(
-      comm,
-      pg_id,
-      pg_desc,
-      std::move(pre_hook_handle),
-      std::move(post_hook_handle));
+  registrations_.emplace_back(comm, pg_id, pg_desc);
   enabled_ = true;
-}
-
-void FlightRecorderHook::unregister() {
-  // Call remove() on all handles to properly unregister hooks
-  for (auto& reg : registrations_) {
-    if (reg.pre_hook_handle) {
-      reg.pre_hook_handle->remove();
-    }
-    if (reg.post_hook_handle) {
-      reg.post_hook_handle->remove();
-    }
-  }
-  registrations_.clear();
-  enabled_ = false;
 }
 
 void FlightRecorderHook::onPreHook(
     const std::string& comm_name,
     size_t pg_id,
     const std::string& pg_desc,
-    OpName name,
     size_t op_id,
     const PreHookArgs& args) {
+  auto name = getOpName(args);
   if (!enabled_) {
+    return;
+  }
+
+  if (name == OpName::finalize) {
     return;
   }
 
@@ -931,8 +916,8 @@ void FlightRecorderHook::onPreHook(
           inputs.push_back(a.input);
           outputs.insert(outputs.end(), a.output.begin(), a.output.end());
         }
-        // BarrierPreHookArgs, SplitPreHookArgs, NewWindowPreHookArgs: no
-        // tensors
+        // BarrierPreHookArgs, SplitPreHookArgs, NewWindowPreHookArgs,
+        // FinalizePreHookArgs: no tensors
       },
       args);
 
@@ -961,6 +946,9 @@ void FlightRecorderHook::onPreHook(
 
 void FlightRecorderHook::onPostHook(size_t op_id, const PostHookArgs& args) {
   if (!enabled_) {
+    return;
+  }
+  if (std::get_if<FinalizePostHookArgs>(&args)) {
     return;
   }
   recorder_->retire_id(op_id, false);

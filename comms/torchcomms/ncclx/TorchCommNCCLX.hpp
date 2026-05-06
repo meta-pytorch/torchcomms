@@ -514,6 +514,8 @@ class TorchCommNCCLX : public TorchCommBackend,
   void checkWorkQueue();
   bool getGraphCaptureMode();
   void ensureTensorContiguous(const at::Tensor& tensor);
+  void checkTensorDevice(const at::Tensor& tensor) const;
+  void checkTensorsDevice(const std::vector<at::Tensor>& tensors) const;
 
   // Initialize the CachingAllocatorHook singleton
   void attachMemoryHook();
