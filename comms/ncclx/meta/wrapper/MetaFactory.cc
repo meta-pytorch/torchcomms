@@ -37,6 +37,8 @@ meta::comms::Hints ncclToMetaComm(const ncclx::Hints& hints) {
   return ret;
 }
 
+namespace {
+
 ctranConfig makeCtranConfigFrom(ncclComm* comm) {
   struct ctranConfig tconfig = {
       .blocking = comm->config.blocking,
@@ -44,7 +46,6 @@ ctranConfig makeCtranConfigFrom(ncclComm* comm) {
       .ncclAllGatherAlgo =
           NCCLX_CONFIG_FIELD(comm->config, ncclAllGatherAlgo).c_str(),
   };
-  // Wire per-comm pipes NVL transport config from ncclx::Config hints
   if (comm->config.ncclxConfig != nullptr) {
     const auto* ncclxCfg =
         static_cast<ncclx::Config*>(comm->config.ncclxConfig);
@@ -57,28 +58,14 @@ ctranConfig makeCtranConfigFrom(ncclComm* comm) {
           ncclxCfg->pipesUseDualStateBuffer.value() ? 1 : 0;
     }
   }
-
   return tconfig;
 }
 
-// TODO: remove this factory method once we have proper CtranComm initialization
-// Initialize all fields except Ctran. Since Ctran/Bootstra/Colltrace requires
-// stateX and other fields to be initialized beforehand, we split its
-// initialization into two parts:
-// 1. Pre-initialization to enable Ctran/Bootstra/Colltrace initialization.
-// 2. Final initialization (final-init) to set up the remaining fields.
 commResult_t setCtranCommBase(ncclComm* ncclCommVal) {
   if (!ncclCommVal) {
     return commInvalidArgument;
   }
-
-  // can not call make_unique with a private constructor
-  // CtranComm has provate constructor for sagety reasons for now
-  // no one should use CtranComm constructor until refactoring is finished
-  // TODO: move to make_unique after finish refactoring and defining a proper
-  // constructor
-  ncclCommVal->ctranComm_ =
-      std::unique_ptr<CtranComm>(std::move(new CtranComm()));
+  ncclCommVal->ctranComm_ = std::make_unique<CtranComm>();
 
   const auto tconfig = makeCtranConfigFrom(ncclCommVal);
   ncclCommVal->ctranComm_->config_ = tconfig;
@@ -89,12 +76,7 @@ commResult_t setCtranCommBase(ncclComm* ncclCommVal) {
   return commSuccess;
 }
 
-CtranComm* getCtranCommFromNcclComm(ncclComm* ncclComm) {
-  if (ncclComm && ncclComm->ctranComm_) {
-    return ncclComm->ctranComm_.get();
-  }
-  return nullptr;
-}
+} // namespace
 
 ncclResult_t createCtranComm(ncclComm* comm) {
   NCCLCHECK_COMM(setCtranCommBase(comm));
