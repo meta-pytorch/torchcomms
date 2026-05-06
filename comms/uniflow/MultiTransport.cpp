@@ -314,7 +314,7 @@ Result<RegisteredSegment> MultiTransportFactory::registerSegment(
       UNIFLOW_LOG_WARN(
           "Segment {} cannot be registered on transport {}: {}",
           segment.data(),
-          f->transportType(),
+          toStringView(f->transportType()),
           handle.error().message());
     }
   }
