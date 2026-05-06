@@ -424,65 +424,6 @@ ncclResult_t DefaultNcclxApi::alltoallvDynamicCombine(
 #endif
 }
 
-ncclResult_t DefaultNcclxApi::alltoallvDedupInit(
-    const size_t totalNumSendBlocks,
-    const size_t blockCount,
-    const size_t blockNumRecvBuckets,
-    const int numRecvBuckets,
-    ncclDataType_t datatype,
-    ncclComm_t comm,
-    cudaStream_t stream,
-    void** request) {
-  std::lock_guard<std::mutex> lock(api_mutex_);
-#ifdef NCCL_ALLTOALLV_DEDUP_SUPPORTED
-  ncclx::Hints hints;
-  return ncclx::allToAllvDedupInit(
-      totalNumSendBlocks,
-      blockCount,
-      blockNumRecvBuckets,
-      numRecvBuckets,
-      hints,
-      datatype,
-      comm,
-      stream,
-      request);
-#else
-  throw std::logic_error(
-      "NCCLX alltoallvDedupInit is not supported in this build");
-#endif
-}
-
-ncclResult_t DefaultNcclxApi::alltoallvDedupExec(
-    const void* sendBuff,
-    const int* sendIdx,
-    const int* fwdIdx,
-    const int* recvIdx,
-    void* recvBuff,
-    int recvBlockIds[],
-    void* request) {
-  std::lock_guard<std::mutex> lock(api_mutex_);
-#ifdef NCCL_ALLTOALLV_DEDUP_SUPPORTED
-  return ncclx::allToAllvDedupExec(
-      sendBuff, sendIdx, fwdIdx, recvIdx, recvBuff, recvBlockIds, request);
-#else
-  throw std::logic_error(
-      "NCCLX allToAllvDedupExec is not supported in this build");
-#endif
-}
-
-ncclResult_t DefaultNcclxApi::alltoallvDedupCombine(
-    const void* /* sendBuff */,
-    const int* /* sendIdx */,
-    const int* /* fwdIdx */,
-    const int* /* recvIdx */,
-    void* /* recvBuff */,
-    void* /* request */) {
-  std::lock_guard<std::mutex> lock(api_mutex_);
-  // placeholder for now; will add support after landed NCCLX side
-  throw std::logic_error(
-      "NCCLX allToAllvDedupCombine is not supported in this build");
-}
-
 ncclResult_t DefaultNcclxApi::allGatherInit(
     void* recvbuff,
     size_t maxRecvCount,
