@@ -147,10 +147,6 @@ class CtranComm {
     return ctranOpCount_;
   }
 
-  // TODO: after finish refactoring remove factory method and define proper
-  // constructor
-  friend commResult_t setCtranCommBase(ncclComm* comm);
-
   // Get a pointer to the Transport array from MultiPeerTransport,
   // indexed by global rank. Returns nullptr if MultiPeerTransport is not
   // initialized.
