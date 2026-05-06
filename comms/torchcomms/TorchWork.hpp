@@ -73,8 +73,8 @@ class TorchWork : public c10::intrusive_ptr_target {
   //
   // - Start hook:  fired when setStatus(INPROGRESS) is called
   // - End hook:    fired when setStatus(COMPLETED/ERROR/TIMEDOUT) is called
-  // - Wait hook:   fired when runWaitHooks() is called (backends call this
-  //                from their wait() implementation)
+  // - Wait pre hook:  fired at the start of wait(), before the sync
+  // - Wait post hook: fired at the end of wait(), after the sync
   //
   // Multiple hooks can be registered; they fire in registration order.
   // Hooks are NOT thread-safe -- register before concurrent status changes.
@@ -97,8 +97,12 @@ class TorchWork : public c10::intrusive_ptr_target {
     }
   }
 
-  void registerWorkWaitHook(WorkHook hook) {
-    wait_hooks_.push_back(std::move(hook));
+  void registerWorkWaitPreHook(WorkHook hook) {
+    wait_pre_hooks_.push_back(std::move(hook));
+  }
+
+  void registerWorkWaitPostHook(WorkHook hook) {
+    wait_post_hooks_.push_back(std::move(hook));
   }
 
   // Disable copy and move semantics
@@ -120,9 +124,15 @@ class TorchWork : public c10::intrusive_ptr_target {
     }
   }
 
-  // Backend wait() implementations should call this to fire wait hooks.
-  void runWaitHooks() {
-    for (auto& hook : wait_hooks_) {
+  // Backend wait() implementations should call these around the actual wait.
+  void runWaitPreHooks() {
+    for (auto& hook : wait_pre_hooks_) {
+      hook();
+    }
+  }
+
+  void runWaitPostHooks() {
+    for (auto& hook : wait_post_hooks_) {
       hook();
     }
   }
@@ -164,7 +174,8 @@ class TorchWork : public c10::intrusive_ptr_target {
   void release_resources() override {
     start_hooks_.clear();
     end_hooks_.clear();
-    wait_hooks_.clear();
+    wait_pre_hooks_.clear();
+    wait_post_hooks_.clear();
   }
 
   std::atomic<WorkStatus> status_{WorkStatus::NOT_STARTED};
@@ -172,7 +183,8 @@ class TorchWork : public c10::intrusive_ptr_target {
 
   std::vector<WorkHook> start_hooks_;
   std::vector<WorkHook> end_hooks_;
-  std::vector<WorkHook> wait_hooks_;
+  std::vector<WorkHook> wait_pre_hooks_;
+  std::vector<WorkHook> wait_post_hooks_;
 };
 
 class TorchWorkCompleted : public TorchWork {

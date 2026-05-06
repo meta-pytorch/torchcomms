@@ -727,7 +727,7 @@ void ClogHook::onPostHook(
                 [this, work_id]() { logLifecycleEvent(work_id, "S"); });
             work->registerWorkEndHook(
                 [this, work_id]() { logLifecycleEvent(work_id, "E"); });
-            work->registerWorkWaitHook(
+            work->registerWorkWaitPreHook(
                 [this, work_id]() { logLifecycleEvent(work_id, "W"); });
           }
         }
