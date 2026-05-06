@@ -223,10 +223,19 @@ TorchCommXCCL::~TorchCommXCCL() {
     if (xccl_comm_) {
       if (xccl_api_) {
         // Use destroy to free resources since oneCCL doesn't have abort api
-        xccl_api_->commDestroy(xccl_comm_);
+        onecclResult_t result = xccl_api_->commDestroy(xccl_comm_);
+        if (result != onecclSuccess) {
+          TC_LOG(ERROR, this) << "Failed to destroy XCCL communicator";
+        }
       }
       xccl_comm_ = nullptr;
     }
+  }
+
+  // Release the caller's store in case init() threw before it could drop
+  // our internal reference. No-op on the successful-init path.
+  if (options_.store) {
+    options_.store.reset();
   }
 }
 
@@ -348,6 +357,11 @@ void TorchCommXCCL::init(
   xccl_api_->setVersionInfo();
   backend_version_ = std::to_string(xccl_api_->getVersion());
 
+  TC_LOG(INFO, this) << "XCCL Version: " << xccl_api_->getVersion()
+                     << " (Major: " << xccl_api_->getMajorVersion()
+                     << " Minor: " << xccl_api_->getMinorVersion()
+                     << " Patch: " << xccl_api_->getPatchVersion() << ")";
+
   result = xccl_api_->commCount(xccl_comm_, &comm_size_);
   if (result != onecclSuccess) [[unlikely]] {
     throw std::runtime_error("XCCL commCount failed");
@@ -447,10 +461,17 @@ void TorchCommXCCL::finalize() {
   if (xccl_comm_) {
     onecclResult_t result = xccl_api_->commDestroy(xccl_comm_);
     if (result != onecclSuccess) [[unlikely]] {
-      TC_LOG(ERROR) << "XCCL commDestroy failed: "
-                    << xccl_api_->getErrorString(result);
+      TC_LOG(ERROR, this) << "XCCL commDestroy failed: "
+                          << xccl_api_->getErrorString(result);
     }
     xccl_comm_ = nullptr;
+  }
+
+  // Drop any lingering store reference. init() already releases on the
+  // happy path; this guards against future code paths that might retain it
+  // so callers can rely on finalize() to free the store.
+  if (options_.store) {
+    options_.store.reset();
   }
 }
 
@@ -460,7 +481,7 @@ void TorchCommXCCL::abortXcclComm() {
     xccl_comm_ = nullptr;
   }
   if (options_.abort_process_on_timeout_or_error) {
-    TC_LOG(ERROR) << "Aborting process due to timeout";
+    TC_LOG(ERROR, this) << "Aborting process due to timeout";
     abort();
   }
 }
@@ -674,7 +695,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::batch_op_issue(
         onecclResult_t result_cleanup =
             xccl_api_->groupEnd(); // Clean up group on error
         if (result_cleanup != onecclSuccess) {
-          TC_LOG(ERROR)
+          TC_LOG(ERROR, this)
               << "XCCL groupEnd failed during error cleanup after send failure in batch_op_issue: "
               << xccl_api_->getErrorString(result_cleanup);
         }
@@ -694,7 +715,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::batch_op_issue(
         onecclResult_t result_cleanup =
             xccl_api_->groupEnd(); // Clean up group on error
         if (result_cleanup != onecclSuccess) {
-          TC_LOG(ERROR)
+          TC_LOG(ERROR, this)
               << "XCCL groupEnd failed during error cleanup after recv failure in batch_op_issue: "
               << xccl_api_->getErrorString(result_cleanup);
         }
@@ -747,8 +768,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::broadcast(
   // TODO: Consider removing this check once oneCCL supports zero-sized tensors
   // in broadcast operation.
   if (tensor.numel() == 0) [[unlikely]] {
-    TC_LOG(WARNING) << "XCCL broadcast called with empty tensor on rank "
-                    << rank_;
+    TC_LOG(WARNING, this) << "XCCL broadcast called with empty tensor";
     work->recordEnd();
     enqueueWork(work, stream);
     return work;
@@ -800,8 +820,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_reduce(
   // TODO: Consider removing this check once oneCCL supports zero-sized tensors
   // for all_reduce operation.
   if (tensor.numel() == 0) [[unlikely]] {
-    TC_LOG(WARNING) << "XCCL all_reduce called with empty input tensor on rank "
-                    << rank_;
+    TC_LOG(WARNING, this) << "XCCL all_reduce called with empty input tensor";
     work->recordEnd();
     enqueueWork(work, stream);
     return work;
@@ -895,8 +914,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce(
   // TODO: Consider removing this check once oneCCL supports zero-sized tensors
   // in reduce operations.
   if (tensor.numel() == 0) [[unlikely]] {
-    TC_LOG(WARNING) << "XCCL reduce called with empty input tensor on rank "
-                    << rank_;
+    TC_LOG(WARNING, this) << "XCCL reduce called with empty input tensor";
     work->recordEnd();
     enqueueWork(work, stream);
     return work;
@@ -999,8 +1017,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_gather(
   // TODO: Consider removing this check once oneCCL supports zero-sized tensors
   // in broadcast operation.
   if (tensor.numel() == 0) [[unlikely]] {
-    TC_LOG(WARNING) << "XCCL all_gather called with empty input tensor on rank "
-                    << rank_;
+    TC_LOG(WARNING, this) << "XCCL all_gather called with empty input tensor";
     work->recordEnd();
     enqueueWork(work, stream);
     return work;
@@ -1101,7 +1118,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_gather_v(
       onecclResult_t result_cleanup =
           xccl_api_->groupEnd(); // clean up group before throwing
       if (result_cleanup != onecclSuccess) {
-        TC_LOG(ERROR)
+        TC_LOG(ERROR, this)
             << "XCCL groupEnd failed during error cleanup after broadcast failure in all_gather_v: "
             << xccl_api_->getErrorString(result_cleanup);
       }
@@ -1159,9 +1176,8 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_gather_single(
   // TODO: Consider removing this check once oneCCL supports zero-sized tensors
   // in all_gather operations.
   if (input.numel() == 0) [[unlikely]] {
-    TC_LOG(WARNING)
-        << "XCCL all_gather_single called with empty input tensor on rank "
-        << rank_;
+    TC_LOG(WARNING, this)
+        << "XCCL all_gather_single called with empty input tensor";
     work->recordEnd();
     enqueueWork(work, stream);
     return work;
@@ -1348,8 +1364,8 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_v(
   for (int i = 0; i < comm_size_; ++i) {
     auto& input_tensor = maybe_scaled_input_list[i];
     if (input_tensor.numel() == 0) [[unlikely]] {
-      TC_LOG(WARNING) << "XCCL skipping empty input tensor for rank " << i
-                      << " in reduce_scatter_v";
+      TC_LOG(WARNING, this) << "XCCL skipping empty input tensor for rank " << i
+                            << " in reduce_scatter_v";
       continue; // skip empty tensors
     }
     const auto dataType = getXcclDataType(input_tensor);
@@ -1370,7 +1386,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_v(
       onecclResult_t result_cleanup =
           xccl_api_->groupEnd(); // clean up group before throwing
       if (result_cleanup != onecclSuccess) {
-        TC_LOG(ERROR)
+        TC_LOG(ERROR, this)
             << "XCCL groupEnd failed during error cleanup after reduce failure in reduce_scatter_v: "
             << xccl_api_->getErrorString(result_cleanup);
       }
@@ -1447,9 +1463,8 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_single(
   // TODO: Consider removing this check once oneCCL supports zero-sized tensors
   // in reduce operations.
   if (input.numel() == 0) [[unlikely]] {
-    TC_LOG(WARNING)
-        << "XCCL reduce_scatter_single called with empty input tensor on rank "
-        << rank_;
+    TC_LOG(WARNING, this)
+        << "XCCL reduce_scatter_single called with empty input tensor";
     work->recordEnd();
     enqueueWork(work, stream);
     return work;
@@ -1706,7 +1721,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_to_all_v_single(
           onecclResult_t result_cleanup =
               xccl_api_->groupEnd(); // clean up group before throwing
           if (result_cleanup != onecclSuccess) {
-            TC_LOG(ERROR)
+            TC_LOG(ERROR, this)
                 << "XCCL groupEnd failed during error cleanup after send failure in all_to_all_v_single: "
                 << xccl_api_->getErrorString(result_cleanup);
           }
@@ -1728,7 +1743,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_to_all_v_single(
         onecclResult_t result_cleanup =
             xccl_api_->groupEnd(); // clean up group before throwing
         if (result_cleanup != onecclSuccess) {
-          TC_LOG(ERROR)
+          TC_LOG(ERROR, this)
               << "XCCL groupEnd failed during error cleanup after recv failure in all_to_all_v_single: "
               << xccl_api_->getErrorString(result_cleanup);
         }
@@ -1836,7 +1851,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_to_all(
         onecclResult_t result_cleanup =
             xccl_api_->groupEnd(); // clean up group before throwing
         if (result_cleanup != onecclSuccess) {
-          TC_LOG(ERROR)
+          TC_LOG(ERROR, this)
               << "XCCL groupEnd failed during error cleanup after send failure in all_to_all: "
               << xccl_api_->getErrorString(result_cleanup);
         }
@@ -1857,7 +1872,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_to_all(
       onecclResult_t result_cleanup =
           xccl_api_->groupEnd(); // clean up group before throwing
       if (result_cleanup != onecclSuccess) {
-        TC_LOG(ERROR)
+        TC_LOG(ERROR, this)
             << "XCCL groupEnd failed during error cleanup after recv failure in all_to_all: "
             << xccl_api_->getErrorString(result_cleanup);
       }
@@ -1965,8 +1980,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::scatter(
   // TODO: Remove this check once oneCCL supports zero-sized tensors
   // in scatter operations.
   if (output_tensor.numel() == 0) [[unlikely]] {
-    TC_LOG(WARNING) << "XCCL scatter called with empty tensor on rank "
-                    << rank_;
+    TC_LOG(WARNING, this) << "XCCL scatter called with empty tensor";
     work->recordEnd();
     enqueueWork(work, stream);
     return work;
@@ -1998,7 +2012,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::scatter(
           onecclResult_t result_cleanup =
               xccl_api_->groupEnd(); // Clean up group on error
           if (result_cleanup != onecclSuccess) {
-            TC_LOG(ERROR)
+            TC_LOG(ERROR, this)
                 << "XCCL groupEnd failed during error cleanup after send failure in scatter: "
                 << xccl_api_->getErrorString(result_cleanup);
           }
@@ -2031,7 +2045,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::scatter(
       onecclResult_t result_cleanup =
           xccl_api_->groupEnd(); // Clean up group on error
       if (result_cleanup != onecclSuccess) {
-        TC_LOG(ERROR)
+        TC_LOG(ERROR, this)
             << "XCCL groupEnd failed during error cleanup after recv failure in scatter: "
             << xccl_api_->getErrorString(result_cleanup);
       }
@@ -2106,8 +2120,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::gather(
   // TODO: Consider removing this check once oneCCL supports zero-sized tensors
   // in send/recv operations.
   if (input_tensor.numel() == 0) [[unlikely]] {
-    TC_LOG(WARNING) << "XCCL gather called with empty input tensor on rank "
-                    << rank_;
+    TC_LOG(WARNING, this) << "XCCL gather called with empty input tensor";
     work->recordEnd();
     enqueueWork(work, stream);
     return work;
@@ -2137,7 +2150,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::gather(
           onecclResult_t result_cleanup =
               xccl_api_->groupEnd(); // Clean up group on error
           if (result_cleanup != onecclSuccess) {
-            TC_LOG(ERROR)
+            TC_LOG(ERROR, this)
                 << "XCCL groupEnd failed during error cleanup after recv failure in gather: "
                 << xccl_api_->getErrorString(result_cleanup);
           }
@@ -2168,7 +2181,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::gather(
       onecclResult_t result_cleanup =
           xccl_api_->groupEnd(); // Clean up group on error
       if (result_cleanup != onecclSuccess) {
-        TC_LOG(ERROR)
+        TC_LOG(ERROR, this)
             << "XCCL groupEnd failed during error cleanup after send failure in gather: "
             << xccl_api_->getErrorString(result_cleanup);
       }

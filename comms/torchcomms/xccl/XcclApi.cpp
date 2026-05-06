@@ -268,7 +268,6 @@ void DefaultXcclApi::setVersionInfo() {
   if (res != onecclSuccess) {
     TC_LOG(ERROR) << "XCCL extractVersionComponents failed with error: "
                   << getErrorString(res);
-    TC_LOG(INFO) << "XCCL Version: " << version_info_.version;
     TC_LOG(WARNING) << "XCCL Major/Minor/Patch info not available";
     return;
   }
@@ -276,11 +275,6 @@ void DefaultXcclApi::setVersionInfo() {
   version_info_.major = major;
   version_info_.minor = minor;
   version_info_.patch = patch;
-
-  TC_LOG(INFO) << "XCCL Version: " << version_info_.version
-               << " (Major: " << version_info_.major
-               << " Minor: " << version_info_.minor
-               << " Patch: " << version_info_.patch << ")";
 }
 
 } // namespace torch::comms

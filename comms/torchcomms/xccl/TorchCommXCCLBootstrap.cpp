@@ -123,6 +123,8 @@ onecclUniqueId TorchCommXCCLBootstrap::exchangeUniqueIdStore() {
         reinterpret_cast<uint8_t*>(&uniqueId) + sizeof(uniqueId));
     store_->set(key, vec);
   } else {
+    // Block until rank 0 has written the unique ID into the store
+    store_->wait({key}, timeout_);
     // Other ranks read the broadcast ID
     auto vec = store_->get(key);
 
