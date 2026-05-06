@@ -3,10 +3,9 @@
 # Check if CCL_ROOT is set
 if(NOT DEFINED ENV{CCL_ROOT})
     message(
-        WARNING
-        "oneCCL environment not found, Skipping XCCL backend compilation."
+        FATAL_ERROR
+        "oneCCL environment not found (CCL_ROOT not set). Source the oneCCL vars.sh before building with USE_XCCL=ON."
     )
-    return()
 endif()
 
 # Set XCCL paths
@@ -15,8 +14,7 @@ set(XCCL_SHARED_LIB "$ENV{CCL_ROOT}/lib/libccl.so.2")
 
 # Validate oneCCL installation
 if(NOT EXISTS "${XCCL_INCLUDE}" OR NOT EXISTS "${XCCL_SHARED_LIB}")
-    message(WARNING "Invalid oneCCL path. Skipping XCCL backend compilation.")
-    return()
+    message(FATAL_ERROR "Invalid oneCCL path: ${XCCL_INCLUDE} or ${XCCL_SHARED_LIB} does not exist.")
 endif()
 
 message(STATUS "XCCL include path    : ${XCCL_INCLUDE}")
@@ -24,8 +22,6 @@ message(STATUS "XCCL library         : ${XCCL_SHARED_LIB}")
 
 file(GLOB TORCHCOMMS_XCCL_SOURCES "comms/torchcomms/xccl/*.cpp")
 file(GLOB TORCHCOMMS_XPU_API_SOURCE "comms/torchcomms/device/xpu/XpuApi.cpp")
-
-include(FindPackageHandleStandardArgs)
 
 add_library(torchcomms_comms_xccl MODULE
     ${TORCHCOMMS_XCCL_SOURCES}
