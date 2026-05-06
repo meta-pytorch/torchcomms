@@ -5,13 +5,19 @@
 #include "comm.h"
 #include "comms/ctran/algos/AllToAll/AllToAllPHintUtils.h"
 #include "comms/ctran/algos/AllToAll/AllToAllvDynamicHintUtils.h"
+#include "comms/ctran/interfaces/ICtran.h"
+#include "comms/ctran/memory/memCacheAllocator.h"
 #include "comms/ctran/window/WinHintUtils.h"
 #include "comms/utils/checks.h"
 #include "comms/utils/commSpecs.h"
 #include "meta/NcclxConfig.h" // @manual
+#include "meta/commstate/FactoryCommStateX.h"
+#include "meta/ctran-integration/BaselineBootstrap.h"
 #include "meta/wrapper/MetaFactory.h"
 
 using namespace ctran;
+
+#define NCCLCHECK_COMM(call) NCCLCHECK(metaCommToNccl(call))
 
 meta::comms::Hints ncclToMetaComm(const ncclx::Hints& hints) {
   meta::comms::Hints ret;
@@ -88,4 +94,39 @@ CtranComm* getCtranCommFromNcclComm(ncclComm* ncclComm) {
     return ncclComm->ctranComm_.get();
   }
   return nullptr;
+}
+
+ncclResult_t createCtranComm(ncclComm* comm) {
+  NCCLCHECK_COMM(setCtranCommBase(comm));
+
+  if (NCCL_USE_MEM_CACHE) {
+    comm->ctranComm_->memCache_ =
+        ncclx::memory::memCacheAllocator::getInstance();
+  }
+
+  comm->ctranComm_->bootstrap_ =
+      std::make_unique<ncclx::BaselineBootstrap>(comm);
+
+  NCCLCHECK(ncclx::createCommStateXFromNcclComm(comm, comm->ctranComm_.get()));
+
+  comm->ctranComm_->colltraceNew_ = comm->newCollTrace;
+
+  NCCLCHECK_COMM(ctranInit(comm->ctranComm_.get()));
+
+  return ncclSuccess;
+}
+
+ncclResult_t destroyCtranComm(ncclComm* comm) {
+  if (!comm || !comm->ctranComm_) {
+    return ncclSuccess;
+  }
+  NCCLCHECK_COMM(ctranFinalize(comm->ctranComm_.get()));
+  try {
+    comm->ctranComm_->destroy();
+    comm->ctranComm_.reset();
+  } catch (const std::exception& e) {
+    CLOGF(ERR, "CtranComm destruction failed: {}", e.what());
+    return ncclInternalError;
+  }
+  return ncclSuccess;
 }

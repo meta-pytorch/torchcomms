@@ -1,83 +1,16 @@
 #include "meta/commstate/FactoryCommStateX.h"
 #include "checks.h"
 #include "comm.h"
+#include "comms/ctran/CtranComm.h"
 #include "comms/ctran/commstate/CommStateX.h"
-#include "comms/ctran/utils/Checks.h"
 #include "meta/NcclxConfig.h" // @manual
 #include "meta/hints/CommHintConfig.h" // @manual
 
-#include "bootstrap.h"
 #include "nvmlwrap.h"
 #include "transport.h"
 
 namespace ncclx {
-
-void initRankTopologyFrom(CommStateX* _CommStateX, void* _comm) {
-  auto comm = reinterpret_cast<ncclComm*>(_comm);
-  _CommStateX->rankStates_.resize(comm->nRanks);
-  _CommStateX->nodeRanks_.resize(comm->nNodes);
-  for (int r = 0; r < comm->nRanks; ++r) {
-    auto& rankState = _CommStateX->rankStates_.at(r);
-    rankState.rank = r;
-    rankState.nodeId = comm->rankToNode[r];
-    rankState.localRank = comm->rankToLocalRank[r];
-    rankState.nLocalRanks = comm->localRanks;
-    rankState.localRankToRanks.assign(
-        comm->localRankToRank, comm->localRankToRank + comm->localRanks);
-
-    // Order of global ranks never changes, thus OK to assume global rank on
-    // each node is already ordered by local rank
-    // NOTE: two GPUs on the same node may be with different nodeId because
-    // they don't have direct NVL access. To keep same nodeId in statex, we
-    // use hostHash+nodeId to make it unique
-    std::string host(
-        std::to_string(comm->peerInfo[r].hostHash) + "_" +
-        std::to_string(rankState.nodeId));
-    _CommStateX->hostToRanks_[host].emplace_back(r);
-
-    _CommStateX->nodeRanks_[rankState.nodeId].emplace_back(rankState.rank);
-  }
-}
-
-std::unique_ptr<CommStateX> createCommStateXFromNcclComm(void* _comm) {
-  auto comm = reinterpret_cast<ncclComm*>(_comm);
-  CHECKABORT(comm->rankToNode, "rankToNode is nullptr");
-  CHECKABORT(comm->localRankToRank, "localRankToRank is nullptr");
-
-  auto _CommStateX = std::make_unique<CommStateX>(
-      comm->rank,
-      comm->nRanks,
-      comm->cudaDev,
-      comm->cudaArch,
-      comm->busId,
-      comm->commHash,
-      std::vector<RankTopology>(), /* rankTopologies */
-      std::vector<int>(), /* commRanksToWorldRanks */
-      NCCLX_CONFIG_FIELD(comm->config, commDesc),
-      comm->noLocal_,
-      commVCliqueSize(NCCLX_CONFIG_FIELD(comm->config, vCliqueSize)));
-
-  if (comm->noLocal_ ||
-      NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::nolocal) {
-    // Fake topology with nLocalRanks=1
-    _CommStateX->initRankTopologyNolocal();
-  } else if (NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::vnode) {
-    // Fake topology with
-    // nLocalRanks=NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS
-    _CommStateX->initRankTopologyVnode(
-        NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS);
-  } else {
-    initRankTopologyFrom(_CommStateX.get(), _comm);
-  }
-
-  INFO(
-      NCCL_INIT | NCCL_GRAPH,
-      "CommStateX: set rankTopology with %s%s",
-      topoNameMap[NCCL_COMM_STATE_DEBUG_TOPO].c_str(),
-      comm->noLocal_ ? " (noLocal hint)" : "");
-
-  return _CommStateX;
-}
+namespace {
 
 ncclResult_t getLocalGpuFabricInfo(
     ncclComm* ncclComm,
@@ -105,24 +38,34 @@ ncclResult_t getLocalGpuFabricInfo(
   return ncclSuccess;
 }
 
-ncclResult_t initNvlFabricTopologies(ncclComm* ncclComm, CtranComm* ctranComm) {
-  // Get local fabric information
+// TODO: NVL fabric topology init should be handled within ctran/statex
+// (e.g., as part of CommStateX initialization), not passed from ncclx.
+ncclResult_t initNvlFabricTopologies(
+    ncclComm* comm,
+    CommStateX* statex,
+    meta::comms::IBootstrap* bootstrap) {
   nvmlGpuFabricInfoV_t localFabricInfo;
-  NCCLCHECK(getLocalGpuFabricInfo(ncclComm, localFabricInfo));
+  NCCLCHECK(getLocalGpuFabricInfo(comm, localFabricInfo));
 
-  // Gather fabric info from all ranks
-  std::vector<nvmlGpuFabricInfoV_t> allFabricInfos(ncclComm->nRanks);
-  allFabricInfos.at(ncclComm->rank) = localFabricInfo;
+  std::vector<nvmlGpuFabricInfoV_t> allFabricInfos(comm->nRanks);
+  allFabricInfos.at(comm->rank) = localFabricInfo;
 
-  bootstrapAllGather(
-      ncclComm->bootstrap, allFabricInfos.data(), sizeof(nvmlGpuFabricInfoV_t));
+  auto resFuture = bootstrap->allGather(
+      allFabricInfos.data(),
+      sizeof(nvmlGpuFabricInfoV_t),
+      comm->rank,
+      comm->nRanks);
+  const int res = std::move(resFuture).get();
+  if (res != 0) {
+    WARN("initNvlFabricTopologies: bootstrap allGather failed with %d", res);
+    return ncclInternalError;
+  }
 
-  // Create NVL fabric topologies for all ranks
-  std::vector<ncclx::NvlFabricTopology> nvlFabricTopos;
-  nvlFabricTopos.reserve(ncclComm->nRanks);
-  for (int rank = 0; rank < ncclComm->nRanks; rank++) {
+  std::vector<NvlFabricTopology> nvlFabricTopos;
+  nvlFabricTopos.reserve(comm->nRanks);
+  for (int rank = 0; rank < comm->nRanks; rank++) {
     const auto& fabricInfo_ = allFabricInfos.at(rank);
-    ncclx::NvlFabricTopology topo;
+    NvlFabricTopology topo;
     if (fabricInfo_.state != NVML_GPU_FABRIC_STATE_NOT_SUPPORTED) {
       topo.supportNvlFabric = true;
       topo.rank = rank;
@@ -134,37 +77,58 @@ ncclResult_t initNvlFabricTopologies(ncclComm* ncclComm, CtranComm* ctranComm) {
     }
     nvlFabricTopos.emplace_back(std::move(topo));
   }
-  ctranComm->statex_->setNvlFabricTopos(
-      std::move(nvlFabricTopos), std::nullopt);
+  statex->setNvlFabricTopos(std::move(nvlFabricTopos), std::nullopt);
   return ncclSuccess;
 }
 
-/**
- * Initialize CtranComm statex from NCCL communicator.
- * This function performs two main phases:
- * 1. Initialize rank states topology
- * 2. Initialize NVL fabric topologies by gathering fabric info from all ranks
- */
-ncclResult_t initCtranCommStatexFromNcclComm(
-    ncclComm* ncclComm,
-    CtranComm* ctranComm) {
-  if (!ncclComm || !ctranComm) {
-    FB_ERRORRETURN(ncclInvalidArgument, "Invalid arguments provided");
-  }
+} // namespace
+
+ncclResult_t createCommStateXFromNcclComm(void* _comm, CtranComm* ctranComm) {
+  auto comm = reinterpret_cast<ncclComm*>(_comm);
+  CHECKABORT(comm->rankToNode, "rankToNode is nullptr");
+  CHECKABORT(comm->localRankToRank, "localRankToRank is nullptr");
+
+  auto* bootstrap = ctranComm->bootstrap_.get();
+
+  const int vCliqueSize =
+      commVCliqueSize(NCCLX_CONFIG_FIELD(comm->config, vCliqueSize));
+
+  ctranComm->statex_ = std::make_unique<CommStateX>(
+      comm->rank,
+      comm->nRanks,
+      comm->cudaDev,
+      comm->cudaArch,
+      comm->busId,
+      comm->commHash,
+      std::vector<RankTopology>(), /* rankTopologies */
+      std::vector<int>(), /* commRanksToWorldRanks */
+      NCCLX_CONFIG_FIELD(comm->config, commDesc),
+      comm->noLocal_,
+      vCliqueSize);
 
   try {
-    ctranComm->statex_->initRankStatesTopology(ctranComm->bootstrap_.get());
-
-    NCCLCHECK(initNvlFabricTopologies(ncclComm, ctranComm));
-
-    return ncclSuccess;
-
+    ctranComm->statex_->initRankStatesTopology(bootstrap);
   } catch (const std::exception& e) {
-    FB_ERRORRETURN(
-        ncclInternalError,
-        "Failed to initialize CtranComm statex from ncclComm: {}",
+    WARN(
+        "createCommStateXFromNcclComm: initRankStatesTopology failed: %s",
         e.what());
+    return ncclInternalError;
   }
+
+  INFO(
+      NCCL_INIT | NCCL_GRAPH,
+      "CommStateX: set rankTopology with noLocal=%d, vCliqueSize=%d, commDesc=%s, commHash=0x%lx, rank=%d, nRanks=%d, nLocalRanks=%d",
+      comm->noLocal_,
+      vCliqueSize,
+      NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str(),
+      comm->commHash,
+      comm->rank,
+      comm->nRanks,
+      ctranComm->statex_->nLocalRanks());
+
+  NCCLCHECK(initNvlFabricTopologies(comm, ctranComm->statex_.get(), bootstrap));
+
+  return ncclSuccess;
 }
 
 ncclResult_t assignMnnvlCliqueIdBasedOnCliqueSize(int* cliqueId) {

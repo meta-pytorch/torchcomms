@@ -1,21 +1,17 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #include <algorithm>
 #include "comm.h"
-#include "comms/ctran/commstate/CommStateX.h"
 #include "meta/RankUtil.h"
 #include "socket.h"
 
+class CtranComm;
+
 namespace ncclx {
 
-// This Factory must be used ONLY in NCCLx code, not in CTRAN code
-// Ctran has it's own StateX factory
-std::unique_ptr<CommStateX> createCommStateXFromNcclComm(void* _comm);
-
-// This init function must be used ONLY in NCCLx code, not in CTRAN code
-// Ctran has it's own StateX factory
-ncclResult_t initCtranCommStatexFromNcclComm(
-    ncclComm* ncclComm,
-    CtranComm* ctranComm);
+// Create CommStateX from ncclComm. Initializes rank topology via bootstrap
+// allgather and sets up NVL fabric topologies. Virtual topology overrides
+// (noLocal, vnode, vClique) are applied internally.
+ncclResult_t createCommStateXFromNcclComm(void* _comm, CtranComm* ctranComm);
 
 ncclResult_t assignMnnvlCliqueIdBasedOnCliqueSize(int* cliqueId);
 } // namespace ncclx
