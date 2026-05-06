@@ -82,6 +82,10 @@ struct KernelArgs {
   const void* sendbuff;
   void* recvbuff;
   commDataType_t datatype;
+  // selfCount==0 && sendElemsList==nullptr && recvElemsList==nullptr signals
+  // a no-op to the kernel: skip self-copy and NVL send/recv and only perform
+  // GPE start/terminate sync. Set on the pure-IB path (no local NVL peers),
+  // where the self-copy is issued via cudaMemcpyAsync from the host.
   size_t selfCount;
   size_t selfSendDispl;
   size_t selfRecvDispl;
