@@ -156,12 +156,6 @@ class ExportedFunctionsTest(unittest.TestCase):
     def test_new_window_is_exported(self) -> None:
         self.assertTrue(callable(torchcomms.distwrap.new_window))
 
-    def test_alltoallv_dedup_init_is_exported(self) -> None:
-        self.assertTrue(callable(torchcomms.distwrap.alltoallv_dedup_init))
-
-    def test_alltoallv_dedup_exec_is_exported(self) -> None:
-        self.assertTrue(callable(torchcomms.distwrap.alltoallv_dedup_exec))
-
     def test_alltoallv_dynamic_dispatch_is_exported(self) -> None:
         self.assertTrue(callable(torchcomms.distwrap.alltoallv_dynamic_dispatch))
 

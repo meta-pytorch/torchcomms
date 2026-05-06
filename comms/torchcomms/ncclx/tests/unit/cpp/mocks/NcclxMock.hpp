@@ -290,42 +290,6 @@ class NcclxMock : public NcclxApi {
        cudaStream_t stream),
       (override));
 
-  MOCK_METHOD(
-      ncclResult_t,
-      alltoallvDedupInit,
-      (const size_t totalNumSendBlocks,
-       const size_t blockCount,
-       const size_t blockNumRecvBuckets,
-       const int numRecvBuckets,
-       ncclDataType_t datatype,
-       ncclComm_t comm,
-       cudaStream_t stream,
-       void** reques),
-      (override));
-
-  MOCK_METHOD(
-      ncclResult_t,
-      alltoallvDedupExec,
-      (const void* sendBuff,
-       const int* sendIdx,
-       const int* fwdIdx,
-       const int* recvIdx,
-       void* recvBuff,
-       int recvBlockIds[],
-       void* request),
-      (override));
-
-  MOCK_METHOD(
-      ncclResult_t,
-      alltoallvDedupCombine,
-      (const void* sendBuff,
-       const int* sendIdx,
-       const int* fwdIdx,
-       const int* recvIdx,
-       void* recvBuff,
-       void* request),
-      (override));
-
   // Persistent AllGather operations
   MOCK_METHOD(
       ncclResult_t,

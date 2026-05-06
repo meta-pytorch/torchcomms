@@ -291,35 +291,6 @@ class NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) = 0;
 
-  [[nodiscard]] virtual ncclResult_t alltoallvDedupInit(
-      const size_t totalNumSendBlocks, // number of blocks (tokens) per batch
-      const size_t blockCount, // number of elements per block (token)
-      const size_t blockNumRecvBuckets, // number of receiving buckets for each
-                                        // block (experts per token, topK)
-      const int numRecvBuckets, // number of receiving buckets per rank (expert
-                                // per rank)
-      ncclDataType_t datatype,
-      ncclComm_t comm,
-      cudaStream_t stream,
-      void** request) = 0;
-
-  [[nodiscard]] virtual ncclResult_t alltoallvDedupExec(
-      const void* sendBuff,
-      const int* sendIdx,
-      const int* fwdIdx,
-      const int* recvIdx,
-      void* recvBuff,
-      int recvBlockIds[],
-      void* request) = 0;
-
-  [[nodiscard]] virtual ncclResult_t alltoallvDedupCombine(
-      const void* sendBuff,
-      const int* sendIdx,
-      const int* fwdIdx,
-      const int* recvIdx,
-      void* recvBuff,
-      void* request) = 0;
-
   // Persistent AllGather operations
   [[nodiscard]] virtual ncclResult_t allGatherInit(
       void* recvbuff,
@@ -690,33 +661,6 @@ class DefaultNcclxApi : public NcclxApi {
       ncclDataType_t datatype,
       ncclComm_t comm,
       cudaStream_t stream) override;
-
-  [[nodiscard]] ncclResult_t alltoallvDedupInit(
-      const size_t totalNumSendBlocks,
-      const size_t blockCount,
-      const size_t blockNumRecvBuckets,
-      const int numRecvBuckets,
-      ncclDataType_t datatype,
-      ncclComm_t comm,
-      cudaStream_t stream,
-      void** request) override;
-
-  [[nodiscard]] ncclResult_t alltoallvDedupExec(
-      const void* sendBuff,
-      const int* sendIdx,
-      const int* fwdIdx,
-      const int* recvIdx,
-      void* recvBuff,
-      int recvBlockIds[],
-      void* request) override;
-
-  [[nodiscard]] ncclResult_t alltoallvDedupCombine(
-      const void* sendBuff,
-      const int* sendIdx,
-      const int* fwdIdx,
-      const int* recvIdx,
-      void* recvBuff,
-      void* request) override;
 
   // Persistent AllGather operations
   [[nodiscard]] ncclResult_t allGatherInit(
