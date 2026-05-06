@@ -518,11 +518,11 @@ void TorchCommNCCL::returnEvent(cudaEvent_t event) {
 }
 
 void TorchCommNCCL::attachMemoryHook() {
-  CachingAllocatorHook::getInstance().registerComm(this);
+  NcclCachingAllocatorHook::getInstance().registerComm(this);
 }
 
 void TorchCommNCCL::detachMemoryHook() {
-  CachingAllocatorHook::getInstance().deregisterComm(this);
+  NcclCachingAllocatorHook::getInstance().deregisterComm(this);
 }
 
 } // namespace torch::comms

@@ -1033,10 +1033,10 @@ TEST_F(
     CachingAllocatorHookCallsGlobalRegisterOnSegmentAlloc) {
   // Test: Verify that CCA hook calls global_register_address on SEGMENT_ALLOC
   // The mock_hook_ already has nccl_mock_ set via SetUp()
-  auto hook = std::make_unique<CachingAllocatorHookImpl>();
+  auto hook = std::make_unique<NcclxCachingAllocatorHookImpl>();
   hook->setNcclApi(nccl_mock_);
-  CachingAllocatorHook::setInstance(std::move(hook));
-  auto& allocator = CachingAllocatorHook::getInstance();
+  NcclxCachingAllocatorHook::setInstance(std::move(hook));
+  auto& allocator = NcclxCachingAllocatorHook::getInstance();
 
   // Create memory allocation trace entry
   auto alloc_entry = createAllocation(0x5000);
@@ -1054,10 +1054,10 @@ TEST_F(
     TorchCommNCCLXTest,
     CachingAllocatorHookCallsGlobalDeregisterOnSegmentFree) {
   // Test: Verify that CCA hook calls global_deregister_address on SEGMENT_FREE
-  auto hook = std::make_unique<CachingAllocatorHookImpl>();
+  auto hook = std::make_unique<NcclxCachingAllocatorHookImpl>();
   hook->setNcclApi(nccl_mock_);
-  CachingAllocatorHook::setInstance(std::move(hook));
-  auto& allocator = CachingAllocatorHook::getInstance();
+  NcclxCachingAllocatorHook::setInstance(std::move(hook));
+  auto& allocator = NcclxCachingAllocatorHook::getInstance();
 
   // Create memory deallocation trace entry
   auto dealloc_entry = createDeallocation(0x6000);
@@ -1078,10 +1078,10 @@ TEST_F(
   // Test: Verify error handling during global memory registration.
   // Registration is best-effort — when ctran is not enabled, it's expected to
   // fail silently with a warning log rather than throwing.
-  auto hook = std::make_unique<CachingAllocatorHookImpl>();
+  auto hook = std::make_unique<NcclxCachingAllocatorHookImpl>();
   hook->setNcclApi(nccl_mock_);
-  CachingAllocatorHook::setInstance(std::move(hook));
-  auto& allocator = CachingAllocatorHook::getInstance();
+  NcclxCachingAllocatorHook::setInstance(std::move(hook));
+  auto& allocator = NcclxCachingAllocatorHook::getInstance();
 
   // Create memory allocation trace entry
   auto alloc_entry = createAllocation(0x7000);

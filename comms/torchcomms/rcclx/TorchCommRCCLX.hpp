@@ -216,7 +216,7 @@ class TorchCommRCCLX : public TorchCommBackend,
 
   // Friend access for TorchCommRCCLX
   friend class TorchWorkRCCLX;
-  friend class CachingAllocatorHookImpl;
+  friend class RcclxCachingAllocatorHookImpl;
 
   // Getter for CUDA API (for friend classes)
   HipApi* getHipApi() const {

@@ -8,12 +8,12 @@
 namespace torch::comms::test {
 
 /**
- * Mock implementation of CachingAllocatorHookImpl using Google Mock.
- * This class provides mock implementations of all CachingAllocatorHookImpl
+ * Mock implementation of NcclxCachingAllocatorHookImpl using Google Mock.
+ * This class provides mock implementations of all NcclxCachingAllocatorHookImpl
  * operations for testing purposes.
  * Note: Inherits from base interface to avoid CUDA initialization in Default.
  */
-class CachingAllocatorHookMock : public CachingAllocatorHookImpl {
+class CachingAllocatorHookMock : public NcclxCachingAllocatorHookImpl {
  public:
   CachingAllocatorHookMock() = default;
   virtual ~CachingAllocatorHookMock() override = default;

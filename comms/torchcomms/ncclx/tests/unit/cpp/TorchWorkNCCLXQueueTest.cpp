@@ -60,7 +60,7 @@ class TorchWorkNCCLXQueueCommTest : public ::testing::Test {
     hook_mock->setupDefaultBehaviors();
 
     mock_hook_ = hook_mock.get();
-    CachingAllocatorHook::setInstance(std::move(hook_mock));
+    NcclxCachingAllocatorHook::setInstance(std::move(hook_mock));
 
     // Create hash store for communication
     auto store_ = c10::make_intrusive<c10d::HashStore>();
@@ -88,7 +88,7 @@ class TorchWorkNCCLXQueueCommTest : public ::testing::Test {
     // Clear the communicator
     comm_.reset();
     // Reset the instance to null to release the mock object
-    CachingAllocatorHook::setInstance(nullptr);
+    NcclxCachingAllocatorHook::setInstance(nullptr);
   }
 
   void setupRankAndSize(int rank, int size) {

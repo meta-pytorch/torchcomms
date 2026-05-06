@@ -23,7 +23,7 @@ class MemoryCCAHookTest : public ::testing::Test {
   }
 
   void TearDown() override {
-    CachingAllocatorHook::setInstance(nullptr);
+    NcclxCachingAllocatorHook::setInstance(nullptr);
   }
 
   c10::cuda::CUDACachingAllocator::TraceEntry createAllocation(uintptr_t addr) {
@@ -53,19 +53,19 @@ class MemoryCCAHookTest : public ::testing::Test {
 };
 
 TEST_F(MemoryCCAHookTest, RegDeregWorksAfterAttach) {
-  // Use real CachingAllocatorHookImpl (not mock) with mock NCCL API
-  auto hook = std::make_unique<CachingAllocatorHookImpl>();
+  // Use real NcclxCachingAllocatorHookImpl (not mock) with mock NCCL API
+  auto hook = std::make_unique<NcclxCachingAllocatorHookImpl>();
   hook->setNcclApi(nccl_mock_);
-  CachingAllocatorHook::setInstance(std::move(hook));
+  NcclxCachingAllocatorHook::setInstance(std::move(hook));
 
-  EXPECT_NO_THROW(CachingAllocatorHook::getInstance());
+  EXPECT_NO_THROW(NcclxCachingAllocatorHook::getInstance());
 
   // Simulate allocation — should call globalRegisterWithPtr
   auto alloc_entry = createAllocation(0x9000);
   EXPECT_CALL(
       *nccl_mock_, globalRegisterWithPtr(reinterpret_cast<void*>(0x9000), 1024))
       .WillOnce(Return(ncclSuccess));
-  CachingAllocatorHook::getInstance().regDeregMem(alloc_entry);
+  NcclxCachingAllocatorHook::getInstance().regDeregMem(alloc_entry);
 
   // Simulate deallocation — should call globalDeregisterWithPtr
   auto dealloc_entry = createDeallocation(0x9000);
@@ -73,7 +73,7 @@ TEST_F(MemoryCCAHookTest, RegDeregWorksAfterAttach) {
       *nccl_mock_,
       globalDeregisterWithPtr(reinterpret_cast<void*>(0x9000), 1024))
       .WillOnce(Return(ncclSuccess));
-  CachingAllocatorHook::getInstance().regDeregMem(dealloc_entry);
+  NcclxCachingAllocatorHook::getInstance().regDeregMem(dealloc_entry);
 }
 
 } // namespace torch::comms::test
