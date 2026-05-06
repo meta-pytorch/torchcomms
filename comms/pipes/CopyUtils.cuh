@@ -185,6 +185,75 @@ __device__ __forceinline__ void memcpy_vectorized(
 #endif // defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
 }
 
+template <typename VecType, int kUnroll = 8>
+__device__ __forceinline__ void memcpy_dual_aligned(
+    VecType* dst1_p,
+    VecType* dst2_p,
+    const VecType* src_p,
+    std::size_t nelems,
+    const ThreadGroup& group) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  const std::size_t kLoopStride = group.group_size * kUnroll;
+  const std::size_t numVecsAligned = (nelems / kLoopStride) * kLoopStride;
+  VecType* __restrict__ dst1 = dst1_p;
+  VecType* __restrict__ dst2 = dst2_p;
+  const VecType* __restrict__ src = src_p;
+
+  for (std::size_t i = group.thread_id_in_group; i < numVecsAligned;
+       i += kLoopStride) {
+    VecType v[kUnroll];
+#pragma unroll
+    for (int j = 0; j < kUnroll; ++j) {
+      v[j] = src[i + j * group.group_size];
+    }
+#pragma unroll
+    for (int j = 0; j < kUnroll; ++j) {
+      dst1[i + j * group.group_size] = v[j];
+    }
+#pragma unroll
+    for (int j = 0; j < kUnroll; ++j) {
+      dst2[i + j * group.group_size] = v[j];
+    }
+  }
+
+  for (std::size_t i = numVecsAligned + group.thread_id_in_group; i < nelems;
+       i += group.group_size) {
+    VecType v = src[i];
+    dst1[i] = v;
+    dst2[i] = v;
+  }
+#endif
+}
+
+template <int kUnroll = 8>
+__device__ __forceinline__ void memcpy_dual(
+    char* dst1,
+    char* dst2,
+    const char* src,
+    std::size_t len,
+    const ThreadGroup& group) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  constexpr std::size_t kAlignment = sizeof(uint4);
+  if ((uintptr_t)dst1 % kAlignment == 0 && (uintptr_t)dst2 % kAlignment == 0 &&
+      (uintptr_t)src % kAlignment == 0) {
+    const std::size_t nelems = len / kAlignment;
+    uint4* __restrict__ dst1_p = reinterpret_cast<uint4*>(dst1);
+    uint4* __restrict__ dst2_p = reinterpret_cast<uint4*>(dst2);
+    const uint4* __restrict__ src_p = reinterpret_cast<const uint4*>(src);
+    memcpy_dual_aligned<uint4, kUnroll>(dst1_p, dst2_p, src_p, nelems, group);
+    len -= nelems * kAlignment;
+    if (len == 0) {
+      return;
+    }
+    dst1 = reinterpret_cast<char*>(dst1_p + nelems);
+    dst2 = reinterpret_cast<char*>(dst2_p + nelems);
+    src = reinterpret_cast<const char*>(src_p + nelems);
+  }
+
+  memcpy_dual_aligned<char, kUnroll>(dst1, dst2, src, len, group);
+#endif
+}
+
 /**
  * assert_buffer_non_overlap - Assert that source and destination buffers do not
  * overlap
