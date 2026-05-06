@@ -93,12 +93,6 @@ void NcclxMock::setupDefaultBehaviors() {
       .WillByDefault(Return(ncclSuccess));
 #endif
 
-  ON_CALL(*this, alltoallvDedupInit(_, _, _, _, _, _, _, _))
-      .WillByDefault(Return(ncclSuccess));
-  ON_CALL(*this, alltoallvDedupExec(_, _, _, _, _, _, _))
-      .WillByDefault(Return(ncclSuccess));
-  ON_CALL(*this, alltoallvDedupCombine(_, _, _, _, _, _))
-      .WillByDefault(Return(ncclSuccess));
   ON_CALL(*this, pFree(_)).WillByDefault(Return(ncclSuccess));
 
   ON_CALL(*this, commWindowRegister(_, _, _, _, _))
