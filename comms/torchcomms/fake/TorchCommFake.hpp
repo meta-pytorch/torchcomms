@@ -139,9 +139,17 @@ class TorchCommFake : public TorchCommBackend {
   c10::intrusive_ptr<TorchWork> reconfigure(
       const ReconfigureOptions& opts) override;
 
+  bool isInitialized() const override {
+    return initialized_;
+  }
+
   // Test helpers
   void setSize(int size) {
     size_ = size;
+  }
+
+  void setReconfigureFailure(bool fail) {
+    shouldFailReconfigure_ = fail;
   }
 
   // Communicator Management
@@ -194,6 +202,7 @@ class TorchCommFake : public TorchCommBackend {
   std::string name_;
   bool abortEnabled_{false};
   bool aborted_{false};
+  bool shouldFailReconfigure_{false};
 };
 
 } // namespace torch::comms
