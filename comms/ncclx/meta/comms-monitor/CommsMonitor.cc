@@ -87,7 +87,9 @@ folly::Singleton<CommsMonitor, CommsMonitorSingletonTag>
       .topoInfo = getTopoInfoFromNcclComm(comm),
       .mapperTrace = mapperTrace,
       .proxyTrace = proxyTrace,
-      .newCollTrace = comm->newCollTrace};
+      .newCollTrace = comm->newCollTrace,
+      .memTracer = meta::comms::memtrace::MemoryTrace::getOrCreate(
+          comm->logMetaData.commHash)};
 }
 
 bool CommsMonitor::deregisterCommImpl(ncclComm_t comm) {
