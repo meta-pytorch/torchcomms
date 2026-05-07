@@ -19,6 +19,36 @@ _HAS_GPU: bool = _has_gpu()
 
 
 class TestTypesAndSegment(unittest.TestCase):
+    def test_public_surface_works_end_to_end(self) -> None:
+        # Mirrors what real callers will do: a single `import uniflow`, then use
+        # symbols straight off the package. No reaching into uniflow._core.
+        import uniflow
+
+        buf = ctypes.create_string_buffer(128)
+        seg = uniflow.Segment(
+            ptr=ctypes.addressof(buf),
+            length=128,
+            mem_type=uniflow.MemoryType.DRAM,
+            device_id=-1,
+        )
+        self.assertEqual(seg.length, 128)
+        self.assertEqual(seg.mem_type, uniflow.MemoryType.DRAM)
+        self.assertEqual(int(uniflow.TransportType.NVLink), 0)
+
+    def test_public_surface_matches_core(self) -> None:
+        # Maintainer-facing check: every name advertised in __all__ is reachable
+        # on the package and is the *same identity* as the underlying _core
+        # symbol. Catches drift if a new pybind class is added without being
+        # re-exported, or if __init__.py shadows a name with a wrapper.
+        import uniflow
+        import uniflow._core
+
+        for name in uniflow.__all__:
+            self.assertTrue(
+                hasattr(uniflow, name), f"uniflow missing public export: {name}"
+            )
+            self.assertIs(getattr(uniflow, name), getattr(uniflow._core, name))
+
     def test_err_code_enum(self) -> None:
         from uniflow._core import ErrCode
 
