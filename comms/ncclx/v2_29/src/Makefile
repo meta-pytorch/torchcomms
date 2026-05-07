@@ -81,6 +81,8 @@ LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/trainer/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/logger/*.cc)
 ## Common Utils shared between comm libraries
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/*.cc)
+## Memory tracing
+LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/memtrace/*.cc)
 ## CollTrace source files
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/colltrace/*.cc)
 ## CollTrace CUDA source files (host-side kernel launchers)

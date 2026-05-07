@@ -78,3 +78,31 @@ TEST(MemoryTraceTest, DumpProducesValidJson) {
   EXPECT_TRUE(parsed.count("peakUsage"));
   EXPECT_GE(parsed["totalAllocated"].asInt(), 8192);
 }
+
+// Tests the commDump integration pattern: adopt a MemoryTrace by commHash,
+// record events, then dump to a string→string map (as commDump does).
+TEST(MemoryTraceTest, DumpToCommDumpMap) {
+  const uint64_t commHash = 0x5001;
+  auto trace = MemoryTrace::getOrCreate(commHash);
+
+  // Simulate ncclCommInit allocations
+  trace->recordAlloc(0xA001, 1024 * 1024);
+  trace->recordAlloc(0xA002, 512 * 1024);
+
+  // commDump reads the trace into a map
+  std::unordered_map<std::string, std::string> map;
+  map["memory"] = trace->dump();
+
+  auto parsed = folly::parseJson(map["memory"]);
+  EXPECT_EQ(parsed["totalAllocated"].asInt(), 1024 * 1024 + 512 * 1024);
+  EXPECT_EQ(parsed["currentUsage"].asInt(), 1024 * 1024 + 512 * 1024);
+  EXPECT_EQ(parsed["peakUsage"].asInt(), 1024 * 1024 + 512 * 1024);
+
+  // Simulate ncclCommDestroy: free without size (ncclCudaFree pattern)
+  trace->recordFree(0xA001, std::nullopt);
+
+  auto stats = trace->getStats();
+  EXPECT_EQ(stats.totalFreed, 1024 * 1024);
+  EXPECT_EQ(stats.currentUsage, 512 * 1024);
+  EXPECT_EQ(stats.peakUsage, 1024 * 1024 + 512 * 1024);
+}
