@@ -567,6 +567,7 @@ class AlltoallvOp:
             self.comm.barrier(False)
         # First deregister comms buffers
         if self._src_info is not None:
+            # pyrefly: ignore [missing-attribute]
             self._window.deregister_local_buffer(self._src_info)
             self._src_info = None
         if self._window is not None:
@@ -578,17 +579,23 @@ class AlltoallvOp:
 
         # Release all GPU buffers to free memory immediately.
         # Without this, Python GC may defer collection and cause OOM.
+        # pyrefly: ignore [bad-assignment]
         self.send_buf = None
+        # pyrefly: ignore [bad-assignment]
         self.recv_buf = None
+        # pyrefly: ignore [bad-assignment]
         self._local_recv_slot_offsets = None
         self._send_sizes_bytes = None
         self._send_offsets_bytes = None
         self._recv_sizes_bytes = None
+        # pyrefly: ignore [bad-assignment]
         self._total_tokens_buf = None
         self._remote_write_offsets = None
 
         # Release MemPools AFTER buffers (buffers use the pools)
+        # pyrefly: ignore [bad-assignment]
         self._send_pool = None
+        # pyrefly: ignore [bad-assignment]
         self._recv_pool = None
 
     def __enter__(self) -> "AlltoallvOp":
@@ -636,6 +643,7 @@ class AlltoallvOp:
         """
         # Use recv_pool since it's the larger allocation and will be used
         # for any internal allocations during alltoallv execution.
+        # pyrefly: ignore [bad-return]
         return self._recv_pool.id
 
     # ------------------------------------------------------------------
