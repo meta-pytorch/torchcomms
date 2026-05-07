@@ -49,6 +49,10 @@ class Profiler {
   // This should be called at the beginning of the collective
   void initForEachColl(int opCount, int samplingWeight);
 
+  void setForceTrace(bool force) {
+    forceTrace_ = force;
+  }
+
   bool shouldTrace() const {
     return shouldTrace_;
   }
@@ -86,6 +90,7 @@ class Profiler {
   AlgoProfilerReport buildReport() const;
   CtranComm* comm_{nullptr};
   bool shouldTrace_{false};
+  bool forceTrace_{false};
   uint64_t opCount_{std::numeric_limits<uint64_t>::max()};
   EventDurationArray durations_{};
   EventTimerArray timers_{};

@@ -61,6 +61,27 @@ TEST_F(ProfilerTest, testInitForEachColl) {
   EXPECT_NE(profiler_->getOpCount(), opCount);
 }
 
+TEST_F(ProfilerTest, testForceTraceOverridesSamplingWeight) {
+  // Without forceTrace, opCount=101 with weight=20 should not trace
+  profiler_->initForEachColl(101, 20);
+  EXPECT_FALSE(profiler_->shouldTrace());
+
+  // With forceTrace, same opCount/weight should trace
+  profiler_->setForceTrace(true);
+  profiler_->initForEachColl(101, 20);
+  EXPECT_TRUE(profiler_->shouldTrace());
+  EXPECT_EQ(getOpCount(), 101);
+
+  // forceTrace persists until caller clears it
+  profiler_->initForEachColl(102, 20);
+  EXPECT_TRUE(profiler_->shouldTrace());
+
+  // Caller clears forceTrace
+  profiler_->setForceTrace(false);
+  profiler_->initForEachColl(101, 20);
+  EXPECT_FALSE(profiler_->shouldTrace());
+}
+
 TEST_F(ProfilerTest, testDefaultReporterType) {
   // Default constructor should use default reporter (no crash on reportToScuba)
   auto profiler = std::make_unique<ctran::Profiler>(comm_);
