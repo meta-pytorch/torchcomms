@@ -117,7 +117,6 @@ class TestFlightRecorderHook(unittest.TestCase):
         self.assertEqual(recorder.size(), 1)
 
         # Clean up
-        recorder.unregister()
         comm.finalize()
 
     def _validate_entry_format(self, entry: dict) -> None:
@@ -329,7 +328,6 @@ class TestFlightRecorderHook(unittest.TestCase):
             for collective in db.collectives:
                 self.assertIsInstance(collective, Collective)
         finally:
-            recorder.unregister()
             comm.finalize()
 
     def test_fr_record_reset(self) -> None:
@@ -386,7 +384,6 @@ class TestFlightRecorderHook(unittest.TestCase):
         for entry in data.get("entries", []):
             self._validate_entry_format(entry)
 
-        recorder.unregister()
         comm.finalize()
 
     def test_fr_record_reset_circular_buffer_full(self) -> None:
@@ -443,7 +440,6 @@ class TestFlightRecorderHook(unittest.TestCase):
             self._validate_entry_format(entry)
             self.assertEqual(entry["profiling_name"], f"{self.backend}:all_reduce")
 
-        recorder.unregister()
         comm.finalize()
 
     def test_fr_record_reset_partial_overwrite(self) -> None:
@@ -490,7 +486,6 @@ class TestFlightRecorderHook(unittest.TestCase):
         for entry in entries:
             self._validate_entry_format(entry)
 
-        recorder.unregister()
         comm.finalize()
 
     def test_fr_record_multiple_resets(self) -> None:
@@ -547,7 +542,6 @@ class TestFlightRecorderHook(unittest.TestCase):
         for entry in entries:
             self._validate_entry_format(entry)
 
-        recorder.unregister()
         comm.finalize()
 
     def test_fr_multiple_collective_operations(self) -> None:
@@ -597,7 +591,6 @@ class TestFlightRecorderHook(unittest.TestCase):
                 f"profiling_name should start with '{self.backend}:', got: {entry['profiling_name']}",
             )
 
-        recorder.unregister()
         comm.finalize()
 
     def test_fr_entry_ordering(self) -> None:
@@ -651,7 +644,6 @@ class TestFlightRecorderHook(unittest.TestCase):
             )
             prev_timestamp = entry["time_created_ns"]
 
-        recorder.unregister()
         comm.finalize()
 
     def test_fr_tensor_sizes_and_dtypes(self) -> None:
@@ -698,7 +690,6 @@ class TestFlightRecorderHook(unittest.TestCase):
         self.assertIn([5, 6], entries[1]["input_sizes"])
         self.assertIn("Long", entries[1]["input_dtypes"])
 
-        recorder.unregister()
         comm.finalize()
 
     def test_fr_ranks_str_single_rank(self) -> None:
@@ -750,7 +741,6 @@ class TestFlightRecorderHook(unittest.TestCase):
             f"ranks should match pattern [N] or [N,N,...], got: {ranks_str}",
         )
 
-        recorder.unregister()
         comm.finalize()
 
     def test_fr_enable_disable(self) -> None:
@@ -783,10 +773,6 @@ class TestFlightRecorderHook(unittest.TestCase):
         json_str = recorder.dump_json()
         data = json.loads(json_str)
         self.assertGreater(len(data.get("entries", [])), 0)
-
-        # Unregister - should be disabled
-        recorder.unregister()
-        self.assertFalse(recorder.is_enabled())
 
         comm.finalize()
 
@@ -870,7 +856,6 @@ class TestFlightRecorderHook(unittest.TestCase):
                 elif "TORCHCOMM_FR_DUMP_TEMP_FILE" in os.environ:
                     del os.environ["TORCHCOMM_FR_DUMP_TEMP_FILE"]
 
-        recorder.unregister()
         comm.finalize()
 
     def test_only_active_excludes_completed_collectives(self) -> None:
@@ -921,7 +906,6 @@ class TestFlightRecorderHook(unittest.TestCase):
             "have completed",
         )
 
-        recorder.unregister()
         comm.finalize()
 
     def test_only_active_via_dump_file_excludes_completed(self) -> None:
@@ -993,7 +977,6 @@ class TestFlightRecorderHook(unittest.TestCase):
                 elif "TORCHCOMM_FR_DUMP_TEMP_FILE" in os.environ:
                     del os.environ["TORCHCOMM_FR_DUMP_TEMP_FILE"]
 
-        recorder.unregister()
         comm.finalize()
 
     def test_only_active_with_mixed_operations(self) -> None:
@@ -1042,7 +1025,6 @@ class TestFlightRecorderHook(unittest.TestCase):
             "collectives have completed",
         )
 
-        recorder.unregister()
         comm.finalize()
 
     def test_split_hook_registers_new_comm(self) -> None:
@@ -1127,7 +1109,6 @@ class TestFlightRecorderHook(unittest.TestCase):
 
         # Clean up
         split_comm.finalize()
-        recorder.unregister()
         comm.finalize()
 
     def test_split_hook_multiple_levels(self) -> None:
@@ -1209,7 +1190,6 @@ class TestFlightRecorderHook(unittest.TestCase):
         # Clean up
         level2_comm.finalize()
         level1_comm.finalize()
-        recorder.unregister()
         comm.finalize()
 
 

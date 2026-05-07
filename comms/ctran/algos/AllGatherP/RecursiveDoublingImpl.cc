@@ -201,6 +201,18 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
 
     FB_COMMCHECK(mapper->waitNotify(notifyVec[i].get()));
 
+    // Drain cross-NIC PCIe writes — multi-NIC platforms have no cross-port
+    // ordering, so the next iput / CE bcast may otherwise read stale data
+    {
+      CtranMapperRequest* rawFlushReq = nullptr;
+      FB_COMMCHECK(
+          mapper->iflush(pArgs->recvbuff, pArgs->recvHdl, &rawFlushReq));
+      std::unique_ptr<CtranMapperRequest> flushReq(rawFlushReq);
+      if (flushReq) {
+        FB_COMMCHECK(mapper->waitRequest(flushReq.get()));
+      }
+    }
+
     // Notify the stream that step `i` IB exchange is done. The stream can
     // now issue the intra-node CE broadcast for the 2^i chunks just
     // received at column `localRank`.

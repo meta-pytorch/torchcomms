@@ -17,7 +17,8 @@ class TestWork : public TorchWork {
   }
 
   void wait() override {
-    runWaitHooks();
+    runWaitPreHooks();
+    runWaitPostHooks();
   }
 
   // expose for testing
@@ -69,16 +70,29 @@ TEST(TorchWorkTest, EndHookFiredOnTimedOut) {
   EXPECT_EQ(end_count, 1);
 }
 
-TEST(TorchWorkTest, WaitHookFiredOnWait) {
+TEST(TorchWorkTest, WaitPreHookFiredOnWait) {
   auto work = c10::make_intrusive<TestWork>();
   int wait_count = 0;
-  work->registerWorkWaitHook([&wait_count]() { wait_count++; });
+  work->registerWorkWaitPreHook([&wait_count]() { wait_count++; });
 
   EXPECT_EQ(wait_count, 0);
   work->wait();
   EXPECT_EQ(wait_count, 1);
 
   // wait hooks fire every time wait() is called
+  work->wait();
+  EXPECT_EQ(wait_count, 2);
+}
+
+TEST(TorchWorkTest, WaitPostHookFiredOnWait) {
+  auto work = c10::make_intrusive<TestWork>();
+  int wait_count = 0;
+  work->registerWorkWaitPostHook([&wait_count]() { wait_count++; });
+
+  EXPECT_EQ(wait_count, 0);
+  work->wait();
+  EXPECT_EQ(wait_count, 1);
+
   work->wait();
   EXPECT_EQ(wait_count, 2);
 }
@@ -115,19 +129,21 @@ TEST(TorchWorkTest, EndHookNotFiredOnInProgress) {
   EXPECT_EQ(end_count, 0);
 }
 
-TEST(TorchWorkTest, AllThreeHooksFiredInLifecycle) {
+TEST(TorchWorkTest, AllHooksFiredInLifecycle) {
   auto work = c10::make_intrusive<TestWork>();
   std::vector<std::string> events;
 
   work->registerWorkStartHook([&events]() { events.push_back("start"); });
   work->registerWorkEndHook([&events]() { events.push_back("end"); });
-  work->registerWorkWaitHook([&events]() { events.push_back("wait"); });
+  work->registerWorkWaitPreHook([&events]() { events.push_back("wait_pre"); });
+  work->registerWorkWaitPostHook(
+      [&events]() { events.push_back("wait_post"); });
 
   work->setStatus(TorchWork::WorkStatus::INPROGRESS);
   work->wait();
   work->setStatus(TorchWork::WorkStatus::COMPLETED);
 
-  std::vector<std::string> expected{"start", "wait", "end"};
+  std::vector<std::string> expected{"start", "wait_pre", "wait_post", "end"};
   EXPECT_EQ(events, expected);
 }
 

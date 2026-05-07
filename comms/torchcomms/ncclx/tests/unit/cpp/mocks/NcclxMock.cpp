@@ -93,12 +93,6 @@ void NcclxMock::setupDefaultBehaviors() {
       .WillByDefault(Return(ncclSuccess));
 #endif
 
-  ON_CALL(*this, alltoallvDedupInit(_, _, _, _, _, _, _, _))
-      .WillByDefault(Return(ncclSuccess));
-  ON_CALL(*this, alltoallvDedupExec(_, _, _, _, _, _, _))
-      .WillByDefault(Return(ncclSuccess));
-  ON_CALL(*this, alltoallvDedupCombine(_, _, _, _, _, _))
-      .WillByDefault(Return(ncclSuccess));
   ON_CALL(*this, pFree(_)).WillByDefault(Return(ncclSuccess));
 
   ON_CALL(*this, commWindowRegister(_, _, _, _, _))
@@ -138,6 +132,7 @@ void NcclxMock::setupDefaultBehaviors() {
   // easily mock SetArgPointee with ncclDevComm struct, so just return success
   ON_CALL(*this, devCommCreate(_, _, _)).WillByDefault(Return(ncclSuccess));
   ON_CALL(*this, devCommDestroy(_, _)).WillByDefault(Return(ncclSuccess));
+  ON_CALL(*this, multimemSupport(_)).WillByDefault(Return(false));
 #endif
 }
 

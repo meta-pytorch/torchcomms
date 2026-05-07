@@ -18,6 +18,7 @@
 #include "comms/utils/logger/Logger.h"
 #include "comms/ctran/memory/Utils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/memtrace/MemoryTrace.h"
 
 #if CUDART_VERSION >= 12010
 
@@ -273,7 +274,7 @@ static ncclResult_t nvlsAllocateMem(struct ncclComm* comm, const CUmemAccessDesc
   CUCHECKGOTO(cuMemMap((CUdeviceptr)*ucptr, ucsize, 0, *ucHandle, 0), ret, fail2);
   CUCHECKGOTO(cuMemSetAccess((CUdeviceptr)*ucptr, ucsize, desc, 1), ret, fail3);
   CUDACHECKGOTO(cudaMemset(*ucptr, 0, ucsize), ret, fail3);
-  logMemoryEvent(
+  meta::comms::memtrace::recordAlloc(
     comm->logMetaData,
     "nvlsAllocateMem",
     "cuMemCreate",

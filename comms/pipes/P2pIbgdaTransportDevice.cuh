@@ -9,6 +9,7 @@
 #include <device/doca_gpunetio_dev_verbs_counter.cuh>
 #include <device/doca_gpunetio_dev_verbs_onesided.cuh>
 
+#include "comms/pipes/CopyOp.cuh"
 #include "comms/pipes/CopyUtils.cuh"
 #include "comms/pipes/DeviceSpan.cuh"
 #include "comms/pipes/DocaVerbsUtils.cuh"
@@ -1103,21 +1104,21 @@ class P2pIbgdaTransportDevice {
    *                        perBlockSlot. 0 means one signal per perBlockSlot.
    * @param timeout         Optional timeout for wait operations.
    */
+  template <typename CopyOp = Memcpy, typename... Args>
   __device__ __forceinline__ void send(
       ThreadGroup& group,
-      void* __restrict__ src,
+      const void* __restrict__ src,
       std::size_t nbytes,
       int active_blocks = 0,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout()) {
-#ifndef __CUDA_ARCH__
-    (void)group;
-    (void)src;
-    (void)nbytes;
-    (void)active_blocks;
-    (void)max_signal_bytes;
-    (void)timeout;
-#else
+      const Timeout& timeout = Timeout(),
+      Args... args) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+#ifdef __HIP_PLATFORM_AMD__
+    static_assert(
+        false,
+        "P2pIbgdaTransportDevice::send() requires NVIDIA GPU (DOCA/IBGDA)");
+#endif
     if (nbytes == 0) {
       return;
     }
@@ -1200,12 +1201,14 @@ class P2pIbgdaTransportDevice {
             timeout);
       }
 
-      // (2) Cooperative memcpy: src → local sendStaging.
-      memcpy_vectorized(
+      // (2) Cooperative copy: src → local sendStaging via CopyOp.
+      CopyOp::send(
           sendRecvState_.sendStagingPtr + stagingOff,
-          static_cast<char*>(src) + dataOff,
+          static_cast<const char*>(src) + dataOff,
           bytesThis,
-          group);
+          group,
+          dataOff,
+          args...);
       group.sync();
 
       // (3) Backpressure: wait for receiver to free this sub-chunk's
@@ -1276,21 +1279,21 @@ class P2pIbgdaTransportDevice {
    *                        Must match the sender's value.
    * @param timeout         Optional timeout for wait operations.
    */
+  template <typename CopyOp = Memcpy, typename... Args>
   __device__ __forceinline__ void recv(
       ThreadGroup& group,
       void* __restrict__ dst,
       std::size_t nbytes,
       int active_blocks = 0,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout()) {
-#ifndef __CUDA_ARCH__
-    (void)group;
-    (void)dst;
-    (void)nbytes;
-    (void)active_blocks;
-    (void)max_signal_bytes;
-    (void)timeout;
-#else
+      const Timeout& timeout = Timeout(),
+      Args... args) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+#ifdef __HIP_PLATFORM_AMD__
+    static_assert(
+        false,
+        "P2pIbgdaTransportDevice::recv() requires NVIDIA GPU (DOCA/IBGDA)");
+#endif
     if (nbytes == 0) {
       return;
     }
@@ -1369,12 +1372,14 @@ class P2pIbgdaTransportDevice {
           static_cast<uint64_t>(chunkStep + 1),
           timeout);
 
-      // (2) Cooperative memcpy: local recvStaging → dst.
-      memcpy_vectorized(
+      // (2) Cooperative copy: local recvStaging → dst via CopyOp.
+      CopyOp::recv(
           static_cast<char*>(dst) + dataOff,
           sendRecvState_.recvStagingPtr + stagingOff,
           bytesThis,
-          group);
+          group,
+          dataOff,
+          args...);
       group.sync();
 
       // (3) Signal SLOT_FREE to sender — per sub-chunk (symmetric with

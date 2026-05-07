@@ -787,7 +787,7 @@ TEST_F(CommDumpTest, DumpDuringColl) {
   }
 }
 
-TEST_F(CommDumpTest, DISABLED_TestDumpAllWithTwoComms) {
+TEST_F(CommDumpTest, TestDumpAllWithTwoComms) {
   auto commsMonitorGuard = EnvRAII(NCCL_COMMSMONITOR_ENABLE, true);
   auto ctranGuard = EnvRAII(NCCL_CTRAN_ENABLE, true);
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});

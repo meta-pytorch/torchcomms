@@ -19,6 +19,36 @@ _HAS_GPU: bool = _has_gpu()
 
 
 class TestTypesAndSegment(unittest.TestCase):
+    def test_public_surface_works_end_to_end(self) -> None:
+        # Mirrors what real callers will do: a single `import uniflow`, then use
+        # symbols straight off the package. No reaching into uniflow._core.
+        import uniflow
+
+        buf = ctypes.create_string_buffer(128)
+        seg = uniflow.Segment(
+            ptr=ctypes.addressof(buf),
+            length=128,
+            mem_type=uniflow.MemoryType.DRAM,
+            device_id=-1,
+        )
+        self.assertEqual(seg.length, 128)
+        self.assertEqual(seg.mem_type, uniflow.MemoryType.DRAM)
+        self.assertEqual(int(uniflow.TransportType.NVLink), 0)
+
+    def test_public_surface_matches_core(self) -> None:
+        # Maintainer-facing check: every name advertised in __all__ is reachable
+        # on the package and is the *same identity* as the underlying _core
+        # symbol. Catches drift if a new pybind class is added without being
+        # re-exported, or if __init__.py shadows a name with a wrapper.
+        import uniflow
+        import uniflow._core
+
+        for name in uniflow.__all__:
+            self.assertTrue(
+                hasattr(uniflow, name), f"uniflow missing public export: {name}"
+            )
+            self.assertIs(getattr(uniflow, name), getattr(uniflow._core, name))
+
     def test_err_code_enum(self) -> None:
         from uniflow._core import ErrCode
 
@@ -61,6 +91,46 @@ class TestTypesAndSegment(unittest.TestCase):
 
         self.assertEqual(seg.mem_type, MemoryType.DRAM)
         self.assertEqual(seg.device_id, -1)
+
+    def test_segment_from_tensor_cpu(self) -> None:
+        import torch
+        from uniflow._core import MemoryType, Segment
+
+        t = torch.zeros(64, dtype=torch.float32)
+        seg = Segment.from_tensor(t)
+
+        self.assertEqual(seg.data_ptr, t.data_ptr())
+        self.assertEqual(seg.length, 64 * 4)
+        self.assertEqual(seg.mem_type, MemoryType.DRAM)
+        self.assertEqual(seg.device_id, -1)
+
+    @unittest.skipUnless(_HAS_GPU, "Requires GPU")
+    def test_segment_from_tensor_cuda(self) -> None:
+        import torch
+        from uniflow._core import MemoryType, Segment
+
+        t = torch.zeros(128, dtype=torch.float32, device="cuda:0")
+        seg = Segment.from_tensor(t)
+
+        self.assertEqual(seg.data_ptr, t.data_ptr())
+        self.assertEqual(seg.length, 128 * 4)
+        self.assertEqual(seg.mem_type, MemoryType.VRAM)
+        self.assertEqual(seg.device_id, 0)
+
+    def test_segment_from_tensor_rejects_non_tensor(self) -> None:
+        from uniflow._core import Segment
+
+        with self.assertRaises(TypeError):
+            Segment.from_tensor("not a tensor")
+
+    def test_segment_from_tensor_rejects_non_contiguous(self) -> None:
+        import torch
+        from uniflow._core import Segment
+
+        t = torch.zeros(8, 8, dtype=torch.float32).t()
+        self.assertFalse(t.is_contiguous())
+        with self.assertRaises(RuntimeError):
+            Segment.from_tensor(t)
 
     def test_uniflow_agent_config(self) -> None:
         from uniflow._core import UniflowAgentConfig
@@ -123,3 +193,24 @@ class TestTypesAndSegment(unittest.TestCase):
         self.assertTrue(result)
         with self.assertRaises(RuntimeError):
             result.error()
+
+    @unittest.skipUnless(_HAS_GPU, "Requires GPU")
+    def test_result_unwrap_returns_value(self) -> None:
+        from uniflow._core import UniflowAgent, UniflowAgentConfig
+
+        config = UniflowAgentConfig(device_id=0, name="test", listen_address="*:0")
+        agent = UniflowAgent(config)
+        result = agent.get_unique_id()
+
+        self.assertEqual(result.unwrap(), result.value())
+
+    @unittest.skipUnless(_HAS_GPU, "Requires GPU")
+    def test_result_unwrap_raises_on_error(self) -> None:
+        from uniflow._core import UniflowAgent, UniflowAgentConfig
+
+        config = UniflowAgentConfig(device_id=0, name="test", listen_address="*:0")
+        agent = UniflowAgent(config)
+        result = agent.connect("127.0.0.1:1")
+
+        with self.assertRaises(RuntimeError):
+            result.unwrap()

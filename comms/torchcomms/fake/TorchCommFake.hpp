@@ -132,6 +132,26 @@ class TorchCommFake : public TorchCommBackend {
   std::shared_ptr<TorchCommWindow> new_window(
       const std::optional<at::Tensor>& tensor = std::nullopt) override;
 
+  // Fault Tolerance
+  bool supportsReconfigure() const override {
+    return true;
+  }
+  c10::intrusive_ptr<TorchWork> reconfigure(
+      const ReconfigureOptions& opts) override;
+
+  bool isInitialized() const override {
+    return initialized_;
+  }
+
+  // Test helpers
+  void setSize(int size) {
+    size_ = size;
+  }
+
+  void setReconfigureFailure(bool fail) {
+    shouldFailReconfigure_ = fail;
+  }
+
   // Communicator Management
   std::shared_ptr<TorchCommBackend> split(
       const std::vector<int>& ranks,
@@ -141,9 +161,36 @@ class TorchCommFake : public TorchCommBackend {
   const CommOptions& getOptions() const override;
   const at::Device& getDevice() const override;
 
-  // Test helper to trigger abort hooks (for testing purposes only)
+  // Test helper to trigger abort hooks (for testing purposes only).
+  // Intentionally kept separate from abort() — fires hooks without
+  // changing communicator state, used by TorchCommHooksTest.
   void triggerAbort() {
     runAbortHooks();
+  }
+
+  // Test helper to enable abort simulation (one-way, mirrors MCCL's
+  // immutable Abort::enabled_)
+  void enableAbort() {
+    abortEnabled_ = true;
+  }
+
+  // Full abort path: sets aborted state + fires hooks.
+  void abort() override {
+    if (!abortEnabled_) {
+      return;
+    }
+    aborted_ = true;
+    runAbortHooks();
+  }
+
+  bool abortEnabled() const override {
+    return abortEnabled_;
+  }
+
+  // Returns false when abortEnabled_ is false, matching the
+  // base class no-op contract.
+  bool isAborted() const override {
+    return abortEnabled_ && aborted_;
   }
 
  private:
@@ -153,6 +200,9 @@ class TorchCommFake : public TorchCommBackend {
   int rank_;
   int size_;
   std::string name_;
+  bool abortEnabled_{false};
+  bool aborted_{false};
+  bool shouldFailReconfigure_{false};
 };
 
 } // namespace torch::comms

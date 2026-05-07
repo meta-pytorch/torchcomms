@@ -12,7 +12,7 @@
 #include "utils.h"
 
 #include "comms/utils/commSpecs.h"
-#include "comms/utils/logger/alloc.h"
+#include "comms/utils/memtrace/MemoryTrace.h"
 
 NCCL_API(ncclResult_t, ncclMemAlloc, void **ptr, size_t size);
 ncclResult_t  ncclMemAlloc(void **ptr, size_t size) {
@@ -80,7 +80,7 @@ ncclResult_t  ncclMemAlloc(void **ptr, size_t size) {
     CUCHECK(cuMemAddressReserve((CUdeviceptr*)ptr, handleSize, memGran, 0, 0));
     /* Map the virtual address range to the physical allocation */
     CUCHECK(cuMemMap((CUdeviceptr)*ptr, handleSize, 0, handle, 0));
-    logMemoryEvent(CommLogData{}, "", "ncclMemAlloc", reinterpret_cast<uintptr_t>(*ptr), handleSize);
+    meta::comms::memtrace::recordAlloc(CommLogData{}, "", "ncclMemAlloc", reinterpret_cast<uintptr_t>(*ptr), handleSize);
     /* Now allow RW access to the newly mapped memory */
     for (int i = 0; i < dcnt; ++i) {
       int p2p = 0;
@@ -101,7 +101,7 @@ fallback:
   // we want CUDA to return an error to the caller.
   // coverity[var_deref_model]
   CUDACHECKGOTO(cudaMalloc(ptr, size), ret, fail);
-  logMemoryEvent(CommLogData{}, "", "ncclMemAlloc", reinterpret_cast<uintptr_t>(*ptr), size);
+  meta::comms::memtrace::recordAlloc(CommLogData{}, "", "ncclMemAlloc", reinterpret_cast<uintptr_t>(*ptr), size);
 
 exit:
   return ret;

@@ -21,20 +21,21 @@
 #include "comms/utils/logger/Logger.h"
 #include "comms/utils/logger/tests/MockScubaTable.h"
 
-#include "LoggerUtil.h"
+#include "VerifyTopoUtil.h"
 #include "comm.h" // @manual
-#include "comms/ncclx/meta/tests/VerifyTopoUtil.h"
+#include "comms/ncclx/meta/logger/tests/LoggerUtil.h"
 #include "debug.h" // @manual
+#include "meta/hints/GlobalHints.h" // @manual
 #include "nccl.h" // @manual
 
-class MemoryLoggingTestFixture
-    : public NcclxBaseTestFixture,
-      public ::testing::WithParamInterface<NcclxEnvs> {
+class MemoryTraceTestFixture : public NcclxBaseTestFixture,
+                               public ::testing::WithParamInterface<NcclxEnvs> {
  public:
-  MemoryLoggingTestFixture() = default;
+  MemoryTraceTestFixture() = default;
   void SetUp() override {
     ctran::utils::commCudaLibraryInit();
     setenv("NCCL_CTRAN_ENABLE", "1", 1);
+    setenv("NCCL_MEMTRACE_ENABLE", "1", 1);
     setenv("NCCL_MEMORY_EVENT_LOGGING", "pipe:nccl_memory_logging", 1);
     NcclxBaseTestFixture::SetUp(GetParam());
     setenv("RANK", std::to_string(this->globalRank).c_str(), 1);
@@ -213,13 +214,45 @@ class MemoryLoggingTestFixture
   }
 
  protected:
+  void runNcclInternalBufferLogTest();
+  void runUserBufferLoggingTest();
+
   cudaStream_t stream;
   void* sendBuf{nullptr};
   void* recvBuf{nullptr};
   bool mockPassthru{true};
 };
 
-TEST_P(MemoryLoggingTestFixture, ncclInternalBufferLogTest) {
+class MemoryTraceNolocalTestFixture : public MemoryTraceTestFixture {
+ public:
+  void SetUp() override {
+    ncclx::setGlobalHint(std::string(ncclx::HintKeys::kCommNoLocal), "1");
+    MemoryTraceTestFixture::SetUp();
+  }
+
+  void TearDown() override {
+    MemoryTraceTestFixture::TearDown();
+    ncclx::resetGlobalHint(std::string(ncclx::HintKeys::kCommNoLocal));
+  }
+};
+
+TEST_P(MemoryTraceTestFixture, ncclInternalBufferLogTest) {
+  runNcclInternalBufferLogTest();
+}
+
+TEST_P(MemoryTraceTestFixture, userBufferLoggingTest) {
+  runUserBufferLoggingTest();
+}
+
+TEST_P(MemoryTraceNolocalTestFixture, ncclInternalBufferLogTest) {
+  runNcclInternalBufferLogTest();
+}
+
+TEST_P(MemoryTraceNolocalTestFixture, userBufferLoggingTest) {
+  runUserBufferLoggingTest();
+}
+
+void MemoryTraceTestFixture::runNcclInternalBufferLogTest() {
   folly::test::TemporaryDirectory tmpDir;
   auto scubaLogDirGuard =
       EnvRAII(NCCL_SCUBA_LOG_FILE_PREFIX, tmpDir.path().string());
@@ -319,7 +352,7 @@ TEST_P(MemoryLoggingTestFixture, ncclInternalBufferLogTest) {
   NCCLCHECK_TEST(ncclCommDestroy(comm));
 }
 
-TEST_P(MemoryLoggingTestFixture, userBufferLoggingTest) {
+void MemoryTraceTestFixture::runUserBufferLoggingTest() {
   folly::test::TemporaryDirectory tmpDir;
   auto scubaLogDirGuard =
       EnvRAII(NCCL_SCUBA_LOG_FILE_PREFIX, tmpDir.path().string());
@@ -385,18 +418,14 @@ TEST_P(MemoryLoggingTestFixture, userBufferLoggingTest) {
   NCCLCHECK_TEST(ncclCommDestroy(comm));
 }
 
-INSTANTIATE_TEST_SUITE_P(
-    MyTestSuite,
-    MemoryLoggingTestFixture,
-    testing::Values(
-        // Baseline
-        NcclxEnvs({{"NCCL_USE_MEM_CACHE", "0"}}),
-        // MemOpt + lazy setup channels
-        NcclxEnvs(
-            {{"NCCL_USE_MEM_CACHE", "1"}, {"NCCL_LAZY_SETUP_CHANNELS", "1"}})),
-    [](const testing::TestParamInfo<MemoryLoggingTestFixture::ParamType>&
-           info) {
-      // generate test-name for a given NcclxEnvs
+// Base env params shared by both suites
+const auto kBaseEnvParams = testing::Values(
+    NcclxEnvs({{"NCCL_USE_MEM_CACHE", "0"}}),
+    NcclxEnvs(
+        {{"NCCL_USE_MEM_CACHE", "1"}, {"NCCL_LAZY_SETUP_CHANNELS", "1"}}));
+
+auto kTestNameGen =
+    [](const testing::TestParamInfo<MemoryTraceTestFixture::ParamType>& info) {
       std::string name;
       for (const auto& [key, val] : info.param) {
         if (key == "NCCL_USE_MEM_CACHE") {
@@ -404,7 +433,19 @@ INSTANTIATE_TEST_SUITE_P(
         }
       }
       return name;
-    });
+    };
+
+INSTANTIATE_TEST_SUITE_P(
+    Default,
+    MemoryTraceTestFixture,
+    kBaseEnvParams,
+    kTestNameGen);
+
+INSTANTIATE_TEST_SUITE_P(
+    Nolocal,
+    MemoryTraceNolocalTestFixture,
+    kBaseEnvParams,
+    kTestNameGen);
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);

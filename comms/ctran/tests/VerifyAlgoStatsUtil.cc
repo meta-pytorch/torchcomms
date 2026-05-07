@@ -2,6 +2,8 @@
 
 #include "VerifyAlgoStatsUtil.h"
 
+#include <cstdlib>
+
 #include <fmt/core.h>
 #include <gtest/gtest.h>
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -10,11 +12,29 @@ namespace ctran::test {
 
 VerifyAlgoStatsHelper::~VerifyAlgoStatsHelper() {
   if (enabled_) {
+    if (oldEnvValue_) {
+      setenv("NCCL_COLLTRACE", oldEnvValue_->c_str(), 1);
+    } else {
+      unsetenv("NCCL_COLLTRACE");
+    }
     NCCL_COLLTRACE = oldColltrace_;
   }
 }
 
 void VerifyAlgoStatsHelper::enable() {
+  // Override at both layers:
+  //  - setenv so the value survives any later ncclCvarInit() re-read
+  //    (e.g. via ncclMemAlloc -> initEnv -> ncclCvarInit).
+  //  - NCCL_COLLTRACE cvar so the value is visible immediately, regardless of
+  //    whether ncclCvarInit() has already run.
+  auto old = std::getenv("NCCL_COLLTRACE");
+  if (old != nullptr) {
+    oldEnvValue_ = old;
+    std::string newValue = std::string(old) + ",algostat";
+    setenv("NCCL_COLLTRACE", newValue.c_str(), 1);
+  } else {
+    setenv("NCCL_COLLTRACE", "algostat", 1);
+  }
   oldColltrace_ = NCCL_COLLTRACE;
   NCCL_COLLTRACE.push_back("algostat");
   enabled_ = true;

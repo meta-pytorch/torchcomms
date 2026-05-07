@@ -132,7 +132,6 @@ class TestFlightRecorderAbort(unittest.TestCase):
             )
             self.assertTrue(has_all_reduce, "Trace should contain all_reduce entry")
 
-            recorder.unregister()
             comm.finalize()
 
         finally:

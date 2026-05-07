@@ -813,6 +813,7 @@ void CtranGpe::Impl::gpeThreadFn() {
         SCOPE_EXIT {
           if (cmd->cpuFlag) {
             cmd->cpuFlag->test_and_set();
+            cmd->cpuFlag->notify_all();
           }
         };
 
@@ -841,10 +842,14 @@ void CtranGpe::Impl::gpeThreadFn() {
                     commRemoteError));
           }
         } else if (!cmd->coll.opGroup.empty() /* skip when opGroup is empty, i.e,. we are only here for post-kernel cmd destruction/cleanup */) {
-          CTRAN_ASYNC_ERR_GUARD_FAULT_TOLERANCE(comm, {
-            FB_COMMCHECKTHROW_EX(
-                cmd->coll.func(cmd->coll.opGroup), comm->logMetaData_);
-          });
+          CTRAN_ASYNC_ERR_GUARD_FAULT_TOLERANCE(
+              comm,
+              {
+                FB_COMMCHECKTHROW_EX(
+                    cmd->coll.func(cmd->coll.opGroup), comm->logMetaData_);
+              },
+              static_cast<int>(cmd->coll.opGroup.front()->type),
+              cmd->coll.opGroup.front()->opCount);
         }
 
         if (cmd->persistent) {

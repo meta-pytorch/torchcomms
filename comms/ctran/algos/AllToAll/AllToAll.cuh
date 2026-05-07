@@ -116,6 +116,17 @@ __global__ void ncclKernelAllToAll(
     ctran::device::KernelStartGpe(flag);
   }
 
+  // count==0 means no work for the kernel (e.g. pure-IB path where the
+  // self-copy is issued via cudaMemcpyAsync on the host and there are no
+  // NVL sends/recvs to do). Only GPE sync remains — wait for terminate
+  // and return.
+  if (args.count == 0) {
+    if (flag && gtIdx == 0) {
+      ctran::device::KernelWaitGpeTerminate(flag);
+    }
+    return;
+  }
+
   devStateLoadToShm(devState);
 
   const T* sendbuff = reinterpret_cast<const T*>(args.sendbuff);

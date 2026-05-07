@@ -162,8 +162,10 @@ commResult_t CtranExRequest::wait() {
   auto reqImpl = reinterpret_cast<CtranExRequestImpl*>(impl_);
 
   if (reqImpl->type == CtranExRequestImpl::BCAST) {
-    // GPE thread is handling the communication, wait for it to complete
-    reqImpl->bcast_complete->wait(true);
+    // GPE thread is handling the communication, wait for it to complete.
+    // wait(false) blocks while the flag is false (clear), returning once
+    // the GPE thread calls test_and_set() to mark completion.
+    reqImpl->bcast_complete->wait(false);
     // Check if there is any error reported by the GPE thread;
     // if so, return the error code.
     if (reqImpl->asyncErr) {

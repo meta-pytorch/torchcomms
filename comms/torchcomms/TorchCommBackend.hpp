@@ -16,7 +16,7 @@
 
 namespace torch::comms {
 
-inline constexpr const char* TORCHCOMM_BACKEND_ABI_VERSION = "1.0";
+inline constexpr const char* TORCHCOMM_BACKEND_ABI_VERSION = "1.1";
 
 /**
  * TorchCommBackend - Abstract base class for communication backends.
@@ -267,6 +267,41 @@ class TorchCommBackend {
   }
 
   /**
+   * Check if abort/fault-tolerance is enabled on this communicator.
+   *
+   * @return True if abort is enabled, false otherwise.
+   */
+  virtual bool abortEnabled() const {
+    return false;
+  }
+
+  /**
+   * Check if the communicator is in an aborted state.
+   *
+   * Useful in CUDA graph mode where per-operation work handles are
+   * unavailable and polling the communicator state is the only way to
+   * detect failures.
+   *
+   * @return True if the communicator has been aborted.
+   */
+  virtual bool isAborted() const {
+    return false;
+  }
+
+  /**
+   * Check if the backend is fully initialized and ready for collective
+   * operations. In dynamic regime, the backend transitions to initialized
+   * state after a successful reconfigure().
+   *
+   * This method is non-throwing and safe to call regardless of backend state.
+   *
+   * @return True if the backend is initialized, false otherwise.
+   */
+  virtual bool isInitialized() const {
+    return true;
+  }
+
+  /**
    * Get the initialization handle for this backend.
    * In dynamic regime, this URL encodes information required by the backend
    * to complete the initialization process via reconfigure().
@@ -299,10 +334,16 @@ class TorchCommBackend {
   }
 
   /**
-   * Abort the communicator, stopping all in-flight operations.
-   * In reconfigurable mode, calls ncclCommRevoke (graceful) and sets error
-   * state. Otherwise calls ncclCommAbort (destructive).
-   * Does not throw. Caller can recover via reconfigure().
+   * Abort the communicator.
+   *
+   * Must be non-blocking and return immediately. Implementations must ensure
+   * all pending operations transition to CANCELED status on their work
+   * handles.
+   *
+   * After abort(), the communicator is in an uninitialized state;
+   * reconfigure() must be called before issuing further collectives.
+   *
+   * Must be thread-safe; may be called from a background watchdog thread.
    */
   virtual void abort() {
     throw std::runtime_error(

@@ -613,12 +613,23 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       return commSuccess;
     }
 
+    // regHdl from searchRegHandle is a RegElem*; extract the IB-level
+    // registration handle that LocalVirtualConn::iflush expects.
+    auto* regElem =
+        reinterpret_cast<ctran::regcache::RegElem*>(const_cast<void*>(regHdl));
+    if (!regElem) {
+      CLOGF(WARN, "CTRAN-MAPPER: No IB registration for flush, skip");
+      return commSuccess;
+    }
+
+    auto regLk = regElem->stateMnger.rlock();
+
     CtranIbRequest* ibReq = nullptr;
     if (req) {
       *req = new CtranMapperRequest();
       ibReq = &((*req)->ibReq);
     }
-    FB_COMMCHECK(this->ctranIb->iflush(buf, regHdl, ibReq));
+    FB_COMMCHECK(this->ctranIb->iflush(buf, regElem->ibRegElem, ibReq));
     return commSuccess;
   }
 

@@ -328,8 +328,12 @@ CtranIb::CtranIb(
     // https://ontrack.amd.com/browse/FBA-633
     enableLocalFlush_ = true;
 #else
-    // Turn on flush for NVidia GPUs older than H100
-    enableLocalFlush_ = comm->statex_->cudaArch() < 900;
+    // Turn on flush for NVidia GPUs older than H100, or when using
+    // multiple NICs with flush enabled (cross-NIC DMA writes have no PCIe
+    // ordering guarantee on ARM SoCs, requiring an explicit RDMA READ
+    // flush per device).
+    enableLocalFlush_ = comm->statex_->cudaArch() < 900 ||
+        (NCCL_CTRAN_IB_DEVICES_PER_RANK > 1 && NCCL_CTRAN_IB_MULTI_NIC_FLUSH);
 #endif
   }
   init(
@@ -347,9 +351,10 @@ CtranIb::CtranIb(
   CLOGF_SUBSYS(
       INFO,
       INIT,
-      "CTRAN-IB: Initialized {} from comm {}",
+      "CTRAN-IB: Initialized {} from comm {} enableLocalFlush {}",
       (void*)this,
-      (void*)comm);
+      (void*)comm,
+      this->enableLocalFlush);
 }
 
 CtranIb::CtranIb(
@@ -382,12 +387,13 @@ CtranIb::CtranIb(
   CLOGF_SUBSYS(
       INFO,
       INIT,
-      "CTRAN-IB: Initialized {} from rank {} cudaDev {} commHash {:x} commDesc {}",
+      "CTRAN-IB: Initialized {} from rank {} cudaDev {} commHash {:x} commDesc {} enableLocalFlush {}",
       (void*)this,
       rank,
       cudaDev,
       commHash,
-      commDesc);
+      commDesc,
+      this->enableLocalFlush);
 }
 
 void CtranIb::init(

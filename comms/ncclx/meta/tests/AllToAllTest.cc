@@ -91,9 +91,11 @@ class AllToAllTest : public NcclxBaseTestFixture {
     CUDACHECK_TEST(cudaFree(recvBuf));
 
 #ifdef TEST_ENABLE_CTRAN
-    sleep(3);
 
     if (comm->newCollTrace) {
+      EXPECT_TRUE(
+          meta::comms::ncclx::waitForCollTraceDrain(*comm->newCollTrace));
+
       auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
       if (dumpMap.count("CT_pastColls")) {
         auto ctPastColls = folly::parseJson(dumpMap["CT_pastColls"]);
