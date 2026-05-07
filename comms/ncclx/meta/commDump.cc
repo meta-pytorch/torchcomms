@@ -18,6 +18,7 @@
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/ProcessGlobalErrorsUtil.h"
+#include "comms/utils/memtrace/MemoryTrace.h"
 #include "meta/colltrace/ProxyTrace.h"
 #include "meta/commDump.h"
 #include "meta/comms-monitor/CommsMonitor.h"
@@ -182,6 +183,14 @@ static void dumpProxyTrace(
   }
 }
 
+static void dumpMemoryTrace(
+    const std::shared_ptr<meta::comms::memtrace::MemoryTrace>& memTracer,
+    std::unordered_map<std::string, std::string>& map) {
+  if (memTracer) {
+    map["memory"] = memTracer->dump();
+  }
+}
+
 std::unordered_map<std::string, std::string> commDumpByMonitorInfo(
     const ncclx::comms_monitor::NcclCommMonitorInfo& info) {
   std::unordered_map<std::string, std::string> map;
@@ -198,6 +207,7 @@ std::unordered_map<std::string, std::string> commDumpByMonitorInfo(
     XLOGF(DBG2, "CommDump: MAPPERTRACE is disabled. No trace to dump");
   }
   dumpProcessGlobalErrors(map);
+  dumpMemoryTrace(info.memTracer, map);
   return map;
 }
 

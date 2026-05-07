@@ -10,6 +10,7 @@
 #include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/utils/commSpecs.h"
+#include "comms/utils/memtrace/MemoryTrace.h"
 #include "meta/colltrace/ProxyTrace.h"
 
 namespace ncclx::comms_monitor {
@@ -35,6 +36,10 @@ struct NcclCommMonitorInfo {
     ALIVE,
     DEAD,
   } status = CommStatus::ALIVE;
+
+  // Adopted from MemoryTrace::getOrCreate() at registerComm time.
+  // See MemoryTrace::getOrCreate() for dual ownership rationale.
+  std::shared_ptr<meta::comms::memtrace::MemoryTrace> memTracer;
 
   static NcclCommMonitorInfo fromNcclComm(ncclComm_t comm);
 };
