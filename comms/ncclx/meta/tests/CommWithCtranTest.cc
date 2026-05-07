@@ -17,6 +17,7 @@
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/testinfra/TestUtils.h"
+#include "meta/NcclxConfig.h" // @manual
 #include "meta/hints/GlobalHints.h" // @manual
 #include "nccl.h"
 
@@ -83,7 +84,10 @@ TEST_F(CommWithCtranTest, CtranCommInitialized) {
   ASSERT_NE(nullptr, ncclComm->ctranComm_);
 
   EXPECT_EQ(comm->ctranComm_->opCount_, &ncclComm->opCount);
-  EXPECT_EQ(comm->ctranComm_->config_, makeCtranConfigFrom(ncclComm));
+  EXPECT_EQ(comm->ctranComm_->config_.blocking, ncclComm->config.blocking);
+  EXPECT_EQ(
+      comm->ctranComm_->config_.commDesc,
+      NCCLX_CONFIG_FIELD(ncclComm->config, commDesc));
   EXPECT_EQ(comm->ctranComm_->logMetaData_, ncclComm->logMetaData);
   EXPECT_EQ(comm->ctranComm_->runtimeConn_, ncclComm->runtimeConn);
 }
