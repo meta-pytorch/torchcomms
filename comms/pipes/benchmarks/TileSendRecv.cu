@@ -127,4 +127,51 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecvDynamic(
   }
 }
 
+// =============================================================================
+// Tile-style fused recv+forward kernel.
+// =============================================================================
+//
+// Each block calls P2pNvlTransportDevice::forward(), which fuses a recv from
+// the predecessor staging buffer with a send to the successor staging buffer
+// (plus a local copy to the user dst). All blocks run forward (no role
+// partition); block group_id ∈ [0, numBlocks) drives the per-block tile
+// assignment and signal slots.
+//
+// In a 2-rank ring test (rank 0 ↔ rank 1):
+//   - Rank 0 launches p2pTileSendRecv (sends src → rank 1 staging,
+//     receives forwarded data ← rank 1 staging).
+//   - Rank 1 launches p2pTileForward with p2p_pred == p2p_succ ==
+//     the single transport to rank 0; forward reads from rank 0's send
+//     into local staging and writes to rank 0's recv staging.
+//
+// Signal slots are paired correctly because forward.recv uses [tail=i,
+// head=i+max_groups] on this transport, while forward.send uses
+// [tail=i, head=i+max_groups] on successor transport. When this ==
+// successor, the recv-side and send-side touch DIFFERENT halves of the
+// signal/step arrays (recv → step_state[max_groups+i]; send →
+// step_state[i]). Rank 0's send/recv similarly use distinct halves on
+// the same transport.
+
+__global__ __launch_bounds__(512, 1) void p2pTileForward(
+    P2pNvlTransportDevice p2p_pred,
+    P2pNvlTransportDevice p2p_succ,
+    TiledBuffer<char> dstTiles,
+    int active_blocks,
+    std::size_t max_signal_bytes,
+    Timeout timeout) {
+  timeout.start();
+
+  auto group = make_block_group();
+  const int blockId = group.group_id;
+
+  p2p_pred.forward(
+      group,
+      dstTiles.tile_data(blockId),
+      dstTiles.tile_bytes(blockId),
+      p2p_succ,
+      active_blocks,
+      max_signal_bytes,
+      timeout);
+}
+
 } // namespace comms::pipes::benchmark
