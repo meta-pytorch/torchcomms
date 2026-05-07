@@ -216,6 +216,55 @@ PYBIND11_MODULE(_core, m) {
           py::arg("length"),
           py::arg("mem_type") = MemoryType::DRAM,
           py::arg("device_id") = -1)
+      .def_static(
+          "from_tensor",
+          [](py::object tensor) {
+            py::module_ torch;
+            try {
+              torch = py::module_::import("torch");
+            } catch (const py::error_already_set&) {
+              throw std::runtime_error(
+                  "Segment.from_tensor() requires PyTorch to be installed");
+            }
+            if (!py::isinstance(tensor, torch.attr("Tensor"))) {
+              throw py::type_error(
+                  "Segment.from_tensor() requires a torch.Tensor");
+            }
+            if (!py::cast<bool>(tensor.attr("is_contiguous")())) {
+              throw std::runtime_error(
+                  "Segment.from_tensor() requires a contiguous tensor");
+            }
+            auto ptr = py::cast<uintptr_t>(tensor.attr("data_ptr")());
+            auto numel = py::cast<size_t>(tensor.attr("numel")());
+            auto elemSize = py::cast<size_t>(tensor.attr("element_size")());
+            auto deviceType =
+                py::cast<std::string>(tensor.attr("device").attr("type"));
+            MemoryType memType;
+            int deviceId;
+            if (deviceType == "cuda") {
+              memType = MemoryType::VRAM;
+              deviceId = py::cast<int>(tensor.attr("get_device")());
+            } else if (deviceType == "cpu") {
+              memType = MemoryType::DRAM;
+              deviceId = -1;
+            } else {
+              throw std::runtime_error(
+                  "Segment.from_tensor(): unsupported device type '" +
+                  deviceType + "' (expected cpu or cuda)");
+            }
+            return Segment(
+                // NOLINTNEXTLINE(performance-no-int-to-ptr)
+                reinterpret_cast<void*>(ptr),
+                numel * elemSize,
+                memType,
+                deviceId);
+          },
+          "Create a Segment from a torch.Tensor (requires PyTorch at runtime). "
+          "The returned Segment holds a raw pointer into the tensor's storage; "
+          "pybind11's keep_alive policy ties the tensor's lifetime to the "
+          "Segment so the storage stays valid for as long as the Segment lives.",
+          py::arg("tensor"),
+          py::keep_alive<0, 1>())
       .def_property_readonly(
           "data_ptr",
           [](const Segment& s) {
