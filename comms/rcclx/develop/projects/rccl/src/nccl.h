@@ -645,6 +645,50 @@ ncclResult_t pncclAllReduceWithBias(const void* sendbuff, void* recvbuff, size_t
     ncclDataType_t datatype, ncclRedOp_t op, ncclComm_t comm, hipStream_t stream, const void* acc);
 /*! @endcond */
 
+/*! @brief      Fused Multi-Group Sharded Relay All-Reduce for 2D Sparse Parallelism
+    @details    Performs multiple sharded relay all-reduces in a single fused call, coordinating
+                phases across ALL groups to prevent XGMI link contention.
+                
+                Problem with separate calls: When 4 separate allreduces run in parallel, different
+                groups may be in different phases (active→helpers vs helpers→active), causing
+                bidirectional contention on shared XGMI links and degrading bandwidth by up to 10x.
+                
+                Solution: This fused API executes ALL groups in lockstep phases:
+                  Phase 1: ALL groups scatter (active→helpers) - unidirectional traffic
+                  Phase 2: ALL groups forward (helpers→other active) - unidirectional traffic
+                  Phase 3: ALL active ranks reduce the relayed chunks - compute only
+                  Phase 4: ALL groups direct-exchange last chunk between active ranks
+                  Phase 5: Final reduction on the exchanged chunk - compute only
+                
+                Helpers act as pure passthrough relays (no local reduction). All
+                reductions happen on active ranks only.
+              
+              Memory model: Each rank is ACTIVE for exactly ONE group (has real tensor data).
+              For other groups, the rank is a HELPER (uses provided scratch buffer).
+              
+    @return     Result code. See @ref rccl_result_code for more details.
+
+    @param[in]  sendBuffs           Array of send buffer pointers (one per group)
+    @param[out] recvBuffs           Array of receive buffer pointers (one per group)  
+    @param[in]  counts              Array of element counts (one per group, allows different sizes)
+    @param[in]  datatype            Data buffer element datatype
+    @param[in]  op                  Reduction operator (ncclSum and ncclAvg supported)
+    @param[in]  comm                Communicator group object to execute on
+    @param[in]  stream              HIP stream to execute collective on
+    @param[in]  allActiveRanks      2D array of active ranks [nGroups][nActiveRanksPerGroup]
+    @param[in]  nActiveRanksPerGroup Number of active ranks per group (typically 2)
+    @param[in]  nGroups             Number of groups (typically 4 for 8-GPU node) */
+ncclResult_t  ncclShardedRelayMultiGroupAllReduce(
+    const void* const* sendBuffs, void* const* recvBuffs, const size_t* counts,
+    ncclDataType_t datatype, ncclRedOp_t op, ncclComm_t comm, hipStream_t stream,
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups);
+/*! @cond       include_hidden */
+ncclResult_t pncclShardedRelayMultiGroupAllReduce(
+    const void* const* sendBuffs, void* const* recvBuffs, const size_t* counts,
+    ncclDataType_t datatype, ncclRedOp_t op, ncclComm_t comm, hipStream_t stream,
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups);
+/*! @endcond */
+
 /*! @brief      Reduce-Scatter
     @details    Reduces data in *sendbuff* using *op* operation and leaves reduced result
                 scattered over the devices so that *recvbuff* on rank i will contain the i-th
