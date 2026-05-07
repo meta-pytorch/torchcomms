@@ -81,6 +81,14 @@ cvars:
       File location for logging memory related events.
       (the same format with NCCL_COMM_EVENT_LOGGING)
 
+ - name        : NCCL_MEMTRACE_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Enable memory tracing for all NCCLX memory allocations, frees, and
+     registrations. When enabled, memory events are logged to Scuba and
+     tracked per-communicator for commDump reporting.
+
  - name        : NCCL_SLOW_COLL_LOGGING
    type        : string
    default     : "pipe:nccl_slow_coll"
