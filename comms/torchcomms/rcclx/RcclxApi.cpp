@@ -328,34 +328,25 @@ ncclResult_t DefaultRcclxApi::redOpDestroy(ncclRedOp_t op, ncclComm_t comm) {
   return ncclRedOpDestroy(op, comm);
 }
 
-ncclResult_t DefaultRcclxApi::allGatherInit(
-    void* recvbuff,
-    size_t maxRecvCount,
-    const RcclxHints& hints,
-    ncclDataType_t datatype,
-    ncclComm_t comm,
-    hipStream_t stream,
-    void** request) {
-  // Convert RcclxHints to ncclx::Hints
-  ncclx::Hints ncclxHints;
-  for (const auto& [key, value] : hints) {
-    ncclxHints.set(key, value);
-  }
-  return ncclx::allGatherInit(
-      recvbuff, maxRecvCount, ncclxHints, datatype, comm, stream, request);
-}
-
-ncclResult_t DefaultRcclxApi::allGatherExec(
-    const void* sendbuff,
-    size_t count,
-    ncclDataType_t datatype,
-    void* request) {
-  return ncclx::allGatherExec(sendbuff, count, datatype, request);
-}
-
-ncclResult_t DefaultRcclxApi::pFree(void* request) {
-  return ncclx::pFree(request);
-}
+// NOTE: The following methods that depend on rcclx-dev-only symbols
+// (`ncclx::Hints`, `ncclx::allGatherInit`, `ncclx::allGatherExec`,
+// `ncclx::pFree`, `ncclShardedRelayMultiGroupAllReduce`) are intentionally
+// NOT defined here. Their definitions live in two parallel translation
+// units selected at BUCK level via `select()` on the active rccl
+// constraint (see `comms/torchcomms/rcclx/BUCK`):
+//
+//   * RcclxApiShardedRelay.cpp     — real implementation, linked when
+//                                    building against rcclx-dev
+//   * RcclxApiShardedRelayStub.cpp — `ncclInternalError` stubs, linked when
+//                                    building against rcclx-stable /
+//                                    rcclx-last-stable / rccl-dev (whose
+//                                    snapshots don't yet expose the new
+//                                    sharded-relay APIs)
+//
+//     - DefaultRcclxApi::allGatherInit
+//     - DefaultRcclxApi::allGatherExec
+//     - DefaultRcclxApi::pFree
+//     - DefaultRcclxApi::shardedRelayMultiGroupAllReduce
 
 ncclResult_t DefaultRcclxApi::memAlloc(void** ptr, size_t size) {
   return ncclMemAlloc(ptr, size);
