@@ -24,7 +24,7 @@
 #endif
 
 #include "comms/utils/commSpecs.h"
-#include "comms/utils/logger/alloc.h"
+#include "comms/utils/memtrace/MemoryTrace.h"
 
 uint64_t clockNano(); // from utils.h with which we have a circular dependency
 
@@ -243,7 +243,7 @@ static inline ncclResult_t ncclCuMemAlloc(void **ptr, CUmemGenericAllocationHand
   CUCHECK(cuMemSetAccess((CUdeviceptr)*ptr, size, &accessDesc, 1));
   if (handlep) *handlep = handle;
   TRACE(NCCL_ALLOC, "CuMem Alloc Size %zu pointer %p handle %llx", size, *ptr, handle);
-  logMemoryEvent(
+  meta::comms::memtrace::recordAlloc(
     memLogMetaData,
     callsite,
     "ncclCuMemAlloc",
@@ -265,7 +265,7 @@ static inline ncclResult_t ncclCuMemFree(void *ptr) {
   CUCHECK(cuMemUnmap((CUdeviceptr)ptr, size));
   CUCHECK(cuMemRelease(handle));
   CUCHECK(cuMemAddressFree((CUdeviceptr)ptr, size));
-  logMemoryEvent(memLogMetaData, "", "ncclCuMemFree", reinterpret_cast<uintptr_t>(ptr));
+  meta::comms::memtrace::recordFree(memLogMetaData, "", "ncclCuMemFree", reinterpret_cast<uintptr_t>(ptr));
   memLogMetaData = CommLogData{};
   return result;
 }
@@ -313,7 +313,7 @@ finish:
   if (*ptr == nullptr && nelem > 0) WARN("Failed to CUDA malloc %ld bytes", nelem*ncclSizeOfT<T>());
   INFO(NCCL_ALLOC, "%s:%d Cuda Alloc Size %ld pointer %p", filefunc, line, nelem*ncclSizeOfT<T>(), *ptr);
   if (!ncclCuMemEnable()) {
-    logMemoryEvent(
+    meta::comms::memtrace::recordAlloc(
         memLogMetaData,
         callsite.c_str(),
         "ncclCudaMalloc",
@@ -350,7 +350,7 @@ finish:
   if (*ptr == nullptr && nelem > 0) WARN("Failed to CUDA calloc %ld bytes", nelem*ncclSizeOfT<T>());
   INFO(NCCL_ALLOC, "%s:%d Cuda Alloc Size %ld pointer %p", filefunc, line, nelem*ncclSizeOfT<T>(), *ptr);
   if (!ncclCuMemEnable()) {
-    logMemoryEvent(
+    meta::comms::memtrace::recordAlloc(
       memLogMetaData,
       callsite.c_str(),
       "ncclCudaCalloc",
@@ -382,7 +382,7 @@ finish:
   if (*ptr == nullptr && nelem > 0) WARN("Failed to CUDA calloc async %ld bytes", nelem*ncclSizeOfT<T>());
   INFO(NCCL_ALLOC, "%s:%d Cuda Alloc Size %ld pointer %p", filefunc, line, nelem*ncclSizeOfT<T>(), *ptr);
   if (!ncclCuMemEnable()) {
-    logMemoryEvent(
+    meta::comms::memtrace::recordAlloc(
       memLogMetaData,
       callsite.c_str(),
       "ncclCudaCallocAsync",
@@ -434,7 +434,7 @@ ncclResult_t ncclCudaFree(T* ptr) {
   }
 finish:
   if (!ncclCuMemEnable()) {
-    logMemoryEvent(
+    meta::comms::memtrace::recordFree(
         memLogMetaData,
         "",
         "ncclCudaFree",
