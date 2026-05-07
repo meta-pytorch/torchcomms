@@ -9,6 +9,8 @@
 #include <cstdio>
 #include <cstdlib>
 
+#include "comms/utils/colltrace/PrecisionClock.h"
+
 // simple fprintf-based check for host code.
 #define CUDA_CHECK_CC(cmd)             \
   do {                                 \
@@ -79,7 +81,10 @@ std::chrono::system_clock::time_point GlobaltimerCalibration::toWallClock(
     CUDA_CHECK_CC(cudaDeviceSynchronize());
 
     cal.device_ns = *mapped_ptr;
-    cal.host_time = std::chrono::system_clock::now();
+    // PTP-aligned anchor when fbclock daemon is reachable; otherwise
+    // falls back to system_clock. This is the single mapping that
+    // converts every graph-mode %globaltimer ns reading into wall time.
+    cal.host_time = colltrace::precisionNow();
 
     CUDA_CHECK_CC(cudaFreeHost(mapped_ptr));
     return cal;
