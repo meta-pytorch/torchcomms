@@ -10,8 +10,7 @@ cpp_include "<unordered_set>"
 include "thrift/annotation/cpp.thrift"
 include "thrift/annotation/thrift.thrift"
 
-@thrift.AllowLegacyMissingUris
-package;
+package "meta.com/comms/analyzer"
 
 typedef i64 GlobalRank
 typedef string CommHash
