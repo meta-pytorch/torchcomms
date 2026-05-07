@@ -21,7 +21,6 @@
 #include "comms/torchcomms/device/cuda/CudaApi.hpp"
 #include "comms/torchcomms/ncclx/GraphEventTracker.hpp"
 #include "comms/torchcomms/ncclx/NcclxApi.hpp"
-#include "comms/torchcomms/ncclx/TorchCommNCCLXPersistentRequest.hpp"
 #include "comms/torchcomms/ncclx/TorchCommWindowNCCLX.hpp"
 #include "comms/torchcomms/ncclx/TorchWorkNCCLX.hpp"
 #include "comms/utils/GraphCaptureSideStream.h"
@@ -206,31 +205,6 @@ class TorchCommNCCLX : public TorchCommBackend,
       const at::Tensor& input_chunk_count_per_rank,
       bool async_op);
 
-  c10::intrusive_ptr<TorchCommNCCLXPersistentRequest> alltoallv_dedup_init(
-      const int num_send_blocks,
-      const int block_count,
-      const int block_num_recv_buckets,
-      const int num_recv_buckets,
-      at::ScalarType dtype,
-      bool async_op);
-
-  c10::intrusive_ptr<TorchWork> alltoallv_dedup_exec(
-      at::Tensor& output_tensor,
-      at::Tensor& recv_block_ids,
-      const at::Tensor& input_tensor,
-      const at::Tensor& send_indices,
-      const at::Tensor& forward_indices,
-      const at::Tensor& recv_indices,
-      at::intrusive_ptr<TorchCommNCCLXPersistentRequest> pReq);
-
-  c10::intrusive_ptr<TorchWork> alltoallv_dedup_combine(
-      at::Tensor& output_tensor,
-      const at::Tensor& input_tensor,
-      const at::Tensor& send_indices,
-      const at::Tensor& forward_indices,
-      const at::Tensor& recv_indices,
-      at::intrusive_ptr<TorchCommNCCLXPersistentRequest> pReq);
-
   // Persistent AllGather operations
   AllGatherPHandle all_gather_p_init(
       at::Tensor& output,
@@ -295,7 +269,6 @@ class TorchCommNCCLX : public TorchCommBackend,
   friend class CachingAllocatorHookImpl;
   template <typename B>
   friend class TorchCommWindowNCCLX;
-  friend class TorchCommNCCLXPersistentRequest;
 
   // Getter for CUDA API (for friend classes)
   CudaApi* getCudaApi() const {
