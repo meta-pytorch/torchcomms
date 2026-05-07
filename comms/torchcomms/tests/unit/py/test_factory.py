@@ -20,6 +20,7 @@ class TestFactory(unittest.TestCase):
         os.environ["RANK"] = "0"
         os.environ["TORCHCOMM_GLOO_HOSTNAME"] = "localhost"
 
+        # pyrefly: ignore [bad-argument-type]
         comm = torchcomms.new_comm("gloo", torch.device("cpu"), "my_comm")
         comm.finalize()
         backend = comm.get_backend_impl()
@@ -32,4 +33,5 @@ class TestFactory(unittest.TestCase):
 
     def test_factory_missing(self):
         with self.assertRaisesRegex(ModuleNotFoundError, "failed to find backend"):
+            # pyrefly: ignore [bad-argument-type]
             torchcomms.new_comm("invalid", torch.device("cuda"), "my_comm")

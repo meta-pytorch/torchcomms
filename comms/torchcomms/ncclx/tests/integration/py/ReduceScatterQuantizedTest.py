@@ -35,6 +35,7 @@ class ReduceScatterQuantizedTest(unittest.TestCase):
     def tearDown(self):
         """Clean up after each test."""
         self.torchcomm = None
+        # pyrefly: ignore [bad-assignment]
         self.wrapper = None
 
     def test_reduce_scatter_quantized_sum(self):

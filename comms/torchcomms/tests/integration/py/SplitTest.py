@@ -95,6 +95,7 @@ class SplitTest(unittest.TestCase):
 
             # Skip empty groups
             if group not in empty_groups:
+                # pyrefly: ignore [bad-argument-type]
                 rank_groups[group].append(rank)
 
         return rank_groups

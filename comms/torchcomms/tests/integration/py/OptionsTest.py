@@ -60,6 +60,7 @@ class OptionsTest(unittest.TestCase):
         """Clean up after each test."""
         # Explicitly reset the TorchComm object to ensure proper cleanup
         self.torchcomm = None
+        # pyrefly: ignore [bad-assignment]
         self.wrapper = None
 
     def test_send_recv(self):
