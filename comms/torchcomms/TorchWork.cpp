@@ -28,6 +28,12 @@ void TorchWorkCompleted::wait() {
   runWaitPostHooks();
 }
 
+void TorchWorkCompleted::waitBlocking() {
+  // Note: required for TorchComm::reconfigure to work with the dummy backend.
+  // No need to checkStatus as the constructor sets the status to COMPLETED.
+  return;
+}
+
 TorchWorkThread::TorchWorkThread(std::function<void()> fn)
     : future_(std::async(std::launch::async, [this, fn = std::move(fn)]() {
         try {
