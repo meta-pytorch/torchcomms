@@ -91,4 +91,59 @@ TEST_F(TorchCommReconfigureTest, ReconfigureFailureOnFirstCall) {
   EXPECT_TRUE(comm->getRanks().empty());
 }
 
+TEST_F(TorchCommReconfigureTest, ReconfigureTrueFailureDoesNotPopulateRanks) {
+  auto comm = createComm(/*enable_reconfigure=*/true);
+  ASSERT_NE(comm, nullptr);
+
+  auto backend =
+      std::dynamic_pointer_cast<TorchCommFake>(comm->getBackendImpl());
+  ASSERT_NE(backend, nullptr);
+  backend->setReconfigureFailure(true);
+
+  // Reconfigure with failure -- work reports ERROR, ranks stay empty,
+  // isInitialized() returns false.
+  auto work = comm->reconfigure(makeOpts());
+  EXPECT_FALSE(work->isCompleted());
+  EXPECT_TRUE(comm->getRanks().empty());
+  EXPECT_FALSE(backend->isInitialized());
+}
+
+TEST_F(TorchCommReconfigureTest, ReconfigureFailureThenSuccessRecovers) {
+  auto comm = createComm(/*enable_reconfigure=*/true);
+  ASSERT_NE(comm, nullptr);
+
+  auto backend =
+      std::dynamic_pointer_cast<TorchCommFake>(comm->getBackendImpl());
+  ASSERT_NE(backend, nullptr);
+
+  // Step 1: Failure
+  backend->setReconfigureFailure(true);
+  comm->reconfigure(makeOpts());
+  EXPECT_TRUE(comm->getRanks().empty());
+
+  // Step 2: Recovery
+  backend->setReconfigureFailure(false);
+  comm->reconfigure(makeOpts());
+
+  auto ranks = comm->getRanks();
+  ASSERT_EQ(ranks.size(), 1);
+  EXPECT_EQ(ranks[0], 0);
+  EXPECT_TRUE(backend->isInitialized());
+}
+
+TEST_F(TorchCommReconfigureTest, ReconfigureSuccessThenFailureClearsRanks) {
+  auto comm = createComm(true);
+  auto backend =
+      std::dynamic_pointer_cast<TorchCommFake>(comm->getBackendImpl());
+
+  // Success: populate ranks
+  comm->reconfigure(makeOpts());
+  ASSERT_EQ(comm->getRanks().size(), 1);
+
+  // True failure: ranks must be cleared, not stale
+  backend->setReconfigureFailure(true);
+  comm->reconfigure(makeOpts());
+  EXPECT_TRUE(comm->getRanks().empty());
+}
+
 } // namespace torch::comms
