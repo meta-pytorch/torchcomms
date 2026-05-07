@@ -100,7 +100,7 @@ def alltoallv_dynamic_combine(
     D: int,
     group: ProcessGroup | None = None,
     async_op: bool = False,
-) -> None:
+) -> Any:
     if not torchcomms_is_enabled():
         raise AssertionError(
             "alltoallv_dynamic_combine requires torchcomms to be enabled"
@@ -117,7 +117,7 @@ def alltoallv_dynamic_combine(
         )
 
     ncclx_backend = tc.get_backend_impl()
-    ncclx_backend.alltoallv_dynamic_combine(
+    return ncclx_backend.alltoallv_dynamic_combine(
         output_tensor,
         input_tensor,
         input_split_sizes,
