@@ -669,6 +669,206 @@ TEST_F(GraphEventTrackerTest, MultipleGraphsOnlyReleasedOneCleanedUp) {
   setupFinalizeExpectations(*comm);
 }
 
+// Verify the pinned-memory counter region is reused across recaptures rather
+// than freed on the watchdog thread. cudaFreeHost is synchronizing — running
+// it inline inside cleanupReleasedGraphs can block the watchdog (which also
+// services NCCL work-progress) when the device is busy with the next eager
+// warmup forward, causing a peer-visible deadlock. See GraphEventTracker.cpp
+// cleanupReleasedGraphs() for the full rationale.
+TEST_F(GraphEventTrackerTest, CounterPoolReusesAcrossRecaptures) {
+  auto comm = createMockedTorchComm();
+  cuda_mock_->setupDefaultBehaviors();
+  nccl_mock_->setupDefaultBehaviors();
+
+  auto options = createAbortModeOptions();
+  comm->init(*device_, "test_counter_pool_reuse", options);
+
+  // Track every uint64_t pinned allocation handed out. Pool reuse means
+  // the second recapture should NOT add a new entry here.
+  std::vector<uint64_t*> allocated_counters;
+  ON_CALL(*cuda_mock_, hostAlloc(_, _, _))
+      .WillByDefault(
+          [&allocated_counters](void** ptr, size_t size, unsigned int) {
+            *ptr = std::calloc(1, size);
+            if (size == sizeof(uint64_t)) {
+              allocated_counters.push_back(static_cast<uint64_t*>(*ptr));
+            }
+            return cudaSuccess;
+          });
+
+  // Track hostFree calls — must be empty during steady-state recapture.
+  std::vector<void*> freed_pointers;
+  ON_CALL(*cuda_mock_, hostFree(_)).WillByDefault([&freed_pointers](void* ptr) {
+    freed_pointers.push_back(ptr);
+    std::free(ptr);
+    return cudaSuccess;
+  });
+
+  // -------- Capture graph 1 --------
+  void* cleanup_data_1 = nullptr;
+  cudaHostFn_t cleanup_fn_1 = nullptr;
+  setupGraphCaptureMocks(/*graph_id=*/100);
+  EXPECT_CALL(*cuda_mock_, eventCreateWithFlags(_, _))
+      .WillRepeatedly(DoAll(
+          SetArgPointee<0>(reinterpret_cast<cudaEvent_t>(0xA100)),
+          Return(cudaSuccess)));
+  EXPECT_CALL(*cuda_mock_, userObjectCreate(_, _, _, _, _))
+      .WillOnce(DoAll(
+          SetArgPointee<0>(reinterpret_cast<cudaUserObject_t>(0x3000)),
+          SaveArg<1>(&cleanup_data_1),
+          SaveArg<2>(&cleanup_fn_1),
+          Return(cudaSuccess)));
+
+  auto tensor = createTestTensor({10, 10});
+  {
+    auto work = comm->send(tensor, 1, true);
+  }
+
+  ASSERT_EQ(allocated_counters.size(), 1u)
+      << "First graph should allocate exactly one counter region";
+  uint64_t* first_counter = allocated_counters[0];
+  ASSERT_NE(first_counter, nullptr);
+
+  // Pretend the GPU kernel had incremented the counter — pool acquire must
+  // reset it back to zero before handing it to the next graph.
+  *first_counter = 7;
+
+  // -------- Release graph 1 --------
+  cleanup_fn_1(cleanup_data_1);
+
+  ::testing::Mock::VerifyAndClearExpectations(cuda_mock_.get());
+  cuda_mock_->setupDefaultBehaviors();
+
+  switchToReplayMode();
+  comm->checkGraphEvents();
+  EXPECT_TRUE(freed_pointers.empty())
+      << "hostFree must not run on the watchdog cleanup path; got "
+      << freed_pointers.size() << " calls";
+
+  // -------- Capture graph 2 (should reuse pooled counter) --------
+  setupGraphCaptureMocks(
+      /*graph_id=*/200, reinterpret_cast<cudaGraph_t>(0xB001));
+  EXPECT_CALL(*cuda_mock_, eventCreateWithFlags(_, _))
+      .WillRepeatedly(DoAll(
+          SetArgPointee<0>(reinterpret_cast<cudaEvent_t>(0xA200)),
+          Return(cudaSuccess)));
+  EXPECT_CALL(*cuda_mock_, userObjectCreate(_, _, _, _, _))
+      .WillOnce(DoAll(
+          SetArgPointee<0>(reinterpret_cast<cudaUserObject_t>(0x3001)),
+          Return(cudaSuccess)));
+
+  {
+    auto work = comm->send(tensor, 1, true);
+  }
+
+  EXPECT_EQ(allocated_counters.size(), 1u)
+      << "Second capture should reuse the pooled counter, not allocate";
+  // maybeInitGraphState calls acquireCounter() (which resets to 0), then
+  // immediately calls replay_counter->increment(stream) which adds 1.
+  // If reset() didn't run, this would be 7 + 1 = 8 (the sentinel above).
+  EXPECT_EQ(*first_counter, 1u)
+      << "Pooled counter must be reset to 0 before the per-capture increment "
+         "(would be 8 if the sentinel survived re-acquire)";
+
+  ::testing::Mock::VerifyAndClearExpectations(cuda_mock_.get());
+  switchToReplayMode();
+  setupFinalizeExpectations(*comm);
+}
+
+// Verify that pinned-memory frees are deferred until comm shutdown rather
+// than running during steady-state recaptures. This is the core invariant
+// the pool fix establishes: zero hostFree on the watchdog thread.
+TEST_F(GraphEventTrackerTest, CounterPoolDrainsAtFinalize) {
+  auto comm = createMockedTorchComm();
+  cuda_mock_->setupDefaultBehaviors();
+  nccl_mock_->setupDefaultBehaviors();
+
+  auto options = createAbortModeOptions();
+  comm->init(*device_, "test_counter_pool_drains_at_finalize", options);
+
+  std::vector<uint64_t*> allocated_counters;
+  ON_CALL(*cuda_mock_, hostAlloc(_, _, _))
+      .WillByDefault(
+          [&allocated_counters](void** ptr, size_t size, unsigned int) {
+            *ptr = std::calloc(1, size);
+            if (size == sizeof(uint64_t)) {
+              allocated_counters.push_back(static_cast<uint64_t*>(*ptr));
+            }
+            return cudaSuccess;
+          });
+
+  std::vector<void*> freed_pointers;
+  // setupDefaultBehaviors() re-installs the default hostFree ON_CALL each
+  // time it's called, so wrap our tracking install in a helper and call it
+  // again after every setupDefaultBehaviors().
+  auto installHostFreeTracker = [this, &freed_pointers]() {
+    ON_CALL(*cuda_mock_, hostFree(_))
+        .WillByDefault([&freed_pointers](void* ptr) {
+          freed_pointers.push_back(ptr);
+          std::free(ptr);
+          return cudaSuccess;
+        });
+  };
+  installHostFreeTracker();
+
+  ON_CALL(*cuda_mock_, eventCreateWithFlags(_, _))
+      .WillByDefault(DoAll(
+          SetArgPointee<0>(reinterpret_cast<cudaEvent_t>(0xA100)),
+          Return(cudaSuccess)));
+
+  auto tensor = createTestTensor({10, 10});
+
+  // Run two capture/release cycles. Pool reuses the same counter, so only
+  // one hostAlloc total.
+  for (int cycle = 0; cycle < 2; ++cycle) {
+    void* cleanup_data = nullptr;
+    cudaHostFn_t cleanup_fn = nullptr;
+    setupGraphCaptureMocks(
+        /*graph_id=*/static_cast<unsigned long long>(100 + cycle),
+        reinterpret_cast<cudaGraph_t>(0xB000 + cycle));
+    EXPECT_CALL(*cuda_mock_, userObjectCreate(_, _, _, _, _))
+        .WillOnce(DoAll(
+            SetArgPointee<0>(
+                reinterpret_cast<cudaUserObject_t>(0x3000 + cycle)),
+            SaveArg<1>(&cleanup_data),
+            SaveArg<2>(&cleanup_fn),
+            Return(cudaSuccess)));
+
+    {
+      auto work = comm->send(tensor, 1, true);
+    }
+
+    ASSERT_NE(cleanup_fn, nullptr);
+    cleanup_fn(cleanup_data);
+    switchToReplayMode();
+    comm->checkGraphEvents();
+
+    EXPECT_TRUE(freed_pointers.empty())
+        << "hostFree must not run during recapture cycle " << cycle;
+
+    ::testing::Mock::VerifyAndClearExpectations(cuda_mock_.get());
+    cuda_mock_->setupDefaultBehaviors();
+    installHostFreeTracker();
+  }
+
+  EXPECT_EQ(allocated_counters.size(), 1u)
+      << "Pool should serve all recaptures from one allocation";
+
+  // finalize() runs destroyAll() but does not destroy the comm — the pool
+  // drain happens in ~GraphEventTracker, which fires when the comm itself
+  // is destroyed. So no hostFree yet.
+  setupFinalizeExpectations(*comm);
+  installHostFreeTracker(); // setupFinalizeExpectations doesn't touch host*
+  EXPECT_TRUE(freed_pointers.empty())
+      << "hostFree must not run at finalize() — only at comm destruction";
+
+  // Destroy the comm; the pool drains here, releasing pinned counters.
+  comm.reset();
+  EXPECT_GE(freed_pointers.size(), 1u)
+      << "Pool should drain at comm destruction, freeing the pinned "
+         "counter region";
+}
+
 TEST_F(GraphEventTrackerTest, DestroyAllIgnoresReleasedFlag) {
   auto comm = createMockedTorchComm();
   cuda_mock_->setupDefaultBehaviors();
