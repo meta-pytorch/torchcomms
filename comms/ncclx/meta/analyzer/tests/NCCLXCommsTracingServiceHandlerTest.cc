@@ -17,11 +17,9 @@
 #include "comms/analyzer/CommDumpPuller.h"
 #include "comms/analyzer/if/gen-cpp2/CommsTracingService.h"
 #include "comms/analyzer/if/gen-cpp2/CommsTracingService_types_custom_protocol.h"
-#include "comms/mccl/integration_tests/CollectiveIntegrationTestMixin.h"
-#include "comms/mccl/integration_tests/McclIntegrationTestUtil.h"
-#include "comms/mccl/tests/CudaStream.h"
-#include "comms/mccl/tests/CudaTestUtil.h"
+#include "comms/ncclx/meta/tests/ForkBasedTestDriver.h"
 #include "comms/testinfra/TestXPlatUtils.h"
+#include "comms/utils/CudaRAII.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/trainer/TrainerContext.h"
 #include "ftar/DynMemGpuBuffer.h"
@@ -53,6 +51,54 @@ namespace {
 
 using namespace ::testing;
 
+// Fill GPU buffer with a value
+template <typename T>
+void modifyGPUBuffer(
+    size_t numElements,
+    void* data,
+    T value = 1,
+    cudaStream_t stream = nullptr) {
+  std::vector<T> hostData(numElements, value);
+  CUDACHECK(cudaMemcpyAsync(
+      data,
+      hostData.data(),
+      numElements * sizeof(T),
+      cudaMemcpyHostToDevice,
+      stream));
+}
+
+// Validate GPU buffer contains expected value
+template <typename T>
+void validateGPUBuffer(
+    size_t numElements,
+    void* data,
+    T value,
+    cudaStream_t stream = nullptr) {
+  std::vector<T> hostData(numElements, 0);
+  CUDACHECK(cudaMemcpyAsync(
+      hostData.data(),
+      data,
+      numElements * sizeof(T),
+      cudaMemcpyDeviceToHost,
+      stream));
+  for (size_t i = 0; i < numElements; i++) {
+    auto diff = hostData[i] > value ? hostData[i] - value : value - hostData[i];
+    if constexpr (std::is_floating_point_v<T>) {
+      EXPECT_LT(diff, T(1e-5)) << fmt::format(
+          "Validation FAILED expected:{} got:{} position:{}",
+          value,
+          hostData[i],
+          i);
+    } else {
+      EXPECT_EQ(hostData[i], value) << fmt::format(
+          "Validation FAILED expected:{} got:{} position:{}",
+          value,
+          hostData[i],
+          i);
+    }
+  }
+}
+
 // RAII for NCCL Communicator
 class NcclComm {
  public:
@@ -78,7 +124,7 @@ class NcclComm {
   ncclComm_t comm_;
 };
 
-class NcclCommsTest : public mccl::CollectiveIntegrationTestMixin, public Test {
+class NcclCommsTest : public ncclx::test::ForkBasedTestDriver, public Test {
  public:
   void SetUp() override {
     int numRanks = 4;
@@ -95,8 +141,8 @@ class NcclCommsTest : public mccl::CollectiveIntegrationTestMixin, public Test {
     }
     auto portStr = folly::join(",", commsTracingServicePorts);
 
-    mccl::CollectiveIntegrationTestMixin::SetUp(
-        mccl::CollectiveIntegrationTestMixin::Config{
+    ncclx::test::ForkBasedTestDriver::SetUp(
+        ncclx::test::ForkBasedTestDriver::Config{
             .numRanks = numRanks,
             .env =
                 {
@@ -313,9 +359,9 @@ TEST_F(NcclCommsTest, AnalyzerSuccess) {
   int worldSize = getWorldSize();
 
   // Initialize CUDA state
-  auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
+  auto deviceId = ncclx::test::ForkBasedTestDriver::getCudaDeviceId(rank);
   XLOG(INFO) << "CUDA device id: " << deviceId;
-  mccl::cuda::CudaStream stream;
+  meta::comms::CudaStream stream;
 
   // NCCL unique ID must be generated on one node and shared to all
   // others
@@ -324,11 +370,11 @@ TEST_F(NcclCommsTest, AnalyzerSuccess) {
   if (rank == 0) {
     // Rank 0 creates the unique id
     NCCLCHECK(ncclGetUniqueId(&ncclUniqueID));
-    mccl::McclIntegrationTestUtil::setKey(
+    ncclx::test::ForkBasedTestDriver::setKey(
         uniqueIDKey, std::string(ncclUniqueID.internal, NCCL_UNIQUE_ID_BYTES));
   } else {
     // Everyone else waits for it
-    auto value = mccl::McclIntegrationTestUtil::waitForKey(uniqueIDKey);
+    auto value = ncclx::test::ForkBasedTestDriver::waitForKey(uniqueIDKey);
     std::memcpy(ncclUniqueID.internal, value.data(), NCCL_UNIQUE_ID_BYTES);
   }
 
@@ -341,7 +387,7 @@ TEST_F(NcclCommsTest, AnalyzerSuccess) {
   facebook::ftar::DynMemGpuBuffer recvBuff(size * sizeof(float));
 
   // Modify GPU memory
-  mccl::McclIntegrationTestUtil::modifyGPUBuffer<float>(size, sendBuff.raw());
+  modifyGPUBuffer<float>(size, sendBuff.raw());
 
   // Perform all-reduce operation
   NCCLCHECK(ncclAllReduce(
@@ -351,14 +397,13 @@ TEST_F(NcclCommsTest, AnalyzerSuccess) {
       ncclFloat,
       ncclSum,
       comm.raw(),
-      stream.raw()));
-  CUDACHECK(cudaStreamSynchronize(stream.raw()));
+      stream.get()));
+  CUDACHECK(cudaStreamSynchronize(stream.get()));
 
   // Validate the results of the all reduce
-  mccl::McclIntegrationTestUtil::validateGPUBuffer<float>(
-      size, recvBuff.raw(), worldSize);
+  validateGPUBuffer<float>(size, recvBuff.raw(), worldSize);
 
-  mccl::McclIntegrationTestUtil::setKey(
+  ncclx::test::ForkBasedTestDriver::setKey(
       fmt::format("done_with_collective_rank_{}", rank), "1");
 
   // Rank 0 checks state of collectives
@@ -366,7 +411,7 @@ TEST_F(NcclCommsTest, AnalyzerSuccess) {
     // Get comm dump state from all ranks
     for (int i = 0; i < worldSize; ++i) {
       // Wait for the rank to be done with collectives
-      mccl::McclIntegrationTestUtil::waitForKey(
+      ncclx::test::ForkBasedTestDriver::waitForKey(
           fmt::format("done_with_collective_rank_{}", rank));
 
       // Get the comm dump state for each rank
@@ -408,11 +453,11 @@ TEST_F(NcclCommsTest, AnalyzerSuccess) {
         analyzerExpectedResult, std::chrono::milliseconds(10000)));
 
     // Notify other ranks to finish
-    mccl::McclIntegrationTestUtil::setKey("analyzer_check_0", "1");
+    ncclx::test::ForkBasedTestDriver::setKey("analyzer_check_0", "1");
   }
 
   // All ranks wait for the collectives check to complete
-  mccl::McclIntegrationTestUtil::waitForKey("analyzer_check_0");
+  ncclx::test::ForkBasedTestDriver::waitForKey("analyzer_check_0");
 }
 
 // Rank 0 doesn't join the second
@@ -425,9 +470,9 @@ TEST_F(NcclCommsTest, OneRankHangs) {
   int worldSize = getWorldSize();
 
   // Initialize CUDA state
-  auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
+  auto deviceId = ncclx::test::ForkBasedTestDriver::getCudaDeviceId(rank);
   XLOG(INFO) << "CUDA device id: " << deviceId;
-  mccl::cuda::CudaStream stream;
+  meta::comms::CudaStream stream;
 
   // NCCL unique ID must be generated on one node and shared to all
   // others
@@ -436,11 +481,11 @@ TEST_F(NcclCommsTest, OneRankHangs) {
   if (rank == 0) {
     // Rank 0 creates the unique id
     NCCLCHECK(ncclGetUniqueId(&ncclUniqueID));
-    mccl::McclIntegrationTestUtil::setKey(
+    ncclx::test::ForkBasedTestDriver::setKey(
         uniqueIDKey, std::string(ncclUniqueID.internal, NCCL_UNIQUE_ID_BYTES));
   } else {
     // Everyone else waits for it
-    auto value = mccl::McclIntegrationTestUtil::waitForKey(uniqueIDKey);
+    auto value = ncclx::test::ForkBasedTestDriver::waitForKey(uniqueIDKey);
     std::memcpy(ncclUniqueID.internal, value.data(), NCCL_UNIQUE_ID_BYTES);
   }
 
@@ -457,7 +502,7 @@ TEST_F(NcclCommsTest, OneRankHangs) {
 
     ncclxSetIteration(c);
     // Modify GPU memory
-    mccl::McclIntegrationTestUtil::modifyGPUBuffer<float>(size, sendBuff.raw());
+    modifyGPUBuffer<float>(size, sendBuff.raw());
 
     // Rank 0 does not join the last collective
     if (c == 3 && rank == 0) {
@@ -470,12 +515,11 @@ TEST_F(NcclCommsTest, OneRankHangs) {
         ncclFloat,
         ncclSum,
         comm.raw(),
-        stream.raw()));
-    CUDACHECK(cudaStreamSynchronize(stream.raw()));
+        stream.get()));
+    CUDACHECK(cudaStreamSynchronize(stream.get()));
 
     // Validate the results of the all reduce
-    mccl::McclIntegrationTestUtil::validateGPUBuffer<float>(
-        size, recvBuff.raw(), worldSize);
+    validateGPUBuffer<float>(size, recvBuff.raw(), worldSize);
   }
 
   // Rank 0 checks state of collectives
@@ -523,12 +567,11 @@ TEST_F(NcclCommsTest, OneRankHangs) {
         ncclFloat,
         ncclSum,
         comm.raw(),
-        stream.raw()));
-    CUDACHECK(cudaStreamSynchronize(stream.raw()));
+        stream.get()));
+    CUDACHECK(cudaStreamSynchronize(stream.get()));
 
     // Validate the results of the all reduce
-    mccl::McclIntegrationTestUtil::validateGPUBuffer<float>(
-        size, recvBuff.raw(), worldSize);
+    validateGPUBuffer<float>(size, recvBuff.raw(), worldSize);
   }
 }
 
@@ -544,9 +587,9 @@ TEST_F(NcclCommsTest, DISABLED_OneRankHangsCudaGraph) {
   int worldSize = getWorldSize();
 
   // Initialize CUDA state
-  auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
+  auto deviceId = ncclx::test::ForkBasedTestDriver::getCudaDeviceId(rank);
   XLOG(INFO) << "CUDA device id: " << deviceId;
-  mccl::cuda::CudaStream stream;
+  meta::comms::CudaStream stream;
 
   // NCCL unique ID must be generated on one node and shared to all
   // others
@@ -555,11 +598,11 @@ TEST_F(NcclCommsTest, DISABLED_OneRankHangsCudaGraph) {
   if (rank == 0) {
     // Rank 0 creates the unique id
     NCCLCHECK(ncclGetUniqueId(&ncclUniqueID));
-    mccl::McclIntegrationTestUtil::setKey(
+    ncclx::test::ForkBasedTestDriver::setKey(
         uniqueIDKey, std::string(ncclUniqueID.internal, NCCL_UNIQUE_ID_BYTES));
   } else {
     // Everyone else waits for it
-    auto value = mccl::McclIntegrationTestUtil::waitForKey(uniqueIDKey);
+    auto value = ncclx::test::ForkBasedTestDriver::waitForKey(uniqueIDKey);
     std::memcpy(ncclUniqueID.internal, value.data(), NCCL_UNIQUE_ID_BYTES);
   }
 
@@ -573,7 +616,7 @@ TEST_F(NcclCommsTest, DISABLED_OneRankHangsCudaGraph) {
 
   cudaGraph_t graph;
   cudaGraphExec_t instance;
-  CUDACHECK(cudaStreamBeginCapture(stream.raw(), cudaStreamCaptureModeGlobal));
+  CUDACHECK(cudaStreamBeginCapture(stream.get(), cudaStreamCaptureModeGlobal));
   NCCLCHECK(ncclAllReduce(
       (const void*)sendBuff.raw(),
       (void*)recvBuff.raw(),
@@ -581,8 +624,8 @@ TEST_F(NcclCommsTest, DISABLED_OneRankHangsCudaGraph) {
       ncclFloat,
       ncclSum,
       comm.raw(),
-      stream.raw()));
-  CUDACHECK(cudaStreamEndCapture(stream.raw(), &graph));
+      stream.get()));
+  CUDACHECK(cudaStreamEndCapture(stream.get(), &graph));
   CUDACHECK(cudaGraphInstantiate(&instance, graph, NULL, NULL, 0));
 
   for (int c = 0; c < 4; ++c) {
@@ -590,18 +633,17 @@ TEST_F(NcclCommsTest, DISABLED_OneRankHangsCudaGraph) {
 
     ncclxSetIteration(c);
     // Modify GPU memory
-    mccl::McclIntegrationTestUtil::modifyGPUBuffer<float>(size, sendBuff.raw());
+    modifyGPUBuffer<float>(size, sendBuff.raw());
 
     // Rank 0 does not join the last collective
     if (c == 3 && rank == 0) {
       continue;
     }
-    CUDACHECK(cudaGraphLaunch(instance, stream.raw()));
-    CUDACHECK(cudaStreamSynchronize(stream.raw()));
+    CUDACHECK(cudaGraphLaunch(instance, stream.get()));
+    CUDACHECK(cudaStreamSynchronize(stream.get()));
 
     // Validate the results of the all reduce
-    mccl::McclIntegrationTestUtil::validateGPUBuffer<float>(
-        size, recvBuff.raw(), worldSize);
+    validateGPUBuffer<float>(size, recvBuff.raw(), worldSize);
   }
 
   // Rank 0 checks state of collectives
@@ -642,12 +684,11 @@ TEST_F(NcclCommsTest, DISABLED_OneRankHangsCudaGraph) {
         analyzerExpectedResult, std::chrono::milliseconds(20000)));
 
     // Make rank 0 join the collective to unblock the other ranks
-    CUDACHECK(cudaGraphLaunch(instance, stream.raw()));
-    CUDACHECK(cudaStreamSynchronize(stream.raw()));
+    CUDACHECK(cudaGraphLaunch(instance, stream.get()));
+    CUDACHECK(cudaStreamSynchronize(stream.get()));
 
     // Validate the results of the all reduce
-    mccl::McclIntegrationTestUtil::validateGPUBuffer<float>(
-        size, recvBuff.raw(), worldSize);
+    validateGPUBuffer<float>(size, recvBuff.raw(), worldSize);
   }
   CUDACHECK(cudaGraphExecDestroy(instance));
   CUDACHECK(cudaGraphDestroy(graph));
@@ -727,7 +768,7 @@ TEST_F(NcclCommsTest, CollectiveMetadataMismatch) {
   int worldSize = getWorldSize();
 
   // Initialize CUDA state
-  auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
+  auto deviceId = ncclx::test::ForkBasedTestDriver::getCudaDeviceId(rank);
   XLOG(INFO) << "CUDA device id: " << deviceId;
   cudaStream_t stream;
   CUDACHECK_TEST(cudaStreamCreate(&stream));
@@ -739,11 +780,11 @@ TEST_F(NcclCommsTest, CollectiveMetadataMismatch) {
   if (rank == 0) {
     // Rank 0 creates the unique id
     NCCLCHECK(ncclGetUniqueId(&ncclUniqueID));
-    mccl::McclIntegrationTestUtil::setKey(
+    ncclx::test::ForkBasedTestDriver::setKey(
         uniqueIDKey, std::string(ncclUniqueID.internal, NCCL_UNIQUE_ID_BYTES));
   } else {
     // Everyone else waits for it
-    auto value = mccl::McclIntegrationTestUtil::waitForKey(uniqueIDKey);
+    auto value = ncclx::test::ForkBasedTestDriver::waitForKey(uniqueIDKey);
     std::memcpy(ncclUniqueID.internal, value.data(), NCCL_UNIQUE_ID_BYTES);
   }
 
@@ -780,7 +821,7 @@ TEST_F(NcclCommsTest, CollectiveMetadataMismatch) {
   if (rank == 0) {
     // Always make sure notify other ranks before exiting
     auto finishGuard = folly::makeGuard([&comm]() {
-      mccl::McclIntegrationTestUtil::setKey("test_return_baton", "Finished");
+      ncclx::test::ForkBasedTestDriver::setKey("test_return_baton", "Finished");
     });
     // Wait for analyzer to report rank 0 is missing
     PullOneJobResult analyzerExpectedResult{
@@ -792,7 +833,7 @@ TEST_F(NcclCommsTest, CollectiveMetadataMismatch) {
 
   } else {
     // Wait for analyzer from rank 0 from returning
-    mccl::McclIntegrationTestUtil::waitForKey("test_return_baton");
+    ncclx::test::ForkBasedTestDriver::waitForKey("test_return_baton");
   }
   XLOG(INFO) << "Test finished, start to abort NCCL comm";
 }
@@ -809,7 +850,7 @@ TEST_F(NcclCommsTest, CollectiveCircularDependency) {
   int worldSize = getWorldSize();
 
   // Initialize CUDA state
-  auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
+  auto deviceId = ncclx::test::ForkBasedTestDriver::getCudaDeviceId(rank);
   XLOG(INFO) << "CUDA device id: " << deviceId;
 
   // cudaGraph_t graph;
@@ -826,18 +867,18 @@ TEST_F(NcclCommsTest, CollectiveCircularDependency) {
   if (rank == 0) {
     // Rank 0 creates the unique id
     NCCLCHECK(ncclGetUniqueId(&ncclUniqueID1));
-    mccl::McclIntegrationTestUtil::setKey(
+    ncclx::test::ForkBasedTestDriver::setKey(
         uniqueIDKey1,
         std::string(ncclUniqueID1.internal, NCCL_UNIQUE_ID_BYTES));
     NCCLCHECK(ncclGetUniqueId(&ncclUniqueID2));
-    mccl::McclIntegrationTestUtil::setKey(
+    ncclx::test::ForkBasedTestDriver::setKey(
         uniqueIDKey2,
         std::string(ncclUniqueID2.internal, NCCL_UNIQUE_ID_BYTES));
   } else {
     // Everyone else waits for it
-    auto value1 = mccl::McclIntegrationTestUtil::waitForKey(uniqueIDKey1);
+    auto value1 = ncclx::test::ForkBasedTestDriver::waitForKey(uniqueIDKey1);
     std::memcpy(ncclUniqueID1.internal, value1.data(), NCCL_UNIQUE_ID_BYTES);
-    auto value2 = mccl::McclIntegrationTestUtil::waitForKey(uniqueIDKey2);
+    auto value2 = ncclx::test::ForkBasedTestDriver::waitForKey(uniqueIDKey2);
     std::memcpy(ncclUniqueID2.internal, value2.data(), NCCL_UNIQUE_ID_BYTES);
     ASSERT_NE(
         strncmp(
@@ -931,7 +972,7 @@ TEST_F(NcclCommsTest, CollectiveCircularDependency) {
   if (rank == 0) {
     // Always make sure notify other ranks before exiting
     auto finishGuard = folly::makeGuard([]() {
-      mccl::McclIntegrationTestUtil::setKey("test_return_baton", "Finished");
+      ncclx::test::ForkBasedTestDriver::setKey("test_return_baton", "Finished");
     });
     // Wait for analyzer to report rank 0 is missing
     PullOneJobResult analyzerExpectedResult{
@@ -943,7 +984,7 @@ TEST_F(NcclCommsTest, CollectiveCircularDependency) {
 
   } else {
     // Wait for analyzer from rank 0 from returning
-    mccl::McclIntegrationTestUtil::waitForKey("test_return_baton");
+    ncclx::test::ForkBasedTestDriver::waitForKey("test_return_baton");
   }
   XLOG(INFO) << "Test finished, start to abort NCCL comm";
 }

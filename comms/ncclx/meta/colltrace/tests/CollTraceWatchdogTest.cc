@@ -8,10 +8,8 @@
 #include "comm.h" // @manual
 #include "nccl.h" // @manual
 
-#include "comms/mccl/integration_tests/CollectiveIntegrationTestMixin.h"
-#include "comms/mccl/integration_tests/McclIntegrationTestUtil.h"
-#include "comms/mccl/tests/CudaStream.h"
-#include "comms/mccl/tests/CudaTestUtil.h"
+#include "comms/ncclx/meta/tests/ForkBasedTestDriver.h"
+#include "comms/utils/CudaRAII.h"
 #include "comms/utils/colltrace/tests/nvidia-only/CPUControlledKernel.h"
 #include "ftar/DynMemGpuBuffer.h"
 
@@ -42,12 +40,12 @@ class NcclComm {
     if (globalRank == 0) {
       // Rank 0 creates the unique id
       NCCLCHECK_FATAL(ncclGetUniqueId(&ncclUniqueID));
-      mccl::McclIntegrationTestUtil::setKey(
+      ncclx::test::ForkBasedTestDriver::setKey(
           uniqueIDKey,
           std::string(ncclUniqueID.internal, NCCL_UNIQUE_ID_BYTES));
     } else {
       // Everyone else waits for it
-      auto value = mccl::McclIntegrationTestUtil::waitForKey(uniqueIDKey);
+      auto value = ncclx::test::ForkBasedTestDriver::waitForKey(uniqueIDKey);
       std::memcpy(ncclUniqueID.internal, value.data(), NCCL_UNIQUE_ID_BYTES);
     }
     NCCLCHECK_FATAL(
@@ -90,14 +88,14 @@ void waitStreamWithTimeout(
   FAIL() << "Wait Stream did not complete within timeout";
 }
 
-class CollTraceWatchdogTest : public mccl::CollectiveIntegrationTestMixin,
+class CollTraceWatchdogTest : public ncclx::test::ForkBasedTestDriver,
                               public ::testing::Test {
  public:
   void SetUp() override {
     int numRanks = 4;
 
-    mccl::CollectiveIntegrationTestMixin::SetUp(
-        mccl::CollectiveIntegrationTestMixin::Config{
+    ncclx::test::ForkBasedTestDriver::SetUp(
+        ncclx::test::ForkBasedTestDriver::Config{
             .numRanks = numRanks,
             .shouldExitOnFailure = false,
             .env =
@@ -130,12 +128,11 @@ class CollTraceWatchdogTest : public mccl::CollectiveIntegrationTestMixin,
   void testDriverCheckSucceed() {
     ASSERT_TRUE(
         std::holds_alternative<
-            mccl::CollectiveIntegrationTestMixin::TestDriverState>(
-            this->state_));
+            ncclx::test::ForkBasedTestDriver::TestDriverState>(this->state_));
     auto& testDriverState =
-        std::get<mccl::CollectiveIntegrationTestMixin::TestDriverState>(
+        std::get<ncclx::test::ForkBasedTestDriver::TestDriverState>(
             this->state_);
-    // Check that all ranks exited with non-zero exit code
+    // Check that all ranks exited with zero exit code
     EXPECT_THAT(
         testDriverState.workerExitCodes, ::testing::Each(::testing::Eq(0)));
   }
@@ -143,10 +140,9 @@ class CollTraceWatchdogTest : public mccl::CollectiveIntegrationTestMixin,
   void testDriverCheckCrashedWithWatchdog() {
     ASSERT_TRUE(
         std::holds_alternative<
-            mccl::CollectiveIntegrationTestMixin::TestDriverState>(
-            this->state_));
+            ncclx::test::ForkBasedTestDriver::TestDriverState>(this->state_));
     auto& testDriverState =
-        std::get<mccl::CollectiveIntegrationTestMixin::TestDriverState>(
+        std::get<ncclx::test::ForkBasedTestDriver::TestDriverState>(
             this->state_);
     // Check that all ranks exited with non-zero exit code
     EXPECT_THAT(
@@ -165,7 +161,7 @@ class CollTraceWatchdogTest : public mccl::CollectiveIntegrationTestMixin,
 
 class NcclAllReduce {
  public:
-  NcclAllReduce(ncclComm_t comm, mccl::cuda::CudaStream& stream, int64_t size)
+  NcclAllReduce(ncclComm_t comm, meta::comms::CudaStream& stream, int64_t size)
       : sendBuff_(size * sizeof(float)), recvBuff_(size * sizeof(float)) {
     NCCLCHECK_FATAL(ncclAllReduce(
         (const void*)sendBuff_.raw(),
@@ -174,7 +170,7 @@ class NcclAllReduce {
         ncclFloat,
         ncclSum,
         comm,
-        stream.raw()));
+        stream.get()));
   }
 
  private:
@@ -196,9 +192,9 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorFromGPE) {
           "ncclx.colltrace.crashOnAsyncError", folly::to<std::string>(true)));
 
   // Initialize CUDA state
-  auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
+  auto deviceId = ncclx::test::ForkBasedTestDriver::getCudaDeviceId(rank);
   XLOG(INFO) << "CUDA device id: " << deviceId;
-  mccl::cuda::CudaStream stream;
+  meta::comms::CudaStream stream;
 
   // Initialize NCCL communicator
   NcclComm comm(worldSize, rank);
@@ -226,13 +222,13 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorFromGPE) {
   NCCLCHECK_FATAL(
 #if NCCL_MINOR >= 29
       ncclx::ncclPutSignal(
-          sendBuff, 32, ncclFloat, dstRank, 0, win, stream.raw()));
-  NCCLCHECK_FATAL(ncclx::ncclWaitSignal(srcRank, win, stream.raw()));
+          sendBuff, 32, ncclFloat, dstRank, 0, win, stream.get()));
+  NCCLCHECK_FATAL(ncclx::ncclWaitSignal(srcRank, win, stream.get()));
 #else
-      ncclPutSignal(sendBuff, 32, ncclFloat, dstRank, 0, win, stream.raw()));
-  NCCLCHECK_FATAL(ncclWaitSignal(srcRank, win, stream.raw()));
+      ncclPutSignal(sendBuff, 32, ncclFloat, dstRank, 0, win, stream.get()));
+  NCCLCHECK_FATAL(ncclWaitSignal(srcRank, win, stream.get()));
 #endif
-  waitStreamWithTimeout(stream.raw(), std::chrono::seconds{80});
+  waitStreamWithTimeout(stream.get(), std::chrono::seconds{80});
 }
 
 TEST_F(CollTraceWatchdogTest, TestAsyncErrorWithGenericAsyncError) {
@@ -249,12 +245,12 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorWithGenericAsyncError) {
           "ncclx.colltrace.crashOnAsyncError", folly::to<std::string>(true)));
 
   // Initialize CUDA state
-  auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
+  auto deviceId = ncclx::test::ForkBasedTestDriver::getCudaDeviceId(rank);
   XLOG(INFO) << "CUDA device id: " << deviceId;
 
   // Initialize NCCL communicator
   NcclComm comm(worldSize, rank);
-  mccl::cuda::CudaStream stream;
+  meta::comms::CudaStream stream;
 
   // Ensure we are using new colltrace
   ASSERT_NE(comm.raw()->newCollTrace, nullptr);
@@ -263,7 +259,7 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorWithGenericAsyncError) {
 
   ncclCommSetAsyncError(comm.raw(), ncclInternalError);
 
-  waitStreamWithTimeout(stream.raw(), std::chrono::seconds{20});
+  waitStreamWithTimeout(stream.get(), std::chrono::seconds{20});
 
   // Wait for sufficiently long for watchdog to stop waiting and exit
   sleep(70);
@@ -290,12 +286,12 @@ TEST_F(CollTraceWatchdogTest, TestTimeoutBeforeColl) {
           folly::to<std::string>(timeoutSec.count() * 1000)));
 
   // Initialize CUDA state
-  auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
+  auto deviceId = ncclx::test::ForkBasedTestDriver::getCudaDeviceId(rank);
   XLOG(INFO) << "CUDA device id: " << deviceId;
 
   // Initialize NCCL communicator
   NcclComm comm(worldSize, rank);
-  mccl::cuda::CudaStream stream;
+  meta::comms::CudaStream stream;
 
   // Ensure we are using new colltrace
   ASSERT_NE(comm.raw()->newCollTrace, nullptr);
@@ -303,9 +299,9 @@ TEST_F(CollTraceWatchdogTest, TestTimeoutBeforeColl) {
   // Need a have an allReduce here to trigger pre-connect
   NcclAllReduce initAllReduce(comm.raw(), stream, 32);
 
-  waitStreamWithTimeout(stream.raw(), std::chrono::seconds{20});
+  waitStreamWithTimeout(stream.get(), std::chrono::seconds{20});
 
-  meta::comms::colltrace::CPUControlledKernel kernel(stream.raw());
+  meta::comms::colltrace::CPUControlledKernel kernel(stream.get());
   // Insert a kernel before the collective kernel in the stream;
   kernel.launch();
 
@@ -341,12 +337,12 @@ TEST_F(CollTraceWatchdogTest, TestTimeoutInColl) {
           folly::to<std::string>(timeoutSec.count() * 1000)));
 
   // Initialize CUDA state
-  auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
+  auto deviceId = ncclx::test::ForkBasedTestDriver::getCudaDeviceId(rank);
   XLOG(INFO) << "CUDA device id: " << deviceId;
 
   // Initialize NCCL communicator
   NcclComm comm(worldSize, rank);
-  mccl::cuda::CudaStream stream;
+  meta::comms::CudaStream stream;
 
   // Ensure we are using new colltrace
   ASSERT_NE(comm.raw()->newCollTrace, nullptr);
@@ -354,7 +350,7 @@ TEST_F(CollTraceWatchdogTest, TestTimeoutInColl) {
   // Need a have an allReduce here to trigger pre-connect
   NcclAllReduce initAllReduce(comm.raw(), stream, 32);
 
-  waitStreamWithTimeout(stream.raw(), std::chrono::seconds{20});
+  waitStreamWithTimeout(stream.get(), std::chrono::seconds{20});
 
   if (rank != 0) {
     // Sleep long enough to make other ranks timeout
@@ -390,12 +386,12 @@ TEST_F(CollTraceWatchdogTest, TestBelowTimeoutInColl) {
           folly::to<std::string>(timeoutSec.count() * 1000)));
 
   // Initialize CUDA state
-  auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
+  auto deviceId = ncclx::test::ForkBasedTestDriver::getCudaDeviceId(rank);
   XLOG(INFO) << "CUDA device id: " << deviceId;
 
   // Initialize NCCL communicator
   NcclComm comm(worldSize, rank);
-  mccl::cuda::CudaStream stream;
+  meta::comms::CudaStream stream;
 
   // Ensure we are using new colltrace
   ASSERT_NE(comm.raw()->newCollTrace, nullptr);
@@ -403,7 +399,7 @@ TEST_F(CollTraceWatchdogTest, TestBelowTimeoutInColl) {
   // Need a have an allReduce here to trigger pre-connect
   NcclAllReduce initAllReduce(comm.raw(), stream, 32);
 
-  waitStreamWithTimeout(stream.raw(), std::chrono::seconds{20});
+  waitStreamWithTimeout(stream.get(), std::chrono::seconds{20});
 
   if (rank != 0) {
     // Sleep shortly, but longer than how long we slept for small timeout case
@@ -414,7 +410,7 @@ TEST_F(CollTraceWatchdogTest, TestBelowTimeoutInColl) {
     std::this_thread::sleep_for(std::chrono::seconds{10});
   }
 
-  waitStreamWithTimeout(stream.raw(), std::chrono::seconds{20});
+  waitStreamWithTimeout(stream.get(), std::chrono::seconds{20});
 }
 
 TEST_F(CollTraceWatchdogTest, TestBelowTimeoutBeforeColl) {
@@ -438,12 +434,12 @@ TEST_F(CollTraceWatchdogTest, TestBelowTimeoutBeforeColl) {
           folly::to<std::string>(timeoutSec.count() * 1000)));
 
   // Initialize CUDA state
-  auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
+  auto deviceId = ncclx::test::ForkBasedTestDriver::getCudaDeviceId(rank);
   XLOG(INFO) << "CUDA device id: " << deviceId;
 
   // Initialize NCCL communicator
   NcclComm comm(worldSize, rank);
-  mccl::cuda::CudaStream stream;
+  meta::comms::CudaStream stream;
 
   // Ensure we are using new colltrace
   ASSERT_NE(comm.raw()->newCollTrace, nullptr);
@@ -451,9 +447,9 @@ TEST_F(CollTraceWatchdogTest, TestBelowTimeoutBeforeColl) {
   // Need a have an allReduce here to trigger pre-connect
   NcclAllReduce initAllReduce(comm.raw(), stream, 32);
 
-  waitStreamWithTimeout(stream.raw(), std::chrono::seconds{20});
+  waitStreamWithTimeout(stream.get(), std::chrono::seconds{20});
 
-  meta::comms::colltrace::CPUControlledKernel kernel(stream.raw());
+  meta::comms::colltrace::CPUControlledKernel kernel(stream.get());
   // Insert a kernel before the collective kernel in the stream;
   kernel.launch();
 
@@ -462,5 +458,5 @@ TEST_F(CollTraceWatchdogTest, TestBelowTimeoutBeforeColl) {
   std::this_thread::sleep_for(std::chrono::seconds{10});
   kernel.endKernel();
 
-  waitStreamWithTimeout(stream.raw(), std::chrono::seconds{20});
+  waitStreamWithTimeout(stream.get(), std::chrono::seconds{20});
 }
