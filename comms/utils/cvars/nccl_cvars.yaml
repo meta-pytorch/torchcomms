@@ -2391,6 +2391,34 @@ cvars:
      The default value is 10 minutes. The gloalhint from the user program takes
      precedence over this env var for the actual time colltrace will wait.
 
+ - name        : NCCL_COLLTRACE_PERIODIC_REANCHOR
+   type        : bool
+   default     : False
+   description : |-
+     When true, the colltrace poll thread periodically (~1 Hz) re-records the
+     GPU-time ↔ wall-clock anchors used by graph mode (GlobaltimerCalibration)
+     and eager mode (CudaReferencePoint) to bound drift between the GPU's
+     oscillator and PTP-aligned wall time below ~100 ns at 100 ppm. When
+     false (default), each anchor is taken once at construction and never
+     refreshed; long-running jobs accumulate ~36–360 ms/hour of drift. The
+     refresh path issues CUDA calls from the colltrace thread; this flag
+     exists so deployments that have observed CUDA-on-non-main-thread hangs
+     can disable the feature without rebuilding.
+
+ - name        : NCCL_COLLTRACE_FATAL_ON_CALIBRATION_FAILURE
+   type        : bool
+   default     : True
+   description : |-
+     When true (default), GlobaltimerCalibration's constructor crashes via
+     XLOG(FATAL) if the initial CUDA-side anchor read fails — without a
+     valid anchor, graph-mode timestamps would map to ~50 years before the
+     UNIX epoch, which is worse than crashing. When false, the failure is
+     logged at ERROR severity, the anchor is left at its default state,
+     and the periodic refresh thread (gated on NCCL_COLLTRACE_PERIODIC_REANCHOR)
+     gets a chance to populate it later. Until refresh succeeds, graph-mode
+     timestamps will be near the UNIX epoch and a rate-limited warning is
+     emitted on each toWallClock() call.
+
  - name        : NCCL_MAPPERTRACE_COLL_RECORD_MAX
    type        : uint64_t
    default     : 20
