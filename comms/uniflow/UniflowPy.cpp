@@ -188,7 +188,11 @@ PYBIND11_MODULE(_core, m) {
       .def("has_error", &PyResult::hasError, "True if the result has an error.")
       .def("__bool__", &PyResult::hasValue)
       .def("value", &PyResult::value, "Get the value, or raise if error.")
-      .def("error", &PyResult::error, "Get the Err, or raise if value.");
+      .def("error", &PyResult::error, "Get the Err, or raise if value.")
+      .def(
+          "unwrap",
+          &PyResult::value,
+          "Pythonic alias for value(): returns the value or raises if error.");
 
   // ---------------------------------------------------------------------------
   // Segment

@@ -123,3 +123,24 @@ class TestTypesAndSegment(unittest.TestCase):
         self.assertTrue(result)
         with self.assertRaises(RuntimeError):
             result.error()
+
+    @unittest.skipUnless(_HAS_GPU, "Requires GPU")
+    def test_result_unwrap_returns_value(self) -> None:
+        from uniflow._core import UniflowAgent, UniflowAgentConfig
+
+        config = UniflowAgentConfig(device_id=0, name="test", listen_address="*:0")
+        agent = UniflowAgent(config)
+        result = agent.get_unique_id()
+
+        self.assertEqual(result.unwrap(), result.value())
+
+    @unittest.skipUnless(_HAS_GPU, "Requires GPU")
+    def test_result_unwrap_raises_on_error(self) -> None:
+        from uniflow._core import UniflowAgent, UniflowAgentConfig
+
+        config = UniflowAgentConfig(device_id=0, name="test", listen_address="*:0")
+        agent = UniflowAgent(config)
+        result = agent.connect("127.0.0.1:1")
+
+        with self.assertRaises(RuntimeError):
+            result.unwrap()
