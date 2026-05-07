@@ -815,20 +815,28 @@ def main():
         if cvar["type"] == "bool":
             allcvars.append(bool(cvar))
         elif cvar["type"] == "string":
+            # pyrefly: ignore [bad-argument-type]
             allcvars.append(string(cvar))
         elif cvar["type"] == "stringlist":
+            # pyrefly: ignore [bad-argument-type]
             allcvars.append(stringlist(cvar))
         elif cvar["type"] == "enum":
+            # pyrefly: ignore [bad-argument-type]
             allcvars.append(enum(cvar))
         elif cvar["type"] == "enumlist":
+            # pyrefly: ignore [bad-argument-type]
             allcvars.append(enumlist(cvar))
         elif cvar["type"] == "prefixed_stringlist":
+            # pyrefly: ignore [bad-argument-type]
             allcvars.append(prefixedStringlist(cvar))
         elif cvar["type"] == "double":
+            # pyrefly: ignore [bad-argument-type]
             allcvars.append(double(cvar))
         elif cvar["type"] == "dictlist":
+            # pyrefly: ignore [bad-argument-type]
             allcvars.append(dictlist(cvar))
         else:
+            # pyrefly: ignore [bad-argument-type]
             allcvars.append(numeric(cvar))
 
     append_unit_test_cvars(allcvars)

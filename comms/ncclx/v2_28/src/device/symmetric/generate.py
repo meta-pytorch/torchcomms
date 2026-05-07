@@ -37,9 +37,12 @@ class Rec(object):
   def __init__(me, **kw):
     me.__dict__.update(kw)
   def __eq__(x, y):
+    # pyrefly: ignore [bad-argument-type]
     if len(x) != len(y): return False
+    # pyrefly: ignore [not-iterable]
     for k in x:
       if k not in y: return False
+      # pyrefly: ignore [bad-index]
       if x[k] != y[k]: return False
     return True
   def __hash__(me):

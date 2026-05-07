@@ -66,6 +66,7 @@ class TestCudaInit(unittest.TestCase):
             print(f"\nTesting start method: {start_method}")
             ctx = mp.get_context(start_method)
             device_id = 0
+            # pyrefly: ignore [missing-attribute]
             process = ctx.Process(target=child_process_func, args=(device_id,))
 
             process.start()
