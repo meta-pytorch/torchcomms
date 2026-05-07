@@ -18,6 +18,27 @@ void test_ll_send_recv(
     int num_blocks,
     int block_size);
 
+/// Test LL forward: read from local LL buf, forward to remote, copy to dst.
+void test_ll_forward(
+    char* dst_d,
+    size_t nbytes,
+    comms::pipes::LlLine* local_ll_buf,
+    comms::pipes::LlLine* remote_ll_buf,
+    int num_blocks,
+    int block_size);
+
+/// Test LL multi-step send→forward→recv pipeline.
+void test_ll_multi_step_forward(
+    const char* src_d,
+    char* fwd_dst_d,
+    char* recv_dst_d,
+    size_t nbytes,
+    comms::pipes::LlLine* ll_buf_a,
+    comms::pipes::LlLine* ll_buf_b,
+    int num_steps,
+    int num_blocks,
+    int block_size);
+
 /// Test LL multi-step send/recv on the same buffer.
 void test_ll_multi_step_send_recv(
     const char* src_d,
@@ -55,6 +76,19 @@ void test_ll_varying_data_multi_step_send_recv(
     char* dst_d,
     size_t nbytes,
     comms::pipes::LlLine* ll_buf,
+    size_t buffer_num_lines,
+    int num_steps,
+    int num_blocks,
+    int block_size);
+
+/// Test LL varying-data multi-step send→forward→recv pipeline.
+void test_ll_varying_data_multi_step_forward(
+    const char* src_d,
+    char* fwd_dst_d,
+    char* recv_dst_d,
+    size_t nbytes,
+    comms::pipes::LlLine* ll_buf_a,
+    comms::pipes::LlLine* ll_buf_b,
     size_t buffer_num_lines,
     int num_steps,
     int num_blocks,
