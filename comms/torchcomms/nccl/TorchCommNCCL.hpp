@@ -387,6 +387,7 @@ class TorchCommNCCL : public TorchCommBackend,
   at::Device device_;
   int comm_size_{};
   int rank_{};
+  int64_t uuid_{-1};
   CommOptions options_;
   size_t max_event_pool_size_{};
   cudaStream_t internal_stream_{};
