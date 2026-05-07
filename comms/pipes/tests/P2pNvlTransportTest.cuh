@@ -120,6 +120,18 @@ void testPutWithSignal(
     int blockSize,
     GroupType groupType = GroupType::WARP);
 
+// forward_group: fused recv-and-forward (reads from predecessor staging buffer,
+// writes to local dst and successor's remote staging buffer simultaneously)
+void testForward(
+    P2pNvlTransportDevice* pred,
+    P2pNvlTransportDevice* succ,
+    void* dst_d,
+    size_t nbytes,
+    int numBlocks,
+    int blockSize,
+    GroupType groupType = GroupType::WARP,
+    cudaStream_t stream = nullptr);
+
 // Test wait() - one-sided wait for peer to write to dst_d and signal
 void testWait(
     P2pNvlTransportDevice* p2p,
