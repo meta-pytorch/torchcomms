@@ -348,6 +348,7 @@ class TorchCommTestWrapper:
         """Clean up resources."""
         if hasattr(self, "torchcomm") and self.torchcomm:
             self.torchcomm.finalize()
+            # pyrefly: ignore [bad-assignment]
             self.torchcomm = None
 
     def get_torchcomm(self):

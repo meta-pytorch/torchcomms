@@ -72,12 +72,15 @@ def _create_torchcomm_process_group(
     # Register backend
     # pyre-fixme[6]: BackendWrapper implements dist.Backend but types isn't aware
     pg._register_backend(comm.get_device(), backend_type, wrapper)
+    # pyrefly: ignore [bad-argument-type]
     pg._set_group_name(group_name)
 
     # Update global state
     dist.distributed_c10d._world.pg_map[pg] = (backend_str, dummy_store)
+    # pyrefly: ignore [unsupported-operation]
     dist.distributed_c10d._world.pg_names[pg] = group_name
     dist.distributed_c10d._world.pg_backend_config[pg] = str(backend_config)
+    # pyrefly: ignore [bad-argument-type]
     dist.distributed_c10d._register_process_group(group_name, pg)
 
     # Set up rank mapping
@@ -168,6 +171,7 @@ def init_device_mesh(
         _init_backend=False,
         _rank=global_rank,
     )
+    # pyrefly: ignore [bad-assignment]
     device_mesh._dim_group_names = group_names
 
     return device_mesh
@@ -222,6 +226,7 @@ def _flatten_with_comm(
             _rank=comm.get_rank(),
             _layout=coalesced_layout,
         )
+    # pyrefly: ignore [bad-assignment]
     flattened_device_mesh._dim_group_names = [mesh_dim_name]
 
     try:

@@ -28,6 +28,7 @@ class LazySetupChannelsTest(unittest.TestCase):
 
     def tearDown(self):
         self.torchcomm_lazy = None
+        # pyrefly: ignore [bad-assignment]
         self.wrapper_lazy = None
 
     def test_lazy_setup_channels_split_allreduce(self):

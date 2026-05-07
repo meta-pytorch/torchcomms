@@ -233,6 +233,7 @@ class AllToAllTest(unittest.TestCase):
                 tensor = torch.ones(count, **options) * int(self.rank + 1)
             elif dtype == torch.int8:
                 tensor = torch.ones(count, **options) * int(self.rank + 1)
+            # pyrefly: ignore [unbound-name]
             input_tensors.append(tensor)
 
         return input_tensors

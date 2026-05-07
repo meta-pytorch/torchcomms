@@ -50,6 +50,7 @@ class TPCommTest(unittest.TestCase):
             dist_param = dist_param.grad if compare_grad else dist_param
             if (
                 (not rank0_only)
+                # pyrefly: ignore [missing-attribute]
                 or (self.rank == 0)
                 or (
                     name not in ["net2.bias"]

@@ -378,11 +378,13 @@ class BatchSendRecvTest(unittest.TestCase):
             description = f"recv rank {recv_rank} tensor {i}"
             if dtype == torch.float:
                 self.assertTrue(
+                    # pyrefly: ignore [unbound-name]
                     torch.allclose(recv_tensor.cpu(), expected),
                     f"Tensors not close enough for {description}",
                 )
             else:
                 self.assertTrue(
+                    # pyrefly: ignore [unbound-name]
                     torch.equal(recv_tensor.cpu(), expected),
                     f"Tensors not equal for {description}",
                 )
