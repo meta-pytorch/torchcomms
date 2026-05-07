@@ -133,6 +133,7 @@ class ReconfigureTest(unittest.TestCase):
             torchcomms.new_comm(
                 self.backend,
                 self.device,
+                # pyrefly: ignore [bad-argument-type]
                 "test_reconfigure_unsupported",
                 enable_reconfigure=True,
             )
@@ -152,6 +153,7 @@ class ReconfigureTest(unittest.TestCase):
         comm = torchcomms.new_comm(
             self.backend,
             self.device,
+            # pyrefly: ignore [bad-argument-type]
             "reconfigure_basic",
             enable_reconfigure=True,
             store=self._get_store_for_comm(),
@@ -192,6 +194,7 @@ class ReconfigureTest(unittest.TestCase):
         comm = torchcomms.new_comm(
             self.backend,
             self.device,
+            # pyrefly: ignore [bad-argument-type]
             "reconfigure_unordered",
             enable_reconfigure=True,
             store=self._get_store_for_comm(),
@@ -229,6 +232,7 @@ class ReconfigureTest(unittest.TestCase):
         comm = torchcomms.new_comm(
             self.backend,
             self.device,
+            # pyrefly: ignore [bad-argument-type]
             "reconfigure_collective",
             enable_reconfigure=True,
             store=self._get_store_for_comm(),
@@ -289,6 +293,7 @@ class ReconfigureTest(unittest.TestCase):
         comm = torchcomms.new_comm(
             self.backend,
             self.device,
+            # pyrefly: ignore [bad-argument-type]
             "reconfigure_allreduce",
             enable_reconfigure=True,
             store=self._get_store_for_comm(),

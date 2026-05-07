@@ -47,6 +47,7 @@ class ProfilerKinetoOverheadTest(unittest.TestCase):
         # Finalize the TorchComm object to ensure proper cleanup
         if self.torchcomm:
             self.torchcomm.finalize()
+            # pyrefly: ignore [bad-assignment]
             self.torchcomm = None
 
     def _sanity_check_profiler_ncclx_meta(self, ncclx_meta_events):

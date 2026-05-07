@@ -175,6 +175,7 @@ class BroadcastTest(unittest.TestCase):
             for _ in range(self.num_replays):
                 # Reset tensor before each replay (non-root ranks need fresh data)
                 if self.rank != root_rank:
+                    # pyrefly: ignore [unbound-name]
                     tensor.copy_(original_tensor)
 
                 graph.replay()
