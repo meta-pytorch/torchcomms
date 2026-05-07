@@ -155,19 +155,7 @@ std::unique_ptr<ncclx::CommStateX> createCtranCommStateXFromNcclComm(
       std::vector<ncclx::RankTopology>(), /* rankTopologies */
       std::vector<int>() /* commRanksToWorldRanks */);
 
-  if (NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::nolocal) {
-    commStateX->initRankTopologyNolocal();
-  } else if (NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::vnode) {
-    FB_CHECKABORT(
-        ncclComm->nRanks >= NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS,
-        "CommStateX: NCCL_COMM_STATE_DEBUG_TOPO::vnode initialize failed because number of available ranks (%d) is less than nLocalRanks per vnode (NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS=%d).",
-        ncclComm->nRanks,
-        NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS);
-    commStateX->initRankTopologyVnode(
-        NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS);
-  } else {
-    commStateX->initRankStatesTopology(ctranComm->bootstrap_.get());
-  }
+  commStateX->initRankStatesTopology(ctranComm->bootstrap_.get());
 
   INFO(
       NCCL_INIT | NCCL_GRAPH,
