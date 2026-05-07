@@ -71,12 +71,16 @@ class SweepConfig:
 
     def __post_init__(self) -> None:
         if self.msg_sizes is None:
+            # pyrefly: ignore [bad-assignment]
             self.msg_sizes = list(_DEFAULT_MSG_SIZES)
         if self.blocks_per_peer_values is None:
+            # pyrefly: ignore [bad-assignment]
             self.blocks_per_peer_values = list(_DEFAULT_BPP)
         if self.num_warps_values is None:
+            # pyrefly: ignore [bad-assignment]
             self.num_warps_values = list(_DEFAULT_WARPS)
         if self.chunk_size_values is None:
+            # pyrefly: ignore [bad-assignment]
             self.chunk_size_values = list(_DEFAULT_CHUNKS)
 
 
@@ -252,6 +256,7 @@ class IBAutoTuneSweep:
                 recv_offsets,
                 dst_offsets,
                 self.dev_win_ptr,
+                # pyrefly: ignore [bad-argument-type]
                 self.src_info,
                 self.rank,
                 self.num_ranks,
@@ -279,6 +284,7 @@ class IBAutoTuneSweep:
                         recv_offsets,
                         dst_offsets,
                         self.dev_win_ptr,
+                        # pyrefly: ignore [bad-argument-type]
                         self.src_info,
                         self.rank,
                         self.num_ranks,

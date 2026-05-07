@@ -143,6 +143,7 @@ class PutBwOp:
             )
 
         # Increment iteration counter for monotonic signal tracking
+        # pyrefly: ignore [unexpected-keyword]
         _increment_iteration_kernel[(1,)](self._iteration, num_warps=1)
 
     def _call_fireforget(

@@ -70,6 +70,7 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
         """Set up test environment before each test."""
         # NCCLX alltoallvDynamic requires NCCL_CTRAN_ENABLE=1
         os.environ["NCCL_CTRAN_ENABLE"] = "1"
+        # pyrefly: ignore [missing-attribute]
         if self.use_ib:
             os.environ["NCCL_COMM_STATE_DEBUG_TOPO"] = "nolocal"
         self.wrapper = self.get_wrapper()

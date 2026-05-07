@@ -262,6 +262,7 @@ class ScatterTest(unittest.TestCase):
                 tensor = torch.ones(count, **options) * int(i + 1)
             elif dtype == torch.int8:
                 tensor = torch.ones(count, **options) * int(i + 1)
+            # pyrefly: ignore [unbound-name]
             inputs.append(tensor)
 
         return inputs

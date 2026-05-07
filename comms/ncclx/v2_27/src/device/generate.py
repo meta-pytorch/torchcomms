@@ -68,6 +68,7 @@ if func_pattern and func_pattern[0]:
   func_pattern = func_pattern.replace("*", "[^ ]*")
   func_pattern += "$"
   def func_filter(*fn):
+    # pyrefly: ignore [no-matching-overload]
     return None is not re.match(func_pattern, paste(" ", *fn), flags=re.IGNORECASE)
 else:
   def func_filter(coll, redop, ty, algo, proto):

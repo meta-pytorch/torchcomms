@@ -249,6 +249,7 @@ class ReduceScatterVTest(unittest.TestCase):
                 tensor = torch.ones(element_count, **options) * int(r + 1)
             elif dtype == torch.int8:
                 tensor = torch.ones(element_count, **options) * int(r + 1)
+            # pyrefly: ignore [unbound-name]
             input_tensors.append(tensor)
 
         return input_tensors

@@ -88,6 +88,7 @@ class ProfilerTestBase(unittest.TestCase):
     def tearDown(self):
         """Clean up after each test."""
         if hasattr(self, "torchcomm") and self.torchcomm:
+            # pyrefly: ignore [bad-assignment]
             self.torchcomm = None
 
     def sanity_check_profiler_meta(self, meta_events):

@@ -1391,6 +1391,7 @@ class TestOpMultiIterDifferentContentPackedGraphLoop(_OpTestBase):
                 graph_stream.synchronize()
 
                 # Clone output after this replay
+                # pyrefly: ignore [unbound-name]
                 replay_output = graph_output.clone()
 
                 # Verify packed output shape
@@ -1546,6 +1547,7 @@ class TestOpMultiIterDifferentContentPackedGraphLoopCopyIn(_OpTestBase):
                 graph_stream.synchronize()
 
                 # Clone output after this replay
+                # pyrefly: ignore [unbound-name]
                 replay_output = graph_output.clone()
 
                 # Verify packed output shape
