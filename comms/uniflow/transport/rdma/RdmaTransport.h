@@ -107,6 +107,7 @@ struct RdmaTransportInfo {
 
   RegisteredBuffer ctrl;
   RegisteredBuffer slab;
+  uint32_t slabSize{0};
 
   /*
    * Serialize this info into a TransportInfo byte vector.
@@ -158,6 +159,7 @@ class RdmaTransport : public Transport {
   RdmaTransport(
       std::shared_ptr<IbvApi> ibvApi,
       std::shared_ptr<CudaApi> cudaApi,
+      std::shared_ptr<CudaDriverApi> cudaDriverApi,
       EventBase* evb,
       std::shared_ptr<std::vector<NicResources>> nics,
       uint64_t domainId,
@@ -374,6 +376,39 @@ class RdmaTransport : public Transport {
   /// Re-dispatches itself on EventBase if the given task is still in-flight.
   void pollCompletions(uint32_t taskId, bool retry);
 
+  // --- Copy-based send/recv pipeline (cursor model) ---
+  //
+  // Three shared cursors with symmetric meaning for send and recv:
+  //
+  //   Send: copied ≤ notified ≤ done ≤ copied + D
+  //     copied:   memcpy user buf → send slab
+  //     notified: data+notify WRs posted on all QPs (remote peer notified)
+  //     done:     CQEs reaped + CTS arrived (slot recyclable)
+  //
+  //   Recv: notified ≤ copied ≤ done ≤ notified + D
+  //     notified: all QP notify entries arrived (local peer notified)
+  //     copied:   memcpy recv slab → user buf
+  //     done:     slab released + new CTS posted (slot recyclable)
+  //
+  // Slot index = cursor % D. Each iteration advances one cursor by one step.
+
+  struct Pipeline {
+    void* data{nullptr};
+    cudaStream_t stream{nullptr};
+    size_t totalSize{0};
+    uint64_t totalSteps{0};
+
+    uint64_t copied{0};
+    uint64_t notified{0};
+    uint64_t done{0};
+
+    std::vector<uint16_t> localSlabs;
+    std::vector<uint32_t> slotPendingCqes;
+
+    MemoryType memType{MemoryType::DRAM};
+    int deviceId{-1};
+  };
+
   /// Ctrl buffer helpers.
   volatile uint32_t* ctrlCts(uint16_t slotIdx);
   volatile uint32_t* ctrlNotify(uint16_t slotIdx, uint32_t qpIdx);
@@ -381,8 +416,54 @@ class RdmaTransport : public Transport {
   uint64_t remoteCtrlNotifyAddr(uint16_t slotIdx, uint32_t qpIdx) const;
   size_t ctrlBufferSize() const;
 
+  // --- Pipeline lifecycle ---
+
+  /// Common entry point for send/recv: validate, create Pipeline, dispatch
+  /// to EventBase, wait for queue position, acquire slabs, then call onReady.
+  template <typename ResultT, typename OnReadyFn>
+  std::future<ResultT> startPipeline(
+      Segment::Span span,
+      const RequestOptions& options,
+      OnReadyFn onReady);
+
+  void pipelineCleanup(std::shared_ptr<Pipeline>& pipeline);
+
+  /// Core CQ polling: drain all CQs, update counters, route completions.
+  /// For pipeline send CQEs (pipelineTaskId match), uses shifted wr_id
+  /// encoding and tracks per-slot CQE counts.
+  /// Returns false if pollCq API fails (transport set to Error).
+  bool processCqes(Pipeline* pipeline = nullptr, uint32_t pipelineTaskId = 0);
+
+  // --- Send pipeline ---
+
+  void sendProgress(
+      std::shared_ptr<Pipeline> pipeline,
+      std::shared_ptr<std::promise<Status>> promise,
+      uint32_t taskId);
+  bool sendCopyProgress(Pipeline& pipeline);
+  bool sendTransmitProgress(Pipeline& pipeline, uint32_t taskId);
+  bool postSlabTransfer(
+      Pipeline& pipeline,
+      uint16_t localSlab,
+      uint16_t remoteSlab,
+      size_t len,
+      uint32_t slot,
+      uint32_t taskId);
+
+  // --- Recv pipeline ---
+
+  void recvProgress(
+      std::shared_ptr<Pipeline> pipeline,
+      std::shared_ptr<std::promise<Result<size_t>>> promise,
+      uint32_t taskId);
+  bool recvNotifyProgress(Pipeline& pipeline);
+  bool recvCopyProgress(Pipeline& pipeline);
+  bool recvDoneProgress(Pipeline& pipeline, uint32_t taskId);
+  bool postCts(uint32_t slot, uint16_t slabIdx, uint32_t taskId);
+
   const std::shared_ptr<IbvApi> ibvApi_;
   const std::shared_ptr<CudaApi> cudaApi_;
+  std::shared_ptr<CudaDriverApi> cudaDriverApi_;
   EventBase* evb_{nullptr};
 
   std::string name_;

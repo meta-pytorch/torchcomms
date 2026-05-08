@@ -26,7 +26,8 @@ RdmaSlabPool::RdmaSlabPool(
   const size_t bufferSize = config_.slabNum * config_.slabSize;
   const size_t totalSize = bufferSize + stateSize;
 
-  auto slabAllocResult = cudaApi_->hostAlloc(totalSize, cudaHostAllocMapped);
+  auto slabAllocResult = cudaApi_->hostAlloc(
+      totalSize, cudaHostAllocMapped | cudaHostAllocPortable);
   if (!slabAllocResult) {
     throw std::runtime_error(
         "RdmaSlabPool: slab cudaHostAlloc failed: " +
