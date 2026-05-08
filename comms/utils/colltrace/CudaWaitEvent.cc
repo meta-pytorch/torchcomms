@@ -4,8 +4,11 @@
 
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 
+#include <folly/ScopeGuard.h>
 #include <folly/Unit.h>
 #include <folly/stop_watch.h>
+
+#include <folly/logging/xlog.h>
 
 #include "comms/utils/CudaRAII.h"
 #include "comms/utils/checks.h"
@@ -16,6 +19,13 @@
 namespace meta::comms::colltrace {
 
 namespace {
+
+// Singleton-existence flag set by the CudaReferencePoint ctor (release) and
+// read by tryGet() (acquire). Lets the colltrace poll thread skip refresh
+// when no CudaWaitEvent has ever been created (CPU-only colltrace usage).
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
+std::atomic<CudaReferencePoint*> g_referencePointInstance{nullptr};
+
 CommsMaybe<bool> waitCudaEventFinish(
     const CudaEvent& event,
     std::chrono::milliseconds sleepTimeMs) {
@@ -44,9 +54,80 @@ CommsMaybe<bool> waitCudaEventFinish(
 
 CudaReferencePoint::CudaReferencePoint() {
   CUDA_CHECK(cudaStreamCreate(&stream_));
-  CUDA_CHECK(cudaEventCreate(&event_));
-  CUDA_CHECK(cudaEventRecord(event_, stream_));
-  time_ = std::chrono::system_clock::now();
+  cudaEvent_t event = nullptr;
+  CUDA_CHECK(cudaEventCreate(&event));
+  CUDA_CHECK(cudaEventRecord(event, stream_));
+  // Wait for the reference event to fire so the host_time anchor below is
+  // not earlier than the GPU reading. Stream is empty so this is fast.
+  CUDA_CHECK(cudaStreamSynchronize(stream_));
+  *anchor_.wlock() = Anchor{.event = event, .time = precisionNow()};
+
+  // Publish singleton handle for tryGet() — release-store so other threads'
+  // acquire-loads see a fully-constructed object.
+  g_referencePointInstance.store(this, std::memory_order_release);
+}
+
+/* static */ CudaReferencePoint* CudaReferencePoint::tryGet() {
+  return g_referencePointInstance.load(std::memory_order_acquire);
+}
+
+void CudaReferencePoint::refresh() {
+  // Try-and-skip: if another thread is already refreshing, short-circuit
+  // without touching the dedicated CUDA stream. Multiple CollTrace
+  // instances exist per process (one per NCCL communicator) and each calls
+  // refresh from its own poll thread; the in-flight refresh will publish a
+  // fresh anchor before our next wakeup, so we lose nothing by skipping.
+  if (refresh_in_progress_.test_and_set(std::memory_order_acquire)) {
+    return;
+  }
+  auto cleanup = folly::makeGuard(
+      [this] { refresh_in_progress_.clear(std::memory_order_release); });
+
+  cudaEvent_t newEvent = nullptr;
+  if (auto err = cudaEventCreate(&newEvent); err != cudaSuccess) {
+    XLOG_EVERY_MS(WARN, 5000)
+        << "CudaReferencePoint::refresh: cudaEventCreate failed: "
+        << cudaGetErrorString(err) << " — keeping previous anchor";
+    return;
+  }
+  CHECK(newEvent != nullptr);
+  if (auto err = cudaEventRecord(newEvent, stream_); err != cudaSuccess) {
+    XLOG_EVERY_MS(WARN, 5000)
+        << "CudaReferencePoint::refresh: cudaEventRecord failed: "
+        << cudaGetErrorString(err) << " — keeping previous anchor";
+    // Best-effort cleanup of an event we just created; any destroy error
+    // here is unrecoverable and would only mask the record failure above.
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+    cudaEventDestroy(newEvent);
+    return;
+  }
+  if (auto err = cudaStreamSynchronize(stream_); err != cudaSuccess) {
+    XLOG_EVERY_MS(WARN, 5000)
+        << "CudaReferencePoint::refresh: cudaStreamSynchronize failed: "
+        << cudaGetErrorString(err) << " — keeping previous anchor";
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+    cudaEventDestroy(newEvent);
+    return;
+  }
+  auto newTime = precisionNow();
+
+  // Swap the anchor under wlock. Once wlock is granted, all in-flight
+  // readers have released their rlock, so the old event is no longer
+  // reachable from any subsequent reader. We destroy it *after* releasing
+  // wlock so we never hold a writer lock across a CUDA call.
+  cudaEvent_t oldEvent = nullptr;
+  {
+    auto a = anchor_.wlock();
+    oldEvent = a->event;
+    a->event = newEvent;
+    a->time = newTime;
+  }
+  if (oldEvent != nullptr) {
+    // Best-effort: a destroy error here would only be logged after the new
+    // anchor is already published, so propagating it serves no purpose.
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+    cudaEventDestroy(oldEvent);
+  }
 }
 
 CommsMaybe<ICollWaitEvent::system_clock_time_point>
@@ -56,9 +137,13 @@ CudaReferencePoint::getTimeViaEvent(const CudaEvent& event) {
 
 CommsMaybe<ICollWaitEvent::system_clock_time_point>
 CudaReferencePoint::getTimeViaEvent(cudaEvent_t event) {
+  // Hold rlock for the entire CUDA call so refresh() cannot destroy the
+  // reference event mid-read. Multiple concurrent readers are unaffected
+  // (shared_mutex); refresh briefly blocks waiting for in-flight rlocks.
+  auto a = anchor_.rlock();
   float offsetMs;
-  CUDA_CHECK_EXPECTED(cudaEventElapsedTime(&offsetMs, this->event_, event));
-  auto eventTime = this->time_ +
+  CUDA_CHECK_EXPECTED(cudaEventElapsedTime(&offsetMs, a->event, event));
+  auto eventTime = a->time +
       std::chrono::duration_cast<std::chrono::microseconds>(
                        std::chrono::duration<float, std::milli>{offsetMs});
   return eventTime;

@@ -14,6 +14,7 @@
 #include "comms/utils/CommsMaybeChecks.h"
 #include "comms/utils/GpuClockCalibration.h"
 #include "comms/utils/checks.h"
+#include "comms/utils/colltrace/CudaWaitEvent.h"
 #include "comms/utils/colltrace/GraphCollTraceHandle.h"
 #include "comms/utils/colltrace/GraphCollTraceState.h"
 #include "comms/utils/colltrace/GraphCudaWaitEvent.h"
@@ -634,20 +635,32 @@ void CollTrace::collTraceThread(
 
   bool initialized = false;
 
-  // Periodic re-anchor of the GPU %globaltimer ↔ wall-clock mapping. Bounds
+  // Periodic re-anchor of the GPU-time ↔ wall-clock mappings. Bounds
   // residual drift between anchors to ~kReanchorInterval × oscillator-ppm
-  // (≤ ~100 ns at 1 s and 100 ppm). Only meaningful in graph mode, since the
-  // anchor is only consulted when converting ring buffer device timestamps.
+  // (≤ ~100 ns at 1 s and 100 ppm).
+  //
+  // Two independent anchors live behind this:
+  //   - GlobaltimerCalibration: %globaltimer (graph mode). Refreshed only
+  //     when this CollTrace has graph mode enabled (ringBuffer_).
+  //   - CudaReferencePoint: cudaEventElapsedTime baseline (eager mode).
+  //     Refreshed only if some CudaWaitEvent has ever been created — we
+  //     check via CudaReferencePoint::tryGet() to avoid forcing CUDA init
+  //     in CPU-only colltrace deployments.
   // Gated on NCCL_COLLTRACE_PERIODIC_REANCHOR (default false) — issuing CUDA
   // calls from this thread has been observed to hang some training jobs.
   constexpr auto kReanchorInterval = std::chrono::seconds(1);
   auto lastReanchor = std::chrono::steady_clock::now();
 
   while (!isThreadCancelled()) {
-    if (NCCL_COLLTRACE_PERIODIC_REANCHOR && ringBuffer_.has_value()) {
+    if (NCCL_COLLTRACE_PERIODIC_REANCHOR) {
       auto now = std::chrono::steady_clock::now();
       if (now - lastReanchor >= kReanchorInterval) {
-        GlobaltimerCalibration::get().refresh();
+        if (ringBuffer_.has_value()) {
+          GlobaltimerCalibration::get().refresh();
+        }
+        if (auto* refpt = CudaReferencePoint::tryGet()) {
+          refpt->refresh();
+        }
         lastReanchor = now;
       }
     }
