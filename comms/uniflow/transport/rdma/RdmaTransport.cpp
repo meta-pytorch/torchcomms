@@ -110,13 +110,113 @@ void RdmaTransportInfo::reset() {
 }
 
 // ---------------------------------------------------------------------------
+// NicResources
+// ---------------------------------------------------------------------------
+
+NicResources::NicResources(
+    ibv_device* device,
+    std::shared_ptr<IbvApi> api,
+    uint8_t gidIndex,
+    std::optional<uint8_t> port)
+    : ibvApi(std::move(api)) {
+  if (!ibvApi) {
+    ibvApi = std::make_shared<IbvApi>();
+  }
+
+  auto ctxResult = ibvApi->openDevice(device);
+  if (ctxResult.hasError()) {
+    throw std::runtime_error("NicResources: failed to open device");
+  }
+  ctx = ctxResult.value();
+
+  portNum = port.value_or(0);
+  if (portNum == 0) {
+    portNum = findActivePort();
+    if (portNum == 0) {
+      throw std::runtime_error("NicResources: no active port found");
+    }
+  }
+
+  auto pdResult = ibvApi->allocPd(ctx);
+  if (pdResult.hasError()) {
+    throw std::runtime_error("NicResources: failed to allocate PD");
+  }
+  pd = pdResult.value();
+
+  auto dmaBufResult = ibvApi->isDmaBufSupported(pd);
+  if (dmaBufResult.hasError()) {
+    throw std::runtime_error("NicResources: failed to probe DMA-BUF support");
+  }
+  dmaBufSupported = dmaBufResult.value();
+
+  ibv_port_attr portAttr{};
+  auto portStatus = ibvApi->queryPort(ctx, portNum, &portAttr);
+  if (portStatus.hasError()) {
+    throw std::runtime_error("NicResources: failed to query port");
+  }
+  lid = portAttr.lid;
+  mtu = portAttr.active_mtu;
+  linkLayer = portAttr.link_layer;
+
+  auto gidStatus = ibvApi->queryGid(ctx, portNum, gidIndex, &gid);
+  if (gidStatus.hasError()) {
+    throw std::runtime_error("NicResources: failed to query GID");
+  }
+}
+
+NicResources::NicResources(NicResources&& other) noexcept
+    : ctx(other.ctx),
+      pd(other.pd),
+      lid(other.lid),
+      gid(other.gid),
+      mtu(other.mtu),
+      linkLayer(other.linkLayer),
+      portNum(other.portNum),
+      dmaBufSupported(other.dmaBufSupported),
+      ibvApi(std::move(other.ibvApi)) {
+  other.ctx = nullptr;
+  other.pd = nullptr;
+}
+
+NicResources::~NicResources() {
+  if (ibvApi) {
+    if (pd) {
+      ibvApi->deallocPd(pd);
+    }
+    if (ctx) {
+      ibvApi->closeDevice(ctx);
+    }
+  }
+}
+
+uint8_t NicResources::findActivePort() const {
+  ibv_device_attr devAttr{};
+  auto status = ibvApi->queryDevice(ctx, &devAttr);
+  if (status.hasError()) {
+    return 0;
+  }
+
+  for (uint8_t p = 1; p <= devAttr.phys_port_cnt; ++p) {
+    ibv_port_attr portAttr{};
+    auto portStatus = ibvApi->queryPort(ctx, p, &portAttr);
+    if (portStatus.hasError()) {
+      continue;
+    }
+    if (portAttr.state == IBV_PORT_ACTIVE) {
+      return p;
+    }
+  }
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
 // RdmaTransport
 // ---------------------------------------------------------------------------
 
 RdmaTransport::RdmaTransport(
     std::shared_ptr<IbvApi> ibvApi,
     EventBase* evb,
-    std::vector<NicResources> nics,
+    std::shared_ptr<std::vector<NicResources>> nics,
     uint64_t domainId,
     RdmaTransportConfig config)
     : ibvApi_(std::move(ibvApi)),
@@ -124,12 +224,12 @@ RdmaTransport::RdmaTransport(
       nics_(std::move(nics)),
       config_(config),
       domainId_(domainId) {
-  CHECK_THROW_EXCEPTION(!nics_.empty(), std::invalid_argument);
+  CHECK_THROW_EXCEPTION(nics_ && !nics_->empty(), std::invalid_argument);
   CHECK_THROW_EXCEPTION(config_.numQps <= 255, std::invalid_argument);
-  numPendingCqe_.resize(nics_.size());
+  numPendingCqe_.resize(nics_->size());
 
   name_ = "rdma";
-  for (const auto& nic : nics_) {
+  for (const auto& nic : *nics_) {
     name_ += "_";
     name_ += nic.ctx->device->name;
   }
@@ -145,17 +245,17 @@ TransportInfo RdmaTransport::bind() {
   }
 
   info_.reset();
-  const uint32_t numNics = static_cast<uint32_t>(nics_.size());
+  const uint32_t numNics = static_cast<uint32_t>(nics_->size());
   const uint32_t numQps = config_.numQps;
 
   cqs_.reserve(numNics);
   uint32_t qpsPerNic = (numQps + numNics - 1) / numNics;
   for (uint32_t n = 0; n < numNics; ++n) {
     auto cqResult = ibvApi_->createCq(
-        nics_[n].ctx, config_.maxWr * qpsPerNic, nullptr, nullptr, 0);
+        nics_->at(n).ctx, config_.maxWr * qpsPerNic, nullptr, nullptr, 0);
     if (cqResult.hasError()) {
       UNIFLOW_LOG_ERROR(
-          "bind: failed to create CQ for NIC {}", getNicName(nics_[n]));
+          "bind: failed to create CQ for NIC {}", getNicName(nics_->at(n)));
       shutdown();
       state_ = TransportState::Error;
       return {};
@@ -191,12 +291,12 @@ TransportInfo RdmaTransport::bind() {
     initAttr.cap.max_recv_sge = config_.maxSge;
     initAttr.cap.max_inline_data = config_.maxInlineData;
 
-    auto qpResult = ibvApi_->createQp(nics_[nicIdx].pd, &initAttr);
+    auto qpResult = ibvApi_->createQp(nics_->at(nicIdx).pd, &initAttr);
     if (qpResult.hasError()) {
       UNIFLOW_LOG_ERROR(
           "bind: failed to create QP {} on NIC {}",
           i,
-          getNicName(nics_[nicIdx]));
+          getNicName(nics_->at(nicIdx)));
       shutdown();
       state_ = TransportState::Error;
       return {};
@@ -206,7 +306,7 @@ TransportInfo RdmaTransport::bind() {
     ibv_qp_attr attr{};
     attr.qp_state = IBV_QPS_INIT;
     attr.pkey_index = config_.pkeyIndex;
-    attr.port_num = nics_[nicIdx].portNum;
+    attr.port_num = nics_->at(nicIdx).portNum;
     attr.qp_access_flags = IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ |
         IBV_ACCESS_LOCAL_WRITE;
 
@@ -217,7 +317,7 @@ TransportInfo RdmaTransport::bind() {
       UNIFLOW_LOG_ERROR(
           "bind: failed to transition QP {} to INIT on NIC {}",
           i,
-          getNicName(nics_[nicIdx]));
+          getNicName(nics_->at(nicIdx)));
       ibvApi_->destroyQp(qp);
       shutdown();
       state_ = TransportState::Error;
@@ -231,7 +331,7 @@ TransportInfo RdmaTransport::bind() {
     info_.qpInfos.push_back({.qpNum = qp->qp_num, .psn = psn});
   }
 
-  for (const auto& nic : nics_) {
+  for (const auto& nic : *nics_) {
     info_.nicInfos.push_back(
         {.lid = nic.lid,
          .linkLayer = static_cast<uint8_t>(nic.linkLayer),
@@ -271,14 +371,14 @@ Status RdmaTransport::connect(std::span<const uint8_t> remoteInfo) {
     return Err(ErrCode::InvalidArgument, "QP count mismatch");
   }
 
-  const uint32_t numNics = static_cast<uint32_t>(nics_.size());
+  const uint32_t numNics = static_cast<uint32_t>(nics_->size());
   const uint32_t remoteNumNics = static_cast<uint32_t>(remote.nicInfos.size());
 
   for (uint32_t i = 0; i < config_.numQps; ++i) {
     uint32_t localNicIdx = i % numNics;
     uint32_t remoteNicIdx = i % remoteNumNics;
     const auto& remoteNic = remote.nicInfos[remoteNicIdx];
-    const auto& localNic = nics_[localNicIdx];
+    const auto& localNic = nics_->at(localNicIdx);
 
     ibv_mtu negotiatedMtu = static_cast<ibv_mtu>(
         std::min(static_cast<uint8_t>(localNic.mtu), remoteNic.mtu));
@@ -397,11 +497,11 @@ Status RdmaTransport::preprocessRequest(
         "RDMA transfer: no matching registration handle");
   }
 
-  if ((*localHandle)->numMrs() != nics_.size()) {
+  if ((*localHandle)->numMrs() != nics_->size()) {
     return Err(
         ErrCode::InvalidArgument,
         "RDMA transfer: local handle NIC count mismatch (expected " +
-            std::to_string(nics_.size()) + ", got " +
+            std::to_string(nics_->size()) + ", got " +
             std::to_string((*localHandle)->numMrs()) + ")");
   }
 
@@ -481,7 +581,7 @@ uint32_t RdmaTransport::postSend(
     std::shared_ptr<Task>& task) {
   ibv_send_wr* badWr = nullptr;
   auto st = ibvApi_->postSend(qps_[qpIdx], head, &badWr);
-  size_t nicIdx = qpIdx % nics_.size();
+  size_t nicIdx = qpIdx % nics_->size();
   if (st) {
     // All WRs posted successfully.
     ++numPendingCqe_[nicIdx];
@@ -491,7 +591,7 @@ uint32_t RdmaTransport::postSend(
   } else {
     UNIFLOW_LOG_ERROR(
         "postSend: failed on NIC {} QP {} taskId={}: {}",
-        getNicName(nics_[nicIdx]),
+        getNicName(nics_->at(nicIdx)),
         qpIdx,
         taskId,
         st.error().message());
@@ -534,7 +634,7 @@ uint32_t RdmaTransport::postSend(
       UNIFLOW_LOG_WARN(
           "postSend: partial failure on NIC {} QP {} taskId={}, consumed={}, "
           "flush WR posted successfully",
-          getNicName(nics_[nicIdx]),
+          getNicName(nics_->at(nicIdx)),
           qpIdx,
           taskId,
           consumed);
@@ -545,7 +645,7 @@ uint32_t RdmaTransport::postSend(
       UNIFLOW_LOG_ERROR(
           "postSend: flush WR also failed on NIC {} QP {} taskId={}, "
           "consumed={} WRs leaked",
-          getNicName(nics_[nicIdx]),
+          getNicName(nics_->at(nicIdx)),
           qpIdx,
           taskId,
           consumed);
@@ -1009,26 +1109,6 @@ Status RdmaTransportFactory::supported(std::shared_ptr<IbvApi> ibvApi) {
   return Ok();
 }
 
-uint8_t RdmaTransportFactory::findActivePort(ibv_context* ctx) {
-  ibv_device_attr devAttr{};
-  auto status = ibvApi_->queryDevice(ctx, &devAttr);
-  if (status.hasError()) {
-    return 0;
-  }
-
-  for (uint8_t port = 1; port <= devAttr.phys_port_cnt; ++port) {
-    ibv_port_attr portAttr{};
-    auto portStatus = ibvApi_->queryPort(ctx, port, &portAttr);
-    if (portStatus.hasError()) {
-      continue;
-    }
-    if (portAttr.state == IBV_PORT_ACTIVE) {
-      return port;
-    }
-  }
-  return 0;
-}
-
 RdmaTransportFactory::RdmaTransportFactory(
     const std::vector<std::string>& deviceNames,
     EventBase* evb,
@@ -1040,6 +1120,7 @@ RdmaTransportFactory::RdmaTransportFactory(
       ibvApi_(std::move(ibvApi)),
       cudaDriverApi_(std::move(cudaDriverApi)),
       evb_(evb),
+      nics_(std::make_shared<std::vector<NicResources>>()),
       config_(config) {
   assert(evb_ != nullptr);
   if (deviceNames.empty()) {
@@ -1072,19 +1153,7 @@ RdmaTransportFactory::RdmaTransportFactory(
   std::unique_ptr<ibv_device*[], decltype(devListDeleter)> devListGuard(
       deviceList, devListDeleter);
 
-  // TODO: Replace manual cleanup with EXIT_SCOPE macro (core/Utils.h).
-  auto cleanupNics = [this]() {
-    for (auto& nic : nics_) {
-      if (nic.pd) {
-        ibvApi_->deallocPd(nic.pd);
-      }
-      if (nic.ctx) {
-        ibvApi_->closeDevice(nic.ctx);
-      }
-    }
-    nics_.clear();
-  };
-
+  nics_->reserve(deviceNames.size());
   for (const auto& deviceName : deviceNames) {
     ibv_device* targetDevice = nullptr;
     for (int i = 0; i < numDevices; ++i) {
@@ -1096,83 +1165,16 @@ RdmaTransportFactory::RdmaTransportFactory(
     }
 
     if (!targetDevice) {
-      cleanupNics();
       throw std::runtime_error("RDMA device not found: " + deviceName);
     }
 
-    auto ctxResult = ibvApi_->openDevice(targetDevice);
-    if (ctxResult.hasError()) {
-      cleanupNics();
-      throw std::runtime_error("Failed to open RDMA device: " + deviceName);
-    }
-
-    NicResources nic;
-    nic.ctx = ctxResult.value();
-
-    // Discover port: use specified portNum, or find first active port
-    uint8_t port = portNum.value_or(0);
-    if (port == 0) {
-      port = findActivePort(nic.ctx);
-      if (port == 0) {
-        ibvApi_->closeDevice(nic.ctx);
-        cleanupNics();
-        throw std::runtime_error("No active port found on: " + deviceName);
-      }
-    }
-    nic.portNum = port;
-
-    auto pdResult = ibvApi_->allocPd(nic.ctx);
-    if (pdResult.hasError()) {
-      ibvApi_->closeDevice(nic.ctx);
-      cleanupNics();
-      throw std::runtime_error("Failed to allocate PD on: " + deviceName);
-    }
-    nic.pd = pdResult.value();
-
-    // Probe kernel DMA-BUF support on this NIC's PD.
-    auto dmaBufSupported = ibvApi_->isDmaBufSupported(nic.pd);
-    CHECK_THROW_ERROR(dmaBufSupported);
-    nic.dmaBufSupported = dmaBufSupported.value();
-
-    ibv_port_attr portAttr{};
-    auto portStatus = ibvApi_->queryPort(nic.ctx, port, &portAttr);
-    if (portStatus.hasError()) {
-      ibvApi_->deallocPd(nic.pd);
-      ibvApi_->closeDevice(nic.ctx);
-      cleanupNics();
-      throw std::runtime_error("Failed to query port on: " + deviceName);
-    }
-    nic.lid = portAttr.lid;
-    nic.mtu = portAttr.active_mtu;
-    nic.linkLayer = portAttr.link_layer;
-
-    auto gidStatus =
-        ibvApi_->queryGid(nic.ctx, port, config_.gidIndex, &nic.gid);
-    if (gidStatus.hasError()) {
-      ibvApi_->deallocPd(nic.pd);
-      ibvApi_->closeDevice(nic.ctx);
-      cleanupNics();
-      throw std::runtime_error("Failed to query GID on: " + deviceName);
-    }
-
-    nics_.push_back(nic);
-  }
-}
-
-RdmaTransportFactory::~RdmaTransportFactory() {
-  for (auto& nic : nics_) {
-    if (nic.pd) {
-      ibvApi_->deallocPd(nic.pd);
-    }
-    if (nic.ctx) {
-      ibvApi_->closeDevice(nic.ctx);
-    }
+    nics_->emplace_back(targetDevice, ibvApi_, config_.gidIndex, portNum);
   }
 }
 
 Result<std::unique_ptr<RegistrationHandle>>
 RdmaTransportFactory::registerSegment(Segment& segment) {
-  if (nics_.empty()) {
+  if (nics_->empty()) {
     return Err(ErrCode::InvalidArgument, "No NICs available for registration");
   }
 
@@ -1223,8 +1225,8 @@ RdmaTransportFactory::registerSegment(Segment& segment) {
   // Register with every NIC's protection domain so the region is usable
   // across all QPs regardless of which NIC they belong to.
   std::vector<ibv_mr*> mrs;
-  mrs.reserve(nics_.size());
-  for (const auto& nic : nics_) {
+  mrs.reserve(nics_->size());
+  for (const auto& nic : *nics_) {
     Result<ibv_mr*> mrResult = Err(ErrCode::NotImplemented);
     if (nic.dmaBufSupported && fdGuard.fd >= 0) {
       // GPU memory: register via DMA-BUF for GPU Direct RDMA.
