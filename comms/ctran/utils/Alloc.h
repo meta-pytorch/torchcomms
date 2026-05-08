@@ -13,7 +13,7 @@
 #include "comms/ctran/utils/DevUtils.cuh"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/alloc.h"
+#include "comms/utils/memtrace/MemoryTrace.h"
 
 namespace ctran::utils {
 
@@ -102,7 +102,7 @@ finish:
       nelem * sizeof(T),
       (void*)*ptr);
   if (!getCuMemSysSupported()) {
-    logMemoryEvent(
+    meta::comms::memtrace::recordAlloc(
         logMetaData ? *logMetaData : CommLogData{},
         callsite,
         "commCudaMalloc",
@@ -129,7 +129,7 @@ commResult_t commCudaFree(T* ptr, const CommLogData* logMetaData = nullptr) {
   }
 finish:
   if (!getCuMemSysSupported()) {
-    logMemoryEvent(
+    meta::comms::memtrace::recordFree(
         logMetaData ? *logMetaData : CommLogData{},
         "",
         "commCudaFree",
@@ -169,7 +169,7 @@ finish:
       line,
       nelem * sizeof(T),
       (void*)*ptr);
-  logMemoryEvent(
+  meta::comms::memtrace::recordAlloc(
       logMetaData ? *logMetaData : CommLogData{},
       callsite,
       "commCudaHostAlloc",
@@ -194,7 +194,7 @@ commResult_t commCudaFreeHost(
     FB_CUDACHECKGOTO(cudaFreeHost(ptr), result, finish);
   }
 finish:
-  logMemoryEvent(
+  meta::comms::memtrace::recordFree(
       logMetaData ? *logMetaData : CommLogData{},
       "",
       "commCudaFreeHost",
@@ -249,7 +249,7 @@ finish:
       nelem * sizeof(T),
       (void*)*ptr);
   if (!getCuMemSysSupported()) {
-    logMemoryEvent(
+    meta::comms::memtrace::recordAlloc(
         logMetaData ? *logMetaData : CommLogData{},
         callsite,
         "commCudaCallocAsync",
