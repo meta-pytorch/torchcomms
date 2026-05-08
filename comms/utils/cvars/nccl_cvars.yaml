@@ -2602,6 +2602,13 @@ cvars:
    description : Path to libibverbs.so. This allows fault injection for
      verbs APIs in NCCLx.
 
+ - name        : NCCL_IBVERBS_LIB
+   type        : string
+   default     : ""
+   description : Override the default libibverbs shared library name.
+     Added in upstream NCCL 2.30. When set, NCCL will attempt to load
+     this library before falling back to libibverbs.so.
+
  - name        : NCCL_COMM_ABORT_SCOPE
    type        : enum
    default     : comm
@@ -3468,3 +3475,97 @@ cvars:
      LL128 uses 128-byte cache-line-atomic packets with inline flag signaling,
      providing better performance for small/medium messages. Requires per-peer
      byte counts (count * elementSize) to be multiples of 16.
+
+# ============================================================================
+# NCCL 2.30 new parameters
+# ============================================================================
+
+ - name        : NCCL_ELASTIC_BUFFER_REGISTER
+   type        : int64_t
+   default     : 1
+   description : Enable elastic buffer registration (added in NCCL 2.30).
+
+ - name        : NCCL_GIN_GDAKI_MAX_DEST_RD_ATOMIC
+   type        : int64_t
+   default     : -2
+   description : Override max_dest_rd_atomic for GIN GDAKI QPs.
+
+ - name        : NCCL_GIN_GDAKI_MAX_QP_RD_ATOMIC
+   type        : int64_t
+   default     : -2
+   description : Override max_qp_rd_atomic for GIN GDAKI QPs.
+
+ - name        : NCCL_IB_OOO_RQ
+   type        : int64_t
+   default     : 0
+   description : Enable IB out-of-order receive queue (added in NCCL 2.30).
+
+ - name        : NCCL_IB_RESILIENCY_PORT_RECOVERY
+   type        : int64_t
+   default     : 0
+   description : Enable IB port recovery for resiliency (added in NCCL 2.30).
+
+ - name        : NCCL_IB_RESILIENCY_PORT_RECOVERY_ACK_TIMEOUT
+   type        : int64_t
+   default     : 5000
+   description : Ack timeout in ms for IB port recovery.
+
+ - name        : NCCL_IB_RESILIENCY_PORT_RECOVERY_ALIVE_MSG_BATCH_INTERVAL
+   type        : int64_t
+   default     : 500
+   description : Interval in ms between alive message batches during IB port recovery.
+
+ - name        : NCCL_IB_RESILIENCY_PORT_RECOVERY_ALIVE_MSG_BATCH_SIZE
+   type        : int64_t
+   default     : 5
+   description : Number of alive messages per batch during IB port recovery.
+
+ - name        : NCCL_IB_RESILIENCY_PORT_RECOVERY_ALIVE_MSG_SEQUENCE_SIZE
+   type        : int64_t
+   default     : 5
+   description : Number of alive message sequences during IB port recovery.
+
+ - name        : NCCL_IB_RESILIENCY_PORT_RECOVERY_ALIVE_MSG_TIMEOUT
+   type        : int64_t
+   default     : 4000
+   description : Timeout in ms for alive messages during IB port recovery.
+
+ - name        : NCCL_IB_RESILIENCY_PORT_RECOVERY_ATTEMPTS_MAX
+   type        : int64_t
+   default     : 5
+   description : Maximum recovery attempts for IB port recovery.
+
+ - name        : NCCL_IB_RESILIENCY_PORT_RECOVERY_START_DELAY
+   type        : int64_t
+   default     : 200
+   description : Delay in ms before starting IB port recovery.
+
+ - name        : NCCL_IGNORE_COLLNET_MISMATCH
+   type        : int64_t
+   default     : 0
+   description : Ignore CollNet capability mismatch across ranks (added in NCCL 2.30).
+
+ - name        : NCCL_IGNORE_NET_MISMATCH
+   type        : int64_t
+   default     : 1
+   description : Ignore net plugin mismatch across ranks (added in NCCL 2.30).
+
+ - name        : NCCL_MNNVL_CROSS_CLIQUE
+   type        : int64_t
+   default     : 0
+   description : Enable multi-NVLink cross-clique support (added in NCCL 2.30).
+
+ - name        : NCCL_MULTI_RANK_GPU_ENABLE
+   type        : int64_t
+   default     : 0
+   description : Enable multi-rank per GPU (added in NCCL 2.30).
+
+ # Note: NCCL_NET_OPTIONAL_RECV_COMPLETION cannot be registered as a cvar
+ # because it collides with #define NCCL_NET_OPTIONAL_RECV_COMPLETION 0x1
+ # in nccl_net.h. The NCCL_PARAM in net.cc is replaced with a manual
+ # ncclLoadParam call.
+
+ - name        : NCCL_P2P_MAX_PEERS
+   type        : int64_t
+   default     : -1
+   description : Maximum number of P2P peers (added in NCCL 2.30). Uses NCCL_CONFIG_UNDEF_INT as default.
