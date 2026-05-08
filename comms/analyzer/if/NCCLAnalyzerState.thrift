@@ -4,8 +4,7 @@ namespace cpp2 facebook.comms.analyzer
 
 include "thrift/annotation/thrift.thrift"
 
-@thrift.AllowLegacyMissingUris
-package;
+package "meta.com/comms/analyzer"
 
 // Numerical rank identifier within a communicator.
 typedef i64 CommRank
