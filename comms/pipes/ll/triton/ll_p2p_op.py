@@ -18,6 +18,30 @@ Usage::
     with op:
         op.send(peer=1, src_tensor=src, nbytes=1024)
         op.recv(peer=1, dst_tensor=dst, nbytes=1024)
+
+CUDA Graph Support
+------------------
+LlP2pOp is CUDA graph compatible. The LL flag handshake protocol
+handles cross-rank synchronization internally, so ``graph.replay()``
+works without any special wrapper.
+
+CUDA Graph Usage Example::
+
+    op = LlP2pOp(comm, max_nbytes=4096, device=device)
+    with op:
+        # 1. Warmup (compiles Triton kernels, outside graph capture)
+        op.send(peer=1, src_tensor=src, nbytes=1024)
+        torch.cuda.synchronize()
+
+        # 2. Capture graph using op's memory pool
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, pool=op.get_graph_pool_id()):
+            op.send(peer=1, src_tensor=src, nbytes=1024)
+
+        # 3. Replay with different content per iteration
+        for i in range(num_iterations):
+            src.copy_(iteration_data[i])
+            graph.replay()
 """
 
 from __future__ import annotations
@@ -273,6 +297,20 @@ class LlP2pOp:
             BLOCK_SIZE=config["block_size"],
             num_warps=config["block_size"] // 32,
         )
+
+    def get_graph_pool_id(self) -> tuple[int, int]:
+        """Return the memory pool ID for CUDA graph capture.
+
+        Pass this to ``torch.cuda.graph(graph, pool=...)`` to ensure
+        allocations during capture use the same transport-compatible pool
+        as the LL buffer.
+
+        Buffer registration (``setup()``) must occur BEFORE graph capture.
+
+        Returns:
+            tuple[int, int]: The CUDA memory pool handle.
+        """
+        return self._ll_pool.id  # type: ignore[return-value]
 
     def teardown(self) -> None:
         """Release resources. Must be called by all ranks (collective).

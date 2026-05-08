@@ -429,3 +429,144 @@ class TestFusedSendRecv(LlP2pTestBase):
                 expected,
                 msg=f"Rank {self.rank}: Fused sendrecv mismatch at {nbytes}B",
             )
+
+
+@unittest.skipUnless(
+    _skip_if_not_ready(),
+    "CUDA graph test requires E2E environment",
+)
+class TestCudaGraph(unittest.TestCase):
+    """CUDA graph capture + replay correctness for LL P2P."""
+
+    wrapper = None
+    op = None
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from comms.pipes.ll.triton.ll_p2p_op import LlP2pOp
+
+        torch.cuda.synchronize()
+        cls.wrapper = TorchCommTestWrapper()
+        cls.torchcomm = cls.wrapper.get_torchcomm()
+        cls.rank = cls.torchcomm.get_rank()
+        cls.world_size = cls.torchcomm.get_size()
+        cls.device = cls.torchcomm.get_device()
+
+        cls.op = LlP2pOp(
+            comm=cls.torchcomm,
+            max_nbytes=4096,
+            device=cls.device,
+        )
+        cls.op.setup()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        if cls.op is not None:
+            cls.op.teardown()
+            cls.op = None
+        cls.torchcomm = None
+        cls.wrapper = None
+        gc.collect()
+        torch.cuda.synchronize()
+        time.sleep(2)
+
+    def test_graph_replay_3x(self) -> None:
+        """Capture one send/recv, replay 3 times with different data."""
+        if self.rank > 1:
+            return
+
+        nbytes = 1024
+        num_elements = nbytes // 4
+        peer = 1 if self.rank == 0 else 0
+
+        src = torch.zeros(num_elements, dtype=torch.int32, device=self.device)
+        dst = torch.zeros(num_elements, dtype=torch.int32, device=self.device)
+
+        # Warmup
+        for _ in range(5):
+            if self.rank == 0:
+                self.op.send(peer=peer, src_tensor=src, nbytes=nbytes)
+            else:
+                self.op.recv(peer=peer, dst_tensor=dst, nbytes=nbytes)
+        torch.cuda.synchronize()
+        self.torchcomm.barrier(False)
+
+        # Capture
+        graph = torch.cuda.CUDAGraph()
+        # pyre-fixme[6]: pool handle type
+        with torch.cuda.graph(graph, pool=self.op.get_graph_pool_id()):  # type: ignore[arg-type]
+            if self.rank == 0:
+                self.op.send(peer=peer, src_tensor=src, nbytes=nbytes)
+            else:
+                self.op.recv(peer=peer, dst_tensor=dst, nbytes=nbytes)
+
+        # Replay 3 times with different data
+        for replay_idx in range(3):
+            fill_value = (self.rank + 1) * 100 + replay_idx
+            src.fill_(fill_value)
+            dst.fill_(0)
+
+            graph.replay()
+            torch.cuda.synchronize()
+
+            if self.rank == 1:
+                expected_value = (peer + 1) * 100 + replay_idx
+                expected = torch.full(
+                    (num_elements,),
+                    expected_value,
+                    dtype=torch.int32,
+                    device=self.device,
+                )
+                torch.testing.assert_close(
+                    dst,
+                    expected,
+                    msg=f"Rank {self.rank}: Graph replay {replay_idx} data mismatch",
+                )
+
+        del graph
+
+    def test_graph_batch_5_iters(self) -> None:
+        """Capture 5 consecutive send/recv in one graph, replay once."""
+        if self.rank > 1:
+            return
+
+        nbytes = 1024
+        num_elements = nbytes // 4
+        peer = 1 if self.rank == 0 else 0
+
+        src = torch.arange(num_elements, dtype=torch.int32, device=self.device)
+        dst = torch.zeros(num_elements, dtype=torch.int32, device=self.device)
+
+        # Warmup
+        for _ in range(5):
+            if self.rank == 0:
+                self.op.send(peer=peer, src_tensor=src, nbytes=nbytes)
+            else:
+                self.op.recv(peer=peer, dst_tensor=dst, nbytes=nbytes)
+        torch.cuda.synchronize()
+        self.torchcomm.barrier(False)
+
+        # Capture 5 iterations
+        graph = torch.cuda.CUDAGraph()
+        # pyre-fixme[6]: pool handle type
+        with torch.cuda.graph(graph, pool=self.op.get_graph_pool_id()):  # type: ignore[arg-type]
+            for _ in range(5):
+                if self.rank == 0:
+                    self.op.send(peer=peer, src_tensor=src, nbytes=nbytes)
+                else:
+                    self.op.recv(peer=peer, dst_tensor=dst, nbytes=nbytes)
+
+        # Replay
+        dst.fill_(0)
+        graph.replay()
+        torch.cuda.synchronize()
+
+        if self.rank == 1:
+            expected = torch.arange(num_elements, dtype=torch.int32, device=self.device)
+            torch.testing.assert_close(
+                dst,
+                expected,
+                msg="Rank 1: Graph batch 5-iter data mismatch",
+            )
+
+        del graph

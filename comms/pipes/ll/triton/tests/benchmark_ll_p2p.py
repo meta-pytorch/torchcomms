@@ -52,7 +52,107 @@ WARMUP_ITERS = 20
 TIMED_ITERS = 200
 
 
-def run_benchmark_worker(local_rank, master_port, bidirectional, fused, gpu_offset):
+def _do_ops(op, local_rank, peer_rank, fused, bidirectional, src, dst, nbytes):
+    if fused:
+        op.sendrecv(peer=peer_rank, src_tensor=src, dst_tensor=dst, nbytes=nbytes)
+    elif bidirectional:
+        op.send(peer=peer_rank, src_tensor=src, nbytes=nbytes)
+        op.recv(peer=peer_rank, dst_tensor=dst, nbytes=nbytes)
+    else:
+        if local_rank == 0:
+            op.send(peer=peer_rank, src_tensor=src, nbytes=nbytes)
+        else:
+            op.recv(peer=peer_rank, dst_tensor=dst, nbytes=nbytes)
+
+
+def _bench_eager(op, comm, local_rank, peer_rank, gpu_id, fused, bidirectional):
+    results = {}
+    for nbytes in MSG_SIZES:
+        num_elements = nbytes // 4
+        src = torch.randn(num_elements, dtype=torch.float32, device=f"cuda:{gpu_id}")
+        dst = torch.zeros(num_elements, dtype=torch.float32, device=f"cuda:{gpu_id}")
+
+        for _ in range(WARMUP_ITERS):
+            _do_ops(op, local_rank, peer_rank, fused, bidirectional, src, dst, nbytes)
+        torch.cuda.synchronize()
+        comm.barrier(False)
+
+        iters = TIMED_ITERS if nbytes <= 16384 else TIMED_ITERS // 2
+        start_ev = torch.cuda.Event(enable_timing=True)
+        end_ev = torch.cuda.Event(enable_timing=True)
+
+        comm.barrier(False)
+        start_ev.record()
+        for _ in range(iters):
+            _do_ops(op, local_rank, peer_rank, fused, bidirectional, src, dst, nbytes)
+        end_ev.record()
+        torch.cuda.synchronize()
+
+        elapsed_ms = start_ev.elapsed_time(end_ev)
+        results[nbytes] = (elapsed_ms * 1000.0) / iters
+        del src, dst
+    return results
+
+
+def _bench_graph(op, comm, local_rank, peer_rank, gpu_id, fused, bidirectional):
+    results = {}
+    for nbytes in MSG_SIZES:
+        num_elements = nbytes // 4
+        src = torch.randn(num_elements, dtype=torch.float32, device=f"cuda:{gpu_id}")
+        dst = torch.zeros(num_elements, dtype=torch.float32, device=f"cuda:{gpu_id}")
+
+        for _ in range(WARMUP_ITERS):
+            _do_ops(op, local_rank, peer_rank, fused, bidirectional, src, dst, nbytes)
+        torch.cuda.synchronize()
+        comm.barrier(False)
+
+        iters = TIMED_ITERS if nbytes <= 16384 else TIMED_ITERS // 2
+
+        graph_stream = torch.cuda.Stream()
+        with torch.cuda.stream(graph_stream):
+            graph = torch.cuda.CUDAGraph()
+            # pyre-fixme[6]: pool handle type
+            with torch.cuda.graph(graph, pool=op.get_graph_pool_id()):  # type: ignore[arg-type]
+                for _ in range(iters):
+                    _do_ops(
+                        op,
+                        local_rank,
+                        peer_rank,
+                        fused,
+                        bidirectional,
+                        src,
+                        dst,
+                        nbytes,
+                    )
+
+        with torch.cuda.stream(graph_stream):
+            for _ in range(WARMUP_ITERS):
+                graph.replay()
+        torch.cuda.synchronize()
+        comm.barrier(False)
+
+        start_ev = torch.cuda.Event(enable_timing=True)
+        end_ev = torch.cuda.Event(enable_timing=True)
+        with torch.cuda.stream(graph_stream):
+            start_ev.record()
+            graph.replay()
+            end_ev.record()
+        torch.cuda.synchronize()
+
+        elapsed_ms = start_ev.elapsed_time(end_ev)
+        results[nbytes] = (elapsed_ms * 1000.0) / iters
+        del src, dst, graph
+    return results
+
+
+def run_benchmark_worker(
+    local_rank,
+    master_port,
+    bidirectional,
+    fused,
+    cuda_graph,
+    gpu_offset,
+):
     gpu_id = local_rank + gpu_offset
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = str(master_port)
@@ -83,12 +183,7 @@ def run_benchmark_worker(local_rank, master_port, bidirectional, fused, gpu_offs
         mode_str = "Bidirectional"
     else:
         mode_str = "Unidirectional"
-    # Pre-warm Triton JIT compilation for all BLOCK_SIZE variants before the
-    # timed benchmark loop. Auto-tune uses BLOCK_SIZE=32 for small messages
-    # (<=256B) and BLOCK_SIZE=512 for larger ones. Each unique BLOCK_SIZE
-    # (a tl.constexpr) triggers a separate Triton compilation that can take
-    # 30+ seconds. Both ranks must finish compiling before the fused kernel
-    # can run, so we pre-warm with sync+barrier after each variant.
+
     for prewarm_nbytes in [8, 1024]:
         prewarm_elements = prewarm_nbytes // 4
         prewarm_src = torch.randn(
@@ -97,92 +192,85 @@ def run_benchmark_worker(local_rank, master_port, bidirectional, fused, gpu_offs
         prewarm_dst = torch.zeros(
             prewarm_elements, dtype=torch.float32, device=f"cuda:{gpu_id}"
         )
-        if fused:
-            op.sendrecv(
-                peer=peer_rank,
-                src_tensor=prewarm_src,
-                dst_tensor=prewarm_dst,
-                nbytes=prewarm_nbytes,
-            )
-        elif bidirectional:
-            op.send(peer=peer_rank, src_tensor=prewarm_src, nbytes=prewarm_nbytes)
-            op.recv(peer=peer_rank, dst_tensor=prewarm_dst, nbytes=prewarm_nbytes)
-        else:
-            if local_rank == 0:
-                op.send(peer=peer_rank, src_tensor=prewarm_src, nbytes=prewarm_nbytes)
-            else:
-                op.recv(peer=peer_rank, dst_tensor=prewarm_dst, nbytes=prewarm_nbytes)
+        _do_ops(
+            op,
+            local_rank,
+            peer_rank,
+            fused,
+            bidirectional,
+            prewarm_src,
+            prewarm_dst,
+            prewarm_nbytes,
+        )
         torch.cuda.synchronize()
         comm.barrier(False)
         del prewarm_src, prewarm_dst
 
+    eager_results = _bench_eager(
+        op,
+        comm,
+        local_rank,
+        peer_rank,
+        gpu_id,
+        fused,
+        bidirectional,
+    )
+
+    if cuda_graph:
+        graph_results = _bench_graph(
+            op,
+            comm,
+            local_rank,
+            peer_rank,
+            gpu_id,
+            fused,
+            bidirectional,
+        )
+
     if local_rank == 0:
-        print(f"Triton LL P2P Benchmark ({mode_str}, 2 GPUs)", flush=True)
+        if cuda_graph:
+            print(
+                f"Triton LL P2P Benchmark ({mode_str} + CUDA Graph, 2 GPUs)",
+                flush=True,
+            )
+        else:
+            print(f"Triton LL P2P Benchmark ({mode_str}, 2 GPUs)", flush=True)
         print(f"GPU {gpu_id} <-> GPU {gpu_id + 1 - 2 * local_rank}", flush=True)
         print(flush=True)
-        print(
-            f"{'Size':<10} | {'Latency (us)':<14} | {'BW (GB/s)':<12} | {'Iters':<6}",
-            flush=True,
-        )
-        print("-" * 56, flush=True)
 
-    for nbytes in MSG_SIZES:
-        num_elements = nbytes // 4  # int32
-        src = torch.randn(num_elements, dtype=torch.float32, device=f"cuda:{gpu_id}")
-        dst = torch.zeros(num_elements, dtype=torch.float32, device=f"cuda:{gpu_id}")
-
-        # Warmup
-        for _ in range(WARMUP_ITERS):
-            if fused:
-                op.sendrecv(
-                    peer=peer_rank, src_tensor=src, dst_tensor=dst, nbytes=nbytes
-                )
-            elif bidirectional:
-                op.send(peer=peer_rank, src_tensor=src, nbytes=nbytes)
-                op.recv(peer=peer_rank, dst_tensor=dst, nbytes=nbytes)
-            else:
-                if local_rank == 0:
-                    op.send(peer=peer_rank, src_tensor=src, nbytes=nbytes)
-                else:
-                    op.recv(peer=peer_rank, dst_tensor=dst, nbytes=nbytes)
-        torch.cuda.synchronize()
-        comm.barrier(False)
-
-        # Fewer iterations for larger messages
-        iters = TIMED_ITERS if nbytes <= 16384 else TIMED_ITERS // 2
-
-        start_event = torch.cuda.Event(enable_timing=True)
-        end_event = torch.cuda.Event(enable_timing=True)
-
-        comm.barrier(False)
-        start_event.record()
-        for _ in range(iters):
-            if fused:
-                op.sendrecv(
-                    peer=peer_rank, src_tensor=src, dst_tensor=dst, nbytes=nbytes
-                )
-            elif bidirectional:
-                op.send(peer=peer_rank, src_tensor=src, nbytes=nbytes)
-                op.recv(peer=peer_rank, dst_tensor=dst, nbytes=nbytes)
-            else:
-                if local_rank == 0:
-                    op.send(peer=peer_rank, src_tensor=src, nbytes=nbytes)
-                else:
-                    op.recv(peer=peer_rank, dst_tensor=dst, nbytes=nbytes)
-        end_event.record()
-        torch.cuda.synchronize()
-
-        elapsed_ms = start_event.elapsed_time(end_event)
-        avg_us = (elapsed_ms * 1000.0) / iters
-        bw_gbps = (nbytes / (1024**3)) / (avg_us / 1_000_000.0)
-
-        if local_rank == 0:
+        if cuda_graph:
             print(
-                f"{format_size(nbytes):<10} | {avg_us:<14.2f} | "
-                f"{bw_gbps:<12.4f} | {iters:<6}"
+                f"{'Size':<10} | {'Eager (us)':<14} | {'Graph (us)':<14} | "
+                f"{'Speedup':<8} | {'Iters':<6}",
+                flush=True,
             )
-
-        del src, dst
+            print("-" * 68, flush=True)
+            for nbytes in MSG_SIZES:
+                iters = TIMED_ITERS if nbytes <= 16384 else TIMED_ITERS // 2
+                eager_us = eager_results[nbytes]
+                graph_us = graph_results[nbytes]
+                speedup = eager_us / graph_us if graph_us > 0 else 0.0
+                print(
+                    f"{format_size(nbytes):<10} | {eager_us:<14.2f} | "
+                    f"{graph_us:<14.2f} | {speedup:<8.2f}x | {iters:<6}",
+                    flush=True,
+                )
+        else:
+            print(
+                f"{'Size':<10} | {'Latency (us)':<14} | "
+                f"{'BW (GB/s)':<12} | {'Iters':<6}",
+                flush=True,
+            )
+            print("-" * 56, flush=True)
+            for nbytes in MSG_SIZES:
+                iters = TIMED_ITERS if nbytes <= 16384 else TIMED_ITERS // 2
+                avg_us = eager_results[nbytes]
+                bw_gbps = (nbytes / (1024**3)) / (avg_us / 1_000_000.0)
+                print(
+                    f"{format_size(nbytes):<10} | {avg_us:<14.2f} | "
+                    f"{bw_gbps:<12.4f} | {iters:<6}",
+                    flush=True,
+                )
 
     op.teardown()
     comm.finalize()
@@ -191,6 +279,7 @@ def run_benchmark_worker(local_rank, master_port, bidirectional, fused, gpu_offs
 if __name__ == "__main__":
     bidirectional = "--bidirectional" in sys.argv
     fused = "--fused" in sys.argv
+    cuda_graph = "--cuda-graph" in sys.argv
     gpu_offset = 0
     for i, a in enumerate(sys.argv):
         if a == "--gpu-offset" and i + 1 < len(sys.argv):
@@ -199,7 +288,7 @@ if __name__ == "__main__":
     port = find_free_port()
     mp.spawn(
         run_benchmark_worker,
-        args=(port, bidirectional, fused, gpu_offset),
+        args=(port, bidirectional, fused, cuda_graph, gpu_offset),
         nprocs=2,
         join=True,
     )
