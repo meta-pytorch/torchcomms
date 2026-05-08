@@ -638,7 +638,24 @@ void CollTrace::collTraceThread(
 
   bool initialized = false;
 
+  // Periodic re-anchor of the GPU %globaltimer ↔ wall-clock mapping. Bounds
+  // residual drift between anchors to ~kReanchorInterval × oscillator-ppm
+  // (≤ ~100 ns at 1 s and 100 ppm). Only meaningful in graph mode, since the
+  // anchor is only consulted when converting ring buffer device timestamps.
+  // Gated on NCCL_COLLTRACE_PERIODIC_REANCHOR (default false) — issuing CUDA
+  // calls from this thread has been observed to hang some training jobs.
+  constexpr auto kReanchorInterval = std::chrono::seconds(1);
+  auto lastReanchor = std::chrono::steady_clock::now();
+
   while (!isThreadCancelled()) {
+    if (NCCL_COLLTRACE_PERIODIC_REANCHOR && ringBuffer_.has_value()) {
+      auto now = std::chrono::steady_clock::now();
+      if (now - lastReanchor >= kReanchorInterval) {
+        GlobaltimerCalibration::get().refresh();
+        lastReanchor = now;
+      }
+    }
+
     std::multiset<PendingAction> actions;
 
     pollGraphEvents(actions);

@@ -12,16 +12,6 @@ using namespace std::chrono_literals;
 
 namespace {
 
-// Build a calibration as if it were captured "right now" so that the
-// reconstruction inside toWallClock(uint32_t) — which queries
-// std::chrono::system_clock::now() internally — has a known reference.
-GlobaltimerCalibration makeCalibrationAtNow(uint64_t deviceNs) {
-  GlobaltimerCalibration cal{};
-  cal.device_ns = deviceNs;
-  cal.host_time = std::chrono::system_clock::now();
-  return cal;
-}
-
 uint32_t pack(uint64_t gpuNs) {
   return static_cast<uint32_t>(gpuNs >> US_TICK_TIMESTAMP_SHIFT);
 }
@@ -51,52 +41,53 @@ TEST(GpuClockCalibrationTest, ToWallClock64BitIdentity) {
   // The 64-bit overload is pure arithmetic on the calibration point:
   // toWallClock(device_ns) must equal host_time exactly.
   const uint64_t kDeviceNs = 5'000'000'000ULL;
-  GlobaltimerCalibration cal{};
-  cal.device_ns = kDeviceNs;
-  cal.host_time = std::chrono::system_clock::now();
+  const auto kHostTime = std::chrono::system_clock::now();
+  auto cal = GlobaltimerCalibration::createForTest(kDeviceNs, kHostTime);
 
-  EXPECT_EQ(cal.toWallClock(kDeviceNs), cal.host_time);
+  EXPECT_EQ(cal->toWallClock(kDeviceNs), kHostTime);
 }
 
 TEST(GpuClockCalibrationTest, ToWallClock64BitOffset) {
   // device_ns + 2s should map to host_time + 2s.
   const uint64_t kDeviceNs = 5'000'000'000ULL;
-  GlobaltimerCalibration cal{};
-  cal.device_ns = kDeviceNs;
-  cal.host_time = std::chrono::system_clock::now();
+  const auto kHostTime = std::chrono::system_clock::now();
+  auto cal = GlobaltimerCalibration::createForTest(kDeviceNs, kHostTime);
 
   auto wall =
-      cal.toWallClock(static_cast<uint64_t>(kDeviceNs + 2'000'000'000ULL));
-  EXPECT_EQ(wall, cal.host_time + 2s);
+      cal->toWallClock(static_cast<uint64_t>(kDeviceNs + 2'000'000'000ULL));
+  EXPECT_EQ(wall, kHostTime + 2s);
 }
 
 TEST(GpuClockCalibrationTest, ToWallClock32BitAtCalibrationPoint) {
   // Event at exactly the calibration point — packed timestamp is
   // (device_ns >> 10). Reconstruction should yield ≈ host_time.
   const uint64_t kDeviceNs = 5'000'000'000ULL;
-  auto cal = makeCalibrationAtNow(kDeviceNs);
+  const auto kHostTime = std::chrono::system_clock::now();
+  auto cal = GlobaltimerCalibration::createForTest(kDeviceNs, kHostTime);
 
-  expectClose(cal.toWallClock(pack(kDeviceNs)), cal.host_time);
+  expectClose(cal->toWallClock(pack(kDeviceNs)), kHostTime);
 }
 
 TEST(GpuClockCalibrationTest, ToWallClock32BitPastEvent) {
   // Event 1 second before the calibration point. Reconstruction should
   // yield ≈ host_time - 1s.
   const uint64_t kDeviceNs = 5'000'000'000ULL;
-  auto cal = makeCalibrationAtNow(kDeviceNs);
+  const auto kHostTime = std::chrono::system_clock::now();
+  auto cal = GlobaltimerCalibration::createForTest(kDeviceNs, kHostTime);
 
-  auto wall = cal.toWallClock(pack(kDeviceNs - 1'000'000'000ULL));
-  expectClose(wall, cal.host_time - 1s);
+  auto wall = cal->toWallClock(pack(kDeviceNs - 1'000'000'000ULL));
+  expectClose(wall, kHostTime - 1s);
 }
 
 TEST(GpuClockCalibrationTest, ToWallClock32BitFutureEvent) {
   // Event 1 second after the calibration point. Reconstruction should
   // yield ≈ host_time + 1s.
   const uint64_t kDeviceNs = 5'000'000'000ULL;
-  auto cal = makeCalibrationAtNow(kDeviceNs);
+  const auto kHostTime = std::chrono::system_clock::now();
+  auto cal = GlobaltimerCalibration::createForTest(kDeviceNs, kHostTime);
 
-  auto wall = cal.toWallClock(pack(kDeviceNs + 1'000'000'000ULL));
-  expectClose(wall, cal.host_time + 1s);
+  auto wall = cal->toWallClock(pack(kDeviceNs + 1'000'000'000ULL));
+  expectClose(wall, kHostTime + 1s);
 }
 
 TEST(GpuClockCalibrationTest, ToWallClock32BitWrapsCorrectly) {
@@ -111,10 +102,11 @@ TEST(GpuClockCalibrationTest, ToWallClock32BitWrapsCorrectly) {
   // "100ms in the future", not "~71 minutes in the past".
   const uint64_t kBaselineTicks = 0xFFFF'FFF0ULL;
   const uint64_t kDeviceNs = kBaselineTicks << US_TICK_TIMESTAMP_SHIFT;
-  auto cal = makeCalibrationAtNow(kDeviceNs);
+  const auto kHostTime = std::chrono::system_clock::now();
+  auto cal = GlobaltimerCalibration::createForTest(kDeviceNs, kHostTime);
 
-  auto wall = cal.toWallClock(pack(kDeviceNs + 100'000'000ULL)); // +100ms
-  expectClose(wall, cal.host_time + 100ms);
+  auto wall = cal->toWallClock(pack(kDeviceNs + 100'000'000ULL)); // +100ms
+  expectClose(wall, kHostTime + 100ms);
 }
 
 // Past-only bias: events spanning the full ~73 min past lookback should
@@ -125,15 +117,16 @@ TEST(GpuClockCalibrationTest, ToWallClock32BitNearWrapBoundary) {
   // Device clock past 5h so subtracting >70 minutes stays positive.
   const uint64_t kDeviceNs =
       std::chrono::duration_cast<std::chrono::nanoseconds>(5h).count();
-  auto cal = makeCalibrationAtNow(kDeviceNs);
+  const auto kHostTime = std::chrono::system_clock::now();
+  auto cal = GlobaltimerCalibration::createForTest(kDeviceNs, kHostTime);
 
   for (auto past : {70min, 71min, 72min}) {
     SCOPED_TRACE("past=" + std::to_string(past.count()) + "min");
     const int64_t pastNs =
         std::chrono::duration_cast<std::chrono::nanoseconds>(past).count();
     auto wall =
-        cal.toWallClock(pack(kDeviceNs - static_cast<uint64_t>(pastNs)));
-    expectClose(wall, cal.host_time - past);
+        cal->toWallClock(pack(kDeviceNs - static_cast<uint64_t>(pastNs)));
+    expectClose(wall, kHostTime - past);
   }
 }
 
@@ -145,16 +138,17 @@ TEST(GpuClockCalibrationTest, ToWallClock32BitNearWrapBoundary) {
 TEST(GpuClockCalibrationTest, ToWallClock32BitWrapsBeyondBoundary) {
   const uint64_t kDeviceNs =
       std::chrono::duration_cast<std::chrono::nanoseconds>(5h).count();
-  auto cal = makeCalibrationAtNow(kDeviceNs);
+  const auto kHostTime = std::chrono::system_clock::now();
+  auto cal = GlobaltimerCalibration::createForTest(kDeviceNs, kHostTime);
 
   constexpr int64_t k74MinNs =
       std::chrono::duration_cast<std::chrono::nanoseconds>(74min).count();
   auto wall =
-      cal.toWallClock(pack(kDeviceNs - static_cast<uint64_t>(k74MinNs)));
+      cal->toWallClock(pack(kDeviceNs - static_cast<uint64_t>(k74MinNs)));
 
   constexpr auto kWrapWindow =
       std::chrono::nanoseconds(uint64_t{1} << 42); // 2^32 ticks * 1024 ns
-  expectClose(wall, cal.host_time - 74min + kWrapWindow);
+  expectClose(wall, kHostTime - 74min + kWrapWindow);
 }
 
 // Calibration captured long enough ago that (now - host_time) in ticks
@@ -167,9 +161,9 @@ TEST(GpuClockCalibrationTest, ToWallClock32BitWrapsBeyondBoundary) {
 // elapsed device_ticks since calibration will have wrapped past
 // UINT32_MAX at least once.
 TEST(GpuClockCalibrationTest, ToWallClock32BitOldCalibration) {
-  GlobaltimerCalibration cal{};
-  cal.device_ns = 1'000'000'000ULL;
-  cal.host_time = std::chrono::system_clock::now() - 2h;
+  const uint64_t kDeviceNs = 1'000'000'000ULL;
+  const auto kHostTime = std::chrono::system_clock::now() - 2h;
+  auto cal = GlobaltimerCalibration::createForTest(kDeviceNs, kHostTime);
 
   // The "current" device timestamp is device_ns + 2h. Pack it (truncate
   // to low 32 of the 1024ns ticks) and feed it to the reconstruction —
@@ -177,27 +171,27 @@ TEST(GpuClockCalibrationTest, ToWallClock32BitOldCalibration) {
   // distinguish this event from one ~71 minutes earlier.
   constexpr int64_t kTwoHoursNs =
       std::chrono::duration_cast<std::chrono::nanoseconds>(2h).count();
-  const uint64_t nowGpuNs = cal.device_ns + static_cast<uint64_t>(kTwoHoursNs);
+  const uint64_t nowGpuNs = kDeviceNs + static_cast<uint64_t>(kTwoHoursNs);
 
   expectClose(
-      cal.toWallClock(pack(nowGpuNs)), std::chrono::system_clock::now());
+      cal->toWallClock(pack(nowGpuNs)), std::chrono::system_clock::now());
 }
 
 // End-to-end smoke test against the real singleton. Confirms that
 // GlobaltimerCalibration::get() boots (kernel launches successfully,
 // captures device_ns + host_time) and that the resulting calibration
-// passes the same math invariants we tested with synthetic data.
+// passes the toWallClock invariants. Round-trip property: feeding a known
+// offset through toWallClock(uint64_t) returns the anchored host_time
+// shifted by the same offset.
 TEST(GpuClockCalibrationTest, SingletonRoundTrip) {
-  const auto& cal = GlobaltimerCalibration::get();
+  auto& cal = GlobaltimerCalibration::get();
 
-  // The 64-bit overload at the calibration point is exact.
-  EXPECT_EQ(cal.toWallClock(cal.device_ns), cal.host_time);
-
-  // The 32-bit overload at the calibration point reconstructs to ≈
-  // host_time. Slack is wider here because the singleton was captured
-  // at process start (potentially many seconds ago) so toWallClock's
-  // internal now() has drifted from cal.host_time accordingly — the
-  // reconstruction still snaps back to host_time via the signed-delta
-  // math, but rounding to ~1024ns ticks contributes a small error.
-  expectClose(cal.toWallClock(pack(cal.device_ns)), cal.host_time);
+  // Pick two device_ns values 2s apart and check the wall-time delta is
+  // also exactly 2s — that's all the math the singleton can validate
+  // without exposing its private anchor.
+  constexpr uint64_t kBase = 1'000'000'000'000ULL;
+  constexpr uint64_t kOffset = 2'000'000'000ULL;
+  auto wall0 = cal.toWallClock(kBase);
+  auto wall1 = cal.toWallClock(kBase + kOffset);
+  EXPECT_EQ(wall1 - wall0, std::chrono::nanoseconds(kOffset));
 }
