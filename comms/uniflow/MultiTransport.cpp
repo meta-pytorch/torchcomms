@@ -394,31 +394,34 @@ Result<std::unique_ptr<MultiTransport>> MultiTransportFactory::createTransport(
   CHECK_RETURN(parsed);
   auto& entries = parsed.value();
   if (entries.size() != factories_.size()) {
-    return Err(
-        ErrCode::InvalidArgument,
-        "transport count mismatch: local=" + std::to_string(factories_.size()) +
-            ", peer=" + std::to_string(entries.size()));
+    UNIFLOW_LOG_WARN(
+        "transport count mismatch: local={}, peer={}",
+        factories_.size(),
+        entries.size());
   }
 
   auto mt = std::make_unique<MultiTransport>(deviceId_, eventBaseThread_);
-  for (size_t i = 0; i < factories_.size(); ++i) {
-    if (entries[i].type != factories_[i]->transportType()) {
-      return Err(
-          ErrCode::TopologyDisconnect,
-          "transport type mismatch at " + std::to_string(i) +
-              ": local=" + std::to_string(factories_[i]->transportType()) +
-              ", peer=" + std::to_string(entries[i].type));
+  for (size_t i = 0, j = 0; i < entries.size() && j < factories_.size();) {
+    if (entries[i].type < factories_[j]->transportType()) {
+      ++i;
+      continue;
+    }
+    if (entries[i].type > factories_[j]->transportType()) {
+      ++j;
+      continue;
     }
 
-    auto transport = factories_[i]->createTransport(entries[i].data);
+    auto transport = factories_[j]->createTransport(entries[i].data);
     if (transport) {
       mt->addTransport(std::move(transport).value());
     } else {
       UNIFLOW_LOG_WARN(
           "Transport {} cannot be created: {}",
-          factories_[i]->transportType(),
+          factories_[j]->transportType(),
           transport.error().message());
     }
+    ++i;
+    ++j;
   }
   if (mt->transports_.empty()) {
     return Err(ErrCode::TopologyDisconnect, "no transport can be connected");
