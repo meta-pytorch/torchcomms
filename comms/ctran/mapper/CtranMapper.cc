@@ -20,7 +20,7 @@
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
-#include "comms/utils/logger/alloc.h"
+#include "comms/utils/memtrace/MemoryTrace.h"
 
 #ifdef ENABLE_META_COMPRESSION
 #include <comms/ctran/mapper/fb/IcompressionManager.h>
@@ -681,7 +681,7 @@ commResult_t CtranMapper::deregMem(void* segHdl, const bool skipRemRelease) {
   // freed is true means all segments are deregistered
   if (freed) {
     for (auto& regElem : regElemsFreed) {
-      logMemoryEvent(
+      meta::comms::memtrace::recordReg(
           logMetaData_,
           "",
           "deregMem",
@@ -690,8 +690,7 @@ commResult_t CtranMapper::deregMem(void* segHdl, const bool skipRemRelease) {
           regElem->numSegments(),
           std::chrono::duration_cast<std::chrono::microseconds>(
               std::chrono::steady_clock::now() - timerBegin)
-              .count(),
-          true /* isRegMemEvent */);
+              .count());
     }
   }
   return commSuccess;
