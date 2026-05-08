@@ -6,6 +6,7 @@
 
 #include "comms/pipes/CopyUtils.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
+#include "comms/pipes/Tile.cuh"
 
 namespace comms::pipes {
 
@@ -33,7 +34,7 @@ struct Memcpy {
   }
 
   template <typename... Args>
-  __device__ __forceinline__ static void recv_forward(
+  __device__ __forceinline__ static void forward(
       char* dst,
       char* fwd_staging,
       const char* staging,
@@ -42,9 +43,7 @@ struct Memcpy {
       std::size_t /*byte_offset*/,
       Args...) {
     if (dst) {
-      memcpy_vectorized(dst, staging, nbytes, group);
-      group.sync();
-      memcpy_vectorized(fwd_staging, dst, nbytes, group);
+      memcpy_vectorized(dst, fwd_staging, staging, nbytes, group);
     } else {
       memcpy_vectorized(fwd_staging, staging, nbytes, group);
     }
