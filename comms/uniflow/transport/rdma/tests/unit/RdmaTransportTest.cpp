@@ -3,6 +3,7 @@
 #include "comms/uniflow/transport/rdma/RdmaTransport.h"
 #include "comms/uniflow/transport/rdma/RdmaRegistrationHandle.h"
 
+#include "comms/uniflow/drivers/cuda/mock/MockCudaApi.h"
 #include "comms/uniflow/drivers/ibverbs/mock/MockIbvApi.h"
 #include "comms/uniflow/executor/ScopedEventBaseThread.h"
 
@@ -53,7 +54,7 @@ class SegmentTest {
 
 TEST(RdmaTransportInfoTest, SerializeDeserializeRoundTrip) {
   RdmaTransportInfo info;
-  info.header.version = 1;
+  info.header.version = kRdmaVersion;
   info.header.numQps = 4;
   info.header.numNics = 2;
   info.nicInfos = {
@@ -76,13 +77,15 @@ TEST(RdmaTransportInfoTest, SerializeDeserializeRoundTrip) {
       {.qpNum = 500, .psn = 600},
       {.qpNum = 700, .psn = 800},
   };
+  info.ctrl = {.addr = 0x1000, .length = 64, .rkeys = {0xAA, 0xBB}};
+  info.slab = {.addr = 0x2000, .length = 4096, .rkeys = {0xCC, 0xDD}};
 
   auto data = info.serialize();
   auto result = RdmaTransportInfo::deserialize(data);
   ASSERT_TRUE(result.hasValue());
 
   auto& out = result.value();
-  EXPECT_EQ(out.header.version, 1);
+  EXPECT_EQ(out.header.version, kRdmaVersion);
   EXPECT_EQ(out.header.numQps, 4);
   EXPECT_EQ(out.header.numNics, 2);
 
@@ -96,6 +99,17 @@ TEST(RdmaTransportInfoTest, SerializeDeserializeRoundTrip) {
   ASSERT_EQ(out.qpInfos.size(), 4);
   EXPECT_EQ(out.qpInfos[0].qpNum, 100);
   EXPECT_EQ(out.qpInfos[3].qpNum, 700);
+
+  EXPECT_EQ(out.ctrl.addr, 0x1000);
+  EXPECT_EQ(out.ctrl.length, 64);
+  ASSERT_EQ(out.ctrl.rkeys.size(), 2);
+  EXPECT_EQ(out.ctrl.rkeys[0], 0xAA);
+  EXPECT_EQ(out.ctrl.rkeys[1], 0xBB);
+  EXPECT_EQ(out.slab.addr, 0x2000);
+  EXPECT_EQ(out.slab.length, 4096);
+  ASSERT_EQ(out.slab.rkeys.size(), 2);
+  EXPECT_EQ(out.slab.rkeys[0], 0xCC);
+  EXPECT_EQ(out.slab.rkeys[1], 0xDD);
 }
 
 TEST(RdmaTransportInfoTest, DeserializeTooSmallForHeader) {
@@ -147,6 +161,8 @@ TEST(RdmaTransportInfoTest, SerializeZeroQps) {
   info.header.numQps = 0;
   info.header.numNics = 1;
   info.nicInfos = {{.lid = 1}};
+  info.ctrl.rkeys = {0};
+  info.slab.rkeys = {0};
 
   auto data = info.serialize();
   auto result = RdmaTransportInfo::deserialize(data);
@@ -201,9 +217,22 @@ class RdmaTransportTest : public ::testing::Test {
  protected:
   void SetUp() override {
     mockApi_ = std::make_shared<testing::NiceMock<MockIbvApi>>();
+    mockCudaApi_ = std::make_shared<testing::NiceMock<MockCudaApi>>();
+    ON_CALL(*mockApi_, regMr(_, _, _, _))
+        .WillByDefault(Return(Result<ibv_mr*>(&fakeSlabMr_)));
+    ON_CALL(*mockApi_, deregMr(_)).WillByDefault(Return(Ok()));
+    ON_CALL(*mockCudaApi_, hostAlloc(_, _))
+        .WillByDefault([](size_t size, unsigned int) {
+          return Result<void*>(std::calloc(1, size));
+        });
+    ON_CALL(*mockCudaApi_, hostFree(_)).WillByDefault([](void* ptr) {
+      std::free(ptr);
+      return Ok();
+    });
   }
 
   std::shared_ptr<testing::NiceMock<MockIbvApi>> mockApi_;
+  std::shared_ptr<testing::NiceMock<MockCudaApi>> mockCudaApi_;
   ScopedEventBaseThread evbThread_;
 
   ibv_device fakeDev0_{};
@@ -218,6 +247,7 @@ class RdmaTransportTest : public ::testing::Test {
   ibv_qp fakeQp1_{};
   ibv_qp fakeQp2_{};
   ibv_qp fakeQp3_{};
+  ibv_mr fakeSlabMr_{};
 };
 
 TEST_F(RdmaTransportTest, SingleNicBindCreatesQPs) {
@@ -236,7 +266,14 @@ TEST_F(RdmaTransportTest, SingleNicBindCreatesQPs) {
   nics->push_back(
       makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0x1234, gid));
   RdmaTransportConfig config{.numQps = 2};
-  RdmaTransport transport(mockApi_, evbThread_.getEventBase(), nics, 0, config);
+  RdmaTransport transport(
+      mockApi_,
+      mockCudaApi_,
+      evbThread_.getEventBase(),
+      nics,
+      0,
+      nullptr,
+      config);
 
   auto data = transport.bind();
   ASSERT_FALSE(data.empty());
@@ -275,7 +312,14 @@ TEST_F(RdmaTransportTest, MultiNicBindDistributesQPsRoundRobin) {
   nics->push_back(
       makeNic(&fakeDev1_, &fakeCtx1_, &fakePd1_, mockApi_, 0x2222, gid1));
   RdmaTransportConfig config{.numQps = 4};
-  RdmaTransport transport(mockApi_, evbThread_.getEventBase(), nics, 0, config);
+  RdmaTransport transport(
+      mockApi_,
+      mockCudaApi_,
+      evbThread_.getEventBase(),
+      nics,
+      0,
+      nullptr,
+      config);
 
   auto data = transport.bind();
   ASSERT_FALSE(data.empty());
@@ -302,7 +346,8 @@ TEST_F(RdmaTransportTest, BindReturnsEmptyOnCqFailure) {
   ibv_gid gid{};
   auto nics = std::make_shared<std::vector<NicResources>>();
   nics->push_back(makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0, gid));
-  RdmaTransport transport(mockApi_, evbThread_.getEventBase(), nics, 0);
+  RdmaTransport transport(
+      mockApi_, mockCudaApi_, evbThread_.getEventBase(), nics, 0);
 
   auto data = transport.bind();
   EXPECT_TRUE(data.empty());
@@ -318,7 +363,8 @@ TEST_F(RdmaTransportTest, BindReturnsEmptyOnQpFailure) {
   ibv_gid gid{};
   auto nics = std::make_shared<std::vector<NicResources>>();
   nics->push_back(makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0, gid));
-  RdmaTransport transport(mockApi_, evbThread_.getEventBase(), nics, 0);
+  RdmaTransport transport(
+      mockApi_, mockCudaApi_, evbThread_.getEventBase(), nics, 0);
 
   auto data = transport.bind();
   EXPECT_TRUE(data.empty());
@@ -338,7 +384,8 @@ TEST_F(RdmaTransportTest, ConnectTransitionsQPs) {
   auto nics = std::make_shared<std::vector<NicResources>>();
   nics->push_back(
       makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0x1234, gid));
-  RdmaTransport transport(mockApi_, evbThread_.getEventBase(), nics, 0);
+  RdmaTransport transport(
+      mockApi_, mockCudaApi_, evbThread_.getEventBase(), nics, 0);
   transport.bind();
 
   RdmaTransportInfo remoteInfo;
@@ -347,6 +394,8 @@ TEST_F(RdmaTransportTest, ConnectTransitionsQPs) {
   remoteInfo.header.numNics = 1;
   remoteInfo.nicInfos = {{.lid = 0x5678}};
   remoteInfo.qpInfos = {{.qpNum = 200, .psn = 300}};
+  remoteInfo.ctrl.rkeys = {0};
+  remoteInfo.slab.rkeys = {0};
 
   auto status = transport.connect(remoteInfo.serialize());
   ASSERT_FALSE(status.hasError());
@@ -365,7 +414,8 @@ TEST_F(RdmaTransportTest, ConnectRejectsQpCountMismatch) {
   ibv_gid gid{};
   auto nics = std::make_shared<std::vector<NicResources>>();
   nics->push_back(makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0, gid));
-  RdmaTransport transport(mockApi_, evbThread_.getEventBase(), nics, 0);
+  RdmaTransport transport(
+      mockApi_, mockCudaApi_, evbThread_.getEventBase(), nics, 0);
   transport.bind();
 
   RdmaTransportInfo remoteInfo;
@@ -374,6 +424,8 @@ TEST_F(RdmaTransportTest, ConnectRejectsQpCountMismatch) {
   remoteInfo.header.numNics = 1;
   remoteInfo.nicInfos = {{.lid = 1}};
   remoteInfo.qpInfos = {{.qpNum = 200, .psn = 300}, {.qpNum = 201, .psn = 301}};
+  remoteInfo.ctrl.rkeys = {0};
+  remoteInfo.slab.rkeys = {0};
 
   auto status = transport.connect(remoteInfo.serialize());
   ASSERT_TRUE(status.hasError());
@@ -384,7 +436,8 @@ TEST_F(RdmaTransportTest, ConnectWithoutBindFails) {
   ibv_gid gid{};
   auto nics = std::make_shared<std::vector<NicResources>>();
   nics->push_back(makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0, gid));
-  RdmaTransport transport(mockApi_, evbThread_.getEventBase(), nics, 0);
+  RdmaTransport transport(
+      mockApi_, mockCudaApi_, evbThread_.getEventBase(), nics, 0);
 
   // Don't call bind() - go straight to connect()
   RdmaTransportInfo remoteInfo;
@@ -393,6 +446,8 @@ TEST_F(RdmaTransportTest, ConnectWithoutBindFails) {
   remoteInfo.header.numNics = 1;
   remoteInfo.nicInfos = {{.lid = 1}};
   remoteInfo.qpInfos = {{.qpNum = 200, .psn = 300}};
+  remoteInfo.ctrl.rkeys = {0};
+  remoteInfo.slab.rkeys = {0};
 
   auto status = transport.connect(remoteInfo.serialize());
   ASSERT_TRUE(status.hasError());
@@ -414,7 +469,8 @@ TEST_F(RdmaTransportTest, ShutdownDestroysResources) {
   ibv_gid gid{};
   auto nics = std::make_shared<std::vector<NicResources>>();
   nics->push_back(makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0, gid));
-  RdmaTransport transport(mockApi_, evbThread_.getEventBase(), nics, 0);
+  RdmaTransport transport(
+      mockApi_, mockCudaApi_, evbThread_.getEventBase(), nics, 0);
   transport.bind();
 
   transport.shutdown();
@@ -491,7 +547,7 @@ TEST_F(RdmaTransportFactoryTest, GetTopologyReturnsNonEmpty) {
       {"mlx5_0"}, evbThread_.getEventBase(), {}, mockApi_);
   auto topo = factory.getTopology();
   EXPECT_FALSE(topo.empty());
-  EXPECT_EQ(topo[0], 1u); // version == kRdmaVersion == 1
+  EXPECT_EQ(topo[0], kRdmaVersion);
 }
 
 TEST_F(RdmaTransportFactoryTest, CreateTransportAcceptsValidTopology) {
@@ -650,9 +706,22 @@ class RdmaTransportDataPathTest : public ::testing::Test {
  protected:
   void SetUp() override {
     mockApi_ = std::make_shared<testing::NiceMock<MockIbvApi>>();
+    mockCudaApi_ = std::make_shared<testing::NiceMock<MockCudaApi>>();
     evbThread_ = std::make_unique<ScopedEventBaseThread>();
 
     fakeQp_.qp_num = 100;
+
+    ON_CALL(*mockApi_, regMr(_, _, _, _))
+        .WillByDefault(Return(Result<ibv_mr*>(&fakeDataMr_)));
+    ON_CALL(*mockApi_, deregMr(_)).WillByDefault(Return(Ok()));
+    ON_CALL(*mockCudaApi_, hostAlloc(_, _))
+        .WillByDefault([](size_t size, unsigned int) {
+          return Result<void*>(std::calloc(1, size));
+        });
+    ON_CALL(*mockCudaApi_, hostFree(_)).WillByDefault([](void* ptr) {
+      std::free(ptr);
+      return Ok();
+    });
 
     EXPECT_CALL(*mockApi_, createCq(&fakeCtx_, _, _, _, _))
         .WillOnce(Return(Result<ibv_cq*>(&fakeCq_)));
@@ -666,7 +735,11 @@ class RdmaTransportDataPathTest : public ::testing::Test {
         makeNic(&fakeDev_, &fakeCtx_, &fakePd_, mockApi_, 0x1234, gid));
 
     transport_ = std::make_unique<RdmaTransport>(
-        mockApi_, evbThread_->getEventBase(), nics, kLocalDomainId);
+        mockApi_,
+        mockCudaApi_,
+        evbThread_->getEventBase(),
+        nics,
+        kLocalDomainId);
     transport_->bind();
 
     RdmaTransportInfo remoteInfo;
@@ -676,6 +749,8 @@ class RdmaTransportDataPathTest : public ::testing::Test {
     remoteInfo.header.domainId = kRemoteDomainId;
     remoteInfo.nicInfos = {{.lid = 0x5678}};
     remoteInfo.qpInfos = {{.qpNum = 200, .psn = 300}};
+    remoteInfo.ctrl.rkeys = {0};
+    remoteInfo.slab.rkeys = {0};
     transport_->connect(remoteInfo.serialize());
   }
 
@@ -733,6 +808,7 @@ class RdmaTransportDataPathTest : public ::testing::Test {
   static constexpr uint64_t kRemoteDomainId = 99;
 
   std::shared_ptr<testing::NiceMock<MockIbvApi>> mockApi_;
+  std::shared_ptr<testing::NiceMock<MockCudaApi>> mockCudaApi_;
   std::unique_ptr<ScopedEventBaseThread> evbThread_;
   std::unique_ptr<RdmaTransport> transport_;
 
@@ -741,6 +817,7 @@ class RdmaTransportDataPathTest : public ::testing::Test {
   ibv_pd fakePd_{};
   ibv_cq fakeCq_{};
   ibv_qp fakeQp_{};
+  ibv_mr fakeDataMr_{};
 };
 
 // --- Opcode-only parameterized fixture (put vs get) ---
