@@ -1,5 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <assert.h>
 #include <cuda.h>
 #include <cuda_runtime_api.h>
 
@@ -79,20 +80,34 @@ __global__ void ncclKernelPutSignal(
     CtranAlgoDeviceState* devState,
     CtranKernelPutSignalArgs args) {
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
+
+  [[maybe_unused]] uint64_t val = 0;
+  if (gtIdx == 0) {
+#if defined(__HIP_PLATFORM_AMD__)
+    trap();
+#else
+    assert(args.signalCounter);
+    if (args.signalCounterSystemScope) /* ib */ {
+      ::cuda::atomic_ref<uint64_t, cuda::thread_scope_system> cref{
+          *args.signalCounter};
+      val = cref.fetch_add(1, cuda::std::memory_order_release) + 1;
+    } else /* nvl */ {
+      ::cuda::atomic_ref<uint64_t, cuda::thread_scope_device> cref{
+          *args.signalCounter};
+      val = cref.fetch_add(1, cuda::std::memory_order_release) + 1;
+    }
+
+    if (args.signalAddr != nullptr) {
+      ::cuda::atomic_ref<uint64_t, cuda::thread_scope_system> ref{
+          *args.signalAddr};
+      ref.store(val, cuda::std::memory_order_release);
+    }
+#endif
+  }
+
   if (flag && gtIdx == 0) {
     ctran::device::devLoadAbortFlags(flag, devState);
     ctran::device::KernelStartGpe(flag);
-  }
-  // just atomic store
-  if (gtIdx == 0 && args.signalAddr != nullptr) {
-#if defined(__HIP_PLATFORM_AMD__)
-    // TODO: implement this atomic operations for AMD GPUs.
-    trap();
-#else
-    ::cuda::atomic_ref<uint64_t, cuda::thread_scope_system> ref{
-        *args.signalAddr};
-    ref.store(args.signalVal, cuda::std::memory_order_release);
-#endif
   }
 
   if (flag && gtIdx == 0) {
@@ -119,14 +134,19 @@ __global__ void ncclKernelWaitSignal(
     ctran::device::KernelStartGpe(flag);
   }
 
-  if (args.signalAddr != nullptr && gtIdx == 0) {
+  if (gtIdx == 0) {
 #if defined(__HIP_PLATFORM_AMD__)
-    // TODO: implement this atomic operations for AMD GPUs.
     trap();
 #else
-    ::cuda::atomic_ref<uint64_t, cuda::thread_scope_system> ref{
-        *args.signalAddr};
-    while (ref.load(cuda::std::memory_order_acquire) < args.cmpVal) {
+    assert(args.signalCounter);
+    ::cuda::atomic_ref<uint64_t, cuda::thread_scope_system> cref{
+        *args.signalCounter};
+    uint64_t val = cref.fetch_add(1, cuda::std::memory_order_release) + 1;
+    if (args.signalAddr != nullptr) {
+      ::cuda::atomic_ref<uint64_t, cuda::thread_scope_system> ref{
+          *args.signalAddr};
+      while (ref.load(cuda::std::memory_order_acquire) < val) {
+      }
     }
 #endif
   }
@@ -141,6 +161,23 @@ __global__ void ncclKernelSignal(
     CtranAlgoDeviceState* devState,
     CtranKernelSignalArgs args) {
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
+
+  [[maybe_unused]] uint64_t val = 0;
+  if (gtIdx == 0) {
+#if !defined(__HIP_PLATFORM_AMD__)
+    assert(args.signalCounter);
+    if (args.signalCounterSystemScope) /* ib */ {
+      ::cuda::atomic_ref<uint64_t, cuda::thread_scope_system> cref{
+          *args.signalCounter};
+      val = cref.fetch_add(1, cuda::std::memory_order_release) + 1;
+    } else /* nvl */ {
+      ::cuda::atomic_ref<uint64_t, cuda::thread_scope_device> cref{
+          *args.signalCounter};
+      val = cref.fetch_add(1, cuda::std::memory_order_release) + 1;
+    }
+#endif
+  }
+
   if (flag && gtIdx == 0) {
     ctran::device::devLoadAbortFlags(flag, devState);
     ctran::device::KernelStartGpe(flag);
@@ -152,7 +189,7 @@ __global__ void ncclKernelSignal(
 #else
     ::cuda::atomic_ref<uint64_t, cuda::thread_scope_system> ref{
         *args.signalAddr};
-    ref.store(args.signalVal, cuda::std::memory_order_release);
+    ref.store(val, cuda::std::memory_order_release);
 #endif
   }
 
