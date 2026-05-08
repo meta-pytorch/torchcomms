@@ -138,6 +138,14 @@ class GraphEventTracker {
       cudaGraph_t graph);
   void cleanupReleasedGraphs();
 
+  // Counter pool. Acquire returns a counter from the pool (resetting it to
+  // zero) or creates a new one if empty. Release returns a counter to the
+  // pool. Both must be called with mutex_ held. Pooling avoids the
+  // synchronizing cudaFreeHost in ~DeviceCounter on the watchdog thread —
+  // see cleanupReleasedGraphs() for context.
+  cudaError_t acquireCounter(std::unique_ptr<DeviceCounter>& out);
+  void releaseCounter(std::unique_ptr<DeviceCounter> counter);
+
   // Fire graph replay hooks for all events from the entry's last notified
   // position up to (current_replay, current_event). Events are ordered
   // S=0, E=1. Catches up missed replays automatically.
@@ -157,6 +165,10 @@ class GraphEventTracker {
   // cached at initOnGraphStart() to be reused in addEntry() for each collective
   unsigned long long current_graph_id_{0};
   std::unordered_map<unsigned long long, GraphState> graphs_;
+  // Pool of pinned-memory counter regions, reused across graph captures.
+  // Guarded by mutex_. Drained at destruction (~DeviceCounter calls
+  // cudaFreeHost — safe at comm shutdown when device is quiescent).
+  std::vector<std::unique_ptr<DeviceCounter>> counter_pool_;
 };
 
 } // namespace torch::comms

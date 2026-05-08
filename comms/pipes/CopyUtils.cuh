@@ -125,6 +125,57 @@ __device__ __forceinline__ void memcpy_vectorized_aligned(
 #endif // defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
 }
 
+/**
+ * memcpy_vectorized_aligned (dual-destination) - Fused recv-and-forward copy
+ *
+ * Reads source data once and writes to two destinations simultaneously.
+ * This halves the read bandwidth vs two separate memcpy_vectorized_aligned
+ * calls, which is critical for ring algorithm forwarding where an
+ * intermediate rank needs to copy to both its local user buffer and the
+ * successor's remote staging buffer.
+ *
+ * Same striding pattern as the single-dst version above.
+ */
+template <typename VecType, int kUnroll = 8>
+__device__ __forceinline__ void memcpy_vectorized_aligned(
+    VecType* dst1_p,
+    VecType* dst2_p,
+    const VecType* src_p,
+    std::size_t nelems,
+    const ThreadGroup& group) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  const std::size_t kLoopStride = group.group_size * kUnroll;
+  const std::size_t numVecsAligned = (nelems / kLoopStride) * kLoopStride;
+  VecType* __restrict__ dst1 = dst1_p;
+  VecType* __restrict__ dst2 = dst2_p;
+  const VecType* __restrict__ src = src_p;
+
+  for (std::size_t i = group.thread_id_in_group; i < numVecsAligned;
+       i += kLoopStride) {
+    VecType v[kUnroll];
+#pragma unroll
+    for (int j = 0; j < kUnroll; ++j) {
+      v[j] = src[i + j * group.group_size];
+    }
+#pragma unroll
+    for (int j = 0; j < kUnroll; ++j) {
+      dst1[i + j * group.group_size] = v[j];
+    }
+#pragma unroll
+    for (int j = 0; j < kUnroll; ++j) {
+      dst2[i + j * group.group_size] = v[j];
+    }
+  }
+
+  for (std::size_t i = numVecsAligned + group.thread_id_in_group; i < nelems;
+       i += group.group_size) {
+    VecType val = src[i];
+    dst1[i] = val;
+    dst2[i] = val;
+  }
+#endif // defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+}
+
 // AMD-optimized uint4 copy with system-coherent stores for P2P over XGMI.
 // NVIDIA NVLink provides hardware cache coherence for P2P writes, so the
 // standard memcpy_vectorized_aligned() is sufficient. AMD XGMI does not
@@ -160,6 +211,45 @@ __device__ __forceinline__ void memcpy_vectorized_aligned_sys(
 }
 #endif
 
+// AMD dual-destination copy: one destination gets system-coherent stores
+// (for NVLink remote write to successor), the other gets plain stores
+// (for local user buffer).
+#if defined(__HIP_DEVICE_COMPILE__) && !defined(__CUDA_ARCH__)
+template <int kUnroll = 8>
+__device__ __forceinline__ void memcpy_vectorized_aligned_sys(
+    uint4* dst_local,
+    uint4* dst_remote,
+    const uint4* src,
+    std::size_t nelems,
+    const ThreadGroup& group) {
+  const std::size_t kLoopStride = group.group_size * kUnroll;
+  const std::size_t numVecsAligned = (nelems / kLoopStride) * kLoopStride;
+
+  for (std::size_t i = group.thread_id_in_group; i < numVecsAligned;
+       i += kLoopStride) {
+    uint4 v[kUnroll];
+#pragma unroll
+    for (int j = 0; j < kUnroll; ++j) {
+      v[j] = src[i + j * group.group_size];
+    }
+#pragma unroll
+    for (int j = 0; j < kUnroll; ++j) {
+      dst_local[i + j * group.group_size] = v[j];
+    }
+#pragma unroll
+    for (int j = 0; j < kUnroll; ++j) {
+      store_sys_u128(&dst_remote[i + j * group.group_size], &v[j]);
+    }
+  }
+
+  for (std::size_t i = numVecsAligned + group.thread_id_in_group; i < nelems;
+       i += group.group_size) {
+    dst_local[i] = src[i];
+    store_sys_u128(&dst_remote[i], &src[i]);
+  }
+}
+#endif
+
 template <int kUnroll = 8>
 __device__ __forceinline__ void memcpy_vectorized(
     char* dst,
@@ -182,6 +272,43 @@ __device__ __forceinline__ void memcpy_vectorized(
   }
 
   memcpy_vectorized_aligned<char, kUnroll>(dst, src, len, group);
+#endif // defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+}
+
+/**
+ * memcpy_vectorized (dual-destination) - Fused copy to two destinations.
+ *
+ * Handles alignment and dispatches to the appropriate dual-dst
+ * memcpy_vectorized_aligned variant. Reads source once, writes to both
+ * destinations.
+ */
+template <int kUnroll = 8>
+__device__ __forceinline__ void memcpy_vectorized(
+    char* dst1,
+    char* dst2,
+    const char* src,
+    std::size_t len,
+    const ThreadGroup& group) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  constexpr std::size_t kAlignment = sizeof(uint4);
+  if ((uintptr_t)dst1 % kAlignment == 0 && (uintptr_t)dst2 % kAlignment == 0 &&
+      (uintptr_t)src % kAlignment == 0) {
+    const std::size_t nelems = len / kAlignment;
+    uint4* __restrict__ dst1_p = reinterpret_cast<uint4*>(dst1);
+    uint4* __restrict__ dst2_p = reinterpret_cast<uint4*>(dst2);
+    const uint4* __restrict__ src_p = reinterpret_cast<const uint4*>(src);
+    memcpy_vectorized_aligned<uint4, kUnroll>(
+        dst1_p, dst2_p, src_p, nelems, group);
+    len -= nelems * kAlignment;
+    if (len == 0) {
+      return;
+    }
+    dst1 = reinterpret_cast<char*>(dst1_p + nelems);
+    dst2 = reinterpret_cast<char*>(dst2_p + nelems);
+    src = reinterpret_cast<const char*>(src_p + nelems);
+  }
+
+  memcpy_vectorized_aligned<char, kUnroll>(dst1, dst2, src, len, group);
 #endif // defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
 }
 

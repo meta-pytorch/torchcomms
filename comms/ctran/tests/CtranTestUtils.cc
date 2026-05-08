@@ -529,21 +529,6 @@ std::unique_ptr<CtranComm> CtranStandaloneFixture::makeCtranComm(
 
 namespace {
 
-void initRankStatesTopologyWrapper(
-    ncclx::CommStateX* statex,
-    meta::comms::IBootstrap* bootstrap,
-    int nRanks) {
-  // Fake topology with nLocalRanks=1
-  if (NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::nolocal) {
-    statex->initRankTopologyNolocal();
-  } else if (NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::vnode) {
-    ASSERT_GE(nRanks, NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS);
-    statex->initRankTopologyVnode(NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS);
-  } else {
-    statex->initRankStatesTopology(std::move(bootstrap));
-  }
-}
-
 using PerRankState = CtranIntraProcessFixture::PerRankState;
 static void resetPerRankState(PerRankState& state) {
   if (state.dstBuffer != nullptr) {
@@ -601,8 +586,7 @@ void initCtranCommMultiRank(
       std::move(rankTopologies),
       std::move(commRanksToWorldRanks),
       std::string{kMultiRankCommDesc});
-  initRankStatesTopologyWrapper(
-      ctranComm->statex_.get(), ctranComm->bootstrap_.get(), nRanks);
+  ctranComm->statex_->initRankStatesTopology(ctranComm->bootstrap_.get());
 
   FB_COMMCHECKTHROW_EX_NOCOMM(ctranInit(ctranComm));
 

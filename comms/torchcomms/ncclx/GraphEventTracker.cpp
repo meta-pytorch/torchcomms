@@ -78,8 +78,8 @@ void GraphEventTracker::maybeInitGraphState(
   if (isGraphTimeoutMonitoringEnabled()) {
     CUDA_CHECK(
         api,
-        DeviceCounter::create(api, state.replay_counter),
-        "Failed to create replay counter");
+        acquireCounter(state.replay_counter),
+        "Failed to acquire replay counter");
     CUDA_CHECK(
         api,
         state.replay_counter->increment(stream),
@@ -351,10 +351,36 @@ void GraphEventTracker::cleanupReleasedGraphs() {
           }
         }
       }
+
+      // Recycle the counter back to the pool instead of letting
+      // ~DeviceCounter run inline. cudaFreeHost is a synchronizing call —
+      // running it here on the watchdog thread can block indefinitely if
+      // the device is busy with the next eager warmup, starving NCCL
+      // progress and causing a peer-visible deadlock. The graph has been
+      // fully destroyed (cudaGraphExecDestroy blocks until in-flight
+      // replays complete, then the user-object refcount drops to zero
+      // and our cleanupCallback fires), so no GPU work references this
+      // counter region.
+      releaseCounter(std::move(graph_state.replay_counter));
     }
 
     it = graphs_.erase(it);
   }
+}
+
+cudaError_t GraphEventTracker::acquireCounter(
+    std::unique_ptr<DeviceCounter>& out) {
+  if (!counter_pool_.empty()) {
+    out = std::move(counter_pool_.back());
+    counter_pool_.pop_back();
+    out->reset();
+    return cudaSuccess;
+  }
+  return DeviceCounter::create(comm_->getCudaApi(), out);
+}
+
+void GraphEventTracker::releaseCounter(std::unique_ptr<DeviceCounter> counter) {
+  counter_pool_.push_back(std::move(counter));
 }
 
 void GraphEventTracker::destroyAll() {

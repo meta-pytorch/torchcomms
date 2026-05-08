@@ -246,6 +246,34 @@ void testWeightedRecvSend(
 }
 
 // =============================================================================
+// forward_group() test kernel and wrapper
+// =============================================================================
+
+__global__ void testForwardKernel(
+    P2pNvlTransportDevice* pred,
+    P2pNvlTransportDevice* succ,
+    void* dst_d,
+    size_t nbytes,
+    GroupType groupType) {
+  auto group = make_group(groupType);
+  pred->forward_group(group, dst_d, nbytes, *succ);
+}
+
+void testForward(
+    P2pNvlTransportDevice* pred,
+    P2pNvlTransportDevice* succ,
+    void* dst_d,
+    size_t nbytes,
+    int numBlocks,
+    int blockSize,
+    GroupType groupType,
+    cudaStream_t stream) {
+  testForwardKernel<<<numBlocks, blockSize, 0, stream>>>(
+      pred, succ, dst_d, nbytes, groupType);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+// =============================================================================
 // write() test kernel and wrapper
 // =============================================================================
 

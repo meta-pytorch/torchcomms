@@ -8,7 +8,12 @@ import torch
 import torch.distributed as dist
 from torch.distributed import ProcessGroup
 from torchcomms._comms import TorchComm
-from torchcomms.distwrap.pginfo import pg_info_get_data, pg_info_set_data
+from torchcomms.distwrap.pginfo import (
+    pg_info_get_data,
+    pg_info_get_global_ranks,
+    pg_info_get_rank_map,
+    pg_info_set_data,
+)
 
 
 # =============================================================================
@@ -332,16 +337,14 @@ def get_group_rank(group: ProcessGroup, global_rank: int) -> int:
     Raises:
         ValueError: If the global rank is not in the group.
     """
-    from torchcomms.distwrap.pginfo import pg_info_get_global_ranks
-
-    global_ranks = pg_info_get_global_ranks(group)
-    try:
-        return global_ranks.index(global_rank)
-    except ValueError:
+    rank_map = pg_info_get_rank_map(group)
+    group_rank = rank_map.get(global_rank)
+    if group_rank is None:
         raise ValueError(
             f"Global rank {global_rank} is not in process group. "
-            f"Group ranks: {global_ranks}"
+            f"Group ranks: {pg_info_get_global_ranks(group)}"
         )
+    return group_rank
 
 
 def get_backend_for_device(group: ProcessGroup, device_type: str) -> str:

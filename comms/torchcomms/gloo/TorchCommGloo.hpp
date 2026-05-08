@@ -213,6 +213,8 @@ class TorchCommGloo : public TorchCommBackend,
   std::string name_;
 
   c10::intrusive_ptr<c10d::Store> store_;
+  c10::intrusive_ptr<c10d::Store> reconfigure_store_;
+  int64_t uuid_{-1};
   std::shared_ptr<gloo::Context> context_;
 
   uint32_t collectiveCounter_{0};

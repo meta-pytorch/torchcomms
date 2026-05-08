@@ -15,6 +15,7 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/wrapper/MetaFactory.h"
 #include "comms/ctran/Ctran.h"
+#include "comms/utils/memtrace/MemoryTrace.h"
 
 // conflict with ctran, disable for now.
 NCCL_PARAM(LocalRegister, "LOCAL_REGISTER", 0);
@@ -148,7 +149,7 @@ ncclResult_t ncclCommRegister(const ncclComm_t comm, void* buff, size_t size, vo
       comm->logMetaData.commHash,
       comm->logMetaData.commDesc.c_str());
   if (NCCL_COMM_REGISTER_LOG_ENABLE) {
-      logMemoryEvent(
+      meta::comms::memtrace::recordReg(
         comm->logMetaData,
         "",
         "ncclCommRegister",
@@ -157,8 +158,7 @@ ncclResult_t ncclCommRegister(const ncclComm_t comm, void* buff, size_t size, vo
         0,
         std::chrono::duration_cast<std::chrono::microseconds>(
           std::chrono::steady_clock::now() - timerBegin)
-          .count(),
-          true /* isRegMemEvent */);
+          .count());
   }
   return ncclSuccess;
 }
@@ -233,7 +233,7 @@ ncclResult_t ncclCommDeregister(const ncclComm_t comm, void *handle) {
       comm->logMetaData.commHash,
       comm->logMetaData.commDesc.c_str());
   if (NCCL_COMM_REGISTER_LOG_ENABLE) {
-    logMemoryEvent(
+    meta::comms::memtrace::recordReg(
         comm->logMetaData,
         "",
         "ncclCommDeregister",
@@ -242,8 +242,7 @@ ncclResult_t ncclCommDeregister(const ncclComm_t comm, void *handle) {
         0,
         std::chrono::duration_cast<std::chrono::microseconds>(
           std::chrono::steady_clock::now() - timerBegin)
-          .count(),
-          true /* isRegMemEvent */);
+          .count());
   }
   return ncclSuccess;
 }
