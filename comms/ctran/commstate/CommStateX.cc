@@ -78,44 +78,23 @@ CommStateX::CommStateX(
 
 CommStateX::~CommStateX() {}
 
-void CommStateX::initRankTopologyNolocal() {
-  rankStates_.resize(nRanks_);
-  nodeRanks_.resize(nRanks_);
-  for (int r = 0; r < nRanks_; ++r) {
-    auto& rankState = rankStates_.at(r);
-    rankState.rank = r;
-    rankState.pid = (r == rank_) ? getpid() : -1;
-    rankState.nodeId = r;
-    rankState.localRank = 0;
-    rankState.nLocalRanks = 1;
-    rankState.localRankToRanks.assign(1, r);
-    const std::string nolocalHost("nolocal_node_" + std::to_string(r));
-    rankState.host = nolocalHost;
-    nodeRanks_[rankState.nodeId].emplace_back(rankState.rank);
+void CommStateX::initSingleRankTopology() {
+  rankStates_.resize(1);
+  nodeRanks_.resize(1);
+  auto& rankState = rankStates_.at(0);
+  rankState.rank = rank_;
+  rankState.pid = getpid();
+  rankState.nodeId = 0;
+  rankState.localRank = 0;
+  rankState.nLocalRanks = 1;
+  rankState.localRankToRanks.assign(1, rank_);
+  char hostname[256] = {};
+  if (gethostname(hostname, sizeof(hostname)) == 0) {
+    rankState.host = hostname;
+  } else {
+    rankState.host = "uninitialized";
   }
-}
-
-void CommStateX::initRankTopologyVnode(const int nLocalRanks) {
-  rankStates_.resize(nRanks_);
-  const int nNodes = (nRanks_ + nLocalRanks - 1) / nLocalRanks;
-  nodeRanks_.resize(nNodes);
-  for (int r = 0; r < nRanks_; ++r) {
-    auto& rankState = rankStates_.at(r);
-    rankState.nLocalRanks = nLocalRanks;
-    rankState.rank = r;
-    rankState.pid = (r == rank_) ? getpid() : -1;
-    rankState.nodeId = r / rankState.nLocalRanks;
-    rankState.localRank = r % rankState.nLocalRanks;
-    rankState.localRankToRanks.assign(
-        rankState.nLocalRanks, rankState.nodeId * rankState.nLocalRanks);
-    for (int i = 0; i < rankState.nLocalRanks; i++) {
-      rankState.localRankToRanks[i] += i;
-    }
-    const std::string vNodeHost(
-        "vnode_node_" + std::to_string(rankState.nodeId));
-    rankState.host = vNodeHost;
-    nodeRanks_[rankState.nodeId].emplace_back(r);
-  }
+  nodeRanks_[0].emplace_back(rank_);
 }
 
 void CommStateX::initRankStatesTopology(meta::comms::IBootstrap* bootstrap) {
@@ -126,7 +105,7 @@ void CommStateX::initRankStatesTopology(meta::comms::IBootstrap* bootstrap) {
         commHash_,
         commDesc_,
         "bootstrap is required for multi-rank topology initialization");
-    initRankTopologyNolocal();
+    initSingleRankTopology();
     return;
   }
   auto myTopo = ctran::commstate::loadTopology(rank_, NCCL_TOPO_FILE_PATH);
@@ -368,7 +347,8 @@ void CommStateX::setRankStatesTopologies(
   // without altering the real hostname stored in rankState.host.
   std::unordered_map<std::string, std::vector<int>> nodeGroupMap;
 
-  for (const auto& rankTopology : rankTopologies_) {
+  for (int r = 0; r < static_cast<int>(rankTopologies_.size()); r++) {
+    const auto& rankTopology = rankTopologies_[r];
     const std::string host(rankTopology.host);
     const std::string rtsw(rankTopology.rtsw);
     const std::string su(rankTopology.su);
@@ -381,15 +361,14 @@ void CommStateX::setRankStatesTopologies(
     // ranks into virtual nodes of the given size.
     std::string nodeGroupKey = host;
     if (noLocal_) {
-      nodeGroupKey = "nolocal_node_" + std::to_string(rankTopology.rank);
+      nodeGroupKey = "nolocal_node_" + std::to_string(r);
     } else if (vCliqueSize_ > 0) {
-      nodeGroupKey =
-          "vnode_" + std::to_string(rankTopology.rank / vCliqueSize_);
+      nodeGroupKey = "vnode_" + std::to_string(r / vCliqueSize_);
     }
-    nodeGroupMap[nodeGroupKey].emplace_back(rankTopology.rank);
+    nodeGroupMap[nodeGroupKey].emplace_back(r);
 
     RankState state;
-    state.rank = rankTopology.rank;
+    state.rank = r;
     state.pid = rankTopology.pid;
     state.host = host;
     state.rtsw = rtsw;

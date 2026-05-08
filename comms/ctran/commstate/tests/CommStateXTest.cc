@@ -1,5 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <unistd.h>
 #include <cstdlib>
 #include <string>
 #include <vector>
@@ -661,6 +662,35 @@ INSTANTIATE_TEST_SUITE_P(
         TopoTestParam{TopoMode::kVClique, 2, 4, 2}),
     topoTestName);
 
+TEST(CommStateXTest, SingleRankTopology) {
+  auto commState = std::make_unique<CommStateX>(
+      0 /* rank */,
+      1 /* nRanks */,
+      0 /* cudaDev */,
+      90 /* cudaArch */,
+      25 /* busId */,
+      0 /* commHash */,
+      std::vector<RankTopology>{},
+      std::vector<int>{});
+
+  commState->initRankStatesTopology(nullptr);
+
+  EXPECT_EQ(commState->nRanks(), 1);
+  EXPECT_EQ(commState->nNodes(), 1);
+  EXPECT_EQ(commState->nLocalRanks(), 1);
+  EXPECT_EQ(commState->localRank(), 0);
+  EXPECT_EQ(commState->node(), 0);
+  EXPECT_FALSE(commState->host(0).empty());
+  EXPECT_FALSE(commState->gPid(0).empty());
+
+  char hostname[256];
+  gethostname(hostname, sizeof(hostname));
+  EXPECT_EQ(commState->host(0), std::string(hostname));
+  EXPECT_EQ(
+      commState->gPid(0),
+      std::string(hostname) + ":" + std::to_string(getpid()));
+}
+
 TEST(CommStateXTest, TopologySetInvalidNvlFabricTopos) {
   const int rank = 0;
   const int nRanks = 4;
@@ -715,8 +745,18 @@ TEST(CommStateXTest, nvlFabricWithNoLocal) {
   const int64_t busId = 25;
   const uint64_t commHash = 0;
 
-  // Create CommStateX with empty rank topologies (will be set by
-  // initRankTopologyNolocal)
+  // Build rank topologies with same host — noLocal=true will override
+  // to virtual per-rank nodes internally
+  std::vector<RankTopology> rankTopologies;
+  rankTopologies.reserve(nRanks);
+  for (int r = 0; r < nRanks; r++) {
+    RankTopology topo{};
+    topo.rank = r;
+    topo.pid = r;
+    std::strncpy(topo.host, "same_host", kMaxNameLen);
+    rankTopologies.push_back(topo);
+  }
+
   auto commState = std::make_unique<CommStateX>(
       rank,
       nRanks,
@@ -724,12 +764,10 @@ TEST(CommStateXTest, nvlFabricWithNoLocal) {
       cudaArch,
       busId,
       commHash,
-      std::vector<RankTopology>{},
+      rankTopologies,
       std::vector<int>{},
       "" /* commDesc */,
       true /* noLocal */);
-
-  commState->initRankTopologyNolocal();
 
   // Set up NVL fabric with 2 clusters of 4 ranks each (e.g. GB200 2-GPU trays)
   std::vector<NvlFabricTopology> nvlFabricTopologies{};
@@ -775,6 +813,18 @@ TEST(CommStateXTest, nvlFabricWithNoLocalCvar) {
   EnvRAII noLocalCvar(
       NCCL_COMM_STATE_DEBUG_TOPO, NCCL_COMM_STATE_DEBUG_TOPO::nolocal);
 
+  // Build rank topologies with same host — CVAR nolocal will override
+  // to virtual per-rank nodes internally
+  std::vector<RankTopology> rankTopologies;
+  rankTopologies.reserve(nRanks);
+  for (int r = 0; r < nRanks; r++) {
+    RankTopology topo{};
+    topo.rank = r;
+    topo.pid = r;
+    std::strncpy(topo.host, "same_host", kMaxNameLen);
+    rankTopologies.push_back(topo);
+  }
+
   auto commState = std::make_unique<CommStateX>(
       rank,
       nRanks,
@@ -782,13 +832,10 @@ TEST(CommStateXTest, nvlFabricWithNoLocalCvar) {
       cudaArch,
       busId,
       commHash,
-      std::vector<RankTopology>{},
+      rankTopologies,
       std::vector<int>{},
       "" /* commDesc */,
       false /* noLocal - hint is NOT set, only CVAR */);
-
-  // initRankTopologyNolocal sets host-based nLocalRanks=1 for all ranks
-  commState->initRankTopologyNolocal();
 
   // Set up NVL fabric with 2 clusters of 4 ranks each (e.g. GB200 2-GPU trays)
   std::vector<NvlFabricTopology> nvlFabricTopologies{};

@@ -88,8 +88,6 @@ class CommStateX {
 
   std::shared_ptr<CommStateX> createCommStateXFromNcclComm(void* comm);
 
-  void initRankTopologyNolocal();
-  void initRankTopologyVnode(const int nLocalRanks);
   void initRankStatesTopology(meta::comms::IBootstrap* bootstrap);
 
   /* Setters */
@@ -196,6 +194,8 @@ class CommStateX {
   bool isSameDeviceRack(int myRank, int peer) const;
 
  private:
+  void initSingleRankTopology();
+
   /* Setters */
   void setRankStatesTopologies(std::vector<RankTopology> rankTopologies);
   void setCommRankToWorldRanks(std::vector<int> commRanksToWorldRanks);
