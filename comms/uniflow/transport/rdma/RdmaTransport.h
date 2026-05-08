@@ -8,10 +8,12 @@
 #include <queue>
 #include <unordered_map>
 
+#include "comms/uniflow/drivers/cuda/CudaApi.h"
 #include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
 #include "comms/uniflow/drivers/ibverbs/IbvApi.h"
 #include "comms/uniflow/executor/EventBase.h"
 #include "comms/uniflow/transport/Transport.h"
+#include "comms/uniflow/transport/rdma/RdmaResources.h"
 
 namespace uniflow {
 
@@ -20,6 +22,7 @@ constexpr uint8_t kRdmaVersion{1};
 // Forward declarations.
 class RdmaRegistrationHandle;
 class RdmaRemoteRegistrationHandle;
+class RdmaSlabPool;
 
 /*
  * RDMA transport configuration.
@@ -42,24 +45,7 @@ struct RdmaTransportConfig {
   uint32_t maxSge{1}; /* Max scatter/gather entries per WR. */
   uint32_t maxInlineData{16}; /* Max inline data bytes per WR. */
   size_t chunkSize{512 * 1024}; /* Transfer chunk size in bytes (512KB). */
-};
-
-/*
- * Per-NIC RDMA resources.
- *
- * Populated by RdmaTransportFactory during device initialization.
- * Ownership: the factory owns the underlying ibverbs objects (context, PD).
- * Transports borrow these resources — they must not outlive the factory.
- */
-struct NicResources {
-  ibv_context* ctx{nullptr}; /* Opened device context. */
-  ibv_pd* pd{nullptr}; /* Protection domain on this device. */
-  uint16_t lid{0}; /* Local identifier (IB fabrics). */
-  ibv_gid gid{}; /* GID for RoCE / IB with GRH. */
-  ibv_mtu mtu{IBV_MTU_4096}; /* Active MTU from port query. */
-  int linkLayer{IBV_LINK_LAYER_ETHERNET}; /* IB or Ethernet (RoCE). */
-  uint8_t portNum{1}; /* Physical port number on the HCA. */
-  bool dmaBufSupported{false}; /* Kernel supports DMA-BUF MR registration. */
+  uint16_t pipelineDepth{2}; /* Send/recv pipeline depth (D staging slabs). */
 };
 
 /*
@@ -94,12 +80,34 @@ struct RdmaTransportInfo {
     uint32_t psn{0}; /* Starting packet sequence number (random). */
   };
 
+  struct RegisteredBuffer {
+    uint64_t addr{0};
+    uint32_t length{0};
+    std::vector<uint32_t> rkeys;
+
+    size_t size() const {
+      return sizeof(addr) + sizeof(length) + rkeys.size() * sizeof(uint32_t);
+    }
+
+    static constexpr size_t expectedSize(uint8_t numNics) {
+      return sizeof(addr) + sizeof(length) + numNics * sizeof(uint32_t);
+    }
+
+    void reset();
+    size_t serialize(uint8_t* data) const;
+    size_t deserialize(const uint8_t* data, uint8_t numNics);
+  };
+
   /* Header fields. */
   Header header;
 
   /* Deserialized per-NIC and per-QP data. */
   std::vector<NicInfo> nicInfos;
   std::vector<QpInfo> qpInfos;
+
+  RegisteredBuffer ctrl;
+  RegisteredBuffer slab;
+  uint32_t slabSize{0};
 
   /*
    * Serialize this info into a TransportInfo byte vector.
@@ -150,9 +158,12 @@ class RdmaTransport : public Transport {
    */
   RdmaTransport(
       std::shared_ptr<IbvApi> ibvApi,
+      std::shared_ptr<CudaApi> cudaApi,
+      std::shared_ptr<CudaDriverApi> cudaDriverApi,
       EventBase* evb,
-      std::vector<NicResources> nics,
+      std::shared_ptr<std::vector<NicResources>> nics,
       uint64_t domainId,
+      std::shared_ptr<RdmaSlabPool> slabPool = nullptr,
       RdmaTransportConfig config = {});
 
   ~RdmaTransport() override;
@@ -365,11 +376,98 @@ class RdmaTransport : public Transport {
   /// Re-dispatches itself on EventBase if the given task is still in-flight.
   void pollCompletions(uint32_t taskId, bool retry);
 
+  // --- Copy-based send/recv pipeline (cursor model) ---
+  //
+  // Three shared cursors with symmetric meaning for send and recv:
+  //
+  //   Send: copied ≤ notified ≤ done ≤ copied + D
+  //     copied:   memcpy user buf → send slab
+  //     notified: data+notify WRs posted on all QPs (remote peer notified)
+  //     done:     CQEs reaped + CTS arrived (slot recyclable)
+  //
+  //   Recv: notified ≤ copied ≤ done ≤ notified + D
+  //     notified: all QP notify entries arrived (local peer notified)
+  //     copied:   memcpy recv slab → user buf
+  //     done:     slab released + new CTS posted (slot recyclable)
+  //
+  // Slot index = cursor % D. Each iteration advances one cursor by one step.
+
+  struct Pipeline {
+    void* data{nullptr};
+    cudaStream_t stream{nullptr};
+    size_t totalSize{0};
+    uint64_t totalSteps{0};
+
+    uint64_t copied{0};
+    uint64_t notified{0};
+    uint64_t done{0};
+
+    std::vector<uint16_t> localSlabs;
+    std::vector<uint32_t> slotPendingCqes;
+
+    MemoryType memType{MemoryType::DRAM};
+    int deviceId{-1};
+  };
+
+  /// Ctrl buffer helpers.
+  volatile uint32_t* ctrlCts(uint16_t slotIdx);
+  volatile uint32_t* ctrlNotify(uint16_t slotIdx, uint32_t qpIdx);
+  uint64_t remoteCtrlCtsAddr(uint16_t slotIdx) const;
+  uint64_t remoteCtrlNotifyAddr(uint16_t slotIdx, uint32_t qpIdx) const;
+  size_t ctrlBufferSize() const;
+
+  // --- Pipeline lifecycle ---
+
+  /// Common entry point for send/recv: validate, create Pipeline, dispatch
+  /// to EventBase, wait for queue position, acquire slabs, then call onReady.
+  template <typename ResultT, typename OnReadyFn>
+  std::future<ResultT> startPipeline(
+      Segment::Span span,
+      const RequestOptions& options,
+      OnReadyFn onReady);
+
+  void pipelineCleanup(std::shared_ptr<Pipeline>& pipeline);
+
+  /// Core CQ polling: drain all CQs, update counters, route completions.
+  /// For pipeline send CQEs (pipelineTaskId match), uses shifted wr_id
+  /// encoding and tracks per-slot CQE counts.
+  /// Returns false if pollCq API fails (transport set to Error).
+  bool processCqes(Pipeline* pipeline = nullptr, uint32_t pipelineTaskId = 0);
+
+  // --- Send pipeline ---
+
+  void sendProgress(
+      std::shared_ptr<Pipeline> pipeline,
+      std::shared_ptr<std::promise<Status>> promise,
+      uint32_t taskId);
+  bool sendCopyProgress(Pipeline& pipeline);
+  bool sendTransmitProgress(Pipeline& pipeline, uint32_t taskId);
+  bool postSlabTransfer(
+      Pipeline& pipeline,
+      uint16_t localSlab,
+      uint16_t remoteSlab,
+      size_t len,
+      uint32_t slot,
+      uint32_t taskId);
+
+  // --- Recv pipeline ---
+
+  void recvProgress(
+      std::shared_ptr<Pipeline> pipeline,
+      std::shared_ptr<std::promise<Result<size_t>>> promise,
+      uint32_t taskId);
+  bool recvNotifyProgress(Pipeline& pipeline);
+  bool recvCopyProgress(Pipeline& pipeline);
+  bool recvDoneProgress(Pipeline& pipeline, uint32_t taskId);
+  bool postCts(uint32_t slot, uint16_t slabIdx, uint32_t taskId);
+
   const std::shared_ptr<IbvApi> ibvApi_;
+  const std::shared_ptr<CudaApi> cudaApi_;
+  std::shared_ptr<CudaDriverApi> cudaDriverApi_;
   EventBase* evb_{nullptr};
 
   std::string name_;
-  const std::vector<NicResources> nics_;
+  std::shared_ptr<std::vector<NicResources>> nics_;
   const RdmaTransportConfig config_;
 
   std::vector<ibv_cq*> cqs_;
@@ -408,6 +506,18 @@ class RdmaTransport : public Transport {
 
   /// guard for shutdown()
   std::atomic<bool> shutdown_{false};
+
+  // --- Send/recv state and pool ---
+
+  std::shared_ptr<RdmaSlabPool> slabPool_;
+
+  // Ctrl buffer for send/recv pipeline flow control.
+  void* ctrlBuffer_{nullptr};
+  std::vector<ibv_mr*> ctrlMrs_;
+
+  // Remote peer's channel info (populated by connect)
+  RdmaTransportInfo::RegisteredBuffer remoteCtrlBuffer_;
+  RdmaTransportInfo::RegisteredBuffer remoteSlabBuffer_;
 };
 
 // ---------------------------------------------------------------------------
@@ -460,9 +570,10 @@ class RdmaTransportFactory : public TransportFactory {
       RdmaTransportConfig config = {},
       std::shared_ptr<IbvApi> ibvApi = nullptr,
       std::shared_ptr<CudaDriverApi> cudaDriverApi = nullptr,
+      std::shared_ptr<CudaApi> cudaApi = nullptr,
       std::optional<uint8_t> portNum = std::nullopt);
 
-  ~RdmaTransportFactory() override;
+  ~RdmaTransportFactory() override = default;
 
   RdmaTransportFactory(const RdmaTransportFactory&) = delete;
   RdmaTransportFactory& operator=(const RdmaTransportFactory&) = delete;
@@ -491,15 +602,13 @@ class RdmaTransportFactory : public TransportFactory {
  private:
   Status canConnect(std::span<const uint8_t> peerTopology) override;
 
-  /* Find the first active port on the device. Returns 0 on failure. */
-  uint8_t findActivePort(ibv_context* ctx);
-
   std::shared_ptr<IbvApi> ibvApi_;
   std::shared_ptr<CudaDriverApi> cudaDriverApi_;
+  std::shared_ptr<CudaApi> cudaApi_;
   EventBase* evb_{nullptr};
   uint64_t domainId_{0};
   size_t pageSize_{0};
-  std::vector<NicResources> nics_;
+  std::shared_ptr<std::vector<NicResources>> nics_;
   const RdmaTransportConfig config_;
 };
 
