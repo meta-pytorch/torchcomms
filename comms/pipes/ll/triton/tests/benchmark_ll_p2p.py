@@ -52,7 +52,7 @@ WARMUP_ITERS = 20
 TIMED_ITERS = 200
 
 
-def run_benchmark_worker(local_rank, master_port, bidirectional, gpu_offset):
+def run_benchmark_worker(local_rank, master_port, bidirectional, fused, gpu_offset):
     gpu_id = local_rank + gpu_offset
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = str(master_port)
@@ -77,13 +77,54 @@ def run_benchmark_worker(local_rank, master_port, bidirectional, gpu_offset):
     )
     op.setup()
 
-    mode_str = "Bidirectional" if bidirectional else "Unidirectional"
+    if fused:
+        mode_str = "Fused SendRecv"
+    elif bidirectional:
+        mode_str = "Bidirectional"
+    else:
+        mode_str = "Unidirectional"
+    # Pre-warm Triton JIT compilation for all BLOCK_SIZE variants before the
+    # timed benchmark loop. Auto-tune uses BLOCK_SIZE=32 for small messages
+    # (<=256B) and BLOCK_SIZE=512 for larger ones. Each unique BLOCK_SIZE
+    # (a tl.constexpr) triggers a separate Triton compilation that can take
+    # 30+ seconds. Both ranks must finish compiling before the fused kernel
+    # can run, so we pre-warm with sync+barrier after each variant.
+    for prewarm_nbytes in [8, 1024]:
+        prewarm_elements = prewarm_nbytes // 4
+        prewarm_src = torch.randn(
+            prewarm_elements, dtype=torch.float32, device=f"cuda:{gpu_id}"
+        )
+        prewarm_dst = torch.zeros(
+            prewarm_elements, dtype=torch.float32, device=f"cuda:{gpu_id}"
+        )
+        if fused:
+            op.sendrecv(
+                peer=peer_rank,
+                src_tensor=prewarm_src,
+                dst_tensor=prewarm_dst,
+                nbytes=prewarm_nbytes,
+            )
+        elif bidirectional:
+            op.send(peer=peer_rank, src_tensor=prewarm_src, nbytes=prewarm_nbytes)
+            op.recv(peer=peer_rank, dst_tensor=prewarm_dst, nbytes=prewarm_nbytes)
+        else:
+            if local_rank == 0:
+                op.send(peer=peer_rank, src_tensor=prewarm_src, nbytes=prewarm_nbytes)
+            else:
+                op.recv(peer=peer_rank, dst_tensor=prewarm_dst, nbytes=prewarm_nbytes)
+        torch.cuda.synchronize()
+        comm.barrier(False)
+        del prewarm_src, prewarm_dst
+
     if local_rank == 0:
-        print(f"Triton LL P2P Benchmark ({mode_str}, 2 GPUs)")
-        print(f"GPU {gpu_id} <-> GPU {gpu_id + 1 - 2 * local_rank}")
-        print()
-        print(f"{'Size':<10} | {'Latency (us)':<14} | {'BW (GB/s)':<12} | {'Iters':<6}")
-        print("-" * 56)
+        print(f"Triton LL P2P Benchmark ({mode_str}, 2 GPUs)", flush=True)
+        print(f"GPU {gpu_id} <-> GPU {gpu_id + 1 - 2 * local_rank}", flush=True)
+        print(flush=True)
+        print(
+            f"{'Size':<10} | {'Latency (us)':<14} | {'BW (GB/s)':<12} | {'Iters':<6}",
+            flush=True,
+        )
+        print("-" * 56, flush=True)
 
     for nbytes in MSG_SIZES:
         num_elements = nbytes // 4  # int32
@@ -92,7 +133,11 @@ def run_benchmark_worker(local_rank, master_port, bidirectional, gpu_offset):
 
         # Warmup
         for _ in range(WARMUP_ITERS):
-            if bidirectional:
+            if fused:
+                op.sendrecv(
+                    peer=peer_rank, src_tensor=src, dst_tensor=dst, nbytes=nbytes
+                )
+            elif bidirectional:
                 op.send(peer=peer_rank, src_tensor=src, nbytes=nbytes)
                 op.recv(peer=peer_rank, dst_tensor=dst, nbytes=nbytes)
             else:
@@ -112,7 +157,11 @@ def run_benchmark_worker(local_rank, master_port, bidirectional, gpu_offset):
         comm.barrier(False)
         start_event.record()
         for _ in range(iters):
-            if bidirectional:
+            if fused:
+                op.sendrecv(
+                    peer=peer_rank, src_tensor=src, dst_tensor=dst, nbytes=nbytes
+                )
+            elif bidirectional:
                 op.send(peer=peer_rank, src_tensor=src, nbytes=nbytes)
                 op.recv(peer=peer_rank, dst_tensor=dst, nbytes=nbytes)
             else:
@@ -141,6 +190,7 @@ def run_benchmark_worker(local_rank, master_port, bidirectional, gpu_offset):
 
 if __name__ == "__main__":
     bidirectional = "--bidirectional" in sys.argv
+    fused = "--fused" in sys.argv
     gpu_offset = 0
     for i, a in enumerate(sys.argv):
         if a == "--gpu-offset" and i + 1 < len(sys.argv):
@@ -149,7 +199,7 @@ if __name__ == "__main__":
     port = find_free_port()
     mp.spawn(
         run_benchmark_worker,
-        args=(port, bidirectional, gpu_offset),
+        args=(port, bidirectional, fused, gpu_offset),
         nprocs=2,
         join=True,
     )

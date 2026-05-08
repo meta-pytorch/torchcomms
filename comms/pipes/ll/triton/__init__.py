@@ -32,6 +32,7 @@ from comms.pipes.ll.triton.ll_ops import (
     LL_READY_TO_WRITE,
     ll_recv_kernel,
     ll_send_kernel,
+    ll_sendrecv_kernel,
     ll_total_buffer_size,
 )
 from comms.pipes.ll.triton.ll_p2p_op import LlP2pOp
@@ -43,6 +44,7 @@ __all__ = [
     # Low-level kernels
     "ll_send_kernel",
     "ll_recv_kernel",
+    "ll_sendrecv_kernel",
     "ll_forward_kernel",
     # Constants
     "LL_LINE_SIZE",

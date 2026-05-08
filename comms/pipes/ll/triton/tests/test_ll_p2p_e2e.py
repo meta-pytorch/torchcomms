@@ -367,3 +367,65 @@ class TestForward(unittest.TestCase):
             )
         else:
             return
+
+
+class TestFusedSendRecv(LlP2pTestBase):
+    """Fused sendrecv correctness tests."""
+
+    def test_bidirectional_1kb(self) -> None:
+        if self.rank > 1:
+            return
+
+        nbytes = 1024
+        num_elements = nbytes // 4
+        peer = 1 if self.rank == 0 else 0
+
+        src = torch.full(
+            (num_elements,),
+            self.rank + 1,
+            dtype=torch.int32,
+            device=self.device,
+        )
+        dst = torch.zeros(num_elements, dtype=torch.int32, device=self.device)
+
+        self.op.sendrecv(peer=peer, src_tensor=src, dst_tensor=dst, nbytes=nbytes)
+        torch.cuda.synchronize()
+
+        expected = torch.full(
+            (num_elements,),
+            peer + 1,
+            dtype=torch.int32,
+            device=self.device,
+        )
+        torch.testing.assert_close(
+            dst,
+            expected,
+            msg=f"Rank {self.rank}: Fused sendrecv data mismatch",
+        )
+
+    def test_multiple_sizes(self) -> None:
+        if self.rank > 1:
+            return
+
+        peer = 1 if self.rank == 0 else 0
+
+        for nbytes in [8, 64, 256, 1024, 16384, 65536]:
+            num_elements = nbytes // 4
+            src = (
+                torch.arange(num_elements, dtype=torch.int32, device=self.device)
+                + self.rank * 1000
+            )
+            dst = torch.zeros(num_elements, dtype=torch.int32, device=self.device)
+
+            self.op.sendrecv(peer=peer, src_tensor=src, dst_tensor=dst, nbytes=nbytes)
+            torch.cuda.synchronize()
+
+            expected = (
+                torch.arange(num_elements, dtype=torch.int32, device=self.device)
+                + peer * 1000
+            )
+            torch.testing.assert_close(
+                dst,
+                expected,
+                msg=f"Rank {self.rank}: Fused sendrecv mismatch at {nbytes}B",
+            )
