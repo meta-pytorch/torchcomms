@@ -67,6 +67,26 @@ Status CudaApi::getDevicePCIBusId(char* pciBusId, int len, int device) {
   return Ok();
 }
 
+// --- Host memory ---
+
+Result<void*> CudaApi::hostAlloc(size_t size, unsigned int flags) {
+  void* ptr = nullptr;
+  CUDA_CHECK(cudaHostAlloc(&ptr, size, flags), ErrCode::DriverError);
+  return ptr;
+}
+
+Status CudaApi::hostFree(void* ptr) {
+  CUDA_CHECK(cudaFreeHost(ptr), ErrCode::DriverError);
+  return Ok();
+}
+
+Result<void*> CudaApi::hostGetDevicePointer(void* hostPtr) {
+  void* devPtr = nullptr;
+  CUDA_CHECK(
+      cudaHostGetDevicePointer(&devPtr, hostPtr, 0), ErrCode::DriverError);
+  return devPtr;
+}
+
 // --- Memory copy ---
 
 Status CudaApi::memcpyAsync(
