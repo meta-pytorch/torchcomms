@@ -66,7 +66,7 @@ struct NicResources {
  * RDMA transport connection metadata — serialization and deserialization.
  *
  * Wire format (packed, memcpy-based):
- *   Header (11 bytes: version, numQps, numNics, domainId)
+ *   Header (14 bytes: version, numQps, numNics, domainId)
  *   + NicInfo[numNics]
  *   + QpInfo[numQps]
  *
@@ -76,8 +76,8 @@ struct RdmaTransportInfo {
   /* Header in the wire format. */
   struct __attribute__((packed)) Header {
     uint8_t version{kRdmaVersion};
-    uint8_t numQps{0};
     uint8_t numNics{0};
+    uint32_t numQps{0};
     uint64_t domainId{0};
   };
   /* Per-NIC addressing info in the wire format. */
@@ -146,7 +146,7 @@ class RdmaTransport : public Transport {
    * @param nics    Per-NIC resources from the factory. Must be non-empty.
    *                Borrowed — must outlive this transport.
    * @param config  Transport configuration (numQps, QP attributes, etc.).
-   *                numQps must be <= 255.
+   *                numQps must be in [1, 255].
    */
   RdmaTransport(
       std::shared_ptr<IbvApi> ibvApi,
