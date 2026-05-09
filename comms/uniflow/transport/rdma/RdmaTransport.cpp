@@ -19,8 +19,19 @@ namespace uniflow {
 
 namespace {
 
-struct RdmaTopologyInfo {
+struct __attribute__((packed)) RdmaTopologyInfo {
   uint8_t version{kRdmaVersion};
+  uint32_t numQps{1};
+
+  static Result<RdmaTopologyInfo> deserialize(std::span<const uint8_t> data) {
+    if (data.size() != sizeof(RdmaTopologyInfo)) {
+      return Err(ErrCode::InvalidArgument, "TransportInfo payload mismatch");
+    }
+
+    RdmaTopologyInfo info;
+    std::memcpy(&info, data.data(), sizeof(RdmaTopologyInfo));
+    return info;
+  }
 };
 
 const char* getNicName(const NicResources& nic) {
@@ -125,7 +136,8 @@ RdmaTransport::RdmaTransport(
       config_(config),
       domainId_(domainId) {
   CHECK_THROW_EXCEPTION(!nics_.empty(), std::invalid_argument);
-  CHECK_THROW_EXCEPTION(config_.numQps <= 255, std::invalid_argument);
+  CHECK_THROW_EXCEPTION(
+      config_.numQps > 0 && config_.numQps <= 255, std::invalid_argument);
   numPendingCqe_.resize(nics_.size());
 
   name_ = "rdma";
@@ -145,8 +157,9 @@ TransportInfo RdmaTransport::bind() {
   }
 
   info_.reset();
-  const uint32_t numNics = static_cast<uint32_t>(nics_.size());
   const uint32_t numQps = config_.numQps;
+  const uint32_t numNics =
+      std::min(numQps, static_cast<uint32_t>(nics_.size()));
 
   cqs_.reserve(numNics);
   uint32_t qpsPerNic = (numQps + numNics - 1) / numNics;
@@ -171,7 +184,7 @@ TransportInfo RdmaTransport::bind() {
   numWrsPerQp_.resize(numQps, 0);
 
   info_.header.version = 1;
-  info_.header.numQps = static_cast<uint8_t>(numQps);
+  info_.header.numQps = numQps;
   info_.header.numNics = static_cast<uint8_t>(numNics);
   info_.header.domainId = domainId_;
   info_.qpInfos.reserve(numQps);
@@ -1292,27 +1305,30 @@ RdmaTransportFactory::importSegment(
 Result<std::unique_ptr<Transport>> RdmaTransportFactory::createTransport(
     std::span<const uint8_t> peerTopology) {
   CHECK_EXPR(canConnect(peerTopology));
+  auto peerTopo = RdmaTopologyInfo::deserialize(peerTopology).value();
+  auto config = config_;
+  config.numQps = std::min(peerTopo.numQps, config.numQps);
   return std::make_unique<RdmaTransport>(
-      ibvApi_, evb_, nics_, domainId_, config_);
+      ibvApi_, evb_, nics_, domainId_, config);
 }
 
 // TODO: get ai_zone_name from fbwhoami / serfwhoami or develop a plugin for
 // customized cluster info
 std::vector<uint8_t> RdmaTransportFactory::getTopology() {
   std::vector<uint8_t> data(sizeof(RdmaTopologyInfo));
-  RdmaTopologyInfo info;
+  RdmaTopologyInfo info{kRdmaVersion, config_.numQps};
   std::memcpy(data.data(), &info, sizeof(info));
   return data;
 }
 
 Status RdmaTransportFactory::canConnect(std::span<const uint8_t> peerTopology) {
-  if (peerTopology.size() != sizeof(RdmaTopologyInfo)) {
-    return Err(ErrCode::InvalidArgument, "Invalid topology data");
-  }
-  RdmaTopologyInfo info;
-  std::memcpy(&info, peerTopology.data(), sizeof(info));
-  if (info.version != kRdmaVersion) {
+  auto info = RdmaTopologyInfo::deserialize(peerTopology);
+  CHECK_RETURN(info);
+  if (info->version != kRdmaVersion) {
     return Err(ErrCode::TopologyDisconnect, "Invalid topology version");
+  }
+  if (info->numQps == 0) {
+    return Err(ErrCode::TopologyDisconnect, "Invalid topology numQps");
   }
   return Ok();
 }
