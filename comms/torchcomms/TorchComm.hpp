@@ -170,6 +170,10 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
   // Throws if not supported by the backend.
   int64_t get_device_transport();
 
+  // Memory Registration API
+  void tensor_register(const at::Tensor& tensor);
+  void tensor_deregister(const at::Tensor& tensor);
+
   std::shared_ptr<TorchCommBackend> getBackendImpl() const {
     return impl_;
   }

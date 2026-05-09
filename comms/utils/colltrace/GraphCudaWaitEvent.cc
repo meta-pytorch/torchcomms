@@ -12,13 +12,12 @@
 #include "comms/utils/CudaRAII.h"
 #include "comms/utils/HRDWRingBuffer.h"
 #include "comms/utils/checks.h"
+#include "comms/utils/colltrace/PrecisionClock.h"
 
 namespace meta::comms::colltrace {
 
 GraphCudaWaitEvent::GraphCudaWaitEvent(cudaStream_t stream, uint32_t collId)
-    : stream_(stream),
-      collId_(collId),
-      enqueueTime_(std::chrono::system_clock::now()) {
+    : stream_(stream), collId_(collId), enqueueTime_(precisionNow()) {
   // Create per-collective CUDA resources using relaxed capture mode so
   // they don't interfere with the graph capture in progress.
   StreamCaptureModeGuard guard{cudaStreamCaptureModeRelaxed};

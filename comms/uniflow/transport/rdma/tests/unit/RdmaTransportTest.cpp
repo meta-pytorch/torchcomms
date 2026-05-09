@@ -181,6 +181,45 @@ class RdmaTransportTest : public ::testing::Test {
   ibv_qp fakeQp3_{};
 };
 
+TEST_F(RdmaTransportTest, ConstructorRejectsZeroQps) {
+  ibv_gid gid{};
+  std::vector<NicResources> nics = {
+      {.ctx = &fakeCtx0_, .pd = &fakePd0_, .lid = 0, .gid = gid}};
+  RdmaTransportConfig config{.numQps = 0};
+  EXPECT_THROW(
+      RdmaTransport(mockApi_, evbThread_.getEventBase(), nics, 0, config),
+      std::invalid_argument);
+}
+
+TEST_F(RdmaTransportTest, BindClampsNicsToQpCount) {
+  fakeQp0_.qp_num = 10;
+
+  EXPECT_CALL(*mockApi_, createCq(&fakeCtx0_, _, _, _, _))
+      .WillOnce(Return(Result<ibv_cq*>(&fakeCq0_)));
+  EXPECT_CALL(*mockApi_, createCq(&fakeCtx1_, _, _, _, _)).Times(0);
+  EXPECT_CALL(*mockApi_, createQp(&fakePd0_, _))
+      .WillOnce(Return(Result<ibv_qp*>(&fakeQp0_)));
+  EXPECT_CALL(*mockApi_, modifyQp(_, _, _)).WillRepeatedly(Return(Ok()));
+
+  ibv_gid gid0{}, gid1{};
+  std::vector<NicResources> nics = {
+      {.ctx = &fakeCtx0_, .pd = &fakePd0_, .lid = 0x1111, .gid = gid0},
+      {.ctx = &fakeCtx1_, .pd = &fakePd1_, .lid = 0x2222, .gid = gid1},
+  };
+  RdmaTransportConfig config{.numQps = 1};
+  RdmaTransport transport(mockApi_, evbThread_.getEventBase(), nics, 0, config);
+
+  auto data = transport.bind();
+  ASSERT_FALSE(data.empty());
+
+  auto result = RdmaTransportInfo::deserialize(data);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_EQ(result.value().header.numNics, 1);
+  EXPECT_EQ(result.value().header.numQps, 1);
+  ASSERT_EQ(result.value().nicInfos.size(), 1);
+  EXPECT_EQ(result.value().nicInfos[0].lid, 0x1111);
+}
+
 TEST_F(RdmaTransportTest, SingleNicBindCreatesQPs) {
   fakeQp0_.qp_num = 42;
   fakeQp1_.qp_num = 43;
@@ -450,6 +489,7 @@ TEST_F(RdmaTransportFactoryTest, GetTopologyReturnsNonEmpty) {
   auto topo = factory.getTopology();
   EXPECT_FALSE(topo.empty());
   EXPECT_EQ(topo[0], 1u); // version == kRdmaVersion == 1
+  EXPECT_GT(topo.size(), 1u); // topology now includes numQps
 }
 
 TEST_F(RdmaTransportFactoryTest, CreateTransportAcceptsValidTopology) {
@@ -474,20 +514,93 @@ TEST_F(RdmaTransportFactoryTest, CreateTransportRejectsWrongVersion) {
   setupSingleDevice();
   RdmaTransportFactory factory(
       {"mlx5_0"}, evbThread_.getEventBase(), {}, mockApi_);
-  std::vector<uint8_t> badTopo = {99};
-  auto result = factory.createTransport(badTopo);
+  auto topo = factory.getTopology();
+  topo[0] = 99; // corrupt version byte
+  auto result = factory.createTransport(topo);
   EXPECT_TRUE(result.hasError());
   EXPECT_EQ(result.error().code(), ErrCode::TopologyDisconnect);
 }
 
-TEST_F(RdmaTransportFactoryTest, CreateTransportRejectsOversizedTopology) {
+TEST_F(RdmaTransportFactoryTest, CreateTransportRejectsSizeMismatch) {
   setupSingleDevice();
   RdmaTransportFactory factory(
       {"mlx5_0"}, evbThread_.getEventBase(), {}, mockApi_);
-  std::vector<uint8_t> bigTopo = {1, 0, 0, 0};
-  auto result = factory.createTransport(bigTopo);
+  std::vector<uint8_t> badTopo = {1};
+  auto result = factory.createTransport(badTopo);
   EXPECT_TRUE(result.hasError());
   EXPECT_EQ(result.error().code(), ErrCode::InvalidArgument);
+}
+
+TEST_F(RdmaTransportFactoryTest, TopologyRoundTripsWithDifferentQps) {
+  setupSingleDevice();
+  RdmaTransportConfig config{.numQps = 4};
+  RdmaTransportFactory factory(
+      {"mlx5_0"}, evbThread_.getEventBase(), config, mockApi_);
+
+  auto topo = factory.getTopology();
+  EXPECT_FALSE(topo.empty());
+
+  auto result = factory.createTransport(topo);
+  EXPECT_TRUE(result.hasValue());
+}
+
+TEST_F(RdmaTransportFactoryTest, CreateTransportRejectsZeroQpsTopology) {
+  setupSingleDevice();
+  RdmaTransportFactory factory(
+      {"mlx5_0"}, evbThread_.getEventBase(), {}, mockApi_);
+  auto topo = factory.getTopology();
+  // Zero out everything after the version byte to set numQps = 0.
+  std::fill(topo.begin() + 1, topo.end(), 0);
+  auto result = factory.createTransport(topo);
+  EXPECT_TRUE(result.hasError());
+  EXPECT_EQ(result.error().code(), ErrCode::TopologyDisconnect);
+}
+
+TEST_F(RdmaTransportFactoryTest, GetTopologyReflectsConfiguredQps) {
+  // Use WillRepeatedly so two factories can be constructed from the same mocks.
+  EXPECT_CALL(*mockApi_, getDeviceList(_))
+      .WillRepeatedly([this](int* numDevices) {
+        *numDevices = 1;
+        return Result<ibv_device**>(fakeDeviceList_);
+      });
+  EXPECT_CALL(*mockApi_, openDevice(&fakeDevice0_))
+      .WillRepeatedly(Return(Result<ibv_context*>(&fakeCtx0_)));
+  EXPECT_CALL(*mockApi_, getDeviceName(&fakeDevice0_))
+      .WillRepeatedly(Return(Result<const char*>("mlx5_0")));
+  EXPECT_CALL(*mockApi_, queryDevice(&fakeCtx0_, _))
+      .WillRepeatedly([](ibv_context*, ibv_device_attr* attr) {
+        attr->phys_port_cnt = 1;
+        return Ok();
+      });
+  EXPECT_CALL(*mockApi_, allocPd(&fakeCtx0_))
+      .WillRepeatedly(Return(Result<ibv_pd*>(&fakePd0_)));
+  EXPECT_CALL(*mockApi_, isDmaBufSupported(&fakePd0_))
+      .WillRepeatedly(Return(Result<bool>(true)));
+  EXPECT_CALL(*mockApi_, queryPort(&fakeCtx0_, 1, _))
+      .WillRepeatedly([](ibv_context*, uint8_t, ibv_port_attr* attr) {
+        attr->lid = 0x1234;
+        attr->active_mtu = IBV_MTU_4096;
+        attr->link_layer = IBV_LINK_LAYER_ETHERNET;
+        attr->state = IBV_PORT_ACTIVE;
+        return Ok();
+      });
+  EXPECT_CALL(*mockApi_, queryGid(&fakeCtx0_, 1, 3, _))
+      .WillRepeatedly(Return(Ok()));
+  EXPECT_CALL(*mockApi_, freeDeviceList(_)).WillRepeatedly(Return(Ok()));
+  EXPECT_CALL(*mockApi_, deallocPd(&fakePd0_)).WillRepeatedly(Return(Ok()));
+  EXPECT_CALL(*mockApi_, closeDevice(&fakeCtx0_)).WillRepeatedly(Return(Ok()));
+
+  RdmaTransportFactory factory1(
+      {"mlx5_0"}, evbThread_.getEventBase(), {.numQps = 1}, mockApi_);
+  auto topo1 = factory1.getTopology();
+
+  RdmaTransportFactory factory4(
+      {"mlx5_0"}, evbThread_.getEventBase(), {.numQps = 4}, mockApi_);
+  auto topo4 = factory4.getTopology();
+
+  ASSERT_EQ(topo1.size(), topo4.size());
+  EXPECT_NE(topo1, topo4);
+  EXPECT_EQ(topo1[0], topo4[0]);
 }
 
 // --- supported() tests ---

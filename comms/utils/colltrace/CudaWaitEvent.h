@@ -2,8 +2,11 @@
 
 #pragma once
 
+#include <atomic>
+
 #include <cuda_runtime.h> // @manual
 
+#include <folly/Synchronized.h>
 #include <folly/synchronization/Baton.h>
 
 #include "comms/utils/CudaRAII.h"
@@ -12,9 +15,15 @@
 
 namespace meta::comms::colltrace {
 
-// WARNING: The cudaEvent and cudaStream used by this class is intentionally
-// NOT destroyed, this class is only intended to be used as global static
-// variables. Creating too many of these objects might cause issue with cuda
+// WARNING: The cudaStream and the latest cudaEvent used by this class are
+// intentionally NOT destroyed at process exit; this class is only intended
+// to be used as a global static. Creating too many of these or destroying
+// them during shutdown can segfault under cudaErrorCudartUnloading.
+//
+// During normal operation, refresh() rotates the cached cudaEvent to bound
+// drift between the GPU's elapsed-time clock and PTP-aligned wall time, and
+// destroys the previous event under the writer lock once it is unreachable
+// to readers — so we don't accumulate one event per refresh.
 class CudaReferencePoint {
   using system_clock_time_point = ICollWaitEvent::system_clock_time_point;
 
@@ -24,12 +33,46 @@ class CudaReferencePoint {
   CommsMaybe<system_clock_time_point> getTimeViaEvent(const CudaEvent& event);
   CommsMaybe<system_clock_time_point> getTimeViaEvent(cudaEvent_t event);
 
+  // Re-record the reference cudaEvent on the dedicated stream and pair it
+  // with a fresh precisionNow() reading. Safe under concurrent invocation
+  // from multiple threads (e.g., one CollTrace poll thread per NCCL
+  // communicator): contenders that find refresh_in_progress_ already set
+  // return immediately without touching the dedicated stream, so the CUDA
+  // operations are effectively serialized at the API layer. Safe vs.
+  // concurrent getTimeViaEvent() readers via folly::Synchronized<Anchor>.
+  // Cost when the caller wins the flag: 1 cudaEventCreate + 1
+  // cudaEventRecord + 1 cudaStreamSynchronize on a private idle stream + 1
+  // fbclock read. CUDA failures are logged (rate-limited) and the prior
+  // anchor is kept. Caller is responsible for rate-limiting; the colltrace
+  // poll thread invokes this at ~1 Hz, bounding residual drift between
+  // anchors below 100 ns at 100 ppm oscillator tolerance.
+  void refresh();
+
+  // Returns the singleton if it has been constructed, otherwise nullptr.
+  // Safe to call from any thread; never triggers construction. Used by the
+  // colltrace poll thread to avoid forcing CUDA initialization in CPU-only
+  // colltrace deployments where no CudaWaitEvent is ever created.
+  static CudaReferencePoint* tryGet();
+
  private:
-  // We intentionally NOT using the RAII version to avoid segfault when calling
-  // cudaEventDestory and cudaStreamDestroy during the program exit.
+  struct Anchor {
+    cudaEvent_t event{nullptr};
+    system_clock_time_point time;
+  };
+
+  // We intentionally do NOT use the RAII version for stream_ to avoid
+  // segfault when calling cudaStreamDestroy during the program exit. The
+  // anchor's cudaEvent is rotated by refresh(); the latest one leaks at
+  // exit by design (see class comment).
   cudaStream_t stream_{nullptr};
-  cudaEvent_t event_{nullptr};
-  system_clock_time_point time_;
+  folly::Synchronized<Anchor> anchor_;
+  // Serializes refresh() callers without blocking: contenders that find
+  // the flag already set short-circuit so the dedicated CUDA stream is
+  // never touched by more than one thread at a time. Multiple CollTrace
+  // poll threads (one per NCCL communicator) all call refresh on this
+  // singleton — without this, concurrent cudaEventRecord on the same
+  // stream would race.
+  std::atomic_flag refresh_in_progress_ = ATOMIC_FLAG_INIT;
 };
 
 class CudaWaitPoint {
