@@ -19,8 +19,10 @@ import torch
 from torch.utils._triton import has_triton
 
 
-TRITON_AVAILABLE = has_triton()
 CUDA_AVAILABLE = torch.cuda.is_available()
+# torchcomms.triton.fb (imported transitively by the collectives module)
+# requires CUDA at import time, so triton-only is not sufficient.
+TRITON_AVAILABLE = has_triton() and CUDA_AVAILABLE
 
 
 # =============================================================================
