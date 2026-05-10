@@ -41,6 +41,10 @@ const char* getNicName(const NicResources& nic) {
   return "(unknown)";
 }
 
+uint64_t qpMapKey(size_t nicIdx, uint32_t qpNum) {
+  return (static_cast<uint64_t>(nicIdx) << 32) | qpNum;
+}
+
 } // namespace
 
 TransportInfo RdmaTransportInfo::serialize() const {
@@ -239,7 +243,7 @@ TransportInfo RdmaTransport::bind() {
 
     uint32_t psn = dist(rng);
     qps_.push_back(qp);
-    qpNumToIdx_[qp->qp_num] = i;
+    qpNumToIdx_[qpMapKey(nicIdx, qp->qp_num)] = i;
     psns_.push_back(psn);
     info_.qpInfos.push_back({.qpNum = qp->qp_num, .psn = psn});
   }
@@ -827,7 +831,8 @@ void RdmaTransport::pollCompletions(uint32_t id, bool retry) {
 
         // Decrement per-QP counter by the encoded WR count.
         // This count includes unsignaled WRs + the signaled WR itself.
-        if (auto qp = qpNumToIdx_.find(wc.qp_num); qp != qpNumToIdx_.end()) {
+        if (auto qp = qpNumToIdx_.find(qpMapKey(i, wc.qp_num));
+            qp != qpNumToIdx_.end()) {
           numWrsPerQp_[qp->second] -= numWrs;
         }
 
