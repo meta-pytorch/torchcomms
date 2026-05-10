@@ -13,6 +13,7 @@
 
 #include <folly/ScopeGuard.h>
 #include <folly/logging/xlog.h>
+#include "comms/ctran/bootstrap/NcclSocketNameFilter.h"
 #include "comms/ctran/utils/Exception.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
@@ -51,8 +52,18 @@ folly::SocketAddress getSocketAdddress(int fd) {
 folly::Expected<folly::IPAddress, int> getInterfaceAddress(
     const std::string& ifName,
     const std::string& addrPrefix,
-    bool preferV6) {
+    bool preferV6,
+    std::string* resolvedIfName) {
   struct ifaddrs* ifaddrs = nullptr;
+
+  XLOGF(
+      DBG,
+      "getInterfaceAddress called with ifName=\"{}\" addrPrefix=\"{}\" preferV6={}",
+      ifName,
+      addrPrefix,
+      preferV6);
+
+  const auto ifNameFilter = parseIfNameSpec(ifName);
 
   if (getifaddrs(&ifaddrs) == -1) {
     return folly::makeUnexpected(errno);
@@ -61,45 +72,69 @@ folly::Expected<folly::IPAddress, int> getInterfaceAddress(
     freeifaddrs(ifaddrs);
   };
 
-  std::vector<folly::IPAddress> addrs;
+  std::vector<std::pair<folly::IPAddress, std::string>> addrs;
   for (auto ifa = ifaddrs; ifa != nullptr; ifa = ifa->ifa_next) {
     if (ifa->ifa_addr == nullptr) {
+      XLOGF(DBG, "  skip {}: no address", ifa->ifa_name);
       continue;
     }
-    if (strncmp(ifName.c_str(), ifa->ifa_name, ifName.size()) != 0) {
+    if (!matchesIfName(ifNameFilter, ifa->ifa_name)) {
+      XLOGF(DBG, "  skip {}: ifname filter mismatch", ifa->ifa_name);
       continue;
     }
     if (ifa->ifa_flags & IFA_F_DEPRECATED) {
-      continue; // Avoid use of deprecated addresses
+      XLOGF(DBG, "  skip {}: deprecated address", ifa->ifa_name);
+      continue;
     }
 
     auto addr = folly::IPAddress::tryFromSockAddr(ifa->ifa_addr);
-    if (addr.hasError() || addr->isLinkLocal()) {
+    if (addr.hasError()) {
+      XLOGF(DBG, "  skip {}: failed to parse address", ifa->ifa_name);
       continue;
     }
     if (addr->isLinkLocal()) {
+      XLOGF(
+          DBG, "  skip {}: link-local address {}", ifa->ifa_name, addr->str());
       continue;
     }
     if (!addrPrefix.empty() && addr->str().find(addrPrefix) != 0) {
-      continue; // Address does not match prefix
+      XLOGF(
+          DBG,
+          "  skip {}: address {} does not match prefix \"{}\"",
+          ifa->ifa_name,
+          addr->str(),
+          addrPrefix);
+      continue;
     }
-    addrs.push_back(addr.value());
+    XLOGF(DBG, "  accept {}: {}", ifa->ifa_name, addr->str());
+    addrs.emplace_back(addr.value(), std::string(ifa->ifa_name));
   }
 
   if (addrs.empty()) {
+    XLOGF(
+        WARN,
+        "getInterfaceAddress: no matching address found for ifName=\"{}\" addrPrefix=\"{}\" preferV6={}",
+        ifName,
+        addrPrefix,
+        preferV6);
     return folly::makeUnexpected(ENXIO);
   }
 
-  // Sort by type
+  // Sort by address family preference
   std::sort(
       addrs.begin(),
       addrs.end(),
-      [preferV6](const folly::IPAddress& a, const folly::IPAddress& b) {
-        return preferV6 ? (a.family() > b.family()) : (a.family() < b.family());
+      [preferV6](
+          const std::pair<folly::IPAddress, std::string>& a,
+          const std::pair<folly::IPAddress, std::string>& b) {
+        return preferV6 ? (a.first.family() > b.first.family())
+                        : (a.first.family() < b.first.family());
       });
 
-  // Return first address
-  return addrs.at(0);
+  if (resolvedIfName != nullptr) {
+    *resolvedIfName = addrs.at(0).second;
+  }
+  return addrs.at(0).first;
 }
 
 //

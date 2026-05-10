@@ -651,27 +651,12 @@ void CtranIb::init(
 void CtranIb::bootstrapStart(
     std::optional<const SocketServerAddr*> qpServerAddr) {
   // Setup the listen socket
-  std::string* ifnamePtr = nullptr;
+  std::string resolvedIfName;
   folly::SocketAddress addrSockAddr;
   if (this->bootstrapMode == BootstrapMode::kDefaultServer) {
-    ifnamePtr = &NCCL_SOCKET_IFNAME;
-    // Validate that NCCL_SOCKET_IFNAME contains only one interface
-    if (NCCL_SOCKET_IFNAME.find(',') != std::string::npos) {
-      CLOGF(
-          WARN,
-          "CTRAN-IB: NCCL_SOCKET_IFNAME contains multiple interfaces ({}). "
-          "Only one interface should be specified.",
-          NCCL_SOCKET_IFNAME);
-      throw ::ctran::utils::Exception(
-          "CTRAN-IB: NCCL_SOCKET_IFNAME should specify only one interface",
-          commInvalidArgument,
-          this->rank,
-          this->commHash,
-          this->commDesc);
-    }
     // Use default NCCL socket ifname
     auto maybeAddr = ctran::bootstrap::getInterfaceAddress(
-        NCCL_SOCKET_IFNAME, NCCL_SOCKET_IPADDR_PREFIX);
+        NCCL_SOCKET_IFNAME, NCCL_SOCKET_IPADDR_PREFIX, true, &resolvedIfName);
     if (maybeAddr.hasError()) {
       CLOGF(WARN, "CTRAN-IB: No socket interfaces found");
       throw ::ctran::utils::Exception(
@@ -691,11 +676,11 @@ void CtranIb::bootstrapStart(
     auto qpServerAddrPtr = qpServerAddr.value();
     // use provided addr(i.e. ip, port, host) to initialize ctranIB
     addrSockAddr = toSocketAddress(*qpServerAddrPtr);
-    ifnamePtr = const_cast<std::string*>(&qpServerAddrPtr->ifName);
+    resolvedIfName = qpServerAddrPtr->ifName;
   }
 
   FB_SYSCHECKTHROW_EX(
-      this->listenSocket->bindAndListen(addrSockAddr, *ifnamePtr),
+      this->listenSocket->bindAndListen(addrSockAddr, resolvedIfName),
       this->rank,
       this->commHash,
       this->commDesc);
@@ -707,7 +692,7 @@ void CtranIb::bootstrapStart(
       bootstrapMode == BootstrapMode::kSpecifiedServer ? "specified"
                                                        : "self-finding",
       this->listenSocket->getListenAddress()->describe().c_str(),
-      *ifnamePtr);
+      resolvedIfName);
 
   // Exchange listen sock address among all ranks
   if (comm) {

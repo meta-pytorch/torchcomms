@@ -22,7 +22,8 @@ namespace ctran::bootstrap {
 folly::Expected<folly::IPAddress, int> getInterfaceAddress(
     const std::string& ifName,
     const std::string& addrPrefix = "",
-    bool preferV6ElseV4 = true);
+    bool preferV6ElseV4 = true,
+    std::string* resolvedIfName = nullptr);
 
 /**
  * C++ wrapper over socket interface for communicating with the peer.
