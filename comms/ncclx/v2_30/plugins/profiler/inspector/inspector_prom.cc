@@ -1,6 +1,6 @@
 /*************************************************************************
- * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0
  *
  * See LICENSE.txt for more license information
  *************************************************************************/
@@ -10,22 +10,24 @@
 #include "inspector_cudawrap.h"
 #include "inspector_ring.h"
 
+#include <cuda_runtime.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
+#include <cmath>
 #include <map>
 #include <string>
-#include <cmath>
-#include <unistd.h>
-#include <sys/stat.h>
-#include <errno.h>
-#include <time.h>
-#include <cuda_runtime.h>
 
 // External references from inspector.cc
 extern struct inspectorState g_state;
-extern inspectorResult_t inspectorCommInfoListFinalize(struct inspectorCommInfoList* commList);
-extern const char* inspectorTimingSourceToString(inspectorTimingSource_t timingSource);
+extern inspectorResult_t inspectorCommInfoListFinalize(
+    struct inspectorCommInfoList* commList);
+extern const char* inspectorTimingSourceToString(
+    inspectorTimingSource_t timingSource);
 
 extern const char* ncclFuncToString(ncclFunc_t fn);
 
@@ -47,13 +49,17 @@ struct inspectorPromCollBucketKey {
   std::string algoProto;
 
   bool operator<(const inspectorPromCollBucketKey& other) const {
-    if (nranks != other.nranks) return nranks < other.nranks;
-    if (nnodes != other.nnodes) return nnodes < other.nnodes;
-    if (func != other.func) return func < other.func;
+    if (nranks != other.nranks)
+      return nranks < other.nranks;
+    if (nnodes != other.nnodes)
+      return nnodes < other.nnodes;
+    if (func != other.func)
+      return func < other.func;
     if (msgSizeRangeBytes != other.msgSizeRangeBytes) {
       return msgSizeRangeBytes < other.msgSizeRangeBytes;
     }
-    if (commName != other.commName) return commName < other.commName;
+    if (commName != other.commName)
+      return commName < other.commName;
     return algoProto < other.algoProto;
   }
 };
@@ -66,9 +72,12 @@ struct inspectorPromP2pBucketKey {
   std::string commName;
 
   bool operator<(const inspectorPromP2pBucketKey& other) const {
-    if (nranks != other.nranks) return nranks < other.nranks;
-    if (nnodes != other.nnodes) return nnodes < other.nnodes;
-    if (func != other.func) return func < other.func;
+    if (nranks != other.nranks)
+      return nranks < other.nranks;
+    if (nnodes != other.nnodes)
+      return nnodes < other.nnodes;
+    if (func != other.func)
+      return func < other.func;
     if (msgSizeRangeBytes != other.msgSizeRangeBytes) {
       return msgSizeRangeBytes < other.msgSizeRangeBytes;
     }
@@ -76,8 +85,10 @@ struct inspectorPromP2pBucketKey {
   }
 };
 
-using inspectorPromCollBucketMap = std::map<inspectorPromCollBucketKey, inspectorPromBucketAgg>;
-using inspectorPromP2pBucketMap = std::map<inspectorPromP2pBucketKey, inspectorPromBucketAgg>;
+using inspectorPromCollBucketMap =
+    std::map<inspectorPromCollBucketKey, inspectorPromBucketAgg>;
+using inspectorPromP2pBucketMap =
+    std::map<inspectorPromP2pBucketKey, inspectorPromBucketAgg>;
 
 struct inspectorPromDevice {
   std::string deviceUuidStr;
@@ -90,10 +101,11 @@ struct inspectorPromDevice {
 };
 static const int kInspectorPromFormatMinor = 1;
 
-static void inspectorPromAggUpdate(inspectorPromBucketAgg& agg,
-                                   double algoBwGbs,
-                                   double busBwGbs,
-                                   uint64_t execTimeUsecs) {
+static void inspectorPromAggUpdate(
+    inspectorPromBucketAgg& agg,
+    double algoBwGbs,
+    double busBwGbs,
+    uint64_t execTimeUsecs) {
   agg.count++;
   agg.execTimeSum += static_cast<double>(execTimeUsecs);
   if (algoBwGbs > 0.0) {
@@ -113,7 +125,8 @@ static void inspectorPromAggUpdate(inspectorPromBucketAgg& agg,
  *   Formats message size as a power-of-two range label (e.g., 1-2KB, 2-4MB).
  *
  * Thread Safety:
- *   Not thread-safe. Onus of thread safety is on the caller/owner of the buffer.
+ *   Not thread-safe. Onus of thread safety is on the caller/owner of the
+ * buffer.
  *
  * Input:
  *   size_t bytes - number of bytes.
@@ -126,9 +139,10 @@ static void inspectorPromAggUpdate(inspectorPromBucketAgg& agg,
  * Return:
  *   None.
  */
-static void inspectorPromFormatMessageSizeRange(size_t bytes,
-                                                char* output,
-                                                size_t outputSize) {
+static void inspectorPromFormatMessageSizeRange(
+    size_t bytes,
+    char* output,
+    size_t outputSize) {
   if (bytes == 0) {
     snprintf(output, outputSize, "0B");
     return;
@@ -191,7 +205,6 @@ static size_t inspectorPromMessageSizeRangeLowerBound(size_t bytes) {
   return static_cast<size_t>(lower) * unitBytes;
 }
 
-
 /*
  * Description:
  *
@@ -220,43 +233,48 @@ static void inspectorPromGetVersion(char* version, size_t versionSize) {
   if (version == nullptr || versionSize == 0) {
     return;
   }
-  snprintf(version, versionSize, "v%d.%d",
-           NCCL_PROFILER_INTERFACE_VERSION,
-           kInspectorPromFormatMinor);
+  snprintf(
+      version,
+      versionSize,
+      "v%d.%d",
+      NCCL_PROFILER_INTERFACE_VERSION,
+      kInspectorPromFormatMinor);
   version[versionSize - 1] = '\0';
 }
 
-static inspectorResult_t inspectorPromGetLabelsColl(char* labels,
-                                                    size_t labelSize,
-                                                    const char* nodeName,
-                                                    const char* gpuName,
-                                                    const char* commName,
-                                                    const char* version,
-                                                    int nranks,
-                                                    int nnodes,
-                                                    ncclFunc_t func,
-                                                    const char* algoProto,
-                                                    size_t msgSizeRangeBytes) {
+static inspectorResult_t inspectorPromGetLabelsColl(
+    char* labels,
+    size_t labelSize,
+    const char* nodeName,
+    const char* gpuName,
+    const char* commName,
+    const char* version,
+    int nranks,
+    int nnodes,
+    ncclFunc_t func,
+    const char* algoProto,
+    size_t msgSizeRangeBytes) {
   const char* jobId = getenv("SLURM_JOB_ID");
   char msgSizeStr[32];
-  inspectorPromFormatMessageSizeRange(msgSizeRangeBytes,
-                                      msgSizeStr,
-                                      sizeof(msgSizeStr));
+  inspectorPromFormatMessageSizeRange(
+      msgSizeRangeBytes, msgSizeStr, sizeof(msgSizeStr));
 
-  int ret = snprintf(labels, labelSize,
-                     "version=\"%s\",slurm_job_id=\"%s\",node=\"%s\",gpu=\"%s\","
-                     "comm_name=\"%s\",n_nodes=\"%d\",nranks=\"%d\","
-                     "collective=\"%s\",message_size=\"%s\",algo_proto=\"%s\"",
-                     (version && version[0]) ? version : "unknown",
-                     jobId ? jobId : "unknown",
-                     (nodeName && nodeName[0]) ? nodeName : "unknown",
-                     (gpuName && gpuName[0]) ? gpuName : "unknown",
-                     (commName && commName[0]) ? commName : "unknown",
-                     nnodes,
-                     nranks,
-                     ncclFuncToString(func),
-                     msgSizeStr,
-                     algoProto ? algoProto : "unknown");
+  int ret = snprintf(
+      labels,
+      labelSize,
+      "version=\"%s\",slurm_job_id=\"%s\",node=\"%s\",gpu=\"%s\","
+      "comm_name=\"%s\",n_nodes=\"%d\",nranks=\"%d\","
+      "collective=\"%s\",message_size=\"%s\",algo_proto=\"%s\"",
+      (version && version[0]) ? version : "unknown",
+      jobId ? jobId : "unknown",
+      (nodeName && nodeName[0]) ? nodeName : "unknown",
+      (gpuName && gpuName[0]) ? gpuName : "unknown",
+      (commName && commName[0]) ? commName : "unknown",
+      nnodes,
+      nranks,
+      ncclFuncToString(func),
+      msgSizeStr,
+      algoProto ? algoProto : "unknown");
 
   if (ret < 0 || (size_t)ret >= labelSize) {
     return inspectorMemoryError;
@@ -286,36 +304,37 @@ static inspectorResult_t inspectorPromGetLabelsColl(char* labels,
  * Return:
  *   inspectorResult_t - success or error code.
  */
-static inspectorResult_t inspectorPromGetLabelsP2p(char* labels,
-                                                   size_t labelSize,
-                                                   const char* nodeName,
-                                                   const char* gpuName,
-                                                   const char* commName,
-                                                   const char* version,
-                                                   int nranks,
-                                                   int nnodes,
-                                                   ncclFunc_t func,
-                                                   size_t msgSizeRangeBytes) {
+static inspectorResult_t inspectorPromGetLabelsP2p(
+    char* labels,
+    size_t labelSize,
+    const char* nodeName,
+    const char* gpuName,
+    const char* commName,
+    const char* version,
+    int nranks,
+    int nnodes,
+    ncclFunc_t func,
+    size_t msgSizeRangeBytes) {
   const char* jobId = getenv("SLURM_JOB_ID");
   char msgSizeStr[32];
-  inspectorPromFormatMessageSizeRange(msgSizeRangeBytes,
-                                      msgSizeStr,
-                                      sizeof(msgSizeStr));
+  inspectorPromFormatMessageSizeRange(
+      msgSizeRangeBytes, msgSizeStr, sizeof(msgSizeStr));
 
-  int ret = snprintf(labels,
-                     labelSize,
-                     "version=\"%s\",slurm_job_id=\"%s\",node=\"%s\",gpu=\"%s\","
-                     "comm_name=\"%s\",n_nodes=\"%d\",nranks=\"%d\","
-                     "p2p_operation=\"%s\",message_size=\"%s\"",
-                     (version && version[0]) ? version : "unknown",
-                     jobId ? jobId : "unknown",
-                     (nodeName && nodeName[0]) ? nodeName : "unknown",
-                     (gpuName && gpuName[0]) ? gpuName : "unknown",
-                     (commName && commName[0]) ? commName : "unknown",
-                     nnodes,
-                     nranks,
-                     ncclFuncToString(func),
-                     msgSizeStr);
+  int ret = snprintf(
+      labels,
+      labelSize,
+      "version=\"%s\",slurm_job_id=\"%s\",node=\"%s\",gpu=\"%s\","
+      "comm_name=\"%s\",n_nodes=\"%d\",nranks=\"%d\","
+      "p2p_operation=\"%s\",message_size=\"%s\"",
+      (version && version[0]) ? version : "unknown",
+      jobId ? jobId : "unknown",
+      (nodeName && nodeName[0]) ? nodeName : "unknown",
+      (gpuName && gpuName[0]) ? gpuName : "unknown",
+      (commName && commName[0]) ? commName : "unknown",
+      nnodes,
+      nranks,
+      ncclFuncToString(func),
+      msgSizeStr);
 
   if (ret < 0 || (size_t)ret >= labelSize) {
     return inspectorMemoryError;
@@ -358,13 +377,17 @@ static void inspectorPromGetNodeName(char* nodeName, size_t nodeNameSize) {
  * Return:
  *   inspectorResult_t - success or error code.
  */
-static inspectorResult_t inspectorPromGetFilename(const char* baseFilename,
-                                                  const char* deviceUuidStr,
-                                                  char* output,
-                                                  size_t outputSize) {
-  snprintf(output, outputSize,
-           "%s/nccl_inspector_metrics_%s.prom",
-           baseFilename, deviceUuidStr);
+static inspectorResult_t inspectorPromGetFilename(
+    const char* baseFilename,
+    const char* deviceUuidStr,
+    char* output,
+    size_t outputSize) {
+  snprintf(
+      output,
+      outputSize,
+      "%s/nccl_inspector_metrics_%s.prom",
+      baseFilename,
+      deviceUuidStr);
 
   return inspectorSuccess;
 }
@@ -380,29 +403,30 @@ static inspectorResult_t inspectorPromGetFilename(const char* baseFilename,
  *   Not thread-safe. Onus of thread safety is on the caller/owner.
  *
  */
-static inspectorResult_t inspectorPromGetDeviceFile(inspectorPromDevice& device,
-                                                    const char* output_root,
-                                                    uint64_t currentTime,
-                                                    struct inspectorDumpThread* dumpThread,
-                                                    FILE** fileOut) {
+static inspectorResult_t inspectorPromGetDeviceFile(
+    inspectorPromDevice& device,
+    const char* output_root,
+    uint64_t currentTime,
+    struct inspectorDumpThread* dumpThread,
+    FILE** fileOut) {
   if (device.file != nullptr) {
     *fileOut = device.file;
     return inspectorSuccess;
   }
 
   char filename[1024];
-  INS_CHK(inspectorPromGetFilename(output_root,
-                                   device.deviceUuidStr.c_str(),
-                                   filename,
-                                   sizeof(filename)));
+  INS_CHK(inspectorPromGetFilename(
+      output_root, device.deviceUuidStr.c_str(), filename, sizeof(filename)));
 
-  FILE* file
-    = dumpThread ? dumpThread->getOrCreateFileHandle(device.deviceUuidStr.c_str(),
-                                                     filename,
-                                                     currentTime) : NULL;
+  FILE* file = dumpThread
+      ? dumpThread->getOrCreateFileHandle(
+            device.deviceUuidStr.c_str(), filename, currentTime)
+      : NULL;
   if (!file) {
-    INFO_INSPECTOR("NCCL Inspector: Failed to get file handle for device UUID %s, file %s",
-                   device.deviceUuidStr.c_str(), filename);
+    INFO_INSPECTOR(
+        "NCCL Inspector: Failed to get file handle for device UUID %s, file %s",
+        device.deviceUuidStr.c_str(),
+        filename);
     return inspectorFileOpenError;
   }
 
@@ -410,7 +434,6 @@ static inspectorResult_t inspectorPromGetDeviceFile(inspectorPromDevice& device,
   *fileOut = file;
   return inspectorSuccess;
 }
-
 
 /*
  * Description:
@@ -422,10 +445,11 @@ static inspectorResult_t inspectorPromGetDeviceFile(inspectorPromDevice& device,
  *   the file handle.
  *
  */
-static inspectorResult_t inspectorPromWriteCollBucket(FILE* file,
-                                                      const inspectorPromDevice& device,
-                                                      const inspectorPromCollBucketKey& key,
-                                                      const inspectorPromBucketAgg& agg) {
+static inspectorResult_t inspectorPromWriteCollBucket(
+    FILE* file,
+    const inspectorPromDevice& device,
+    const inspectorPromCollBucketKey& key,
+    const inspectorPromBucketAgg& agg) {
   if (!file) {
     return inspectorFileOpenError;
   }
@@ -436,28 +460,33 @@ static inspectorResult_t inspectorPromWriteCollBucket(FILE* file,
   char version[16];
   inspectorPromGetVersion(version, sizeof(version));
 
-  INS_CHK(inspectorPromGetLabelsColl(labels,
-                                     sizeof(labels),
-                                     device.nodeName.c_str(),
-                                     device.gpuName.c_str(),
-                                     key.commName.c_str(),
-                                     version,
-                                     key.nranks,
-                                     key.nnodes,
-                                     key.func,
-                                     key.algoProto.c_str(),
-                                     key.msgSizeRangeBytes));
+  INS_CHK(inspectorPromGetLabelsColl(
+      labels,
+      sizeof(labels),
+      device.nodeName.c_str(),
+      device.gpuName.c_str(),
+      key.commName.c_str(),
+      version,
+      key.nranks,
+      key.nnodes,
+      key.func,
+      key.algoProto.c_str(),
+      key.msgSizeRangeBytes));
 
   double execMean = agg.count ? (agg.execTimeSum / agg.count) : 0.0;
   // GM = exp((1/n) * sum(log(x))) from log rules.
   double busMean = agg.busCount ? std::exp(agg.busLogSum / agg.busCount) : 0.0;
 
   char buffer[2048];
-  int written = snprintf(buffer, sizeof(buffer),
-                         "nccl_bus_bandwidth_gbs{%s} %.6g\n"
-                         "nccl_collective_exec_time_microseconds{%s} %.6g\n",
-                         labels, busMean,
-                         labels, execMean);
+  int written = snprintf(
+      buffer,
+      sizeof(buffer),
+      "nccl_bus_bandwidth_gbs{%s} %.6g\n"
+      "nccl_collective_exec_time_microseconds{%s} %.6g\n",
+      labels,
+      busMean,
+      labels,
+      execMean);
 
   if (written < 0 || (size_t)written >= sizeof(buffer)) {
     return inspectorMemoryError;
@@ -479,10 +508,11 @@ static inspectorResult_t inspectorPromWriteCollBucket(FILE* file,
  *   Not thread-safe. Onus of thread safety is on the caller/owner of
  *   the file handle.
  */
-static inspectorResult_t inspectorPromWriteP2pBucket(FILE* file,
-                                                     const inspectorPromDevice& device,
-                                                     const inspectorPromP2pBucketKey& key,
-                                                     const inspectorPromBucketAgg& agg) {
+static inspectorResult_t inspectorPromWriteP2pBucket(
+    FILE* file,
+    const inspectorPromDevice& device,
+    const inspectorPromP2pBucketKey& key,
+    const inspectorPromBucketAgg& agg) {
   if (!file) {
     return inspectorFileOpenError;
   }
@@ -493,26 +523,31 @@ static inspectorResult_t inspectorPromWriteP2pBucket(FILE* file,
   char version[16];
   inspectorPromGetVersion(version, sizeof(version));
 
-  INS_CHK(inspectorPromGetLabelsP2p(labels,
-                                    sizeof(labels),
-                                    device.nodeName.c_str(),
-                                    device.gpuName.c_str(),
-                                    key.commName.c_str(),
-                                    version,
-                                    key.nranks,
-                                    key.nnodes,
-                                    key.func,
-                                    key.msgSizeRangeBytes));
+  INS_CHK(inspectorPromGetLabelsP2p(
+      labels,
+      sizeof(labels),
+      device.nodeName.c_str(),
+      device.gpuName.c_str(),
+      key.commName.c_str(),
+      version,
+      key.nranks,
+      key.nnodes,
+      key.func,
+      key.msgSizeRangeBytes));
 
   double execMean = agg.count ? (agg.execTimeSum / agg.count) : 0.0;
   double busMean = agg.busCount ? std::exp(agg.busLogSum / agg.busCount) : 0.0;
 
   char buffer[2048];
-  int written = snprintf(buffer, sizeof(buffer),
-                         "nccl_p2p_bus_bandwidth_gbs{%s} %.6g\n"
-                         "nccl_p2p_exec_time_microseconds{%s} %.6g\n",
-                         labels, busMean,
-                         labels, execMean);
+  int written = snprintf(
+      buffer,
+      sizeof(buffer),
+      "nccl_p2p_bus_bandwidth_gbs{%s} %.6g\n"
+      "nccl_p2p_exec_time_microseconds{%s} %.6g\n",
+      labels,
+      busMean,
+      labels,
+      execMean);
 
   if (written < 0 || (size_t)written >= sizeof(buffer)) {
     return inspectorMemoryError;
@@ -545,9 +580,10 @@ static inspectorResult_t inspectorPromWriteP2pBucket(FILE* file,
  * Return:
  *   inspectorResult_t - success or error code.
  */
-static inspectorResult_t inspectorPromCommInfoDumpColl(struct inspectorCommInfo* commInfo,
-                                                       inspectorPromCollBucketMap& buckets,
-                                                       bool* needs_writing) {
+static inspectorResult_t inspectorPromCommInfoDumpColl(
+    struct inspectorCommInfo* commInfo,
+    inspectorPromCollBucketMap& buckets,
+    bool* needs_writing) {
   if (commInfo == nullptr) {
     return inspectorSuccess;
   }
@@ -557,12 +593,13 @@ static inspectorResult_t inspectorPromCommInfoDumpColl(struct inspectorCommInfo*
 
   inspectorLockWr(&commInfo->guard);
   if (commInfo->dump_coll) {
-    if (commInfo->completedCollRing.size > 0
-        && drainedColl.capacity() < commInfo->completedCollRing.size) {
+    if (commInfo->completedCollRing.size > 0 &&
+        drainedColl.capacity() < commInfo->completedCollRing.size) {
       drainedColl.reserve(commInfo->completedCollRing.size);
     }
-    INS_CHK(inspectorRingDrain<inspectorCompletedOpInfo>(&commInfo->completedCollRing,
-                                                        drainedColl));
+    INS_CHK(
+        inspectorRingDrain<inspectorCompletedOpInfo>(
+            &commInfo->completedCollRing, drainedColl));
     commInfo->dump_coll = inspectorRingNonEmpty(&commInfo->completedCollRing);
   }
   inspectorUnlockRWLock(&commInfo->guard);
@@ -571,34 +608,38 @@ static inspectorResult_t inspectorPromCommInfoDumpColl(struct inspectorCommInfo*
     *needs_writing = true;
     for (size_t i = 0; i < drainedColl.size(); i++) {
       const inspectorCompletedOpInfo& collInfo = drainedColl[i];
-      size_t msgSizeRangeBytes
-        = inspectorPromMessageSizeRangeLowerBound(collInfo.msgSizeBytes);
-      const char* commName
-        = (commInfo->commName && commInfo->commName[0]) ? commInfo->commName : "unknown";
-      const char* algo = (collInfo.algo && collInfo.algo[0]) ? collInfo.algo : "unknown";
-      const char* proto = (collInfo.proto && collInfo.proto[0]) ? collInfo.proto : "unknown";
+      size_t msgSizeRangeBytes =
+          inspectorPromMessageSizeRangeLowerBound(collInfo.msgSizeBytes);
+      const char* commName = (commInfo->commName && commInfo->commName[0])
+          ? commInfo->commName
+          : "unknown";
+      const char* algo =
+          (collInfo.algo && collInfo.algo[0]) ? collInfo.algo : "unknown";
+      const char* proto =
+          (collInfo.proto && collInfo.proto[0]) ? collInfo.proto : "unknown";
       std::string algoProto = std::string(algo) + "_" + proto;
-      inspectorPromCollBucketKey key {
-        commInfo->nranks,
-        commInfo->nnodes,
-        collInfo.func,
-        msgSizeRangeBytes,
-        commName,
-        algoProto
-      };
-      inspectorPromAggUpdate(buckets[key],
-                             collInfo.algoBwGbs,
-                             collInfo.busBwGbs,
-                             collInfo.execTimeUsecs);
+      inspectorPromCollBucketKey key{
+          commInfo->nranks,
+          commInfo->nnodes,
+          collInfo.func,
+          msgSizeRangeBytes,
+          commName,
+          algoProto};
+      inspectorPromAggUpdate(
+          buckets[key],
+          collInfo.algoBwGbs,
+          collInfo.busBwGbs,
+          collInfo.execTimeUsecs);
     }
   }
 
   return inspectorSuccess;
 }
 
-static inspectorResult_t inspectorPromCommInfoDumpP2p(struct inspectorCommInfo* commInfo,
-                                                      inspectorPromP2pBucketMap& buckets,
-                                                      bool* needs_writing) {
+static inspectorResult_t inspectorPromCommInfoDumpP2p(
+    struct inspectorCommInfo* commInfo,
+    inspectorPromP2pBucketMap& buckets,
+    bool* needs_writing) {
   if (commInfo == nullptr) {
     return inspectorSuccess;
   }
@@ -608,12 +649,13 @@ static inspectorResult_t inspectorPromCommInfoDumpP2p(struct inspectorCommInfo* 
 
   inspectorLockWr(&commInfo->guard);
   if (commInfo->dump_p2p) {
-    if (commInfo->completedP2pRing.size > 0
-        && drainedP2p.capacity() < commInfo->completedP2pRing.size) {
+    if (commInfo->completedP2pRing.size > 0 &&
+        drainedP2p.capacity() < commInfo->completedP2pRing.size) {
       drainedP2p.reserve(commInfo->completedP2pRing.size);
     }
-    INS_CHK(inspectorRingDrain<inspectorCompletedOpInfo>(&commInfo->completedP2pRing,
-                                                        drainedP2p));
+    INS_CHK(
+        inspectorRingDrain<inspectorCompletedOpInfo>(
+            &commInfo->completedP2pRing, drainedP2p));
     commInfo->dump_p2p = inspectorRingNonEmpty(&commInfo->completedP2pRing);
   }
   inspectorUnlockRWLock(&commInfo->guard);
@@ -622,31 +664,33 @@ static inspectorResult_t inspectorPromCommInfoDumpP2p(struct inspectorCommInfo* 
     *needs_writing = true;
     for (size_t i = 0; i < drainedP2p.size(); i++) {
       const inspectorCompletedOpInfo& p2pInfo = drainedP2p[i];
-      size_t msgSizeRangeBytes
-        = inspectorPromMessageSizeRangeLowerBound(p2pInfo.msgSizeBytes);
-      const char* commName
-        = (commInfo->commName && commInfo->commName[0]) ? commInfo->commName : "unknown";
-      inspectorPromP2pBucketKey key {
-        commInfo->nranks,
-        commInfo->nnodes,
-        p2pInfo.func,
-        msgSizeRangeBytes,
-        commName
-      };
-      inspectorPromAggUpdate(buckets[key],
-                             p2pInfo.algoBwGbs,
-                             p2pInfo.busBwGbs,
-                             p2pInfo.execTimeUsecs);
+      size_t msgSizeRangeBytes =
+          inspectorPromMessageSizeRangeLowerBound(p2pInfo.msgSizeBytes);
+      const char* commName = (commInfo->commName && commInfo->commName[0])
+          ? commInfo->commName
+          : "unknown";
+      inspectorPromP2pBucketKey key{
+          commInfo->nranks,
+          commInfo->nnodes,
+          p2pInfo.func,
+          msgSizeRangeBytes,
+          commName};
+      inspectorPromAggUpdate(
+          buckets[key],
+          p2pInfo.algoBwGbs,
+          p2pInfo.busBwGbs,
+          p2pInfo.execTimeUsecs);
     }
   }
 
   return inspectorSuccess;
 }
 
-static inspectorResult_t inspectorPromCommInfoDump(struct inspectorCommInfo* commInfo,
-                                                   inspectorPromCollBucketMap& collBuckets,
-                                                   inspectorPromP2pBucketMap& p2pBuckets,
-                                                   bool* needs_writing) {
+static inspectorResult_t inspectorPromCommInfoDump(
+    struct inspectorCommInfo* commInfo,
+    inspectorPromCollBucketMap& collBuckets,
+    inspectorPromP2pBucketMap& p2pBuckets,
+    bool* needs_writing) {
   *needs_writing = false;
 
   INS_CHK(inspectorPromCommInfoDumpColl(commInfo, collBuckets, needs_writing));
@@ -662,16 +706,16 @@ static inspectorResult_t inspectorPromCommInfoDump(struct inspectorCommInfo* com
  * Thread Safety:
  *   Not thread-safe (caller must hold commList lock).
  */
-static inspectorResult_t inspectorPromFillDeviceBuckets(struct inspectorCommInfoList* commList,
-                                                        std::map<std::string, inspectorPromDevice>& devices,
-                                                        uint32_t* processedOut) {
+static inspectorResult_t inspectorPromFillDeviceBuckets(
+    struct inspectorCommInfoList* commList,
+    std::map<std::string, inspectorPromDevice>& devices,
+    uint32_t* processedOut) {
   if (processedOut == nullptr) {
     return inspectorMemoryError;
   }
   *processedOut = 0;
 
-  for (struct inspectorCommInfo* itr = commList->comms;
-       itr != nullptr;
+  for (struct inspectorCommInfo* itr = commList->comms; itr != nullptr;
        itr = itr->next) {
     bool needs_writing;
 
@@ -691,17 +735,16 @@ static inspectorResult_t inspectorPromFillDeviceBuckets(struct inspectorCommInfo
       device.gpuName = gpuName;
     }
 
-    INS_CHK(inspectorPromCommInfoDump(itr,
-                                      device.collBuckets,
-                                      device.p2pBuckets,
-                                      &needs_writing));
+    INS_CHK(inspectorPromCommInfoDump(
+        itr, device.collBuckets, device.p2pBuckets, &needs_writing));
 
     if (needs_writing) {
       device.hasData = true;
       (*processedOut)++;
       TRACE_INSPECTOR(
-        "NCCL Inspector: Processed comm %u for CUDA device (rank %d)",
-        *processedOut, itr->rank);
+          "NCCL Inspector: Processed comm %u for CUDA device (rank %d)",
+          *processedOut,
+          itr->rank);
     }
   }
 
@@ -715,41 +758,33 @@ static inspectorResult_t inspectorPromFillDeviceBuckets(struct inspectorCommInfo
  * Thread Safety:
  *   Not thread-safe (caller must hold commList lock).
  */
-static inspectorResult_t inspectorPromWriteDeviceBuckets(std::map<std::string,
-                                                         inspectorPromDevice>& devices,
-                                                         const char* output_root,
-                                                         uint64_t currentTime,
-                                                         struct inspectorDumpThread* dumpThread) {
+static inspectorResult_t inspectorPromWriteDeviceBuckets(
+    std::map<std::string, inspectorPromDevice>& devices,
+    const char* output_root,
+    uint64_t currentTime,
+    struct inspectorDumpThread* dumpThread) {
   for (auto& entry : devices) {
     inspectorPromDevice& device = entry.second;
     if (!device.hasData) {
       continue;
     }
     FILE* file = nullptr;
-    INS_CHK(inspectorPromGetDeviceFile(device,
-                                       output_root,
-                                       currentTime,
-                                       dumpThread,
-                                       &file));
+    INS_CHK(inspectorPromGetDeviceFile(
+        device, output_root, currentTime, dumpThread, &file));
     if (!file) {
       continue;
     }
     for (const auto& collEntry : device.collBuckets) {
-      INS_CHK(inspectorPromWriteCollBucket(file,
-                                           device,
-                                           collEntry.first,
-                                           collEntry.second));
+      INS_CHK(inspectorPromWriteCollBucket(
+          file, device, collEntry.first, collEntry.second));
     }
     for (const auto& p2pEntry : device.p2pBuckets) {
-      INS_CHK(inspectorPromWriteP2pBucket(file,
-                                          device,
-                                          p2pEntry.first,
-                                          p2pEntry.second));
+      INS_CHK(inspectorPromWriteP2pBucket(
+          file, device, p2pEntry.first, p2pEntry.second));
     }
   }
   return inspectorSuccess;
 }
-
 
 /*
  * Description:
@@ -769,9 +804,10 @@ static inspectorResult_t inspectorPromWriteDeviceBuckets(std::map<std::string,
  * Return:
  *   inspectorResult_t - success or error code.
  */
-inspectorResult_t inspectorPromCommInfoListDump(struct inspectorCommInfoList* commList,
-                                                const char* output_root,
-                                                struct inspectorDumpThread* dumpThread) {
+inspectorResult_t inspectorPromCommInfoListDump(
+    struct inspectorCommInfoList* commList,
+    const char* output_root,
+    struct inspectorDumpThread* dumpThread) {
   INS_CHK(inspectorLockRd(&commList->guard));
   inspectorResult_t res = inspectorSuccess;
 
@@ -780,18 +816,19 @@ inspectorResult_t inspectorPromCommInfoListDump(struct inspectorCommInfoList* co
     uint64_t currentTime = inspectorGetTime();
     std::map<std::string, inspectorPromDevice> devices;
 
-    INS_CHK_GOTO(inspectorPromFillDeviceBuckets(commList,
-                                                devices,
-                                                &processed),
-                 res, exit);
-    INS_CHK_GOTO(inspectorPromWriteDeviceBuckets(devices,
-                                                 output_root,
-                                                 currentTime,
-                                                 dumpThread),
-                 res, exit);
+    INS_CHK_GOTO(
+        inspectorPromFillDeviceBuckets(commList, devices, &processed),
+        res,
+        exit);
+    INS_CHK_GOTO(
+        inspectorPromWriteDeviceBuckets(
+            devices, output_root, currentTime, dumpThread),
+        res,
+        exit);
     TRACE_INSPECTOR(
-      "NCCL Inspector: Completed dump across devices, flushed %u/%u communicators",
-      processed, commList->ncomms);
+        "NCCL Inspector: Completed dump across devices, flushed %u/%u communicators",
+        processed,
+        commList->ncomms);
   }
 
 exit:
@@ -802,14 +839,16 @@ exit:
 /*
  * Description:
  *
- *   Validates and adjusts the dump interval for Prometheus-specific requirements.
- *   Prometheus requires a minimum 30-second interval to match node exporter poll interval.
+ *   Validates and adjusts the dump interval for Prometheus-specific
+ * requirements. Prometheus requires a minimum 30-second interval to match node
+ * exporter poll interval.
  *
  * Thread Safety:
  *   Thread-safe.
  *
  * Input:
- *   int64_t interval - raw interval in microseconds from environment variable (-1 = disabled, 0 = continuous, >0 = periodic).
+ *   int64_t interval - raw interval in microseconds from environment variable
+ * (-1 = disabled, 0 = continuous, >0 = periodic).
  *
  * Output:
  *   None.
@@ -824,9 +863,10 @@ int64_t inspectorPromValidateInterval(int64_t interval) {
     return interval;
   } else if (interval >= 0 && interval < MIN_PROM_INTERVAL) {
     INFO_INSPECTOR(
-      "NCCL Inspector: Prometheus dump requires minimum interval of %ld microseconds "
-      "to match node exporter poll interval, but got %ld. Setting to minimum.",
-      MIN_PROM_INTERVAL, interval);
+        "NCCL Inspector: Prometheus dump requires minimum interval of %ld microseconds "
+        "to match node exporter poll interval, but got %ld. Setting to minimum.",
+        MIN_PROM_INTERVAL,
+        interval);
     return MIN_PROM_INTERVAL;
   }
 

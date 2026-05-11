@@ -1,19 +1,21 @@
 /*************************************************************************
- * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0
  *
  * See LICENSE.txt for more license information
  *************************************************************************/
 
 #include "inspector.h"
-#include "profiler.h"
-#include "inspector_prom.h"
-#include "inspector_json.h"
 #include "inspector_cudawrap.h"
-#include "inspector_ring.h"
 #include "inspector_event_pool.h"
+#include "inspector_json.h"
+#include "inspector_prom.h"
+#include "inspector_ring.h"
+#include "profiler.h"
 
 #include <assert.h>
+#include <cuda_runtime.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <strings.h>
@@ -21,23 +23,20 @@
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
-#include <errno.h>
-#include <cstring>
 #include <chrono>
+#include <cstring>
 #include <thread>
-#include <cuda_runtime.h>
 
 #include "common.h"
 
-#define INS_CUDA_CHK(cmd)                                               \
-  do {                                                                  \
-    cudaError_t err = cmd;                                              \
-    if (err != cudaSuccess) {                                           \
-      INFO_INSPECTOR("Cuda failure '%s'", cudaGetErrorString(err));     \
-      return inspectorCudaError;                                        \
-    }                                                                   \
+#define INS_CUDA_CHK(cmd)                                           \
+  do {                                                              \
+    cudaError_t err = cmd;                                          \
+    if (err != cudaSuccess) {                                       \
+      INFO_INSPECTOR("Cuda failure '%s'", cudaGetErrorString(err)); \
+      return inspectorCudaError;                                    \
+    }                                                               \
   } while (false)
-
 
 // Global flag to control inspector use
 static bool enableNcclInspector = false;
@@ -53,7 +52,8 @@ static uint32_t ncclInspectorDumpCollRingSize = 1024;
 static uint32_t ncclInspectorDumpP2pRingSize = 1024;
 // Minimum message size (bytes) to be tracked by inspector
 size_t ncclInspectorDumpMinSizeBytes = 8192;
-// Global dump interval in microseconds (-1 = disabled, 0 = continuous, >0 = periodic)
+// Global dump interval in microseconds (-1 = disabled, 0 = continuous, >0 =
+// periodic)
 static int64_t ncclInspectorDumpIntervalUsecs = -1;
 // Extra guard to prevent spurious messages for eager pollers that try to dump
 // out results before we have initialized
@@ -107,7 +107,8 @@ uint64_t inspectorGetTime() {
 /*
  * Description:
  *
- *   Wrapper around inspectorGetTime() that returns formatted UTC datetime string.
+ *   Wrapper around inspectorGetTime() that returns formatted UTC datetime
+ * string.
  *
  * Thread Safety:
  *
@@ -125,18 +126,20 @@ uint64_t inspectorGetTime() {
  *   inspectorResult_t - success or error code.
  */
 inspectorResult_t inspectorGetTimeUTC(char* buffer, size_t bufferSize) {
-  if (!buffer || bufferSize < 21) {  // Need at least 20 chars for "YYYY-MM-DDTHH:MM:SSZ"
+  if (!buffer ||
+      bufferSize < 21) { // Need at least 20 chars for "YYYY-MM-DDTHH:MM:SSZ"
     return inspectorMemoryError;
   }
 
   uint64_t timestampUsec = inspectorGetTime();
-  time_t timestampSec = timestampUsec / 1000000;  // Convert microseconds to seconds
+  time_t timestampSec =
+      timestampUsec / 1000000; // Convert microseconds to seconds
   struct tm* utc_tm = gmtime(&timestampSec);
 
   if (utc_tm) {
     // Format as ISO 8601 datetime: YYYY-MM-DDTHH:MM:SSZ
     if (strftime(buffer, bufferSize, "%Y-%m-%dT%H:%M:%SZ", utc_tm) == 0) {
-      return inspectorMemoryError;  // Buffer too small
+      return inspectorMemoryError; // Buffer too small
     }
   } else {
     // Fallback if gmtime fails
@@ -168,18 +171,29 @@ inspectorResult_t inspectorGetTimeUTC(char* buffer, size_t bufferSize) {
  *
  */
 ncclDataType_t inspectorStringToDatatype(const char* str) {
-  if (strcmp(str, "ncclInt8") == 0) return ncclInt8;
-  if (strcmp(str, "ncclInt32") == 0) return ncclInt32;
-  if (strcmp(str, "ncclUint32") == 0) return ncclUint32;
-  if (strcmp(str, "ncclInt64") == 0) return ncclInt64;
-  if (strcmp(str, "ncclUint64") == 0) return ncclUint64;
-  if (strcmp(str, "ncclFloat16") == 0) return ncclFloat16;
-  if (strcmp(str, "ncclFloat32") == 0) return ncclFloat32;
-  if (strcmp(str, "ncclFloat64") == 0) return ncclFloat64;
-  if (strcmp(str, "ncclBfloat16") == 0) return ncclBfloat16;
-  if (strcmp(str, "ncclFloat8e4m3") == 0) return ncclFloat8e4m3;
-  if (strcmp(str, "ncclFloat8e5m2") == 0) return ncclFloat8e5m2;
-  return (ncclDataType_t)-1;  // Or handle error as appropriate
+  if (strcmp(str, "ncclInt8") == 0)
+    return ncclInt8;
+  if (strcmp(str, "ncclInt32") == 0)
+    return ncclInt32;
+  if (strcmp(str, "ncclUint32") == 0)
+    return ncclUint32;
+  if (strcmp(str, "ncclInt64") == 0)
+    return ncclInt64;
+  if (strcmp(str, "ncclUint64") == 0)
+    return ncclUint64;
+  if (strcmp(str, "ncclFloat16") == 0)
+    return ncclFloat16;
+  if (strcmp(str, "ncclFloat32") == 0)
+    return ncclFloat32;
+  if (strcmp(str, "ncclFloat64") == 0)
+    return ncclFloat64;
+  if (strcmp(str, "ncclBfloat16") == 0)
+    return ncclBfloat16;
+  if (strcmp(str, "ncclFloat8e4m3") == 0)
+    return ncclFloat8e4m3;
+  if (strcmp(str, "ncclFloat8e5m2") == 0)
+    return ncclFloat8e5m2;
+  return (ncclDataType_t)-1; // Or handle error as appropriate
 }
 
 /*
@@ -204,31 +218,52 @@ ncclDataType_t inspectorStringToDatatype(const char* str) {
  */
 const char* ncclFuncToString(ncclFunc_t fn) {
   switch (fn) {
-  case ncclFuncAllGather: return "AllGather";
-  case ncclFuncAllReduce: return "AllReduce";
-  case ncclFuncBroadcast: return "Broadcast";
-  case ncclFuncRecv: return "Recv";
-  case ncclFuncReduce: return "Reduce";
-  case ncclFuncReduceScatter: return "ReduceScatter";
-  case ncclFuncSendRecv: return "SendRecv";
-  case ncclFuncSend: return "Send";
-  case ncclFuncAll2All: return "All2All";
-  case ncclFuncAllGatherV: return "AllGatherV";
-  default: return "Invalid";
+    case ncclFuncAllGather:
+      return "AllGather";
+    case ncclFuncAllReduce:
+      return "AllReduce";
+    case ncclFuncBroadcast:
+      return "Broadcast";
+    case ncclFuncRecv:
+      return "Recv";
+    case ncclFuncReduce:
+      return "Reduce";
+    case ncclFuncReduceScatter:
+      return "ReduceScatter";
+    case ncclFuncSendRecv:
+      return "SendRecv";
+    case ncclFuncSend:
+      return "Send";
+    case ncclFuncAll2All:
+      return "All2All";
+    case ncclFuncAllGatherV:
+      return "AllGatherV";
+    default:
+      return "Invalid";
   }
 }
 
 ncclFunc_t ncclStringToFunc(const char* str) {
-  if (strcmp(str, "AllGather") == 0) return ncclFuncAllGather;
-  if (strcmp(str, "AllReduce") == 0) return ncclFuncAllReduce;
-  if (strcmp(str, "Broadcast") == 0) return ncclFuncBroadcast;
-  if (strcmp(str, "Recv") == 0) return ncclFuncRecv;
-  if (strcmp(str, "Reduce") == 0) return ncclFuncReduce;
-  if (strcmp(str, "ReduceScatter") == 0) return ncclFuncReduceScatter;
-  if (strcmp(str, "SendRecv") == 0) return ncclFuncSendRecv;
-  if (strcmp(str, "Send") == 0) return ncclFuncSend;
-  if (strcmp(str, "All2All") == 0) return ncclFuncAll2All;
-  if (strcmp(str, "AllGatherV") == 0) return ncclFuncAllGatherV;
+  if (strcmp(str, "AllGather") == 0)
+    return ncclFuncAllGather;
+  if (strcmp(str, "AllReduce") == 0)
+    return ncclFuncAllReduce;
+  if (strcmp(str, "Broadcast") == 0)
+    return ncclFuncBroadcast;
+  if (strcmp(str, "Recv") == 0)
+    return ncclFuncRecv;
+  if (strcmp(str, "Reduce") == 0)
+    return ncclFuncReduce;
+  if (strcmp(str, "ReduceScatter") == 0)
+    return ncclFuncReduceScatter;
+  if (strcmp(str, "SendRecv") == 0)
+    return ncclFuncSendRecv;
+  if (strcmp(str, "Send") == 0)
+    return ncclFuncSend;
+  if (strcmp(str, "All2All") == 0)
+    return ncclFuncAll2All;
+  if (strcmp(str, "AllGatherV") == 0)
+    return ncclFuncAllGatherV;
   return ncclNumFuncs; // Invalid / unknown
 }
 
@@ -277,12 +312,10 @@ inspectorResult_t inspectorUnlockRWLock(pthread_rwlock_t* lockRef) {
   }
 }
 
-
-
-
 inspectorState g_state;
 
-static inspectorResult_t inspectorCommInfoListInit(struct inspectorCommInfoList* commList) {
+static inspectorResult_t inspectorCommInfoListInit(
+    struct inspectorCommInfoList* commList) {
   if (commList->comms) {
     return inspectorGlobalInitError;
   }
@@ -316,16 +349,17 @@ static inspectorResult_t inspectorGlobalStateInit() {
  * Return:
  *   const char* - string representation of the timing source.
  */
-const char* inspectorTimingSourceToString(inspectorTimingSource_t timingSource) {
+const char* inspectorTimingSourceToString(
+    inspectorTimingSource_t timingSource) {
   switch (timingSource) {
-  case inspectorTimingSourceKernelGpu:
-    return "kernel_gpu";
-  case inspectorTimingSourceKernelCpu:
-    return "kernel_cpu";
-  case inspectorTimingSourceCollectiveCpu:
-    return "collective_cpu";
-  default:
-    return "unknown";
+    case inspectorTimingSourceKernelGpu:
+      return "kernel_gpu";
+    case inspectorTimingSourceKernelCpu:
+      return "kernel_cpu";
+    case inspectorTimingSourceCollectiveCpu:
+      return "collective_cpu";
+    default:
+      return "unknown";
   }
 }
 
@@ -349,7 +383,6 @@ const char* inspectorTimingSourceToString(inspectorTimingSource_t timingSource) 
  *
  */
 
-
 /*
  * Description:
  *   Finalizes and cleans up a commList, freeing all communicators.
@@ -367,12 +400,13 @@ const char* inspectorTimingSourceToString(inspectorTimingSource_t timingSource) 
  *   inspectorResult_t - success or error code.
  *
  */
-inspectorResult_t inspectorCommInfoListFinalize(struct inspectorCommInfoList* commList) {
+inspectorResult_t inspectorCommInfoListFinalize(
+    struct inspectorCommInfoList* commList) {
   struct inspectorCommInfo* nextComm = nullptr;
   INS_CHK(inspectorLockWr(&commList->guard));
   while (commList->comms != nullptr && commList->ncomms != 0) {
-    TRACE_INSPECTOR("NCCL Inspector: comm %lu still in tracker",
-                    commList->comms->commHash);
+    TRACE_INSPECTOR(
+        "NCCL Inspector: comm %lu still in tracker", commList->comms->commHash);
     nextComm = commList->comms->next;
     inspectorRingFinalize(&commList->comms->completedCollRing);
     inspectorRingFinalize(&commList->comms->completedP2pRing);
@@ -416,16 +450,16 @@ static bool ensureDir(char* workdir) {
         return true; // Directory exists and is writable
       } else {
         INFO_INSPECTOR(
-          "NCCL Inspector: dump directory %s exists, but is not "
-          "writable",
-          workdir);
+            "NCCL Inspector: dump directory %s exists, but is not "
+            "writable",
+            workdir);
         return false;
       }
     } else {
       INFO_INSPECTOR(
-        "NCCL Inspector: dump location %s exists, but is not a "
-        "directory",
-        workdir);
+          "NCCL Inspector: dump location %s exists, but is not a "
+          "directory",
+          workdir);
       return false;
     }
   } else {
@@ -435,8 +469,9 @@ static bool ensureDir(char* workdir) {
       return true; // Directory created successfully
     } else {
       INFO_INSPECTOR(
-        "NCCL Inspector: failed to create dump directory %s: %s", workdir,
-        strerror(errno));
+          "NCCL Inspector: failed to create dump directory %s: %s",
+          workdir,
+          strerror(errno));
       return false;
     }
   }
@@ -486,9 +521,12 @@ static void genDumpDir(char** workdir) {
   }
 }
 
-
-inspectorDumpThread::inspectorDumpThread(const char* _outputRoot, int64_t _sampleIntervalUsecs)
-  : jfo(nullptr), outputRoot(strdup(_outputRoot)), sampleIntervalUsecs(_sampleIntervalUsecs) {
+inspectorDumpThread::inspectorDumpThread(
+    const char* _outputRoot,
+    int64_t _sampleIntervalUsecs)
+    : jfo(nullptr),
+      outputRoot(strdup(_outputRoot)),
+      sampleIntervalUsecs(_sampleIntervalUsecs) {
   if (inspectorLockInit(&guard) != inspectorSuccess) {
     INFO_INSPECTOR("NCCL Inspector inspectorDumpThread: couldn't init lock");
   }
@@ -509,11 +547,14 @@ inspectorDumpThread::~inspectorDumpThread() {
     for (size_t i = 0; i < deviceFlushEntries.size(); i++) {
       if (deviceFlushEntries[i].filename[0] != '\0') {
         if (unlink(deviceFlushEntries[i].filename) == 0) {
-          TRACE_INSPECTOR("NCCL Inspector: Cleaned up Prometheus file %s",
-                          deviceFlushEntries[i].filename);
+          TRACE_INSPECTOR(
+              "NCCL Inspector: Cleaned up Prometheus file %s",
+              deviceFlushEntries[i].filename);
         } else {
-          INFO_INSPECTOR("NCCL Inspector: Failed to cleanup Prometheus file %s: %s",
-                         deviceFlushEntries[i].filename, strerror(errno));
+          INFO_INSPECTOR(
+              "NCCL Inspector: Failed to cleanup Prometheus file %s: %s",
+              deviceFlushEntries[i].filename,
+              strerror(errno));
         }
       }
     }
@@ -533,24 +574,26 @@ inspectorDumpThread::~inspectorDumpThread() {
 }
 
 // Implementation of inspectorDumpThread methods
-FILE* inspectorDumpThread::getOrCreateFileHandle(const char* deviceUuidStr,
-                                                 const char* filename,
-                                                 uint64_t currentTime) {
+FILE* inspectorDumpThread::getOrCreateFileHandle(
+    const char* deviceUuidStr,
+    const char* filename,
+    uint64_t currentTime) {
   int flushIndex = -1;
   bool needsFlush = false;
 
   // Find existing entry for this device UUID
   for (size_t i = 0; i < deviceFlushEntries.size(); i++) {
-    if (strncmp(deviceFlushEntries[i].deviceUuidStr,
-                deviceUuidStr,
-                sizeof(deviceFlushEntries[i].deviceUuidStr) - 1) == 0) {
+    if (strncmp(
+            deviceFlushEntries[i].deviceUuidStr,
+            deviceUuidStr,
+            sizeof(deviceFlushEntries[i].deviceUuidStr) - 1) == 0) {
       flushIndex = static_cast<int>(i);
 
       // Check if we need to flush (clear) the file
       if (sampleIntervalUsecs > 0 &&
-          (deviceFlushEntries[i].lastFlushTime == 0
-           || ((currentTime - deviceFlushEntries[i].lastFlushTime)
-               >= (uint64_t)sampleIntervalUsecs))) {
+          (deviceFlushEntries[i].lastFlushTime == 0 ||
+           ((currentTime - deviceFlushEntries[i].lastFlushTime) >=
+            (uint64_t)sampleIntervalUsecs))) {
         needsFlush = true;
       }
       break;
@@ -560,7 +603,8 @@ FILE* inspectorDumpThread::getOrCreateFileHandle(const char* deviceUuidStr,
   // If not found, add new entry
   if (flushIndex == -1) {
     deviceFlushInfo newEntry;
-    strncpy(newEntry.deviceUuidStr, deviceUuidStr, sizeof(newEntry.deviceUuidStr));
+    strncpy(
+        newEntry.deviceUuidStr, deviceUuidStr, sizeof(newEntry.deviceUuidStr));
     newEntry.deviceUuidStr[sizeof(newEntry.deviceUuidStr) - 1] = '\0';
     strncpy(newEntry.filename, filename, sizeof(newEntry.filename) - 1);
     newEntry.filename[sizeof(newEntry.filename) - 1] = '\0';
@@ -586,7 +630,8 @@ FILE* inspectorDumpThread::getOrCreateFileHandle(const char* deviceUuidStr,
     FILE* file = fopen(filename, mode);
 
     if (!file) {
-      INFO_INSPECTOR("NCCL Inspector: Failed to open Prometheus file %s", filename);
+      INFO_INSPECTOR(
+          "NCCL Inspector: Failed to open Prometheus file %s", filename);
       return NULL;
     }
 
@@ -595,7 +640,8 @@ FILE* inspectorDumpThread::getOrCreateFileHandle(const char* deviceUuidStr,
     deviceFlushEntries[flushIndex].fileHandle = file;
 
     if (needsFlush) {
-      TRACE_INSPECTOR("NCCL Inspector: Created/flushed Prometheus file %s", filename);
+      TRACE_INSPECTOR(
+          "NCCL Inspector: Created/flushed Prometheus file %s", filename);
       deviceFlushEntries[flushIndex].lastFlushTime = currentTime;
     }
   }
@@ -609,7 +655,7 @@ void inspectorDumpThread::startThread() {
   inspectorUnlockRWLock(&guard);
   if (pthread_create(&pthread, NULL, dumpMain, this) != 0) {
     INFO_INSPECTOR(
-      "NCCL Inspector inspectorDumpThread: couldn't create dump thread!");
+        "NCCL Inspector inspectorDumpThread: couldn't create dump thread!");
     return;
   }
   threadStarted = true;
@@ -625,15 +671,17 @@ void inspectorDumpThread::stopThread() {
     pthread_join(pthread, nullptr);
     threadStarted = false;
   }
-  INFO_INSPECTOR( "NCCL Inspector inspectorDumpThread: stopped");
+  INFO_INSPECTOR("NCCL Inspector inspectorDumpThread: stopped");
 }
 
-inspectorResult_t inspectorDumpThread::inspectorStateDump(const char* output_root) {
+inspectorResult_t inspectorDumpThread::inspectorStateDump(
+    const char* output_root) {
   if (!ncclInspectorInit) {
     return inspectorUninitializedError;
   }
   if (!enableNcclInspector) {
-    INFO_INSPECTOR( "NCCL Inspector is not enabled, will not do ncclAllCommTallyDump");
+    INFO_INSPECTOR(
+        "NCCL Inspector is not enabled, will not do ncclAllCommTallyDump");
     return inspectorDisabledError;
   }
 
@@ -644,15 +692,18 @@ inspectorResult_t inspectorDumpThread::inspectorStateDump(const char* output_roo
   }
 }
 
-inspectorResult_t inspectorDumpThread::inspectorStateDumpJSON(const char* output_root) {
+inspectorResult_t inspectorDumpThread::inspectorStateDumpJSON(
+    const char* output_root) {
   if (jfo == 0) {
     char hostname[256];
     gethostname(hostname, 255);
     char tmp[2048];
-    snprintf(tmp, sizeof(tmp), "%s/%s-pid%d.log", output_root, hostname, getpid());
+    snprintf(
+        tmp, sizeof(tmp), "%s/%s-pid%d.log", output_root, hostname, getpid());
     jsonResult_t result = jsonInitFileOutput(&jfo, tmp);
     if (jsonSuccess != result) {
-      INFO_INSPECTOR("Cannot open %s for writing: %s", tmp, jsonErrorString(result));
+      INFO_INSPECTOR(
+          "Cannot open %s for writing: %s", tmp, jsonErrorString(result));
       return inspectorFileOpenError;
     }
     chmod(tmp, 0666);
@@ -669,16 +720,16 @@ inspectorResult_t inspectorDumpThread::inspectorStateDumpJSON(const char* output
   return inspectorSuccess;
 }
 
-inspectorResult_t inspectorDumpThread::inspectorStateDumpProm(const char* output_root) {
+inspectorResult_t inspectorDumpThread::inspectorStateDumpProm(
+    const char* output_root) {
   // Write communicators directly to files with per-device flushing
   // handled inside
-  inspectorResult_t dumpResult
-    = inspectorPromCommInfoListDump(&g_state.liveComms,
-                                    output_root,
-                                    this);
+  inspectorResult_t dumpResult =
+      inspectorPromCommInfoListDump(&g_state.liveComms, output_root, this);
   if (dumpResult != inspectorSuccess) {
-    INFO_INSPECTOR("NCCL Inspector: Direct Prometheus dump failed: %s",
-                   inspectorErrorString(dumpResult));
+    INFO_INSPECTOR(
+        "NCCL Inspector: Direct Prometheus dump failed: %s",
+        inspectorErrorString(dumpResult));
     return dumpResult;
   }
 
@@ -709,7 +760,8 @@ void* inspectorDumpThread::dumpMain(void* arg) {
 
     // Sleep only if interval > 0; if interval == 0, dump continuously
     if (dumper->sampleIntervalUsecs > 0) {
-      std::this_thread::sleep_for(std::chrono::microseconds(dumper->sampleIntervalUsecs));
+      std::this_thread::sleep_for(
+          std::chrono::microseconds(dumper->sampleIntervalUsecs));
     }
   }
 
@@ -725,7 +777,8 @@ void* inspectorDumpThread::dumpMain(void* arg) {
  *   Not thread-safe (should be called during initialization).
  *
  * Input:
- *   int64_t intervalUsecs - dump interval in microseconds (-1 = disabled, 0 = continuous, >0 = periodic).
+ *   int64_t intervalUsecs - dump interval in microseconds (-1 = disabled, 0 =
+ * continuous, >0 = periodic).
  *
  * Output:
  *   Dump thread is started if successful.
@@ -735,8 +788,9 @@ void* inspectorDumpThread::dumpMain(void* arg) {
  */
 static inspectorResult_t inspectorStartDumpThread(int64_t intervalUsecs) {
   if (intervalUsecs < 0) {
-    INFO_INSPECTOR( "NCCL Inspector: dump thread disabled "
-                    "(interval is -1); not starting internal dump thread.");
+    INFO_INSPECTOR(
+        "NCCL Inspector: dump thread disabled "
+        "(interval is -1); not starting internal dump thread.");
     return inspectorSuccess;
   }
 
@@ -746,31 +800,34 @@ static inspectorResult_t inspectorStartDumpThread(int64_t intervalUsecs) {
   if (dumpdir != nullptr) {
     if (!ensureDir(dumpdir)) {
       free(dumpdir);
-      INFO_INSPECTOR( "NCCL Inspector: failed to generate a dump dir; not "
-                      "starting internal dump thread.");
+      INFO_INSPECTOR(
+          "NCCL Inspector: failed to generate a dump dir; not "
+          "starting internal dump thread.");
       return inspectorSuccess;
     }
 
     dumper = new inspectorDumpThread(dumpdir, intervalUsecs);
     if (intervalUsecs == 0) {
       INFO_INSPECTOR(
-        "NCCL Inspector enabled with continuous dumping, "
-        "output directory %s, format %s",
-        dumpdir,
-        enableNcclInspectorPromDump ? "Prometheus" : "JSON");
+          "NCCL Inspector enabled with continuous dumping, "
+          "output directory %s, format %s",
+          dumpdir,
+          enableNcclInspectorPromDump ? "Prometheus" : "JSON");
     } else {
       INFO_INSPECTOR(
-        "NCCL Inspector enabled with polling interval %ld us, "
-        "output directory %s, format %s",
-        intervalUsecs, dumpdir,
-        enableNcclInspectorPromDump ? "Prometheus" : "JSON");
+          "NCCL Inspector enabled with polling interval %ld us, "
+          "output directory %s, format %s",
+          intervalUsecs,
+          dumpdir,
+          enableNcclInspectorPromDump ? "Prometheus" : "JSON");
     }
     dumper->startThread();
 
     free(dumpdir);
   } else {
-    INFO_INSPECTOR( "NCCL Inspector: failed to generate a dump "
-                    "dir; not starting internal dump thread.");
+    INFO_INSPECTOR(
+        "NCCL Inspector: failed to generate a dump "
+        "dir; not starting internal dump thread.");
   }
 
   return inspectorSuccess;
@@ -824,32 +881,78 @@ static void showInspectorEnvVars() {
     const char* defaultVal;
     const char* description;
   } envVars[] = {
-    {"NCCL_INSPECTOR_ENABLE", getenv("NCCL_INSPECTOR_ENABLE"), "0", "Enable/disable inspector plugin"},
-    {"NCCL_INSPECTOR_ENABLE_P2P", getenv("NCCL_INSPECTOR_ENABLE_P2P"), "1", "Enable/disable P2P tracking"},
-    {"NCCL_INSPECTOR_DUMP_THREAD_ENABLE", getenv("NCCL_INSPECTOR_DUMP_THREAD_ENABLE"), "1", "Enable/disable dump thread"},
-    {"NCCL_INSPECTOR_DUMP_THREAD_INTERVAL_MICROSECONDS", getenv("NCCL_INSPECTOR_DUMP_THREAD_INTERVAL_MICROSECONDS"), "-1", "Dump interval in microseconds (-1 = disabled/dump only at teardown, 0 = continuous, >0 = periodic)"},
-    {"NCCL_INSPECTOR_DUMP_DIR", getenv("NCCL_INSPECTOR_DUMP_DIR"), "(auto-generated)", "Output directory for inspector logs"},
-    {"NCCL_INSPECTOR_DUMP_VERBOSE", getenv("NCCL_INSPECTOR_DUMP_VERBOSE"), "0", "Enable/disable verbose dumping (event_trace)"},
-    {"NCCL_INSPECTOR_PROM_DUMP", getenv("NCCL_INSPECTOR_PROM_DUMP"), "0", "Enable/disable Prometheus format output dump"},
-    {"NCCL_INSPECTOR_DUMP_MIN_SIZE_BYTES", getenv("NCCL_INSPECTOR_DUMP_MIN_SIZE_BYTES"), "8192", "Minimum message size (bytes) to be tracked by inspector"},
-    {"NCCL_INSPECTOR_DUMP_COLL_RING_SIZE", getenv("NCCL_INSPECTOR_DUMP_COLL_RING_SIZE"), "1024", "Per-communicator completed-collective ring buffer capacity"},
-    {"NCCL_INSPECTOR_DUMP_P2P_RING_SIZE", getenv("NCCL_INSPECTOR_DUMP_P2P_RING_SIZE"), "1024", "Per-communicator completed-P2P ring buffer capacity"},
-    {"NCCL_INSPECTOR_COLL_POOL_SIZE", getenv("NCCL_INSPECTOR_COLL_POOL_SIZE"), "256", "Collective pool initial size/stride"},
-    {"NCCL_INSPECTOR_P2P_POOL_SIZE", getenv("NCCL_INSPECTOR_P2P_POOL_SIZE"), "256", "P2P pool initial size/stride"},
-    {"NCCL_INSPECTOR_COMM_POOL_SIZE", getenv("NCCL_INSPECTOR_COMM_POOL_SIZE"), "256", "Comm pool initial size/stride"},
-    {"NCCL_INSPECTOR_POOL_GROW", getenv("NCCL_INSPECTOR_POOL_GROW"), "1", "Enable/disable dynamic growth of event pools"},
-    {"NCCL_INSPECTOR_REQUIRE_KERNEL_TIMING", getenv("NCCL_INSPECTOR_REQUIRE_KERNEL_TIMING"), "1", "Require GPU-based kernel timing; discard events with CPU-measured timing"},
+      {"NCCL_INSPECTOR_ENABLE",
+       getenv("NCCL_INSPECTOR_ENABLE"),
+       "0",
+       "Enable/disable inspector plugin"},
+      {"NCCL_INSPECTOR_ENABLE_P2P",
+       getenv("NCCL_INSPECTOR_ENABLE_P2P"),
+       "1",
+       "Enable/disable P2P tracking"},
+      {"NCCL_INSPECTOR_DUMP_THREAD_ENABLE",
+       getenv("NCCL_INSPECTOR_DUMP_THREAD_ENABLE"),
+       "1",
+       "Enable/disable dump thread"},
+      {"NCCL_INSPECTOR_DUMP_THREAD_INTERVAL_MICROSECONDS",
+       getenv("NCCL_INSPECTOR_DUMP_THREAD_INTERVAL_MICROSECONDS"),
+       "-1",
+       "Dump interval in microseconds (-1 = disabled/dump only at teardown, 0 = continuous, >0 = periodic)"},
+      {"NCCL_INSPECTOR_DUMP_DIR",
+       getenv("NCCL_INSPECTOR_DUMP_DIR"),
+       "(auto-generated)",
+       "Output directory for inspector logs"},
+      {"NCCL_INSPECTOR_DUMP_VERBOSE",
+       getenv("NCCL_INSPECTOR_DUMP_VERBOSE"),
+       "0",
+       "Enable/disable verbose dumping (event_trace)"},
+      {"NCCL_INSPECTOR_PROM_DUMP",
+       getenv("NCCL_INSPECTOR_PROM_DUMP"),
+       "0",
+       "Enable/disable Prometheus format output dump"},
+      {"NCCL_INSPECTOR_DUMP_MIN_SIZE_BYTES",
+       getenv("NCCL_INSPECTOR_DUMP_MIN_SIZE_BYTES"),
+       "8192",
+       "Minimum message size (bytes) to be tracked by inspector"},
+      {"NCCL_INSPECTOR_DUMP_COLL_RING_SIZE",
+       getenv("NCCL_INSPECTOR_DUMP_COLL_RING_SIZE"),
+       "1024",
+       "Per-communicator completed-collective ring buffer capacity"},
+      {"NCCL_INSPECTOR_DUMP_P2P_RING_SIZE",
+       getenv("NCCL_INSPECTOR_DUMP_P2P_RING_SIZE"),
+       "1024",
+       "Per-communicator completed-P2P ring buffer capacity"},
+      {"NCCL_INSPECTOR_COLL_POOL_SIZE",
+       getenv("NCCL_INSPECTOR_COLL_POOL_SIZE"),
+       "256",
+       "Collective pool initial size/stride"},
+      {"NCCL_INSPECTOR_P2P_POOL_SIZE",
+       getenv("NCCL_INSPECTOR_P2P_POOL_SIZE"),
+       "256",
+       "P2P pool initial size/stride"},
+      {"NCCL_INSPECTOR_COMM_POOL_SIZE",
+       getenv("NCCL_INSPECTOR_COMM_POOL_SIZE"),
+       "256",
+       "Comm pool initial size/stride"},
+      {"NCCL_INSPECTOR_POOL_GROW",
+       getenv("NCCL_INSPECTOR_POOL_GROW"),
+       "1",
+       "Enable/disable dynamic growth of event pools"},
+      {"NCCL_INSPECTOR_REQUIRE_KERNEL_TIMING",
+       getenv("NCCL_INSPECTOR_REQUIRE_KERNEL_TIMING"),
+       "1",
+       "Require GPU-based kernel timing; discard events with CPU-measured timing"},
   };
 
   const int numEnvVars = sizeof(envVars) / sizeof(envVars[0]);
 
   VERSION("NCCL Inspector Environment Variables:");
   for (int i = 0; i < numEnvVars; i++) {
-    VERSION("  %s = %s%s%s",
-            envVars[i].name,
-            envVars[i].value ? envVars[i].value : "(not set)",
-            envVars[i].value ? "" : ", default=",
-            envVars[i].value ? "" : envVars[i].defaultVal);
+    VERSION(
+        "  %s = %s%s%s",
+        envVars[i].name,
+        envVars[i].value ? envVars[i].value : "(not set)",
+        envVars[i].value ? "" : ", default=",
+        envVars[i].value ? "" : envVars[i].defaultVal);
   }
 }
 
@@ -867,20 +970,27 @@ static void showInspectorEnvVars() {
  * Return:
  *   uint32_t - The validated pool size (>= minSize).
  */
-static uint32_t getPoolSizeFromEnv(const char* envVarName,
-                                   const char* description,
-                                   uint32_t defaultSize,
-                                   uint32_t minSize) {
+static uint32_t getPoolSizeFromEnv(
+    const char* envVarName,
+    const char* description,
+    uint32_t defaultSize,
+    uint32_t minSize) {
   const char* str = getenv(envVarName);
   uint64_t poolSize = str ? strtoull(str, 0, 0) : defaultSize;
   if (poolSize < minSize) {
-    INFO_INSPECTOR("NCCL Inspector: %s %lu too small, using minimum of %u",
-                   description, poolSize, minSize);
+    INFO_INSPECTOR(
+        "NCCL Inspector: %s %lu too small, using minimum of %u",
+        description,
+        poolSize,
+        minSize);
     poolSize = minSize;
   }
   if (poolSize > UINT32_MAX) {
-    INFO_INSPECTOR("NCCL Inspector: %s %lu too large, using maximum of %u",
-                   description, poolSize, UINT32_MAX);
+    INFO_INSPECTOR(
+        "NCCL Inspector: %s %lu too large, using maximum of %u",
+        description,
+        poolSize,
+        UINT32_MAX);
     poolSize = UINT32_MAX;
   }
   return (uint32_t)poolSize;
@@ -898,8 +1008,9 @@ static uint32_t getPoolSizeFromEnv(const char* envVarName,
  * Return:
  *   uint32_t - Validated ring size (>= 1).
  */
-static uint32_t getRingSizeFromEnv(const char* envVarName,
-                                   uint32_t defaultSize) {
+static uint32_t getRingSizeFromEnv(
+    const char* envVarName,
+    uint32_t defaultSize) {
   const char* str = getenv(envVarName);
   uint64_t ringSize = str ? strtoull(str, 0, 0) : defaultSize;
   if (ringSize == 0) {
@@ -953,15 +1064,12 @@ static void initKernelTimingFromEnv() {
  *   inspectorResult_t - Result from inspectorEventPoolInit.
  */
 static inspectorResult_t inspectorEventPoolInitFromEnv() {
-  uint32_t collPoolSize
-    = getPoolSizeFromEnv("NCCL_INSPECTOR_COLL_POOL_SIZE",
-                         "Collective pool size", 256, 10);
-  uint32_t p2pPoolSize
-    = getPoolSizeFromEnv("NCCL_INSPECTOR_P2P_POOL_SIZE",
-                         "P2P pool size", 256, 10);
-  uint32_t commPoolSize
-    = getPoolSizeFromEnv("NCCL_INSPECTOR_COMM_POOL_SIZE",
-                         "Comm pool size", 256, 10);
+  uint32_t collPoolSize = getPoolSizeFromEnv(
+      "NCCL_INSPECTOR_COLL_POOL_SIZE", "Collective pool size", 256, 10);
+  uint32_t p2pPoolSize = getPoolSizeFromEnv(
+      "NCCL_INSPECTOR_P2P_POOL_SIZE", "P2P pool size", 256, 10);
+  uint32_t commPoolSize = getPoolSizeFromEnv(
+      "NCCL_INSPECTOR_COMM_POOL_SIZE", "Comm pool size", 256, 10);
 
   return inspectorEventPoolInit(collPoolSize, p2pPoolSize, commPoolSize);
 }
@@ -995,27 +1103,28 @@ static inspectorResult_t initDumpThreadFromEnv() {
     ncclInspectorDumpIntervalUsecs = -1;
   }
 
-  if (enableNcclInspectorPromDump && enableNcclInspectorDumpThread && ncclInspectorDumpIntervalUsecs >= 0) {
-    ncclInspectorDumpIntervalUsecs
-      = inspectorPromValidateInterval(ncclInspectorDumpIntervalUsecs);
+  if (enableNcclInspectorPromDump && enableNcclInspectorDumpThread &&
+      ncclInspectorDumpIntervalUsecs >= 0) {
+    ncclInspectorDumpIntervalUsecs =
+        inspectorPromValidateInterval(ncclInspectorDumpIntervalUsecs);
   }
 
   str = getenv("NCCL_INSPECTOR_DUMP_MIN_SIZE_BYTES");
   ncclInspectorDumpMinSizeBytes = str ? strtoull(str, 0, 0) : 8192;
 
-  ncclInspectorDumpCollRingSize
-    = getRingSizeFromEnv("NCCL_INSPECTOR_DUMP_COLL_RING_SIZE", 1024);
+  ncclInspectorDumpCollRingSize =
+      getRingSizeFromEnv("NCCL_INSPECTOR_DUMP_COLL_RING_SIZE", 1024);
 
-  ncclInspectorDumpP2pRingSize
-    = getRingSizeFromEnv("NCCL_INSPECTOR_DUMP_P2P_RING_SIZE", 1024);
+  ncclInspectorDumpP2pRingSize =
+      getRingSizeFromEnv("NCCL_INSPECTOR_DUMP_P2P_RING_SIZE", 1024);
 
   if (enableNcclInspectorDumpThread) {
     INS_CHK(inspectorStartDumpThread(ncclInspectorDumpIntervalUsecs));
   } else {
     INFO_INSPECTOR(
-      "NCCL Inspector: NCCL_INSPECTOR_DUMP_THREAD_ENABLE set to 0; not "
-      "starting internal dump "
-      "thread.");
+        "NCCL Inspector: NCCL_INSPECTOR_DUMP_THREAD_ENABLE set to 0; not "
+        "starting internal dump "
+        "thread.");
   }
   return inspectorSuccess;
 }
@@ -1053,8 +1162,9 @@ inspectorResult_t inspectorGlobalInit(int rank) {
   }
 
   if (enableNcclInspector == false) {
-    VERSION("NCCL Inspector Plugin DISABLED (NCCL_INSPECTOR_ENABLE=%s)",
-            str ? str : "0");
+    VERSION(
+        "NCCL Inspector Plugin DISABLED (NCCL_INSPECTOR_ENABLE=%s)",
+        str ? str : "0");
     return inspectorDisabledError;
   }
 
@@ -1093,42 +1203,42 @@ inspectorResult_t inspectorGlobalInit(int rank) {
  */
 const char* inspectorErrorString(inspectorResult_t result) {
   switch (result) {
-  case inspectorSuccess:
-    return "Success";
-  case inspectorUninitializedError:
-    return "Inspector is not initialized";
-  case inspectorMemoryError:
-    return "Inspector encountered issue allocating memory";
-  case inspectorFileOpenError:
-    return "Inspector could not open file";
-  case inspectorDisabledError:
-    return "Inspector is disabled";
-  case inspectorLockError:
-    return "Inspector encountered error with lock";
-  case inspectorPthreadError:
-    return "Inspector encountered error with pthreads";
-  case inspectorJsonError:
-    return "Inspector encountered error while emitting JSON";
-  case inspectorCudaError:
-    return "Inspector encountered CUDA error";
-  case inspectorBadHash:
-    return "Inspector encountered bad communicator hash";
-  case inspectorDeleteUnknownCommError:
-    return "Inspector was asked to delete a communicator that it is not "
-      "tracking";
-  case inspectorAddDuplicateCommError:
-    return "Inspector was asked to add a communicator it was already "
-      "tracking";
-  case inspectorNop:
-    return "Inspector NOP";
-  case inspectorNullTally:
-    return "Inspector encountered a null OpTally";
-  case inspectorGlobalInitError:
-    return "Inspector encountered a repeated global init";
-  case inspectorReturn:
-    return "Inspector Unconditional Return";
-  default:
-    return "Unknown error";
+    case inspectorSuccess:
+      return "Success";
+    case inspectorUninitializedError:
+      return "Inspector is not initialized";
+    case inspectorMemoryError:
+      return "Inspector encountered issue allocating memory";
+    case inspectorFileOpenError:
+      return "Inspector could not open file";
+    case inspectorDisabledError:
+      return "Inspector is disabled";
+    case inspectorLockError:
+      return "Inspector encountered error with lock";
+    case inspectorPthreadError:
+      return "Inspector encountered error with pthreads";
+    case inspectorJsonError:
+      return "Inspector encountered error while emitting JSON";
+    case inspectorCudaError:
+      return "Inspector encountered CUDA error";
+    case inspectorBadHash:
+      return "Inspector encountered bad communicator hash";
+    case inspectorDeleteUnknownCommError:
+      return "Inspector was asked to delete a communicator that it is not "
+             "tracking";
+    case inspectorAddDuplicateCommError:
+      return "Inspector was asked to add a communicator it was already "
+             "tracking";
+    case inspectorNop:
+      return "Inspector NOP";
+    case inspectorNullTally:
+      return "Inspector encountered a null OpTally";
+    case inspectorGlobalInitError:
+      return "Inspector encountered a repeated global init";
+    case inspectorReturn:
+      return "Inspector Unconditional Return";
+    default:
+      return "Unknown error";
   }
 }
 
@@ -1149,10 +1259,10 @@ const char* inspectorErrorString(inspectorResult_t result) {
  * Return:
  *   inspectorResult_t - success or error code.
  */
-inspectorResult_t inspectorCommGetHashStr(uint64_t commHash,
-                                          char hashStr[NCCL_COMM_HASH_LENGTH]) {
-  snprintf(hashStr, NCCL_COMM_HASH_LENGTH, "0x%lx",
-           commHash);
+inspectorResult_t inspectorCommGetHashStr(
+    uint64_t commHash,
+    char hashStr[NCCL_COMM_HASH_LENGTH]) {
+  snprintf(hashStr, NCCL_COMM_HASH_LENGTH, "0x%lx", commHash);
   return inspectorSuccess;
 }
 
@@ -1173,10 +1283,11 @@ inspectorResult_t inspectorCommGetHashStr(uint64_t commHash,
  *   None.
  *
  * Return:
- *   bool - true if communicators are equal (same hash and rank), false otherwise.
+ *   bool - true if communicators are equal (same hash and rank), false
+ * otherwise.
  */
-static bool comm_eq(uint64_t lCommHash, uint64_t rCommHash,
-                    int lRank, int rRank) {
+static bool
+comm_eq(uint64_t lCommHash, uint64_t rCommHash, int lRank, int rRank) {
   return lCommHash == rCommHash && lRank == rRank;
 }
 
@@ -1188,12 +1299,11 @@ static bool comm_eq(uint64_t lCommHash, uint64_t rCommHash,
  *   Not thread-safe - should be called during communicator initialization.
  *
  * Input:
- *   struct inspectorCommInfo* commInfo - communicator info structure to initialize (must not be NULL).
- *   const char* commName - communicator name (can be NULL).
- *   uint64_t commHash - communicator hash.
- *   int nnodes - number of nodes (must be > 0).
- *   int nranks - number of ranks (must be > 0).
- *   int rank - rank (must be >= 0 and < nranks).
+ *   struct inspectorCommInfo* commInfo - communicator info structure to
+ * initialize (must not be NULL). const char* commName - communicator name (can
+ * be NULL). uint64_t commHash - communicator hash. int nnodes - number of nodes
+ * (must be > 0). int nranks - number of ranks (must be > 0). int rank - rank
+ * (must be >= 0 and < nranks).
  *
  * Output:
  *   commInfo is initialized with the provided parameters.
@@ -1207,12 +1317,17 @@ static bool comm_eq(uint64_t lCommHash, uint64_t rCommHash,
  *   - nranks must be positive
  *   - rank must be non-negative and less than nranks
  */
-static inspectorResult_t inspectorFillCommInfo(struct inspectorCommInfo* commInfo,
-                                               const char* commName, uint64_t commHash,
-                                               int nnodes, int nranks, int rank) {
+static inspectorResult_t inspectorFillCommInfo(
+    struct inspectorCommInfo* commInfo,
+    const char* commName,
+    uint64_t commHash,
+    int nnodes,
+    int nranks,
+    int rank) {
   commInfo->commNameStr[0] = '\0';
   if (commName && commName[0]) {
-    snprintf(commInfo->commNameStr, sizeof(commInfo->commNameStr), "%s", commName);
+    snprintf(
+        commInfo->commNameStr, sizeof(commInfo->commNameStr), "%s", commName);
   }
   commInfo->commName = commInfo->commNameStr;
   commInfo->commHash = commHash;
@@ -1223,16 +1338,21 @@ static inspectorResult_t inspectorFillCommInfo(struct inspectorCommInfo* commInf
   commInfo->dump_coll = false;
   commInfo->dump_p2p = false;
   commInfo->p2pSeqNum = 0;
-  INS_CHK(inspectorRingInit(&commInfo->completedCollRing, ncclInspectorDumpCollRingSize,
-                            sizeof(struct inspectorCompletedOpInfo)));
-  INS_CHK(inspectorRingInit(&commInfo->completedP2pRing, ncclInspectorDumpP2pRingSize,
-                            sizeof(struct inspectorCompletedOpInfo)));
+  INS_CHK(inspectorRingInit(
+      &commInfo->completedCollRing,
+      ncclInspectorDumpCollRingSize,
+      sizeof(struct inspectorCompletedOpInfo)));
+  INS_CHK(inspectorRingInit(
+      &commInfo->completedP2pRing,
+      ncclInspectorDumpP2pRingSize,
+      sizeof(struct inspectorCompletedOpInfo)));
 
   // Capture current CUDA device ID and convert to UUID string
   int cudaDeviceId = -1;
   cudaError_t err = cudaGetDevice(&cudaDeviceId);
   if (err != cudaSuccess) {
-    INFO_INSPECTOR("Inspector: Failed to get CUDA device ID: %s", cudaGetErrorString(err));
+    INFO_INSPECTOR(
+        "Inspector: Failed to get CUDA device ID: %s", cudaGetErrorString(err));
     return inspectorCudaError;
   }
 
@@ -1242,7 +1362,9 @@ static inspectorResult_t inspectorFillCommInfo(struct inspectorCommInfo* commInf
   CUdevice cuDevice;
   CUresult cuErr = INSPECTOR_CUPFN(cuDeviceGet)(&cuDevice, cudaDeviceId);
   if (cuErr != CUDA_SUCCESS) {
-    INFO_INSPECTOR("Inspector: Failed to get CUDA device handle for device %d", cudaDeviceId);
+    INFO_INSPECTOR(
+        "Inspector: Failed to get CUDA device handle for device %d",
+        cudaDeviceId);
     return inspectorCudaError;
   }
 
@@ -1250,21 +1372,32 @@ static inspectorResult_t inspectorFillCommInfo(struct inspectorCommInfo* commInf
   CUuuid deviceUuid;
   cuErr = INSPECTOR_CUPFN(cuDeviceGetUuid)(&deviceUuid, cuDevice);
   if (cuErr != CUDA_SUCCESS) {
-    INFO_INSPECTOR("Inspector: Failed to get device UUID for device %d", cudaDeviceId);
+    INFO_INSPECTOR(
+        "Inspector: Failed to get device UUID for device %d", cudaDeviceId);
     return inspectorCudaError;
   }
 
   // Format UUID as string (standard UUID format)
-  snprintf(commInfo->deviceUuidStr, sizeof(commInfo->deviceUuidStr),
-           "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-           (unsigned char)deviceUuid.bytes[0], (unsigned char)deviceUuid.bytes[1],
-           (unsigned char)deviceUuid.bytes[2], (unsigned char)deviceUuid.bytes[3],
-           (unsigned char)deviceUuid.bytes[4], (unsigned char)deviceUuid.bytes[5],
-           (unsigned char)deviceUuid.bytes[6], (unsigned char)deviceUuid.bytes[7],
-           (unsigned char)deviceUuid.bytes[8], (unsigned char)deviceUuid.bytes[9],
-           (unsigned char)deviceUuid.bytes[10], (unsigned char)deviceUuid.bytes[11],
-           (unsigned char)deviceUuid.bytes[12], (unsigned char)deviceUuid.bytes[13],
-           (unsigned char)deviceUuid.bytes[14], (unsigned char)deviceUuid.bytes[15]);
+  snprintf(
+      commInfo->deviceUuidStr,
+      sizeof(commInfo->deviceUuidStr),
+      "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+      (unsigned char)deviceUuid.bytes[0],
+      (unsigned char)deviceUuid.bytes[1],
+      (unsigned char)deviceUuid.bytes[2],
+      (unsigned char)deviceUuid.bytes[3],
+      (unsigned char)deviceUuid.bytes[4],
+      (unsigned char)deviceUuid.bytes[5],
+      (unsigned char)deviceUuid.bytes[6],
+      (unsigned char)deviceUuid.bytes[7],
+      (unsigned char)deviceUuid.bytes[8],
+      (unsigned char)deviceUuid.bytes[9],
+      (unsigned char)deviceUuid.bytes[10],
+      (unsigned char)deviceUuid.bytes[11],
+      (unsigned char)deviceUuid.bytes[12],
+      (unsigned char)deviceUuid.bytes[13],
+      (unsigned char)deviceUuid.bytes[14],
+      (unsigned char)deviceUuid.bytes[15]);
 
   INS_CHK(inspectorLockInit(&commInfo->guard));
   commInfo->next = nullptr;
@@ -1280,12 +1413,11 @@ static inspectorResult_t inspectorFillCommInfo(struct inspectorCommInfo* commInf
  *   Thread-safe (uses locks internally).
  *
  * Input:
- *   struct inspectorCommInfo **commInfo - pointer to output struct (must not be NULL).
- *   const char* commName - communicator name (can be NULL).
- *   uint64_t commHash - communicator hash.
- *   int nNodes - number of nodes (must be > 0).
- *   int nranks - number of ranks (must be > 0).
- *   int rank - rank (must be >= 0 and < nranks).
+ *   struct inspectorCommInfo **commInfo - pointer to output struct (must not be
+ * NULL). const char* commName - communicator name (can be NULL). uint64_t
+ * commHash - communicator hash. int nNodes - number of nodes (must be > 0). int
+ * nranks - number of ranks (must be > 0). int rank - rank (must be >= 0 and <
+ * nranks).
  *
  * Output:
  *   commInfo is set to the new communicator struct.
@@ -1299,51 +1431,55 @@ static inspectorResult_t inspectorFillCommInfo(struct inspectorCommInfo* commInf
  *   - nranks must be positive
  *   - rank must be non-negative and less than nranks
  */
-inspectorResult_t inspectorAddComm(struct inspectorCommInfo **commInfo,
-                                   const char* commName, uint64_t commHash,
-                                   int nNodes, int nranks, int rank) {
+inspectorResult_t inspectorAddComm(
+    struct inspectorCommInfo** commInfo,
+    const char* commName,
+    uint64_t commHash,
+    int nNodes,
+    int nranks,
+    int rank) {
   struct inspectorCommInfoList* liveCommInfoList = &g_state.liveComms;
   struct inspectorCommInfo* commInfoPtr = nullptr;
 
   inspectorResult_t res = inspectorSuccess;
   bool locked = false;
-  INSPECTOR_LOCK_RD_FLAG(&liveCommInfoList->guard, locked,
-                         "inspectorAddComm: commList::guard -rd");
-  for (struct inspectorCommInfo* itr = liveCommInfoList->comms;
-       itr != nullptr;
+  INSPECTOR_LOCK_RD_FLAG(
+      &liveCommInfoList->guard,
+      locked,
+      "inspectorAddComm: commList::guard -rd");
+  for (struct inspectorCommInfo* itr = liveCommInfoList->comms; itr != nullptr;
        itr = itr->next) {
     if (comm_eq(commHash, itr->commHash, rank, itr->rank)) {
-      INFO_INSPECTOR("NCCL Inspector: comm 0x%lx already in tracker",
-                     commHash);
+      INFO_INSPECTOR("NCCL Inspector: comm 0x%lx already in tracker", commHash);
       res = inspectorAddDuplicateCommError;
       goto exit;
     }
   }
-  INSPECTOR_UNLOCK_RW_LOCK_FLAG(&liveCommInfoList->guard, locked,
-                                "inspectorAddComm: commList::guard");
-  commInfoPtr
-    = (struct inspectorCommInfo*)calloc(1, sizeof(struct inspectorCommInfo));
+  INSPECTOR_UNLOCK_RW_LOCK_FLAG(
+      &liveCommInfoList->guard, locked, "inspectorAddComm: commList::guard");
+  commInfoPtr =
+      (struct inspectorCommInfo*)calloc(1, sizeof(struct inspectorCommInfo));
   if (0 == commInfoPtr) {
     res = inspectorMemoryError;
     goto exit;
   }
-  INS_CHK_GOTO(inspectorFillCommInfo(commInfoPtr,
-                                     commName,
-                                     commHash,
-                                     nNodes,
-                                     nranks,
-                                     rank),
-               res, fail);
+  INS_CHK_GOTO(
+      inspectorFillCommInfo(
+          commInfoPtr, commName, commHash, nNodes, nranks, rank),
+      res,
+      fail);
 
-  INSPECTOR_LOCK_WR_FLAG(&liveCommInfoList->guard, locked,
-                         "inspectorAddComm: commList::guard -wr");
+  INSPECTOR_LOCK_WR_FLAG(
+      &liveCommInfoList->guard,
+      locked,
+      "inspectorAddComm: commList::guard -wr");
   ++liveCommInfoList->ncomms;
   commInfoPtr->next = liveCommInfoList->comms;
   liveCommInfoList->comms = commInfoPtr;
 
 exit:
-  INSPECTOR_UNLOCK_RW_LOCK_FLAG(&liveCommInfoList->guard, locked,
-                                "inspectorAddComm: commList::guard");
+  INSPECTOR_UNLOCK_RW_LOCK_FLAG(
+      &liveCommInfoList->guard, locked, "inspectorAddComm: commList::guard");
   *commInfo = commInfoPtr;
   return res;
 fail:
@@ -1372,20 +1508,20 @@ fail:
  * Return:
  *   inspectorResult_t - success or error code.
  */
-inspectorResult_t inspectorDelComm(struct inspectorCommInfo *commInfo) {
+inspectorResult_t inspectorDelComm(struct inspectorCommInfo* commInfo) {
   struct inspectorCommInfoList* liveCommInfoList = &g_state.liveComms;
   struct inspectorCommInfoList* deletedCommInfoList = &g_state.deletedComms;
   struct inspectorCommInfo* commInfoPtr = nullptr;
   bool locked = false;
 
-  TRACE_INSPECTOR("NCCL Inspector: DelComm removing 0x%lx",
-                  commInfo->commHash);
+  TRACE_INSPECTOR("NCCL Inspector: DelComm removing 0x%lx", commInfo->commHash);
 
-  INSPECTOR_LOCK_WR_FLAG(&liveCommInfoList->guard, locked,
-                         "inspectorDelComm: liveCommInfoList::guard -wr");
+  INSPECTOR_LOCK_WR_FLAG(
+      &liveCommInfoList->guard,
+      locked,
+      "inspectorDelComm: liveCommInfoList::guard -wr");
   struct inspectorCommInfo** prev_ptr = &liveCommInfoList->comms;
-  for (struct inspectorCommInfo* itr = liveCommInfoList->comms;
-       itr != nullptr;
+  for (struct inspectorCommInfo* itr = liveCommInfoList->comms; itr != nullptr;
        itr = itr->next) {
     if (comm_eq(commInfo->commHash, itr->commHash, commInfo->rank, itr->rank)) {
       *prev_ptr = itr->next;
@@ -1396,12 +1532,15 @@ inspectorResult_t inspectorDelComm(struct inspectorCommInfo *commInfo) {
     }
     prev_ptr = &itr->next;
   }
-  INSPECTOR_UNLOCK_RW_LOCK_FLAG(&liveCommInfoList->guard, locked,
-                                "inspectorDelComm: liveCommInfoList::guard -unlock");
+  INSPECTOR_UNLOCK_RW_LOCK_FLAG(
+      &liveCommInfoList->guard,
+      locked,
+      "inspectorDelComm: liveCommInfoList::guard -unlock");
 
   if (!commInfoPtr) {
-    INFO_INSPECTOR("NCCL Inspector: DelComm can't remove 0x%lx, not present",
-                   commInfo->commHash);
+    INFO_INSPECTOR(
+        "NCCL Inspector: DelComm can't remove 0x%lx, not present",
+        commInfo->commHash);
     return inspectorDeleteUnknownCommError;
   }
 
@@ -1410,13 +1549,17 @@ inspectorResult_t inspectorDelComm(struct inspectorCommInfo *commInfo) {
   commInfoPtr->dump_p2p = false;
   inspectorUnlockRWLock(&commInfoPtr->guard);
 
-  INSPECTOR_LOCK_WR_FLAG(&deletedCommInfoList->guard, locked,
-                         "inspectorDelComm: deletedCommInfoList::guard -wr");
+  INSPECTOR_LOCK_WR_FLAG(
+      &deletedCommInfoList->guard,
+      locked,
+      "inspectorDelComm: deletedCommInfoList::guard -wr");
   commInfoPtr->next = deletedCommInfoList->comms;
   deletedCommInfoList->comms = commInfoPtr;
   deletedCommInfoList->ncomms++;
-  INSPECTOR_UNLOCK_RW_LOCK_FLAG(&deletedCommInfoList->guard, locked,
-                                "inspectorDelComm: deletedCommInfoList::guard -unlock");
+  INSPECTOR_UNLOCK_RW_LOCK_FLAG(
+      &deletedCommInfoList->guard,
+      locked,
+      "inspectorDelComm: deletedCommInfoList::guard -unlock");
 
   return inspectorSuccess;
 }
@@ -1447,8 +1590,9 @@ inspectorResult_t inspectorDelComm(struct inspectorCommInfo *commInfo) {
  * Return:
  *   N.A. (void function)
  */
-void inspectorComputeOpBw(struct inspectorCommInfo *commInfo,
-                          struct inspectorCompletedOpInfo *op) {
+void inspectorComputeOpBw(
+    struct inspectorCommInfo* commInfo,
+    struct inspectorCompletedOpInfo* op) {
   double timeInSec = op->execTimeUsecs / 1000000.0;
   double factor = 0.0;
   double trafficSize = 0.0;
@@ -1458,33 +1602,34 @@ void inspectorComputeOpBw(struct inspectorCommInfo *commInfo,
     factor = 1.0;
   } else {
     switch (op->func) {
-    case ncclFuncReduce:
-    case ncclFuncBroadcast:
-      trafficSize = (double)op->msgSizeBytes;
-      factor = 1;
-      break;
-    case ncclFuncAllReduce:
-      trafficSize = (double)op->msgSizeBytes;
-      factor = ((double)(2 * (commInfo->nranks - 1))) / ((double)commInfo->nranks);
-      break;
-    case ncclFuncReduceScatter:
-      trafficSize = (double)(op->msgSizeBytes * commInfo->nranks);
-      factor = ((double)(commInfo->nranks - 1)) / ((double)commInfo->nranks);
-      break;
-    case ncclFuncAllGather:
-    case ncclFuncAllGatherV:
-      trafficSize = (double)(op->msgSizeBytes * commInfo->nranks);
-      factor = ((double)(commInfo->nranks - 1)) / ((double)commInfo->nranks);
-      break;
-    case ncclFuncSendRecv:
-    case ncclFuncSend:
-    case ncclFuncRecv:
-      trafficSize = (double)op->msgSizeBytes;
-      factor = 1;
-      break;
-    default:
-      trafficSize = 0;
-      factor = 0.0;
+      case ncclFuncReduce:
+      case ncclFuncBroadcast:
+        trafficSize = (double)op->msgSizeBytes;
+        factor = 1;
+        break;
+      case ncclFuncAllReduce:
+        trafficSize = (double)op->msgSizeBytes;
+        factor =
+            ((double)(2 * (commInfo->nranks - 1))) / ((double)commInfo->nranks);
+        break;
+      case ncclFuncReduceScatter:
+        trafficSize = (double)(op->msgSizeBytes * commInfo->nranks);
+        factor = ((double)(commInfo->nranks - 1)) / ((double)commInfo->nranks);
+        break;
+      case ncclFuncAllGather:
+      case ncclFuncAllGatherV:
+        trafficSize = (double)(op->msgSizeBytes * commInfo->nranks);
+        factor = ((double)(commInfo->nranks - 1)) / ((double)commInfo->nranks);
+        break;
+      case ncclFuncSendRecv:
+      case ncclFuncSend:
+      case ncclFuncRecv:
+        trafficSize = (double)op->msgSizeBytes;
+        factor = 1;
+        break;
+      default:
+        trafficSize = 0;
+        factor = 0.0;
     }
   }
   op->algoBwGbs = timeInSec != 0 ? (trafficSize / 1.0E9 / timeInSec) : 0;
@@ -1512,7 +1657,8 @@ void inspectorComputeOpBw(struct inspectorCommInfo *commInfo,
  *   uint64_t - execution time in microseconds, or 0 if invalid timing
  *   data.
  */
-static uint64_t calculateKernelGpuExecTimeUsecs(struct inspectorKernelChInfo *kernelCh) {
+static uint64_t calculateKernelGpuExecTimeUsecs(
+    struct inspectorKernelChInfo* kernelCh) {
   if (kernelCh->startGpuClk != 0 && kernelCh->stopGpuClk != 0) {
     if (kernelCh->stopGpuClk > kernelCh->startGpuClk) {
       uint64_t execTimeNanosecs = kernelCh->stopGpuClk - kernelCh->startGpuClk;
@@ -1535,10 +1681,12 @@ static uint64_t calculateKernelGpuExecTimeUsecs(struct inspectorKernelChInfo *ke
  * Input:
  *   struct inspectorCollInfo *collInfo - collective operation info
  *   containing kernel channels.
- *   inspectorTimingSource_t *timingSource - pointer to store the timing source used.
+ *   inspectorTimingSource_t *timingSource - pointer to store the timing source
+ * used.
  *
  * Output:
- *   timingSource is set to indicate whether GPU, CPU, or collective timing was used.
+ *   timingSource is set to indicate whether GPU, CPU, or collective timing was
+ * used.
  *
  * Return:
  *
@@ -1547,13 +1695,14 @@ static uint64_t calculateKernelGpuExecTimeUsecs(struct inspectorKernelChInfo *ke
  *              timing is available.
  *
  */
-static uint64_t calculateMaxKernelExecTimeUsecs(struct inspectorCollInfo *collInfo,
-                                                inspectorTimingSource_t *timingSource) {
+static uint64_t calculateMaxKernelExecTimeUsecs(
+    struct inspectorCollInfo* collInfo,
+    inspectorTimingSource_t* timingSource) {
   uint64_t maxKernelExecTimeUsecs = 0;
   inspectorTimingSource_t bestTimingSource = inspectorTimingSourceCollectiveCpu;
 
   for (uint32_t i = 0; i < collInfo->nChannels; i++) {
-    struct inspectorKernelChInfo *kernelCh = &collInfo->kernelCh[i];
+    struct inspectorKernelChInfo* kernelCh = &collInfo->kernelCh[i];
     uint64_t gpuExecTimeUsecs = calculateKernelGpuExecTimeUsecs(kernelCh);
     if (gpuExecTimeUsecs > 0) {
       if (gpuExecTimeUsecs > maxKernelExecTimeUsecs) {
@@ -1562,7 +1711,8 @@ static uint64_t calculateMaxKernelExecTimeUsecs(struct inspectorCollInfo *collIn
       }
     } else {
       if (kernelCh->tsCompletedUsec > kernelCh->tsStartUsec) {
-        uint64_t cpuExecTimeUsecs = kernelCh->tsCompletedUsec - kernelCh->tsStartUsec;
+        uint64_t cpuExecTimeUsecs =
+            kernelCh->tsCompletedUsec - kernelCh->tsStartUsec;
         if (cpuExecTimeUsecs > maxKernelExecTimeUsecs) {
           maxKernelExecTimeUsecs = cpuExecTimeUsecs;
           bestTimingSource = inspectorTimingSourceKernelCpu;
@@ -1600,14 +1750,15 @@ static uint64_t calculateMaxKernelExecTimeUsecs(struct inspectorCollInfo *collIn
  *   None.
  *
  */
-void inspectorUpdateCollPerf(struct inspectorCompletedOpInfo *completedOp,
-                             struct inspectorCollInfo *collInfo) {
+void inspectorUpdateCollPerf(
+    struct inspectorCompletedOpInfo* completedOp,
+    struct inspectorCollInfo* collInfo) {
   completedOp->isP2p = false;
   completedOp->func = ncclStringToFunc(collInfo->func);
   completedOp->sn = collInfo->sn;
   completedOp->msgSizeBytes = collInfo->msgSizeBytes;
   completedOp->execTimeUsecs =
-    calculateMaxKernelExecTimeUsecs(collInfo, &completedOp->timingSource);
+      calculateMaxKernelExecTimeUsecs(collInfo, &completedOp->timingSource);
   completedOp->algo = collInfo->algo;
   completedOp->proto = collInfo->proto;
   completedOp->evtTrk = collInfo->collEvtTrk;
@@ -1625,7 +1776,8 @@ void inspectorUpdateCollPerf(struct inspectorCompletedOpInfo *completedOp,
  *
  * Input:
  *   struct inspectorP2pInfo *p2pInfo - P2P operation info.
- *   inspectorTimingSource_t *timingSource - output parameter for timing source used.
+ *   inspectorTimingSource_t *timingSource - output parameter for timing source
+ * used.
  *
  * Output:
  *   timingSource is set to the timing method used.
@@ -1633,13 +1785,14 @@ void inspectorUpdateCollPerf(struct inspectorCompletedOpInfo *completedOp,
  * Return:
  *   uint64_t - maximum execution time in microseconds across all channels.
  */
-static uint64_t calculateMaxKernelExecTimeUsecsP2p(struct inspectorP2pInfo *p2pInfo,
-                                                   inspectorTimingSource_t *timingSource) {
+static uint64_t calculateMaxKernelExecTimeUsecsP2p(
+    struct inspectorP2pInfo* p2pInfo,
+    inspectorTimingSource_t* timingSource) {
   uint64_t maxExecTimeUsecs = 0;
   bool hasGpuTiming = false;
 
   for (uint32_t i = 0; i < p2pInfo->nChannels; i++) {
-    struct inspectorKernelChInfo *kernelCh = &p2pInfo->kernelCh[i];
+    struct inspectorKernelChInfo* kernelCh = &p2pInfo->kernelCh[i];
     uint64_t gpuExecTimeUsecs = calculateKernelGpuExecTimeUsecs(kernelCh);
 
     if (gpuExecTimeUsecs > 0) {
@@ -1657,9 +1810,10 @@ static uint64_t calculateMaxKernelExecTimeUsecsP2p(struct inspectorP2pInfo *p2pI
 
   // Fall back to CPU timestamps
   for (uint32_t i = 0; i < p2pInfo->nChannels; i++) {
-    struct inspectorKernelChInfo *kernelCh = &p2pInfo->kernelCh[i];
+    struct inspectorKernelChInfo* kernelCh = &p2pInfo->kernelCh[i];
     if (kernelCh->tsCompletedUsec > kernelCh->tsStartUsec) {
-      uint64_t cpuExecTimeUsecs = kernelCh->tsCompletedUsec - kernelCh->tsStartUsec;
+      uint64_t cpuExecTimeUsecs =
+          kernelCh->tsCompletedUsec - kernelCh->tsStartUsec;
       if (cpuExecTimeUsecs > maxExecTimeUsecs) {
         maxExecTimeUsecs = cpuExecTimeUsecs;
       }
@@ -1681,15 +1835,16 @@ static uint64_t calculateMaxKernelExecTimeUsecsP2p(struct inspectorP2pInfo *p2pI
   return 0;
 }
 
-void inspectorUpdateP2pPerf(struct inspectorCompletedOpInfo *completedOp,
-                            struct inspectorP2pInfo *p2pInfo) {
+void inspectorUpdateP2pPerf(
+    struct inspectorCompletedOpInfo* completedOp,
+    struct inspectorP2pInfo* p2pInfo) {
   completedOp->isP2p = true;
   completedOp->func = ncclStringToFunc(p2pInfo->func);
   completedOp->sn = p2pInfo->sn;
   completedOp->msgSizeBytes = p2pInfo->msgSizeBytes;
   completedOp->peer = p2pInfo->peer;
   completedOp->execTimeUsecs =
-    calculateMaxKernelExecTimeUsecsP2p(p2pInfo, &completedOp->timingSource);
+      calculateMaxKernelExecTimeUsecsP2p(p2pInfo, &completedOp->timingSource);
   completedOp->evtTrk = p2pInfo->p2pEvtTrk;
 }
 

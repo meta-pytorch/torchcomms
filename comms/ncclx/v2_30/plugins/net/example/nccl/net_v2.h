@@ -1,6 +1,6 @@
 /*************************************************************************
- * SPDX-FileCopyrightText: Copyright (c) 2017-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2017-2026 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0
  *
  * See LICENSE.txt for more license information
  *************************************************************************/
@@ -27,17 +27,30 @@ typedef struct {
   ncclResult_t (*listen)(int dev, void* handle, void** listenComm);
   // Connect to a handle and return a sending comm object for that peer.
   ncclResult_t (*connect)(int dev, void* handle, void** sendComm);
-  // Finalize connection establishment after remote peer has called connectHandle
+  // Finalize connection establishment after remote peer has called
+  // connectHandle
   ncclResult_t (*accept)(void* listenComm, void** recvComm);
   // Register/Deregister memory. Comm can be either a sendComm or a recvComm.
-  ncclResult_t (*regMr)(void* comm, void* data, int size, int type, void** mhandle);
+  ncclResult_t (
+      *regMr)(void* comm, void* data, int size, int type, void** mhandle);
   ncclResult_t (*deregMr)(void* comm, void* mhandle);
   // Asynchronous send to a peer. Type is either NCCL_PTR_HOST or NCCL_PTR_CUDA.
   // May return request == NULL if the call cannot be performed (or would block)
-  ncclResult_t (*isend)(void* sendComm, void* data, int size, void* mhandle, void** request);
-  // Asynchronous recv from a peer. Type is either NCCL_PTR_HOST or NCCL_PTR_CUDA.
-  // May return request == NULL if the call cannot be performed (or would block)
-  ncclResult_t (*irecv)(void* recvComm, void* data, int size, void* mhandle, void** request);
+  ncclResult_t (*isend)(
+      void* sendComm,
+      void* data,
+      int size,
+      void* mhandle,
+      void** request);
+  // Asynchronous recv from a peer. Type is either NCCL_PTR_HOST or
+  // NCCL_PTR_CUDA. May return request == NULL if the call cannot be performed
+  // (or would block)
+  ncclResult_t (*irecv)(
+      void* recvComm,
+      void* data,
+      int size,
+      void* mhandle,
+      void** request);
   // Perform a flush/fence to make sure all data received with NCCL_PTR_CUDA is
   // visible to the GPU
   ncclResult_t (*flush)(void* recvComm, void* data, int size, void* mhandle);

@@ -14,25 +14,29 @@
 
 /* Struct definitions */
 struct ncclLsaBarrierSession_C {
-    ncclLsaBarrierSession<ncclCoopAny> bar;
+  ncclLsaBarrierSession<ncclCoopAny> bar;
 };
 
 struct ncclGinBarrierSession_C {
-    ncclGinBarrierSession<ncclCoopAny> bar;
+  ncclGinBarrierSession<ncclCoopAny> bar;
 };
 
 struct ncclBarrierSession_C {
-    ncclBarrierSession<ncclCoopAny> bar;
+  ncclBarrierSession<ncclCoopAny> bar;
 };
 
 /* Peer pointer API */
-NCCL_IR_EXTERN_C __device__ void* ncclGetPeerPointerTeam(ncclWindow_t w, size_t offset, ncclTeam tm, int peer);
+NCCL_IR_EXTERN_C __device__ void*
+ncclGetPeerPointerTeam(ncclWindow_t w, size_t offset, ncclTeam tm, int peer);
 
 /* Coop initialization and utility functions */
 NCCL_IR_EXTERN_C __device__ void ncclCoopAnyInitThread(ncclCoopAny* coop);
 NCCL_IR_EXTERN_C __device__ void ncclCoopAnyInitWarp(ncclCoopAny* coop);
-NCCL_IR_EXTERN_C __device__ void ncclCoopAnyInitLanes(ncclCoopAny* coop, uint32_t lane_mask);
-NCCL_IR_EXTERN_C __device__ void ncclCoopAnyInitWarpSpan(ncclCoopAny* coop, int warp0, int nWarps, int id);
+NCCL_IR_EXTERN_C __device__ void ncclCoopAnyInitLanes(
+    ncclCoopAny* coop,
+    uint32_t lane_mask);
+NCCL_IR_EXTERN_C __device__ void
+ncclCoopAnyInitWarpSpan(ncclCoopAny* coop, int warp0, int nWarps, int id);
 NCCL_IR_EXTERN_C __device__ void ncclCoopAnyInitCta(ncclCoopAny* coop);
 
 NCCL_IR_EXTERN_C __device__ int ncclCoopThreadRank(const ncclCoopAny* coop);
@@ -50,12 +54,18 @@ NCCL_IR_EXTERN_C __device__ void ncclLsaBarrierSessionInit(
     uint32_t index,
     bool multimem = false,
     ncclMultimemHandle mmHandle = {});
-NCCL_IR_EXTERN_C __device__
-void ncclLsaBarrierSessionArrive(ncclLsaBarrierSession_C* session, ncclCoopAny coop, cuda::memory_order order);
-NCCL_IR_EXTERN_C __device__
-void ncclLsaBarrierSessionWait(ncclLsaBarrierSession_C* session, ncclCoopAny coop, cuda::memory_order order);
-NCCL_IR_EXTERN_C __device__
-void ncclLsaBarrierSessionSync(ncclLsaBarrierSession_C* session, ncclCoopAny coop, cuda::memory_order order);
+NCCL_IR_EXTERN_C __device__ void ncclLsaBarrierSessionArrive(
+    ncclLsaBarrierSession_C* session,
+    ncclCoopAny coop,
+    cuda::memory_order order);
+NCCL_IR_EXTERN_C __device__ void ncclLsaBarrierSessionWait(
+    ncclLsaBarrierSession_C* session,
+    ncclCoopAny coop,
+    cuda::memory_order order);
+NCCL_IR_EXTERN_C __device__ void ncclLsaBarrierSessionSync(
+    ncclLsaBarrierSession_C* session,
+    ncclCoopAny coop,
+    cuda::memory_order order);
 
 /* GIN Barrier Session APIs */
 NCCL_IR_EXTERN_C __device__ void ncclGinBarrierSessionInit(
@@ -82,7 +92,8 @@ NCCL_IR_EXTERN_C __device__ void ncclBarrierSessionInit(
     ncclLsaBarrierHandle const innerBarHandle,
     ncclGinBarrierHandle const outerBarHandle,
     uint32_t index,
-    bool multimem=false, ncclMultimemHandle const innerMmHandle={});
+    bool multimem = false,
+    ncclMultimemHandle const innerMmHandle = {});
 
 NCCL_IR_EXTERN_C __device__ void ncclBarrierSessionSync(
     ncclBarrierSession_C* session,
@@ -91,4 +102,3 @@ NCCL_IR_EXTERN_C __device__ void ncclBarrierSessionSync(
     ncclGinFenceLevel fence);
 
 #endif // _NCCL_DEVICE_WRAPPER_H_
-

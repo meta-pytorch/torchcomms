@@ -1,6 +1,6 @@
 /*************************************************************************
- * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0
  *
  * See LICENSE.txt for more license information
  *************************************************************************/
@@ -8,11 +8,11 @@
 #ifndef UTILS_H_
 #define UTILS_H_
 
+#include <stdio.h>
+#include <stdlib.h>
 #include "cuda_runtime.h"
 #include "nccl.h"
 #include "nccl_utils.h"
-#include <stdio.h>
-#include <stdlib.h>
 
 #ifdef MPI_SUPPORT
 #include "mpi.h"
@@ -34,7 +34,7 @@
  *
  * @return 0 on success, non-zero on error
  */
-int util_broadcast(int root, int my_rank, ncclUniqueId *arg);
+int util_broadcast(int root, int my_rank, ncclUniqueId* arg);
 
 /**
  * Run the given NCCL example in parallel
@@ -50,7 +50,9 @@ int util_broadcast(int root, int my_rank, ncclUniqueId *arg);
  *
  * @return 0 on success, non-zero on error
  */
-int run_example(int argc, char *argv[],
-                void *(*ncclExample)(int, int, int, int));
+int run_example(
+    int argc,
+    char* argv[],
+    void* (*ncclExample)(int, int, int, int));
 
 #endif // UTILS_H_

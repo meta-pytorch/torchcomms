@@ -1,19 +1,19 @@
 /*************************************************************************
- * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0
  *
  * See LICENSE.txt for more license information
  *************************************************************************/
 
-#include "cuda_runtime.h"
-#include "nccl.h"
-#include "nccl_device.h"
-#include "utils.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include "cuda_runtime.h"
+#include "nccl.h"
+#include "nccl_device.h"
+#include "utils.h"
 
 /*
  * NCCL Device API Pure GIN AlltoAll Example
@@ -22,7 +22,8 @@
  * for performing AlltoAll collective operations directly from GPU kernels using
  * only network-based communication.
  * GIN enables GPU kernels to initiate network communication without CPU
- * intervention, providing low-latency communication for distributed applications.
+ * intervention, providing low-latency communication for distributed
+ * applications.
  *
  * Learning Objectives:
  * - Understand pure GIN (GPU-Initiated Networking) communication
@@ -51,7 +52,8 @@
  *
  * Device setup (this example):
  * - worldGinBarrierCount and ginSignalCount: one per CTA (grid dimension x).
- * - ginConnectionType NCCL_GIN_CONNECTION_FULL: full GIN connectivity (each rank to all peers).
+ * - ginConnectionType NCCL_GIN_CONNECTION_FULL: full GIN connectivity (each
+ * rank to all peers).
  * - ncclGinBarrierSession for cross-rank barriers before the puts.
  * - A single GIN context (index 0) is used for simplicity; production code may
  *   use multiple contexts for throughput.
@@ -63,7 +65,8 @@
  *   at entry so ranks do not exit the kernel before the collective completes.
  */
 
-// Grid width (CTAs). Must match reqs.worldGinBarrierCount and reqs.ginSignalCount.
+// Grid width (CTAs). Must match reqs.worldGinBarrierCount and
+// reqs.ginSignalCount.
 #define NCCL_DEVICE_CTA_COUNT 16
 #define NCCL_DEVICE_THREADS_PER_CTA 512
 
@@ -73,42 +76,59 @@
 
 // Pure GIN alltoall: one put per (src rank, peer) partitioned across threads.
 template <typename T>
-__global__ void PureGinAlltoAllKernel(ncclWindow_t sendwin, size_t sendoffset,
-                                      ncclWindow_t recvwin, size_t recvoffset,
-                                      size_t count, struct ncclDevComm devComm) {
+__global__ void PureGinAlltoAllKernel(
+    ncclWindow_t sendwin,
+    size_t sendoffset,
+    ncclWindow_t recvwin,
+    size_t recvoffset,
+    size_t count,
+    struct ncclDevComm devComm) {
   int ginContext = 0; // single context for simplicity
   unsigned int signalIndex = blockIdx.x;
-  ncclGin gin { devComm, ginContext };
+  ncclGin gin{devComm, ginContext};
   uint64_t signalValue = gin.readSignal(signalIndex);
 
-  ncclGinBarrierSession<ncclCoopCta> bar { ncclCoopCta(), gin, ncclTeamTagWorld(), blockIdx.x };
-  bar.sync(ncclCoopCta(), cuda::memory_order_acquire, ncclGinFenceLevel::Relaxed);
+  ncclGinBarrierSession<ncclCoopCta> bar{
+      ncclCoopCta(), gin, ncclTeamTagWorld(), blockIdx.x};
+  bar.sync(
+      ncclCoopCta(), cuda::memory_order_acquire, ncclGinFenceLevel::Relaxed);
 
   int tid = threadIdx.x + blockIdx.x * blockDim.x;
   int nthreads = blockDim.x * gridDim.x;
 
   const size_t size = count * sizeof(T);
   for (int r = tid; r < devComm.nRanks; r += nthreads) {
-    gin.put(ncclTeamWorld(devComm), r,
-        recvwin, recvoffset + devComm.rank * size,
-        sendwin, sendoffset + r * size,
-        size, ncclGin_SignalInc{signalIndex});
+    gin.put(
+        ncclTeamWorld(devComm),
+        r,
+        recvwin,
+        recvoffset + devComm.rank * size,
+        sendwin,
+        sendoffset + r * size,
+        size,
+        ncclGin_SignalInc{signalIndex});
   }
 
-  // Wait only on the CTA whose blockIdx.x (signalIndex) accumulates all puts to this rank.
+  // Wait only on the CTA whose blockIdx.x (signalIndex) accumulates all puts to
+  // this rank.
   int receivingCta = (devComm.rank % nthreads) / blockDim.x;
   if (blockIdx.x == receivingCta)
     gin.waitSignal(ncclCoopCta(), signalIndex, signalValue + devComm.nRanks);
 
   gin.flush(ncclCoopCta());
-  bar.sync(ncclCoopCta(), cuda::memory_order_release, ncclGinFenceLevel::Relaxed);
+  bar.sync(
+      ncclCoopCta(), cuda::memory_order_release, ncclGinFenceLevel::Relaxed);
 }
 
 // ==========================================================================
 // Host-Side Setup and Device API Initialization
 // ==========================================================================
 
-void* pureGinAlltoAll(int my_rank, int total_ranks, int local_device, int devices_per_rank) {
+void* pureGinAlltoAll(
+    int my_rank,
+    int total_ranks,
+    int local_device,
+    int devices_per_rank) {
   ncclComm_t comm;
   ncclUniqueId nccl_unique_id;
 
@@ -134,13 +154,17 @@ void* pureGinAlltoAll(int my_rank, int total_ranks, int local_device, int device
 
   // Initialize NCCL communicator
   NCCLCHECK(ncclCommInitRank(&comm, total_ranks, nccl_unique_id, my_rank));
-  printf("  Rank %d initialized NCCL communicator for %d total ranks\n", my_rank, total_ranks);
+  printf(
+      "  Rank %d initialized NCCL communicator for %d total ranks\n",
+      my_rank,
+      total_ranks);
 
   // Check for Device API and GIN support
   ncclCommProperties_t props = NCCL_COMM_PROPERTIES_INITIALIZER;
   NCCLCHECK(ncclCommQueryProperties(comm, &props));
   if (!props.deviceApiSupport) {
-    printf("ERROR: rank %d communicator does not support Device API!\n", my_rank);
+    printf(
+        "ERROR: rank %d communicator does not support Device API!\n", my_rank);
     NCCLCHECK(ncclCommFinalize(comm));
     NCCLCHECK(ncclCommDestroy(comm));
     return NULL;
@@ -157,8 +181,8 @@ void* pureGinAlltoAll(int my_rank, int total_ranks, int local_device, int device
   size_t total_elements = count * total_ranks;
   size_t size_bytes = total_elements * sizeof(float);
 
-  float *h_sendbuff = (float*)malloc(size_bytes);
-  float *h_recvbuff = (float*)malloc(size_bytes);
+  float* h_sendbuff = (float*)malloc(size_bytes);
+  float* h_recvbuff = (float*)malloc(size_bytes);
   void* d_sendbuff;
   void* d_recvbuff;
   ncclWindow_t send_win;
@@ -173,8 +197,10 @@ void* pureGinAlltoAll(int my_rank, int total_ranks, int local_device, int device
   // ==========================================================================
 
   // Register symmetric windows for GIN access
-  NCCLCHECK(ncclCommWindowRegister(comm, d_sendbuff, size_bytes, &send_win, NCCL_WIN_COLL_SYMMETRIC));
-  NCCLCHECK(ncclCommWindowRegister(comm, d_recvbuff, size_bytes, &recv_win, NCCL_WIN_COLL_SYMMETRIC));
+  NCCLCHECK(ncclCommWindowRegister(
+      comm, d_sendbuff, size_bytes, &send_win, NCCL_WIN_COLL_SYMMETRIC));
+  NCCLCHECK(ncclCommWindowRegister(
+      comm, d_recvbuff, size_bytes, &recv_win, NCCL_WIN_COLL_SYMMETRIC));
 
   // Initialize data: each rank sends unique values to each destination
   for (size_t i = 0; i < total_elements; i++) {
@@ -182,7 +208,8 @@ void* pureGinAlltoAll(int my_rank, int total_ranks, int local_device, int device
     int element_idx = i % count;
     h_sendbuff[i] = (float)(my_rank * 1000 + dest_rank * 100 + element_idx);
   }
-  CUDACHECK(cudaMemcpy(d_sendbuff, h_sendbuff, size_bytes, cudaMemcpyHostToDevice));
+  CUDACHECK(
+      cudaMemcpy(d_sendbuff, h_sendbuff, size_bytes, cudaMemcpyHostToDevice));
   printf("  Rank %d initialized send data\n", my_rank);
 
   // ==========================================================================
@@ -196,15 +223,21 @@ void* pureGinAlltoAll(int my_rank, int total_ranks, int local_device, int device
   // Create device communicator with GIN support
   ncclDevComm devComm;
   ncclDevCommRequirements reqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
-  reqs.worldGinBarrierCount = NCCL_DEVICE_CTA_COUNT;  // ncclGinBarrierSession (world team)
-  reqs.ginSignalCount = NCCL_DEVICE_CTA_COUNT; // one signal index per CTA (blockIdx.x)
-  reqs.ginConnectionType = NCCL_GIN_CONNECTION_FULL;  // full GIN connectivity: each rank to all peers
+  reqs.worldGinBarrierCount =
+      NCCL_DEVICE_CTA_COUNT; // ncclGinBarrierSession (world team)
+  reqs.ginSignalCount =
+      NCCL_DEVICE_CTA_COUNT; // one signal index per CTA (blockIdx.x)
+  reqs.ginConnectionType =
+      NCCL_GIN_CONNECTION_FULL; // full GIN connectivity: each rank to all peers
   NCCLCHECK(ncclDevCommCreate(comm, &reqs, &devComm));
   printf("  Rank %d created device communicator with GIN support\n", my_rank);
 
   if (my_rank == 0) {
-    printf("Starting Pure GIN AlltoAll with %zu elements per rank (%zu total elements, %zu MB)\n",
-            count, total_elements, size_bytes / (1024 * 1024));
+    printf(
+        "Starting Pure GIN AlltoAll with %zu elements per rank (%zu total elements, %zu MB)\n",
+        count,
+        total_elements,
+        size_bytes / (1024 * 1024));
   }
 
   // ==========================================================================
@@ -219,8 +252,9 @@ void* pureGinAlltoAll(int my_rank, int total_ranks, int local_device, int device
   CUDACHECK(cudaMemset(d_recvbuff, 0, size_bytes));
 
   // Launch pure GIN AlltoAll kernel
-  PureGinAlltoAllKernel<float><<<NCCL_DEVICE_CTA_COUNT, NCCL_DEVICE_THREADS_PER_CTA, 0, stream>>>(
-      send_win, 0, recv_win, 0, count, devComm);
+  PureGinAlltoAllKernel<float>
+      <<<NCCL_DEVICE_CTA_COUNT, NCCL_DEVICE_THREADS_PER_CTA, 0, stream>>>(
+          send_win, 0, recv_win, 0, count, devComm);
 
   // Wait for completion
   CUDACHECK(cudaStreamSynchronize(stream));
@@ -231,7 +265,8 @@ void* pureGinAlltoAll(int my_rank, int total_ranks, int local_device, int device
   // ==========================================================================
 
   // Verify pure GIN results
-  CUDACHECK(cudaMemcpy(h_recvbuff, d_recvbuff, size_bytes, cudaMemcpyDeviceToHost));
+  CUDACHECK(
+      cudaMemcpy(h_recvbuff, d_recvbuff, size_bytes, cudaMemcpyDeviceToHost));
   bool gin_success = true;
   for (int src_rank = 0; src_rank < total_ranks; src_rank++) {
     for (size_t i = 0; i < count; i++) {
@@ -239,12 +274,18 @@ void* pureGinAlltoAll(int my_rank, int total_ranks, int local_device, int device
       float expected = (float)(src_rank * 1000 + my_rank * 100 + i);
       if (h_recvbuff[recv_idx] != expected) {
         gin_success = false;
-        printf("  Rank %d: Pure GIN mismatch at [%d][%zu]: got %.0f, expected %.0f\n",
-                my_rank, src_rank, i, h_recvbuff[recv_idx], expected);
+        printf(
+            "  Rank %d: Pure GIN mismatch at [%d][%zu]: got %.0f, expected %.0f\n",
+            my_rank,
+            src_rank,
+            i,
+            h_recvbuff[recv_idx],
+            expected);
         break;
       }
     }
-    if (!gin_success) break;
+    if (!gin_success)
+      break;
   }
 
   if (my_rank == 0) {

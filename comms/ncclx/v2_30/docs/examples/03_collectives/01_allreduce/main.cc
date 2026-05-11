@@ -1,16 +1,16 @@
 /*************************************************************************
- * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0
  *
  * See LICENSE.txt for more license information
  *************************************************************************/
 
-#include "cuda_runtime.h"
-#include "nccl.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "cuda_runtime.h"
+#include "nccl.h"
 
 /*
  * NCCL AllReduce Example - Collective Communication
@@ -29,38 +29,46 @@
 
 // Enhanced error checking macro for NCCL operations
 // Provides detailed error information including the failed operation
-#define NCCLCHECK(cmd)                                                         \
-  do {                                                                         \
-    ncclResult_t res = cmd;                                                    \
-    if (res != ncclSuccess) {                                                  \
-      fprintf(stderr, "Failed, NCCL error %s:%d '%s'\n", __FILE__, __LINE__,   \
-              ncclGetErrorString(res));                                        \
-      fprintf(stderr, "Failed NCCL operation: %s\n", #cmd);                    \
-      exit(EXIT_FAILURE);                                                      \
-    }                                                                          \
+#define NCCLCHECK(cmd)                                      \
+  do {                                                      \
+    ncclResult_t res = cmd;                                 \
+    if (res != ncclSuccess) {                               \
+      fprintf(                                              \
+          stderr,                                           \
+          "Failed, NCCL error %s:%d '%s'\n",                \
+          __FILE__,                                         \
+          __LINE__,                                         \
+          ncclGetErrorString(res));                         \
+      fprintf(stderr, "Failed NCCL operation: %s\n", #cmd); \
+      exit(EXIT_FAILURE);                                   \
+    }                                                       \
   } while (0)
 
-#define CUDACHECK(cmd)                                                         \
-  do {                                                                         \
-    cudaError_t err = cmd;                                                     \
-    if (err != cudaSuccess) {                                                  \
-      fprintf(stderr, "Failed: Cuda error %s:%d '%s'\n", __FILE__, __LINE__,   \
-              cudaGetErrorString(err));                                        \
-      fprintf(stderr, "Failed CUDA operation: %s\n", #cmd);                    \
-      exit(EXIT_FAILURE);                                                      \
-    }                                                                          \
+#define CUDACHECK(cmd)                                      \
+  do {                                                      \
+    cudaError_t err = cmd;                                  \
+    if (err != cudaSuccess) {                               \
+      fprintf(                                              \
+          stderr,                                           \
+          "Failed: Cuda error %s:%d '%s'\n",                \
+          __FILE__,                                         \
+          __LINE__,                                         \
+          cudaGetErrorString(err));                         \
+      fprintf(stderr, "Failed CUDA operation: %s\n", #cmd); \
+      exit(EXIT_FAILURE);                                   \
+    }                                                       \
   } while (0)
 
-int main(int argc, char *argv[]) {
+int main(int argc, char* argv[]) {
   // ========================================================================
   // STEP 1: Initialize Variables and Detect Available GPUs
   // ========================================================================
 
   int num_gpus = 0;
-  ncclComm_t *comms;
-  cudaStream_t *streams;
-  float **sendbuff;
-  float **recvbuff;
+  ncclComm_t* comms;
+  cudaStream_t* streams;
+  float** sendbuff;
+  float** recvbuff;
 
   // Get number of CUDA devices
   CUDACHECK(cudaGetDeviceCount(&num_gpus));
@@ -76,10 +84,10 @@ int main(int argc, char *argv[]) {
   // ========================================================================
 
   // Allocate arrays for per-device resources, and array of pointers for buffers
-  comms = (ncclComm_t *)malloc(num_gpus * sizeof(ncclComm_t));
-  streams = (cudaStream_t *)malloc(num_gpus * sizeof(cudaStream_t));
-  sendbuff = (float **)malloc(num_gpus * sizeof(float *));
-  recvbuff = (float **)malloc(num_gpus * sizeof(float *));
+  comms = (ncclComm_t*)malloc(num_gpus * sizeof(ncclComm_t));
+  streams = (cudaStream_t*)malloc(num_gpus * sizeof(cudaStream_t));
+  sendbuff = (float**)malloc(num_gpus * sizeof(float*));
+  recvbuff = (float**)malloc(num_gpus * sizeof(float*));
 
   printf("Memory allocated for %d communicators and streams\n", num_gpus);
 
@@ -106,15 +114,15 @@ int main(int argc, char *argv[]) {
     CUDACHECK(cudaStreamCreate(&streams[i]));
 
     // Allocate device memory for send and receive buffers
-    CUDACHECK(cudaMalloc((void **)&sendbuff[i], size * sizeof(float)));
-    CUDACHECK(cudaMalloc((void **)&recvbuff[i], size * sizeof(float)));
+    CUDACHECK(cudaMalloc((void**)&sendbuff[i], size * sizeof(float)));
+    CUDACHECK(cudaMalloc((void**)&recvbuff[i], size * sizeof(float)));
 
     // Initialize send buffer: zero the entire buffer, then set first element to
     // rank
     CUDACHECK(cudaMemset(sendbuff[i], 0, size * sizeof(float)));
     float rank_value = (float)i;
-    CUDACHECK(cudaMemcpy(sendbuff[i], &rank_value, sizeof(float),
-                         cudaMemcpyHostToDevice));
+    CUDACHECK(cudaMemcpy(
+        sendbuff[i], &rank_value, sizeof(float), cudaMemcpyHostToDevice));
 
     printf("  Device %d initialized with data value %d\n", i, i);
   }
@@ -130,8 +138,14 @@ int main(int argc, char *argv[]) {
   NCCLCHECK(ncclGroupStart());
   for (int i = 0; i < num_gpus; i++) {
     // Each device performs combines all contributions and distributes result
-    NCCLCHECK(ncclAllReduce(sendbuff[i], recvbuff[i], size, ncclFloat, ncclSum,
-                            comms[i], streams[i]));
+    NCCLCHECK(ncclAllReduce(
+        sendbuff[i],
+        recvbuff[i],
+        size,
+        ncclFloat,
+        ncclSum,
+        comms[i],
+        streams[i]));
   }
   NCCLCHECK(ncclGroupEnd());
 
@@ -156,12 +170,15 @@ int main(int argc, char *argv[]) {
   for (int i = 0; i < num_gpus; i++) {
     float result;
     CUDACHECK(cudaSetDevice(i));
-    CUDACHECK(cudaMemcpy(&result, recvbuff[i], sizeof(float),
-                         cudaMemcpyDeviceToHost));
+    CUDACHECK(cudaMemcpy(
+        &result, recvbuff[i], sizeof(float), cudaMemcpyDeviceToHost));
 
     if (result != expected) {
-      printf("  Device %d received incorrect result: %.0f (expected %.0f)\n", i,
-             result, expected);
+      printf(
+          "  Device %d received incorrect result: %.0f (expected %.0f)\n",
+          i,
+          result,
+          expected);
       success = false;
     } else {
       printf("  Device %d correctly received sum: %.0f\n", i, result);

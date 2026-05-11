@@ -1,6 +1,6 @@
 /*************************************************************************
- * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0
  *
  * See LICENSE.txt for more license information
  *************************************************************************/
@@ -42,8 +42,10 @@ static void* loadCudaSymbol(const char* symbol_name) {
 
   void* symbol = dlsym(cudaDriverLib, symbol_name);
   if (!symbol) {
-    INFO_INSPECTOR("Inspector: Failed to load CUDA symbol '%s': %s",
-         symbol_name, dlerror());
+    INFO_INSPECTOR(
+        "Inspector: Failed to load CUDA symbol '%s': %s",
+        symbol_name,
+        dlerror());
     return nullptr;
   }
 
@@ -78,13 +80,15 @@ inspectorResult_t inspectorCudaWrapInit(void) {
     // Try alternative name
     cudaDriverLib = dlopen("libcuda.so.1", RTLD_LAZY);
     if (!cudaDriverLib) {
-      INFO_INSPECTOR("Inspector: Failed to load CUDA driver library: %s", dlerror());
+      INFO_INSPECTOR(
+          "Inspector: Failed to load CUDA driver library: %s", dlerror());
       return inspectorCudaError;
     }
   }
 
   // Load required CUDA driver functions
-  pfn_cuGetErrorString = (PFN_cuGetErrorString)loadCudaSymbol("cuGetErrorString");
+  pfn_cuGetErrorString =
+      (PFN_cuGetErrorString)loadCudaSymbol("cuGetErrorString");
   if (!pfn_cuGetErrorString) {
     INFO_INSPECTOR("Inspector: Failed to load cuGetErrorString");
     inspectorCudaWrapCleanup();
