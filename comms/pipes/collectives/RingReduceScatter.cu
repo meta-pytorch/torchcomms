@@ -49,7 +49,7 @@ __global__ __launch_bounds__(kBlockSize, 1) void ring_reduce_scatter_kernel(
   const int stride = (my_rank - topo.prev_rank + W) % W;
   const char* input_base = reinterpret_cast<const char*>(args.input);
 
-  using ReduceOp = TileReduce<T, AccumOp, kTileElems, kBlockSize>;
+  using ReduceOp = TileReduceStaged<T, AccumOp, kTileElems, kBlockSize>;
 
   for (std::size_t off = 0; off < io_tile_bytes; off += pipeline_window) {
     const std::size_t remaining = io_tile_bytes - off;
