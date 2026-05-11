@@ -397,8 +397,9 @@ class RdmaTransport : public Transport {
   /// Per-QP inflight WR count. Accessed only on EventBase thread.
   std::vector<uint32_t> numWrsPerQp_;
 
-  /// Maps ibv QP number → QP index for completion routing.
-  std::unordered_map<uint32_t, uint32_t> qpNumToIdx_;
+  /// Maps (NIC index, ibv QP number) → QP index for completion routing.
+  /// QP numbers are only unique within an RDMA device.
+  std::unordered_map<uint64_t, uint32_t> qpNumToIdx_;
 
   /// State of the transport.
   TransportState state_{TransportState::Disconnected};
