@@ -608,28 +608,28 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
    */
   inline commResult_t
   iflush(const void* buf, const void* regHdl, CtranMapperRequest** req) {
-    if (!this->ctranIb) {
-      CLOGF(WARN, "CTRAN-MAPPER: IB backend not enabled, skip flush");
-      return commSuccess;
+    if (this->ctranIb) {
+      auto* regElem = reinterpret_cast<ctran::regcache::RegElem*>(
+          const_cast<void*>(regHdl));
+      if (!regElem) {
+        CLOGF(WARN, "CTRAN-MAPPER: No IB registration for flush, skip");
+        return commSuccess;
+      }
+      auto regLk = regElem->stateMnger.rlock();
+      CtranIbRequest* ibReq = nullptr;
+      if (req) {
+        *req = new CtranMapperRequest();
+        ibReq = &((*req)->ibReq);
+      }
+      FB_COMMCHECK(this->ctranIb->iflush(buf, regElem->ibRegElem, ibReq));
+    } else if (this->ctranTcpDm) {
+      // TCPDM: flush is unnecessary — data arrives via kernel unpack.
+      // Return a pre-completed request so callers can poll normally.
+      if (req) {
+        *req = new CtranMapperRequest();
+        (*req)->setComplete();
+      }
     }
-
-    // regHdl from searchRegHandle is a RegElem*; extract the IB-level
-    // registration handle that LocalVirtualConn::iflush expects.
-    auto* regElem =
-        reinterpret_cast<ctran::regcache::RegElem*>(const_cast<void*>(regHdl));
-    if (!regElem) {
-      CLOGF(WARN, "CTRAN-MAPPER: No IB registration for flush, skip");
-      return commSuccess;
-    }
-
-    auto regLk = regElem->stateMnger.rlock();
-
-    CtranIbRequest* ibReq = nullptr;
-    if (req) {
-      *req = new CtranMapperRequest();
-      ibReq = &((*req)->ibReq);
-    }
-    FB_COMMCHECK(this->ctranIb->iflush(buf, regElem->ibRegElem, ibReq));
     return commSuccess;
   }
 
