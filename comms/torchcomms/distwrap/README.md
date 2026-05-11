@@ -239,13 +239,16 @@ from torchcomms import distwrap as dist
 dist.all_reduce(tensor)
 ```
 
-### Object collectives use an arbitrary torchcomms instance
+### Barrier and object collectives prefer CPU when available
 
-For object-based collectives (`all_gather_object`, `gather_object`,
-`scatter_object_list`, `broadcast_object_list`), there is no tensor to infer
-the device type from. In this case, distwrap picks the first available
-torchcomms instance arbitrarily. If you have multiple backends configured
-(e.g., both CPU and GPU), the chosen backend may not be what you expect.
+For operations without a tensor to infer the device from (`barrier`,
+`all_gather_object`, `gather_object`, `scatter_object_list`,
+`broadcast_object_list`), distwrap matches c10d behavior:
+
+- If the process group has a single backend, it uses that backend.
+- If multiple backends are configured and a CPU communicator is available, it
+  prefers the CPU communicator.
+- Otherwise, it falls back to the first available communicator.
 
 ### split_group and new_window operate on all backends by default
 
@@ -265,7 +268,7 @@ subgroup = dist.split_group(
 
 ### new_window uses an arbitrary torchcomms instance by default
 
-Similar to object collectives, `new_window` picks the first available
+Unlike barrier and object collectives, `new_window` picks the first available
 torchcomms instance from the group when `backend` is not specified. Use the
 `backend` parameter to explicitly choose which backend to use:
 

@@ -61,7 +61,8 @@ def _get_default_torchcomms_instance(pg: ProcessGroup) -> TorchComm:
     Get a default torchcomms instance for the given process group.
 
     This is used for operations that don't have a tensor to infer the device
-    from (e.g., object collectives, barrier).
+    from (e.g., object collectives, barrier). Match c10d behavior by preferring
+    the CPU communicator when multiple device backends are present.
 
     Args:
         pg: The process group.
@@ -75,7 +76,10 @@ def _get_default_torchcomms_instance(pg: ProcessGroup) -> TorchComm:
     torchcomms_instances = pg_info_get_data(pg, "torchcomms")
     if not torchcomms_instances:
         raise AssertionError(f"No torchcomms instances found for process group {pg}")
-    # Use the first available torchcomms instance
+    if len(torchcomms_instances) == 1:
+        return next(iter(torchcomms_instances.values()))
+    if "cpu" in torchcomms_instances:
+        return torchcomms_instances["cpu"]
     return next(iter(torchcomms_instances.values()))
 
 
