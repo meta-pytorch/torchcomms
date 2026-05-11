@@ -3038,6 +3038,17 @@ cvars:
      Default: "0" (only rank 0 logs). Set to an empty string to allow
      all ranks to log.
 
+ - name        : MCCL_ALGO_PROFILER_STEP_LOGGING_INTERVAL
+   type        : int
+   default     : 113
+   description : |-
+     Controls step-based algo profiler logging at the MCCL level. When the
+     training step (from AllReduceOpts kvPairs["step"]) is a multiple of this
+     interval, all allreduce algo profiler data for that step is logged,
+     bypassing the per-op NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT filter.
+     Rank filtering (MCCL_FILTER_ALGO_PROFILER_LOGGING_BY_RANKS) still applies.
+     Set to 0 or negative to disable step-based logging.
+
  - name        : NCCL_GIN_GDAKI_NIC_HANDLER
    type        : int
    default     : 0
