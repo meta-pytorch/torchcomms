@@ -461,7 +461,6 @@ void ctran::RegCache::asyncRegThreadFn(int cudaDev) {
           INFO, INIT, "CTranMapperRegCache asyncRegThreadFn: terminate");
       return;
     }
-
     FB_CHECKABORT(
         cmd.buf && cmd.len > 0 && cmd.cudaDev >= 0,
         "Invalid buffer registration request: buf {} len {} cudaDev {}",
@@ -591,6 +590,12 @@ bool ctran::RegCache::isRegistered(const void* ptr, const size_t len) {
   // Find range in regElemsMaps
   auto regHdl = searchRegElem(ptr, len);
   return regHdl != nullptr;
+}
+
+void* ctran::RegCache::getRegHandle(const void* ptr, const size_t len) {
+  // Return the regHdl (RegElem*) cast to void* - this is the handle format
+  // used by mapper functions like iput/isendCtrl
+  return static_cast<void*>(searchRegElem(ptr, len));
 }
 
 void* ctran::RegCache::searchIbRegHandle(
