@@ -2914,6 +2914,16 @@ cvars:
      We might use fewer thread blocks, if we can achieve max occupancy
      with them.
 
+ - name        : NCCL_CTRAN_ALLREDUCE_RING_NUM_THREAD_BLOCKS
+   type        : int
+   default     : 0
+   description : |-
+     Force the exact number of thread blocks for the AllReduce Ring
+     kernel, bypassing the auto-tuner. When set to > 0, the auto-tuner
+     block selection is skipped and this value is used directly.
+     Use with NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE to fully
+     override the auto-tuner.
+
  - name        : NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE
    type        : int
    default     : 0
