@@ -56,6 +56,13 @@ inline uint64_t clockNano() {
   return uint64_t(ts.tv_sec)*1000*1000*1000 + ts.tv_nsec;
 }
 
+// Wall-clock (epoch) time in nanoseconds for cross-host timestamp correlation
+inline uint64_t wallClockNano() {
+  struct timespec ts;
+  clock_gettime(CLOCK_REALTIME, &ts);
+  return uint64_t(ts.tv_sec)*1000*1000*1000 + ts.tv_nsec;
+}
+
 /* get any bytes of random data from /dev/urandom, return ncclSuccess (0) if it succeeds. */
 inline ncclResult_t getRandomData(void* buffer, size_t bytes) {
   ncclResult_t ret = ncclSuccess;
@@ -561,7 +568,7 @@ ncclResult_t ncclBitsToString(uint32_t bits, uint32_t mask, const char* (*toStr)
 size_t get_sc_page_size(void);
 
 /**
- * @brief function to get system's page size aligned memory address and buffersize 
+ * @brief function to get system's page size aligned memory address and buffersize
  *
  * Given a pointer `ptr` to a buffer of size `bufsize`, this function computes:
  *   1. A new pointer `aligned_ptr` which points to the start of the page-aligned memory region that includes `ptr`.
