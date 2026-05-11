@@ -1,19 +1,19 @@
 /*************************************************************************
- * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0
  *
  * See LICENSE.txt for more license information
  *************************************************************************/
 
-#include "cuda_runtime.h"
-#include "nccl.h"
-#include "utils.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include "cuda_runtime.h"
+#include "nccl.h"
+#include "utils.h"
 
 /*
  * NCCL User Buffer Registration AllReduce Example
@@ -34,9 +34,11 @@
  * easier readability. For fully integrated examples using pthreads or MPI see
  * examples in 01_communicators.
  */
-void *allReduce(int my_rank, int total_ranks, int local_device,
-                int devices_per_rank) {
-
+void* allReduce(
+    int my_rank,
+    int total_ranks,
+    int local_device,
+    int devices_per_rank) {
   // ========================================================================
   // STEP 1: Initialize NCCL Communicator and Setup
   // ========================================================================
@@ -60,8 +62,10 @@ void *allReduce(int my_rank, int total_ranks, int local_device,
   // This creates the communication context for collective operations
   ncclComm_t comm;
   NCCLCHECK(ncclCommInitRank(&comm, total_ranks, nccl_unique_id, my_rank));
-  printf("  Rank %d communicator initialized using device %d\n", my_rank,
-         local_device);
+  printf(
+      "  Rank %d communicator initialized using device %d\n",
+      my_rank,
+      local_device);
 
   // ========================================================================
   // STEP 2: Allocate Memory Using NCCL Allocator
@@ -75,13 +79,15 @@ void *allReduce(int my_rank, int total_ranks, int local_device,
   size_t count = 1024 * 1024; // 1M elements
   size_t size_bytes = count * sizeof(float);
 
-  printf("  Rank %d allocating %.2f MB per buffer\n", my_rank,
-         (float)size_bytes / (1024 * 1024));
+  printf(
+      "  Rank %d allocating %.2f MB per buffer\n",
+      my_rank,
+      (float)size_bytes / (1024 * 1024));
 
   // Allocate buffers using NCCL allocator
   // NCCL's allocator can provide optimized memory for communication
-  void *d_sendbuff;
-  void *d_recvbuff;
+  void* d_sendbuff;
+  void* d_recvbuff;
   NCCLCHECK(ncclMemAlloc(&d_sendbuff, size_bytes));
   NCCLCHECK(ncclMemAlloc(&d_recvbuff, size_bytes));
 
@@ -92,8 +98,8 @@ void *allReduce(int my_rank, int total_ranks, int local_device,
   // Register the buffers with NCCL
   // This is the key optimization - buffers are pre-registered for efficiency
   // The handles returned can be used to identify registered buffers
-  void *send_handle;
-  void *recv_handle;
+  void* send_handle;
+  void* recv_handle;
   NCCLCHECK(ncclCommRegister(comm, d_sendbuff, size_bytes, &send_handle));
   NCCLCHECK(ncclCommRegister(comm, d_recvbuff, size_bytes, &recv_handle));
 
@@ -103,7 +109,7 @@ void *allReduce(int my_rank, int total_ranks, int local_device,
 
   // Initialize data - each rank contributes its rank value
   // This creates a simple test pattern for verification
-  float *h_data = (float *)malloc(size_bytes);
+  float* h_data = (float*)malloc(size_bytes);
   for (size_t i = 0; i < count; i++) {
     h_data[i] = (float)my_rank;
   }
@@ -120,14 +126,16 @@ void *allReduce(int my_rank, int total_ranks, int local_device,
   // ========================================================================
 
   if (my_rank == 0) {
-    printf("Starting AllReduce with %zu elements (%zu MB)\n", count,
-           size_bytes / (1024 * 1024));
+    printf(
+        "Starting AllReduce with %zu elements (%zu MB)\n",
+        count,
+        size_bytes / (1024 * 1024));
   }
 
   // Perform AllReduce operation
   // Since buffers are registered, this should have optimized performance
-  NCCLCHECK(ncclAllReduce(d_sendbuff, d_recvbuff, count, ncclFloat, ncclSum,
-                          comm, stream));
+  NCCLCHECK(ncclAllReduce(
+      d_sendbuff, d_recvbuff, count, ncclFloat, ncclSum, comm, stream));
 
   if (my_rank == 0) {
     printf("AllReduce completed successfully\n");
@@ -141,22 +149,27 @@ void *allReduce(int my_rank, int total_ranks, int local_device,
   CUDACHECK(cudaStreamSynchronize(stream));
 
   // Verify results (optional - copy back and check a few elements)
-  float *h_result = (float *)malloc(sizeof(float) * count);
-  CUDACHECK(cudaMemcpy(h_result, d_recvbuff, sizeof(float) * count,
-                       cudaMemcpyDeviceToHost));
+  float* h_result = (float*)malloc(sizeof(float) * count);
+  CUDACHECK(cudaMemcpy(
+      h_result, d_recvbuff, sizeof(float) * count, cudaMemcpyDeviceToHost));
 
   // Each element should be the sum of all ranks
   float expected_sum = (float)(total_ranks * (total_ranks - 1)) / 2;
   bool all_ok = true;
   if (my_rank == 0) {
-    printf("Verification - Expected: %.1f, Got: %.1f\n", expected_sum,
-           h_result[0]);
+    printf(
+        "Verification - Expected: %.1f, Got: %.1f\n",
+        expected_sum,
+        h_result[0]);
 
     for (size_t i = 1; i < count; i++) {
       if (fabsf(h_result[i] - expected_sum) > 0.001) {
-        printf(" Results verification failed at index %zu: Expected %.1f, Got "
-               "%.1f\n",
-               i, expected_sum, h_result[i]);
+        printf(
+            " Results verification failed at index %zu: Expected %.1f, Got "
+            "%.1f\n",
+            i,
+            expected_sum,
+            h_result[i]);
         all_ok = false;
         break;
       }
@@ -208,7 +221,7 @@ void *allReduce(int my_rank, int total_ranks, int local_device,
   return NULL;
 }
 
-int main(int argc, char *argv[]) {
+int main(int argc, char* argv[]) {
   // Run example using the standard test framework
   // This handles MPI/pthread initialization, device assignment, and cleanup
   return run_example(argc, argv, allReduce);

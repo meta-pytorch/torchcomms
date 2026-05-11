@@ -1,6 +1,6 @@
 /*************************************************************************
- * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0
  *
  * See LICENSE.txt for more license information
  *************************************************************************/
@@ -23,17 +23,28 @@ void ceProfilerDeregisterContext(struct context* ctx);
 void ceProfilerCleanupPendingEvents(struct context* ctx);
 
 // CE event start/stop functions
-ncclResult_t ceProfilerStartCeCollEvent(struct context* ctx, void** eHandle, ncclProfilerEventDescr_v6_t* eDescr, double startTime);
+ncclResult_t ceProfilerStartCeCollEvent(
+    struct context* ctx,
+    void** eHandle,
+    ncclProfilerEventDescr_v6_t* eDescr,
+    double startTime);
 ncclResult_t ceProfilerStopCeCollEvent(void* eHandle);
 
-ncclResult_t ceProfilerStartCeSyncEvent(struct context* ctx, void** eHandle, ncclProfilerEventDescr_v6_t* eDescr, double startTime);
+ncclResult_t ceProfilerStartCeSyncEvent(
+    struct context* ctx,
+    void** eHandle,
+    ncclProfilerEventDescr_v6_t* eDescr,
+    double startTime);
 ncclResult_t ceProfilerStopCeSyncEvent(void* eHandle);
 
-ncclResult_t ceProfilerStartCeBatchEvent(struct context* ctx, void** eHandle, ncclProfilerEventDescr_v6_t* eDescr, double startTime);
+ncclResult_t ceProfilerStartCeBatchEvent(
+    struct context* ctx,
+    void** eHandle,
+    ncclProfilerEventDescr_v6_t* eDescr,
+    double startTime);
 ncclResult_t ceProfilerStopCeBatchEvent(void* eHandle);
 
 // Get CE timing mode for context initialization
 CeTimingMode_t ceProfilerGetTimingMode(void);
 
 #endif // PROFILER_PLUGIN_CE_H_
-

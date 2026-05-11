@@ -1,6 +1,6 @@
 /*************************************************************************
- * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0
  *
  * See LICENSE.txt for more license information
  *************************************************************************/
@@ -15,26 +15,26 @@
 
 const char* jsonErrorString(jsonResult_t res) {
   switch (res) {
-  case jsonSuccess:
-    return "jsonSuccess";
-  case jsonFileError:
-    return "jsonFileError";
-  case jsonUnknownStateError:
-    return "jsonUnknownStateError";
-  case jsonEmptyStateError:
-    return "jsonEmptyStateError";
-  case jsonExpectedNonNoneStateError:
-    return "jsonExpectedNonNoneStateError";
-  case jsonMemoryError:
-    return "jsonMemoryError";
-  case jsonStringOverflowError:
-    return "jsonStringOverflowError";
-  case jsonStringBadChar:
-    return "jsonStringBadChar";
-  case jsonLockError:
-    return "jsonLockError";
-  default:
-    return "unknown json error";
+    case jsonSuccess:
+      return "jsonSuccess";
+    case jsonFileError:
+      return "jsonFileError";
+    case jsonUnknownStateError:
+      return "jsonUnknownStateError";
+    case jsonEmptyStateError:
+      return "jsonEmptyStateError";
+    case jsonExpectedNonNoneStateError:
+      return "jsonExpectedNonNoneStateError";
+    case jsonMemoryError:
+      return "jsonMemoryError";
+    case jsonStringOverflowError:
+      return "jsonStringOverflowError";
+    case jsonStringBadChar:
+      return "jsonStringBadChar";
+    case jsonLockError:
+      return "jsonLockError";
+    default:
+      return "unknown json error";
   }
 }
 
@@ -42,7 +42,7 @@ const char* jsonErrorString(jsonResult_t res) {
 typedef struct jsonFileOutput {
   jsonState_t* states;
   size_t state_cap; // Allocated stack capacity
-  size_t state_n;   // # of items in the stack.
+  size_t state_n; // # of items in the stack.
   FILE* fp;
   pthread_mutex_t mutex;
 } jsonFileOutput;
@@ -132,7 +132,8 @@ static int utf8copy(unsigned char* out, int out_lim, const unsigned char* in) {
     copy_len = 3;
   } else if ((in[0] & 0xF8) == 0xF0) {
     // 4-byte sequence
-    if ((in[1] & 0xC0) != 0x80 || (in[2] & 0xC0) != 0x80 || (in[3] & 0xC0) != 0x80 || out_lim < 4) {
+    if ((in[1] & 0xC0) != 0x80 || (in[2] & 0xC0) != 0x80 ||
+        (in[3] & 0xC0) != 0x80 || out_lim < 4) {
       return 0;
     }
     copy_len = 4;
@@ -155,7 +156,8 @@ static int utf8copy(unsigned char* out, int out_lim, const unsigned char* in) {
 //
 // We return false if we were not able to copy all of 'in', either for
 // length reasons or for unhandled characters.
-static jsonResult_t sanitizeJson(unsigned char out[], int lim, const unsigned char* in) {
+static jsonResult_t
+sanitizeJson(unsigned char out[], int lim, const unsigned char* in) {
   int c = 0;
   while (*in) {
     if (c + 1 >= lim) {
@@ -163,43 +165,43 @@ static jsonResult_t sanitizeJson(unsigned char out[], int lim, const unsigned ch
       return jsonStringOverflowError;
     }
     switch (*in) {
-    case '"':
-    case '\\':
-    case '/':
-    case '\t':
-    case '\n':
-      if (c + 2 > lim) {
-        out[c] = 0;
-        return jsonStringOverflowError;
-      }
+      case '"':
+      case '\\':
+      case '/':
+      case '\t':
+      case '\n':
+        if (c + 2 > lim) {
+          out[c] = 0;
+          return jsonStringOverflowError;
+        }
 
-      out[c++] = '\\';
-      if (*in == '\n') {
-        out[c++] = 'n';
-      } else if (*in == '\t') {
-        out[c++] = 't';
-      } else {
-        out[c++] = *in;
-      }
-      ++in;
-      break;
-    default:
-      if (*in <= 0x1F) {
-        out[c] = 0;
-        return jsonStringBadChar;
-      } else if (*in <= 0x7F) {
-        out[c++] = *in;
+        out[c++] = '\\';
+        if (*in == '\n') {
+          out[c++] = 'n';
+        } else if (*in == '\t') {
+          out[c++] = 't';
+        } else {
+          out[c++] = *in;
+        }
         ++in;
-      } else {
-        const int utf8len = utf8copy(out + c, lim - c - 1, in);
-        if (utf8len == 0) {
+        break;
+      default:
+        if (*in <= 0x1F) {
           out[c] = 0;
           return jsonStringBadChar;
+        } else if (*in <= 0x7F) {
+          out[c++] = *in;
+          ++in;
+        } else {
+          const int utf8len = utf8copy(out + c, lim - c - 1, in);
+          if (utf8len == 0) {
+            out[c] = 0;
+            return jsonStringBadChar;
+          }
+          c += utf8len;
+          in += utf8len;
         }
-        c += utf8len;
-        in += utf8len;
-      }
-      break;
+        break;
     }
   }
   out[c] = 0;
@@ -221,7 +223,8 @@ static jsonResult_t jsonPushState(jsonFileOutput* jfo, jsonState_t state) {
   }
   if (jfo->state_cap <= (jfo->state_n + 1)) {
     jfo->state_cap = max((size_t)16, jfo->state_cap * 2);
-    jfo->states = (jsonState_t*)realloc(jfo->states, sizeof(jsonState_t) * jfo->state_cap);
+    jfo->states = (jsonState_t*)realloc(
+        jfo->states, sizeof(jsonState_t) * jfo->state_cap);
     if (jfo->states == 0) {
       return jsonMemoryError;
     }
@@ -238,7 +241,8 @@ static jsonState_t jsonCurrState(const jsonFileOutput* jfo) {
   return jfo->states[jfo->state_n - 1];
 }
 
-// Replace the stack with state (equivalent to a pop & push if stack is not empty)
+// Replace the stack with state (equivalent to a pop & push if stack is not
+// empty)
 static jsonResult_t jsonReplaceState(jsonFileOutput* jfo, jsonState_t state) {
   if (state == JSON_NONE) {
     return jsonExpectedNonNoneStateError;
@@ -263,17 +267,18 @@ static jsonState_t jsonPopState(jsonFileOutput* jfo) {
 // Emit a ',' separator of we aren't the first item.
 jsonResult_t jsonKey(jsonFileOutput* jfo, const char* name) {
   switch (jsonCurrState(jfo)) {
-  case JSON_OBJECT_EMPTY:
-    jsonReplaceState(jfo, JSON_OBJECT_SOME);
-    break;
-  case JSON_OBJECT_SOME:
-    fprintf(jfo->fp, ",");
-    break;
-  default:
-    return jsonUnknownStateError;
+    case JSON_OBJECT_EMPTY:
+      jsonReplaceState(jfo, JSON_OBJECT_SOME);
+      break;
+    case JSON_OBJECT_SOME:
+      fprintf(jfo->fp, ",");
+      break;
+    default:
+      return jsonUnknownStateError;
   }
   unsigned char tmp[2048];
-  const jsonResult_t res = sanitizeJson(tmp, sizeof(tmp), (const unsigned char*)name);
+  const jsonResult_t res =
+      sanitizeJson(tmp, sizeof(tmp), (const unsigned char*)name);
   if (res != jsonSuccess) {
     return res;
   }
@@ -287,19 +292,19 @@ jsonResult_t jsonKey(jsonFileOutput* jfo, const char* name) {
 // Emit preceeding ',' if in a list and not first item.
 static jsonResult_t jsonValHelper(jsonFileOutput* jfo) {
   switch (jsonCurrState(jfo)) {
-  case JSON_LIST_EMPTY:
-    jsonReplaceState(jfo, JSON_LIST_SOME);
-    break;
-  case JSON_LIST_SOME:
-    fprintf(jfo->fp, ",");
-    break;
-  case JSON_KEY:
-    jsonPopState(jfo);
-    break;
-  case JSON_NONE:
-    break;
-  default:
-    return jsonUnknownStateError;
+    case JSON_LIST_EMPTY:
+      jsonReplaceState(jfo, JSON_LIST_SOME);
+      break;
+    case JSON_LIST_SOME:
+      fprintf(jfo->fp, ",");
+      break;
+    case JSON_KEY:
+      jsonPopState(jfo);
+      break;
+    case JSON_NONE:
+      break;
+    default:
+      return jsonUnknownStateError;
   }
   return jsonSuccess;
 }
@@ -317,11 +322,11 @@ jsonResult_t jsonStartObject(jsonFileOutput* jfo) {
 // Close an object
 jsonResult_t jsonFinishObject(jsonFileOutput* jfo) {
   switch (jsonPopState(jfo)) {
-  case JSON_OBJECT_EMPTY:
-  case JSON_OBJECT_SOME:
-    break;
-  default:
-    return jsonUnknownStateError;
+    case JSON_OBJECT_EMPTY:
+    case JSON_OBJECT_SOME:
+      break;
+    default:
+      return jsonUnknownStateError;
   }
   fprintf(jfo->fp, "}");
   return jsonSuccess;
@@ -340,11 +345,11 @@ jsonResult_t jsonStartList(jsonFileOutput* jfo) {
 // Close a list
 jsonResult_t jsonFinishList(jsonFileOutput* jfo) {
   switch (jsonPopState(jfo)) {
-  case JSON_LIST_EMPTY:
-  case JSON_LIST_SOME:
-    break;
-  default:
-    return jsonUnknownStateError;
+    case JSON_LIST_EMPTY:
+    case JSON_LIST_SOME:
+      break;
+    default:
+      return jsonUnknownStateError;
   }
   fprintf(jfo->fp, "]");
   return jsonSuccess;
@@ -371,7 +376,8 @@ jsonResult_t jsonStr(jsonFileOutput* jfo, const char* str) {
     return res;
   }
   unsigned char tmp[2048];
-  const jsonResult_t san_res = sanitizeJson(tmp, sizeof(tmp), (const unsigned char*)str);
+  const jsonResult_t san_res =
+      sanitizeJson(tmp, sizeof(tmp), (const unsigned char*)str);
   if (san_res != jsonSuccess) {
     return san_res;
   }
@@ -403,7 +409,6 @@ jsonResult_t jsonUint32(jsonFileOutput* jfo, const uint32_t val) {
   fprintf(jfo->fp, "%u", val);
   return jsonSuccess;
 }
-
 
 // Write an integer value
 jsonResult_t jsonUint64(jsonFileOutput* jfo, const uint64_t val) {
@@ -456,10 +461,9 @@ jsonResult_t jsonDouble(jsonFileOutput* jfo, const double val) {
   } while (0)
 
 int main() {
-
   const char refstr[] =
-    "{\"number\":123,\"utfstring\":\"∮ E⋅da = Q,  n → ∞, ∑ f(i) = ∏ g(i), ∀x∈ℝ: ⌈x⌉ = −⌊−x⌋, α ∧ "
-    "¬β = ¬(¬α ∨ β),\",\"list\":[\"true\",null,9423812381231,3123111,0.694234]}";
+      "{\"number\":123,\"utfstring\":\"∮ E⋅da = Q,  n → ∞, ∑ f(i) = ∏ g(i), ∀x∈ℝ: ⌈x⌉ = −⌊−x⌋, α ∧ "
+      "¬β = ¬(¬α ∨ β),\",\"list\":[\"true\",null,9423812381231,3123111,0.694234]}";
 
   jsonFileOutput* jfo;
   JSONCHECK(jsonInitFileOutput(&jfo, "test.json"));
@@ -467,8 +471,9 @@ int main() {
   JSONCHECK(jsonKey(jfo, "number"));
   JSONCHECK(jsonInt(jfo, 123));
   JSONCHECK(jsonKey(jfo, "utfstring"));
-  JSONCHECK(
-    jsonStr(jfo, "∮ E⋅da = Q,  n → ∞, ∑ f(i) = ∏ g(i), ∀x∈ℝ: ⌈x⌉ = −⌊−x⌋, α ∧ ¬β = ¬(¬α ∨ β),"));
+  JSONCHECK(jsonStr(
+      jfo,
+      "∮ E⋅da = Q,  n → ∞, ∑ f(i) = ∏ g(i), ∀x∈ℝ: ⌈x⌉ = −⌊−x⌋, α ∧ ¬β = ¬(¬α ∨ β),"));
   JSONCHECK(jsonKey(jfo, "list"));
   JSONCHECK(jsonStartList(jfo));
   JSONCHECK(jsonBool(jfo, true));

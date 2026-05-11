@@ -1,6 +1,6 @@
 /*************************************************************************
- * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0
  *
  * See LICENSE.txt for more license information
  *************************************************************************/
@@ -22,15 +22,15 @@ ncclUniqueId nccl_unique_id;
  */
 typedef struct {
   // Common variables
-  int total_ranks;      // Total number of MPI ranks or pthreads
+  int total_ranks; // Total number of MPI ranks or pthreads
   int devices_per_rank; // Number of devices per rank or thread
-  int local_device;     // Node local rank or thread id (0 to total_ranks-1)
-  int my_rank;          // Rank or thread id for NCCL
-  void *func;
+  int local_device; // Node local rank or thread id (0 to total_ranks-1)
+  int my_rank; // Rank or thread id for NCCL
+  void* func;
 
   // pthread-specific variables
 #ifndef MPI_SUPPORT
-  pthread_t *threads; // Thread array
+  pthread_t* threads; // Thread array
 #endif
 } context_t;
 
@@ -58,7 +58,7 @@ typedef struct {
  *
  * @return 0 on success, non-zero on error
  */
-int initialize(int argc, char *argv[], context_t *ctx);
+int initialize(int argc, char* argv[], context_t* ctx);
 
 /**
  * Wrap function to call the example function in a thread
@@ -66,7 +66,7 @@ int initialize(int argc, char *argv[], context_t *ctx);
  * Note: This function is needed since pthread only allows a single void*
  * argument.
  */
-void *thread_wrapper(void *arg);
+void* thread_wrapper(void* arg);
 
 /**
  * Run ncclExample in parallel using MPI or pthreads
@@ -91,7 +91,7 @@ void *thread_wrapper(void *arg);
  * The ncclExample function should have signature:
  * void* ncclExample(int, int, int, int)
  */
-int run_parallel(context_t *ctx, void *(*ncclExample)(int, int, int, int));
+int run_parallel(context_t* ctx, void* (*ncclExample)(int, int, int, int));
 
 /**
  * Clean up resources
@@ -107,12 +107,12 @@ int run_parallel(context_t *ctx, void *(*ncclExample)(int, int, int, int));
  *
  * @param ctx       Context to clean up
  */
-void cleanup(context_t *ctx);
+void cleanup(context_t* ctx);
 
 /**
  * Broadcast NCCL unique ID
  */
-int util_broadcast(int root, int my_rank, ncclUniqueId *arg) {
+int util_broadcast(int root, int my_rank, ncclUniqueId* arg) {
 #ifdef MPI_SUPPORT
   MPICHECK(
       MPI_Bcast(arg, sizeof(ncclUniqueId), MPI_BYTE, root, MPI_COMM_WORLD));
@@ -122,8 +122,12 @@ int util_broadcast(int root, int my_rank, ncclUniqueId *arg) {
   }
   int barrier_err = pthread_barrier_wait(&barrier);
   if (barrier_err != 0 && barrier_err != PTHREAD_BARRIER_SERIAL_THREAD) {
-    fprintf(stderr, "pthread_barrier_wait failed at %s:%d with error code %d\n",
-            __FILE__, __LINE__, barrier_err);
+    fprintf(
+        stderr,
+        "pthread_barrier_wait failed at %s:%d with error code %d\n",
+        __FILE__,
+        __LINE__,
+        barrier_err);
     abort();
   }
   if (my_rank != root) {
@@ -136,7 +140,7 @@ int util_broadcast(int root, int my_rank, ncclUniqueId *arg) {
 /**
  * Initialize MPI or pthread backend
  */
-int initialize(int argc, char *argv[], context_t *ctx) {
+int initialize(int argc, char* argv[], context_t* ctx) {
 #ifdef MPI_SUPPORT
   // Initialize MPI
   MPICHECK(MPI_Init(&argc, &argv));
@@ -152,8 +156,12 @@ int initialize(int argc, char *argv[], context_t *ctx) {
 
   // Split the communicator based on shared memory (i.e., nodes)
   MPI_Comm node_comm;
-  MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, ctx->my_rank,
-                      MPI_INFO_NULL, &node_comm);
+  MPI_Comm_split_type(
+      MPI_COMM_WORLD,
+      MPI_COMM_TYPE_SHARED,
+      ctx->my_rank,
+      MPI_INFO_NULL,
+      &node_comm);
 
   // Get the rank within the node communicator
   MPI_Comm_rank(node_comm, &ctx->local_device);
@@ -168,7 +176,7 @@ int initialize(int argc, char *argv[], context_t *ctx) {
   int num_gpus = 0;
   CUDACHECK(cudaGetDeviceCount(&num_gpus));
   ctx->total_ranks = num_gpus; // Default to all available GPUs
-  const char *nThreadsEnv = getenv("NTHREADS");
+  const char* nThreadsEnv = getenv("NTHREADS");
   if (nThreadsEnv) {
     ctx->total_ranks = atoi(nThreadsEnv);
   }
@@ -182,8 +190,10 @@ int initialize(int argc, char *argv[], context_t *ctx) {
 
   // Check if we have enough GPUs
   if (ctx->total_ranks > num_gpus) {
-    printf("Error: Requested %d threads but only %d GPUs available\n",
-           ctx->total_ranks, num_gpus);
+    printf(
+        "Error: Requested %d threads but only %d GPUs available\n",
+        ctx->total_ranks,
+        num_gpus);
     printf("Please reduce NTHREADS to %d or fewer\n", num_gpus);
     return 1;
   }
@@ -192,7 +202,7 @@ int initialize(int argc, char *argv[], context_t *ctx) {
   pthread_barrier_init(&barrier, NULL, ctx->total_ranks);
 
   // Allocate thread resources
-  ctx->threads = (pthread_t *)malloc(ctx->total_ranks * sizeof(pthread_t));
+  ctx->threads = (pthread_t*)malloc(ctx->total_ranks * sizeof(pthread_t));
   if (ctx->threads == NULL) {
     printf("Failed to allocate memory for threads\n");
     return 1;
@@ -208,26 +218,29 @@ int initialize(int argc, char *argv[], context_t *ctx) {
  * Note: This function is needed since pthread only allows a single void*
  * argument.
  */
-void *thread_wrapper(void *arg) {
-  context_t *ctx = (context_t *)arg;
-  void *(*example_func)(int, int, int, int) =
-      (void *(*)(int, int, int, int))ctx->func;
-  return example_func(ctx->my_rank, ctx->total_ranks, ctx->local_device,
-                      ctx->devices_per_rank);
+void* thread_wrapper(void* arg) {
+  context_t* ctx = (context_t*)arg;
+  void* (*example_func)(int, int, int, int) =
+      (void* (*)(int, int, int, int))ctx->func;
+  return example_func(
+      ctx->my_rank, ctx->total_ranks, ctx->local_device, ctx->devices_per_rank);
 }
 
 /**
  * Run ncclExample in parallel using MPI or pthreads
  */
-int run_parallel(context_t *ctx, void *(*ncclExample)(int, int, int, int)) {
+int run_parallel(context_t* ctx, void* (*ncclExample)(int, int, int, int)) {
 #ifdef MPI_SUPPORT
   if (ctx->my_rank == 0) {
     printf("NCCL Example: One Device per Process\n");
     printf("====================================\n");
   }
 
-  if (ncclExample(ctx->my_rank, ctx->total_ranks, ctx->local_device,
-                  ctx->devices_per_rank) != NULL)
+  if (ncclExample(
+          ctx->my_rank,
+          ctx->total_ranks,
+          ctx->local_device,
+          ctx->devices_per_rank) != NULL)
     return 1;
   // Synchronize to ensure ordered output
   MPICHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -236,8 +249,8 @@ int run_parallel(context_t *ctx, void *(*ncclExample)(int, int, int, int)) {
   printf("===================================\n");
 
   // Create separate context for each thread
-  context_t *thread_contexts =
-      (context_t *)malloc(ctx->total_ranks * sizeof(context_t));
+  context_t* thread_contexts =
+      (context_t*)malloc(ctx->total_ranks * sizeof(context_t));
   if (thread_contexts == NULL) {
     printf("Failed to allocate thread contexts\n");
     return 1;
@@ -251,7 +264,7 @@ int run_parallel(context_t *ctx, void *(*ncclExample)(int, int, int, int)) {
     thread_contexts[i].local_device = i;
     thread_contexts[i].total_ranks = ctx->total_ranks;
     thread_contexts[i].devices_per_rank = 1;
-    thread_contexts[i].func = (void *)ncclExample;
+    thread_contexts[i].func = (void*)ncclExample;
     pthread_create(&ctx->threads[i], NULL, thread_wrapper, &thread_contexts[i]);
   }
 
@@ -269,11 +282,12 @@ int run_parallel(context_t *ctx, void *(*ncclExample)(int, int, int, int)) {
 /**
  * Run the given NCCL example in parallel
  */
-int run_example(int argc, char *argv[],
-                void *(*ncclExample)(int, int, int, int)) {
-
+int run_example(
+    int argc,
+    char* argv[],
+    void* (*ncclExample)(int, int, int, int)) {
   // 1. Allocate context
-  context_t *ctx = (context_t *)calloc(1, sizeof(context_t));
+  context_t* ctx = (context_t*)calloc(1, sizeof(context_t));
   if (ctx == NULL) {
     printf("Failed to allocate memory for context\n");
     return 1;
@@ -310,7 +324,7 @@ int run_example(int argc, char *argv[],
 /**
  * Clean up resources
  */
-void cleanup(context_t *ctx) {
+void cleanup(context_t* ctx) {
 #ifdef MPI_SUPPORT
   // Free MPI resources
   MPICHECK(MPI_Finalize());

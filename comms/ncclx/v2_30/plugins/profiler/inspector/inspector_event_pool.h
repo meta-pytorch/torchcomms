@@ -27,9 +27,9 @@ struct inspectorCommInfoPoolEntry {
 
 // Chunk structure for stride-based pool growth
 struct inspectorPoolChunk {
-  void* entries;                    // Pointer to the array of entries in this chunk
-  uint32_t chunkSize;               // Number of entries in this chunk
-  struct inspectorPoolChunk* next;  // Next chunk in the list
+  void* entries; // Pointer to the array of entries in this chunk
+  uint32_t chunkSize; // Number of entries in this chunk
+  struct inspectorPoolChunk* next; // Next chunk in the list
 };
 
 struct inspectorEventPool {
@@ -68,9 +68,10 @@ struct inspectorEventPool {
 extern struct inspectorEventPool g_eventPool;
 
 // Memory pool functions
-inspectorResult_t inspectorEventPoolInit(uint32_t collPoolSize,
-                                        uint32_t p2pPoolSize,
-                                        uint32_t commPoolSize);
+inspectorResult_t inspectorEventPoolInit(
+    uint32_t collPoolSize,
+    uint32_t p2pPoolSize,
+    uint32_t commPoolSize);
 inspectorResult_t inspectorEventPoolFinalize();
 
 struct inspectorCollInfo* inspectorEventPoolAllocColl();

@@ -1,7 +1,7 @@
-#include "inspector.h"
 #include "inspector_ring.h"
 #include <stdlib.h>
 #include <string.h>
+#include "inspector.h"
 
 /*
  * Description:
@@ -21,10 +21,12 @@
  * Return:
  *   inspectorResult_t - success or error code.
  */
-inspectorResult_t inspectorRingInit(struct inspectorCompletedRing* ring,
-                                    uint32_t size,
-                                    size_t entrySize) {
-  if (!ring) return inspectorMemoryError;
+inspectorResult_t inspectorRingInit(
+    struct inspectorCompletedRing* ring,
+    uint32_t size,
+    size_t entrySize) {
+  if (!ring)
+    return inspectorMemoryError;
   ring->entrySize = entrySize;
   if (size == 0) {
     ring->entries = nullptr;
@@ -35,7 +37,8 @@ inspectorResult_t inspectorRingInit(struct inspectorCompletedRing* ring,
   // Allocate one extra slot so empty (head==tail) and full
   // ((tail+1)%(size+1)==head) are always distinguishable without a count field.
   ring->entries = calloc(size + 1, entrySize);
-  if (!ring->entries) return inspectorMemoryError;
+  if (!ring->entries)
+    return inspectorMemoryError;
 
   ring->size = size;
   ring->head = 0;
@@ -60,7 +63,8 @@ inspectorResult_t inspectorRingInit(struct inspectorCompletedRing* ring,
  *   None.
  */
 void inspectorRingFinalize(struct inspectorCompletedRing* ring) {
-  if (!ring) return;
+  if (!ring)
+    return;
   free(ring->entries);
   ring->entries = nullptr;
   ring->size = ring->head = ring->tail = 0;
@@ -84,10 +88,13 @@ void inspectorRingFinalize(struct inspectorCompletedRing* ring) {
  * Return:
  *   inspectorResult_t - success or error code.
  */
-inspectorResult_t inspectorRingEnqueue(struct inspectorCompletedRing* ring,
-                                       const void* entry) {
-  if (!ring || !entry) return inspectorMemoryError;
-  if (ring->size == 0 || !ring->entries) return inspectorSuccess;
+inspectorResult_t inspectorRingEnqueue(
+    struct inspectorCompletedRing* ring,
+    const void* entry) {
+  if (!ring || !entry)
+    return inspectorMemoryError;
+  if (ring->size == 0 || !ring->entries)
+    return inspectorSuccess;
 
   uint32_t bufSize = ring->size + 1;
   if ((ring->tail + 1) % bufSize == ring->head) {

@@ -1,20 +1,20 @@
 /*************************************************************************
- * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0
  *
  * See LICENSE.txt for more license information
  *************************************************************************/
 
-#include <stdio.h>
-#include <pthread.h>
-#include <cstring>
-#include <unistd.h>
-#include <time.h>
 #include "profiler_plugin_ce.h"
+#include <pthread.h>
+#include <stdio.h>
+#include <time.h>
+#include <unistd.h>
+#include <cstring>
 #include "event.h"
 #include "print_event.h"
 
-#define __hidden __attribute__ ((visibility("hidden")))
+#define __hidden __attribute__((visibility("hidden")))
 
 // External reference to gettime() from plugin.cc
 extern double gettime(void);
@@ -33,32 +33,34 @@ static struct {
   CeTimingMode_t timingMode;
   int pollerIntervalUs;
 } ceProfilerCtxt = {
-  .pollerThread = 0,
-  .pollerRunning = false,
-  .mutex = PTHREAD_MUTEX_INITIALIZER,
-  .contextRegistry = NULL,
-  .contextCount = 0,
-  .contextCapacity = 0,
-  .timingMode = CE_TIMING_CPU,
-  .pollerIntervalUs = 500
-};
+    .pollerThread = 0,
+    .pollerRunning = false,
+    .mutex = PTHREAD_MUTEX_INITIALIZER,
+    .contextRegistry = NULL,
+    .contextCount = 0,
+    .contextCapacity = 0,
+    .timingMode = CE_TIMING_CPU,
+    .pollerIntervalUs = 500};
 
 // Poll CE Coll events for a context
 static void pollCeCollEvents(struct context* ctx) {
-  if (ctx->ceCollPoolSize == 0 || ctx->ceCollPool == NULL) return;
+  if (ctx->ceCollPoolSize == 0 || ctx->ceCollPool == NULL)
+    return;
 
   double startTime = getProfilerStartTime();
   struct ceColl** ceCollPtr = &ctx->ceEvents.ceCollHead;
   while (*ceCollPtr) {
     struct ceColl* event = *ceCollPtr;
 
-    if (!event->startCompleted && cudaEventQuery(event->startEvent) == cudaSuccess) {
+    if (!event->startCompleted &&
+        cudaEventQuery(event->startEvent) == cudaSuccess) {
       event->startCompleted = true;
       event->cpuStartTime = gettime();
       event->base.startTs = gettime() - startTime;
     }
 
-    if (event->startCompleted && !event->stopCompleted && cudaEventQuery(event->stopEvent) == cudaSuccess) {
+    if (event->startCompleted && !event->stopCompleted &&
+        cudaEventQuery(event->stopEvent) == cudaSuccess) {
       event->stopCompleted = true;
       event->cpuStopTime = gettime();
       event->base.stopTs = gettime() - startTime;
@@ -66,7 +68,9 @@ static void pollCeCollEvents(struct context* ctx) {
       event->cpuDuration = event->cpuStopTime - event->cpuStartTime;
       if (event->timingMode == CE_TIMING_GPU) {
         float elapsedMs;
-        if (cudaEventElapsedTime(&elapsedMs, event->startEvent, event->stopEvent) == cudaSuccess) {
+        if (cudaEventElapsedTime(
+                &elapsedMs, event->startEvent, event->stopEvent) ==
+            cudaSuccess) {
           event->elapsedTime = (uint64_t)(elapsedMs * 1000);
         } else {
           event->elapsedTime = (uint64_t)event->cpuDuration;
@@ -93,20 +97,23 @@ static void pollCeCollEvents(struct context* ctx) {
 
 // Poll CE Sync events for a context
 static void pollCeSyncEvents(struct context* ctx) {
-  if (ctx->ceSyncPoolSize == 0 || ctx->ceSyncPool == NULL) return;
+  if (ctx->ceSyncPoolSize == 0 || ctx->ceSyncPool == NULL)
+    return;
 
   double startTime = getProfilerStartTime();
   struct ceSync** ceSyncPtr = &ctx->ceEvents.ceSyncHead;
   while (*ceSyncPtr) {
     struct ceSync* event = *ceSyncPtr;
 
-    if (!event->startCompleted && cudaEventQuery(event->startEvent) == cudaSuccess) {
+    if (!event->startCompleted &&
+        cudaEventQuery(event->startEvent) == cudaSuccess) {
       event->startCompleted = true;
       event->cpuStartTime = gettime();
       event->base.startTs = gettime() - startTime;
     }
 
-    if (event->startCompleted && !event->stopCompleted && cudaEventQuery(event->stopEvent) == cudaSuccess) {
+    if (event->startCompleted && !event->stopCompleted &&
+        cudaEventQuery(event->stopEvent) == cudaSuccess) {
       event->stopCompleted = true;
       event->cpuStopTime = gettime();
       event->base.stopTs = gettime() - startTime;
@@ -114,7 +121,9 @@ static void pollCeSyncEvents(struct context* ctx) {
       event->cpuDuration = event->cpuStopTime - event->cpuStartTime;
       if (event->timingMode == CE_TIMING_GPU) {
         float elapsedMs;
-        if (cudaEventElapsedTime(&elapsedMs, event->startEvent, event->stopEvent) == cudaSuccess) {
+        if (cudaEventElapsedTime(
+                &elapsedMs, event->startEvent, event->stopEvent) ==
+            cudaSuccess) {
           event->elapsedTime = (uint64_t)(elapsedMs * 1000);
         } else {
           event->elapsedTime = (uint64_t)event->cpuDuration;
@@ -141,20 +150,23 @@ static void pollCeSyncEvents(struct context* ctx) {
 
 // Poll CE Batch events for a context
 static void pollCeBatchEvents(struct context* ctx) {
-  if (ctx->ceBatchPoolSize == 0 || ctx->ceBatchPool == NULL) return;
+  if (ctx->ceBatchPoolSize == 0 || ctx->ceBatchPool == NULL)
+    return;
 
   double startTime = getProfilerStartTime();
   struct ceBatch** ceBatchPtr = &ctx->ceEvents.ceBatchHead;
   while (*ceBatchPtr) {
     struct ceBatch* event = *ceBatchPtr;
 
-    if (!event->startCompleted && cudaEventQuery(event->startEvent) == cudaSuccess) {
+    if (!event->startCompleted &&
+        cudaEventQuery(event->startEvent) == cudaSuccess) {
       event->startCompleted = true;
       event->cpuStartTime = gettime();
       event->base.startTs = gettime() - startTime;
     }
 
-    if (event->startCompleted && !event->stopCompleted && cudaEventQuery(event->stopEvent) == cudaSuccess) {
+    if (event->startCompleted && !event->stopCompleted &&
+        cudaEventQuery(event->stopEvent) == cudaSuccess) {
       event->stopCompleted = true;
       event->cpuStopTime = gettime();
       event->base.stopTs = gettime() - startTime;
@@ -162,7 +174,9 @@ static void pollCeBatchEvents(struct context* ctx) {
       event->cpuDuration = event->cpuStopTime - event->cpuStartTime;
       if (event->timingMode == CE_TIMING_GPU) {
         float elapsedMs;
-        if (cudaEventElapsedTime(&elapsedMs, event->startEvent, event->stopEvent) == cudaSuccess) {
+        if (cudaEventElapsedTime(
+                &elapsedMs, event->startEvent, event->stopEvent) ==
+            cudaSuccess) {
           event->elapsedTime = (uint64_t)(elapsedMs * 1000);
         } else {
           event->elapsedTime = (uint64_t)event->cpuDuration;
@@ -197,7 +211,8 @@ static void* cePollerThreadMain(void* arg) {
 
     for (int i = 0; i < ceProfilerCtxt.contextCount; i++) {
       struct context* ctx = ceProfilerCtxt.contextRegistry[i];
-      if (!ctx) continue;
+      if (!ctx)
+        continue;
 
       if (pthread_mutex_trylock(&ctx->ceEvents.mutex) != 0) {
         continue;
@@ -225,21 +240,22 @@ ncclResult_t ceProfilerInitGlobal(void) {
     ceProfilerCtxt.timingMode = CE_TIMING_CPU;
   }
 
-  const char* intervalStr = getenv("NCCL_PROFILER_CE_POLLER_INTERVAL_MICROSECONDS");
+  const char* intervalStr =
+      getenv("NCCL_PROFILER_CE_POLLER_INTERVAL_MICROSECONDS");
   if (intervalStr) {
     ceProfilerCtxt.pollerIntervalUs = atoi(intervalStr);
   }
 
   ceProfilerCtxt.contextCapacity = 16;
-  ceProfilerCtxt.contextRegistry
-    = (struct context**)calloc(ceProfilerCtxt.contextCapacity,
-                               sizeof(struct context*));
+  ceProfilerCtxt.contextRegistry = (struct context**)calloc(
+      ceProfilerCtxt.contextCapacity, sizeof(struct context*));
   if (!ceProfilerCtxt.contextRegistry) {
     return ncclSystemError;
   }
 
   ceProfilerCtxt.pollerRunning = true;
-  if (pthread_create(&ceProfilerCtxt.pollerThread, NULL, cePollerThreadMain, NULL) != 0) {
+  if (pthread_create(
+          &ceProfilerCtxt.pollerThread, NULL, cePollerThreadMain, NULL) != 0) {
     free(ceProfilerCtxt.contextRegistry);
     return ncclSystemError;
   }
@@ -286,9 +302,13 @@ void ceProfilerRegisterContext(struct context* ctx) {
   // Resize registry if needed
   if (ceProfilerCtxt.contextCount > ceProfilerCtxt.contextCapacity) {
     int newCapacity = ceProfilerCtxt.contextCapacity * 2;
-    struct context** newRegistry = (struct context**)calloc(newCapacity, sizeof(struct context*));
+    struct context** newRegistry =
+        (struct context**)calloc(newCapacity, sizeof(struct context*));
     if (newRegistry) {
-      memcpy(newRegistry, ceProfilerCtxt.contextRegistry, ceProfilerCtxt.contextCount * sizeof(struct context*));
+      memcpy(
+          newRegistry,
+          ceProfilerCtxt.contextRegistry,
+          ceProfilerCtxt.contextCount * sizeof(struct context*));
       free(ceProfilerCtxt.contextRegistry);
       ceProfilerCtxt.contextRegistry = newRegistry;
       ceProfilerCtxt.contextCapacity = newCapacity;
@@ -311,7 +331,8 @@ void ceProfilerDeregisterContext(struct context* ctx) {
     if (ceProfilerCtxt.contextRegistry[i] &&
         ceProfilerCtxt.contextRegistry[i]->commHash == ctx->commHash &&
         ceProfilerCtxt.contextRegistry[i]->rank == ctx->rank) {
-      ceProfilerCtxt.contextRegistry[i] = ceProfilerCtxt.contextRegistry[ceProfilerCtxt.contextCount - 1];
+      ceProfilerCtxt.contextRegistry[i] =
+          ceProfilerCtxt.contextRegistry[ceProfilerCtxt.contextCount - 1];
       ceProfilerCtxt.contextCount--;
       break;
     }
@@ -326,22 +347,28 @@ void ceProfilerCleanupPendingEvents(struct context* ctx) {
 
   struct ceColl* ceColl = ctx->ceEvents.ceCollHead;
   while (ceColl) {
-    if (ceColl->startEvent) cudaEventDestroy(ceColl->startEvent);
-    if (ceColl->stopEvent) cudaEventDestroy(ceColl->stopEvent);
+    if (ceColl->startEvent)
+      cudaEventDestroy(ceColl->startEvent);
+    if (ceColl->stopEvent)
+      cudaEventDestroy(ceColl->stopEvent);
     ceColl = ceColl->pollerNext;
   }
 
   struct ceSync* ceSync = ctx->ceEvents.ceSyncHead;
   while (ceSync) {
-    if (ceSync->startEvent) cudaEventDestroy(ceSync->startEvent);
-    if (ceSync->stopEvent) cudaEventDestroy(ceSync->stopEvent);
+    if (ceSync->startEvent)
+      cudaEventDestroy(ceSync->startEvent);
+    if (ceSync->stopEvent)
+      cudaEventDestroy(ceSync->stopEvent);
     ceSync = ceSync->pollerNext;
   }
 
   struct ceBatch* ceBatch = ctx->ceEvents.ceBatchHead;
   while (ceBatch) {
-    if (ceBatch->startEvent) cudaEventDestroy(ceBatch->startEvent);
-    if (ceBatch->stopEvent) cudaEventDestroy(ceBatch->stopEvent);
+    if (ceBatch->startEvent)
+      cudaEventDestroy(ceBatch->startEvent);
+    if (ceBatch->stopEvent)
+      cudaEventDestroy(ceBatch->stopEvent);
     ceBatch = ceBatch->pollerNext;
   }
 
@@ -354,10 +381,15 @@ CeTimingMode_t ceProfilerGetTimingMode(void) {
 }
 
 // Start CE Coll event
-ncclResult_t ceProfilerStartCeCollEvent(struct context* ctx, void** eHandle, ncclProfilerEventDescr_v6_t* eDescr, double startTime) {
+ncclResult_t ceProfilerStartCeCollEvent(
+    struct context* ctx,
+    void** eHandle,
+    ncclProfilerEventDescr_v6_t* eDescr,
+    double startTime) {
   struct ceColl* event;
   int ceCollId = __atomic_fetch_add(&ctx->ceCollPoolIndex, 1, __ATOMIC_RELAXED);
-  if ((ceCollId - __atomic_load_n(&ctx->ceCollPoolBase, __ATOMIC_RELAXED)) < ctx->ceCollPoolSize) {
+  if ((ceCollId - __atomic_load_n(&ctx->ceCollPoolBase, __ATOMIC_RELAXED)) <
+      ctx->ceCollPoolSize) {
     event = &ctx->ceCollPool[ceCollId % ctx->ceCollPoolSize];
     event->parent = (struct collApi*)eDescr->parentObj;
     event->ceCollId = ceCollId;
@@ -428,10 +460,15 @@ ncclResult_t ceProfilerStopCeCollEvent(void* eHandle) {
 }
 
 // Start CE Sync event
-ncclResult_t ceProfilerStartCeSyncEvent(struct context* ctx, void** eHandle, ncclProfilerEventDescr_v6_t* eDescr, double startTime) {
+ncclResult_t ceProfilerStartCeSyncEvent(
+    struct context* ctx,
+    void** eHandle,
+    ncclProfilerEventDescr_v6_t* eDescr,
+    double startTime) {
   struct ceSync* event;
   int ceSyncId = __atomic_fetch_add(&ctx->ceSyncPoolIndex, 1, __ATOMIC_RELAXED);
-  if ((ceSyncId - __atomic_load_n(&ctx->ceSyncPoolBase, __ATOMIC_RELAXED)) < ctx->ceSyncPoolSize) {
+  if ((ceSyncId - __atomic_load_n(&ctx->ceSyncPoolBase, __ATOMIC_RELAXED)) <
+      ctx->ceSyncPoolSize) {
     event = &ctx->ceSyncPool[ceSyncId % ctx->ceSyncPoolSize];
     event->parent = (struct ceColl*)eDescr->parentObj;
     event->ceSyncId = ceSyncId;
@@ -497,10 +534,16 @@ ncclResult_t ceProfilerStopCeSyncEvent(void* eHandle) {
 }
 
 // Start CE Batch event
-ncclResult_t ceProfilerStartCeBatchEvent(struct context* ctx, void** eHandle, ncclProfilerEventDescr_v6_t* eDescr, double startTime) {
+ncclResult_t ceProfilerStartCeBatchEvent(
+    struct context* ctx,
+    void** eHandle,
+    ncclProfilerEventDescr_v6_t* eDescr,
+    double startTime) {
   struct ceBatch* event;
-  int ceBatchId = __atomic_fetch_add(&ctx->ceBatchPoolIndex, 1, __ATOMIC_RELAXED);
-  if ((ceBatchId - __atomic_load_n(&ctx->ceBatchPoolBase, __ATOMIC_RELAXED)) < ctx->ceBatchPoolSize) {
+  int ceBatchId =
+      __atomic_fetch_add(&ctx->ceBatchPoolIndex, 1, __ATOMIC_RELAXED);
+  if ((ceBatchId - __atomic_load_n(&ctx->ceBatchPoolBase, __ATOMIC_RELAXED)) <
+      ctx->ceBatchPoolSize) {
     event = &ctx->ceBatchPool[ceBatchId % ctx->ceBatchPoolSize];
     event->parent = (struct ceColl*)eDescr->parentObj;
     event->ceBatchId = ceBatchId;
@@ -564,4 +607,3 @@ ncclResult_t ceProfilerStopCeBatchEvent(void* eHandle) {
   debugEvent(eHandle, "CeBatchStopEvent");
   return ncclSuccess;
 }
-
