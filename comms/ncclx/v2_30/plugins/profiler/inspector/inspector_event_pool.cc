@@ -20,10 +20,11 @@ struct inspectorEventPool g_eventPool;
  *   failure.
  *
  */
-static struct inspectorPoolChunk* allocatePoolChunk(size_t entrySize,
-                                                    uint32_t chunkSize) {
-  struct inspectorPoolChunk* chunk
-    = (struct inspectorPoolChunk*)calloc(1, sizeof(struct inspectorPoolChunk));
+static struct inspectorPoolChunk* allocatePoolChunk(
+    size_t entrySize,
+    uint32_t chunkSize) {
+  struct inspectorPoolChunk* chunk =
+      (struct inspectorPoolChunk*)calloc(1, sizeof(struct inspectorPoolChunk));
   if (chunk == nullptr) {
     return nullptr;
   }
@@ -38,7 +39,6 @@ static struct inspectorPoolChunk* allocatePoolChunk(size_t entrySize,
   chunk->next = nullptr;
   return chunk;
 }
-
 
 /*
  * Description:
@@ -67,12 +67,11 @@ static inspectorResult_t initCollectivePool(uint32_t strideSize) {
     return inspectorLockError;
   }
 
-  struct inspectorPoolChunk* chunk
-    = allocatePoolChunk(sizeof(struct inspectorCollInfoPoolEntry),
-                        strideSize);
+  struct inspectorPoolChunk* chunk =
+      allocatePoolChunk(sizeof(struct inspectorCollInfoPoolEntry), strideSize);
   if (chunk == nullptr) {
     INFO_INSPECTOR(
-      "NCCL Inspector: Failed to allocate initial collective info pool chunk");
+        "NCCL Inspector: Failed to allocate initial collective info pool chunk");
     pthread_mutex_destroy(&g_eventPool.collPoolLock);
     return inspectorMemoryError;
   }
@@ -81,8 +80,8 @@ static inspectorResult_t initCollectivePool(uint32_t strideSize) {
   g_eventPool.collChunkCount = 1;
   g_eventPool.collTotalSize = strideSize;
 
-  struct inspectorCollInfoPoolEntry* entries
-    = (struct inspectorCollInfoPoolEntry*)chunk->entries;
+  struct inspectorCollInfoPoolEntry* entries =
+      (struct inspectorCollInfoPoolEntry*)chunk->entries;
   g_eventPool.collFreeList = &entries[0];
   for (uint32_t i = 0; i < strideSize - 1; i++) {
     entries[i].next = &entries[i + 1];
@@ -92,8 +91,8 @@ static inspectorResult_t initCollectivePool(uint32_t strideSize) {
   entries[strideSize - 1].inUse = false;
 
   INFO_INSPECTOR(
-    "NCCL Inspector: Initialized collective pool with stride size %u",
-    strideSize);
+      "NCCL Inspector: Initialized collective pool with stride size %u",
+      strideSize);
   return inspectorSuccess;
 }
 
@@ -108,13 +107,14 @@ static inspectorResult_t initCollectivePool(uint32_t strideSize) {
  *
  */
 static inspectorResult_t growCollectivePool() {
-  struct inspectorPoolChunk* newChunk
-    = allocatePoolChunk(sizeof(struct inspectorCollInfoPoolEntry),
-                        g_eventPool.collStrideSize);
+  struct inspectorPoolChunk* newChunk = allocatePoolChunk(
+      sizeof(struct inspectorCollInfoPoolEntry), g_eventPool.collStrideSize);
 
   if (newChunk == nullptr) {
-    WARN_INSPECTOR("NCCL Inspector: Failed to grow collective info pool (current chunks: %u, total entries: %u)",
-                   g_eventPool.collChunkCount, g_eventPool.collTotalSize);
+    WARN_INSPECTOR(
+        "NCCL Inspector: Failed to grow collective info pool (current chunks: %u, total entries: %u)",
+        g_eventPool.collChunkCount,
+        g_eventPool.collTotalSize);
     return inspectorMemoryError;
   }
 
@@ -123,8 +123,8 @@ static inspectorResult_t growCollectivePool() {
   g_eventPool.collChunkCount++;
   g_eventPool.collTotalSize += g_eventPool.collStrideSize;
 
-  struct inspectorCollInfoPoolEntry* entries
-    = (struct inspectorCollInfoPoolEntry*)newChunk->entries;
+  struct inspectorCollInfoPoolEntry* entries =
+      (struct inspectorCollInfoPoolEntry*)newChunk->entries;
   for (uint32_t i = 0; i < g_eventPool.collStrideSize - 1; i++) {
     entries[i].next = &entries[i + 1];
     entries[i].inUse = false;
@@ -134,8 +134,9 @@ static inspectorResult_t growCollectivePool() {
   g_eventPool.collFreeList = &entries[0];
 
   INFO_INSPECTOR(
-    "NCCL Inspector: Grew collective pool to %u chunks (%u total entries)",
-    g_eventPool.collChunkCount, g_eventPool.collTotalSize);
+      "NCCL Inspector: Grew collective pool to %u chunks (%u total entries)",
+      g_eventPool.collChunkCount,
+      g_eventPool.collTotalSize);
   return inspectorSuccess;
 }
 
@@ -166,12 +167,11 @@ static inspectorResult_t initP2pPool(uint32_t strideSize) {
     return inspectorLockError;
   }
 
-  struct inspectorPoolChunk* chunk
-    = allocatePoolChunk(sizeof(struct inspectorP2pInfoPoolEntry),
-                        strideSize);
+  struct inspectorPoolChunk* chunk =
+      allocatePoolChunk(sizeof(struct inspectorP2pInfoPoolEntry), strideSize);
   if (chunk == nullptr) {
     INFO_INSPECTOR(
-      "NCCL Inspector: Failed to allocate initial P2P info pool chunk");
+        "NCCL Inspector: Failed to allocate initial P2P info pool chunk");
     pthread_mutex_destroy(&g_eventPool.p2pPoolLock);
     return inspectorMemoryError;
   }
@@ -180,8 +180,8 @@ static inspectorResult_t initP2pPool(uint32_t strideSize) {
   g_eventPool.p2pChunkCount = 1;
   g_eventPool.p2pTotalSize = strideSize;
 
-  struct inspectorP2pInfoPoolEntry* entries
-    = (struct inspectorP2pInfoPoolEntry*)chunk->entries;
+  struct inspectorP2pInfoPoolEntry* entries =
+      (struct inspectorP2pInfoPoolEntry*)chunk->entries;
   g_eventPool.p2pFreeList = &entries[0];
   for (uint32_t i = 0; i < strideSize - 1; i++) {
     entries[i].next = &entries[i + 1];
@@ -191,8 +191,7 @@ static inspectorResult_t initP2pPool(uint32_t strideSize) {
   entries[strideSize - 1].inUse = false;
 
   INFO_INSPECTOR(
-    "NCCL Inspector: Initialized P2P pool with stride size %u",
-    strideSize);
+      "NCCL Inspector: Initialized P2P pool with stride size %u", strideSize);
   return inspectorSuccess;
 }
 
@@ -207,13 +206,14 @@ static inspectorResult_t initP2pPool(uint32_t strideSize) {
  *
  */
 static inspectorResult_t growP2pPool() {
-  struct inspectorPoolChunk* newChunk
-    = allocatePoolChunk(sizeof(struct inspectorP2pInfoPoolEntry),
-                        g_eventPool.p2pStrideSize);
+  struct inspectorPoolChunk* newChunk = allocatePoolChunk(
+      sizeof(struct inspectorP2pInfoPoolEntry), g_eventPool.p2pStrideSize);
 
   if (newChunk == nullptr) {
-    WARN_INSPECTOR("NCCL Inspector: Failed to grow P2P info pool (current chunks: %u, total entries: %u)",
-                   g_eventPool.p2pChunkCount, g_eventPool.p2pTotalSize);
+    WARN_INSPECTOR(
+        "NCCL Inspector: Failed to grow P2P info pool (current chunks: %u, total entries: %u)",
+        g_eventPool.p2pChunkCount,
+        g_eventPool.p2pTotalSize);
     return inspectorMemoryError;
   }
 
@@ -222,8 +222,8 @@ static inspectorResult_t growP2pPool() {
   g_eventPool.p2pChunkCount++;
   g_eventPool.p2pTotalSize += g_eventPool.p2pStrideSize;
 
-  struct inspectorP2pInfoPoolEntry* entries
-    = (struct inspectorP2pInfoPoolEntry*)newChunk->entries;
+  struct inspectorP2pInfoPoolEntry* entries =
+      (struct inspectorP2pInfoPoolEntry*)newChunk->entries;
   for (uint32_t i = 0; i < g_eventPool.p2pStrideSize - 1; i++) {
     entries[i].next = &entries[i + 1];
     entries[i].inUse = false;
@@ -232,8 +232,10 @@ static inspectorResult_t growP2pPool() {
   entries[g_eventPool.p2pStrideSize - 1].inUse = false;
   g_eventPool.p2pFreeList = &entries[0];
 
-  INFO_INSPECTOR( "NCCL Inspector: Grew P2P pool to %u chunks (%u total entries)",
-                  g_eventPool.p2pChunkCount, g_eventPool.p2pTotalSize);
+  INFO_INSPECTOR(
+      "NCCL Inspector: Grew P2P pool to %u chunks (%u total entries)",
+      g_eventPool.p2pChunkCount,
+      g_eventPool.p2pTotalSize);
   return inspectorSuccess;
 }
 
@@ -265,9 +267,11 @@ static inspectorResult_t initCommPool(uint32_t strideSize) {
   }
 
   // Allocate first chunk
-  struct inspectorPoolChunk* chunk = allocatePoolChunk(sizeof(struct inspectorCommInfoPoolEntry), strideSize);
+  struct inspectorPoolChunk* chunk =
+      allocatePoolChunk(sizeof(struct inspectorCommInfoPoolEntry), strideSize);
   if (chunk == nullptr) {
-    INFO_INSPECTOR( "NCCL Inspector: Failed to allocate initial comm info pool chunk");
+    INFO_INSPECTOR(
+        "NCCL Inspector: Failed to allocate initial comm info pool chunk");
     pthread_mutex_destroy(&g_eventPool.commPoolLock);
     return inspectorMemoryError;
   }
@@ -277,7 +281,8 @@ static inspectorResult_t initCommPool(uint32_t strideSize) {
   g_eventPool.commTotalSize = strideSize;
 
   // Initialize free list for this chunk
-  struct inspectorCommInfoPoolEntry* entries = (struct inspectorCommInfoPoolEntry*)chunk->entries;
+  struct inspectorCommInfoPoolEntry* entries =
+      (struct inspectorCommInfoPoolEntry*)chunk->entries;
   g_eventPool.commFreeList = &entries[0];
   for (uint32_t i = 0; i < strideSize - 1; i++) {
     entries[i].next = &entries[i + 1];
@@ -286,7 +291,8 @@ static inspectorResult_t initCommPool(uint32_t strideSize) {
   entries[strideSize - 1].next = nullptr;
   entries[strideSize - 1].inUse = false;
 
-  INFO_INSPECTOR( "NCCL Inspector: Initialized comm pool with stride size %u", strideSize);
+  INFO_INSPECTOR(
+      "NCCL Inspector: Initialized comm pool with stride size %u", strideSize);
   return inspectorSuccess;
 }
 
@@ -302,12 +308,13 @@ static inspectorResult_t initCommPool(uint32_t strideSize) {
  */
 static inspectorResult_t growCommPool() {
   struct inspectorPoolChunk* newChunk = allocatePoolChunk(
-    sizeof(struct inspectorCommInfoPoolEntry),
-    g_eventPool.commStrideSize);
+      sizeof(struct inspectorCommInfoPoolEntry), g_eventPool.commStrideSize);
 
   if (newChunk == nullptr) {
-    WARN_INSPECTOR("NCCL Inspector: Failed to grow comm info pool (current chunks: %u, total entries: %u)",
-                   g_eventPool.commChunkCount, g_eventPool.commTotalSize);
+    WARN_INSPECTOR(
+        "NCCL Inspector: Failed to grow comm info pool (current chunks: %u, total entries: %u)",
+        g_eventPool.commChunkCount,
+        g_eventPool.commTotalSize);
     return inspectorMemoryError;
   }
 
@@ -318,7 +325,8 @@ static inspectorResult_t growCommPool() {
   g_eventPool.commTotalSize += g_eventPool.commStrideSize;
 
   // Add entries from new chunk to free list
-  struct inspectorCommInfoPoolEntry* entries = (struct inspectorCommInfoPoolEntry*)newChunk->entries;
+  struct inspectorCommInfoPoolEntry* entries =
+      (struct inspectorCommInfoPoolEntry*)newChunk->entries;
   for (uint32_t i = 0; i < g_eventPool.commStrideSize - 1; i++) {
     entries[i].next = &entries[i + 1];
     entries[i].inUse = false;
@@ -327,8 +335,10 @@ static inspectorResult_t growCommPool() {
   entries[g_eventPool.commStrideSize - 1].inUse = false;
   g_eventPool.commFreeList = &entries[0];
 
-  INFO_INSPECTOR( "NCCL Inspector: Grew comm pool to %u chunks (%u total entries)",
-                  g_eventPool.commChunkCount, g_eventPool.commTotalSize);
+  INFO_INSPECTOR(
+      "NCCL Inspector: Grew comm pool to %u chunks (%u total entries)",
+      g_eventPool.commChunkCount,
+      g_eventPool.commTotalSize);
   return inspectorSuccess;
 }
 
@@ -398,9 +408,10 @@ static void cleanupPartialPoolInit() {
  *   inspectorMemoryError - Failed to allocate initial chunk.
  *
  */
-inspectorResult_t inspectorEventPoolInit(uint32_t collPoolSize,
-                                         uint32_t p2pPoolSize,
-                                         uint32_t commPoolSize) {
+inspectorResult_t inspectorEventPoolInit(
+    uint32_t collPoolSize,
+    uint32_t p2pPoolSize,
+    uint32_t commPoolSize) {
   inspectorResult_t res;
 
   memset(&g_eventPool, 0, sizeof(struct inspectorEventPool));
@@ -427,8 +438,11 @@ inspectorResult_t inspectorEventPoolInit(uint32_t collPoolSize,
   }
 
   INFO_INSPECTOR(
-    "NCCL Inspector: Memory pools initialized (stride-based) - Coll: %u, P2P: %u, Comms: %u, pool grow: %s",
-    collPoolSize, p2pPoolSize, commPoolSize, g_eventPool.growEnabled ? "enabled" : "disabled");
+      "NCCL Inspector: Memory pools initialized (stride-based) - Coll: %u, P2P: %u, Comms: %u, pool grow: %s",
+      collPoolSize,
+      p2pPoolSize,
+      commPoolSize,
+      g_eventPool.growEnabled ? "enabled" : "disabled");
 
   return inspectorSuccess;
 }
@@ -469,17 +483,20 @@ struct inspectorCollInfo* inspectorEventPoolAllocColl() {
   if (g_eventPool.collFreeList == nullptr) {
     if (!g_eventPool.growEnabled) {
       pthread_mutex_unlock(&g_eventPool.collPoolLock);
-      WARN_INSPECTOR("NCCL Inspector: Collective pool exhausted and pool grow is disabled (NCCL_INSPECTOR_POOL_GROW=0) - allocation failed!");
+      WARN_INSPECTOR(
+          "NCCL Inspector: Collective pool exhausted and pool grow is disabled (NCCL_INSPECTOR_POOL_GROW=0) - allocation failed!");
       return nullptr;
     }
     INFO_INSPECTOR(
-      "NCCL Inspector: Collective pool exhausted, growing pool (current: %u chunks, %u entries)",
-      g_eventPool.collChunkCount, g_eventPool.collTotalSize);
+        "NCCL Inspector: Collective pool exhausted, growing pool (current: %u chunks, %u entries)",
+        g_eventPool.collChunkCount,
+        g_eventPool.collTotalSize);
 
     inspectorResult_t res = growCollectivePool();
     if (res != inspectorSuccess) {
       pthread_mutex_unlock(&g_eventPool.collPoolLock);
-      WARN_INSPECTOR("NCCL Inspector: Failed to grow collective pool - allocation failed!");
+      WARN_INSPECTOR(
+          "NCCL Inspector: Failed to grow collective pool - allocation failed!");
       return nullptr;
     }
   }
@@ -518,16 +535,20 @@ struct inspectorP2pInfo* inspectorEventPoolAllocP2p() {
   if (g_eventPool.p2pFreeList == nullptr) {
     if (!g_eventPool.growEnabled) {
       pthread_mutex_unlock(&g_eventPool.p2pPoolLock);
-      WARN_INSPECTOR("NCCL Inspector: P2P pool exhausted and pool grow is disabled (NCCL_INSPECTOR_POOL_GROW=0) - allocation failed!");
+      WARN_INSPECTOR(
+          "NCCL Inspector: P2P pool exhausted and pool grow is disabled (NCCL_INSPECTOR_POOL_GROW=0) - allocation failed!");
       return nullptr;
     }
-    INFO_INSPECTOR( "NCCL Inspector: P2P pool exhausted, growing pool (current: %u chunks, %u entries)",
-                    g_eventPool.p2pChunkCount, g_eventPool.p2pTotalSize);
+    INFO_INSPECTOR(
+        "NCCL Inspector: P2P pool exhausted, growing pool (current: %u chunks, %u entries)",
+        g_eventPool.p2pChunkCount,
+        g_eventPool.p2pTotalSize);
 
     inspectorResult_t res = growP2pPool();
     if (res != inspectorSuccess) {
       pthread_mutex_unlock(&g_eventPool.p2pPoolLock);
-      WARN_INSPECTOR("NCCL Inspector: Failed to grow P2P pool - allocation failed!");
+      WARN_INSPECTOR(
+          "NCCL Inspector: Failed to grow P2P pool - allocation failed!");
       return nullptr;
     }
   }
@@ -568,16 +589,20 @@ struct inspectorCommInfo* inspectorEventPoolAllocComm() {
   if (g_eventPool.commFreeList == nullptr) {
     if (!g_eventPool.growEnabled) {
       pthread_mutex_unlock(&g_eventPool.commPoolLock);
-      WARN_INSPECTOR("NCCL Inspector: Comm pool exhausted and pool grow is disabled (NCCL_INSPECTOR_POOL_GROW=0) - allocation failed!");
+      WARN_INSPECTOR(
+          "NCCL Inspector: Comm pool exhausted and pool grow is disabled (NCCL_INSPECTOR_POOL_GROW=0) - allocation failed!");
       return nullptr;
     }
-    INFO_INSPECTOR( "NCCL Inspector: Comm pool exhausted, growing pool (current: %u chunks, %u entries)",
-                    g_eventPool.commChunkCount, g_eventPool.commTotalSize);
+    INFO_INSPECTOR(
+        "NCCL Inspector: Comm pool exhausted, growing pool (current: %u chunks, %u entries)",
+        g_eventPool.commChunkCount,
+        g_eventPool.commTotalSize);
 
     inspectorResult_t res = growCommPool();
     if (res != inspectorSuccess) {
       pthread_mutex_unlock(&g_eventPool.commPoolLock);
-      WARN_INSPECTOR("NCCL Inspector: Failed to grow comm pool - allocation failed!");
+      WARN_INSPECTOR(
+          "NCCL Inspector: Failed to grow comm pool - allocation failed!");
       return nullptr;
     }
   }
@@ -620,14 +645,18 @@ void inspectorEventPoolReleaseColl(struct inspectorCollInfo* collInfo) {
 
   // Calculate the pool entry address from the object address
   struct inspectorCollInfoPoolEntry* entry =
-    (struct inspectorCollInfoPoolEntry*)((char*)collInfo -
-                                         offsetof(struct inspectorCollInfoPoolEntry, obj));
+      (struct
+       inspectorCollInfoPoolEntry*)((char*)collInfo -
+                                    offsetof(
+                                        struct inspectorCollInfoPoolEntry,
+                                        obj));
 
   pthread_mutex_lock(&g_eventPool.collPoolLock);
 
   if (!entry->inUse) {
     pthread_mutex_unlock(&g_eventPool.collPoolLock);
-    WARN_INSPECTOR("NCCL Inspector: Double release detected for collective info!");
+    WARN_INSPECTOR(
+        "NCCL Inspector: Double release detected for collective info!");
     return;
   }
 
@@ -663,8 +692,10 @@ void inspectorEventPoolReleaseP2p(struct inspectorP2pInfo* p2pInfo) {
 
   // Calculate the pool entry address from the object address
   struct inspectorP2pInfoPoolEntry* entry =
-    (struct inspectorP2pInfoPoolEntry*)((char*)p2pInfo -
-                                        offsetof(struct inspectorP2pInfoPoolEntry, obj));
+      (struct inspectorP2pInfoPoolEntry*)((char*)p2pInfo -
+                                          offsetof(
+                                              struct inspectorP2pInfoPoolEntry,
+                                              obj));
 
   pthread_mutex_lock(&g_eventPool.p2pPoolLock);
 
@@ -706,8 +737,11 @@ void inspectorEventPoolReleaseComm(struct inspectorCommInfo* commInfo) {
 
   // Calculate the pool entry address from the object address
   struct inspectorCommInfoPoolEntry* entry =
-    (struct inspectorCommInfoPoolEntry*)((char*)commInfo -
-                                         offsetof(struct inspectorCommInfoPoolEntry, obj));
+      (struct
+       inspectorCommInfoPoolEntry*)((char*)commInfo -
+                                    offsetof(
+                                        struct inspectorCommInfoPoolEntry,
+                                        obj));
 
   pthread_mutex_lock(&g_eventPool.commPoolLock);
 

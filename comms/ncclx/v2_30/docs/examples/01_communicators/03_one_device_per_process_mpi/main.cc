@@ -1,17 +1,17 @@
 /*************************************************************************
- * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0
  *
  * See LICENSE.txt for more license information
  *************************************************************************/
 
-#include "cuda_runtime.h"
-#include "mpi.h"
-#include "nccl.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "cuda_runtime.h"
+#include "mpi.h"
+#include "nccl.h"
 
 /**
  * NCCL Example: One Device per Process with MPI
@@ -54,26 +54,34 @@
 // Enhanced error checking macro for NCCL operations
 // Provides detailed error information including the failed operation
 
-#define NCCLCHECK(cmd)                                                         \
-  do {                                                                         \
-    ncclResult_t res = cmd;                                                    \
-    if (res != ncclSuccess) {                                                  \
-      fprintf(stderr, "Failed, NCCL error %s:%d '%s'\n", __FILE__, __LINE__,   \
-              ncclGetErrorString(res));                                        \
-      fprintf(stderr, "Failed NCCL operation: %s\n", #cmd);                    \
-      exit(EXIT_FAILURE);                                                      \
-    }                                                                          \
+#define NCCLCHECK(cmd)                                      \
+  do {                                                      \
+    ncclResult_t res = cmd;                                 \
+    if (res != ncclSuccess) {                               \
+      fprintf(                                              \
+          stderr,                                           \
+          "Failed, NCCL error %s:%d '%s'\n",                \
+          __FILE__,                                         \
+          __LINE__,                                         \
+          ncclGetErrorString(res));                         \
+      fprintf(stderr, "Failed NCCL operation: %s\n", #cmd); \
+      exit(EXIT_FAILURE);                                   \
+    }                                                       \
   } while (0)
 
-#define CUDACHECK(cmd)                                                         \
-  do {                                                                         \
-    cudaError_t err = cmd;                                                     \
-    if (err != cudaSuccess) {                                                  \
-      fprintf(stderr, "Failed: Cuda error %s:%d '%s'\n", __FILE__, __LINE__,   \
-              cudaGetErrorString(err));                                        \
-      fprintf(stderr, "Failed CUDA operation: %s\n", #cmd);                    \
-      exit(EXIT_FAILURE);                                                      \
-    }                                                                          \
+#define CUDACHECK(cmd)                                      \
+  do {                                                      \
+    cudaError_t err = cmd;                                  \
+    if (err != cudaSuccess) {                               \
+      fprintf(                                              \
+          stderr,                                           \
+          "Failed: Cuda error %s:%d '%s'\n",                \
+          __FILE__,                                         \
+          __LINE__,                                         \
+          cudaGetErrorString(err));                         \
+      fprintf(stderr, "Failed CUDA operation: %s\n", #cmd); \
+      exit(EXIT_FAILURE);                                   \
+    }                                                       \
   } while (0)
 
 // =============================================================================
@@ -92,7 +100,6 @@
  * @return Local rank (0, 1, 2...) for GPU assignment, or -1 on error
  */
 int getLocalRank(MPI_Comm comm) {
-
   int world_size;
   MPI_Comm_size(comm, &world_size);
 
@@ -101,8 +108,8 @@ int getLocalRank(MPI_Comm comm) {
 
   // Split the communicator based on shared memory (i.e., nodes)
   MPI_Comm node_comm;
-  MPI_Comm_split_type(comm, MPI_COMM_TYPE_SHARED, world_rank, MPI_INFO_NULL,
-                      &node_comm);
+  MPI_Comm_split_type(
+      comm, MPI_COMM_TYPE_SHARED, world_rank, MPI_INFO_NULL, &node_comm);
 
   // Get the rank and size within the node communicator
   int node_rank, node_size;
@@ -119,7 +126,7 @@ int getLocalRank(MPI_Comm comm) {
 // MAIN FUNCTION - NCCL Communicator Lifecycle Example
 // =============================================================================
 
-int main(int argc, char *argv[]) {
+int main(int argc, char* argv[]) {
   // Variables for MPI, CUDA, and NCCL components
   int mpi_rank, mpi_size, local_rank;
   int num_gpus = 0;
@@ -135,16 +142,18 @@ int main(int argc, char *argv[]) {
   MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
   MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
 
-
   if (mpi_rank == 0) {
-    printf("Starting NCCL communicator lifecycle example with %d processes\n",
-           mpi_size);
+    printf(
+        "Starting NCCL communicator lifecycle example with %d processes\n",
+        mpi_size);
   }
   // Determine which local GPU this process should use
   local_rank = getLocalRank(MPI_COMM_WORLD);
 
-  printf("  MPI initialized - Process %d of %d total processes\n", mpi_rank,
-         mpi_size);
+  printf(
+      "  MPI initialized - Process %d of %d total processes\n",
+      mpi_rank,
+      mpi_size);
 
   // =========================================================================
   // STEP 2: Setup CUDA device for this process
@@ -160,9 +169,12 @@ int main(int argc, char *argv[]) {
   }
 
   if (local_rank >= num_gpus) {
-    fprintf(stderr,
-            "ERROR: Process %d needs GPU %d but only %d devices available\n",
-            mpi_rank, local_rank, num_gpus);
+    fprintf(
+        stderr,
+        "ERROR: Process %d needs GPU %d but only %d devices available\n",
+        mpi_rank,
+        local_rank,
+        num_gpus);
     exit(EXIT_FAILURE);
   }
 
@@ -172,8 +184,7 @@ int main(int argc, char *argv[]) {
   // Create CUDA stream for GPU operations
   CUDACHECK(cudaStreamCreate(&stream));
 
-  printf("  MPI rank %d assigned to CUDA device %d\n", mpi_rank,
-         local_rank);
+  printf("  MPI rank %d assigned to CUDA device %d\n", mpi_rank, local_rank);
 
   // =========================================================================
   // STEP 3: Initialize NCCL communicator
@@ -204,8 +215,12 @@ int main(int argc, char *argv[]) {
   NCCLCHECK(ncclCommCount(comm, &comm_size));
   NCCLCHECK(ncclCommCuDevice(comm, &comm_device));
 
-  printf("  MPI rank %d → NCCL rank %d/%d on GPU device %d\n", mpi_rank,
-         comm_rank, comm_size, comm_device);
+  printf(
+      "  MPI rank %d → NCCL rank %d/%d on GPU device %d\n",
+      mpi_rank,
+      comm_rank,
+      comm_size,
+      comm_device);
 
   // Give all processes a chance to finish their printf
   MPI_Barrier(MPI_COMM_WORLD);
@@ -238,12 +253,13 @@ int main(int argc, char *argv[]) {
   }
 
   if (mpi_rank == 0) {
+    printf("\nAll NCCL communicators created and cleaned up properly!\n");
     printf(
-        "\nAll NCCL communicators created and cleaned up properly!\n");
-    printf("This example demonstrated the complete NCCL communicator "
-           "lifecycle.\n");
-    printf("Next steps: Try running NCCL collective operations (AllReduce, "
-           "etc.)\n");
+        "This example demonstrated the complete NCCL communicator "
+        "lifecycle.\n");
+    printf(
+        "Next steps: Try running NCCL collective operations (AllReduce, "
+        "etc.)\n");
   }
 
   MPI_Finalize();

@@ -1,6 +1,6 @@
 /*************************************************************************
- * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0
  *
  * See LICENSE.txt for more license information
  *************************************************************************/
@@ -17,9 +17,9 @@
 #include "inspector.h"
 
 // Function pointer types for CUDA driver API functions
-typedef CUresult (*PFN_cuGetErrorString)(CUresult error, const char **pStr);
-typedef CUresult (*PFN_cuDeviceGet)(CUdevice *device, int ordinal);
-typedef CUresult (*PFN_cuDeviceGetUuid)(CUuuid *uuid, CUdevice dev);
+typedef CUresult (*PFN_cuGetErrorString)(CUresult error, const char** pStr);
+typedef CUresult (*PFN_cuDeviceGet)(CUdevice* device, int ordinal);
+typedef CUresult (*PFN_cuDeviceGetUuid)(CUuuid* uuid, CUdevice dev);
 
 // Function pointers - externally defined
 extern PFN_cuGetErrorString pfn_cuGetErrorString;

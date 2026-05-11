@@ -1,6 +1,6 @@
 /*************************************************************************
- * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0
  *
  * See LICENSE.txt for more license information
  *************************************************************************/
@@ -12,11 +12,12 @@
 
 // Extend v5 descriptor with CE-specific fields
 typedef struct {
-  uint64_t type;                // event type descriptor
-  void* parentObj;              // pointer to the profiler parent object
-  int rank;                     // originating rank
+  uint64_t type; // event type descriptor
+  void* parentObj; // pointer to the profiler parent object
+  int rank; // originating rank
   union {
-    // All v5 descriptors (groupApi, collApi, p2pApi, kernelLaunch, coll, p2p, proxyOp, proxyStep, kernelCh, netPlugin)
+    // All v5 descriptors (groupApi, collApi, p2pApi, kernelLaunch, coll, p2p,
+    // proxyOp, proxyStep, kernelCh, netPlugin)
     struct {
       bool graphCaptured;
       int groupDepth;
@@ -129,20 +130,33 @@ typedef struct {
   const char* name;
 
   // init - initialize the profiler plugin
-  ncclResult_t (*init)(void** context, uint64_t commId, int* eActivationMask, const char* commName, int nNodes, int nranks, int rank, ncclDebugLogger_t logfn);
+  ncclResult_t (*init)(
+      void** context,
+      uint64_t commId,
+      int* eActivationMask,
+      const char* commName,
+      int nNodes,
+      int nranks,
+      int rank,
+      ncclDebugLogger_t logfn);
 
   // startEvent - initialize and start a new event
-  ncclResult_t (*startEvent)(void* context, void** eHandle, ncclProfilerEventDescr_v6_t* eDescr);
+  ncclResult_t (*startEvent)(
+      void* context,
+      void** eHandle,
+      ncclProfilerEventDescr_v6_t* eDescr);
 
   // stopEvent - stop/finalize an event
   ncclResult_t (*stopEvent)(void* eHandle);
 
   // recordEventState - record event state transitions and updates
-  ncclResult_t (*recordEventState)(void* eHandle, ncclProfilerEventState_v6_t eState, ncclProfilerEventStateArgs_v6_t* eStateArgs);
+  ncclResult_t (*recordEventState)(
+      void* eHandle,
+      ncclProfilerEventState_v6_t eState,
+      ncclProfilerEventStateArgs_v6_t* eStateArgs);
 
   // finalize - finalize the profiler plugin
   ncclResult_t (*finalize)(void* context);
 } ncclProfiler_v6_t;
 
 #endif // PROFILER_V6_H_
-

@@ -1,19 +1,19 @@
 /*************************************************************************
- * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0
  *
  * See LICENSE.txt for more license information
  *************************************************************************/
 
-#include "cuda_runtime.h"
-#include "nccl.h"
-#include "nccl_device.h"
-#include "utils.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include "cuda_runtime.h"
+#include "nccl.h"
+#include "nccl_device.h"
+#include "utils.h"
 
 /*
  * NCCL Device API AllReduce Example
@@ -59,14 +59,23 @@
 
 // Device kernel that performs AllReduce sum operation
 // This kernel demonstrates direct NCCL communication from GPU threads
-__global__ void simpleAllReduceKernel(ncclWindow_t sendwin, size_t sendoffset,
-                                      ncclWindow_t recvwin, size_t recvoffset,
-                                      size_t count, struct ncclDevComm devComm) {
+__global__ void simpleAllReduceKernel(
+    ncclWindow_t sendwin,
+    size_t sendoffset,
+    ncclWindow_t recvwin,
+    size_t recvoffset,
+    size_t count,
+    struct ncclDevComm devComm) {
   // LSA barriers enable coordination between GPU threads across different ranks
   // Barrier scope: CTA (all threads in this block participate)
-  // Barrier index: blockIdx.x selects this CTA's dedicated barrier (one barrier per CTA)
-  ncclLsaBarrierSession<ncclCoopCta> bar { ncclCoopCta(), devComm, ncclTeamLsa(devComm),
-                                           devComm.lsaBarrier, blockIdx.x };
+  // Barrier index: blockIdx.x selects this CTA's dedicated barrier (one barrier
+  // per CTA)
+  ncclLsaBarrierSession<ncclCoopCta> bar{
+      ncclCoopCta(),
+      devComm,
+      ncclTeamLsa(devComm),
+      devComm.lsaBarrier,
+      blockIdx.x};
   bar.sync(ncclCoopCta(), cuda::memory_order_acquire);
 
   const int rank = devComm.rank, nRanks = devComm.nRanks;
@@ -81,19 +90,19 @@ __global__ void simpleAllReduceKernel(ncclWindow_t sendwin, size_t sendoffset,
   for (size_t offset = globalTid; offset < count; offset += globalNthreads) {
     float v = 0.0f;
     // Access remote (and local [peer==rank]) memory and reduce locally
-    for (int peer=0; peer<nRanks; peer++) {
+    for (int peer = 0; peer < nRanks; peer++) {
       // Access peer memory directly using LSA (Load/Store Accessible) pointers
       float* sendPtr = (float*)ncclGetLsaPointer(sendwin, sendoffset, peer);
       v += sendPtr[offset];
     }
     // Write the result back to remote and local memory
-    for (int peer=0; peer<nRanks; peer++) {
+    for (int peer = 0; peer < nRanks; peer++) {
       float* recvPtr = (float*)ncclGetLsaPointer(recvwin, recvoffset, peer);
       recvPtr[offset] = v;
     }
   }
-  // Release barrier ensures that we received data from everyone before we unblock the stream
-  // and allow the next kernel(s) to process the data.
+  // Release barrier ensures that we received data from everyone before we
+  // unblock the stream and allow the next kernel(s) to process the data.
   // Critical for correctness in device-side collective operations
   bar.sync(ncclCoopCta(), cuda::memory_order_release);
 }
@@ -107,7 +116,11 @@ __global__ void simpleAllReduceKernel(ncclWindow_t sendwin, size_t sendoffset,
 // easier readability. For fully integrated examples using pthreads or MPI see
 // examples. in 01_communicators.
 
-void* allReduce(int my_rank, int total_ranks, int local_device, int devices_per_rank) {
+void* allReduce(
+    int my_rank,
+    int total_ranks,
+    int local_device,
+    int devices_per_rank) {
   ncclComm_t comm;
   ncclUniqueId nccl_unique_id;
 
@@ -133,21 +146,28 @@ void* allReduce(int my_rank, int total_ranks, int local_device, int devices_per_
 
   // Initialize NCCL communicator (same as Host API)
   NCCLCHECK(ncclCommInitRank(&comm, total_ranks, nccl_unique_id, my_rank));
-  printf("  Rank %d initialized NCCL communicator for %d total ranks\n", my_rank, total_ranks);
+  printf(
+      "  Rank %d initialized NCCL communicator for %d total ranks\n",
+      my_rank,
+      total_ranks);
 
   // Check for Device API support
   ncclCommProperties_t props = NCCL_COMM_PROPERTIES_INITIALIZER;
   NCCLCHECK(ncclCommQueryProperties(comm, &props));
   if (!props.deviceApiSupport) {
-    printf("ERROR: rank %d communicator does not support Device API!\n", my_rank);
+    printf(
+        "ERROR: rank %d communicator does not support Device API!\n", my_rank);
     NCCLCHECK(ncclCommFinalize(comm));
     NCCLCHECK(ncclCommDestroy(comm));
     return NULL;
   }
-  // Pure LSA example requires a single team where all ranks can directly access each other
+  // Pure LSA example requires a single team where all ranks can directly access
+  // each other
   if (props.nLsaTeams != 1) {
-    printf("ERROR: rank %d communicator has %d LSA teams, expected 1 for pure LSA example!\n",
-           my_rank, props.nLsaTeams);
+    printf(
+        "ERROR: rank %d communicator has %d LSA teams, expected 1 for pure LSA example!\n",
+        my_rank,
+        props.nLsaTeams);
     NCCLCHECK(ncclCommFinalize(comm));
     NCCLCHECK(ncclCommDestroy(comm));
     return NULL;
@@ -157,14 +177,15 @@ void* allReduce(int my_rank, int total_ranks, int local_device, int devices_per_
   size_t count = 1024 * 1024; // 1M elements
   size_t size_bytes = count * sizeof(float);
 
-  float *h_data = (float*)malloc(size_bytes);
+  float* h_data = (float*)malloc(size_bytes);
   void* d_sendbuff;
   void* d_recvbuff;
   ncclWindow_t send_win;
   ncclWindow_t recv_win;
 
   // Device API requires allocation compatible with symmetric memory allocation
-  // This ensures memory can be accessed directly by device kernels from all ranks
+  // This ensures memory can be accessed directly by device kernels from all
+  // ranks
   NCCLCHECK(ncclMemAlloc(&d_sendbuff, size_bytes));
   NCCLCHECK(ncclMemAlloc(&d_recvbuff, size_bytes));
 
@@ -174,8 +195,10 @@ void* allReduce(int my_rank, int total_ranks, int local_device, int devices_per_
 
   // Register symmetric windows for LSA access
   // Windows enable direct peer-to-peer access from device kernels
-  NCCLCHECK(ncclCommWindowRegister(comm, d_sendbuff, size_bytes, &send_win, NCCL_WIN_COLL_SYMMETRIC));
-  NCCLCHECK(ncclCommWindowRegister(comm, d_recvbuff, size_bytes, &recv_win, NCCL_WIN_COLL_SYMMETRIC));
+  NCCLCHECK(ncclCommWindowRegister(
+      comm, d_sendbuff, size_bytes, &send_win, NCCL_WIN_COLL_SYMMETRIC));
+  NCCLCHECK(ncclCommWindowRegister(
+      comm, d_recvbuff, size_bytes, &recv_win, NCCL_WIN_COLL_SYMMETRIC));
 
   // Initialize data with rank-specific values for verification
   for (size_t i = 0; i < count; i++) {
@@ -196,15 +219,23 @@ void* allReduce(int my_rank, int total_ranks, int local_device, int devices_per_
   // Requirements specify resources to allocate (e.g., one barrier per CTA)
   ncclDevComm devComm;
   ncclDevCommRequirements reqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
-  reqs.lsaBarrierCount = NCCL_DEVICE_CTA_COUNT; // Must match kernel launch config
+  reqs.lsaBarrierCount =
+      NCCL_DEVICE_CTA_COUNT; // Must match kernel launch config
   NCCLCHECK(ncclDevCommCreate(comm, &reqs, &devComm));
-  printf("  Rank %d created device communicator with %d LSA barriers\n", my_rank, NCCL_DEVICE_CTA_COUNT);
+  printf(
+      "  Rank %d created device communicator with %d LSA barriers\n",
+      my_rank,
+      NCCL_DEVICE_CTA_COUNT);
 
   if (my_rank == 0) {
-    printf("Starting AllReduce with %zu elements (%zu MB) using Device API\n",
-           count, size_bytes / (1024 * 1024));
-    printf("Expected result: sum of ranks 0 to %d = %d per element\n",
-           total_ranks - 1, (total_ranks * (total_ranks - 1)) / 2);
+    printf(
+        "Starting AllReduce with %zu elements (%zu MB) using Device API\n",
+        count,
+        size_bytes / (1024 * 1024));
+    printf(
+        "Expected result: sum of ranks 0 to %d = %d per element\n",
+        total_ranks - 1,
+        (total_ranks * (total_ranks - 1)) / 2);
   }
 
   // ==========================================================================
@@ -212,8 +243,13 @@ void* allReduce(int my_rank, int total_ranks, int local_device, int devices_per_
   // ==========================================================================
 
   // Launch device kernel to perform AllReduce
-  // This kernel will directly access peer memory and perform collective operation
-  simpleAllReduceKernel<<<NCCL_DEVICE_CTA_COUNT, NCCL_DEVICE_THREADS_PER_CTA, 0, stream>>>(send_win, 0, recv_win, 0, count, devComm);
+  // This kernel will directly access peer memory and perform collective
+  // operation
+  simpleAllReduceKernel<<<
+      NCCL_DEVICE_CTA_COUNT,
+      NCCL_DEVICE_THREADS_PER_CTA,
+      0,
+      stream>>>(send_win, 0, recv_win, 0, count, devComm);
 
   // Wait for completion - kernel performs AllReduce.
   CUDACHECK(cudaStreamSynchronize(stream));
@@ -235,11 +271,14 @@ void* allReduce(int my_rank, int total_ranks, int local_device, int devices_per_
   }
 
   if (my_rank == 0) {
-    printf("AllReduce completed. Result verification: %s\n",
-           success ? "PASSED" : "FAILED");
+    printf(
+        "AllReduce completed. Result verification: %s\n",
+        success ? "PASSED" : "FAILED");
     if (success) {
-      printf("All elements correctly sum to %.0f (ranks 0-%d)\n",
-             expected, total_ranks - 1);
+      printf(
+          "All elements correctly sum to %.0f (ranks 0-%d)\n",
+          expected,
+          total_ranks - 1);
     }
   }
 

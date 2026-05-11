@@ -1,6 +1,6 @@
 /*************************************************************************
- * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0
  *
  * See LICENSE.txt for more license information
  *************************************************************************/
@@ -8,14 +8,15 @@
 #ifndef PROFILER_V4_H_
 #define PROFILER_V4_H_
 
-#include <stdint.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <sys/types.h>
 
 typedef struct {
-  uint8_t type;                 // event type descriptor: ncclProfileColl, ...
-  void* parentObj;              // pointer to the profiler parent object (for coll is the group)
-  int rank;                     // originating rank
+  uint8_t type; // event type descriptor: ncclProfileColl, ...
+  void* parentObj; // pointer to the profiler parent object (for coll is the
+                   // group)
+  int rank; // originating rank
   union {
     struct {
       uint64_t seqNumber;
@@ -41,11 +42,11 @@ typedef struct {
     } p2p;
 
     struct {
-      pid_t pid;                // pid of the originating process
-      uint8_t channelId;        // channel id for this proxy operation
-      int peer;                 // remote rank for send/recv
-      int nSteps;               // number of steps for this proxy operation
-      int chunkSize;            // amount of data transferred by this proxy operation
+      pid_t pid; // pid of the originating process
+      uint8_t channelId; // channel id for this proxy operation
+      int peer; // remote rank for send/recv
+      int nSteps; // number of steps for this proxy operation
+      int chunkSize; // amount of data transferred by this proxy operation
       int isSend;
     } proxyOp;
 
@@ -55,7 +56,7 @@ typedef struct {
 
     struct {
       uint8_t channelId;
-      uint64_t pTimer;          // start timestamp from GPU globaltimer
+      uint64_t pTimer; // start timestamp from GPU globaltimer
     } kernelCh;
 
     struct {
@@ -88,7 +89,8 @@ typedef struct {
 
   // init - initialize the profiler plugin
   // Input
-  //  - context        : opaque profiler context object for separating profiler behavior across comms
+  //  - context        : opaque profiler context object for separating profiler
+  //  behavior across comms
   //  - commName       : user assigned communicator name
   //  - commHash       : communicator id
   //  - nNodes         : number of nodes in communicator
@@ -97,27 +99,42 @@ typedef struct {
   //  - logfn          : logger function
   // Output
   //  - eActivationMask: bitmask of active events set by the plugin
-  ncclResult_t (*init)(void** context, int* eActivationMask, const char* commName, uint64_t commHash, int nNodes, int nranks, int rank, ncclDebugLogger_t logfn);
+  ncclResult_t (*init)(
+      void** context,
+      int* eActivationMask,
+      const char* commName,
+      uint64_t commHash,
+      int nNodes,
+      int nranks,
+      int rank,
+      ncclDebugLogger_t logfn);
 
-  // startEvent - initialize and start a new event for the supplied event descriptor inside the eventset
-  // Input
+  // startEvent - initialize and start a new event for the supplied event
+  // descriptor inside the eventset Input
   //  - context: opaque profiler context object
   //  - eDescr : pointer to ncclProfilerEventDescr_t object
   // Output
   //  - eHandle: return event handle for supplied event descriptor object
-  ncclResult_t (*startEvent)(void* context, void** eHandle, ncclProfilerEventDescr_v4_t* eDescr);
+  ncclResult_t (*startEvent)(
+      void* context,
+      void** eHandle,
+      ncclProfilerEventDescr_v4_t* eDescr);
 
   // stopEvent - stop/finalize an event inside and event set
   // Input
   //  - eHandle: handle to event object
   ncclResult_t (*stopEvent)(void* eHandle);
 
-  // recordEventState - record event state transitions and event attribute updates
-  // Input
+  // recordEventState - record event state transitions and event attribute
+  // updates Input
   //  - eHandle   : handle to event object created through startEvent
-  //  - eStateArgs: optional argument used to capture event attribute updates associated with the state transition
+  //  - eStateArgs: optional argument used to capture event attribute updates
+  //  associated with the state transition
   //  - eState    : event state transition
-  ncclResult_t (*recordEventState)(void* eHandle, ncclProfilerEventState_v4_t eState, ncclProfilerEventStateArgs_v4_t* eStateArgs);
+  ncclResult_t (*recordEventState)(
+      void* eHandle,
+      ncclProfilerEventState_v4_t eState,
+      ncclProfilerEventStateArgs_v4_t* eStateArgs);
 
   // finalize - finalize the profiler plugin
   // Input

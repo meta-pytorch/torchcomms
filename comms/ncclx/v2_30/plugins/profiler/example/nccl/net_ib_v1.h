@@ -1,6 +1,6 @@
 /*************************************************************************
- * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0
  *
  * See LICENSE.txt for more license information
  *************************************************************************/
@@ -20,14 +20,14 @@ enum {
 // function. The profiler should inspect the plugin id to find out the source
 // plugin as well as the version of the event struct
 typedef struct {
-  uint8_t type;        // event type (plugin defined)
+  uint8_t type; // event type (plugin defined)
   union {
     struct {
-      int device;      // network device id
-      uint64_t wr_id;  // work request id
-      int opcode;      // ibv opcode
-      int qpNum;       // QP number
-      size_t length;   // work request data length
+      int device; // network device id
+      uint64_t wr_id; // work request id
+      int opcode; // ibv opcode
+      int qpNum; // QP number
+      size_t length; // work request data length
     } qp;
   };
 } ncclProfilerNetIbDescr_v1_t;
