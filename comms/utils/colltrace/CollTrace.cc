@@ -151,7 +151,10 @@ std::shared_ptr<GraphCollTraceState> CollTrace::getOrCreateGraphState(
   unsigned long long graphId = 0;
   cudaGraph_t graph = nullptr;
 
-#if CUDART_VERSION >= 13000
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
+  auto res = hipStreamGetCaptureInfo_v2(
+      stream, &captureStatus, &graphId, &graph, nullptr, nullptr);
+#elif CUDART_VERSION >= 13000
   auto res = cudaStreamGetCaptureInfo(
       stream, &captureStatus, &graphId, &graph, nullptr, nullptr, nullptr);
 #else

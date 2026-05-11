@@ -424,18 +424,6 @@ ncclResult_t ncclAllReduceWithBias_impl(const void* sendbuff, void* recvbuff, si
     }
   }
 
-  struct NvtxParamsAllReduce {
-    size_t bytes;
-    ncclRedOp_t op;
-    ncclDataType_t datatype;
-  };
-  NvtxParamsAllReduce payload{count * ncclTypeSize(datatype), op, datatype};
-  NVTX3_FUNC_WITH_PARAMS(
-    AllReduce,
-    NcclNvtxParamsAllReduce,
-    NVTX3_PAYLOAD(comm ? comm->commHash : 0, count * ncclTypeSize(datatype), op, datatype)
-  );
-
   if (mscclAvailable(comm) && !mscclIsCaller() && acc == nullptr) {
     return mscclEnqueueCheck(
       sendbuff, nullptr, nullptr, recvbuff, nullptr, nullptr,
