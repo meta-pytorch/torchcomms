@@ -16,8 +16,8 @@ void CachingAllocatorHookMock::setupDefaultBehaviors() {
     mem_pre_hook_registered_ = true;
   });
 
-  // Call registerMemPreHook to simulate what DefaultCachingAllocatorHookImpl
-  // constructor does
+  // Call registerMemPreHook to simulate what
+  // DefaultNcclxCachingAllocatorHookImpl constructor does
   registerMemPreHook();
 }
 
