@@ -648,7 +648,11 @@ bool CommStateX::isSameDc(int myRank, int peer) const {
   return dc(peer) == dc(myRank);
 }
 bool CommStateX::isSameDeviceRack(int myRank, int peer) const {
-  return deviceRack(myRank) == deviceRack(peer);
+  // Guard against unknown rackSerial (-1): without this, two ranks with
+  // missing DEVICE_RACK_SERIAL would match (-1 == -1), falsely disabling
+  // trunk P2P when NCCL_MNNVL_TRUNK_DISABLE is set.
+  auto rs = deviceRack(myRank);
+  return rs >= 0 && rs == deviceRack(peer);
 }
 bool CommStateX::isSameNvlFabric(int myRank, int peer) const {
   if (!nvlFabricEnabled_) {

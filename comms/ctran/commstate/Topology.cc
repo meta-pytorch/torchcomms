@@ -18,11 +18,12 @@ constexpr std::string_view kDeviceRackSerial = "DEVICE_RACK_SERIAL";
 // DEVICE_BACKEND_NETWORK_TOPOLOGY should be present in all T20 hosts with
 // backend network. If not found CTRAN initialization fails.
 // Ignore this field for other platform types.
-// Expected format for top of rack topology
-// e.g
-// DEVICE_BACKEND_NETWORK_TOPOLOGY=pci5/pci5.5D.z088//rtsw191.c088.f00.pci5
-// Expected format for rail based topology
+// Expected format for top of rack topology (NSF)
+// e.g DEVICE_BACKEND_NETWORK_TOPOLOGY=pci5/pci5.5D.z088//rtsw191.c088.f00.pci5
+// Expected format for rail based topology (DSF with scaling unit)
 // e.g DEVICE_BACKEND_NETWORK_TOPOLOGY=/snb1.z081/snb1.z081.u015/
+// Expected format for DSF without scaling unit (e.g. GB300 DSF at UCO1)
+// e.g DEVICE_BACKEND_NETWORK_TOPOLOGY=uco1/uco1.z086//
 void parseTopologyValue(
     const std::string& value,
     const std::string& filepath,
@@ -50,8 +51,7 @@ void parseTopologyValue(
   su = std::move(topologyParts[2]);
   rtsw = std::move(topologyParts[3]);
 
-  if ((rtsw.empty() && su.empty()) || (!rtsw.empty() && !su.empty()) ||
-      zone.empty()) {
+  if (zone.empty()) {
     return;
   }
   isBackendTopologyValid = true;
