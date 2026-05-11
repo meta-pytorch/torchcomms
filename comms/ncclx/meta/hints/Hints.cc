@@ -4,7 +4,6 @@
 #include "checks.h" // NOLINT
 #include "comm.h" // NOLINT
 #include "comms/ctran/algos/AllToAll/AllToAllPHintUtils.h"
-#include "comms/ctran/algos/AllToAll/AllToAllvDynamicHintUtils.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/window/WinHintUtils.h"
 #include "meta/NcclxConfig.h" // @manual
@@ -15,11 +14,9 @@
 namespace ncclx {
 
 using meta::comms::hints::AllToAllPHintUtils;
-using meta::comms::hints::AllToAllvDynamicHintUtils;
 using meta::comms::hints::WinHintUtils;
 
 __attribute__((visibility("default"))) Hints::Hints() {
-  AllToAllvDynamicHintUtils::init(this->kv);
   AllToAllPHintUtils::init(this->kv);
   WinHintUtils::init(this->kv);
 }
@@ -45,11 +42,7 @@ static std::string stripNcclxPrefix(const std::string& key) {
 __attribute__((visibility("default"))) ncclResult_t
 Hints::set(const std::string& key, const std::string& val) {
   auto bareKey = stripNcclxPrefix(key);
-  if (bareKey.starts_with("ncclx_alltoallv_dynamic")) {
-    NCCLCHECK(
-        metaCommToNccl(AllToAllvDynamicHintUtils::set(bareKey, val, this->kv)));
-    return ncclSuccess;
-  } else if (bareKey.starts_with("ncclx_alltoallp")) {
+  if (bareKey.starts_with("ncclx_alltoallp")) {
     NCCLCHECK(metaCommToNccl(AllToAllPHintUtils::set(bareKey, val, this->kv)));
     return ncclSuccess;
   } else if (bareKey.starts_with(("window"))) {

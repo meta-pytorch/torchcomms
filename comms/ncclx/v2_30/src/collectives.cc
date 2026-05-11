@@ -541,20 +541,7 @@ ncclResult_t ncclx::alltoallvDynamic(
     ncclDataType_t datatype,
     ncclComm_t comm,
     cudaStream_t stream) {
-
-  NCCLCHECK(metaCommToNccl(ctranAllToAllvDynamicSupport(comm->ctranComm_.get(), ncclToMetaComm(hints), maxSendcount, maxRecvcount, ncclToMetaComm(datatype))));
-
-  return metaCommToNccl(ctranAllToAllvDynamic(
-      sendbuffs,
-      sendcounts,
-      recvbuffs,
-      maxSendcount,
-      maxRecvcount,
-      actualRecvcounts,
-      ncclToMetaComm(hints),
-      ncclToMetaComm(datatype),
-      comm->ctranComm_.get(),
-      stream));
+  return ncclInvalidUsage;
 }
 
 
@@ -570,20 +557,7 @@ ncclResult_t ncclx::alltoallvDynamicSplit(
     ncclDataType_t datatype,
     ncclComm_t comm,
     cudaStream_t stream) {
-
-  NCCLCHECK(metaCommToNccl(ctranAllToAllvDynamicSupport(comm->ctranComm_.get(), ncclToMetaComm(hints), maxSendcount, maxRecvcount, ncclToMetaComm(datatype))));
-
-  return metaCommToNccl(ctranAlltoallvDynamicSplit(
-      sendbuff,
-      sendSplitLengths,
-      recvbuffs,
-      maxSendcount,
-      maxRecvcount,
-      actualRecvcounts,
-      ncclToMetaComm(hints),
-      ncclToMetaComm(datatype),
-      comm->ctranComm_.get(),
-      stream));
+  return ncclInvalidUsage;
 }
 
 __attribute__((visibility("default")))
@@ -603,25 +577,7 @@ ncclResult_t ncclx::alltoallvDynamicSplitNonContig(
   ncclDataType_t datatype,
   ncclComm_t comm,
   cudaStream_t stream) {
-
-  NCCLCHECK(metaCommToNccl(ctranAllToAllvDynamicSupport(comm->ctranComm_.get(), ncclToMetaComm(hints), maxSendcount, maxRecvcount, ncclToMetaComm(datatype))));
-
-  return metaCommToNccl(ctranAlltoallvDynamicSplitNonContig(
-      sendbuff,
-      sendSplitLengths,
-      numSendSplitLengths,
-      sendIndices,
-      sendIndicesBlockLengths,
-      recvbuffs,
-      nullptr,
-      maxSendcount,
-      maxRecvcount,
-      ncclToMetaComm(hints),
-      ncclToMetaComm(datatype),
-      comm->ctranComm_.get(),
-      stream,
-      false,
-      recvAllSplitLengths));
+  return ncclInvalidUsage;
 }
 
 __attribute__((visibility("default")))
@@ -639,25 +595,7 @@ ncclResult_t ncclx::alltoallvDynamicDispatch(
   ncclDataType_t datatype,
   ncclComm_t comm,
   cudaStream_t stream) {
-
-  NCCLCHECK(metaCommToNccl(ctranAllToAllvDynamicSupport(comm->ctranComm_.get(), ncclToMetaComm(hints), maxSendcount, maxRecvcount, ncclToMetaComm(datatype))));
-
-  return metaCommToNccl(ctranAlltoallvDynamicSplitNonContig(
-      sendbuff,
-      sendSplitLengths,
-      numSendSplitLengths,
-      sendIndices,
-      sendIndicesBlockLengths,
-      recvbuffs,
-      nullptr,
-      maxSendcount,
-      maxRecvcount,
-      ncclToMetaComm(hints),
-      ncclToMetaComm(datatype),
-      comm->ctranComm_.get(),
-      stream,
-      false,
-      recvAllSplitLengths));
+  return ncclInvalidUsage;
 }
 
 __attribute__((visibility("default")))
@@ -674,24 +612,7 @@ ncclResult_t ncclx::alltoallvDynamicCombine(
   ncclDataType_t datatype,
   ncclComm_t comm,
   cudaStream_t stream) {
-
-  NCCLCHECK(metaCommToNccl(ctranAllToAllvDynamicSupport(comm->ctranComm_.get(), ncclToMetaComm(hints), maxSendcount, maxRecvcount, ncclToMetaComm(datatype))));
-
-  return metaCommToNccl(ctranAlltoallvDynamicSplitNonContig(
-      sendbuff,
-      sendSplitLengths,
-      numSendSplitLengths,
-      sendIndices,
-      sendIndicesBlockLengths,
-      nullptr,
-      recvbuff,
-      maxSendcount,
-      maxRecvcount,
-      ncclToMetaComm(hints),
-      ncclToMetaComm(datatype),
-      comm->ctranComm_.get(),
-      stream,
-      true));
+  return ncclInvalidUsage;
 }
 
 NCCL_API(ncclResult_t, ncclPutSignal, const void* localbuff, size_t count, ncclDataType_t datatype,

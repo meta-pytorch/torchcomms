@@ -27,10 +27,8 @@ typedef commResult_t (*opFunc)(
     const std::vector<std::unique_ptr<struct OpElem>>& opGroup);
 
 namespace ctran {
-using PersistentObj = std::variant<
-    std::monostate,
-    std::unique_ptr<alltoallp::AlgoImpl>,
-    std::unique_ptr<alltoallvdynamicp::AlgoImpl>>;
+using PersistentObj =
+    std::variant<std::monostate, std::unique_ptr<alltoallp::AlgoImpl>>;
 using PreLaunchGraphPrepareFn =
     commResult_t (*)(opFunc& opFunc, struct OpElem* op, PersistentObj& pObj);
 } // namespace ctran
@@ -47,10 +45,6 @@ struct OpElem {
     ALLTOALLP,
     ALLTOALLV,
     DEVICE_ALLTOALLV,
-    ALLTOALLV_DYNAMIC,
-    ALLTOALLV_DYNAMIC_SPLIT,
-    ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG,
-    ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG_P,
     ALLTOALL_DEDUP,
     ALLTOALLV_DEDUP,
     BROADCAST,
@@ -171,19 +165,6 @@ struct OpElem {
       const int64_t* recvcounts_d; // device pointer
       commDataType_t datatype;
     } device_alltoallv;
-    struct {
-      const void* const* sendbuffs;
-      void* const* recvbuffs;
-      void* recvbuff;
-      commDataType_t datatype;
-      size_t sendcountsLength;
-      size_t maxSendcount;
-      size_t maxRecvcount;
-      KernelElem* kElem;
-      // Persistent args for persistent alltoallv_dynamic.
-      void* pArgs;
-      bool combine;
-    } alltoallv_dynamic;
     struct {
       const void* sendbuff;
       const size_t* sendcounts;
@@ -306,9 +287,6 @@ struct KernelConfig {
     ALLTOALL,
     DEVICE_ALLTOALLV,
     ALLTOALLV,
-    ALLTOALLV_DYNAMIC,
-    ALLTOALLV_DYNAMIC_SPLIT,
-    ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG,
     ALLTOALL_DEDUP,
     ALLTOALLV_DEDUP,
     BROADCAST,
@@ -523,24 +501,6 @@ extern __global__ void ncclKernelAllToAllv(
     int* flag,
     CtranAlgoDeviceState* devState,
     ctran::alltoallv::KernelArgs args);
-
-template <typename T>
-extern __global__ void ncclKernelAllToAllvDynamic(
-    int* flag,
-    CtranAlgoDeviceState* devState,
-    ctran::alltoallvdynamic::KernelArgs args);
-
-template <typename T>
-extern __global__ void ncclKernelAllToAllvDynamicSplit(
-    int* flag,
-    CtranAlgoDeviceState* devState,
-    ctran::alltoallvdynamic::KernelArgs args);
-
-template <typename T>
-extern __global__ void ncclKernelAllToAllvDynamicSplitNonContig(
-    int* flag,
-    CtranAlgoDeviceState* devState,
-    ctran::alltoallvdynamic::KernelArgs args);
 
 template <typename T>
 extern __global__ void ncclKernelAllToAllDedup(

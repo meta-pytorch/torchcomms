@@ -7,7 +7,6 @@
 #include <folly/dynamic.h>
 
 #include "comms/ctran/algos/AllToAll/AllToAllPImpl.h"
-#include "comms/ctran/algos/AllToAll/AllToAllvDynamicPImpl.h"
 #include "comms/ctran/algos/common/GpeKernel.h"
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
 #include "comms/ctran/colltrace/MapperTrace.h"
@@ -40,11 +39,6 @@ static std::unordered_map<KernelConfig::KernelType, const std::string>
         {KernelConfig::KernelType::ALLTOALL, "AllToAll"},
         {KernelConfig::KernelType::DEVICE_ALLTOALLV, "DeviceAllToAllvPipes"},
         {KernelConfig::KernelType::ALLTOALLV, "AllToAllv"},
-        {KernelConfig::KernelType::ALLTOALLV_DYNAMIC, "AllToAllvDynamic"},
-        {KernelConfig::KernelType::ALLTOALLV_DYNAMIC_SPLIT,
-         "AllToAllvDynamicSplit"},
-        {KernelConfig::KernelType::ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG,
-         "AllToAllvDynamicSplitNonContig"},
 };
 
 CtranGpe::Impl::Impl() {
