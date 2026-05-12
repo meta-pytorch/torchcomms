@@ -982,10 +982,14 @@ inline commResult_t completeHostResourceSetup(
       CtranAlgo::TmpbufType::RING_TMP_RECV_BUF);
   args.rightRemBuf = (char*)args.rightRemBuf + offsetRingTmpRecv;
 
-  // Reverse: notifications from right on tmpRecvBufRev
-  args.rightNotify.reset(new CtranMapperNotify());
-  FB_COMMCHECK(comm->ctran_->mapper->initNotify(
-      args.rightRank, resource.tmpRecvBufRevHdl, args.rightNotify.get()));
+  // Reverse: notifications from right on tmpRecvBufRev.
+  // Only needed when bidir AG is enabled — otherwise the reverse path is
+  // unused.
+  if (args.enableBidirAg) {
+    args.rightNotify.reset(new CtranMapperNotify());
+    FB_COMMCHECK(comm->ctran_->mapper->initNotify(
+        args.rightRank, resource.tmpRecvBufRevHdl, args.rightNotify.get()));
+  }
 
   // Point leftRemBufRev to left neighbor's tmpRecvBufRev segment
   size_t offsetRingTmpRecvRev = comm->ctran_->algo->getTmpBufOffset(

@@ -1006,6 +1006,172 @@ TEST_P(RdmaTransportOpcodeTest, RetriesWhenQpIsFull) {
       << "Expected at least 2 postSend calls (QP full → retry)";
 }
 
+TEST_F(RdmaTransportTest, CompletionRoutingDisambiguatesDuplicateQpNumbers) {
+  // QP numbers are only unique within one RDMA device. The first transfer
+  // catches duplicate-key insertion regressions; the second catches lookup
+  // regressions that poison per-QP queue-depth accounting.
+  constexpr uint64_t kLocalDomainId = 42;
+  constexpr uint64_t kRemoteDomainId = 99;
+  constexpr size_t kNumWr = 2 * kDefaultMaxWr + 1;
+  constexpr size_t kBufSize = kNumWr * kChunkSize;
+  constexpr size_t kLookupRegressionBufSize = (kDefaultMaxWr + 1) * kChunkSize;
+
+  fakeQp0_.qp_num = 100;
+  fakeQp1_.qp_num = 100;
+
+  // Build a two-NIC transport where both NICs report the same QP number. The
+  // production routing key must therefore be (CQ/NIC index, QP number), not
+  // just wc.qp_num.
+  EXPECT_CALL(*mockApi_, createCq(&fakeCtx0_, _, _, _, _))
+      .WillOnce(Return(Result<ibv_cq*>(&fakeCq0_)));
+  EXPECT_CALL(*mockApi_, createCq(&fakeCtx1_, _, _, _, _))
+      .WillOnce(Return(Result<ibv_cq*>(&fakeCq1_)));
+  EXPECT_CALL(*mockApi_, createQp(&fakePd0_, _))
+      .WillOnce(Return(Result<ibv_qp*>(&fakeQp0_)));
+  EXPECT_CALL(*mockApi_, createQp(&fakePd1_, _))
+      .WillOnce(Return(Result<ibv_qp*>(&fakeQp1_)));
+  EXPECT_CALL(*mockApi_, modifyQp(_, _, _)).WillRepeatedly(Return(Ok()));
+
+  ibv_gid gid0{}, gid1{};
+  std::vector<NicResources> nics = {
+      {.ctx = &fakeCtx0_, .pd = &fakePd0_, .lid = 0x1111, .gid = gid0},
+      {.ctx = &fakeCtx1_, .pd = &fakePd1_, .lid = 0x2222, .gid = gid1},
+  };
+  RdmaTransportConfig config{.numQps = 2};
+  RdmaTransport transport(
+      mockApi_, evbThread_.getEventBase(), nics, kLocalDomainId, config);
+  transport.bind();
+
+  RdmaTransportInfo remoteInfo;
+  remoteInfo.header.version = 1;
+  remoteInfo.header.numQps = 2;
+  remoteInfo.header.numNics = 2;
+  remoteInfo.header.domainId = kRemoteDomainId;
+  remoteInfo.nicInfos = {{.lid = 0x3333}, {.lid = 0x4444}};
+  remoteInfo.qpInfos = {{.qpNum = 200, .psn = 300}, {.qpNum = 201, .psn = 301}};
+  ASSERT_FALSE(transport.connect(remoteInfo.serialize()).hasError());
+
+  std::vector<char> localBuf(kBufSize);
+  std::vector<char> remoteBuf(kBufSize);
+  Segment localSeg(localBuf.data(), kBufSize, MemoryType::DRAM);
+  ibv_mr fakeMr0{};
+  ibv_mr fakeMr1{};
+  fakeMr0.addr = localBuf.data();
+  fakeMr0.length = kBufSize;
+  fakeMr0.lkey = 0x1111;
+  fakeMr1.addr = localBuf.data();
+  fakeMr1.length = kBufSize;
+  fakeMr1.lkey = 0x2222;
+
+  auto localReg = SegmentTest::makeRegistered(
+      localSeg,
+      std::make_unique<RdmaRegistrationHandle>(
+          std::vector<ibv_mr*>{&fakeMr0, &fakeMr1}, mockApi_, kLocalDomainId));
+  auto remoteReg = SegmentTest::makeRemote(
+      remoteBuf.data(),
+      kBufSize,
+      std::make_unique<RdmaRemoteRegistrationHandle>(
+          std::vector<uint32_t>{0x3333, 0x4444}, kRemoteDomainId));
+
+  auto lastWrId = [](ibv_send_wr* wr) {
+    while (wr->next != nullptr) {
+      wr = wr->next;
+    }
+    return wr->wr_id;
+  };
+
+  // postSend captures the signaled WR id from each posted chain so pollCq can
+  // return realistic completions. The lower 32 bits encode how many WR slots
+  // pollCompletions should credit back to that QP.
+  std::queue<uint64_t> cq0Completions;
+  std::queue<uint64_t> cq1Completions;
+  bool allowCq1Completion = false;
+  bool failSecondQp1Post = true;
+  uint32_t qp0Posts = 0;
+  uint32_t qp1Posts = 0;
+
+  EXPECT_CALL(*mockApi_, postSend(&fakeQp0_, _, _))
+      .WillRepeatedly(
+          [&](ibv_qp*, ibv_send_wr* wr, ibv_send_wr** badWr) -> Status {
+            const uint64_t wrId = lastWrId(wr);
+            const uint32_t numWrs = static_cast<uint32_t>(wrId & 0xffffffff);
+            // Phase 2 expects a lookup regression to make QP0 look more
+            // available than it is, causing an over-capacity post to QP0.
+            if (numWrs > kDefaultMaxWr) {
+              *badWr = wr;
+              return Err(ErrCode::DriverError, "posted over QP capacity");
+            }
+            ++qp0Posts;
+            cq0Completions.push(wrId);
+            if (qp0Posts == 2) {
+              allowCq1Completion = true;
+            }
+            return Ok();
+          });
+
+  EXPECT_CALL(*mockApi_, postSend(&fakeQp1_, _, _))
+      .WillRepeatedly(
+          [&](ibv_qp*, ibv_send_wr* wr, ibv_send_wr** badWr) -> Status {
+            ++qp1Posts;
+            // Phase 1 catches duplicate-key insertion by delaying CQ1. If CQ0
+            // is credited to QP1, the retry incorrectly posts to QP1 again.
+            if (failSecondQp1Post && qp1Posts > 1) {
+              *badWr = wr;
+              return Err(ErrCode::DriverError, "posted to wrong QP");
+            }
+            cq1Completions.push(lastWrId(wr));
+            return Ok();
+          });
+
+  EXPECT_CALL(*mockApi_, pollCq(&fakeCq0_, _, _))
+      .WillRepeatedly([&](ibv_cq*, int, ibv_wc* wcs) {
+        if (cq0Completions.empty()) {
+          return Result<int>(0);
+        }
+        wcs[0].status = IBV_WC_SUCCESS;
+        wcs[0].qp_num = 100;
+        wcs[0].wr_id = cq0Completions.front();
+        cq0Completions.pop();
+        return Result<int>(1);
+      });
+
+  EXPECT_CALL(*mockApi_, pollCq(&fakeCq1_, _, _))
+      .WillRepeatedly([&](ibv_cq*, int, ibv_wc* wcs) {
+        if (!allowCq1Completion || cq1Completions.empty()) {
+          return Result<int>(0);
+        }
+        wcs[0].status = IBV_WC_SUCCESS;
+        wcs[0].qp_num = 100;
+        wcs[0].wr_id = cq1Completions.front();
+        cq1Completions.pop();
+        return Result<int>(1);
+      });
+
+  // Phase 1: fill both QPs and force a retry before CQ1 drains. Correct
+  // routing credits CQ0 back to QP0, so the retry posts there and succeeds.
+  TransferRequest req{
+      .local = localReg.span(0ul, kBufSize),
+      .remote = remoteReg.span(0ul, kBufSize),
+  };
+  std::vector<TransferRequest> reqs = {req};
+  auto status = transport.put(reqs).get();
+
+  EXPECT_FALSE(status.hasError()) << status.error().message();
+
+  // Phase 2: allow QP1 reuse and verify the next transfer does not expose
+  // poisoned QP0 accounting from routing CQ1 completions through the QP0 key.
+  failSecondQp1Post = false;
+  TransferRequest lookupRegressionReq{
+      .local = localReg.span(0ul, kLookupRegressionBufSize),
+      .remote = remoteReg.span(0ul, kLookupRegressionBufSize),
+  };
+  std::vector<TransferRequest> lookupRegressionReqs = {lookupRegressionReq};
+  auto lookupRegressionStatus = transport.put(lookupRegressionReqs).get();
+
+  EXPECT_FALSE(lookupRegressionStatus.hasError())
+      << lookupRegressionStatus.error().message();
+}
+
 TEST_P(RdmaTransportOpcodeTest, PartialPostDrainsCqeBeforeCompleting) {
   // Verify that when postSend partially fails (some WRs consumed before the
   // bad WR), the flush WR's CQE is polled before the task completes.

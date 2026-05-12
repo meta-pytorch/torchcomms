@@ -37,7 +37,7 @@ void DefaultNcclxGlobalApi::initCachingAllocatorHook() {
         ncclGetErrorString(result));
   }
   ncclCommDestroy(comm);
-  CachingAllocatorHook::getInstance();
+  NcclxCachingAllocatorHook::getInstance();
 }
 
 } // namespace torch::comms

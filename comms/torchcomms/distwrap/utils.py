@@ -49,7 +49,7 @@ def parse_backend_string(backend: str) -> dict[str, str]:
 
     The backend string can be:
     - Simple form: "nccl", "gloo", "ncclx", "rccl", "rcclx", "hccl"
-    - Merged form: "cpu:gloo,gpu:nccl"
+    - Merged form: "cpu:gloo,cuda:nccl"
 
     Known backends and their default device types:
     - nccl -> cuda
@@ -61,25 +61,29 @@ def parse_backend_string(backend: str) -> dict[str, str]:
         backend: Backend string
 
     Returns:
-        device_backends: Dict mapping device type ("cpu"/"gpu"/"mtia") to backend
+        device_backends: Dict mapping canonical device type to backend
     """
     device_backends = {}
 
-    # Check if it's a merged form like "cpu:gloo,gpu:nccl"
+    # check if it's a merged form like "cpu:gloo,cuda:nccl"
     if ":" in backend:
         # Parse the merged form
         parts = backend.split(",")
         for part in parts:
-            split_result = part.split(":")
-            if len(split_result) != 2:
+            pieces = part.split(":")
+            if len(pieces) != 2:
                 raise ValueError(
                     f"Invalid backend format: '{part}'. Each part in merged form "
-                    f"must have exactly one colon (e.g., 'cpu:gloo,gpu:nccl'), "
-                    f"got {len(split_result) - 1} colons."
+                    f"must have exactly one colon (e.g., 'cpu:gloo,cuda:nccl'), "
+                    f"got {len(pieces) - 1} colons."
                 )
-            device_type, be = split_result
-            device_type = device_type.strip()
-            be = be.strip()
+            device_type, be = pieces[0].strip(), pieces[1].strip()
+            device_type = torch.device(device_type).type
+            if device_type in device_backends:
+                raise ValueError(
+                    f"Duplicate device type '{device_type}' in backend string "
+                    f"'{backend}'"
+                )
             device_backends[device_type] = be
     else:
         # Simple form: just the backend name
