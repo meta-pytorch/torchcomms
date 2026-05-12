@@ -306,8 +306,7 @@ ncclComm_t TorchCommNCCLBootstrap::createNcclComm(
 
   if (ncclErr != ncclSuccess || nccl_comm == nullptr) {
     TC_LOG(ERROR) << "[comm=" << name << "] Failed to initialize NCCL "
-                  << "communicator (rank=" << rank_
-                  << ", size=" << comm_size_
+                  << "communicator (rank=" << rank_ << ", size=" << comm_size_
                   << "): " << nccl_api_->getErrorString(ncclErr);
     throw std::runtime_error(
         "Failed to initialize NCCL communicator: " +
