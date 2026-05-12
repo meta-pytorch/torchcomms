@@ -12,6 +12,7 @@
 #include "comms/uniflow/drivers/ibverbs/IbvApi.h"
 #include "comms/uniflow/executor/EventBase.h"
 #include "comms/uniflow/transport/Transport.h"
+#include "comms/uniflow/transport/rdma/RdmaResources.h"
 
 namespace uniflow {
 
@@ -42,24 +43,6 @@ struct RdmaTransportConfig {
   uint32_t maxSge{1}; /* Max scatter/gather entries per WR. */
   uint32_t maxInlineData{16}; /* Max inline data bytes per WR. */
   size_t chunkSize{512 * 1024}; /* Transfer chunk size in bytes (512KB). */
-};
-
-/*
- * Per-NIC RDMA resources.
- *
- * Populated by RdmaTransportFactory during device initialization.
- * Ownership: the factory owns the underlying ibverbs objects (context, PD).
- * Transports borrow these resources — they must not outlive the factory.
- */
-struct NicResources {
-  ibv_context* ctx{nullptr}; /* Opened device context. */
-  ibv_pd* pd{nullptr}; /* Protection domain on this device. */
-  uint16_t lid{0}; /* Local identifier (IB fabrics). */
-  ibv_gid gid{}; /* GID for RoCE / IB with GRH. */
-  ibv_mtu mtu{IBV_MTU_4096}; /* Active MTU from port query. */
-  int linkLayer{IBV_LINK_LAYER_ETHERNET}; /* IB or Ethernet (RoCE). */
-  uint8_t portNum{1}; /* Physical port number on the HCA. */
-  bool dmaBufSupported{false}; /* Kernel supports DMA-BUF MR registration. */
 };
 
 /*
@@ -151,7 +134,7 @@ class RdmaTransport : public Transport {
   RdmaTransport(
       std::shared_ptr<IbvApi> ibvApi,
       EventBase* evb,
-      std::vector<NicResources> nics,
+      std::shared_ptr<std::vector<NicResources>> nics,
       uint64_t domainId,
       RdmaTransportConfig config = {});
 
@@ -369,7 +352,8 @@ class RdmaTransport : public Transport {
   EventBase* evb_{nullptr};
 
   std::string name_;
-  const std::vector<NicResources> nics_;
+  std::shared_ptr<std::vector<NicResources>> nicsHandle_;
+  std::span<NicResources> nics_;
   const RdmaTransportConfig config_;
 
   std::vector<ibv_cq*> cqs_;
@@ -463,7 +447,7 @@ class RdmaTransportFactory : public TransportFactory {
       std::shared_ptr<CudaDriverApi> cudaDriverApi = nullptr,
       std::optional<uint8_t> portNum = std::nullopt);
 
-  ~RdmaTransportFactory() override;
+  ~RdmaTransportFactory() override = default;
 
   RdmaTransportFactory(const RdmaTransportFactory&) = delete;
   RdmaTransportFactory& operator=(const RdmaTransportFactory&) = delete;
@@ -492,15 +476,12 @@ class RdmaTransportFactory : public TransportFactory {
  private:
   Status canConnect(std::span<const uint8_t> peerTopology) override;
 
-  /* Find the first active port on the device. Returns 0 on failure. */
-  uint8_t findActivePort(ibv_context* ctx);
-
   std::shared_ptr<IbvApi> ibvApi_;
   std::shared_ptr<CudaDriverApi> cudaDriverApi_;
   EventBase* evb_{nullptr};
   uint64_t domainId_{0};
   size_t pageSize_{0};
-  std::vector<NicResources> nics_;
+  std::shared_ptr<std::vector<NicResources>> nicsHandle_;
   const RdmaTransportConfig config_;
 };
 
