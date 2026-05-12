@@ -176,6 +176,9 @@ extras_require = {
         "lintrunner",
         "parameterized",
         "pydot",
+        # Required for the nccl4py backend and its PREMUL_SUM bfloat16 path.
+        "nccl4py",
+        "ml_dtypes",
     ],
 }
 
@@ -197,7 +200,10 @@ ext_modules += [
 if USE_TRANSPORT:
     ext_modules.append(CMakeExtension("torchcomms._transport"))
 
-backend_entry_points = ["fake = torchcomms._comms"] + [
+backend_entry_points = [
+    "fake = torchcomms._comms",
+    "nccl4py = torchcomms.nccl4py",
+] + [
     f"{name} = torchcomms._comms_{name}" for name, enabled in BACKEND_FLAGS if enabled
 ]
 

@@ -92,6 +92,18 @@ PYBIND11_MODULE(_comms, m, py::mod_gil_not_used()) {
           })
       .def_property_readonly(
           "type", &ReduceOp::type, "Get the type of the operation")
+      .def_property_readonly(
+          "factor",
+          [](const ReduceOp& self) -> py::object {
+            const auto& f = self.factor();
+            if (!f.has_value()) {
+              return py::none();
+            }
+            return std::visit(
+                [](const auto& arg) -> py::object { return py::cast(arg); },
+                *f);
+          },
+          "Get the PREMUL_SUM factor (float, Tensor, or None)")
       .def_static(
           "PREMUL_SUM",
           &ReduceOp::make_nccl_premul_sum,
@@ -1219,7 +1231,26 @@ the collective operations (``all_reduce``, ``broadcast``, etc.).
 Each collective method should return ``None`` for synchronous completion,
 or an object with a ``wait()`` method for asynchronous operations.
           )")
-      .def(py::init<>());
+      .def(py::init<>())
+      .def(
+          "_set_device_and_options",
+          [](TorchCommBackend& self,
+             at::Device device,
+             const CommOptions& options) {
+            auto* py_backend = dynamic_cast<PyTorchCommBackend*>(&self);
+            if (!py_backend) {
+              throw std::runtime_error(
+                  "_set_device_and_options is only valid on Python backends");
+            }
+            py_backend->setDeviceAndOptions(device, options);
+          },
+          py::arg("device"),
+          py::arg("options"),
+          R"(Set the c10d-visible device and options on this backend.
+
+Used by Python ``split()`` implementations to populate the C++-side state on
+sub-communicators that bypass the regular ``init()`` bootstrap path.
+          )");
 
   // Bind TorchComm class
   py_opaque_class<TorchComm, std::shared_ptr<TorchComm>>(m, "TorchComm")

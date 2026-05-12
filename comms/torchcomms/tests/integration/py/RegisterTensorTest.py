@@ -68,6 +68,7 @@ class RegisterTensorTest(unittest.TestCase):
     @skip_backend("nccl", msg="tensor_register not implemented for backend: ")
     @skip_backend("ncclx", msg="tensor_register not implemented for backend: ")
     @skip_backend("gloo", msg="tensor_register not implemented for backend: ")
+    @skip_backend("nccl4py", msg="tensor_register not implemented for backend: ")
     def test_cpu_broadcast_with_tensor_register(self):
         """Test CPU broadcast with TorchComm.tensor_register() public API."""
         for count, dtype in itertools.product(self.counts, self.dtypes):
