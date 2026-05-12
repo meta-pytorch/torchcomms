@@ -140,8 +140,6 @@ typedef struct ncclConfig_v22700 {
   // control allgather algo at comm level
   const char* ncclAllGatherAlgo{nullptr};
 
-  // control the lazy connect features
-  int lazyConnect{NCCL_CONFIG_UNDEF_INT};
   int lazySetupChannels{NCCL_CONFIG_UNDEF_INT};
 
   // control the fast init features
@@ -180,7 +178,6 @@ typedef struct ncclConfig_v22700 {
   NCCL_CONFIG_UNDEF_PTR,                    /* splitGroupRanks */       \
   NCCL_CONFIG_UNDEF_INT,                    /* splitGroupSize */        \
   NCCL_CONFIG_UNDEF_PTR,                    /* ncclAllGatherAlgo */     \
-  NCCL_CONFIG_UNDEF_INT,                    /* lazyConnect */           \
   NCCL_CONFIG_UNDEF_INT,                    /* lazySetupChannels */     \
   NCCL_CONFIG_UNDEF_INT,                    /* fastInitMode */          \
   NCCL_CONFIG_UNDEF_PTR,                    /* hints */                  \

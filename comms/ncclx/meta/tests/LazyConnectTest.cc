@@ -14,6 +14,7 @@
 #include "nccl.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "meta/hints/GlobalHints.h"
 
 class NcclxLazyConnectTestFixture
     : public NcclxBaseTestFixture,
@@ -25,6 +26,24 @@ class NcclxLazyConnectTestFixture
   void* recvBuf{nullptr};
   ncclDataType_t dataType{ncclBfloat16};
 
+  bool isNoLocal() const {
+    for (const auto& [key, val] : GetParam()) {
+      if (key == "NCCL_NOLOCAL" && val == "1") {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  ncclComm_t createRootComm() {
+    if (isNoLocal()) {
+      ncclx::setGlobalHint(
+          std::string(ncclx::HintKeys::kCommNoLocal).c_str(), "1");
+    }
+    return ncclx::test::createNcclComm(
+        globalRank, numRanks, localRank, bootstrap_.get());
+  }
+
  protected:
   void SetUp() override {
     NcclxBaseTestFixture::SetUp(GetParam());
@@ -32,6 +51,9 @@ class NcclxLazyConnectTestFixture
   }
 
   void TearDown() override {
+    if (isNoLocal()) {
+      ncclx::resetGlobalHint(std::string(ncclx::HintKeys::kCommNoLocal));
+    }
     if (sendBuf) {
       CUDACHECK_TEST(cudaFree(sendBuf));
       sendBuf = nullptr;
@@ -130,8 +152,7 @@ class NcclxLazyConnectTestFixture
 };
 
 TEST_P(NcclxLazyConnectTestFixture, InitOnly) {
-  rootComm = ncclx::test::createNcclComm(
-      globalRank, numRanks, localRank, bootstrap_.get());
+  rootComm = createRootComm();
   ASSERT_NE(nullptr, rootComm);
   // Nothing should be connected or initialized if no collective is called
   if (NCCL_RUNTIME_CONNECT) {
@@ -154,9 +175,9 @@ TEST_P(NcclxLazyConnectTestFixture, InitOnly) {
 }
 
 TEST_P(NcclxLazyConnectTestFixture, AllReduceRing) {
-  EnvRAII algo(NCCL_ALGO, std::string("RING"));
-  rootComm = ncclx::test::createNcclComm(
-      globalRank, numRanks, localRank, bootstrap_.get());
+  SysEnvRAII algo("NCCL_ALGO", "RING");
+  EnvRAII<std::string> algoEnv(NCCL_ALGO, std::string("RING"));
+  rootComm = createRootComm();
   ASSERT_NE(nullptr, rootComm);
 
   size_t count = 1 << 10; // 1K elements
@@ -173,8 +194,7 @@ TEST_P(NcclxLazyConnectTestFixture, AllReduceRing) {
   }
   if (NCCL_LAZY_SETUP_CHANNELS) {
     // RING should be connected in rootComm
-    // other algorithms should not be connected if NCCL_RUNTIME_CONNECT is
-    // enabled
+    // other algorithms should not be connected if lazy connect is enabled
     checkAlgoChannelState(rootComm, NCCL_ALGO_RING, NCCL_RUNTIME_CONNECT);
   }
 
@@ -183,9 +203,9 @@ TEST_P(NcclxLazyConnectTestFixture, AllReduceRing) {
 }
 
 TEST_P(NcclxLazyConnectTestFixture, AllReduceTree) {
-  EnvRAII algo(NCCL_ALGO, std::string("TREE"));
-  rootComm = ncclx::test::createNcclComm(
-      globalRank, numRanks, localRank, bootstrap_.get());
+  SysEnvRAII algo("NCCL_ALGO", "TREE");
+  EnvRAII<std::string> algoEnv(NCCL_ALGO, std::string("TREE"));
+  rootComm = createRootComm();
   ASSERT_NE(nullptr, rootComm);
 
   size_t count = 1 << 10; // 1K elements
@@ -202,8 +222,7 @@ TEST_P(NcclxLazyConnectTestFixture, AllReduceTree) {
   }
   if (NCCL_LAZY_SETUP_CHANNELS) {
     // TREE should be connected in rootComm
-    // other algorithms should not be connected if NCCL_RUNTIME_CONNECT is
-    // enabled
+    // other algorithms should not be connected if lazy connect is enabled
     checkAlgoChannelState(rootComm, NCCL_ALGO_TREE, NCCL_RUNTIME_CONNECT);
   }
 
@@ -212,9 +231,9 @@ TEST_P(NcclxLazyConnectTestFixture, AllReduceTree) {
 }
 
 TEST_P(NcclxLazyConnectTestFixture, AllReduceTreeIncreaseChannel) {
-  EnvRAII algo(NCCL_ALGO, std::string("TREE"));
-  rootComm = ncclx::test::createNcclComm(
-      globalRank, numRanks, localRank, bootstrap_.get());
+  SysEnvRAII algo("NCCL_ALGO", "TREE");
+  EnvRAII<std::string> algoEnv(NCCL_ALGO, std::string("TREE"));
+  rootComm = createRootComm();
   ASSERT_NE(nullptr, rootComm);
 
   size_t smallCount = 1 << 10; // 1K elements
@@ -243,8 +262,7 @@ TEST_P(NcclxLazyConnectTestFixture, AllReduceTreeIncreaseChannel) {
 }
 
 TEST_P(NcclxLazyConnectTestFixture, Alltoall) {
-  rootComm = ncclx::test::createNcclComm(
-      globalRank, numRanks, localRank, bootstrap_.get());
+  rootComm = createRootComm();
   ASSERT_NE(nullptr, rootComm);
 
   size_t count = 1 << 20; // 1M BF16 elements
@@ -294,8 +312,7 @@ TEST_P(NcclxLazyConnectTestFixture, Alltoall) {
 }
 
 TEST_P(NcclxLazyConnectTestFixture, AlltoallAndAllGather) {
-  rootComm = ncclx::test::createNcclComm(
-      globalRank, numRanks, localRank, bootstrap_.get());
+  rootComm = createRootComm();
   ASSERT_NE(nullptr, rootComm);
 
   size_t count = 1 << 20; // 1M BF16 elements
@@ -329,11 +346,14 @@ TEST_P(NcclxLazyConnectTestFixture, AlltoallAndAllGather) {
 // test that p2p channels higher than collective channels
 // expected behavior is that all channels should initialized
 TEST_P(NcclxLazyConnectTestFixture, higherP2pChThanColl) {
-  EnvRAII p2pMinCh(NCCL_MIN_P2P_NCHANNELS, (int64_t)MAXCHANNELS);
-  EnvRAII p2pMaxCh(NCCL_MAX_P2P_NCHANNELS, (int64_t)MAXCHANNELS);
+  SysEnvRAII p2pMinCh("NCCL_MIN_P2P_NCHANNELS", std::to_string(MAXCHANNELS));
+  SysEnvRAII p2pMaxCh("NCCL_MAX_P2P_NCHANNELS", std::to_string(MAXCHANNELS));
+  EnvRAII<int64_t> p2pMinChEnv(
+      NCCL_MIN_P2P_NCHANNELS, static_cast<int64_t>(MAXCHANNELS));
+  EnvRAII<int64_t> p2pMaxChEnv(
+      NCCL_MAX_P2P_NCHANNELS, static_cast<int64_t>(MAXCHANNELS));
 
-  rootComm = ncclx::test::createNcclComm(
-      globalRank, numRanks, localRank, bootstrap_.get());
+  rootComm = createRootComm();
   ASSERT_NE(nullptr, rootComm);
   // p2p channels should be higher than collective channels
   EXPECT_GE(rootComm->p2pnChannels, rootComm->collChannels);
@@ -369,8 +389,7 @@ TEST_P(NcclxLazyConnectTestFixture, higherP2pChThanColl) {
 }
 
 TEST_P(NcclxLazyConnectTestFixture, ChildCommAllGather) {
-  rootComm = ncclx::test::createNcclComm(
-      globalRank, numRanks, localRank, bootstrap_.get());
+  rootComm = createRootComm();
   ASSERT_NE(nullptr, rootComm);
 
   ncclComm_t childComm;
@@ -465,7 +484,7 @@ TEST_P(NcclxLazyConnectTestFixture, ChildCommAllGather) {
 //   present,
 //   // fallback path will be tested.
 //   // TODO: use a mock tuner plugin to test the logic
-//   EnvRAII algo(NCCL_ALGO, std::string("TREE"));
+//   SysEnvRAII algo("NCCL_ALGO", "TREE");
 //   EnvRAII tuner(NCCL_TUNER_PLUGIN, std::string(""));
 //   NCCLCHECK_TEST(
 //       ncclCommInitRankConfig(&rootComm, numRanks, ncclUid, globalRank,
@@ -520,22 +539,16 @@ TEST_P(NcclxLazyConnectTestFixture, ChildCommAllGather) {
 // }
 
 TEST_P(NcclxLazyConnectTestFixture, ChildCommLazyConfig) {
-  rootComm = ncclx::test::createNcclComm(
-      globalRank, numRanks, localRank, bootstrap_.get());
+  rootComm = createRootComm();
   ASSERT_NE(nullptr, rootComm);
-  // split/duplicate a communicator always enable lazy connect and setup
-  // channels
   ncclComm_t childComm = nullptr;
   ncclConfig_t childCommConfig = NCCL_CONFIG_INITIALIZER;
-  ncclx::Hints lazyHints({{"lazyConnect", "1"}, {"lazySetupChannels", "1"}});
+  ncclx::Hints lazyHints({{"lazySetupChannels", "1"}});
   childCommConfig.hints = &lazyHints;
   NCCLCHECK_TEST(
       ncclCommSplit(rootComm, 0, globalRank, &childComm, &childCommConfig));
   ASSERT_NE(nullptr, childComm);
 
-  // child comm should always have lazy connect and setup channels enabled and
-  // not allocate any channels
-  EXPECT_TRUE(NCCLX_CONFIG_FIELD(childComm->config, lazyConnect));
   EXPECT_TRUE(NCCLX_CONFIG_FIELD(childComm->config, lazySetupChannels));
   for (int a = 0; a < NCCL_NUM_ALGORITHMS; a++) {
     EXPECT_FALSE(childComm->initAlgoChannels[a]);
@@ -558,8 +571,7 @@ TEST_P(NcclxLazyConnectTestFixture, ChildCommLazyConfig) {
 }
 
 TEST_P(NcclxLazyConnectTestFixture, coalescedAllReduce) {
-  comm = ncclx::test::createNcclComm(
-      globalRank, numRanks, localRank, bootstrap_.get());
+  comm = createRootComm();
   ASSERT_NE(nullptr, comm);
 
   size_t count = 1 << 10; // 1K elements
@@ -580,44 +592,38 @@ TEST_P(NcclxLazyConnectTestFixture, coalescedAllReduce) {
   NCCLCHECK_TEST(ncclCommDestroy(comm));
 }
 
+// NCCL_RUNTIME_CONNECT is set by BUCK launcher (env var per binary), not by
+// test params. Use LAZY_CONNECT_ENABLED to select the param set that matches.
+#if LAZY_CONNECT_ENABLED
 INSTANTIATE_TEST_SUITE_P(
     MyTestSuite,
     NcclxLazyConnectTestFixture,
     testing::Values(
-        NcclxEnvs({{"NCCL_RUNTIME_CONNECT", "1"}}),
+        NcclxEnvs({}),
+        NcclxEnvs({{"NCCL_LAZY_SETUP_CHANNELS", "1"}}),
         NcclxEnvs({
-            {"NCCL_RUNTIME_CONNECT", "1"},
-            {"NCCL_LAZY_SETUP_CHANNELS", "1"},
-        }),
-        NcclxEnvs({
-            {"NCCL_RUNTIME_CONNECT", "0"},
-            {"NCCL_LAZY_SETUP_CHANNELS", "1"},
-        }),
-        NcclxEnvs({
-            {"NCCL_RUNTIME_CONNECT", "1"},
             {"NCCL_LAZY_SETUP_CHANNELS", "1"},
             {"NCCL_MEM_USE_SLAB_ALLOCATOR", "1"},
         }),
         NcclxEnvs({
-            {"NCCL_RUNTIME_CONNECT", "1"},
             {"NCCL_LAZY_SETUP_CHANNELS", "1"},
             {"NCCL_MEM_USE_SLAB_ALLOCATOR", "1"},
             {"NCCL_USE_TRANSPORT_EXT", "1"},
         }),
         NcclxEnvs({
-            {"NCCL_RUNTIME_CONNECT", "1"},
             {"NCCL_LAZY_SETUP_CHANNELS", "1"},
             {"NCCL_USE_TRANSPORT_PROXY", "shared"},
             {"NCCL_CHANNEL_METADATA_LOCATION", "host"},
+        }),
+        NcclxEnvs({{"NCCL_NOLOCAL", "1"}}),
+        NcclxEnvs({
+            {"NCCL_LAZY_SETUP_CHANNELS", "1"},
+            {"NCCL_NOLOCAL", "1"},
         })),
     [](const testing::TestParamInfo<NcclxLazyConnectTestFixture::ParamType>&
            info) {
-      // generate test-name for a given NcclxEnvs
-      std::string name = "";
+      std::string name;
       for (const auto& [key, val] : info.param) {
-        if (key == "NCCL_RUNTIME_CONNECT" && val == "1") {
-          name += "lazy_connect_";
-        }
         if (key == "NCCL_LAZY_SETUP_CHANNELS" && val == "1") {
           name += "setupChannels_";
         }
@@ -630,9 +636,23 @@ INSTANTIATE_TEST_SUITE_P(
         if (key == "NCCL_USE_TRANSPORT_PROXY" && val != "none") {
           name += "proxy_" + val + "_";
         }
+        if (key == "NCCL_NOLOCAL" && val == "1") {
+          name += "nolocal_";
+        }
+      }
+      if (name.empty()) {
+        name = "baseline";
       }
       return name;
     });
+#else
+INSTANTIATE_TEST_SUITE_P(
+    MyTestSuite,
+    NcclxLazyConnectTestFixture,
+    testing::Values(NcclxEnvs({{"NCCL_LAZY_SETUP_CHANNELS", "1"}})),
+    [](const testing::TestParamInfo<NcclxLazyConnectTestFixture::ParamType>&
+           info) { return std::string("setupChannels"); });
+#endif
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);

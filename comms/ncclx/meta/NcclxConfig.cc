@@ -69,7 +69,6 @@ Config::Config(const ncclConfig_t* config) {
   checkPtrConflict("commDesc", config->commDesc);
   checkPtrConflict("splitGroupRanks", config->splitGroupRanks);
   checkPtrConflict("ncclAllGatherAlgo", config->ncclAllGatherAlgo);
-  checkIntConflict("lazyConnect", config->lazyConnect);
   checkIntConflict("lazySetupChannels", config->lazySetupChannels);
   checkIntConflict("fastInitMode", config->fastInitMode);
 
@@ -156,13 +155,6 @@ Config::Config(const ncclConfig_t* config) {
     if (!val.empty()) {
       ncclAllGatherAlgo = val;
     }
-  }
-
-  // booleans: flat field > hint > env default
-  if (config->lazyConnect != NCCL_CONFIG_UNDEF_INT) {
-    lazyConnect = config->lazyConnect != 0;
-  } else {
-    lazyConnect = parseHintBool("lazyConnect", NCCL_RUNTIME_CONNECT);
   }
 
   if (config->lazySetupChannels != NCCL_CONFIG_UNDEF_INT) {

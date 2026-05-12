@@ -42,7 +42,6 @@ CtranExComm::CtranExComm(const ncclComm_t comm, const std::string& commDesc) {
   ncclx::Hints hints(
       {{"commDesc", commDesc},
        {"splitGroupRanks", ranksStr},
-       {"lazyConnect", "1"},
        {"lazySetupChannels", "1"}});
   config.hints = &hints;
 

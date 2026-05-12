@@ -345,6 +345,8 @@ cvars:
    default     : -1
    description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-comm-blocking
 
+ # TODO: Delete NCCL_RUNTIME_CONNECT once v2.27 and v2.28 are removed.
+ # v2.29 uses ncclParam + per-comm hints instead.
  - name        : NCCL_RUNTIME_CONNECT
    type        : int64_t
    default     : 1
