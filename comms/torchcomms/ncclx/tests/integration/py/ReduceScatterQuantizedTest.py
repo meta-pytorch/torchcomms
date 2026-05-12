@@ -7,7 +7,9 @@ import unittest
 
 import torch
 import torchcomms
-from torchcomms.tests.integration.py.TorchCommTestHelpers import TorchCommTestWrapper
+from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
+    TorchCommTestWrapper,
+)
 
 
 class ReduceScatterQuantizedTest(unittest.TestCase):

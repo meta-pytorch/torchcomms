@@ -18,7 +18,7 @@ from datetime import timedelta
 
 import torch
 from torch.distributed import TCPStore
-from torchcomms.tests.integration.py.TorchCommTestHelpers import (
+from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
     skip_backend,
     TorchCommTestWrapper,
 )

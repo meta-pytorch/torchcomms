@@ -8,7 +8,9 @@ import unittest
 import torch
 from torchcomms import new_comm
 from torchcomms._comms import ReduceOp
-from torchcomms.tests.integration.py.TorchCommTestHelpers import TorchCommTestWrapper
+from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
+    TorchCommTestWrapper,
+)
 
 
 class TestReduceOpCopy(unittest.TestCase):

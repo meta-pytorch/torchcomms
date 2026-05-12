@@ -11,7 +11,7 @@ from typing import List
 
 import torch
 from parameterized import parameterized_class
-from torchcomms.tests.integration.py.TorchCommTestHelpers import (
+from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
     get_dtype_name,
     TorchCommTestWrapper,
 )

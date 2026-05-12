@@ -7,7 +7,9 @@ from datetime import timedelta
 
 import torch
 from torchcomms import ReduceOp
-from torchcomms.tests.integration.py.TorchCommTestHelpers import TorchCommTestWrapper
+from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
+    TorchCommTestWrapper,
+)
 
 TENSOR_COUNT: int = 4
 DEFAULT_HINTS_MAP = {"hint_key": "hint_value"}

@@ -8,7 +8,7 @@ import unittest
 
 import torch
 from torchcomms import ReduceOp
-from torchcomms.tests.integration.py.TorchCommTestHelpers import (
+from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
     filter_int8_overflow_cases,
     get_dtype_name,
     get_op_name,
