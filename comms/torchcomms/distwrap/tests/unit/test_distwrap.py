@@ -2,9 +2,12 @@
 # pyre-strict
 
 import unittest
+from typing import cast
+from unittest.mock import patch
 
 import torch.distributed
 import torchcomms.distwrap
+import torchcomms.distwrap.collectives as collectives
 
 
 class ForwardedAttributesTest(unittest.TestCase):
@@ -175,6 +178,24 @@ class AllExportsTest(unittest.TestCase):
                 hasattr(torchcomms.distwrap, name),
                 f"'{name}' in __all__ but not accessible",
             )
+
+
+class DefaultTorchcommsInstanceTest(unittest.TestCase):
+    """Tests for default communicator selection for ops without tensor inputs."""
+
+    def test_prefers_cpu_comm_when_present(self) -> None:
+        fake_pg = cast(torch.distributed.ProcessGroup, object())
+        non_cpu_comm = object()
+        cpu_comm = object()
+
+        with patch.object(
+            collectives,
+            "pg_info_get_data",
+            return_value={"cuda": non_cpu_comm, "cpu": cpu_comm},
+        ):
+            selected = collectives._get_default_torchcomms_instance(fake_pg)
+
+        self.assertIs(selected, cpu_comm)
 
 
 if __name__ == "__main__":
