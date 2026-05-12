@@ -94,11 +94,6 @@ void CtranGpeKernelTestBase::runTest(void* kernelFn) {
     case OpElem::opType::REDUCESCATTER:
       op->reducescatter.interReduce = nullptr;
       break;
-    case OpElem::opType::ALLTOALLV_DYNAMIC:
-    case OpElem::opType::ALLTOALLV_DYNAMIC_SPLIT:
-    case OpElem::opType::ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG:
-      op->alltoallv_dynamic.kElem = nullptr;
-      break;
     default:
       break;
   }
@@ -149,11 +144,6 @@ INSTANTIATE_TEST_SUITE_P(
         TESTCASE(ALLGATHER, ALLGATHER),
         TESTCASE(ALLTOALL, ALLTOALL),
         TESTCASE(ALLTOALLV, ALLTOALLV),
-        TESTCASE(ALLTOALLV_DYNAMIC, ALLTOALLV_DYNAMIC),
-        TESTCASE(ALLTOALLV_DYNAMIC_SPLIT, ALLTOALLV_DYNAMIC_SPLIT),
-        TESTCASE(
-            ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG,
-            ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG),
         TESTCASE(ALLTOALL_DEDUP, ALLTOALL_DEDUP),
         TESTCASE(ALLTOALLV_DEDUP, ALLTOALLV_DEDUP),
         TESTCASE(BROADCAST, BROADCAST),

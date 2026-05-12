@@ -387,66 +387,6 @@ TEST_F(
 
 TEST_F(
     CollTraceWrapperTest,
-    GetCollectiveMetadata_AllToAllvDynamic_CorrectMetadata) {
-  // Create AllToAllv_Dynamic kernel config
-  KernelConfig allToAllvDynamicConfig(
-      KernelConfig::KernelType::ALLTOALLV_DYNAMIC,
-      reinterpret_cast<cudaStream_t>(0x1234),
-      "alltoallv_dynamic_algo",
-      5);
-
-  uint64_t opCount = 444;
-
-  auto metadata =
-      getCollectiveMetadata(opGroup_, allToAllvDynamicConfig, opCount);
-
-  EXPECT_EQ(metadata.opName, "AllToAllv_Dynamic");
-  EXPECT_EQ(metadata.algoName, "alltoallv_dynamic_algo");
-  EXPECT_EQ(metadata.opCount, opCount);
-}
-
-TEST_F(
-    CollTraceWrapperTest,
-    GetCollectiveMetadata_AllToAllvDynamicSplit_CorrectMetadata) {
-  // Create AllToAllv_Dynamic_Split kernel config
-  KernelConfig allToAllvDynamicSplitConfig(
-      KernelConfig::KernelType::ALLTOALLV_DYNAMIC_SPLIT,
-      reinterpret_cast<cudaStream_t>(0x1234),
-      "alltoallv_dynamic_split_algo",
-      5);
-
-  uint64_t opCount = 555;
-
-  auto metadata =
-      getCollectiveMetadata(opGroup_, allToAllvDynamicSplitConfig, opCount);
-
-  EXPECT_EQ(metadata.opName, "AllToAllv_Dynamic_Split");
-  EXPECT_EQ(metadata.algoName, "alltoallv_dynamic_split_algo");
-  EXPECT_EQ(metadata.opCount, opCount);
-}
-
-TEST_F(
-    CollTraceWrapperTest,
-    GetCollectiveMetadata_AllToAllvDynamicSplitNonContig_CorrectMetadata) {
-  // Create AllToAllv_Dynamic_Split_Non_Contig kernel config
-  KernelConfig allToAllvDynamicSplitNonContigConfig(
-      KernelConfig::KernelType::ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG,
-      reinterpret_cast<cudaStream_t>(0x1234),
-      "alltoallv_dynamic_split_non_contig_algo",
-      5);
-
-  uint64_t opCount = 666;
-
-  auto metadata = getCollectiveMetadata(
-      opGroup_, allToAllvDynamicSplitNonContigConfig, opCount);
-
-  EXPECT_EQ(metadata.opName, "AllToAllv_Dynamic_Split_Non_Contig");
-  EXPECT_EQ(metadata.algoName, "alltoallv_dynamic_split_non_contig_algo");
-  EXPECT_EQ(metadata.opCount, opCount);
-}
-
-TEST_F(
-    CollTraceWrapperTest,
     GetCollectiveMetadata_AllToAllDedup_CorrectMetadata) {
   // Create AllToAll_Dedup kernel config
   KernelConfig allToAllDedupConfig(

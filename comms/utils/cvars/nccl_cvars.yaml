@@ -1208,27 +1208,6 @@ cvars:
      Number of threads in each thread block used for intra-node
      AllToAllv kernel.
 
- - name        : NCCL_CTRAN_ALLTOALLV_DYNAMIC_NUM_THREAD_BLOCKS
-   type        : int
-   default     : 64
-   description : |-
-     Number of thread blocks used for intra-node AllToAllv kernel.
-     Must be even number.
-
- - name        : NCCL_CTRAN_ALLTOALLV_DYNAMIC_THREAD_BLOCK_SIZE
-   type        : int
-   default     : 256
-   description : |-
-     Number of threads in each thread block used for intra-node
-     AllToAllv kernel.
-
- - name        : NCCL_CTRAN_ALLTOALLV_DYNAMIC_MAX_NUM_COUNTS_PER_PEER
-   type        : int
-   default     : 256
-   description : |-
-     Maximum number of experts for MoE models. This value is used by
-     AllToAllvDynamic to allocate the corresponding buffer size.
-
  - name        : NCCL_CTRAN_ALLTOALL_DEDUP_NUM_THREAD_BLOCKS_PER_RAIL_P2P
    type        : int
    default     : 16

@@ -815,7 +815,6 @@ set(SRC_FILES
 set(RCCLX_FILES
   meta/algorithms/AlgoInit.h
   meta/algorithms/AlgoUtils.h
-  meta/ctran/AllToAllvDynamic.cc
   meta/ctran/BaselineBootstrap.cc
   meta/ctran/BaselineBootstrap.h
   meta/ctran/Hints.cc

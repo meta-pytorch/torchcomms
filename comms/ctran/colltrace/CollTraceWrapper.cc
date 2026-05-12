@@ -219,30 +219,6 @@ CollectiveMetadata getCollectiveMetadata(
           .count = std::nullopt, // AllToAllv uses variable counts
       };
     }
-    case KernelConfig::KernelType::ALLTOALLV_DYNAMIC: {
-      // TODO: Calculating count information for dynamic alltoallv
-      return CollectiveMetadata{
-          .opName = "AllToAllv_Dynamic",
-          .algoName = kernelConfig.algoName,
-          .opCount = opCount,
-      };
-    }
-    case KernelConfig::KernelType::ALLTOALLV_DYNAMIC_SPLIT: {
-      // TODO: Calculating count information for dynamic alltoallv
-      return CollectiveMetadata{
-          .opName = "AllToAllv_Dynamic_Split",
-          .algoName = kernelConfig.algoName,
-          .opCount = opCount,
-      };
-    }
-    case KernelConfig::KernelType::ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG: {
-      // TODO: Calculating count information for dynamic alltoallv
-      return CollectiveMetadata{
-          .opName = "AllToAllv_Dynamic_Split_Non_Contig",
-          .algoName = kernelConfig.algoName,
-          .opCount = opCount,
-      };
-    }
     case KernelConfig::KernelType::ALLTOALL_DEDUP: {
       // TODO: Add more info for dedup alltoall
       return CollectiveMetadata{

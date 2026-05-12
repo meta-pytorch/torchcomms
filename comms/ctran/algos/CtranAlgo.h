@@ -28,15 +28,6 @@ enum CollType {
 };
 constexpr int kExpectedCommAttrLength = 5;
 
-// The following two values are used to allocate tmpbuf for
-// AllToAllvDynamic.
-// TODO: if model scale become larger, need to figure out ways to reduce
-// these value to avoid allocate a large staging buffer.
-// TODO: move the following and the tmpbuff allocation logic out of CtranAlgo,
-// and create new funcs in A2AvDynamic's own logic.
-inline size_t all2allvDynamicMaxSendcounts = 0;
-inline size_t all2allvDynamicMaxNumSplitsPerRank = 0;
-
 commResult_t ctranConfigCommAlgoOverride(CtranComm* comm);
 
 class CtranAlgo {
@@ -86,30 +77,6 @@ class CtranAlgo {
 
     // Temporary buffer to stage dst data for small messages
     MIN_REG_DST_TMPBUF,
-
-    // Temporary buffer to store sencdounts for inter-node alltoallv_dynamic
-    SENDCOUNTS_TMPBUF,
-
-    // Temporary buffer to store recvcounts for alltoallv_dynamic
-    // It would be used to store actualrecvcounts for dynamic and split
-    // store recvAllSplitLengths for split_non_contig
-    RECVCOUNTS_TMPBUF,
-
-    // Temporary buffer to store sendcounts in CPU memory for
-    // alltoallv_dynamic
-    SENDCOUNTS_TMPBUF_CPU,
-
-    // Temporary buffer to store sendindices in CPU memory for
-    // alltoallv_dynamic
-    SENDINDICES_TMPBUF_CPU,
-
-    // Temporary buffer to store sendindices in CPU memory for
-    // alltoallv_dynamic
-    SENDINDICES_BLOCKLEN_TMPBUF_CPU,
-
-    // Temporary buffer to store sendbuffs pointers in CPU memory for
-    // alltoallv_dynamic
-    SENDBUFFS_PTR_TMPBUF_CPU,
 
     // Temporary buffer to hold partially/fully reduced results for
     // communication to peers in AllReduce Ring Algorithm
@@ -163,11 +130,6 @@ class CtranAlgo {
   // local tmpbuf block
   void* tmpbuf{nullptr};
   std::string tmpBufKey;
-  // Temporary buffer to store sendcounts locally on CPU
-  size_t* sendCountsTmpbufCPU{nullptr};
-  size_t* sendIndicesTmpbufCPU{nullptr};
-  size_t* sendIndicesBlockLengthsTmpbufCPU{nullptr};
-  void** sendbuffsPtrTmpbufCPU{nullptr};
 
   void* tmpbufRegHdl{nullptr};
   void* tmpbufSegHdl{nullptr};

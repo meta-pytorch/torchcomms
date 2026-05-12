@@ -4,7 +4,6 @@
 
 #include "comm.h"
 #include "comms/ctran/algos/AllToAll/AllToAllPHintUtils.h"
-#include "comms/ctran/algos/AllToAll/AllToAllvDynamicHintUtils.h"
 #include "comms/ctran/interfaces/ICtran.h"
 #include "comms/ctran/memory/memCacheAllocator.h"
 #include "comms/ctran/window/WinHintUtils.h"
@@ -22,10 +21,6 @@ using namespace ctran;
 meta::comms::Hints ncclToMetaComm(const ncclx::Hints& hints) {
   meta::comms::Hints ret;
   std::string v;
-  for (const auto& k : meta::comms::hints::AllToAllvDynamicHintUtils::keys()) {
-    FB_COMMCHECKTHROW(ncclToMetaComm(hints.get(k, v)));
-    FB_COMMCHECKTHROW(ret.set(k, v));
-  }
   for (const auto& k : meta::comms::hints::AllToAllPHintUtils::keys()) {
     FB_COMMCHECKTHROW(ncclToMetaComm(hints.get(k, v)));
     FB_COMMCHECKTHROW(ret.set(k, v));
