@@ -69,7 +69,6 @@ Config::Config(const ncclConfig_t* config) {
   checkPtrConflict("commDesc", config->commDesc);
   checkPtrConflict("splitGroupRanks", config->splitGroupRanks);
   checkPtrConflict("ncclAllGatherAlgo", config->ncclAllGatherAlgo);
-  checkIntConflict("lazySetupChannels", config->lazySetupChannels);
   checkIntConflict("fastInitMode", config->fastInitMode);
 
   if (conflict) {
@@ -155,13 +154,6 @@ Config::Config(const ncclConfig_t* config) {
     if (!val.empty()) {
       ncclAllGatherAlgo = val;
     }
-  }
-
-  if (config->lazySetupChannels != NCCL_CONFIG_UNDEF_INT) {
-    lazySetupChannels = config->lazySetupChannels != 0;
-  } else {
-    lazySetupChannels =
-        parseHintBool("lazySetupChannels", NCCL_LAZY_SETUP_CHANNELS);
   }
 
   if (config->fastInitMode != NCCL_CONFIG_UNDEF_INT) {

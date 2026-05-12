@@ -39,10 +39,10 @@ CtranExComm::CtranExComm(const ncclComm_t comm, const std::string& commDesc) {
     }
     ranksStr += std::to_string(globalRanks[i]);
   }
-  ncclx::Hints hints(
-      {{"commDesc", commDesc},
-       {"splitGroupRanks", ranksStr},
-       {"lazySetupChannels", "1"}});
+  ncclx::Hints hints({
+      {"commDesc", commDesc},
+      {"splitGroupRanks", ranksStr},
+  });
   config.hints = &hints;
 
   // if parent comm is non-blocking, ncclCommSplit will be non-blocking

@@ -543,13 +543,9 @@ TEST_P(NcclxLazyConnectTestFixture, ChildCommLazyConfig) {
   ASSERT_NE(nullptr, rootComm);
   ncclComm_t childComm = nullptr;
   ncclConfig_t childCommConfig = NCCL_CONFIG_INITIALIZER;
-  ncclx::Hints lazyHints({{"lazySetupChannels", "1"}});
-  childCommConfig.hints = &lazyHints;
   NCCLCHECK_TEST(
       ncclCommSplit(rootComm, 0, globalRank, &childComm, &childCommConfig));
   ASSERT_NE(nullptr, childComm);
-
-  EXPECT_TRUE(NCCLX_CONFIG_FIELD(childComm->config, lazySetupChannels));
   for (int a = 0; a < NCCL_NUM_ALGORITHMS; a++) {
     EXPECT_FALSE(childComm->initAlgoChannels[a]);
   }
