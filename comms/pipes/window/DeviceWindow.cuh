@@ -1023,6 +1023,9 @@ class DeviceWindow {
    * @param src_buf      Registered source buffer.
    * @param src_offset   Byte offset into the source buffer.
    * @param nbytes       Number of bytes to transfer.
+   * @param codeOptFlags  IBGDA put code options. SkipDbRinging leaves the put
+   *                      un-doorbelled; caller must arrange a later same-QP
+   *                      doorbell/flush. Ignored on NVL.
    */
   __device__ __forceinline__ void put(
       ThreadGroup& group,
@@ -1030,7 +1033,8 @@ class DeviceWindow {
       std::size_t dst_offset,
       const LocalBufferRegistration& src_buf,
       std::size_t src_offset,
-      std::size_t nbytes) {
+      std::size_t nbytes,
+      uint32_t codeOptFlags = PipesCodeOptFlagsDefault) {
     DEVICE_WINDOW_CHECK_RANK(target_rank, handle_.nRanks);
     DEVICE_WINDOW_CHECK_NOT_SELF(target_rank, handle_.myRank);
     const auto* localSrc = static_cast<const char*>(src_buf.base) + src_offset;
@@ -1048,7 +1052,16 @@ class DeviceWindow {
           const_cast<void*>(remoteBufferRegistry_[ibgdaPeerIdx].base),
           remoteBufferRegistry_[ibgdaPeerIdx].rkey_per_device);
       handle_.get_ibgda(target_rank)
-          .put(group, localBuf, remoteBuf.subBuffer(dst_offset), nbytes);
+          .put(
+              group,
+              localBuf,
+              remoteBuf.subBuffer(dst_offset),
+              nbytes,
+              -1,
+              1,
+              -1,
+              1,
+              codeOptFlags);
     }
   }
 
