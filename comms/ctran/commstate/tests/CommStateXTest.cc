@@ -869,4 +869,79 @@ TEST(CommStateXTest, nvlFabricWithNoLocalCvar) {
   EXPECT_EQ(commState->nNodes(), nRanks);
 }
 
+TEST(CommStateXTest, gb300DsfTopologyNoSuNoRtsw) {
+  const int rank = 0;
+  const int nRanks = 3;
+  const int cudaDev = 0;
+  const int cudaArch = 90;
+  const int64_t busId = 25;
+  const uint64_t commHash = 0;
+  const std::string kEmptySu = "";
+  const std::string kEmptyRtsw = "";
+  const std::string kUco1Dc = "uco1";
+  const std::string kUco1Zone = "uco1.z086";
+
+  std::vector<RankTopology> rankTopologies{};
+  rankTopologies.emplace_back(
+      createRankTopology(0, kUco1Dc, kUco1Zone, kEmptySu, kEmptyRtsw, kHost0));
+  rankTopologies.emplace_back(
+      createRankTopology(1, kUco1Dc, kUco1Zone, kEmptySu, kEmptyRtsw, kHost0));
+  rankTopologies.emplace_back(
+      createRankTopology(2, kUco1Dc, kUco1Zone, kEmptySu, kEmptyRtsw, kHost1));
+
+  auto commState = std::make_unique<CommStateX>(
+      rank,
+      nRanks,
+      cudaDev,
+      cudaArch,
+      busId,
+      commHash,
+      rankTopologies,
+      std::vector<int>{});
+
+  EXPECT_TRUE(commState->isSameNode(rank, 1));
+  EXPECT_FALSE(commState->isSameNode(rank, 2));
+
+  // With both su and rtsw empty, isSameRack returns false for all peers
+  EXPECT_FALSE(commState->isSameRack(rank, 1));
+  EXPECT_FALSE(commState->isSameRack(rank, 2));
+
+  EXPECT_TRUE(commState->isSameZone(rank, 1));
+  EXPECT_TRUE(commState->isSameZone(rank, 2));
+
+  EXPECT_TRUE(commState->isSameDc(rank, 1));
+  EXPECT_TRUE(commState->isSameDc(rank, 2));
+}
+
+TEST(CommStateXTest, isSameDeviceRackUnknownSerial) {
+  EnvRAII env(NCCL_MNNVL_TRUNK_DISABLE, true);
+  const int rank = 0;
+  const int nRanks = 2;
+  const int cudaDev = 0;
+  const int cudaArch = 90;
+  const int64_t busId = 25;
+  const uint64_t commHash = 0;
+  const std::string kEmptyRtsw;
+
+  std::vector<RankTopology> rankTopologies{};
+  // Both ranks have unknown rackSerial (-1)
+  rankTopologies.emplace_back(
+      createRankTopology(0, kDc, kZone, kSuDomain1, kEmptyRtsw, kHost0, -1));
+  rankTopologies.emplace_back(
+      createRankTopology(1, kDc, kZone, kSuDomain1, kEmptyRtsw, kHost0, -1));
+
+  auto commState = std::make_unique<CommStateX>(
+      rank,
+      nRanks,
+      cudaDev,
+      cudaArch,
+      busId,
+      commHash,
+      rankTopologies,
+      std::vector<int>{});
+
+  // Unknown rackSerial (-1) should not match
+  EXPECT_FALSE(commState->isSameDeviceRack(rank, 1));
+}
+
 } // namespace ncclx
