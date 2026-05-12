@@ -184,7 +184,7 @@ class TorchCommFake : public TorchCommBackend {
     runAbortHooks();
   }
 
-  bool abortEnabled() const override {
+  bool isAbortSupported() const override {
     return abortEnabled_;
   }
 
