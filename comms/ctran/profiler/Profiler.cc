@@ -35,7 +35,8 @@ Profiler::Profiler(CtranComm* comm, std::unique_ptr<IProfilerReporter> reporter)
 Profiler::~Profiler() = default;
 
 void Profiler::initForEachColl(int opCount, int samplingWeight) {
-  shouldTrace_ = samplingWeight > 0 && (opCount % samplingWeight) == 0;
+  shouldTrace_ =
+      forceTrace_ || (samplingWeight > 0 && (opCount % samplingWeight) == 0);
   if (shouldTrace_) {
     opCount_ = opCount;
     durations_.fill(0);
