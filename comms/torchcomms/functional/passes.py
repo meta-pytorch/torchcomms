@@ -60,7 +60,7 @@ def reinplacement_pass(
     from torch._guards import detect_fake_mode
     from torch._inductor.virtualized import V
 
-    fake_tensor_updater = FakeTensorUpdater(gm.graph)
+    fake_tensor_updater = FakeTensorUpdater(gm)
 
     fake_mode = detect_fake_mode(
         [node.meta.get("val") for node in gm.graph.nodes if "val" in node.meta]
