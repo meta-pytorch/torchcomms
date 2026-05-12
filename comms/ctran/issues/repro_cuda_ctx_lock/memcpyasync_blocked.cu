@@ -42,6 +42,11 @@ int main() {
   int* d;
   cudaMalloc(&d, sizeof(int));
 
+  // Pinned host buffer for the value sent via cudaMemcpyAsync.
+  int* h_zero;
+  cudaHostAlloc((void**)&h_zero, sizeof(int), cudaHostAllocDefault);
+  *h_zero = 0;
+
   // Get busyKernel running on the GPU. The first launch also lazy-loads its
   // module, but the GPU is idle so it's fast.
   busyKernel<<<1, 1, 0, sA>>>(20'000'000'000LL);
@@ -55,9 +60,8 @@ int main() {
   // child's memcpy blocks on the same lock.
   std::thread b([&] {
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    int v = 0;
     auto t = std::chrono::steady_clock::now();
-    cudaMemcpyAsync(d, &v, sizeof(int), cudaMemcpyHostToDevice, sB);
+    cudaMemcpyAsync(d, h_zero, sizeof(int), cudaMemcpyHostToDevice, sB);
     std::printf("[B] cudaMemcpyAsync returned in   %.3fs\n", secs(t));
   });
 
