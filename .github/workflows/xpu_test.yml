@@ -45,7 +45,7 @@ jobs:
         shell: bash
         run: |
           timeout 30 xpu-smi discovery || true
-          xpu-smi topology -m
+          xpu-smi topology -m || true
 
       - name: Runner health check GPU count
         if: always()
