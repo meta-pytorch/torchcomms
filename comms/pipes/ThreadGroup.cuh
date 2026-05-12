@@ -434,6 +434,8 @@ struct ThreadGroup {
       DeviceSpan<const uint32_t> weights) const;
   __device__ inline struct PartitionResult partition_interleaved(
       uint32_t num_partitions) const;
+  __device__ inline struct PartitionResult split(
+      uint32_t first_group_size) const;
 
  private:
 #ifdef __CUDACC__
@@ -752,6 +754,41 @@ __device__ inline PartitionResult ThreadGroup::partition_interleaved(
           .group_size = group_size,
           .group_id = new_group_id,
           .total_groups = groups_in_partition,
+          .scope = scope}};
+#endif
+  return PartitionResult{};
+}
+
+/**
+ * split - Divide groups into two parts at a fixed boundary
+ *
+ * Groups [0, first_group_size) become partition 0.
+ * Groups [first_group_size, total_groups) become partition 1.
+ *
+ * Lighter than partition(weights) — no proportional distribution,
+ * just a comparison and subtraction.
+ *
+ * If first_group_size == 0, all groups go to partition 1.
+ * If first_group_size >= total_groups, all groups go to partition 0.
+ *
+ * @param first_group_size Number of groups in partition 0
+ * @return {partition_id, subgroup} for this group
+ */
+__device__ inline PartitionResult ThreadGroup::split(
+    uint32_t first_group_size) const {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  uint32_t clamped =
+      first_group_size < total_groups ? first_group_size : total_groups;
+  uint32_t pid = (group_id < clamped) ? 0u : 1u;
+  uint32_t new_group_id = (pid == 0) ? group_id : group_id - clamped;
+  uint32_t new_total = (pid == 0) ? clamped : total_groups - clamped;
+  return PartitionResult{
+      .partition_id = pid,
+      .subgroup = ThreadGroup{
+          .thread_id_in_group = thread_id_in_group,
+          .group_size = group_size,
+          .group_id = new_group_id,
+          .total_groups = new_total,
           .scope = scope}};
 #endif
   return PartitionResult{};
