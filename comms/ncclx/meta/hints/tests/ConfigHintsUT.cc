@@ -35,7 +35,6 @@ TEST(ConfigHintsUT, HintsCreateNcclxConfig) {
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   ncclx::Hints hints;
   hints.set("commDesc", "test_desc");
-  hints.set("lazySetupChannels", "0");
   hints.set("fastInitMode", "1");
   hints.set("ncclAllGatherAlgo", "custom_algo");
   config.hints = &hints;
@@ -46,7 +45,6 @@ TEST(ConfigHintsUT, HintsCreateNcclxConfig) {
   ASSERT_NE(config.ncclxConfig, nullptr);
 
   EXPECT_EQ(NCCLX_CONFIG_FIELD(config, commDesc), "test_desc");
-  EXPECT_FALSE(NCCLX_CONFIG_FIELD(config, lazySetupChannels));
   EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, fastInitMode));
   EXPECT_EQ(NCCLX_CONFIG_FIELD(config, ncclAllGatherAlgo), "custom_algo");
 
@@ -62,7 +60,6 @@ TEST(ConfigHintsUT, PrefixedKeysMatchBareKeys) {
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   ncclx::Hints hints;
   hints.set("ncclx::commDesc", "test_desc");
-  hints.set("ncclx::lazySetupChannels", "0");
   hints.set("ncclx::fastInitMode", "1");
   hints.set("ncclx::ncclAllGatherAlgo", "custom_algo");
   config.hints = &hints;
@@ -73,7 +70,6 @@ TEST(ConfigHintsUT, PrefixedKeysMatchBareKeys) {
   ASSERT_NE(config.ncclxConfig, nullptr);
 
   EXPECT_EQ(NCCLX_CONFIG_FIELD(config, commDesc), "test_desc");
-  EXPECT_FALSE(NCCLX_CONFIG_FIELD(config, lazySetupChannels));
   EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, fastInitMode));
   EXPECT_EQ(NCCLX_CONFIG_FIELD(config, ncclAllGatherAlgo), "custom_algo");
 

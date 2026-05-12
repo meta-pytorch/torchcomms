@@ -27,7 +27,6 @@ class Config {
   std::string commDesc = "undefined";
   std::vector<int> splitGroupRanks;
   std::string ncclAllGatherAlgo = "undefined";
-  bool lazySetupChannels = false;
   bool fastInitMode = false;
 
   // Per-communicator MultiPeerTransport (pipes) NVL config overrides.
@@ -53,7 +52,6 @@ inline const std::vector<std::string>& knownHintKeys() {
       "commDesc",
       "splitGroupRanks",
       "ncclAllGatherAlgo",
-      "lazySetupChannels",
       "fastInitMode",
       "pipesNvlChunkSize",
       "pipesUseDualStateBuffer",
