@@ -216,20 +216,21 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalMaxValue) {
 
 // =============================================================================
 // Group-Level API Tests
-// These tests verify put_group_local and put_signal_group_local partitioning
+// These tests verify put_cooperative partitioning
 // and broadcast logic. Actual RDMA operations require a real DOCA QP, so
 // these tests focus on the GPU-side logic: data partitioning, sub-buffer
 // offset calculation, and signal ticket broadcast.
 // =============================================================================
 
-TEST_F(P2pIbgdaTransportDeviceTestFixture, PutGroupPartitioning) {
-  // Test that put_group_local correctly partitions data across warp lanes
-  runAndVerify([](bool* d_success) { runTestPutGroupPartitioning(d_success); });
+TEST_F(P2pIbgdaTransportDeviceTestFixture, PutCooperativePartitioning) {
+  // Test that put_cooperative correctly partitions data across warp lanes
+  runAndVerify(
+      [](bool* d_success) { runTestPutCooperativePartitioning(d_success); });
 }
 
 TEST_F(P2pIbgdaTransportDeviceTestFixture, PutSignalGroupBroadcast) {
-  // Test that put_signal_group_local broadcasts the signal ticket from leader
-  // to all lanes
+  // Test that the cooperative put signal path broadcasts the leader's signal
+  // ticket to all lanes.
   runAndVerify(
       [](bool* d_success) { runTestPutSignalGroupBroadcast(d_success); });
 }
@@ -254,10 +255,11 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, Broadcast64DoubleSafety) {
       [](bool* d_success) { runTestBroadcast64DoubleSafety(d_success); });
 }
 
-TEST_F(P2pIbgdaTransportDeviceTestFixture, PutGroupPartitioningBlock) {
-  // Test put_group_local partitioning logic with block-sized groups
-  runAndVerify(
-      [](bool* d_success) { runTestPutGroupPartitioningBlock(d_success); });
+TEST_F(P2pIbgdaTransportDeviceTestFixture, PutCooperativePartitioningBlock) {
+  // Test put_cooperative partitioning logic with block-sized groups
+  runAndVerify([](bool* d_success) {
+    runTestPutCooperativePartitioningBlock(d_success);
+  });
 }
 
 // =============================================================================
@@ -294,14 +296,14 @@ TEST_F(P2pIbgdaWaitSignalTimeoutTest, WaitSignalTimeoutTraps) {
   // Set up a signal buffer with value 0, then wait for GE 999 with a
   // short timeout. The signal will never satisfy GE 999, so the timeout
   // should fire and __trap().
-  DeviceBuffer signalBuf(sizeof(uint64_t));
-  auto* d_signalBuf = static_cast<uint64_t*>(signalBuf.get());
+  // Do not use DeviceBuffer here: after the expected trap, cudaFree reports
+  // the launch failure before TearDown can reset the device.
+  uint64_t* d_signalBuf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&d_signalBuf, sizeof(uint64_t)));
   CUDACHECK_TEST(cudaMemset(d_signalBuf, 0, sizeof(uint64_t)));
 
   // 10ms timeout - should trigger quickly
-  runTestWaitSignalTimeout(d_signalBuf, 0, 10);
-
-  cudaError_t err = cudaGetLastError();
+  cudaError_t err = runTestWaitSignalTimeout(d_signalBuf, 0, 10);
   EXPECT_TRUE(isExpectedTrapError(err))
       << "Expected trap error from wait_signal timeout, got: "
       << cudaGetErrorString(err);

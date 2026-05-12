@@ -46,7 +46,7 @@ void testPutAndSignal(
 }
 
 // =============================================================================
-// Kernel: Group-collaborative put + signal (warp group)
+// Kernel: Explicit cooperative put + signal (warp group)
 // =============================================================================
 
 __global__ void putAndSignalGroupKernel(
@@ -58,8 +58,9 @@ __global__ void putAndSignalGroupKernel(
     uint64_t signalVal) {
   auto group = make_warp_group();
 
-  // Group-cooperative put with signal (single put+signal, not two puts)
-  transport->put(group, localBuf, remoteBuf, nbytes, signalId, signalVal);
+  // Explicitly shard the provided buffer across warp lanes.
+  transport->put_cooperative(
+      group, localBuf, remoteBuf, nbytes, signalId, signalVal);
 
   transport->flush(group);
 }
@@ -83,7 +84,7 @@ void testPutAndSignalGroup(
 }
 
 // =============================================================================
-// Kernel: Multi-warp group-collaborative put + signal
+// Kernel: Multi-warp presharded group put + signal
 // Each warp partitions data manually, then calls group-scope put + signal
 // =============================================================================
 
@@ -131,7 +132,7 @@ void testPutAndSignalGroupMultiWarp(
 }
 
 // =============================================================================
-// Kernel: Block-scope group-collaborative put + signal
+// Kernel: Block-scope presharded group put + signal
 // Each block partitions data manually, then calls group-scope put + signal
 // =============================================================================
 
@@ -179,7 +180,7 @@ void testPutAndSignalGroupBlock(
 }
 
 // =============================================================================
-// Kernel: Wait for signal (volatile spin on local signal buffer)
+// Kernel: Wait for signal (acquire polling on local signal buffer)
 // =============================================================================
 
 __global__ void waitSignalKernel(
@@ -607,7 +608,7 @@ void testPutSignalCounter(
 }
 
 // =============================================================================
-// Kernel: Wait for local counter to reach expected value (volatile spin)
+// Kernel: Wait for local counter to reach expected value (acquire polling)
 // =============================================================================
 
 __global__ void waitCounterKernel(

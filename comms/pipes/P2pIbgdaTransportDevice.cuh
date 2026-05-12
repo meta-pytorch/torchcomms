@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include <cuda/atomic>
+
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -78,7 +80,9 @@ struct NicDeviceIbgdaResources {
  *   Group-scope: put(group, ...) — all threads in group must call.
  *     QP selection: single QP for now (multi-QP via group.group_id % numQps
  *     will be added in a follow-up diff).
- *     Data transfer is group-cooperative (threads split WQE construction).
+ *     Data transfer uses the exact buffer span supplied by the caller.
+ *     Threads in the group coordinate the operation; callers that want the
+ *     transport to shard a larger buffer should use put_cooperative().
  *     Signal/counter/fence are leader-only with group.sync().
  *
  *   Thread-scope: put(...) — single thread calls.
@@ -209,6 +213,39 @@ class P2pIbgdaTransportDevice {
   }
 
   /**
+   * put_cooperative (group-scope, slot-index) - Shard a larger RDMA Write
+   * across the threads in this group, with optional slot-index
+   * signal/counter.
+   *
+   * This is the explicit helper for callers that want the transport to split
+   * the provided buffer across the group. Plain put(group, ...) expects the
+   * caller to pass the exact data range for this group.
+   */
+  __device__ void put_cooperative(
+      ThreadGroup& group,
+      const IbgdaLocalBuffer& localBuf,
+      const IbgdaRemoteBuffer& remoteBuf,
+      std::size_t nbytes,
+      int signalId = -1,
+      uint64_t signalVal = 1,
+      int counterId = -1,
+      uint64_t counterVal = 1) {
+    IbgdaRemoteBuffer sigSlot =
+        (signalId >= 0) ? remote_signal_slot(signalId) : IbgdaRemoteBuffer{};
+    IbgdaLocalBuffer ctrSlot =
+        (counterId >= 0) ? counter_slot(counterId) : IbgdaLocalBuffer{};
+    put_cooperative(
+        group,
+        localBuf,
+        remoteBuf,
+        nbytes,
+        sigSlot,
+        signalVal,
+        ctrSlot,
+        counterVal);
+  }
+
+  /**
    * put (thread-scope, slot-index) - Single-thread variant of slot-index put.
    * Caller is responsible for gating to one thread. Uses QP 0.
    * Args match the group-scope overload.
@@ -312,7 +349,7 @@ class P2pIbgdaTransportDevice {
    * reset_signal (group-scope, slot-index) - Zero a local signal inbox slot.
    *
    * @param group    Thread group; all threads must call. Leader writes 0,
-   *                 then __threadfence_system().
+   *                 then a device-scope fence.
    * @param signalId Slot index into the local signal inbox.
    */
   __device__ void reset_signal(ThreadGroup& group, int signalId) {
@@ -342,7 +379,7 @@ class P2pIbgdaTransportDevice {
   }
 
   /**
-   * read_signal (slot-index) - Non-blocking volatile read of a local signal
+   * read_signal (slot-index) - Non-blocking acquire read of a local signal
    * inbox slot.
    *
    * @param signalId Slot index into the local signal inbox.
@@ -353,7 +390,7 @@ class P2pIbgdaTransportDevice {
   }
 
   /**
-   * read_counter (slot-index) - Non-blocking volatile read of a local counter
+   * read_counter (slot-index) - Non-blocking acquire read of a local counter
    * slot.
    *
    * @param counterId Slot index into the local counter buffer.
@@ -372,12 +409,13 @@ class P2pIbgdaTransportDevice {
   // =========================================================================
 
   /**
-   * put (group-scope) - Group-cooperative RDMA Write with optional signal /
+   * put (group-scope) - Group-local RDMA Write with optional signal /
    * counter.
    *
-   * All threads in the group must call. Data transfer adapts to group size:
-   *   group_size == 1: single thread posts one WQE
-   *   group_size > 1: threads cooperatively construct WQEs (one per thread)
+   * All threads in the group must call. The provided localBuf/remoteBuf/nbytes
+   * are treated as the exact range for this group; put() does not shard a
+   * larger user buffer. Use put_cooperative() for the convenience behavior that
+   * splits the provided range across the group.
    *
    * Returns void; completion is observed via wait_signal/wait_counter/flush.
    *
@@ -396,7 +434,8 @@ class P2pIbgdaTransportDevice {
    * @param signalVal  Value added to *signalBuf (atomic FA).
    * @param counterBuf Pre-resolved local counter slot. ptr==nullptr disables
    *                   the counter. With signalBuf set: companion-QP loopback
-   *                   atomic. Counter-only: fence + GPU atomicAdd.
+   *                   atomic. Counter-only uses a discard signal target plus
+   *                   the same companion-QP loopback counter.
    * @param counterVal Value added to *counterBuf.
    */
   __device__ void put(
@@ -434,6 +473,34 @@ class P2pIbgdaTransportDevice {
       uint64_t counterVal = 1) {
     ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
     put(solo,
+        localBuf,
+        remoteBuf,
+        nbytes,
+        signalBuf,
+        signalVal,
+        counterBuf,
+        counterVal);
+  }
+
+  /**
+   * put_cooperative (group-scope) - Group-cooperative RDMA Write with optional
+   * signal/counter.
+   *
+   * All threads in the group must call. The transport splits the provided
+   * range across group lanes and posts one data WQE per lane, then the leader
+   * posts any requested signal/counter WQE.
+   */
+  __device__ void put_cooperative(
+      ThreadGroup& group,
+      const IbgdaLocalBuffer& localBuf,
+      const IbgdaRemoteBuffer& remoteBuf,
+      std::size_t nbytes,
+      const IbgdaRemoteBuffer& signalBuf,
+      uint64_t signalVal = 1,
+      const IbgdaLocalBuffer& counterBuf = {},
+      uint64_t counterVal = 1) {
+    put_cooperative_impl(
+        group,
         localBuf,
         remoteBuf,
         nbytes,
@@ -581,7 +648,7 @@ class P2pIbgdaTransportDevice {
    * reset_signal (group-scope) - Zero a local signal slot.
    *
    * @param group     Thread group; all threads must call. Leader writes 0,
-   *                  then __threadfence_system().
+   *                  then a device-scope fence.
    * @param signalBuf Pre-resolved local signal slot.
    */
   __device__ void reset_signal(
@@ -619,25 +686,23 @@ class P2pIbgdaTransportDevice {
   // =========================================================================
 
   /**
-   * read_signal - Non-blocking volatile read of a local signal slot.
+   * read_signal - Non-blocking acquire read of a local signal slot.
    *
    * @param signalBuf Pre-resolved local signal slot.
    * @return          Current value of *signalBuf.
    */
   __device__ uint64_t read_signal(const IbgdaLocalBuffer& signalBuf) const {
-    volatile uint64_t* sig = static_cast<volatile uint64_t*>(signalBuf.ptr);
-    return *sig;
+    return load_acquire_system_u64(signalBuf.ptr);
   }
 
   /**
-   * read_counter - Non-blocking volatile read of a local counter slot.
+   * read_counter - Non-blocking acquire read of a local counter slot.
    *
    * @param counterBuf Pre-resolved local counter slot.
    * @return           Current value of *counterBuf.
    */
   __device__ uint64_t read_counter(const IbgdaLocalBuffer& counterBuf) const {
-    volatile uint64_t* ctr = static_cast<volatile uint64_t*>(counterBuf.ptr);
-    return *ctr;
+    return load_acquire_system_u64(counterBuf.ptr);
   }
 
   // =========================================================================
@@ -645,25 +710,22 @@ class P2pIbgdaTransportDevice {
   // =========================================================================
 
  private:
-  // --- put_impl: always group-cooperative data transfer ---
+  __device__ __forceinline__ static uint64_t load_acquire_system_u64(
+      const void* ptr) {
+    auto* slot = static_cast<uint64_t*>(const_cast<void*>(ptr));
+    return cuda::atomic_ref<uint64_t, cuda::thread_scope_system>{*slot}.load(
+        cuda::memory_order_acquire);
+  }
 
-  __device__ void put_impl(
+  __device__ void finish_put_impl(
       ThreadGroup& group,
-      const IbgdaLocalBuffer& localBuf,
-      const IbgdaRemoteBuffer& remoteBuf,
-      std::size_t nbytes,
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal,
       const IbgdaLocalBuffer& counterBuf,
       uint64_t counterVal) {
-    bool hasSignal = signalBuf.ptr != nullptr;
-    bool hasCounter = counterBuf.ptr != nullptr;
+    const bool hasSignal = signalBuf.ptr != nullptr;
+    const bool hasCounter = counterBuf.ptr != nullptr;
 
-    // Step 1: ALWAYS group-cooperative data transfer
-    put_cooperative(group, localBuf, remoteBuf, nbytes);
-
-    // Step 2: Leader posts signal/counter WQE(s).
-    //
     // The DOCA verbs API exposes:
     //   - signal_fenced (atomic FA, FENCEd against prior put)
     //   - signal_counter (signal_fenced on primary QP + companion-QP loopback
@@ -692,11 +754,39 @@ class P2pIbgdaTransportDevice {
     group.sync();
   }
 
+  __device__ void put_impl(
+      ThreadGroup& group,
+      const IbgdaLocalBuffer& localBuf,
+      const IbgdaRemoteBuffer& remoteBuf,
+      std::size_t nbytes,
+      const IbgdaRemoteBuffer& signalBuf,
+      uint64_t signalVal,
+      const IbgdaLocalBuffer& counterBuf,
+      uint64_t counterVal) {
+    if (group.is_leader() && nbytes > 0) {
+      put_single_impl(group.group_id, localBuf, remoteBuf, nbytes);
+    }
+    group.sync();
+    finish_put_impl(group, signalBuf, signalVal, counterBuf, counterVal);
+  }
+
+  __device__ void put_cooperative_impl(
+      ThreadGroup& group,
+      const IbgdaLocalBuffer& localBuf,
+      const IbgdaRemoteBuffer& remoteBuf,
+      std::size_t nbytes,
+      const IbgdaRemoteBuffer& signalBuf,
+      uint64_t signalVal,
+      const IbgdaLocalBuffer& counterBuf,
+      uint64_t counterVal) {
+    put_cooperative_data_impl(group, localBuf, remoteBuf, nbytes);
+    finish_put_impl(group, signalBuf, signalVal, counterBuf, counterVal);
+  }
+
   // --- wait_signal_impl ---
   //
-  // The trailing __threadfence_system() is the standard "acquire fence after
-  // observing a flag": it ensures payload writes (e.g. data the NIC RDMA'd
-  // alongside the signal) are visible to subsequent loads on this thread.
+  // Signal waits use system-scope acquire loads. This matches NCCLX GIN's
+  // waitSignal path and avoids the heavier post-poll __threadfence_system().
 
   __device__ void wait_signal_impl(
       ThreadGroup& group,
@@ -704,15 +794,15 @@ class P2pIbgdaTransportDevice {
       uint64_t expected,
       const Timeout& timeout = Timeout()) {
     if (group.is_leader()) {
-      volatile uint64_t* sig = static_cast<volatile uint64_t*>(signalBuf.ptr);
-      while (*sig < expected) {
+      uint64_t current = load_acquire_system_u64(signalBuf.ptr);
+      while (current < expected) {
         TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
             timeout,
             "wait_signal: expected>=%llu, current=%llu",
             static_cast<unsigned long long>(expected),
-            static_cast<unsigned long long>(*sig));
+            static_cast<unsigned long long>(current));
+        current = load_acquire_system_u64(signalBuf.ptr);
       }
-      __threadfence_system();
     }
     group.sync();
   }
@@ -725,15 +815,15 @@ class P2pIbgdaTransportDevice {
       uint64_t expected,
       const Timeout& timeout = Timeout()) {
     if (group.is_leader()) {
-      volatile uint64_t* ctr = static_cast<volatile uint64_t*>(counterBuf.ptr);
-      while (*ctr < expected) {
+      uint64_t current = load_acquire_system_u64(counterBuf.ptr);
+      while (current < expected) {
         TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
             timeout,
             "wait_counter: expected>=%llu, current=%llu",
             static_cast<unsigned long long>(expected),
-            static_cast<unsigned long long>(*ctr));
+            static_cast<unsigned long long>(current));
+        current = load_acquire_system_u64(counterBuf.ptr);
       }
-      __threadfence_system();
     }
     group.sync();
   }
@@ -742,8 +832,8 @@ class P2pIbgdaTransportDevice {
   //
   // The volatile store + group.sync() is sufficient for intra-group ordering.
   // __threadfence() (device scope) is a cheap belt-and-suspenders so that
-  // threads in OTHER blocks observing the slot via volatile reads see the
-  // reset. We deliberately do NOT use __threadfence_system() here: nothing
+  // threads in OTHER blocks observing the slot through the read/wait APIs see
+  // the reset. We deliberately do NOT use __threadfence_system() here: nothing
   // off-device reads this slot — the NIC only writes it via remote signals,
   // and the host doesn't read it on the hot path.
 
@@ -762,13 +852,18 @@ class P2pIbgdaTransportDevice {
   // Raw building blocks (single-thread, no gating, no sync)
   // =========================================================================
 
-  // --- put_cooperative: group-collaborative WQE construction ---
+  // --- put_cooperative_data_impl: group-collaborative WQE construction ---
 
-  __device__ void put_cooperative(
+  __device__ void put_cooperative_data_impl(
       ThreadGroup& group,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes) {
+    if (nbytes == 0) {
+      group.sync();
+      return;
+    }
+
     std::size_t chunkSize = nbytes / group.group_size;
     std::size_t offset = group.thread_id_in_group * chunkSize;
     std::size_t laneBytes = (group.thread_id_in_group == group.group_size - 1)
