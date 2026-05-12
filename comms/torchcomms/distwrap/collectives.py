@@ -347,8 +347,9 @@ def scatter(
         # Resolve group_src for torchcomms
         if group_src is None:
             if src is None:
-                raise ValueError("Either src or group_src must be specified")
-            group_src = get_group_rank(pg, src)
+                group_src = 0
+            else:
+                group_src = get_group_rank(pg, src)
         elif src is not None:
             raise ValueError("Cannot specify both src and group_src")
 
@@ -381,8 +382,9 @@ def gather(
         # Resolve group_dst for torchcomms
         if group_dst is None:
             if dst is None:
-                raise ValueError("Either dst or group_dst must be specified")
-            group_dst = get_group_rank(pg, dst)
+                group_dst = 0
+            else:
+                group_dst = get_group_rank(pg, dst)
         elif dst is not None:
             raise ValueError("Cannot specify both dst and group_dst")
 
@@ -600,8 +602,9 @@ def gather_object(
         # Resolve group_dst for torchcomms
         if group_dst is None:
             if dst is None:
-                raise ValueError("Either dst or group_dst must be specified")
-            group_dst = get_group_rank(pg, dst)
+                group_dst = 0
+            else:
+                group_dst = get_group_rank(pg, dst)
         elif dst is not None:
             raise ValueError("Cannot specify both dst and group_dst")
 
@@ -629,8 +632,9 @@ def scatter_object_list(
         # Resolve group_src for torchcomms
         if group_src is None:
             if src is None:
-                raise ValueError("Either src or group_src must be specified")
-            group_src = get_group_rank(pg, src)
+                group_src = 0
+            else:
+                group_src = get_group_rank(pg, src)
         elif src is not None:
             raise ValueError("Cannot specify both src and group_src")
 
@@ -665,8 +669,9 @@ def broadcast_object_list(
         # Resolve group_src for torchcomms
         if group_src is None:
             if src is None:
-                raise ValueError("Either src or group_src must be specified")
-            group_src = get_group_rank(pg, src)
+                group_src = 0
+            else:
+                group_src = get_group_rank(pg, src)
         elif src is not None:
             raise ValueError("Cannot specify both src and group_src")
 

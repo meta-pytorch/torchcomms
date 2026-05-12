@@ -232,6 +232,58 @@ class ObjectCollectivesTest(unittest.TestCase):
         self.assertEqual(obj_0["tuple_as_list"], [1, "two", 3.0])
         self.assertIsNone(obj_0["none_value"])
 
+    def test_gather_object_default_dst(self) -> None:
+        """Test gather_object defaults to root=0 when dst is omitted (matching c10d)."""
+        rank = dist.get_rank()
+        num_ranks = dist.get_world_size()
+
+        obj = f"data_from_rank_{rank}"
+
+        if rank == 0:
+            object_gather_list = [None] * num_ranks
+        else:
+            object_gather_list = None
+
+        dist.gather_object(obj, object_gather_list=object_gather_list)
+
+        if rank == 0:
+            if object_gather_list is None:
+                raise AssertionError("object_gather_list is None")
+            for i in range(num_ranks):
+                self.assertEqual(object_gather_list[i], f"data_from_rank_{i}")
+
+    def test_scatter_object_list_default_src(self) -> None:
+        """Test scatter_object_list defaults to root=0 when src is omitted (matching c10d)."""
+        rank = dist.get_rank()
+        num_ranks = dist.get_world_size()
+
+        if rank == 0:
+            scatter_input = [f"object_for_rank_{i}" for i in range(num_ranks)]
+        else:
+            scatter_input = None
+
+        scatter_output = [None]
+
+        dist.scatter_object_list(
+            scatter_output, scatter_object_input_list=scatter_input
+        )
+
+        self.assertEqual(scatter_output[0], f"object_for_rank_{rank}")
+
+    def test_broadcast_object_list_default_src(self) -> None:
+        """Test broadcast_object_list defaults to root=0 when src is omitted (matching c10d)."""
+        rank = dist.get_rank()
+
+        if rank == 0:
+            object_list = ["broadcast_string", 42]
+        else:
+            object_list = [None, None]
+
+        dist.broadcast_object_list(object_list)
+
+        self.assertEqual(object_list[0], "broadcast_string")
+        self.assertEqual(object_list[1], 42)
+
 
 if __name__ == "__main__":
     unittest.main()

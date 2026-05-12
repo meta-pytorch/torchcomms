@@ -137,6 +137,52 @@ class ScatterGatherTest(unittest.TestCase):
                 expected = torch.full_like(gathered.cpu(), i + 1)
                 torch.testing.assert_close(gathered.cpu(), expected)
 
+    def test_scatter_default_src(self) -> None:
+        """Test scatter defaults to root=0 when src is omitted (matching c10d)."""
+        rank = dist.get_rank()
+        num_ranks = dist.get_world_size()
+        device = get_device(rank)
+
+        output_tensor = torch.zeros(1024, dtype=torch.float, device=device)
+
+        if rank == 0:
+            scatter_list = [
+                torch.ones(1024, dtype=torch.float, device=device) * (i + 1)
+                for i in range(num_ranks)
+            ]
+        else:
+            scatter_list = None
+
+        dist.scatter(output_tensor, scatter_list)
+
+        expected = torch.full_like(output_tensor.cpu(), rank + 1)
+        torch.testing.assert_close(output_tensor.cpu(), expected)
+
+    def test_gather_default_dst(self) -> None:
+        """Test gather defaults to root=0 when dst is omitted (matching c10d)."""
+        rank = dist.get_rank()
+        num_ranks = dist.get_world_size()
+        device = get_device(rank)
+
+        input_tensor = torch.ones(1024, dtype=torch.float, device=device) * (rank + 1)
+
+        if rank == 0:
+            gather_list = [
+                torch.zeros(1024, dtype=torch.float, device=device)
+                for _ in range(num_ranks)
+            ]
+        else:
+            gather_list = None
+
+        dist.gather(input_tensor, gather_list)
+
+        if rank == 0:
+            if gather_list is None:
+                raise AssertionError("gather_list is None")
+            for i, gathered in enumerate(gather_list):
+                expected = torch.full_like(gathered.cpu(), i + 1)
+                torch.testing.assert_close(gathered.cpu(), expected)
+
 
 if __name__ == "__main__":
     unittest.main()
