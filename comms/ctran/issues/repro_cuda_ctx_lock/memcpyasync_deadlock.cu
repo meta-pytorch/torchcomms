@@ -41,7 +41,7 @@
 #include <cstdlib>
 #include <thread>
 
-__global__ void persistentKernel(volatile int* shutdown);
+__global__ void persistentKernel(volatile int* shutdown, volatile int* started);
 __global__ void firstTimeKernel();
 
 static double secs(std::chrono::steady_clock::time_point t) {
@@ -58,6 +58,16 @@ int main() {
   cudaMalloc(&d_shutdown, sizeof(int));
   cudaMemset(d_shutdown, 0, sizeof(int));
 
+  // Pinned host buffer for the shutdown value sent via cudaMemcpyAsync.
+  int* h_one;
+  cudaHostAlloc((void**)&h_one, sizeof(int), cudaHostAllocDefault);
+  *h_one = 1;
+
+  // Pinned flag: persistentKernel writes 1 when it starts on the GPU.
+  volatile int* h_started;
+  cudaHostAlloc((void**)&h_started, sizeof(int), cudaHostAllocDefault);
+  *h_started = 0;
+
   // Force line-buffered stdout so prints are visible even if the process
   // is force-exited from the watchdog before stdio buffers get flushed.
   setvbuf(stdout, nullptr, _IOLBF, 0);
@@ -71,17 +81,25 @@ int main() {
   }).detach();
 
   // 1. Launch persistent kernel. It will spin until *d_shutdown != 0.
-  persistentKernel<<<1, 1, 0, sA>>>(d_shutdown);
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  persistentKernel<<<1, 1, 0, sA>>>(d_shutdown, (int*)h_started);
+
+  // Wait until kernel has ACTUALLY started on the GPU — no timing ambiguity.
+  while (*h_started == 0) {
+    std::this_thread::yield();
+  }
+  std::printf("persistentKernel confirmed running on GPU.\n");
 
   // 2. Spawn child thread to deliver the shutdown signal via
   //    cudaMemcpyAsync. In LAZY mode this call blocks on the primary
   //    context lock and never reaches the GPU.
   std::thread b([&] {
+    // Sleep so the main thread has time to enter firstTimeKernel<<<>>>'s
+    // cuLibraryLoadData (which grabs the context lock). Without this,
+    // cudaMemcpyAsync could run first, deliver shutdown=1, and the
+    // deadlock wouldn't reproduce.
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    int one = 1;
     auto t = std::chrono::steady_clock::now();
-    cudaMemcpyAsync(d_shutdown, &one, sizeof(int), cudaMemcpyHostToDevice, sB);
+    cudaMemcpyAsync(d_shutdown, h_one, sizeof(int), cudaMemcpyHostToDevice, sB);
     std::printf(
         "[B] cudaMemcpyAsync (shutdown=1) returned in %.3fs\n", secs(t));
   });
