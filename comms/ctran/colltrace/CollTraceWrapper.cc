@@ -2,6 +2,8 @@
 
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
 
+#include <set>
+
 #include <folly/logging/xlog.h>
 
 #include "comms/utils/RankUtils.h"
