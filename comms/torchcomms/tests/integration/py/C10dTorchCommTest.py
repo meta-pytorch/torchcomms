@@ -12,10 +12,12 @@ from torchcomms.tests.helpers.py.test_helpers import skip_if_ncclx
 from torchcomms.tests.integration.py.TorchCommTestHelpers import (
     get_device,
     get_rank_and_size,
+    skip_backend,
 )
 
 
 @skip_if_ncclx
+@skip_backend("nccl4py")
 class TestC10dTorchCommsBasic(unittest.TestCase):
     REDUCE_OPS = [
         subtest(dist.ReduceOp.SUM, name="SUM"),

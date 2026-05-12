@@ -124,8 +124,10 @@ jobs:
 
         export ${{ matrix.build-flags }}
 
-        # Install from pre-built wheel (skip build step)
-        pip install "${RUNNER_ARTIFACT_DIR}"/*.whl pytest numpy psutil parameterized pydot requests urllib3 tabulate
+        # Install from pre-built wheel (skip build step). ``nccl4py`` and
+        # ``ml_dtypes`` are needed by the pure-Python nccl4py backend (the
+        # latter is required for its PREMUL_SUM bfloat16 path).
+        pip install "${RUNNER_ARTIFACT_DIR}"/*.whl pytest numpy psutil parameterized pydot requests urllib3 tabulate nccl4py ml_dtypes
 
         python -c "import torchcomms"
 

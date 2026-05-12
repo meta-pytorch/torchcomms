@@ -359,6 +359,15 @@ def skip_backend(backend, msg="Skipping test for backend: "):
     def dec_fn(fn):
         reason = f"{msg}{backend}"
 
+        # Support both class- and method-level decoration. ``unittest.skip``
+        # handles classes directly by setting ``__unittest_skip__`` so we
+        # delegate to it for class targets; otherwise fall back to a per-call
+        # wrapper that raises ``SkipTest`` at runtime.
+        if isinstance(fn, type):
+            if os.environ["TEST_BACKEND"] == backend:
+                return unittest.skip(reason)(fn)
+            return fn
+
         @wraps(fn)
         def wrapper(*args, **kwargs):
             if os.environ["TEST_BACKEND"] == backend:

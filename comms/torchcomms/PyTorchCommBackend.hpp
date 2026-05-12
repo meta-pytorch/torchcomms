@@ -33,6 +33,14 @@ class PyTorchCommBackend : public TorchCommBackend {
     py_self_ = std::move(self);
   }
 
+  // Allows Python ``split()`` implementations to set the c10d-visible device
+  // and options on the child backend without going through ``init()`` (which
+  // would otherwise re-run the bootstrap path against the store).
+  void setDeviceAndOptions(at::Device device, const CommOptions& options) {
+    device_ = device;
+    options_ = options;
+  }
+
   static c10::intrusive_ptr<TorchWork> wrapPyWork(py::object py_result);
 
   void init(

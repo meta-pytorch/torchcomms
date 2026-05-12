@@ -51,6 +51,14 @@ else
     echo "Skipping ncclx tests (USE_NCCLX=${USE_NCCLX})"
 fi
 
+# nccl4py (pure-Python backend backed by NVIDIA's nccl4py bindings)
+if python -c "import nccl" 2>/dev/null; then
+    export TEST_BACKEND=nccl4py
+    run_tests
+else
+    echo "Skipping nccl4py tests (nccl4py not installed)"
+fi
+
 # Gloo with CPU
 export TEST_BACKEND=gloo
 export TEST_DEVICE=cpu
