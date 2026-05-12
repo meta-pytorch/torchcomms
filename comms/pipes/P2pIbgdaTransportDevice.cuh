@@ -23,6 +23,16 @@ struct Memcpy;
 
 inline constexpr uint64_t kDefaultDeviceTimeoutCycles = 10'000'000'000ULL;
 
+// Flags forwarded to DOCA GPU verbs for IBGDA put submits.
+//
+// PipesCodeOptFlagsSkipDbRinging leaves the put un-doorbelled; the caller must
+// arrange a later same-QP doorbell/flush before waiting on completion.
+enum PipesCodeOptFlags : uint32_t {
+  PipesCodeOptFlagsDefault = DOCA_GPUNETIO_VERBS_GPU_CODE_OPT_DEFAULT,
+  PipesCodeOptFlagsSkipDbRinging =
+      DOCA_GPUNETIO_VERBS_GPU_CODE_OPT_SKIP_DB_RINGING,
+};
+
 // Slot-id bounds checks for the slot-index API. Catches both
 // out-of-range slot ids and slot-index calls made when the transport was
 // constructed with no owned signal/counter buffer (numSlots == 0).
@@ -184,6 +194,7 @@ class P2pIbgdaTransportDevice {
    * @param counterId   Slot index into the local counter buffer. -1 disables
    *                    the counter. Bounds-checked against numCounterSlots_.
    * @param counterVal  Value added to the local counter slot.
+   * @param codeOptFlags PipesCodeOptFlags for the put submit.
    */
   __device__ void put(
       ThreadGroup& group,
@@ -193,7 +204,8 @@ class P2pIbgdaTransportDevice {
       int signalId = -1,
       uint64_t signalVal = 1,
       int counterId = -1,
-      uint64_t counterVal = 1) {
+      uint64_t counterVal = 1,
+      uint32_t codeOptFlags = PipesCodeOptFlagsDefault) {
     IbgdaRemoteBuffer sigSlot =
         (signalId >= 0) ? remote_signal_slot(signalId) : IbgdaRemoteBuffer{};
     IbgdaLocalBuffer ctrSlot =
@@ -205,7 +217,8 @@ class P2pIbgdaTransportDevice {
         sigSlot,
         signalVal,
         ctrSlot,
-        counterVal);
+        counterVal,
+        codeOptFlags);
   }
 
   /**
@@ -220,7 +233,8 @@ class P2pIbgdaTransportDevice {
       int signalId = -1,
       uint64_t signalVal = 1,
       int counterId = -1,
-      uint64_t counterVal = 1) {
+      uint64_t counterVal = 1,
+      uint32_t codeOptFlags = PipesCodeOptFlagsDefault) {
     ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
     put(solo,
         localBuf,
@@ -229,7 +243,8 @@ class P2pIbgdaTransportDevice {
         signalId,
         signalVal,
         counterId,
-        counterVal);
+        counterVal,
+        codeOptFlags);
   }
 
   /**
@@ -396,8 +411,10 @@ class P2pIbgdaTransportDevice {
    * @param signalVal  Value added to *signalBuf (atomic FA).
    * @param counterBuf Pre-resolved local counter slot. ptr==nullptr disables
    *                   the counter. With signalBuf set: companion-QP loopback
-   *                   atomic. Counter-only: fence + GPU atomicAdd.
+   *                   atomic. Counter-only: discard-slot signal +
+   *                   companion-QP loopback atomic.
    * @param counterVal Value added to *counterBuf.
+   * @param codeOptFlags PipesCodeOptFlags for the put submit.
    */
   __device__ void put(
       ThreadGroup& group,
@@ -407,7 +424,8 @@ class P2pIbgdaTransportDevice {
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal = 1,
       const IbgdaLocalBuffer& counterBuf = {},
-      uint64_t counterVal = 1) {
+      uint64_t counterVal = 1,
+      uint32_t codeOptFlags = PipesCodeOptFlagsDefault) {
     put_impl(
         group,
         localBuf,
@@ -416,7 +434,8 @@ class P2pIbgdaTransportDevice {
         signalBuf,
         signalVal,
         counterBuf,
-        counterVal);
+        counterVal,
+        codeOptFlags);
   }
 
   /**
@@ -431,7 +450,8 @@ class P2pIbgdaTransportDevice {
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal = 1,
       const IbgdaLocalBuffer& counterBuf = {},
-      uint64_t counterVal = 1) {
+      uint64_t counterVal = 1,
+      uint32_t codeOptFlags = PipesCodeOptFlagsDefault) {
     ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
     put(solo,
         localBuf,
@@ -440,7 +460,8 @@ class P2pIbgdaTransportDevice {
         signalBuf,
         signalVal,
         counterBuf,
-        counterVal);
+        counterVal,
+        codeOptFlags);
   }
 
   // =========================================================================
@@ -655,12 +676,13 @@ class P2pIbgdaTransportDevice {
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal,
       const IbgdaLocalBuffer& counterBuf,
-      uint64_t counterVal) {
+      uint64_t counterVal,
+      uint32_t codeOptFlags = PipesCodeOptFlagsDefault) {
     bool hasSignal = signalBuf.ptr != nullptr;
     bool hasCounter = counterBuf.ptr != nullptr;
 
-    // Step 1: ALWAYS group-cooperative data transfer
-    put_cooperative(group, localBuf, remoteBuf, nbytes);
+    // Step 1: ALWAYS group-cooperative data transfer.
+    put_cooperative(group, localBuf, remoteBuf, nbytes, codeOptFlags);
 
     // Step 2: Leader posts signal/counter WQE(s).
     //
@@ -768,7 +790,8 @@ class P2pIbgdaTransportDevice {
       ThreadGroup& group,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
-      std::size_t nbytes) {
+      std::size_t nbytes,
+      uint32_t codeOptFlags = PipesCodeOptFlagsDefault) {
     std::size_t chunkSize = nbytes / group.group_size;
     std::size_t offset = group.thread_id_in_group * chunkSize;
     std::size_t laneBytes = (group.thread_id_in_group == group.group_size - 1)
@@ -779,7 +802,8 @@ class P2pIbgdaTransportDevice {
     IbgdaRemoteBuffer laneRemoteBuf = remoteBuf.subBuffer(offset);
 
     if (group.group_size == 1) {
-      put_single_impl(group.group_id, laneBuf, laneRemoteBuf, laneBytes);
+      put_single_impl(
+          group.group_id, laneBuf, laneRemoteBuf, laneBytes, codeOptFlags);
       return;
     }
 
@@ -829,7 +853,7 @@ class P2pIbgdaTransportDevice {
 
     group.sync();
 
-    // Leader marks ready and rings doorbell
+    // Leader marks ready and submits.
     if (group.is_leader()) {
       doca_gpu_dev_verbs_mark_wqes_ready<
           DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
@@ -838,7 +862,7 @@ class P2pIbgdaTransportDevice {
           DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
           DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU,
           DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(
-          qp, base_wqe_idx + group.group_size);
+          qp, base_wqe_idx + group.group_size, codeOptFlags);
     }
 
     group.sync();
@@ -850,7 +874,8 @@ class P2pIbgdaTransportDevice {
       uint32_t group_id,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
-      std::size_t nbytes) {
+      std::size_t nbytes,
+      uint32_t codeOptFlags = PipesCodeOptFlagsDefault) {
     auto idx = nic_qp_for_group(group_id);
     const NicDeviceIbgdaResources& nic = nicDevices_[idx.nic_id];
     doca_gpu_dev_verbs_ticket_t ticket;
@@ -865,7 +890,12 @@ class P2pIbgdaTransportDevice {
         DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
         DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO,
         DOCA_GPUNETIO_VERBS_EXEC_SCOPE_THREAD>(
-        nic.qps[idx.qp_id], remoteAddr, localAddr, nbytes, &ticket);
+        nic.qps[idx.qp_id],
+        remoteAddr,
+        localAddr,
+        nbytes,
+        &ticket,
+        codeOptFlags);
   }
 
   // --- signal_fenced: atomic fetch-add with NIC FENCE (always fenced) ---
