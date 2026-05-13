@@ -160,6 +160,29 @@ CommsMaybeVoid CommDumpPlugin::afterCollKernelEnd(
   evictPastColls(*lockedCollTraceDump, completedIteration);
   lockedCollTraceDump->currentColls.erase(it);
 
+  auto latencyUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                       curEvent.collRecord->getTimingInfo().getCollEndTs() -
+                       curEvent.collRecord->getTimingInfo().getCollStartTs())
+                       .count();
+  if (completedIteration > lockedCollTraceDump->currentIteration) {
+    lockedCollTraceDump->currentIteration = completedIteration;
+    lockedCollTraceDump->currentIterationCommTimeUs = latencyUs;
+  } else if (completedIteration == lockedCollTraceDump->currentIteration) {
+    lockedCollTraceDump->currentIterationCommTimeUs += latencyUs;
+  } else {
+    // Unexpected: a collective from an older iteration completed after we
+    // already moved to a newer iteration.  Log and skip the comm-time update
+    // to avoid corrupting the current iteration's accounting.
+    XLOG_FIRST_N(
+        ERR,
+        2,
+        "CommDumpPlugin: Completed iteration ",
+        completedIteration,
+        " is older than current iteration ",
+        lockedCollTraceDump->currentIteration,
+        ". Skipping comm time update.");
+  }
+
   return folly::unit;
 }
 
@@ -253,6 +276,14 @@ CommsMaybe<CollTraceDump> CommDumpPlugin::dump() noexcept {
   }
 
   return dumpCopy;
+}
+
+IterationCommTime CommDumpPlugin::getCurrentIterationCommTime() const noexcept {
+  auto locked = collTraceDump_.rlock(config_.dumpLockAcquireTimeout);
+  if (locked.isNull()) {
+    return {};
+  }
+  return {locked->currentIteration, locked->currentIterationCommTimeUs};
 }
 
 std::unordered_map<std::string, std::string> commDumpToMap(
