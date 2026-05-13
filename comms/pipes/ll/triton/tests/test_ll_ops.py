@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import unittest
 
+from comms.pipes.ll.triton.auto_tune import ll_auto_tune, ll_auto_tune_bidirectional
 from comms.pipes.ll.triton.ll_ops import (
     can_use_ll,
     ll_buffer_size,
@@ -199,3 +200,51 @@ class TestLlPeerBufferOffset(unittest.TestCase):
             off = ll_peer_buffer_offset(r, self_rank, per_peer_size)
             self.assertGreaterEqual(off, 0)
             self.assertLessEqual(off + per_peer_size, total)
+
+
+class TestLlAutoTune(unittest.TestCase):
+    def test_small_message_uses_single_warp(self) -> None:
+        config = ll_auto_tune(64)
+        self.assertEqual(config["block_size"], 32)
+        self.assertEqual(config["num_blocks"], 1)
+
+    def test_boundary_256(self) -> None:
+        config = ll_auto_tune(256)
+        self.assertEqual(config["block_size"], 32)
+
+    def test_medium_message(self) -> None:
+        config = ll_auto_tune(1024)
+        self.assertEqual(config["block_size"], 512)
+        self.assertEqual(config["num_blocks"], 1)
+
+    def test_large_message(self) -> None:
+        config = ll_auto_tune(65536)
+        self.assertEqual(config["block_size"], 512)
+        self.assertEqual(config["num_blocks"], 32)
+
+    def test_returns_valid_keys(self) -> None:
+        config = ll_auto_tune(8)
+        self.assertIn("num_blocks", config)
+        self.assertIn("block_size", config)
+
+    def test_monotonically_increasing_blocks(self) -> None:
+        sizes = [8, 256, 512, 1024, 4096, 16384, 65536, 262144]
+        block_counts = [ll_auto_tune(s)["num_blocks"] for s in sizes]
+        for i in range(1, len(block_counts)):
+            self.assertGreaterEqual(block_counts[i], block_counts[i - 1])
+
+    def test_very_large_message(self) -> None:
+        config = ll_auto_tune(1024 * 1024)
+        self.assertEqual(config["num_blocks"], 256)
+
+
+class TestLlAutoTuneBidirectional(unittest.TestCase):
+    def test_doubles_blocks(self) -> None:
+        uni = ll_auto_tune(16384)
+        bidi = ll_auto_tune_bidirectional(16384)
+        self.assertEqual(bidi["num_blocks"], uni["num_blocks"] * 2)
+        self.assertEqual(bidi["block_size"], uni["block_size"])
+
+    def test_capped_at_1024(self) -> None:
+        bidi = ll_auto_tune_bidirectional(1024 * 1024)
+        self.assertLessEqual(bidi["num_blocks"], 1024)
