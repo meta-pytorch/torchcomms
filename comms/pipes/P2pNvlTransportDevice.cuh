@@ -15,6 +15,7 @@
 #include "comms/pipes/SignalState.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
 #include "comms/pipes/Timeout.cuh"
+#include "comms/pipes/ll/LlOps.cuh"
 #include "comms/pipes/ll128/Ll128Ops.cuh"
 
 namespace comms::pipes {
@@ -51,6 +52,7 @@ struct LocalState {
   DeviceSpan<SignalState> signalBuffer;
   DeviceSpan<BarrierState> barrierBuffer;
   Ll128Packet* ll128Buffer{nullptr};
+  LlLine* llBuffer{nullptr};
 };
 
 /**
@@ -84,6 +86,7 @@ struct RemoteState {
   DeviceSpan<SignalState> signalBuffer;
   DeviceSpan<BarrierState> barrierBuffer;
   Ll128Packet* ll128Buffer{nullptr};
+  LlLine* llBuffer{nullptr};
 };
 
 /**
@@ -146,6 +149,7 @@ struct P2pNvlTransportOptions {
   std::size_t pipelineDepth;
   bool useDualStateBuffer{false}; // Default to single state buffer mode
   std::size_t ll128BufferNumPackets{0}; // 0 = no chunking
+  std::size_t llBufferNumLines{0}; // 0 = no chunking
 };
 
 /**
@@ -1809,6 +1813,219 @@ class P2pNvlTransportDevice {
   }
   __device__ RemoteState& remote_state() {
     return remoteState_;
+  }
+
+  // ===========================================================================
+  // LL Protocol Operations
+  // ===========================================================================
+
+  /**
+   * ll_send — Send data to peer's LL buffer via NVLink.
+   *
+   * Packs user data into LL lines and volatile-stores them to the
+   * peer's LL buffer with inline flag signaling.
+   *
+   * PRECONDITION: llBufferSize > 0 in transport config.
+   *
+   * @param group         ThreadGroup (auto-converted to warp scope)
+   * @param src           Local source buffer (8-byte aligned)
+   * @param nbytes        Total bytes (must be a multiple of 8)
+   * @param active_groups Number of groups calling concurrently.
+   *   0 = default to max groups the LL buffer can support.
+   *   >0 = explicit group count; buffer partitioned per group.group_id.
+   * @param timeout       Timeout for flag polling
+   */
+  __device__ __forceinline__ void ll_send(
+      const ThreadGroup& group,
+      const char* src,
+      size_t nbytes,
+      int active_groups = 0,
+      const Timeout& timeout = Timeout()) {
+#ifdef __CUDA_ARCH__
+    PIPES_DEVICE_CHECK(remoteState_.llBuffer != nullptr);
+    PIPES_DEVICE_CHECK(can_use_ll(src, nbytes, options_.llBufferNumLines));
+
+    const int maxGroups =
+        (options_.llBufferNumLines >= static_cast<size_t>(kLlLinesPerWarp))
+        ? static_cast<int>(options_.llBufferNumLines / kLlLinesPerWarp)
+        : 1;
+    const int effActive = active_groups > 0 ? active_groups : maxGroups;
+
+    PIPES_DEVICE_CHECK(static_cast<uint32_t>(effActive) <= group.total_groups);
+    PIPES_DEVICE_CHECK(group.group_id < static_cast<uint32_t>(effActive));
+
+    const size_t perGroupLines = options_.llBufferNumLines / effActive;
+    if (effActive > 1 && options_.llBufferNumLines > 0) {
+      PIPES_DEVICE_CHECK(perGroupLines >= kLlLinesPerWarp);
+    }
+    const size_t bufferOffset = group.group_id * perGroupLines;
+
+    comms::pipes::ll_send(
+        group,
+        src,
+        nbytes,
+        remoteState_.llBuffer + bufferOffset,
+        timeout,
+        perGroupLines);
+#else
+    (void)group;
+    (void)src;
+    (void)nbytes;
+    (void)active_groups;
+    (void)timeout;
+#endif
+  }
+
+  /**
+   * ll_recv — Receive data from local LL buffer.
+   *
+   * Polls the local LL buffer (written remotely by peer), reads
+   * payload to output buffer, and ACKs with kLlReadyToWrite.
+   *
+   * PRECONDITION: llBufferSize > 0 in transport config.
+   *
+   * @param group         ThreadGroup (auto-converted to warp scope)
+   * @param dst           Local output buffer (8-byte aligned)
+   * @param nbytes        Total bytes (must be a multiple of 8)
+   * @param active_groups Number of groups calling concurrently.
+   *   0 = default to max groups the LL buffer can support.
+   *   >0 = explicit group count; buffer partitioned per group.group_id.
+   * @param timeout       Timeout for flag polling
+   */
+  __device__ __forceinline__ void ll_recv(
+      const ThreadGroup& group,
+      char* dst,
+      size_t nbytes,
+      int active_groups = 0,
+      const Timeout& timeout = Timeout()) {
+#ifdef __CUDA_ARCH__
+    PIPES_DEVICE_CHECK(localState_.llBuffer != nullptr);
+    PIPES_DEVICE_CHECK(can_use_ll(dst, nbytes, options_.llBufferNumLines));
+
+    const int maxGroups =
+        (options_.llBufferNumLines >= static_cast<size_t>(kLlLinesPerWarp))
+        ? static_cast<int>(options_.llBufferNumLines / kLlLinesPerWarp)
+        : 1;
+    const int effActive = active_groups > 0 ? active_groups : maxGroups;
+
+    PIPES_DEVICE_CHECK(static_cast<uint32_t>(effActive) <= group.total_groups);
+    PIPES_DEVICE_CHECK(group.group_id < static_cast<uint32_t>(effActive));
+
+    const size_t perGroupLines = options_.llBufferNumLines / effActive;
+    if (effActive > 1 && options_.llBufferNumLines > 0) {
+      PIPES_DEVICE_CHECK(perGroupLines >= kLlLinesPerWarp);
+    }
+    const size_t bufferOffset = group.group_id * perGroupLines;
+
+    comms::pipes::ll_recv(
+        group,
+        dst,
+        nbytes,
+        localState_.llBuffer + bufferOffset,
+        timeout,
+        perGroupLines);
+#else
+    (void)group;
+    (void)dst;
+    (void)nbytes;
+    (void)active_groups;
+    (void)timeout;
+#endif
+  }
+
+  /**
+   * ll_forward — Receive from predecessor and forward to successor.
+   *
+   * Reads from this transport's local LL buffer (predecessor wrote here),
+   * forwards to successor_transport's remote LL buffer, copies payload
+   * to local output, and ACKs predecessor.
+   *
+   * PRECONDITION: llBufferSize > 0 in both this and successor transport.
+   *
+   * @param group                ThreadGroup (auto-converted to warp scope)
+   * @param dst                  Local output buffer (8-byte aligned)
+   * @param nbytes               Total bytes (must be a multiple of 8)
+   * @param successor_transport  Transport for the successor peer
+   * @param active_groups        Number of groups calling concurrently.
+   *   0 = default to max groups the LL buffer can support.
+   *   >0 = explicit group count; buffer partitioned per group.group_id.
+   * @param timeout              Timeout for flag polling
+   */
+  __device__ __forceinline__ void ll_forward(
+      const ThreadGroup& group,
+      char* dst,
+      size_t nbytes,
+      const P2pNvlTransportDevice& successor_transport,
+      int active_groups = 0,
+      const Timeout& timeout = Timeout()) {
+#ifdef __CUDA_ARCH__
+    PIPES_DEVICE_CHECK(localState_.llBuffer != nullptr);
+    PIPES_DEVICE_CHECK(successor_transport.remoteState_.llBuffer != nullptr);
+    PIPES_DEVICE_CHECK(can_use_ll(dst, nbytes, options_.llBufferNumLines));
+
+    const int myMax =
+        (options_.llBufferNumLines >= static_cast<size_t>(kLlLinesPerWarp))
+        ? static_cast<int>(options_.llBufferNumLines / kLlLinesPerWarp)
+        : 1;
+    const int succMax = (successor_transport.options_.llBufferNumLines >=
+                         static_cast<size_t>(kLlLinesPerWarp))
+        ? static_cast<int>(
+              successor_transport.options_.llBufferNumLines / kLlLinesPerWarp)
+        : 1;
+    const int maxGroups = myMax < succMax ? myMax : succMax;
+    const int effActive = active_groups > 0 ? active_groups : maxGroups;
+
+    PIPES_DEVICE_CHECK(static_cast<uint32_t>(effActive) <= group.total_groups);
+    PIPES_DEVICE_CHECK(group.group_id < static_cast<uint32_t>(effActive));
+
+    const size_t myPerGroup = options_.llBufferNumLines / effActive;
+    const size_t succPerGroup =
+        successor_transport.options_.llBufferNumLines / effActive;
+    if (effActive > 1) {
+      if (options_.llBufferNumLines > 0) {
+        PIPES_DEVICE_CHECK(myPerGroup >= kLlLinesPerWarp);
+      }
+      if (successor_transport.options_.llBufferNumLines > 0) {
+        PIPES_DEVICE_CHECK(succPerGroup >= kLlLinesPerWarp);
+      }
+    }
+    const size_t myOffset = group.group_id * myPerGroup;
+    const size_t succOffset = group.group_id * succPerGroup;
+
+    // Asymmetric buffer sizing: 0 means "pre-sized to fit message."
+    // Use the non-zero value when only one side is chunked.
+    size_t effectiveLines;
+    if (myPerGroup > 0 && succPerGroup > 0) {
+      effectiveLines = myPerGroup < succPerGroup ? myPerGroup : succPerGroup;
+    } else if (myPerGroup > 0) {
+      effectiveLines = myPerGroup;
+    } else {
+      effectiveLines = succPerGroup;
+    }
+
+    comms::pipes::ll_forward(
+        group,
+        dst,
+        nbytes,
+        localState_.llBuffer + myOffset,
+        successor_transport.remoteState_.llBuffer + succOffset,
+        timeout,
+        effectiveLines);
+#else
+    (void)group;
+    (void)dst;
+    (void)nbytes;
+    (void)successor_transport;
+    (void)active_groups;
+    (void)timeout;
+#endif
+  }
+
+  /**
+   * get_ll_buffer_num_lines — Get the number of LL lines in the buffer.
+   */
+  __device__ __forceinline__ size_t get_ll_buffer_num_lines() const {
+    return options_.llBufferNumLines;
   }
 
  private:
