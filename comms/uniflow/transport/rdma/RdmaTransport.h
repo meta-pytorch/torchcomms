@@ -3,9 +3,9 @@
 #pragma once
 
 #include <cstring>
+#include <deque>
 #include <memory>
 #include <optional>
-#include <queue>
 #include <unordered_map>
 
 #include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
@@ -246,10 +246,6 @@ class RdmaTransport : public Transport {
       return promise_.get_future();
     }
 
-    bool isComplete() {
-      return isPromiseSet_ && postFinished_ && remainingWrs_ == 0;
-    }
-
     void postFinished() {
       postFinished_ = true;
     }
@@ -258,30 +254,46 @@ class RdmaTransport : public Transport {
       remainingWrs_ += numWrs;
     }
 
-    void complete(Result<uint32_t> numWrs) {
+    void recordCompletion(Result<uint32_t> numWrs) {
       if (numWrs.hasError()) {
-        postFinished();
-        setPromise(std::move(numWrs).error());
+        if (!error_) {
+          error_ = std::move(numWrs).error();
+        }
+        postFinished_ = true;
         return;
       }
       remainingWrs_ -= numWrs.value();
-      if (remainingWrs_ == 0 && postFinished_) {
-        setPromise(Ok());
+    }
+
+    bool isDone() const {
+      return isFullyDrained() || hasError();
+    }
+
+    bool isFullyDrained() const {
+      return postFinished_ && remainingWrs_ == 0;
+    }
+
+    bool hasError() const {
+      return error_.has_value();
+    }
+
+    void fulfill() {
+      if (!fulfilled_) {
+        fulfilled_ = true;
+        if (error_) {
+          promise_.set_value(std::move(*error_));
+        } else {
+          promise_.set_value(Ok());
+        }
       }
     }
 
    private:
-    bool isPromiseSet_{false};
+    bool fulfilled_{false};
     bool postFinished_{false};
     uint32_t remainingWrs_{0};
+    std::optional<Status> error_;
     std::promise<Status> promise_;
-
-    void setPromise(Status status) {
-      if (!isPromiseSet_) {
-        isPromiseSet_ = true;
-        promise_.set_value(std::move(status));
-      }
-    }
   };
 
   /// Work request descriptor for a single RDMA chunk.
@@ -295,9 +307,16 @@ class RdmaTransport : public Transport {
     const RdmaRemoteRegistrationHandle* remoteHandle{nullptr};
   };
 
-  struct PendingRequests {
+  struct PendingTransfer {
     uint32_t taskId;
     std::unique_ptr<std::vector<SendWr>> sendWrs;
+    size_t idx{0};
+    std::shared_ptr<Task> task;
+  };
+
+  struct PendingCompletion {
+    uint32_t taskId;
+    std::shared_ptr<Task> task;
   };
 
   // --- Caller thread methods ---
@@ -322,6 +341,10 @@ class RdmaTransport : public Transport {
       std::span<const TransferRequest> requests,
       ibv_wr_opcode opcode,
       const RequestOptions& options);
+
+  /// Unified IO processing loop. Runs exclusively on EventBase thread.
+  /// Posts WRs from pendingTransfers_, polls CQs, fulfills promises in order.
+  void ioLooper() noexcept;
 
   /// Distributes SendWrs across QPs proportional to available capacity
   /// and posts them.
@@ -350,10 +373,11 @@ class RdmaTransport : public Transport {
   ///
   /// Error behavior:
   ///   - Partial failure (consumed > 0): flush WR posted, returns consumed+1.
-  ///     task->complete(error) is called. task->posted(consumed+1) is called.
+  ///     task->recordCompletion(error) is called. task->posted(consumed+1)
+  ///     is called.
   ///   - Flush failure: transport set to Error state.
   ///   - Complete failure (consumed == 0): returns 0.
-  ///     task->complete(error) is called. No counter changes.
+  ///     task->recordCompletion(error) is called. No counter changes.
   uint32_t postSend(
       uint32_t qpIdx,
       ibv_send_wr* head,
@@ -361,9 +385,8 @@ class RdmaTransport : public Transport {
       uint32_t taskId,
       std::shared_ptr<Task>& task);
 
-  /// Polls all CQs and dispatches completions to their tasks.
-  /// Re-dispatches itself on EventBase if the given task is still in-flight.
-  void pollCompletions(uint32_t taskId, bool retry);
+  /// Polls all CQs and routes completions to their tasks via inflightTasks_.
+  void pollCompletions();
 
   const std::shared_ptr<IbvApi> ibvApi_;
   EventBase* evb_{nullptr};
@@ -387,9 +410,15 @@ class RdmaTransport : public Transport {
   /// Number of pending CQEs for each nic. Accessed only on EventBase thread.
   std::vector<int> numPendingCqe_{0};
 
-  /// pending requests queue for post-order guarantee. Accessed only on
+  /// Transfers awaiting WR posting. Accessed only on EventBase.
+  std::deque<PendingTransfer> pendingTransfers_;
+
+  /// Transfers awaiting CQ completion. Accessed only on EventBase.
+  std::deque<PendingCompletion> pendingCompletions_;
+
+  /// Whether ioLooper is scheduled on the EventBase. Accessed only on
   /// EventBase.
-  std::queue<PendingRequests> pendingRequests_;
+  bool ioLooperScheduled_{false};
 
   /// Maps taskId → task for in-flight requests. Accessed only on EventBase.
   std::unordered_map<uint32_t, std::shared_ptr<Task>> inflightTasks_;
