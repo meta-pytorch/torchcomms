@@ -13,7 +13,7 @@ from torchcomms.tests.helpers.py.cuda_graph_test_helpers import (
     PipelineStep,
     skip_unless_ncclx,
 )
-from torchcomms.tests.integration.py.TorchCommTestHelpers import get_rank_and_size
+from torchcomms.tests.integration.helpers.TorchCommTestHelpers import get_rank_and_size
 
 
 class TestGraphConcurrency(CudaGraphTestBase):

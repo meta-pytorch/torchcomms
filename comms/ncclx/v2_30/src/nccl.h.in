@@ -41,7 +41,6 @@ extern "C" {
 #define NCCL_COMM_DESCRIPTION // used for nccl-pg to set it https://fburl.com/code/th293cmh
 #define NCCL_COMM_SPLIT_GROUP_RANKS_SUPPORTED
 #define NCCL_ALLTOALLV_SUPPORTED
-#define NCCL_ALLTOALLV_DYNAMIC_SUPPORTED
 #define NCCL_ALLTOALLV_DEDUP_SUPPORTED
 #define NCCL_ALLTOALL_SUPPORTED
 #define NCCL_PERSISTENT_COLL_SUPPORTED
@@ -165,10 +164,6 @@ typedef struct ncclConfig_v22800 {
   // control allgather algo at comm level
   const char* ncclAllGatherAlgo{nullptr};
 
-  // control the lazy connect features
-  int lazyConnect{NCCL_CONFIG_UNDEF_INT};
-  int lazySetupChannels{NCCL_CONFIG_UNDEF_INT};
-
   // control the fast init features
   int fastInitMode{NCCL_CONFIG_UNDEF_INT};
 
@@ -210,8 +205,6 @@ typedef struct ncclConfig_v22800 {
   NCCL_CONFIG_UNDEF_PTR,                    /* splitGroupRanks */       \
   NCCL_CONFIG_UNDEF_INT,                    /* splitGroupSize */        \
   NCCL_CONFIG_UNDEF_PTR,                    /* ncclAllGatherAlgo */     \
-  NCCL_CONFIG_UNDEF_INT,                    /* lazyConnect */           \
-  NCCL_CONFIG_UNDEF_INT,                    /* lazySetupChannels */     \
   NCCL_CONFIG_UNDEF_INT,                    /* fastInitMode */          \
   NCCL_CONFIG_UNDEF_PTR,                    /* hints */                 \
   NCCL_CONFIG_UNDEF_PTR,                    /* ncclxConfig */           \

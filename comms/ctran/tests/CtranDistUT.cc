@@ -29,27 +29,6 @@ class CtranTest : public ctran::CtranDistTestFixture {
   CtranComm* comm{nullptr};
 };
 
-TEST_F(CtranTest, CtranAllToAllvDynamicHints) {
-  EXPECT_TRUE(ctranInitialized(comm));
-
-  meta::comms::Hints hints;
-  hints.set("ncclx_alltoallv_dynamic_sendbuffs_location", "cpu");
-  hints.set("ncclx_alltoallv_dynamic_recvbuffs_location", "cpu");
-  hints.set("ncclx_alltoallv_dynamic_sendcounts_location", "gpu");
-  hints.set("ncclx_alltoallv_dynamic_max_sendcounts_location", "cpu");
-  hints.set("ncclx_alltoallv_dynamic_max_recvcounts_location", "cpu");
-  hints.set("ncclx_alltoallv_dynamic_actual_recvcounts_location", "gpu");
-
-  const size_t elemSize = commTypeSize(commInt);
-  size_t maxSendcounts =
-      (CTRAN_MIN_REGISTRATION_SIZE + elemSize - 1) / elemSize;
-  size_t maxRecvcounts = maxSendcounts;
-
-  auto res = ctranAllToAllvDynamicSupport(
-      comm, hints, maxSendcounts, maxRecvcounts, commInt);
-  EXPECT_EQ(commSuccess, res);
-}
-
 TEST_F(CtranTest, GpeNotInitialized) {
   comm->ctran_->gpe.reset();
   ASSERT_FALSE(ctranInitialized(comm));

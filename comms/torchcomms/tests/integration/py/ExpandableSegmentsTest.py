@@ -17,7 +17,7 @@ os.environ.setdefault("NCCL_ALLREDUCE_ALGO", "ctran")
 
 import torch
 from torchcomms import ReduceOp
-from torchcomms.tests.integration.py.TorchCommTestHelpers import (
+from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
     get_rank_and_size,
     TorchCommTestWrapper,
 )

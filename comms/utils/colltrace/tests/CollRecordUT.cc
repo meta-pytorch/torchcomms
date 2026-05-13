@@ -281,4 +281,46 @@ TEST_F(CollRecordTest, NullMetadata) {
   EXPECT_FALSE(collRecord_->equals(*recordWithNullMetadata));
 }
 
+TEST_F(CollRecordTest, IterationDefaultValue) {
+  EXPECT_EQ(collRecord_->getIteration(), -1);
+}
+
+TEST_F(CollRecordTest, IterationExplicitValue) {
+  auto metadata = std::make_unique<NiceMock<MockCollMetadata>>();
+  auto record = std::make_unique<CollRecord>(1, std::move(metadata), 42);
+  EXPECT_EQ(record->getIteration(), 42);
+}
+
+TEST_F(CollRecordTest, IterationInToDynamic) {
+  auto metadata = std::make_unique<NiceMock<MockCollMetadata>>();
+  folly::dynamic emptyObj = folly::dynamic::object;
+  ON_CALL(*metadata, toDynamic()).WillByDefault(Return(emptyObj));
+  auto record = std::make_unique<CollRecord>(1, std::move(metadata), 7);
+  auto result = record->toDynamic();
+  ASSERT_TRUE(result.count("iteration"));
+  EXPECT_EQ(result["iteration"].asInt(), 7);
+}
+
+TEST_F(CollRecordTest, IterationAffectsHash) {
+  auto meta1 = std::make_unique<NiceMock<MockCollMetadata>>();
+  ON_CALL(*meta1, hash()).WillByDefault(Return(0));
+  auto meta2 = std::make_unique<NiceMock<MockCollMetadata>>();
+  ON_CALL(*meta2, hash()).WillByDefault(Return(0));
+
+  auto record1 = std::make_unique<CollRecord>(1, std::move(meta1), 10);
+  auto record2 = std::make_unique<CollRecord>(1, std::move(meta2), 20);
+  EXPECT_NE(record1->hash(), record2->hash());
+}
+
+TEST_F(CollRecordTest, IterationAffectsEquals) {
+  auto meta1 = std::make_unique<NiceMock<MockCollMetadata>>();
+  ON_CALL(*meta1, equals(_)).WillByDefault(Return(true));
+  auto meta2 = std::make_unique<NiceMock<MockCollMetadata>>();
+  ON_CALL(*meta2, equals(_)).WillByDefault(Return(true));
+
+  auto record1 = std::make_unique<CollRecord>(1, std::move(meta1), 10);
+  auto record2 = std::make_unique<CollRecord>(1, std::move(meta2), 20);
+  EXPECT_FALSE(record1->equals(*record2));
+}
+
 } // namespace

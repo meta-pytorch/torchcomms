@@ -176,7 +176,6 @@ struct CtranKernelArgs {
     ctran::sendrecv::KernelSendRecvArgs sendrecv;
     ctran::alltoall::KernelArgs alltoall;
     ctran::alltoallv::KernelArgs alltoallv;
-    ctran::alltoallvdynamic::KernelArgs alltoallv_dynamic;
     ctran::alltoalldedup::KernelArgs alltoall_dedup;
     ctran::broadcast::KernelArgs broadcast;
     ctran::reducescatter::KernelArgs reducescatter;

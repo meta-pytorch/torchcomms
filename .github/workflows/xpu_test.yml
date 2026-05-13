@@ -96,6 +96,7 @@ jobs:
           SHA1: ${{ github.event.pull_request.head.sha || github.sha }}
           RUNNER_NAME: ${{ runner.name }}
           ZE_AFFINITY_MASK: ${{ env.ZE_AFFINITY_MASK }}
+          DISABLED_TESTS: ${{ vars.DISABLED_TESTS }}
         timeout-minutes: 120
         run: |
           set -x
@@ -127,6 +128,7 @@ jobs:
             -e GITHUB_RUN_NUMBER \
             -e GITHUB_RUN_ATTEMPT \
             -e ZE_AFFINITY_MASK \
+            -e DISABLED_TESTS \
             -e DLE_PATH=${DLE_PATH} \
             -e JOB_ID \
             -e BRANCH \

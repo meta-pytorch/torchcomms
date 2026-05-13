@@ -267,11 +267,11 @@ class TorchCommBackend {
   }
 
   /**
-   * Check if abort/fault-tolerance is enabled on this communicator.
+   * Check if abort/fault-tolerance is supported on this communicator.
    *
-   * @return True if abort is enabled, false otherwise.
+   * @return True if abort is supported, false otherwise.
    */
-  virtual bool abortEnabled() const {
+  virtual bool isAbortSupported() const {
     return false;
   }
 

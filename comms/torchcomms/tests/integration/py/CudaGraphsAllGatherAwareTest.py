@@ -20,8 +20,6 @@ import unittest
 
 import torch
 import torchcomms  # noqa: F401 — side-effect import registers ncclx backend
-
-# pyre-fixme[21]: Could not find name `ProfilerActivity` in `torch.profiler`.
 from torch.profiler import profile, ProfilerActivity
 from torchcomms.tests.helpers.py.cuda_graph_test_helpers import (
     _wait,
@@ -29,7 +27,7 @@ from torchcomms.tests.helpers.py.cuda_graph_test_helpers import (
     GraphTestBuilder,
     skip_unless_ncclx,
 )
-from torchcomms.tests.integration.py.TorchCommTestHelpers import get_rank_and_size
+from torchcomms.tests.integration.helpers.TorchCommTestHelpers import get_rank_and_size
 
 
 class TestAllGatherCudaGraphAware(CudaGraphTestBase):
@@ -112,7 +110,6 @@ class TestAllGatherCudaGraphAware(CudaGraphTestBase):
             #   2. Graph capture (auto-converts to AGP)
             #   3. Graph replays (SM-free CE+host-node replay)
             profile_ctx = (
-                # pyre-fixme[16]: Module `torch.profiler` has no attribute `ProfilerActivity`.
                 profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA])
                 if profile_dir
                 else contextlib.nullcontext()

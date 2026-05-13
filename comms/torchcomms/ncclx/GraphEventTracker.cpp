@@ -27,6 +27,14 @@ namespace torch::comms {
 
 GraphEventTracker::GraphEventTracker(TorchCommNCCLX* comm) : comm_(comm) {}
 
+GraphEventTracker::~GraphEventTracker() {
+  destroyAll();
+  CudaApi* api = comm_->getCudaApi();
+  for (cudaEvent_t event : event_pool_) {
+    (void)api->eventDestroy(event);
+  }
+}
+
 void GraphEventTracker::initOnGraphStart(cudaStream_t stream) {
   // No op if not in graph capture mode
   if (!comm_->getGraphCaptureMode()) {
@@ -65,9 +73,10 @@ void GraphEventTracker::maybeInitGraphState(
     return;
   }
   auto& state = it->second;
+  state.event_pool_ = &event_pool_;
+  state.counter_pool_ = &counter_pool_;
 
   CudaApi* api = comm_->getCudaApi();
-  state.api_ = api;
 
   SharedCallbackState* shared = allocateCallbackState();
   state.shared_ = shared;
@@ -314,18 +323,6 @@ GraphEventTracker::CheckResult GraphEventTracker::checkAll() {
 
 #undef EVENT_QUERY_CHECK
 
-GraphState::~GraphState() {
-  if (api_ == nullptr) {
-    return;
-  }
-
-  for (auto& [_, entries] : stream_entries) {
-    for (auto& entry : entries) {
-      entry.destroyEvents(api_);
-    }
-  }
-}
-
 void GraphEventTracker::cleanupReleasedGraphs() {
   CudaApi* api = comm_->getCudaApi();
 
@@ -351,17 +348,6 @@ void GraphEventTracker::cleanupReleasedGraphs() {
           }
         }
       }
-
-      // Recycle the counter back to the pool instead of letting
-      // ~DeviceCounter run inline. cudaFreeHost is a synchronizing call —
-      // running it here on the watchdog thread can block indefinitely if
-      // the device is busy with the next eager warmup, starving NCCL
-      // progress and causing a peer-visible deadlock. The graph has been
-      // fully destroyed (cudaGraphExecDestroy blocks until in-flight
-      // replays complete, then the user-object refcount drops to zero
-      // and our cleanupCallback fires), so no GPU work references this
-      // counter region.
-      releaseCounter(std::move(graph_state.replay_counter));
     }
 
     it = graphs_.erase(it);
@@ -379,8 +365,14 @@ cudaError_t GraphEventTracker::acquireCounter(
   return DeviceCounter::create(comm_->getCudaApi(), out);
 }
 
-void GraphEventTracker::releaseCounter(std::unique_ptr<DeviceCounter> counter) {
-  counter_pool_.push_back(std::move(counter));
+cudaError_t GraphEventTracker::acquireEvent(cudaEvent_t& out) {
+  if (!event_pool_.empty()) {
+    out = event_pool_.back();
+    event_pool_.pop_back();
+    return cudaSuccess;
+  }
+  return comm_->getCudaApi()->eventCreateWithFlags(
+      &out, cudaEventDisableTiming);
 }
 
 void GraphEventTracker::destroyAll() {

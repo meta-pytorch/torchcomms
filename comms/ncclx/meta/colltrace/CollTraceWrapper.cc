@@ -338,11 +338,18 @@ ncclResult_t newCollTraceInit(ncclComm* comm) {
   auto plugins =
       std::vector<std::unique_ptr<meta::comms::colltrace::ICollTracePlugin>>{};
 
+  auto evictionMode = NCCL_COLLTRACE_ITERATION_MODE
+      ? meta::comms::colltrace::EvictionMode::Iteration
+      : meta::comms::colltrace::EvictionMode::FixedCount;
+
   auto commDumpPlugin =
       std::make_unique<meta::comms::colltrace::CommDumpPlugin>(
           meta::comms::colltrace::CommDumpConfig{
               .pastCollSize = NCCL_COLLTRACE_RECORD_MAX,
               .pendingCollSize = NCCL_COLLTRACE_PENDING_QUEUE_SIZE,
+              .evictionMode = evictionMode,
+              .maxIterations = NCCL_COLLTRACE_RECORD_MAX_ITERATIONS,
+              .iterationUpperBound = NCCL_COLLTRACE_ITERATION_UPPER_BOUND,
           });
   plugins.push_back(std::move(commDumpPlugin));
 

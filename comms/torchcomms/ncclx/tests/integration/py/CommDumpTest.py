@@ -6,7 +6,9 @@ import json
 import unittest
 
 from torchcomms._comms_ncclx import comm_dump_all
-from torchcomms.tests.integration.py.TorchCommTestHelpers import TorchCommTestWrapper
+from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
+    TorchCommTestWrapper,
+)
 
 
 class CommDumpTest(unittest.TestCase):

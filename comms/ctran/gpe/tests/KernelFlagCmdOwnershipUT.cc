@@ -2,7 +2,6 @@
 
 #include <gtest/gtest.h>
 #include "comms/ctran/algos/AllToAll/AllToAllPImpl.h"
-#include "comms/ctran/algos/AllToAll/AllToAllvDynamicPImpl.h"
 #include "comms/ctran/algos/common/GpeKernel.h"
 #include "comms/ctran/gpe/CtranGpeImpl.h"
 

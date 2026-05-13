@@ -16,7 +16,7 @@ from torchcomms.tests.helpers.py.cuda_graph_test_helpers import (
     skip_unless_ncclx,
 )
 from torchcomms.tests.helpers.py.fatal_state_test_helpers import FatalStateTestMixin
-from torchcomms.tests.integration.py.TorchCommTestHelpers import get_rank_and_size
+from torchcomms.tests.integration.helpers.TorchCommTestHelpers import get_rank_and_size
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +199,6 @@ class TestTimeout(CudaGraphTestBase, FatalStateTestMixin):
         else:
             self.assert_subprocess_failed(result)
 
-    # pyre-ignore[56]
     @skip_unless_ncclx
     def test_eager_timeout(self) -> None:
         """Eager collective timeout should abort the process."""
@@ -208,7 +207,6 @@ class TestTimeout(CudaGraphTestBase, FatalStateTestMixin):
             "Aborting process due to timeout",
         )
 
-    # pyre-ignore[56]
     @skip_unless_ncclx
     def test_graph_timeout(self) -> None:
         """Graph replay timeout should abort the process."""
@@ -217,7 +215,6 @@ class TestTimeout(CudaGraphTestBase, FatalStateTestMixin):
             "Graph monitor: collective TIMED OUT for graph",
         )
 
-    # pyre-ignore[56]
     @skip_unless_ncclx
     def test_eager_timeout_after_successful_op(self) -> None:
         """First eager op succeeds, second times out and aborts."""
@@ -226,7 +223,6 @@ class TestTimeout(CudaGraphTestBase, FatalStateTestMixin):
             "Aborting process due to timeout",
         )
 
-    # pyre-ignore[56]
     @skip_unless_ncclx
     def test_graph_timeout_after_successful_replay(self) -> None:
         """First graph replay succeeds, second times out and aborts."""
@@ -235,7 +231,6 @@ class TestTimeout(CudaGraphTestBase, FatalStateTestMixin):
             "Graph monitor: collective TIMED OUT for graph",
         )
 
-    # pyre-ignore[56]
     @skip_unless_ncclx
     def test_eager_no_false_timeout(self) -> None:
         """Normal eager collective with short timeout completes without false timeout."""
@@ -255,7 +250,6 @@ class TestTimeout(CudaGraphTestBase, FatalStateTestMixin):
         finally:
             comm.finalize()
 
-    # pyre-ignore[56]
     @skip_unless_ncclx
     def test_graph_no_false_timeout(self) -> None:
         """Graph replay without artificial delay should complete without timeout."""

@@ -844,9 +844,9 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   timers[TIMER_INIT_ALLGATHER] = clockNano() - timers[TIMER_INIT_ALLGATHER];
 
   // Check for lazy channel setup support
-  comm->lazySetupChannels = comm->cuMemSupport && NCCLX_CONFIG_FIELD(comm->config, lazySetupChannels);
+  comm->lazySetupChannels = comm->cuMemSupport && NCCL_LAZY_SETUP_CHANNELS;
   // Check for runtime connect support
-  comm->runtimeConn = comm->cuMemSupport && NCCLX_CONFIG_FIELD(comm->config, lazyConnect);
+  comm->runtimeConn = comm->cuMemSupport && NCCL_RUNTIME_CONNECT;
 
   if (comm->runtimeConn == 0 && comm->lazySetupChannels == 1) {
     WARN("NCCL_RUNTIME_CONNECT is disabled but NCCL_LAZY_SETUP_CHANNELS is enabled, full lazy connect features will still be used");

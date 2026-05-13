@@ -345,6 +345,8 @@ cvars:
    default     : -1
    description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-comm-blocking
 
+ # TODO: Delete NCCL_RUNTIME_CONNECT once v2.27 and v2.28 are removed.
+ # v2.29 uses ncclParam + per-comm hints instead.
  - name        : NCCL_RUNTIME_CONNECT
    type        : int64_t
    default     : 1
@@ -1205,27 +1207,6 @@ cvars:
    description : |-
      Number of threads in each thread block used for intra-node
      AllToAllv kernel.
-
- - name        : NCCL_CTRAN_ALLTOALLV_DYNAMIC_NUM_THREAD_BLOCKS
-   type        : int
-   default     : 64
-   description : |-
-     Number of thread blocks used for intra-node AllToAllv kernel.
-     Must be even number.
-
- - name        : NCCL_CTRAN_ALLTOALLV_DYNAMIC_THREAD_BLOCK_SIZE
-   type        : int
-   default     : 256
-   description : |-
-     Number of threads in each thread block used for intra-node
-     AllToAllv kernel.
-
- - name        : NCCL_CTRAN_ALLTOALLV_DYNAMIC_MAX_NUM_COUNTS_PER_PEER
-   type        : int
-   default     : 256
-   description : |-
-     Maximum number of experts for MoE models. This value is used by
-     AllToAllvDynamic to allocate the corresponding buffer size.
 
  - name        : NCCL_CTRAN_ALLTOALL_DEDUP_NUM_THREAD_BLOCKS_PER_RAIL_P2P
    type        : int
@@ -2343,6 +2324,25 @@ cvars:
      (e.g. current collective in iteration 5, it will keep all the collectives
      in iteration 4 and 5).
      Set to 0 to disable recording past collectives.
+
+ - name        : NCCL_COLLTRACE_ITERATION_MODE
+   type        : bool
+   default     : false
+   description : |-
+     If true, CommDumpPlugin retains all collectives from recent training
+     iterations (set via ncclxSetIteration) instead of a fixed count.
+     The number of iterations retained is controlled by
+     NCCL_COLLTRACE_RECORD_MAX_ITERATIONS. Falls back to a hard upper bound
+     (NCCL_COLLTRACE_ITERATION_UPPER_BOUND, default 3000) if iteration
+     tracking is not active.
+
+ - name        : NCCL_COLLTRACE_ITERATION_UPPER_BOUND
+   type        : int
+   default     : 3000
+   description : |-
+     Hard upper bound on past collectives retained when
+     NCCL_COLLTRACE_ITERATION_MODE is enabled. Prevents unbounded growth
+     if ncclxSetIteration is never called.
 
  - name        : NCCL_COLLTRACE_SLOW_COLL_THRESHOLD_BY_PG
    type        : stringlist

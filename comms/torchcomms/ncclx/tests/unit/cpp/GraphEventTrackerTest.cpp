@@ -338,8 +338,9 @@ TEST_F(GraphEventTrackerTest, ReplayCounterResetsTimer) {
   setupFinalizeExpectations(*comm);
 }
 
-// destroyAll should destroy exactly the entry-owned events. We track which
-// events are destroyed to verify precise cleanup.
+// destroyAll should stash the entry-owned events into the tracker event pool;
+// the actual cudaEventDestroy calls fire at ~GraphEventTracker (comm
+// destruction). We track destroys to verify the events are eventually freed.
 TEST_F(GraphEventTrackerTest, DestroyAllCleansUpGraphEntryEvents) {
   auto comm = createMockedTorchComm();
   cuda_mock_->setupDefaultBehaviors();
@@ -377,15 +378,26 @@ TEST_F(GraphEventTrackerTest, DestroyAllCleansUpGraphEntryEvents) {
 
   comm->finalize();
 
-  EXPECT_TRUE(
-      std::find(
-          destroyed_events.begin(), destroyed_events.end(), events.start) !=
+  // After finalize, events are stashed in the tracker pool, not destroyed.
+  EXPECT_EQ(
+      std::find(destroyed_events.begin(), destroyed_events.end(), events.start),
       destroyed_events.end())
-      << "start event was not destroyed by destroyAll";
-  EXPECT_TRUE(
-      std::find(destroyed_events.begin(), destroyed_events.end(), events.end) !=
+      << "start event must defer destruction past finalize";
+  EXPECT_EQ(
+      std::find(destroyed_events.begin(), destroyed_events.end(), events.end),
       destroyed_events.end())
-      << "end event was not destroyed by destroyAll";
+      << "end event must defer destruction past finalize";
+
+  // ~GraphEventTracker drains the pool at comm destruction.
+  comm.reset();
+  EXPECT_NE(
+      std::find(destroyed_events.begin(), destroyed_events.end(), events.start),
+      destroyed_events.end())
+      << "start event was not destroyed by ~GraphEventTracker";
+  EXPECT_NE(
+      std::find(destroyed_events.begin(), destroyed_events.end(), events.end),
+      destroyed_events.end())
+      << "end event was not destroyed by ~GraphEventTracker";
 }
 
 // Verify that the cleanup callback only sets the released flag when a graph
@@ -554,18 +566,52 @@ TEST_F(GraphEventTrackerTest, CheckAllCleansUpReleasedGraphs) {
   // Invoke cleanup callback — sets released flag
   captured_cleanup_fn(captured_cleanup_data);
 
-  // checkGraphEvents calls checkAll which calls cleanupReleasedGraphs
-  EXPECT_CALL(*cuda_mock_, eventDestroy(events.start))
-      .WillOnce(Return(cudaSuccess));
-  EXPECT_CALL(*cuda_mock_, eventDestroy(events.end))
-      .WillOnce(Return(cudaSuccess));
+  // checkGraphEvents calls checkAll which calls cleanupReleasedGraphs.
+  // Events are now stashed in the tracker event pool rather than destroyed
+  // inline, so checkAll must NOT call eventDestroy on the captured events.
+  std::vector<cudaEvent_t> destroyed_events;
+  EXPECT_CALL(*cuda_mock_, eventDestroy(_))
+      .WillRepeatedly(DoAll(
+          [&destroyed_events](cudaEvent_t event) {
+            destroyed_events.push_back(event);
+          },
+          Return(cudaSuccess)));
 
   comm->checkGraphEvents();
 
+  EXPECT_EQ(
+      std::find(destroyed_events.begin(), destroyed_events.end(), events.start),
+      destroyed_events.end())
+      << "start_event must be stashed by cleanupReleasedGraphs, not destroyed";
+  EXPECT_EQ(
+      std::find(destroyed_events.begin(), destroyed_events.end(), events.end),
+      destroyed_events.end())
+      << "end_event must be stashed by cleanupReleasedGraphs, not destroyed";
+
   ::testing::Mock::VerifyAndClearExpectations(cuda_mock_.get());
 
-  // finalize should have nothing to clean up (already cleaned by checkAll)
-  setupFinalizeExpectations(*comm);
+  // Re-install the destroy tracker for the finalize/destroy sequence.
+  EXPECT_CALL(*cuda_mock_, eventDestroy(_))
+      .WillRepeatedly(DoAll(
+          [&destroyed_events](cudaEvent_t event) {
+            destroyed_events.push_back(event);
+          },
+          Return(cudaSuccess)));
+  EXPECT_CALL(*cuda_mock_, free(_)).WillRepeatedly(Return(cudaSuccess));
+  EXPECT_CALL(*cuda_mock_, streamDestroy(_)).WillOnce(Return(cudaSuccess));
+  EXPECT_CALL(*nccl_mock_, commDestroy(_)).WillOnce(Return(ncclSuccess));
+  comm->finalize();
+
+  // Drain happens at comm destruction.
+  comm.reset();
+  EXPECT_NE(
+      std::find(destroyed_events.begin(), destroyed_events.end(), events.start),
+      destroyed_events.end())
+      << "start_event not destroyed at comm destruction";
+  EXPECT_NE(
+      std::find(destroyed_events.begin(), destroyed_events.end(), events.end),
+      destroyed_events.end())
+      << "end_event not destroyed at comm destruction";
 }
 
 TEST_F(GraphEventTrackerTest, MultipleGraphsOnlyReleasedOneCleanedUp) {
@@ -650,11 +696,15 @@ TEST_F(GraphEventTrackerTest, MultipleGraphsOnlyReleasedOneCleanedUp) {
   // Release only graph 1
   cleanup_fn_1(cleanup_data_1);
 
-  // checkAll should destroy graph 1's events but not graph 2's
-  EXPECT_CALL(*cuda_mock_, eventDestroy(start1)).WillOnce(Return(cudaSuccess));
-  EXPECT_CALL(*cuda_mock_, eventDestroy(end1)).WillOnce(Return(cudaSuccess));
-  EXPECT_CALL(*cuda_mock_, eventDestroy(start2)).Times(0);
-  EXPECT_CALL(*cuda_mock_, eventDestroy(end2)).Times(0);
+  // checkAll stashes graph 1's events in the tracker pool; graph 2 stays in
+  // graphs_ and its events are untouched. No eventDestroy fires on either.
+  std::vector<cudaEvent_t> destroyed_events;
+  EXPECT_CALL(*cuda_mock_, eventDestroy(_))
+      .WillRepeatedly(DoAll(
+          [&destroyed_events](cudaEvent_t event) {
+            destroyed_events.push_back(event);
+          },
+          Return(cudaSuccess)));
 
   ON_CALL(*cuda_mock_, eventQuery(start2))
       .WillByDefault(Return(cudaErrorNotReady));
@@ -663,10 +713,36 @@ TEST_F(GraphEventTrackerTest, MultipleGraphsOnlyReleasedOneCleanedUp) {
 
   comm->checkGraphEvents();
 
+  for (auto e : {start1, end1, start2, end2}) {
+    EXPECT_EQ(
+        std::find(destroyed_events.begin(), destroyed_events.end(), e),
+        destroyed_events.end())
+        << "event must be stashed by cleanupReleasedGraphs, not destroyed";
+  }
+
   ::testing::Mock::VerifyAndClearExpectations(cuda_mock_.get());
 
-  // finalize should destroy graph 2's events
-  setupFinalizeExpectations(*comm);
+  // Re-install destroy tracker, then run finalize and comm destruction.
+  // graph 2's events get stashed by destroyAll, then both graphs' events
+  // drain at ~GraphEventTracker.
+  EXPECT_CALL(*cuda_mock_, eventDestroy(_))
+      .WillRepeatedly(DoAll(
+          [&destroyed_events](cudaEvent_t event) {
+            destroyed_events.push_back(event);
+          },
+          Return(cudaSuccess)));
+  EXPECT_CALL(*cuda_mock_, free(_)).WillRepeatedly(Return(cudaSuccess));
+  EXPECT_CALL(*cuda_mock_, streamDestroy(_)).WillOnce(Return(cudaSuccess));
+  EXPECT_CALL(*nccl_mock_, commDestroy(_)).WillOnce(Return(ncclSuccess));
+  comm->finalize();
+  comm.reset();
+
+  for (auto e : {start1, end1, start2, end2}) {
+    EXPECT_NE(
+        std::find(destroyed_events.begin(), destroyed_events.end(), e),
+        destroyed_events.end())
+        << "event was not destroyed at comm destruction";
+  }
 }
 
 // Verify the pinned-memory counter region is reused across recaptures rather
@@ -869,6 +945,93 @@ TEST_F(GraphEventTrackerTest, CounterPoolDrainsAtFinalize) {
          "counter region";
 }
 
+// Verify that graph events captured by GraphEventTracker are destroyed at
+// comm destruction (~GraphEventTracker drains event_pool_), not earlier.
+// finalize() runs destroyAll() which only stashes; the actual cudaEventDestroy
+// calls happen when the comm itself is destroyed and the device is quiescent.
+TEST_F(GraphEventTrackerTest, EventPoolDrainsAtCommDestruction) {
+  auto comm = createMockedTorchComm();
+  cuda_mock_->setupDefaultBehaviors();
+  nccl_mock_->setupDefaultBehaviors();
+
+  auto options = createAbortModeOptions();
+  comm->init(*device_, "test_event_pool_drains_at_destruction", options);
+
+  // Track every eventDestroy call across the full lifecycle.
+  std::vector<cudaEvent_t> destroyed_events;
+  auto trackEventDestroy = [&destroyed_events](cudaEvent_t e) {
+    destroyed_events.push_back(e);
+    return cudaSuccess;
+  };
+  ON_CALL(*cuda_mock_, eventDestroy(_)).WillByDefault(trackEventDestroy);
+
+  // -------- Capture / release a graph --------
+  void* cleanup_data = nullptr;
+  cudaHostFn_t cleanup_fn = nullptr;
+  setupGraphCaptureMocks(/*graph_id=*/100);
+  auto events = setupGraphCaptureEvents();
+  EXPECT_CALL(*cuda_mock_, userObjectCreate(_, _, _, _, _))
+      .WillOnce(DoAll(
+          SetArgPointee<0>(reinterpret_cast<cudaUserObject_t>(0x3000)),
+          SaveArg<1>(&cleanup_data),
+          SaveArg<2>(&cleanup_fn),
+          Return(cudaSuccess)));
+
+  {
+    auto tensor = createTestTensor({10, 10});
+    auto work = comm->send(tensor, 1, true);
+  }
+
+  ASSERT_NE(cleanup_fn, nullptr);
+  cleanup_fn(cleanup_data);
+  switchToReplayMode();
+  comm->checkGraphEvents();
+
+  // Watchdog cleanup must not destroy start/end events.
+  EXPECT_EQ(
+      std::find(destroyed_events.begin(), destroyed_events.end(), events.start),
+      destroyed_events.end())
+      << "start_event destroyed during watchdog cleanup";
+  EXPECT_EQ(
+      std::find(destroyed_events.begin(), destroyed_events.end(), events.end),
+      destroyed_events.end())
+      << "end_event destroyed during watchdog cleanup";
+
+  ::testing::Mock::VerifyAndClearExpectations(cuda_mock_.get());
+  cuda_mock_->setupDefaultBehaviors();
+
+  // Manually set up finalize expectations so our tracker keeps capturing
+  // eventDestroy across both finalize() and the subsequent comm destruction.
+  // (The default setupFinalizeExpectations installs an EXPECT_CALL on
+  // eventDestroy that would shadow our ON_CALL tracker.)
+  EXPECT_CALL(*cuda_mock_, eventDestroy(_)).WillRepeatedly(trackEventDestroy);
+  EXPECT_CALL(*cuda_mock_, free(_)).WillRepeatedly(Return(cudaSuccess));
+  EXPECT_CALL(*cuda_mock_, streamDestroy(_)).WillOnce(Return(cudaSuccess));
+  EXPECT_CALL(*nccl_mock_, commDestroy(_)).WillOnce(Return(ncclSuccess));
+  comm->finalize();
+
+  // finalize stashes events into event_pool_ but doesn't destroy them.
+  EXPECT_EQ(
+      std::find(destroyed_events.begin(), destroyed_events.end(), events.start),
+      destroyed_events.end())
+      << "start_event destroyed during finalize (must defer to ~GraphEventTracker)";
+  EXPECT_EQ(
+      std::find(destroyed_events.begin(), destroyed_events.end(), events.end),
+      destroyed_events.end())
+      << "end_event destroyed during finalize (must defer to ~GraphEventTracker)";
+
+  // Destroy the comm; ~GraphEventTracker drains event_pool_ here.
+  comm.reset();
+  EXPECT_NE(
+      std::find(destroyed_events.begin(), destroyed_events.end(), events.start),
+      destroyed_events.end())
+      << "start_event was not destroyed when comm was destroyed";
+  EXPECT_NE(
+      std::find(destroyed_events.begin(), destroyed_events.end(), events.end),
+      destroyed_events.end())
+      << "end_event was not destroyed when comm was destroyed";
+}
+
 TEST_F(GraphEventTrackerTest, DestroyAllIgnoresReleasedFlag) {
   auto comm = createMockedTorchComm();
   cuda_mock_->setupDefaultBehaviors();
@@ -905,7 +1068,8 @@ TEST_F(GraphEventTrackerTest, DestroyAllIgnoresReleasedFlag) {
 
   switchToReplayMode();
 
-  // destroyAll (via finalize) should destroy events regardless of released flag
+  // destroyAll (via finalize) stashes events into the tracker pool regardless
+  // of the released flag; the actual destruction fires at ~GraphEventTracker.
   std::vector<cudaEvent_t> destroyed_events;
   EXPECT_CALL(*cuda_mock_, eventDestroy(_))
       .WillRepeatedly(DoAll(
@@ -918,16 +1082,16 @@ TEST_F(GraphEventTrackerTest, DestroyAllIgnoresReleasedFlag) {
   EXPECT_CALL(*nccl_mock_, commDestroy(_)).WillOnce(Return(ncclSuccess));
 
   comm->finalize();
+  comm.reset();
 
-  EXPECT_TRUE(
-      std::find(
-          destroyed_events.begin(), destroyed_events.end(), events.start) !=
+  EXPECT_NE(
+      std::find(destroyed_events.begin(), destroyed_events.end(), events.start),
       destroyed_events.end())
-      << "start event was not destroyed by destroyAll";
-  EXPECT_TRUE(
-      std::find(destroyed_events.begin(), destroyed_events.end(), events.end) !=
+      << "start event was not destroyed at comm destruction";
+  EXPECT_NE(
+      std::find(destroyed_events.begin(), destroyed_events.end(), events.end),
       destroyed_events.end())
-      << "end event was not destroyed by destroyAll";
+      << "end event was not destroyed at comm destruction";
 }
 
 TEST_F(GraphEventTrackerTest, EventResetByReplayDefeatsTimeout) {

@@ -9,7 +9,7 @@ from torch.testing._internal.common_utils import (
     subtest,
 )
 from torchcomms.tests.helpers.py.test_helpers import skip_if_ncclx
-from torchcomms.tests.integration.py.TorchCommTestHelpers import (
+from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
     get_device,
     get_rank_and_size,
 )
