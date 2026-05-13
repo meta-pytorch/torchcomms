@@ -329,6 +329,51 @@ class ReconfigureTest(unittest.TestCase):
 
         comm.finalize()
 
+    def test_reconfigure_single_to_all(self):
+        """Test reconfigure from single rank to all ranks then allreduce."""
+        if not self._is_supported_backend():
+            self.skipTest(f"Backend {self.backend} does not support reconfigure()")
+
+        import torchcomms
+
+        comm = torchcomms.new_comm(
+            self.backend,
+            self.device,
+            "reconfigure_single_to_all",
+            enable_reconfigure=True,
+            store=self._get_store_for_comm(),
+        )
+
+        comm.reconfigure(
+            uuid=3,
+            init_handles=[comm.get_init_handle()],
+            timeout=timedelta(milliseconds=30000),
+        ).wait()
+
+        all_handles = self._collect_handles(comm, "test_reconfigure_single_to_all")
+        comm.reconfigure(
+            uuid=4,
+            init_handles=all_handles,
+            timeout=timedelta(milliseconds=30000),
+        ).wait()
+
+        my_rank = comm.get_rank()
+        tensor = torch.ones(4, dtype=torch.float, device=self.device) * (my_rank + 1)
+        comm.all_reduce(tensor, torchcomms.ReduceOp.SUM, async_op=False)
+
+        if self.device.type == "cuda":
+            torch.cuda.current_stream().synchronize()
+
+        expected_value = sum(range(1, self.world_size + 1))
+        expected = torch.ones(4, dtype=torch.float, device="cpu") * expected_value
+        self.assertTrue(
+            torch.allclose(tensor.cpu(), expected),
+            f"[Rank {my_rank}] AllReduce after single-to-all reconfigure failed: "
+            f"got {tensor.cpu()}, expected {expected}",
+        )
+
+        comm.finalize()
+
     def test_reconfigure_identity(self):
         """Test that reconfigure works when world size doesn't change."""
         if not self._is_supported_backend():
