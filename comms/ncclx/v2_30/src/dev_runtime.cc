@@ -184,6 +184,7 @@ static void symTeamDestroyAll(struct ncclComm* comm); // Further down
 ncclResult_t ncclDevrFinalize(struct ncclComm* comm) {
   struct ncclDevrState* devr = &comm->devrState;
   cudaStream_t stream;
+  ncclResult_t ret = ncclSuccess;
   if (devr->bigSize == 0) return ncclSuccess;
 
   while (!ncclIntruQueueEmpty(&devr->regTaskQueue)) {
@@ -197,7 +198,7 @@ ncclResult_t ncclDevrFinalize(struct ncclComm* comm) {
   CUDACHECKIGNORE(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
   while (devr->winSortedCount > 0) {
     struct ncclDevrWindow* win = devr->winSorted[0].win;
-    NCCLCHECKIGNORE(symWindowDestroy(comm, win->vidmem, stream));
+    NCCLCHECKIGNORE(symWindowDestroy(comm, win->vidmem, stream), ret);
   }
   CUDACHECKIGNORE(cudaStreamSynchronize(stream));
   CUDACHECKIGNORE(cudaStreamDestroy(stream));
@@ -227,7 +228,7 @@ ncclResult_t ncclDevrFinalize(struct ncclComm* comm) {
   ncclSpaceDestruct(&devr->bigSpace);
   free(devr->lsaRankList);
   free(devr->winSorted);
-  return ncclSuccess;
+  return ret;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
