@@ -44,6 +44,9 @@ class Ctran : public ICtran {
   uint64_t getOpCount() const override;
   uint64_t getCtranOpCount() const override;
 
+  void startEventAlgo() override;
+  void endEventAlgo() override;
+
  private:
   CtranComm* comm_{nullptr};
 };
