@@ -24,6 +24,7 @@ extern __global__ void ncclKernelAllGatherPHierarchicalPipes(
 namespace {
 
 constexpr const char* kAlgoName = "CtranAllGatherPHierarchicalPipes";
+constexpr size_t kDirectFallbackMaxBytes = 4 * 1024 * 1024;
 
 commResult_t validateAndFillRankGeometry(
     CtranComm* comm,
@@ -168,10 +169,15 @@ commResult_t AlgoImpl::execHierarchicalPipes(
   FB_COMMCHECK(waitInit());
 
   const size_t typeSize = commTypeSize(datatype);
+  const size_t sendBytes = count * typeSize;
+  if (sendBytes <= kDirectFallbackMaxBytes) {
+    return execDirect(sendbuff, count, datatype);
+  }
+
   hierarchical_pipes::KernArgs kernArgs{};
   auto& args = kernArgs.args;
   FB_COMMCHECK(validateAndFillRankGeometry(comm_, args));
-  args.sendcount = count * typeSize;
+  args.sendcount = sendBytes;
   args.ib_signaling_data_size = NCCL_CTRAN_HIER_AG_IB_SIGNAL_BYTES;
   args.nvl_signaling_data_size = NCCL_CTRAN_HIER_AG_NVL_SIGNAL_BYTES;
   args.sendbuf = static_cast<const char*>(sendbuff);
