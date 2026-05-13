@@ -69,6 +69,9 @@ class CommsMonitor {
   // If any failure happened during calling this function, it will return -1.
   static int64_t getNumOfCommMonitoring();
 
+  // For testing only. Clears all registered communicators from the singleton.
+  static void testOnlyClearComms();
+
  private:
   bool registerCommImpl(ncclComm_t comm);
   bool deregisterCommImpl(ncclComm_t comm);
