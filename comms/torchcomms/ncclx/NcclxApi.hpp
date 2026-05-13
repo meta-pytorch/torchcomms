@@ -10,6 +10,12 @@
 #include <glog/logging.h>
 #include <nccl.h> // @manual=//comms/ncclx:nccl
 
+// NCCL_SHRINK_ABORT was introduced in NCCL 2.27 alongside ncclCommShrink.
+// Define a fallback so dependents compile against older NCCL headers.
+#if NCCL_VERSION_CODE < NCCL_VERSION(2, 27, 0) && !defined(NCCL_SHRINK_ABORT)
+#define NCCL_SHRINK_ABORT 0x01
+#endif
+
 // NCCL Device API headers are only available in NCCLX 2.28+
 // For conda feedstock builds with older NCCLX versions, device API is disabled
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API

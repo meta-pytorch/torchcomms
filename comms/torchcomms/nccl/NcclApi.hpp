@@ -7,6 +7,14 @@
 
 #include <nccl.h> // @manual=fbsource//third-party/nccl:nccl
 
+// NCCL_SHRINK_ABORT was introduced in NCCL 2.27 alongside ncclCommShrink.
+// Define a fallback so dependents compile against older NCCL headers; the
+// commShrink wrapper in NcclApi.cpp is itself version-guarded and returns
+// ncclInvalidUsage on older NCCL, so the value is never read at runtime.
+#if NCCL_VERSION_CODE < NCCL_VERSION(2, 27, 0) && !defined(NCCL_SHRINK_ABORT)
+#define NCCL_SHRINK_ABORT 0x01
+#endif
+
 namespace torch::comms {
 /**
  * Abstract interface for NCCL API operations.
