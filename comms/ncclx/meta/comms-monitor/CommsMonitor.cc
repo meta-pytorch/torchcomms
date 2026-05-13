@@ -217,6 +217,13 @@ CommsMonitor::getTopologyByCommDesc(const std::string& commDesc) {
   return commsMonitorSingleton.try_get();
 }
 
+/*static*/ void CommsMonitor::testOnlyClearComms() {
+  auto commMonitorPtr = getInstance();
+  if (commMonitorPtr != nullptr) {
+    commMonitorPtr->commsMap_.wlock()->clear();
+  }
+}
+
 /*static*/ std::optional<CommDumpAllMap> CommsMonitor::commDumpAll() {
   if (!NCCL_COMMSMONITOR_ENABLE) {
     static bool logDumpAllUnavailable = false;
