@@ -308,6 +308,10 @@ std::unordered_map<std::string, std::string> commDumpToMap(
   }
   map["CT_currentColls"] = folly::toJson(currentColls);
 
+  map["CT_currentIteration"] = std::to_string(dump.currentIteration);
+  map["CT_currentIterationCommTimeUs"] =
+      std::to_string(dump.currentIterationCommTimeUs);
+
   return map;
 }
 
