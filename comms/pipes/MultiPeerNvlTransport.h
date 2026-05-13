@@ -95,6 +95,11 @@ struct MultiPeerNvlTransportConfig {
   // 0 (default), LL128 is disabled. Use ll128_buffer_size() from
   // Ll128Packet.cuh to compute from message size.
   std::size_t ll128BufferSize{0};
+
+  // Override the automatically selected memory sharing mode. Leaving this unset
+  // keeps the default behavior: fabric handles when available, cudaIpc
+  // otherwise.
+  std::optional<MemSharingMode> memSharingMode;
 };
 
 /**
