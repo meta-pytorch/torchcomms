@@ -20,7 +20,8 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
       nRanks_(nRanks),
       bootstrap_(std::move(bootstrap)),
       config_(multiPeerNvlTransportConfig),
-      memSharingMode_(GpuMemHandler::detectBestMode()) {
+      memSharingMode_(
+          config_.memSharingMode.value_or(GpuMemHandler::detectBestMode())) {
   // ===========================================================================
   // Buffer Allocation
   // ===========================================================================
