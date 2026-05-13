@@ -286,31 +286,51 @@ IterationCommTime CommDumpPlugin::getCurrentIterationCommTime() const noexcept {
   return {locked->currentIteration, locked->currentIterationCommTimeUs};
 }
 
+namespace {
+bool isKeyReq(
+    const std::unordered_set<std::string>& fields,
+    std::string_view key) {
+  return fields.empty() || fields.contains(std::string{key});
+}
+} // namespace
+
 std::unordered_map<std::string, std::string> commDumpToMap(
-    const CollTraceDump& dump) {
+    const CollTraceDump& dump,
+    const std::unordered_set<std::string>& requestFields) {
   std::unordered_map<std::string, std::string> map;
 
-  auto pastColls = folly::dynamic::array();
-  for (const auto& coll : dump.pastColls) {
-    pastColls.push_back(coll->toDynamic());
+  if (isKeyReq(requestFields, "CT_pastColls")) {
+    auto pastColls = folly::dynamic::array();
+    for (const auto& coll : dump.pastColls) {
+      pastColls.push_back(coll->toDynamic());
+    }
+    map["CT_pastColls"] = folly::toJson(pastColls);
   }
-  map["CT_pastColls"] = folly::toJson(pastColls);
 
-  auto pendingColls = folly::dynamic::array();
-  for (const auto& coll : dump.pendingColls) {
-    pendingColls.push_back(coll->toDynamic());
+  if (isKeyReq(requestFields, "CT_pendingColls")) {
+    auto pendingColls = folly::dynamic::array();
+    for (const auto& coll : dump.pendingColls) {
+      pendingColls.push_back(coll->toDynamic());
+    }
+    map["CT_pendingColls"] = folly::toJson(pendingColls);
   }
-  map["CT_pendingColls"] = folly::toJson(pendingColls);
 
-  auto currentColls = folly::dynamic::array();
-  for (const auto& coll : dump.currentColls) {
-    currentColls.push_back(coll->toDynamic());
+  if (isKeyReq(requestFields, "CT_currentColls")) {
+    auto currentColls = folly::dynamic::array();
+    for (const auto& coll : dump.currentColls) {
+      currentColls.push_back(coll->toDynamic());
+    }
+    map["CT_currentColls"] = folly::toJson(currentColls);
   }
-  map["CT_currentColls"] = folly::toJson(currentColls);
 
-  map["CT_currentIteration"] = std::to_string(dump.currentIteration);
-  map["CT_currentIterationCommTimeUs"] =
-      std::to_string(dump.currentIterationCommTimeUs);
+  if (isKeyReq(requestFields, "CT_currentIteration")) {
+    map["CT_currentIteration"] = std::to_string(dump.currentIteration);
+  }
+
+  if (isKeyReq(requestFields, "CT_currentIterationCommTimeUs")) {
+    map["CT_currentIterationCommTimeUs"] =
+        std::to_string(dump.currentIterationCommTimeUs);
+  }
 
   return map;
 }

@@ -5,6 +5,7 @@
 #include <deque>
 #include <memory>
 #include <queue>
+#include <unordered_set>
 #include <vector>
 
 #include <folly/MPMCQueue.h>
@@ -140,6 +141,7 @@ class CommDumpPlugin : public ICollTracePlugin {
 // Helper functions for CommDumpPlugin
 
 std::unordered_map<std::string, std::string> commDumpToMap(
-    const CollTraceDump& dump);
+    const CollTraceDump& dump,
+    const std::unordered_set<std::string>& requestFields = {});
 
 } // namespace meta::comms::colltrace

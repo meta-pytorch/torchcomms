@@ -2,6 +2,7 @@
 #pragma once
 
 #include <memory>
+#include <unordered_set>
 
 #include "comm.h"
 #include "device.h"
@@ -56,7 +57,8 @@ class CommsMonitor {
  public:
   static bool registerComm(ncclComm_t comm);
   static bool deregisterComm(ncclComm_t comm);
-  static std::optional<CommDumpAllMap> commDumpAll();
+  static std::optional<CommDumpAllMap> commDumpAll(
+      const std::unordered_set<std::string>& requestFields = {});
 
   static std::optional<NcclCommMonitorInfo> getCommInfoByCommPtr(
       ncclComm_t comm);
@@ -75,7 +77,8 @@ class CommsMonitor {
  private:
   bool registerCommImpl(ncclComm_t comm);
   bool deregisterCommImpl(ncclComm_t comm);
-  CommDumpAllMap commDumpAllImpl();
+  CommDumpAllMap commDumpAllImpl(
+      const std::unordered_set<std::string>& requestFields);
 
   static std::shared_ptr<CommsMonitor> getInstance();
 
@@ -86,5 +89,6 @@ class CommsMonitor {
 } // namespace ncclx::comms_monitor
 
 std::unordered_map<std::string, std::string> commDumpByMonitorInfo(
-    const ncclx::comms_monitor::NcclCommMonitorInfo&
-        info); // resides in commDump.cc
+    const ncclx::comms_monitor::NcclCommMonitorInfo& info,
+    const std::unordered_set<std::string>& requestFields =
+        {}); // resides in commDump.cc

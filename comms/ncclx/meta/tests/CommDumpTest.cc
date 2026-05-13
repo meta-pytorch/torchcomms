@@ -21,6 +21,7 @@
 #include "meta/NcclxConfig.h"
 #include "meta/colltrace/ProxyMock.h"
 #include "meta/commDump.h"
+#include "meta/comms-monitor/CommsMonitor.h"
 #include "meta/wrapper/CtranExComm.h"
 
 static bool VERBOSE = true;
@@ -1094,6 +1095,297 @@ TEST_F(CommDumpTest, DISABLED_DumpWhileCommsInDestruct) {
     comm_ptr.reset();
     t.join();
   }
+}
+
+TEST_F(CommDumpTest, DumpAllWithRequestFieldsCommInfoOnly) {
+  ncclx::comms_monitor::CommsMonitor::testOnlyClearComms();
+  auto commsMonitorGuard = EnvRAII(NCCL_COMMSMONITOR_ENABLE, true);
+  auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
+
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
+
+  constexpr int numColls = 3;
+  this->initData(this->globalRank);
+  for (int i = 0; i < numColls; i++) {
+    NCCLCHECK_TEST(ncclAllReduce(
+        this->dataBuf,
+        this->dataBuf,
+        this->dataCount,
+        ncclInt,
+        ncclSum,
+        comm,
+        this->stream));
+  }
+  CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
+  ASSERT_NE(comm->newCollTrace, nullptr);
+  EXPECT_TRUE(waitForCollTraceDrain(*comm->newCollTrace));
+
+  std::unordered_map<std::string, std::unordered_map<std::string, std::string>>
+      dumpAll;
+  auto res = ncclCommDumpAll(dumpAll, std::string{"commHash;rank;nRanks"});
+  ASSERT_EQ(res, ncclSuccess);
+  EXPECT_GE(dumpAll.size(), 1);
+
+  auto commHash = hashToHexStr(comm->commHash);
+  ASSERT_TRUE(dumpAll.count(commHash));
+  const auto& commDump = dumpAll.at(commHash);
+
+  EXPECT_EQ(commDump.count("commHash"), 1);
+  EXPECT_EQ(commDump.count("rank"), 1);
+  EXPECT_EQ(commDump.count("nRanks"), 1);
+
+  // Keys not requested should be absent
+  EXPECT_EQ(commDump.count("localRank"), 0);
+  EXPECT_EQ(commDump.count("node"), 0);
+  EXPECT_EQ(commDump.count("CT_pastColls"), 0);
+  EXPECT_EQ(commDump.count("CT_pendingColls"), 0);
+  EXPECT_EQ(commDump.count("CT_currentColls"), 0);
+  EXPECT_EQ(commDump.count("PT_pastColls"), 0);
+  EXPECT_EQ(commDump.count("PT_activeOps"), 0);
+  EXPECT_EQ(commDump.count("memory"), 0);
+}
+
+TEST_F(CommDumpTest, DumpAllWithRequestFieldsTotalCommDurPerIteration) {
+  ncclx::comms_monitor::CommsMonitor::testOnlyClearComms();
+  auto commsMonitorGuard = EnvRAII(NCCL_COMMSMONITOR_ENABLE, true);
+  auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
+
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
+
+  constexpr int numColls = 3;
+  this->initData(this->globalRank);
+  for (int i = 0; i < numColls; i++) {
+    NCCLCHECK_TEST(ncclAllReduce(
+        this->dataBuf,
+        this->dataBuf,
+        this->dataCount,
+        ncclInt,
+        ncclSum,
+        comm,
+        this->stream));
+  }
+  CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
+  ASSERT_NE(comm->newCollTrace, nullptr);
+  EXPECT_TRUE(waitForCollTraceDrain(*comm->newCollTrace));
+
+  std::unordered_map<std::string, std::unordered_map<std::string, std::string>>
+      dumpAll;
+  auto res = ncclCommDumpAll(
+      dumpAll, std::string{"GlobalInfo::totalCommDurPerIterationUs"});
+  ASSERT_EQ(res, ncclSuccess);
+
+  // Per-communicator maps should be empty (no fields requested)
+  auto commHash = hashToHexStr(comm->commHash);
+  if (dumpAll.count(commHash)) {
+    const auto& commDump = dumpAll.at(commHash);
+    EXPECT_EQ(commDump.count("CT_pastColls"), 0);
+    EXPECT_EQ(commDump.count("commHash"), 0);
+  }
+
+  // Aggregated result should be in GlobalInfo
+  ASSERT_TRUE(dumpAll.count("GlobalInfo"));
+  const auto& globalInfo = dumpAll.at("GlobalInfo");
+  EXPECT_EQ(globalInfo.count("totalCommDurPerIterationUs"), 1);
+}
+
+TEST_F(CommDumpTest, DumpAllWithEmptyRequestFieldsDumpsEverything) {
+  ncclx::comms_monitor::CommsMonitor::testOnlyClearComms();
+  auto commsMonitorGuard = EnvRAII(NCCL_COMMSMONITOR_ENABLE, true);
+  auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
+
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
+
+  constexpr int numColls = 3;
+  this->initData(this->globalRank);
+  for (int i = 0; i < numColls; i++) {
+    NCCLCHECK_TEST(ncclAllReduce(
+        this->dataBuf,
+        this->dataBuf,
+        this->dataCount,
+        ncclInt,
+        ncclSum,
+        comm,
+        this->stream));
+  }
+  CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
+  ASSERT_NE(comm->newCollTrace, nullptr);
+  EXPECT_TRUE(waitForCollTraceDrain(*comm->newCollTrace));
+
+  std::unordered_map<std::string, std::unordered_map<std::string, std::string>>
+      dumpAll;
+  auto res = ncclCommDumpAll(dumpAll);
+  ASSERT_EQ(res, ncclSuccess);
+  EXPECT_GE(dumpAll.size(), 1);
+
+  auto commHash = hashToHexStr(comm->commHash);
+  ASSERT_TRUE(dumpAll.count(commHash));
+  const auto& commDump = dumpAll.at(commHash);
+
+  EXPECT_EQ(commDump.count("commHash"), 1);
+  EXPECT_EQ(commDump.count("rank"), 1);
+  EXPECT_EQ(commDump.count("CT_pastColls"), 1);
+  EXPECT_EQ(commDump.count("CT_pendingColls"), 1);
+  EXPECT_EQ(commDump.count("CT_currentColls"), 1);
+  EXPECT_EQ(commDump.count("PT_pastColls"), 1);
+  EXPECT_EQ(commDump.count("PT_activeOps"), 1);
+}
+
+TEST_F(CommDumpTest, DumpAllGlobalInfoOnlySkipsPerCommDump) {
+  ncclx::comms_monitor::CommsMonitor::testOnlyClearComms();
+  auto commsMonitorGuard = EnvRAII(NCCL_COMMSMONITOR_ENABLE, true);
+  auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
+
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
+
+  constexpr int numColls = 3;
+  this->initData(this->globalRank);
+  for (int i = 0; i < numColls; i++) {
+    NCCLCHECK_TEST(ncclAllReduce(
+        this->dataBuf,
+        this->dataBuf,
+        this->dataCount,
+        ncclInt,
+        ncclSum,
+        comm,
+        this->stream));
+  }
+  CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
+  ASSERT_NE(comm->newCollTrace, nullptr);
+  EXPECT_TRUE(waitForCollTraceDrain(*comm->newCollTrace));
+
+  std::unordered_map<std::string, std::unordered_map<std::string, std::string>>
+      dumpAll;
+  auto res = ncclCommDumpAll(
+      dumpAll, std::string{"GlobalInfo::totalCommDurPerIterationUs"});
+  ASSERT_EQ(res, ncclSuccess);
+
+  // Per-communicator entries should NOT exist at all (shortcut skipped the
+  // loop)
+  auto commHash = hashToHexStr(comm->commHash);
+  EXPECT_EQ(dumpAll.count(commHash), 0)
+      << "Per-communicator dump should be skipped when only GlobalInfo keys requested";
+
+  // GlobalInfo should be present
+  ASSERT_TRUE(dumpAll.count("GlobalInfo"));
+  EXPECT_EQ(dumpAll.at("GlobalInfo").count("totalCommDurPerIterationUs"), 1);
+}
+
+TEST_F(CommDumpTest, DumpAllSingleCollTraceKey) {
+  ncclx::comms_monitor::CommsMonitor::testOnlyClearComms();
+  auto commsMonitorGuard = EnvRAII(NCCL_COMMSMONITOR_ENABLE, true);
+  auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
+  auto collRecordGuard = EnvRAII(NCCL_COLLTRACE_RECORD_MAX, -1);
+
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
+
+  constexpr int numColls = 3;
+  this->initData(this->globalRank);
+  for (int i = 0; i < numColls; i++) {
+    NCCLCHECK_TEST(ncclAllReduce(
+        this->dataBuf,
+        this->dataBuf,
+        this->dataCount,
+        ncclInt,
+        ncclSum,
+        comm,
+        this->stream));
+  }
+  CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
+  ASSERT_NE(comm->newCollTrace, nullptr);
+  EXPECT_TRUE(waitForCollTraceDrain(*comm->newCollTrace));
+
+  std::unordered_map<std::string, std::unordered_map<std::string, std::string>>
+      dumpAll;
+  auto res = ncclCommDumpAll(dumpAll, std::string{"CT_pastColls"});
+  ASSERT_EQ(res, ncclSuccess);
+
+  auto commHash = hashToHexStr(comm->commHash);
+  ASSERT_TRUE(dumpAll.count(commHash));
+  const auto& commDump = dumpAll.at(commHash);
+
+  // Only CT_pastColls should be present
+  EXPECT_EQ(commDump.count("CT_pastColls"), 1);
+  EXPECT_EQ(commDump.count("CT_pendingColls"), 0);
+  EXPECT_EQ(commDump.count("CT_currentColls"), 0);
+  EXPECT_EQ(commDump.count("CT_currentIteration"), 0);
+  EXPECT_EQ(commDump.count("commHash"), 0);
+  EXPECT_EQ(commDump.count("rank"), 0);
+  EXPECT_EQ(commDump.count("PT_pastColls"), 0);
+  EXPECT_EQ(commDump.count("memory"), 0);
+}
+
+TEST_F(CommDumpTest, DumpAllMixedPerCommAndGlobalInfoKeys) {
+  ncclx::comms_monitor::CommsMonitor::testOnlyClearComms();
+  auto commsMonitorGuard = EnvRAII(NCCL_COMMSMONITOR_ENABLE, true);
+  auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
+
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
+
+  constexpr int numColls = 3;
+  this->initData(this->globalRank);
+  for (int i = 0; i < numColls; i++) {
+    NCCLCHECK_TEST(ncclAllReduce(
+        this->dataBuf,
+        this->dataBuf,
+        this->dataCount,
+        ncclInt,
+        ncclSum,
+        comm,
+        this->stream));
+  }
+  CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
+  ASSERT_NE(comm->newCollTrace, nullptr);
+  EXPECT_TRUE(waitForCollTraceDrain(*comm->newCollTrace));
+
+  std::unordered_map<std::string, std::unordered_map<std::string, std::string>>
+      dumpAll;
+  auto res = ncclCommDumpAll(
+      dumpAll,
+      std::string{"rank;nRanks;GlobalInfo::totalCommDurPerIterationUs"});
+  ASSERT_EQ(res, ncclSuccess);
+
+  // Per-communicator should have only rank and nRanks
+  auto commHash = hashToHexStr(comm->commHash);
+  ASSERT_TRUE(dumpAll.count(commHash));
+  const auto& commDump = dumpAll.at(commHash);
+  EXPECT_EQ(commDump.count("rank"), 1);
+  EXPECT_EQ(commDump.count("nRanks"), 1);
+  EXPECT_EQ(commDump.count("commHash"), 0);
+  EXPECT_EQ(commDump.count("CT_pastColls"), 0);
+
+  // GlobalInfo should also be present
+  ASSERT_TRUE(dumpAll.count("GlobalInfo"));
+  EXPECT_EQ(dumpAll.at("GlobalInfo").count("totalCommDurPerIterationUs"), 1);
+}
+
+TEST_F(CommDumpTest, DumpAllProxyTraceKeyOnly) {
+  ncclx::comms_monitor::CommsMonitor::testOnlyClearComms();
+  auto commsMonitorGuard = EnvRAII(NCCL_COMMSMONITOR_ENABLE, true);
+  auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
+
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
+
+  std::unordered_map<std::string, std::unordered_map<std::string, std::string>>
+      dumpAll;
+  auto res = ncclCommDumpAll(dumpAll, std::string{"PT_pastColls"});
+  ASSERT_EQ(res, ncclSuccess);
+
+  auto commHash = hashToHexStr(comm->commHash);
+  ASSERT_TRUE(dumpAll.count(commHash));
+  const auto& commDump = dumpAll.at(commHash);
+
+  EXPECT_EQ(commDump.count("PT_pastColls"), 1);
+  EXPECT_EQ(commDump.count("PT_activeOps"), 0);
+  EXPECT_EQ(commDump.count("PT_activeColls"), 0);
+  EXPECT_EQ(commDump.count("commHash"), 0);
+  EXPECT_EQ(commDump.count("CT_pastColls"), 0);
 }
 
 int main(int argc, char* argv[]) {
