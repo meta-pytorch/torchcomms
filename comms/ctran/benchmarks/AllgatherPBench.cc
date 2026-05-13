@@ -28,7 +28,8 @@ DEFINE_int32(bench_iters, 50, "Number of benchmark iterations (default: 20)");
 DEFINE_string(
     algo,
     "all",
-    "Algorithm to benchmark: 'ctdirect', 'ctpipeline', 'nccl', or 'all' (default: all)");
+    "Algorithm to benchmark: 'ctdirect', 'ctpipeline', 'ctrdpipeline', "
+    "'cthierarchical_pipes', 'nccl', or 'all' (default: all)");
 DEFINE_bool(in_place, false, "Run in-place allgather (default: false)");
 DEFINE_string(
     mem_type,
@@ -386,6 +387,20 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
     const auto statex = ctranComm_->statex_.get();
     const auto nNodes = statex->nNodes();
     const bool pipelineSupported = nNodes > 1;
+#if defined(ENABLE_PIPES)
+    const bool hierarchicalPipesSupported =
+        ctranComm_->multiPeerTransport_ != nullptr;
+#else
+    const bool hierarchicalPipesSupported = false;
+#endif
+    const bool runCtranAlgo = FLAGS_algo == "ctdirect" ||
+        FLAGS_algo == "ctpipeline" || FLAGS_algo == "ctrdpipeline" ||
+        FLAGS_algo == "cthierarchical_pipes" || FLAGS_algo == "all";
+
+    EXPECT_TRUE(
+        FLAGS_algo != "cthierarchical_pipes" || hierarchicalPipesSupported)
+        << "cthierarchical_pipes requires ENABLE_PIPES and "
+           "NCCL_CTRAN_USE_PIPES=1";
 
     // Generate size range (powers of 2)
     std::vector<size_t> sizes;
@@ -408,8 +423,7 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
     CtranPersistentRequest* request = nullptr;
 
     // Only allocate and initialize if running AllGatherP algorithms
-    if (FLAGS_algo == "ctdirect" || FLAGS_algo == "ctpipeline" ||
-        FLAGS_algo == "all") {
+    if (runCtranAlgo) {
       // Allocate and initialize buffers ONCE for max size
       sendbuf = allocateBuffer(maxSizeBytes);
       recvbuf = allocateBuffer(maxRecvBytes);
@@ -471,6 +485,28 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
             NCCL_ALLGATHER_P_ALGO, NCCL_ALLGATHER_P_ALGO::ctpipeline);
         BenchmarkResult result = benchmarkAllgatherPWithRequest(
             count, "AllGatherP_Pipeline", request, sendbuf, recvbuf);
+        printResult(result);
+        ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
+      }
+
+      // Benchmark AllgatherP Recursive Doubling Pipeline (reuses same request)
+      if ((FLAGS_algo == "ctrdpipeline" || FLAGS_algo == "all") &&
+          pipelineSupported) {
+        EnvRAII algoEnv(
+            NCCL_ALLGATHER_P_ALGO, NCCL_ALLGATHER_P_ALGO::ctrdpipeline);
+        BenchmarkResult result = benchmarkAllgatherPWithRequest(
+            count, "AllGatherP_RecDblPipeline", request, sendbuf, recvbuf);
+        printResult(result);
+        ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
+      }
+
+      // Benchmark AllgatherP hierarchical Pipes path (reuses same request)
+      if ((FLAGS_algo == "cthierarchical_pipes" || FLAGS_algo == "all") &&
+          hierarchicalPipesSupported) {
+        EnvRAII algoEnv(
+            NCCL_ALLGATHER_P_ALGO, NCCL_ALLGATHER_P_ALGO::cthierarchical_pipes);
+        BenchmarkResult result = benchmarkAllgatherPWithRequest(
+            count, "AllGatherP_HierarchicalPipes", request, sendbuf, recvbuf);
         printResult(result);
         ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
       }
