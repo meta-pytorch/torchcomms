@@ -2325,6 +2325,25 @@ cvars:
      in iteration 4 and 5).
      Set to 0 to disable recording past collectives.
 
+ - name        : NCCL_COLLTRACE_ITERATION_MODE
+   type        : bool
+   default     : false
+   description : |-
+     If true, CommDumpPlugin retains all collectives from recent training
+     iterations (set via ncclxSetIteration) instead of a fixed count.
+     The number of iterations retained is controlled by
+     NCCL_COLLTRACE_RECORD_MAX_ITERATIONS. Falls back to a hard upper bound
+     (NCCL_COLLTRACE_ITERATION_UPPER_BOUND, default 3000) if iteration
+     tracking is not active.
+
+ - name        : NCCL_COLLTRACE_ITERATION_UPPER_BOUND
+   type        : int
+   default     : 3000
+   description : |-
+     Hard upper bound on past collectives retained when
+     NCCL_COLLTRACE_ITERATION_MODE is enabled. Prevents unbounded growth
+     if ncclxSetIteration is never called.
+
  - name        : NCCL_COLLTRACE_SLOW_COLL_THRESHOLD_BY_PG
    type        : stringlist
    default     :

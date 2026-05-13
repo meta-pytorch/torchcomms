@@ -110,11 +110,18 @@ bool CollTimingRecord::operator==(const CollTimingRecord& other) const {
 // CollRecord implementation
 CollRecord::CollRecord(
     uint64_t collId,
-    std::unique_ptr<ICollMetadata> ICollMetadata)
-    : collId_(collId), collMetadata_(std::move(ICollMetadata)) {}
+    std::unique_ptr<ICollMetadata> ICollMetadata,
+    int64_t iteration)
+    : collId_(collId),
+      iteration_(iteration),
+      collMetadata_(std::move(ICollMetadata)) {}
 
 uint64_t CollRecord::getCollId() const noexcept {
   return collId_;
+}
+
+int64_t CollRecord::getIteration() const noexcept {
+  return iteration_;
 }
 
 const ICollMetadata* CollRecord::getCollMetadata() const {
@@ -127,7 +134,8 @@ CollTimingRecord& CollRecord::getTimingInfo() {
 
 std::size_t CollRecord::hash() const {
   // Hash the collId and timingInfo
-  std::size_t seed = folly::hash::hash_combine(collId_, timingInfo_.hash());
+  std::size_t seed =
+      folly::hash::hash_combine(collId_, iteration_, timingInfo_.hash());
 
   // Add the hash of collMetadata if it exists
   if (collMetadata_) {
@@ -139,7 +147,8 @@ std::size_t CollRecord::hash() const {
 
 bool CollRecord::equals(const CollRecord& other) const noexcept {
   // Compare collId and timingInfo
-  if (collId_ != other.collId_ || !(timingInfo_ == other.timingInfo_)) {
+  if (collId_ != other.collId_ || iteration_ != other.iteration_ ||
+      !(timingInfo_ == other.timingInfo_)) {
     return false;
   }
 
@@ -172,6 +181,7 @@ folly::dynamic CollRecord::toDynamic() const noexcept {
   // and call it "opCount". We should switch to use collId in the future.
   result["collId"] = collId_;
   result["opCount"] = collId_;
+  result["iteration"] = iteration_;
 
   return result;
 }
