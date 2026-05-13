@@ -99,10 +99,12 @@ inline commResult_t CtranIbVirtualConn::setDefaultQPConfig() {
   // assure maxNumQps_ to be a multiple of NCCL_CTRAN_IB_DEVICES_PER_RANK
   if (maxNumQps_ % NCCL_CTRAN_IB_DEVICES_PER_RANK) {
     int originalMaxNumQps = maxNumQps_;
-    maxNumQps_ = maxNumQps_ - (maxNumQps_ % NCCL_CTRAN_IB_DEVICES_PER_RANK);
+    maxNumQps_ = maxNumQps_ +
+        (NCCL_CTRAN_IB_DEVICES_PER_RANK -
+         maxNumQps_ % NCCL_CTRAN_IB_DEVICES_PER_RANK);
     CLOGF(
         WARN,
-        "CTRAN-IB: CTRAN_MAX_QPS is not a multiple of NCCL_CTRAN_IB_DEVICES_PER_RANK  ({} > {}), use {} instead",
+        "CTRAN-IB: CTRAN_MAX_QPS is not a multiple of NCCL_CTRAN_IB_DEVICES_PER_RANK  ({} < {}), rounding up to {} instead",
         originalMaxNumQps,
         NCCL_CTRAN_IB_DEVICES_PER_RANK,
         maxNumQps_);
