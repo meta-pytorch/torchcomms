@@ -496,3 +496,80 @@ TEST_F(CommDumpPluginIterationTest, MaxIterationsRetention) {
 TEST_F(CommDumpPluginIterationTest, MaxEventRetentionReturnsUpperBound) {
   EXPECT_EQ(plugin->maxEventRetention(), 3000);
 }
+
+// ---- Iteration comm time tracking tests ----
+
+TEST_F(CommDumpPluginTest, CommTimeDefaultValue) {
+  auto result = plugin->getCurrentIterationCommTime();
+  EXPECT_EQ(result.iteration, -1);
+  EXPECT_EQ(result.commTimeUs, 0);
+}
+
+TEST_F(CommDumpPluginTest, CommTimeAccumulation) {
+  using std::chrono::microseconds;
+  using std::chrono::system_clock;
+  auto now = system_clock::now();
+
+  auto event1 = createCollTraceEventWithIteration(1, 5);
+  event1.collRecord->getTimingInfo().setCollStartTs(now);
+  event1.collRecord->getTimingInfo().setCollEndTs(now + microseconds(100));
+
+  auto event2 = createCollTraceEventWithIteration(2, 5);
+  event2.collRecord->getTimingInfo().setCollStartTs(now);
+  event2.collRecord->getTimingInfo().setCollEndTs(now + microseconds(250));
+
+  processFullLifecycle(event1);
+  processFullLifecycle(event2);
+
+  auto result = plugin->getCurrentIterationCommTime();
+  EXPECT_EQ(result.iteration, 5);
+  EXPECT_EQ(result.commTimeUs, 350);
+}
+
+TEST_F(CommDumpPluginTest, CommTimeStaleIterationIgnored) {
+  using std::chrono::microseconds;
+  using std::chrono::system_clock;
+  auto now = system_clock::now();
+
+  // Process event from iteration 5
+  auto event1 = createCollTraceEventWithIteration(1, 5);
+  event1.collRecord->getTimingInfo().setCollStartTs(now);
+  event1.collRecord->getTimingInfo().setCollEndTs(now + microseconds(100));
+  processFullLifecycle(event1);
+
+  EXPECT_EQ(plugin->getCurrentIterationCommTime().iteration, 5);
+  EXPECT_EQ(plugin->getCurrentIterationCommTime().commTimeUs, 100);
+
+  // Process event from older iteration 3 — should be ignored
+  auto event2 = createCollTraceEventWithIteration(2, 3);
+  event2.collRecord->getTimingInfo().setCollStartTs(now);
+  event2.collRecord->getTimingInfo().setCollEndTs(now + microseconds(200));
+  processFullLifecycle(event2);
+
+  // Current iteration should still be 5 with unchanged comm time
+  auto result = plugin->getCurrentIterationCommTime();
+  EXPECT_EQ(result.iteration, 5);
+  EXPECT_EQ(result.commTimeUs, 100);
+}
+
+TEST_F(CommDumpPluginTest, CommTimeIterationRollover) {
+  using std::chrono::microseconds;
+  using std::chrono::system_clock;
+  auto now = system_clock::now();
+
+  auto event1 = createCollTraceEventWithIteration(1, 1);
+  event1.collRecord->getTimingInfo().setCollStartTs(now);
+  event1.collRecord->getTimingInfo().setCollEndTs(now + microseconds(100));
+  processFullLifecycle(event1);
+
+  EXPECT_EQ(plugin->getCurrentIterationCommTime().commTimeUs, 100);
+
+  auto event2 = createCollTraceEventWithIteration(2, 2);
+  event2.collRecord->getTimingInfo().setCollStartTs(now);
+  event2.collRecord->getTimingInfo().setCollEndTs(now + microseconds(200));
+  processFullLifecycle(event2);
+
+  auto result = plugin->getCurrentIterationCommTime();
+  EXPECT_EQ(result.iteration, 2);
+  EXPECT_EQ(result.commTimeUs, 200);
+}

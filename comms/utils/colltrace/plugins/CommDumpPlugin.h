@@ -70,6 +70,14 @@ struct CollTraceDump {
   std::deque<std::shared_ptr<CollRecord>> pastColls;
   std::deque<std::shared_ptr<CollRecord>> currentColls;
   std::deque<std::shared_ptr<CollRecord>> pendingColls;
+
+  int64_t currentIteration{-1};
+  int64_t currentIterationCommTimeUs{0};
+};
+
+struct IterationCommTime {
+  int64_t iteration{-1};
+  int64_t commTimeUs{0};
 };
 
 class CommDumpPlugin : public ICollTracePlugin {
@@ -96,6 +104,8 @@ class CommDumpPlugin : public ICollTracePlugin {
 
   // CommDump specific API, supposed to be called by the dump (user) thread
   CommsMaybe<CollTraceDump> dump() noexcept;
+
+  IterationCommTime getCurrentIterationCommTime() const noexcept;
 
   // For testing purpose only. This API is NOT thread safe! Clears all the
   // recorded colls. Please make sure all the previous colls are processed
