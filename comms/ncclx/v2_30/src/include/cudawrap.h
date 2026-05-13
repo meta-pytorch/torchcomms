@@ -13,8 +13,6 @@
 #include "checks.h"
 #include "compiler.h"
 
-#include "comms/ctran/utils/ErrorStackTraceUtil.h"
-
 // Is cuMem API usage enabled
 extern int ncclCuMemEnable();
 extern int ncclCuMemHostEnable();

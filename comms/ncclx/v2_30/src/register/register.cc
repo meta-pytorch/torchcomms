@@ -14,6 +14,7 @@
 #include "group.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/ctran/utils/ErrorStackTraceUtil.h"
 #include "meta/wrapper/MetaFactory.h"
 #include "comms/ctran/Ctran.h"
 #include "comms/utils/memtrace/MemoryTrace.h"
