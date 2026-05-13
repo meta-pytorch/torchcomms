@@ -12,11 +12,11 @@ pointers, counts, and dtypes required by NCCL operations.
 """
 
 from __future__ import annotations
+
 import math
 
 from cuda.core import Buffer
-from cuda.core.utils import StridedMemoryView, args_viewable_as_strided_memory
-
+from cuda.core.utils import args_viewable_as_strided_memory, StridedMemoryView
 from nccl.core.cuda import get_device_id, get_stream_ptr
 from nccl.core.memory import get_memory_resource
 from nccl.core.typing import (
@@ -117,7 +117,9 @@ class NcclBuffer:
         device_id (int): CUDA device ID where buffer resides.
     """
 
-    def __init__(self, buffer: NcclBufferSpec, stream: NcclStreamSpec | None = None) -> None:
+    def __init__(
+        self, buffer: NcclBufferSpec, stream: NcclStreamSpec | None = None
+    ) -> None:
         """
         Initializes an NcclBuffer from a buffer specification.
 

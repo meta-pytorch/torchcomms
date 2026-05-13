@@ -39,11 +39,11 @@ except ImportError:
 
 
 from nccl.bindings import (
-    DataType,
-    RedOp,
-    GinType as NcclGinType,
-    GinConnectionType as NcclGinConnectionType,
     CommMemStat as NcclCommMemStat,
+    DataType,
+    GinConnectionType as NcclGinConnectionType,
+    GinType as NcclGinType,
+    RedOp,
 )
 
 __all__ = [
@@ -218,7 +218,12 @@ class NcclDataType:
             DataType.Float,
         ]:
             return 4
-        elif self._datatype in [DataType.Int64, DataType.Uint64, DataType.Float64, DataType.Double]:
+        elif self._datatype in [
+            DataType.Int64,
+            DataType.Uint64,
+            DataType.Float64,
+            DataType.Double,
+        ]:
             return 8
         else:
             raise NcclInvalid(

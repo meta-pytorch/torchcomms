@@ -16,9 +16,7 @@ from __future__ import annotations
 import threading
 
 from cuda.core import Buffer, Device, MemoryResource, Stream
-
 from nccl import bindings as _nccl_bindings
-
 from nccl.core.cuda import CudaDeviceContext
 
 try:
@@ -68,11 +66,15 @@ class NcclMemoryResource(MemoryResource):
             - ``NCCLError``: If allocation fails.
         """
         with CudaDeviceContext(self.device):
-            ptr = _nccl_bindings.mem_alloc(size)  # mem_alloc raises NCCLError if ptr is 0
+            ptr = _nccl_bindings.mem_alloc(
+                size
+            )  # mem_alloc raises NCCLError if ptr is 0
             buf = Buffer.from_handle(ptr=ptr, size=size, mr=self)
             return buf
 
-    def deallocate(self, ptr: DevicePointerT, size: int, stream: Stream | None = None) -> None:
+    def deallocate(
+        self, ptr: DevicePointerT, size: int, stream: Stream | None = None
+    ) -> None:
         """
         Deallocates device memory using NCCL.
 

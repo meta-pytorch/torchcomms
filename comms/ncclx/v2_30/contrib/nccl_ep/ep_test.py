@@ -30,7 +30,6 @@ from mpi4py import MPI
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "python"))
 
 from nccl_ep.nccl_wrapper import (
-    NCCLLibrary,
     ncclDataTypeEnum,
     ncclEpAlgorithm_t,
     ncclEpAllocFn_t,
@@ -38,6 +37,7 @@ from nccl_ep.nccl_wrapper import (
     ncclEpFreeFn_t,
     ncclEpGroupConfig_t,
     ncclEpTensorTag_t,
+    NCCLLibrary,
     ncclNDTensor_t,
     ncclUniqueId,
 )
@@ -60,11 +60,20 @@ _cuda_rt.cudaMalloc.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t
 _cuda_rt.cudaMalloc.restype = ctypes.c_int
 _cuda_rt.cudaFree.argtypes = [ctypes.c_void_p]
 _cuda_rt.cudaFree.restype = ctypes.c_int
-_cuda_rt.cudaMemcpy.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
+_cuda_rt.cudaMemcpy.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_void_p,
+    ctypes.c_size_t,
+    ctypes.c_int,
+]
 _cuda_rt.cudaMemcpy.restype = ctypes.c_int
 _cuda_rt.cudaStreamSynchronize.argtypes = [ctypes.c_void_p]
 _cuda_rt.cudaStreamSynchronize.restype = ctypes.c_int
-_cuda_rt.cudaHostAlloc.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t, ctypes.c_uint]
+_cuda_rt.cudaHostAlloc.argtypes = [
+    ctypes.POINTER(ctypes.c_void_p),
+    ctypes.c_size_t,
+    ctypes.c_uint,
+]
 _cuda_rt.cudaHostAlloc.restype = ctypes.c_int
 _cuda_rt.cudaFreeHost.argtypes = [ctypes.c_void_p]
 _cuda_rt.cudaFreeHost.restype = ctypes.c_int
@@ -113,7 +122,10 @@ def cuda_stream_synchronize(stream):
 
 def cuda_host_alloc(size):
     ptr = ctypes.c_void_p()
-    _cuda_check(_cuda_rt.cudaHostAlloc(ctypes.byref(ptr), size, CUDA_HOST_ALLOC_MAPPED), "cudaHostAlloc")
+    _cuda_check(
+        _cuda_rt.cudaHostAlloc(ctypes.byref(ptr), size, CUDA_HOST_ALLOC_MAPPED),
+        "cudaHostAlloc",
+    )
     return ptr
 
 
@@ -129,17 +141,25 @@ def cuda_device_reset():
 # Tensor helpers (ncclEpTensor* not exposed as high-level wrapper methods)
 # ---------------------------------------------------------------------------
 
+
 def tensor_create(nccl, ep_group, ndim, datatype, tag, data, *sizes):
     tensor = ncclNDTensor_t()
     padded = list(sizes) + [1] * (5 - len(sizes))
-    nccl.NCCL_CHECK(nccl._funcs["ncclEpTensorCreate"](
-        ep_group, ctypes.byref(tensor),
-        ctypes.c_uint(ndim), ctypes.c_int(datatype), ctypes.c_int(tag),
-        data,
-        ctypes.c_uint(padded[0]), ctypes.c_uint(padded[1]),
-        ctypes.c_uint(padded[2]), ctypes.c_uint(padded[3]),
-        ctypes.c_uint(padded[4]),
-    ))
+    nccl.NCCL_CHECK(
+        nccl._funcs["ncclEpTensorCreate"](
+            ep_group,
+            ctypes.byref(tensor),
+            ctypes.c_uint(ndim),
+            ctypes.c_int(datatype),
+            ctypes.c_int(tag),
+            data,
+            ctypes.c_uint(padded[0]),
+            ctypes.c_uint(padded[1]),
+            ctypes.c_uint(padded[2]),
+            ctypes.c_uint(padded[3]),
+            ctypes.c_uint(padded[4]),
+        )
+    )
     return tensor
 
 
@@ -157,6 +177,7 @@ def tensor_get_data(nccl, tensor):
 # bfloat16 conversion (matches the C++ float_to_bf16 exactly)
 # ---------------------------------------------------------------------------
 
+
 def float_to_bf16(f):
     x = struct.unpack("I", struct.pack("f", f))[0]
     rounding_bias = 0x00007FFF + ((x >> 16) & 1)
@@ -166,6 +187,7 @@ def float_to_bf16(f):
 # ---------------------------------------------------------------------------
 # Custom allocator callbacks (matching torchMalloc / torchFree in ep_test.cu)
 # ---------------------------------------------------------------------------
+
 
 @ncclEpAllocFn_t
 def _alloc_fn(ptr, size):
@@ -183,6 +205,7 @@ def _free_fn(ptr):
 # DJB2 hostname hash (matches getHostHash in ep_test.cu)
 # ---------------------------------------------------------------------------
 
+
 def _host_hash(name):
     h = 5381
     for c in name:
@@ -194,6 +217,7 @@ def _host_hash(name):
 # Main test
 # ---------------------------------------------------------------------------
 
+
 def main():  # noqa: C901 — intentionally kept as a single function to mirror ep_test.cu
     mpi_comm = MPI.COMM_WORLD
     my_rank = mpi_comm.Get_rank()
@@ -202,17 +226,26 @@ def main():  # noqa: C901 — intentionally kept as a single function to mirror 
     # -- argument parsing (same flags as the C++ test) ----------------------
     parser = argparse.ArgumentParser(description="EP Test (Python)")
     parser.add_argument("-a", choices=["ll", "ht"], default="ll", help="Algorithm mode")
-    parser.add_argument("-m", action="store_true", help="Disable max_tokens_per_rank (HT only)")
-    parser.add_argument("-s", choices=["none", "dispatch", "combine", "both"], default="none",
-                        help="Send-only mode")
+    parser.add_argument(
+        "-m", action="store_true", help="Disable max_tokens_per_rank (HT only)"
+    )
+    parser.add_argument(
+        "-s",
+        choices=["none", "dispatch", "combine", "both"],
+        default="none",
+        help="Send-only mode",
+    )
     parser.add_argument("-c", action="store_true", help="Enable cached mode (HT only)")
     parser.add_argument("-r", action="store_true", help="Enable random mode")
     parser.add_argument("-t", type=int, default=50, help="Number of tokens")
     parser.add_argument("-d", type=int, default=7168, help="Hidden dimension size")
     args = parser.parse_args()
 
-    algorithm = (ncclEpAlgorithm_t.NCCL_EP_ALGO_LOW_LATENCY
-                 if args.a == "ll" else ncclEpAlgorithm_t.NCCL_EP_ALGO_HIGH_THROUGHPUT)
+    algorithm = (
+        ncclEpAlgorithm_t.NCCL_EP_ALGO_LOW_LATENCY
+        if args.a == "ll"
+        else ncclEpAlgorithm_t.NCCL_EP_ALGO_HIGH_THROUGHPUT
+    )
     disable_max_tokens = args.m
     dispatch_send_only = args.s in ("dispatch", "both")
     combine_send_only = args.s in ("combine", "both")
@@ -231,8 +264,10 @@ def main():  # noqa: C901 — intentionally kept as a single function to mirror 
             if algorithm != ncclEpAlgorithm_t.NCCL_EP_ALGO_HIGH_THROUGHPUT:
                 print("Error: -m is only applicable to HT mode (-a ht)")
             else:
-                print("Error: -m (NCCL_EP_AUTO for max_tokens_per_rank) is not yet supported.\n"
-                      "       This feature will be available in a future release for HT mode.")
+                print(
+                    "Error: -m (NCCL_EP_AUTO for max_tokens_per_rank) is not yet supported.\n"
+                    "       This feature will be available in a future release for HT mode."
+                )
         sys.exit(1)
 
     # -- derived parameters -------------------------------------------------
@@ -245,11 +280,15 @@ def main():  # noqa: C901 — intentionally kept as a single function to mirror 
 
     if num_experts % n_ranks != 0:
         if my_rank == 0:
-            print(f"Error: num_experts ({num_experts}) must be divisible by nRanks ({n_ranks})")
+            print(
+                f"Error: num_experts ({num_experts}) must be divisible by nRanks ({n_ranks})"
+            )
         sys.exit(1)
     if top_k > num_local_experts:
         if my_rank == 0:
-            print(f"Error: top_k ({top_k}) must be <= num_local_experts ({num_local_experts})")
+            print(
+                f"Error: top_k ({top_k}) must be <= num_local_experts ({num_local_experts})"
+            )
         sys.exit(1)
 
     # -- calculate localRank via hostname hash (same as C++ test) -----------
@@ -288,17 +327,28 @@ def main():  # noqa: C901 — intentionally kept as a single function to mirror 
     config.num_qp_per_rank = NCCL_EP_AUTO
     config.num_channels = NCCL_EP_AUTO
 
-    algorithm_name = "LOW_LATENCY" if algorithm == ncclEpAlgorithm_t.NCCL_EP_ALGO_LOW_LATENCY else "HIGH_THROUGHPUT"
+    algorithm_name = (
+        "LOW_LATENCY"
+        if algorithm == ncclEpAlgorithm_t.NCCL_EP_ALGO_LOW_LATENCY
+        else "HIGH_THROUGHPUT"
+    )
     extra = " (no max_tokens_per_rank)" if disable_max_tokens else ""
-    print(f"Rank {my_rank}: Testing ncclEpCreateGroup with algorithm: {algorithm_name}{extra}")
+    print(
+        f"Rank {my_rank}: Testing ncclEpCreateGroup with algorithm: {algorithm_name}{extra}"
+    )
 
     ep_group = nccl.ncclEpCreateGroup(comm, config, stream, _alloc_fn, _free_fn)
 
     # -- topk_idx tensor [num_tokens, top_k] int64 --------------------------
     topk_idx = tensor_create(
-        nccl, ep_group, 2, ncclDataTypeEnum.ncclInt64,
+        nccl,
+        ep_group,
+        2,
+        ncclDataTypeEnum.ncclInt64,
         ncclEpTensorTag_t.NCCL_EP_TENSOR_TAG_TOPK_IDX,
-        None, num_tokens, top_k,
+        None,
+        num_tokens,
+        top_k,
     )
 
     topk_idx_host = (ctypes.c_int64 * (num_tokens * top_k))()
@@ -310,7 +360,9 @@ def main():  # noqa: C901 — intentionally kept as a single function to mirror 
             for j in range(1, top_k):
                 topk_idx_host[i * top_k + j] = (first_expert + j) % num_experts
         if my_rank == 0:
-            print("Random mode enabled: first expert random, rest deterministic (no repetitions)")
+            print(
+                "Random mode enabled: first expert random, rest deterministic (no repetitions)"
+            )
     else:
         for i in range(num_tokens):
             for j in range(top_k):
@@ -326,16 +378,23 @@ def main():  # noqa: C901 — intentionally kept as a single function to mirror 
     if disable_max_tokens:
         recv_counter_host_ptr = cuda_host_alloc(num_local_experts * 4)
         handle_recv_expert_counter = tensor_create(
-            nccl, ep_group, 1, ncclDataTypeEnum.ncclInt32,
+            nccl,
+            ep_group,
+            1,
+            ncclDataTypeEnum.ncclInt32,
             ncclEpTensorTag_t.NCCL_EP_TENSOR_TAG_RECV_EXPERT_COUNTER_HOST,
-            recv_counter_host_ptr, num_local_experts,
+            recv_counter_host_ptr,
+            num_local_experts,
         )
         handle_local_tensors.append(handle_recv_expert_counter)
 
     # -- EP handle ----------------------------------------------------------
     print(f"Rank {my_rank}: Testing ncclEpCreateHandle")
     ep_handle = nccl.ncclEpCreateHandle(
-        ep_group, topk_idx, None, stream,
+        ep_group,
+        topk_idx,
+        None,
+        stream,
         local_tensors=handle_local_tensors if handle_local_tensors else None,
     )
     cuda_stream_synchronize(stream)
@@ -357,50 +416,85 @@ def main():  # noqa: C901 — intentionally kept as a single function to mirror 
 
     # -- input/output tensors for dispatch ----------------------------------
     input_tokens = tensor_create(
-        nccl, ep_group, 2, ncclDataTypeEnum.ncclBfloat16,
+        nccl,
+        ep_group,
+        2,
+        ncclDataTypeEnum.ncclBfloat16,
         ncclEpTensorTag_t.NCCL_EP_TENSOR_TAG_TOKENS,
-        None, num_tokens, hidden,
+        None,
+        num_tokens,
+        hidden,
     )
 
     topk_weights = tensor_create(
-        nccl, ep_group, 2, ncclDataTypeEnum.ncclFloat32,
+        nccl,
+        ep_group,
+        2,
+        ncclDataTypeEnum.ncclFloat32,
         ncclEpTensorTag_t.NCCL_EP_TENSOR_TAG_TOPK_WEIGHTS,
-        None, num_tokens, top_k,
+        None,
+        num_tokens,
+        top_k,
     )
 
     if is_ll:
         output_tokens = tensor_create(
-            nccl, ep_group, 3, ncclDataTypeEnum.ncclBfloat16,
+            nccl,
+            ep_group,
+            3,
+            ncclDataTypeEnum.ncclBfloat16,
             ncclEpTensorTag_t.NCCL_EP_TENSOR_TAG_TOKENS,
-            None, num_local_experts, config.max_tokens_per_rank * n_ranks, hidden,
+            None,
+            num_local_experts,
+            config.max_tokens_per_rank * n_ranks,
+            hidden,
         )
     else:
         output_tokens = tensor_create(
-            nccl, ep_group, 2, ncclDataTypeEnum.ncclBfloat16,
+            nccl,
+            ep_group,
+            2,
+            ncclDataTypeEnum.ncclBfloat16,
             ncclEpTensorTag_t.NCCL_EP_TENSOR_TAG_TOKENS,
-            None, num_recv_tokens, hidden,
+            None,
+            num_recv_tokens,
+            hidden,
         )
 
     local_tensor_recv_count = None
     if is_ll:
         local_tensor_recv_count = tensor_create(
-            nccl, ep_group, 1, ncclDataTypeEnum.ncclInt32,
+            nccl,
+            ep_group,
+            1,
+            ncclDataTypeEnum.ncclInt32,
             ncclEpTensorTag_t.NCCL_EP_TENSOR_TAG_RECV_EXPERT_COUNTER_DEVICE,
-            None, num_local_experts,
+            None,
+            num_local_experts,
         )
 
     output_topk_weights = None
     output_topk_idx = None
     if not is_ll:
         output_topk_weights = tensor_create(
-            nccl, ep_group, 2, ncclDataTypeEnum.ncclFloat32,
+            nccl,
+            ep_group,
+            2,
+            ncclDataTypeEnum.ncclFloat32,
             ncclEpTensorTag_t.NCCL_EP_TENSOR_TAG_TOPK_WEIGHTS,
-            None, num_recv_tokens, top_k,
+            None,
+            num_recv_tokens,
+            top_k,
         )
         output_topk_idx = tensor_create(
-            nccl, ep_group, 2, ncclDataTypeEnum.ncclInt64,
+            nccl,
+            ep_group,
+            2,
+            ncclDataTypeEnum.ncclInt64,
             ncclEpTensorTag_t.NCCL_EP_TENSOR_TAG_TOPK_IDX,
-            None, num_recv_tokens, top_k,
+            None,
+            num_recv_tokens,
+            top_k,
         )
 
     # -- fill input tokens: first ELEMENTS_TESTED_PER_TOKEN elems = 0x1000 + rank
@@ -436,12 +530,18 @@ def main():  # noqa: C901 — intentionally kept as a single function to mirror 
         local_arr[0] = local_tensor_recv_count
 
     # -- dispatch -----------------------------------------------------------
-    print(f"Rank {my_rank}: Testing ncclEpDispatch (send_only={'true' if dispatch_send_only else 'false'})")
+    print(
+        f"Rank {my_rank}: Testing ncclEpDispatch (send_only={'true' if dispatch_send_only else 'false'})"
+    )
     nccl.ncclEpDispatch(
         ep_handle,
-        ctypes.cast(inputs_arr, ctypes.POINTER(ncclNDTensor_t)), num_inputs,
-        ctypes.cast(outputs_arr, ctypes.POINTER(ncclNDTensor_t)), num_outputs,
-        ctypes.cast(local_arr, ctypes.POINTER(ncclNDTensor_t)) if num_local > 0 else None,
+        ctypes.cast(inputs_arr, ctypes.POINTER(ncclNDTensor_t)),
+        num_inputs,
+        ctypes.cast(outputs_arr, ctypes.POINTER(ncclNDTensor_t)),
+        num_outputs,
+        ctypes.cast(local_arr, ctypes.POINTER(ncclNDTensor_t))
+        if num_local > 0
+        else None,
         num_local,
         int(dispatch_send_only),
         dispatch_config,
@@ -464,7 +564,9 @@ def main():  # noqa: C901 — intentionally kept as a single function to mirror 
         hlt0_data = tensor_get_data(nccl, handle_recv_expert_counter)
         recv_count_host = ctypes.cast(hlt0_data, ctypes.POINTER(ctypes.c_int))
 
-    recv_from_expert_start = (local_experts_start + num_experts - num_local_experts) % num_experts
+    recv_from_expert_start = (
+        local_experts_start + num_experts - num_local_experts
+    ) % num_experts
     recv_rank = recv_from_expert_start // num_local_experts
 
     # -- verify dispatch output ---------------------------------------------
@@ -480,8 +582,10 @@ def main():  # noqa: C901 — intentionally kept as a single function to mirror 
         for e in range(num_local_experts):
             expected_count = num_tokens
             if recv_count_host[e] != expected_count:
-                print(f"Recv_count check failed! Rank {my_rank}, expert {e}: "
-                      f"expected {expected_count}, got {recv_count_host[e]}")
+                print(
+                    f"Recv_count check failed! Rank {my_rank}, expert {e}: "
+                    f"expected {expected_count}, got {recv_count_host[e]}"
+                )
                 dispatch_check_passed = False
                 break
             max_t = config.max_tokens_per_rank * n_ranks
@@ -491,8 +595,10 @@ def main():  # noqa: C901 — intentionally kept as a single function to mirror 
                     expected = 0x1000 + recv_rank
                     actual = output_host[token_off + j]
                     if actual != expected:
-                        print(f"Dispatch data check failed! Rank {my_rank}, expert {e}, "
-                              f"token {t}, element {j}: expected {expected}, got {actual}")
+                        print(
+                            f"Dispatch data check failed! Rank {my_rank}, expert {e}, "
+                            f"token {t}, element {j}: expected {expected}, got {actual}"
+                        )
                         dispatch_check_passed = False
                         break
                 if not dispatch_check_passed:
@@ -505,22 +611,28 @@ def main():  # noqa: C901 — intentionally kept as a single function to mirror 
             for e in range(num_local_experts):
                 expected_count = num_tokens
                 if recv_count_host[e] != expected_count:
-                    print(f"Recv_count check failed! Rank {my_rank}, expert {e}: "
-                          f"expected {expected_count}, got {recv_count_host[e]}")
+                    print(
+                        f"Recv_count check failed! Rank {my_rank}, expert {e}: "
+                        f"expected {expected_count}, got {recv_count_host[e]}"
+                    )
                     dispatch_check_passed = False
                     break
 
         output_host = (ctypes.c_uint16 * (num_recv_tokens * hidden))()
         out0_data = tensor_get_data(nccl, output_tokens)
-        cuda_memcpy(output_host, out0_data, num_recv_tokens * hidden * 2, CUDA_MEMCPY_D2H)
+        cuda_memcpy(
+            output_host, out0_data, num_recv_tokens * hidden * 2, CUDA_MEMCPY_D2H
+        )
         check_count = num_recv_tokens if disable_max_tokens else num_tokens
         for i in range(check_count):
             for j in range(ELEMENTS_TESTED_PER_TOKEN):
                 expected = 0x1000 + recv_rank
                 actual = output_host[i * hidden + j]
                 if actual != expected:
-                    print(f"Dispatch check failed! Rank {my_rank}, token {i}, "
-                          f"element {j}: expected {expected}, got {actual}")
+                    print(
+                        f"Dispatch check failed! Rank {my_rank}, token {i}, "
+                        f"element {j}: expected {expected}, got {actual}"
+                    )
                     dispatch_check_passed = False
                     break
             if not dispatch_check_passed:
@@ -551,29 +663,41 @@ def main():  # noqa: C901 — intentionally kept as a single function to mirror 
                 off = i * top_k + j
                 if recv_tw[off] != expected_weight:
                     if weight_errors < 5:
-                        print(f"Rank {my_rank}: recv_topk_weights[{i}][{j}] = {recv_tw[off]}, "
-                              f"expected {expected_weight}")
+                        print(
+                            f"Rank {my_rank}: recv_topk_weights[{i}][{j}] = {recv_tw[off]}, "
+                            f"expected {expected_weight}"
+                        )
                     weight_errors += 1
                     ht_outputs_valid = False
                 idx_val = recv_ti[off]
                 if idx_val < 0 or idx_val >= num_experts:
                     if idx_errors < 5:
-                        print(f"Rank {my_rank}: recv_topk_idx[{i}][{j}] = {idx_val}, "
-                              f"expected range [0, {num_experts})")
+                        print(
+                            f"Rank {my_rank}: recv_topk_idx[{i}][{j}] = {idx_val}, "
+                            f"expected range [0, {num_experts})"
+                        )
                     idx_errors += 1
                     ht_outputs_valid = False
 
         if weight_errors > 0:
-            print(f"Rank {my_rank}: recv_topk_weights verification failed with {weight_errors} errors")
+            print(
+                f"Rank {my_rank}: recv_topk_weights verification failed with {weight_errors} errors"
+            )
         if idx_errors > 0:
-            print(f"Rank {my_rank}: recv_topk_idx verification failed with {idx_errors} errors")
+            print(
+                f"Rank {my_rank}: recv_topk_idx verification failed with {idx_errors} errors"
+            )
         if ht_outputs_valid:
-            print(f"Rank {my_rank}: {algorithm_name} mode recv_topk_weights and recv_topk_idx verification passed")
+            print(
+                f"Rank {my_rank}: {algorithm_name} mode recv_topk_weights and recv_topk_idx verification passed"
+            )
         else:
             dispatch_check_passed = False
 
     if random_mode:
-        print(f"Rank {my_rank}: {algorithm_name} Dispatch flow completed (random mode, checks skipped)")
+        print(
+            f"Rank {my_rank}: {algorithm_name} Dispatch flow completed (random mode, checks skipped)"
+        )
     elif dispatch_check_passed:
         print(f"Rank {my_rank}: {algorithm_name} Dispatch flow passed successfully")
     else:
@@ -587,9 +711,15 @@ def main():  # noqa: C901 — intentionally kept as a single function to mirror 
 
     if is_ll:
         expert_outputs = tensor_create(
-            nccl, ep_group, 3, ncclDataTypeEnum.ncclBfloat16,
+            nccl,
+            ep_group,
+            3,
+            ncclDataTypeEnum.ncclBfloat16,
             ncclEpTensorTag_t.NCCL_EP_TENSOR_TAG_TOKENS,
-            None, num_local_experts, config.max_tokens_per_rank * n_ranks, hidden,
+            None,
+            num_local_experts,
+            config.max_tokens_per_rank * n_ranks,
+            hidden,
         )
         eo_host = (ctypes.c_uint16 * (config.max_tokens_per_rank * hidden))()
         for t in range(config.max_tokens_per_rank):
@@ -599,12 +729,19 @@ def main():  # noqa: C901 — intentionally kept as a single function to mirror 
         for e in range(num_local_experts):
             offset_bytes = e * config.max_tokens_per_rank * hidden * n_ranks * 2
             dst = ctypes.c_void_p(eo_data.value + offset_bytes)
-            cuda_memcpy(dst, eo_host, config.max_tokens_per_rank * hidden * 2, CUDA_MEMCPY_H2D)
+            cuda_memcpy(
+                dst, eo_host, config.max_tokens_per_rank * hidden * 2, CUDA_MEMCPY_H2D
+            )
     else:
         expert_outputs = tensor_create(
-            nccl, ep_group, 2, ncclDataTypeEnum.ncclBfloat16,
+            nccl,
+            ep_group,
+            2,
+            ncclDataTypeEnum.ncclBfloat16,
             ncclEpTensorTag_t.NCCL_EP_TENSOR_TAG_TOKENS,
-            None, num_recv_tokens, hidden,
+            None,
+            num_recv_tokens,
+            hidden,
         )
         eo_host = (ctypes.c_uint16 * (num_recv_tokens * hidden))()
         for t in range(num_recv_tokens):
@@ -614,9 +751,14 @@ def main():  # noqa: C901 — intentionally kept as a single function to mirror 
         cuda_memcpy(eo_data, eo_host, num_recv_tokens * hidden * 2, CUDA_MEMCPY_H2D)
 
     combined_output = tensor_create(
-        nccl, ep_group, 2, ncclDataTypeEnum.ncclBfloat16,
+        nccl,
+        ep_group,
+        2,
+        ncclDataTypeEnum.ncclBfloat16,
         ncclEpTensorTag_t.NCCL_EP_TENSOR_TAG_TOKENS,
-        None, num_tokens, hidden,
+        None,
+        num_tokens,
+        hidden,
     )
 
     combine_in = (ncclNDTensor_t * 1)()
@@ -631,12 +773,18 @@ def main():  # noqa: C901 — intentionally kept as a single function to mirror 
         combine_local[0] = topk_weights
         combine_num_local = 1
 
-    print(f"Rank {my_rank}: Testing ncclEpCombine (send_only={'true' if combine_send_only else 'false'})")
+    print(
+        f"Rank {my_rank}: Testing ncclEpCombine (send_only={'true' if combine_send_only else 'false'})"
+    )
     nccl.ncclEpCombine(
         ep_handle,
-        ctypes.cast(combine_in, ctypes.POINTER(ncclNDTensor_t)), 1,
-        ctypes.cast(combine_out, ctypes.POINTER(ncclNDTensor_t)), 1,
-        ctypes.cast(combine_local, ctypes.POINTER(ncclNDTensor_t)) if combine_num_local > 0 else None,
+        ctypes.cast(combine_in, ctypes.POINTER(ncclNDTensor_t)),
+        1,
+        ctypes.cast(combine_out, ctypes.POINTER(ncclNDTensor_t)),
+        1,
+        ctypes.cast(combine_local, ctypes.POINTER(ncclNDTensor_t))
+        if combine_num_local > 0
+        else None,
         combine_num_local,
         int(combine_send_only),
         None,
@@ -658,8 +806,10 @@ def main():  # noqa: C901 — intentionally kept as a single function to mirror 
                 expected = float_to_bf16(float((j + 1) * 2))
                 actual = co_host[i * hidden + j]
                 if actual != expected:
-                    print(f"Combine check failed! Rank {my_rank}, token {i}, "
-                          f"element {j}: expected {expected}, got {actual}")
+                    print(
+                        f"Combine check failed! Rank {my_rank}, token {i}, "
+                        f"element {j}: expected {expected}, got {actual}"
+                    )
                     combine_errors += 1
                     if combine_errors >= 5:
                         break
@@ -669,10 +819,14 @@ def main():  # noqa: C901 — intentionally kept as a single function to mirror 
     if random_mode:
         print(f"Rank {my_rank}: Combine flow completed (random mode, checks skipped)")
     elif combine_errors == 0:
-        print(f"Rank {my_rank}: Combine verification PASSED! "
-              f"All {num_tokens} tokens with {hidden} elements each correctly combined")
+        print(
+            f"Rank {my_rank}: Combine verification PASSED! "
+            f"All {num_tokens} tokens with {hidden} elements each correctly combined"
+        )
     else:
-        print(f"Rank {my_rank}: Combine verification FAILED with {combine_errors} errors")
+        print(
+            f"Rank {my_rank}: Combine verification FAILED with {combine_errors} errors"
+        )
         print(f"Rank {my_rank}: Exiting test due to combine failure")
         sys.exit(1)
 
@@ -681,7 +835,9 @@ def main():  # noqa: C901 — intentionally kept as a single function to mirror 
     # ===================================================================
     if cached_mode:
         if is_ll:
-            print(f"Rank {my_rank}: Error - cached mode is only supported in HT modes (not LL)")
+            print(
+                f"Rank {my_rank}: Error - cached mode is only supported in HT modes (not LL)"
+            )
             sys.exit(1)
 
         print(f"Rank {my_rank}: Testing cached mode ({algorithm_name})")
@@ -707,19 +863,34 @@ def main():  # noqa: C901 — intentionally kept as a single function to mirror 
 
         # new output tensors for second dispatch
         cached_out_tokens = tensor_create(
-            nccl, ep_group, 2, ncclDataTypeEnum.ncclBfloat16,
+            nccl,
+            ep_group,
+            2,
+            ncclDataTypeEnum.ncclBfloat16,
             ncclEpTensorTag_t.NCCL_EP_TENSOR_TAG_TOKENS,
-            None, num_recv_tokens, hidden,
+            None,
+            num_recv_tokens,
+            hidden,
         )
         cached_combined_output = tensor_create(
-            nccl, ep_group, 2, ncclDataTypeEnum.ncclBfloat16,
+            nccl,
+            ep_group,
+            2,
+            ncclDataTypeEnum.ncclBfloat16,
             ncclEpTensorTag_t.NCCL_EP_TENSOR_TAG_TOKENS,
-            None, num_tokens, hidden,
+            None,
+            num_tokens,
+            hidden,
         )
         cached_combined_tw = tensor_create(
-            nccl, ep_group, 2, ncclDataTypeEnum.ncclFloat32,
+            nccl,
+            ep_group,
+            2,
+            ncclDataTypeEnum.ncclFloat32,
             ncclEpTensorTag_t.NCCL_EP_TENSOR_TAG_TOPK_WEIGHTS,
-            None, num_tokens, top_k,
+            None,
+            num_tokens,
+            top_k,
         )
 
         cached_comb_outs = (ncclNDTensor_t * 2)()
@@ -728,9 +899,14 @@ def main():  # noqa: C901 — intentionally kept as a single function to mirror 
 
         # topk_weights input for combine (copy from dispatch output)
         cached_ctw_in = tensor_create(
-            nccl, ep_group, 2, ncclDataTypeEnum.ncclFloat32,
+            nccl,
+            ep_group,
+            2,
+            ncclDataTypeEnum.ncclFloat32,
             ncclEpTensorTag_t.NCCL_EP_TENSOR_TAG_TOPK_WEIGHTS,
-            None, num_recv_tokens, top_k,
+            None,
+            num_recv_tokens,
+            top_k,
         )
         ctw_dst = tensor_get_data(nccl, cached_ctw_in)
         ctw_src = tensor_get_data(nccl, output_topk_weights)
@@ -744,13 +920,18 @@ def main():  # noqa: C901 — intentionally kept as a single function to mirror 
         cached_disp_outs = (ncclNDTensor_t * 1)()
         cached_disp_outs[0] = cached_out_tokens
 
-        print(f"Rank {my_rank}: Testing cached mode - second ncclEpDispatch call "
-              f"(send_only={'true' if dispatch_send_only else 'false'})")
+        print(
+            f"Rank {my_rank}: Testing cached mode - second ncclEpDispatch call "
+            f"(send_only={'true' if dispatch_send_only else 'false'})"
+        )
         nccl.ncclEpDispatch(
             ep_handle,
-            ctypes.cast(inputs_arr, ctypes.POINTER(ncclNDTensor_t)), 1,
-            ctypes.cast(cached_disp_outs, ctypes.POINTER(ncclNDTensor_t)), 1,
-            None, 0,
+            ctypes.cast(inputs_arr, ctypes.POINTER(ncclNDTensor_t)),
+            1,
+            ctypes.cast(cached_disp_outs, ctypes.POINTER(ncclNDTensor_t)),
+            1,
+            None,
+            0,
             int(dispatch_send_only),
             dispatch_config,
             stream,
@@ -760,13 +941,18 @@ def main():  # noqa: C901 — intentionally kept as a single function to mirror 
         nccl.ncclEpComplete(ep_handle, None, stream)
         cuda_stream_synchronize(stream)
 
-        print(f"Rank {my_rank}: Testing cached mode - second ncclEpCombine call "
-              f"(send_only={'true' if combine_send_only else 'false'})")
+        print(
+            f"Rank {my_rank}: Testing cached mode - second ncclEpCombine call "
+            f"(send_only={'true' if combine_send_only else 'false'})"
+        )
         nccl.ncclEpCombine(
             ep_handle,
-            ctypes.cast(cached_comb_ins, ctypes.POINTER(ncclNDTensor_t)), 2,
-            ctypes.cast(cached_comb_outs, ctypes.POINTER(ncclNDTensor_t)), 2,
-            None, 0,
+            ctypes.cast(cached_comb_ins, ctypes.POINTER(ncclNDTensor_t)),
+            2,
+            ctypes.cast(cached_comb_outs, ctypes.POINTER(ncclNDTensor_t)),
+            2,
+            None,
+            0,
             int(combine_send_only),
             None,
             stream,
@@ -796,32 +982,44 @@ def main():  # noqa: C901 — intentionally kept as a single function to mirror 
             for i in range(num_recv_tokens * hidden):
                 if first_d0[i] != sec_d0[i]:
                     if cached_dispatch_errors < 5:
-                        print(f"Rank {my_rank}: Cached dispatch output0 mismatch at {i}: "
-                              f"first={first_d0[i]}, second={sec_d0[i]}")
+                        print(
+                            f"Rank {my_rank}: Cached dispatch output0 mismatch at {i}: "
+                            f"first={first_d0[i]}, second={sec_d0[i]}"
+                        )
                     cached_dispatch_errors += 1
 
             for i in range(num_tokens * hidden):
                 if first_co[i] != sec_co[i]:
                     if cached_combine_errors < 5:
-                        print(f"Rank {my_rank}: Cached combine output mismatch at {i}: "
-                              f"first={first_co[i]}, second={sec_co[i]}")
+                        print(
+                            f"Rank {my_rank}: Cached combine output mismatch at {i}: "
+                            f"first={first_co[i]}, second={sec_co[i]}"
+                        )
                     cached_combine_errors += 1
 
             expected_w = 1.0 / top_k
             for i in range(num_tokens * top_k):
                 if sec_tw[i] != expected_w:
                     if cached_combine_errors < 5:
-                        print(f"Rank {my_rank}: Cached combine topk_weights mismatch at {i}: "
-                              f"expected={expected_w}, got={sec_tw[i]}")
+                        print(
+                            f"Rank {my_rank}: Cached combine topk_weights mismatch at {i}: "
+                            f"expected={expected_w}, got={sec_tw[i]}"
+                        )
                     cached_combine_errors += 1
 
         if random_mode:
-            print(f"Rank {my_rank}: Cached mode completed (random mode, checks skipped)")
+            print(
+                f"Rank {my_rank}: Cached mode completed (random mode, checks skipped)"
+            )
         elif cached_dispatch_errors == 0 and cached_combine_errors == 0:
-            print(f"Rank {my_rank}: Cached mode verification PASSED - dispatch and combine outputs match")
+            print(
+                f"Rank {my_rank}: Cached mode verification PASSED - dispatch and combine outputs match"
+            )
         else:
-            print(f"Rank {my_rank}: Cached mode verification FAILED - "
-                  f"dispatch errors: {cached_dispatch_errors}, combine errors: {cached_combine_errors}")
+            print(
+                f"Rank {my_rank}: Cached mode verification FAILED - "
+                f"dispatch errors: {cached_dispatch_errors}, combine errors: {cached_combine_errors}"
+            )
             sys.exit(1)
 
         # cleanup cached tensors
@@ -830,7 +1028,9 @@ def main():  # noqa: C901 — intentionally kept as a single function to mirror 
         tensor_destroy(nccl, ep_group, cached_combined_tw)
         tensor_destroy(nccl, ep_group, cached_ctw_in)
 
-        print(f"Rank {my_rank}: Cached mode - second dispatch and combine calls completed successfully")
+        print(
+            f"Rank {my_rank}: Cached mode - second dispatch and combine calls completed successfully"
+        )
 
     # ===================================================================
     # Cleanup — all tensor destroys must happen before ncclEpGroupDestroy
