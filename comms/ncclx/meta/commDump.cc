@@ -258,7 +258,8 @@ __attribute__((visibility("default"))) ncclResult_t ncclCommDump(
 __attribute__((visibility("default"))) ncclResult_t ncclCommDumpAll(
     std::unordered_map<
         std::string,
-        std::unordered_map<std::string, std::string>>& map) {
+        std::unordered_map<std::string, std::string>>& map,
+    std::optional<std::string> requestFieldsStr) {
   initEnv();
   auto commDumpsMaybe = ncclx::comms_monitor::CommsMonitor::commDumpAll();
   if (!commDumpsMaybe.has_value()) {
