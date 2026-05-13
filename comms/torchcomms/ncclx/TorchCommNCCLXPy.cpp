@@ -223,13 +223,13 @@ Returns:
 
   m.def(
       "comm_dump_all",
-      []() {
+      [](std::optional<std::string> requestFields) {
         DefaultNcclxGlobalApi api;
         std::unordered_map<
             std::string,
             std::unordered_map<std::string, std::string>>
             map;
-        auto result = api.commDumpAll(map);
+        auto result = api.commDumpAll(map, std::move(requestFields));
         if (result != ncclSuccess) {
           throw std::runtime_error(
               std::string("ncclCommDumpAll failed: ") +
@@ -244,9 +244,28 @@ This is a module-level function that does not require a communicator instance.
 Returns a dictionary keyed by communicator hash, where each value is a
 dictionary of that communicator's internal state.
 
+Args:
+    request_fields: Optional semicolon-separated list of output keys to include.
+        If None (default), all fields are dumped.
+
+        Fields are categorized by cost:
+
+        Trivial — read directly from in-memory structs, no serialization:
+            commHash, rank, localRank, node, nRanks, localRanks, nNodes,
+            commDesc, CT_currentIteration, CT_currentIterationCommTimeUs,
+            GlobalInfo::totalCommDurPerIterationUs, memory
+
+        Expensive — requires dumping + JSON serialization of collections:
+            CT_pastColls, CT_currentColls, CT_pendingColls,
+            PT_pastColls, PT_activeOps, PT_activeColls,
+            MT_currentColl, MT_unfinishedRequests,
+            MT_recvNotifiedByPeer, MT_putFinishedByPeer,
+            processGlobalErrors, GlobalInfo::NetworkPerfInfo
+
 Returns:
     dict[str, dict[str, str]]: Nested key-value pairs of all communicator states.
 )",
+      py::arg("request_fields") = py::none(),
       py::call_guard<py::gil_scoped_release>());
 
   m.def(
