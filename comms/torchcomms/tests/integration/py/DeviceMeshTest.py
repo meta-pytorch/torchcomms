@@ -25,9 +25,7 @@ except ImportError:
     HAS_MESH_LAYOUT = False
 
 try:
-    from torch.distributed._mesh_layout import (  # noqa: F401  # pyre-ignore[21]
-        _FlatLayout,
-    )
+    from torch.distributed._mesh_layout import _FlatLayout  # noqa: F401
 
     HAS_FLAT_LAYOUT = True
 except ImportError:
@@ -200,7 +198,6 @@ class DeviceMeshTest(unittest.TestCase):
                 layout = device_mesh_3d[dim_name]._layout
                 sizes.append(layout.shape)
                 strides.append(layout.stride)
-            # pyre-fixme[19]: _MeshLayout dataclass accepts positional args
             flatten_layout = _MeshLayout(tuple(sizes), tuple(strides))
         _flatten_with_comm(
             device_mesh_3d,

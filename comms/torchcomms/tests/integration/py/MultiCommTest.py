@@ -6,7 +6,7 @@ import unittest
 
 import torch
 from torchcomms import ReduceOp
-from torchcomms.tests.integration.py.TorchCommTestHelpers import (
+from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
     create_store,
     destroy_root_store,
     TorchCommTestWrapper,

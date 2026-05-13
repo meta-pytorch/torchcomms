@@ -24,7 +24,9 @@ from typing import Optional
 import torch
 import torchcomms
 from torch.utils._triton import has_triton
-from torchcomms.tests.integration.py.TorchCommTestHelpers import TorchCommTestWrapper
+from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
+    TorchCommTestWrapper,
+)
 
 
 TRITON_AVAILABLE = has_triton()

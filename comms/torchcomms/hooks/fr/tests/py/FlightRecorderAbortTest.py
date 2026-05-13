@@ -16,7 +16,7 @@ os.environ["TORCHCOMM_FR_DUMP_DYNAMIC_FILE_NAME"] = "1"
 import torch
 import torchcomms
 from torchcomms.hooks import FlightRecorderHook
-from torchcomms.tests.integration.py.TorchCommTestHelpers import (
+from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
     get_rank_and_size,
     skip_backend,
 )

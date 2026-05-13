@@ -26,3 +26,5 @@ global-exclude *.so
 global-exclude *.a
 global-exclude *.o
 global-exclude *.swp
+global-exclude *Test.py
+global-exclude *_test.py

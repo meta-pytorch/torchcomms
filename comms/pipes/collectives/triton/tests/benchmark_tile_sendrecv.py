@@ -339,7 +339,7 @@ def main() -> int:
         print("Triton not available")
         return 1
 
-    from torchcomms.tests.integration.py.TorchCommTestHelpers import (
+    from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
         TorchCommTestWrapper,
     )
 
