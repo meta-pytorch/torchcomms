@@ -62,8 +62,17 @@ commResult_t tranportProxyShutdown(struct ncclComm* comm) {
 }
 
 TransportProxy::TransportProxy(struct ncclComm* comm) : parentComm_(comm) {
-  NCCLCHECKIGNORE(
-      ncclCuMemHostAlloc((void**)&syncPoolPtr_, nullptr, kDefaultSyncPoolSize));
+  ncclResult_t allocRes =
+      ncclCuMemHostAlloc((void**)&syncPoolPtr_, nullptr, kDefaultSyncPoolSize);
+  if (allocRes != ncclSuccess && allocRes != ncclInProgress) {
+    WARN_WITH_SCUBA(
+        "%s:%s:%d -> %d (%s)",
+        __FILE__,
+        __func__,
+        __LINE__,
+        allocRes,
+        ncclCodeToString(allocRes));
+  }
   size_t nFlags = kDefaultSyncPoolSize / sizeof(uint64_t);
   for (int elemOffset = 0; elemOffset < nFlags; elemOffset++) {
     syncFlagPool_.push_back(syncPoolPtr_ + elemOffset);
@@ -101,7 +110,16 @@ void TransportProxy::shutdown() {
   if (syncPoolPtr_) {
     activeOps_.clear();
     syncFlagPool_.clear();
-    NCCLCHECKIGNORE(ncclCuMemHostFree((void*)syncPoolPtr_));
+    ncclResult_t freeRes = ncclCuMemHostFree((void*)syncPoolPtr_);
+    if (freeRes != ncclSuccess && freeRes != ncclInProgress) {
+      WARN_WITH_SCUBA(
+          "%s:%s:%d -> %d (%s)",
+          __FILE__,
+          __func__,
+          __LINE__,
+          freeRes,
+          ncclCodeToString(freeRes));
+    }
   }
   initialized_ = false;
 }
