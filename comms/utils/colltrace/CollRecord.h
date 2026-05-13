@@ -55,9 +55,13 @@ class ICollRecord {
 
 class CollRecord : public ICollRecord {
  public:
-  CollRecord(uint64_t collId, std::unique_ptr<ICollMetadata> ICollMetadata);
+  CollRecord(
+      uint64_t collId,
+      std::unique_ptr<ICollMetadata> ICollMetadata,
+      int64_t iteration = -1);
 
   uint64_t getCollId() const noexcept override;
+  int64_t getIteration() const noexcept;
   const ICollMetadata* getCollMetadata() const;
 
   // Timing info is the only field that we could modify after init
@@ -72,6 +76,8 @@ class CollRecord : public ICollRecord {
  private:
   uint64_t collId_; // CollTrace internal collective id. Should always increment
                     // monotonically
+  int64_t iteration_; // Step number in the training loop.
+
   std::unique_ptr<ICollMetadata>
       collMetadata_; // Using unique ptr as we might get an inherited class
   CollTimingRecord
