@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -43,7 +44,7 @@ struct RankTopology {
 
   char dc[kMaxNameLen];
 
-  int rackSerial{-1};
+  char rackSerial[kMaxNameLen];
 };
 
 // ncclx internal structure for NVL Fabric info
@@ -157,7 +158,7 @@ class CommStateX {
   // get DataCenter name for a given rank, default to current rank
   std::string dc(int rank = -1) const;
 
-  int deviceRack(int rank) const;
+  std::string_view deviceRack(int rank = -1) const;
 
   // get globalRank for a given rank, default to current rank
   int gRank(int rank = -1) const;
@@ -224,7 +225,7 @@ class CommStateX {
 
     std::vector<int> localRankToRanks{};
 
-    int rackSerial{-1};
+    std::string rackSerial;
   };
 
   // internal state related to NVL Fabric for quick one time lookup

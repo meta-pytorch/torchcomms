@@ -57,21 +57,13 @@ void parseTopologyValue(
   isBackendTopologyValid = true;
 }
 
-void parseRackSerial(const std::string& value, int& rackSerial) {
-  try {
-    rackSerial = folly::to<int>(value);
-  } catch (const std::exception& e) {
-    CLOGF(ERR, "Failed to parse rack serial '{}': {}", value, e.what());
-  }
-}
-
 std::optional<ncclx::RankTopology> loadTopology(
     int rank,
     const std::string& filepath) {
   std::ifstream file(filepath);
   std::string line;
 
-  int rackSerial = -1;
+  std::string rackSerial;
 
   // currently we don't use rtsw info yet, it's ok to have empty rtsw
   std::string rtsw;
@@ -99,9 +91,14 @@ std::optional<ncclx::RankTopology> loadTopology(
       parseTopologyValue(
           value, filepath, dc, zone, su, rtsw, isBackendTopologyValid);
     } else if (key == kDeviceRackSerial) {
-      // If device rack serial is not present, use default value -1
-      if (!value.empty()) {
-        parseRackSerial(value, rackSerial);
+      if (value.size() >= ncclx::kMaxNameLen) {
+        CLOGF(
+            WARN,
+            "DEVICE_RACK_SERIAL '{}' exceeds max length {}, ignoring to avoid truncation-based false matches",
+            value,
+            ncclx::kMaxNameLen);
+      } else {
+        rackSerial = value;
       }
     }
   }
@@ -118,12 +115,19 @@ std::optional<ncclx::RankTopology> loadTopology(
           "to ignore this error");
       return std::nullopt;
     }
+    if (rackSerial.empty()) {
+      CLOGF(
+          WARN,
+          "DEVICE_RACK_SERIAL not found in {}. "
+          "isSameDeviceRack() will always return false, which may affect NVL fabric topology detection",
+          filepath);
+    }
   }
 
   ncclx::RankTopology topo;
   topo.rank = rank;
   topo.pid = getpid();
-  topo.rackSerial = rackSerial;
+  std::strncpy(topo.rackSerial, rackSerial.c_str(), ncclx::kMaxNameLen);
   std::strncpy(topo.dc, dc.c_str(), ncclx::kMaxNameLen);
   std::strncpy(topo.zone, zone.c_str(), ncclx::kMaxNameLen);
   std::strncpy(topo.host, host.c_str(), ncclx::kMaxNameLen);

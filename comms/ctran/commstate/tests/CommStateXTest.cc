@@ -43,7 +43,7 @@ RankTopology createRankTopology(
     const std::string& su,
     const std::string& rtsw,
     const std::string& host,
-    int rackSerial = -1,
+    const std::string& rackSerial = "",
     int pid = -1) {
   RankTopology topo;
   topo.rank = rank;
@@ -53,7 +53,7 @@ RankTopology createRankTopology(
   std::strcpy(topo.su, su.c_str());
   std::strcpy(topo.dc, dc.c_str());
   std::strcpy(topo.zone, zone.c_str());
-  topo.rackSerial = rackSerial;
+  std::strncpy(topo.rackSerial, rackSerial.c_str(), ncclx::kMaxNameLen);
   return topo;
 }
 
@@ -248,11 +248,11 @@ TEST(CommStateXTest, multiRackTest) {
   const std::string kRtsw;
   std::vector<RankTopology> rankTopologies{};
   rankTopologies.emplace_back(
-      createRankTopology(0, kDc, kZone, kSuDomain1, kRtsw, kHost0, 100));
+      createRankTopology(0, kDc, kZone, kSuDomain1, kRtsw, kHost0, "100"));
   rankTopologies.emplace_back(
-      createRankTopology(1, kDc, kZone, kSuDomain1, kRtsw, kHost0, 100));
+      createRankTopology(1, kDc, kZone, kSuDomain1, kRtsw, kHost0, "100"));
   rankTopologies.emplace_back(
-      createRankTopology(2, kDc, kZone, kSuDomain1, kRtsw, kHost1, 101));
+      createRankTopology(2, kDc, kZone, kSuDomain1, kRtsw, kHost1, "101"));
 
   auto commState = std::make_unique<CommStateX>(
       rank,
@@ -266,6 +266,34 @@ TEST(CommStateXTest, multiRackTest) {
 
   EXPECT_TRUE(commState->isSameDeviceRack(rank, 1));
   EXPECT_FALSE(commState->isSameDeviceRack(rank, 2));
+}
+
+TEST(CommStateXTest, emptyDeviceRackReturnsFalse) {
+  EnvRAII env(NCCL_MNNVL_TRUNK_DISABLE, true);
+  const int rank = 0;
+  const int nRanks = 2;
+  const int cudaDev = 0;
+  const int cudaArch = 90;
+  const int64_t busId = 25;
+  const uint64_t commHash = 0;
+  const std::string kRtsw;
+  std::vector<RankTopology> rankTopologies{};
+  rankTopologies.emplace_back(
+      createRankTopology(0, kDc, kZone, kSuDomain1, kRtsw, kHost0));
+  rankTopologies.emplace_back(
+      createRankTopology(1, kDc, kZone, kSuDomain1, kRtsw, kHost0));
+
+  auto commState = std::make_unique<CommStateX>(
+      rank,
+      nRanks,
+      cudaDev,
+      cudaArch,
+      busId,
+      commHash,
+      rankTopologies,
+      std::vector<int>{});
+
+  EXPECT_FALSE(commState->isSameDeviceRack(rank, 1));
 }
 
 TEST(CommStateXTest, nvlFabricTest) {
@@ -599,7 +627,7 @@ class GpidTopoTest : public ::testing::TestWithParam<TopoTestParam> {
       const auto& [host, rtsw] = hostInfo[r / kRanksPerHost];
       const int pid = 1000 * (r / kRanksPerHost + 1) + r % kRanksPerHost;
       topos.emplace_back(
-          createRankTopology(r, kDc, kZone, kSu, rtsw, host, -1, pid));
+          createRankTopology(r, kDc, kZone, kSu, rtsw, host, "", pid));
     }
     return topos;
   }
@@ -924,11 +952,11 @@ TEST(CommStateXTest, isSameDeviceRackUnknownSerial) {
   const std::string kEmptyRtsw;
 
   std::vector<RankTopology> rankTopologies{};
-  // Both ranks have unknown rackSerial (-1)
+  // Both ranks have empty rackSerial
   rankTopologies.emplace_back(
-      createRankTopology(0, kDc, kZone, kSuDomain1, kEmptyRtsw, kHost0, -1));
+      createRankTopology(0, kDc, kZone, kSuDomain1, kEmptyRtsw, kHost0));
   rankTopologies.emplace_back(
-      createRankTopology(1, kDc, kZone, kSuDomain1, kEmptyRtsw, kHost0, -1));
+      createRankTopology(1, kDc, kZone, kSuDomain1, kEmptyRtsw, kHost0));
 
   auto commState = std::make_unique<CommStateX>(
       rank,
@@ -940,7 +968,7 @@ TEST(CommStateXTest, isSameDeviceRackUnknownSerial) {
       rankTopologies,
       std::vector<int>{});
 
-  // Unknown rackSerial (-1) should not match
+  // Empty rackSerial should not match
   EXPECT_FALSE(commState->isSameDeviceRack(rank, 1));
 }
 
