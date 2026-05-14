@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/pipes/P2pNvlTransportDevice.cuh"
+#include "comms/pipes/TiledBuffer.cuh"
 #include "comms/pipes/tests/Checks.h"
 #include "comms/pipes/tests/P2pNvlTransportDeviceTest.cuh"
 
@@ -242,6 +243,77 @@ void testLl128SendRecv(
   PIPES_KERNEL_LAUNCH_CHECK();
 
   // Wait for both to complete and destroy streams
+  PIPES_CUDA_CHECK(cudaSetDevice(0));
+  PIPES_CUDA_CHECK(cudaStreamSynchronize(send_stream));
+  PIPES_CUDA_CHECK(cudaStreamDestroy(send_stream));
+  PIPES_CUDA_CHECK(cudaSetDevice(1));
+  PIPES_CUDA_CHECK(cudaStreamSynchronize(recv_stream));
+  PIPES_CUDA_CHECK(cudaStreamDestroy(recv_stream));
+}
+
+// =============================================================================
+// LL tiled (non-cooperative) send/recv test kernels
+// =============================================================================
+
+__global__ void testLlTiledSendKernel(
+    P2pNvlTransportDevice p2p,
+    const char* src,
+    size_t nbytes,
+    int num_steps) {
+  auto group = make_warp_group();
+  auto [dir, subgroup] = group.partition_interleaved(2);
+  const int active = subgroup.total_groups;
+  Timeout timeout;
+  timeout.start();
+  if (dir == 0) {
+    for (int i = 0; i < num_steps; i++) {
+      TiledBuffer<char> tile(const_cast<char*>(src), nbytes, subgroup);
+      p2p.ll_send(subgroup, tile.data(), tile.bytes(), active, timeout);
+    }
+  }
+}
+
+__global__ void testLlTiledRecvKernel(
+    P2pNvlTransportDevice p2p,
+    char* dst,
+    size_t nbytes,
+    int num_steps) {
+  auto group = make_warp_group();
+  auto [dir, subgroup] = group.partition_interleaved(2);
+  const int active = subgroup.total_groups;
+  Timeout timeout;
+  timeout.start();
+  if (dir == 1) {
+    for (int i = 0; i < num_steps; i++) {
+      TiledBuffer<char> tile(dst, nbytes, subgroup);
+      p2p.ll_recv(subgroup, tile.data(), tile.bytes(), active, timeout);
+    }
+  }
+}
+
+void testLlTiledSendRecv(
+    P2pNvlTransportDevice sender,
+    P2pNvlTransportDevice receiver,
+    const char* src_d,
+    char* dst_d,
+    size_t nbytes,
+    int numBlocks,
+    int blockSize) {
+  constexpr int kNumSteps = 1;
+  cudaStream_t send_stream, recv_stream;
+
+  PIPES_CUDA_CHECK(cudaSetDevice(0));
+  PIPES_CUDA_CHECK(cudaStreamCreate(&send_stream));
+  testLlTiledSendKernel<<<numBlocks, blockSize, 0, send_stream>>>(
+      sender, src_d, nbytes, kNumSteps);
+  PIPES_KERNEL_LAUNCH_CHECK();
+
+  PIPES_CUDA_CHECK(cudaSetDevice(1));
+  PIPES_CUDA_CHECK(cudaStreamCreate(&recv_stream));
+  testLlTiledRecvKernel<<<numBlocks, blockSize, 0, recv_stream>>>(
+      receiver, dst_d, nbytes, kNumSteps);
+  PIPES_KERNEL_LAUNCH_CHECK();
+
   PIPES_CUDA_CHECK(cudaSetDevice(0));
   PIPES_CUDA_CHECK(cudaStreamSynchronize(send_stream));
   PIPES_CUDA_CHECK(cudaStreamDestroy(send_stream));
