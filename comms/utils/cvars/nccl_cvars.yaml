@@ -2014,7 +2014,7 @@ cvars:
  - name        : NCCL_ALLGATHER_P_ALGO
    type        : enum
    default     : ctpipeline
-   choices     : ctdirect, ctpipeline, ctrdpipeline
+   choices     : ctdirect, ctpipeline, ctrdpipeline, cthierarchical_pipes
    description : |-
      The algorithm to use for AllgatherP communication
      ctdirect - Ctran-based direct point-to-point algorithm
@@ -2023,6 +2023,50 @@ cvars:
      ctrdpipeline - Ctran-based hybrid algorithm that does recursive doubling across
                     rails for inter-node exchange and CopyEngine based broadcast
                     within the NVLink domain. Requires nNodes to be a power of 2.
+     cthierarchical_pipes - Ctran/Pipes hierarchical NVLink + IBGDA
+                            allgather path.
+
+ - name        : NCCL_CTRAN_HIER_AG_IB_NUM_BLOCKS
+   type        : int64_t
+   default     : 16
+   description : |-
+     Number of CUDA block groups used by ctran hierarchical Pipes AllGather
+     for the inter-node IBGDA ring.
+
+ - name        : NCCL_CTRAN_HIER_AG_IB_PIPELINE_DEPTH
+   type        : int64_t
+   default     : 2
+   description : |-
+     Number of send/recv staging slots allocated for ctran hierarchical Pipes
+     AllGather IBGDA send/recv.
+
+ - name        : NCCL_CTRAN_HIER_AG_IB_QPS_PER_PEER_PER_NIC
+   type        : int64_t
+   default     : 4
+   description : |-
+     Number of IBGDA QP sets per peer per NIC for ctran hierarchical Pipes
+     AllGather.
+
+ - name        : NCCL_CTRAN_HIER_AG_IB_SIGNAL_BYTES
+   type        : uint64_t
+   default     : 1048576
+   description : |-
+     Maximum bytes covered by one IBGDA signal in ctran hierarchical Pipes
+     AllGather.
+
+ - name        : NCCL_CTRAN_HIER_AG_NVL_SIGNAL_BYTES
+   type        : uint64_t
+   default     : 1048576
+   description : |-
+     Maximum bytes covered by one NVLink signal in ctran hierarchical Pipes
+     AllGather.
+
+ - name        : NCCL_CTRAN_HIER_AG_TIMEOUT_MS
+   type        : uint64_t
+   default     : 30000
+   description : |-
+     GPU-side timeout in milliseconds for ctran hierarchical Pipes AllGather
+     transport waits. Set to 0 to disable timeout.
 
  - name        : NCCL_ALLGATHER_ALGO
    type        : enum
