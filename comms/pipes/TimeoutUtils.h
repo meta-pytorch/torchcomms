@@ -3,11 +3,30 @@
 #pragma once
 
 #include <cuda_runtime.h>
+#include <array>
+#include <atomic>
 #include <cstdint>
 #include <stdexcept>
+#include <string>
 #include "comms/pipes/Timeout.cuh"
 
 namespace comms::pipes {
+
+namespace detail {
+
+inline constexpr int kMaxCachedCudaDevices = 64;
+
+using GpuCyclesCache = std::array<std::atomic<int>, kMaxCachedCudaDevices>;
+
+inline GpuCyclesCache& cachedGpuCyclesPerMs() {
+  // This is shared across translation units in a linked image. Dev-mode
+  // dynamic linking can create one cache per DSO, which is safe here because
+  // this is only an optimization cache for an idempotent device query.
+  /* library-local */ static GpuCyclesCache cache{};
+  return cache;
+}
+
+} // namespace detail
 
 /**
  * getGpuCyclesPerMs - Get the GPU clock rate in cycles per millisecond
@@ -31,10 +50,33 @@ inline uint64_t getGpuCyclesPerMs(int device = 0) {
   return static_cast<uint64_t>(clock_rate_khz);
 }
 
+inline uint64_t getCachedGpuCyclesPerMs(int device = 0) {
+  if (device < 0 || device >= detail::kMaxCachedCudaDevices) {
+    return getGpuCyclesPerMs(device);
+  }
+
+  auto& cached = detail::cachedGpuCyclesPerMs()[device];
+  int cycles_per_ms = cached.load(std::memory_order_acquire);
+  if (cycles_per_ms != 0) {
+    return static_cast<uint64_t>(cycles_per_ms);
+  }
+
+  cycles_per_ms = static_cast<int>(getGpuCyclesPerMs(device));
+  int expected = 0;
+  if (cached.compare_exchange_strong(
+          expected,
+          cycles_per_ms,
+          std::memory_order_release,
+          std::memory_order_acquire)) {
+    return static_cast<uint64_t>(cycles_per_ms);
+  }
+  return static_cast<uint64_t>(expected);
+}
+
 /**
  * makeTimeout - Create a Timeout configuration for the specified device
  *
- * Convenience function that queries the GPU clock rate and creates a
+ * Convenience function that reads the cached GPU clock rate and creates a
  * Timeout object ready to pass to kernels. Precomputes timeout_cycles
  * on the host side for efficient GPU-side checking.
  *
@@ -51,7 +93,7 @@ inline Timeout makeTimeout(uint32_t timeout_ms, int device = 0) {
   if (timeout_ms == 0) {
     return Timeout(); // No timeout
   }
-  uint64_t cycles_per_ms = getGpuCyclesPerMs(device);
+  uint64_t cycles_per_ms = getCachedGpuCyclesPerMs(device);
   uint64_t timeout_cycles = static_cast<uint64_t>(timeout_ms) * cycles_per_ms;
   return Timeout(timeout_cycles);
 }
