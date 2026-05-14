@@ -101,6 +101,11 @@ struct MultiPeerNvlTransportConfig {
   // on P2pNvlTransportDevice. When 0 (default), LL is disabled.
   // Use ll_buffer_size() from LlPacket.cuh to compute from message size.
   std::size_t llBufferSize{0};
+
+  // Override the automatically selected memory sharing mode. Leaving this unset
+  // keeps the default behavior: fabric handles when available, cudaIpc
+  // otherwise.
+  std::optional<MemSharingMode> memSharingMode;
 };
 
 /**
