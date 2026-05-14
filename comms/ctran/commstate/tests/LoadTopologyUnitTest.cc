@@ -62,7 +62,7 @@ TEST(TopologyTest, RailBasedTopology) {
   EXPECT_EQ(zone, "snb1.z081");
   EXPECT_EQ(su, "snb1.z081.u015");
   EXPECT_EQ(rtsw, "");
-  EXPECT_EQ(topo->rackSerial, 12345);
+  EXPECT_STREQ(topo->rackSerial, "12345");
 }
 
 TEST(TopologyTest, InvalidTopologyFormat) {
@@ -110,7 +110,7 @@ TEST(TopologyTest, GB300DsfTopologyZoneOnly) {
   EXPECT_EQ(zone, "uco1.z086");
   EXPECT_EQ(su, "");
   EXPECT_EQ(rtsw, "");
-  EXPECT_EQ(topo->rackSerial, 12278553);
+  EXPECT_STREQ(topo->rackSerial, "12278553");
 }
 
 TEST(TopologyTest, EmptyTopologyValue) {
@@ -142,17 +142,17 @@ TEST(TopologyTest, EmptyRackSerial) {
   const std::string rtsw(topo->rtsw);
   EXPECT_EQ(host, "rtptest021.nha1.facebook.com");
   EXPECT_EQ(rtsw, "rtsw098.c084.f00.nha1");
-  EXPECT_EQ(topo->rackSerial, -1);
+  EXPECT_STREQ(topo->rackSerial, "");
 }
 
-TEST(TopologyTest, InvalidRackSerialFormat) {
+TEST(TopologyTest, NonNumericRackSerial) {
   const std::string filepath = "/tmp/ut-topology.txt";
   std::ofstream file(filepath);
   file << "DEVICE_NAME=testhost.facebook.com" << std::endl;
   file << "DEVICE_BACKEND_NETWORK_TOPOLOGY=/zone//rtsw001" << std::endl;
   file << "DEVICE_RACK_SERIAL=not_a_number" << std::endl;
 
-  // This should throw an exception during folly::to<int> conversion
   auto topo = ctran::commstate::loadTopology(0, filepath);
   EXPECT_TRUE(topo);
+  EXPECT_STREQ(topo->rackSerial, "not_a_number");
 }
