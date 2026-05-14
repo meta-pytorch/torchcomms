@@ -12,6 +12,7 @@
 #include "comms/pipes/MultiPeerNvlTransport.h"
 #include "comms/pipes/P2pNvlTransportDevice.cuh"
 #include "comms/pipes/TiledBuffer.cuh"
+#include "comms/pipes/TimeoutUtils.h"
 #include "comms/pipes/benchmarks/TileSendRecv.cuh"
 #include "comms/pipes/tests/P2pNvlTransportTest.cuh"
 #include "comms/pipes/tests/Utils.cuh"
@@ -4256,6 +4257,173 @@ TEST_F(P2pNvlTransportTestFixture, TileForwardMultiCallPersistentStep) {
       2,
       4,
       5);
+}
+
+TEST_F(P2pNvlTransportTestFixture, TileForwardDesynchronizedStepState) {
+  if (numRanks != 2) {
+    return;
+  }
+
+  constexpr int kNumBlocks = 4;
+  constexpr size_t kDataBufferSize = 1024 * 1024;
+  constexpr size_t kMaxSignalBytes = 64 * 1024;
+  constexpr size_t kPerBlockSlotSize = kDataBufferSize / kNumBlocks;
+  constexpr size_t kForwardBytes = kMaxSignalBytes * kNumBlocks;
+  constexpr size_t kAdvanceBytes = kForwardBytes * 5;
+  constexpr int kThreadCount = 256;
+  constexpr unsigned char kAdvancePattern = 0x33;
+  constexpr unsigned char kForwardPattern = 0x7a;
+
+  auto bs = std::make_shared<meta::comms::MpiBootstrap>();
+  const int peerRank = globalRank == 0 ? 1 : 0;
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = kDataBufferSize,
+      .chunkSize = kDataBufferSize,
+      .pipelineDepth = 2,
+  };
+  MultiPeerNvlTransport transport(globalRank, numRanks, bs, config);
+  transport.exchange();
+  auto p2pHost = transport.buildP2pTransportDevice(peerRank);
+  int device = 0;
+  CUDACHECK_TEST(cudaGetDevice(&device));
+  Timeout timeout = makeTimeout(5000, device);
+
+  if (globalRank == 0) {
+    CUDACHECK_TEST(cudaMemset(
+        p2pHost.getLocalState().dataBuffer,
+        0,
+        config.pipelineDepth * config.dataBufferSize));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+  }
+
+  DeviceBuffer advanceSendBuf(kAdvanceBytes);
+  DeviceBuffer advanceRecvBuf(kAdvanceBytes);
+  if (globalRank == 1) {
+    CUDACHECK_TEST(
+        cudaMemset(advanceSendBuf.get(), kAdvancePattern, kAdvanceBytes));
+  } else {
+    CUDACHECK_TEST(cudaMemset(advanceRecvBuf.get(), 0, kAdvanceBytes));
+  }
+
+  // Advance only the rank1->rank0 tile send/recv state by 5 sub-steps. The
+  // following forward call then has recvStep == 0 and sendStep == 5 on rank 1.
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  if (globalRank == 1) {
+    test::testTileSend(
+        p2pHost,
+        advanceSendBuf.get(),
+        kAdvanceBytes,
+        kNumBlocks,
+        kMaxSignalBytes,
+        timeout,
+        kNumBlocks,
+        kThreadCount);
+  } else {
+    test::testTileRecv(
+        p2pHost,
+        advanceRecvBuf.get(),
+        kAdvanceBytes,
+        kNumBlocks,
+        kMaxSignalBytes,
+        timeout,
+        kNumBlocks,
+        kThreadCount);
+  }
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  if (globalRank == 0) {
+    std::vector<char> hostBuf(kAdvanceBytes);
+    CUDACHECK_TEST(cudaMemcpy(
+        hostBuf.data(),
+        advanceRecvBuf.get(),
+        kAdvanceBytes,
+        cudaMemcpyDeviceToHost));
+    for (size_t i = 0; i < kAdvanceBytes; ++i) {
+      if (static_cast<unsigned char>(hostBuf[i]) != kAdvancePattern) {
+        EXPECT_EQ(static_cast<unsigned char>(hostBuf[i]), kAdvancePattern)
+            << "pre-advance mismatch at byte " << i;
+        break;
+      }
+    }
+  }
+
+  DeviceBuffer srcBuf(kForwardBytes);
+  DeviceBuffer fwdR1Buf(kForwardBytes);
+  if (globalRank == 0) {
+    CUDACHECK_TEST(cudaMemset(srcBuf.get(), kForwardPattern, kForwardBytes));
+  } else {
+    CUDACHECK_TEST(cudaMemset(fwdR1Buf.get(), 0, kForwardBytes));
+  }
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  if (globalRank == 0) {
+    test::testTileSend(
+        p2pHost,
+        srcBuf.get(),
+        kForwardBytes,
+        kNumBlocks,
+        kMaxSignalBytes,
+        timeout,
+        kNumBlocks,
+        kThreadCount);
+  } else {
+    TiledBuffer<char> dstTiles(
+        static_cast<char*>(fwdR1Buf.get()), kForwardBytes, kNumBlocks);
+    int numBlocksArg = kNumBlocks;
+    std::size_t maxSignalBytes = kMaxSignalBytes;
+    void* args[] = {
+        &p2pHost,
+        &p2pHost,
+        &dstTiles,
+        &numBlocksArg,
+        &maxSignalBytes,
+        &timeout};
+
+    CUDACHECK_TEST(cudaLaunchKernel(
+        (void*)comms::pipes::benchmark::p2pTileForward,
+        dim3(kNumBlocks),
+        dim3(kThreadCount),
+        args,
+        0,
+        nullptr));
+  }
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  if (globalRank == 0) {
+    std::vector<char> stagingSlot(kDataBufferSize);
+    CUDACHECK_TEST(cudaMemcpy(
+        stagingSlot.data(),
+        static_cast<char*>(p2pHost.getLocalState().dataBuffer) +
+            kDataBufferSize,
+        kDataBufferSize,
+        cudaMemcpyDeviceToHost));
+    for (int block = 0; block < kNumBlocks; ++block) {
+      const size_t chunkOffset = block * kPerBlockSlotSize + kMaxSignalBytes;
+      for (size_t i = 0; i < kMaxSignalBytes; ++i) {
+        EXPECT_EQ(
+            static_cast<unsigned char>(stagingSlot[chunkOffset + i]),
+            kForwardPattern)
+            << "forward staging mismatch at block " << block << " byte " << i;
+        if (static_cast<unsigned char>(stagingSlot[chunkOffset + i]) !=
+            kForwardPattern) {
+          return;
+        }
+      }
+    }
+  } else {
+    std::vector<char> hostBuf(kForwardBytes);
+    CUDACHECK_TEST(cudaMemcpy(
+        hostBuf.data(), fwdR1Buf.get(), kForwardBytes, cudaMemcpyDeviceToHost));
+    for (size_t i = 0; i < kForwardBytes; ++i) {
+      EXPECT_EQ(static_cast<unsigned char>(hostBuf[i]), kForwardPattern)
+          << "forward mismatch at byte " << i;
+      if (static_cast<unsigned char>(hostBuf[i]) != kForwardPattern) {
+        return;
+      }
+    }
+  }
 }
 
 // Partial tiles (nbytes not evenly divisible by numBlocks)
