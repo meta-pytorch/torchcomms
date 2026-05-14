@@ -557,12 +557,15 @@ inline void progressRecv(
     AlgoContext& algoCtx,
     std::vector<std::unique_ptr<CtranMapperRequest>>& bufSyncSResps,
     std::vector<std::unique_ptr<CtranMapperRequest>>& flushResps) {
-  // Check if have received a chunk from left
-  // Data receive doesn't need specific post, thus updating post & done
-  // together
-  if (opReadyToPost<Op::kRecvTrans>(algoCtx) &&
-      progressRecvCheckTrans(args, resource, algoCtx)) {
+  // Post step (no-op for IB — data arrives via RDMA put, not receiver post).
+  // Split from check step to allow future backends to insert work here.
+  if (opReadyToPost<Op::kRecvTrans>(algoCtx)) {
     opUpdatePost<Op::kRecvTrans>(algoCtx);
+  }
+
+  // Check if data has arrived from left peer
+  if (opHasPosted<Op::kRecvTrans>(algoCtx) &&
+      progressRecvCheckTrans(args, resource, algoCtx)) {
     opUpdateDone<Op::kRecvTrans>(algoCtx);
   }
 
