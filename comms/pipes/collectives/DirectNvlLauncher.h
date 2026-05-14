@@ -1,0 +1,66 @@
+// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+
+#pragma once
+
+#include <cuda_runtime_api.h>
+
+#include <cstddef>
+
+#include "comms/pipes/P2pNvlTransportDevice.cuh"
+#include "comms/pipes/collectives/DirectNvlTypes.h"
+
+namespace comms::pipes {
+
+struct DirectAllgatherNvlLaunchParams {
+  int my_rank{0};
+  int num_ranks{0};
+  std::size_t sendcount{0};
+  std::size_t signaling_data_size{0};
+  const char* sendbuf{nullptr};
+  char* recvbuf{nullptr};
+  int num_blocks{16};
+  float timeout_ms{0.0f};
+  cudaStream_t stream{nullptr};
+  P2pNvlTransportDevice peers[kDirectNvlMaxRanks]{};
+};
+
+void launch_direct_allgather_nvl(const DirectAllgatherNvlLaunchParams& params);
+
+struct DirectReduceScatterNvlLaunchParams {
+  int my_rank{0};
+  int num_ranks{0};
+  std::size_t chunk_elements{0};
+  std::size_t signaling_data_size{0};
+  const float* input{nullptr};
+  float* output{nullptr};
+  int num_blocks{16};
+  float timeout_ms{0.0f};
+  cudaStream_t stream{nullptr};
+  P2pNvlTransportDevice peers[kDirectNvlMaxRanks]{};
+};
+
+void launch_direct_reduce_scatter_nvl(
+    const DirectReduceScatterNvlLaunchParams& params);
+
+struct HierarchicalAllgatherLaunchParams {
+  int num_ranks{0};
+  int ib_rank{0};
+  int ib_size{0};
+  int nvl_rank{0};
+  int nvl_size{0};
+  std::size_t sendcount{0};
+  std::size_t ib_signaling_data_size{0};
+  std::size_t nvl_signaling_data_size{0};
+  const char* sendbuf{nullptr};
+  char* recvbuf{nullptr};
+  int ib_num_blocks{16};
+  float timeout_ms{0.0f};
+  cudaStream_t stream{nullptr};
+  HierarchicalAllgatherIbgdaRing ib_ring{};
+  P2pNvlTransportDevice nvl_peers[kDirectNvlMaxRanks]{};
+};
+
+void launch_hierarchical_allgather_fused(
+    const HierarchicalAllgatherLaunchParams& params);
+
+} // namespace comms::pipes
