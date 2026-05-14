@@ -1,26 +1,31 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 /// Cross-host integration test for MultiTransport put/get.
-/// Requires MPI with 2 ranks on 2 different hosts (nnodes=2, ppn=1).
+/// Requires 2 ranks on 2 different hosts (nnodes=2, ppn=1).
 /// Each rank creates a MultiTransportFactory, exchanges topology and
-/// connection info via MPI, then tests DRAM and GPU put/get transfers.
+/// connection info via TCP, then tests DRAM and GPU put/get transfers.
+/// Uses MASTER_ADDR/MASTER_PORT/RANK/WORLD_SIZE env vars set by re_launcher.
 
-#include <mpi.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <chrono>
+#include <cstdlib>
 #include <cstring>
+#include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
 
-#include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/uniflow/MultiTransport.h"
 #include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
 #include "comms/uniflow/transport/Topology.h"
 
 #include <cuda_runtime_api.h> // @manual=third-party//cuda:cuda-lazy
-
-using meta::comms::MpiBaseTestFixture;
-using meta::comms::MPIEnvironmentBase;
 
 namespace uniflow {
 
@@ -48,65 +53,194 @@ class SegmentTest {
   }
 };
 
-/// Exchange a variable-length byte vector between rank 0 and rank 1 via MPI.
-static std::vector<uint8_t> mpiExchange(
+// --- TCP-based inter-rank communication (replaces MPI) ---
+
+class TestEnv : public ::testing::Environment {
+ public:
+  void SetUp() override {
+    const char* rankStr = std::getenv("RANK");
+    if (!rankStr)
+      rankStr = std::getenv("OMPI_COMM_WORLD_RANK");
+    const char* sizeStr = std::getenv("WORLD_SIZE");
+    if (!sizeStr)
+      sizeStr = std::getenv("OMPI_COMM_WORLD_SIZE");
+    const char* addr = std::getenv("MASTER_ADDR");
+    const char* portStr = std::getenv("MASTER_PORT");
+
+    if (!rankStr || !sizeStr || !addr || !portStr) {
+      throw std::runtime_error(
+          "Missing required env vars: RANK, WORLD_SIZE, MASTER_ADDR, MASTER_PORT");
+    }
+
+    rank_ = std::atoi(rankStr);
+    worldSize_ = std::atoi(sizeStr);
+    if (worldSize_ != 2) {
+      throw std::runtime_error(
+          "MultiTransportCrossHostTest requires exactly 2 ranks");
+    }
+
+    int port = std::atoi(portStr);
+
+    if (rank_ == 0) {
+      int listenFd = ::socket(AF_INET6, SOCK_STREAM, 0);
+      if (listenFd < 0)
+        throw std::runtime_error("socket() failed");
+      int opt = 1;
+      ::setsockopt(listenFd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+      int off = 0;
+      ::setsockopt(listenFd, IPPROTO_IPV6, IPV6_V6ONLY, &off, sizeof(off));
+
+      struct sockaddr_in6 sa{};
+      sa.sin6_family = AF_INET6;
+      sa.sin6_addr = in6addr_any;
+      sa.sin6_port = htons(static_cast<uint16_t>(port));
+
+      if (::bind(listenFd, reinterpret_cast<sockaddr*>(&sa), sizeof(sa)) < 0) {
+        ::close(listenFd);
+        throw std::runtime_error(
+            "bind() failed on port " + std::to_string(port));
+      }
+      if (::listen(listenFd, 1) < 0) {
+        ::close(listenFd);
+        throw std::runtime_error("listen() failed");
+      }
+      peerFd_ = ::accept(listenFd, nullptr, nullptr);
+      ::close(listenFd);
+      if (peerFd_ < 0)
+        throw std::runtime_error("accept() failed");
+    } else {
+      struct addrinfo hints{};
+      hints.ai_family = AF_UNSPEC;
+      hints.ai_socktype = SOCK_STREAM;
+      struct addrinfo* res = nullptr;
+      std::string portS = std::to_string(port);
+      if (int r = ::getaddrinfo(addr, portS.c_str(), &hints, &res); r != 0) {
+        throw std::runtime_error(
+            std::string("getaddrinfo: ") + gai_strerror(r));
+      }
+
+      peerFd_ = ::socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+      if (peerFd_ < 0) {
+        ::freeaddrinfo(res);
+        throw std::runtime_error("socket() failed");
+      }
+
+      for (int i = 0; i < 50; ++i) {
+        if (::connect(peerFd_, res->ai_addr, res->ai_addrlen) == 0)
+          break;
+        if (i == 49) {
+          ::freeaddrinfo(res);
+          ::close(peerFd_);
+          throw std::runtime_error(
+              std::string("connect to ") + addr + ":" + portS + " failed");
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
+      ::freeaddrinfo(res);
+    }
+
+    int nodelay = 1;
+    ::setsockopt(peerFd_, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+  }
+
+  void TearDown() override {
+    if (peerFd_ >= 0) {
+      ::close(peerFd_);
+      peerFd_ = -1;
+    }
+  }
+
+  static int rank() {
+    return rank_;
+  }
+  static int worldSize() {
+    return worldSize_;
+  }
+  static int peerFd() {
+    return peerFd_;
+  }
+
+ private:
+  static int rank_;
+  static int worldSize_;
+  static int peerFd_;
+};
+
+int TestEnv::rank_ = -1;
+int TestEnv::worldSize_ = -1;
+int TestEnv::peerFd_ = -1;
+
+static void sendAll(int fd, const void* buf, size_t len) {
+  auto* p = static_cast<const char*>(buf);
+  while (len > 0) {
+    ssize_t n = ::send(fd, p, len, 0);
+    if (n <= 0)
+      throw std::runtime_error("TCP send failed");
+    p += n;
+    len -= static_cast<size_t>(n);
+  }
+}
+
+static void recvAll(int fd, void* buf, size_t len) {
+  auto* p = static_cast<char*>(buf);
+  while (len > 0) {
+    ssize_t n = ::recv(fd, p, len, 0);
+    if (n <= 0)
+      throw std::runtime_error("TCP recv failed");
+    p += n;
+    len -= static_cast<size_t>(n);
+  }
+}
+
+static std::vector<uint8_t> tcpExchange(
     const std::vector<uint8_t>& localData,
-    int rank) {
-  int peerRank = 1 - rank;
-
-  int localSize = static_cast<int>(localData.size());
-  int remoteSize = 0;
-  MPI_Sendrecv(
-      &localSize,
-      1,
-      MPI_INT,
-      peerRank,
-      0,
-      &remoteSize,
-      1,
-      MPI_INT,
-      peerRank,
-      0,
-      MPI_COMM_WORLD,
-      MPI_STATUS_IGNORE);
-
+    int /*rank*/) {
+  int fd = TestEnv::peerFd();
+  uint32_t localSize = static_cast<uint32_t>(localData.size());
+  uint32_t remoteSize = 0;
+  sendAll(fd, &localSize, sizeof(localSize));
+  recvAll(fd, &remoteSize, sizeof(remoteSize));
   std::vector<uint8_t> remoteData(remoteSize);
-  MPI_Sendrecv(
-      localData.data(),
-      localSize,
-      MPI_BYTE,
-      peerRank,
-      1,
-      remoteData.data(),
-      remoteSize,
-      MPI_BYTE,
-      peerRank,
-      1,
-      MPI_COMM_WORLD,
-      MPI_STATUS_IGNORE);
-
+  sendAll(fd, localData.data(), localSize);
+  recvAll(fd, remoteData.data(), remoteSize);
   return remoteData;
 }
 
-/// Returns true if any rank wants to skip (synchronized across all ranks).
 static bool anyRankWantsToSkip(bool localSkip) {
-  int localVal = localSkip ? 1 : 0;
-  int globalVal = 0;
-  MPI_Allreduce(&localVal, &globalVal, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-  return globalVal != 0;
+  int fd = TestEnv::peerFd();
+  uint8_t local = localSkip ? 1 : 0;
+  uint8_t remote = 0;
+  sendAll(fd, &local, 1);
+  recvAll(fd, &remote, 1);
+  return local != 0 || remote != 0;
 }
 
-class MultiTransportCrossHostTest : public MpiBaseTestFixture {
+static void tcpBarrier() {
+  int fd = TestEnv::peerFd();
+  uint8_t token = 1;
+  sendAll(fd, &token, 1);
+  recvAll(fd, &token, 1);
+}
+
+class MultiTransportCrossHostTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    MpiBaseTestFixture::SetUp();
+    globalRank = TestEnv::rank();
+    numRanks = TestEnv::worldSize();
     ASSERT_EQ(numRanks, 2)
-        << "MultiTransportCrossHostTest requires exactly 2 MPI ranks";
+        << "MultiTransportCrossHostTest requires exactly 2 ranks";
 
     auto& topo = Topology::get();
-    ASSERT_TRUE(topo.available());
-    ASSERT_GT(topo.nicCount(), 0u) << "Need at least 1 NIC";
+    if (!topo.available()) {
+      GTEST_SKIP() << "Topology not available";
+    }
+    if (topo.nicCount() == 0u) {
+      GTEST_SKIP() << "Need at least 1 NIC";
+    }
   }
+
+  int globalRank{0};
+  int numRanks{0};
 
   struct ConnectedPair {
     std::unique_ptr<MultiTransportFactory> factory;
@@ -118,26 +252,24 @@ class MultiTransportCrossHostTest : public MpiBaseTestFixture {
     RemoteRegisteredSegment remote;
   };
 
-  /// Create a connected MultiTransport pair across hosts using MPI to
+  /// Create a connected MultiTransport pair across hosts using TCP to
   /// exchange topology and connection info.
   ConnectedPair connectCrossHost(int deviceId) {
     ConnectedPair pair;
     pair.factory = std::make_unique<MultiTransportFactory>(deviceId);
 
-    // Exchange topology via MPI.
     auto localTopo = pair.factory->getTopology();
-    auto remoteTopo = mpiExchange(localTopo, globalRank);
+    auto remoteTopo = tcpExchange(localTopo, globalRank);
 
     auto transportResult = pair.factory->createTransport(remoteTopo);
     EXPECT_TRUE(transportResult.hasValue())
         << "createTransport failed: " << transportResult.error().message();
     pair.transport = std::move(transportResult.value());
 
-    // Exchange TransportInfo via MPI.
     auto bindResult = pair.transport->bind();
     EXPECT_TRUE(bindResult.hasValue())
         << "bind failed: " << bindResult.error().message();
-    auto remoteInfo = mpiExchange(bindResult.value(), globalRank);
+    auto remoteInfo = tcpExchange(bindResult.value(), globalRank);
     auto connectStatus = pair.transport->connect(remoteInfo);
     EXPECT_FALSE(connectStatus.hasError())
         << "connect failed: " << connectStatus.error().message();
@@ -145,7 +277,7 @@ class MultiTransportCrossHostTest : public MpiBaseTestFixture {
     return pair;
   }
 
-  /// Register a local segment, exchange registration payloads via MPI,
+  /// Register a local segment, exchange registration payloads via TCP,
   /// import the remote segment, and return both registered segments.
   std::optional<SegmentRegistration> registerAndExchangeSegments(
       MultiTransportFactory& factory,
@@ -161,7 +293,7 @@ class MultiTransportCrossHostTest : public MpiBaseTestFixture {
     }
 
     auto localPayload = regResult.value().exportId().value();
-    auto remotePayload = mpiExchange(localPayload, globalRank);
+    auto remotePayload = tcpExchange(localPayload, globalRank);
 
     auto importResult = factory.importSegment(remotePayload);
     EXPECT_TRUE(importResult.hasValue()) << importResult.error().message();
@@ -489,7 +621,7 @@ TEST_P(SameDeviceTransferTest, Transfer) {
     zeroBuffer(myPtr, myMemType, cudaDev, totalSize);
   }
 
-  MPI_Barrier(MPI_COMM_WORLD);
+  tcpBarrier();
 
   int segDeviceId = isGpu(myMemType) ? cudaDev : -1;
   auto segments = registerAndExchangeSegments(
@@ -516,7 +648,7 @@ TEST_P(SameDeviceTransferTest, Transfer) {
     EXPECT_EQ(pair.transport->transferCount(expectedTransport), 1u);
   }
 
-  MPI_Barrier(MPI_COMM_WORLD);
+  tcpBarrier();
 
   if (globalRank == verifyRank) {
     auto verify = readBuffer(myPtr, myMemType, cudaDev, totalSize);
@@ -529,7 +661,7 @@ TEST_P(SameDeviceTransferTest, Transfer) {
     }
   }
 
-  MPI_Barrier(MPI_COMM_WORLD);
+  tcpBarrier();
 }
 
 // clang-format off
@@ -653,7 +785,7 @@ TEST_P(CrossDeviceGpuTransferTest, Transfer) {
     cudaMemset(gpuPtr, 0, totalSize);
   }
 
-  MPI_Barrier(MPI_COMM_WORLD);
+  tcpBarrier();
 
   auto segments = registerAndExchangeSegments(
       *pair.factory, gpuPtr, totalSize, MemoryType::VRAM, cudaDev);
@@ -673,7 +805,7 @@ TEST_P(CrossDeviceGpuTransferTest, Transfer) {
     EXPECT_EQ(pair.transport->transferCount(expectedTransport), 1u);
   }
 
-  MPI_Barrier(MPI_COMM_WORLD);
+  tcpBarrier();
 
   if (globalRank == verifyRank) {
     std::vector<char> verify(totalSize, 0);
@@ -688,7 +820,7 @@ TEST_P(CrossDeviceGpuTransferTest, Transfer) {
     }
   }
 
-  MPI_Barrier(MPI_COMM_WORLD);
+  tcpBarrier();
 }
 
 // clang-format off
@@ -713,6 +845,6 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new MPIEnvironmentBase());
+  ::testing::AddGlobalTestEnvironment(new uniflow::TestEnv());
   return RUN_ALL_TESTS();
 }
