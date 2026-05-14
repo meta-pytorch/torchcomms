@@ -12,44 +12,41 @@ with support for buffer registration, custom reduction operators, and resource m
 """
 
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Any, Sequence
 
 import numpy as _np
-
-from cuda.core import Device
-from cuda.core import system
-
+from cuda.core import Device, system
 from nccl import bindings as _nccl_bindings
-
 from nccl.core.buffer import NcclBuffer
 from nccl.core.constants import (
-    NCCL_SPLIT_NOCOLOR,
-    NCCL_UNDEF_INT,
-    NCCL_MAGIC,
-    CTAPolicy,
     CommShrinkFlag,
     CommSuspendFlag,
+    CTAPolicy,
+    NCCL_MAGIC,
+    NCCL_SPLIT_NOCOLOR,
+    NCCL_UNDEF_INT,
     WindowFlag,
 )
 from nccl.core.cuda import get_stream_ptr
 from nccl.core.resources import (
     CommResource,
-    RegisteredBufferHandle,
-    RegisteredWindowHandle,
     CustomRedOp,
     DevCommResource,
+    RegisteredBufferHandle,
+    RegisteredWindowHandle,
 )
 from nccl.core.typing import (
-    NcclDataType,
     NcclBufferSpec,
-    NcclRedOp,
-    NcclGinType,
-    NcclGinConnectionType,
-    NcclStreamSpec,
-    NcclScalarSpec,
-    NcclInvalid,
     NcclCommMemStat,
+    NcclDataType,
+    NcclGinConnectionType,
+    NcclGinType,
+    NcclInvalid,
+    NcclRedOp,
+    NcclScalarSpec,
+    NcclStreamSpec,
 )
 from nccl.core.utils import UniqueId
 
@@ -123,7 +120,9 @@ class NCCLConfig:
 
         # Apply NCCL_CONFIG_INITIALIZER defaults
         self._cfg.size_ = int(_nccl_bindings.config_dtype.itemsize)
-        self._cfg.magic = NCCL_MAGIC  # NCCL protocol magic number for ncclConfig_t validation
+        self._cfg.magic = (
+            NCCL_MAGIC  # NCCL protocol magic number for ncclConfig_t validation
+        )
         self._cfg.version = _nccl_bindings.get_version()
 
         # Initialize all fields to undef
@@ -292,7 +291,9 @@ class NCCLConfig:
         if not isinstance(val, int):
             raise NcclInvalid(f"min_ctas must be int, got {type(val).__name__}")
         if not (0 < val <= 32):
-            raise NcclInvalid(f"min_ctas must be a positive integer up to 32, got {val}")
+            raise NcclInvalid(
+                f"min_ctas must be a positive integer up to 32, got {val}"
+            )
         self._cfg.min_ctas = val
 
     @property
@@ -310,7 +311,9 @@ class NCCLConfig:
         if not isinstance(val, int):
             raise NcclInvalid(f"max_ctas must be int, got {type(val).__name__}")
         if not (0 < val <= 32):
-            raise NcclInvalid(f"max_ctas must be a positive integer up to 32, got {val}")
+            raise NcclInvalid(
+                f"max_ctas must be a positive integer up to 32, got {val}"
+            )
         self._cfg.max_ctas = val
 
     @property
@@ -408,7 +411,9 @@ class NCCLConfig:
     @cta_policy.setter
     def cta_policy(self, val: int | CTAPolicy) -> None:
         if not isinstance(val, (int, CTAPolicy)):
-            raise NcclInvalid(f"cta_policy must be int or CTAPolicy, got {type(val).__name__}")
+            raise NcclInvalid(
+                f"cta_policy must be int or CTAPolicy, got {type(val).__name__}"
+            )
         self._cfg.cta_policy = int(val)
 
     @property
@@ -458,9 +463,13 @@ class NCCLConfig:
     @n_channels_per_net_peer.setter
     def n_channels_per_net_peer(self, val: int) -> None:
         if not isinstance(val, int):
-            raise NcclInvalid(f"n_channels_per_net_peer must be int, got {type(val).__name__}")
+            raise NcclInvalid(
+                f"n_channels_per_net_peer must be int, got {type(val).__name__}"
+            )
         if val <= 0:
-            raise NcclInvalid(f"n_channels_per_net_peer must be a positive integer, got {val}")
+            raise NcclInvalid(
+                f"n_channels_per_net_peer must be a positive integer, got {val}"
+            )
         self._cfg.n_channels_per_net_peer = val
 
     @property
@@ -476,7 +485,9 @@ class NCCLConfig:
     @nvlink_centric_sched.setter
     def nvlink_centric_sched(self, val: bool) -> None:
         if not isinstance(val, bool):
-            raise NcclInvalid(f"nvlink_centric_sched must be bool, got {type(val).__name__}")
+            raise NcclInvalid(
+                f"nvlink_centric_sched must be bool, got {type(val).__name__}"
+            )
         self._cfg.nvlink_centric_sched = int(val)
 
     @property
@@ -866,7 +877,9 @@ class Communicator:
         if self._comm == 0:
             raise NcclInvalid(f"Cannot {operation}: Communicator not initialized")
 
-    def _validate_buffer_device(self, buffer: NcclBuffer, buffer_name: str = "buffer") -> None:
+    def _validate_buffer_device(
+        self, buffer: NcclBuffer, buffer_name: str = "buffer"
+    ) -> None:
         """
         Validates that buffer is on the same device as the communicator.
 
@@ -898,7 +911,9 @@ class Communicator:
         if self._comm_properties is None:
             self._comm_properties = _nccl_bindings.CommProperties()
             # Initialize with magic number, size, and version (like NCCL_COMM_PROPERTIES_INITIALIZER)
-            self._comm_properties.size_ = int(_nccl_bindings.comm_properties_dtype.itemsize)
+            self._comm_properties.size_ = int(
+                _nccl_bindings.comm_properties_dtype.itemsize
+            )
             self._comm_properties.magic = NCCL_MAGIC
             self._comm_properties.version = _nccl_bindings.get_version()
             _nccl_bindings.comm_query_properties(self._comm, self._comm_properties.ptr)
@@ -1237,7 +1252,9 @@ class Communicator:
         uid_ptr = 0 if unique_id is None else unique_id.ptr
         rank_val = -1 if rank is None else int(rank)
         cfg_ptr = 0 if config is None else config.ptr
-        comm_ptr = _nccl_bindings.comm_grow(self._comm, int(nranks), uid_ptr, rank_val, cfg_ptr)
+        comm_ptr = _nccl_bindings.comm_grow(
+            self._comm, int(nranks), uid_ptr, rank_val, cfg_ptr
+        )
 
         return type(self)(comm_ptr)
 
@@ -1616,7 +1633,11 @@ class Communicator:
 
     # --- Point-to-Point Communication ---
     def send(
-        self, sendbuf: NcclBufferSpec, peer: int, *, stream: NcclStreamSpec | None = None
+        self,
+        sendbuf: NcclBufferSpec,
+        peer: int,
+        *,
+        stream: NcclStreamSpec | None = None,
     ) -> None:
         """
         Sends a buffer to a peer rank using this communicator.
@@ -1634,11 +1655,20 @@ class Communicator:
         self._validate_buffer_device(s, "sendbuf")
 
         _nccl_bindings.send(
-            s.ptr, s.count, int(s.dtype), int(peer), int(self._comm), get_stream_ptr(stream)
+            s.ptr,
+            s.count,
+            int(s.dtype),
+            int(peer),
+            int(self._comm),
+            get_stream_ptr(stream),
         )
 
     def recv(
-        self, recvbuf: NcclBufferSpec, peer: int, *, stream: NcclStreamSpec | None = None
+        self,
+        recvbuf: NcclBufferSpec,
+        peer: int,
+        *,
+        stream: NcclStreamSpec | None = None,
     ) -> None:
         """
         Receives data into a buffer from a peer rank using this communicator.
@@ -1656,7 +1686,12 @@ class Communicator:
         self._validate_buffer_device(r, "recvbuf")
 
         _nccl_bindings.recv(
-            r.ptr, r.count, int(r.dtype), int(peer), int(self._comm), get_stream_ptr(stream)
+            r.ptr,
+            r.count,
+            int(r.dtype),
+            int(peer),
+            int(self._comm),
+            get_stream_ptr(stream),
         )
 
     def wait_signal(
@@ -1698,7 +1733,9 @@ class Communicator:
             arr[idx]["ctx"] = desc.context
         ptr = 0 if nr_descs == 0 else int(arr.ctypes.data)
 
-        _nccl_bindings.wait_signal(nr_descs, ptr, int(self._comm), get_stream_ptr(stream))
+        _nccl_bindings.wait_signal(
+            nr_descs, ptr, int(self._comm), get_stream_ptr(stream)
+        )
 
     def signal(
         self,
@@ -1889,7 +1926,13 @@ class Communicator:
         dtype = r.dtype
 
         _nccl_bindings.broadcast(
-            s_ptr, r_ptr, count, int(dtype), int(root), int(self._comm), get_stream_ptr(stream)
+            s_ptr,
+            r_ptr,
+            count,
+            int(dtype),
+            int(root),
+            int(self._comm),
+            get_stream_ptr(stream),
         )
 
     def reduce(
@@ -1960,7 +2003,13 @@ class Communicator:
 
         if root is None:
             _nccl_bindings.all_reduce(
-                s_ptr, r_ptr, count, int(dtype), int(op), int(self._comm), get_stream_ptr(stream)
+                s_ptr,
+                r_ptr,
+                count,
+                int(dtype),
+                int(op),
+                int(self._comm),
+                get_stream_ptr(stream),
             )
         else:
             _nccl_bindings.reduce(
@@ -2067,7 +2116,13 @@ class Communicator:
         dtype = s.dtype
 
         _nccl_bindings.reduce_scatter(
-            s_ptr, r_ptr, count, int(dtype), int(op), int(self._comm), get_stream_ptr(stream)
+            s_ptr,
+            r_ptr,
+            count,
+            int(dtype),
+            int(op),
+            int(self._comm),
+            get_stream_ptr(stream),
         )
 
     def alltoall(
@@ -2201,7 +2256,13 @@ class Communicator:
             )
         else:
             _nccl_bindings.gather(
-                s_ptr, r_ptr, count, int(dtype), int(root), int(self._comm), get_stream_ptr(stream)
+                s_ptr,
+                r_ptr,
+                count,
+                int(dtype),
+                int(root),
+                int(self._comm),
+                get_stream_ptr(stream),
             )
 
     def scatter(
@@ -2266,7 +2327,13 @@ class Communicator:
         dtype = r.dtype
 
         _nccl_bindings.scatter(
-            s_ptr, r_ptr, count, int(dtype), int(root), int(self._comm), get_stream_ptr(stream)
+            s_ptr,
+            r_ptr,
+            count,
+            int(dtype),
+            int(root),
+            int(self._comm),
+            get_stream_ptr(stream),
         )
 
     # --- Registration ---

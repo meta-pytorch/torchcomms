@@ -90,7 +90,9 @@ def main():
     expected = float(100 + (1 - rank))
     actual = float(recv_data[0].item())
 
-    print(f"Rank {rank}: Sent {100 + rank:.0f}, Received {actual:.0f} (expected {expected:.0f})")
+    print(
+        f"Rank {rank}: Sent {100 + rank:.0f}, Received {actual:.0f} (expected {expected:.0f})"
+    )
 
     # [NCCL4Py] Destroy NCCL communicator (collective call)
     nccl_comm.destroy()
