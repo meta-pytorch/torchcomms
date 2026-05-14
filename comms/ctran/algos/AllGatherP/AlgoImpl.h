@@ -58,6 +58,14 @@ class AlgoImpl {
       const size_t count,
       const commDataType_t datatype);
 
+  // Execute the Pipes hierarchical NVLink + IBGDA algorithm.
+  // This is an opt-in path that launches a single device-side staged
+  // allgather kernel through GPE with an empty host op group.
+  commResult_t execHierarchicalPipes(
+      const void* sendbuff,
+      const size_t count,
+      const commDataType_t datatype);
+
   static inline const std::string algoName(enum NCCL_ALLGATHER_P_ALGO algo) {
     switch (algo) {
       case NCCL_ALLGATHER_P_ALGO::ctdirect:
@@ -66,6 +74,8 @@ class AlgoImpl {
         return "CtranAllGatherPPipeline";
       case NCCL_ALLGATHER_P_ALGO::ctrdpipeline:
         return "CtranAllGatherPRecDbl";
+      case NCCL_ALLGATHER_P_ALGO::cthierarchical_pipes:
+        return "CtranAllGatherPHierarchicalPipes";
       default:
         return "Unknown";
     }

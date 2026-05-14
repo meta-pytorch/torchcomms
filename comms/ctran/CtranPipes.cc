@@ -2,6 +2,7 @@
 
 #include "comms/ctran/CtranPipes.h"
 
+#include <algorithm>
 #include <set>
 
 #include "comms/ctran/CtranComm.h"
@@ -85,6 +86,15 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     }
     config.ibgdaConfig.dataBufferSize = NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE;
     config.ibgdaConfig.qpDepth = NCCL_CTRAN_IBGDA_QP_DEPTH;
+    config.ibgdaConfig.sendRecv =
+        comms::pipes::MultipeerIbgdaTransportConfig::SendRecvConfig{
+            .maxGroups = static_cast<int>(
+                std::max<int64_t>(1, NCCL_CTRAN_HIER_AG_IB_NUM_BLOCKS)),
+            .pipelineDepth = static_cast<int>(
+                std::max<int64_t>(1, NCCL_CTRAN_HIER_AG_IB_PIPELINE_DEPTH)),
+        };
+    config.ibgdaConfig.numQpsPerPeerPerNic = static_cast<int>(
+        std::max<int64_t>(1, NCCL_CTRAN_HIER_AG_IB_QPS_PER_PEER_PER_NIC));
     if (NCCL_IB_TIMEOUT != NCCL_IB_TIMEOUT_DEFAULTCVARVALUE) {
       config.ibgdaConfig.timeout = static_cast<uint8_t>(NCCL_IB_TIMEOUT);
     }
