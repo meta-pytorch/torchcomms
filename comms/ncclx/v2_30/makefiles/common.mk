@@ -86,15 +86,10 @@ else
 endif
 $(info NVCC_GENCODE is ${NVCC_GENCODE})
 
-# CUDA 13.0 requires c++17
-ifeq ($(shell test "0$(CUDA_MAJOR)" -ge 13; echo $$?),0)
-  CXXSTD ?= -std=c++17
-else
-  CXXSTD ?= -std=c++14
-endif
+CXXSTD ?= -std=c++17
 
 CXXFLAGS   := -DCUDA_MAJOR=$(CUDA_MAJOR) -DCUDA_MINOR=$(CUDA_MINOR) -fPIC -fvisibility=hidden \
-              -Wall -Wno-unused-function -Wno-sign-compare $(CXXSTD) -Wvla \
+              -Wall -Wno-unused-function -Wno-sign-compare -std=c++2a -Wvla \
               -I $(CUDA_INC) -I $(CUDA_INC)/cccl \
               $(CXXFLAGS)
 # Maxrregcount needs to be set accordingly to NCCL_MAX_NTHREADS (otherwise it will cause kernel launch errors)
