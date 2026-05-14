@@ -2427,6 +2427,24 @@ cvars:
      timestamps will be near the UNIX epoch and a rate-limited warning is
      emitted on each toWallClock() call.
 
+ - name        : NCCL_USE_PTP
+   type        : bool
+   default     : true
+   description : |-
+     When true, colltrace's PrecisionClock initializes fbclock and emits
+     PTP-aligned wall-time stamps with a known uncertainty window — fleet-
+     comparable across hosts. When false (or when fbclock_init fails on the
+     host), PrecisionClock falls back to std::chrono::system_clock (host
+     clock, possibly NTP-disciplined, with no uncertainty annotation).
+     Read once via getenv() during PrecisionClock's lazy singleton
+     construction, before ncclCvarInit() runs in many call paths — this
+     entry exists for discoverability and cvar-dump tooling; the actual
+     read in PrecisionClock.cc is direct and does not consult /etc/nccl.conf.
+     PrecisionClock falls back to NCCL_USE_PTP_DEFAULT_LITERAL (a compile-
+     time constant emitted by extractcvars.py from this `default:` field)
+     when the env var is unset, so the code default tracks the yaml default
+     without manual sync.
+
  - name        : NCCL_MAPPERTRACE_COLL_RECORD_MAX
    type        : uint64_t
    default     : 20

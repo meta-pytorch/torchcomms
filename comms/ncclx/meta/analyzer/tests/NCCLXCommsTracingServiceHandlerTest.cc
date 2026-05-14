@@ -12,6 +12,7 @@
 #include <nccl.h> // @manual
 #include <thrift/lib/cpp2/protocol/DebugProtocol.h>
 
+#include "aiplatform/training_components/paft/ftar/DynMemGpuBuffer.h"
 #include "aiplatform/tw_platform/core/MastInfo.h"
 #include "comms/analyzer/Analyzer.h"
 #include "comms/analyzer/CommDumpPuller.h"
@@ -24,7 +25,6 @@
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/trainer/TrainerContext.h"
-#include "ftar/DynMemGpuBuffer.h"
 #include "meta/analyzer/NCCLXCommsTracingServiceUtil.h"
 #include "servicerouter/client/cpp2/ServiceRouter.h"
 #include "tupperware/common/client_factory/FreePortSocket.h"

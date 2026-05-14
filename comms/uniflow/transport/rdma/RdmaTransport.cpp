@@ -570,7 +570,7 @@ uint32_t RdmaTransport::postSend(
     }
   }
 
-  task->complete(st.error());
+  task->recordCompletion(st.error());
   return 0; // Signal to caller that posting failed.
 }
 
@@ -656,6 +656,87 @@ Result<uint32_t> RdmaTransport::spray(
 }
 
 // ---------------------------------------------------------------------------
+// Unified IO processing loop (EventBase thread)
+// ---------------------------------------------------------------------------
+
+void RdmaTransport::ioLooper() noexcept {
+  // Phase 1 — Post: walk pendingTransfers_ front-to-back.
+  while (!pendingTransfers_.empty()) {
+    auto& entry = pendingTransfers_.front();
+
+    if (state_ != TransportState::Connected) {
+      entry.task->recordCompletion(
+          Err(ErrCode::TransportError, "RDMA transport is broken"));
+      pendingCompletions_.push_back({entry.taskId, std::move(entry.task)});
+      pendingTransfers_.pop_front();
+      continue;
+    }
+
+    if (entry.idx >= entry.sendWrs->size()) {
+      entry.task->postFinished();
+      pendingCompletions_.push_back({entry.taskId, std::move(entry.task)});
+      pendingTransfers_.pop_front();
+      continue;
+    }
+
+    auto postResult =
+        spray(*entry.sendWrs, entry.idx, entry.taskId, entry.task);
+    if (postResult.hasError()) {
+      UNIFLOW_LOG_ERROR("ioLooper: taskId={} spray failed", entry.taskId);
+      pendingCompletions_.push_back({entry.taskId, std::move(entry.task)});
+      pendingTransfers_.pop_front();
+      continue;
+    }
+
+    if (entry.idx >= entry.sendWrs->size()) {
+      UNIFLOW_LOG_DEBUG(
+          "ioLooper: taskId={} all {} chunks posted",
+          entry.taskId,
+          entry.sendWrs->size());
+      entry.task->postFinished();
+      pendingCompletions_.push_back({entry.taskId, std::move(entry.task)});
+      pendingTransfers_.pop_front();
+    } else {
+      break;
+    }
+  }
+
+  // Phase 2 — Poll: drain all CQs.
+  pollCompletions();
+
+  // Phase 3 — Fulfill: walk pendingCompletions_ front-to-back for in-order
+  // promise delivery.
+  while (!pendingCompletions_.empty()) {
+    auto& entry = pendingCompletions_.front();
+
+    if (entry.task->isDone()) {
+      entry.task->fulfill();
+    } else if (state_ != TransportState::Connected) {
+      entry.task->recordCompletion(
+          Err(ErrCode::TransportError, "RDMA transport is broken"));
+      entry.task->fulfill();
+    }
+
+    // Remove when fully drained (all CQEs received), or when the transport
+    // is broken (no more CQEs will ever arrive).
+    if (entry.task->isFullyDrained() || state_ != TransportState::Connected) {
+      inflightTasks_.erase(entry.taskId);
+      pendingCompletions_.pop_front();
+      continue;
+    }
+
+    break;
+  }
+
+  // Phase 4 — Yield & reschedule.
+  if (!pendingTransfers_.empty() || !pendingCompletions_.empty()) {
+    evb_->dispatch([this]() noexcept { ioLooper(); });
+  } else {
+    ioLooperScheduled_ = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Transfer dispatch (caller thread → EventBase thread)
 // ---------------------------------------------------------------------------
 
@@ -671,7 +752,6 @@ std::future<Status> RdmaTransport::rdmaTransfer(
     return make_ready_future<Status>(Ok());
   }
 
-  // Build SendWrs on the caller thread (validates handles, splits chunks).
   auto wrsResult = buildSendWrs(requests, opcode);
   if (wrsResult.hasError()) {
     UNIFLOW_LOG_ERROR(
@@ -689,94 +769,20 @@ std::future<Status> RdmaTransport::rdmaTransfer(
   auto task = std::make_shared<Task>();
   auto future = task->get_future();
 
-  // Dispatch posting + polling to the EventBase thread.
-  // All state mutations (numWrsPerQp_, inflightTasks_, nextTaskId_)
-  // happen exclusively on this thread — no locks needed.
   evb_->dispatch([this,
                   task = std::move(task),
                   reqWrs = std::move(reqWrs)]() mutable noexcept {
-    size_t idx = 0;
     uint32_t taskId = nextTaskId_++;
     UNIFLOW_LOG_DEBUG(
         "rdmaTransfer: taskId={} dispatched to EventBase", taskId);
     inflightTasks_[taskId] = task;
-    // Note: put and get does not require the post order, but we still use a
-    // queue and guarantee the post order, since send & recv requires post-order
-    // and it will be helpful for the `flush` implementation in the future.
-    pendingRequests_.emplace(taskId, std::move(reqWrs));
+    pendingTransfers_.push_back(
+        {taskId, std::move(reqWrs), /*idx=*/0, std::move(task)});
 
-    // Self-re-dispatching post loop:
-    //   0. If the head of pendingRequests_ is not the current task, re-dispatch
-    //   1. Distribute and post WRs across QPs (weighted by capacity)
-    //   2. If all posted → mark postFinished, start poll chain
-    //   3. If QPs full or partial post → poll to free slots, re-dispatch
-    auto postLoop = [this, idx, taskId, task = std::move(task)](
-                        auto& self) mutable noexcept -> void {
-      auto& [currentId, reqWrs] = pendingRequests_.front();
-      if (currentId != taskId) {
-        // Previous task is not completed yet. Self dispatch to retry.
-        evb_->dispatch(
-            [self = std::move(self)]() mutable noexcept { self(self); });
-        return;
-      }
-
-      if (state_ != TransportState::Connected) {
-        UNIFLOW_LOG_ERROR(
-            "rdmaTransfer: taskId={} aborted, transport not connected", taskId);
-        pendingRequests_.pop();
-        pollCompletions(taskId, false);
-        return;
-      }
-
-      if (idx >= reqWrs->size()) {
-        task->postFinished();
-      } else {
-        auto postResult = spray(*reqWrs, idx, taskId, task);
-        if (postResult.hasError()) {
-          // postSend failed on a QP. Task is already errored and
-          // postFinished. Don't post more — just let the poll chain
-          // drain CQEs from earlier successful QPs and the flush WR.
-          UNIFLOW_LOG_ERROR("rdmaTransfer: taskId={} spray failed", taskId);
-        } else if (idx >= reqWrs->size()) {
-          // All chunks posted successfully.
-          UNIFLOW_LOG_DEBUG(
-              "rdmaTransfer: taskId={} all {} chunks posted",
-              taskId,
-              reqWrs->size());
-          task->postFinished();
-        } else {
-          // Not all chunks posted (QPs full or partial capacity).
-          // Poll to free slots and re-dispatch to retry remaining.
-          UNIFLOW_LOG_WARN(
-              "rdmaTransfer: taskId={} QPs full, posted {}/{} chunks, retrying",
-              taskId,
-              idx,
-              reqWrs->size());
-          pollCompletions(taskId, false);
-          evb_->dispatch(
-              [self = std::move(self)]() mutable noexcept { self(self); });
-          return;
-        }
-      }
-
-      // requests is posted, remove it from the queue.
-      pendingRequests_.pop();
-
-      // Start the poll chain to drain completions — but only if the
-      // task still has outstanding WRs. If it's already complete (e.g.,
-      // postSend failed with consumed=0), skip the unnecessary poll.
-      if (!task->isComplete()) {
-        UNIFLOW_LOG_DEBUG(
-            "rdmaTransfer: taskId={} starting poll chain", taskId);
-        evb_->dispatch(
-            [this, taskId]() noexcept { pollCompletions(taskId, true); });
-      } else {
-        UNIFLOW_LOG_DEBUG(
-            "rdmaTransfer: taskId={} completed immediately", taskId);
-        inflightTasks_.erase(taskId);
-      }
-    };
-    postLoop(postLoop);
+    if (!ioLooperScheduled_) {
+      ioLooperScheduled_ = true;
+      evb_->dispatch([this]() noexcept { ioLooper(); });
+    }
   });
 
   return future;
@@ -786,27 +792,11 @@ std::future<Status> RdmaTransport::rdmaTransfer(
 // Completion polling (EventBase thread)
 // ---------------------------------------------------------------------------
 
-void RdmaTransport::pollCompletions(uint32_t id, bool retry) {
+void RdmaTransport::pollCompletions() {
   constexpr int kNumBatch = 16;
-
-  auto cleanup = [this, id]() {
-    if (auto it = inflightTasks_.find(id); it != inflightTasks_.end()) {
-      it->second->complete(
-          Err(ErrCode::TransportError, "RDMA transport is broken"));
-      inflightTasks_.erase(it);
-    }
-  };
-
-  // If transport is broken, fail the task immediately.
-  if (state_ != TransportState::Connected) {
-    UNIFLOW_LOG_ERROR(
-        "pollCompletions: taskId={} aborted, transport not connected", id);
-    return cleanup();
-  }
 
   for (size_t i = 0; i < cqs_.size(); ++i) {
     int expected = numPendingCqe_[i];
-    // Drain CQ in batches.
     ibv_wc wcs[kNumBatch];
     while (expected > 0) {
       auto pollResult = ibvApi_->pollCq(cqs_[i], kNumBatch, wcs);
@@ -816,7 +806,11 @@ void RdmaTransport::pollCompletions(uint32_t id, bool retry) {
             i,
             pollResult.error().message());
         state_ = TransportState::Error;
-        return cleanup();
+        for (auto& [taskId, task] : inflightTasks_) {
+          task->recordCompletion(
+              Err(ErrCode::TransportError, "RDMA transport is broken"));
+        }
+        return;
       }
 
       int n = pollResult.value();
@@ -824,13 +818,10 @@ void RdmaTransport::pollCompletions(uint32_t id, bool retry) {
         uint32_t taskId = static_cast<uint32_t>(wc.wr_id >> 32);
         uint32_t numWrs = static_cast<uint32_t>(wc.wr_id & 0xffffffff);
 
-        // Decrement expected CQE count only for signaled WRs.
         if (numWrs > 0) {
           --numPendingCqe_[i];
         }
 
-        // Decrement per-QP counter by the encoded WR count.
-        // This count includes unsignaled WRs + the signaled WR itself.
         if (auto qp = qpNumToIdx_.find(qpMapKey(i, wc.qp_num));
             qp != qpNumToIdx_.end()) {
           numWrsPerQp_[qp->second] -= numWrs;
@@ -846,7 +837,7 @@ void RdmaTransport::pollCompletions(uint32_t id, bool retry) {
                 numWrs,
                 wc.qp_num,
                 static_cast<int>(wc.status));
-            it->second->complete(Err(
+            it->second->recordCompletion(Err(
                 ErrCode::DriverError,
                 "RDMA WR failed: wr_id=" + std::to_string(wc.wr_id) +
                     " taskId=" + std::to_string(taskId) +
@@ -854,25 +845,15 @@ void RdmaTransport::pollCompletions(uint32_t id, bool retry) {
                     " status=" + std::to_string(static_cast<int>(wc.status))));
           }
 
-          // decrement counter
-          it->second->complete(numWrs);
+          it->second->recordCompletion(numWrs);
         }
       }
 
       if (n < kNumBatch) {
-        break; // CQ drained for now.
+        break;
       }
 
       expected -= kNumBatch;
-    }
-  }
-
-  // Re-dispatch poll chain if this task is still in-flight.
-  if (auto it = inflightTasks_.find(id); it != inflightTasks_.end()) {
-    if (it->second->isComplete()) {
-      inflightTasks_.erase(it);
-    } else if (retry) {
-      evb_->dispatch([this, id]() noexcept { pollCompletions(id, true); });
     }
   }
 }
@@ -928,7 +909,8 @@ void RdmaTransport::shutdown() {
     // transport instance
     evb_->dispatch([this, &m, &cv, &done]() noexcept {
       auto drain = [this, &m, &cv, &done](auto& self) -> void {
-        if (inflightTasks_.empty() && pendingRequests_.empty()) {
+        if (pendingTransfers_.empty() && pendingCompletions_.empty() &&
+            inflightTasks_.empty()) {
           {
             std::lock_guard<std::mutex> lock(m);
             done = true;

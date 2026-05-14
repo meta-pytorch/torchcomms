@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 
 from Cython.Build import cythonize
-from setuptools import setup, Extension
+from setuptools import Extension, setup
 
 
 # Check CUDA_HOME is set and is a valid directory
@@ -14,12 +14,13 @@ if not CUDA_HOME:
 
 cuda_path = Path(CUDA_HOME)
 if not cuda_path.exists() or not cuda_path.is_dir():
-    raise SystemExit(f"Error: CUDA_HOME does not exist or is not a directory: {CUDA_HOME}")
+    raise SystemExit(
+        f"Error: CUDA_HOME does not exist or is not a directory: {CUDA_HOME}"
+    )
 CUDA_INC = str(cuda_path / "include")
 
-ext_modules = [
-    "nccl.bindings.nccl"
-]
+ext_modules = ["nccl.bindings.nccl"]
+
 
 def calculate_modules(module: str):
     module_parts = module.split(".")
@@ -69,7 +70,9 @@ def calculate_modules(module: str):
     inter_utils_mod = module_parts.copy()
     inter_utils_mod.insert(-1, "_internal")
     inter_utils_mod[-1] = "utils"
-    inter_utils_mod_pyx = os.path.join(*inter_utils_mod[:-1], f"{inter_utils_mod[-1]}.pyx")
+    inter_utils_mod_pyx = os.path.join(
+        *inter_utils_mod[:-1], f"{inter_utils_mod[-1]}.pyx"
+    )
     inter_utils_mod = ".".join(inter_utils_mod)
     inter_utils_ext = Extension(
         inter_utils_mod,
@@ -87,7 +90,11 @@ def calculate_modules(module: str):
 ext_modules = [e for ext in ext_modules for e in calculate_modules(ext)]
 
 
-compiler_directives = {"embedsignature": True, "show_performance_hints": True, "freethreading_compatible": True}
+compiler_directives = {
+    "embedsignature": True,
+    "show_performance_hints": True,
+    "freethreading_compatible": True,
+}
 
 
 setup(

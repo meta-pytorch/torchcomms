@@ -26,7 +26,6 @@
 #include <thread>
 
 #include "meta/colltrace/ProxyTraceFunc.h"
-#include "comms/utils/logger/EventsScubaUtil.h"
 
 #define NCCL_MAX_PROXY_CONNECTIONS (NCCL_MAX_LOCAL_RANKS+1)
 

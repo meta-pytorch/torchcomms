@@ -12,23 +12,23 @@ memory, enabling zero-copy integration between NCCL operations and PyTorch workf
 
 from __future__ import annotations
 
-import numpy as np
 from typing import Literal
 
+import numpy as np
 from nccl.core.buffer import mem_alloc
 from nccl.core.typing import (
-    NcclInvalid,
-    NcclDataType,
+    BFLOAT16,
     FLOAT16,
     FLOAT32,
     FLOAT64,
-    INT8,
-    INT32,
-    INT64,
-    UINT8,
-    BFLOAT16,
     FLOAT8E4M3,
     FLOAT8E5M2,
+    INT32,
+    INT64,
+    INT8,
+    NcclDataType,
+    NcclInvalid,
+    UINT8,
 )
 
 __all__ = ["empty", "resolve_tensor"]
@@ -153,7 +153,11 @@ def _parse_device(device: torch.device | int | str | None) -> int:
         device_obj = torch.device(device)
         if device_obj.type != "cuda":
             raise NcclInvalid(f"NCCL tensors must be on CUDA device, got {device}")
-        return device_obj.index if device_obj.index is not None else torch.cuda.current_device()
+        return (
+            device_obj.index
+            if device_obj.index is not None
+            else torch.cuda.current_device()
+        )
     else:
         # device is int, use it directly
         return device
@@ -274,6 +278,13 @@ def resolve_tensor(tensor: torch.Tensor) -> tuple[int, int, NcclDataType, int]:
         raise ModuleNotFoundError("PyTorch is not installed")
 
     if not isinstance(tensor, torch.Tensor):
-        raise NcclInvalid(f"tensor must be a PyTorch tensor, got {type(tensor).__name__}")
+        raise NcclInvalid(
+            f"tensor must be a PyTorch tensor, got {type(tensor).__name__}"
+        )
 
-    return (tensor.data_ptr(), tensor.numel(), _to_nccl_dtype(tensor.dtype), tensor.device.index)
+    return (
+        tensor.data_ptr(),
+        tensor.numel(),
+        _to_nccl_dtype(tensor.dtype),
+        tensor.device.index,
+    )

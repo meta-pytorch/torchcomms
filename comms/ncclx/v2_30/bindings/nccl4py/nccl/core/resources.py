@@ -17,7 +17,6 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 from nccl import bindings as _nccl_bindings
-
 from nccl.core.constants import WindowFlag
 from nccl.core.typing import NcclDataType, NcclInvalid
 
@@ -94,7 +93,9 @@ class CommResource(ABC):
             - ``RuntimeError``: If resource has been closed.
         """
         if self._closed:
-            raise RuntimeError(f"{self.__class__.__name__} has been closed and is no longer valid")
+            raise RuntimeError(
+                f"{self.__class__.__name__} has been closed and is no longer valid"
+            )
 
     @property
     def is_valid(self) -> bool:
@@ -149,7 +150,9 @@ class RegisteredBufferHandle(CommResource):
         See Also:
             https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/comms.html#ncclcommregister
         """
-        self._handle = _nccl_bindings.comm_register(self._comm_ptr, self._buffer_ptr, self._size)
+        self._handle = _nccl_bindings.comm_register(
+            self._comm_ptr, self._buffer_ptr, self._size
+        )
 
     def _deallocate(self) -> None:
         """
@@ -215,7 +218,9 @@ class RegisteredWindowHandle(CommResource):
         https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/comms.html#ncclcommwindowregister
     """
 
-    def __init__(self, comm_ptr: int, buffer_ptr: int, size: int, flags: WindowFlag | None = None):
+    def __init__(
+        self, comm_ptr: int, buffer_ptr: int, size: int, flags: WindowFlag | None = None
+    ):
         """
         Creates and registers a memory window with NCCL.
 
@@ -503,7 +508,9 @@ class DevCommResource(CommResource):
         # Allocate DevComm struct first
         self._dev_comm = _nccl_bindings.DevComm()
         # Pass pointer to dev_comm_create to initialize it
-        _nccl_bindings.dev_comm_create(self._comm_ptr, self._requirements_ptr, self._dev_comm.ptr)
+        _nccl_bindings.dev_comm_create(
+            self._comm_ptr, self._requirements_ptr, self._dev_comm.ptr
+        )
 
     def _deallocate(self) -> None:
         """Destroys device communicator via ncclDevCommDestroy."""

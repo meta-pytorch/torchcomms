@@ -269,20 +269,21 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
   } \
 } while (false)
 
-// Report failure but clear error and continue
-#define NCCLCHECKIGNORE(call)                          \
-  do {                                                 \
-    ncclResult_t RES = call;                           \
-    if (RES != ncclSuccess && RES != ncclInProgress) { \
-      WARN_WITH_SCUBA(                                 \
-          "%s:%s:%d -> %d (%s)",                       \
-          __FILE__,                                    \
-          __func__,                                    \
-          __LINE__,                                    \
-          RES,                                         \
-          ncclCodeToString(RES));                      \
-    }                                                  \
-  } while (0)
+// Report failure but continue - useful for cleanup paths where we want to
+// attempt all cleanup steps. Preserves the first error in RES.
+#define NCCLCHECKIGNORE(call, RES) do {                \
+  ncclResult_t TMPRES = call;                          \
+  if (TMPRES != ncclSuccess && TMPRES != ncclInProgress) { \
+    WARN_WITH_SCUBA(                                   \
+        "%s:%s:%d -> %d (%s)",                         \
+        __FILE__,                                      \
+        __func__,                                      \
+        __LINE__,                                      \
+        TMPRES,                                        \
+        ncclCodeToString(TMPRES));                     \
+    if (RES == ncclSuccess) RES = TMPRES;              \
+  }                                                    \
+} while (0)
 
 // Common thread creation implementation with error handling
 #define STDTHREADCREATE_IMPL(var, func, error_action, ...) do { \

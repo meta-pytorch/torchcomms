@@ -13,10 +13,9 @@ initialization, and error string utilities for NCCL operations.
 from __future__ import annotations
 
 import numpy as _np
-from packaging.version import Version as _Version
-
-from nccl._version import __version__
 from nccl import bindings as _nccl_bindings
+from nccl._version import __version__
+from packaging.version import Version as _Version
 
 __all__ = ["Version", "get_version", "UniqueId", "get_unique_id", "get_error_string"]
 
@@ -147,9 +146,9 @@ class UniqueId:
         Returns:
             ``np.ndarray``: Array containing the unique ID data.
         """
-        return _np.ndarray((1,), dtype=_nccl_bindings.unique_id_dtype, buffer=self._internal).view(
-            _np.recarray
-        )
+        return _np.ndarray(
+            (1,), dtype=_nccl_bindings.unique_id_dtype, buffer=self._internal
+        ).view(_np.recarray)
 
     @property
     def as_bytes(self) -> bytes:

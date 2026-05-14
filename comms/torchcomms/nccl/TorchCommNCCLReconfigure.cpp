@@ -125,6 +125,28 @@ std::string extractStoreAddr(
   return addr;
 }
 
+int findRankInHandles(
+    const std::variant<std::unordered_set<InitHandle>, std::vector<InitHandle>>&
+        handles,
+    const InitHandle& myHandle) {
+  return std::visit(
+      [&](const auto& h) -> int {
+        int result = -1;
+        int idx = 0;
+        for (const auto& handle : h) {
+          if (handle == myHandle) {
+            if (result >= 0) {
+              return -1;
+            }
+            result = idx;
+          }
+          idx++;
+        }
+        return result;
+      },
+      handles);
+}
+
 c10::intrusive_ptr<c10d::Store> connectStore(
     const std::string& storeAddr,
     const std::string& prefix,
@@ -183,7 +205,7 @@ c10::intrusive_ptr<c10d::Store> connectStore(
 // is aborted and nulled out.
 c10::intrusive_ptr<TorchWork> TorchCommNCCL::reconfigure(
     const ReconfigureOptions& opts) {
-  TC_LOG(INFO, this) << "TorchCommNCCL reconfigure starting 2";
+  TC_LOG(INFO, this) << "TorchCommNCCL reconfigure starting";
   TracingGuard tracingGuard(name_, comm_size_, "reconfigure", rank_);
 
   int new_size = static_cast<int>(
@@ -194,18 +216,25 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::reconfigure(
   bool inQuorum = nccl_comm_ && uuid_ >= 0 && uuid_ == quorum.uuid;
   auto storeAddr = extractStoreAddr(opts.handles);
 
-  // Identity reconfigure (same world size, no membership change) --
-  // fall back to fresh init since the old comm may be unhealthy.
-  if (inQuorum && quorum.ranks.size() == static_cast<size_t>(new_size) &&
-      quorum.newMemberCount == 0) {
+  // Fall back to fresh init when shrink/grow has no advantage:
+  // - Single-rank quorum: a 1-rank comm has no bootstrap networking, so
+  //   commGrow will fail. Must clear unconditionally (not just when
+  //   inQuorum) so all ranks take the same fresh init path.
+  // - Identity reconfigure: same world size, no membership change — old comm
+  //   may be unhealthy.
+  if (quorum.ranks.size() == 1 ||
+      (inQuorum && quorum.ranks.size() == static_cast<size_t>(new_size) &&
+       quorum.newMemberCount == 0)) {
     inQuorum = false;
     quorum.ranks.clear();
   }
 
   if (nccl_comm_) {
     auto workStatus = workq_.garbageCollect();
-    if (workStatus == TorchWorkNCCL::WorkStatus::NOT_STARTED ||
-        workStatus == TorchWorkNCCL::WorkStatus::INPROGRESS) {
+
+    if (!inQuorum &&
+        (workStatus == TorchWorkNCCL::WorkStatus::NOT_STARTED ||
+         workStatus == TorchWorkNCCL::WorkStatus::INPROGRESS)) {
       NCCL_CHECK_IGNORE(
           nccl_api_,
           nccl_api_->commRevoke(nccl_comm_),
@@ -244,14 +273,17 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::reconfigure(
         fmt::format("Failed to set CUDA device to {}", device_.index()));
 
     ncclUniqueId uniqueId{};
-    int myRank = 0;
+    int myRank = findRankInHandles(opts.handles, getInitHandle());
 
     if (new_size > 1) {
       auto store = connectStore(
           storeAddr,
           fmt::format("{}/{}", name_, opts.uuid),
           reconfigureTimeout);
-      myRank = static_cast<int>(store->add("rank_counter", 1)) - 1;
+
+      if (myRank < 0) {
+        myRank = static_cast<int>(store->add("rank_counter", 1)) - 1;
+      }
 
       if (myRank == 0) {
         NCCL_CHECK(
@@ -338,6 +370,9 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::reconfigure(
         store->set("unique_id", vec);
       }
 
+      TC_LOG(INFO, this) << "TorchCommNCCL existing commGrow: rank=" << rank_
+                         << " new_size=" << new_size;
+
       ncclComm_t grown = nullptr;
       NCCL_CHECK(
           nccl_api_,
@@ -366,6 +401,10 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::reconfigure(
 
     int growRank =
         quorumSize + static_cast<int>(store->add("rank_counter", 1)) - 1;
+
+    TC_LOG(INFO, this) << "TorchCommNCCL new rank commGrow: rank=" << growRank
+                       << " uniqueId=" << vec.size()
+                       << " new_size=" << new_size;
 
     ncclComm_t new_comm = nullptr;
     NCCL_CHECK(

@@ -13,9 +13,10 @@ const char* DefaultNcclxGlobalApi::getErrorString(ncclResult_t result) {
 ncclResult_t DefaultNcclxGlobalApi::commDumpAll(
     std::unordered_map<
         std::string,
-        std::unordered_map<std::string, std::string>>& map) {
+        std::unordered_map<std::string, std::string>>& map,
+    std::optional<std::string> requestFields) {
   std::lock_guard<std::mutex> lock(api_mutex_);
-  return ::ncclCommDumpAll(map);
+  return ::ncclCommDumpAll(map, std::move(requestFields));
 }
 
 void DefaultNcclxGlobalApi::initCachingAllocatorHook() {

@@ -27,7 +27,6 @@
 #include "meta/transport/transportExt.h"
 #include "meta/transport/transportConnect.h"
 #include "meta/transport/transportProxy.h"
-#include "comms/utils/logger/EventsScubaUtil.h"
 #include "meta/wrapper/MetaFactory.h"
 
 #define GROUP_MAX_RECLAIM_STEPS 10

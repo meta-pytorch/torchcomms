@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <optional>
 #include <unordered_map>
 
 #include <gmock/gmock.h>
@@ -25,7 +26,7 @@ class NcclxGlobalMock : public NcclxGlobalApi {
   MOCK_METHOD(
       ncclResult_t,
       commDumpAll,
-      (NcclxCommDumpAllMap & map),
+      (NcclxCommDumpAllMap & map, std::optional<std::string> requestFields),
       (override));
 
   void setupDefaultBehaviors() {
@@ -34,7 +35,7 @@ class NcclxGlobalMock : public NcclxGlobalApi {
 
     ON_CALL(*this, getErrorString(_))
         .WillByDefault(Return("mock nccl error string"));
-    ON_CALL(*this, commDumpAll(_)).WillByDefault(Return(ncclSuccess));
+    ON_CALL(*this, commDumpAll(_, _)).WillByDefault(Return(ncclSuccess));
   }
 
   void reset() {

@@ -562,7 +562,7 @@ ncclResult_t ncclSocketInit(struct ncclSocket* sock, const union ncclSocketAddre
       WARN("ncclSocketInit: connecting to address %s with family %d is neither AF_INET(%d) nor AF_INET6(%d)",
           ncclSocketToString(&sock->addr, line), family, AF_INET, AF_INET6);
 
-      WARN("You might set TORCH_NCCL_BCAST_UNIQUEID=0 to enable fast init feature, in ncclx 2.29 you will have ncclSocketInit errors. "
+      WARN("You might set TORCH_NCCL_BCAST_UNIQUEID=0 to enable fast init feature, in ncclx 2.30 you will have ncclSocketInit errors. "
            "We have deprecated NCCL_FASTINIT_MODE; set NCCL_FASTINIT_MODE=none and TORCH_NCCL_BCAST_UNIQUEID=1 to bootstrap NCCL");
       ret = ncclInternalError;
       goto exit;

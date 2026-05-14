@@ -20,7 +20,6 @@ import contextlib
 from typing import Generator
 
 from nccl import bindings as _nccl_bindings
-
 from nccl.core.constants import NCCL_UNDEF_FLOAT
 
 __all__ = ["GroupSimInfo", "group_start", "group_end", "group_simulate_end", "group"]
@@ -42,7 +41,9 @@ class GroupSimInfo:
 
         # Apply NCCL_SIM_INFO_INITIALIZER defaults
         self._sim_info.size_ = int(_nccl_bindings.sim_info_dtype.itemsize)
-        self._sim_info.magic = 0x74685283  # NCCL protocol magic number for ncclSimInfo_t validation
+        self._sim_info.magic = (
+            0x74685283  # NCCL protocol magic number for ncclSimInfo_t validation
+        )
         self._sim_info.version = _nccl_bindings.get_version()
         self._sim_info.estimated_time = NCCL_UNDEF_FLOAT
 
