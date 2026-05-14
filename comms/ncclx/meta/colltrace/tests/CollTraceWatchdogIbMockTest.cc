@@ -7,12 +7,12 @@
 #include "comm.h" // @manual
 #include "nccl.h" // @manual
 
+#include "aiplatform/training_components/paft/ftar/DynMemGpuBuffer.h"
 #include "comms/mccl/integration_tests/CollectiveIntegrationTestMixin.h"
 #include "comms/mccl/integration_tests/McclIntegrationTestUtil.h"
 #include "comms/mccl/tests/CudaStream.h"
 #include "comms/mccl/tests/CudaTestUtil.h"
 #include "comms/testinfra/IbverbMockTestUtils.h"
-#include "ftar/DynMemGpuBuffer.h"
 
 #define NCCLCHECK_FATAL(cmd)                                            \
   do {                                                                  \
