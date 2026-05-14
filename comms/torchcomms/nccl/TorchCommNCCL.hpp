@@ -371,6 +371,10 @@ class TorchCommNCCL : public TorchCommBackend,
   void checkInitialized() const;
   void checkAndAbortIfTimedOutOrError();
   void checkWorkQueue();
+  CommState handleFatalTransitionFromWatchdog(
+      CommState state_before,
+      CommState state_after);
+  void maybeAbortProcessFromWatchdog(CommState state);
   void enqueueWork(c10::intrusive_ptr<TorchWorkNCCL> work, cudaStream_t stream);
   bool getGraphCaptureMode();
   cudaStream_t getOperationStream(bool async_op);

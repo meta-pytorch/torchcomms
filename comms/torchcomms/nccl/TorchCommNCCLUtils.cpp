@@ -197,8 +197,8 @@ void TorchCommNCCL::checkWorkQueue() {
   }
 }
 
-// The timeout thread cannot make NCCL calls.  The only CUDA call it can make
-// it cudaEventQuery.
+// If the watchdog first observes a fatal state, clean up the communicator
+// immediately.
 void TorchCommNCCL::timeoutWatchdog() noexcept {
   TC_LOG(INFO, this) << "Timeout thread starting for rank: " << rank_;
 
@@ -222,6 +222,8 @@ void TorchCommNCCL::timeoutWatchdog() noexcept {
       }
     }
 
+    CommState state_before = comm_state_.load(std::memory_order_relaxed);
+
     // Check work objects for completion or timeout
     // Thread-safety: checkWorkQueue() calls garbageCollect() which acquires
     // work_queues_mutex_ before accessing the work queue, ensuring safe
@@ -236,19 +238,9 @@ void TorchCommNCCL::timeoutWatchdog() noexcept {
     if (shutdown_) {
       break;
     }
-    if (comm_state_ != CommState::NORMAL &&
-        options_.abort_process_on_timeout_or_error &&
-        !options_.enable_reconfigure) {
-      if (comm_state_ == CommState::TIMEOUT) {
-        TC_LOG(ERROR, this)
-            << "Aborting process due to timeout on rank " << rank_
-            << " - timeout watchdog detected operation timeout";
-      } else if (comm_state_ == CommState::ERROR) {
-        TC_LOG(ERROR, this) << "Aborting process due to error on rank " << rank_
-                            << " - timeout watchdog detected operation error. ";
-      }
-      ::abort();
-    }
+    CommState state_after = comm_state_.load(std::memory_order_relaxed);
+    state_after = handleFatalTransitionFromWatchdog(state_before, state_after);
+    maybeAbortProcessFromWatchdog(state_after);
 
     // Check communicator for async error
     if (comm_state_ == CommState::NORMAL) {
@@ -271,6 +263,51 @@ void TorchCommNCCL::timeoutWatchdog() noexcept {
   TC_LOG(INFO, this) << "Timeout thread exiting for rank: " << rank_;
 }
 
+TorchCommNCCL::CommState TorchCommNCCL::handleFatalTransitionFromWatchdog(
+    CommState state_before,
+    CommState state_after) {
+  if (state_before != CommState::NORMAL || state_after == CommState::NORMAL) {
+    return state_after;
+  }
+
+  switch (state_after) {
+    case CommState::TIMEOUT:
+      if (options_.enable_reconfigure) {
+        revokeNcclComm();
+      } else {
+        abortNcclComm();
+      }
+      return state_after;
+    case CommState::ERROR:
+      abort();
+      return comm_state_.load(std::memory_order_relaxed);
+    default:
+      return state_after;
+  }
+}
+
+void TorchCommNCCL::maybeAbortProcessFromWatchdog(CommState state) {
+  if (state == CommState::NORMAL ||
+      !options_.abort_process_on_timeout_or_error ||
+      options_.enable_reconfigure) {
+    return;
+  }
+
+  switch (state) {
+    case CommState::TIMEOUT:
+      TC_LOG(ERROR, this) << "Aborting process due to timeout on rank " << rank_
+                          << " - timeout watchdog detected operation timeout";
+      break;
+    case CommState::ERROR:
+      TC_LOG(ERROR, this) << "Aborting process due to error on rank " << rank_
+                          << " - timeout watchdog detected operation error. ";
+      break;
+    default:
+      return;
+  }
+  ::abort();
+}
+
 void TorchCommNCCL::checkInitialized() const {
   if (init_state_ != InitializationState::INITIALIZED) {
     throw std::runtime_error("TorchCommNCCL not initialized");
@@ -278,15 +315,18 @@ void TorchCommNCCL::checkInitialized() const {
 }
 
 void TorchCommNCCL::checkAndAbortIfTimedOutOrError() {
-  // Nothing to check in graph capture mode
+  CommState state = comm_state_.load(std::memory_order_relaxed);
   if (getGraphCaptureMode()) {
-    return;
+    if (state == CommState::NORMAL) {
+      return;
+    }
+  } else {
+    // First, check work queue status
+    checkWorkQueue();
+    state = comm_state_.load(std::memory_order_relaxed);
   }
 
-  // First, check work queue status
-  checkWorkQueue();
-
-  if (comm_state_ == CommState::TIMEOUT) {
+  if (state == CommState::TIMEOUT) {
     if (options_.enable_reconfigure) {
       revokeNcclComm();
       throw std::runtime_error("NCCL operation timed out");
@@ -299,7 +339,11 @@ void TorchCommNCCL::checkAndAbortIfTimedOutOrError() {
         throw std::runtime_error("NCCL operation timed out");
       }
     }
-  } else if (comm_state_ == CommState::ERROR) {
+  } else if (state == CommState::ERROR) {
+    if (!nccl_comm_) {
+      throw std::runtime_error(
+          "NCCL communicator was already aborted due to a previous error");
+    }
     ncclResult_t asyncErr;
     NCCL_CHECK(
         nccl_api_,
