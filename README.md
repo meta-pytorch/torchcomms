@@ -343,4 +343,4 @@ Please check the directory and relevant files to verify the license.
 
 For convenience some of them are listed below:
 
-* [NCCL License](./comms/ncclx/v2_27/LICENSE.txt)
+* [NCCL License](./comms/ncclx/v2_29/LICENSE.txt)
