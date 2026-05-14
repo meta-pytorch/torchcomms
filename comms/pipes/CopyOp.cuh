@@ -5,50 +5,11 @@
 #include <cstddef>
 
 #include "comms/pipes/CopyUtils.cuh"
+#include "comms/pipes/MemcpyCopyOp.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
 #include "comms/pipes/Tile.cuh"
 
 namespace comms::pipes {
-
-struct Memcpy {
-  template <typename... Args>
-  __device__ __forceinline__ static void send(
-      char* staging,
-      const char* src,
-      std::size_t nbytes,
-      ThreadGroup& group,
-      std::size_t /*byte_offset*/,
-      Args...) {
-    memcpy_vectorized(staging, src, nbytes, group);
-  }
-
-  template <typename... Args>
-  __device__ __forceinline__ static void recv(
-      char* dst,
-      const char* staging,
-      std::size_t nbytes,
-      ThreadGroup& group,
-      std::size_t /*byte_offset*/,
-      Args...) {
-    memcpy_vectorized(dst, staging, nbytes, group);
-  }
-
-  template <typename... Args>
-  __device__ __forceinline__ static void forward(
-      char* dst,
-      char* fwd_staging,
-      const char* staging,
-      std::size_t nbytes,
-      ThreadGroup& group,
-      std::size_t /*byte_offset*/,
-      Args...) {
-    if (dst) {
-      memcpy_vectorized(dst, fwd_staging, staging, nbytes, group);
-    } else {
-      memcpy_vectorized(fwd_staging, staging, nbytes, group);
-    }
-  }
-};
 
 template <typename T, typename AccumOp, int kTileElems, int kBlockSize>
 struct TileReduce {
