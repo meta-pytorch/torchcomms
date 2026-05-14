@@ -51,6 +51,9 @@ DECLARE_CUDA_PFN(cuMemGetHandleForAddressRange, 11070);
 DECLARE_CUDA_PFN(cuMemRetainAllocationHandle, 11000);
 DECLARE_CUDA_PFN(cuMemGetAddressRange, 3020);
 
+// --- Stream memory ops ---
+DECLARE_CUDA_PFN(cuStreamWriteValue64, 11070);
+
 #undef DECLARE_CUDA_PFN
 
 std::once_flag g_initFlag;
@@ -338,6 +341,7 @@ void doInit() {
   LOAD_SYM(cuMemGetHandleForAddressRange, 11070, 1);
   LOAD_SYM(cuMemRetainAllocationHandle, 11000, 1);
   LOAD_SYM(cuMemGetAddressRange, 3020, 1);
+  LOAD_SYM(cuStreamWriteValue64, 11070, 1);
 
   // Check if cuMem is supported
   checkCuMemSupported(cudaDev);
@@ -495,6 +499,16 @@ Status CudaDriverApi::cuMemGetHandleForAddressRange(
     CUmemRangeHandleType handleType,
     unsigned long long flags) {
   CU_CALL(cuMemGetHandleForAddressRange, handle, dptr, size, handleType, flags);
+}
+
+// --- Stream memory ops ---
+
+Status CudaDriverApi::streamWriteValue64(
+    CUstream stream,
+    CUdeviceptr addr,
+    uint64_t value,
+    unsigned int flags) {
+  CU_CALL(cuStreamWriteValue64, stream, addr, value, flags);
 }
 
 // --- supported APIs ---
