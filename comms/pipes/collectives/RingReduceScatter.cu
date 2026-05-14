@@ -8,8 +8,30 @@
 
 namespace comms::pipes {
 
+namespace {
+
+struct MemcpyAndSelfInputCopy {
+  template <typename... Args>
+  __device__ __forceinline__ static void send(
+      char* staging,
+      const char* src,
+      std::size_t nbytes,
+      ThreadGroup& group,
+      std::size_t byte_offset,
+      const char* self_src,
+      char* self_dst,
+      Args...) {
+    memcpy_vectorized(staging, src, nbytes, group);
+    memcpy_vectorized(
+        self_dst + byte_offset, self_src + byte_offset, nbytes, group);
+  }
+};
+
+} // namespace
+
 template <
     int NumRings,
+    bool PrefillSelfCopy,
     typename T,
     typename AccumOp,
     int kTileElems,
@@ -61,7 +83,23 @@ __global__ __launch_bounds__(kBlockSize, 1) void ring_reduce_scatter_kernel(
     // Step 0: Send raw input chunk to next.
     const char* send_src = input_base + current_rank * chunk_bytes +
         ring_offset + io_tile_offset + off;
-    next.send(group, send_src, window, group.total_groups, max_sig, timeout);
+    if constexpr (PrefillSelfCopy) {
+      const char* self_src = input_base + my_rank * chunk_bytes + ring_offset +
+          io_tile_offset + off;
+      char* self_dst = reinterpret_cast<char*>(args.output) + ring_offset +
+          io_tile_offset + off;
+      next.template send<MemcpyAndSelfInputCopy>(
+          group,
+          send_src,
+          window,
+          group.total_groups,
+          max_sig,
+          timeout,
+          self_src,
+          self_dst);
+    } else {
+      next.send(group, send_src, window, group.total_groups, max_sig, timeout);
+    }
 
     // W-1 receive steps: forward for intermediate, recv for final.
     for (int step = 0; step < W - 1; step++) {
@@ -82,6 +120,7 @@ __global__ __launch_bounds__(kBlockSize, 1) void ring_reduce_scatter_kernel(
       } else {
         char* dst = reinterpret_cast<char*>(args.output) + ring_offset +
             io_tile_offset + off;
+        const char* reduce_input = PrefillSelfCopy ? dst : local_input;
         prev.template recv<ReduceOp>(
             group,
             dst,
@@ -89,7 +128,7 @@ __global__ __launch_bounds__(kBlockSize, 1) void ring_reduce_scatter_kernel(
             group.total_groups,
             max_sig,
             timeout,
-            local_input);
+            reduce_input);
       }
     }
   }
@@ -98,15 +137,27 @@ __global__ __launch_bounds__(kBlockSize, 1) void ring_reduce_scatter_kernel(
 
 // Template instantiations
 template __global__ void
-ring_reduce_scatter_kernel<1, float, SumOp, 16384, 512>(
+ring_reduce_scatter_kernel<1, false, float, SumOp, 16384, 512>(
     const __grid_constant__ RingReduceScatterArgs<1, float>,
     Timeout);
 template __global__ void
-ring_reduce_scatter_kernel<2, float, SumOp, 16384, 512>(
+ring_reduce_scatter_kernel<1, true, float, SumOp, 16384, 512>(
+    const __grid_constant__ RingReduceScatterArgs<1, float>,
+    Timeout);
+template __global__ void
+ring_reduce_scatter_kernel<2, false, float, SumOp, 16384, 512>(
     const __grid_constant__ RingReduceScatterArgs<2, float>,
     Timeout);
 template __global__ void
-ring_reduce_scatter_kernel<4, float, SumOp, 16384, 512>(
+ring_reduce_scatter_kernel<2, true, float, SumOp, 16384, 512>(
+    const __grid_constant__ RingReduceScatterArgs<2, float>,
+    Timeout);
+template __global__ void
+ring_reduce_scatter_kernel<4, false, float, SumOp, 16384, 512>(
+    const __grid_constant__ RingReduceScatterArgs<4, float>,
+    Timeout);
+template __global__ void
+ring_reduce_scatter_kernel<4, true, float, SumOp, 16384, 512>(
     const __grid_constant__ RingReduceScatterArgs<4, float>,
     Timeout);
 

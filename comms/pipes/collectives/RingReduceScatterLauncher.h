@@ -17,6 +17,7 @@ struct RingReduceScatterLaunchParams {
   float* output{nullptr};
   int num_blocks{16};
   int num_rings{1};
+  bool prefill_self_copy{false};
   float timeout_ms{0.0f};
 
   struct RingParams {

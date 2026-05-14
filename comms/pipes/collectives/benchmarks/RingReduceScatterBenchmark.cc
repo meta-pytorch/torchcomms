@@ -39,9 +39,12 @@ struct RingReduceScatterBenchmarkResult {
   int num_rings{};
   float nccl_bandwidth{};
   float ring_bandwidth{};
+  float prefill_bandwidth{};
   float nccl_latency{};
   float ring_latency{};
+  float prefill_latency{};
   float speedup{};
+  float prefill_vs_ring{};
 };
 
 class RingReduceScatterBenchmarkFixture
@@ -140,7 +143,8 @@ class RingReduceScatterBenchmarkFixture
 
   float run_ring_benchmark(
       const RingReduceScatterBenchmarkConfig& config,
-      float& latency_us) {
+      float& latency_us,
+      bool prefill_self_copy) {
     const std::size_t total_elements = config.chunk_elements * worldSize;
     const std::size_t total_bytes = total_elements * sizeof(float);
 
@@ -192,6 +196,7 @@ class RingReduceScatterBenchmarkFixture
     launch_params.output = static_cast<float*>(recv_buf.get());
     launch_params.num_blocks = config.num_blocks * config.num_rings;
     launch_params.num_rings = config.num_rings;
+    launch_params.prefill_self_copy = prefill_self_copy;
 
     for (int r = 0; r < config.num_rings; r++) {
       auto& rp = launch_params.rings[r];
@@ -256,14 +261,18 @@ class RingReduceScatterBenchmarkFixture
     ss << std::left << std::setw(14) << "Test" << std::right << std::setw(10)
        << "Size" << std::right << std::setw(6) << "Rings" << std::right
        << std::setw(10) << "NCCL" << std::right << std::setw(10) << "Ring"
-       << std::right << std::setw(10) << "Speedup" << std::right
-       << std::setw(12) << "NCCL Lat" << std::right << std::setw(12)
-       << "Ring Lat\n";
+       << std::right << std::setw(10) << "Prefill" << std::right
+       << std::setw(10) << "R/NCCL" << std::right << std::setw(10) << "P/Ring"
+       << std::right << std::setw(12) << "NCCL Lat" << std::right
+       << std::setw(12) << "Ring Lat" << std::right << std::setw(12)
+       << "Pref Lat\n";
     ss << std::left << std::setw(14) << "" << std::right << std::setw(10) << ""
        << std::right << std::setw(6) << "" << std::right << std::setw(10)
        << "(GB/s)" << std::right << std::setw(10) << "(GB/s)" << std::right
-       << std::setw(10) << "" << std::right << std::setw(12) << "(us)"
-       << std::right << std::setw(12) << "(us)\n";
+       << std::setw(10) << "(GB/s)" << std::right << std::setw(10) << ""
+       << std::right << std::setw(10) << "" << std::right << std::setw(12)
+       << "(us)" << std::right << std::setw(12) << "(us)" << std::right
+       << std::setw(12) << "(us)\n";
     ss << "--------------------------------------------------------------------------------\n";
 
     for (const auto& r : results) {
@@ -272,11 +281,16 @@ class RingReduceScatterBenchmarkFixture
          << std::setw(6) << r.num_rings << std::right << std::setw(10)
          << std::fixed << std::setprecision(2) << r.nccl_bandwidth << std::right
          << std::setw(10) << std::fixed << std::setprecision(2)
-         << r.ring_bandwidth << std::right << std::setw(9) << std::fixed
-         << std::setprecision(2) << r.speedup << "x" << std::right
+         << r.ring_bandwidth << std::right << std::setw(10) << std::fixed
+         << std::setprecision(2) << r.prefill_bandwidth << std::right
+         << std::setw(9) << std::fixed << std::setprecision(2) << r.speedup
+         << "x" << std::right << std::setw(9) << std::fixed
+         << std::setprecision(2) << r.prefill_vs_ring << "x" << std::right
          << std::setw(12) << std::fixed << std::setprecision(1)
          << r.nccl_latency << std::right << std::setw(12) << std::fixed
-         << std::setprecision(1) << r.ring_latency << "\n";
+         << std::setprecision(1) << r.ring_latency << std::right
+         << std::setw(12) << std::fixed << std::setprecision(1)
+         << r.prefill_latency << "\n";
     }
 
     ss << "================================================================================\n";
@@ -385,7 +399,10 @@ TEST_F(RingReduceScatterBenchmarkFixture, VsNccl) {
     float nccl_bw = run_nccl_benchmark(config, nccl_lat);
 
     float ring_lat = 0.0f;
-    float ring_bw = run_ring_benchmark(config, ring_lat);
+    float ring_bw = run_ring_benchmark(config, ring_lat, false);
+
+    float prefill_lat = 0.0f;
+    float prefill_bw = run_ring_benchmark(config, prefill_lat, true);
 
     if (globalRank == 0) {
       results.push_back({
@@ -396,9 +413,12 @@ TEST_F(RingReduceScatterBenchmarkFixture, VsNccl) {
           .num_rings = config.num_rings,
           .nccl_bandwidth = nccl_bw,
           .ring_bandwidth = ring_bw,
+          .prefill_bandwidth = prefill_bw,
           .nccl_latency = nccl_lat,
           .ring_latency = ring_lat,
+          .prefill_latency = prefill_lat,
           .speedup = (nccl_bw > 0) ? ring_bw / nccl_bw : 0.0f,
+          .prefill_vs_ring = (ring_bw > 0) ? prefill_bw / ring_bw : 0.0f,
       });
     }
     bootstrap->barrierAll();

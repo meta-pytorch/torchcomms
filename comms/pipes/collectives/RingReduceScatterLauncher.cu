@@ -15,7 +15,7 @@ namespace comms::pipes {
 
 namespace {
 
-template <int NumRings>
+template <int NumRings, bool PrefillSelfCopy>
 void launch_impl(const RingReduceScatterLaunchParams& params, Timeout timeout) {
   RingReduceScatterArgs<NumRings, float> args{};
   args.my_rank = params.my_rank;
@@ -35,8 +35,24 @@ void launch_impl(const RingReduceScatterLaunchParams& params, Timeout timeout) {
     };
   }
 
-  ring_reduce_scatter_kernel<NumRings, float, SumOp, 16384, 512>
-      <<<params.num_blocks, 512>>>(args, timeout);
+  ring_reduce_scatter_kernel<
+      NumRings,
+      PrefillSelfCopy,
+      float,
+      SumOp,
+      16384,
+      512><<<params.num_blocks, 512>>>(args, timeout);
+}
+
+template <int NumRings>
+void launch_for_num_rings(
+    const RingReduceScatterLaunchParams& params,
+    Timeout timeout) {
+  if (params.prefill_self_copy) {
+    launch_impl<NumRings, true>(params, timeout);
+  } else {
+    launch_impl<NumRings, false>(params, timeout);
+  }
 }
 
 } // namespace
@@ -51,13 +67,13 @@ void launch_ring_reduce_scatter(const RingReduceScatterLaunchParams& params) {
 
   switch (params.num_rings) {
     case 1:
-      launch_impl<1>(params, timeout);
+      launch_for_num_rings<1>(params, timeout);
       break;
     case 2:
-      launch_impl<2>(params, timeout);
+      launch_for_num_rings<2>(params, timeout);
       break;
     case 4:
-      launch_impl<4>(params, timeout);
+      launch_for_num_rings<4>(params, timeout);
       break;
     default:
       throw std::runtime_error(

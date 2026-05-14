@@ -9,6 +9,7 @@ namespace comms::pipes {
 
 template <
     int NumRings,
+    bool PrefillSelfCopy,
     typename T,
     typename AccumOp,
     int kTileElems,
