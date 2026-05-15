@@ -151,7 +151,9 @@ class CtranAllReduceTest : public ctran::CtranDistTestFixture,
       size_t count,
       TestInPlaceType inplace,
       commRedOp_t op,
-      MemAllocType memType) {
+      MemAllocType memType,
+      std::vector<CtranMapperBackend> excludedBackends = {
+          CtranMapperBackend::NVL}) {
     if (memType == kCuMemAllocDisjoint && !NCCL_CTRAN_IB_DMABUF_ENABLE) {
       GTEST_SKIP() << "dmabuf is not supported, skip disjoint test";
     }
@@ -218,12 +220,12 @@ class CtranAllReduceTest : public ctran::CtranDistTestFixture,
         lastColl["algoName"].asString(),
         testing::HasSubstr(allReduceAlgoName(algo)));
 
+    // AllReduce uses kernel reduce not NVL iput
     verifyBackendsUsed(
         ctranComm->ctran_.get(),
         ctranComm->statex_.get(),
         kMemNcclMemAlloc,
-        // AllReduce uses kernel reduce not NVL iput
-        {CtranMapperBackend::NVL});
+        excludedBackends);
     verifyGpeLeak(ctranComm->ctran_.get());
 
     for (auto& segment : segments) {
@@ -512,6 +514,115 @@ INSTANTIATE_TEST_SUITE_P(
     CtranTestBidirAgEnabled,
     CtranAllReduceRingBidirAgEnabledTestFp32,
     testingValuesBidirAg,
+    getTestName);
+
+#endif
+
+// =============================================================================
+// TCPDM backend tests for AllReduceRing
+// Requires multi-host setup with devmem-capable NICs.
+// Run with: buck test <target> -c comms.hosts=<host1>,<host2>
+// =============================================================================
+
+#ifdef CTRAN_TEST_TCPDM_BACKEND
+
+class CtranAllReduceRingTcpDmTestFp32
+    : public CtranAllReduceTest<float>,
+      public ::testing::WithParamInterface<
+          std::tuple<size_t, TestInPlaceType, commRedOp_t, MemAllocType>> {
+ public:
+  void SetUp() override {
+    if (!getenv("ENABLE_TCPDM_TEST")) {
+      GTEST_SKIP()
+          << "TCPDM test requires ENABLE_TCPDM_TEST=1 and devmem-capable hosts";
+    }
+
+    setenv("NCCL_COMM_STATE_DEBUG_TOPO", "nolocal", 1);
+    // TODO: re-enable bidir AG for TCPDM once reverse recvKernElem is allocated
+    setenv("NCCL_CTRAN_ALLREDUCE_RING_BIDIR_AG_MAX_SIZE", "0", 1);
+    // Force numBlocks/blockSize for TCPDM unpack kernel
+    setenv("NCCL_CTRAN_ALLREDUCE_RING_NUM_THREAD_BLOCKS", "16", 1);
+    setenv("NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE", "256", 1);
+
+    // GPU closest to beth0 (mlx5_4) on GRANDTETON hosts
+    setenv("CUDA_VISIBLE_DEVICES", "2", 1);
+
+    // TCPDM transport config
+    setenv("TCP_DEVMEM_STEER_ACTIVE_OPEN", "1", 1);
+    setenv("TCP_DEVMEM_FIXED_IRQ_AFFINITY", "1", 1);
+    setenv("TCP_DEVMEM_FIXED_THREAD_AFFINITY", "1", 1);
+    setenv("TCP_DEVMEM_SETUP_XPS", "1", 1);
+    setenv("TCP_DEVMEM_CONGESTION_CONTROL", "dctcp", 1);
+    setenv("TCP_DEVMEM_DEBUG_TCP", "1", 1);
+    setenv("TCP_DEVMEM_TX_WORKERS_PER_DEV", "4", 1);
+    setenv("TCP_DEVMEM_RX_WORKERS_PER_DEV", "4", 1);
+    setenv("TCP_DEVMEM_SOCKETS_PER_COMM", "4", 1);
+    setenv("TCP_DEVMEM_QUEUES", "4", 1);
+    setenv("TCP_DEVMEM_IFNAME", "beth0", 1);
+    setenv("TCP_DEVMEM_SKIP_AGENT", "1", 1);
+    setenv("TCP_DEVMEM_SKIP_LOGGER", "1", 1);
+
+    // NCCL runtime: disable non-TCPDM transports
+    setenv("NCCL_COLLNET_ENABLE", "0", 1);
+    setenv("NCCL_OOB_NET_ENABLE", "0", 1);
+    setenv("NCCL_CROSS_NIC", "1", 1);
+    setenv("NCCL_PXN_DISABLE", "1", 1);
+    setenv("NCCL_SHM_DISABLE", "1", 1);
+    setenv("NCCL_RAS_ENABLE", "0", 1);
+
+    // NCCL bootstrap: match SOCKET_IFNAME with CLIENT_SOCKET_IFNAME
+    setenv("NCCL_SOCKET_IFNAME", "beth0", 1);
+    setenv("NCCL_CLIENT_SOCKET_IFNAME", "beth0", 1);
+
+    // NCCL ctran: select TCPDM backend
+    setenv("NCCL_CTRAN_ENABLE", "1", 1);
+    setenv("NCCL_CTRAN_BACKENDS", "tcpdm", 1);
+
+    // Ctran unpack config
+    setenv("NCCL_NET", "", 1);
+    setenv("NCCL_CTRAN_UNPACK_NUM_THREAD_BLOCKS", "16", 1);
+    setenv("NCCL_P2P_NET_CHUNKSIZE", "262144", 1);
+    setenv("NCCL_BUFFSIZE", "4194304", 1);
+
+    ncclCvarInit();
+    CtranAllReduceTest::SetUp();
+  }
+};
+
+TEST_P(CtranAllReduceRingTcpDmTestFp32, AllReduceRingTcpDmFp32) {
+  const auto& [count, inplace, op, memType] = GetParam();
+  beginTest(
+      ctranAllReduceRing,
+      NCCL_ALLREDUCE_ALGO::ctring,
+      count,
+      inplace,
+      op,
+      memType,
+      {CtranMapperBackend::NVL, CtranMapperBackend::IB});
+}
+
+auto testingValuesTcpDm = ::testing::Values(
+    std::make_tuple(1, kTestOutOfPlace, commSum, kMemNcclMemAlloc),
+    std::make_tuple(8, kTestOutOfPlace, commSum, kMemNcclMemAlloc),
+    std::make_tuple(17, kTestOutOfPlace, commSum, kMemNcclMemAlloc),
+    std::make_tuple(1024, kTestOutOfPlace, commSum, kMemNcclMemAlloc),
+    std::make_tuple(8192, kTestOutOfPlace, commSum, kMemNcclMemAlloc),
+    std::make_tuple(8195, kTestOutOfPlace, commSum, kMemNcclMemAlloc),
+    std::make_tuple(1024 * 1024, kTestOutOfPlace, commSum, kMemNcclMemAlloc),
+    std::make_tuple(
+        1024 * 1024 + 17,
+        kTestOutOfPlace,
+        commSum,
+        kMemNcclMemAlloc),
+    std::make_tuple(8195, kTestOutOfPlace, commProd, kMemNcclMemAlloc),
+    std::make_tuple(8195, kTestOutOfPlace, commMax, kMemNcclMemAlloc),
+    std::make_tuple(8195, kTestOutOfPlace, commMin, kMemNcclMemAlloc),
+    std::make_tuple(8195, kTestOutOfPlace, commAvg, kMemNcclMemAlloc));
+
+INSTANTIATE_TEST_SUITE_P(
+    CtranTestTcpDm,
+    CtranAllReduceRingTcpDmTestFp32,
+    testingValuesTcpDm,
     getTestName);
 
 #endif
