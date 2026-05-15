@@ -339,3 +339,24 @@ TEST(ConfigHintsUT, IbQpsPerConnectionDefaultUnset) {
 
   delete ncclxCfg;
 }
+
+// ----- ibLazyConnect tests -----
+
+TEST(ConfigHintsUT, LazyPeerInit_DefaultIsFalse) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+  ASSERT_NE(config.ncclxConfig, nullptr);
+  EXPECT_FALSE(NCCLX_CONFIG_FIELD(config, ibLazyConnect));
+  delete static_cast<ncclx::Config*>(config.ncclxConfig);
+}
+
+TEST(ConfigHintsUT, LazyPeerInit_HintOverrides) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ibLazyConnect", "true");
+  config.hints = &hints;
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+  ASSERT_NE(config.ncclxConfig, nullptr);
+  EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, ibLazyConnect));
+  delete static_cast<ncclx::Config*>(config.ncclxConfig);
+}
