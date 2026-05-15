@@ -720,7 +720,7 @@ void MultiPeerTransport::build_device_handle() {
 
       case TransportType::P2P_IBGDA: {
         P2pIbgdaTransportDevice* devPtr = ibgdaTransport_
-            ? ibgdaTransport_->getP2pTransportDevice(r)
+            ? ibgdaTransport_->getP2pTransportDeviceSlot(r)
             : nullptr;
         new (&transportsHost[r]) Transport(devPtr);
         break;
