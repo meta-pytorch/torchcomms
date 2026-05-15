@@ -28,8 +28,8 @@ export USE_GLOO=OFF
 export USE_TRANSPORT=OFF
 export USE_SYSTEM_LIBS=1
 
-python3 -m pip install typing-extensions numpy sympy expecttest pytest parameterized
-python3 -m pip install --no-deps --pre torch pytorch-triton-xpu --index-url https://download.pytorch.org/whl/nightly/xpu --force-reinstall --no-cache-dir 
+python3 -m pip install typing-extensions numpy sympy expecttest pytest parameterized filelock networkx pyelftools
+python3 -m pip install --no-deps --pre torch pytorch-triton-xpu --index-url https://download.pytorch.org/whl/nightly/xpu --force-reinstall --no-cache-dir
 
 cd torchcomms && pip install . --no-deps --no-build-isolation && cd ..
 
