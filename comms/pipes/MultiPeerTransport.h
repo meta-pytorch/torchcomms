@@ -188,18 +188,22 @@ class MultiPeerTransport {
 
   /**
    * @return MultiPeerDeviceHandle suitable for passing to CUDA kernels.
-   * @throws std::runtime_error if exchange() has not been called.
+   * @throws std::runtime_error if lazy mode is enabled or exchange() not
+   * called.
    */
   MultiPeerDeviceHandle get_device_handle() const;
 
   /**
    * Materialize the specified IBGDA peers, then return the device handle.
-   * Use this with lazy mode to ensure peers are ready before kernel launch.
+   * Use with lazy mode for DeviceWindow or direct Transport[] access.
    *
    * @param peers List of peer ranks to materialize
-   * @return MultiPeerDeviceHandle suitable for passing to CUDA kernels.
    */
   MultiPeerDeviceHandle get_device_handle(const std::vector<int>& peers);
+
+  bool is_lazy_mode() const;
+
+  void materializePeers(const std::vector<int>& peers);
 
   // --- IBGDA buffer registration (delegates to ibgdaTransport_) ---
 
@@ -262,6 +266,7 @@ class MultiPeerTransport {
   const int myRank_;
   const int nRanks_;
   const int deviceId_;
+  const bool ibLazyConnect_{false};
   std::shared_ptr<meta::comms::IBootstrap> bootstrap_;
 
   // --- Topology (populated in constructor) ---
