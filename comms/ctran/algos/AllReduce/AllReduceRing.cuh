@@ -11,6 +11,12 @@
 #include "comms/ctran/gpe/CtranGpeDev.h"
 #include "comms/utils/commSpecs.h"
 
+#ifdef CTRAN_TCPDM_ENABLE
+#include "comms/tcp_devmem/unpack/batch_unpack_kernel.cuh"
+#include "comms/tcp_devmem/unpack/batch_unpack_kernel.h"
+#include "comms/tcp_devmem/unpack/batch_unpack_kernel_device.h"
+#endif
+
 namespace ctran::allreduce::ring {
 
 namespace {
@@ -18,6 +24,10 @@ namespace {
 using ctran::algos::GpeKernelSyncDev::checkPost;
 using ctran::algos::GpeKernelSyncDev::complete;
 using ctran::algos::GpeKernelSyncDev::waitPost;
+
+#ifdef CTRAN_TCPDM_ENABLE
+__shared__ UnpackBlockState allReduceRingUnpack;
+#endif
 
 } // namespace
 
@@ -38,19 +48,33 @@ __device__ __forceinline__ const T* getBufAtByteOffset(
       reinterpret_cast<const char*>(buf) + offset);
 }
 
-template <typename T, commRedOp_t RedOp>
+template <typename T, commRedOp_t RedOp, bool Unpack>
 __device__ __forceinline__ void _progressRecv(
     ctran::allreduce::ring::KernArgs& args,
     AlgoContext& algoCtx) {
+#ifdef CTRAN_TCPDM_ENABLE
+  if constexpr (Unpack) {
+    SQueue* sq = args.unpack.sq[blockIdx.x];
+    __shared__ int sqReady;
+    if (threadIdx.x == 0) {
+      sqReady = (sq != nullptr && !device_queue_empty(&sq->header)) ? 1 : 0;
+    }
+    __syncthreads();
+    if (sqReady) {
+      StrideInfos strideInfos{};
+      setupUnpackStrides(strideInfos, GET_ALGO_NUM(sq->header.flags));
+      unpack(
+          sq, &allReduceRingUnpack, strideInfos, &sq->header.flags, 0, false);
+    }
+  }
+#endif
+
   OpRound& opRound = algoCtx.opRounds[Op::kRecvRedCopy];
   int round = opRound.done;
   if (round >= opRound.totalRounds) {
-    // Already finished all rounds
     return;
   }
-  // Wait for host side to post the request
   if (!checkPost(args.recvRedCopySync, blockIdx.x, round)) {
-    // TODO: FT CHECK_ABORT
     return;
   }
 
@@ -304,7 +328,7 @@ __device__ __forceinline__ void updatePartitionCtxDevice(
   }
 }
 
-template <typename T, commRedOp_t RedOp, bool EnableBidirAg>
+template <typename T, commRedOp_t RedOp, bool EnableBidirAg, bool Unpack>
 __device__ void algoFn(ctran::allreduce::ring::KernArgs& args) {
   // Setup algorithm context
   AlgoContext algoCtx = {
@@ -341,7 +365,7 @@ __device__ void algoFn(ctran::allreduce::ring::KernArgs& args) {
     };
     while (notDone()) {
       _progressSend<T, RedOp>(args, algoCtx);
-      _progressRecv<T, RedOp>(args, algoCtx);
+      _progressRecv<T, RedOp, Unpack>(args, algoCtx);
       _progressRevSend<T, RedOp, EnableBidirAg>(args, algoCtx);
       _progressRevRecv<T, RedOp, EnableBidirAg>(args, algoCtx);
       KERNEL_ABORT();
@@ -354,9 +378,13 @@ __device__ void algoFn(ctran::allreduce::ring::KernArgs& args) {
 } // namespace ctran::allreduce::ring
 
 // EnableBidirAg template parameter:
+// EnableBidirAg:
 // - true: bi-directional AllGather with reverse direction (default)
 // - false: standard single-direction AG (lower register usage)
-template <typename T, commRedOp_t RedOp, bool EnableBidirAg>
+// Unpack:
+// - true: TCPDM unpack path (drain SQueues in kernel)
+// - false: IB path (no kernel-side unpack)
+template <typename T, commRedOp_t RedOp, bool EnableBidirAg, bool Unpack>
 __global__ void ncclKernelAllReduceCtranRing(
     int* flag,
     CtranAlgoDeviceState* devState,
@@ -373,7 +401,7 @@ __global__ void ncclKernelAllReduceCtranRing(
   }
 
   // Run algorithm main body
-  ctran::allreduce::ring::algoFn<T, RedOp, EnableBidirAg>(args);
+  ctran::allreduce::ring::algoFn<T, RedOp, EnableBidirAg, Unpack>(args);
 
   // This sync threads ensure that every thread in the block has completed using
   // the flag status before resetting it by thread 0 below.
@@ -386,20 +414,31 @@ __global__ void ncclKernelAllReduceCtranRing(
 }
 
 // Instantiation macro for bi-directional AG kernel
-#define DECL_CTRAN_ALLREDUCERING_KERN_BIDIR(T, RedOp)                    \
-  template __global__ void ncclKernelAllReduceCtranRing<T, RedOp, true>( \
-      int* flag,                                                         \
-      CtranAlgoDeviceState* devState,                                    \
+#define DECL_CTRAN_ALLREDUCERING_KERN_BIDIR(T, RedOp)  \
+  template __global__ void                             \
+  ncclKernelAllReduceCtranRing<T, RedOp, true, false>( \
+      int* flag,                                       \
+      CtranAlgoDeviceState* devState,                  \
       ctran::allreduce::ring::KernArgs args);
 
 // Instantiation macro for simple kernel (no bidir AG, lower register usage)
-#define DECL_CTRAN_ALLREDUCERING_KERN_SIMPLE(T, RedOp)                    \
-  template __global__ void ncclKernelAllReduceCtranRing<T, RedOp, false>( \
-      int* flag,                                                          \
-      CtranAlgoDeviceState* devState,                                     \
+#define DECL_CTRAN_ALLREDUCERING_KERN_SIMPLE(T, RedOp)  \
+  template __global__ void                              \
+  ncclKernelAllReduceCtranRing<T, RedOp, false, false>( \
+      int* flag,                                        \
+      CtranAlgoDeviceState* devState,                   \
       ctran::allreduce::ring::KernArgs args);
 
-// Combined macro to instantiate both kernel variants
-#define DECL_CTRAN_ALLREDUCERING_KERN(T, RedOp) \
-  DECL_CTRAN_ALLREDUCERING_KERN_BIDIR(T, RedOp) \
-  DECL_CTRAN_ALLREDUCERING_KERN_SIMPLE(T, RedOp)
+// Instantiation macro for simple kernel with TCPDM unpack
+#define DECL_CTRAN_ALLREDUCERING_KERN_SIMPLE_UNPACK(T, RedOp) \
+  template __global__ void                                    \
+  ncclKernelAllReduceCtranRing<T, RedOp, false, true>(        \
+      int* flag,                                              \
+      CtranAlgoDeviceState* devState,                         \
+      ctran::allreduce::ring::KernArgs args);
+
+// Combined macro to instantiate all kernel variants
+#define DECL_CTRAN_ALLREDUCERING_KERN(T, RedOp)  \
+  DECL_CTRAN_ALLREDUCERING_KERN_BIDIR(T, RedOp)  \
+  DECL_CTRAN_ALLREDUCERING_KERN_SIMPLE(T, RedOp) \
+  DECL_CTRAN_ALLREDUCERING_KERN_SIMPLE_UNPACK(T, RedOp)
