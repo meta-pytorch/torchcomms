@@ -207,6 +207,9 @@ function build_third_party {
         conda-forge::libopenssl-static
         fmt
       )
+      if [[ -n "${NCCL_FEEDSTOCK_BUILD}" ]]; then
+          DEPS+=(conda-forge::folly)
+      fi
       conda install "${DEPS[@]}" --yes
       ensure_conda_libdwarf_symlinks
       build_fb_oss_library "https://github.com/facebook/folly.git" "$third_party_tag" folly
