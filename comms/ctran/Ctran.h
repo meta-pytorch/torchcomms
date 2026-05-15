@@ -218,6 +218,23 @@ commResult_t ctranGet(
     CtranComm* comm,
     cudaStream_t stream);
 
+commResult_t ctranFetchAdd(
+    void* resultBuf,
+    uint64_t addVal,
+    size_t targetIndex,
+    int peer,
+    ctran::CtranWin* win,
+    CtranComm* comm,
+    cudaStream_t stream);
+
+commResult_t ctranAtomicAdd(
+    uint64_t addVal,
+    size_t targetIndex,
+    int peer,
+    ctran::CtranWin* win,
+    CtranComm* comm,
+    cudaStream_t stream);
+
 void ctranGroupTrackDefaultOp(CtranComm* comm);
 
 namespace ctran {
