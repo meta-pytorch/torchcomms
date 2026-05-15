@@ -392,6 +392,7 @@ commResult_t ctranWinAllocate(
       comm,
       size,
       locationRes == "cpu" ? DevMemType::kHostPinned : DevMemType::kCumem);
+  newWin->setAtomicCapable(true);
   FB_COMMCHECK(newWin->allocate(nullptr));
   FB_COMMCHECK(newWin->exchange());
   if (baseptr) {
@@ -444,6 +445,9 @@ commResult_t ctranWinRegister(
       // if user buffer is on host CPU, allocate kHostPinned buffer for
       // signal otherwise is on GPU device, allocate kCumem buffer for signal
       userBufType);
+  newWin->setAtomicCapable(
+      reinterpret_cast<uintptr_t>(databuf) % sizeof(uint64_t) == 0 &&
+      size % sizeof(uint64_t) == 0);
 
   FB_COMMCHECK(newWin->allocate((void*)databuf));
 
