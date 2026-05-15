@@ -18,7 +18,8 @@ enum class KernElemRole {
   kIntraAllGather,
   kRemIntraReduce,
   kRemIntraBcast,
-  kRemInterReduce
+  kRemInterReduce,
+  kTcpDmRecv
 };
 
 struct KernelArgs {
@@ -85,6 +86,8 @@ struct HostArgs {
 
 struct HostResource {
   ~HostResource() {
+    // recvKernElem is freed via kElemStepMap in ~OpElem() (CtranGpe.cc).
+
     // Release GpeKernelSyncs back to pool (sets inuse=false so pool can
     // reclaim). For graph-captured ops, this runs at graph destruction time
     // via cmdDestroy -> delete cmd -> ~OpElem -> ~HostResource, preventing
@@ -119,6 +122,10 @@ struct HostResource {
   void* tmpSendBufHdl{nullptr};
   void* tmpRecvBuf{nullptr};
   void* tmpRecvBufHdl{nullptr};
+
+  // KernelElem for recv-side initNotify. Allocated only for TCPDM (carries
+  // irecv buffer/size); nullptr for IB (IB's initNotify doesn't need it).
+  KernelElem* recvKernElem{nullptr};
 
   // Reverse direction
   ctran::algos::GpeKernelSync* revSendCopySync{nullptr};
