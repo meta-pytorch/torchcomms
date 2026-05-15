@@ -41,3 +41,29 @@ __global__ void ncclKernelFetchAdd(
     ctran::device::KernelWaitGpeTerminate(flag);
   }
 }
+
+__global__ void ncclKernelAtomicAdd(
+    int* flag,
+    CtranAlgoDeviceState* devState,
+    CtranKernelAtomicAddArgs args) {
+  const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
+  if (flag && gtIdx == 0) {
+    ctran::device::devLoadAbortFlags(flag, devState);
+    ctran::device::KernelStartGpe(flag);
+  }
+
+  if (gtIdx == 0 && args.remoteAddr != nullptr) {
+#if defined(__HIP_PLATFORM_AMD__)
+    // TODO: implement atomic operations for AMD GPUs.
+    __builtin_trap();
+#else
+    ::cuda::atomic_ref<uint64_t, cuda::thread_scope_system> ref{
+        *args.remoteAddr};
+    ref.fetch_add(args.addVal, cuda::std::memory_order_relaxed);
+#endif
+  }
+
+  if (flag && gtIdx == 0) {
+    ctran::device::KernelWaitGpeTerminate(flag);
+  }
+}

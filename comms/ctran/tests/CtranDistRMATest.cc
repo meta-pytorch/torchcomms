@@ -831,6 +831,90 @@ INSTANTIATE_TEST_SUITE_P(
       return name;
     });
 
+// Verifies winAtomicAdd correctness:
+// 1. Single-writer: each rank atomically increments a counter on the next peer,
+//    checks final value matches numIters * addVal.
+// 2. Multi-writer contention: all ranks atomically add to rank 0's single
+//    counter, checks final value equals (numRanks-1) * numIters * addVal.
+TEST_F(CtranRMATest, winAtomicAdd) {
+  const size_t kNumIters = 100;
+  const uint64_t kAddVal = 7;
+
+  auto statex = ctranComm->statex_.get();
+  ASSERT_NE(statex, nullptr);
+
+  cudaStream_t stream;
+  CUDACHECK_TEST(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+
+  const auto rank = statex->rank();
+  const auto numRanks = statex->nRanks();
+
+  // --- Part 1: single-writer per slot ---
+  {
+    size_t sizeBytes = numRanks * sizeof(uint64_t);
+    CtranWin* win = nullptr;
+    void* winBase = nullptr;
+    createWin(
+        true, MemAllocType::kMemCudaMalloc, &winBase, &win, sizeBytes, {});
+    CUDACHECK_TEST(cudaMemset(winBase, 0, sizeBytes));
+    barrier();
+
+    int nextPeer = (rank + 1) % numRanks;
+    for (size_t iter = 0; iter < kNumIters; iter++) {
+      COMMCHECK_TEST(ctranAtomicAdd(
+          kAddVal, rank, nextPeer, win, ctranComm.get(), stream));
+    }
+    CUDACHECK_TEST(cudaStreamSynchronize(stream));
+    barrier();
+
+    int prevPeer = (rank + numRanks - 1) % numRanks;
+    uint64_t hostVal = 0;
+    CUDACHECK_TEST(cudaMemcpy(
+        &hostVal,
+        reinterpret_cast<uint64_t*>(winBase) + prevPeer,
+        sizeof(uint64_t),
+        cudaMemcpyDeviceToHost));
+    EXPECT_EQ(hostVal, kNumIters * kAddVal);
+
+    COMMCHECK_TEST(ctranWinFree(win));
+    freeWinBuf(true, winBase, sizeBytes, MemAllocType::kMemCudaMalloc);
+  }
+
+  // --- Part 2: multi-writer contention ---
+  {
+    size_t sizeBytes = sizeof(uint64_t);
+    CtranWin* win = nullptr;
+    void* winBase = nullptr;
+    createWin(
+        true, MemAllocType::kMemCudaMalloc, &winBase, &win, sizeBytes, {});
+    CUDACHECK_TEST(cudaMemset(winBase, 0, sizeBytes));
+    barrier();
+
+    if (rank != 0) {
+      for (size_t iter = 0; iter < kNumIters; iter++) {
+        COMMCHECK_TEST(
+            ctranAtomicAdd(kAddVal, 0, 0, win, ctranComm.get(), stream));
+      }
+    }
+    CUDACHECK_TEST(cudaStreamSynchronize(stream));
+    barrier();
+
+    if (rank == 0) {
+      uint64_t hostVal = 0;
+      CUDACHECK_TEST(cudaMemcpy(
+          &hostVal, winBase, sizeof(uint64_t), cudaMemcpyDeviceToHost));
+      uint64_t expected =
+          static_cast<uint64_t>(numRanks - 1) * kNumIters * kAddVal;
+      EXPECT_EQ(hostVal, expected);
+    }
+
+    COMMCHECK_TEST(ctranWinFree(win));
+    freeWinBuf(true, winBase, sizeBytes, MemAllocType::kMemCudaMalloc);
+  }
+
+  CUDACHECK_TEST(cudaStreamDestroy(stream));
+}
+
 INSTANTIATE_TEST_SUITE_P(
     RMATestInstance,
     CtranRMATestParam,

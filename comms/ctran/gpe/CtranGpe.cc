@@ -48,6 +48,8 @@ std::string kernelTypeToOpName(KernelConfig::KernelType type) {
     case KernelConfig::WAITSIGNAL:
     case KernelConfig::SIGNAL:
     case KernelConfig::GET:
+    case KernelConfig::FETCHADD:
+    case KernelConfig::ATOMICADD:
       return "RMA";
     default:
       return "Unknown";
@@ -335,6 +337,8 @@ static std::unordered_map<KernelConfig::KernelType, std::string>
         {KernelConfig::KernelType::WAITNOTIFY, "WAITNOTIFY"},
         {KernelConfig::KernelType::ALLGATHERP, "ALLGATHERP"},
         {KernelConfig::KernelType::ALLGATHERP_INIT, "ALLGATHERP_INIT"},
+        {KernelConfig::KernelType::FETCHADD, "FETCHADD"},
+        {KernelConfig::KernelType::ATOMICADD, "ATOMICADD"},
 };
 
 std::string KernelConfig::toString() {

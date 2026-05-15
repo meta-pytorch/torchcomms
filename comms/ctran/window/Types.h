@@ -17,6 +17,7 @@ enum OpCountType {
   kSignal = 3,
   kGet = 4,
   kFetchAdd = 5,
+  kAtomicAdd = 6,
 };
 
 struct RemWinInfo {

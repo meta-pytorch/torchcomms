@@ -42,3 +42,8 @@ struct CtranKernelFetchAddArgs {
   uint64_t addVal;
   uint64_t* resultAddr;
 };
+
+struct CtranKernelAtomicAddArgs {
+  uint64_t* remoteAddr;
+  uint64_t addVal;
+};

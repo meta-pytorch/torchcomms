@@ -19,6 +19,11 @@ extern __global__ void ncclKernelFetchAdd(
     CtranAlgoDeviceState* devState,
     CtranKernelFetchAddArgs args);
 
+extern __global__ void ncclKernelAtomicAdd(
+    int* flag,
+    CtranAlgoDeviceState* devState,
+    CtranKernelAtomicAddArgs args);
+
 static commResult_t fetchAddImpl(
     const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
   struct OpElem* op = opGroup.front().get();
@@ -191,5 +196,181 @@ commResult_t ctranFetchAdd(
       fetchAddImpl,
       config,
       reinterpret_cast<void*>(ncclKernelFetchAdd)));
+  return commSuccess;
+}
+
+static commResult_t atomicAddImpl(
+    const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
+  struct OpElem* op = opGroup.front().get();
+  auto comm = op->comm_;
+  auto win = op->atomicadd.win;
+  int peerRank = op->atomicadd.peerRank;
+
+  CtranAlgoRMALogger logger("atomicAdd", op->opCount, peerRank, win, comm);
+
+  if (!comm->ctran_->mapper->hasBackend(peerRank, CtranMapperBackend::IB)) {
+    CLOGF(ERR, "atomicAdd only supports IB backend for now");
+    return commInternalError;
+  }
+
+  const size_t targetOffsetBytes = op->atomicadd.targetIndex * sizeof(uint64_t);
+  void* remoteAddr = reinterpret_cast<void*>(
+      reinterpret_cast<uintptr_t>(win->remWinInfo[peerRank].dataAddr) +
+      targetOffsetBytes);
+
+  // IB atomic fetch-and-add always writes the old value to a local buffer.
+  // Use a stack-local scratch since we discard the result.
+  uint64_t scratchBuf = 0;
+  void* localMemHdl = nullptr;
+  bool localReg = false;
+  FB_COMMCHECK(comm->ctran_->mapper->searchRegHandle(
+      &scratchBuf, sizeof(uint64_t), &localMemHdl, &localReg));
+
+  CLOGF_TRACE(
+      COLL,
+      "atomicAddImpl: remoteAddr {} (base {} + offset {}), addVal {}",
+      remoteAddr,
+      win->remWinInfo[peerRank].dataAddr,
+      targetOffsetBytes,
+      op->atomicadd.addVal);
+
+  auto fetchAddReq = std::make_unique<CtranMapperRequest>();
+  FB_COMMCHECK(comm->ctran_->mapper->ifetchAndAdd(
+      &scratchBuf,
+      remoteAddr,
+      op->atomicadd.addVal,
+      peerRank,
+      CtranMapperConfig{
+          .memHdl_ = localMemHdl,
+          .remoteAccessKey_ = win->remWinInfo[peerRank].dataRkey,
+      },
+      fetchAddReq.get()));
+
+  FB_COMMCHECK(comm->ctran_->mapper->waitRequest(fetchAddReq.get()));
+
+  if (localReg) {
+    FB_COMMCHECK(comm->ctran_->mapper->deregDynamic(localMemHdl));
+  }
+  return commSuccess;
+}
+
+commResult_t ctranAtomicAdd(
+    uint64_t addVal,
+    size_t targetIndex,
+    int peer,
+    CtranWin* win,
+    CtranComm* comm,
+    cudaStream_t stream) {
+  const auto winOpCount = win->updateOpCount(peer);
+  const auto atomicAddOpCount =
+      win->updateOpCount(peer, window::OpCountType::kAtomicAdd);
+  auto statex = comm->statex_.get();
+
+  CLOGF_SUBSYS(
+      INFO,
+      COLL,
+      "CTRAN-RMA ctranAtomicAdd: opCount {} winOpCount {} addVal {} "
+      "targetIndex {} rank {} peer {} win {} stream={}",
+      atomicAddOpCount,
+      winOpCount,
+      addVal,
+      targetIndex,
+      statex->rank(),
+      peer,
+      (void*)win,
+      (void*)stream);
+
+  if (!win->isAtomicCapable()) {
+    CLOGF(
+        ERR,
+        "ctranAtomicAdd requires an atomic_capable window (data buffer must be 8-byte aligned and size must be a multiple of 8 bytes)");
+    return commInvalidArgument;
+  }
+
+  auto remoteDataAddr =
+      reinterpret_cast<uintptr_t>(win->remWinInfo[peer].dataAddr);
+  if (remoteDataAddr % sizeof(uint64_t) != 0) {
+    CLOGF(
+        ERR,
+        "Remote window data buffer {} is not 8-byte aligned for peer {}",
+        remoteDataAddr,
+        peer);
+    return commInvalidArgument;
+  }
+
+  size_t peerWinSize = win->getDataSize(peer);
+  if (peerWinSize % sizeof(uint64_t) != 0) {
+    CLOGF(
+        ERR,
+        "Peer {}'s window size {} is not a multiple of 8 bytes, not suitable for atomic operations",
+        peer,
+        peerWinSize);
+    return commInvalidArgument;
+  }
+
+  size_t targetOffsetBytes = targetIndex * sizeof(uint64_t);
+  if ((targetOffsetBytes + sizeof(uint64_t)) > peerWinSize) {
+    CLOGF(
+        ERR,
+        "Invalid targetIndex {}: offset {} + 8 bytes exceeds peer {}'s window size {}",
+        targetIndex,
+        targetOffsetBytes,
+        peer,
+        peerWinSize);
+    return commInvalidArgument;
+  }
+
+  KernelConfig config = KernelConfig(
+      KernelConfig::KernelType::ATOMICADD,
+      stream,
+      "AtomicAdd",
+      atomicAddOpCount);
+  config.args.devState_d = comm->ctran_->algo->getDevState();
+
+  std::vector<std::unique_ptr<struct OpElem>> opGroup;
+
+  if (statex->node(peer) == statex->node() && win->nvlEnabled(peer)) {
+    uint64_t* remoteAddr = reinterpret_cast<uint64_t*>(
+        reinterpret_cast<uintptr_t>(win->remWinInfo[peer].dataAddr) +
+        targetOffsetBytes);
+
+    auto colltraceHandle = meta::comms::colltrace::getCollTraceHandleRMA(
+        comm, opGroup, config, true);
+    colltraceHandle->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel);
+
+    CtranKernelAtomicAddArgs kernArgs{
+        .remoteAddr = remoteAddr,
+        .addVal = addVal,
+    };
+    config.algoArgs = reinterpret_cast<void*>(&kernArgs);
+
+    FB_COMMCHECK(comm->ctran_->gpe->submit(
+        std::move(opGroup),
+        atomicAddImpl,
+        config,
+        reinterpret_cast<void*>(ncclKernelAtomicAdd)));
+
+    colltraceHandle->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel);
+    return commSuccess;
+  }
+
+  // IB path: GPE callback does the work; kernel only coordinates with GPE.
+  // Set remoteAddr to nullptr so the kernel skips the NVL atomic.
+  CtranKernelAtomicAddArgs kernArgs{};
+  config.algoArgs = reinterpret_cast<void*>(&kernArgs);
+
+  struct OpElem* op =
+      new struct OpElem(OpElem::opType::ATOMICADD, comm, atomicAddOpCount);
+  op->atomicadd.targetIndex = targetIndex;
+  op->atomicadd.addVal = addVal;
+  op->atomicadd.peerRank = peer;
+  op->atomicadd.win = win;
+  opGroup.push_back(std::unique_ptr<struct OpElem>(op));
+
+  FB_COMMCHECK(comm->ctran_->gpe->submit(
+      std::move(opGroup),
+      atomicAddImpl,
+      config,
+      reinterpret_cast<void*>(ncclKernelAtomicAdd)));
   return commSuccess;
 }
