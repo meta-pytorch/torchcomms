@@ -26,6 +26,7 @@
 // TODO: Remove this guard once v2_27 is deprecated — v2_27 does not have the
 // comms/utils/colltrace:algostats dependency
 #if NCCL_MINOR >= 28
+#include "comms/ctran/CtranComm.h"
 #include "comms/utils/colltrace/AlgoStats.h"
 #endif
 
@@ -494,11 +495,27 @@ __attribute__((visibility("default"))) void dumpAlgoStat(
     std::unordered_map<std::string, std::unordered_map<std::string, int64_t>>&
         map) {
   map.clear();
-  if (comm == nullptr || comm->algoStats == nullptr) {
+  if (comm == nullptr) {
     return;
   }
-  auto dump = comm->algoStats->dump();
-  map.swap(dump.counts);
+
+  // Dump baseline (ncclx) algo stats
+  if (comm->algoStats) {
+    auto dump = comm->algoStats->dump();
+    map.swap(dump.counts);
+  }
+
+  // Merge ctran algo stats
+  if (comm->ctranComm_) {
+    auto ctranDump = comm->ctranComm_->dumpAlgoStats();
+    if (ctranDump.has_value()) {
+      for (auto& [opName, algoMap] : ctranDump->counts) {
+        for (auto& [algoName, count] : algoMap) {
+          map[opName][algoName] += count;
+        }
+      }
+    }
+  }
 }
 
 namespace {
