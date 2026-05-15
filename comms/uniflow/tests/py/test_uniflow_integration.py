@@ -16,11 +16,6 @@ import os
 import threading
 import unittest
 
-# Must be set before any CUDA allocation.
-# expandable_segments: use cuMemCreate (VMM) for allocations.
-# TORCH_CUDA_EXPANDABLE_SEGMENTS_IPC: create allocations with
-# CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR so that NVLink transport
-# can export/import via cuMemExportToShareableHandle.
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["TORCH_CUDA_EXPANDABLE_SEGMENTS_IPC"] = "1"
 
@@ -75,107 +70,92 @@ class TestUniflowIntegration(unittest.TestCase):
             flush=True,
         )
 
-        # Shared state between threads
-        server_id_holder: list[str | None] = [None]
-        server_id_ready: threading.Event = threading.Event()
+        # Create agents on main thread (avoids GIL contention during construction)
+        srv_config = UniflowAgentConfig(
+            device_id=0, name="server", listen_address="*:0"
+        )
+        cli_config = UniflowAgentConfig(
+            device_id=1, name="client", listen_address="*:0"
+        )
+        srv_agent: UniflowAgent = UniflowAgent(srv_config)
+        cli_agent: UniflowAgent = UniflowAgent(cli_config)
+        srv_uid_result = srv_agent.get_unique_id()
+        assert srv_uid_result.has_value(), f"get_unique_id: {srv_uid_result.error()}"
+        srv_uid: str = srv_uid_result.value()
+
         errors: list[str] = []
 
         def server_fn() -> None:
             try:
-                torch.cuda.set_device(0)
-
-                config = UniflowAgentConfig(
-                    device_id=0,
-                    name="server",
-                    listen_address="*:0",
-                )
-                agent = UniflowAgent(config)
-                id_result = agent.get_unique_id()
-                assert id_result.has_value(), id_result.error()
-                server_id_holder[0] = id_result.value()
-                server_id_ready.set()
-
-                # Accept connection
-                conn_result = agent.accept()
-                assert conn_result.has_value(), conn_result.error()
+                conn_result = srv_agent.accept()
+                assert conn_result.has_value(), f"accept: {conn_result.error()}"
                 conn = conn_result.value()
 
-                # Register GPU tensor
                 seg = Segment(
                     ptr=server_tensor.data_ptr(),
                     length=server_tensor.nbytes,
                     mem_type=MemoryType.VRAM,
                     device_id=0,
                 )
-                reg_result = agent.register_segment(seg)
-                assert reg_result.has_value(), reg_result.error()
+                reg_result = srv_agent.register_segment(seg)
+                assert reg_result.has_value(), f"register: {reg_result.error()}"
                 reg_seg = reg_result.value()
 
-                # Send export ID to client
+                # Export our segment ID and send to client via ctrl msg
                 export_result = reg_seg.export_id()
-                assert export_result.has_value(), export_result.error()
+                assert export_result.has_value(), f"export_id: {export_result.error()}"
                 send_result = conn.send_ctrl_msg(export_result.value())
-                assert send_result.has_value(), send_result.error()
+                assert send_result.has_value(), f"send export: {send_result.error()}"
 
                 # Receive client's export ID and import
                 recv_result = conn.recv_ctrl_msg()
-                assert recv_result.has_value(), recv_result.error()
-                import_result = agent.import_segment(recv_result.value())
-                assert import_result.has_value(), import_result.error()
+                assert recv_result.has_value(), f"recv export: {recv_result.error()}"
+                import_result = srv_agent.import_segment(recv_result.value())
+                assert import_result.has_value(), f"import: {import_result.error()}"
 
-                # Wait for client to signal transfer is done
+                # Send data_ready notification via ctrl msg
+                notif_result = conn.send_ctrl_msg(b"data_ready")
+                assert notif_result.has_value(), f"send notif: {notif_result.error()}"
+
+                # Wait for client's "done" message before shutting down
                 done_result = conn.recv_ctrl_msg()
-                assert done_result.has_value(), done_result.error()
+                assert done_result.has_value(), f"recv done: {done_result.error()}"
+                assert done_result.value() == b"done"
 
                 conn.shutdown()
-
             except Exception as e:
                 errors.append(f"Server: {e}")
 
         def client_fn() -> None:
             try:
-                torch.cuda.set_device(1)
-                server_id_ready.wait(timeout=10)
-                server_id: str | None = server_id_holder[0]
-                assert server_id is not None
-
-                config = UniflowAgentConfig(
-                    device_id=1,
-                    name="client",
-                    listen_address="*:0",
-                )
-                agent = UniflowAgent(config)
-
-                # Connect to server
-                conn_result = agent.connect(server_id)
-                assert conn_result.has_value(), conn_result.error()
+                conn_result = cli_agent.connect(srv_uid)
+                assert conn_result.has_value(), f"connect: {conn_result.error()}"
                 conn = conn_result.value()
 
-                # Register GPU tensor
                 seg = Segment(
                     ptr=client_tensor.data_ptr(),
                     length=client_tensor.nbytes,
                     mem_type=MemoryType.VRAM,
                     device_id=1,
                 )
-                reg_result = agent.register_segment(seg)
-                assert reg_result.has_value(), reg_result.error()
+                reg_result = cli_agent.register_segment(seg)
+                assert reg_result.has_value(), f"register: {reg_result.error()}"
                 reg_seg = reg_result.value()
 
-                # Send export ID to server
+                # Export our segment ID and send to server via ctrl msg
                 export_result = reg_seg.export_id()
-                assert export_result.has_value(), export_result.error()
+                assert export_result.has_value(), f"export_id: {export_result.error()}"
                 send_result = conn.send_ctrl_msg(export_result.value())
-                assert send_result.has_value(), send_result.error()
+                assert send_result.has_value(), f"send export: {send_result.error()}"
 
                 # Receive server's export ID and import
                 recv_result = conn.recv_ctrl_msg()
-                assert recv_result.has_value(), recv_result.error()
-                import_result = agent.import_segment(recv_result.value())
-                assert import_result.has_value(), import_result.error()
+                assert recv_result.has_value(), f"recv export: {recv_result.error()}"
+                import_result = cli_agent.import_segment(recv_result.value())
+                assert import_result.has_value(), f"import: {import_result.error()}"
                 server_remote_seg = import_result.value()
 
-                # Get data from server's GPU into our GPU
+                # Pull data from server via get()
                 local_span = reg_seg.span(0, reg_seg.length)
                 remote_span = server_remote_seg.span(0, server_remote_seg.length)
                 future = conn.get(requests=[TransferRequest(local_span, remote_span)])
@@ -186,7 +166,12 @@ class TestUniflowIntegration(unittest.TestCase):
                 assert future.done()
 
                 get_result = future.get()
-                assert get_result.has_value(), get_result.error()
+                assert get_result.has_value(), f"get: {get_result.error()}"
+
+                # Receive "data_ready" notification via ctrl msg
+                notif_result = conn.recv_ctrl_msg()
+                assert notif_result.has_value(), f"recv notif: {notif_result.error()}"
+                assert notif_result.value() == b"data_ready"
 
                 # Double-get returns cached result
                 get_result2 = future.get()
@@ -197,19 +182,18 @@ class TestUniflowIntegration(unittest.TestCase):
                 assert done_result.has_value(), done_result.error()
 
                 conn.shutdown()
-
             except Exception as e:
                 errors.append(f"Client: {e}")
 
-        server_thread = threading.Thread(target=server_fn)
-        client_thread = threading.Thread(target=client_fn)
-        server_thread.start()
-        client_thread.start()
-        server_thread.join(timeout=30)
-        client_thread.join(timeout=30)
+        st = threading.Thread(target=server_fn)
+        ct = threading.Thread(target=client_fn)
+        st.start()
+        ct.start()
+        st.join(timeout=30)
+        ct.join(timeout=30)
 
-        self.assertFalse(server_thread.is_alive(), "Server thread hung")
-        self.assertFalse(client_thread.is_alive(), "Client thread hung")
+        self.assertFalse(st.is_alive(), "Server thread hung")
+        self.assertFalse(ct.is_alive(), "Client thread hung")
         self.assertEqual(errors, [], f"Thread errors: {errors}")
 
         # Verify data correctness
