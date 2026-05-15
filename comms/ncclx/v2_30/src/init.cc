@@ -6,6 +6,7 @@
  *************************************************************************/
 
 #include "nccl.h"
+#include "meta/DeviceRackSerial.h"
 #include "meta/NcclxConfig.h" // @manual
 #include "meta/NcclxPerCommConfig.h" // @manual
 #include "channel.h"
@@ -740,53 +741,6 @@ static void showVersion() {
   INFO(NCCL_ALL,"%s", ncclGetGitVersion());
 }
 
-static constexpr std::string_view kDeviceRackSerial = "DEVICE_RACK_SERIAL"; /* key in topology file */
-static ncclResult_t ncclxGetDeviceRackSerial(ncclComm* comm, int* rackSerial) {
-  if (comm == nullptr) {
-    WARN("Invalid state or comm pointer");
-    return ncclInvalidArgument;
-  }
-
-  std::ifstream file(NCCL_TOPO_FILE_PATH);
-  if (!file.is_open()) {
-    WARN("Failed to open topology file: %s", NCCL_TOPO_FILE_PATH.c_str());
-    return ncclSystemError;
-  }
-
-  std::string rackSerialStr;
-  std::string line;
-  bool found = false;
-
-  while (std::getline(file, line)) {
-    size_t pos = line.find('=');
-    if (pos == std::string::npos) {
-      continue;
-    }
-
-    std::string key = line.substr(0, pos);
-    std::string value = line.substr(pos + 1);
-
-    if (key == kDeviceRackSerial) {
-      if (!value.empty()) {
-        rackSerialStr = std::move(value);
-        found = true;
-        break;
-      }
-    }
-  }
-
-  if (!found) {
-    INFO(NCCL_INIT, "No rack serial found in topology file");
-  }
-
-  auto maybeRackSerial = folly::tryTo<int>(rackSerialStr);
-  CHECK(maybeRackSerial.hasValue());
-  *rackSerial = maybeRackSerial.value();
-
-  file.close();
-  return ncclSuccess;
-}
-
 NCCL_PARAM(MNNVLUUID, "MNNVL_UUID", -1);
 NCCL_PARAM(MNNVLCliqueId, "MNNVL_CLIQUE_ID", -1);
 NCCL_PARAM(MNNVLCrossClique, "MNNVL_CROSS_CLIQUE", 0);
@@ -864,8 +818,13 @@ static ncclResult_t fillInfo(struct ncclComm* comm, struct ncclPeerInfo* info, u
            info->busId,
            uuid0, uuid1,
            info->fabricInfo.cliqueId, info->fabricInfo.state, info->fabricInfo.healthMask);
+      // [META] Load rack serial for MNNVL trunk disable (string-based, supports alphanumeric serials)
       if(NCCL_MNNVL_TRUNK_DISABLE) {
-        NCCLCHECK(ncclxGetDeviceRackSerial(comm, &info->rackSerial));
+        if (ncclx::loadRackSerial(NCCL_TOPO_FILE_PATH, info->rackSerial, sizeof(info->rackSerial))) {
+          INFO(NCCL_INIT, "Loaded rack serial: %s", info->rackSerial);
+        } else {
+          WARN("No rack serial information available, skipping rack serial check");
+        }
       }
     }
   }
