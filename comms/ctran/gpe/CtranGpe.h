@@ -11,7 +11,6 @@
 #include <fmt/format.h>
 
 #include "comms/ctran/CtranComm.h"
-#include "comms/ctran/CtranExImpl.h"
 #include "comms/ctran/algos/AllGather/Types.h"
 #include "comms/ctran/algos/AllReduce/Types.h"
 #include "comms/ctran/algos/AllToAll/Types.h"
