@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <map>
 #include <mutex>
 
 #include <cuda.h>
@@ -29,65 +30,46 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 
-// Helper macro for 3-arg template kernel function map entries
-#define CTRAN_RING_REDOP_FUNCMAP(dtype, type, bidir)               \
-  {std::make_pair(dtype, commSum),                                 \
-   reinterpret_cast<const void*>(                                  \
-       &ncclKernelAllReduceCtranRing<type, commSum, bidir>)},      \
-      {std::make_pair(dtype, commProd),                            \
-       reinterpret_cast<const void*>(                              \
-           &ncclKernelAllReduceCtranRing<type, commProd, bidir>)}, \
-      {std::make_pair(dtype, commAvg),                             \
-       reinterpret_cast<const void*>(                              \
-           &ncclKernelAllReduceCtranRing<type, commAvg, bidir>)},  \
-      {std::make_pair(dtype, commMax),                             \
-       reinterpret_cast<const void*>(                              \
-           &ncclKernelAllReduceCtranRing<type, commMax, bidir>)},  \
-  {                                                                \
-    std::make_pair(dtype, commMin),                                \
-        reinterpret_cast<const void*>(                             \
-            &ncclKernelAllReduceCtranRing<type, commMin, bidir>)   \
-  }
+// Key for kernel function lookup: (datatype, redOp, enableBidirAg)
+using KernelFuncKey = std::tuple<commDataType_t, commRedOp_t, bool>;
 
-// Bi-directional AG kernel map (EnableBidirAg=true)
-static const std::unordered_map<
-    std::pair<commDataType_t, commRedOp_t>,
-    const void*,
-    CtranPairHash>
-    typeToFuncBidir = {
-        CTRAN_RING_REDOP_FUNCMAP(commInt8, int8_t, true),
-        CTRAN_RING_REDOP_FUNCMAP(commUint8, uint8_t, true),
-        CTRAN_RING_REDOP_FUNCMAP(commInt32, int32_t, true),
-        CTRAN_RING_REDOP_FUNCMAP(commUint32, uint32_t, true),
-        CTRAN_RING_REDOP_FUNCMAP(commInt64, int64_t, true),
-        CTRAN_RING_REDOP_FUNCMAP(commUint64, uint64_t, true),
-        CTRAN_RING_REDOP_FUNCMAP(commFloat16, half, true),
-        CTRAN_RING_REDOP_FUNCMAP(commFloat32, float, true),
-        CTRAN_RING_REDOP_FUNCMAP(commFloat64, double, true),
+// Build a single (datatype, redOp, bidir) → kernel function pointer map
+// containing all template combinations. Adding a new template parameter
+// only requires updating the lambda and key, not duplicating the type list.
+auto makeKernelMap() {
+  std::map<KernelFuncKey, const void*> m;
+  auto reg = [&]<typename T, bool Bidir>(commDataType_t dt) {
+    m[{dt, commSum, Bidir}] = reinterpret_cast<const void*>(
+        &ncclKernelAllReduceCtranRing<T, commSum, Bidir>);
+    m[{dt, commProd, Bidir}] = reinterpret_cast<const void*>(
+        &ncclKernelAllReduceCtranRing<T, commProd, Bidir>);
+    m[{dt, commAvg, Bidir}] = reinterpret_cast<const void*>(
+        &ncclKernelAllReduceCtranRing<T, commAvg, Bidir>);
+    m[{dt, commMax, Bidir}] = reinterpret_cast<const void*>(
+        &ncclKernelAllReduceCtranRing<T, commMax, Bidir>);
+    m[{dt, commMin, Bidir}] = reinterpret_cast<const void*>(
+        &ncclKernelAllReduceCtranRing<T, commMin, Bidir>);
+  };
+  auto regAll = [&]<typename T>(commDataType_t dt) {
+    reg.template operator()<T, false>(dt);
+    reg.template operator()<T, true>(dt);
+  };
+  regAll.template operator()<int8_t>(commInt8);
+  regAll.template operator()<uint8_t>(commUint8);
+  regAll.template operator()<int32_t>(commInt32);
+  regAll.template operator()<uint32_t>(commUint32);
+  regAll.template operator()<int64_t>(commInt64);
+  regAll.template operator()<uint64_t>(commUint64);
+  regAll.template operator()<half>(commFloat16);
+  regAll.template operator()<float>(commFloat32);
+  regAll.template operator()<double>(commFloat64);
 #if defined(__CUDA_BF16_TYPES_EXIST__)
-        CTRAN_RING_REDOP_FUNCMAP(commBfloat16, __nv_bfloat16, true),
+  regAll.template operator()<__nv_bfloat16>(commBfloat16);
 #endif
-};
+  return m;
+}
 
-// Simple kernel map (EnableBidirAg=false, lower register usage)
-static const std::unordered_map<
-    std::pair<commDataType_t, commRedOp_t>,
-    const void*,
-    CtranPairHash>
-    typeToFuncSimple = {
-        CTRAN_RING_REDOP_FUNCMAP(commInt8, int8_t, false),
-        CTRAN_RING_REDOP_FUNCMAP(commUint8, uint8_t, false),
-        CTRAN_RING_REDOP_FUNCMAP(commInt32, int32_t, false),
-        CTRAN_RING_REDOP_FUNCMAP(commUint32, uint32_t, false),
-        CTRAN_RING_REDOP_FUNCMAP(commInt64, int64_t, false),
-        CTRAN_RING_REDOP_FUNCMAP(commUint64, uint64_t, false),
-        CTRAN_RING_REDOP_FUNCMAP(commFloat16, half, false),
-        CTRAN_RING_REDOP_FUNCMAP(commFloat32, float, false),
-        CTRAN_RING_REDOP_FUNCMAP(commFloat64, double, false),
-#if defined(__CUDA_BF16_TYPES_EXIST__)
-        CTRAN_RING_REDOP_FUNCMAP(commBfloat16, __nv_bfloat16, false),
-#endif
-};
+static const auto kernelFuncMap = makeKernelMap();
 
 namespace {
 
@@ -575,12 +557,15 @@ inline void progressRecv(
     AlgoContext& algoCtx,
     std::vector<std::unique_ptr<CtranMapperRequest>>& bufSyncSResps,
     std::vector<std::unique_ptr<CtranMapperRequest>>& flushResps) {
-  // Check if have received a chunk from left
-  // Data receive doesn't need specific post, thus updating post & done
-  // together
-  if (opReadyToPost<Op::kRecvTrans>(algoCtx) &&
-      progressRecvCheckTrans(args, resource, algoCtx)) {
+  // Post step (no-op for IB — data arrives via RDMA put, not receiver post).
+  // Split from check step to allow future backends to insert work here.
+  if (opReadyToPost<Op::kRecvTrans>(algoCtx)) {
     opUpdatePost<Op::kRecvTrans>(algoCtx);
+  }
+
+  // Check if data has arrived from left peer
+  if (opHasPosted<Op::kRecvTrans>(algoCtx) &&
+      progressRecvCheckTrans(args, resource, algoCtx)) {
     opUpdateDone<Op::kRecvTrans>(algoCtx);
   }
 
@@ -1307,16 +1292,16 @@ commResult_t ctranAllReduceRing(
   // Select kernel based on bi-directional AG CVAR and message size
   const bool enableBidirAg =
       ctran::allreduce::ring::shouldEnableBidirAg(messageBytes, arch);
-  const auto& typeToFunc = enableBidirAg ? typeToFuncBidir : typeToFuncSimple;
-
+  auto kernelKey = KernelFuncKey{datatype, redOp, enableBidirAg};
   FB_CHECKTHROW_EX(
-      typeToFunc.contains(std::make_pair(datatype, redOp)),
+      kernelFuncMap.contains(kernelKey),
       comm->logMetaData_,
       fmt::format(
-          "typeToFunc does not contain datatype {} with op {}",
+          "kernelFuncMap does not contain datatype {} op {} bidir {}",
           datatype,
-          redOp));
-  const void* func = typeToFunc.at(std::make_pair(datatype, redOp));
+          redOp,
+          enableBidirAg));
+  const void* func = kernelFuncMap.at(kernelKey);
 
   int numBlocks = 0;
   int numThreads = 0;
