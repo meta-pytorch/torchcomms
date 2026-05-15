@@ -1874,8 +1874,6 @@ T MultipeerIbgdaTransport::exchangeWithPeer(
     int peerRank,
     const T& localPayload,
     int tag) {
-  T remotePayload{};
-
   auto timeoutUs = std::chrono::duration_cast<std::chrono::microseconds>(
       std::chrono::milliseconds(config_.materializePeerTimeoutMs));
   auto waitFuture = [&](auto&& future, const char* op) -> int {
@@ -1892,56 +1890,29 @@ T MultipeerIbgdaTransport::exchangeWithPeer(
     }
   };
 
-  // Lower rank recvs first to avoid deadlock with blocking bootstrap
-  // implementations (e.g. MpiBootstrap uses blocking MPI_Send/MPI_Recv).
-  if (myRank_ < peerRank) {
-    auto recvFuture =
-        bootstrap_->recv(&remotePayload, sizeof(T), peerRank, /*tag=*/tag);
-    int recvResult = waitFuture(std::move(recvFuture), "recv");
-    if (recvResult != 0) {
-      throw std::runtime_error(
-          fmt::format(
-              "materializePeer: rank {} recv from peer {} failed (error {})",
-              myRank_,
-              peerRank,
-              recvResult));
-    }
-    auto sendFuture = bootstrap_->send(
-        const_cast<T*>(&localPayload), sizeof(T), peerRank, /*tag=*/tag);
-    int sendResult = waitFuture(std::move(sendFuture), "send");
-    if (sendResult != 0) {
-      throw std::runtime_error(
-          fmt::format(
-              "materializePeer: rank {} send to peer {} failed (error {})",
-              myRank_,
-              peerRank,
-              sendResult));
-    }
-  } else {
-    auto sendFuture = bootstrap_->send(
-        const_cast<T*>(&localPayload), sizeof(T), peerRank, /*tag=*/tag);
-    int sendResult = waitFuture(std::move(sendFuture), "send");
-    if (sendResult != 0) {
-      throw std::runtime_error(
-          fmt::format(
-              "materializePeer: rank {} send to peer {} failed (error {})",
-              myRank_,
-              peerRank,
-              sendResult));
-    }
-    auto recvFuture =
-        bootstrap_->recv(&remotePayload, sizeof(T), peerRank, /*tag=*/tag);
-    int recvResult = waitFuture(std::move(recvFuture), "recv");
-    if (recvResult != 0) {
-      throw std::runtime_error(
-          fmt::format(
-              "materializePeer: rank {} recv from peer {} failed (error {})",
-              myRank_,
-              peerRank,
-              recvResult));
-    }
+  int sendResult = waitFuture(
+      bootstrap_->send(const_cast<T*>(&localPayload), sizeof(T), peerRank, tag),
+      "send");
+  if (sendResult != 0) {
+    throw std::runtime_error(
+        fmt::format(
+            "materializePeer: rank {} send to peer {} failed (error {})",
+            myRank_,
+            peerRank,
+            sendResult));
   }
 
+  T remotePayload{};
+  int recvResult = waitFuture(
+      bootstrap_->recv(&remotePayload, sizeof(T), peerRank, tag), "recv");
+  if (recvResult != 0) {
+    throw std::runtime_error(
+        fmt::format(
+            "materializePeer: rank {} recv from peer {} failed (error {})",
+            myRank_,
+            peerRank,
+            recvResult));
+  }
   return remotePayload;
 }
 
@@ -2018,10 +1989,19 @@ void MultipeerIbgdaTransport::materializePeer(int peerRank) {
             myRank_,
             nRanks_));
   }
-  int peerIndex = rankToPeerIndex(peerRank);
   if (isPeerMaterialized(peerRank)) {
     return;
   }
+  for (int p : pendingPeers_) {
+    if (p == peerRank) {
+      return;
+    }
+  }
+  pendingPeers_.push_back(peerRank);
+}
+
+void MultipeerIbgdaTransport::doMaterializePeer(int peerRank) {
+  int peerIndex = rankToPeerIndex(peerRank);
 
   try {
     createPeerQps(peerIndex);
@@ -2033,7 +2013,7 @@ void MultipeerIbgdaTransport::materializePeer(int peerRank) {
     if (remoteQp.numNics != numNics_) {
       throw std::runtime_error(
           fmt::format(
-              "materializePeer: peer {} has numNics={} but local numNics={}",
+              "materializePeer: peer {} numNics={} vs local {}",
               peerRank,
               remoteQp.numNics,
               numNics_));
@@ -2041,7 +2021,7 @@ void MultipeerIbgdaTransport::materializePeer(int peerRank) {
     if (remoteQp.numQpsPerPeerPerNic != config_.numQpsPerPeerPerNic) {
       throw std::runtime_error(
           fmt::format(
-              "materializePeer: peer {} has numQps={} but local numQps={}",
+              "materializePeer: peer {} numQps={} vs local {}",
               peerRank,
               remoteQp.numQpsPerPeerPerNic,
               config_.numQpsPerPeerPerNic));
@@ -2067,6 +2047,17 @@ void MultipeerIbgdaTransport::materializePeer(int peerRank) {
     cleanupPeerOnFailure(peerIndex);
     throw;
   }
+}
+
+void MultipeerIbgdaTransport::connectPeers() {
+  if (pendingPeers_.empty()) {
+    return;
+  }
+  std::sort(pendingPeers_.begin(), pendingPeers_.end());
+  for (int peerRank : pendingPeers_) {
+    doMaterializePeer(peerRank);
+  }
+  pendingPeers_.clear();
 }
 
 } // namespace comms::pipes
