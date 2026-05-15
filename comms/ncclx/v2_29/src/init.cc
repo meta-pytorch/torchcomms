@@ -43,7 +43,7 @@
 
 #include "comms/ctran/Ctran.h"
 #include "meta/commstate/FactoryCommStateX.h"
-#include "comms/ctran/commstate/CommStateX.h"
+
 #include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/ctran/utils/Utils.h"
 #include "comms/ctran/utils/SkipDestroyUtil.h"
@@ -51,7 +51,7 @@
 #include "meta/colltrace/CollTraceWrapper.h"
 #include "meta/comms-monitor/CommsMonitor.h"
 #include "meta/commstate/FactoryCommStateX.h"
-#include "meta/ctran-integration/BaselineBootstrap.h"
+
 #include "meta/hints/CommHintConfig.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -1119,13 +1119,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   timers[TIMER_INIT_ALLGATHER] = clockNano() - timers[TIMER_INIT_ALLGATHER];
 
   // Check for lazy channel setup support
-  comm->lazySetupChannels = comm->cuMemSupport && NCCLX_CONFIG_FIELD(comm->config, lazySetupChannels);
-  // Check for runtime connect support
-  comm->runtimeConn = comm->cuMemSupport && NCCLX_CONFIG_FIELD(comm->config, lazyConnect);
-
-  if (comm->runtimeConn == 0 && comm->lazySetupChannels == 1) {
-    WARN("NCCL_RUNTIME_CONNECT is disabled but NCCL_LAZY_SETUP_CHANNELS is enabled, full lazy connect features will still be used");
-  }
+  comm->lazySetupChannels = comm->cuMemSupport && NCCL_LAZY_SETUP_CHANNELS;
 
   // Check for MNNVL support
   NCCLCHECKGOTO(ncclGetUserP2pLevel(&p2pLevel), ret, fail);
@@ -1504,6 +1498,10 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   }
 
   comm->runtimeConn = comm->cuMemSupport && ncclParamRuntimeConnect();
+
+  if (comm->runtimeConn == 0 && comm->lazySetupChannels == 1) {
+    WARN("NCCL_RUNTIME_CONNECT is disabled but NCCL_LAZY_SETUP_CHANNELS is enabled, full lazy connect features will still be used");
+  }
 
   if (comm->lazySetupChannels) {
     INFO(
@@ -1933,27 +1931,9 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
    */
   NCCLCHECKGOTO(meta::comms::ncclx::newCollTraceInit(comm), res, fail);
 
-  // TODO: remove all ncclx fields and leave only ctranComm_
-  // (we are working on refactoring now, when it's done only ctranComm_ must be used)
-
-  // TODO: replace this dirty init code with CtranComm constructor.
-  // There is an issue with the order of initialization. We need to initialize stateX
-  // before initializing ctran/bootstrap/calltrace. The ctran classes internally start
-  // using CtranComm while still relying on ncclComm_t. This means that when we call
-  // ctranInit/boostrap init/calltrace init/ any internal ctran calss,
-  // both comm->stateX and ctranComm_->stateX must be initialized. Consequently, we have
-  // to split the initialization of CtranComm into several parts. This must be cleaned
-  // when we develop CtranComm constuctor.
-  NCCLCHECKGOTO(metaCommToNccl(setCtranCommBase(comm)), res, fail);
-
-  comm->ctranComm_->bootstrap_ = std::make_unique<ncclx::BaselineBootstrap>(comm);
-  comm->ctranComm_->statex_ = ncclx::createCommStateXFromNcclComm(comm);
 
   if (comm->useCtran_) {
-    // TODO: move initialization to CtranComm constructor once we finish all ctran refactor
-    NCCLCHECK(ncclx::initCtranCommStatexFromNcclComm(comm, comm->ctranComm_.get()));
-    comm->ctranComm_->colltraceNew_ = comm->newCollTrace;
-    NCCLCHECKGOTO(metaCommToNccl(ctranInit(comm->ctranComm_.get())), res, fail);
+    NCCLCHECKGOTO(createCtranComm(comm), res, fail);
   }
   // --------------------- done
 
@@ -2760,16 +2740,9 @@ static ncclResult_t commDestroySync(struct ncclAsyncJob* job_) {
   /*
    * NCCLX - Resource Cleanup
    */
-  NCCLCHECKGOTO(metaCommToNccl(ctranFinalize(comm->ctranComm_.get())), ret, fail);
   NCCLCHECKGOTO(meta::comms::ncclx::newCollTraceDestroy(comm), ret, fail);
 
-  try {
-    comm->ctranComm_->destroy();
-    comm->ctranComm_.reset();
-  } catch (std::exception& e) {
-    CLOGF(ERR, "CtranComm destruction failed: {}", e.what());
-    goto fail;
-  }
+  NCCLCHECKGOTO(destroyCtranComm(comm), ret, fail);
 
   TRACE(NCCL_INIT, "Destroying comm %p rank %d abortFlag %d asyncResult %d", comm, comm->rank, *comm->abortFlag, comm->asyncResult);
 

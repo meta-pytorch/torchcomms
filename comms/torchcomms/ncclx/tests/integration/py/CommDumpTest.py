@@ -6,7 +6,9 @@ import json
 import unittest
 
 from torchcomms._comms_ncclx import comm_dump_all
-from torchcomms.tests.integration.py.TorchCommTestHelpers import TorchCommTestWrapper
+from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
+    TorchCommTestWrapper,
+)
 
 
 class CommDumpTest(unittest.TestCase):
@@ -84,6 +86,8 @@ class CommDumpTest(unittest.TestCase):
         )
 
         for comm_key, dump in all_dumps.items():
+            if comm_key == "GlobalInfo":
+                continue
             self.assertIsInstance(dump, dict)
             self.assertGreater(len(dump), 0, f"Dump for comm {comm_key} is empty")
             self.assertIn("rank", dump, f"Missing rank for comm {comm_key}")
@@ -128,6 +132,80 @@ class CommDumpTest(unittest.TestCase):
         self.assertGreaterEqual(len(all_dumps), 2)
 
         del split_comm
+
+    def test_comm_dump_all_with_request_fields_comm_info(self):
+        """Test that request_fields filters to only the requested keys."""
+        all_dumps = comm_dump_all(request_fields="rank;nRanks")
+
+        self.assertIsInstance(all_dumps, dict)
+        self.assertGreaterEqual(len(all_dumps), 1)
+
+        for comm_key, dump in all_dumps.items():
+            if comm_key == "GlobalInfo":
+                continue
+            self.assertIn("rank", dump)
+            self.assertIn("nRanks", dump)
+            # Keys not requested should be absent
+            self.assertNotIn("commHash", dump)
+            self.assertNotIn("localRank", dump)
+            self.assertNotIn("CT_pastColls", dump)
+            self.assertNotIn("PT_pastColls", dump)
+
+    def test_comm_dump_all_with_request_fields_global_info(self):
+        """Test that requesting only GlobalInfo keys skips per-comm dumps."""
+        all_dumps = comm_dump_all(
+            request_fields="GlobalInfo::totalCommDurPerIterationUs"
+        )
+
+        self.assertIsInstance(all_dumps, dict)
+        self.assertIn("GlobalInfo", all_dumps)
+        self.assertIn("totalCommDurPerIterationUs", all_dumps["GlobalInfo"])
+
+        # Per-communicator entries should be skipped
+        for comm_key, dump in all_dumps.items():
+            if comm_key == "GlobalInfo":
+                continue
+            self.assertEqual(
+                len(dump),
+                0,
+                f"Per-comm dump for {comm_key} should be empty when only GlobalInfo requested",
+            )
+
+    def test_comm_dump_all_none_request_fields_dumps_everything(self):
+        """Test that request_fields=None (default) dumps all fields."""
+        all_dumps = comm_dump_all()
+
+        self.assertIsInstance(all_dumps, dict)
+        self.assertGreaterEqual(len(all_dumps), 1)
+
+        for comm_key, dump in all_dumps.items():
+            if comm_key == "GlobalInfo":
+                continue
+            # Comm info keys are always present
+            self.assertIn("rank", dump)
+            self.assertIn("nRanks", dump)
+            self.assertIn("commHash", dump)
+            # CollTrace/ProxyTrace keys require them to be manually enabled
+
+    def test_comm_dump_all_mixed_per_comm_and_global_info(self):
+        """Test request_fields with both per-comm and GlobalInfo keys."""
+        all_dumps = comm_dump_all(
+            request_fields="rank;GlobalInfo::totalCommDurPerIterationUs"
+        )
+
+        self.assertIsInstance(all_dumps, dict)
+
+        # GlobalInfo should be present
+        self.assertIn("GlobalInfo", all_dumps)
+        self.assertIn("totalCommDurPerIterationUs", all_dumps["GlobalInfo"])
+
+        # Per-communicator should have only rank
+        for comm_key, dump in all_dumps.items():
+            if comm_key == "GlobalInfo":
+                continue
+            self.assertIn("rank", dump)
+            self.assertNotIn("commHash", dump)
+            self.assertNotIn("CT_pastColls", dump)
 
 
 if __name__ == "__main__":

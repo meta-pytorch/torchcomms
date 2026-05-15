@@ -2,8 +2,10 @@
 
 #include "comms/torchcomms/hooks/clog/ClogHook.hpp"
 #include "comms/torchcomms/TorchComm.hpp"
+#include "comms/torchcomms/hooks/common/OpNameHelper.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <chrono>
 #include <stdexcept>
 #include <variant>
@@ -26,7 +28,8 @@ bool getAsyncOp(const PreHookArgs& args) {
         using T = std::decay_t<decltype(a)>;
         if constexpr (
             std::is_same_v<T, SplitPreHookArgs> ||
-            std::is_same_v<T, NewWindowPreHookArgs>) {
+            std::is_same_v<T, NewWindowPreHookArgs> ||
+            std::is_same_v<T, FinalizePreHookArgs>) {
           return false;
         } else {
           return a.async_op;
@@ -62,19 +65,13 @@ ClogHook::ClogHook(
       fmt::format("V|{}|base_timestamp={:.3f}", kLogVersion, base_ts_));
 }
 
-ClogHook::~ClogHook() {
-  unregister();
-}
+ClogHook::~ClogHook() = default;
 
 // -- Registration --
 
 void ClogHook::registerWithComm(std::shared_ptr<TorchComm> comm) {
-  log_file_.writeLine(
-      fmt::format(
-          "new_comm|comm={}|rank={}|world_size={}",
-          std::string(comm->getCommName()),
-          comm->getRank(),
-          comm->getSize()));
+  log_file_.writeLine(buildNewCommSignature(
+      comm->getCommName(), comm->getRank(), comm->getSize()));
   registerHooks(comm);
 }
 
@@ -88,52 +85,32 @@ void ClogHook::registerHooks(std::shared_ptr<TorchComm> comm) {
   }
 
   std::string comm_name(comm->getCommName());
+  auto self = shared_from_this();
 
   int device_index = comm->getDevice().index();
   auto pre_hook_handle = comm->registerPreHook(
-      [this, comm_name, device_index](
-          OpName name, size_t op_id, const PreHookArgs& args) {
-        this->onPreHook(comm_name, device_index, name, op_id, args);
+      [self, comm_name, device_index](size_t op_id, const PreHookArgs& args) {
+        self->onPreHook(comm_name, device_index, op_id, args);
       });
 
-  auto post_hook_handle =
-      comm->registerPostHook([this](size_t op_id, const PostHookArgs& args) {
-        this->onPostHook(op_id, args);
+  auto post_hook_handle = comm->registerPostHook(
+      [self, comm_name](size_t op_id, const PostHookArgs& args) {
+        self->onPostHook(comm_name, op_id, args);
       });
 
   auto graph_replay_hook_handle =
-      comm->registerGraphReplayHook([this, comm_name](
+      comm->registerGraphReplayHook([self, comm_name](
                                         uint64_t graph_id,
                                         uint64_t replay_id,
                                         void* stream,
                                         size_t collective_index,
                                         std::string_view event) {
-        this->onGraphReplayEvent(
+        self->onGraphReplayEvent(
             comm_name, graph_id, replay_id, stream, collective_index, event);
       });
 
-  registrations_.push_back(
-      CommRegistration{
-          .comm = comm,
-          .pre_hook_handle = std::move(pre_hook_handle),
-          .post_hook_handle = std::move(post_hook_handle),
-          .graph_replay_hook_handle = std::move(graph_replay_hook_handle),
-      });
-}
-
-void ClogHook::unregister() {
-  for (auto& reg : registrations_) {
-    if (reg.pre_hook_handle) {
-      reg.pre_hook_handle->remove();
-    }
-    if (reg.post_hook_handle) {
-      reg.post_hook_handle->remove();
-    }
-    if (reg.graph_replay_hook_handle) {
-      reg.graph_replay_hook_handle->remove();
-    }
-  }
-  registrations_.clear();
+  registrations_.push_back(CommRegistration{.comm = comm});
+  active_comm_count_.fetch_add(1, std::memory_order_relaxed);
 }
 
 // -- Formatting helpers (static, identical to original Clog) --
@@ -143,99 +120,6 @@ double ClogHook::now() {
   auto duration = tp.time_since_epoch();
   auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration);
   return static_cast<double>(millis.count()) / 1000.0;
-}
-
-std::string_view ClogHook::reduceOpToString(const ReduceOp& op) {
-  switch (op.type()) {
-    case ReduceOp::RedOpType::SUM:
-      return "sum";
-    case ReduceOp::RedOpType::PRODUCT:
-      return "prod";
-    case ReduceOp::RedOpType::MIN:
-      return "min";
-    case ReduceOp::RedOpType::MAX:
-      return "max";
-    case ReduceOp::RedOpType::BAND:
-      return "band";
-    case ReduceOp::RedOpType::BOR:
-      return "bor";
-    case ReduceOp::RedOpType::BXOR:
-      return "bxor";
-    case ReduceOp::RedOpType::PREMUL_SUM:
-      return "premul_sum";
-    case ReduceOp::RedOpType::AVG:
-      return "avg";
-    default:
-      return "unknown";
-  }
-}
-
-std::string_view ClogHook::dtypeToString(at::ScalarType dtype) {
-  switch (dtype) {
-    case at::ScalarType::Float:
-      return "f32";
-    case at::ScalarType::Double:
-      return "f64";
-    case at::ScalarType::Half:
-      return "f16";
-    case at::ScalarType::BFloat16:
-      return "bf16";
-    case at::ScalarType::Int:
-      return "i32";
-    case at::ScalarType::Long:
-      return "i64";
-    case at::ScalarType::Short:
-      return "i16";
-    case at::ScalarType::Char:
-      return "i8";
-    case at::ScalarType::Byte:
-      return "u8";
-    case at::ScalarType::Bool:
-      return "bool";
-    case at::ScalarType::Float8_e4m3fn:
-      return "fp8e4m3";
-    case at::ScalarType::Float8_e5m2:
-      return "fp8e5m2";
-    default:
-      return "other";
-  }
-}
-
-std::string ClogHook::formatCounts(const std::vector<at::Tensor>& tensors) {
-  std::string result;
-  for (size_t i = 0; i < tensors.size(); ++i) {
-    if (i > 0) {
-      result += ',';
-    }
-    result += std::to_string(tensors[i].numel());
-  }
-  return result;
-}
-
-std::string ClogHook::formatCounts(const std::vector<uint64_t>& counts) {
-  std::string result;
-  for (size_t i = 0; i < counts.size(); ++i) {
-    if (i > 0) {
-      result += ',';
-    }
-    result += std::to_string(counts[i]);
-  }
-  return result;
-}
-
-std::string ClogHook::formatPtr(const void* ptr) {
-  return fmt::format("{:#x}", reinterpret_cast<uintptr_t>(ptr));
-}
-
-std::string ClogHook::formatPtrs(const std::vector<at::Tensor>& tensors) {
-  std::string result;
-  for (size_t i = 0; i < tensors.size(); ++i) {
-    if (i > 0) {
-      result += ',';
-    }
-    result += formatPtr(tensors[i].data_ptr());
-  }
-  return result;
 }
 
 // graph_id is globally unique per the CUDA spec:
@@ -311,7 +195,7 @@ WorkId ClogHook::logCollective(
     bool async_op,
     void* stream,
     uint64_t graph_id) {
-  auto sig_key = fmt::format("{}|comm={}", sig_body, comm_name);
+  auto sig_key = std::string(sig_body);
 
   auto new_corr_id = next_corr_id_.fetch_add(1, std::memory_order_relaxed);
   auto corr_id = sig_map_.findOrInsert(sig_key, new_corr_id);
@@ -332,7 +216,8 @@ WorkId ClogHook::logCollective(
 
   uint64_t work_id = next_work_id_.fetch_add(1, std::memory_order_relaxed);
   if (log_lifecycle_) {
-    work_corr_map_.insert(work_id, WorkInfo{corr_id, graph_id});
+    work_corr_map_.insert(
+        work_id, WorkInfo{corr_id, graph_id, std::string(comm_name)});
     work_events_map_.insert(
         work_id,
         async_op ? std::vector<std::string>{"S", "E", "W"}
@@ -349,319 +234,25 @@ WorkId ClogHook::logCollective(
   return work_id;
 }
 
-// -- Signature builder via std::visit --
-
-std::string ClogHook::buildSignature(OpName name, const PreHookArgs& args)
-    const {
-  return std::visit(
-      [this, name](const auto& a) -> std::string {
-        using T = std::decay_t<decltype(a)>;
-        auto op = opToString(name);
-
-        // In-place collectives (single tensor is both input and output)
-        if constexpr (std::is_same_v<T, AllReducePreHookArgs>) {
-          auto count = a.tensor.numel();
-          auto dtype = dtypeToString(a.tensor.scalar_type());
-          auto red_op = reduceOpToString(a.op);
-          auto sig = fmt::format(
-              "{}|in_count={}|out_count={}|dtype={}|red_op={}|async_op={}",
-              op,
-              count,
-              count,
-              dtype,
-              red_op,
-              a.async_op ? 't' : 'f');
-          if (log_buffers_) {
-            sig += fmt::format("|buf={}", formatPtr(a.tensor.data_ptr()));
-          }
-          return sig;
-        } else if constexpr (std::is_same_v<T, BroadcastPreHookArgs>) {
-          auto count = a.tensor.numel();
-          auto dtype = dtypeToString(a.tensor.scalar_type());
-          auto sig = fmt::format(
-              "{}|in_count={}|out_count={}|dtype={}|root={}|async_op={}",
-              op,
-              count,
-              count,
-              dtype,
-              a.root,
-              a.async_op ? 't' : 'f');
-          if (log_buffers_) {
-            sig += fmt::format("|buf={}", formatPtr(a.tensor.data_ptr()));
-          }
-          return sig;
-        } else if constexpr (std::is_same_v<T, ReducePreHookArgs>) {
-          auto count = a.tensor.numel();
-          auto dtype = dtypeToString(a.tensor.scalar_type());
-          auto red_op = reduceOpToString(a.op);
-          auto sig = fmt::format(
-              "{}|in_count={}|out_count={}|dtype={}|red_op={}|root={}|async_op={}",
-              op,
-              count,
-              count,
-              dtype,
-              red_op,
-              a.root,
-              a.async_op ? 't' : 'f');
-          if (log_buffers_) {
-            sig += fmt::format("|buf={}", formatPtr(a.tensor.data_ptr()));
-          }
-          return sig;
-
-          // Point-to-point
-        } else if constexpr (std::is_same_v<T, SendPreHookArgs>) {
-          auto dtype = dtypeToString(a.tensor.scalar_type());
-          auto sig = fmt::format(
-              "{}|in_count={}|out_count=0|dtype={}|peer={}|async_op={}",
-              op,
-              a.tensor.numel(),
-              dtype,
-              a.peer,
-              a.async_op ? 't' : 'f');
-          if (log_buffers_) {
-            sig += fmt::format("|in={}", formatPtr(a.tensor.data_ptr()));
-          }
-          return sig;
-        } else if constexpr (std::is_same_v<T, RecvPreHookArgs>) {
-          auto dtype = dtypeToString(a.tensor.scalar_type());
-          auto sig = fmt::format(
-              "{}|in_count=0|out_count={}|dtype={}|peer={}|async_op={}",
-              op,
-              a.tensor.numel(),
-              dtype,
-              a.peer,
-              a.async_op ? 't' : 'f');
-          if (log_buffers_) {
-            sig += fmt::format("|out={}", formatPtr(a.tensor.data_ptr()));
-          }
-          return sig;
-
-          // Distinct input/output (single tensors)
-        } else if constexpr (
-            std::is_same_v<T, AllGatherSinglePreHookArgs> ||
-            std::is_same_v<T, AllToAllSinglePreHookArgs>) {
-          auto dtype = dtypeToString(a.input.scalar_type());
-          auto sig = fmt::format(
-              "{}|in_count={}|out_count={}|dtype={}|async_op={}",
-              op,
-              a.input.numel(),
-              a.output.numel(),
-              dtype,
-              a.async_op ? 't' : 'f');
-          if (log_buffers_) {
-            sig += fmt::format(
-                "|in={}|out={}",
-                formatPtr(a.input.data_ptr()),
-                formatPtr(a.output.data_ptr()));
-          }
-          return sig;
-        } else if constexpr (std::
-                                 is_same_v<T, ReduceScatterSinglePreHookArgs>) {
-          auto dtype = dtypeToString(a.input.scalar_type());
-          auto red_op = reduceOpToString(a.op);
-          auto sig = fmt::format(
-              "{}|in_count={}|out_count={}|dtype={}|red_op={}|async_op={}",
-              op,
-              a.input.numel(),
-              a.output.numel(),
-              dtype,
-              red_op,
-              a.async_op ? 't' : 'f');
-          if (log_buffers_) {
-            sig += fmt::format(
-                "|in={}|out={}",
-                formatPtr(a.input.data_ptr()),
-                formatPtr(a.output.data_ptr()));
-          }
-          return sig;
-        } else if constexpr (std::is_same_v<T, AllToAllVSinglePreHookArgs>) {
-          auto dtype = dtypeToString(a.input.scalar_type());
-          auto sig = fmt::format(
-              "{}|in_splits={}|out_splits={}|dtype={}|async_op={}",
-              op,
-              formatCounts(a.input_split_sizes),
-              formatCounts(a.output_split_sizes),
-              dtype,
-              a.async_op ? 't' : 'f');
-          if (log_buffers_) {
-            sig += fmt::format(
-                "|in={}|out={}",
-                formatPtr(a.input.data_ptr()),
-                formatPtr(a.output.data_ptr()));
-          }
-          return sig;
-
-          // Input tensor -> output tensor list
-        } else if constexpr (
-            std::is_same_v<T, AllGatherPreHookArgs> ||
-            std::is_same_v<T, AllGatherVPreHookArgs>) {
-          auto dtype = dtypeToString(a.input.scalar_type());
-          auto sig = fmt::format(
-              "{}|in_count={}|out_counts={}|dtype={}|async_op={}",
-              op,
-              a.input.numel(),
-              formatCounts(a.output),
-              dtype,
-              a.async_op ? 't' : 'f');
-          if (log_buffers_) {
-            sig += fmt::format(
-                "|in={}|out={}",
-                formatPtr(a.input.data_ptr()),
-                formatPtrs(a.output));
-          }
-          return sig;
-
-          // Input tensor list -> output tensor
-        } else if constexpr (
-            std::is_same_v<T, ReduceScatterPreHookArgs> ||
-            std::is_same_v<T, ReduceScatterVPreHookArgs>) {
-          auto dtype = dtypeToString(a.output.scalar_type());
-          auto red_op = reduceOpToString(a.op);
-          auto sig = fmt::format(
-              "{}|in_counts={}|out_count={}|dtype={}|red_op={}|async_op={}",
-              op,
-              formatCounts(a.input),
-              a.output.numel(),
-              dtype,
-              red_op,
-              a.async_op ? 't' : 'f');
-          if (log_buffers_) {
-            sig += fmt::format(
-                "|in={}|out={}",
-                formatPtrs(a.input),
-                formatPtr(a.output.data_ptr()));
-          }
-          return sig;
-
-          // Tensor lists on both sides
-        } else if constexpr (std::is_same_v<T, AllToAllPreHookArgs>) {
-          if (a.input.empty()) {
-            return std::string();
-          }
-          auto dtype = dtypeToString(a.input[0].scalar_type());
-          auto sig = fmt::format(
-              "{}|in_counts={}|out_counts={}|dtype={}|async_op={}",
-              op,
-              formatCounts(a.input),
-              formatCounts(a.output),
-              dtype,
-              a.async_op ? 't' : 'f');
-          if (log_buffers_) {
-            sig += fmt::format(
-                "|in={}|out={}", formatPtrs(a.input), formatPtrs(a.output));
-          }
-          return sig;
-
-          // Scatter/gather with root
-        } else if constexpr (std::is_same_v<T, ScatterPreHookArgs>) {
-          auto dtype = dtypeToString(a.output.scalar_type());
-          auto sig = fmt::format(
-              "{}|in_counts={}|out_count={}|dtype={}|root={}|async_op={}",
-              op,
-              formatCounts(a.input),
-              a.output.numel(),
-              dtype,
-              a.root,
-              a.async_op ? 't' : 'f');
-          if (log_buffers_) {
-            sig += fmt::format(
-                "|in={}|out={}",
-                formatPtrs(a.input),
-                formatPtr(a.output.data_ptr()));
-          }
-          return sig;
-        } else if constexpr (std::is_same_v<T, GatherPreHookArgs>) {
-          auto dtype = dtypeToString(a.input.scalar_type());
-          auto sig = fmt::format(
-              "{}|in_count={}|out_counts={}|dtype={}|root={}|async_op={}",
-              op,
-              a.input.numel(),
-              formatCounts(a.output),
-              dtype,
-              a.root,
-              a.async_op ? 't' : 'f');
-          if (log_buffers_) {
-            sig += fmt::format(
-                "|in={}|out={}",
-                formatPtr(a.input.data_ptr()),
-                formatPtrs(a.output));
-          }
-          return sig;
-        } else if constexpr (std::is_same_v<T, GatherSinglePreHookArgs>) {
-          auto dtype = dtypeToString(a.input.scalar_type());
-          auto sig = fmt::format(
-              "{}|in_count={}|out_count={}|dtype={}|root={}|async_op={}",
-              op,
-              a.input.numel(),
-              a.output.numel(),
-              dtype,
-              a.root,
-              a.async_op ? 't' : 'f');
-          if (log_buffers_) {
-            sig += fmt::format(
-                "|in={}|out={}",
-                formatPtr(a.input.data_ptr()),
-                formatPtr(a.output.data_ptr()));
-          }
-          return sig;
-
-          // Special (no tensors)
-        } else if constexpr (std::is_same_v<T, BarrierPreHookArgs>) {
-          return fmt::format("{}|async_op={}", op, a.async_op ? 't' : 'f');
-        } else if constexpr (std::is_same_v<T, BatchOpIssuePreHookArgs>) {
-          return fmt::format(
-              "{}|num_ops={}|async_op={}",
-              op,
-              a.num_ops,
-              a.async_op ? 't' : 'f');
-
-          // Communicator management (split logged separately)
-        } else if constexpr (std::is_same_v<T, SplitPreHookArgs>) {
-          return std::string();
-        } else if constexpr (std::is_same_v<T, NewWindowPreHookArgs>) {
-          return std::string();
-        } else {
-          return std::string();
-        }
-      },
-      args);
-}
-
 // -- Pre-hook --
 
 void ClogHook::onPreHook(
     const std::string& comm_name,
     int device_index,
-    OpName name,
     size_t op_id,
     const PreHookArgs& args) {
-  // Handle split specially: log the split event, not a signature.
   if (auto* split = std::get_if<SplitPreHookArgs>(&args)) {
-    std::string ranks_str;
-    for (size_t i = 0; i < split->ranks.size(); ++i) {
-      if (i > 0) {
-        ranks_str += ',';
-      }
-      ranks_str += std::to_string(split->ranks[i]);
-    }
-    log_file_.writeLine(
-        fmt::format(
-            "split|parent={}|child={}|ranks={}",
-            comm_name,
-            split->name,
-            ranks_str));
+    log_file_.writeLine(buildSplitLine(comm_name, *split));
     return;
   }
 
-  // Skip new_window (no logging needed)
-  if (std::get_if<NewWindowPreHookArgs>(&args)) {
+  if (std::get_if<NewWindowPreHookArgs>(&args) ||
+      std::get_if<FinalizePreHookArgs>(&args)) {
     return;
   }
 
-  auto sig = buildSignature(name, args);
-  if (sig.empty()) {
-    return;
-  }
+  auto sig = buildSignature(comm_name, args, log_buffers_);
+  assert(!sig.empty());
 
   bool async_op = getAsyncOp(args);
   auto [stream, graph_id] = getGraphCaptureInfo(device_index);
@@ -675,7 +266,10 @@ void ClogHook::onPreHook(
 
 // -- Post-hook --
 
-void ClogHook::onPostHook(size_t op_id, const PostHookArgs& args) {
+void ClogHook::onPostHook(
+    const std::string& comm_name,
+    size_t op_id,
+    const PostHookArgs& args) {
   // For split, register the new communicator.
   if (auto* split = std::get_if<SplitPostHookArgs>(&args)) {
     if (auto new_comm = split->new_comm.lock()) {
@@ -686,6 +280,35 @@ void ClogHook::onPostHook(size_t op_id, const PostHookArgs& args) {
 
   // TODO: add logging for window operations.
   if (std::get_if<NewWindowPostHookArgs>(&args)) {
+    return;
+  }
+
+  if (std::get_if<FinalizePostHookArgs>(&args)) {
+    auto remaining =
+        active_comm_count_.fetch_sub(1, std::memory_order_acq_rel) - 1;
+    if (remaining == 0) {
+      work_events_map_.forEach([&](uint64_t work_id,
+                                   const auto& pending_events) {
+        auto work_info = work_corr_map_.find(work_id);
+        if (!work_info) {
+          return;
+        }
+        std::string events_str;
+        for (size_t i = 0; i < pending_events.size(); ++i) {
+          if (i > 0) {
+            events_str += ',';
+          }
+          events_str += pending_events[i];
+        }
+        log_file_.writeLine(
+            fmt::format(
+                "WARN|comm={}|leaked work_id={}|corr_id={}|pending_events={}",
+                work_info->comm_name,
+                work_id,
+                work_info->corr_id,
+                events_str));
+      });
+    }
     return;
   }
 
@@ -711,7 +334,7 @@ void ClogHook::onPostHook(size_t op_id, const PostHookArgs& args) {
                 [this, work_id]() { logLifecycleEvent(work_id, "S"); });
             work->registerWorkEndHook(
                 [this, work_id]() { logLifecycleEvent(work_id, "E"); });
-            work->registerWorkWaitHook(
+            work->registerWorkWaitPreHook(
                 [this, work_id]() { logLifecycleEvent(work_id, "W"); });
           }
         }

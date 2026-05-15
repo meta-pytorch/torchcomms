@@ -112,7 +112,6 @@ class TestClog(unittest.TestCase):
             )
 
             # -- Cleanup --
-            clog_handle.unregister()
             comm.finalize()
 
     def test_multiple_comms_shared_clog_handle(self) -> None:
@@ -150,7 +149,6 @@ class TestClog(unittest.TestCase):
                 "Expected log entry for comm_b",
             )
 
-            clog_handle.unregister()
             comm_a.finalize()
             comm_b.finalize()
 
@@ -197,8 +195,6 @@ class TestClog(unittest.TestCase):
                 _has_line_containing(lines_b, "comm=iso_a"),
             )
 
-            clog_a.unregister()
-            clog_b.unregister()
             comm_a.finalize()
             comm_b.finalize()
 
@@ -257,7 +253,6 @@ class TestClogCudaGraph(unittest.TestCase):
             torch.cuda.synchronize()
             g.reset()
             comm.finalize()
-            clog_handle.unregister()
 
             lines = _read_log_lines(log_path)
             graph_q_after_replay = len(

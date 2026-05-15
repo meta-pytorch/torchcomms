@@ -14,11 +14,9 @@
 #include <fmt/core.h>
 #include <nccl.h> // @manual
 #include <torch/csrc/cuda/CUDAPluggableAllocator.h> // @manual=//caffe2:torch-cpp-cuda
-
 #include "comms/torchcomms/TorchCommFactory.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLXBootstrap.hpp"
 #include "comms/torchcomms/utils/Logging.hpp"
-#include "comms/torchcomms/utils/StoreManager.hpp"
 #include "comms/torchcomms/utils/TracingGuard.hpp"
 #include "comms/torchcomms/utils/Utils.hpp"
 #include "comms/utils/CudaRAII.h"
@@ -280,191 +278,6 @@ void TorchCommNCCLX::initNcclxResources() {
   init_state_ = InitializationState::INITIALIZED;
 }
 
-InitHandle TorchCommNCCLX::getInitHandle() const {
-  return fmt::format("ncclx:{}", rank_);
-}
-
-namespace {
-
-std::unordered_set<int> parseRanksFromHandles(
-    const std::variant<std::unordered_set<InitHandle>, std::vector<InitHandle>>&
-        handles) {
-  std::unordered_set<int> ranks;
-  auto extractRank = [&](const InitHandle& handle) {
-    auto pos = handle.find(':');
-    if (pos != std::string::npos) {
-      ranks.insert(std::stoi(handle.substr(pos + 1)));
-    }
-  };
-  std::visit(
-      [&](const auto& h) {
-        for (const auto& handle : h) {
-          extractRank(handle);
-        }
-      },
-      handles);
-  return ranks;
-}
-
-} // namespace
-
-c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reconfigure(
-    const ReconfigureOptions& opts) {
-  TC_LOG(INFO, this) << "TorchCommNCCLX reconfigure starting";
-
-  int new_size = static_cast<int>(
-      std::visit([](const auto& h) { return h.size(); }, opts.handles));
-
-  auto reconfigureTimeout = opts.timeout.value_or(options_.timeout);
-
-  if (comm_state_ == CommState::ERROR && nccl_comm_) {
-    if (timeout_thread_.joinable()) {
-      shutdown_ = true;
-      {
-        std::lock_guard<std::mutex> lock(timeout_mutex_);
-        timeout_cv_.notify_all();
-      }
-      timeout_thread_.join();
-    }
-    workq_.finalize();
-    NCCLX_CHECK_IGNORE(
-        nccl_api_,
-        nccl_api_->commAbort(nccl_comm_),
-        "NCCLX commAbort failed during error recovery");
-    nccl_comm_ = nullptr;
-  }
-
-#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
-  auto growRankIt = opts.hints.find("grow_rank");
-  bool isNewRankJoining = !nccl_comm_ && growRankIt != opts.hints.end();
-#else
-  bool isNewRankJoining = false;
-#endif
-
-  if (!nccl_comm_ && !isNewRankJoining) {
-    comm_state_ = CommState::NORMAL;
-    shutdown_ = false;
-
-    comm_size_ = new_size;
-
-    auto bootstrap = std::make_unique<TorchCommNCCLXBootstrap>(
-        reconfigure_store_, device_, nccl_api_, cuda_api_, reconfigureTimeout);
-    device_ = bootstrap->getDevice();
-    nccl_comm_ = bootstrap->createNcclComm(
-        fmt::format("{}/reconfigure/{}", name_, opts.uuid), options_);
-
-    initNcclxResources();
-#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
-  } else if (isNewRankJoining) {
-    comm_state_ = CommState::NORMAL;
-    shutdown_ = false;
-
-    int growRank = std::stoi(growRankIt->second);
-    auto store = createPrefixStore(
-        fmt::format("{}/grow/{}", name_, opts.uuid), reconfigureTimeout);
-
-    store->wait({"unique_id"}, reconfigureTimeout);
-    auto vec = store->get("unique_id");
-    ncclUniqueId uniqueId{};
-    std::memcpy(&uniqueId, vec.data(), sizeof(ncclUniqueId));
-
-    ncclComm_t new_comm = nullptr;
-    NCCLX_CHECK(
-        nccl_api_,
-        nccl_comm_,
-        nccl_api_->commGrow(
-            nullptr, new_size, &uniqueId, growRank, &new_comm, nullptr),
-        "NCCLX commGrow failed for new rank during reconfigure");
-
-    nccl_comm_ = new_comm;
-    initNcclxResources();
-#endif
-  } else {
-    if (timeout_thread_.joinable()) {
-      shutdown_ = true;
-      {
-        std::lock_guard<std::mutex> lock(timeout_mutex_);
-        timeout_cv_.notify_all();
-      }
-      timeout_thread_.join();
-    }
-
-    workq_.finalize();
-
-    ncclComm_t new_comm = nullptr;
-
-    if (new_size <= comm_size_) {
-      auto newRanks = parseRanksFromHandles(opts.handles);
-      std::vector<int> excludeRanks;
-      for (int r = 0; r < comm_size_; ++r) {
-        if (newRanks.find(r) == newRanks.end()) {
-          excludeRanks.push_back(r);
-        }
-      }
-
-      NCCLX_CHECK(
-          nccl_api_,
-          nccl_comm_,
-          nccl_api_->commShrink(
-              nccl_comm_,
-              excludeRanks.data(),
-              static_cast<int>(excludeRanks.size()),
-              &new_comm,
-              nullptr,
-              NCCL_SHRINK_ABORT),
-          "NCCLX commShrink failed during reconfigure");
-#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
-    } else {
-      const ncclUniqueId* uniqueIdPtr = nullptr;
-      ncclUniqueId uniqueId{};
-
-      if (rank_ == 0) {
-        NCCLX_CHECK(
-            nccl_api_,
-            nccl_comm_,
-            nccl_api_->commGetUniqueId(nccl_comm_, &uniqueId),
-            "NCCLX commGetUniqueId failed during grow");
-
-        auto store = createPrefixStore(
-            fmt::format("{}/grow/{}", name_, opts.uuid), reconfigureTimeout);
-        std::vector<uint8_t> vec(
-            reinterpret_cast<uint8_t*>(&uniqueId),
-            reinterpret_cast<uint8_t*>(&uniqueId) + sizeof(uniqueId));
-        store->set("unique_id", vec);
-
-        uniqueIdPtr = &uniqueId;
-      }
-
-      NCCLX_CHECK(
-          nccl_api_,
-          nccl_comm_,
-          nccl_api_->commGrow(
-              nccl_comm_, new_size, uniqueIdPtr, -1, &new_comm, nullptr),
-          "NCCLX commGrow failed during reconfigure");
-#else
-    } else {
-      throw std::runtime_error(
-          "TorchCommNCCLX reconfigure: grow requires NCCLx >= 2.29");
-#endif
-    }
-
-    nccl_comm_ = new_comm;
-    comm_state_ = CommState::NORMAL;
-    shutdown_ = false;
-
-    initNcclxResources();
-  }
-
-  init_state_ = InitializationState::INITIALIZED;
-
-  TracingGuard tracingGuard(name_, comm_size_, "reconfigure", rank_);
-
-  TC_LOG(INFO, this) << "TorchCommNCCLX reconfigure completed for rank: "
-                     << rank_;
-
-  return c10::make_intrusive<TorchWorkCompleted>();
-}
-
 void TorchCommNCCLX::abort() {
   if (options_.enable_reconfigure) {
     revokeNcclComm();
@@ -678,6 +491,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::send(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
+  checkTensorDevice(tensor);
 
   TracingGuard tracingGuard(name_, comm_size_, "send", dst, tensor, tensor);
 
@@ -723,6 +537,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::recv(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
+  checkTensorDevice(tensor);
 
   TracingGuard tracingGuard(name_, comm_size_, "recv", src, tensor, tensor);
 
@@ -772,6 +587,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::batch_op_issue(
   std::vector<at::Tensor> output_tensors;
 
   for (const auto& op : ops) {
+    checkTensorDevice(op.tensor);
     if (op.type == BatchSendRecv::P2POp::OpType::SEND) {
       at::Tensor tensor = op.tensor;
       ensureTensorContiguous(tensor);
@@ -870,6 +686,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::broadcast(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
+  checkTensorDevice(tensor);
 
   TracingGuard tracingGuard(
       name_, comm_size_, "broadcast", rank_, tensor, tensor);
@@ -917,6 +734,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_reduce(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
+  checkTensorDevice(tensor);
 
   TracingGuard tracingGuard(
       name_, comm_size_, "all_reduce", rank_, tensor, tensor);
@@ -966,6 +784,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
+  checkTensorDevice(tensor);
 
   TracingGuard tracingGuard(name_, comm_size_, "reduce", root, tensor, tensor);
 
@@ -1029,6 +848,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather(
           "All tensors in tensor_list must have same size as input tensor");
     }
   }
+  checkTensorDevice(tensor);
+  checkTensorsDevice(tensor_list);
 
   TracingGuard tracingGuard(
       name_, comm_size_, "all_gather", rank_, tensor_list, {tensor});
@@ -1112,6 +933,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather_v(
   for (const auto& t : tensor_list) {
     ensureTensorContiguous(t);
   }
+  checkTensorDevice(tensor);
+  checkTensorsDevice(tensor_list);
   TracingGuard tracingGuard(
       name_, comm_size_, "all_gather_v", rank_, tensor_list, {tensor});
 
@@ -1180,6 +1003,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather_single(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(output);
   ensureTensorContiguous(input);
+  checkTensorDevice(output);
+  checkTensorDevice(input);
 
   if (output.numel() != input.numel() * comm_size_) {
     throw std::runtime_error(
@@ -1271,6 +1096,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather_p_exec(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(input);
+  checkTensorDevice(input);
 
   TracingGuard tracingGuard(
       name_, comm_size_, "all_gather_p_exec", rank_, {input}, {});
@@ -1325,6 +1151,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter(
           "All input tensors must have same size as output tensor");
     }
   }
+  checkTensorsDevice(input_list);
+  checkTensorDevice(output);
 
   TracingGuard tracingGuard(
       name_, comm_size_, "reduce_scatter", rank_, input_list, {output});
@@ -1411,6 +1239,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_v(
   for (const auto& t : input_list) {
     ensureTensorContiguous(t);
   }
+  checkTensorsDevice(input_list);
+  checkTensorDevice(output);
 
   TracingGuard tracingGuard(
       name_, comm_size_, "reduce_scatter_v", rank_, input_list, {output});
@@ -1497,6 +1327,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_single(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(output);
   ensureTensorContiguous(input);
+  checkTensorDevice(output);
+  checkTensorDevice(input);
 
   if (input.numel() != output.numel() * comm_size_) {
     throw std::runtime_error(
@@ -1551,6 +1383,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all_single(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(output);
   ensureTensorContiguous(input);
+  checkTensorDevice(output);
+  checkTensorDevice(input);
 
   if (input.numel() != output.numel()) {
     throw std::runtime_error(
@@ -1612,6 +1446,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all_v_single(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(output);
   ensureTensorContiguous(input);
+  checkTensorDevice(output);
+  checkTensorDevice(input);
 
   // Validate split sizes vectors
   if (input_split_sizes.size() != static_cast<size_t>(comm_size_)) {
@@ -1715,6 +1551,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all(
     const AllToAllOptions& options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
+  checkTensorsDevice(output_tensor_list);
+  checkTensorsDevice(input_tensor_list);
   if (output_tensor_list.size() != static_cast<size_t>(comm_size_) ||
       input_tensor_list.size() != static_cast<size_t>(comm_size_)) {
     throw std::runtime_error(
@@ -1805,18 +1643,14 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::device_alltoallv_single(
   ensureTensorContiguous(input);
   ensureTensorContiguous(output_split_sizes);
   ensureTensorContiguous(input_split_sizes);
+  checkTensorDevice(output);
+  checkTensorDevice(input);
+  checkTensorDevice(output_split_sizes);
+  checkTensorDevice(input_split_sizes);
 
   // Validate metadata tensor types - all must be int64_t (torch.int64)
   validateInt64Dtype(input_split_sizes, "input_split_sizes");
   validateInt64Dtype(output_split_sizes, "output_split_sizes");
-
-  // Validate metadata tensors are on CUDA
-  TORCH_CHECK(
-      input_split_sizes.is_cuda(),
-      "input_split_sizes must be a CUDA tensor for device_alltoallv_single");
-  TORCH_CHECK(
-      output_split_sizes.is_cuda(),
-      "output_split_sizes must be a CUDA tensor for device_alltoallv_single");
 
   TracingGuard tracingGuard(
       name_, comm_size_, "device_alltoallv_single", rank_, input, output);
@@ -1889,6 +1723,12 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_dispatch(
   for (const auto& t : output_tensor_list) {
     ensureTensorContiguous(t);
   }
+  checkTensorDevice(input_tensor);
+  checkTensorsDevice(output_tensor_list);
+  checkTensorDevice(output_chunk_sizes_per_rank);
+  checkTensorDevice(input_chunk_sizes);
+  checkTensorDevice(input_chunk_indices);
+  checkTensorDevice(input_chunk_count_per_rank);
 
   // Validate metadata tensor types - all must be int64_t (torch.int64)
   validateInt64Dtype(input_chunk_sizes, "input_chunk_sizes");
@@ -1989,6 +1829,11 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_combine(
   ensureTensorContiguous(input_chunk_sizes);
   ensureTensorContiguous(input_chunk_indices);
   ensureTensorContiguous(input_chunk_count_per_rank);
+  checkTensorDevice(output_tensor);
+  checkTensorDevice(input_tensor);
+  checkTensorDevice(input_chunk_sizes);
+  checkTensorDevice(input_chunk_indices);
+  checkTensorDevice(input_chunk_count_per_rank);
 
   // Validate metadata tensor types - all must be int64_t (torch.int64)
   validateInt64Dtype(input_chunk_sizes, "input_chunk_sizes");
@@ -2047,159 +1892,6 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_combine(
   return work;
 }
 
-c10::intrusive_ptr<TorchCommNCCLXPersistentRequest>
-TorchCommNCCLX::alltoallv_dedup_init(
-    const int num_send_blocks,
-    const int block_count,
-    const int block_num_recv_buckets,
-    const int num_recv_buckets,
-    at::ScalarType dtype,
-    // async_op decides the stream, thus we need to specify at init time as
-    // required by NCCLX API
-    bool async_op) {
-  checkInitialized();
-  checkAndAbortIfTimedOutOrError();
-
-  cudaStream_t stream = getOperationStream(async_op);
-
-  void* pReq = nullptr;
-  ncclResult_t result = nccl_api_->alltoallvDedupInit(
-      num_send_blocks,
-      block_count,
-      block_num_recv_buckets,
-      num_recv_buckets,
-      getNcclDataType(dtype),
-      nccl_comm_,
-      stream,
-      &pReq);
-
-  NCCLX_CHECK(nccl_api_, nccl_comm_, result, "NCCLX alltoallvDedupInit failed");
-  return at::make_intrusive<TorchCommNCCLXPersistentRequest>(
-      shared_from_this(), pReq, stream);
-}
-
-c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dedup_exec(
-    at::Tensor& output_tensor,
-    at::Tensor& recv_block_ids,
-    const at::Tensor& input_tensor,
-    const at::Tensor& send_indices,
-    const at::Tensor& forward_indices,
-    const at::Tensor& recv_indices,
-    at::intrusive_ptr<TorchCommNCCLXPersistentRequest> pReq) {
-  checkInitialized();
-  checkAndAbortIfTimedOutOrError();
-
-  ensureTensorContiguous(output_tensor);
-  ensureTensorContiguous(recv_block_ids);
-  ensureTensorContiguous(input_tensor);
-  ensureTensorContiguous(send_indices);
-  ensureTensorContiguous(forward_indices);
-  ensureTensorContiguous(recv_indices);
-
-  validateIntDtype(send_indices, "send_indices");
-  validateIntDtype(forward_indices, "forward_indices");
-  validateIntDtype(recv_indices, "recv_indices");
-
-  TracingGuard tracingGuard(
-      name_,
-      comm_size_,
-      "alltoallv_dedup_exec",
-      rank_,
-      input_tensor,
-      output_tensor);
-
-  TORCH_CHECK(
-      pReq->getStream() != std::nullopt,
-      "cuda stream is not recorded at alltoallv_dedup_init before calling alltoallv_dedup_exec");
-  auto stream = pReq->getStream().value();
-  graph_event_tracker_.initOnGraphStart(stream);
-  auto work = createWork(stream, options_.timeout, input_tensor);
-  // Keep the persistent request alive until last dedup work has completed and
-  // cleaned up by CPU, because work->wait() doesn't let CPU wait for kernel
-  // to complete.
-  work->setPersistentRequest(pReq);
-
-  // Record start event before NCCL operation
-  work->recordStart("alltoallv_dedup_exec");
-
-  ncclResult_t result = nccl_api_->alltoallvDedupExec(
-      input_tensor.data_ptr(),
-      send_indices.data_ptr<int>(),
-      forward_indices.data_ptr<int>(),
-      recv_indices.data_ptr<int>(),
-      output_tensor.data_ptr(),
-      recv_block_ids.data_ptr<int>(),
-      pReq->getRequestPtr());
-
-  NCCLX_CHECK(nccl_api_, nccl_comm_, result, "NCCLX alltoallvDedupExec failed");
-
-  // Record end event after NCCL operation
-  work->recordEnd();
-
-  // Enqueue the work after events have been recorded
-  enqueueWork(work, stream);
-
-  return work;
-}
-
-c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dedup_combine(
-    at::Tensor& output_tensor,
-    const at::Tensor& input_tensor,
-    const at::Tensor& send_indices,
-    const at::Tensor& forward_indices,
-    const at::Tensor& recv_indices,
-    at::intrusive_ptr<TorchCommNCCLXPersistentRequest> pReq) {
-  checkInitialized();
-  checkAndAbortIfTimedOutOrError();
-
-  ensureTensorContiguous(output_tensor);
-  ensureTensorContiguous(input_tensor);
-  ensureTensorContiguous(send_indices);
-  ensureTensorContiguous(forward_indices);
-  ensureTensorContiguous(recv_indices);
-
-  validateIntDtype(send_indices, "send_indices");
-  validateIntDtype(forward_indices, "forward_indices");
-  validateIntDtype(recv_indices, "recv_indices");
-
-  TracingGuard tracingGuard(
-      name_,
-      comm_size_,
-      "alltoallv_dedup_combine",
-      rank_,
-      input_tensor,
-      output_tensor);
-
-  TORCH_CHECK(
-      pReq->getStream() != std::nullopt,
-      "cuda stream is not recorded at alltoallv_dedup_init before calling alltoallv_dedup_combine");
-  auto stream = pReq->getStream().value();
-  graph_event_tracker_.initOnGraphStart(stream);
-  auto work = createWork(stream, options_.timeout, input_tensor);
-
-  // Record start event before NCCL operation
-  work->recordStart("alltoallv_dedup_combine");
-
-  ncclResult_t result = nccl_api_->alltoallvDedupCombine(
-      input_tensor.data_ptr(),
-      send_indices.data_ptr<int>(),
-      forward_indices.data_ptr<int>(),
-      recv_indices.data_ptr<int>(),
-      output_tensor.data_ptr(),
-      pReq->getRequestPtr());
-
-  NCCLX_CHECK(
-      nccl_api_, nccl_comm_, result, "NCCLX alltoallvDedupCombine failed");
-
-  // Record end event after NCCL operation
-  work->recordEnd();
-
-  // Enqueue the work after events have been recorded
-  enqueueWork(work, stream);
-
-  return work;
-}
-
 #ifdef NCCL_REDUCE_SCATTER_QUANTIZE_SUPPORTED
 c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_quantized(
     at::Tensor& output,
@@ -2211,6 +1903,9 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_quantized(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(output);
   ensureTensorContiguous(input);
+  checkTensorDevice(output);
+  checkTensorDevice(input);
+  checkTensorDevice(seed);
 
   TORCH_CHECK(
       input.scalar_type() == at::kFloat,
@@ -2325,6 +2020,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::scatter(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(output_tensor);
+  checkTensorDevice(output_tensor);
+  checkTensorsDevice(input_tensor_list);
 
   // Only the root rank needs valid input tensors
   if (rank_ == root) {
@@ -2429,6 +2126,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::gather(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(input_tensor);
+  checkTensorDevice(input_tensor);
+  checkTensorsDevice(output_tensor_list);
 
   // Only the root rank needs valid output tensors
   if (rank_ == root) {

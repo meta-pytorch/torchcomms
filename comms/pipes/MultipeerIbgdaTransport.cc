@@ -1243,8 +1243,7 @@ void MultipeerIbgdaTransport::exchange() {
   std::vector<P2pIbgdaTransportBuildParams> buildParams(numPeers);
 
   for (int peer = 0; peer < numPeers; peer++) {
-    // One NicDeviceIbgdaResourcesBuildSpec per physical NIC. NIC-fast
-    // interleaving: slot s = q * numNics_ + nic.
+    // One NicDeviceIbgdaResourcesBuildSpec per exposed physical NIC.
     auto& bp = buildParams[peer];
     bp.h_nicDeviceIbgdaResources.resize(numNics_);
     for (int n = 0; n < numNics_; ++n) {
@@ -1255,9 +1254,9 @@ void MultipeerIbgdaTransport::exchange() {
       nicSpec.deviceId = n;
     }
 
-    for (int nic = 0; nic < numNics_; nic++) {
-      auto& nicQps = nicDevices_[nic].qpGroups;
-      auto& nicSpec = bp.h_nicDeviceIbgdaResources[nic];
+    for (int n = 0; n < numNics_; n++) {
+      auto& nicQps = nicDevices_[n].qpGroups;
+      auto& nicSpec = bp.h_nicDeviceIbgdaResources[n];
       for (int q = 0; q < numQps; q++) {
         const int qpIdx = peer * numQps + q;
         doca_error_t err = doca_gpu_verbs_get_qp_dev(

@@ -24,7 +24,7 @@ skip_unless_ncclx = unittest.skipIf(
 
 # pyre-fixme[21]: Could not find name `ProfilerActivity` in `torch.profiler`.
 from torch.profiler import profile, ProfilerActivity
-from torchcomms.tests.integration.py.TorchCommTestHelpers import get_rank_and_size
+from torchcomms.tests.integration.helpers.TorchCommTestHelpers import get_rank_and_size
 
 if TYPE_CHECKING:
     from typing import Self

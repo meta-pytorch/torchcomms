@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -43,7 +44,7 @@ struct RankTopology {
 
   char dc[kMaxNameLen];
 
-  int rackSerial{-1};
+  char rackSerial[kMaxNameLen];
 };
 
 // ncclx internal structure for NVL Fabric info
@@ -88,9 +89,6 @@ class CommStateX {
 
   std::shared_ptr<CommStateX> createCommStateXFromNcclComm(void* comm);
 
-  void initRankTopologyNolocal();
-  void initRankTopologyVnode(const int nLocalRanks);
-  friend void initRankTopologyFrom(CommStateX* _CommStateX, void* _comm);
   void initRankStatesTopology(meta::comms::IBootstrap* bootstrap);
 
   /* Setters */
@@ -160,7 +158,7 @@ class CommStateX {
   // get DataCenter name for a given rank, default to current rank
   std::string dc(int rank = -1) const;
 
-  int deviceRack(int rank) const;
+  std::string_view deviceRack(int rank = -1) const;
 
   // get globalRank for a given rank, default to current rank
   int gRank(int rank = -1) const;
@@ -197,6 +195,8 @@ class CommStateX {
   bool isSameDeviceRack(int myRank, int peer) const;
 
  private:
+  void initSingleRankTopology();
+
   /* Setters */
   void setRankStatesTopologies(std::vector<RankTopology> rankTopologies);
   void setCommRankToWorldRanks(std::vector<int> commRanksToWorldRanks);
@@ -225,7 +225,7 @@ class CommStateX {
 
     std::vector<int> localRankToRanks{};
 
-    int rackSerial{-1};
+    std::string rackSerial;
   };
 
   // internal state related to NVL Fabric for quick one time lookup
@@ -267,12 +267,9 @@ class CommStateX {
   // and an associated communicator.
   std::vector<int> commRanksToWorldRanks_{};
 
-  // e.g map<host-name, localRankToRank>
-  // e.g map<host1: [0, 1, 2, 3], host2: [4, 5, 6, 7]>
-  std::unordered_map<std::string, std::vector<int>> hostToRanks_{};
-
-  // similar to hostToRanks_ but access by nodeId
-  // e.g vector<0: [0, 1, 2, 3], 1: [0, 1, 2, 3]>
+  // Node grouping: nodeRanks_[nodeId] = [rank0, rank1, ...]
+  // For virtual topologies (nolocal, vnode, vClique), node grouping may differ
+  // from physical host grouping.
   std::vector<std::vector<int>> nodeRanks_{};
 
   // similar to nodeRanks, but at nvlDomain level. e.g vector<0: [0, 1, 2, 3],

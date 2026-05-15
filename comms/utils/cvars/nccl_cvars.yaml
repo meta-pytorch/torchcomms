@@ -81,6 +81,14 @@ cvars:
       File location for logging memory related events.
       (the same format with NCCL_COMM_EVENT_LOGGING)
 
+ - name        : NCCL_MEMTRACE_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Enable memory tracing for all NCCLX memory allocations, frees, and
+     registrations. When enabled, memory events are logged to Scuba and
+     tracked per-communicator for commDump reporting.
+
  - name        : NCCL_SLOW_COLL_LOGGING
    type        : string
    default     : "pipe:nccl_slow_coll"
@@ -337,6 +345,8 @@ cvars:
    default     : -1
    description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-comm-blocking
 
+ # TODO: Delete NCCL_RUNTIME_CONNECT once v2.27 and v2.28 are removed.
+ # v2.29 uses ncclParam + per-comm hints instead.
  - name        : NCCL_RUNTIME_CONNECT
    type        : int64_t
    default     : 1
@@ -538,6 +548,16 @@ cvars:
    type        : int64_t
    default     : 0
    description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-net-force-flush
+
+ - name        : NCCL_ENABLE_P2C_RDMA_FLUSH
+   type        : bool
+   default     : true
+   description : |-
+     Enable RDMA READ flush for PATH_P2C topology (C2C to CPU + PCIe to NIC)
+     on GB200. When RDMA data arrives via PCIe and the proxy tail update reaches
+     GPU via a different path (C2C), there is no cross-path ordering guarantee.
+     The flush drains pending PCIe writes before signaling the GPU kernel.
+     Set to false to disable for performance comparison.
 
  - name        : NCCL_NET_DISABLE_INTRA
    type        : int64_t
@@ -1188,27 +1208,6 @@ cvars:
      Number of threads in each thread block used for intra-node
      AllToAllv kernel.
 
- - name        : NCCL_CTRAN_ALLTOALLV_DYNAMIC_NUM_THREAD_BLOCKS
-   type        : int
-   default     : 64
-   description : |-
-     Number of thread blocks used for intra-node AllToAllv kernel.
-     Must be even number.
-
- - name        : NCCL_CTRAN_ALLTOALLV_DYNAMIC_THREAD_BLOCK_SIZE
-   type        : int
-   default     : 256
-   description : |-
-     Number of threads in each thread block used for intra-node
-     AllToAllv kernel.
-
- - name        : NCCL_CTRAN_ALLTOALLV_DYNAMIC_MAX_NUM_COUNTS_PER_PEER
-   type        : int
-   default     : 256
-   description : |-
-     Maximum number of experts for MoE models. This value is used by
-     AllToAllvDynamic to allocate the corresponding buffer size.
-
  - name        : NCCL_CTRAN_ALLTOALL_DEDUP_NUM_THREAD_BLOCKS_PER_RAIL_P2P
    type        : int
    default     : 16
@@ -1517,6 +1516,16 @@ cvars:
      NICs report max_cqe ~4M which causes the driver to allocate ~256MB
      per CQ. For example, setting to 32768 keeps per-CQ memory at ~2MB.
      Default -1 to use the device-reported maximum.
+
+ - name        : NCCL_CTRAN_IB_MULTI_NIC_FLUSH
+   type        : int
+   default     : 1
+   description : |-
+     Enable PCIe flush (RDMA READ) when using multiple NICs per rank
+     (NCCL_CTRAN_IB_DEVICES_PER_RANK > 1). On platforms where each NIC is a
+     separate PCIe requester (e.g. GB200 ARM SoC), cross-NIC DMA writes have
+     no ordering guarantee. The flush drains pending writes before the next
+     step reads the received data. Set to 0 to disable for debugging.
 
  - name        : NCCL_CTRAN_IB_DEVICES_PER_RANK
    type        : int
@@ -2316,6 +2325,25 @@ cvars:
      in iteration 4 and 5).
      Set to 0 to disable recording past collectives.
 
+ - name        : NCCL_COLLTRACE_ITERATION_MODE
+   type        : bool
+   default     : false
+   description : |-
+     If true, CommDumpPlugin retains all collectives from recent training
+     iterations (set via ncclxSetIteration) instead of a fixed count.
+     The number of iterations retained is controlled by
+     NCCL_COLLTRACE_RECORD_MAX_ITERATIONS. Falls back to a hard upper bound
+     (NCCL_COLLTRACE_ITERATION_UPPER_BOUND, default 3000) if iteration
+     tracking is not active.
+
+ - name        : NCCL_COLLTRACE_ITERATION_UPPER_BOUND
+   type        : int
+   default     : 3000
+   description : |-
+     Hard upper bound on past collectives retained when
+     NCCL_COLLTRACE_ITERATION_MODE is enabled. Prevents unbounded growth
+     if ncclxSetIteration is never called.
+
  - name        : NCCL_COLLTRACE_SLOW_COLL_THRESHOLD_BY_PG
    type        : stringlist
    default     :
@@ -2370,6 +2398,52 @@ cvars:
      does not finish within the timeout, colltrace will crash the process.
      The default value is 10 minutes. The gloalhint from the user program takes
      precedence over this env var for the actual time colltrace will wait.
+
+ - name        : NCCL_COLLTRACE_PERIODIC_REANCHOR
+   type        : bool
+   default     : False
+   description : |-
+     When true, the colltrace poll thread periodically (~1 Hz) re-records the
+     GPU-time ↔ wall-clock anchors used by graph mode (GlobaltimerCalibration)
+     and eager mode (CudaReferencePoint) to bound drift between the GPU's
+     oscillator and PTP-aligned wall time below ~100 ns at 100 ppm. When
+     false (default), each anchor is taken once at construction and never
+     refreshed; long-running jobs accumulate ~36–360 ms/hour of drift. The
+     refresh path issues CUDA calls from the colltrace thread; this flag
+     exists so deployments that have observed CUDA-on-non-main-thread hangs
+     can disable the feature without rebuilding.
+
+ - name        : NCCL_COLLTRACE_FATAL_ON_CALIBRATION_FAILURE
+   type        : bool
+   default     : True
+   description : |-
+     When true (default), GlobaltimerCalibration's constructor crashes via
+     XLOG(FATAL) if the initial CUDA-side anchor read fails — without a
+     valid anchor, graph-mode timestamps would map to ~50 years before the
+     UNIX epoch, which is worse than crashing. When false, the failure is
+     logged at ERROR severity, the anchor is left at its default state,
+     and the periodic refresh thread (gated on NCCL_COLLTRACE_PERIODIC_REANCHOR)
+     gets a chance to populate it later. Until refresh succeeds, graph-mode
+     timestamps will be near the UNIX epoch and a rate-limited warning is
+     emitted on each toWallClock() call.
+
+ - name        : NCCL_USE_PTP
+   type        : bool
+   default     : true
+   description : |-
+     When true, colltrace's PrecisionClock initializes fbclock and emits
+     PTP-aligned wall-time stamps with a known uncertainty window — fleet-
+     comparable across hosts. When false (or when fbclock_init fails on the
+     host), PrecisionClock falls back to std::chrono::system_clock (host
+     clock, possibly NTP-disciplined, with no uncertainty annotation).
+     Read once via getenv() during PrecisionClock's lazy singleton
+     construction, before ncclCvarInit() runs in many call paths — this
+     entry exists for discoverability and cvar-dump tooling; the actual
+     read in PrecisionClock.cc is direct and does not consult /etc/nccl.conf.
+     PrecisionClock falls back to NCCL_USE_PTP_DEFAULT_LITERAL (a compile-
+     time constant emitted by extractcvars.py from this `default:` field)
+     when the env var is unset, so the code default tracks the yaml default
+     without manual sync.
 
  - name        : NCCL_MAPPERTRACE_COLL_RECORD_MAX
    type        : uint64_t
@@ -2545,6 +2619,13 @@ cvars:
    default     : "libibverbs.so"
    description : Path to libibverbs.so. This allows fault injection for
      verbs APIs in NCCLx.
+
+ - name        : NCCL_IBVERBS_LIB
+   type        : string
+   default     : ""
+   description : Override the default libibverbs shared library name.
+     Added in upstream NCCL 2.30. When set, NCCL will attempt to load
+     this library before falling back to libibverbs.so.
 
  - name        : NCCL_COMM_ABORT_SCOPE
    type        : enum
@@ -2851,6 +2932,16 @@ cvars:
      We might use fewer thread blocks, if we can achieve max occupancy
      with them.
 
+ - name        : NCCL_CTRAN_ALLREDUCE_RING_NUM_THREAD_BLOCKS
+   type        : int
+   default     : 0
+   description : |-
+     Force the exact number of thread blocks for the AllReduce Ring
+     kernel, bypassing the auto-tuner. When set to > 0, the auto-tuner
+     block selection is skipped and this value is used directly.
+     Use with NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE to fully
+     override the auto-tuner.
+
  - name        : NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE
    type        : int
    default     : 0
@@ -2959,6 +3050,32 @@ cvars:
      Profiler is created and algo profiling data flows to the
      mccl_operation_trace Scuba table via McclAlgoProfilerReporter. Set to
      false to disable ctran profiling from the MCCL level.
+
+ - name        : MCCL_FILTER_PROFILER_LOGGING_BY_RANKS
+   type        : stringlist
+   default     : "0"
+   description : |-
+     Comma-separated list of global ranks allowed to write profiler
+     operation data to filter logs (mccl_operation_trace). Only effective
+     when MCCL_CTRAN_TRANSPORT_PROFILER is enabled (true by default),
+     which controls whether ctran profiling data flows to
+     mccl_operation_trace. This filter applies only to profiler
+     operation trace samples; other log types are not affected. When
+     this list is non-empty, only the specified ranks will have their
+     profiler samples written; all other ranks are silently skipped.
+     Default: "0" (only rank 0 logs). Set to an empty string to allow
+     all ranks to log.
+
+ - name        : MCCL_PROFILER_STEP_LOGGING_INTERVAL
+   type        : int
+   default     : 113
+   description : |-
+     Controls step-based profiler logging at the MCCL level. When the
+     training step (from AllReduceOpts kvPairs["step"]) is a multiple of this
+     interval, all allreduce profiler data for that step is logged,
+     bypassing the per-op NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT filter.
+     Rank filtering (MCCL_FILTER_PROFILER_LOGGING_BY_RANKS) still applies.
+     Set to 0 or negative to disable step-based logging.
 
  - name        : NCCL_GIN_GDAKI_NIC_HANDLER
    type        : int
@@ -3397,3 +3514,97 @@ cvars:
      LL128 uses 128-byte cache-line-atomic packets with inline flag signaling,
      providing better performance for small/medium messages. Requires per-peer
      byte counts (count * elementSize) to be multiples of 16.
+
+# ============================================================================
+# NCCL 2.30 new parameters
+# ============================================================================
+
+ - name        : NCCL_ELASTIC_BUFFER_REGISTER
+   type        : int64_t
+   default     : 1
+   description : Enable elastic buffer registration (added in NCCL 2.30).
+
+ - name        : NCCL_GIN_GDAKI_MAX_DEST_RD_ATOMIC
+   type        : int64_t
+   default     : -2
+   description : Override max_dest_rd_atomic for GIN GDAKI QPs.
+
+ - name        : NCCL_GIN_GDAKI_MAX_QP_RD_ATOMIC
+   type        : int64_t
+   default     : -2
+   description : Override max_qp_rd_atomic for GIN GDAKI QPs.
+
+ - name        : NCCL_IB_OOO_RQ
+   type        : int64_t
+   default     : 0
+   description : Enable IB out-of-order receive queue (added in NCCL 2.30).
+
+ - name        : NCCL_IB_RESILIENCY_PORT_RECOVERY
+   type        : int64_t
+   default     : 0
+   description : Enable IB port recovery for resiliency (added in NCCL 2.30).
+
+ - name        : NCCL_IB_RESILIENCY_PORT_RECOVERY_ACK_TIMEOUT
+   type        : int64_t
+   default     : 5000
+   description : Ack timeout in ms for IB port recovery.
+
+ - name        : NCCL_IB_RESILIENCY_PORT_RECOVERY_ALIVE_MSG_BATCH_INTERVAL
+   type        : int64_t
+   default     : 500
+   description : Interval in ms between alive message batches during IB port recovery.
+
+ - name        : NCCL_IB_RESILIENCY_PORT_RECOVERY_ALIVE_MSG_BATCH_SIZE
+   type        : int64_t
+   default     : 5
+   description : Number of alive messages per batch during IB port recovery.
+
+ - name        : NCCL_IB_RESILIENCY_PORT_RECOVERY_ALIVE_MSG_SEQUENCE_SIZE
+   type        : int64_t
+   default     : 5
+   description : Number of alive message sequences during IB port recovery.
+
+ - name        : NCCL_IB_RESILIENCY_PORT_RECOVERY_ALIVE_MSG_TIMEOUT
+   type        : int64_t
+   default     : 4000
+   description : Timeout in ms for alive messages during IB port recovery.
+
+ - name        : NCCL_IB_RESILIENCY_PORT_RECOVERY_ATTEMPTS_MAX
+   type        : int64_t
+   default     : 5
+   description : Maximum recovery attempts for IB port recovery.
+
+ - name        : NCCL_IB_RESILIENCY_PORT_RECOVERY_START_DELAY
+   type        : int64_t
+   default     : 200
+   description : Delay in ms before starting IB port recovery.
+
+ - name        : NCCL_IGNORE_COLLNET_MISMATCH
+   type        : int64_t
+   default     : 0
+   description : Ignore CollNet capability mismatch across ranks (added in NCCL 2.30).
+
+ - name        : NCCL_IGNORE_NET_MISMATCH
+   type        : int64_t
+   default     : 1
+   description : Ignore net plugin mismatch across ranks (added in NCCL 2.30).
+
+ - name        : NCCL_MNNVL_CROSS_CLIQUE
+   type        : int64_t
+   default     : 0
+   description : Enable multi-NVLink cross-clique support (added in NCCL 2.30).
+
+ - name        : NCCL_MULTI_RANK_GPU_ENABLE
+   type        : int64_t
+   default     : 0
+   description : Enable multi-rank per GPU (added in NCCL 2.30).
+
+ # Note: NCCL_NET_OPTIONAL_RECV_COMPLETION cannot be registered as a cvar
+ # because it collides with #define NCCL_NET_OPTIONAL_RECV_COMPLETION 0x1
+ # in nccl_net.h. The NCCL_PARAM in net.cc is replaced with a manual
+ # ncclLoadParam call.
+
+ - name        : NCCL_P2P_MAX_PEERS
+   type        : int64_t
+   default     : -1
+   description : Maximum number of P2P peers (added in NCCL 2.30). Uses NCCL_CONFIG_UNDEF_INT as default.

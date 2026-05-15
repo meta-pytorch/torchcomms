@@ -1,5 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <unistd.h>
 #include <cstdlib>
 #include <string>
 #include <vector>
@@ -9,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include "comms/ctran/commstate/CommStateX.h"
+#include "comms/ctran/tests/VerifyCommStateXUtil.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 
 namespace ncclx {
@@ -41,7 +43,7 @@ RankTopology createRankTopology(
     const std::string& su,
     const std::string& rtsw,
     const std::string& host,
-    int rackSerial = -1,
+    const std::string& rackSerial = "",
     int pid = -1) {
   RankTopology topo;
   topo.rank = rank;
@@ -51,7 +53,7 @@ RankTopology createRankTopology(
   std::strcpy(topo.su, su.c_str());
   std::strcpy(topo.dc, dc.c_str());
   std::strcpy(topo.zone, zone.c_str());
-  topo.rackSerial = rackSerial;
+  std::strncpy(topo.rackSerial, rackSerial.c_str(), ncclx::kMaxNameLen);
   return topo;
 }
 
@@ -246,11 +248,11 @@ TEST(CommStateXTest, multiRackTest) {
   const std::string kRtsw;
   std::vector<RankTopology> rankTopologies{};
   rankTopologies.emplace_back(
-      createRankTopology(0, kDc, kZone, kSuDomain1, kRtsw, kHost0, 100));
+      createRankTopology(0, kDc, kZone, kSuDomain1, kRtsw, kHost0, "100"));
   rankTopologies.emplace_back(
-      createRankTopology(1, kDc, kZone, kSuDomain1, kRtsw, kHost0, 100));
+      createRankTopology(1, kDc, kZone, kSuDomain1, kRtsw, kHost0, "100"));
   rankTopologies.emplace_back(
-      createRankTopology(2, kDc, kZone, kSuDomain1, kRtsw, kHost1, 101));
+      createRankTopology(2, kDc, kZone, kSuDomain1, kRtsw, kHost1, "101"));
 
   auto commState = std::make_unique<CommStateX>(
       rank,
@@ -264,6 +266,34 @@ TEST(CommStateXTest, multiRackTest) {
 
   EXPECT_TRUE(commState->isSameDeviceRack(rank, 1));
   EXPECT_FALSE(commState->isSameDeviceRack(rank, 2));
+}
+
+TEST(CommStateXTest, emptyDeviceRackReturnsFalse) {
+  EnvRAII env(NCCL_MNNVL_TRUNK_DISABLE, true);
+  const int rank = 0;
+  const int nRanks = 2;
+  const int cudaDev = 0;
+  const int cudaArch = 90;
+  const int64_t busId = 25;
+  const uint64_t commHash = 0;
+  const std::string kRtsw;
+  std::vector<RankTopology> rankTopologies{};
+  rankTopologies.emplace_back(
+      createRankTopology(0, kDc, kZone, kSuDomain1, kRtsw, kHost0));
+  rankTopologies.emplace_back(
+      createRankTopology(1, kDc, kZone, kSuDomain1, kRtsw, kHost0));
+
+  auto commState = std::make_unique<CommStateX>(
+      rank,
+      nRanks,
+      cudaDev,
+      cudaArch,
+      busId,
+      commHash,
+      rankTopologies,
+      std::vector<int>{});
+
+  EXPECT_FALSE(commState->isSameDeviceRack(rank, 1));
 }
 
 TEST(CommStateXTest, nvlFabricTest) {
@@ -552,47 +582,141 @@ TEST(CommStateXTest, CommRankToWorldRanks) {
   EXPECT_EQ(commState->gRank(3), 7);
 }
 
-TEST(CommStateXTest, gPidTest) {
-  const int nRanks = 4;
-  const int cudaDev = 0;
-  const int cudaArch = 90;
-  const int64_t busId = 25;
-  const uint64_t commHash = 0;
-  const std::string kSu;
+// Parameterized test: verify host()/gPid() preserve real values and node
+// grouping is correct across all virtual topology modes.
+enum class TopoMode { kSystem, kNolocal, kVnode, kVClique };
 
-  std::vector<RankTopology> rankTopologies{};
-  rankTopologies.emplace_back(
-      createRankTopology(0, kDc, kZone, kSu, kRtsw0, kHost0, -1, 1000));
-  rankTopologies.emplace_back(
-      createRankTopology(1, kDc, kZone, kSu, kRtsw0, kHost0, -1, 1001));
-  rankTopologies.emplace_back(
-      createRankTopology(2, kDc, kZone, kSu, kRtsw0, kHost1, -1, 2000));
-  rankTopologies.emplace_back(
-      createRankTopology(3, kDc, kZone, kSu, kRtsw0, kHost1, -1, 2001));
+struct TopoTestParam {
+  TopoMode mode;
+  int vCliqueSize; // only used for kVClique
+  int expectedNNodes;
+  int expectedNLocalRanks; // for rank 0
+};
 
-  for (int rank = 0; rank < nRanks; ++rank) {
-    auto commState = std::make_unique<CommStateX>(
-        rank,
-        nRanks,
-        cudaDev,
-        cudaArch,
-        busId,
-        commHash,
-        rankTopologies,
-        std::vector<int>{});
-
-    // Test gPid() for default (current) rank
-    std::string expectedGPid = std::string(rankTopologies[rank].host) + ":" +
-        std::to_string(rankTopologies[rank].pid);
-    EXPECT_EQ(commState->gPid(), expectedGPid);
-
-    // Test gPid(rank) for all ranks
-    for (int r = 0; r < nRanks; ++r) {
-      std::string expected = std::string(rankTopologies[r].host) + ":" +
-          std::to_string(rankTopologies[r].pid);
-      EXPECT_EQ(commState->gPid(r), expected);
-    }
+std::string topoTestName(const testing::TestParamInfo<TopoTestParam>& info) {
+  switch (info.param.mode) {
+    case TopoMode::kSystem:
+      return "system";
+    case TopoMode::kNolocal:
+      return "nolocal";
+    case TopoMode::kVnode:
+      return "vnode4";
+    case TopoMode::kVClique:
+      return "vclique" + std::to_string(info.param.vCliqueSize);
   }
+  return "unknown";
+}
+
+class GpidTopoTest : public ::testing::TestWithParam<TopoTestParam> {
+ protected:
+  static constexpr int kRanksPerHost = 4;
+  static constexpr int kNumHosts = 2;
+  static constexpr int kNRanks = kRanksPerHost * kNumHosts;
+  static constexpr int kCudaDev = 0;
+  static constexpr int kCudaArch = 90;
+  static constexpr int64_t kBusId = 25;
+  static constexpr uint64_t kCommHash = 0;
+
+  std::vector<RankTopology> makeRankTopologies() {
+    const std::string kSu;
+    const std::array<std::pair<const char*, const char*>, kNumHosts> hostInfo =
+        {{{kHost0, kRtsw0}, {kHost1, kRtsw1}}};
+    std::vector<RankTopology> topos;
+    topos.reserve(kNRanks);
+    for (int r = 0; r < kNRanks; r++) {
+      const auto& [host, rtsw] = hostInfo[r / kRanksPerHost];
+      const int pid = 1000 * (r / kRanksPerHost + 1) + r % kRanksPerHost;
+      topos.emplace_back(
+          createRankTopology(r, kDc, kZone, kSu, rtsw, host, "", pid));
+    }
+    return topos;
+  }
+};
+
+TEST_P(GpidTopoTest, HostAndGpidPreserved) {
+  const auto& [mode, vCliqueSize, expectedNNodes, expectedNLocalRanks] =
+      GetParam();
+  auto rankTopologies = makeRankTopologies();
+
+  // Set CVAR for vnode mode (needs ncclx EnvRAII, not SysEnvRAII)
+  // nolocal and vClique are passed via constructor params instead.
+  std::unique_ptr<SysEnvRAII> envTopo, envPpn;
+  if (mode == TopoMode::kVnode) {
+    envTopo =
+        std::make_unique<SysEnvRAII>("NCCL_COMM_STATE_DEBUG_TOPO", "vnode");
+    envPpn = std::make_unique<SysEnvRAII>(
+        "NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS", "4");
+  }
+
+  const bool noLocal = (mode == TopoMode::kNolocal);
+  auto commState = std::make_unique<CommStateX>(
+      0,
+      kNRanks,
+      kCudaDev,
+      kCudaArch,
+      kBusId,
+      kCommHash,
+      rankTopologies,
+      std::vector<int>{},
+      "" /* commDesc */,
+      noLocal,
+      vCliqueSize);
+
+  // Node grouping matches expected virtual topology
+  EXPECT_EQ(commState->nNodes(), expectedNNodes);
+  EXPECT_EQ(commState->nLocalRanks(0), expectedNLocalRanks);
+
+  // Real hostname and gPid preserved for all ranks
+  using Helper = ctran::testing::VerifyCommStateXHelper;
+  for (int r = 0; r < kNRanks; ++r) {
+    Helper::verifyHost(commState.get(), r, rankTopologies[r].host);
+    Helper::verifyGPid(
+        commState.get(), r, rankTopologies[r].host, rankTopologies[r].pid);
+  }
+  Helper::verifyGPidUniqueness(commState.get(), kNRanks);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    CommStateXTest,
+    GpidTopoTest,
+    ::testing::Values(
+        // system: 2 real hosts × 4 ranks each
+        TopoTestParam{TopoMode::kSystem, 0, 2, 4},
+        // nolocal: each rank is its own node
+        TopoTestParam{TopoMode::kNolocal, 0, 8, 1},
+        // vnode with nLocalRanks=4: 2 virtual nodes
+        TopoTestParam{TopoMode::kVnode, 0, 2, 4},
+        // vClique size=2: 4 virtual nodes of 2 ranks each
+        TopoTestParam{TopoMode::kVClique, 2, 4, 2}),
+    topoTestName);
+
+TEST(CommStateXTest, SingleRankTopology) {
+  auto commState = std::make_unique<CommStateX>(
+      0 /* rank */,
+      1 /* nRanks */,
+      0 /* cudaDev */,
+      90 /* cudaArch */,
+      25 /* busId */,
+      0 /* commHash */,
+      std::vector<RankTopology>{},
+      std::vector<int>{});
+
+  commState->initRankStatesTopology(nullptr);
+
+  EXPECT_EQ(commState->nRanks(), 1);
+  EXPECT_EQ(commState->nNodes(), 1);
+  EXPECT_EQ(commState->nLocalRanks(), 1);
+  EXPECT_EQ(commState->localRank(), 0);
+  EXPECT_EQ(commState->node(), 0);
+  EXPECT_FALSE(commState->host(0).empty());
+  EXPECT_FALSE(commState->gPid(0).empty());
+
+  char hostname[256];
+  gethostname(hostname, sizeof(hostname));
+  EXPECT_EQ(commState->host(0), std::string(hostname));
+  EXPECT_EQ(
+      commState->gPid(0),
+      std::string(hostname) + ":" + std::to_string(getpid()));
 }
 
 TEST(CommStateXTest, TopologySetInvalidNvlFabricTopos) {
@@ -649,8 +773,18 @@ TEST(CommStateXTest, nvlFabricWithNoLocal) {
   const int64_t busId = 25;
   const uint64_t commHash = 0;
 
-  // Create CommStateX with empty rank topologies (will be set by
-  // initRankTopologyNolocal)
+  // Build rank topologies with same host — noLocal=true will override
+  // to virtual per-rank nodes internally
+  std::vector<RankTopology> rankTopologies;
+  rankTopologies.reserve(nRanks);
+  for (int r = 0; r < nRanks; r++) {
+    RankTopology topo{};
+    topo.rank = r;
+    topo.pid = r;
+    std::strncpy(topo.host, "same_host", kMaxNameLen);
+    rankTopologies.push_back(topo);
+  }
+
   auto commState = std::make_unique<CommStateX>(
       rank,
       nRanks,
@@ -658,14 +792,10 @@ TEST(CommStateXTest, nvlFabricWithNoLocal) {
       cudaArch,
       busId,
       commHash,
-      std::vector<RankTopology>{},
+      rankTopologies,
       std::vector<int>{},
       "" /* commDesc */,
       true /* noLocal */);
-
-  // noLocal is set at construction; initRankStatesTopology delegates to
-  // initRankTopologyNolocal
-  commState->initRankStatesTopology(nullptr);
 
   // Set up NVL fabric with 2 clusters of 4 ranks each (e.g. GB200 2-GPU trays)
   std::vector<NvlFabricTopology> nvlFabricTopologies{};
@@ -711,6 +841,18 @@ TEST(CommStateXTest, nvlFabricWithNoLocalCvar) {
   EnvRAII noLocalCvar(
       NCCL_COMM_STATE_DEBUG_TOPO, NCCL_COMM_STATE_DEBUG_TOPO::nolocal);
 
+  // Build rank topologies with same host — CVAR nolocal will override
+  // to virtual per-rank nodes internally
+  std::vector<RankTopology> rankTopologies;
+  rankTopologies.reserve(nRanks);
+  for (int r = 0; r < nRanks; r++) {
+    RankTopology topo{};
+    topo.rank = r;
+    topo.pid = r;
+    std::strncpy(topo.host, "same_host", kMaxNameLen);
+    rankTopologies.push_back(topo);
+  }
+
   auto commState = std::make_unique<CommStateX>(
       rank,
       nRanks,
@@ -718,13 +860,10 @@ TEST(CommStateXTest, nvlFabricWithNoLocalCvar) {
       cudaArch,
       busId,
       commHash,
-      std::vector<RankTopology>{},
+      rankTopologies,
       std::vector<int>{},
       "" /* commDesc */,
       false /* noLocal - hint is NOT set, only CVAR */);
-
-  // initRankTopologyNolocal sets host-based nLocalRanks=1 for all ranks
-  commState->initRankTopologyNolocal();
 
   // Set up NVL fabric with 2 clusters of 4 ranks each (e.g. GB200 2-GPU trays)
   std::vector<NvlFabricTopology> nvlFabricTopologies{};
@@ -756,6 +895,81 @@ TEST(CommStateXTest, nvlFabricWithNoLocalCvar) {
     EXPECT_EQ(commState->node(i), i);
   }
   EXPECT_EQ(commState->nNodes(), nRanks);
+}
+
+TEST(CommStateXTest, gb300DsfTopologyNoSuNoRtsw) {
+  const int rank = 0;
+  const int nRanks = 3;
+  const int cudaDev = 0;
+  const int cudaArch = 90;
+  const int64_t busId = 25;
+  const uint64_t commHash = 0;
+  const std::string kEmptySu = "";
+  const std::string kEmptyRtsw = "";
+  const std::string kUco1Dc = "uco1";
+  const std::string kUco1Zone = "uco1.z086";
+
+  std::vector<RankTopology> rankTopologies{};
+  rankTopologies.emplace_back(
+      createRankTopology(0, kUco1Dc, kUco1Zone, kEmptySu, kEmptyRtsw, kHost0));
+  rankTopologies.emplace_back(
+      createRankTopology(1, kUco1Dc, kUco1Zone, kEmptySu, kEmptyRtsw, kHost0));
+  rankTopologies.emplace_back(
+      createRankTopology(2, kUco1Dc, kUco1Zone, kEmptySu, kEmptyRtsw, kHost1));
+
+  auto commState = std::make_unique<CommStateX>(
+      rank,
+      nRanks,
+      cudaDev,
+      cudaArch,
+      busId,
+      commHash,
+      rankTopologies,
+      std::vector<int>{});
+
+  EXPECT_TRUE(commState->isSameNode(rank, 1));
+  EXPECT_FALSE(commState->isSameNode(rank, 2));
+
+  // With both su and rtsw empty, isSameRack returns false for all peers
+  EXPECT_FALSE(commState->isSameRack(rank, 1));
+  EXPECT_FALSE(commState->isSameRack(rank, 2));
+
+  EXPECT_TRUE(commState->isSameZone(rank, 1));
+  EXPECT_TRUE(commState->isSameZone(rank, 2));
+
+  EXPECT_TRUE(commState->isSameDc(rank, 1));
+  EXPECT_TRUE(commState->isSameDc(rank, 2));
+}
+
+TEST(CommStateXTest, isSameDeviceRackUnknownSerial) {
+  EnvRAII env(NCCL_MNNVL_TRUNK_DISABLE, true);
+  const int rank = 0;
+  const int nRanks = 2;
+  const int cudaDev = 0;
+  const int cudaArch = 90;
+  const int64_t busId = 25;
+  const uint64_t commHash = 0;
+  const std::string kEmptyRtsw;
+
+  std::vector<RankTopology> rankTopologies{};
+  // Both ranks have empty rackSerial
+  rankTopologies.emplace_back(
+      createRankTopology(0, kDc, kZone, kSuDomain1, kEmptyRtsw, kHost0));
+  rankTopologies.emplace_back(
+      createRankTopology(1, kDc, kZone, kSuDomain1, kEmptyRtsw, kHost0));
+
+  auto commState = std::make_unique<CommStateX>(
+      rank,
+      nRanks,
+      cudaDev,
+      cudaArch,
+      busId,
+      commHash,
+      rankTopologies,
+      std::vector<int>{});
+
+  // Empty rackSerial should not match
+  EXPECT_FALSE(commState->isSameDeviceRack(rank, 1));
 }
 
 } // namespace ncclx

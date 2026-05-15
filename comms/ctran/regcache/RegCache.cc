@@ -17,7 +17,7 @@
 #include "comms/ctran/utils/ExtUtils.h"
 #include "comms/utils/CudaRAII.h"
 #include "comms/utils/commSpecs.h"
-#include "comms/utils/logger/alloc.h"
+#include "comms/utils/memtrace/MemoryTrace.h"
 
 static folly::Singleton<ctran::RegCache> regCacheSingleton;
 std::shared_ptr<ctran::RegCache> ctran::RegCache::getInstance() {
@@ -421,7 +421,7 @@ commResult_t ctran::RegCache::globalDeregister(
   if (totalSegmentsFreed > 0) {
     CommLogData globalLogData{};
     globalLogData.commDesc = "global";
-    logMemoryEvent(
+    meta::comms::memtrace::recordReg(
         globalLogData,
         "",
         "globalDeregister",
@@ -430,8 +430,7 @@ commResult_t ctran::RegCache::globalDeregister(
         totalSegmentsFreed,
         std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - timerBegin)
-            .count(),
-        true /* isRegMemEvent */);
+            .count());
   }
 
   return commSuccess;
@@ -462,7 +461,6 @@ void ctran::RegCache::asyncRegThreadFn(int cudaDev) {
           INFO, INIT, "CTranMapperRegCache asyncRegThreadFn: terminate");
       return;
     }
-
     FB_CHECKABORT(
         cmd.buf && cmd.len > 0 && cmd.cudaDev >= 0,
         "Invalid buffer registration request: buf {} len {} cudaDev {}",
@@ -592,6 +590,12 @@ bool ctran::RegCache::isRegistered(const void* ptr, const size_t len) {
   // Find range in regElemsMaps
   auto regHdl = searchRegElem(ptr, len);
   return regHdl != nullptr;
+}
+
+void* ctran::RegCache::getRegHandle(const void* ptr, const size_t len) {
+  // Return the regHdl (RegElem*) cast to void* - this is the handle format
+  // used by mapper functions like iput/isendCtrl
+  return static_cast<void*>(searchRegElem(ptr, len));
 }
 
 void* ctran::RegCache::searchIbRegHandle(
@@ -961,7 +965,7 @@ commResult_t ctran::RegCache::regRange(
   }
 
   // Log to scuba
-  logMemoryEvent(
+  meta::comms::memtrace::recordReg(
       logMetaData,
       "",
       useDesc,
@@ -970,8 +974,7 @@ commResult_t ctran::RegCache::regRange(
       numSegmentsToReg,
       std::chrono::duration_cast<std::chrono::microseconds>(
           std::chrono::steady_clock::now() - timerBegin)
-          .count(),
-      true /* isRegMemEvent */);
+          .count());
 
   profiler.wlock()->record(ctran::regcache::EventType::kRegMemEvent, dur);
   return commSuccess;
@@ -1379,7 +1382,7 @@ commResult_t ctran::RegCache::regAll() {
         0, // rank
         0 // nRanks
     };
-    logMemoryEvent(
+    meta::comms::memtrace::recordReg(
         defaultLogMetaData,
         "",
         "regAll",
@@ -1388,8 +1391,7 @@ commResult_t ctran::RegCache::regAll() {
         totalSegmentsRegistered,
         std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - timerBegin)
-            .count(),
-        true /* isRegMemEvent */);
+            .count());
   }
 
   CLOGF_TRACE(

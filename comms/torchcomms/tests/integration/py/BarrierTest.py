@@ -6,7 +6,9 @@ import os
 import unittest
 
 import torch
-from torchcomms.tests.integration.py.TorchCommTestHelpers import TorchCommTestWrapper
+from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
+    TorchCommTestWrapper,
+)
 
 
 class BarrierTest(unittest.TestCase):

@@ -179,4 +179,34 @@ __global__ void p2pTileSendRecvDynamic(
     bool needsBarrier,
     Timeout timeout = Timeout());
 
+/**
+ * p2pTileForward — Tile-style fused recv+forward kernel.
+ *
+ * Each block calls P2pNvlTransportDevice::forward() to read its tile
+ * from the predecessor staging buffer (p2p_pred.localState_.dataBuffer)
+ * and dual-write it to (a) the local user dst tile and (b) the
+ * successor staging buffer (p2p_succ.remoteState_.dataBuffer).
+ *
+ * Launch with `numBlocks` total blocks (no role partition). Each block
+ * processes one tile.
+ *
+ * In a 2-rank ring test, p2p_pred == p2p_succ (the single transport
+ * between rank 0 and rank 1) — see ForwardGroup tests for pattern.
+ *
+ * @param p2p_pred   Transport to predecessor (read source staging)
+ * @param p2p_succ   Transport to successor (write target staging)
+ * @param dstTiles   Tiled view of the local output buffer
+ * @param active_blocks Number of blocks calling forward concurrently.
+ *                      0 means use tile_max_groups.
+ * @param max_signal_bytes Hint for signal granularity. 0 = per-slot signal.
+ * @param timeout    Optional timeout for signal waits
+ */
+__global__ void p2pTileForward(
+    P2pNvlTransportDevice p2p_pred,
+    P2pNvlTransportDevice p2p_succ,
+    TiledBuffer<char> dstTiles,
+    int active_blocks,
+    std::size_t max_signal_bytes = 0,
+    Timeout timeout = Timeout());
+
 } // namespace comms::pipes::benchmark

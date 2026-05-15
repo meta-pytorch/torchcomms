@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include <cuda/atomic>
+
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -9,6 +11,7 @@
 #include <device/doca_gpunetio_dev_verbs_counter.cuh>
 #include <device/doca_gpunetio_dev_verbs_onesided.cuh>
 
+#include "comms/pipes/CopyOp.cuh"
 #include "comms/pipes/CopyUtils.cuh"
 #include "comms/pipes/DeviceSpan.cuh"
 #include "comms/pipes/DocaVerbsUtils.cuh"
@@ -17,6 +20,8 @@
 #include "comms/pipes/Timeout.cuh"
 
 namespace comms::pipes {
+
+struct Memcpy;
 
 inline constexpr uint64_t kDefaultDeviceTimeoutCycles = 10'000'000'000ULL;
 
@@ -54,8 +59,7 @@ inline constexpr uint64_t kDefaultDeviceTimeoutCycles = 10'000'000'000ULL;
  * Owns the QPs (primary + companion for compound put+signal+counter ops)
  * and the sink lkey for atomic FA responses on a single NIC. The
  * P2pIbgdaTransportDevice holds a `DeviceSpan<NicDeviceIbgdaResources>` indexed
- * by NIC slot (peer-rotated on the host side so that `nic_qp_for_group(g)`'s
- * nic_id (= g % numNics) yields balanced per-peer scatter).
+ * by physical NIC slot.
  */
 struct NicDeviceIbgdaResources {
   DeviceSpan<doca_gpu_dev_verbs_qp*> qps{};
@@ -75,7 +79,9 @@ struct NicDeviceIbgdaResources {
  *   Group-scope: put(group, ...) — all threads in group must call.
  *     QP selection: single QP for now (multi-QP via group.group_id % numQps
  *     will be added in a follow-up diff).
- *     Data transfer is group-cooperative (threads split WQE construction).
+ *     Data transfer uses the exact buffer span supplied by the caller.
+ *     Threads in the group coordinate the operation; callers that want the
+ *     transport to shard a larger buffer should use put_cooperative().
  *     Signal/counter/fence are leader-only with group.sync().
  *
  *   Thread-scope: put(...) — single thread calls.
@@ -206,6 +212,39 @@ class P2pIbgdaTransportDevice {
   }
 
   /**
+   * put_cooperative (group-scope, slot-index) - Shard a larger RDMA Write
+   * across the threads in this group, with optional slot-index
+   * signal/counter.
+   *
+   * This is the explicit helper for callers that want the transport to split
+   * the provided buffer across the group. Plain put(group, ...) expects the
+   * caller to pass the exact data range for this group.
+   */
+  __device__ void put_cooperative(
+      ThreadGroup& group,
+      const IbgdaLocalBuffer& localBuf,
+      const IbgdaRemoteBuffer& remoteBuf,
+      std::size_t nbytes,
+      int signalId = -1,
+      uint64_t signalVal = 1,
+      int counterId = -1,
+      uint64_t counterVal = 1) {
+    IbgdaRemoteBuffer sigSlot =
+        (signalId >= 0) ? remote_signal_slot(signalId) : IbgdaRemoteBuffer{};
+    IbgdaLocalBuffer ctrSlot =
+        (counterId >= 0) ? counter_slot(counterId) : IbgdaLocalBuffer{};
+    put_cooperative(
+        group,
+        localBuf,
+        remoteBuf,
+        nbytes,
+        sigSlot,
+        signalVal,
+        ctrSlot,
+        counterVal);
+  }
+
+  /**
    * put (thread-scope, slot-index) - Single-thread variant of slot-index put.
    * Caller is responsible for gating to one thread. Uses QP 0.
    * Args match the group-scope overload.
@@ -309,7 +348,7 @@ class P2pIbgdaTransportDevice {
    * reset_signal (group-scope, slot-index) - Zero a local signal inbox slot.
    *
    * @param group    Thread group; all threads must call. Leader writes 0,
-   *                 then __threadfence_system().
+   *                 then a device-scope fence.
    * @param signalId Slot index into the local signal inbox.
    */
   __device__ void reset_signal(ThreadGroup& group, int signalId) {
@@ -339,7 +378,7 @@ class P2pIbgdaTransportDevice {
   }
 
   /**
-   * read_signal (slot-index) - Non-blocking volatile read of a local signal
+   * read_signal (slot-index) - Non-blocking acquire read of a local signal
    * inbox slot.
    *
    * @param signalId Slot index into the local signal inbox.
@@ -350,7 +389,7 @@ class P2pIbgdaTransportDevice {
   }
 
   /**
-   * read_counter (slot-index) - Non-blocking volatile read of a local counter
+   * read_counter (slot-index) - Non-blocking acquire read of a local counter
    * slot.
    *
    * @param counterId Slot index into the local counter buffer.
@@ -369,12 +408,13 @@ class P2pIbgdaTransportDevice {
   // =========================================================================
 
   /**
-   * put (group-scope) - Group-cooperative RDMA Write with optional signal /
+   * put (group-scope) - Group-local RDMA Write with optional signal /
    * counter.
    *
-   * All threads in the group must call. Data transfer adapts to group size:
-   *   group_size == 1: single thread posts one WQE
-   *   group_size > 1: threads cooperatively construct WQEs (one per thread)
+   * All threads in the group must call. The provided localBuf/remoteBuf/nbytes
+   * are treated as the exact range for this group; put() does not shard a
+   * larger user buffer. Use put_cooperative() for the convenience behavior that
+   * splits the provided range across the group.
    *
    * Returns void; completion is observed via wait_signal/wait_counter/flush.
    *
@@ -393,7 +433,8 @@ class P2pIbgdaTransportDevice {
    * @param signalVal  Value added to *signalBuf (atomic FA).
    * @param counterBuf Pre-resolved local counter slot. ptr==nullptr disables
    *                   the counter. With signalBuf set: companion-QP loopback
-   *                   atomic. Counter-only: fence + GPU atomicAdd.
+   *                   atomic. Counter-only uses a discard signal target plus
+   *                   the same companion-QP loopback counter.
    * @param counterVal Value added to *counterBuf.
    */
   __device__ void put(
@@ -431,6 +472,34 @@ class P2pIbgdaTransportDevice {
       uint64_t counterVal = 1) {
     ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
     put(solo,
+        localBuf,
+        remoteBuf,
+        nbytes,
+        signalBuf,
+        signalVal,
+        counterBuf,
+        counterVal);
+  }
+
+  /**
+   * put_cooperative (group-scope) - Group-cooperative RDMA Write with optional
+   * signal/counter.
+   *
+   * All threads in the group must call. The transport splits the provided
+   * range across group lanes and posts one data WQE per lane, then the leader
+   * posts any requested signal/counter WQE.
+   */
+  __device__ void put_cooperative(
+      ThreadGroup& group,
+      const IbgdaLocalBuffer& localBuf,
+      const IbgdaRemoteBuffer& remoteBuf,
+      std::size_t nbytes,
+      const IbgdaRemoteBuffer& signalBuf,
+      uint64_t signalVal = 1,
+      const IbgdaLocalBuffer& counterBuf = {},
+      uint64_t counterVal = 1) {
+    put_cooperative_impl(
+        group,
         localBuf,
         remoteBuf,
         nbytes,
@@ -578,7 +647,7 @@ class P2pIbgdaTransportDevice {
    * reset_signal (group-scope) - Zero a local signal slot.
    *
    * @param group     Thread group; all threads must call. Leader writes 0,
-   *                  then __threadfence_system().
+   *                  then a device-scope fence.
    * @param signalBuf Pre-resolved local signal slot.
    */
   __device__ void reset_signal(
@@ -616,25 +685,23 @@ class P2pIbgdaTransportDevice {
   // =========================================================================
 
   /**
-   * read_signal - Non-blocking volatile read of a local signal slot.
+   * read_signal - Non-blocking acquire read of a local signal slot.
    *
    * @param signalBuf Pre-resolved local signal slot.
    * @return          Current value of *signalBuf.
    */
   __device__ uint64_t read_signal(const IbgdaLocalBuffer& signalBuf) const {
-    volatile uint64_t* sig = static_cast<volatile uint64_t*>(signalBuf.ptr);
-    return *sig;
+    return load_acquire_system_u64(signalBuf.ptr);
   }
 
   /**
-   * read_counter - Non-blocking volatile read of a local counter slot.
+   * read_counter - Non-blocking acquire read of a local counter slot.
    *
    * @param counterBuf Pre-resolved local counter slot.
    * @return           Current value of *counterBuf.
    */
   __device__ uint64_t read_counter(const IbgdaLocalBuffer& counterBuf) const {
-    volatile uint64_t* ctr = static_cast<volatile uint64_t*>(counterBuf.ptr);
-    return *ctr;
+    return load_acquire_system_u64(counterBuf.ptr);
   }
 
   // =========================================================================
@@ -642,25 +709,22 @@ class P2pIbgdaTransportDevice {
   // =========================================================================
 
  private:
-  // --- put_impl: always group-cooperative data transfer ---
+  __device__ __forceinline__ static uint64_t load_acquire_system_u64(
+      const void* ptr) {
+    auto* slot = static_cast<uint64_t*>(const_cast<void*>(ptr));
+    return cuda::atomic_ref<uint64_t, cuda::thread_scope_system>{*slot}.load(
+        cuda::memory_order_acquire);
+  }
 
-  __device__ void put_impl(
+  __device__ void finish_put_impl(
       ThreadGroup& group,
-      const IbgdaLocalBuffer& localBuf,
-      const IbgdaRemoteBuffer& remoteBuf,
-      std::size_t nbytes,
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal,
       const IbgdaLocalBuffer& counterBuf,
       uint64_t counterVal) {
-    bool hasSignal = signalBuf.ptr != nullptr;
-    bool hasCounter = counterBuf.ptr != nullptr;
+    const bool hasSignal = signalBuf.ptr != nullptr;
+    const bool hasCounter = counterBuf.ptr != nullptr;
 
-    // Step 1: ALWAYS group-cooperative data transfer
-    put_cooperative(group, localBuf, remoteBuf, nbytes);
-
-    // Step 2: Leader posts signal/counter WQE(s).
-    //
     // The DOCA verbs API exposes:
     //   - signal_fenced (atomic FA, FENCEd against prior put)
     //   - signal_counter (signal_fenced on primary QP + companion-QP loopback
@@ -689,11 +753,39 @@ class P2pIbgdaTransportDevice {
     group.sync();
   }
 
+  __device__ void put_impl(
+      ThreadGroup& group,
+      const IbgdaLocalBuffer& localBuf,
+      const IbgdaRemoteBuffer& remoteBuf,
+      std::size_t nbytes,
+      const IbgdaRemoteBuffer& signalBuf,
+      uint64_t signalVal,
+      const IbgdaLocalBuffer& counterBuf,
+      uint64_t counterVal) {
+    if (group.is_leader() && nbytes > 0) {
+      put_single_impl(group.group_id, localBuf, remoteBuf, nbytes);
+    }
+    group.sync();
+    finish_put_impl(group, signalBuf, signalVal, counterBuf, counterVal);
+  }
+
+  __device__ void put_cooperative_impl(
+      ThreadGroup& group,
+      const IbgdaLocalBuffer& localBuf,
+      const IbgdaRemoteBuffer& remoteBuf,
+      std::size_t nbytes,
+      const IbgdaRemoteBuffer& signalBuf,
+      uint64_t signalVal,
+      const IbgdaLocalBuffer& counterBuf,
+      uint64_t counterVal) {
+    put_cooperative_data_impl(group, localBuf, remoteBuf, nbytes);
+    finish_put_impl(group, signalBuf, signalVal, counterBuf, counterVal);
+  }
+
   // --- wait_signal_impl ---
   //
-  // The trailing __threadfence_system() is the standard "acquire fence after
-  // observing a flag": it ensures payload writes (e.g. data the NIC RDMA'd
-  // alongside the signal) are visible to subsequent loads on this thread.
+  // Signal waits use system-scope acquire loads. This matches NCCLX GIN's
+  // waitSignal path and avoids the heavier post-poll __threadfence_system().
 
   __device__ void wait_signal_impl(
       ThreadGroup& group,
@@ -701,15 +793,15 @@ class P2pIbgdaTransportDevice {
       uint64_t expected,
       const Timeout& timeout = Timeout()) {
     if (group.is_leader()) {
-      volatile uint64_t* sig = static_cast<volatile uint64_t*>(signalBuf.ptr);
-      while (*sig < expected) {
+      uint64_t current = load_acquire_system_u64(signalBuf.ptr);
+      while (current < expected) {
         TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
             timeout,
             "wait_signal: expected>=%llu, current=%llu",
             static_cast<unsigned long long>(expected),
-            static_cast<unsigned long long>(*sig));
+            static_cast<unsigned long long>(current));
+        current = load_acquire_system_u64(signalBuf.ptr);
       }
-      __threadfence_system();
     }
     group.sync();
   }
@@ -722,15 +814,15 @@ class P2pIbgdaTransportDevice {
       uint64_t expected,
       const Timeout& timeout = Timeout()) {
     if (group.is_leader()) {
-      volatile uint64_t* ctr = static_cast<volatile uint64_t*>(counterBuf.ptr);
-      while (*ctr < expected) {
+      uint64_t current = load_acquire_system_u64(counterBuf.ptr);
+      while (current < expected) {
         TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
             timeout,
             "wait_counter: expected>=%llu, current=%llu",
             static_cast<unsigned long long>(expected),
-            static_cast<unsigned long long>(*ctr));
+            static_cast<unsigned long long>(current));
+        current = load_acquire_system_u64(counterBuf.ptr);
       }
-      __threadfence_system();
     }
     group.sync();
   }
@@ -739,8 +831,8 @@ class P2pIbgdaTransportDevice {
   //
   // The volatile store + group.sync() is sufficient for intra-group ordering.
   // __threadfence() (device scope) is a cheap belt-and-suspenders so that
-  // threads in OTHER blocks observing the slot via volatile reads see the
-  // reset. We deliberately do NOT use __threadfence_system() here: nothing
+  // threads in OTHER blocks observing the slot through the read/wait APIs see
+  // the reset. We deliberately do NOT use __threadfence_system() here: nothing
   // off-device reads this slot — the NIC only writes it via remote signals,
   // and the host doesn't read it on the hot path.
 
@@ -759,13 +851,18 @@ class P2pIbgdaTransportDevice {
   // Raw building blocks (single-thread, no gating, no sync)
   // =========================================================================
 
-  // --- put_cooperative: group-collaborative WQE construction ---
+  // --- put_cooperative_data_impl: group-collaborative WQE construction ---
 
-  __device__ void put_cooperative(
+  __device__ void put_cooperative_data_impl(
       ThreadGroup& group,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes) {
+    if (nbytes == 0) {
+      group.sync();
+      return;
+    }
+
     std::size_t chunkSize = nbytes / group.group_size;
     std::size_t offset = group.thread_id_in_group * chunkSize;
     std::size_t laneBytes = (group.thread_id_in_group == group.group_size - 1)
@@ -1103,21 +1200,21 @@ class P2pIbgdaTransportDevice {
    *                        perBlockSlot. 0 means one signal per perBlockSlot.
    * @param timeout         Optional timeout for wait operations.
    */
+  template <typename CopyOp = Memcpy, typename... Args>
   __device__ __forceinline__ void send(
       ThreadGroup& group,
-      void* __restrict__ src,
+      const void* __restrict__ src,
       std::size_t nbytes,
       int active_blocks = 0,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout()) {
-#ifndef __CUDA_ARCH__
-    (void)group;
-    (void)src;
-    (void)nbytes;
-    (void)active_blocks;
-    (void)max_signal_bytes;
-    (void)timeout;
-#else
+      const Timeout& timeout = Timeout(),
+      Args... args) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+#ifdef __HIP_PLATFORM_AMD__
+    static_assert(
+        false,
+        "P2pIbgdaTransportDevice::send() requires NVIDIA GPU (DOCA/IBGDA)");
+#endif
     if (nbytes == 0) {
       return;
     }
@@ -1200,12 +1297,14 @@ class P2pIbgdaTransportDevice {
             timeout);
       }
 
-      // (2) Cooperative memcpy: src → local sendStaging.
-      memcpy_vectorized(
+      // (2) Cooperative copy: src → local sendStaging via CopyOp.
+      CopyOp::send(
           sendRecvState_.sendStagingPtr + stagingOff,
-          static_cast<char*>(src) + dataOff,
+          static_cast<const char*>(src) + dataOff,
           bytesThis,
-          group);
+          group,
+          dataOff,
+          args...);
       group.sync();
 
       // (3) Backpressure: wait for receiver to free this sub-chunk's
@@ -1276,21 +1375,21 @@ class P2pIbgdaTransportDevice {
    *                        Must match the sender's value.
    * @param timeout         Optional timeout for wait operations.
    */
+  template <typename CopyOp = Memcpy, typename... Args>
   __device__ __forceinline__ void recv(
       ThreadGroup& group,
       void* __restrict__ dst,
       std::size_t nbytes,
       int active_blocks = 0,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout()) {
-#ifndef __CUDA_ARCH__
-    (void)group;
-    (void)dst;
-    (void)nbytes;
-    (void)active_blocks;
-    (void)max_signal_bytes;
-    (void)timeout;
-#else
+      const Timeout& timeout = Timeout(),
+      Args... args) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+#ifdef __HIP_PLATFORM_AMD__
+    static_assert(
+        false,
+        "P2pIbgdaTransportDevice::recv() requires NVIDIA GPU (DOCA/IBGDA)");
+#endif
     if (nbytes == 0) {
       return;
     }
@@ -1369,12 +1468,14 @@ class P2pIbgdaTransportDevice {
           static_cast<uint64_t>(chunkStep + 1),
           timeout);
 
-      // (2) Cooperative memcpy: local recvStaging → dst.
-      memcpy_vectorized(
+      // (2) Cooperative copy: local recvStaging → dst via CopyOp.
+      CopyOp::recv(
           static_cast<char*>(dst) + dataOff,
           sendRecvState_.recvStagingPtr + stagingOff,
           bytesThis,
-          group);
+          group,
+          dataOff,
+          args...);
       group.sync();
 
       // (3) Signal SLOT_FREE to sender — per sub-chunk (symmetric with
@@ -1395,10 +1496,318 @@ class P2pIbgdaTransportDevice {
 #endif
   }
 
+  /**
+   * forward — receive data and forward it to the next peer in a ring.
+   *
+   * Combines recv + send in a single method, sharing the staging buffer to
+   * avoid an extra copy. The CopyOp::forward() method receives three
+   * buffers: dst (application output), fwd_staging (next peer's send staging),
+   * and staging (this transport's recv staging). This enables fused
+   * receive-reduce-forward patterns.
+   *
+   * Signal ordering invariant (critical for ring deadlock avoidance):
+   *   1. Wait DATA_READY from sender (this transport)
+   *   2. Wait NIC_DONE on fwd transport's sendStaging (backpressure)
+   *   3. CopyOp::forward(dst, fwd_staging, staging, ...)
+   *   4. Signal SLOT_FREE to sender (this transport) — BEFORE step 5
+   *   5. Wait SLOT_FREE from fwd transport's receiver
+   *   6. threadfence_system + RDMA put via fwd transport
+   *
+   * Step 4 before step 5 breaks the circular dependency in rings: each rank
+   * releases its predecessor's staging before waiting on its successor.
+   *
+   * Protocol compatibility with send() and recv():
+   *
+   * forward acts as a recv on "this" transport and a send on "fwd".
+   * The signal protocol is wire-compatible:
+   *
+   *   Recv side (this transport):
+   *     - Reads stepState[maxGroups + groupId] (same index as recv)
+   *     - Waits DATA_READY on localSignalBuf[groupId] (matches send's
+   *       piggybacked signal on remoteSignalBuf[groupId])
+   *     - Signals SLOT_FREE on remoteSignalBuf[maxGroups + groupId]
+   *       (matches send's backpressure wait on localSignalBuf[maxGroups +
+   *       groupId])
+   *
+   *   Fwd side (fwd transport):
+   *     - Reads stepState[groupId] (same index as send)
+   *     - Waits NIC_DONE on localCounterBuf[groupId] (matches send's
+   *       self-counter)
+   *     - Waits SLOT_FREE on localSignalBuf[maxGroups + groupId]
+   *       (matches recv's backpressure release)
+   *     - RDMA puts with DATA_READY on remoteSignalBuf[groupId]
+   *       + NIC_DONE on localCounterBuf[groupId]
+   *       (matches recv's DATA_READY wait)
+   *
+   * Any chain of send → forward* → recv is therefore valid: each
+   * forward consumes exactly the signals its predecessor produces
+   * and produces exactly the signals its successor expects.
+   *
+   * @param group           ThreadGroup (all threads participate).
+   * @param dst             Application destination (may be nullptr if
+   *                        CopyOp handles it, e.g. reduce-scatter).
+   * @param fwd             Forward transport (sends to next peer in ring).
+   * @param nbytes          Bytes to receive and forward.
+   * @param active_blocks   Number of block-groups sharing the slot. 0 =
+   * maxGroups.
+   * @param max_signal_bytes Max bytes per signaled sub-chunk. 0 = perBlockSlot.
+   * @param timeout         Optional timeout for wait operations.
+   * @param args            Extra args forwarded to CopyOp::forward.
+   */
+  template <typename CopyOp = Memcpy, typename... Args>
+  __device__ __forceinline__ void forward(
+      ThreadGroup& group,
+      void* __restrict__ dst,
+      P2pIbgdaTransportDevice& fwd,
+      std::size_t nbytes,
+      int active_blocks = 0,
+      std::size_t max_signal_bytes = 0,
+      const Timeout& timeout = Timeout(),
+      Args... args) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+#ifdef __HIP_PLATFORM_AMD__
+    static_assert(
+        false,
+        "P2pIbgdaTransportDevice::forward() requires NVIDIA GPU (DOCA/IBGDA)");
+#endif
+    if (nbytes == 0) {
+      return;
+    }
+
+    const int groupId = group.group_id;
+
+    // --- recv side (this transport) ---
+    const int recvEffActive =
+        active_blocks > 0 ? active_blocks : sendRecvState_.maxGroups;
+    if (recvEffActive > sendRecvState_.maxGroups || groupId >= recvEffActive) {
+      if (group.is_leader()) {
+        printf(
+            "[PIPES] FATAL: forward recv active_blocks=%d "
+            "maxGroups=%d groupId=%u\n",
+            recvEffActive,
+            sendRecvState_.maxGroups,
+            groupId);
+      }
+      __trap();
+    }
+
+    const std::size_t recvPerBlockSlot =
+        (sendRecvState_.dataBufferSize / recvEffActive) & ~15ULL;
+    if (recvPerBlockSlot == 0) {
+      if (group.is_leader()) {
+        printf("[PIPES] FATAL: forward recvPerBlockSlot=0\n");
+      }
+      __trap();
+    }
+
+    // --- fwd side (fwd transport) ---
+    const int fwdEffActive =
+        active_blocks > 0 ? active_blocks : fwd.sendRecvState_.maxGroups;
+    if (fwdEffActive > fwd.sendRecvState_.maxGroups ||
+        groupId >= fwdEffActive) {
+      if (group.is_leader()) {
+        printf(
+            "[PIPES] FATAL: forward fwd active_blocks=%d "
+            "maxGroups=%d groupId=%u\n",
+            fwdEffActive,
+            fwd.sendRecvState_.maxGroups,
+            groupId);
+      }
+      __trap();
+    }
+
+    const std::size_t fwdPerBlockSlot =
+        (fwd.sendRecvState_.dataBufferSize / fwdEffActive) & ~15ULL;
+    if (fwdPerBlockSlot == 0) {
+      if (group.is_leader()) {
+        printf("[PIPES] FATAL: forward fwdPerBlockSlot=0\n");
+      }
+      __trap();
+    }
+
+    // Chunk sizes for recv and fwd sides
+    std::size_t recvChunkSize =
+        (max_signal_bytes > 0 && max_signal_bytes < recvPerBlockSlot)
+        ? (max_signal_bytes & ~15ULL)
+        : recvPerBlockSlot;
+    if (recvChunkSize == 0) {
+      recvChunkSize = recvPerBlockSlot;
+    }
+    std::size_t fwdChunkSize =
+        (max_signal_bytes > 0 && max_signal_bytes < fwdPerBlockSlot)
+        ? (max_signal_bytes & ~15ULL)
+        : fwdPerBlockSlot;
+    if (fwdChunkSize == 0) {
+      fwdChunkSize = fwdPerBlockSlot;
+    }
+
+    const std::size_t recvChunksPerSlot = recvPerBlockSlot / recvChunkSize;
+    const std::size_t fwdChunksPerSlot = fwdPerBlockSlot / fwdChunkSize;
+    const std::size_t totalRecvChunks =
+        (nbytes + recvChunkSize - 1) / recvChunkSize;
+    const std::size_t totalFwdChunks =
+        (nbytes + fwdChunkSize - 1) / fwdChunkSize;
+
+    // Step state
+    const int64_t recvBaseStep =
+        sendRecvState_.stepState[sendRecvState_.maxGroups + groupId];
+    const int recvPipelineDepth = sendRecvState_.pipelineDepth;
+    const std::size_t recvDataBufSize = sendRecvState_.dataBufferSize;
+    const int recvMaxGroups = sendRecvState_.maxGroups;
+    const int64_t recvChunksPerSlot64 = static_cast<int64_t>(recvChunksPerSlot);
+
+    const int64_t fwdBaseStep = fwd.sendRecvState_.stepState[groupId];
+    const int fwdPipelineDepth = fwd.sendRecvState_.pipelineDepth;
+    const std::size_t fwdDataBufSize = fwd.sendRecvState_.dataBufferSize;
+    const int fwdMaxGroups = fwd.sendRecvState_.maxGroups;
+    const int64_t fwdChunksPerSlot64 = static_cast<int64_t>(fwdChunksPerSlot);
+    const int64_t fwdPipelineChunks =
+        static_cast<int64_t>(fwdPipelineDepth) * fwdChunksPerSlot64;
+
+    // Both sides process the same nbytes; chunk sizes must match so that
+    // the loop counter advances recv and fwd step states in lockstep.
+    if (totalRecvChunks != totalFwdChunks) {
+      if (group.is_leader()) {
+        printf(
+            "[PIPES] FATAL: forward chunk count mismatch: "
+            "recv=%llu fwd=%llu\n",
+            (unsigned long long)totalRecvChunks,
+            (unsigned long long)totalFwdChunks);
+      }
+      __trap();
+    }
+
+    for (std::size_t s = 0; s < totalRecvChunks; ++s) {
+      // --- Recv side offsets ---
+      const int64_t recvChunkStep = recvBaseStep + static_cast<int64_t>(s);
+      const int64_t recvSlotStep = recvChunkStep / recvChunksPerSlot64;
+      const int64_t recvSubStep = recvChunkStep % recvChunksPerSlot64;
+      const int recvSlot = static_cast<int>(recvSlotStep % recvPipelineDepth);
+      const std::size_t recvSlotOff = recvSlot * recvDataBufSize;
+      const std::size_t recvChunkOff =
+          static_cast<std::size_t>(recvSubStep) * recvChunkSize;
+      const std::size_t recvStagingOff =
+          recvSlotOff + groupId * recvPerBlockSlot + recvChunkOff;
+      const std::size_t dataOff = s * recvChunkSize;
+      const std::size_t bytesThis = (dataOff + recvChunkSize <= nbytes)
+          ? recvChunkSize
+          : (nbytes - dataOff);
+
+      // --- Fwd side offsets ---
+      const int64_t fwdChunkStep = fwdBaseStep + static_cast<int64_t>(s);
+      const int64_t fwdSlotStep = fwdChunkStep / fwdChunksPerSlot64;
+      const int64_t fwdSubStep = fwdChunkStep % fwdChunksPerSlot64;
+      const int fwdSlot = static_cast<int>(fwdSlotStep % fwdPipelineDepth);
+      const std::size_t fwdSlotOff = fwdSlot * fwdDataBufSize;
+      const std::size_t fwdChunkOff =
+          static_cast<std::size_t>(fwdSubStep) * fwdChunkSize;
+      const std::size_t fwdStagingOff =
+          fwdSlotOff + groupId * fwdPerBlockSlot + fwdChunkOff;
+
+      // (1) Wait for sender's DATA_READY.
+      wait_signal(
+          group,
+          sendRecvState_.localSignalBuf.subBuffer(groupId * sizeof(uint64_t)),
+          static_cast<uint64_t>(recvChunkStep + 1),
+          timeout);
+
+      // (2) Wait for NIC_DONE on fwd's sendStaging (backpressure).
+      if (fwdChunkStep >= fwdPipelineChunks) {
+        fwd.wait_counter(
+            group,
+            fwd.sendRecvState_.localCounterBuf.subBuffer(
+                groupId * sizeof(uint64_t)),
+            static_cast<uint64_t>(fwdChunkStep - fwdPipelineChunks + 1),
+            timeout);
+      }
+
+      // (3) CopyOp::forward — transform recv staging → dst + fwd staging.
+      CopyOp::forward(
+          dst ? static_cast<char*>(dst) + dataOff : nullptr,
+          fwd.sendRecvState_.sendStagingPtr + fwdStagingOff,
+          sendRecvState_.recvStagingPtr + recvStagingOff,
+          bytesThis,
+          group,
+          dataOff,
+          args...);
+      group.sync();
+
+      // (4) Signal SLOT_FREE to sender (this transport).
+      //     CRITICAL: must happen BEFORE waiting on fwd's SLOT_FREE (step 5)
+      //     to break circular ring dependency.
+      signal(
+          group,
+          sendRecvState_.remoteSignalBuf.subBuffer(
+              (recvMaxGroups + groupId) * sizeof(uint64_t)),
+          1ULL);
+
+      // (5) Wait for fwd receiver's SLOT_FREE (backpressure on fwd's
+      //     recvStaging).
+      if (fwdChunkStep >= fwdPipelineChunks) {
+        fwd.wait_signal(
+            group,
+            fwd.sendRecvState_.localSignalBuf.subBuffer(
+                (fwdMaxGroups + groupId) * sizeof(uint64_t)),
+            static_cast<uint64_t>(fwdChunkStep - fwdPipelineChunks + 1),
+            timeout);
+      }
+
+      // (6) threadfence_system + RDMA put via fwd transport.
+      __threadfence_system();
+      group.sync();
+      if (group.is_leader()) {
+        ThreadGroup solo{0, 1, group.group_id, 1, SyncScope::THREAD};
+        fwd.put(
+            solo,
+            fwd.sendRecvState_.sendStagingBuf.subBuffer(fwdStagingOff),
+            fwd.sendRecvState_.recvStagingBuf.subBuffer(fwdStagingOff),
+            bytesThis,
+            fwd.sendRecvState_.remoteSignalBuf.subBuffer(
+                groupId * sizeof(uint64_t)),
+            1ULL,
+            fwd.sendRecvState_.localCounterBuf.subBuffer(
+                groupId * sizeof(uint64_t)),
+            1ULL);
+      }
+      group.sync();
+    }
+
+    // Update step state for both recv and fwd sides.
+    if (group.is_leader()) {
+      sendRecvState_.stepState[sendRecvState_.maxGroups + groupId] =
+          recvBaseStep + static_cast<int64_t>(totalRecvChunks);
+      fwd.sendRecvState_.stepState[groupId] =
+          fwdBaseStep + static_cast<int64_t>(totalRecvChunks);
+    }
+    group.sync();
+#endif
+  }
+
   // Send/recv state accessors
 
   __host__ __device__ const IbSendRecvState& send_recv_state() const {
     return sendRecvState_;
+  }
+
+  /**
+   * Maximum bytes a block can send without blocking on pipeline backpressure.
+   *
+   * The staging buffer is split into pipelineDepth slots, each divided evenly
+   * across active_blocks. A block can fill all its slots before the NIC must
+   * drain any of them, so the non-blocking window is:
+   *   (dataBufferSize / active_blocks) * pipelineDepth
+   *
+   * Callers should loop over their data in pipeline_window-sized chunks so
+   * that send()/forward() never stall waiting for a free slot.
+   *
+   * @param active_blocks  Total blocks sharing this transport (typically
+   *                       gridDim.x).
+   */
+  __device__ __forceinline__ std::size_t pipeline_window(
+      int active_blocks) const {
+    const std::size_t per_block_slot =
+        (sendRecvState_.dataBufferSize / active_blocks) & ~15ULL;
+    return per_block_slot * sendRecvState_.pipelineDepth;
   }
 
  private:
@@ -1408,16 +1817,10 @@ class P2pIbgdaTransportDevice {
   };
 
   /**
-   * nic_qp_for_group - Single lookup: returns {nic_id, qp_id} for a group.
+   * nic_qp_for_group - Single lookup: returns NIC/QP ids.
    *
-   * Round-robin over nicDevices_, then within the chosen NIC round-robin
-   * over its qps. All WQEs for one logical operation share the same
-   * group_id and therefore land on the same NIC + QP — required for the
-   * FENCE bit to order them. Host-side population is responsible for
-   * peer-rotating the NicDeviceIbgdaResources[] order so adjacent peers
-   * land on different NICs. Traps if nicDevices_ is empty or the chosen
-   * NIC has no qps (programming error: device op on a default-constructed
-   * transport).
+   * Round-robin over NIC resources, then within the chosen NIC round-robin over
+   * its QPs.
    */
   __device__ NicQpIndex nic_qp_for_group(uint32_t group_id) const {
     if (nicDevices_.empty()) {
@@ -1467,10 +1870,7 @@ class P2pIbgdaTransportDevice {
   }
 
   // --- Members ---
-  // Per-NIC bundles (qps + companion_qps + sink_lkey + device_id). Host-side
-  // builder peer-rotates the order so nic_qp_for_group(g)'s nic_id (= g %
-  // nicDevices_.size()) produces balanced scatter. At single-NIC:
-  // nicDevices_.size() == 1.
+  // Per-NIC bundles (qps + companion_qps + sink_lkey + device_id).
   DeviceSpan<NicDeviceIbgdaResources> nicDevices_{};
 
   // Owned signal/counter buffers (set by transport during construction)

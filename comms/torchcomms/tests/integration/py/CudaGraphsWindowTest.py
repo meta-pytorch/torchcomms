@@ -326,12 +326,10 @@ class TestWindowGraphCapture(CudaGraphTestBase):
                 # execute eagerly rather than being captured.
                 has_device_api = hasattr(win, "get_device_window")
                 if has_device_api:
-                    # pyre-ignore[16]: device API methods on NCCLX subclass
                     dev_win_ptr = win.get_device_window(signal_count=size)
 
                     # Local buffer registration during capture — also uses
                     # StreamCaptureModeGuard for commWindowRegister.
-                    # pyre-ignore[16]: device API methods on NCCLX subclass
                     src_buf_info = win.register_local_buffer(src_data)
 
                 # RMA ops captured into the graph
@@ -419,7 +417,7 @@ class TestWindowGraphCapture(CudaGraphTestBase):
                 )
 
             if has_device_api:
-                # pyre-ignore[16, 61]: device API on NCCLX subclass
+                # pyre-ignore[61]: src_buf_info defined under the same has_device_api guard
                 win.deregister_local_buffer(src_buf_info)
             del win
             torch.cuda.synchronize()

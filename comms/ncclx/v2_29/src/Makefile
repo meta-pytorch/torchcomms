@@ -30,7 +30,7 @@ CXXFLAGS += -DENABLE_PIPES
 endif
 
 ##### src files
-INCEXPORTS  := nccl.h nccl_device.h CtranEx.h CtranExComm.h \
+INCEXPORTS  := nccl.h nccl_device.h \
 	$(patsubst ${SRCDIR}/include/%,%,$(wildcard ${SRCDIR}/include/nccl_device/*.h ${SRCDIR}/include/nccl_device/*/*.h ${SRCDIR}/include/nccl_device/*/*/*.h))
 
 
@@ -81,6 +81,8 @@ LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/trainer/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/logger/*.cc)
 ## Common Utils shared between comm libraries
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/*.cc)
+## Memory tracing
+LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/memtrace/*.cc)
 ## CollTrace source files
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/colltrace/*.cc)
 ## CollTrace CUDA source files (host-side kernel launchers)
@@ -345,16 +347,6 @@ $(PKGDIR)/nccl.pc : nccl.pc.in
 	    $< > $@
 
 $(INCDIR)/%.h : %.h
-	@printf "Grabbing   %-35s > %s\n" $< $@
-	mkdir -p $(INCDIR)
-	install -m 644 $< $@
-
-$(INCDIR)/CtranEx.h : ${BASE_DIR}/comms/ctran/CtranEx.h
-	@printf "Grabbing   %-35s > %s\n" $< $@
-	mkdir -p $(INCDIR)
-	install -m 644 $< $@
-
-$(INCDIR)/CtranExComm.h : ${SHAREDDIR}/meta/wrapper/CtranExComm.h
 	@printf "Grabbing   %-35s > %s\n" $< $@
 	mkdir -p $(INCDIR)
 	install -m 644 $< $@

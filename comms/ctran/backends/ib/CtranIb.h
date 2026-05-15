@@ -50,9 +50,8 @@ class CtranIb {
       std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory = nullptr,
       std::optional<int> maxNumCqe = std::nullopt);
 
-  // Creates local IB resources without pre-existing communicator. It is used
-  // for use cases directly control the local transport (see CtranEx). In
-  // addition, it supports three types of bootstrap mode as defined below.
+  // Creates local IB resources without pre-existing communicator.
+  // Supports three types of bootstrap mode as defined below.
   // Input arguments:
   //   - rank: the rank of the calling process. Used to manage peer-to-peer
   //           connection in local connection cache.

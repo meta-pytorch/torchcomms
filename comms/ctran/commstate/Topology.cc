@@ -18,11 +18,12 @@ constexpr std::string_view kDeviceRackSerial = "DEVICE_RACK_SERIAL";
 // DEVICE_BACKEND_NETWORK_TOPOLOGY should be present in all T20 hosts with
 // backend network. If not found CTRAN initialization fails.
 // Ignore this field for other platform types.
-// Expected format for top of rack topology
-// e.g
-// DEVICE_BACKEND_NETWORK_TOPOLOGY=pci5/pci5.5D.z088//rtsw191.c088.f00.pci5
-// Expected format for rail based topology
+// Expected format for top of rack topology (NSF)
+// e.g DEVICE_BACKEND_NETWORK_TOPOLOGY=pci5/pci5.5D.z088//rtsw191.c088.f00.pci5
+// Expected format for rail based topology (DSF with scaling unit)
 // e.g DEVICE_BACKEND_NETWORK_TOPOLOGY=/snb1.z081/snb1.z081.u015/
+// Expected format for DSF without scaling unit (e.g. GB300 DSF at UCO1)
+// e.g DEVICE_BACKEND_NETWORK_TOPOLOGY=uco1/uco1.z086//
 void parseTopologyValue(
     const std::string& value,
     const std::string& filepath,
@@ -50,19 +51,10 @@ void parseTopologyValue(
   su = std::move(topologyParts[2]);
   rtsw = std::move(topologyParts[3]);
 
-  if ((rtsw.empty() && su.empty()) || (!rtsw.empty() && !su.empty()) ||
-      zone.empty()) {
+  if (zone.empty()) {
     return;
   }
   isBackendTopologyValid = true;
-}
-
-void parseRackSerial(const std::string& value, int& rackSerial) {
-  try {
-    rackSerial = folly::to<int>(value);
-  } catch (const std::exception& e) {
-    CLOGF(ERR, "Failed to parse rack serial '{}': {}", value, e.what());
-  }
 }
 
 std::optional<ncclx::RankTopology> loadTopology(
@@ -71,7 +63,7 @@ std::optional<ncclx::RankTopology> loadTopology(
   std::ifstream file(filepath);
   std::string line;
 
-  int rackSerial = -1;
+  std::string rackSerial;
 
   // currently we don't use rtsw info yet, it's ok to have empty rtsw
   std::string rtsw;
@@ -99,9 +91,14 @@ std::optional<ncclx::RankTopology> loadTopology(
       parseTopologyValue(
           value, filepath, dc, zone, su, rtsw, isBackendTopologyValid);
     } else if (key == kDeviceRackSerial) {
-      // If device rack serial is not present, use default value -1
-      if (!value.empty()) {
-        parseRackSerial(value, rackSerial);
+      if (value.size() >= ncclx::kMaxNameLen) {
+        CLOGF(
+            WARN,
+            "DEVICE_RACK_SERIAL '{}' exceeds max length {}, ignoring to avoid truncation-based false matches",
+            value,
+            ncclx::kMaxNameLen);
+      } else {
+        rackSerial = value;
       }
     }
   }
@@ -118,12 +115,19 @@ std::optional<ncclx::RankTopology> loadTopology(
           "to ignore this error");
       return std::nullopt;
     }
+    if (rackSerial.empty()) {
+      CLOGF(
+          WARN,
+          "DEVICE_RACK_SERIAL not found in {}. "
+          "isSameDeviceRack() will always return false, which may affect NVL fabric topology detection",
+          filepath);
+    }
   }
 
   ncclx::RankTopology topo;
   topo.rank = rank;
   topo.pid = getpid();
-  topo.rackSerial = rackSerial;
+  std::strncpy(topo.rackSerial, rackSerial.c_str(), ncclx::kMaxNameLen);
   std::strncpy(topo.dc, dc.c_str(), ncclx::kMaxNameLen);
   std::strncpy(topo.zone, zone.c_str(), ncclx::kMaxNameLen);
   std::strncpy(topo.host, host.c_str(), ncclx::kMaxNameLen);

@@ -38,6 +38,28 @@ void testRecv(
     int blocksPerGroup = 1,
     cudaStream_t stream = nullptr);
 
+void testTileSend(
+    const P2pNvlTransportDevice& p2p,
+    void* src_d,
+    size_t nbytes,
+    int activeBlocks,
+    size_t maxSignalBytes,
+    Timeout timeout,
+    int numBlocks,
+    int blockSize,
+    cudaStream_t stream = nullptr);
+
+void testTileRecv(
+    const P2pNvlTransportDevice& p2p,
+    void* dst_d,
+    size_t nbytes,
+    int activeBlocks,
+    size_t maxSignalBytes,
+    Timeout timeout,
+    int numBlocks,
+    int blockSize,
+    cudaStream_t stream = nullptr);
+
 // Multiple sequential sends within a single kernel
 void testMultiSend(
     P2pNvlTransportDevice* p2p,
@@ -119,6 +141,18 @@ void testPutWithSignal(
     int numBlocks,
     int blockSize,
     GroupType groupType = GroupType::WARP);
+
+// forward_group: fused recv-and-forward (reads from predecessor staging buffer,
+// writes to local dst and successor's remote staging buffer simultaneously)
+void testForward(
+    P2pNvlTransportDevice* pred,
+    P2pNvlTransportDevice* succ,
+    void* dst_d,
+    size_t nbytes,
+    int numBlocks,
+    int blockSize,
+    GroupType groupType = GroupType::WARP,
+    cudaStream_t stream = nullptr);
 
 // Test wait() - one-sided wait for peer to write to dst_d and signal
 void testWait(

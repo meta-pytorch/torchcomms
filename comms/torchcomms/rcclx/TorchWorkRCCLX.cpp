@@ -143,12 +143,13 @@ TorchWorkRCCLX::WorkStatus TorchWorkRCCLX::checkStatus() {
 }
 
 void TorchWorkRCCLX::wait() {
-  runWaitHooks();
+  runWaitPreHooks();
 
   // If already completed, return immediately
   WorkStatus local_state = status();
   if (local_state == WorkStatus::COMPLETED ||
       local_state == WorkStatus::ERROR || local_state == WorkStatus::TIMEDOUT) {
+    runWaitPostHooks();
     return;
   }
 
@@ -175,5 +176,7 @@ void TorchWorkRCCLX::wait() {
   // complete.
   inputTensors_.clear();
   inputTensor_.reset();
+
+  runWaitPostHooks();
 }
 } // namespace torch::comms

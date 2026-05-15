@@ -274,19 +274,6 @@ def gen_alltoall_files(gensrc, srcs, rules):
         },
     )
 
-    # Generate for AllToAllvDynamic with three variants
-    gen_algo_files(
-        gensrc,
-        srcs,
-        rules,
-        {
-            "bases": ["AllToAllvDynamic"],
-            "dir": "AllToAll",
-            "has_ops": False,
-            "variants": ["", "Split", "SplitNonContig"],
-        },
-    )
-
 
 def genalgos(gensrc):
     srcs = []

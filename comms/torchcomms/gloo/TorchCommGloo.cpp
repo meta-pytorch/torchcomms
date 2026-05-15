@@ -321,6 +321,7 @@ void TorchCommGloo::init(
 
   if (options.enable_reconfigure) {
     options_.enable_reconfigure = true;
+    reconfigure_store_ = options.store;
     TC_LOG(INFO, this)
         << "TorchCommGloo dynamic regime enabled, deferring initialization";
     return;
@@ -371,6 +372,8 @@ void TorchCommGloo::connectGlooContext(
   if (options.store) {
     if (persistentStore) {
       store_ = options.store;
+    } else if (!storePrefix.empty()) {
+      store_ = c10::make_intrusive<c10d::PrefixStore>(prefix, options.store);
     } else {
       bootstrapStore = options.store;
       store_ = dupPrefixStore(prefix, bootstrapStore, options.timeout);
@@ -380,7 +383,7 @@ void TorchCommGloo::connectGlooContext(
     store_ = dupPrefixStore(prefix, bootstrapStore, options.timeout);
   }
 
-  if (rank_ == 0) {
+  if (rank_ == 0 && storePrefix.empty()) {
     int64_t initCount = store_->add("init_count", 1);
     TORCH_INTERNAL_ASSERT(
         initCount == 1, "detected multiple communicators on same store!");
@@ -397,43 +400,6 @@ void TorchCommGloo::connectGlooContext(
     gloo::barrier(opts);
   }
   bootstrapStore.reset();
-}
-
-InitHandle TorchCommGloo::getInitHandle() const {
-  return "gloo";
-}
-
-c10::intrusive_ptr<TorchWork> TorchCommGloo::reconfigure(
-    const ReconfigureOptions& opts) {
-  context_.reset();
-  store_.reset();
-  collectiveCounter_ = 0;
-  comm_state_ = CommState::NORMAL;
-
-  comm_size_ = static_cast<int>(
-      std::visit([](const auto& h) { return h.size(); }, opts.handles));
-
-  auto [rank, envCommSize] = query_ranksize();
-  (void)envCommSize;
-  rank_ = rank;
-
-  auto reconfigureTimeout = opts.timeout.value_or(options_.timeout);
-
-  auto storePrefix = fmt::format("{}/reconfigure/{}", name_, opts.uuid);
-
-  CommOptions connectOpts = options_;
-  connectOpts.timeout = reconfigureTimeout;
-
-  connectGlooContext(connectOpts, storePrefix);
-
-  init_state_ = InitializationState::INITIALIZED;
-
-  TracingGuard tracingGuard(name_, comm_size_, "reconfigure", rank_);
-
-  TC_LOG(INFO, this) << "TorchCommGloo reconfigure completed for rank: "
-                     << rank_;
-
-  return c10::make_intrusive<TorchWorkCompleted>();
 }
 
 void TorchCommGloo::finalize() {

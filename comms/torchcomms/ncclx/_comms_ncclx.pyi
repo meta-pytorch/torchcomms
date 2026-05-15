@@ -16,9 +16,6 @@ class TorchWork:
     def is_completed(self) -> bool: ...
     def wait(self) -> None: ...
 
-class TorchCommNCCLXPersistentRequest:
-    def map_remote_tensor(self) -> torch.Tensor: ...
-
 class TorchCommNCCLX:
     def device_alltoallv_single(
         self,
@@ -49,35 +46,6 @@ class TorchCommNCCLX:
         hidden_dim: int,
         async_op: bool,
     ) -> TorchWork: ...
-    def alltoallv_dedup_init(
-        self,
-        num_send_blocks: int,
-        block_count: int,
-        block_num_recv_buckets: int,
-        num_recv_buckets: int,
-        dtype: torch.dtype,
-        async_op: bool,
-    ) -> TorchCommNCCLXPersistentRequest: ...
-    def alltoallv_dedup_exec(
-        self,
-        output_tensor: torch.Tensor,
-        recv_block_ids: torch.Tensor,
-        input_tensor: torch.Tensor,
-        send_indices: torch.Tensor,
-        forward_indices: torch.Tensor,
-        recv_indices: torch.Tensor,
-        request: TorchCommNCCLXPersistentRequest,
-    ) -> TorchWork: ...
-    def alltoallv_dedup_combine(
-        self,
-        output_tensor: torch.Tensor,
-        input_tensor: torch.Tensor,
-        send_indices: torch.Tensor,
-        forward_indices: torch.Tensor,
-        recv_indices: torch.Tensor,
-        request: TorchCommNCCLXPersistentRequest,
-        async_op: bool,
-    ) -> TorchWork: ...
     def reduce_scatter_quantized(
         self,
         output: torch.Tensor,
@@ -88,5 +56,7 @@ class TorchCommNCCLX:
     ) -> TorchWork: ...
     def comm_dump(self) -> dict[str, str]: ...
 
-def comm_dump_all() -> dict[str, dict[str, str]]: ...
+def comm_dump_all(
+    request_fields: str | None = None,
+) -> dict[str, dict[str, str]]: ...
 def init_caching_allocator_hook() -> None: ...

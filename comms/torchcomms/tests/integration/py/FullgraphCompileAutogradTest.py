@@ -10,7 +10,7 @@ import torch
 from torchcomms.tests.helpers.py.test_helpers import (  # noqa: E402
     skip_if_torch_compile_not_supported_or_enabled,
 )
-from torchcomms.tests.integration.py.TorchCommTestHelpers import (  # noqa: E402
+from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (  # noqa: E402
     skip_backend,
     TorchCommTestWrapper,
 )

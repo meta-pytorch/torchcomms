@@ -23,6 +23,12 @@ enum class LogLevel {
   TRACE = 6
 };
 
+// Save and restore macros that collide with our enum values.
+// topo.h defines #define NET 5 which would expand inside the enum.
+#pragma push_macro("NET")
+#pragma push_macro("INIT")
+#undef NET
+#undef INIT
 enum SubSystem {
   INIT = 0x1,
   COLL = 0x2,
@@ -42,6 +48,8 @@ enum SubSystem {
   RAS = 0x8000,
   ALL = ~0
 };
+#pragma pop_macro("INIT")
+#pragma pop_macro("NET")
 
 // TODO: Properly clean this up so that we directly parse NCCL logs to folly
 // levels.

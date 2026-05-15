@@ -1033,10 +1033,10 @@ TEST_F(
     CachingAllocatorHookCallsGlobalRegisterOnSegmentAlloc) {
   // Test: Verify that CCA hook calls global_register_address on SEGMENT_ALLOC
   // The mock_hook_ already has nccl_mock_ set via SetUp()
-  auto hook = std::make_unique<CachingAllocatorHookImpl>();
+  auto hook = std::make_unique<NcclxCachingAllocatorHookImpl>();
   hook->setNcclApi(nccl_mock_);
-  CachingAllocatorHook::setInstance(std::move(hook));
-  auto& allocator = CachingAllocatorHook::getInstance();
+  NcclxCachingAllocatorHook::setInstance(std::move(hook));
+  auto& allocator = NcclxCachingAllocatorHook::getInstance();
 
   // Create memory allocation trace entry
   auto alloc_entry = createAllocation(0x5000);
@@ -1054,10 +1054,10 @@ TEST_F(
     TorchCommNCCLXTest,
     CachingAllocatorHookCallsGlobalDeregisterOnSegmentFree) {
   // Test: Verify that CCA hook calls global_deregister_address on SEGMENT_FREE
-  auto hook = std::make_unique<CachingAllocatorHookImpl>();
+  auto hook = std::make_unique<NcclxCachingAllocatorHookImpl>();
   hook->setNcclApi(nccl_mock_);
-  CachingAllocatorHook::setInstance(std::move(hook));
-  auto& allocator = CachingAllocatorHook::getInstance();
+  NcclxCachingAllocatorHook::setInstance(std::move(hook));
+  auto& allocator = NcclxCachingAllocatorHook::getInstance();
 
   // Create memory deallocation trace entry
   auto dealloc_entry = createDeallocation(0x6000);
@@ -1078,10 +1078,10 @@ TEST_F(
   // Test: Verify error handling during global memory registration.
   // Registration is best-effort — when ctran is not enabled, it's expected to
   // fail silently with a warning log rather than throwing.
-  auto hook = std::make_unique<CachingAllocatorHookImpl>();
+  auto hook = std::make_unique<NcclxCachingAllocatorHookImpl>();
   hook->setNcclApi(nccl_mock_);
-  CachingAllocatorHook::setInstance(std::move(hook));
-  auto& allocator = CachingAllocatorHook::getInstance();
+  NcclxCachingAllocatorHook::setInstance(std::move(hook));
+  auto& allocator = NcclxCachingAllocatorHook::getInstance();
 
   // Create memory allocation trace entry
   auto alloc_entry = createAllocation(0x7000);
@@ -1152,76 +1152,6 @@ TEST_F(TorchCommNCCLXTest, AlltoallvDynamicDispatchCombine) {
       input_chunk_count_per_rank,
       false);
 
-  EXPECT_NE(work2, nullptr);
-
-  setupNormalDestruction(*comm);
-  comm->finalize();
-}
-
-TEST_F(TorchCommNCCLXTest, AlltoallvDedupExecCombine) {
-  setupRankAndSize(0, 4);
-
-  auto comm = createMockedTorchComm();
-
-  cuda_mock_->setupDefaultBehaviors();
-  nccl_mock_->setupDefaultBehaviors();
-
-  comm->init(*device_, "test_name", default_options_);
-
-  const int nnodes = 2;
-  const int nranks = 4;
-  const int nlocalranks = 2;
-  const int num_send_blocks = 16;
-  const int block_count = 64;
-  const int block_num_recv_buckets = 2;
-  const int num_recv_buckets = 2;
-  const at::ScalarType dtype = at::ScalarType::Float;
-  const bool async_op = true;
-
-  // Create test tensors
-  auto input_tensor = createTestTensor({100}, dtype);
-  auto output_tensor = createTestTensor({100}, dtype);
-  auto recv_block_ids = createTestTensor({100}, at::kInt);
-  auto send_indices = createTestTensor({nnodes * num_send_blocks}, at::kInt);
-  auto forward_indices =
-      createTestTensor({nnodes * nlocalranks * num_send_blocks}, at::kInt);
-  auto recv_indices =
-      createTestTensor({num_recv_buckets * nranks * num_send_blocks}, at::kInt);
-
-  EXPECT_CALL(*nccl_mock_, alltoallvDedupInit(_, _, _, _, _, _, _, _))
-      .WillOnce(Return(ncclSuccess));
-
-  EXPECT_CALL(*nccl_mock_, pFree(_)).WillOnce(Return(ncclSuccess));
-
-  EXPECT_CALL(*nccl_mock_, alltoallvDedupExec(_, _, _, _, _, _, _))
-      .WillOnce(Return(ncclSuccess));
-
-  auto pReq = comm->alltoallv_dedup_init(
-      num_send_blocks,
-      block_count,
-      block_num_recv_buckets,
-      num_recv_buckets,
-      dtype,
-      async_op);
-  EXPECT_NE(pReq, nullptr);
-
-  auto work1 = comm->alltoallv_dedup_exec(
-      output_tensor,
-      recv_block_ids,
-      input_tensor,
-      send_indices,
-      forward_indices,
-      recv_indices,
-      pReq);
-  EXPECT_NE(work1, nullptr);
-
-  auto work2 = comm->alltoallv_dedup_combine(
-      output_tensor,
-      input_tensor,
-      send_indices,
-      forward_indices,
-      recv_indices,
-      pReq);
   EXPECT_NE(work2, nullptr);
 
   setupNormalDestruction(*comm);

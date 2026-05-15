@@ -1,5 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #include "comms/ctran/profiler/Profiler.h"
+#include "comms/ctran/CtranComm.h"
+#include "comms/ctran/interfaces/ICtran.h"
 #include "comms/ctran/profiler/DefaultAlgoProfilerReporter.h"
 
 namespace {
@@ -35,7 +37,8 @@ Profiler::Profiler(CtranComm* comm, std::unique_ptr<IProfilerReporter> reporter)
 Profiler::~Profiler() = default;
 
 void Profiler::initForEachColl(int opCount, int samplingWeight) {
-  shouldTrace_ = samplingWeight > 0 && (opCount % samplingWeight) == 0;
+  shouldTrace_ =
+      forceTrace_ || (samplingWeight > 0 && (opCount % samplingWeight) == 0);
   if (shouldTrace_) {
     opCount_ = opCount;
     durations_.fill(0);
@@ -56,6 +59,9 @@ void Profiler::startEvent(
   if (event == ProfilerEvent::ALGO_CTRL) {
     readyTs_ = getTimeStamp(timers_[idx].getCheckpoint());
   }
+  if (event == ProfilerEvent::ALGO_TOTAL && comm_ && comm_->ctran_) {
+    comm_->ctran_->startEventAlgo();
+  }
   if (callback) {
     callback(*this);
   }
@@ -71,6 +77,9 @@ void Profiler::endEvent(
   durations_[idx] += getDurationUs(timers_[idx].lap());
   if (event == ProfilerEvent::ALGO_CTRL) {
     controlTs_ = getTimeStamp(timers_[idx].getCheckpoint());
+  }
+  if (event == ProfilerEvent::ALGO_TOTAL && comm_ && comm_->ctran_) {
+    comm_->ctran_->endEventAlgo();
   }
   if (callback) {
     callback(*this);

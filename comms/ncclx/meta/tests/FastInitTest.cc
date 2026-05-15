@@ -30,15 +30,6 @@ class FastInitTestFixture : public NcclxBaseTestFixture,
   bool enableFastInitConfig{false};
 };
 
-void printCommStateX(const ncclComm& comm) {
-  const auto statex = comm.ctranComm_->statex_.get();
-  VLOG(1) << "=== CommStateX ===";
-  VLOG(1) << "CommStateX " << &comm << ": ";
-  VLOG(1) << "rank: " << statex->rank();
-  VLOG(1) << "nRanks: " << statex->nRanks();
-  VLOG(1) << "=================";
-}
-
 void validateCtranInitialization(
     ncclComm_t comm,
     int expectedRank,
@@ -137,17 +128,6 @@ TEST_P(FastInitTestFixture, NcclCommInitWorldAndAbort) {
   NCCLCHECK_TEST(ncclCommAbort(rootComm));
 }
 
-void compareComm(const ncclComm& comm1, const ncclComm& comm2) {
-  const auto state1 = comm1.ctranComm_->statex_.get();
-  const auto state2 = comm2.ctranComm_->statex_.get();
-  EXPECT_EQ(state1->rank(), state2->rank());
-  EXPECT_EQ(state1->nRanks(), state2->nRanks());
-  EXPECT_EQ(state1->cudaDev(), state2->cudaDev());
-
-  // TODO: baseline ncclComm does not maintain commRankToWorldRank mapping
-  // populate them to support statex->gRank() API
-}
-
 TEST_P(FastInitTestFixture, NcclCommSplit) {
   ncclComm_t rootComm = nullptr;
   ncclUniqueId commId;
@@ -188,32 +168,13 @@ TEST_P(FastInitTestFixture, NcclCommSplit) {
     NCCLCHECK_TEST(ncclCommDestroy(rootComm));
     GTEST_SKIP() << "Skip test since only one node provided";
   }
+  EXPECT_EQ(statex1->rank(), globalRank / 2);
   EXPECT_EQ(statex1->nRanks(), numRanks / 2);
+  EXPECT_EQ(statex1->cudaDev(), localRank);
   EXPECT_NE(statex1->commHash(), 0);
   // distributed run strict checks
   EXPECT_EQ(statex1->nNodes(), 2);
   EXPECT_EQ(statex1->nLocalRanks(), localSize / 2);
-
-  ncclComm expectedComm;
-  expectedComm.config = NCCL_CONFIG_INITIALIZER;
-  ncclx::Hints expectedHints({{"commDesc", childCommDesc}});
-  expectedComm.config.hints = &expectedHints;
-  ncclxParseCommConfig(&expectedComm.config);
-  setCtranCommBase(&expectedComm);
-
-  expectedComm.ctranComm_->statex_ = std::make_unique<ncclx::CommStateX>(
-      globalRank / 2,
-      numRanks / 2,
-      localRank,
-      rootComm->ctranComm_->statex_->cudaArch(), // cudaArch of H100
-      25, // busId
-      0,
-      std::vector<ncclx::RankTopology>{},
-      std::vector<int>{});
-
-  printCommStateX(*childComm);
-  printCommStateX(expectedComm);
-  compareComm(*childComm, expectedComm);
 
   NCCLCHECK_TEST(ncclCommDestroy(childComm));
   NCCLCHECK_TEST(ncclCommDestroy(rootComm));

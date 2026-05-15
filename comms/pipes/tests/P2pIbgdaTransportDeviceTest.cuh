@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include <cuda_runtime_api.h>
+
 #include <cstdint>
 
 #include "comms/pipes/IbgdaBuffer.h"
@@ -46,10 +48,10 @@ void runTestWaitSignalMultipleSlots(
 // Group-level API tests
 // =============================================================================
 
-// Test put_group_local data partitioning across warp lanes.
-void runTestPutGroupPartitioning(bool* d_success);
+// Test put_cooperative data partitioning across warp lanes.
+void runTestPutCooperativePartitioning(bool* d_success);
 
-// Test put_signal_group_local signal broadcast.
+// Test signal-ticket broadcast used by the cooperative put signal path.
 void runTestPutSignalGroupBroadcast(bool* d_success);
 
 // =============================================================================
@@ -66,8 +68,8 @@ void runTestBroadcast64Multiwarp(bool* d_success);
 // values should not race (verifies the double-sync pattern)
 void runTestBroadcast64DoubleSafety(bool* d_success);
 
-// Test put_group_local partitioning logic with block-sized groups
-void runTestPutGroupPartitioningBlock(bool* d_success);
+// Test put_cooperative partitioning logic with block-sized groups
+void runTestPutCooperativePartitioningBlock(bool* d_success);
 
 // =============================================================================
 // wait_signal timeout tests
@@ -75,7 +77,7 @@ void runTestPutGroupPartitioningBlock(bool* d_success);
 
 // Test that wait_signal traps when timeout expires (signal never satisfies
 // condition). After calling this, check cudaGetLastError() for trap error.
-void runTestWaitSignalTimeout(
+cudaError_t runTestWaitSignalTimeout(
     uint64_t* d_signalBuf,
     int device,
     uint32_t timeout_ms);

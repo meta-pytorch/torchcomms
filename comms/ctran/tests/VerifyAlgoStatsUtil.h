@@ -2,7 +2,9 @@
 
 #pragma once
 
+#include <optional>
 #include <string>
+#include <vector>
 #include "comms/ctran/CtranComm.h"
 
 namespace ctran::test {
@@ -13,6 +15,9 @@ class VerifyAlgoStatsHelper {
   ~VerifyAlgoStatsHelper();
 
   // Enable AlgoStats tracing. Must be called before CtranComm creation.
+  // Overrides NCCL_COLLTRACE via both setenv (so the value survives any
+  // subsequent ncclCvarInit() re-read) and the in-memory cvar (so the value is
+  // visible immediately, regardless of call ordering).
   void enable();
 
   void verify(
@@ -29,6 +34,7 @@ class VerifyAlgoStatsHelper {
 
  private:
   bool enabled_{false};
+  std::optional<std::string> oldEnvValue_;
   std::vector<std::string> oldColltrace_;
 };
 

@@ -17,7 +17,6 @@
 
 #include "comms/ctran/memory/SlabAllocator.h"
 #include "comms/utils/commSpecs.h"
-#include "comms/utils/logger/alloc.h"
 
 // Allow test class to access getFreeMemReg() method
 class memCacheAllocatorTest;

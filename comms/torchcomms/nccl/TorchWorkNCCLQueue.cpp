@@ -20,7 +20,6 @@ TorchWorkNCCL::WorkStatus TorchWorkNCCLQueue::garbageCollectLocked() {
 
       // Use the checkStatus function to determine the work status
       TorchWorkNCCL::WorkStatus status = work->checkStatus();
-      last_status = status;
 
       if (status == TorchWorkNCCL::WorkStatus::COMPLETED) {
         // Work is completed, remove it from the work queue
@@ -33,6 +32,7 @@ TorchWorkNCCL::WorkStatus TorchWorkNCCLQueue::garbageCollectLocked() {
         return status;
       } else {
         // NOT_STARTED or INPROGRESS - stop processing this queue
+        last_status = status;
         break;
       }
     }

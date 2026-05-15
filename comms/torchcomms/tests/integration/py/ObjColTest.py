@@ -8,7 +8,7 @@ from datetime import timedelta
 
 import torch
 from torchcomms import objcol
-from torchcomms.tests.integration.py.TorchCommTestHelpers import (
+from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
     is_full_sweep,
     TorchCommTestWrapper,
 )

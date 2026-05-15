@@ -356,7 +356,7 @@ waitSignalDriverApi(int peer, CtranWin* win, cudaStream_t stream) {
     // the slot for the next graph replay.
     //
     // This follows the pattern established by NCCL's CE collective path
-    // in ncclMemOpSync() (comms/ncclx/v2_28/src/ce_coll.cc lines 212-222),
+    // in ncclMemOpSync() (comms/ncclx/v2_29/src/ce_coll.cc lines 212-222),
     // which batches waits + resets in a single cuStreamBatchMemOp during
     // graph capture.  The batch is atomic on the stream — the wait
     // completes before the reset runs, and no remote signal for the next

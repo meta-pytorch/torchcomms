@@ -18,8 +18,8 @@ TorchWorkGloo::~TorchWorkGloo() {
 }
 
 void TorchWorkGloo::wait() {
-  runWaitHooks();
-  return;
+  runWaitPreHooks();
+  runWaitPostHooks();
 }
 
 } // namespace torch::comms

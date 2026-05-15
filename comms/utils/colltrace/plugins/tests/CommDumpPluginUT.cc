@@ -45,12 +45,25 @@ class CommDumpPluginTest : public ::testing::Test {
 
   // Helper method to create a CollTraceEvent with a CollRecord
   CollTraceEvent createCollTraceEvent(uint64_t collId) {
+    return createCollTraceEventWithIteration(collId, -1);
+  }
+
+  CollTraceEvent createCollTraceEventWithIteration(
+      uint64_t collId,
+      int64_t iteration) {
     auto metadata = std::make_unique<MockCollMetadata>();
-    auto collRecord = std::make_shared<CollRecord>(collId, std::move(metadata));
+    auto collRecord =
+        std::make_shared<CollRecord>(collId, std::move(metadata), iteration);
 
     CollTraceEvent event;
     event.collRecord = collRecord;
     return event;
+  }
+
+  void processFullLifecycle(CollTraceEvent& event) {
+    EXPECT_VALUE(plugin->afterCollKernelScheduled(event));
+    EXPECT_VALUE(plugin->afterCollKernelStart(event));
+    EXPECT_VALUE(plugin->afterCollKernelEnd(event));
   }
 
   std::unique_ptr<CommDumpPlugin> plugin;
@@ -389,4 +402,174 @@ TEST_F(CommDumpPluginTest, ConcurrentActiveCollectives) {
   EXPECT_VALUE(dump3);
   EXPECT_TRUE(dump3.value().currentColls.empty());
   EXPECT_EQ(dump3.value().pastColls.size(), 2);
+}
+
+// ---- Iteration-based eviction tests ----
+
+class CommDumpPluginIterationTest : public CommDumpPluginTest {
+ protected:
+  void SetUp() override {
+    plugin = std::make_unique<CommDumpPlugin>(CommDumpConfig{
+        .evictionMode = EvictionMode::Iteration,
+        .maxIterations = 1,
+        .iterationUpperBound = 3000,
+    });
+  }
+};
+
+TEST_F(CommDumpPluginIterationTest, EvictsOlderIterations) {
+  // Process events from iteration 1
+  auto event1 = createCollTraceEventWithIteration(1, 1);
+  auto event2 = createCollTraceEventWithIteration(2, 1);
+  processFullLifecycle(event1);
+  processFullLifecycle(event2);
+
+  auto dump1 = plugin->dump();
+  EXPECT_VALUE(dump1);
+  EXPECT_EQ(dump1.value().pastColls.size(), 2);
+
+  // Process event from iteration 2 — iteration 1 records should be evicted
+  auto event3 = createCollTraceEventWithIteration(3, 2);
+  processFullLifecycle(event3);
+
+  auto dump2 = plugin->dump();
+  EXPECT_VALUE(dump2);
+  EXPECT_EQ(dump2.value().pastColls.size(), 1);
+  EXPECT_EQ(dump2.value().pastColls.front()->getCollId(), 3);
+  EXPECT_EQ(dump2.value().pastColls.front()->getIteration(), 2);
+}
+
+TEST_F(CommDumpPluginIterationTest, RetainsCurrentIteration) {
+  auto event1 = createCollTraceEventWithIteration(1, 5);
+  auto event2 = createCollTraceEventWithIteration(2, 5);
+  auto event3 = createCollTraceEventWithIteration(3, 5);
+  processFullLifecycle(event1);
+  processFullLifecycle(event2);
+  processFullLifecycle(event3);
+
+  auto dump = plugin->dump();
+  EXPECT_VALUE(dump);
+  EXPECT_EQ(dump.value().pastColls.size(), 3);
+}
+
+TEST_F(CommDumpPluginIterationTest, HardUpperBoundEnforced) {
+  plugin = std::make_unique<CommDumpPlugin>(CommDumpConfig{
+      .evictionMode = EvictionMode::Iteration,
+      .maxIterations = 1,
+      .iterationUpperBound = 5,
+  });
+
+  // All events have iteration -1 (simulating broken iteration tracking)
+  for (uint64_t i = 0; i < 10; ++i) {
+    auto event = createCollTraceEventWithIteration(i, -1);
+    processFullLifecycle(event);
+  }
+
+  auto dump = plugin->dump();
+  EXPECT_VALUE(dump);
+  EXPECT_LE(static_cast<int64_t>(dump.value().pastColls.size()), 5);
+}
+
+TEST_F(CommDumpPluginIterationTest, MaxIterationsRetention) {
+  // Configure to retain last 2 iterations
+  plugin = std::make_unique<CommDumpPlugin>(CommDumpConfig{
+      .evictionMode = EvictionMode::Iteration,
+      .maxIterations = 2,
+      .iterationUpperBound = 3000,
+  });
+
+  auto event1 = createCollTraceEventWithIteration(1, 1);
+  auto event2 = createCollTraceEventWithIteration(2, 2);
+  auto event3 = createCollTraceEventWithIteration(3, 3);
+  processFullLifecycle(event1);
+  processFullLifecycle(event2);
+  processFullLifecycle(event3);
+
+  auto dump = plugin->dump();
+  EXPECT_VALUE(dump);
+  // Should retain iterations 2 and 3, evict iteration 1
+  EXPECT_EQ(dump.value().pastColls.size(), 2);
+  EXPECT_EQ(dump.value().pastColls[0]->getIteration(), 2);
+  EXPECT_EQ(dump.value().pastColls[1]->getIteration(), 3);
+}
+
+TEST_F(CommDumpPluginIterationTest, MaxEventRetentionReturnsUpperBound) {
+  EXPECT_EQ(plugin->maxEventRetention(), 3000);
+}
+
+// ---- Iteration comm time tracking tests ----
+
+TEST_F(CommDumpPluginTest, CommTimeDefaultValue) {
+  auto result = plugin->getCurrentIterationCommTime();
+  EXPECT_EQ(result.iteration, -1);
+  EXPECT_EQ(result.commTimeUs, 0);
+}
+
+TEST_F(CommDumpPluginTest, CommTimeAccumulation) {
+  using std::chrono::microseconds;
+  using std::chrono::system_clock;
+  auto now = system_clock::now();
+
+  auto event1 = createCollTraceEventWithIteration(1, 5);
+  event1.collRecord->getTimingInfo().setCollStartTs(now);
+  event1.collRecord->getTimingInfo().setCollEndTs(now + microseconds(100));
+
+  auto event2 = createCollTraceEventWithIteration(2, 5);
+  event2.collRecord->getTimingInfo().setCollStartTs(now);
+  event2.collRecord->getTimingInfo().setCollEndTs(now + microseconds(250));
+
+  processFullLifecycle(event1);
+  processFullLifecycle(event2);
+
+  auto result = plugin->getCurrentIterationCommTime();
+  EXPECT_EQ(result.iteration, 5);
+  EXPECT_EQ(result.commTimeUs, 350);
+}
+
+TEST_F(CommDumpPluginTest, CommTimeStaleIterationIgnored) {
+  using std::chrono::microseconds;
+  using std::chrono::system_clock;
+  auto now = system_clock::now();
+
+  // Process event from iteration 5
+  auto event1 = createCollTraceEventWithIteration(1, 5);
+  event1.collRecord->getTimingInfo().setCollStartTs(now);
+  event1.collRecord->getTimingInfo().setCollEndTs(now + microseconds(100));
+  processFullLifecycle(event1);
+
+  EXPECT_EQ(plugin->getCurrentIterationCommTime().iteration, 5);
+  EXPECT_EQ(plugin->getCurrentIterationCommTime().commTimeUs, 100);
+
+  // Process event from older iteration 3 — should be ignored
+  auto event2 = createCollTraceEventWithIteration(2, 3);
+  event2.collRecord->getTimingInfo().setCollStartTs(now);
+  event2.collRecord->getTimingInfo().setCollEndTs(now + microseconds(200));
+  processFullLifecycle(event2);
+
+  // Current iteration should still be 5 with unchanged comm time
+  auto result = plugin->getCurrentIterationCommTime();
+  EXPECT_EQ(result.iteration, 5);
+  EXPECT_EQ(result.commTimeUs, 100);
+}
+
+TEST_F(CommDumpPluginTest, CommTimeIterationRollover) {
+  using std::chrono::microseconds;
+  using std::chrono::system_clock;
+  auto now = system_clock::now();
+
+  auto event1 = createCollTraceEventWithIteration(1, 1);
+  event1.collRecord->getTimingInfo().setCollStartTs(now);
+  event1.collRecord->getTimingInfo().setCollEndTs(now + microseconds(100));
+  processFullLifecycle(event1);
+
+  EXPECT_EQ(plugin->getCurrentIterationCommTime().commTimeUs, 100);
+
+  auto event2 = createCollTraceEventWithIteration(2, 2);
+  event2.collRecord->getTimingInfo().setCollStartTs(now);
+  event2.collRecord->getTimingInfo().setCollEndTs(now + microseconds(200));
+  processFullLifecycle(event2);
+
+  auto result = plugin->getCurrentIterationCommTime();
+  EXPECT_EQ(result.iteration, 2);
+  EXPECT_EQ(result.commTimeUs, 200);
 }

@@ -170,6 +170,10 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
   // Throws if not supported by the backend.
   int64_t get_device_transport();
 
+  // Memory Registration API
+  void tensor_register(const at::Tensor& tensor);
+  void tensor_deregister(const at::Tensor& tensor);
+
   std::shared_ptr<TorchCommBackend> getBackendImpl() const {
     return impl_;
   }
@@ -225,6 +229,20 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
    */
   void abort();
 
+  /**
+   * Check if abort/fault-tolerance is supported on this communicator.
+   *
+   * @return True if abort is supported, false otherwise.
+   */
+  bool isAbortSupported() const;
+
+  /**
+   * Check if the communicator is in an aborted state.
+   *
+   * @return True if the communicator has been aborted.
+   */
+  bool isAborted() const;
+
   // Hook types (defined in TorchCommHooks.hpp; aliased for backward compat)
   using PreHook = ::torch::comms::PreHook;
   using PostHook = ::torch::comms::PostHook;
@@ -264,7 +282,7 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
       std::shared_ptr<TorchCommBackend> impl,
       std::vector<int> ranks);
 
-  void preHook(OpName name, size_t op_id, PreHookArgs&& args);
+  void preHook(size_t op_id, PreHookArgs&& args);
   void postHook(size_t op_id, PostHookArgs&& args);
 
   // Rank validation helper

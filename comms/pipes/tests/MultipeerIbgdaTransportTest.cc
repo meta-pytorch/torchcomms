@@ -202,7 +202,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalBasic) {
 }
 
 // =============================================================================
-// Group-Level Put/Signal Basic Test - Verifies group-collaborative RDMA
+// Group-Level Put/Signal Basic Test - Verifies explicit cooperative RDMA
 // =============================================================================
 
 TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupBasic) {
