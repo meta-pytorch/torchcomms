@@ -59,8 +59,7 @@ inline constexpr uint64_t kDefaultDeviceTimeoutCycles = 10'000'000'000ULL;
  * Owns the QPs (primary + companion for compound put+signal+counter ops)
  * and the sink lkey for atomic FA responses on a single NIC. The
  * P2pIbgdaTransportDevice holds a `DeviceSpan<NicDeviceIbgdaResources>` indexed
- * by NIC slot (peer-rotated on the host side so that `nic_qp_for_group(g)`'s
- * nic_id (= g % numNics) yields balanced per-peer scatter).
+ * by physical NIC slot.
  */
 struct NicDeviceIbgdaResources {
   DeviceSpan<doca_gpu_dev_verbs_qp*> qps{};
@@ -1818,16 +1817,10 @@ class P2pIbgdaTransportDevice {
   };
 
   /**
-   * nic_qp_for_group - Single lookup: returns {nic_id, qp_id} for a group.
+   * nic_qp_for_group - Single lookup: returns NIC/QP ids.
    *
-   * Round-robin over nicDevices_, then within the chosen NIC round-robin
-   * over its qps. All WQEs for one logical operation share the same
-   * group_id and therefore land on the same NIC + QP — required for the
-   * FENCE bit to order them. Host-side population is responsible for
-   * peer-rotating the NicDeviceIbgdaResources[] order so adjacent peers
-   * land on different NICs. Traps if nicDevices_ is empty or the chosen
-   * NIC has no qps (programming error: device op on a default-constructed
-   * transport).
+   * Round-robin over NIC resources, then within the chosen NIC round-robin over
+   * its QPs.
    */
   __device__ NicQpIndex nic_qp_for_group(uint32_t group_id) const {
     if (nicDevices_.empty()) {
@@ -1877,10 +1870,7 @@ class P2pIbgdaTransportDevice {
   }
 
   // --- Members ---
-  // Per-NIC bundles (qps + companion_qps + sink_lkey + device_id). Host-side
-  // builder peer-rotates the order so nic_qp_for_group(g)'s nic_id (= g %
-  // nicDevices_.size()) produces balanced scatter. At single-NIC:
-  // nicDevices_.size() == 1.
+  // Per-NIC bundles (qps + companion_qps + sink_lkey + device_id).
   DeviceSpan<NicDeviceIbgdaResources> nicDevices_{};
 
   // Owned signal/counter buffers (set by transport during construction)
