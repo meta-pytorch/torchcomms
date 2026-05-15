@@ -134,6 +134,7 @@ class TopologyTest : public ::testing::Test {
 
   void setupGpus(int count) {
     ON_CALL(*nvml_, deviceCount()).WillByDefault(Return(Result<int>(count)));
+    ON_CALL(*cuda_, getDeviceCount()).WillByDefault(Return(Result<int>(count)));
     for (int i = 0; i < count; ++i) {
       NvmlApi::DeviceInfo info;
       info.handle =
@@ -148,6 +149,22 @@ class TopologyTest : public ::testing::Test {
       ON_CALL(*cuda_, getDevicePCIBusId(_, _, i))
           .WillByDefault([bdf](char* buf, int len, int) {
             strncpy(buf, bdf.c_str(), len);
+            return Ok();
+          });
+
+      // Resolve NVML handle by PCI bus ID (matches discoverGpus logic).
+      ON_CALL(*nvml_, nvmlDeviceGetHandleByPciBusId(_, _))
+          .WillByDefault([](const char*, nvmlDevice_t* dev) {
+            // Return a non-null handle for any valid PCI bus ID.
+            // NOLINTNEXTLINE(performance-no-int-to-ptr)
+            *dev = reinterpret_cast<nvmlDevice_t>(static_cast<uintptr_t>(1));
+            return Ok();
+          });
+
+      ON_CALL(*nvml_, nvmlDeviceGetCudaComputeCapability(_, _, _))
+          .WillByDefault([](nvmlDevice_t, int* major, int* minor) {
+            *major = 9;
+            *minor = 0;
             return Ok();
           });
 
@@ -205,10 +222,9 @@ TEST_F(TopologyTest, DiscoverWithTwoGpusCreatesNodes) {
   EXPECT_EQ(std::get<TopoNode::GpuData>(gpu1.data).cudaDeviceId, 1);
 }
 
-TEST_F(TopologyTest, DiscoverFailsWhenNvmlFails) {
-  EXPECT_CALL(*nvml_, deviceCount())
-      .WillOnce(Return(Err(ErrCode::DriverError, "nvml failed")));
-  // CUDA should not be called if NVML fails first.
+TEST_F(TopologyTest, DiscoverFailsWhenCudaDeviceCountFails) {
+  EXPECT_CALL(*cuda_, getDeviceCount())
+      .WillOnce(Return(Err(ErrCode::DriverError, "cuda failed")));
   EXPECT_CALL(*cuda_, getDevicePCIBusId(_, _, _)).Times(Exactly(0));
   auto topo = createTopology();
   EXPECT_FALSE(topo->available());
