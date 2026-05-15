@@ -698,11 +698,13 @@ class P2pNvlTransportDevice {
    *                                   copy data to dst
    *                                   state = -1 ────────▶ [sender unblocks]
    */
+  template <typename CopyOp = Memcpy, typename... Args>
   __device__ __forceinline__ void recv_group(
       ThreadGroup& group,
       void* dstbuff,
       std::size_t nbytes,
-      const Timeout& timeout = Timeout()) {
+      [[maybe_unused]] const Timeout& timeout = Timeout(),
+      [[maybe_unused]] Args... args) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
     if (options_.dataBufferSize == 0) {
       printf(
@@ -779,12 +781,13 @@ class P2pNvlTransportDevice {
           ChunkState& localReceiverState = localReceiverStates[chunkStateIdx];
           localReceiverState.wait_ready_to_recv(group, stepId, timeout);
 
-          // Copy data from local buffer
-          memcpy_vectorized(
+          CopyOp::recv(
               dst + stepOffset + chunkOffset,
               recvBuffer + dataBufferOffset + chunkOffset,
               chunkBytes,
-              group);
+              group,
+              stepOffset + chunkOffset,
+              args...);
 
           // Sync #1 + plain write: barrier all threads, then leader
           // writes UNREADY to local receiverState (see send_group()
@@ -843,12 +846,13 @@ class P2pNvlTransportDevice {
                   localReceiverStates[chunkStateIdx];
               localReceiverState.wait_ready_to_recv(group, stepId, timeout);
 
-              // Copy data from local buffer
-              memcpy_vectorized(
+              CopyOp::recv(
                   dst + stepOffset + chunkOffset,
                   recvBuffer + dataBufferOffset + chunkOffset,
                   chunkBytes,
-                  group);
+                  group,
+                  stepOffset + chunkOffset,
+                  args...);
 
               // Signal LOCAL receiverStateBuffer with READY_TO_SEND
               localReceiverState.ready_to_send(group);
@@ -880,12 +884,14 @@ class P2pNvlTransportDevice {
    * @param successor Transport to the next rank in the ring
    * @param timeout Timeout for polling operations
    */
+  template <typename CopyOp = Memcpy, typename... Args>
   __device__ __forceinline__ void forward_group(
       ThreadGroup& group,
       void* dstbuff,
       std::size_t nbytes,
       P2pNvlTransportDevice& successor,
-      const Timeout& timeout = Timeout()) {
+      [[maybe_unused]] const Timeout& timeout = Timeout(),
+      [[maybe_unused]] Args... args) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
     if (options_.dataBufferSize == 0) {
       printf(
@@ -968,14 +974,14 @@ class P2pNvlTransportDevice {
               successorLocalSenderStates[chunkStateIdx];
           successorLocalSenderState.wait_ready_to_send(group, timeout);
 
-          // 3. Dual-dst copy: predecessor staging → local user buf +
-          //    successor remote staging
-          memcpy_vectorized(
-              dst + stepOffset + chunkOffset,
+          CopyOp::forward(
+              dst ? dst + stepOffset + chunkOffset : nullptr,
               successorSendBuffer + dataBufferOffset + chunkOffset,
               recvBuffer + dataBufferOffset + chunkOffset,
               chunkBytes,
-              group);
+              group,
+              stepOffset + chunkOffset,
+              args...);
 
           // 4. Both unready() calls (plain writes with group.sync())
           localReceiverState.unready(group);
@@ -1035,13 +1041,14 @@ class P2pNvlTransportDevice {
                   successorRemoteReceiverStatesOnly[chunkStateIdx];
               successorRemoteReceiverState.wait_ready_to_send(group, timeout);
 
-              // Dual-dst copy
-              memcpy_vectorized(
-                  dst + stepOffset + chunkOffset,
+              CopyOp::forward(
+                  dst ? dst + stepOffset + chunkOffset : nullptr,
                   successorSendBuffer + dataBufferOffset + chunkOffset,
                   recvBuffer + dataBufferOffset + chunkOffset,
                   chunkBytes,
-                  group);
+                  group,
+                  stepOffset + chunkOffset,
+                  args...);
 
               // ACK predecessor (buffer free)
               localReceiverState.ready_to_send(group);
