@@ -2,12 +2,14 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstring>
 #include <deque>
 #include <memory>
 #include <optional>
 #include <unordered_map>
 
+#include "comms/uniflow/drivers/cuda/CudaApi.h"
 #include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
 #include "comms/uniflow/drivers/ibverbs/IbvApi.h"
 #include "comms/uniflow/executor/EventBase.h"
@@ -21,6 +23,7 @@ constexpr uint8_t kRdmaVersion{1};
 // Forward declarations.
 class RdmaRegistrationHandle;
 class RdmaRemoteRegistrationHandle;
+class RdmaSlabPool;
 
 /*
  * RDMA transport configuration.
@@ -43,6 +46,7 @@ struct RdmaTransportConfig {
   uint32_t maxSge{1}; /* Max scatter/gather entries per WR. */
   uint32_t maxInlineData{16}; /* Max inline data bytes per WR. */
   size_t chunkSize{512 * 1024}; /* Transfer chunk size in bytes (512KB). */
+  uint16_t pipelineDepth{2}; /* Send/recv pipeline depth (D staging slabs). */
 };
 
 /*
@@ -77,12 +81,33 @@ struct RdmaTransportInfo {
     uint32_t psn{0}; /* Starting packet sequence number (random). */
   };
 
+  struct RegisteredBuffer {
+    uint64_t addr{0};
+    uint32_t length{0};
+    std::vector<uint32_t> rkeys;
+
+    size_t size() const {
+      return sizeof(addr) + sizeof(length) + rkeys.size() * sizeof(uint32_t);
+    }
+
+    static constexpr size_t expectedSize(uint8_t numNics) {
+      return sizeof(addr) + sizeof(length) + numNics * sizeof(uint32_t);
+    }
+
+    void reset();
+    size_t serialize(uint8_t* data) const;
+    size_t deserialize(const uint8_t* data, uint8_t numNics);
+  };
+
   /* Header fields. */
   Header header;
 
   /* Deserialized per-NIC and per-QP data. */
   std::vector<NicInfo> nicInfos;
   std::vector<QpInfo> qpInfos;
+
+  RegisteredBuffer ctrl;
+  RegisteredBuffer slab;
 
   /*
    * Serialize this info into a TransportInfo byte vector.
@@ -133,10 +158,12 @@ class RdmaTransport : public Transport {
    */
   RdmaTransport(
       std::shared_ptr<IbvApi> ibvApi,
+      std::shared_ptr<CudaApi> cudaApi,
       EventBase* evb,
       std::shared_ptr<std::vector<NicResources>> nics,
       uint64_t domainId,
-      RdmaTransportConfig config = {});
+      RdmaTransportConfig config = {},
+      std::shared_ptr<RdmaSlabPool> slabPool = nullptr);
 
   ~RdmaTransport() override;
 
@@ -371,7 +398,15 @@ class RdmaTransport : public Transport {
   /// Polls all CQs and routes completions to their tasks via inflightTasks_.
   void pollCompletions();
 
+  /// Ctrl buffer helpers.
+  std::atomic_ref<uint32_t> ctrlCts(uint16_t slotIdx);
+  std::atomic_ref<uint32_t> ctrlNotify(uint16_t slotIdx, uint32_t qpIdx);
+  uint64_t remoteCtrlCtsAddr(uint16_t slotIdx) const;
+  uint64_t remoteCtrlNotifyAddr(uint16_t slotIdx, uint32_t qpIdx) const;
+  size_t ctrlBufferSize() const;
+
   const std::shared_ptr<IbvApi> ibvApi_;
+  const std::shared_ptr<CudaApi> cudaApi_;
   EventBase* evb_{nullptr};
 
   std::string name_;
@@ -422,6 +457,18 @@ class RdmaTransport : public Transport {
 
   /// guard for shutdown()
   std::atomic<bool> shutdown_{false};
+
+  // --- Send/recv state and pool ---
+
+  std::shared_ptr<RdmaSlabPool> slabPool_;
+
+  // Ctrl buffer for send/recv pipeline flow control.
+  void* ctrlBuffer_{nullptr};
+  std::vector<ibv_mr*> ctrlMrs_;
+
+  // Remote peer's channel info (populated by connect)
+  RdmaTransportInfo::RegisteredBuffer remoteCtrlBuffer_;
+  RdmaTransportInfo::RegisteredBuffer remoteSlabBuffer_;
 };
 
 // ---------------------------------------------------------------------------
@@ -474,6 +521,7 @@ class RdmaTransportFactory : public TransportFactory {
       RdmaTransportConfig config = {},
       std::shared_ptr<IbvApi> ibvApi = nullptr,
       std::shared_ptr<CudaDriverApi> cudaDriverApi = nullptr,
+      std::shared_ptr<CudaApi> cudaApi = nullptr,
       std::optional<uint8_t> portNum = std::nullopt);
 
   ~RdmaTransportFactory() override = default;
@@ -507,6 +555,7 @@ class RdmaTransportFactory : public TransportFactory {
 
   std::shared_ptr<IbvApi> ibvApi_;
   std::shared_ptr<CudaDriverApi> cudaDriverApi_;
+  std::shared_ptr<CudaApi> cudaApi_;
   EventBase* evb_{nullptr};
   uint64_t domainId_{0};
   size_t pageSize_{0};
