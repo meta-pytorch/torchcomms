@@ -29,6 +29,8 @@ run_tests () {
         DPTPCommTest.py
         FinalizeWarningTest.py
         FSDPCommTest.py
+        FullgraphCompileAutogradTest
+        FullgraphCompileTest
         GatherTest.py
         MultiCommTest.py
         ObjColTest.py
