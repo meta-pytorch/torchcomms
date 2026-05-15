@@ -107,6 +107,9 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
       config.ibgdaConfig.rnrRetry =
           static_cast<uint8_t>(NCCL_CTRAN_IBGDA_RNR_RETRY);
     }
+    config.ibgdaConfig.ibLazyConnect = pc.ibLazyConnect;
+    config.ibgdaConfig.materializePeerTimeoutMs =
+        NCCL_CTRAN_IBGDA_MATERIALIZE_PEER_TIMEOUT_MS;
 
     config.disableIb = NCCL_CTRAN_PIPES_DISABLE_IB;
     config.topoConfig.p2pDisable = NCCL_P2P_DISABLE ||

@@ -1780,6 +1780,23 @@ cvars:
      Number of times to retry after receiving an RNR NAK.
      7 means infinite retry.
 
+ - name        : NCCL_CTRAN_IBGDA_LAZY_CONNECT
+   type        : bool
+   default     : false
+   description : |-
+     When true, MultipeerIbgdaTransport defers per-peer state allocation to
+     first use (lazy mode). When false (default), all per-peer state is
+     allocated eagerly at construction. Per-comm override via
+     CommOptions.hints["ncclx::ibLazyConnect"].
+
+ - name        : NCCL_CTRAN_IBGDA_MATERIALIZE_PEER_TIMEOUT_MS
+   type        : uint32_t
+   default     : 30000
+   description : |-
+     Timeout (in milliseconds) for materializePeer bilateral exchange.
+     On timeout, materializePeer throws rather than hanging.
+     No per-comm override.
+
  - name        : NCCL_CTRAN_BACKENDS
    type        : enumlist
    default     : ib, nvl, socket
