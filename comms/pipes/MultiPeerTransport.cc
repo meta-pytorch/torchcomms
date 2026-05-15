@@ -255,6 +255,19 @@ MultiPeerDeviceHandle MultiPeerTransport::get_device_handle() const {
   };
 }
 
+MultiPeerDeviceHandle MultiPeerTransport::get_device_handle(
+    const std::vector<int>& peers) {
+  if (ibgdaTransport_) {
+    for (int peer : peers) {
+      if (peer >= 0 && peer < nRanks_ && peer != myRank_ &&
+          typePerRank_[peer] == TransportType::P2P_IBGDA) {
+        ibgdaTransport_->materializePeer(peer);
+      }
+    }
+  }
+  return get_device_handle();
+}
+
 IbgdaLocalBuffer MultiPeerTransport::localRegisterIbgdaBuffer(
     void* ptr,
     size_t size) {

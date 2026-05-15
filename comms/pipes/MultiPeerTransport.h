@@ -192,6 +192,15 @@ class MultiPeerTransport {
    */
   MultiPeerDeviceHandle get_device_handle() const;
 
+  /**
+   * Materialize the specified IBGDA peers, then return the device handle.
+   * Use this with lazy mode to ensure peers are ready before kernel launch.
+   *
+   * @param peers List of peer ranks to materialize
+   * @return MultiPeerDeviceHandle suitable for passing to CUDA kernels.
+   */
+  MultiPeerDeviceHandle get_device_handle(const std::vector<int>& peers);
+
   // --- IBGDA buffer registration (delegates to ibgdaTransport_) ---
 
   /**
