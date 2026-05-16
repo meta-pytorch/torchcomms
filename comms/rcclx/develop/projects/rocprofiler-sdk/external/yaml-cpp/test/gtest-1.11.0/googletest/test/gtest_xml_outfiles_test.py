@@ -109,7 +109,7 @@ class GTestXMLOutFilesTest(gtest_xml_test_utils.GTestXMLTestCase):
     p = gtest_test_utils.Subprocess(command,
                                     working_dir=gtest_test_utils.GetTempDir())
     self.assert_(p.exited)
-    self.assertEquals(0, p.exit_code)
+    self.assertEqual(0, p.exit_code)
 
     output_file_name1 = test_name + ".xml"
     output_file1 = os.path.join(self.output_dir_, output_file_name1)
