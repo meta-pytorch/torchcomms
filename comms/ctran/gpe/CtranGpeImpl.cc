@@ -20,6 +20,7 @@
 #include "comms/ctran/utils/Debug.h"
 #include "comms/ctran/utils/Exception.h"
 #include "comms/ctran/utils/ExtUtils.h"
+#include "comms/ctran/utils/MemFence.h"
 
 #include "comms/utils/colltrace/CollRecord.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -163,7 +164,27 @@ void CUDART_CB CtranGpe::Impl::cmdDestroy(void* data) {
   while (cmd->inFlight.load(std::memory_order_acquire) > 0) {
     std::this_thread::yield();
   }
+  auto* impl = cmd->gpe->pimpl.get();
   delete cmd;
+  if (impl->pendingAsyncDestroys_.fetch_sub(1, std::memory_order_acq_rel) ==
+      1) {
+    impl->asyncDestroysDrained_.post();
+  }
+}
+
+void CUDART_CB CtranGpe::Impl::persistentKernelElemDestroy(void* data) {
+  auto* release =
+      static_cast<CtranGpe::Impl::PersistentKernelElemRelease*>(data);
+  for (auto* elem : release->elems) {
+    elem->clearPersistent();
+    elem->free();
+  }
+  auto* impl = release->impl;
+  delete release;
+  if (impl->pendingAsyncDestroys_.fetch_sub(1, std::memory_order_acq_rel) ==
+      1) {
+    impl->asyncDestroysDrained_.post();
+  }
 }
 
 commResult_t OrderedWorkStreamGuard::doAcquire(
@@ -388,6 +409,7 @@ commResult_t CtranGpe::Impl::submit(
     if (isCapturing) {
       FB_COMMCHECK(preLaunchGraphPrepare(cmd, graphPrepareFn));
       cmd->persistent = true;
+      pendingAsyncDestroys_.fetch_add(1, std::memory_order_relaxed);
       // Mark the flag as persistent so reclaim() won't steal it between
       // graph replays (the kernel writes KERNEL_UNSET after each replay).
       if (kernelFlag) {
@@ -436,20 +458,13 @@ commResult_t CtranGpe::Impl::submit(
       for (auto* elem : kernelConfig.persistentKernelElems) {
         elem->setPersistent();
       }
-      auto* elems = new std::vector<KernelElem*>(
-          std::move(kernelConfig.persistentKernelElems));
+      pendingAsyncDestroys_.fetch_add(1, std::memory_order_relaxed);
+      auto* release = new CtranGpe::Impl::PersistentKernelElemRelease{
+          std::move(kernelConfig.persistentKernelElems), this};
       FB_COMMCHECKGOTO(
           utils::cudagraph::retainUserObject(
-              /*obj=*/elems,
-              /*destroyCallback=*/
-              [](void* p) {
-                auto* v = static_cast<std::vector<KernelElem*>*>(p);
-                for (auto* elem : *v) {
-                  elem->clearPersistent();
-                  elem->free();
-                }
-                delete v;
-              },
+              /*obj=*/release,
+              /*destroyCallback=*/persistentKernelElemDestroy,
               streamCaptureInfo),
           res,
           fail);
@@ -655,47 +670,21 @@ void CtranGpe::Impl::terminate() {
   cmdEnqueue(cmd);
   thread_.join();
 
-  // Pool elements are released by CUDA's async cmdDestroy callback
-  // (cudaUserObjectNoDestructorSync). Spin until all pools drain before
-  // returning, to avoid freeing pinned memory from under an in-flight callback.
-  const auto& statex = comm->statex_;
-  const auto start = std::chrono::steady_clock::now();
-  auto nextLog = start + std::chrono::seconds(5);
-  while (true) {
+  // Reclaim non-persistent pool items (all done after GPE thread join).
+  this->kernelFlagPool->reclaim();
+  this->kernelElemPool->reclaim();
+  this->gpeKernelSyncPool->reclaim();
+
+  // Wait for outstanding async graph destruction callbacks (cmdDestroy,
+  // persistentKernelElemDestroy) to release persistent pool items.
+  if (pendingAsyncDestroys_.load(std::memory_order_acquire) > 0) {
+    asyncDestroysDrained_.wait();
     this->kernelFlagPool->reclaim();
     this->kernelElemPool->reclaim();
     this->gpeKernelSyncPool->reclaim();
-    if (this->kernelFlagPool->capacity() == this->kernelFlagPool->size() &&
-        this->kernelElemPool->capacity() == this->kernelElemPool->size() &&
-        this->gpeKernelSyncPool->capacity() ==
-            this->gpeKernelSyncPool->size()) {
-      break;
-    }
-    const auto now = std::chrono::steady_clock::now();
-    if (now >= nextLog) {
-      const auto elapsedSec =
-          std::chrono::duration_cast<std::chrono::seconds>(now - start).count();
-      CLOGF_SUBSYS(
-          WARNING,
-          INIT,
-          "terminate() spin-wait: pools still draining after {}s on rank {} commHash {:x}"
-          " -- kernelFlag {}/{} kernelElem {}/{} gpeKernelSync {}/{}."
-          " Most likely cudaGraphDestroy() was not called on all CUDA graphs"
-          " that captured CTranGPE operations.",
-          elapsedSec,
-          statex->rank(),
-          statex->commHash(),
-          this->kernelFlagPool->size(),
-          this->kernelFlagPool->capacity(),
-          this->kernelElemPool->size(),
-          this->kernelElemPool->capacity(),
-          this->gpeKernelSyncPool->size(),
-          this->gpeKernelSyncPool->capacity());
-      nextLog = now + std::chrono::seconds(5);
-    }
-    std::this_thread::yield();
   }
 
+  const auto& statex = comm->statex_;
   CLOGF_SUBSYS(
       INFO,
       INIT,
@@ -927,6 +916,7 @@ void CtranGpe::Impl::gpeThreadFn() {
 
 void KernelElem::unuse() {
   CHECK_KELEM_NGROUPS(this);
+  wcStoreFence();
   for (int i = 0; i < this->ngroups; i++) {
     this->status[i] = KernelElem::ElemStatus::RESET;
   }
@@ -976,7 +966,7 @@ void KernelElem::free() {
     return;
   }
 
-  // Free
+  wcStoreFence();
   for (int i = 0; i < this->ngroups; i++) {
     this->status[i] = KernelElem::ElemStatus::RESET;
   }
@@ -988,7 +978,7 @@ void KernelElem::free() {
 }
 
 bool KernelElem::isFree() {
-  if (persistent_) {
+  if (persistent_.load(std::memory_order_acquire)) {
     return false;
   }
   CHECK_KELEM_NGROUPS(this);
@@ -997,6 +987,7 @@ bool KernelElem::isFree() {
     allFree &= (this->status[i] == KernelElem::ElemStatus::RESET);
   }
   if (allFree) {
+    wcAcquireFence();
     CLOGF_TRACE(
         COLL,
         "CTRAN-GPE: elem {} isFree = true with ngroups {}",

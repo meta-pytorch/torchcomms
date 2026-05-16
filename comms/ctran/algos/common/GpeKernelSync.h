@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include <atomic>
+
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/utils/MemFence.h"
 
@@ -95,24 +97,24 @@ struct alignas(16) GpeKernelSync {
   // Implements PinnedHostItem concept
   // { t.inUse() } -> std::same_as<bool>;
   bool inUse() {
-    return inuse;
+    return inuse.load(std::memory_order_acquire);
   }
 
   // Implements PinnedHostItem concept
   // { t.reset() } -> std::same_as<void>;
   void reset() {
     resetStatus();
-    inuse = false;
+    inuse.store(false, std::memory_order_release);
   }
 
   // Implements PinnedHostItem concept
   // { t.onPop() } -> std::same_as<void>;
   void onPop() {
     resetStatus();
-    inuse = true;
+    inuse.store(true, std::memory_order_release);
   }
 
  private:
-  volatile bool inuse{false};
+  std::atomic<bool> inuse{false};
 };
 } // namespace ctran::algos
