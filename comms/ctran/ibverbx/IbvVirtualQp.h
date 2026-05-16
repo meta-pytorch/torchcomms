@@ -4,6 +4,7 @@
 
 #include <folly/Expected.h>
 #include <folly/dynamic.h>
+#include <array>
 #include <deque>
 #include <optional>
 #include <utility>
@@ -208,6 +209,18 @@ class IbvVirtualQp {
       const ActiveVirtualWr& pending,
       int32_t deviceId,
       uint32_t fragLen);
+
+  // SG-aware fragment builder. Walks the ActiveVirtualWr's sgBufs/sgBufLens
+  // starting from `pending.offset`, fills `outSges` with up to
+  // `kMaxSgBuffersPerWr` entries, and returns {numSge, actualBytesPacked}.
+  // The lkey for each SGE is taken from
+  //   pending.perBufferDeviceKeys.value()[bufIdx].deviceIdToKeys[deviceId]
+  // when set, otherwise falls back to pending.deviceKeys[deviceId].lkey.
+  inline std::pair<int, uint64_t> buildScatterGatherList(
+      const ActiveVirtualWr& pending,
+      int32_t deviceId,
+      uint64_t maxBytesToSend,
+      std::array<ibv_sge, kMaxSgBuffersPerWr>& outSges);
   // Returns true if the physical QP at qpIdx has room for more outstanding
   // send WRs (respects maxMsgCntPerQp_ limit).
   inline bool hasQpCapacity(int qpIdx) const;
@@ -345,6 +358,73 @@ IbvVirtualQp::initializeDqplbReceiver() {
 // Helper: Single-QP fast path (pure passthrough, no tracking)
 inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSendSingleQp(
     const IbvVirtualSendWr& wr) {
+  // ---- Scatter-gather single-QP fast path ----
+  // For SG WRs we post one physical ibv_send_wr that carries every SG
+  // buffer as its own ibv_sge entry. No fragmentation / no completion
+  // tracking — just like the non-SG single-QP path. Only RDMA_WRITE and
+  // RDMA_WRITE_WITH_IMM are supported (matches the multi-QP SG branch).
+  if (wr.isScatterGatherEnabled()) {
+    if (wr.opcode != IBV_WR_RDMA_WRITE &&
+        wr.opcode != IBV_WR_RDMA_WRITE_WITH_IMM) {
+      return folly::makeUnexpected(Error(
+          EINVAL,
+          "[Ibverbx]IbvVirtualQp::postSendSingleQp, scatter-gather only supports RDMA_WRITE / RDMA_WRITE_WITH_IMM"));
+    }
+    if (wr.sgBufs.size() != wr.sgBufLens.size()) {
+      return folly::makeUnexpected(Error(
+          EINVAL,
+          "[Ibverbx]IbvVirtualQp::postSendSingleQp, sgBufs and sgBufLens size mismatch"));
+    }
+    if (wr.sgBufs.size() > kMaxSgBuffersPerWr) {
+      return folly::makeUnexpected(Error(
+          EINVAL,
+          fmt::format(
+              "[Ibverbx]IbvVirtualQp::postSendSingleQp, sgBufs.size()={} exceeds kMaxSgBuffersPerWr={}",
+              wr.sgBufs.size(),
+              kMaxSgBuffersPerWr)));
+    }
+
+    int32_t deviceId = physicalQps_.at(0).getDeviceId();
+    std::array<ibv_sge, kMaxSgBuffersPerWr> sges{};
+    for (size_t i = 0; i < wr.sgBufs.size(); ++i) {
+      sges[i].addr = reinterpret_cast<uint64_t>(wr.sgBufs[i]);
+      sges[i].length = static_cast<uint32_t>(wr.sgBufLens[i]);
+
+      // Per-buffer lkey if provided, else fall back to deviceKeys.
+      uint32_t lkey = wr.deviceKeys.at(deviceId).lkey;
+      if (wr.perBufferDeviceKeys.has_value() &&
+          i < wr.perBufferDeviceKeys->size()) {
+        const auto& bufKeys = (*wr.perBufferDeviceKeys)[i];
+        auto it = bufKeys.deviceIdToKeys.find(deviceId);
+        if (it != bufKeys.deviceIdToKeys.end()) {
+          lkey = it->second.lkey;
+        }
+      }
+      sges[i].lkey = lkey;
+    }
+
+    ibv_send_wr sendWr{};
+    sendWr.wr_id = wr.wrId;
+    sendWr.next = nullptr;
+    sendWr.sg_list = sges.data();
+    sendWr.num_sge = static_cast<int>(wr.sgBufs.size());
+    sendWr.opcode = wr.opcode;
+    sendWr.send_flags = wr.sendFlags;
+    sendWr.wr.rdma.remote_addr = wr.remoteAddr;
+    // rkey is for the destination buffer — always from the original WR.
+    sendWr.wr.rdma.rkey = wr.deviceKeys.at(deviceId).rkey;
+    if (wr.opcode == IBV_WR_RDMA_WRITE_WITH_IMM) {
+      sendWr.imm_data = wr.immData;
+    }
+
+    ibv_send_wr badWr{};
+    auto maybePost = physicalQps_.at(0).postSend(&sendWr, &badWr);
+    if (maybePost.hasError()) {
+      return folly::makeUnexpected(maybePost.error());
+    }
+    return folly::unit;
+  }
+
   if (wr.length == 0) {
     return folly::makeUnexpected(Error(
         EINVAL,
@@ -422,9 +502,34 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSend(
   // ============================================================
 
   // Parameter validation
-  if (wr.length == 0) {
+  uint64_t totalLen = wr.getTotalLength();
+  if (totalLen == 0) {
     return folly::makeUnexpected(Error(
         EINVAL, "[Ibverbx]IbvVirtualQp::postSend, RDMA length cannot be zero"));
+  }
+
+  // Scatter-gather is only supported for RDMA_WRITE / RDMA_WRITE_WITH_IMM.
+  if (wr.isScatterGatherEnabled() && wr.opcode != IBV_WR_RDMA_WRITE &&
+      wr.opcode != IBV_WR_RDMA_WRITE_WITH_IMM) {
+    return folly::makeUnexpected(Error(
+        EINVAL,
+        "[Ibverbx]IbvVirtualQp::postSend, scatter-gather only supports RDMA_WRITE / RDMA_WRITE_WITH_IMM"));
+  }
+
+  // SG bookkeeping vectors must be the same length (matches single-QP check).
+  if (wr.isScatterGatherEnabled() && wr.sgBufs.size() != wr.sgBufLens.size()) {
+    return folly::makeUnexpected(Error(
+        EINVAL,
+        "[Ibverbx]IbvVirtualQp::postSend, sgBufs and sgBufLens size mismatch"));
+  }
+
+  // For SG WRs: if multi-NIC and no per-buffer keys provided, the fallback
+  // deviceKeys map must contain at least one entry per device.
+  if (wr.isScatterGatherEnabled() && deviceCnt_ > 1 &&
+      !wr.perBufferDeviceKeys.has_value() && wr.deviceKeys.empty()) {
+    return folly::makeUnexpected(Error(
+        EINVAL,
+        "[Ibverbx]IbvVirtualQp::postSend, multi-NIC scatter-gather requires perBufferDeviceKeys or deviceKeys fallback"));
   }
 
   if (!(wr.sendFlags & IBV_SEND_SIGNALED) &&
@@ -437,7 +542,7 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSend(
   bool needsNotify =
       (wr.opcode == IBV_WR_RDMA_WRITE_WITH_IMM &&
        loadBalancingScheme_ == LoadBalancingScheme::SPRAY);
-  int expectedMsgCnt = (wr.length + maxMsgSize_ - 1) / maxMsgSize_;
+  int expectedMsgCnt = (totalLen + maxMsgSize_ - 1) / maxMsgSize_;
 
   sendTracker_.add(
       ActiveVirtualWr{
@@ -445,14 +550,17 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSend(
           .remainingMsgCnt = needsNotify ? expectedMsgCnt + 1 : expectedMsgCnt,
           .aggregatedStatus = IBV_WC_SUCCESS,
           .localAddr = wr.localAddr,
-          .length = wr.length,
+          .length = static_cast<uint32_t>(totalLen),
           .remoteAddr = wr.remoteAddr,
           .opcode = wr.opcode,
           .immData = wr.immData,
           .deviceKeys = wr.deviceKeys,
           .offset = 0,
           .needsNotify = needsNotify,
-          .notifyPosted = false});
+          .notifyPosted = false,
+          .sgBufs = wr.sgBufs,
+          .sgBufLens = wr.sgBufLens,
+          .perBufferDeviceKeys = wr.perBufferDeviceKeys});
 
   auto result = dispatchPendingSends();
   if (result.hasError()) {
@@ -663,25 +771,125 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::dispatchPendingSends(
       uint32_t fragLen = std::min(
           maxMsgSize_, static_cast<int>(pending->length - pending->offset));
 
-      auto [sendWr, sendSge] = buildPhysicalSendWr(*pending, deviceId, fragLen);
-      sendWr.sg_list = &sendSge;
-
       ibv_send_wr badWr{};
-      auto maybePost = physicalQps_.at(qpIdx).postSend(&sendWr, &badWr);
-      if (maybePost.hasError()) {
-        return folly::makeUnexpected(maybePost.error());
+
+      if (pending->isScatterGatherEnabled()) {
+        // Pack as many SG fragments as fit within `fragLen` (and within
+        // kMaxSgBuffersPerWr) into a single physical WR.
+        std::array<ibv_sge, kMaxSgBuffersPerWr> sgFragSges{};
+        auto [numSge, actualBytes] =
+            buildScatterGatherList(*pending, deviceId, fragLen, sgFragSges);
+        if (numSge == 0) {
+          // Defensive — shouldn't happen because pending->offset < length.
+          break;
+        }
+
+        ibv_send_wr sendWr{};
+        sendWr.wr_id = nextPhysicalWrId_++;
+        sendWr.next = nullptr;
+        sendWr.sg_list = sgFragSges.data();
+        sendWr.num_sge = numSge;
+        sendWr.send_flags = IBV_SEND_SIGNALED;
+        // rkey is for the DESTINATION buffer — always taken from the original
+        // WR's deviceKeys, never from perBufferDeviceKeys (which only carry
+        // source-side lkeys).
+        sendWr.wr.rdma.remote_addr = pending->remoteAddr + pending->offset;
+        sendWr.wr.rdma.rkey = pending->deviceKeys.at(deviceId).rkey;
+
+        if (pending->opcode == IBV_WR_RDMA_WRITE_WITH_IMM &&
+            loadBalancingScheme_ == LoadBalancingScheme::SPRAY) {
+          sendWr.opcode = IBV_WR_RDMA_WRITE;
+        } else {
+          sendWr.opcode = pending->opcode;
+          if (loadBalancingScheme_ == LoadBalancingScheme::DQPLB) {
+            bool isLastFragment =
+                (pending->offset + actualBytes >= pending->length);
+            sendWr.imm_data = dqplbSeqTracker_.getSendImm(isLastFragment);
+          }
+        }
+
+        auto maybePost = physicalQps_.at(qpIdx).postSend(&sendWr, &badWr);
+        if (maybePost.hasError()) {
+          return folly::makeUnexpected(maybePost.error());
+        }
+        physicalQps_.at(qpIdx).physicalSendWrStatus_.emplace_back(
+            sendWr.wr_id, internalId);
+        pending->offset += actualBytes;
+      } else {
+        auto [sendWr, sendSge] =
+            buildPhysicalSendWr(*pending, deviceId, fragLen);
+        sendWr.sg_list = &sendSge;
+
+        auto maybePost = physicalQps_.at(qpIdx).postSend(&sendWr, &badWr);
+        if (maybePost.hasError()) {
+          return folly::makeUnexpected(maybePost.error());
+        }
+
+        physicalQps_.at(qpIdx).physicalSendWrStatus_.emplace_back(
+            sendWr.wr_id, internalId);
+
+        pending->offset += fragLen;
       }
-
-      physicalQps_.at(qpIdx).physicalSendWrStatus_.emplace_back(
-          sendWr.wr_id, internalId);
-
-      pending->offset += fragLen;
     }
 
     sendTracker_.popPendingPost();
   }
 
   return folly::unit;
+}
+
+inline std::pair<int, uint64_t> IbvVirtualQp::buildScatterGatherList(
+    const ActiveVirtualWr& pending,
+    int32_t deviceId,
+    uint64_t maxBytesToSend,
+    std::array<ibv_sge, kMaxSgBuffersPerWr>& outSges) {
+  int numSge = 0;
+  uint64_t remainingToSend = maxBytesToSend;
+  uint64_t cumulative = 0;
+  uint64_t currentOffset = pending.offset;
+  uint64_t actualBytes = 0;
+
+  // Look up the lkey for `bufIdx` on `deviceId`, falling back to deviceKeys.
+  auto lookupLkey = [&](size_t bufIdx) -> uint32_t {
+    if (pending.perBufferDeviceKeys.has_value() &&
+        bufIdx < pending.perBufferDeviceKeys->size()) {
+      const auto& bufKeys = (*pending.perBufferDeviceKeys)[bufIdx];
+      auto it = bufKeys.deviceIdToKeys.find(deviceId);
+      if (it != bufKeys.deviceIdToKeys.end()) {
+        return it->second.lkey;
+      }
+    }
+    return pending.deviceKeys.at(deviceId).lkey;
+  };
+
+  for (size_t bufIdx = 0; bufIdx < pending.sgBufs.size() &&
+       remainingToSend > 0 && numSge < kMaxSgBuffersPerWr;
+       ++bufIdx) {
+    uint64_t bufLen = pending.sgBufLens[bufIdx];
+
+    // Skip buffers entirely consumed by previous fragments.
+    if (currentOffset >= cumulative + bufLen) {
+      cumulative += bufLen;
+      continue;
+    }
+
+    uint64_t bufStartOffset =
+        currentOffset > cumulative ? currentOffset - cumulative : 0;
+    uint64_t bufRemaining = bufLen - bufStartOffset;
+    uint64_t bufToSend = std::min(bufRemaining, remainingToSend);
+
+    outSges[numSge].addr =
+        reinterpret_cast<uint64_t>(pending.sgBufs[bufIdx]) + bufStartOffset;
+    outSges[numSge].length = static_cast<uint32_t>(bufToSend);
+    outSges[numSge].lkey = lookupLkey(bufIdx);
+
+    remainingToSend -= bufToSend;
+    actualBytes += bufToSend;
+    cumulative += bufLen;
+    ++numSge;
+  }
+
+  return {numSge, actualBytes};
 }
 
 inline std::pair<ibv_send_wr, ibv_sge> IbvVirtualQp::buildPhysicalSendWr(

@@ -3,6 +3,8 @@
 #pragma once
 
 #include <deque>
+#include <optional>
+#include <tuple>
 #include <vector>
 
 #include <folly/container/F14Map.h>
@@ -17,6 +19,18 @@ struct MemoryRegionKeys {
 };
 
 // ============================================================
+// Scatter-gather support
+// ============================================================
+
+// Per-buffer device-specific keys for scatter-gather operations.
+// One entry per SG buffer; each entry maps deviceId -> {lkey, rkey} so the
+// SG fragment builder can pick the correct per-NIC keys when fragmenting a
+// multi-buffer payload across the underlying physical QPs.
+struct ScatterGatherBufferKeys {
+  folly::F14FastMap<int32_t, MemoryRegionKeys> deviceIdToKeys;
+};
+
+// ============================================================
 // IbvVirtualSendWr/IbvVirtualRecvWr (input to VirtualQp::postSend/Recv)
 // ============================================================
 
@@ -25,7 +39,8 @@ struct MemoryRegionKeys {
 struct IbvVirtualSendWr {
   uint64_t wrId{0}; // User's work request ID
 
-  // Local buffer
+  // Local buffer (used when the WR is *not* in scatter-gather mode, i.e.
+  // sgBufs.empty()).
   void* localAddr{nullptr}; // Local buffer address
   uint32_t length{0}; // Buffer length
 
@@ -44,7 +59,36 @@ struct IbvVirtualSendWr {
 
   // Per-device memory keys: maps deviceId -> {lkey, rkey}.
   // Mandatory field: 1 entry for single-NIC, N entries for multi-NIC.
+  // Used for non-SG WRs and as a fallback for SG WRs whose
+  // perBufferDeviceKeys is unset.
   folly::F14FastMap<int32_t, MemoryRegionKeys> deviceKeys;
+
+  // Optional scatter-gather payload. When sgBufs is non-empty the WR is
+  // treated as a multi-buffer SG send and (localAddr, length) are ignored;
+  // the fragment builder walks sgBufs/sgBufLens instead.
+  std::vector<void*> sgBufs;
+  std::vector<size_t> sgBufLens;
+  // Optional per-buffer device keys for SG WRs. If unset, the SG fragment
+  // builder falls back to deviceKeys for every buffer.
+  std::optional<std::vector<ScatterGatherBufferKeys>> perBufferDeviceKeys;
+
+  // Helper: true iff this WR carries SG buffers.
+  bool isScatterGatherEnabled() const {
+    return !sgBufs.empty();
+  }
+
+  // Helper: total payload length across the SG buffers (or single-buffer
+  // length when SG is not in use).
+  uint64_t getTotalLength() const {
+    if (!isScatterGatherEnabled()) {
+      return length;
+    }
+    uint64_t total = 0;
+    for (auto bufLen : sgBufLens) {
+      total += bufLen;
+    }
+    return total;
+  }
 };
 
 // Custom recv work request (replaces ibv_recv_wr in IbvVirtualQp::postRecv
@@ -107,6 +151,12 @@ struct ActiveVirtualWr {
   bool needsNotify{false}; // True if this WR requires a notify (SPRAY mode)
   bool notifyPosted{false}; // True after notify has been posted to notifyQp
 
+  // ---- Scatter-gather state (cached from IbvVirtualSendWr) ----
+  // Empty unless the originating WR carried SG buffers.
+  std::vector<void*> sgBufs;
+  std::vector<size_t> sgBufLens;
+  std::optional<std::vector<ScatterGatherBufferKeys>> perBufferDeviceKeys;
+
   // Helper: check if WR is fully complete
   bool isComplete() const {
     return remainingMsgCnt == 0;
@@ -118,6 +168,44 @@ struct ActiveVirtualWr {
         opcode == IBV_WR_RDMA_WRITE_WITH_IMM || opcode == IBV_WR_RDMA_READ ||
         opcode == IBV_WR_ATOMIC_FETCH_AND_ADD ||
         opcode == IBV_WR_ATOMIC_CMP_AND_SWP;
+  }
+
+  // Helper: true iff this active WR has SG buffers.
+  bool isScatterGatherEnabled() const {
+    return !sgBufs.empty();
+  }
+
+  // Helper: total byte length across SG buffers (falls back to `length`).
+  uint64_t getTotalLength() const {
+    if (!isScatterGatherEnabled()) {
+      return length;
+    }
+    uint64_t total = 0;
+    for (auto bufLen : sgBufLens) {
+      total += bufLen;
+    }
+    return total;
+  }
+
+  // Helper: given the current `offset` (bytes already sent across the SG
+  // payload), return the (bufferIndex, offsetWithinBuffer, remainingInBuffer)
+  // that the next physical fragment should start from.
+  // Returns {-1, 0, 0} when offset is beyond the whole payload, or when SG
+  // is not enabled.
+  std::tuple<int, uint64_t, uint64_t> getCurrentBufferPosition() const {
+    if (!isScatterGatherEnabled()) {
+      return {-1, 0, 0};
+    }
+    uint64_t cumulative = 0;
+    for (size_t i = 0; i < sgBufs.size(); ++i) {
+      uint64_t bufLen = sgBufLens[i];
+      if (static_cast<uint64_t>(offset) < cumulative + bufLen) {
+        uint64_t bufferOffset = static_cast<uint64_t>(offset) - cumulative;
+        return {static_cast<int>(i), bufferOffset, bufLen - bufferOffset};
+      }
+      cumulative += bufLen;
+    }
+    return {-1, 0, 0};
   }
 };
 
