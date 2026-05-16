@@ -229,8 +229,6 @@ void TorchCommRCCL::initRcclResources() {
       rccl_api_->commUserRank(nccl_comm_, &rank_),
       "RCCL User Rank failed");
 
-  tryTorchCommLoggingInit("torchcomm");
-
   RCCL_CHECK(
       rccl_api_,
       nccl_comm_,
