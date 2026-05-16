@@ -1024,7 +1024,6 @@ commResult_t CtranIb::preConnect(const std::unordered_set<int>& peerRanks) {
   std::shared_ptr<CtranIbVirtualConn> vc = nullptr;
   bool newConnection = false;
   // if map is empty, it means we don't know comm size and peerAddr
-  // FIXME: revisit preConnect for CtranEx if needed
   if (connectedPeerMap.empty()) {
     return commSuccess;
   }

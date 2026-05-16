@@ -2,8 +2,8 @@
 
 #ifndef CTRAN_BROADCAST_IMPL_H_
 #define CTRAN_BROADCAST_IMPL_H_
+#include <cuda_runtime.h>
 #include "comms/ctran/CtranComm.h"
-#include "comms/ctran/CtranExImpl.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 commResult_t ctranBroadcastDirect(

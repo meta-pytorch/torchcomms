@@ -28,7 +28,7 @@ CXXFLAGS += -DENABLE_PIPES
 endif
 
 ##### src files
-INCEXPORTS  := nccl.h CtranEx.h CtranExComm.h
+INCEXPORTS  := nccl.h
 LIBSRCFILES := \
  	$(wildcard ${SRCDIR}/*.cc) \
 	$(wildcard ${SRCDIR}/graph/*.cc) \
@@ -306,16 +306,6 @@ $(PKGDIR)/nccl.pc : nccl.pc.in
 	    $< > $@
 
 $(INCDIR)/%.h : %.h
-	@printf "Grabbing   %-35s > %s\n" $< $@
-	mkdir -p $(INCDIR)
-	install -m 644 $< $@
-
-$(INCDIR)/CtranEx.h : ${BASE_DIR}/comms/ctran/CtranEx.h
-	@printf "Grabbing   %-35s > %s\n" $< $@
-	mkdir -p $(INCDIR)
-	install -m 644 $< $@
-
-$(INCDIR)/CtranExComm.h : ${SHAREDDIR}/meta/wrapper/CtranExComm.h
 	@printf "Grabbing   %-35s > %s\n" $< $@
 	mkdir -p $(INCDIR)
 	install -m 644 $< $@

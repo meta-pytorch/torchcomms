@@ -369,10 +369,8 @@ commResult_t CtranGpe::submit(
     const void* ncclKernel,
     std::optional<std::chrono::milliseconds> timeout,
     PreLaunchGraphPrepareFn graphPrepareFn) {
-  if (this->pimpl->comm->algoStats_) {
-    this->pimpl->comm->algoStats_->record(
-        kernelTypeToOpName(kernelConfig.type), kernelConfig.algoName);
-  }
+  this->pimpl->comm->recordAlgoStat(
+      kernelTypeToOpName(kernelConfig.type), kernelConfig.algoName);
   return this->pimpl->submit(
       CtranGpeCmd::TypeEnum::GRAPH_ENQUEUE,
       std::move(opGroup),

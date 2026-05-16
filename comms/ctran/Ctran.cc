@@ -144,6 +144,14 @@ commResult_t ctranInit(
     return commInternalError;
   }
 
+  for (const auto& opt : NCCL_COLLTRACE) {
+    if (opt == "algostat") {
+      comm->algoStats_ = std::make_unique<meta::comms::colltrace::AlgoStats>(
+          comm->statex_->commHash(), comm->statex_->commDesc());
+      break;
+    }
+  }
+
   auto res = ctranInitializePipes(comm);
   if (res != commSuccess) {
     return res;
@@ -178,13 +186,6 @@ CtranComm::CtranComm(std::shared_ptr<Abort> abort, ctranConfig commConfig)
   }
   // Default points to internal opCount
   opCount_ = &ctranOpCount_;
-
-  for (const auto& opt : NCCL_COLLTRACE) {
-    if (opt == "algostat") {
-      algoStats_ = std::make_unique<meta::comms::colltrace::AlgoStats>();
-      break;
-    }
-  }
 }
 
 void CtranComm::destroy() {
