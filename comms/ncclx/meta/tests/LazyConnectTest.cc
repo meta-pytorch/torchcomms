@@ -155,7 +155,7 @@ TEST_P(NcclxLazyConnectTestFixture, InitOnly) {
   rootComm = createRootComm();
   ASSERT_NE(nullptr, rootComm);
   // Nothing should be connected or initialized if no collective is called
-  if (NCCL_RUNTIME_CONNECT) {
+  if (LAZY_CONNECT_ENABLED) {
     // Algorithms should not be connected
     for (int a = 0; a < NCCL_NUM_ALGORITHMS; a++) {
       EXPECT_FALSE(rootComm->initAlgoChannels[a]);
@@ -165,7 +165,7 @@ TEST_P(NcclxLazyConnectTestFixture, InitOnly) {
     // channels should not be initialized
     EXPECT_EQ(rootComm->nChannelsReady, 0);
   }
-  if (NCCL_RUNTIME_CONNECT) {
+  if (LAZY_CONNECT_ENABLED) {
     // Algorithms should not be connected
     for (int a = 0; a < NCCL_NUM_ALGORITHMS; a++) {
       EXPECT_EQ(rootComm->algoConnectedChannels[a], 0);
@@ -188,14 +188,14 @@ TEST_P(NcclxLazyConnectTestFixture, AllReduceRing) {
       sendBuf, recvBuf, count, dataType, ncclSum, rootComm, stream);
   EXPECT_EQ(res, ncclSuccess);
 
-  if (NCCL_RUNTIME_CONNECT) {
+  if (LAZY_CONNECT_ENABLED) {
     // RING should be connected
     checkAlgoInitState(rootComm, NCCL_ALGO_RING);
   }
   if (NCCL_LAZY_SETUP_CHANNELS) {
     // RING should be connected in rootComm
     // other algorithms should not be connected if lazy connect is enabled
-    checkAlgoChannelState(rootComm, NCCL_ALGO_RING, NCCL_RUNTIME_CONNECT);
+    checkAlgoChannelState(rootComm, NCCL_ALGO_RING, LAZY_CONNECT_ENABLED);
   }
 
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
@@ -216,14 +216,14 @@ TEST_P(NcclxLazyConnectTestFixture, AllReduceTree) {
       sendBuf, recvBuf, count, dataType, ncclSum, rootComm, stream);
   EXPECT_EQ(res, ncclSuccess);
 
-  if (NCCL_RUNTIME_CONNECT) {
+  if (LAZY_CONNECT_ENABLED) {
     // TREE should be connected
     checkAlgoInitState(rootComm, NCCL_ALGO_TREE);
   }
   if (NCCL_LAZY_SETUP_CHANNELS) {
     // TREE should be connected in rootComm
     // other algorithms should not be connected if lazy connect is enabled
-    checkAlgoChannelState(rootComm, NCCL_ALGO_TREE, NCCL_RUNTIME_CONNECT);
+    checkAlgoChannelState(rootComm, NCCL_ALGO_TREE, LAZY_CONNECT_ENABLED);
   }
 
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
@@ -248,13 +248,13 @@ TEST_P(NcclxLazyConnectTestFixture, AllReduceTreeIncreaseChannel) {
       sendBuf, recvBuf, count, dataType, ncclSum, rootComm, stream);
   EXPECT_EQ(res, ncclSuccess);
 
-  if (NCCL_RUNTIME_CONNECT) {
+  if (LAZY_CONNECT_ENABLED) {
     // TREE should be connected
     checkAlgoInitState(rootComm, NCCL_ALGO_TREE);
   }
   if (NCCL_LAZY_SETUP_CHANNELS) {
     // TREE should be connected in rootComm
-    checkAlgoChannelState(rootComm, NCCL_ALGO_TREE, NCCL_RUNTIME_CONNECT);
+    checkAlgoChannelState(rootComm, NCCL_ALGO_TREE, LAZY_CONNECT_ENABLED);
   }
 
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
@@ -278,7 +278,7 @@ TEST_P(NcclxLazyConnectTestFixture, Alltoall) {
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
 
   auto prevNchannelsReady = rootComm->nChannelsReady;
-  if (NCCL_RUNTIME_CONNECT) {
+  if (LAZY_CONNECT_ENABLED) {
     // Algorithms should not be connected
     checkAlgoInitState(rootComm, NCCL_NUM_ALGORITHMS);
   }
@@ -331,13 +331,13 @@ TEST_P(NcclxLazyConnectTestFixture, AlltoallAndAllGather) {
 
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
 
-  if (NCCL_RUNTIME_CONNECT) {
+  if (LAZY_CONNECT_ENABLED) {
     // RING should be connected
     checkAlgoInitState(rootComm, NCCL_ALGO_RING);
   }
   if (NCCL_LAZY_SETUP_CHANNELS) {
     // RING should be connected in rootComm
-    checkAlgoChannelState(rootComm, NCCL_ALGO_RING, NCCL_RUNTIME_CONNECT);
+    checkAlgoChannelState(rootComm, NCCL_ALGO_RING, LAZY_CONNECT_ENABLED);
   }
 
   NCCLCHECK_TEST(ncclCommDestroy(rootComm));
@@ -376,13 +376,13 @@ TEST_P(NcclxLazyConnectTestFixture, higherP2pChThanColl) {
 
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
 
-  if (NCCL_RUNTIME_CONNECT) {
+  if (LAZY_CONNECT_ENABLED) {
     // RING should be connected
     checkAlgoInitState(rootComm, NCCL_ALGO_RING);
   }
   if (NCCL_LAZY_SETUP_CHANNELS) {
     // RING should be connected in rootComm
-    checkAlgoChannelState(rootComm, NCCL_ALGO_RING, NCCL_RUNTIME_CONNECT);
+    checkAlgoChannelState(rootComm, NCCL_ALGO_RING, LAZY_CONNECT_ENABLED);
   }
 
   NCCLCHECK_TEST(ncclCommDestroy(rootComm));
@@ -407,7 +407,7 @@ TEST_P(NcclxLazyConnectTestFixture, ChildCommAllGather) {
   EXPECT_EQ(res, ncclSuccess);
 
   // Allgather should be using RING
-  if (NCCL_RUNTIME_CONNECT) {
+  if (LAZY_CONNECT_ENABLED) {
     // RING should be connected
     checkAlgoInitState(childComm, NCCL_ALGO_RING);
     // rootComm should not connect any algorithm
@@ -415,9 +415,9 @@ TEST_P(NcclxLazyConnectTestFixture, ChildCommAllGather) {
   }
   if (NCCL_LAZY_SETUP_CHANNELS) {
     // RING should be connected in childComm
-    checkAlgoChannelState(childComm, NCCL_ALGO_RING, NCCL_RUNTIME_CONNECT);
+    checkAlgoChannelState(childComm, NCCL_ALGO_RING, LAZY_CONNECT_ENABLED);
     // rootComm should not connect any algorithm
-    checkAlgoChannelState(rootComm, NCCL_NUM_ALGORITHMS, NCCL_RUNTIME_CONNECT);
+    checkAlgoChannelState(rootComm, NCCL_NUM_ALGORITHMS, LAZY_CONNECT_ENABLED);
   }
 
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
@@ -455,7 +455,7 @@ TEST_P(NcclxLazyConnectTestFixture, ChildCommAllGather) {
 //       sendBuf, recvBuf, count, dataType, ncclSum, rootComm, stream);
 //   EXPECT_EQ(res, ncclSuccess);
 
-//   if (NCCL_RUNTIME_CONNECT) {
+//   if (LAZY_CONNECT_ENABLED) {
 //     // COLLNET would be connected, if available
 //     for (int a = 0; a < NCCL_NUM_ALGORITHMS; a++) {
 //       if (rootComm->collNetSupport == 1 && a == NCCL_ALGO_COLLNET_DIRECT) {
@@ -469,7 +469,7 @@ TEST_P(NcclxLazyConnectTestFixture, ChildCommAllGather) {
 //     // COLLNET should be connected in rootComm, if available
 //     if (rootComm->collNetSupport == 1) {
 //       checkAlgoChannelState(
-//           rootComm, NCCL_ALGO_COLLNET_DIRECT, NCCL_RUNTIME_CONNECT);
+//           rootComm, NCCL_ALGO_COLLNET_DIRECT, LAZY_CONNECT_ENABLED);
 //     }
 //   }
 
@@ -517,7 +517,7 @@ TEST_P(NcclxLazyConnectTestFixture, ChildCommAllGather) {
 //       sendBuf, recvBuf, count, dataType, ncclSum, rootComm, stream);
 //   EXPECT_EQ(res, ncclSuccess);
 
-//   if (NCCL_RUNTIME_CONNECT) {
+//   if (LAZY_CONNECT_ENABLED) {
 //     // Selected algo would be connected
 //     for (int a = 0; a < NCCL_NUM_ALGORITHMS; a++) {
 //       if (a == expectedAlgo) {
@@ -531,7 +531,7 @@ TEST_P(NcclxLazyConnectTestFixture, ChildCommAllGather) {
 //     // some channels should be initialized
 //     EXPECT_GE(rootComm->nChannelsReady, expectedNchannels);
 //     // Selected algo should be connected in rootComm
-//     checkAlgoChannelState(rootComm, expectedAlgo, NCCL_RUNTIME_CONNECT);
+//     checkAlgoChannelState(rootComm, expectedAlgo, LAZY_CONNECT_ENABLED);
 //   }
 
 //   CUDACHECK_TEST(cudaStreamSynchronize(stream));
@@ -552,7 +552,7 @@ TEST_P(NcclxLazyConnectTestFixture, ChildCommLazyConfig) {
   EXPECT_EQ(childComm->nChannelsReady, 0);
 
   // Nothing should be connected or initialized if no collective is called
-  if (NCCL_RUNTIME_CONNECT) {
+  if (LAZY_CONNECT_ENABLED) {
     // Algorithms should not be connected
     for (int a = 0; a < NCCL_NUM_ALGORITHMS; a++) {
       EXPECT_FALSE(rootComm->initAlgoChannels[a]);
