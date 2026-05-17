@@ -8,14 +8,8 @@
 #include "comms/ctran/window/CtranWin.h"
 #include "nccl.h" // @manual
 
-#if NCCL_MINOR >= 28
-// forward declare ncclWindow_vidmem
 struct ncclWindow_vidmem;
 using NcclWinHandle = ncclWindow_vidmem;
-#else
-struct ncclWindow;
-using NcclWinHandle = ncclWindow;
-#endif
 
 struct ncclWin {
   // communicator associated with this window

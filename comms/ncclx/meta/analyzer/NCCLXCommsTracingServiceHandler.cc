@@ -12,9 +12,7 @@
 #include <thrift/lib/cpp2/protocol/Serializer.h>
 
 #include "comms/utils/cvars/nccl_cvars.h"
-#if NCCL_MINOR >= 28
 #include "comms/utils/logger/ProcessGlobalErrorsUtil.h"
-#endif
 #include "comms/utils/trainer/TrainerContext.h"
 #include "meta/RankUtil.h"
 #include "meta/comms-monitor/CommsMonitor.h"
@@ -74,7 +72,6 @@ NCCLXCommsTracingServiceHandler::co_getComms(
     apache::thrift::SimpleJSONSerializer::deserialize(s, ncclParsedEntry);
   }
 
-#if NCCL_MINOR >= 28
   {
     auto globalState = ProcessGlobalErrorsUtil::getAllState();
     for (const auto& ibErr : globalState.ibCompletionErrors) {
@@ -109,7 +106,6 @@ NCCLXCommsTracingServiceHandler::co_getComms(
       response.cudaErrors().ensure().push_back(std::move(thriftErr));
     }
   }
-#endif
 
   co_return std::make_unique<comms::GetCommsResponse>(std::move(response));
 }
