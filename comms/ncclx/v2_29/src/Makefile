@@ -56,6 +56,7 @@ LIBSRCFILES := \
 
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/commDump.cc)
+LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/DeviceRackSerial.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/NcclxConfig.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/commHash.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/RankUtil.cc)

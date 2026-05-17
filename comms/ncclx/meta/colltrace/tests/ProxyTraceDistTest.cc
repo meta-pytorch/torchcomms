@@ -39,6 +39,7 @@ class ProxyTraceTest : public NcclxBaseTestFixture {
         // ranks 2-3 on node_1. NCCL uses NCCL_HOSTID to determine node
         // membership, so different hostids produce different comm->node values.
         {"NCCL_HOSTID", "node_" + std::to_string(globalRank / 2)},
+        {"NCCL_PXN_DISABLE", "1"},
     });
     CUDACHECK_TEST(cudaStreamCreate(&stream));
   }
@@ -419,9 +420,6 @@ TEST_F(ProxyTraceTest, QueryFinishedAllReduce) {
 
 TEST_F(ProxyTraceTest, QueryFinishedAllToAll) {
   auto traceGuard = EnvRAII(NCCL_PROXYTRACE, {"trace"});
-  // disable PXN so that each proxy thread can have deterministic behavior:
-  // send and recv for the local rank with PPN remote ranks on the other node
-  NCCL_PXN_DISABLE = 1;
   // ensure we use default proxy path
   NCCL_ALLTOALL_ALGO = NCCL_ALLTOALL_ALGO::orig;
 
@@ -471,9 +469,6 @@ TEST_F(ProxyTraceTest, QueryFinishedAllToAll) {
 
 TEST_F(ProxyTraceTest, QueryFinishedSendRecv) {
   auto traceGuard = EnvRAII(NCCL_PROXYTRACE, {"trace"});
-  // disable PXN so that each proxy thread can have deterministic behavior:
-  // send and recv for the local rank with PPN remote ranks on the other node
-  NCCL_PXN_DISABLE = 1;
   // ensure we use default proxy path
   NCCL_SENDRECV_ALGO = NCCL_SENDRECV_ALGO::orig;
 
@@ -583,9 +578,6 @@ TEST_F(ProxyTraceTest, QueryHangAllReduce) {
 
 TEST_F(ProxyTraceTest, QueryHangSendRecv) {
   auto traceGuard = EnvRAII(NCCL_PROXYTRACE, {"trace"});
-  // disable PXN so that each proxy thread is guaranteed to send and recv with
-  // PPN remote ranks
-  NCCL_PXN_DISABLE = 1;
   // ensure we use default proxy path
   NCCL_SENDRECV_ALGO = NCCL_SENDRECV_ALGO::orig;
 
