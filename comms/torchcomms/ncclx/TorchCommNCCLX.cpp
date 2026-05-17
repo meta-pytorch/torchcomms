@@ -194,8 +194,7 @@ void TorchCommNCCLX::initNcclxResources() {
       cuda_api_->memGetInfo(&free_memory, &total_memory),
       fmt::format("Failed to get memory info for device {}", device_.index()));
 
-  high_priority_stream_ =
-      options_.getHint<bool>(kHintHighPriorityStream, false);
+  high_priority_stream_ = options_.isHighPriorityStreamEnabled();
 
   int stream_priority = 0;
 

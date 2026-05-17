@@ -124,6 +124,10 @@ PYBIND11_MODULE(_comms, m, py::mod_gil_not_used()) {
           &CommOptions::timeout,
           "Timeout for operations (milliseconds)")
       .def_readwrite(
+          "high_priority_stream",
+          &CommOptions::high_priority_stream,
+          "Whether to use a high priority stream by default")
+      .def_readwrite(
           "store",
           &CommOptions::store,
           "Store for communication between processes")
@@ -2307,6 +2311,8 @@ Args:
              std::optional<std::unordered_map<std::string, std::string>> hints,
              std::optional<std::chrono::milliseconds> timeout) {
             CommOptions opts;
+            opts.high_priority_stream =
+                self.getOptions().isHighPriorityStreamEnabled();
             if (hints) {
               opts.hints = *hints;
             }
