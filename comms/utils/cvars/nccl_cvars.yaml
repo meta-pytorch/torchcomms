@@ -1954,26 +1954,6 @@ cvars:
      Global ranks to log algo information from. Default is to log from all
      ranks.
 
- - name        : NCCL_CTRAN_QP_PROFILING_ENABLE
-   type        : bool
-   default     : false
-   description : |-
-     Flag to enable QP profiling module
-
-
- - name        : NCCL_CTRAN_QP_PROFILING_OUTPUT
-   type        : string
-   default     : ""
-   description : |-
-     Output mode for Ctran QP profiling ("", "file")
-
- - name        : NCCL_CTRAN_QP_PROFILING_SAMPLING_WEIGHT
-   type        : int
-   default     : 1
-   description : |-
-     WQE sampling weight to control writing WQE info to output.
-     The sampling rate is 1/NCCL_QP_PROFILING_SAMPLING_WEIGHT.
-
 
  - name        : NCCL_CTRAN_ENABLE_TRACE_LOG
    type        : bool

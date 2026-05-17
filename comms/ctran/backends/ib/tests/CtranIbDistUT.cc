@@ -2572,19 +2572,18 @@ TEST_P(CtranIbTestParam, GpuMemPutNotifyLastMixedFastRegular) {
   CUDACHECK_TEST(cudaFree(buf));
 }
 
-class CtranIbTestWithQueuePairProfiler : public CtranIbTest {
+class CtranIbTestWithProfiler : public CtranIbTest {
  public:
-  CtranIbTestWithQueuePairProfiler() = default;
+  CtranIbTestWithProfiler() = default;
   void SetUp() override {
     setenv("NCCL_CTRAN_TRANSPORT_PROFILER", "true", 1); // enable profiler
     setenv("NCCL_CTRAN_IB_MAX_QPS", "1", 1); // for tracking puts easier
     setenv("NCCL_CTRAN_DEVICE_TRAFFIC_SAMPLING_WEIGHT", "1", 1);
-    setenv("NCCL_CTRAN_QP_PROFILING_ENABLE", "true", 1); // enable QP profiling
     CtranIbTest::SetUp();
   }
 };
 
-TEST_F(CtranIbTestWithQueuePairProfiler, GpuMemPutNotifyMixedFastRegular) {
+TEST_F(CtranIbTestWithProfiler, GpuMemPutNotifyMixedFastRegular) {
   uint64_t qpScalingThreshold = 16384UL;
 
   EnvRAII env1(NCCL_CTRAN_IB_VC_MODE, NCCL_CTRAN_IB_VC_MODE::spray);
