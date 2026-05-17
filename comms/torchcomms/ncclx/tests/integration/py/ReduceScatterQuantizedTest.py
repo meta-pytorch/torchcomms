@@ -28,7 +28,7 @@ class ReduceScatterQuantizedTest(unittest.TestCase):
         # Get the NCCLX backend for NCCLX-specific APIs
         self.ncclx_backend = self.torchcomm.unsafe_get_backend()
 
-        # Skip if reduce_scatter_quantized is not available (requires v2_27 or v2_29+)
+        # Skip if reduce_scatter_quantized is not available (requires v2_29+)
         if not hasattr(self.ncclx_backend, "reduce_scatter_quantized"):
             self.skipTest(
                 "reduce_scatter_quantized not available in this NCCLX version"

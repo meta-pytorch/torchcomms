@@ -292,15 +292,8 @@ TEST_P(ReduceScatterPatAlgoSelectionTest, AlgoSelection) {
   // Enforce PAT algorithm selection via env vars for SUM (both NCCL_ALGO,
   // NCCL_PROTO and NCCL_PAT_ENABLE must be set, NCCL_PAT_ENABLE=1 is set in
   // main()). AVG requires PAT AVG CVAR or hint.
-  // Starting NCCLX 2.29, we started fully relying on the Nvidia PARAM
-  // infrastructure for the Nvidia-provided control variables.
-#if NCCL_VERSION_CODE >= 22900
   SysEnvRAII algoGuard("NCCL_ALGO", "reducescatter:pat");
   SysEnvRAII protoGuard("NCCL_PROTO", "Simple");
-#else
-  EnvRAII<std::string> algoGuard(NCCL_ALGO, std::string("reducescatter:pat"));
-  EnvRAII<std::string> protoGuard(NCCL_PROTO, std::string("Simple"));
-#endif
 
   // Enable PAT AVG via CVAR before comm creation
   auto patAvgGuard = EnvRAII(NCCL_REDUCESCATTER_PAT_AVG_ENABLE, patAvgEnable);
