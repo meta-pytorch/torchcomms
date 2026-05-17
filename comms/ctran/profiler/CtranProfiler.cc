@@ -2,9 +2,6 @@
 
 #include "comms/ctran/profiler/CtranProfiler.h"
 #include "comms/ctran/commstate/CommStateX.h"
-#include "comms/ctran/profiler/AlgoProfilerModule.h"
-#include "comms/ctran/profiler/CtranProfilerSlowRankModule.h"
-#include "comms/ctran/profiler/QueuePairProfilerModule.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
@@ -32,31 +29,7 @@ CtranProfiler::CtranProfiler(int rank, const std::string& hostname) {
   CtranProfilerInit();
 }
 
-void CtranProfiler::CtranProfilerInit() {
-  if (NCCL_SLOW_RANK_ENABLE) {
-    installModule<CtranProfilerSlowRankModule>();
-  }
-  if (NCCL_CTRAN_ALGO_PROFILING_ENABLE) {
-    if (!NCCL_FILTER_ALGO_LOGGING_BY_RANKS.empty()) {
-      // TODO: use commstatex when `commRanksToWorldRanks` map is available
-      for (const auto& rank : NCCL_FILTER_ALGO_LOGGING_BY_RANKS) {
-        if (std::stoi(rank) == localRankInfo_.globalRank) {
-          installModule<AlgoProfilerModule>();
-          break;
-        }
-      }
-    } else {
-      installModule<AlgoProfilerModule>();
-    }
-
-    if (NCCL_CTRAN_ALGO_PROFILING_SAMPLING_MODE == "collective") {
-      profileModuleLoggingConfig_.mt.seed(comm_->statex_->commHash());
-    }
-  }
-  if (NCCL_CTRAN_QP_PROFILING_ENABLE) {
-    installModule<QueuePairProfilerModule>();
-  }
-}
+void CtranProfiler::CtranProfilerInit() {}
 
 CtranProfiler::~CtranProfiler() {}
 
@@ -323,7 +296,7 @@ void CtranProfiler::handleAlgoCompleted() {
 }
 
 bool CtranProfiler::shouldHandleRdmaEvent() {
-  if (!NCCL_CTRAN_QP_PROFILING_ENABLE && !NCCL_SLOW_RANK_ENABLE) {
+  if (!NCCL_SLOW_RANK_ENABLE) {
     return false;
   }
   return profileModuleLoggingConfig_.shouldLogCollective_;
@@ -363,11 +336,6 @@ void CtranProfiler::setLoggingConfig(int opCount) {
         return;
       }
     }
-  }
-
-  if (NCCL_CTRAN_QP_PROFILING_ENABLE) {
-    profileModuleLoggingConfig_.shouldLogCollective_ = true;
-    return;
   }
 
   if (NCCL_SLOW_RANK_ENABLE) {
