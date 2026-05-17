@@ -2578,7 +2578,6 @@ class CtranIbTestWithProfiler : public CtranIbTest {
   void SetUp() override {
     setenv("NCCL_CTRAN_TRANSPORT_PROFILER", "true", 1); // enable profiler
     setenv("NCCL_CTRAN_IB_MAX_QPS", "1", 1); // for tracking puts easier
-    setenv("NCCL_CTRAN_DEVICE_TRAFFIC_SAMPLING_WEIGHT", "1", 1);
     CtranIbTest::SetUp();
   }
 };

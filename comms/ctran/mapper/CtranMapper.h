@@ -816,13 +816,6 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     return commSuccess;
   }
 
-  void startEventAlgo() {
-    // To be defined by the transports.
-  }
-  void endEventAlgo() {
-    // To be defined by the transports.
-  }
-
   /* report the Ctran profiling results
    * Input arguments:
    *   - flush: force flushing the profiling result

@@ -45,11 +45,6 @@ class ICtran {
   // OpCount to track calls only to Ctran collectives
   virtual uint64_t getCtranOpCount() const = 0;
 
-  // Transport profiler hooks, called at ALGO_TOTAL boundaries by the Profiler.
-  // Implementations snapshot transport stats at start, emit delta at end.
-  virtual void startEventAlgo() = 0;
-  virtual void endEventAlgo() = 0;
-
   std::unique_ptr<CtranMapper> mapper{nullptr};
   // IMPORTANT: Member destruction order matters! C++ destroys members in
   // reverse order of declaration. algo must be declared BEFORE gpe so that

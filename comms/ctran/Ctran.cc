@@ -99,18 +99,6 @@ uint64_t Ctran::getCtranOpCount() const {
   return comm_->getCtranOpCount();
 }
 
-void Ctran::startEventAlgo() {
-  if (mapper) {
-    mapper->startEventAlgo();
-  }
-}
-
-void Ctran::endEventAlgo() {
-  if (mapper) {
-    mapper->endEventAlgo();
-  }
-}
-
 #if defined(ENABLE_PIPES)
 comms::pipes::Transport* CtranComm::getMultiPeerTransportsPtr() const {
   if (!multiPeerTransport_) {
