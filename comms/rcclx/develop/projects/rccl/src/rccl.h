@@ -25,6 +25,7 @@
 #define RCCL_GATHER_SCATTER 1
 #define RCCL_ALLTOALLV 1
 #define RCCL_ALLREDUCE_WITH_BIAS 1
+#define NCCL_COMM_DESCRIPTION // enables ProcessGroupNCCL to pass pg_desc to config.commDesc
 
 #ifdef __cplusplus
 extern "C" {
@@ -108,6 +109,7 @@ typedef struct ncclConfig_v22800 {
   int nvlsCTAs;                /*!< Number of NVLS cooperative thread arrays (blocks)*/
   int nChannelsPerNetPeer;     /*!< Number of channels per NET peer*/
   int nvlinkCentricSched;      /*!< nvlinkCentricSched*/
+  const char *commDesc;        /*!< Communicator description from process group */
 } ncclConfig_t;
 
 /* Config initializer must be assigned to initialize config structure when it is created.
@@ -130,6 +132,7 @@ typedef struct ncclConfig_v22800 {
   NCCL_CONFIG_UNDEF_INT,                            /* nvlsCTAs */              \
   NCCL_CONFIG_UNDEF_INT,                            /* nChannelsPerNetPeer */   \
   NCCL_CONFIG_UNDEF_INT,                            /* nvlinkCentricSched */    \
+  NCCL_CONFIG_UNDEF_PTR,                            /* commDesc */              \
 }
 /*! @} */
 
@@ -312,17 +315,17 @@ ncclResult_t pncclCommSplit(ncclComm_t comm, int color, int key, ncclComm_t *new
     @param[in]  excludeRanksList      List of ranks to be exluded
     @param[in]  excludeRanksCount     Number of ranks to be excluded
     @param[out] newcomm               Pointer to new communicator
-    @param[in]  config                Config file for new communicator. May be NULL to inherit from comm 
+    @param[in]  config                Config file for new communicator. May be NULL to inherit from comm
     @param[in]  shrinkFlags           Flag to adapt to various states of the parent communicator (see NCCL_SHRINK flags)*/
 ncclResult_t  ncclCommShrink(ncclComm_t comm, int* excludeRanksList, int excludeRanksCount, ncclComm_t* newcomm, ncclConfig_t* config, int shrinkFlags);
 ncclResult_t pncclCommShrink(ncclComm_t comm, int* excludeRanksList, int excludeRanksCount, ncclComm_t* newcomm, ncclConfig_t* config, int shrinkFlags);
 
 /*! @brief      Creates a new communicator (multi thread/process version), similar to ncclCommInitRankConfig.
-     @details    Allows to use more than one ncclUniqueId (up to one per rank), 
+     @details    Allows to use more than one ncclUniqueId (up to one per rank),
                  indicated by nId, to accelerate the init operation.
                  The number of ncclUniqueIds and their order must be the same for every rank.
      @return     Result code. See @ref rccl_result_code for more details.
- 
+
      @param[out] newcomm       Pointer to new communicator
      @param[in]  nranks        Total number of ranks participating in this communicator
      @param[in]  myrank        Current rank
@@ -743,7 +746,7 @@ ncclResult_t pncclAlltoAllv(const void *sendbuff, const size_t sendcounts[],
                 On the root rank, data from rank i is placed at recvbuff + i*count.
                 On non-root ranks, recvbuff is not used.
                 root is the rank where data will be gathered.
-                
+
                 In-place operations will happen if sendbuff == recvbuff + root * count.
     @return     Result code. See @ref rccl_result_code for more details.
 
@@ -766,7 +769,7 @@ ncclResult_t pncclGather(const void* sendbuff, void* recvbuff, size_t count,
                 On non-root ranks, sendbuff is not used.
                 Each rank receives count elements into recvbuff.
                 root is the rank that will distribute the data.
-                
+
                 In-place operations will happen if recvbuff == sendbuff + root * count.
     @return     Result code. See @ref rccl_result_code for more details.
 
@@ -1032,55 +1035,6 @@ class Hints {
     private:
         kvType kv;
 };
-
-/*
- * All-To-Allv Dynamic
- * Device (i) sends scounts[j] of data from sbuf[j] to device (j).
- * At the same time, device (i) receives rcounts[j] of data from device (j)
- * to be placed at rbuf[j]. scounts and rcounts are
- * measured in the units of datatype, not bytes. Only out-of-place operation
- * is allowed (i.e., sbufs and rbufs cannot overlap).
- * Arguments:
- *    IN  sbufs       - Data array to send (contains blocks for each other rank)
- *    IN  scounts     - Length of each block in sbuf
- *    OUT rbufs       - Data array to receive (contains blocks for each other rank)
- *    IN  max_rcounts - Max length of each block in rbuf
- *    OUT actual_rcounts - Actual length of each block in rbuf
- *    IN  hints       - Hints for performance
- *    IN  datatype    - Type of each data element
- *    IN  comm
- *    IN  stream
- *
- * Accepted hints:
- *   ncclx_alltoallv_dynamic_sendbuffs_contig: {true, false} (default: false)
- *   --- indicating whether all sendbuffs are part of a single contiguous memory allocation.
- *   ncclx_alltoallv_dynamic_recvbuffs_contig: {true, false} (default: false)
- *   --- indicating whether all recvbuffs are part of a single contiguous memory allocation.
- *   ncclx_alltoallv_dynamic_sendbuffs_location: {cpu, gpu, auto} (default: auto)
- *   --- indicating the location of the pointers of sendbuffs (not the location of each sendbuff).
- *   ncclx_alltoallv_dynamic_sendcounts_location: {cpu, gpu, auto} (default: auto)
- *   --- indicating the location of sendcounts.
- *   ncclx_alltoallv_dynamic_recvbuffs_location: {cpu, gpu, auto} (default: auto)
- *   --- indicating the location of the pointers of recvbuffs (not the location of each recvbuff).
- *   ncclx_alltoallv_dynamic_max_sendcounts_location: {cpu, gpu, auto} (default: auto)
- *   --- indicating the location of maxSendcounts.
- *   ncclx_alltoallv_dynamic_max_recvcounts_location: {cpu, gpu, auto} (default: auto)
- *   --- indicating the location of maxRecvcounts.
- *   ncclx_alltoallv_dynamic_actual_recvcounts_location: {cpu, gpu, auto} (default: auto)
- *   --- indicating the location of actualRecvcounts.
- */
-ncclResult_t alltoallvDynamic(const void * const* sendbuffs, const size_t* sendcounts, void * const* recvbuffs,
-    size_t maxSendcount, size_t maxRecvcount, size_t* actualRecvcounts,
-    const Hints& hints, ncclDataType_t datatype, ncclComm_t comm, hipStream_t stream);
-
-ncclResult_t alltoallvDynamicSplit(const void* sendbuff, const size_t* sendSplitLengths, void* const* recvbuffs,
-    size_t maxSendcount, size_t maxRecvcount, size_t* actualRecvcounts, const Hints& hints,
-    ncclDataType_t datatype, ncclComm_t comm, hipStream_t stream);
-
-ncclResult_t alltoallvDynamicSplitNonContig( const void* sendbuff, const size_t* sendSplitLengths,
-    size_t numSendSplitLengths, const size_t* sendIndices, const size_t* sendIndicesBlockLengths, void* const* recvbuffs,
-    size_t* recvAllSplitLengths, size_t* recvIndices, size_t* recvIndicesBlockLengths, size_t maxSendcount,
-    size_t maxRecvcount, const Hints& hints, ncclDataType_t datatype, ncclComm_t comm, hipStream_t stream);
 
 /*
  * Persistent All-Gather similar to ncclAllgather, the key difference is that

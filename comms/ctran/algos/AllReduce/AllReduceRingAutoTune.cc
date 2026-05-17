@@ -11,6 +11,7 @@
 #include <fmt/format.h>
 
 #include "comms/ctran/algos/CtranAlgoConsts.h"
+#include "comms/ctran/utils/Checks.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 
@@ -222,19 +223,30 @@ AutoTuneParams getAutoTunedParams(
 
   auto bp = getAutoTunedBlockParams(
       p.chunkSize, maxOccupancyNumBlocks, maxOccupancyBlockSize, arch);
-  if (NCCL_CTRAN_ALLREDUCE_RING_MAX_NUM_THREAD_BLOCKS > 0 &&
+  if (NCCL_CTRAN_ALLREDUCE_RING_NUM_THREAD_BLOCKS > 0) {
+    FB_CHECKTHROW_EX_NOCOMM(
+        NCCL_CTRAN_ALLREDUCE_RING_MAX_NUM_THREAD_BLOCKS <= 0 ||
+            NCCL_CTRAN_ALLREDUCE_RING_NUM_THREAD_BLOCKS <=
+                NCCL_CTRAN_ALLREDUCE_RING_MAX_NUM_THREAD_BLOCKS,
+        fmt::format(
+            "NCCL_CTRAN_ALLREDUCE_RING_NUM_THREAD_BLOCKS ({}) exceeds "
+            "MAX_NUM_THREAD_BLOCKS ({})",
+            NCCL_CTRAN_ALLREDUCE_RING_NUM_THREAD_BLOCKS,
+            NCCL_CTRAN_ALLREDUCE_RING_MAX_NUM_THREAD_BLOCKS));
+    bp.numBlocks = NCCL_CTRAN_ALLREDUCE_RING_NUM_THREAD_BLOCKS;
+  } else if (
+      NCCL_CTRAN_ALLREDUCE_RING_MAX_NUM_THREAD_BLOCKS > 0 &&
       bp.numBlocks > NCCL_CTRAN_ALLREDUCE_RING_MAX_NUM_THREAD_BLOCKS) {
     bp.numBlocks = NCCL_CTRAN_ALLREDUCE_RING_MAX_NUM_THREAD_BLOCKS;
   }
   if (NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE > 0) {
-    if (NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE > maxOccupancyBlockSize) {
-      throw std::invalid_argument(
-          fmt::format(
-              "NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE ({}) exceeds "
-              "max occupancy block size ({})",
-              NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE,
-              maxOccupancyBlockSize));
-    }
+    FB_CHECKTHROW_EX_NOCOMM(
+        NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE <= maxOccupancyBlockSize,
+        fmt::format(
+            "NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE ({}) exceeds "
+            "max occupancy block size ({})",
+            NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE,
+            maxOccupancyBlockSize));
     bp.blockSize = NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE;
   }
 

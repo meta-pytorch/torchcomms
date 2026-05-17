@@ -6,7 +6,7 @@ import itertools
 import unittest
 
 import torch
-from torchcomms.tests.integration.py.TorchCommTestHelpers import (
+from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
     skip_backend,
     TorchCommTestWrapper,
 )

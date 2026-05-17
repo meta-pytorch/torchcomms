@@ -6,7 +6,9 @@ import unittest
 
 import torch
 from torchcomms import ReduceOp
-from torchcomms.tests.integration.py.TorchCommTestHelpers import TorchCommTestWrapper
+from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
+    TorchCommTestWrapper,
+)
 
 
 class SplitTest(unittest.TestCase):

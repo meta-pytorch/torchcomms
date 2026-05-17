@@ -41,7 +41,6 @@ extern "C" {
 #define NCCL_COMM_DESCRIPTION // used for nccl-pg to set it https://fburl.com/code/th293cmh
 #define NCCL_COMM_SPLIT_GROUP_RANKS_SUPPORTED
 #define NCCL_ALLTOALLV_SUPPORTED
-#define NCCL_ALLTOALLV_DYNAMIC_SUPPORTED
 #define NCCL_ALLTOALLV_DEDUP_SUPPORTED
 #define NCCL_ALLTOALL_SUPPORTED
 #define NCCL_PERSISTENT_COLL_SUPPORTED
@@ -163,10 +162,6 @@ typedef struct ncclConfig_v22800 {
   // control allgather algo at comm level
   const char* ncclAllGatherAlgo{nullptr};
 
-  // control the lazy connect features
-  int lazyConnect{NCCL_CONFIG_UNDEF_INT};
-  int lazySetupChannels{NCCL_CONFIG_UNDEF_INT};
-
   // control the fast init features
   int fastInitMode{NCCL_CONFIG_UNDEF_INT};
 
@@ -207,8 +202,6 @@ typedef struct ncclConfig_v22800 {
   NCCL_CONFIG_UNDEF_PTR,                    /* splitGroupRanks */       \
   NCCL_CONFIG_UNDEF_INT,                    /* splitGroupSize */        \
   NCCL_CONFIG_UNDEF_PTR,                    /* ncclAllGatherAlgo */     \
-  NCCL_CONFIG_UNDEF_INT,                    /* lazyConnect */           \
-  NCCL_CONFIG_UNDEF_INT,                    /* lazySetupChannels */     \
   NCCL_CONFIG_UNDEF_INT,                    /* fastInitMode */          \
   NCCL_CONFIG_UNDEF_PTR,                    /* hints */                  \
   NCCL_CONFIG_UNDEF_PTR,                    /* ncclxConfig */            \
@@ -1125,6 +1118,7 @@ ncclResult_t  pncclCommGetUniqueHash(ncclComm_t comm, uint64_t* uniqueHash);
 #define NCCL_COMM_DUMP
 #define NCCL_COMM_DUMP_ALL
 
+#include <optional>
 #include <unordered_map>
 #include <string>
 /* Dump NCCL current internal state for a given communicator in a key-value store format.
@@ -1134,8 +1128,11 @@ ncclResult_t  ncclCommDump(ncclComm_t comm, std::unordered_map<std::string, std:
 /* Dump NCCL current internal state for all the communicators.
  * The returned map is in the format {commHash: {key: value}} where
  * {key: value} is the result of ncclCommDump in the communicator with hash commHash.
+ * requestFields: semicolon-separated list of field names to include (e.g. "rank;nRanks;CT_pastColls").
+ *   std::nullopt (default) dumps all fields.
  */
-ncclResult_t ncclCommDumpAll(std::unordered_map<std::string, std::unordered_map<std::string, std::string>>& map);
+ncclResult_t ncclCommDumpAll(std::unordered_map<std::string, std::unordered_map<std::string, std::string>>& map,
+    std::optional<std::string> requestFields = std::nullopt);
 
 #define NCCL_HAS_COMMS_TRACING_SERVICE_PORT
 ncclResult_t ncclCommsTracingServicePort(int& port);

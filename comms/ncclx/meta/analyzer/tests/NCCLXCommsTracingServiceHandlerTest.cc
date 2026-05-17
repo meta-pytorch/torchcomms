@@ -24,7 +24,6 @@
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/trainer/TrainerContext.h"
-#include "ftar/DynMemGpuBuffer.h"
 #include "meta/analyzer/NCCLXCommsTracingServiceUtil.h"
 #include "servicerouter/client/cpp2/ServiceRouter.h"
 #include "tupperware/common/client_factory/FreePortSocket.h"
@@ -35,6 +34,25 @@ using namespace meta::comms::analyzer;
 using namespace ncclx;
 
 namespace {
+
+struct GpuBuffer {
+  explicit GpuBuffer(size_t size) : size_(size) {
+    cudaMalloc(&ptr_, size);
+  }
+  ~GpuBuffer() {
+    cudaFree(ptr_);
+  }
+  GpuBuffer(const GpuBuffer&) = delete;
+  GpuBuffer& operator=(const GpuBuffer&) = delete;
+  void* raw() const {
+    return ptr_;
+  }
+
+ private:
+  void* ptr_ = nullptr;
+  size_t size_ = 0;
+};
+
 #define NCCLCHECK(cmd)                                                  \
   do {                                                                  \
     ncclResult_t res = cmd;                                             \
@@ -337,8 +355,8 @@ TEST_F(NcclCommsTest, AnalyzerSuccess) {
 
   // Allocate memory on the GPU
   int size = 32;
-  facebook::ftar::DynMemGpuBuffer sendBuff(size * sizeof(float));
-  facebook::ftar::DynMemGpuBuffer recvBuff(size * sizeof(float));
+  GpuBuffer sendBuff(size * sizeof(float));
+  GpuBuffer recvBuff(size * sizeof(float));
 
   // Modify GPU memory
   mccl::McclIntegrationTestUtil::modifyGPUBuffer<float>(size, sendBuff.raw());
@@ -449,8 +467,8 @@ TEST_F(NcclCommsTest, OneRankHangs) {
 
   // Allocate memory on the GPU
   int size = 32;
-  facebook::ftar::DynMemGpuBuffer sendBuff(size * sizeof(float));
-  facebook::ftar::DynMemGpuBuffer recvBuff(size * sizeof(float));
+  GpuBuffer sendBuff(size * sizeof(float));
+  GpuBuffer recvBuff(size * sizeof(float));
 
   for (int c = 0; c < 4; ++c) {
     XLOG(INFO) << "Iteration " << c;
@@ -568,8 +586,8 @@ TEST_F(NcclCommsTest, DISABLED_OneRankHangsCudaGraph) {
 
   // Allocate memory on the GPU
   int size = 32;
-  facebook::ftar::DynMemGpuBuffer sendBuff(size * sizeof(float));
-  facebook::ftar::DynMemGpuBuffer recvBuff(size * sizeof(float));
+  GpuBuffer sendBuff(size * sizeof(float));
+  GpuBuffer recvBuff(size * sizeof(float));
 
   cudaGraph_t graph;
   cudaGraphExec_t instance;

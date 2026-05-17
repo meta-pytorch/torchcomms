@@ -142,7 +142,7 @@ void runTestWaitSignalMultipleSlots(
 // Group-level API test kernels
 // =============================================================================
 
-__global__ void testPutGroupPartitioning(bool* success) {
+__global__ void testPutCooperativePartitioning(bool* success) {
   *success = true;
 
   auto group = comms::pipes::make_warp_group();
@@ -203,8 +203,8 @@ __global__ void testPutSignalGroupBroadcast(bool* success) {
 // Group-level test wrapper functions
 // =============================================================================
 
-void runTestPutGroupPartitioning(bool* d_success) {
-  testPutGroupPartitioning<<<1, comms::pipes::kWarpSize>>>(d_success);
+void runTestPutCooperativePartitioning(bool* d_success) {
+  testPutCooperativePartitioning<<<1, comms::pipes::kWarpSize>>>(d_success);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
@@ -272,7 +272,7 @@ __global__ void testBroadcast64DoubleSafety(bool* success) {
   }
 }
 
-__global__ void testPutGroupPartitioningBlock(bool* success) {
+__global__ void testPutCooperativePartitioningBlock(bool* success) {
   auto group = comms::pipes::make_block_group();
 
   constexpr std::size_t kTotalBytes = 4096; // 4KB
@@ -315,8 +315,8 @@ void runTestBroadcast64DoubleSafety(bool* d_success) {
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
-void runTestPutGroupPartitioningBlock(bool* d_success) {
-  testPutGroupPartitioningBlock<<<4, 256>>>(d_success);
+void runTestPutCooperativePartitioningBlock(bool* d_success) {
+  testPutCooperativePartitioningBlock<<<4, 256>>>(d_success);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
@@ -367,7 +367,7 @@ testWaitSignalNoTimeout(uint64_t* d_signalBuf, Timeout timeout, bool* success) {
 // wait_signal timeout test wrapper functions
 // =============================================================================
 
-void runTestWaitSignalTimeout(
+cudaError_t runTestWaitSignalTimeout(
     uint64_t* d_signalBuf,
     int device,
     uint32_t timeout_ms) {
@@ -377,7 +377,7 @@ void runTestWaitSignalTimeout(
   // NOLINTNEXTLINE(facebook-cuda-safe-kernel-call-check)
   testWaitSignalTimeout<<<1, 1>>>(d_signalBuf, timeout);
   // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-  cudaDeviceSynchronize();
+  return cudaDeviceSynchronize();
 }
 
 void runTestWaitSignalNoTimeout(

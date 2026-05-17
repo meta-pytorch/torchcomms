@@ -703,6 +703,10 @@ struct ncclComm {
   ncclConfig_t config;
   // initState is to more conveniently reclaim resources when errors happen.
   ncclResult_t initState;
+  // init-completion timestamps
+  uint64_t initCompleteTimestamp; // clockNano() (monotonic) at Init COMPLETE, for delta measurement
+  uint64_t initCompleteWallclock; // wallClockNano() (epoch) at Init COMPLETE, for cross-host correlation
+  bool firstCollLogged; // true after first-collective diagnostic log has fired
   // flag to indicate if ncclCommFinalize() is called
   bool finalizeCalled;
   // shared structures for finalization
@@ -737,7 +741,7 @@ struct ncclComm {
   // CE Collective
   struct ncclCeColl ceColl;
   struct ncclIntruQueue<struct ncclCeInitTask, &ncclCeInitTask::next> ceInitTaskQueue;
-  
+
   // Choose custom collective algorithms
   std::unique_ptr<meta::comms::AlgoFactoryDev> algoFactory{nullptr};
   // buffer registration cache

@@ -41,7 +41,7 @@ class AllReduceUniformTest : public NcclxBaseTestFixture {
   AllReduceUniformTest() = default;
 
   void SetUp() override {
-    NcclxBaseTestFixture::SetUp();
+    NcclxBaseTestFixture::SetUp({{"NCCL_MAX_NCHANNELS", "1"}});
 
     comm = ncclx::test::createNcclComm(
         globalRank, numRanks, localRank, bootstrap_.get());
@@ -115,10 +115,8 @@ class AllReduceUniformTestBF16
   void runTest(size_t tensorSize, AllReduceAlgo algoType) {
     if (algoType == AllReduceAlgo::SingleRing) {
       NCCL_ALGO = "ring";
-      NCCL_MAX_NCHANNELS = 1;
     } else if (algoType == AllReduceAlgo::SingleTree) {
       NCCL_ALGO = "tree";
-      NCCL_MAX_NCHANNELS = 1;
     } else {
       throw std::runtime_error("Invalid AllReduceAlgo");
     }

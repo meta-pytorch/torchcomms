@@ -5,6 +5,7 @@
 #include <deque>
 #include <memory>
 #include <queue>
+#include <unordered_set>
 #include <vector>
 
 #include <folly/MPMCQueue.h>
@@ -13,6 +14,11 @@
 #include "comms/utils/colltrace/CollTracePlugin.h"
 
 namespace meta::comms::colltrace {
+
+enum class EvictionMode {
+  FixedCount, // Keep last N records (current behavior)
+  Iteration, // Keep records from current iteration, with hard upper bound
+};
 
 struct CommDumpConfig {
   // Default size of queue storing past collective communication operations.
@@ -36,6 +42,15 @@ struct CommDumpConfig {
   // dropped if the queue is full.
   int64_t pendingCollSize{kCommDumpQueueSize};
   std::chrono::milliseconds dumpLockAcquireTimeout{kDumpLockAcquireTimeout};
+
+  EvictionMode evictionMode{EvictionMode::FixedCount};
+  // Number of recent iterations to retain when using Iteration mode.
+  // 1 = current iteration only, 2 = current + previous, etc.
+  int64_t maxIterations{1};
+  // Hard upper bound on retained past records when using Iteration mode.
+  // Prevents unbounded growth if ncclxSetIteration is never called.
+  static constexpr int64_t kDefaultIterationUpperBound{3000};
+  int64_t iterationUpperBound{kDefaultIterationUpperBound};
 };
 
 struct CollRecordGreaterCollId {
@@ -56,6 +71,14 @@ struct CollTraceDump {
   std::deque<std::shared_ptr<CollRecord>> pastColls;
   std::deque<std::shared_ptr<CollRecord>> currentColls;
   std::deque<std::shared_ptr<CollRecord>> pendingColls;
+
+  int64_t currentIteration{-1};
+  int64_t currentIterationCommTimeUs{0};
+};
+
+struct IterationCommTime {
+  int64_t iteration{-1};
+  int64_t commTimeUs{0};
 };
 
 class CommDumpPlugin : public ICollTracePlugin {
@@ -83,6 +106,8 @@ class CommDumpPlugin : public ICollTracePlugin {
   // CommDump specific API, supposed to be called by the dump (user) thread
   CommsMaybe<CollTraceDump> dump() noexcept;
 
+  IterationCommTime getCurrentIterationCommTime() const noexcept;
+
   // For testing purpose only. This API is NOT thread safe! Clears all the
   // recorded colls. Please make sure all the previous colls are processed
   // before calling this API. Otherwise, the result might be unexpected.
@@ -91,7 +116,10 @@ class CommDumpPlugin : public ICollTracePlugin {
   static constexpr std::string_view kCommDumpPluginName = "CommDumpPlugin";
 
  private:
+  void evictPastColls(CollTraceDump& dump, int64_t completedIteration);
+
   CommDumpConfig config_;
+  int64_t maxIterationSeen_{-1};
 
   folly::Synchronized<CollTraceDump> collTraceDump_;
 
@@ -113,6 +141,7 @@ class CommDumpPlugin : public ICollTracePlugin {
 // Helper functions for CommDumpPlugin
 
 std::unordered_map<std::string, std::string> commDumpToMap(
-    const CollTraceDump& dump);
+    const CollTraceDump& dump,
+    const std::unordered_set<std::string>& requestFields = {});
 
 } // namespace meta::comms::colltrace

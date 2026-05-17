@@ -5,28 +5,28 @@
 namespace torch::comms {
 
 // Global function to be registered as a hook
-void cachingAllocatorHookFn(
+void ncclxCachingAllocatorHookFn(
     const c10::cuda::CUDACachingAllocator::TraceEntry& te) {
   // Forward to the singleton instance
-  CachingAllocatorHook::getInstance().regDeregMem(te);
+  NcclxCachingAllocatorHook::getInstance().regDeregMem(te);
 }
 
-CachingAllocatorHookImpl& CachingAllocatorHook::getInstance() {
+NcclxCachingAllocatorHookImpl& NcclxCachingAllocatorHook::getInstance() {
   // Use std::call_once for thread-safe singleton initialization
   // NOLINTNEXTLINE(facebook-hte-std::call_once)
   std::call_once(init_flag_, createInstance);
   return *instance_;
 }
 
-DefaultCachingAllocatorHookImpl::DefaultCachingAllocatorHookImpl() {
+DefaultNcclxCachingAllocatorHookImpl::DefaultNcclxCachingAllocatorHookImpl() {
   // Setup memory registration hooks
   at::globalContext().lazyInitDevice(c10::DeviceType::CUDA);
   registerMemPreHook();
   c10::cuda::CUDACachingAllocator::attachAllocatorTraceTracker(
-      &cachingAllocatorHookFn);
+      &ncclxCachingAllocatorHookFn);
 }
 
-void CachingAllocatorHookImpl::registerMemPreHook() {
+void NcclxCachingAllocatorHookImpl::registerMemPreHook() {
   // Register all memory that has already been allocated by querying the
   // CUDACachingAllocator snapshot directly. This captures any allocations
   // that occurred before the trace hook was attached.
@@ -47,7 +47,7 @@ void CachingAllocatorHookImpl::registerMemPreHook() {
   mem_pre_hook_registered_ = true;
 }
 
-void CachingAllocatorHookImpl::regDeregMem(
+void NcclxCachingAllocatorHookImpl::regDeregMem(
     const c10::cuda::CUDACachingAllocator::TraceEntry& te) {
   if (te.action_ ==
           c10::cuda::CUDACachingAllocator::TraceEntry::Action::SEGMENT_ALLOC ||
@@ -73,7 +73,7 @@ void CachingAllocatorHookImpl::regDeregMem(
   }
 }
 
-bool CachingAllocatorHookImpl::isMemPreHookRegistered() {
+bool NcclxCachingAllocatorHookImpl::isMemPreHookRegistered() {
   return mem_pre_hook_registered_;
 }
 

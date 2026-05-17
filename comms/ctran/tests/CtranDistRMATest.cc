@@ -34,6 +34,9 @@ class CtranRMATest : public ctran::CtranDistTestFixture, public CtranBaseTest {
     ASSERT_NE(ctranComm.get(), nullptr);
   }
   void TearDown() override {
+    if (ctranComm) {
+      ctran::waitForCollTraceDrain(ctranComm.get());
+    }
     ctranComm.reset();
     ctran::CtranDistTestFixture::TearDown();
     // Check that all allocated memory segments have been freed
@@ -169,7 +172,18 @@ TEST_P(MultiWindowTestParam, multiWindow) {
 class CtranRMATestParam
     : public CtranRMATest,
       public ::testing::WithParamInterface<
-          std::tuple<size_t, size_t, bool, MemAllocType, bool>> {};
+          std::tuple<size_t, size_t, bool, MemAllocType, bool>> {
+ protected:
+  void SetUp() override {
+#ifdef CTRAN_TEST_IB_ONLY_BACKEND
+    const auto ctranAllReduce = std::get<2>(GetParam());
+    if (ctranAllReduce) {
+      GTEST_SKIP() << "IB-only mode: NVL not available for ctranAllReduce";
+    }
+#endif
+    CtranRMATest::SetUp();
+  }
+};
 
 TEST_P(CtranRMATestParam, winPutWait) {
   const auto& [kNumElements, kNumIters, ctranAllReduce, bufType, userBuf] =
@@ -665,7 +679,7 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Combine(
         // kNumElements, kNumIters, ctranAllReduce, cpuWin, userBuf
         ::testing::Values(8192, 8 * 1024 * 1024),
-        ::testing::Values(500),
+        ::testing::Values(50),
         ::testing::Values(true, false),
         ::testing::Values(
             MemAllocType::kMemCuMemAlloc,

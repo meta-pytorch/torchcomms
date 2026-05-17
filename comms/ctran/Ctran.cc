@@ -99,6 +99,18 @@ uint64_t Ctran::getCtranOpCount() const {
   return comm_->getCtranOpCount();
 }
 
+void Ctran::startEventAlgo() {
+  if (mapper) {
+    mapper->startEventAlgo();
+  }
+}
+
+void Ctran::endEventAlgo() {
+  if (mapper) {
+    mapper->endEventAlgo();
+  }
+}
+
 #if defined(ENABLE_PIPES)
 comms::pipes::Transport* CtranComm::getMultiPeerTransportsPtr() const {
   if (!multiPeerTransport_) {
@@ -130,6 +142,14 @@ commResult_t ctranInit(
   } catch (std::exception& e) {
     CLOGF(ERR, "Ctran initialization failed: {}", e.what());
     return commInternalError;
+  }
+
+  for (const auto& opt : NCCL_COLLTRACE) {
+    if (opt == "algostat") {
+      comm->algoStats_ = std::make_unique<meta::comms::colltrace::AlgoStats>(
+          comm->statex_->commHash(), comm->statex_->commDesc());
+      break;
+    }
   }
 
   auto res = ctranInitializePipes(comm);
@@ -166,13 +186,6 @@ CtranComm::CtranComm(std::shared_ptr<Abort> abort, ctranConfig commConfig)
   }
   // Default points to internal opCount
   opCount_ = &ctranOpCount_;
-
-  for (const auto& opt : NCCL_COLLTRACE) {
-    if (opt == "algostat") {
-      algoStats_ = std::make_unique<meta::comms::colltrace::AlgoStats>();
-      break;
-    }
-  }
 }
 
 void CtranComm::destroy() {

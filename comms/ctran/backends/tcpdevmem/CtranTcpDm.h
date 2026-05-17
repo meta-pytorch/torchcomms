@@ -90,7 +90,7 @@ class CtranTcpDm {
   commResult_t teardownUnpackConsumer(void* pool);
 
  private:
-  ::comms::tcp_devmem::TransportInterface* transport_{nullptr};
+  std::shared_ptr<::comms::tcp_devmem::TransportInterface> transport_;
   ctran::bootstrap::ServerSocket listenSocket_{
       static_cast<int>(NCCL_SOCKET_RETRY_CNT)};
   std::vector<sockaddr_storage> allListenSocketAddrs_{};

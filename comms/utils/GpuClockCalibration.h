@@ -6,13 +6,19 @@
 
 #include <cstdint>
 
-#if not defined(__CUDACC__) and not defined(__HIPCC__)
+// Host-only includes. The guard uses __HIPCC__ || !__CUDACC__ so that:
+//  - Regular .cc files: visible (neither macro defined)
+//  - NVCC .cu files: hidden (folly headers don't compile under nvcc)
+//  - HIP .cc/-x hip files: visible (clang handles folly fine)
+// After hipify (__CUDACC__ → __HIPCC__), this becomes __HIPCC__ || !__HIPCC__
+// which is always true — correct since HIP/clang has no folly issues.
+#if defined(__HIPCC__) || !defined(__CUDACC__)
 #include <atomic>
 #include <chrono>
 #include <memory>
 
 #include <folly/Synchronized.h>
-#endif // not defined(__CUDACC__) and not defined(__HIPCC__)
+#endif
 
 // Globaltimer (ns) is reduced to ~1024ns ticks (`>> shift`) to fit in 32
 // bits when packed into HRDWEntry. 32 bits of 1024ns ticks wraps every
@@ -39,7 +45,7 @@ namespace meta::comms::colltrace {
 // cudaFreeHost during static destruction races with CUDA runtime teardown
 // (cudaErrorCudartUnloading) and segfaults. The singleton in get() is
 // heap-allocated and leaked; matches CudaReferencePoint and PrecisionClockImpl.
-#if not defined(__CUDACC__) and not defined(__HIPCC__)
+#if defined(__HIPCC__) || !defined(__CUDACC__)
 class GlobaltimerCalibration {
  public:
   // Convert a device globaltimer nanosecond reading to a wall-clock
@@ -119,7 +125,7 @@ class GlobaltimerCalibration {
 
 // Launch a single-thread kernel that writes globaltimer() to *out.
 cudaError_t launchReadGlobaltimer(cudaStream_t stream, uint64_t* out);
-#endif // not defined(__CUDACC__) and not defined(__HIPCC__)
+#endif
 
 #if defined(__CUDACC__) || defined(__HIPCC__)
 // Device-side globaltimer read. Returns nanoseconds since device boot.

@@ -2147,6 +2147,16 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   comm->initState = ncclSuccess;
   timers[TIMER_INIT_TOTAL] = clockNano() - timers[TIMER_INIT_TOTAL];
 
+  // Timestamp logging: init completion
+  comm->initCompleteTimestamp = clockNano();
+  comm->initCompleteWallclock = wallClockNano();
+  INFO(NCCL_INIT, "Init Complete (rank %d nranks %d): commDesc %s commHash 0x%llx: "
+       "initComplete=%.6f",
+       comm->rank, comm->nRanks,
+       comm->config.commDesc ? comm->config.commDesc : "N/A",
+       (unsigned long long)comm->commHash,
+       comm->initCompleteWallclock / 1e9);
+
   // Trace this call for replay tool
   if (job->parent) {
     /* unlink child abort flag. */
@@ -2435,6 +2445,7 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t *config) {
   NCCL_CONFIG_DEFAULT(internalConfigPtr, CTAPolicy, NCCL_CONFIG_UNDEF_INT, NCCL_CTA_POLICY_DEFAULT, "CTA policy flags", "%d");
   NCCL_CONFIG_DEFAULT(internalConfigPtr, shrinkShare, NCCL_CONFIG_UNDEF_INT, 0, "shrinkShare", "%d");
   NCCL_CONFIG_DEFAULT(internalConfigPtr, nvlsCTAs, NCCL_CONFIG_UNDEF_INT, NCCL_CONFIG_UNDEF_INT, "nvlsCTAs", "%d");
+  NCCL_CONFIG_DEFAULT(internalConfigPtr, commDesc, NCCL_CONFIG_UNDEF_PTR, NULL, "Comm desc", "%s");
 
   /* assign config to communicator */
   comm->config.blocking = internalConfigPtr->blocking;
@@ -2449,6 +2460,7 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t *config) {
   comm->config.CTAPolicy = internalConfigPtr->CTAPolicy;
   comm->config.shrinkShare = internalConfigPtr->shrinkShare;
   comm->config.nvlsCTAs = internalConfigPtr->nvlsCTAs;
+  comm->config.commDesc = internalConfigPtr->commDesc;
   NCCLCHECKGOTO(envConfigOverride(comm), ret, fail);
 
 exit:

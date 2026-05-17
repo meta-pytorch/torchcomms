@@ -1403,13 +1403,13 @@ operations will fail until reconfigure() is called (in reconfigurable mode).
           )",
           py::call_guard<py::gil_scoped_release>())
       .def(
-          "abort_enabled",
-          &TorchComm::abortEnabled,
+          "is_abort_supported",
+          &TorchComm::isAbortSupported,
           R"(
-Check if abort/fault-tolerance is enabled on this communicator.
+Check if abort/fault-tolerance is supported on this communicator.
 
 Returns:
-    bool: True if abort is enabled, False otherwise.
+    bool: True if abort is supported, False otherwise.
           )",
           py::call_guard<py::gil_scoped_release>())
       .def(

@@ -98,7 +98,7 @@ void CudaReferencePoint::refresh() {
     // Best-effort cleanup of an event we just created; any destroy error
     // here is unrecoverable and would only mask the record failure above.
     // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-    cudaEventDestroy(newEvent);
+    (void)cudaEventDestroy(newEvent);
     return;
   }
   if (auto err = cudaStreamSynchronize(stream_); err != cudaSuccess) {
@@ -106,7 +106,7 @@ void CudaReferencePoint::refresh() {
         << "CudaReferencePoint::refresh: cudaStreamSynchronize failed: "
         << cudaGetErrorString(err) << " — keeping previous anchor";
     // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-    cudaEventDestroy(newEvent);
+    (void)cudaEventDestroy(newEvent);
     return;
   }
   auto newTime = precisionNow();
@@ -126,7 +126,7 @@ void CudaReferencePoint::refresh() {
     // Best-effort: a destroy error here would only be logged after the new
     // anchor is already published, so propagating it serves no purpose.
     // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-    cudaEventDestroy(oldEvent);
+    (void)cudaEventDestroy(oldEvent);
   }
 }
 

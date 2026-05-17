@@ -77,7 +77,10 @@ CommsMaybeVoid GraphCudaWaitEvent::afterCollKernelScheduled() noexcept {
   const cudaGraphNode_t* preRejoinDeps = nullptr;
   const cudaGraphEdgeData* preRejoinEdgeData = nullptr;
   size_t numPreRejoinDeps = 0;
-#if CUDART_VERSION >= 13000
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
+  CUDA_CHECK_EXPECTED(hipStreamGetCaptureInfo_v2(
+      stream_, &status, nullptr, nullptr, &preRejoinDeps, &numPreRejoinDeps));
+#elif CUDART_VERSION >= 13000
   CUDA_CHECK_EXPECTED(cudaStreamGetCaptureInfo(
       stream_,
       &status,

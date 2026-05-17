@@ -398,8 +398,9 @@ commResult_t ctran::IpcRegCache::initAsyncSocket() {
 
   // Start the server with a callback that handles IPC requests
   // The peer sends the whole IpcReq, and we check the type to dispatch
+  std::string resolvedIfName;
   auto maybeAddr = ctran::bootstrap::getInterfaceAddress(
-      NCCL_SOCKET_IFNAME, NCCL_SOCKET_IPADDR_PREFIX);
+      NCCL_SOCKET_IFNAME, NCCL_SOCKET_IPADDR_PREFIX, true, &resolvedIfName);
   if (maybeAddr.hasError()) {
     CLOGF(WARN, "CTRAN-REGCACHE: No socket interfaces found");
     throw ::ctran::utils::Exception(
@@ -495,8 +496,9 @@ commResult_t ctran::IpcRegCache::initAsyncSocket() {
   CLOGF_SUBSYS(
       INFO,
       INIT,
-      "CTRAN-REGCACHE: AsyncSocket server started at {}",
-      serverAddr_.describe());
+      "CTRAN-REGCACHE: AsyncSocket server started at {} ifname {}",
+      serverAddr_.describe(),
+      resolvedIfName);
 
   return commSuccess;
 }

@@ -30,6 +30,14 @@ class MockCudaApi : public CudaApi {
       (override));
 
   MOCK_METHOD(
+      Result<void*>,
+      hostAlloc,
+      (size_t size, unsigned int flags),
+      (override));
+  MOCK_METHOD(Status, hostFree, (void* ptr), (override));
+  MOCK_METHOD(Result<void*>, hostGetDevicePointer, (void* hostPtr), (override));
+
+  MOCK_METHOD(
       Status,
       memcpyAsync,
       (void* dst,

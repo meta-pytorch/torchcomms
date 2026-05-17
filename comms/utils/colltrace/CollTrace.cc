@@ -20,6 +20,7 @@
 #include "comms/utils/colltrace/GraphCudaWaitEvent.h"
 #include "comms/utils/colltrace/PrecisionClock.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/trainer/TrainerContext.h"
 
 namespace meta::comms::colltrace {
 
@@ -151,7 +152,10 @@ std::shared_ptr<GraphCollTraceState> CollTrace::getOrCreateGraphState(
   unsigned long long graphId = 0;
   cudaGraph_t graph = nullptr;
 
-#if CUDART_VERSION >= 13000
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
+  auto res = hipStreamGetCaptureInfo_v2(
+      stream, &captureStatus, &graphId, &graph, nullptr, nullptr);
+#elif CUDART_VERSION >= 13000
   auto res = cudaStreamGetCaptureInfo(
       stream, &captureStatus, &graphId, &graph, nullptr, nullptr, nullptr);
 #else
@@ -248,7 +252,8 @@ CommsMaybe<std::shared_ptr<ICollTraceHandle>> CollTrace::recordCollective(
   }
 
   pendingEnqueueColl_ = std::make_unique<CollTraceEvent>(
-      std::make_shared<CollRecord>(collId_.fetch_add(1), std::move(metadata)),
+      std::make_shared<CollRecord>(
+          collId_.fetch_add(1), std::move(metadata), ncclxGetIteration()),
       std::move(waitEvent));
   auto handle =
       std::make_shared<CollTraceHandle>(this, pendingEnqueueColl_.get());
@@ -355,8 +360,8 @@ CollTrace::recordGraphCollectiveImpl(
 
   rawWaitEvent->attachRingBuffer(&*ringBuffer_);
 
-  auto collRecord =
-      std::make_shared<CollRecord>(collIdVal, std::move(metadata));
+  auto collRecord = std::make_shared<CollRecord>(
+      collIdVal, std::move(metadata), ncclxGetIteration());
   auto recordPtr = std::static_pointer_cast<ICollRecord>(collRecord);
 
   auto collEvent = std::make_unique<CollTraceEvent>(CollTraceEvent{

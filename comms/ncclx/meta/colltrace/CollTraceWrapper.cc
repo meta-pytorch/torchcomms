@@ -26,6 +26,7 @@
 // TODO: Remove this guard once v2_27 is deprecated — v2_27 does not have the
 // comms/utils/colltrace:algostats dependency
 #if NCCL_MINOR >= 28
+#include "comms/ctran/CtranComm.h"
 #include "comms/utils/colltrace/AlgoStats.h"
 #endif
 
@@ -338,11 +339,18 @@ ncclResult_t newCollTraceInit(ncclComm* comm) {
   auto plugins =
       std::vector<std::unique_ptr<meta::comms::colltrace::ICollTracePlugin>>{};
 
+  auto evictionMode = NCCL_COLLTRACE_ITERATION_MODE
+      ? meta::comms::colltrace::EvictionMode::Iteration
+      : meta::comms::colltrace::EvictionMode::FixedCount;
+
   auto commDumpPlugin =
       std::make_unique<meta::comms::colltrace::CommDumpPlugin>(
           meta::comms::colltrace::CommDumpConfig{
               .pastCollSize = NCCL_COLLTRACE_RECORD_MAX,
               .pendingCollSize = NCCL_COLLTRACE_PENDING_QUEUE_SIZE,
+              .evictionMode = evictionMode,
+              .maxIterations = NCCL_COLLTRACE_RECORD_MAX_ITERATIONS,
+              .iterationUpperBound = NCCL_COLLTRACE_ITERATION_UPPER_BOUND,
           });
   plugins.push_back(std::move(commDumpPlugin));
 
@@ -487,11 +495,27 @@ __attribute__((visibility("default"))) void dumpAlgoStat(
     std::unordered_map<std::string, std::unordered_map<std::string, int64_t>>&
         map) {
   map.clear();
-  if (comm == nullptr || comm->algoStats == nullptr) {
+  if (comm == nullptr) {
     return;
   }
-  auto dump = comm->algoStats->dump();
-  map.swap(dump.counts);
+
+  // Dump baseline (ncclx) algo stats
+  if (comm->algoStats) {
+    auto dump = comm->algoStats->dump();
+    map.swap(dump.counts);
+  }
+
+  // Merge ctran algo stats
+  if (comm->ctranComm_) {
+    auto ctranDump = comm->ctranComm_->dumpAlgoStats();
+    if (ctranDump.has_value()) {
+      for (auto& [opName, algoMap] : ctranDump->counts) {
+        for (auto& [algoName, count] : algoMap) {
+          map[opName][algoName] += count;
+        }
+      }
+    }
+  }
 }
 
 namespace {

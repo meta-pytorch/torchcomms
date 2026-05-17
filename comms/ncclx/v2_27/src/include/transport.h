@@ -25,6 +25,7 @@
 #include "bootstrap.h"
 
 constexpr auto kMaxHostNameLen = 127; // Extra byte for NUL
+constexpr auto kMaxRackSerialLen = 63; // [META] for DeviceRackSerial string support
 
 extern struct ncclTransport p2pTransport;
 extern struct ncclTransport shmTransport;
@@ -55,7 +56,7 @@ struct ncclPeerInfo {
   int cuMemSupport;
   int version;
   char hostname[kMaxHostNameLen+1];
-  int rackSerial;
+  char rackSerial[kMaxRackSerialLen+1]; // [META] string-based rack serial (was int)
 };
 
 // [META]: increase size from 256 to 288 to accommodate for NCCLX's new fields

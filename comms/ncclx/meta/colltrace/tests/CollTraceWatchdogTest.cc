@@ -13,7 +13,26 @@
 #include "comms/mccl/tests/CudaStream.h"
 #include "comms/mccl/tests/CudaTestUtil.h"
 #include "comms/utils/colltrace/tests/nvidia-only/CPUControlledKernel.h"
-#include "ftar/DynMemGpuBuffer.h"
+
+namespace {
+struct GpuBuffer {
+  explicit GpuBuffer(size_t size) : size_(size) {
+    cudaMalloc(&ptr_, size);
+  }
+  ~GpuBuffer() {
+    cudaFree(ptr_);
+  }
+  GpuBuffer(const GpuBuffer&) = delete;
+  GpuBuffer& operator=(const GpuBuffer&) = delete;
+  void* raw() const {
+    return ptr_;
+  }
+
+ private:
+  void* ptr_ = nullptr;
+  size_t size_ = 0;
+};
+} // namespace
 
 #define NCCLCHECK_FATAL(cmd)                                            \
   do {                                                                  \
@@ -178,8 +197,8 @@ class NcclAllReduce {
   }
 
  private:
-  facebook::ftar::DynMemGpuBuffer sendBuff_;
-  facebook::ftar::DynMemGpuBuffer recvBuff_;
+  GpuBuffer sendBuff_;
+  GpuBuffer recvBuff_;
 };
 
 TEST_F(CollTraceWatchdogTest, TestAsyncErrorFromGPE) {

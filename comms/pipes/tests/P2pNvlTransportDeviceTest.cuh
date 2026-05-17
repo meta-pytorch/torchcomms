@@ -129,4 +129,19 @@ void testLl128SendRecv(
     int numBlocks,
     int blockSize);
 
+// =============================================================================
+// LL tiled (non-cooperative) send/recv test helpers
+// These test the ll_send()/ll_recv() methods with active_groups > 1,
+// where each warp independently sends/receives its own tile via TiledBuffer.
+// =============================================================================
+
+void testLlTiledSendRecv(
+    P2pNvlTransportDevice sender,
+    P2pNvlTransportDevice receiver,
+    const char* src_d,
+    char* dst_d,
+    size_t nbytes,
+    int numBlocks,
+    int blockSize);
+
 } // namespace comms::pipes::test

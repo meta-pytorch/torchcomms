@@ -614,7 +614,7 @@ std::string CommStateX::su(int rank) const {
   return rankStates_.at(rank).su;
 }
 
-int CommStateX::deviceRack(int rank) const {
+std::string_view CommStateX::deviceRack(int rank) const {
   CHECK_TOPO_AND_SET_RANK(rank, rank_, rankStates_);
   return rankStates_.at(rank).rackSerial;
 }
@@ -648,7 +648,12 @@ bool CommStateX::isSameDc(int myRank, int peer) const {
   return dc(peer) == dc(myRank);
 }
 bool CommStateX::isSameDeviceRack(int myRank, int peer) const {
-  return deviceRack(myRank) == deviceRack(peer);
+  const auto myRack = deviceRack(myRank);
+  const auto peerRack = deviceRack(peer);
+  if (myRack.empty() || peerRack.empty()) {
+    return false;
+  }
+  return myRack == peerRack;
 }
 bool CommStateX::isSameNvlFabric(int myRank, int peer) const {
   if (!nvlFabricEnabled_) {

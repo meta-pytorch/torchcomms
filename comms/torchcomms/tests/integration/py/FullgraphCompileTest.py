@@ -13,20 +13,20 @@ from torchcomms.functional import is_torch_compile_supported_and_enabled
 from torchcomms.tests.helpers.py.test_helpers import (
     skip_if_torch_compile_not_supported_or_enabled,
 )
-from torchcomms.tests.integration.py.TorchCommTestHelpers import (  # noqa: E402
+from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (  # noqa: E402
     skip_backend,
 )
 
 if is_torch_compile_supported_and_enabled():
     from torchcomms import ReduceOp, Timeout  # noqa: E402
-    from torchcomms.tests.integration.py.TorchCommTestHelpers import (  # noqa: E402
+    from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (  # noqa: E402
         get_dtype_name,
         get_op_name,
         is_full_sweep,
         TorchCommTestWrapper,
     )
 else:
-    from torchcomms.tests.integration.py.TorchCommTestHelpers import is_full_sweep
+    from torchcomms.tests.integration.helpers.TorchCommTestHelpers import is_full_sweep
 
     ReduceOp = None
 

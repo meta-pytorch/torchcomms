@@ -11,6 +11,7 @@
 
 #include "comms/ctran/algos/AllReduce/AllReduceRingAutoTune.h"
 #include "comms/ctran/algos/CtranAlgoConsts.h"
+#include "comms/ctran/utils/Exception.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 using ctran::allreduce::ring::getAutoTunedParams;
@@ -81,6 +82,18 @@ class NumBlocksOverride {
   ~NumBlocksOverride() {
     NCCL_CTRAN_ALLREDUCE_RING_MAX_NUM_THREAD_BLOCKS =
         NCCL_CTRAN_ALLREDUCE_RING_MAX_NUM_THREAD_BLOCKS_DEFAULTCVARVALUE;
+  }
+};
+
+// RAII guard for NUM_THREAD_BLOCKS CVAR (force exact value).
+class ForceNumBlocksOverride {
+ public:
+  explicit ForceNumBlocksOverride(int v) {
+    NCCL_CTRAN_ALLREDUCE_RING_NUM_THREAD_BLOCKS = v;
+  }
+  ~ForceNumBlocksOverride() {
+    NCCL_CTRAN_ALLREDUCE_RING_NUM_THREAD_BLOCKS =
+        NCCL_CTRAN_ALLREDUCE_RING_NUM_THREAD_BLOCKS_DEFAULTCVARVALUE;
   }
 };
 
@@ -943,7 +956,47 @@ TEST_F(AutoTuneCVAROverrideTest, BlockOverrides) {
     EXPECT_THROW(
         getAutoTunedParams(
             kMsg, kNRanks, kMaxOccNumBlocks, kMaxOccBlockSize, 1),
-        std::invalid_argument);
+        ctran::utils::Exception);
+  }
+}
+
+// NUM_THREAD_BLOCKS forces exact numBlocks, bypassing auto-tuner.
+TEST_F(AutoTuneCVAROverrideTest, ForceNumBlocks) {
+  MaxBDPOverride bdp(128 * MB);
+
+  // Force 16 blocks regardless of auto-tuner output.
+  {
+    ForceNumBlocksOverride fn(16);
+    auto at = getAutoTunedParams(
+        kMsg, kNRanks, kMaxOccNumBlocks, kMaxOccBlockSize, 1);
+    EXPECT_EQ(at.block.numBlocks, 16);
+  }
+
+  // Force 1 block — overrides auto-tuner's higher value.
+  {
+    ForceNumBlocksOverride fn(1);
+    auto at = getAutoTunedParams(
+        kMsg, kNRanks, kMaxOccNumBlocks, kMaxOccBlockSize, 1);
+    EXPECT_EQ(at.block.numBlocks, 1);
+  }
+
+  // Force + MAX cap: force must not exceed cap.
+  {
+    ForceNumBlocksOverride fn(16);
+    NumBlocksOverride nb(8);
+    EXPECT_THROW(
+        getAutoTunedParams(
+            kMsg, kNRanks, kMaxOccNumBlocks, kMaxOccBlockSize, 1),
+        ctran::utils::Exception);
+  }
+
+  // Force <= MAX cap: succeeds.
+  {
+    ForceNumBlocksOverride fn(4);
+    NumBlocksOverride nb(8);
+    auto at = getAutoTunedParams(
+        kMsg, kNRanks, kMaxOccNumBlocks, kMaxOccBlockSize, 1);
+    EXPECT_EQ(at.block.numBlocks, 4);
   }
 }
 
