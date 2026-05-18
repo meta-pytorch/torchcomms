@@ -126,8 +126,17 @@ CollTrace::CollTrace(
 }
 
 CollTrace::~CollTrace() {
-  // Set the cancellation flag
-  threadShouldStop_.test_and_set();
+  // Set the cancellation flag under the flush mutex so waitFlush()
+  // can't miss the state change between its predicate check and wait.
+  {
+    std::lock_guard lock(flushState_.mutex);
+    threadShouldStop_.test_and_set();
+  }
+  flushState_.cv.notify_all();
+  // Wake the poll thread if it is blocking on the MPMC queue so it sees
+  // the cancellation flag promptly instead of waiting for the full
+  // maxCheckCancelInterval.
+  pendingTraceColls_.writeIfNotFull(nullptr);
   // Invalidate all eager handles.
   for (auto& [_, handle] : eventToHandleMap_) {
     handle->invalidate();
@@ -391,6 +400,33 @@ CollTrace::recordGraphCollectiveImpl(
   return handle;
 }
 
+uint64_t CollTrace::requestFlush() noexcept {
+  auto gen = flushState_.requested.fetch_add(1, std::memory_order_acq_rel) + 1;
+  // Best-effort sentinel to wake the poll thread. If the queue is full,
+  // the thread has plenty of work and will see the updated generation
+  // on its next iteration.
+  pendingTraceColls_.writeIfNotFull(nullptr);
+  return gen;
+}
+
+void CollTrace::waitFlush(uint64_t gen) noexcept {
+  std::unique_lock lock(flushState_.mutex);
+  flushState_.cv.wait(lock, [&] {
+    return flushState_.completed.load(std::memory_order_acquire) >= gen ||
+        isThreadCancelled();
+  });
+}
+
+void CollTrace::ackFlush(uint64_t gen) noexcept {
+  if (gen > flushState_.completed.load(std::memory_order_relaxed)) {
+    {
+      std::lock_guard lock(flushState_.mutex);
+      flushState_.completed.store(gen, std::memory_order_release);
+    }
+    flushState_.cv.notify_all();
+  }
+}
+
 bool CollTrace::isThreadCancelled() const noexcept {
   return threadShouldStop_.test(std::memory_order_relaxed);
 }
@@ -506,8 +542,6 @@ void CollTrace::pollEagerEvents(
     std::unique_ptr<CollTraceEvent> event;
     while (pendingTraceColls_.read(event)) {
       if (event == nullptr) {
-        XLOG_FIRST_N(
-            ERR, 2, logPrefix_, ": Got null event from pendingTrace queue");
         continue;
       }
       eagerEvents_.push_back(std::move(event));
@@ -670,21 +704,25 @@ void CollTrace::collTraceThread(
       }
     }
 
+    auto flushGen = flushState_.requested.load(std::memory_order_acquire);
     std::multiset<PendingAction> actions;
 
     pollGraphEvents(actions);
     pollEagerEvents(actions);
     processCompletedEvents(actions);
 
+    ackFlush(flushGen);
+
     if (!initialized) {
       threadStarted_.count_down();
       initialized = true;
     }
 
-    if (actions.empty()) {
-      // No active events. Block on the MPMC queue so incoming eager events
-      // wake the thread immediately instead of sleeping for the full
-      // interval. Graph events are polled at the top of the next iteration.
+    if (actions.empty() &&
+        flushState_.requested.load(std::memory_order_acquire) == flushGen) {
+      // No active events and no new flush request arrived during this cycle.
+      // Block on the MPMC queue so incoming eager events wake the thread
+      // immediately instead of sleeping for the full interval.
       std::unique_ptr<CollTraceEvent> event;
       auto deadline =
           std::chrono::steady_clock::now() + config_.maxCheckCancelInterval;

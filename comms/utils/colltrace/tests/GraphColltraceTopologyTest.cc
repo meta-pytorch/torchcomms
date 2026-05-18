@@ -684,3 +684,156 @@ TEST(GraphColltraceTopologyDisabledTest, NoTelemetryNodesWhenDisabled) {
   // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
   cudaStreamDestroy(stream);
 }
+
+// ---------------------------------------------------------------------------
+// Flush tests — verify that requestFlush/waitFlush forces the poll thread
+// to read the ring buffer, processing graph replay events that would
+// otherwise sit unread until the next poll interval.
+// ---------------------------------------------------------------------------
+
+class GraphColltraceFlushTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    int deviceCount = 0;
+    auto err = cudaGetDeviceCount(&deviceCount);
+    if (err != cudaSuccess || deviceCount == 0) {
+      GTEST_SKIP() << "No CUDA device available";
+    }
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+    cudaSetDevice(0);
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+    cudaStreamCreate(&stream_);
+
+    cvarGuard_.emplace(NCCL_COLLTRACE_TRACE_CUDA_GRAPH, true);
+    meta::comms::colltrace::GlobaltimerCalibration::get();
+
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+    cudaMalloc(&buf1_, kWorkBytes);
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+    cudaMalloc(&buf2_, kWorkBytes);
+
+    auto dumpPlugin = std::make_unique<CommDumpPlugin>(
+        meta::comms::colltrace::CommDumpConfig{.pastCollSize = 100});
+    dumpPlugin_ = dumpPlugin.get();
+
+    auto plugins = std::vector<std::unique_ptr<ICollTracePlugin>>{};
+    plugins.push_back(std::move(dumpPlugin));
+    CommLogData logData{};
+    colltrace_ = std::make_shared<CollTrace>(
+        CollTraceConfig{
+            // Long interval so the poll thread sleeps between cycles.
+            // Ring buffer entries sit unread until flush wakes the thread.
+            .maxCheckCancelInterval = std::chrono::milliseconds{100000}},
+        logData,
+        []() -> meta::comms::CommsMaybeVoid {
+          // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+          cudaSetDevice(0);
+          auto mode = cudaStreamCaptureModeThreadLocal;
+          // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+          cudaThreadExchangeStreamCaptureMode(&mode);
+          return folly::unit;
+        },
+        std::move(plugins));
+  }
+
+  void TearDown() override {
+    colltrace_.reset();
+    if (buf2_) {
+      // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+      cudaFree(buf2_);
+    }
+    if (buf1_) {
+      // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+      cudaFree(buf1_);
+    }
+    if (stream_) {
+      // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+      cudaStreamDestroy(stream_);
+    }
+  }
+
+  cudaGraph_t captureSerial(uint32_t numColls) {
+    cudaGraph_t graph;
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+    cudaStreamBeginCapture(stream_, cudaStreamCaptureModeGlobal);
+    for (uint32_t c = 0; c < numColls; ++c) {
+      auto metadata = std::make_unique<BenchMetadata>();
+      auto waitEvent = std::make_unique<GraphCudaWaitEvent>(stream_);
+      auto handle =
+          colltrace_
+              ->recordCollective(std::move(metadata), std::move(waitEvent))
+              .value();
+      handle->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel);
+      cudaMemcpyAsync(
+          buf2_, buf1_, kWorkBytes, cudaMemcpyDeviceToDevice, stream_);
+      handle->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel);
+    }
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+    cudaStreamEndCapture(stream_, &graph);
+    return graph;
+  }
+
+  static constexpr size_t kWorkBytes = 64 * 1024;
+  cudaStream_t stream_{nullptr};
+  float* buf1_{nullptr};
+  float* buf2_{nullptr};
+  std::optional<EnvRAII<bool>> cvarGuard_;
+  std::shared_ptr<CollTrace> colltrace_;
+  CommDumpPlugin* dumpPlugin_{nullptr};
+};
+
+TEST_F(GraphColltraceFlushTest, DumpWithoutFlushMissesEvents) {
+  constexpr uint32_t kNumColls = 5;
+  auto graph = captureSerial(kNumColls);
+  ASSERT_NE(graph, nullptr);
+
+  cudaGraphExec_t instance;
+  ASSERT_EQ(
+      // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+      cudaGraphInstantiate(&instance, graph, nullptr, nullptr, 0),
+      cudaSuccess);
+
+  ASSERT_EQ(cudaGraphLaunch(instance, stream_), cudaSuccess);
+  ASSERT_EQ(cudaStreamSynchronize(stream_), cudaSuccess);
+
+  // GPU has written ring buffer entries, but the poll thread is sleeping
+  // (10s interval). Dump without flush should show no completed events.
+  auto dumpResult = dumpPlugin_->dump();
+  ASSERT_TRUE(dumpResult.hasValue());
+  EXPECT_EQ(static_cast<int>(dumpResult.value().pastColls.size()), 0)
+      << "Without flush, ring buffer entries should not be processed yet";
+
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  cudaGraphExecDestroy(instance);
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  cudaGraphDestroy(graph);
+}
+
+TEST_F(GraphColltraceFlushTest, FlushDrainsRingBuffer) {
+  constexpr uint32_t kNumColls = 5;
+  auto graph = captureSerial(kNumColls);
+  ASSERT_NE(graph, nullptr);
+
+  cudaGraphExec_t instance;
+  ASSERT_EQ(
+      // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+      cudaGraphInstantiate(&instance, graph, nullptr, nullptr, 0),
+      cudaSuccess);
+
+  ASSERT_EQ(cudaGraphLaunch(instance, stream_), cudaSuccess);
+  ASSERT_EQ(cudaStreamSynchronize(stream_), cudaSuccess);
+
+  // Flush wakes the poll thread, which reads the ring buffer and
+  // processes all graph replay events through the plugin pipeline.
+  colltrace_->waitFlush(colltrace_->requestFlush());
+
+  auto dumpResult = dumpPlugin_->dump();
+  ASSERT_TRUE(dumpResult.hasValue());
+  EXPECT_EQ(static_cast<int>(dumpResult.value().pastColls.size()), kNumColls)
+      << "After flush, all graph replay events should appear in pastColls";
+
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  cudaGraphExecDestroy(instance);
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  cudaGraphDestroy(graph);
+}
