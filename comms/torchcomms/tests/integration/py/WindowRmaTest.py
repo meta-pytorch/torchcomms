@@ -261,6 +261,35 @@ class WindowRmaTest(unittest.TestCase):
         del win
         torch.cuda.synchronize()
 
+    def _window_put_basic_test(self):
+        """Test that put() returns valid work and completes (sync and async)."""
+        num_elements = 1024
+        buf = torch.zeros(num_elements, dtype=torch.float32, device=self.device)
+
+        win = self.torchcomm.new_window()
+        win.tensor_register(buf)
+        self.assertEqual(win.get_size(), num_elements * buf.element_size())
+
+        input_tensor = (
+            torch.ones(num_elements, dtype=torch.float32, device=self.device)
+            * self.rank
+        )
+        dst_rank = (self.rank + 1) % self.num_ranks
+
+        work = win.put(input_tensor, dst_rank, 0, False)
+        self.assertIsNotNone(work)
+        work.wait()
+        self.torchcomm.barrier(False)
+
+        async_work = win.put(input_tensor, dst_rank, 0, True)
+        self.assertIsNotNone(async_work)
+        async_work.wait()
+        self.torchcomm.barrier(False)
+
+        win.tensor_deregister()
+        del win
+        torch.cuda.synchronize()
+
     @unittest.skipIf(_rma_skip, _rma_skip_reason)
     def test_all_tests(self):
         """Run all tests with all parameter combinations."""
