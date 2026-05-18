@@ -8,8 +8,13 @@
 
 namespace ctran::commstate {
 
+struct TopologyResult {
+  ncclx::RankTopology rankTopology;
+  std::string networkTopo;
+};
+
 // load RankTopology from a given filepath
-std::optional<ncclx::RankTopology> loadTopology(
+std::optional<TopologyResult> loadTopology(
     int rank,
     const std::string& filepath);
 
