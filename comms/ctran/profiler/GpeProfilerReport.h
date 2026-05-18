@@ -58,7 +58,7 @@ constexpr std::string_view tracePointName(GpeTracePoint p) {
 // previous stamped tracepoint in the same iter (0 for ITER_START).
 // `aborted` and `message` are populated only on the ALGO_ABORTED row;
 // `message` carries the abort reason ("timeout" / "explicit" /
-// "abnormal_exit") and lands in the Scuba "Message" column.
+// "abnormal_exit") and lands in the Scuba "message" column.
 struct GpeProfilerReport {
   const CommLogData* logMetaData{nullptr};
   uint64_t commHash{0};
