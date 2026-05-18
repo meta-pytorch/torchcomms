@@ -315,6 +315,21 @@ commResult_t AllToAllWinExec(
 
 commResult_t AllToAllWinDestroy(CtranPersistentRequest* request);
 
+commResult_t BroadcastWinInit(
+    CtranWin* win,
+    commDataType_t datatype,
+    CtranComm* comm,
+    cudaStream_t stream,
+    CtranPersistentRequest*& request);
+
+commResult_t BroadcastWinExec(
+    const void* sendbuff,
+    const size_t count,
+    int root,
+    CtranPersistentRequest* request);
+
+commResult_t BroadcastWinDestroy(CtranPersistentRequest* request);
+
 // Global pointer-based memory registration (does not require a comm).
 // If forceReg is true, registration happens even in async/lazy mode.
 commResult_t globalRegisterWithPtr(

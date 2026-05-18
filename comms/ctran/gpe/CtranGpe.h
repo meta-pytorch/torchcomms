@@ -47,6 +47,7 @@ struct OpElem {
     ALLTOALL_DEDUP,
     ALLTOALLV_DEDUP,
     BROADCAST,
+    BROADCASTP,
     REDUCESCATTER,
     PUTNOTIFY,
     WAITNOTIFY,
@@ -195,6 +196,14 @@ struct OpElem {
       std::unordered_map<int, KernelElem*> putNotifyMap;
       std::unordered_map<int, KernelElem*> waitNotifyMap;
     } broadcast;
+    struct {
+      void* pArgs;
+      const void* sendbuff;
+      size_t count;
+      int root;
+      std::unordered_map<int, KernelElem*> putNotifyMap;
+      std::unordered_map<int, KernelElem*> waitNotifyMap;
+    } broadcastP;
     struct {
       const void* sendbuff;
       void* recvbuff;
