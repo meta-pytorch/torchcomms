@@ -303,6 +303,11 @@ class TorchCommNCCLX : public TorchCommBackend,
     return device_;
   }
 
+  // Publish nccl_comm_ into c10d::symmetric_memory::NCCLDevCommManager under
+  // `group_name` so PyTorch's NCCLSymmetricMemory can look it up without
+  // dynamic_cast'ing to ProcessGroupNCCL. Unregistered in the destructor.
+  void registerWithSymmMem(const std::string& group_name) override;
+
 #if defined(ENABLE_PIPES)
   // Get device-allocated transport handle for Triton/CUDA kernels.
   // Returns device pointer as int64 (same pointer on subsequent calls).
@@ -501,6 +506,11 @@ class TorchCommNCCLX : public TorchCommBackend,
   // Member variables
   ncclComm_t nccl_comm_{};
   at::Device device_;
+  // Process-group name this comm was registered with via registerWithSymmMem.
+  // Empty if never registered. Used by the destructor to unregister from
+  // NCCLDevCommManager so a successor TorchCommNCCLX with the same name can
+  // register cleanly.
+  std::string symm_mem_group_name_;
   int comm_size_{};
   int rank_{};
   int64_t uuid_{-1};

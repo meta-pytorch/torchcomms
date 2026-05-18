@@ -54,6 +54,22 @@ class TorchCommBackend {
   // Unique name for this instance of the communicator.
   virtual std::string_view getCommName() const = 0;
 
+  // Publish this backend's underlying host NCCL communicator into
+  // c10d::symmetric_memory::NCCLDevCommManager under the given
+  // process-group name so PyTorch's NCCLSymmetricMemory can look it up by
+  // group_name without dynamic_cast'ing to a backend-specific class.
+  // Default implementation throws — only the ncclx backend overrides this.
+  // Implemented as a virtual on TorchCommBackend so the Python binding can
+  // dispatch through the base class without taking an RTTI dependency on
+  // TorchCommNCCLX (whose typeinfo lives in a separate DSO from the
+  // binding).
+  virtual void registerWithSymmMem(const std::string& /*group_name*/) {
+    throw std::logic_error(
+        "[TorchCommBackend]: register_with_symm_mem not supported for "
+        "backend: " +
+        std::string(getBackendName()));
+  }
+
   // Point-to-Point Operations
   virtual c10::intrusive_ptr<TorchWork> send(
       const at::Tensor& tensor,
