@@ -23,7 +23,10 @@ typedef enum {
   ncclInternalError = 3,
   ncclInvalidArgument = 4,
   ncclInvalidUsage = 5,
-  ncclRemoteError = 6
+  ncclRemoteError = 6,
+  ncclInProgress = 7,
+  ncclTimeout = 8,
+  ncclNumResults = 9
 } ncclResult_t;
 
 /* Opaque handle to communicator */
