@@ -1,9 +1,13 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/torchcomms/BackendWrapper.hpp"
+#include "comms/torchcomms/NCCLCommProvider.hpp"
 #include "comms/torchcomms/TorchComm.hpp"
 
 #include <c10/core/DeviceGuard.h> // @manual=//caffe2:c10
+#include <torch/csrc/distributed/c10d/NCCLCommProvider.hpp> // @manual=//caffe2:torch-cpp-cpu
+
+#include <utility>
 
 namespace torch::comms {
 
@@ -141,9 +145,41 @@ c10::intrusive_ptr<c10::ivalue::Future> WorkWrapper::getFuture() {
 
 BackendWrapper::BackendWrapper(std::shared_ptr<TorchComm> comm)
     : Backend(comm->getRank(), comm->getSize()),
-      comm_(comm),
-      backend_(comm->getBackendImpl()),
+      comm_(std::move(comm)),
+      backend_(comm_->getBackendImpl()),
       options_(c10::make_intrusive<Options>()) {}
+
+namespace {
+
+class NCCLBackendWrapper final : public BackendWrapper,
+                                 public c10d::NCCLCommProvider {
+ public:
+  explicit NCCLBackendWrapper(std::shared_ptr<TorchComm> comm)
+      : BackendWrapper(std::move(comm)) {}
+
+  void* getNCCLCommPtr() const override {
+    auto backend = getBackendImpl();
+    auto* provider = dynamic_cast<NCCLCommProvider*>(backend.get());
+    TORCH_CHECK(
+        provider != nullptr,
+        "TorchComm backend does not expose an NCCL communicator");
+    auto* comm = provider->getNCCLCommPtr();
+    TORCH_CHECK(
+        comm != nullptr, "TorchComm backend returned a null NCCL communicator");
+    return comm;
+  }
+};
+
+} // namespace
+
+c10::intrusive_ptr<BackendWrapper> createBackendWrapper(
+    std::shared_ptr<TorchComm> comm) {
+  auto backend = comm->getBackendImpl();
+  if (dynamic_cast<NCCLCommProvider*>(backend.get()) != nullptr) {
+    return c10::make_intrusive<NCCLBackendWrapper>(std::move(comm));
+  }
+  return c10::make_intrusive<BackendWrapper>(std::move(comm));
+}
 
 c10::intrusive_ptr<c10d::Work> BackendWrapper::broadcast(
     std::vector<at::Tensor>& tensors,
@@ -551,6 +587,10 @@ std::shared_ptr<TorchComm> BackendWrapper::getComm() const {
   return comm_;
 }
 
+std::shared_ptr<TorchCommBackend> BackendWrapper::getBackendImpl() const {
+  return backend_;
+}
+
 const std::string BackendWrapper::getBackendName() const {
   return comm_->getBackend();
 }
@@ -598,7 +638,7 @@ c10::intrusive_ptr<c10d::Backend> BackendWrapper::split(
   if (new_comm == nullptr) {
     return nullptr;
   }
-  return c10::make_intrusive<BackendWrapper>(new_comm);
+  return createBackendWrapper(new_comm);
 }
 
 } // namespace torch::comms

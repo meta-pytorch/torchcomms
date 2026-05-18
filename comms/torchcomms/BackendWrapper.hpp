@@ -146,10 +146,16 @@ class BackendWrapper : public c10d::Backend {
       const std::vector<int>& ranks,
       const c10::intrusive_ptr<c10d::Backend::Options>& opts) override;
 
+ protected:
+  std::shared_ptr<TorchCommBackend> getBackendImpl() const;
+
  private:
   std::shared_ptr<TorchComm> comm_;
   std::shared_ptr<TorchCommBackend> backend_;
   c10::intrusive_ptr<Options> options_;
 };
+
+c10::intrusive_ptr<BackendWrapper> createBackendWrapper(
+    std::shared_ptr<TorchComm> comm);
 
 } // namespace torch::comms

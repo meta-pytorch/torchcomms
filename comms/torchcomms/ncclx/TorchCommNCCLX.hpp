@@ -15,6 +15,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "comms/torchcomms/NCCLCommProvider.hpp"
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/TorchCommBackend.hpp"
 #include "comms/torchcomms/TorchCommBatch.hpp"
@@ -70,6 +71,7 @@ bool isGraphTimeoutMonitoringEnabled();
 void resetGraphTimeoutMonitoringCacheForTest();
 
 class TorchCommNCCLX : public TorchCommBackend,
+                       public NCCLCommProvider,
                        public std::enable_shared_from_this<TorchCommNCCLX> {
  public:
   static constexpr std::string_view kBackendName = "ncclx";
@@ -302,6 +304,8 @@ class TorchCommNCCLX : public TorchCommBackend,
   const at::Device& getDevice() const override {
     return device_;
   }
+
+  void* getNCCLCommPtr() const override;
 
 #if defined(ENABLE_PIPES)
   // Get device-allocated transport handle for Triton/CUDA kernels.
