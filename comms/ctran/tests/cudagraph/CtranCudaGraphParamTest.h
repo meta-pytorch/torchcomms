@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "comms/ctran/tests/VerifyAlgoStatsUtil.h"
 #include "comms/ctran/tests/cudagraph/CtranCudaGraphTestBase.h"
 #include "comms/ctran/tests/cudagraph/CudaGraphTestBuilder.h"
 #include "comms/ctran/tests/cudagraph/DeviceVerify.h"
@@ -87,6 +88,9 @@ struct AlgoDescriptor {
 
   std::function<void(Buffers*, size_t count, ctran::testing::CaptureContext&)>
       capture;
+
+  std::string collective;
+  std::string expectedAlgo;
 };
 
 // Run the collective eagerly to compute expected output.
@@ -520,7 +524,14 @@ inline void runPattern(
 
 #define DEFINE_CUDAGRAPH_PARAM_TEST(SuiteName, ...)                          \
   class SuiteName : public CtranCudaGraphTestBase,                           \
-                    public ::testing::WithParamInterface<GraphTestParam> {}; \
+                    public ::testing::WithParamInterface<GraphTestParam> {   \
+   protected:                                                                \
+    ctran::test::VerifyAlgoStatsHelper algoStats_;                           \
+    void SetUp() override {                                                  \
+      CtranCudaGraphTestBase::SetUp();                                       \
+      algoStats_.enable();                                                   \
+    }                                                                        \
+  };                                                                         \
                                                                              \
   TEST_P(SuiteName, CudaGraphOp) {                                           \
     auto [desc, pattern, count, replayMult] = GetParam();                    \
@@ -532,6 +543,9 @@ inline void runPattern(
     }                                                                        \
     runPattern(                                                              \
         pattern, comm.get(), globalRank, numRanks, count, numReplays, desc); \
+    if (!desc.expectedAlgo.empty()) {                                        \
+      algoStats_.verify(comm.get(), desc.collective, desc.expectedAlgo);     \
+    }                                                                        \
   }                                                                          \
                                                                              \
   std::string SuiteName##TestName(                                           \

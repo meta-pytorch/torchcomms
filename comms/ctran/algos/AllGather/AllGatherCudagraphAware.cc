@@ -185,7 +185,7 @@ commResult_t ctranAllGatherCudagraphAware(
           sendbuff, recvbuff, sendcount, datatype, comm, stream));
       break;
     case NCCL_ALLGATHER_ALGO::ctgraph_rd:
-      FB_COMMCHECK(ctranAllGatherRd(
+      FB_COMMCHECK(ctranAllGatherStreamedRd(
           sendbuff, recvbuff, sendcount, datatype, comm, stream));
       break;
     default:
