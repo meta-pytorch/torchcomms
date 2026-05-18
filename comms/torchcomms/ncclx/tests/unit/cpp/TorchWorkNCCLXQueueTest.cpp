@@ -13,6 +13,7 @@
 #include "comms/torchcomms/ncclx/TorchCommNCCLXCCA.hpp"
 #include "comms/torchcomms/ncclx/TorchWorkNCCLX.hpp"
 #include "comms/torchcomms/ncclx/tests/unit/cpp/mocks/CachingAllocatorHookMock.hpp"
+#include "comms/torchcomms/ncclx/tests/unit/cpp/mocks/CtranMock.hpp"
 #include "comms/torchcomms/ncclx/tests/unit/cpp/mocks/CudaMock.hpp"
 #include "comms/torchcomms/ncclx/tests/unit/cpp/mocks/NcclxMock.hpp"
 
@@ -77,11 +78,18 @@ class TorchWorkNCCLXQueueCommTest : public ::testing::Test {
     // Create fresh mocks for each test
     cuda_mock_ = std::make_shared<NiceMock<torch::comms::test::CudaMock>>();
     nccl_mock_ = std::make_shared<NiceMock<torch::comms::test::NcclxMock>>();
+    ctran_mock_ = std::make_shared<NiceMock<torch::comms::test::CtranMock>>();
+    ON_CALL(*ctran_mock_, getCtranComm(_))
+        .WillByDefault(Return(static_cast<CtranComm*>(nullptr)));
+    ON_CALL(*ctran_mock_, allGatherPSupport(_)).WillByDefault(Return(true));
+    ON_CALL(*ctran_mock_, deviceAllToAllvSupport(_))
+        .WillByDefault(Return(true));
 
     // Create communicator
     comm_ = std::make_shared<TorchCommNCCLX>();
     comm_->setCudaApi(cuda_mock_);
     comm_->setNcclApi(nccl_mock_);
+    comm_->setCtranApi(ctran_mock_);
   }
 
   void TearDown() override {
@@ -136,6 +144,7 @@ class TorchWorkNCCLXQueueCommTest : public ::testing::Test {
   // Raw pointers to mocks for setting expectations
   std::shared_ptr<NiceMock<torch::comms::test::CudaMock>> cuda_mock_;
   std::shared_ptr<NiceMock<torch::comms::test::NcclxMock>> nccl_mock_;
+  std::shared_ptr<NiceMock<torch::comms::test::CtranMock>> ctran_mock_;
   std::vector<WorkEvent> work_events_;
 
   CommOptions default_options_;
