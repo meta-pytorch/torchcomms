@@ -203,6 +203,18 @@ class CollTrace : public ICollTrace {
   // Used to emit periodic kProgressing actions so the watchdog plugin can
   // detect hung graph collectives.
   std::unordered_set<uint32_t> progressingGraphCollectives_;
+  // Completed graph replay events whose kEnd has been processed. Cleared
+  // at the end of processCompletedEvents once plugins have taken ownership
+  // of the CollRecord shared_ptr.
+  std::vector<std::unique_ptr<CollTraceEvent>> graphReplayEvents_;
+
+  // Maps collId → in-flight replayEvent for collectives whose start event
+  // has been processed but end event hasn't arrived yet. The clone is
+  // created at start time so its startTs is captured immediately and
+  // can't be clobbered by a subsequent start for the same collId.
+  // Owns the CollTraceEvent so it survives across poll cycles.
+  std::unordered_map<uint32_t, std::unique_ptr<CollTraceEvent>>
+      inFlightReplays_;
 
   // Eager events being polled by the colltrace thread. Only accessed from
   // the colltrace thread — no mutex needed.
