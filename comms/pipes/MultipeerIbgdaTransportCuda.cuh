@@ -75,6 +75,15 @@ P2pIbgdaTransportDevice* buildDeviceTransportsOnGpu(
     std::vector<void*>& outGpuAllocations);
 
 /**
+ * Write a single P2pIbgdaTransportDevice into the pre-allocated array.
+ */
+void writeDeviceTransportSlot(
+    P2pIbgdaTransportDevice* deviceArray,
+    int peerIndex,
+    const P2pIbgdaTransportBuildParams& params,
+    std::vector<void*>& outGpuAllocations);
+
+/**
  * Get size of P2pIbgdaTransportDevice struct.
  */
 std::size_t getP2pIbgdaTransportDeviceSize();
