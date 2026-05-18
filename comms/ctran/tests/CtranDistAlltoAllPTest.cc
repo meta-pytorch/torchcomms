@@ -11,6 +11,7 @@
 #include "comms/ctran/algos/AllToAll/AllToAllPImpl.h"
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
+#include "comms/ctran/window/CtranWin.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
@@ -191,6 +192,63 @@ class ctranAllToAllPTest : public ctran::CtranDistTestFixture,
   int numTimesRunExec{7};
   size_t bufNbytes{0};
 };
+
+TEST_F(ctranAllToAllPTest, WinAllToAll) {
+  if (!ctran::CtranWin::allToAllWinSupported(ctranComm.get())) {
+    GTEST_SKIP() << "allToAllWin not supported on this topology";
+  }
+
+  const size_t bufNbytes = maxRecvCount * sizeof(int);
+
+  void* winBase = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&winBase, bufNbytes));
+  ctran::CtranWin* win = nullptr;
+  ASSERT_EQ(
+      ctranWinRegister(winBase, bufNbytes, ctranComm.get(), &win), commSuccess);
+
+  sendBuf = (int*)createDataBuf(bufNbytes, true);
+
+  CtranPersistentRequest* pRequest = nullptr;
+  ASSERT_EQ(
+      ctran::AllToAllWinInit(
+          win, commInt, ctranComm.get(), testStream, pRequest),
+      commSuccess);
+  ASSERT_NE(pRequest, nullptr);
+
+  for (int x = 0; x < numTimesRunExec; x++) {
+    generateDistRandomExpValue();
+    generateDistRandomCount(/*small_msg*/ x == 0);
+
+    for (int i = 0; i < numRanks; ++i) {
+      assignChunkValue<int>(
+          sendBuf + count * i, count, expectedVal + globalRank * 100 + i + 1);
+    }
+    CUDACHECK_TEST(cudaMemsetAsync(winBase, 0, bufNbytes, testStream));
+
+    ASSERT_EQ(ctran::AllToAllWinExec(sendBuf, count, pRequest), commSuccess);
+    CUDACHECK_TEST(cudaStreamSynchronize(testStream));
+
+    int* recvbuff = (int*)winBase;
+    for (int i = 0; i < numRanks; ++i) {
+      int errs = checkChunkValue<int>(
+          recvbuff + count * i, count, expectedVal + i * 100 + globalRank + 1);
+      EXPECT_EQ(errs, 0) << "rank " << globalRank << " checked chunk " << i
+                         << " at " << recvbuff + count * i << " with " << errs
+                         << " errors";
+    }
+  }
+
+  verifyGpeLeak(ctranComm->ctran_.get());
+
+  auto destroyRes = ctran::AllToAllWinDestroy(pRequest);
+  ASSERT_EQ(destroyRes, commSuccess);
+  delete pRequest;
+
+  releaseDataBuf(sendBuf, bufNbytes, true);
+  sendBuf = nullptr;
+  ASSERT_EQ(ctranWinFree(win), commSuccess);
+  CUDACHECK_TEST(cudaFree(winBase));
+}
 
 class ctranAllToAllPTestParam
     : public ctranAllToAllPTest,
