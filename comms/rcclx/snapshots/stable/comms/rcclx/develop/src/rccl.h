@@ -24,6 +24,7 @@
 #define RCCL_GATHER_SCATTER 1
 #define RCCL_ALLTOALLV 1
 #define RCCL_ALLREDUCE_WITH_BIAS 1
+#define NCCL_COMM_DESCRIPTION // enables ProcessGroupNCCL to pass pg_desc to config.commDesc
 
 #ifdef __cplusplus
 extern "C" {
@@ -102,6 +103,7 @@ typedef struct ncclConfig_v22700 {
   int CTAPolicy;               /*!< CTA Policy*/
   int shrinkShare;             /*!< Shrink size*/
   int nvlsCTAs;                /*!< Number of NVLS cooperative thread arrays (blocks)*/
+  const char *commDesc;        /*!< Communicator description from process group */
 } ncclConfig_t;
 
 /* Config initializer must be assigned to initialize config structure when it is created.
@@ -122,6 +124,7 @@ typedef struct ncclConfig_v22700 {
   NCCL_CONFIG_UNDEF_INT,                            /* CTAPolicy */      \
   NCCL_CONFIG_UNDEF_INT,                            /* shrinkShare */    \
   NCCL_CONFIG_UNDEF_INT,                            /* nvlsCTAs */       \
+  NCCL_CONFIG_UNDEF_PTR,                            /* commDesc */       \
 }
 /*! @} */
 

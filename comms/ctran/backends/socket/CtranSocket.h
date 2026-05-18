@@ -24,18 +24,14 @@ class CtranSocket {
    * The remote connection will happen when the remote peer
    * issues the first message to the local rank. Input arguments:
    *    - comm: the NCCL communicator
-   *    - ctrlMgr: the ctranCtrlManager that manages control message callback
-   *               functions registered by other modules. Passed to VC for
-   *               calling callback when receiving control message.
    */
-  CtranSocket(CtranComm* comm, CtranCtrlManager* ctrlMgr);
+  explicit CtranSocket(CtranComm* comm);
 
   CtranSocket(
       int rank,
       int cudaDev,
       uint64_t commHash,
       const std::string& commDesc,
-      CtranCtrlManager* ctrlMgr,
       const SocketServerAddr& serverAddr);
   ~CtranSocket();
 
@@ -184,7 +180,6 @@ class CtranSocket {
   const int cudaDev_;
   const uint64_t commHash_;
   const std::string commDesc_;
-  CtranCtrlManager* ctrlMgr_{nullptr};
   CommLogData ncclLogData_;
   std::vector<bool> preConnectPeerMap_;
 

@@ -6,7 +6,6 @@
 #include "MetaFactory.h"
 #include "comm.h"
 #include "comms/ctran/algos/AllToAll/AllToAllPHintUtils.h"
-#include "comms/ctran/algos/AllToAll/AllToAllvDynamicHintUtils.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/window/WinHintUtils.h"
@@ -74,10 +73,6 @@ meta::comms::Hints ncclToMetaComm(const ncclx::Hints& hints) {
   // changing the existing NCCLX APIs that use ncclx::Hints.
   meta::comms::Hints ret;
   std::string v;
-  for (const auto& k : meta::comms::hints::AllToAllvDynamicHintUtils::keys()) {
-    FB_COMMCHECKTHROW(ncclToMetaComm(hints.get(k, v)));
-    FB_COMMCHECKTHROW(ret.set(k, v));
-  }
   for (const auto& k : meta::comms::hints::AllToAllPHintUtils::keys()) {
     FB_COMMCHECKTHROW(ncclToMetaComm(hints.get(k, v)));
     FB_COMMCHECKTHROW(ret.set(k, v));
@@ -128,12 +123,10 @@ commResult_t initNcclCommCtran(ncclComm* ncclComm) {
   ctranComm->bootstrap_ = std::make_unique<rcclx::BaselineBootstrap>(ncclComm);
   ctranComm->statex_ =
       createCtranCommStateXFromNcclComm(ncclComm, ctranComm.get());
-  // TODO: init CtranComm newCollTrace
-  FB_COMMCHECK(ctranInit(ctranComm.get()));
-
   // TODO: add RCCL config to configure all gather algo
   ctranComm->config_.ncclAllGatherAlgo = "undefined";
-  FB_COMMCHECK(ctranConfigCommAlgoOverride(ctranComm.get()));
+  // TODO: init CtranComm newCollTrace
+  FB_COMMCHECK(ctranInit(ctranComm.get()));
 
   // Ensure Ctran has been initialized correctly
   FB_CHECKTHROW(ctranInitialized(ctranComm.get()), "Ctran not initialized");
@@ -157,19 +150,7 @@ std::unique_ptr<ncclx::CommStateX> createCtranCommStateXFromNcclComm(
       std::vector<ncclx::RankTopology>(), /* rankTopologies */
       std::vector<int>() /* commRanksToWorldRanks */);
 
-  if (NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::nolocal) {
-    commStateX->initRankTopologyNolocal();
-  } else if (NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::vnode) {
-    FB_CHECKABORT(
-        ncclComm->nRanks >= NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS,
-        "CommStateX: NCCL_COMM_STATE_DEBUG_TOPO::vnode initialize failed because number of available ranks (%d) is less than nLocalRanks per vnode (NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS=%d).",
-        ncclComm->nRanks,
-        NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS);
-    commStateX->initRankTopologyVnode(
-        NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS);
-  } else {
-    commStateX->initRankStatesTopology(ctranComm->bootstrap_.get());
-  }
+  commStateX->initRankStatesTopology(ctranComm->bootstrap_.get());
 
   INFO(
       NCCL_INIT | NCCL_GRAPH,

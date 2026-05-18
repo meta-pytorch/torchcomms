@@ -1,0 +1,102 @@
+# Set default if the root environment variable is not already set.
+# Note PAPI_CUDA_ROOT is an environment variable that must be set.
+# It is the ONLY environment variable that must be set, all other
+# settings are optional.
+PAPI_CUDA_ROOT ?= /opt/cuda
+
+# For non-typical system configurations, the following 'runtime overrides' can
+# be set, as just a library name, or a full path and name. There cannot be any
+# spaces between the double quotes (which must be escaped as \"). An example:
+
+# PAPI_CUDA_CUPTI = \"$(PAPI_CUDA_ROOT)/extras/CUPTI/lib64/libcupti.so\"
+
+# By default, all overrides are empty strings.
+
+# If an override is not an empty string, it must work, or the component will be
+# disabled. 
+
+# Both at compile time and run time, the software depends on PAPI_CUDA_ROOT.
+# There are three libraries used by the NVML component, they are 
+# libcuda.so
+# libcudart.so 
+# libnvidia-ml.so
+
+# The standard installed locations for these libraries, with overrides:
+# $(PAPI_CUDA_ROOT)/lib64/libcuda.so               #O.R. PAPI_CUDA_MAIN
+# $(PAPI_CUDA_ROOT)/lib64/libcudart.so             #O.R. PAPI_CUDA_RUNTIME
+# $(PAPI_CUDA_ROOT)/lib64/libnvidia-ml.so          #O.R. PAPI_NVML_MAIN
+# 
+# There are many ways to cause these paths to be known. 
+# Spack is a package manager used on supercomputers, Linux and MacOS. If Spack
+# is aware of CUDA or NVML, it encodes the paths to the necessary libraries.
+
+# The environment variable LD_LIBRARY_PATH encodes a list of paths to search for
+# libraries; separated by a colon (:). These paths could be added to
+# LD_LIBRARY_PATH. 
+#
+# Warning: LD_LIBRARY_PATH often contains a list of directories that are
+# searched for libraries, some of these may be needed by other packages you are
+# using. Always add to LD_LIBRARY_PATH recursively; for example: 
+# >export LD_LIBRARY_PATH=someNewLibraryDirectory:$LD_LIBRARY_PATH 
+# which would append the existing LD_LIBRARY_PATH to the new directory you wish
+# to add.  Alternatively, you can prepend it: 
+# >export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:someNewLibraryDirectory 
+# Which will search the existing libraries first, then your new directory.
+
+# You can check on the value of LD_LIBRARY_PATH with 
+# >echo $LD_LIBRARY_PATH
+
+# There may be other package managers or utilities, for example on a system with
+# modules; the command 'module load cuda' may modify LD_LIBRARY_PATH.
+
+# A Linux system will also search for libraries by default in the directories
+# listed by /etc/ld.so.conf, and /usr/lib64, /lib64, /usr/lib, /lib. 
+
+# OVERRIDES: These are by default empty strings (""), if set they must work.
+PAPI_CUDA_MAIN = \"\"
+PAPI_CUDA_RUNTIME = \"\"
+PAPI_NVML_MAIN = \"\"
+
+# An example of an override:
+# PAPI_NVML_MAIN = \"$(PAPI_CUDA_ROOT)/lib64/libnvidia-ml.so\"
+
+# Note:  PAPI_CUDA_MAIN and PAPI_CUDA_RUNTIME, if set, will also apply to the
+#        CUDA component, which uses the same libraries.
+
+# Note:  If you change these overrides, PAPI should be rebuilt from scratch.
+#        From papi/src/
+#        make clobber
+#        ./configure --with-components="nvml"
+#        make  
+
+# OPERATION, per library:
+# 1) If an override string is not empty, we will use it explicitly and fail if
+# it does not work. This means disabling the component; a reason for disabling
+# is shown using the papi utility, papi/src/utils/papi_component_avail
+
+# 2) We will attempt to open the library using the normal system library search
+# paths; if Spack is present and configured correctly it should deliver the
+# proper library. A failure here will be silent; we will proceed to (3).
+
+# 3) If that fails, we will try to find the library in the standard installed
+# locations listed above. If this fails, we disable the component, the reason
+# for disabling is shown using the papi utility,
+# papi/src/utils/papi_component_avail. 
+
+# DEFFLAGS is the macro defines for the three overrides. In the code we convert
+# these to string variables with the following lines:
+# static char cuda_main[]=PAPI_CUDA_MAIN;
+# static char cuda_runtime[]=PAPI_CUDA_RUNTIME;
+# static char nvml_main[]=PAPI_NVML_MAIN;
+
+NVML_MACS = -DPAPI_CUDA_MAIN=$(PAPI_CUDA_MAIN) -DPAPI_CUDA_RUNTIME=$(PAPI_CUDA_RUNTIME) -DPAPI_NVML_MAIN=$(PAPI_NVML_MAIN)
+
+COMPSRCS += components/nvml/linux-nvml.c
+COMPOBJS += linux-nvml.o
+# CFLAGS specifies compile flags; need include files here, and macro defines.
+CFLAGS += -I$(PAPI_CUDA_ROOT)/include -g $(NVML_MACS)
+LDFLAGS += $(LDL) -g
+
+linux-nvml.o: components/nvml/linux-nvml.c $(HEADERS)
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/nvml/linux-nvml.c -o linux-nvml.o
+

@@ -13,7 +13,6 @@
 #include <folly/init/Init.h>
 
 #include "comm.h"
-#include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/backends/ib/ibutils.h"
 #include "comms/ctran/ibverbx/Ibverbx.h"
@@ -81,7 +80,6 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
     ctran::CtranDistTestFixture::SetUp();
     ctranComm_ = makeCtranComm();
     this->comm = ctranComm_.get();
-    this->ctrlMgr = std::make_unique<CtranCtrlManager>();
     auto s = CtranIbSingleton::getInstance();
     CHECK_VALID_IB_SINGLETON(s);
     installedVerbs = s->verbsUtils->setVerbs<MockIbVerbsWrapper>();
@@ -91,7 +89,6 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
     auto s = CtranIbSingleton::getInstance();
     CHECK_VALID_IB_SINGLETON(s);
     s->verbsUtils->setVerbs<VerbsWrapper>();
-    this->ctrlMgr.reset();
     ctranComm_.reset();
     ctran::CtranDistTestFixture::TearDown();
   }
@@ -109,7 +106,6 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
  protected:
   std::unique_ptr<CtranComm> ctranComm_;
   CtranComm* comm{nullptr};
-  std::unique_ptr<CtranCtrlManager> ctrlMgr{nullptr};
 };
 
 /* function extracts the difference in timestamps between
@@ -168,8 +164,8 @@ TEST_F(CtranIbTest, Baseline) {
 
   s->startIbAsyncEventHandler(this->comm->statex_->cudaDev());
   try {
-    auto ctranIb1 = std::make_unique<CtranIb>(this->comm, this->ctrlMgr.get());
-    auto ctranIb2 = std::make_unique<CtranIb>(this->comm, this->ctrlMgr.get());
+    auto ctranIb1 = std::make_unique<CtranIb>(this->comm);
+    auto ctranIb2 = std::make_unique<CtranIb>(this->comm);
     // ensures ibv_poll_async_fd runs at least waitCount times
     for (int i = 0; i < 10; i++) {
       if (asyncFdCounter >= waitCount) {
@@ -211,7 +207,7 @@ TEST_F(CtranIbTest, PollError) {
 
   s->startIbAsyncEventHandler(this->comm->statex_->cudaDev());
   try {
-    auto ctranIb = std::make_unique<CtranIb>(this->comm, this->ctrlMgr.get());
+    auto ctranIb = std::make_unique<CtranIb>(this->comm);
     // ensures ibv_poll_async_fd runs at least once
     for (int i = 0; i < 10; i++) {
       if (asyncFdCounter >= 1) {
@@ -261,7 +257,7 @@ TEST_F(CtranIbTest, AsyncEventFound) {
 
   s->startIbAsyncEventHandler(this->comm->statex_->cudaDev());
   try {
-    auto ctranIb = std::make_unique<CtranIb>(this->comm, this->ctrlMgr.get());
+    auto ctranIb = std::make_unique<CtranIb>(this->comm);
     // Wait for ibv_poll_async_fd to run at least once and for the handler
     // to process the event
     for (int i = 0; i < 10; i++) {
@@ -365,7 +361,7 @@ TEST_F(CtranIbTest, AsyncEventLinkFlap) {
 
   s->startIbAsyncEventHandler(this->comm->statex_->cudaDev());
   try {
-    auto ctranIb = std::make_unique<CtranIb>(this->comm, this->ctrlMgr.get());
+    auto ctranIb = std::make_unique<CtranIb>(this->comm);
     // need to wait for timeout; total time > down + up + down + timeout (2s in
     // this test)
     for (int i = 0; i < 10; i++) {
@@ -469,7 +465,7 @@ TEST_F(CtranIbTest, LinkFlapZeroTimeout) {
   s->startIbAsyncEventHandler(this->comm->statex_->cudaDev());
 
   try {
-    auto ctranIb = std::make_unique<CtranIb>(this->comm, this->ctrlMgr.get());
+    auto ctranIb = std::make_unique<CtranIb>(this->comm);
     // need to wait for timeout; total time > down + up + timeout (2s in this
     // test)
     for (int i = 0; i < 10; i++) {

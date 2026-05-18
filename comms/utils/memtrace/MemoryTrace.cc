@@ -80,8 +80,12 @@ void recordAlloc(
     int64_t bytes,
     std::optional<int> numSegments,
     std::optional<int64_t> durationUs) {
+  if (!NCCL_MEMTRACE_ENABLE) {
+    return;
+  }
   logMemoryEvent(
       logMetaData, callsite, use, addr, bytes, numSegments, durationUs);
+  MemoryTrace::getOrCreate(logMetaData.commHash)->recordAlloc(addr, bytes);
 }
 
 void recordFree(
@@ -90,7 +94,11 @@ void recordFree(
     const std::string& use,
     uintptr_t addr,
     std::optional<int64_t> bytes) {
+  if (!NCCL_MEMTRACE_ENABLE) {
+    return;
+  }
   logMemoryEvent(logMetaData, callsite, use, addr, bytes);
+  MemoryTrace::getOrCreate(logMetaData.commHash)->recordFree(addr, bytes);
 }
 
 void recordReg(
@@ -101,6 +109,9 @@ void recordReg(
     std::optional<int64_t> bytes,
     std::optional<int> numSegments,
     std::optional<int64_t> durationUs) {
+  if (!NCCL_MEMTRACE_ENABLE) {
+    return;
+  }
   logMemoryEvent(
       logMetaData,
       callsite,

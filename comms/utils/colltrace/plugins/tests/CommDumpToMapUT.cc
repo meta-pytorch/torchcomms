@@ -34,15 +34,19 @@ TEST_F(CommDumpToMapTest, EmptyDump) {
   auto map = commDumpToMap(dump);
 
   // Verify the map has the expected keys
-  EXPECT_EQ(map.size(), 3);
+  EXPECT_EQ(map.size(), 5);
   EXPECT_TRUE(map.find("CT_pastColls") != map.end());
   EXPECT_TRUE(map.find("CT_pendingColls") != map.end());
   EXPECT_TRUE(map.find("CT_currentColls") != map.end());
+  EXPECT_TRUE(map.find("CT_currentIteration") != map.end());
+  EXPECT_TRUE(map.find("CT_currentIterationCommTimeUs") != map.end());
 
   // Verify the values are as expected for an empty dump
   EXPECT_EQ(map["CT_pastColls"], "[]");
   EXPECT_EQ(map["CT_pendingColls"], "[]");
   EXPECT_EQ(map["CT_currentColls"], "[]");
+  EXPECT_EQ(map["CT_currentIteration"], "-1");
+  EXPECT_EQ(map["CT_currentIterationCommTimeUs"], "0");
 }
 
 // Test commDumpToMap with only pastColls
@@ -56,7 +60,7 @@ TEST_F(CommDumpToMapTest, WithPastColls) {
   auto map = commDumpToMap(dump);
 
   // Verify the map has the expected keys
-  EXPECT_EQ(map.size(), 3);
+  EXPECT_EQ(map.size(), 5);
 
   // Parse the JSON for pastColls and verify it contains the expected data
   auto pastCollsJson = folly::parseJson(map["CT_pastColls"]);
@@ -79,7 +83,7 @@ TEST_F(CommDumpToMapTest, WithCurrentColl) {
   auto map = commDumpToMap(dump);
 
   // Verify the map has the expected keys
-  EXPECT_EQ(map.size(), 3);
+  EXPECT_EQ(map.size(), 5);
 
   // Verify pastColls and pendingColls are empty
   EXPECT_EQ(map["CT_pastColls"], "[]");
@@ -103,7 +107,7 @@ TEST_F(CommDumpToMapTest, WithPendingColls) {
   auto map = commDumpToMap(dump);
 
   // Verify the map has the expected keys
-  EXPECT_EQ(map.size(), 3);
+  EXPECT_EQ(map.size(), 5);
 
   // Verify pastColls is empty and currentColl is null
   EXPECT_EQ(map["CT_pastColls"], "[]");
@@ -115,6 +119,20 @@ TEST_F(CommDumpToMapTest, WithPendingColls) {
   EXPECT_EQ(pendingCollsJson[0]["collId"], 4);
   EXPECT_EQ(pendingCollsJson[1]["collId"], 5);
   EXPECT_EQ(pendingCollsJson[2]["collId"], 6);
+}
+
+// Test commDumpToMap with iteration fields set
+TEST_F(CommDumpToMapTest, WithIterationFields) {
+  CollTraceDump dump;
+
+  dump.currentIteration = 42;
+  dump.currentIterationCommTimeUs = 12345;
+
+  auto map = commDumpToMap(dump);
+
+  EXPECT_EQ(map.size(), 5);
+  EXPECT_EQ(map["CT_currentIteration"], "42");
+  EXPECT_EQ(map["CT_currentIterationCommTimeUs"], "12345");
 }
 
 // Test commDumpToMap with all fields populated
@@ -132,10 +150,14 @@ TEST_F(CommDumpToMapTest, FullDump) {
   dump.pendingColls.push_back(createCollRecord(4));
   dump.pendingColls.push_back(createCollRecord(5));
 
+  // Set iteration fields
+  dump.currentIteration = 10;
+  dump.currentIterationCommTimeUs = 5000;
+
   auto map = commDumpToMap(dump);
 
   // Verify the map has the expected keys
-  EXPECT_EQ(map.size(), 3);
+  EXPECT_EQ(map.size(), 5);
 
   // Parse the JSON for pastColls and verify it contains the expected data
   auto pastCollsJson = folly::parseJson(map["CT_pastColls"]);
@@ -153,4 +175,8 @@ TEST_F(CommDumpToMapTest, FullDump) {
   EXPECT_EQ(pendingCollsJson.size(), 2);
   EXPECT_EQ(pendingCollsJson[0]["collId"], 4);
   EXPECT_EQ(pendingCollsJson[1]["collId"], 5);
+
+  // Verify iteration fields
+  EXPECT_EQ(map["CT_currentIteration"], "10");
+  EXPECT_EQ(map["CT_currentIterationCommTimeUs"], "5000");
 }

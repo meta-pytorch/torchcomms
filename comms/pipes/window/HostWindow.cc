@@ -16,13 +16,13 @@ namespace comms::pipes {
 namespace {
 
 // Allocate zeroed GPU memory via cudaMalloc and wrap in IbgdaLocalBuffer.
-// The .ptr field holds the raw GPU pointer; .lkey is unset until
-// registerIbgdaBuffer() is called in exchange().
+// The .ptr field holds the raw GPU pointer; .lkey_per_device are unset until
+// localRegisterIbgdaBuffer() is called in exchange().
 IbgdaLocalBuffer allocateIbgdaBuffer(std::size_t size) {
   void* ptr = nullptr;
   CUDA_CHECK(cudaMalloc(&ptr, size));
   CUDA_CHECK(cudaMemset(ptr, 0, size));
-  return IbgdaLocalBuffer(ptr, NetworkLKey{});
+  return IbgdaLocalBuffer(ptr, NetworkLKeys{});
 }
 
 } // namespace
@@ -139,19 +139,19 @@ HostWindow::~HostWindow() {
   // lkey is only populated during exchange() via registerIbgdaBuffer(),
   // so check lkey != NetworkLKey{} to avoid deregistering unregistered buffers.
   if (ibgdaBarrierLocalBuf_.ptr) {
-    if (ibgdaBarrierLocalBuf_.lkey != NetworkLKey{}) {
+    if (ibgdaBarrierLocalBuf_.lkey_per_device.size > 0) {
       transport_.localDeregisterIbgdaBuffer(ibgdaBarrierLocalBuf_.ptr);
     }
     cudaFree(ibgdaBarrierLocalBuf_.ptr);
   }
   if (ibgdaPeerSignalLocalBuf_.ptr) {
-    if (ibgdaPeerSignalLocalBuf_.lkey != NetworkLKey{}) {
+    if (ibgdaPeerSignalLocalBuf_.lkey_per_device.size > 0) {
       transport_.localDeregisterIbgdaBuffer(ibgdaPeerSignalLocalBuf_.ptr);
     }
     cudaFree(ibgdaPeerSignalLocalBuf_.ptr);
   }
   if (ibgdaPeerCounterLocalBuf_.ptr) {
-    if (ibgdaPeerCounterLocalBuf_.lkey != NetworkLKey{}) {
+    if (ibgdaPeerCounterLocalBuf_.lkey_per_device.size > 0) {
       transport_.localDeregisterIbgdaBuffer(ibgdaPeerCounterLocalBuf_.ptr);
     }
     cudaFree(ibgdaPeerCounterLocalBuf_.ptr);
@@ -309,7 +309,7 @@ void HostWindow::exchange() {
   exchanged_ = true;
 }
 
-std::optional<NetworkLKey> HostWindow::registerLocalBuffer(
+std::optional<NetworkLKeys> HostWindow::registerLocalBuffer(
     void* ptr,
     std::size_t size) {
   if (ibgdaPeerRanks_.empty()) {
@@ -317,7 +317,7 @@ std::optional<NetworkLKey> HostWindow::registerLocalBuffer(
   }
   auto ibgdaBuf = transport_.localRegisterIbgdaBuffer(ptr, size);
   registeredLocalBuffers_.push_back(ptr);
-  return ibgdaBuf.lkey;
+  return ibgdaBuf.lkey_per_device;
 }
 
 void HostWindow::reset_signals(cudaStream_t stream) const {
@@ -351,10 +351,9 @@ void HostWindow::registerAndExchangeBuffer(void* ptr, std::size_t size) {
     auto ibgdaBuf = transport_.localRegisterIbgdaBuffer(ptr, size);
     registeredLocalBuffers_.push_back(ptr);
     auto remoteBufs = transport_.exchangeIbgdaBuffer(ibgdaBuf);
-    for (int i = 0; i < nIbgdaPeers; ++i) {
-      remoteRegistrations_.push_back(
-          RemoteBufferRegistration{
-              remoteBufs[i].ptr, size, remoteBufs[i].rkey});
+    for (const auto& remoteBuf : remoteBufs) {
+      remoteRegistrations_.emplace_back(
+          remoteBuf.ptr, size, remoteBuf.rkey_per_device);
     }
   }
 
@@ -445,9 +444,11 @@ DeviceWindow HostWindow::getDeviceWindow() const {
 
   // Per-peer counters
   dw.peerCounterCount_ = static_cast<int>(config_.peerCounterCount);
-  dw.ibgdaPeerCounterBuf_ =
-      static_cast<uint64_t*>(ibgdaPeerCounterLocalBuf_.ptr);
-  dw.ibgdaPeerCounterLkey_ = ibgdaPeerCounterLocalBuf_.lkey;
+  if (ibgdaPeerCounterLocalBuf_.ptr) {
+    dw.ibgdaPeerCounterBuf_ =
+        static_cast<uint64_t*>(ibgdaPeerCounterLocalBuf_.ptr);
+    dw.ibgdaPeerCounterLkeys_ = ibgdaPeerCounterLocalBuf_.lkey_per_device;
+  }
 
   // Barrier
   dw.barrierCount_ = static_cast<int>(config_.barrierCount);

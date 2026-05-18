@@ -3,8 +3,11 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
+#include <vector>
 
 #include "comms/pipes/IbgdaBuffer.h"
+#include "comms/pipes/rdma/NicConstants.h"
 
 // Forward declarations
 struct doca_gpu_dev_verbs_qp;
@@ -15,38 +18,64 @@ namespace comms::pipes {
 class P2pIbgdaTransportDevice;
 
 /**
- * Parameters for building a single P2pIbgdaTransportDevice
+ * Per-NIC build spec for one peer's transport.
+ *
+ * Each entry corresponds to a physical NIC. The build function packs
+ * these into a GPU-resident DeviceSpan<NicDeviceIbgdaResources> for the device
+ * transport. Host callers are responsible for ordering the vector with
+ * peer-specific NIC rotation so device-side `nic_for_group(g) = g % numNics`
+ * produces balanced thread-per-peer scatter.
  */
-struct P2pIbgdaTransportBuildParams {
-  doca_gpu_dev_verbs_qp* gpuQp{nullptr};
-  doca_gpu_dev_verbs_qp* companionGpuQp{nullptr};
-  NetworkLKey sinkLkey{};
+struct NicDeviceIbgdaResourcesBuildSpec {
+  std::vector<doca_gpu_dev_verbs_qp*> qps; // primary QPs on this NIC
+  std::vector<doca_gpu_dev_verbs_qp*> companionQps; // companion QPs on this NIC
+  NetworkLKey sinkLkey{}; // sink lkey for this NIC's PD
+  int deviceId{0}; // physical NIC device id (informational)
 };
 
 /**
- * Build P2pIbgdaTransportDevice array on GPU
+ * Parameters for building a single P2pIbgdaTransportDevice.
  *
- * Constructs an array of P2pIbgdaTransportDevice objects in GPU memory.
+ * The build function reads `nicResources` (one entry per NIC), copies QP
+ * pointers to GPU memory, and constructs a DeviceSpan<NicDeviceIbgdaResources>
+ * for the device transport.
  *
- * @param params Array of build parameters (one per peer)
+ * Single-NIC callers populate `nicResources` with one element.
+ * Multi-NIC callers populate `nicResources` with one element per NIC; qps and
+ * companionQps within a NicDeviceIbgdaResourcesBuildSpec must be the same size.
+ */
+struct P2pIbgdaTransportBuildParams {
+  std::vector<NicDeviceIbgdaResourcesBuildSpec> h_nicDeviceIbgdaResources;
+  IbgdaRemoteBuffer remoteSignalBuf{};
+  IbgdaLocalBuffer localSignalBuf{};
+  IbgdaLocalBuffer counterBuf{};
+  IbgdaRemoteBuffer discardSignalSlot{};
+  int numSignalSlots{0};
+  int numCounterSlots{0};
+  IbSendRecvState sendRecvState{};
+};
+
+/**
+ * Build P2pIbgdaTransportDevice array on GPU.
+ *
+ * For each peer, allocates GPU arrays for QP pointers, copies them,
+ * then constructs P2pIbgdaTransportDevice objects in GPU memory.
+ * All GPU allocations are pushed into outGpuAllocations for cleanup.
+ * If sendRecvState is populated in the build params, it is passed through
+ * the transport constructor before copying to GPU.
+ *
+ * @param params Build parameters (one per peer)
  * @param numPeers Number of peers
- * @return Pointer to GPU memory containing the array
+ * @param outGpuAllocations Output: all GPU allocations (caller frees)
+ * @return Pointer to GPU array of transport objects (also in outGpuAllocations)
  */
 P2pIbgdaTransportDevice* buildDeviceTransportsOnGpu(
-    const P2pIbgdaTransportBuildParams* params,
-    int numPeers);
+    const std::vector<P2pIbgdaTransportBuildParams>& params,
+    int numPeers,
+    std::vector<void*>& outGpuAllocations);
 
 /**
- * Free P2pIbgdaTransportDevice array from GPU
- *
- * @param ptr Pointer returned by buildDeviceTransportsOnGpu
- */
-void freeDeviceTransportsOnGpu(P2pIbgdaTransportDevice* ptr);
-
-/**
- * Get size of P2pIbgdaTransportDevice struct
- *
- * Used for memory allocation calculations.
+ * Get size of P2pIbgdaTransportDevice struct.
  */
 std::size_t getP2pIbgdaTransportDeviceSize();
 

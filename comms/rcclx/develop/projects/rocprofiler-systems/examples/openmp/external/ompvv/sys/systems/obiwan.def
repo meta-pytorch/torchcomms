@@ -1,0 +1,37 @@
+# Definitions for a generic system
+
+$(info "Including $(SYSTEM).def file")
+
+#---------------------------------------------------------------------------
+# BATCH Scheduler
+#---------------------------------------------------------------------------
+BATCH_SCHEDULER =
+
+CUDA_MODULE ?= 
+#---------------------------------------------------------------------------
+# C compilers
+#---------------------------------------------------------------------------
+CCOMPILERS="aomp"
+
+# GCC compiler
+ifeq ($(CC), aomp)
+  C_COMPILER_MODULE ?= aomp
+  C_VERSION ?= aompversion | sed "s/^/AOMP /g"
+endif
+
+#---------------------------------------------------------------------------
+# C++ compilers
+#---------------------------------------------------------------------------
+CXXCOMPILERS="aomp"
+
+# GCC compiler
+ifeq ($(CXX), aomp)
+  CXX_COMPILER_MODULE ?= aomp
+  CXX_VERSION ?= aompversion | sed "s/^/AOMP /g"
+endif
+
+#---------------------------------------------------------------------------
+# FORTRAN Compilers
+#---------------------------------------------------------------------------
+FCOMPILERS=""
+

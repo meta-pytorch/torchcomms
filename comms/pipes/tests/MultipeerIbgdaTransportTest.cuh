@@ -20,7 +20,6 @@ __global__ void putAndSignalKernel(
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
     std::size_t nbytes,
-    IbgdaRemoteBuffer remoteSignalBuf,
     int signalId,
     uint64_t signalVal);
 
@@ -29,7 +28,6 @@ __global__ void putAndSignalGroupKernel(
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
     std::size_t nbytes,
-    IbgdaRemoteBuffer remoteSignalBuf,
     int signalId,
     uint64_t signalVal);
 
@@ -38,7 +36,6 @@ __global__ void putAndSignalGroupMultiWarpKernel(
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
     std::size_t nbytes,
-    IbgdaRemoteBuffer remoteSignalBuf,
     int signalId,
     uint64_t signalVal);
 
@@ -47,12 +44,11 @@ __global__ void putAndSignalGroupBlockKernel(
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
     std::size_t nbytes,
-    IbgdaRemoteBuffer remoteSignalBuf,
     int signalId,
     uint64_t signalVal);
 
 __global__ void waitSignalKernel(
-    volatile uint64_t* localSignalBuf,
+    P2pIbgdaTransportDevice* transport,
     int signalId,
     uint64_t expectedSignal);
 
@@ -61,13 +57,11 @@ __global__ void multiplePutAndSignalKernel(
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
     std::size_t bytesPerPut,
-    IbgdaRemoteBuffer remoteSignalBuf,
     int signalId,
     int numPuts);
 
 __global__ void signalOnlyKernel(
     P2pIbgdaTransportDevice* transport,
-    IbgdaRemoteBuffer remoteSignalBuf,
     int signalId,
     uint64_t signalVal);
 
@@ -91,10 +85,8 @@ __global__ void waitReadyThenPutAndSignalKernel(
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
     std::size_t nbytes,
-    volatile uint64_t* localSignalBuf,
     int readySignalId,
     uint64_t readySignalVal,
-    IbgdaRemoteBuffer remoteSignalBuf,
     int dataSignalId,
     uint64_t dataSignalVal);
 
@@ -103,10 +95,8 @@ __global__ void bidirectionalPutAndWaitKernel(
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
     std::size_t nbytes,
-    IbgdaRemoteBuffer remoteSignalBuf,
     int sendSignalId,
     uint64_t sendSignalVal,
-    volatile uint64_t* localSignalBuf,
     int recvSignalId,
     uint64_t recvSignalVal);
 
@@ -114,14 +104,12 @@ __global__ void allToAllSendKernel(
     P2pIbgdaTransportDevice** peerTransports,
     IbgdaLocalBuffer* localSendBufs,
     IbgdaRemoteBuffer* peerRecvBufs,
-    IbgdaRemoteBuffer* remoteSignalBufs,
     int myRank,
     std::size_t nbytes,
     int numPeers);
 
 __global__ void allToAllWaitKernel(
-    volatile uint64_t* localSignalBuf,
-    int* peerRanks,
+    P2pIbgdaTransportDevice** peerTransports,
     int numPeers);
 
 __global__ void putSignalCounterKernel(
@@ -129,16 +117,24 @@ __global__ void putSignalCounterKernel(
     IbgdaLocalBuffer localDataBuf,
     IbgdaRemoteBuffer remoteDataBuf,
     std::size_t nbytes,
-    IbgdaRemoteBuffer remoteSignalBuf,
     int signalId,
     uint64_t signalVal,
-    IbgdaLocalBuffer localCounterBuf,
     int counterId,
     uint64_t counterVal);
 
 __global__ void waitCounterKernel(
-    volatile uint64_t* counterBuf,
+    P2pIbgdaTransportDevice* transport,
     int counterId,
     uint64_t expectedVal);
+
+// Multi-QP kernel: QP selection is transparent via active_qp() inside transport
+__global__ void multiQpPutAndSignalKernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    std::size_t totalBytes,
+    IbgdaRemoteBuffer remoteSignalBuf,
+    int signalId,
+    uint64_t signalVal);
 
 } // namespace comms::pipes::test

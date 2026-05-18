@@ -9,8 +9,9 @@
 namespace py = pybind11;
 using namespace torch::comms;
 
-PYBIND11_MODULE(_comms_xccl, m) {
+PYBIND11_MODULE(_comms_xccl, m, py::mod_gil_not_used()) {
   m.doc() = "XCCL specific python bindings for TorchComm";
 
-  py::class_<TorchCommXCCL, std::shared_ptr<TorchCommXCCL>>(m, "TorchCommXCCL");
+  py::class_<TorchCommXCCL, TorchCommBackend, std::shared_ptr<TorchCommXCCL>>(
+      m, "TorchCommXCCL");
 }

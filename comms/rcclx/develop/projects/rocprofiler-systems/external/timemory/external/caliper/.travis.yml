@@ -1,0 +1,41 @@
+language: cpp
+dist: bionic
+os: linux
+
+addons:
+  apt:
+    sources:
+      - ubuntu-toolchain-r-test
+    packages:
+      - openmpi-bin
+      - libopenmpi-dev
+      - libunwind-dev
+      - libdw-dev
+      - gfortran
+
+# The base build matrix
+compiler:
+  - gcc
+  - clang
+env:
+  - WITH_MPI=On WITH_FORTRAN=Off WITH_GOTCHA=On
+  - WITH_MPI=On WITH_FORTRAN=Off WITH_GOTCHA=Off
+
+# Add explicit job for mpi off, fortran on, and coverage
+jobs:
+  include:
+    - compiler: gcc
+      env: WITH_MPI=Off WITH_FORTRAN=On WITH_GOTCHA=On COVERAGE="-DCMAKE_C_FLAGS=-coverage -DCMAKE_CXX_FLAGS=-coverage"
+    
+script:
+  - basedir=$(pwd)
+  - cd $basedir/python/caliper-reader
+  - python -B -m unittest discover -s tests/
+  - mkdir $basedir/build && cd $basedir/build
+  - cmake -C ../cmake/hostconfig/travis.cmake ${COVERAGE} -DCMAKE_C_COMPILER=${CC} -DCMAKE_CXX_COMPILER=${CXX} -DWITH_FORTRAN=${WITH_FORTRAN} -DWITH_MPI=${WITH_MPI} -DWITH_GOTCHA=${WITH_GOTCHA} ..
+  - make -j8
+  - export OMPI_MCA_btl_base_warn_component_unused=0
+  - ctest --output-on-failure
+
+after_success:
+  - if [[ -n "${COVERAGE}" ]] ; then bash <(curl -s https://codecov.io/bash) ; fi

@@ -1,0 +1,10 @@
+bin
+logs
+results_report
+ompvv/*.mod
+ompvv/*.a
+results.json
+results.csv
+recent_REPORT_ONLINE_tags
+sys/scripts/API/__pycache__/
+*~

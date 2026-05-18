@@ -159,13 +159,18 @@ std::shared_ptr<TorchCommBackend> TorchCommFactory::create_backend(
     const CommOptions& options) {
   std::shared_ptr<TorchCommBackend> impl;
 
-  for (const auto& [key, _] : backends_) {
-    TC_LOG(INFO) << "Backend " << key << " is registered";
+  {
+    std::lock_guard<std::mutex> guard(mutex_);
+    for (const auto& [key, _] : backends_) {
+      TC_LOG(INFO) << "Backend " << key << " is registered";
+    }
+
+    if (auto it = backends_.find(backend); it != backends_.end()) {
+      impl = it->second();
+    }
   }
 
-  if (auto it = backends_.find(backend); it != backends_.end()) {
-    impl = it->second();
-  } else {
+  if (!impl) {
     impl = create_generic_backend(backend);
   }
 
@@ -239,5 +244,10 @@ void TorchCommFactory::register_allocator_factory(
 TorchCommFactory& TorchCommFactory::get() {
   static TorchCommFactory instance;
   return instance;
+}
+
+bool TorchCommFactory::is_backend_registered(const std::string& backend) const {
+  std::lock_guard<std::mutex> guard(mutex_);
+  return backends_.find(backend) != backends_.end();
 }
 } // namespace torch::comms

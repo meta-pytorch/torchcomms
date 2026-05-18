@@ -1,0 +1,65 @@
+.TH LIBPFM 3  "September, 2005" "" "Linux Programmer's Manual"
+.SH NAME
+libpfm_i386_p6 - support for Intel P6 processor family
+.SH SYNOPSIS
+.nf
+.B #include <perfmon/pfmlib.h>
+.B #include <perfmon/pfmlib_i386_p6.h>
+.sp
+.SH DESCRIPTION
+The libpfm library provides full support for the P6 processor family, including
+the Pentium M processor. The interface is defined in \fBpfmlib_i386_p6.h\fR. It consists
+of a set of functions and structures which describe and allow access to the
+P6 processors specific PMU features.
+.sp
+When P6 processor specific features are needed to support a measurement, their descriptions must be passed
+as model-specific input arguments to the \fBpfm_dispatch_events()\fR function. The P6 processors specific 
+input arguments are described in the \fBpfmlib_i386_p6_input_param_t\fR structure and the output
+parameters in \fBpfmlib_i386_p6_output_param_t\fR. They are defined as follows:
+.sp
+.nf
+typedef struct {
+	unsigned int	cnt_mask;
+	unsigned int	flags;
+} pfmlib_i386_p6_counter_t;
+
+typedef struct {
+	pfmlib_i386_p6_counter_t	pfp_i386_p6_counters[PMU_I386_P6_NUM_COUNTERS];
+	uint64_t			reserved[4];
+} pfmlib_i386_p6_input_param_t;
+
+typedef struct {
+	uint64_t	reserved[8];
+} pfmlib_i386_p6_output_param_t;
+.fi
+.sp
+.sp
+The P6 processor provides a few additional per-event features for 
+counters: thresholding, inversion, edge detection. They can be set using the 
+\fBpfp_i386_p6_counters\fR data structure for each event.  The \fBflags\fR
+field can be initialized as follows:
+.TP
+.B PFMLIB_I386_P6_SEL_INV
+Inverse the results of the \fBcnt_mask\fR comparison when set
+.TP
+.B PFMLIB_I386_P6_SEL_EDGE
+Enables edge detection of events. 
+.LP
+The \fBcnt_mask\fR field contains is used to set the event threshold.
+The value of the counter is incremented each time the number of occurrences
+per cycle of the event is greater or equal to the value of the field. When
+zero all occurrences are counted.
+.sp
+.SH Handling of Pentium M
+The library provides full support for the Pentium M PMU. A Pentium implements
+more events than a generic P6 processor. The library autodetects the host
+processor and can distinguish generic P6 processor from a Pentium. Thus no
+special call is needed.
+.sp
+.SH ERRORS
+Refer to the description of the \fBpfm_dispatch_events()\fR function for errors.
+.SH SEE ALSO
+pfm_dispatch_events(3) and set of examples shipped with the library
+.SH AUTHOR
+Stephane Eranian <eranian@hpl.hp.com>
+.PP

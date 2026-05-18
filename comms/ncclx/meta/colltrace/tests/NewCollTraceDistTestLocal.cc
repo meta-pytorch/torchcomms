@@ -33,7 +33,6 @@ class CollTraceTestLocal : public NcclxBaseTestFixture {
         {"NCCL_HPC_JOB_IDS",
          "HPC_JOB_NAME,HPC_JOB_VERSION,HPC_JOB_ATTEMPT_INDEX"},
         {"NCCL_COLLTRACE", "trace"},
-        {"NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1"},
         {"NCCL_CTRAN_ENABLE", "1"},
         {"NCCL_CTRAN_IB_EPOCH_LOCK_ENFORCE_CHECK", "true"},
     });

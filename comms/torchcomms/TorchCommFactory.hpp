@@ -37,11 +37,13 @@ class TorchCommFactory {
       const std::string& backend,
       const std::function<std::shared_ptr<c10::Allocator>()>& factory);
 
+  bool is_backend_registered(const std::string& backend) const;
+
  private:
   std::shared_ptr<TorchCommBackend> create_generic_backend(
       const std::string& backend);
 
-  std::mutex mutex_;
+  mutable std::mutex mutex_;
   std::unordered_map<
       std::string,
       std::function<std::shared_ptr<TorchCommBackend>()>>

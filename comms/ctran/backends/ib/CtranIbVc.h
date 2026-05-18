@@ -191,7 +191,6 @@ class CtranIbVirtualConn {
       std::vector<CtranIbDevice>& devices,
       int peerRank,
       CtranComm* comm,
-      CtranCtrlManager* ctrlMgr,
       uint32_t pgTrafficClass,
       int cudaDev);
   ~CtranIbVirtualConn();
@@ -1085,17 +1084,7 @@ class CtranIbVirtualConn {
 
       case ibverbx::IBV_WC_RECV: {
         auto& packet = dequeFront(this->recvCtrl_.postedPkts_).get();
-        if (this->ctrlMgr_ && this->ctrlMgr_->hasCb(packet.type)) {
-          // This is a control message with registered callback.
-          // Handle it in callback without matching recv
-          CLOGF_TRACE(
-              COLL,
-              "CTRAN-IB-VC: received and invoke callback for packet [{}] peer {}",
-              packet.toString(),
-              this->peerRank);
-          FB_COMMCHECK(this->ctrlMgr_->runCb(
-              this->peerRank, packet.type, packet.payload));
-        } else if (this->recvCtrl_.enqueuedWrs_.empty()) {
+        if (this->recvCtrl_.enqueuedWrs_.empty()) {
           // No queued receive msg. This is an unexpected message.
           // Copy received ctrl msg to unexp buffer
           FB_COMMCHECK(enqueueUnexpWr(packet));
@@ -1807,7 +1796,6 @@ class CtranIbVirtualConn {
   std::unordered_map<uint32_t, bool> rcvdSeqNums_;
 
   CtranComm* comm_{nullptr};
-  CtranCtrlManager* ctrlMgr_{nullptr};
 
   // State for notifyQP notifications
   int32_t notifyCount_{0};

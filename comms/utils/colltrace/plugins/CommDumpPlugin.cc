@@ -155,14 +155,68 @@ CommsMaybeVoid CommDumpPlugin::afterCollKernelEnd(
         commInternalError));
   }
 
-  while (config_.pastCollSize >= 0 &&
-         lockedCollTraceDump->pastColls.size() >= config_.pastCollSize) {
-    lockedCollTraceDump->pastColls.pop_front();
-  }
-  lockedCollTraceDump->pastColls.emplace_back(std::move(*it));
+  auto completedIteration = curEvent.collRecord->getIteration();
+  lockedCollTraceDump->pastCollsHeap.push(std::move(*it));
+  evictPastColls(*lockedCollTraceDump, completedIteration);
   lockedCollTraceDump->currentColls.erase(it);
 
+  auto latencyUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                       curEvent.collRecord->getTimingInfo().getCollEndTs() -
+                       curEvent.collRecord->getTimingInfo().getCollStartTs())
+                       .count();
+  if (completedIteration > lockedCollTraceDump->currentIteration) {
+    lockedCollTraceDump->currentIteration = completedIteration;
+    lockedCollTraceDump->currentIterationCommTimeUs = latencyUs;
+  } else if (completedIteration == lockedCollTraceDump->currentIteration) {
+    lockedCollTraceDump->currentIterationCommTimeUs += latencyUs;
+  } else {
+    // Unexpected: a collective from an older iteration completed after we
+    // already moved to a newer iteration.  Log and skip the comm-time update
+    // to avoid corrupting the current iteration's accounting.
+    XLOG_FIRST_N(
+        ERR,
+        2,
+        "CommDumpPlugin: Completed iteration ",
+        completedIteration,
+        " is older than current iteration ",
+        lockedCollTraceDump->currentIteration,
+        ". Skipping comm time update.");
+  }
+
   return folly::unit;
+}
+
+void CommDumpPlugin::evictPastColls(
+    CollTraceDump& dump,
+    int64_t completedIteration) {
+  switch (config_.evictionMode) {
+    case EvictionMode::FixedCount: {
+      while (config_.pastCollSize >= 0 &&
+             static_cast<int64_t>(dump.pastCollsHeap.size()) >
+                 config_.pastCollSize) {
+        dump.pastCollsHeap.pop();
+      }
+      break;
+    }
+    case EvictionMode::Iteration: {
+      if (completedIteration > maxIterationSeen_) {
+        maxIterationSeen_ = completedIteration;
+      }
+      int64_t evictionThreshold = maxIterationSeen_ - config_.maxIterations + 1;
+      while (!dump.pastCollsHeap.empty()) {
+        const auto& oldest = dump.pastCollsHeap.top();
+        bool overHardLimit = static_cast<int64_t>(dump.pastCollsHeap.size()) >
+            config_.iterationUpperBound;
+        bool oldIteration = oldest->getIteration() < evictionThreshold;
+        if (overHardLimit || oldIteration) {
+          dump.pastCollsHeap.pop();
+        } else {
+          break;
+        }
+      }
+      break;
+    }
+  }
 }
 
 CommsMaybe<CollTraceDump> CommDumpPlugin::dump() noexcept {
@@ -204,6 +258,12 @@ CommsMaybe<CollTraceDump> CommDumpPlugin::dump() noexcept {
   // Create a copy of the current state of collTraceDump_
   CollTraceDump dumpCopy = *readLockedCollTraceDump;
 
+  // Drain the min-heap into pastColls deque in ascending collId order
+  while (!dumpCopy.pastCollsHeap.empty()) {
+    dumpCopy.pastColls.push_back(dumpCopy.pastCollsHeap.top());
+    dumpCopy.pastCollsHeap.pop();
+  }
+
   // Temporary fix: Currently we use currentColls to also track the next
   // pending collective, this logic is being used in Analyzer to detect
   // dependencies between collectives. Without making the next pending
@@ -218,32 +278,67 @@ CommsMaybe<CollTraceDump> CommDumpPlugin::dump() noexcept {
   return dumpCopy;
 }
 
+IterationCommTime CommDumpPlugin::getCurrentIterationCommTime() const noexcept {
+  auto locked = collTraceDump_.rlock(config_.dumpLockAcquireTimeout);
+  if (locked.isNull()) {
+    return {};
+  }
+  return {locked->currentIteration, locked->currentIterationCommTimeUs};
+}
+
+namespace {
+bool isKeyReq(
+    const std::unordered_set<std::string>& fields,
+    std::string_view key) {
+  return fields.empty() || fields.contains(std::string{key});
+}
+} // namespace
+
 std::unordered_map<std::string, std::string> commDumpToMap(
-    const CollTraceDump& dump) {
+    const CollTraceDump& dump,
+    const std::unordered_set<std::string>& requestFields) {
   std::unordered_map<std::string, std::string> map;
 
-  auto pastColls = folly::dynamic::array();
-  for (const auto& coll : dump.pastColls) {
-    pastColls.push_back(coll->toDynamic());
+  if (isKeyReq(requestFields, "CT_pastColls")) {
+    auto pastColls = folly::dynamic::array();
+    for (const auto& coll : dump.pastColls) {
+      pastColls.push_back(coll->toDynamic());
+    }
+    map["CT_pastColls"] = folly::toJson(pastColls);
   }
-  map["CT_pastColls"] = folly::toJson(pastColls);
 
-  auto pendingColls = folly::dynamic::array();
-  for (const auto& coll : dump.pendingColls) {
-    pendingColls.push_back(coll->toDynamic());
+  if (isKeyReq(requestFields, "CT_pendingColls")) {
+    auto pendingColls = folly::dynamic::array();
+    for (const auto& coll : dump.pendingColls) {
+      pendingColls.push_back(coll->toDynamic());
+    }
+    map["CT_pendingColls"] = folly::toJson(pendingColls);
   }
-  map["CT_pendingColls"] = folly::toJson(pendingColls);
 
-  auto currentColls = folly::dynamic::array();
-  for (const auto& coll : dump.currentColls) {
-    currentColls.push_back(coll->toDynamic());
+  if (isKeyReq(requestFields, "CT_currentColls")) {
+    auto currentColls = folly::dynamic::array();
+    for (const auto& coll : dump.currentColls) {
+      currentColls.push_back(coll->toDynamic());
+    }
+    map["CT_currentColls"] = folly::toJson(currentColls);
   }
-  map["CT_currentColls"] = folly::toJson(currentColls);
+
+  if (isKeyReq(requestFields, "CT_currentIteration")) {
+    map["CT_currentIteration"] = std::to_string(dump.currentIteration);
+  }
+
+  if (isKeyReq(requestFields, "CT_currentIterationCommTimeUs")) {
+    map["CT_currentIterationCommTimeUs"] =
+        std::to_string(dump.currentIterationCommTimeUs);
+  }
 
   return map;
 }
 
 int64_t CommDumpPlugin::maxEventRetention() const noexcept {
+  if (config_.evictionMode == EvictionMode::Iteration) {
+    return config_.iterationUpperBound;
+  }
   return config_.pastCollSize;
 }
 
@@ -251,6 +346,7 @@ CommsMaybeVoid CommDumpPlugin::testOnlyClearColls() noexcept {
   collTraceDump_.exchange(CollTraceDump{});
   newPendingColls_ =
       folly::MPMCQueue<std::shared_ptr<CollRecord>>(config_.pendingCollSize);
+  maxIterationSeen_ = -1;
   return folly::unit;
 }
 

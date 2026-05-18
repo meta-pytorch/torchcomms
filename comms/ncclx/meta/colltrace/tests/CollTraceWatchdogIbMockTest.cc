@@ -1,3 +1,4 @@
+#include <folly/FileUtil.h>
 #include <folly/Random.h>
 #include <folly/testing/TestUtil.h>
 #include <gmock/gmock.h>
@@ -11,7 +12,26 @@
 #include "comms/mccl/tests/CudaStream.h"
 #include "comms/mccl/tests/CudaTestUtil.h"
 #include "comms/testinfra/IbverbMockTestUtils.h"
-#include "ftar/DynMemGpuBuffer.h"
+
+namespace {
+struct GpuBuffer {
+  explicit GpuBuffer(size_t size) : size_(size) {
+    cudaMalloc(&ptr_, size);
+  }
+  ~GpuBuffer() {
+    cudaFree(ptr_);
+  }
+  GpuBuffer(const GpuBuffer&) = delete;
+  GpuBuffer& operator=(const GpuBuffer&) = delete;
+  void* raw() const {
+    return ptr_;
+  }
+
+ private:
+  void* ptr_ = nullptr;
+  size_t size_ = 0;
+};
+} // namespace
 
 #define NCCLCHECK_FATAL(cmd)                                            \
   do {                                                                  \
@@ -42,16 +62,11 @@ class NcclComm {
       NCCLCHECK_FATAL(ncclGetUniqueId(&ncclUniqueID));
       mccl::McclIntegrationTestUtil::setKey(
           uniqueIDKey,
-          std::string(ncclUniqueID.internal, NCCL_UNIQUE_ID_BYTES),
-          std::nullopt);
+          std::string(ncclUniqueID.internal, NCCL_UNIQUE_ID_BYTES));
     } else {
       // Everyone else waits for it
-      auto value = mccl::McclIntegrationTestUtil::waitForKey(
-          uniqueIDKey, [](const auto& versionAndValue) {
-            return versionAndValue.has_value();
-          });
-      std::memcpy(
-          ncclUniqueID.internal, value.value.data(), NCCL_UNIQUE_ID_BYTES);
+      auto value = mccl::McclIntegrationTestUtil::waitForKey(uniqueIDKey);
+      std::memcpy(ncclUniqueID.internal, value.data(), NCCL_UNIQUE_ID_BYTES);
     }
     NCCLCHECK_FATAL(
         ncclCommInitRank(&comm_, worldSize, ncclUniqueID, globalRank));
@@ -91,7 +106,6 @@ class CollTraceWatchdogTest : public mccl::CollectiveIntegrationTestMixin,
         // enable commsDumpAll
         "NCCL_COMMSMONITOR_ENABLE=1",
         "NCCL_COLLTRACE=trace",
-        "NCCL_COLLTRACE_USE_NEW_COLLTRACE=1",
         // enable ctran
         "NCCL_CTRAN_ENABLE=1",
         "NCCL_CTRAN_BACKENDS=ib",
@@ -161,13 +175,12 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorWithIbVerbMock) {
   NcclComm comm(worldSize, rank);
 
   // Ensure we are using new colltrace
-  ASSERT_EQ(comm.raw()->ctranComm_->collTrace_, nullptr);
   ASSERT_NE(comm.raw()->newCollTrace, nullptr);
 
   // Allocate memory on the GPU
   constexpr int size = 32;
-  facebook::ftar::DynMemGpuBuffer sendBuff(size * sizeof(float));
-  facebook::ftar::DynMemGpuBuffer recvBuff(size * sizeof(float));
+  GpuBuffer sendBuff(size * sizeof(float));
+  GpuBuffer recvBuff(size * sizeof(float));
 
   // Inject ibv failure to trigger async error
   ::meta::comms::setFailureInjection("ibv_post_send", 0, rank);

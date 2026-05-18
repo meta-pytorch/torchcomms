@@ -18,21 +18,21 @@ add_subdirectory(
   ${ROOT}/comms/utils/test_utils
   ${CMAKE_CURRENT_BINARY_DIR}/test_utils)
 
-# Build the dummy test backend as a shared library for dynamic loading tests
-add_library(dummy_test_backend SHARED
-    DummyTorchCommBackend.cpp
-    ${ROOT}/comms/torchcomms/dummy/TorchCommDummy.cpp
+# Build the fake test backend as a shared library for dynamic loading tests
+add_library(fake_test_backend SHARED
+    FakeTorchCommBackend.cpp
+    ${ROOT}/comms/torchcomms/fake/TorchCommFake.cpp
 )
-target_include_directories(dummy_test_backend PRIVATE
+target_include_directories(fake_test_backend PRIVATE
     ${ROOT}
     ${CONDA_INCLUDE}
 )
-target_compile_features(dummy_test_backend PRIVATE cxx_std_20)
-target_link_libraries(dummy_test_backend PRIVATE
+target_compile_features(fake_test_backend PRIVATE cxx_std_20)
+target_link_libraries(fake_test_backend PRIVATE
     torchcomms
     ${TORCH_LIBRARIES}
 )
-set_target_properties(dummy_test_backend PROPERTIES
+set_target_properties(fake_test_backend PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
 )
 
@@ -73,16 +73,16 @@ target_link_options(TorchCommFactoryTest PRIVATE
     "LINKER:--allow-shlib-undefined"
 )
 
-# Add dependency so dummy backend is built before factory test runs
-add_dependencies(TorchCommFactoryTest dummy_test_backend)
+# Add dependency so fake backend is built before factory test runs
+add_dependencies(TorchCommFactoryTest fake_test_backend)
 
 # Register tests with CTest
 include(GoogleTest)
 gtest_discover_tests(TorchCommOptionsTest)
 
 # For TorchCommFactoryTest, we need to set the environment variable
-# pointing to the dummy backend library
+# pointing to the fake backend library
 add_test(NAME TorchCommFactoryTest COMMAND TorchCommFactoryTest)
 set_tests_properties(TorchCommFactoryTest PROPERTIES
-    ENVIRONMENT "DUMMY_TEST_BACKEND_LIB_PATH=$<TARGET_FILE:dummy_test_backend>"
+    ENVIRONMENT "FAKE_TEST_BACKEND_LIB_PATH=$<TARGET_FILE:fake_test_backend>"
 )

@@ -2,7 +2,7 @@
 # Common environment setup for CI jobs
 # Usage: source setup_env.sh [--with-cmake] [--cuda-version <version>] [--torch-version <version>] <torch-channel>
 #   --with-cmake: Install cmake and ninja-build
-#   --cuda-version: CUDA version (e.g., "12.8") - required for nightly builds
+#   --cuda-version: CUDA version (e.g., "13.2") - required for nightly builds
 #   --torch-version: Exact torch version to install (e.g., "2.6.0.dev20250101")
 #   torch-channel: "stable" or "nightly"
 

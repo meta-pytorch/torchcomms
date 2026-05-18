@@ -128,14 +128,19 @@ class HostWindow {
    * Register a local buffer for use as a source in
    * DeviceWindow::put/put_signal.
    *
-   * NOT collective: only registers locally for IBGDA (gets lkey).
+   * NOT collective: only registers locally for IBGDA (gets per-NIC lkeys).
    * Does not exchange with peers. Use for source-only buffers.
    *
    * @param ptr   Local GPU buffer pointer
    * @param size  Buffer size in bytes
-   * @return      lkey for the registered buffer, or nullopt if no IBGDA peers
+   * @return      Per-NIC lkeys for the registered buffer (one entry per NIC,
+   *              up to kMaxNicsPerGpu), or nullopt if no IBGDA peers. The
+   *              kernel-side IBGDA put selects lkeys[nic] based on the slot
+   *              it dispatches on, so passing only NIC0's lkey would corrupt
+   *              WQEs for any slot landing on NIC[1..N-1] on multi-NIC
+   *              hardware (GB200/GB300).
    */
-  std::optional<NetworkLKey> registerLocalBuffer(void* ptr, std::size_t size);
+  std::optional<NetworkLKeys> registerLocalBuffer(void* ptr, std::size_t size);
 
   /**
    * Register and exchange the window data buffer with all peers.

@@ -8,6 +8,9 @@ if(USE_SYSTEM_LIBS)
     # Use system installed NCCL
     set(NCCL_INCLUDE "${CONDA_INCLUDE}")
     set(NCCL_SHARED_LIB "${CONDA_LIB}/libnccl.so")
+elseif(DEFINED TORCHCOMMS_NCCL_INCLUDE AND DEFINED TORCHCOMMS_NCCL_LIBRARY)
+    set(NCCL_INCLUDE "${TORCHCOMMS_NCCL_INCLUDE}")
+    set(NCCL_SHARED_LIB "${TORCHCOMMS_NCCL_LIBRARY}")
 elseif(EXISTS "${TORCH_INSTALL_PREFIX}/../build/nccl/include/nccl.h")
     # Use NCCL from PyTorch source build
     set(NCCL_INCLUDE "${TORCH_INSTALL_PREFIX}/../build/nccl/include")
@@ -48,6 +51,10 @@ target_link_libraries(torchcomms_comms_nccl PRIVATE
     ${TORCH_PYTHON_LIB}
 )
 if(USE_SYSTEM_LIBS)
+    target_link_libraries(torchcomms_comms_nccl PRIVATE
+        ${NCCL_SHARED_LIB}
+    )
+elseif(DEFINED TORCHCOMMS_NCCL_INCLUDE AND DEFINED TORCHCOMMS_NCCL_LIBRARY)
     target_link_libraries(torchcomms_comms_nccl PRIVATE
         ${NCCL_SHARED_LIB}
     )

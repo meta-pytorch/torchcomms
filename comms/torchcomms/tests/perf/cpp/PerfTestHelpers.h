@@ -52,8 +52,8 @@ class PerfTimer {
   double elapsed_ms();
 
  private:
-  at::cuda::CUDAEvent start_event_;
-  at::cuda::CUDAEvent end_event_;
+  at::cuda::CUDAEvent start_event_{cudaEventDefault};
+  at::cuda::CUDAEvent end_event_{cudaEventDefault};
   State state_;
 };
 

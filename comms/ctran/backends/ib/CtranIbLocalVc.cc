@@ -123,7 +123,12 @@ commResult_t LocalVirtualConn::iflush(
         (void*)req);
   }
 
-  outstandingReqs_.push_back(req);
+  // Push one entry per device CQE. Only the last carries the actual req;
+  // earlier entries are nullptr so processCqe drains them without completing.
+  for (int device = 0; device < NCCL_CTRAN_IB_DEVICES_PER_RANK; device++) {
+    outstandingReqs_.push_back(
+        device == NCCL_CTRAN_IB_DEVICES_PER_RANK - 1 ? req : nullptr);
+  }
 
   return commSuccess;
 }
@@ -136,10 +141,13 @@ commResult_t LocalVirtualConn::processCqe(
       opcode);
 
   // Since each flush is executed by network one by one, we complete each flush
-  // as simple FIFO.
+  // as simple FIFO. With multi-NIC, each iflush posts one RDMA READ per
+  // device; only the last entry carries the request to complete.
   auto req = outstandingReqs_.front();
   outstandingReqs_.pop_front();
-  FB_COMMCHECK(req->complete());
+  if (req) {
+    FB_COMMCHECK(req->complete());
+  }
 
   return commSuccess;
 }

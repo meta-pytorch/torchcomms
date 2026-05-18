@@ -1,0 +1,476 @@
+2010-09-30
+
+	* src/: configure, configure.in: When --with-OS=CLE is enabled,
+	  check the kernel version and use perfmon2 for old kernels and
+	  perf_events for new kernels.
+
+	* src/: configure, configure.in: If no sources of perf counters are
+	  available, then use the generic_platform substrate instead.
+
+	  Currently the code would always fall back on perfctr even if no
+	  perfctr support was available.
+
+	* src/: configure, configure.in: If you specify --with-perf-events
+	  or --with-pe-include but the required perf_event.h header is not
+	  available, then have configure fail with an error.
+
+	* papi.spec: Bump version number to 4.1.1 in affected files.  Also
+	  bump requirement for kernel from 2.6.31 to 2.6.32.  This in prep
+	  for the pending release.
+
+	* src/: configure, Makefile.in, configure.in, papi.h: Bump version
+	  number to 4.1.1 in affected files.  This in prep for the pending
+	  release.
+
+	* INSTALL.txt: Hope this late commit doesn't interfere with
+	  anything.  This updates the INSTALL.txt to reflect all of the
+	  improvements we've made to perf_event support since the last
+	  release.
+
+2010-09-29
+
+	* src/Rules.pfm: The -Werror problem was still occurring on
+	  ia64/perfmon compiles, as I hadn't updated Rules.pfm
+
+	* src/: configure, configure.in, perf_events.c, perf_events.h,
+	  sys_perf_counter_open.c, sys_perf_event_open.c, syscalls.h:
+	  Remove support for the perf_counter interface in kernel 2.6.31.
+	  Now supports only the perf_event interface in kernel 2.6.32 and
+	  above.
+
+2010-09-22
+
+	* src/perf_events.c: Attempt to add mmtimer support to perf_events
+	  substrate.
+
+	* src/: multiplex.c, papi.c, papi_protos.h: The multiplex code
+	  currently does not make a final adjustment at the time of
+	  MPX_read().  This is to avoid the case where counts could be
+	  decreasing if you have multiple reads returning estimated values
+	  before the next actual counter read.
+
+	  While this code works to keep the results non-decreasing, it can
+	  cause significant differences from expected results for final
+	  reads, especially if many counters are being multiplexed.
+
+	  This is seen in the sdsc-mpx test.  It was failing occasionally
+	  on some machines by having error of over 20% (the cutoff for a
+	  test error) when multiplexing 11 events.
+
+	  What this fix does is to special case the PAPI_stop() case when
+	  multiplexing is enabled, having the PAPI_stop() do a final
+	  adjustment.  The intermediate PAPI_read() case is not changed.
+
+	  This fixes the sdsc-mpx case, while still passing the mendes-alt
+	  case (which checks for non-decreasing values).
+
+	  There is a #define that can be set in multiplex.c to restore the
+	  previous behavior.
+
+	* src/ctests/mendes-alt.c: This is our only test that checks to see
+	  if multiplexed values are non-decreasing or not.  Unfortunately
+	  the test currently doesn't fail if values do go backward.
+
+	  This change causes the test to fail if it finds multiplexed
+	  counts that decrease.
+
+2010-09-17
+
+	* src/libpfm-3.y/: config.mk, lib/intel_wsm_events.h: Fix conflicts
+	  from merge.
+
+2010-09-15
+
+	* src/: Makefile.inc, Rules.perfctr-pfm, Rules.pfm_pe: Finally fix
+	  the -WExtra problem.
+
+	  The issue was -WExtra was being passed to libpfm, but only in the
+	  case	 where the user had a CFLAGS env variable.
+
+	  It turns out this is due to the following from section 5.7.2 of
+	  the gmake manual:    Except by explicit request, make exports a
+	  variable only if it is    either defined in the environment
+	  initially or set on the command line,
+
+	  And the fix is also described:    If you want to prevent a
+	  variable from being exported, use the    unexport directive,
+
+	  So I've added an "unexport CFLAGS" directive, which seems to be
+	  the right thing as our Makefile explicitly passes CFLAGS to the
+	  sub-Makefiles that need it.  This seems to fix the build.
+
+2010-09-13
+
+	* src/libpfm-3.y/: docs/man3/libpfm_westmere.3,
+	  lib/intel_wsm_events.h, lib/intel_wsm_unc_events.h,
+	  lib/pfmlib_intel_nhm.c, lib/pfmlib_priv.h: Fix the missing files
+	  from the import (CVS claims this as a "conflict")
+
+2010-09-08
+
+	* src/Makefile.inc: Fixed the recipies for [c|f]tests and utils.
+	  $(LIBRARY) => $(papiLIBS) (this way we don't build libpapi.a if
+	  we won't want it)
+
+2010-09-03
+
+	* src/ctests/sdsc.c: Had a "%d" instead of "%lld" in that last
+	  commit.
+
+	* src/ctests/sdsc.c: Give a more detailed error message on the
+	  sdsc-mpx test.
+
+	  We're seeing sporadic failures (probably due to results being
+	  close to the threshold value) but it's hard to tell on buildbot
+	  which counter is failing because the error message didn't   print
+	  the value.
+
+2010-09-02
+
+	* src/papi.c: Remove code that reported ENOSUPP if HW multiplexing
+	  is not available.
+
+	  PAPI can automatically perform SW multiplexing if HW is not
+	  available.
+
+	  With this part of my previous multiplexing patch reverted,
+	  multiplexing seems  to work even on 2.6.32 perf_events (by
+	  reverting to SW mode on those machines)
+
+2010-08-31
+
+	* src/perf_events.c: Explicitly set the disabled flag to zero in
+	  perf_events for new events.
+
+	  It was possible with an event set that if you removed an event
+	  then	 added a new one that the disabled flag was obtaining the
+	  value   from the previously removed event.
+
+	  This fix doesn't seem to break anything, but the code involved is
+	  a bit   tricky to follow.
+
+	  This fixes the sdsc4-mpx test on sol.
+
+	* src/components/coretemp/: Rules.coretemp, linux-coretemp.c,
+	  linux-coretemp.h: Initial stab at a coretemp component.
+
+	  This component exposes every thing that looks like a useful file
+	  under /sys/class/hwmon.
+
+2010-08-30
+
+	* src/perf_events.c: F_SETOWN_EX is not available until 2.6.32, so
+	  don't use it unless we are running on a recent enough kernel.
+
+	* src/perf_events.c: Pentium 4 was not supported by perf_events
+	  until version 2.6.35.  Print an error if we attempt to use it on
+	  an older kernel.
+
+2010-08-27
+
+	* src/ctests/overflow_allcounters.c: The "overflow_allcounters"
+	  test failed on perfmon2 kernels   because the behavior of a
+	  counter on overflow differs between	the various substrates.
+
+	  Therefore detect if we're running on perfmon2 and print a
+	  warning,   but still pass the test.
+
+	* src/libpfm-3.y/lib/: intel_wsm_events.h, intel_wsm_unc_events.h,
+	  pfmlib_intel_nhm.c, pfmlib_priv.h: updating
+
+	* src/libpfm-3.y/docs/man3/libpfm_westmere.3: removing westmere
+	  documentation
+
+	* src/perf_events.c: Fix warning in compile due to missing
+	  parameter in a debug statement.
+
+	* src/ctests/test_utils.c: In the ctests, test_skip() was
+	  attempting a PAPI_shutdown() before exiting.	  On multithreaded
+	  tests (that had already spawned threads before the	decision to
+	  skip) this really causes the programs to end up confused    and
+	  reports spurious memory errors.
+
+	  So remove the PAPI_shutdown() from test_skip().  There's a
+	  comment in test_fail()   that indicates this was already done
+	  there for similar reasons.
+
+2010-08-26
+
+	* src/ctests/byte_profile.c: byte_profile was failing on systems
+	  where fp_ops is a derived event.
+
+	  modify the test so it gives a warning instead of failing and
+	  avoids   using the derived event.
+
+	* src/perf_events.c: At PAPI_stop() time a counter with overflow
+	  enabled is being adjusted by a   value equal to the sampling
+	  period.
+
+	  It looks like this isn't needed (and is generating an overcount
+	  that breaks	 overflow_allcounters).
+
+	  I'm still checking up on this code; if it turns out to be
+	  necessary I may   have ro revert this later.
+
+	* src/ctests/overflow_allcounters.c: Add validation check to
+	  overflow_allcounters
+
+	  It turns out perf_event kernels overcount overflows for some
+	  reason, while   perfctr doesn't.  I'm investigating.
+
+	* src/ctests/: overflow_allcounters.c, papi_test.h, test_utils.c:
+	  On Power5 and Power6, hardware counters 5 and 6 cannot generate
+	  interrupts.
+
+	  This means the overflow_allcounters test was failing because
+	  overflow    could not be generated for events 5 and 6.
+
+	  Add code that special cases Power5 and Power6 for this test (and
+	  generate a warning)
+
+	* src/perf_events.c: Change some debug messages to be warnings
+	  instead of errors.
+
+	* src/: papi.c, ctests/second.c: Fix ctests/second on bluegrass
+	  (POWER6)
+
+	  The test was testing domains by trying
+	  PAPI_DOM_ALL^PAPI_DOM_SUPERVISOR   in an attempt to turn off the
+	  SUPERVISOR bit.  This fails on   Power6 as it leaves the
+	  PAPI_DOM_OTHER bit set, which isn't	allowed.
+
+	  How did the test earlier measure PAPI_DOM_ALL then, which has all
+	  bits set?   Well it turns out papi.c silently corrects
+	  PAPI_DOM_ALL to be   available_domains.  But if you fiddle any of
+	  the bits this   correction is lost.  This is probably not the
+	  right thing to do,   but the best way to fix it is not clear.
+
+	  For now this modifies the "second" test to clear the DOM_OTHER
+	  bit too   if the domain setting fails with it set.
+
+2010-08-25
+
+	* src/: papi.c, papi.h, perf_events.c, ctests/kufrin.c,
+	  ctests/mendes-alt.c, ctests/multiplex1.c,
+	  ctests/multiplex1_pthreads.c, ctests/multiplex2.c,
+	  ctests/multiplex3_pthreads.c, ctests/sdsc.c, ctests/sdsc2.c,
+	  ctests/sdsc4.c, ftests/fmultiplex1.F, ftests/fmultiplex2.F: Add
+	  support for including the OS version in the component_info_t
+	  struct.
+
+	  Use this support under perf_events to disable multiplexing
+	  support if the   kernel is < 2.6.33
+
+	  Modify the various multiplexing tests to "skip" if they get a
+	  PAPI_ENOSUPP	 when attempting to set up multiplexing.
+
+	* src/ctests/all_native_events.c: Update all_native_events ctest to
+	  print warning in the case where we skip events because they
+	  aren't implemented yet (offcore and uncore mostly).
+
+2010-08-24
+
+	* src/ctests/: papi_test.h, profile.c, test_utils.c: Adds a new
+	  "test_warn()" function for the ctests.
+
+	  This allows you to let tests pass with a warning.
+
+	  This is useful in cases where you don't want to forget that an
+	  option   needs implementing, but that the feature being missed
+	  isn't important   enough to fail the test.
+
+	  The first user of this is the "profile" test.  We warn that
+	  PAPI_PROFIL_RANDOM is not supported on perf_events.
+
+	* src/perf_events.c: From what I can tell, on perf_events the
+	  overflow PAPI_OVERFLOW_FORCE_SW case was improperly falling
+	  through in _papi_pe_dispatch_timer() to also run the HARDWARE
+	  code.
+
+	  This meant that we were attempting to read non-existant hardware
+	  overflow data, causing a lot of errors to be printed to the
+	  screen.
+
+	  This shows up in the overflow_force_software test
+
+	* src/ctests/: ipc.c, multiplex2.c, multiplex3_pthreads.c,
+	  test_utils.c: Some minor changes to the ctests.
+
+	  + ipc -- fail if the reported IPC value is zero + multiplex2 --
+	  fail if all 32 counter values report as zero + multiplex3_pthread
+	  -- give up sooner if each counter returns zero.      otherwise
+	  the test can take upwards of an hour to finish      and makes the
+	  fan on my laptop sound like it's going to explode	 in the
+	  process
+
+2010-08-20
+
+	* src/Makefile.inc: Disable CFLAGS += $(EXTRA_CFLAGS) (-Wextra) for
+	  now.	This will get buildbot running again, and if I can manage
+	  to figure out exactly what the Makefiles are doing I'll re-enable
+	  it again.
+
+	* src/perf_events.c: Add support for Pentium 4 under perf events.
+	  This requires a 2.6.35 kernel.  On p4 perf events requires a
+	  special format for the raw event, so we modify   the results from
+	  libpfm3 to conform to what the kernel expects.
+
+	* release_procedure.txt: release_procedure updated to reflect files
+	  to keep under /doc
+
+2010-08-18
+
+	* src/perf_events.c: Patch from Gary Mohr that allows PAPI on perf
+	  events to catch permissions	problems at the time of
+	  configuration, rather than only appearing   once papi_start() is
+	  called.
+
+	  Quick summary of changes:   + Adds a check_permissions() routine
+	     PERF_COUNT_HW_INSTRUCTIONS is used as the test event.    +
+	  check_permissions() is called during PAPI_ATTACH,
+	  PAPI_CPU_ATTACH and PAPI_DOMAIN    + Various "ctl" structures
+	  renamed "pe_ctl"    + Some minor debug changes
+
+2010-08-05
+
+	* src/perf_events.c: Use F_SETOWN_EX instead of F_SETOWN in
+	  tune_up_fd()
+
+	  This fixes a multi-thread overflow bug found with the Rice
+	  test-suite.
+
+	  F_SETOWN_EX doesn't exist until Linux 2.6.32.  We really need
+	  some infrastructure that detects the running kernel at init time
+	  and warns that things like F_SETOWN_EX, multiplexing, etc., are
+	  unavailable if the kernel is too old.
+
+2010-08-04
+
+	* src/: Makefile.inc, cpus.c, cpus.h, genpapifdef.c, papi.c,
+	  papi.h, papi_defines.h, papi_internal.c, papi_internal.h,
+	  perf_events.c, perf_events.h, threads.h: This is the
+	  PAPI_CPU_ATTACH patch from Gary Mohr that also fixes a  problem
+	  with multiple event sets on perf events.
+
+	  Changes by file:
+
+	    papi.h
+	       +  Add PAPI_CPU_ATTACHED
+	       +  Add strutctures needed for CPU_ATTACH
+	    Makefile.in
+	       + include the new cpus.c file
+	    papi_internal.c
+	       + add call to _papi_hwi_shutdown_cpu() in
+	  _papi_hwi_free_EventSet()
+	       + make remap_event_position() non-static
+	       + add_native_events() and remove_native_events() use
+		 _papi_hwi_get_context()
+	       + _papi_hw_read() has some whitespace and debug message
+	  changes,
+		 and removes an extraneous loop index
+	    papi_internal.h
+	       + a new CPUS_LOCK is added
+	       + cpuinfo struct added to various structures
+	       + an inline call called _papi_hwi_get_context() added
+	    perf_events.h
+	       + a cpu_num field added to control_state_t
+	    perf_events.c
+	       + open_pe_events() allows per-cpu counting,
+		 additional debug was added
+	       + set_cpu() function added
+	       + new debug messages in set_granularity() and
+	  _papi_pe_read()
+	       + _papi_pe_ctl() has PAPI_CPU_ATTACH code added
+	       + _papi_pe_update_control_state() has the default domain
+		 set to be PAPI_DOM_USER instead of pe_ctl->domain
+	    genpapifdef.c
+	       + PAPI_CPU_ATTACHED added
+	    threads.h
+	       + an ESI field added to ThreadInfo_t
+	    papi.c
+	       + many new ABIDBG() debug messages added
+	       + PAPI_start() updated to check for CPU_ATTACH conflicts,
+		 has whitespace fixes, gets context now,
+		 if dirty calls update_control_state()
+	       + PAPI_stop(), PAPI_reset(), PAPI_read(), PAPI_read_ts(),
+		 PAPI_accum(), PAPI_write(), PAPI_cleanup_eventset(),
+		 all use _papi_hwi_get_context() to get context
+	       + PAPI_read() has some braces added
+	       + PAPI_get_opt() and PAPI_set_opt() have CPU_ATTACHED code
+	  added.
+	       + PAPI_overflow() and PAPI_sprofil() now report errors if
+		 CPU_ATTACH enabled
+	     cpus.c, cpus.h
+	       + New files based on threads.c and threads.h
+
+	  I made some additional changes, based on warnings given by gcc
+	  + Added a few missing function prototypes in cpus.h	+ Update
+	  PAPI_MAX_LOCK as it wasn't increased to handle     the new
+	  addition of CPUS_LOCK   + Removed various variables and functions
+	  reported as being unused.
+
+2010-08-03
+
+	* src/: papi_internal.h, papi_lock.h: The option
+	  --with-no-cpu-counters was not supported on AIX. This has been
+	  fixed and works now. Also the get_{real|virt}_{cycles|usec}
+	  implementations for AIX (checked in Jul 29) have now been tested
+	  and work correctly.
+
+2010-07-29
+
+	* src/: configure, configure.in, papi_lock.h, papi_vector.c: Added
+	  AIX support for the get_{real|virt}_{cycles|usec} functions +++
+	  Fortran tests are now compiling on AIX. Wrong compiler flags were
+	  used for the AIX compilers.
+
+2010-07-26
+
+	* src/papi_events.csv: add PAPI_L1_DCM for atom
+
+	* src/x86_cache_info.c: Update the x86 cache_info table.
+
+	  The data from this table now comes from figure 3-17 in   the
+	  Intel Architectures Software Reference Manual 2A   (cpuid
+	  instruction section)
+
+	  This fixes an issue on my Atom N270 machine where the L2 cache
+	  was not reported.
+
+2010-07-16
+
+	* INSTALL.txt, src/perf_events.c, src/perf_events.h: Perf Events
+	  now support attach and detach.
+
+	  The patch for supporting this was written by Gary Mohr
+
+	* src/papi_events.csv: Add a few missing events to Nehalem, based
+	  on reading Intel Volume 3b.
+
+	* src/papi_events.csv: Fix Westmere to not use L1D_ALL_REF:ANY
+
+	  I tested this on a Nehalem which has the proper behavior,
+	  unfortunately   no Westmere here to test on.
+
+	* src/: papi_events.csv, papi_pfm_events.c, perfctr-x86.c: Enable
+	  support for having more than one CPU block with the same name in
+	  the .csv file.  This allows easier support for sharing events
+	  between similar architectures.
+
+	  I *think* this is needed and *think* it shouldn't break anything,
+	  but I might have to back it out.
+
+	  Also fixes event support for Pentium Pro / Pentium III/ P6 on
+	  perfmon2 and perf events kernels.
+
+	  Also fixed some confusion where perfctr called chips "Intel Core"
+	  meaning Core Duo   wheras pfmon called "Intel Core" meaning
+	  Core2.
+
+	  This was tested on actual Pentium Pro and PIII hardware (as well
+	  as on a few	Pentium 4 machines plus a Core2 machine)
+
+2010-07-02
+
+	* src/: papi_hl.c, ctests/api.c: Added remaining low-level api
+	  tests

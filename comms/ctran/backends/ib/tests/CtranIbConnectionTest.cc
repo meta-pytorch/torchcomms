@@ -68,7 +68,6 @@ class CtranIbConnectionTest : public ::testing::Test {
         rank, // Use rank as CUDA device identifier
         commHash,
         commDesc,
-        nullptr, // ctrlMgr
         false, // enableLocalFlush
         CtranIb::BootstrapMode::kExternal,
         /*qpServerAddr=*/std::nullopt,
@@ -284,7 +283,6 @@ TEST_F(CtranIbConnectionTest, ConnectVcDirectWithoutLocalVcIdentifierFails) {
       rank,
       commHash,
       commDesc,
-      nullptr, // ctrlMgr
       false, // enableLocalFlush
       CtranIb::BootstrapMode::kExternal,
       /*qpServerAddr=*/std::nullopt,

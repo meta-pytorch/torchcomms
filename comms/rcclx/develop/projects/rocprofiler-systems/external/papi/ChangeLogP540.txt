@@ -1,0 +1,459 @@
+2014-11-13  
+
+  * 8f524875 RELEASENOTES.txt: Prepare release notes for a 5.4.0 release
+
+2014-11-12  
+
+  * a8b4613b man/man1/papi_avail.1 man/man1/papi_clockres.1
+  man/man1/papi_command_line.1...: Rebuild the doxygen manpages
+
+  * fbea4897 src/run_tests_exclude.txt: Remove omptough from standard
+  run_tests.sh testing  On some platforms (e.g. some AMD machines), if
+  OMP_NUM_THREADS is not set, then this test does not complete in a reasonable
+  time.  That is because on these platforms too many threads are spawned inside
+  a large loop.
+
+2014-11-11  
+
+  * 23c2705b src/components/bgpm/CNKunit/linux-CNKunit.c
+  src/components/bgpm/IOunit/linux-IOunit.c
+  src/components/bgpm/IOunit/linux-IOunit.h...: Fix number of counters and
+  events for each of the 5 BGPM units as well as emon on BG/Q
+
+2014-11-07  
+
+  * 93c69ded src/linux-timer.c: Patch linux-timer.c to provide cycle counter
+  support on aarch64 (64-bit ARMv8 architecture)  Thanks to William Cohen for
+  this patch and the message below: --- The aarch64 has cycle counter available
+  to userspace and this resource should be made available in papi. --- This
+  patch is not tested by the PAPI team (no easily available hardware).
+
+2014-11-06  
+
+  * 038b2f31 src/components/rapl/linux-rapl.c: Extension of the RAPL energy
+  measurements on Intel via msr-safe.
+  (https://github.com/scalability-llnl/msr-safe)  msr-safe is a linux kernel
+  module that allows user access to a whitelisted set of MSRs. It is nearly
+  identical in structure to the stock msr kernel module, with the important
+  exception that the "capabilities" check has been removed.  The LLNL sysadmins
+  did a security review for the whitelist.
+
+  * 67e0b3f6 src/components/rapl/tests/rapl_basic.c: Fixed string null
+  termination.
+
+2014-10-30  
+
+  * 2a1805ec src/components/perf_event/pe_libpfm4_events.c
+  src/components/perf_event/pe_libpfm4_events.h
+  src/components/perf_event/perf_event.c...: Patch to reduce cost of using
+  PAPI_name_to_code and add list of supported pmu names to papi_component_avail
+  output  Thanks to Gary Mohr for this patch and its documentation: --- This
+  patch file contains code to look for either pmu names or component names on
+  the front of event strings passed to PAPI_name_to_code calls.  If found the
+  name will be compared to values in each component info structure to see if
+  the component supports this event.  If the pmu name or component name does
+  not match the values in the component info structure then there is no need to
+  call this component for this event.  If the event string does not contain
+  either a pmu name or a component name then all components will be called. 
+  This reduces the overhead in PAPI when converting event names to event codes
+  when either component names or pmu names are provided in the event name
+  string.  To support the above checks, there is also code in this patch to add
+  an array of pmu names to the component info structure and modifications to
+  the core and uncore components to save the pmu names supported by each of
+  these components in this new array.  This patch also adds code to the
+  papi_component_avail tool to display the pmu names supported by each active
+  component. ---
+
+2014-10-28  
+
+  * a91db97b src/components/net/linux-net.c src/components/nvml/linux-nvml.c
+  src/components/perf_event/perf_event.c...: This patch file contains
+  additional changes to resolve defects reported by Coverity.  Thanks to Gary
+  Mohr for this patch. ------ This patch file contains additional changes to
+  resolve defects reported by Coverity.  Mostly these just make sure that
+  character buffers get null terminated so they can be used as C strings. 
+  There is also a change in the RAPL component to improve the message to
+  identify why the component may have been disabled. ------
+
+2014-10-22  
+
+  * 3f913658 src/ctests/tenth.c: Fix percent error calculation in
+  ctests/tenth.c  Thanks to Carl Love for this patch and the following
+  documentation:  Do the division first then multiply by 100 when calculating
+  the percent error.  This will keep the magnitude of the numbers closer.  If
+  you multiply by 100 before dividing you may exceed the size the representable
+  number size.  Additionally, by casting the values to floats then dividing we
+  get more accuracy in the calculation of the percent error.  The integer
+  division will not give us a percent error less then 1.
+
+  * ba5ef24a src/papi_events.csv: PPC64, fix L1 data cache read, write and all
+  access equations.  Thanks to Carl Love for this patch and the following
+  documentation:  The current POWER 7 equations for all accesses over counts
+  because it includes non load accesses to the cache.  The equation was changed
+  to be the sum of the reads and the writes.  The read accesses to the two
+  units, can be counted with the single event PM_LD_REF_L1 rather then counting
+  the events to the two LSU units independently.  The number of reads to the L1
+  must be adjusted by subtracting the misses as these become writes.  Power 8
+  has four LSU units. The same equations can be used since PM_LD_REF_L1 counts
+  across all four LSU units.
+
+  * 882f5765 src/utils/native_avail.c: This patch file fixes two problems and
+  adds a performance improvement in "papi_native_avail.  Thanks to Gary Mohr
+  for this patch and the following information:  First it corrects a problem
+  when using the -i or -x options.  The code was putting out too many event
+  divider lines (lines with all '-' characters).  This has been corrected. 
+  Second it improves the results from "papi_native_avail --validate" when being
+  used on SNBEP systems.  This system has some events which require multiple
+  masks to be provided for them to be valid.  The validate code was showing
+  these events as not available because it did not try to use the event with
+  the correct combination of masks.  The fix checks to see if a valid form of
+  the event has not yet been found and if so then it tries the event with
+  specific combinations of masks that have been found to make these events
+  work.  It also adds a check before trying to validate the event with a new
+  mask to see if a valid form of the event has already been found.  If it has
+  then there is no need to try and validate the event again.
+
+  * 94985c8a src/config.h.in src/configure src/configure.in...: Fix build error
+  when no fortan is installed  Thanks to Maynard Johnson for this patch. Fix up
+  the build mechanism to properly handle the case where no Fortran compiler is
+  installed -- i.e., don't build or install testlib/ftest_util.o or the ftests.
+
+2014-10-16  
+
+  * de05a9d8 src/linux-common.c: PPC64 add support for the Power non
+  virtualized platform  Thanks to Carl Love for this patch and the following
+  description: The Power 8 system can be run as a non-virtualized machine.  In
+  this case, the platform is "PowerNV".  This patch adds the platform to the
+  possible IBM platform types.
+
+  * 547f4412 src/ctests/byte_profile.c: byte_profile.c: PPC64 add support for
+  PPC64 Little Endian to byte_profile.c  Thanks to Carl Love for this patch and
+  the following description: The POWER 8 platform is Little Endian.  It uses
+  ELF version 2 which does not use function descriptors.  This patch adds the
+  needed #ifdef support to correctly compile the test case for Big Endian or
+  Little Endian.  This patch is untested by the PAPI developers (hardware not
+  easily accessible).
+
+2014-10-15  
+
+  * 14f70ebc src/ctests/sprofile.c: PPC64 add support for PPC64 Little Endian
+  to sprofile.c  Thanks to Carl Love for this patch and the following
+  description: The POWER 8 platform is Little Endian.  It uses ELF version 2
+  which does not use function descriptors.  This patch adds the needed #ifdef
+  support to correctly compile the test case for Big Endian or Little Endian.
+
+  * 6d41e208 src/linux-memory.c: PPC64 sys_mem_info array size is wrong  Thanks
+  to Carl Love for this patch and the following description: The variable
+  sys_mem_info is an array of type PAPI_mh_info_t.  It is statically declared
+  as size 4.  The data for POWER8 is statically declared in entry 4 of the
+  array which is beyond the allocated array.  The array should be declared
+  without a size so the compiler will automatically determine the correct size
+  based on the number of elements being initialized.  This patch makes the
+  change.
+
+  * 061817e0 src/papi_events.csv: Remove stray Intel Haswell events from Intel
+  Ivy Bridge presets  Thanks to William Cohen for this patch and the following
+  description: 'Commit 4c87d753ab56688acad5bf0cb3b95eae8aa80458 added some
+  events meant for Intel Haswell to the Intel Ivy bridge presets.  This patch
+  removes those stray events.  Without this patch on Intel Ivy Bridge machines
+  would see messages like the following: PAPI Error: papi_preset: Error finding
+  event L2_TRANS:DEMAND_DATA_RD. PAPI Error: papi_preset: Error finding event
+  L2_RQSTS:ALL_DEMAND_REFERENCES.'  This patch was not tested by the PAPI team
+  (no appropriate hardware).
+
+2014-10-14  
+
+  * 8bc1ff85 src/papi_events.csv: Update papi_events.csv to match libpfm
+  support for Intel family 6 model 63 (hsw_ep)  Thanks to William Cohen for
+  this patch and its information: 'A recent September 11, 2014 patch (98c00b)
+  to the upstream libpfm split out Intel family 6 model 63 into its own name of
+  "hsw_ep".  The papi_events.csv needs to be updated to support that new name. 
+  This should have no impact for older libpfms that still identify Intel family
+  6 model 63 as "hswv" and "hsw_ep" map to the same papi presets.'
+
+  * 32a8b758 src/papi_events.csv: Support for the ARM X-Gene processor.  Thanks
+  to William Cohen for this patch. The events for the Applied Micro X-Gene
+  processor are slightly different from other ARM processors.  Thus, need to
+  define those presets for the X-Gene processor.  Note: This patch is not
+  tested by the PAPI team because we do not have the appropriate hardware.
+
+  * 0a97f54e src/components/perf_event/pe_libpfm4_events.c
+  .../perf_event_uncore/peu_libpfm4_events.c src/papi_internal.c...: Thanks to
+  Gary Mohr for the patch  ---------------------  Fix for bugs in
+  PAPI_get_event_info when using the core and uncore components: 
+  PAPI_get_event_info returns incorrect / incomplete information.  The errors
+  were in how the code handled event masks and their descriptions so the errors
+  would not lead to program failures, just the possibility of incorrect
+  labeling of output.  ---------------------
+
+2014-10-09  
+
+  * 77960f71 src/components/perf_event/pe_libpfm4_events.c: Record
+  encode_failed error by setting attr.config to 0xFFFFFFF.  This causes any
+  later validate attempts to fail, which is the desired behavior.  Note: as of
+  2014/10/09 this has not been thoroughly tested, since a failure case is not
+  known.  This patch simply copies a fix that was applied to the
+  perf_event_uncore component.
+
+2014-09-25  
+
+  * 00ae8c1e src/components/perf_event_uncore/peu_libpfm4_events.c: Based on
+  Gary Mohr's suggestion.  If an event fails when we try to add it
+  (encode_failed), then we note that error by setting attr.config = 0xFFFFFF
+  for that event.  Then, if there is a later check to validate this event, the
+  check will correctly return an error.
+
+  * 3801faaf src/utils/native_avail.c: Adding the NativeAvailValidate patch
+  provided by Gary Mohr.  The problem being addresed is that if there were any
+  problems validating event masks, then those problems would result in the
+  entire event being invalid.  The desired action was to test each event mask,
+  and if any basic event mask can make the event succeed, then the event should
+  be returned as valid and available.  The solution is to create a large buffer
+  and write events and masks into this buffer as they are processed, tracking
+  their validity.  At the end go back and mark the validity of the entire
+  event.  This matches the standard output of PAPI.
+
+2014-09-24  
+
+  * 6abc8196 src/components/emon/README src/components/emon/Rules.emon
+  src/components/emon/linux-emon.c: Emon power component for BG/Q
+
+2014-09-23  
+
+  * 62b9f2a9 .../perf_event_uncore/perf_event_uncore.c: perf_event_uncore.c:
+  Check scheduability of events  Patch by Gary Mohr, ------------------- This
+  patch file adds code to the uncore component to check and make sure that the
+  events being opened from an event set can be scheduled by the kernel.  This
+  kind of code exists in the core component but was not moved into the uncore
+  component because it was felt that it would not be an issue with uncore. 
+  Turns out the kernel has the same kind of issues when scheduling uncore
+  events.  The symptoms of this problem will show that the kernel will report
+  that all events in the event set were opened successfully but when trying to
+  read the results one (or more) of the events will get a read failure.  Seen
+  in the traces and on stderr (if papi configured with debug=yes) as a "short
+  read" error.  The logic is slightly different than what is in the core
+  component because the events in the core component are grouped and the ones
+  in the uncore are not grouped.  When events are grouped, you only need to
+  enable/disable and read results on the group leader. But when they are not
+  grouped you need to do these operations on each event in the event set.
+
+2014-09-19  
+
+  * 8e6bf887 src/components/cuda/linux-cuda.c
+  src/components/infiniband/linux-infiniband.c
+  src/components/lustre/linux-lustre.c...: Address coverity defects in
+  src/components  Thanks Gary Mohr ----------------  This patch file contains
+  fixes for defects reported by Coverity in the /src/components directory.
+  Mostly these changes just make sure that char buffers get null terminated so
+  that when they get used as a C string (they usually do) we will not end up
+  with unpredictable results.  A problem has been reported by one of our
+  testers that the lustre component produced very long event names with lots of
+  unprintable garbage in the names.  It turns out this was caused by a buffer
+  that filled up and never got null terminated.  Then string functions were
+  used on the buffer which picked up the whole buffer and lots more.  These
+  changes fixed the problem.
+
+  * 266c61a4 src/linux-common.c src/papi_hl.c src/papi_internal.c...: Address
+  coverity reported issues in src/  Thanks to Gary Mohr -------------------
+  Changes in this patch file:  linux-common.c:  Add code to insure that cpu
+  info vendor_string and model_string buffers are NULL terminated strings. 
+  Also insure that the value which gets read into mdi->exe_info.fullname gets
+  NULL terminated. This makes it safe to use the  'strxxx' functions on the
+  value (which is done immediately after it is read in).  papi_hl.c:  Fix call
+  to _hl_rate_calls() where the third argument was not the correct data type. 
+  papi_internal.c:  Add code to insure that event info name, short_desc, and
+  long_desc buffers are NULL terminated strings.  papi_user_events.c:  While
+  processing define symbols, insure that the 'local_line', 'name', and 'value'
+  buffers get NULL terminated (so we can safely use 'strxxx' functions on
+  them). Insure that the 'symbol' field in the user defined event ends up NULL
+  terminated. Rearrange code to avoid falling through from one case to the next
+  in a switch statement. Coverity flagged falling out the bottom of a case
+  statement as a potential defect but it was doing what it should. 
+  sw_multiplex.c:  Unnecessary test.  The value of ESI can not be NULL when
+  this code is reached.  x86_cpuid_info.c:  The variable need_leaf4 is set but
+  not used.  The only place it gets set returns without checking its value. 
+  The place that checks its value never could have set its value non-zero.
+
+2014-09-12  
+
+  * d72277fc release_procedure.txt: Update release procedure, check buildbot!
+
+2014-09-08  
+
+  * a0e4f9a7 src/components/perf_event_uncore/perf_event_uncore.c: Uncore
+  component fix:  By Gary Mohr, The line that sets exclude_guests in the uncore
+  component is there because it also there in the core component.  But when I
+  look at it closer, it is an error in both cases.  I will submit a patch to
+  remove them and get rid of some commented out code that no longer belongs in
+  the source.  The uncore events do not support the concept of excluding the
+  host or guest os so we should never set either bit.  But the core events do
+  support this concept and libpfm4 provides event masks "mg" and "mh" to
+  control counting in these domains.  By default if neither is set then libpfm4
+  excludes counting in the guest os, if either "mh" or "mg" is provided as an
+  event mask then it is counted but the other is excluded, and if both are
+  provided then both are counted.  So when the code forces the exclude_guest
+  bit to be set it breaks the ability to fully control what will happen with
+  the masks.  I did not notice the uncore part of this problem when testing on
+  my SNB system, probably because we use an older kernel which tolerated the
+  bit being set (or maybe because HSW is handled differently).
+
+2014-09-02  
+
+  * 4499fee7 src/papi_internal.c: Thanks to Gary Mohr for the patch
+  --------------------- Fix in papi_internal.c where it was trying to look up
+  the event name.  The RAPL component found the event and returned a code but
+  papi_internal.c  exited the enum loop for that component but failed to exit
+  the loop that checks all of the components.  This caused it to keep looking
+  at other components until it fell out of the outer loop and returned an
+  error. In addition to the actual change, some formatting issues were fixed.
+  ---------------------
+
+  * f5835c26 src/components/perf_event/perf_event_lib.h: Bump NUM_MPX_COUNTERS
+  for linux-perf  Uncore on SNB and newer systems has enough counters to go
+  beyond the 64 array spaces we allocate. This needs a better long term
+  solution.  Reported by Gary Mohr --------------------- When running on snbep
+  systems with the uncore component enabled, if papi is configured with
+  debug=yes then the message "Warning!  num_cntrs is more than num_mpx_cntrs"
+  gets written to stderr.  This happens because the snbep uncore pmu's have a
+  total of 81 counters and PAPI is set to only accept a maximum of 64 counters.
+   This change increases the amount PAPI will accept to 100 (prevents the
+  warning message from being printed). ---------------------
+
+  * 07990f85 src/ctests/branches.c src/ctests/calibrate.c
+  src/ctests/describe.c...: ctests/ Address coverity reported defects  Thanks
+  to Gary Mohr for the patch --------------------------------- he contents of
+  this patch file fix defects reported by Coverity in the directory
+  'papi/src/ctests'.  The defect reported in branches.c was that a comparison
+  between different kinds of data was being done.  The defect reported in
+  calibrate.c was that the variable 'papi_event_str' could end up without a
+  null terminator.  The defects reported in describe.c, get_event_component.c,
+  and krentel_pthreads.c were that return values from function calls were being
+  stored in a variable but never being used.  I also did a little clean-up in
+  describe.c.  This test had been failing for me on Intel NHM and SNBEP but now
+  it runs and reports that it PASSED. ---------------------------------
+
+2014-08-29  
+
+  * 74cb07df src/testlib/test_utils.c: testlib/test_util.c: Check enum return
+  value  Addresses an issue found by Coverity. Thanks Gary Mohr,
+  ---------------- The changes in this patch file fixes the only defect in the
+  src/testlib directory.  The defect reported that the return value from a call
+  to PAPI_enum_cmp_event was being ignored.  This call to enum events is to get
+  the first event for the component index passed into this function. It turns
+  out that the function that contains this code is only ever called by the
+  overflow_allcounters ctest and it only calls once and always passes a
+  component index of 0 (perf_event).  So I added code to check the return value
+  and fail the test if an error was returned. ----------------
+
+  * 74041b3e src/utils/event_info.c: event_info utility: address coverity
+  defect  From Gary Mohr -------------- This patch corrects a defect reported
+  by Coverity.  The defect reported that the call to PAPI_enum_cmp_event was
+  setting retval which was never getting used before it got set again by a call
+  to PAPI_get_event_info.  After looking at the code, I decided that we should
+  not be trying to get the next event inside a loop that is enumerating masks
+  for the current event.  It makes more sense to break out of the loop to get
+  masks and let the outer loop that is walking the events get the next event.
+  --------------
+
+2014-08-28  
+
+  * 62dceb9b src/utils/native_avail.c: Extend 'papi_native_event --validate' to
+  check for umasks.
+
+2014-08-27  
+
+  * a5c2beb2 src/components/perf_event/pe_libpfm4_events.c
+  src/components/perf_event/pe_libpfm4_events.h
+  src/components/perf_event/perf_event.c...: perf_event[_uncore]: switch to
+  libpfm4 extended masks  Patch due to Gary Mohr, many thanks.
+  ------------------------------------ This patch file contains the changes to
+  make the perf_event and perf_event_uncore components in PAPI use the libpfm4
+  extended event masks.  This adds a number of new masks that can be entered
+  with events supported by these components. They include a mask 'u' which can
+  be used control if counting in the user domain should be enabled, a mask 'k'
+  which does the same for the kernel domain, and a mask 'cpu' which will cause
+  counting to only occur on a specified cpu.  There are also some other new
+  masks which may work but have not been tested yet.
+  ------------------------------------
+
+2014-08-20  
+
+  * e76bbe66 src/components/perf_event/pe_libpfm4_events.c
+  src/components/perf_event/perf_event.c
+  .../perf_event_uncore/perf_event_uncore.c...: General code cleanup and
+  improved debugging  Thanks to Gary Mohr ------------------- This patch file
+  does general code cleanup.  It modifies the code to eliminate compiler
+  warnings, remove defects reported by coverity, and improve traces.
+
+2014-08-11  
+
+  * 8f2a1cee src/utils/error_codes.c: error_codes utility: remove internal bits
+   Remove dependency on _papi_hwi_num_errors, just keep calling PAPI_strerror
+  until it fails. We shouldn't be using internal symbols anyways.
+
+2014-08-04  
+
+  * a7136edd src/components/nvml/README: Update nvml README  We changed the
+  options to simplify the configure line. Bad information is worse than no
+  information...
+
+2014-07-25  
+
+  * a37160c1 src/components/perf_event/perf_event.c: perf_event.c: cleanup
+  error messages  Thanks to Gary Mohr ------------------- This patch contains
+  general cleanup code.  Calls to PAPIERROR pass a string which does not need
+  to end with a new line because this function will always add one.  New lines
+  at the end of strings passed to this function have been removed.  These
+  changes also add some additional debug messages.
+
+2014-07-24  
+
+  * bf55b6b7 src/papi_events.csv: Update HSW presets  Thanks to Gary Mohr
+  ------------------- Previously we sent updates to the PAPI preset event
+  definitions to improve the preset cache events on Haswell processors.  In
+  checking the latest source, it looks like the L1 cache events changes did not
+  get applied quite right.  Here is a patch to the latest source that will make
+  it the way we had intended.
+
+  * eeaef9fa src/papi.c: papi.c: Add information to API entry debuging  Thanks
+  to Gary Mohr ------------------- This patch contains the results of taking a
+  second pass to cleanup the debug prints in the file papi.c.  It adds entry
+  traces to more functions that can be called from an application.  It also
+  adds lots of additional values to the trace entries so that we can see what
+  is being passed to these functions from the application.
+
+2014-07-23  
+
+  * ee736151 src/run_tests.sh: run_tests.sh: more exclude cleanups  Thanks Gary
+  Mohr ---------------- This patch removes an additional check for Makefiles in
+  the script.  The exclude files are now used to prevent Makefiles from getting
+  run by this script.  I missed this one when providing the previous patch to
+  make this change.
+
+  * c37afa23 src/papi_internal.c: papi_internal.c: change SUBDBG to INTDBG 
+  Thanks to Gary Mohr ------------------- This patch contains changes to
+  replace calls to SUBDBG with calls to INTDBG in this source file.  This
+  source file should be using the Internal debug macro rather than the
+  Substrate debug macro so that the PAPI debug filters work correctly.  These
+  changes also add some new debug calls so that we will get a better picture of
+  what is going on in the PAPI internal layer.  There are a few calls to the
+  SUBDBG macro that are in code that I have modified to add support for new
+  event level masks which are not converted by this patch.  They will be
+  corrected when the event level mask patch is provided.
+
+  * e43b1138 src/utils/native_avail.c: native_avail.c: Bug fixes and updates 
+  Thanks to Gary Mohr -------------------------------------------------- This
+  patch fixes a couple of problems found in the papi_native_avail program. 
+  First change fixes a problem introduced when the -validate option was added. 
+  This option causes events to get added to an event set but never removes
+  them.  This change will remove them if the add works.  This change also fixes
+  a coverity detected error where the return value from PAPI_destroy_eventset
+  was being ignored.  Second change improves the delimitor check when
+  separating the event description from the event mask description.  The
+  previous check only looked for a colon but some of the event descriptions
+  contain a colon so descriptions would get displayed incorrectly.  The new
+  check finds the "masks:" substring which is what papi inserts to separate
+  these two descriptions.  Third change adds code to allow the user to enter
+  events of the form pmu:::event or pmu::event when using the -e option in the
+  program.
+

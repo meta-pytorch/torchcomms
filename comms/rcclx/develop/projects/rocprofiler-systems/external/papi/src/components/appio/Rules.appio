@@ -1,0 +1,9 @@
+# $Id$
+
+COMPSRCS += components/appio/appio.c
+COMPOBJS += appio.o
+SHLIBDEPS += -ldl
+
+appio.o: components/appio/appio.h components/appio/appio.c components/appio/appio.h $(HEADERS)
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/appio/appio.c -o $@
+

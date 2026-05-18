@@ -7,7 +7,9 @@
 #include "comms/ctran/Ctran.h" // access to incomplete type
 
 #include "comms/utils/colltrace/NetworkPerfMonitor.h"
+#include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "meta/commDump.h"
 
 constexpr static auto kGlobalInfoDumpMapKey = "GlobalInfo";
 
@@ -78,12 +80,18 @@ folly::Singleton<CommsMonitor, CommsMonitorSingletonTag>
   }
   return NcclCommMonitorInfo{
       .logMetaData = comm->logMetaData,
-      .commState = ncclx::CommStateX{*comm->ctranComm_->statex_},
+      .stateInfo =
+          CommStateInfo{
+              .localRank = comm->localRank,
+              .node = comm->rankToNode ? comm->rankToNode[comm->rank] : 0,
+              .nLocalRanks = comm->localRanks,
+              .nNodes = comm->nNodes},
       .topoInfo = getTopoInfoFromNcclComm(comm),
-      .collTrace = comm->collTrace,
       .mapperTrace = mapperTrace,
       .proxyTrace = proxyTrace,
-      .newCollTrace = comm->newCollTrace};
+      .newCollTrace = comm->newCollTrace,
+      .memTracer = meta::comms::memtrace::MemoryTrace::getOrCreate(
+          comm->logMetaData.commHash)};
 }
 
 bool CommsMonitor::deregisterCommImpl(ncclComm_t comm) {
@@ -104,7 +112,11 @@ bool CommsMonitor::registerCommImpl(ncclComm_t comm) {
   return true;
 }
 
-CommDumpAllMap CommsMonitor::commDumpAllImpl() {
+CommDumpAllMap CommsMonitor::commDumpAllImpl(
+    const std::unordered_set<std::string>& requestFields) {
+  using meta::comms::colltrace::CommDumpPlugin;
+  using meta::comms::ncclx::isKeyRequested;
+
   std::vector<NcclCommMonitorInfo> commInfos;
   {
     auto lockedMap = commsMap_.rlock();
@@ -119,17 +131,57 @@ CommDumpAllMap CommsMonitor::commDumpAllImpl() {
       commInfos.size());
 
   CommDumpAllMap commDumpAllMap;
-  for (const auto& commMonitorInfo : commInfos) {
-    commDumpAllMap[hashToHexStr(commMonitorInfo.logMetaData.commHash)] =
-        commDumpByMonitorInfo(commMonitorInfo);
+
+  bool onlyGlobalInfo = !requestFields.empty() &&
+      std::all_of(
+          requestFields.begin(),
+          requestFields.end(),
+          [](const std::string& key) {
+            return key.starts_with("GlobalInfo::");
+          });
+
+  if (!onlyGlobalInfo) {
+    for (const auto& commMonitorInfo : commInfos) {
+      commDumpAllMap[hashToHexStr(commMonitorInfo.logMetaData.commHash)] =
+          commDumpByMonitorInfo(commMonitorInfo, requestFields);
+    }
   }
 
   std::unordered_map<std::string, std::string> globalInfoDumpMap;
-  auto networkPerfMonitorPtr =
-      ncclx::colltrace::NetworkPerfMonitor::getInstance();
-  if (networkPerfMonitorPtr != nullptr) {
-    networkPerfMonitorPtr->reportPerfStatsAsMap(globalInfoDumpMap);
+
+  if (isKeyRequested(requestFields, "GlobalInfo::NetworkPerfInfo")) {
+    auto networkPerfMonitorPtr =
+        ncclx::colltrace::NetworkPerfMonitor::getInstance();
+    if (networkPerfMonitorPtr != nullptr) {
+      networkPerfMonitorPtr->reportPerfStatsAsMap(globalInfoDumpMap);
+    }
   }
+
+  if (isKeyRequested(requestFields, "GlobalInfo::totalCommDurPerIterationUs")) {
+    int64_t totalCommTimeUs = 0;
+    int64_t curCommIter = -1;
+    for (const auto& commInfo : commInfos) {
+      if (commInfo.newCollTrace == nullptr) {
+        continue;
+      }
+      auto* plugin =
+          dynamic_cast<CommDumpPlugin*>(commInfo.newCollTrace->getPluginByName(
+              std::string{CommDumpPlugin::kCommDumpPluginName}));
+      if (plugin == nullptr) {
+        continue;
+      }
+      auto iterTime = plugin->getCurrentIterationCommTime();
+      if (iterTime.iteration > curCommIter) {
+        curCommIter = iterTime.iteration;
+        totalCommTimeUs = iterTime.commTimeUs;
+      } else if (iterTime.iteration == curCommIter) {
+        totalCommTimeUs += iterTime.commTimeUs;
+      }
+    }
+    globalInfoDumpMap["totalCommDurPerIterationUs"] =
+        std::to_string(totalCommTimeUs);
+  }
+
   if (!globalInfoDumpMap.empty()) {
     commDumpAllMap[kGlobalInfoDumpMapKey] = globalInfoDumpMap;
   }
@@ -211,7 +263,15 @@ CommsMonitor::getTopologyByCommDesc(const std::string& commDesc) {
   return commsMonitorSingleton.try_get();
 }
 
-/*static*/ std::optional<CommDumpAllMap> CommsMonitor::commDumpAll() {
+/*static*/ void CommsMonitor::testOnlyClearComms() {
+  auto commMonitorPtr = getInstance();
+  if (commMonitorPtr != nullptr) {
+    commMonitorPtr->commsMap_.wlock()->clear();
+  }
+}
+
+/*static*/ std::optional<CommDumpAllMap> CommsMonitor::commDumpAll(
+    const std::unordered_set<std::string>& requestFields) {
   if (!NCCL_COMMSMONITOR_ENABLE) {
     static bool logDumpAllUnavailable = false;
     if (!logDumpAllUnavailable) {
@@ -225,7 +285,7 @@ CommsMonitor::getTopologyByCommDesc(const std::string& commDesc) {
   if (commMonitorPtr == nullptr) {
     return std::nullopt;
   }
-  return commMonitorPtr->commDumpAllImpl();
+  return commMonitorPtr->commDumpAllImpl(requestFields);
 }
 
 /*static*/ std::optional<NcclCommMonitorInfo>

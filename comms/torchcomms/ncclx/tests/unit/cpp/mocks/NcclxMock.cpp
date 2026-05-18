@@ -33,12 +33,28 @@ void NcclxMock::setupDefaultBehaviors() {
 
   ON_CALL(*this, commAbort(_)).WillByDefault(Return(ncclSuccess));
 
+  ON_CALL(*this, commRevoke(_)).WillByDefault(Return(ncclSuccess));
+
   ON_CALL(*this, commGetAsyncError(_, _))
       .WillByDefault(DoAll(SetArgPointee<1>(ncclSuccess), Return(ncclSuccess)));
 
   ON_CALL(*this, commSplit(_, _, _, _, _))
       .WillByDefault(DoAll(
           SetArgPointee<3>(reinterpret_cast<ncclComm_t>(0x4000)),
+          Return(ncclSuccess)));
+
+  ON_CALL(*this, commShrink(_, _, _, _, _, _))
+      .WillByDefault(DoAll(
+          SetArgPointee<3>(reinterpret_cast<ncclComm_t>(0x6000)),
+          Return(ncclSuccess)));
+
+  ON_CALL(*this, commGetUniqueId(_, _))
+      .WillByDefault(
+          DoAll(SetArgPointee<1>(ncclUniqueId{}), Return(ncclSuccess)));
+
+  ON_CALL(*this, commGrow(_, _, _, _, _, _))
+      .WillByDefault(DoAll(
+          SetArgPointee<4>(reinterpret_cast<ncclComm_t>(0x7000)),
           Return(ncclSuccess)));
 
   // Memory registration - return success by default
@@ -77,12 +93,6 @@ void NcclxMock::setupDefaultBehaviors() {
       .WillByDefault(Return(ncclSuccess));
 #endif
 
-  ON_CALL(*this, alltoallvDedupInit(_, _, _, _, _, _, _, _))
-      .WillByDefault(Return(ncclSuccess));
-  ON_CALL(*this, alltoallvDedupExec(_, _, _, _, _, _, _))
-      .WillByDefault(Return(ncclSuccess));
-  ON_CALL(*this, alltoallvDedupCombine(_, _, _, _, _, _))
-      .WillByDefault(Return(ncclSuccess));
   ON_CALL(*this, pFree(_)).WillByDefault(Return(ncclSuccess));
 
   ON_CALL(*this, commWindowRegister(_, _, _, _, _))
@@ -122,6 +132,7 @@ void NcclxMock::setupDefaultBehaviors() {
   // easily mock SetArgPointee with ncclDevComm struct, so just return success
   ON_CALL(*this, devCommCreate(_, _, _)).WillByDefault(Return(ncclSuccess));
   ON_CALL(*this, devCommDestroy(_, _)).WillByDefault(Return(ncclSuccess));
+  ON_CALL(*this, multimemSupport(_)).WillByDefault(Return(false));
 #endif
 }
 

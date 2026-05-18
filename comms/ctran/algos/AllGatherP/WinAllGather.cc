@@ -2,12 +2,14 @@
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllGatherP/AlgoImpl.h"
+#include "comms/ctran/algos/AllGatherP/Types.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/window/CtranWin.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 using ctran::allgatherp::AlgoImpl;
+using ctran::allgatherp::PersistArgs;
 
 #define CHECK_VALID_PREQ(pReq)                                         \
   do {                                                                 \
@@ -28,6 +30,35 @@ using ctran::allgatherp::AlgoImpl;
 
 namespace ctran {
 
+namespace {
+const std::string algoWinInitName = "CtranAllGatherWinInit";
+
+// GPE callback: populate pArgs remote info from window, then mark initialized.
+// Runs on GPE thread to avoid races between init and exec on the mapper epoch
+// lock (see D76792218).
+commResult_t populateWinPArgs(
+    const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
+  struct OpElem* op = opGroup.front().get();
+  auto* pArgs = reinterpret_cast<PersistArgs*>(op->allgatherp_init.pArgs);
+  auto* win = op->allgatherp_init.win;
+  CtranComm* comm = opGroup.front()->comm_;
+
+  const auto nRanks = comm->statex_->nRanks();
+
+  CtranAlgoLogger logger(algoWinInitName, op->opCount, comm);
+
+  pArgs->remoteRecvBuffs.resize(nRanks);
+  pArgs->remoteAccessKeys.resize(nRanks);
+  for (int r = 0; r < nRanks; r++) {
+    pArgs->remoteRecvBuffs[r] = win->remWinInfo[r].dataAddr;
+    pArgs->remoteAccessKeys[r] = win->remWinInfo[r].dataRkey;
+  }
+
+  pArgs->initialized.store(true);
+  return commSuccess;
+}
+} // namespace
+
 commResult_t allGatherWinInit(
     CtranWin* win,
     CtranComm* comm,
@@ -47,19 +78,34 @@ commResult_t allGatherWinInit(
 
   auto algo = std::make_unique<AlgoImpl>(comm, stream);
 
-  // Populate pArgs from window remote info
   algo->pArgs.recvbuff = win->winDataPtr;
   algo->pArgs.recvHdl = win->dataRegHdl;
-  algo->pArgs.remoteRecvBuffs.resize(nRanks);
-  algo->pArgs.remoteAccessKeys.resize(nRanks);
-  for (int r = 0; r < nRanks; r++) {
-    algo->pArgs.remoteRecvBuffs[r] = win->remWinInfo[r].dataAddr;
-    algo->pArgs.remoteAccessKeys[r] = win->remWinInfo[r].dataRkey;
-  }
-  // Window already exchanged remote info, mark as initialized
-  algo->pArgs.initialized.store(true);
+  algo->pArgs.initialized.store(false);
 
   FB_COMMCHECK(algo->initResources());
+
+  // Submit remote info population to GPE thread via submitHost (no kernel).
+  // submitHost is not captured by cudagraph, so it works correctly during
+  // both graph capture and eager execution. This matches the pattern from
+  // allGatherPInit to avoid races between init and exec on the
+  // mapper epoch lock.
+  auto opCount = comm->ctran_->getOpCount();
+
+  KernelConfig config = KernelConfig(
+      KernelConfig::KernelType::ALLGATHERP_INIT,
+      stream,
+      algoWinInitName,
+      opCount);
+
+  std::vector<std::unique_ptr<struct OpElem>> opGroup;
+  auto op = std::make_unique<OpElem>(
+      OpElem::opType::ALLGATHERP_INIT, stream, comm, opCount);
+  op->allgatherp_init.pArgs = &algo->pArgs;
+  op->allgatherp_init.win = win;
+  opGroup.push_back(std::move(op));
+
+  FB_COMMCHECK(comm->ctran_->gpe->submitHost(
+      std::move(opGroup), populateWinPArgs, config, nullptr /* cpuFlag */));
 
   request = new CtranPersistentRequest(
       CtranPersistentRequest::Type::ALLGATHER_P_WIN, comm, stream);
@@ -82,6 +128,8 @@ commResult_t allGatherWinExec(
       return algo->execDirect(sendbuff, count, datatype);
     case NCCL_ALLGATHER_P_ALGO::ctpipeline:
       return algo->execPipeline(sendbuff, count, datatype);
+    case NCCL_ALLGATHER_P_ALGO::ctrdpipeline:
+      return algo->execRecursiveDoubling(sendbuff, count, datatype);
     default:
       return ErrorStackTraceUtil::log(commInternalError);
   }

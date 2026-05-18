@@ -24,6 +24,13 @@ TorchWorkCompleted::TorchWorkCompleted() {
 }
 
 void TorchWorkCompleted::wait() {
+  runWaitPreHooks();
+  runWaitPostHooks();
+}
+
+void TorchWorkCompleted::waitBlocking() {
+  // Note: required for TorchComm::reconfigure to work with the dummy backend.
+  // No need to checkStatus as the constructor sets the status to COMPLETED.
   return;
 }
 
@@ -39,11 +46,15 @@ TorchWorkThread::TorchWorkThread(std::function<void()> fn)
       })) {}
 
 void TorchWorkThread::wait() {
+  runWaitPreHooks();
+
   if (!future_.valid()) {
     // already waited on
+    runWaitPostHooks();
     return;
   }
   future_.get();
+  runWaitPostHooks();
 }
 
 } // namespace torch::comms

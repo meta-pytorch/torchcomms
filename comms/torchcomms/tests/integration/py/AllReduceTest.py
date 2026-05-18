@@ -8,10 +8,11 @@ import unittest
 
 import torch
 from torchcomms import RedOpType, ReduceOp
-from torchcomms.tests.integration.py.TorchCommTestHelpers import (
+from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
     filter_int8_overflow_cases,
     get_dtype_name,
     get_op_name,
+    is_full_sweep,
     TorchCommTestWrapper,
 )
 
@@ -20,9 +21,13 @@ class AllReduceTest(unittest.TestCase):
     """Test class for all_reduce operations in TorchComm."""
 
     # Class variables for test parameters
-    counts = [0, 4, 1024, 1024 * 1024]
-    dtypes = [torch.float, torch.int, torch.int8]
-    ops = [ReduceOp.SUM, ReduceOp.MAX, ReduceOp.AVG]
+    counts = [0, 4, 1024, 1024 * 1024] if is_full_sweep() else [4, 1024 * 1024]
+    dtypes = [torch.float, torch.int, torch.int8] if is_full_sweep() else [torch.float]
+    ops = (
+        [ReduceOp.SUM, ReduceOp.MAX, ReduceOp.AVG]
+        if is_full_sweep()
+        else [ReduceOp.SUM]
+    )
     num_replays = 4
 
     def get_test_cases(self):

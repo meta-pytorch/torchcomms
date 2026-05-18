@@ -24,19 +24,21 @@ class TorchWorkNCCLX;
 
 // Tracks a single graph-captured collective for timeout detection.
 struct GraphWork {
-  cudaEvent_t start_event; // OWNED — ad-hoc created, destroyed on cleanup
-  cudaEvent_t end_event; // OWNED — ad-hoc created, destroyed on cleanup
+  cudaEvent_t start_event; // OWNED — stashed in tracker event_pool_ on cleanup
+  cudaEvent_t end_event; // OWNED — stashed in tracker event_pool_ on cleanup
   std::chrono::milliseconds timeout;
   std::optional<std::chrono::steady_clock::time_point> start_completed_time;
   uint64_t last_seen_replay{0};
+  // Replay event logging state.
+  // Events are ordered: S=0, E=1 (W is not observable during replay).
+  // Initialized to (replay=0, event=E) — the counter starts at 0
+  // and the first g.replay() increments it to 1, which is the first
+  // replay execution that should be reported.
+  uint64_t notified_through_replay{0};
+  int notified_through_event{1};
 
   GraphWork(cudaEvent_t start, cudaEvent_t end, std::chrono::milliseconds t)
       : start_event(start), end_event(end), timeout(t) {}
-
-  void destroyEvents(CudaApi* api) {
-    (void)api->eventDestroy(start_event);
-    (void)api->eventDestroy(end_event);
-  }
 };
 
 // Shared state for the graph-release flag, read by the tracker's watchdog.
@@ -49,22 +51,41 @@ struct SharedCallbackState {
   std::atomic_bool released{false};
 };
 
-// Per-graph state. Owns the CUDA events / dependency tensors
-// for all captured collectives; RAII destruction for
-// automatic cleanup on erase/clear.
+// Per-graph state. Holds the CUDA events / dependency tensors
+// for all captured collectives. The destructor returns owned events to the
+// tracker's event_pool_; the counter is explicitly moved to counter_pool_
+// before destruction. This ensures neither cudaEventDestroy nor cudaFreeHost
+// runs inline on the watchdog thread.
 struct GraphState {
   // Entries grouped by stream — collectives are only ordered within a stream,
   // so per-stream grouping enables early-exit optimization in checkAll().
   std::unordered_map<cudaStream_t, std::vector<GraphWork>> stream_entries;
   SharedCallbackState* shared_{nullptr};
-  CudaApi* api_{nullptr};
   std::unique_ptr<DeviceCounter> replay_counter;
   // CPU tensors that must be kept alive for the graph's lifetime.
   // This includes CPU pointer tensors used by alltoallv_dynamic_dispatch
   // operations. These tensors are moved from work objects during graph
   // capture and remain valid until the graph is destroyed.
   std::vector<at::Tensor> cpu_tensors;
-  ~GraphState();
+  // Set by GraphEventTracker::maybeInitGraphState to point at the tracker's
+  // pools. Null for GraphState objects that were never fully initialized.
+  std::vector<cudaEvent_t>* event_pool_{nullptr};
+  std::vector<std::unique_ptr<DeviceCounter>>* counter_pool_{nullptr};
+
+  ~GraphState() {
+    if (counter_pool_ && replay_counter) {
+      counter_pool_->push_back(std::move(replay_counter));
+    }
+    if (!event_pool_) {
+      return;
+    }
+    for (auto& [_, entries] : stream_entries) {
+      for (auto& entry : entries) {
+        event_pool_->push_back(entry.start_event);
+        event_pool_->push_back(entry.end_event);
+      }
+    }
+  }
 };
 
 // Monitors graph-captured collectives for timeout/error after graph launch.
@@ -100,7 +121,7 @@ class GraphEventTracker {
   enum class CheckResult { OK, TIMEOUT, ERROR };
 
   explicit GraphEventTracker(TorchCommNCCLX* comm);
-  ~GraphEventTracker() = default;
+  ~GraphEventTracker();
 
   // Non-copyable, non-movable (contains mutex)
   GraphEventTracker(const GraphEventTracker&) = delete;
@@ -131,11 +152,47 @@ class GraphEventTracker {
       cudaGraph_t graph);
   void cleanupReleasedGraphs();
 
+  // Counter pool. Acquire returns a counter from the pool (resetting it to
+  // zero) or creates a new one if empty. ~GraphState handles returning
+  // counters to the pool. Pooling avoids the synchronizing cudaFreeHost
+  // in ~DeviceCounter on the watchdog thread — see cleanupReleasedGraphs()
+  // for context.
+  cudaError_t acquireCounter(std::unique_ptr<DeviceCounter>& out);
+
+  // Event pool. Acquire returns an event from the pool, creating a new one
+  // if empty. ~GraphState handles returning events to the pool.
+  // Pooling avoids the synchronizing cudaEventDestroy on the watchdog
+  // thread — see cleanupReleasedGraphs() for context.
+  cudaError_t acquireEvent(cudaEvent_t& out);
+
+  // Fire graph replay hooks for all events from the entry's last notified
+  // position up to (current_replay, current_event). Events are ordered
+  // S=0, E=1. Catches up missed replays automatically.
+  static constexpr int kEventS = 0;
+  static constexpr int kEventE = 1;
+
+  void notifyReplayProgress(
+      unsigned long long graph_id,
+      void* stream,
+      size_t collective_index,
+      GraphWork& entry,
+      uint64_t current_replay,
+      int current_event);
+
   TorchCommNCCLX* comm_; // raw pointer — parent owns this tracker
   std::mutex mutex_;
   // cached at initOnGraphStart() to be reused in addEntry() for each collective
   unsigned long long current_graph_id_{0};
   std::unordered_map<unsigned long long, GraphState> graphs_;
+  // Pool of pinned-memory counter regions, reused across graph captures.
+  // Guarded by mutex_. Drained at destruction (~DeviceCounter calls
+  // cudaFreeHost — safe at comm shutdown when device is quiescent).
+  std::vector<std::unique_ptr<DeviceCounter>> counter_pool_;
+  // Pool of CUDA events from completed graphs, deferred for destruction
+  // until ~GraphEventTracker. cudaEventDestroy is a synchronizing call —
+  // running it on the watchdog thread can deadlock with the eager warmup
+  // that follows a PAFT recapture. Guarded by mutex_.
+  std::vector<cudaEvent_t> event_pool_;
 };
 
 } // namespace torch::comms

@@ -18,13 +18,16 @@ from datetime import timedelta
 
 import torch
 from torch.distributed import TCPStore
-from torchcomms.tests.integration.py.TorchCommTestHelpers import TorchCommTestWrapper
+from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
+    skip_backend,
+    TorchCommTestWrapper,
+)
 
 
 class ReconfigureTest(unittest.TestCase):
     """Test class for reconfigure() fault tolerance API."""
 
-    SUPPORTED_BACKENDS = {"mccl", "gloo"}
+    SUPPORTED_BACKENDS = {"mccl", "gloo", "nccl", "ncclx"}
 
     _shared_store = None
 
@@ -48,22 +51,27 @@ class ReconfigureTest(unittest.TestCase):
             else:
                 if not torch.cuda.is_available():
                     self.skipTest("CUDA is not available")
+
+                if self.backend == "mccl":
+                    os.environ["NCCL_COMM_STATE_DEBUG_TOPO"] = "nolocal"
+                    os.environ["NCCL_IGNORE_TOPO_LOAD_FAILURE"] = "1"
+
                 device_id = self.rank % torch.cuda.device_count()
                 self.device = torch.device(f"cuda:{device_id}")
 
-                if ReconfigureTest._shared_store is None:
-                    master_addr = os.environ.get("MASTER_ADDR", "localhost")
-                    master_port = int(os.environ.get("MASTER_PORT", "29500"))
+            if ReconfigureTest._shared_store is None:
+                master_addr = os.environ.get("MASTER_ADDR", "localhost")
+                master_port = int(os.environ.get("MASTER_PORT", "29500"))
 
-                    ReconfigureTest._shared_store = TCPStore(
-                        host_name=master_addr,
-                        port=master_port,
-                        world_size=self.world_size,
-                        is_master=(self.rank == 0),
-                        timeout=timedelta(seconds=30),
-                    )
+                ReconfigureTest._shared_store = TCPStore(
+                    host_name=master_addr,
+                    port=master_port,
+                    world_size=self.world_size,
+                    is_master=(self.rank == 0),
+                    timeout=timedelta(seconds=30),
+                )
 
-                self.store = ReconfigureTest._shared_store
+            self.store = ReconfigureTest._shared_store
         else:
             self.wrapper = self.get_wrapper()
             self.torchcomm = self.wrapper.get_torchcomm()
@@ -81,11 +89,22 @@ class ReconfigureTest(unittest.TestCase):
         """Check if current backend supports reconfigure()."""
         return self.backend in self.SUPPORTED_BACKENDS
 
+    def _get_store_for_comm(self):
+        """Get the store to pass to new_comm for NCCL/NCCLx bootstrap."""
+        return getattr(self, "store", None)
+
+    def _skip_if_nccl_too_old(self):
+        """Skip test if NCCL < 2.29 (commGrow/commGetUniqueId unavailable)."""
+        if self.backend not in ("nccl", "ncclx"):
+            return
+        if torch.cuda.is_available():
+            major, minor, _ = torch.cuda.nccl.version()
+            if (major, minor) < (2, 29):
+                self.skipTest(f"NCCL {major}.{minor} < 2.29, commGrow not supported")
+
     def _collect_handles(self, comm, key_prefix):
         """Collect init handles from all ranks."""
         my_handle = comm.get_init_handle()
-        if self.backend == "gloo":
-            return [my_handle] * self.world_size
         key = f"{key_prefix}_{self.rank}"
         self.store.set(key, my_handle)
         handles = []
@@ -141,7 +160,11 @@ class ReconfigureTest(unittest.TestCase):
         import torchcomms
 
         comm = torchcomms.new_comm(
-            self.backend, self.device, "reconfigure_basic", enable_reconfigure=True
+            self.backend,
+            self.device,
+            "reconfigure_basic",
+            enable_reconfigure=True,
+            store=self._get_store_for_comm(),
         )
 
         all_handles = self._collect_handles(comm, "test_reconfigure_basic")
@@ -166,45 +189,6 @@ class ReconfigureTest(unittest.TestCase):
 
         comm.finalize()
 
-    def test_reconfigure_unordered_handles(self):
-        """Test reconfigure with unordered handles (set)."""
-        if not self._is_supported_backend():
-            self.skipTest(f"Backend {self.backend} does not support reconfigure()")
-
-        if self.backend == "gloo":
-            self.skipTest("Gloo uses identical handles; unordered set collapses to 1")
-
-        import torchcomms
-
-        comm = torchcomms.new_comm(
-            self.backend,
-            self.device,
-            "reconfigure_unordered",
-            enable_reconfigure=True,
-        )
-
-        all_handles = set(self._collect_handles(comm, "test_reconfigure_unordered"))
-
-        print(f"[Rank {self.rank}] Collected handles (set): {all_handles}")
-
-        work = comm.reconfigure(
-            uuid=1,
-            init_handles=all_handles,
-            timeout=timedelta(milliseconds=30000),
-        )
-
-        work.wait()
-
-        self.assertGreaterEqual(comm.get_rank(), 0)
-        self.assertEqual(comm.get_size(), self.world_size)
-
-        print(
-            f"[Rank {self.rank}] Reconfigure with set completed, "
-            f"assigned rank: {comm.get_rank()}"
-        )
-
-        comm.finalize()
-
     def test_reconfigure_then_collective(self):
         """Test that collective operations work after reconfigure."""
         if not self._is_supported_backend():
@@ -217,6 +201,7 @@ class ReconfigureTest(unittest.TestCase):
             self.device,
             "reconfigure_collective",
             enable_reconfigure=True,
+            store=self._get_store_for_comm(),
         )
 
         all_handles = self._collect_handles(comm, "test_reconfigure_collective")
@@ -276,6 +261,7 @@ class ReconfigureTest(unittest.TestCase):
             self.device,
             "reconfigure_allreduce",
             enable_reconfigure=True,
+            store=self._get_store_for_comm(),
         )
 
         all_handles = self._collect_handles(comm, "test_reconfigure_allreduce")
@@ -303,6 +289,244 @@ class ReconfigureTest(unittest.TestCase):
         )
 
         print(f"[Rank {my_rank}] AllReduce after reconfigure succeeded")
+
+        comm.finalize()
+
+    def test_reconfigure_scale_down_up(self):
+        """Test that reconfigure works when scaling down and up."""
+        if not self._is_supported_backend():
+            self.skipTest(f"Backend {self.backend} does not support reconfigure()")
+        self._skip_if_nccl_too_old()
+
+        import torchcomms
+
+        comm = torchcomms.new_comm(
+            self.backend,
+            self.device,
+            "reconfigure_scale_down_up",
+            enable_reconfigure=True,
+            store=self._get_store_for_comm(),
+        )
+
+        comm.reconfigure(
+            uuid=3,
+            init_handles=[comm.get_init_handle()],
+            timeout=timedelta(milliseconds=30000),
+        ).wait()
+
+        all_handles = self._collect_handles(comm, "test_reconfigure_scale_down_up")
+        comm.reconfigure(
+            uuid=4,
+            init_handles=all_handles,
+            timeout=timedelta(milliseconds=30000),
+        ).wait()
+
+        comm.reconfigure(
+            uuid=5,
+            init_handles=[comm.get_init_handle()],
+            timeout=timedelta(milliseconds=30000),
+        ).wait()
+
+        comm.finalize()
+
+    def test_reconfigure_single_to_all(self):
+        """Test reconfigure from single rank to all ranks then allreduce."""
+        if not self._is_supported_backend():
+            self.skipTest(f"Backend {self.backend} does not support reconfigure()")
+
+        import torchcomms
+
+        comm = torchcomms.new_comm(
+            self.backend,
+            self.device,
+            "reconfigure_single_to_all",
+            enable_reconfigure=True,
+            store=self._get_store_for_comm(),
+        )
+
+        comm.reconfigure(
+            uuid=3,
+            init_handles=[comm.get_init_handle()],
+            timeout=timedelta(milliseconds=30000),
+        ).wait()
+
+        all_handles = self._collect_handles(comm, "test_reconfigure_single_to_all")
+        comm.reconfigure(
+            uuid=4,
+            init_handles=all_handles,
+            timeout=timedelta(milliseconds=30000),
+        ).wait()
+
+        my_rank = comm.get_rank()
+        tensor = torch.ones(4, dtype=torch.float, device=self.device) * (my_rank + 1)
+        comm.all_reduce(tensor, torchcomms.ReduceOp.SUM, async_op=False)
+
+        if self.device.type == "cuda":
+            torch.cuda.current_stream().synchronize()
+
+        expected_value = sum(range(1, self.world_size + 1))
+        expected = torch.ones(4, dtype=torch.float, device="cpu") * expected_value
+        self.assertTrue(
+            torch.allclose(tensor.cpu(), expected),
+            f"[Rank {my_rank}] AllReduce after single-to-all reconfigure failed: "
+            f"got {tensor.cpu()}, expected {expected}",
+        )
+
+        comm.finalize()
+
+    def test_reconfigure_identity(self):
+        """Test that reconfigure works when world size doesn't change."""
+        if not self._is_supported_backend():
+            self.skipTest(f"Backend {self.backend} does not support reconfigure()")
+
+        import torchcomms
+
+        comm = torchcomms.new_comm(
+            self.backend,
+            self.device,
+            "reconfigure_identity",
+            enable_reconfigure=True,
+            store=self._get_store_for_comm(),
+        )
+
+        all_handles = self._collect_handles(comm, "test_reconfigure_identity1")
+        comm.reconfigure(
+            uuid=4,
+            init_handles=all_handles,
+            timeout=timedelta(milliseconds=30000),
+        ).wait()
+
+        all_handles = self._collect_handles(comm, "test_reconfigure_identity2")
+        comm.reconfigure(
+            uuid=5,
+            init_handles=all_handles,
+            timeout=timedelta(milliseconds=30000),
+        ).wait()
+
+        comm.finalize()
+
+    def test_reconfigure_late(self):
+        """Test that reconfigure works when workers join late."""
+        if not self._is_supported_backend():
+            self.skipTest(f"Backend {self.backend} does not support reconfigure()")
+        self._skip_if_nccl_too_old()
+
+        import torchcomms
+
+        comm = torchcomms.new_comm(
+            self.backend,
+            self.device,
+            "reconfigure_late",
+            enable_reconfigure=True,
+            store=self._get_store_for_comm(),
+        )
+
+        initial_world_size = self.world_size // 2
+
+        all_handles = self._collect_handles(comm, "test_reconfigure_late1")
+        if self.rank < initial_world_size:
+            comm.reconfigure(
+                uuid=4,
+                init_handles=all_handles[:initial_world_size],
+                timeout=timedelta(milliseconds=30000),
+            ).wait()
+
+        all_handles = self._collect_handles(comm, "test_reconfigure_late2")
+        comm.reconfigure(
+            uuid=5,
+            init_handles=all_handles,
+            timeout=timedelta(milliseconds=30000),
+        ).wait()
+
+        comm.finalize()
+
+    def test_reconfigure_merge_split(self):
+        """Test that reconfigure works when there's a split brain condition."""
+        if not self._is_supported_backend():
+            self.skipTest(f"Backend {self.backend} does not support reconfigure()")
+        self._skip_if_nccl_too_old()
+
+        import torchcomms
+
+        comm = torchcomms.new_comm(
+            self.backend,
+            self.device,
+            "reconfigure_merge_split",
+            enable_reconfigure=True,
+            store=self._get_store_for_comm(),
+        )
+
+        initial_world_size = self.world_size // 2
+
+        all_handles = self._collect_handles(comm, "test_reconfigure_merge_split1")
+        if self.rank < initial_world_size:
+            initial_handles = all_handles[:initial_world_size]
+            initial_uuid = 4
+        else:
+            initial_handles = all_handles[initial_world_size:]
+            initial_uuid = 5
+        comm.reconfigure(
+            uuid=initial_uuid,
+            init_handles=initial_handles,
+            timeout=timedelta(milliseconds=30000),
+        ).wait()
+
+        all_handles = self._collect_handles(comm, "test_reconfigure_merge_split2")
+        comm.reconfigure(
+            uuid=6,
+            init_handles=all_handles,
+            timeout=timedelta(milliseconds=30000),
+        ).wait()
+
+        comm.finalize()
+
+    @skip_backend("gloo")
+    def test_reconfigure_after_abort(self):
+        """After abort(), reconfigure() should recover the communicator."""
+        if not self._is_supported_backend():
+            self.skipTest(f"Backend {self.backend} does not support reconfigure()")
+
+        import torchcomms
+
+        comm = torchcomms.new_comm(
+            self.backend,
+            self.device,
+            "reconfigure_after_abort",
+            enable_reconfigure=True,
+            store=self._get_store_for_comm(),
+        )
+
+        all_handles = self._collect_handles(comm, "test_reconfigure_after_abort1")
+        comm.reconfigure(
+            uuid=10,
+            init_handles=all_handles,
+            timeout=timedelta(milliseconds=30000),
+        ).wait()
+
+        comm.abort()
+
+        all_handles = self._collect_handles(comm, "test_reconfigure_after_abort2")
+        comm.reconfigure(
+            uuid=11,
+            init_handles=all_handles,
+            timeout=timedelta(milliseconds=30000),
+        ).wait()
+
+        tensor = torch.ones(4, dtype=torch.float, device=self.device) * (
+            comm.get_rank() + 1
+        )
+        comm.all_reduce(tensor, torchcomms.ReduceOp.SUM, async_op=False)
+
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+
+        expected_value = sum(range(1, self.world_size + 1))
+        expected = torch.ones(4, dtype=torch.float, device="cpu") * expected_value
+        self.assertTrue(
+            torch.allclose(tensor.cpu(), expected),
+            f"[Rank {comm.get_rank()}] AllReduce after abort+reconfigure failed: "
+            f"got {tensor.cpu()}, expected {expected}",
+        )
 
         comm.finalize()
 

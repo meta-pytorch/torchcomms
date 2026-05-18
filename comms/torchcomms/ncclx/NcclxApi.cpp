@@ -71,6 +71,11 @@ ncclResult_t DefaultNcclxApi::commAbort(ncclComm_t comm) {
   return ncclCommAbort(comm);
 }
 
+ncclResult_t DefaultNcclxApi::commRevoke(ncclComm_t comm) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+  return ncclCommRevoke(comm, 0);
+}
+
 ncclResult_t DefaultNcclxApi::commGetAsyncError(
     ncclComm_t comm,
     ncclResult_t* asyncError) {
@@ -86,6 +91,52 @@ ncclResult_t DefaultNcclxApi::commSplit(
     ncclConfig_t* config) {
   std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclCommSplit(comm, color, key, newcomm, config);
+}
+
+ncclResult_t DefaultNcclxApi::commShrink(
+    ncclComm_t comm,
+    int* excludeRanksList,
+    int excludeRanksCount,
+    ncclComm_t* newcomm,
+    ncclConfig_t* config,
+    int shrinkFlags) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+  return ncclCommShrink(
+      comm, excludeRanksList, excludeRanksCount, newcomm, config, shrinkFlags);
+}
+
+ncclResult_t DefaultNcclxApi::commGetUniqueId(
+    ncclComm_t comm,
+    ncclUniqueId* uniqueId) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
+  return ncclCommGetUniqueId(comm, uniqueId);
+#else
+  (void)comm;
+  (void)uniqueId;
+  return ncclInvalidUsage;
+#endif
+}
+
+ncclResult_t DefaultNcclxApi::commGrow(
+    ncclComm_t comm,
+    int nRanks,
+    const ncclUniqueId* uniqueId,
+    int rank,
+    ncclComm_t* newcomm,
+    ncclConfig_t* config) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
+  return ncclCommGrow(comm, nRanks, uniqueId, rank, newcomm, config);
+#else
+  (void)comm;
+  (void)nRanks;
+  (void)uniqueId;
+  (void)rank;
+  (void)newcomm;
+  (void)config;
+  return ncclInvalidUsage;
+#endif
 }
 
 ncclResult_t DefaultNcclxApi::commRegister(
@@ -373,65 +424,6 @@ ncclResult_t DefaultNcclxApi::alltoallvDynamicCombine(
 #endif
 }
 
-ncclResult_t DefaultNcclxApi::alltoallvDedupInit(
-    const size_t totalNumSendBlocks,
-    const size_t blockCount,
-    const size_t blockNumRecvBuckets,
-    const int numRecvBuckets,
-    ncclDataType_t datatype,
-    ncclComm_t comm,
-    cudaStream_t stream,
-    void** request) {
-  std::lock_guard<std::mutex> lock(api_mutex_);
-#ifdef NCCL_ALLTOALLV_DEDUP_SUPPORTED
-  ncclx::Hints hints;
-  return ncclx::allToAllvDedupInit(
-      totalNumSendBlocks,
-      blockCount,
-      blockNumRecvBuckets,
-      numRecvBuckets,
-      hints,
-      datatype,
-      comm,
-      stream,
-      request);
-#else
-  throw std::logic_error(
-      "NCCLX alltoallvDedupInit is not supported in this build");
-#endif
-}
-
-ncclResult_t DefaultNcclxApi::alltoallvDedupExec(
-    const void* sendBuff,
-    const int* sendIdx,
-    const int* fwdIdx,
-    const int* recvIdx,
-    void* recvBuff,
-    int recvBlockIds[],
-    void* request) {
-  std::lock_guard<std::mutex> lock(api_mutex_);
-#ifdef NCCL_ALLTOALLV_DEDUP_SUPPORTED
-  return ncclx::allToAllvDedupExec(
-      sendBuff, sendIdx, fwdIdx, recvIdx, recvBuff, recvBlockIds, request);
-#else
-  throw std::logic_error(
-      "NCCLX allToAllvDedupExec is not supported in this build");
-#endif
-}
-
-ncclResult_t DefaultNcclxApi::alltoallvDedupCombine(
-    const void* /* sendBuff */,
-    const int* /* sendIdx */,
-    const int* /* fwdIdx */,
-    const int* /* recvIdx */,
-    void* /* recvBuff */,
-    void* /* request */) {
-  std::lock_guard<std::mutex> lock(api_mutex_);
-  // placeholder for now; will add support after landed NCCLX side
-  throw std::logic_error(
-      "NCCLX allToAllvDedupCombine is not supported in this build");
-}
-
 ncclResult_t DefaultNcclxApi::allGatherInit(
     void* recvbuff,
     size_t maxRecvCount,
@@ -623,8 +615,8 @@ ncclResult_t DefaultNcclxApi::winLocalRegisterBuffer(
     ncclComm_t comm,
     void* ptr,
     size_t size,
-    uint32_t* outLkey) {
-  return ncclWinLocalRegisterBuffer(comm, ptr, size, outLkey);
+    ncclLkeyPerDevice* outLkeys) {
+  return ncclWinLocalRegisterBuffer(comm, ptr, size, outLkeys);
 }
 
 ncclResult_t DefaultNcclxApi::winLocalDeregisterBuffer(
@@ -667,6 +659,19 @@ ncclResult_t DefaultNcclxApi::winGetLsaMultimemDevicePointer(
 
 ncclTeam_t DefaultNcclxApi::teamLsa(ncclComm_t comm) {
   return ncclTeamLsa(comm);
+}
+
+bool DefaultNcclxApi::multimemSupport(ncclComm_t comm) {
+#ifdef NCCL_COMM_PROPERTIES_INITIALIZER
+  ncclCommProperties_t props = NCCL_COMM_PROPERTIES_INITIALIZER;
+  if (ncclCommQueryProperties(comm, &props) != ncclSuccess) {
+    return false;
+  }
+  return props.multimemSupport;
+#else
+  (void)comm;
+  return false;
+#endif
 }
 #endif // TORCHCOMMS_HAS_NCCL_DEVICE_API
 

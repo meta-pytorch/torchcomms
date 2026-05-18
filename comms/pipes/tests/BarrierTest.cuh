@@ -51,7 +51,7 @@ void testReadBarrierExpectedCounter(
 
 // =============================================================================
 // P2pNvlTransportDevice barrier API test helpers
-// These test barrier_sync_threadgroup() with 2-GPU P2P communication
+// These test barrier_sync() with 2-GPU P2P communication
 // =============================================================================
 
 // Barrier sync operation using P2pNvlTransportDevice

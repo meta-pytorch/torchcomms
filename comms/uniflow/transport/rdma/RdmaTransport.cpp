@@ -4,10 +4,12 @@
 #include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
 #include "comms/uniflow/logging/Logger.h"
 #include "comms/uniflow/transport/rdma/RdmaRegistrationHandle.h"
+#include "comms/uniflow/transport/rdma/RdmaSlabPool.h"
 
 #include <unistd.h>
 #include <algorithm>
 #include <cassert>
+#include <cstdlib>
 #include <random>
 #include <stdexcept>
 
@@ -19,8 +21,21 @@ namespace uniflow {
 
 namespace {
 
-struct RdmaTopologyInfo {
+constexpr uint32_t kSlabIdxInvalid{0xFFFFFFFF};
+
+struct __attribute__((packed)) RdmaTopologyInfo {
   uint8_t version{kRdmaVersion};
+  uint32_t numQps{1};
+
+  static Result<RdmaTopologyInfo> deserialize(std::span<const uint8_t> data) {
+    if (data.size() != sizeof(RdmaTopologyInfo)) {
+      return Err(ErrCode::InvalidArgument, "TransportInfo payload mismatch");
+    }
+
+    RdmaTopologyInfo info;
+    std::memcpy(&info, data.data(), sizeof(RdmaTopologyInfo));
+    return info;
+  }
 };
 
 const char* getNicName(const NicResources& nic) {
@@ -30,12 +45,53 @@ const char* getNicName(const NicResources& nic) {
   return "(unknown)";
 }
 
+uint64_t qpMapKey(size_t nicIdx, uint32_t qpNum) {
+  return (static_cast<uint64_t>(nicIdx) << 32) | qpNum;
+}
+
 } // namespace
+
+size_t RdmaTransportInfo::RegisteredBuffer::serialize(uint8_t* data) const {
+  size_t offset = 0;
+  std::memcpy(data + offset, &addr, sizeof(addr));
+  offset += sizeof(addr);
+  std::memcpy(data + offset, &length, sizeof(length));
+  offset += sizeof(length);
+  if (!rkeys.empty()) {
+    size_t len = rkeys.size() * sizeof(uint32_t);
+    std::memcpy(data + offset, rkeys.data(), len);
+    offset += len;
+  }
+  return offset;
+}
+
+size_t RdmaTransportInfo::RegisteredBuffer::deserialize(
+    const uint8_t* data,
+    uint8_t numNics) {
+  size_t offset = 0;
+  std::memcpy(&addr, data + offset, sizeof(addr));
+  offset += sizeof(addr);
+  std::memcpy(&length, data + offset, sizeof(length));
+  offset += sizeof(length);
+  if (numNics > 0) {
+    size_t len = numNics * sizeof(uint32_t);
+    rkeys.resize(numNics);
+    std::memcpy(rkeys.data(), data + offset, len);
+    offset += len;
+  }
+  return offset;
+}
+
+void RdmaTransportInfo::RegisteredBuffer::reset() {
+  addr = 0;
+  length = 0;
+  rkeys.clear();
+}
 
 TransportInfo RdmaTransportInfo::serialize() const {
   constexpr size_t headerSize = sizeof(RdmaTransportInfo::Header);
   const size_t totalSize = headerSize + nicInfos.size() * sizeof(NicInfo) +
-      qpInfos.size() * sizeof(QpInfo);
+      qpInfos.size() * sizeof(QpInfo) + ctrl.size() + slab.size();
   TransportInfo data(totalSize);
 
   size_t offset = 0;
@@ -43,18 +99,19 @@ TransportInfo RdmaTransportInfo::serialize() const {
   offset += headerSize;
 
   if (!nicInfos.empty()) {
-    std::memcpy(
-        data.data() + offset,
-        nicInfos.data(),
-        nicInfos.size() * sizeof(NicInfo));
-    offset += nicInfos.size() * sizeof(NicInfo);
+    size_t len = nicInfos.size() * sizeof(NicInfo);
+    std::memcpy(data.data() + offset, nicInfos.data(), len);
+    offset += len;
   }
 
   if (!qpInfos.empty()) {
-    std::memcpy(
-        data.data() + offset, qpInfos.data(), qpInfos.size() * sizeof(QpInfo));
+    size_t len = qpInfos.size() * sizeof(QpInfo);
+    std::memcpy(data.data() + offset, qpInfos.data(), len);
+    offset += len;
   }
 
+  offset += ctrl.serialize(data.data() + offset);
+  offset += slab.serialize(data.data() + offset);
   return data;
 }
 
@@ -76,9 +133,15 @@ Result<RdmaTransportInfo> RdmaTransportInfo::deserialize(
   }
 
   const size_t expectedSize = headerSize + header.numNics * sizeof(NicInfo) +
-      header.numQps * sizeof(QpInfo);
+      header.numQps * sizeof(QpInfo) +
+      RegisteredBuffer::expectedSize(header.numNics) * 2;
   if (data.size() < expectedSize) {
-    return Err(ErrCode::InvalidArgument, "TransportInfo too small for payload");
+    return Err(
+        ErrCode::InvalidArgument,
+        fmt::format(
+            "TransportInfo too small for payload, expected {} bytes, got {} bytes",
+            expectedSize,
+            data.size()));
   }
 
   size_t offset = headerSize;
@@ -98,6 +161,12 @@ Result<RdmaTransportInfo> RdmaTransportInfo::deserialize(
         info.qpInfos.data(),
         data.data() + offset,
         header.numQps * sizeof(QpInfo));
+    offset += header.numQps * sizeof(QpInfo);
+  }
+
+  if (header.numNics > 0) {
+    offset += info.ctrl.deserialize(data.data() + offset, header.numNics);
+    offset += info.slab.deserialize(data.data() + offset, header.numNics);
   }
 
   return info;
@@ -107,6 +176,8 @@ void RdmaTransportInfo::reset() {
   header = {};
   nicInfos.clear();
   qpInfos.clear();
+  ctrl.reset();
+  slab.reset();
 }
 
 // ---------------------------------------------------------------------------
@@ -115,18 +186,27 @@ void RdmaTransportInfo::reset() {
 
 RdmaTransport::RdmaTransport(
     std::shared_ptr<IbvApi> ibvApi,
+    std::shared_ptr<CudaApi> cudaApi,
     EventBase* evb,
-    std::vector<NicResources> nics,
+    std::shared_ptr<std::vector<NicResources>> nics,
     uint64_t domainId,
-    RdmaTransportConfig config)
+    RdmaTransportConfig config,
+    std::shared_ptr<RdmaSlabPool> slabPool)
     : ibvApi_(std::move(ibvApi)),
+      cudaApi_(std::move(cudaApi)),
       evb_(evb),
-      nics_(std::move(nics)),
+      nicsHandle_(std::move(nics)),
       config_(config),
-      domainId_(domainId) {
-  CHECK_THROW_EXCEPTION(!nics_.empty(), std::invalid_argument);
-  CHECK_THROW_EXCEPTION(config_.numQps <= 255, std::invalid_argument);
-  numPendingCqe_.resize(nics_.size());
+      domainId_(domainId),
+      slabPool_(std::move(slabPool)) {
+  CHECK_THROW_EXCEPTION(
+      nicsHandle_ && !nicsHandle_->empty(), std::invalid_argument);
+  CHECK_THROW_EXCEPTION(
+      config_.numQps > 0 && config_.numQps <= 255, std::invalid_argument);
+
+  const uint32_t numNics =
+      std::min(config_.numQps, static_cast<uint32_t>(nicsHandle_->size()));
+  nics_ = std::span<NicResources>(nicsHandle_->data(), numNics);
 
   name_ = "rdma";
   for (const auto& nic : nics_) {
@@ -145,12 +225,35 @@ TransportInfo RdmaTransport::bind() {
   }
 
   info_.reset();
-  const uint32_t numNics = static_cast<uint32_t>(nics_.size());
   const uint32_t numQps = config_.numQps;
+  const uint32_t numNics = nics_.size();
+  numPendingCqe_.resize(nics_.size());
+
+  // Allocate and register ctrl buffer for send/recv pipeline flow control.
+  // Layout: [CTS: D entries][Notify: D * Q entries], all atomic<uint32_t>.
+  // CTS and Notify are separate regions so bidirectional send/recv is safe.
+  const size_t ctrlSize = ctrlBufferSize();
+  info_.ctrl.length = static_cast<uint32_t>(ctrlSize);
+  auto ctrlAllocResult = cudaApi_->hostAlloc(
+      ctrlSize, cudaHostAllocMapped | cudaHostAllocPortable);
+  if (!ctrlAllocResult) {
+    UNIFLOW_LOG_ERROR("bind: failed to allocate ctrl buffer");
+    state_ = TransportState::Error;
+    return {};
+  }
+  ctrlBuffer_ = ctrlAllocResult.value();
+  info_.ctrl.addr = reinterpret_cast<uint64_t>(ctrlBuffer_);
+  // Initialize all entries to kSlabIdxInvalid.
+  auto* ctrlEntries = static_cast<uint32_t*>(ctrlBuffer_);
+  const size_t numEntries = ctrlSize / sizeof(uint32_t);
+  for (size_t i = 0; i < numEntries; ++i) {
+    std::atomic_ref<uint32_t>(ctrlEntries[i])
+        .store(kSlabIdxInvalid, std::memory_order_relaxed);
+  }
 
   cqs_.reserve(numNics);
   uint32_t qpsPerNic = (numQps + numNics - 1) / numNics;
-  for (uint32_t n = 0; n < numNics; ++n) {
+  for (uint8_t n = 0; n < numNics; ++n) {
     auto cqResult = ibvApi_->createCq(
         nics_[n].ctx, config_.maxWr * qpsPerNic, nullptr, nullptr, 0);
     if (cqResult.hasError()) {
@@ -170,9 +273,9 @@ TransportInfo RdmaTransport::bind() {
   psns_.reserve(numQps);
   numWrsPerQp_.resize(numQps, 0);
 
-  info_.header.version = 1;
-  info_.header.numQps = static_cast<uint8_t>(numQps);
-  info_.header.numNics = static_cast<uint8_t>(numNics);
+  info_.header.version = kRdmaVersion;
+  info_.header.numQps = numQps;
+  info_.header.numNics = numNics;
   info_.header.domainId = domainId_;
   info_.qpInfos.reserve(numQps);
   info_.nicInfos.reserve(numNics);
@@ -226,7 +329,7 @@ TransportInfo RdmaTransport::bind() {
 
     uint32_t psn = dist(rng);
     qps_.push_back(qp);
-    qpNumToIdx_[qp->qp_num] = i;
+    qpNumToIdx_[qpMapKey(nicIdx, qp->qp_num)] = i;
     psns_.push_back(psn);
     info_.qpInfos.push_back({.qpNum = qp->qp_num, .psn = psn});
   }
@@ -238,6 +341,36 @@ TransportInfo RdmaTransport::bind() {
          .mtu = static_cast<uint8_t>(nic.mtu),
          .gid = nic.gid});
     UNIFLOW_LOG_INFO("Bind NIC {} successfully", getNicName(nic));
+  }
+
+  constexpr int kCtrlAccess =
+      IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ;
+  for (const auto& nic : nics_) {
+    auto mrResult = ibvApi_->regMr(nic.pd, ctrlBuffer_, ctrlSize, kCtrlAccess);
+    if (!mrResult) {
+      UNIFLOW_LOG_ERROR(
+          "RdmaTransport::bind: ctrl buffer ibv_reg_mr failed: {}",
+          mrResult.error().toString());
+      shutdown();
+      state_ = TransportState::Error;
+      return {};
+    }
+    auto* mr = mrResult.value();
+    ctrlMrs_.push_back(mr);
+    info_.ctrl.rkeys.push_back(mr->rkey);
+  }
+
+  if (slabPool_) {
+    info_.slab.addr = slabPool_->slabAddr(0);
+    info_.slab.length = static_cast<uint32_t>(slabPool_->slabSize());
+    info_.slab.rkeys.resize(numNics);
+    for (uint8_t n = 0; n < numNics; ++n) {
+      info_.slab.rkeys[n] = slabPool_->slabRkey(n);
+    }
+  } else {
+    info_.slab.addr = 0;
+    info_.slab.length = 0;
+    info_.slab.rkeys.resize(numNics, 0);
   }
 
   state_ = TransportState::Initialized;
@@ -334,6 +467,9 @@ Status RdmaTransport::connect(std::span<const uint8_t> remoteInfo) {
       return Err(ErrCode::ConnectionFailed, "Failed to transition QP to RTS");
     }
   }
+
+  remoteCtrlBuffer_ = std::move(remote.ctrl);
+  remoteSlabBuffer_ = std::move(remote.slab);
 
   state_ = TransportState::Connected;
   UNIFLOW_LOG_INFO(
@@ -553,7 +689,7 @@ uint32_t RdmaTransport::postSend(
     }
   }
 
-  task->complete(st.error());
+  task->recordCompletion(st.error());
   return 0; // Signal to caller that posting failed.
 }
 
@@ -639,6 +775,87 @@ Result<uint32_t> RdmaTransport::spray(
 }
 
 // ---------------------------------------------------------------------------
+// Unified IO processing loop (EventBase thread)
+// ---------------------------------------------------------------------------
+
+void RdmaTransport::ioLooper() noexcept {
+  // Phase 1 — Post: walk pendingTransfers_ front-to-back.
+  while (!pendingTransfers_.empty()) {
+    auto& entry = pendingTransfers_.front();
+
+    if (state_ != TransportState::Connected) {
+      entry.task->recordCompletion(
+          Err(ErrCode::TransportError, "RDMA transport is broken"));
+      pendingCompletions_.push_back({entry.taskId, std::move(entry.task)});
+      pendingTransfers_.pop_front();
+      continue;
+    }
+
+    if (entry.idx >= entry.sendWrs->size()) {
+      entry.task->postFinished();
+      pendingCompletions_.push_back({entry.taskId, std::move(entry.task)});
+      pendingTransfers_.pop_front();
+      continue;
+    }
+
+    auto postResult =
+        spray(*entry.sendWrs, entry.idx, entry.taskId, entry.task);
+    if (postResult.hasError()) {
+      UNIFLOW_LOG_ERROR("ioLooper: taskId={} spray failed", entry.taskId);
+      pendingCompletions_.push_back({entry.taskId, std::move(entry.task)});
+      pendingTransfers_.pop_front();
+      continue;
+    }
+
+    if (entry.idx >= entry.sendWrs->size()) {
+      UNIFLOW_LOG_DEBUG(
+          "ioLooper: taskId={} all {} chunks posted",
+          entry.taskId,
+          entry.sendWrs->size());
+      entry.task->postFinished();
+      pendingCompletions_.push_back({entry.taskId, std::move(entry.task)});
+      pendingTransfers_.pop_front();
+    } else {
+      break;
+    }
+  }
+
+  // Phase 2 — Poll: drain all CQs.
+  pollCompletions();
+
+  // Phase 3 — Fulfill: walk pendingCompletions_ front-to-back for in-order
+  // promise delivery.
+  while (!pendingCompletions_.empty()) {
+    auto& entry = pendingCompletions_.front();
+
+    if (entry.task->isDone()) {
+      entry.task->fulfill();
+    } else if (state_ != TransportState::Connected) {
+      entry.task->recordCompletion(
+          Err(ErrCode::TransportError, "RDMA transport is broken"));
+      entry.task->fulfill();
+    }
+
+    // Remove when fully drained (all CQEs received), or when the transport
+    // is broken (no more CQEs will ever arrive).
+    if (entry.task->isFullyDrained() || state_ != TransportState::Connected) {
+      inflightTasks_.erase(entry.taskId);
+      pendingCompletions_.pop_front();
+      continue;
+    }
+
+    break;
+  }
+
+  // Phase 4 — Yield & reschedule.
+  if (!pendingTransfers_.empty() || !pendingCompletions_.empty()) {
+    evb_->dispatch([this]() noexcept { ioLooper(); });
+  } else {
+    ioLooperScheduled_ = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Transfer dispatch (caller thread → EventBase thread)
 // ---------------------------------------------------------------------------
 
@@ -654,7 +871,6 @@ std::future<Status> RdmaTransport::rdmaTransfer(
     return make_ready_future<Status>(Ok());
   }
 
-  // Build SendWrs on the caller thread (validates handles, splits chunks).
   auto wrsResult = buildSendWrs(requests, opcode);
   if (wrsResult.hasError()) {
     UNIFLOW_LOG_ERROR(
@@ -672,94 +888,20 @@ std::future<Status> RdmaTransport::rdmaTransfer(
   auto task = std::make_shared<Task>();
   auto future = task->get_future();
 
-  // Dispatch posting + polling to the EventBase thread.
-  // All state mutations (numWrsPerQp_, inflightTasks_, nextTaskId_)
-  // happen exclusively on this thread — no locks needed.
   evb_->dispatch([this,
                   task = std::move(task),
                   reqWrs = std::move(reqWrs)]() mutable noexcept {
-    size_t idx = 0;
     uint32_t taskId = nextTaskId_++;
     UNIFLOW_LOG_DEBUG(
         "rdmaTransfer: taskId={} dispatched to EventBase", taskId);
     inflightTasks_[taskId] = task;
-    // Note: put and get does not require the post order, but we still use a
-    // queue and guarantee the post order, since send & recv requires post-order
-    // and it will be helpful for the `flush` implementation in the future.
-    pendingRequests_.emplace(taskId, std::move(reqWrs));
+    pendingTransfers_.push_back(
+        {taskId, std::move(reqWrs), /*idx=*/0, std::move(task)});
 
-    // Self-re-dispatching post loop:
-    //   0. If the head of pendingRequests_ is not the current task, re-dispatch
-    //   1. Distribute and post WRs across QPs (weighted by capacity)
-    //   2. If all posted → mark postFinished, start poll chain
-    //   3. If QPs full or partial post → poll to free slots, re-dispatch
-    auto postLoop = [this, idx, taskId, task = std::move(task)](
-                        auto& self) mutable noexcept -> void {
-      auto& [currentId, reqWrs] = pendingRequests_.front();
-      if (currentId != taskId) {
-        // Previous task is not completed yet. Self dispatch to retry.
-        evb_->dispatch(
-            [self = std::move(self)]() mutable noexcept { self(self); });
-        return;
-      }
-
-      if (state_ != TransportState::Connected) {
-        UNIFLOW_LOG_ERROR(
-            "rdmaTransfer: taskId={} aborted, transport not connected", taskId);
-        pendingRequests_.pop();
-        pollCompletions(taskId, false);
-        return;
-      }
-
-      if (idx >= reqWrs->size()) {
-        task->postFinished();
-      } else {
-        auto postResult = spray(*reqWrs, idx, taskId, task);
-        if (postResult.hasError()) {
-          // postSend failed on a QP. Task is already errored and
-          // postFinished. Don't post more — just let the poll chain
-          // drain CQEs from earlier successful QPs and the flush WR.
-          UNIFLOW_LOG_ERROR("rdmaTransfer: taskId={} spray failed", taskId);
-        } else if (idx >= reqWrs->size()) {
-          // All chunks posted successfully.
-          UNIFLOW_LOG_DEBUG(
-              "rdmaTransfer: taskId={} all {} chunks posted",
-              taskId,
-              reqWrs->size());
-          task->postFinished();
-        } else {
-          // Not all chunks posted (QPs full or partial capacity).
-          // Poll to free slots and re-dispatch to retry remaining.
-          UNIFLOW_LOG_WARN(
-              "rdmaTransfer: taskId={} QPs full, posted {}/{} chunks, retrying",
-              taskId,
-              idx,
-              reqWrs->size());
-          pollCompletions(taskId, false);
-          evb_->dispatch(
-              [self = std::move(self)]() mutable noexcept { self(self); });
-          return;
-        }
-      }
-
-      // requests is posted, remove it from the queue.
-      pendingRequests_.pop();
-
-      // Start the poll chain to drain completions — but only if the
-      // task still has outstanding WRs. If it's already complete (e.g.,
-      // postSend failed with consumed=0), skip the unnecessary poll.
-      if (!task->isComplete()) {
-        UNIFLOW_LOG_DEBUG(
-            "rdmaTransfer: taskId={} starting poll chain", taskId);
-        evb_->dispatch(
-            [this, taskId]() noexcept { pollCompletions(taskId, true); });
-      } else {
-        UNIFLOW_LOG_DEBUG(
-            "rdmaTransfer: taskId={} completed immediately", taskId);
-        inflightTasks_.erase(taskId);
-      }
-    };
-    postLoop(postLoop);
+    if (!ioLooperScheduled_) {
+      ioLooperScheduled_ = true;
+      evb_->dispatch([this]() noexcept { ioLooper(); });
+    }
   });
 
   return future;
@@ -769,27 +911,11 @@ std::future<Status> RdmaTransport::rdmaTransfer(
 // Completion polling (EventBase thread)
 // ---------------------------------------------------------------------------
 
-void RdmaTransport::pollCompletions(uint32_t id, bool retry) {
+void RdmaTransport::pollCompletions() {
   constexpr int kNumBatch = 16;
-
-  auto cleanup = [this, id]() {
-    if (auto it = inflightTasks_.find(id); it != inflightTasks_.end()) {
-      it->second->complete(
-          Err(ErrCode::TransportError, "RDMA transport is broken"));
-      inflightTasks_.erase(it);
-    }
-  };
-
-  // If transport is broken, fail the task immediately.
-  if (state_ != TransportState::Connected) {
-    UNIFLOW_LOG_ERROR(
-        "pollCompletions: taskId={} aborted, transport not connected", id);
-    return cleanup();
-  }
 
   for (size_t i = 0; i < cqs_.size(); ++i) {
     int expected = numPendingCqe_[i];
-    // Drain CQ in batches.
     ibv_wc wcs[kNumBatch];
     while (expected > 0) {
       auto pollResult = ibvApi_->pollCq(cqs_[i], kNumBatch, wcs);
@@ -799,7 +925,11 @@ void RdmaTransport::pollCompletions(uint32_t id, bool retry) {
             i,
             pollResult.error().message());
         state_ = TransportState::Error;
-        return cleanup();
+        for (auto& [taskId, task] : inflightTasks_) {
+          task->recordCompletion(
+              Err(ErrCode::TransportError, "RDMA transport is broken"));
+        }
+        return;
       }
 
       int n = pollResult.value();
@@ -807,14 +937,12 @@ void RdmaTransport::pollCompletions(uint32_t id, bool retry) {
         uint32_t taskId = static_cast<uint32_t>(wc.wr_id >> 32);
         uint32_t numWrs = static_cast<uint32_t>(wc.wr_id & 0xffffffff);
 
-        // Decrement expected CQE count only for signaled WRs.
         if (numWrs > 0) {
           --numPendingCqe_[i];
         }
 
-        // Decrement per-QP counter by the encoded WR count.
-        // This count includes unsignaled WRs + the signaled WR itself.
-        if (auto qp = qpNumToIdx_.find(wc.qp_num); qp != qpNumToIdx_.end()) {
+        if (auto qp = qpNumToIdx_.find(qpMapKey(i, wc.qp_num));
+            qp != qpNumToIdx_.end()) {
           numWrsPerQp_[qp->second] -= numWrs;
         }
 
@@ -827,34 +955,24 @@ void RdmaTransport::pollCompletions(uint32_t id, bool retry) {
                 taskId,
                 numWrs,
                 wc.qp_num,
-                wc.status);
-            it->second->complete(
-                Err(ErrCode::DriverError,
-                    "RDMA WR failed: wr_id=" + std::to_string(wc.wr_id) +
-                        " taskId=" + std::to_string(taskId) +
-                        " numWrs=" + std::to_string(numWrs) +
-                        " status=" + std::to_string(wc.status)));
+                static_cast<int>(wc.status));
+            it->second->recordCompletion(Err(
+                ErrCode::DriverError,
+                "RDMA WR failed: wr_id=" + std::to_string(wc.wr_id) +
+                    " taskId=" + std::to_string(taskId) +
+                    " numWrs=" + std::to_string(numWrs) +
+                    " status=" + std::to_string(static_cast<int>(wc.status))));
           }
 
-          // decrement counter
-          it->second->complete(numWrs);
+          it->second->recordCompletion(numWrs);
         }
       }
 
       if (n < kNumBatch) {
-        break; // CQ drained for now.
+        break;
       }
 
       expected -= kNumBatch;
-    }
-  }
-
-  // Re-dispatch poll chain if this task is still in-flight.
-  if (auto it = inflightTasks_.find(id); it != inflightTasks_.end()) {
-    if (it->second->isComplete()) {
-      inflightTasks_.erase(it);
-    } else if (retry) {
-      evb_->dispatch([this, id]() noexcept { pollCompletions(id, true); });
     }
   }
 }
@@ -891,6 +1009,47 @@ std::future<Result<size_t>> RdmaTransport::recv(
   return promise.get_future();
 }
 
+// ---------------------------------------------------------------------------
+// Ctrl buffer helpers
+// ---------------------------------------------------------------------------
+
+size_t RdmaTransport::ctrlBufferSize() const {
+  constexpr size_t align = alignof(uint64_t);
+  const uint32_t D = config_.pipelineDepth;
+  const uint32_t Q = config_.numQps;
+  const size_t raw = D * (1 + Q) * sizeof(uint32_t);
+  return (raw + align - 1) & ~(align - 1);
+}
+
+std::atomic_ref<uint32_t> RdmaTransport::ctrlCts(uint16_t slotIdx) {
+  auto* p = static_cast<uint32_t*>(ctrlBuffer_) + slotIdx;
+  return std::atomic_ref<uint32_t>(*p);
+}
+
+std::atomic_ref<uint32_t> RdmaTransport::ctrlNotify(
+    uint16_t slotIdx,
+    uint32_t qpIdx) {
+  const uint32_t D = config_.pipelineDepth;
+  const uint32_t Q = config_.numQps;
+  auto* p = static_cast<uint32_t*>(ctrlBuffer_) + D + slotIdx * Q + qpIdx;
+  return std::atomic_ref<uint32_t>(*p);
+}
+
+uint64_t RdmaTransport::remoteCtrlCtsAddr(uint16_t slotIdx) const {
+  return remoteCtrlBuffer_.addr + slotIdx * sizeof(uint32_t);
+}
+
+uint64_t RdmaTransport::remoteCtrlNotifyAddr(uint16_t slotIdx, uint32_t qpIdx)
+    const {
+  const uint32_t D = config_.pipelineDepth;
+  const uint32_t Q = config_.numQps;
+  return remoteCtrlBuffer_.addr + (D + slotIdx * Q + qpIdx) * sizeof(uint32_t);
+}
+
+// ---------------------------------------------------------------------------
+// Shutdown
+// ---------------------------------------------------------------------------
+
 void RdmaTransport::shutdown() {
   if (shutdown_.exchange(true)) {
     return;
@@ -899,6 +1058,7 @@ void RdmaTransport::shutdown() {
   // Make sure that there is no tasks in the evb loop thread related to this
   // transport instance
   if (!evb_->isLoopRunning()) {
+    state_ = TransportState::Disconnected;
     UNIFLOW_LOG_WARN("shutdown: event loop already stopped, skipping drain");
   } else {
     UNIFLOW_LOG_INFO("shutdown: draining inflight tasks");
@@ -910,7 +1070,9 @@ void RdmaTransport::shutdown() {
     // transport instance
     evb_->dispatch([this, &m, &cv, &done]() noexcept {
       auto drain = [this, &m, &cv, &done](auto& self) -> void {
-        if (inflightTasks_.empty() && pendingRequests_.empty()) {
+        if (pendingTransfers_.empty() && pendingCompletions_.empty() &&
+            inflightTasks_.empty()) {
+          state_ = TransportState::Disconnected;
           {
             std::lock_guard<std::mutex> lock(m);
             done = true;
@@ -947,7 +1109,16 @@ void RdmaTransport::shutdown() {
   }
   cqs_.clear();
 
-  state_ = TransportState::Disconnected;
+  for (auto* mr : ctrlMrs_) {
+    ibvApi_->deregMr(mr);
+  }
+  ctrlMrs_.clear();
+
+  if (ctrlBuffer_) {
+    cudaApi_->hostFree(ctrlBuffer_);
+    ctrlBuffer_ = nullptr;
+  }
+
   UNIFLOW_LOG_INFO("shutdown: complete");
 }
 
@@ -955,24 +1126,58 @@ void RdmaTransport::shutdown() {
 // RdmaTransportFactory
 // ---------------------------------------------------------------------------
 
-uint8_t RdmaTransportFactory::findActivePort(ibv_context* ctx) {
-  ibv_device_attr devAttr{};
-  auto status = ibvApi_->queryDevice(ctx, &devAttr);
-  if (status.hasError()) {
-    return 0;
+Status RdmaTransportFactory::supported(std::shared_ptr<IbvApi> ibvApi) {
+  if (!ibvApi) {
+    ibvApi = std::make_shared<IbvApi>();
   }
 
-  for (uint8_t port = 1; port <= devAttr.phys_port_cnt; ++port) {
-    ibv_port_attr portAttr{};
-    auto portStatus = ibvApi_->queryPort(ctx, port, &portAttr);
-    if (portStatus.hasError()) {
-      continue;
+  CHECK_EXPR(ibvApi->init());
+
+  int numDevices = 0;
+  auto devListResult = ibvApi->getDeviceList(&numDevices);
+  CHECK_RETURN(devListResult);
+  ibv_device** deviceList = devListResult.value();
+  struct DevListGuard {
+    std::shared_ptr<IbvApi> api;
+    ibv_device** list;
+    ~DevListGuard() {
+      api->freeDeviceList(list);
     }
-    if (portAttr.state == IBV_PORT_ACTIVE) {
-      return port;
+  } devListGuard{ibvApi, deviceList};
+
+  if (numDevices == 0) {
+    UNIFLOW_LOG_INFO("RDMA not supported: no IB devices found");
+    return Err(ErrCode::ResourceExhausted, "No RDMA devices found");
+  }
+
+  for (int i = 0; i < numDevices; ++i) {
+    bool found = false;
+    auto ctxResult = ibvApi->openDevice(deviceList[i]);
+    CHECK_RETURN(ctxResult);
+    ibv_context* ctx = ctxResult.value();
+
+    ibv_device_attr devAttr{};
+    if (ibvApi->queryDevice(ctx, &devAttr)) {
+      for (uint8_t port = 1; port <= devAttr.phys_port_cnt; ++port) {
+        ibv_port_attr portAttr{};
+        auto portStatus = ibvApi->queryPort(ctx, port, &portAttr);
+        if (!portStatus.hasError() && portAttr.state == IBV_PORT_ACTIVE) {
+          found = true;
+          break;
+        }
+      }
+    }
+
+    ibvApi->closeDevice(ctx);
+    if (!found) {
+      return Err(
+          ErrCode::ResourceExhausted,
+          fmt::format(
+              "No active RDMA ports found for {}", deviceList[i]->name));
     }
   }
-  return 0;
+
+  return Ok();
 }
 
 RdmaTransportFactory::RdmaTransportFactory(
@@ -981,11 +1186,14 @@ RdmaTransportFactory::RdmaTransportFactory(
     RdmaTransportConfig config,
     std::shared_ptr<IbvApi> ibvApi,
     std::shared_ptr<CudaDriverApi> cudaDriverApi,
+    std::shared_ptr<CudaApi> cudaApi,
     std::optional<uint8_t> portNum)
     : TransportFactory(TransportType::RDMA),
       ibvApi_(std::move(ibvApi)),
       cudaDriverApi_(std::move(cudaDriverApi)),
+      cudaApi_(std::move(cudaApi)),
       evb_(evb),
+      nicsHandle_(std::make_shared<std::vector<NicResources>>()),
       config_(config) {
   assert(evb_ != nullptr);
   if (deviceNames.empty()) {
@@ -996,6 +1204,9 @@ RdmaTransportFactory::RdmaTransportFactory(
   }
   if (!cudaDriverApi_) {
     cudaDriverApi_ = std::make_shared<CudaDriverApi>();
+  }
+  if (!cudaApi_) {
+    cudaApi_ = std::make_shared<CudaApi>();
   }
 
   // Generate a random domain id to identify handles from this factory.
@@ -1018,19 +1229,7 @@ RdmaTransportFactory::RdmaTransportFactory(
   std::unique_ptr<ibv_device*[], decltype(devListDeleter)> devListGuard(
       deviceList, devListDeleter);
 
-  // TODO: Replace manual cleanup with EXIT_SCOPE macro (core/Utils.h).
-  auto cleanupNics = [this]() {
-    for (auto& nic : nics_) {
-      if (nic.pd) {
-        ibvApi_->deallocPd(nic.pd);
-      }
-      if (nic.ctx) {
-        ibvApi_->closeDevice(nic.ctx);
-      }
-    }
-    nics_.clear();
-  };
-
+  nicsHandle_->reserve(deviceNames.size());
   for (const auto& deviceName : deviceNames) {
     ibv_device* targetDevice = nullptr;
     for (int i = 0; i < numDevices; ++i) {
@@ -1042,83 +1241,16 @@ RdmaTransportFactory::RdmaTransportFactory(
     }
 
     if (!targetDevice) {
-      cleanupNics();
       throw std::runtime_error("RDMA device not found: " + deviceName);
     }
 
-    auto ctxResult = ibvApi_->openDevice(targetDevice);
-    if (ctxResult.hasError()) {
-      cleanupNics();
-      throw std::runtime_error("Failed to open RDMA device: " + deviceName);
-    }
-
-    NicResources nic;
-    nic.ctx = ctxResult.value();
-
-    // Discover port: use specified portNum, or find first active port
-    uint8_t port = portNum.value_or(0);
-    if (port == 0) {
-      port = findActivePort(nic.ctx);
-      if (port == 0) {
-        ibvApi_->closeDevice(nic.ctx);
-        cleanupNics();
-        throw std::runtime_error("No active port found on: " + deviceName);
-      }
-    }
-    nic.portNum = port;
-
-    auto pdResult = ibvApi_->allocPd(nic.ctx);
-    if (pdResult.hasError()) {
-      ibvApi_->closeDevice(nic.ctx);
-      cleanupNics();
-      throw std::runtime_error("Failed to allocate PD on: " + deviceName);
-    }
-    nic.pd = pdResult.value();
-
-    // Probe kernel DMA-BUF support on this NIC's PD.
-    auto dmaBufSupported = ibvApi_->isDmaBufSupported(nic.pd);
-    CHECK_THROW_ERROR(dmaBufSupported);
-    nic.dmaBufSupported = dmaBufSupported.value();
-
-    ibv_port_attr portAttr{};
-    auto portStatus = ibvApi_->queryPort(nic.ctx, port, &portAttr);
-    if (portStatus.hasError()) {
-      ibvApi_->deallocPd(nic.pd);
-      ibvApi_->closeDevice(nic.ctx);
-      cleanupNics();
-      throw std::runtime_error("Failed to query port on: " + deviceName);
-    }
-    nic.lid = portAttr.lid;
-    nic.mtu = portAttr.active_mtu;
-    nic.linkLayer = portAttr.link_layer;
-
-    auto gidStatus =
-        ibvApi_->queryGid(nic.ctx, port, config_.gidIndex, &nic.gid);
-    if (gidStatus.hasError()) {
-      ibvApi_->deallocPd(nic.pd);
-      ibvApi_->closeDevice(nic.ctx);
-      cleanupNics();
-      throw std::runtime_error("Failed to query GID on: " + deviceName);
-    }
-
-    nics_.push_back(nic);
-  }
-}
-
-RdmaTransportFactory::~RdmaTransportFactory() {
-  for (auto& nic : nics_) {
-    if (nic.pd) {
-      ibvApi_->deallocPd(nic.pd);
-    }
-    if (nic.ctx) {
-      ibvApi_->closeDevice(nic.ctx);
-    }
+    nicsHandle_->emplace_back(targetDevice, ibvApi_, config_.gidIndex, portNum);
   }
 }
 
 Result<std::unique_ptr<RegistrationHandle>>
 RdmaTransportFactory::registerSegment(Segment& segment) {
-  if (nics_.empty()) {
+  if (nicsHandle_->empty()) {
     return Err(ErrCode::InvalidArgument, "No NICs available for registration");
   }
 
@@ -1169,8 +1301,8 @@ RdmaTransportFactory::registerSegment(Segment& segment) {
   // Register with every NIC's protection domain so the region is usable
   // across all QPs regardless of which NIC they belong to.
   std::vector<ibv_mr*> mrs;
-  mrs.reserve(nics_.size());
-  for (const auto& nic : nics_) {
+  mrs.reserve(nicsHandle_->size());
+  for (const auto& nic : *nicsHandle_) {
     Result<ibv_mr*> mrResult = Err(ErrCode::NotImplemented);
     if (nic.dmaBufSupported && fdGuard.fd >= 0) {
       // GPU memory: register via DMA-BUF for GPU Direct RDMA.
@@ -1230,34 +1362,38 @@ RdmaTransportFactory::importSegment(
   std::memcpy(
       rkeys.data(), payload.data() + offset, sizeof(uint32_t) * header.numMrs);
 
+  uint64_t domainId = header.domainId;
   return std::make_unique<RdmaRemoteRegistrationHandle>(
-      std::move(rkeys), header.domainId);
+      std::move(rkeys), domainId);
 }
 
 Result<std::unique_ptr<Transport>> RdmaTransportFactory::createTransport(
     std::span<const uint8_t> peerTopology) {
   CHECK_EXPR(canConnect(peerTopology));
+  auto peerTopo = RdmaTopologyInfo::deserialize(peerTopology).value();
+  auto config = config_;
+  config.numQps = std::min(peerTopo.numQps, config.numQps);
   return std::make_unique<RdmaTransport>(
-      ibvApi_, evb_, nics_, domainId_, config_);
+      ibvApi_, cudaApi_, evb_, nicsHandle_, domainId_, config, nullptr);
 }
 
 // TODO: get ai_zone_name from fbwhoami / serfwhoami or develop a plugin for
 // customized cluster info
 std::vector<uint8_t> RdmaTransportFactory::getTopology() {
   std::vector<uint8_t> data(sizeof(RdmaTopologyInfo));
-  RdmaTopologyInfo info;
+  RdmaTopologyInfo info{kRdmaVersion, config_.numQps};
   std::memcpy(data.data(), &info, sizeof(info));
   return data;
 }
 
 Status RdmaTransportFactory::canConnect(std::span<const uint8_t> peerTopology) {
-  if (peerTopology.size() != sizeof(RdmaTopologyInfo)) {
-    return Err(ErrCode::InvalidArgument, "Invalid topology data");
-  }
-  RdmaTopologyInfo info;
-  std::memcpy(&info, peerTopology.data(), sizeof(info));
-  if (info.version != kRdmaVersion) {
+  auto info = RdmaTopologyInfo::deserialize(peerTopology);
+  CHECK_RETURN(info);
+  if (info->version != kRdmaVersion) {
     return Err(ErrCode::TopologyDisconnect, "Invalid topology version");
+  }
+  if (info->numQps == 0) {
+    return Err(ErrCode::TopologyDisconnect, "Invalid topology numQps");
   }
   return Ok();
 }

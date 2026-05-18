@@ -67,6 +67,26 @@ Status CudaApi::getDevicePCIBusId(char* pciBusId, int len, int device) {
   return Ok();
 }
 
+// --- Host memory ---
+
+Result<void*> CudaApi::hostAlloc(size_t size, unsigned int flags) {
+  void* ptr = nullptr;
+  CUDA_CHECK(cudaHostAlloc(&ptr, size, flags), ErrCode::DriverError);
+  return ptr;
+}
+
+Status CudaApi::hostFree(void* ptr) {
+  CUDA_CHECK(cudaFreeHost(ptr), ErrCode::DriverError);
+  return Ok();
+}
+
+Result<void*> CudaApi::hostGetDevicePointer(void* hostPtr) {
+  void* devPtr = nullptr;
+  CUDA_CHECK(
+      cudaHostGetDevicePointer(&devPtr, hostPtr, 0), ErrCode::DriverError);
+  return devPtr;
+}
+
 // --- Memory copy ---
 
 Status CudaApi::memcpyAsync(
@@ -79,6 +99,42 @@ Status CudaApi::memcpyAsync(
       cudaMemcpyAsync(dst, src, count, kind, stream), ErrCode::DriverError);
   return Ok();
 }
+
+#if CUDART_VERSION >= 12080
+Status CudaApi::memcpyBatchAsync(
+    void* const* dsts,
+    const void* const* srcs,
+    const size_t* sizes,
+    size_t count,
+    cudaStream_t stream) {
+  cudaMemcpyAttributes attr{};
+  attr.srcAccessOrder = cudaMemcpySrcAccessOrderStream;
+  size_t attrsIdx = 0;
+#if CUDART_VERSION < 13000
+  // CUDA 12.8 takes non-const dsts/srcs/sizes and a trailing failIdx.
+  size_t failIdx = SIZE_MAX;
+  CUDA_CHECK(
+      cudaMemcpyBatchAsync(
+          const_cast<void**>(dsts),
+          const_cast<void**>(srcs),
+          const_cast<size_t*>(sizes),
+          count,
+          &attr,
+          &attrsIdx,
+          1,
+          &failIdx,
+          stream),
+      ErrCode::DriverError);
+#else
+  // CUDA 13.0+ took const qualifiers and removed failIdx.
+  CUDA_CHECK(
+      cudaMemcpyBatchAsync(
+          dsts, srcs, sizes, count, &attr, &attrsIdx, 1, stream),
+      ErrCode::DriverError);
+#endif
+  return Ok();
+}
+#endif
 
 Status CudaApi::memcpyPeerAsync(
     void* dst,

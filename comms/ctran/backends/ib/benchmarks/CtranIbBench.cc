@@ -89,7 +89,6 @@ static BenchmarkContext setupBenchmarkContext(size_t bufferSize) {
       cudaDev0,
       -1 /* commHash */,
       "RDMA-Transport",
-      nullptr /* ctrlManager */,
       true /* enableLocalFlush */,
       CtranIb::BootstrapMode::kExternal);
   auto receiverIb = std::make_unique<CtranIb>(
@@ -97,7 +96,6 @@ static BenchmarkContext setupBenchmarkContext(size_t bufferSize) {
       cudaDev1,
       -1 /* commHash */,
       "RDMA-Transport",
-      nullptr /* ctrlManager */,
       true /* enableLocalFlush */,
       CtranIb::BootstrapMode::kExternal);
 

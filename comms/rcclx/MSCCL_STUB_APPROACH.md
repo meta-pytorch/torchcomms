@@ -16,22 +16,22 @@ implementations for all MSCCL functions. This approach:
 
 **Build Configuration Only:**
 
-1. `/data/users/dmwu/fbsource/fbcode/comms/rcclx/develop/def_build.bzl`
+1. `fbsource/fbcode/comms/rcclx/develop/def_build.bzl`
    - Commented out MSCCL source files
    - Added stub file to build: `"misc/msccl_stub.cc"`
 
 **New Files Created:**
 
-1. `/data/users/dmwu/fbsource/fbcode/comms/rcclx/develop/src/misc/msccl_stub.cc`
+1. `fbsource/fbcode/comms/rcclx/develop/projects/rccl/src/misc/msccl_stub.cc`
    - Provides stub implementations for all MSCCL functions
    - All functions return `false` or `ncclSuccess` (no-ops)
    - Uses forward declarations (no MSCCL header dependencies)
 
 **Documentation:**
 
-1. `/data/users/dmwu/fbsource/fbcode/comms/rcclx/patches/msccl_stub.patch`
+1. `fbsource/fbcode/comms/rcclx/patches/msccl_stub.patch`
    - Documents the stub implementation
-2. `/data/users/dmwu/fbsource/fbcode/comms/rcclx/MSCCL_REMOVAL_SUMMARY.md`
+2. `fbsource/fbcode/comms/rcclx/MSCCL_REMOVAL_SUMMARY.md`
    - Original summary from initial implementation
 
 ### What Was NOT Changed
@@ -48,11 +48,11 @@ implementations for all MSCCL functions. This approach:
 **MSCCL Implementation Files (Excluded from Build):**
 
 - All files in
-  `/data/users/dmwu/fbsource/fbcode/comms/rcclx/develop/src/misc/msccl/`
+  `fbsource/fbcode/comms/rcclx/develop/projects/rccl/src/misc/msccl/`
 - All files in
-  `/data/users/dmwu/fbsource/fbcode/comms/rcclx/develop/src/include/msccl/`
+  `fbsource/fbcode/comms/rcclx/develop/projects/rccl/src/include/msccl/`
 - All files in
-  `/data/users/dmwu/fbsource/fbcode/comms/rcclx/develop/src/misc/mscclpp/`
+  `fbsource/fbcode/comms/rcclx/develop/projects/rccl/src/misc/mscclpp/`
 
 ## How It Works
 
@@ -102,7 +102,7 @@ ncclResult_t mscclEnqueueCheck(...) { return ncclInternalError; }
 ### Changed:
 
 - `develop/def_build.bzl` - Build configuration
-- `develop/src/misc/msccl_stub.cc` - Stub implementation (NEW)
+- `develop/projects/rccl/src/misc/msccl_stub.cc` - Stub implementation (NEW)
 
 ### Created:
 

@@ -34,7 +34,7 @@ conda create --yes --quiet --prefix "$CONDA_ENV" python=3.13 cmake=3.31.2 ninja=
 
 CONDA_RUN="conda run --no-capture-output -p ${CONDA_ENV}"
 
-${CONDA_RUN} pip install torch --pre --index-url https://download.pytorch.org/whl/nightly/cu128
+${CONDA_RUN} pip install torch --pre --index-url https://download.pytorch.org/whl/nightly/cu132
 
 # Uncomment to debug the build w/ docker exec
 #${CONDA_RUN} bash -c "sleep 10000000000000"

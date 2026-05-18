@@ -1,0 +1,62 @@
+# Definitions for the COE Tulip system
+
+$(info "Including tulip.def file")
+
+#---------------------------------------------------------------------------
+# BATCH Scheduler
+#---------------------------------------------------------------------------
+JSRUN_COMMAND = srun -p amdMI60 
+BATCH_SCHEDULER = $(JSRUN_COMMAND)
+
+CUDA_MODULE ?= 
+#---------------------------------------------------------------------------
+# C compilers
+#---------------------------------------------------------------------------
+CCOMPILERS="gcc, cc"
+
+# GCC compiler
+ifeq ($(CC), gcc)
+  C_COMPILER_MODULE = cuda/10.1.243 gcc/8.1.1-openacc-gcc-8-branch-20190215
+  C_VERSION = gcc -dumpversion
+endif
+
+# CRAY compiler (AMD)
+ifeq ($(CC), cc)
+  C_COMPILER_MODULE = craype-x86-naples; module load PrgEnv-cray; module load cce; module load craype-accel-amd-gfx906; module load rocm/3.3.0
+  C_VERSION = cc --version 2>&1 | grep -oh 'clang version [0-9.]*'| grep -oh 'version .*' | sed "s/version/cray/g"
+endif
+
+#---------------------------------------------------------------------------
+# C++ compilers
+#---------------------------------------------------------------------------
+CXXCOMPILERS="g++, c++"
+
+# GCC compiler
+ifeq ($(CXX), g++)
+  CXX_COMPILER_MODULE = cuda/10.1.243 gcc/8.1.1-openacc-gcc-8-branch-20190215
+  CXX_VERSION = g++ -dumpversion
+endif
+
+
+# CRAY compiler (AMD)
+ifeq ($(CXX), CC)
+  CXX_COMPILER_MODULE = PrgEnv-cray; module load cce; module load craype-x86-naples; module load craype-accel-amd-gfx906; module load rocm/3.3.0
+  CXX_VERSION = CC --version 2>&1 | grep -oh 'clang version [0-9.]*'| grep -oh 'version .*' | sed "s/version/cray/g"
+endif
+
+#---------------------------------------------------------------------------
+# FORTRAN Compilers
+#---------------------------------------------------------------------------
+FCOMPILERS="gfortran, ftn"
+
+# GCC compiler
+ifeq ($(FC), gfortran)
+  F_COMPILER_MODULE = cuda/10.1.243 gcc/8.1.1-openacc-gcc-8-branch-20190215
+  F_VERSION = gfortran -dumpversion
+endif
+
+# CRAY compiler
+ifeq ($(FC), ftn)
+  F_COMPILER_MODULE = PrgEnv-cray; module load cce; module load craype-x86-naples; module load craype-accel-amd-gfx906; module load rocm/3.3.0
+  F_VERSION = ftn --version 2>&1 | grep -oh 'clang version [0-9.]*'| grep -oh 'version .*' | sed "s/version/cray/g"
+endif

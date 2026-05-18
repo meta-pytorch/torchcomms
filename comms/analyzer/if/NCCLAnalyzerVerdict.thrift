@@ -3,8 +3,7 @@
 include "thrift/annotation/cpp.thrift"
 include "thrift/annotation/thrift.thrift"
 
-@thrift.AllowLegacyMissingUris
-package;
+package "meta.com/comms/analyzer"
 
 cpp_include "<unordered_set>"
 

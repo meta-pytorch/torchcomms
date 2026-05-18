@@ -1,0 +1,79 @@
+#!/bin/bash -e
+#
+# NOTE: remove '--mpi' after @PROJECT_BINARY_DIR@/timemory-run if applications built without MPI
+#
+source $(dirname $(basename ${BASH_SOURCE[0]}))/common.sh
+
+TEST_NAME=$(basename ${BASH_SOURCE[0]})
+
+export TIMEMORY_OUTPUT_PATH=@CMAKE_CURRENT_BINARY_DIR@/dynamic/timemory-@TEST_NAME@-output
+export TIMEMORY_TEXT_OUTPUT=ON
+export TIMEMORY_FILE_OUTPUT=ON
+export TIMEMORY_AUTO_OUTPUT=ON
+export TIMEMORY_TREE_OUTPUT=OFF
+export TIMEMORY_JSON_OUTPUT=OFF
+export TIMEMORY_COUT_OUTPUT=ON
+export TIMEMORY_FLAMEGRAPH_OUTPUT=OFF
+
+rm -rf ${TIMEMORY_OUTPUT_PATH}
+
+# append directories to path
+export PATH=@CMAKE_CURRENT_BINARY_DIR@:@PROJECT_BINARY_DIR@:${PATH}
+# add path to libtimemory to LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=@PROJECT_BINARY_DIR@:@PROJECT_BINARY_DIR@/external/dyninst/dyninstAPI_RT:${LD_LIBRARY_PATH}
+
+emit-separator "Performing binary re-write in trace mode"
+
+# add dynamic instrumentation in trace mode
+@PROJECT_BINARY_DIR@/timemory-run --mode=trace -o ./@TEST_NAME@.trace.inst --min-address-range=32 -- @COMMAND@
+
+emit-separator "Executing instrumented binary"
+
+export TIMEMORY_OUTPUT_PREFIX="region-sync-trace"
+
+# run trace mode instrumented binary
+./@TEST_NAME@.trace.inst
+
+emit-separator "Performing binary re-write in region mode"
+
+# add dynamic instrumentation in region mode
+@PROJECT_BINARY_DIR@/timemory-run --mode=region -o ./@TEST_NAME@.region.inst --min-address-range=32 -- @COMMAND@
+
+emit-separator "Executing instrumented binary"
+
+export TIMEMORY_OUTPUT_PREFIX="region-sync-region"
+
+# run region mode instrumented binary
+./@TEST_NAME@.region.inst
+
+emit-separator "Analyzing results in ${TIMEMORY_OUTPUT_PATH}"
+
+TRACE_OUTPUT=$(cat ${TIMEMORY_OUTPUT_PATH}/region-sync-trace*.txt | grep '>>>')
+REGION_OUTPUT=$(cat ${TIMEMORY_OUTPUT_PATH}/region-sync-region*.txt | grep '>>>')
+
+NTRACE=$(count-lines ${TIMEMORY_OUTPUT_PATH}/region-sync-trace*.txt)
+NREGION=$(count-lines ${TIMEMORY_OUTPUT_PATH}/region-sync-region*.txt)
+
+if [ "${NTRACE}" -lt 3 ]; then
+    echo -e "Trace output was only ${NTRACE} lines (< 3)\n"
+    echo -e "${TRACE_OUTPUT}"
+    exit -1
+fi
+
+if [ "${NREGION}" -lt 3 ]; then
+    echo -e "Region output was only ${NREGION} lines (< 3)\n"
+    echo -e "${REGION_OUTPUT}"
+    exit -1
+fi
+
+if [ "${NREGION}" -le "${NTRACE}" ]; then
+    echo -e "Region output was <= trace output (${NREGION} <= ${NTRACE})\n"
+    echo -e "Region output:\n"
+    echo -e "${REGION_OUTPUT}"
+    echo -e "Trace output:\n"
+    echo -e "${TRACE_OUTPUT}"
+    exit -1
+fi
+
+echo "Instrumentation Test... Done"
+exit 0

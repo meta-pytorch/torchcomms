@@ -2,6 +2,7 @@
 #pragma once
 
 #include <memory>
+#include <unordered_set>
 
 #include "comm.h"
 #include "device.h"
@@ -10,18 +11,23 @@
 #include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/utils/commSpecs.h"
-#include "meta/colltrace/CollTrace.h"
+#include "comms/utils/memtrace/MemoryTrace.h"
 #include "meta/colltrace/ProxyTrace.h"
 
 namespace ncclx::comms_monitor {
 ::comms::CommsTopologyInfo getTopoInfoFromNcclComm(ncclComm_t comm);
 
+struct CommStateInfo {
+  int localRank{0};
+  int node{0};
+  int nLocalRanks{1};
+  int nNodes{1};
+};
+
 struct NcclCommMonitorInfo {
   CommLogData logMetaData;
-  ncclx::CommStateX commState;
+  CommStateInfo stateInfo;
   ::comms::CommsTopologyInfo topoInfo;
-  // This one will be deprecated soon.
-  std::shared_ptr<CollTrace> collTrace;
   std::shared_ptr<colltrace::MapperTrace> mapperTrace;
   std::shared_ptr<ProxyTrace> proxyTrace;
   // ptr for the new colltrace interface.
@@ -31,6 +37,10 @@ struct NcclCommMonitorInfo {
     ALIVE,
     DEAD,
   } status = CommStatus::ALIVE;
+
+  // Adopted from MemoryTrace::getOrCreate() at registerComm time.
+  // See MemoryTrace::getOrCreate() for dual ownership rationale.
+  std::shared_ptr<meta::comms::memtrace::MemoryTrace> memTracer;
 
   static NcclCommMonitorInfo fromNcclComm(ncclComm_t comm);
 };
@@ -47,7 +57,8 @@ class CommsMonitor {
  public:
   static bool registerComm(ncclComm_t comm);
   static bool deregisterComm(ncclComm_t comm);
-  static std::optional<CommDumpAllMap> commDumpAll();
+  static std::optional<CommDumpAllMap> commDumpAll(
+      const std::unordered_set<std::string>& requestFields = {});
 
   static std::optional<NcclCommMonitorInfo> getCommInfoByCommPtr(
       ncclComm_t comm);
@@ -60,10 +71,14 @@ class CommsMonitor {
   // If any failure happened during calling this function, it will return -1.
   static int64_t getNumOfCommMonitoring();
 
+  // For testing only. Clears all registered communicators from the singleton.
+  static void testOnlyClearComms();
+
  private:
   bool registerCommImpl(ncclComm_t comm);
   bool deregisterCommImpl(ncclComm_t comm);
-  CommDumpAllMap commDumpAllImpl();
+  CommDumpAllMap commDumpAllImpl(
+      const std::unordered_set<std::string>& requestFields);
 
   static std::shared_ptr<CommsMonitor> getInstance();
 
@@ -74,5 +89,6 @@ class CommsMonitor {
 } // namespace ncclx::comms_monitor
 
 std::unordered_map<std::string, std::string> commDumpByMonitorInfo(
-    const ncclx::comms_monitor::NcclCommMonitorInfo&
-        info); // resides in commDump.cc
+    const ncclx::comms_monitor::NcclCommMonitorInfo& info,
+    const std::unordered_set<std::string>& requestFields =
+        {}); // resides in commDump.cc

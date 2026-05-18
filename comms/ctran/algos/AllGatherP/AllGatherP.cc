@@ -134,23 +134,22 @@ commResult_t AlgoImpl::destroy() {
 
 namespace ctran {
 bool allGatherPSupport(CtranComm* comm) {
-  bool ctranSupport = false;
+  if (!ctranInitialized(comm)) {
+    return false;
+  }
+
   const auto statex = comm->statex_.get();
-  if (ctranInitialized(comm)) {
-    ctranSupport = true;
-    auto mapper = comm->ctran_->mapper.get();
-    const auto myRank = statex->rank();
-    // Check if all remote peers are supported by ctran
-    for (auto rank = 0; rank < statex->nRanks(); rank++) {
-      if (mapper->getBackend(rank) == CtranMapperBackend::UNSET &&
-          rank != myRank) {
-        ctranSupport = false;
-        break;
-      }
+  auto mapper = comm->ctran_->mapper.get();
+  const auto myRank = statex->rank();
+  // Check if all remote peers are supported by ctran
+  for (auto rank = 0; rank < statex->nRanks(); rank++) {
+    if (mapper->getBackend(rank) == CtranMapperBackend::UNSET &&
+        rank != myRank) {
+      return false;
     }
   }
 
-  return ctranSupport;
+  return true;
 }
 
 commResult_t allGatherPInit(
@@ -237,6 +236,8 @@ commResult_t allGatherPExec(
       return algo->execDirect(sendbuff, count, datatype);
     case NCCL_ALLGATHER_P_ALGO::ctpipeline:
       return algo->execPipeline(sendbuff, count, datatype);
+    case NCCL_ALLGATHER_P_ALGO::ctrdpipeline:
+      return algo->execRecursiveDoubling(sendbuff, count, datatype);
     default:
       return ErrorStackTraceUtil::log(commInternalError);
   }

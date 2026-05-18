@@ -9,6 +9,9 @@
 #include "common.h"
 #include "p2p_resiliency.h"
 
+// [NCCLX-PerCommConfig] Per-comm IB config helpers
+#include "meta/transport/NcclxIbNetCommConfig.h"
+
 NCCL_PARAM(IbGidIndex, "IB_GID_INDEX", -1);
 NCCL_PARAM(IbRoutableFlidIbGidIndex, "IB_ROUTABLE_FLID_GID_INDEX", 1);
 NCCL_PARAM(IbRoceVersionNum, "IB_ROCE_VERSION_NUM", 2);
@@ -405,6 +408,7 @@ ncclResult_t ncclIbListen(void* ctx, int dev, void* opaqueHandle, void** listenC
   static_assert(sizeof(struct ncclIbHandle) < NCCL_NET_HANDLE_MAXSIZE, "ncclIbHandle size too large");
   memset(handle, 0, sizeof(struct ncclIbHandle));
   comm->dev = dev;
+  comm->ctx = ctx; // [NCCLX-PerCommConfig] store ctx for ncclIbAccept
   handle->magic = NCCL_SOCKET_MAGIC;
   NCCLCHECKGOTO(ncclSocketInit(&comm->sock, &ncclIbIfAddr, handle->magic, ncclSocketTypeNetIb, NULL, 1), ret, fail);
   NCCLCHECKGOTO(ncclSocketListen(&comm->sock), ret, fail);
@@ -527,6 +531,11 @@ ncclResult_t ncclIbConnect(void* ctx, int dev, void* opaqueHandle, void** sendCo
   int ready;
   uint8_t link_layer = IBV_LINK_LAYER_UNSPECIFIED;
   *sendComm = NULL;
+  // [NCCLX-PerCommConfig] Lambda to resolve qpsPerConn safely across goto re-entries
+  auto getQpsPerConn = [&]() {
+    return ncclx::ibResolveQpsPerConnection(
+        (ncclx::NcclxIbNetCommConfig*)ctx, ncclParamIbQpsPerConn());
+  };
 
   if (stage->state == ncclIbCommStateConnect)      goto ib_connect_check;
   if (stage->state == ncclIbCommStateSendDevList)  goto ib_send_dev_list;
@@ -542,6 +551,8 @@ ncclResult_t ncclIbConnect(void* ctx, int dev, void* opaqueHandle, void** sendCo
 
   NCCLCHECK(ncclIbMalloc((void**)&comm, sizeof(struct ncclIbSendComm)));
   NCCLCHECKGOTO(ncclIbSendCommInit(comm), ret, fail);
+  // [NCCLX-PerCommConfig] Apply per-comm IB overrides (splitDataOnQps)
+  ncclx::ncclxIbCommInit(comm, ctx);
   NCCLCHECKGOTO(ncclIbStatsInit(&comm->base.stats), ret, fail);
   NCCLCHECKGOTO(ncclSocketInit(&comm->base.sock, &handle->connectAddr, handle->magic, ncclSocketTypeNetIb, NULL, 1), ret, fail);
   stage->comm = comm;
@@ -581,13 +592,15 @@ ib_recv_dev_list:
   if (stage->offset != sizeof(ncclNetVDeviceProps_t)) return ncclSuccess;
   stage->offset = 0;
   ncclNetVDeviceProps_t remoteVProps;
-  ncclNetCommConfig_t* config;
+  // [NCCLX-PerCommConfig]  NcclxIbNetCommConfig is a superset of ncclNetCommConfig_t
+  // So still define config to minimize code changes
+  ncclx::NcclxIbNetCommConfig* config;
   memcpy(&remoteVProps, stage->buffer, sizeof(ncclNetVDeviceProps_t));
   mergedDev = ncclIbMergedDevs + dev;
   comm->base.vProps = mergedDev->vProps;
   int localNqps, remoteNqps;
-  localNqps  = ncclParamIbQpsPerConn() * comm->base.vProps.ndevs; // We must have at least 1 qp per-device
-  remoteNqps = ncclParamIbQpsPerConn() * remoteVProps.ndevs;
+  localNqps  = getQpsPerConn() * comm->base.vProps.ndevs; // We must have at least 1 qp per-device
+  remoteNqps = getQpsPerConn() * remoteVProps.ndevs;
   comm->base.nqps = remoteNqps > localNqps ? remoteNqps : localNqps; // Select max nqps (local or remote)
 
   comm->base.nDataQps = std::max(comm->base.vProps.ndevs, remoteVProps.ndevs);
@@ -601,7 +614,7 @@ ib_recv_dev_list:
   // Sender's CQ size needs to accomodate the upper bound of number of send
   // requests multiplied by the number of QPs used per request.
   int cqSize;
-  cqSize = NET_IB_MAX_REQUESTS*ncclParamIbQpsPerConn();
+  cqSize = NET_IB_MAX_REQUESTS*getQpsPerConn();
   for (int i = 0; i < comm->base.vProps.ndevs; i++) {
     int ibDevN = comm->base.vProps.devs[i];
     if (comm->base.resiliency) {
@@ -676,7 +689,9 @@ ib_recv_dev_list:
       return ncclInternalError;
     }
   }
-  config = (ncclNetCommConfig_t*)ctx;
+  // [NCCLX-PerCommConfig] Cast ctx as NcclxIbNetCommConfig rather than
+  // ncclNetCommConfig_t
+  config = (ncclx::NcclxIbNetCommConfig*)ctx;
   meta.addr = (uint64_t)comm->ctsFifo;
   meta.sl = (ncclParamIbSl() != -1) ? ncclParamIbSl() : (config && config->trafficClass != NCCL_NET_TRAFFIC_CLASS_UNDEF) ? config->trafficClass : NCCL_IB_SL_DEFAULT;
   meta.tc = (ncclParamIbTc() != -1) ? ncclParamIbTc() : (config && config->trafficClass != NCCL_NET_TRAFFIC_CLASS_UNDEF) ? config->trafficClass : NCCL_IB_TC_DEFAULT;
@@ -956,6 +971,11 @@ ncclResult_t ncclIbAccept(void* listenComm, void** recvComm, ncclNetDeviceHandle
   int ready;
   int link_layer = IBV_LINK_LAYER_UNSPECIFIED;
   *recvComm = NULL;
+  // [NCCLX-PerCommConfig] Lambda to resolve qpsPerConn safely across goto re-entries
+  auto getQpsPerConn = [&]() {
+    return ncclx::ibResolveQpsPerConnection(
+        (ncclx::NcclxIbNetCommConfig*)lComm->ctx, ncclParamIbQpsPerConn());
+  };
 
   if (stage->state == ncclIbCommStateAccept)   goto ib_accept_check;
   if (stage->state == ncclIbCommStateRecvDevList) goto ib_recv_dev_list;
@@ -970,6 +990,8 @@ ncclResult_t ncclIbAccept(void* listenComm, void** recvComm, ncclNetDeviceHandle
 
   NCCLCHECK(ncclIbMalloc((void**)&rComm, sizeof(struct ncclIbRecvComm)));
   NCCLCHECKGOTO(ncclIbRecvCommInit(rComm), ret, fail);
+  // [NCCLX-PerCommConfig] Apply per-comm IB overrides (splitDataOnQps)
+  ncclx::ncclxIbCommInit(rComm, lComm->ctx);
   NCCLCHECKGOTO(ncclIbStatsInit(&rComm->base.stats), ret, fail);
   stage->comm = rComm;
   stage->state = ncclIbCommStateAccept;
@@ -1005,8 +1027,8 @@ ib_recv_dev_list:
   rComm->base.vProps = mergedDev->vProps;
   memcpy(stage->buffer, &rComm->base.vProps, sizeof(ncclNetVDeviceProps_t));
   int localNqps, remoteNqps;
-  localNqps  = ncclParamIbQpsPerConn() * rComm->base.vProps.ndevs; // We must have at least 1 qp per-device
-  remoteNqps = ncclParamIbQpsPerConn() * remoteVProps.ndevs;
+  localNqps  = getQpsPerConn() * rComm->base.vProps.ndevs; // We must have at least 1 qp per-device
+  remoteNqps = getQpsPerConn() * remoteVProps.ndevs;
   rComm->base.nqps = remoteNqps > localNqps ? remoteNqps : localNqps; // Select max nqps (local or remote)
 
   rComm->base.nDataQps = std::max(rComm->base.vProps.ndevs, remoteVProps.ndevs);
@@ -1052,7 +1074,7 @@ ib_recv:
   // up to 2 completions (one for the CTS message and one for the completion
   // of a receive request) per QP, in the worst case.
   int cqSize;
-  cqSize = 2*NET_IB_MAX_REQUESTS*ncclParamIbQpsPerConn();
+  cqSize = 2*NET_IB_MAX_REQUESTS*getQpsPerConn();
   for (int i = 0; i < rComm->base.vProps.ndevs; i++) {
     rCommDev = rComm->devs + i;
     ibDevN = rComm->base.vProps.devs[i];

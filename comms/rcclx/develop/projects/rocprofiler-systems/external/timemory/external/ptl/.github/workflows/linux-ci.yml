@@ -1,0 +1,121 @@
+name: linux-ci
+
+on:
+  push:
+    branches: [ master, main, develop ]
+  pull_request:
+    branches: [ master, main, develop ]
+
+env:
+  BUILD_TYPE: Release
+  ASAN_OPTIONS: "detect_leaks=0"
+
+jobs:
+  ci:
+    runs-on: ubuntu-18.04
+    strategy:
+      matrix:
+        include:
+          - build_type: 'Debug'
+            build_libs: 'shared'
+            compiler: 'gcc'
+            extra_args: '--coverage --tbb --num-tasks=64'
+            extra_packages: 'clang-tidy'
+            standard: '11'
+          - build_type: 'RelWithDebInfo'
+            build_libs: 'shared'
+            compiler: 'clang-12'
+            extra_args: '--num-tasks=256 --sanitizer --sanitizer-type=leak --static-analysis'
+            extra_packages: 'clang-tidy-12'
+            standard: '11'
+          - build_type: 'RelWithDebInfo'
+            build_libs: 'shared'
+            compiler: 'clang-12'
+            extra_args: '--num-tasks=256 --tbb --sanitizer --sanitizer-type=address --static-analysis'
+            extra_packages: 'clang-tidy-12'
+            standard: '14'
+          - build_type: 'RelWithDebInfo'
+            build_libs: 'shared'
+            compiler: 'clang-12'
+            extra_args: '--num-tasks=256 --tbb --sanitizer --sanitizer-type=thread --static-analysis'
+            extra_cmake: '-DPTL_USE_LOCKS=ON'
+            extra_packages: 'clang-tidy-12'
+            standard: '17'
+        build_type: ['Release']
+        build_libs: ['shared static']
+        compiler: ['gcc-6', 'gcc-7', 'gcc-8', 'gcc-9', 'gcc-10', 'clang-7', 'clang-8', 'clang-10', 'clang-11']
+        extra_args: ['--num-tasks=256 --tbb']
+        standard: ['11']
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Install Conda
+      run:
+        wget https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda.sh &&
+        bash miniconda.sh -b -p /opt/conda &&
+        export PATH="/opt/conda/bin:${PATH}" &&
+        conda config --set always_yes yes --set changeps1 yes &&
+        conda update -c defaults -n base conda &&
+        conda create -n pyctest -c defaults -c conda-forge python=3.7 pyctest &&
+        source activate &&
+        conda activate pyctest
+
+    - name: Configure Repos
+      run:
+        DISTRIB_CODENAME=$(cat /etc/lsb-release | grep DISTRIB_CODENAME | awk -F '=' '{print $NF}') &&
+        sudo apt-get update &&
+        sudo apt-get install -y software-properties-common wget curl &&
+        sudo add-apt-repository -u -y ppa:ubuntu-toolchain-r/test &&
+        wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add - &&
+        echo "deb http://apt.llvm.org/${DISTRIB_CODENAME}/ llvm-toolchain-${DISTRIB_CODENAME}-8 main" >> llvm-toolchain.list &&
+        echo "deb-src http://apt.llvm.org/${DISTRIB_CODENAME}/ llvm-toolchain-${DISTRIB_CODENAME}-8 main" >> llvm-toolchain.list &&
+        echo "deb http://apt.llvm.org/${DISTRIB_CODENAME}/ llvm-toolchain-${DISTRIB_CODENAME}-9 main" >> llvm-toolchain.list &&
+        echo "deb-src http://apt.llvm.org/${DISTRIB_CODENAME}/ llvm-toolchain-${DISTRIB_CODENAME}-9 main" >> llvm-toolchain.list &&
+        echo "deb http://apt.llvm.org/${DISTRIB_CODENAME}/ llvm-toolchain-${DISTRIB_CODENAME}-10 main" >> llvm-toolchain.list &&
+        echo "deb-src http://apt.llvm.org/${DISTRIB_CODENAME}/ llvm-toolchain-${DISTRIB_CODENAME}-10 main" >> llvm-toolchain.list &&
+        echo "deb http://apt.llvm.org/${DISTRIB_CODENAME}/ llvm-toolchain-${DISTRIB_CODENAME}-11 main" >> llvm-toolchain.list &&
+        echo "deb-src http://apt.llvm.org/${DISTRIB_CODENAME}/ llvm-toolchain-${DISTRIB_CODENAME}-11 main" >> llvm-toolchain.list &&
+        echo "deb http://apt.llvm.org/${DISTRIB_CODENAME}/ llvm-toolchain-${DISTRIB_CODENAME}-12 main" >> llvm-toolchain.list &&
+        echo "deb-src http://apt.llvm.org/${DISTRIB_CODENAME}/ llvm-toolchain-${DISTRIB_CODENAME}-12 main" >> llvm-toolchain.list &&
+        cat llvm-toolchain.list &&
+        sudo mv llvm-toolchain.list /etc/apt/sources.list.d/
+
+    - name: Install Repos
+      run:
+        export CC=${{ matrix.compiler }} &&
+        export CXX=$(echo "${{ matrix.compiler }}" | sed 's/gcc/g++/1' | sed 's/clang/clang++/1') &&
+        echo "C compiler is ${CC}" &&
+        echo "C++ compiler is ${CXX}" &&
+        sudo apt-get update &&
+        sudo apt-get install -y lcov libtbb-dev ${{ matrix.extra_packages }} &&
+        sudo apt-get install -y build-essential ${CC} ${CXX}
+
+    - name: Build and Test
+      run:
+        export PATH="/opt/conda/bin:${PATH}" &&
+        source activate &&
+        conda activate pyctest &&
+        export CMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH}:${CONDA_PREFIX}" &&
+        export CC=$(which ${{ matrix.compiler }}) &&
+        export CXX=$(which $(echo "${{ matrix.compiler }}" | sed 's/gcc/g++/1' | sed 's/clang/clang++/1')) &&
+        echo "C compiler is ${CC}" &&
+        echo "C++ compiler is ${CXX}" &&
+        python ./pyctest-runner.py -SF
+          --pyctest-model=Continuous
+          --pyctest-site=GitHub-Linux
+          --pyctest-build-type=${{ matrix.build_type }}
+          --build-libs ${{ matrix.build_libs }}
+          ${{ matrix.extra_args }}
+          -- -VV ${{ matrix.extra_ctest }}
+          -- -DCMAKE_INSTALL_PREFIX=${HOME}/ptl-install -DCMAKE_CXX_STANDARD=${{ matrix.standard }} ${{ matrix.extra_cmake }}
+
+    - name: Install
+      run:
+        export PATH="/opt/conda/bin:${PATH}" &&
+        source activate &&
+        conda activate pyctest &&
+        export CMAKE_PREFIX_PATH="${HOME}/ptl-install:${CMAKE_PREFIX_PATH}:${CONDA_PREFIX}" &&
+        cmake --build build-PTL --target install &&
+        cmake -B ${HOME}/ptl-examples-build ${PWD}/examples/basic &&
+        cmake --build ${HOME}/ptl-examples-build --target all

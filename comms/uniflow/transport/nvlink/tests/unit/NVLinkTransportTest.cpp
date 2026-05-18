@@ -371,6 +371,39 @@ std::shared_ptr<::testing::NiceMock<MockCudaApi>>
 std::shared_ptr<::testing::NiceMock<MockCudaDriverApi>>
     NVLinkTransportFactoryTest::cudaDriverMock_;
 
+// --- supported() tests ---
+
+TEST(NVLinkTransportFactorySupportedTest, ReturnsTrueWithCudaDevices) {
+  auto cudaMock = std::make_shared<::testing::NiceMock<MockCudaApi>>();
+  EXPECT_CALL(*cudaMock, getDeviceCount())
+      .WillOnce(::testing::Return(Result<int>(8)));
+
+  auto status = NVLinkTransportFactory::supported(cudaMock);
+  EXPECT_FALSE(status.hasError());
+}
+
+TEST(NVLinkTransportFactorySupportedTest, ReturnsFalseWhenNoDevices) {
+  auto cudaMock = std::make_shared<::testing::NiceMock<MockCudaApi>>();
+  EXPECT_CALL(*cudaMock, getDeviceCount())
+      .WillOnce(::testing::Return(Result<int>(0)));
+
+  auto status = NVLinkTransportFactory::supported(cudaMock);
+  EXPECT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::ResourceExhausted);
+}
+
+TEST(NVLinkTransportFactorySupportedTest, ReturnsFalseWhenCudaFails) {
+  auto cudaMock = std::make_shared<::testing::NiceMock<MockCudaApi>>();
+  EXPECT_CALL(*cudaMock, getDeviceCount())
+      .WillOnce(
+          ::testing::Return(
+              Result<int>(Err(ErrCode::DriverError, "no CUDA driver"))));
+
+  auto status = NVLinkTransportFactory::supported(cudaMock);
+  EXPECT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::DriverError);
+}
+
 // --- bounds checking ---
 
 TEST_F(NVLinkTransportFactoryTest, ConstructorRejectsNegativeDevice) {
@@ -1862,7 +1895,22 @@ TEST_F(NVLinkTransportPutGetTest, PutMultipleRequestsCopiesAllData) {
 
   cudaEvent_t fakeEvent = reinterpret_cast<cudaEvent_t>(0x70);
 
-  // Expect 3 memcpyAsync calls in order, put: dst=remote, src=local.
+  // Expect a single batched call on CUDA 12.8+, otherwise 3 individual
+  // memcpyAsync calls. put: dst=remote, src=local.
+#if CUDART_VERSION >= 12080
+  EXPECT_CALL(*cudaApiMock_, memcpyBatchAsync(_, _, _, 3, nullptr))
+      .WillOnce(Invoke(
+          [](void** dsts,
+             const void* const* srcs,
+             const size_t* sizes,
+             size_t count,
+             cudaStream_t) -> Status {
+            for (size_t i = 0; i < count; ++i) {
+              std::memcpy(dsts[i], srcs[i], sizes[i]);
+            }
+            return Ok();
+          }));
+#else
   {
     ::testing::InSequence seq;
     EXPECT_CALL(
@@ -1913,6 +1961,7 @@ TEST_F(NVLinkTransportPutGetTest, PutMultipleRequestsCopiesAllData) {
               return Ok();
             }));
   }
+#endif
 
   EXPECT_CALL(*cudaApiMock_, eventCreate(_))
       .WillOnce(DoAll(::testing::SetArgPointee<0>(fakeEvent), Return(Ok())));
@@ -1992,6 +2041,20 @@ TEST_F(NVLinkTransportPutGetTest, PutSubSpanTransfersPartialData) {
   cudaEvent_t fakeEvent = reinterpret_cast<cudaEvent_t>(0x72);
 
   // Sub-spans: only transfer the first half of each region.
+#if CUDART_VERSION >= 12080
+  EXPECT_CALL(*cudaApiMock_, memcpyBatchAsync(_, _, _, 3, nullptr))
+      .WillOnce(Invoke(
+          [](void** dsts,
+             const void* const* srcs,
+             const size_t* sizes,
+             size_t count,
+             cudaStream_t) -> Status {
+            for (size_t i = 0; i < count; ++i) {
+              std::memcpy(dsts[i], srcs[i], sizes[i]);
+            }
+            return Ok();
+          }));
+#else
   {
     ::testing::InSequence seq;
     EXPECT_CALL(
@@ -2046,6 +2109,7 @@ TEST_F(NVLinkTransportPutGetTest, PutSubSpanTransfersPartialData) {
               return Ok();
             }));
   }
+#endif
 
   EXPECT_CALL(*cudaApiMock_, eventCreate(_))
       .WillOnce(DoAll(::testing::SetArgPointee<0>(fakeEvent), Return(Ok())));
@@ -2133,7 +2197,22 @@ TEST_F(NVLinkTransportPutGetTest, GetMultipleRequestsCopiesAllData) {
 
   cudaEvent_t fakeEvent = reinterpret_cast<cudaEvent_t>(0x71);
 
-  // Expect 3 memcpyAsync calls in order, get: dst=local, src=remote.
+  // Expect a single batched call on CUDA 12.8+, otherwise 3 individual
+  // memcpyAsync calls. get: dst=local, src=remote.
+#if CUDART_VERSION >= 12080
+  EXPECT_CALL(*cudaApiMock_, memcpyBatchAsync(_, _, _, 3, nullptr))
+      .WillOnce(Invoke(
+          [](void** dsts,
+             const void* const* srcs,
+             const size_t* sizes,
+             size_t count,
+             cudaStream_t) -> Status {
+            for (size_t i = 0; i < count; ++i) {
+              std::memcpy(dsts[i], srcs[i], sizes[i]);
+            }
+            return Ok();
+          }));
+#else
   {
     ::testing::InSequence seq;
     EXPECT_CALL(
@@ -2184,6 +2263,7 @@ TEST_F(NVLinkTransportPutGetTest, GetMultipleRequestsCopiesAllData) {
               return Ok();
             }));
   }
+#endif
 
   EXPECT_CALL(*cudaApiMock_, eventCreate(_))
       .WillOnce(DoAll(::testing::SetArgPointee<0>(fakeEvent), Return(Ok())));

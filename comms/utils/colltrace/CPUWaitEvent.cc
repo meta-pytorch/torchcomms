@@ -3,9 +3,11 @@
 #include "comms/utils/colltrace/CPUWaitEvent.h"
 #include <folly/Unit.h>
 
+#include "comms/utils/colltrace/PrecisionClock.h"
+
 namespace meta::comms::colltrace {
 
-CPUWaitEvent::CPUWaitEvent() : enqueueTime_(std::chrono::system_clock::now()) {}
+CPUWaitEvent::CPUWaitEvent() : enqueueTime_(precisionNow()) {}
 
 CommsMaybeVoid CPUWaitEvent::beforeCollKernelScheduled() noexcept {
   // No op for CPU Wait event before collective kernel scheduled
@@ -30,13 +32,13 @@ CommsMaybe<bool> CPUWaitEvent::waitCollEnd(
 
 CommsMaybeVoid CPUWaitEvent::signalCollStart() noexcept {
   startEvent_.waitSemaphore.post();
-  startEvent_.timePoint = std::chrono::system_clock::now();
+  startEvent_.timePoint = precisionNow();
   return folly::unit;
 }
 
 CommsMaybeVoid CPUWaitEvent::signalCollEnd() noexcept {
   endEvent_.waitSemaphore.post();
-  endEvent_.timePoint = std::chrono::system_clock::now();
+  endEvent_.timePoint = precisionNow();
   return folly::unit;
 }
 

@@ -1,0 +1,68 @@
+# This handles formatting for C/C++ source code and cmake code
+name: formatting
+
+on:
+  push:
+    branches: [ master, develop ]
+  pull_request:
+    branches: [ master, develop ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cxx-formatting:
+    runs-on: ubuntu-20.04
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang-format-9 cmake
+    - name: clang-format
+      run: |
+        cmake -B build-PTL -DPTL_USE_TBB=OFF .
+        cmake --build build-PTL --target format-source
+        rm -rf build-PTL
+        if [ $(git diff | wc -l) -gt 0 ]; then
+          echo -e "\nError! Source code not formatted. Run clang-format-9...\n"
+          echo -e "\nFiles:\n"
+          git diff --name-only
+          echo -e "\nFull diff:\n"
+          git diff
+          exit 1
+        fi
+
+  cmake-formatting:
+    runs-on: ubuntu-20.04
+    strategy:
+      matrix:
+        python-version: [3.8]
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v2
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake
+        python -m pip install --upgrade pip
+        pip install cmake-format pyyaml
+    - name: cmake format
+      run: |
+        cmake -B build-PTL -DPTL_USE_TBB=OFF .
+        cmake --build build-PTL --target format-cmake
+        rm -rf build-PTL
+        if [ $(git diff | wc -l) -gt 0 ]; then
+          echo -e "\nError! CMake code not formatted. Run cmake-format...\n"
+          echo -e "\nFiles:\n"
+          git diff --name-only
+          echo -e "\nFull diff:\n"
+          git diff
+          exit 1
+        fi

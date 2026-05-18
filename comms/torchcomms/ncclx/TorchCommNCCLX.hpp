@@ -21,9 +21,9 @@
 #include "comms/torchcomms/device/cuda/CudaApi.hpp"
 #include "comms/torchcomms/ncclx/GraphEventTracker.hpp"
 #include "comms/torchcomms/ncclx/NcclxApi.hpp"
-#include "comms/torchcomms/ncclx/TorchCommNCCLXPersistentRequest.hpp"
 #include "comms/torchcomms/ncclx/TorchCommWindowNCCLX.hpp"
 #include "comms/torchcomms/ncclx/TorchWorkNCCLX.hpp"
+#include "comms/utils/GraphCaptureSideStream.h"
 
 #if defined(ENABLE_PIPES)
 #include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
@@ -205,31 +205,6 @@ class TorchCommNCCLX : public TorchCommBackend,
       const at::Tensor& input_chunk_count_per_rank,
       bool async_op);
 
-  c10::intrusive_ptr<TorchCommNCCLXPersistentRequest> alltoallv_dedup_init(
-      const int num_send_blocks,
-      const int block_count,
-      const int block_num_recv_buckets,
-      const int num_recv_buckets,
-      at::ScalarType dtype,
-      bool async_op);
-
-  c10::intrusive_ptr<TorchWork> alltoallv_dedup_exec(
-      at::Tensor& output_tensor,
-      at::Tensor& recv_block_ids,
-      const at::Tensor& input_tensor,
-      const at::Tensor& send_indices,
-      const at::Tensor& forward_indices,
-      const at::Tensor& recv_indices,
-      at::intrusive_ptr<TorchCommNCCLXPersistentRequest> pReq);
-
-  c10::intrusive_ptr<TorchWork> alltoallv_dedup_combine(
-      at::Tensor& output_tensor,
-      const at::Tensor& input_tensor,
-      const at::Tensor& send_indices,
-      const at::Tensor& forward_indices,
-      const at::Tensor& recv_indices,
-      at::intrusive_ptr<TorchCommNCCLXPersistentRequest> pReq);
-
   // Persistent AllGather operations
   AllGatherPHandle all_gather_p_init(
       at::Tensor& output,
@@ -278,14 +253,22 @@ class TorchCommNCCLX : public TorchCommBackend,
       const std::string& name,
       const CommOptions& options = {}) override;
 
+  // Fault Tolerance API
+  bool supportsReconfigure() const override {
+    return true;
+  }
+  InitHandle getInitHandle() const override;
+  c10::intrusive_ptr<TorchWork> reconfigure(
+      const ReconfigureOptions& opts) override;
+  void abort() override;
+
   std::unordered_map<std::string, std::string> comm_dump();
   // Friend access for TorchCommNCCLX
   friend class TorchWorkNCCLX;
   friend class GraphEventTracker;
-  friend class CachingAllocatorHookImpl;
+  friend class NcclxCachingAllocatorHookImpl;
   template <typename B>
   friend class TorchCommWindowNCCLX;
-  friend class TorchCommNCCLXPersistentRequest;
 
   // Getter for CUDA API (for friend classes)
   CudaApi* getCudaApi() const {
@@ -332,6 +315,7 @@ class TorchCommNCCLX : public TorchCommBackend,
   [[nodiscard]] cudaEvent_t getEvent();
   void returnEvent(cudaEvent_t event);
   void abortNcclComm();
+  void revokeNcclComm();
 
   enum class CommState {
     NORMAL,
@@ -345,7 +329,18 @@ class TorchCommNCCLX : public TorchCommBackend,
   cudaEvent_t
       dependency_event_{}; // Pre-allocated event for stream dependencies
 
+  // Side stream used to host the graph timeout monitoring's external
+  // cudaEventRecord nodes off the main collective stream's critical path
+  // during CUDA graph capture. See TorchWorkNCCLX::recordStart/recordEnd.
+  // Owns its own dep event internally. Lazily instantiated only when
+  // ``isGraphTimeoutMonitoringEnabled()``.
+  std::unique_ptr<meta::comms::GraphSideStream> graph_monitor_side_stream_;
+
  public:
+  meta::comms::GraphSideStream* getGraphMonitorSideStream() {
+    return graph_monitor_side_stream_.get();
+  }
+
   struct Address {
     void* addr;
   };
@@ -356,7 +351,7 @@ class TorchCommNCCLX : public TorchCommBackend,
   };
 
   // Global pointer-based registration that doesn't require a comm instance.
-  // Used by CachingAllocatorHook for pre-comm memory registration.
+  // Used by NcclxCachingAllocatorHook for pre-comm memory registration.
   // The caller provides the NcclxApi to use for the registration.
   static void global_register_address(
       const AddressWithLen& addr,
@@ -487,12 +482,15 @@ class TorchCommNCCLX : public TorchCommBackend,
       const ncclDataType_t dataType);
   void timeoutWatchdog() noexcept;
   void checkInitialized() const;
+  void initNcclxResources();
   void checkAndAbortIfTimedOutOrError();
   void checkWorkQueue();
   bool getGraphCaptureMode();
   void ensureTensorContiguous(const at::Tensor& tensor);
+  void checkTensorDevice(const at::Tensor& tensor) const;
+  void checkTensorsDevice(const std::vector<at::Tensor>& tensors) const;
 
-  // Initialize the CachingAllocatorHook singleton
+  // Initialize the NcclxCachingAllocatorHook singleton
   void attachMemoryHook();
 
 #if defined(ENABLE_PIPES)
@@ -505,8 +503,12 @@ class TorchCommNCCLX : public TorchCommBackend,
   at::Device device_;
   int comm_size_{};
   int rank_{};
+  int64_t uuid_{-1};
   size_t split_counter_{};
   CommOptions options_;
+
+  // Store held for reconfigure bootstrap (kept alive across reconfigure calls)
+  c10::intrusive_ptr<c10d::Store> reconfigure_store_;
 
   cudaStream_t internal_stream_{};
   void* barrier_buffer_{}; // Pre-allocated CUDA buffer for barrier operations

@@ -110,11 +110,7 @@ inline CtranCommWithBootstrap createCtranCommWithBootstrap(
       std::move(commRanksToWorldRanks),
       std::string{commDesc});
 
-  // For single-rank communicators (nRanks=1), use nolocal topology mode
-  // which doesn't require bootstrap communication.
-  if (nRanks == 1) {
-    ctranComm->statex_->initRankTopologyNolocal();
-  }
+  ctranComm->statex_->initRankStatesTopology(ctranComm->bootstrap_.get());
 
   FB_COMMCHECKTHROW_EX(ctranInit(ctranComm.get()), ctranComm->logMetaData_);
 

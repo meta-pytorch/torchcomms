@@ -165,7 +165,7 @@ __global__ void selfTransportPutKernel(
     const char* src_d,
     std::size_t nbytes) {
   auto group = make_warp_group();
-  transport->self.put(group, dst_d, src_d, nbytes);
+  transport->self.put_group(group, dst_d, src_d, nbytes);
 }
 
 void testSelfTransportPut(
@@ -399,9 +399,42 @@ void testDeviceWindowNvlOffsetPut(
   auto dw = bufs.create_with_offset_put(myRank, nRanks, windowBuf_d);
 
   int targetPeerRank = (myRank == 0) ? 1 : 0;
-  LocalBufferRegistration src_buf{srcBuf_d, srcBufSize, NetworkLKey{}};
+  LocalBufferRegistration src_buf{srcBuf_d, srcBufSize};
   nvlOffsetPutKernel<<<4, 256>>>(
       dw, targetPeerRank, dst_offset, src_buf, src_offset, nbytes);
+  CUDACHECK_TEST(cudaGetLastError());
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+}
+
+// =============================================================================
+// DeviceWindow Offset-Based NVL Per-Group Put Test
+// =============================================================================
+
+__global__ void nvlOffsetPutPerGroupKernel(
+    DeviceWindow dw,
+    int targetPeerRank,
+    LocalBufferRegistration src_buf,
+    std::size_t tileSize) {
+  auto group = make_block_group();
+  std::size_t offset = group.group_id * tileSize;
+  dw.put(group, targetPeerRank, offset, src_buf, offset, tileSize);
+}
+
+void testDeviceWindowNvlOffsetPutPerGroup(
+    int myRank,
+    int nRanks,
+    char* windowBuf_d,
+    const char* srcBuf_d,
+    std::size_t srcBufSize,
+    std::size_t tileSize,
+    int numTiles) {
+  NvlOffsetPutDeviceWindowBuffers bufs;
+  auto dw = bufs.create_with_offset_put(myRank, nRanks, windowBuf_d);
+
+  int targetPeerRank = (myRank == 0) ? 1 : 0;
+  LocalBufferRegistration src_buf{srcBuf_d, srcBufSize, NetworkLKeys{}};
+  nvlOffsetPutPerGroupKernel<<<numTiles, 256>>>(
+      dw, targetPeerRank, src_buf, tileSize);
   CUDACHECK_TEST(cudaGetLastError());
   CUDACHECK_TEST(cudaDeviceSynchronize());
 }
@@ -437,7 +470,7 @@ void testDeviceWindowNvlOffsetPutSignal(
   auto dw = bufs.create_with_offset_put(myRank, nRanks, windowBuf_d);
 
   int targetPeerRank = (myRank == 0) ? 1 : 0;
-  LocalBufferRegistration src_buf{srcBuf_d, srcBufSize, NetworkLKey{}};
+  LocalBufferRegistration src_buf{srcBuf_d, srcBufSize};
   nvlOffsetPutSignalKernel<<<4, 256>>>(
       dw, targetPeerRank, dst_offset, src_buf, src_offset, nbytes, signalId);
   CUDACHECK_TEST(cudaGetLastError());
@@ -468,8 +501,8 @@ void testDeviceWindowNvlBidirectionalOffsetPutSignal(
   NvlOffsetPutDeviceWindowBuffers bufs1;
   auto dw1 = bufs1.create_with_offset_put(1, nRanks, windowBuf0_d);
 
-  LocalBufferRegistration srcReg0{srcBuf0_d, srcBufSize, NetworkLKey{}};
-  LocalBufferRegistration srcReg1{srcBuf1_d, srcBufSize, NetworkLKey{}};
+  LocalBufferRegistration srcReg0{srcBuf0_d, srcBufSize};
+  LocalBufferRegistration srcReg1{srcBuf1_d, srcBufSize};
 
   // Rank 0 puts to rank 1's window buffer
   nvlOffsetPutSignalKernel<<<4, 256>>>(
@@ -750,7 +783,7 @@ void testDeviceWindowNvlOffsetPutSignalCounter(
   auto dw = bufs.create_with_offset_put(myRank, nRanks, windowBuf_d);
 
   int targetPeerRank = (myRank == 0) ? 1 : 0;
-  LocalBufferRegistration src_buf{srcBuf_d, srcBufSize, NetworkLKey{}};
+  LocalBufferRegistration src_buf{srcBuf_d, srcBufSize};
   nvlOffsetPutSignalCounterKernel<<<4, 256>>>(
       dw,
       targetPeerRank,
@@ -806,7 +839,7 @@ void testDeviceWindowNvlOffsetPutCounter(
   auto dw = bufs.create_with_offset_put(myRank, nRanks, windowBuf_d);
 
   int targetPeerRank = (myRank == 0) ? 1 : 0;
-  LocalBufferRegistration src_buf{srcBuf_d, srcBufSize, NetworkLKey{}};
+  LocalBufferRegistration src_buf{srcBuf_d, srcBufSize};
   nvlOffsetPutCounterKernel<<<4, 256>>>(
       dw,
       targetPeerRank,

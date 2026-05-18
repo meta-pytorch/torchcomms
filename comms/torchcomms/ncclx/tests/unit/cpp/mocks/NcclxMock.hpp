@@ -49,6 +49,8 @@ class NcclxMock : public NcclxApi {
 
   MOCK_METHOD(ncclResult_t, commAbort, (ncclComm_t comm), (override));
 
+  MOCK_METHOD(ncclResult_t, commRevoke, (ncclComm_t comm), (override));
+
   MOCK_METHOD(
       ncclResult_t,
       commGetAsyncError,
@@ -61,6 +63,34 @@ class NcclxMock : public NcclxApi {
       (ncclComm_t comm,
        int color,
        int key,
+       ncclComm_t* newcomm,
+       ncclConfig_t* config),
+      (override));
+
+  MOCK_METHOD(
+      ncclResult_t,
+      commShrink,
+      (ncclComm_t comm,
+       int* excludeRanksList,
+       int excludeRanksCount,
+       ncclComm_t* newcomm,
+       ncclConfig_t* config,
+       int shrinkFlags),
+      (override));
+
+  MOCK_METHOD(
+      ncclResult_t,
+      commGetUniqueId,
+      (ncclComm_t comm, ncclUniqueId* uniqueId),
+      (override));
+
+  MOCK_METHOD(
+      ncclResult_t,
+      commGrow,
+      (ncclComm_t comm,
+       int nRanks,
+       const ncclUniqueId* uniqueId,
+       int rank,
        ncclComm_t* newcomm,
        ncclConfig_t* config),
       (override));
@@ -260,42 +290,6 @@ class NcclxMock : public NcclxApi {
        cudaStream_t stream),
       (override));
 
-  MOCK_METHOD(
-      ncclResult_t,
-      alltoallvDedupInit,
-      (const size_t totalNumSendBlocks,
-       const size_t blockCount,
-       const size_t blockNumRecvBuckets,
-       const int numRecvBuckets,
-       ncclDataType_t datatype,
-       ncclComm_t comm,
-       cudaStream_t stream,
-       void** reques),
-      (override));
-
-  MOCK_METHOD(
-      ncclResult_t,
-      alltoallvDedupExec,
-      (const void* sendBuff,
-       const int* sendIdx,
-       const int* fwdIdx,
-       const int* recvIdx,
-       void* recvBuff,
-       int recvBlockIds[],
-       void* request),
-      (override));
-
-  MOCK_METHOD(
-      ncclResult_t,
-      alltoallvDedupCombine,
-      (const void* sendBuff,
-       const int* sendIdx,
-       const int* fwdIdx,
-       const int* recvIdx,
-       void* recvBuff,
-       void* request),
-      (override));
-
   // Persistent AllGather operations
   MOCK_METHOD(
       ncclResult_t,
@@ -392,6 +386,22 @@ class NcclxMock : public NcclxApi {
       (override));
 
   MOCK_METHOD(ncclTeam_t, teamLsa, (ncclComm_t comm), (override));
+
+  MOCK_METHOD(bool, multimemSupport, (ncclComm_t comm), (override));
+
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
+  MOCK_METHOD(
+      ncclResult_t,
+      winGetPeerDevicePointer,
+      (NcclxWindow win, size_t offset, int peer, void** outPtr),
+      (override));
+
+  MOCK_METHOD(
+      ncclResult_t,
+      winGetLsaMultimemDevicePointer,
+      (NcclxWindow win, size_t offset, void** outPtr),
+      (override));
+#endif
 #endif
 
 #if defined(ENABLE_PIPES)
@@ -418,7 +428,7 @@ class NcclxMock : public NcclxApi {
   MOCK_METHOD(
       ncclResult_t,
       winLocalRegisterBuffer,
-      (ncclComm_t comm, void* ptr, size_t size, uint32_t* outLkey),
+      (ncclComm_t comm, void* ptr, size_t size, ncclLkeyPerDevice* outLkeys),
       (override));
   MOCK_METHOD(
       ncclResult_t,

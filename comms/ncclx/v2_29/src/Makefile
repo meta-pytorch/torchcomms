@@ -18,6 +18,8 @@ include ../makefiles/version.mk
 
 ##### Mock Scuba Data in CMake build
 CXXFLAGS += -DMOCK_SCUBA_DATA -DFOLLY_XLOG_STRIP_PREFIXES=\"${BASE_DIR}\"
+# Use header-only fmt to avoid runtime dependency on libfmt.so
+CXXFLAGS += -DFMT_HEADER_ONLY=1
 
 ifeq ($(ENABLE_TCPDM),0)
 CXXFLAGS += -DCTRAN_DISABLE_TCPDM
@@ -28,7 +30,7 @@ CXXFLAGS += -DENABLE_PIPES
 endif
 
 ##### src files
-INCEXPORTS  := nccl.h nccl_device.h CtranEx.h CtranExComm.h \
+INCEXPORTS  := nccl.h nccl_device.h \
 	$(patsubst ${SRCDIR}/include/%,%,$(wildcard ${SRCDIR}/include/nccl_device/*.h ${SRCDIR}/include/nccl_device/*/*.h ${SRCDIR}/include/nccl_device/*/*/*.h))
 
 
@@ -54,21 +56,24 @@ LIBSRCFILES := \
 
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/commDump.cc)
+LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/DeviceRackSerial.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/NcclxConfig.cc)
-LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/analyzer/*.cc)
+LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/commHash.cc)
+LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/RankUtil.cc)
+LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/analyzer/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/colltrace/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/logger/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/tcpstore/*.cc)
-LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/transport/*.cc)
+LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/transport/*.cc)
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/utilx/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/commstate/*.cc)
-LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/rma/*.cc)
+LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/rma/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/collectives/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/comms-monitor/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/ctran-integration/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/hints/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/algoconf/*.cc)
-LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/wrapper/*.cc)
+LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/wrapper/*.cc)
 
 #### Start of fbcode source files
 ## Trainer Context for getting/setting trainer steps.
@@ -77,6 +82,8 @@ LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/trainer/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/logger/*.cc)
 ## Common Utils shared between comm libraries
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/*.cc)
+## Memory tracing
+LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/memtrace/*.cc)
 ## CollTrace source files
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/colltrace/*.cc)
 ## CollTrace CUDA source files (host-side kernel launchers)
@@ -114,7 +121,6 @@ LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/AllGatherP/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/ReduceScatter/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/AllReduce/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/AllToAll/*.cc)
-LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/AllToAllvDedup/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/SendRecv/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/Broadcast/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/RMA/*.cc)
@@ -125,7 +131,7 @@ INCLUDES += -I${NCCLDIR}/
 INCLUDES += -I${SHAREDDIR}/
 INCLUDES += -I${NCCLDIR}/meta
 INCLUDES += -I${SHAREDDIR}/meta
-INCLUDES += -I${NCCLDIR}/meta/wrapper
+INCLUDES += -I${SHAREDDIR}/meta/wrapper
 INCLUDES += -Idevice
 INCLUDES += -I$(BASE_DIR)
 INCLUDES += -I$(CONDA_INCLUDE_DIR)
@@ -182,6 +188,7 @@ LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/devmgr/devmgr.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/devmgr/bufmgr.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/devmgr/devmgr_client.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/common/*.cc)
+LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/logger/LogInit.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/unpack/external_unpack.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/unpack/internal_unpack.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/unpack/batch_unpack_state.cc)
@@ -341,16 +348,6 @@ $(PKGDIR)/nccl.pc : nccl.pc.in
 	    $< > $@
 
 $(INCDIR)/%.h : %.h
-	@printf "Grabbing   %-35s > %s\n" $< $@
-	mkdir -p $(INCDIR)
-	install -m 644 $< $@
-
-$(INCDIR)/CtranEx.h : ${BASE_DIR}/comms/ctran/CtranEx.h
-	@printf "Grabbing   %-35s > %s\n" $< $@
-	mkdir -p $(INCDIR)
-	install -m 644 $< $@
-
-$(INCDIR)/CtranExComm.h : ${NCCLDIR}/meta/wrapper/CtranExComm.h
 	@printf "Grabbing   %-35s > %s\n" $< $@
 	mkdir -p $(INCDIR)
 	install -m 644 $< $@

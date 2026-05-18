@@ -27,29 +27,10 @@
 #include "comms/utils/logger/LoggingFormat.h"
 #include "meta/analyzer/NCCLXCommsTracingServiceUtil.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "meta/colltrace/CollTraceFunc.h"
-#include "meta/colltrace/CollTraceLegacyHandle.h"
-#include "comms/ctran/colltrace/CollTraceWrapper.h"
 #include "comms/utils/InitFolly.h"
 
 #include "meta/algoconf/AlgoConfig.h"
 #include "cuda_runtime_api.h"
-
-using namespace meta::comms::colltrace;
-
-void initLegacyColltraceForCtran() {
-  setCollTraceLegacyHandleFunc(
-      [](CtranComm* comm,
-         const std::vector<std::unique_ptr<OpElem>>& opElems,
-         const KernelConfig& kernelConfig,
-         const bool isLegacy) -> std::unique_ptr<ICollTraceHandle> {
-        return std::make_unique<CollTraceLegacyHandle>(
-            comm,
-            ncclx::colltrace::collTraceAquireEventCtran(
-                comm, opElems, kernelConfig, isLegacy),
-            CollTraceLegacyHandle::HandleType::ctran);
-      });
-}
 
 const char* userHomeDir() {
   struct passwd *pwUser = getpwuid(getuid());
@@ -113,7 +94,6 @@ void initEnv() {
     }
     initEnvFunc();
     initNcclLogger();
-    initLegacyColltraceForCtran();
     ncclx::NCCLXCommsTracingServiceUtil::startService();
     ncclx::algoconf::setupGlobalHints();
   });

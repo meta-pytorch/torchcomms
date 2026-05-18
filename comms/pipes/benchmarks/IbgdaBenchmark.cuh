@@ -21,7 +21,9 @@ __global__ void ibgdaPutSignalWaitLocalKernel(
     IbgdaRemoteBuffer remoteBuf,
     std::size_t nbytes,
     IbgdaRemoteBuffer remoteSignalBuf,
-    int signalId);
+    int signalId,
+    IbgdaLocalBuffer localCounterBuf,
+    int counterId);
 
 __global__ void ibgdaPutWaitLocalKernel(
     P2pIbgdaTransportDevice* transport,
@@ -34,6 +36,8 @@ __global__ void ibgdaPutWaitLocalBatchKernel(
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
     std::size_t nbytes,
+    IbgdaLocalBuffer localCounterBuf,
+    int counterId,
     int numIters,
     unsigned long long* totalCycles);
 
@@ -44,6 +48,8 @@ __global__ void ibgdaPutSignalWaitLocalBatchKernel(
     std::size_t nbytes,
     IbgdaRemoteBuffer remoteSignalBuf,
     int signalId,
+    IbgdaLocalBuffer localCounterBuf,
+    int counterId,
     int numIters,
     unsigned long long* totalCycles);
 
@@ -54,29 +60,9 @@ __global__ void ibgdaSignalOnlyBatchKernel(
     int numIters,
     unsigned long long* totalCycles);
 
-__global__ void ibgdaPutCqPollWaitBatchKernel(
-    P2pIbgdaTransportDevice* transport,
-    IbgdaLocalBuffer localBuf,
-    IbgdaRemoteBuffer remoteBuf,
-    std::size_t nbytes,
-    int numIters,
-    unsigned long long* totalCycles);
-
-__global__ void ibgdaPutSignalCounterBatchKernel(
-    P2pIbgdaTransportDevice* transport,
-    IbgdaLocalBuffer localDataBuf,
-    IbgdaRemoteBuffer remoteDataBuf,
-    std::size_t nbytes,
-    IbgdaRemoteBuffer remoteSignalBuf,
-    int signalId,
-    IbgdaLocalBuffer localCounterBuf,
-    int counterId,
-    int numIters,
-    unsigned long long* totalCycles);
-
 // Multi-peer kernels for counter fan-out validation
 
-__global__ void ibgdaMultiPeerCqPollFanOutBatchKernel(
+__global__ void ibgdaMultiPeerSerialCounterFanOutBatchKernel(
     P2pIbgdaTransportDevice* transportsBase,
     std::size_t transportStride,
     int numPeers,
@@ -85,6 +71,7 @@ __global__ void ibgdaMultiPeerCqPollFanOutBatchKernel(
     std::size_t nbytes,
     const IbgdaRemoteBuffer* remoteSignalBufs,
     int signalId,
+    IbgdaLocalBuffer localCounterBuf,
     int numIters,
     unsigned long long* totalCycles);
 

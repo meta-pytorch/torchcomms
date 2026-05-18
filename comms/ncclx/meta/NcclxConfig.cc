@@ -69,8 +69,6 @@ Config::Config(const ncclConfig_t* config) {
   checkPtrConflict("commDesc", config->commDesc);
   checkPtrConflict("splitGroupRanks", config->splitGroupRanks);
   checkPtrConflict("ncclAllGatherAlgo", config->ncclAllGatherAlgo);
-  checkIntConflict("lazyConnect", config->lazyConnect);
-  checkIntConflict("lazySetupChannels", config->lazySetupChannels);
   checkIntConflict("fastInitMode", config->fastInitMode);
 
   if (conflict) {
@@ -158,20 +156,6 @@ Config::Config(const ncclConfig_t* config) {
     }
   }
 
-  // booleans: flat field > hint > env default
-  if (config->lazyConnect != NCCL_CONFIG_UNDEF_INT) {
-    lazyConnect = config->lazyConnect != 0;
-  } else {
-    lazyConnect = parseHintBool("lazyConnect", NCCL_RUNTIME_CONNECT);
-  }
-
-  if (config->lazySetupChannels != NCCL_CONFIG_UNDEF_INT) {
-    lazySetupChannels = config->lazySetupChannels != 0;
-  } else {
-    lazySetupChannels =
-        parseHintBool("lazySetupChannels", NCCL_LAZY_SETUP_CHANNELS);
-  }
-
   if (config->fastInitMode != NCCL_CONFIG_UNDEF_INT) {
     fastInitMode = config->fastInitMode != 0;
   } else {
@@ -208,6 +192,61 @@ Config::Config(const ncclConfig_t* config) {
         WARN(
             "NCCLX hint 'vCliqueSize': invalid integer value '%s'",
             val.c_str());
+      }
+    }
+  }
+
+  // ncclBuffSize: hint only (no flat ncclConfig_t field)
+  {
+    std::string val = getHintStr("ncclBuffSize");
+    if (!val.empty()) {
+      try {
+        int parsed = std::stoi(val);
+        if (parsed <= 0) {
+          WARN("NCCLX hint 'ncclBuffSize': value %d must be positive", parsed);
+        } else {
+          ncclBuffSize = parsed;
+        }
+      } catch (const std::exception&) {
+        WARN("NCCLX hint 'ncclBuffSize': invalid value '%s'", val.c_str());
+      }
+    }
+  }
+
+  // ibSplitDataOnQps: hint only, 0 or 1
+  {
+    std::string val = getHintStr("ibSplitDataOnQps");
+    if (!val.empty()) {
+      try {
+        int parsed = std::stoi(val);
+        if (parsed != 0 && parsed != 1) {
+          WARN(
+              "NCCLX hint 'ibSplitDataOnQps': value %d must be 0 or 1", parsed);
+        } else {
+          ibSplitDataOnQps = parsed;
+        }
+      } catch (const std::exception&) {
+        WARN("NCCLX hint 'ibSplitDataOnQps': invalid value '%s'", val.c_str());
+      }
+    }
+  }
+
+  // ibQpsPerConnection: hint only, positive integer
+  {
+    std::string val = getHintStr("ibQpsPerConnection");
+    if (!val.empty()) {
+      try {
+        int parsed = std::stoi(val);
+        if (parsed <= 0) {
+          WARN(
+              "NCCLX hint 'ibQpsPerConnection': value %d must be positive",
+              parsed);
+        } else {
+          ibQpsPerConnection = parsed;
+        }
+      } catch (const std::exception&) {
+        WARN(
+            "NCCLX hint 'ibQpsPerConnection': invalid value '%s'", val.c_str());
       }
     }
   }

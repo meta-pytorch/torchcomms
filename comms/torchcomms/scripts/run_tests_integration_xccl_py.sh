@@ -23,6 +23,7 @@ run_tests () {
         BarrierTest.py
         BatchSendRecvTest.py
         BroadcastTest.py
+        C10dTorchCommTest.py
         DDPCommTest.py
         DeviceMeshTest.py
         DPTPCommTest.py
@@ -43,13 +44,12 @@ run_tests () {
     )
 
     for test_file in "${tests[@]}"; do
-        torchrun --nnodes 1 --nproc_per_node "${NPROC_PER_NODE}" "$test_file" --verbose
+        torchrun --nnodes 1 --nproc_per_node "${NPROC_PER_NODE}" -m pytest -v -s "$test_file"
     done
 
-    #TODO: Re-enable test when internal PYTORCHDGQ-8654 is resolved.
-    # cd -
-    # cd "$(dirname "$0")/../hooks/fr/tests/py"
-    # torchrun --nnodes 1 --nproc_per_node "${NPROC_PER_NODE}" FlightRecorderTest.py --verbose
+    cd -
+    cd "$(dirname "$0")/../hooks/fr/tests/py"
+    torchrun --nnodes 1 --nproc_per_node "${NPROC_PER_NODE}" -m pytest -v -s FlightRecorderTest.py
 }
 
 # XCCL

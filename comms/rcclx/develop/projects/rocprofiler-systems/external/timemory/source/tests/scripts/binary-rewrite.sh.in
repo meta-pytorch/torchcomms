@@ -1,0 +1,87 @@
+#!/bin/bash -e
+#
+# NOTE: add '--mpi' after @PROJECT_BINARY_DIR@/timemory-run to applications built with MPI
+#
+source $(dirname $(basename ${BASH_SOURCE[0]}))/common.sh
+
+TEST_NAME=$(basename ${BASH_SOURCE[0]})
+
+export TIMEMORY_OUTPUT_PATH=@CMAKE_CURRENT_BINARY_DIR@/dynamic/timemory-@TEST_NAME@-output
+export TIMEMORY_OUTPUT_PREFIX="binary-rewrite"
+export TIMEMORY_TEXT_OUTPUT=ON
+export TIMEMORY_FILE_OUTPUT=ON
+export TIMEMORY_AUTO_OUTPUT=ON
+export TIMEMORY_TREE_OUTPUT=OFF
+export TIMEMORY_JSON_OUTPUT=OFF
+export TIMEMORY_COUT_OUTPUT=ON
+export TIMEMORY_FLAMEGRAPH_OUTPUT=OFF
+
+rm -rf ${TIMEMORY_OUTPUT_PATH}
+
+# append directories to path
+export PATH=@CMAKE_CURRENT_BINARY_DIR@:@PROJECT_BINARY_DIR@:${PATH}
+# add path to libtimemory to LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=@PROJECT_BINARY_DIR@:@PROJECT_BINARY_DIR@/external/dyninst/dyninstAPI_RT:${LD_LIBRARY_PATH}
+
+emit-separator "Performing binary re-write with default components"
+
+# simple binary re-write. only uses wall_clock for instrumentation
+@PROJECT_BINARY_DIR@/timemory-run -o ./@TEST_NAME@.inst.first -- @COMMAND@
+
+emit-separator "Executing instrumented run"
+
+# run
+./@TEST_NAME@.inst.first
+
+emit-separator "Analyzing results in ${TIMEMORY_OUTPUT_PATH}"
+
+WALL_FILE="${TIMEMORY_OUTPUT_PATH}/${TIMEMORY_OUTPUT_PREFIX}-wall_clock.txt"
+
+if [ ! -f "${WALL_FILE}" ]; then
+    echo -e "Missing wall-clock output file: \"${WALL_FILE}\""
+    echo -e "File in ${TIMEMORY_OUTPUT_PATH}:\n$(ls ${TIMEMORY_OUTPUT_PATH})"
+    exit 1
+else
+    NWALL=$(count-lines ${WALL_FILE})
+    if [ "${NWALL}" -eq 0 ]; then
+        echo -e "\nWall-clock results from \"${WALL_FILE}\" were empty:\n"
+        echo -e "$(cat ${WALL_FILE} | grep '>>>')"
+        exit 1
+    fi
+fi
+
+# ensure that env doesn't override
+unset TIMEMORY_TRACE_COMPONENTS
+unset TIMEMORY_GLOBAL_COMPONENTS
+
+emit-separator "Performing binary re-write with wall_clock, cpu_util, and peak_rss"
+
+# binary rewrite but uses wall_clock cpu_util and peak rss for instrumentation
+@PROJECT_BINARY_DIR@/timemory-run -d wall_clock cpu_util peak_rss -I 'instrumentation_tests' -o ./@TEST_NAME@.inst.second -- @COMMAND@
+
+emit-separator "Executing instrumented run"
+
+# run
+./@TEST_NAME@.inst.second
+
+for i in "wall_clock" "cpu_util" "peak_rss"
+do
+    emit-separator "Analyzing ${i} results in ${TIMEMORY_OUTPUT_PATH}"
+    FILE="${TIMEMORY_OUTPUT_PATH}/${TIMEMORY_OUTPUT_PREFIX}-${i}.txt"
+
+    if [ ! -f "${FILE}" ]; then
+        echo -e "Missing ${i} output file: \"${FILE}\""
+        echo -e "File in ${TIMEMORY_OUTPUT_PATH}:\n$(find ${TIMEMORY_OUTPUT_PATH})"
+        exit 1
+    else
+        NLINES=$(count-lines ${FILE})
+        if [ "${NLINES}" -eq 0 ]; then
+            echo -e "\n${i} results from \"${FILE}\" were empty:\n"
+            echo -e "$(cat ${FILE} | grep '>>>')"
+            exit 1
+        fi
+    fi
+done
+
+echo "Instrumentation Test... Done"
+exit 0

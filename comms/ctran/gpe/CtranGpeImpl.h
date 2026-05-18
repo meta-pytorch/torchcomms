@@ -20,6 +20,7 @@
 #include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/ctran/utils/ExtUtils.h"
 #include "comms/ctran/utils/PinnedHostPool.h"
+#include "comms/utils/GraphCaptureSideStream.h"
 
 struct CommLogData;
 
@@ -262,6 +263,13 @@ class OrderedWorkStreamGuard {
   bool everCaptured_{false};
   cudaStream_t lastUserStream_{nullptr};
   cudaGraphNode_t lastRecordNode_{};
+
+  // Side stream used during capture to host the external cudaEventRecord
+  // node for execModeSyncEvent_ off the user stream's critical path, so
+  // its release fence doesn't stall compute between ctran submissions.
+  // The next doAcquire still adds lastRecordNode_ (now on the side) as
+  // an explicit capture dependency of userStream, preserving ordering.
+  std::unique_ptr<meta::comms::GraphSideStream> sideStream_;
 
   const CommLogData* logMetaData_{nullptr};
 };

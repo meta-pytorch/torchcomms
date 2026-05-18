@@ -1,0 +1,10 @@
+*~
+build*
+TAGS
+.DS_Store
+.emacs*
+*.swp
+build/
+.vscode
+__pycache__
+*.pyc

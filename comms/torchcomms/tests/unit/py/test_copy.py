@@ -8,7 +8,9 @@ import unittest
 import torch
 from torchcomms import new_comm
 from torchcomms._comms import ReduceOp
-from torchcomms.tests.integration.py.TorchCommTestHelpers import TorchCommTestWrapper
+from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
+    TorchCommTestWrapper,
+)
 
 
 class TestReduceOpCopy(unittest.TestCase):
@@ -46,7 +48,7 @@ class TestCommCopy(unittest.TestCase):
 
     def setUp(self):
         """Set up test environment before each test."""
-        self.torchcomm = new_comm("dummy", torch.device("cpu"), name="test_copy_comm")
+        self.torchcomm = new_comm("fake", torch.device("cpu"), name="test_copy_comm")
 
     def tearDown(self):
         """Clean up after each test."""

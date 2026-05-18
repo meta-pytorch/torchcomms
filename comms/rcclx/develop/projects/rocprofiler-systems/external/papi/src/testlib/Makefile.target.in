@@ -1,0 +1,12 @@
+PACKAGE_TARNAME = @PACKAGE_TARNAME@
+prefix = @prefix@
+exec_prefix = @exec_prefix@
+datarootdir = @datarootdir@
+datadir = @datadir@/${PACKAGE_TARNAME}
+DATADIR = $(DESTDIR)$(datadir)
+INCLUDE = -I. -I@includedir@
+CC	= @CC@
+F77	= @F77@
+CC_R	= @CC_R@
+CFLAGS	= @CFLAGS@ @TOPTFLAGS@
+ENABLE_FORTRAN = @ENABLE_FORTRAN@

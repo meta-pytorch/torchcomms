@@ -114,6 +114,7 @@ TEST_P(MultiGraph, InputDeleted) {
 auto allToAllvSingleParamValues() {
   static std::vector<AllToAllvSingleParams> params = []() {
     std::vector<AllToAllvSingleParams> p;
+#if TEST_FULL_SWEEP
     std::vector<at::ScalarType> dtypes = {at::kFloat, at::kInt, at::kChar};
 
     // Uniform pattern: full dtype coverage with two counts
@@ -127,6 +128,10 @@ auto allToAllvSingleParamValues() {
     p.emplace_back(AllToAllvSizePattern::ZeroSizes, 4, at::kFloat);
     p.emplace_back(AllToAllvSizePattern::AllZero, 0, at::kFloat);
     p.emplace_back(AllToAllvSizePattern::Asymmetric, 4, at::kFloat);
+#else
+    p.emplace_back(AllToAllvSizePattern::Uniform, 4, at::kFloat);
+    p.emplace_back(AllToAllvSizePattern::Uniform, 1024, at::kFloat);
+#endif
     return p;
   }();
   return ::testing::ValuesIn(params);

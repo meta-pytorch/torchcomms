@@ -312,7 +312,6 @@ void CtranIbSingleton::ibAsyncEventHandler(const int cudaDev) {
 
 CtranIb::CtranIb(
     CtranComm* comm,
-    CtranCtrlManager* ctrlMgr,
     std::optional<bool> enableLocalFlush,
     std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory,
     std::optional<int> maxNumCqe)
@@ -329,8 +328,12 @@ CtranIb::CtranIb(
     // https://ontrack.amd.com/browse/FBA-633
     enableLocalFlush_ = true;
 #else
-    // Turn on flush for NVidia GPUs older than H100
-    enableLocalFlush_ = comm->statex_->cudaArch() < 900;
+    // Turn on flush for NVidia GPUs older than H100, or when using
+    // multiple NICs with flush enabled (cross-NIC DMA writes have no PCIe
+    // ordering guarantee on ARM SoCs, requiring an explicit RDMA READ
+    // flush per device).
+    enableLocalFlush_ = comm->statex_->cudaArch() < 900 ||
+        (NCCL_CTRAN_IB_DEVICES_PER_RANK > 1 && NCCL_CTRAN_IB_MULTI_NIC_FLUSH);
 #endif
   }
   init(
@@ -339,7 +342,6 @@ CtranIb::CtranIb(
       comm->statex_->cudaDev(),
       comm->statex_->commHash(),
       comm->statex_->commDesc(),
-      ctrlMgr,
       enableLocalFlush_,
       BootstrapMode::kDefaultServer,
       std::nullopt,
@@ -349,9 +351,10 @@ CtranIb::CtranIb(
   CLOGF_SUBSYS(
       INFO,
       INIT,
-      "CTRAN-IB: Initialized {} from comm {}",
+      "CTRAN-IB: Initialized {} from comm {} enableLocalFlush {}",
       (void*)this,
-      (void*)comm);
+      (void*)comm,
+      this->enableLocalFlush);
 }
 
 CtranIb::CtranIb(
@@ -359,7 +362,6 @@ CtranIb::CtranIb(
     int cudaDev,
     uint64_t commHash,
     const std::string& commDesc,
-    CtranCtrlManager* ctrlMgr,
     // FIXME: Unlike IB with comm, we require user to always specify
     // enableLocalFlush because we don't have access to statex->cudaArch() for
     // default config detection
@@ -375,7 +377,6 @@ CtranIb::CtranIb(
       cudaDev,
       commHash,
       commDesc,
-      ctrlMgr,
       enableLocalFlush,
       bootstrapMode,
       qpServerAddr,
@@ -386,12 +387,13 @@ CtranIb::CtranIb(
   CLOGF_SUBSYS(
       INFO,
       INIT,
-      "CTRAN-IB: Initialized {} from rank {} cudaDev {} commHash {:x} commDesc {}",
+      "CTRAN-IB: Initialized {} from rank {} cudaDev {} commHash {:x} commDesc {} enableLocalFlush {}",
       (void*)this,
       rank,
       cudaDev,
       commHash,
-      commDesc);
+      commDesc,
+      this->enableLocalFlush);
 }
 
 void CtranIb::init(
@@ -400,7 +402,6 @@ void CtranIb::init(
     int cudaDev,
     uint64_t commHash,
     const std::string& commDesc,
-    CtranCtrlManager* ctrlMgr,
     bool enableLocalFlush,
     const BootstrapMode bootstrapMode,
     std::optional<const SocketServerAddr*> qpServerAddr,
@@ -414,7 +415,6 @@ void CtranIb::init(
   this->cudaDev = cudaDev;
   this->commHash = commHash;
   this->commDesc = commDesc;
-  this->ctrlMgr = ctrlMgr;
   this->ncclLogData = CommLogData{
       .commId = comm ? comm->logMetaData_.commId : 0,
       .commHash = commHash,
@@ -651,27 +651,12 @@ void CtranIb::init(
 void CtranIb::bootstrapStart(
     std::optional<const SocketServerAddr*> qpServerAddr) {
   // Setup the listen socket
-  std::string* ifnamePtr = nullptr;
+  std::string resolvedIfName;
   folly::SocketAddress addrSockAddr;
   if (this->bootstrapMode == BootstrapMode::kDefaultServer) {
-    ifnamePtr = &NCCL_SOCKET_IFNAME;
-    // Validate that NCCL_SOCKET_IFNAME contains only one interface
-    if (NCCL_SOCKET_IFNAME.find(',') != std::string::npos) {
-      CLOGF(
-          WARN,
-          "CTRAN-IB: NCCL_SOCKET_IFNAME contains multiple interfaces ({}). "
-          "Only one interface should be specified.",
-          NCCL_SOCKET_IFNAME);
-      throw ::ctran::utils::Exception(
-          "CTRAN-IB: NCCL_SOCKET_IFNAME should specify only one interface",
-          commInvalidArgument,
-          this->rank,
-          this->commHash,
-          this->commDesc);
-    }
     // Use default NCCL socket ifname
     auto maybeAddr = ctran::bootstrap::getInterfaceAddress(
-        NCCL_SOCKET_IFNAME, NCCL_SOCKET_IPADDR_PREFIX);
+        NCCL_SOCKET_IFNAME, NCCL_SOCKET_IPADDR_PREFIX, true, &resolvedIfName);
     if (maybeAddr.hasError()) {
       CLOGF(WARN, "CTRAN-IB: No socket interfaces found");
       throw ::ctran::utils::Exception(
@@ -691,11 +676,11 @@ void CtranIb::bootstrapStart(
     auto qpServerAddrPtr = qpServerAddr.value();
     // use provided addr(i.e. ip, port, host) to initialize ctranIB
     addrSockAddr = toSocketAddress(*qpServerAddrPtr);
-    ifnamePtr = const_cast<std::string*>(&qpServerAddrPtr->ifName);
+    resolvedIfName = qpServerAddrPtr->ifName;
   }
 
   FB_SYSCHECKTHROW_EX(
-      this->listenSocket->bindAndListen(addrSockAddr, *ifnamePtr),
+      this->listenSocket->bindAndListen(addrSockAddr, resolvedIfName),
       this->rank,
       this->commHash,
       this->commDesc);
@@ -707,7 +692,7 @@ void CtranIb::bootstrapStart(
       bootstrapMode == BootstrapMode::kSpecifiedServer ? "specified"
                                                        : "self-finding",
       this->listenSocket->getListenAddress()->describe().c_str(),
-      *ifnamePtr);
+      resolvedIfName);
 
   // Exchange listen sock address among all ranks
   if (comm) {
@@ -730,10 +715,6 @@ void CtranIb::bootstrapStart(
   }
 
   this->listenThread = std::thread{bootstrapAccept, this};
-}
-
-void CtranIb::regCtrlCb(std::unique_ptr<CtranCtrlManager>& ctrlMgr) {
-  // no control message callback to register; no-op.
 }
 
 std::string CtranIb::getIbDevName(int device) const {
@@ -1043,7 +1024,6 @@ commResult_t CtranIb::preConnect(const std::unordered_set<int>& peerRanks) {
   std::shared_ptr<CtranIbVirtualConn> vc = nullptr;
   bool newConnection = false;
   // if map is empty, it means we don't know comm size and peerAddr
-  // FIXME: revisit preConnect for CtranEx if needed
   if (connectedPeerMap.empty()) {
     return commSuccess;
   }
@@ -1432,7 +1412,7 @@ std::shared_ptr<CtranIbVirtualConn> CtranIb::createVc(int peerRank) {
   }
   // Create a new VC and assign
   it.first->second = std::make_shared<CtranIbVirtualConn>(
-      devices, peerRank, comm, ctrlMgr, getPgToTrafficClassValue(), cudaDev);
+      devices, peerRank, comm, getPgToTrafficClassValue(), cudaDev);
   return it.first->second;
 }
 

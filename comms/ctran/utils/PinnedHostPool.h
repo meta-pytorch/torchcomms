@@ -48,8 +48,10 @@ class PinnedHostPool {
     this->reclaim();
     if (this->inuseItems_.size()) {
       CLOGF(
-          INFO,
-          "CTRAN-GPE: Internal {} pool has {} inuse items, indicating same amount of unfinished kernel",
+          WARNING,
+          "CTRAN-GPE: Internal {} pool has {} inuse items at destruction. "
+          "In CUDA graph mode this indicates an async cmdDestroy race: "
+          "the graph was not fully destroyed before communicator teardown.",
           T::name(),
           this->inuseItems_.size());
     }

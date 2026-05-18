@@ -1,0 +1,952 @@
+2025-02-24  Anthony Danalis <adanalis@icl.utk.edu>
+
+	* doc/Doxyfile-common, papi.spec, src/Makefile.in, src/configure.in:
+	  Version updated for releasing 7.2.0b2
+
+2025-02-24  Treece Burgess <tburgess@icl.utk.edu>
+
+	* src/components/cuda/cupti_dispatch.c,
+	  src/components/cuda/cupti_profiler.c,
+	  src/components/cuda/cupti_utils.h, src/components/cuda/linux-
+	  cuda.c, src/components/cuda/papi_cupti_common.c,
+	  src/components/cuda/papi_cupti_common.h: Add support for
+	  heterogeneous systems in the Cuda component.
+
+2025-02-21  Anthony <adanalis@icl.utk.edu>
+
+	* src/counter_analysis_toolkit/scripts/README.md,
+	  src/counter_analysis_toolkit/scripts/README.txt,
+	  .../scripts/{default.gnp => default_gnp.inc},
+	  .../scripts/multi_plot.gnp,
+	  .../L2_RQSTS:ALL_DEMAND_REFERENCES.data.reads.stat,
+	  .../L2_RQSTS:DEMAND_DATA_RD_HIT.data.reads.stat,
+	  .../L2_RQSTS:DEMAND_DATA_RD_MISS.data.reads.stat,
+	  .../sample_data/PM_DATA_FROM_L2.data.reads.stat,
+	  .../sample_data/PM_DATA_FROM_L3.data.reads.stat,
+	  .../PM_DATA_FROM_L3MISS.data.reads.stat,
+	  .../scripts/single_plot.gnp: Changing example files to accomodate
+	  Windows.
+
+2025-02-12  Dong Jun Woun <dwoun@dopamine.cluster>
+
+	* src/components/rocm_smi/rocs.c: rocm_smi: Initial event count and
+	  event table initialization event count upper bound mismatch &
+	  handling unsupported events
+
+2025-02-19  Anthony Danalis <adanalis@icl.utk.edu>
+
+	* src/components/rocp_sdk/sdk_class.cpp: Ensure context is valid and
+	  active when stopping
+
+2025-02-13  Treece Burgess <tburgess@icl.utk.edu>
+
+	* src/components/cuda/cupti_profiler.c: Remove maxPassCount from
+	  calculate_num_passes. Add further documentation for maxPassCount
+	  behavior.
+
+2025-02-12  Anthony Danalis <adanalis@icl.utk.edu>
+
+	* src/components/rocp_sdk/sdk_class.cpp: Propagate error when
+	  obtaining function pointers.  If we fail to dlopen() the library
+	  because the path was wrong, or if we can't dlsym() some of the the
+	  functions, then make sure the code does not proceed.
+
+Sun Feb 9 16:07:40 2025 -0800  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/docs/Makefile,
+	  src/libpfm4/docs/man3/libpfm_intel_gnr_unc_imc.3,
+	  src/libpfm4/include/perfmon/pfmlib.h, src/libpfm4/lib/Makefile,
+	  src/libpfm4/lib/events/intel_adl_glc_events.h,
+	  src/libpfm4/lib/events/intel_adl_grt_events.h,
+	  src/libpfm4/lib/events/intel_gnr_events.h,
+	  src/libpfm4/lib/events/intel_gnr_unc_imc_events.h,
+	  src/libpfm4/lib/pfmlib_common.c,
+	  src/libpfm4/lib/pfmlib_intel_gnr_unc_imc.c,
+	  src/libpfm4/lib/pfmlib_intel_snbep_unc.c,
+	  src/libpfm4/lib/pfmlib_intel_snbep_unc_priv.h,
+	  src/libpfm4/lib/pfmlib_perf_event_pmu.c,
+	  src/libpfm4/lib/pfmlib_priv.h,
+	  src/libpfm4/perf_examples/self_smpl_multi.c,
+	  src/libpfm4/tests/validate_x86.c: Update libpfm4 Current with
+	  commit 762ca94010d9a8f21f0440c0b5807e9a2e849420  Cleanup Alderlake
+	  event descriptions  Remove . at end of descriptions.  commit
+	  66627c778115b7d5a1cd6200250b7c4b07bccc67  Add Intel GraniteRapids
+	  uncore IMC PMU support  Adds Intel GraniteRapids uncore IMC (memory
+	  controller) PMU support. - Based on Intel JSON event table version
+	  : 1.06 - Based on Intel JSON event table published : 01/17/2025
+	  Available at github.com/Intel/perfmon   commit
+	  59aae0f5ce1dda4013063a4d192ab793179916d6  Fix clang unused
+	  function/variable errors  With clang and -Werrors, the library did
+	  not compile. Fix both issues: - unused perf_get_ovfl_umask_idx()
+	  with CONFIG_PFMLIB_NOTRACEPOINT set - unused variable sum in
+	  self_smpl_multi.c   commit 876528e6213b478986ba2fef768ee7e06df0e5fd
+	  Update Intel GraniteRapids core events to 1.06  Updates the Intel
+	  GraniteRapids core PMU event table to latest Intel released
+	  version:  Date   : 01/17/2025 Version: 1.06  From
+	  gitub.com/Intel/perfmon   Note:  At this time the PAPI team does
+	  not have access to a machine with Intel GraniteRapids or Intel
+	  Alderlake to test Commit ID's: - 762ca94 - 66627c7 - 876528e  As a
+	  sanity check, PAPI was built on a Intel SkyLake (Intel(R) Xeon(R)
+	  Gold 6140) with the utilities behaving as expected.  Commit ID
+	  59aae0f does resolve the issue of being unable to compile libpfm4
+	  with llvm compilers. Tested with llvm 11.1.0.
+
+2025-02-10  Anthony Danalis <adanalis@icl.utk.edu>
+
+	* src/components/rocp_sdk/README.md,
+	  src/components/rocp_sdk/sdk_class.cpp,
+	  src/components/rocp_sdk/sdk_class.hpp: Updated variable names for
+	  uniformity.
+
+2025-02-05  Anthony Danalis <adanalis@icl.utk.edu>
+
+	* src/components/rocp_sdk/README.md: Version information.
+	* src/components/rocp_sdk/README.md: README file.
+
+2025-02-04  Anthony Danalis <adanalis@icl.utk.edu>
+
+	* src/components/rocp_sdk/sdk_class.cpp,
+	  src/components/rocp_sdk/tests/kernel.cpp,
+	  src/components/rocp_sdk/tests/two_eventsets.c:
+	  rocprofiler_configure() can be called before PAPI_library_init()
+	* src/components/rocp_sdk/rocp_sdk.c,
+	  src/components/rocp_sdk/sdk_class.cpp: Added author information to
+	  files.
+
+2025-01-31  Anthony Danalis <adanalis@icl.utk.edu>
+
+	* src/components/rocp_sdk/sdk_class.cpp,
+	  src/components/rocp_sdk/tests/Makefile,
+	  src/components/rocp_sdk/tests/advanced.c: Default value for
+	  qualifier "device".
+
+2024-09-23  Anthony Danalis <adanalis@icl.utk.edu>
+
+	* src/components/rocp_sdk/rocp_sdk.c,
+	  src/components/rocp_sdk/sdk_class.cpp,
+	  src/components/rocp_sdk/sdk_class.hpp,
+	  src/components/rocp_sdk/tests/Makefile,
+	  src/components/rocp_sdk/tests/advanced.c,
+	  src/components/rocp_sdk/tests/kernel.cpp,
+	  src/components/rocp_sdk/tests/simple.c,
+	  src/components/rocp_sdk/tests/simple_sampling.c,
+	  src/components/rocp_sdk/tests/two_eventsets.c: ROCP_SDK: Enabling
+	  device profiling mode.  - Sampling is the default mode. - Sampling
+	  reads the values directly from the call. - Qualifier "kernel" is a
+	  mandatory qualifier. For all other qualifiers the default value is
+	  "sum". - Code needs w.r.t mutexes adapt to different C++ standards.
+	  - Test for Sampling mode. - dispatch mode accumulates values across
+	  kernel invocations.
+
+2025-02-10  Bill Williams <william.williams@mailbox.tu-dresden.de>
+
+	* src/components/rocp_sdk/Rules.rocp_sdk: rocp_sdk: add missing
+	  srcfile  Fixes #313.
+
+Mon Jan 27 16:35:05 2025 -0800  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/lib/events/amd64_events_fam1ah_zen5.h: Update libpfm4
+	  Current with commit 7750d00833a607eeb53c9a6832ffa8a6b827cdb9  fix
+	  AMD Zen5 encodings for L2_FILL_RESPONSE_SRC and L2_PREFETCH_MISS_L3
+	  Event codes were swapped.   Note: The PAPI team at this time does
+	  not have access to a machine with an AMD Zen5 to test this update.
+	  An AMD Zen4 was used as a sanity check with the utilities:
+	  papi_component_avail, papi_native_avail, and papi_command_line
+	  behaving as expected.
+
+2025-01-27  Treece Burgess <tburgess@icl.utk.edu>
+
+	* src/components/perf_event/perf_event.c: Updating error message for
+	  function check_exclude_guest() in perf_event.c.
+
+2025-01-17  Treece Burgess <tburgess@icl.utk.edu>
+
+	* src/configure, src/configure.in: Restructure configure and
+	  configure.in to avoid errors: cuda.h no such file and integer
+	  expression expected on Power 9 and Power 10.
+
+2025-01-31  Treece Burgess <tburgess@orthus.nic.uoregon.edu>
+
+	* .github/workflows/papi_framework_workflow.yml: Replace
+	  actions/upload-artifact@v3 with actions/upload-artifact@v4.
+
+2024-12-18  Treece Burgess <tburgess@hopper1.nic.uoregon.edu>
+
+	* src/papi_events.csv: Updating papi_events.csv to support addition
+	  of L1I_CACHE and deprecation of L1I_CACHE_ACCESS in libpfm4.
+	  Testing took place on a Neoverse V2 by comparing output from the
+	  commit prior to the addition of L1I_CACHE and the commit that adds
+	  L1I_CACHE.  - Output for papi_avail was identical - Output for
+	  papi_command_line for the events PAPI_L1_ICA, PAPI_L1_ICH,
+	  PAPI_L1_TCA, and PAPI_L1_TCH was roughly identical.
+
+Fri Dec 13 00:23:03 2024 -0800  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/include/perfmon/perf_event.h,
+	  src/libpfm4/lib/events/arm_neoverse_n1_events.h,
+	  src/libpfm4/lib/events/arm_neoverse_n2_events.h,
+	  src/libpfm4/lib/events/arm_neoverse_v1_events.h,
+	  src/libpfm4/lib/events/arm_neoverse_v2_events.h: Update libpfm4
+	  Current with commit d22403ec9bddaf62c59d847904918b30db69550d  make
+	  L1I_CACHE_ACCESS an alias to the official L1I_CACHE event  Covers
+	  Neoverse N1, N2, N3, V1, V2. L1I_CACHE_ACCESS is marked as
+	  deprecated.   commit 0003418f8b698cbb2709e7f6931c6fd94e634f98
+	  update perf_events interface header to 6.12  Update perf_event.h to
+	  reflect state in 6.12.   Testing was only done on an ARM Neoverse
+	  V2 as the PAPI team does not have access to an N1, N2, N3, or V1.
+	  Testing: - papi_avail successfully runs - papi_component_avail
+	  successfully runs - papi_native_avail shows the new event L1I_CACHE
+	  and that L1I_CACHE_ACCESS is deprecated - papi_command_line works
+	  with L1I_CACHE (tested with qualifiers cpu and u)
+
+2025-01-28  Treece Burgess <tburgess@orthus.nic.uoregon.edu>
+
+	* src/run_tests.sh: Update run_tests.sh to remove bash specific
+	  syntax.
+
+2024-10-10  Willow Cunningham <willow.e.cunningham@gmail.com>
+
+	* src/components/perf_event/perf_event.c: perf_event: Eliminate
+	  permission error for check_exclude_guest() with paranoid kernel  On
+	  systems with perf_event_paranoid>=2, userspace calls to
+	  perf_event_open() must set attr.exclude_kernel=1. Set
+	  exclude_kernel=1 in check_exclude_guest() to allow the function to
+	  execute successfully on systems with perf_event_paranoid>=2;
+
+2024-11-12  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/counter_analysis_toolkit/eventstock.c: cat: remove error return
+	  value  Since the perf_event component can be disabled, this error
+	  message should be removed.  These changes have been tested on the
+	  NVIDIA Grace-Hopper architecture.
+	* src/counter_analysis_toolkit/eventstock.c: cat: add newlines to
+	  error messages  Include newlines for consistency.  These changes
+	  have been tested on the NVIDIA Grace-Hopper architecture.
+	* src/counter_analysis_toolkit/main.c: cat: remove unnecessary
+	  cleanup call  Remove call that is already invoked.  These changes
+	  have been tested on the NVIDIA Grace-Hopper architecture.
+
+2025-01-08  Treece Burgess <tburgess@icl.utk.edu>
+
+	* .github/workflows/cat_workflow.yml: Fixing bug in counter analysis
+	  toolkit workflow
+
+2025-01-06  Treece Burgess <tburgess@icl.utk.edu>
+
+	* .github/workflows/README.md,
+	  .github/workflows/appio_component_workflow.yml,
+	  .github/workflows/cat_workflow.yml, .github/workflows/ci.sh,
+	  .github/workflows/ci_cat.sh,
+	  .github/workflows/ci_default_components.sh,
+	  .github/workflows/ci_individual_component.sh,
+	  .github/workflows/ci_papi_framework.sh,
+	  .github/workflows/coretemp_component_workflow.yml,
+	  .github/workflows/cuda_component_workflow.yml,
+	  .github/workflows/default_components_workflow.yml,
+	  .github/workflows/example_component_workflow.yml,
+	  .github/workflows/intel_gpu_component_workflow.yml,
+	  .github/workflows/io_component_workflow.yml,
+	  .github/workflows/lmsensors_component_workflow.yml,
+	  .github/workflows/main.yml,
+	  .github/workflows/net_component_workflow.yml,
+	  .github/workflows/nvml_component_workflow.yml,
+	  .github/workflows/papi_framework_workflow.yml,
+	  .github/workflows/powercap_component_workflow.yml,
+	  .github/workflows/rocm_component_workflow.yml,
+	  .github/workflows/rocm_smi_component_workflow.yml,
+	  .github/workflows/sde_component_workflow.yml,
+	  .github/workflows/stealtime_component_workflow.yml,
+	  src/run_tests.sh, src/run_tests_shlib.sh: Updating the PAPI GitHub
+	  CI, see README for more details on structure.
+
+2024-12-11  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/components/intel_gpu/Rules.intel_gpu,
+	  src/components/intel_gpu/tests/Makefile: intel_gpu: remove
+	  unnecessary linker flags  Since the flag -lstdc++ is already
+	  included from the configure script, it does not need to be included
+	  in the component's Rules and Makefiles. Also, -g is already
+	  included in the recipes, it is not needed in the linker flags
+	  variable.  These changes have been tested on the Intel Max 1550
+	  GPU.
+	* src/configure, src/configure.in: configure: -pthread with intel_gpu
+	  Since the intel_gpu component uses mutexes, which use POSIX threads
+	  on some systems, -pthread needs to be used when this component is
+	  configured-in.  These changes have been tested on the Intel Max
+	  1550 GPU.
+
+2024-12-13  Treece Burgess <tburgess@icl.utk.edu>
+
+	* src/components/lmsensors/tests/Makefile,
+	  .../lmsensors/tests/lmsensors_list_events.c,
+	  src/components/lmsensors/tests/lmsensors_read.c: Adding tests for
+	  the lmsensors component.
+
+Thu Oct 3 16:25:55 2024 +0900  Yoshihiro Furudera <fj5100bi@fujitsu.com>
+
+	* src/libpfm4/README, src/libpfm4/docs/Makefile,
+	  src/libpfm4/docs/man3/libpfm_arm_monaka.3,
+	  src/libpfm4/include/perfmon/pfmlib.h, src/libpfm4/lib/Makefile,
+	  src/libpfm4/lib/events/arm_fujitsu_monaka_events.h,
+	  src/libpfm4/lib/pfmlib_arm_armv9.c,
+	  src/libpfm4/lib/pfmlib_common.c, src/libpfm4/lib/pfmlib_priv.h,
+	  src/libpfm4/tests/validate_arm64.c: Update libpfm4 Current with
+	  commit 5e26b48b6d9b9d5f8c368c81cfe23a54a129bd24  Enable support for
+	  FUJITSU-MONAKA core PMU  This patch adds support for FUJITSU-MONAKA
+	  core PMU. This includes ARMv9 generic core events and FUJITSU-
+	  MONAKA specfic events.  FUJITSU-MONAKA Specification URL:
+	  https://github.com/fujitsu/FUJITSU-MONAKA   Note: The PAPI team at
+	  this time does not have access to a machine with the ARM processor
+	  FUJITSU-MONAKA for testing.
+
+2024-11-06  Treece Burgess <tburgess@dopamine.cluster>
+
+	* src/components/rapl/linux-rapl.c: Add support for AMD family 25
+	  (19h) processors in the RAPL component. Tested on
+	  Family/Model/Stepping: - 25/1/1 - 25/48/1 - 25/17/1 - 25/144/1 -
+	  25/97/2
+
+2024-11-21  Treece Burgess <tburgess@icl.utk.edu>
+
+	* src/ctests/all_native_events.c, src/ctests/get_event_component.c:
+	  Update all_native_events.c and get_event_component.c to take an
+	  optional flag --disable-cuda-events=<yes,no> to disable processing
+	  of Cuda native events.
+
+2024-12-02  Dong Jun Woun <djwoun@gmail.com>
+
+	* src/configure, src/configure.in, src/darwin-common.c, src/darwin-
+	  common.h, src/darwin-memory.c, src/run_tests.sh, src/threads.c,
+	  src/utils/papi_multiplex_cost.c, src/utils/print_header.c: Disable
+	  perf_event, perf_events_uncore, and cpu
+
+2024-11-27  Willow Cunningham <willow.e.cunningham@gmail.com>
+
+	* src/components/rapl/linux-rapl.c: rapl: fixed indentation
+	  (spaces->tabs)
+
+2024-11-14  Willow Cunningham <willow.e.cunningham@gmail.com>
+
+	* src/components/rapl/linux-rapl.c: rapl: Add support for RaptorLake
+	  Add RAPL component support for the RaptorLake architecture. This
+	  change was tested for Family/Model/Stepping 0x6/0xb7/0x1
+	  (RaptorLake-S/HX) only. The other two models of RaptorLake (Models
+	  0xba and 0xbf) are untested.
+
+2024-11-12  Willow Cunningham <willow.e.cunningham@gmail.com>
+
+	* src/components/rapl/linux-rapl.c: fixed indentation
+
+2024-09-19  Willow Cunningham <willow.e.cunningham@maine.edu>
+
+	* src/components/rapl/linux-rapl.c: rapl: Added RAPL component
+	  support for Intel RaptorLake.
+
+Sat Sep 28 23:07:55 2024 -0700  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/README, src/libpfm4/docs/Makefile,
+	  src/libpfm4/docs/man3/libpfm_arm_neoverse_n3.3,
+	  src/libpfm4/docs/man3/libpfm_intel_gnr.3,
+	  src/libpfm4/docs/man3/libpfm_intel_icl.3,
+	  src/libpfm4/docs/man3/libpfm_intel_spr.3,
+	  src/libpfm4/docs/man3/pfm_get_event_attr_info.3,
+	  src/libpfm4/examples/showevtinfo.c,
+	  src/libpfm4/include/perfmon/pfmlib.h,
+	  src/libpfm4/lib/events/arm_neoverse_n3_events.h,
+	  src/libpfm4/lib/events/intel_gnr_events.h,
+	  src/libpfm4/lib/events/intel_icl_events.h,
+	  src/libpfm4/lib/events/intel_spr_events.h,
+	  src/libpfm4/lib/pfmlib_arm_armv9.c,
+	  src/libpfm4/lib/pfmlib_common.c,
+	  src/libpfm4/lib/pfmlib_intel_x86.c,
+	  src/libpfm4/lib/pfmlib_intel_x86_priv.h,
+	  src/libpfm4/lib/pfmlib_perf_event.c, src/libpfm4/lib/pfmlib_priv.h,
+	  src/libpfm4/perf_examples/task.c,
+	  src/libpfm4/tests/validate_arm64.c,
+	  src/libpfm4/tests/validate_x86.c: Update libpfm4 Current with
+	  commit 91970fe6eb4e80b63f77fb54a9592e28a207050c  Add ARM Neoverse
+	  N3 core PMU support  Adds ARM Neoverse N3 core PMU support. Based
+	  on: https://github.com/ARM-
+	  software/data/blob/master/pmu/neoverse-n3.json   commit
+	  1c2c67b38cd28823b3e34208b86e4656b55d310f  fix group_pmu
+	  initialization in perf_examples/task  Variable was reinitialized at
+	  each iteration preventing events from being group by fd via
+	  perf_event_open()   commit 298127beb46c43ed02f8d2f8efc8ce52a9d601db
+	  Add support for Topdown via PERF_METRICS for Intel Icelake/IcelakeX
+	  Add the TOPDOWN_M dedicated event to provide the pseudo encodings
+	  necessary to program Topdown L1 events onto the PERF_METRICS MSR of
+	  Intel GraniteRapids on Linux.  In order to successfully use
+	  PERF_METRICS, the kernel imposes some restrictions (which are not
+	  known to libpfm4) which the user must follow: TOPDOWN_M events must
+	  be passed to the kernel in a single perf_events group (chained fds)
+	  AND the TOPDOWN_M.SLOTS event must be the first event in that
+	  group.  Note that only the SLOTS events (programmed in fixed
+	  counter3) support modifiers such as user vs. kernel, hw_smpl or
+	  precise sampling on perf_events. All other umasks do not support
+	  any modifier. The SLOTS event controls the filtering for all
+	  PERF_METRICS pseudo events.  The encodings provided by libpfm4 for
+	  fixed counters are specific to Linux. When used on non Linux
+	  systems, encodings are not guaranteed to be valid.   commit
+	  d01108b9b470131545389be4f2f479d0fa4b9444  Add support for Topdown
+	  via PERF_METRICS for Intel GraniteRapids  Cut & paste of the Intel
+	  SapphireRapids support.  Add the TOPDOWN_M dedicated event to
+	  provide the pseudo encodings necessary to program Topdown L1 and L2
+	  events onto the PERF_METRICS MSR of Intel GraniteRapids on Linux.
+	  In order to successfully use PERF_METRICS, the kernel imposes some
+	  restrictions (which are not known to libpfm4) which the user must
+	  follow: TOPDOWN_M events must be passed to the kernel in a single
+	  perf_events group (chained fds) AND the TOPDOWN_M.SLOTS event must
+	  be the first event in that group.  Note that only the SLOTS events
+	  (programmed in fixed counter3) support modifiers such as user vs.
+	  kernel, hw_smpl or precise sampling on perf_events. All other
+	  umasks do not support any modifier. The SLOTS event controls the
+	  filtering for all PERF_METRICS pseudo events.  The encodings
+	  provided by libpfm4 for fixed counters are specific to Linux. When
+	  used on non Linux systems, encodings are not guaranteed to be
+	  valid.   commit d9de389d9cf168116b4753ac7d94edbffcd2a161  Add
+	  support for Topdown via PERF_METRICS for Intel SapphireRapids  Add
+	  the TOPDOWN_M dedicated event to provide the pseudo encodings
+	  necessary to program Topdown L1 and L2 events onto the PERF_METRICS
+	  MSR of Intel SapphireRapids on Linux.  In order to successfully use
+	  PERF_METRICS, the kernel imposes some restrictions (which are not
+	  known to libpfm4) which the user must follow: TOPDOWN_M events must
+	  be passed to the kernel in a single perf_events group (chained fds)
+	  AND the TOPDOWN_M.SLOTS event must be the first event in that
+	  group.  Note that only the SLOTS events (programmed in fixed
+	  counter3) support modifiers such as user vs. kernel, hw_smpl or
+	  precise sampling on perf_events. All other umasks do not support
+	  any modifier. The SLOTS event controls the filtering for all
+	  PERF_METRICS pseudo events.  The encodings provided by libpfm4 for
+	  fixed counters are specific to Linux. When used on non Linux
+	  systems, encodings are not guaranteed to be valid.   commit
+	  1530567c76d290233b68e71b064cb1c3abfde8c3  add support_no_mods
+	  support to Intel X86 encoding  This patch adds support for
+	  attribute info support_no_mods to Intel X86 encoding routines.
+	  There is a new INTEL_X86_NO_MODS flags that can be set on umasks
+	  flags field.   commit 7e131752c0e486555cbb57342cdac2087e129dd4  Add
+	  support_no_mods support to perf_events encoding  This patch adds
+	  handling of the support_no_mods attribute info to perf_events
+	  encoding routine. If the flag is set for any umasks then it is
+	  applied to all. It is expected that events with such conditions
+	  prohibit umasks combinations. Only the perf_events pinned attribute
+	  is maintained because it is a modifier of the perf_events subsystem
+	  with no specific implication in the hardware.   commit
+	  bf495f91ef5c455af0de679703090566a776b65a  Add support_hw_smpl
+	  description to pfm_get_event_attr_info() man page  Was missing from
+	  manual since the field was added.   commit
+	  8717588413b931818eddc6c9caaa9995c7d2418d  Add new attribute info
+	  field support_no_mods  This new attribute is added to the
+	  pfm_event_attr_info_t structure to handle the case where some of
+	  the umasks of an event do not support all the modifiers that the
+	  event as a whole support. That applies to privilege level
+	  filtering, hardware sampling and such.   commit
+	  704fb4aa4b722c110256ec0488e8f895542f64ab  fix assignment in
+	  pfmlib_build_event_pattrs  Was doing os_nattrs += ..... then
+	  os_nattrs was just initialized at declaration with no prior usage.
+	  Testing:  - Arm Neoverse v3: As stands the PAPI team does not have
+	  access to a machine with ARM Neoverse v3 for testing.  - Icelake
+	  (Intel Xeon Silver 4309Y): Successful PAPI build.
+	  papi_component_avail, papi_native_avail, and papi_command_line are
+	  successful. TOPDOWN_M metrics are shown in papi_native_avail, but
+	  we are only able to monitor TOPDOWN_M:SLOTS at this time.  -
+	  Granite Rapids: As stands the PAPI team does not have access to a
+	  machine with Granite Rapids for testing.  - Sapphire Rapids (Intel
+	  Xeon Gold 6430): Successful PAPI build. papi_component_avail,
+	  papi_native_avail, and papi_command_line are successful. TOPDOWN_M
+	  metrics are shown in papi_native_avail, but we are only able to
+	  monitor TOPDOWN_M:SLOTS at this time.
+
+2024-11-21  Dong Jun Woun <dwoun@leconte.cluster>
+
+	* src/components/cuda/tests/Makefile: remove unecessary linking
+
+2024-10-04  William Cohen <wcohen@redhat.com>
+
+	* src/components/lmsensors/linux-lmsensors.c: lmsensors: Avoid
+	  possible overruns on local variable  The local path_name variable
+	  in link_lmsensors_libraries() needs to be PATH_MAX in size to avoid
+	  possible overruns and scribbling over parts of the stack.  Error:
+	  OVERRUN (CWE-119): [#def22] [important]
+	  papi-7.2.0b1-build/papi-7.2.0b1/src/components/lmsensors/linux-
+	  lmsensors.c:398:7: overrun-buffer-arg: Overrunning array
+	  "path_name" of 1024 bytes by passing it to a function which
+	  accesses it at byte offset 4095 using argument "4096UL". [Note: The
+	  source code implementation of the function has been overridden by a
+	  builtin model.] #  396|      // Step 3: Try the explicit install
+	  default. #  397|      if (dl1 == NULL && lmsensors_root != NULL) {
+	  // if root given, try it. #  398|->       snprintf(path_name,
+	  PATH_MAX, "%s/lib64/libsensors.so", lmsensors_root);   // PAPI Root
+	  check. #  399|         dl1 = dlopen(path_name, RTLD_NOW |
+	  RTLD_GLOBAL);             // Try to open that path. #  400|      }
+	  Error: OVERRUN (CWE-119): [#def23] [important]
+	  papi-7.2.0b1-build/papi-7.2.0b1/src/components/lmsensors/linux-
+	  lmsensors.c:404:7: overrun-buffer-arg: Overrunning array
+	  "path_name" of 1024 bytes by passing it to a function which
+	  accesses it at byte offset 4095 using argument "4096UL". [Note: The
+	  source code implementation of the function has been overridden by a
+	  builtin model.] #  402|      // Step 4: Try another explicit
+	  install default. #  403|      if (dl1 == NULL && lmsensors_root !=
+	  NULL) {                          // if root given, try it. #
+	  404|->       snprintf(path_name, PATH_MAX, "%s/lib/libsensors.so",
+	  lmsensors_root);   // PAPI Root check. #  405|         dl1 =
+	  dlopen(path_name, RTLD_NOW | RTLD_GLOBAL);             // Try to
+	  open that path. #  406|      }
+	* src/threads.c: thread: Properly free memory in case of malloc
+	  failure in allocate_thread  Added code to properly free memory for
+	  the following situation that Coverity pointed out:  Error:
+	  RESOURCE_LEAK (CWE-772): [#def49] [important]
+	  papi-7.2.0b1-build/papi-7.2.0b1/src/threads.c:117:2: alloc_fn:
+	  Storage is returned from allocation function "malloc".
+	  papi-7.2.0b1-build/papi-7.2.0b1/src/threads.c:117:2: var_assign:
+	  Assigning: "thread->running_eventset" = storage returned from
+	  "malloc(8UL * (size_t)papi_num_components)".
+	  papi-7.2.0b1-build/papi-7.2.0b1/src/threads.c:134:4:
+	  leaked_storage: Freeing "thread" without freeing its pointer field
+	  "running_eventset" leaks the storage that "running_eventset" points
+	  to. #  132|                                papi_free(
+	  thread->context[i] ); #  133|                        papi_free(
+	  thread->context ); #  134|->                      papi_free( thread
+	  ); #  135|                        return ( NULL ); #  136|
+	* src/components/sysdetect/linux_cpu_utils.c: sysdetect: Ensure that
+	  a variable in get_cache_type is always initialized  Initializing
+	  variable type to a sane value (PAPI_MH_TYPE_EMPTY) to make sure
+	  that the coverity static analysis does not generate the following
+	  message:  Error: UNINIT (CWE-457): papi-7.2.0b1-build/papi-7.2.0b1/
+	  src/components/sysdetect/linux_cpu_utils.c:561:5: var_decl:
+	  Declaring variable "type" without initializer. papi-7.2.0b1-build/p
+	  api-7.2.0b1/src/components/sysdetect/linux_cpu_utils.c:593:5:
+	  uninit_use: Using uninitialized value "type". #  591|       } #
+	  592| #  593|->     *value = type; #  594| #  595|       return
+	  CPU_SUCCESS;
+	* src/components/infiniband/linux-infiniband.c: infiniband: Ensure
+	  that memory allocated by strdup() freed  It is possible in
+	  add_ib_counter() that one of the strdup() operations fails and the
+	  other succeeds.  In cases where the struct referencing them is
+	  being free because of a failure one of the strdup() any allocated
+	  memory should be freed also.  This was noted noted in a coverity
+	  scan of PAPI:  Error: RESOURCE_LEAK (CWE-772):
+	  papi-7.2.0b1-build/papi-7.2.0b1/src/components/infiniband/linux-
+	  infiniband.c:332:5: alloc_fn: Storage is returned from allocation
+	  function "strdup".
+	  papi-7.2.0b1-build/papi-7.2.0b1/src/components/infiniband/linux-
+	  infiniband.c:332:5: var_assign: Assigning: "new_cnt->ev_file_name"
+	  = storage returned from "strdup(file_name)".
+	  papi-7.2.0b1-build/papi-7.2.0b1/src/components/infiniband/linux-
+	  infiniband.c:338:9: leaked_storage: Freeing "new_cnt" without
+	  freeing its pointer field "ev_file_name" leaks the storage that
+	  "ev_file_name" points to. #  336|       { #  337|
+	  PAPIERROR("cannot allocate memory for counter internal fields"); #
+	  338|->         papi_free(new_cnt); #  339|           return (0); #
+	  340|       }  Error: RESOURCE_LEAK (CWE-772):
+	  papi-7.2.0b1-build/papi-7.2.0b1/src/components/infiniband/linux-
+	  infiniband.c:331:5: alloc_fn: Storage is returned from allocation
+	  function "strdup".
+	  papi-7.2.0b1-build/papi-7.2.0b1/src/components/infiniband/linux-
+	  infiniband.c:331:5: var_assign: Assigning: "new_cnt->ev_name" =
+	  storage returned from "strdup(name)".
+	  papi-7.2.0b1-build/papi-7.2.0b1/src/components/infiniband/linux-
+	  infiniband.c:338:9: leaked_storage: Freeing "new_cnt" without
+	  freeing its pointer field "ev_name" leaks the storage that
+	  "ev_name" points to. #  336|       { #  337|
+	  PAPIERROR("cannot allocate memory for counter internal fields"); #
+	  338|->         papi_free(new_cnt); #  339|           return (0); #
+	  340|       }
+
+2024-11-12  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/papi_events.csv: presets: remove PAPI_FP_OPS from POWER9 &
+	  POWER10  The previous definition counted floating-point
+	  instructions instead of operations. Added note to papi_events.csv
+	  that explains how to scale and combine native events to measure all
+	  FLOPs with multiplexing.  These changes have been tested on the IBM
+	  POWER9 and POWER10 architectures.
+
+2024-10-16  Treece Burgess <tburgess@gilgamesh.nic.uoregon.edu>
+
+	* src/components/cuda/tests/Makefile: Removing -lpthread flag inplace
+	  of -pthread and adding -pthread to concurrent_profiling to build
+	  correctly on glibc < 2.34.
+
+2024-11-11  Treece Burgess <tburgess@leconte.cluster>
+
+	* gitlog2changelog.py, release_procedure.txt: Updating
+	  gitlog2changelog.py to add command line arguments and updating the
+	  text in release_procedures.txt.
+
+2024-10-30  Anthony <adanalis@icl.utk.edu>
+
+	* src/counter_analysis_toolkit/Makefile,
+	  src/counter_analysis_toolkit/instructions.c: CAT: More instruction
+	  tests and cleaner output.
+
+2024-10-29  Anthony <adanalis@icl.utk.edu>
+
+	* src/counter_analysis_toolkit/Makefile,
+	  src/counter_analysis_toolkit/instructions.c: CAT: New instruction
+	  benchmarks for FMA and Int.
+
+2024-10-29  Jeevitha Palanisamy <jeevitha@linux.ibm.com>
+
+	* src/papi_events.csv: PAPI power10 event list presets  Added presets
+	  for IBM Power 10
+
+2024-10-16  Treece Burgess <tburgess@leconte.cluster>
+
+	* src/components/cuda/cupti_profiler.c: Allow for a user to supply
+	  just the base cuda native event name. Defaults to
+	  cuda_ntv_name:device=0.
+
+2024-10-24  Treece Burgess <tburgess@hexane.cluster>
+
+	* src/components/cuda/cupti_profiler.c,
+	  src/components/cuda/papi_cupti_common.c: Updating the ordering of
+	  conditional checks in functions to load library files.
+
+2024-10-17  Willow Cunningham <willow.e.cunningham@maine.edu>
+
+	* src/counter_analysis_toolkit/Makefile: counter_analysis_toolkit:
+	  use 'ifndef' for more idiomatic code
+
+2024-10-01  Willow Cunningham <willow.e.cunningham@maine.edu>
+
+	* src/counter_analysis_toolkit/Makefile: counter_analysis_toolkit:
+	  Added automatic architecture detection to the Makefile  The CAT
+	  Makefile will now use 'uname -m' to detect if the architecture is
+	  arm or x86, and otherwise assume powerpc. If ARCH is already set,
+	  it is left alone.
+
+2024-10-23  Anthony <adanalis@icl.utk.edu>
+
+	* src/components/sysdetect/cpu.c,
+	  src/components/sysdetect/linux_cpu_utils.c,
+	  src/components/sysdetect/sysdetect.c,
+	  src/utils/papi_hardware_avail.c: sysdetect: accounting for missing
+	  core ids.
+
+2024-10-16  Willow Cunningham <william.e.cunningham@maine.edu>
+
+	* src/validation_tests/Makefile.recipies: validation_tests: Add -O1
+	  optimization flag to matrix_multiply.o  When compiled with
+	  optimization level -O2, the papi_sr_ins test has a roughly -33%
+	  error. Compiling with -O1 resolves this issue.  Tested on Intel
+	  Xeon CPU E5-2640 v3 (Haswell-EP) and ARM Cortex-A76
+
+2024-10-17  Anthony Danalis <adanalis@icl.utk.edu>
+
+	* src/configure, src/configure.in: Sysdetect: allow users to disable
+	  component.  Added a flag (--with-sysdetect=<yes,no>) in configure
+	  that allows users to disable the Sysdetect component.
+
+2024-10-17  Treece Burgess <tburgess@leconte.cluster>
+
+	* src/Makefile.in: Update Makefile.in to have PAPI version 7.2.0.0b1.
+
+2024-09-20  Heike Jagode <jagode@icl.utk.edu>
+
+	* src/components/cuda/tests/Makefile: Link with CXX instead of CC
+	  macro  To avoid issues with older GCC versions (e.g., GCC 9.5.0),
+	  where libstdc++ needs to be manually added during the linking step
+	  (or a soft link to the library is required—on our machine (see gcc
+	  -v when GCC 9.5.0 module is loaded), this would be 'ln -s
+	  /usr/lib64/libstdc++.so.6 /usr/lib64/libstdc++.so'), we link using
+	  the CXX macro instead of the CC macro.
+
+2024-09-24  Treece Burgess <tburgess@leconte.cluster>
+
+	* src/components/cuda/README_internal.md,
+	  src/components/cuda/Rules.cuda, src/components/cuda/cupti_config.h,
+	  src/components/cuda/cupti_dispatch.c,
+	  src/components/cuda/cupti_dispatch.h,
+	  src/components/cuda/cupti_events.c,
+	  src/components/cuda/cupti_events.h,
+	  src/components/cuda/cupti_profiler.c,
+	  src/components/cuda/cupti_profiler.h,
+	  src/components/cuda/cupti_utils.c,
+	  src/components/cuda/cupti_utils.h, src/components/cuda/htable.h,
+	  src/components/cuda/linux-cuda.c,
+	  src/components/cuda/papi_cupti_common.c,
+	  src/components/cuda/papi_cupti_common.h: Update Cuda component to
+	  add a device qualifier. As of Cuda Version 12.6, the MetricsContext
+	  API has been removed and replaced with the MetricsEvaluator API.
+	  Due to this change, the Cuda component will only work with Cuda
+	  versions < 12.6. The PAPI team will be working to support both the
+	  MetricsContext API and MetricsEvaluator API.
+
+2024-10-11  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/run_tests.sh: run_tests.sh: change libpfm-3.y to libpfm4
+	  Change paths from libpfm-3.y to libpfm4 so that the tests link to
+	  libpfm.so.4  These changes have been tested on the NVIDIA Grace-
+	  Hopper architecture.
+
+2024-02-16  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/linux-memory.c: papi_mem_info: add support for ARM Neoverse V2
+	  Add TLB information for ARM Neoverse V2, per the Reference Manual:
+	  https://developer.arm.com/documentation/102375/0002?lang=en  These
+	  changes have been tested on the ARM Neoverse V2, ARM Cortex-A72,
+	  and AMD Zen3 architectures.
+
+2024-02-15  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/linux-memory.c: papi_mem_info: check for newlines in sysfs
+	  files  Some systems have a newline character at the end of the
+	  cache type file. The newline character needs to be taken into
+	  account for proper string comparisons.  These changes have been
+	  tested on the ARM Neoverse V2, ARM Cortex-A72, and AMD Zen3
+	  architectures.
+	* src/linux-memory.c: papi_mem_info: convert tabs to spaces  This
+	  helps with readability.  These changes have been tested on the ARM
+	  Neoverse V2, ARM Cortex-A72, and AMD Zen3 architectures.
+
+2024-09-19  Daniel Barry <dbarry@vols.utk.edu>
+
+	* .../intel_gpu/internal/src/GPUMetricHandler.cpp,
+	  src/components/intel_gpu/linux_intel_gpu_metrics.c: intel_gpu:
+	  properly reset metrics  Reset the appropriate fields in the context
+	  struct when PAPI_cleanup() is called. This corresponds to
+	  intel_gpu_update_control_state() being called with the value
+	  'count' equal to zero.  Also reset the internal metric counts when
+	  PAPI_start() is called, so that the previous values do not persist
+	  after the next PAPI_start().  These changes have been tested on the
+	  Intel Ponte Vecchio architecture.
+	* src/components/intel_gpu/linux_intel_gpu_metrics.c: intel_gpu:
+	  remove extraneous check for group  The metric group should not be
+	  checked when PAPI_add_event() is called. It should be checked upon
+	  PAPI_start() only.  These changes have been tested on the Intel
+	  Ponte Vecchio architecture.
+	* src/components/intel_gpu/internal/inc/GPUMetricInterface.h:
+	  intel_gpu: allow larger number of groups  There were previously
+	  only 8 bits allotted to enumerate the metric groups, limited the
+	  number of groups to 256. However, there are at least 1433 groups
+	  available on the Intel Ponte Vecchio architecture.  These changes
+	  have been tested on the Intel Ponte Vecchio architecture.
+
+2024-10-07  William Cohen <wcohen@redhat.com>
+
+	* src/high-level/scripts/papi_hl_output_writer.py: high-level:
+	  Explicitly use python3 and place shebang on the first line  Python3
+	  has been released for over 15 years.  Fedora, Debian, and other
+	  distributions state that python scripts should avoid using
+	  unversioned python intepreter:
+	  https://fedoraproject.org/wiki/FinalizingFedoraSwitchtoPython3
+	  https://www.debian.org/doc/packaging-manuals/python-policy/  The
+	  RPM build process will flag unversioned python interpreter use as
+	  an error and the build will fail.  Making the
+	  papi_hl_output_writer.py explicitly use /usr/bin/python3.  The
+	  shebang line that describes which interpreter to use must be the
+	  first line of the file (https://www.shellcheck.net/wiki/SC1128).
+
+2024-10-02  Treece Burgess <tburgess@leconte.cluster>
+
+	* doc/Doxyfile-common, doc/Doxyfile-man3,
+	  man/man3/papi_hl_output_writer_Sum_Counter.3,
+	  man/man3/papi_hl_output_writer_Sum_Counters.3, src/high-
+	  level/scripts/papi_hl_output_writer.py: Update
+	  papi_hl_output_writer.py to use 4 spaces instead of 2 for code
+	  formatting and add Doxygen documentation to classes and functions.
+
+2024-10-04  Treece Burgess <tburgess@hexane.cluster>
+
+	* src/papi.c: Correcting documentation in PAPI_add_named_event.
+
+2024-06-26  William Cohen <wcohen@redhat.com>
+
+	* src/utils/Makefile: utils: Include the compiler flags when linking
+	  the PAPI utilities  Newer Linux distributions are using LTO to
+	  generate the binaries rather than standard linking.  Should include
+	  the flags used to generate the .o files to make it clearer what
+	  optimization should be done in LTO when generating the final
+	  binaries.
+
+2023-03-27  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm_smi/rocs.c: rocm_smi: rename special cases to
+	  derived events  Derived events are handled in the
+	  `handle_special_events` function. This name is not intuitive. Use
+	  `handle_derived_events` instead.
+
+2024-09-23  Treece Burgess <tburgess@dopamine.cluster>
+
+	* src/components/rocm/rocm.c: Update disabled reason if rocm init is
+	  successful.
+
+2024-09-26  Anthony Danalis <adanalis@icl.utk.edu>
+
+	* src/components/Makefile_comp_tests.target.in,
+	  src/components/cuda/tests/Makefile, src/configure,
+	  src/configure.in: CUDA Tests: Conditionally adding -fpic to nvcc.
+	  If the PAPI shared library is built (either because the user
+	  explicitly configured with --with-shared-lib=yes, or by default
+	  because the user did not specify anything) then nvcc will be
+	  instructed to create position-independent code through the flag
+	  "-fpic". If the user has disabled the shared library (by
+	  configuring with --with-shared-lib=no) then this flag is not passed
+	  to nvcc.
+
+Thu Sep 19 00:38:14 2024 -0700  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/README, src/libpfm4/docs/Makefile,
+	  src/libpfm4/docs/man3/libpfm_arm_ac55.3,
+	  src/libpfm4/docs/man3/libpfm_arm_ac76.3,
+	  src/libpfm4/docs/man3/libpfm_arm_neoverse_v3.3,
+	  src/libpfm4/include/perfmon/pfmlib.h, src/libpfm4/lib/Makefile,
+	  src/libpfm4/lib/events/arm_cortex_a55_events.h,
+	  src/libpfm4/lib/events/arm_cortex_a76_events.h,
+	  .../lib/events/arm_hisilicon_kunpeng_unc_events.h,
+	  .../lib/events/arm_marvell_tx2_unc_events.h,
+	  src/libpfm4/lib/events/arm_neoverse_v3_events.h,
+	  src/libpfm4/lib/events/power10_events.h,
+	  src/libpfm4/lib/pfmlib_arm_armv8.c,
+	  src/libpfm4/lib/pfmlib_arm_armv8_kunpeng_unc.c, ...c =>
+	  pfmlib_arm_armv8_kunpeng_unc_perf_event.c},
+	  src/libpfm4/lib/pfmlib_arm_armv8_thunderx2_unc.c, ...=>
+	  pfmlib_arm_armv8_thunderx2_unc_perf_event.c},
+	  src/libpfm4/lib/pfmlib_arm_armv8_unc.c,
+	  src/libpfm4/lib/pfmlib_arm_armv8_unc_priv.h,
+	  src/libpfm4/lib/pfmlib_arm_armv9.c,
+	  src/libpfm4/lib/pfmlib_common.c, src/libpfm4/lib/pfmlib_priv.h,
+	  src/libpfm4/tests/validate_arm.c,
+	  src/libpfm4/tests/validate_arm64.c: Update libpfm4 Current with
+	  commit c89a379175c00a20bbc660ad9b444e8ecc16cd28  add ARM Cortex A76
+	  core PMU support  Adds ARM Cortex A76 core PMU support. Based on:
+	  https://github.com/ARM-
+	  software/data/blob/master/pmu/cortex-a76.json   commit
+	  6195cbb4686dbeeee7a237ab8a133ef6c2209476  fix detection of ARM
+	  Cortex A55  Was using code not yet released. Bug introduced by:
+	  c40b6eb0640a ("add ARM Cortex A55 core PMU support")   commit
+	  1e8734203f74f0ec6974a860c0b18cb95cce1371  Update IBM Power10 core
+	  PMU support  Added additional events for IBM Power 10 core PMU.
+	  commit c40b6eb0640a649b2c3fdf472c1d6499a8e819c0  add ARM Cortex A55
+	  core PMU support  Add support for ARM Cortex A55 core PMU events.
+	  Based on: https://github.com/ARM-
+	  software/data/blob/master/pmu/cortex-a55.json   commit
+	  f91ea4f1a76fdd5886fd9b6fe8eaa6f585a5bac4  fix ARM thunderX2 and
+	  HiSilicon support to compile on non Linux  The perf_events encoding
+	  routines were mixed with generic encodings and event tables. This
+	  patch cleans all of this to separate generic from Linux specific
+	  code.  commit 892c5fc89ed5fc0e4f0b4a4a290fac57613f23da  Add ARM
+	  Neoverse V3 core PMU support  Based on: https://github.com/ARM-
+	  software/data/blob/master/pmu/neoverse-v3.json   Note: Below are
+	  the commits grouped from top to bottom and discusses what was able
+	  to be tested and what was not.  - Commit ID with last 6 of 16cd28,
+	  unable to test due to no access to a machine with ARM Cortex A76. -
+	  Commit ID with last 6 of 209476, unable to test update due to no
+	  access to a machine with ARM Cortex A55. - Commit ID with last 6 of
+	  ce1371, tested Power10 updates on a machine with IBM Power S1022
+	  with papi_component_avail showing added events in the event count,
+	  papi_native_avail showing newly added events, and the ability to
+	  add the new events with papi_command_line. Commit ID with last 6 of
+	  e819c0, unable to test update due to no access to a machine with
+	  ARM Cortex A55. - Commit ID's with last 6 of a5bac4 and 3f23da,
+	  unable to test updates due to no access to a machine with either
+	  ARM Neoverse V3, ARM thunderX2 and HiSilicon.
+
+Tue Sep 17 16:36:24 2024 -0700  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/lib/pfmlib_common.c: Update libpfm4 Current with commit
+	  0118612a28d270e78d1f17c24e9db0935e332285  remove extraneous printf
+	  in pfmlib_init_env()  Was introduced by mistake by commit:
+	  32b7c3d6ab6b ("add LIBPFM_PROC_CPUINFO variable for Linux")   Note:
+	  Built PAPI on ARM Neoverse V2 with utilities such as
+	  papi_component_avail, papi_native_avail, and papi_command_line
+	  working as expected.
+
+Sun Sep 15 22:29:37 2024 -0700  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/lib/pfmlib_common.c, src/libpfm4/lib/pfmlib_priv.h:
+	  Update libpfm4 Current with commit
+	  3724e7ef87e71dd1de46ef4eb4ec2b1be4ea63e5  add LIBPFM_PROC_CPUINFO
+	  variable for Linux  Allows overriding the filename used to parse
+	  the /proc/cpuinfo file. This can be used to detect certain CPU
+	  models, such as on ARM. Providing an override allows testing
+	  without the actual hardware.   Note: Built PAPI on machines with
+	  Arm Neoverse V2 and Intel(R) Xeon(R) CPU E5-2698 v4 with both being
+	  successful. Ran papi_component_avail, papi_native_avail, and
+	  papi_command_line with all three utilities running succesfully on
+	  both of the aforementioned CPU's.
+
+2024-09-05  Anthony Danalis <adanalis@icl.utk.edu>
+
+	* src/components/rocp_sdk/sdk_class.cpp,
+	  src/components/rocp_sdk/sdk_class.hpp,
+	  src/components/rocp_sdk/tests/Makefile,
+	  src/components/rocp_sdk/tests/kernel.cpp,
+	  src/components/rocp_sdk/tests/two_eventsets.c: Better support for
+	  multiple eventsets and multiple devices.  Now we create the
+	  dispatch profile when the user calls PAPI_start() not when the
+	  dispatch callback is invoked. Also, we create as many profiles as
+	  there are devices requested by the user events, and we associate
+	  each profile with the correct agent.
+
+Thu Sep 5 23:38:53 2024 -0700  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/README, src/libpfm4/docs/Makefile,
+	  src/libpfm4/docs/man3/libpfm_arm_ac72.3,
+	  src/libpfm4/include/perfmon/pfmlib.h,
+	  src/libpfm4/lib/events/intel_gnr_events.h,
+	  src/libpfm4/lib/pfmlib_arm.c, src/libpfm4/lib/pfmlib_arm_armv8.c,
+	  src/libpfm4/lib/pfmlib_common.c, src/libpfm4/lib/pfmlib_priv.h,
+	  src/libpfm4/tests/validate_x86.c: Update libpfm4 Current with
+	  commit 9c5c88e734e866f0801b80c527330ad6dbe21e89  add ARM Cortex A72
+	  Core PMU support  As a clone of Cortex A57.   commit
+	  6d276b48eba5ead4e3fd4b6eca359504f2b69b6c  fix pfm_arm_detect()
+	  buffer initialization problem  Commit 3abda5bc6c1a ("Optimize
+	  pfm_detect() for ARM processors") added an optimization to avoid
+	  parsing /proc/cpuinfo too many times. But it had a bug whereby it
+	  was reinitializing the pfm_arm_cfg.* fields multiple times and
+	  potentially from an uninitialized buffer.   commit
+	  fd3191c34ad87e22d3f3d31d2cf5c1050a9136ba  Fix
+	  FRONTEND_RETIRED.LATE_SWPF encoding on Intel GNR  Fix was missing
+	  from commit d799b554647 ("update Intel GraniteRapids core PMU to
+	  1.03")   Note: As stands the PAPI team does not have access to a
+	  machine with either, Intel Granite Rapids or ARM Cortex A72 to test
+	  the updated changes mentioned above.
+
+2024-08-26  Dong Jun Woun <dwoun@methane.cluster>
+
+	* src/run_tests.sh: run_tests.sh : Test only active components  In
+	  the run_tests.sh script, when checking for components tests filter
+	  for active/inactive components.  Tested with the rocm and cuda
+	  components on Methane
+
+2024-08-01  Treece Burgess <tburgess@leconte.cluster>
+
+	* src/components/cuda/tests/Makefile: Removing unneeded + from
+	  NVCFLAGS assignment.
+
+2024-07-29  Treece Burgess <tburgess@leconte.cluster>
+
+	* src/components/cuda/tests/Makefile: Removing conditional check for
+	  -arch=native flag.
+
+2024-08-26  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/components/rocm/tests/common.h: rocm: fix typo in component
+	  tests  Fix so that when a component test fails, it says "FAILED".
+
+Mon Sep 2 21:51:03 2024 -0700  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/lib/events/intel_gnr_events.h: Update libpfm4 Current
+	  with commit 0d799b5546477a46b3a52310bbf1884d56e9e37f  update Intel
+	  GraniteRapids core PMU to 1.03  Updates the Intel GraniteRapids
+	  core PMU event table to latest Intel released version:  Date   :
+	  08/19/2024 Version: 1.03  From gitub.com/Intel/perfmon   update
+	  Intel GraniteRapids core PMU event table  Update to upstream
+	  version 1.03  Note: Unable to test Intel Granite Rapids updates due
+	  to the PAPI team not having access to a machine with Granite
+	  Rapids.
+
+2024-08-19  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/components/cuda/README.md: cuda: fix typo in README  Corrected
+	  the name of the 'papi_native_avail' utility.
+
+2024-09-06  djwoun <65102751+djwoun@users.noreply.github.com>
+
+	* README.md: Update README.md
+
+2024-09-05  G-Ragghianti <ragghianti@icl.utk.edu>
+
+	* .github/workflows/spack.sh: Fixing cuda version to highest
+	  currently supported

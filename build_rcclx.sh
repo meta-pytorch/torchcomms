@@ -25,6 +25,7 @@ function do_cmake_build() {
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
     -DCMAKE_CXX_STANDARD=20 \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.22 \
+    -DCMAKE_CXX_FLAGS="-DFMT_HEADER_ONLY=1" \
     $extra_flags \
     -S "${source_dir}"
   ninja
@@ -259,7 +260,7 @@ CLEAN_BUILD=${CLEAN_BUILD:=0}
 LIB_SUFFIX=${LIB_SUFFIX:-lib}
 CONDA_INCLUDE_DIR="${CONDA_PREFIX}/include"
 CONDA_LIB_DIR="${CONDA_PREFIX}/lib"
-NCCL_HOME=${NCCL_HOME:="${PWD}/comms/rcclx/develop"}
+NCCL_HOME=${NCCL_HOME:="${PWD}/comms/rcclx/develop/projects/rccl"}
 BASE_DIR=${BASE_DIR:="${PWD}"}
 THIRD_PARTY_LDFLAGS=""
 
@@ -294,11 +295,11 @@ THRIFT_SERVICE_LDFLAGS=(
   "-l:libxxhash.a"
 )
 THIRD_PARTY_LDFLAGS+="${THRIFT_SERVICE_LDFLAGS[*]} "
-THIRD_PARTY_LDFLAGS+="$(pkg-config --libs --static libfolly) "
+THIRD_PARTY_LDFLAGS+="$(pkg-config --libs --static libfolly | sed 's/-lfmt\b//g') "
 if [[ -z "${USE_SYSTEM_LIBS}" ]]; then
-  THIRD_PARTY_LDFLAGS+="-lglog -lgflags -l:libboost_context.a -l:libfmt.a -l:libssl.a -l:libcrypto.a"
+  THIRD_PARTY_LDFLAGS+="-lglog -lgflags -l:libboost_context.a -l:libssl.a -l:libcrypto.a"
 else
-  THIRD_PARTY_LDFLAGS+="-lglog -lgflags -lboost_context -lfmt -lssl -lcrypto"
+  THIRD_PARTY_LDFLAGS+="-lglog -lgflags -lboost_context -lssl -lcrypto"
 fi
 
 echo "$THIRD_PARTY_LDFLAGS"
@@ -351,7 +352,7 @@ fi
 
 # hipify-perl (ROCm 7.0) doesn't map cudaEventWait/Record flags, so they pass
 # through unchanged into hipified source. Define them directly.
-export CXXFLAGS="-DSO_INCOMING_NAPI_ID=56 -DcudaEventWaitDefault=0x00 -DcudaEventWaitExternal=0x01 -DcudaEventRecordDefault=0x00 -DcudaEventRecordExternal=0x01"
+export CXXFLAGS="-I${CONDA_INCLUDE_DIR} -I${BASE_DIR} -DFOLLY_ASSUME_NO_JEMALLOC -DSO_INCOMING_NAPI_ID=56 -DcudaEventWaitDefault=0x00 -DcudaEventWaitExternal=0x01 -DcudaEventRecordDefault=0x00 -DcudaEventRecordExternal=0x01"
 
 # Create linker version script to hide gflags/glog symbols from librccl.so.
 # These get pulled in via static libs (libfolly.a, libthriftcpp2.a) but conflict
@@ -372,7 +373,8 @@ export LDFLAGS="${LDFLAGS:-} -Wl,--version-script=/tmp/rccl_hide_gflags.lds"
 
 mkdir -p "$BUILDDIR"
 pushd "${NCCL_HOME}"
-
+export ROCM_PATH="${ROCM_PATH:-/usr/local/fbcode/platform010/lib/rocm-7.0}"
+export CXX="${CXX:-${ROCM_PATH}/bin/amdclang++}"
 function build_rccl {
   ./install.sh \
     --prefix "$BUILDDIR" \

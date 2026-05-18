@@ -9,7 +9,7 @@ ncclx-specific profiler test using the common ProfilerTestBase class.
 import unittest
 
 import torch
-from torchcomms.tests.integration.py.ProfilerTest import ProfilerTestBase
+from torchcomms.tests.integration.helpers.ProfilerTest import ProfilerTestBase
 
 
 def validate_ncclx_profiler_events(per_coll_meta):

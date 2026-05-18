@@ -28,6 +28,9 @@ class HRDWRingBufferTestAccessor {
   static uint32_t mask(const HRDWRingBuffer<DataT>& buf) {
     return buf.mask_;
   }
+  static uint32_t shift(const HRDWRingBuffer<DataT>& buf) {
+    return buf.shift_;
+  }
   static uint64_t* writeIndex(const HRDWRingBuffer<DataT>& buf) {
     return buf.writeIndex_;
   }
@@ -49,7 +52,7 @@ TEST_F(HRDWRingBufferTest, InitialEntriesMarkedSlotEmpty) {
   TestBuffer buf(16);
   ASSERT_TRUE(buf.valid());
   for (uint32_t i = 0; i < 16; ++i) {
-    EXPECT_EQ(TestAccess::ring(buf)[i].sequence, HRDW_RINGBUFFER_SLOT_EMPTY);
+    EXPECT_EQ(TestAccess::ring(buf)[i].epoch, HRDW_RINGBUFFER_SLOT_EMPTY);
   }
 }
 
@@ -120,18 +123,12 @@ class HRDWRingBufferReaderTest : public ::testing::Test {
     cudaStreamSynchronize(stream_);
   }
 
-  // Advance writeIndex but leave the entry unstamped (sequence mismatch).
-  // Simulates a GPU write that hasn't completed yet.
+  // Advance writeIndex without publishing the slot bytes — simulates the
+  // race where the host sees writeIndex bumped before the writer's
+  // atom.exch.b128 lands. The slot's epoch stays at EMPTY (0), so the
+  // reader classifies it as kNotReady and stops scanning.
   void writeUnstampedSlot() {
-    uint64_t slot = (*TestAccess::writeIndex(*buf_))++;
-    uint64_t idx = slot & TestAccess::mask(*buf_);
-    auto& entry = TestAccess::ring(*buf_)[idx];
-    entry.timestamp_ns = 0;
-    entry.data = {};
-    // Don't stamp sequence — it still has SLOT_EMPTY or a stale value.
-    // The reader will see preSeq != slot and count it as lost.
-    (void)slot;
-    (void)entry;
+    (void)(*TestAccess::writeIndex(*buf_))++;
   }
 
   std::optional<TestBuffer> buf_;
@@ -155,7 +152,7 @@ TEST_F(HRDWRingBufferReaderTest, ReadsSingleEntry) {
   std::vector<uint32_t> seen;
   auto result = reader_->poll([&](const TestEntry& e, uint64_t) {
     seen.push_back(e.data.tag);
-    EXPECT_NE(e.timestamp_ns, 0u) << "GPU timestamp should be non-zero";
+    EXPECT_NE(e.timestamp, 0u) << "GPU timestamp should be non-zero";
   });
 
   EXPECT_EQ(result.entriesRead, 1u);
@@ -199,16 +196,19 @@ TEST_F(HRDWRingBufferReaderTest, DoesNotReReadOldEntries) {
   EXPECT_EQ(seen, expected);
 }
 
+// Models the race where writeIndex becomes host-visible before the
+// writer's slot publication: the reader sees an EMPTY epoch at the
+// half-published slot and stops scanning.
 TEST_F(HRDWRingBufferReaderTest, UnstampedEntryStopsScanning) {
   writeEntry(1);
-  writeUnstampedSlot(); // writeIndex advanced but sequence not stamped
+  writeUnstampedSlot(); // writeIndex advanced but slot not yet published
   writeEntry(3);
 
   std::vector<uint32_t> seen;
   auto result = reader_->poll(
       [&](const TestEntry& e, uint64_t) { seen.push_back(e.data.tag); });
 
-  // Reader stops at unstamped entry (kNotReady). Only entry 1 delivered.
+  // Reader stops at the unstamped slot (kNotReady). Only entry 1 delivered.
   EXPECT_EQ(result.entriesRead, 1u);
   EXPECT_EQ(result.entriesLost, 0u);
   const std::vector<uint32_t> expected{1};
@@ -267,22 +267,21 @@ TEST_F(HRDWRingBufferReaderTest, MultiplePollCyclesAccumulate) {
 TEST_F(HRDWRingBufferReaderTest, CallbackReceivesSnapshotNotReference) {
   writeEntry(42);
 
-  uint64_t observedTimestamp = 0;
-  auto result = reader_->poll([&](const TestEntry& e, uint64_t) {
-    observedTimestamp = e.timestamp_ns;
-  });
+  uint32_t observedTimestamp = 0;
+  auto result = reader_->poll(
+      [&](const TestEntry& e, uint64_t) { observedTimestamp = e.timestamp; });
 
   EXPECT_EQ(result.entriesRead, 1u);
   EXPECT_NE(observedTimestamp, 0u);
 
   // Mutate the ring entry after poll completed. The callback already ran
   // with a snapshot, so this mutation should not affect the observed value.
-  TestAccess::ring(*buf_)[0].timestamp_ns = 9999;
+  TestAccess::ring(*buf_)[0].timestamp = 9999;
   EXPECT_NE(observedTimestamp, 9999u);
 }
 
-// Verify that overwritten entries (where sequence is a different valid
-// slot from a later wrap-around) are counted as lost and never delivered.
+// Verify that overwritten entries (epoch advanced past the reader's
+// expected value) are counted as lost and never delivered.
 TEST_F(HRDWRingBufferReaderTest, OverwrittenEntriesNeverDelivered) {
   // Write kRingSize entries to fill the buffer.
   for (uint32_t i = 0; i < kRingSize; ++i) {
@@ -291,19 +290,19 @@ TEST_F(HRDWRingBufferReaderTest, OverwrittenEntriesNeverDelivered) {
   // Read them all.
   reader_->poll([](const TestEntry&, uint64_t) {});
 
-  // Write one more entry at slot kRingSize (ring index 0). Its sequence
-  // is kRingSize, which won't match the reader's expected slot.
+  // Write one more entry at slot kRingSize (ring index 0). Its epoch
+  // advances past the reader's last seen value.
   writeEntry(100);
 
-  // Manually set sequence to a different valid slot to simulate an
-  // overwrite from a later wrap-around.
-  TestAccess::ring(*buf_)[0].sequence = kRingSize + kRingSize; // wrong epoch
+  // Manually bump epoch to simulate a further wrap-around overwrite.
+  TestAccess::ring(*buf_)[0].epoch =
+      static_cast<uint32_t>((2 * kRingSize) >> TestAccess::shift(*buf_)) + 1u;
 
   uint32_t callbackCount = 0;
   auto result =
       reader_->poll([&](const TestEntry&, uint64_t) { ++callbackCount; });
 
-  // The entry should be skipped (sequence mismatch), counted as lost.
+  // The entry should be skipped (epoch mismatch), counted as lost.
   EXPECT_EQ(callbackCount, 0u);
   EXPECT_EQ(result.entriesRead, 0u);
   EXPECT_EQ(result.entriesLost, 1u);
@@ -316,33 +315,33 @@ TEST_F(HRDWRingBufferReaderTest, DataAndTimestampsPreserved) {
 
   struct SeenEntry {
     uint32_t tag;
-    uint64_t timestamp_ns;
+    uint32_t timestamp;
   };
   std::vector<SeenEntry> seen;
   auto result = reader_->poll([&](const TestEntry& e, uint64_t) {
-    seen.push_back({e.data.tag, e.timestamp_ns});
+    seen.push_back({e.data.tag, e.timestamp});
   });
 
   ASSERT_EQ(seen.size(), 2u);
   EXPECT_EQ(result.entriesRead, 2u);
 
   EXPECT_EQ(seen[0].tag, 10u);
-  EXPECT_NE(seen[0].timestamp_ns, 0u);
+  EXPECT_NE(seen[0].timestamp, 0u);
 
   EXPECT_EQ(seen[1].tag, 20u);
-  EXPECT_NE(seen[1].timestamp_ns, 0u);
+  EXPECT_NE(seen[1].timestamp, 0u);
   // Second write happened after first, so timestamp should be >= first.
-  EXPECT_GE(seen[1].timestamp_ns, seen[0].timestamp_ns);
+  EXPECT_GE(seen[1].timestamp, seen[0].timestamp);
 }
 
-// Verify that unstamped entries stop scanning, and subsequent polls
-// pick up the entry once it's stamped.
+// Same race, then the writer's publication finally lands — the next poll
+// should resume from where the previous one stopped.
 TEST_F(HRDWRingBufferReaderTest, UnstampedEntryResumesAfterStamp) {
   writeEntry(1);
   writeUnstampedSlot();
   writeEntry(3);
 
-  // First poll: stops at unstamped entry.
+  // First poll: stops at unstamped slot.
   std::vector<uint32_t> seen;
   auto result = reader_->poll(
       [&](const TestEntry& e, uint64_t) { seen.push_back(e.data.tag); });
@@ -352,12 +351,13 @@ TEST_F(HRDWRingBufferReaderTest, UnstampedEntryResumesAfterStamp) {
   EXPECT_EQ(result.entriesRead, 1u);
   EXPECT_EQ(reader_->lastReadIndex(), 1u);
 
-  // Stamp the unstamped entry.
-  TestAccess::ring(*buf_)[1].timestamp_ns = 200;
+  // Manually publish slot 1 with the correct epoch.
+  TestAccess::ring(*buf_)[1].timestamp = 200;
   TestAccess::ring(*buf_)[1].data = TestEvent{2};
-  TestAccess::ring(*buf_)[1].sequence = 1;
+  TestAccess::ring(*buf_)[1].epoch =
+      static_cast<uint32_t>(1 >> TestAccess::shift(*buf_)) + 1u;
 
-  // Second poll: picks up entries 2 and 3.
+  // Second poll: picks up slots 1 and 2 (entries 2 and 3).
   std::vector<uint32_t> seen2;
   auto result2 = reader_->poll(
       [&](const TestEntry& e, uint64_t) { seen2.push_back(e.data.tag); });
@@ -461,22 +461,18 @@ TEST_F(HRDWRingBufferReaderTest, JumpToTailAfterPartialRead) {
 }
 
 // ---------------------------------------------------------------------------
-// Destruction: verify ~HRDWRingBuffer destructs live entries.
-// Uses a mapped counter accessible from both GPU (kernel writes) and
-// CPU (ring buffer teardown destructor).
+// Destruction: verify ~HRDWRingBuffer destructs live entries for non-trivially-
+// destructible DataT. Uses a mapped counter accessible from both GPU (kernel
+// writes) and CPU (ring buffer teardown destructor).
 // ---------------------------------------------------------------------------
 
-// Event type that tracks live instance count via a mapped counter.
-// The counter pointer is stored in each instance so device code can
-// access it without referencing a host global.
+// 8-byte event that tracks live instance count via a mapped counter.
 struct CountedEvent {
-  int id{0};
-  int* counter{nullptr}; // mapped memory, accessible from host and device
+  int* counter{nullptr};
 
   __host__ __device__ CountedEvent() = default;
 
-  __host__ __device__ explicit CountedEvent(int id_, int* counter_)
-      : id(id_), counter(counter_) {
+  __host__ __device__ explicit CountedEvent(int* counter_) : counter(counter_) {
     if (counter) {
 #ifdef __CUDA_ARCH__
       atomicAdd(counter, 1);
@@ -496,8 +492,7 @@ struct CountedEvent {
     }
   }
 
-  __host__ __device__ CountedEvent(const CountedEvent& o)
-      : id(o.id), counter(o.counter) {
+  __host__ __device__ CountedEvent(const CountedEvent& o) : counter(o.counter) {
     if (counter) {
 #ifdef __CUDA_ARCH__
       atomicAdd(counter, 1);
@@ -508,14 +503,13 @@ struct CountedEvent {
   }
 
   __host__ __device__ CountedEvent(CountedEvent&& o) noexcept
-      : id(o.id), counter(o.counter) {
+      : counter(o.counter) {
     // Transfer ownership — no increment. Moved-from object won't decrement.
     o.counter = nullptr;
   }
 
   __host__ __device__ CountedEvent& operator=(const CountedEvent& o) {
     if (this != &o) {
-      // Decrement old counter before overwriting.
       if (counter) {
 #ifdef __CUDA_ARCH__
         atomicAdd(counter, -1);
@@ -523,9 +517,7 @@ struct CountedEvent {
         --(*counter);
 #endif
       }
-      id = o.id;
       counter = o.counter;
-      // Increment new counter.
       if (counter) {
 #ifdef __CUDA_ARCH__
         atomicAdd(counter, 1);
@@ -546,7 +538,6 @@ struct CountedEvent {
         --(*counter);
 #endif
       }
-      id = o.id;
       counter = o.counter;
       o.counter = nullptr;
     }
@@ -568,7 +559,7 @@ TEST(HRDWRingBufferDestructionTest, TeardownDestructsAllEntries) {
     cudaStream_t stream;
     ASSERT_EQ(cudaStreamCreate(&stream), cudaSuccess);
     for (int i = 0; i < 4; ++i) {
-      buf.write(stream, CountedEvent(i, counter));
+      buf.write(stream, CountedEvent(counter));
     }
     ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
     cudaStreamDestroy(stream);
@@ -595,7 +586,7 @@ TEST(HRDWRingBufferDestructionTest, PartialFillOnlyDestructsWritten) {
     cudaStream_t stream;
     ASSERT_EQ(cudaStreamCreate(&stream), cudaSuccess);
     for (int i = 0; i < 3; ++i) {
-      buf.write(stream, CountedEvent(i, counter));
+      buf.write(stream, CountedEvent(counter));
     }
     ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
     cudaStreamDestroy(stream);
@@ -616,12 +607,13 @@ namespace meta::comms::colltrace {
 
 namespace {
 template <typename DataT>
-__global__ void ringBufferWriteKernel(
+__global__ void countedEventRingBufferWriteKernel(
     HRDWEntry<DataT>* ring,
     uint64_t* writeIdx,
     uint32_t mask,
+    uint32_t shift,
     DataT data) {
-  hrdwRingBufferWrite(ring, writeIdx, mask, data);
+  hrdwRingBufferWrite(ring, writeIdx, mask, shift, data);
 }
 } // namespace
 
@@ -631,9 +623,11 @@ cudaError_t launchRingBufferWrite<CountedEvent>(
     HRDWEntry<CountedEvent>* ring,
     uint64_t* writeIdx,
     uint32_t mask,
+    uint32_t shift,
     CountedEvent data) {
   // NOLINTNEXTLINE(facebook-cuda-safe-kernel-call-check)
-  ringBufferWriteKernel<<<1, 1, 0, stream>>>(ring, writeIdx, mask, data);
+  countedEventRingBufferWriteKernel<<<1, 1, 0, stream>>>(
+      ring, writeIdx, mask, shift, data);
   return cudaGetLastError();
 }
 

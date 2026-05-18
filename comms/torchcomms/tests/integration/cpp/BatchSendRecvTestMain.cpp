@@ -89,7 +89,12 @@ TEST_P(MultiGraph, InputDeleted) {
 
 auto batchSendRecvParamValues() {
   return ::testing::Combine(
-      ::testing::Values(4), ::testing::Values(at::kFloat, at::kInt, at::kChar));
+      ::testing::Values(4),
+#if TEST_FULL_SWEEP
+      ::testing::Values(at::kFloat, at::kInt, at::kChar));
+#else
+      ::testing::Values(at::kFloat));
+#endif
 }
 
 auto batchSendRecvGraphParamValues() {

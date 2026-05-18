@@ -194,7 +194,6 @@ TEST(UniflowAgentTest, FullLifecycleWithTcpController) {
   auto factory = MultiTransportFactoryTest::make(
       {std::make_shared<MockTransportFactory>(TransportType::RDMA)});
 
-  // Server agent with real TcpServer
   auto tcpServer = std::make_unique<controller::TcpServer>("127.0.0.1:0");
   ASSERT_TRUE(tcpServer->init().hasValue());
   int port = tcpServer->getPort();
@@ -205,25 +204,20 @@ TEST(UniflowAgentTest, FullLifecycleWithTcpController) {
       nullptr,
       std::move(tcpServer));
 
-  // getUniqueId
   auto serverId = serverAgent.getUniqueId();
   ASSERT_TRUE(serverId.hasValue());
   EXPECT_EQ(serverId.value(), "127.0.0.1:" + std::to_string(port));
 
-  // registerSegment
   uint8_t buf[64];
   Segment seg(buf, sizeof(buf), MemoryType::VRAM, 0);
   auto regResult = serverAgent.registerSegment(seg);
   ASSERT_TRUE(regResult.hasValue());
   EXPECT_EQ(regResult.value().len(), sizeof(buf));
 
-  // Client agent with real TcpClient
   auto clientAgent = UniflowAgentTest::create(
       {.deviceId = 1, .name = "client"},
       factory,
       std::make_unique<controller::TcpClient>());
-
-  // accept + connect using the server's unique ID
   Result<std::unique_ptr<Connection>> serverConnResult =
       ErrCode::NotImplemented;
   Result<std::unique_ptr<Connection>> clientConnResult =
@@ -248,7 +242,6 @@ TEST(UniflowAgentTest, FullLifecycleWithWildcardAddress) {
   auto factory = MultiTransportFactoryTest::make(
       {std::make_shared<MockTransportFactory>(TransportType::RDMA)});
 
-  // Server with wildcard address — getId() should resolve to connectable addr
   auto tcpServer = std::make_unique<controller::TcpServer>("0.0.0.0:0");
   ASSERT_TRUE(tcpServer->init().hasValue());
   int port = tcpServer->getPort();
@@ -259,25 +252,20 @@ TEST(UniflowAgentTest, FullLifecycleWithWildcardAddress) {
       nullptr,
       std::move(tcpServer));
 
-  // getUniqueId — wildcard resolved to loopback
   auto serverId = serverAgent.getUniqueId();
   ASSERT_TRUE(serverId.hasValue());
   EXPECT_EQ(serverId.value(), "127.0.0.1:" + std::to_string(port));
 
-  // registerSegment
   uint8_t buf[64];
   Segment seg(buf, sizeof(buf), MemoryType::VRAM, 0);
   auto regResult = serverAgent.registerSegment(seg);
   ASSERT_TRUE(regResult.hasValue());
   EXPECT_EQ(regResult.value().len(), sizeof(buf));
 
-  // Client connects using the resolved address
   auto clientAgent = UniflowAgentTest::create(
       {.deviceId = 1, .name = "client"},
       factory,
       std::make_unique<controller::TcpClient>());
-
-  // accept + connect
   Result<std::unique_ptr<Connection>> serverConnResult =
       ErrCode::NotImplemented;
   Result<std::unique_ptr<Connection>> clientConnResult =

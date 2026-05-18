@@ -1,0 +1,97 @@
+# Set default if the root environment variable is not already set.
+# Note PAPI_ROCMSMI_ROOT is an environment variable that must be set.
+# There are four other environment variables that must be exported
+# for runtime operation; see the README file.
+
+PAPI_ROCMSMI_ROOT ?= /opt/rocm/rocm_smi
+
+# There is one library used by the ROCM_SMI component: librocm_smi64.so
+# By default, the software tries to find this in system paths, including
+# those listed in the environment variable LD_LIBRARY_PATH. If not found
+# there it looks in $(PAPI_ROCMSMI_ROOT)/lib/librocm_smi64.so
+
+# However, this can be overridden by exporting PAPI_ROCM_SMI_LIB as 
+# something else. It would still need to be a full path and library name.
+# If it is exported, it must work or the component will be disabled. e.g.
+# export PAPI_ROCM_SMI_LIB=$(PAPI_ROCMSMI_ROOT)/lib/librocm_smi64.so
+# This allows users to overcome non-standard ROCM installs or specify
+# specific version of the librocm_smi64.so library.
+
+# PAPI_ROCMSMI_ROOT is used at both at compile time and run time.
+
+# There are many ways to cause this path to be known. Spack is a package
+# manager used on supercomputers, Linux and MacOS. If Spack is aware of ROCM,
+# it encodes the paths to the necessary libraries.
+
+# The environment variable LD_LIBRARY_PATH encodes a list of paths to
+# search for libraries; separated by a colon (:). New paths can be
+# added to LD_LIBRARY_PATH. 
+#
+# Warning: LD_LIBRARY_PATH often contains directories that apply to other
+# installed packages you may be using. Always add to LD_LIBRARY_PATH
+# recursively; for example:
+ 
+# >export LD_LIBRARY_PATH=someNewLibraryDirectory:$LD_LIBRARY_PATH which would
+# append the existing LD_LIBRARY_PATH to the new directory you wish to add.
+# Alternatively, you can prepend it: 
+# >export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:someNewLibraryDirectory Which will
+# search the existing libraries first, then your new directory.
+
+# You can check on the value of LD_LIBRARY_PATH with 
+# >echo $LD_LIBRARY_PATH
+
+# There may be other package managers or utilities, for example on a system
+# with modules; the command 'module load rocm' may modify LD_LIBRARY_PATH.
+
+# A Linux system will also search for libraries by default in the directories
+# listed by /etc/ld.so.conf, and /usr/lib64, /lib64, /usr/lib, /lib. 
+
+# Note:  If you change the exports, PAPI should be rebuilt from scratch; see
+# note below.
+
+# Note: ROCM_SMI is typically provided with the ROCM libraries, but in PAPI
+# ROCM and ROCM_SMI are treated as separate components, and must be given
+# separately on the configure option --with-components. e.g.
+
+#        From within the papi/src/ director:
+#        make clobber
+#        ./configure --with-components="rocm_smi"
+#        make  
+
+# An alternative, for both rocm and rocm_smi components:
+#        ./configure --with-components="rocm rocm_smi"
+
+# OPERATION, per library:
+# 1) If an override is not empty, we will use it explicitly and fail if it
+# does not work. This means disabling the component; a reason for disabling
+# is shown using the papi utility, papi/src/utils/papi_component_avail
+
+# 2) We will attempt to open the library using the normal system library search
+# paths; if Spack is present and configured correctly it should deliver the
+# proper library. A failure here will be silent; we will proceed to (3).
+
+# 3) If that fails, we will try to find the library in the standard installed
+# locations listed above. If this fails, we disable the component, the reason
+# for disabling is shown using the papi utility,
+# papi/src/utils/papi_component_avail. 
+
+COMPSRCS += components/rocm_smi/linux-rocm-smi.c \
+            components/rocm_smi/rocs.c
+COMPOBJS += linux-rocm-smi.o \
+            rocs.o
+
+# CFLAGS specifies compile flags; need include files here, and macro defines.
+# Where to find rocm_smi.h varied in early ROCM releases. If it changes again,
+# for backward compatibility add *more* -I paths, do not just replace this one.
+
+CFLAGS += -I$(PAPI_ROCMSMI_ROOT)/../include/rocm_smi
+CFLAGS += -I$(PAPI_ROCMSMI_ROOT)/../include
+CFLAGS += -I$(PAPI_ROCMSMI_ROOT)/include/rocm_smi
+CFLAGS += -g
+LDFLAGS += $(LDL) -g
+
+linux-rocm-smi.o: components/rocm_smi/linux-rocm-smi.c $(HEADERS)
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/rocm_smi/linux-rocm-smi.c -o linux-rocm-smi.o
+
+rocs.o: components/rocm_smi/rocs.c $(HEADERS)
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/rocm_smi/rocs.c -o rocs.o

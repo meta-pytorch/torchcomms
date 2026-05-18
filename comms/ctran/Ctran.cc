@@ -1,5 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #include <memory>
+#include <optional>
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
@@ -111,6 +112,14 @@ comms::pipes::Transport* CtranComm::getMultiPeerTransportsPtr() const {
 }
 #endif // defined(ENABLE_PIPES)
 
+std::optional<meta::comms::colltrace::AlgoStatDump> CtranComm::dumpAlgoStats()
+    const {
+  if (!algoStats_) {
+    return std::nullopt;
+  }
+  return algoStats_->dump();
+}
+
 commResult_t ctranInit(
     CtranComm* comm,
     std::unique_ptr<ctran::IProfilerReporter> reporter) {
@@ -123,7 +132,20 @@ commResult_t ctranInit(
     return commInternalError;
   }
 
+  for (const auto& opt : NCCL_COLLTRACE) {
+    if (opt == "algostat") {
+      comm->algoStats_ = std::make_unique<meta::comms::colltrace::AlgoStats>(
+          comm->statex_->commHash(), comm->statex_->commDesc());
+      break;
+    }
+  }
+
   auto res = ctranInitializePipes(comm);
+  if (res != commSuccess) {
+    return res;
+  }
+
+  res = ctranConfigCommAlgoOverride(comm);
   if (res != commSuccess) {
     return res;
   }
@@ -155,6 +177,8 @@ CtranComm::CtranComm(std::shared_ptr<Abort> abort, ctranConfig commConfig)
 }
 
 void CtranComm::destroy() {
+  cudagraphDeferredCleanup.runAll();
+
   // All smart pointers are automatically de-initialized, but we want to
   // ensure they do so in a specific order. Therefore, we manually handle
   // their de-initialization here.
@@ -166,7 +190,6 @@ void CtranComm::destroy() {
 #endif // defined(ENABLE_PIPES)
   ctran_.reset();
   bootstrap_.reset();
-  collTrace_.reset();
   colltraceNew_.reset();
   statex_.reset();
   // NOTE: memCache needs to be destroyed after transportProxy_ to release
@@ -193,7 +216,11 @@ commResult_t ctranFinalize(CtranComm* comm) {
 
 namespace ctran {
 
-commResult_t globalRegisterWithPtr(void* buff, size_t size, bool forceReg) {
+commResult_t globalRegisterWithPtr(
+    void* buff,
+    size_t size,
+    bool forceReg,
+    bool ncclManaged) {
   if (NCCL_CTRAN_REGISTER == NCCL_CTRAN_REGISTER::none) {
     // ctran registration is disabled, no-op
     return commSuccess;
@@ -205,10 +232,11 @@ commResult_t globalRegisterWithPtr(void* buff, size_t size, bool forceReg) {
     return commInternalError;
   }
 
-  return regCache->globalRegister(buff, size, forceReg);
+  return regCache->globalRegister(buff, size, forceReg, ncclManaged);
 }
 
-commResult_t globalDeregisterWithPtr(void* buff, size_t size) {
+commResult_t
+globalDeregisterWithPtr(void* buff, size_t size, bool skipRemRelease) {
   if (NCCL_CTRAN_REGISTER == NCCL_CTRAN_REGISTER::none) {
     // ctran registration is disabled, no-op
     return commSuccess;
@@ -220,7 +248,7 @@ commResult_t globalDeregisterWithPtr(void* buff, size_t size) {
     return commInternalError;
   }
 
-  return regCache->globalDeregister(buff, size);
+  return regCache->globalDeregister(buff, size, skipRemRelease);
 }
 
 commResult_t registerAll() {

@@ -1,5 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #include "comms/ctran/profiler/Profiler.h"
+#include "comms/ctran/CtranComm.h"
 #include "comms/ctran/profiler/DefaultAlgoProfilerReporter.h"
 
 namespace {
@@ -35,7 +36,8 @@ Profiler::Profiler(CtranComm* comm, std::unique_ptr<IProfilerReporter> reporter)
 Profiler::~Profiler() = default;
 
 void Profiler::initForEachColl(int opCount, int samplingWeight) {
-  shouldTrace_ = samplingWeight > 0 && (opCount % samplingWeight) == 0;
+  shouldTrace_ =
+      forceTrace_ || (samplingWeight > 0 && (opCount % samplingWeight) == 0);
   if (shouldTrace_) {
     opCount_ = opCount;
     durations_.fill(0);
