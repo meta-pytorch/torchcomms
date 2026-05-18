@@ -115,8 +115,10 @@ __global__ void CtranGpeTestFtDisabledOobTerminateKernel(
   while (comms::device::ld_volatile_global(args.terminate) == 0)
     ;
 
-  // FtDisabled: GpeThread will terminate after setting AsyncEx_, and will not
-  // be able to terminate Kernel, so we don't wait here.
+  __syncthreads();
+  if (flag && tId == 0) {
+    comms::device::st_volatile_global(&flag[bId], KERNEL_UNSET);
+  }
 }
 
 __global__ void CtranGpeTestFtEnabledOobTerminateKernel(
