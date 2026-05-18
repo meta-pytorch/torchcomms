@@ -1861,12 +1861,13 @@ cvars:
 
  - name        : NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT
    type        : int
-   default     : 1
+   default     : 0
    description : |-
      Sampling weight for algo profiling based on opCount per communicator.
      A collective is profiled when (opCount % samplingWeight == 0).
      For example, a sampling weight of 100 means every 100th collective
-     on each communicator is profiled. Set to 1 to profile every collective.
+     on each communicator is profiled. Set to 0 to disable profiling,
+     or 1 to profile every collective.
 
 
  - name        : NCCL_CTRAN_TRANSPORT_PROFILER
