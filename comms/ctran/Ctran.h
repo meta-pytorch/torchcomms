@@ -297,6 +297,24 @@ commResult_t AllToAllPExec(
 
 commResult_t AllToAllPDestroy(CtranPersistentRequest* request);
 
+/* Window-based alltoall using the same CE+IB algorithm as AllToAllP.
+ * Buffer metadata is sourced from CtranWin (post-exchange) instead of
+ * PersistArgs. The window must have been allocated and exchanged before init.
+ */
+commResult_t AllToAllWinInit(
+    CtranWin* win,
+    commDataType_t datatype,
+    CtranComm* comm,
+    cudaStream_t stream,
+    CtranPersistentRequest*& request);
+
+commResult_t AllToAllWinExec(
+    const void* sendbuff,
+    const size_t count,
+    CtranPersistentRequest* request);
+
+commResult_t AllToAllWinDestroy(CtranPersistentRequest* request);
+
 // Global pointer-based memory registration (does not require a comm).
 // If forceReg is true, registration happens even in async/lazy mode.
 commResult_t globalRegisterWithPtr(
