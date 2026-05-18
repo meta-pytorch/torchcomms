@@ -198,3 +198,7 @@ ncclResult_t createCtranComm(ncclComm* comm);
 // Finalize, destroy, and reset ctranComm_ on the given ncclComm.
 // No-op if ctranComm_ is nullptr.
 ncclResult_t destroyCtranComm(ncclComm* comm);
+
+// Public accessor returning the CtranComm* hanging off an ncclComm, or
+// nullptr if it isn't initialized (e.g. NCCL_CTRAN_ENABLE not set).
+CtranComm* getCtranCommFromNcclComm(ncclComm* ncclComm);
