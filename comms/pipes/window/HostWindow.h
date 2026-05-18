@@ -122,6 +122,14 @@ class HostWindow {
    */
   DeviceWindow getDeviceWindow() const;
 
+  /**
+   * Materialize the specified IBGDA peers, then return the DeviceWindow.
+   * Use with lazy mode to ensure peers are ready before kernel launch.
+   *
+   * @param peers List of peer ranks to materialize
+   */
+  DeviceWindow getDeviceWindow(const std::vector<int>& peers);
+
   // --- Buffer registration for generic put/put_signal ---
 
   /**
