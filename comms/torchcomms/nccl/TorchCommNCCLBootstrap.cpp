@@ -291,7 +291,6 @@ ncclComm_t TorchCommNCCLBootstrap::createNcclComm(
 
   uniqueId = exchangeUniqueId(name);
 
-  // TODO: add logging on failures and successes
   // TODO: use scalable init
   // TODO: get the local rank
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
@@ -304,11 +303,19 @@ ncclComm_t TorchCommNCCLBootstrap::createNcclComm(
 
   ncclResult_t ncclErr = nccl_api_->commInitRankConfig(
       &nccl_comm, comm_size_, uniqueId, rank_, &config);
+
   if (ncclErr != ncclSuccess || nccl_comm == nullptr) {
+    TC_LOG(ERROR) << "[comm=" << name << "] Failed to initialize NCCL "
+                  << "communicator (rank=" << rank_ << ", size=" << comm_size_
+                  << "): " << nccl_api_->getErrorString(ncclErr);
     throw std::runtime_error(
         "Failed to initialize NCCL communicator: " +
         std::string(nccl_api_->getErrorString(ncclErr)));
   }
+
+  TC_LOG(INFO) << "[comm=" << name << "] NCCL communicator initialized "
+               << "(rank=" << rank_ << ", size=" << comm_size_
+               << ", device=" << device_.index() << ")";
 
   cleanupTCPStore(nccl_comm);
 
