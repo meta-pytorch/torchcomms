@@ -23,6 +23,10 @@
 namespace comms::pipes {
 class P2pIbgdaTransportDevice;
 struct MultipeerIbgdaDeviceTransport;
+struct P2pIbgdaTransportBuildParams;
+struct PeerQpPayload;
+struct PeerBufferPayload;
+struct PeerBufferSizes;
 } // namespace comms::pipes
 
 namespace comms::pipes {
@@ -350,7 +354,30 @@ class MultipeerIbgdaTransport {
    * @param peerRank Global rank of the peer (must be != myRank and < nRanks)
    * @return Pointer to P2pIbgdaTransportDevice for the specified peer
    */
-  P2pIbgdaTransportDevice* getP2pTransportDevice(int peerRank) const;
+  P2pIbgdaTransportDevice* getP2pTransportDevice(int peerRank);
+
+  /**
+   * Lazily allocate per-peer staging buffers and build the GPU device
+   * transport slot. No-op in eager mode or if the peer is already
+   * materialized. Both ranks must call materializePeer() for each other
+   * concurrently (or within the timeout window).
+   *
+   * NOT thread-safe. Callers must not invoke this concurrently for
+   * the same or different peers.
+   *
+   * @param peerRank Global rank of the peer to materialize
+   */
+  void materializePeer(int peerRank);
+
+  /**
+   * Check whether a peer's staging buffers have been allocated and its
+   * GPU device transport slot populated. In eager mode, returns true for
+   * all valid peers after exchange().
+   *
+   * @param peerRank Global rank of the peer
+   * @return true if the peer is ready for kernel use
+   */
+  bool isPeerMaterialized(int peerRank) const;
 
   /**
    * getDeviceTransportPtr - Get pointer to device transport array
@@ -362,6 +389,16 @@ class MultipeerIbgdaTransport {
    * @return Pointer to P2pIbgdaTransportDevice array in GPU memory
    */
   P2pIbgdaTransportDevice* getDeviceTransportPtr() const;
+
+  /**
+   * Return the GPU pointer for a peer's device transport slot without
+   * triggering lazy materialization. The slot may be zeroed if the peer
+   * has not been materialized yet.
+   *
+   * @param peerRank Global rank of the peer
+   * @return Pointer to P2pIbgdaTransportDevice slot (may be zeroed)
+   */
+  P2pIbgdaTransportDevice* getP2pTransportDeviceSlot(int peerRank) const;
 
   /**
    * Get number of peers (nRanks - 1)
@@ -442,7 +479,6 @@ class MultipeerIbgdaTransport {
   void allocateResources();
   void registerMemory();
   void createQpGroups();
-  void createLoopbackCompanionQps();
   void allocate_send_recv_buffers();
   void exchange_send_recv_buffers();
   void cleanup_send_recv_buffers();
@@ -456,6 +492,22 @@ class MultipeerIbgdaTransport {
       int nic);
   int rankToPeerIndex(int rank) const;
   int peerIndexToRank(int peerIndex) const;
+
+  // Per-peer helpers shared by eager exchange() and lazy materializePeer()
+  void createPeerQps(int peerIndex);
+  void connectPeerLoopback(int peerIndex);
+  P2pIbgdaTransportBuildParams buildPeerTransportParams(int peerIndex) const;
+
+  PeerBufferSizes computePeerBufferSizes() const;
+
+  // materializePeer decomposition
+  PeerQpPayload buildLocalQpPayload(int peerIndex) const;
+  void allocatePeerBuffers(int peerIndex, PeerBufferPayload& payload);
+  template <typename T>
+  T exchangeWithPeer(int peerRank, const T& localPayload, int tag);
+  void connectPeerMainQps(int peerIndex, const PeerQpPayload& remotePayload);
+  void applyRemoteViews(int peerIndex, const PeerBufferPayload& remotePayload);
+  void cleanupPeerOnFailure(int peerIndex);
 
   // Rank information
   const int myRank_{-1};
@@ -532,19 +584,18 @@ class MultipeerIbgdaTransport {
   // Exchange info received from peers
   std::vector<IbgdaTransportExchInfo> peerExchInfo_;
 
-  // Transport-owned signal buffers (allocated if numSignalSlots > 0)
+  // Slot-index signal/counter/discard buffers.
+  // Eager mode: bulk-allocated in exchange(). Null in lazy mode.
   void* signalInboxGpu_{nullptr};
+  void* counterGpu_{nullptr};
+  void* discardSignalGpu_{nullptr};
+  // Per-peer views into signal/counter/discard (populated by both modes).
   std::vector<IbgdaRemoteBuffer> signalRemoteViews_;
   std::vector<IbgdaLocalBuffer> signalLocalViews_;
-
-  // Transport-owned counter buffers (allocated if numCounterSlots > 0)
-  void* counterGpu_{nullptr};
   std::vector<IbgdaLocalBuffer> counterViews_;
-
-  void* discardSignalGpu_{nullptr};
   std::vector<IbgdaRemoteBuffer> discardSignalRemoteViews_;
 
-  // Send/recv buffers (allocated when maxGroups > 0)
+  // Per-peer send/recv buffer views (populated by both modes).
   struct SendRecvPeerBuffers {
     IbgdaLocalBuffer sendStaging;
     IbgdaLocalBuffer recvStaging;
@@ -556,14 +607,23 @@ class MultipeerIbgdaTransport {
   };
   std::vector<SendRecvPeerBuffers> sendRecvPeerBuffers_;
 
+  // Eager mode: bulk allocations for all peers. Null in lazy mode.
   std::unique_ptr<meta::comms::DeviceBuffer> sendStagingBulk_;
   std::unique_ptr<meta::comms::DeviceBuffer> recvStagingBulk_;
   std::unique_ptr<meta::comms::DeviceBuffer> signalBulk_;
   std::unique_ptr<meta::comms::DeviceBuffer> counterBulk_;
   std::unique_ptr<meta::comms::DeviceBuffer> stepStateBulk_;
-
   IbgdaLocalBuffer recvStagingBulkReg_;
   IbgdaLocalBuffer signalBulkReg_;
+  IbgdaLocalBuffer counterBulkReg_;
+
+  // Lazy mode: per-peer contiguous allocation (staging + signal + counter +
+  // stepState + slot-index). Null for unmaterialized peers. Empty in eager
+  // mode.
+  std::vector<std::unique_ptr<meta::comms::DeviceBuffer>> lazyPeerBufs_;
+
+  // Lazy mode: set to true after writeDeviceTransportSlot completes.
+  std::vector<bool> peerMaterialized_;
 };
 
 } // namespace comms::pipes
