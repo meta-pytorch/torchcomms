@@ -46,6 +46,27 @@ class CtranMock : public CtranApi {
       (override));
 
   MOCK_METHOD(ncclResult_t, allGatherPDestroy, (void* request), (override));
+
+  MOCK_METHOD(
+      bool,
+      deviceAllToAllvSupport,
+      (CtranComm * ctranComm),
+      (override));
+
+  MOCK_METHOD(
+      ncclResult_t,
+      deviceAllToAllv,
+      (const void* sendbuff,
+       void* recvbuff,
+       const int64_t* sendcounts_d,
+       const int64_t* recvcounts_d,
+       ncclDataType_t datatype,
+       CtranComm* ctranComm,
+       cudaStream_t stream,
+       int64_t sendcountsMultiplier,
+       int64_t recvcountsMultiplier,
+       const HintsMap& hints),
+      (override));
 };
 
 } // namespace torch::comms::test

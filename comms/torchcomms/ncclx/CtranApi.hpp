@@ -61,6 +61,25 @@ class CtranApi {
       void* request) = 0;
 
   [[nodiscard]] virtual ncclResult_t allGatherPDestroy(void* request) = 0;
+
+  /// Returns true iff `deviceAllToAllv` can run on this comm. Verifies
+  /// ctran has the required pipes transport support. Callers should check
+  /// this before `deviceAllToAllv` and surface a clear error if false.
+  [[nodiscard]] virtual bool deviceAllToAllvSupport(CtranComm* ctranComm) = 0;
+
+  /// Device-side AllToAllv. Counts and split sizes live on the GPU; ctran
+  /// reads them on-stream without an extra D2H copy.
+  [[nodiscard]] virtual ncclResult_t deviceAllToAllv(
+      const void* sendbuff,
+      void* recvbuff,
+      const int64_t* sendcounts_d,
+      const int64_t* recvcounts_d,
+      ncclDataType_t datatype,
+      CtranComm* ctranComm,
+      cudaStream_t stream,
+      int64_t sendcountsMultiplier,
+      int64_t recvcountsMultiplier,
+      const std::unordered_map<std::string, std::string>& hints) = 0;
 };
 
 /**
@@ -92,6 +111,20 @@ class DefaultCtranApi : public CtranApi {
       void* request) override;
 
   [[nodiscard]] ncclResult_t allGatherPDestroy(void* request) override;
+
+  [[nodiscard]] bool deviceAllToAllvSupport(CtranComm* ctranComm) override;
+
+  [[nodiscard]] ncclResult_t deviceAllToAllv(
+      const void* sendbuff,
+      void* recvbuff,
+      const int64_t* sendcounts_d,
+      const int64_t* recvcounts_d,
+      ncclDataType_t datatype,
+      CtranComm* ctranComm,
+      cudaStream_t stream,
+      int64_t sendcountsMultiplier,
+      int64_t recvcountsMultiplier,
+      const std::unordered_map<std::string, std::string>& hints) override;
 };
 
 } // namespace torch::comms

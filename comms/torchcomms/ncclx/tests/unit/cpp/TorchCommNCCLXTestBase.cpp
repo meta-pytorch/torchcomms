@@ -23,6 +23,7 @@ void TorchCommNCCLXTest::SetUp() {
   // Default: per-collective support fns return true. Tests that exercise
   // the unsupported path override with EXPECT_CALL.
   ON_CALL(*ctran_mock_, allGatherPSupport(_)).WillByDefault(Return(true));
+  ON_CALL(*ctran_mock_, deviceAllToAllvSupport(_)).WillByDefault(Return(true));
 
   // Force the global instance to be created on the CPU device
   auto hook_mock = std::make_unique<CachingAllocatorHookMock>();

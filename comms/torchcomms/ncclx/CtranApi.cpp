@@ -143,4 +143,32 @@ ncclResult_t DefaultCtranApi::allGatherPDestroy(void* request) {
   return fromCtranResult(res);
 }
 
+bool DefaultCtranApi::deviceAllToAllvSupport(CtranComm* ctranComm) {
+  return ctranDeviceAllToAllvSupport(ctranComm);
+}
+
+ncclResult_t DefaultCtranApi::deviceAllToAllv(
+    const void* sendbuff,
+    void* recvbuff,
+    const int64_t* sendcounts_d,
+    const int64_t* recvcounts_d,
+    ncclDataType_t datatype,
+    CtranComm* ctranComm,
+    cudaStream_t stream,
+    int64_t sendcountsMultiplier,
+    int64_t recvcountsMultiplier,
+    const std::unordered_map<std::string, std::string>& hints) {
+  return fromCtranResult(ctranDeviceAllToAllv(
+      sendbuff,
+      recvbuff,
+      sendcounts_d,
+      recvcounts_d,
+      toCtranDataType(datatype),
+      ctranComm,
+      stream,
+      sendcountsMultiplier,
+      recvcountsMultiplier,
+      hints));
+}
+
 } // namespace torch::comms
