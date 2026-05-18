@@ -109,6 +109,9 @@ class CollTrace : public ICollTrace {
       CollTraceEvent& collEvent,
       CollTraceHandleTriggerState state) noexcept override;
 
+  uint64_t requestFlush() noexcept override;
+  void waitFlush(uint64_t gen) noexcept override;
+
  private:
   // Internal impl for graph-captured collectives, called when
   // recordCollective detects a GraphCudaWaitEvent.
@@ -122,6 +125,7 @@ class CollTrace : public ICollTrace {
    * cancellation.
    ***************************************************************************/
   bool isThreadCancelled() const noexcept;
+  void ackFlush(uint64_t gen) noexcept;
 
   void collTraceThread(
       const std::function<CommsMaybeVoid(void)>& threadSetupFunc);
@@ -203,6 +207,16 @@ class CollTrace : public ICollTrace {
   // Eager events being polled by the colltrace thread. Only accessed from
   // the colltrace thread — no mutex needed.
   std::vector<std::unique_ptr<CollTraceEvent>> eagerEvents_;
+
+  // Flush synchronization: requestFlush() increments requested and pushes
+  // a nullptr sentinel to wake the poll thread. The poll thread stores the
+  // requested value into completed after draining, then notifies via cv.
+  struct FlushState {
+    std::atomic<uint64_t> requested{0};
+    std::atomic<uint64_t> completed{0};
+    std::mutex mutex;
+    std::condition_variable cv;
+  } flushState_;
 
   std::atomic_flag threadShouldStop_;
   // Signaled by the poll thread after its first loop iteration completes.
