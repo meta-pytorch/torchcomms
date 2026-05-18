@@ -302,17 +302,10 @@ ncclResult_t devCommSetupChannels(ncclComm_t comm) {
       comm ? &comm->logMetaData : nullptr);
   ncclResult_t ret = ncclSuccess;
   int nRanks = comm->nRanks;
-#if NCCL_MINOR >= 28
   struct ncclKernelCommAndChannels tmpCommAndChans;
   memset(&tmpCommAndChans, '\0', sizeof(tmpCommAndChans));
   struct ncclKernelCommAndChannels* devCommAndChans =
       comm->devCommAndChans.value();
-#else
-  struct ncclDevCommAndChannels tmpCommAndChans;
-  memset(&tmpCommAndChans, '\0', sizeof(tmpCommAndChans));
-  struct ncclDevCommAndChannels* devCommAndChans =
-      comm->devCommAndChans.value();
-#endif
   cudaStream_t deviceStream;
 
   NCCLCHECKGOTO(

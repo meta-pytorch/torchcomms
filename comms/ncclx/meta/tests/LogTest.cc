@@ -23,11 +23,7 @@ class LogTest : public ::testing::Test {
 
   void initLogging() {
     ncclDebugLevel = -1;
-#if NCCL_VERSION_CODE >= 22800
     ncclDebugFile = nullptr;
-#else
-    ncclDebugLogFileStr = "";
-#endif
     initNcclLogger();
   }
 };
