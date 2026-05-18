@@ -158,6 +158,15 @@ struct MultipeerIbgdaTransportConfig {
   // 7 means infinite retry.
   // Default is 7 (matching NCCL IbvQpUtils).
   uint8_t rnrRetry{7};
+
+  // When true, defer per-peer state (QPs, staging, signal buffers) to
+  // first use via materializePeer(). When false (default), allocate
+  // eagerly at exchange() time.
+  bool ibLazyConnect{false};
+
+  // Timeout (ms) for the bilateral exchange in materializePeer().
+  // On timeout, materializePeer throws rather than hanging.
+  uint32_t materializePeerTimeoutMs{30000};
 };
 
 /**

@@ -32,10 +32,12 @@ using meta::comms::CommBackend;
 struct ctranPipesConfig {
   int64_t nvlChunkSize{-1};
   int useDualStateBuffer{-1}; // -1=cvar, 0=single, 1=dual
+  bool ibLazyConnect{false};
 
   bool operator==(const ctranPipesConfig& other) const {
     return nvlChunkSize == other.nvlChunkSize &&
-        useDualStateBuffer == other.useDualStateBuffer;
+        useDualStateBuffer == other.useDualStateBuffer &&
+        ibLazyConnect == other.ibLazyConnect;
   }
 };
 
