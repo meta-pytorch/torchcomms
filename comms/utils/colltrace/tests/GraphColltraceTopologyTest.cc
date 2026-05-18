@@ -18,6 +18,7 @@
 #include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/test_utils/CudaGraphTestUtils.h"
+#include "comms/utils/trainer/TrainerContext.h"
 
 using meta::comms::colltrace::CollTrace;
 using meta::comms::colltrace::CollTraceConfig;
@@ -836,4 +837,127 @@ TEST_F(GraphColltraceFlushTest, FlushDrainsRingBuffer) {
   cudaGraphExecDestroy(instance);
   // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
   cudaGraphDestroy(graph);
+}
+
+// Replay a graph multiple times and verify each replay produces valid
+// timing (non-zero duration, enqueueTs == startTs for graph clones).
+TEST_F(GraphColltraceTopologyTest, ReplayTimingValid) {
+  constexpr uint32_t kNumColls = 2;
+  constexpr int kNumReplays = 3;
+
+  auto graph = captureSerial(kNumColls);
+  ASSERT_NE(graph, nullptr);
+
+  cudaGraphExec_t instance;
+  ASSERT_EQ(
+      // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+      cudaGraphInstantiate(&instance, graph, nullptr, nullptr, 0),
+      cudaSuccess);
+
+  auto* plugin = dynamic_cast<CommDumpPlugin*>(colltrace_->getPluginByName(
+      std::string{CommDumpPlugin::kCommDumpPluginName}));
+  ASSERT_NE(plugin, nullptr);
+
+  for (int r = 0; r < kNumReplays; ++r) {
+    ASSERT_EQ(cudaGraphLaunch(instance, stream_), cudaSuccess);
+  }
+  ASSERT_EQ(cudaStreamSynchronize(stream_), cudaSuccess);
+
+  colltrace_->waitFlush(colltrace_->requestFlush());
+
+  auto dump = plugin->dump();
+  ASSERT_TRUE(dump.hasValue());
+  EXPECT_GE(
+      static_cast<int>(dump.value().pastColls.size()),
+      static_cast<int>(kNumColls * kNumReplays));
+
+  for (const auto& coll : dump.value().pastColls) {
+    auto startTs = coll->getTimingInfo().getCollStartTs();
+    auto endTs = coll->getTimingInfo().getCollEndTs();
+    auto enqueueTs = coll->getTimingInfo().getCollEnqueueTs();
+    auto dur =
+        std::chrono::duration_cast<std::chrono::microseconds>(endTs - startTs)
+            .count();
+    EXPECT_GT(dur, 0) << "collId=" << coll->getCollId()
+                      << " has non-positive duration";
+    EXPECT_GE(endTs, startTs);
+    EXPECT_EQ(enqueueTs, startTs)
+        << "Graph clone enqueueTs should equal startTs";
+  }
+
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  cudaGraphExecDestroy(instance);
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  cudaGraphDestroy(graph);
+}
+
+// Reproduces the production bug where pastColls entries had corrupted
+// timing because the clone was shared between pastColls and the next
+// replay's collEntry. Run multiple replays without flushing between
+// them (the production pattern), then flush once and verify that all
+// retained pastColls entries have enqueueTs == startTs. With the old
+// shared-record approach, the next replay's start event would overwrite
+// startTs while leaving enqueueTs stale.
+TEST_F(GraphColltraceTopologyTest, ReplayTimingConsistency) {
+  constexpr uint32_t kNumColls = 5;
+  constexpr int kNumReplays = 10;
+
+  ncclxSetIteration(0);
+  auto graph = captureSerial(kNumColls);
+  ASSERT_NE(graph, nullptr);
+
+  cudaGraphExec_t instance;
+  ASSERT_EQ(
+      // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+      cudaGraphInstantiate(&instance, graph, nullptr, nullptr, 0),
+      cudaSuccess);
+
+  auto* plugin = dynamic_cast<CommDumpPlugin*>(colltrace_->getPluginByName(
+      std::string{CommDumpPlugin::kCommDumpPluginName}));
+  ASSERT_NE(plugin, nullptr);
+
+  // Run all replays back-to-back WITHOUT flushing — this is the
+  // production pattern where comm_dump_all is called once per step
+  // but collectives from the previous step are still in pastColls.
+  for (int step = 0; step < kNumReplays; ++step) {
+    ASSERT_EQ(cudaGraphLaunch(instance, stream_), cudaSuccess);
+  }
+  ASSERT_EQ(cudaStreamSynchronize(stream_), cudaSuccess);
+
+  auto gen = colltrace_->requestFlush();
+  colltrace_->waitFlush(gen);
+
+  auto dump = plugin->dump();
+  ASSERT_TRUE(dump.hasValue());
+
+  int checked = 0;
+  for (const auto& coll : dump.value().pastColls) {
+    auto startTs = coll->getTimingInfo().getCollStartTs();
+    auto endTs = coll->getTimingInfo().getCollEndTs();
+    auto enqueueTs = coll->getTimingInfo().getCollEnqueueTs();
+    auto dur =
+        std::chrono::duration_cast<std::chrono::microseconds>(endTs - startTs)
+            .count();
+    auto iter = coll->getIteration();
+
+    EXPECT_GT(dur, 0) << "iter=" << iter << " collId=" << coll->getCollId()
+                      << " has non-positive duration " << dur << "us";
+    EXPECT_GE(endTs, startTs) << "iter=" << iter << ": endTs < startTs";
+    EXPECT_EQ(enqueueTs, startTs)
+        << "iter=" << iter << " collId=" << coll->getCollId()
+        << ": enqueueTs != startTs — pastColls entry was mutated"
+           " by a subsequent replay's start event";
+
+    checked++;
+  }
+
+  EXPECT_GT(checked, 0) << "pastColls should not be empty after " << kNumReplays
+                        << " replays";
+
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  cudaGraphExecDestroy(instance);
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  cudaGraphDestroy(graph);
+
+  ncclxSetIteration(-1);
 }

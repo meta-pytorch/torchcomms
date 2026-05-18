@@ -453,6 +453,7 @@ void CollTrace::pollGraphEvents(
           }
           collIdMap_.erase(collId);
           progressingGraphCollectives_.erase(collId);
+          inFlightReplays_.erase(collId);
         }
         return true;
       }
@@ -489,10 +490,12 @@ void CollTrace::pollGraphEvents(
         auto timestamp = cal.toWallClock(entry.timestamp);
 
         if (isStartEvent) {
-          // if we see a new start event before we observed this collectives
-          // last end, the end event was likely overwritten (ring too small).
-          // the watchdog detects this via the changed start timestamp and
-          // resets its timer automatically but we should log it anyway
+          // Graph replays are sequential on the stream, so seeing a second
+          // start before the matching end means the prior end was dropped
+          // by ring buffer overflow. The previous in-flight clone will be
+          // discarded below without a kEnd action — this is the expected
+          // data-loss path (warned here; the watchdog detects the changed
+          // start timestamp and resets its timer automatically).
           if (auto [_, inserted] = progressingGraphCollectives_.insert(collId);
               !inserted) {
             XLOG_EVERY_MS(WARN, 5000)
@@ -500,17 +503,49 @@ void CollTrace::pollGraphEvents(
                 << " saw a new start event before the previous end event"
                    " — the end event was likely overwritten (ring too small)";
           }
-          collEntry.event->collRecord->getTimingInfo().setCollStartTs(
-              timestamp);
+
+          // Graph replays produce a fresh CollRecord with its own collId
+          // (distinct from the template) so that each replay is independently
+          // tracked through the plugin pipeline. The template's metadata is
+          // shared (must remain immutable post-construction).
+          auto& prev = collEntry.event->collRecord;
+
+          auto frozenRecord = std::make_shared<CollRecord>(
+              collId_.fetch_add(1),
+              prev->getCollMetadata(),
+              prev->getIteration());
+          frozenRecord->getTimingInfo().setCollEnqueueTs(timestamp);
+          frozenRecord->getTimingInfo().setCollStartTs(timestamp);
+
+          auto replayEvent = std::make_unique<CollTraceEvent>(CollTraceEvent{
+              .collRecord = std::move(frozenRecord),
+              .waitEvent = nullptr,
+          });
+          auto* replayPtr = replayEvent.get();
+          if (auto replayIt = inFlightReplays_.find(collId);
+              replayIt != inFlightReplays_.end()) {
+            graphReplayEvents_.push_back(std::move(replayIt->second));
+            replayIt->second = std::move(replayEvent);
+          } else {
+            inFlightReplays_[collId] = std::move(replayEvent);
+          }
           actions.insert(
-              {collEntry.event.get(),
-               PendingActionType::kScheduleAndStart,
-               timestamp});
+              {replayPtr, PendingActionType::kScheduleAndStart, timestamp});
         } else /* isEndEvent */ {
-          collEntry.event->collRecord->getTimingInfo().setCollEndTs(timestamp);
           progressingGraphCollectives_.erase(collId);
-          actions.insert(
-              {collEntry.event.get(), PendingActionType::kEnd, timestamp});
+
+          if (auto replayIt = inFlightReplays_.find(collId);
+              replayIt != inFlightReplays_.end()) {
+            auto* replayPtr = replayIt->second.get();
+            replayPtr->collRecord->getTimingInfo().setCollEndTs(timestamp);
+            actions.insert({replayPtr, PendingActionType::kEnd, timestamp});
+            graphReplayEvents_.push_back(std::move(replayIt->second));
+            inFlightReplays_.erase(replayIt);
+          } else {
+            XLOG_EVERY_MS(WARN, 5000)
+                << logPrefix_ << ": graph collective " << collId
+                << " end event without matching start — dropped";
+          }
         }
       },
       /*timeout=*/config_.maxCheckCancelInterval);
@@ -521,16 +556,15 @@ void CollTrace::pollGraphEvents(
         << " graph replay timestamp(s) (overwritten)";
   }
 
-  // Emit kProgressing for every pending start so the watchdog plugin's
-  // timer accumulates. Without this, graph collectives would never trigger
-  // the watchdog timeout because collEventProgressing is only called on
-  // discrete ring buffer events.
+  // Emit kProgressing for every in-flight clone so the watchdog plugin's
+  // timer accumulates. We use inFlightReplays_ (the cloned events) rather
+  // than collIdMap_ (the templates) so that progressing fires against the
+  // actual replay record with correct timing.
   auto now = precisionNow();
   for (auto collId : progressingGraphCollectives_) {
-    auto it = collIdMap_.find(collId);
-    if (it != collIdMap_.end()) {
-      actions.insert(
-          {it->second->event.get(), PendingActionType::kProgressing, now});
+    auto it = inFlightReplays_.find(collId);
+    if (it != inFlightReplays_.end()) {
+      actions.insert({it->second.get(), PendingActionType::kProgressing, now});
     }
   }
 }
@@ -635,6 +669,8 @@ void CollTrace::processCompletedEvents(
       }
     }
   }
+
+  graphReplayEvents_.clear();
 
   // clean up completed eager events...
   static constexpr auto kEpoch = ICollWaitEvent::system_clock_time_point{};

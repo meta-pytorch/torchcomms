@@ -165,7 +165,7 @@ class CollRecordTest : public Test {
 TEST_F(CollRecordTest, ConstructorAndGetters) {
   // Check that the getters return the expected values
   EXPECT_EQ(collRecord_->getCollId(), 123);
-  EXPECT_EQ(collRecord_->getCollMetadata(), mockMetadata_);
+  EXPECT_EQ(collRecord_->getCollMetadata().get(), mockMetadata_);
 
   // Check that the timing info is accessible and has the expected values
   EXPECT_EQ(
@@ -261,7 +261,7 @@ TEST_F(CollRecordTest, NullMetadata) {
   auto recordWithNullMetadata = std::make_unique<CollRecord>(123, nullptr);
 
   // Should not crash when accessing metadata
-  EXPECT_EQ(recordWithNullMetadata->getCollMetadata(), nullptr);
+  EXPECT_EQ(recordWithNullMetadata->getCollMetadata().get(), nullptr);
 
   // Should be able to calculate hash
   std::size_t hash = recordWithNullMetadata->hash();
