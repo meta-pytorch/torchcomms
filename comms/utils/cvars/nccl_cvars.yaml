@@ -1977,7 +1977,7 @@ cvars:
  - name        : NCCL_ALLGATHER_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctdirect, ctring, ctrd, ctbrucks, ctgraph, ctgraph_pipeline, ctgraph_rdpipeline, ctgraph_ring, ctgraph_rd
+   choices     : orig, ctran, ctdirect, ctring, ctrd, ctsrd, ctbrucks, ctgraph, ctgraph_pipeline, ctgraph_rdpipeline, ctgraph_ring, ctgraph_rd
    description : |-
      The algorithm to use for Allgather communication
      orig - Copy-based ring algorithm
@@ -1985,6 +1985,7 @@ cvars:
      ctdirect - Ctran-based direct point-to-point algorithm
      ctring - Ctran-based ring algorithm
      ctrd - Ctran-based recursive doubling algorithm
+     ctsrd - Ctran-based streamed recursive doubling algorithm
      ctgraph - Cudagraph-aware: auto-selects pipeline/ring/rd based on topology during graph capture
      ctgraph_pipeline - Cudagraph-aware: forces persistent pipeline algorithm (nLocalRanks>1)
      ctgraph_rdpipeline - Cudagraph-aware: forces persistent recursive-doubling pipeline algorithm (nLocalRanks>1, nNodes power of 2)
@@ -1996,6 +1997,15 @@ cvars:
    default     : 134217728
    description : |-
      Minimum send size in bytes for ctgraph auto-select to choose ring over recursive doubling when nLocalRanks==1. Default 128MB.
+
+ - name        : NCCL_CTRAN_ALLGATHER_CTSRD_FC
+   type        : enum
+   default     : recvOnly
+   choices     : recvOnly, full
+   description : |-
+     Flow control mode for ctsrd (streamed recursive doubling) AllGather algorithm.
+     recvOnly - Receiver-only flow control. Pre-enqueue own chunk for all steps, forward received chunks to all future step peers immediately. Maximizes send/recv overlap.
+     full - Sender and receiver flow control. Forward received chunks to next step peer immediately, stage forwards for further steps until those steps begin. Reduces concurrent flows to at most 2 peers.
 
  - name        : NCCL_REDUCESCATTER_ALGO
    type        : enum

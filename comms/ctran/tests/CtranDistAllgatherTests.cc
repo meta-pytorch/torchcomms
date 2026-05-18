@@ -360,7 +360,8 @@ INSTANTIATE_TEST_SUITE_P(
             testing::Values(
                 NCCL_ALLGATHER_ALGO::ctdirect,
                 NCCL_ALLGATHER_ALGO::ctring,
-                NCCL_ALLGATHER_ALGO::ctrd),
+                NCCL_ALLGATHER_ALGO::ctrd,
+                NCCL_ALLGATHER_ALGO::ctsrd),
             testing::Values(0),
             testing::Values(8192, 1),
             testing::Values(kTestInPlace, kTestOutOfPlace),
@@ -378,7 +379,8 @@ INSTANTIATE_TEST_SUITE_P(
             testing::Values(
                 NCCL_ALLGATHER_ALGO::ctdirect,
                 NCCL_ALLGATHER_ALGO::ctring,
-                NCCL_ALLGATHER_ALGO::ctrd),
+                NCCL_ALLGATHER_ALGO::ctrd,
+                NCCL_ALLGATHER_ALGO::ctsrd),
             testing::Values(0),
             testing::Values(8192, 1048576, 1048567, 1),
             testing::Values(kTestInPlace),
@@ -396,7 +398,8 @@ INSTANTIATE_TEST_SUITE_P(
             testing::Values(
                 NCCL_ALLGATHER_ALGO::ctdirect,
                 NCCL_ALLGATHER_ALGO::ctring,
-                NCCL_ALLGATHER_ALGO::ctrd),
+                NCCL_ALLGATHER_ALGO::ctrd,
+                NCCL_ALLGATHER_ALGO::ctsrd),
             testing::Values(256),
             testing::Values(1048567, 1),
             testing::Values(kTestOutOfPlace),
@@ -414,7 +417,8 @@ INSTANTIATE_TEST_SUITE_P(
             testing::Values(
                 NCCL_ALLGATHER_ALGO::ctdirect,
                 NCCL_ALLGATHER_ALGO::ctring,
-                NCCL_ALLGATHER_ALGO::ctrd),
+                NCCL_ALLGATHER_ALGO::ctrd,
+                NCCL_ALLGATHER_ALGO::ctsrd),
             testing::Values(0),
             testing::Values(8192, 1),
             testing::Values(kTestOutOfPlace),
