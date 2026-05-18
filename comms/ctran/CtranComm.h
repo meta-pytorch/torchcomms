@@ -156,6 +156,15 @@ class CtranComm {
   // disabled.
   std::optional<meta::comms::colltrace::AlgoStatDump> dumpAlgoStats() const;
 
+  // Record a collective algorithm invocation. No-op if algoStats is disabled.
+  inline void recordAlgoStat(
+      const std::string& opName,
+      const std::string& algoName) {
+    if (algoStats_) {
+      algoStats_->record(opName, algoName);
+    }
+  }
+
   // fields are public to allow access from external code and tests
   // TODO: remove config_, it's redundant
   ctranConfig config_;
@@ -207,6 +216,9 @@ class CtranComm {
 
  private:
   friend class CtranGpe;
+  friend commResult_t ctranInit(
+      CtranComm* comm,
+      std::unique_ptr<ctran::IProfilerReporter> reporter);
   std::unique_ptr<meta::comms::colltrace::AlgoStats> algoStats_;
   // TODO: define proper constructor to make CtranComm be independent of
   // ncclComm.

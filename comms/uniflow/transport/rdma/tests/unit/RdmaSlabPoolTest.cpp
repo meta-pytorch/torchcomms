@@ -348,6 +348,7 @@ TEST_F(RdmaSlabPoolTest, Atomic_AcquireAll64Slabs) {
   EXPECT_TRUE(pool->acquire().hasError());
 
   std::vector<uint16_t> indices;
+  indices.reserve(slabs.size());
   for (const auto& s : slabs) {
     indices.push_back(s.index());
   }
@@ -375,6 +376,7 @@ TEST_F(RdmaSlabPoolTest, Atomic_AcquireAll128Slabs_CrossesBitmapBoundary) {
   EXPECT_TRUE(pool->acquire().hasError());
 
   std::vector<uint16_t> indices;
+  indices.reserve(slabs.size());
   for (const auto& s : slabs) {
     indices.push_back(s.index());
   }

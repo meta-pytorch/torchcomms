@@ -1861,23 +1861,13 @@ cvars:
 
  - name        : NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT
    type        : int
-   default     : 1
+   default     : 0
    description : |-
-     Sampling weight to control writing data transfers info to output. The
-     output is specified by NCCL_CTRAN_ALGO_PROFILING_OUTPUT. The sampling rate
-     is 1/NCCL_ALGO_PROFILING_SAMPLING_WEIGHT, e.g., a sampling weight of 100
-     means that 1% of the data transfers will be logged.
-
- - name        : NCCL_CTRAN_ALGO_PROFILING_SAMPLING_MODE
-   type        : string
-   default     : "opcount"
-   description : |-
-      Sampling mode to control whether the sampling is applied at the collective
-      or opcount mode. For the collective modes, we log
-      every collective randomly according to the sampling
-      weight. For the opcount sampling mode, we log every operation deterministically
-      when the opcount is a multiple of the sampling weight.
-
+     Sampling weight for algo profiling based on opCount per communicator.
+     A collective is profiled when (opCount % samplingWeight == 0).
+     For example, a sampling weight of 100 means every 100th collective
+     on each communicator is profiled. Set to 0 to disable profiling,
+     or 1 to profile every collective.
 
 
  - name        : NCCL_CTRAN_TRANSPORT_PROFILER
@@ -1891,13 +1881,6 @@ cvars:
    default     : false
    description : |-
      Flag to enable slow rank module
-
- - name        : NCCL_CTRAN_DEVICE_TRAFFIC_SAMPLING_WEIGHT
-   type        : int
-   default     : 100
-   description : |-
-     Sampling weight to collect device traffic data for slow rank detection module. The sampling rate
-     is 1/NCCL_CTRAN_DEVICE_TRAFFIC_SAMPLING_WEIGHT.
 
  - name        : NCCL_SLOW_RANK_PERF_WINDOW_SIZE
    type        : int
@@ -1940,39 +1923,6 @@ cvars:
    default     : 20
    description : |-
      Only log slow rank data if the variance is more than this percentage.
-
- - name        : NCCL_CTRAN_ALGO_PROFILING_ENABLE
-   type        : bool
-   default     : false
-   description : |-
-     Flag to enable algo profiling module
-
- -  name        : NCCL_FILTER_ALGO_LOGGING_BY_RANKS
-    type        : stringlist
-    default     : ""
-    description : |-
-     Global ranks to log algo information from. Default is to log from all
-     ranks.
-
- - name        : NCCL_CTRAN_QP_PROFILING_ENABLE
-   type        : bool
-   default     : false
-   description : |-
-     Flag to enable QP profiling module
-
-
- - name        : NCCL_CTRAN_QP_PROFILING_OUTPUT
-   type        : string
-   default     : ""
-   description : |-
-     Output mode for Ctran QP profiling ("", "file")
-
- - name        : NCCL_CTRAN_QP_PROFILING_SAMPLING_WEIGHT
-   type        : int
-   default     : 1
-   description : |-
-     WQE sampling weight to control writing WQE info to output.
-     The sampling rate is 1/NCCL_QP_PROFILING_SAMPLING_WEIGHT.
 
 
  - name        : NCCL_CTRAN_ENABLE_TRACE_LOG

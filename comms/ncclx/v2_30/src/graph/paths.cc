@@ -13,6 +13,7 @@
 #include "net.h"
 #include "channel.h"
 #include "transport.h"
+#include "meta/DeviceRackSerial.h"
 #include "device.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
@@ -388,15 +389,13 @@ ncclResult_t ncclTopoCheckP2p(struct ncclComm* comm, struct ncclTopoSystem* syst
   // Compute the PCI distance and compare with the p2pLevel.
   if (path->type <= p2pLevel) *p2p = 1;
 
-  // Check if multi-NVLink P2P is disabled and handle rack serial matching
+  // [META] Check if multi-NVLink P2P is disabled and handle rack serial matching
   if (NCCL_MNNVL_TRUNK_DISABLE && mnnvl) {
     INFO(NCCL_GRAPH, "NCCL_MNNVL_TRUNK_DISABLE enabled");
 
-    // Only check rack serials if comm and rackSerials are available
-    if (comm->peerInfo[rank1].rackSerial && comm->peerInfo[rank2].rackSerial) {
-      *p2p = (comm->peerInfo[rank1].rackSerial == comm->peerInfo[rank2].rackSerial);
-      INFO(NCCL_GRAPH, "P2P is set to %d based on rack serial match/unmatch rank1: %d rank2: %d rackSerial1: %d rackSerial2: %d", *p2p, rank1, rank2, comm->peerInfo[rank1].rackSerial, comm->peerInfo[rank2].rackSerial);
-
+    if (comm->peerInfo[rank1].rackSerial[0] != '\0' && comm->peerInfo[rank2].rackSerial[0] != '\0') {
+      *p2p = ncclx::isSameRackSerial(comm->peerInfo[rank1].rackSerial, comm->peerInfo[rank2].rackSerial);
+      INFO(NCCL_GRAPH, "P2P is set to %d based on rack serial match/unmatch rank1: %d rank2: %d rackSerial1: %s rackSerial2: %s", *p2p, rank1, rank2, comm->peerInfo[rank1].rackSerial, comm->peerInfo[rank2].rackSerial);
     } else {
       WARN("No rack serial information available, skipping rack serial check");
     }

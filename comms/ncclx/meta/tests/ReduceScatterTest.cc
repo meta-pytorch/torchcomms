@@ -276,13 +276,7 @@ TEST_P(ReduceScatterOrigTestParam, OrigTest) {
   (void)envs_; // applied in SetUp
   auto rsAlgoGuard =
       EnvRAII(NCCL_REDUCESCATTER_ALGO, NCCL_REDUCESCATTER_ALGO::orig);
-  // Starting NCCLX 2.29, we started fully relying on the Nvidia PARAM
-  // infrastructure for the Nvidia-provided control variables.
-#if NCCL_VERSION_CODE >= 22900
   SysEnvRAII algoGuard("NCCL_ALGO", ncclAlgo);
-#else
-  EnvRAII<std::string> algoGuard(NCCL_ALGO, ncclAlgo);
-#endif
 
   ReduceScatterTestParams param{
       .algo = NCCL_REDUCESCATTER_ALGO::orig,

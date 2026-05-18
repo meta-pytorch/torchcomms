@@ -23,11 +23,8 @@
 #include "debug.h"
 #include "nccl.h"
 
-// TODO: Remove this guard once v2_27 is deprecated — v2_27 does not have the
-// comms/utils/colltrace:algostats dependency
-#if NCCL_MINOR >= 28
+#include "comms/ctran/CtranComm.h"
 #include "comms/utils/colltrace/AlgoStats.h"
-#endif
 
 #include <fmt/core.h>
 #include <folly/logging/xlog.h>
@@ -290,9 +287,6 @@ getEmptyKernelTaskMetadata(
 } // namespace
 
 ncclResult_t newCollTraceInit(ncclComm* comm) {
-  // TODO: Remove this guard once v2_27 is deprecated — v2_27's comm.h does not
-  // have the algoStats field
-#if NCCL_MINOR >= 28
   // Parse NCCL_COLLTRACE configuration flags
   bool algoStatEnabled = false;
   bool verboseEnabled = false;
@@ -326,12 +320,6 @@ ncclResult_t newCollTraceInit(ncclComm* comm) {
   if ((!verboseEnabled && !traceEnabled)) {
     return ncclSuccess;
   }
-#else
-  if (NCCL_COLLTRACE.empty()) {
-    XLOGF(INFO, "Skipping CollTrace init. NCCL_COLLTRACE is empty");
-    return ncclSuccess;
-  }
-#endif
 
   XLOG(INFO, "Initializing new CollTrace");
 
@@ -485,20 +473,32 @@ std::unordered_map<std::string, std::string> collTraceGetInfo() {
 
 namespace ncclx::colltrace {
 
-// TODO: Remove this guard once v2_27 is deprecated — v2_27 does not have the
-// comms/utils/colltrace:algostats dependency
-#if NCCL_MINOR >= 28
-
 __attribute__((visibility("default"))) void dumpAlgoStat(
     ncclComm_t comm,
     std::unordered_map<std::string, std::unordered_map<std::string, int64_t>>&
         map) {
   map.clear();
-  if (comm == nullptr || comm->algoStats == nullptr) {
+  if (comm == nullptr) {
     return;
   }
-  auto dump = comm->algoStats->dump();
-  map.swap(dump.counts);
+
+  // Dump baseline (ncclx) algo stats
+  if (comm->algoStats) {
+    auto dump = comm->algoStats->dump();
+    map.swap(dump.counts);
+  }
+
+  // Merge ctran algo stats
+  if (comm->ctranComm_) {
+    auto ctranDump = comm->ctranComm_->dumpAlgoStats();
+    if (ctranDump.has_value()) {
+      for (auto& [opName, algoMap] : ctranDump->counts) {
+        for (auto& [algoName, count] : algoMap) {
+          map[opName][algoName] += count;
+        }
+      }
+    }
+  }
 }
 
 namespace {
@@ -564,18 +564,14 @@ std::optional<AlgoInfo> parseAlgoInfoFromNcclKernelPlan(ncclKernelPlan& plan) {
 
 } // namespace
 
-#endif // NCCL_MINOR >= 28
-
 std::shared_ptr<meta::comms::colltrace::ICollTraceHandle>
 collTraceBaselineGetHandle(ncclKernelPlan* plan, cudaStream_t stream) {
-#if NCCL_MINOR >= 28
   if (plan->comm->algoStats) {
     auto algoInfo = parseAlgoInfoFromNcclKernelPlan(*plan);
     if (algoInfo.has_value()) {
       plan->comm->algoStats->record(algoInfo->opName, algoInfo->algoName);
     }
   }
-#endif
 
   if (NCCL_COLLTRACE.empty()) {
     return std::make_unique<meta::comms::colltrace::DummyCollTraceHandle>();

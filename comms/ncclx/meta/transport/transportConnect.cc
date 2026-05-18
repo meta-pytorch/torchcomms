@@ -10,12 +10,12 @@
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/Utils.h"
 
-#include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/EventsScubaUtil.h"
 #include "meta/transport/transportConnect.h"
 #include "meta/transport/transportExt.h"
 #include "meta/transport/transportProxy.h"
 #include "meta/wrapper/MetaFactory.h"
+#include "register.h"
 
 namespace ncclx {
 
@@ -52,8 +52,9 @@ ncclResult_t transportRingConnect(struct ncclComm* comm, int nChannels) {
   NCCLCHECK(ncclTransportP2pSetup(comm, &comm->graphs[NCCL_ALGO_RING], 0));
 
   // exchange ring info in first connection, if needed
+#if NCCL_MINOR >= 29
   if (comm->algoConnectedChannels[NCCL_ALGO_RING] == 0 &&
-      (NCCL_LOCAL_REGISTER || NCCL_GRAPH_REGISTER)) {
+      (ncclParamLocalRegister() || ncclParamGraphRegister())) {
     struct RingConnInfo {
       bool useNetPXN{false};
       bool useGdr{true};
@@ -75,6 +76,7 @@ ncclResult_t transportRingConnect(struct ncclComm* comm, int nChannels) {
       }
     }
   }
+#endif
   INFO(
       NCCL_INIT,
       "commDesc: %s connected rings from channel %d to %d, use ring PXN %d GDR %d",
@@ -300,17 +302,10 @@ ncclResult_t devCommSetupChannels(ncclComm_t comm) {
       comm ? &comm->logMetaData : nullptr);
   ncclResult_t ret = ncclSuccess;
   int nRanks = comm->nRanks;
-#if NCCL_MINOR >= 28
   struct ncclKernelCommAndChannels tmpCommAndChans;
   memset(&tmpCommAndChans, '\0', sizeof(tmpCommAndChans));
   struct ncclKernelCommAndChannels* devCommAndChans =
       comm->devCommAndChans.value();
-#else
-  struct ncclDevCommAndChannels tmpCommAndChans;
-  memset(&tmpCommAndChans, '\0', sizeof(tmpCommAndChans));
-  struct ncclDevCommAndChannels* devCommAndChans =
-      comm->devCommAndChans.value();
-#endif
   cudaStream_t deviceStream;
 
   NCCLCHECKGOTO(
