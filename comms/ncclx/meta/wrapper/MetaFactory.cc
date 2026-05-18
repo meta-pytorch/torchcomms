@@ -52,6 +52,7 @@ ctranConfig makeCtranConfigFrom(ncclComm* comm) {
       tconfig.pipesConfig.useDualStateBuffer =
           ncclxCfg->pipesUseDualStateBuffer.value() ? 1 : 0;
     }
+    tconfig.pipesConfig.ibLazyConnect = ncclxCfg->ibLazyConnect;
   }
   return tconfig;
 }
