@@ -357,17 +357,30 @@ class MultipeerIbgdaTransport {
   P2pIbgdaTransportDevice* getP2pTransportDevice(int peerRank);
 
   /**
-   * Lazily allocate per-peer staging buffers and build the GPU device
-   * transport slot. No-op in eager mode or if the peer is already
-   * materialized. Both ranks must call materializePeer() for each other
-   * concurrently (or within the timeout window).
+   * Queue a peer for lazy materialization. No network I/O happens here.
+   * Call connectPeers() to complete all queued peers.
    *
-   * NOT thread-safe. Callers must not invoke this concurrently for
-   * the same or different peers.
+   * No-op in eager mode or if the peer is already materialized.
    *
    * @param peerRank Global rank of the peer to materialize
    */
   void materializePeer(int peerRank);
+
+  /**
+   * Connect all queued peers. In lazy mode, this MUST be called after
+   * all getP2pTransportDevice() / materializePeer() calls and BEFORE
+   * launching any kernel that uses the transport pointers.
+   *
+   * Processes peers in sorted rank order to avoid deadlock for >2 ranks.
+   * No-op in eager mode or if no peers are queued.
+   *
+   * Example:
+   *   prev = transport->getP2pTransportDevice(prev_rank);
+   *   next = transport->getP2pTransportDevice(next_rank);
+   *   transport->connectPeers();  // must call before kernel launch
+   *   launchKernel<<<...>>>(prev, next);
+   */
+  void connectPeers();
 
   /**
    * Check whether a peer's staging buffers have been allocated and its
@@ -500,7 +513,8 @@ class MultipeerIbgdaTransport {
 
   PeerBufferSizes computePeerBufferSizes() const;
 
-  // materializePeer decomposition
+  void doMaterializePeer(int peerRank);
+
   PeerQpPayload buildLocalQpPayload(int peerIndex) const;
   void allocatePeerBuffers(int peerIndex, PeerBufferPayload& payload);
   template <typename T>
@@ -624,6 +638,13 @@ class MultipeerIbgdaTransport {
 
   // Lazy mode: set to true after writeDeviceTransportSlot completes.
   std::vector<bool> peerMaterialized_;
+
+  // Lazy mode: set after a failed connectPeers() attempt. Retrying peer
+  // materialization is unsafe because peer-side state may be asymmetric.
+  bool materializationFailed_{false};
+
+  // Queued peers awaiting connectPeers().
+  std::vector<int> pendingPeers_;
 };
 
 } // namespace comms::pipes

@@ -205,6 +205,8 @@ class MultiPeerTransport {
 
   void materializePeers(const std::vector<int>& peers);
 
+  void connectPeers();
+
   // --- IBGDA buffer registration (delegates to ibgdaTransport_) ---
 
   /**
