@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
-#include <fstream>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -20,6 +19,7 @@
 #include "comms/torchcomms/RemovableHandle.hpp"
 #include "comms/torchcomms/TorchCommHooks.hpp"
 #include "comms/torchcomms/TorchCommTypes.hpp"
+#include "comms/torchcomms/hooks/common/ThreadSafeLogFile.hpp"
 
 namespace torch::comms {
 
@@ -28,41 +28,6 @@ class TorchComm;
 
 using WorkId = uint64_t;
 inline constexpr WorkId kWorkIdInvalid = std::numeric_limits<WorkId>::max();
-
-class ThreadSafeLogFile {
- public:
-  void open(const std::string& path) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    file_.open(path, std::ios::out | std::ios::trunc);
-    if (!file_.is_open()) {
-      throw std::runtime_error("ClogHook: failed to open log file: " + path);
-    }
-  }
-
-  void writeLine(const std::string& line) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    file_.write(line.data(), line.size());
-    file_ << '\n';
-    file_.flush();
-  }
-
-  ~ThreadSafeLogFile() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (file_.is_open()) {
-      file_.close();
-    }
-  }
-
-  ThreadSafeLogFile() = default;
-  ThreadSafeLogFile(const ThreadSafeLogFile&) = delete;
-  ThreadSafeLogFile& operator=(const ThreadSafeLogFile&) = delete;
-  ThreadSafeLogFile(ThreadSafeLogFile&&) = delete;
-  ThreadSafeLogFile& operator=(ThreadSafeLogFile&&) = delete;
-
- private:
-  std::ofstream file_;
-  std::mutex mutex_;
-};
 
 template <typename K, typename V>
 class ThreadSafeMap {
@@ -134,6 +99,14 @@ class ThreadSafeMap {
     return true;
   }
 
+  template <typename F>
+  void forEach(F&& fn) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& [key, value] : map_) {
+      fn(key, value);
+    }
+  }
+
  private:
   using Map = std::unordered_map<K, V>;
   Map map_;
@@ -180,9 +153,6 @@ class ClogHook : public std::enable_shared_from_this<ClogHook> {
   // and registers pre/post hooks for logging.
   void registerWithComm(std::shared_ptr<TorchComm> comm);
 
-  // Unregister from all communicators.
-  void unregister();
-
  private:
   void registerHooks(std::shared_ptr<TorchComm> comm);
 
@@ -195,7 +165,10 @@ class ClogHook : public std::enable_shared_from_this<ClogHook> {
       const PreHookArgs& args);
 
   // Post-hook: register work lifecycle hooks for S/E/W events.
-  void onPostHook(size_t op_id, const PostHookArgs& args);
+  void onPostHook(
+      const std::string& comm_name,
+      size_t op_id,
+      const PostHookArgs& args);
 
   // Build signature string from typed pre-hook args via std::visit.
   std::string buildSignature(OpName name, const PreHookArgs& args) const;
@@ -255,6 +228,7 @@ class ClogHook : public std::enable_shared_from_this<ClogHook> {
   struct WorkInfo {
     uint64_t corr_id{};
     uint64_t graph_id{kNoGraphCapture};
+    std::string comm_name;
   };
   ThreadSafeMap<uint64_t, WorkInfo> work_corr_map_;
 
@@ -296,11 +270,10 @@ class ClogHook : public std::enable_shared_from_this<ClogHook> {
       std::string_view event);
 
   // Registration tracking for cleanup (main thread only, no lock needed)
+  std::atomic<size_t> active_comm_count_{0};
+
   struct CommRegistration {
     std::weak_ptr<TorchComm> comm;
-    std::unique_ptr<RemovableHandle> pre_hook_handle;
-    std::unique_ptr<RemovableHandle> post_hook_handle;
-    std::unique_ptr<RemovableHandle> graph_replay_hook_handle;
   };
   std::vector<CommRegistration> registrations_;
 };

@@ -21,7 +21,7 @@ from __future__ import annotations
 from typing import Any
 
 import torch
-from torchcomms._comms import OpName, RemovableHandle
+from torchcomms._comms import OpName
 
 
 # Lazily resolved reference to torch.ops.c10d.check_for_nan.
@@ -126,7 +126,7 @@ class NanCheckHook:
     ) -> None:
         self._check_inputs = check_inputs
         self._check_outputs = check_outputs
-        self._handles: list[tuple[Any, RemovableHandle]] = []
+        self._registered_count: int = 0
 
     def register_with_comm(self, comm: Any) -> None:
         """Register the NaN check hook with a communicator.
@@ -175,17 +175,11 @@ class NanCheckHook:
                 if self._check_outputs:
                     _check_list(args.output, "output", op_str, comm_name)
 
-            # barrier, split, new_window: no tensors to check
+            # barrier, split, new_window, finalize: no tensors to check
 
-        handle = comm.register_pre_hook(_pre_hook)
-        self._handles.append((comm, handle))
-
-    def unregister(self) -> None:
-        """Remove all registered hooks."""
-        for _comm, handle in self._handles:
-            handle.remove()
-        self._handles.clear()
+        comm.register_pre_hook(_pre_hook)
+        self._registered_count += 1
 
     def is_enabled(self) -> bool:
         """Return whether any communicators are registered."""
-        return len(self._handles) > 0
+        return self._registered_count > 0

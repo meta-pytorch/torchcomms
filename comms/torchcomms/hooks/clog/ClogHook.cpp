@@ -26,7 +26,8 @@ bool getAsyncOp(const PreHookArgs& args) {
         using T = std::decay_t<decltype(a)>;
         if constexpr (
             std::is_same_v<T, SplitPreHookArgs> ||
-            std::is_same_v<T, NewWindowPreHookArgs>) {
+            std::is_same_v<T, NewWindowPreHookArgs> ||
+            std::is_same_v<T, FinalizePreHookArgs>) {
           return false;
         } else {
           return a.async_op;
@@ -62,9 +63,7 @@ ClogHook::ClogHook(
       fmt::format("V|{}|base_timestamp={:.3f}", kLogVersion, base_ts_));
 }
 
-ClogHook::~ClogHook() {
-  unregister();
-}
+ClogHook::~ClogHook() = default;
 
 // -- Registration --
 
@@ -88,52 +87,33 @@ void ClogHook::registerHooks(std::shared_ptr<TorchComm> comm) {
   }
 
   std::string comm_name(comm->getCommName());
+  auto self = shared_from_this();
 
   int device_index = comm->getDevice().index();
   auto pre_hook_handle = comm->registerPreHook(
-      [this, comm_name, device_index](
+      [self, comm_name, device_index](
           OpName name, size_t op_id, const PreHookArgs& args) {
-        this->onPreHook(comm_name, device_index, name, op_id, args);
+        self->onPreHook(comm_name, device_index, name, op_id, args);
       });
 
-  auto post_hook_handle =
-      comm->registerPostHook([this](size_t op_id, const PostHookArgs& args) {
-        this->onPostHook(op_id, args);
+  auto post_hook_handle = comm->registerPostHook(
+      [self, comm_name](size_t op_id, const PostHookArgs& args) {
+        self->onPostHook(comm_name, op_id, args);
       });
 
   auto graph_replay_hook_handle =
-      comm->registerGraphReplayHook([this, comm_name](
+      comm->registerGraphReplayHook([self, comm_name](
                                         uint64_t graph_id,
                                         uint64_t replay_id,
                                         void* stream,
                                         size_t collective_index,
                                         std::string_view event) {
-        this->onGraphReplayEvent(
+        self->onGraphReplayEvent(
             comm_name, graph_id, replay_id, stream, collective_index, event);
       });
 
-  registrations_.push_back(
-      CommRegistration{
-          .comm = comm,
-          .pre_hook_handle = std::move(pre_hook_handle),
-          .post_hook_handle = std::move(post_hook_handle),
-          .graph_replay_hook_handle = std::move(graph_replay_hook_handle),
-      });
-}
-
-void ClogHook::unregister() {
-  for (auto& reg : registrations_) {
-    if (reg.pre_hook_handle) {
-      reg.pre_hook_handle->remove();
-    }
-    if (reg.post_hook_handle) {
-      reg.post_hook_handle->remove();
-    }
-    if (reg.graph_replay_hook_handle) {
-      reg.graph_replay_hook_handle->remove();
-    }
-  }
-  registrations_.clear();
+  registrations_.push_back(CommRegistration{.comm = comm});
+  active_comm_count_.fetch_add(1, std::memory_order_relaxed);
 }
 
 // -- Formatting helpers (static, identical to original Clog) --
@@ -332,7 +312,8 @@ WorkId ClogHook::logCollective(
 
   uint64_t work_id = next_work_id_.fetch_add(1, std::memory_order_relaxed);
   if (log_lifecycle_) {
-    work_corr_map_.insert(work_id, WorkInfo{corr_id, graph_id});
+    work_corr_map_.insert(
+        work_id, WorkInfo{corr_id, graph_id, std::string(comm_name)});
     work_events_map_.insert(
         work_id,
         async_op ? std::vector<std::string>{"S", "E", "W"}
@@ -620,6 +601,8 @@ std::string ClogHook::buildSignature(OpName name, const PreHookArgs& args)
           return std::string();
         } else if constexpr (std::is_same_v<T, NewWindowPreHookArgs>) {
           return std::string();
+        } else if constexpr (std::is_same_v<T, FinalizePreHookArgs>) {
+          return std::string();
         } else {
           return std::string();
         }
@@ -653,8 +636,9 @@ void ClogHook::onPreHook(
     return;
   }
 
-  // Skip new_window (no logging needed)
-  if (std::get_if<NewWindowPreHookArgs>(&args)) {
+  // Skip new_window and finalize (no logging needed)
+  if (std::get_if<NewWindowPreHookArgs>(&args) ||
+      std::get_if<FinalizePreHookArgs>(&args)) {
     return;
   }
 
@@ -675,7 +659,10 @@ void ClogHook::onPreHook(
 
 // -- Post-hook --
 
-void ClogHook::onPostHook(size_t op_id, const PostHookArgs& args) {
+void ClogHook::onPostHook(
+    const std::string& comm_name,
+    size_t op_id,
+    const PostHookArgs& args) {
   // For split, register the new communicator.
   if (auto* split = std::get_if<SplitPostHookArgs>(&args)) {
     if (auto new_comm = split->new_comm.lock()) {
@@ -686,6 +673,35 @@ void ClogHook::onPostHook(size_t op_id, const PostHookArgs& args) {
 
   // TODO: add logging for window operations.
   if (std::get_if<NewWindowPostHookArgs>(&args)) {
+    return;
+  }
+
+  if (std::get_if<FinalizePostHookArgs>(&args)) {
+    auto remaining =
+        active_comm_count_.fetch_sub(1, std::memory_order_acq_rel) - 1;
+    if (remaining == 0) {
+      work_events_map_.forEach([&](uint64_t work_id,
+                                   const auto& pending_events) {
+        auto work_info = work_corr_map_.find(work_id);
+        if (!work_info) {
+          return;
+        }
+        std::string events_str;
+        for (size_t i = 0; i < pending_events.size(); ++i) {
+          if (i > 0) {
+            events_str += ',';
+          }
+          events_str += pending_events[i];
+        }
+        log_file_.writeLine(
+            fmt::format(
+                "WARN|comm={}|leaked work_id={}|corr_id={}|pending_events={}",
+                work_info->comm_name,
+                work_id,
+                work_info->corr_id,
+                events_str));
+      });
+    }
     return;
   }
 

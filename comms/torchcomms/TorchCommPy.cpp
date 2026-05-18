@@ -334,17 +334,18 @@ Used to track the lifecycle of an asynchronous operation.
       .value("gather", OpName::gather)
       .value("gather_single", OpName::gather_single)
       .value("split", OpName::split)
-      .value("new_window", OpName::new_window);
+      .value("new_window", OpName::new_window)
+      .value("finalize", OpName::finalize);
 
   // Bind RemovableHandle class for hook management
   py::class_<RemovableHandle, std::unique_ptr<RemovableHandle>>(
       m,
       "RemovableHandle",
       R"(
-Handle for removing a registered hook.
+Handle for a registered hook.
 
-Call remove() to unregister the hook. The hook will be automatically
-unregistered when the handle is garbage collected if remove() was not called.
+The handle can be discarded after registration. Hooks manage their
+own lifetime and remain active until the communicator is destroyed.
       )")
       .def(
           "remove",
@@ -459,12 +460,14 @@ unregistered when the handle is garbage collected if remove() was not called.
     size_t num_ops;
     bool async_op;
   };
+  struct PyFinalizePreHookArgs {};
 
   // Post-hook args (value types)
   struct PyCollectivePostHookArgs {};
   struct PySplitPostHookArgs {};
   struct PyNewWindowPostHookArgs {};
   struct PyBatchOpIssuePostHookArgs {};
+  struct PyFinalizePostHookArgs {};
 
   // Register pre-hook arg types
   py::class_<PySendPreHookArgs>(m, "SendPreHookArgs")
@@ -552,12 +555,14 @@ unregistered when the handle is garbage collected if remove() was not called.
   py::class_<PyBatchOpIssuePreHookArgs>(m, "BatchOpIssuePreHookArgs")
       .def_readonly("num_ops", &PyBatchOpIssuePreHookArgs::num_ops)
       .def_readonly("async_op", &PyBatchOpIssuePreHookArgs::async_op);
+  py::class_<PyFinalizePreHookArgs>(m, "FinalizePreHookArgs");
 
   // Post-hook arg types
   py::class_<PyCollectivePostHookArgs>(m, "CollectivePostHookArgs");
   py::class_<PySplitPostHookArgs>(m, "SplitPostHookArgs");
   py::class_<PyNewWindowPostHookArgs>(m, "NewWindowPostHookArgs");
   py::class_<PyBatchOpIssuePostHookArgs>(m, "BatchOpIssuePostHookArgs");
+  py::class_<PyFinalizePostHookArgs>(m, "FinalizePostHookArgs");
 
   py::class_<TorchCommWindowAttr, std::shared_ptr<TorchCommWindowAttr>>(
       m, "TorchCommWindowAttr", "Window attributes.")
@@ -2430,6 +2435,10 @@ Raises: RuntimeError if the ranks list is non-empty and the current rank is not 
                                              BatchOpIssuePreHookArgs>) {
                       return py::cast(
                           PyBatchOpIssuePreHookArgs{a.num_ops, a.async_op});
+                    } else if constexpr (std::is_same_v<
+                                             T,
+                                             FinalizePreHookArgs>) {
+                      return py::cast(PyFinalizePreHookArgs{});
                     } else {
                       return py::none();
                     }
@@ -2449,15 +2458,15 @@ Args:
     callback: A callable that takes (name, op_id, args).
 
 Returns:
-    RemovableHandle: A handle that can be used to unregister the hook.
+    RemovableHandle: A handle for the registered hook. The handle
+    can be discarded; the hook remains active until the communicator
+    is destroyed.
 
 Example::
 
     def my_pre_hook(name, op_id, args):
         print(f"Starting {name}")
-    handle = comm.register_pre_hook(my_pre_hook)
-    # ... run operations ...
-    handle.remove()  # Unregister when done
+    comm.register_pre_hook(my_pre_hook)
 
 Note:
     Hooks are not thread-safe and must not be modified while a collective
@@ -2482,6 +2491,10 @@ Note:
                                              T,
                                              BatchOpIssuePostHookArgs>) {
                       return py::cast(PyBatchOpIssuePostHookArgs{});
+                    } else if constexpr (std::is_same_v<
+                                             T,
+                                             FinalizePostHookArgs>) {
+                      return py::cast(PyFinalizePostHookArgs{});
                     } else {
                       return py::cast(PyCollectivePostHookArgs{});
                     }
@@ -2502,15 +2515,15 @@ Args:
     callback: A callable that takes (op_id, args).
 
 Returns:
-    RemovableHandle: A handle that can be used to unregister the hook.
+    RemovableHandle: A handle for the registered hook. The handle
+    can be discarded; the hook remains active until the communicator
+    is destroyed.
 
 Example::
 
     def my_post_hook(args):
         print(f"Completed {args.name}")
-    handle = comm.register_post_hook(my_post_hook)
-    # ... run operations ...
-    handle.remove()  # Unregister when done
+    comm.register_post_hook(my_post_hook)
 
 Note:
     Hooks are not thread-safe and must not be modified while a collective
@@ -2536,14 +2549,16 @@ Args:
     callback: A callable with no arguments.
 
 Returns:
-    RemovableHandle: A handle that can be used to unregister the hook.
+    RemovableHandle: A handle for the registered hook. The handle
+    can be discarded; the hook remains active until the communicator
+    is destroyed.
 
 Example::
 
     def my_abort_hook():
         print("About to abort, saving debug info...")
         save_debug_state()
-    handle = comm.register_abort_hook(my_abort_hook)
+    comm.register_abort_hook(my_abort_hook)
 
 Note:
     Hooks are not thread-safe and must not be modified while a collective

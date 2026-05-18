@@ -14,7 +14,7 @@ Example:
     >>> logger = clog(output="/tmp/clog.log", events=["ALL"])
     >>> logger.register_with_comm(comm)
     >>> # ... run collectives ...
-    >>> logger.unregister()
+    >>> comm.finalize()
 """
 
 from typing import TYPE_CHECKING

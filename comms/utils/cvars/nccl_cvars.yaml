@@ -539,6 +539,16 @@ cvars:
    default     : 0
    description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-net-force-flush
 
+ - name        : NCCL_ENABLE_P2C_RDMA_FLUSH
+   type        : bool
+   default     : true
+   description : |-
+     Enable RDMA READ flush for PATH_P2C topology (C2C to CPU + PCIe to NIC)
+     on GB200. When RDMA data arrives via PCIe and the proxy tail update reaches
+     GPU via a different path (C2C), there is no cross-path ordering guarantee.
+     The flush drains pending PCIe writes before signaling the GPU kernel.
+     Set to false to disable for performance comparison.
+
  - name        : NCCL_NET_DISABLE_INTRA
    type        : int64_t
    default     : 0

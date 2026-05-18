@@ -50,10 +50,5 @@ Example:
               comm: The communicator to register with.
           )",
           py::arg("comm"),
-          py::call_guard<py::gil_scoped_release>())
-      .def(
-          "unregister",
-          &ClogHook::unregister,
-          "Unregister from all communicators.",
           py::call_guard<py::gil_scoped_release>());
 }
