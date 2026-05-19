@@ -289,6 +289,13 @@ void MultiPeerTransport::materializePeers(const std::vector<int>& peers) {
         ibgdaTransport_->materializePeer(peer);
       }
     }
+    ibgdaTransport_->connectPeers();
+  }
+}
+
+void MultiPeerTransport::connectPeers() {
+  if (ibgdaTransport_) {
+    ibgdaTransport_->connectPeers();
   }
 }
 

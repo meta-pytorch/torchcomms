@@ -86,6 +86,7 @@ TEST_P(RingAllGatherTest, Correctness) {
     ringParams.prev = transport->getP2pTransportDevice(rings[r].prev_rank);
     ringParams.next = transport->getP2pTransportDevice(rings[r].next_rank);
   }
+  transport->connectPeers();
 
   bootstrap->barrierAll();
   launch_ring_allgather(launchParams);

@@ -34,6 +34,9 @@ constexpr uint32_t kCompanionQpDepth = 32;
 // Bootstrap tags for the two-phase bilateral exchange in materializePeer.
 constexpr int kTagQpExchange = 0;
 constexpr int kTagBufferExchange = 1;
+constexpr const char* kMaterializationFailedError =
+    "MultipeerIbgdaTransport: lazy peer materialization previously failed; "
+    "retry is not supported";
 
 } // namespace
 
@@ -2004,6 +2007,18 @@ void MultipeerIbgdaTransport::cleanupPeerOnFailure(int peerIndex) {
     deregisterBuffer(buf->get());
     buf.reset();
   }
+  peerMaterialized_[peerIndex] = false;
+  if (peerTransportsGpu_ != nullptr && peerTransportSize_ != 0) {
+    cudaError_t err = cudaMemset(
+        reinterpret_cast<char*>(peerTransportsGpu_) +
+            static_cast<std::size_t>(peerIndex) * peerTransportSize_,
+        0,
+        peerTransportSize_);
+    if (err != cudaSuccess) {
+      LOG(WARNING) << "Failed to zero failed lazy peer transport slot: "
+                   << cudaGetErrorString(err);
+    }
+  }
 }
 
 void MultipeerIbgdaTransport::materializePeer(int peerRank) {
@@ -2018,53 +2033,89 @@ void MultipeerIbgdaTransport::materializePeer(int peerRank) {
             myRank_,
             nRanks_));
   }
-  int peerIndex = rankToPeerIndex(peerRank);
   if (isPeerMaterialized(peerRank)) {
     return;
   }
+  for (int p : pendingPeers_) {
+    if (p == peerRank) {
+      return;
+    }
+  }
+  pendingPeers_.push_back(peerRank);
+}
+
+void MultipeerIbgdaTransport::doMaterializePeer(int peerRank) {
+  int peerIndex = rankToPeerIndex(peerRank);
+
+  createPeerQps(peerIndex);
+
+  // Phase 1: exchange QP info, connect QPs
+  auto localQp = buildLocalQpPayload(peerIndex);
+  auto remoteQp = exchangeWithPeer(peerRank, localQp, kTagQpExchange);
+
+  if (remoteQp.numNics != numNics_) {
+    throw std::runtime_error(
+        fmt::format(
+            "materializePeer: peer {} numNics={} vs local {}",
+            peerRank,
+            remoteQp.numNics,
+            numNics_));
+  }
+  if (remoteQp.numQpsPerPeerPerNic != config_.numQpsPerPeerPerNic) {
+    throw std::runtime_error(
+        fmt::format(
+            "materializePeer: peer {} numQps={} vs local {}",
+            peerRank,
+            remoteQp.numQpsPerPeerPerNic,
+            config_.numQpsPerPeerPerNic));
+  }
+
+  connectPeerMainQps(peerIndex, remoteQp);
+  connectPeerLoopback(peerIndex);
+
+  // Phase 2: exchange buffer info (acts as QP-ready barrier)
+  PeerBufferPayload localBuf{};
+  allocatePeerBuffers(peerIndex, localBuf);
+  auto remoteBuf = exchangeWithPeer(peerRank, localBuf, kTagBufferExchange);
+  applyRemoteViews(peerIndex, remoteBuf);
+
+  auto params = buildPeerTransportParams(peerIndex);
+  writeDeviceTransportSlot(
+      peerTransportsGpu_, peerIndex, params, gpuAllocations_);
+  peerMaterialized_[peerIndex] = true;
+
+  VLOG(1) << "MultipeerIbgdaTransport: rank " << myRank_
+          << " materialized peer " << peerRank;
+}
+
+void MultipeerIbgdaTransport::connectPeers() {
+  if (materializationFailed_) {
+    pendingPeers_.clear();
+    throw std::runtime_error(kMaterializationFailedError);
+  }
+  if (pendingPeers_.empty()) {
+    return;
+  }
+  std::sort(pendingPeers_.begin(), pendingPeers_.end());
+
+  std::vector<int> peers;
+  peers.swap(pendingPeers_);
+  std::vector<int> touchedPeerIndexes;
 
   try {
-    createPeerQps(peerIndex);
-
-    // Phase 1: exchange QP info, connect QPs
-    auto localQp = buildLocalQpPayload(peerIndex);
-    auto remoteQp = exchangeWithPeer(peerRank, localQp, kTagQpExchange);
-
-    if (remoteQp.numNics != numNics_) {
-      throw std::runtime_error(
-          fmt::format(
-              "materializePeer: peer {} has numNics={} but local numNics={}",
-              peerRank,
-              remoteQp.numNics,
-              numNics_));
+    for (int peerRank : peers) {
+      if (isPeerMaterialized(peerRank)) {
+        continue;
+      }
+      const int peerIndex = rankToPeerIndex(peerRank);
+      touchedPeerIndexes.push_back(peerIndex);
+      doMaterializePeer(peerRank);
     }
-    if (remoteQp.numQpsPerPeerPerNic != config_.numQpsPerPeerPerNic) {
-      throw std::runtime_error(
-          fmt::format(
-              "materializePeer: peer {} has numQps={} but local numQps={}",
-              peerRank,
-              remoteQp.numQpsPerPeerPerNic,
-              config_.numQpsPerPeerPerNic));
-    }
-
-    connectPeerMainQps(peerIndex, remoteQp);
-    connectPeerLoopback(peerIndex);
-
-    // Phase 2: exchange buffer info (acts as QP-ready barrier)
-    PeerBufferPayload localBuf{};
-    allocatePeerBuffers(peerIndex, localBuf);
-    auto remoteBuf = exchangeWithPeer(peerRank, localBuf, kTagBufferExchange);
-    applyRemoteViews(peerIndex, remoteBuf);
-
-    auto params = buildPeerTransportParams(peerIndex);
-    writeDeviceTransportSlot(
-        peerTransportsGpu_, peerIndex, params, gpuAllocations_);
-    peerMaterialized_[peerIndex] = true;
-
-    VLOG(1) << "MultipeerIbgdaTransport: rank " << myRank_
-            << " materialized peer " << peerRank;
   } catch (...) {
-    cleanupPeerOnFailure(peerIndex);
+    materializationFailed_ = true;
+    for (int peerIndex : touchedPeerIndexes) {
+      cleanupPeerOnFailure(peerIndex);
+    }
     throw;
   }
 }

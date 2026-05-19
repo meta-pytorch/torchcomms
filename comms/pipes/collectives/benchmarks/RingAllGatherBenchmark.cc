@@ -193,6 +193,7 @@ class RingAllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
       rp.prev = transport->getP2pTransportDevice(rings[r].prev_rank);
       rp.next = transport->getP2pTransportDevice(rings[r].next_rank);
     }
+    transport->connectPeers();
 
     CudaEvent start, stop;
     const int n_warmup = 5;
