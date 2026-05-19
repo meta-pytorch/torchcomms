@@ -48,6 +48,14 @@ commResult_t ctranAllGatherBrucksFF(
     CtranComm* comm,
     cudaStream_t stream);
 
+commResult_t ctranAllGatherHierarchicalRing(
+    const void* sendbuff,
+    void* recvbuff,
+    size_t sendcount,
+    commDataType_t datatype,
+    CtranComm* comm,
+    cudaStream_t stream);
+
 static inline const std::string allGatherAlgoName(
     enum NCCL_ALLGATHER_ALGO algo) {
   switch (algo) {
@@ -61,6 +69,8 @@ static inline const std::string allGatherAlgoName(
       return "CtranAllGatherRing";
     case NCCL_ALLGATHER_ALGO::ctbrucks:
       return "CtranBrucksFF";
+    case NCCL_ALLGATHER_ALGO::cthierarchical_ring:
+      return "CtranAllGatherHierarchicalRing";
     case NCCL_ALLGATHER_ALGO::ctran:
       return "CtranAuto";
     case NCCL_ALLGATHER_ALGO::ctgraph:
