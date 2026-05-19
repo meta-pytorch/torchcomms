@@ -33,6 +33,7 @@ class Config {
   // When set, override the corresponding CVARs for this communicator.
   std::optional<size_t> pipesNvlChunkSize;
   std::optional<bool> pipesUseDualStateBuffer;
+  std::optional<size_t> pipesIbgdaDataBufferSize;
   int vCliqueSize = 0;
 
   // Per-communicator buffer size override (Simple protocol).
@@ -56,6 +57,15 @@ inline const std::vector<std::string>& knownHintKeys() {
       "splitGroupRanks",
       "ncclAllGatherAlgo",
       "fastInitMode",
+      "useCtran",
+      "usePatAvg",
+      "noLocal",
+      "sendrecvAlgo",
+      "allgatherAlgo",
+      "allreduceAlgo",
+      "pipesIbgdaDataBufferSize",
+      "alltoallvAlgo",
+      "rmaAlgo",
       "pipesNvlChunkSize",
       "pipesUseDualStateBuffer",
       "vCliqueSize",
