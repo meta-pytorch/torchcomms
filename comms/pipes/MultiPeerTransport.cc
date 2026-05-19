@@ -286,7 +286,7 @@ void MultiPeerTransport::materializePeers(const std::vector<int>& peers) {
     for (int peer : peers) {
       if (peer >= 0 && peer < nRanks_ && peer != myRank_ &&
           typePerRank_[peer] == TransportType::P2P_IBGDA) {
-        ibgdaTransport_->materializePeer(peer);
+        ibgdaTransport_->queuePeerForMaterialization(peer);
       }
     }
     ibgdaTransport_->connectPeers();

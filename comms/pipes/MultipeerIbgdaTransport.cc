@@ -2022,13 +2022,21 @@ void MultipeerIbgdaTransport::cleanupPeerOnFailure(int peerIndex) {
 }
 
 void MultipeerIbgdaTransport::materializePeer(int peerRank) {
+  queuePeerForMaterialization(peerRank);
+  connectPeers();
+}
+
+void MultipeerIbgdaTransport::queuePeerForMaterialization(int peerRank) {
   if (!config_.ibLazyConnect) {
     return;
+  }
+  if (materializationFailed_) {
+    throw std::runtime_error(kMaterializationFailedError);
   }
   if (peerRank == myRank_ || peerRank < 0 || peerRank >= nRanks_) {
     throw std::invalid_argument(
         fmt::format(
-            "materializePeer: invalid peerRank={} (myRank={}, nRanks={})",
+            "queuePeerForMaterialization: invalid peerRank={} (myRank={}, nRanks={})",
             peerRank,
             myRank_,
             nRanks_));
@@ -2101,6 +2109,7 @@ void MultipeerIbgdaTransport::connectPeers() {
   std::vector<int> peers;
   peers.swap(pendingPeers_);
   std::vector<int> touchedPeerIndexes;
+  touchedPeerIndexes.reserve(peers.size());
 
   try {
     for (int peerRank : peers) {

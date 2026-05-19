@@ -85,12 +85,15 @@ TEST_P(RingAllGatherTest, Correctness) {
     auto& ringParams = launchParams.rings[r];
     ringParams.prev_rank = rings[r].prev_rank;
     ringParams.next_rank = rings[r].next_rank;
-    ringParams.prev = transport->getP2pTransportDevice(rings[r].prev_rank);
-    ringParams.next = transport->getP2pTransportDevice(rings[r].next_rank);
+    transport->queuePeerForMaterialization(ringParams.prev_rank);
+    transport->queuePeerForMaterialization(ringParams.next_rank);
   }
-  // Lazy mode: connectPeers() must be called after all getP2pTransportDevice()
-  // calls and before launching the kernel.
   transport->connectPeers();
+  for (int r = 0; r < params.num_rings; r++) {
+    auto& ringParams = launchParams.rings[r];
+    ringParams.prev = transport->getP2pTransportDevice(ringParams.prev_rank);
+    ringParams.next = transport->getP2pTransportDevice(ringParams.next_rank);
+  }
 
   bootstrap->barrierAll();
   launch_ring_allgather(launchParams);
