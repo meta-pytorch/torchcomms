@@ -144,6 +144,85 @@ P2pIbgdaTransportDevice* buildDeviceTransportsOnGpu(
   return gpuPtr;
 }
 
+void writeDeviceTransportSlot(
+    P2pIbgdaTransportDevice* deviceArray,
+    int peerIndex,
+    const P2pIbgdaTransportBuildParams& params,
+    std::vector<void*>& outGpuAllocations) {
+  CHECK(!params.h_nicDeviceIbgdaResources.empty())
+      << "writeDeviceTransportSlot needs >= 1 NIC";
+  int numNics = static_cast<int>(params.h_nicDeviceIbgdaResources.size());
+  int qpsPerNic =
+      static_cast<int>(params.h_nicDeviceIbgdaResources[0].qps.size());
+  constexpr int kQpKindsPerNic = 2;
+
+  std::size_t qpsPerPeer =
+      static_cast<std::size_t>(kQpKindsPerNic) * numNics * qpsPerNic;
+  std::size_t qpBytes = qpsPerPeer * sizeof(doca_gpu_dev_verbs_qp*);
+  doca_gpu_dev_verbs_qp** d_qps = nullptr;
+  cudaError_t err = cudaMalloc(&d_qps, qpBytes);
+  CHECK(err == cudaSuccess) << "Failed to allocate per-peer GPU QP array: "
+                            << cudaGetErrorString(err);
+  outGpuAllocations.push_back(d_qps);
+
+  std::vector<doca_gpu_dev_verbs_qp*> h_qps;
+  h_qps.reserve(qpsPerPeer);
+  for (int n = 0; n < numNics; ++n) {
+    const auto& nicSpec = params.h_nicDeviceIbgdaResources[n];
+    h_qps.insert(h_qps.end(), nicSpec.qps.begin(), nicSpec.qps.end());
+    h_qps.insert(
+        h_qps.end(), nicSpec.companionQps.begin(), nicSpec.companionQps.end());
+  }
+  err = cudaMemcpy(d_qps, h_qps.data(), qpBytes, cudaMemcpyHostToDevice);
+  CHECK(err == cudaSuccess)
+      << "Failed to copy per-peer QP array to GPU: " << cudaGetErrorString(err);
+
+  std::size_t nicBytes = numNics * sizeof(NicDeviceIbgdaResources);
+  NicDeviceIbgdaResources* d_nicResources = nullptr;
+  err = cudaMalloc(&d_nicResources, nicBytes);
+  CHECK(err == cudaSuccess)
+      << "Failed to allocate per-peer NicDeviceIbgdaResources: "
+      << cudaGetErrorString(err);
+  outGpuAllocations.push_back(d_nicResources);
+
+  std::vector<NicDeviceIbgdaResources> h_nicResources;
+  h_nicResources.reserve(numNics);
+  for (int n = 0; n < numNics; ++n) {
+    auto* d_mainQps = d_qps + (n * kQpKindsPerNic * qpsPerNic);
+    auto* d_companionQps = d_mainQps + qpsPerNic;
+    h_nicResources.push_back(
+        NicDeviceIbgdaResources{
+            DeviceSpan<doca_gpu_dev_verbs_qp*>(d_mainQps, qpsPerNic),
+            DeviceSpan<doca_gpu_dev_verbs_qp*>(d_companionQps, qpsPerNic),
+            params.h_nicDeviceIbgdaResources[n].sinkLkey,
+            params.h_nicDeviceIbgdaResources[n].deviceId,
+        });
+  }
+  err = cudaMemcpy(
+      d_nicResources, h_nicResources.data(), nicBytes, cudaMemcpyHostToDevice);
+  CHECK(err == cudaSuccess)
+      << "Failed to copy per-peer NicDeviceIbgdaResources to GPU: "
+      << cudaGetErrorString(err);
+
+  P2pIbgdaTransportDevice hostTransport(
+      DeviceSpan<NicDeviceIbgdaResources>(d_nicResources, numNics),
+      params.remoteSignalBuf,
+      params.localSignalBuf,
+      params.counterBuf,
+      params.numSignalSlots,
+      params.numCounterSlots,
+      params.discardSignalSlot,
+      params.sendRecvState);
+
+  err = cudaMemcpy(
+      deviceArray + peerIndex,
+      &hostTransport,
+      sizeof(P2pIbgdaTransportDevice),
+      cudaMemcpyHostToDevice);
+  CHECK(err == cudaSuccess) << "Failed to copy per-peer device transport slot: "
+                            << cudaGetErrorString(err);
+}
+
 std::size_t getP2pIbgdaTransportDeviceSize() {
   return sizeof(P2pIbgdaTransportDevice);
 }
