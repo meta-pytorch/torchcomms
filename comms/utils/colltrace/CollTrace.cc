@@ -20,7 +20,6 @@
 #include "comms/utils/colltrace/GraphCudaWaitEvent.h"
 #include "comms/utils/colltrace/PrecisionClock.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/trainer/TrainerContext.h"
 
 namespace meta::comms::colltrace {
 
@@ -261,8 +260,7 @@ CommsMaybe<std::shared_ptr<ICollTraceHandle>> CollTrace::recordCollective(
   }
 
   pendingEnqueueColl_ = std::make_unique<CollTraceEvent>(
-      std::make_shared<CollRecord>(
-          collId_.fetch_add(1), std::move(metadata), ncclxGetIteration()),
+      std::make_shared<CollRecord>(collId_.fetch_add(1), std::move(metadata)),
       std::move(waitEvent));
   auto handle =
       std::make_shared<CollTraceHandle>(this, pendingEnqueueColl_.get());
@@ -369,8 +367,8 @@ CollTrace::recordGraphCollectiveImpl(
 
   rawWaitEvent->attachRingBuffer(&*ringBuffer_);
 
-  auto collRecord = std::make_shared<CollRecord>(
-      collIdVal, std::move(metadata), ncclxGetIteration());
+  auto collRecord =
+      std::make_shared<CollRecord>(collIdVal, std::move(metadata));
   auto recordPtr = std::static_pointer_cast<ICollRecord>(collRecord);
 
   auto collEvent = std::make_unique<CollTraceEvent>(CollTraceEvent{
@@ -511,9 +509,7 @@ void CollTrace::pollGraphEvents(
           auto& prev = collEntry.event->collRecord;
 
           auto frozenRecord = std::make_shared<CollRecord>(
-              collId_.fetch_add(1),
-              prev->getCollMetadata(),
-              prev->getIteration());
+              collId_.fetch_add(1), prev->getCollMetadata());
           frozenRecord->getTimingInfo().setCollEnqueueTs(timestamp);
           frozenRecord->getTimingInfo().setCollStartTs(timestamp);
 

@@ -157,7 +157,7 @@ CommsMaybeVoid CommDumpPlugin::afterCollKernelEnd(
   }
 
   lockedCollTraceDump->pastCollsHeap.push(std::move(*it));
-  evictPastColls(*lockedCollTraceDump, curEvent.collRecord->getIteration());
+  evictPastColls(*lockedCollTraceDump);
   lockedCollTraceDump->currentColls.erase(it);
 
   auto iterSnap = ncclxGetIterationSnapshot();
@@ -184,36 +184,11 @@ CommsMaybeVoid CommDumpPlugin::afterCollKernelEnd(
   return folly::unit;
 }
 
-void CommDumpPlugin::evictPastColls(
-    CollTraceDump& dump,
-    int64_t completedIteration) {
-  switch (config_.evictionMode) {
-    case EvictionMode::FixedCount: {
-      while (config_.pastCollSize >= 0 &&
-             static_cast<int64_t>(dump.pastCollsHeap.size()) >
-                 config_.pastCollSize) {
-        dump.pastCollsHeap.pop();
-      }
-      break;
-    }
-    case EvictionMode::Iteration: {
-      if (completedIteration > maxIterationSeen_) {
-        maxIterationSeen_ = completedIteration;
-      }
-      int64_t evictionThreshold = maxIterationSeen_ - config_.maxIterations + 1;
-      while (!dump.pastCollsHeap.empty()) {
-        const auto& oldest = dump.pastCollsHeap.top();
-        bool overHardLimit = static_cast<int64_t>(dump.pastCollsHeap.size()) >
-            config_.iterationUpperBound;
-        bool oldIteration = oldest->getIteration() < evictionThreshold;
-        if (overHardLimit || oldIteration) {
-          dump.pastCollsHeap.pop();
-        } else {
-          break;
-        }
-      }
-      break;
-    }
+void CommDumpPlugin::evictPastColls(CollTraceDump& dump) {
+  while (config_.pastCollSize >= 0 &&
+         static_cast<int64_t>(dump.pastCollsHeap.size()) >
+             config_.pastCollSize) {
+    dump.pastCollsHeap.pop();
   }
 }
 
@@ -334,9 +309,6 @@ std::unordered_map<std::string, std::string> commDumpToMap(
 }
 
 int64_t CommDumpPlugin::maxEventRetention() const noexcept {
-  if (config_.evictionMode == EvictionMode::Iteration) {
-    return config_.iterationUpperBound;
-  }
   return config_.pastCollSize;
 }
 
@@ -344,7 +316,6 @@ CommsMaybeVoid CommDumpPlugin::testOnlyClearColls() noexcept {
   collTraceDump_.exchange(CollTraceDump{});
   newPendingColls_ =
       folly::MPMCQueue<std::shared_ptr<CollRecord>>(config_.pendingCollSize);
-  maxIterationSeen_ = -1;
   return folly::unit;
 }
 

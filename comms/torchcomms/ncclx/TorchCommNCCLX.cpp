@@ -52,6 +52,15 @@ void validateIntDtype(const at::Tensor& tensor, std::string_view name) {
 
 std::atomic<int> g_graphTimeoutMonitoringState{-1};
 
+bool isColltraceGraphTracingEnabled() {
+  const char* env = std::getenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH");
+  if (env == nullptr) {
+    return false;
+  }
+  std::string val(env);
+  return val == "1" || val == "true";
+}
+
 } // namespace
 
 bool isGraphTimeoutMonitoringEnabled() {
@@ -63,6 +72,13 @@ bool isGraphTimeoutMonitoringEnabled() {
       std::string val(env);
       enabled = (val != "0" && val != "false");
     }
+    if (enabled && isColltraceGraphTracingEnabled()) {
+      LOG(WARNING)
+          << "[TC] NCCL_COLLTRACE_TRACE_CUDA_GRAPH is enabled — "
+          << "disabling GraphEventTracker timeout monitoring in favor of "
+          << "colltrace watchdog plugin";
+      enabled = false;
+    }
     state = enabled ? 1 : 0;
     g_graphTimeoutMonitoringState.store(state, std::memory_order_relaxed);
   }
@@ -71,6 +87,37 @@ bool isGraphTimeoutMonitoringEnabled() {
 
 void resetGraphTimeoutMonitoringCacheForTest() {
   g_graphTimeoutMonitoringState.store(-1, std::memory_order_relaxed);
+}
+
+bool tryEnableColltraceTimeoutWatchdog(std::chrono::milliseconds timeout) {
+  const char* monitoringEnv =
+      std::getenv("TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING");
+  if (monitoringEnv != nullptr) {
+    std::string val(monitoringEnv);
+    if (val == "0" || val == "false") {
+      return false;
+    }
+  }
+  if (!isColltraceGraphTracingEnabled()) {
+    return false;
+  }
+  if (ncclx::setGlobalHint("ncclx.colltrace.crashOnAsyncError", "1") !=
+      ncclSuccess) {
+    LOG(WARNING) << "[TC] Failed to enable colltrace async error checking";
+    return false;
+  }
+  if (ncclx::setGlobalHint("ncclx.colltrace.crashOnTimeout", "1") !=
+      ncclSuccess) {
+    LOG(WARNING) << "[TC] Failed to enable colltrace timeout checking";
+    return false;
+  }
+  if (ncclx::setGlobalHint(
+          "ncclx.colltrace.timeoutMs", std::to_string(timeout.count())) !=
+      ncclSuccess) {
+    LOG(WARNING) << "[TC] Failed to set colltrace watchdog timeout";
+    return false;
+  }
+  return true;
 }
 
 TorchCommNCCLX::TorchCommNCCLX()
@@ -160,6 +207,14 @@ void TorchCommNCCLX::init(
     TC_LOG(INFO, this)
         << "TorchCommNCCLX dynamic regime enabled, deferring initialization";
     return;
+  }
+
+  // When TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING is enabled (default) and
+  // NCCL_COLLTRACE_TRACE_CUDA_GRAPH=1, set colltrace watchdog hints before
+  // creating the NCCL communicator — the colltrace plugin is configured
+  // during ncclCommInitRank and must see the hints at that point.
+  if (!isGraphTimeoutMonitoringEnabled()) {
+    tryEnableColltraceTimeoutWatchdog(options_.timeout);
   }
 
   if (device_.index() == -1 || nccl_comm_ == nullptr) {
