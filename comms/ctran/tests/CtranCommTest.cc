@@ -1,5 +1,8 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <atomic>
+#include <memory>
+
 #include <gtest/gtest.h>
 
 #include "comms/ctran/CtranComm.h"
@@ -60,6 +63,35 @@ TEST(CtranCommTest, ctranCommConfigTest) {
   /// Explicitly create comm with false abort as first argument is unomittable
   CtranComm comm2(ctran::utils::createAbort(false));
   EXPECT_EQ(comm2.config_.backends.size(), 0);
+}
+
+TEST(CudagraphDeferredCleanupTest, RunCleansReadyResourcesBeforeForce) {
+  CudagraphDeferredCleanup cleanup;
+  auto ready = std::make_shared<std::atomic<bool>>(false);
+  auto pending = std::make_shared<std::atomic<bool>>(false);
+  int readyCleanupCount = 0;
+  int pendingCleanupCount = 0;
+  int untrackedCleanupCount = 0;
+
+  cleanup.add([&]() { readyCleanupCount++; }, ready);
+  cleanup.add([&]() { pendingCleanupCount++; }, pending);
+  cleanup.add([&]() { untrackedCleanupCount++; });
+
+  cleanup.run();
+  EXPECT_EQ(readyCleanupCount, 0);
+  EXPECT_EQ(pendingCleanupCount, 0);
+  EXPECT_EQ(untrackedCleanupCount, 0);
+
+  ready->store(true, std::memory_order_release);
+  cleanup.run();
+  EXPECT_EQ(readyCleanupCount, 1);
+  EXPECT_EQ(pendingCleanupCount, 0);
+  EXPECT_EQ(untrackedCleanupCount, 0);
+
+  cleanup.run(true /* force */);
+  EXPECT_EQ(readyCleanupCount, 1);
+  EXPECT_EQ(pendingCleanupCount, 1);
+  EXPECT_EQ(untrackedCleanupCount, 1);
 }
 
 } // namespace ctran::testing

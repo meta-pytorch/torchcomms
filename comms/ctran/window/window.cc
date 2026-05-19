@@ -11,6 +11,7 @@
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/window/CtranWin.h"
 #include "comms/ctran/window/Types.h"
+#include "comms/utils/CudaRAII.h"
 #if defined(ENABLE_PIPES)
 #include "comms/pipes/MultiPeerTransport.h"
 #include "comms/pipes/window/DeviceWindow.cuh"
@@ -400,6 +401,12 @@ commResult_t ctranWinAllocate(
     void** baseptr,
     CtranWin** win,
     const meta::comms::Hints& hints) {
+  {
+    meta::comms::StreamCaptureModeGuard captureGuard{
+        cudaStreamCaptureModeRelaxed};
+    comm->cudagraphDeferredCleanup.run();
+  }
+
   if (size < CTRAN_MIN_REGISTRATION_SIZE) {
     CLOGF_SUBSYS(
         INFO,
@@ -458,6 +465,12 @@ commResult_t ctranWinRegister(
     CtranComm* comm,
     CtranWin** win,
     const meta::comms::Hints& hints) {
+  {
+    meta::comms::StreamCaptureModeGuard captureGuard{
+        cudaStreamCaptureModeRelaxed};
+    comm->cudagraphDeferredCleanup.run();
+  }
+
   if (databuf == nullptr) {
     FB_ERRORRETURN(
         commInternalError,
