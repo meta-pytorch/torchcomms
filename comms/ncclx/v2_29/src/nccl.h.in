@@ -1128,11 +1128,13 @@ ncclResult_t  ncclCommDump(ncclComm_t comm, std::unordered_map<std::string, std:
 /* Dump NCCL current internal state for all the communicators.
  * The returned map is in the format {commHash: {key: value}} where
  * {key: value} is the result of ncclCommDump in the communicator with hash commHash.
- * requestFields: semicolon-separated list of field names to include (e.g. "rank;nRanks;CT_pastColls").
- *   std::nullopt (default) dumps all fields.
+ * hints: key-value map of options. Supported hints:
+ *   "comm_dump::requestFields" — semicolon-separated list of field names to include.
+ *   "comm_dump::flush" — "1" to flush ring buffers before dumping.
+ *   Empty map (default) dumps all fields without flushing.
  */
 ncclResult_t ncclCommDumpAll(std::unordered_map<std::string, std::unordered_map<std::string, std::string>>& map,
-    std::optional<std::string> requestFields = std::nullopt);
+    const std::unordered_map<std::string, std::string>& hints = {});
 
 #define NCCL_HAS_COMMS_TRACING_SERVICE_PORT
 ncclResult_t ncclCommsTracingServicePort(int& port);

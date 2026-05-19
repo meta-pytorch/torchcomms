@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -11,6 +12,9 @@
 namespace meta::comms::ncclx {
 
 using DumpFieldSet = std::unordered_set<std::string>;
+
+DumpFieldSet parseRequestFields(
+    const std::optional<std::string>& requestFieldsStr);
 
 bool isKeyRequested(const DumpFieldSet& fields, std::string_view key);
 
