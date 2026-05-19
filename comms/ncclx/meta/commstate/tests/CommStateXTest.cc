@@ -10,7 +10,6 @@
 #include "comms/ctran/tests/VerifyCommStateXUtil.h"
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
-#include "meta/hints/GlobalHints.h" // @manual
 #include "nccl.h"
 
 using ctran::testing::VerifyCommStateXHelper;
@@ -22,14 +21,9 @@ class CommStateXDistTest : public NcclxBaseTestFixture {
 
   void SetUp() override {
     NcclxBaseTestFixture::SetUp();
-    ASSERT_EQ(
-        ncclx::setGlobalHint(std::string(ncclx::HintKeys::kCommUseCtran), "1"),
-        ncclSuccess);
   }
 
   void TearDown() override {
-    ncclx::resetGlobalHint(std::string(ncclx::HintKeys::kCommUseCtran));
-    ncclx::resetGlobalHint(std::string(ncclx::HintKeys::kCommNoLocal));
     NcclxBaseTestFixture::TearDown();
   }
 
@@ -41,8 +35,11 @@ class CommStateXDistTest : public NcclxBaseTestFixture {
 };
 
 TEST_F(CommStateXDistTest, CreateFromNcclComm) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints{{"useCtran", "1"}};
+  config.hints = &hints;
   ncclx::test::NcclCommRAII comm{
-      globalRank, numRanks, localRank, bootstrap_.get()};
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
   ASSERT_NE(comm.get(), nullptr);
   ASSERT_TRUE(ctranInitialized(comm->ctranComm_.get()));
 
@@ -61,14 +58,11 @@ TEST_F(CommStateXDistTest, CreateFromNcclComm) {
 }
 
 TEST_F(CommStateXDistTest, CreateNoLocalFromNcclComm) {
-  // FIXME: replace with per-comm ncclx::Hints config once noLocal is
-  // supported as a per-comm hint field (global hints will be deprecated)
-  ASSERT_EQ(
-      ncclx::setGlobalHint(std::string(ncclx::HintKeys::kCommNoLocal), "1"),
-      ncclSuccess);
-
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints{{"useCtran", "1"}, {"noLocal", "1"}};
+  config.hints = &hints;
   ncclx::test::NcclCommRAII comm{
-      globalRank, numRanks, localRank, bootstrap_.get()};
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
   ASSERT_NE(comm.get(), nullptr);
   ASSERT_TRUE(ctranInitialized(comm->ctranComm_.get()));
 
@@ -88,7 +82,7 @@ TEST_F(CommStateXDistTest, CreateNoLocalFromNcclComm) {
 
 TEST_F(CommStateXDistTest, CreateVCliqueSizeFromNcclComm) {
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
-  ncclx::Hints hints({{"vCliqueSize", "2"}});
+  ncclx::Hints hints({{"vCliqueSize", "2"}, {"useCtran", "1"}});
   config.hints = &hints;
 
   ncclx::test::NcclCommRAII comm{

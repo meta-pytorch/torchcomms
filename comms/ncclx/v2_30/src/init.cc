@@ -2585,10 +2585,10 @@ static ncclResult_t ncclCommInitRankDev(ncclComm_t* newcomm, int nranks, int nId
   NCCLCHECKGOTO(ncclCudaHostCalloc(&comm->abortFlagDev, 1), res, fail);
   NCCLCHECKGOTO(ncclCalloc(&comm->abortFlagRefCount, 1), res, fail);
   comm->startMagic = comm->endMagic = NCCL_MAGIC; // Used to detect comm corruption.
-  // Ctran can be enabled either globally via CVAR or per-communicator using hint
-  comm->useCtran_ = ncclx::commUseCtran();
-  comm->usePatAvg_ = ncclx::commUsePatAvg();
-  comm->noLocal_ = ncclx::commNoLocal();
+  // [META:PER_COMM_CONFIG] Read per-comm config from parsed ncclx::Config
+  comm->useCtran_ = NCCLX_CONFIG_FIELD(*config, useCtran);
+  comm->usePatAvg_ = NCCLX_CONFIG_FIELD(*config, usePatAvg);
+  comm->noLocal_ = NCCLX_CONFIG_FIELD(*config, noLocal);
   INFO(NCCL_INIT, "CommInit comm %p commHash 0x%lx commDesc %s useCtran %d usePatAvg %d noLocal %d: %s %s %s",
        comm, getHash(commId->internal, NCCL_UNIQUE_ID_BYTES),
        NCCLX_CONFIG_FIELD(*config, commDesc).c_str(),
@@ -3309,10 +3309,10 @@ static ncclResult_t ncclCommInitChildComm(ncclComm_t comm, ncclComm_t* newcomm, 
 
     /* start with ncclInternalError and will be changed to ncclSuccess if init succeeds. */
     childComm->initState = ncclInternalError;
-    // Ctran can be enabled either globally via CVAR or per-communicator using hint
-    childComm->useCtran_ = ncclx::commUseCtran();
-    childComm->usePatAvg_ = ncclx::commUsePatAvg();
-    childComm->noLocal_ = ncclx::commNoLocal();
+    // [META:PER_COMM_CONFIG] Read per-comm config from parsed ncclx::Config
+    childComm->useCtran_ = NCCLX_CONFIG_FIELD(childComm->config, useCtran);
+    childComm->usePatAvg_ = NCCLX_CONFIG_FIELD(childComm->config, usePatAvg);
+    childComm->noLocal_ = NCCLX_CONFIG_FIELD(childComm->config, noLocal);
     INFO(NCCL_INIT, "CommSplit comm %p commDesc %s useCtran %d usePatAvg %d noLocal %d: %s %s %s",
         childComm, NCCLX_CONFIG_FIELD(childComm->config, commDesc).c_str(),
         childComm->useCtran_, childComm->usePatAvg_, childComm->noLocal_, ncclx::getCommUseCtranConfig().c_str(),
