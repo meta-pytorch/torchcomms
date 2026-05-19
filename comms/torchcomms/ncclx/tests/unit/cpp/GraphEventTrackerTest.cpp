@@ -1228,4 +1228,156 @@ TEST_F(
   resetGraphTimeoutMonitoringCacheForTest();
   setupFinalizeExpectations(*comm);
 }
+// --- Colltrace graph tracing disables GraphEventTracker monitoring ---
+
+TEST_F(
+    GraphEventTrackerTest,
+    ColltraceGraphTracing_DisablesGraphTimeoutMonitoring) {
+  resetGraphTimeoutMonitoringCacheForTest();
+
+  ::setenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH", "1", 1);
+  EXPECT_FALSE(isGraphTimeoutMonitoringEnabled());
+
+  ::unsetenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH");
+  resetGraphTimeoutMonitoringCacheForTest();
+}
+
+TEST_F(
+    GraphEventTrackerTest,
+    ColltraceGraphTracing_MonitoringEnabledWhenNotSet) {
+  resetGraphTimeoutMonitoringCacheForTest();
+
+  ::unsetenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH");
+  EXPECT_TRUE(isGraphTimeoutMonitoringEnabled());
+
+  resetGraphTimeoutMonitoringCacheForTest();
+}
+
+TEST_F(
+    GraphEventTrackerTest,
+    ColltraceGraphTracing_ExplicitDisableOverridesColltrace) {
+  resetGraphTimeoutMonitoringCacheForTest();
+
+  ::setenv("TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING", "0", 1);
+  ::setenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH", "1", 1);
+  EXPECT_FALSE(isGraphTimeoutMonitoringEnabled());
+
+  ::unsetenv("TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING");
+  ::unsetenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH");
+  resetGraphTimeoutMonitoringCacheForTest();
+}
+
+TEST_F(
+    GraphEventTrackerTest,
+    ColltraceGraphTracing_NoStartEndEventsOrReplayCounter) {
+  resetGraphTimeoutMonitoringCacheForTest();
+
+  auto comm = createMockedTorchComm();
+  cuda_mock_->setupDefaultBehaviors();
+  nccl_mock_->setupDefaultBehaviors();
+
+  auto options = createAbortModeOptions();
+  ::setenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH", "1", 1);
+  comm->init(*device_, "test_colltrace_graph_no_events", options);
+
+  setupGraphCaptureMocks();
+
+  // Only sync_event_ created — no start_event_ or end_event_
+  cudaEvent_t sync = reinterpret_cast<cudaEvent_t>(0xA003);
+  EXPECT_CALL(*cuda_mock_, eventCreateWithFlags(_, _))
+      .WillOnce(DoAll(SetArgPointee<0>(sync), Return(cudaSuccess)));
+
+  // No replay counter kernel
+  EXPECT_CALL(*cuda_mock_, launchHostFunc(_, _, _)).Times(0);
+
+  // Cleanup callback still installed
+  EXPECT_CALL(*cuda_mock_, userObjectCreate(_, _, _, _, _))
+      .WillOnce(DoAll(
+          SetArgPointee<0>(reinterpret_cast<cudaUserObject_t>(0x3000)),
+          Return(cudaSuccess)));
+  EXPECT_CALL(*cuda_mock_, graphRetainUserObject(_, _, _, _))
+      .WillOnce(Return(cudaSuccess));
+
+  setupEventRecordMocks();
+
+  auto tensor = createTestTensor({10, 10});
+
+  {
+    auto work = comm->send(tensor, 1, true);
+  }
+
+  ::testing::Mock::VerifyAndClearExpectations(cuda_mock_.get());
+
+  switchToReplayMode();
+  ::unsetenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH");
+  resetGraphTimeoutMonitoringCacheForTest();
+  setupFinalizeExpectations(*comm);
+}
+
+TEST_F(GraphEventTrackerTest, ColltraceGraphTracing_CheckGraphEventsReturnsOK) {
+  resetGraphTimeoutMonitoringCacheForTest();
+
+  auto comm = createMockedTorchComm();
+  cuda_mock_->setupDefaultBehaviors();
+  nccl_mock_->setupDefaultBehaviors();
+
+  auto options = createAbortModeOptions();
+  ::setenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH", "1", 1);
+  comm->init(*device_, "test_colltrace_graph_check_ok", options);
+
+  setupGraphCaptureMocks();
+
+  cudaEvent_t sync = reinterpret_cast<cudaEvent_t>(0xA003);
+  EXPECT_CALL(*cuda_mock_, eventCreateWithFlags(_, _))
+      .WillOnce(DoAll(SetArgPointee<0>(sync), Return(cudaSuccess)))
+      .WillRepeatedly(DoAll(
+          SetArgPointee<0>(reinterpret_cast<cudaEvent_t>(0xA100)),
+          Return(cudaSuccess)));
+
+  setupEventRecordMocks();
+
+  auto tensor = createTestTensor({10, 10});
+
+  {
+    auto work = comm->send(tensor, 1, true);
+  }
+
+  ::testing::Mock::VerifyAndClearExpectations(cuda_mock_.get());
+
+  switchToReplayMode();
+
+  // No event queries — checkAll() returns OK immediately
+  EXPECT_CALL(*cuda_mock_, eventQuery(_)).Times(0);
+
+  comm->checkGraphEvents();
+
+  ::testing::Mock::VerifyAndClearExpectations(cuda_mock_.get());
+
+  ::unsetenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH");
+  resetGraphTimeoutMonitoringCacheForTest();
+  setupFinalizeExpectations(*comm);
+}
+
+// --- tryEnableColltraceTimeoutWatchdog env var gating ---
+
+TEST_F(
+    GraphEventTrackerTest,
+    TryEnableColltraceWatchdog_ReturnsFalseWhenGraphTracingDisabled) {
+  ::unsetenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH");
+  EXPECT_FALSE(
+      tryEnableColltraceTimeoutWatchdog(std::chrono::milliseconds{5000}));
+}
+
+TEST_F(
+    GraphEventTrackerTest,
+    TryEnableColltraceWatchdog_ReturnsFalseWhenMonitoringExplicitlyDisabled) {
+  ::setenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH", "1", 1);
+  ::setenv("TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING", "0", 1);
+  EXPECT_FALSE(
+      tryEnableColltraceTimeoutWatchdog(std::chrono::milliseconds{5000}));
+
+  ::unsetenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH");
+  ::unsetenv("TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING");
+}
+
 } // namespace torch::comms::test
