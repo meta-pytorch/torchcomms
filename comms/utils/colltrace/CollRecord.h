@@ -55,13 +55,9 @@ class ICollRecord {
 
 class CollRecord : public ICollRecord {
  public:
-  CollRecord(
-      uint64_t collId,
-      std::shared_ptr<ICollMetadata> ICollMetadata,
-      int64_t iteration = -1);
+  CollRecord(uint64_t collId, std::shared_ptr<ICollMetadata> ICollMetadata);
 
   uint64_t getCollId() const noexcept override;
-  int64_t getIteration() const noexcept;
   const std::shared_ptr<ICollMetadata>& getCollMetadata() const;
 
   // Timing info is the only field that we could modify after init
@@ -75,7 +71,6 @@ class CollRecord : public ICollRecord {
 
  private:
   uint64_t collId_;
-  int64_t iteration_;
   std::shared_ptr<ICollMetadata> collMetadata_;
   CollTimingRecord timingInfo_;
 };

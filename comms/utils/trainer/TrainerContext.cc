@@ -4,69 +4,31 @@
 
 #include <atomic>
 #include <chrono>
-#include <cstring>
-
-#if defined(__x86_64__)
-#include <emmintrin.h>
-#endif
+#include <cstdint>
 
 namespace {
 
 // Pack iteration (high 64 bits) and timestampUs (low 64 bits) into a single
-// 128-bit atomic so readers always see a consistent pair.
-__int128 packIteration(int64_t iteration, int64_t timestampUs) {
-  __int128 v = 0;
-  std::memcpy(&v, &timestampUs, 8);
-  std::memcpy(reinterpret_cast<char*>(&v) + 8, &iteration, 8);
-  return v;
+// 128-bit value so readers always observe a consistent pair. constexpr so
+// gIterationPacked below is constant-initialized (no SIOF window).
+constexpr __int128 packIteration(int64_t iteration, int64_t timestampUs) {
+  return (static_cast<__int128>(static_cast<uint64_t>(iteration)) << 64) |
+      static_cast<__int128>(static_cast<uint64_t>(timestampUs));
 }
 
 IterationSnapshot unpackIteration(__int128 v) {
   IterationSnapshot snap;
-  std::memcpy(&snap.timestampUs, &v, 8);
-  std::memcpy(&snap.iteration, reinterpret_cast<const char*>(&v) + 8, 8);
+  snap.iteration = static_cast<int64_t>(static_cast<uint64_t>(v >> 64));
+  snap.timestampUs = static_cast<int64_t>(static_cast<uint64_t>(v));
   return snap;
 }
 
-// SSE2 MOVDQA is single-copy atomic for naturally-aligned 16-byte addresses
-// on every production x86_64 CPU, avoiding the __atomic_{store,load}_16
-// libatomic libcalls that GCC emits for std::atomic<__int128>.
-#if defined(__x86_64__)
-
+// std::atomic<__int128> is lock-free on x86_64 (cmpxchg16b, with -mcx16) and
+// on aarch64 with LSE2; elsewhere it falls back to libatomic's lock table.
+// We link -latomic unconditionally in the v2_29/v2_30 makefiles and the
+// github CMakeLists so the fallback always resolves at link time.
 // NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
-alignas(16) __int128 gIterationPacked = packIteration(/*iteration=*/-1,
-                                                      /*timestampUs=*/0);
-
-void releaseStore128(__int128* dst, __int128 val) {
-  __m128i v;
-  __builtin_memcpy(&v, &val, sizeof(v));
-  std::atomic_thread_fence(std::memory_order_release);
-  _mm_store_si128(reinterpret_cast<__m128i*>(dst), v);
-}
-
-__int128 acquireLoad128(const __int128* src) {
-  __m128i v = _mm_load_si128(reinterpret_cast<const __m128i*>(src));
-  std::atomic_thread_fence(std::memory_order_acquire);
-  __int128 result;
-  __builtin_memcpy(&result, &v, sizeof(result));
-  return result;
-}
-
-#else
-
-// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
-std::atomic<__int128> gIterationPacked{
-    packIteration(/*iteration=*/-1, /*timestampUs=*/0)};
-
-void releaseStore128(std::atomic<__int128>* dst, __int128 val) {
-  dst->store(val, std::memory_order_release);
-}
-
-__int128 acquireLoad128(const std::atomic<__int128>* src) {
-  return src->load(std::memory_order_acquire);
-}
-
-#endif
+std::atomic<__int128> gIterationPacked{packIteration(-1, 0)};
 
 } // namespace
 
@@ -74,7 +36,8 @@ void ncclxSetIteration(int64_t iteration) {
   auto timestampUs = std::chrono::duration_cast<std::chrono::microseconds>(
                          std::chrono::system_clock::now().time_since_epoch())
                          .count();
-  releaseStore128(&gIterationPacked, packIteration(iteration, timestampUs));
+  gIterationPacked.store(
+      packIteration(iteration, timestampUs), std::memory_order_release);
 }
 
 int64_t ncclxGetIteration() {
@@ -86,5 +49,5 @@ int64_t ncclxGetIterationTimestampUs() {
 }
 
 IterationSnapshot ncclxGetIterationSnapshot() {
-  return unpackIteration(acquireLoad128(&gIterationPacked));
+  return unpackIteration(gIterationPacked.load(std::memory_order_acquire));
 }
