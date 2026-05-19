@@ -21,6 +21,7 @@ static bool isGraphAwareAlgo(enum NCCL_ALLGATHER_ALGO algo) {
     case NCCL_ALLGATHER_ALGO::ctsrd:
     case NCCL_ALLGATHER_ALGO::ctring:
     case NCCL_ALLGATHER_ALGO::ctbrucks:
+    case NCCL_ALLGATHER_ALGO::cthierarchical_ring:
     case NCCL_ALLGATHER_ALGO::ctran:
     case NCCL_ALLGATHER_ALGO::orig:
       return false;
@@ -58,6 +59,9 @@ bool ctranAllGatherSupport(
     case NCCL_ALLGATHER_ALGO::ctdirect:
     case NCCL_ALLGATHER_ALGO::ctran:
       supported = true;
+      break;
+    case NCCL_ALLGATHER_ALGO::cthierarchical_ring:
+      supported = false;
       break;
     case NCCL_ALLGATHER_ALGO::ctgraph:
     case NCCL_ALLGATHER_ALGO::ctgraph_pipeline:
@@ -172,6 +176,12 @@ commResult_t ctranAllGather(
     case NCCL_ALLGATHER_ALGO::ctsrd:
       return ctranAllGatherStreamedRd(
           sendbuff, recvbuff, sendcount, datatype, comm, stream);
+
+    case NCCL_ALLGATHER_ALGO::cthierarchical_ring:
+      FB_ERRORRETURN(
+          commInvalidUsage,
+          "AllGather {} not registered in this build layer",
+          allGatherAlgoName(algo));
 
     case NCCL_ALLGATHER_ALGO::ctdirect:
     default:

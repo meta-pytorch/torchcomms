@@ -181,6 +181,23 @@ Config::Config(const ncclConfig_t* config) {
           "pipesUseDualStateBuffer", NCCL_CTRAN_PIPES_USE_DUAL_STATE_BUFFER);
     }
   }
+  {
+    std::string val = getHintStr("pipesIbgdaDataBufferSize");
+    if (!val.empty()) {
+      try {
+        auto parsed = std::stoull(val);
+        if (parsed > 0) {
+          pipesIbgdaDataBufferSize = parsed;
+        } else {
+          WARN("NCCLX hint 'pipesIbgdaDataBufferSize': value must be positive");
+        }
+      } catch (const std::exception&) {
+        WARN(
+            "NCCLX hint 'pipesIbgdaDataBufferSize': invalid value '%s'",
+            val.c_str());
+      }
+    }
+  }
 
   ibLazyConnect = parseHintBool("ibLazyConnect", NCCL_CTRAN_IBGDA_LAZY_CONNECT);
 
