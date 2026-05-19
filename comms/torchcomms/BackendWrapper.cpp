@@ -242,16 +242,53 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::allgather(
       inputTensors.size() == 1,
       "Only single input tensor supported, but got ",
       inputTensors.size());
+  const auto& input = inputTensors.at(0);
+  auto& outputList = outputTensors.at(0);
+  TORCH_CHECK(
+      static_cast<int>(outputList.size()) == getSize(),
+      "Expected ",
+      getSize(),
+      " output tensors (one per rank), but got ",
+      outputList.size());
+
   AllGatherOptions bopts;
   if (opts.timeout != kUnsetTimeout) {
     bopts.timeout = opts.timeout;
   } else {
     bopts.timeout = options_->timeout;
   }
-  return c10::make_intrusive<WorkWrapper>(
-      backend_->all_gather(
-          outputTensors.at(0), inputTensors.at(0), opts.asyncOp, bopts),
-      outputTensors.at(0));
+
+  // Fast path: when per-rank output tensors point to distinct memory,
+  // delegate straight to the backend's list-based all_gather (no extra
+  // alloc/copy). Simply check the first two ranks.
+  bool aliased = outputList.size() > 1 &&
+      outputList[0].data_ptr() == outputList[1].data_ptr();
+  if (!aliased) {
+    return c10::make_intrusive<WorkWrapper>(
+        backend_->all_gather(outputList, input, opts.asyncOp, bopts),
+        outputList);
+  }
+
+  // Slow path (aliased outputs): each outputList[r] points to the same
+  // K-element buffer, but the gather needs world_size * K bytes. Allocate
+  // a contiguous staging tensor shaped {world_size, K}, gather into it,
+  // then copy each rank's row back into the caller's per-rank tensor.
+  AllGatherSingleOptions sopts;
+  sopts.timeout = bopts.timeout;
+  auto staging = at::empty(
+      {getSize() * input.numel()},
+      input.options().memory_format(at::MemoryFormat::Contiguous));
+  auto work = c10::make_intrusive<WorkWrapper>(
+      backend_->all_gather_single(staging, input, opts.asyncOp, sopts),
+      outputList);
+  auto rows = staging.view({getSize(), input.numel()});
+  // Block on the gather before per-rank copies. The user's Work handle
+  // still gates on collective completion via WorkWrapper.
+  work->wait(kNoTimeout);
+  for (int r = 0; r < getSize(); ++r) {
+    outputList[r].copy_(rows[r].view_as(outputList[r]));
+  }
+  return work;
 }
 
 c10::intrusive_ptr<c10d::Work> BackendWrapper::allgather_coalesced(
