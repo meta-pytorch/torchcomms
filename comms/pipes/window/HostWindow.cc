@@ -486,4 +486,9 @@ DeviceWindow HostWindow::getDeviceWindow() const {
   return dw;
 }
 
+DeviceWindow HostWindow::getDeviceWindow(const std::vector<int>& peers) {
+  transport_.get_device_handle(peers);
+  return getDeviceWindow();
+}
+
 } // namespace comms::pipes
