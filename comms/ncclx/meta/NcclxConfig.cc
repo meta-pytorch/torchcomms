@@ -182,6 +182,8 @@ Config::Config(const ncclConfig_t* config) {
     }
   }
 
+  ibLazyConnect = parseHintBool("ibLazyConnect", NCCL_CTRAN_IBGDA_LAZY_CONNECT);
+
   // vCliqueSize: hint only (no flat ncclConfig_t field)
   {
     auto val = getHintStr("vCliqueSize");
