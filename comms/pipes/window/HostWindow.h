@@ -16,6 +16,7 @@ namespace comms::pipes {
 // Forward declarations
 class DeviceWindow;
 class MultiPeerTransport;
+struct MultiPeerDeviceHandle;
 class P2pIbgdaTransportDevice;
 struct LocalBufferRegistration;
 struct RemoteBufferRegistration;
@@ -119,14 +120,25 @@ class HostWindow {
    *
    * Must be called after exchange() and after all registerLocalBuffer()
    * and registerAndExchangeBuffer() calls.
+   *
+   * @throws std::runtime_error if lazy mode is enabled (ibLazyConnect=true).
+   *   Use getDeviceWindow(peers) instead.
    */
   DeviceWindow getDeviceWindow() const;
 
   /**
-   * Materialize the specified IBGDA peers, then return the DeviceWindow.
-   * Use with lazy mode to ensure peers are ready before kernel launch.
+   * getDeviceWindow (lazy mode) - Materialize specific IBGDA peers,
+   * then return the DeviceWindow.
    *
-   * @param peers List of peer ranks to materialize
+   * Call this instead of getDeviceWindow() when lazy mode is enabled.
+   * Materializes the listed peers (QPs, buffers, bilateral exchange)
+   * before building the DeviceWindow. Unmaterialized peers remain as
+   * zeroed transport slots — the kernel must only access materialized
+   * peers.
+   *
+   * No-op for non-IBGDA peers or in eager mode.
+   *
+   * @param peers List of global peer ranks to materialize
    */
   DeviceWindow getDeviceWindow(const std::vector<int>& peers);
 
@@ -208,6 +220,7 @@ class HostWindow {
   void* get_nvlink_address(int peer, std::size_t offset = 0) const;
 
  private:
+  DeviceWindow buildDeviceWindowImpl(MultiPeerDeviceHandle handle) const;
   void uploadRegistrationsToDevice();
 
   // Transport reference (non-owning, must outlive this object)
