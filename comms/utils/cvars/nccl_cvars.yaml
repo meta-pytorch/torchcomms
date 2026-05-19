@@ -83,6 +83,17 @@ cvars:
       scuba table nccl_profiler_gpe.
       (the same format with NCCL_COMM_EVENT_LOGGING)
 
+ - name        : NCCL_CTRAN_GPE_PROFILING_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Kill-switch for ctran::GpeProfiler's per-tracepoint Scuba flush
+     (table nccl_profiler_gpe). When false (default), CtranGpe nulls the
+     reporter regardless of caller injection — no Scuba rows are emitted.
+     The profiler still tracks per-iteration state internally so the
+     consolidated abort ERR line on stderr (gpeProfiler_->debugString())
+     keeps producing per-phase latencies. Set true to enable Scuba flush.
+
  - name        : NCCL_CTRAN_GPE_PROFILING_SAMPLING_WEIGHT
    type        : int
    default     : 1000
