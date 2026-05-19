@@ -50,6 +50,8 @@ class CtranIb {
       std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory = nullptr,
       std::optional<int> maxNumCqe = std::nullopt);
 
+  static bool shouldEnableLocalFlushByDefault(int cudaArch);
+
   // Creates local IB resources without pre-existing communicator.
   // Supports three types of bootstrap mode as defined below.
   // Input arguments:
