@@ -705,6 +705,16 @@ void CtranGpe::Impl::terminate() {
       statex->commDesc());
 }
 
+void CtranGpe::Impl::injectGpeProfilerMetadata(CtranGpeCmd* cmd) {
+  if (cmd->coll.opGroup.empty()) {
+    return;
+  }
+  gpeProfiler_->injectMetadata({
+      .opCount = cmd->coll.opGroup.front()->opCount,
+      .opType = static_cast<int>(cmd->coll.opGroup.front()->type),
+  });
+}
+
 void CtranGpe::Impl::gpeThreadFn() {
   const auto& statex = comm->statex_;
   assert(statex != nullptr);
@@ -719,7 +729,15 @@ void CtranGpe::Impl::gpeThreadFn() {
     FB_CUDACHECKTHROW_EX(cudaSetDevice(cudaDev), comm->logMetaData_);
 
     while (1) {
+      gpeProfiler_->mark(ctran::GpeTracePoint::ITER_START);
       auto cmd = cmdDequeue();
+      injectGpeProfilerMetadata(cmd);
+      gpeProfiler_->mark(ctran::GpeTracePoint::CMD_DEQUEUE);
+
+      // Captured before SCOPE_EXIT so the lambda can safely see it after
+      // the TERMINATE branch deletes cmd + returns.
+      const bool isTerminateCmd =
+          (cmd->type == CtranGpeCmd::TypeEnum::TERMINATE);
 
       if (cmd->timeout.has_value()) {
         comm->setTimeout(cmd->timeout.value());
@@ -729,29 +747,32 @@ void CtranGpe::Impl::gpeThreadFn() {
         comm->setTimeout(*d);
       }
       SCOPE_EXIT {
-        // if comm is aborted for any reason, we mark it as aborted to avoid
-        // resetting the state.
-        if (comm->testAbort()) {
+        // TERMINATE is GPE-thread shutdown. The abort flag may still be set
+        // from a prior collective iter's failure, but re-running the abort
+        // log path here would (a) duplicate the abort log emitted by that
+        // prior iter's SCOPE_EXIT, and (b) stamp ALGO_ABORTED *after*
+        // TERMINATE_CMD on this iter's timeline, producing a negative
+        // (uint underflow) durationUs in debugString. Skip the abort
+        // branch on TERMINATE; just cancel any leftover timeout.
+        if (!isTerminateCmd && comm->testAbort()) {
           auto abort = comm->getAbort();
-          if (abort->TimedOut()) {
-            CLOGF(
-                ERR,
-                "Communicator aborted due to timeout on rank {} commHash {:x}",
-                statex->rank(),
-                statex->commHash());
-          } else {
-            CLOGF(
-                ERR,
-                "Communicator aborted (explicit) on rank {} commHash {:x}",
-                statex->rank(),
-                statex->commHash());
-          }
+          const std::string_view reason =
+              abort->TimedOut() ? "timeout" : "explicit";
+          gpeProfiler_->mark(ctran::GpeTracePoint::ALGO_ABORTED, reason);
+          CLOGF(
+              ERR,
+              "Communicator aborted ({}) on rank {} commHash {:x} {}",
+              reason,
+              statex->rank(),
+              statex->commHash(),
+              gpeProfiler_->debugString());
           comm->setAbort();
         }
         comm->cancelTimeout();
       };
 
       if (cmd->type == CtranGpeCmd::TypeEnum::TERMINATE) {
+        gpeProfiler_->mark(ctran::GpeTracePoint::TERMINATE_CMD);
         CLOGF_SUBSYS(
             INFO,
             INIT,
@@ -776,6 +797,7 @@ void CtranGpe::Impl::gpeThreadFn() {
           std::this_thread::yield();
         }
       }
+      gpeProfiler_->mark(ctran::GpeTracePoint::WAIT_KERNEL);
 
       if (cmd->coll.collHandle != nullptr) {
         cmd->coll.collHandle->trigger(
@@ -854,6 +876,7 @@ void CtranGpe::Impl::gpeThreadFn() {
           cmd->coll.opGroup.clear();
         }
       }
+      gpeProfiler_->mark(ctran::GpeTracePoint::HOST_ALGO);
 
       if (kernelFlag) {
         volatile int* flag_d = kernelFlag->flag_;
@@ -877,6 +900,7 @@ void CtranGpe::Impl::gpeThreadFn() {
           // termination
           kernelFlag->setFlagPerGroup(
               comm->testAbort() ? KERNEL_HOST_ABORT : KERNEL_TERMINATE);
+          gpeProfiler_->mark(ctran::GpeTracePoint::TERMINATE_KERNEL);
         }
         // Teardown unpack queue if it was allocated for this operation (TcpDM
         // backend). Don't wait for kernel to finish, the pool manages

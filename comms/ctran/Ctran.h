@@ -25,7 +25,8 @@ class Ctran : public ICtran {
  public:
   Ctran(
       CtranComm* comm,
-      std::unique_ptr<ctran::IProfilerReporter> reporter = nullptr);
+      std::unique_ptr<ctran::IProfilerReporter> reporter = nullptr,
+      std::unique_ptr<ctran::IGpeProfilerReporter> gpeReporter = nullptr);
   ~Ctran();
 
   bool isInitialized() const override;

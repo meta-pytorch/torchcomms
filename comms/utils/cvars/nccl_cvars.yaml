@@ -74,6 +74,34 @@ cvars:
       all data is logged to scuba table nccl_profiler_algo.
       (the same format with NCCL_COMM_EVENT_LOGGING)
 
+ - name        : NCCL_CTRAN_GPE_PROFILING_LOGGING
+   type        : string
+   default     : "scuba:nccl_profiler_gpe"
+   description : |-
+      File location for logging per-tracepoint GPE thread profiler rows
+      emitted by ctran::GpeProfiler. By default, all data is logged to
+      scuba table nccl_profiler_gpe.
+      (the same format with NCCL_COMM_EVENT_LOGGING)
+
+ - name        : NCCL_CTRAN_GPE_PROFILING_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Kill-switch for ctran::GpeProfiler's per-tracepoint Scuba flush
+     (table nccl_profiler_gpe). When false (default), CtranGpe nulls the
+     reporter regardless of caller injection — no Scuba rows are emitted.
+     The profiler still tracks per-iteration state internally so the
+     consolidated abort ERR line on stderr (gpeProfiler_->debugString())
+     keeps producing per-phase latencies. Set true to enable Scuba flush.
+
+ - name        : NCCL_CTRAN_GPE_PROFILING_SAMPLING_WEIGHT
+   type        : int
+   default     : 1000
+   description : |-
+     1-in-N sampling weight for per-iteration GpeProfiler Scuba reports.
+     Set to 0 to disable happy-path tracing (abort-only). Aborted
+     iterations are always reported regardless of sampling.
+
  - name        : NCCL_MEMORY_EVENT_LOGGING
    type        : string
    default     : ""
@@ -3001,11 +3029,15 @@ cvars:
    type        : bool
    default     : true
    description : |-
-     Enable ctran transport profiling for MCCL. When true, MCCL overrides
-     NCCL_CTRAN_TRANSPORT_PROFILER to true during init so that the ctran
-     Profiler is created and algo profiling data flows to the
-     mccl_operation_trace Scuba table via McclAlgoProfilerReporter. Set to
-     false to disable ctran profiling from the MCCL level.
+     Enable ctran transport profiling for MCCL. When true (and the rank
+     passes MCCL_FILTER_PROFILER_LOGGING_BY_RANKS), MCCL sets
+     comm_->config_.enableProfiler and injects BOTH
+     McclAlgoProfilerReporter and McclGpeProfilerReporter into
+     ctranInit. Algo rows land in mccl_operation_trace with
+     mcclop="ALGO_PROFILING"; GPE per-tracepoint rows land in the same
+     table with mcclop="GPE_PROFILING". Set to false to disable both
+     reporters from the MCCL level (CTRAN-side defaults for the GPE
+     profiler still apply per NCCL_CTRAN_GPE_PROFILING_ENABLE).
 
  - name        : MCCL_FILTER_PROFILER_LOGGING_BY_RANKS
    type        : stringlist

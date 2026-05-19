@@ -24,12 +24,14 @@
 
 Ctran::Ctran(
     CtranComm* comm,
-    std::unique_ptr<ctran::IProfilerReporter> reporter)
+    std::unique_ptr<ctran::IProfilerReporter> reporter,
+    std::unique_ptr<ctran::IGpeProfilerReporter> gpeReporter)
     : comm_(comm) {
   ctran::logging::initCtranLogging();
 
   mapper = std::make_unique<CtranMapper>(comm_);
-  gpe = std::make_unique<CtranGpe>(comm->statex_->cudaDev(), comm_);
+  gpe = std::make_unique<CtranGpe>(
+      comm->statex_->cudaDev(), comm_, std::move(gpeReporter));
 
   algo = std::make_unique<CtranAlgo>(comm, this);
 
@@ -122,11 +124,13 @@ std::optional<meta::comms::colltrace::AlgoStatDump> CtranComm::dumpAlgoStats()
 
 commResult_t ctranInit(
     CtranComm* comm,
-    std::unique_ptr<ctran::IProfilerReporter> reporter) {
+    std::unique_ptr<ctran::IProfilerReporter> reporter,
+    std::unique_ptr<ctran::IGpeProfilerReporter> gpeReporter) {
   NcclScubaEvent initEvent(&comm->logMetaData_);
   initEvent.lapAndRecord("CtranInit START");
   try {
-    comm->ctran_ = std::make_shared<Ctran>(comm, std::move(reporter));
+    comm->ctran_ = std::make_shared<Ctran>(
+        comm, std::move(reporter), std::move(gpeReporter));
   } catch (std::exception& e) {
     CLOGF(ERR, "Ctran initialization failed: {}", e.what());
     return commInternalError;

@@ -15,6 +15,7 @@ constexpr std::string_view k_nccl_memory_logging = "nccl_memory_logging";
 constexpr std::string_view k_nccl_profiler_slow_rank =
     "nccl_profiler_slow_rank";
 constexpr std::string_view k_nccl_profiler_algo = "nccl_profiler_algo";
+constexpr std::string_view k_nccl_profiler_gpe = "nccl_profiler_gpe";
 constexpr std::string_view k_nccl_structured_logging =
     "nccl_structured_logging";
 constexpr std::string_view k_nccl_slow_coll = "nccl_slow_coll";
@@ -69,6 +70,7 @@ std::vector<std::pair<std::string_view, std::string_view>> getAllTableNames() {
       {k_nccl_memory_logging, NCCL_MEMORY_EVENT_LOGGING},
       {k_nccl_profiler_slow_rank, NCCL_SLOW_RANK_LOGGING},
       {k_nccl_profiler_algo, NCCL_CTRAN_ALGO_PROFILING_LOGGING},
+      {k_nccl_profiler_gpe, NCCL_CTRAN_GPE_PROFILING_LOGGING},
       {k_nccl_structured_logging, NCCL_COMM_EVENT_LOGGING},
       {k_nccl_slow_coll, NCCL_SLOW_COLL_LOGGING},
       {k_nccl_collective_stats, NCCL_COLL_STATS_LOGGING},
@@ -116,6 +118,7 @@ DEFINE_scuba_table(nccl_error_logging);
 DEFINE_scuba_table(nccl_memory_logging);
 DEFINE_scuba_table(nccl_profiler_slow_rank);
 DEFINE_scuba_table(nccl_profiler_algo);
+DEFINE_scuba_table(nccl_profiler_gpe);
 DEFINE_scuba_table(nccl_structured_logging);
 DEFINE_scuba_table(nccl_slow_coll);
 DEFINE_scuba_table(nccl_collective_stats);
@@ -128,6 +131,7 @@ void DataTableWrapper::init() {
   INIT_scuba_table(nccl_memory_logging);
   INIT_scuba_table(nccl_profiler_slow_rank);
   INIT_scuba_table(nccl_profiler_algo);
+  INIT_scuba_table(nccl_profiler_gpe);
   INIT_scuba_table(nccl_structured_logging);
   INIT_scuba_table(nccl_slow_coll);
   INIT_scuba_table(nccl_collective_stats);
@@ -141,6 +145,7 @@ void DataTableWrapper::shutdown() {
   SHUTDOWN_scuba_table(nccl_memory_logging);
   SHUTDOWN_scuba_table(nccl_profiler_slow_rank);
   SHUTDOWN_scuba_table(nccl_profiler_algo);
+  SHUTDOWN_scuba_table(nccl_profiler_gpe);
   SHUTDOWN_scuba_table(nccl_structured_logging);
   SHUTDOWN_scuba_table(nccl_slow_coll);
   SHUTDOWN_scuba_table(nccl_collective_stats);
