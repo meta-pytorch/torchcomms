@@ -5,10 +5,10 @@
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CudaWrap.h"
-#include "comms/ctran/utils/DevMemType.h"
 #include "comms/ctran/window/CtranWin.h"
 #include "comms/ctran/window/Types.h"
 #if defined(ENABLE_PIPES)
@@ -41,6 +41,70 @@ CtranWin::CtranWin(CtranComm* comm, size_t size, DevMemType bufType)
     val.store(1);
 }
 
+commResult_t CtranWin::regMem(const void* ptr, size_t len, void** regHdl) {
+  if (ptr == nullptr || len == 0) {
+    *regHdl = nullptr;
+    return commSuccess;
+  }
+
+  auto statex = comm->statex_.get();
+  auto mapper = comm->ctran_->mapper.get();
+  auto regCache = ctran::RegCache::getInstance();
+  ctran::CHECK_VALID_REGCACHE(regCache);
+
+  ctran::regcache::RegElem* regElem = nullptr;
+  FB_COMMCHECK(regCache->regRange(
+      ptr,
+      len,
+      statex->cudaDev(),
+      mapper->enabledBackends(),
+      &regElem,
+      true /* ncclManaged */,
+      &mapper->logMetaData_,
+      "windowRegMem"));
+  *regHdl = regElem;
+  return commSuccess;
+}
+
+commResult_t CtranWin::deregMemIfNotNull(void*& regHdl) {
+  if (regHdl == nullptr) {
+    return commSuccess;
+  }
+
+  auto regCache = ctran::RegCache::getInstance();
+  ctran::CHECK_VALID_REGCACHE(regCache);
+
+  auto* regElem = reinterpret_cast<ctran::regcache::RegElem*>(regHdl);
+  FB_COMMCHECK(regCache->deregRange(regElem));
+  regHdl = nullptr;
+  return commSuccess;
+}
+
+commResult_t CtranWin::releaseRemReg(
+    std::vector<std::unique_ptr<IpcRemRegElem>>& ownedRegs,
+    CtranMapperRemoteAccessKey* rkey,
+    int peer) {
+  auto statex = comm->statex_.get();
+  if (peer == statex->rank()) {
+    return commSuccess;
+  }
+
+  if (static_cast<size_t>(peer) < ownedRegs.size() && ownedRegs[peer]) {
+    ownedRegs[peer].reset();
+  }
+
+  return commSuccess;
+}
+
+commResult_t CtranWin::freeMem(void* addr) {
+  if (isGpuMem()) {
+    FB_COMMCHECK(utils::commCuMemFree(addr));
+  } else {
+    FB_CUDACHECK(cudaFreeHost(addr));
+  }
+  return commSuccess;
+}
+
 commResult_t CtranWin::exchange() {
   auto statex = comm->statex_.get();
   const auto nRanks = statex->nRanks();
@@ -50,54 +114,24 @@ commResult_t CtranWin::exchange() {
 
   auto mapper = comm->ctran_->mapper.get();
   CtranMapperEpochRAII epochRAII(mapper);
-  // Registration via ctran mapper.
-  FB_COMMCHECK(mapper->regMem(
-      winBasePtr,
-      range_,
-      &(baseSegHdl),
-      true,
-      true, /* NCCL managed buffer */
-      &baseRegHdl));
+
+  // Window memory owns its registration. Do not insert it into the global VA
+  // lookup cache: CUDA may later reuse the same device VA for a different
+  // allocation after this window expires.
+  FB_COMMCHECK(regMem(winBasePtr, range_, &baseRegHdl));
 
   if (allocDataBuf_) {
-    dataSegHdl = baseSegHdl;
     dataRegHdl = baseRegHdl;
   } else {
-    // User-provided buffer: use globalRegisterWithPtr to cache and register
-    // multi-segment buffers (e.g., expandable segments) that mapper->regMem
-    // cannot handle (it asserts single-segment). forceReg=true ensures
-    // registration happens immediately; ncclManaged=true enables NVL IPC
-    // handle creation for cudaMalloc buffers. searchRegHandle then finds the
-    // RegElem via fast path for use in allGatherCtrl handle exchange.
-    FB_COMMCHECK(
-        ctran::globalRegisterWithPtr(
-            winDataPtr,
-            dataBytes,
-            true /* forceReg */,
-            true /* ncclManaged */));
-    bool dynamicRegist = false;
-    FB_COMMCHECK(mapper->searchRegHandle(
-        winDataPtr, dataBytes, &dataRegHdl, &dynamicRegist));
-    // globalRegisterWithPtr with forceReg=true guarantees the RegElem is
-    // already created, so searchRegHandle should find it via fast path
-    // (not dynamic registration).
-    FB_CHECKABORT(
-        !dynamicRegist,
-        "Unexpected dynamic registration for window data buffer {} len {}",
-        winDataPtr,
-        dataBytes);
+    FB_COMMCHECK(regMem(winDataPtr, dataBytes, &dataRegHdl));
   }
 
-  // Exchange each rank's data buffer size via bootstrap allGather
-  // This populates remWinInfo[r].dataBytes for all ranks
   std::vector<size_t> allRankSizes(nRanks);
   allRankSizes[myRank] = dataBytes;
   auto resFuture = comm->bootstrap_->allGather(
       allRankSizes.data(), sizeof(size_t), myRank, nRanks);
   FB_COMMCHECK(static_cast<commResult_t>(std::move(resFuture).get()));
 
-  // Handshake with other peers for registration exchange and network
-  // connection setup
   std::vector<void*> remoteBaseBufs(nRanks);
   std::vector<void*> remoteUserBufs(nRanks);
   std::vector<struct CtranMapperRemoteAccessKey> remoteBaseBufAccessKeys(
@@ -105,14 +139,27 @@ commResult_t CtranWin::exchange() {
   std::vector<struct CtranMapperRemoteAccessKey> remoteUserBufAccessKeys(
       nRanks);
 
+  remoteBaseIpcRegs.resize(nRanks);
+  remoteDataIpcRegs.resize(nRanks);
+
   FB_COMMCHECK(mapper->allGatherCtrl(
-      winBasePtr, baseRegHdl, remoteBaseBufs, remoteBaseBufAccessKeys));
+      winBasePtr,
+      baseRegHdl,
+      remoteBaseBufs,
+      remoteBaseBufAccessKeys,
+      CtranMapperBackend::UNSET,
+      &remoteBaseIpcRegs,
+      false /* trackExport */));
 
   if (!allocDataBuf_) {
-    // if data buffer is provided by user, extra round of handler exchange is
-    // needed
     FB_COMMCHECK(mapper->allGatherCtrl(
-        winDataPtr, dataRegHdl, remoteUserBufs, remoteUserBufAccessKeys));
+        winDataPtr,
+        dataRegHdl,
+        remoteUserBufs,
+        remoteUserBufAccessKeys,
+        CtranMapperBackend::UNSET,
+        &remoteDataIpcRegs,
+        false /* trackExport */));
   }
 
   for (auto r = 0; r < nRanks; r++) {
@@ -266,62 +313,46 @@ commResult_t CtranWin::free(bool skipBarrier) {
 
   auto nRanks = statex->nRanks();
 
-  // utils funcs to deregister memory
-  auto deregMemIfNotNull = [&](void* segHdl) {
-    if (segHdl != nullptr) {
-      FB_COMMCHECK(mapper->deregMem(segHdl, true /* skipRemRelease */));
-    }
-    return commSuccess;
-  };
-
-  // utils func to free memory
-  auto freeMem = [&](void* addr) {
-    if (isGpuMem()) {
-      FB_COMMCHECK(utils::commCuMemFree(addr));
-    } else {
-      FB_CUDACHECK(cudaFreeHost(addr));
-    }
-    return commSuccess;
-  };
-
-  // deregistr buffer
-  deregMemIfNotNull(baseSegHdl);
-  // deregister remote buf
+  // Release locally-imported remote signal buffers.
   for (auto i = 0; i < nRanks; ++i) {
-    if (i != statex->rank()) {
-      FB_COMMCHECK(mapper->deregRemReg(&remWinInfo[i].signalRkey));
+    FB_COMMCHECK(
+        releaseRemReg(remoteBaseIpcRegs, &remWinInfo[i].signalRkey, i));
+  }
+
+  // User-provided data buffer: release locally-imported remote data buffers.
+  if (!allocDataBuf_) {
+    for (auto i = 0; i < nRanks; ++i) {
+      FB_COMMCHECK(
+          releaseRemReg(remoteDataIpcRegs, &remWinInfo[i].dataRkey, i));
     }
   }
 
-  // User-provided data buffer: deregister locally without remote IPC
-  // notifications. Remove from export cache first (so mapper destructor
-  // won't access the freed RegElem), then free segments locally, then
-  // release locally-imported remote handles.
-  if (!allocDataBuf_) {
-    mapper->removeFromExportCache(dataRegHdl);
-    FB_COMMCHECK(
-        ctran::globalDeregisterWithPtr(
-            winDataPtr, dataBytes, true /* skipRemRelease */));
-    for (auto i = 0; i < nRanks; ++i) {
-      if (i != statex->rank()) {
-        FB_COMMCHECK(mapper->deregRemReg(&remWinInfo[i].dataRkey));
-      }
-    }
+  if (dataRegHdl != baseRegHdl) {
+    FB_COMMCHECK(deregMemIfNotNull(dataRegHdl));
+  } else {
+    dataRegHdl = nullptr;
   }
+  FB_COMMCHECK(deregMemIfNotNull(baseRegHdl));
 
 #if defined(ENABLE_PIPES)
   // HostWindow handles cleanup via RAII
   hostWindow_.reset();
 #endif
 
-  freeMem(winBasePtr);
+  FB_COMMCHECK(freeMem(winBasePtr));
 
   return commSuccess;
 }
 
 bool CtranWin::nvlEnabled(int rank) const {
-  return isGpuMem() &&
-      comm->ctran_->mapper->hasBackend(rank, CtranMapperBackend::NVL);
+  if (!isGpuMem()) {
+    return false;
+  }
+  if (rank >= 0 && rank < static_cast<int>(remWinInfo.size()) &&
+      remWinInfo[rank].dataRkey.backend != CtranMapperBackend::UNSET) {
+    return remWinInfo[rank].dataRkey.backend == CtranMapperBackend::NVL;
+  }
+  return comm->ctran_->mapper->hasBackend(rank, CtranMapperBackend::NVL);
 }
 
 #if defined(ENABLE_PIPES)
