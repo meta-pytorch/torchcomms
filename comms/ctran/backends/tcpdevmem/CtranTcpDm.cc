@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #include "comms/ctran/backends/tcpdevmem/CtranTcpDm.h"
 #include "comms/ctran/backends/tcpdevmem/CtranTcpDmSingleton.h"
+#include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/Debug.h"
 #include "comms/utils/StrUtils.h"
@@ -116,6 +117,7 @@ void CtranTcpDm::bootstrapAccept() {
     ::comms::tcp_devmem::CommunicatorInterface* recvComm;
     COMMCHECKTHROW(transport_->accept(listenComm, &recvComm));
     COMMCHECKTHROW(transport_->closeListen(listenComm));
+    recvComm->setCommStats(&profilerCtx_.commStats);
 
     bootstrapAddRecvPeer(peerRank, recvComm);
 
@@ -165,6 +167,7 @@ commResult_t CtranTcpDm::bootstrapConnect(
 
   ::comms::tcp_devmem::CommunicatorInterface* sendComm{};
   COMMCHECKTHROW(transport_->connect(netdev_, &handle, &sendComm));
+  sendComm->setCommStats(&profilerCtx_.commStats);
 
   bootstrapAddSendPeer(peerRank, sendComm);
 
@@ -194,6 +197,11 @@ CtranTcpDm::CtranTcpDm([[maybe_unused]] CtranComm* comm) {
 
   transport_->open(netdev_);
 
+  profilerCtx_.cuDev = cudaDev_;
+  profilerCtx_.rank = rank_;
+  profilerCtx_.nRanks = nRanks_;
+  profilerCtx_.commHash = commHash_;
+
   bootstrapPrepare(comm->bootstrap_.get());
 
   CLOGF_SUBSYS(
@@ -215,6 +223,14 @@ CtranTcpDm::~CtranTcpDm() {
   for (auto comm : recvComms_) {
     transport_->closeRecv(comm.second);
   }
+}
+
+void CtranTcpDm::profilerStart() {
+  transport_->profilerStart(profilerCtx_);
+}
+
+void CtranTcpDm::profilerEnd() {
+  transport_->profilerEnd(profilerCtx_);
 }
 
 commResult_t CtranTcpDm::preConnect(const std::unordered_set<int>& peerRanks) {
@@ -381,6 +397,14 @@ CtranTcpDm::prepareUnpackConsumer(SQueues* sqs, size_t blocks, void** pool) {
 commResult_t CtranTcpDm::teardownUnpackConsumer(void* pool) {
   COMMCHECK_TCP(transport_->teardownUnpackConsumer(netdev_, pool));
   return commSuccess;
+}
+
+void CtranTcpDm::registerProfilerHooks(ctran::Profiler* profiler) {
+  if (!profiler) {
+    return;
+  }
+  profiler->registerAlgoStartHook([this]() { profilerStart(); });
+  profiler->registerAlgoEndHook([this]() { profilerEnd(); });
 }
 
 } // namespace ctran

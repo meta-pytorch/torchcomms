@@ -58,6 +58,9 @@ void Profiler::startEvent(
   if (event == ProfilerEvent::ALGO_CTRL) {
     readyTs_ = getTimeStamp(timers_[idx].getCheckpoint());
   }
+  if (event == ProfilerEvent::ALGO_TOTAL && algoStartHook_) {
+    algoStartHook_();
+  }
   if (callback) {
     callback(*this);
   }
@@ -73,6 +76,9 @@ void Profiler::endEvent(
   durations_[idx] += getDurationUs(timers_[idx].lap());
   if (event == ProfilerEvent::ALGO_CTRL) {
     controlTs_ = getTimeStamp(timers_[idx].getCheckpoint());
+  }
+  if (event == ProfilerEvent::ALGO_TOTAL && algoEndHook_) {
+    algoEndHook_();
   }
   if (callback) {
     callback(*this);
@@ -113,6 +119,14 @@ void Profiler::reportToScuba() {
   }
 
   shouldTrace_ = false;
+}
+
+void Profiler::registerAlgoStartHook(AlgoHook hook) {
+  algoStartHook_ = std::move(hook);
+}
+
+void Profiler::registerAlgoEndHook(AlgoHook hook) {
+  algoEndHook_ = std::move(hook);
 }
 
 } // namespace ctran

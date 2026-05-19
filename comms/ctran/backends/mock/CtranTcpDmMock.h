@@ -7,6 +7,8 @@
 
 namespace ctran {
 
+class Profiler;
+
 class CtranTcpDm {
  public:
   explicit CtranTcpDm(CtranComm* comm) {}
@@ -85,5 +87,9 @@ class CtranTcpDm {
   commResult_t teardownUnpackConsumer(void* pool) {
     return commInvalidUsage;
   }
+
+  void profilerStart() {}
+  void profilerEnd() {}
+  void registerProfilerHooks(ctran::Profiler*) {}
 };
 } // namespace ctran
