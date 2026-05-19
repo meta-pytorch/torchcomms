@@ -25,6 +25,7 @@ enum class LoggerEventType {
   CtranProfilerEventType,
   CtranProfilerSlowRankModuleEventType,
   CtranProfilerAlgoEventType,
+  CtranProfilerGpeEventType,
   CommdumpEventType,
   TerminateEventType,
 };
@@ -341,6 +342,60 @@ class CtranProfilerAlgoEvent : public CtranProfilerEvent {
   uint64_t controlTs;
   uint64_t timeFromDataToCollEndUs;
   uint64_t collectiveDurationUs;
+};
+
+// Per-tracepoint Scuba row emitted by ctran::GpeProfiler for each
+// instrumented phase boundary in CtranGpe::Impl::gpeThreadFn.
+// Iteration-level fields (aborted, abortReason, opCount, opType)
+// are repeated on every row from the same iteration.
+class CtranProfilerGpeEvent : public CommEvent {
+ public:
+  CtranProfilerGpeEvent();
+  // rank and commHash are intentionally NOT taken here — they're added by
+  // the CommEvent base class via logMetaData (see CommEvent::toSample()
+  // adding "rank" and "commHash"). Re-adding them here would produce
+  // duplicate Scuba columns and break the local sibling convention used
+  // by CtranProfilerEvent / CtranProfilerAlgoEvent / NetworkPerfMonitorEvent.
+  CtranProfilerGpeEvent(
+      const struct CommLogData* logMetaData,
+      const std::string& stage,
+      const uint64_t opCount,
+      const int opType,
+      const std::string& tracePoint,
+      const uint64_t iterUs,
+      const uint64_t durationUs,
+      const bool aborted,
+      const std::string& message)
+      : CommEvent(logMetaData, stage, ""),
+        opCount_(opCount),
+        opType_(opType),
+        tracePoint_(tracePoint),
+        iterUs_(iterUs),
+        durationUs_(durationUs),
+        aborted_(aborted),
+        message_(message) {
+    iteration_ = ncclxGetIteration();
+  }
+
+  ~CtranProfilerGpeEvent() override = default;
+
+  LoggerEventType getEventType() override {
+    return LoggerEventType::CtranProfilerGpeEventType;
+  }
+  void setTimerDelta(double /*delta*/) override {}
+  NcclScubaSample toSample() override;
+
+ private:
+  const uint64_t opCount_;
+  const int opType_;
+  const std::string tracePoint_;
+  const uint64_t iterUs_;
+  const uint64_t durationUs_;
+  const bool aborted_;
+  const std::string message_;
+  // training step. If not set by trainer, it is always -1. Also see
+  // ncclxGetIteration().
+  int64_t iteration_{-1};
 };
 
 class NetworkPerfMonitorEvent : public CommEvent {
