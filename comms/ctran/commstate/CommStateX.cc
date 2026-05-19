@@ -117,25 +117,25 @@ void CommStateX::initRankStatesTopology(meta::comms::IBootstrap* bootstrap) {
         commDesc_,
         fmt::format("Failed to load topology from {}", NCCL_TOPO_FILE_PATH));
   } else {
+    networkTopo_ = std::move(myTopo->networkTopo);
     CLOGF_SUBSYS(
         INFO,
         INIT,
-        "Load topology for rank {} commHash {:x} commDesc {}, nRanks {}, host {}, dc {} zone {} rtsw {} scaling unit {} rackSerial {}",
+        "Load topology for rank {} commHash {:x} commDesc {}, nRanks {}, host {}, dc {} zone {} rackSerial {} networkTopo {}",
         rank_,
         commHash_,
         commDesc_,
         nRanks_,
-        myTopo->host,
-        myTopo->dc,
-        myTopo->zone,
-        myTopo->rtsw,
-        myTopo->su,
-        myTopo->rackSerial);
+        myTopo->rankTopology.host,
+        myTopo->rankTopology.dc,
+        myTopo->rankTopology.zone,
+        myTopo->rankTopology.rackSerial,
+        networkTopo_);
   }
 
   // Gather topologies across all the ranks
   std::vector<ncclx::RankTopology> allTopos(nRanks_);
-  allTopos.at(rank_) = *myTopo;
+  allTopos.at(rank_) = myTopo->rankTopology;
   auto resFuture = bootstrap->allGather(
       allTopos.data(), sizeof(ncclx::RankTopology), rank_, nRanks_);
   FB_COMMCHECKTHROW_EX(
@@ -350,8 +350,6 @@ void CommStateX::setRankStatesTopologies(
   for (int r = 0; r < static_cast<int>(rankTopologies_.size()); r++) {
     const auto& rankTopology = rankTopologies_[r];
     const std::string host(rankTopology.host);
-    const std::string rtsw(rankTopology.rtsw);
-    const std::string su(rankTopology.su);
     const std::string dc(rankTopology.dc);
     const std::string zone(rankTopology.zone);
 
@@ -371,8 +369,6 @@ void CommStateX::setRankStatesTopologies(
     state.rank = r;
     state.pid = rankTopology.pid;
     state.host = host;
-    state.rtsw = rtsw;
-    state.su = su;
     state.dc = dc;
     state.zone = zone;
     state.rackSerial = rankTopology.rackSerial;
@@ -578,11 +574,6 @@ std::string CommStateX::host(int rank) const {
   return rankStates_.at(rank).host;
 }
 
-std::string CommStateX::rtsw(int rank) const {
-  CHECK_TOPO_AND_SET_RANK(rank, rank_, rankStates_);
-  return rankStates_.at(rank).rtsw;
-}
-
 int CommStateX::gRank(int rank) const {
   CHECK_RANKMAP_SET(commRanksToWorldRanks_);
   if (rank == -1) {
@@ -599,6 +590,10 @@ std::string CommStateX::gPid(int rank) const {
       std::to_string(rankStates_.at(rank).pid);
 }
 
+const std::string& CommStateX::networkTopo() const {
+  return networkTopo_;
+}
+
 std::string CommStateX::dc(int rank) const {
   CHECK_TOPO_AND_SET_RANK(rank, rank_, rankStates_);
   return rankStates_.at(rank).dc;
@@ -607,11 +602,6 @@ std::string CommStateX::dc(int rank) const {
 std::string CommStateX::zone(int rank) const {
   CHECK_TOPO_AND_SET_RANK(rank, rank_, rankStates_);
   return rankStates_.at(rank).zone;
-}
-
-std::string CommStateX::su(int rank) const {
-  CHECK_TOPO_AND_SET_RANK(rank, rank_, rankStates_);
-  return rankStates_.at(rank).su;
 }
 
 std::string_view CommStateX::deviceRack(int rank) const {
@@ -623,24 +613,6 @@ std::string_view CommStateX::deviceRack(int rank) const {
 bool CommStateX::isSameNode(int myRank, int peer) const {
   return node(peer) == node(myRank);
 }
-bool CommStateX::isSameRack(int myRank, int peer) const {
-  const auto& rtsw1 = rtsw(myRank);
-  if (!rtsw1.empty()) {
-    const auto& rtsw2 = rtsw(peer);
-    return !rtsw2.empty() && rtsw1 == rtsw2;
-  }
-
-  // Check su only if rtsw check failed. Since PXN is enabled all ranks in the
-  // same SU are 1 hop away.
-  const auto& su1 = su(myRank);
-  if (!su1.empty()) {
-    const auto& su2 = su(peer);
-    return !su2.empty() && su1 == su2;
-  }
-
-  return false;
-}
-
 bool CommStateX::isSameZone(int myRank, int peer) const {
   return zone(peer) == zone(myRank);
 }

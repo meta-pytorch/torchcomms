@@ -15,11 +15,10 @@ TEST(TopologyTest, LoadTopologySuccess) {
 
   auto topo = ctran::commstate::loadTopology(0, filepath);
   EXPECT_TRUE(topo);
-  EXPECT_EQ(topo->rank, 0);
-  const std::string host(topo->host);
-  const std::string rtsw(topo->rtsw);
+  EXPECT_EQ(topo->rankTopology.rank, 0);
+  const std::string host(topo->rankTopology.host);
   EXPECT_EQ(host, "rtptest021.nha1.facebook.com");
-  EXPECT_EQ(rtsw, "rtsw098.c084.f00.nha1");
+  EXPECT_EQ(topo->networkTopo, "/nha1.1D//rtsw098.c084.f00.nha1");
 }
 
 TEST(TopologyTest, LoadTopologyFailure) {
@@ -49,20 +48,17 @@ TEST(TopologyTest, RailBasedTopology) {
 
   auto topo = ctran::commstate::loadTopology(1, filepath);
   EXPECT_TRUE(topo);
-  EXPECT_EQ(topo->rank, 1);
+  EXPECT_EQ(topo->rankTopology.rank, 1);
 
-  const std::string host(topo->host);
-  const std::string dc(topo->dc);
-  const std::string zone(topo->zone);
-  const std::string su(topo->su);
-  const std::string rtsw(topo->rtsw);
+  const std::string host(topo->rankTopology.host);
+  const std::string dc(topo->rankTopology.dc);
+  const std::string zone(topo->rankTopology.zone);
 
   EXPECT_EQ(host, "testhost.rail.facebook.com");
   EXPECT_EQ(dc, "");
   EXPECT_EQ(zone, "snb1.z081");
-  EXPECT_EQ(su, "snb1.z081.u015");
-  EXPECT_EQ(rtsw, "");
-  EXPECT_STREQ(topo->rackSerial, "12345");
+  EXPECT_STREQ(topo->rankTopology.rackSerial, "12345");
+  EXPECT_EQ(topo->networkTopo, "/snb1.z081/snb1.z081.u015/");
 }
 
 TEST(TopologyTest, InvalidTopologyFormat) {
@@ -85,10 +81,7 @@ TEST(TopologyTest, BothRtswAndScalingUnit) {
 
   auto topo = ctran::commstate::loadTopology(0, filepath);
   EXPECT_TRUE(topo);
-  const std::string su(topo->su);
-  const std::string rtsw(topo->rtsw);
-  EXPECT_EQ(su, "scaling_unit");
-  EXPECT_EQ(rtsw, "rtsw_name");
+  EXPECT_EQ(topo->networkTopo, "dc/zone/scaling_unit/rtsw_name");
 }
 
 TEST(TopologyTest, GB300DsfTopologyZoneOnly) {
@@ -100,17 +93,14 @@ TEST(TopologyTest, GB300DsfTopologyZoneOnly) {
 
   auto topo = ctran::commstate::loadTopology(0, filepath);
   EXPECT_TRUE(topo);
-  const std::string host(topo->host);
-  const std::string dc(topo->dc);
-  const std::string zone(topo->zone);
-  const std::string su(topo->su);
-  const std::string rtsw(topo->rtsw);
+  const std::string host(topo->rankTopology.host);
+  const std::string dc(topo->rankTopology.dc);
+  const std::string zone(topo->rankTopology.zone);
   EXPECT_EQ(host, "twshared1766.40.uco1.facebook.com");
   EXPECT_EQ(dc, "uco1");
   EXPECT_EQ(zone, "uco1.z086");
-  EXPECT_EQ(su, "");
-  EXPECT_EQ(rtsw, "");
-  EXPECT_STREQ(topo->rackSerial, "12278553");
+  EXPECT_STREQ(topo->rankTopology.rackSerial, "12278553");
+  EXPECT_EQ(topo->networkTopo, "uco1/uco1.z086//");
 }
 
 TEST(TopologyTest, EmptyTopologyValue) {
@@ -123,8 +113,9 @@ TEST(TopologyTest, EmptyTopologyValue) {
   EXPECT_TRUE(topo); // Should succeed, empty topology is allowed when no
                      // backend network
 
-  const std::string host(topo->host);
+  const std::string host(topo->rankTopology.host);
   EXPECT_EQ(host, "testhost.facebook.com");
+  EXPECT_EQ(topo->networkTopo, "");
 }
 
 TEST(TopologyTest, EmptyRackSerial) {
@@ -137,12 +128,10 @@ TEST(TopologyTest, EmptyRackSerial) {
 
   auto topo = ctran::commstate::loadTopology(0, filepath);
   EXPECT_TRUE(topo);
-  EXPECT_EQ(topo->rank, 0);
-  const std::string host(topo->host);
-  const std::string rtsw(topo->rtsw);
+  EXPECT_EQ(topo->rankTopology.rank, 0);
+  const std::string host(topo->rankTopology.host);
   EXPECT_EQ(host, "rtptest021.nha1.facebook.com");
-  EXPECT_EQ(rtsw, "rtsw098.c084.f00.nha1");
-  EXPECT_STREQ(topo->rackSerial, "");
+  EXPECT_STREQ(topo->rankTopology.rackSerial, "");
 }
 
 TEST(TopologyTest, NonNumericRackSerial) {
@@ -154,5 +143,5 @@ TEST(TopologyTest, NonNumericRackSerial) {
 
   auto topo = ctran::commstate::loadTopology(0, filepath);
   EXPECT_TRUE(topo);
-  EXPECT_STREQ(topo->rackSerial, "not_a_number");
+  EXPECT_STREQ(topo->rankTopology.rackSerial, "not_a_number");
 }

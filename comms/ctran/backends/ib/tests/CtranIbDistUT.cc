@@ -1796,10 +1796,10 @@ TEST_F(CtranIbTest, envQpConfig) {
                  zone2 = "nha1.c085", zone3 = "nha2.c080";
   // set a fake topology to test QP changes for each IB VC
   std::unordered_map<int, std::vector<std::string>> expectedTopology = {
-      {0, {"rtsw098.c084.f00.nha1", dc1, zone1}}, // rank-0
-      {1, {"rtsw099.c084.f00.nha1", dc1, zone1}}, // rank-1: same zone as rank-0
-      {2, {"rtsw100.c085.f00.nha1", dc1, zone2}}, // rank-2: x-zone with rank-0
-      {3, {"rtsw101.c080.f00.nha2", dc2, zone3}} // rank-3: x-dc with rank-0
+      {0, {dc1, zone1}}, // rank-0
+      {1, {dc1, zone1}}, // rank-1: same zone as rank-0
+      {2, {dc1, zone2}}, // rank-2: x-zone with rank-0
+      {3, {dc2, zone3}} // rank-3: x-dc with rank-0
   };
   // dummy values for testing
   // {<QP Scaling Threshold>, <number of QPs>, <VC mode>}
@@ -1821,9 +1821,8 @@ TEST_F(CtranIbTest, envQpConfig) {
     topo.rank = rank;
     auto fakeHostName = "fakehost.0" + std::to_string(rank);
     std::strcpy(topo.host, fakeHostName.c_str());
-    std::strcpy(topo.rtsw, expectedTopology.at(rank)[0].c_str());
-    std::strcpy(topo.dc, expectedTopology.at(rank)[1].c_str());
-    std::strcpy(topo.zone, expectedTopology.at(rank)[2].c_str());
+    std::strcpy(topo.dc, expectedTopology.at(rank)[0].c_str());
+    std::strcpy(topo.zone, expectedTopology.at(rank)[1].c_str());
     testRankTopologies.emplace_back(topo);
   }
   // create a new statex with fake topology for testing
@@ -1897,18 +1896,14 @@ TEST_F(CtranIbTest, envQpConfig) {
 }
 
 TEST_F(CtranIbTest, ValidBeTopology) {
-  std::string kSuDomain1 = "nha1.c084.u001";
   constexpr auto dc1 = "nha1", dc2 = "nha2", zone1 = "nha1.c084",
                  zone2 = "nha1.c085", zone3 = "nha2.c080";
   // set a fake topology to test QP changes for each IB VC
   std::unordered_map<int, std::vector<std::string>> expectedTopology = {
-      {0, {"rtsw098.c084.f00.nha1", kSuDomain1, dc1, zone1}}, // rank-0
-      {1, {"rtsw099.c084.f00.nha1", kSuDomain1, dc1, zone1}}, // rank-1: same
-                                                              // zone as rank-0
-      {2, {"rtsw100.c085.f00.nha1", kSuDomain1, dc1, zone2}}, // rank-2: x-zone
-                                                              // with rank-0
-      {3, {"rtsw101.c080.f00.nha2", kSuDomain1, dc2, zone3}} // rank-3: x-dc
-                                                             // with rank-0
+      {0, {dc1, zone1}}, // rank-0
+      {1, {dc1, zone1}}, // rank-1: same zone as rank-0
+      {2, {dc1, zone2}}, // rank-2: x-zone with rank-0
+      {3, {dc2, zone3}} // rank-3: x-dc with rank-0
   };
 
   std::vector<ncclx::RankTopology> testRankTopologies{};
@@ -1917,10 +1912,8 @@ TEST_F(CtranIbTest, ValidBeTopology) {
     topo.rank = rank;
     auto fakeHostName = "fakehost.0" + std::to_string(rank);
     std::strcpy(topo.host, fakeHostName.c_str());
-    std::strcpy(topo.rtsw, expectedTopology.at(rank)[0].c_str());
-    std::strcpy(topo.su, expectedTopology.at(rank)[1].c_str());
-    std::strcpy(topo.dc, expectedTopology.at(rank)[2].c_str());
-    std::strcpy(topo.zone, expectedTopology.at(rank)[3].c_str());
+    std::strcpy(topo.dc, expectedTopology.at(rank)[0].c_str());
+    std::strcpy(topo.zone, expectedTopology.at(rank)[1].c_str());
     testRankTopologies.emplace_back(topo);
   }
 
@@ -1950,7 +1943,6 @@ TEST_F(CtranIbTest, ValidBeTopology) {
 }
 
 TEST_F(CtranIbTest, InvalidBeTopology) {
-  std::string kSuDomain1 = "";
   constexpr auto dc1 = "nha1", dc2 = "nha2", zone1 = "nha1.c084",
                  zone2 = "nha1.c085", zone3 = "nha2.c080";
   // set a fake topology to test QP changes for each IB VC. No rtsw or SU info
@@ -1970,7 +1962,6 @@ TEST_F(CtranIbTest, InvalidBeTopology) {
     std::strcpy(topo.host, fakeHostName.c_str());
     std::strcpy(topo.dc, expectedTopology.at(rank)[0].c_str());
     std::strcpy(topo.zone, expectedTopology.at(rank)[1].c_str());
-    std::strcpy(topo.su, kSuDomain1.c_str());
     testRankTopologies.emplace_back(topo);
   }
 

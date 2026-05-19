@@ -23,12 +23,6 @@ constexpr auto kHost3 = "twshared0103.01.nha1";
 constexpr auto kDc = "nha1";
 constexpr auto kZone = "c084";
 
-constexpr auto kRtsw0 = "rtsw098.c084.f00.nha1";
-constexpr auto kRtsw1 = "rtsw099.c084.f00.nha1";
-
-constexpr auto kSuDomain1 = "nha1.c084.u001";
-constexpr auto kSuDomain2 = "nha1.c084.u002";
-
 constexpr auto kNvlFabricClusterId1 = "1";
 constexpr auto kNvlFabricClusterId2 = "2";
 constexpr int64_t kNvlFabricCliqueId1 = 1;
@@ -40,8 +34,6 @@ RankTopology createRankTopology(
     int rank,
     const std::string& dc,
     const std::string& zone,
-    const std::string& su,
-    const std::string& rtsw,
     const std::string& host,
     const std::string& rackSerial = "",
     int pid = -1) {
@@ -49,8 +41,6 @@ RankTopology createRankTopology(
   topo.rank = rank;
   topo.pid = pid;
   std::strcpy(topo.host, host.c_str());
-  std::strcpy(topo.rtsw, rtsw.c_str());
-  std::strcpy(topo.su, su.c_str());
   std::strcpy(topo.dc, dc.c_str());
   std::strcpy(topo.zone, zone.c_str());
   std::strncpy(topo.rackSerial, rackSerial.c_str(), ncclx::kMaxNameLen);
@@ -79,36 +69,26 @@ class CommStateXTest : public ::testing::Test {
 };
 
 TEST(CommStateXTest, Topology) {
-  // format dc/zone//rtsw
   std::vector<RankTopology> rankTopologies{};
-  const std::string kSu;
-  rankTopologies.emplace_back(
-      createRankTopology(0, kDc, kZone, kSu, kRtsw0, kHost0));
-  rankTopologies.emplace_back(
-      createRankTopology(1, kDc, kZone, kSu, kRtsw0, kHost0));
-  rankTopologies.emplace_back(
-      createRankTopology(2, kDc, kZone, kSu, kRtsw0, kHost1));
-  rankTopologies.emplace_back(
-      createRankTopology(3, kDc, kZone, kSu, kRtsw0, kHost1));
+  rankTopologies.emplace_back(createRankTopology(0, kDc, kZone, kHost0));
+  rankTopologies.emplace_back(createRankTopology(1, kDc, kZone, kHost0));
+  rankTopologies.emplace_back(createRankTopology(2, kDc, kZone, kHost1));
+  rankTopologies.emplace_back(createRankTopology(3, kDc, kZone, kHost1));
 
-  rankTopologies.emplace_back(
-      createRankTopology(4, kDc, kZone, kSu, kRtsw1, kHost2));
-  rankTopologies.emplace_back(
-      createRankTopology(5, kDc, kZone, kSu, kRtsw1, kHost2));
-  rankTopologies.emplace_back(
-      createRankTopology(6, kDc, kZone, kSu, kRtsw1, kHost3));
-  rankTopologies.emplace_back(
-      createRankTopology(7, kDc, kZone, kSu, kRtsw1, kHost3));
+  rankTopologies.emplace_back(createRankTopology(4, kDc, kZone, kHost2));
+  rankTopologies.emplace_back(createRankTopology(5, kDc, kZone, kHost2));
+  rankTopologies.emplace_back(createRankTopology(6, kDc, kZone, kHost3));
+  rankTopologies.emplace_back(createRankTopology(7, kDc, kZone, kHost3));
 
   std::unordered_map<int, std::vector<std::string_view>> expectedHostRtsws{
-      {0, {kHost0, kRtsw0, kDc, kZone}},
-      {1, {kHost0, kRtsw0, kDc, kZone}},
-      {2, {kHost1, kRtsw0, kDc, kZone}},
-      {3, {kHost1, kRtsw0, kDc, kZone}},
-      {4, {kHost2, kRtsw1, kDc, kZone}},
-      {5, {kHost2, kRtsw1, kDc, kZone}},
-      {6, {kHost3, kRtsw1, kDc, kZone}},
-      {7, {kHost3, kRtsw1, kDc, kZone}}};
+      {0, {kHost0, kDc, kZone}},
+      {1, {kHost0, kDc, kZone}},
+      {2, {kHost1, kDc, kZone}},
+      {3, {kHost1, kDc, kZone}},
+      {4, {kHost2, kDc, kZone}},
+      {5, {kHost2, kDc, kZone}},
+      {6, {kHost3, kDc, kZone}},
+      {7, {kHost3, kDc, kZone}}};
 
   auto verify = [&](CommStateX* s, int rank) {
     EXPECT_EQ(s->cudaDev(), 0);
@@ -162,11 +142,10 @@ TEST(CommStateXTest, Topology) {
         EXPECT_EQ(s->localRankToRank(i, nodeId), nodeId * 2 + i);
       }
     }
-    // host/rtsw
+    // host/dc/zone
     EXPECT_EQ(s->host(), expectedHostRtsws.at(rank).at(0));
-    EXPECT_EQ(s->rtsw(), expectedHostRtsws.at(rank).at(1));
-    EXPECT_EQ(s->dc(), expectedHostRtsws.at(rank).at(2));
-    EXPECT_EQ(s->zone(), expectedHostRtsws.at(rank).at(3));
+    EXPECT_EQ(s->dc(), expectedHostRtsws.at(rank).at(1));
+    EXPECT_EQ(s->zone(), expectedHostRtsws.at(rank).at(2));
   };
 
   // verify all ranks
@@ -187,18 +166,13 @@ TEST(CommStateXTest, Topology) {
 
 TEST(CommStateXTest, ValidEorTopology) {
   std::vector<RankTopology> rankTopologies{};
-  const std::string kRtsw;
-  rankTopologies.emplace_back(
-      createRankTopology(0, kDc, kZone, kSuDomain1, kRtsw, kHost0));
-  rankTopologies.emplace_back(
-      createRankTopology(1, kDc, kZone, kSuDomain1, kRtsw, kHost0));
-  rankTopologies.emplace_back(
-      createRankTopology(2, kDc, kZone, kSuDomain1, kRtsw, kHost1));
-  rankTopologies.emplace_back(
-      createRankTopology(3, kDc, kZone, kSuDomain2, kRtsw, kHost2));
+  rankTopologies.emplace_back(createRankTopology(0, kDc, kZone, kHost0));
+  rankTopologies.emplace_back(createRankTopology(1, kDc, kZone, kHost0));
+  rankTopologies.emplace_back(createRankTopology(2, kDc, kZone, kHost1));
+  rankTopologies.emplace_back(createRankTopology(3, kDc, kZone, kHost2));
 
   std::unordered_map<int, std::vector<std::string_view>> expectedTopology{
-      {0, {kHost0, kSuDomain1, kDc, kZone}}};
+      {0, {kHost0, kDc, kZone}}};
 
   int myRank = 0;
   auto commState = std::make_unique<CommStateX>(
@@ -220,19 +194,15 @@ TEST(CommStateXTest, ValidEorTopology) {
   EXPECT_EQ(commState->nNodes(), 3);
 
   EXPECT_EQ(commState->host(), expectedTopology.at(myRank).at(0));
-  EXPECT_EQ(commState->su(), expectedTopology.at(myRank).at(1));
-  EXPECT_EQ(commState->dc(), expectedTopology.at(myRank).at(2));
-  EXPECT_EQ(commState->zone(), expectedTopology.at(myRank).at(3));
+  EXPECT_EQ(commState->dc(), expectedTopology.at(myRank).at(1));
+  EXPECT_EQ(commState->zone(), expectedTopology.at(myRank).at(2));
 
   for (int peer = 1; peer < 4; ++peer) {
     if (peer == 1) {
       EXPECT_TRUE(commState->isSameNode(myRank, peer));
-      EXPECT_TRUE(commState->isSameRack(myRank, peer));
     } else if (peer == 2) {
       EXPECT_FALSE(commState->isSameNode(myRank, peer));
-      EXPECT_TRUE(commState->isSameRack(myRank, peer));
     } else if (peer == 3) {
-      EXPECT_FALSE(commState->isSameRack(myRank, peer));
       EXPECT_TRUE(commState->isSameZone(myRank, peer));
     }
   }
@@ -245,14 +215,10 @@ TEST(CommStateXTest, multiRackTest) {
   const int cudaArch = 90;
   const int64_t busId = 25;
   const uint64_t commHash = 0;
-  const std::string kRtsw;
   std::vector<RankTopology> rankTopologies{};
-  rankTopologies.emplace_back(
-      createRankTopology(0, kDc, kZone, kSuDomain1, kRtsw, kHost0, "100"));
-  rankTopologies.emplace_back(
-      createRankTopology(1, kDc, kZone, kSuDomain1, kRtsw, kHost0, "100"));
-  rankTopologies.emplace_back(
-      createRankTopology(2, kDc, kZone, kSuDomain1, kRtsw, kHost1, "101"));
+  rankTopologies.emplace_back(createRankTopology(0, kDc, kZone, kHost0, "100"));
+  rankTopologies.emplace_back(createRankTopology(1, kDc, kZone, kHost0, "100"));
+  rankTopologies.emplace_back(createRankTopology(2, kDc, kZone, kHost1, "101"));
 
   auto commState = std::make_unique<CommStateX>(
       rank,
@@ -276,12 +242,9 @@ TEST(CommStateXTest, emptyDeviceRackReturnsFalse) {
   const int cudaArch = 90;
   const int64_t busId = 25;
   const uint64_t commHash = 0;
-  const std::string kRtsw;
   std::vector<RankTopology> rankTopologies{};
-  rankTopologies.emplace_back(
-      createRankTopology(0, kDc, kZone, kSuDomain1, kRtsw, kHost0));
-  rankTopologies.emplace_back(
-      createRankTopology(1, kDc, kZone, kSuDomain1, kRtsw, kHost0));
+  rankTopologies.emplace_back(createRankTopology(0, kDc, kZone, kHost0));
+  rankTopologies.emplace_back(createRankTopology(1, kDc, kZone, kHost0));
 
   auto commState = std::make_unique<CommStateX>(
       rank,
@@ -323,24 +286,15 @@ TEST(CommStateXTest, nvlFabricTest) {
       createNvlFabricTopology(7, kNvlFabricClusterId2, kNvlFabricCliqueId1));
 
   std::vector<RankTopology> rankTopologies{};
-  const std::string kSu = "";
-  rankTopologies.emplace_back(
-      createRankTopology(0, kDc, kZone, kSu, kRtsw0, kHost0));
-  rankTopologies.emplace_back(
-      createRankTopology(1, kDc, kZone, kSu, kRtsw0, kHost0));
-  rankTopologies.emplace_back(
-      createRankTopology(2, kDc, kZone, kSu, kRtsw0, kHost1));
-  rankTopologies.emplace_back(
-      createRankTopology(3, kDc, kZone, kSu, kRtsw0, kHost1));
+  rankTopologies.emplace_back(createRankTopology(0, kDc, kZone, kHost0));
+  rankTopologies.emplace_back(createRankTopology(1, kDc, kZone, kHost0));
+  rankTopologies.emplace_back(createRankTopology(2, kDc, kZone, kHost1));
+  rankTopologies.emplace_back(createRankTopology(3, kDc, kZone, kHost1));
 
-  rankTopologies.emplace_back(
-      createRankTopology(4, kDc, kZone, kSu, kRtsw1, kHost2));
-  rankTopologies.emplace_back(
-      createRankTopology(5, kDc, kZone, kSu, kRtsw1, kHost2));
-  rankTopologies.emplace_back(
-      createRankTopology(6, kDc, kZone, kSu, kRtsw1, kHost3));
-  rankTopologies.emplace_back(
-      createRankTopology(7, kDc, kZone, kSu, kRtsw1, kHost3));
+  rankTopologies.emplace_back(createRankTopology(4, kDc, kZone, kHost2));
+  rankTopologies.emplace_back(createRankTopology(5, kDc, kZone, kHost2));
+  rankTopologies.emplace_back(createRankTopology(6, kDc, kZone, kHost3));
+  rankTopologies.emplace_back(createRankTopology(7, kDc, kZone, kHost3));
 
   auto commState = std::make_unique<CommStateX>(
       rank,
@@ -411,24 +365,15 @@ TEST(CommStateXTest, nvlFabricCliqueTest) {
       createNvlFabricTopology(7, kNvlFabricClusterId2, kNvlFabricCliqueId4));
 
   std::vector<RankTopology> rankTopologies{};
-  const std::string kSu = "";
-  rankTopologies.emplace_back(
-      createRankTopology(0, kDc, kZone, kSu, kRtsw0, kHost0));
-  rankTopologies.emplace_back(
-      createRankTopology(1, kDc, kZone, kSu, kRtsw0, kHost0));
-  rankTopologies.emplace_back(
-      createRankTopology(2, kDc, kZone, kSu, kRtsw0, kHost1));
-  rankTopologies.emplace_back(
-      createRankTopology(3, kDc, kZone, kSu, kRtsw0, kHost1));
+  rankTopologies.emplace_back(createRankTopology(0, kDc, kZone, kHost0));
+  rankTopologies.emplace_back(createRankTopology(1, kDc, kZone, kHost0));
+  rankTopologies.emplace_back(createRankTopology(2, kDc, kZone, kHost1));
+  rankTopologies.emplace_back(createRankTopology(3, kDc, kZone, kHost1));
 
-  rankTopologies.emplace_back(
-      createRankTopology(4, kDc, kZone, kSu, kRtsw1, kHost2));
-  rankTopologies.emplace_back(
-      createRankTopology(5, kDc, kZone, kSu, kRtsw1, kHost2));
-  rankTopologies.emplace_back(
-      createRankTopology(6, kDc, kZone, kSu, kRtsw1, kHost3));
-  rankTopologies.emplace_back(
-      createRankTopology(7, kDc, kZone, kSu, kRtsw1, kHost3));
+  rankTopologies.emplace_back(createRankTopology(4, kDc, kZone, kHost2));
+  rankTopologies.emplace_back(createRankTopology(5, kDc, kZone, kHost2));
+  rankTopologies.emplace_back(createRankTopology(6, kDc, kZone, kHost3));
+  rankTopologies.emplace_back(createRankTopology(7, kDc, kZone, kHost3));
 
   auto commState = std::make_unique<CommStateX>(
       rank,
@@ -475,23 +420,14 @@ TEST(CommStateXTest, nvlFabricVCliqueSizeHint) {
   }
 
   std::vector<RankTopology> rankTopologies{};
-  const std::string kSu = "";
-  rankTopologies.emplace_back(
-      createRankTopology(0, kDc, kZone, kSu, kRtsw0, kHost0));
-  rankTopologies.emplace_back(
-      createRankTopology(1, kDc, kZone, kSu, kRtsw0, kHost0));
-  rankTopologies.emplace_back(
-      createRankTopology(2, kDc, kZone, kSu, kRtsw0, kHost1));
-  rankTopologies.emplace_back(
-      createRankTopology(3, kDc, kZone, kSu, kRtsw0, kHost1));
-  rankTopologies.emplace_back(
-      createRankTopology(4, kDc, kZone, kSu, kRtsw1, kHost2));
-  rankTopologies.emplace_back(
-      createRankTopology(5, kDc, kZone, kSu, kRtsw1, kHost2));
-  rankTopologies.emplace_back(
-      createRankTopology(6, kDc, kZone, kSu, kRtsw1, kHost3));
-  rankTopologies.emplace_back(
-      createRankTopology(7, kDc, kZone, kSu, kRtsw1, kHost3));
+  rankTopologies.emplace_back(createRankTopology(0, kDc, kZone, kHost0));
+  rankTopologies.emplace_back(createRankTopology(1, kDc, kZone, kHost0));
+  rankTopologies.emplace_back(createRankTopology(2, kDc, kZone, kHost1));
+  rankTopologies.emplace_back(createRankTopology(3, kDc, kZone, kHost1));
+  rankTopologies.emplace_back(createRankTopology(4, kDc, kZone, kHost2));
+  rankTopologies.emplace_back(createRankTopology(5, kDc, kZone, kHost2));
+  rankTopologies.emplace_back(createRankTopology(6, kDc, kZone, kHost3));
+  rankTopologies.emplace_back(createRankTopology(7, kDc, kZone, kHost3));
 
   auto makeCommState = [&](int vCliqueSize = 0) {
     return std::make_unique<CommStateX>(
@@ -618,16 +554,13 @@ class GpidTopoTest : public ::testing::TestWithParam<TopoTestParam> {
   static constexpr uint64_t kCommHash = 0;
 
   std::vector<RankTopology> makeRankTopologies() {
-    const std::string kSu;
-    const std::array<std::pair<const char*, const char*>, kNumHosts> hostInfo =
-        {{{kHost0, kRtsw0}, {kHost1, kRtsw1}}};
+    const std::array<const char*, kNumHosts> hostInfo = {{kHost0, kHost1}};
     std::vector<RankTopology> topos;
     topos.reserve(kNRanks);
     for (int r = 0; r < kNRanks; r++) {
-      const auto& [host, rtsw] = hostInfo[r / kRanksPerHost];
+      const auto host = hostInfo[r / kRanksPerHost];
       const int pid = 1000 * (r / kRanksPerHost + 1) + r % kRanksPerHost;
-      topos.emplace_back(
-          createRankTopology(r, kDc, kZone, kSu, rtsw, host, "", pid));
+      topos.emplace_back(createRankTopology(r, kDc, kZone, host, "", pid));
     }
     return topos;
   }
@@ -728,24 +661,15 @@ TEST(CommStateXTest, TopologySetInvalidNvlFabricTopos) {
   const uint64_t commHash = 0;
 
   std::vector<RankTopology> rankTopologies{};
-  const std::string kSu;
-  rankTopologies.emplace_back(
-      createRankTopology(0, kDc, kZone, kSu, kRtsw0, kHost0));
-  rankTopologies.emplace_back(
-      createRankTopology(1, kDc, kZone, kSu, kRtsw0, kHost0));
-  rankTopologies.emplace_back(
-      createRankTopology(2, kDc, kZone, kSu, kRtsw0, kHost1));
-  rankTopologies.emplace_back(
-      createRankTopology(3, kDc, kZone, kSu, kRtsw0, kHost1));
+  rankTopologies.emplace_back(createRankTopology(0, kDc, kZone, kHost0));
+  rankTopologies.emplace_back(createRankTopology(1, kDc, kZone, kHost0));
+  rankTopologies.emplace_back(createRankTopology(2, kDc, kZone, kHost1));
+  rankTopologies.emplace_back(createRankTopology(3, kDc, kZone, kHost1));
 
-  rankTopologies.emplace_back(
-      createRankTopology(4, kDc, kZone, kSu, kRtsw1, kHost2));
-  rankTopologies.emplace_back(
-      createRankTopology(5, kDc, kZone, kSu, kRtsw1, kHost2));
-  rankTopologies.emplace_back(
-      createRankTopology(6, kDc, kZone, kSu, kRtsw1, kHost3));
-  rankTopologies.emplace_back(
-      createRankTopology(7, kDc, kZone, kSu, kRtsw1, kHost3));
+  rankTopologies.emplace_back(createRankTopology(4, kDc, kZone, kHost2));
+  rankTopologies.emplace_back(createRankTopology(5, kDc, kZone, kHost2));
+  rankTopologies.emplace_back(createRankTopology(6, kDc, kZone, kHost3));
+  rankTopologies.emplace_back(createRankTopology(7, kDc, kZone, kHost3));
 
   auto commState = std::make_unique<CommStateX>(
       rank,
@@ -904,18 +828,16 @@ TEST(CommStateXTest, gb300DsfTopologyNoSuNoRtsw) {
   const int cudaArch = 90;
   const int64_t busId = 25;
   const uint64_t commHash = 0;
-  const std::string kEmptySu = "";
-  const std::string kEmptyRtsw = "";
   const std::string kUco1Dc = "uco1";
   const std::string kUco1Zone = "uco1.z086";
 
   std::vector<RankTopology> rankTopologies{};
   rankTopologies.emplace_back(
-      createRankTopology(0, kUco1Dc, kUco1Zone, kEmptySu, kEmptyRtsw, kHost0));
+      createRankTopology(0, kUco1Dc, kUco1Zone, kHost0));
   rankTopologies.emplace_back(
-      createRankTopology(1, kUco1Dc, kUco1Zone, kEmptySu, kEmptyRtsw, kHost0));
+      createRankTopology(1, kUco1Dc, kUco1Zone, kHost0));
   rankTopologies.emplace_back(
-      createRankTopology(2, kUco1Dc, kUco1Zone, kEmptySu, kEmptyRtsw, kHost1));
+      createRankTopology(2, kUco1Dc, kUco1Zone, kHost1));
 
   auto commState = std::make_unique<CommStateX>(
       rank,
@@ -929,10 +851,6 @@ TEST(CommStateXTest, gb300DsfTopologyNoSuNoRtsw) {
 
   EXPECT_TRUE(commState->isSameNode(rank, 1));
   EXPECT_FALSE(commState->isSameNode(rank, 2));
-
-  // With both su and rtsw empty, isSameRack returns false for all peers
-  EXPECT_FALSE(commState->isSameRack(rank, 1));
-  EXPECT_FALSE(commState->isSameRack(rank, 2));
 
   EXPECT_TRUE(commState->isSameZone(rank, 1));
   EXPECT_TRUE(commState->isSameZone(rank, 2));
@@ -949,14 +867,10 @@ TEST(CommStateXTest, isSameDeviceRackUnknownSerial) {
   const int cudaArch = 90;
   const int64_t busId = 25;
   const uint64_t commHash = 0;
-  const std::string kEmptyRtsw;
-
   std::vector<RankTopology> rankTopologies{};
   // Both ranks have empty rackSerial
-  rankTopologies.emplace_back(
-      createRankTopology(0, kDc, kZone, kSuDomain1, kEmptyRtsw, kHost0));
-  rankTopologies.emplace_back(
-      createRankTopology(1, kDc, kZone, kSuDomain1, kEmptyRtsw, kHost0));
+  rankTopologies.emplace_back(createRankTopology(0, kDc, kZone, kHost0));
+  rankTopologies.emplace_back(createRankTopology(1, kDc, kZone, kHost0));
 
   auto commState = std::make_unique<CommStateX>(
       rank,

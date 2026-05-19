@@ -29,8 +29,6 @@ void parseTopologyValue(
     const std::string& filepath,
     std::string& dc,
     std::string& zone,
-    std::string& su,
-    std::string& rtsw,
     bool& isBackendTopologyValid) {
   std::vector<std::string> topologyParts;
   folly::split('/', value, topologyParts);
@@ -48,8 +46,6 @@ void parseTopologyValue(
 
   dc = std::move(topologyParts[0]);
   zone = std::move(topologyParts[1]);
-  su = std::move(topologyParts[2]);
-  rtsw = std::move(topologyParts[3]);
 
   if (zone.empty()) {
     return;
@@ -57,7 +53,7 @@ void parseTopologyValue(
   isBackendTopologyValid = true;
 }
 
-std::optional<ncclx::RankTopology> loadTopology(
+std::optional<TopologyResult> loadTopology(
     int rank,
     const std::string& filepath) {
   std::ifstream file(filepath);
@@ -65,12 +61,7 @@ std::optional<ncclx::RankTopology> loadTopology(
 
   std::string rackSerial;
 
-  // currently we don't use rtsw info yet, it's ok to have empty rtsw
-  std::string rtsw;
-
-  // Rail based topologies do not have rtsw info, we use scaling unit info
-  // instead
-  std::string dc, zone, su, host, backendNetworkTopology;
+  std::string dc, zone, host, backendNetworkTopology;
   bool isBackendTopologyValid = false;
 
   while (std::getline(file, line)) {
@@ -88,8 +79,7 @@ std::optional<ncclx::RankTopology> loadTopology(
       host = value;
     } else if (key == kNetworkTopo) {
       backendNetworkTopology = value;
-      parseTopologyValue(
-          value, filepath, dc, zone, su, rtsw, isBackendTopologyValid);
+      parseTopologyValue(value, filepath, dc, zone, isBackendTopologyValid);
     } else if (key == kDeviceRackSerial) {
       if (value.size() >= ncclx::kMaxNameLen) {
         CLOGF(
@@ -131,9 +121,7 @@ std::optional<ncclx::RankTopology> loadTopology(
   std::strncpy(topo.dc, dc.c_str(), ncclx::kMaxNameLen);
   std::strncpy(topo.zone, zone.c_str(), ncclx::kMaxNameLen);
   std::strncpy(topo.host, host.c_str(), ncclx::kMaxNameLen);
-  std::strncpy(topo.rtsw, rtsw.c_str(), ncclx::kMaxNameLen);
-  std::strncpy(topo.su, su.c_str(), ncclx::kMaxNameLen);
-  return topo;
+  return TopologyResult{topo, std::move(backendNetworkTopology)};
 }
 
 } // namespace ctran::commstate
