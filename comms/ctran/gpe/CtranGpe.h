@@ -20,6 +20,7 @@
 #include "comms/ctran/algos/SendRecv/Types.h"
 #include "comms/ctran/algos/common/GpeKernelSync.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
+#include "comms/ctran/profiler/IGpeProfilerReporter.h"
 #include "comms/ctran/window/CtranWin.h"
 
 typedef commResult_t (*opFunc)(
@@ -365,7 +366,16 @@ struct fmt::formatter<KernelConfig::KernelType> : fmt::formatter<int> {
 
 class CtranGpe {
  public:
-  CtranGpe(int cudaDev, CtranComm* comm);
+  // Optional reporter injection for tests. The cvar
+  // NCCL_CTRAN_GPE_PROFILING_ENABLE gates whether any reporter is wired
+  // through to the profiler at all: when false (default), the reporter
+  // is nulled regardless of what's passed here. When true, a passed
+  // reporter is used as-is, and nullptr is replaced with the production
+  // DefaultGpeProfilerReporter (Scuba flush).
+  CtranGpe(
+      int cudaDev,
+      CtranComm* comm,
+      std::unique_ptr<ctran::IGpeProfilerReporter> reporter = nullptr);
   ~CtranGpe();
 
   // Submit device mem communication. A kernel will be launched and host side
