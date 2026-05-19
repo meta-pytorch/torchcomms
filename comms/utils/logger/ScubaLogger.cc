@@ -20,6 +20,8 @@ DataTableWrapper* getTablePtrFromEvent(LoggerEventType event) {
       return SCUBA_nccl_profiler_slow_rank_ptr.get();
     case LoggerEventType::CtranProfilerAlgoEventType:
       return SCUBA_nccl_profiler_algo_ptr.get();
+    case LoggerEventType::CtranProfilerGpeEventType:
+      return SCUBA_nccl_profiler_gpe_ptr.get();
     case LoggerEventType::CommEventType:
       return SCUBA_nccl_structured_logging_ptr.get();
     default:
