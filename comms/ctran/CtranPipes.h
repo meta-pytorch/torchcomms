@@ -2,10 +2,24 @@
 
 #pragma once
 
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+
 #include "comms/utils/commSpecs.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 
 class CtranComm;
 class CtranAlgo;
+
+inline size_t ctranEffectiveP2pNvlSharedDevbufSize(int nLocalRanks) {
+  uint64_t size = NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE;
+  if (NCCL_CTRAN_HIER_AG_OVERLAP_ENABLE && nLocalRanks > 1 &&
+      NCCL_CTRAN_HIER_AG_NVL_SHARED_DEVBUF_SIZE > 0) {
+    size = std::max(size, NCCL_CTRAN_HIER_AG_NVL_SHARED_DEVBUF_SIZE);
+  }
+  return static_cast<size_t>(size);
+}
 
 // Create and configure MultiPeerTransport on the CtranComm.
 // exchange() is deferred to ctranInitPipesResources().
