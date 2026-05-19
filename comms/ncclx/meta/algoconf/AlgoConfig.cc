@@ -54,6 +54,8 @@ inline const std::string algoValToStr(enum NCCL_ALLGATHER_ALGO val) {
       return "ctsrd";
     case NCCL_ALLGATHER_ALGO::ctbrucks:
       return "ctbrucks";
+    case NCCL_ALLGATHER_ALGO::cthierarchical_ring:
+      return "cthierarchical_ring";
     case NCCL_ALLGATHER_ALGO::ctgraph:
       return "ctgraph";
     case NCCL_ALLGATHER_ALGO::ctgraph_pipeline:
@@ -83,6 +85,8 @@ inline void algoStrToVal(
     val = NCCL_ALLGATHER_ALGO::ctsrd;
   } else if (str == "ctbrucks") {
     val = NCCL_ALLGATHER_ALGO::ctbrucks;
+  } else if (str == "cthierarchical_ring") {
+    val = NCCL_ALLGATHER_ALGO::cthierarchical_ring;
   } else if (str == "ctgraph") {
     val = NCCL_ALLGATHER_ALGO::ctgraph;
   } else if (str == "ctgraph_pipeline") {
