@@ -176,6 +176,7 @@ extras_require = {
         "lintrunner",
         "parameterized",
         "pydot",
+        "expecttest",
     ],
 }
 
