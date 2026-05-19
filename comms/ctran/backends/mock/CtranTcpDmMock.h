@@ -88,6 +88,8 @@ class CtranTcpDm {
     return commInvalidUsage;
   }
 
+  void profilerStart() {}
+  void profilerEnd() {}
   void registerProfilerHooks(ctran::Profiler*) {}
 };
 } // namespace ctran
