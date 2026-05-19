@@ -138,21 +138,6 @@ static commResult_t impl(
     }
     FB_COMMCHECK(comm->ctran_->mapper->waitNotify(notifyVec[i].get()));
 
-    // Flush received data to ensure: (1) cross-NIC DMA visibility before
-    // next step reads it as iput source (multi-NIC platforms have no
-    // cross-device PCIe ordering guarantee), and (2) GPU-read-after-RDMA-write
-    // visibility if a GPU kernel is scheduled before CPU observes RDMA write
-    // completion.
-    {
-      CtranMapperRequest* rawFlushReq = nullptr;
-      FB_COMMCHECK(
-          comm->ctran_->mapper->iflush(recvbuff, memHdl, &rawFlushReq));
-      std::unique_ptr<CtranMapperRequest> flushReq(rawFlushReq);
-      if (flushReq) {
-        FB_COMMCHECK(comm->ctran_->mapper->waitRequest(flushReq.get()));
-      }
-    }
-
     CTRAN_PROFILER_IF(
         profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_DATA));
   }
