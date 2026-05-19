@@ -602,7 +602,7 @@ commResult_t CtranMapper::regMem(
   if (NCCL_CTRAN_REGISTER == NCCL_CTRAN_REGISTER::eager || forceRegist) {
     bool didRegister = false;
     auto* segment = segments.front();
-    FB_COMMCHECK(regCache->regRange(
+    FB_COMMCHECK(regCache->regRangeCached(
         segment->range.buf,
         segment->range.len,
         cudaDev,
@@ -790,12 +790,12 @@ commResult_t CtranMapper::searchRegHandle(
   // First try find whether the given <buf, len> range has been covered by an
   // existing registration so the registration can be reused.
   // If not yet registered, but all underlying segments have ben pre-registered
-  // (i.e., cached) by user, regRange will internally perform the
+  // (i.e., cached) by user, regRangeCached will internally perform the
   // registration and cache it. All logic should be handled within a single
   // global lock.
   ctran::regcache::RegElem* regHdl_ = nullptr;
   bool didRegister = false;
-  FB_COMMCHECK(regCache->regRange(
+  FB_COMMCHECK(regCache->regRangeCached(
       buf,
       len,
       cudaDev,
@@ -819,7 +819,7 @@ commResult_t CtranMapper::searchRegHandle(
     // registration with the given buf, len range. Caller is responsible for
     // immediate deregisgration after current use.
     FB_COMMCHECK(regCache->regDynamic(
-        buf, len, comm->statex_->cudaDev(), enableBackends_, &regHdl_));
+        buf, len, cudaDev, enableBackends_, &regHdl_, &logMetaData_));
     *dynamicRegist = true;
     CLOGF(
         WARN,
