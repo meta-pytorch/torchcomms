@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <unordered_map>
 
 #include "comms/ctran/CtranComm.h"
@@ -90,6 +91,11 @@ class CtranTcpDm {
   commResult_t teardownUnpackConsumer(void* pool);
 
  private:
+  // Tracks the number of live CtranTcpDm instances so the last one to be
+  // destroyed can shut down the Transport while CUDA is still alive,
+  // rather than leaving it to the folly::Singleton destructor at process exit.
+  static std::atomic<int> activeInstances_;
+
   std::shared_ptr<::comms::tcp_devmem::TransportInterface> transport_;
   ctran::bootstrap::ServerSocket listenSocket_{
       static_cast<int>(NCCL_SOCKET_RETRY_CNT)};

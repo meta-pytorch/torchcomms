@@ -11,6 +11,8 @@
 
 namespace ctran {
 
+std::atomic<int> CtranTcpDm::activeInstances_{0};
+
 #define COMMCHECK_TCP(cmd)                                            \
   do {                                                                \
     ::comms::tcp_devmem::Status RES = cmd;                            \
@@ -184,6 +186,7 @@ commResult_t CtranTcpDm::bootstrapConnect(
 
 CtranTcpDm::CtranTcpDm([[maybe_unused]] CtranComm* comm) {
   transport_ = CtranTcpDmSingleton::getTransport();
+  activeInstances_.fetch_add(1, std::memory_order_acq_rel);
 
   cudaDev_ = comm->statex_->cudaDev();
   rank_ = comm->statex_->rank();
@@ -214,6 +217,13 @@ CtranTcpDm::~CtranTcpDm() {
   }
   for (auto comm : recvComms_) {
     transport_->closeRecv(comm.second);
+  }
+
+  // Shut down the transport when the last CtranTcpDm instance is destroyed,
+  // while the CUDA context is still alive. Deferring to the folly::Singleton
+  // destructor at process exit causes cudaFreeHost() to fail.
+  if (activeInstances_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+    transport_->shutdown(false);
   }
 }
 
