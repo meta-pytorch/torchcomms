@@ -9,6 +9,7 @@
 #include <folly/logging/xlog.h>
 
 #include "comms/utils/CommsMaybeChecks.h"
+#include "comms/utils/trainer/TrainerContext.h"
 
 namespace meta::comms::colltrace {
 
@@ -155,32 +156,29 @@ CommsMaybeVoid CommDumpPlugin::afterCollKernelEnd(
         commInternalError));
   }
 
-  auto completedIteration = curEvent.collRecord->getIteration();
   lockedCollTraceDump->pastCollsHeap.push(std::move(*it));
-  evictPastColls(*lockedCollTraceDump, completedIteration);
+  evictPastColls(*lockedCollTraceDump, curEvent.collRecord->getIteration());
   lockedCollTraceDump->currentColls.erase(it);
 
-  auto latencyUs = std::chrono::duration_cast<std::chrono::microseconds>(
-                       curEvent.collRecord->getTimingInfo().getCollEndTs() -
-                       curEvent.collRecord->getTimingInfo().getCollStartTs())
-                       .count();
-  if (completedIteration > lockedCollTraceDump->currentIteration) {
-    lockedCollTraceDump->currentIteration = completedIteration;
-    lockedCollTraceDump->currentIterationCommTimeUs = latencyUs;
-  } else if (completedIteration == lockedCollTraceDump->currentIteration) {
-    lockedCollTraceDump->currentIterationCommTimeUs += latencyUs;
-  } else {
-    // Unexpected: a collective from an older iteration completed after we
-    // already moved to a newer iteration.  Log and skip the comm-time update
-    // to avoid corrupting the current iteration's accounting.
-    XLOG_FIRST_N(
-        ERR,
-        2,
-        "CommDumpPlugin: Completed iteration ",
-        completedIteration,
-        " is older than current iteration ",
-        lockedCollTraceDump->currentIteration,
-        ". Skipping comm time update.");
+  auto iterSnap = ncclxGetIterationSnapshot();
+  if (iterSnap.iteration > lockedCollTraceDump->currentIteration) {
+    lockedCollTraceDump->currentIteration = iterSnap.iteration;
+    lockedCollTraceDump->currentIterationCommTimeUs = 0;
+    lockedCollTraceDump->iterationCutoffUs = iterSnap.timestampUs;
+  }
+
+  auto collStartUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                         curEvent.collRecord->getTimingInfo()
+                             .getCollStartTs()
+                             .time_since_epoch())
+                         .count();
+  if (collStartUs >= lockedCollTraceDump->iterationCutoffUs) {
+    auto latencyUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                         curEvent.collRecord->getTimingInfo().getCollEndTs() -
+                         curEvent.collRecord->getTimingInfo().getCollStartTs())
+                         .count();
+    lockedCollTraceDump->currentIterationCommTimeUs +=
+        std::max(latencyUs, int64_t{0});
   }
 
   return folly::unit;

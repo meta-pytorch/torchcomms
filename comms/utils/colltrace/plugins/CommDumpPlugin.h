@@ -74,6 +74,7 @@ struct CollTraceDump {
 
   int64_t currentIteration{-1};
   int64_t currentIterationCommTimeUs{0};
+  int64_t iterationCutoffUs{0};
 };
 
 struct IterationCommTime {
