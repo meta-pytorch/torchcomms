@@ -35,6 +35,7 @@ Ctran::Ctran(
 
   if (comm->config_.enableProfiler) {
     profiler = std::make_unique<ctran::Profiler>(comm, std::move(reporter));
+    mapper->registerProfilerHooks(profiler.get());
   }
 }
 

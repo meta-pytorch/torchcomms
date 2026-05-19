@@ -816,6 +816,12 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     return commSuccess;
   }
 
+  void registerProfilerHooks(ctran::Profiler* profiler) {
+    if (ctranTcpDm) {
+      ctranTcpDm->registerProfilerHooks(profiler);
+    }
+  }
+
   /* report the Ctran profiling results
    * Input arguments:
    *   - flush: force flushing the profiling result

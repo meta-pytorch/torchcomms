@@ -37,6 +37,7 @@ class Profiler {
   using EventDurationArray = std::array<uint64_t, NUM_PROFILER_EVENT_TYPES>;
   using EventTimerArray =
       std::array<utils::StopWatch<Clock>, NUM_PROFILER_EVENT_TYPES>;
+  using AlgoHook = std::function<void()>;
 
  public:
   // Construct with a reporter. If nullptr, defaults to
@@ -84,6 +85,9 @@ class Profiler {
 
   void reportToScuba();
 
+  void registerAlgoStartHook(AlgoHook hook);
+  void registerAlgoEndHook(AlgoHook hook);
+
  public:
   AlgoContext algoContext{};
 
@@ -98,6 +102,8 @@ class Profiler {
   uint64_t readyTs_{0};
   uint64_t controlTs_{0};
   std::unique_ptr<IProfilerReporter> reporter_;
+  AlgoHook algoStartHook_;
+  AlgoHook algoEndHook_;
 };
 
 } // namespace ctran

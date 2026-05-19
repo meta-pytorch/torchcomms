@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #include "comms/ctran/backends/tcpdevmem/CtranTcpDm.h"
 #include "comms/ctran/backends/tcpdevmem/CtranTcpDmSingleton.h"
+#include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/Debug.h"
 #include "comms/utils/StrUtils.h"
@@ -381,6 +382,18 @@ CtranTcpDm::prepareUnpackConsumer(SQueues* sqs, size_t blocks, void** pool) {
 commResult_t CtranTcpDm::teardownUnpackConsumer(void* pool) {
   COMMCHECK_TCP(transport_->teardownUnpackConsumer(netdev_, pool));
   return commSuccess;
+}
+
+void CtranTcpDm::registerProfilerHooks(ctran::Profiler* profiler) {
+  if (!profiler) {
+    return;
+  }
+  profiler->registerAlgoStartHook([this]() {
+    // Transport profiler start — to be implemented.
+  });
+  profiler->registerAlgoEndHook([this]() {
+    // Transport profiler end — to be implemented.
+  });
 }
 
 } // namespace ctran

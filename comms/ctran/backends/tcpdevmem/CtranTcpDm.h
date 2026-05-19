@@ -14,6 +14,8 @@
 
 namespace ctran {
 
+class Profiler;
+
 class CtranTcpDm {
  public:
   explicit CtranTcpDm(CtranComm* comm);
@@ -88,6 +90,8 @@ class CtranTcpDm {
   // Return GPU kernel consumer queues to the pool.
   // pool: the pool returned by prepareUnpackConsumer.
   commResult_t teardownUnpackConsumer(void* pool);
+
+  void registerProfilerHooks(ctran::Profiler* profiler);
 
  private:
   std::shared_ptr<::comms::tcp_devmem::TransportInterface> transport_;
