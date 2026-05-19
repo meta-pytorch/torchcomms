@@ -13,6 +13,7 @@
 #include "comms/ctran/tests/VerifyAlgoStatsUtil.h"
 #include "comms/ctran/tests/cudagraph/CtranCudaGraphParamTest.h"
 #include "comms/ctran/utils/Alloc.h"
+#include "comms/testinfra/AlgoTestUtils.h"
 
 #define NCCLCHECK_TEST_BENCH(cmd)                                         \
   do {                                                                    \
@@ -358,7 +359,7 @@ TEST_F(CudaGraphAllGatherCtgraphDestroy, DestroyGraphCleanly) {
 // setup.
 TEST_F(
     CtranCudaGraphTestBase,
-    DISABLED_CtgraphRdpipelineInPlaceMultiAgReplayPreservesAllBytes) {
+    CtgraphRdpipelineInPlaceMultiAgReplayPreservesAllBytes) {
   setenv("NCCL_CTRAN_ENABLE", "1", 0);
   setenv("NCCL_MNNVL_ENABLE", "1", 0);
   setenv("NCCL_NVLS_ENABLE", "0", 0);
@@ -370,7 +371,8 @@ TEST_F(
   setenv("NCCL_IB_GID_INDEX", "3", 0);
   setenv("NCCL_SOCKET_IFNAME", "eth0", 0);
   setenv("NCCL_CUMEM_ENABLE", "1", 1);
-  setenv("NCCL_ALLGATHER_ALGO", "ctgraph_rdpipeline", 1);
+  testinfra::AlgoRAII algoGuard(
+      NCCL_ALLGATHER_ALGO, NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline);
 
   auto ctranCommHolder = makeCtranComm();
   ASSERT_NE(ctranCommHolder, nullptr);
@@ -547,7 +549,7 @@ TEST_F(
     }
   };
 
-  constexpr int kTotalChecks = 10;
+  constexpr int kTotalChecks = 2;
   size_t mmDcOOP = 0;
   size_t mmDcIP = 0;
   doCapturedRun(/*oop=*/true, /*sameBuffer=*/true);

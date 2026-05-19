@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
@@ -27,6 +28,11 @@ struct WindowConfig;
 #endif
 
 namespace ctran {
+namespace regcache {
+struct IpcRemRegElem;
+} // namespace regcache
+using regcache::IpcRemRegElem;
+
 struct CtranWin {
   // TODO: remove the communicator from the window allocation.
   // We will need Ctran instead of CtranComm to allocate the window. Current
@@ -39,17 +45,18 @@ struct CtranWin {
   // Remote window info (addr, rkey, dataBytes) for all peers in this window
   std::vector<window::RemWinInfo> remWinInfo;
 
+  // Window-owned NVL imports. These bypass the shared IPC import cache and are
+  // released with this window.
+  std::vector<std::unique_ptr<IpcRemRegElem>> remoteBaseIpcRegs;
+  std::vector<std::unique_ptr<IpcRemRegElem>> remoteDataIpcRegs;
+
   // This rank's local data buffer size in bytes
   size_t dataBytes{0};
   // Signal buffer size in number of uint64_t elements per rank
   size_t signalSize{0};
-  // The ctran mapper handles for caching the allocated buffer segment
-  void* baseSegHdl{nullptr};
-  // The ctran mapper handles for caching the allocated buffer registration
+  // Window-owned local registration for the allocated signal/base buffer.
   void* baseRegHdl{nullptr};
-  // The ctran mapper handles for caching the data segment
-  void* dataSegHdl{nullptr};
-  // The ctran mapper handles for caching the data registration
+  // Window-owned local registration for the data buffer.
   void* dataRegHdl{nullptr};
   // The base pointer of allocated buffer by the window
   void* winBasePtr{nullptr};
@@ -163,6 +170,14 @@ struct CtranWin {
   }
 
  private:
+  commResult_t regMem(const void* ptr, size_t len, void** regHdl);
+  commResult_t deregMemIfNotNull(void*& regHdl);
+  commResult_t releaseRemReg(
+      std::vector<std::unique_ptr<IpcRemRegElem>>& ownedRegs,
+      CtranMapperRemoteAccessKey* rkey,
+      int peer);
+  commResult_t freeMem(void* addr);
+
   DevMemType bufType_{DevMemType::kCumem};
   // whether allocate window data buffer or provided by users
   bool allocDataBuf_{true};

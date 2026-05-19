@@ -714,11 +714,6 @@ commResult_t CtranMapper::deregDynamic(void* regHdl) {
   return commSuccess;
 }
 
-void CtranMapper::removeFromExportCache(void* regHdl) {
-  auto* regElem = reinterpret_cast<ctran::regcache::RegElem*>(regHdl);
-  exportRegCache_.wlock()->remove(regElem);
-}
-
 commResult_t CtranMapper::deregRemReg(struct CtranMapperRemoteAccessKey* rkey) {
   switch (rkey->backend) {
     case CtranMapperBackend::NVL: {
@@ -934,7 +929,9 @@ commResult_t CtranMapper::intraAllGatherCtrl(
     void* hdl,
     std::vector<void*>& remoteBufs,
     std::vector<struct CtranMapperRemoteAccessKey>& remoteAccessKeys,
-    CtranMapperBackend backend) {
+    CtranMapperBackend backend,
+    std::vector<std::unique_ptr<ctran::regcache::IpcRemRegElem>>* remoteIpcRegs,
+    bool trackExport) {
   const auto& statex = comm->statex_;
   const int nLocalRanks = statex->nLocalRanks();
 
@@ -944,7 +941,14 @@ commResult_t CtranMapper::intraAllGatherCtrl(
   }
 
   return this->allGatherCtrl(
-      buf, hdl, ranks, remoteBufs, remoteAccessKeys, backend);
+      buf,
+      hdl,
+      ranks,
+      remoteBufs,
+      remoteAccessKeys,
+      backend,
+      remoteIpcRegs,
+      trackExport);
 }
 
 commResult_t CtranMapper::allGatherCtrl(
@@ -952,14 +956,23 @@ commResult_t CtranMapper::allGatherCtrl(
     void* hdl,
     std::vector<void*>& remoteBufs,
     std::vector<struct CtranMapperRemoteAccessKey>& remoteAccessKeys,
-    CtranMapperBackend backend) {
+    CtranMapperBackend backend,
+    std::vector<std::unique_ptr<ctran::regcache::IpcRemRegElem>>* remoteIpcRegs,
+    bool trackExport) {
   const int nRanks = comm->statex_->nRanks();
   std::vector<int> ranks(nRanks);
   for (int i = 0; i < nRanks; i++) {
     ranks[i] = i;
   }
   return this->allGatherCtrl(
-      buf, hdl, ranks, remoteBufs, remoteAccessKeys, backend);
+      buf,
+      hdl,
+      ranks,
+      remoteBufs,
+      remoteAccessKeys,
+      backend,
+      remoteIpcRegs,
+      trackExport);
 }
 
 commResult_t CtranMapper::allGatherCtrl(
@@ -968,12 +981,20 @@ commResult_t CtranMapper::allGatherCtrl(
     const std::vector<int>& ranks,
     std::vector<void*>& remoteBufs,
     std::vector<struct CtranMapperRemoteAccessKey>& remoteAccessKeys,
-    CtranMapperBackend backend) {
+    CtranMapperBackend backend,
+    std::vector<std::unique_ptr<ctran::regcache::IpcRemRegElem>>* remoteIpcRegs,
+    bool trackExport) {
+  const int nRanks = comm->statex_->nRanks();
   const int rank = comm->statex_->rank();
 
   // Skip if rank is not in the ranks list
   if (std::find(ranks.begin(), ranks.end(), rank) == ranks.end()) {
     return commSuccess;
+  }
+
+  if (remoteIpcRegs != nullptr &&
+      remoteIpcRegs->size() < static_cast<size_t>(nRanks)) {
+    remoteIpcRegs->resize(nRanks);
   }
 
   // When totalSegments > CTRAN_IPC_INLINE_SEGMENTS (2), the extra segment
@@ -1020,22 +1041,28 @@ commResult_t CtranMapper::allGatherCtrl(
 
     if (peerBackends[i] == CtranMapperBackend::NVL) {
       if (nvlSendMsg.type == ControlMsgType::UNSPECIFIED) {
-        // exportMem records in exportRegCache_ for this peer
         FB_COMMCHECK(this->exportMem(
             peerList[i],
             buf,
             hdl,
             nvlSendMsg,
             &nvlExtraSegments,
-            peerBackends[i]));
-      } else if (NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET) {
+            peerBackends[i],
+            trackExport));
+      } else if (trackExport && NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET) {
         // exportMem not called for this peer, record explicitly
         exportRegCache_.wlock()->record(regElem, peerList[i]);
       }
     } else {
       if (ibSendMsg.type == ControlMsgType::UNSPECIFIED) {
         FB_COMMCHECK(this->exportMem(
-            peerList[i], buf, hdl, ibSendMsg, nullptr, peerBackends[i]));
+            peerList[i],
+            buf,
+            hdl,
+            ibSendMsg,
+            nullptr,
+            peerBackends[i],
+            trackExport));
       }
     }
   }
@@ -1158,12 +1185,15 @@ commResult_t CtranMapper::allGatherCtrl(
         }
       }
       if (!hasPending) {
+        std::unique_ptr<ctran::regcache::IpcRemRegElem>* ownedIpcReg =
+            remoteIpcRegs == nullptr ? nullptr : &(*remoteIpcRegs)[peerList[i]];
         FB_COMMCHECK(this->importMem(
             peerList[i],
             recvMsgs[i],
             &remoteBufs[peerList[i]],
             &remoteAccessKeys[peerList[i]],
-            allRecvExtraSegments[i]));
+            allRecvExtraSegments[i],
+            ownedIpcReg));
         peerImported[i] = true;
         numPeersImported++;
       }

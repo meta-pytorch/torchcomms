@@ -118,13 +118,6 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
    */
   commResult_t deregDynamic(void* regHdl);
 
-  /* Remove a registration handle from the export tracking cache.
-   * Used when the caller handles deregistration separately (e.g., via
-   * globalDeregisterWithPtr) and needs to prevent the mapper destructor
-   * from accessing a freed RegElem.
-   */
-  void removeFromExportCache(void* regHdl);
-
   /* Deregister an imported buffer registration from remote peer.
    * Input arguments:
    *  - rkey: the remoteAccessKey of the imported remote buffer received in
@@ -383,13 +376,20 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
    *                 including the rank itself
    *   - remoteAccessKeys: the allgathered remote access keys from all local
    *                       ranks
+   *   - remoteIpcRegs: if provided, NVL imports are not inserted into the
+   *                    shared import cache and are owned by this vector
+   *   - trackExport: whether to record NVL exports for mapper-managed remote
+   *                  release
    */
   commResult_t intraAllGatherCtrl(
       const void* buf,
       void* hdl,
       std::vector<void*>& remoteBufs,
       std::vector<struct CtranMapperRemoteAccessKey>& remoteAccessKeys,
-      CtranMapperBackend backend = CtranMapperBackend::UNSET);
+      CtranMapperBackend backend = CtranMapperBackend::UNSET,
+      std::vector<std::unique_ptr<ctran::regcache::IpcRemRegElem>>*
+          remoteIpcRegs = nullptr,
+      bool trackExport = true);
 
   /* Blocking allgather control messages among ranks of the mapper associated
    * communicator specified in ranks. It returns after sent and received all
@@ -405,6 +405,10 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
    *                 including the rank itself
    *   - remoteAccessKeys: the allgathered remote access keys from all local
    *                       ranks
+   *   - remoteIpcRegs: if provided, NVL imports are not inserted into the
+   *                    shared import cache and are owned by this vector
+   *   - trackExport: whether to record NVL exports for mapper-managed remote
+   *                  release
    */
   commResult_t allGatherCtrl(
       const void* buf,
@@ -412,7 +416,10 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       const std::vector<int>& ranks,
       std::vector<void*>& remoteBufs,
       std::vector<struct CtranMapperRemoteAccessKey>& remoteAccessKeys,
-      CtranMapperBackend backend = CtranMapperBackend::UNSET);
+      CtranMapperBackend backend = CtranMapperBackend::UNSET,
+      std::vector<std::unique_ptr<ctran::regcache::IpcRemRegElem>>*
+          remoteIpcRegs = nullptr,
+      bool trackExport = true);
 
   /* Blocking allgather control messages among ranks of the mapper associated
    * communicator specified in ranks. It returns after sent and received all
@@ -428,13 +435,20 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
    *                 including the rank itself
    *   - remoteAccessKeys: the allgathered remote access keys from all local
    *                       ranks
+   *   - remoteIpcRegs: if provided, NVL imports are not inserted into the
+   *                    shared import cache and are owned by this vector
+   *   - trackExport: whether to record NVL exports for mapper-managed remote
+   *                  release
    */
   commResult_t allGatherCtrl(
       const void* buf,
       void* hdl,
       std::vector<void*>& remoteBufs,
       std::vector<struct CtranMapperRemoteAccessKey>& remoteAccessKeys,
-      CtranMapperBackend backend = CtranMapperBackend::UNSET);
+      CtranMapperBackend backend = CtranMapperBackend::UNSET,
+      std::vector<std::unique_ptr<ctran::regcache::IpcRemRegElem>>*
+          remoteIpcRegs = nullptr,
+      bool trackExport = true);
 
   /* Convenient wrapper of isendCtrl/irecvCtrl to post a blocking barrier among
    * all local ranks of the mapper associated communicator.
@@ -878,6 +892,10 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
 
   CtranSocket* ctranSockPtr();
 
+  const std::vector<bool>& enabledBackends() const {
+    return enableBackends_;
+  }
+
   // number of iput requests made for each backend
   std::vector<int> iPutCount;
   std::vector<int> iGetCount;
@@ -1107,7 +1125,8 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       void* hdl,
       ControlMsg& msg,
       std::vector<ctran::utils::CtranIpcSegDesc>* extraSegments,
-      CtranMapperBackend backend = CtranMapperBackend::UNSET) {
+      CtranMapperBackend backend = CtranMapperBackend::UNSET,
+      bool trackExport = true) {
     auto regElem = reinterpret_cast<ctran::regcache::RegElem*>(hdl);
     // TODO: Enforce that a communicator can only export memory it registered
     // itself except the memory registered by globalRegister. Currently any comm
@@ -1143,7 +1162,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       }
 
       // Record the exported remote rank to notify at deregistration
-      if (NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET) {
+      if (trackExport && NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET) {
         exportRegCache_.wlock()->record(regElem, rank);
       }
 
@@ -1178,7 +1197,8 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       const ControlMsg& msg,
       void** buf,
       CtranMapperRemoteAccessKey* remKey,
-      const std::vector<ctran::utils::CtranIpcSegDesc>& extraSegments = {}) {
+      const std::vector<ctran::utils::CtranIpcSegDesc>& extraSegments = {},
+      std::unique_ptr<ctran::regcache::IpcRemRegElem>* ownedIpcReg = nullptr) {
     switch (msg.type) {
       case ControlMsgType::IB_EXPORT_MEM:
         if (!this->ctranIb) {
@@ -1201,15 +1221,28 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
         }
         remKey->backend = CtranMapperBackend::NVL;
         const std::string peerId = comm->statex_->gPid(rank);
-        FB_COMMCHECK(
-            ctran::IpcRegCache::getInstance()->importMem(
-                peerId,
-                msg.ipcDesc,
-                comm->statex_->cudaDev(),
-                buf,
-                &(remKey->nvlKey),
-                &this->logMetaData_,
-                extraSegments));
+        if (ownedIpcReg != nullptr) {
+          FB_COMMCHECK(
+              ctran::IpcRegCache::getInstance()->importMemUncached(
+                  peerId,
+                  msg.ipcDesc,
+                  comm->statex_->cudaDev(),
+                  buf,
+                  &(remKey->nvlKey),
+                  ownedIpcReg,
+                  &this->logMetaData_,
+                  extraSegments));
+        } else {
+          FB_COMMCHECK(
+              ctran::IpcRegCache::getInstance()->importMem(
+                  peerId,
+                  msg.ipcDesc,
+                  comm->statex_->cudaDev(),
+                  buf,
+                  &(remKey->nvlKey),
+                  &this->logMetaData_,
+                  extraSegments));
+        }
         break;
       }
       default:

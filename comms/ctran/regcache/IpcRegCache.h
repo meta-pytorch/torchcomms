@@ -2,6 +2,7 @@
 #pragma once
 
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -89,6 +90,18 @@ class IpcRegCache {
       int cudaDev,
       void** buf,
       struct ctran::regcache::IpcRemHandle* remKey,
+      const struct CommLogData* logMetaData = nullptr,
+      const std::vector<ctran::utils::CtranIpcSegDesc>& extraSegments = {});
+
+  // Import a remote NVL memory registration without inserting it into the
+  // shared import cache. The caller owns remRegElem and controls its lifetime.
+  commResult_t importMemUncached(
+      const std::string& peerId,
+      const ctran::regcache::IpcDesc& ipcDesc,
+      int cudaDev,
+      void** buf,
+      struct ctran::regcache::IpcRemHandle* remKey,
+      std::unique_ptr<ctran::regcache::IpcRemRegElem>* remRegElem,
       const struct CommLogData* logMetaData = nullptr,
       const std::vector<ctran::utils::CtranIpcSegDesc>& extraSegments = {});
 

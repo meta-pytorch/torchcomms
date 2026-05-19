@@ -122,6 +122,51 @@ commResult_t ctran::IpcRegCache::importMem(
   return commSuccess;
 }
 
+commResult_t ctran::IpcRegCache::importMemUncached(
+    const std::string& peerId,
+    const ctran::regcache::IpcDesc& ipcDesc,
+    int cudaDev,
+    void** buf,
+    struct ctran::regcache::IpcRemHandle* remKey,
+    std::unique_ptr<ctran::regcache::IpcRemRegElem>* remRegElem,
+    const struct CommLogData* logMetaData,
+    const std::vector<ctran::utils::CtranIpcSegDesc>& extraSegments) {
+  if (remRegElem == nullptr) {
+    CLOGF(ERR, "CTRAN-REGCACHE: remRegElem is nullptr in importMemUncached");
+    return commInvalidArgument;
+  }
+
+  std::unique_ptr<ctran::regcache::IpcRemRegElem> reg = nullptr;
+  try {
+    reg = std::make_unique<ctran::regcache::IpcRemRegElem>(
+        ipcDesc.desc, cudaDev, logMetaData, extraSegments);
+  } catch (std::exception& e) {
+    CLOGF(
+        WARN,
+        "CTRAN-REGCACHE: failed to import uncached IPC remote registration from peer {} ipcDesc {}, error {}",
+        peerId,
+        ipcDesc.toString(),
+        e.what());
+    return ErrorStackTraceUtil::log(commInternalError);
+  }
+
+  void* basePtr = reg->ipcRemMem.getBase();
+  *buf = reinterpret_cast<char*>(basePtr) + ipcDesc.offset;
+  std::snprintf(remKey->peerId, regcache::kMaxPeerIdLen, "%s", peerId.c_str());
+  remKey->basePtr = ipcDesc.desc.base;
+  remKey->uid = ipcDesc.uid;
+  *remRegElem = std::move(reg);
+  CLOGF_TRACE(
+      COLL,
+      "CTRAN-REGCACHE: Imported uncached NVL remote mem from peer {}: buf {} (base {} offset {} uid {})",
+      peerId,
+      (void*)*buf,
+      (void*)basePtr,
+      ipcDesc.offset,
+      ipcDesc.uid);
+  return commSuccess;
+}
+
 commResult_t ctran::IpcRegCache::importRemMemImpl(
     const std::string& peerId,
     const ctran::regcache::IpcDesc& ipcDesc,

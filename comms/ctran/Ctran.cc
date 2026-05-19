@@ -177,7 +177,7 @@ CtranComm::CtranComm(std::shared_ptr<Abort> abort, ctranConfig commConfig)
 }
 
 void CtranComm::destroy() {
-  cudagraphDeferredCleanup.runAll();
+  cudagraphDeferredCleanup.run(true /* force */);
 
   // All smart pointers are automatically de-initialized, but we want to
   // ensure they do so in a specific order. Therefore, we manually handle
