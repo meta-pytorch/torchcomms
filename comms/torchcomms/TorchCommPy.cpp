@@ -1308,6 +1308,26 @@ break as interfaces change.
 Deprecated: Use get_backend_impl() instead.
           )")
       .def(
+          "register_with_symm_mem",
+          [](TorchComm& self, const std::string& group_name) {
+            // Dispatch through the TorchCommBackend virtual so we don't
+            // take an RTTI dependency on TorchCommNCCLX (whose typeinfo
+            // lives in a separate DSO from this Python binding). Non-ncclx
+            // backends raise from the default base implementation.
+            self.getBackendImpl()->registerWithSymmMem(group_name);
+          },
+          py::arg("group_name"),
+          R"(
+Publish this communicator's underlying NCCL comm into PyTorch's
+NCCLDevCommManager under the given process-group name. After this call,
+torch.distributed._symmetric_memory.rendezvous() on a tensor in a process
+group with the given name will find this comm via NCCLDevCommManager
+without needing the backend to be a ProcessGroupNCCL.
+
+Only the ncclx backend supports this; other backends raise.
+          )",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
           "get_init_handle",
           &TorchComm::getInitHandle,
           R"(

@@ -92,6 +92,7 @@ class TorchCommNCCL : public TorchCommBackend,
   int getSize() const override;
   std::string_view getBackendName() const override;
   std::string_view getCommName() const override;
+  void registerWithSymmMem(const std::string& group_name) override;
 
   // Point-to-Point Operations
   c10::intrusive_ptr<TorchWork> send(
@@ -394,6 +395,10 @@ class TorchCommNCCL : public TorchCommBackend,
   cudaEvent_t
       dependency_event_{}; // Pre-allocated event for stream dependencies
   void* barrier_buffer_{}; // Pre-allocated CUDA buffer for barrier operations
+  // Process-group name this comm was registered with via registerWithSymmMem.
+  // Empty if no registration has happened yet; used by the dtor to drop the
+  // entry from NCCLDevCommManager so a successor PG can register cleanly.
+  std::string symm_mem_group_name_;
   enum class InitializationState {
     UNINITIALIZED,
     INITIALIZED,
