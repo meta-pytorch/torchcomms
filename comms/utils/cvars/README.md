@@ -99,8 +99,7 @@ NCCL_RAS_ENABLE - default value changed from 1 to 0 NCCL_CTRAN_IB_MAX_QPS -
 default value changed from 1 to 16 NCCL_CTRAN_IB_QP_MAX_MSGS - default value
 changed from 4 to 128 NCCL_CTRAN_IB_QP_SCALING_THRESHOLD - default value changed
 from 131072 to 524288 NCCL_CTRAN_IB_QP_CONFIG_XDC - default value changed from
-"" to "1048576,16,spray,128" NCCL_CTRAN_IB_QP_CONFIG_XRACK - default value
-changed from "" to "1048576,16,spray,128" NCCL_CTRAN_IB_QP_CONFIG_XZONE -
+"" to "1048576,16,spray,128" NCCL_CTRAN_IB_QP_CONFIG_XZONE -
 default value changed from "" to "1048576,16,spray,128" NCCL_CTRAN_IB_VC_MODE -
 default value changed from "spray" to "dqplb"
 

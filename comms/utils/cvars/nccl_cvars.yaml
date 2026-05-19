@@ -1555,17 +1555,6 @@ cvars:
      Configure IBVCs to support either spray mode (uses extra QP for
      notifications) or dqplb mode ("normal" but all writes are WRITE_WITH_IMM)
 
- - name        : NCCL_CTRAN_IB_QP_CONFIG_XRACK
-   type        : stringlist
-   default     : "1048576,16,spray,128"
-   description : |-
-     A set of configuration for CTRAN IB over inter-rack communication:
-     <QP_SCALING_THRESHOLD>,<MAX_QPS>,<VC_MODE>,<QP_MAX_MSGS>
-     e.g., NCCL_CTRAN_IB_QP_CONFIG_XRACK="1048576,4,spray,6",
-     If not given, NCCLx will use values from
-     NCCL_CTRAN_IB_QP_SCALING_THRESHOLD, NCCL_CTRAN_IB_MAX_QPS,
-     NCCL_CTRAN_IB_VC_MODE, and NCCL_CTRAN_IB_QP_MAX_MSGS respectively
-
  - name        : NCCL_CTRAN_IB_QP_CONFIG_XZONE
    type        : stringlist
    default     : "1048576,16,spray,128"
@@ -1606,7 +1595,7 @@ cvars:
      where value is a list of <QP_SCALING_THRESHOLD>,<MAX_QPS>,<VC_MODE>,<QP_MAX_MSGS><TRAFFIC_CLASS>
      e.g., NCCL_CTRAN_IB_QP_CONFIG_ALGO="alltoall:1048576,4,dqplb,128,224;sendrecv:1048576,16,spray,128,224"
      If not given, NCCLx will use the configuration specified per topology
-     (see NCCL_CTRAN_IB_QP_CONFIG_XDC, NCCL_CTRAN_IB_QP_CONFIG_XZONE, NCCL_CTRAN_IB_QP_CONFIG_XRACK),
+     (see NCCL_CTRAN_IB_QP_CONFIG_XDC, NCCL_CTRAN_IB_QP_CONFIG_XZONE),
      or the default configuration set (see NCCL_CTRAN_IB_QP_SCALING_THRESHOLD, NCCL_CTRAN_IB_MAX_QPS,
      NCCL_CTRAN_IB_VC_MODE, and NCCL_CTRAN_IB_QP_MAX_MSGS) for all collectives.
 
