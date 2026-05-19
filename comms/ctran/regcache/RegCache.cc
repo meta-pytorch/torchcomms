@@ -349,7 +349,7 @@ commResult_t ctran::RegCache::globalRegister(
     ctran::regcache::RegElem* regHdl = nullptr;
     CommLogData globalLogData{};
     globalLogData.commDesc = "global";
-    FB_COMMCHECK(regRange(
+    FB_COMMCHECK(regRangeCached(
         buf,
         len,
         cudaDev,
@@ -474,7 +474,7 @@ void ctran::RegCache::asyncRegThreadFn(int cudaDev) {
     // Expected behavior:
     // - If didRegister is true, meaning the buffer is registered by the
     //   asyncThread. Later GPE thread will lookup hit at
-    //   searchRegHandle->regRange.
+    //   searchRegHandle->regRangeCached.
     // - If didRegister is false and regHdl is not nullptr, meaning the buffer
     //   has already been registered by a previous async request or GPE
     //   registration.
@@ -484,7 +484,7 @@ void ctran::RegCache::asyncRegThreadFn(int cudaDev) {
     //   executes the registration request, e.g., too slow asyncReg thread.
     //   Then, asyncReg thread will also tread it as dynamic registration and
     //   skip.
-    FB_COMMCHECKTHROW_EX_NOCOMM(regRange(
+    FB_COMMCHECKTHROW_EX_NOCOMM(regRangeCached(
         cmd.buf,
         cmd.len,
         cmd.cudaDev,
@@ -619,7 +619,7 @@ void* ctran::RegCache::searchIbRegHandle(
   CommLogData logMetaData{};
   logMetaData.commDesc = "global";
 
-  auto res = regRange(
+  auto res = regRangeCached(
       ptr,
       len,
       cudaDev,
@@ -868,7 +868,7 @@ commResult_t ctran::RegCache::registerSegmentsTogether(
   return commSuccess;
 }
 
-commResult_t ctran::RegCache::regRange(
+commResult_t ctran::RegCache::regRangeCached(
     const void* ptr,
     const size_t len,
     const int cudaDev,
@@ -1135,14 +1135,17 @@ commResult_t ctran::RegCache::deregElem(ctran::regcache::RegElem* regElem) {
   return commSuccess;
 }
 
-commResult_t ctran::RegCache::regDynamic(
+commResult_t ctran::RegCache::regRange(
     const void* ptr,
     const size_t len,
     int cudaDev,
     const std::vector<bool>& backends,
-    ctran::regcache::RegElem** regElem) {
-  auto dur = CtranMapperTimer();
+    ctran::regcache::RegElem** regElem,
+    bool ncclManaged,
+    const struct CommLogData* logMetaData,
+    const std::string& useDesc) {
   SetCudaDevRAII setCudaDev(cudaDev);
+  auto timerBegin = std::chrono::steady_clock::now();
 
   std::vector<ctran::regcache::SegmentRange> ranges;
   FB_COMMCHECK(
@@ -1161,7 +1164,8 @@ commResult_t ctran::RegCache::regDynamic(
       lenToReg,
       cudaDev,
       true /*isDynamic*/,
-      ranges.at(0).type);
+      ranges.at(0).type,
+      ncclManaged);
 
   // Registration (expensive)
   FB_COMMCHECK(newRegElem_->doRegister(backends));
@@ -1173,6 +1177,40 @@ commResult_t ctran::RegCache::regDynamic(
   regElemsMaps_.wlock()->regHdlToElemMap.emplace(
       *regElem, std::move(newRegElem_));
 
+  if (logMetaData != nullptr) {
+    meta::comms::memtrace::recordReg(
+        *logMetaData,
+        "",
+        useDesc,
+        reinterpret_cast<uintptr_t>(ranges.at(0).buf),
+        lenToReg,
+        ranges.size(),
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - timerBegin)
+            .count());
+  }
+
+  return commSuccess;
+}
+
+commResult_t ctran::RegCache::regDynamic(
+    const void* ptr,
+    const size_t len,
+    int cudaDev,
+    const std::vector<bool>& backends,
+    ctran::regcache::RegElem** regElem,
+    const struct CommLogData* logMetaData) {
+  auto dur = CtranMapperTimer();
+  FB_COMMCHECK(regRange(
+      ptr,
+      len,
+      cudaDev,
+      backends,
+      regElem,
+      false /* ncclManaged */,
+      logMetaData,
+      "dynamicRegMem"));
+
   {
     auto profilerLk = profiler.wlock();
     profilerLk->record(ctran::regcache::EventType::kDynamicRegMemEvent);
@@ -1182,7 +1220,7 @@ commResult_t ctran::RegCache::regDynamic(
   return commSuccess;
 }
 
-commResult_t ctran::RegCache::deregDynamic(ctran::regcache::RegElem* regHdl) {
+commResult_t ctran::RegCache::deregRange(ctran::regcache::RegElem* regHdl) {
   std::unique_ptr<ctran::regcache::RegElem> regElem = nullptr;
   // Global lock to update regElemsMaps_.
   // Unlock before deregistration, avoid long holding time of the lock.
@@ -1192,7 +1230,7 @@ commResult_t ctran::RegCache::deregDynamic(ctran::regcache::RegElem* regHdl) {
 
     auto it = regHdlToElemMap.find(regHdl);
     if (it == regHdlToElemMap.end()) {
-      CLOGF(ERR, "deregDynamic: regElem {} not found", (void*)regHdl);
+      CLOGF(ERR, "deregRange: regElem {} not found", (void*)regHdl);
       return commInvalidUsage;
     }
     // Remove regElem from global cache and return ownership to caller for any
@@ -1205,6 +1243,10 @@ commResult_t ctran::RegCache::deregDynamic(ctran::regcache::RegElem* regHdl) {
   FB_COMMCHECK(deregElem(regElem.get()));
 
   return commSuccess;
+}
+
+commResult_t ctran::RegCache::deregDynamic(ctran::regcache::RegElem* regHdl) {
+  return deregRange(regHdl);
 }
 
 // Helper function to get all segments and group them into contiguous memory
