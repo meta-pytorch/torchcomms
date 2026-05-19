@@ -19,6 +19,7 @@ struct RingReduceScatterTestParams {
   int num_rings;
   std::size_t data_buffer_size;
   int pipeline_depth;
+  bool ibLazyConnect{false};
 };
 
 std::string param_name(
@@ -48,6 +49,7 @@ TEST_P(RingReduceScatterTest, Correctness) {
                 .maxGroups = config.num_blocks * params.num_rings,
                 .pipelineDepth = params.pipeline_depth,
             },
+        .ibLazyConnect = params.ibLazyConnect,
     };
     transport = std::make_unique<MultipeerIbgdaTransport>(
         globalRank, worldSize, bootstrap, transportConfig);
@@ -88,6 +90,9 @@ TEST_P(RingReduceScatterTest, Correctness) {
     ringParams.prev = transport->getP2pTransportDevice(rings[r].prev_rank);
     ringParams.next = transport->getP2pTransportDevice(rings[r].next_rank);
   }
+  // Lazy mode: connectPeers() must be called after all getP2pTransportDevice()
+  // calls and before launching the kernel.
+  transport->connectPeers();
 
   bootstrap->barrierAll();
   launch_ring_reduce_scatter(launchParams);
@@ -170,6 +175,22 @@ INSTANTIATE_TEST_SUITE_P(
             .num_rings = 2,
             .data_buffer_size = 4 * 1024 * 1024,
             .pipeline_depth = 2,
+        }),
+    param_name);
+
+INSTANTIATE_TEST_SUITE_P(
+    LazyMode,
+    RingReduceScatterTest,
+    ::testing::Values(
+        RingReduceScatterTestParams{
+            .config =
+                {.chunk_elements = 64 * 1024,
+                 .num_blocks = 8,
+                 .name = "256KB_8B_lazy"},
+            .num_rings = 1,
+            .data_buffer_size = 1024 * 1024,
+            .pipeline_depth = 2,
+            .ibLazyConnect = true,
         }),
     param_name);
 

@@ -146,6 +146,14 @@ struct CtranWin {
         bufType_ == DevMemType::kCumem;
   }
 
+  inline bool isAtomicCapable() const {
+    return atomicCapable_;
+  }
+
+  inline void setAtomicCapable(bool val) {
+    atomicCapable_ = val;
+  }
+
   // Check whether persistent allgather (allgatherP) is supported.
   // Returns true if ctran is initialized and all peers have configured
   // backends. Static variant allows checking before a window is created.
@@ -158,6 +166,9 @@ struct CtranWin {
   DevMemType bufType_{DevMemType::kCumem};
   // whether allocate window data buffer or provided by users
   bool allocDataBuf_{true};
+  // Whether this window's data buffer meets the alignment requirements
+  // for IB/NVLink atomic operations (8-byte aligned address and size).
+  bool atomicCapable_{false};
   // rank: window::OpCountType as key
   folly::Synchronized<
       std::unordered_map<std::pair<int, window::OpCountType>, uint64_t>>

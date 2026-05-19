@@ -1723,6 +1723,79 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultiNicAggregateBandwidth) {
   XLOGF(INFO, "Rank {}: MultiNicAggregateBandwidth test completed", globalRank);
 }
 
+// =============================================================================
+// Lazy Mode Tests
+// =============================================================================
+
+class LazyModeTestFixture : public MpiBaseTestFixture {
+ protected:
+  void SetUp() override {
+    MpiBaseTestFixture::SetUp();
+    CUDACHECK_TEST(cudaSetDevice(localRank));
+  }
+
+  std::unique_ptr<MultipeerIbgdaTransport> createLazyTransport() {
+    MultipeerIbgdaTransportConfig config{
+        .cudaDevice = localRank,
+        .numSignalSlots = 1,
+        .numCounterSlots = 1,
+        .ibLazyConnect = true,
+        .materializePeerTimeoutMs = 10000,
+    };
+    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+    auto transport = std::make_unique<MultipeerIbgdaTransport>(
+        globalRank, numRanks, bootstrap, config);
+    transport->exchange();
+    return transport;
+  }
+};
+
+TEST_F(LazyModeTestFixture, MaterializeOnAccess) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Requires exactly 2 ranks";
+  }
+  try {
+    auto transport = createLazyTransport();
+    int peerRank = (globalRank == 0) ? 1 : 0;
+
+    EXPECT_FALSE(transport->isPeerMaterialized(peerRank));
+
+    auto* devPtr = transport->getP2pTransportDevice(peerRank);
+    EXPECT_NE(devPtr, nullptr);
+    transport->connectPeers();
+    EXPECT_TRUE(transport->isPeerMaterialized(peerRank));
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBGDA not available: " << e.what();
+  }
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+}
+
+TEST_F(LazyModeTestFixture, EagerModeAllPeersMaterialized) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Requires at least 2 ranks";
+  }
+  try {
+    MultipeerIbgdaTransportConfig config{
+        .cudaDevice = localRank,
+        .ibLazyConnect = false,
+    };
+    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+    auto transport = std::make_unique<MultipeerIbgdaTransport>(
+        globalRank, numRanks, bootstrap, config);
+    transport->exchange();
+
+    for (int peer = 0; peer < numRanks; peer++) {
+      if (peer == globalRank) {
+        continue;
+      }
+      EXPECT_TRUE(transport->isPeerMaterialized(peer));
+    }
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBGDA not available: " << e.what();
+  }
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+}
+
 } // namespace comms::pipes::tests
 
 int main(int argc, char* argv[]) {

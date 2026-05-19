@@ -43,6 +43,9 @@ class Config {
   // Per-communicator IB transport config overrides.
   std::optional<int> ibSplitDataOnQps;
   std::optional<int> ibQpsPerConnection;
+
+  // Defer per-peer IBGDA state to first use (hint > CVAR).
+  bool ibLazyConnect = false;
 };
 
 // Hint keys corresponding to Config fields above.  Used by
@@ -59,6 +62,7 @@ inline const std::vector<std::string>& knownHintKeys() {
       "ncclBuffSize",
       "ibSplitDataOnQps",
       "ibQpsPerConnection",
+      "ibLazyConnect",
   };
   return keys;
 }

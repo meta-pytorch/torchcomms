@@ -188,23 +188,6 @@ class TorchCommNCCLX : public TorchCommBackend,
       bool async_op,
       const std::unordered_map<std::string, std::string>& hints = {});
 
-  c10::intrusive_ptr<TorchWork> alltoallv_dynamic_dispatch(
-      const std::vector<at::Tensor>& output_tensor_list,
-      at::Tensor& output_chunk_sizes_per_rank,
-      const at::Tensor& input_tensor,
-      const at::Tensor& input_chunk_sizes,
-      const at::Tensor& input_chunk_indices,
-      const at::Tensor& input_chunk_count_per_rank,
-      bool async_op);
-
-  c10::intrusive_ptr<TorchWork> alltoallv_dynamic_combine(
-      at::Tensor& output_tensor,
-      const at::Tensor& input_tensor,
-      const at::Tensor& input_chunk_sizes,
-      const at::Tensor& input_chunk_indices,
-      const at::Tensor& input_chunk_count_per_rank,
-      bool async_op);
-
   // Persistent AllGather operations
   AllGatherPHandle all_gather_p_init(
       at::Tensor& output,

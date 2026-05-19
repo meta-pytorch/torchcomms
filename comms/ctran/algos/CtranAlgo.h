@@ -4,6 +4,7 @@
 #define CTRAN_ALGO_H_
 
 #include <fmt/format.h>
+#include <functional>
 #include <vector>
 
 #include "comms/ctran/CtranComm.h"
@@ -16,6 +17,10 @@
 #include "comms/ctran/utils/CtranIpc.h"
 #include "comms/pipes/P2pNvlTransportDevice.cuh"
 #include "comms/utils/logger/Logger.h"
+
+#include <folly/Synchronized.h>
+
+#include "comms/ctran/algos/IPersistPlan.h"
 
 #define LOCAL_RANK_TO_DEV_REGION_POS(localRank, ownerLocalRank) \
   (localRank < ownerLocalRank ? localRank : localRank - 1)
@@ -34,6 +39,10 @@ class CtranAlgo {
  public:
   CtranAlgo(CtranComm* comm, ICtran* ctran);
 
+  // Test-only constructor: skips CUDA/kernel init for CPU-only unit tests.
+  struct TestOnly {};
+  explicit CtranAlgo(TestOnly) {}
+
   ~CtranAlgo();
 
   // initialize device state and SharedResource, if needed
@@ -43,6 +52,12 @@ class CtranAlgo {
   // Get base pointer to pre-allocated P2pNvlTransportDevice array
   // Array is indexed by peer local rank
   comms::pipes::P2pNvlTransportDevice* getNvlTransportsBase();
+
+  // Thread-safe get-or-create for persistent algorithm plans.
+  // Returns a non-owning pointer to the plan (lifetime owned by this map).
+  const ctran::algos::IPersistPlan* getOrCreatePersistPlan(
+      ctran::algos::PersistPlanKey key,
+      std::function<std::unique_ptr<ctran::algos::IPersistPlan>()> createFn);
 
   // accessing allGatherAlgo
   void setAllGatherAlgo(enum NCCL_ALLGATHER_ALGO algo);
@@ -148,6 +163,13 @@ class CtranAlgo {
   // Allocated with cudaMalloc for device accessibility
   // Indexed by peer local rank, slot for self (localRank) is unused
   comms::pipes::P2pNvlTransportDevice* nvlTransports_{nullptr};
+
+  // Generic persistent plan map: any algorithm can register a cached plan.
+  folly::Synchronized<std::unordered_map<
+      ctran::algos::PersistPlanKey,
+      std::unique_ptr<ctran::algos::IPersistPlan>,
+      ctran::algos::PersistPlanKeyHash>>
+      persistPlans_;
 };
 
 class CtranAlgo::SharedResource {

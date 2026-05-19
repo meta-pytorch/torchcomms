@@ -148,11 +148,10 @@ class CtranIb;
 
 using ConnectionType = enum {
   NO_STATEX = 0,
-  SAME_RACK = 1,
-  SAME_ZONE = 2,
-  SAME_DC = 3,
-  DIFF_DC = 4,
-  CTRAN_EX = 5,
+  SAME_ZONE = 1,
+  SAME_DC = 2,
+  DIFF_DC = 3,
+  CTRAN_EX = 4,
 };
 
 namespace {

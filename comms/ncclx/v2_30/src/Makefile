@@ -125,6 +125,7 @@ LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/perftrace/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/common/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/AllGather/*.cc)
+LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/AllGather/StreamedRd/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/AllGatherP/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/ReduceScatter/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/AllReduce/*.cc)
@@ -303,7 +304,12 @@ DOCA_LIBOBJ      := $(DOCA_LIBSRC:%.cpp=$(DOCA_OBJDIR)/%.o)
 LIBOBJ           += $(DOCA_LIBOBJ)
 
 ##### rules
+BUILD_NCCL_CLI ?= 1
+ifeq ($(BUILD_NCCL_CLI),1)
 build : lib staticlib binary
+else
+build : lib staticlib
+endif
 
 lib : $(INCTARGETS) $(LIBDIR)/$(LIBTARGET) $(PKGDIR)/$(PKGTARGET)
 
@@ -354,7 +360,7 @@ $(BINDIR)/$(BINNAME): $(BINOBJ)
 $(BINDIR)/$(PARAMBIN): $(PARAMBINOBJ) $(LIBDIR)/$(LIBTARGET)
 	@printf "Linking    %-35s > %s\n" $(PARAMBIN) $@
 	mkdir -p $(BINDIR)
-	$(CXX) $(CXXFLAGS) $< -o $@ -L$(LIBDIR) -lnccl -L${CUDA_LIB} -l$(CUDARTLIB) -lpthread -lrt -ldl
+	$(CXX) $(CXXFLAGS) $< -o $@ -L$(LIBDIR) -L${CONDA_LIB_DIR} -lnccl -L${CUDA_LIB} -l$(CUDARTLIB) -lpthread -lrt -ldl
 
 $(PKGDIR)/nccl.pc : nccl.pc.in
 	mkdir -p $(PKGDIR)
@@ -484,8 +490,10 @@ install : build
 	cp -P -v $(BUILDDIR)/lib/lib* $(PREFIX)/lib/
 	cp -P -v $(BUILDDIR)/lib/pkgconfig/* $(PREFIX)/lib/pkgconfig/
 	cp -v -r $(BUILDDIR)/include/* $(PREFIX)/include/
+ifeq ($(BUILD_NCCL_CLI),1)
 	cp -v $(BUILDDIR)/bin/ncclras $(PREFIX)/bin/
 	cp -v $(BUILDDIR)/bin/ncclparam $(PREFIX)/bin/
+endif
 
 FILESTOFORMAT := $(shell find . -name ".\#*" -prune -o \( -name "*.cc" -o -name "*.h" \) -print | grep -v -E 'ibvwrap.h|nvmlwrap.h|gdrwrap.h|nccl.h')
 # Note that formatting.mk defines a new target so in order to not overwrite the default target,

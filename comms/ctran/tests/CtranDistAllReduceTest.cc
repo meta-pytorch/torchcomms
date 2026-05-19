@@ -4,6 +4,7 @@
 #include <folly/json/json.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include <mpi.h>
 #include <stdlib.h>
 #include <thread>
 
@@ -544,8 +545,25 @@ class CtranAllReduceRingTcpDmTestFp32
     setenv("NCCL_CTRAN_ALLREDUCE_RING_NUM_THREAD_BLOCKS", "16", 1);
     setenv("NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE", "256", 1);
 
-    // GPU closest to beth0 (mlx5_4) on GRANDTETON hosts
-    setenv("CUDA_VISIBLE_DEVICES", "2", 1);
+    // Detect number of local ranks (ppn) from MPI
+    int worldSize = 1;
+    MPI_Comm_size(MPI_COMM_WORLD, &worldSize);
+    // With 2 hosts, ppn = worldSize / 2
+    int numHosts = 2;
+    int ppn = worldSize / numHosts;
+
+    // PIX-optimal GPU/NIC assignment for GRANDTETON H100:
+    //   beth3 → GPU 0, beth4 → GPU 1, beth0 → GPU 2, beth1 → GPU 3
+    if (ppn >= 4) {
+      setenv("CUDA_VISIBLE_DEVICES", "0,1,2,3", 1);
+      setenv("TCP_DEVMEM_IFNAME", "beth3,beth4,beth0,beth1", 1);
+    } else if (ppn >= 2) {
+      setenv("CUDA_VISIBLE_DEVICES", "2,3", 1);
+      setenv("TCP_DEVMEM_IFNAME", "beth0,beth1", 1);
+    } else {
+      setenv("CUDA_VISIBLE_DEVICES", "2", 1);
+      setenv("TCP_DEVMEM_IFNAME", "beth0", 1);
+    }
 
     // TCPDM transport config
     setenv("TCP_DEVMEM_STEER_ACTIVE_OPEN", "1", 1);
@@ -558,7 +576,6 @@ class CtranAllReduceRingTcpDmTestFp32
     setenv("TCP_DEVMEM_RX_WORKERS_PER_DEV", "4", 1);
     setenv("TCP_DEVMEM_SOCKETS_PER_COMM", "4", 1);
     setenv("TCP_DEVMEM_QUEUES", "4", 1);
-    setenv("TCP_DEVMEM_IFNAME", "beth0", 1);
     setenv("TCP_DEVMEM_SKIP_AGENT", "1", 1);
     setenv("TCP_DEVMEM_SKIP_LOGGER", "1", 1);
 
@@ -570,9 +587,9 @@ class CtranAllReduceRingTcpDmTestFp32
     setenv("NCCL_SHM_DISABLE", "1", 1);
     setenv("NCCL_RAS_ENABLE", "0", 1);
 
-    // NCCL bootstrap: match SOCKET_IFNAME with CLIENT_SOCKET_IFNAME
-    setenv("NCCL_SOCKET_IFNAME", "beth0", 1);
-    setenv("NCCL_CLIENT_SOCKET_IFNAME", "beth0", 1);
+    // NCCL bootstrap on beth7 (separate from data NICs)
+    setenv("NCCL_SOCKET_IFNAME", "beth7", 1);
+    setenv("NCCL_CLIENT_SOCKET_IFNAME", "beth7", 1);
 
     // NCCL ctran: select TCPDM backend
     setenv("NCCL_CTRAN_ENABLE", "1", 1);

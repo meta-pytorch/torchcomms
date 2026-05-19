@@ -36,6 +36,9 @@ CtranAlgo::CtranAlgo(CtranComm* comm, ICtran* ctran)
 }
 
 CtranAlgo::~CtranAlgo() {
+  if (!comm_) {
+    return;
+  }
   collToVcConfigMap_.clear();
 
   if (this->sharedRes_) {
@@ -535,6 +538,7 @@ static const std::unordered_map<std::string, enum NCCL_ALLGATHER_ALGO>
         {"ctdirect", NCCL_ALLGATHER_ALGO::ctdirect},
         {"ctring", NCCL_ALLGATHER_ALGO::ctring},
         {"ctrd", NCCL_ALLGATHER_ALGO::ctrd},
+        {"ctsrd", NCCL_ALLGATHER_ALGO::ctsrd},
         {"ctbrucks", NCCL_ALLGATHER_ALGO::ctbrucks},
         {"ctgraph", NCCL_ALLGATHER_ALGO::ctgraph},
         {"ctgraph_pipeline", NCCL_ALLGATHER_ALGO::ctgraph_pipeline},
@@ -563,6 +567,32 @@ commResult_t ctranConfigCommAlgoOverride(CtranComm* comm) {
         comm->config_.ncclAllGatherAlgo);
   }
   return commSuccess;
+}
+
+const ctran::algos::IPersistPlan* CtranAlgo::getOrCreatePersistPlan(
+    ctran::algos::PersistPlanKey key,
+    std::function<std::unique_ptr<ctran::algos::IPersistPlan>()> createFn) {
+  // Fast path: concurrent readers share rlock (no contention after init).
+  {
+    auto plans = persistPlans_.rlock();
+    auto it = plans->find(key);
+    if (it != plans->end()) {
+      return it->second.get();
+    }
+  }
+  // Slow path: upgrade lock serializes creators — only one thread can hold
+  // ulock at a time, so at most one thread calls createFn(). Re-check
+  // under ulock because another thread may have inserted between our rlock
+  // release and ulock acquire.
+  auto plans = persistPlans_.ulock();
+  auto it = plans->find(key);
+  if (it != plans->end()) {
+    return it->second.get();
+  }
+  // Atomically promote to write lock (no gap where another writer can slip in).
+  auto wplans = plans.moveFromUpgradeToWrite();
+  auto [inserted, _] = wplans->emplace(key, createFn());
+  return inserted->second.get();
 }
 
 void CtranAlgo::setAllGatherAlgo(enum NCCL_ALLGATHER_ALGO algo) {

@@ -1555,17 +1555,6 @@ cvars:
      Configure IBVCs to support either spray mode (uses extra QP for
      notifications) or dqplb mode ("normal" but all writes are WRITE_WITH_IMM)
 
- - name        : NCCL_CTRAN_IB_QP_CONFIG_XRACK
-   type        : stringlist
-   default     : "1048576,16,spray,128"
-   description : |-
-     A set of configuration for CTRAN IB over inter-rack communication:
-     <QP_SCALING_THRESHOLD>,<MAX_QPS>,<VC_MODE>,<QP_MAX_MSGS>
-     e.g., NCCL_CTRAN_IB_QP_CONFIG_XRACK="1048576,4,spray,6",
-     If not given, NCCLx will use values from
-     NCCL_CTRAN_IB_QP_SCALING_THRESHOLD, NCCL_CTRAN_IB_MAX_QPS,
-     NCCL_CTRAN_IB_VC_MODE, and NCCL_CTRAN_IB_QP_MAX_MSGS respectively
-
  - name        : NCCL_CTRAN_IB_QP_CONFIG_XZONE
    type        : stringlist
    default     : "1048576,16,spray,128"
@@ -1606,7 +1595,7 @@ cvars:
      where value is a list of <QP_SCALING_THRESHOLD>,<MAX_QPS>,<VC_MODE>,<QP_MAX_MSGS><TRAFFIC_CLASS>
      e.g., NCCL_CTRAN_IB_QP_CONFIG_ALGO="alltoall:1048576,4,dqplb,128,224;sendrecv:1048576,16,spray,128,224"
      If not given, NCCLx will use the configuration specified per topology
-     (see NCCL_CTRAN_IB_QP_CONFIG_XDC, NCCL_CTRAN_IB_QP_CONFIG_XZONE, NCCL_CTRAN_IB_QP_CONFIG_XRACK),
+     (see NCCL_CTRAN_IB_QP_CONFIG_XDC, NCCL_CTRAN_IB_QP_CONFIG_XZONE),
      or the default configuration set (see NCCL_CTRAN_IB_QP_SCALING_THRESHOLD, NCCL_CTRAN_IB_MAX_QPS,
      NCCL_CTRAN_IB_VC_MODE, and NCCL_CTRAN_IB_QP_MAX_MSGS) for all collectives.
 
@@ -1780,6 +1769,23 @@ cvars:
      Number of times to retry after receiving an RNR NAK.
      7 means infinite retry.
 
+ - name        : NCCL_CTRAN_IBGDA_LAZY_CONNECT
+   type        : bool
+   default     : false
+   description : |-
+     When true, MultipeerIbgdaTransport defers per-peer state allocation to
+     first use (lazy mode). When false (default), all per-peer state is
+     allocated eagerly at construction. Per-comm override via
+     CommOptions.hints["ncclx::ibLazyConnect"].
+
+ - name        : NCCL_CTRAN_IBGDA_MATERIALIZE_PEER_TIMEOUT_MS
+   type        : uint32_t
+   default     : 30000
+   description : |-
+     Timeout (in milliseconds) for materializePeer bilateral exchange.
+     On timeout, materializePeer throws rather than hanging.
+     No per-comm override.
+
  - name        : NCCL_CTRAN_BACKENDS
    type        : enumlist
    default     : ib, nvl, socket
@@ -1861,12 +1867,13 @@ cvars:
 
  - name        : NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT
    type        : int
-   default     : 1
+   default     : 0
    description : |-
      Sampling weight for algo profiling based on opCount per communicator.
      A collective is profiled when (opCount % samplingWeight == 0).
      For example, a sampling weight of 100 means every 100th collective
-     on each communicator is profiled. Set to 1 to profile every collective.
+     on each communicator is profiled. Set to 0 to disable profiling,
+     or 1 to profile every collective.
 
 
  - name        : NCCL_CTRAN_TRANSPORT_PROFILER
@@ -1976,7 +1983,7 @@ cvars:
  - name        : NCCL_ALLGATHER_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctdirect, ctring, ctrd, ctbrucks, ctgraph, ctgraph_pipeline, ctgraph_rdpipeline, ctgraph_ring, ctgraph_rd
+   choices     : orig, ctran, ctdirect, ctring, ctrd, ctsrd, ctbrucks, ctgraph, ctgraph_pipeline, ctgraph_rdpipeline, ctgraph_ring, ctgraph_rd
    description : |-
      The algorithm to use for Allgather communication
      orig - Copy-based ring algorithm
@@ -1984,6 +1991,7 @@ cvars:
      ctdirect - Ctran-based direct point-to-point algorithm
      ctring - Ctran-based ring algorithm
      ctrd - Ctran-based recursive doubling algorithm
+     ctsrd - Ctran-based streamed recursive doubling algorithm
      ctgraph - Cudagraph-aware: auto-selects pipeline/ring/rd based on topology during graph capture
      ctgraph_pipeline - Cudagraph-aware: forces persistent pipeline algorithm (nLocalRanks>1)
      ctgraph_rdpipeline - Cudagraph-aware: forces persistent recursive-doubling pipeline algorithm (nLocalRanks>1, nNodes power of 2)
@@ -1995,6 +2003,15 @@ cvars:
    default     : 134217728
    description : |-
      Minimum send size in bytes for ctgraph auto-select to choose ring over recursive doubling when nLocalRanks==1. Default 128MB.
+
+ - name        : NCCL_CTRAN_ALLGATHER_CTSRD_FC
+   type        : enum
+   default     : recvOnly
+   choices     : recvOnly, full
+   description : |-
+     Flow control mode for ctsrd (streamed recursive doubling) AllGather algorithm.
+     recvOnly - Receiver-only flow control. Pre-enqueue own chunk for all steps, forward received chunks to all future step peers immediately. Maximizes send/recv overlap.
+     full - Sender and receiver flow control. Forward received chunks to next step peer immediately, stage forwards for further steps until those steps begin. Reduces concurrent flows to at most 2 peers.
 
  - name        : NCCL_REDUCESCATTER_ALGO
    type        : enum

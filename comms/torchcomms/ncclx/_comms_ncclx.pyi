@@ -1,8 +1,6 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # pyre-strict
 
-from typing import List
-
 import torch
 from torchcomms._comms import TorchCommWindow
 
@@ -23,27 +21,6 @@ class TorchCommNCCLX:
         input: torch.Tensor,
         output_split_sizes: torch.Tensor,
         input_split_sizes: torch.Tensor,
-        async_op: bool,
-    ) -> TorchWork: ...
-    def alltoallv_dynamic_dispatch(
-        self,
-        output_tensor_list: List[torch.Tensor],
-        output_chunk_sizes_per_rank: torch.Tensor,
-        input_tensor: torch.Tensor,
-        input_chunk_sizes: torch.Tensor,
-        input_chunk_indices: torch.Tensor,
-        input_chunk_count_per_rank: torch.Tensor,
-        hidden_dim: int,
-        async_op: bool,
-    ) -> TorchWork: ...
-    def alltoallv_dynamic_combine(
-        self,
-        output_tensor: torch.Tensor,
-        input_tensor: torch.Tensor,
-        input_chunk_sizes: torch.Tensor,
-        input_chunk_indices: torch.Tensor,
-        input_chunk_count_per_rank: torch.Tensor,
-        hidden_dim: int,
         async_op: bool,
     ) -> TorchWork: ...
     def reduce_scatter_quantized(

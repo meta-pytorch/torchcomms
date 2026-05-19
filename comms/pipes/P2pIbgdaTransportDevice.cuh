@@ -1825,8 +1825,9 @@ class P2pIbgdaTransportDevice {
   __device__ NicQpIndex nic_qp_for_group(uint32_t group_id) const {
     if (nicDevices_.empty()) {
       printf(
-          "P2pIbgdaTransportDevice: nicDevices_ is empty at "
-          "%s:%d block=(%u,%u,%u) thread=(%u,%u,%u)\n",
+          "P2pIbgdaTransportDevice: transport not initialized "
+          "(peer not materialized? call get_device_handle(peers) first) "
+          "at %s:%d block=(%u,%u,%u) thread=(%u,%u,%u)\n",
           __FILE__,
           __LINE__,
           blockIdx.x,
