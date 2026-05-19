@@ -526,26 +526,69 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::barrier(
       backend_->barrier(opts.asyncOp, bopts));
 }
 
-c10::intrusive_ptr<c10d::Work>
-BackendWrapper::send(std::vector<at::Tensor>& tensors, int dstRank, int tag) {
+c10::intrusive_ptr<c10d::Work> BackendWrapper::send(
+    std::vector<at::Tensor>& tensors,
+    int dstRank,
+    int /*tag*/) {
   TORCH_CHECK(
       tensors.size() == 1,
       "Only single tensor supported, but got ",
       tensors.size(),
       " tensors");
+  if (coalescing_batch_.has_value()) {
+    coalescing_batch_->send(tensors.at(0), dstRank);
+    // Per-op Work returned during coalescing is a no-op sentinel; the real
+    // Work covering the whole batch is returned by endCoalescing(). c10d's
+    // batch_isend_irecv discards these per-op returns.
+    return c10::make_intrusive<WorkWrapper>(
+        c10::make_intrusive<TorchWorkCompleted>(), tensors);
+  }
   return c10::make_intrusive<WorkWrapper>(
       backend_->send(tensors.at(0), dstRank, /*async_op=*/true), tensors);
 }
 
-c10::intrusive_ptr<c10d::Work>
-BackendWrapper::recv(std::vector<at::Tensor>& tensors, int srcRank, int tag) {
+c10::intrusive_ptr<c10d::Work> BackendWrapper::recv(
+    std::vector<at::Tensor>& tensors,
+    int srcRank,
+    int /*tag*/) {
   TORCH_CHECK(
       tensors.size() == 1,
       "Only single tensor supported, but got ",
       tensors.size(),
       " tensors");
+  if (coalescing_batch_.has_value()) {
+    coalescing_batch_->recv(tensors.at(0), srcRank);
+    return c10::make_intrusive<WorkWrapper>(
+        c10::make_intrusive<TorchWorkCompleted>(), tensors);
+  }
   return c10::make_intrusive<WorkWrapper>(
       backend_->recv(tensors.at(0), srcRank, /*async_op=*/true), tensors);
+}
+
+void BackendWrapper::startCoalescing() {
+  TORCH_CHECK(
+      !coalescing_batch_.has_value(),
+      "BackendWrapper::startCoalescing called while a batch is already active");
+  coalescing_batch_.emplace(comm_->batch_op_create());
+}
+
+c10::intrusive_ptr<c10d::Work> BackendWrapper::endCoalescing() {
+  TORCH_CHECK(
+      coalescing_batch_.has_value(),
+      "BackendWrapper::endCoalescing called without a matching startCoalescing");
+  // Move the batch out so we always reset state, even if issue() throws.
+  auto batch = std::move(*coalescing_batch_);
+  coalescing_batch_.reset();
+  if (batch.ops.empty()) {
+    // Empty coalescing window — return a completed sentinel so callers can
+    // .wait() without blocking.
+    return c10::make_intrusive<WorkWrapper>(
+        c10::make_intrusive<TorchWorkCompleted>());
+  }
+  BatchP2POptions bopts;
+  bopts.timeout = options_->timeout;
+  return c10::make_intrusive<WorkWrapper>(
+      batch.issue(/*async_op=*/true, bopts));
 }
 
 std::shared_ptr<TorchComm> BackendWrapper::getComm() const {
