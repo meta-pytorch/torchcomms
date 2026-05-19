@@ -258,6 +258,104 @@ TEST_P(DistRegCacheTestSuite, ExportImportMem) {
   }
 }
 
+TEST_F(DistRegCacheTest, ImportMemUncachedDoesNotPopulateSharedCache) {
+  auto& mapper = comm_->ctran_->mapper;
+  ASSERT_NE(mapper, nullptr);
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+
+  std::unique_ptr<CtranIb> ctranIb;
+  try {
+    ctranIb = std::make_unique<CtranIb>(comm_.get(), std::nullopt);
+  } catch (const std::bad_alloc&) {
+    GTEST_SKIP() << "IB backend failed to allocate. Skip test";
+  }
+
+  const size_t dataCount = 100;
+  const size_t dataRange = dataCount * sizeof(int);
+
+  CtranIbEpochRAII epochRAII(ctranIb.get());
+  if (globalRank == 0) {
+    const int peer = 1;
+    void* data = nullptr;
+    CUDACHECK_TEST(cudaMalloc(&data, dataRange));
+    ASSERT_NE(data, nullptr);
+    assignChunkValue((int*)data, dataCount, (int)dataCount, (int)1);
+
+    void* segHdl = nullptr;
+    ctran::regcache::RegElem* regHdl = nullptr;
+    COMMCHECK_TEST(
+        mapper->regMem(data, dataRange, &segHdl, true, true, (void**)&regHdl));
+    ASSERT_NE(regHdl, nullptr);
+
+    ControlMsg msg(ControlMsgType::NVL_EXPORT_MEM);
+    std::vector<ctran::utils::CtranIpcSegDesc> extraSegments;
+    COMMCHECK_TEST(ipcRegCache->exportMem(
+        data, regHdl->ipcRegElem, msg.ipcDesc, extraSegments));
+    COMMCHECK_TEST(ibSendCtrl(msg, peer, ctranIb));
+
+    ctranIb->waitNotify(peer);
+
+    COMMCHECK_TEST(mapper->deregMem(segHdl, true));
+    CUDACHECK_TEST(cudaFree(data));
+  } else if (globalRank == 1) {
+    const int peer = 0;
+    const auto peerId = comm_->statex_->gPid(peer);
+    ipcRegCache->clearAllRemReg();
+
+    ControlMsg msg;
+    COMMCHECK_TEST(ibRecvCtrl(msg, peer, ctranIb));
+    EXPECT_EQ(msg.type, ControlMsgType::NVL_EXPORT_MEM);
+    EXPECT_EQ(ipcRegCache->getNumRemReg(peerId), 0);
+
+    void* uncachedMappedData = nullptr;
+    CtranMapperRemoteAccessKey uncachedKey{};
+    uncachedKey.backend = CtranMapperBackend::NVL;
+    std::unique_ptr<ctran::regcache::IpcRemRegElem> uncachedReg;
+    COMMCHECK_TEST(ipcRegCache->importMemUncached(
+        peerId,
+        msg.ipcDesc,
+        comm_->statex_->cudaDev(),
+        &uncachedMappedData,
+        &uncachedKey.nvlKey,
+        &uncachedReg,
+        &comm_->logMetaData_));
+    EXPECT_NE(uncachedMappedData, nullptr);
+    EXPECT_NE(uncachedReg, nullptr);
+    EXPECT_EQ(uncachedKey.nvlKey.basePtr, msg.ipcDesc.desc.base);
+    EXPECT_EQ(ipcRegCache->getNumRemReg(peerId), 0);
+    EXPECT_EQ(
+        checkChunkValue(
+            (int*)uncachedMappedData, dataCount, (int)dataCount, (int)1),
+        0);
+
+    uncachedReg.reset();
+    EXPECT_EQ(ipcRegCache->getNumRemReg(peerId), 0);
+
+    void* cachedMappedData = nullptr;
+    CtranMapperRemoteAccessKey cachedKey{};
+    cachedKey.backend = CtranMapperBackend::NVL;
+    COMMCHECK_TEST(ipcRegCache->importMem(
+        peerId,
+        msg.ipcDesc,
+        comm_->statex_->cudaDev(),
+        &cachedMappedData,
+        &cachedKey.nvlKey,
+        &comm_->logMetaData_));
+    EXPECT_NE(cachedMappedData, nullptr);
+    EXPECT_EQ(cachedKey.nvlKey.basePtr, msg.ipcDesc.desc.base);
+    EXPECT_EQ(ipcRegCache->getNumRemReg(peerId), 1);
+    EXPECT_EQ(
+        checkChunkValue((int*)cachedMappedData, dataCount, (int)dataCount, 1),
+        0);
+    COMMCHECK_TEST(ipcRegCache->releaseRemReg(
+        peerId, msg.ipcDesc.desc.base, msg.ipcDesc.uid));
+    EXPECT_EQ(ipcRegCache->getNumRemReg(peerId), 0);
+
+    COMMCHECK_TEST(ibNotify(peer, ctranIb));
+  }
+}
+
 TEST_F(DistRegCacheTest, ExportReleaseMemCb) {
   auto& mapper = comm_->ctran_->mapper;
   ASSERT_NE(mapper, nullptr);
