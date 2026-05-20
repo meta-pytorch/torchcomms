@@ -70,8 +70,9 @@ class BenchmarkConfig:
 
 
 if TRITON_AVAILABLE:
-
+    # pyrefly: ignore [unbound-name]
     @requires_torchcomms
+    # pyrefly: ignore [unbound-name]
     @triton.jit
     def tile_sendrecv_kernel(
         transport_ptr,

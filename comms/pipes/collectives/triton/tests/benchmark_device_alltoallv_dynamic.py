@@ -161,6 +161,7 @@ class AlltoallvDynamicBenchmark:
         """Deregister send buffer so it can be modified."""
         if self.src_info is not None:
             self.window.deregister_local_buffer(self.src_info)
+            # pyrefly: ignore [bad-assignment]
             self.src_info = None
 
     def _register_src(self) -> None:
@@ -186,13 +187,17 @@ class AlltoallvDynamicBenchmark:
         self.comm.barrier(False)
         if self.src_info is not None:
             self.window.deregister_local_buffer(self.src_info)
+            # pyrefly: ignore [bad-assignment]
             self.src_info = None
         if self.window is not None:
             self.window.tensor_deregister()
+            # pyrefly: ignore [bad-assignment]
             self.window = None
 
         # 4. Clean up class-level pools LAST (after all graphs are destroyed)
+        # pyrefly: ignore [bad-assignment]
         self.recv_buf = None
+        # pyrefly: ignore [bad-assignment]
         self.send_buf = None
         self.recv_pool = None  # pyre-ignore[8]: Intentional cleanup
         self.send_pool = None  # pyre-ignore[8]: Intentional cleanup

@@ -227,10 +227,20 @@ class SendRecvOp:
 
         # Reset coordination counters.
         _fill_kernel[(1,)](
-            self.send_coord, 0, self.pipeline_depth, BLOCK_SIZE=64, num_warps=1
+            # pyrefly: ignore [bad-argument-type, unexpected-keyword]
+            self.send_coord,
+            0,
+            self.pipeline_depth,
+            BLOCK_SIZE=64,
+            num_warps=1,
         )
         _fill_kernel[(1,)](
-            self.recv_coord, 0, self.pipeline_depth, BLOCK_SIZE=64, num_warps=1
+            # pyrefly: ignore [bad-argument-type, unexpected-keyword]
+            self.recv_coord,
+            0,
+            self.pipeline_depth,
+            BLOCK_SIZE=64,
+            num_warps=1,
         )
 
         sendrecv_cooperative_kernel[grid](
@@ -297,11 +307,16 @@ class SendRecvOp:
         self.dev_win = None
         self.window = None
         # 4: Release staging buffers and memory pool
+        # pyrefly: ignore [bad-assignment]
         self.send_staging = None
+        # pyrefly: ignore [bad-assignment]
         self.recv_staging = None
+        # pyrefly: ignore [bad-assignment]
         self._pool = None
         if not self.parallel:
+            # pyrefly: ignore [bad-assignment]
             self.send_coord = None
+            # pyrefly: ignore [bad-assignment]
             self.recv_coord = None
         # 5: Barrier after full cleanup
         self.comm.barrier(False)

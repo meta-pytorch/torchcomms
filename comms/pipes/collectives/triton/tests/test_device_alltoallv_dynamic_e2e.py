@@ -138,7 +138,9 @@ class _SingleTestBase(unittest.TestCase):
         if hasattr(cls, "window") and cls.window is not None:
             cls.window.tensor_deregister()
             cls.window = None
+        # pyrefly: ignore [bad-assignment]
         cls.recv_buf = None
+        # pyrefly: ignore [bad-assignment]
         cls.send_buf = None
         cls.recv_pool = None
         cls.send_pool = None
@@ -243,7 +245,9 @@ class TestUniformSizesBasic(_SingleTestBase):
             recv_sizes,
             local_recv_slot_offsets,
             remote_write_offsets,
+            # pyrefly: ignore [bad-argument-type]
             self.dev_win_ptr,
+            # pyrefly: ignore [bad-argument-type]
             self.src_info,
             self.my_rank,
             self.world_size,
@@ -278,7 +282,9 @@ class TestLargeMessages(_SingleTestBase):
             recv_sizes,
             local_recv_slot_offsets,
             remote_write_offsets,
+            # pyrefly: ignore [bad-argument-type]
             self.dev_win_ptr,
+            # pyrefly: ignore [bad-argument-type]
             self.src_info,
             self.my_rank,
             self.world_size,
@@ -316,7 +322,9 @@ class TestMinimumMessageSize(_SingleTestBase):
             recv_sizes,
             local_recv_slot_offsets,
             remote_write_offsets,
+            # pyrefly: ignore [bad-argument-type]
             self.dev_win_ptr,
+            # pyrefly: ignore [bad-argument-type]
             self.src_info,
             self.my_rank,
             self.world_size,
@@ -352,7 +360,9 @@ class TestRepeatedCalls(_SingleTestBase):
                 recv_sizes,
                 local_recv_slot_offsets,
                 remote_write_offsets,
+                # pyrefly: ignore [bad-argument-type]
                 self.dev_win_ptr,
+                # pyrefly: ignore [bad-argument-type]
                 self.src_info,
                 self.my_rank,
                 self.world_size,
@@ -396,7 +406,9 @@ class TestNumWarps4(_SingleTestBase):
             recv_sizes,
             local_recv_slot_offsets,
             remote_write_offsets,
+            # pyrefly: ignore [bad-argument-type]
             self.dev_win_ptr,
+            # pyrefly: ignore [bad-argument-type]
             self.src_info,
             self.my_rank,
             self.world_size,
@@ -430,7 +442,9 @@ class TestNumWarps32(_SingleTestBase):
             recv_sizes,
             local_recv_slot_offsets,
             remote_write_offsets,
+            # pyrefly: ignore [bad-argument-type]
             self.dev_win_ptr,
+            # pyrefly: ignore [bad-argument-type]
             self.src_info,
             self.my_rank,
             self.world_size,
@@ -469,7 +483,9 @@ class TestBlocksPerPeer2Uniform(_SingleTestBase):
             recv_sizes,
             local_recv_slot_offsets,
             remote_write_offsets,
+            # pyrefly: ignore [bad-argument-type]
             self.dev_win_ptr,
+            # pyrefly: ignore [bad-argument-type]
             self.src_info,
             self.my_rank,
             self.world_size,
@@ -503,7 +519,9 @@ class TestBlocksPerPeer4Uniform(_SingleTestBase):
             recv_sizes,
             local_recv_slot_offsets,
             remote_write_offsets,
+            # pyrefly: ignore [bad-argument-type]
             self.dev_win_ptr,
+            # pyrefly: ignore [bad-argument-type]
             self.src_info,
             self.my_rank,
             self.world_size,
@@ -544,7 +562,9 @@ class TestBlocksPerPeer4Large(_SingleTestBase):
             recv_sizes,
             local_recv_slot_offsets,
             remote_write_offsets,
+            # pyrefly: ignore [bad-argument-type]
             self.dev_win_ptr,
+            # pyrefly: ignore [bad-argument-type]
             self.src_info,
             self.my_rank,
             self.world_size,
@@ -587,7 +607,9 @@ class TestBlocksPerPeerConsistency(_SingleTestBase):
             recv_sizes,
             local_recv_slot_offsets,
             remote_write_offsets,
+            # pyrefly: ignore [bad-argument-type]
             self.dev_win_ptr,
+            # pyrefly: ignore [bad-argument-type]
             self.src_info,
             self.my_rank,
             self.world_size,
@@ -615,7 +637,9 @@ class TestBlocksPerPeerConsistency(_SingleTestBase):
             recv_sizes,
             local_recv_slot_offsets,
             remote_write_offsets,
+            # pyrefly: ignore [bad-argument-type]
             self.dev_win_ptr,
+            # pyrefly: ignore [bad-argument-type]
             self.src_info,
             self.my_rank,
             self.world_size,
@@ -675,7 +699,9 @@ class TestRepeatedCallsMultiBlock(_SingleTestBase):
                 recv_sizes,
                 local_recv_slot_offsets,
                 remote_write_offsets,
+                # pyrefly: ignore [bad-argument-type]
                 self.dev_win_ptr,
+                # pyrefly: ignore [bad-argument-type]
                 self.src_info,
                 self.my_rank,
                 self.world_size,
@@ -727,7 +753,9 @@ class TestRepeatedCallsVaryingBlocksPerPeer(_SingleTestBase):
                 recv_sizes,
                 local_recv_slot_offsets,
                 remote_write_offsets,
+                # pyrefly: ignore [bad-argument-type]
                 self.dev_win_ptr,
+                # pyrefly: ignore [bad-argument-type]
                 self.src_info,
                 self.my_rank,
                 self.world_size,
@@ -771,7 +799,9 @@ class TestSyncBufferBasic(_SingleTestBase):
             recv_sizes,
             local_recv_slot_offsets,
             remote_write_offsets,
+            # pyrefly: ignore [bad-argument-type]
             self.dev_win_ptr,
+            # pyrefly: ignore [bad-argument-type]
             self.src_info,
             self.my_rank,
             self.world_size,
@@ -826,7 +856,9 @@ class TestSyncBufferRepeatedCalls(_SingleTestBase):
                 recv_sizes,
                 local_recv_slot_offsets,
                 remote_write_offsets,
+                # pyrefly: ignore [bad-argument-type]
                 self.dev_win_ptr,
+                # pyrefly: ignore [bad-argument-type]
                 self.src_info,
                 self.my_rank,
                 self.world_size,
@@ -870,7 +902,9 @@ class TestSyncBufferMultiBlock(_SingleTestBase):
             recv_sizes,
             local_recv_slot_offsets,
             remote_write_offsets,
+            # pyrefly: ignore [bad-argument-type]
             self.dev_win_ptr,
+            # pyrefly: ignore [bad-argument-type]
             self.src_info,
             self.my_rank,
             self.world_size,
