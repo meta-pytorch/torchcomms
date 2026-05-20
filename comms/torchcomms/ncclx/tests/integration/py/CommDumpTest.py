@@ -5,10 +5,10 @@
 import json
 import unittest
 
-from torchcomms._comms_ncclx import comm_dump_all
 from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
     TorchCommTestWrapper,
 )
+from torchcomms_ncclx._comms_ncclx import comm_dump_all
 
 
 class CommDumpTest(unittest.TestCase):

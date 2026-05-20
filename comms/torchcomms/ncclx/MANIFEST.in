@@ -1,0 +1,10 @@
+include CMakeLists.txt
+include pyproject.toml
+include setup.py
+include README.md
+
+global-exclude *.py[cod]
+global-exclude *.so
+global-exclude *.a
+global-exclude *.o
+global-exclude *.swp
