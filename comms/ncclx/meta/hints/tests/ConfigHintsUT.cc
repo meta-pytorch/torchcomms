@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "comms/utils/cvars/nccl_cvars.h"
 #include "nccl.h" // @manual
 
 #include "meta/NcclxConfig.h" // @manual
@@ -23,6 +24,14 @@ TEST(ConfigHintsUT, NoHintsCreatesDefaults) {
   EXPECT_EQ(ncclxCfg->commDesc, "undefined");
   EXPECT_TRUE(ncclxCfg->splitGroupRanks.empty());
   EXPECT_EQ(ncclxCfg->ncclAllGatherAlgo, "undefined");
+  EXPECT_EQ(ncclxCfg->useCtran, false);
+  EXPECT_EQ(ncclxCfg->usePatAvg, false);
+  EXPECT_EQ(ncclxCfg->noLocal, false);
+  EXPECT_EQ(ncclxCfg->sendrecvAlgo, NCCL_SENDRECV_ALGO::orig);
+  EXPECT_EQ(ncclxCfg->allgatherAlgo, NCCL_ALLGATHER_ALGO::orig);
+  EXPECT_EQ(ncclxCfg->allreduceAlgo, NCCL_ALLREDUCE_ALGO::orig);
+  EXPECT_EQ(ncclxCfg->alltoallvAlgo, NCCL_ALLTOALLV_ALGO::orig);
+  EXPECT_EQ(ncclxCfg->rmaAlgo, NCCL_RMA_ALGO::ctran);
 
   // Upstream NCCL fields should be untouched
   EXPECT_EQ(config.blocking, NCCL_CONFIG_UNDEF_INT);
@@ -358,5 +367,108 @@ TEST(ConfigHintsUT, LazyPeerInit_HintOverrides) {
   EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
   ASSERT_NE(config.ncclxConfig, nullptr);
   EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, ibLazyConnect));
+  delete static_cast<ncclx::Config*>(config.ncclxConfig);
+}
+
+TEST(ConfigHintsUT, UseCtranHintOverride) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("useCtran", "1");
+  config.hints = &hints;
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+  ASSERT_NE(config.ncclxConfig, nullptr);
+  EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, useCtran));
+  delete static_cast<ncclx::Config*>(config.ncclxConfig);
+}
+
+TEST(ConfigHintsUT, UsePatAvgHintOverride) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("usePatAvg", "true");
+  config.hints = &hints;
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+  ASSERT_NE(config.ncclxConfig, nullptr);
+  EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, usePatAvg));
+  delete static_cast<ncclx::Config*>(config.ncclxConfig);
+}
+
+TEST(ConfigHintsUT, NoLocalHintOverride) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("noLocal", "1");
+  config.hints = &hints;
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+  ASSERT_NE(config.ncclxConfig, nullptr);
+  EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, noLocal));
+  delete static_cast<ncclx::Config*>(config.ncclxConfig);
+}
+
+TEST(ConfigHintsUT, AllgatherAlgoHintOverride) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("allgatherAlgo", "ctring");
+  config.hints = &hints;
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+  ASSERT_NE(config.ncclxConfig, nullptr);
+  EXPECT_EQ(
+      NCCLX_CONFIG_FIELD(config, allgatherAlgo), NCCL_ALLGATHER_ALGO::ctring);
+  delete static_cast<ncclx::Config*>(config.ncclxConfig);
+}
+
+TEST(ConfigHintsUT, SendrecvAlgoHint) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("sendrecvAlgo", "ctran");
+  config.hints = &hints;
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+  ASSERT_NE(config.ncclxConfig, nullptr);
+  EXPECT_EQ(
+      NCCLX_CONFIG_FIELD(config, sendrecvAlgo), NCCL_SENDRECV_ALGO::ctran);
+  delete static_cast<ncclx::Config*>(config.ncclxConfig);
+}
+
+TEST(ConfigHintsUT, AllreduceAlgoHint) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("allreduceAlgo", "ctdirect");
+  config.hints = &hints;
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+  ASSERT_NE(config.ncclxConfig, nullptr);
+  EXPECT_EQ(
+      NCCLX_CONFIG_FIELD(config, allreduceAlgo), NCCL_ALLREDUCE_ALGO::ctdirect);
+  delete static_cast<ncclx::Config*>(config.ncclxConfig);
+}
+
+TEST(ConfigHintsUT, AlltoallvAlgoHint) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("alltoallvAlgo", "ctran");
+  config.hints = &hints;
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+  ASSERT_NE(config.ncclxConfig, nullptr);
+  EXPECT_EQ(
+      NCCLX_CONFIG_FIELD(config, alltoallvAlgo), NCCL_ALLTOALLV_ALGO::ctran);
+  delete static_cast<ncclx::Config*>(config.ncclxConfig);
+}
+
+TEST(ConfigHintsUT, RmaAlgoHint) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("rmaAlgo", "orig");
+  config.hints = &hints;
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+  ASSERT_NE(config.ncclxConfig, nullptr);
+  EXPECT_EQ(NCCLX_CONFIG_FIELD(config, rmaAlgo), NCCL_RMA_ALGO::orig);
+  delete static_cast<ncclx::Config*>(config.ncclxConfig);
+}
+
+TEST(ConfigHintsUT, InvalidAlgoHintFallsBackToDefault) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("sendrecvAlgo", "invalid_algo");
+  config.hints = &hints;
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+  ASSERT_NE(config.ncclxConfig, nullptr);
+  EXPECT_EQ(NCCLX_CONFIG_FIELD(config, sendrecvAlgo), NCCL_SENDRECV_ALGO::orig);
   delete static_cast<ncclx::Config*>(config.ncclxConfig);
 }
