@@ -4,7 +4,6 @@
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/commstate/CommStateX.h"
 #include "meta/NcclxConfig.h" // @manual
-#include "meta/hints/CommHintConfig.h" // @manual
 
 #include "nvmlwrap.h"
 #include "transport.h"
