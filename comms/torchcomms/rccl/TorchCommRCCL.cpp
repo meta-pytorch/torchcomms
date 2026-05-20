@@ -330,6 +330,12 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::reconfigure(
         << "ncclCommGrow is not implemented in RCCL backend yet; "
         << "isNewRankJoining branch is a no-op during reconfigure";
   } else {
+    // Abort the existing communicator and bootstrap a fresh one with only the
+    // participating ranks (identified by opts.handles). This handles all
+    // reconfigure patterns uniformly: shrink, identity, singleton,
+    // split-brain, late join, grow.
+    // The bootstrap rendezvous is keyed on opts.uuid, so only the ranks that
+    // participate in this reconfigure meet at the same store key.
     detachMemoryHook();
 
     if (timeout_thread_.joinable()) {
@@ -348,38 +354,20 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::reconfigure(
       std::swap(completed_works_, empty);
     }
 
-    ncclComm_t new_comm = nullptr;
-
-    if (new_size <= comm_size_) {
-      auto newRanks = parseRanksFromHandles(opts.handles);
-      std::vector<int> excludeRanks;
-      for (int r = 0; r < comm_size_; ++r) {
-        if (newRanks.find(r) == newRanks.end()) {
-          excludeRanks.push_back(r);
-        }
-      }
-
-      RCCL_CHECK(
-          rccl_api_,
-          nccl_comm_,
-          rccl_api_->commShrink(
-              nccl_comm_,
-              excludeRanks.data(),
-              static_cast<int>(excludeRanks.size()),
-              &new_comm,
-              nullptr,
-              NCCL_SHRINK_ABORT),
-          "RCCL commShrink failed during reconfigure");
-    } else {
-      TC_LOG(WARNING, this)
-          << "ncclCommGrow is not implemented in RCCL backend yet; "
-          << "grow path (new_size > comm_size_) is a no-op during reconfigure";
-      new_comm = nccl_comm_;
-    }
-
-    nccl_comm_ = new_comm;
+    RCCL_CHECK_IGNORE(
+        rccl_api_,
+        rccl_api_->commAbort(nccl_comm_),
+        "RCCL commAbort failed during reconfigure");
+    nccl_comm_ = nullptr;
     comm_state_ = CommState::NORMAL;
     shutdown_ = false;
+    comm_size_ = new_size;
+
+    auto bootstrap = std::make_unique<TorchCommRCCLBootstrap>(
+        reconfigure_store_, device_, rccl_api_, hip_api_, reconfigureTimeout);
+    device_ = bootstrap->getDevice();
+    nccl_comm_ = bootstrap->createNcclComm(
+        fmt::format("{}/reconfigure/{}", name_, opts.uuid));
 
     initRcclResources();
   }

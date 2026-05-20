@@ -342,6 +342,17 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::reconfigure(
         << "ncclCommGrow is not implemented in RCCLX backend yet; "
         << "isNewRankJoining branch is a no-op during reconfigure";
   } else {
+    // Abort the existing communicator and bootstrap a fresh one with only the
+    // participating ranks (identified by opts.handles). This handles all
+    // reconfigure patterns uniformly:
+    //   - shrink (fewer handles than current world_size)
+    //   - identity (same handles, same world_size)
+    //   - singleton (each rank passes only its own handle)
+    //   - split-brain (two groups reconfigure independently with different uuids)
+    //   - late join (some ranks skip a reconfigure round)
+    //   - grow (more handles than current world_size)
+    // The bootstrap rendezvous is keyed on opts.uuid, so only the ranks that
+    // participate in this reconfigure meet at the same store key.
     detachMemoryHook();
 
     if (timeout_thread_.joinable()) {
@@ -360,38 +371,21 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::reconfigure(
       std::swap(completed_works_, empty);
     }
 
-    ncclComm_t new_comm = nullptr;
+    RCCLX_CHECK_IGNORE(
+        rcclx_api_,
+        rcclx_api_->commAbort(nccl_comm_),
+        "RCCLX commAbort failed during reconfigure");
+    nccl_comm_ = nullptr;
 
-    if (new_size <= comm_size_) {
-      auto newRanks = parseRanksFromHandles(opts.handles);
-      std::vector<int> excludeRanks;
-      for (int r = 0; r < comm_size_; ++r) {
-        if (newRanks.find(r) == newRanks.end()) {
-          excludeRanks.push_back(r);
-        }
-      }
-
-      RCCLX_CHECK(
-          rcclx_api_,
-          nccl_comm_,
-          rcclx_api_->commShrink(
-              nccl_comm_,
-              excludeRanks.data(),
-              static_cast<int>(excludeRanks.size()),
-              &new_comm,
-              nullptr,
-              NCCL_SHRINK_ABORT),
-          "RCCLX commShrink failed during reconfigure");
-    } else {
-      TC_LOG(WARNING, this)
-          << "ncclCommGrow is not implemented in RCCLX backend yet; "
-          << "grow path (new_size > comm_size_) is a no-op during reconfigure";
-      new_comm = nccl_comm_;
-    }
-
-    nccl_comm_ = new_comm;
     comm_state_ = CommState::NORMAL;
     shutdown_ = false;
+    comm_size_ = new_size;
+
+    auto bootstrap = std::make_unique<TorchCommRCCLXBootstrap>(
+        reconfigure_store_, device_, rcclx_api_, hip_api_, reconfigureTimeout);
+    device_ = bootstrap->getDevice();
+    nccl_comm_ = bootstrap->createNcclComm(
+        fmt::format("{}/reconfigure/{}", name_, opts.uuid));
 
     initRcclxResources();
   }
