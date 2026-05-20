@@ -498,9 +498,6 @@ std::unique_ptr<CtranComm> CtranStandaloneFixture::makeCtranComm(
   std::strncpy(topo.dc, "ut_dc", ncclx::kMaxNameLen);
   std::strncpy(topo.zone, "ut_zone", ncclx::kMaxNameLen);
   std::strncpy(topo.host, "ut_host", ncclx::kMaxNameLen);
-  // we can only set one of the two, rtsw or su.
-  std::strncpy(topo.rtsw, "", ncclx::kMaxNameLen);
-  std::strncpy(topo.su, "ut_su", ncclx::kMaxNameLen);
 
   std::vector<ncclx::RankTopology> rankTopologies = {topo};
   std::vector<int> commRanksToWorldRanks = {0};

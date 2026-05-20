@@ -1,8 +1,9 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/ctran/backends/ib/CtranIb.h"
-
-#include <unistd.h>
+#include "comms/ctran/backends/ib/BootstrapExternal.h"
+#include "comms/ctran/backends/ib/BootstrapInternal.h"
+#include "comms/ctran/backends/ib/CtranIb.h"
 
 #include <fmt/core.h>
 #include <folly/ScopeGuard.h>
@@ -39,12 +40,15 @@ using namespace ctran::ibvwrap;
 
 namespace {
 #define CTRAN_IB_ANY_PORT -1
-const std::string kCtranIbLogEventName{"CtranIb-QpExchange"};
-
-const uint64_t kBootstrapMagic = 0xfaceb00cdeadbeef;
+constexpr int kH100CudaArch = 900;
+constexpr int kGb300CudaArch = 1030;
 }; // namespace
 
 thread_local std::unordered_map<void*, std::atomic_bool> epochLockedFlags;
+
+bool CtranIb::shouldEnableLocalFlushByDefault(int cudaArch) {
+  return cudaArch < kH100CudaArch || cudaArch == kGb300CudaArch;
+}
 
 commResult_t checkEpochLock(CtranIb* ctranIb) {
   if (NCCL_CTRAN_IB_EPOCH_LOCK_ENFORCE_CHECK &&
@@ -328,12 +332,12 @@ CtranIb::CtranIb(
     // https://ontrack.amd.com/browse/FBA-633
     enableLocalFlush_ = true;
 #else
-    // Turn on flush for NVidia GPUs older than H100, or when using
-    // multiple NICs with flush enabled (cross-NIC DMA writes have no PCIe
-    // ordering guarantee on ARM SoCs, requiring an explicit RDMA READ
-    // flush per device).
-    enableLocalFlush_ = comm->statex_->cudaArch() < 900 ||
-        (NCCL_CTRAN_IB_DEVICES_PER_RANK > 1 && NCCL_CTRAN_IB_MULTI_NIC_FLUSH);
+    // Turn on flush for NVidia GPUs older than H100 and GB300.
+    // TODO: Replace the GB300 CUDA-arch proxy with a topology query similar to
+    // baseline ncclTopoNeedFlush(); CUDA arch is not precise topology
+    // detection.
+    enableLocalFlush_ =
+        CtranIb::shouldEnableLocalFlushByDefault(comm->statex_->cudaArch());
 #endif
   }
   init(
@@ -440,9 +444,6 @@ void CtranIb::init(
   } else { // Fall back to old, non-abortable sockets.
     socketFactory_ = std::make_shared<ctran::bootstrap::SocketFactory>();
   }
-
-  listenSocket = socketFactory_->createServerSocket(
-      static_cast<int>(NCCL_SOCKET_RETRY_CNT), abortCtrl_);
 
   const bool commAbortEnabled = comm && comm->abortEnabled();
   if (commAbortEnabled && abortCtrl->Enabled()) {
@@ -613,21 +614,24 @@ void CtranIb::init(
       cudaDev,
       dmaBufSupported);
 
-  // assign the lock-free vcStateMaps ptr for fast path access when applicable
-  {
-    auto locked = vcStateMaps.wlock();
-    vcStateMapsPtr = &(*locked);
-  }
-
-  if (comm) {
-    // initialize connection map before preConnect() is called by any algorithm
-    connectedPeerMap.resize(comm->statex_->nRanks(), false);
-  }
+  // Initialize the per-peer VC state (rank/qp maps, connectedPeerMap, and
+  // lock-free fast-path pointer). Must run before any incoming connection is
+  // accepted (i.e., before bootstrap_->start() spawns the listen thread).
+  vcState_.init(this, this->ncclLogData, comm ? comm->statex_->nRanks() : 0);
 
   // Optionally start internal bootstrap service.
   // If kExternal, external callsite would explicitly manage it and thus we skip
   // the internal bootstrap.
   if (this->bootstrapMode == BootstrapMode::kExternal) {
+    externalBootstrap_ = std::make_unique<ctran::ib::BootstrapExternal>(
+        vcState_,
+        devices,
+        comm,
+        cudaDev,
+        commHash,
+        commDesc,
+        ncclLogData,
+        getPgToTrafficClassValue());
     CLOGF_SUBSYS(
         INFO,
         INIT,
@@ -636,7 +640,19 @@ void CtranIb::init(
         commHash,
         commDesc);
   } else {
-    bootstrapStart(qpServerAddr);
+    bootstrap_ = std::make_unique<Bootstrap>(
+        vcState_,
+        socketFactory_,
+        abortCtrl_,
+        ncclLogData,
+        comm,
+        devices,
+        getPgToTrafficClassValue(),
+        cudaDev,
+        rank,
+        commHash,
+        commDesc);
+    bootstrap_->start(qpServerAddr);
   }
 
   CLOGF_SUBSYS(
@@ -646,75 +662,6 @@ void CtranIb::init(
       (void*)this,
       commHash,
       commDesc);
-}
-
-void CtranIb::bootstrapStart(
-    std::optional<const SocketServerAddr*> qpServerAddr) {
-  // Setup the listen socket
-  std::string resolvedIfName;
-  folly::SocketAddress addrSockAddr;
-  if (this->bootstrapMode == BootstrapMode::kDefaultServer) {
-    // Use default NCCL socket ifname
-    auto maybeAddr = ctran::bootstrap::getInterfaceAddress(
-        NCCL_SOCKET_IFNAME, NCCL_SOCKET_IPADDR_PREFIX, true, &resolvedIfName);
-    if (maybeAddr.hasError()) {
-      CLOGF(WARN, "CTRAN-IB: No socket interfaces found");
-      throw ::ctran::utils::Exception(
-          "CTRAN-IB : No socket interfaces found",
-          commSystemError,
-          this->rank,
-          this->commHash,
-          this->commDesc);
-    }
-
-    addrSockAddr = folly::SocketAddress(maybeAddr.value(), 0 /* port */);
-  } else {
-    FB_CHECKABORT(
-        qpServerAddr.has_value(),
-        "CTRAN-IB: Expect bootstrap with specified server address, but is not provided. It indicates a COMM bug");
-
-    auto qpServerAddrPtr = qpServerAddr.value();
-    // use provided addr(i.e. ip, port, host) to initialize ctranIB
-    addrSockAddr = toSocketAddress(*qpServerAddrPtr);
-    resolvedIfName = qpServerAddrPtr->ifName;
-  }
-
-  FB_SYSCHECKTHROW_EX(
-      this->listenSocket->bindAndListen(addrSockAddr, resolvedIfName),
-      this->rank,
-      this->commHash,
-      this->commDesc);
-  CLOGF_SUBSYS(
-      INFO,
-      INIT,
-      "CTRAN-IB: Rank {} created listen socket with {} listenAddr {} ifname {}",
-      rank,
-      bootstrapMode == BootstrapMode::kSpecifiedServer ? "specified"
-                                                       : "self-finding",
-      this->listenSocket->getListenAddress()->describe().c_str(),
-      resolvedIfName);
-
-  // Exchange listen sock address among all ranks
-  if (comm) {
-    allListenSocketAddrs.resize(comm->statex_->nRanks());
-    auto maybeListenAddr = this->listenSocket->getListenAddress();
-    if (maybeListenAddr.hasError()) {
-      FB_SYSCHECKTHROW_EX(
-          maybeListenAddr.error(), this->rank, this->commHash, this->commDesc);
-    }
-    maybeListenAddr->getAddress(&allListenSocketAddrs[rank]);
-
-    auto resFuture = comm->bootstrap_->allGather(
-        allListenSocketAddrs.data(),
-        sizeof(allListenSocketAddrs.at(0)),
-        comm->statex_->rank(),
-        comm->statex_->nRanks());
-    FB_COMMCHECKTHROW_EX(
-        static_cast<commResult_t>(std::move(resFuture).get()),
-        this->ncclLogData);
-  }
-
-  this->listenThread = std::thread{bootstrapAccept, this};
 }
 
 std::string CtranIb::getIbDevName(int device) const {
@@ -729,9 +676,8 @@ CtranIb::~CtranIb(void) {
   auto s = CtranIbSingleton::getInstance();
   CHECK_VALID_IB_SINGLETON(s);
 
-  if (bootstrapMode != BootstrapMode::kExternal) {
-    listenSocket->shutdown();
-    listenThread.join();
+  if (bootstrap_) {
+    bootstrap_->shutdown();
   }
 
   FB_COMMCHECKIGNORE(releaseRemoteTransStates(true /* fromDestructor */));
@@ -940,7 +886,7 @@ commResult_t CtranIb::iflush(
 }
 
 commResult_t CtranIb::getVcConfig(int peerRank, CtranIbVcConfig_t& config) {
-  std::shared_ptr<CtranIbVirtualConn> vc = getVcImpl(peerRank);
+  std::shared_ptr<CtranIbVirtualConn> vc = vcState_.getVc(peerRank);
   FB_COMMCHECK(checkValidVc(vc, peerRank));
 
   config = {
@@ -956,12 +902,9 @@ commResult_t CtranIb::releaseRemoteTransStates(bool fromDestructor) {
   // resource. Skip epochLock if called from destructor
   CtranIbEpochRAII epochRAII(fromDestructor ? nullptr : this);
 
-  { // Explicitly release all virtual connections before destroying cq.
-    auto lockedVcStateMaps = vcStateMaps.wlock();
-    lockedVcStateMaps->rankToVcMap.clear();
-    lockedVcStateMaps->qpToVcMap.clear();
-    vcStateMapsPtr = nullptr;
-  }
+  // Explicitly release all virtual connections (and clear connectedPeerMap)
+  // before destroying cq.
+  vcState_.releaseAll();
 
   // Epoch lock only ensures no external access to CtranIb while releasing
   // resources; We still need per-object lock here to ensure the internal
@@ -980,7 +923,6 @@ commResult_t CtranIb::releaseRemoteTransStates(bool fromDestructor) {
     rankToPendingOpsMap.clear();
   }
 
-  this->connectedPeerMap.clear();
   return commSuccess;
 }
 
@@ -1021,27 +963,26 @@ commResult_t CtranIb::initRemoteTransStates(void) {
 }
 
 commResult_t CtranIb::preConnect(const std::unordered_set<int>& peerRanks) {
-  std::shared_ptr<CtranIbVirtualConn> vc = nullptr;
   bool newConnection = false;
   // if map is empty, it means we don't know comm size and peerAddr
-  if (connectedPeerMap.empty()) {
+  if (!vcState_.hasConnectedPeerMap()) {
     return commSuccess;
   }
   // Actively connect to peers with larger rank number, if not already connected
   for (int peerRank : peerRanks) {
     FB_COMMCHECK(checkValidPeer(peerRank));
-    if (rank < peerRank && getVcImpl(peerRank) == nullptr) {
-      FB_COMMCHECK(bootstrapConnect(peerRank));
+    if (rank < peerRank && vcState_.getVc(peerRank) == nullptr) {
+      FB_COMMCHECK(bootstrap_->connect(peerRank, std::nullopt));
     }
   }
   // check if all requested peers are connected
   for (int peerRank : peerRanks) {
-    if (!connectedPeerMap.at(peerRank)) {
-      while (getVcImpl(peerRank) == nullptr) {
+    if (!vcState_.isPeerConnected(peerRank)) {
+      while (vcState_.getVc(peerRank) == nullptr) {
         // wait listening thread to establish connections with rest of peers
         // with smaller rank number
       }
-      connectedPeerMap.at(peerRank) = true;
+      vcState_.markPeerConnected(peerRank);
       newConnection = true;
     }
   }
@@ -1058,245 +999,9 @@ commResult_t CtranIb::preConnect(const std::unordered_set<int>& peerRanks) {
   return commSuccess;
 }
 
-commResult_t CtranIb::connectVc(
-    std::unique_ptr<ctran::bootstrap::ISocket> sock,
-    const bool isServer,
-    const int peerRank) {
-  // Create a new VC for the peer
-  FB_COMMCHECK(this->checkValidPeer(peerRank));
-  std::shared_ptr<CtranIbVirtualConn> vc = createVc(peerRank);
-
-  std::string localBusCard, remoteBusCard;
-  {
-    // No need to lock since VC is not yet exposed to local rank. Lock to
-    // simply follow VC thread-safety semantics.
-    const std::lock_guard<std::mutex> lock(vc->mutex);
-
-    /* exchange business cards */
-    std::size_t size = vc->getBusCardSize();
-    localBusCard.resize(size);
-    remoteBusCard.resize(size);
-    FB_COMMCHECK(vc->getLocalBusCard(localBusCard.data()));
-    if (isServer) {
-      FB_SYSCHECKRETURN(
-          sock->recv(remoteBusCard.data(), size), commRemoteError);
-      FB_SYSCHECKRETURN(sock->send(localBusCard.data(), size), commRemoteError);
-    } else {
-      FB_SYSCHECKRETURN(sock->send(localBusCard.data(), size), commRemoteError);
-      FB_SYSCHECKRETURN(
-          sock->recv(remoteBusCard.data(), size), commRemoteError);
-    }
-  }
-
-  connectVcDirect(remoteBusCard, peerRank);
-
-  // Ack that the connection is fully established.
-  // Ensure remote rank don't use the VC before local setupVc and
-  // vcStateMaps update.
-  int ack{0};
-  if (isServer) {
-    FB_SYSCHECKRETURN(sock->send(&ack, sizeof(int)), commRemoteError);
-    FB_SYSCHECKRETURN(sock->recv(&ack, sizeof(int)), commRemoteError);
-  } else {
-    FB_SYSCHECKRETURN(sock->recv(&ack, sizeof(int)), commRemoteError);
-    FB_SYSCHECKRETURN(sock->send(&ack, sizeof(int)), commRemoteError);
-  }
-  return commSuccess;
-}
-
-std::string CtranIb::getLocalVcIdentifier(const int peerRank) {
-  std::string localBusCard;
-  auto vc = createVc(peerRank);
-  {
-    const std::lock_guard<std::mutex> lock(vc->mutex);
-    localBusCard.resize(vc->getBusCardSize());
-    FB_COMMCHECKTHROW_EX(
-        vc->getLocalBusCard(localBusCard.data()), this->ncclLogData);
-  }
-  return localBusCard;
-}
-
-commResult_t CtranIb::connectVcDirect(
-    const std::string& remoteVcIdentifier,
-    const int peerRank) {
-  // Connect the VC
-  auto vc = createVc(peerRank);
-  {
-    const std::lock_guard<std::mutex> lock(vc->mutex);
-
-    // Verify that getLocalVcIdentifier() was called first to create QPs.
-    // This is a precondition for connectVcDirect().
-    if (!vc->areQpsInitialized()) {
-      CLOGF(
-          ERR,
-          "CTRAN-IB: connectVcDirect called for peerRank {} before getLocalVcIdentifier(). "
-          "QPs must be initialized first. commHash {:x}, commDesc {}",
-          peerRank,
-          commHash,
-          commDesc);
-      return commInternalError;
-    }
-
-    FB_COMMCHECKTHROW_EX(
-        vc->setupVc((void*)remoteVcIdentifier.data()), this->ncclLogData);
-  }
-
-  uint32_t controlQp = vc->getControlQpNum();
-  uint32_t notifyQp = vc->getNotifyQpNum();
-  uint32_t atomicQp = vc->getAtomicQpNum();
-  std::vector<uint32_t> dataQps = vc->getDataQpNums();
-
-  // Till now VC is not yet exposed to local rank. Local rank can use the VC
-  // once updated the vcStateMaps.
-  FB_COMMCHECKTHROW_EX(updateVcState(vc, peerRank), this->ncclLogData);
-
-  CLOGF_SUBSYS(
-      INFO,
-      INIT,
-      "CTRAN-IB: Established connection: commHash {:x}, commDesc {}, "
-      "vc {}, rank {}, peer {}, control qpn {}, notify qpn {}, atomic qpn {}, data qpns {}",
-      commHash,
-      commDesc,
-      (void*)vc.get(),
-      rank,
-      peerRank,
-      controlQp,
-      notifyQp,
-      atomicQp,
-      vecToStr(dataQps));
-
-  return commSuccess;
-}
-
-// TODO: We may want to retry if err is ECONNRESET,
-// ETIMEDOUT, or ECONNRESET. For other errors, we
-// may still want to throw an ctran::utils::Exception,
-// like what would happen if FT is disabled (via
-// the FB_SYSCHECKTHROW_EX macro).
-#define HANDLE_SOCKET_ERROR(cmd, ib)                                  \
-  if (!ib->abortCtrl_->Enabled()) {                                   \
-    FB_SYSCHECKTHROW_EX(cmd, ib->rank, ib->commHash, ib->commDesc);   \
-  } else {                                                            \
-    int errCode = cmd;                                                \
-    if (errCode || ib->abortCtrl_->Test()) {                          \
-      CLOGF(ERR, "Socket error encountered: {}. Aborting.", errCode); \
-      ib->abortCtrl_->Set(); /* Ensure remote is notified */          \
-      break;                                                          \
-    }                                                                 \
-  }
-
-void CtranIb::bootstrapAccept(CtranIb* ib) {
-  // Set cudaDev for logging
-  FB_CUDACHECKTHROW_EX(
-      cudaSetDevice(ib->cudaDev), ib->rank, ib->commHash, ib->commDesc);
-  commNamedThreadStart(
-      "CTranIbListen", ib->rank, ib->commHash, ib->commDesc.c_str(), __func__);
-  while (1) {
-    // Accept a connection from a peer. Socket will automatically closed when
-    // it'll go out of scope (part of its destructor).
-    auto maybeSocket = ib->listenSocket->acceptSocket();
-    if (maybeSocket.hasError()) {
-      if (ib->listenSocket->hasShutDown()) {
-        break; // listen socket is closed or the CtranIb instance was aborted
-      }
-      HANDLE_SOCKET_ERROR(maybeSocket.error(), ib);
-    }
-
-    std::unique_ptr<ctran::bootstrap::ISocket> socket =
-        std::move(maybeSocket.value());
-
-    uint64_t magic{0};
-    HANDLE_SOCKET_ERROR(socket->recv(&magic, sizeof(uint64_t)), ib);
-    if (magic != kBootstrapMagic) {
-      CLOGF(
-          WARN,
-          "CTRAN-IB: Invalid magic - received {:x} but expected {:x} for commHash {:x} commDesc {}. "
-          "Likely unexpected connection attempt. Ignoring. Local Addr: {},  Peer Addr: {}",
-          magic,
-          kBootstrapMagic,
-          ib->commHash,
-          ib->commDesc,
-          socket->getLocalAddress().describe(),
-          socket->getPeerAddress().describe());
-      continue;
-    }
-
-    int peerRank;
-    HANDLE_SOCKET_ERROR(socket->recv(&peerRank, sizeof(int)), ib);
-    const auto err = ib->connectVc(std::move(socket), true, peerRank);
-    if (err != 0) { // TODO: We may want to handle certain errors differently?
-      CLOGF(
-          ERR,
-          "CTRAN-IB: Failed to establish connection with peer rank {} for commHash {:x} commDesc {}, err={}",
-          peerRank,
-          ib->commHash,
-          ib->commDesc,
-          err);
-      continue;
-    }
-  }
-
-  CLOGF(
-      INFO,
-      "CTRAN-IB: Listen thread terminating, rank {} commHash {:x} commDesc {}",
-      ib->rank,
-      ib->commHash,
-      ib->commDesc);
-  return;
-}
-
-commResult_t CtranIb::bootstrapConnect(
-    int peerRank,
-    std::optional<const SocketServerAddr*> peerAddr) {
-  folly::SocketAddress peerSockAddr;
-  const std::string* clientIfName;
-  // When peer server address is passed, connect to it directly.
-  // Otherwise, use the pre-exchanged listen socket address which requires an
-  // associated communicator.
-  if (peerAddr.has_value()) {
-    auto peerAddrPtr = peerAddr.value();
-    peerSockAddr = toSocketAddress(*peerAddrPtr);
-    // always use the same ifname as remote server
-    clientIfName = &peerAddrPtr->ifName;
-  } else {
-    FB_CHECKABORT(
-        allListenSocketAddrs.size() > 0,
-        "Peer address is not specified, but pre-exchanged listen sockets is empty. It indicates a COMM internal bug.");
-    peerSockAddr = toSocketAddress(allListenSocketAddrs[peerRank]);
-    clientIfName = &NCCL_CLIENT_SOCKET_IFNAME;
-  }
-
-  NcclScubaEvent scubaEvent(kCtranIbLogEventName, &ncclLogData);
-  scubaEvent.startAndRecord();
-  SCOPE_EXIT {
-    scubaEvent.stopAndRecord();
-  };
-
-  CLOGF_SUBSYS(
-      INFO,
-      INIT,
-      "CTRAN-IB: Establishing connection: commHash {:x}, commDesc {}, rank {}, peer {}, peer listenAddr {} clientIfName {}",
-      commHash,
-      commDesc,
-      rank,
-      peerRank,
-      peerSockAddr.describe(),
-      *clientIfName);
-
-  // Send SETUP command to remote listenThread
-  std::unique_ptr<ctran::bootstrap::ISocket> sock =
-      socketFactory_->createClientSocket(abortCtrl_);
-  FB_SYSCHECKRETURN(
-      sock->connect(
-          peerSockAddr,
-          *clientIfName,
-          std::chrono::milliseconds(NCCL_SOCKET_RETRY_SLEEP_MSEC),
-          NCCL_SOCKET_RETRY_CNT),
-      commRemoteError);
-  FB_SYSCHECKRETURN(
-      sock->send(&kBootstrapMagic, sizeof(uint64_t)), commRemoteError);
-  FB_SYSCHECKRETURN(sock->send(&rank, sizeof(int)), commRemoteError);
-  return connectVc(std::move(sock), false, peerRank);
+folly::Expected<folly::SocketAddress, int>
+CtranIb::getListenSocketListenAddr() {
+  return bootstrap_->getListenAddress();
 }
 
 const char* CtranIb::ibv_wc_status_str(enum ibverbx::ibv_wc_status status) {
@@ -1348,72 +1053,6 @@ const char* CtranIb::ibv_wc_status_str(enum ibverbx::ibv_wc_status status) {
     default:
       return "unrecognized error";
   }
-}
-
-commResult_t CtranIb::updateVcState(
-    std::shared_ptr<CtranIbVirtualConn> vc,
-    int peerRank) {
-  auto locked = vcStateMaps.wlock();
-  if (locked->rankToVcMap.find(peerRank) != locked->rankToVcMap.end()) {
-    CLOGF(
-        ERR,
-        "CTRAN-IB: VirtualConnection (VC) already exists for peerRank {} in pimpl {} commHash {:x}, commDesc {}. It likely indicates a COMM bug.",
-        peerRank,
-        (void*)this,
-        commHash,
-        commDesc);
-    return commInternalError;
-  }
-
-  locked->rankToVcMap[peerRank] = vc;
-  QpUniqueId controlQpId = std::make_pair(vc->getControlQpNum(), 0);
-  if (checkAndInsertQpToVcMap(locked->qpToVcMap, controlQpId, vc) !=
-      commSuccess) {
-    return commInternalError;
-  }
-  QpUniqueId notifyQpId = std::make_pair(vc->getNotifyQpNum(), 0);
-  if (checkAndInsertQpToVcMap(locked->qpToVcMap, notifyQpId, vc) !=
-      commSuccess) {
-    return commInternalError;
-  }
-  QpUniqueId atomicQpId = std::make_pair(vc->getAtomicQpNum(), 0);
-  if (checkAndInsertQpToVcMap(locked->qpToVcMap, atomicQpId, vc) !=
-      commSuccess) {
-    return commInternalError;
-  }
-
-  std::vector<uint32_t> dataQps = vc->getDataQpNums();
-  for (int qpIdx = 0; qpIdx < dataQps.size(); qpIdx++) {
-    int device = vc->getIbDevFromQpIdx(qpIdx);
-    QpUniqueId qpId = std::make_pair(dataQps[qpIdx], device);
-    if (checkAndInsertQpToVcMap(locked->qpToVcMap, qpId, vc) != commSuccess) {
-      return commInternalError;
-    }
-  }
-
-  {
-    // Remove from pendingVcs_ since the VC is now established and ownership
-    // transferred to vcStateMaps
-    // TODO: for now we apply a hot fix to address segfault caused by race from
-    // concurrent threads updating pendingVcs_. We need to revisit why we
-    // need pendingVcs_? To add explanation to it or remove
-    std::lock_guard<std::mutex> lock(cqMutex);
-    pendingVcs_.erase(peerRank);
-  }
-
-  return commSuccess;
-}
-
-std::shared_ptr<CtranIbVirtualConn> CtranIb::createVc(int peerRank) {
-  std::lock_guard<std::mutex> lock(cqMutex);
-  auto it = pendingVcs_.emplace(peerRank, nullptr);
-  if (!it.second) {
-    return it.first->second;
-  }
-  // Create a new VC and assign
-  it.first->second = std::make_shared<CtranIbVirtualConn>(
-      devices, peerRank, comm, getPgToTrafficClassValue(), cudaDev);
-  return it.first->second;
 }
 
 commResult_t CtranIb::setPgToTrafficClassMap() {

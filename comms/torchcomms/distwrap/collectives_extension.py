@@ -1,7 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # pyre-strict
 
-from typing import Any, List
+from typing import Any
 
 import torch
 from torch.distributed import ProcessGroup, ReduceOp
@@ -45,87 +45,6 @@ def new_window(
         tc = next(iter(torchcomms_instances.values()))
 
     return tc.new_window()
-
-
-# =============================================================================
-# AlltoAllv-Dynamic Operations (torchcomms/ncclx-only)
-# =============================================================================
-
-
-def alltoallv_dynamic_dispatch(
-    output_tensors: List[torch.Tensor],
-    output_split_sizes: torch.Tensor,
-    input_tensor: torch.Tensor,
-    input_split_sizes: torch.Tensor,
-    input_split_indices: torch.Tensor,
-    input_split_indices_per_rank: torch.Tensor,
-    D: int,
-    group: ProcessGroup | None = None,
-    async_op: bool = False,
-) -> Any:
-    if not torchcomms_is_enabled():
-        raise AssertionError(
-            "alltoallv_dynamic_dispatch requires torchcomms to be enabled"
-        )
-
-    pg = get_group(group)
-    tc = get_torchcomms_instance(pg, device_type="cuda")
-
-    # Verify backend is ncclx
-    backend_name = tc.get_backend()
-    if backend_name != "ncclx":
-        raise AssertionError(
-            f"alltoallv_dynamic_dispatch requires ncclx backend, got {backend_name}"
-        )
-
-    ncclx_backend = tc.get_backend_impl()
-    return ncclx_backend.alltoallv_dynamic_dispatch(
-        output_tensors,
-        output_split_sizes,
-        input_tensor,
-        input_split_sizes,
-        input_split_indices,
-        input_split_indices_per_rank,
-        D,
-        async_op,
-    )
-
-
-def alltoallv_dynamic_combine(
-    output_tensor: torch.Tensor,
-    input_tensor: torch.Tensor,
-    input_split_sizes: torch.Tensor,
-    input_split_indices: torch.Tensor,
-    input_split_indices_per_rank: torch.Tensor,
-    D: int,
-    group: ProcessGroup | None = None,
-    async_op: bool = False,
-) -> None:
-    if not torchcomms_is_enabled():
-        raise AssertionError(
-            "alltoallv_dynamic_combine requires torchcomms to be enabled"
-        )
-
-    pg = get_group(group)
-    tc = get_torchcomms_instance(pg, device_type="cuda")
-
-    # Verify backend is ncclx
-    backend_name = tc.get_backend()
-    if backend_name != "ncclx":
-        raise AssertionError(
-            f"alltoallv_dynamic_combine requires ncclx backend, got {backend_name}"
-        )
-
-    ncclx_backend = tc.get_backend_impl()
-    ncclx_backend.alltoallv_dynamic_combine(
-        output_tensor,
-        input_tensor,
-        input_split_sizes,
-        input_split_indices,
-        input_split_indices_per_rank,
-        D,
-        async_op,
-    )
 
 
 # =============================================================================

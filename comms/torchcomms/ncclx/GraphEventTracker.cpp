@@ -137,8 +137,7 @@ void GraphEventTracker::addEntry(TorchWorkNCCLX* work) {
   }
 
   // Transfer CPU tensors from the work object to the graph state.
-  // These tensors (e.g., CPU pointer tensors used by alltoallv_dynamic_dispatch
-  // operations) must remain alive for the graph's lifetime to avoid
+  // These tensors must remain alive for the graph's lifetime to avoid
   // use-after-free during graph replay.
   auto& cpu_tensors = it->second.cpu_tensors;
   cpu_tensors.insert(

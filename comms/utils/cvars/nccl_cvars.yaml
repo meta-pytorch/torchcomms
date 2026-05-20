@@ -1117,6 +1117,85 @@ cvars:
      Split messages larger than NCCL_CTRAN_AG_RING_MIN_SPLIT_SIZE into this many
      messages.
 
+ - name        : NCCL_CTRAN_HIER_AG_IB_NUM_BLOCKS
+   type        : int
+   default     : 16
+   description : |-
+     Number of CUDA thread blocks for the cthierarchical_ring AllGather IB
+     ring phase. For 4x1 IB-only tests, this is the full hierarchical kernel
+     grid size because the NVLink fanout degenerates to nvl_size=1.
+
+ - name        : NCCL_CTRAN_HIER_AG_OVERLAP_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Enable the experimental overlapped cthierarchical_ring AllGather kernel.
+     When enabled, dedicated IB blocks publish chunk-ready counters and
+     dedicated NVLink blocks fan out chunks as soon as they arrive.
+
+ - name        : NCCL_CTRAN_HIER_AG_NVL_NUM_BLOCKS
+   type        : int
+   default     : 16
+   description : |-
+     Number of CUDA thread blocks for the experimental overlapped
+     cthierarchical_ring AllGather NVLink fanout role.
+
+ - name        : NCCL_CTRAN_HIER_AG_OVERLAP_CHUNK_BYTES
+   type        : uint64_t
+   default     : 4194304
+   description : |-
+     Logical chunk size, in bytes, used by the experimental overlapped
+     cthierarchical_ring AllGather kernel for IB-ready notification and
+     NVLink fanout scheduling.
+
+ - name        : NCCL_CTRAN_HIER_AG_IBGDA_DATA_BUFFER_SIZE
+   type        : uint64_t
+   default     : 33554432
+   description : |-
+     Minimum IBGDA send/recv data-buffer size to use when the experimental
+     overlapped cthierarchical_ring AllGather kernel is enabled. 0 disables
+     this algorithm-specific minimum and uses NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE
+     or the per-communicator pipesIbgdaDataBufferSize directly.
+
+ - name        : NCCL_CTRAN_HIER_AG_NVL_SHARED_DEVBUF_SIZE
+   type        : uint64_t
+   default     : 67108864
+   description : |-
+     Minimum total per-peer NVLink shared device-buffer size to use when the
+     experimental overlapped cthierarchical_ring AllGather kernel is enabled.
+     This value is divided by NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH before
+     configuring each pipeline slot. 0 disables this algorithm-specific
+     minimum and uses NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE directly.
+
+ - name        : NCCL_CTRAN_HIER_AG_IB_QPS_PER_PEER_PER_NIC
+   type        : int
+   default     : 4
+   description : |-
+     Number of IBGDA QP sets per peer per NIC for the cthierarchical_ring
+     AllGather algorithm.
+
+ - name        : NCCL_CTRAN_HIER_AG_IB_SIGNAL_BYTES
+   type        : uint64_t
+   default     : 0
+   description : |-
+     Maximum bytes per signaled sub-chunk for the cthierarchical_ring IBGDA
+     send/recv phase. 0 means each block signals once per per-block staging
+     slot.
+
+ - name        : NCCL_CTRAN_HIER_AG_NVL_SIGNAL_BYTES
+   type        : uint64_t
+   default     : 0
+   description : |-
+     Maximum bytes per signaled sub-chunk for the cthierarchical_ring NVLink
+     fanout phase. 0 means each block signals once per per-block staging slot.
+
+ - name        : NCCL_CTRAN_HIER_AG_TIMEOUT_MS
+   type        : float
+   default     : 30000.0
+   description : |-
+     Timeout in milliseconds for the cthierarchical_ring AllGather kernel.
+     0 means no timeout.
+
 
  - name        : NCCL_CTRAN_AG_RD_RTR
    type        : bool
@@ -1517,16 +1596,6 @@ cvars:
      per CQ. For example, setting to 32768 keeps per-CQ memory at ~2MB.
      Default -1 to use the device-reported maximum.
 
- - name        : NCCL_CTRAN_IB_MULTI_NIC_FLUSH
-   type        : int
-   default     : 1
-   description : |-
-     Enable PCIe flush (RDMA READ) when using multiple NICs per rank
-     (NCCL_CTRAN_IB_DEVICES_PER_RANK > 1). On platforms where each NIC is a
-     separate PCIe requester (e.g. GB200 ARM SoC), cross-NIC DMA writes have
-     no ordering guarantee. The flush drains pending writes before the next
-     step reads the received data. Set to 0 to disable for debugging.
-
  - name        : NCCL_CTRAN_IB_DEVICES_PER_RANK
    type        : int
    default     : 1
@@ -1554,17 +1623,6 @@ cvars:
    description : |-
      Configure IBVCs to support either spray mode (uses extra QP for
      notifications) or dqplb mode ("normal" but all writes are WRITE_WITH_IMM)
-
- - name        : NCCL_CTRAN_IB_QP_CONFIG_XRACK
-   type        : stringlist
-   default     : "1048576,16,spray,128"
-   description : |-
-     A set of configuration for CTRAN IB over inter-rack communication:
-     <QP_SCALING_THRESHOLD>,<MAX_QPS>,<VC_MODE>,<QP_MAX_MSGS>
-     e.g., NCCL_CTRAN_IB_QP_CONFIG_XRACK="1048576,4,spray,6",
-     If not given, NCCLx will use values from
-     NCCL_CTRAN_IB_QP_SCALING_THRESHOLD, NCCL_CTRAN_IB_MAX_QPS,
-     NCCL_CTRAN_IB_VC_MODE, and NCCL_CTRAN_IB_QP_MAX_MSGS respectively
 
  - name        : NCCL_CTRAN_IB_QP_CONFIG_XZONE
    type        : stringlist
@@ -1606,7 +1664,7 @@ cvars:
      where value is a list of <QP_SCALING_THRESHOLD>,<MAX_QPS>,<VC_MODE>,<QP_MAX_MSGS><TRAFFIC_CLASS>
      e.g., NCCL_CTRAN_IB_QP_CONFIG_ALGO="alltoall:1048576,4,dqplb,128,224;sendrecv:1048576,16,spray,128,224"
      If not given, NCCLx will use the configuration specified per topology
-     (see NCCL_CTRAN_IB_QP_CONFIG_XDC, NCCL_CTRAN_IB_QP_CONFIG_XZONE, NCCL_CTRAN_IB_QP_CONFIG_XRACK),
+     (see NCCL_CTRAN_IB_QP_CONFIG_XDC, NCCL_CTRAN_IB_QP_CONFIG_XZONE),
      or the default configuration set (see NCCL_CTRAN_IB_QP_SCALING_THRESHOLD, NCCL_CTRAN_IB_MAX_QPS,
      NCCL_CTRAN_IB_VC_MODE, and NCCL_CTRAN_IB_QP_MAX_MSGS) for all collectives.
 
@@ -1779,6 +1837,48 @@ cvars:
      RNR retry count for IBGDA transport in Pipes MultiPeerTransport.
      Number of times to retry after receiving an RNR NAK.
      7 means infinite retry.
+
+ - name        : NCCL_CTRAN_IBGDA_LAZY_CONNECT
+   type        : bool
+   default     : false
+   description : |-
+     When true, MultipeerIbgdaTransport defers per-peer state allocation to
+     first use (lazy mode). When false (default), all per-peer state is
+     allocated eagerly at construction. Per-comm override via
+     CommOptions.hints["ncclx::ibLazyConnect"].
+
+ - name        : NCCL_CTRAN_IBGDA_MATERIALIZE_PEER_TIMEOUT_MS
+   type        : uint32_t
+   default     : 30000
+   description : |-
+     Timeout (in milliseconds) for materializePeer bilateral exchange.
+     On timeout, materializePeer throws rather than hanging.
+     No per-comm override.
+
+ - name        : NCCL_CTRAN_IBGDA_SENDRECV_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Enable send/recv staging buffers for IBGDA transport in Pipes
+     MultiPeerTransport. Required for cthierarchical_ring. When enabled,
+     allocates additional GPU memory for pipelined send/recv staging per
+     IBGDA peer. The effective IBGDA data-buffer size must be positive via
+     NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE or the per-communicator
+     pipesIbgdaDataBufferSize hint.
+
+ - name        : NCCL_CTRAN_IBGDA_SENDRECV_MAX_GROUPS
+   type        : int
+   default     : 128
+   description : |-
+     Maximum number of block-groups for IBGDA send/recv staging.
+     Only used when NCCL_CTRAN_IBGDA_SENDRECV_ENABLE=1.
+
+ - name        : NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH
+   type        : int
+   default     : 2
+   description : |-
+     Pipeline depth (number of staging ring slots) for IBGDA send/recv.
+     Only used when NCCL_CTRAN_IBGDA_SENDRECV_ENABLE=1.
 
  - name        : NCCL_CTRAN_BACKENDS
    type        : enumlist
@@ -1977,7 +2077,7 @@ cvars:
  - name        : NCCL_ALLGATHER_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctdirect, ctring, ctrd, ctbrucks, ctgraph, ctgraph_pipeline, ctgraph_rdpipeline, ctgraph_ring, ctgraph_rd
+   choices     : orig, ctran, ctdirect, ctring, ctrd, ctsrd, ctbrucks, cthierarchical_ring, ctgraph, ctgraph_pipeline, ctgraph_rdpipeline, ctgraph_ring, ctgraph_rd
    description : |-
      The algorithm to use for Allgather communication
      orig - Copy-based ring algorithm
@@ -1985,6 +2085,8 @@ cvars:
      ctdirect - Ctran-based direct point-to-point algorithm
      ctring - Ctran-based ring algorithm
      ctrd - Ctran-based recursive doubling algorithm
+     ctsrd - Ctran-based streamed recursive doubling algorithm
+     cthierarchical_ring - Pipes-based hierarchical AllGather using an inter-node IBGDA ring per local rank followed by intra-node NVLink fanout; with nLocalRanks==1 it degenerates to the hierarchical kernel's IB-only phase
      ctgraph - Cudagraph-aware: auto-selects pipeline/ring/rd based on topology during graph capture
      ctgraph_pipeline - Cudagraph-aware: forces persistent pipeline algorithm (nLocalRanks>1)
      ctgraph_rdpipeline - Cudagraph-aware: forces persistent recursive-doubling pipeline algorithm (nLocalRanks>1, nNodes power of 2)
@@ -1996,6 +2098,15 @@ cvars:
    default     : 134217728
    description : |-
      Minimum send size in bytes for ctgraph auto-select to choose ring over recursive doubling when nLocalRanks==1. Default 128MB.
+
+ - name        : NCCL_CTRAN_ALLGATHER_CTSRD_FC
+   type        : enum
+   default     : recvOnly
+   choices     : recvOnly, full
+   description : |-
+     Flow control mode for ctsrd (streamed recursive doubling) AllGather algorithm.
+     recvOnly - Receiver-only flow control. Pre-enqueue own chunk for all steps, forward received chunks to all future step peers immediately. Maximizes send/recv overlap.
+     full - Sender and receiver flow control. Forward received chunks to next step peer immediately, stage forwards for further steps until those steps begin. Reduces concurrent flows to at most 2 peers.
 
  - name        : NCCL_REDUCESCATTER_ALGO
    type        : enum

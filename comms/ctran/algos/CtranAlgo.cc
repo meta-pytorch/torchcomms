@@ -5,6 +5,7 @@
 #include <memory>
 
 #include "comms/ctran/CtranComm.h"
+#include "comms/ctran/CtranPipes.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/CtranAlgoConsts.h"
 #include "comms/ctran/utils/Alloc.h"
@@ -36,6 +37,9 @@ CtranAlgo::CtranAlgo(CtranComm* comm, ICtran* ctran)
 }
 
 CtranAlgo::~CtranAlgo() {
+  if (!comm_) {
+    return;
+  }
   collToVcConfigMap_.clear();
 
   if (this->sharedRes_) {
@@ -112,18 +116,21 @@ inline size_t getPerPeerChunkStatesSize() {
   static size_t size = sizeof(ChunkState) * CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS;
   return size;
 }
+
 // Helper to calculate sync and staging buffer and chunkState pointers for a
 // given peer
-std::tuple<CtranAlgoDeviceSync*, void*, void*>
-partitionDevShm(void* mappedDevShmPtr, int nLocalRanks, int pos) {
+std::tuple<CtranAlgoDeviceSync*, void*, void*> partitionDevShm(
+    void* mappedDevShmPtr,
+    int nLocalRanks,
+    int pos,
+    size_t nvlSharedDevbufSize) {
   char* regionPtr_d = reinterpret_cast<char*>(mappedDevShmPtr);
   void* bufBase_d =
       regionPtr_d + (nLocalRanks - 1) * sizeof(CtranAlgoDeviceSync);
   void* chunkStateBase_d = reinterpret_cast<char*>(bufBase_d) +
-      (nLocalRanks - 1) * NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE;
+      (nLocalRanks - 1) * nvlSharedDevbufSize;
   void* sync = regionPtr_d + pos * sizeof(CtranAlgoDeviceSync);
-  void* buf = reinterpret_cast<char*>(bufBase_d) +
-      pos * NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE;
+  void* buf = reinterpret_cast<char*>(bufBase_d) + pos * nvlSharedDevbufSize;
   void* chunkState = reinterpret_cast<char*>(chunkStateBase_d) +
       pos * getPerPeerChunkStatesSize();
   return {reinterpret_cast<CtranAlgoDeviceSync*>(sync), buf, chunkState};
@@ -152,6 +159,8 @@ commResult_t CtranAlgo::initKernelResources() {
   scubaEvent.startAndRecord();
 
   memset(&devState_, 0, sizeof(CtranAlgoDeviceState));
+  const size_t nvlSharedDevbufSize =
+      ctranEffectiveP2pNvlSharedDevbufSize(nLocalRanks);
 
   // Initialize inter-process shared device buffer
   if (!this->sharedRes_) {
@@ -194,7 +203,7 @@ commResult_t CtranAlgo::initKernelResources() {
   // Copy basic comm info to device state for collective kernel to use
   statex->setupDev(devState_.statex);
 
-  devState_.bufSize = NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE;
+  devState_.bufSize = nvlSharedDevbufSize;
   devState_.bcastBufSize = NCCL_CTRAN_BCAST_NVL_SHARED_DEVBUF_SIZE;
   devState_.enableTraceLog = NCCL_CTRAN_ENABLE_DEV_TRACE_LOG;
   devState_.enableCancellableWaits = comm_->abortEnabled();
@@ -221,14 +230,18 @@ commResult_t CtranAlgo::initKernelResources() {
         auto [localSync, localBuf, localChunkState] = partitionDevShm(
             this->sharedRes_->mappedDevShmPtrs[localRank],
             nLocalRanks,
-            localPos);
+            localPos,
+            nvlSharedDevbufSize);
         localSyncsMap[i] = localSync;
         localStagingBufsMap[i] = localBuf;
         localChunkStatesMap[i] = localChunkState;
 
         int remotePos = LOCAL_RANK_TO_DEV_REGION_POS(localRank, i);
         auto [remoteSync, remoteBuf, remoteChunkState] = partitionDevShm(
-            this->sharedRes_->mappedDevShmPtrs[i], nLocalRanks, remotePos);
+            this->sharedRes_->mappedDevShmPtrs[i],
+            nLocalRanks,
+            remotePos,
+            nvlSharedDevbufSize);
         remoteSyncsMap[i] = remoteSync;
         remoteStagingBufsMap[i] = remoteBuf;
         remoteChunkStatesMap[i] = remoteChunkState;
@@ -236,7 +249,7 @@ commResult_t CtranAlgo::initKernelResources() {
 
       // Next chunk is for bcastBuf
       peerBcastBufsMap[i] = (char*)this->sharedRes_->mappedDevShmPtrs[i] +
-          (sizeof(CtranAlgoDeviceSync) + NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE +
+          (sizeof(CtranAlgoDeviceSync) + nvlSharedDevbufSize +
            getPerPeerChunkStatesSize()) *
               (nLocalRanks - 1);
       CLOGF_TRACE(
@@ -270,8 +283,8 @@ commResult_t CtranAlgo::initKernelResources() {
           "initKernelResources-nvlTransports"));
 
   comms::pipes::P2pNvlTransportOptions options{
-      .dataBufferSize = NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE /
-          NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH,
+      .dataBufferSize =
+          nvlSharedDevbufSize / NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH,
       .chunkSize = NCCL_CTRAN_PIPES_NVL_CHUNK_SIZE,
       .pipelineDepth = NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH};
 
@@ -314,6 +327,8 @@ CtranAlgo::SharedResource::SharedResource(CtranComm* comm) {
   this->comm_ = comm;
   int localRank = statex->localRank();
   int nLocalRanks = statex->nLocalRanks();
+  const size_t nvlSharedDevbufSize =
+      ctranEffectiveP2pNvlSharedDevbufSize(nLocalRanks);
 
   // Create local shared memory region
   // The memory region on each owner rank is divided to (localRanks -1) sets of
@@ -321,9 +336,8 @@ CtranAlgo::SharedResource::SharedResource(CtranComm* comm) {
   // as below with N localRanks.
   // |bufState_0|bufState_1|...|bufState_N-2|buf_0|buf_1|...|buf_N-2|chunkState_0|chunkState_1|...|chunkState_N-2|
   std::vector<ctran::utils::CtranIpcDesc> ipcDescs(nLocalRanks);
-  size_t shmSize =
-      (sizeof(CtranAlgoDeviceSync) + NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE +
-       getPerPeerChunkStatesSize()) *
+  size_t shmSize = (sizeof(CtranAlgoDeviceSync) + nvlSharedDevbufSize +
+                    getPerPeerChunkStatesSize()) *
           (nLocalRanks - 1) +
       NCCL_CTRAN_BCAST_NVL_SHARED_DEVBUF_SIZE;
 
@@ -373,8 +387,7 @@ CtranAlgo::SharedResource::SharedResource(CtranComm* comm) {
 
     void* chunkStatePtr_d = reinterpret_cast<char*>(devShmPtr) +
         (nLocalRanks - 1) *
-            (sizeof(CtranAlgoDeviceSync) +
-             NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE) +
+            (sizeof(CtranAlgoDeviceSync) + nvlSharedDevbufSize) +
         pos * getPerPeerChunkStatesSize();
     std::vector<ChunkState> initStates(
         CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS, ChunkState());
@@ -535,7 +548,9 @@ static const std::unordered_map<std::string, enum NCCL_ALLGATHER_ALGO>
         {"ctdirect", NCCL_ALLGATHER_ALGO::ctdirect},
         {"ctring", NCCL_ALLGATHER_ALGO::ctring},
         {"ctrd", NCCL_ALLGATHER_ALGO::ctrd},
+        {"ctsrd", NCCL_ALLGATHER_ALGO::ctsrd},
         {"ctbrucks", NCCL_ALLGATHER_ALGO::ctbrucks},
+        {"cthierarchical_ring", NCCL_ALLGATHER_ALGO::cthierarchical_ring},
         {"ctgraph", NCCL_ALLGATHER_ALGO::ctgraph},
         {"ctgraph_pipeline", NCCL_ALLGATHER_ALGO::ctgraph_pipeline},
         {"ctgraph_rdpipeline", NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline},
@@ -563,6 +578,32 @@ commResult_t ctranConfigCommAlgoOverride(CtranComm* comm) {
         comm->config_.ncclAllGatherAlgo);
   }
   return commSuccess;
+}
+
+const ctran::algos::IPersistPlan* CtranAlgo::getOrCreatePersistPlan(
+    ctran::algos::PersistPlanKey key,
+    std::function<std::unique_ptr<ctran::algos::IPersistPlan>()> createFn) {
+  // Fast path: concurrent readers share rlock (no contention after init).
+  {
+    auto plans = persistPlans_.rlock();
+    auto it = plans->find(key);
+    if (it != plans->end()) {
+      return it->second.get();
+    }
+  }
+  // Slow path: upgrade lock serializes creators — only one thread can hold
+  // ulock at a time, so at most one thread calls createFn(). Re-check
+  // under ulock because another thread may have inserted between our rlock
+  // release and ulock acquire.
+  auto plans = persistPlans_.ulock();
+  auto it = plans->find(key);
+  if (it != plans->end()) {
+    return it->second.get();
+  }
+  // Atomically promote to write lock (no gap where another writer can slip in).
+  auto wplans = plans.moveFromUpgradeToWrite();
+  auto [inserted, _] = wplans->emplace(key, createFn());
+  return inserted->second.get();
 }
 
 void CtranAlgo::setAllGatherAlgo(enum NCCL_ALLGATHER_ALGO algo) {

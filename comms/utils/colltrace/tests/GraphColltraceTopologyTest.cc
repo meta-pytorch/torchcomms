@@ -18,7 +18,6 @@
 #include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/test_utils/CudaGraphTestUtils.h"
-#include "comms/utils/trainer/TrainerContext.h"
 
 using meta::comms::colltrace::CollTrace;
 using meta::comms::colltrace::CollTraceConfig;
@@ -902,7 +901,6 @@ TEST_F(GraphColltraceTopologyTest, ReplayTimingConsistency) {
   constexpr uint32_t kNumColls = 5;
   constexpr int kNumReplays = 10;
 
-  ncclxSetIteration(0);
   auto graph = captureSerial(kNumColls);
   ASSERT_NE(graph, nullptr);
 
@@ -938,13 +936,12 @@ TEST_F(GraphColltraceTopologyTest, ReplayTimingConsistency) {
     auto dur =
         std::chrono::duration_cast<std::chrono::microseconds>(endTs - startTs)
             .count();
-    auto iter = coll->getIteration();
-
-    EXPECT_GT(dur, 0) << "iter=" << iter << " collId=" << coll->getCollId()
+    EXPECT_GT(dur, 0) << "collId=" << coll->getCollId()
                       << " has non-positive duration " << dur << "us";
-    EXPECT_GE(endTs, startTs) << "iter=" << iter << ": endTs < startTs";
+    EXPECT_GE(endTs, startTs)
+        << "collId=" << coll->getCollId() << ": endTs < startTs";
     EXPECT_EQ(enqueueTs, startTs)
-        << "iter=" << iter << " collId=" << coll->getCollId()
+        << "collId=" << coll->getCollId()
         << ": enqueueTs != startTs — pastColls entry was mutated"
            " by a subsequent replay's start event";
 
@@ -958,6 +955,4 @@ TEST_F(GraphColltraceTopologyTest, ReplayTimingConsistency) {
   cudaGraphExecDestroy(instance);
   // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
   cudaGraphDestroy(graph);
-
-  ncclxSetIteration(-1);
 }

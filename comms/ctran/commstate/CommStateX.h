@@ -19,7 +19,7 @@ namespace ncclx {
 
 namespace {
 constexpr size_t kMaxNameLen = 64;
-}
+} // namespace
 
 // We use sizeof(T) to determine the size for bootstrapAllGather, so have to use
 // c style char[] to get accurate size
@@ -33,12 +33,6 @@ struct RankTopology {
 
   // host name e.g twshared0265.02.nha1
   char host[kMaxNameLen];
-
-  // rtsw name e.g rtsw098.c084.f00.nha1
-  char rtsw[kMaxNameLen];
-
-  // Scaling unit info for rail based networks eg. atn3.z085.u001
-  char su[kMaxNameLen];
 
   char zone[kMaxNameLen];
 
@@ -146,11 +140,9 @@ class CommStateX {
   // get host name for a given rank, default to current rank
   std::string host(int rank = -1) const;
 
-  // get rtsw/rack name for a given rank, default to current rank
-  std::string rtsw(int rank = -1) const;
-
-  // get scaling unit name for a given rank, default to current rank
-  std::string su(int rank = -1) const;
+  // get raw DEVICE_BACKEND_NETWORK_TOPOLOGY string (local rank only, for
+  // observability)
+  const std::string& networkTopo() const;
 
   // get zone name for a given rank, default to current rank
   std::string zone(int rank = -1) const;
@@ -170,9 +162,6 @@ class CommStateX {
 
   // check if two ranks are on the same node
   bool isSameNode(int myRank, int peer) const;
-
-  // check if two ranks are on the same rack/ (under the same rtsw)
-  bool isSameRack(int myRank, int peer) const;
 
   // check if two ranks are on the same zone
   bool isSameZone(int myRank, int peer) const;
@@ -208,10 +197,6 @@ class CommStateX {
     int pid{-1};
 
     std::string host;
-
-    std::string rtsw;
-
-    std::string su;
 
     std::string dc;
 
@@ -261,6 +246,10 @@ class CommStateX {
   int64_t busId_{-1};
   const uint64_t commHash_{0};
   const std::string commDesc_;
+
+  // Raw DEVICE_BACKEND_NETWORK_TOPOLOGY string for local rank (observability
+  // only)
+  std::string networkTopo_;
 
   std::vector<RankTopology> rankTopologies_{};
   // World ranks only exist in eager init when there's a default_pg

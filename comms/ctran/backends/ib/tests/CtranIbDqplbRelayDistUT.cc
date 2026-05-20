@@ -81,15 +81,23 @@ class CtranIbDqplbRelayTest : public ctran::CtranDistTestFixture {
 
   struct DqplbEnvRAII {
     // The relay case depends on multi-NIC DQPLB over multiple QPs. It does not
-    // issue iflush, so NCCL_CTRAN_IB_MULTI_NIC_FLUSH is not part of the local
-    // test setup.
+    // issue iflush, so only the NIC and QP selection cvars are part of the
+    // local test setup.
     std::vector<std::string> qpConfig{"524288", "2", "dqplb", "128"};
     EnvRAII<decltype(NCCL_CTRAN_IB_DEVICES_PER_RANK)> devices{
         NCCL_CTRAN_IB_DEVICES_PER_RANK,
         2};
-    EnvRAII<decltype(NCCL_CTRAN_IB_QP_CONFIG_XRACK)> xRackQps{
-        NCCL_CTRAN_IB_QP_CONFIG_XRACK,
-        qpConfig};
+    // SAME_ZONE uses global defaults, so set them to dqplb mode
+    EnvRAII<decltype(NCCL_CTRAN_IB_QP_SCALING_THRESHOLD)> scalingTh{
+        NCCL_CTRAN_IB_QP_SCALING_THRESHOLD,
+        524288};
+    EnvRAII<decltype(NCCL_CTRAN_IB_MAX_QPS)> maxQps{NCCL_CTRAN_IB_MAX_QPS, 2};
+    EnvRAII<decltype(NCCL_CTRAN_IB_VC_MODE)> vcMode{
+        NCCL_CTRAN_IB_VC_MODE,
+        NCCL_CTRAN_IB_VC_MODE::dqplb};
+    EnvRAII<decltype(NCCL_CTRAN_IB_QP_MAX_MSGS)> maxMsgs{
+        NCCL_CTRAN_IB_QP_MAX_MSGS,
+        128};
     EnvRAII<decltype(NCCL_CTRAN_IB_QP_CONFIG_XZONE)> xZoneQps{
         NCCL_CTRAN_IB_QP_CONFIG_XZONE,
         qpConfig};

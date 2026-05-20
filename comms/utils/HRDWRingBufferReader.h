@@ -2,15 +2,12 @@
 
 #pragma once
 
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <utility>
 #include <vector>
-
-#if defined(__x86_64__)
-#include <emmintrin.h>
-#endif
 
 #include "comms/utils/HRDWRingBuffer.h"
 
@@ -21,27 +18,20 @@ namespace meta::comms::colltrace {
 // independently (each as its own atomic), and the per-slot epoch check
 // in tryRead classifies any stale state as kNotReady / kOverwritten if
 // the writeIndex bump becomes visible before the slot publication.
+//
+// For the 16-byte ring entry, both paths lower to lock cmpxchg16b
+// (x86_64 with -mcx16) or to a libcall to __atomic_load_16 otherwise.
+// The v2_29/v2_30 makefiles and the github CMakeLists link -latomic
+// unconditionally so the libcall always resolves at link time.
 template <typename T>
 __attribute__((always_inline)) inline T relaxedLoad(const T* ptr) {
+#if defined(__cpp_lib_atomic_ref)
+  return std::atomic_ref<T>(*const_cast<T*>(ptr))
+      .load(std::memory_order_relaxed);
+#else
   return __atomic_load_n(ptr, __ATOMIC_RELAXED);
-}
-
-// 16-byte specialization. __atomic_load_n on __int128 emits a libcall to
-// __atomic_load_16 (libatomic) — even with -mcx16, GCC doesn't reliably
-// inline cmpxchg16b for it. Some build images don't ship libatomic, so on
-// x86_64 we sidestep the libcall via SSE2 MOVDQA, which is single-copy
-// atomic for naturally-aligned 16-byte addresses on every production
-// x86_64 CPU. The slot is alignas(16), so this is always safe.
-#if defined(__x86_64__)
-template <>
-__attribute__((always_inline)) inline unsigned __int128 relaxedLoad(
-    const unsigned __int128* ptr) {
-  __m128i v = _mm_load_si128(reinterpret_cast<const __m128i*>(ptr));
-  unsigned __int128 result;
-  __builtin_memcpy(&result, &v, sizeof(result));
-  return result;
-}
 #endif
+}
 
 // Result of a single poll() call.
 struct PollResult {

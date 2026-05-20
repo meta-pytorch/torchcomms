@@ -51,8 +51,6 @@ from torchcomms.distwrap.collectives import (
     send,
 )
 from torchcomms.distwrap.collectives_extension import (
-    alltoallv_dynamic_combine,
-    alltoallv_dynamic_dispatch,
     new_window,
     reduce_scatter_quantized,
 )
@@ -164,8 +162,6 @@ __all__ = [
     "get_mem_allocator",
     "register_mem_pool",
     "new_window",
-    "alltoallv_dynamic_dispatch",
-    "alltoallv_dynamic_combine",
     "reduce_scatter_quantized",
     # Re-exported from torch.distributed
     "ReduceOp",

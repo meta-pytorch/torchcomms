@@ -27,13 +27,14 @@ class SendRecvTest : public NcclxBaseTestFixture {
     setenv("NCCL_CTRAN_ENABLE", "1", 1);
     NcclxBaseTestFixture::SetUp();
     ctranAlgoStats_.enable();
+    ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints;
 #ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
-    ASSERT_EQ(
-        ncclx::setGlobalHint(std::string(ncclx::HintKeys::kCommNoLocal), "1"),
-        ncclSuccess);
+    hints.set("noLocal", "1");
 #endif
+    config.hints = &hints;
     this->comm = ncclx::test::createNcclComm(
-        globalRank, numRanks, localRank, bootstrap_.get());
+        globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
 
     CUDACHECK_TEST(cudaSetDevice(this->localRank));
     CUDACHECK_TEST(cudaStreamCreate(&this->stream));
@@ -42,9 +43,6 @@ class SendRecvTest : public NcclxBaseTestFixture {
   void TearDown() override {
     NCCLCHECK_TEST(ncclCommDestroy(this->comm));
     CUDACHECK_TEST(cudaStreamDestroy(this->stream));
-#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
-    ncclx::resetGlobalHint(std::string(ncclx::HintKeys::kCommNoLocal));
-#endif
     NcclxBaseTestFixture::TearDown();
   }
 

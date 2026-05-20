@@ -134,8 +134,8 @@ class CommDumpTest(unittest.TestCase):
         del split_comm
 
     def test_comm_dump_all_with_request_fields_comm_info(self):
-        """Test that request_fields filters to only the requested keys."""
-        all_dumps = comm_dump_all(request_fields="rank;nRanks")
+        """Test that requestFields hint filters to only the requested keys."""
+        all_dumps = comm_dump_all(hints={"comm_dump::requestFields": "rank;nRanks"})
 
         self.assertIsInstance(all_dumps, dict)
         self.assertGreaterEqual(len(all_dumps), 1)
@@ -154,7 +154,7 @@ class CommDumpTest(unittest.TestCase):
     def test_comm_dump_all_with_request_fields_global_info(self):
         """Test that requesting only GlobalInfo keys skips per-comm dumps."""
         all_dumps = comm_dump_all(
-            request_fields="GlobalInfo::totalCommDurPerIterationUs"
+            hints={"comm_dump::requestFields": "GlobalInfo::totalCommDurPerIterationUs"}
         )
 
         self.assertIsInstance(all_dumps, dict)
@@ -172,7 +172,7 @@ class CommDumpTest(unittest.TestCase):
             )
 
     def test_comm_dump_all_none_request_fields_dumps_everything(self):
-        """Test that request_fields=None (default) dumps all fields."""
+        """Test that empty hints (default) dumps all fields."""
         all_dumps = comm_dump_all()
 
         self.assertIsInstance(all_dumps, dict)
@@ -190,7 +190,9 @@ class CommDumpTest(unittest.TestCase):
     def test_comm_dump_all_mixed_per_comm_and_global_info(self):
         """Test request_fields with both per-comm and GlobalInfo keys."""
         all_dumps = comm_dump_all(
-            request_fields="rank;GlobalInfo::totalCommDurPerIterationUs"
+            hints={
+                "comm_dump::requestFields": "rank;GlobalInfo::totalCommDurPerIterationUs"
+            }
         )
 
         self.assertIsInstance(all_dumps, dict)

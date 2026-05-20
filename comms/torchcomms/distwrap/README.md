@@ -185,7 +185,6 @@ def all_reduce(tensor, op=ReduceOp.SUM, group=None, async_op=False):
 ### Extensions (torchcomms-only)
 - `new_window` - Create RMA window
 - `alltoallv_dedup_init/exec` - Deduplicated alltoallv for MoE
-- `alltoallv_dynamic_dispatch/combine` - Dynamic alltoallv for MoE
 
 ## Limitations When torchcomms is Enabled
 

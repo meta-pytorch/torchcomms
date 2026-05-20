@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include <optional>
 #include <unordered_map>
 
 #include <gmock/gmock.h>
@@ -11,9 +10,10 @@
 
 namespace torch::comms::test {
 
-// Type alias to avoid preprocessor comma issues inside MOCK_METHOD macros.
+// Type aliases to avoid preprocessor comma issues inside MOCK_METHOD macros.
 using NcclxCommDumpAllMap = std::
     unordered_map<std::string, std::unordered_map<std::string, std::string>>;
+using NcclxHintsMap = std::unordered_map<std::string, std::string>;
 
 /**
  * Mock implementation of NcclxGlobalApi using Google Mock.
@@ -26,7 +26,7 @@ class NcclxGlobalMock : public NcclxGlobalApi {
   MOCK_METHOD(
       ncclResult_t,
       commDumpAll,
-      (NcclxCommDumpAllMap & map, std::optional<std::string> requestFields),
+      (NcclxCommDumpAllMap & map, const NcclxHintsMap& hints),
       (override));
 
   void setupDefaultBehaviors() {

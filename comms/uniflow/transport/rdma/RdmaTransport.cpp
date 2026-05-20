@@ -421,7 +421,7 @@ Status RdmaTransport::connect(std::span<const uint8_t> remoteInfo) {
     rtrAttr.path_mtu = negotiatedMtu;
     rtrAttr.dest_qp_num = remote.qpInfos[i].qpNum;
     rtrAttr.rq_psn = remote.qpInfos[i].psn;
-    rtrAttr.max_dest_rd_atomic = 1;
+    rtrAttr.max_dest_rd_atomic = config_.maxRdAtomic;
     rtrAttr.min_rnr_timer = 12;
 
     if (remoteNic.linkLayer == IBV_LINK_LAYER_ETHERNET) {
@@ -455,7 +455,7 @@ Status RdmaTransport::connect(std::span<const uint8_t> remoteInfo) {
     rtsAttr.timeout = config_.timeout;
     rtsAttr.retry_cnt = config_.retryCnt;
     rtsAttr.rnr_retry = 7;
-    rtsAttr.max_rd_atomic = 1;
+    rtsAttr.max_rd_atomic = config_.maxRdAtomic;
 
     int rtsMask = IBV_QP_STATE | IBV_QP_SQ_PSN | IBV_QP_TIMEOUT |
         IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY | IBV_QP_MAX_QP_RD_ATOMIC;
@@ -730,6 +730,23 @@ Result<uint32_t> RdmaTransport::spray(
     totalAssigned += share;
   }
 
+  // Fill any capacity left by integer truncation in the weighted pass.
+  const uint32_t targetAssigned = std::min(remaining, totalAvail);
+  while (totalAssigned < targetAssigned) {
+    bool progressed = false;
+    for (uint32_t q = 0; q < numQps && totalAssigned < targetAssigned; ++q) {
+      if (qpAssigned[q] >= qpAvail[q]) {
+        continue;
+      }
+      ++qpAssigned[q];
+      ++totalAssigned;
+      progressed = true;
+    }
+    if (!progressed) {
+      break;
+    }
+  }
+
   // Post assigned chunks to each QP.
   uint32_t totalPosted = 0;
   for (uint32_t q = 0; q < numQps && idx < wrs.size(); ++q) {
@@ -774,12 +791,47 @@ Result<uint32_t> RdmaTransport::spray(
   return Result<uint32_t>(totalPosted);
 }
 
+size_t RdmaTransport::outstandingWrs() const {
+  size_t total = 0;
+  for (uint32_t count : numWrsPerQp_) {
+    total += count;
+  }
+  return total;
+}
+
+size_t RdmaTransport::admissionBudgetWrs() const {
+  const size_t totalCapacity = static_cast<size_t>(config_.maxWr) * qps_.size();
+  return std::max<size_t>(1, totalCapacity / 2);
+}
+
+bool RdmaTransport::canStartTransfer(const PendingTransfer& transfer) const {
+  if (transfer.idx != 0) {
+    return true;
+  }
+
+  const size_t outstanding = outstandingWrs();
+  if (outstanding == 0) {
+    return true;
+  }
+
+  const size_t transferWrs = transfer.sendWrs->size();
+  const size_t budget = admissionBudgetWrs();
+  if (transferWrs > budget) {
+    return false;
+  }
+
+  return outstanding + transferWrs <= budget;
+}
+
 // ---------------------------------------------------------------------------
 // Unified IO processing loop (EventBase thread)
 // ---------------------------------------------------------------------------
 
 void RdmaTransport::ioLooper() noexcept {
-  // Phase 1 — Post: walk pendingTransfers_ front-to-back.
+  // Phase 1 — Poll: drain all CQs (round-robin).
+  pollCompletions();
+
+  // Phase 2 — Post: walk pendingTransfers_ front-to-back.
   while (!pendingTransfers_.empty()) {
     auto& entry = pendingTransfers_.front();
 
@@ -796,6 +848,10 @@ void RdmaTransport::ioLooper() noexcept {
       pendingCompletions_.push_back({entry.taskId, std::move(entry.task)});
       pendingTransfers_.pop_front();
       continue;
+    }
+
+    if (!canStartTransfer(entry)) {
+      break;
     }
 
     auto postResult =
@@ -819,9 +875,6 @@ void RdmaTransport::ioLooper() noexcept {
       break;
     }
   }
-
-  // Phase 2 — Poll: drain all CQs.
-  pollCompletions();
 
   // Phase 3 — Fulfill: walk pendingCompletions_ front-to-back for in-order
   // promise delivery.
@@ -914,10 +967,21 @@ std::future<Status> RdmaTransport::rdmaTransfer(
 void RdmaTransport::pollCompletions() {
   constexpr int kNumBatch = 16;
 
-  for (size_t i = 0; i < cqs_.size(); ++i) {
-    int expected = numPendingCqe_[i];
-    ibv_wc wcs[kNumBatch];
-    while (expected > 0) {
+  // Cap total CQEs per call to ensure fairness with other transports
+  // sharing the same EventBase.
+  const uint64_t maxCqes = config_.maxWr * qps_.size();
+  uint64_t totalDrained = 0;
+
+  // Round-robin: poll one batch from each CQ per round, repeat until
+  // CQs are empty or the cap is reached.
+  while (totalDrained < maxCqes) {
+    uint64_t before = totalDrained;
+    for (size_t i = 0; i < cqs_.size() && totalDrained < maxCqes; ++i) {
+      if (numPendingCqe_[i] <= 0) {
+        continue;
+      }
+
+      ibv_wc wcs[kNumBatch];
       auto pollResult = ibvApi_->pollCq(cqs_[i], kNumBatch, wcs);
       if (pollResult.hasError()) {
         UNIFLOW_LOG_ERROR(
@@ -933,6 +997,7 @@ void RdmaTransport::pollCompletions() {
       }
 
       int n = pollResult.value();
+      totalDrained += static_cast<uint64_t>(n);
       for (const auto& wc : std::span(wcs).subspan(0, n)) {
         uint32_t taskId = static_cast<uint32_t>(wc.wr_id >> 32);
         uint32_t numWrs = static_cast<uint32_t>(wc.wr_id & 0xffffffff);
@@ -967,12 +1032,9 @@ void RdmaTransport::pollCompletions() {
           it->second->recordCompletion(numWrs);
         }
       }
-
-      if (n < kNumBatch) {
-        break;
-      }
-
-      expected -= kNumBatch;
+    }
+    if (totalDrained == before) {
+      break;
     }
   }
 }

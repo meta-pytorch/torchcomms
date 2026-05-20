@@ -106,15 +106,13 @@ endif
 # Use addprefix so that we can specify more than one path
 NVLDFLAGS  := -L${CUDA_LIB} -lcudart -lrt
 
-# colltrace's HRDWRingBufferReader uses __atomic_load_n on a 128-bit value,
-# which the compiler lowers to __atomic_load_16 (libatomic). On x86_64 we
-# sidestep this in source via an SSE2 MOVDQA specialization (see
-# HRDWRingBufferReader.h), so no libatomic dep is needed there. On other
-# archs (e.g. aarch64) we fall back to linking libatomic.
-HOST_ARCH := $(shell uname -m)
-ifneq ($(HOST_ARCH),x86_64)
+# colltrace's HRDWRingBufferReader and TrainerContext use 128-bit atomic
+# loads/stores. The compiler may lower these to __atomic_load_16 /
+# __atomic_store_16 (libatomic) depending on the target and flags. Link
+# libatomic unconditionally so the libcall always resolves; on x86_64 with
+# -mcx16 (or aarch64 with LSE2) most ops inline and the dep is effectively
+# free.
 LDFLAGS   += -latomic
-endif
 
 NVCUFLAGS_SYM :=
 

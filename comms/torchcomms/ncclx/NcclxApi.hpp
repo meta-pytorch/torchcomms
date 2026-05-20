@@ -270,33 +270,6 @@ class NcclxApi {
     return ncclInvalidUsage;
   }
 
-  [[nodiscard]] virtual ncclResult_t alltoallvDynamicDispatch(
-      const void* sendbuff,
-      const size_t* sendSplitLengths,
-      size_t numSendSplitLengths,
-      const size_t* sendIndices,
-      const size_t* sendIndicesBlockLengths,
-      void* const* recvbuffs,
-      size_t* recvAllSplitLengths,
-      size_t maxSendcount,
-      size_t maxRecvcount,
-      ncclDataType_t datatype,
-      ncclComm_t comm,
-      cudaStream_t stream) = 0;
-
-  [[nodiscard]] virtual ncclResult_t alltoallvDynamicCombine(
-      const void* sendbuff,
-      const size_t* sendSplitLengths,
-      size_t numSendSplitLengths,
-      const size_t* sendIndices,
-      const size_t* sendIndicesBlockLengths,
-      void* recvbuff,
-      size_t maxSendcount,
-      size_t maxRecvcount,
-      ncclDataType_t datatype,
-      ncclComm_t comm,
-      cudaStream_t stream) = 0;
-
   // Persistent AllGather operations
   [[nodiscard]] virtual ncclResult_t allGatherInit(
       void* recvbuff,
@@ -640,33 +613,6 @@ class DefaultNcclxApi : public NcclxApi {
       int64_t sendcountsMultiplier = 1,
       int64_t recvcountsMultiplier = 1,
       const std::unordered_map<std::string, std::string>& hints = {}) override;
-
-  [[nodiscard]] ncclResult_t alltoallvDynamicDispatch(
-      const void* sendbuff,
-      const size_t* sendSplitLengths,
-      size_t numSendSplitLengths,
-      const size_t* sendIndices,
-      const size_t* sendIndicesBlockLengths,
-      void* const* recvbuffs,
-      size_t* recvAllSplitLengths,
-      size_t maxSendcount,
-      size_t maxRecvcount,
-      ncclDataType_t datatype,
-      ncclComm_t comm,
-      cudaStream_t stream) override;
-
-  [[nodiscard]] ncclResult_t alltoallvDynamicCombine(
-      const void* sendbuff,
-      const size_t* sendSplitLengths,
-      size_t numSendSplitLengths,
-      const size_t* sendIndices,
-      const size_t* sendIndicesBlockLengths,
-      void* recvbuff,
-      size_t maxSendcount,
-      size_t maxRecvcount,
-      ncclDataType_t datatype,
-      ncclComm_t comm,
-      cudaStream_t stream) override;
 
   // Persistent AllGather operations
   [[nodiscard]] ncclResult_t allGatherInit(

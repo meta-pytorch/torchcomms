@@ -35,8 +35,8 @@ static commResult_t impl(
   std::vector<struct CtranMapperRemoteAccessKey> remoteAccessKeys(nSteps);
   std::vector<std::unique_ptr<CtranMapperRequest>> irecvReq(nSteps);
   std::vector<std::unique_ptr<CtranMapperRequest>> isendReq(nSteps);
-  // these are the final iput requests per step for which we will need to wait
-  std::vector<std::unique_ptr<CtranMapperRequest>> iputReq(nSteps);
+  std::vector<CtranMapperRequest> iputReqs(nRanks - 1);
+  size_t iputReqIdx = 0;
   std::vector<std::unique_ptr<CtranMapperNotify>> notifyVec(nSteps);
   CtranAlgoLogger logger(reduceScatterAlgoName(myAlgo), op->opCount, comm);
   std::unique_ptr<CtranMapperTimestamp> timestamp =
@@ -96,17 +96,17 @@ static commResult_t impl(
 
     // Initialize notify to receive notification from peer
     notifyVec[i] = std::make_unique<CtranMapperNotify>();
-    FB_COMMCHECK(
-        comm->ctran_->mapper->initNotify(peer, tmpHdl, notifyVec[i].get()));
+    FB_COMMCHECK(comm->ctran_->mapper->initNotify(
+        peer, tmpHdl, notifyVec[i].get(), nRanks >> (i + 1)));
 
     // Block until we have handle for this peer
     FB_COMMCHECK(comm->ctran_->mapper->waitRequest(irecvReq[i].get()));
     timestamp->recvCtrl.push_back(CtranMapperTimestampPoint(peer));
+    const size_t stepReqStart = iputReqIdx;
     for (size_t j = 0; j < (nRanks >> (i + 1)); j++) {
       bool lastChunkPerStep = (j == (nRanks >> (i + 1)) - 1) ? 1 : 0;
       size_t sendBufOffset = j * (2 << i) + peer % (2 << i);
       size_t tmpBufOffset = j * 2 + (peer >> i) % 2;
-      CtranMapperRequest* putReqPtr = nullptr;
 
       // Put to peer
       // Only first step needs to put from sendbuff, remaining steps just
@@ -124,43 +124,28 @@ static commResult_t impl(
           sendBufOffset,
           tmpBufOffset,
           lastChunkPerStep);
-      if (lastChunkPerStep) {
-        FB_COMMCHECK(comm->ctran_->mapper->iput(
-            putSrc,
-            (char*)remoteTmpBuffs[i] + j * recvSize,
-            recvSize,
-            peer,
-            CtranMapperConfig{
-                .memHdl_ = putHdl,
-                .remoteAccessKey_ = remoteAccessKeys[i],
-                .notify_ = lastChunkPerStep ? true : false},
-            &putReqPtr));
-      } else {
-        FB_COMMCHECK(comm->ctran_->mapper->iput(
-            putSrc,
-            (char*)remoteTmpBuffs[i] + j * recvSize,
-            recvSize,
-            peer,
-            CtranMapperConfig{
-                .memHdl_ = putHdl,
-                .remoteAccessKey_ = remoteAccessKeys[i],
-                .notify_ = lastChunkPerStep ? true : false},
-            static_cast<CtranMapperRequest*>(nullptr)));
-      }
+      FB_COMMCHECK(comm->ctran_->mapper->iput(
+          putSrc,
+          (char*)remoteTmpBuffs[i] + j * recvSize,
+          recvSize,
+          peer,
+          CtranMapperConfig{
+              .memHdl_ = putHdl,
+              .remoteAccessKey_ = remoteAccessKeys[i],
+              .notify_ = true},
+          &iputReqs.at(iputReqIdx++)));
       // Capture duration started from first put
       if (j == 0) {
         timestamp->putIssued.push_back(CtranMapperTimestampPoint(peer));
       }
-      if (lastChunkPerStep) {
-        iputReq[i] = std::unique_ptr<CtranMapperRequest>(putReqPtr);
-        // Local reduce will update tmpRedBuf, let's ensure the previous put has
-        // finished so tmpRedBuf can be updated
-        CLOGF_TRACE(
-            COLL, "rank {} peer {} iputReq: {}", rank, peer, (void*)putReqPtr);
-        FB_COMMCHECK(comm->ctran_->mapper->waitRequest(iputReq[i].get()));
-        timestamp->putComplete.push_back(CtranMapperTimestampPoint(peer));
-      }
     }
+    // Local reduce can overwrite tmpRedBuf, so all sends from this step must
+    // reach local completion before reducing into it again.
+    for (size_t k = stepReqStart; k < iputReqIdx; k++) {
+      FB_COMMCHECK(comm->ctran_->mapper->waitRequest(&iputReqs[k]));
+    }
+    timestamp->putComplete.push_back(CtranMapperTimestampPoint(peer));
+
     // make sure send from peer is completed
     FB_COMMCHECK(comm->ctran_->mapper->waitNotify(notifyVec[i].get()));
 

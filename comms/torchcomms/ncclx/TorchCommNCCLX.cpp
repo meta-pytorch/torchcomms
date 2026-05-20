@@ -52,6 +52,15 @@ void validateIntDtype(const at::Tensor& tensor, std::string_view name) {
 
 std::atomic<int> g_graphTimeoutMonitoringState{-1};
 
+bool isColltraceGraphTracingEnabled() {
+  const char* env = std::getenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH");
+  if (env == nullptr) {
+    return false;
+  }
+  std::string val(env);
+  return val == "1" || val == "true";
+}
+
 } // namespace
 
 bool isGraphTimeoutMonitoringEnabled() {
@@ -63,6 +72,13 @@ bool isGraphTimeoutMonitoringEnabled() {
       std::string val(env);
       enabled = (val != "0" && val != "false");
     }
+    if (enabled && isColltraceGraphTracingEnabled()) {
+      LOG(WARNING)
+          << "[TC] NCCL_COLLTRACE_TRACE_CUDA_GRAPH is enabled — "
+          << "disabling GraphEventTracker timeout monitoring in favor of "
+          << "colltrace watchdog plugin";
+      enabled = false;
+    }
     state = enabled ? 1 : 0;
     g_graphTimeoutMonitoringState.store(state, std::memory_order_relaxed);
   }
@@ -71,6 +87,37 @@ bool isGraphTimeoutMonitoringEnabled() {
 
 void resetGraphTimeoutMonitoringCacheForTest() {
   g_graphTimeoutMonitoringState.store(-1, std::memory_order_relaxed);
+}
+
+bool tryEnableColltraceTimeoutWatchdog(std::chrono::milliseconds timeout) {
+  const char* monitoringEnv =
+      std::getenv("TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING");
+  if (monitoringEnv != nullptr) {
+    std::string val(monitoringEnv);
+    if (val == "0" || val == "false") {
+      return false;
+    }
+  }
+  if (!isColltraceGraphTracingEnabled()) {
+    return false;
+  }
+  if (ncclx::setGlobalHint("ncclx.colltrace.crashOnAsyncError", "1") !=
+      ncclSuccess) {
+    LOG(WARNING) << "[TC] Failed to enable colltrace async error checking";
+    return false;
+  }
+  if (ncclx::setGlobalHint("ncclx.colltrace.crashOnTimeout", "1") !=
+      ncclSuccess) {
+    LOG(WARNING) << "[TC] Failed to enable colltrace timeout checking";
+    return false;
+  }
+  if (ncclx::setGlobalHint(
+          "ncclx.colltrace.timeoutMs", std::to_string(timeout.count())) !=
+      ncclSuccess) {
+    LOG(WARNING) << "[TC] Failed to set colltrace watchdog timeout";
+    return false;
+  }
+  return true;
 }
 
 TorchCommNCCLX::TorchCommNCCLX()
@@ -160,6 +207,14 @@ void TorchCommNCCLX::init(
     TC_LOG(INFO, this)
         << "TorchCommNCCLX dynamic regime enabled, deferring initialization";
     return;
+  }
+
+  // When TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING is enabled (default) and
+  // NCCL_COLLTRACE_TRACE_CUDA_GRAPH=1, set colltrace watchdog hints before
+  // creating the NCCL communicator — the colltrace plugin is configured
+  // during ncclCommInitRank and must see the hints at that point.
+  if (!isGraphTimeoutMonitoringEnabled()) {
+    tryEnableColltraceTimeoutWatchdog(options_.timeout);
   }
 
   if (device_.index() == -1 || nccl_comm_ == nullptr) {
@@ -470,6 +525,10 @@ std::string_view TorchCommNCCLX::getBackendName() const {
 
 std::string_view TorchCommNCCLX::getCommName() const {
   return name_;
+}
+
+int64_t TorchCommNCCLX::getCommPtr() const {
+  return reinterpret_cast<int64_t>(nccl_comm_);
 }
 
 static inline std::chrono::milliseconds getOperationTimeout(
@@ -1691,197 +1750,6 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::device_alltoallv_single(
       hints);
 
   NCCLX_CHECK(nccl_api_, nccl_comm_, result, "NCCLX deviceAllToAllv failed");
-
-  // Record end event after NCCL operation
-  work->recordEnd();
-
-  // Enqueue the work after events have been recorded
-  enqueueWork(work, stream);
-
-  return work;
-}
-
-c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_dispatch(
-    const std::vector<at::Tensor>& output_tensor_list,
-    at::Tensor& output_chunk_sizes_per_rank,
-    const at::Tensor& input_tensor,
-    const at::Tensor& input_chunk_sizes,
-    const at::Tensor& input_chunk_indices,
-    const at::Tensor& input_chunk_count_per_rank,
-    bool async_op) {
-  checkInitialized();
-  checkAndAbortIfTimedOutOrError();
-  TORCH_CHECK(
-      !output_tensor_list.empty(),
-      "alltoallv_dynamic_dispatch: output_tensor_list must not be empty");
-  ensureTensorContiguous(input_tensor);
-  ensureTensorContiguous(input_chunk_sizes);
-  ensureTensorContiguous(input_chunk_indices);
-  ensureTensorContiguous(input_chunk_count_per_rank);
-  ensureTensorContiguous(output_chunk_sizes_per_rank);
-
-  for (const auto& t : output_tensor_list) {
-    ensureTensorContiguous(t);
-  }
-  checkTensorDevice(input_tensor);
-  checkTensorsDevice(output_tensor_list);
-  checkTensorDevice(output_chunk_sizes_per_rank);
-  checkTensorDevice(input_chunk_sizes);
-  checkTensorDevice(input_chunk_indices);
-  checkTensorDevice(input_chunk_count_per_rank);
-
-  // Validate metadata tensor types - all must be int64_t (torch.int64)
-  validateInt64Dtype(input_chunk_sizes, "input_chunk_sizes");
-  validateInt64Dtype(input_chunk_indices, "input_chunk_indices");
-  validateInt64Dtype(input_chunk_count_per_rank, "input_chunk_count_per_rank");
-  validateInt64Dtype(
-      output_chunk_sizes_per_rank, "output_chunk_sizes_per_rank");
-
-  TracingGuard tracingGuard(
-      name_,
-      comm_size_,
-      "alltoallv_dynamic_dispatch",
-      rank_,
-      {input_tensor},
-      output_tensor_list);
-
-  // Convert vector of tensors to a CPU tensor holding pointers, which will be
-  // held by torchComm.
-  //
-  // Note: PyTorch does not provide tensors of void* or uintptr_t, so we
-  // workaround it by using tensors of int64_t, which should work on almost
-  // every platform that we care about. We use memcpy for type punning instead
-  // of reinterpret_cast to avoid undefined behavior due to strict aliasing
-  // rules.
-  static_assert(
-      sizeof(void*) == sizeof(int64_t),
-      "void* and int64_t must have the same size for pointer storage");
-  at::Tensor output_tensor_ptrs = at::zeros(
-      {static_cast<int64_t>(output_tensor_list.size())},
-      at::TensorOptions().dtype(at::kLong).device(at::kCPU));
-  int64_t* ptr_storage = output_tensor_ptrs.data_ptr<int64_t>();
-  for (size_t i = 0; i < output_tensor_list.size(); ++i) {
-    void* data_ptr = output_tensor_list[i].data_ptr();
-    std::memcpy(&ptr_storage[i], &data_ptr, sizeof(void*));
-  }
-
-  cudaStream_t stream = getOperationStream(async_op);
-  graph_event_tracker_.initOnGraphStart(stream);
-  auto work = createWork(
-      stream,
-      options_.timeout,
-      async_op
-          ? std::vector<
-                at::Tensor>{input_tensor, input_chunk_sizes, input_chunk_indices, input_chunk_count_per_rank}
-          : std::vector<at::Tensor>{});
-
-  // Save the CPU pointer tensor to keep it alive for the lifetime of the work
-  // object. output_tensor_ptrs is a CPU tensor holding raw pointers to the
-  // output tensors and must remain valid during async operations and graph
-  // replay. The output_tensor_list (GPU tensors) is kept alive by the caller.
-  work->setCPUTensors({output_tensor_ptrs});
-
-  // Record start event before NCCL operation
-  work->recordStart("alltoallv_dynamic_dispatch");
-
-  // Ensure int64_t and size_t are compatible for safe casting
-  static_assert(
-      sizeof(int64_t) == sizeof(size_t),
-      "int64_t and size_t must have the same size for metadata tensors");
-
-  ncclResult_t result = nccl_api_->alltoallvDynamicDispatch(
-      input_tensor.data_ptr(),
-      reinterpret_cast<size_t*>(input_chunk_sizes.data_ptr()),
-      input_chunk_sizes.numel(),
-      reinterpret_cast<size_t*>(input_chunk_indices.data_ptr()),
-      reinterpret_cast<size_t*>(input_chunk_count_per_rank.data_ptr()),
-      reinterpret_cast<void* const*>(output_tensor_ptrs.data_ptr()),
-      reinterpret_cast<size_t*>(output_chunk_sizes_per_rank.data_ptr()),
-      input_tensor.numel(),
-      output_tensor_list[0].numel(),
-      getNcclDataType(input_tensor),
-      nccl_comm_,
-      stream);
-
-  NCCLX_CHECK(
-      nccl_api_, nccl_comm_, result, "NCCLX alltoallvDynamicDispatch failed");
-
-  // Record end event after NCCL operation
-  work->recordEnd();
-
-  // Enqueue the work after events have been recorded
-  enqueueWork(work, stream);
-
-  return work;
-}
-
-c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_combine(
-    at::Tensor& output_tensor,
-    const at::Tensor& input_tensor,
-    const at::Tensor& input_chunk_sizes,
-    const at::Tensor& input_chunk_indices,
-    const at::Tensor& input_chunk_count_per_rank,
-    bool async_op) {
-  checkInitialized();
-  checkAndAbortIfTimedOutOrError();
-  ensureTensorContiguous(output_tensor);
-  ensureTensorContiguous(input_tensor);
-  ensureTensorContiguous(input_chunk_sizes);
-  ensureTensorContiguous(input_chunk_indices);
-  ensureTensorContiguous(input_chunk_count_per_rank);
-  checkTensorDevice(output_tensor);
-  checkTensorDevice(input_tensor);
-  checkTensorDevice(input_chunk_sizes);
-  checkTensorDevice(input_chunk_indices);
-  checkTensorDevice(input_chunk_count_per_rank);
-
-  // Validate metadata tensor types - all must be int64_t (torch.int64)
-  validateInt64Dtype(input_chunk_sizes, "input_chunk_sizes");
-  validateInt64Dtype(input_chunk_indices, "input_chunk_indices");
-  validateInt64Dtype(input_chunk_count_per_rank, "input_chunk_count_per_rank");
-
-  TracingGuard tracingGuard(
-      name_,
-      comm_size_,
-      "alltoallv_dynamic_combine",
-      rank_,
-      input_tensor,
-      output_tensor);
-
-  cudaStream_t stream = getOperationStream(async_op);
-  graph_event_tracker_.initOnGraphStart(stream);
-  auto work = createWork(
-      stream,
-      options_.timeout,
-      async_op
-          ? std::vector<
-                at::Tensor>{input_tensor, input_chunk_sizes, input_chunk_indices, input_chunk_count_per_rank}
-          : std::vector<at::Tensor>{});
-
-  // Record start event before NCCL operation
-  work->recordStart("alltoallv_dynamic_combine");
-
-  // Ensure int64_t and size_t are compatible for safe casting
-  static_assert(
-      sizeof(int64_t) == sizeof(size_t),
-      "int64_t and size_t must have the same size for metadata tensors");
-
-  // Cast int64_t* to size_t* for NCCL API (safe on 64-bit systems)
-  ncclResult_t result = nccl_api_->alltoallvDynamicCombine(
-      input_tensor.data_ptr(),
-      reinterpret_cast<size_t*>(input_chunk_sizes.data_ptr()),
-      input_chunk_sizes.numel(),
-      reinterpret_cast<size_t*>(input_chunk_indices.data_ptr()),
-      reinterpret_cast<size_t*>(input_chunk_count_per_rank.data_ptr()),
-      output_tensor.data_ptr(),
-      input_tensor.numel(),
-      output_tensor.numel(),
-      getNcclDataType(input_tensor),
-      nccl_comm_,
-      stream);
-
-  NCCLX_CHECK(
-      nccl_api_, nccl_comm_, result, "NCCLX alltoallvDynamicCombine failed");
 
   // Record end event after NCCL operation
   work->recordEnd();

@@ -42,7 +42,14 @@ struct RdmaTransportConfig {
   uint8_t retryCnt{7}; /* Number of retries before reporting an error. */
   uint8_t trafficClass{0}; /* Traffic class for GRH (QoS / DSCP). */
   uint16_t pkeyIndex{0}; /* Partition key index for QP INIT. */
-  uint32_t maxWr{128}; /* Max outstanding send WRs per QP. */
+  /* Max outstanding send WRs per QP. The default leaves enough SQ depth for
+   * high-throughput multi-NIC CPU RDMA without requiring a benchmark override.
+   */
+  uint32_t maxWr{2048};
+  /* Max outstanding RDMA READ/atomic operations per QP. This directly controls
+   * requester-side READ pipelining and responder-side inbound READ capacity.
+   */
+  uint32_t maxRdAtomic{8};
   uint32_t maxSge{1}; /* Max scatter/gather entries per WR. */
   uint32_t maxInlineData{16}; /* Max inline data bytes per WR. */
   size_t chunkSize{512 * 1024}; /* Transfer chunk size in bytes (512KB). */
@@ -374,6 +381,18 @@ class RdmaTransport : public Transport {
       size_t& idx,
       uint32_t taskId,
       std::shared_ptr<Task>& task);
+
+  /// Returns whether a pending transfer may begin posting without exceeding
+  /// the transport's conservative SQ admission budget.
+  bool canStartTransfer(const PendingTransfer& transfer) const;
+
+  /// Conservative global WR budget used to admit complete transfers. A single
+  /// transfer larger than this budget may still start when no other WRs are
+  /// outstanding, so very large messages continue to make progress.
+  size_t admissionBudgetWrs() const;
+
+  /// Total WRs currently outstanding across all QPs.
+  size_t outstandingWrs() const;
 
   /// Posts a chain of WRs to a single QP. On partial failure, posts a
   /// flush WR so the HCA generates a CQE for the consumed unsignaled WRs.

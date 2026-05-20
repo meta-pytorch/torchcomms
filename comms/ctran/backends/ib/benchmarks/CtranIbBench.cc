@@ -8,6 +8,7 @@
 
 #include <folly/init/Init.h>
 
+#include "comms/ctran/backends/ib/BootstrapExternal.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/utils/Exception.h"
 
@@ -100,12 +101,18 @@ static BenchmarkContext setupBenchmarkContext(size_t bufferSize) {
       CtranIb::BootstrapMode::kExternal);
 
   // Connect senderIb and receiverIb
-  auto senderVcIdentifier = senderIb->getLocalVcIdentifier(kDummyRank);
-  auto receiverVcIdentifier = receiverIb->getLocalVcIdentifier(kDummyRank);
+  auto senderVcIdentifier =
+      senderIb->externalBootstrap()->getLocalVcId(kDummyRank);
+  auto receiverVcIdentifier =
+      receiverIb->externalBootstrap()->getLocalVcId(kDummyRank);
   CHECK_EQ(
-      senderIb->connectVcDirect(receiverVcIdentifier, kDummyRank), commSuccess);
+      senderIb->externalBootstrap()->connectVc(
+          receiverVcIdentifier, kDummyRank),
+      commSuccess);
   CHECK_EQ(
-      receiverIb->connectVcDirect(senderVcIdentifier, kDummyRank), commSuccess);
+      receiverIb->externalBootstrap()->connectVc(
+          senderVcIdentifier, kDummyRank),
+      commSuccess);
 
   // Allocate memory on the sender side
   CHECK_EQ(cudaSetDevice(cudaDev0), cudaSuccess);

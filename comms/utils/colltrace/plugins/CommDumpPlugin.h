@@ -15,11 +15,6 @@
 
 namespace meta::comms::colltrace {
 
-enum class EvictionMode {
-  FixedCount, // Keep last N records (current behavior)
-  Iteration, // Keep records from current iteration, with hard upper bound
-};
-
 struct CommDumpConfig {
   // Default size of queue storing past collective communication operations.
   // The default value should be enough for debugging past collective. For slow
@@ -28,7 +23,6 @@ struct CommDumpConfig {
   // 1024 elements should be sufficiently large to handle the number of
   // collective calls that is hanging when we dump the trace.
   static constexpr int kCommDumpQueueSize = 1024;
-
   // Default timeout for waiting for the lock to be acquired for dump. We don't
   // want to block the dump thread if there is any issue with the lock.
   static constexpr auto kDumpLockAcquireTimeout = std::chrono::seconds(1);
@@ -42,15 +36,6 @@ struct CommDumpConfig {
   // dropped if the queue is full.
   int64_t pendingCollSize{kCommDumpQueueSize};
   std::chrono::milliseconds dumpLockAcquireTimeout{kDumpLockAcquireTimeout};
-
-  EvictionMode evictionMode{EvictionMode::FixedCount};
-  // Number of recent iterations to retain when using Iteration mode.
-  // 1 = current iteration only, 2 = current + previous, etc.
-  int64_t maxIterations{1};
-  // Hard upper bound on retained past records when using Iteration mode.
-  // Prevents unbounded growth if ncclxSetIteration is never called.
-  static constexpr int64_t kDefaultIterationUpperBound{3000};
-  int64_t iterationUpperBound{kDefaultIterationUpperBound};
 };
 
 struct CollRecordGreaterCollId {
@@ -74,6 +59,7 @@ struct CollTraceDump {
 
   int64_t currentIteration{-1};
   int64_t currentIterationCommTimeUs{0};
+  int64_t iterationCutoffUs{0};
 };
 
 struct IterationCommTime {
@@ -116,10 +102,9 @@ class CommDumpPlugin : public ICollTracePlugin {
   static constexpr std::string_view kCommDumpPluginName = "CommDumpPlugin";
 
  private:
-  void evictPastColls(CollTraceDump& dump, int64_t completedIteration);
+  void evictPastColls(CollTraceDump& dump);
 
   CommDumpConfig config_;
-  int64_t maxIterationSeen_{-1};
 
   folly::Synchronized<CollTraceDump> collTraceDump_;
 

@@ -36,7 +36,8 @@ static commResult_t impl(
   std::vector<struct CtranMapperRemoteAccessKey> remoteAccessKeys(nSteps);
   std::vector<std::unique_ptr<CtranMapperRequest>> irecvReq(nSteps);
   std::vector<std::unique_ptr<CtranMapperRequest>> isendReq(nSteps);
-  std::vector<std::unique_ptr<CtranMapperRequest>> iputReq(nSteps);
+  std::vector<CtranMapperRequest> iputReqs(nRanks - 1);
+  size_t iputReqIdx = 0;
   std::vector<std::unique_ptr<CtranMapperNotify>> notifyVec(nSteps);
   std::unique_ptr<CtranMapperTimestamp> timestamp =
       std::unique_ptr<CtranMapperTimestamp>(
@@ -88,8 +89,8 @@ static commResult_t impl(
 
     // Initialize notify to receive notification from peer
     notifyVec[i] = std::make_unique<CtranMapperNotify>();
-    FB_COMMCHECK(
-        comm->ctran_->mapper->initNotify(peer, memHdl, notifyVec[i].get()));
+    FB_COMMCHECK(comm->ctran_->mapper->initNotify(
+        peer, memHdl, notifyVec[i].get(), 1 << i));
   }
   CTRAN_PROFILER_IF(
       profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_CTRL));
@@ -120,62 +121,32 @@ static commResult_t impl(
 
     for (size_t j = 0; j < (1 << i); j++) {
       size_t putOffset = j * (nRanks / (1 << i)) + rank % (nRanks / (1 << i));
-      // Only need to block on the final put
-      bool notify = j == (1 << i) - 1;
-
-      if (notify) {
-        CtranMapperRequest* putReqPtr = nullptr;
-        FB_COMMCHECK(comm->ctran_->mapper->iput(
-            (char*)recvbuff + putOffset * sendSize,
-            (char*)remoteRecvBuffs[i] + putOffset * sendSize,
-            sendSize,
-            peer,
-            CtranMapperConfig{
-                .memHdl_ = memHdl,
-                .remoteAccessKey_ = remoteAccessKeys[i],
-                .notify_ = notify},
-            &putReqPtr));
-        iputReq[i] = std::unique_ptr<CtranMapperRequest>(putReqPtr);
-      } else {
-        FB_COMMCHECK(comm->ctran_->mapper->iput(
-            (char*)recvbuff + putOffset * sendSize,
-            (char*)remoteRecvBuffs[i] + putOffset * sendSize,
-            sendSize,
-            peer,
-            CtranMapperConfig{
-                .memHdl_ = memHdl,
-                .remoteAccessKey_ = remoteAccessKeys[i],
-                .notify_ = notify},
-            static_cast<CtranMapperRequest*>(nullptr)));
-      }
+      FB_COMMCHECK(comm->ctran_->mapper->iput(
+          (char*)recvbuff + putOffset * sendSize,
+          (char*)remoteRecvBuffs[i] + putOffset * sendSize,
+          sendSize,
+          peer,
+          CtranMapperConfig{
+              .memHdl_ = memHdl,
+              .remoteAccessKey_ = remoteAccessKeys[i],
+              .notify_ = true},
+          &iputReqs.at(iputReqIdx++)));
       // Capture duration started from first put
       if (j == 0) {
         timestamp->putIssued.push_back(CtranMapperTimestampPoint(peer));
       }
     }
-    // Wait for signal from receives
-    FB_COMMCHECK(comm->ctran_->mapper->waitRequest(iputReq[i].get()));
-    // Capture duration ended at last put when it is completed
-    timestamp->putComplete.push_back(CtranMapperTimestampPoint(peer));
     FB_COMMCHECK(comm->ctran_->mapper->waitNotify(notifyVec[i].get()));
-
-    // Flush received data to ensure: (1) cross-NIC DMA visibility before
-    // next step reads it as iput source (multi-NIC platforms have no
-    // cross-device PCIe ordering guarantee), and (2) GPU-read-after-RDMA-write
-    // visibility if a GPU kernel is scheduled before CPU observes RDMA write
-    // completion.
-    {
-      CtranMapperRequest* rawFlushReq = nullptr;
-      FB_COMMCHECK(
-          comm->ctran_->mapper->iflush(recvbuff, memHdl, &rawFlushReq));
-      std::unique_ptr<CtranMapperRequest> flushReq(rawFlushReq);
-      if (flushReq) {
-        FB_COMMCHECK(comm->ctran_->mapper->waitRequest(flushReq.get()));
-      }
-    }
 
     CTRAN_PROFILER_IF(
         profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_DATA));
+  }
+
+  for (size_t k = 0; k < iputReqIdx; k++) {
+    FB_COMMCHECK(comm->ctran_->mapper->waitRequest(&iputReqs[k]));
+  }
+  for (const auto peer : peers) {
+    timestamp->putComplete.push_back(CtranMapperTimestampPoint(peer));
   }
 
   for (int i = 0; i < nSteps; i++) {

@@ -17,12 +17,10 @@ using namespace uniflow;
 using ::testing::_;
 using ::testing::Return;
 
-// Use default config values for test constants.
 static const RdmaTransportConfig kDefaultConfig{};
-// must match RdmaTransportConfig default
 constexpr size_t kChunkSize = 512 * 1024;
-// must match RdmaTransportConfig default
-constexpr size_t kDefaultMaxWr = 128;
+// Keep data-path queue-capacity tests small and deterministic.
+constexpr size_t kTestMaxWr = 128;
 
 namespace uniflow {
 
@@ -838,12 +836,15 @@ class RdmaTransportDataPathTest : public ::testing::Test {
     nics->push_back(
         makeNic(&fakeDev_, &fakeCtx_, &fakePd_, mockApi_, 0x1234, gid));
 
+    RdmaTransportConfig config{};
+    config.maxWr = kTestMaxWr;
     transport_ = std::make_unique<RdmaTransport>(
         mockApi_,
         mockCudaApi_,
         evbThread_->getEventBase(),
         nics,
-        kLocalDomainId);
+        kLocalDomainId,
+        config);
     transport_->bind();
 
     RdmaTransportInfo remoteInfo;
@@ -1064,8 +1065,7 @@ TEST_P(RdmaTransportOpcodeTest, WcErrorFailsTask) {
 }
 
 TEST_P(RdmaTransportOpcodeTest, RetriesWhenQpIsFull) {
-  constexpr size_t kMaxWr = 128; // must match RdmaTransportConfig default
-  constexpr size_t kNumWr = kMaxWr + 1; // 129 WRs
+  constexpr size_t kNumWr = kTestMaxWr + 1; // 129 WRs
   constexpr size_t kBufSize = kNumWr * kChunkSize; // 129 chunks
 
   auto ts = makeTestSegments(kBufSize);
@@ -1123,9 +1123,9 @@ TEST_F(RdmaTransportTest, CompletionRoutingDisambiguatesDuplicateQpNumbers) {
   // regressions that poison per-QP queue-depth accounting.
   constexpr uint64_t kLocalDomainId = 42;
   constexpr uint64_t kRemoteDomainId = 99;
-  constexpr size_t kNumWr = 2 * kDefaultMaxWr + 1;
+  constexpr size_t kNumWr = 2 * kTestMaxWr + 1;
   constexpr size_t kBufSize = kNumWr * kChunkSize;
-  constexpr size_t kLookupRegressionBufSize = (kDefaultMaxWr + 1) * kChunkSize;
+  constexpr size_t kLookupRegressionBufSize = (kTestMaxWr + 1) * kChunkSize;
 
   fakeQp0_.qp_num = 100;
   fakeQp1_.qp_num = 100;
@@ -1150,6 +1150,7 @@ TEST_F(RdmaTransportTest, CompletionRoutingDisambiguatesDuplicateQpNumbers) {
   nics->push_back(
       makeNic(&fakeDev1_, &fakeCtx1_, &fakePd1_, mockApi_, 0x2222, gid1));
   RdmaTransportConfig config{.numQps = 2};
+  config.maxWr = kTestMaxWr;
   RdmaTransport transport(
       mockApi_,
       mockCudaApi_,
@@ -1217,7 +1218,7 @@ TEST_F(RdmaTransportTest, CompletionRoutingDisambiguatesDuplicateQpNumbers) {
             const uint32_t numWrs = static_cast<uint32_t>(wrId & 0xffffffff);
             // Phase 2 expects a lookup regression to make QP0 look more
             // available than it is, causing an over-capacity post to QP0.
-            if (numWrs > kDefaultMaxWr) {
+            if (numWrs > kTestMaxWr) {
               *badWr = wr;
               return Err(ErrCode::DriverError, "posted over QP capacity");
             }
@@ -1390,7 +1391,7 @@ TEST_P(RdmaTransportOpcodeTest, ShutdownDrainsInflightTransfer) {
 TEST_P(RdmaTransportOpcodeTest, SubsequentTransferAfterWcError) {
   // Verify that a WC error on one transfer does not prevent subsequent
   // transfers from succeeding — the error is per-task, not transport-wide.
-  auto ts = makeTestSegments(kChunkSize * kDefaultMaxWr);
+  auto ts = makeTestSegments(kChunkSize * kTestMaxWr);
 
   std::vector<uint64_t> capturedWrIds;
   EXPECT_CALL(*mockApi_, postSend(&fakeQp_, _, _))

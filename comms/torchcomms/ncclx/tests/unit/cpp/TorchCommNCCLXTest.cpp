@@ -570,6 +570,7 @@ TEST_F(TorchCommNCCLXTest, Getters) {
 
   EXPECT_EQ(comm->getOptions(), options);
   EXPECT_EQ(comm->getDevice(), device_);
+  EXPECT_EQ(comm->getCommPtr(), reinterpret_cast<int64_t>(ncclComm_t(0x3000)));
 
   comm->finalize();
 }
@@ -1097,65 +1098,6 @@ TEST_F(
   // Execute: simulate memory allocation — should not throw, registration
   // failure is handled gracefully with a warning log
   EXPECT_NO_THROW(allocator.regDeregMem(alloc_entry));
-}
-
-TEST_F(TorchCommNCCLXTest, AlltoallvDynamicDispatchCombine) {
-  setupRankAndSize(0, 2);
-
-  auto comm = createMockedTorchComm();
-
-  cuda_mock_->setupDefaultBehaviors();
-  nccl_mock_->setupDefaultBehaviors();
-
-  comm->init(*device_, "test_name", default_options_);
-
-  // Create test data
-  auto input_tensor = createTestTensor({100});
-  std::vector<at::Tensor> output_tensor_list = {
-      createTestTensor({50}), createTestTensor({50})};
-  auto input_chunk_sizes =
-      at::ones({2}, at::TensorOptions().device(*device_).dtype(at::kLong));
-  auto input_chunk_indices =
-      at::ones({2}, at::TensorOptions().device(*device_).dtype(at::kLong));
-  auto input_chunk_count_per_rank =
-      at::ones({2}, at::TensorOptions().device(*device_).dtype(at::kLong));
-  auto output_chunk_sizes_per_rank =
-      at::ones({4}, at::TensorOptions().device(*device_).dtype(at::kLong));
-  auto output_tensor = createTestTensor({100});
-
-  // Test alltoallv_dynamic_dispatch
-  EXPECT_CALL(
-      *nccl_mock_, alltoallvDynamicDispatch(_, _, _, _, _, _, _, _, _, _, _, _))
-      .WillOnce(Return(ncclSuccess));
-
-  auto work1 = comm->alltoallv_dynamic_dispatch(
-      output_tensor_list,
-      output_chunk_sizes_per_rank,
-      input_tensor,
-      input_chunk_sizes,
-      input_chunk_indices,
-      input_chunk_count_per_rank,
-      false);
-
-  EXPECT_NE(work1, nullptr);
-
-  // Test alltoallv_dynamic_combine
-  EXPECT_CALL(
-      *nccl_mock_, alltoallvDynamicCombine(_, _, _, _, _, _, _, _, _, _, _))
-      .WillOnce(Return(ncclSuccess));
-
-  auto work2 = comm->alltoallv_dynamic_combine(
-      output_tensor,
-      input_tensor,
-      input_chunk_sizes,
-      input_chunk_indices,
-      input_chunk_count_per_rank,
-      false);
-
-  EXPECT_NE(work2, nullptr);
-
-  setupNormalDestruction(*comm);
-  comm->finalize();
 }
 
 #ifdef NCCL_REDUCE_SCATTER_QUANTIZE_SUPPORTED

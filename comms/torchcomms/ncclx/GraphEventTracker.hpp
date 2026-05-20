@@ -63,9 +63,8 @@ struct GraphState {
   SharedCallbackState* shared_{nullptr};
   std::unique_ptr<DeviceCounter> replay_counter;
   // CPU tensors that must be kept alive for the graph's lifetime.
-  // This includes CPU pointer tensors used by alltoallv_dynamic_dispatch
-  // operations. These tensors are moved from work objects during graph
-  // capture and remain valid until the graph is destroyed.
+  // These tensors are moved from work objects during graph capture and
+  // remain valid until the graph is destroyed.
   std::vector<at::Tensor> cpu_tensors;
   // Set by GraphEventTracker::maybeInitGraphState to point at the tracker's
   // pools. Null for GraphState objects that were never fully initialized.

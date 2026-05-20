@@ -49,6 +49,7 @@ target_link_libraries(TorchCommOptionsTest PRIVATE
     torchcomms
     GTest::gtest_main
     GTest::gmock
+    atomic
 )
 target_link_options(TorchCommOptionsTest PRIVATE
     "LINKER:--allow-shlib-undefined"
