@@ -418,6 +418,10 @@ class TorchCommRCCL : public TorchCommBackend,
 
   bool high_priority_stream_{false};
   std::string name_;
+  // UUID of the current communicator quorum, set at end of reconfigure().
+  // Embedded in getInitHandle() so findQuorum() can identify which ranks
+  // shared the same previous communicator.
+  int64_t uuid_{-1};
 };
 
 } // namespace torch::comms
