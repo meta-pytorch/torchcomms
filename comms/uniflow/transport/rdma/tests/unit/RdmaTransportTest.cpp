@@ -3,6 +3,7 @@
 #include "comms/uniflow/transport/rdma/RdmaTransport.h"
 #include "comms/uniflow/transport/rdma/RdmaRegistrationHandle.h"
 
+#include "comms/uniflow/drivers/cuda/mock/MockCudaApi.h"
 #include "comms/uniflow/drivers/ibverbs/mock/MockIbvApi.h"
 #include "comms/uniflow/executor/ScopedEventBaseThread.h"
 
@@ -16,12 +17,10 @@ using namespace uniflow;
 using ::testing::_;
 using ::testing::Return;
 
-// Use default config values for test constants.
 static const RdmaTransportConfig kDefaultConfig{};
-// must match RdmaTransportConfig default
 constexpr size_t kChunkSize = 512 * 1024;
-// must match RdmaTransportConfig default
-constexpr size_t kDefaultMaxWr = 128;
+// Keep data-path queue-capacity tests small and deterministic.
+constexpr size_t kTestMaxWr = 128;
 
 namespace uniflow {
 
@@ -53,7 +52,7 @@ class SegmentTest {
 
 TEST(RdmaTransportInfoTest, SerializeDeserializeRoundTrip) {
   RdmaTransportInfo info;
-  info.header.version = 1;
+  info.header.version = kRdmaVersion;
   info.header.numQps = 4;
   info.header.numNics = 2;
   info.nicInfos = {
@@ -76,13 +75,15 @@ TEST(RdmaTransportInfoTest, SerializeDeserializeRoundTrip) {
       {.qpNum = 500, .psn = 600},
       {.qpNum = 700, .psn = 800},
   };
+  info.ctrl = {.addr = 0x1000, .length = 64, .rkeys = {0xAA, 0xBB}};
+  info.slab = {.addr = 0x2000, .length = 4096, .rkeys = {0xCC, 0xDD}};
 
   auto data = info.serialize();
   auto result = RdmaTransportInfo::deserialize(data);
   ASSERT_TRUE(result.hasValue());
 
   auto& out = result.value();
-  EXPECT_EQ(out.header.version, 1);
+  EXPECT_EQ(out.header.version, kRdmaVersion);
   EXPECT_EQ(out.header.numQps, 4);
   EXPECT_EQ(out.header.numNics, 2);
 
@@ -96,6 +97,17 @@ TEST(RdmaTransportInfoTest, SerializeDeserializeRoundTrip) {
   ASSERT_EQ(out.qpInfos.size(), 4);
   EXPECT_EQ(out.qpInfos[0].qpNum, 100);
   EXPECT_EQ(out.qpInfos[3].qpNum, 700);
+
+  EXPECT_EQ(out.ctrl.addr, 0x1000);
+  EXPECT_EQ(out.ctrl.length, 64);
+  ASSERT_EQ(out.ctrl.rkeys.size(), 2);
+  EXPECT_EQ(out.ctrl.rkeys[0], 0xAA);
+  EXPECT_EQ(out.ctrl.rkeys[1], 0xBB);
+  EXPECT_EQ(out.slab.addr, 0x2000);
+  EXPECT_EQ(out.slab.length, 4096);
+  ASSERT_EQ(out.slab.rkeys.size(), 2);
+  EXPECT_EQ(out.slab.rkeys[0], 0xCC);
+  EXPECT_EQ(out.slab.rkeys[1], 0xDD);
 }
 
 TEST(RdmaTransportInfoTest, DeserializeTooSmallForHeader) {
@@ -147,6 +159,8 @@ TEST(RdmaTransportInfoTest, SerializeZeroQps) {
   info.header.numQps = 0;
   info.header.numNics = 1;
   info.nicInfos = {{.lid = 1}};
+  info.ctrl.rkeys = {0};
+  info.slab.rkeys = {0};
 
   auto data = info.serialize();
   auto result = RdmaTransportInfo::deserialize(data);
@@ -156,15 +170,67 @@ TEST(RdmaTransportInfoTest, SerializeZeroQps) {
   ASSERT_EQ(result.value().nicInfos.size(), 1);
 }
 
+// --- Helpers ---
+
+NicResources makeNic(
+    ibv_device* dev,
+    ibv_context* ctx,
+    ibv_pd* pd,
+    std::shared_ptr<testing::NiceMock<MockIbvApi>> mockApi,
+    uint16_t lid = 0,
+    ibv_gid gid = {},
+    uint8_t port = 1) {
+  ON_CALL(*mockApi, openDevice(dev))
+      .WillByDefault(Return(Result<ibv_context*>(ctx)));
+  ON_CALL(*mockApi, allocPd(ctx)).WillByDefault(Return(Result<ibv_pd*>(pd)));
+  ON_CALL(*mockApi, isDmaBufSupported(pd))
+      .WillByDefault(Return(Result<bool>(false)));
+  ON_CALL(*mockApi, queryPort(ctx, port, _))
+      .WillByDefault([lid, gid](ibv_context*, uint8_t, ibv_port_attr* attr) {
+        attr->lid = lid;
+        attr->active_mtu = IBV_MTU_4096;
+        attr->link_layer = IBV_LINK_LAYER_ETHERNET;
+        attr->state = IBV_PORT_ACTIVE;
+        return Ok();
+      });
+  ON_CALL(*mockApi, queryGid(ctx, port, _, _))
+      .WillByDefault([gid](ibv_context*, uint8_t, int, ibv_gid* out) {
+        *out = gid;
+        return Ok();
+      });
+  ON_CALL(*mockApi, queryDevice(ctx, _))
+      .WillByDefault([port](ibv_context*, ibv_device_attr* attr) {
+        attr->phys_port_cnt = port;
+        return Ok();
+      });
+  ON_CALL(*mockApi, deallocPd(pd)).WillByDefault(Return(Ok()));
+  ON_CALL(*mockApi, closeDevice(ctx)).WillByDefault(Return(Ok()));
+
+  return NicResources(dev, mockApi, 3, port);
+}
+
 // --- Mock-based transport tests ---
 
 class RdmaTransportTest : public ::testing::Test {
  protected:
   void SetUp() override {
     mockApi_ = std::make_shared<testing::NiceMock<MockIbvApi>>();
+    mockCudaApi_ = std::make_shared<testing::NiceMock<MockCudaApi>>();
+    ON_CALL(*mockApi_, regMr(_, _, _, _))
+        .WillByDefault(Return(Result<ibv_mr*>(&fakeSlabMr_)));
+    ON_CALL(*mockApi_, deregMr(_)).WillByDefault(Return(Ok()));
+    ON_CALL(*mockCudaApi_, hostAlloc(_, _))
+        .WillByDefault([](size_t size, unsigned int) {
+          return Result<void*>(std::calloc(1, size));
+        });
+    ON_CALL(*mockCudaApi_, hostFree(_)).WillByDefault([](void* ptr) {
+      std::free(ptr);
+      return Ok();
+    });
   }
 
   std::shared_ptr<testing::NiceMock<MockIbvApi>> mockApi_;
+  std::shared_ptr<testing::NiceMock<MockCudaApi>> mockCudaApi_;
   ScopedEventBaseThread evbThread_;
 
   ibv_device fakeDev0_{};
@@ -179,7 +245,50 @@ class RdmaTransportTest : public ::testing::Test {
   ibv_qp fakeQp1_{};
   ibv_qp fakeQp2_{};
   ibv_qp fakeQp3_{};
+  ibv_mr fakeSlabMr_{};
 };
+
+TEST_F(RdmaTransportTest, ConstructorRejectsZeroQps) {
+  ibv_gid gid{};
+  auto nics = std::make_shared<std::vector<NicResources>>();
+  nics->push_back(makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0, gid));
+  RdmaTransportConfig config{.numQps = 0};
+  EXPECT_THROW(
+      RdmaTransport(
+          mockApi_, mockCudaApi_, evbThread_.getEventBase(), nics, 0, config),
+      std::invalid_argument);
+}
+
+TEST_F(RdmaTransportTest, BindClampsNicsToQpCount) {
+  fakeQp0_.qp_num = 10;
+
+  EXPECT_CALL(*mockApi_, createCq(&fakeCtx0_, _, _, _, _))
+      .WillOnce(Return(Result<ibv_cq*>(&fakeCq0_)));
+  EXPECT_CALL(*mockApi_, createCq(&fakeCtx1_, _, _, _, _)).Times(0);
+  EXPECT_CALL(*mockApi_, createQp(&fakePd0_, _))
+      .WillOnce(Return(Result<ibv_qp*>(&fakeQp0_)));
+  EXPECT_CALL(*mockApi_, modifyQp(_, _, _)).WillRepeatedly(Return(Ok()));
+
+  ibv_gid gid0{}, gid1{};
+  auto nics = std::make_shared<std::vector<NicResources>>();
+  nics->push_back(
+      makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0x1111, gid0));
+  nics->push_back(
+      makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0x2222, gid1));
+  RdmaTransportConfig config{.numQps = 1};
+  RdmaTransport transport(
+      mockApi_, mockCudaApi_, evbThread_.getEventBase(), nics, 0, config);
+
+  auto data = transport.bind();
+  ASSERT_FALSE(data.empty());
+
+  auto result = RdmaTransportInfo::deserialize(data);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_EQ(result.value().header.numNics, 1);
+  EXPECT_EQ(result.value().header.numQps, 1);
+  ASSERT_EQ(result.value().nicInfos.size(), 1);
+  EXPECT_EQ(result.value().nicInfos[0].lid, 0x1111);
+}
 
 TEST_F(RdmaTransportTest, SingleNicBindCreatesQPs) {
   fakeQp0_.qp_num = 42;
@@ -193,10 +302,12 @@ TEST_F(RdmaTransportTest, SingleNicBindCreatesQPs) {
   EXPECT_CALL(*mockApi_, modifyQp(_, _, _)).WillRepeatedly(Return(Ok()));
 
   ibv_gid gid{};
-  std::vector<NicResources> nics = {
-      {.ctx = &fakeCtx0_, .pd = &fakePd0_, .lid = 0x1234, .gid = gid}};
+  auto nics = std::make_shared<std::vector<NicResources>>();
+  nics->push_back(
+      makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0x1234, gid));
   RdmaTransportConfig config{.numQps = 2};
-  RdmaTransport transport(mockApi_, evbThread_.getEventBase(), nics, 0, config);
+  RdmaTransport transport(
+      mockApi_, mockCudaApi_, evbThread_.getEventBase(), nics, 0, config);
 
   auto data = transport.bind();
   ASSERT_FALSE(data.empty());
@@ -229,12 +340,14 @@ TEST_F(RdmaTransportTest, MultiNicBindDistributesQPsRoundRobin) {
   EXPECT_CALL(*mockApi_, modifyQp(_, _, _)).WillRepeatedly(Return(Ok()));
 
   ibv_gid gid0{}, gid1{};
-  std::vector<NicResources> nics = {
-      {.ctx = &fakeCtx0_, .pd = &fakePd0_, .lid = 0x1111, .gid = gid0},
-      {.ctx = &fakeCtx1_, .pd = &fakePd1_, .lid = 0x2222, .gid = gid1},
-  };
+  auto nics = std::make_shared<std::vector<NicResources>>();
+  nics->push_back(
+      makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0x1111, gid0));
+  nics->push_back(
+      makeNic(&fakeDev1_, &fakeCtx1_, &fakePd1_, mockApi_, 0x2222, gid1));
   RdmaTransportConfig config{.numQps = 4};
-  RdmaTransport transport(mockApi_, evbThread_.getEventBase(), nics, 0, config);
+  RdmaTransport transport(
+      mockApi_, mockCudaApi_, evbThread_.getEventBase(), nics, 0, config);
 
   auto data = transport.bind();
   ASSERT_FALSE(data.empty());
@@ -259,9 +372,10 @@ TEST_F(RdmaTransportTest, BindReturnsEmptyOnCqFailure) {
       .WillOnce(Return(Result<ibv_cq*>(ErrCode::ResourceExhausted)));
 
   ibv_gid gid{};
-  std::vector<NicResources> nics = {
-      {.ctx = &fakeCtx0_, .pd = &fakePd0_, .lid = 0, .gid = gid}};
-  RdmaTransport transport(mockApi_, evbThread_.getEventBase(), nics, 0);
+  auto nics = std::make_shared<std::vector<NicResources>>();
+  nics->push_back(makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0, gid));
+  RdmaTransport transport(
+      mockApi_, mockCudaApi_, evbThread_.getEventBase(), nics, 0);
 
   auto data = transport.bind();
   EXPECT_TRUE(data.empty());
@@ -275,9 +389,10 @@ TEST_F(RdmaTransportTest, BindReturnsEmptyOnQpFailure) {
       .WillOnce(Return(Result<ibv_qp*>(ErrCode::ResourceExhausted)));
 
   ibv_gid gid{};
-  std::vector<NicResources> nics = {
-      {.ctx = &fakeCtx0_, .pd = &fakePd0_, .lid = 0, .gid = gid}};
-  RdmaTransport transport(mockApi_, evbThread_.getEventBase(), nics, 0);
+  auto nics = std::make_shared<std::vector<NicResources>>();
+  nics->push_back(makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0, gid));
+  RdmaTransport transport(
+      mockApi_, mockCudaApi_, evbThread_.getEventBase(), nics, 0);
 
   auto data = transport.bind();
   EXPECT_TRUE(data.empty());
@@ -294,9 +409,11 @@ TEST_F(RdmaTransportTest, ConnectTransitionsQPs) {
   EXPECT_CALL(*mockApi_, modifyQp(_, _, _)).WillRepeatedly(Return(Ok()));
 
   ibv_gid gid{};
-  std::vector<NicResources> nics = {
-      {.ctx = &fakeCtx0_, .pd = &fakePd0_, .lid = 0x1234, .gid = gid}};
-  RdmaTransport transport(mockApi_, evbThread_.getEventBase(), nics, 0);
+  auto nics = std::make_shared<std::vector<NicResources>>();
+  nics->push_back(
+      makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0x1234, gid));
+  RdmaTransport transport(
+      mockApi_, mockCudaApi_, evbThread_.getEventBase(), nics, 0);
   transport.bind();
 
   RdmaTransportInfo remoteInfo;
@@ -305,6 +422,8 @@ TEST_F(RdmaTransportTest, ConnectTransitionsQPs) {
   remoteInfo.header.numNics = 1;
   remoteInfo.nicInfos = {{.lid = 0x5678}};
   remoteInfo.qpInfos = {{.qpNum = 200, .psn = 300}};
+  remoteInfo.ctrl.rkeys = {0};
+  remoteInfo.slab.rkeys = {0};
 
   auto status = transport.connect(remoteInfo.serialize());
   ASSERT_FALSE(status.hasError());
@@ -321,9 +440,10 @@ TEST_F(RdmaTransportTest, ConnectRejectsQpCountMismatch) {
   EXPECT_CALL(*mockApi_, modifyQp(_, _, _)).WillRepeatedly(Return(Ok()));
 
   ibv_gid gid{};
-  std::vector<NicResources> nics = {
-      {.ctx = &fakeCtx0_, .pd = &fakePd0_, .lid = 0, .gid = gid}};
-  RdmaTransport transport(mockApi_, evbThread_.getEventBase(), nics, 0);
+  auto nics = std::make_shared<std::vector<NicResources>>();
+  nics->push_back(makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0, gid));
+  RdmaTransport transport(
+      mockApi_, mockCudaApi_, evbThread_.getEventBase(), nics, 0);
   transport.bind();
 
   RdmaTransportInfo remoteInfo;
@@ -332,6 +452,8 @@ TEST_F(RdmaTransportTest, ConnectRejectsQpCountMismatch) {
   remoteInfo.header.numNics = 1;
   remoteInfo.nicInfos = {{.lid = 1}};
   remoteInfo.qpInfos = {{.qpNum = 200, .psn = 300}, {.qpNum = 201, .psn = 301}};
+  remoteInfo.ctrl.rkeys = {0};
+  remoteInfo.slab.rkeys = {0};
 
   auto status = transport.connect(remoteInfo.serialize());
   ASSERT_TRUE(status.hasError());
@@ -340,9 +462,10 @@ TEST_F(RdmaTransportTest, ConnectRejectsQpCountMismatch) {
 
 TEST_F(RdmaTransportTest, ConnectWithoutBindFails) {
   ibv_gid gid{};
-  std::vector<NicResources> nics = {
-      {.ctx = &fakeCtx0_, .pd = &fakePd0_, .lid = 0, .gid = gid}};
-  RdmaTransport transport(mockApi_, evbThread_.getEventBase(), nics, 0);
+  auto nics = std::make_shared<std::vector<NicResources>>();
+  nics->push_back(makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0, gid));
+  RdmaTransport transport(
+      mockApi_, mockCudaApi_, evbThread_.getEventBase(), nics, 0);
 
   // Don't call bind() - go straight to connect()
   RdmaTransportInfo remoteInfo;
@@ -351,6 +474,8 @@ TEST_F(RdmaTransportTest, ConnectWithoutBindFails) {
   remoteInfo.header.numNics = 1;
   remoteInfo.nicInfos = {{.lid = 1}};
   remoteInfo.qpInfos = {{.qpNum = 200, .psn = 300}};
+  remoteInfo.ctrl.rkeys = {0};
+  remoteInfo.slab.rkeys = {0};
 
   auto status = transport.connect(remoteInfo.serialize());
   ASSERT_TRUE(status.hasError());
@@ -370,9 +495,10 @@ TEST_F(RdmaTransportTest, ShutdownDestroysResources) {
   EXPECT_CALL(*mockApi_, destroyCq(&fakeCq0_)).WillOnce(Return(Ok()));
 
   ibv_gid gid{};
-  std::vector<NicResources> nics = {
-      {.ctx = &fakeCtx0_, .pd = &fakePd0_, .lid = 0, .gid = gid}};
-  RdmaTransport transport(mockApi_, evbThread_.getEventBase(), nics, 0);
+  auto nics = std::make_shared<std::vector<NicResources>>();
+  nics->push_back(makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0, gid));
+  RdmaTransport transport(
+      mockApi_, mockCudaApi_, evbThread_.getEventBase(), nics, 0);
   transport.bind();
 
   transport.shutdown();
@@ -449,7 +575,8 @@ TEST_F(RdmaTransportFactoryTest, GetTopologyReturnsNonEmpty) {
       {"mlx5_0"}, evbThread_.getEventBase(), {}, mockApi_);
   auto topo = factory.getTopology();
   EXPECT_FALSE(topo.empty());
-  EXPECT_EQ(topo[0], 1u); // version == kRdmaVersion == 1
+  EXPECT_GT(topo.size(), 1u); // topology now includes numQps
+  EXPECT_EQ(topo[0], kRdmaVersion);
 }
 
 TEST_F(RdmaTransportFactoryTest, CreateTransportAcceptsValidTopology) {
@@ -474,20 +601,190 @@ TEST_F(RdmaTransportFactoryTest, CreateTransportRejectsWrongVersion) {
   setupSingleDevice();
   RdmaTransportFactory factory(
       {"mlx5_0"}, evbThread_.getEventBase(), {}, mockApi_);
-  std::vector<uint8_t> badTopo = {99};
-  auto result = factory.createTransport(badTopo);
+  auto topo = factory.getTopology();
+  topo[0] = 99; // corrupt version byte
+  auto result = factory.createTransport(topo);
   EXPECT_TRUE(result.hasError());
   EXPECT_EQ(result.error().code(), ErrCode::TopologyDisconnect);
 }
 
-TEST_F(RdmaTransportFactoryTest, CreateTransportRejectsOversizedTopology) {
+TEST_F(RdmaTransportFactoryTest, CreateTransportRejectsSizeMismatch) {
   setupSingleDevice();
   RdmaTransportFactory factory(
       {"mlx5_0"}, evbThread_.getEventBase(), {}, mockApi_);
-  std::vector<uint8_t> bigTopo = {1, 0, 0, 0};
-  auto result = factory.createTransport(bigTopo);
+  std::vector<uint8_t> badTopo = {1};
+  auto result = factory.createTransport(badTopo);
   EXPECT_TRUE(result.hasError());
   EXPECT_EQ(result.error().code(), ErrCode::InvalidArgument);
+}
+
+TEST_F(RdmaTransportFactoryTest, TopologyRoundTripsWithDifferentQps) {
+  setupSingleDevice();
+  RdmaTransportConfig config{.numQps = 4};
+  RdmaTransportFactory factory(
+      {"mlx5_0"}, evbThread_.getEventBase(), config, mockApi_);
+
+  auto topo = factory.getTopology();
+  EXPECT_FALSE(topo.empty());
+
+  auto result = factory.createTransport(topo);
+  EXPECT_TRUE(result.hasValue());
+}
+
+TEST_F(RdmaTransportFactoryTest, CreateTransportRejectsZeroQpsTopology) {
+  setupSingleDevice();
+  RdmaTransportFactory factory(
+      {"mlx5_0"}, evbThread_.getEventBase(), {}, mockApi_);
+  auto topo = factory.getTopology();
+  // Zero out everything after the version byte to set numQps = 0.
+  std::fill(topo.begin() + 1, topo.end(), 0);
+  auto result = factory.createTransport(topo);
+  EXPECT_TRUE(result.hasError());
+  EXPECT_EQ(result.error().code(), ErrCode::TopologyDisconnect);
+}
+
+TEST_F(RdmaTransportFactoryTest, GetTopologyReflectsConfiguredQps) {
+  // Use WillRepeatedly so two factories can be constructed from the same mocks.
+  EXPECT_CALL(*mockApi_, getDeviceList(_))
+      .WillRepeatedly([this](int* numDevices) {
+        *numDevices = 1;
+        return Result<ibv_device**>(fakeDeviceList_);
+      });
+  EXPECT_CALL(*mockApi_, openDevice(&fakeDevice0_))
+      .WillRepeatedly(Return(Result<ibv_context*>(&fakeCtx0_)));
+  EXPECT_CALL(*mockApi_, getDeviceName(&fakeDevice0_))
+      .WillRepeatedly(Return(Result<const char*>("mlx5_0")));
+  EXPECT_CALL(*mockApi_, queryDevice(&fakeCtx0_, _))
+      .WillRepeatedly([](ibv_context*, ibv_device_attr* attr) {
+        attr->phys_port_cnt = 1;
+        return Ok();
+      });
+  EXPECT_CALL(*mockApi_, allocPd(&fakeCtx0_))
+      .WillRepeatedly(Return(Result<ibv_pd*>(&fakePd0_)));
+  EXPECT_CALL(*mockApi_, isDmaBufSupported(&fakePd0_))
+      .WillRepeatedly(Return(Result<bool>(true)));
+  EXPECT_CALL(*mockApi_, queryPort(&fakeCtx0_, 1, _))
+      .WillRepeatedly([](ibv_context*, uint8_t, ibv_port_attr* attr) {
+        attr->lid = 0x1234;
+        attr->active_mtu = IBV_MTU_4096;
+        attr->link_layer = IBV_LINK_LAYER_ETHERNET;
+        attr->state = IBV_PORT_ACTIVE;
+        return Ok();
+      });
+  EXPECT_CALL(*mockApi_, queryGid(&fakeCtx0_, 1, 3, _))
+      .WillRepeatedly(Return(Ok()));
+  EXPECT_CALL(*mockApi_, freeDeviceList(_)).WillRepeatedly(Return(Ok()));
+  EXPECT_CALL(*mockApi_, deallocPd(&fakePd0_)).WillRepeatedly(Return(Ok()));
+  EXPECT_CALL(*mockApi_, closeDevice(&fakeCtx0_)).WillRepeatedly(Return(Ok()));
+
+  RdmaTransportFactory factory1(
+      {"mlx5_0"}, evbThread_.getEventBase(), {.numQps = 1}, mockApi_);
+  auto topo1 = factory1.getTopology();
+
+  RdmaTransportFactory factory4(
+      {"mlx5_0"}, evbThread_.getEventBase(), {.numQps = 4}, mockApi_);
+  auto topo4 = factory4.getTopology();
+
+  ASSERT_EQ(topo1.size(), topo4.size());
+  EXPECT_NE(topo1, topo4);
+  EXPECT_EQ(topo1[0], topo4[0]);
+}
+
+// --- supported() tests ---
+
+TEST_F(RdmaTransportFactoryTest, SupportedReturnsTrueWithActiveDevice) {
+  EXPECT_CALL(*mockApi_, getDeviceList(_)).WillOnce([this](int* numDevices) {
+    *numDevices = 1;
+    return Result<ibv_device**>(fakeDeviceList_);
+  });
+  EXPECT_CALL(*mockApi_, openDevice(&fakeDevice0_))
+      .WillOnce(Return(Result<ibv_context*>(&fakeCtx0_)));
+  EXPECT_CALL(*mockApi_, queryDevice(&fakeCtx0_, _))
+      .WillOnce([](ibv_context*, ibv_device_attr* attr) {
+        attr->phys_port_cnt = 1;
+        return Ok();
+      });
+  EXPECT_CALL(*mockApi_, queryPort(&fakeCtx0_, 1, _))
+      .WillOnce([](ibv_context*, uint8_t, ibv_port_attr* attr) {
+        attr->state = IBV_PORT_ACTIVE;
+        return Ok();
+      });
+  EXPECT_CALL(*mockApi_, closeDevice(&fakeCtx0_)).WillOnce(Return(Ok()));
+  EXPECT_CALL(*mockApi_, freeDeviceList(_)).WillOnce(Return(Ok()));
+
+  EXPECT_TRUE(RdmaTransportFactory::supported(mockApi_));
+}
+
+TEST_F(RdmaTransportFactoryTest, SupportedReturnsFalseWhenInitFails) {
+  EXPECT_CALL(*mockApi_, init())
+      .WillOnce(Return(Err(ErrCode::DriverError, "no libibverbs")));
+
+  EXPECT_FALSE(RdmaTransportFactory::supported(mockApi_));
+}
+
+TEST_F(RdmaTransportFactoryTest, SupportedReturnsFalseWhenNoDevices) {
+  EXPECT_CALL(*mockApi_, getDeviceList(_)).WillOnce([](int* numDevices) {
+    *numDevices = 0;
+    return Result<ibv_device**>(nullptr);
+  });
+
+  EXPECT_FALSE(RdmaTransportFactory::supported(mockApi_));
+}
+
+TEST_F(RdmaTransportFactoryTest, SupportedReturnsFalseWhenNoActivePort) {
+  EXPECT_CALL(*mockApi_, getDeviceList(_)).WillOnce([this](int* numDevices) {
+    *numDevices = 1;
+    return Result<ibv_device**>(fakeDeviceList_);
+  });
+  EXPECT_CALL(*mockApi_, openDevice(&fakeDevice0_))
+      .WillOnce(Return(Result<ibv_context*>(&fakeCtx0_)));
+  EXPECT_CALL(*mockApi_, queryDevice(&fakeCtx0_, _))
+      .WillOnce([](ibv_context*, ibv_device_attr* attr) {
+        attr->phys_port_cnt = 1;
+        return Ok();
+      });
+  EXPECT_CALL(*mockApi_, queryPort(&fakeCtx0_, 1, _))
+      .WillOnce([](ibv_context*, uint8_t, ibv_port_attr* attr) {
+        attr->state = IBV_PORT_DOWN;
+        return Ok();
+      });
+  EXPECT_CALL(*mockApi_, closeDevice(&fakeCtx0_)).WillOnce(Return(Ok()));
+  EXPECT_CALL(*mockApi_, freeDeviceList(_)).WillOnce(Return(Ok()));
+
+  auto status = RdmaTransportFactory::supported(mockApi_);
+  EXPECT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::ResourceExhausted);
+}
+
+TEST_F(RdmaTransportFactoryTest, SupportedReturnsFalseWhenOpenDeviceFails) {
+  EXPECT_CALL(*mockApi_, getDeviceList(_)).WillOnce([this](int* numDevices) {
+    *numDevices = 1;
+    return Result<ibv_device**>(fakeDeviceList_);
+  });
+  EXPECT_CALL(*mockApi_, openDevice(&fakeDevice0_))
+      .WillOnce(Return(Result<ibv_context*>(ErrCode::DriverError)));
+  EXPECT_CALL(*mockApi_, freeDeviceList(_)).WillOnce(Return(Ok()));
+
+  auto status = RdmaTransportFactory::supported(mockApi_);
+  EXPECT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::DriverError);
+}
+
+TEST_F(RdmaTransportFactoryTest, SupportedClosesDeviceWhenQueryDeviceFails) {
+  EXPECT_CALL(*mockApi_, getDeviceList(_)).WillOnce([this](int* numDevices) {
+    *numDevices = 1;
+    return Result<ibv_device**>(fakeDeviceList_);
+  });
+  EXPECT_CALL(*mockApi_, openDevice(&fakeDevice0_))
+      .WillOnce(Return(Result<ibv_context*>(&fakeCtx0_)));
+  EXPECT_CALL(*mockApi_, queryDevice(&fakeCtx0_, _))
+      .WillOnce(Return(Err(ErrCode::DriverError, "query failed")));
+  EXPECT_CALL(*mockApi_, closeDevice(&fakeCtx0_)).WillOnce(Return(Ok()));
+  EXPECT_CALL(*mockApi_, freeDeviceList(_)).WillOnce(Return(Ok()));
+
+  auto status = RdmaTransportFactory::supported(mockApi_);
+  EXPECT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::ResourceExhausted);
 }
 
 TEST_F(RdmaTransportFactoryTest, ConstructorByNameThrowsOnUnknownDevice) {
@@ -511,9 +808,22 @@ class RdmaTransportDataPathTest : public ::testing::Test {
  protected:
   void SetUp() override {
     mockApi_ = std::make_shared<testing::NiceMock<MockIbvApi>>();
+    mockCudaApi_ = std::make_shared<testing::NiceMock<MockCudaApi>>();
     evbThread_ = std::make_unique<ScopedEventBaseThread>();
 
     fakeQp_.qp_num = 100;
+
+    ON_CALL(*mockApi_, regMr(_, _, _, _))
+        .WillByDefault(Return(Result<ibv_mr*>(&fakeDataMr_)));
+    ON_CALL(*mockApi_, deregMr(_)).WillByDefault(Return(Ok()));
+    ON_CALL(*mockCudaApi_, hostAlloc(_, _))
+        .WillByDefault([](size_t size, unsigned int) {
+          return Result<void*>(std::calloc(1, size));
+        });
+    ON_CALL(*mockCudaApi_, hostFree(_)).WillByDefault([](void* ptr) {
+      std::free(ptr);
+      return Ok();
+    });
 
     EXPECT_CALL(*mockApi_, createCq(&fakeCtx_, _, _, _, _))
         .WillOnce(Return(Result<ibv_cq*>(&fakeCq_)));
@@ -522,11 +832,19 @@ class RdmaTransportDataPathTest : public ::testing::Test {
     EXPECT_CALL(*mockApi_, modifyQp(_, _, _)).WillRepeatedly(Return(Ok()));
 
     ibv_gid gid{};
-    std::vector<NicResources> nics = {
-        {.ctx = &fakeCtx_, .pd = &fakePd_, .lid = 0x1234, .gid = gid}};
+    auto nics = std::make_shared<std::vector<NicResources>>();
+    nics->push_back(
+        makeNic(&fakeDev_, &fakeCtx_, &fakePd_, mockApi_, 0x1234, gid));
 
+    RdmaTransportConfig config{};
+    config.maxWr = kTestMaxWr;
     transport_ = std::make_unique<RdmaTransport>(
-        mockApi_, evbThread_->getEventBase(), nics, kLocalDomainId);
+        mockApi_,
+        mockCudaApi_,
+        evbThread_->getEventBase(),
+        nics,
+        kLocalDomainId,
+        config);
     transport_->bind();
 
     RdmaTransportInfo remoteInfo;
@@ -536,6 +854,8 @@ class RdmaTransportDataPathTest : public ::testing::Test {
     remoteInfo.header.domainId = kRemoteDomainId;
     remoteInfo.nicInfos = {{.lid = 0x5678}};
     remoteInfo.qpInfos = {{.qpNum = 200, .psn = 300}};
+    remoteInfo.ctrl.rkeys = {0};
+    remoteInfo.slab.rkeys = {0};
     transport_->connect(remoteInfo.serialize());
   }
 
@@ -593,6 +913,7 @@ class RdmaTransportDataPathTest : public ::testing::Test {
   static constexpr uint64_t kRemoteDomainId = 99;
 
   std::shared_ptr<testing::NiceMock<MockIbvApi>> mockApi_;
+  std::shared_ptr<testing::NiceMock<MockCudaApi>> mockCudaApi_;
   std::unique_ptr<ScopedEventBaseThread> evbThread_;
   std::unique_ptr<RdmaTransport> transport_;
 
@@ -601,6 +922,7 @@ class RdmaTransportDataPathTest : public ::testing::Test {
   ibv_pd fakePd_{};
   ibv_cq fakeCq_{};
   ibv_qp fakeQp_{};
+  ibv_mr fakeDataMr_{};
 };
 
 // --- Opcode-only parameterized fixture (put vs get) ---
@@ -743,8 +1065,7 @@ TEST_P(RdmaTransportOpcodeTest, WcErrorFailsTask) {
 }
 
 TEST_P(RdmaTransportOpcodeTest, RetriesWhenQpIsFull) {
-  constexpr size_t kMaxWr = 128; // must match RdmaTransportConfig default
-  constexpr size_t kNumWr = kMaxWr + 1; // 129 WRs
+  constexpr size_t kNumWr = kTestMaxWr + 1; // 129 WRs
   constexpr size_t kBufSize = kNumWr * kChunkSize; // 129 chunks
 
   auto ts = makeTestSegments(kBufSize);
@@ -794,6 +1115,182 @@ TEST_P(RdmaTransportOpcodeTest, RetriesWhenQpIsFull) {
 
   EXPECT_GE(postSendCallCount, 2u)
       << "Expected at least 2 postSend calls (QP full → retry)";
+}
+
+TEST_F(RdmaTransportTest, CompletionRoutingDisambiguatesDuplicateQpNumbers) {
+  // QP numbers are only unique within one RDMA device. The first transfer
+  // catches duplicate-key insertion regressions; the second catches lookup
+  // regressions that poison per-QP queue-depth accounting.
+  constexpr uint64_t kLocalDomainId = 42;
+  constexpr uint64_t kRemoteDomainId = 99;
+  constexpr size_t kNumWr = 2 * kTestMaxWr + 1;
+  constexpr size_t kBufSize = kNumWr * kChunkSize;
+  constexpr size_t kLookupRegressionBufSize = (kTestMaxWr + 1) * kChunkSize;
+
+  fakeQp0_.qp_num = 100;
+  fakeQp1_.qp_num = 100;
+
+  // Build a two-NIC transport where both NICs report the same QP number. The
+  // production routing key must therefore be (CQ/NIC index, QP number), not
+  // just wc.qp_num.
+  EXPECT_CALL(*mockApi_, createCq(&fakeCtx0_, _, _, _, _))
+      .WillOnce(Return(Result<ibv_cq*>(&fakeCq0_)));
+  EXPECT_CALL(*mockApi_, createCq(&fakeCtx1_, _, _, _, _))
+      .WillOnce(Return(Result<ibv_cq*>(&fakeCq1_)));
+  EXPECT_CALL(*mockApi_, createQp(&fakePd0_, _))
+      .WillOnce(Return(Result<ibv_qp*>(&fakeQp0_)));
+  EXPECT_CALL(*mockApi_, createQp(&fakePd1_, _))
+      .WillOnce(Return(Result<ibv_qp*>(&fakeQp1_)));
+  EXPECT_CALL(*mockApi_, modifyQp(_, _, _)).WillRepeatedly(Return(Ok()));
+
+  ibv_gid gid0{}, gid1{};
+  auto nics = std::make_shared<std::vector<NicResources>>();
+  nics->push_back(
+      makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0x1111, gid0));
+  nics->push_back(
+      makeNic(&fakeDev1_, &fakeCtx1_, &fakePd1_, mockApi_, 0x2222, gid1));
+  RdmaTransportConfig config{.numQps = 2};
+  config.maxWr = kTestMaxWr;
+  RdmaTransport transport(
+      mockApi_,
+      mockCudaApi_,
+      evbThread_.getEventBase(),
+      nics,
+      kLocalDomainId,
+      config);
+  transport.bind();
+
+  RdmaTransportInfo remoteInfo;
+  remoteInfo.header.version = 1;
+  remoteInfo.header.numQps = 2;
+  remoteInfo.header.numNics = 2;
+  remoteInfo.header.domainId = kRemoteDomainId;
+  remoteInfo.nicInfos = {{.lid = 0x3333}, {.lid = 0x4444}};
+  remoteInfo.qpInfos = {{.qpNum = 200, .psn = 300}, {.qpNum = 201, .psn = 301}};
+  remoteInfo.ctrl.rkeys = {0, 0};
+  remoteInfo.slab.rkeys = {0, 0};
+  auto res = transport.connect(remoteInfo.serialize());
+  ASSERT_FALSE(res.hasError()) << res.error().message();
+
+  std::vector<char> localBuf(kBufSize);
+  std::vector<char> remoteBuf(kBufSize);
+  Segment localSeg(localBuf.data(), kBufSize, MemoryType::DRAM);
+  ibv_mr fakeMr0{};
+  ibv_mr fakeMr1{};
+  fakeMr0.addr = localBuf.data();
+  fakeMr0.length = kBufSize;
+  fakeMr0.lkey = 0x1111;
+  fakeMr1.addr = localBuf.data();
+  fakeMr1.length = kBufSize;
+  fakeMr1.lkey = 0x2222;
+
+  auto localReg = SegmentTest::makeRegistered(
+      localSeg,
+      std::make_unique<RdmaRegistrationHandle>(
+          std::vector<ibv_mr*>{&fakeMr0, &fakeMr1}, mockApi_, kLocalDomainId));
+  auto remoteReg = SegmentTest::makeRemote(
+      remoteBuf.data(),
+      kBufSize,
+      std::make_unique<RdmaRemoteRegistrationHandle>(
+          std::vector<uint32_t>{0x3333, 0x4444}, kRemoteDomainId));
+
+  auto lastWrId = [](ibv_send_wr* wr) {
+    while (wr->next != nullptr) {
+      wr = wr->next;
+    }
+    return wr->wr_id;
+  };
+
+  // postSend captures the signaled WR id from each posted chain so pollCq can
+  // return realistic completions. The lower 32 bits encode how many WR slots
+  // pollCompletions should credit back to that QP.
+  std::queue<uint64_t> cq0Completions;
+  std::queue<uint64_t> cq1Completions;
+  bool allowCq1Completion = false;
+  bool failSecondQp1Post = true;
+  uint32_t qp0Posts = 0;
+  uint32_t qp1Posts = 0;
+
+  EXPECT_CALL(*mockApi_, postSend(&fakeQp0_, _, _))
+      .WillRepeatedly(
+          [&](ibv_qp*, ibv_send_wr* wr, ibv_send_wr** badWr) -> Status {
+            const uint64_t wrId = lastWrId(wr);
+            const uint32_t numWrs = static_cast<uint32_t>(wrId & 0xffffffff);
+            // Phase 2 expects a lookup regression to make QP0 look more
+            // available than it is, causing an over-capacity post to QP0.
+            if (numWrs > kTestMaxWr) {
+              *badWr = wr;
+              return Err(ErrCode::DriverError, "posted over QP capacity");
+            }
+            ++qp0Posts;
+            cq0Completions.push(wrId);
+            if (qp0Posts == 2) {
+              allowCq1Completion = true;
+            }
+            return Ok();
+          });
+
+  EXPECT_CALL(*mockApi_, postSend(&fakeQp1_, _, _))
+      .WillRepeatedly(
+          [&](ibv_qp*, ibv_send_wr* wr, ibv_send_wr** badWr) -> Status {
+            ++qp1Posts;
+            // Phase 1 catches duplicate-key insertion by delaying CQ1. If CQ0
+            // is credited to QP1, the retry incorrectly posts to QP1 again.
+            if (failSecondQp1Post && qp1Posts > 1) {
+              *badWr = wr;
+              return Err(ErrCode::DriverError, "posted to wrong QP");
+            }
+            cq1Completions.push(lastWrId(wr));
+            return Ok();
+          });
+
+  EXPECT_CALL(*mockApi_, pollCq(&fakeCq0_, _, _))
+      .WillRepeatedly([&](ibv_cq*, int, ibv_wc* wcs) {
+        if (cq0Completions.empty()) {
+          return Result<int>(0);
+        }
+        wcs[0].status = IBV_WC_SUCCESS;
+        wcs[0].qp_num = 100;
+        wcs[0].wr_id = cq0Completions.front();
+        cq0Completions.pop();
+        return Result<int>(1);
+      });
+
+  EXPECT_CALL(*mockApi_, pollCq(&fakeCq1_, _, _))
+      .WillRepeatedly([&](ibv_cq*, int, ibv_wc* wcs) {
+        if (!allowCq1Completion || cq1Completions.empty()) {
+          return Result<int>(0);
+        }
+        wcs[0].status = IBV_WC_SUCCESS;
+        wcs[0].qp_num = 100;
+        wcs[0].wr_id = cq1Completions.front();
+        cq1Completions.pop();
+        return Result<int>(1);
+      });
+
+  // Phase 1: fill both QPs and force a retry before CQ1 drains. Correct
+  // routing credits CQ0 back to QP0, so the retry posts there and succeeds.
+  TransferRequest req{
+      .local = localReg.span(0ul, kBufSize),
+      .remote = remoteReg.span(0ul, kBufSize),
+  };
+  std::vector<TransferRequest> reqs = {req};
+  auto status = transport.put(reqs).get();
+
+  EXPECT_FALSE(status.hasError()) << status.error().message();
+
+  // Phase 2: allow QP1 reuse and verify the next transfer does not expose
+  // poisoned QP0 accounting from routing CQ1 completions through the QP0 key.
+  failSecondQp1Post = false;
+  TransferRequest lookupRegressionReq{
+      .local = localReg.span(0ul, kLookupRegressionBufSize),
+      .remote = remoteReg.span(0ul, kLookupRegressionBufSize),
+  };
+  std::vector<TransferRequest> lookupRegressionReqs = {lookupRegressionReq};
+  auto lookupRegressionStatus = transport.put(lookupRegressionReqs).get();
+
+  EXPECT_FALSE(lookupRegressionStatus.hasError())
+      << lookupRegressionStatus.error().message();
 }
 
 TEST_P(RdmaTransportOpcodeTest, PartialPostDrainsCqeBeforeCompleting) {
@@ -894,7 +1391,7 @@ TEST_P(RdmaTransportOpcodeTest, ShutdownDrainsInflightTransfer) {
 TEST_P(RdmaTransportOpcodeTest, SubsequentTransferAfterWcError) {
   // Verify that a WC error on one transfer does not prevent subsequent
   // transfers from succeeding — the error is per-task, not transport-wide.
-  auto ts = makeTestSegments(kChunkSize * kDefaultMaxWr);
+  auto ts = makeTestSegments(kChunkSize * kTestMaxWr);
 
   std::vector<uint64_t> capturedWrIds;
   EXPECT_CALL(*mockApi_, postSend(&fakeQp_, _, _))

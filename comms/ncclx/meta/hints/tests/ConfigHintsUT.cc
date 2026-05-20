@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "comms/utils/cvars/nccl_cvars.h"
 #include "nccl.h" // @manual
 
 #include "meta/NcclxConfig.h" // @manual
@@ -23,7 +24,14 @@ TEST(ConfigHintsUT, NoHintsCreatesDefaults) {
   EXPECT_EQ(ncclxCfg->commDesc, "undefined");
   EXPECT_TRUE(ncclxCfg->splitGroupRanks.empty());
   EXPECT_EQ(ncclxCfg->ncclAllGatherAlgo, "undefined");
-  EXPECT_TRUE(ncclxCfg->lazyConnect);
+  EXPECT_EQ(ncclxCfg->useCtran, false);
+  EXPECT_EQ(ncclxCfg->usePatAvg, false);
+  EXPECT_EQ(ncclxCfg->noLocal, false);
+  EXPECT_EQ(ncclxCfg->sendrecvAlgo, NCCL_SENDRECV_ALGO::orig);
+  EXPECT_EQ(ncclxCfg->allgatherAlgo, NCCL_ALLGATHER_ALGO::orig);
+  EXPECT_EQ(ncclxCfg->allreduceAlgo, NCCL_ALLREDUCE_ALGO::orig);
+  EXPECT_EQ(ncclxCfg->alltoallvAlgo, NCCL_ALLTOALLV_ALGO::orig);
+  EXPECT_EQ(ncclxCfg->rmaAlgo, NCCL_RMA_ALGO::ctran);
 
   // Upstream NCCL fields should be untouched
   EXPECT_EQ(config.blocking, NCCL_CONFIG_UNDEF_INT);
@@ -36,8 +44,6 @@ TEST(ConfigHintsUT, HintsCreateNcclxConfig) {
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   ncclx::Hints hints;
   hints.set("commDesc", "test_desc");
-  hints.set("lazyConnect", "1");
-  hints.set("lazySetupChannels", "0");
   hints.set("fastInitMode", "1");
   hints.set("ncclAllGatherAlgo", "custom_algo");
   config.hints = &hints;
@@ -48,8 +54,6 @@ TEST(ConfigHintsUT, HintsCreateNcclxConfig) {
   ASSERT_NE(config.ncclxConfig, nullptr);
 
   EXPECT_EQ(NCCLX_CONFIG_FIELD(config, commDesc), "test_desc");
-  EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, lazyConnect));
-  EXPECT_FALSE(NCCLX_CONFIG_FIELD(config, lazySetupChannels));
   EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, fastInitMode));
   EXPECT_EQ(NCCLX_CONFIG_FIELD(config, ncclAllGatherAlgo), "custom_algo");
 
@@ -65,8 +69,6 @@ TEST(ConfigHintsUT, PrefixedKeysMatchBareKeys) {
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   ncclx::Hints hints;
   hints.set("ncclx::commDesc", "test_desc");
-  hints.set("ncclx::lazyConnect", "1");
-  hints.set("ncclx::lazySetupChannels", "0");
   hints.set("ncclx::fastInitMode", "1");
   hints.set("ncclx::ncclAllGatherAlgo", "custom_algo");
   config.hints = &hints;
@@ -77,8 +79,6 @@ TEST(ConfigHintsUT, PrefixedKeysMatchBareKeys) {
   ASSERT_NE(config.ncclxConfig, nullptr);
 
   EXPECT_EQ(NCCLX_CONFIG_FIELD(config, commDesc), "test_desc");
-  EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, lazyConnect));
-  EXPECT_FALSE(NCCLX_CONFIG_FIELD(config, lazySetupChannels));
   EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, fastInitMode));
   EXPECT_EQ(NCCLX_CONFIG_FIELD(config, ncclAllGatherAlgo), "custom_algo");
 
@@ -93,36 +93,10 @@ TEST(ConfigHintsUT, PrefixedKeysMatchBareKeys) {
   delete static_cast<ncclx::Config*>(config.ncclxConfig);
 }
 
-TEST(ConfigHintsUT, BoolHintFormats) {
-  // Test various truthy values
-  for (const char* trueVal :
-       {"1", "yes", "YES", "Yes", "true", "TRUE", "True", "y", "Y", "t", "T"}) {
-    ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
-    ncclx::Hints hints;
-    hints.set("lazyConnect", trueVal);
-    config.hints = &hints;
-    EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess) << trueVal;
-    EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, lazyConnect)) << trueVal;
-    delete static_cast<ncclx::Config*>(config.ncclxConfig);
-  }
-  // Test various falsy values
-  for (const char* falseVal :
-       {"0", "no", "NO", "No", "false", "FALSE", "False", "n", "N", "f", "F"}) {
-    ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
-    ncclx::Hints hints;
-    hints.set("lazyConnect", falseVal);
-    config.hints = &hints;
-    EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess) << falseVal;
-    EXPECT_FALSE(NCCLX_CONFIG_FIELD(config, lazyConnect)) << falseVal;
-    delete static_cast<ncclx::Config*>(config.ncclxConfig);
-  }
-}
-
 TEST(ConfigHintsUT, OldFormatFlatFields) {
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   // Set fields via old format (directly on ncclConfig_t)
   config.commDesc = "old_desc";
-  config.lazyConnect = 1;
   config.fastInitMode = 2;
 
   EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
@@ -131,25 +105,9 @@ TEST(ConfigHintsUT, OldFormatFlatFields) {
   ASSERT_NE(config.ncclxConfig, nullptr);
 
   EXPECT_EQ(NCCLX_CONFIG_FIELD(config, commDesc), "old_desc");
-  EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, lazyConnect));
   EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, fastInitMode));
 
   delete static_cast<ncclx::Config*>(config.ncclxConfig);
-}
-
-TEST(ConfigHintsUT, ConflictReturnsError) {
-  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
-  // Set lazyConnect in old format
-  config.lazyConnect = 1;
-  // Also set it in hints (new format)
-  ncclx::Hints hints;
-  hints.set("lazyConnect", "0");
-  config.hints = &hints;
-
-  EXPECT_EQ(ncclxParseCommConfig(&config), ncclInvalidArgument);
-
-  // ncclxConfig should NOT have been created
-  EXPECT_EQ(config.ncclxConfig, (void*)NCCL_CONFIG_UNDEF_PTR);
 }
 
 TEST(ConfigHintsUT, DoubleParseReturnsError) {
@@ -206,4 +164,311 @@ TEST(ConfigHintsUT, SplitGroupRanksSingleRank) {
   EXPECT_EQ(ncclxCfg->splitGroupRanks, expected);
 
   delete ncclxCfg;
+}
+
+// ----- ncclBuffSize tests -----
+
+TEST(ConfigHintsUT, NcclBuffSizeSetViaHint) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ncclBuffSize", "8388608");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  ASSERT_TRUE(ncclxCfg->ncclBuffSize.has_value());
+  EXPECT_EQ(ncclxCfg->ncclBuffSize.value(), 8388608);
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, NcclBuffSizeDefaultUnset) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_FALSE(ncclxCfg->ncclBuffSize.has_value());
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, NcclBuffSizeRejectsNegative) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ncclBuffSize", "-1");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_FALSE(ncclxCfg->ncclBuffSize.has_value());
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, NcclBuffSizeRejectsZero) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ncclBuffSize", "0");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_FALSE(ncclxCfg->ncclBuffSize.has_value());
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, NcclBuffSizeRejectsInvalidString) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ncclBuffSize", "notanumber");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_FALSE(ncclxCfg->ncclBuffSize.has_value());
+
+  delete ncclxCfg;
+}
+
+// ----- ibSplitDataOnQps tests -----
+
+TEST(ConfigHintsUT, IbSplitDataOnQpsSetViaHint) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ibSplitDataOnQps", "1");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  ASSERT_TRUE(ncclxCfg->ibSplitDataOnQps.has_value());
+  EXPECT_EQ(ncclxCfg->ibSplitDataOnQps.value(), 1);
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, IbSplitDataOnQpsAcceptsZero) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ibSplitDataOnQps", "0");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  ASSERT_TRUE(ncclxCfg->ibSplitDataOnQps.has_value());
+  EXPECT_EQ(ncclxCfg->ibSplitDataOnQps.value(), 0);
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, IbSplitDataOnQpsRejectsInvalid) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ibSplitDataOnQps", "2");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_FALSE(ncclxCfg->ibSplitDataOnQps.has_value());
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, IbSplitDataOnQpsDefaultUnset) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_FALSE(ncclxCfg->ibSplitDataOnQps.has_value());
+
+  delete ncclxCfg;
+}
+
+// ----- ibQpsPerConnection tests -----
+
+TEST(ConfigHintsUT, IbQpsPerConnectionSetViaHint) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ibQpsPerConnection", "4");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  ASSERT_TRUE(ncclxCfg->ibQpsPerConnection.has_value());
+  EXPECT_EQ(ncclxCfg->ibQpsPerConnection.value(), 4);
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, IbQpsPerConnectionRejectsZero) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ibQpsPerConnection", "0");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_FALSE(ncclxCfg->ibQpsPerConnection.has_value());
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, IbQpsPerConnectionRejectsNegative) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ibQpsPerConnection", "-1");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_FALSE(ncclxCfg->ibQpsPerConnection.has_value());
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, IbQpsPerConnectionDefaultUnset) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_FALSE(ncclxCfg->ibQpsPerConnection.has_value());
+
+  delete ncclxCfg;
+}
+
+// ----- ibLazyConnect tests -----
+
+TEST(ConfigHintsUT, LazyPeerInit_DefaultIsFalse) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+  ASSERT_NE(config.ncclxConfig, nullptr);
+  EXPECT_FALSE(NCCLX_CONFIG_FIELD(config, ibLazyConnect));
+  delete static_cast<ncclx::Config*>(config.ncclxConfig);
+}
+
+TEST(ConfigHintsUT, LazyPeerInit_HintOverrides) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ibLazyConnect", "true");
+  config.hints = &hints;
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+  ASSERT_NE(config.ncclxConfig, nullptr);
+  EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, ibLazyConnect));
+  delete static_cast<ncclx::Config*>(config.ncclxConfig);
+}
+
+TEST(ConfigHintsUT, UseCtranHintOverride) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("useCtran", "1");
+  config.hints = &hints;
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+  ASSERT_NE(config.ncclxConfig, nullptr);
+  EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, useCtran));
+  delete static_cast<ncclx::Config*>(config.ncclxConfig);
+}
+
+TEST(ConfigHintsUT, UsePatAvgHintOverride) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("usePatAvg", "true");
+  config.hints = &hints;
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+  ASSERT_NE(config.ncclxConfig, nullptr);
+  EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, usePatAvg));
+  delete static_cast<ncclx::Config*>(config.ncclxConfig);
+}
+
+TEST(ConfigHintsUT, NoLocalHintOverride) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("noLocal", "1");
+  config.hints = &hints;
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+  ASSERT_NE(config.ncclxConfig, nullptr);
+  EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, noLocal));
+  delete static_cast<ncclx::Config*>(config.ncclxConfig);
+}
+
+TEST(ConfigHintsUT, AllgatherAlgoHintOverride) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("allgatherAlgo", "ctring");
+  config.hints = &hints;
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+  ASSERT_NE(config.ncclxConfig, nullptr);
+  EXPECT_EQ(
+      NCCLX_CONFIG_FIELD(config, allgatherAlgo), NCCL_ALLGATHER_ALGO::ctring);
+  delete static_cast<ncclx::Config*>(config.ncclxConfig);
+}
+
+TEST(ConfigHintsUT, SendrecvAlgoHint) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("sendrecvAlgo", "ctran");
+  config.hints = &hints;
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+  ASSERT_NE(config.ncclxConfig, nullptr);
+  EXPECT_EQ(
+      NCCLX_CONFIG_FIELD(config, sendrecvAlgo), NCCL_SENDRECV_ALGO::ctran);
+  delete static_cast<ncclx::Config*>(config.ncclxConfig);
+}
+
+TEST(ConfigHintsUT, AllreduceAlgoHint) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("allreduceAlgo", "ctdirect");
+  config.hints = &hints;
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+  ASSERT_NE(config.ncclxConfig, nullptr);
+  EXPECT_EQ(
+      NCCLX_CONFIG_FIELD(config, allreduceAlgo), NCCL_ALLREDUCE_ALGO::ctdirect);
+  delete static_cast<ncclx::Config*>(config.ncclxConfig);
+}
+
+TEST(ConfigHintsUT, AlltoallvAlgoHint) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("alltoallvAlgo", "ctran");
+  config.hints = &hints;
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+  ASSERT_NE(config.ncclxConfig, nullptr);
+  EXPECT_EQ(
+      NCCLX_CONFIG_FIELD(config, alltoallvAlgo), NCCL_ALLTOALLV_ALGO::ctran);
+  delete static_cast<ncclx::Config*>(config.ncclxConfig);
+}
+
+TEST(ConfigHintsUT, RmaAlgoHint) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("rmaAlgo", "orig");
+  config.hints = &hints;
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+  ASSERT_NE(config.ncclxConfig, nullptr);
+  EXPECT_EQ(NCCLX_CONFIG_FIELD(config, rmaAlgo), NCCL_RMA_ALGO::orig);
+  delete static_cast<ncclx::Config*>(config.ncclxConfig);
+}
+
+TEST(ConfigHintsUT, InvalidAlgoHintFallsBackToDefault) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("sendrecvAlgo", "invalid_algo");
+  config.hints = &hints;
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+  ASSERT_NE(config.ncclxConfig, nullptr);
+  EXPECT_EQ(NCCLX_CONFIG_FIELD(config, sendrecvAlgo), NCCL_SENDRECV_ALGO::orig);
+  delete static_cast<ncclx::Config*>(config.ncclxConfig);
 }

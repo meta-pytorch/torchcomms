@@ -1,0 +1,6 @@
+add_library(num3 SHARED num.c num.h)
+add_executable(test_filter test_filter.c)
+target_link_libraries(test_filter gotcha dl num3)
+add_dependencies(test_filter num)
+gotcha_add_test(filter_test test_filter)
+environment_add(filter_test TEST "GOTCHA_DEBUG=3")

@@ -41,7 +41,6 @@ extern "C" {
 #define NCCL_COMM_DESCRIPTION // used for nccl-pg to set it https://fburl.com/code/th293cmh
 #define NCCL_COMM_SPLIT_GROUP_RANKS_SUPPORTED
 #define NCCL_ALLTOALLV_SUPPORTED
-#define NCCL_ALLTOALLV_DYNAMIC_SUPPORTED
 #define NCCL_ALLTOALLV_DEDUP_SUPPORTED
 #define NCCL_ALLTOALL_SUPPORTED
 #define NCCL_PERSISTENT_COLL_SUPPORTED
@@ -163,10 +162,6 @@ typedef struct ncclConfig_v22800 {
   // control allgather algo at comm level
   const char* ncclAllGatherAlgo{nullptr};
 
-  // control the lazy connect features
-  int lazyConnect{NCCL_CONFIG_UNDEF_INT};
-  int lazySetupChannels{NCCL_CONFIG_UNDEF_INT};
-
   // control the fast init features
   int fastInitMode{NCCL_CONFIG_UNDEF_INT};
 
@@ -207,8 +202,6 @@ typedef struct ncclConfig_v22800 {
   NCCL_CONFIG_UNDEF_PTR,                    /* splitGroupRanks */       \
   NCCL_CONFIG_UNDEF_INT,                    /* splitGroupSize */        \
   NCCL_CONFIG_UNDEF_PTR,                    /* ncclAllGatherAlgo */     \
-  NCCL_CONFIG_UNDEF_INT,                    /* lazyConnect */           \
-  NCCL_CONFIG_UNDEF_INT,                    /* lazySetupChannels */     \
   NCCL_CONFIG_UNDEF_INT,                    /* fastInitMode */          \
   NCCL_CONFIG_UNDEF_PTR,                    /* hints */                  \
   NCCL_CONFIG_UNDEF_PTR,                    /* ncclxConfig */            \
@@ -1044,10 +1037,41 @@ ncclResult_t ncclGetMultiPeerDeviceHandle(
     int* outNumIbPeers);
 
 /*
- * Register a local buffer for use as source in device-side RDMA put operations.
- * NON-COLLECTIVE — purely local memory registration (lkey only, no rkey exchange).
+ * NCCLX_MAX_NICS_PER_GPU — maximum number of IBGDA NICs per GPU exposed to
+ * ncclWinLocalRegisterBuffer. Must match comms::pipes::kMaxNicsPerGpu and
+ * torch::comms::kMaxNicsPerGpu (verified by static_assert in
+ * PipesDeviceBackend.cpp). Increase only if a future platform supports
+ * > 2 NICs per GPU; update all three constants in lockstep.
+ */
+#define NCCLX_MAX_NICS_PER_GPU 2
+
+/*
+ * Per-NIC lkey result for ncclWinLocalRegisterBuffer.
  *
- * The returned lkey is in network byte order, suitable for IBGDA WQE construction.
+ *   values[0..size) — per-NIC RDMA local keys in network byte order.
+ *   size            — actual NIC count populated [0, NCCLX_MAX_NICS_PER_GPU].
+ *                     0 indicates no IBGDA peers (NVL-only topology); the
+ *                     caller must NOT index into values[] in that case.
+ *
+ * The device-side put selects values[nic] based on the slot it dispatches
+ * on, so consumers MUST forward all `size` per-NIC keys to
+ * LocalBufferRegistration. Populating only values[0] would corrupt WQEs
+ * for any slot landing on NIC[1..size-1] on multi-NIC hardware
+ * (GB200/GB300).
+ */
+typedef struct {
+  uint32_t values[NCCLX_MAX_NICS_PER_GPU];
+  int size;
+} ncclLkeyPerDevice;
+
+/*
+ * Register a local buffer for use as source in device-side RDMA put operations.
+ * NON-COLLECTIVE — purely local memory registration (per-NIC lkeys only, no
+ * rkey exchange).
+ *
+ * Fills *outLkeys with per-NIC lkeys + populated NIC count. See
+ * ncclLkeyPerDevice for layout.
+ *
  * Deregister with ncclWinLocalDeregisterBuffer() when no longer needed.
  *
  * Requires NCCL_CTRAN_USE_PIPES=1 during communicator init.
@@ -1057,7 +1081,7 @@ ncclResult_t ncclWinLocalRegisterBuffer(
     ncclComm_t comm,
     void* ptr,
     size_t size,
-    uint32_t* outLkey);
+    ncclLkeyPerDevice* outLkeys);
 
 /*
  * Deregister a buffer previously registered with ncclWinLocalRegisterBuffer().
@@ -1094,6 +1118,7 @@ ncclResult_t  pncclCommGetUniqueHash(ncclComm_t comm, uint64_t* uniqueHash);
 #define NCCL_COMM_DUMP
 #define NCCL_COMM_DUMP_ALL
 
+#include <optional>
 #include <unordered_map>
 #include <string>
 /* Dump NCCL current internal state for a given communicator in a key-value store format.
@@ -1103,13 +1128,27 @@ ncclResult_t  ncclCommDump(ncclComm_t comm, std::unordered_map<std::string, std:
 /* Dump NCCL current internal state for all the communicators.
  * The returned map is in the format {commHash: {key: value}} where
  * {key: value} is the result of ncclCommDump in the communicator with hash commHash.
+ * hints: key-value map of options. Supported hints:
+ *   "comm_dump::requestFields" — semicolon-separated list of field names to include.
+ *   "comm_dump::flush" — "1" to flush ring buffers before dumping.
+ *   Empty map (default) dumps all fields without flushing.
  */
-ncclResult_t ncclCommDumpAll(std::unordered_map<std::string, std::unordered_map<std::string, std::string>>& map);
+ncclResult_t ncclCommDumpAll(std::unordered_map<std::string, std::unordered_map<std::string, std::string>>& map,
+    const std::unordered_map<std::string, std::string>& hints = {});
 
 #define NCCL_HAS_COMMS_TRACING_SERVICE_PORT
 ncclResult_t ncclCommsTracingServicePort(int& port);
 
+// NCCL_HAS_DUMP_ALGO_STAT controls whether dumpAlgoStat() is available.
+// To disable (e.g., when using a shim with a
+// different ncclComm layout), compile with -DNCCL_HAS_DUMP_ALGO_STAT=0.
+#if !defined(NCCL_HAS_DUMP_ALGO_STAT)
 #define NCCL_HAS_DUMP_ALGO_STAT
+#elif NCCL_HAS_DUMP_ALGO_STAT == 0
+#undef NCCL_HAS_DUMP_ALGO_STAT
+#endif
+
+#ifdef NCCL_HAS_DUMP_ALGO_STAT
 namespace ncclx::colltrace {
 
 // Dump collective algorithm statistics for a communicator.
@@ -1119,6 +1158,7 @@ namespace ncclx::colltrace {
 void dumpAlgoStat(ncclComm_t comm, std::unordered_map<std::string, std::unordered_map<std::string, int64_t>>& map);
 
 } // namespace ncclx::colltrace
+#endif // NCCL_HAS_DUMP_ALGO_STAT
 
 namespace ncclx {
 

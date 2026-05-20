@@ -3,6 +3,7 @@
 #pragma once
 
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 
@@ -26,7 +27,11 @@ class NcclxGlobalApi {
   [[nodiscard]] virtual ncclResult_t commDumpAll(
       std::unordered_map<
           std::string,
-          std::unordered_map<std::string, std::string>>& map) = 0;
+          std::unordered_map<std::string, std::string>>& map,
+      const std::unordered_map<std::string, std::string>& hints = {}) = 0;
+
+  // Initialize the CUDA Caching Allocator memory hook of NCCLX.
+  virtual void initCachingAllocatorHook() = 0;
 };
 
 /**
@@ -41,7 +46,10 @@ class DefaultNcclxGlobalApi : public NcclxGlobalApi {
   [[nodiscard]] ncclResult_t commDumpAll(
       std::unordered_map<
           std::string,
-          std::unordered_map<std::string, std::string>>& map) override;
+          std::unordered_map<std::string, std::string>>& map,
+      const std::unordered_map<std::string, std::string>& hints = {}) override;
+
+  void initCachingAllocatorHook() override;
 
  private:
   mutable std::mutex api_mutex_;

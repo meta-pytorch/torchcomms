@@ -1,0 +1,24 @@
+name: coretemp
+
+on:
+  pull_request:
+    # run CI only if coretemp directory or coretemp sub-directories receive updates
+    paths:
+      - 'src/components/coretemp/**'
+  # allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  component_tests:
+    strategy:
+      matrix:
+        component: [coretemp]
+        debug: [yes, no] 
+        shlib: [with, without]
+      fail-fast: false
+    runs-on: [self-hosted, cpu_intel]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: coretemp component tests
+        run: .github/workflows/ci_individual_component.sh ${{matrix.component}} ${{matrix.debug}} ${{matrix.shlib}}

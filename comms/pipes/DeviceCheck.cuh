@@ -4,6 +4,8 @@
 
 #include <cstdio>
 
+#include "comms/pipes/HipCompat.cuh"
+
 namespace comms::pipes {
 
 /**
@@ -23,7 +25,7 @@ namespace comms::pipes {
  * Note: __trap() puts the CUDA device into an unrecoverable error state. After
  * a trap, cudaDeviceReset() is required to recover the device context.
  */
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
 #define PIPES_DEVICE_CHECK(expr)                                    \
   do {                                                              \
     if (!(expr)) {                                                  \
@@ -55,7 +57,7 @@ namespace comms::pipes {
  * Usage:
  *   PIPES_DEVICE_CHECK_MSG(idx < size, "Index out of bounds");
  */
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
 #define PIPES_DEVICE_CHECK_MSG(expr, msg)                                \
   do {                                                                   \
     if (!(expr)) {                                                       \

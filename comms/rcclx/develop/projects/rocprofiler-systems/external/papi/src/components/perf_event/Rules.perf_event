@@ -1,0 +1,9 @@
+
+COMPSRCS += components/perf_event/perf_event.c components/perf_event/pe_libpfm4_events.c
+COMPOBJS += perf_event.o pe_libpfm4_events.o
+
+perf_event.o: components/perf_event/perf_event.c components/perf_event/perf_event_lib.h components/perf_event/perf_helpers.h
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/perf_event/perf_event.c -o perf_event.o 
+
+pe_libpfm4_events.o: components/perf_event/pe_libpfm4_events.c
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/perf_event/pe_libpfm4_events.c -o pe_libpfm4_events.o 

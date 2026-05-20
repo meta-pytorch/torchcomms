@@ -1,0 +1,47 @@
+#ifndef CALIPER_CONFIG_H
+#define CALIPER_CONFIG_H
+
+#cmakedefine CALIPER_HAVE_OMPT 
+#cmakedefine CALIPER_HAVE_MPI
+#cmakedefine CALIPER_HAVE_MPIT
+#cmakedefine CALIPER_HAVE_LIBUNWIND
+#cmakedefine CALIPER_HAVE_LIBCURL
+#cmakedefine CALIPER_HAVE_PAPI
+#cmakedefine CALIPER_HAVE_LIBPFM
+#cmakedefine CALIPER_HAVE_SAMPLER
+#cmakedefine CALIPER_HAVE_NVTX
+#cmakedefine CALIPER_HAVE_TAU
+#cmakedefine CALIPER_HAVE_VTUNE
+#cmakedefine CALIPER_HAVE_GOTCHA
+#cmakedefine CALIPER_HAVE_SOS
+#cmakedefine CALIPER_HAVE_CUPTI
+#cmakedefine CALIPER_HAVE_LIBDW
+#cmakedefine CALIPER_HAVE_VTUNE
+#cmakedefine CALIPER_HAVE_ADIAK
+#cmakedefine CALIPER_HAVE_PCP
+#cmakedefine CALIPER_HAVE_ROCM
+#cmakedefine CALIPER_HAVE_VARIORUM
+
+#cmakedefine CALIPER_REDUCED_CONSTEXPR_USAGE
+
+#cmakedefine CALIPER_MPIWRAP_USE_GOTCHA
+
+#cmakedefine CALIPER_ENABLE_HISTOGRAMS
+
+#cmakedefine CALIPER_BUILD_TESTING
+
+#ifdef CALIPER_REDUCED_CONSTEXPR_USAGE
+#define CONSTEXPR_UNLESS_PGI 
+#else
+#define CONSTEXPR_UNLESS_PGI constexpr
+#endif
+
+// Version information -- numerical and a version string
+#define CALIPER_MAJOR_VERSION @CALIPER_MAJOR_VERSION@
+#define CALIPER_MINOR_VERSION @CALIPER_MINOR_VERSION@
+#define CALIPER_PATCH_VERSION @CALIPER_PATCH_VERSION@
+#define CALIPER_VERSION       "@CALIPER_VERSION@"
+
+#cmakedefine TEST_USE_OMP
+
+#endif // CALIPER_CONFIG_H

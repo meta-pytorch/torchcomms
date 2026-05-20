@@ -1,0 +1,9 @@
+xpmem_attach
+xpmem_detach
+xpmem_fini
+xpmem_get
+xpmem_init
+xpmem_make
+xpmem_release
+xpmem_remove
+xpmem_version

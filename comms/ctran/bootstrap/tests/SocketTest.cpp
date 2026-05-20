@@ -55,6 +55,58 @@ TEST(Socket, GetInterfaceAddress) {
   }
 }
 
+TEST(Socket, GetInterfaceAddressMultiInterface) {
+  const bool kPreferV6{true};
+
+  // Comma-separated list should match any of the listed interfaces
+  std::string resolvedIfName;
+  auto maybeAddr = ctran::bootstrap::getInterfaceAddress(
+      "lo,eth0", "", kPreferV6, &resolvedIfName);
+  ASSERT_FALSE(maybeAddr.hasError())
+      << "Multi-interface ifname \"lo,eth0\" should resolve an address";
+  EXPECT_FALSE(maybeAddr->isLinkLocal());
+  EXPECT_FALSE(resolvedIfName.empty());
+  EXPECT_EQ(resolvedIfName.find(','), std::string::npos)
+      << "resolvedIfName should be a single interface, got: " << resolvedIfName;
+
+  // Negation: exclude lo, should still find eth0
+  auto maybeAddrNeg =
+      ctran::bootstrap::getInterfaceAddress("^lo", "", kPreferV6);
+  ASSERT_FALSE(maybeAddrNeg.hasError())
+      << "Negated ifname \"^lo\" should resolve via other interfaces";
+  EXPECT_NE(maybeAddrNeg->str(), "::1");
+
+  // Non-existent interface should fail
+  auto maybeAddrBad =
+      ctran::bootstrap::getInterfaceAddress("nonexistent_if", "", kPreferV6);
+  EXPECT_TRUE(maybeAddrBad.hasError());
+}
+
+TEST(Socket, BindAndListenWithMultiInterfaceIfName) {
+  const bool kPreferV6{true};
+
+  // Simulate NCCL_SOCKET_IFNAME="lo,eth0" (comma-separated from scheduler)
+  // Resolve to a single interface, then bind — should not fail with ENODEV
+  std::string resolvedIfName;
+  auto maybeAddr = ctran::bootstrap::getInterfaceAddress(
+      "lo,eth0", "", kPreferV6, &resolvedIfName);
+  ASSERT_FALSE(maybeAddr.hasError());
+
+  ctran::bootstrap::ServerSocket server{1};
+  folly::SocketAddress addr(maybeAddr.value(), 0);
+  ASSERT_EQ(0, server.bindAndListen(addr, resolvedIfName))
+      << "bindAndListen should succeed with resolved single interface \""
+      << resolvedIfName << "\", not raw comma-separated spec";
+  EXPECT_NE(server.getFd(), -1);
+
+  // Verify binding with raw comma-separated string fails
+  ctran::bootstrap::ServerSocket server2{1};
+  EXPECT_NE(0, server2.bind(addr, "lo,eth0"))
+      << "SO_BINDTODEVICE with comma-separated ifname should fail";
+
+  EXPECT_EQ(0, server.shutdown());
+}
+
 TEST(Socket, SocketLifeCycle) {
   ctran::bootstrap::ServerSocket server{1};
   ctran::bootstrap::Socket client;

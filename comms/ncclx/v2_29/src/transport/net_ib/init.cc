@@ -6,6 +6,10 @@
  *************************************************************************/
 
 #include "common.h"
+// [NCCLX-PerCommConfig] Per-comm IB config via side-channel
+#include "meta/NcclxConfig.h"
+#include "meta/transport/NcclxIbNetCommConfig.h"
+#include "meta/transport/NcclxNetPluginHelper.h"
 
 NCCL_PARAM(IbPciRelaxedOrdering, "IB_PCI_RELAXED_ORDERING", 2);
 NCCL_PARAM(IbAdaptiveRouting, "IB_ADAPTIVE_ROUTING", -2);
@@ -392,11 +396,23 @@ fail:
 
 ncclResult_t ncclIbInit(void** ctx, uint64_t commId, ncclNetCommConfig_t* config, ncclDebugLogger_t logFunction, ncclProfilerCallback_t profFunction) {
   ncclResult_t ret = ncclSuccess;
-  ncclNetCommConfig_t* netCommConfig = nullptr;
   NCCLCHECK(ncclIbInitDevices(logFunction, profFunction));
-  NCCLCHECK(ncclCalloc(&netCommConfig, 1));
-  netCommConfig->trafficClass = config->trafficClass;
-  *ctx = (void *)netCommConfig;
+  // [NCCLX-PerCommConfig] Allocate extended ctx with per-comm IB overrides
+  auto* ncclxConfig = new ncclx::NcclxIbNetCommConfig();
+  ncclxConfig->trafficClass = config->trafficClass;
+
+  const ncclConfig_t* commConfig = ncclxGetCurrentCommConfig();
+  if (commConfig && commConfig->ncclxConfig) {
+    auto& ibSplit = NCCLX_CONFIG_FIELD(*commConfig, ibSplitDataOnQps);
+    if (ibSplit.has_value())
+      ncclxConfig->ibSplitDataOnQps = ibSplit.value();
+
+    auto& ibQps = NCCLX_CONFIG_FIELD(*commConfig, ibQpsPerConnection);
+    if (ibQps.has_value())
+      ncclxConfig->ibQpsPerConnection = ibQps.value();
+  }
+
+  *ctx = (void*)ncclxConfig;
   return ret;
 }
 
@@ -451,6 +467,7 @@ ncclResult_t ncclIbGetProperties(int dev, ncclNetProperties_t* props) {
 }
 
 ncclResult_t ncclIbFinalize(void* ctx) {
-  free(ctx);
+  // [NCCLX-PerCommConfig] Free extended ctx (NcclxIbNetCommConfig instead of ncclNetCommConfig_t)
+  delete static_cast<ncclx::NcclxIbNetCommConfig*>(ctx);
   return ncclIbFinalizeDevices();
 }

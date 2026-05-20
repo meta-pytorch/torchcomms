@@ -7,6 +7,14 @@
 
 #include <nccl.h> // @manual=fbsource//third-party/nccl:nccl
 
+// NCCL_SHRINK_ABORT was introduced in NCCL 2.27 alongside ncclCommShrink.
+// Define a fallback so dependents compile against older NCCL headers; the
+// commShrink wrapper in NcclApi.cpp is itself version-guarded and returns
+// ncclInvalidUsage on older NCCL, so the value is never read at runtime.
+#if NCCL_VERSION_CODE < NCCL_VERSION(2, 27, 0) && !defined(NCCL_SHRINK_ABORT)
+#define NCCL_SHRINK_ABORT 0x01
+#endif
+
 namespace torch::comms {
 /**
  * Abstract interface for NCCL API operations.
@@ -36,6 +44,8 @@ class NcclApi {
 
   [[nodiscard]] virtual ncclResult_t commAbort(ncclComm_t comm) = 0;
 
+  [[nodiscard]] virtual ncclResult_t commRevoke(ncclComm_t comm) = 0;
+
   [[nodiscard]] virtual ncclResult_t commGetAsyncError(
       ncclComm_t comm,
       ncclResult_t* asyncError) = 0;
@@ -44,6 +54,26 @@ class NcclApi {
       ncclComm_t comm,
       int color,
       int key,
+      ncclComm_t* newcomm,
+      ncclConfig_t* config) = 0;
+
+  [[nodiscard]] virtual ncclResult_t commShrink(
+      ncclComm_t comm,
+      int* excludeRanksList,
+      int excludeRanksCount,
+      ncclComm_t* newcomm,
+      ncclConfig_t* config,
+      int shrinkFlags) = 0;
+
+  [[nodiscard]] virtual ncclResult_t commGetUniqueId(
+      ncclComm_t comm,
+      ncclUniqueId* uniqueId) = 0;
+
+  [[nodiscard]] virtual ncclResult_t commGrow(
+      ncclComm_t comm,
+      int nRanks,
+      const ncclUniqueId* uniqueId,
+      int rank,
       ncclComm_t* newcomm,
       ncclConfig_t* config) = 0;
 
@@ -185,6 +215,8 @@ class DefaultNcclApi : public NcclApi {
 
   [[nodiscard]] ncclResult_t commAbort(ncclComm_t comm) override;
 
+  [[nodiscard]] ncclResult_t commRevoke(ncclComm_t comm) override;
+
   [[nodiscard]] ncclResult_t commGetAsyncError(
       ncclComm_t comm,
       ncclResult_t* asyncError) override;
@@ -193,6 +225,26 @@ class DefaultNcclApi : public NcclApi {
       ncclComm_t comm,
       int color,
       int key,
+      ncclComm_t* newcomm,
+      ncclConfig_t* config) override;
+
+  [[nodiscard]] ncclResult_t commShrink(
+      ncclComm_t comm,
+      int* excludeRanksList,
+      int excludeRanksCount,
+      ncclComm_t* newcomm,
+      ncclConfig_t* config,
+      int shrinkFlags) override;
+
+  [[nodiscard]] ncclResult_t commGetUniqueId(
+      ncclComm_t comm,
+      ncclUniqueId* uniqueId) override;
+
+  [[nodiscard]] ncclResult_t commGrow(
+      ncclComm_t comm,
+      int nRanks,
+      const ncclUniqueId* uniqueId,
+      int rank,
       ncclComm_t* newcomm,
       ncclConfig_t* config) override;
 

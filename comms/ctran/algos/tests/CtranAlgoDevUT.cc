@@ -309,6 +309,40 @@ TYPED_TEST(CtranAlgoDevTypedTest, localReduceSumUnaligned) {
   }
 }
 
+// Exercises localReduce at counts where the tail's "designated CTA"
+// (under copyUnroll-style per-block ownership = `(limitCount/numPerBlock)
+// % nGroups`) is NOT block 0. Existing localReduceSumUnaligned uses
+// count=1041 with blockDim=640 and gridDim=2, where for every supported
+// dtype the designated CTA collapses to 0; this test covers the case
+// where the tail is owned by a non-zero block.
+TYPED_TEST(CtranAlgoDevTypedTest, localReduceSumUnalignedNonZeroDesignatedCta) {
+  std::vector<size_t> testnSrcs{2, 8};
+  std::vector<size_t> testnDsts{1, 2};
+  constexpr uint numThreadBlocks = 4;
+  // For T=float (sizeofT=4), blockDim=640: numPerBlock = 640 * (16/4) * 4
+  // = 10240. count=10241 => limitCount=10240, tail=1, designated=1.
+  // count=20481 => designated=2. count=30721 => designated=3. count=40961
+  // => designated=0 (wrap). For other dtypes the designated index shifts
+  // proportionally; in every case the tail is non-empty and at least one
+  // count puts it on a non-zero block.
+  std::vector<size_t> testCounts{10241, 20481, 30721, 40961};
+
+  for (auto nsrcs : testnSrcs) {
+    for (auto ndsts : testnDsts) {
+      for (auto count : testCounts) {
+        localReduceTest<TypeParam>(
+            nsrcs,
+            ndsts,
+            count,
+            commSum,
+            /*nranks=*/1,
+            /*subsetThreadBlocks=*/false,
+            numThreadBlocks);
+      }
+    }
+  }
+}
+
 TYPED_TEST(CtranAlgoDevTypedTest, localReduceProd) {
   // test reduction kernel with 2 or 8 srcs, and 1 or 2 dsts, which are common
   // cases for inter-node and intra-node collectives.

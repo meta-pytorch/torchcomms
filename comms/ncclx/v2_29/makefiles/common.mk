@@ -83,6 +83,14 @@ NVCUFLAGS  := -ccbin $(CXX) $(NVCC_GENCODE) $(CXXSTD) --expt-extended-lambda -Xp
 # Use addprefix so that we can specify more than one path
 NVLDFLAGS  := -L${CUDA_LIB} -lcudart -lrt -lstdc++fs
 
+# colltrace's HRDWRingBufferReader and TrainerContext use 128-bit atomic
+# loads/stores. The compiler may lower these to __atomic_load_16 /
+# __atomic_store_16 (libatomic) depending on the target and flags. Link
+# libatomic unconditionally so the libcall always resolves; on x86_64 with
+# -mcx16 (or aarch64 with LSE2) most ops inline and the dep is effectively
+# free.
+LDFLAGS   += -latomic
+
 NVCUFLAGS_SYM :=
 
 ########## GCOV ##########

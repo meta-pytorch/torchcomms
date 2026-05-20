@@ -7,6 +7,7 @@
 #include "param.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "meta/algoconf/AlgoStrConv.h"
 
 #include <algorithm>
 #include <sstream>
@@ -14,10 +15,21 @@
 #include <string>
 #include <vector>
 
+using ncclx::algoconf::algoStrToVal;
+
 namespace ncclx {
 
 Config::Config(const ncclConfig_t* config) {
   initEnv();
+
+  useCtran = NCCL_CTRAN_ENABLE;
+  usePatAvg = NCCL_REDUCESCATTER_PAT_AVG_ENABLE;
+  noLocal = false;
+  sendrecvAlgo = NCCL_SENDRECV_ALGO;
+  allgatherAlgo = NCCL_ALLGATHER_ALGO;
+  allreduceAlgo = NCCL_ALLREDUCE_ALGO;
+  alltoallvAlgo = NCCL_ALLTOALLV_ALGO;
+  rmaAlgo = NCCL_RMA_ALGO;
 
   if (!config) {
     WARN("ncclx::Config: config is null");
@@ -69,8 +81,6 @@ Config::Config(const ncclConfig_t* config) {
   checkPtrConflict("commDesc", config->commDesc);
   checkPtrConflict("splitGroupRanks", config->splitGroupRanks);
   checkPtrConflict("ncclAllGatherAlgo", config->ncclAllGatherAlgo);
-  checkIntConflict("lazyConnect", config->lazyConnect);
-  checkIntConflict("lazySetupChannels", config->lazySetupChannels);
   checkIntConflict("fastInitMode", config->fastInitMode);
 
   if (conflict) {
@@ -148,8 +158,12 @@ Config::Config(const ncclConfig_t* config) {
     }
   }
 
-  // ncclAllGatherAlgo
+  // ncclAllGatherAlgo — deprecated string field, kept for MetaFactory compat.
+  // The canonical field is allgatherAlgo (enum), parsed below with other algos.
   if (config->ncclAllGatherAlgo) {
+    WARN(
+        "ncclConfig_t.ncclAllGatherAlgo is deprecated; use ncclConfig_t.hints "
+        "with key 'allgatherAlgo' instead");
     ncclAllGatherAlgo = config->ncclAllGatherAlgo;
   } else {
     auto val = getHintStr("ncclAllGatherAlgo");
@@ -157,19 +171,8 @@ Config::Config(const ncclConfig_t* config) {
       ncclAllGatherAlgo = val;
     }
   }
-
-  // booleans: flat field > hint > env default
-  if (config->lazyConnect != NCCL_CONFIG_UNDEF_INT) {
-    lazyConnect = config->lazyConnect != 0;
-  } else {
-    lazyConnect = parseHintBool("lazyConnect", NCCL_RUNTIME_CONNECT);
-  }
-
-  if (config->lazySetupChannels != NCCL_CONFIG_UNDEF_INT) {
-    lazySetupChannels = config->lazySetupChannels != 0;
-  } else {
-    lazySetupChannels =
-        parseHintBool("lazySetupChannels", NCCL_LAZY_SETUP_CHANNELS);
+  if (ncclAllGatherAlgo != "undefined") {
+    algoStrToVal(ncclAllGatherAlgo, allgatherAlgo);
   }
 
   if (config->fastInitMode != NCCL_CONFIG_UNDEF_INT) {
@@ -197,6 +200,25 @@ Config::Config(const ncclConfig_t* config) {
           "pipesUseDualStateBuffer", NCCL_CTRAN_PIPES_USE_DUAL_STATE_BUFFER);
     }
   }
+  {
+    std::string val = getHintStr("pipesIbgdaDataBufferSize");
+    if (!val.empty()) {
+      try {
+        auto parsed = std::stoull(val);
+        if (parsed > 0) {
+          pipesIbgdaDataBufferSize = parsed;
+        } else {
+          WARN("NCCLX hint 'pipesIbgdaDataBufferSize': value must be positive");
+        }
+      } catch (const std::exception&) {
+        WARN(
+            "NCCLX hint 'pipesIbgdaDataBufferSize': invalid value '%s'",
+            val.c_str());
+      }
+    }
+  }
+
+  ibLazyConnect = parseHintBool("ibLazyConnect", NCCL_CTRAN_IBGDA_LAZY_CONNECT);
 
   // vCliqueSize: hint only (no flat ncclConfig_t field)
   {
@@ -211,6 +233,77 @@ Config::Config(const ncclConfig_t* config) {
       }
     }
   }
+
+  // ncclBuffSize: hint only (no flat ncclConfig_t field)
+  {
+    std::string val = getHintStr("ncclBuffSize");
+    if (!val.empty()) {
+      try {
+        int parsed = std::stoi(val);
+        if (parsed <= 0) {
+          WARN("NCCLX hint 'ncclBuffSize': value %d must be positive", parsed);
+        } else {
+          ncclBuffSize = parsed;
+        }
+      } catch (const std::exception&) {
+        WARN("NCCLX hint 'ncclBuffSize': invalid value '%s'", val.c_str());
+      }
+    }
+  }
+
+  // ibSplitDataOnQps: hint only, 0 or 1
+  {
+    std::string val = getHintStr("ibSplitDataOnQps");
+    if (!val.empty()) {
+      try {
+        int parsed = std::stoi(val);
+        if (parsed != 0 && parsed != 1) {
+          WARN(
+              "NCCLX hint 'ibSplitDataOnQps': value %d must be 0 or 1", parsed);
+        } else {
+          ibSplitDataOnQps = parsed;
+        }
+      } catch (const std::exception&) {
+        WARN("NCCLX hint 'ibSplitDataOnQps': invalid value '%s'", val.c_str());
+      }
+    }
+  }
+
+  // ibQpsPerConnection: hint only, positive integer
+  {
+    std::string val = getHintStr("ibQpsPerConnection");
+    if (!val.empty()) {
+      try {
+        int parsed = std::stoi(val);
+        if (parsed <= 0) {
+          WARN(
+              "NCCLX hint 'ibQpsPerConnection': value %d must be positive",
+              parsed);
+        } else {
+          ibQpsPerConnection = parsed;
+        }
+      } catch (const std::exception&) {
+        WARN(
+            "NCCLX hint 'ibQpsPerConnection': invalid value '%s'", val.c_str());
+      }
+    }
+  }
+
+  useCtran = parseHintBool("useCtran", NCCL_CTRAN_ENABLE);
+  usePatAvg = parseHintBool("usePatAvg", NCCL_REDUCESCATTER_PAT_AVG_ENABLE);
+  noLocal = parseHintBool("noLocal", false);
+
+  auto parseAlgoHint = [&](const char* key, auto& field) {
+    auto val = getHintStr(key);
+    if (!val.empty()) {
+      algoStrToVal(val, field);
+    }
+  };
+  parseAlgoHint("sendrecvAlgo", sendrecvAlgo);
+  parseAlgoHint("allgatherAlgo", allgatherAlgo);
+  parseAlgoHint("allreduceAlgo", allreduceAlgo);
+  parseAlgoHint("alltoallvAlgo", alltoallvAlgo);
+  parseAlgoHint("rmaAlgo", rmaAlgo);
 }
 
 } // namespace ncclx

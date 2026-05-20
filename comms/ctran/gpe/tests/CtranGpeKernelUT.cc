@@ -94,11 +94,6 @@ void CtranGpeKernelTestBase::runTest(void* kernelFn) {
     case OpElem::opType::REDUCESCATTER:
       op->reducescatter.interReduce = nullptr;
       break;
-    case OpElem::opType::ALLTOALLV_DYNAMIC:
-    case OpElem::opType::ALLTOALLV_DYNAMIC_SPLIT:
-    case OpElem::opType::ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG:
-      op->alltoallv_dynamic.kElem = nullptr;
-      break;
     default:
       break;
   }
@@ -149,15 +144,9 @@ INSTANTIATE_TEST_SUITE_P(
         TESTCASE(ALLGATHER, ALLGATHER),
         TESTCASE(ALLTOALL, ALLTOALL),
         TESTCASE(ALLTOALLV, ALLTOALLV),
-        TESTCASE(ALLTOALLV_DYNAMIC, ALLTOALLV_DYNAMIC),
-        TESTCASE(ALLTOALLV_DYNAMIC_SPLIT, ALLTOALLV_DYNAMIC_SPLIT),
-        TESTCASE(
-            ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG,
-            ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG),
         TESTCASE(ALLTOALL_DEDUP, ALLTOALL_DEDUP),
         TESTCASE(ALLTOALLV_DEDUP, ALLTOALLV_DEDUP),
         TESTCASE(BROADCAST, BROADCAST),
-        TESTCASE(BROADCAST, BROADCAST_UNPACK),
         TESTCASE(REDUCESCATTER, REDUCESCATTER),
         TESTCASE(PUTNOTIFY, PUTNOTIFY),
         TESTCASE(WAITNOTIFY, WAITNOTIFY),
@@ -192,8 +181,8 @@ INSTANTIATE_TEST_SUITE_P(
         TESTCASE(RECV, RECV),
         TESTCASE(SEND, SENDRECV), // *
         TESTCASE(RECV, RECV_UNPACK),
-        TESTCASE(SEND, SENDRECV_UNPACK) // *
-        ),
+        TESTCASE(SEND, SENDRECV_UNPACK), // *
+        TESTCASE(BROADCAST, BROADCAST_UNPACK)),
     [](const ::testing::TestParamInfo<GpeKernelTestParams>& info) {
       return std::get<0>(info.param);
     });

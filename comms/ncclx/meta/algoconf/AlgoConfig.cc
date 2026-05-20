@@ -19,6 +19,8 @@ inline const std::string algoValToStr(enum NCCL_SENDRECV_ALGO val) {
       return "ctzcopy";
     case NCCL_SENDRECV_ALGO::ctp2p:
       return "ctp2p";
+    case NCCL_SENDRECV_ALGO::ctgraph:
+      return "ctgraph";
   }
 }
 
@@ -29,6 +31,8 @@ inline void algoStrToVal(const std::string& str, enum NCCL_SENDRECV_ALGO& val) {
     val = NCCL_SENDRECV_ALGO::ctzcopy;
   } else if (str == "ctp2p") {
     val = NCCL_SENDRECV_ALGO::ctp2p;
+  } else if (str == "ctgraph") {
+    val = NCCL_SENDRECV_ALGO::ctgraph;
   } else {
     val = NCCL_SENDRECV_ALGO::orig;
   }
@@ -46,10 +50,24 @@ inline const std::string algoValToStr(enum NCCL_ALLGATHER_ALGO val) {
       return "ctring";
     case NCCL_ALLGATHER_ALGO::ctrd:
       return "ctrd";
+    case NCCL_ALLGATHER_ALGO::ctsrd:
+      return "ctsrd";
     case NCCL_ALLGATHER_ALGO::ctbrucks:
       return "ctbrucks";
-      break;
+    case NCCL_ALLGATHER_ALGO::cthierarchical_ring:
+      return "cthierarchical_ring";
+    case NCCL_ALLGATHER_ALGO::ctgraph:
+      return "ctgraph";
+    case NCCL_ALLGATHER_ALGO::ctgraph_pipeline:
+      return "ctgraph_pipeline";
+    case NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline:
+      return "ctgraph_rdpipeline";
+    case NCCL_ALLGATHER_ALGO::ctgraph_ring:
+      return "ctgraph_ring";
+    case NCCL_ALLGATHER_ALGO::ctgraph_rd:
+      return "ctgraph_rd";
   }
+  return "unknown";
 }
 
 inline void algoStrToVal(
@@ -63,8 +81,22 @@ inline void algoStrToVal(
     val = NCCL_ALLGATHER_ALGO::ctring;
   } else if (str == "ctrd") {
     val = NCCL_ALLGATHER_ALGO::ctrd;
+  } else if (str == "ctsrd") {
+    val = NCCL_ALLGATHER_ALGO::ctsrd;
   } else if (str == "ctbrucks") {
     val = NCCL_ALLGATHER_ALGO::ctbrucks;
+  } else if (str == "cthierarchical_ring") {
+    val = NCCL_ALLGATHER_ALGO::cthierarchical_ring;
+  } else if (str == "ctgraph") {
+    val = NCCL_ALLGATHER_ALGO::ctgraph;
+  } else if (str == "ctgraph_pipeline") {
+    val = NCCL_ALLGATHER_ALGO::ctgraph_pipeline;
+  } else if (str == "ctgraph_rdpipeline") {
+    val = NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline;
+  } else if (str == "ctgraph_ring") {
+    val = NCCL_ALLGATHER_ALGO::ctgraph_ring;
+  } else if (str == "ctgraph_rd") {
+    val = NCCL_ALLGATHER_ALGO::ctgraph_rd;
   } else {
     val = NCCL_ALLGATHER_ALGO::orig;
   }

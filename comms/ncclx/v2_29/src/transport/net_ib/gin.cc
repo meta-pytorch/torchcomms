@@ -9,6 +9,9 @@
 
 #include "gin/gin_host.h"
 #include "gin.h"
+// [NCCLX-PerCommConfig] Use NcclxIbNetCommConfig so ctx is compatible with
+// ncclIbListen/ncclIbConnect which cast ctx to NcclxIbNetCommConfig*.
+#include "meta/transport/NcclxIbNetCommConfig.h"
 
 const int NCCL_GIN_IB_ALLGATHER_TAG = 0xa0;
 const int NCCL_GIN_IB_ALLTOALL_TAG = 0xa1;
@@ -102,9 +105,11 @@ try_proxy:
   if (ginIb) memcpy(ginIb, &ncclGinIbProxy, sizeof(ncclGinIb));
 
 end:
-  ncclNetCommConfig_t* netCommConfig = nullptr;
-  NCCLCHECK(ncclCalloc(&netCommConfig, 1));
-  *ctx = netCommConfig;
+  // [NCCLX-PerCommConfig] Allocate NcclxIbNetCommConfig (not ncclNetCommConfig_t)
+  // so the ctx is type-compatible with ncclIbListen/ncclIbConnect, which cast
+  // ctx to NcclxIbNetCommConfig* to read per-comm IB overrides.
+  auto* ncclxConfig = new ncclx::NcclxIbNetCommConfig();
+  *ctx = ncclxConfig;
   return ncclSuccess;
 }
 ncclResult_t ncclGinIbInit(void** ctx, uint64_t commId, ncclDebugLogger_t logFunction) {
@@ -119,7 +124,8 @@ ncclGin_t ncclGinIb = {
 };
 
 ncclResult_t ncclGinIbFinalize(void *ctx) {
-  if (ctx) free(ctx);
+  // [NCCLX-PerCommConfig] Match allocation in ncclGinIbInitType
+  delete static_cast<ncclx::NcclxIbNetCommConfig*>(ctx);
   return ncclIbFinalizeDevices();
 }
 

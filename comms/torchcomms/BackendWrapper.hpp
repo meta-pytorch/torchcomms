@@ -19,9 +19,6 @@ class WorkWrapper : public c10d::Work {
       std::vector<at::Tensor> outputTensors = {});
   ~WorkWrapper() override = default;
 
-  bool isCompleted() override;
-  bool isSuccess() const override;
-  std::exception_ptr exception() const override;
   void synchronize() override;
   bool wait(std::chrono::milliseconds timeout) override;
   std::vector<at::Tensor> result() override;
@@ -151,7 +148,6 @@ class BackendWrapper : public c10d::Backend {
 
  private:
   std::shared_ptr<TorchComm> comm_;
-  std::shared_ptr<TorchCommBackend> backend_;
   c10::intrusive_ptr<Options> options_;
 };
 

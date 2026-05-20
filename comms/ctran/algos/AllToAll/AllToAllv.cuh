@@ -146,6 +146,17 @@ __global__ void ncclKernelAllToAllv(
     ctran::device::KernelStartGpe(flag);
   }
 
+  // No work for the kernel when all three are true: no NVL sends, no NVL
+  // recvs, and no self-copy (e.g. pure-IB path where the self-copy is issued
+  // via cudaMemcpyAsync on the host). Only GPE sync remains.
+  if (args.sendElemsList == nullptr && args.recvElemsList == nullptr &&
+      args.selfCount == 0) {
+    if (flag && gtIdx == 0) {
+      ctran::device::KernelWaitGpeTerminate(flag);
+    }
+    return;
+  }
+
   devStateLoadToShm(devState);
 
   const T* sendbuff = reinterpret_cast<const T*>(args.sendbuff);

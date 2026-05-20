@@ -90,10 +90,11 @@ NCCLDeviceBackend::Ptr NCCLDeviceBackend::create_device_window(
   reqs.teamRequirementsList = nullptr;
 
   // Mirror NCCL's internal gating (sym_kernels.cc): only request NVLS
-  // multicast when the LSA team has more than 2 members.  Without this
-  // check ncclDevCommCreate returns ncclInvalidArgument on topologies
-  // where multicast is unavailable (e.g. 1x2 configurations).
-  reqs.lsaMultimem = nccl_api->teamLsa(nccl_comm).nRanks > 2;
+  // multicast when hardware supports it AND the LSA team has more than
+  // 2 members.  Without both checks ncclDevCommCreate returns
+  // ncclInvalidArgument on topologies where multicast is unavailable.
+  reqs.lsaMultimem = nccl_api->multimemSupport(nccl_comm) &&
+      nccl_api->teamLsa(nccl_comm).nRanks > 2;
   reqs.barrierCount = config.barrier_count;
   reqs.lsaBarrierCount = config.barrier_count;
   reqs.railGinBarrierCount = config.barrier_count;
@@ -218,12 +219,12 @@ RegisteredBuffer NCCLDeviceBackend::register_local_buffer(
       << "[NCCLDeviceBackend]: Local buffer registration failed";
 
   // GIN put uses backend_window (ncclWindow_t) for RDMA/NVLink transfers.
-  // lkey is unused by GIN — only the Pipes (IBGDA) backend needs it.
+  // lkeys are unused by GIN — only the Pipes (IBGDA) backend needs them.
+  // Default-constructed RegisteredBuffer zero-initializes the lkeys array.
   RegisteredBuffer buf;
   buf.base_ptr = ptr;
   buf.size = size;
   buf.backend_window = static_cast<void*>(local_win);
-  buf.lkey = 0;
   return buf;
 }
 

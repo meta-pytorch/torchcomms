@@ -1,0 +1,308 @@
+#qid {
+    padding: 5px 10px;
+    -moz-border-radius: 10px;
+    -webkit-border-radius: 10px;
+    border-radius: 10px;
+  }
+  label.btn {
+      padding: 18px 60px;
+      white-space: normal;
+      -webkit-transform: scale(1.0);
+      -moz-transform: scale(1.0);
+      -o-transform: scale(1.0);
+      -webkit-transition-duration: .3s;
+      -moz-transition-duration: .3s;
+      -o-transition-duration: .3s
+  }
+  
+  label.btn:hover {
+      text-shadow: 0 3px 2px rgba(0,0,0,0.4);
+      -webkit-transform: scale(1.01);
+      -moz-transform: scale(1.01);
+      -o-transform: scale(1.01)
+  }
+  label.btn-block {
+      text-align: left;
+      position: relative
+  }
+  
+  label .btn-label {
+      position: absolute;
+      left: 0;
+      top: 0;
+      display: inline-block;
+      padding: 0 10px;
+      background: rgba(0,0,0,.15);
+      height: 100%
+  }
+  
+  label .glyphicon {
+      top: 34%
+  }
+  
+  .modal-header {
+      background-color: transparent;
+      color: inherit
+  }
+  
+  .modal-body {
+      min-height: 450px
+  }
+  #loadbar {
+      position: absolute;
+      width: 62px;
+      height: 77px;
+      top: 2em
+  }
+
+  
+  .blockG {
+      position: absolute;
+      background-color: #FFF;
+      width: 10px;
+      height: 24px;
+      -moz-border-radius: 8px 8px 0 0;
+      -moz-transform: scale(0.4);
+      -moz-animation-name: fadeG;
+      -moz-animation-duration: .8800000000000001s;
+      -moz-animation-iteration-count: infinite;
+      -moz-animation-direction: linear;
+      -webkit-border-radius: 8px 8px 0 0;
+      -webkit-transform: scale(0.4);
+      -webkit-animation-name: fadeG;
+      -webkit-animation-duration: .8800000000000001s;
+      -webkit-animation-iteration-count: infinite;
+      -webkit-animation-direction: linear;
+      -ms-border-radius: 8px 8px 0 0;
+      -ms-transform: scale(0.4);
+      -ms-animation-name: fadeG;
+      -ms-animation-duration: .8800000000000001s;
+      -ms-animation-iteration-count: infinite;
+      -ms-animation-direction: linear;
+      -o-border-radius: 8px 8px 0 0;
+      -o-transform: scale(0.4);
+      -o-animation-name: fadeG;
+      -o-animation-duration: .8800000000000001s;
+      -o-animation-iteration-count: infinite;
+      -o-animation-direction: linear;
+      border-radius: 8px 8px 0 0;
+      transform: scale(0.4);
+      animation-name: fadeG;
+      animation-duration: .8800000000000001s;
+      animation-iteration-count: infinite;
+      animation-direction: linear
+  }
+  #rotateG_01 {
+      left: 0;
+      top: 28px;
+      -moz-animation-delay: .33s;
+      -moz-transform: rotate(-90deg);
+      -webkit-animation-delay: .33s;
+      -webkit-transform: rotate(-90deg);
+      -ms-animation-delay: .33s;
+      -ms-transform: rotate(-90deg);
+      -o-animation-delay: .33s;
+      -o-transform: rotate(-90deg);
+      animation-delay: .33s;
+      transform: rotate(-90deg)
+  }
+  #rotateG_02 {
+      left: 8px;
+      top: 10px;
+      -moz-animation-delay: .44000000000000006s;
+      -moz-transform: rotate(-45deg);
+      -webkit-animation-delay: .44000000000000006s;
+      -webkit-transform: rotate(-45deg);
+      -ms-animation-delay: .44000000000000006s;
+      -ms-transform: rotate(-45deg);
+      -o-animation-delay: .44000000000000006s;
+      -o-transform: rotate(-45deg);
+      animation-delay: .44000000000000006s;
+      transform: rotate(-45deg)
+  }
+  #rotateG_03 {
+      left: 26px;
+      top: 3px;
+      -moz-animation-delay: .55s;
+      -moz-transform: rotate(0deg);
+      -webkit-animation-delay: .55s;
+      -webkit-transform: rotate(0deg);
+      -ms-animation-delay: .55s;
+      -ms-transform: rotate(0deg);
+      -o-animation-delay: .55s;
+      -o-transform: rotate(0deg);
+      animation-delay: .55s;
+      transform: rotate(0deg)
+  }
+  #rotateG_04 {
+      right: 8px;
+      top: 10px;
+      -moz-animation-delay: .66s;
+      -moz-transform: rotate(45deg);
+      -webkit-animation-delay: .66s;
+      -webkit-transform: rotate(45deg);
+      -ms-animation-delay: .66s;
+      -ms-transform: rotate(45deg);
+      -o-animation-delay: .66s;
+      -o-transform: rotate(45deg);
+      animation-delay: .66s;
+      transform: rotate(45deg)
+  }
+  #rotateG_05 {
+      right: 0;
+      top: 28px;
+      -moz-animation-delay: .7700000000000001s;
+      -moz-transform: rotate(90deg);
+      -webkit-animation-delay: .7700000000000001s;
+      -webkit-transform: rotate(90deg);
+      -ms-animation-delay: .7700000000000001s;
+      -ms-transform: rotate(90deg);
+      -o-animation-delay: .7700000000000001s;
+      -o-transform: rotate(90deg);
+      animation-delay: .7700000000000001s;
+      transform: rotate(90deg)
+  }
+  #rotateG_06 {
+      right: 8px;
+      bottom: 7px;
+      -moz-animation-delay: .8800000000000001s;
+      -moz-transform: rotate(135deg);
+      -webkit-animation-delay: .8800000000000001s;
+      -webkit-transform: rotate(135deg);
+      -ms-animation-delay: .8800000000000001s;
+      -ms-transform: rotate(135deg);
+      -o-animation-delay: .8800000000000001s;
+      -o-transform: rotate(135deg);
+      animation-delay: .8800000000000001s;
+      transform: rotate(135deg)
+  }
+  #rotateG_07 {
+      bottom: 0;
+      left: 26px;
+      -moz-animation-delay: .99s;
+      -moz-transform: rotate(180deg);
+      -webkit-animation-delay: .99s;
+      -webkit-transform: rotate(180deg);
+      -ms-animation-delay: .99s;
+      -ms-transform: rotate(180deg);
+      -o-animation-delay: .99s;
+      -o-transform: rotate(180deg);
+      animation-delay: .99s;
+      transform: rotate(180deg)
+  }
+  #rotateG_08 {
+      left: 8px;
+      bottom: 7px;
+      -moz-animation-delay: 1.1s;
+      -moz-transform: rotate(-135deg);
+      -webkit-animation-delay: 1.1s;
+      -webkit-transform: rotate(-135deg);
+      -ms-animation-delay: 1.1s;
+      -ms-transform: rotate(-135deg);
+      -o-animation-delay: 1.1s;
+      -o-transform: rotate(-135deg);
+      animation-delay: 1.1s;
+      transform: rotate(-135deg)
+  }
+  @-moz-keyframes fadeG {
+      0% {
+          background-color: #000
+      }
+  
+      100% {
+          background-color: #FFF
+      }
+  }
+  
+  @-webkit-keyframes fadeG {
+      0% {
+          background-color: #000
+      }
+  
+      100% {
+          background-color: #FFF
+      }
+  }
+  
+  @-ms-keyframes fadeG {
+      0% {
+          background-color: #000
+      }
+  
+      100% {
+          background-color: #FFF
+      }
+  }
+  
+  @-o-keyframes fadeG {
+      0% {
+          background-color: #000
+      }
+      100% {
+          background-color: #FFF
+      }
+  }
+  
+  @keyframes fadeG {
+      0% {
+          background-color: #000
+      }
+  
+      100% {
+          background-color: #FFF
+      }
+  }
+  
+  /* NG animations for results outputs */
+  /*
+animation:*/
+
+.slideDown.ng-hide {
+    height:0;
+    overflow:hidden;
+  }
+  
+  .slideDown {
+    height:700px;
+    overflow:hidden;
+  }
+  
+  .slideDown.ng-hide-add,
+  .slideDown.ng-hide-remove {
+    transition: height linear 0.3s;
+  }
+  
+  .resultOutput {
+    height: 80%;
+    overflow-y: scroll;
+  }
+
+  .outputsContainer {
+    overflow-y: auto; 
+    max-height:430px;
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+
+  .notificationMessage.ng-hide {
+    opacity: 0;    
+  }
+
+  .notificationMessage.ng-hide-add,
+  .notificationMessage.ng-hide-remove {
+    transition: all linear 1s;    
+  }
+
+  .failTest {
+      color: red;
+      font-weight: bold;
+  }
+
+  .passTest {
+      color:green;
+      font-weight: bold;
+  }
+
+  .outputText {
+      font-size: 1.3em;
+  }

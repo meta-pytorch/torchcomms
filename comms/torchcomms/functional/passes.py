@@ -17,6 +17,7 @@ NOTE: when used in conjunction, the reinplacement pass should be applied first.
 
 import logging
 import operator
+from inspect import signature
 
 import torch
 from torch._higher_order_ops.effects import with_effects
@@ -60,7 +61,12 @@ def reinplacement_pass(
     from torch._guards import detect_fake_mode
     from torch._inductor.virtualized import V
 
-    fake_tensor_updater = FakeTensorUpdater(gm.graph)
+    # TODO: remove this check after https://github.com/pytorch/pytorch/pull/159523 is in
+    # a PyTorch release.
+    if "gm" in signature(FakeTensorUpdater).parameters:
+        fake_tensor_updater = FakeTensorUpdater(gm)
+    else:
+        fake_tensor_updater = FakeTensorUpdater(gm.graph)
 
     fake_mode = detect_fake_mode(
         [node.meta.get("val") for node in gm.graph.nodes if "val" in node.meta]

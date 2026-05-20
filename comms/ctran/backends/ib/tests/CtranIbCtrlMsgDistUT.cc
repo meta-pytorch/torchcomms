@@ -7,7 +7,6 @@
 #include <folly/init/Init.h>
 #include <folly/logging/xlog.h>
 
-#include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/backends/ib/CtranIbBase.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
@@ -30,11 +29,9 @@ class CtranIbCtrlMsgTest : public ctran::CtranDistTestFixture {
     CtranDistTestFixture::SetUp();
     this->comm_ = makeCtranComm();
     this->comm = this->comm_.get();
-    this->ctrlMgr = std::make_unique<CtranCtrlManager>();
   }
 
   void TearDown() override {
-    this->ctrlMgr.reset();
     this->comm_.reset();
     CtranDistTestFixture::TearDown();
   }
@@ -48,7 +45,6 @@ class CtranIbCtrlMsgTest : public ctran::CtranDistTestFixture {
  protected:
   std::unique_ptr<CtranComm> comm_{nullptr};
   CtranComm* comm{nullptr};
-  std::unique_ptr<CtranCtrlManager> ctrlMgr{nullptr};
 };
 
 TEST_F(CtranIbCtrlMsgTest, CtrlMsg) {
@@ -57,7 +53,7 @@ TEST_F(CtranIbCtrlMsgTest, CtrlMsg) {
       "Expect rank 2 can issue multiple send control msgs to ranks 0 and 1, and match to the corresponding recvs");
 
   try {
-    auto ctranIb = std::make_unique<CtranIb>(this->comm, this->ctrlMgr.get());
+    auto ctranIb = std::make_unique<CtranIb>(this->comm);
     std::vector<CtranIbRequest> reqs;
     std::vector<ControlMsg> smsgs;
     ControlMsg rmsg0(ControlMsgType::IB_EXPORT_MEM);

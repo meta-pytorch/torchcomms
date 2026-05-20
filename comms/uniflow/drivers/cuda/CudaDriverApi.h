@@ -97,6 +97,14 @@ class CudaDriverApi {
       CUmemRangeHandleType handleType,
       unsigned long long flags);
 
+  // --- Stream memory ops ---
+
+  virtual Status streamWriteValue64(
+      CUstream stream,
+      CUdeviceptr addr,
+      uint64_t value,
+      unsigned int flags);
+
   // --- supported APIs ---
   virtual Result<bool> isDmaBufSupported(int cudaDev);
 

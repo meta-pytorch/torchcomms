@@ -1,0 +1,16 @@
+aligned_alloc
+calloc
+cfree
+free
+malloc
+malloc_get_state
+malloc_set_state
+malloc_stats
+malloc_trim
+malloc_usable_size
+mallopt
+memalign
+posix_memalign
+pvalloc
+realloc
+valloc

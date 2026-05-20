@@ -79,22 +79,4 @@ void test_multi_peer_self_put(
     int numBlocks,
     int blockSize);
 
-/**
- * Verify IBGDA transport accessor via MultiPeerDeviceHandle.
- *
- * For each rank, if the transport type is P2P_IBGDA, reads the signal
- * count from the device-side P2pIbgdaTransportDevice and writes it to
- * output_d[rank]. Non-IBGDA ranks get -1.
- *
- * @param handle Device handle with IBGDA transports.
- * @param output_d GPU buffer to write per-rank signal counts (size = nRanks).
- * @param numBlocks Number of CUDA blocks.
- * @param blockSize Number of threads per block.
- */
-void test_ibgda_accessor(
-    MultiPeerDeviceHandle handle,
-    int* output_d,
-    int numBlocks,
-    int blockSize);
-
 } // namespace comms::pipes::test

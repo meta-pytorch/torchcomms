@@ -1,0 +1,16 @@
+#
+# Only valid for the build tree
+#
+
+set(timemory_ROOT_DIR "@PROJECT_BINARY_DIR@")
+set(timemory_INCLUDE_DIRS "@PROJECT_SOURCE_DIR@/source")
+set(timemory_LIB_DIR "@PROJECT_BINARY_DIR@")
+
+if(@TIMEMORY_USE_PYTHON@)
+    set(timemory_PYTHON_DIR "@PROJECT_BINARY_DIR@")
+endif()
+
+# if TIMEMORY_USE_COVERAGE, always link to library
+if(@TIMEMORY_USE_COVERAGE@)
+    list(APPEND timemory_FIND_COMPONENTS cxx)
+endif()

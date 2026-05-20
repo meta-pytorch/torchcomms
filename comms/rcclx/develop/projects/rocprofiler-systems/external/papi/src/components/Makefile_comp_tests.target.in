@@ -1,0 +1,45 @@
+PACKAGE_TARNAME = @PACKAGE_TARNAME@
+exec_prefix = @exec_prefix@
+prefix = @prefix@
+datarootdir = @datarootdir@
+datadir = ../../..
+testlibdir = $(datadir)/testlib
+validationlibdir = $(datadir)/validation_tests
+INCLUDE = -I. -I$(datadir) -I$(testlibdir) -I$(validationlibdir) -I@includedir@
+LIBDIR  = @libdir@
+LIBRARY = @LIBRARY@
+SHLIB   = @SHLIB@
+PAPILIB = $(datadir)/@LINKLIB@
+TESTLIB = $(testlibdir)/libtestlib.a
+LDFLAGS = @LDFLAGS@ @LDL@
+CC	= @CC@
+MPICC	= @MPICC@
+F77	= @F77@
+CC_R	= @CC_R@
+CFLAGS	= @CFLAGS@
+OPTFLAGS= @OPTFLAGS@
+TOPTFLAGS= @TOPTFLAGS@
+OMPCFLGS = @OMPCFLGS@
+UTILOBJS = $(TESTLIB)
+BUILD_SHARED_LIB = @BUILD_SHARED_LIB@
+BUILD_LIBSDE_SHARED = @BUILD_LIBSDE_SHARED@
+BUILD_LIBSDE_STATIC = @BUILD_LIBSDE_STATIC@
+NO_MPI_TESTS = @NO_MPI_TESTS@
+NVPPC64LEFLAGS = @NVPPC64LEFLAGS@
+ENABLE_FORTRAN_TESTS = @ENABLE_FORTRAN_TESTS@
+
+
+tests: $(NAME)_tests
+
+install:
+	@echo "$(NAME) tests (DATADIR) being installed in: \"$(DATADIR)\""; 
+	-mkdir -p $(DATADIR)/$(NAME)/tests
+	-chmod go+rx $(DATADIR)
+	-chmod go+rx $(DATADIR)/$(NAME)/tests
+	-find . -perm -100 -type f -exec cp {} $(DATADIR)/$(NAME)/tests \;
+	-chmod go+rx $(DATADIR)/$(NAME)/*
+	-find . -name "*.[ch]" -type f -exec cp {} $(DATADIR)/$(NAME)/tests \;
+	-cp Makefile $(DATADIR)/$(NAME)/tests
+	-cp ../../Makefile_comp_tests $(DATADIR)
+
+

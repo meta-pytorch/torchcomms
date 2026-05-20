@@ -37,13 +37,14 @@ __device__ __forceinline__ void send_peer(
     bool use_ll128 = (bytes <= ll128ThresholdBytes) &&
         comms::pipes::can_use_ll128(src, bytes);
     if (use_ll128) {
-      transport.p2p_nvl.ll128_send(
+      transport.p2p_nvl.ll128_send_group(
           group, const_cast<char*>(src), bytes, timeout);
     } else {
-      transport.p2p_nvl.send(group, const_cast<char*>(src), bytes, timeout);
+      transport.p2p_nvl.send_group(
+          group, const_cast<char*>(src), bytes, timeout);
     }
   } else {
-    transport.p2p_nvl.send(group, const_cast<char*>(src), bytes, timeout);
+    transport.p2p_nvl.send_group(group, const_cast<char*>(src), bytes, timeout);
   }
 }
 
@@ -60,12 +61,12 @@ __device__ __forceinline__ void recv_peer(
     bool use_ll128 = (bytes <= ll128ThresholdBytes) &&
         comms::pipes::can_use_ll128(dst, bytes);
     if (use_ll128) {
-      transport.p2p_nvl.ll128_recv(group, dst, bytes, timeout);
+      transport.p2p_nvl.ll128_recv_group(group, dst, bytes, timeout);
     } else {
-      transport.p2p_nvl.recv(group, dst, bytes, timeout);
+      transport.p2p_nvl.recv_group(group, dst, bytes, timeout);
     }
   } else {
-    transport.p2p_nvl.recv(group, dst, bytes, timeout);
+    transport.p2p_nvl.recv_group(group, dst, bytes, timeout);
   }
 }
 
@@ -106,7 +107,7 @@ __global__ void ncclKernelDeviceAllToAllvPipes(
     size_t recvOffset = computeDisplacement(args.recvcounts_d, globalRank) *
         recvMultiplier * elementSize;
 
-    transports[globalRank].self.put(
+    transports[globalRank].self.put_group(
         group,
         static_cast<char*>(args.recvbuff) + recvOffset,
         static_cast<const char*>(args.sendbuff) + sendOffset,
@@ -136,7 +137,7 @@ __global__ void ncclKernelDeviceAllToAllvPipes(
 
     if (peerGlobalRank == myRank) {
       if (partition_id == 0) {
-        transports[peerGlobalRank].self.put(
+        transports[peerGlobalRank].self.put_group(
             group_per_peer, dst_ptr, src_ptr, sendBytes);
       }
     } else if (partition_id == 0) {

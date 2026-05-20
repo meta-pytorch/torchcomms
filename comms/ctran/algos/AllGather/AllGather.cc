@@ -1,15 +1,41 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 // #include <mutex>
+#include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+
+static bool isGraphAwareAlgo(enum NCCL_ALLGATHER_ALGO algo) {
+  switch (algo) {
+    case NCCL_ALLGATHER_ALGO::ctgraph:
+    case NCCL_ALLGATHER_ALGO::ctgraph_pipeline:
+    case NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline:
+    case NCCL_ALLGATHER_ALGO::ctgraph_ring:
+    case NCCL_ALLGATHER_ALGO::ctgraph_rd:
+      return true;
+    case NCCL_ALLGATHER_ALGO::ctdirect:
+    case NCCL_ALLGATHER_ALGO::ctrd:
+    case NCCL_ALLGATHER_ALGO::ctsrd:
+    case NCCL_ALLGATHER_ALGO::ctring:
+    case NCCL_ALLGATHER_ALGO::ctbrucks:
+    case NCCL_ALLGATHER_ALGO::cthierarchical_ring:
+    case NCCL_ALLGATHER_ALGO::ctran:
+    case NCCL_ALLGATHER_ALGO::orig:
+      return false;
+  }
+  return false;
+}
 
 // Check if CTRAN is supported and if a specific algo is supported by CTRAN.
 // If user sets a specific algo, it should check to avoid unexpected abort in
 // ctranAllGather.
-bool ctranAllGatherSupport(CtranComm* comm, enum NCCL_ALLGATHER_ALGO algo) {
+bool ctranAllGatherSupport(
+    CtranComm* comm,
+    enum NCCL_ALLGATHER_ALGO algo,
+    cudaStream_t stream) {
   if (!ctranInitialized(comm) || !comm->ctran_->mapper->hasBackend()) {
     return false;
   }
@@ -20,6 +46,7 @@ bool ctranAllGatherSupport(CtranComm* comm, enum NCCL_ALLGATHER_ALGO algo) {
     case NCCL_ALLGATHER_ALGO::ctring:
     case NCCL_ALLGATHER_ALGO::ctbrucks:
     case NCCL_ALLGATHER_ALGO::ctrd:
+    case NCCL_ALLGATHER_ALGO::ctsrd:
       supported = statex->nLocalRanks() == 1;
       if (!supported) {
         CLOGF_SUBSYS(
@@ -33,6 +60,56 @@ bool ctranAllGatherSupport(CtranComm* comm, enum NCCL_ALLGATHER_ALGO algo) {
     case NCCL_ALLGATHER_ALGO::ctran:
       supported = true;
       break;
+    case NCCL_ALLGATHER_ALGO::cthierarchical_ring:
+      supported = false;
+      break;
+    case NCCL_ALLGATHER_ALGO::ctgraph:
+    case NCCL_ALLGATHER_ALGO::ctgraph_pipeline:
+    case NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline:
+    case NCCL_ALLGATHER_ALGO::ctgraph_ring:
+    case NCCL_ALLGATHER_ALGO::ctgraph_rd: {
+      // Check stream capture status
+      if (stream == nullptr) {
+        supported = false;
+        break;
+      }
+      ctran::utils::cudagraph::StreamCaptureInfo captureInfo;
+      auto err =
+          ctran::utils::cudagraph::getStreamCaptureInfo(stream, captureInfo);
+      supported = (err == cudaSuccess) &&
+          (captureInfo.status == cudaStreamCaptureStatusActive);
+      if (!supported) {
+        CLOGF_SUBSYS(
+            INFO,
+            COLL,
+            "AllGather {}: not in capture mode. "
+            "Falling back to baseline. "
+            "commHash {:x} commDesc {} nRanks {} nLocalRanks {} nNodes {}",
+            allGatherAlgoName(algo),
+            statex->commHash(),
+            statex->commDesc(),
+            statex->nRanks(),
+            statex->nLocalRanks(),
+            statex->nNodes());
+        break;
+      }
+
+      // Topology check for explicit algo variants
+      if ((algo == NCCL_ALLGATHER_ALGO::ctgraph_ring ||
+           algo == NCCL_ALLGATHER_ALGO::ctgraph_rd) &&
+          statex->nLocalRanks() > 1) {
+        CLOGF_SUBSYS(
+            WARN,
+            COLL,
+            "AllGather {} requires nLocalRanks==1, got {}. "
+            "Falling back to baseline",
+            allGatherAlgoName(algo),
+            statex->nLocalRanks());
+        supported = false;
+        break;
+      }
+      break;
+    }
     case NCCL_ALLGATHER_ALGO::orig: // invalid query
       supported = false;
       break;
@@ -49,6 +126,23 @@ commResult_t ctranAllGather(
     CtranComm* comm,
     cudaStream_t stream,
     enum NCCL_ALLGATHER_ALGO algo) {
+  // Cudagraph-aware optimization: when capturing and AGP is supported,
+  // transparently convert to the persistent window-based AGP algorithm.
+  if (isGraphAwareAlgo(algo)) {
+    ctran::utils::cudagraph::StreamCaptureInfo captureInfo;
+    FB_CUDACHECK(
+        ctran::utils::cudagraph::getStreamCaptureInfo(stream, captureInfo));
+    if (captureInfo.status == cudaStreamCaptureStatusActive) {
+      return ctranAllGatherCudagraphAware(
+          sendbuff, recvbuff, sendcount, datatype, comm, stream, algo);
+    }
+    FB_ERRORRETURN(
+        commInvalidUsage,
+        "AllGather {} called outside CUDA graph capture. "
+        "ctranAllGatherSupport should have returned false.",
+        allGatherAlgoName(algo));
+  }
+
   const auto statex = comm->statex_.get();
 
   // Only ctdirect supports nLocalRanks>1 case.
@@ -78,6 +172,17 @@ commResult_t ctranAllGather(
     case NCCL_ALLGATHER_ALGO::ctrd:
       return ctranAllGatherRd(
           sendbuff, recvbuff, sendcount, datatype, comm, stream);
+
+    case NCCL_ALLGATHER_ALGO::ctsrd:
+      return ctranAllGatherStreamedRd(
+          sendbuff, recvbuff, sendcount, datatype, comm, stream);
+
+    case NCCL_ALLGATHER_ALGO::cthierarchical_ring:
+      FB_ERRORRETURN(
+          commInvalidUsage,
+          "AllGather {} not registered in this build layer",
+          allGatherAlgoName(algo));
+
     case NCCL_ALLGATHER_ALGO::ctdirect:
     default:
       return ctranAllGatherDirect(

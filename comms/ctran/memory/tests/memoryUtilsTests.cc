@@ -60,7 +60,11 @@ TEST_F(memoryUtilsTest, cudaCallocAsync) {
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
 
   // can be freed by ncclCudaFree
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
+  EXPECT_EQ(ncclCudaFree(ptr, nullptr), commSuccess);
+#else
   EXPECT_EQ(ncclCudaFree(ptr), commSuccess);
+#endif
 
   CUDACHECK_TEST(cudaMemGetInfo(&after, &total));
   EXPECT_EQ(before, after);

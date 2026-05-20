@@ -10,7 +10,6 @@
 #include <sstream>
 #include <string>
 
-#include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
@@ -21,7 +20,7 @@
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
-#include "comms/utils/logger/alloc.h"
+#include "comms/utils/memtrace/MemoryTrace.h"
 
 #ifdef ENABLE_META_COMPRESSION
 #include <comms/ctran/mapper/fb/IcompressionManager.h>
@@ -154,14 +153,10 @@ CtranMapper::CtranMapper(CtranComm* comm) {
         "CTRAN-MAPPER: TCPDM can not be enabled with IB, NVL or Socket backends");
   }
 
-  this->ctrlMgr = std::make_unique<CtranCtrlManager>();
-
   /* enable available backends */
   if (enableBackends_[CtranMapperBackend::IB]) {
     try {
-      this->ctranIb =
-          std::make_unique<class CtranIb>(comm, this->ctrlMgr.get());
-      this->ctranIb->regCtrlCb(this->ctrlMgr);
+      this->ctranIb = std::make_unique<class CtranIb>(comm);
     } catch ([[maybe_unused]] const std::bad_alloc& e) {
       ctranIb = nullptr;
       enableBackends_[CtranMapperBackend::IB] = false;
@@ -170,8 +165,7 @@ CtranMapper::CtranMapper(CtranComm* comm) {
   }
   if (enableBackends_[CtranMapperBackend::SOCKET]) {
     if (!this->ctranIb) {
-      this->ctranSock =
-          std::make_unique<class CtranSocket>(comm, this->ctrlMgr.get());
+      this->ctranSock = std::make_unique<class CtranSocket>(comm);
     } else {
       enableBackends_[CtranMapperBackend::SOCKET] = false;
       CLOGF_SUBSYS(
@@ -181,8 +175,7 @@ CtranMapper::CtranMapper(CtranComm* comm) {
     }
   }
   if (enableBackends_[CtranMapperBackend::TCPDM]) {
-    this->ctranTcpDm =
-        std::make_unique<class ctran::CtranTcpDm>(comm, this->ctrlMgr.get());
+    this->ctranTcpDm = std::make_unique<class ctran::CtranTcpDm>(comm);
     CLOGF(WARN, "CTRAN-MAPPER: TCPDM backend is enabled");
   }
 
@@ -609,7 +602,7 @@ commResult_t CtranMapper::regMem(
   if (NCCL_CTRAN_REGISTER == NCCL_CTRAN_REGISTER::eager || forceRegist) {
     bool didRegister = false;
     auto* segment = segments.front();
-    FB_COMMCHECK(regCache->regRange(
+    FB_COMMCHECK(regCache->regRangeCached(
         segment->range.buf,
         segment->range.len,
         cudaDev,
@@ -688,7 +681,7 @@ commResult_t CtranMapper::deregMem(void* segHdl, const bool skipRemRelease) {
   // freed is true means all segments are deregistered
   if (freed) {
     for (auto& regElem : regElemsFreed) {
-      logMemoryEvent(
+      meta::comms::memtrace::recordReg(
           logMetaData_,
           "",
           "deregMem",
@@ -697,8 +690,7 @@ commResult_t CtranMapper::deregMem(void* segHdl, const bool skipRemRelease) {
           regElem->numSegments(),
           std::chrono::duration_cast<std::chrono::microseconds>(
               std::chrono::steady_clock::now() - timerBegin)
-              .count(),
-          true /* isRegMemEvent */);
+              .count());
     }
   }
   return commSuccess;
@@ -720,6 +712,11 @@ commResult_t CtranMapper::deregDynamic(void* regHdl) {
   FB_COMMCHECK(regCache->deregDynamic(regElem));
 
   return commSuccess;
+}
+
+void CtranMapper::removeFromExportCache(void* regHdl) {
+  auto* regElem = reinterpret_cast<ctran::regcache::RegElem*>(regHdl);
+  exportRegCache_.wlock()->remove(regElem);
 }
 
 commResult_t CtranMapper::deregRemReg(struct CtranMapperRemoteAccessKey* rkey) {
@@ -793,12 +790,12 @@ commResult_t CtranMapper::searchRegHandle(
   // First try find whether the given <buf, len> range has been covered by an
   // existing registration so the registration can be reused.
   // If not yet registered, but all underlying segments have ben pre-registered
-  // (i.e., cached) by user, regRange will internally perform the
+  // (i.e., cached) by user, regRangeCached will internally perform the
   // registration and cache it. All logic should be handled within a single
   // global lock.
   ctran::regcache::RegElem* regHdl_ = nullptr;
   bool didRegister = false;
-  FB_COMMCHECK(regCache->regRange(
+  FB_COMMCHECK(regCache->regRangeCached(
       buf,
       len,
       cudaDev,
@@ -822,7 +819,7 @@ commResult_t CtranMapper::searchRegHandle(
     // registration with the given buf, len range. Caller is responsible for
     // immediate deregisgration after current use.
     FB_COMMCHECK(regCache->regDynamic(
-        buf, len, comm->statex_->cudaDev(), enableBackends_, &regHdl_));
+        buf, len, cudaDev, enableBackends_, &regHdl_, &logMetaData_));
     *dynamicRegist = true;
     CLOGF(
         WARN,

@@ -156,10 +156,13 @@ TorchWorkXCCL::WorkStatus TorchWorkXCCL::checkStatus() {
 }
 
 void TorchWorkXCCL::wait() {
+  runWaitPreHooks();
+
   // If already completed, return immediately
   WorkStatus local_state = state_;
   if (local_state == WorkStatus::COMPLETED ||
       local_state == WorkStatus::ERROR || local_state == WorkStatus::TIMEDOUT) {
+    runWaitPostHooks();
     return;
   }
 
@@ -180,5 +183,7 @@ void TorchWorkXCCL::wait() {
       comm_->getXpuApi(),
       comm_->getXpuApi()->streamWaitEvent(current_stream, end_event_, 0),
       "Failed to make stream wait for event");
+
+  runWaitPostHooks();
 }
 } // namespace torch::comms

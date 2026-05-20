@@ -27,14 +27,6 @@ std::shared_ptr<ICollTraceHandle> getCollTraceHandle(
     const KernelConfig& kernelConfig,
     const bool ifchecksum = false);
 
-// See getCollTraceHandle for the signature of func
-void setCollTraceLegacyHandleFunc(
-    std::function<std::unique_ptr<ICollTraceHandle>(
-        CtranComm*,
-        const std::vector<std::unique_ptr<struct OpElem>>&,
-        const KernelConfig&,
-        const bool)> func);
-
 bool testOnlyClearCollTraceRecords(CtranComm* comm);
 
 } // namespace meta::comms::colltrace

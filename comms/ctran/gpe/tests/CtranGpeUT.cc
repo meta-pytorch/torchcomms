@@ -2,7 +2,11 @@
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include <atomic>
+#include <chrono>
+#include <future>
 #include <iostream>
+#include <thread>
 
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/common/GpeKernel.h"
@@ -1568,11 +1572,14 @@ TEST_F(CtranGpeTest, GraphCaptureWithHostNode) {
   CUDACHECK_TEST(cudaGraphDestroy(graph));
 
   // cudaUserObjectNoDestructorSync: cmdDestroy fires asynchronously after
-  // graph destruction. Wait for it to release the flag back to the pool.
-  while (gpe->numInUseKernelFlags() > 0) {
+  // graph destruction. Wait for it to release all pool resources back.
+  while (gpe->numInUseKernelFlags() > 0 || gpe->numInUseKernelElems() > 0 ||
+         gpe->numInUseGpeKernelSyncs() > 0) {
     std::this_thread::yield();
   }
   EXPECT_EQ(gpe->numInUseKernelFlags(), 0);
+  EXPECT_EQ(gpe->numInUseKernelElems(), 0);
+  EXPECT_EQ(gpe->numInUseGpeKernelSyncs(), 0);
   CUDACHECK_TEST(cudaFree(buf));
   CUDACHECK_TEST(cudaFreeHost(valPtr));
   CUDACHECK_TEST(cudaStreamDestroy(stream));
@@ -1641,14 +1648,122 @@ TEST_F(CtranGpeTest, GraphCaptureDestroyFreesResources) {
   CUDACHECK_TEST(cudaGraphExecDestroy(graphExec));
   CUDACHECK_TEST(cudaGraphDestroy(graph));
 
-  while (gpe->numInUseKernelFlags() > 0) {
+  // cudaUserObjectNoDestructorSync: cmdDestroy fires asynchronously after
+  // graph destruction. Wait for it to release all pool resources back.
+  while (gpe->numInUseKernelFlags() > 0 || gpe->numInUseKernelElems() > 0 ||
+         gpe->numInUseGpeKernelSyncs() > 0) {
     std::this_thread::yield();
   }
+  EXPECT_EQ(gpe->numInUseKernelFlags(), 0);
+  EXPECT_EQ(gpe->numInUseKernelElems(), 0);
+  EXPECT_EQ(gpe->numInUseGpeKernelSyncs(), 0);
 
   CUDACHECK_TEST(cudaFree(buf));
   CUDACHECK_TEST(cudaFreeHost(valPtr));
   CUDACHECK_TEST(cudaStreamDestroy(stream));
 }
+
+namespace {
+std::mutex g_replayOpCountsMutex;
+std::vector<uint64_t> g_replayOpCounts;
+
+commResult_t recordOpCountFunc(
+    const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
+  std::lock_guard<std::mutex> lock(g_replayOpCountsMutex);
+  g_replayOpCounts.push_back(opGroup.front()->opCount);
+  return commSuccess;
+}
+} // namespace
+
+// Verify cmdCb advances op->opCount on each graph replay so host-side
+// consumers (Profiler sampling, scuba, CtranAlgoLogger) see a fresh value
+// per replay rather than the frozen capture-time value. Regression guard
+// for opcount-mode profiler sampling under cuda-graph replay.
+TEST_F(CtranGpeTest, GraphReplayAdvancesOpCount) {
+  auto gpe = std::unique_ptr<CtranGpe>(new CtranGpe(cudaDev, dummyComm));
+  cudaStream_t stream;
+  CUDACHECK_TEST(cudaStreamCreate(&stream));
+
+  constexpr int kVal = 77;
+  int* buf = nullptr;
+  int* valPtr = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMemset(buf, 0, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMallocHost(&valPtr, sizeof(int)));
+  *valPtr = kVal;
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  {
+    std::lock_guard<std::mutex> lock(g_replayOpCountsMutex);
+    g_replayOpCounts.clear();
+  }
+
+  constexpr uint64_t kCaptureOpCount = 100;
+
+  CUDACHECK_TEST(cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed));
+  {
+    std::vector<std::unique_ptr<struct OpElem>> ops;
+    auto& op = ops.emplace_back(
+        std::make_unique<OpElem>(
+            OpElem::opType::RECV, dummyComm, kCaptureOpCount));
+    op->recv.recvbuff = nullptr;
+    op->recv.count = 0;
+    op->recv.datatype = commInt8;
+    op->recv.peerRank = 0;
+
+    auto config = KernelConfig(
+        KernelConfig::KernelType::ALLGATHER,
+        stream,
+        "dummyAlgo",
+        kCaptureOpCount);
+    ctranKernelSetAllGatherArgs(
+        buf, valPtr, commInt8, count, dummyDevState_d, &config.args);
+
+    ASSERT_EQ(
+        gpe->submit(
+            std::move(ops),
+            &recordOpCountFunc,
+            config,
+            reinterpret_cast<void*>(CtranGpeTestKernel)),
+        commSuccess);
+  }
+
+  cudaGraph_t graph;
+  CUDACHECK_TEST(cudaStreamEndCapture(stream, &graph));
+  ASSERT_NE(graph, nullptr);
+
+  cudaGraphExec_t graphExec;
+  CUDACHECK_TEST(cudaGraphInstantiate(&graphExec, graph, nullptr, nullptr, 0));
+
+  constexpr int kReplays = 3;
+  for (int i = 0; i < kReplays; ++i) {
+    CUDACHECK_TEST(cudaGraphLaunch(graphExec, stream));
+  }
+  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+
+  // Each replay's cmdCb increments op->opCount before the GPE thread runs
+  // recordOpCountFunc. With three replays starting from kCaptureOpCount=100,
+  // the func sees 101, 102, 103.
+  std::vector<uint64_t> seen;
+  {
+    std::lock_guard<std::mutex> lock(g_replayOpCountsMutex);
+    seen = g_replayOpCounts;
+  }
+  const std::vector<uint64_t> expected = {
+      kCaptureOpCount + 1, kCaptureOpCount + 2, kCaptureOpCount + 3};
+  EXPECT_EQ(seen, expected);
+
+  CUDACHECK_TEST(cudaGraphExecDestroy(graphExec));
+  CUDACHECK_TEST(cudaGraphDestroy(graph));
+  while (gpe->numInUseKernelFlags() > 0 || gpe->numInUseKernelElems() > 0 ||
+         gpe->numInUseGpeKernelSyncs() > 0) {
+    std::this_thread::yield();
+  }
+  CUDACHECK_TEST(cudaFree(buf));
+  CUDACHECK_TEST(cudaFreeHost(valPtr));
+  CUDACHECK_TEST(cudaStreamDestroy(stream));
+}
+
 TEST_F(CtranGpeTest, SubmitCustomKernArgs) {
   auto gpe = std::unique_ptr<CtranGpe>(new CtranGpe(cudaDev, dummyComm));
   cudaStream_t stream;
@@ -2161,5 +2276,54 @@ TEST_F(CtranGpeTest, PostKernelCleanupGraphWithOpGroup) {
   CUDACHECK_TEST(cudaFreeHost(expectedValPtr));
   CUDACHECK_TEST(cudaFree(a));
   CUDACHECK_TEST(cudaStreamDestroy(stream));
+}
+
+// Verify that terminate() drains the GpeKernelSyncPool before returning.
+//
+// Simulates the production race: CUDA graph cmdDestroy callbacks release pool
+// elements asynchronously after cudaGraphDestroy. Without the spin-wait in
+// terminate(), the pool destructor can free pinned memory while those elements
+// are still "in use", causing use-after-free when the background release runs.
+
+TEST_F(CtranGpeTest, TerminateWaitsForGpeKernelSyncPoolDrain) {
+  auto gpe = std::make_unique<CtranGpe>(cudaDev, dummyComm);
+
+  // Allocate syncs from the pool — they are now "in use".
+  std::vector<ctran::algos::GpeKernelSync*> syncs;
+  constexpr size_t kNumSyncs = 5;
+  constexpr int kNworkers = 1;
+  ASSERT_EQ(gpe->allocGpeKernelSyncs(kNumSyncs, kNworkers, syncs), commSuccess);
+  ASSERT_EQ(gpe->numInUseGpeKernelSyncs(), kNumSyncs);
+
+  // Run terminate() in a background thread so main can control when the pool
+  // is drained. Use a promise to signal when gpe.reset() completes.
+  std::promise<void> gpeResetDone;
+  std::thread gpeThread([&]() {
+    gpe.reset(); // With fix: blocks until pool drained; without fix: returns
+                 // fast
+    gpeResetDone.set_value();
+  });
+
+  // Wait for gpe.reset() to complete, with a short deadline.
+  // With fix: terminate() is blocked in spin-wait → future times out → we
+  // release Without fix: terminate() returns immediately → future is ready →
+  // FAIL
+  constexpr auto kDrainWait = std::chrono::milliseconds(200);
+  auto status = gpeResetDone.get_future().wait_for(kDrainWait);
+
+  if (status == std::future_status::ready) {
+    // gpe.reset() returned while pool elements were still in use.
+    gpeThread.join();
+    FAIL() << "terminate() returned in < " << kDrainWait.count()
+           << "ms while GpeKernelSync pool elements were still in use. "
+              "Pool destructor freed pinned memory before async callbacks "
+              "could release elements, causing use-after-free.";
+  }
+
+  // terminate() is blocked in spin-wait — release elements to unblock it.
+  for (auto* sync : syncs) {
+    sync->reset(); // inUse() → false; spin-wait reclaims and exits
+  }
+  gpeThread.join();
 }
 #endif

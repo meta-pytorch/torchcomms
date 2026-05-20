@@ -13,7 +13,6 @@ TEST(CtranLib, CreateCommunicator) {
 
   EXPECT_EQ(comm->ctran_.get(), nullptr);
   EXPECT_EQ(comm->bootstrap_.get(), nullptr);
-  EXPECT_EQ(comm->collTrace_.get(), nullptr);
   EXPECT_EQ(comm->colltraceNew_.get(), nullptr);
   EXPECT_EQ(comm->memCache_.get(), nullptr);
   EXPECT_EQ(comm->statex_.get(), nullptr);

@@ -1,0 +1,53 @@
+#!/bin/bash -e
+#
+# NOTE: add '--mpi' after @PROJECT_BINARY_DIR@/timemory-run to applications built with MPI
+#
+source $(dirname $(basename ${BASH_SOURCE[0]}))/common.sh
+
+TEST_NAME=$(basename ${BASH_SOURCE[0]})
+
+export TIMEMORY_OUTPUT_PATH=@CMAKE_CURRENT_BINARY_DIR@/dynamic/timemory-@TEST_NAME@-output
+export TIMEMORY_OUTPUT_PREFIX="binary-rewrite-regex"
+export TIMEMORY_TEXT_OUTPUT=ON
+export TIMEMORY_FILE_OUTPUT=ON
+export TIMEMORY_AUTO_OUTPUT=ON
+export TIMEMORY_TREE_OUTPUT=OFF
+export TIMEMORY_JSON_OUTPUT=OFF
+export TIMEMORY_COUT_OUTPUT=ON
+export TIMEMORY_FLAMEGRAPH_OUTPUT=OFF
+
+rm -rf ${TIMEMORY_OUTPUT_PATH}
+
+# append directories to path
+export PATH=@CMAKE_CURRENT_BINARY_DIR@:@PROJECT_BINARY_DIR@:${PATH}
+# add path to libtimemory to LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=@PROJECT_BINARY_DIR@:@PROJECT_BINARY_DIR@/external/dyninst/dyninstAPI_RT:${LD_LIBRARY_PATH}
+
+emit-separator "Performing binary re-write"
+
+# exclude all functions matching pattern 'impl_*'
+@PROJECT_BINARY_DIR@/timemory-run -E '^instrumentation_tests' --min-address-range=32 -o ./@TEST_NAME@.inst -- @COMMAND@
+
+emit-separator "Executing instrumented binary"
+
+# run instrumented exe
+./@TEST_NAME@.inst
+
+emit-separator "Analyzing results in ${TIMEMORY_OUTPUT_PATH}"
+
+WALL_FILE="${TIMEMORY_OUTPUT_PATH}/${TIMEMORY_OUTPUT_PREFIX}-wall_clock.txt"
+if [ ! -f "${WALL_FILE}" ]; then
+    echo -e "Missing wall-clock output file: \"${WALL_FILE}\""
+    echo -e "File in ${TIMEMORY_OUTPUT_PATH}:\n$(ls ${TIMEMORY_OUTPUT_PATH})"
+    exit 1
+else
+    NWALL=$(count-lines ${WALL_FILE})
+    if [ "${NWALL}" -eq 0 ]; then
+        echo -e "\nWall-clock results from \"${WALL_FILE}\" were empty:\n"
+        echo -e "$(cat ${WALL_FILE} | grep '>>>')"
+        exit 1
+    fi
+fi
+
+echo "Instrumentation Test... Done"
+exit 0

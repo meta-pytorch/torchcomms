@@ -108,20 +108,17 @@ commResult_t AllToAllPDestroy(CtranPersistentRequest* request) {
 }
 
 bool AllToAllPSupport(CtranComm* comm) {
-  bool ctranSupport = false;
-  const auto statex = comm->statex_.get();
-  if (ctranInitialized(comm)) {
-    ctranSupport = true;
-    for (int rank = 0; rank < statex->nRanks(); rank++) {
-      if (comm->ctran_->mapper->getBackend(rank) == CtranMapperBackend::UNSET) {
-        ctranSupport = false;
-        break;
-      }
-    }
-  } else {
+  if (!ctranInitialized(comm)) {
     return false;
   }
+  const auto statex = comm->statex_.get();
 
-  return ctranSupport;
+  for (int rank = 0; rank < statex->nRanks(); rank++) {
+    if (comm->ctran_->mapper->getBackend(rank) == CtranMapperBackend::UNSET) {
+      return false;
+    }
+  }
+
+  return true;
 }
 } // namespace ctran

@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "comms/utils/cvars/nccl_cvars.h"
 #include "nccl.h" // @manual
 
 namespace ncclx {
@@ -27,15 +28,36 @@ class Config {
   std::string commDesc = "undefined";
   std::vector<int> splitGroupRanks;
   std::string ncclAllGatherAlgo = "undefined";
-  bool lazyConnect = false;
-  bool lazySetupChannels = false;
   bool fastInitMode = false;
+
+  bool useCtran = false;
+  bool usePatAvg = false;
+  bool noLocal = false;
+
+  enum NCCL_SENDRECV_ALGO sendrecvAlgo = NCCL_SENDRECV_ALGO::orig;
+  enum NCCL_ALLGATHER_ALGO allgatherAlgo = NCCL_ALLGATHER_ALGO::orig;
+  enum NCCL_ALLREDUCE_ALGO allreduceAlgo = NCCL_ALLREDUCE_ALGO::orig;
+  enum NCCL_ALLTOALLV_ALGO alltoallvAlgo = NCCL_ALLTOALLV_ALGO::orig;
+  enum NCCL_RMA_ALGO rmaAlgo = NCCL_RMA_ALGO::orig;
 
   // Per-communicator MultiPeerTransport (pipes) NVL config overrides.
   // When set, override the corresponding CVARs for this communicator.
   std::optional<size_t> pipesNvlChunkSize;
   std::optional<bool> pipesUseDualStateBuffer;
+  std::optional<size_t> pipesIbgdaDataBufferSize;
   int vCliqueSize = 0;
+
+  // Per-communicator buffer size override (Simple protocol).
+  // When set, overrides the global NCCL_BUFFSIZE for this communicator.
+  // Only supported with splitShare=0.
+  std::optional<int> ncclBuffSize;
+
+  // Per-communicator IB transport config overrides.
+  std::optional<int> ibSplitDataOnQps;
+  std::optional<int> ibQpsPerConnection;
+
+  // Defer per-peer IBGDA state to first use (hint > CVAR).
+  bool ibLazyConnect = false;
 };
 
 // Hint keys corresponding to Config fields above.  Used by
@@ -45,12 +67,23 @@ inline const std::vector<std::string>& knownHintKeys() {
       "commDesc",
       "splitGroupRanks",
       "ncclAllGatherAlgo",
-      "lazyConnect",
-      "lazySetupChannels",
       "fastInitMode",
+      "useCtran",
+      "usePatAvg",
+      "noLocal",
+      "sendrecvAlgo",
+      "allgatherAlgo",
+      "allreduceAlgo",
+      "pipesIbgdaDataBufferSize",
+      "alltoallvAlgo",
+      "rmaAlgo",
       "pipesNvlChunkSize",
       "pipesUseDualStateBuffer",
       "vCliqueSize",
+      "ncclBuffSize",
+      "ibSplitDataOnQps",
+      "ibQpsPerConnection",
+      "ibLazyConnect",
   };
   return keys;
 }

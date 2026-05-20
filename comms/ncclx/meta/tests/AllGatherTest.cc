@@ -22,9 +22,21 @@ class AllGatherTest : public NcclxBaseTestFixture {
  public:
   AllGatherTest() = default;
   void SetUp() override {
-    NcclxBaseTestFixture::SetUp();
+    NcclxEnvs envs = {
+        {"NCCL_CTRAN_ENABLE", "1"},
+        {"NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET", "1"},
+    };
+#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
+    envs.push_back({"NCCL_COMM_STATE_DEBUG_TOPO", "nolocal"});
+#endif
+    NcclxBaseTestFixture::SetUp(envs);
+    ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
+    ncclx::Hints hints{{"noLocal", "1"}};
+    config.hints = &hints;
+#endif
     this->comm = ncclx::test::createNcclComm(
-        globalRank, numRanks, localRank, bootstrap_.get());
+        globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
 
     CUDACHECK_TEST(cudaSetDevice(localRank));
     CUDACHECK_TEST(cudaStreamCreate(&stream));
@@ -51,7 +63,6 @@ class AllGatherTest : public NcclxBaseTestFixture {
     }
 
     if (algo != NCCL_ALLGATHER_ALGO::orig) {
-#ifdef TEST_ENABLE_CTRAN
       if (!ctranAllGatherSupport(comm->ctranComm_.get(), algo)) {
         GTEST_SKIP() << "Ctran algorithm is not supported, skip test";
       }
@@ -62,9 +73,6 @@ class AllGatherTest : public NcclxBaseTestFixture {
         GTEST_SKIP()
             << "Ctran does not support cudaMalloc-ed buffer with nLocalRanks > 1, skip test";
       }
-#else
-      GTEST_SKIP() << "Ctran is not enabled, skip test";
-#endif
     }
 
     // Create and register buffers. If inplace, we use the same buffer for send
@@ -187,15 +195,13 @@ TEST_P(AllgatherMemtypeGraphTestParam, Test) {
   auto registFlag = false;
   constexpr size_t count = 10e6 * 8;
 
-  auto GRAPH_REGISTER_OVERRIDE = 1L;
-  // TODO: we should throw proper error in the unsupported case in baseline
-  // NCCL graph register
-  if (algo == NCCL_ALLGATHER_ALGO::orig && useCudaGraph &&
+  const char* graphRegEnv = getenv("NCCL_GRAPH_REGISTER");
+  if (graphRegEnv != nullptr && std::string(graphRegEnv) == "1" &&
       memType == kCuMemAllocDisjoint) {
-    GRAPH_REGISTER_OVERRIDE = 0L;
+    GTEST_SKIP()
+        << "kCuMemAllocDisjoint not supported with NCCL_GRAPH_REGISTER=1";
   }
 
-  auto envGuard = EnvRAII(NCCL_GRAPH_REGISTER, GRAPH_REGISTER_OVERRIDE);
   runTest(algo, false /* inplace */, registFlag, useCudaGraph, memType, count);
 }
 

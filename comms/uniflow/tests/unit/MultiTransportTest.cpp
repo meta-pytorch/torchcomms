@@ -614,20 +614,25 @@ TEST_F(MultiTransportFactoryTest, CreateTransportRejectsEmptyTopology) {
   EXPECT_EQ(result.error().code(), ErrCode::TopologyDisconnect);
 }
 
-TEST_F(MultiTransportFactoryTest, CreateTransportRejectsFactoryCountMismatch) {
+TEST_F(MultiTransportFactoryTest, CreateTransportAllowsFactoryCountMismatch) {
   auto rdma = makeFactory(TransportType::RDMA, {0x01}, {0xAA});
   MultiTransportFactory singleMtf = makeMultiTransportFactory({rdma});
   auto topo = singleMtf.getTopology();
 
-  // Peer has two factories — count mismatch.
+  // Peer has two factories, but only RDMA overlaps with the sender.
   auto rdmaPeer = makeFactory(TransportType::RDMA, {0x01}, {0xAA});
   auto nvlinkPeer = makeFactory(TransportType::NVLink, {0x01}, {0xBB});
   MultiTransportFactory peerMtf =
       makeMultiTransportFactory({rdmaPeer, nvlinkPeer});
 
   auto result = peerMtf.createTransport(topo);
-  ASSERT_TRUE(result.hasError());
-  EXPECT_EQ(result.error().code(), ErrCode::InvalidArgument);
+  ASSERT_TRUE(result.hasValue()) << result.error().message();
+  ASSERT_NE(result.value(), nullptr);
+
+  auto bindResult = result.value()->bind();
+  ASSERT_TRUE(bindResult.hasValue()) << bindResult.error().message();
+  ASSERT_FALSE(bindResult.value().empty());
+  EXPECT_EQ(1, bindResult.value().front());
 }
 
 TEST_F(MultiTransportFactoryTest, CreateTransportRejectsTransportTypeMismatch) {

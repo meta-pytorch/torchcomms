@@ -85,7 +85,7 @@ __global__ void singlePeerSendKernel(
     void* srcBuff,
     std::size_t nbytes) {
   auto group = make_warp_group();
-  dw.get_handle().get_nvl(peerRank).send(group, srcBuff, nbytes);
+  dw.get_handle().get_nvl(peerRank).send_group(group, srcBuff, nbytes);
 }
 
 void testSinglePeerSend(
@@ -105,7 +105,7 @@ __global__ void singlePeerRecvKernel(
     void* dstBuff,
     std::size_t nbytes) {
   auto group = make_warp_group();
-  dw.get_handle().get_nvl(peerRank).recv(group, dstBuff, nbytes);
+  dw.get_handle().get_nvl(peerRank).recv_group(group, dstBuff, nbytes);
 }
 
 void testSinglePeerRecv(
@@ -144,10 +144,10 @@ __global__ void multiPeerSendRecvAllPeersKernel(
   int peer_rank = peer_idx < myRank ? peer_idx : peer_idx + 1;
 
   if (partition_id == 0) {
-    dw.get_handle().get_nvl(peer_rank).send(
+    dw.get_handle().get_nvl(peer_rank).send_group(
         group_per_peer, srcBuffs[peer_idx], nbytesPerPeer);
   } else {
-    dw.get_handle().get_nvl(peer_rank).recv(
+    dw.get_handle().get_nvl(peer_rank).recv_group(
         group_per_peer, dstBuffs[peer_idx], nbytesPerPeer);
   }
 }

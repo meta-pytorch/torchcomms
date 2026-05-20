@@ -11,7 +11,6 @@
 #include <fmt/format.h>
 
 #include "comms/ctran/CtranComm.h"
-#include "comms/ctran/CtranExImpl.h"
 #include "comms/ctran/algos/AllGather/Types.h"
 #include "comms/ctran/algos/AllReduce/Types.h"
 #include "comms/ctran/algos/AllToAll/Types.h"
@@ -27,10 +26,8 @@ typedef commResult_t (*opFunc)(
     const std::vector<std::unique_ptr<struct OpElem>>& opGroup);
 
 namespace ctran {
-using PersistentObj = std::variant<
-    std::monostate,
-    std::unique_ptr<alltoallp::AlgoImpl>,
-    std::unique_ptr<alltoallvdynamicp::AlgoImpl>>;
+using PersistentObj =
+    std::variant<std::monostate, std::unique_ptr<alltoallp::AlgoImpl>>;
 using PreLaunchGraphPrepareFn =
     commResult_t (*)(opFunc& opFunc, struct OpElem* op, PersistentObj& pObj);
 } // namespace ctran
@@ -47,10 +44,6 @@ struct OpElem {
     ALLTOALLP,
     ALLTOALLV,
     DEVICE_ALLTOALLV,
-    ALLTOALLV_DYNAMIC,
-    ALLTOALLV_DYNAMIC_SPLIT,
-    ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG,
-    ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG_P,
     ALLTOALL_DEDUP,
     ALLTOALLV_DEDUP,
     BROADCAST,
@@ -91,6 +84,9 @@ struct OpElem {
     struct {
       // reference to pre-initialized persistent arguments and resource
       void* pArgs;
+      // non-null for window-based init; used by GPE callback to populate
+      // pArgs from window remote info
+      ctran::CtranWin* win;
     } allgatherp_init;
     struct {
       // reference to pre-initialized persistent arguments and resource
@@ -168,19 +164,6 @@ struct OpElem {
       const int64_t* recvcounts_d; // device pointer
       commDataType_t datatype;
     } device_alltoallv;
-    struct {
-      const void* const* sendbuffs;
-      void* const* recvbuffs;
-      void* recvbuff;
-      commDataType_t datatype;
-      size_t sendcountsLength;
-      size_t maxSendcount;
-      size_t maxRecvcount;
-      KernelElem* kElem;
-      // Persistent args for persistent alltoallv_dynamic.
-      void* pArgs;
-      bool combine;
-    } alltoallv_dynamic;
     struct {
       const void* sendbuff;
       const size_t* sendcounts;
@@ -303,9 +286,6 @@ struct KernelConfig {
     ALLTOALL,
     DEVICE_ALLTOALLV,
     ALLTOALLV,
-    ALLTOALLV_DYNAMIC,
-    ALLTOALLV_DYNAMIC_SPLIT,
-    ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG,
     ALLTOALL_DEDUP,
     ALLTOALLV_DEDUP,
     BROADCAST,
@@ -427,7 +407,9 @@ class CtranGpe {
   // Return number of inuse checksums.
   size_t numInUseChecksums();
 
-  // Return number of inuse GPE kernel syncs.
+  // Return number of inuse GpeKernelSync elements.
+  // Used to verify that CUDA graph cmdDestroy callbacks have released all pool
+  // elements before pool destruction (async cmdDestroy race).
   size_t numInUseGpeKernelSyncs();
 
   commResult_t allocGpeKernelSyncs(
@@ -469,6 +451,11 @@ __global__ void ncclKernelAllGatherCtranRing(
     ctran::allgather::KernelArgs args);
 
 __global__ void ncclKernelAllGatherCtranRecDbl(
+    int* flag,
+    CtranAlgoDeviceState* devState,
+    ctran::allgather::KernelArgs args);
+
+__global__ void ncclKernelAllGatherCtranStreamedRd(
     int* flag,
     CtranAlgoDeviceState* devState,
     ctran::allgather::KernelArgs args);
@@ -518,24 +505,6 @@ extern __global__ void ncclKernelAllToAllv(
     int* flag,
     CtranAlgoDeviceState* devState,
     ctran::alltoallv::KernelArgs args);
-
-template <typename T>
-extern __global__ void ncclKernelAllToAllvDynamic(
-    int* flag,
-    CtranAlgoDeviceState* devState,
-    ctran::alltoallvdynamic::KernelArgs args);
-
-template <typename T>
-extern __global__ void ncclKernelAllToAllvDynamicSplit(
-    int* flag,
-    CtranAlgoDeviceState* devState,
-    ctran::alltoallvdynamic::KernelArgs args);
-
-template <typename T>
-extern __global__ void ncclKernelAllToAllvDynamicSplitNonContig(
-    int* flag,
-    CtranAlgoDeviceState* devState,
-    ctran::alltoallvdynamic::KernelArgs args);
 
 template <typename T>
 extern __global__ void ncclKernelAllToAllDedup(

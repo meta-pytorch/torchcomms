@@ -9,10 +9,12 @@
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/backends/CtranCtrl.h"
+#include "comms/ctran/backends/ib/BootstrapInternal.h"
 #include "comms/ctran/backends/ib/CtranIbBase.h"
 #include "comms/ctran/backends/ib/CtranIbImpl.h"
 #include "comms/ctran/backends/ib/CtranIbLocalVc.h"
 #include "comms/ctran/backends/ib/CtranIbVc.h"
+#include "comms/ctran/backends/ib/VcState.h"
 #include "comms/ctran/bootstrap/AbortableSocket.h"
 #include "comms/ctran/bootstrap/ISocketFactory.h"
 #include "comms/ctran/ibverbx/Ibverbx.h"
@@ -26,6 +28,9 @@
 
 class CtranIb;
 class CtranIbVirtualConn;
+namespace ctran::ib {
+class BootstrapExternal;
+} // namespace ctran::ib
 commResult_t checkEpochLock(CtranIb* ctranIb);
 
 /**
@@ -42,21 +47,18 @@ class CtranIb {
   // to the local rank.
   // Input arguments:
   //   - comm: the Ctran communicator
-  //   - ctrlMgr: the ctranCtrlManager that manages control message callback
-  //              functions registered by other modules. Passed to VC for
-  //              calling callback when receiving control message.
   //   - enableLocalFlush: whether to support local flush. If not specified, use
   //              default config based on cuda arch.
   CtranIb(
       CtranComm* comm,
-      CtranCtrlManager* ctrlMgr,
       std::optional<bool> enableLocalFlush = std::nullopt,
       std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory = nullptr,
       std::optional<int> maxNumCqe = std::nullopt);
 
-  // Creates local IB resources without pre-existing communicator. It is used
-  // for use cases directly control the local transport (see CtranEx). In
-  // addition, it supports three types of bootstrap mode as defined below.
+  static bool shouldEnableLocalFlushByDefault(int cudaArch);
+
+  // Creates local IB resources without pre-existing communicator.
+  // Supports three types of bootstrap mode as defined below.
   // Input arguments:
   //   - rank: the rank of the calling process. Used to manage peer-to-peer
   //           connection in local connection cache.
@@ -64,7 +66,6 @@ class CtranIb {
   //              mapping NIC
   //   - commHash: for logging only.
   //   - commDesc: for logging only.
-  //   - ctrlMgr: same as in comm-based CtranIb constructor.
   //   - enableLocalFlush: whether to support local flush.
   //   - bootstrapMode: defines the needed bootstrap mode. If kDefaultServer,
   //                    it launches internal listen thread which binds and
@@ -80,7 +81,6 @@ class CtranIb {
       int cudaDev,
       uint64_t commHash,
       const std::string& commDesc,
-      CtranCtrlManager* ctrlMgr,
       bool enableLocalFlush,
       const BootstrapMode bootstrapMode = BootstrapMode::kDefaultServer,
       std::optional<const SocketServerAddr*> qpServerAddr = std::nullopt,
@@ -113,11 +113,6 @@ class CtranIb {
 
   // Unlock the entire CtranIb instance.
   commResult_t epochUnlock();
-
-  // Register control message callback function if have any.
-  // Input arguments:
-  //   - ctrlMgr: the ctranCtrlManager to manage the control message
-  void regCtrlCb(std::unique_ptr<CtranCtrlManager>& ctrlMgr);
 
   // Register memory to be used for IB operations.
   // Input arguments:
@@ -444,26 +439,17 @@ class CtranIb {
 
   CtranComm* comm{nullptr};
 
-  // Setup virtual connection with a connected peer.
-  // If serverRank is given, it indicates the calling rank behaves as client and
-  // the other side behaves as server, so that we can switch the socket
-  // send/recv to match.
-  // Input arguments:
-  // - sock: socket connection established by callsite. Used for internal
-  //         business card exchange
-  // - isServer: whether the local rank is isServer
-  // - peerRank: the peer rank of remote client or server
-  commResult_t connectVc(
-      std::unique_ptr<ctran::bootstrap::ISocket> sock,
-      const bool isServer,
-      const int peerRank);
-
-  // APIs to get the connection identifier for a given rank, and establish
-  // the connection to remote VC.
-  std::string getLocalVcIdentifier(const int peerRank);
-  commResult_t connectVcDirect(
-      const std::string& remoteVcIdentifier,
-      const int peerRank);
+  // Accessor for the external bootstrap helper.
+  //
+  // Returns a non-owning pointer to the BootstrapExternal owned by this
+  // CtranIb when constructed with BootstrapMode::kExternal; nullptr
+  // otherwise. The caller (today only RdmaTransport) drives the
+  // two-step handshake by calling getLocalVcId() / connectVc() on the
+  // returned object directly. The returned pointer is valid for the
+  // lifetime of the owning CtranIb.
+  ::ctran::ib::BootstrapExternal* externalBootstrap() {
+    return externalBootstrap_.get();
+  }
 
   // Get the virtual connection for a given peer.
   // If the peer is not yet connected, return nullptr.
@@ -476,13 +462,11 @@ class CtranIb {
   // - peerRank: the peer rank
   template <typename PerfConfig = DefaultPerfCollConfig>
   inline std::shared_ptr<CtranIbVirtualConn> getVc(int peerRank) {
-    return getVcImpl<PerfConfig>(peerRank);
+    return vcState_.getVc<PerfConfig>(peerRank);
   }
 
   // Return the listen address of the listen socket.
-  folly::Expected<folly::SocketAddress, int> getListenSocketListenAddr() {
-    return listenSocket->getListenAddress();
-  }
+  folly::Expected<folly::SocketAddress, int> getListenSocketListenAddr();
 
   int getRank() const {
     return rank;
@@ -508,7 +492,6 @@ class CtranIb {
       int cudaDev,
       uint64_t commHash,
       const std::string& commDesc,
-      CtranCtrlManager* ctrlMgr,
       bool enableLocalFlush,
       const BootstrapMode bootstrapMode = BootstrapMode::kDefaultServer,
       std::optional<const SocketServerAddr*> qpServerAddr = std::nullopt,
@@ -517,33 +500,11 @@ class CtranIb {
       std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory = nullptr,
       std::optional<int> maxNumCqe = std::nullopt);
 
-  void bootstrapStart(std::optional<const SocketServerAddr*> qpServerAddr);
-  static void bootstrapAccept(CtranIb* ib);
-  commResult_t bootstrapConnect(
-      int peerRank,
-      std::optional<const SocketServerAddr*> peerAddr = std::nullopt);
-
-  // Create a virtual connection for a given peer.
-  // Expect used only in bootstrapAccept() and bootstrapConnect().
-  std::shared_ptr<CtranIbVirtualConn> createVc(int peerRank);
-
-  // Update and query vcStateMaps.
-  // It is thread-safe to be called by server and client threads concurrently.
-  // NOTE: vc lock doesn't protect qpToRankMap, since it is for all peers.
-  commResult_t updateVcState(std::shared_ptr<CtranIbVirtualConn> vc, int rank);
-  commResult_t queryQpToRank(uint32_t qpn, int& rank);
-
   commResult_t setPgToTrafficClassMap();
 
   uint32_t getPgToTrafficClassValue() const;
 
   const char* ibv_wc_status_str(enum ibverbx::ibv_wc_status status);
-
-  // check where the peer is connected
-  inline bool isPeerConnected(int peerRank) const {
-    return (
-        connectedPeerMap.size() > peerRank && connectedPeerMap.at(peerRank));
-  }
 
   inline bool canTransfer(CtranIbVirtualConn* vc) {
     CTRAN_IB_PER_OBJ_LOCK_GUARD(vc->mutex, { return vc->canTransferData(); });
@@ -572,74 +533,6 @@ class CtranIb {
       return commInternalError;
     }
     return commSuccess;
-  }
-
-  inline commResult_t checkAndInsertQpToVcMap(
-      folly::F14FastMap<QpUniqueId, std::shared_ptr<CtranIbVirtualConn>>& map,
-      QpUniqueId& qpId,
-      std::shared_ptr<CtranIbVirtualConn>& vc) {
-    if (map.find(qpId) != map.end()) {
-      CLOGF(
-          ERR,
-          "CTRAN-IB: QP {} on device {} already exists in pimpl {} commHash {:x}, commDesc {}. It likely indicates a COMM bug.",
-          qpId.first,
-          qpId.second,
-          (void*)this,
-          commHash,
-          commDesc);
-      return commInternalError;
-    }
-    map.emplace(qpId, vc);
-    return commSuccess;
-  }
-
-  // Get a virtual connection for a given peer or QP.
-  // If the peer is not yet connected, return nullptr.
-  // For a returned VC, it is guaranteed to be ready to use.
-  template <typename PerfConfig = DefaultPerfCollConfig>
-  inline std::shared_ptr<CtranIbVirtualConn> getVcImpl(int peerRank) {
-    if (PerfConfig::skipVcConnectionCheck ||
-        (vcStateMapsPtr && isPeerConnected(peerRank))) {
-      return vcStateMapsPtr->rankToVcMap.at(peerRank);
-    } else {
-      auto locked = vcStateMaps.rlock();
-
-      auto it = locked->rankToVcMap.find(peerRank);
-      if (it == locked->rankToVcMap.end()) {
-        return nullptr;
-      }
-
-      return it->second;
-    }
-  }
-
-  template <typename PerfConfig = DefaultPerfCollConfig>
-  inline std::shared_ptr<CtranIbVirtualConn> getVcByQp(QpUniqueId qpUniqueId) {
-    // lambda function to get VC from a given pointer
-    auto getVcFrom = [&](const VcStateMaps* maybeLockedVcStateMapsPtr)
-        -> std::shared_ptr<CtranIbVirtualConn> {
-      auto it = maybeLockedVcStateMapsPtr->qpToVcMap.find(qpUniqueId);
-      // VC should be already created and added to vcStateMaps. If not found, it
-      // likely indicates a NCCL bug, e.g., not using CtranIb epoch lock
-      if (it == maybeLockedVcStateMapsPtr->qpToVcMap.end()) {
-        CLOGF(
-            ERR,
-            "CTRAN-IB: Received unknown QP number {} on IB device {} in pimpl {} commHash {:x}, commDesc {}. Known QPs: {}. It likely indicates a COMM bug.",
-            qpUniqueId.first,
-            qpUniqueId.second,
-            (void*)this,
-            commHash,
-            commDesc,
-            f14FastMapToStr(maybeLockedVcStateMapsPtr->qpToVcMap));
-        return nullptr;
-      }
-      return it->second;
-    };
-
-    auto vcstatemaps = PerfConfig::skipVcConnectionCheck
-        ? vcStateMapsPtr
-        : &(*vcStateMaps.rlock());
-    return getVcFrom(vcstatemaps);
   }
 
   // Check whether vc is ready and no outstanding pending ops
@@ -696,7 +589,7 @@ class CtranIb {
       for (auto it = rankToPendingOpsMap.begin();
            it != rankToPendingOpsMap.end();) {
         int peerRank = it->first;
-        std::shared_ptr<CtranIbVirtualConn> vc = getVcImpl(peerRank);
+        std::shared_ptr<CtranIbVirtualConn> vc = vcState_.getVc(peerRank);
         // If VC has established, move the pendingOps list to readyToIssueOps;
         // otherwise, skip and move to next peer.
         if (vc) {
@@ -716,7 +609,7 @@ class CtranIb {
 
     // Post ready-to-issue pending ops
     for (auto& [peerRank, pendingOps] : readyToIssueOps) {
-      std::shared_ptr<CtranIbVirtualConn> vc = getVcImpl(peerRank);
+      std::shared_ptr<CtranIbVirtualConn> vc = vcState_.getVc(peerRank);
       CTRAN_IB_PER_OBJ_LOCK_GUARD(vc->mutex, {
         for (auto& op : pendingOps) {
           if (op->opType == PendingOp::PendingOpType::ISEND_CTRL) {
@@ -768,7 +661,8 @@ class CtranIb {
     FB_COMMCHECK(checkEpochLock(this));
     FB_COMMCHECK(checkValidPeer(peerRank));
 
-    std::shared_ptr<CtranIbVirtualConn> vc = getVcImpl<PerfConfig>(peerRank);
+    std::shared_ptr<CtranIbVirtualConn> vc =
+        vcState_.getVc<PerfConfig>(peerRank);
 
     // nullptr VC indicates not yet established connection; try to connect.
     // For smaller peerRank, wait peerRank connects to local listenThread.
@@ -776,13 +670,14 @@ class CtranIb {
     // progress.
     if (!PerfConfig::skipVcConnectionCheck && rank < peerRank &&
         vc == nullptr) {
-      FB_COMMCHECK(bootstrapConnect(peerRank, peerServerAddr));
+      FB_COMMCHECK(bootstrap_->connect(peerRank, peerServerAddr));
       // Get VC again after connection is established
-      vc = getVcImpl<PerfConfig>(peerRank);
+      vc = vcState_.getVc<PerfConfig>(peerRank);
     }
 
     // Skip vc and pendingOps check if pre-connected
-    if (PerfConfig::skipVcConnectionCheck || isPeerConnected(peerRank) ||
+    if (PerfConfig::skipVcConnectionCheck ||
+        vcState_.isPeerConnected(peerRank) ||
         !addToPendingOpsIfRequired(
             type,
             // FIXME: need refactor to keep the constness if possible
@@ -809,7 +704,8 @@ class CtranIb {
     FB_COMMCHECK(checkEpochLock(this));
     FB_COMMCHECK(checkValidPeer(peerRank));
 
-    std::shared_ptr<CtranIbVirtualConn> vc = getVcImpl<PerfConfig>(peerRank);
+    std::shared_ptr<CtranIbVirtualConn> vc =
+        vcState_.getVc<PerfConfig>(peerRank);
 
     // nullptr VC indicates not yet established connection; try to connect.
     // For smaller peerRank, wait peerRank connects to local listenThread.
@@ -817,13 +713,14 @@ class CtranIb {
     // progress.
     if (!PerfConfig::skipVcConnectionCheck && rank < peerRank &&
         vc == nullptr) {
-      FB_COMMCHECK(bootstrapConnect(peerRank, peerServerAddr));
+      FB_COMMCHECK(bootstrap_->connect(peerRank, peerServerAddr));
       // Get VC again after connection is established
-      vc = getVcImpl<PerfConfig>(peerRank);
+      vc = vcState_.getVc<PerfConfig>(peerRank);
     }
 
     // Skip vc and pendingOps check if pre-connected
-    if (PerfConfig::skipVcConnectionCheck || isPeerConnected(peerRank) ||
+    if (PerfConfig::skipVcConnectionCheck ||
+        vcState_.isPeerConnected(peerRank) ||
         !addToPendingOpsIfRequired(
             std::nullopt,
             payload,
@@ -846,7 +743,8 @@ class CtranIb {
       int peerRank) {
     FB_COMMCHECK(checkEpochLock(this));
 
-    std::shared_ptr<CtranIbVirtualConn> vc = getVc<PerfConfig>(peerRank);
+    std::shared_ptr<CtranIbVirtualConn> vc =
+        vcState_.getVc<PerfConfig>(peerRank);
     FB_COMMCHECK(checkValidVc(vc, peerRank));
 
     CTRAN_IB_PER_OBJ_LOCK_GUARD(
@@ -869,7 +767,8 @@ class CtranIb {
       bool fast) {
     FB_COMMCHECK(checkEpochLock(this));
 
-    std::shared_ptr<CtranIbVirtualConn> vc = getVcImpl<PerfConfig>(peerRank);
+    std::shared_ptr<CtranIbVirtualConn> vc =
+        vcState_.getVc<PerfConfig>(peerRank);
     FB_COMMCHECK(checkValidVc(vc, peerRank));
 
     CTRAN_IB_PER_OBJ_LOCK_GUARD(vc->mutex, {
@@ -901,7 +800,8 @@ class CtranIb {
       bool fast) {
     FB_COMMCHECK(checkEpochLock(this));
 
-    std::shared_ptr<CtranIbVirtualConn> vc = getVc<PerfConfig>(peerRank);
+    std::shared_ptr<CtranIbVirtualConn> vc =
+        vcState_.getVc<PerfConfig>(peerRank);
     FB_COMMCHECK(checkValidVc(vc, peerRank));
 
     CTRAN_IB_PER_OBJ_LOCK_GUARD(vc->mutex, {
@@ -920,7 +820,7 @@ class CtranIb {
       void* ibRegElem,
       struct CtranIbRemoteAccessKey remoteAccessKey,
       CtranIbRequest* req) {
-    std::shared_ptr<CtranIbVirtualConn> vc = getVcImpl(peerRank);
+    std::shared_ptr<CtranIbVirtualConn> vc = vcState_.getVc(peerRank);
     FB_COMMCHECK(checkValidVc(vc, peerRank));
     CTRAN_IB_PER_OBJ_LOCK_GUARD(vc->mutex, {
       FB_COMMCHECK(vc->ifetchAndAdd(
@@ -935,7 +835,7 @@ class CtranIb {
       int peerRank,
       struct CtranIbRemoteAccessKey remoteAccessKey,
       CtranIbRequest* req) {
-    std::shared_ptr<CtranIbVirtualConn> vc = getVcImpl(peerRank);
+    std::shared_ptr<CtranIbVirtualConn> vc = vcState_.getVc(peerRank);
     FB_COMMCHECK(checkValidVc(vc, peerRank));
     CTRAN_IB_PER_OBJ_LOCK_GUARD(vc->mutex, {
       FB_COMMCHECK(vc->iatomicSet(dbuf, val, remoteAccessKey, req));
@@ -946,7 +846,7 @@ class CtranIb {
   inline commResult_t notifyImpl(int peerRank, CtranIbRequest* req) {
     FB_COMMCHECK(checkEpochLock(this));
 
-    std::shared_ptr<CtranIbVirtualConn> vc = getVcImpl(peerRank);
+    std::shared_ptr<CtranIbVirtualConn> vc = vcState_.getVc(peerRank);
     FB_COMMCHECK(checkValidVc(vc, peerRank));
 
     // Waits till the VC can transfer data before posting a put
@@ -968,7 +868,8 @@ class CtranIb {
 
     FB_COMMCHECK(this->progressInternal<PerfConfig>());
 
-    std::shared_ptr<CtranIbVirtualConn> vc = getVcImpl<PerfConfig>(peerRank);
+    std::shared_ptr<CtranIbVirtualConn> vc =
+        vcState_.getVc<PerfConfig>(peerRank);
 
     // VC may not be established yet, e.g., if the connection is established by
     // listenThread. Return and check again next time.
@@ -984,12 +885,13 @@ class CtranIb {
     FB_COMMCHECK(checkEpochLock(this));
     FB_COMMCHECK(checkValidPeer(peerRank));
 
-    std::shared_ptr<CtranIbVirtualConn> vc = getVcImpl<PerfConfig>(peerRank);
+    std::shared_ptr<CtranIbVirtualConn> vc =
+        vcState_.getVc<PerfConfig>(peerRank);
     // VC may not be established yet, e.g., if the connection is established
     // by listenThread. Continue check till it is established.
     if (!PerfConfig::skipVcConnectionCheck) {
       while (vc == nullptr && !abortCtrl_->Test()) {
-        vc = getVcImpl<PerfConfig>(peerRank);
+        vc = vcState_.getVc<PerfConfig>(peerRank);
       }
     }
 
@@ -1056,7 +958,7 @@ class CtranIb {
         // Expect received CQE should be with a registered rank and established
         // VC
         std::shared_ptr<CtranIbVirtualConn> vc =
-            getVcByQp<PerfConfig>(std::make_pair(wc.qp_num, device));
+            vcState_.getVcByQp<PerfConfig>(std::make_pair(wc.qp_num, device));
         if (vc == nullptr) {
           CLOGF(
               ERR,
@@ -1102,29 +1004,20 @@ class CtranIb {
 
   std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory_;
 
-  // bitmap to indicate whether a peer is connected.
-  // note that only one thread access it (e.g., GPE thread) or the epoch lock
-  // needs to be acquired.
-  std::vector<bool> connectedPeerMap;
+  // All per-peer virtual-connection state (rank/qp lookup maps and the
+  // connectedPeerMap bitmap). Late-initialized in init() once ncclLogData
+  // is populated.
+  ::ctran::ib::VcState vcState_;
 
-  std::unique_ptr<ctran::bootstrap::IServerSocket> listenSocket;
-  std::vector<sockaddr_storage> allListenSocketAddrs{};
-  std::thread listenThread;
+  // Internal-bootstrap service: owns listen socket + accept thread +
+  // client-connect path, and publishes every freshly-handshaken VC into
+  // vcState_. Null when bootstrapMode == kExternal.
+  std::unique_ptr<::ctran::ib::Bootstrap> bootstrap_;
 
-  // Virtual connection status for all peers.
-  // NOTE: when using a VC, additional per-VC lock is required.
-  struct VcStateMaps {
-    folly::F14FastMap<QpUniqueId, std::shared_ptr<CtranIbVirtualConn>>
-        qpToVcMap;
-    folly::F14FastMap<int, std::shared_ptr<CtranIbVirtualConn>> rankToVcMap;
-  };
-  // VCs that are created but not yet connected
-  std::unordered_map<int, std::shared_ptr<CtranIbVirtualConn>> pendingVcs_;
-
-  folly::Synchronized<VcStateMaps> vcStateMaps;
-  // Lock-free struct to be used in eager connect mode which gurantees
-  // single-threaded access
-  VcStateMaps* vcStateMapsPtr{nullptr};
+  // External-bootstrap helper: callsite-managed handshake driver. Owns
+  // its own pendingVcs_ map + mutex. Allocated only when bootstrapMode
+  // == BootstrapMode::kExternal; nullptr otherwise.
+  std::unique_ptr<::ctran::ib::BootstrapExternal> externalBootstrap_;
 
   // Local virtual connection for local flush.
   std::unique_ptr<::ctran::ib::LocalVirtualConn> localVc;
@@ -1140,8 +1033,6 @@ class CtranIb {
 
   folly::F14FastMap<int, PendingOpQueue> rankToPendingOpsMap;
   std::mutex pendingOpsMutex;
-
-  CtranCtrlManager* ctrlMgr{nullptr};
 
   std::unordered_map<std::string, uint32_t> pgToTrafficClassMap_;
 

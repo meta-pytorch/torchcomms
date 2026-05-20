@@ -5,6 +5,7 @@
 #include <folly/synchronization/CallOnce.h>
 
 #include <fmt/core.h>
+#include "comms/ctran/backends/ib/BootstrapExternal.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/utils/Checks.h"
@@ -52,10 +53,12 @@ RdmaMemory::RdmaMemory(const void* buf, size_t len, int cudaDev, bool cacheReg)
         "Failed to fetch the IB handle from regCache. The buffer may not be registered");
   } else {
     // Not registered yet; do it now.
-    FB_COMMCHECKTHROW(regCache_->globalRegister(buf_, len_, true, cudaDev_));
+    FB_COMMCHECKTHROW(regCache_->globalRegister(
+        buf_, len_, true /* forceReg */, false /* ncclManaged */, cudaDev_));
     regHdl_ = regCache_->searchIbRegHandle(buf_, len_, cudaDev_);
     if (regHdl_ == nullptr) {
-      FB_COMMCHECKIGNORE(regCache_->globalDeregister(buf_, len_, cudaDev_));
+      FB_COMMCHECKIGNORE(regCache_->globalDeregister(
+          buf_, len_, false /* skipRemRelease */, cudaDev_));
       throw std::runtime_error("Failed to fetch the IB handle from regCache.");
     }
   }
@@ -86,7 +89,8 @@ RdmaMemory::~RdmaMemory() noexcept {
     return;
   }
   if (remoteKey_.size() > 0 && regHdl_) {
-    FB_COMMCHECKIGNORE(regCache_->globalDeregister(buf_, len_, cudaDev_));
+    FB_COMMCHECKIGNORE(regCache_->globalDeregister(
+        buf_, len_, false /* skipRemRelease */, cudaDev_));
     regHdl_ = nullptr;
   }
 }
@@ -122,7 +126,6 @@ RdmaTransport::RdmaTransport(
       cudaDev,
       -1 /* commHash */,
       "RDMA-Transport",
-      nullptr /* ctrlManager */,
       true /* enableLocalFlush */,
       CtranIb::BootstrapMode::kExternal,
       std::nullopt /* qpServerAddr */,
@@ -176,7 +179,6 @@ bool queryRdmaSupport() {
           kDummyDevice,
           -1 /* commHash */,
           "Query-RDMA-Support",
-          nullptr /* ctrlManager */,
           true /* enableLocalFlush */,
           CtranIb::BootstrapMode::kExternal);
     } catch (const std::exception& e) {
@@ -199,11 +201,11 @@ bool RdmaTransport::supported() {
 }
 
 std::string RdmaTransport::bind() {
-  return ib_->getLocalVcIdentifier(kDummyRank);
+  return ib_->externalBootstrap()->getLocalVcId(kDummyRank);
 }
 
 commResult_t RdmaTransport::connect(const std::string& peerId) {
-  FB_COMMCHECK(ib_->connectVcDirect(peerId, kDummyRank));
+  FB_COMMCHECK(ib_->externalBootstrap()->connectVc(peerId, kDummyRank));
   return commSuccess;
 }
 

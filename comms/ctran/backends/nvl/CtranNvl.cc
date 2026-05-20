@@ -92,10 +92,16 @@ CtranNvl::CtranNvl(CtranComm* comm) {
   CLOGF_SUBSYS(
       INFO,
       INIT,
-      "CTRAN-NVL: Initialized NVL backend on rank {} localRank {}, supported "
-      "intra-host peer ranks {}, supported NVL fabric ranks {}",
+      "CTRAN-NVL: Initialized NVL backend on rank {} localRank {}, "
+      "commHash {:x} commDesc {} nRanks {} nLocalRanks {} nNodes {}, "
+      "supported intra-host peer ranks {}, supported NVL fabric ranks {}",
       myRank,
       myLocalRank,
+      statex->commHash(),
+      statex->commDesc(),
+      statex->nRanks(),
+      statex->nLocalRanks(),
+      statex->nNodes(),
       vecToStr(supportedInraHostRanksStr).c_str(),
       vecToStr(nvlFabricSupportedRanksStr));
 

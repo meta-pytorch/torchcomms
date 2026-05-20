@@ -1760,7 +1760,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, PutSignalOperation) {
 
   // Build LocalBufferRegistration for the source buffer.
   // For NVL-only, lkey is unused.
-  LocalBufferRegistration srcBuf{localSrc_d, kTransferSize, NetworkLKey{}};
+  LocalBufferRegistration srcBuf{localSrc_d, kTransferSize};
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 

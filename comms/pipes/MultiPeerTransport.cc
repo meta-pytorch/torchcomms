@@ -57,6 +57,7 @@ MultiPeerTransport::MultiPeerTransport(
     : myRank_(myRank),
       nRanks_(nRanks),
       deviceId_(deviceId),
+      ibLazyConnect_(config.ibgdaConfig.ibLazyConnect),
       bootstrap_(std::move(bootstrap)) {
   if (!topo.has_value()) {
     TopologyDiscovery topoDiscovery;
@@ -245,6 +246,11 @@ MultiPeerDeviceHandle MultiPeerTransport::get_device_handle() const {
     throw std::runtime_error(
         "MultiPeerTransport::get_device_handle() called before exchange()");
   }
+  if (ibLazyConnect_) {
+    throw std::runtime_error(
+        "get_device_handle() cannot be used with lazy mode (ibLazyConnect=true). "
+        "Use get_device_handle(peers) or getP2pTransportDevice(peerRank).");
+  }
 
   return MultiPeerDeviceHandle{
       myRank_,
@@ -253,6 +259,44 @@ MultiPeerDeviceHandle MultiPeerTransport::get_device_handle() const {
       static_cast<int>(nvlPeerRanks_.size()),
       static_cast<int>(ibgdaPeerRanks_.size()),
   };
+}
+
+MultiPeerDeviceHandle MultiPeerTransport::get_device_handle(
+    const std::vector<int>& peers) {
+  if (!deviceHandleBuilt_) {
+    throw std::runtime_error(
+        "MultiPeerTransport::get_device_handle(peers) called before exchange()");
+  }
+  materializePeers(peers);
+  return MultiPeerDeviceHandle{
+      myRank_,
+      nRanks_,
+      {transportsGpu_, static_cast<uint32_t>(nRanks_)},
+      static_cast<int>(nvlPeerRanks_.size()),
+      static_cast<int>(ibgdaPeerRanks_.size()),
+  };
+}
+
+bool MultiPeerTransport::is_lazy_mode() const {
+  return ibLazyConnect_;
+}
+
+void MultiPeerTransport::materializePeers(const std::vector<int>& peers) {
+  if (ibgdaTransport_) {
+    for (int peer : peers) {
+      if (peer >= 0 && peer < nRanks_ && peer != myRank_ &&
+          typePerRank_[peer] == TransportType::P2P_IBGDA) {
+        ibgdaTransport_->queuePeerForMaterialization(peer);
+      }
+    }
+    ibgdaTransport_->connectPeers();
+  }
+}
+
+void MultiPeerTransport::connectPeers() {
+  if (ibgdaTransport_) {
+    ibgdaTransport_->connectPeers();
+  }
 }
 
 IbgdaLocalBuffer MultiPeerTransport::localRegisterIbgdaBuffer(
@@ -720,11 +764,16 @@ void MultiPeerTransport::build_device_handle() {
 
       case TransportType::P2P_IBGDA: {
         P2pIbgdaTransportDevice* devPtr = ibgdaTransport_
-            ? ibgdaTransport_->getP2pTransportDevice(r)
+            ? ibgdaTransport_->getP2pTransportDeviceSlot(r)
             : nullptr;
         new (&transportsHost[r]) Transport(devPtr);
         break;
       }
+
+      case TransportType::P2P_IBGDA_AMD:
+        throw std::runtime_error(
+            "P2P_IBGDA_AMD transport not supported in MultiPeerTransport "
+            "(use MultipeerIbgdaTransportAmd instead)");
     }
   }
 

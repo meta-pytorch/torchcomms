@@ -10,6 +10,15 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
+// Fallback definitions for older kernel headers.
+#ifndef SYS_pidfd_open
+#define SYS_pidfd_open 434
+#endif
+#ifndef SYS_pidfd_getfd
+#define SYS_pidfd_getfd 438
+#endif
+
+#include <array>
 #include <cerrno>
 #include <cstring>
 
@@ -84,11 +93,45 @@ std::future<Status> NVLinkTransport::transfer(
                   cudaStream]() mutable noexcept {
     CudaDeviceGuard deviceGuard(*cudaApi, deviceId);
 
-    for (auto& op : ops) {
+#if CUDART_VERSION >= 12080
+    if (ops.size() > 1) {
+      // Small inline buffer avoids heap allocation for typical batch sizes.
+      // Falls back to vector for larger batches.
+      constexpr size_t kInlineCap = 16;
+      std::array<void*, kInlineCap> dstsInline;
+      std::array<const void*, kInlineCap> srcsInline;
+      std::array<size_t, kInlineCap> sizesInline;
+      std::vector<void*> dstsHeap;
+      std::vector<const void*> srcsHeap;
+      std::vector<size_t> sizesHeap;
+      void** dsts = dstsInline.data();
+      const void** srcs = srcsInline.data();
+      size_t* sizes = sizesInline.data();
+      if (ops.size() > kInlineCap) {
+        dstsHeap.resize(ops.size());
+        srcsHeap.resize(ops.size());
+        sizesHeap.resize(ops.size());
+        dsts = dstsHeap.data();
+        srcs = srcsHeap.data();
+        sizes = sizesHeap.data();
+      }
+      for (size_t i = 0; i < ops.size(); ++i) {
+        dsts[i] = ops[i].dst;
+        srcs[i] = ops[i].src;
+        sizes[i] = ops[i].size;
+      }
       CHECK_SET_PROMISE(
           promise,
-          cudaApi->memcpyAsync(
-              op.dst, op.src, op.size, cudaMemcpyDeviceToDevice, cudaStream));
+          cudaApi->memcpyBatchAsync(dsts, srcs, sizes, ops.size(), cudaStream));
+    } else
+#endif
+    {
+      for (auto& op : ops) {
+        CHECK_SET_PROMISE(
+            promise,
+            cudaApi->memcpyAsync(
+                op.dst, op.src, op.size, cudaMemcpyDeviceToDevice, cudaStream));
+      }
     }
 
     // Record a CUDA event after the last memcpy.
@@ -263,6 +306,21 @@ void NVLinkTransport::shutdown() {
 // ---------------------------------------------------------------------------
 // NVLinkTransportFactory
 // ---------------------------------------------------------------------------
+
+Status NVLinkTransportFactory::supported(std::shared_ptr<CudaApi> cudaApi) {
+  if (!cudaApi) {
+    cudaApi = std::make_shared<CudaApi>();
+  }
+
+  auto countResult = cudaApi->getDeviceCount();
+  CHECK_RETURN(countResult);
+
+  if (countResult.value() == 0) {
+    return Err(ErrCode::ResourceExhausted, "No CUDA devices found");
+  }
+
+  return Ok();
+}
 
 NVLinkTransportFactory::NVLinkTransportFactory(
     int device,
@@ -570,6 +628,7 @@ Status NVLinkTransportFactory::canConnect(
 
   auto peer = NVLinkTopology::deserialize(peerTopology);
   CHECK_RETURN(peer);
+  int peerDevId = peer.value().cudaDeviceId;
 
   // MNNVL fabric path: both have non-zero cluster UUIDs in the same domain.
   if (!isZeroUUid(topo->clusterId) && !isZeroUUid(peer.value().clusterId)) {
@@ -577,7 +636,7 @@ Status NVLinkTransportFactory::canConnect(
       UNIFLOW_LOG_INFO(
           "canConnect: MNNVL fabric path, device {} -> peer device {}",
           deviceId_,
-          peer.value().cudaDeviceId);
+          peerDevId);
       return Ok();
     }
     // Different MNNVL domains — fall through to intra-node check in case
@@ -586,15 +645,12 @@ Status NVLinkTransportFactory::canConnect(
 
   // Intra-node path: check same host via hostHash, then verify P2P access.
   if (!topo->sameHost(peer.value())) {
-    UNIFLOW_LOG_WARN(
-        "canConnect: peer device {} not on same host",
-        peer.value().cudaDeviceId);
+    UNIFLOW_LOG_WARN("canConnect: peer device {} not on same host", peerDevId);
     return Err(
         ErrCode::TopologyDisconnect, "NVLink: peer is not on the same host");
   }
 
-  auto canAccess =
-      cuda_api_->deviceCanAccessPeer(deviceId_, peer.value().cudaDeviceId);
+  auto canAccess = cuda_api_->deviceCanAccessPeer(deviceId_, peerDevId);
   if (canAccess.hasError()) {
     UNIFLOW_LOG_ERROR(
         "canConnect: deviceCanAccessPeer failed: {}",
@@ -605,7 +661,7 @@ Status NVLinkTransportFactory::canConnect(
     UNIFLOW_LOG_WARN(
         "canConnect: P2P not supported between device {} and {}",
         deviceId_,
-        peer.value().cudaDeviceId);
+        peerDevId);
     return Err(
         ErrCode::TopologyDisconnect,
         "NVLink: P2P access not supported between devices");

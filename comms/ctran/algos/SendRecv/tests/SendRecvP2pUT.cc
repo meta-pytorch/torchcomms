@@ -198,13 +198,14 @@ TEST_F(SendRecvP2pTest, GraphCaptureSkipsPinnedMempool) {
 
   auto ops = makeSendOps(numOps, dummyBuf, dummyOpCount);
 
-  // Snapshot GPU free memory before capture
-  size_t freeBefore, total;
-  CUDACHECK_TEST(cudaMemGetInfo(&freeBefore, &total));
-
   cudaStream_t stream;
   CUDACHECK_TEST(cudaStreamCreate(&stream));
   CUDACHECK_TEST(cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed));
+
+  // Snapshot GPU free memory after stream creation + capture begin,
+  // so the assertion isolates setupP2pKernelConfig's allocations only.
+  size_t freeBefore, total;
+  CUDACHECK_TEST(cudaMemGetInfo(&freeBefore, &total));
 
   KernelConfig config(
       KernelConfig::KernelType::SENDRECV_P2P, stream, "testAlgo", dummyOpCount);

@@ -6,26 +6,26 @@
 namespace torch::comms {
 
 // Global function to be registered as a hook
-void cachingAllocatorHookFn(const TraceEntry& te) {
+void rcclCachingAllocatorHookFn(const TraceEntry& te) {
   // Forward to the singleton instance
-  CachingAllocatorHook::getInstance().regDeregMem(te);
+  RcclCachingAllocatorHook::getInstance().regDeregMem(te);
 }
 
-CachingAllocatorHookImpl& CachingAllocatorHook::getInstance() {
+RcclCachingAllocatorHookImpl& RcclCachingAllocatorHook::getInstance() {
   // Use std::call_once for thread-safe singleton initialization
   // NOLINTNEXTLINE(facebook-hte-std::call_once)
   std::call_once(init_flag_, createInstance);
   return *instance_;
 }
 
-DefaultCachingAllocatorHookImpl::DefaultCachingAllocatorHookImpl() {
+DefaultRcclCachingAllocatorHookImpl::DefaultRcclCachingAllocatorHookImpl() {
   // Setup memory registration hooks
   at::globalContext().lazyInitDevice(c10::DeviceType::CUDA);
   registerMemPreHook();
-  attachAllocatorTraceTracker(&cachingAllocatorHookFn);
+  attachAllocatorTraceTracker(&rcclCachingAllocatorHookFn);
 }
 
-void CachingAllocatorHookImpl::registerMemPreHook() {
+void RcclCachingAllocatorHookImpl::registerMemPreHook() {
   // We assume no mem pool and no comm has been created yet, we just loop up the
   // snapshot of the default pool for all devices.
   auto the_snapshot = snapshot();
@@ -42,7 +42,7 @@ void CachingAllocatorHookImpl::registerMemPreHook() {
   }
 }
 
-void CachingAllocatorHookImpl::regDeregMem(const TraceEntry& te) {
+void RcclCachingAllocatorHookImpl::regDeregMem(const TraceEntry& te) {
   std::lock_guard<std::mutex> lock(mutex_);
   bool register_mem = te.action_ == TraceEntry::Action::SEGMENT_ALLOC;
   bool unregister_mem = te.action_ == TraceEntry::Action::SEGMENT_FREE;
@@ -84,7 +84,7 @@ void CachingAllocatorHookImpl::regDeregMem(const TraceEntry& te) {
   }
 }
 
-void CachingAllocatorHookImpl::registerComm(TorchCommRCCL* comm) {
+void RcclCachingAllocatorHookImpl::registerComm(TorchCommRCCL* comm) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   // Check if the communicator is already registered
@@ -102,7 +102,7 @@ void CachingAllocatorHookImpl::registerComm(TorchCommRCCL* comm) {
   registeredComms_.insert(comm);
 }
 
-void CachingAllocatorHookImpl::deregisterComm(TorchCommRCCL* comm) {
+void RcclCachingAllocatorHookImpl::deregisterComm(TorchCommRCCL* comm) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   if (registeredComms_.find(comm) == registeredComms_.end()) {
@@ -120,7 +120,7 @@ void CachingAllocatorHookImpl::deregisterComm(TorchCommRCCL* comm) {
   registeredComms_.erase(comm);
 }
 
-void CachingAllocatorHookImpl::clear() {
+void RcclCachingAllocatorHookImpl::clear() {
   std::lock_guard<std::mutex> lock(mutex_);
   for (auto& comm : registeredComms_) {
     for (const auto& [addr, mem_info] : registeredMemMap_) {
@@ -133,7 +133,7 @@ void CachingAllocatorHookImpl::clear() {
   registeredComms_.clear();
 }
 
-bool CachingAllocatorHookImpl::isCommRegistered(TorchCommRCCL* comm) {
+bool RcclCachingAllocatorHookImpl::isCommRegistered(TorchCommRCCL* comm) {
   std::lock_guard<std::mutex> lock(mutex_);
   return registeredComms_.find(comm) != registeredComms_.end();
 }

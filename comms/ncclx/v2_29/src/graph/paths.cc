@@ -13,6 +13,7 @@
 #include "net.h"
 #include "channel.h"
 #include "transport.h"
+#include "meta/DeviceRackSerial.h"
 #include "device.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
@@ -373,15 +374,13 @@ ncclResult_t ncclTopoCheckP2p(struct ncclComm* comm, struct ncclTopoSystem* syst
   // Compute the PCI distance and compare with the p2pLevel.
   if (path->type <= p2pLevel) *p2p = 1;
 
-  // Check if multi-NVLink P2P is disabled and handle rack serial matching
+  // [META] Check if multi-NVLink P2P is disabled and handle rack serial matching
   if (NCCL_MNNVL_TRUNK_DISABLE && mnnvl) {
     INFO(NCCL_GRAPH, "NCCL_MNNVL_TRUNK_DISABLE enabled");
 
-    // Only check rack serials if comm and rackSerials are available
-    if (comm->peerInfo[rank1].rackSerial && comm->peerInfo[rank2].rackSerial) {
-      *p2p = (comm->peerInfo[rank1].rackSerial == comm->peerInfo[rank2].rackSerial);
-      INFO(NCCL_GRAPH, "P2P is set to %d based on rack serial match/unmatch rank1: %d rank2: %d rackSerial1: %d rackSerial2: %d", *p2p, rank1, rank2, comm->peerInfo[rank1].rackSerial, comm->peerInfo[rank2].rackSerial);
-
+    if (comm->peerInfo[rank1].rackSerial[0] != '\0' && comm->peerInfo[rank2].rackSerial[0] != '\0') {
+      *p2p = ncclx::isSameRackSerial(comm->peerInfo[rank1].rackSerial, comm->peerInfo[rank2].rackSerial);
+      INFO(NCCL_GRAPH, "P2P is set to %d based on rack serial match/unmatch rank1: %d rank2: %d rackSerial1: %s rackSerial2: %s", *p2p, rank1, rank2, comm->peerInfo[rank1].rackSerial, comm->peerInfo[rank2].rackSerial);
     } else {
       WARN("No rack serial information available, skipping rack serial check");
     }
@@ -583,6 +582,14 @@ ncclResult_t ncclTopoNeedFlush(struct ncclComm* comm, int64_t netId, int netDev,
   NCCLCHECK(ncclGetLocalCpu(system, g, &c));
   NCCLCHECK(ncclTopoIdToIndex(system, NET, netId, &n));
   if (gpu->paths[NET][n].type <= PATH_PXB && gpu->paths[CPU][c].type == PATH_C2C) {
+    *flush = 1;
+  }
+  // [META] PATH_P2C (C2C to CPU + PCIe to NIC) also requires flush: RDMA data
+  // arrives via PCIe while the proxy tail update reaches GPU via a different path,
+  // with no cross-path ordering guarantee.
+  int netPathType = gpu->paths[NET][n].type;
+  int cpuPathType = gpu->paths[CPU][c].type;
+  if (NCCL_ENABLE_P2C_RDMA_FLUSH && netPathType == PATH_P2C && cpuPathType == PATH_C2C) {
     *flush = 1;
   }
   return ncclSuccess;

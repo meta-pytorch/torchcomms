@@ -18,15 +18,15 @@ jobs:
         include:
           - runs-on: "linux.g5.12xlarge.nvidia.gpu"
             gpu-arch-type: "cuda"
-            gpu-arch-version: "12.8"
+            gpu-arch-version: "13.0"
             torch-version: "stable"
           - runs-on: "linux.g5.12xlarge.nvidia.gpu"
             gpu-arch-type: "cuda"
-            gpu-arch-version: "12.8"
+            gpu-arch-version: "13.0"
             torch-version: "nightly"
           - runs-on: "linux.g5.12xlarge.nvidia.gpu"
             gpu-arch-type: "cuda"
-            gpu-arch-version: "12.8"
+            gpu-arch-version: "13.0"
             torch-version: "nightly"
             build-flags: "USE_NCCLX=0 USE_TRANSPORT=0"
 
@@ -62,11 +62,11 @@ jobs:
         include:
           - runs-on: "linux.g5.12xlarge.nvidia.gpu"
             gpu-arch-type: "cuda"
-            gpu-arch-version: "12.8"
+            gpu-arch-version: "13.0"
             torch-version: "stable"
           - runs-on: "linux.g5.12xlarge.nvidia.gpu"
             gpu-arch-type: "cuda"
-            gpu-arch-version: "12.8"
+            gpu-arch-version: "13.0"
             torch-version: "nightly"
 
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
@@ -82,6 +82,8 @@ jobs:
         set -ex
         source .github/scripts/setup_env.sh --with-cmake --cuda-version "${{ matrix.gpu-arch-version }}" "${{ matrix.torch-version }}"
 
+        export DISABLED_TESTS="${{ vars.DISABLED_TESTS }}"
+
         # Build and run C++ tests
         cmake -B build_tests -G Ninja -DBUILD_TESTS=ON
         cmake --build build_tests
@@ -95,15 +97,15 @@ jobs:
         include:
           - runs-on: "linux.g5.12xlarge.nvidia.gpu"
             gpu-arch-type: "cuda"
-            gpu-arch-version: "12.8"
+            gpu-arch-version: "13.0"
             torch-version: "stable"
           - runs-on: "linux.g5.12xlarge.nvidia.gpu"
             gpu-arch-type: "cuda"
-            gpu-arch-version: "12.8"
+            gpu-arch-version: "13.0"
             torch-version: "nightly"
           - runs-on: "linux.g5.12xlarge.nvidia.gpu"
             gpu-arch-type: "cuda"
-            gpu-arch-version: "12.8"
+            gpu-arch-version: "13.0"
             torch-version: "nightly"
             build-flags: "USE_NCCLX=0 USE_TRANSPORT=0"
 
@@ -123,9 +125,11 @@ jobs:
         source .github/scripts/setup_env.sh --cuda-version "${{ matrix.gpu-arch-version }}" --torch-version "$TORCH_VERSION" "${{ matrix.torch-version }}"
 
         export ${{ matrix.build-flags }}
+        export DISABLED_TESTS="${{ vars.DISABLED_TESTS }}"
 
         # Install from pre-built wheel (skip build step)
-        pip install "${RUNNER_ARTIFACT_DIR}"/*.whl pytest numpy psutil parameterized pydot requests urllib3 tabulate
+        WHEEL=$(ls "${RUNNER_ARTIFACT_DIR}"/*.whl)
+        pip install "${WHEEL}[dev]"
 
         python -c "import torchcomms"
 

@@ -52,7 +52,7 @@ commResult_t commCuMemAlloc(
       size,
       *ptr,
       ctran::utils::toFormattableHandle(handle));
-  logMemoryEvent(
+  meta::comms::memtrace::recordAlloc(
       logMetaData ? *logMetaData : CommLogData{},
       callsite,
       "commCuMemAlloc",
@@ -96,7 +96,7 @@ commResult_t commCuMemFree(void* ptr, const CommLogData* logMetaData) {
       size,
       ptr,
       ctran::utils::toFormattableHandle(handle));
-  logMemoryEvent(
+  meta::comms::memtrace::recordFree(
       logMetaData ? *logMetaData : CommLogData{},
       "",
       "commCuMemFree",

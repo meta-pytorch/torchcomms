@@ -3,6 +3,32 @@
 
 set -x
 
+function ensure_conda_libdwarf_symlinks() {
+  local conda_lib_dir="${CMAKE_PREFIX_PATH}/lib"
+  local libdwarf_real=""
+  local soname=""
+
+  for candidate in "${conda_lib_dir}"/libdwarf.so "${conda_lib_dir}"/libdwarf.so.*; do
+    [[ -e "$candidate" ]] || continue
+    if [[ -f "$candidate" && ! -L "$candidate" ]]; then
+      libdwarf_real="$(basename "$candidate")"
+      break
+    fi
+  done
+
+  if [[ -z "$libdwarf_real" ]]; then
+    return
+  fi
+
+  if [[ "$libdwarf_real" != "libdwarf.so" ]]; then
+    ln -sf "$libdwarf_real" "${conda_lib_dir}/libdwarf.so"
+  fi
+  soname=$(readelf -d "${conda_lib_dir}/${libdwarf_real}" 2>/dev/null | sed -n 's/.*Library soname: \[\(.*\)\]/\1/p' | head -n 1)
+  if [[ -n "$soname" && "$soname" != "$libdwarf_real" ]]; then
+    ln -sf "$libdwarf_real" "${conda_lib_dir}/${soname}"
+  fi
+}
+
 function do_cmake_build() {
   local source_dir="$1"
   local extra_flags="$2"
@@ -20,6 +46,7 @@ function do_cmake_build() {
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
     -DCMAKE_CXX_STANDARD=20 \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.22 \
+    -DCMAKE_CXX_FLAGS="-DFMT_HEADER_ONLY=1" \
     $extra_flags \
     -S "${source_dir}"
   ninja -j$(nproc)
@@ -181,6 +208,7 @@ function build_third_party {
         fmt
       )
       conda install "${DEPS[@]}" --yes
+      ensure_conda_libdwarf_symlinks
       build_fb_oss_library "https://github.com/facebook/folly.git" "$third_party_tag" folly
     fi
   fi
@@ -337,10 +365,20 @@ THRIFT_SERVICE_LDFLAGS+=(
 )
 THIRD_PARTY_LDFLAGS+="${THRIFT_SERVICE_LDFLAGS[*]} "
 THIRD_PARTY_LDFLAGS+="$(pkg-config --libs --static libfolly) "
+# liburing: folly's cmake config declares this dependency but pkg-config omits
+# it. Add -luring if the system has liburing (folly uses io_uring for async I/O).
+if pkg-config --exists liburing 2>/dev/null; then
+  THIRD_PARTY_LDFLAGS+="-luring "
+fi
+# libfmt: NCCLX's own objects use FMT_HEADER_ONLY=1, but the prebuilt
+# folly/thrift static libs were built without it and contain unresolved
+# references to non-inline fmt::v9::detail symbols (is_printable,
+# thousands_sep_impl, locale_ref::get<std::locale>). The conda libfolly.pc
+# does not list fmt as a dep, so add -lfmt explicitly.
 if [[ -z "${USE_SYSTEM_LIBS}" ]]; then
-  THIRD_PARTY_LDFLAGS+="-l:libglog.a -l:libgflags.a -l:libboost_context.a -l:libfmt.a -l:libssl.a -l:libcrypto.a"
+  THIRD_PARTY_LDFLAGS+="-l:libglog.a -l:libgflags.a -l:libboost_context.a -l:libssl.a -l:libcrypto.a -l:libfmt.a"
 else
-  THIRD_PARTY_LDFLAGS+="-lglog -lgflags -lboost_context -lfmt -lssl -lcrypto"
+  THIRD_PARTY_LDFLAGS+="-lglog -lgflags -lboost_context -lssl -lcrypto -lfmt"
 fi
 
 echo "$THIRD_PARTY_LDFLAGS"
@@ -364,7 +402,7 @@ if [[ -z "${NVCC_GENCODE-}" ]]; then
             arch_gencode="$arch_gencode -gencode=arch=compute_90,code=sm_90"
         ;;
         "b200")
-            arch_gencode="$arch_gencode -gencode=arch=compute_100,code=sm_100"
+            arch_gencode="$arch_gencode -gencode=arch=compute_100a,code=sm_100a"
         ;;
         "b300")
             arch_gencode="$arch_gencode -gencode=arch=compute_103a,code=sm_103a"

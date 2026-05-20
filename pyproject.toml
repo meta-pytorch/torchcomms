@@ -10,3 +10,6 @@ line-length = 88
 
 [tool.ruff.format]
 # Match internal fbcode settings
+
+[tool.pytest.ini_options]
+addopts = "--import-mode=append"

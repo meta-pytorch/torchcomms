@@ -12,7 +12,7 @@ jobs:
     name: lintrunner
     runs-on: linux.4xlarge
     container:
-      image: nvidia/cuda:12.8.1-devel-ubuntu24.04
+      image: nvidia/cuda:13.2.1-cudnn-devel-ubuntu24.04
     timeout-minutes: 30
     steps:
       - name: Setup git
@@ -46,7 +46,7 @@ jobs:
         run: python -m pip install --upgrade pip
       - name: Install pytorch
         shell: bash -l {0}
-        run: pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu128
+        run: pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu132
       - name: Install Dependencies
         shell: bash -l {0}
         run: |

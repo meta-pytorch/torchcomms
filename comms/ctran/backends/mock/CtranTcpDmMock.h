@@ -3,14 +3,13 @@
 #pragma once
 
 #include "comms/ctran/CtranComm.h"
-#include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/mock/CtranTcpDmBaseMock.h"
 
 namespace ctran {
 
 class CtranTcpDm {
  public:
-  CtranTcpDm(CtranComm* comm, CtranCtrlManager* ctrlMgr) {}
+  explicit CtranTcpDm(CtranComm* comm) {}
   ~CtranTcpDm() {}
 
   commResult_t preConnect(const std::unordered_set<int>& peerRanks) {

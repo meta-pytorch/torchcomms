@@ -291,8 +291,32 @@ void NicDiscovery::sortCandidates() {
         if (a.pathType != b.pathType) {
           return static_cast<int>(a.pathType) < static_cast<int>(b.pathType);
         }
-        return a.bandwidthGbps > b.bandwidthGbps;
+        if (a.bandwidthGbps != b.bandwidthGbps) {
+          return a.bandwidthGbps > b.bandwidthGbps;
+        }
+        // Deterministic tiebreak: device name. Without this, ties fall back
+        // to ibv_get_device_list() enumeration order, which is not guaranteed
+        // consistent across hosts — breaking same-rail pairing in multi-NIC
+        // setups (e.g., GB200 where each GPU has 2 equivalent PIX NICs).
+        return a.name < b.name;
       });
+}
+
+std::vector<NicCandidate> NicDiscovery::getBestAffinityNics() const {
+  std::vector<NicCandidate> result;
+  if (candidates_.empty()) {
+    return result;
+  }
+  const auto& best = candidates_.front();
+  for (const auto& c : candidates_) {
+    if (c.pathType == best.pathType && c.bandwidthGbps == best.bandwidthGbps &&
+        c.isDataDirect == best.isDataDirect) {
+      result.push_back(c);
+    } else {
+      break;
+    }
+  }
+  return result;
 }
 
 void NicDiscovery::logBestCandidate() {

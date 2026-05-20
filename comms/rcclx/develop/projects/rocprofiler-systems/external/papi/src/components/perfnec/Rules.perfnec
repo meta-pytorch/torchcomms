@@ -1,0 +1,6 @@
+
+COMPSRCS += components/perfnec/perfmon.c
+COMPOBJS += perfmon.o
+
+perfmon.o: components/perfnec/perfmon.c components/perfnec/perfnec.h
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/perfnec/perfmon.c -o perfmon.o 

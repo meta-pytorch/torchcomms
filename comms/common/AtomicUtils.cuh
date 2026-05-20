@@ -485,6 +485,48 @@ store128_volatile_global(volatile uint64_t* ptr, uint64_t v0, uint64_t v1) {
 }
 
 // =============================================================================
+// 128-bit Volatile Load/Store (v4.u32 — for LL protocol 16-byte lines)
+// =============================================================================
+
+__device__ __forceinline__ void load_v4_volatile_global(
+    const volatile uint32_t* ptr,
+    uint32_t& v0,
+    uint32_t& v1,
+    uint32_t& v2,
+    uint32_t& v3) {
+#if defined(__HIP_PLATFORM_AMD__)
+  v0 = ptr[0];
+  v1 = ptr[1];
+  v2 = ptr[2];
+  v3 = ptr[3];
+#else
+  asm volatile("ld.volatile.global.v4.u32 {%0,%1,%2,%3}, [%4];"
+               : "=r"(v0), "=r"(v1), "=r"(v2), "=r"(v3)
+               : "l"(ptr)
+               : "memory");
+#endif
+}
+
+__device__ __forceinline__ void store_v4_volatile_global(
+    volatile uint32_t* ptr,
+    uint32_t v0,
+    uint32_t v1,
+    uint32_t v2,
+    uint32_t v3) {
+#if defined(__HIP_PLATFORM_AMD__)
+  ptr[0] = v0;
+  ptr[1] = v1;
+  ptr[2] = v2;
+  ptr[3] = v3;
+#else
+  asm volatile("st.volatile.global.v4.u32 [%0], {%1,%2,%3,%4};"
+               :
+               : "l"(ptr), "r"(v0), "r"(v1), "r"(v2), "r"(v3)
+               : "memory");
+#endif
+}
+
+// =============================================================================
 // Atomic Operation
 // =============================================================================
 

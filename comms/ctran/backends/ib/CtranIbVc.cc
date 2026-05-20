@@ -51,11 +51,8 @@ inline commResult_t CtranIbVirtualConn::setDefaultQPConfig() {
   ConnectionType connTyp = ConnectionType::NO_STATEX;
   std::vector<std::string>* configList{nullptr};
   if (comm_ && comm_->statex_) {
-    if (comm_->statex_->isSameRack(comm_->statex_->rank(), peerRank)) {
-      connTyp = ConnectionType::SAME_RACK;
-    } else if (comm_->statex_->isSameZone(comm_->statex_->rank(), peerRank)) {
+    if (comm_->statex_->isSameZone(comm_->statex_->rank(), peerRank)) {
       connTyp = ConnectionType::SAME_ZONE;
-      configList = &NCCL_CTRAN_IB_QP_CONFIG_XRACK;
     } else if (comm_->statex_->isSameDc(comm_->statex_->rank(), peerRank)) {
       connTyp = ConnectionType::SAME_DC;
       configList = &NCCL_CTRAN_IB_QP_CONFIG_XZONE;
@@ -71,7 +68,7 @@ inline commResult_t CtranIbVirtualConn::setDefaultQPConfig() {
   if ((configList != nullptr) && (configList->size() > 0)) {
     FB_CHECKABORT(
         configList->size() == kExpectedQpConfigLength,
-        "XRACK, XZONE, XDC QP Config strings must have exactly 4 elements");
+        "XZONE, XDC QP Config strings must have exactly 4 elements");
     qpScalingTh_ = stoul(configList->at(qpConfigIndex::QP_SCALING_THRESHOLD));
     maxNumQps_ = stoi(configList->at(qpConfigIndex::MAX_QPS));
     if (configList->at(qpConfigIndex::VC_MODE) == "spray") {
@@ -99,10 +96,12 @@ inline commResult_t CtranIbVirtualConn::setDefaultQPConfig() {
   // assure maxNumQps_ to be a multiple of NCCL_CTRAN_IB_DEVICES_PER_RANK
   if (maxNumQps_ % NCCL_CTRAN_IB_DEVICES_PER_RANK) {
     int originalMaxNumQps = maxNumQps_;
-    maxNumQps_ = maxNumQps_ - (maxNumQps_ % NCCL_CTRAN_IB_DEVICES_PER_RANK);
+    maxNumQps_ = maxNumQps_ +
+        (NCCL_CTRAN_IB_DEVICES_PER_RANK -
+         maxNumQps_ % NCCL_CTRAN_IB_DEVICES_PER_RANK);
     CLOGF(
         WARN,
-        "CTRAN-IB: CTRAN_MAX_QPS is not a multiple of NCCL_CTRAN_IB_DEVICES_PER_RANK  ({} > {}), use {} instead",
+        "CTRAN-IB: CTRAN_MAX_QPS is not a multiple of NCCL_CTRAN_IB_DEVICES_PER_RANK  ({} < {}), rounding up to {} instead",
         originalMaxNumQps,
         NCCL_CTRAN_IB_DEVICES_PER_RANK,
         maxNumQps_);
@@ -130,8 +129,6 @@ std::string CtranIbVirtualConn::connTypeName(ConnectionType connTyp) {
   switch (connTyp) {
     case ConnectionType::NO_STATEX:
       return "NO_STATEX";
-    case ConnectionType::SAME_RACK:
-      return "SAME_RACK";
     case ConnectionType::SAME_ZONE:
       return "SAME_ZONE";
     case ConnectionType::SAME_DC:
@@ -171,12 +168,11 @@ void CtranIbVirtualConn::logConnectionConfig(ConnectionType connTyp) {
       CLOGF_SUBSYS(
           INFO,
           INIT,
-          "CTRAN-IB-VC: QP setting for connection type {} (sameDC {}, sameZone {}, sameRack {}): maxNumQps_={}, qpScalingTh_={}, vcMode_={}, maxQpMsgs_={}, "
+          "CTRAN-IB-VC: QP setting for connection type {} (sameDC {}, sameZone {}): maxNumQps_={}, qpScalingTh_={}, vcMode_={}, maxQpMsgs_={}, "
           "rank {} peerRank {} commHash {:x} commDesc {}",
           connTypeName(connTyp),
           statex->isSameDc(statex->rank(), peerRank),
           statex->isSameZone(statex->rank(), peerRank),
-          statex->isSameRack(statex->rank(), peerRank),
           maxNumQps_,
           qpScalingTh_,
           vcModeName(vcMode_),
@@ -316,14 +312,12 @@ CtranIbVirtualConn::CtranIbVirtualConn(
     std::vector<CtranIbDevice>& devices,
     int peerRank,
     CtranComm* comm,
-    CtranCtrlManager* ctrlMgr,
     uint32_t pgTrafficClass,
     int cudaDev)
     : peerRank(peerRank),
       devices_(devices),
       maxNumQps_(NCCL_CTRAN_IB_MAX_QPS),
       comm_(comm),
-      ctrlMgr_(ctrlMgr),
       pgTrafficClass_(pgTrafficClass),
       cudaDev_(cudaDev) {
   // set default QP configs based on topology and user-specified CVARs, if

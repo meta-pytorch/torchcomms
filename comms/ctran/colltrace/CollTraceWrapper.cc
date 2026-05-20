@@ -2,6 +2,8 @@
 
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
 
+#include <set>
+
 #include <folly/logging/xlog.h>
 
 #include "comms/utils/RankUtils.h"
@@ -14,13 +16,6 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 
 namespace meta::comms::colltrace {
-
-static std::function<std::unique_ptr<ICollTraceHandle>(
-    CtranComm*,
-    const std::vector<std::unique_ptr<struct OpElem>>&,
-    const KernelConfig&,
-    const bool)>
-    legacyFunc = nullptr;
 
 bool isCapturingStream(cudaStream_t stream) {
   cudaStreamCaptureStatus status;
@@ -222,30 +217,6 @@ CollectiveMetadata getCollectiveMetadata(
           .recvbuff = reinterpret_cast<uintptr_t>(allToAllvArgs.recvbuff),
           .dataType = allToAllvArgs.datatype,
           .count = std::nullopt, // AllToAllv uses variable counts
-      };
-    }
-    case KernelConfig::KernelType::ALLTOALLV_DYNAMIC: {
-      // TODO: Calculating count information for dynamic alltoallv
-      return CollectiveMetadata{
-          .opName = "AllToAllv_Dynamic",
-          .algoName = kernelConfig.algoName,
-          .opCount = opCount,
-      };
-    }
-    case KernelConfig::KernelType::ALLTOALLV_DYNAMIC_SPLIT: {
-      // TODO: Calculating count information for dynamic alltoallv
-      return CollectiveMetadata{
-          .opName = "AllToAllv_Dynamic_Split",
-          .algoName = kernelConfig.algoName,
-          .opCount = opCount,
-      };
-    }
-    case KernelConfig::KernelType::ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG: {
-      // TODO: Calculating count information for dynamic alltoallv
-      return CollectiveMetadata{
-          .opName = "AllToAllv_Dynamic_Split_Non_Contig",
-          .algoName = kernelConfig.algoName,
-          .opCount = opCount,
       };
     }
     case KernelConfig::KernelType::ALLTOALL_DEDUP: {
@@ -472,25 +443,7 @@ std::shared_ptr<ICollTraceHandle> getCollTraceHandle(
     return nullptr;
   }
 
-  if (NCCL_COLLTRACE_USE_NEW_COLLTRACE) {
-    return getNewCollTraceHandle(comm, opGroup, kernelConfig);
-  }
-
-  // Fall back to legacy colltrace logic
-  XLOG_IF(
-      FATAL,
-      legacyFunc == nullptr,
-      "Legacy colltrace logic is not configured!");
-  return legacyFunc(comm, opGroup, kernelConfig, ifchecksum);
-}
-
-void setCollTraceLegacyHandleFunc(
-    std::function<std::unique_ptr<ICollTraceHandle>(
-        CtranComm*,
-        const std::vector<std::unique_ptr<struct OpElem>>&,
-        const KernelConfig&,
-        const bool)> func) {
-  legacyFunc = func;
+  return getNewCollTraceHandle(comm, opGroup, kernelConfig);
 }
 
 bool testOnlyClearCollTraceRecords(CtranComm* comm) {

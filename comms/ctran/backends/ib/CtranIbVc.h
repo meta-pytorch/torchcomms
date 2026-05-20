@@ -148,11 +148,10 @@ class CtranIb;
 
 using ConnectionType = enum {
   NO_STATEX = 0,
-  SAME_RACK = 1,
-  SAME_ZONE = 2,
-  SAME_DC = 3,
-  DIFF_DC = 4,
-  CTRAN_EX = 5,
+  SAME_ZONE = 1,
+  SAME_DC = 2,
+  DIFF_DC = 3,
+  CTRAN_EX = 4,
 };
 
 namespace {
@@ -191,7 +190,6 @@ class CtranIbVirtualConn {
       std::vector<CtranIbDevice>& devices,
       int peerRank,
       CtranComm* comm,
-      CtranCtrlManager* ctrlMgr,
       uint32_t pgTrafficClass,
       int cudaDev);
   ~CtranIbVirtualConn();
@@ -1085,17 +1083,7 @@ class CtranIbVirtualConn {
 
       case ibverbx::IBV_WC_RECV: {
         auto& packet = dequeFront(this->recvCtrl_.postedPkts_).get();
-        if (this->ctrlMgr_ && this->ctrlMgr_->hasCb(packet.type)) {
-          // This is a control message with registered callback.
-          // Handle it in callback without matching recv
-          CLOGF_TRACE(
-              COLL,
-              "CTRAN-IB-VC: received and invoke callback for packet [{}] peer {}",
-              packet.toString(),
-              this->peerRank);
-          FB_COMMCHECK(this->ctrlMgr_->runCb(
-              this->peerRank, packet.type, packet.payload));
-        } else if (this->recvCtrl_.enqueuedWrs_.empty()) {
+        if (this->recvCtrl_.enqueuedWrs_.empty()) {
           // No queued receive msg. This is an unexpected message.
           // Copy received ctrl msg to unexp buffer
           FB_COMMCHECK(enqueueUnexpWr(packet));
@@ -1219,11 +1207,10 @@ class CtranIbVirtualConn {
     // with its notify bit set; on fast path, we don't need to track this, as
     // all writes are from same qp and are ordered.
     //
-    // Every write that is posted by the sender has a sequential sequence
-    // number starting at 0. This sequence number is written into the bits of
-    // the immediate data masked by kSeqNumMask. If a given write is the final
-    // write of a PUT with remote notify, the kNotifyBit of the immediate is
-    // also set.
+    // Every WRITE_WITH_IMM posted on this DQPLB notify path has a sequential
+    // sequence number starting at 0. This sequence number is written into the
+    // bits of the immediate data masked by kSeqNumMask. If a given write is
+    // the final write of a PUT, the kNotifyBit of the immediate is also set.
     //
     // If sequence # N has its notify bit set, we need to wait until all
     // sequence numbers <= N have been received. We do this in the following
@@ -1332,15 +1319,18 @@ class CtranIbVirtualConn {
         reinterpret_cast<uint64_t>(put->dbuf) + put->offset;
     sendPutWr_.wr.rdma.rkey = put->rkeys[device];
 
-    // RDMA_WRITE if in spray mode, or dqplb mode without notify
+    // Use plain RDMA_WRITE when the caller does not request receiver-side
+    // notification. Spray mode also uses plain writes; when spray notify is
+    // requested, burnDownPuts() sends a separate notifyQP message after the
+    // sender observes data completion.
     if (put->vcMode == NCCL_CTRAN_IB_VC_MODE::spray || !put->notify) {
       sendPutWr_.opcode = ibverbx::IBV_WR_RDMA_WRITE;
     } else {
-      // When in dqplb mode with notify, we need track when all packets have
-      // been received on the receiver side. Because packets may be issued
-      // through different QPs, we use RDMA_WRITE_WITH_IMM + per-packet seqNum
-      // to track all packets belonging to the Put on receiver side, and use
-      // notify bit to mark the seqNum of final write.
+      // DQPLB notify must track receiver-side arrival across QPs. Because
+      // packets may be issued through different QPs, each write uses
+      // RDMA_WRITE_WITH_IMM with a per-packet sequence number. The final write
+      // of the PUT sets the notify bit so the receiver can release waitNotify()
+      // only after all lower sequence numbers have arrived.
       // Also see writeImmRcvd() for receiver side logic.
       sendPutWr_.opcode = ibverbx::IBV_WR_RDMA_WRITE_WITH_IMM;
       sendPutWr_.imm_data = sndNxt_;
@@ -1807,7 +1797,6 @@ class CtranIbVirtualConn {
   std::unordered_map<uint32_t, bool> rcvdSeqNums_;
 
   CtranComm* comm_{nullptr};
-  CtranCtrlManager* ctrlMgr_{nullptr};
 
   // State for notifyQP notifications
   int32_t notifyCount_{0};

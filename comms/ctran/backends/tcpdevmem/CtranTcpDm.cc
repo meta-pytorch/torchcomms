@@ -182,9 +182,7 @@ commResult_t CtranTcpDm::bootstrapConnect(
   return res;
 }
 
-CtranTcpDm::CtranTcpDm(
-    [[maybe_unused]] CtranComm* comm,
-    [[maybe_unused]] CtranCtrlManager* ctrlMgr) {
+CtranTcpDm::CtranTcpDm([[maybe_unused]] CtranComm* comm) {
   transport_ = CtranTcpDmSingleton::getTransport();
 
   cudaDev_ = comm->statex_->cudaDev();
@@ -277,7 +275,7 @@ commResult_t CtranTcpDm::isend(
       size,
       handle,
       &request));
-  req.track(transport_, request);
+  req.track(transport_.get(), request);
 
   return commSuccess;
 }
@@ -369,7 +367,7 @@ commResult_t CtranTcpDm::irecvConnected(
       &request,
       unpackPool));
 
-  req.track(transport_, request);
+  req.track(transport_.get(), request);
 
   return commSuccess;
 }

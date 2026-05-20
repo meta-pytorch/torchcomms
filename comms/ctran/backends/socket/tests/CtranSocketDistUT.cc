@@ -6,7 +6,6 @@
 #include <folly/ScopeGuard.h>
 #include <folly/init/Init.h>
 
-#include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/socket/CtranSocket.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
@@ -28,7 +27,6 @@ class CtranSocketTest : public ctran::CtranDistTestFixture {
     ctran::CtranDistTestFixture::SetUp();
     comm_ = makeCtranComm();
     comm = comm_.get();
-    ctrlMgr = std::make_unique<CtranCtrlManager>();
   }
 
   void printTestDesc(const std::string& testName, const std::string& testDesc) {
@@ -41,7 +39,6 @@ class CtranSocketTest : public ctran::CtranDistTestFixture {
  protected:
   std::unique_ptr<CtranComm> comm_{nullptr};
   CtranComm* comm{nullptr};
-  std::unique_ptr<CtranCtrlManager> ctrlMgr{nullptr};
 };
 
 TEST_F(CtranSocketTest, NormalInitialize) {
@@ -49,7 +46,7 @@ TEST_F(CtranSocketTest, NormalInitialize) {
       "NormalInitialize",
       "Expect CtranSocket to be initialized without internal error.");
 
-  auto ctranSock = std::make_unique<CtranSocket>(comm, ctrlMgr.get());
+  auto ctranSock = std::make_unique<CtranSocket>(comm);
   EXPECT_NE(ctranSock, nullptr);
 }
 
@@ -79,7 +76,7 @@ TEST_F(CtranSocketTest, InitializeWithoutComm) {
   SocketServerAddr serverAddr{.port = port, .ipv6 = maybeAddr->str()};
 
   auto ctranSock = std::make_unique<CtranSocket>(
-      rank, cudaDev, commHash, commDesc, ctrlMgr.get(), serverAddr);
+      rank, cudaDev, commHash, commDesc, serverAddr);
   EXPECT_NE(ctranSock, nullptr);
 
   // test send/recv control message
@@ -127,60 +124,12 @@ TEST_F(CtranSocketTest, InitializeWithoutComm) {
   }
 }
 
-namespace {
-constexpr int testRkey = 9;
-constexpr uint64_t testRemoteAddr = 100;
-bool testCbFlag = false;
-commResult_t testCtrlMsgCb(int peer, void* msgPtr, void* ctx) {
-  bool* testCbFlagPtr = reinterpret_cast<bool*>(ctx);
-  *testCbFlagPtr = true;
-  EXPECT_EQ(peer, 0);
-  auto msg = reinterpret_cast<ControlMsg*>(msgPtr);
-  EXPECT_EQ(msg->type, ControlMsgType::IB_EXPORT_MEM);
-  EXPECT_EQ(msg->ibDesc.rkeys[0], testRkey);
-  EXPECT_EQ(msg->ibDesc.remoteAddr, testRemoteAddr);
-  return commSuccess;
-}
-} // namespace
-
-TEST_F(CtranSocketTest, CbCtrlMsg) {
-  this->printTestDesc(
-      "CbCtrlMsg",
-      "Expect rank 0 can issue a send control msg that triggers corresponding callback on rank 1");
-
-  // Register callback
-  this->ctrlMgr->regCb(
-      ControlMsgType::IB_EXPORT_MEM, testCtrlMsgCb, &testCbFlag);
-
-  auto ctranSock =
-      std::make_unique<CtranSocket>(this->comm, this->ctrlMgr.get());
-  CtranSocketRequest req;
-  ControlMsg smsg(ControlMsgType::IB_EXPORT_MEM);
-
-  smsg.ibDesc.remoteAddr = testRemoteAddr;
-  smsg.ibDesc.rkeys[0] = testRkey;
-  smsg.ibDesc.nKeys = 1;
-  if (this->globalRank == 0) {
-    COMMCHECK_TEST(ctranSock->isendCtrlMsg(smsg, 1, req));
-
-    // Wait until send finishes
-    waitSocketReq(req, ctranSock);
-  } else if (this->globalRank == 1) {
-    // Wait until callback is triggered
-    do {
-      COMMCHECK_TEST(ctranSock->progress());
-    } while (!testCbFlag);
-  } else {
-    // no-op for non-communicating ranks
-    COMMCHECK_TEST(req.complete());
-  }
-}
 TEST_F(CtranSocketTest, CtrlMsg) {
   printTestDesc(
       "SendRecvCtrlMsg",
       "Expect rank 2 can issue multiple send control msgs to ranks 0 and 1, and match to the corresponding recvs");
 
-  auto ctranSock = std::make_unique<CtranSocket>(comm, ctrlMgr.get());
+  auto ctranSock = std::make_unique<CtranSocket>(comm);
   std::vector<CtranSocketRequest> reqs;
   std::vector<ControlMsg> smsgs;
   ControlMsg rmsg0(ControlMsgType::IB_EXPORT_MEM);
@@ -252,7 +201,7 @@ TEST_F(CtranSocketTest, AllGather) {
   printTestDesc(
       "AllGather",
       "Expect every rank to recv&send a control msg to all other ranks");
-  auto ctranSock = std::make_unique<CtranSocket>(comm, ctrlMgr.get());
+  auto ctranSock = std::make_unique<CtranSocket>(comm);
   std::vector<CtranSocketRequest> sreqs(numRanks);
   std::vector<CtranSocketRequest> rreqs(numRanks);
   std::vector<ControlMsg> smsgs(numRanks);
@@ -301,7 +250,7 @@ TEST_F(CtranSocketTest, MatchAnyCtrlMsg) {
       "MatchAnyCtrlMsg",
       "Expect rank 0 can issue a send control msg to rank 1 and matches to the UNSPECIFIED recv on rank1");
 
-  auto ctranSock = std::make_unique<CtranSocket>(comm, ctrlMgr.get());
+  auto ctranSock = std::make_unique<CtranSocket>(comm);
   const int nCtrl = 300; // exceed MAX_CONTROL_MSGS
   std::vector<CtranSocketRequest> reqs(nCtrl);
   std::vector<ControlMsg> smsgs(nCtrl);
@@ -347,7 +296,7 @@ TEST_F(CtranSocketTest, CtrlMsgAndPreConnect) {
       "Expect rank 0 can issue a send control msg, followed by preConnect"
       "the preConnect is expected to be a no-op");
 
-  auto ctranSock = std::make_unique<CtranSocket>(comm, ctrlMgr.get());
+  auto ctranSock = std::make_unique<CtranSocket>(comm);
   CtranSocketRequest req;
   ControlMsg smsg(ControlMsgType::IB_EXPORT_MEM);
   ControlMsg rmsg(ControlMsgType::IB_EXPORT_MEM);

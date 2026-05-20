@@ -25,7 +25,7 @@ __global__ void test_multi_peer_nvl_send_kernel(
     size_t nbytes) {
   auto group = make_warp_group();
   auto& nvl = handle.get_nvl(peerRank);
-  nvl.send(group, src_d, nbytes);
+  nvl.send_group(group, src_d, nbytes);
 }
 
 __global__ void test_multi_peer_nvl_recv_kernel(
@@ -35,7 +35,7 @@ __global__ void test_multi_peer_nvl_recv_kernel(
     size_t nbytes) {
   auto group = make_warp_group();
   auto& nvl = handle.get_nvl(peerRank);
-  nvl.recv(group, dst_d, nbytes);
+  nvl.recv_group(group, dst_d, nbytes);
 }
 
 __global__ void test_multi_peer_self_put_kernel(
@@ -47,10 +47,10 @@ __global__ void test_multi_peer_self_put_kernel(
   if (handle.get_type(handle.myRank) != TransportType::SELF) {
     return;
   }
-  // Use P2pSelfTransportDevice::put() through the device handle
+  // Use P2pSelfTransportDevice::put_group() through the device handle
   auto group = make_warp_group();
   P2pSelfTransportDevice selfTransport;
-  selfTransport.put(
+  selfTransport.put_group(
       group,
       reinterpret_cast<char*>(dst_d),
       reinterpret_cast<const char*>(src_d),
@@ -100,29 +100,6 @@ void test_multi_peer_self_put(
     int blockSize) {
   test_multi_peer_self_put_kernel<<<numBlocks, blockSize>>>(
       handle, dst_d, src_d, nbytes);
-  PIPES_KERNEL_LAUNCH_CHECK();
-}
-
-__global__ void test_ibgda_accessor_kernel(
-    MultiPeerDeviceHandle handle,
-    int* output_d) {
-  auto tid = blockIdx.x * blockDim.x + threadIdx.x;
-  if (tid < static_cast<uint32_t>(handle.nRanks)) {
-    if (handle.get_type(tid) == TransportType::P2P_IBGDA) {
-      auto& ibgda = handle.get_ibgda(tid);
-      output_d[tid] = (ibgda.getQp() != nullptr) ? 1 : 0;
-    } else {
-      output_d[tid] = -1;
-    }
-  }
-}
-
-void test_ibgda_accessor(
-    MultiPeerDeviceHandle handle,
-    int* output_d,
-    int numBlocks,
-    int blockSize) {
-  test_ibgda_accessor_kernel<<<numBlocks, blockSize>>>(handle, output_d);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 

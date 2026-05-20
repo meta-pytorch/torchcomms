@@ -146,7 +146,6 @@ class TestDebugServerFlightRecorder(unittest.TestCase):
                 html_content = resp.text
                 self.assertIn("pg_status", html_content)
 
-            recorder.unregister()
             comm.finalize()
             stop_debug_server()
 

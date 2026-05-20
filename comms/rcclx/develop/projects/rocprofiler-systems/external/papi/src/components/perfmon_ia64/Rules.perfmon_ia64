@@ -1,0 +1,6 @@
+
+COMPSRCS += components/perfmon_ia64/perfmon-ia64.c
+COMPOBJS += perfmon-ia64.o
+
+perfmon-ia64.o: components/perfmon_ia64/perfmon-ia64.c components/perfmon_ia64/perfmon-ia64.h
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/perfmon_ia64/perfmon-ia64.c -o perfmon-ia64.o 

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <map>
 #include <mutex>
 
 #include <cuda.h>
@@ -29,65 +30,46 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 
-// Helper macro for 3-arg template kernel function map entries
-#define CTRAN_RING_REDOP_FUNCMAP(dtype, type, bidir)               \
-  {std::make_pair(dtype, commSum),                                 \
-   reinterpret_cast<const void*>(                                  \
-       &ncclKernelAllReduceCtranRing<type, commSum, bidir>)},      \
-      {std::make_pair(dtype, commProd),                            \
-       reinterpret_cast<const void*>(                              \
-           &ncclKernelAllReduceCtranRing<type, commProd, bidir>)}, \
-      {std::make_pair(dtype, commAvg),                             \
-       reinterpret_cast<const void*>(                              \
-           &ncclKernelAllReduceCtranRing<type, commAvg, bidir>)},  \
-      {std::make_pair(dtype, commMax),                             \
-       reinterpret_cast<const void*>(                              \
-           &ncclKernelAllReduceCtranRing<type, commMax, bidir>)},  \
-  {                                                                \
-    std::make_pair(dtype, commMin),                                \
-        reinterpret_cast<const void*>(                             \
-            &ncclKernelAllReduceCtranRing<type, commMin, bidir>)   \
-  }
+// Key for kernel function lookup: (datatype, redOp, enableBidirAg, unpack)
+using KernelFuncKey = std::tuple<commDataType_t, commRedOp_t, bool, bool>;
 
-// Bi-directional AG kernel map (EnableBidirAg=true)
-static const std::unordered_map<
-    std::pair<commDataType_t, commRedOp_t>,
-    const void*,
-    CtranPairHash>
-    typeToFuncBidir = {
-        CTRAN_RING_REDOP_FUNCMAP(commInt8, int8_t, true),
-        CTRAN_RING_REDOP_FUNCMAP(commUint8, uint8_t, true),
-        CTRAN_RING_REDOP_FUNCMAP(commInt32, int32_t, true),
-        CTRAN_RING_REDOP_FUNCMAP(commUint32, uint32_t, true),
-        CTRAN_RING_REDOP_FUNCMAP(commInt64, int64_t, true),
-        CTRAN_RING_REDOP_FUNCMAP(commUint64, uint64_t, true),
-        CTRAN_RING_REDOP_FUNCMAP(commFloat16, half, true),
-        CTRAN_RING_REDOP_FUNCMAP(commFloat32, float, true),
-        CTRAN_RING_REDOP_FUNCMAP(commFloat64, double, true),
+// Build a single (datatype, redOp, bidir, unpack) → kernel function pointer
+// map containing all template combinations.
+auto makeKernelMap() {
+  std::map<KernelFuncKey, const void*> m;
+  auto reg = [&]<typename T, bool Bidir, bool Unpack>(commDataType_t dt) {
+    m[{dt, commSum, Bidir, Unpack}] = reinterpret_cast<const void*>(
+        &ncclKernelAllReduceCtranRing<T, commSum, Bidir, Unpack>);
+    m[{dt, commProd, Bidir, Unpack}] = reinterpret_cast<const void*>(
+        &ncclKernelAllReduceCtranRing<T, commProd, Bidir, Unpack>);
+    m[{dt, commAvg, Bidir, Unpack}] = reinterpret_cast<const void*>(
+        &ncclKernelAllReduceCtranRing<T, commAvg, Bidir, Unpack>);
+    m[{dt, commMax, Bidir, Unpack}] = reinterpret_cast<const void*>(
+        &ncclKernelAllReduceCtranRing<T, commMax, Bidir, Unpack>);
+    m[{dt, commMin, Bidir, Unpack}] = reinterpret_cast<const void*>(
+        &ncclKernelAllReduceCtranRing<T, commMin, Bidir, Unpack>);
+  };
+  auto regAll = [&]<typename T>(commDataType_t dt) {
+    reg.template operator()<T, false, false>(dt);
+    reg.template operator()<T, true, false>(dt);
+    reg.template operator()<T, false, true>(dt);
+  };
+  regAll.template operator()<int8_t>(commInt8);
+  regAll.template operator()<uint8_t>(commUint8);
+  regAll.template operator()<int32_t>(commInt32);
+  regAll.template operator()<uint32_t>(commUint32);
+  regAll.template operator()<int64_t>(commInt64);
+  regAll.template operator()<uint64_t>(commUint64);
+  regAll.template operator()<half>(commFloat16);
+  regAll.template operator()<float>(commFloat32);
+  regAll.template operator()<double>(commFloat64);
 #if defined(__CUDA_BF16_TYPES_EXIST__)
-        CTRAN_RING_REDOP_FUNCMAP(commBfloat16, __nv_bfloat16, true),
+  regAll.template operator()<__nv_bfloat16>(commBfloat16);
 #endif
-};
+  return m;
+}
 
-// Simple kernel map (EnableBidirAg=false, lower register usage)
-static const std::unordered_map<
-    std::pair<commDataType_t, commRedOp_t>,
-    const void*,
-    CtranPairHash>
-    typeToFuncSimple = {
-        CTRAN_RING_REDOP_FUNCMAP(commInt8, int8_t, false),
-        CTRAN_RING_REDOP_FUNCMAP(commUint8, uint8_t, false),
-        CTRAN_RING_REDOP_FUNCMAP(commInt32, int32_t, false),
-        CTRAN_RING_REDOP_FUNCMAP(commUint32, uint32_t, false),
-        CTRAN_RING_REDOP_FUNCMAP(commInt64, int64_t, false),
-        CTRAN_RING_REDOP_FUNCMAP(commUint64, uint64_t, false),
-        CTRAN_RING_REDOP_FUNCMAP(commFloat16, half, false),
-        CTRAN_RING_REDOP_FUNCMAP(commFloat32, float, false),
-        CTRAN_RING_REDOP_FUNCMAP(commFloat64, double, false),
-#if defined(__CUDA_BF16_TYPES_EXIST__)
-        CTRAN_RING_REDOP_FUNCMAP(commBfloat16, __nv_bfloat16, false),
-#endif
-};
+static const auto kernelFuncMap = makeKernelMap();
 
 namespace {
 
@@ -148,6 +130,14 @@ inline bool shouldEnableBidirAg(size_t messageBytes, GpuArch arch) {
 namespace {
 
 const auto myAlgo = NCCL_ALLREDUCE_ALGO::ctring;
+
+// Query whether the left peer (recv direction) uses TCPDM backend.
+inline bool hasTcpDmRecv(
+    const ctran::allreduce::ring::HostArgs& args,
+    const ctran::allreduce::ring::HostResource& resource) {
+  return resource.comm->ctran_->mapper->getBackend(args.leftRank) ==
+      CtranMapperBackend::TCPDM;
+}
 
 inline std::string toHexStr(void* ptr) {
   std::stringstream ss;
@@ -537,6 +527,36 @@ inline void progressRecvPostRecvBuf(
   bufSyncSResps.at(round).reset(req);
 }
 
+// Post irecv for the current round (TCPDM requires 1:1 irecv per iput).
+// Round 0, partition 0 is posted in completeHostResourceSetup.
+inline void progressRecvPostTcpDmIrecv(
+    const ctran::allreduce::ring::HostArgs& args,
+    ctran::allreduce::ring::HostResource& resource,
+    const AlgoContext& algoCtx) {
+  int round = algoCtx.opRounds[Op::kRecvTrans].post;
+  int tmpChunkId = getTmpChunkId(algoCtx, round);
+  auto chunkArg = getRoundArgs<Op::kRecvTrans>(
+      algoCtx, round, algoCtx.opRounds[Op::kRecvTrans].postStep);
+  char* chunkRecvBuf = reinterpret_cast<char*>(resource.tmpRecvBuf) +
+      tmpChunkId * algoCtx.chunkSize;
+  size_t chunkBytes = chunkArg.numel * algoCtx.typeSize;
+  resource.recvKernElem->waitNotify.recvbuff = chunkRecvBuf;
+  resource.recvKernElem->waitNotify.nbytes = chunkBytes;
+  if (round > 0 || algoCtx.partition > 0) {
+    // The TCPDM needs to call initNotify, i.e. tcpdm->irecv() in every single
+    // recv round. Reuse the initNotify mechnaisim here to post irecv().
+    // Reuse leftNotify — the ready counter guarantees the previous round's
+    // checkNotify completed before we post the next irecv.
+    FB_COMMCHECKTHROW_EX(
+        resource.comm->ctran_->mapper->initNotify(
+            args.leftRank,
+            resource.tmpRecvBufHdl,
+            resource.recvKernElem,
+            args.leftNotify.get()),
+        resource.comm->logMetaData_);
+  }
+}
+
 inline void progressSend(
     const ctran::allreduce::ring::HostArgs& args,
     ctran::allreduce::ring::HostResource& resource,
@@ -575,13 +595,35 @@ inline void progressRecv(
     AlgoContext& algoCtx,
     std::vector<std::unique_ptr<CtranMapperRequest>>& bufSyncSResps,
     std::vector<std::unique_ptr<CtranMapperRequest>>& flushResps) {
-  // Check if have received a chunk from left
-  // Data receive doesn't need specific post, thus updating post & done
-  // together
-  if (opReadyToPost<Op::kRecvTrans>(algoCtx) &&
+  // Post step: TCPDM posts irecv, IB is a no-op (data arrives via RDMA put).
+  // Serialized via ready counter (TCPDM: ready=1, IB: ready=-1 unlimited).
+  if (opReadyToPost<Op::kRecvTrans>(algoCtx)) {
+    if (hasTcpDmRecv(args, resource)) {
+      // TCPDM: don't post irecv if the target tmpRecvBuf slot is still being
+      // read by a previous round's recvRedCopy. IB doesn't need this because
+      // the sender-side bufSync gates writes until recvRedCopy completes.
+      int round = algoCtx.opRounds[Op::kRecvTrans].post;
+      bool slotFree = round < static_cast<int>(algoCtx.numChunks) ||
+          algoCtx.opRounds[Op::kRecvRedCopy].done >
+              round - static_cast<int>(algoCtx.numChunks);
+      if (slotFree) {
+        progressRecvPostTcpDmIrecv(args, resource, algoCtx);
+        opUpdatePost<Op::kRecvTrans>(algoCtx);
+      }
+    } else {
+      opUpdatePost<Op::kRecvTrans>(algoCtx);
+    }
+  }
+
+  // Check if data has arrived from left peer
+  if (opHasPosted<Op::kRecvTrans>(algoCtx) &&
       progressRecvCheckTrans(args, resource, algoCtx)) {
-    opUpdatePost<Op::kRecvTrans>(algoCtx);
     opUpdateDone<Op::kRecvTrans>(algoCtx);
+    if (hasTcpDmRecv(args, resource)) {
+      // Allow next round's irecv to post (one in flight at a time —
+      // initNotify reuses leftNotify after checkNotify completes).
+      algoCtx.opRounds[Op::kRecvTrans].ready++;
+    }
   }
 
   // Check if any received chunk is ready to flush
@@ -589,7 +631,6 @@ inline void progressRecv(
     progressRecvPostFlush(args, resource, algoCtx, flushResps);
     opUpdatePost<Op::kRecvFlush>(algoCtx);
   }
-
   // Check if any outstanding flush is done
   if (opHasPosted<Op::kRecvFlush>(algoCtx)) {
     if (progressRecvCheckFlush(args, resource, algoCtx, flushResps)) {
@@ -943,6 +984,12 @@ inline void updatePartitionCtxHost(
   } else {
     updatePartitionCtx<false>(algoCtx);
   }
+  if (hasTcpDmRecv(args, resource)) {
+    // TCPDM: serialize irecv posts (one at a time) since initNotify reuses
+    // leftNotify. IB uses ready=-1 to pre-post all rounds.
+    algoCtx.opRounds[Op::kRecvTrans].ready = 1;
+  }
+
   if (algoCtx.partition > 0) {
     // Sync with kernel to start the new partition if not the first one.
     resource.partitionSync->post(algoCtx.partition);
@@ -976,16 +1023,23 @@ inline commResult_t completeHostResourceSetup(
   // Forward: notifications from left on tmpRecvBuf
   args.leftNotify.reset(new CtranMapperNotify());
   FB_COMMCHECK(comm->ctran_->mapper->initNotify(
-      args.leftRank, resource.tmpRecvBufHdl, args.leftNotify.get()));
+      args.leftRank,
+      resource.tmpRecvBufHdl,
+      resource.recvKernElem,
+      args.leftNotify.get()));
 
   size_t offsetRingTmpRecv = comm->ctran_->algo->getTmpBufOffset(
       CtranAlgo::TmpbufType::RING_TMP_RECV_BUF);
   args.rightRemBuf = (char*)args.rightRemBuf + offsetRingTmpRecv;
 
-  // Reverse: notifications from right on tmpRecvBufRev
-  args.rightNotify.reset(new CtranMapperNotify());
-  FB_COMMCHECK(comm->ctran_->mapper->initNotify(
-      args.rightRank, resource.tmpRecvBufRevHdl, args.rightNotify.get()));
+  // Reverse: notifications from right on tmpRecvBufRev.
+  // Only needed when bidir AG is enabled — otherwise the reverse path is
+  // unused.
+  if (args.enableBidirAg) {
+    args.rightNotify.reset(new CtranMapperNotify());
+    FB_COMMCHECK(comm->ctran_->mapper->initNotify(
+        args.rightRank, resource.tmpRecvBufRevHdl, args.rightNotify.get()));
+  }
 
   // Point leftRemBufRev to left neighbor's tmpRecvBufRev segment
   size_t offsetRingTmpRecvRev = comm->ctran_->algo->getTmpBufOffset(
@@ -1010,45 +1064,6 @@ inline commResult_t completeHostResourceSetup(
         std::string(desc));                                                  \
   }
 
-// Dedicated ctrl exchange for straggler detection, separate from the data
-// credit flow. Each rank signals "I'm ready" to both ring neighbors and waits
-// for both to signal back. The measured duration captures pure setup latency
-// (how long until the slowest neighbor is ready) with no data transfer noise.
-static void neighborReadinessBarrier(
-    CtranComm* comm,
-    const ctran::allreduce::ring::HostArgs& args) {
-  CtranMapperRequest recvFromRight;
-  CtranMapperRequest recvFromLeft;
-  CtranMapperRequest sendToLeft;
-  CtranMapperRequest sendToRight;
-
-  // Post receives first to avoid missed signals
-  FB_COMMCHECKTHROW_EX(
-      comm->ctran_->mapper->irecvCtrl(args.rightRank, &recvFromRight),
-      comm->logMetaData_);
-  FB_COMMCHECKTHROW_EX(
-      comm->ctran_->mapper->irecvCtrl(args.leftRank, &recvFromLeft),
-      comm->logMetaData_);
-
-  // Signal both neighbors
-  FB_COMMCHECKTHROW_EX(
-      comm->ctran_->mapper->isendCtrl(args.leftRank, &sendToLeft),
-      comm->logMetaData_);
-  FB_COMMCHECKTHROW_EX(
-      comm->ctran_->mapper->isendCtrl(args.rightRank, &sendToRight),
-      comm->logMetaData_);
-
-  // Wait for peer readiness
-  FB_COMMCHECKTHROW_EX(
-      comm->ctran_->mapper->waitRequest(&recvFromRight), comm->logMetaData_);
-  FB_COMMCHECKTHROW_EX(
-      comm->ctran_->mapper->waitRequest(&recvFromLeft), comm->logMetaData_);
-  FB_COMMCHECKTHROW_EX(
-      comm->ctran_->mapper->waitRequest(&sendToLeft), comm->logMetaData_);
-  FB_COMMCHECKTHROW_EX(
-      comm->ctran_->mapper->waitRequest(&sendToRight), comm->logMetaData_);
-}
-
 static commResult_t impl(
     const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
   FB_CHECKTHROW_EX_NOCOMM(
@@ -1069,15 +1084,16 @@ static commResult_t impl(
   auto& args = op->allreduce.hostArgs;
   auto& resource = op->allreduce.hostResource;
 
-  CTRAN_PROFILER_IF(
-      profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_CTRL));
   if (!resource.setupComplete) {
+    size_t msgSize = op->allreduce.count * commTypeSize(op->allreduce.datatype);
+    CtranMapperContext context(allReduceAlgoName(myAlgo), msgSize, msgSize);
+    // TCPDM uses unpackPool for irecv routing; nullptr for IB (ignored).
+    context.unpackPool = op->unpackPool;
+    comm->ctran_->mapper->setContext(std::move(context));
+
     FB_COMMCHECK(completeHostResourceSetup(comm, args, resource));
     resource.setupComplete = true;
   }
-  neighborReadinessBarrier(comm, args);
-  CTRAN_PROFILER_IF(
-      profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_CTRL));
 
   // setup algoCtx
   AlgoContext algoCtx = {
@@ -1344,19 +1360,30 @@ commResult_t ctranAllReduceRing(
   auto arch = ctran::allreduce::ring::GpuArch::Default;
   FB_COMMCHECK(getGpuArch(&arch));
 
-  // Select kernel based on bi-directional AG CVAR and message size
-  const bool enableBidirAg =
-      ctran::allreduce::ring::shouldEnableBidirAg(messageBytes, arch);
-  const auto& typeToFunc = enableBidirAg ? typeToFuncBidir : typeToFuncSimple;
+  // Detect TCPDM backend for left peer (recv direction)
+  bool hasTcpDmRecv =
+      comm->ctran_->mapper->getBackend((rank - 1 + nRanks) % nRanks) ==
+      CtranMapperBackend::TCPDM;
 
+  bool enableBidirAg =
+      ctran::allreduce::ring::shouldEnableBidirAg(messageBytes, arch);
+  // TODO: enable bidir AG for TCPDM (requires allocating a reverse
+  // recvKernElem for the reverse path's initNotify/irecv).
   FB_CHECKTHROW_EX(
-      typeToFunc.contains(std::make_pair(datatype, redOp)),
+      !(hasTcpDmRecv && enableBidirAg),
+      comm->logMetaData_,
+      "bidir AG is not yet supported with TCPDM backend");
+  auto kernelKey = KernelFuncKey{datatype, redOp, enableBidirAg, hasTcpDmRecv};
+  FB_CHECKTHROW_EX(
+      kernelFuncMap.contains(kernelKey),
       comm->logMetaData_,
       fmt::format(
-          "typeToFunc does not contain datatype {} with op {}",
+          "kernelFuncMap does not contain datatype {} op {} bidir {} unpack {}",
           datatype,
-          redOp));
-  const void* func = typeToFunc.at(std::make_pair(datatype, redOp));
+          redOp,
+          enableBidirAg,
+          hasTcpDmRecv));
+  const void* func = kernelFuncMap.at(kernelKey);
 
   int numBlocks = 0;
   int numThreads = 0;
@@ -1393,9 +1420,8 @@ commResult_t ctranAllReduceRing(
 
   auto& hostResource = op->allreduce.hostResource;
   hostResource.comm = comm;
+
   std::vector<ctran::algos::GpeKernelSync*> gpeKernelSyncs;
-  // 3 forward (sendCopy, recvRedCopy, partition) + 2 reverse (revSendCopy,
-  // revRecvCopy)
   constexpr size_t kAllReduceRingNumSyncs = 5;
   FB_COMMCHECK(comm->ctran_->gpe->allocGpeKernelSyncs(
       kAllReduceRingNumSyncs, numBlocks, gpeKernelSyncs));
@@ -1441,6 +1467,18 @@ commResult_t ctranAllReduceRing(
   hostArgs.numBlocks = numBlocks;
   hostArgs.numThreads = numThreads;
   hostArgs.enableBidirAg = enableBidirAg;
+
+  if (hasTcpDmRecv) {
+    // Pre-allocate KernelElem for TCPDM initNotify on main thread.
+    // TCPDM's initNotify requires kernElem with recvbuff/nbytes for irecv.
+    FB_COMMCHECK(
+        comm->ctran_->gpe->allocKernelElems(1, 1, &hostResource.recvKernElem));
+    hostResource.recvKernElem->waitNotify.recvbuff = hostResource.tmpRecvBuf;
+    hostResource.recvKernElem->waitNotify.nbytes = hostResource.chunkSize;
+    op->allreduce.kElemStepMap[static_cast<int>(
+        ctran::allreduce::KernElemRole::kTcpDmRecv)] =
+        hostResource.recvKernElem;
+  }
   // rightRemBuf, rightRemKey, leftNotify init from gpe thread for EpochLock
 
   opGroup.push_back(std::move(op));
@@ -1475,6 +1513,12 @@ commResult_t ctranAllReduceRing(
   };
   // Used only in gpe->submit, copied as a Kernel Launch Arg.
   config.algoArgs = &kernArgs;
+
+  // TCPDM: populate SQueues so the kernel can drain scattered TCP chunks
+  if (hasTcpDmRecv) {
+    FB_COMMCHECK(comm->ctran_->mapper->prepareUnpackConsumer(
+        &kernArgs.unpack, numBlocks, opGroup, config));
+  }
 
   // TODO: delete, this is for colltrace: Find a way to make colltrace use
   // settings from above. Currently colltrace cannot fetch information from

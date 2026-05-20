@@ -18,7 +18,6 @@
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "meta/colltrace/CollTrace.h"
 
 #include "comm.h"
 #define CAPTURE_STDOUT_WITH_FAIL_SAFE()                                    \

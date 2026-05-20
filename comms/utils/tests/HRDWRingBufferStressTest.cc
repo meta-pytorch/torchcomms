@@ -118,7 +118,7 @@ EAGER_STRESS_TEST(MultiStreamTimestampOrdering) {
 
   uint64_t badEntries = 0;
   auto result = reader.poll([&](const auto& e, uint64_t) {
-    if (e.timestamp_ns == 0) {
+    if (e.timestamp == 0) {
       ++badEntries;
     }
   });
@@ -142,7 +142,7 @@ EAGER_STRESS_TEST(ConcurrentWriteAndPoll) {
     HRDWRingBufferReader<TestEvent> reader(buf);
     while (!writersDone.load(std::memory_order_acquire)) {
       auto result = reader.poll([&](const auto& e, uint64_t) {
-        if (e.timestamp_ns == 0) {
+        if (e.timestamp == 0) {
           totalBad.fetch_add(1, std::memory_order_relaxed);
         }
       });
@@ -151,7 +151,7 @@ EAGER_STRESS_TEST(ConcurrentWriteAndPoll) {
     }
     // Final drain.
     auto result = reader.poll([&](const auto& e, uint64_t) {
-      if (e.timestamp_ns == 0) {
+      if (e.timestamp == 0) {
         totalBad.fetch_add(1, std::memory_order_relaxed);
       }
     });
@@ -186,15 +186,15 @@ EAGER_STRESS_TEST(SingleStreamMonotonicOrdering) {
   ASSERT_EQ(cudaStreamSynchronize(streams[0]), cudaSuccess);
 
   uint64_t badEntries = 0;
-  uint64_t prevTimestamp = 0;
+  uint32_t prevTimestamp = 0;
   auto result = reader.poll([&](const auto& e, uint64_t) {
-    if (e.timestamp_ns == 0) {
+    if (e.timestamp == 0) {
       ++badEntries;
     }
-    if (prevTimestamp > 0 && e.timestamp_ns < prevTimestamp) {
+    if (prevTimestamp > 0 && e.timestamp < prevTimestamp) {
       ++badEntries;
     }
-    prevTimestamp = e.timestamp_ns;
+    prevTimestamp = e.timestamp;
   });
 
   EXPECT_EQ(badEntries, 0u);
@@ -291,7 +291,7 @@ GRAPH_STRESS_TEST(GraphReplayTimestampOrdering) {
 
   uint64_t badEntries = 0;
   auto result = reader.poll([&](const auto& e, uint64_t) {
-    if (e.timestamp_ns == 0) {
+    if (e.timestamp == 0) {
       ++badEntries;
     }
   });
@@ -315,7 +315,7 @@ GRAPH_STRESS_TEST(GraphReplayConcurrentPoll) {
     HRDWRingBufferReader<TestEvent> reader(buf);
     while (!replaysDone.load(std::memory_order_acquire)) {
       auto result = reader.poll([&](const auto& e, uint64_t) {
-        if (e.timestamp_ns == 0) {
+        if (e.timestamp == 0) {
           totalBad.fetch_add(1, std::memory_order_relaxed);
         }
       });
@@ -324,7 +324,7 @@ GRAPH_STRESS_TEST(GraphReplayConcurrentPoll) {
     }
     // Final drain.
     auto result = reader.poll([&](const auto& e, uint64_t) {
-      if (e.timestamp_ns == 0) {
+      if (e.timestamp == 0) {
         totalBad.fetch_add(1, std::memory_order_relaxed);
       }
     });
@@ -363,7 +363,7 @@ GRAPH_STRESS_TEST(GraphReplayEventValidation) {
         if (tag >= static_cast<uint32_t>(cfg.numStreams)) {
           totalBad.fetch_add(1, std::memory_order_relaxed);
         }
-        if (e.timestamp_ns == 0) {
+        if (e.timestamp == 0) {
           totalBad.fetch_add(1, std::memory_order_relaxed);
         }
         totalCompleted.fetch_add(1, std::memory_order_relaxed);
@@ -414,7 +414,7 @@ TEST_F(HRDWRingBufferStressTest, WrapAroundImmediateNoContention) {
   HRDWRingBufferReader<TestEvent> reader(buf);
   uint64_t readCount = 0;
   auto result = reader.poll([&](const auto& e, uint64_t) {
-    EXPECT_NE(e.timestamp_ns, 0u);
+    EXPECT_NE(e.timestamp, 0u);
     ++readCount;
   });
   // kSize + 1 writes total. Some may be lost due to lapping on tiny ring.
@@ -451,7 +451,7 @@ TEST_F(HRDWRingBufferStressTest, MultiWriterNeverBlocks) {
   HRDWRingBufferReader<TestEvent> reader(buf);
   uint64_t badEntries = 0;
   auto result = reader.poll([&](const auto& e, uint64_t) {
-    if (e.timestamp_ns == 0) {
+    if (e.timestamp == 0) {
       ++badEntries;
     }
   });
