@@ -7,7 +7,6 @@
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "meta/NcclxConfig.h" // @manual
-#include "meta/hints/GlobalHints.h" // @manual
 #include "meta/transport/NcclxIbNetCommConfig.h" // @manual
 #include "nccl.h" // @manual
 
@@ -15,11 +14,11 @@ class CommSplitPerCommConfigTest : public NcclxBaseTestFixture {
  public:
   void SetUp() override {
     NcclxBaseTestFixture::SetUp();
-    ASSERT_EQ(
-        ncclx::setGlobalHint(std::string(ncclx::HintKeys::kCommNoLocal), "1"),
-        ncclSuccess);
+    ncclConfig_t initConfig = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints initHints{{"noLocal", "1"}};
+    initConfig.hints = &initHints;
     comm = ncclx::test::createNcclComm(
-        globalRank, numRanks, localRank, bootstrap_.get());
+        globalRank, numRanks, localRank, bootstrap_.get(), false, &initConfig);
     CUDACHECK_TEST(cudaStreamCreate(&stream));
     CUDACHECK_TEST(cudaMalloc(&dataBuf, sizeof(int) * dataCount));
   }
@@ -28,7 +27,6 @@ class CommSplitPerCommConfigTest : public NcclxBaseTestFixture {
     CUDACHECK_TEST(cudaFree(dataBuf));
     CUDACHECK_TEST(cudaStreamDestroy(stream));
     NCCLCHECK_TEST(ncclCommDestroy(comm));
-    ncclx::resetGlobalHint(std::string(ncclx::HintKeys::kCommNoLocal));
     NcclxBaseTestFixture::TearDown();
   }
 
