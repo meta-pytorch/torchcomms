@@ -14,7 +14,6 @@
 #include "nccl.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "meta/hints/GlobalHints.h"
 
 class NcclxLazyConnectTestFixture
     : public NcclxBaseTestFixture,
@@ -37,8 +36,11 @@ class NcclxLazyConnectTestFixture
 
   ncclComm_t createRootComm() {
     if (isNoLocal()) {
-      ncclx::setGlobalHint(
-          std::string(ncclx::HintKeys::kCommNoLocal).c_str(), "1");
+      ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+      ncclx::Hints hints{{"noLocal", "1"}};
+      config.hints = &hints;
+      return ncclx::test::createNcclComm(
+          globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
     }
     return ncclx::test::createNcclComm(
         globalRank, numRanks, localRank, bootstrap_.get());
@@ -51,9 +53,6 @@ class NcclxLazyConnectTestFixture
   }
 
   void TearDown() override {
-    if (isNoLocal()) {
-      ncclx::resetGlobalHint(std::string(ncclx::HintKeys::kCommNoLocal));
-    }
     if (sendBuf) {
       CUDACHECK_TEST(cudaFree(sendBuf));
       sendBuf = nullptr;

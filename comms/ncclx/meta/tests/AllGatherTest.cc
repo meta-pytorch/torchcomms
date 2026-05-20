@@ -15,9 +15,6 @@
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
-#include "meta/hints/GlobalHints.h"
-#endif
 
 using testinfra::AlgoRAII;
 
@@ -33,20 +30,19 @@ class AllGatherTest : public NcclxBaseTestFixture {
     envs.push_back({"NCCL_COMM_STATE_DEBUG_TOPO", "nolocal"});
 #endif
     NcclxBaseTestFixture::SetUp(envs);
+    ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
 #ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
-    ncclx::setGlobalHint(std::string(ncclx::HintKeys::kCommNoLocal), "1");
+    ncclx::Hints hints{{"noLocal", "1"}};
+    config.hints = &hints;
 #endif
     this->comm = ncclx::test::createNcclComm(
-        globalRank, numRanks, localRank, bootstrap_.get());
+        globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
 
     CUDACHECK_TEST(cudaSetDevice(localRank));
     CUDACHECK_TEST(cudaStreamCreate(&stream));
   }
 
   void TearDown() override {
-#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
-    ncclx::resetGlobalHint(std::string(ncclx::HintKeys::kCommNoLocal));
-#endif
     NCCLCHECK_TEST(ncclCommDestroy(comm));
     CUDACHECK_TEST(cudaStreamDestroy(stream));
     NcclxBaseTestFixture::TearDown();

@@ -10,8 +10,6 @@
 #include "comm.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/testinfra/TestUtils.h"
-#include "meta/hints/CommHintConfig.h" // @manual
-#include "meta/hints/GlobalHints.h" // @manual
 #include "nccl.h"
 #include "transport.h"
 
@@ -35,7 +33,6 @@ class CommWithNoLocalTest : public NcclxBaseTestFixture {
   }
 
   void TearDown() override {
-    ncclx::resetGlobalHint(std::string(ncclx::HintKeys::kCommNoLocal));
     NcclxBaseTestFixture::TearDown();
   }
 };
@@ -68,13 +65,8 @@ TEST_P(CommWithNoLocalTestParam, NoLocalEnableByHint) {
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   config.blocking = blockingInit ? 1 : 0;
   const auto commDescStr = fmt::format("{}-{}", kNcclUtCommDesc, "noLocal");
-  ncclx::Hints noLocalHints({{"commDesc", commDescStr}});
+  ncclx::Hints noLocalHints({{"commDesc", commDescStr}, {"noLocal", "1"}});
   config.hints = &noLocalHints;
-
-  // Enable by hint
-  ASSERT_EQ(
-      ncclx::setGlobalHint(std::string(ncclx::HintKeys::kCommNoLocal), "1"),
-      ncclSuccess);
 
   // Use appropriate RAII wrapper based on creation mode
   std::optional<ncclx::test::NcclCommRAII> comm2Default;
@@ -102,9 +94,6 @@ TEST_P(CommWithNoLocalTestParam, NoLocalEnableByHint) {
   }
 
   EXPECT_TRUE(comm2->noLocal_);
-
-  ASSERT_TRUE(
-      ncclx::resetGlobalHint(std::string(ncclx::HintKeys::kCommNoLocal)));
 
   // Now disabled again
   {
@@ -142,16 +131,11 @@ class CommWithNoLocalCollTest
   void SetUp() override {
     NcclxBaseTestFixture::SetUp();
     algoStats_.enable();
-    ASSERT_EQ(
-        ncclx::setGlobalHint(std::string(ncclx::HintKeys::kCommUseCtran), "1"),
-        ncclSuccess);
     CUDACHECK_TEST(cudaStreamCreate(&stream));
   }
 
   void TearDown() override {
     CUDACHECK_TEST(cudaStreamDestroy(stream));
-    ncclx::resetGlobalHint(std::string(ncclx::HintKeys::kCommNoLocal));
-    ncclx::resetGlobalHint(std::string(ncclx::HintKeys::kCommUseCtran));
     NcclxBaseTestFixture::TearDown();
   }
 
@@ -333,14 +317,14 @@ class CommWithNoLocalCollTest
 TEST_P(CommWithNoLocalCollTest, BaselineRun) {
   const auto [noLocal, collectiveOp] = GetParam();
 
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints{{"useCtran", "1"}};
   if (noLocal) {
-    ASSERT_EQ(
-        ncclx::setGlobalHint(std::string(ncclx::HintKeys::kCommNoLocal), "1"),
-        ncclSuccess);
+    hints.set("noLocal", "1");
   }
-
+  config.hints = &hints;
   ncclx::test::NcclCommRAII comm{
-      globalRank, numRanks, localRank, bootstrap_.get()};
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
   ASSERT_NE(comm.get(), nullptr);
   EXPECT_EQ(comm->noLocal_, noLocal);
 
@@ -359,12 +343,11 @@ TEST_P(CommWithNoLocalCollTest, CtranRun) {
     GTEST_SKIP() << "CtranRun only tests noLocal mode";
   }
 
-  ASSERT_EQ(
-      ncclx::setGlobalHint(std::string(ncclx::HintKeys::kCommNoLocal), "1"),
-      ncclSuccess);
-
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints{{"useCtran", "1"}, {"noLocal", "1"}};
+  config.hints = &hints;
   ncclx::test::NcclCommRAII comm{
-      globalRank, numRanks, localRank, bootstrap_.get()};
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
   ASSERT_NE(comm.get(), nullptr);
   EXPECT_TRUE(comm->noLocal_);
 

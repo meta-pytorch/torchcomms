@@ -21,7 +21,6 @@
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/collectives/PatAvgHelper.h"
-#include "meta/hints/GlobalHints.h" // @manual
 #include "meta/wrapper/DataTypeStrUtils.h"
 
 /**
@@ -46,9 +45,6 @@ class ReduceScatterPatSelectTest : public NcclxBaseTestFixture {
 
   void TearDown() override {
     CUDACHECK_TEST(cudaStreamDestroy(stream));
-    // Reset global hint to avoid affecting subsequent tests
-    ncclx::resetGlobalHint(
-        std::string(ncclx::HintKeys::kCommAlgoReduceScatter));
     NcclxBaseTestFixture::TearDown();
   }
 
@@ -76,10 +72,12 @@ class ReduceScatterPatSelectTest : public NcclxBaseTestFixture {
       std::optional<std::string> expectedAlgo = std::nullopt,
       std::optional<std::string> unexpectedAlgo = std::nullopt,
       std::optional<double> tolerance = std::nullopt) {
+    ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints{{"usePatAvg", usePatAvg ? "1" : "0"}};
+    config.hints = &hints;
     ncclx::test::NcclCommRAII commGuard{
-        globalRank, numRanks, localRank, bootstrap_.get()};
+        globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
     ncclComm_t comm = commGuard.get();
-    comm->usePatAvg_ = usePatAvg;
 
     const size_t count = 8000;
     const size_t allocSize = count * numRanks * sizeof(T);
@@ -132,14 +130,11 @@ class ReduceScatterPatSelectTest : public NcclxBaseTestFixture {
  * so user ops continue through normal algorithm selection.
  */
 TEST_F(ReduceScatterPatSelectTest, UserPreMulSumNotConvertedToPatAvg) {
-  // Enable PAT AVG via global hint before comm creation
-  ASSERT_EQ(
-      ncclx::setGlobalHint(
-          std::string(ncclx::HintKeys::kCommAlgoReduceScatter), "avg:patavg"),
-      ncclSuccess);
-
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints{{"usePatAvg", "1"}};
+  config.hints = &hints;
   ncclx::test::NcclCommRAII commGuard{
-      globalRank, numRanks, localRank, bootstrap_.get()};
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
   ncclComm_t comm = commGuard.get();
   ASSERT_TRUE(comm->usePatAvg_);
 
@@ -193,14 +188,11 @@ TEST_F(ReduceScatterPatSelectTest, UserPreMulSumNotConvertedToPatAvg) {
  * and produces correct results (sum / nRanks).
  */
 TEST_F(ReduceScatterPatSelectTest, BuiltInAvgWithPatAvgWorks) {
-  // Enable PAT AVG via global hint before comm creation
-  ASSERT_EQ(
-      ncclx::setGlobalHint(
-          std::string(ncclx::HintKeys::kCommAlgoReduceScatter), "avg:patavg"),
-      ncclSuccess);
-
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints{{"usePatAvg", "1"}};
+  config.hints = &hints;
   ncclx::test::NcclCommRAII commGuard{
-      globalRank, numRanks, localRank, bootstrap_.get()};
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
   ncclComm_t comm = commGuard.get();
   ASSERT_TRUE(comm->usePatAvg_);
 
@@ -360,14 +352,11 @@ INSTANTIATE_TEST_SUITE_P(
  * This is a negative test - it validates that the proper error is returned.
  */
 TEST_F(ReduceScatterPatSelectTest, GroupedReduceScatterPatAvg) {
-  // Enable PAT AVG via global hint before comm creation
-  ASSERT_EQ(
-      ncclx::setGlobalHint(
-          std::string(ncclx::HintKeys::kCommAlgoReduceScatter), "avg:patavg"),
-      ncclSuccess);
-
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints{{"usePatAvg", "1"}};
+  config.hints = &hints;
   ncclx::test::NcclCommRAII commGuard{
-      globalRank, numRanks, localRank, bootstrap_.get()};
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
   ncclComm_t comm = commGuard.get();
   ASSERT_TRUE(comm->usePatAvg_);
 
@@ -477,14 +466,11 @@ TEST_F(ReduceScatterPatSelectTest, UsePatAvgCvarControl) {
  * 2. Other collectives (AllReduce with ncclAvg) - not affected
  */
 TEST_F(ReduceScatterPatSelectTest, UsePatAvgOnlyAffectsReduceScatterAvg) {
-  // Enable PAT AVG via global hint before comm creation
-  ASSERT_EQ(
-      ncclx::setGlobalHint(
-          std::string(ncclx::HintKeys::kCommAlgoReduceScatter), "avg:patavg"),
-      ncclSuccess);
-
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints{{"usePatAvg", "1"}};
+  config.hints = &hints;
   ncclx::test::NcclCommRAII commGuard{
-      globalRank, numRanks, localRank, bootstrap_.get()};
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
   ncclComm_t comm = commGuard.get();
   ASSERT_TRUE(comm->usePatAvg_);
 

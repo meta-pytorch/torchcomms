@@ -18,7 +18,6 @@
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/testinfra/TestUtils.h"
 #include "meta/NcclxConfig.h" // @manual
-#include "meta/hints/GlobalHints.h" // @manual
 #include "nccl.h"
 
 #define dceil(x, y) ((x / y) + !!(x % y))
@@ -439,13 +438,9 @@ TEST_P(CommWithCtranTestParam, CtranEnableByHint) {
 
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   config.blocking = blockingInit ? 1 : 0;
-  ncclx::Hints ctranHints;
+  ncclx::Hints ctranHints{{"useCtran", "1"}};
   config.hints = &ctranHints;
 
-  // Enable by hint
-  ASSERT_EQ(
-      ncclx::setGlobalHint(std::string(ncclx::HintKeys::kCommUseCtran), "1"),
-      ncclSuccess);
   ncclComm_t comm2;
   if (createMode == TestCommCreateMode::kDefault) {
     comm2 = ncclx::test::createNcclComm(
@@ -469,10 +464,8 @@ TEST_P(CommWithCtranTestParam, CtranEnableByHint) {
   }
 
   ASSERT_TRUE(ctranInitialized(comm2->ctranComm_.get()));
-  ASSERT_TRUE(
-      ncclx::resetGlobalHint(std::string(ncclx::HintKeys::kCommUseCtran)));
 
-  // Now it should be disabled again after hint reset
+  // Now it should be disabled again after no hint
   ncclComm_t comm3 = ncclx::test::createNcclComm(
       globalRank, numRanks, localRank, bootstrap_.get());
   ASSERT_NE(comm3, nullptr);
