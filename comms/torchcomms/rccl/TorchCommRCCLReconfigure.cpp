@@ -158,10 +158,38 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::reconfigure(
 
   // Clean up the existing communicator before any reconfiguration.
   if (nccl_comm_) {
+    // Check for in-flight work before deciding whether to revoke.
+    // Mirrors NCCL's workq_.garbageCollect() pattern: snapshot the queued
+    // work items (under the mutex), then query their HIP event status without
+    // holding the lock (checkStatus() calls hipEventQuery).
+    bool workInFlight = false;
+    {
+      std::vector<c10::intrusive_ptr<TorchWorkRCCL>> pendingWork;
+      {
+        std::lock_guard<std::mutex> lock(work_queues_mutex_);
+        for (auto& [stream, q] : stream_work_queues_) {
+          auto tmp = q;
+          while (!tmp.empty()) {
+            pendingWork.push_back(tmp.front());
+            tmp.pop();
+          }
+        }
+      }
+      for (auto& work : pendingWork) {
+        auto s = work->checkStatus();
+        if (s == TorchWork::WorkStatus::NOT_STARTED ||
+            s == TorchWork::WorkStatus::INPROGRESS) {
+          workInFlight = true;
+          break;
+        }
+      }
+    }
+
     // Only revoke when this rank is leaving the quorum (new joiner or fresh
-    // init). In-quorum ranks keep the comm alive for commShrink; revoking it
-    // would invalidate the comm before shrink runs.
-    if (!inQuorum) {
+    // init) AND there is work in flight that needs to be cancelled. In-quorum
+    // ranks keep the comm alive for commShrink; revoking it would invalidate
+    // the comm before shrink runs.
+    if (!inQuorum && workInFlight) {
       RCCL_CHECK_IGNORE(
           rccl_api_,
           rccl_api_->commRevoke(nccl_comm_),
