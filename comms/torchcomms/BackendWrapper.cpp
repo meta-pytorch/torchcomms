@@ -324,10 +324,21 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::gather(
     std::vector<std::vector<at::Tensor>>& outputTensors,
     std::vector<at::Tensor>& inputTensors,
     const c10d::GatherOptions& opts) {
-  TORCH_CHECK(
-      outputTensors.size() == 1,
-      "Only single output tensor list supported, but got ",
-      outputTensors.size());
+  if (getRank() == opts.rootRank) {
+    TORCH_CHECK(
+        outputTensors.size() == 1,
+        "Only single output tensor list supported on root rank, but got ",
+        outputTensors.size());
+  } else if (outputTensors.empty()) {
+    // Normalize non-root c10d gather outputs to wrapper's empty list shape
+    outputTensors = {};
+    outputTensors.emplace_back();
+  } else {
+    TORCH_CHECK(
+        outputTensors.size() == 1,
+        "Only single output tensor list supported on non-root ranks, but got ",
+        outputTensors.size());
+  }
   TORCH_CHECK(
       inputTensors.size() == 1,
       "Only single input tensor supported, but got ",

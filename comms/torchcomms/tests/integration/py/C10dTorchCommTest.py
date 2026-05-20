@@ -95,18 +95,17 @@ class TestC10dTorchCommsBasic(unittest.TestCase):
         dist.broadcast(tensor, src=0)
         self.assertEqual(tensor.item(), 1)
 
-    # TODO:Enable when PR https://github.com/pytorch/pytorch/pull/178533 is merged
-    # def test_gather(self):
-    #    tensor = torch.tensor([dist.get_rank()], dtype=torch.float32)
-    #    gather_list = None
-    #    if dist.get_rank() == 0:
-    #        gather_list = [
-    #            torch.empty_like(tensor) for _ in range(dist.get_world_size())
-    #        ]
-    #    dist.gather(tensor, gather_list=gather_list, dst=0)
-    #    if dist.get_rank() == 0:
-    #        expected = list(range(dist.get_world_size()))
-    #        self.assertEqual([t.item() for t in gather_list], expected)
+    def test_gather(self):
+        tensor = torch.tensor([self._rank_value()], dtype=torch.float32)
+        gather_list = None
+        if dist.get_rank() == 0:
+            gather_list = [
+                torch.empty_like(tensor) for _ in range(dist.get_world_size())
+            ]
+        dist.gather(tensor, gather_list=gather_list, dst=0)
+        if dist.get_rank() == 0:
+            expected = list(range(1, dist.get_world_size() + 1))
+            self.assertEqual([t.item() for t in gather_list], expected)
 
     def test_scatter(self):
         if dist.get_rank() == 0:
