@@ -27,7 +27,6 @@ class Config {
   // When adding a new field, also add its key to knownHintKeys below.
   std::string commDesc = "undefined";
   std::vector<int> splitGroupRanks;
-  std::string ncclAllGatherAlgo = "undefined";
   bool fastInitMode = false;
 
   bool useCtran = false;
