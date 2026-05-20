@@ -53,8 +53,6 @@
 #include "meta/comms-monitor/CommsMonitor.h"
 #include "meta/commstate/FactoryCommStateX.h"
 
-#include "meta/hints/CommHintConfig.h"
-
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/EventsScubaUtil.h"
 #include "comms/utils/logger/LoggingFormat.h"
@@ -2425,15 +2423,14 @@ static ncclResult_t ncclCommInitRankDev(ncclComm_t* newcomm, int nranks, int nId
   NCCLCHECKGOTO(ncclCudaHostCalloc(&comm->abortFlagDev, 1), res, fail);
   NCCLCHECKGOTO(ncclCalloc(&comm->abortFlagRefCount, 1), res, fail);
   comm->startMagic = comm->endMagic = NCCL_MAGIC; // Used to detect comm corruption.
-  // Ctran can be enabled either globally via CVAR or per-communicator using hint
-  comm->useCtran_ = ncclx::commUseCtran();
-  comm->usePatAvg_ = ncclx::commUsePatAvg();
-  comm->noLocal_ = ncclx::commNoLocal();
-  INFO(NCCL_INIT, "CommInit comm %p commHash 0x%lx commDesc %s useCtran %d usePatAvg %d noLocal %d: %s %s %s",
+  // [META:PER_COMM_CONFIG] Read per-comm config from parsed ncclx::Config
+  comm->useCtran_ = NCCLX_CONFIG_FIELD(*config, useCtran);
+  comm->usePatAvg_ = NCCLX_CONFIG_FIELD(*config, usePatAvg);
+  comm->noLocal_ = NCCLX_CONFIG_FIELD(*config, noLocal);
+  INFO(NCCL_INIT, "CommInit comm %p commHash 0x%lx commDesc %s useCtran %d usePatAvg %d noLocal %d",
        comm, getHash(commId->internal, NCCL_UNIQUE_ID_BYTES),
        NCCLX_CONFIG_FIELD(*config, commDesc).c_str(),
-       comm->useCtran_, comm->usePatAvg_, comm->noLocal_, ncclx::getCommUseCtranConfig().c_str(),
-       ncclx::getCommUsePatAvgConfig().c_str(), ncclx::getCommNoLocalConfig().c_str());
+       comm->useCtran_, comm->usePatAvg_, comm->noLocal_);
   *comm->abortFlagRefCount = 1;
   NCCLCHECKGOTO(parseCommConfig(comm, config), res, fail);
   /* start with ncclInProgress and will be changed to ncclSuccess if init succeeds. */
@@ -3148,14 +3145,13 @@ static ncclResult_t ncclCommInitChildComm(ncclComm_t comm, ncclComm_t* newcomm, 
 
     /* start with ncclInternalError and will be changed to ncclSuccess if init succeeds. */
     childComm->initState = ncclInternalError;
-    // Ctran can be enabled either globally via CVAR or per-communicator using hint
-    childComm->useCtran_ = ncclx::commUseCtran();
-    childComm->usePatAvg_ = ncclx::commUsePatAvg();
-    childComm->noLocal_ = ncclx::commNoLocal();
-    INFO(NCCL_INIT, "CommSplit comm %p commDesc %s useCtran %d usePatAvg %d noLocal %d: %s %s %s",
+    // [META:PER_COMM_CONFIG] Read per-comm config from parsed ncclx::Config
+    childComm->useCtran_ = NCCLX_CONFIG_FIELD(childComm->config, useCtran);
+    childComm->usePatAvg_ = NCCLX_CONFIG_FIELD(childComm->config, usePatAvg);
+    childComm->noLocal_ = NCCLX_CONFIG_FIELD(childComm->config, noLocal);
+    INFO(NCCL_INIT, "CommSplit comm %p commDesc %s useCtran %d usePatAvg %d noLocal %d",
         childComm, NCCLX_CONFIG_FIELD(childComm->config, commDesc).c_str(),
-        childComm->useCtran_, childComm->usePatAvg_, childComm->noLocal_, ncclx::getCommUseCtranConfig().c_str(),
-        ncclx::getCommUsePatAvgConfig().c_str(), ncclx::getCommNoLocalConfig().c_str());
+        childComm->useCtran_, childComm->usePatAvg_, childComm->noLocal_);
   }
 
   NEW_NOTHROW_GOTO(job, ncclCommInitRankAsyncJob, res, fail);
