@@ -148,7 +148,6 @@ class BackendWrapper : public c10d::Backend {
 
  private:
   std::shared_ptr<TorchComm> comm_;
-  std::shared_ptr<TorchCommBackend> backend_;
   c10::intrusive_ptr<Options> options_;
 };
 
