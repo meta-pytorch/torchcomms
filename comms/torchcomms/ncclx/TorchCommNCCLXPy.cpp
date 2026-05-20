@@ -69,6 +69,7 @@ Returns:
     dict[str, str]: Key-value pairs of communicator state.
 )",
           py::call_guard<py::gil_scoped_release>())
+      .def("get_nccl_comm_ptr", &TorchCommNCCLX::getCommPtr)
 #ifdef NCCL_REDUCE_SCATTER_QUANTIZE_SUPPORTED
       .def(
           "reduce_scatter_quantized",
