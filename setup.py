@@ -59,14 +59,21 @@ TORCH_ROOT = os.path.dirname(torch.__file__)
 
 print("Configuration:")
 USE_NCCL = flag_enabled("USE_NCCL", True)
-USE_NCCLX = flag_enabled("USE_NCCLX", True)
+# NCCLX is no longer bundled with the core torchcomms wheel. It now ships as a
+# separate `torchcomms-ncclx` wheel (see packaging/ncclx/). USE_NCCLX is kept
+# here as an off-by-default escape hatch for downstream builds that still want
+# the old bundled behavior; the upstream torchcomms wheel never builds it.
+USE_NCCLX = flag_enabled("USE_NCCLX", False)
 USE_GLOO = flag_enabled("USE_GLOO", True)
 USE_RCCL = flag_enabled("USE_RCCL", False)
 USE_RCCLX = flag_enabled("USE_RCCLX", False)
 USE_XCCL = flag_enabled("USE_XCCL", False)
 IS_ROCM = hasattr(torch.version, "hip") and torch.version.hip is not None
-# Transport is CUDA-only; disable by default on ROCm but allow explicit opt-in.
-USE_TRANSPORT = flag_enabled("USE_TRANSPORT", not IS_ROCM)
+# Transport is CUDA-only AND depends on libfolly, which is built by
+# build_ncclx.sh. With USE_NCCLX=OFF as the default for the core wheel, that
+# dep isn't installed, so Transport defaults to OFF too. Enable explicitly
+# (and ensure folly is available) when you want it bundled.
+USE_TRANSPORT = flag_enabled("USE_TRANSPORT", False)
 USE_TRITON = flag_enabled("USE_TRITON", False)
 
 requirement_path = os.path.join(ROOT, "requirements.txt")

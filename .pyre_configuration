@@ -11,6 +11,9 @@
   "ignore_all_errors": [
   ],
   "site_package_search_strategy": "all",
+  "search_path": [
+    "comms/torchcomms/ncclx"
+  ],
   "source_directories": [
     "scripts",
     "comms"

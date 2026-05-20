@@ -1,7 +1,15 @@
 #!/bin/bash
 # Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# Runs the torchcomms Python unit tests against one or more backends.
+#
+# Set TEST_BACKENDS to a comma-separated list of backends to exercise.
+# Default: nccl,gloo (the core wheel). Use TEST_BACKENDS=ncclx after
+# installing the standalone torchcomms-ncclx wheel.
 
 set -ex
+
+TEST_BACKENDS=${TEST_BACKENDS:-nccl,gloo}
 
 TORCHCOMMS_ROOT="comms/torchcomms"
 
@@ -31,24 +39,40 @@ run_tests () {
     done
 }
 
-# NCCL
-export TEST_BACKEND=nccl
-run_tests
+run_for_backend () {
+    local backend="$1"
+    case "$backend" in
+        nccl)
+            export TEST_BACKEND=nccl
+            run_tests
+            unset TEST_BACKEND
+            ;;
+        ncclx)
+            python -c "import torchcomms, torchcomms_ncclx; assert torchcomms.is_backend_built('ncclx'), 'ncclx backend not registered'"
+            export TEST_BACKEND=ncclx
+            run_tests
+            unset TEST_BACKEND
+            ;;
+        gloo)
+            # CPU then CUDA
+            export TEST_BACKEND=gloo
+            export TEST_DEVICE=cpu
+            export CUDA_VISIBLE_DEVICES=""
+            run_tests
+            unset TEST_DEVICE CUDA_VISIBLE_DEVICES
 
-# NCCLX
-export TEST_BACKEND=ncclx
-run_tests
+            export TEST_DEVICE=cuda
+            run_tests
+            unset TEST_BACKEND TEST_DEVICE
+            ;;
+        *)
+            echo "Unknown backend in TEST_BACKENDS: $backend" >&2
+            exit 1
+            ;;
+    esac
+}
 
-# Gloo with CPU
-export TEST_BACKEND=gloo
-export TEST_DEVICE=cpu
-export CUDA_VISIBLE_DEVICES=""
-run_tests
-unset TEST_DEVICE
-unset CUDA_VISIBLE_DEVICES
-
-# Gloo with CUDA
-export TEST_BACKEND=gloo
-export TEST_DEVICE=cuda
-run_tests
-unset TEST_DEVICE
+IFS=',' read -ra _backends <<< "$TEST_BACKENDS"
+for backend in "${_backends[@]}"; do
+    run_for_backend "$backend"
+done

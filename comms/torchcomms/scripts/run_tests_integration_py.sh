@@ -1,11 +1,17 @@
 #!/bin/bash
 # Copyright (c) Meta Platforms, Inc. and affiliates.
-
-# DO NOT DELETE
-# This script runs the Python integration tests.
-# This is used as part of the GitHub CI.
+#
+# DO NOT DELETE — used in GitHub CI.
+#
+# Runs the torchcomms Python integration tests against one or more backends.
+#
+# Set TEST_BACKENDS to a comma-separated list of backends to exercise.
+# Default: nccl,gloo (the core wheel). Use TEST_BACKENDS=ncclx after
+# installing the standalone torchcomms-ncclx wheel.
 
 set -ex
+
+TEST_BACKENDS=${TEST_BACKENDS:-nccl,gloo}
 
 # If no InfiniBand devices are present, disable the IB backend to avoid
 # CtranIbSingleton init failures ("Operation not permitted") and cascading
@@ -36,31 +42,42 @@ run_tests () {
     done
 }
 
-# NCCL
-export TEST_BACKEND=nccl
-run_tests
+run_for_backend () {
+    local backend="$1"
+    case "$backend" in
+        nccl)
+            export TEST_BACKEND=nccl
+            run_tests
+            unset TEST_BACKEND
+            ;;
+        ncclx)
+            python -c "import torchcomms, torchcomms_ncclx; assert torchcomms.is_backend_built('ncclx'), 'ncclx backend not registered'"
+            export TEST_BACKEND=ncclx
+            run_tests
+            # TODO(d4l3k): reenable ncclx-specific integration tests once they
+            # are passing. Failed to initialize NCCL communicator: internal error
+            # run_tests "$NCCLX_INTEGRATION_TEST_DIRS"
+            unset TEST_BACKEND
+            ;;
+        gloo)
+            export TEST_BACKEND=gloo
+            export TEST_DEVICE=cpu
+            export CUDA_VISIBLE_DEVICES=""
+            run_tests
+            unset TEST_DEVICE CUDA_VISIBLE_DEVICES
 
-# NCCLX (skip if built with USE_NCCLX=0)
-if [ "${USE_NCCLX}" != "0" ] && [ "${USE_NCCLX}" != "OFF" ]; then
-    export TEST_BACKEND=ncclx
-    run_tests
-    # TODO(d4l3k): reenable once NCCLX tests are passing
-    # Failed to initialize NCCL communicator: internal error
-    #run_tests "$NCCLX_INTEGRATION_TEST_DIRS"
-else
-    echo "Skipping ncclx tests (USE_NCCLX=${USE_NCCLX})"
-fi
+            export TEST_DEVICE=cuda
+            run_tests
+            unset TEST_BACKEND TEST_DEVICE
+            ;;
+        *)
+            echo "Unknown backend in TEST_BACKENDS: $backend" >&2
+            exit 1
+            ;;
+    esac
+}
 
-# Gloo with CPU
-export TEST_BACKEND=gloo
-export TEST_DEVICE=cpu
-export CUDA_VISIBLE_DEVICES=""
-run_tests
-unset TEST_DEVICE
-unset CUDA_VISIBLE_DEVICES
-
-# Gloo with CUDA
-export TEST_BACKEND=gloo
-export TEST_DEVICE=cuda
-run_tests
-unset TEST_DEVICE
+IFS=',' read -ra _backends <<< "$TEST_BACKENDS"
+for backend in "${_backends[@]}"; do
+    run_for_backend "$backend"
+done

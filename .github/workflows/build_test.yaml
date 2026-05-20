@@ -1,5 +1,12 @@
 name: Build and test torchcomms
 
+# Two `package` axes:
+#   - core:  the `torchcomms` wheel (NCCL + Gloo).
+#   - ncclx: the standalone `torchcomms-ncclx` wheel that depends on core.
+#            Also where the C++ tests live (test utilities need libfolly,
+#            which is only installed by build_ncclx.sh).
+# `fail-fast: false` means an ncclx regression doesn't block the core signal.
+
 on:
   push:
     branches:
@@ -15,77 +22,60 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - runs-on: "linux.g5.12xlarge.nvidia.gpu"
-            gpu-arch-type: "cuda"
-            gpu-arch-version: "13.0"
-            torch-version: "stable"
-          - runs-on: "linux.g5.12xlarge.nvidia.gpu"
-            gpu-arch-type: "cuda"
-            gpu-arch-version: "13.0"
-            torch-version: "nightly"
-          - runs-on: "linux.g5.12xlarge.nvidia.gpu"
-            gpu-arch-type: "cuda"
-            gpu-arch-version: "13.0"
-            torch-version: "nightly"
-            build-flags: "USE_NCCLX=0 USE_TRANSPORT=0"
-
+        torch-version: [stable, nightly]
+        package: [core, ncclx]
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     permissions:
       id-token: write
       contents: read
     with:
-      timeout: 60
-      runner: ${{ matrix.runs-on }}
-      gpu-arch-type: ${{ matrix.gpu-arch-type }}
-      gpu-arch-version: ${{ matrix.gpu-arch-version }}
-      upload-artifact: build-artifacts-${{ matrix.torch-version }}-${{ matrix.gpu-arch-type }}-${{ matrix.gpu-arch-version }}-${{ matrix.build-flags }}
+      timeout: 120
+      runner: "linux.g5.12xlarge.nvidia.gpu"
+      gpu-arch-type: "cuda"
+      gpu-arch-version: "13.0"
+      upload-artifact: build-artifacts-${{ matrix.torch-version }}-${{ matrix.package }}
       script: |
         set -ex
-        source .github/scripts/setup_env.sh --with-cmake --cuda-version "${{ matrix.gpu-arch-version }}" "${{ matrix.torch-version }}"
+        source .github/scripts/setup_env.sh --with-cmake --cuda-version "13.0" "${{ matrix.torch-version }}"
 
-        export ${{ matrix.build-flags }}
-
-        # Build wheel
+        # Always produce the core wheel; the ncclx wheel links against it.
         pip install build
         python -m build --wheel --no-isolation
-
         mkdir -p "${RUNNER_ARTIFACT_DIR}"
         cp dist/*.whl "${RUNNER_ARTIFACT_DIR}/"
+
+        if [ "${{ matrix.package }}" = "ncclx" ]; then
+          pip install dist/*.whl
+          ./build_ncclx.sh
+          python -m build --wheel --no-isolation --outdir dist/ncclx ./comms/torchcomms/ncclx
+          cp dist/ncclx/*.whl "${RUNNER_ARTIFACT_DIR}/"
+        fi
 
         python -c "import torch; print(torch.__version__)" > "${RUNNER_ARTIFACT_DIR}/torch_version.txt"
 
   build_and_run_cpp_tests:
+    # C++ tests live with the ncclx build because comms/utils/checks.h (used
+    # transitively by the test utilities) includes <folly/String.h>, and folly
+    # is only installed by build_ncclx.sh.
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - runs-on: "linux.g5.12xlarge.nvidia.gpu"
-            gpu-arch-type: "cuda"
-            gpu-arch-version: "13.0"
-            torch-version: "stable"
-          - runs-on: "linux.g5.12xlarge.nvidia.gpu"
-            gpu-arch-type: "cuda"
-            gpu-arch-version: "13.0"
-            torch-version: "nightly"
-
+        torch-version: [stable, nightly]
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     permissions:
       id-token: write
       contents: read
     with:
-      timeout: 60
-      runner: ${{ matrix.runs-on }}
-      gpu-arch-type: ${{ matrix.gpu-arch-type }}
-      gpu-arch-version: ${{ matrix.gpu-arch-version }}
+      timeout: 120
+      runner: "linux.g5.12xlarge.nvidia.gpu"
+      gpu-arch-type: "cuda"
+      gpu-arch-version: "13.0"
       script: |
         set -ex
-        source .github/scripts/setup_env.sh --with-cmake --cuda-version "${{ matrix.gpu-arch-version }}" "${{ matrix.torch-version }}"
-
+        source .github/scripts/setup_env.sh --with-cmake --cuda-version "13.0" "${{ matrix.torch-version }}"
         export DISABLED_TESTS="${{ vars.DISABLED_TESTS }}"
 
-        # Build and run C++ tests
-        cmake -B build_tests -G Ninja -DBUILD_TESTS=ON
+        cmake -B build_tests -G Ninja -DBUILD_TESTS=ON -DUSE_NCCLX=ON
         cmake --build build_tests
         cd build_tests && ctest --output-on-failure
 
@@ -94,45 +84,38 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - runs-on: "linux.g5.12xlarge.nvidia.gpu"
-            gpu-arch-type: "cuda"
-            gpu-arch-version: "13.0"
-            torch-version: "stable"
-          - runs-on: "linux.g5.12xlarge.nvidia.gpu"
-            gpu-arch-type: "cuda"
-            gpu-arch-version: "13.0"
-            torch-version: "nightly"
-          - runs-on: "linux.g5.12xlarge.nvidia.gpu"
-            gpu-arch-type: "cuda"
-            gpu-arch-version: "13.0"
-            torch-version: "nightly"
-            build-flags: "USE_NCCLX=0 USE_TRANSPORT=0"
-
+        torch-version: [stable, nightly]
+        package: [core, ncclx]
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     permissions:
       id-token: write
       contents: read
     with:
       timeout: 120
-      runner: ${{ matrix.runs-on }}
-      gpu-arch-type: ${{ matrix.gpu-arch-type }}
-      gpu-arch-version: ${{ matrix.gpu-arch-version }}
-      download-artifact: build-artifacts-${{ matrix.torch-version }}-${{ matrix.gpu-arch-type }}-${{ matrix.gpu-arch-version }}-${{ matrix.build-flags }}
+      runner: "linux.g5.12xlarge.nvidia.gpu"
+      gpu-arch-type: "cuda"
+      gpu-arch-version: "13.0"
+      download-artifact: build-artifacts-${{ matrix.torch-version }}-${{ matrix.package }}
       script: |
         set -ex
         TORCH_VERSION=$(cat "${RUNNER_ARTIFACT_DIR}/torch_version.txt")
-        source .github/scripts/setup_env.sh --cuda-version "${{ matrix.gpu-arch-version }}" --torch-version "$TORCH_VERSION" "${{ matrix.torch-version }}"
-
-        export ${{ matrix.build-flags }}
+        source .github/scripts/setup_env.sh --cuda-version "13.0" --torch-version "$TORCH_VERSION" "${{ matrix.torch-version }}"
         export DISABLED_TESTS="${{ vars.DISABLED_TESTS }}"
 
-        # Install from pre-built wheel (skip build step)
-        WHEEL=$(ls "${RUNNER_ARTIFACT_DIR}"/*.whl)
-        pip install "${WHEEL}[dev]"
+        # Always install the core wheel — ncclx package or not. The core
+        # wheel ships pytest etc. via [dev].
+        CORE_WHEEL=$(ls "${RUNNER_ARTIFACT_DIR}"/torchcomms-*.whl | grep -v ncclx | head -1)
+        pip install "${CORE_WHEEL}[dev]"
 
-        python -c "import torchcomms"
+        if [ "${{ matrix.package }}" = "ncclx" ]; then
+          NCCLX_WHEEL=$(ls "${RUNNER_ARTIFACT_DIR}"/torchcomms_ncclx-*.whl)
+          pip install "${NCCLX_WHEEL}"
+          export TEST_BACKENDS=ncclx
+        else
+          export TEST_BACKENDS=nccl,gloo
+        fi
 
-        # Run Python tests
+        python -c "import torchcomms; print('built backends:', torchcomms.built_backends())"
+
         comms/torchcomms/scripts/run_tests_unit_py.sh
         comms/torchcomms/scripts/run_tests_integration_py.sh
