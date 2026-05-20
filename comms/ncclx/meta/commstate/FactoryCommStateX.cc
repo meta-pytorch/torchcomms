@@ -90,8 +90,7 @@ ncclResult_t initCommStateXFromNcclComm(void* _comm, CtranComm* ctranComm) {
 
   auto* bootstrap = ctranComm->bootstrap_.get();
 
-  const int vCliqueSize =
-      commVCliqueSize(NCCLX_CONFIG_FIELD(comm->config, vCliqueSize));
+  const int vCliqueSize = NCCLX_CONFIG_FIELD(comm->config, vCliqueSize);
 
   ctranComm->statex_ = std::make_unique<CommStateX>(
       comm->rank,
