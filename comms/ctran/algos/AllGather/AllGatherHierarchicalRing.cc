@@ -10,7 +10,6 @@
 #include <vector>
 
 #include "comms/ctran/CtranComm.h"
-#include "comms/ctran/CtranPipes.h"
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
@@ -377,9 +376,7 @@ commResult_t ctranAllGatherHierarchicalRing(
     FB_COMMCHECK(
         ensureReadyCounterCapacity(comm, readyCounters, overlapParams.stream));
     overlapParams.ready_counters = comm->hierarchicalAgReadyCounters_;
-    FB_COMMCHECK(ctran::ctranPreparePipesTrace(comm, overlapParams.trace));
     comms::pipes::launch_hierarchical_allgather_overlap(overlapParams);
-    ctran::ctranEnqueuePipesTraceDrain(comm, overlapParams.stream);
   } else {
     comms::pipes::launch_hierarchical_allgather_fused(params);
   }
