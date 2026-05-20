@@ -1762,6 +1762,24 @@ TEST_F(LazyModeTestFixture, MaterializeOnAccess) {
 
     auto* devPtr = transport->getP2pTransportDevice(peerRank);
     EXPECT_NE(devPtr, nullptr);
+    EXPECT_TRUE(transport->isPeerMaterialized(peerRank));
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBGDA not available: " << e.what();
+  }
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+}
+
+TEST_F(LazyModeTestFixture, QueueThenConnect) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Requires exactly 2 ranks";
+  }
+  try {
+    auto transport = createLazyTransport();
+    int peerRank = (globalRank == 0) ? 1 : 0;
+
+    transport->queuePeerForMaterialization(peerRank);
+    EXPECT_FALSE(transport->isPeerMaterialized(peerRank));
+
     transport->connectPeers();
     EXPECT_TRUE(transport->isPeerMaterialized(peerRank));
   } catch (const std::exception& e) {

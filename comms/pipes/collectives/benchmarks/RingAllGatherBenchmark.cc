@@ -190,10 +190,15 @@ class RingAllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
       auto& rp = launch_params.rings[r];
       rp.prev_rank = rings[r].prev_rank;
       rp.next_rank = rings[r].next_rank;
-      rp.prev = transport->getP2pTransportDevice(rings[r].prev_rank);
-      rp.next = transport->getP2pTransportDevice(rings[r].next_rank);
+      transport->queuePeerForMaterialization(rp.prev_rank);
+      transport->queuePeerForMaterialization(rp.next_rank);
     }
     transport->connectPeers();
+    for (int r = 0; r < config.num_rings; r++) {
+      auto& rp = launch_params.rings[r];
+      rp.prev = transport->getP2pTransportDevice(rp.prev_rank);
+      rp.next = transport->getP2pTransportDevice(rp.next_rank);
+    }
 
     CudaEvent start, stop;
     const int n_warmup = 5;
