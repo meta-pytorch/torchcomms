@@ -64,10 +64,19 @@ constexpr size_t kDefaultGraphTimeoutCheckIntervalMs = 1000;
 // Global call-once check for graph timeout monitoring (env var gated).
 // Reads TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING on first call; caches result.
 // Default: enabled. Set to "0" or "false" to disable (for benchmarking).
+// Also returns false when NCCL_COLLTRACE_TRACE_CUDA_GRAPH is enabled, since
+// the colltrace watchdog plugin handles graph timeout detection instead.
 bool isGraphTimeoutMonitoringEnabled();
 
 // Test-only: reset the cached state so next call re-reads the env var.
 void resetGraphTimeoutMonitoringCacheForTest();
+
+// When NCCL_COLLTRACE_TRACE_CUDA_GRAPH is enabled, configures the colltrace
+// watchdog plugin to handle async error checking and timeout detection for
+// graph-captured collectives via ncclx global hints.
+// No-op when TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING is explicitly disabled.
+// Returns true if colltrace graph tracing is active and all hints succeeded.
+bool tryEnableColltraceTimeoutWatchdog(std::chrono::milliseconds timeout);
 
 class TorchCommNCCLX : public TorchCommBackend,
                        public std::enable_shared_from_this<TorchCommNCCLX> {
