@@ -35,9 +35,16 @@ export USE_GLOO=OFF
 export USE_TRANSPORT=OFF
 export USE_SYSTEM_LIBS=1
 
-python3 -m pip install typing-extensions numpy sympy
 python3 -m pip install --no-deps --pre torch pytorch-triton-xpu --index-url https://download.pytorch.org/whl/nightly/xpu --force-reinstall --no-cache-dir 
-cd torchcomms && pip install . --no-deps --no-build-isolation && cd ..
+
+cd torchcomms && \
+    # Parse the base dev array directly out of setup.py
+    sed -n '/"dev": \[/,/\]/p' setup.py | grep -v -E '"dev"|\[|\]' | sed -e 's/[", ]//g' > requirements-xccl.txt && \
+    printf "%s\n" "typing-extensions" "sympy" >> requirements-xccl.txt  #Add additonal deps for xccl
+    python3 -m pip install -r requirements-xccl.txt && \
+    # Install torchcomms package without additional dependencies
+    python3 -m pip install . --no-build-isolation --no-deps && \
+cd ..
 
 #Check Intel XPU visibility
 python3 -c "import torch; import torchcomms; print(f'Torch version: {torch.__version__}')"
