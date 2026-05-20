@@ -368,6 +368,10 @@ class TorchCommNCCLX : public TorchCommBackend,
   }
 
   void checkGraphEvents();
+  CommState handleFatalTransitionFromWatchdog(
+      CommState state_before,
+      CommState state_after);
+  void maybeAbortProcessFromWatchdog(CommState state);
 
   struct Configs {
     size_t max_event_pool_size_{kDefaultMaxEventPoolSize};
