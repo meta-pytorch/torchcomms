@@ -165,6 +165,16 @@ const ctran::CtranEnvs kHierarchicalRingEnvs = {
     {"NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE", "33554432"},
 };
 
+const ctran::CtranEnvs kHierarchicalRingOverlapEnvs = {
+    {"NCCL_CTRAN_USE_PIPES", "1"},
+    {"NCCL_CTRAN_IBGDA_SENDRECV_ENABLE", "1"},
+    {"NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE", "33554432"},
+    {"NCCL_CTRAN_HIER_AG_OVERLAP_ENABLE", "1"},
+    {"NCCL_CTRAN_PIPES_TRACE_ENABLE", "1"},
+    {"NCCL_CTRAN_PIPES_TRACE_RING_SIZE", "65536"},
+    {"NCCL_MNNVL_ENABLE", "0"},
+};
+
 } // namespace
 
 // Param: (CtranEnvs, (algo, offset, count, inplace, memType, iter, pairColl))
@@ -461,6 +471,21 @@ INSTANTIATE_TEST_SUITE_P(
     CtranAllgatherTestParam,
     ::testing::Combine(
         ::testing::Values(kHierarchicalRingEnvs),
+        ::testing::Combine(
+            testing::Values(NCCL_ALLGATHER_ALGO::cthierarchical_ring),
+            testing::Values(0),
+            testing::Values(8192, 1),
+            testing::Values(kTestInPlace, kTestOutOfPlace),
+            testing::Values(kMemNcclMemAlloc),
+            testing::Values(1),
+            testing::Values(kTestPairNone))),
+    getTestName);
+
+INSTANTIATE_TEST_SUITE_P(
+    CtranTestHierarchicalRingOverlap,
+    CtranAllgatherTestParam,
+    ::testing::Combine(
+        ::testing::Values(kHierarchicalRingOverlapEnvs),
         ::testing::Combine(
             testing::Values(NCCL_ALLGATHER_ALGO::cthierarchical_ring),
             testing::Values(0),
