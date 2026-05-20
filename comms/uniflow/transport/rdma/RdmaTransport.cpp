@@ -779,7 +779,10 @@ Result<uint32_t> RdmaTransport::spray(
 // ---------------------------------------------------------------------------
 
 void RdmaTransport::ioLooper() noexcept {
-  // Phase 1 — Post: walk pendingTransfers_ front-to-back.
+  // Phase 1 — Poll: drain all CQs (round-robin).
+  pollCompletions();
+
+  // Phase 2 — Post: walk pendingTransfers_ front-to-back.
   while (!pendingTransfers_.empty()) {
     auto& entry = pendingTransfers_.front();
 
@@ -819,9 +822,6 @@ void RdmaTransport::ioLooper() noexcept {
       break;
     }
   }
-
-  // Phase 2 — Poll: drain all CQs.
-  pollCompletions();
 
   // Phase 3 — Fulfill: walk pendingCompletions_ front-to-back for in-order
   // promise delivery.
@@ -914,10 +914,21 @@ std::future<Status> RdmaTransport::rdmaTransfer(
 void RdmaTransport::pollCompletions() {
   constexpr int kNumBatch = 16;
 
-  for (size_t i = 0; i < cqs_.size(); ++i) {
-    int expected = numPendingCqe_[i];
-    ibv_wc wcs[kNumBatch];
-    while (expected > 0) {
+  // Cap total CQEs per call to ensure fairness with other transports
+  // sharing the same EventBase.
+  const uint64_t maxCqes = config_.maxWr * qps_.size();
+  uint64_t totalDrained = 0;
+
+  // Round-robin: poll one batch from each CQ per round, repeat until
+  // CQs are empty or the cap is reached.
+  while (totalDrained < maxCqes) {
+    uint64_t before = totalDrained;
+    for (size_t i = 0; i < cqs_.size() && totalDrained < maxCqes; ++i) {
+      if (numPendingCqe_[i] <= 0) {
+        continue;
+      }
+
+      ibv_wc wcs[kNumBatch];
       auto pollResult = ibvApi_->pollCq(cqs_[i], kNumBatch, wcs);
       if (pollResult.hasError()) {
         UNIFLOW_LOG_ERROR(
@@ -933,6 +944,7 @@ void RdmaTransport::pollCompletions() {
       }
 
       int n = pollResult.value();
+      totalDrained += static_cast<uint64_t>(n);
       for (const auto& wc : std::span(wcs).subspan(0, n)) {
         uint32_t taskId = static_cast<uint32_t>(wc.wr_id >> 32);
         uint32_t numWrs = static_cast<uint32_t>(wc.wr_id & 0xffffffff);
@@ -967,12 +979,9 @@ void RdmaTransport::pollCompletions() {
           it->second->recordCompletion(numWrs);
         }
       }
-
-      if (n < kNumBatch) {
-        break;
-      }
-
-      expected -= kNumBatch;
+    }
+    if (totalDrained == before) {
+      break;
     }
   }
 }
