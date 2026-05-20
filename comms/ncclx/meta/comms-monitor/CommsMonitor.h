@@ -58,7 +58,7 @@ class CommsMonitor {
   static bool registerComm(ncclComm_t comm);
   static bool deregisterComm(ncclComm_t comm);
   static std::optional<CommDumpAllMap> commDumpAll(
-      const std::unordered_set<std::string>& requestFields = {});
+      const std::unordered_map<std::string, std::string>& hints = {});
 
   static std::optional<NcclCommMonitorInfo> getCommInfoByCommPtr(
       ncclComm_t comm);
@@ -78,7 +78,7 @@ class CommsMonitor {
   bool registerCommImpl(ncclComm_t comm);
   bool deregisterCommImpl(ncclComm_t comm);
   CommDumpAllMap commDumpAllImpl(
-      const std::unordered_set<std::string>& requestFields);
+      const std::unordered_map<std::string, std::string>& hints);
 
   static std::shared_ptr<CommsMonitor> getInstance();
 

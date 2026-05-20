@@ -992,7 +992,8 @@ TEST_F(CommDumpTest, DumpAllWithRequestFieldsCommInfoOnly) {
 
   std::unordered_map<std::string, std::unordered_map<std::string, std::string>>
       dumpAll;
-  auto res = ncclCommDumpAll(dumpAll, std::string{"commHash;rank;nRanks"});
+  auto res = ncclCommDumpAll(
+      dumpAll, {{"comm_dump::requestFields", "commHash;rank;nRanks"}});
   ASSERT_EQ(res, ncclSuccess);
   EXPECT_GE(dumpAll.size(), 1);
 
@@ -1042,7 +1043,8 @@ TEST_F(CommDumpTest, DumpAllWithRequestFieldsTotalCommDurPerIteration) {
   std::unordered_map<std::string, std::unordered_map<std::string, std::string>>
       dumpAll;
   auto res = ncclCommDumpAll(
-      dumpAll, std::string{"GlobalInfo::totalCommDurPerIterationUs"});
+      dumpAll,
+      {{"comm_dump::requestFields", "GlobalInfo::totalCommDurPerIterationUs"}});
   ASSERT_EQ(res, ncclSuccess);
 
   // Per-communicator maps should be empty (no fields requested)
@@ -1129,7 +1131,8 @@ TEST_F(CommDumpTest, DumpAllGlobalInfoOnlySkipsPerCommDump) {
   std::unordered_map<std::string, std::unordered_map<std::string, std::string>>
       dumpAll;
   auto res = ncclCommDumpAll(
-      dumpAll, std::string{"GlobalInfo::totalCommDurPerIterationUs"});
+      dumpAll,
+      {{"comm_dump::requestFields", "GlobalInfo::totalCommDurPerIterationUs"}});
   ASSERT_EQ(res, ncclSuccess);
 
   // Per-communicator entries should NOT exist at all (shortcut skipped the
@@ -1170,7 +1173,8 @@ TEST_F(CommDumpTest, DumpAllSingleCollTraceKey) {
 
   std::unordered_map<std::string, std::unordered_map<std::string, std::string>>
       dumpAll;
-  auto res = ncclCommDumpAll(dumpAll, std::string{"CT_pastColls"});
+  auto res =
+      ncclCommDumpAll(dumpAll, {{"comm_dump::requestFields", "CT_pastColls"}});
   ASSERT_EQ(res, ncclSuccess);
 
   auto commHash = hashToHexStr(comm->commHash);
@@ -1216,7 +1220,8 @@ TEST_F(CommDumpTest, DumpAllMixedPerCommAndGlobalInfoKeys) {
       dumpAll;
   auto res = ncclCommDumpAll(
       dumpAll,
-      std::string{"rank;nRanks;GlobalInfo::totalCommDurPerIterationUs"});
+      {{"comm_dump::requestFields",
+        "rank;nRanks;GlobalInfo::totalCommDurPerIterationUs"}});
   ASSERT_EQ(res, ncclSuccess);
 
   // Per-communicator should have only rank and nRanks
@@ -1243,7 +1248,8 @@ TEST_F(CommDumpTest, DumpAllProxyTraceKeyOnly) {
 
   std::unordered_map<std::string, std::unordered_map<std::string, std::string>>
       dumpAll;
-  auto res = ncclCommDumpAll(dumpAll, std::string{"PT_pastColls"});
+  auto res =
+      ncclCommDumpAll(dumpAll, {{"comm_dump::requestFields", "PT_pastColls"}});
   ASSERT_EQ(res, ncclSuccess);
 
   auto commHash = hashToHexStr(comm->commHash);

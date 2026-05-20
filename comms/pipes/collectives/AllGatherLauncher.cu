@@ -92,4 +92,55 @@ void launch_hierarchical_allgather_fused(
   PIPES_CUDA_CHECK(cudaGetLastError());
 }
 
+void launch_hierarchical_allgather_overlap(
+    const HierarchicalAllgatherOverlapLaunchParams& params) {
+  validate_direct_nvl(params.nvl_size);
+  if (params.ib_size < 1 ||
+      params.ib_size * params.nvl_size != params.num_ranks) {
+    throw std::runtime_error("Invalid hierarchical allgather rank geometry");
+  }
+  if (params.ib_num_blocks < 1 || params.nvl_num_blocks < 1) {
+    throw std::runtime_error(
+        "Hierarchical overlap allgather requires positive block counts");
+  }
+  if (params.chunk_bytes == 0) {
+    throw std::runtime_error(
+        "Hierarchical overlap allgather requires positive chunk_bytes");
+  }
+  if (params.ready_counters == nullptr) {
+    throw std::runtime_error(
+        "Hierarchical overlap allgather requires ready counters");
+  }
+
+  HierarchicalAllgatherOverlapArgs args{};
+  args.num_ranks = params.num_ranks;
+  args.ib_rank = params.ib_rank;
+  args.ib_size = params.ib_size;
+  args.nvl_rank = params.nvl_rank;
+  args.nvl_size = params.nvl_size;
+  args.ib_num_blocks = params.ib_num_blocks;
+  args.nvl_num_blocks = params.nvl_num_blocks;
+  args.sendcount = params.sendcount;
+  args.ib_signaling_data_size = params.ib_signaling_data_size;
+  args.nvl_signaling_data_size = params.nvl_signaling_data_size;
+  args.chunk_bytes = params.chunk_bytes;
+  args.ready_sequence = params.ready_sequence;
+  args.ready_counters = params.ready_counters;
+  args.sendbuf = params.sendbuf;
+  args.recvbuf = params.recvbuf;
+  args.ib_ring = params.ib_ring;
+  args.trace = params.trace;
+  for (int peer = 0; peer < params.nvl_size; ++peer) {
+    if (peer == params.nvl_rank) {
+      continue;
+    }
+    new (&args.nvl_peers[peer]) P2pNvlTransportDevice(params.nvl_peers[peer]);
+  }
+
+  hierarchical_allgather_overlap_kernel<512>
+      <<<params.ib_num_blocks + params.nvl_num_blocks, 512, 0, params.stream>>>(
+          args, make_launch_timeout(params.timeout_ms));
+  PIPES_CUDA_CHECK(cudaGetLastError());
+}
+
 } // namespace comms::pipes

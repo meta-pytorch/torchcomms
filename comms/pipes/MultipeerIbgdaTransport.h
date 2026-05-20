@@ -351,10 +351,24 @@ class MultipeerIbgdaTransport {
    * This method handles the rank-to-index mapping internally and provides
    * explicit peer selection without requiring CUDA headers.
    *
+   * In lazy mode, this materializes the requested peer before returning, so
+   * the returned pointer is ready for kernel use.
+   *
    * @param peerRank Global rank of the peer (must be != myRank and < nRanks)
    * @return Pointer to P2pIbgdaTransportDevice for the specified peer
    */
   P2pIbgdaTransportDevice* getP2pTransportDevice(int peerRank);
+
+  /**
+   * Lazily materialize one peer and return after its GPU device transport slot
+   * is populated. No-op in eager mode or if the peer is already materialized.
+   *
+   * For ring-style setup where all ranks need to expose multiple peers before
+   * connecting, use queuePeerForMaterialization() followed by connectPeers().
+   *
+   * @param peerRank Global rank of the peer to materialize
+   */
+  void materializePeer(int peerRank);
 
   /**
    * Queue a peer for lazy materialization. No network I/O happens here.
@@ -362,22 +376,24 @@ class MultipeerIbgdaTransport {
    *
    * No-op in eager mode or if the peer is already materialized.
    *
-   * @param peerRank Global rank of the peer to materialize
+   * @param peerRank Global rank of the peer to queue
    */
-  void materializePeer(int peerRank);
+  void queuePeerForMaterialization(int peerRank);
 
   /**
    * Connect all queued peers. In lazy mode, this MUST be called after
-   * all getP2pTransportDevice() / materializePeer() calls and BEFORE
-   * launching any kernel that uses the transport pointers.
+   * queuePeerForMaterialization() and BEFORE fetching transport pointers for
+   * kernel launch.
    *
    * Processes peers in sorted rank order to avoid deadlock for >2 ranks.
    * No-op in eager mode or if no peers are queued.
    *
    * Example:
+   *   transport->queuePeerForMaterialization(prev_rank);
+   *   transport->queuePeerForMaterialization(next_rank);
+   *   transport->connectPeers();
    *   prev = transport->getP2pTransportDevice(prev_rank);
    *   next = transport->getP2pTransportDevice(next_rank);
-   *   transport->connectPeers();  // must call before kernel launch
    *   launchKernel<<<...>>>(prev, next);
    */
   void connectPeers();

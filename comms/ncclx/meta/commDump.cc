@@ -29,22 +29,6 @@ using meta::comms::ncclx::DumpFieldSet;
 
 namespace {
 
-DumpFieldSet parseRequestFields(
-    const std::optional<std::string>& requestFieldsStr) {
-  if (!requestFieldsStr.has_value() || requestFieldsStr->empty()) {
-    return {};
-  }
-  DumpFieldSet fields;
-  std::istringstream ss(*requestFieldsStr);
-  std::string token;
-  while (std::getline(ss, token, ';')) {
-    if (!token.empty()) {
-      fields.insert(std::move(token));
-    }
-  }
-  return fields;
-}
-
 bool anyKeyRequested(
     const DumpFieldSet& fields,
     std::initializer_list<std::string_view> keys) {
@@ -62,6 +46,22 @@ bool anyKeyRequested(
 } // namespace
 
 namespace meta::comms::ncclx {
+
+DumpFieldSet parseRequestFields(
+    const std::optional<std::string>& requestFieldsStr) {
+  if (!requestFieldsStr.has_value() || requestFieldsStr->empty()) {
+    return {};
+  }
+  DumpFieldSet fields;
+  std::istringstream ss(*requestFieldsStr);
+  std::string token;
+  while (std::getline(ss, token, ';')) {
+    if (!token.empty()) {
+      fields.insert(std::move(token));
+    }
+  }
+  return fields;
+}
 
 bool isKeyRequested(const DumpFieldSet& fields, std::string_view key) {
   return fields.empty() || fields.contains(std::string{key});
@@ -375,11 +375,9 @@ __attribute__((visibility("default"))) ncclResult_t ncclCommDumpAll(
     std::unordered_map<
         std::string,
         std::unordered_map<std::string, std::string>>& map,
-    std::optional<std::string> requestFieldsStr) {
+    const std::unordered_map<std::string, std::string>& hints) {
   initEnv();
-  auto requestFields = parseRequestFields(requestFieldsStr);
-  auto commDumpsMaybe =
-      ncclx::comms_monitor::CommsMonitor::commDumpAll(requestFields);
+  auto commDumpsMaybe = ncclx::comms_monitor::CommsMonitor::commDumpAll(hints);
   if (!commDumpsMaybe.has_value()) {
     return ncclInternalError;
   }

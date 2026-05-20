@@ -14,9 +14,9 @@ ncclResult_t DefaultNcclxGlobalApi::commDumpAll(
     std::unordered_map<
         std::string,
         std::unordered_map<std::string, std::string>>& map,
-    std::optional<std::string> requestFields) {
+    const std::unordered_map<std::string, std::string>& hints) {
   std::lock_guard<std::mutex> lock(api_mutex_);
-  return ::ncclCommDumpAll(map, std::move(requestFields));
+  return ::ncclCommDumpAll(map, hints);
 }
 
 void DefaultNcclxGlobalApi::initCachingAllocatorHook() {

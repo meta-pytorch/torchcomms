@@ -128,7 +128,8 @@ jobs:
         export DISABLED_TESTS="${{ vars.DISABLED_TESTS }}"
 
         # Install from pre-built wheel (skip build step)
-        pip install "${RUNNER_ARTIFACT_DIR}"/*.whl pytest numpy psutil parameterized pydot requests urllib3 tabulate
+        WHEEL=$(ls "${RUNNER_ARTIFACT_DIR}"/*.whl)
+        pip install "${WHEEL}[dev]"
 
         python -c "import torchcomms"
 

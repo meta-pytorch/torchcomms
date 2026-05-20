@@ -570,6 +570,7 @@ TEST_F(TorchCommNCCLXTest, Getters) {
 
   EXPECT_EQ(comm->getOptions(), options);
   EXPECT_EQ(comm->getDevice(), device_);
+  EXPECT_EQ(comm->getCommPtr(), reinterpret_cast<int64_t>(ncclComm_t(0x3000)));
 
   comm->finalize();
 }

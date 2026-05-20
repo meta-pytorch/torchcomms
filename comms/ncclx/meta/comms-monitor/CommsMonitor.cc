@@ -113,9 +113,19 @@ bool CommsMonitor::registerCommImpl(ncclComm_t comm) {
 }
 
 CommDumpAllMap CommsMonitor::commDumpAllImpl(
-    const std::unordered_set<std::string>& requestFields) {
+    const std::unordered_map<std::string, std::string>& hints) {
   using meta::comms::colltrace::CommDumpPlugin;
   using meta::comms::ncclx::isKeyRequested;
+
+  auto rfIt = hints.find("comm_dump::requestFields");
+  auto requestFields = meta::comms::ncclx::parseRequestFields(
+      rfIt != hints.end() ? std::optional<std::string>(rfIt->second)
+                          : std::nullopt);
+
+  bool flush = false;
+  if (auto it = hints.find("comm_dump::flush"); it != hints.end()) {
+    flush = it->second == "1";
+  }
 
   std::vector<NcclCommMonitorInfo> commInfos;
   {
@@ -129,6 +139,21 @@ CommDumpAllMap CommsMonitor::commDumpAllImpl(
       NCCL_ALL,
       "CommsMonitor: Dumping info for %lu communicators",
       commInfos.size());
+
+  if (flush) {
+    std::vector<std::pair<meta::comms::colltrace::ICollTrace*, uint64_t>>
+        flushTokens;
+    flushTokens.reserve(commInfos.size());
+    for (const auto& info : commInfos) {
+      if (info.newCollTrace != nullptr) {
+        auto gen = info.newCollTrace->requestFlush();
+        flushTokens.emplace_back(info.newCollTrace.get(), gen);
+      }
+    }
+    for (auto& [ct, gen] : flushTokens) {
+      ct->waitFlush(gen);
+    }
+  }
 
   CommDumpAllMap commDumpAllMap;
 
@@ -271,7 +296,7 @@ CommsMonitor::getTopologyByCommDesc(const std::string& commDesc) {
 }
 
 /*static*/ std::optional<CommDumpAllMap> CommsMonitor::commDumpAll(
-    const std::unordered_set<std::string>& requestFields) {
+    const std::unordered_map<std::string, std::string>& hints) {
   if (!NCCL_COMMSMONITOR_ENABLE) {
     static bool logDumpAllUnavailable = false;
     if (!logDumpAllUnavailable) {
@@ -285,7 +310,7 @@ CommsMonitor::getTopologyByCommDesc(const std::string& commDesc) {
   if (commMonitorPtr == nullptr) {
     return std::nullopt;
   }
-  return commMonitorPtr->commDumpAllImpl(requestFields);
+  return commMonitorPtr->commDumpAllImpl(hints);
 }
 
 /*static*/ std::optional<NcclCommMonitorInfo>

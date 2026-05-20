@@ -472,6 +472,10 @@ std::string_view TorchCommNCCLX::getCommName() const {
   return name_;
 }
 
+int64_t TorchCommNCCLX::getCommPtr() const {
+  return reinterpret_cast<int64_t>(nccl_comm_);
+}
+
 static inline std::chrono::milliseconds getOperationTimeout(
     std::chrono::milliseconds timeout,
     std::chrono::milliseconds default_timeout) {

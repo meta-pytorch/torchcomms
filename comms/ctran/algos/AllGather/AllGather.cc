@@ -21,6 +21,7 @@ static bool isGraphAwareAlgo(enum NCCL_ALLGATHER_ALGO algo) {
     case NCCL_ALLGATHER_ALGO::ctsrd:
     case NCCL_ALLGATHER_ALGO::ctring:
     case NCCL_ALLGATHER_ALGO::ctbrucks:
+    case NCCL_ALLGATHER_ALGO::cthierarchical_ring:
     case NCCL_ALLGATHER_ALGO::ctran:
     case NCCL_ALLGATHER_ALGO::orig:
       return false;
@@ -35,7 +36,9 @@ bool ctranAllGatherSupport(
     CtranComm* comm,
     enum NCCL_ALLGATHER_ALGO algo,
     cudaStream_t stream) {
-  if (!ctranInitialized(comm) || !comm->ctran_->mapper->hasBackend()) {
+  const bool pipesAlgo = algo == NCCL_ALLGATHER_ALGO::cthierarchical_ring;
+  if (!ctranInitialized(comm) ||
+      (!pipesAlgo && !comm->ctran_->mapper->hasBackend())) {
     return false;
   }
 
@@ -54,6 +57,55 @@ bool ctranAllGatherSupport(
             "AllGather algorithm {} only support nLocalRanks=1. Falling back to baseline",
             allGatherAlgoName(algo));
       }
+      break;
+    case NCCL_ALLGATHER_ALGO::cthierarchical_ring:
+#if defined(ENABLE_PIPES)
+      if (statex->nRanks() <= 1 || statex->nNodes() <= 1) {
+        CLOGF_SUBSYS(
+            WARN,
+            COLL,
+            "AllGather {} requires multiple nodes, got nRanks={} nNodes={}. Falling back to baseline",
+            allGatherAlgoName(algo),
+            statex->nRanks(),
+            statex->nNodes());
+        supported = false;
+        break;
+      }
+      if (statex->nLocalRanks() < 1 ||
+          statex->nRanks() != statex->nNodes() * statex->nLocalRanks()) {
+        CLOGF_SUBSYS(
+            WARN,
+            COLL,
+            "AllGather {} requires rectangular rank geometry, got nRanks={} nNodes={} nLocalRanks={}. Falling back to baseline",
+            allGatherAlgoName(algo),
+            statex->nRanks(),
+            statex->nNodes(),
+            statex->nLocalRanks());
+        supported = false;
+        break;
+      }
+      if (!comm->multiPeerTransport_) {
+        CLOGF_SUBSYS(
+            WARN,
+            COLL,
+            "AllGather {} requires MultiPeerTransport (NCCL_CTRAN_USE_PIPES=1)",
+            allGatherAlgoName(algo));
+        supported = false;
+        break;
+      }
+      if (!NCCL_CTRAN_IBGDA_SENDRECV_ENABLE) {
+        CLOGF_SUBSYS(
+            WARN,
+            COLL,
+            "AllGather {} requires NCCL_CTRAN_IBGDA_SENDRECV_ENABLE=1",
+            allGatherAlgoName(algo));
+        supported = false;
+        break;
+      }
+      supported = true;
+#else
+      supported = false;
+#endif
       break;
     case NCCL_ALLGATHER_ALGO::ctdirect:
     case NCCL_ALLGATHER_ALGO::ctran:
@@ -171,6 +223,10 @@ commResult_t ctranAllGather(
 
     case NCCL_ALLGATHER_ALGO::ctsrd:
       return ctranAllGatherStreamedRd(
+          sendbuff, recvbuff, sendcount, datatype, comm, stream);
+
+    case NCCL_ALLGATHER_ALGO::cthierarchical_ring:
+      return ctranAllGatherHierarchicalRing(
           sendbuff, recvbuff, sendcount, datatype, comm, stream);
 
     case NCCL_ALLGATHER_ALGO::ctdirect:

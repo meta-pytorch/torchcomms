@@ -69,6 +69,7 @@ Returns:
     dict[str, str]: Key-value pairs of communicator state.
 )",
           py::call_guard<py::gil_scoped_release>())
+      .def("get_nccl_comm_ptr", &TorchCommNCCLX::getCommPtr)
 #ifdef NCCL_REDUCE_SCATTER_QUANTIZE_SUPPORTED
       .def(
           "reduce_scatter_quantized",
@@ -114,13 +115,13 @@ Returns:
 
   m.def(
       "comm_dump_all",
-      [](std::optional<std::string> requestFields) {
+      [](const std::unordered_map<std::string, std::string>& hints) {
         DefaultNcclxGlobalApi api;
         std::unordered_map<
             std::string,
             std::unordered_map<std::string, std::string>>
             map;
-        auto result = api.commDumpAll(map, std::move(requestFields));
+        auto result = api.commDumpAll(map, hints);
         if (result != ncclSuccess) {
           throw std::runtime_error(
               std::string("ncclCommDumpAll failed: ") +
@@ -136,10 +137,13 @@ Returns a dictionary keyed by communicator hash, where each value is a
 dictionary of that communicator's internal state.
 
 Args:
-    request_fields: Optional semicolon-separated list of output keys to include.
-        If None (default), all fields are dumped.
+    hints: Dict of key-value options controlling the dump behavior.
+        Supported hints:
+        - "comm_dump::requestFields": semicolon-separated list of output keys.
+        - "comm_dump::flush": "1" to flush ring buffers before dumping.
+        Empty dict (default) dumps all fields without flushing.
 
-        Fields are categorized by cost:
+        comm_dump::requestFields are categorized by cost:
 
         Trivial — read directly from in-memory structs, no serialization:
             commHash, rank, localRank, node, nRanks, localRanks, nNodes,
@@ -156,7 +160,7 @@ Args:
 Returns:
     dict[str, dict[str, str]]: Nested key-value pairs of all communicator states.
 )",
-      py::arg("request_fields") = py::none(),
+      py::arg("hints") = std::unordered_map<std::string, std::string>{},
       py::call_guard<py::gil_scoped_release>());
 
   m.def(

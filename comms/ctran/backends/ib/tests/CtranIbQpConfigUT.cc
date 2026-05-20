@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/backends/ib/CtranIbBase.h"
 #include "comms/ctran/backends/ib/CtranIbVc.h"
 #include "comms/testinfra/TestXPlatUtils.h"
@@ -71,4 +72,11 @@ TEST(CtranIbQpConfigRegressionTest, MaxQps1DevPerRank2) {
       /*cudaDev=*/0);
 
   EXPECT_EQ(vc.getMaxNumQp(), 2);
+}
+
+TEST(CtranIbDefaultFlushTest, EnablesFlushForOldNvidiaAndGb300) {
+  EXPECT_TRUE(CtranIb::shouldEnableLocalFlushByDefault(800));
+  EXPECT_FALSE(CtranIb::shouldEnableLocalFlushByDefault(900));
+  EXPECT_FALSE(CtranIb::shouldEnableLocalFlushByDefault(1000));
+  EXPECT_TRUE(CtranIb::shouldEnableLocalFlushByDefault(1030));
 }

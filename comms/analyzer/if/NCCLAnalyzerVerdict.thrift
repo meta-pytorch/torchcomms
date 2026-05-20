@@ -68,6 +68,17 @@ enum VerdictType {
   IB_COMPLETION_ERROR = 25,
   CUDA_ERROR = 26,
   CUDA_NVLINK_UNCORRECTABLE_ERROR = 27,
+  // CKS push path: rank's process is unreachable per the producer's
+  // explicit per-rank delivery status (UNREACHABLE / TIMEOUT / etc.) in
+  // the most recent fired bucket. Distinct from STUCK verdicts because
+  // it's a positive signal from the poller, not an inference from data
+  // absence.
+  JOB_RANK_PROCESS_DEAD = 28,
+  // CKS push path: bucket fired with one or more pods missing from the
+  // expected roster. Distinguishes "OTel pipeline lag" (transient) from
+  // "pod genuinely silent" (persistent) when paired with the bucket
+  // completion timeout.
+  JOB_PODS_UNREACHABLE = 29,
 }
 
 struct SlowRankLeastCommsVerdict {

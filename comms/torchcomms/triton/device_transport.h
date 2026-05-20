@@ -2,7 +2,7 @@
 // TorchComms Transport API - C-style declarations for LLVM bitcode
 //
 // Declares extern C wrappers for pipes transport operations
-// (P2pNvlTransportDevice send/recv/signal/barrier).
+// (P2pNvlTransportDevice or P2pIbgdaTransportDevice send/recv).
 // Compiled to LLVM bitcode with clang for linking with Triton kernels.
 //
 // Handle: void* device pointer to comms::pipes::MultiPeerDeviceHandle,
@@ -20,7 +20,7 @@ extern "C" {
 
 typedef void* TorchCommsTransportHandle;
 
-// --- Data Transfer (grid-collective, pipelined NVLink) ---
+// --- Data Transfer (grid-collective, NVLink only) ---
 
 __device__ int torchcomms_transport_send_groups(
     TorchCommsTransportHandle handle,
@@ -52,7 +52,7 @@ __device__ int torchcomms_transport_wait_signal(
     int op,
     unsigned long long value);
 
-// --- Send/Recv (block-cooperative, pipelined NVLink) ---
+// --- Send/Recv (block-cooperative, pipelined transport) ---
 // active_blocks: number of groups calling concurrently (0 = tile_max_groups)
 // max_signal_bytes: hint for signaling granularity (0 = one signal per slot)
 
