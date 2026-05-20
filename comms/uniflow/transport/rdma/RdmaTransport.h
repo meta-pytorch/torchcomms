@@ -382,6 +382,18 @@ class RdmaTransport : public Transport {
       uint32_t taskId,
       std::shared_ptr<Task>& task);
 
+  /// Returns whether a pending transfer may begin posting without exceeding
+  /// the transport's conservative SQ admission budget.
+  bool canStartTransfer(const PendingTransfer& transfer) const;
+
+  /// Conservative global WR budget used to admit complete transfers. A single
+  /// transfer larger than this budget may still start when no other WRs are
+  /// outstanding, so very large messages continue to make progress.
+  size_t admissionBudgetWrs() const;
+
+  /// Total WRs currently outstanding across all QPs.
+  size_t outstandingWrs() const;
+
   /// Posts a chain of WRs to a single QP. On partial failure, posts a
   /// flush WR so the HCA generates a CQE for the consumed unsignaled WRs.
   ///
