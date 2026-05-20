@@ -6,13 +6,6 @@
 #include <cstddef>
 #include <cstdint>
 
-#if defined(ENABLE_PIPES)
-#include <cuda_runtime.h>
-#endif // defined(ENABLE_PIPES)
-
-#if defined(ENABLE_PIPES)
-#include "comms/pipes/PipesTraceTypes.h"
-#endif // defined(ENABLE_PIPES)
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
@@ -36,14 +29,3 @@ commResult_t ctranInitializePipes(CtranComm* comm);
 // MultiPeerTransport and exchange handles. Must be called after both
 // CtranAlgo (SharedResource) and MultiPeerTransport have been created.
 commResult_t ctranInitPipesResources(CtranAlgo* algo);
-
-#if defined(ENABLE_PIPES)
-namespace ctran {
-
-commResult_t ctranPreparePipesTrace(
-    CtranComm* comm,
-    comms::pipes::PipesTraceHandle& trace);
-void ctranEnqueuePipesTraceDrain(CtranComm* comm, cudaStream_t stream);
-
-} // namespace ctran
-#endif // defined(ENABLE_PIPES)

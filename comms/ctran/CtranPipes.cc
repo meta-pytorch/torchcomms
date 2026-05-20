@@ -3,7 +3,6 @@
 #include "comms/ctran/CtranPipes.h"
 
 #include <algorithm>
-#include <memory>
 #include <set>
 
 #include "comms/ctran/CtranComm.h"
@@ -16,44 +15,7 @@
 #if defined(ENABLE_PIPES)
 
 #include "comms/pipes/MultiPeerTransport.h"
-#include "comms/pipes/PipesTrace.h"
 #include "comms/pipes/ll128/Ll128Packet.cuh"
-
-namespace {
-
-bool ctranPipesTraceEnabled() {
-  return NCCL_CTRAN_PIPES_TRACE_ENABLE;
-}
-
-} // namespace
-
-commResult_t ctran::ctranPreparePipesTrace(
-    CtranComm* comm,
-    comms::pipes::PipesTraceHandle& trace) {
-  trace = {};
-  if (!ctranPipesTraceEnabled()) {
-    return commSuccess;
-  }
-  const uint32_t ringSize = comms::pipes::PipesTrace::normalizeRingSize(
-      NCCL_CTRAN_PIPES_TRACE_RING_SIZE);
-  if (ringSize == 0) {
-    return commSuccess;
-  }
-
-  if (comm->pipesTrace_ == nullptr) {
-    comm->pipesTrace_ = std::make_unique<comms::pipes::PipesTrace>();
-  }
-  comm->pipesTrace_->ensure(ringSize);
-  trace = comm->pipesTrace_->deviceHandle();
-  return commSuccess;
-}
-
-void ctran::ctranEnqueuePipesTraceDrain(CtranComm* comm, cudaStream_t stream) {
-  if (!ctranPipesTraceEnabled() || comm->pipesTrace_ == nullptr) {
-    return;
-  }
-  comm->pipesTrace_->enqueueDrain(stream);
-}
 
 commResult_t ctranInitializePipes(CtranComm* comm) {
   if (!NCCL_CTRAN_USE_PIPES) {
