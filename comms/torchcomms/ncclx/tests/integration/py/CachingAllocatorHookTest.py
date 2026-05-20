@@ -5,7 +5,7 @@
 import unittest
 
 import torch
-from torchcomms._comms_ncclx import init_caching_allocator_hook
+from torchcomms_ncclx._comms_ncclx import init_caching_allocator_hook
 
 
 class CachingAllocatorHookTest(unittest.TestCase):

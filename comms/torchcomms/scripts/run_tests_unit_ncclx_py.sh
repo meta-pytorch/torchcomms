@@ -1,7 +1,13 @@
 #!/bin/bash
 # Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# Runs the Python unit tests against the standalone torchcomms-ncclx wheel.
+# Requires both torchcomms and torchcomms-ncclx to be installed.
 
 set -ex
+
+# Sanity check that the ncclx backend was installed.
+python -c "import torchcomms_ncclx; import torchcomms; assert torchcomms.is_backend_built('ncclx'), 'ncclx backend not registered'"
 
 TORCHCOMMS_ROOT="comms/torchcomms"
 
@@ -31,23 +37,5 @@ run_tests () {
     done
 }
 
-# NCCL
-export TEST_BACKEND=nccl
+export TEST_BACKEND=ncclx
 run_tests
-
-# NCCLX is now built/tested via the standalone `torchcomms-ncclx` wheel,
-# in run_tests_unit_ncclx_py.sh — skip it here.
-
-# Gloo with CPU
-export TEST_BACKEND=gloo
-export TEST_DEVICE=cpu
-export CUDA_VISIBLE_DEVICES=""
-run_tests
-unset TEST_DEVICE
-unset CUDA_VISIBLE_DEVICES
-
-# Gloo with CUDA
-export TEST_BACKEND=gloo
-export TEST_DEVICE=cuda
-run_tests
-unset TEST_DEVICE
