@@ -2,6 +2,7 @@
 
 #include <stdlib.h>
 #include <cstddef>
+#include <optional>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -11,14 +12,13 @@
 #include <comm.h>
 #include <nccl.h>
 #include "checks.h"
+#include "comms/ctran/tests/VerifyAlgoStatsUtil.h"
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "meta/algoconf/AlgoConfig.h"
-#include "meta/hints/GlobalHints.h"
-
-#include "meta/wrapper/MetaFactory.h"
+#include "meta/NcclxConfig.h"
+#include "meta/algoconf/AlgoStrConv.h"
 
 class AllReduceTest : public NcclxBaseTestFixture {
  public:
@@ -27,16 +27,13 @@ class AllReduceTest : public NcclxBaseTestFixture {
     // registry the user buffer as NCCL_MANAGED memory. It enable the nvl
     // intra-node connection
     NcclxBaseTestFixture::SetUp();
-
-    comm = ncclx::test::createNcclComm(
-        globalRank, numRanks, localRank, bootstrap_.get());
+    ctranAlgoStats_.enable();
 
     CUDACHECK_TEST(cudaSetDevice(localRank));
     CUDACHECK_TEST(cudaStreamCreate(&stream));
   }
 
   void TearDown() override {
-    NCCLCHECK_TEST(ncclCommDestroy(comm));
     CUDACHECK_TEST(cudaStreamDestroy(stream));
     NcclxBaseTestFixture::TearDown();
   }
@@ -94,11 +91,20 @@ class AllReduceTest : public NcclxBaseTestFixture {
 
   template <typename T>
   void run(
-      enum NCCL_ALLREDUCE_ALGO algo,
+      std::optional<enum NCCL_ALLREDUCE_ALGO> algo,
       ncclDataType_t dataType,
       bool enableDequant,
       size_t count) {
-    auto envGuard = EnvRAII(NCCL_ALLREDUCE_ALGO, algo);
+    ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints;
+    if (algo.has_value()) {
+      hints.set("allreduceAlgo", ncclx::algoconf::algoValToStr(*algo));
+      config.hints = &hints;
+    }
+    ncclx::test::NcclCommRAII commRaii(
+        globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
+    this->comm = commRaii.get();
+
     T *sendBuf = nullptr, *recvBuf = nullptr;
 
     // create and register buffers
@@ -125,6 +131,13 @@ class AllReduceTest : public NcclxBaseTestFixture {
       ASSERT_EQ(res, ncclSuccess);
     }
     CUDACHECK_TEST(cudaStreamSynchronize(stream));
+
+#ifdef TEST_ENABLE_CTRAN
+    if (algo.has_value() && *algo == NCCL_ALLREDUCE_ALGO::ctdirect) {
+      ctranAlgoStats_.verify(comm->ctranComm_.get(), "AllReduce", "Ctran");
+    }
+#endif
+
     // Check results
     std::vector<T> expectedVals(count);
     for (int i = 0; i < count; i++) {
@@ -146,31 +159,23 @@ class AllReduceTest : public NcclxBaseTestFixture {
   }
 
  protected:
-  ncclComm_t comm;
+  ncclComm_t comm{nullptr};
   cudaStream_t stream;
+  ctran::test::VerifyAlgoStatsHelper ctranAlgoStats_;
 };
 
 class AllReduceHintOverrideTest : public AllReduceTest {};
 
 TEST_F(AllReduceHintOverrideTest, TestWithHintOverride_orig) {
-  enum NCCL_ALLREDUCE_ALGO algo = NCCL_ALLREDUCE_ALGO::orig;
-  std::string hintVal = ncclx::algoconf::getAlgoHintValue(algo);
-  ASSERT_TRUE(ncclx::setGlobalHint("algo_allreduce", hintVal.c_str()));
-  run<int>(algo, ncclInt32, false, 1024);
-  ASSERT_TRUE(ncclx::resetGlobalHint("algo_allreduce"));
+  run<int>(NCCL_ALLREDUCE_ALGO::orig, ncclInt32, false, 1024);
 }
 
 TEST_F(AllReduceHintOverrideTest, TestWithHintOverride_ctdirect) {
-  enum NCCL_ALLREDUCE_ALGO algo = NCCL_ALLREDUCE_ALGO::ctdirect;
-  std::string hintVal = ncclx::algoconf::getAlgoHintValue(algo);
-  ASSERT_TRUE(ncclx::setGlobalHint("algo_allreduce", hintVal.c_str()));
-  run<int>(algo, ncclInt32, false, 1024);
-  ASSERT_TRUE(ncclx::resetGlobalHint("algo_allreduce"));
+  run<int>(NCCL_ALLREDUCE_ALGO::ctdirect, ncclInt32, false, 1024);
 }
 
 TEST_F(AllReduceHintOverrideTest, TestWithHintOverride_null) {
-  enum NCCL_ALLREDUCE_ALGO algo = NCCL_ALLREDUCE_ALGO::ctdirect;
-  run<int>(algo, ncclInt32, false, 1024);
+  run<int>(std::nullopt, ncclInt32, false, 1024);
 }
 
 int main(int argc, char* argv[]) {

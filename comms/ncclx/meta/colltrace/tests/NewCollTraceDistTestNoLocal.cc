@@ -20,7 +20,6 @@
 #include "comms/ctran/Ctran.h"
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
-#include "comms/testinfra/AlgoTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/utils/colltrace/CollTrace.h"
 #include "comms/utils/colltrace/tests/nvidia-only/CPUControlledKernel.h"
@@ -165,8 +164,6 @@ TEST_F(CollTraceTest, NewCollTraceAllReduce) {
 }
 
 TEST_F(CollTraceTest, MixedCtranBaseline) {
-  auto ctranAlgoGuard =
-      testinfra::AlgoRAII(NCCL_ALLGATHER_ALGO, NCCL_ALLGATHER_ALGO::ctring);
   auto ctranGuard = EnvRAII(NCCL_CTRAN_ENABLE, true);
   // CTran has temporarily disabled NVL backend support. Set to nolocal to
   // enable test
@@ -174,8 +171,11 @@ TEST_F(CollTraceTest, MixedCtranBaseline) {
       EnvRAII(NCCL_COMM_STATE_DEBUG_TOPO, NCCL_COMM_STATE_DEBUG_TOPO::nolocal);
   auto checksumSampleRateGuard =
       EnvRAII(NCCL_CTRAN_ALLGATHER_CHECKSUM_SAMPLE_RATE, 1);
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints{{"allgatherAlgo", "ctring"}};
+  config.hints = &hints;
   ncclx::test::NcclCommRAII comm{
-      globalRank, numRanks, localRank, bootstrap_.get()};
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
 
   constexpr int count = 1048576;
   constexpr int nColl = 10;
