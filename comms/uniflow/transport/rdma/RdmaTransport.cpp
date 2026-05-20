@@ -421,7 +421,7 @@ Status RdmaTransport::connect(std::span<const uint8_t> remoteInfo) {
     rtrAttr.path_mtu = negotiatedMtu;
     rtrAttr.dest_qp_num = remote.qpInfos[i].qpNum;
     rtrAttr.rq_psn = remote.qpInfos[i].psn;
-    rtrAttr.max_dest_rd_atomic = 1;
+    rtrAttr.max_dest_rd_atomic = config_.maxRdAtomic;
     rtrAttr.min_rnr_timer = 12;
 
     if (remoteNic.linkLayer == IBV_LINK_LAYER_ETHERNET) {
@@ -455,7 +455,7 @@ Status RdmaTransport::connect(std::span<const uint8_t> remoteInfo) {
     rtsAttr.timeout = config_.timeout;
     rtsAttr.retry_cnt = config_.retryCnt;
     rtsAttr.rnr_retry = 7;
-    rtsAttr.max_rd_atomic = 1;
+    rtsAttr.max_rd_atomic = config_.maxRdAtomic;
 
     int rtsMask = IBV_QP_STATE | IBV_QP_SQ_PSN | IBV_QP_TIMEOUT |
         IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY | IBV_QP_MAX_QP_RD_ATOMIC;
