@@ -92,6 +92,7 @@ class TorchCommNCCLX : public TorchCommBackend,
   int getSize() const override;
   std::string_view getBackendName() const override;
   std::string_view getCommName() const override;
+  int64_t getCommPtr() const;
 
   // Point-to-Point Operations
   c10::intrusive_ptr<TorchWork> send(
