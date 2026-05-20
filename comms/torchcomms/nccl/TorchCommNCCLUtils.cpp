@@ -126,9 +126,7 @@ size_t TorchCommNCCL::wordSize(ncclDataType_t type) const {
 #endif
       return 1;
     case ncclHalf:
-#if HAVE_BF16
     case ncclBfloat16:
-#endif
       // case ncclFloat16:
       return 2;
     case ncclInt:
@@ -145,7 +143,8 @@ size_t TorchCommNCCL::wordSize(ncclDataType_t type) const {
       // case ncclFloat64:
       return 8;
     default:
-      return 0;
+      throw std::runtime_error(
+          "Unsupported ncclDataType_t in wordSize: " + std::to_string(type));
   }
 }
 
