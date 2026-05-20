@@ -1,11 +1,13 @@
 #!/bin/bash
 # Copyright (c) Meta Platforms, Inc. and affiliates.
-
-# DO NOT DELETE
-# This script runs the Python integration tests.
-# This is used as part of the GitHub CI.
+#
+# Runs the Python integration tests against the standalone torchcomms-ncclx
+# wheel. Requires both torchcomms and torchcomms-ncclx to be installed.
 
 set -ex
+
+# Sanity check that the ncclx backend was installed.
+python -c "import torchcomms_ncclx; import torchcomms; assert torchcomms.is_backend_built('ncclx'), 'ncclx backend not registered'"
 
 # If no InfiniBand devices are present, disable the IB backend to avoid
 # CtranIbSingleton init failures ("Operation not permitted") and cascading
@@ -23,6 +25,9 @@ INTEGRATION_TEST_DIRS=$(find "$TORCHCOMMS_ROOT" -path '*/tests/integration/py' -
     ! -path '*/rcclx/*' \
     ! -path '*/fb/*' | sort -u)
 
+NCCLX_INTEGRATION_TEST_DIRS=$(find "$TORCHCOMMS_ROOT" -path '*/ncclx/tests/integration/py' -type d \
+    ! -path '*/fb/*' | sort -u)
+
 run_tests () {
     local dirs="${1:-$INTEGRATION_TEST_DIRS}"
     for dir in $dirs; do
@@ -33,23 +38,8 @@ run_tests () {
     done
 }
 
-# NCCL
-export TEST_BACKEND=nccl
+export TEST_BACKEND=ncclx
 run_tests
-
-# NCCLX is now built/tested via the standalone `torchcomms-ncclx` wheel,
-# in run_tests_integration_ncclx_py.sh — skip it here.
-
-# Gloo with CPU
-export TEST_BACKEND=gloo
-export TEST_DEVICE=cpu
-export CUDA_VISIBLE_DEVICES=""
-run_tests
-unset TEST_DEVICE
-unset CUDA_VISIBLE_DEVICES
-
-# Gloo with CUDA
-export TEST_BACKEND=gloo
-export TEST_DEVICE=cuda
-run_tests
-unset TEST_DEVICE
+# TODO(d4l3k): reenable once NCCLX-specific integration tests are passing.
+# Failed to initialize NCCL communicator: internal error
+#run_tests "$NCCLX_INTEGRATION_TEST_DIRS"

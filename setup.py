@@ -59,7 +59,11 @@ TORCH_ROOT = os.path.dirname(torch.__file__)
 
 print("Configuration:")
 USE_NCCL = flag_enabled("USE_NCCL", True)
-USE_NCCLX = flag_enabled("USE_NCCLX", True)
+# NCCLX is no longer bundled with the core torchcomms wheel. It now ships as a
+# separate `torchcomms-ncclx` wheel (see packaging/ncclx/). USE_NCCLX is kept
+# here as an off-by-default escape hatch for downstream builds that still want
+# the old bundled behavior; the upstream torchcomms wheel never builds it.
+USE_NCCLX = flag_enabled("USE_NCCLX", False)
 USE_GLOO = flag_enabled("USE_GLOO", True)
 USE_RCCL = flag_enabled("USE_RCCL", False)
 USE_RCCLX = flag_enabled("USE_RCCLX", False)
