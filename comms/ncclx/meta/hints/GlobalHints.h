@@ -4,6 +4,7 @@
 
 #include <folly/CppAttributes.h>
 #include <folly/Synchronized.h>
+#include <array>
 #include <functional>
 #include <optional>
 #include <string>
@@ -17,28 +18,26 @@ struct HintKeys {
       "ncclx.colltrace.crashOnTimeout";
   static constexpr std::string_view kCollTraceTimeoutMs =
       "ncclx.colltrace.timeoutMs";
-  // enable/disable Ctran at communicator creation time
-  // NOTE: torch eager init mode is required; otherwise, the hint to
-  // communicator mapping may be incorrect
-  static constexpr std::string_view kCommUseCtran = "ncclx.comm.useCtran";
-  // per-communicator ReduceScatter algorithm override
-  // Format: "<redop>:<algo>" e.g., "avg:patavg"
-  static constexpr std::string_view kCommAlgoReduceScatter =
-      "ncclx.comm.algo_reducescatter";
-  // disable local (P2P and SHM) transports at communicator creation time
-  static constexpr std::string_view kCommNoLocal = "ncclx.comm.nolocal";
-  // override per-communicator virtual NVL clique size
-  static constexpr std::string_view kVCliqueSize = "ncclx.comm.vCliqueSize";
 };
 
-constexpr std::array<std::string_view, 7> kHintKeysArray = {
+constexpr std::array<std::string_view, 3> kHintKeysArray = {
     HintKeys::kCollTraceCrashOnAsyncError,
     HintKeys::kCollTraceCrashOnTimeout,
-    HintKeys::kCollTraceTimeoutMs,
-    HintKeys::kCommUseCtran,
-    HintKeys::kCommAlgoReduceScatter,
-    HintKeys::kCommNoLocal,
-    HintKeys::kVCliqueSize};
+    HintKeys::kCollTraceTimeoutMs};
+
+// {deprecated GlobalHint key, replacement per-comm ncclx::Hints key}
+using DeprecatedHintKey = std::pair<std::string_view, std::string_view>;
+
+constexpr std::array<DeprecatedHintKey, 8> kDeprecatedCommHintKeys = {{
+    {"ncclx.comm.useCtran", "useCtran"},
+    {"ncclx.comm.algo_reducescatter", "usePatAvg"},
+    {"ncclx.comm.nolocal", "noLocal"},
+    {"ncclx.comm.vCliqueSize", "vCliqueSize"},
+    {"algo_allgather", "allgatherAlgo"},
+    {"algo_allreduce", "allreduceAlgo"},
+    {"algo_alltoallv", "alltoallvAlgo"},
+    {"algo_rma", "rmaAlgo"},
+}};
 
 using GlobalSetHintHook =
     std::function<void(const std::string& key, const std::string& val)>;
