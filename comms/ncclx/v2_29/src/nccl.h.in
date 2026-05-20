@@ -159,9 +159,6 @@ typedef struct ncclConfig_v22800 {
   int* splitGroupRanks;
   int splitGroupSize;
 
-  // control allgather algo at comm level
-  const char* ncclAllGatherAlgo{nullptr};
-
   // control the fast init features
   int fastInitMode{NCCL_CONFIG_UNDEF_INT};
 
@@ -201,7 +198,6 @@ typedef struct ncclConfig_v22800 {
   NCCL_CONFIG_UNDEF_PTR,                    /* commDesc */              \
   NCCL_CONFIG_UNDEF_PTR,                    /* splitGroupRanks */       \
   NCCL_CONFIG_UNDEF_INT,                    /* splitGroupSize */        \
-  NCCL_CONFIG_UNDEF_PTR,                    /* ncclAllGatherAlgo */     \
   NCCL_CONFIG_UNDEF_INT,                    /* fastInitMode */          \
   NCCL_CONFIG_UNDEF_PTR,                    /* hints */                  \
   NCCL_CONFIG_UNDEF_PTR,                    /* ncclxConfig */            \

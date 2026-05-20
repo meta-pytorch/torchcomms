@@ -18,7 +18,6 @@
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/testinfra/TestUtils.h"
 #include "meta/NcclxConfig.h" // @manual
-#include "meta/hints/GlobalHints.h" // @manual
 #include "nccl.h"
 
 #define dceil(x, y) ((x / y) + !!(x % y))
@@ -96,7 +95,9 @@ TEST_F(CommWithCtranTest, CTranAllGatherOverrideConfig) {
   EnvRAII ctranEnv(NCCL_CTRAN_ENABLE, true);
   EnvRAII env(NCCL_ALLGATHER_ALGO, NCCL_ALLGATHER_ALGO::orig);
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
-  config.ncclAllGatherAlgo = "ctring";
+  ncclx::Hints hints;
+  hints.set("allgatherAlgo", "ctring");
+  config.hints = &hints;
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
 
@@ -104,22 +105,20 @@ TEST_F(CommWithCtranTest, CTranAllGatherOverrideConfig) {
   ASSERT_NE(nullptr, comm->ctranComm_->ctran_);
   EXPECT_TRUE(ctranInitialized(comm->ctranComm_.get()));
 
-  auto algo = comm->ctranComm_->ctran_->algo->getAllGatherAlgo();
-  EXPECT_TRUE(algo == NCCL_ALLGATHER_ALGO::ctring);
+  auto algo = NCCLX_CONFIG_FIELD(comm->config, allgatherAlgo);
+  EXPECT_EQ(algo, NCCL_ALLGATHER_ALGO::ctring);
 }
 
 TEST_F(CommWithCtranTest, CTranAllGatherOverrideConfigSplitComm) {
   EnvRAII ctranEnv(NCCL_CTRAN_ENABLE, true);
   EnvRAII env(NCCL_ALLGATHER_ALGO, NCCL_ALLGATHER_ALGO::orig);
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
-  std::string algoStr = "ctring";
-  config.ncclAllGatherAlgo = algoStr.c_str();
+  ncclx::Hints hints;
+  hints.set("allgatherAlgo", "ctring");
+  config.hints = &hints;
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
 
-  // change pointer to be an invalid value, should still work since
-  // we copy the string to the config
-  algoStr = "badconfig";
   ncclx::test::NcclCommSplitRAII childComm{
       comm.get(), globalRank % 2, globalRank / 2};
   ASSERT_NE(nullptr, childComm.get());
@@ -128,11 +127,11 @@ TEST_F(CommWithCtranTest, CTranAllGatherOverrideConfigSplitComm) {
   ASSERT_NE(nullptr, comm->ctranComm_->ctran_);
   EXPECT_TRUE(ctranInitialized(comm->ctranComm_.get()));
 
-  auto algo = comm->ctranComm_->ctran_->algo->getAllGatherAlgo();
-  EXPECT_TRUE(algo == NCCL_ALLGATHER_ALGO::ctring);
+  auto algo = NCCLX_CONFIG_FIELD(comm->config, allgatherAlgo);
+  EXPECT_EQ(algo, NCCL_ALLGATHER_ALGO::ctring);
 
-  auto childAlgo = childComm->ctranComm_->ctran_->algo->getAllGatherAlgo();
-  EXPECT_TRUE(childAlgo == NCCL_ALLGATHER_ALGO::ctring);
+  auto childAlgo = NCCLX_CONFIG_FIELD(childComm->config, allgatherAlgo);
+  EXPECT_EQ(childAlgo, NCCL_ALLGATHER_ALGO::ctring);
 }
 
 TEST_F(CommWithCtranTest, PostCommDestroy) {
@@ -439,13 +438,9 @@ TEST_P(CommWithCtranTestParam, CtranEnableByHint) {
 
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   config.blocking = blockingInit ? 1 : 0;
-  ncclx::Hints ctranHints;
+  ncclx::Hints ctranHints{{"useCtran", "1"}};
   config.hints = &ctranHints;
 
-  // Enable by hint
-  ASSERT_EQ(
-      ncclx::setGlobalHint(std::string(ncclx::HintKeys::kCommUseCtran), "1"),
-      ncclSuccess);
   ncclComm_t comm2;
   if (createMode == TestCommCreateMode::kDefault) {
     comm2 = ncclx::test::createNcclComm(
@@ -469,10 +464,8 @@ TEST_P(CommWithCtranTestParam, CtranEnableByHint) {
   }
 
   ASSERT_TRUE(ctranInitialized(comm2->ctranComm_.get()));
-  ASSERT_TRUE(
-      ncclx::resetGlobalHint(std::string(ncclx::HintKeys::kCommUseCtran)));
 
-  // Now it should be disabled again after hint reset
+  // Now it should be disabled again after no hint
   ncclComm_t comm3 = ncclx::test::createNcclComm(
       globalRank, numRanks, localRank, bootstrap_.get());
   ASSERT_NE(comm3, nullptr);

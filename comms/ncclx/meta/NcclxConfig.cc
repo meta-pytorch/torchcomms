@@ -7,6 +7,7 @@
 #include "param.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "meta/algoconf/AlgoStrConv.h"
 
 #include <algorithm>
 #include <sstream>
@@ -14,10 +15,21 @@
 #include <string>
 #include <vector>
 
+using ncclx::algoconf::algoStrToVal;
+
 namespace ncclx {
 
 Config::Config(const ncclConfig_t* config) {
   initEnv();
+
+  useCtran = NCCL_CTRAN_ENABLE;
+  usePatAvg = NCCL_REDUCESCATTER_PAT_AVG_ENABLE;
+  noLocal = false;
+  sendrecvAlgo = NCCL_SENDRECV_ALGO;
+  allgatherAlgo = NCCL_ALLGATHER_ALGO;
+  allreduceAlgo = NCCL_ALLREDUCE_ALGO;
+  alltoallvAlgo = NCCL_ALLTOALLV_ALGO;
+  rmaAlgo = NCCL_RMA_ALGO;
 
   if (!config) {
     WARN("ncclx::Config: config is null");
@@ -68,7 +80,6 @@ Config::Config(const ncclConfig_t* config) {
 
   checkPtrConflict("commDesc", config->commDesc);
   checkPtrConflict("splitGroupRanks", config->splitGroupRanks);
-  checkPtrConflict("ncclAllGatherAlgo", config->ncclAllGatherAlgo);
   checkIntConflict("fastInitMode", config->fastInitMode);
 
   if (conflict) {
@@ -143,16 +154,6 @@ Config::Config(const ncclConfig_t* config) {
         }
       }
       splitGroupRanks = elems;
-    }
-  }
-
-  // ncclAllGatherAlgo
-  if (config->ncclAllGatherAlgo) {
-    ncclAllGatherAlgo = config->ncclAllGatherAlgo;
-  } else {
-    auto val = getHintStr("ncclAllGatherAlgo");
-    if (!val.empty()) {
-      ncclAllGatherAlgo = val;
     }
   }
 
@@ -269,6 +270,22 @@ Config::Config(const ncclConfig_t* config) {
       }
     }
   }
+
+  useCtran = parseHintBool("useCtran", NCCL_CTRAN_ENABLE);
+  usePatAvg = parseHintBool("usePatAvg", NCCL_REDUCESCATTER_PAT_AVG_ENABLE);
+  noLocal = parseHintBool("noLocal", false);
+
+  auto parseAlgoHint = [&](const char* key, auto& field) {
+    auto val = getHintStr(key);
+    if (!val.empty()) {
+      algoStrToVal(val, field);
+    }
+  };
+  parseAlgoHint("sendrecvAlgo", sendrecvAlgo);
+  parseAlgoHint("allgatherAlgo", allgatherAlgo);
+  parseAlgoHint("allreduceAlgo", allreduceAlgo);
+  parseAlgoHint("alltoallvAlgo", alltoallvAlgo);
+  parseAlgoHint("rmaAlgo", rmaAlgo);
 }
 
 } // namespace ncclx

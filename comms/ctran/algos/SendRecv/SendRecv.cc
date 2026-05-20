@@ -11,7 +11,25 @@
 #include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/ctran/utils/ExtUtils.h"
 
-static thread_local std::deque<OpElem*> CtranOpGroup;
+namespace {
+thread_local std::deque<OpElem*> CtranOpGroup;
+thread_local std::optional<enum NCCL_SENDRECV_ALGO> CtranOpGroupAlgo;
+
+commResult_t checkAndCacheAlgo(enum NCCL_SENDRECV_ALGO algo) {
+  if (CtranOpGroupAlgo.has_value()) {
+    if (*CtranOpGroupAlgo != algo) {
+      FB_ERRORRETURN(
+          commInvalidUsage,
+          "Mixed sendrecv algos in CtranOpGroup: {} vs {}",
+          static_cast<int>(*CtranOpGroupAlgo),
+          static_cast<int>(algo));
+    }
+  } else {
+    CtranOpGroupAlgo = algo;
+  }
+  return commSuccess;
+}
+} // namespace
 
 std::unordered_map<KernelConfig::KernelType, void*> kernelFns = {
     {KernelConfig::KernelType::SEND, reinterpret_cast<void*>(ncclKernelSend)},
@@ -86,7 +104,12 @@ commResult_t ctranSend(
     commDataType_t datatype,
     int peer,
     CtranComm* comm,
-    cudaStream_t stream) {
+    cudaStream_t stream,
+    enum NCCL_SENDRECV_ALGO algo) {
+  auto result = checkAndCacheAlgo(algo);
+  if (result != commSuccess) {
+    return result;
+  }
   auto opCount = comm->ctran_->getOpCount();
   CTRAN_COLL_INFO(
       "CtranSend", sendbuff, nullptr, count, datatype, peer, comm, stream);
@@ -107,7 +130,12 @@ commResult_t ctranRecv(
     commDataType_t datatype,
     int peer,
     CtranComm* comm,
-    cudaStream_t stream) {
+    cudaStream_t stream,
+    enum NCCL_SENDRECV_ALGO algo) {
+  auto result = checkAndCacheAlgo(algo);
+  if (result != commSuccess) {
+    return result;
+  }
   auto opCount = comm->ctran_->getOpCount();
   CTRAN_COLL_INFO(
       "CtranRecv", nullptr, recvbuff, count, datatype, peer, comm, stream);
@@ -264,12 +292,13 @@ commResult_t ctranGroupEndHookImpl(
 }
 
 commResult_t ctranGroupEndHook(
-    enum NCCL_SENDRECV_ALGO algo,
     std::optional<std::chrono::milliseconds> timeout) {
+  auto algo = CtranOpGroupAlgo.value_or(NCCL_SENDRECV_ALGO::ctran);
+  CtranOpGroupAlgo.reset();
+  if (CtranOpGroup.empty()) {
+    return commSuccess;
+  }
   if (algo == NCCL_SENDRECV_ALGO::ctgraph) {
-    if (CtranOpGroup.empty()) {
-      return commSuccess;
-    }
     cudaStream_t stream = CtranOpGroup.front()->stream;
     ctran::utils::cudagraph::StreamCaptureInfo captureInfo;
     FB_CUDACHECK(
