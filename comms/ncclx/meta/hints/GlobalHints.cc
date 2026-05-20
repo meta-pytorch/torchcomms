@@ -23,6 +23,16 @@ GlobalHints::GlobalHints() {
 
 // Storage for basic hints that require only string key and value management
 bool GlobalHints::setHint(std::string key, std::string val) {
+  for (const auto& dep : kDeprecatedCommHintKeys) {
+    if (key == dep.first) {
+      CLOGF(
+          WARN,
+          "GLOBAL-HINTS: GlobalHint key '{}' is deprecated and no longer affects communicator behavior. Use per-comm ncclx::Hints with key '{}' instead.",
+          key,
+          dep.second);
+      return false;
+    }
+  }
   auto entry = getHintEntry(key);
   if (!entry) {
     CLOGF(
@@ -56,6 +66,11 @@ std::optional<std::string> GlobalHints::getHint(const std::string& key) {
 }
 
 bool GlobalHints::resetHint(const std::string& key) {
+  for (const auto& dep : kDeprecatedCommHintKeys) {
+    if (key == dep.first) {
+      return true;
+    }
+  }
   auto entry = getHintEntry(key);
   if (!entry) {
     CLOGF(
