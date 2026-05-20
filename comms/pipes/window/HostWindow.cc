@@ -398,7 +398,8 @@ void HostWindow::uploadRegistrationsToDevice() {
   }
 }
 
-DeviceWindow HostWindow::getDeviceWindow() const {
+DeviceWindow HostWindow::buildDeviceWindowImpl(
+    MultiPeerDeviceHandle handle) const {
   if (!exchanged_) {
     throw std::runtime_error(
         "HostWindow::getDeviceWindow() called before exchange()");
@@ -410,7 +411,7 @@ DeviceWindow HostWindow::getDeviceWindow() const {
   // DeviceSpan has deleted copy-assignment, so we use placement new
   // for all DeviceSpan-typed members.
   DeviceWindow dw;
-  new (&dw.handle_) MultiPeerDeviceHandle(transport_.get_device_handle());
+  new (&dw.handle_) MultiPeerDeviceHandle(handle);
   dw.nNvlPeers_ = nNvlPeers;
   dw.nIbgdaPeers_ = nIbgdaPeers;
 
@@ -476,14 +477,21 @@ DeviceWindow HostWindow::getDeviceWindow() const {
         nIbgdaPeers);
   }
 
-  // Window buffer NVL peer pointers (for offset-based put/put_signal).
-  // IBGDA uses remoteBufferRegistry_ (the window buffer is the exchanged buf).
+  // Window buffer NVL peer pointers (for offset-based put/put_signal)
   if (userNvlPeerPtrsDevice_ && nNvlPeers > 0) {
     new (&dw.windowNvlPeerPtrs_) DeviceSpan<void*>(
         static_cast<void**>(userNvlPeerPtrsDevice_->get()), nNvlPeers);
   }
 
   return dw;
+}
+
+DeviceWindow HostWindow::getDeviceWindow() const {
+  return buildDeviceWindowImpl(transport_.get_device_handle());
+}
+
+DeviceWindow HostWindow::getDeviceWindow(const std::vector<int>& peers) {
+  return buildDeviceWindowImpl(transport_.get_device_handle(peers));
 }
 
 } // namespace comms::pipes

@@ -2,6 +2,7 @@
 
 #include "comms/ctran/CtranPipes.h"
 
+#include <algorithm>
 #include <set>
 
 #include "comms/ctran/CtranComm.h"
@@ -36,8 +37,12 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     config.nvlConfig.pipelineDepth =
         static_cast<size_t>(NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH);
 
+    const bool hierAgOverlapEnabled =
+        NCCL_CTRAN_HIER_AG_OVERLAP_ENABLE && comm->statex_->nLocalRanks() > 1;
+    const size_t nvlSharedDevbufSize =
+        ctranEffectiveP2pNvlSharedDevbufSize(comm->statex_->nLocalRanks());
     config.nvlConfig.dataBufferSize = static_cast<size_t>(
-        NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE / config.nvlConfig.pipelineDepth);
+        nvlSharedDevbufSize / config.nvlConfig.pipelineDepth);
 
     config.nvlConfig.chunkSize = (pc.nvlChunkSize > 0)
         ? static_cast<size_t>(pc.nvlChunkSize)
@@ -46,6 +51,11 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     config.nvlConfig.useDualStateBuffer = (pc.useDualStateBuffer >= 0)
         ? (pc.useDualStateBuffer == 1)
         : NCCL_CTRAN_PIPES_USE_DUAL_STATE_BUFFER;
+    if (hierAgOverlapEnabled) {
+      config.nvlConfig.tile_max_groups = std::max(
+          config.nvlConfig.tile_max_groups,
+          static_cast<int>(NCCL_CTRAN_HIER_AG_NVL_NUM_BLOCKS));
+    }
 
     // LL128 buffer allocation for DeviceAllToAllv
     if (NCCL_CTRAN_DA2A_LL128_THRESHOLD > 0) {
@@ -83,7 +93,15 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
       }
       config.ibgdaConfig.ibHca = std::move(hcaStr);
     }
-    config.ibgdaConfig.dataBufferSize = NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE;
+    uint64_t ibgdaDataBufferSize = (pc.ibgdaDataBufferSize > 0)
+        ? static_cast<size_t>(pc.ibgdaDataBufferSize)
+        : static_cast<size_t>(NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE);
+    if (hierAgOverlapEnabled && NCCL_CTRAN_HIER_AG_IBGDA_DATA_BUFFER_SIZE > 0) {
+      ibgdaDataBufferSize = std::max(
+          ibgdaDataBufferSize, NCCL_CTRAN_HIER_AG_IBGDA_DATA_BUFFER_SIZE);
+    }
+    config.ibgdaConfig.dataBufferSize =
+        static_cast<size_t>(ibgdaDataBufferSize);
     config.ibgdaConfig.qpDepth = NCCL_CTRAN_IBGDA_QP_DEPTH;
     if (NCCL_IB_TIMEOUT != NCCL_IB_TIMEOUT_DEFAULTCVARVALUE) {
       config.ibgdaConfig.timeout = static_cast<uint8_t>(NCCL_IB_TIMEOUT);
@@ -106,6 +124,49 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
         NCCL_CTRAN_IBGDA_RNR_RETRY_DEFAULTCVARVALUE) {
       config.ibgdaConfig.rnrRetry =
           static_cast<uint8_t>(NCCL_CTRAN_IBGDA_RNR_RETRY);
+    }
+    config.ibgdaConfig.ibLazyConnect = pc.ibLazyConnect;
+    config.ibgdaConfig.materializePeerTimeoutMs =
+        NCCL_CTRAN_IBGDA_MATERIALIZE_PEER_TIMEOUT_MS;
+
+    if (NCCL_CTRAN_IBGDA_SENDRECV_ENABLE) {
+      config.ibgdaConfig.numQpsPerPeerPerNic =
+          static_cast<int>(NCCL_CTRAN_HIER_AG_IB_QPS_PER_PEER_PER_NIC);
+      if (config.ibgdaConfig.dataBufferSize == 0) {
+        CLOGF(
+            ERR,
+            "NCCL_CTRAN_IBGDA_SENDRECV_ENABLE=1 requires a positive "
+            "IBGDA data-buffer size via NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE "
+            "or per-communicator pipesIbgdaDataBufferSize");
+        return commInvalidArgument;
+      }
+      if (NCCL_CTRAN_IBGDA_SENDRECV_MAX_GROUPS <= 0) {
+        CLOGF(
+            ERR,
+            "NCCL_CTRAN_IBGDA_SENDRECV_MAX_GROUPS must be positive, got {}",
+            NCCL_CTRAN_IBGDA_SENDRECV_MAX_GROUPS);
+        return commInvalidArgument;
+      }
+      if (NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH <= 0) {
+        CLOGF(
+            ERR,
+            "NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH must be positive, got {}",
+            NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH);
+        return commInvalidArgument;
+      }
+      config.ibgdaConfig.sendRecv =
+          comms::pipes::MultipeerIbgdaTransportConfig::SendRecvConfig{
+              .maxGroups =
+                  static_cast<int>(NCCL_CTRAN_IBGDA_SENDRECV_MAX_GROUPS),
+              .pipelineDepth =
+                  static_cast<int>(NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH),
+          };
+      CLOGF(
+          INFO,
+          "Pipes IBGDA sendRecv configured: maxGroups={}, pipelineDepth={}, dataBufferSize={}",
+          config.ibgdaConfig.sendRecv->maxGroups,
+          config.ibgdaConfig.sendRecv->pipelineDepth,
+          config.ibgdaConfig.dataBufferSize);
     }
 
     config.disableIb = NCCL_CTRAN_PIPES_DISABLE_IB;

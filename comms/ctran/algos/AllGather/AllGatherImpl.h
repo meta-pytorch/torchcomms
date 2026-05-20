@@ -24,6 +24,14 @@ commResult_t ctranAllGatherRd(
     CtranComm* comm,
     cudaStream_t stream);
 
+commResult_t ctranAllGatherStreamedRd(
+    const void* sendbuff,
+    void* recvbuff,
+    size_t sendcount,
+    commDataType_t datatype,
+    CtranComm* comm,
+    cudaStream_t stream);
+
 commResult_t ctranAllGatherRing(
     const void* sendbuff,
     void* recvbuff,
@@ -40,6 +48,14 @@ commResult_t ctranAllGatherBrucksFF(
     CtranComm* comm,
     cudaStream_t stream);
 
+commResult_t ctranAllGatherHierarchicalRing(
+    const void* sendbuff,
+    void* recvbuff,
+    size_t sendcount,
+    commDataType_t datatype,
+    CtranComm* comm,
+    cudaStream_t stream);
+
 static inline const std::string allGatherAlgoName(
     enum NCCL_ALLGATHER_ALGO algo) {
   switch (algo) {
@@ -47,10 +63,14 @@ static inline const std::string allGatherAlgoName(
       return "CtranAllGatherDirect";
     case NCCL_ALLGATHER_ALGO::ctrd:
       return "CtranAllGatherRd";
+    case NCCL_ALLGATHER_ALGO::ctsrd:
+      return "CtranAllGatherStreamedRd";
     case NCCL_ALLGATHER_ALGO::ctring:
       return "CtranAllGatherRing";
     case NCCL_ALLGATHER_ALGO::ctbrucks:
       return "CtranBrucksFF";
+    case NCCL_ALLGATHER_ALGO::cthierarchical_ring:
+      return "CtranAllGatherHierarchicalRing";
     case NCCL_ALLGATHER_ALGO::ctran:
       return "CtranAuto";
     case NCCL_ALLGATHER_ALGO::ctgraph:

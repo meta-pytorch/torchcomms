@@ -426,7 +426,7 @@ class TestAutoTuneSweepIB(unittest.TestCase):
         if not _is_ready():
             raise unittest.SkipTest("Sweep test environment not ready")
 
-        from torchcomms.tests.integration.py.TorchCommTestHelpers import (
+        from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
             TorchCommTestWrapper,
         )
 

@@ -15,7 +15,6 @@
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 #include <vector>
 #include "comms/torchcomms/TorchWork.hpp"
-#include "comms/torchcomms/ncclx/TorchCommNCCLXPersistentRequest.hpp"
 #include "comms/torchcomms/utils/TracingGuard.hpp"
 
 namespace torch::comms {
@@ -60,12 +59,6 @@ class TorchWorkNCCLX : public TorchWork {
   void wait() override;
   std::chrono::milliseconds getTimeout() const override {
     return timeout_ms_;
-  }
-
-  // Set persistent request reference to keep it alive until work is freed
-  void setPersistentRequest(
-      at::intrusive_ptr<TorchCommNCCLXPersistentRequest> request) {
-    persistent_request_ = std::move(request);
   }
 
   // Set CPU tensors that need to be kept alive for the lifetime of this
@@ -145,9 +138,6 @@ class TorchWorkNCCLX : public TorchWork {
   std::optional<std::chrono::steady_clock::time_point> start_completed_time_;
 
   std::optional<at::RecordFunction> recordFunction_;
-
-  // Reference to persistent request to keep it alive until work is freed
-  at::intrusive_ptr<TorchCommNCCLXPersistentRequest> persistent_request_;
 };
 
 class TorchWorkNCCLXQueue {

@@ -3,6 +3,8 @@
 #include "comms/pipes/tests/Checks.h"
 #include "comms/pipes/tests/P2pNvlTransportTest.cuh"
 
+#include "comms/pipes/TiledBuffer.cuh"
+
 namespace comms::pipes::test {
 
 // Helper to create the appropriate thread group based on type
@@ -33,6 +35,44 @@ __global__ void testRecvKernel(
     GroupType groupType) {
   auto group = make_group(groupType);
   p2p->recv_group(group, dst_d, nbytes);
+}
+
+__global__ void testTileSendKernel(
+    P2pNvlTransportDevice p2p,
+    void* src_d,
+    size_t nbytes,
+    int activeBlocks,
+    size_t maxSignalBytes,
+    Timeout timeout) {
+  timeout.start();
+  auto group = make_block_group();
+  TiledBuffer<char> tiles(reinterpret_cast<char*>(src_d), nbytes, group);
+  p2p.send(
+      group,
+      tiles.data(),
+      tiles.bytes(),
+      activeBlocks,
+      maxSignalBytes,
+      timeout);
+}
+
+__global__ void testTileRecvKernel(
+    P2pNvlTransportDevice p2p,
+    void* dst_d,
+    size_t nbytes,
+    int activeBlocks,
+    size_t maxSignalBytes,
+    Timeout timeout) {
+  timeout.start();
+  auto group = make_block_group();
+  TiledBuffer<char> tiles(reinterpret_cast<char*>(dst_d), nbytes, group);
+  p2p.recv(
+      group,
+      tiles.data(),
+      tiles.bytes(),
+      activeBlocks,
+      maxSignalBytes,
+      timeout);
 }
 
 // Kernel that performs multiple sequential sends within a single kernel launch
@@ -159,6 +199,36 @@ void testRecv(
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
+void testTileSend(
+    const P2pNvlTransportDevice& p2p,
+    void* src_d,
+    size_t nbytes,
+    int activeBlocks,
+    size_t maxSignalBytes,
+    Timeout timeout,
+    int numBlocks,
+    int blockSize,
+    cudaStream_t stream) {
+  testTileSendKernel<<<numBlocks, blockSize, 0, stream>>>(
+      p2p, src_d, nbytes, activeBlocks, maxSignalBytes, timeout);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void testTileRecv(
+    const P2pNvlTransportDevice& p2p,
+    void* dst_d,
+    size_t nbytes,
+    int activeBlocks,
+    size_t maxSignalBytes,
+    Timeout timeout,
+    int numBlocks,
+    int blockSize,
+    cudaStream_t stream) {
+  testTileRecvKernel<<<numBlocks, blockSize, 0, stream>>>(
+      p2p, dst_d, nbytes, activeBlocks, maxSignalBytes, timeout);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
 void testMultiSend(
     P2pNvlTransportDevice* p2p,
     void* src_d,
@@ -242,6 +312,34 @@ void testWeightedRecvSend(
     GroupType groupType) {
   testWeightedRecvSendKernel<<<numBlocks, blockSize>>>(
       p2p, recv_d, send_d, nbytes, recvWeight, sendWeight, groupType);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+// =============================================================================
+// forward_group() test kernel and wrapper
+// =============================================================================
+
+__global__ void testForwardKernel(
+    P2pNvlTransportDevice* pred,
+    P2pNvlTransportDevice* succ,
+    void* dst_d,
+    size_t nbytes,
+    GroupType groupType) {
+  auto group = make_group(groupType);
+  pred->forward_group(group, dst_d, nbytes, *succ);
+}
+
+void testForward(
+    P2pNvlTransportDevice* pred,
+    P2pNvlTransportDevice* succ,
+    void* dst_d,
+    size_t nbytes,
+    int numBlocks,
+    int blockSize,
+    GroupType groupType,
+    cudaStream_t stream) {
+  testForwardKernel<<<numBlocks, blockSize, 0, stream>>>(
+      pred, succ, dst_d, nbytes, groupType);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 

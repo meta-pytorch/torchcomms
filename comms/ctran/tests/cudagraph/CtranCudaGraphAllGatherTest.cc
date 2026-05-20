@@ -48,6 +48,10 @@ static AlgoDescriptor makeAllGather(enum NCCL_ALLGATHER_ALGO algo) {
             algo),
         commSuccess);
   };
+  desc.collective = "AllGather";
+  if (algo != NCCL_ALLGATHER_ALGO::ctran) {
+    desc.expectedAlgo = allGatherAlgoName(algo);
+  }
   return desc;
 }
 

@@ -60,9 +60,6 @@ struct alignas(16) CtranAlgoDeviceState {
   void* localChunkStatesMap[CTRAN_MAX_NVL_PEERS];
 
   void* peerBcastBufsMap[CTRAN_MAX_NVL_PEERS];
-  void* peerAllToAllvDynamicBufsMap[CTRAN_MAX_NVL_PEERS];
-  // FIXME: this should become per-block resource.
-  void** alltoallvDynamicSendbuffsMap[CTRAN_ALGO_MAX_THREAD_BLOCKS];
 
   // Comm info copied from ncclComm
   size_t bufSize;

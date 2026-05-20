@@ -5,11 +5,20 @@
 // ctgraph_ring, ctgraph_rd allow explicit selection. All variants are only
 // active during CUDA graph capture and fall back to baseline otherwise.
 
+#include <nccl.h>
+#include <cstring>
 #include <random>
 
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
 #include "comms/ctran/tests/VerifyAlgoStatsUtil.h"
 #include "comms/ctran/tests/cudagraph/CtranCudaGraphParamTest.h"
+#include "comms/ctran/utils/Alloc.h"
+
+#define NCCLCHECK_TEST_BENCH(cmd)                                         \
+  do {                                                                    \
+    ncclResult_t r = cmd;                                                 \
+    ASSERT_EQ(r, ncclSuccess) << "NCCL error: " << ncclGetErrorString(r); \
+  } while (0)
 
 static AlgoDescriptor makeAllGatherCtgraph(
     enum NCCL_ALLGATHER_ALGO algo = NCCL_ALLGATHER_ALGO::ctgraph) {
@@ -341,6 +350,227 @@ TEST_F(CudaGraphAllGatherCtgraphDestroy, DestroyGraphCleanly) {
   ASSERT_EQ(cudaGraphExecDestroy(exec), cudaSuccess);
   ASSERT_EQ(cudaGraphDestroy(graph), cudaSuccess);
   ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+}
+
+// Reproduces the ctgraph_rdpipeline in-place corruption covered by
+// nccl-tests-suite `-F full_replay_check`: many distinct-slot AllGather calls
+// captured in one CUDA graph, then replayed several times on a 2-rank local
+// setup.
+TEST_F(
+    CtranCudaGraphTestBase,
+    DISABLED_CtgraphRdpipelineInPlaceMultiAgReplayPreservesAllBytes) {
+  setenv("NCCL_CTRAN_ENABLE", "1", 0);
+  setenv("NCCL_MNNVL_ENABLE", "1", 0);
+  setenv("NCCL_NVLS_ENABLE", "0", 0);
+  setenv("NCCL_P2P_DISABLE", "0", 0);
+  setenv("NCCL_NET_GDR_C2C", "1", 0);
+  setenv("NCCL_CTRAN_IB_DEVICES_PER_RANK", "1", 0);
+  setenv("NCCL_IB_HCA", "mlx5_0:1,mlx5_1:1", 0);
+  setenv("NCCL_IB_DISABLE", "0", 0);
+  setenv("NCCL_IB_GID_INDEX", "3", 0);
+  setenv("NCCL_SOCKET_IFNAME", "eth0", 0);
+  setenv("NCCL_CUMEM_ENABLE", "1", 1);
+  setenv("NCCL_ALLGATHER_ALGO", "ctgraph_rdpipeline", 1);
+
+  auto ctranCommHolder = makeCtranComm();
+  ASSERT_NE(ctranCommHolder, nullptr);
+
+  if (!ctran::allGatherPSupport(ctranCommHolder.get())) {
+    GTEST_SKIP() << "allGatherP not supported";
+  }
+  const auto statex = ctranCommHolder->statex_.get();
+  if (statex->nLocalRanks() < 2) {
+    GTEST_SKIP() << "Need at least 2 local ranks (NVL peers) to repro";
+  }
+  if (statex->nNodes() > 1 &&
+      (statex->nNodes() & (statex->nNodes() - 1)) != 0) {
+    GTEST_SKIP() << "ctgraph_rdpipeline requires nNodes to be a power of 2";
+  }
+
+  // Use the public NCCL API path and broadcast the ncclUniqueId through the
+  // test bootstrap.
+  ncclUniqueId ncclId;
+  if (globalRank == 0) {
+    NCCLCHECK_TEST_BENCH(ncclGetUniqueId(&ncclId));
+  }
+  std::vector<char> idBuf(numRanks * sizeof(ncclId));
+  std::memcpy(
+      idBuf.data() + globalRank * sizeof(ncclId), &ncclId, sizeof(ncclId));
+  {
+    auto rc =
+        ctranCommHolder->bootstrap_
+            ->allGather(idBuf.data(), sizeof(ncclId), globalRank, numRanks)
+            .get();
+    ASSERT_EQ(rc, 0) << "Bootstrap allGather for ncclUniqueId failed";
+  }
+  std::memcpy(&ncclId, idBuf.data(), sizeof(ncclId));
+  CUDACHECK_TEST(cudaSetDevice(localRank));
+  ncclComm_t ncclComm = nullptr;
+  ncclConfig_t ncclCfg = NCCL_CONFIG_INITIALIZER;
+  ncclCfg.commDesc = "nccl-tests-suite-benchmarking-comms";
+  NCCLCHECK_TEST_BENCH(ncclGroupStart());
+  NCCLCHECK_TEST_BENCH(ncclCommInitRankConfig(
+      &ncclComm, numRanks, ncclId, globalRank, &ncclCfg));
+  NCCLCHECK_TEST_BENCH(ncclGroupEnd());
+
+  ctranCommHolder.reset();
+
+  const int nRanks = numRanks;
+  constexpr size_t kIters = 50;
+  constexpr size_t kReplays = 5;
+  constexpr size_t typeBytes = 2;
+  constexpr size_t sendcount = 8UL * 1024 * 1024;
+  constexpr size_t sendBytesPerSlot = sendcount * typeBytes;
+  const size_t recvBytesPerSlot = sendcount * nRanks * typeBytes;
+
+  auto fillBf16 = [](void* buf, size_t count, uint16_t val) {
+    std::vector<uint16_t> h(count, val);
+    CUDACHECK_TEST(
+        cudaMemcpy(buf, h.data(), count * sizeof(uint16_t), cudaMemcpyDefault));
+  };
+  auto rankVal = [](int rank) -> uint16_t {
+    return static_cast<uint16_t>(0x4000 + rank);
+  };
+  auto slotVal = [](size_t slot, int rank) -> uint16_t {
+    return static_cast<uint16_t>((slot & 0xff) << 8) |
+        static_cast<uint16_t>(0x40 + rank);
+  };
+
+  meta::comms::CudaStream stream(cudaStreamNonBlocking);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Mirror the production sequence: perf OOP, datacheck OOP, perf IP, then
+  // datacheck IP. The datacheck phases use distinct slots and verify bytes.
+  auto doCapturedRun = [&](bool oop,
+                           bool sameBuffer,
+                           size_t* outBadSlots = nullptr) {
+    if (outBadSlots) {
+      *outBadSlots = 0;
+    }
+    if (sameBuffer) {
+      ctran::TestDeviceBuffer perfSend(sendBytesPerSlot);
+      ctran::TestDeviceBuffer perfRecv(recvBytesPerSlot);
+      char* sb = static_cast<char*>(perfSend.get());
+      char* rb = static_cast<char*>(perfRecv.get());
+      fillBf16(sb, sendcount, rankVal(globalRank));
+      CUDACHECK_TEST(cudaMemset(rb, 0, recvBytesPerSlot));
+      auto* myChunkRb = rb + globalRank * sendBytesPerSlot;
+      fillBf16(myChunkRb, sendcount, rankVal(globalRank));
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+      cudaGraph_t g = nullptr;
+      cudaGraphExec_t ge = nullptr;
+      ASSERT_EQ(
+          cudaStreamBeginCapture(stream.get(), cudaStreamCaptureModeGlobal),
+          cudaSuccess);
+      for (size_t i = 0; i < kIters; ++i) {
+        void* aghSrc =
+            oop ? static_cast<void*>(sb) : static_cast<void*>(myChunkRb);
+        NCCLCHECK_TEST_BENCH(ncclAllGather(
+            aghSrc, rb, sendcount, ncclBfloat16, ncclComm, stream.get()));
+      }
+      ASSERT_EQ(cudaStreamEndCapture(stream.get(), &g), cudaSuccess);
+      ASSERT_EQ(cudaGraphInstantiate(&ge, g, 0), cudaSuccess);
+      for (int r = 0; r < kReplays; ++r) {
+        ASSERT_EQ(cudaGraphLaunch(ge, stream.get()), cudaSuccess);
+      }
+      ASSERT_EQ(cudaStreamSynchronize(stream.get()), cudaSuccess);
+      ASSERT_EQ(cudaGraphExecDestroy(ge), cudaSuccess);
+      ASSERT_EQ(cudaGraphDestroy(g), cudaSuccess);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+      return;
+    }
+    {
+      const size_t bigDcSendBytes = kIters * sendBytesPerSlot;
+      const size_t bigDcRecvBytes = kIters * recvBytesPerSlot;
+      ctran::TestDeviceBuffer bigDcSend(bigDcSendBytes);
+      ctran::TestDeviceBuffer bigDcRecv(bigDcRecvBytes);
+      CUDACHECK_TEST(cudaMemset(bigDcRecv.get(), 0, bigDcRecvBytes));
+      for (size_t k = 0; k < kIters; ++k) {
+        auto* slotSend =
+            static_cast<char*>(bigDcSend.get()) + k * sendBytesPerSlot;
+        auto* slotRecv =
+            static_cast<char*>(bigDcRecv.get()) + k * recvBytesPerSlot;
+        fillBf16(slotSend, sendcount, slotVal(k, globalRank));
+        auto* slotMyChunk = slotRecv + globalRank * sendBytesPerSlot;
+        fillBf16(slotMyChunk, sendcount, slotVal(k, globalRank));
+      }
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+      cudaGraph_t g = nullptr;
+      cudaGraphExec_t ge = nullptr;
+      ASSERT_EQ(
+          cudaStreamBeginCapture(stream.get(), cudaStreamCaptureModeGlobal),
+          cudaSuccess);
+      for (size_t k = 0; k < kIters; ++k) {
+        auto* slotSend =
+            static_cast<char*>(bigDcSend.get()) + k * sendBytesPerSlot;
+        auto* slotRecv =
+            static_cast<char*>(bigDcRecv.get()) + k * recvBytesPerSlot;
+        auto* slotMyChunk = slotRecv + globalRank * sendBytesPerSlot;
+        void* aghSrc = oop ? static_cast<void*>(slotSend)
+                           : static_cast<void*>(slotMyChunk);
+        NCCLCHECK_TEST_BENCH(ncclAllGather(
+            aghSrc, slotRecv, sendcount, ncclBfloat16, ncclComm, stream.get()));
+      }
+      ASSERT_EQ(cudaStreamEndCapture(stream.get(), &g), cudaSuccess);
+      ASSERT_EQ(cudaGraphInstantiate(&ge, g, 0), cudaSuccess);
+      for (int r = 0; r < kReplays; ++r) {
+        ASSERT_EQ(cudaGraphLaunch(ge, stream.get()), cudaSuccess);
+      }
+      ASSERT_EQ(cudaStreamSynchronize(stream.get()), cudaSuccess);
+      ASSERT_EQ(cudaGraphExecDestroy(ge), cudaSuccess);
+      ASSERT_EQ(cudaGraphDestroy(g), cudaSuccess);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      size_t badSlots = 0;
+      for (size_t k = 0; k < kIters; ++k) {
+        std::vector<uint16_t> h(sendcount * nRanks);
+        auto* slotRecv =
+            static_cast<char*>(bigDcRecv.get()) + k * recvBytesPerSlot;
+        CUDACHECK_TEST(cudaMemcpy(
+            h.data(), slotRecv, recvBytesPerSlot, cudaMemcpyDefault));
+        size_t mm = 0;
+        for (int r = 0; r < nRanks; ++r) {
+          uint16_t expected = slotVal(k, r);
+          for (size_t i = 0; i < sendcount; ++i) {
+            if (h[r * sendcount + i] != expected) {
+              ++mm;
+            }
+          }
+        }
+        if (mm > 0) {
+          ++badSlots;
+        }
+      }
+      if (outBadSlots) {
+        *outBadSlots = badSlots;
+      }
+    }
+  };
+
+  constexpr int kTotalChecks = 10;
+  size_t mmDcOOP = 0;
+  size_t mmDcIP = 0;
+  doCapturedRun(/*oop=*/true, /*sameBuffer=*/true);
+  for (int t = 0; t < kTotalChecks; ++t) {
+    size_t mm = 0;
+    doCapturedRun(/*oop=*/true, /*sameBuffer=*/false, &mm);
+    mmDcOOP += mm;
+  }
+  doCapturedRun(/*oop=*/false, /*sameBuffer=*/true);
+  for (int t = 0; t < kTotalChecks; ++t) {
+    size_t mm = 0;
+    doCapturedRun(/*oop=*/false, /*sameBuffer=*/false, &mm);
+    mmDcIP += mm;
+  }
+
+  EXPECT_EQ(mmDcIP, 0u)
+      << "ctgraph_rdpipeline in-place datacheck capture corrupted " << mmDcIP
+      << " slots' recvbufs across " << kTotalChecks << " iters";
+  EXPECT_EQ(mmDcOOP, 0u)
+      << "ctgraph_rdpipeline out-of-place datacheck warmup corrupted "
+      << mmDcOOP << " slots' recvbufs across " << kTotalChecks << " iters";
+
+  ncclCommDestroy(ncclComm);
 }
 
 int main(int argc, char* argv[]) {

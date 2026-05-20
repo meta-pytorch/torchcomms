@@ -193,6 +193,198 @@ static void d2dCopyKernel(
       folly::UserMetric(chunkSize, folly::UserMetric::Type::METRIC);
 }
 
+/**
+ * Benchmark P2P dual-destination copy: load src from local GPU, store to one
+ * local dst and one remote dst (GPU 0 -> GPU 0 + GPU 1)
+ */
+static void p2pDualDstCopyKernel(
+    uint32_t iters,
+    size_t nBytes,
+    int nBlocks,
+    SyncScope groupScope,
+    folly::UserCounters& counters,
+    int clusterSize = 1) {
+  const int nRunsPerIter = 50;
+
+  const int localDev = 0;
+  const int remoteDev = 1;
+
+  // Allocate remote dst2 on GPU 1
+  CHECK_EQ(cudaSetDevice(remoteDev), cudaSuccess);
+  DeviceBuffer dst2Buffer(nBytes);
+  char* dst2Ptr = static_cast<char*>(dst2Buffer.get());
+
+  // Allocate src and local dst1 on GPU 0
+  CHECK_EQ(cudaSetDevice(localDev), cudaSuccess);
+  CudaBenchBase bench;
+
+  DeviceBuffer srcBuffer(nBytes);
+  DeviceBuffer dst1Buffer(nBytes);
+
+  char* srcPtr = static_cast<char*>(srcBuffer.get());
+  char* dst1Ptr = static_cast<char*>(dst1Buffer.get());
+
+  float totalTimeMs = 0.0f;
+  const int nThreads = 256;
+  for (uint32_t i = 0; i < iters; ++i) {
+    bench.startTiming();
+
+    void* kernArgs[6] = {
+        (void*)&dst1Ptr,
+        (void*)&dst2Ptr,
+        (void*)&srcPtr,
+        (void*)&nBytes,
+        (void*)&nRunsPerIter,
+        (void*)&groupScope};
+    dim3 grid{static_cast<unsigned int>(nBlocks), 1, 1};
+    dim3 blocks{nThreads, 1, 1};
+
+    std::optional<dim3> clusterDimOpt =
+        (groupScope == SyncScope::CLUSTER && clusterSize > 1)
+        ? std::optional{dim3(clusterSize, 1, 1)}
+        : std::nullopt;
+    CHECK_EQ(
+        comms::common::launchKernel(
+            (void*)dualDstCopyKernel,
+            grid,
+            blocks,
+            kernArgs,
+            bench.stream,
+            clusterDimOpt),
+        cudaSuccess);
+
+    bench.stopTiming();
+    totalTimeMs += bench.measureTime();
+  }
+
+  float avgTimeUs = (totalTimeMs / iters / nRunsPerIter) * 1000.0f;
+  float readBwGBps = (nBytes / 1e9f) / (avgTimeUs / 1e6f);
+
+  size_t nGroups;
+  switch (groupScope) {
+    case SyncScope::BLOCK:
+      nGroups = nBlocks;
+      break;
+    case SyncScope::MULTIWARP:
+      nGroups = nBlocks * (nThreads / 128);
+      break;
+    case SyncScope::CLUSTER:
+      nGroups = nBlocks / clusterSize;
+      break;
+    case SyncScope::WARP:
+    default:
+      nGroups = nBlocks * (nThreads / 32);
+      break;
+  }
+  size_t chunkSize = nBytes / nGroups / 1024;
+
+  counters["deviceTimeUs"] =
+      folly::UserMetric(avgTimeUs, folly::UserMetric::Type::METRIC);
+  counters["readBwGBps"] =
+      folly::UserMetric(readBwGBps, folly::UserMetric::Type::METRIC);
+  counters["nGroups"] =
+      folly::UserMetric(nGroups, folly::UserMetric::Type::METRIC);
+  counters["chunkSizeKB"] =
+      folly::UserMetric(chunkSize, folly::UserMetric::Type::METRIC);
+}
+
+/**
+ * Benchmark P2P two-pass copy baseline in a SINGLE kernel: read src → write
+ * local dst1, then read src again → write remote dst2, all within one kernel
+ * launch. Fair comparison with dualDstCopyKernel (no kernel launch overhead
+ * difference).
+ */
+static void p2pTwoPassCopyKernel(
+    uint32_t iters,
+    size_t nBytes,
+    int nBlocks,
+    SyncScope groupScope,
+    folly::UserCounters& counters,
+    int clusterSize = 1) {
+  const int nRunsPerIter = 50;
+
+  const int localDev = 0;
+  const int remoteDev = 1;
+
+  // Allocate remote dst2 on GPU 1
+  CHECK_EQ(cudaSetDevice(remoteDev), cudaSuccess);
+  DeviceBuffer dst2Buffer(nBytes);
+  char* dst2Ptr = static_cast<char*>(dst2Buffer.get());
+
+  // Allocate src and local dst1 on GPU 0
+  CHECK_EQ(cudaSetDevice(localDev), cudaSuccess);
+  CudaBenchBase bench;
+
+  DeviceBuffer srcBuffer(nBytes);
+  DeviceBuffer dst1Buffer(nBytes);
+
+  char* srcPtr = static_cast<char*>(srcBuffer.get());
+  char* dst1Ptr = static_cast<char*>(dst1Buffer.get());
+
+  float totalTimeMs = 0.0f;
+  const int nThreads = 256;
+  for (uint32_t i = 0; i < iters; ++i) {
+    bench.startTiming();
+
+    void* kernArgs[6] = {
+        (void*)&dst1Ptr,
+        (void*)&dst2Ptr,
+        (void*)&srcPtr,
+        (void*)&nBytes,
+        (void*)&nRunsPerIter,
+        (void*)&groupScope};
+    dim3 grid{static_cast<unsigned int>(nBlocks), 1, 1};
+    dim3 blocks{nThreads, 1, 1};
+
+    std::optional<dim3> clusterDimOpt =
+        (groupScope == SyncScope::CLUSTER && clusterSize > 1)
+        ? std::optional{dim3(clusterSize, 1, 1)}
+        : std::nullopt;
+    CHECK_EQ(
+        comms::common::launchKernel(
+            (void*)twoPassCopyKernel,
+            grid,
+            blocks,
+            kernArgs,
+            bench.stream,
+            clusterDimOpt),
+        cudaSuccess);
+
+    bench.stopTiming();
+    totalTimeMs += bench.measureTime();
+  }
+
+  float avgTimeUs = (totalTimeMs / iters / nRunsPerIter) * 1000.0f;
+  float readBwGBps = (nBytes / 1e9f) / (avgTimeUs / 1e6f);
+
+  size_t nGroups;
+  switch (groupScope) {
+    case SyncScope::BLOCK:
+      nGroups = nBlocks;
+      break;
+    case SyncScope::MULTIWARP:
+      nGroups = nBlocks * (nThreads / 128);
+      break;
+    case SyncScope::CLUSTER:
+      nGroups = nBlocks / clusterSize;
+      break;
+    case SyncScope::WARP:
+    default:
+      nGroups = nBlocks * (nThreads / 32);
+      break;
+  }
+  size_t chunkSize = nBytes / nGroups / 1024;
+
+  counters["deviceTimeUs"] =
+      folly::UserMetric(avgTimeUs, folly::UserMetric::Type::METRIC);
+  counters["readBwGBps"] =
+      folly::UserMetric(readBwGBps, folly::UserMetric::Type::METRIC);
+  counters["nGroups"] =
+      folly::UserMetric(nGroups, folly::UserMetric::Type::METRIC);
+  counters["chunkSizeKB"] =
+      folly::UserMetric(chunkSize, folly::UserMetric::Type::METRIC);
+}
+
 //------------------------------------------------------------------------------
 // Benchmark Registration Helper Macros
 //------------------------------------------------------------------------------
@@ -286,6 +478,28 @@ REGISTER_COPY_BENCH_ALL_SIZES_CLUSTER(d2dCopyKernelCluster, cluster);
 
 // P2P (cross device) benchmarks - cluster groups (2 blocks per cluster)
 REGISTER_COPY_BENCH_ALL_SIZES_CLUSTER(p2pCopyKernelCluster, cluster);
+
+// P2P dual-dst (fused: local src -> local dst1 + remote dst2) vs
+// two-pass (sequential: src->local dst1, then src->remote dst2)
+// Sweep: 1MB, 2MB, 4MB, 8MB with 2, 4, 8, 16 blocks
+#define REGISTER_DUALDST_BENCH_FOR_SIZE(func, sizeMB, groupScope, suffix) \
+  BENCHMARK_MULTI_PARAM_COUNTERS(                                         \
+      func, sizeMB##MB_1b_##suffix, sizeMB * 1024 * 1024, 1, groupScope); \
+  BENCHMARK_MULTI_PARAM_COUNTERS(                                         \
+      func, sizeMB##MB_2b_##suffix, sizeMB * 1024 * 1024, 2, groupScope); \
+  BENCHMARK_MULTI_PARAM_COUNTERS(                                         \
+      func, sizeMB##MB_4b_##suffix, sizeMB * 1024 * 1024, 4, groupScope); \
+  BENCHMARK_MULTI_PARAM_COUNTERS(                                         \
+      func, sizeMB##MB_8b_##suffix, sizeMB * 1024 * 1024, 8, groupScope)
+
+#define REGISTER_DUALDST_BENCH_ALL_SIZES(func, groupScope, suffix) \
+  REGISTER_DUALDST_BENCH_FOR_SIZE(func, 1, groupScope, suffix);    \
+  REGISTER_DUALDST_BENCH_FOR_SIZE(func, 2, groupScope, suffix);    \
+  REGISTER_DUALDST_BENCH_FOR_SIZE(func, 4, groupScope, suffix);    \
+  REGISTER_DUALDST_BENCH_FOR_SIZE(func, 8, groupScope, suffix)
+
+REGISTER_DUALDST_BENCH_ALL_SIZES(p2pDualDstCopyKernel, SyncScope::BLOCK, block);
+REGISTER_DUALDST_BENCH_ALL_SIZES(p2pTwoPassCopyKernel, SyncScope::BLOCK, block);
 
 } // namespace comms::pipes::benchmark
 

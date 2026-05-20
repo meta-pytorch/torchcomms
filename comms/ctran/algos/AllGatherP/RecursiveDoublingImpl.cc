@@ -122,8 +122,8 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
   for (int i = 0; i < nSteps; i++) {
     peers[i] = peerAtStep(nodeId, localRank, nLocalRanks, nNodes, i);
     notifyVec[i] = std::make_unique<CtranMapperNotify>();
-    FB_COMMCHECK(
-        mapper->initNotify(peers[i], pArgs->recvHdl, notifyVec[i].get()));
+    FB_COMMCHECK(mapper->initNotify(
+        peers[i], pArgs->recvHdl, notifyVec[i].get(), 1 << i));
   }
 
   // Exchange a ready-to-receive handshake with every rail peer before
@@ -149,8 +149,8 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
   CTRAN_PROFILER_IF(
       profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_DATA));
 
-  // Last-put request per step, used to wait for local completion.
-  std::vector<CtranMapperRequest> lastPutReqs(nSteps);
+  std::vector<CtranMapperRequest> iputReqs(nNodes - 1);
+  size_t iputReqIdx = 0;
 
   for (int i = 0; i < nSteps; i++) {
     const int peer = peers[i];
@@ -182,7 +182,6 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
       void* dstPtr =
           ctran::allgatherp::getPtr(pArgs->remoteRecvBuffs[peer], byteOffset);
 
-      const bool isLast = (j == nPuts - 1);
       FB_COMMCHECK(mapper->iput(
           srcPtr,
           dstPtr,
@@ -191,13 +190,9 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
           CtranMapperConfig{
               .memHdl_ = srcHdl,
               .remoteAccessKey_ = pArgs->remoteAccessKeys[peer],
-              .notify_ = isLast},
-          isLast ? &lastPutReqs[i]
-                 : static_cast<CtranMapperRequest*>(nullptr)));
+              .notify_ = true},
+          &iputReqs.at(iputReqIdx++)));
     }
-
-    FB_COMMCHECK(mapper->waitRequest(&lastPutReqs[i]));
-    timestamp->putComplete.push_back(CtranMapperTimestampPoint(peer));
 
     FB_COMMCHECK(mapper->waitNotify(notifyVec[i].get()));
 
@@ -207,6 +202,13 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
     if (nLocalRanks > 1) {
       resource->pipeSync->post(i);
     }
+  }
+
+  for (size_t k = 0; k < iputReqIdx; k++) {
+    FB_COMMCHECK(mapper->waitRequest(&iputReqs[k]));
+  }
+  for (const auto peer : peers) {
+    timestamp->putComplete.push_back(CtranMapperTimestampPoint(peer));
   }
 
   CTRAN_PROFILER_IF(

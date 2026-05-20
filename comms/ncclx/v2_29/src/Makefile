@@ -30,7 +30,7 @@ CXXFLAGS += -DENABLE_PIPES
 endif
 
 ##### src files
-INCEXPORTS  := nccl.h nccl_device.h CtranEx.h CtranExComm.h \
+INCEXPORTS  := nccl.h nccl_device.h \
 	$(patsubst ${SRCDIR}/include/%,%,$(wildcard ${SRCDIR}/include/nccl_device/*.h ${SRCDIR}/include/nccl_device/*/*.h ${SRCDIR}/include/nccl_device/*/*/*.h))
 
 
@@ -56,6 +56,7 @@ LIBSRCFILES := \
 
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/commDump.cc)
+LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/DeviceRackSerial.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/NcclxConfig.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/commHash.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/RankUtil.cc)
@@ -81,6 +82,8 @@ LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/trainer/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/logger/*.cc)
 ## Common Utils shared between comm libraries
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/*.cc)
+## Memory tracing
+LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/memtrace/*.cc)
 ## CollTrace source files
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/colltrace/*.cc)
 ## CollTrace CUDA source files (host-side kernel launchers)
@@ -114,6 +117,7 @@ LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/perftrace/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/common/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/AllGather/*.cc)
+LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/AllGather/StreamedRd/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/AllGatherP/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/ReduceScatter/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/AllReduce/*.cc)
@@ -345,16 +349,6 @@ $(PKGDIR)/nccl.pc : nccl.pc.in
 	    $< > $@
 
 $(INCDIR)/%.h : %.h
-	@printf "Grabbing   %-35s > %s\n" $< $@
-	mkdir -p $(INCDIR)
-	install -m 644 $< $@
-
-$(INCDIR)/CtranEx.h : ${BASE_DIR}/comms/ctran/CtranEx.h
-	@printf "Grabbing   %-35s > %s\n" $< $@
-	mkdir -p $(INCDIR)
-	install -m 644 $< $@
-
-$(INCDIR)/CtranExComm.h : ${SHAREDDIR}/meta/wrapper/CtranExComm.h
 	@printf "Grabbing   %-35s > %s\n" $< $@
 	mkdir -p $(INCDIR)
 	install -m 644 $< $@

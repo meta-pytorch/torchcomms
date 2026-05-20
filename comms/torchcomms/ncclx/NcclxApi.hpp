@@ -10,6 +10,12 @@
 #include <glog/logging.h>
 #include <nccl.h> // @manual=//comms/ncclx:nccl
 
+// NCCL_SHRINK_ABORT was introduced in NCCL 2.27 alongside ncclCommShrink.
+// Define a fallback so dependents compile against older NCCL headers.
+#if NCCL_VERSION_CODE < NCCL_VERSION(2, 27, 0) && !defined(NCCL_SHRINK_ABORT)
+#define NCCL_SHRINK_ABORT 0x01
+#endif
+
 // NCCL Device API headers are only available in NCCLX 2.28+
 // For conda feedstock builds with older NCCLX versions, device API is disabled
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
@@ -264,62 +270,6 @@ class NcclxApi {
     return ncclInvalidUsage;
   }
 
-  [[nodiscard]] virtual ncclResult_t alltoallvDynamicDispatch(
-      const void* sendbuff,
-      const size_t* sendSplitLengths,
-      size_t numSendSplitLengths,
-      const size_t* sendIndices,
-      const size_t* sendIndicesBlockLengths,
-      void* const* recvbuffs,
-      size_t* recvAllSplitLengths,
-      size_t maxSendcount,
-      size_t maxRecvcount,
-      ncclDataType_t datatype,
-      ncclComm_t comm,
-      cudaStream_t stream) = 0;
-
-  [[nodiscard]] virtual ncclResult_t alltoallvDynamicCombine(
-      const void* sendbuff,
-      const size_t* sendSplitLengths,
-      size_t numSendSplitLengths,
-      const size_t* sendIndices,
-      const size_t* sendIndicesBlockLengths,
-      void* recvbuff,
-      size_t maxSendcount,
-      size_t maxRecvcount,
-      ncclDataType_t datatype,
-      ncclComm_t comm,
-      cudaStream_t stream) = 0;
-
-  [[nodiscard]] virtual ncclResult_t alltoallvDedupInit(
-      const size_t totalNumSendBlocks, // number of blocks (tokens) per batch
-      const size_t blockCount, // number of elements per block (token)
-      const size_t blockNumRecvBuckets, // number of receiving buckets for each
-                                        // block (experts per token, topK)
-      const int numRecvBuckets, // number of receiving buckets per rank (expert
-                                // per rank)
-      ncclDataType_t datatype,
-      ncclComm_t comm,
-      cudaStream_t stream,
-      void** request) = 0;
-
-  [[nodiscard]] virtual ncclResult_t alltoallvDedupExec(
-      const void* sendBuff,
-      const int* sendIdx,
-      const int* fwdIdx,
-      const int* recvIdx,
-      void* recvBuff,
-      int recvBlockIds[],
-      void* request) = 0;
-
-  [[nodiscard]] virtual ncclResult_t alltoallvDedupCombine(
-      const void* sendBuff,
-      const int* sendIdx,
-      const int* fwdIdx,
-      const int* recvIdx,
-      void* recvBuff,
-      void* request) = 0;
-
   // Persistent AllGather operations
   [[nodiscard]] virtual ncclResult_t allGatherInit(
       void* recvbuff,
@@ -401,6 +351,9 @@ class NcclxApi {
 
   // Get the LSA team info (rank count, local rank) for a communicator.
   [[nodiscard]] virtual ncclTeam_t teamLsa(ncclComm_t comm) = 0;
+
+  // Query whether the communicator supports NVLS multicast (multimem).
+  [[nodiscard]] virtual bool multimemSupport(ncclComm_t comm) = 0;
 #endif
 
 #if defined(ENABLE_PIPES)
@@ -661,60 +614,6 @@ class DefaultNcclxApi : public NcclxApi {
       int64_t recvcountsMultiplier = 1,
       const std::unordered_map<std::string, std::string>& hints = {}) override;
 
-  [[nodiscard]] ncclResult_t alltoallvDynamicDispatch(
-      const void* sendbuff,
-      const size_t* sendSplitLengths,
-      size_t numSendSplitLengths,
-      const size_t* sendIndices,
-      const size_t* sendIndicesBlockLengths,
-      void* const* recvbuffs,
-      size_t* recvAllSplitLengths,
-      size_t maxSendcount,
-      size_t maxRecvcount,
-      ncclDataType_t datatype,
-      ncclComm_t comm,
-      cudaStream_t stream) override;
-
-  [[nodiscard]] ncclResult_t alltoallvDynamicCombine(
-      const void* sendbuff,
-      const size_t* sendSplitLengths,
-      size_t numSendSplitLengths,
-      const size_t* sendIndices,
-      const size_t* sendIndicesBlockLengths,
-      void* recvbuff,
-      size_t maxSendcount,
-      size_t maxRecvcount,
-      ncclDataType_t datatype,
-      ncclComm_t comm,
-      cudaStream_t stream) override;
-
-  [[nodiscard]] ncclResult_t alltoallvDedupInit(
-      const size_t totalNumSendBlocks,
-      const size_t blockCount,
-      const size_t blockNumRecvBuckets,
-      const int numRecvBuckets,
-      ncclDataType_t datatype,
-      ncclComm_t comm,
-      cudaStream_t stream,
-      void** request) override;
-
-  [[nodiscard]] ncclResult_t alltoallvDedupExec(
-      const void* sendBuff,
-      const int* sendIdx,
-      const int* fwdIdx,
-      const int* recvIdx,
-      void* recvBuff,
-      int recvBlockIds[],
-      void* request) override;
-
-  [[nodiscard]] ncclResult_t alltoallvDedupCombine(
-      const void* sendBuff,
-      const int* sendIdx,
-      const int* fwdIdx,
-      const int* recvIdx,
-      void* recvBuff,
-      void* request) override;
-
   // Persistent AllGather operations
   [[nodiscard]] ncclResult_t allGatherInit(
       void* recvbuff,
@@ -792,6 +691,8 @@ class DefaultNcclxApi : public NcclxApi {
 #endif
 
   [[nodiscard]] ncclTeam_t teamLsa(ncclComm_t comm) override;
+
+  [[nodiscard]] bool multimemSupport(ncclComm_t comm) override;
 #endif
 
 #if defined(ENABLE_PIPES)

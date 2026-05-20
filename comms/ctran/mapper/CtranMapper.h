@@ -608,17 +608,28 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
    */
   inline commResult_t
   iflush(const void* buf, const void* regHdl, CtranMapperRequest** req) {
-    if (!this->ctranIb) {
-      CLOGF(WARN, "CTRAN-MAPPER: IB backend not enabled, skip flush");
-      return commSuccess;
+    if (this->ctranIb) {
+      auto* regElem = reinterpret_cast<ctran::regcache::RegElem*>(
+          const_cast<void*>(regHdl));
+      if (!regElem) {
+        CLOGF(WARN, "CTRAN-MAPPER: No IB registration for flush, skip");
+        return commSuccess;
+      }
+      auto regLk = regElem->stateMnger.rlock();
+      CtranIbRequest* ibReq = nullptr;
+      if (req) {
+        *req = new CtranMapperRequest();
+        ibReq = &((*req)->ibReq);
+      }
+      FB_COMMCHECK(this->ctranIb->iflush(buf, regElem->ibRegElem, ibReq));
+    } else if (this->ctranTcpDm) {
+      // TCPDM: flush is unnecessary — data arrives via kernel unpack.
+      // Return a pre-completed request so callers can poll normally.
+      if (req) {
+        *req = new CtranMapperRequest();
+        (*req)->setComplete();
+      }
     }
-
-    CtranIbRequest* ibReq = nullptr;
-    if (req) {
-      *req = new CtranMapperRequest();
-      ibReq = &((*req)->ibReq);
-    }
-    FB_COMMCHECK(this->ctranIb->iflush(buf, regHdl, ibReq));
     return commSuccess;
   }
 
@@ -1463,8 +1474,9 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   inline commResult_t isendCtrlImpl(int peerRank, CtranMapperRequest* req) {
     req->type = CtranMapperRequest::ReqType::SEND_SYNC_CTRL;
     req->peer = peerRank;
-    req->backend =
-        ctranIb ? CtranMapperBackend::IB : CtranMapperBackend::SOCKET;
+    req->backend = ctranIb ? CtranMapperBackend::IB
+        : ctranSock        ? CtranMapperBackend::SOCKET
+                           : CtranMapperBackend::TCPDM;
     auto& msg = req->sendSyncCtrl.msg;
     msg.setType(ControlMsgType::SYNC);
 
@@ -1485,16 +1497,20 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     if (ctranIb) {
       return ctranIb->isendCtrlMsg(
           msg.type, &msg, sizeof(ControlMsg), peerRank, req->ibReq);
-    } else {
+    } else if (ctranSock) {
       return ctranSock->isendCtrlMsg(msg, peerRank, req->sockReq);
+    } else if (ctranTcpDm) {
+      return ctranTcpDm->isendCtrlMsg(msg, peerRank, req->tcpDmReq);
     }
+    return commInternalError;
   }
 
   inline commResult_t irecvCtrlImpl(int peerRank, CtranMapperRequest* req) {
     req->type = CtranMapperRequest::ReqType::RECV_SYNC_CTRL;
     req->peer = peerRank;
-    req->backend =
-        ctranIb ? CtranMapperBackend::IB : CtranMapperBackend::SOCKET;
+    req->backend = ctranIb ? CtranMapperBackend::IB
+        : ctranSock        ? CtranMapperBackend::SOCKET
+                           : CtranMapperBackend::TCPDM;
     auto& msg = req->recvSyncCtrl.msg;
     msg.setType(ControlMsgType::SYNC);
 
@@ -1514,9 +1530,12 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
         msg.toString());
     if (ctranIb) {
       return ctranIb->irecvCtrlMsg(&msg, sizeof(msg), peerRank, req->ibReq);
-    } else {
+    } else if (ctranSock) {
       return ctranSock->irecvCtrlMsg(msg, peerRank, req->sockReq);
+    } else if (ctranTcpDm) {
+      return ctranTcpDm->irecvCtrlMsg(msg, peerRank, req->tcpDmReq);
     }
+    return commInternalError;
   }
 
   // allow put messages to be stack allocated
@@ -1901,6 +1920,8 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     } else if (notify->backend == CtranMapperBackend::IB) {
       FB_COMMCHECK(this->ctranIb->checkNotify<PerfConfig>(notify->peer, done));
     } else if (notify->backend == CtranMapperBackend::TCPDM) {
+      // Progress TCPDM transport to post any queued irecv requests
+      FB_COMMCHECK(this->ctranTcpDm->progress());
       *done = notify->tcpDmReq.isComplete();
     } else {
       CLOGF(ERR, "CTRAN-MAPPER: unexpected backend {}", notify->backend);

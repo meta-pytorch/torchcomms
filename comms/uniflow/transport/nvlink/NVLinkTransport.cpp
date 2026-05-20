@@ -18,6 +18,7 @@
 #define SYS_pidfd_getfd 438
 #endif
 
+#include <array>
 #include <cerrno>
 #include <cstring>
 
@@ -92,11 +93,45 @@ std::future<Status> NVLinkTransport::transfer(
                   cudaStream]() mutable noexcept {
     CudaDeviceGuard deviceGuard(*cudaApi, deviceId);
 
-    for (auto& op : ops) {
+#if CUDART_VERSION >= 12080
+    if (ops.size() > 1) {
+      // Small inline buffer avoids heap allocation for typical batch sizes.
+      // Falls back to vector for larger batches.
+      constexpr size_t kInlineCap = 16;
+      std::array<void*, kInlineCap> dstsInline;
+      std::array<const void*, kInlineCap> srcsInline;
+      std::array<size_t, kInlineCap> sizesInline;
+      std::vector<void*> dstsHeap;
+      std::vector<const void*> srcsHeap;
+      std::vector<size_t> sizesHeap;
+      void** dsts = dstsInline.data();
+      const void** srcs = srcsInline.data();
+      size_t* sizes = sizesInline.data();
+      if (ops.size() > kInlineCap) {
+        dstsHeap.resize(ops.size());
+        srcsHeap.resize(ops.size());
+        sizesHeap.resize(ops.size());
+        dsts = dstsHeap.data();
+        srcs = srcsHeap.data();
+        sizes = sizesHeap.data();
+      }
+      for (size_t i = 0; i < ops.size(); ++i) {
+        dsts[i] = ops[i].dst;
+        srcs[i] = ops[i].src;
+        sizes[i] = ops[i].size;
+      }
       CHECK_SET_PROMISE(
           promise,
-          cudaApi->memcpyAsync(
-              op.dst, op.src, op.size, cudaMemcpyDeviceToDevice, cudaStream));
+          cudaApi->memcpyBatchAsync(dsts, srcs, sizes, ops.size(), cudaStream));
+    } else
+#endif
+    {
+      for (auto& op : ops) {
+        CHECK_SET_PROMISE(
+            promise,
+            cudaApi->memcpyAsync(
+                op.dst, op.src, op.size, cudaMemcpyDeviceToDevice, cudaStream));
+      }
     }
 
     // Record a CUDA event after the last memcpy.

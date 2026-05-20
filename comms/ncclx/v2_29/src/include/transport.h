@@ -22,6 +22,7 @@
 #define TRANSPORT_PROFILER 4
 
 constexpr auto kMaxHostNameLen = 127; // Extra byte for NULL
+constexpr auto kMaxRackSerialLen = 63; // [META] for DeviceRackSerial string support
 
 #include "proxy.h"
 #include "comm.h"
@@ -62,7 +63,7 @@ struct ncclPeerInfo {
   bool rmaPluginAvailable;
   bool cuMemGdrSupport;
   char hostname[kMaxHostNameLen+1];
-  int rackSerial;
+  char rackSerial[kMaxRackSerialLen+1]; // [META] string-based rack serial (was int)
 };
 
 // [META]: increase size from 256 to 288 to accommodate for NCCLX's new fields

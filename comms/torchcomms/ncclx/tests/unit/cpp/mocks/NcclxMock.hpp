@@ -257,75 +257,6 @@ class NcclxMock : public NcclxApi {
        cudaStream_t stream),
       (override));
 
-  MOCK_METHOD(
-      ncclResult_t,
-      alltoallvDynamicDispatch,
-      (const void* sendbuff,
-       const size_t* sendSplitLengths,
-       size_t numSendSplitLengths,
-       const size_t* sendIndices,
-       const size_t* sendIndicesBlockLengths,
-       void* const* recvbuffs,
-       size_t* recvAllSplitLengths,
-       size_t maxSendcount,
-       size_t maxRecvcount,
-       ncclDataType_t datatype,
-       ncclComm_t comm,
-       cudaStream_t stream),
-      (override));
-
-  MOCK_METHOD(
-      ncclResult_t,
-      alltoallvDynamicCombine,
-      (const void* sendbuff,
-       const size_t* sendSplitLengths,
-       size_t numSendSplitLengths,
-       const size_t* sendIndices,
-       const size_t* sendIndicesBlockLengths,
-       void* recvbuff,
-       size_t maxSendcount,
-       size_t maxRecvcount,
-       ncclDataType_t datatype,
-       ncclComm_t comm,
-       cudaStream_t stream),
-      (override));
-
-  MOCK_METHOD(
-      ncclResult_t,
-      alltoallvDedupInit,
-      (const size_t totalNumSendBlocks,
-       const size_t blockCount,
-       const size_t blockNumRecvBuckets,
-       const int numRecvBuckets,
-       ncclDataType_t datatype,
-       ncclComm_t comm,
-       cudaStream_t stream,
-       void** reques),
-      (override));
-
-  MOCK_METHOD(
-      ncclResult_t,
-      alltoallvDedupExec,
-      (const void* sendBuff,
-       const int* sendIdx,
-       const int* fwdIdx,
-       const int* recvIdx,
-       void* recvBuff,
-       int recvBlockIds[],
-       void* request),
-      (override));
-
-  MOCK_METHOD(
-      ncclResult_t,
-      alltoallvDedupCombine,
-      (const void* sendBuff,
-       const int* sendIdx,
-       const int* fwdIdx,
-       const int* recvIdx,
-       void* recvBuff,
-       void* request),
-      (override));
-
   // Persistent AllGather operations
   MOCK_METHOD(
       ncclResult_t,
@@ -422,6 +353,8 @@ class NcclxMock : public NcclxApi {
       (override));
 
   MOCK_METHOD(ncclTeam_t, teamLsa, (ncclComm_t comm), (override));
+
+  MOCK_METHOD(bool, multimemSupport, (ncclComm_t comm), (override));
 
 #if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
   MOCK_METHOD(

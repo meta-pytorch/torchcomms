@@ -18,7 +18,8 @@ class CtranTcpDmSingleton {
 
   static bool supportBondTransport();
 
-  static ::comms::tcp_devmem::TransportInterface* getTransport();
+  static std::shared_ptr<::comms::tcp_devmem::TransportInterface>
+  getTransport();
 };
 
 } // namespace ctran

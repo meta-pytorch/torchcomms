@@ -5,6 +5,7 @@
 #include <memory>
 
 #include "comms/ctran/CtranComm.h"
+#include "comms/ctran/CtranPipes.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/CtranAlgoConsts.h"
 #include "comms/ctran/utils/Alloc.h"
@@ -21,12 +22,6 @@ using comms::pipes::DeviceSpan;
 
 CtranAlgo::CtranAlgo(CtranComm* comm, ICtran* ctran)
     : comm_(comm), ctran_(ctran) {
-  all2allvDynamicMaxSendcounts =
-      NCCL_CTRAN_ALLTOALLV_DYNAMIC_MAX_NUM_COUNTS_PER_PEER *
-      comm_->statex_->nRanks();
-  all2allvDynamicMaxNumSplitsPerRank =
-      NCCL_CTRAN_ALLTOALLV_DYNAMIC_MAX_NUM_COUNTS_PER_PEER;
-
   // Always initialize kernel resources since the current impl requires barrier
   // among all local ranks. It should not be triggered on-demand at local
   // getDevState() call.
@@ -36,51 +31,15 @@ CtranAlgo::CtranAlgo(CtranComm* comm, ICtran* ctran)
     FB_COMMCHECKIGNORE(initTmpBufs());
   }
 
-  FB_CUDACHECKTHROW_EX(
-      cudaHostAlloc(
-          &this->sendCountsTmpbufCPU,
-          sizeof(size_t) * all2allvDynamicMaxSendcounts,
-          cudaHostAllocDefault),
-      comm->logMetaData_);
-  tmpbufSegments[TmpbufType::SENDCOUNTS_TMPBUF_CPU] = this->sendCountsTmpbufCPU;
-  tmpbufSegmentOffsets[TmpbufType::SENDCOUNTS_TMPBUF_CPU] = 0;
-
-  FB_CUDACHECKTHROW_EX(
-      cudaHostAlloc(
-          &this->sendIndicesTmpbufCPU,
-          sizeof(size_t) * all2allvDynamicMaxSendcounts,
-          cudaHostAllocDefault),
-      comm->logMetaData_);
-  tmpbufSegments[TmpbufType::SENDINDICES_TMPBUF_CPU] =
-      this->sendIndicesTmpbufCPU;
-  tmpbufSegmentOffsets[TmpbufType::SENDINDICES_TMPBUF_CPU] = 0;
-
-  FB_CUDACHECKTHROW_EX(
-      cudaHostAlloc(
-          &this->sendIndicesBlockLengthsTmpbufCPU,
-          sizeof(size_t) * comm_->statex_->nRanks(),
-          cudaHostAllocDefault),
-      comm->logMetaData_);
-  tmpbufSegments[TmpbufType::SENDINDICES_BLOCKLEN_TMPBUF_CPU] =
-      this->sendIndicesBlockLengthsTmpbufCPU;
-  tmpbufSegmentOffsets[TmpbufType::SENDINDICES_BLOCKLEN_TMPBUF_CPU] = 0;
-
-  FB_CUDACHECKTHROW_EX(
-      cudaHostAlloc(
-          &this->sendbuffsPtrTmpbufCPU,
-          sizeof(void*) * all2allvDynamicMaxSendcounts,
-          cudaHostAllocDefault),
-      comm->logMetaData_);
-  tmpbufSegments[TmpbufType::SENDBUFFS_PTR_TMPBUF_CPU] =
-      this->sendbuffsPtrTmpbufCPU;
-  tmpbufSegmentOffsets[TmpbufType::SENDBUFFS_PTR_TMPBUF_CPU] = 0;
-
   FB_COMMCHECKTHROW_EX(initializeCommAttributesMap(), comm_->logMetaData_);
 
   return;
 }
 
 CtranAlgo::~CtranAlgo() {
+  if (!comm_) {
+    return;
+  }
   collToVcConfigMap_.clear();
 
   if (this->sharedRes_) {
@@ -115,19 +74,6 @@ CtranAlgo::~CtranAlgo() {
           comm_->logMetaData_);
     }
   }
-  if (this->sendCountsTmpbufCPU) {
-    FB_CUDACHECKIGNORE(cudaFreeHost(this->sendCountsTmpbufCPU));
-  }
-  if (this->sendbuffsPtrTmpbufCPU) {
-    FB_CUDACHECKIGNORE(cudaFreeHost(this->sendbuffsPtrTmpbufCPU));
-  }
-  if (this->sendIndicesTmpbufCPU) {
-    FB_CUDACHECKIGNORE(cudaFreeHost(this->sendIndicesTmpbufCPU));
-  }
-  if (this->sendIndicesBlockLengthsTmpbufCPU) {
-    FB_CUDACHECKIGNORE(cudaFreeHost(this->sendIndicesBlockLengthsTmpbufCPU));
-  }
-
   if (this->allReduceDirectResource) {
     FB_COMMCHECKIGNORE(this->allReduceDirectResource->destroy());
   }
@@ -170,18 +116,21 @@ inline size_t getPerPeerChunkStatesSize() {
   static size_t size = sizeof(ChunkState) * CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS;
   return size;
 }
+
 // Helper to calculate sync and staging buffer and chunkState pointers for a
 // given peer
-std::tuple<CtranAlgoDeviceSync*, void*, void*>
-partitionDevShm(void* mappedDevShmPtr, int nLocalRanks, int pos) {
+std::tuple<CtranAlgoDeviceSync*, void*, void*> partitionDevShm(
+    void* mappedDevShmPtr,
+    int nLocalRanks,
+    int pos,
+    size_t nvlSharedDevbufSize) {
   char* regionPtr_d = reinterpret_cast<char*>(mappedDevShmPtr);
   void* bufBase_d =
       regionPtr_d + (nLocalRanks - 1) * sizeof(CtranAlgoDeviceSync);
   void* chunkStateBase_d = reinterpret_cast<char*>(bufBase_d) +
-      (nLocalRanks - 1) * NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE;
+      (nLocalRanks - 1) * nvlSharedDevbufSize;
   void* sync = regionPtr_d + pos * sizeof(CtranAlgoDeviceSync);
-  void* buf = reinterpret_cast<char*>(bufBase_d) +
-      pos * NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE;
+  void* buf = reinterpret_cast<char*>(bufBase_d) + pos * nvlSharedDevbufSize;
   void* chunkState = reinterpret_cast<char*>(chunkStateBase_d) +
       pos * getPerPeerChunkStatesSize();
   return {reinterpret_cast<CtranAlgoDeviceSync*>(sync), buf, chunkState};
@@ -210,6 +159,8 @@ commResult_t CtranAlgo::initKernelResources() {
   scubaEvent.startAndRecord();
 
   memset(&devState_, 0, sizeof(CtranAlgoDeviceState));
+  const size_t nvlSharedDevbufSize =
+      ctranEffectiveP2pNvlSharedDevbufSize(nLocalRanks);
 
   // Initialize inter-process shared device buffer
   if (!this->sharedRes_) {
@@ -252,7 +203,7 @@ commResult_t CtranAlgo::initKernelResources() {
   // Copy basic comm info to device state for collective kernel to use
   statex->setupDev(devState_.statex);
 
-  devState_.bufSize = NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE;
+  devState_.bufSize = nvlSharedDevbufSize;
   devState_.bcastBufSize = NCCL_CTRAN_BCAST_NVL_SHARED_DEVBUF_SIZE;
   devState_.enableTraceLog = NCCL_CTRAN_ENABLE_DEV_TRACE_LOG;
   devState_.enableCancellableWaits = comm_->abortEnabled();
@@ -267,8 +218,6 @@ commResult_t CtranAlgo::initKernelResources() {
     auto& remoteChunkStatesMap = devState_.remoteChunkStatesMap;
     auto& localChunkStatesMap = devState_.localChunkStatesMap;
     auto& peerBcastBufsMap = devState_.peerBcastBufsMap;
-    auto& peerAllToAllvDynamicBufsMap = devState_.peerAllToAllvDynamicBufsMap;
-    auto& alltoallvDynamicSendbuffsMap = devState_.alltoallvDynamicSendbuffsMap;
 
     for (int i = 0; i < nLocalRanks; i++) {
       if (i == localRank) {
@@ -281,14 +230,18 @@ commResult_t CtranAlgo::initKernelResources() {
         auto [localSync, localBuf, localChunkState] = partitionDevShm(
             this->sharedRes_->mappedDevShmPtrs[localRank],
             nLocalRanks,
-            localPos);
+            localPos,
+            nvlSharedDevbufSize);
         localSyncsMap[i] = localSync;
         localStagingBufsMap[i] = localBuf;
         localChunkStatesMap[i] = localChunkState;
 
         int remotePos = LOCAL_RANK_TO_DEV_REGION_POS(localRank, i);
         auto [remoteSync, remoteBuf, remoteChunkState] = partitionDevShm(
-            this->sharedRes_->mappedDevShmPtrs[i], nLocalRanks, remotePos);
+            this->sharedRes_->mappedDevShmPtrs[i],
+            nLocalRanks,
+            remotePos,
+            nvlSharedDevbufSize);
         remoteSyncsMap[i] = remoteSync;
         remoteStagingBufsMap[i] = remoteBuf;
         remoteChunkStatesMap[i] = remoteChunkState;
@@ -296,7 +249,7 @@ commResult_t CtranAlgo::initKernelResources() {
 
       // Next chunk is for bcastBuf
       peerBcastBufsMap[i] = (char*)this->sharedRes_->mappedDevShmPtrs[i] +
-          (sizeof(CtranAlgoDeviceSync) + NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE +
+          (sizeof(CtranAlgoDeviceSync) + nvlSharedDevbufSize +
            getPerPeerChunkStatesSize()) *
               (nLocalRanks - 1);
       CLOGF_TRACE(
@@ -305,28 +258,6 @@ commResult_t CtranAlgo::initKernelResources() {
           i,
           (void*)peerBcastBufsMap[i],
           devState_.bcastBufSize);
-
-      // Next chunk is for alltoallvDynamic
-      peerAllToAllvDynamicBufsMap[i] = reinterpret_cast<void*>(
-          reinterpret_cast<uintptr_t>(peerBcastBufsMap[i]) +
-          devState_.bcastBufSize);
-    }
-    // FIXME: need better management on shm resources. Like how we managed the
-    // tmpbuf.
-    char* alltoallvDynamicSendbuffsMap_d =
-        (char*)(this->sharedRes_->devShmPtr) +
-        (sizeof(CtranAlgoDeviceSync) + NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE +
-         getPerPeerChunkStatesSize()) *
-            (statex->nLocalRanks() - 1) +
-        NCCL_CTRAN_BCAST_NVL_SHARED_DEVBUF_SIZE +
-        (CTRAN_ALGO_MAX_THREAD_BLOCKS / 2) * sizeof(size_t) *
-            (all2allvDynamicMaxSendcounts + 1 +
-             all2allvDynamicMaxNumSplitsPerRank) *
-            statex->nLocalRanks();
-    for (int i = 0; i < CTRAN_ALGO_MAX_THREAD_BLOCKS; i++) {
-      alltoallvDynamicSendbuffsMap[i] = reinterpret_cast<void**>(
-          alltoallvDynamicSendbuffsMap_d +
-          i * sizeof(void*) * all2allvDynamicMaxSendcounts);
     }
   }
 
@@ -352,8 +283,8 @@ commResult_t CtranAlgo::initKernelResources() {
           "initKernelResources-nvlTransports"));
 
   comms::pipes::P2pNvlTransportOptions options{
-      .dataBufferSize = NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE /
-          NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH,
+      .dataBufferSize =
+          nvlSharedDevbufSize / NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH,
       .chunkSize = NCCL_CTRAN_PIPES_NVL_CHUNK_SIZE,
       .pipelineDepth = NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH};
 
@@ -396,6 +327,8 @@ CtranAlgo::SharedResource::SharedResource(CtranComm* comm) {
   this->comm_ = comm;
   int localRank = statex->localRank();
   int nLocalRanks = statex->nLocalRanks();
+  const size_t nvlSharedDevbufSize =
+      ctranEffectiveP2pNvlSharedDevbufSize(nLocalRanks);
 
   // Create local shared memory region
   // The memory region on each owner rank is divided to (localRanks -1) sets of
@@ -403,20 +336,10 @@ CtranAlgo::SharedResource::SharedResource(CtranComm* comm) {
   // as below with N localRanks.
   // |bufState_0|bufState_1|...|bufState_N-2|buf_0|buf_1|...|buf_N-2|chunkState_0|chunkState_1|...|chunkState_N-2|
   std::vector<ctran::utils::CtranIpcDesc> ipcDescs(nLocalRanks);
-  size_t shmSize =
-      (sizeof(CtranAlgoDeviceSync) + NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE +
-       getPerPeerChunkStatesSize()) *
+  size_t shmSize = (sizeof(CtranAlgoDeviceSync) + nvlSharedDevbufSize +
+                    getPerPeerChunkStatesSize()) *
           (nLocalRanks - 1) +
       NCCL_CTRAN_BCAST_NVL_SHARED_DEVBUF_SIZE;
-
-  // Allocate extra buffer for AllToAllvDynamic count/indices block/indices
-  // (spaced used in aforementioned order) exchange.
-  // FIXME: this much size is only needed for noncontig kernel.
-  // Can add ifdef to reduce size for contig kernel, which only need 1 size_t
-  // for one send/recv pair.
-  shmSize += (CTRAN_ALGO_MAX_THREAD_BLOCKS / 2) * sizeof(size_t) *
-      (all2allvDynamicMaxSendcounts + 1 + all2allvDynamicMaxNumSplitsPerRank) *
-      nLocalRanks;
 
   DevMemType memType = DevMemType::kCumem;
   auto cuMemHandleType = ctran::utils::getCuMemAllocHandleType();
@@ -425,10 +348,6 @@ CtranAlgo::SharedResource::SharedResource(CtranComm* comm) {
     memType = DevMemType::kCudaMalloc;
     cuMemHandleType = CU_MEM_HANDLE_TYPE_NONE;
   }
-
-  /* allocate extra buffer for AllToAllvDynamic sendbuffers. */
-  shmSize += CTRAN_ALGO_MAX_THREAD_BLOCKS * sizeof(void*) *
-      all2allvDynamicMaxSendcounts;
 
   // Throw exception if fails to allocate memory
   this->ipcMem_ = std::make_unique<ctran::utils::CtranIpcMem>(
@@ -468,8 +387,7 @@ CtranAlgo::SharedResource::SharedResource(CtranComm* comm) {
 
     void* chunkStatePtr_d = reinterpret_cast<char*>(devShmPtr) +
         (nLocalRanks - 1) *
-            (sizeof(CtranAlgoDeviceSync) +
-             NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE) +
+            (sizeof(CtranAlgoDeviceSync) + nvlSharedDevbufSize) +
         pos * getPerPeerChunkStatesSize();
     std::vector<ChunkState> initStates(
         CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS, ChunkState());
@@ -630,7 +548,9 @@ static const std::unordered_map<std::string, enum NCCL_ALLGATHER_ALGO>
         {"ctdirect", NCCL_ALLGATHER_ALGO::ctdirect},
         {"ctring", NCCL_ALLGATHER_ALGO::ctring},
         {"ctrd", NCCL_ALLGATHER_ALGO::ctrd},
+        {"ctsrd", NCCL_ALLGATHER_ALGO::ctsrd},
         {"ctbrucks", NCCL_ALLGATHER_ALGO::ctbrucks},
+        {"cthierarchical_ring", NCCL_ALLGATHER_ALGO::cthierarchical_ring},
         {"ctgraph", NCCL_ALLGATHER_ALGO::ctgraph},
         {"ctgraph_pipeline", NCCL_ALLGATHER_ALGO::ctgraph_pipeline},
         {"ctgraph_rdpipeline", NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline},
@@ -658,6 +578,32 @@ commResult_t ctranConfigCommAlgoOverride(CtranComm* comm) {
         comm->config_.ncclAllGatherAlgo);
   }
   return commSuccess;
+}
+
+const ctran::algos::IPersistPlan* CtranAlgo::getOrCreatePersistPlan(
+    ctran::algos::PersistPlanKey key,
+    std::function<std::unique_ptr<ctran::algos::IPersistPlan>()> createFn) {
+  // Fast path: concurrent readers share rlock (no contention after init).
+  {
+    auto plans = persistPlans_.rlock();
+    auto it = plans->find(key);
+    if (it != plans->end()) {
+      return it->second.get();
+    }
+  }
+  // Slow path: upgrade lock serializes creators — only one thread can hold
+  // ulock at a time, so at most one thread calls createFn(). Re-check
+  // under ulock because another thread may have inserted between our rlock
+  // release and ulock acquire.
+  auto plans = persistPlans_.ulock();
+  auto it = plans->find(key);
+  if (it != plans->end()) {
+    return it->second.get();
+  }
+  // Atomically promote to write lock (no gap where another writer can slip in).
+  auto wplans = plans.moveFromUpgradeToWrite();
+  auto [inserted, _] = wplans->emplace(key, createFn());
+  return inserted->second.get();
 }
 
 void CtranAlgo::setAllGatherAlgo(enum NCCL_ALLGATHER_ALGO algo) {
@@ -804,17 +750,6 @@ commResult_t CtranAlgo::initTmpBufs() {
   segmentManager.insert(
       TmpbufType::MIN_REG_DST_TMPBUF, CTRAN_MIN_REGISTRATION_SIZE);
 
-  // counts buffers for GPU resident collectives
-  // To be improve: as all2allvDynamicMaxSendcounts size is large, can consider
-  // to initilze it with algo type using ifdefine, as dynamic and split only
-  // need to be nRanks.
-  segmentManager.insert(
-      TmpbufType::SENDCOUNTS_TMPBUF,
-      sizeof(size_t) * all2allvDynamicMaxSendcounts);
-  segmentManager.insert(
-      TmpbufType::RECVCOUNTS_TMPBUF,
-      sizeof(size_t) * all2allvDynamicMaxSendcounts);
-
   // Ring buffer sizing: delegates to deriveBufSize() which applies
   // CVAR priority (chunk override > STAGING_BUF_SIZE > kStagingBufSize).
   size_t ringBufSize = ctran::allreduce::ring::getStagingBufSize();
@@ -865,16 +800,7 @@ commResult_t CtranAlgo::initTmpBufs() {
       comm_->logMetaData_);
 
   // set offsets within the slab buffer for each tmpbuf type
-  // note SENDCOUNTS_TMPBUF_CPU is a CPU type buffer, both its size and offset
-  // would be zero in this loop if not skipped
-  // TODO: move CPU buffers to separate segment management logic
   for (auto i = 0; i < (size_t)TmpbufType::NUM_TMPBUFS; i++) {
-    if (i == (size_t)TmpbufType::SENDCOUNTS_TMPBUF_CPU ||
-        i == (size_t)TmpbufType::SENDBUFFS_PTR_TMPBUF_CPU ||
-        i == (size_t)TmpbufType::SENDINDICES_TMPBUF_CPU ||
-        i == (size_t)TmpbufType::SENDINDICES_BLOCKLEN_TMPBUF_CPU) {
-      continue;
-    }
     const CtranAlgo::TmpbufType type = static_cast<CtranAlgo::TmpbufType>(i);
     const auto& x = segmentManager.getSegInfo(type);
     this->tmpbufSegments[type] = BUFOFFSET(this->tmpbuf, x.offset);
@@ -916,10 +842,6 @@ std::tuple<void*, void*> CtranAlgo::getTmpBufInfo(const TmpbufType type) {
         static_cast<int>(type));
   } else {
     buf = it->second;
-  }
-
-  if (type == TmpbufType::SENDCOUNTS_TMPBUF_CPU) {
-    bufHdl = nullptr;
   }
 
   return std::make_tuple(buf, bufHdl);

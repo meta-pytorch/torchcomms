@@ -29,10 +29,6 @@ from torch.distributed.flight_recorder.components.types import (
 )
 from torchcomms.hooks import FlightRecorderHook
 from torchcomms.objcol import all_gather_object
-from torchcomms.tests.integration.py.TorchCommTestHelpers import (
-    get_rank_and_size,
-    skip_backend,
-)
 
 
 class TestFlightRecorderHook(unittest.TestCase):

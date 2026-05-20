@@ -9,6 +9,7 @@
 #include <folly/logging/xlog.h>
 
 #include "comms/utils/CommsMaybeChecks.h"
+#include "comms/utils/trainer/TrainerContext.h"
 
 namespace meta::comms::colltrace {
 
@@ -156,14 +157,39 @@ CommsMaybeVoid CommDumpPlugin::afterCollKernelEnd(
   }
 
   lockedCollTraceDump->pastCollsHeap.push(std::move(*it));
-  while (config_.pastCollSize >= 0 &&
-         static_cast<int64_t>(lockedCollTraceDump->pastCollsHeap.size()) >
-             config_.pastCollSize) {
-    lockedCollTraceDump->pastCollsHeap.pop();
-  }
+  evictPastColls(*lockedCollTraceDump);
   lockedCollTraceDump->currentColls.erase(it);
 
+  auto iterSnap = ncclxGetIterationSnapshot();
+  if (iterSnap.iteration > lockedCollTraceDump->currentIteration) {
+    lockedCollTraceDump->currentIteration = iterSnap.iteration;
+    lockedCollTraceDump->currentIterationCommTimeUs = 0;
+    lockedCollTraceDump->iterationCutoffUs = iterSnap.timestampUs;
+  }
+
+  auto collStartUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                         curEvent.collRecord->getTimingInfo()
+                             .getCollStartTs()
+                             .time_since_epoch())
+                         .count();
+  if (collStartUs >= lockedCollTraceDump->iterationCutoffUs) {
+    auto latencyUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                         curEvent.collRecord->getTimingInfo().getCollEndTs() -
+                         curEvent.collRecord->getTimingInfo().getCollStartTs())
+                         .count();
+    lockedCollTraceDump->currentIterationCommTimeUs +=
+        std::max(latencyUs, int64_t{0});
+  }
+
   return folly::unit;
+}
+
+void CommDumpPlugin::evictPastColls(CollTraceDump& dump) {
+  while (config_.pastCollSize >= 0 &&
+         static_cast<int64_t>(dump.pastCollsHeap.size()) >
+             config_.pastCollSize) {
+    dump.pastCollsHeap.pop();
+  }
 }
 
 CommsMaybe<CollTraceDump> CommDumpPlugin::dump() noexcept {
@@ -225,27 +251,59 @@ CommsMaybe<CollTraceDump> CommDumpPlugin::dump() noexcept {
   return dumpCopy;
 }
 
+IterationCommTime CommDumpPlugin::getCurrentIterationCommTime() const noexcept {
+  auto locked = collTraceDump_.rlock(config_.dumpLockAcquireTimeout);
+  if (locked.isNull()) {
+    return {};
+  }
+  return {locked->currentIteration, locked->currentIterationCommTimeUs};
+}
+
+namespace {
+bool isKeyReq(
+    const std::unordered_set<std::string>& fields,
+    std::string_view key) {
+  return fields.empty() || fields.contains(std::string{key});
+}
+} // namespace
+
 std::unordered_map<std::string, std::string> commDumpToMap(
-    const CollTraceDump& dump) {
+    const CollTraceDump& dump,
+    const std::unordered_set<std::string>& requestFields) {
   std::unordered_map<std::string, std::string> map;
 
-  auto pastColls = folly::dynamic::array();
-  for (const auto& coll : dump.pastColls) {
-    pastColls.push_back(coll->toDynamic());
+  if (isKeyReq(requestFields, "CT_pastColls")) {
+    auto pastColls = folly::dynamic::array();
+    for (const auto& coll : dump.pastColls) {
+      pastColls.push_back(coll->toDynamic());
+    }
+    map["CT_pastColls"] = folly::toJson(pastColls);
   }
-  map["CT_pastColls"] = folly::toJson(pastColls);
 
-  auto pendingColls = folly::dynamic::array();
-  for (const auto& coll : dump.pendingColls) {
-    pendingColls.push_back(coll->toDynamic());
+  if (isKeyReq(requestFields, "CT_pendingColls")) {
+    auto pendingColls = folly::dynamic::array();
+    for (const auto& coll : dump.pendingColls) {
+      pendingColls.push_back(coll->toDynamic());
+    }
+    map["CT_pendingColls"] = folly::toJson(pendingColls);
   }
-  map["CT_pendingColls"] = folly::toJson(pendingColls);
 
-  auto currentColls = folly::dynamic::array();
-  for (const auto& coll : dump.currentColls) {
-    currentColls.push_back(coll->toDynamic());
+  if (isKeyReq(requestFields, "CT_currentColls")) {
+    auto currentColls = folly::dynamic::array();
+    for (const auto& coll : dump.currentColls) {
+      currentColls.push_back(coll->toDynamic());
+    }
+    map["CT_currentColls"] = folly::toJson(currentColls);
   }
-  map["CT_currentColls"] = folly::toJson(currentColls);
+
+  if (isKeyReq(requestFields, "CT_currentIteration")) {
+    map["CT_currentIteration"] = std::to_string(dump.currentIteration);
+  }
+
+  if (isKeyReq(requestFields, "CT_currentIterationCommTimeUs")) {
+    map["CT_currentIterationCommTimeUs"] =
+        std::to_string(dump.currentIterationCommTimeUs);
+  }
 
   return map;
 }

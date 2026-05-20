@@ -23,7 +23,6 @@ TEST(ConfigHintsUT, NoHintsCreatesDefaults) {
   EXPECT_EQ(ncclxCfg->commDesc, "undefined");
   EXPECT_TRUE(ncclxCfg->splitGroupRanks.empty());
   EXPECT_EQ(ncclxCfg->ncclAllGatherAlgo, "undefined");
-  EXPECT_TRUE(ncclxCfg->lazyConnect);
 
   // Upstream NCCL fields should be untouched
   EXPECT_EQ(config.blocking, NCCL_CONFIG_UNDEF_INT);
@@ -36,8 +35,6 @@ TEST(ConfigHintsUT, HintsCreateNcclxConfig) {
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   ncclx::Hints hints;
   hints.set("commDesc", "test_desc");
-  hints.set("lazyConnect", "1");
-  hints.set("lazySetupChannels", "0");
   hints.set("fastInitMode", "1");
   hints.set("ncclAllGatherAlgo", "custom_algo");
   config.hints = &hints;
@@ -48,8 +45,6 @@ TEST(ConfigHintsUT, HintsCreateNcclxConfig) {
   ASSERT_NE(config.ncclxConfig, nullptr);
 
   EXPECT_EQ(NCCLX_CONFIG_FIELD(config, commDesc), "test_desc");
-  EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, lazyConnect));
-  EXPECT_FALSE(NCCLX_CONFIG_FIELD(config, lazySetupChannels));
   EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, fastInitMode));
   EXPECT_EQ(NCCLX_CONFIG_FIELD(config, ncclAllGatherAlgo), "custom_algo");
 
@@ -65,8 +60,6 @@ TEST(ConfigHintsUT, PrefixedKeysMatchBareKeys) {
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   ncclx::Hints hints;
   hints.set("ncclx::commDesc", "test_desc");
-  hints.set("ncclx::lazyConnect", "1");
-  hints.set("ncclx::lazySetupChannels", "0");
   hints.set("ncclx::fastInitMode", "1");
   hints.set("ncclx::ncclAllGatherAlgo", "custom_algo");
   config.hints = &hints;
@@ -77,8 +70,6 @@ TEST(ConfigHintsUT, PrefixedKeysMatchBareKeys) {
   ASSERT_NE(config.ncclxConfig, nullptr);
 
   EXPECT_EQ(NCCLX_CONFIG_FIELD(config, commDesc), "test_desc");
-  EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, lazyConnect));
-  EXPECT_FALSE(NCCLX_CONFIG_FIELD(config, lazySetupChannels));
   EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, fastInitMode));
   EXPECT_EQ(NCCLX_CONFIG_FIELD(config, ncclAllGatherAlgo), "custom_algo");
 
@@ -93,36 +84,10 @@ TEST(ConfigHintsUT, PrefixedKeysMatchBareKeys) {
   delete static_cast<ncclx::Config*>(config.ncclxConfig);
 }
 
-TEST(ConfigHintsUT, BoolHintFormats) {
-  // Test various truthy values
-  for (const char* trueVal :
-       {"1", "yes", "YES", "Yes", "true", "TRUE", "True", "y", "Y", "t", "T"}) {
-    ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
-    ncclx::Hints hints;
-    hints.set("lazyConnect", trueVal);
-    config.hints = &hints;
-    EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess) << trueVal;
-    EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, lazyConnect)) << trueVal;
-    delete static_cast<ncclx::Config*>(config.ncclxConfig);
-  }
-  // Test various falsy values
-  for (const char* falseVal :
-       {"0", "no", "NO", "No", "false", "FALSE", "False", "n", "N", "f", "F"}) {
-    ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
-    ncclx::Hints hints;
-    hints.set("lazyConnect", falseVal);
-    config.hints = &hints;
-    EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess) << falseVal;
-    EXPECT_FALSE(NCCLX_CONFIG_FIELD(config, lazyConnect)) << falseVal;
-    delete static_cast<ncclx::Config*>(config.ncclxConfig);
-  }
-}
-
 TEST(ConfigHintsUT, OldFormatFlatFields) {
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   // Set fields via old format (directly on ncclConfig_t)
   config.commDesc = "old_desc";
-  config.lazyConnect = 1;
   config.fastInitMode = 2;
 
   EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
@@ -131,25 +96,9 @@ TEST(ConfigHintsUT, OldFormatFlatFields) {
   ASSERT_NE(config.ncclxConfig, nullptr);
 
   EXPECT_EQ(NCCLX_CONFIG_FIELD(config, commDesc), "old_desc");
-  EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, lazyConnect));
   EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, fastInitMode));
 
   delete static_cast<ncclx::Config*>(config.ncclxConfig);
-}
-
-TEST(ConfigHintsUT, ConflictReturnsError) {
-  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
-  // Set lazyConnect in old format
-  config.lazyConnect = 1;
-  // Also set it in hints (new format)
-  ncclx::Hints hints;
-  hints.set("lazyConnect", "0");
-  config.hints = &hints;
-
-  EXPECT_EQ(ncclxParseCommConfig(&config), ncclInvalidArgument);
-
-  // ncclxConfig should NOT have been created
-  EXPECT_EQ(config.ncclxConfig, (void*)NCCL_CONFIG_UNDEF_PTR);
 }
 
 TEST(ConfigHintsUT, DoubleParseReturnsError) {
@@ -389,4 +338,25 @@ TEST(ConfigHintsUT, IbQpsPerConnectionDefaultUnset) {
   EXPECT_FALSE(ncclxCfg->ibQpsPerConnection.has_value());
 
   delete ncclxCfg;
+}
+
+// ----- ibLazyConnect tests -----
+
+TEST(ConfigHintsUT, LazyPeerInit_DefaultIsFalse) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+  ASSERT_NE(config.ncclxConfig, nullptr);
+  EXPECT_FALSE(NCCLX_CONFIG_FIELD(config, ibLazyConnect));
+  delete static_cast<ncclx::Config*>(config.ncclxConfig);
+}
+
+TEST(ConfigHintsUT, LazyPeerInit_HintOverrides) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ibLazyConnect", "true");
+  config.hints = &hints;
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+  ASSERT_NE(config.ncclxConfig, nullptr);
+  EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, ibLazyConnect));
+  delete static_cast<ncclx::Config*>(config.ncclxConfig);
 }

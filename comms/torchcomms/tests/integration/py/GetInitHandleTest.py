@@ -13,7 +13,9 @@ This test verifies:
 import os
 import unittest
 
-from torchcomms.tests.integration.py.TorchCommTestHelpers import TorchCommTestWrapper
+from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
+    TorchCommTestWrapper,
+)
 
 
 class GetInitHandleTest(unittest.TestCase):

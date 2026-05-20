@@ -125,6 +125,13 @@ class MockCudaDriverApi : public CudaDriverApi {
       (CUdeviceptr * pbase, size_t* psize, CUdeviceptr dptr),
       (override));
 
+  // --- Stream memory ops ---
+  MOCK_METHOD(
+      Status,
+      streamWriteValue64,
+      (CUstream stream, CUdeviceptr addr, uint64_t value, unsigned int flags),
+      (override));
+
   // --- supported APIs ---
   MOCK_METHOD(Result<bool>, isDmaBufSupported, (int cudaDev), (override));
   MOCK_METHOD(Result<bool>, isCuMemSupported, (), (override));

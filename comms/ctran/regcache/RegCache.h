@@ -314,7 +314,7 @@ class RegCache {
       std::vector<regcache::Segment*>& segments,
       std::vector<void*>& segHdls);
 
-  // Thread-safe functions to register a given buffer range.
+  // Thread-safe functions to register a given cached buffer range.
   // If the buffer is already registered and cached, the pre-existing handle is
   // returned. Otherwise, it will check if all underlying memory segments of
   // this buffer are cached by user, and register the full segment range. If the
@@ -330,9 +330,9 @@ class RegCache {
   //   - logMetaData: the metadata of the communicator that registers the buffer
   //                  (logging purpose only)
   // output:
-  //   - didRegister: whether regRange registered regHdl, or just found it
+  //   - didRegister: whether regRangeCached registered regHdl, or just found it
   //   - regHdl: the registration handle
-  commResult_t regRange(
+  commResult_t regRangeCached(
       const void* ptr,
       const size_t len,
       const int cudaDev,
@@ -343,25 +343,47 @@ class RegCache {
       regcache::RegElem** regHdl,
       bool ncclManaged = false);
 
-  // Thread-safe functions to dynamically register a segment.
-  // It is similar to regRange() but is not associated with a cached segment nor
-  // allow reuse. It must be deregistered via deregDynamic().
+  // Thread-safe function to directly register a buffer range without consulting
+  // the reusable segment/regElem cache. It registers every pinned physical
+  // range covering [ptr, ptr + len) as one dynamic RegElem, does not allow
+  // lookup reuse, and must be deregistered via deregRange().
   // input:
   //   - ptr: the pointer to the buffer to be registered
   //   - len: the length of the buffer
   //   - cudaDev: the cuda device id of the buffer
   // output:
-  //   - regHdl: the dynamic registration handle
+  //   - regHdl: the direct registration handle
+  commResult_t regRange(
+      const void* ptr,
+      const size_t len,
+      int cudaDev,
+      const std::vector<bool>& backends,
+      regcache::RegElem** regHdl,
+      bool ncclManaged = false,
+      const struct CommLogData* logMetaData = nullptr,
+      const std::string& useDesc = "dynamicRegMem");
+
+  // Thread-safe functions to dynamically register a segment. Compatibility
+  // wrapper around regRange() for existing callers. Always records the
+  // registration under "dynamicRegMem" so dynamic and window registrations stay
+  // separate in scuba.
   commResult_t regDynamic(
       const void* ptr,
       const size_t len,
       int cudaDev,
       const std::vector<bool>& backends,
-      regcache::RegElem** regHdl);
+      regcache::RegElem** regHdl,
+      const struct CommLogData* logMetaData = nullptr);
 
-  // Thread-safe functions to deregister a dynamic registration.
+  // Thread-safe function to deregister a direct range registration.
   // Unlike freeSegment(), it always deregisters since only the calling
   // communicator uses it.
+  // input:
+  //   - regHdl: the direct registration handle
+  commResult_t deregRange(regcache::RegElem* regHdl);
+
+  // Thread-safe function to deregister a dynamic registration. Compatibility
+  // wrapper around deregRange() for existing callers.
   // input:
   //   - regHdl: the dynamic registration handle
   commResult_t deregDynamic(regcache::RegElem* regHdl);
@@ -434,9 +456,16 @@ class RegCache {
   // Thread-safe function to check if a given <ptr, len> range is registered.
   bool isRegistered(const void* ptr, const size_t len);
 
+  // Thread-safe function to get the registration handle for a given <ptr, len>
+  // range. Returns RegElem* as void* if registered; returns nullptr if not.
+  // The returned handle can be used directly with mapper functions like
+  // iput/isendCtrl.
+  void* getRegHandle(const void* ptr, const size_t len);
+
   // Thread-safe function to search for a RegElem containing [ptr, ptr+len)
   // and return its ibRegElem. If the buffer is cached but not yet registered,
-  // it will perform registration via regRange(). Returns nullptr if not cached.
+  // it will perform registration via regRangeCached(). Returns nullptr if not
+  // cached.
   void* searchIbRegHandle(const void* ptr, size_t len, int deviceId = -1);
 
   // Thread-safe function to wait on all async registration requests to finish.
@@ -446,8 +475,9 @@ class RegCache {
   // Global API to register all cached segments. This is useful in lazy
   // registration mode where segments are cached but not immediately registered.
   // Instead of registering each segment individually via
-  // searchRegHandle/regRange, this function discovers all contiguous memory
-  // regions among the cached segments and registers each region separately.
+  // searchRegHandle/regRangeCached, this function discovers all contiguous
+  // memory regions among the cached segments and registers each region
+  // separately.
   //
   // This function does NOT assume all cached segments form a single
   // contiguous region. It finds ALL contiguous regions (which may be
@@ -474,9 +504,9 @@ class RegCache {
 
   // Deregister all non-dynamic registration elements from the global cache.
   // This removes all registrations that were created via regAll() or
-  // regRange(), but does NOT remove the cached segments themselves (they can be
-  // re-registered later). Dynamic registrations (created via regDynamic) are
-  // not affected.
+  // regRangeCached(), but does NOT remove the cached segments themselves (they
+  // can be re-registered later). Dynamic registrations (created via regRange()
+  // or regDynamic()) are not affected.
   //
   // Returns commSuccess if successful, or error code otherwise.
   static commResult_t deregAll();

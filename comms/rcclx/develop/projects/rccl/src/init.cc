@@ -1224,6 +1224,7 @@ static ncclResult_t computeBuffSizes(struct ncclComm* comm) {
 NCCL_PARAM(GraphDumpFileRank, "GRAPH_DUMP_FILE_RANK", 0);
 NCCL_PARAM(CollNetNodeThreshold, "COLLNET_NODE_THRESHOLD", 2);
 NCCL_PARAM(NvbPreconnect, "NVB_PRECONNECT", 0);
+NCCL_PARAM(PatPreconnect, "PAT_PRECONNECT", 1);
 NCCL_PARAM(AllocP2pNetLLBuffers, "ALLOC_P2P_NET_LL_BUFFERS", 0);
 #ifdef ENABLE_WARP_SPEED
 extern int64_t rcclParamWarpSpeedForceEnable();
@@ -1247,7 +1248,7 @@ static ncclResult_t initNvlDomainInfo(struct ncclComm* comm) {
   comm->nvlDomainInfo.nNvlDomains = comm->nNodes;
   comm->nvlDomainInfo.minRanksPerNvlDomain = comm->minLocalRanks;
   comm->nvlDomainInfo.maxRanksPerNvlDomain = comm->maxLocalRanks;
-  
+
   TRACE(NCCL_INIT, "NVLink domains: %d domains, min ranks per domain: %d, max ranks per domain: %d",
         comm->nNodes, comm->nvlDomainInfo.minRanksPerNvlDomain, comm->nvlDomainInfo.maxRanksPerNvlDomain);
 
@@ -1940,7 +1941,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     NCCLCHECKGOTO(ncclTransportTreeConnect(comm), ret, fail);
 
     // Connect PAT only for communicators with 1 GPU per node
-    if (comm->maxLocalRanks == 1) NCCLCHECKGOTO(ncclTransportPatConnect(comm), ret, fail);
+    if (comm->maxLocalRanks == 1 && ncclParamPatPreconnect()) NCCLCHECKGOTO(ncclTransportPatConnect(comm), ret, fail);
 
     // Attempt to setup NVLS, may silently fail and disable NVLS
     NCCLCHECKGOTO(ncclNvlsSetup(comm, parent), ret, fail);
@@ -2442,6 +2443,16 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   comm->initState = ncclSuccess;
   timers[TIMER_INIT_TOTAL] = clockNano() - timers[TIMER_INIT_TOTAL];
 
+  // Timestamp logging: init completion
+  comm->initCompleteTimestamp = clockNano();
+  comm->initCompleteWallclock = wallClockNano();
+  INFO(NCCL_INIT, "Init Complete (rank %d nranks %d): commDesc %s commHash 0x%llx: "
+       "initComplete=%.6f",
+       comm->rank, comm->nRanks,
+       comm->config.commDesc ? comm->config.commDesc : "N/A",
+       (unsigned long long)comm->commHash,
+       comm->initCompleteWallclock / 1e9);
+
 
   // Ctran Specific Initialization
   if(NCCL_CTRAN_ENABLE) {
@@ -2568,7 +2579,7 @@ static ncclResult_t envConfigOverride(ncclComm_t comm) {
     comm->config.netName = (char*)malloc(netNameLen);
     if (comm->config.netName == nullptr) {
       WARN("Failed to allocate memory for network name");
-      return ncclSystemError;      
+      return ncclSystemError;
     }
     memcpy((void*)comm->config.netName, tmpNetName, netNameLen);
   } else {
@@ -2780,6 +2791,7 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t *config) {
   NCCL_CONFIG_DEFAULT(internalConfigPtr, nChannelsPerNetPeer, NCCL_CONFIG_UNDEF_INT,
                       NCCL_CONFIG_UNDEF_INT, "nChannelsPerNetPeer", "%d");
   NCCL_CONFIG_DEFAULT(internalConfigPtr, nvlinkCentricSched, NCCL_CONFIG_UNDEF_INT, 0, "nvlinkCentricSched", "%d");
+  NCCL_CONFIG_DEFAULT(internalConfigPtr, commDesc, NCCL_CONFIG_UNDEF_PTR, NULL, "Comm desc", "%s");
 
   /* assign config to communicator */
   comm->config.blocking = internalConfigPtr->blocking;
@@ -2796,6 +2808,7 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t *config) {
   comm->config.nvlsCTAs = internalConfigPtr->nvlsCTAs;
   comm->config.nChannelsPerNetPeer = internalConfigPtr->nChannelsPerNetPeer;
   comm->config.nvlinkCentricSched = internalConfigPtr->nvlinkCentricSched;
+  comm->config.commDesc = internalConfigPtr->commDesc;
   NCCLCHECKGOTO(envConfigOverride(comm), ret, fail);
 
 exit:

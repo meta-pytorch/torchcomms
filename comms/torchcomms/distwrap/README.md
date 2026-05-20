@@ -58,9 +58,10 @@ to metadata and torchcomms instances:
 ```python
 @dataclass
 class _PG_INFO:
-    global_ranks: list[int]    # Global ranks in this group
-    group_desc: str            # Group description/name
-    data: dict[str, Any]       # Arbitrary data (stores torchcomms instances)
+    global_ranks: list[int]           # Global ranks in this group
+    group_desc: str                   # Group description/name
+    rank_to_group_rank: dict[int, int]  # Cached global_rank -> group_rank mapping
+    data: dict[str, Any]              # Arbitrary data (stores torchcomms instances)
 
 # Registry: ProcessGroup -> _PG_INFO
 _PG_INFO_REGISTRY: dict[ProcessGroup, _PG_INFO] = {}
@@ -184,7 +185,6 @@ def all_reduce(tensor, op=ReduceOp.SUM, group=None, async_op=False):
 ### Extensions (torchcomms-only)
 - `new_window` - Create RMA window
 - `alltoallv_dedup_init/exec` - Deduplicated alltoallv for MoE
-- `alltoallv_dynamic_dispatch/combine` - Dynamic alltoallv for MoE
 
 ## Limitations When torchcomms is Enabled
 

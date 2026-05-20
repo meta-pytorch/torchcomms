@@ -42,7 +42,7 @@ fi
 
 # Install system packages
 dnf config-manager --set-enabled powertools
-dnf install -y almalinux-release-devel
+dnf install -y almalinux-release-devel gcc-toolset-13-libatomic-devel
 
 if [ "$INSTALL_CMAKE" = true ]; then
   dnf install -y ninja-build cmake

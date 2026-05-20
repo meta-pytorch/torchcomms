@@ -10,6 +10,15 @@ interface. Any functions that needs to be exposed to python should have "nccl"
 in the signature, see src/version.script for details.
 */
 
+struct IterationSnapshot {
+  int64_t iteration{-1};
+  int64_t timestampUs{0};
+};
+
 __attribute__((noinline, visibility("default"))) void ncclxSetIteration(
     int64_t);
 __attribute__((noinline, visibility("default"))) int64_t ncclxGetIteration();
+__attribute__((noinline, visibility("default"))) int64_t
+ncclxGetIterationTimestampUs();
+__attribute__((noinline, visibility("default"))) IterationSnapshot
+ncclxGetIterationSnapshot();

@@ -13,6 +13,7 @@
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/TorchCommFactory.hpp"
 #include "comms/torchcomms/TorchWork.hpp"
+#include "comms/torchcomms/hooks/common/OpNameHelper.hpp"
 
 // Forward declarations for hook submodule init
 void init_clog_hook_bindings(py::module_& m);
@@ -1402,6 +1403,30 @@ operations will fail until reconfigure() is called (in reconfigurable mode).
           )",
           py::call_guard<py::gil_scoped_release>())
       .def(
+          "is_abort_supported",
+          &TorchComm::isAbortSupported,
+          R"(
+Check if abort/fault-tolerance is supported on this communicator.
+
+Returns:
+    bool: True if abort is supported, False otherwise.
+          )",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "is_aborted",
+          &TorchComm::isAborted,
+          R"(
+Check if the communicator is in an aborted state.
+
+Useful in CUDA graph mode where per-operation work handles are
+unavailable and polling the communicator state is the only way to
+detect failures.
+
+Returns:
+    bool: True if the communicator has been aborted.
+          )",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
           "get_device_transport",
           &TorchComm::get_device_transport,
           R"(
@@ -1420,6 +1445,37 @@ Returns:
 Raises:
     RuntimeError: If the backend does not support device transport.
 )",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "tensor_register",
+          [](TorchComm& self, const at::Tensor& tensor) {
+            self.tensor_register(tensor);
+          },
+          R"(
+Register a tensor's memory with the communication backend.
+
+Pre-registers the memory region for optimized data transfer (e.g.,
+RDMA zero-copy). The caller must call tensor_deregister() before
+freeing the tensor. Omitting deregistration leaks the backend handle
+but does not crash; cleanup occurs on communicator finalization.
+
+Args:
+    tensor: The tensor whose memory to register.
+          )",
+          py::arg("tensor"),
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "tensor_deregister",
+          [](TorchComm& self, const at::Tensor& tensor) {
+            self.tensor_deregister(tensor);
+          },
+          R"(
+Deregister a tensor's previously registered memory.
+
+Args:
+    tensor: The tensor whose memory to deregister.
+          )",
+          py::arg("tensor"),
           py::call_guard<py::gil_scoped_release>())
 
       // Point-to-Point Operations
@@ -2156,7 +2212,7 @@ Example:
           R"(
 Initialize a persistent AllGather operation.
 
-This is a SM free collective operation where the memory is pre-registered and uses 
+This is a SM free collective operation where the memory is pre-registered and uses
 Copy Engine or DMA to move data from one rank to the other.
 
 Args:
@@ -2300,10 +2356,8 @@ Raises: RuntimeError if the ranks list is non-empty and the current rank is not 
       .def(
           "register_pre_hook",
           [](TorchComm& self, const py::function& callback) {
-            auto hook = [callback](
-                            OpName name,
-                            size_t op_id,
-                            const PreHookArgs& args) {
+            auto hook = [callback](size_t op_id, const PreHookArgs& args) {
+              auto name = getOpName(args);
               py::gil_scoped_acquire acquire;
               py::object py_args = std::visit(
                   [](const auto& a) -> py::object {

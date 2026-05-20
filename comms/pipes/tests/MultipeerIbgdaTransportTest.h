@@ -33,7 +33,7 @@ void testPutAndSignal(
     int blockSize);
 
 /**
- * Test kernel: Group-collaborative put + signal (warp group, slot-index)
+ * Test kernel: Explicit cooperative put + signal (warp group, slot-index)
  */
 void testPutAndSignalGroup(
     P2pIbgdaTransportDevice* deviceTransportPtr,
@@ -46,7 +46,7 @@ void testPutAndSignalGroup(
     int blockSize);
 
 /**
- * Test kernel: Multi-warp group-collaborative put + signal (slot-index)
+ * Test kernel: Multi-warp presharded group put + signal (slot-index)
  */
 void testPutAndSignalGroupMultiWarp(
     P2pIbgdaTransportDevice* deviceTransportPtr,
@@ -59,7 +59,7 @@ void testPutAndSignalGroupMultiWarp(
     int blockSize);
 
 /**
- * Test kernel: Block-scope group-collaborative put + signal (slot-index)
+ * Test kernel: Block-scope presharded group put + signal (slot-index)
  */
 void testPutAndSignalGroupBlock(
     P2pIbgdaTransportDevice* deviceTransportPtr,

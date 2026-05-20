@@ -479,6 +479,19 @@ discoverGpus(CudaApi& cudaApi, NvmlApi& nvmlApi, SysfsApi& sysfs) {
   return gpus;
 }
 
+/// Check whether an ibdev sysfs path belongs to a virtual (software) RDMA
+/// device such as RXE (Soft-RoCE).  These live under
+/// /sys/devices/virtual/ and have no PCI backing.
+bool isVirtualRdmaDevice(SysfsApi& sysfs, const std::string& ibdevPath) {
+  auto resolved = sysfs.resolvePath(ibdevPath);
+  if (!resolved) {
+    return false;
+  }
+  return resolved.value().find("/devices/virtual/") != std::string::npos;
+}
+
+constexpr size_t kDefaultRxeSpeed = 10000; // 10 Gbps
+
 /// Discover NICs via IbvApi: enumerate IB devices and active ports.
 /// Returns empty vector if ibverbs is not available.
 Result<std::vector<NicDiscovery>> discoverNics(
@@ -511,11 +524,17 @@ Result<std::vector<NicDiscovery>> discoverNics(
 
     // Resolve PCI device path from ibdev sysfs path.
     std::string ibdevPath = dev->ibdev_path;
-    auto resolved = sysfs.resolvePath(ibdevPath + "/device");
-    if (!resolved) {
-      continue;
+
+    bool isVirtual = isVirtualRdmaDevice(sysfs, ibdevPath);
+    std::string pciDevicePath;
+
+    if (!isVirtual) {
+      auto resolved = sysfs.resolvePath(ibdevPath + "/device");
+      if (!resolved) {
+        continue;
+      }
+      pciDevicePath = std::move(resolved).value();
     }
-    const std::string& pciDevicePath = std::move(resolved).value();
 
     // Open device and query ports.
     auto ctxResult = ibvApi.openDevice(dev);
@@ -535,7 +554,7 @@ Result<std::vector<NicDiscovery>> discoverNics(
             portAttr.state == IBV_PORT_ACTIVE) {
           auto speed =
               ibPortSpeedMbps(portAttr.active_speed, portAttr.active_width);
-          if (speed > portSpeedMbps) {
+          if (activePort == -1 || speed > portSpeedMbps) {
             activePort = port;
             portSpeedMbps =
                 ibPortSpeedMbps(portAttr.active_speed, portAttr.active_width);
@@ -545,19 +564,40 @@ Result<std::vector<NicDiscovery>> discoverNics(
     }
 
     if (activePort != -1) {
-      nics.push_back({
-          .name = std::move(devName),
-          .data =
-              TopoNode::NicData{
-                  .bdf = std::string(extractBdf(pciDevicePath)),
-                  .numaNode = readNumaNode(sysfs, pciDevicePath),
-                  .port = activePort,
-                  .portSpeedMbps = portSpeedMbps,
-              },
-          .sysfsPath = pciDevicePath,
-          .ancestorChain = buildAncestorChain(sysfs, pciDevicePath),
-          .linkInfo = readPcieLinkInfo(sysfs, pciDevicePath),
-      });
+      if (isVirtual) {
+        if (portSpeedMbps == 0) {
+          portSpeedMbps = kDefaultRxeSpeed;
+        }
+        // Virtual devices have no PCI topology. Use NUMA 0, empty ancestor
+        // chain, and a default port speed if the ibverbs query returned 0.
+        nics.push_back({
+            .name = std::move(devName),
+            .data =
+                TopoNode::NicData{
+                    .bdf = "virtual",
+                    .numaNode = 0,
+                    .port = activePort,
+                    .portSpeedMbps = portSpeedMbps,
+                },
+            .sysfsPath = ibdevPath,
+            .ancestorChain = {},
+            .linkInfo = {},
+        });
+      } else {
+        nics.push_back({
+            .name = std::move(devName),
+            .data =
+                TopoNode::NicData{
+                    .bdf = std::string(extractBdf(pciDevicePath)),
+                    .numaNode = readNumaNode(sysfs, pciDevicePath),
+                    .port = activePort,
+                    .portSpeedMbps = portSpeedMbps,
+                },
+            .sysfsPath = pciDevicePath,
+            .ancestorChain = buildAncestorChain(sysfs, pciDevicePath),
+            .linkInfo = readPcieLinkInfo(sysfs, pciDevicePath),
+        });
+      }
     }
 
     ibvApi.closeDevice(ctx);
@@ -835,8 +875,9 @@ Status Topology::discover() {
 
 Status Topology::discoverHardware(DiscoveryData& data) {
   auto gpuResult = discoverGpus(*cudaApi_, *nvmlApi_, *sysfsApi_);
-  CHECK_RETURN(gpuResult);
-  data.gpus = std::move(gpuResult).value();
+  if (gpuResult) {
+    data.gpus = std::move(gpuResult).value();
+  }
 
   auto nicResult = discoverNics(*ibvApi_, *sysfsApi_);
   if (nicResult) {
@@ -931,12 +972,19 @@ void Topology::buildEdges(const DiscoveryData& data) {
 
   // Connect each PCI device to its CPU node.
   // For NICs, cap bandwidth with the RDMA port speed (like NCCL's LINK_NET).
+  // For virtual devices (empty ancestor chain), use port speed directly.
   for (const auto& dev : pciDevices) {
     int numa =
         (dev.numaNode >= 0 && dev.numaNode < numaCount) ? dev.numaNode : 0;
-    uint32_t bw = computeChainBottleneckMBps(*sysfsApi_, dev.ancestorChain);
-    if (dev.portSpeedMBps > 0) {
-      bw = std::min(bw, dev.portSpeedMBps);
+    uint32_t bw;
+    if (dev.ancestorChain.empty()) {
+      // Virtual device — no PCIe topology; use port speed as bandwidth.
+      bw = dev.portSpeedMBps;
+    } else {
+      bw = computeChainBottleneckMBps(*sysfsApi_, dev.ancestorChain);
+      if (dev.portSpeedMBps > 0) {
+        bw = std::min(bw, dev.portSpeedMBps);
+      }
     }
     addLink(dev.nodeId, cpuNodeIds_[numa], PathType::PHB, bw);
   }

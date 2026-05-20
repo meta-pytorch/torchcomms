@@ -21,7 +21,6 @@
 #include "comms/torchcomms/device/cuda/CudaApi.hpp"
 #include "comms/torchcomms/ncclx/GraphEventTracker.hpp"
 #include "comms/torchcomms/ncclx/NcclxApi.hpp"
-#include "comms/torchcomms/ncclx/TorchCommNCCLXPersistentRequest.hpp"
 #include "comms/torchcomms/ncclx/TorchCommWindowNCCLX.hpp"
 #include "comms/torchcomms/ncclx/TorchWorkNCCLX.hpp"
 #include "comms/utils/GraphCaptureSideStream.h"
@@ -93,6 +92,7 @@ class TorchCommNCCLX : public TorchCommBackend,
   int getSize() const override;
   std::string_view getBackendName() const override;
   std::string_view getCommName() const override;
+  int64_t getCommPtr() const;
 
   // Point-to-Point Operations
   c10::intrusive_ptr<TorchWork> send(
@@ -189,48 +189,6 @@ class TorchCommNCCLX : public TorchCommBackend,
       bool async_op,
       const std::unordered_map<std::string, std::string>& hints = {});
 
-  c10::intrusive_ptr<TorchWork> alltoallv_dynamic_dispatch(
-      const std::vector<at::Tensor>& output_tensor_list,
-      at::Tensor& output_chunk_sizes_per_rank,
-      const at::Tensor& input_tensor,
-      const at::Tensor& input_chunk_sizes,
-      const at::Tensor& input_chunk_indices,
-      const at::Tensor& input_chunk_count_per_rank,
-      bool async_op);
-
-  c10::intrusive_ptr<TorchWork> alltoallv_dynamic_combine(
-      at::Tensor& output_tensor,
-      const at::Tensor& input_tensor,
-      const at::Tensor& input_chunk_sizes,
-      const at::Tensor& input_chunk_indices,
-      const at::Tensor& input_chunk_count_per_rank,
-      bool async_op);
-
-  c10::intrusive_ptr<TorchCommNCCLXPersistentRequest> alltoallv_dedup_init(
-      const int num_send_blocks,
-      const int block_count,
-      const int block_num_recv_buckets,
-      const int num_recv_buckets,
-      at::ScalarType dtype,
-      bool async_op);
-
-  c10::intrusive_ptr<TorchWork> alltoallv_dedup_exec(
-      at::Tensor& output_tensor,
-      at::Tensor& recv_block_ids,
-      const at::Tensor& input_tensor,
-      const at::Tensor& send_indices,
-      const at::Tensor& forward_indices,
-      const at::Tensor& recv_indices,
-      at::intrusive_ptr<TorchCommNCCLXPersistentRequest> pReq);
-
-  c10::intrusive_ptr<TorchWork> alltoallv_dedup_combine(
-      at::Tensor& output_tensor,
-      const at::Tensor& input_tensor,
-      const at::Tensor& send_indices,
-      const at::Tensor& forward_indices,
-      const at::Tensor& recv_indices,
-      at::intrusive_ptr<TorchCommNCCLXPersistentRequest> pReq);
-
   // Persistent AllGather operations
   AllGatherPHandle all_gather_p_init(
       at::Tensor& output,
@@ -292,10 +250,9 @@ class TorchCommNCCLX : public TorchCommBackend,
   // Friend access for TorchCommNCCLX
   friend class TorchWorkNCCLX;
   friend class GraphEventTracker;
-  friend class CachingAllocatorHookImpl;
+  friend class NcclxCachingAllocatorHookImpl;
   template <typename B>
   friend class TorchCommWindowNCCLX;
-  friend class TorchCommNCCLXPersistentRequest;
 
   // Getter for CUDA API (for friend classes)
   CudaApi* getCudaApi() const {
@@ -378,7 +335,7 @@ class TorchCommNCCLX : public TorchCommBackend,
   };
 
   // Global pointer-based registration that doesn't require a comm instance.
-  // Used by CachingAllocatorHook for pre-comm memory registration.
+  // Used by NcclxCachingAllocatorHook for pre-comm memory registration.
   // The caller provides the NcclxApi to use for the registration.
   static void global_register_address(
       const AddressWithLen& addr,
@@ -514,8 +471,10 @@ class TorchCommNCCLX : public TorchCommBackend,
   void checkWorkQueue();
   bool getGraphCaptureMode();
   void ensureTensorContiguous(const at::Tensor& tensor);
+  void checkTensorDevice(const at::Tensor& tensor) const;
+  void checkTensorsDevice(const std::vector<at::Tensor>& tensors) const;
 
-  // Initialize the CachingAllocatorHook singleton
+  // Initialize the NcclxCachingAllocatorHook singleton
   void attachMemoryHook();
 
 #if defined(ENABLE_PIPES)
@@ -528,6 +487,7 @@ class TorchCommNCCLX : public TorchCommBackend,
   at::Device device_;
   int comm_size_{};
   int rank_{};
+  int64_t uuid_{-1};
   size_t split_counter_{};
   CommOptions options_;
 

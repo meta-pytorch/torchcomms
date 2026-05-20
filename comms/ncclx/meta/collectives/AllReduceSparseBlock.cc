@@ -5,6 +5,7 @@
 #include "enqueue.h"
 #include "nccl.h"
 
+#include "comms/ctran/utils/ErrorStackTraceUtil.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/wrapper/MetaFactory.h"
 

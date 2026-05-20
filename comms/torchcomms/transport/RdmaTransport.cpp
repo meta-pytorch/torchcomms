@@ -5,6 +5,7 @@
 #include <folly/synchronization/CallOnce.h>
 
 #include <fmt/core.h>
+#include "comms/ctran/backends/ib/BootstrapExternal.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/utils/Checks.h"
@@ -200,11 +201,11 @@ bool RdmaTransport::supported() {
 }
 
 std::string RdmaTransport::bind() {
-  return ib_->getLocalVcIdentifier(kDummyRank);
+  return ib_->externalBootstrap()->getLocalVcId(kDummyRank);
 }
 
 commResult_t RdmaTransport::connect(const std::string& peerId) {
-  FB_COMMCHECK(ib_->connectVcDirect(peerId, kDummyRank));
+  FB_COMMCHECK(ib_->externalBootstrap()->connectVc(peerId, kDummyRank));
   return commSuccess;
 }
 

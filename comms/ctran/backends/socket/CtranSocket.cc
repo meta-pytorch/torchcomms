@@ -124,8 +124,9 @@ void CtranSocket::init(const SocketServerAddr& serverAddr) {
     this->preConnectPeerMap_.resize(comm->statex_->nRanks(), false);
     // only exchange listen sockets with bootstrapAllGather when using comm to
     // initialize CtranSocket
+    std::string resolvedIfName;
     auto maybeAddr = ctran::bootstrap::getInterfaceAddress(
-        NCCL_SOCKET_IFNAME, NCCL_SOCKET_IPADDR_PREFIX);
+        NCCL_SOCKET_IFNAME, NCCL_SOCKET_IPADDR_PREFIX, true, &resolvedIfName);
     if (maybeAddr.hasError()) {
       std::string msg = fmt::format(
           "CTRAN-SOCKET: No socket interfaces found (NCCL_SOCKET_IFNAME={}, NCCL_SOCKET_IPADDR_PREFIX={})",
@@ -140,12 +141,12 @@ void CtranSocket::init(const SocketServerAddr& serverAddr) {
           INIT,
           "CTRAN-SOCKET: socket address set to {} on interface {}",
           maybeAddr->str(),
-          NCCL_SOCKET_IFNAME);
+          resolvedIfName);
     }
 
     folly::SocketAddress ifAddrSockAddr(maybeAddr.value(), 0 /* port */);
     FB_SYSCHECKTHROW_EX(
-        listenSocket_.bindAndListen(ifAddrSockAddr, NCCL_SOCKET_IFNAME),
+        listenSocket_.bindAndListen(ifAddrSockAddr, resolvedIfName),
         ncclLogData_);
     CLOGF_SUBSYS(
         INFO,

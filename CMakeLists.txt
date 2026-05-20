@@ -11,14 +11,13 @@ if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.31)
     set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 endif()
 
-# colltrace's HRDWRingBufferReader uses __atomic_load_n on a 128-bit value,
-# which the compiler lowers to __atomic_load_16 (libatomic). On x86_64 we
-# sidestep this in source via an SSE2 MOVDQA specialization (see
-# HRDWRingBufferReader.h), so no libatomic dep is needed there. On other
-# archs (aarch64, etc.) we fall back to linking libatomic.
-if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
-    add_link_options("LINKER:--push-state,--no-as-needed" "-latomic" "LINKER:--pop-state")
-endif()
+# colltrace's HRDWRingBufferReader and TrainerContext use 128-bit atomic
+# loads/stores. The compiler may lower these to __atomic_load_16 /
+# __atomic_store_16 (libatomic) depending on the target and flags. Link
+# libatomic unconditionally so the libcall always resolves; on x86_64 with
+# -mcx16 (or aarch64 with LSE2) most ops inline and the dep is effectively
+# free.
+add_link_options("LINKER:--push-state,--no-as-needed" "-latomic" "LINKER:--pop-state")
 
 # Options
 option(USE_NCCL "Whether to build NCCL or not" ON)
@@ -40,34 +39,48 @@ message(STATUS "  USE_TRANSPORT  : ${USE_TRANSPORT}")
 message(STATUS "  USE_TRITON     : ${USE_TRITON}")
 message(STATUS "  BUILD_TESTS    : ${BUILD_TESTS}")
 
-if(DEFINED ENV{TORCH_CUDA_ARCH_LIST})
-    set(TORCH_CUDA_ARCH_LIST $ENV{TORCH_CUDA_ARCH_LIST})
+# NEEDS_CUDA: TRUE when any enabled backend requires CUDA. GLOO and XCCL
+# are the only non-CUDA backends; if no CUDA-dependent backend is enabled
+# we can skip CUDA-specific setup like TORCH_CUDA_ARCH_LIST detection.
+if(USE_NCCL OR USE_NCCLX OR USE_RCCL OR USE_RCCLX OR USE_TRANSPORT OR USE_TRITON)
+    set(NEEDS_CUDA TRUE)
 else()
-    # Auto-detect from nvidia-smi, fall back to 9.0.
-    # Without this, .cu kernels (e.g. AtomicAddKernel.cu) are compiled only
-    # for sm_90 and fail at runtime on other GPUs with
-    # "no kernel image is available for execution on the device".
-    # See also: comms/torchcomms/triton/CMakeLists.txt for the same pattern.
-    execute_process(
-        COMMAND nvidia-smi --query-gpu=compute_cap --format=csv,noheader
-        OUTPUT_VARIABLE _smi_output
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_QUIET
-        RESULT_VARIABLE _smi_result
-    )
-    if(_smi_result EQUAL 0 AND _smi_output)
-        # Deduplicate compute capabilities across all GPUs
-        # (e.g. "9.0\n9.0\n9.0\n9.0" -> "9.0")
-        string(REPLACE "\n" ";" _cc_list "${_smi_output}")
-        list(REMOVE_DUPLICATES _cc_list)
-        list(JOIN _cc_list ";" TORCH_CUDA_ARCH_LIST)
-        message(STATUS "Auto-detected CUDA architectures from nvidia-smi: ${TORCH_CUDA_ARCH_LIST}")
-    else()
-        set(TORCH_CUDA_ARCH_LIST "9.0")
-        message(STATUS "nvidia-smi not available, defaulting CUDA architecture to 9.0")
-    endif()
+    set(NEEDS_CUDA FALSE)
 endif()
-message(STATUS "TORCH_CUDA_ARCH_LIST : ${TORCH_CUDA_ARCH_LIST}")
+message(STATUS "  NEEDS_CUDA  : ${NEEDS_CUDA}")
+
+if(NOT NEEDS_CUDA)
+    message(STATUS "Skipping CUDA arch detection (no CUDA-dependent backends enabled)")
+else()
+    if(DEFINED ENV{TORCH_CUDA_ARCH_LIST})
+        set(TORCH_CUDA_ARCH_LIST $ENV{TORCH_CUDA_ARCH_LIST})
+    else()
+        # Auto-detect from nvidia-smi, fall back to 9.0.
+        # Without this, .cu kernels (e.g. AtomicAddKernel.cu) are compiled only
+        # for sm_90 and fail at runtime on other GPUs with
+        # "no kernel image is available for execution on the device".
+        # See also: comms/torchcomms/triton/CMakeLists.txt for the same pattern.
+        execute_process(
+            COMMAND nvidia-smi --query-gpu=compute_cap --format=csv,noheader
+            OUTPUT_VARIABLE _smi_output
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+            RESULT_VARIABLE _smi_result
+        )
+        if(_smi_result EQUAL 0 AND _smi_output)
+            # Deduplicate compute capabilities across all GPUs
+            # (e.g. "9.0\n9.0\n9.0\n9.0" -> "9.0")
+            string(REPLACE "\n" ";" _cc_list "${_smi_output}")
+            list(REMOVE_DUPLICATES _cc_list)
+            list(JOIN _cc_list ";" TORCH_CUDA_ARCH_LIST)
+            message(STATUS "Auto-detected CUDA architectures from nvidia-smi: ${TORCH_CUDA_ARCH_LIST}")
+        else()
+            set(TORCH_CUDA_ARCH_LIST "9.0")
+            message(STATUS "nvidia-smi not available, defaulting CUDA architecture to 9.0")
+        endif()
+    endif()
+    message(STATUS "TORCH_CUDA_ARCH_LIST : ${TORCH_CUDA_ARCH_LIST}")
+endif()
 
 # Set ROOT early — needed by build_ncclx.cmake and backend CMakeLists.
 set(ROOT ${CMAKE_CURRENT_SOURCE_DIR})
@@ -165,6 +178,9 @@ target_link_libraries(torchcomms PRIVATE glog::glog gflags::gflags fmt::fmt)
 target_link_libraries(torchcomms PRIVATE ${TORCH_LIBRARIES} nlohmann_json::nlohmann_json)
 
 # Clog Hook sources (compiled into _comms)
+# Common hooks sources
+set(TORCHCOMMS_HOOKS_COMMON_SOURCES "comms/torchcomms/hooks/common/SignatureBuilder.cpp")
+
 file(GLOB TORCHCOMMS_CLOG_SOURCES "comms/torchcomms/hooks/clog/ClogHook.cpp")
 file(GLOB TORCHCOMMS_CLOG_PYTHON_SOURCES
     "comms/torchcomms/hooks/clog/ClogHookPy.cpp")
@@ -177,6 +193,7 @@ file(GLOB TORCHCOMMS_FR_PYTHON_SOURCES "comms/torchcomms/hooks/fr/FlightRecorder
 add_library(torchcomms_comms MODULE
     ${TORCHCOMMS_PYTHON_SOURCES}
     ${HOOKS_PYTHON_SOURCES}
+    ${TORCHCOMMS_HOOKS_COMMON_SOURCES}
     ${TORCHCOMMS_CLOG_SOURCES}
     ${TORCHCOMMS_CLOG_PYTHON_SOURCES}
     ${TORCHCOMMS_FR_SOURCES}

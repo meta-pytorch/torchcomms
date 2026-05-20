@@ -4,9 +4,11 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include <folly/Synchronized.h>
@@ -27,15 +29,19 @@ struct Transport;
 
 using meta::comms::CommBackend;
 
-// Per-communicator pipes NVL transport overrides.
+// Per-communicator Pipes transport overrides.
 // -1 means use CVAR default.
 struct ctranPipesConfig {
   int64_t nvlChunkSize{-1};
   int useDualStateBuffer{-1}; // -1=cvar, 0=single, 1=dual
+  bool ibLazyConnect{false};
+  int64_t ibgdaDataBufferSize{-1};
 
   bool operator==(const ctranPipesConfig& other) const {
     return nvlChunkSize == other.nvlChunkSize &&
-        useDualStateBuffer == other.useDualStateBuffer;
+        useDualStateBuffer == other.useDualStateBuffer &&
+        ibLazyConnect == other.ibLazyConnect &&
+        ibgdaDataBufferSize == other.ibgdaDataBufferSize;
   }
 };
 
@@ -147,10 +153,6 @@ class CtranComm {
     return ctranOpCount_;
   }
 
-  // TODO: after finish refactoring remove factory method and define proper
-  // constructor
-  friend commResult_t setCtranCommBase(ncclComm* comm);
-
   // Get a pointer to the Transport array from MultiPeerTransport,
   // indexed by global rank. Returns nullptr if MultiPeerTransport is not
   // initialized.
@@ -159,6 +161,15 @@ class CtranComm {
   // Returns a snapshot of the algo stats, or std::nullopt if stats are
   // disabled.
   std::optional<meta::comms::colltrace::AlgoStatDump> dumpAlgoStats() const;
+
+  void recordAlgoStats(const std::string& opName, const std::string& algoName);
+
+  // Record a collective algorithm invocation. No-op if algoStats is disabled.
+  inline void recordAlgoStat(
+      const std::string& opName,
+      const std::string& algoName) {
+    recordAlgoStats(opName, algoName);
+  }
 
   // fields are public to allow access from external code and tests
   // TODO: remove config_, it's redundant
@@ -186,6 +197,8 @@ class CtranComm {
   std::unique_ptr<ncclx::CommStateX> statex_;
 #if defined(ENABLE_PIPES)
   std::unique_ptr<comms::pipes::MultiPeerTransport> multiPeerTransport_;
+  uint64_t* hierarchicalAgReadyCounters_{nullptr};
+  size_t hierarchicalAgReadyCounterCount_{0};
 #endif // defined(ENABLE_PIPES)
 
   // Deferred cleanup for CUDA graph resources. CUDA user-object destructor
@@ -211,6 +224,9 @@ class CtranComm {
 
  private:
   friend class CtranGpe;
+  friend commResult_t ctranInit(
+      CtranComm* comm,
+      std::unique_ptr<ctran::IProfilerReporter> reporter);
   std::unique_ptr<meta::comms::colltrace::AlgoStats> algoStats_;
   // TODO: define proper constructor to make CtranComm be independent of
   // ncclComm.

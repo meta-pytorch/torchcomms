@@ -19,6 +19,7 @@
 #include "comms/torchcomms/RemovableHandle.hpp"
 #include "comms/torchcomms/TorchCommHooks.hpp"
 #include "comms/torchcomms/TorchCommTypes.hpp"
+#include "comms/torchcomms/hooks/common/SignatureBuilder.hpp"
 #include "comms/torchcomms/hooks/common/ThreadSafeLogFile.hpp"
 
 namespace torch::comms {
@@ -160,7 +161,6 @@ class ClogHook : public std::enable_shared_from_this<ClogHook> {
   void onPreHook(
       const std::string& comm_name,
       int device_index,
-      OpName name,
       size_t op_id,
       const PreHookArgs& args);
 
@@ -170,17 +170,8 @@ class ClogHook : public std::enable_shared_from_this<ClogHook> {
       size_t op_id,
       const PostHookArgs& args);
 
-  // Build signature string from typed pre-hook args via std::visit.
-  std::string buildSignature(OpName name, const PreHookArgs& args) const;
-
   // -- Formatting helpers --
   static double now();
-  static std::string_view reduceOpToString(const ReduceOp& op);
-  static std::string_view dtypeToString(at::ScalarType dtype);
-  static std::string formatCounts(const std::vector<at::Tensor>& tensors);
-  static std::string formatCounts(const std::vector<uint64_t>& counts);
-  static std::string formatPtr(const void* ptr);
-  static std::string formatPtrs(const std::vector<at::Tensor>& tensors);
 
   void logEvent(uint64_t corr_id, std::string_view event);
   void

@@ -27,14 +27,13 @@ class Config {
   std::string commDesc = "undefined";
   std::vector<int> splitGroupRanks;
   std::string ncclAllGatherAlgo = "undefined";
-  bool lazyConnect = false;
-  bool lazySetupChannels = false;
   bool fastInitMode = false;
 
   // Per-communicator MultiPeerTransport (pipes) NVL config overrides.
   // When set, override the corresponding CVARs for this communicator.
   std::optional<size_t> pipesNvlChunkSize;
   std::optional<bool> pipesUseDualStateBuffer;
+  std::optional<size_t> pipesIbgdaDataBufferSize;
   int vCliqueSize = 0;
 
   // Per-communicator buffer size override (Simple protocol).
@@ -45,6 +44,9 @@ class Config {
   // Per-communicator IB transport config overrides.
   std::optional<int> ibSplitDataOnQps;
   std::optional<int> ibQpsPerConnection;
+
+  // Defer per-peer IBGDA state to first use (hint > CVAR).
+  bool ibLazyConnect = false;
 };
 
 // Hint keys corresponding to Config fields above.  Used by
@@ -54,15 +56,23 @@ inline const std::vector<std::string>& knownHintKeys() {
       "commDesc",
       "splitGroupRanks",
       "ncclAllGatherAlgo",
-      "lazyConnect",
-      "lazySetupChannels",
       "fastInitMode",
+      "useCtran",
+      "usePatAvg",
+      "noLocal",
+      "sendrecvAlgo",
+      "allgatherAlgo",
+      "allreduceAlgo",
+      "pipesIbgdaDataBufferSize",
+      "alltoallvAlgo",
+      "rmaAlgo",
       "pipesNvlChunkSize",
       "pipesUseDualStateBuffer",
       "vCliqueSize",
       "ncclBuffSize",
       "ibSplitDataOnQps",
       "ibQpsPerConnection",
+      "ibLazyConnect",
   };
   return keys;
 }

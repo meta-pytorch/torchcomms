@@ -65,6 +65,7 @@ class OptionsTest : public ::testing::Test {
   void TearDown() override {
     // Explicitly reset the TorchComm object to ensure proper cleanup
     if (torchcomm_) {
+      torchcomm_->barrier(false)->wait();
       torchcomm_.reset();
     }
     if (wrapper_) {

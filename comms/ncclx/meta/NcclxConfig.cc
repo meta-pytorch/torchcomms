@@ -69,8 +69,6 @@ Config::Config(const ncclConfig_t* config) {
   checkPtrConflict("commDesc", config->commDesc);
   checkPtrConflict("splitGroupRanks", config->splitGroupRanks);
   checkPtrConflict("ncclAllGatherAlgo", config->ncclAllGatherAlgo);
-  checkIntConflict("lazyConnect", config->lazyConnect);
-  checkIntConflict("lazySetupChannels", config->lazySetupChannels);
   checkIntConflict("fastInitMode", config->fastInitMode);
 
   if (conflict) {
@@ -158,20 +156,6 @@ Config::Config(const ncclConfig_t* config) {
     }
   }
 
-  // booleans: flat field > hint > env default
-  if (config->lazyConnect != NCCL_CONFIG_UNDEF_INT) {
-    lazyConnect = config->lazyConnect != 0;
-  } else {
-    lazyConnect = parseHintBool("lazyConnect", NCCL_RUNTIME_CONNECT);
-  }
-
-  if (config->lazySetupChannels != NCCL_CONFIG_UNDEF_INT) {
-    lazySetupChannels = config->lazySetupChannels != 0;
-  } else {
-    lazySetupChannels =
-        parseHintBool("lazySetupChannels", NCCL_LAZY_SETUP_CHANNELS);
-  }
-
   if (config->fastInitMode != NCCL_CONFIG_UNDEF_INT) {
     fastInitMode = config->fastInitMode != 0;
   } else {
@@ -197,6 +181,25 @@ Config::Config(const ncclConfig_t* config) {
           "pipesUseDualStateBuffer", NCCL_CTRAN_PIPES_USE_DUAL_STATE_BUFFER);
     }
   }
+  {
+    std::string val = getHintStr("pipesIbgdaDataBufferSize");
+    if (!val.empty()) {
+      try {
+        auto parsed = std::stoull(val);
+        if (parsed > 0) {
+          pipesIbgdaDataBufferSize = parsed;
+        } else {
+          WARN("NCCLX hint 'pipesIbgdaDataBufferSize': value must be positive");
+        }
+      } catch (const std::exception&) {
+        WARN(
+            "NCCLX hint 'pipesIbgdaDataBufferSize': invalid value '%s'",
+            val.c_str());
+      }
+    }
+  }
+
+  ibLazyConnect = parseHintBool("ibLazyConnect", NCCL_CTRAN_IBGDA_LAZY_CONNECT);
 
   // vCliqueSize: hint only (no flat ncclConfig_t field)
   {

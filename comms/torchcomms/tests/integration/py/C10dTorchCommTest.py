@@ -3,14 +3,13 @@ import unittest
 
 import torch
 import torch.distributed as dist
-from torch.testing._internal.common_device_type import instantiate_device_type_tests
 from torch.testing._internal.common_utils import (
     instantiate_parametrized_tests,
     parametrize,
     subtest,
 )
 from torchcomms.tests.helpers.py.test_helpers import skip_if_ncclx
-from torchcomms.tests.integration.py.TorchCommTestHelpers import (
+from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
     get_device,
     get_rank_and_size,
 )
@@ -44,8 +43,11 @@ class TestC10dTorchCommsBasic(unittest.TestCase):
         return dist.get_rank() + 1
 
     def _skip_if_product_overflows(self, op):
-        if op == dist.ReduceOp.PRODUCT and dist.get_world_size() > 34:
-            self.skipTest("PRODUCT reduction overflows float32 for world_size > 34")
+        if op == dist.ReduceOp.PRODUCT and dist.get_world_size() > 12:
+            self.skipTest(
+                f"world_size={dist.get_world_size()} > 12: PRODUCT is world_size! "
+                "and only up to 12! is exactly representable in float32"
+            )
 
     def _expected_reduce_result(self, op):
         """Return the expected scalar result for a rank+1 input reduced across all ranks."""
@@ -93,18 +95,17 @@ class TestC10dTorchCommsBasic(unittest.TestCase):
         dist.broadcast(tensor, src=0)
         self.assertEqual(tensor.item(), 1)
 
-    # TODO:Enable when PR https://github.com/pytorch/pytorch/pull/178533 is merged
-    # def test_gather(self):
-    #    tensor = torch.tensor([dist.get_rank()], dtype=torch.float32)
-    #    gather_list = None
-    #    if dist.get_rank() == 0:
-    #        gather_list = [
-    #            torch.empty_like(tensor) for _ in range(dist.get_world_size())
-    #        ]
-    #    dist.gather(tensor, gather_list=gather_list, dst=0)
-    #    if dist.get_rank() == 0:
-    #        expected = list(range(dist.get_world_size()))
-    #        self.assertEqual([t.item() for t in gather_list], expected)
+    def test_gather(self):
+        tensor = torch.tensor([self._rank_value()], dtype=torch.float32)
+        gather_list = None
+        if dist.get_rank() == 0:
+            gather_list = [
+                torch.empty_like(tensor) for _ in range(dist.get_world_size())
+            ]
+        dist.gather(tensor, gather_list=gather_list, dst=0)
+        if dist.get_rank() == 0:
+            expected = list(range(1, dist.get_world_size() + 1))
+            self.assertEqual([t.item() for t in gather_list], expected)
 
     def test_scatter(self):
         if dist.get_rank() == 0:

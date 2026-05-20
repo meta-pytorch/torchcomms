@@ -13,9 +13,10 @@ const char* DefaultNcclxGlobalApi::getErrorString(ncclResult_t result) {
 ncclResult_t DefaultNcclxGlobalApi::commDumpAll(
     std::unordered_map<
         std::string,
-        std::unordered_map<std::string, std::string>>& map) {
+        std::unordered_map<std::string, std::string>>& map,
+    const std::unordered_map<std::string, std::string>& hints) {
   std::lock_guard<std::mutex> lock(api_mutex_);
-  return ::ncclCommDumpAll(map);
+  return ::ncclCommDumpAll(map, hints);
 }
 
 void DefaultNcclxGlobalApi::initCachingAllocatorHook() {
@@ -37,7 +38,7 @@ void DefaultNcclxGlobalApi::initCachingAllocatorHook() {
         ncclGetErrorString(result));
   }
   ncclCommDestroy(comm);
-  CachingAllocatorHook::getInstance();
+  NcclxCachingAllocatorHook::getInstance();
 }
 
 } // namespace torch::comms

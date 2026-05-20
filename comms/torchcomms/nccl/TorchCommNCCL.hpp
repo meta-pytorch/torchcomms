@@ -213,7 +213,7 @@ class TorchCommNCCL : public TorchCommBackend,
 
   // Friend access for TorchCommNCCL
   friend class TorchWorkNCCL;
-  friend class CachingAllocatorHookImpl;
+  friend class NcclCachingAllocatorHookImpl;
   friend class TorchCommWindowNCCL;
 
   // Getter for CUDA API (for friend classes)
@@ -375,6 +375,8 @@ class TorchCommNCCL : public TorchCommBackend,
   bool getGraphCaptureMode();
   cudaStream_t getOperationStream(bool async_op);
   void ensureTensorContiguous(const at::Tensor& tensor);
+  void checkTensorDevice(const at::Tensor& tensor) const;
+  void checkTensorsDevice(const std::vector<at::Tensor>& tensors) const;
 
   void attachMemoryHook();
   void detachMemoryHook();
@@ -385,6 +387,7 @@ class TorchCommNCCL : public TorchCommBackend,
   at::Device device_;
   int comm_size_{};
   int rank_{};
+  int64_t uuid_{-1};
   CommOptions options_;
   size_t max_event_pool_size_{};
   cudaStream_t internal_stream_{};

@@ -29,6 +29,14 @@ class CudaApi {
 
   virtual Status getDevicePCIBusId(char* pciBusId, int len, int device);
 
+  // --- Host memory ---
+
+  virtual Result<void*> hostAlloc(size_t size, unsigned int flags);
+
+  virtual Status hostFree(void* ptr);
+
+  virtual Result<void*> hostGetDevicePointer(void* hostPtr);
+
   // --- Memory copy ---
 
   virtual Status memcpyAsync(
@@ -37,6 +45,18 @@ class CudaApi {
       size_t count,
       cudaMemcpyKind kind,
       cudaStream_t stream);
+
+#if CUDART_VERSION >= 12080
+  // Batch DMA submission. Available on CUDA 12.8+; the underlying CUDA
+  // signature changed in CUDA 13.0 (failIdx removed), but the wrapper
+  // surface stays stable.
+  virtual Status memcpyBatchAsync(
+      void* const* dsts,
+      const void* const* srcs,
+      const size_t* sizes,
+      size_t count,
+      cudaStream_t stream);
+#endif
 
   virtual Status memcpyPeerAsync(
       void* dst,

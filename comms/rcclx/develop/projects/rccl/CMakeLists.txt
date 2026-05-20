@@ -45,6 +45,17 @@ option(FAULT_INJECTION                         "Enable fault injection"         
 option(QUIET_WARNINGS                          "Supress compiler warnings"                     OFF)
 option(ENABLE_ROCSHMEM                         "Enable rocSHMEM support in RCCL"               OFF)
 
+# Third-party dependency paths
+#==================================================================================================
+# These can be set via -D flags or will default to environment variables
+set(CONDA_INCLUDE_DIR "$ENV{CONDA_INCLUDE_DIR}" CACHE PATH "Path to conda include directory")
+set(CONDA_LIB_DIR "$ENV{CONDA_LIB_DIR}" CACHE PATH "Path to conda lib directory")
+
+# Path to the fbcode root (five levels up from this CMakeLists.txt).
+# Defined once and used for ctran/pipes globs, hipify, and external scripts.
+set(FBCODE_DIR "${CMAKE_SOURCE_DIR}/../../../../..")
+get_filename_component(FBCODE_DIR "${FBCODE_DIR}" ABSOLUTE)
+
 # Default GPU architectures to build
 #==================================================================================================
 set(DEFAULT_GPUS
@@ -155,7 +166,7 @@ endif()
 # Set CMAKE flags
 #==================================================================================================
 set(CMAKE_INSTALL_PREFIX "${ROCM_PATH}" CACHE PATH "")
-set(CMAKE_CXX_STANDARD   17)   # We use C++17 features, this will add compile option: -std=c++17
+set(CMAKE_CXX_STANDARD   20)   # C++20 required for folly headers (consteval, etc.)
 set(CMAKE_CXX_EXTENSIONS OFF)  # Without this line, it will add -std=gnu++17 instead, which has some issues.
 if(ROCM_PATH)
   list(APPEND CMAKE_PREFIX_PATH  # Add ROCM_PATH to CMake search paths (for finding HIP / HSA
@@ -635,8 +646,10 @@ set(SRC_FILES
   src/include/msccl/msccl_status.h
   src/include/msccl/msccl_struct.h
   src/include/nccl_device/comm.h
+  src/include/nccl_device/comm_tmp.h
   src/include/nccl_device/coop.h
   src/include/nccl_device/core.h
+  src/include/nccl_device/core_tmp.h
   src/include/nccl_device/ll_a2a.h
   src/include/nccl_device/mem_barrier.h
   src/include/nccl_device/ptr.h
@@ -797,6 +810,266 @@ set(SRC_FILES
   src/misc/latency_profiler/CollTraceUtils.cc
 )
 
+# Run this command to get META_FILES:
+# find comms/rcclx/develop/meta -type f ! -path "*/scuba/*" ! -path "*/testinfra/*" ! -path "*/tests/*" ! -path "*/lib/*" ! -path "*/lpcoll/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" \) | sed 's|^comms/rcclx/develop/\(build/release/hipify/\)\?||' | sort
+set(RCCLX_FILES
+  meta/algorithms/AlgoInit.h
+  meta/algorithms/AlgoUtils.h
+  meta/ctran/BaselineBootstrap.cc
+  meta/ctran/BaselineBootstrap.h
+  meta/ctran/Hints.cc
+  meta/ctran/MetaFactory.cc
+  meta/ctran/MetaFactory.h
+  meta/ctran/PersistentCollectives.cc
+)
+
+# Automatically collect all ctran and pipes source files.
+# Glob paths must be absolute because these dirs live outside CMAKE_SOURCE_DIR
+# (at fbcode/comms/ctran/ and fbcode/comms/pipes/, not under comms/rcclx/develop/).
+file(GLOB_RECURSE CTRAN_SOURCES_ABS
+    "${FBCODE_DIR}/comms/ctran/*.cc"
+    "${FBCODE_DIR}/comms/ctran/*.cu"
+    "${FBCODE_DIR}/comms/ctran/*.h"
+    "${FBCODE_DIR}/comms/ctran/*.cuh"
+)
+
+# Convert absolute paths to fbcode-relative paths (e.g. "comms/ctran/Ctran.cc")
+# so they work with the hipify pipeline which resolves via ${FBCODE_DIR}/${SRC_FILE}.
+set(CTRAN_SOURCES "")
+foreach(ABS_PATH ${CTRAN_SOURCES_ABS})
+    file(RELATIVE_PATH REL_PATH "${FBCODE_DIR}" "${ABS_PATH}")
+    list(APPEND CTRAN_SOURCES "${REL_PATH}")
+endforeach()
+
+list(FILTER CTRAN_SOURCES EXCLUDE REGEX "comms/ctran/tests/.*")
+list(FILTER CTRAN_SOURCES EXCLUDE REGEX "comms/ctran/benchmarks/.*")
+list(FILTER CTRAN_SOURCES EXCLUDE REGEX "comms/ctran/examples/.*")
+# Also exclude nested tests/benchmarks/examples dirs (e.g. comms/ctran/algos/tests/, comms/ctran/gpe/tests/)
+list(FILTER CTRAN_SOURCES EXCLUDE REGEX "comms/ctran/.*/tests/.*")
+list(FILTER CTRAN_SOURCES EXCLUDE REGEX "comms/ctran/.*/benchmarks/.*")
+list(FILTER CTRAN_SOURCES EXCLUDE REGEX "comms/ctran/.*/examples/.*")
+list(FILTER CTRAN_SOURCES EXCLUDE REGEX "comms/ctran/issues/.*")
+list(FILTER CTRAN_SOURCES EXCLUDE REGEX "comms/ctran/.*/issues/.*")
+if (NOT DEFINED ENABLE_TCPDM OR NOT ENABLE_TCPDM)
+    add_compile_definitions(CTRAN_DISABLE_TCPDM)
+    list(FILTER CTRAN_SOURCES EXCLUDE REGEX "comms/ctran/backends/tcpdevmem/.*")
+endif()
+
+# Automatically collect all pipes source files.
+file(GLOB_RECURSE PIPES_SOURCES_ABS
+    "${FBCODE_DIR}/comms/pipes/*.cc"
+    "${FBCODE_DIR}/comms/pipes/*.cu"
+    "${FBCODE_DIR}/comms/pipes/*.h"
+    "${FBCODE_DIR}/comms/pipes/*.cuh"
+)
+
+set(PIPES_SOURCES "")
+foreach(ABS_PATH ${PIPES_SOURCES_ABS})
+    file(RELATIVE_PATH REL_PATH "${FBCODE_DIR}" "${ABS_PATH}")
+    list(APPEND PIPES_SOURCES "${REL_PATH}")
+endforeach()
+
+# Exclude IBGDA/DOCA files — they depend on NVIDIA DOCA and infiniband/verbs.h,
+# not available for ROCm/RCCL builds.
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "[Ii]bgda")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "[Dd]oca")
+# MultiPeerTransport unconditionally includes MultipeerIbgdaTransport.h, so exclude it too.
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/pipes/MultiPeerTransport\\.")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "MultiPeerTransportAmd\\.")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "AllToAllvAmd\\.")
+# Exclude Dispatchv files (currently disabled)
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "Dispatchv\\.")
+# Exclude tests and benchmarks (they depend on gtest/mpi which are not available in this build)
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/pipes/tests/.*")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/pipes/benchmarks/.*")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/pipes/.*/tests/.*")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/pipes/.*/benchmarks/.*")
+# Exclude all pipes collectives — they depend on CUDA-only headers (cuda_bf16.h,
+# P2pIbgdaTransportDevice.cuh, __trap) that are not available on ROCm/HIP.
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/pipes/collectives/.*")
+# Exclude rdma files — they depend on spdlog which is not available in this build.
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/pipes/rdma/.*")
+# Exclude window files — they depend on IbgdaBuffer.h which is excluded.
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/pipes/window/.*")
+# Exclude GpuMemHandler and CudaDriverLazy — they depend on cudaTypedefs.h which is not available.
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "GpuMemHandler\\.")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "CudaDriverLazy\\.")
+# Exclude MultiPeerNvlTransport — it depends on GpuMemHandler.h which is excluded.
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "MultiPeerNvlTransport\\.")
+
+# Run this command to get RCCLX_LIB_FILES:
+# find comms/rcclx/develop/meta -type f ! -path "*/tests/*" -path "*/lib/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" \) | sort
+# find comms/rcclx/develop/meta -type f ! -path "*/tests/*" -path "*/lpcoll/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" \) | sort
+set(RCCLX_LIB_FILES
+  comms/rcclx/develop/meta/lib/CollTraceUtils.cc
+  comms/rcclx/develop/meta/lib/CollTraceUtils.h
+  comms/rcclx/develop/meta/lib/Common.h
+  comms/rcclx/develop/meta/lib/EventQueue.h
+  comms/rcclx/develop/meta/lib/ProxyTrace.cc
+  comms/rcclx/develop/meta/lib/ProxyTrace.h
+# comms/rcclx/develop/meta/lib/RcclxScubaEvent.cc
+# comms/rcclx/develop/meta/lib/RcclxScubaEvent.h
+# comms/rcclx/develop/meta/lib/ScubaLogger.cc
+# comms/rcclx/develop/meta/lib/ScubaLogger.h
+  comms/rcclx/develop/meta/lpcoll/low_precision_allgather.cc
+  comms/rcclx/develop/meta/lpcoll/low_precision_allgather.h
+  comms/rcclx/develop/meta/lpcoll/low_precision_allreduce.cc
+  comms/rcclx/develop/meta/lpcoll/low_precision_allreduce.h
+  comms/rcclx/develop/meta/lpcoll/low_precision_alltoall.cc
+  comms/rcclx/develop/meta/lpcoll/low_precision_alltoall.h
+  comms/rcclx/develop/meta/lpcoll/low_precision_buffer_pool.cc
+  comms/rcclx/develop/meta/lpcoll/low_precision_buffer_pool.h
+  comms/rcclx/develop/meta/lpcoll/low_precision_common.h
+  comms/rcclx/develop/meta/lpcoll/low_precision_kernels.h
+  comms/rcclx/develop/meta/lpcoll/low_precision_reduce_scatter.cc
+  comms/rcclx/develop/meta/lpcoll/low_precision_reduce_scatter.h
+  comms/rcclx/develop/meta/lpcoll/low_precision_utility.h
+  comms/rcclx/develop/meta/lpcoll/p2p_allgather.cc
+  comms/rcclx/develop/meta/lpcoll/p2p_allgather.h
+)
+
+# find comms/ctran/ -type f ! -path "*/tests/*" ! -path "*/benchmarks/*" ! -path "*/examples/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" -o -name "*.cuh" -o -name "*.cu" \) | sort
+set(CTRAN_FILES
+  ${CTRAN_SOURCES}
+  comms/common/bootstrap/IBootstrap.h
+  comms/ctran/bootstrap/ICtranBootstrap.h
+  comms/tcp_devmem/transport.h # extra requirement
+  comms/utils/MemUtils.h # extra requirement
+)
+
+# TODO: Add back comms/common/ files
+# Run this command to get COMMON_FILES:
+# find comms/utils/ comms/common comms/pipes -type f ! -path "*/tests/*" ! -path "*/benchmarks/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" -o -name "*.cuh" -o -name "*.cu" \) | sort
+set(COMMON_FILES
+  comms/common/algorithms/AlgoFactory.cu
+  comms/common/algorithms/AlgoFactory.cuh
+  comms/common/algorithms/AlgoUtils.cc
+  comms/common/algorithms/AlgoUtils.h
+  comms/common/algorithms/all_gather/AlgoAllGather.cu
+  comms/common/algorithms/all_gather/AlgoAllGather.cuh
+  comms/common/algorithms/all_gather/AllGatherAlgoManager.cu
+  comms/common/algorithms/all_gather/AllGatherAlgoManager.h
+  comms/common/algorithms/all_gather/all_gather_dda.cuh
+  comms/common/algorithms/all_reduce/AlgoAllReduce.cu
+  comms/common/algorithms/all_reduce/AlgoAllReduce.cuh
+  comms/common/algorithms/all_reduce/AllReduceAlgoManager.cu
+  comms/common/algorithms/all_reduce/AllReduceAlgoManager.h
+  comms/common/algorithms/all_reduce/all_reduce_dda.cuh
+  comms/common/algorithms/all_to_all/AlgoAllToAll.cu
+  comms/common/algorithms/all_to_all/AlgoAllToAll.cuh
+  comms/common/algorithms/all_to_all/AllToAllAlgoManager.cu
+  comms/common/algorithms/all_to_all/AllToAllAlgoManager.h
+  comms/common/algorithms/all_to_all/all_to_all_dda.cuh
+  comms/common/algorithms/CollCommon.cuh
+  comms/common/algorithms/reduce_scatter/AlgoReduceScatter.cu
+  comms/common/algorithms/reduce_scatter/AlgoReduceScatter.cuh
+  comms/common/algorithms/reduce_scatter/ReduceScatterAlgoManager.cu
+  comms/common/algorithms/reduce_scatter/ReduceScatterAlgoManager.h
+  comms/common/algorithms/reduce_scatter/reduce_scatter_dda.cuh
+  comms/common/AtomicUtils.cuh
+  comms/common/BitOps.cuh
+  comms/common/CudaWrap.h
+  comms/common/DeviceConstants.cuh
+  comms/common/IpcGpuBarrier.cu
+  comms/common/IpcGpuBarrier.cuh
+  comms/common/IpcMemHandler.cc
+  comms/common/IpcMemHandler.h
+  comms/common/bootstrap/IBootstrap.h
+  comms/utils/checks.h
+  comms/utils/colltrace/AlgoStats.cc
+  comms/utils/colltrace/AlgoStats.h
+  comms/utils/colltrace/CollMetadata.h
+  comms/utils/colltrace/CollMetadataImpl.cc
+  comms/utils/colltrace/CollMetadataImpl.h
+  comms/utils/colltrace/CollRecord.cc
+  comms/utils/colltrace/CollRecord.h
+  comms/utils/colltrace/CollTrace.cc
+  comms/utils/colltrace/CollTraceEvent.h
+  comms/utils/colltrace/CollTrace.h
+  comms/utils/colltrace/CollTraceHandle.cc
+  comms/utils/colltrace/CollTraceHandle.h
+  comms/utils/colltrace/CollTraceInterface.h
+  comms/utils/colltrace/CollTracePlugin.h
+  comms/utils/colltrace/CollWaitEvent.h
+  comms/utils/colltrace/CommLogDataSerialize.cc
+  comms/utils/colltrace/CommLogDataSerialize.h
+  comms/utils/colltrace/CPUWaitEvent.cc
+  comms/utils/colltrace/CPUWaitEvent.h
+  comms/utils/colltrace/CudaEventPool.cc
+  comms/utils/colltrace/CudaEventPool.h
+  comms/utils/colltrace/CudaWaitEvent.cc
+  comms/utils/colltrace/CudaWaitEvent.h
+  comms/utils/colltrace/DummyCollTraceHandle.h
+  comms/utils/colltrace/GenericMetadata.cc
+  comms/utils/colltrace/GenericMetadata.h
+  comms/utils/colltrace/NetworkPerfMonitor.cc
+  comms/utils/colltrace/NetworkPerfMonitor.h
+  comms/utils/colltrace/plugins/CommDumpPlugin.cc
+  comms/utils/colltrace/plugins/CommDumpPlugin.h
+  comms/utils/colltrace/plugins/WatchdogPlugin.cc
+  comms/utils/colltrace/plugins/WatchdogPlugin.h
+  comms/utils/CommsMaybeChecks.h
+  comms/utils/commSpecs.cc
+  comms/utils/commSpecs.h
+  comms/utils/Conversion.cc
+  comms/utils/Conversion.h
+  comms/utils/GpuClockCalibration.cc
+  comms/utils/GpuClockCalibration.cu
+  comms/utils/GpuClockCalibration.h
+  comms/utils/CudaChecks.h
+  comms/utils/CudaRAII.cc
+  comms/utils/CudaRAII.h
+  comms/utils/cvars/nccl_baseline_adapter.cc
+  comms/utils/cvars/nccl_baseline_adapter.h
+  comms/utils/cvars/nccl_cvars.cc
+  comms/utils/cvars/nccl_cvars.h
+  comms/utils/EnvUtils.cc
+  comms/utils/EnvUtils.h
+  comms/utils/InitFolly.cc
+  comms/utils/InitFolly.h
+  comms/utils/kernels/rng/philox_rng.cuh
+  comms/utils/kernels/stochastic_rounding/stochastic_rounding.cuh
+  comms/utils/logger/alloc.cc
+  comms/utils/logger/alloc.h
+  comms/utils/logger/BackendTopologyUtil.cc
+  comms/utils/logger/BackendTopologyUtil.h
+  comms/utils/logger/DataSink.h
+  comms/utils/logger/DataTable.cc
+  comms/utils/logger/DataTable.h
+  comms/utils/logger/DataTableWrapper.cc
+  comms/utils/logger/DataTableWrapper.h
+  comms/utils/logger/EventMgr.cc
+  comms/utils/logger/EventMgr.h
+  comms/utils/logger/EventMgrHelperTypes.cc
+  comms/utils/logger/EventMgrHelperTypes.h
+  comms/utils/logger/EventsScubaUtil.cc
+  comms/utils/logger/EventsScubaUtil.h
+  comms/utils/logger/Logger.cc
+  comms/utils/logger/Logger.h
+  comms/utils/logger/LoggingFormat.cc
+  comms/utils/logger/LoggingFormat.h
+  comms/utils/logger/LogUtils.cc
+  comms/utils/logger/LogUtils.h
+  comms/utils/logger/NcclScubaSample.cc
+  comms/utils/logger/NcclScubaSample.h
+  comms/utils/logger/NcclWriterWrapper.cc
+  comms/utils/logger/NcclWriterWrapper.h
+  comms/utils/logger/ProcessGlobalErrorsUtil.cc
+  comms/utils/logger/ProcessGlobalErrorsUtil.h
+  comms/utils/logger/ScubaFileUtils.cc
+  comms/utils/logger/ScubaFileUtils.h
+  comms/utils/logger/ScubaLogger.cc
+  comms/utils/logger/ScubaLogger.h
+  comms/utils/MemUtils.cc
+  comms/utils/MemUtils.h
+  comms/utils/RankUtils.cc
+  comms/utils/RankUtils.h
+  comms/utils/StrUtils.h
+  comms/utils/trainer/TrainerContext.cc
+  comms/utils/trainer/TrainerContext.h
+  comms/utils/TypeUtils.h
+)
+
 if(USE_AMDSMI)
   set(SMI_SOURCES
     src/include/amdsmi_wrap.h
@@ -876,10 +1149,87 @@ foreach(SRC_FILE ${SRC_FILES})
   endif()
 endforeach()
 
+# Hipify RCCLX_FILES (relative to develop/)
+set(RCCLX_DEV_DIR "${CMAKE_SOURCE_DIR}/../..")
+foreach(SRC_FILE ${RCCLX_FILES})
+  if (NOT EXISTS ${RCCLX_DEV_DIR}/${SRC_FILE})
+    message(FATAL_ERROR "Unable to find file listed in CMakeLists.txt: ${RCCLX_DEV_DIR}/${SRC_FILE}")
+  endif()
+  set(HIP_FILE "${HIPIFY_DIR}/${SRC_FILE}")
+  get_filename_component(HIP_FILE_DIR ${HIP_FILE} DIRECTORY)
+  add_file_unique(HIP_SOURCES ${HIP_FILE})
+  string(REPLACE "\.cuh" "\.h" HIP_FILE ${HIP_FILE})
+  string(REPLACE "\.cu" "\.cu.cpp" HIP_FILE ${HIP_FILE})
+  list(APPEND HIP_SOURCES ${HIP_FILE})
+  add_custom_command(
+    OUTPUT ${HIP_FILE}
+    COMMAND mkdir -p ${HIP_FILE_DIR}
+            && ${hipify-perl_executable} -quiet-warnings ${RCCLX_DEV_DIR}/${SRC_FILE} -o ${HIP_FILE}
+            && ${CMAKE_COMMAND} -E env bash ${CMAKE_CURRENT_SOURCE_DIR}/cmake/scripts/add_unroll.sh ${HIP_FILE}
+    MAIN_DEPENDENCY ${RCCLX_DEV_DIR}/${SRC_FILE}
+    COMMENT "Hipifying ${SRC_FILE} -> ${HIP_FILE}"
+  )
+endforeach()
+
+# Different build rules for files that we want to import with their full path.
+# They will be stored in fbcode/comms/rcclx/develop/build/release/hipify/<path/from/fbcode>
+foreach(SRC_FILE ${RCCLX_LIB_FILES} ${COMMON_FILES} ${CTRAN_FILES} ${PIPES_SOURCES})
+  # Check that file exists
+  if (NOT EXISTS ${FBCODE_DIR}/${SRC_FILE})
+    message(FATAL_ERROR "Unable to find file listed in CMakeLists.txt: ${FBCODE_DIR}/${SRC_FILE}")
+  endif()
+
+  # Establish hipified copy of the source file
+  set(HIP_FILE "${HIPIFY_DIR}/${SRC_FILE}")
+  get_filename_component(HIP_FILE_DIR ${HIP_FILE} DIRECTORY)
+
+  # Make sure the file name is unique and there is no duplicate
+  add_file_unique(HIP_SOURCES ${HIP_FILE})
+
+  # Convert .cu files to .cpp so that they get processed properly
+  if(HIP_FILE MATCHES "\\.cu$" AND NOT HIP_FILE MATCHES "\\.cuh$")
+    string(REPLACE "\.cu" "\.cu.cpp" HIP_FILE ${HIP_FILE})
+  endif()
+  list(APPEND HIP_SOURCES ${HIP_FILE})
+
+  # Create a custom command to create hipified source code
+  if (FAULT_INJECTION)
+    add_custom_command(
+      OUTPUT ${HIP_FILE}
+      COMMAND mkdir -p ${HIP_FILE_DIR}
+              && ${hipify-perl_executable} -quiet-warnings ${FBCODE_DIR}/${SRC_FILE} -o ${HIP_FILE}
+              && ${CMAKE_COMMAND} -E env bash ${CMAKE_CURRENT_SOURCE_DIR}/cmake/scripts/add_faults.sh ${HIP_FILE}
+      MAIN_DEPENDENCY ${FBCODE_DIR}/${SRC_FILE}
+      COMMENT "Hipifying ${SRC_FILE} -> ${HIP_FILE}"
+    )
+  else()
+    add_custom_command(
+      OUTPUT ${HIP_FILE}
+      COMMAND mkdir -p ${HIP_FILE_DIR}
+              && ${hipify-perl_executable} -quiet-warnings ${FBCODE_DIR}/${SRC_FILE} -o ${HIP_FILE}
+              && ${CMAKE_COMMAND} -E env bash ${CMAKE_CURRENT_SOURCE_DIR}/cmake/scripts/add_unroll.sh ${HIP_FILE}
+      MAIN_DEPENDENCY ${FBCODE_DIR}/${SRC_FILE}
+      COMMENT "Hipifying ${SRC_FILE} -> ${HIP_FILE}"
+    )
+  endif()
+endforeach()
+
 # Adding custom target to hipify all the source files
 # This is required to make sure that all the hipified source files are
 # available before compiling the unit tests executable(s)
 add_custom_target(hipify_all DEPENDS ${HIP_SOURCES})
+
+# Hipify external comms/ headers (comms/common, comms/utils) that are not part of RCCL source
+#==================================================================================================
+set(HIPIFY_EXT_DIR "${CMAKE_CURRENT_BINARY_DIR}/hipify_ext")
+# Prepend HIPIFY_EXT_DIR to CXX flags so it takes priority over -I fbcode in env CXXFLAGS
+set(CMAKE_CXX_FLAGS "-I${HIPIFY_EXT_DIR} ${CMAKE_CXX_FLAGS}")
+add_custom_target(hipify_external_headers
+  COMMAND ${CMAKE_COMMAND} -E env bash ${CMAKE_CURRENT_SOURCE_DIR}/cmake/scripts/hipify_external_headers.sh
+    ${hipify-perl_executable} ${FBCODE_DIR} ${HIPIFY_EXT_DIR}
+  COMMENT "Hipifying external comms/ headers"
+)
+add_dependencies(hipify_all hipify_external_headers)
 
 # Generate device/host tables and all the collective functions that are going to be in librccl.so
 #==================================================================================================
@@ -921,6 +1271,44 @@ if (GENERATE_SYM_KERNELS)
   endif()
 endif()
 
+# Generate ctran kernel instantiation files
+#==================================================================================================
+# These files instantiate the kernel templates defined in .cuh files for each data type.
+# Without these, the kernel symbols would be undefined at link time.
+set(CTRAN_GEN_DIR "${HIPIFY_DIR}/ctran_gensrc")
+message(STATUS "Generating ctran kernel instantiation files in ${CTRAN_GEN_DIR}")
+
+execute_process(
+    COMMAND ${Python3_EXECUTABLE} ${FBCODE_DIR}/comms/ctran/algos/genctran.py ${CTRAN_GEN_DIR}
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    RESULT_VARIABLE gen_ctran_result
+    ERROR_VARIABLE gen_ctran_error
+)
+if (gen_ctran_result)
+  message(SEND_ERROR "Error: ${gen_ctran_error}")
+  message(FATAL_ERROR "${FBCODE_DIR}/comms/ctran/algos/genctran.py failed")
+endif()
+
+# Find and hipify the generated ctran kernel files
+file(GLOB CTRAN_GENERATED_CU_FILES "${CTRAN_GEN_DIR}/*.cu")
+list(LENGTH CTRAN_GENERATED_CU_FILES CTRAN_GEN_COUNT)
+
+foreach(GEN_CU_FILE ${CTRAN_GENERATED_CU_FILES})
+  get_filename_component(GEN_CU_FILENAME ${GEN_CU_FILE} NAME)
+  # Convert .cu to .cu.cpp for HIP compilation
+  string(REPLACE ".cu" ".cu.cpp" HIP_GEN_FILENAME ${GEN_CU_FILENAME})
+  set(HIP_GEN_FILE "${CTRAN_GEN_DIR}/${HIP_GEN_FILENAME}")
+
+  # Create a custom command to hipify the generated file
+  add_custom_command(
+    OUTPUT ${HIP_GEN_FILE}
+    COMMAND ${hipify-perl_executable} -quiet-warnings ${GEN_CU_FILE} -o ${HIP_GEN_FILE}
+    DEPENDS ${GEN_CU_FILE}
+    COMMENT "Hipifying generated ctran kernel: ${GEN_CU_FILENAME} -> ${HIP_GEN_FILENAME}"
+  )
+  list(APPEND HIP_SOURCES ${HIP_GEN_FILE})
+endforeach()
+
 # Find the generated files in the output directory
 file(GLOB_RECURSE GENERATED_FILES "${GEN_DIR}/*")
 
@@ -953,9 +1341,12 @@ add_library(rccl ${HIP_SOURCES})
 ## Set RCCL dependencies
 ## Ensure git version is updated before building rccl
 add_dependencies(rccl update_git_version)
+add_dependencies(rccl hipify_external_headers)
 
 ## Set RCCL include directories
+target_include_directories(rccl BEFORE PRIVATE ${HIPIFY_EXT_DIR})
 target_include_directories(rccl PRIVATE ${PROJECT_BINARY_DIR}/include)        # for generated rccl.h header
+target_include_directories(rccl PRIVATE ${PROJECT_BINARY_DIR}/include/rccl)   # for #include "rccl.h"
 target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/src)                    # for hipfied headers
 target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/src/device)
 target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/src/device/network/unpack)
@@ -968,6 +1359,10 @@ target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/gensrc)
 target_include_directories(rccl PRIVATE ${HSA_INCLUDE_PATH})
 target_include_directories(rccl PRIVATE ${ROCM_SMI_INCLUDE_DIR})
 target_include_directories(rccl PRIVATE ${ROCMCORE_PATH}/include)
+target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/comms/rcclx/develop/meta/ctran)
+target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/comms/ctran/utils)
+target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/comms/ctran)
+
 if(DEMANGLE_DIR)
   target_include_directories(rccl PRIVATE ${DEMANGLE_DIR})
 endif()
@@ -975,6 +1370,18 @@ if(ROCTX_ENABLE)
   target_include_directories(rccl PRIVATE ${ROCTRACER_INCLUDE_DIR})
 endif()
 
+# Files in fbcode/comms/rcclx/develop/meta/ are imported using just their file name
+# We will include their parent directories so they are found by CMake
+# target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/meta/colltrace)  # disabled: meta/colltrace excluded due to namespace incompatibility
+target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/meta/algorithms)
+target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/meta/ctran)
+
+# Files that are imported using their full path have been HIPified
+# in fbcode/comms/rcclx/develop/build/release/hipify/<path/from/fbcode>
+# To make these headers visible in a way that they can be imported with the full path,
+# we need to use fbcode/comms/rcclx/develop/build/release/hipify/ as one of the target include directories.
+target_include_directories(rccl PRIVATE ${HIPIFY_DIR})
+target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/comms/rcclx/develop)
 
 ## Set RCCL compile definitions
 if(COLLTRACE)
@@ -1209,6 +1616,26 @@ if (GENERATE_SYM_KERNELS)
   target_compile_definitions(rccl PRIVATE GENERATE_SYM_KERNELS)
 endif()
 
+# Set HIP/ROCm preprocessor flags
+target_compile_definitions(rccl PRIVATE __HIP_PLATFORM_AMD__)
+target_compile_definitions(rccl PRIVATE USE_ROCM)
+target_compile_definitions(rccl PRIVATE __HIPCC__)
+
+# Set non-FB infra preprocessor flags
+# Prevent glog macro conflicts with HIP/AMD headers that define ERROR
+target_compile_definitions(rccl PRIVATE GLOG_NO_ABBREVIATED_SEVERITIES)
+target_compile_definitions(rccl PRIVATE MOCK_SCUBA_DATA) # removes some Scuba logging in comms/utils/logger.
+target_compile_definitions(rccl PRIVATE CTRAN_DISABLE_TCPDM) # TCPDM has strict topology requirements, which is why it isn't supported NCCLX/RCCLX Conda packages. See T239012482.
+target_compile_definitions(rccl PRIVATE NVTX_DISABLE) # NVTX is for annotating code for profilers like NSight systems. It's disabled by default for the NCCLX Conda package.
+
+# Undefine __HIPCC__ for host-only .cc files that need types guarded by
+# #if !defined(__CUDACC__) (hipified to __HIPCC__) in AllReduce/Types.h.
+set_source_files_properties(
+  ${CMAKE_CURRENT_BINARY_DIR}/hipify/comms/ctran/gpe/CtranGpe.cc
+  ${CMAKE_CURRENT_BINARY_DIR}/hipify/comms/ctran/algos/AllReduce/AllReduceRing.cc
+  PROPERTIES COMPILE_OPTIONS "-U__HIPCC__"
+)
+
 ## Set RCCL compile options
 if (HAVE_PARALLEL_JOBS)
   target_compile_options(rccl PRIVATE -parallel-jobs=12)
@@ -1229,6 +1656,8 @@ target_compile_options(rccl PRIVATE -Werror=deprecated-copy-with-user-provided-c
 target_compile_options(rccl PRIVATE -Wno-format-nonliteral)
 target_compile_options(rccl PRIVATE -Wno-unused-function)
 target_compile_options(rccl PRIVATE -fgpu-rdc)
+# Enable SSE4.2 for folly F14 CRC intrinsics (host code only) to match libfolly.a build
+target_compile_options(rccl PRIVATE -Xarch_host -msse4.2)
 
 if(QUIET_WARNINGS)
   target_compile_options(rccl PRIVATE -Wno-invalid-offsetof)
@@ -1406,6 +1835,70 @@ endif()
 if (HAVE_KERNARG_PRELOAD)
   target_link_options(rccl PRIVATE "SHELL:-Xoffload-linker -mllvm=-amdgpu-kernarg-preload-count=16")
 endif()
+
+# Set path where CMake will look for header files
+target_include_directories(rccl PRIVATE
+  ${CONDA_INCLUDE_DIR}
+)
+
+# Set path where CMake will look for library files
+link_directories(${CONDA_LIB_DIR})
+
+target_link_libraries(rccl PRIVATE
+  ${CONDA_LIB_DIR}/libcomms_tracing_service.a
+)
+
+set(thrift_group_list
+  ${CONDA_LIB_DIR}/libasync.a
+  ${CONDA_LIB_DIR}/libconcurrency.a
+  ${CONDA_LIB_DIR}/libthrift-core.a
+  ${CONDA_LIB_DIR}/libthriftanyrep.a
+  ${CONDA_LIB_DIR}/libthriftcpp2.a
+  ${CONDA_LIB_DIR}/libthriftmetadata.a
+  ${CONDA_LIB_DIR}/libthriftprotocol.a
+  ${CONDA_LIB_DIR}/libthrifttype.a
+  ${CONDA_LIB_DIR}/libthrifttyperep.a
+  ${CONDA_LIB_DIR}/librpcmetadata.a
+  ${CONDA_LIB_DIR}/libruntime.a
+  ${CONDA_LIB_DIR}/libserverdbginfo.a
+  ${CONDA_LIB_DIR}/libtransport.a
+  ${CONDA_LIB_DIR}/libcommon.a
+)
+target_link_libraries(rccl PRIVATE
+  "$<LINK_GROUP:RESCAN,${thrift_group_list}>"
+)
+
+# Other thrift service linker flags
+target_link_libraries(rccl PRIVATE
+  ${CONDA_LIB_DIR}/libwangle.a
+  ${CONDA_LIB_DIR}/libfizz.a
+  ${CONDA_LIB_DIR}/libxxhash.a
+)
+
+# Folly linker flags
+# To get this list, activate conda environment with folly installed, then run:
+# export PKG_CONFIG_PATH="${CONDA_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH}" && pkg-config --libs --static libfolly
+target_link_libraries(rccl PRIVATE
+  ${CONDA_LIB_DIR}/libfolly.a
+  ${CONDA_LIB_DIR}/libdouble-conversion.a
+  ${CONDA_LIB_DIR}/libglog.a
+  ${CONDA_LIB_DIR}/libevent.a
+  ${CONDA_LIB_DIR}/libz.a
+  ${CONDA_LIB_DIR}/libssl.a
+  ${CONDA_LIB_DIR}/libcrypto.a
+  ${CONDA_LIB_DIR}/libzstd.so
+  ${CONDA_LIB_DIR}/libsodium.a
+)
+
+# Other linker flags
+target_link_libraries(rccl PRIVATE
+  ${CONDA_LIB_DIR}/libglog.a
+  ${CONDA_LIB_DIR}/libgflags.a
+  ${CONDA_LIB_DIR}/libboost_context.a
+  ${CONDA_LIB_DIR}/libfmt.a
+  ${CONDA_LIB_DIR}/libssl.a
+  ${CONDA_LIB_DIR}/libcrypto.a
+)
 
 if(ENABLE_MSCCLPP)
   add_mscclpp_targets()

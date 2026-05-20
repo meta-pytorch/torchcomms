@@ -10,6 +10,7 @@
 #include "comms/utils/colltrace/CollTraceEvent.h"
 #include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
 #include "comms/utils/colltrace/tests/MockTypes.h"
+#include "comms/utils/trainer/TrainerContext.h"
 
 using namespace meta::comms;
 using namespace meta::comms::colltrace;
@@ -40,10 +41,10 @@ class CommDumpPluginTest : public ::testing::Test {
   }
 
   void TearDown() override {
+    ncclxSetIteration(-1);
     plugin.reset();
   }
 
-  // Helper method to create a CollTraceEvent with a CollRecord
   CollTraceEvent createCollTraceEvent(uint64_t collId) {
     auto metadata = std::make_unique<MockCollMetadata>();
     auto collRecord = std::make_shared<CollRecord>(collId, std::move(metadata));
@@ -51,6 +52,12 @@ class CommDumpPluginTest : public ::testing::Test {
     CollTraceEvent event;
     event.collRecord = collRecord;
     return event;
+  }
+
+  void processFullLifecycle(CollTraceEvent& event) {
+    EXPECT_VALUE(plugin->afterCollKernelScheduled(event));
+    EXPECT_VALUE(plugin->afterCollKernelStart(event));
+    EXPECT_VALUE(plugin->afterCollKernelEnd(event));
   }
 
   std::unique_ptr<CommDumpPlugin> plugin;
@@ -389,4 +396,120 @@ TEST_F(CommDumpPluginTest, ConcurrentActiveCollectives) {
   EXPECT_VALUE(dump3);
   EXPECT_TRUE(dump3.value().currentColls.empty());
   EXPECT_EQ(dump3.value().pastColls.size(), 2);
+}
+
+// ---- Iteration comm time tracking tests ----
+
+TEST_F(CommDumpPluginTest, CommTimeDefaultValue) {
+  auto result = plugin->getCurrentIterationCommTime();
+  EXPECT_EQ(result.iteration, -1);
+  EXPECT_EQ(result.commTimeUs, 0);
+}
+
+TEST_F(CommDumpPluginTest, CommTimeAccumulation) {
+  using std::chrono::microseconds;
+  using std::chrono::system_clock;
+
+  ncclxSetIteration(5);
+  auto now = system_clock::now();
+
+  auto event1 = createCollTraceEvent(1);
+  event1.collRecord->getTimingInfo().setCollStartTs(now);
+  event1.collRecord->getTimingInfo().setCollEndTs(now + microseconds(100));
+
+  auto event2 = createCollTraceEvent(2);
+  event2.collRecord->getTimingInfo().setCollStartTs(now);
+  event2.collRecord->getTimingInfo().setCollEndTs(now + microseconds(250));
+
+  processFullLifecycle(event1);
+  processFullLifecycle(event2);
+
+  auto result = plugin->getCurrentIterationCommTime();
+  EXPECT_EQ(result.iteration, 5);
+  EXPECT_EQ(result.commTimeUs, 350);
+}
+
+TEST_F(CommDumpPluginTest, CommTimeStaleIterationIgnored) {
+  using std::chrono::microseconds;
+  using std::chrono::system_clock;
+
+  ncclxSetIteration(5);
+  auto t1 = system_clock::now();
+
+  auto event1 = createCollTraceEvent(1);
+  event1.collRecord->getTimingInfo().setCollStartTs(t1);
+  event1.collRecord->getTimingInfo().setCollEndTs(t1 + microseconds(100));
+  processFullLifecycle(event1);
+
+  EXPECT_EQ(plugin->getCurrentIterationCommTime().iteration, 5);
+  EXPECT_EQ(plugin->getCurrentIterationCommTime().commTimeUs, 100);
+
+  // Event whose startTs is before the iteration cutoff — should not be counted
+  auto event2 = createCollTraceEvent(2);
+  event2.collRecord->getTimingInfo().setCollStartTs(
+      t1 - std::chrono::seconds(10));
+  event2.collRecord->getTimingInfo().setCollEndTs(
+      t1 - std::chrono::seconds(10) + microseconds(200));
+  processFullLifecycle(event2);
+
+  auto result = plugin->getCurrentIterationCommTime();
+  EXPECT_EQ(result.iteration, 5);
+  EXPECT_EQ(result.commTimeUs, 100);
+}
+
+TEST_F(CommDumpPluginTest, CommTimeIterationRollover) {
+  using std::chrono::microseconds;
+  using std::chrono::system_clock;
+
+  ncclxSetIteration(1);
+  auto t1 = system_clock::now();
+
+  auto event1 = createCollTraceEvent(1);
+  event1.collRecord->getTimingInfo().setCollStartTs(t1);
+  event1.collRecord->getTimingInfo().setCollEndTs(t1 + microseconds(100));
+  processFullLifecycle(event1);
+
+  EXPECT_EQ(plugin->getCurrentIterationCommTime().commTimeUs, 100);
+
+  ncclxSetIteration(2);
+  auto t2 = system_clock::now();
+
+  auto event2 = createCollTraceEvent(2);
+  event2.collRecord->getTimingInfo().setCollStartTs(t2);
+  event2.collRecord->getTimingInfo().setCollEndTs(t2 + microseconds(200));
+  processFullLifecycle(event2);
+
+  auto result = plugin->getCurrentIterationCommTime();
+  EXPECT_EQ(result.iteration, 2);
+  EXPECT_EQ(result.commTimeUs, 200);
+}
+
+TEST_F(CommDumpPluginTest, CommTimeAccumulatesEvenAfterEviction) {
+  using std::chrono::microseconds;
+  using std::chrono::system_clock;
+
+  // pastCollSize=3 means only the 3 most recent pastColls survive eviction,
+  // but the comm time accumulator should still count ALL completed events.
+  plugin = std::make_unique<CommDumpPlugin>(CommDumpConfig{
+      .pastCollSize = 3,
+  });
+
+  ncclxSetIteration(1);
+  auto t = system_clock::now();
+
+  constexpr int kNumEvents = 10;
+  for (uint64_t i = 0; i < kNumEvents; ++i) {
+    auto event = createCollTraceEvent(i);
+    event.collRecord->getTimingInfo().setCollStartTs(t);
+    event.collRecord->getTimingInfo().setCollEndTs(t + microseconds(100));
+    processFullLifecycle(event);
+  }
+
+  auto dump = plugin->dump();
+  ASSERT_TRUE(dump.hasValue());
+  EXPECT_EQ(dump.value().pastColls.size(), 3);
+
+  auto result = plugin->getCurrentIterationCommTime();
+  EXPECT_EQ(result.iteration, 1);
+  EXPECT_EQ(result.commTimeUs, kNumEvents * 100);
 }

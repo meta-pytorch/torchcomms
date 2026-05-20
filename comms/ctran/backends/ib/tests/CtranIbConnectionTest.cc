@@ -8,6 +8,7 @@
 
 #include <folly/futures/Future.h>
 
+#include "comms/ctran/backends/ib/BootstrapExternal.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/backends/ib/CtranIbBase.h"
 
@@ -74,14 +75,15 @@ class CtranIbConnectionTest : public ::testing::Test {
         /*abortCtrl=*/abortCtrl);
 
     // Get and provide VC identifier
-    std::string myVcId = ctranIb->getLocalVcIdentifier(peerRank);
+    std::string myVcId = ctranIb->externalBootstrap()->getLocalVcId(peerRank);
     syncObjects.myVcIdPromise.setValue(myVcId);
 
     // Wait for peer's VC identifier
     std::string peerVcId = std::move(syncObjects.peerVcIdFuture).get();
 
     // Connect to peer
-    commResult_t connectResult = ctranIb->connectVcDirect(peerVcId, peerRank);
+    commResult_t connectResult =
+        ctranIb->externalBootstrap()->connectVc(peerVcId, peerRank);
     EXPECT_EQ(connectResult, commSuccess);
 
     // Allow time for connection establishment
@@ -265,9 +267,10 @@ TEST_F(CtranIbConnectionTest, TestAbortCtrl) {
   this->runTest(/*testAbort=*/true);
 }
 
-// Test that calling connectVcDirect before getLocalVcIdentifier returns an
-// error instead of segfaulting. This validates the fix for the segfault caused
-// by uninitialized QPs when setupVc is called before getLocalBusCard.
+// Test that calling BootstrapExternal::connectVc before
+// BootstrapExternal::getLocalVcId returns an error instead of segfaulting. This
+// validates the fix for the segfault caused by uninitialized QPs when setupVc
+// is called before getLocalBusCard.
 TEST_F(CtranIbConnectionTest, ConnectVcDirectWithoutLocalVcIdentifierFails) {
   const uint64_t commHash = 0x12345678;
   const std::string commDesc = "test_uninitialized_qp";
@@ -292,10 +295,45 @@ TEST_F(CtranIbConnectionTest, ConnectVcDirectWithoutLocalVcIdentifierFails) {
   // doesn't matter for this test since we expect early failure)
   std::string fakeRemoteVcId(256, '\0');
 
-  // Calling connectVcDirect without first calling getLocalVcIdentifier should
-  // fail gracefully with commInternalError, not segfault.
-  // This tests the fix for the segfault in CtranIbVirtualConn::setupVc when
-  // QPs are not initialized.
+  // Calling BootstrapExternal::connectVc without first calling getLocalVcId
+  // should fail gracefully with commInternalError, not segfault. This tests
+  // the fix for the segfault in CtranIbVirtualConn::setupVc when QPs are not
+  // initialized.
   EXPECT_EQ(
-      ctranIb->connectVcDirect(fakeRemoteVcId, peerRank), commInternalError);
+      ctranIb->externalBootstrap()->connectVc(fakeRemoteVcId, peerRank),
+      commInternalError);
+}
+
+// Verify that the externalBootstrap() accessor returns nullptr when CtranIb is
+// constructed in an internal bootstrap mode (kSpecifiedServer here). This
+// replaces the previous death-test-based guard against misuse: in the new
+// design BootstrapExternal is only allocated in kExternal mode, so the only
+// way to reach its methods is through the accessor which returns nullptr
+// otherwise.
+TEST_F(CtranIbConnectionTest, ExternalBootstrapAccessorNullInInternalMode) {
+  const uint64_t commHash = 0x12345678;
+  const std::string commDesc = "test_external_in_internal_mode";
+  const int rank = 0;
+
+  // Use localhost with OS-assigned port so the listen thread starts cleanly
+  // without requiring a real cluster network configuration.
+  SocketServerAddr serverAddr;
+  serverAddr.port = 0;
+  serverAddr.ipv4 = "127.0.0.1";
+  serverAddr.ifName = "lo";
+
+  EXPECT_EQ(cudaSetDevice(rank), cudaSuccess);
+
+  auto abortCtrl = ctran::utils::createAbort(/*enabled=*/false);
+  auto ctranIb = std::make_unique<CtranIb>(
+      rank,
+      rank, // cudaDev
+      commHash,
+      commDesc,
+      false, // enableLocalFlush
+      CtranIb::BootstrapMode::kSpecifiedServer,
+      /*qpServerAddr=*/&serverAddr,
+      /*abortCtrl=*/abortCtrl);
+
+  EXPECT_EQ(ctranIb->externalBootstrap(), nullptr);
 }

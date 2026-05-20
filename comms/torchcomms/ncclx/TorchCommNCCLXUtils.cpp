@@ -3,6 +3,7 @@
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLXCCA.hpp"
 
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include "comms/torchcomms/utils/Logging.hpp"
@@ -284,7 +285,7 @@ void TorchCommNCCLX::timeoutWatchdog() noexcept {
         TC_LOG(ERROR, this) << "Aborting process due to error on rank " << rank_
                             << " - timeout watchdog detected operation error. ";
       }
-      ::abort();
+      std::abort();
     }
 
     // Check communicator for async error
@@ -300,7 +301,7 @@ void TorchCommNCCLX::timeoutWatchdog() noexcept {
         TC_LOG(ERROR, this)
             << "Aborting process due to error on rank " << rank_
             << " - nccl hit async error: " << ncclGetErrorString(asyncErr);
-        abort();
+        std::abort();
       }
     }
   }
@@ -334,7 +335,7 @@ void TorchCommNCCLX::checkAndAbortIfTimedOutOrError() {
       abortNcclComm();
       if (options_.abort_process_on_timeout_or_error) {
         TC_LOG(ERROR, this) << "Aborting process due to timeout";
-        ::abort();
+        std::abort();
       } else {
         throw std::runtime_error("NCCLX operation timed out");
       }
@@ -352,7 +353,7 @@ void TorchCommNCCLX::checkAndAbortIfTimedOutOrError() {
     if (options_.abort_process_on_timeout_or_error) {
       TC_LOG(ERROR, this) << "Aborting process due to error: "
                           << ncclException.what();
-      ::abort();
+      std::abort();
     } else {
       throw ncclException;
     }
@@ -441,6 +442,22 @@ void TorchCommNCCLX::ensureTensorContiguous(const at::Tensor& tensor) {
   }
 }
 
+void TorchCommNCCLX::checkTensorDevice(const at::Tensor& tensor) const {
+  TORCH_CHECK(
+      tensor.device().type() == device_.type(),
+      "Expected tensor on ",
+      device_.type(),
+      " but found tensor on ",
+      tensor.device());
+}
+
+void TorchCommNCCLX::checkTensorsDevice(
+    const std::vector<at::Tensor>& tensors) const {
+  for (const auto& t : tensors) {
+    checkTensorDevice(t);
+  }
+}
+
 // Protected methods (not in the private section of the header)
 cudaEvent_t TorchCommNCCLX::getEvent() {
   std::lock_guard<std::mutex> lock(event_pool_mutex_);
@@ -473,10 +490,10 @@ void TorchCommNCCLX::returnEvent(cudaEvent_t event) {
 }
 
 void TorchCommNCCLX::attachMemoryHook() {
-  // Initialize the CachingAllocatorHook singleton.
+  // Initialize the NcclxCachingAllocatorHook singleton.
   // This attaches the CCA trace hook and registers any pre-existing
   // allocations.
-  CachingAllocatorHook::getInstance();
+  NcclxCachingAllocatorHook::getInstance();
 }
 
 } // namespace torch::comms

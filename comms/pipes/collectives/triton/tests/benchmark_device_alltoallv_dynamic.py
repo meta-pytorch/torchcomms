@@ -1390,7 +1390,7 @@ def main() -> int:
             )
 
     # Initialize TorchComm
-    from torchcomms.tests.integration.py.TorchCommTestHelpers import (
+    from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
         TorchCommTestWrapper,
     )
 

@@ -3,6 +3,7 @@
 #include <fstream>
 #include <memory>
 
+#include <fmt/format.h>
 #include <folly/init/Init.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -16,6 +17,7 @@
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/testinfra/TestUtils.h"
+#include "meta/NcclxConfig.h" // @manual
 #include "meta/hints/GlobalHints.h" // @manual
 #include "nccl.h"
 
@@ -58,55 +60,18 @@ TEST_F(CommWithCtranTest, CtranDisable) {
       globalRank, numRanks, localRank, bootstrap_.get()};
 
   ASSERT_NE(nullptr, comm.get());
-  ASSERT_EQ(nullptr, comm->ctranComm_->ctran_);
-  EXPECT_FALSE(ctranInitialized(comm->ctranComm_.get()));
+  EXPECT_EQ(nullptr, comm->ctranComm_);
+  EXPECT_FALSE(ctranInitialized(nullptr));
 
-  ASSERT_NE(nullptr, comm->ctranComm_->opCount_);
-  EXPECT_EQ(comm->ctranComm_->opCount_, &comm->opCount);
-
-  ASSERT_NE(nullptr, comm->ctranComm_->statex_);
-
-  EXPECT_EQ(comm->ctranComm_->config_, makeCtranConfigFrom(comm));
-  EXPECT_EQ(comm->ctranComm_->logMetaData_, comm->logMetaData);
-
-  EXPECT_EQ(comm->ctranComm_->colltraceNew_, nullptr);
-
-  // Expect all CTran collective support to be false
-  EXPECT_FALSE(
-      ctranAllGatherSupport(comm->ctranComm_.get(), NCCL_ALLGATHER_ALGO));
-  EXPECT_FALSE(ctranAllReduceSupport(
-      comm->ctranComm_.get(), NCCL_ALLREDUCE_ALGO::ctran));
-  EXPECT_FALSE(
-      ctranBroadcastSupport(comm->ctranComm_.get(), NCCL_BROADCAST_ALGO));
-  EXPECT_FALSE(ctranReduceScatterSupport(
-      comm->ctranComm_.get(), NCCL_REDUCESCATTER_ALGO));
-  EXPECT_FALSE(ctranSendRecvSupport(0, comm->ctranComm_.get()));
+  // All CTran collective support functions should return false with nullptr
+  EXPECT_FALSE(ctranAllGatherSupport(nullptr, NCCL_ALLGATHER_ALGO));
+  EXPECT_FALSE(ctranAllReduceSupport(nullptr, NCCL_ALLREDUCE_ALGO::ctran));
+  EXPECT_FALSE(ctranBroadcastSupport(nullptr, NCCL_BROADCAST_ALGO));
+  EXPECT_FALSE(ctranReduceScatterSupport(nullptr, NCCL_REDUCESCATTER_ALGO));
+  EXPECT_FALSE(ctranSendRecvSupport(0, nullptr));
   EXPECT_FALSE(ctranAllToAllSupport(
-      1048576, commInt, comm->ctranComm_.get(), NCCL_ALLTOALL_ALGO::ctran));
-  EXPECT_FALSE(ctranAllToAllvSupport(comm->ctranComm_.get()));
-  meta::comms::Hints hints;
-
-  size_t maxSendcounts =
-      dceil(CTRAN_MIN_REGISTRATION_SIZE, commTypeSize(commInt));
-  size_t maxRecvcounts =
-      dceil(CTRAN_MIN_REGISTRATION_SIZE, commTypeSize(commInt));
-
-  auto res = ctranAllToAllvDynamicSupport(
-      comm->ctranComm_.get(), hints, maxSendcounts, maxRecvcounts, commInt);
-  EXPECT_EQ(commInvalidUsage, res);
-
-  hints.set("ncclx_alltoallv_dynamic_sendbuffs_location", "cpu");
-  hints.set("ncclx_alltoallv_dynamic_recvbuffs_location", "cpu");
-  hints.set("ncclx_alltoallv_dynamic_sendcounts_location", "gpu");
-  hints.set("ncclx_alltoallv_dynamic_max_sendcounts_location", "cpu");
-  hints.set("ncclx_alltoallv_dynamic_max_recvcounts_location", "cpu");
-  hints.set("ncclx_alltoallv_dynamic_actual_recvcounts_location", "gpu");
-
-  maxSendcounts = CTRAN_MIN_REGISTRATION_SIZE / commTypeSize(commInt);
-  maxRecvcounts = CTRAN_MIN_REGISTRATION_SIZE / commTypeSize(commInt);
-  res = ctranAllToAllvDynamicSupport(
-      comm->ctranComm_.get(), hints, maxSendcounts, maxRecvcounts, commInt);
-  EXPECT_EQ(commInvalidUsage, res);
+      1048576, commInt, nullptr, NCCL_ALLTOALL_ALGO::ctran));
+  EXPECT_FALSE(ctranAllToAllvSupport(nullptr));
 }
 
 TEST_F(CommWithCtranTest, CtranCommInitialized) {
@@ -119,7 +84,10 @@ TEST_F(CommWithCtranTest, CtranCommInitialized) {
   ASSERT_NE(nullptr, ncclComm->ctranComm_);
 
   EXPECT_EQ(comm->ctranComm_->opCount_, &ncclComm->opCount);
-  EXPECT_EQ(comm->ctranComm_->config_, makeCtranConfigFrom(ncclComm));
+  EXPECT_EQ(comm->ctranComm_->config_.blocking, ncclComm->config.blocking);
+  EXPECT_EQ(
+      comm->ctranComm_->config_.commDesc,
+      NCCLX_CONFIG_FIELD(ncclComm->config, commDesc));
   EXPECT_EQ(comm->ctranComm_->logMetaData_, ncclComm->logMetaData);
   EXPECT_EQ(comm->ctranComm_->runtimeConn_, ncclComm->runtimeConn);
 }
@@ -394,14 +362,12 @@ TEST_F(CommWithCtranTest, CommFailureWithInvalidTopology) {
         try {
           ncclx::test::createNcclComm(
               globalRank, numRanks, localRank, bootstrap_.get(), true);
-        } catch (const std::runtime_error& e) {
-          EXPECT_THAT(
-              e.what(),
-              testing::HasSubstr("Failed, NCCL error: internal error"));
+        } catch (const std::exception& e) {
+          EXPECT_THAT(e.what(), testing::HasSubstr("NCCL error"));
           throw;
         }
       },
-      std::runtime_error);
+      std::exception);
 
   // Clean up temporary files
   unlink(invalidTopoFilepath.c_str());

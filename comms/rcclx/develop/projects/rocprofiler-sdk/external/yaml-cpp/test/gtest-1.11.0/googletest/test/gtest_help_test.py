@@ -109,7 +109,7 @@ class GTestHelpTest(gtest_test_utils.TestCase):
     """
 
     exit_code, output = RunWithFlag(flag)
-    self.assertEquals(0, exit_code)
+    self.assertEqual(0, exit_code)
     self.assert_(HELP_REGEX.search(output), output)
 
     if IS_LINUX or IS_GNUKFREEBSD:

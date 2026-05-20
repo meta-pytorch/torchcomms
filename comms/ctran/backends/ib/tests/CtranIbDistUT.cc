@@ -1796,10 +1796,10 @@ TEST_F(CtranIbTest, envQpConfig) {
                  zone2 = "nha1.c085", zone3 = "nha2.c080";
   // set a fake topology to test QP changes for each IB VC
   std::unordered_map<int, std::vector<std::string>> expectedTopology = {
-      {0, {"rtsw098.c084.f00.nha1", dc1, zone1}}, // rank-0
-      {1, {"rtsw099.c084.f00.nha1", dc1, zone1}}, // rank-1: x-rack with rank-0
-      {2, {"rtsw100.c085.f00.nha1", dc1, zone2}}, // rank-2: x-zone with rank-0
-      {3, {"rtsw101.c080.f00.nha2", dc2, zone3}} // rank-3: x-dc with rank-0
+      {0, {dc1, zone1}}, // rank-0
+      {1, {dc1, zone1}}, // rank-1: same zone as rank-0
+      {2, {dc1, zone2}}, // rank-2: x-zone with rank-0
+      {3, {dc2, zone3}} // rank-3: x-dc with rank-0
   };
   // dummy values for testing
   // {<QP Scaling Threshold>, <number of QPs>, <VC mode>}
@@ -1809,7 +1809,6 @@ TEST_F(CtranIbTest, envQpConfig) {
       {"512", "8", "spray", "8"},
       {"1024", "16", "dqplb", "12"},
   };
-  EnvRAII xRackQps(NCCL_CTRAN_IB_QP_CONFIG_XRACK, kPeerTestQpConfig[1]);
   EnvRAII xZoneQps(NCCL_CTRAN_IB_QP_CONFIG_XZONE, kPeerTestQpConfig[2]);
   EnvRAII xDcQps(NCCL_CTRAN_IB_QP_CONFIG_XDC, kPeerTestQpConfig[3]);
 
@@ -1822,9 +1821,8 @@ TEST_F(CtranIbTest, envQpConfig) {
     topo.rank = rank;
     auto fakeHostName = "fakehost.0" + std::to_string(rank);
     std::strcpy(topo.host, fakeHostName.c_str());
-    std::strcpy(topo.rtsw, expectedTopology.at(rank)[0].c_str());
-    std::strcpy(topo.dc, expectedTopology.at(rank)[1].c_str());
-    std::strcpy(topo.zone, expectedTopology.at(rank)[2].c_str());
+    std::strcpy(topo.dc, expectedTopology.at(rank)[0].c_str());
+    std::strcpy(topo.zone, expectedTopology.at(rank)[1].c_str());
     testRankTopologies.emplace_back(topo);
   }
   // create a new statex with fake topology for testing
@@ -1865,19 +1863,29 @@ TEST_F(CtranIbTest, envQpConfig) {
 
       CtranIb::CtranIbVcConfig_t config;
       EXPECT_EQ(ctranIb->getVcConfig(peer, config), commSuccess);
-      // Check QP Scaling Threshold
-      EXPECT_EQ(std::get<0>(config), std::stoul(kPeerTestQpConfig[peer].at(0)));
-      // Check # of QPs
-      EXPECT_EQ(std::get<1>(config), std::stoi(kPeerTestQpConfig[peer].at(1)));
-      // Check VC Mode
-      if (kPeerTestQpConfig[peer].at(2) == "spray") {
-        EXPECT_EQ(std::get<2>(config), NCCL_CTRAN_IB_VC_MODE::spray);
+      if (peer == 1) {
+        // Peer 1 is in same zone (SAME_ZONE) — uses global defaults
+        EXPECT_EQ(
+            std::get<0>(config), (size_t)NCCL_CTRAN_IB_QP_SCALING_THRESHOLD);
+        EXPECT_EQ(std::get<1>(config), (int)NCCL_CTRAN_IB_MAX_QPS);
+        EXPECT_EQ(
+            std::get<2>(config),
+            (enum NCCL_CTRAN_IB_VC_MODE)NCCL_CTRAN_IB_VC_MODE);
+        EXPECT_EQ(std::get<3>(config), (int)NCCL_CTRAN_IB_QP_MAX_MSGS);
       } else {
-        EXPECT_EQ(kPeerTestQpConfig[peer].at(2), "dqplb"); // Only other option
-        EXPECT_EQ(std::get<2>(config), NCCL_CTRAN_IB_VC_MODE::dqplb);
+        // Peers 2,3 use XZONE/XDC config overrides
+        EXPECT_EQ(
+            std::get<0>(config), std::stoul(kPeerTestQpConfig[peer].at(0)));
+        EXPECT_EQ(
+            std::get<1>(config), std::stoi(kPeerTestQpConfig[peer].at(1)));
+        if (kPeerTestQpConfig[peer].at(2) == "spray") {
+          EXPECT_EQ(std::get<2>(config), NCCL_CTRAN_IB_VC_MODE::spray);
+        } else {
+          EXPECT_EQ(std::get<2>(config), NCCL_CTRAN_IB_VC_MODE::dqplb);
+        }
+        EXPECT_EQ(
+            std::get<3>(config), std::stoi(kPeerTestQpConfig[peer].at(3)));
       }
-      // Check # of QPs per VC
-      EXPECT_EQ(std::get<3>(config), std::stoi(kPeerTestQpConfig[peer].at(3)));
     }
   } else {
     ControlMsg msg(ControlMsgType::SYNC);
@@ -1888,18 +1896,14 @@ TEST_F(CtranIbTest, envQpConfig) {
 }
 
 TEST_F(CtranIbTest, ValidBeTopology) {
-  std::string kSuDomain1 = "nha1.c084.u001";
   constexpr auto dc1 = "nha1", dc2 = "nha2", zone1 = "nha1.c084",
                  zone2 = "nha1.c085", zone3 = "nha2.c080";
   // set a fake topology to test QP changes for each IB VC
   std::unordered_map<int, std::vector<std::string>> expectedTopology = {
-      {0, {"rtsw098.c084.f00.nha1", kSuDomain1, dc1, zone1}}, // rank-0
-      {1, {"rtsw099.c084.f00.nha1", kSuDomain1, dc1, zone1}}, // rank-1: x-rack
-                                                              // with rank-0
-      {2, {"rtsw100.c085.f00.nha1", kSuDomain1, dc1, zone2}}, // rank-2: x-zone
-                                                              // with rank-0
-      {3, {"rtsw101.c080.f00.nha2", kSuDomain1, dc2, zone3}} // rank-3: x-dc
-                                                             // with rank-0
+      {0, {dc1, zone1}}, // rank-0
+      {1, {dc1, zone1}}, // rank-1: same zone as rank-0
+      {2, {dc1, zone2}}, // rank-2: x-zone with rank-0
+      {3, {dc2, zone3}} // rank-3: x-dc with rank-0
   };
 
   std::vector<ncclx::RankTopology> testRankTopologies{};
@@ -1908,10 +1912,8 @@ TEST_F(CtranIbTest, ValidBeTopology) {
     topo.rank = rank;
     auto fakeHostName = "fakehost.0" + std::to_string(rank);
     std::strcpy(topo.host, fakeHostName.c_str());
-    std::strcpy(topo.rtsw, expectedTopology.at(rank)[0].c_str());
-    std::strcpy(topo.su, expectedTopology.at(rank)[1].c_str());
-    std::strcpy(topo.dc, expectedTopology.at(rank)[2].c_str());
-    std::strcpy(topo.zone, expectedTopology.at(rank)[3].c_str());
+    std::strcpy(topo.dc, expectedTopology.at(rank)[0].c_str());
+    std::strcpy(topo.zone, expectedTopology.at(rank)[1].c_str());
     testRankTopologies.emplace_back(topo);
   }
 
@@ -1941,14 +1943,13 @@ TEST_F(CtranIbTest, ValidBeTopology) {
 }
 
 TEST_F(CtranIbTest, InvalidBeTopology) {
-  std::string kSuDomain1 = "";
   constexpr auto dc1 = "nha1", dc2 = "nha2", zone1 = "nha1.c084",
                  zone2 = "nha1.c085", zone3 = "nha2.c080";
   // set a fake topology to test QP changes for each IB VC. No rtsw or SU info
   // is present for the ranks
   std::unordered_map<int, std::vector<std::string>> expectedTopology = {
       {0, {dc1, zone1}}, // rank-0
-      {1, {dc1, zone1}}, // rank-1: x-rack with rank-0
+      {1, {dc1, zone1}}, // rank-1: same zone as rank-0
       {2, {dc1, zone2}}, // rank-2: x-zone with rank-0
       {3, {dc2, zone3}} // rank-3: x-dc with rank-0
   };
@@ -1961,7 +1962,6 @@ TEST_F(CtranIbTest, InvalidBeTopology) {
     std::strcpy(topo.host, fakeHostName.c_str());
     std::strcpy(topo.dc, expectedTopology.at(rank)[0].c_str());
     std::strcpy(topo.zone, expectedTopology.at(rank)[1].c_str());
-    std::strcpy(topo.su, kSuDomain1.c_str());
     testRankTopologies.emplace_back(topo);
   }
 
@@ -2572,19 +2572,17 @@ TEST_P(CtranIbTestParam, GpuMemPutNotifyLastMixedFastRegular) {
   CUDACHECK_TEST(cudaFree(buf));
 }
 
-class CtranIbTestWithQueuePairProfiler : public CtranIbTest {
+class CtranIbTestWithProfiler : public CtranIbTest {
  public:
-  CtranIbTestWithQueuePairProfiler() = default;
+  CtranIbTestWithProfiler() = default;
   void SetUp() override {
     setenv("NCCL_CTRAN_TRANSPORT_PROFILER", "true", 1); // enable profiler
     setenv("NCCL_CTRAN_IB_MAX_QPS", "1", 1); // for tracking puts easier
-    setenv("NCCL_CTRAN_DEVICE_TRAFFIC_SAMPLING_WEIGHT", "1", 1);
-    setenv("NCCL_CTRAN_QP_PROFILING_ENABLE", "true", 1); // enable QP profiling
     CtranIbTest::SetUp();
   }
 };
 
-TEST_F(CtranIbTestWithQueuePairProfiler, GpuMemPutNotifyMixedFastRegular) {
+TEST_F(CtranIbTestWithProfiler, GpuMemPutNotifyMixedFastRegular) {
   uint64_t qpScalingThreshold = 16384UL;
 
   EnvRAII env1(NCCL_CTRAN_IB_VC_MODE, NCCL_CTRAN_IB_VC_MODE::spray);

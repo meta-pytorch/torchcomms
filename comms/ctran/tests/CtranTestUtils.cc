@@ -498,9 +498,6 @@ std::unique_ptr<CtranComm> CtranStandaloneFixture::makeCtranComm(
   std::strncpy(topo.dc, "ut_dc", ncclx::kMaxNameLen);
   std::strncpy(topo.zone, "ut_zone", ncclx::kMaxNameLen);
   std::strncpy(topo.host, "ut_host", ncclx::kMaxNameLen);
-  // we can only set one of the two, rtsw or su.
-  std::strncpy(topo.rtsw, "", ncclx::kMaxNameLen);
-  std::strncpy(topo.su, "ut_su", ncclx::kMaxNameLen);
 
   std::vector<ncclx::RankTopology> rankTopologies = {topo};
   std::vector<int> commRanksToWorldRanks = {0};
@@ -528,21 +525,6 @@ std::unique_ptr<CtranComm> CtranStandaloneFixture::makeCtranComm(
 // ============================================================================
 
 namespace {
-
-void initRankStatesTopologyWrapper(
-    ncclx::CommStateX* statex,
-    meta::comms::IBootstrap* bootstrap,
-    int nRanks) {
-  // Fake topology with nLocalRanks=1
-  if (NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::nolocal) {
-    statex->initRankTopologyNolocal();
-  } else if (NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::vnode) {
-    ASSERT_GE(nRanks, NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS);
-    statex->initRankTopologyVnode(NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS);
-  } else {
-    statex->initRankStatesTopology(std::move(bootstrap));
-  }
-}
 
 using PerRankState = CtranIntraProcessFixture::PerRankState;
 static void resetPerRankState(PerRankState& state) {
@@ -601,8 +583,7 @@ void initCtranCommMultiRank(
       std::move(rankTopologies),
       std::move(commRanksToWorldRanks),
       std::string{kMultiRankCommDesc});
-  initRankStatesTopologyWrapper(
-      ctranComm->statex_.get(), ctranComm->bootstrap_.get(), nRanks);
+  ctranComm->statex_->initRankStatesTopology(ctranComm->bootstrap_.get());
 
   FB_COMMCHECKTHROW_EX_NOCOMM(ctranInit(ctranComm));
 

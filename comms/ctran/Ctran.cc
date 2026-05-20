@@ -2,6 +2,8 @@
 #include <memory>
 #include <optional>
 
+#include <cuda_runtime.h>
+
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/CtranPipes.h"
@@ -120,6 +122,14 @@ std::optional<meta::comms::colltrace::AlgoStatDump> CtranComm::dumpAlgoStats()
   return algoStats_->dump();
 }
 
+void CtranComm::recordAlgoStats(
+    const std::string& opName,
+    const std::string& algoName) {
+  if (algoStats_) {
+    algoStats_->record(opName, algoName);
+  }
+}
+
 commResult_t ctranInit(
     CtranComm* comm,
     std::unique_ptr<ctran::IProfilerReporter> reporter) {
@@ -130,6 +140,14 @@ commResult_t ctranInit(
   } catch (std::exception& e) {
     CLOGF(ERR, "Ctran initialization failed: {}", e.what());
     return commInternalError;
+  }
+
+  for (const auto& opt : NCCL_COLLTRACE) {
+    if (opt == "algostat") {
+      comm->algoStats_ = std::make_unique<meta::comms::colltrace::AlgoStats>(
+          comm->statex_->commHash(), comm->statex_->commDesc());
+      break;
+    }
   }
 
   auto res = ctranInitializePipes(comm);
@@ -166,13 +184,6 @@ CtranComm::CtranComm(std::shared_ptr<Abort> abort, ctranConfig commConfig)
   }
   // Default points to internal opCount
   opCount_ = &ctranOpCount_;
-
-  for (const auto& opt : NCCL_COLLTRACE) {
-    if (opt == "algostat") {
-      algoStats_ = std::make_unique<meta::comms::colltrace::AlgoStats>();
-      break;
-    }
-  }
 }
 
 void CtranComm::destroy() {
@@ -182,6 +193,11 @@ void CtranComm::destroy() {
   // ensure they do so in a specific order. Therefore, we manually handle
   // their de-initialization here.
 #if defined(ENABLE_PIPES)
+  if (hierarchicalAgReadyCounters_ != nullptr) {
+    cudaFree(hierarchicalAgReadyCounters_);
+    hierarchicalAgReadyCounters_ = nullptr;
+    hierarchicalAgReadyCounterCount_ = 0;
+  }
   // Must be destroyed before ctran_ (which owns SharedResource staging
   // buffers used as external data buffers) and before bootstrap_ (since
   // multiPeerTransport_ holds a non-owning reference to it).

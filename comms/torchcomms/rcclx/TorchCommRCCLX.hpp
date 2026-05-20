@@ -225,7 +225,7 @@ class TorchCommRCCLX : public TorchCommBackend,
 
   // Friend access for TorchCommRCCLX
   friend class TorchWorkRCCLX;
-  friend class CachingAllocatorHookImpl;
+  friend class RcclxCachingAllocatorHookImpl;
 
   // Getter for CUDA API (for friend classes)
   HipApi* getHipApi() const {
@@ -386,6 +386,8 @@ class TorchCommRCCLX : public TorchCommBackend,
       hipStream_t stream);
   hipStream_t getOperationStream(bool async_op);
   void ensureTensorContiguous(const at::Tensor& tensor);
+  void checkTensorDevice(const at::Tensor& tensor) const;
+  void checkTensorsDevice(const std::vector<at::Tensor>& tensors) const;
 
   void attachMemoryHook();
   void detachMemoryHook();

@@ -275,7 +275,7 @@ commResult_t CtranTcpDm::isend(
       size,
       handle,
       &request));
-  req.track(transport_, request);
+  req.track(transport_.get(), request);
 
   return commSuccess;
 }
@@ -367,7 +367,7 @@ commResult_t CtranTcpDm::irecvConnected(
       &request,
       unpackPool));
 
-  req.track(transport_, request);
+  req.track(transport_.get(), request);
 
   return commSuccess;
 }

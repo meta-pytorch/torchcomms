@@ -13,6 +13,7 @@
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
+#include "comms/utils/logger/LogUtils.h"
 
 class RegCacheTest : public ::testing::Test {
  public:
@@ -24,6 +25,7 @@ class RegCacheTest : public ::testing::Test {
     setenv("NCCL_CTRAN_BACKENDS", "ib", 1);
     setenv("NCCL_CTRAN_REGISTER", "eager", 1);
     ncclCvarInit();
+    meta::comms::logger::initCommLogging();
 
     // Initialize CUDA library (required for cuMem operations)
     ASSERT_EQ(ctran::utils::commCudaLibraryInit(), commSuccess);
@@ -1380,6 +1382,56 @@ TEST(IpcRemHandleTest, CorruptedDestroyDoesNotCrash) {
   handle->~IpcRemHandle();
 }
 
+// Test getRegHandle returns nullptr for unregistered buffer and valid handle
+// after registration
+TEST_F(RegCacheTest, GetRegHandleReturnsHandleForRegisteredBuffer) {
+  size_t bufSize = 8192;
+  void* buf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
+
+  // getRegHandle should return nullptr for uncached buffer
+  EXPECT_EQ(regCache->getRegHandle(buf, bufSize), nullptr);
+
+  // Cache the segment
+  std::vector<ctran::regcache::Segment*> segments;
+  std::vector<void*> segHdls;
+  EXPECT_EQ(
+      regCache->cacheSegment(
+          buf, bufSize, cudaDev, false, 0, segments, segHdls),
+      commSuccess);
+  EXPECT_EQ(segments.size(), 1);
+
+  // Cached but not yet registered - getRegHandle should still return nullptr
+  EXPECT_EQ(regCache->getRegHandle(buf, bufSize), nullptr);
+
+  // Register via regAll
+  EXPECT_EQ(ctran::RegCache::regAll(), commSuccess);
+
+  // Now getRegHandle should return a valid handle
+  void* regHdl = regCache->getRegHandle(buf, bufSize);
+  EXPECT_NE(regHdl, nullptr);
+
+  // isRegistered should agree
+  EXPECT_TRUE(regCache->isRegistered(buf, bufSize));
+
+  // Deregister
+  EXPECT_EQ(ctran::RegCache::deregAll(), commSuccess);
+
+  // After deregistration, getRegHandle should return nullptr again
+  EXPECT_EQ(regCache->getRegHandle(buf, bufSize), nullptr);
+  EXPECT_FALSE(regCache->isRegistered(buf, bufSize));
+
+  // Clean up
+  bool freed = false;
+  bool ncclManaged = false;
+  std::vector<std::unique_ptr<ctran::regcache::RegElem>> regElems;
+  EXPECT_EQ(
+      regCache->freeSegment(segHdls[0], freed, ncclManaged, regElems),
+      commSuccess);
+  EXPECT_TRUE(freed);
+
+  CUDACHECK_TEST(cudaFree(buf));
+}
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   folly::Init init(&argc, &argv);

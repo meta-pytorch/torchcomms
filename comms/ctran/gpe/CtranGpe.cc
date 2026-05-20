@@ -35,9 +35,6 @@ std::string kernelTypeToOpName(KernelConfig::KernelType type) {
     case KernelConfig::ALLTOALL_DEDUP:
     case KernelConfig::DEVICE_ALLTOALLV:
     case KernelConfig::ALLTOALLV:
-    case KernelConfig::ALLTOALLV_DYNAMIC:
-    case KernelConfig::ALLTOALLV_DYNAMIC_SPLIT:
-    case KernelConfig::ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG:
     case KernelConfig::ALLTOALLV_DEDUP:
       return "AllToAll";
     case KernelConfig::BROADCAST:
@@ -109,20 +106,9 @@ OpElem::OpElem(OpElem* op) {
     this->alltoall_dedup.sdispls = op->alltoall_dedup.sdispls;
     this->alltoall_dedup.recvcounts = op->alltoall_dedup.recvcounts;
     this->alltoall_dedup.rdispls = op->alltoall_dedup.rdispls;
-  } else if (op->type == ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG) {
-    this->alltoallv_dynamic.sendbuffs = op->alltoallv_dynamic.sendbuffs;
-    this->alltoallv_dynamic.recvbuffs = op->alltoallv_dynamic.recvbuffs;
-    this->alltoallv_dynamic.datatype = op->alltoallv_dynamic.datatype;
-    this->alltoallv_dynamic.sendcountsLength =
-        op->alltoallv_dynamic.sendcountsLength;
-    this->alltoallv_dynamic.maxSendcount = op->alltoallv_dynamic.maxSendcount;
-    this->alltoallv_dynamic.maxRecvcount = op->alltoallv_dynamic.maxRecvcount;
-    this->alltoallv_dynamic.kElem = op->alltoallv_dynamic.kElem;
-    this->alltoallv_dynamic.pArgs = op->alltoallv_dynamic.pArgs;
   } else {
     FB_CHECKABORT(
-        false,
-        "This function currently only supports ALLTOALL_DEDUP or ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG");
+        false, "This function currently only supports ALLTOALL_DEDUP");
   }
 }
 
@@ -149,9 +135,6 @@ OpElem::OpElem(
       this->alltoallv.recvcounts.resize(comm_->statex_->nRanks());
       new (&this->alltoallv.rdispls) std::vector<size_t>;
       this->alltoallv.rdispls.resize(comm_->statex_->nRanks());
-      break;
-    case ALLTOALLV_DYNAMIC_SPLIT:
-      this->send.kElem = nullptr;
       break;
     case ALLTOALL_DEDUP:
       new (&this->alltoall_dedup.remoteRecvBuffs) std::vector<void*>;
@@ -268,30 +251,6 @@ OpElem::~OpElem() {
       this->allreduce.hostResource.~HostResource();
       break;
     }
-    case ALLTOALLV_DYNAMIC: {
-      if (this->alltoallv_dynamic.kElem) {
-        this->alltoallv_dynamic.kElem->free();
-      }
-      break;
-    }
-    case ALLTOALLV_DYNAMIC_SPLIT: {
-      if (this->alltoallv_dynamic.kElem) {
-        this->alltoallv_dynamic.kElem->free();
-      }
-      break;
-    }
-    case ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG: {
-      if (this->alltoallv_dynamic.kElem) {
-        this->alltoallv_dynamic.kElem->free();
-      }
-      break;
-    }
-    case ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG_P: {
-      if (this->alltoallv_dynamic.kElem) {
-        this->alltoallv_dynamic.kElem->free();
-      }
-      break;
-    }
     default:
       break;
   }
@@ -344,30 +303,6 @@ void OpElem::setStatus(KernelElem::ElemStatus status) {
       }
       break;
     }
-    case ALLTOALLV_DYNAMIC: {
-      if (this->alltoallv_dynamic.kElem) {
-        this->alltoallv_dynamic.kElem->setStatus(status);
-      }
-      break;
-    }
-    case ALLTOALLV_DYNAMIC_SPLIT: {
-      if (this->alltoallv_dynamic.kElem) {
-        this->alltoallv_dynamic.kElem->setStatus(status);
-      }
-      break;
-    }
-    case ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG: {
-      if (this->alltoallv_dynamic.kElem) {
-        this->alltoallv_dynamic.kElem->setStatus(status);
-      }
-      break;
-    }
-    case ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG_P: {
-      if (this->alltoallv_dynamic.kElem) {
-        this->alltoallv_dynamic.kElem->setStatus(status);
-      }
-      break;
-    }
     case ALLTOALL_DEDUP: {
       for (auto& pair : this->alltoall_dedup.bcastElemMap) {
         if (pair.second != nullptr) {
@@ -390,11 +325,6 @@ static std::unordered_map<KernelConfig::KernelType, std::string>
         {KernelConfig::KernelType::DEVICE_ALLTOALLV, "DEVICE_ALLTOALLV"},
         {KernelConfig::KernelType::ALLTOALLV, "ALLTOALLV"},
         {KernelConfig::KernelType::ALLTOALL_DEDUP, "ALLTOALL_DEDUP"},
-        {KernelConfig::KernelType::ALLTOALLV_DYNAMIC, "ALLTOALLV_DYNAMIC"},
-        {KernelConfig::KernelType::ALLTOALLV_DYNAMIC_SPLIT,
-         "ALLTOALLV_DYNAMIC_SPLIT"},
-        {KernelConfig::KernelType::ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG,
-         "ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG"},
         {KernelConfig::KernelType::SENDRECV, "SENDRECV"},
         {KernelConfig::KernelType::SEND, "SEND"},
         {KernelConfig::KernelType::RECV, "RECV"},
@@ -439,10 +369,8 @@ commResult_t CtranGpe::submit(
     const void* ncclKernel,
     std::optional<std::chrono::milliseconds> timeout,
     PreLaunchGraphPrepareFn graphPrepareFn) {
-  if (this->pimpl->comm->algoStats_) {
-    this->pimpl->comm->algoStats_->record(
-        kernelTypeToOpName(kernelConfig.type), kernelConfig.algoName);
-  }
+  this->pimpl->comm->recordAlgoStat(
+      kernelTypeToOpName(kernelConfig.type), kernelConfig.algoName);
   return this->pimpl->submit(
       CtranGpeCmd::TypeEnum::GRAPH_ENQUEUE,
       std::move(opGroup),

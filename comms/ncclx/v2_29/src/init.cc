@@ -6,6 +6,7 @@
  *************************************************************************/
 
 #include "nccl.h"
+#include "meta/DeviceRackSerial.h"
 #include "meta/NcclxConfig.h" // @manual
 #include "meta/NcclxPerCommConfig.h" // @manual
 #include "channel.h"
@@ -43,7 +44,7 @@
 
 #include "comms/ctran/Ctran.h"
 #include "meta/commstate/FactoryCommStateX.h"
-#include "comms/ctran/commstate/CommStateX.h"
+
 #include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/ctran/utils/Utils.h"
 #include "comms/ctran/utils/SkipDestroyUtil.h"
@@ -51,7 +52,7 @@
 #include "meta/colltrace/CollTraceWrapper.h"
 #include "meta/comms-monitor/CommsMonitor.h"
 #include "meta/commstate/FactoryCommStateX.h"
-#include "meta/ctran-integration/BaselineBootstrap.h"
+
 #include "meta/hints/CommHintConfig.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -718,53 +719,6 @@ static void showVersion() {
   INFO(NCCL_ALL,"%s", ncclGetGitVersion());
 }
 
-static constexpr std::string_view kDeviceRackSerial = "DEVICE_RACK_SERIAL"; /* key in topology file */
-static ncclResult_t ncclxGetDeviceRackSerial(ncclComm* comm, int* rackSerial) {
-  if (comm == nullptr) {
-    WARN("Invalid state or comm pointer");
-    return ncclInvalidArgument;
-  }
-
-  std::ifstream file(NCCL_TOPO_FILE_PATH);
-  if (!file.is_open()) {
-    WARN("Failed to open topology file: %s", NCCL_TOPO_FILE_PATH.c_str());
-    return ncclSystemError;
-  }
-
-  std::string rackSerialStr;
-  std::string line;
-  bool found = false;
-
-  while (std::getline(file, line)) {
-    size_t pos = line.find('=');
-    if (pos == std::string::npos) {
-      continue;
-    }
-
-    std::string key = line.substr(0, pos);
-    std::string value = line.substr(pos + 1);
-
-    if (key == kDeviceRackSerial) {
-      if (!value.empty()) {
-        rackSerialStr = std::move(value);
-        found = true;
-        break;
-      }
-    }
-  }
-
-  if (!found) {
-    INFO(NCCL_INIT, "No rack serial found in topology file");
-  }
-
-  auto maybeRackSerial = folly::tryTo<int>(rackSerialStr);
-  CHECK(maybeRackSerial.hasValue());
-  *rackSerial = maybeRackSerial.value();
-
-  file.close();
-  return ncclSuccess;
-}
-
 NCCL_PARAM(MNNVLUUID, "MNNVL_UUID", -1);
 NCCL_PARAM(MNNVLCliqueId, "MNNVL_CLIQUE_ID", -1);
 
@@ -836,8 +790,13 @@ static ncclResult_t fillInfo(struct ncclComm* comm, struct ncclPeerInfo* info, u
            info->busId,
            uuid0, uuid1,
            info->fabricInfo.cliqueId, info->fabricInfo.state, info->fabricInfo.healthMask);
+      // [META] Load rack serial for MNNVL trunk disable (string-based, supports alphanumeric serials)
       if(NCCL_MNNVL_TRUNK_DISABLE) {
-        NCCLCHECK(ncclxGetDeviceRackSerial(comm, &info->rackSerial));
+        if (ncclx::loadRackSerial(NCCL_TOPO_FILE_PATH, info->rackSerial, sizeof(info->rackSerial))) {
+          INFO(NCCL_INIT, "Loaded rack serial: %s", info->rackSerial);
+        } else {
+          WARN("No rack serial information available, skipping rack serial check");
+        }
       }
     }
   }
@@ -1119,13 +1078,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   timers[TIMER_INIT_ALLGATHER] = clockNano() - timers[TIMER_INIT_ALLGATHER];
 
   // Check for lazy channel setup support
-  comm->lazySetupChannels = comm->cuMemSupport && NCCLX_CONFIG_FIELD(comm->config, lazySetupChannels);
-  // Check for runtime connect support
-  comm->runtimeConn = comm->cuMemSupport && NCCLX_CONFIG_FIELD(comm->config, lazyConnect);
-
-  if (comm->runtimeConn == 0 && comm->lazySetupChannels == 1) {
-    WARN("NCCL_RUNTIME_CONNECT is disabled but NCCL_LAZY_SETUP_CHANNELS is enabled, full lazy connect features will still be used");
-  }
+  comm->lazySetupChannels = comm->cuMemSupport && NCCL_LAZY_SETUP_CHANNELS;
 
   // Check for MNNVL support
   NCCLCHECKGOTO(ncclGetUserP2pLevel(&p2pLevel), ret, fail);
@@ -1504,6 +1457,10 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   }
 
   comm->runtimeConn = comm->cuMemSupport && ncclParamRuntimeConnect();
+
+  if (comm->runtimeConn == 0 && comm->lazySetupChannels == 1) {
+    WARN("NCCL_RUNTIME_CONNECT is disabled but NCCL_LAZY_SETUP_CHANNELS is enabled, full lazy connect features will still be used");
+  }
 
   if (comm->lazySetupChannels) {
     INFO(
@@ -1933,27 +1890,9 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
    */
   NCCLCHECKGOTO(meta::comms::ncclx::newCollTraceInit(comm), res, fail);
 
-  // TODO: remove all ncclx fields and leave only ctranComm_
-  // (we are working on refactoring now, when it's done only ctranComm_ must be used)
-
-  // TODO: replace this dirty init code with CtranComm constructor.
-  // There is an issue with the order of initialization. We need to initialize stateX
-  // before initializing ctran/bootstrap/calltrace. The ctran classes internally start
-  // using CtranComm while still relying on ncclComm_t. This means that when we call
-  // ctranInit/boostrap init/calltrace init/ any internal ctran calss,
-  // both comm->stateX and ctranComm_->stateX must be initialized. Consequently, we have
-  // to split the initialization of CtranComm into several parts. This must be cleaned
-  // when we develop CtranComm constuctor.
-  NCCLCHECKGOTO(metaCommToNccl(setCtranCommBase(comm)), res, fail);
-
-  comm->ctranComm_->bootstrap_ = std::make_unique<ncclx::BaselineBootstrap>(comm);
-  comm->ctranComm_->statex_ = ncclx::createCommStateXFromNcclComm(comm);
 
   if (comm->useCtran_) {
-    // TODO: move initialization to CtranComm constructor once we finish all ctran refactor
-    NCCLCHECK(ncclx::initCtranCommStatexFromNcclComm(comm, comm->ctranComm_.get()));
-    comm->ctranComm_->colltraceNew_ = comm->newCollTrace;
-    NCCLCHECKGOTO(metaCommToNccl(ctranInit(comm->ctranComm_.get())), res, fail);
+    NCCLCHECKGOTO(createCtranComm(comm), res, fail);
   }
   // --------------------- done
 
@@ -2760,16 +2699,9 @@ static ncclResult_t commDestroySync(struct ncclAsyncJob* job_) {
   /*
    * NCCLX - Resource Cleanup
    */
-  NCCLCHECKGOTO(metaCommToNccl(ctranFinalize(comm->ctranComm_.get())), ret, fail);
   NCCLCHECKGOTO(meta::comms::ncclx::newCollTraceDestroy(comm), ret, fail);
 
-  try {
-    comm->ctranComm_->destroy();
-    comm->ctranComm_.reset();
-  } catch (std::exception& e) {
-    CLOGF(ERR, "CtranComm destruction failed: {}", e.what());
-    goto fail;
-  }
+  NCCLCHECKGOTO(destroyCtranComm(comm), ret, fail);
 
   TRACE(NCCL_INIT, "Destroying comm %p rank %d abortFlag %d asyncResult %d", comm, comm->rank, *comm->abortFlag, comm->asyncResult);
 

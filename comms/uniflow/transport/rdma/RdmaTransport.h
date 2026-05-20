@@ -2,16 +2,19 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstring>
+#include <deque>
 #include <memory>
 #include <optional>
-#include <queue>
 #include <unordered_map>
 
+#include "comms/uniflow/drivers/cuda/CudaApi.h"
 #include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
 #include "comms/uniflow/drivers/ibverbs/IbvApi.h"
 #include "comms/uniflow/executor/EventBase.h"
 #include "comms/uniflow/transport/Transport.h"
+#include "comms/uniflow/transport/rdma/RdmaResources.h"
 
 namespace uniflow {
 
@@ -20,6 +23,7 @@ constexpr uint8_t kRdmaVersion{1};
 // Forward declarations.
 class RdmaRegistrationHandle;
 class RdmaRemoteRegistrationHandle;
+class RdmaSlabPool;
 
 /*
  * RDMA transport configuration.
@@ -42,31 +46,14 @@ struct RdmaTransportConfig {
   uint32_t maxSge{1}; /* Max scatter/gather entries per WR. */
   uint32_t maxInlineData{16}; /* Max inline data bytes per WR. */
   size_t chunkSize{512 * 1024}; /* Transfer chunk size in bytes (512KB). */
-};
-
-/*
- * Per-NIC RDMA resources.
- *
- * Populated by RdmaTransportFactory during device initialization.
- * Ownership: the factory owns the underlying ibverbs objects (context, PD).
- * Transports borrow these resources — they must not outlive the factory.
- */
-struct NicResources {
-  ibv_context* ctx{nullptr}; /* Opened device context. */
-  ibv_pd* pd{nullptr}; /* Protection domain on this device. */
-  uint16_t lid{0}; /* Local identifier (IB fabrics). */
-  ibv_gid gid{}; /* GID for RoCE / IB with GRH. */
-  ibv_mtu mtu{IBV_MTU_4096}; /* Active MTU from port query. */
-  int linkLayer{IBV_LINK_LAYER_ETHERNET}; /* IB or Ethernet (RoCE). */
-  uint8_t portNum{1}; /* Physical port number on the HCA. */
-  bool dmaBufSupported{false}; /* Kernel supports DMA-BUF MR registration. */
+  uint16_t pipelineDepth{2}; /* Send/recv pipeline depth (D staging slabs). */
 };
 
 /*
  * RDMA transport connection metadata — serialization and deserialization.
  *
  * Wire format (packed, memcpy-based):
- *   Header (11 bytes: version, numQps, numNics, domainId)
+ *   Header (14 bytes: version, numQps, numNics, domainId)
  *   + NicInfo[numNics]
  *   + QpInfo[numQps]
  *
@@ -76,8 +63,8 @@ struct RdmaTransportInfo {
   /* Header in the wire format. */
   struct __attribute__((packed)) Header {
     uint8_t version{kRdmaVersion};
-    uint8_t numQps{0};
     uint8_t numNics{0};
+    uint32_t numQps{0};
     uint64_t domainId{0};
   };
   /* Per-NIC addressing info in the wire format. */
@@ -94,12 +81,33 @@ struct RdmaTransportInfo {
     uint32_t psn{0}; /* Starting packet sequence number (random). */
   };
 
+  struct RegisteredBuffer {
+    uint64_t addr{0};
+    uint32_t length{0};
+    std::vector<uint32_t> rkeys;
+
+    size_t size() const {
+      return sizeof(addr) + sizeof(length) + rkeys.size() * sizeof(uint32_t);
+    }
+
+    static constexpr size_t expectedSize(uint8_t numNics) {
+      return sizeof(addr) + sizeof(length) + numNics * sizeof(uint32_t);
+    }
+
+    void reset();
+    size_t serialize(uint8_t* data) const;
+    size_t deserialize(const uint8_t* data, uint8_t numNics);
+  };
+
   /* Header fields. */
   Header header;
 
   /* Deserialized per-NIC and per-QP data. */
   std::vector<NicInfo> nicInfos;
   std::vector<QpInfo> qpInfos;
+
+  RegisteredBuffer ctrl;
+  RegisteredBuffer slab;
 
   /*
    * Serialize this info into a TransportInfo byte vector.
@@ -146,14 +154,16 @@ class RdmaTransport : public Transport {
    * @param nics    Per-NIC resources from the factory. Must be non-empty.
    *                Borrowed — must outlive this transport.
    * @param config  Transport configuration (numQps, QP attributes, etc.).
-   *                numQps must be <= 255.
+   *                numQps must be in [1, 255].
    */
   RdmaTransport(
       std::shared_ptr<IbvApi> ibvApi,
+      std::shared_ptr<CudaApi> cudaApi,
       EventBase* evb,
-      std::vector<NicResources> nics,
+      std::shared_ptr<std::vector<NicResources>> nics,
       uint64_t domainId,
-      RdmaTransportConfig config = {});
+      RdmaTransportConfig config = {},
+      std::shared_ptr<RdmaSlabPool> slabPool = nullptr);
 
   ~RdmaTransport() override;
 
@@ -246,10 +256,6 @@ class RdmaTransport : public Transport {
       return promise_.get_future();
     }
 
-    bool isComplete() {
-      return isPromiseSet_ && postFinished_ && remainingWrs_ == 0;
-    }
-
     void postFinished() {
       postFinished_ = true;
     }
@@ -258,30 +264,46 @@ class RdmaTransport : public Transport {
       remainingWrs_ += numWrs;
     }
 
-    void complete(Result<uint32_t> numWrs) {
+    void recordCompletion(Result<uint32_t> numWrs) {
       if (numWrs.hasError()) {
-        postFinished();
-        setPromise(std::move(numWrs).error());
+        if (!error_) {
+          error_ = std::move(numWrs).error();
+        }
+        postFinished_ = true;
         return;
       }
       remainingWrs_ -= numWrs.value();
-      if (remainingWrs_ == 0 && postFinished_) {
-        setPromise(Ok());
+    }
+
+    bool isDone() const {
+      return isFullyDrained() || hasError();
+    }
+
+    bool isFullyDrained() const {
+      return postFinished_ && remainingWrs_ == 0;
+    }
+
+    bool hasError() const {
+      return error_.has_value();
+    }
+
+    void fulfill() {
+      if (!fulfilled_) {
+        fulfilled_ = true;
+        if (error_) {
+          promise_.set_value(std::move(*error_));
+        } else {
+          promise_.set_value(Ok());
+        }
       }
     }
 
    private:
-    bool isPromiseSet_{false};
+    bool fulfilled_{false};
     bool postFinished_{false};
     uint32_t remainingWrs_{0};
+    std::optional<Status> error_;
     std::promise<Status> promise_;
-
-    void setPromise(Status status) {
-      if (!isPromiseSet_) {
-        isPromiseSet_ = true;
-        promise_.set_value(std::move(status));
-      }
-    }
   };
 
   /// Work request descriptor for a single RDMA chunk.
@@ -295,9 +317,16 @@ class RdmaTransport : public Transport {
     const RdmaRemoteRegistrationHandle* remoteHandle{nullptr};
   };
 
-  struct PendingRequests {
+  struct PendingTransfer {
     uint32_t taskId;
     std::unique_ptr<std::vector<SendWr>> sendWrs;
+    size_t idx{0};
+    std::shared_ptr<Task> task;
+  };
+
+  struct PendingCompletion {
+    uint32_t taskId;
+    std::shared_ptr<Task> task;
   };
 
   // --- Caller thread methods ---
@@ -322,6 +351,10 @@ class RdmaTransport : public Transport {
       std::span<const TransferRequest> requests,
       ibv_wr_opcode opcode,
       const RequestOptions& options);
+
+  /// Unified IO processing loop. Runs exclusively on EventBase thread.
+  /// Posts WRs from pendingTransfers_, polls CQs, fulfills promises in order.
+  void ioLooper() noexcept;
 
   /// Distributes SendWrs across QPs proportional to available capacity
   /// and posts them.
@@ -350,10 +383,11 @@ class RdmaTransport : public Transport {
   ///
   /// Error behavior:
   ///   - Partial failure (consumed > 0): flush WR posted, returns consumed+1.
-  ///     task->complete(error) is called. task->posted(consumed+1) is called.
+  ///     task->recordCompletion(error) is called. task->posted(consumed+1)
+  ///     is called.
   ///   - Flush failure: transport set to Error state.
   ///   - Complete failure (consumed == 0): returns 0.
-  ///     task->complete(error) is called. No counter changes.
+  ///     task->recordCompletion(error) is called. No counter changes.
   uint32_t postSend(
       uint32_t qpIdx,
       ibv_send_wr* head,
@@ -361,15 +395,23 @@ class RdmaTransport : public Transport {
       uint32_t taskId,
       std::shared_ptr<Task>& task);
 
-  /// Polls all CQs and dispatches completions to their tasks.
-  /// Re-dispatches itself on EventBase if the given task is still in-flight.
-  void pollCompletions(uint32_t taskId, bool retry);
+  /// Polls all CQs and routes completions to their tasks via inflightTasks_.
+  void pollCompletions();
+
+  /// Ctrl buffer helpers.
+  std::atomic_ref<uint32_t> ctrlCts(uint16_t slotIdx);
+  std::atomic_ref<uint32_t> ctrlNotify(uint16_t slotIdx, uint32_t qpIdx);
+  uint64_t remoteCtrlCtsAddr(uint16_t slotIdx) const;
+  uint64_t remoteCtrlNotifyAddr(uint16_t slotIdx, uint32_t qpIdx) const;
+  size_t ctrlBufferSize() const;
 
   const std::shared_ptr<IbvApi> ibvApi_;
+  const std::shared_ptr<CudaApi> cudaApi_;
   EventBase* evb_{nullptr};
 
   std::string name_;
-  const std::vector<NicResources> nics_;
+  std::shared_ptr<std::vector<NicResources>> nicsHandle_;
+  std::span<NicResources> nics_;
   const RdmaTransportConfig config_;
 
   std::vector<ibv_cq*> cqs_;
@@ -387,9 +429,15 @@ class RdmaTransport : public Transport {
   /// Number of pending CQEs for each nic. Accessed only on EventBase thread.
   std::vector<int> numPendingCqe_{0};
 
-  /// pending requests queue for post-order guarantee. Accessed only on
+  /// Transfers awaiting WR posting. Accessed only on EventBase.
+  std::deque<PendingTransfer> pendingTransfers_;
+
+  /// Transfers awaiting CQ completion. Accessed only on EventBase.
+  std::deque<PendingCompletion> pendingCompletions_;
+
+  /// Whether ioLooper is scheduled on the EventBase. Accessed only on
   /// EventBase.
-  std::queue<PendingRequests> pendingRequests_;
+  bool ioLooperScheduled_{false};
 
   /// Maps taskId → task for in-flight requests. Accessed only on EventBase.
   std::unordered_map<uint32_t, std::shared_ptr<Task>> inflightTasks_;
@@ -397,8 +445,9 @@ class RdmaTransport : public Transport {
   /// Per-QP inflight WR count. Accessed only on EventBase thread.
   std::vector<uint32_t> numWrsPerQp_;
 
-  /// Maps ibv QP number → QP index for completion routing.
-  std::unordered_map<uint32_t, uint32_t> qpNumToIdx_;
+  /// Maps (NIC index, ibv QP number) → QP index for completion routing.
+  /// QP numbers are only unique within an RDMA device.
+  std::unordered_map<uint64_t, uint32_t> qpNumToIdx_;
 
   /// State of the transport.
   TransportState state_{TransportState::Disconnected};
@@ -408,6 +457,18 @@ class RdmaTransport : public Transport {
 
   /// guard for shutdown()
   std::atomic<bool> shutdown_{false};
+
+  // --- Send/recv state and pool ---
+
+  std::shared_ptr<RdmaSlabPool> slabPool_;
+
+  // Ctrl buffer for send/recv pipeline flow control.
+  void* ctrlBuffer_{nullptr};
+  std::vector<ibv_mr*> ctrlMrs_;
+
+  // Remote peer's channel info (populated by connect)
+  RdmaTransportInfo::RegisteredBuffer remoteCtrlBuffer_;
+  RdmaTransportInfo::RegisteredBuffer remoteSlabBuffer_;
 };
 
 // ---------------------------------------------------------------------------
@@ -460,9 +521,10 @@ class RdmaTransportFactory : public TransportFactory {
       RdmaTransportConfig config = {},
       std::shared_ptr<IbvApi> ibvApi = nullptr,
       std::shared_ptr<CudaDriverApi> cudaDriverApi = nullptr,
+      std::shared_ptr<CudaApi> cudaApi = nullptr,
       std::optional<uint8_t> portNum = std::nullopt);
 
-  ~RdmaTransportFactory() override;
+  ~RdmaTransportFactory() override = default;
 
   RdmaTransportFactory(const RdmaTransportFactory&) = delete;
   RdmaTransportFactory& operator=(const RdmaTransportFactory&) = delete;
@@ -491,15 +553,13 @@ class RdmaTransportFactory : public TransportFactory {
  private:
   Status canConnect(std::span<const uint8_t> peerTopology) override;
 
-  /* Find the first active port on the device. Returns 0 on failure. */
-  uint8_t findActivePort(ibv_context* ctx);
-
   std::shared_ptr<IbvApi> ibvApi_;
   std::shared_ptr<CudaDriverApi> cudaDriverApi_;
+  std::shared_ptr<CudaApi> cudaApi_;
   EventBase* evb_{nullptr};
   uint64_t domainId_{0};
   size_t pageSize_{0};
-  std::vector<NicResources> nics_;
+  std::shared_ptr<std::vector<NicResources>> nicsHandle_;
   const RdmaTransportConfig config_;
 };
 
