@@ -730,6 +730,23 @@ Result<uint32_t> RdmaTransport::spray(
     totalAssigned += share;
   }
 
+  // Fill any capacity left by integer truncation in the weighted pass.
+  const uint32_t targetAssigned = std::min(remaining, totalAvail);
+  while (totalAssigned < targetAssigned) {
+    bool progressed = false;
+    for (uint32_t q = 0; q < numQps && totalAssigned < targetAssigned; ++q) {
+      if (qpAssigned[q] >= qpAvail[q]) {
+        continue;
+      }
+      ++qpAssigned[q];
+      ++totalAssigned;
+      progressed = true;
+    }
+    if (!progressed) {
+      break;
+    }
+  }
+
   // Post assigned chunks to each QP.
   uint32_t totalPosted = 0;
   for (uint32_t q = 0; q < numQps && idx < wrs.size(); ++q) {
@@ -774,6 +791,38 @@ Result<uint32_t> RdmaTransport::spray(
   return Result<uint32_t>(totalPosted);
 }
 
+size_t RdmaTransport::outstandingWrs() const {
+  size_t total = 0;
+  for (uint32_t count : numWrsPerQp_) {
+    total += count;
+  }
+  return total;
+}
+
+size_t RdmaTransport::admissionBudgetWrs() const {
+  const size_t totalCapacity = static_cast<size_t>(config_.maxWr) * qps_.size();
+  return std::max<size_t>(1, totalCapacity / 2);
+}
+
+bool RdmaTransport::canStartTransfer(const PendingTransfer& transfer) const {
+  if (transfer.idx != 0) {
+    return true;
+  }
+
+  const size_t outstanding = outstandingWrs();
+  if (outstanding == 0) {
+    return true;
+  }
+
+  const size_t transferWrs = transfer.sendWrs->size();
+  const size_t budget = admissionBudgetWrs();
+  if (transferWrs > budget) {
+    return false;
+  }
+
+  return outstanding + transferWrs <= budget;
+}
+
 // ---------------------------------------------------------------------------
 // Unified IO processing loop (EventBase thread)
 // ---------------------------------------------------------------------------
@@ -799,6 +848,10 @@ void RdmaTransport::ioLooper() noexcept {
       pendingCompletions_.push_back({entry.taskId, std::move(entry.task)});
       pendingTransfers_.pop_front();
       continue;
+    }
+
+    if (!canStartTransfer(entry)) {
+      break;
     }
 
     auto postResult =
