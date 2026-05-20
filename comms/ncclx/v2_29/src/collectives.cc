@@ -13,7 +13,6 @@
 
 #include "comms/ctran/Ctran.h"
 #include "meta/NcclxConfig.h"
-#include "meta/algoconf/AlgoConfig.h"
 #include "meta/collectives/PatAvgHelper.h"
 #include "comms/ctran/utils/Checks.h"
 #include "meta/wrapper/MetaFactory.h"
@@ -276,7 +275,7 @@ ncclResult_t ncclSend(const void* sendbuff, size_t count, ncclDataType_t datatyp
   }
   SetCudaDevRAII setCudaDev(comm->cudaDev);
 
-  auto algo = ncclx::algoconf::getSendRecvAlgo();
+  auto algo = NCCLX_CONFIG_FIELD(comm->config, sendrecvAlgo); // [META:PER_COMM_CONFIG]
   if ((algo != NCCL_SENDRECV_ALGO::orig) &&
       ctranSendRecvSupport(peer, comm->ctranComm_.get(), algo, stream)) {
     // ctran send/recvs are enqueued within ctran wherease other non-ctran ones
@@ -284,7 +283,7 @@ ncclResult_t ncclSend(const void* sendbuff, size_t count, ncclDataType_t datatyp
     // groups of ops will be issued separately.
     ncclResult_t ret;
     NCCLCHECK(ncclGroupStart());
-    ret = metaCommToNccl(ctranSend(sendbuff, count, ncclToMetaComm(datatype), peer, comm->ctranComm_.get(), stream));
+    ret = metaCommToNccl(ctranSend(sendbuff, count, ncclToMetaComm(datatype), peer, comm->ctranComm_.get(), stream, algo));
     NCCLCHECK(ncclGroupEnd());
     return ret;
   }
@@ -319,7 +318,7 @@ ncclResult_t ncclRecv(void* recvbuff, size_t count, ncclDataType_t datatype, int
   }
   SetCudaDevRAII setCudaDev(comm->cudaDev);
 
-  auto algo = ncclx::algoconf::getSendRecvAlgo();
+  auto algo = NCCLX_CONFIG_FIELD(comm->config, sendrecvAlgo); // [META:PER_COMM_CONFIG]
   if ((algo != NCCL_SENDRECV_ALGO::orig) &&
       ctranSendRecvSupport(peer, comm->ctranComm_.get(), algo, stream)) {
     // ctran send/recvs are enqueued within ctran wherease other non-ctran ones
@@ -327,7 +326,7 @@ ncclResult_t ncclRecv(void* recvbuff, size_t count, ncclDataType_t datatype, int
     // groups of ops will be issued separately.
     ncclResult_t ret;
     NCCLCHECK(ncclGroupStart());
-    ret = metaCommToNccl(ctranRecv(recvbuff, count, ncclToMetaComm(datatype), peer, comm->ctranComm_.get(), stream));
+    ret = metaCommToNccl(ctranRecv(recvbuff, count, ncclToMetaComm(datatype), peer, comm->ctranComm_.get(), stream, algo));
     NCCLCHECK(ncclGroupEnd());
     return ret;
   }
