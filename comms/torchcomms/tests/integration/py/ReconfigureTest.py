@@ -27,7 +27,7 @@ from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
 class ReconfigureTest(unittest.TestCase):
     """Test class for reconfigure() fault tolerance API."""
 
-    SUPPORTED_BACKENDS = {"mccl", "gloo", "nccl", "ncclx"}
+    SUPPORTED_BACKENDS = {"mccl", "gloo", "nccl", "ncclx", "rccl", "rcclx"}
 
     _shared_store = None
 
@@ -93,8 +93,14 @@ class ReconfigureTest(unittest.TestCase):
         """Get the store to pass to new_comm for NCCL/NCCLx bootstrap."""
         return getattr(self, "store", None)
 
-    def _skip_if_nccl_too_old(self):
-        """Skip test if NCCL < 2.29 (commGrow/commGetUniqueId unavailable)."""
+    def _skip_if_grow_not_supported(self):
+        """Skip test if commGrow is not available.
+
+        Skips for rccl/rcclx backends which do not implement commGrow,
+        and for nccl/ncclx with NCCL < 2.29 (commGrow/commGetUniqueId unavailable).
+        """
+        if self.backend in ("rccl", "rcclx"):
+            self.skipTest(f"Backend {self.backend} does not implement commGrow")
         if self.backend not in ("nccl", "ncclx"):
             return
         if torch.cuda.is_available():
@@ -292,11 +298,170 @@ class ReconfigureTest(unittest.TestCase):
 
         comm.finalize()
 
+
+    def _create_reconfigured_comm(self, name, uuid):
+        """Helper: create a comm and perform initial reconfigure."""
+        import torchcomms
+
+        comm = torchcomms.new_comm(
+            self.backend,
+            self.device,
+            name,
+            enable_reconfigure=True,
+            store=self._get_store_for_comm(),
+            timeout=timedelta(seconds=120),
+        )
+
+        init_handles = self._collect_handles(comm, f"{name}_init")
+        work = comm.reconfigure(
+            uuid=uuid,
+            init_handles=init_handles,
+            timeout=timedelta(seconds=30),
+        )
+        work.wait()
+
+        post_handles = self._collect_handles(comm, f"{name}_post")
+        return comm, post_handles
+
+    def _reduce_op_sum(self):
+        import torchcomms
+
+        return torchcomms.ReduceOp.SUM
+
+    def test_shrink_basic(self):
+        """Test shrink: exclude last rank, allreduce on child comm."""
+        if not self._is_supported_backend():
+            self.skipTest(f"Backend {self.backend} does not support reconfigure()")
+        if self.world_size < 3:
+            self.skipTest("Need at least 3 ranks for shrink test")
+
+        comm, all_handles = self._create_reconfigured_comm("shrink_basic", 100)
+        exclude_rank = self.world_size - 1
+
+        if self.rank == exclude_rank:
+            comm.finalize()
+            return
+
+        surviving_handles = [h for i, h in enumerate(all_handles) if i != exclude_rank]
+        work = comm.reconfigure(
+            uuid=101,
+            init_handles=surviving_handles,
+            timeout=timedelta(seconds=30),
+        )
+        work.wait()
+
+        new_size = comm.get_size()
+        self.assertEqual(new_size, self.world_size - 1)
+
+        my_rank = comm.get_rank()
+        tensor = torch.ones(1024, dtype=torch.float, device=self.device) * (my_rank + 1)
+        comm.all_reduce(tensor, op=self._reduce_op_sum(), async_op=False)
+
+        expected = sum(range(1, new_size + 1))
+        self.assertTrue(
+            torch.allclose(tensor, torch.full_like(tensor, expected)),
+            f"AllReduce post-shrink failed: got {tensor[0].item()}, expected {expected}",
+        )
+
+        print(f"[Rank {my_rank}] Shrink {self.world_size} -> {new_size}, allreduce OK")
+        comm.finalize()
+
+    def test_shrink_multiple_collectives(self):
+        """Test multiple allreduces + broadcast on child comm after shrink."""
+        if not self._is_supported_backend():
+            self.skipTest(f"Backend {self.backend} does not support reconfigure()")
+        if self.world_size < 3:
+            self.skipTest("Need at least 3 ranks for shrink test")
+
+        comm, all_handles = self._create_reconfigured_comm("shrink_multi", 200)
+        exclude_rank = self.world_size - 1
+
+        if self.rank == exclude_rank:
+            comm.finalize()
+            return
+
+        surviving_handles = [h for i, h in enumerate(all_handles) if i != exclude_rank]
+        work = comm.reconfigure(
+            uuid=201,
+            init_handles=surviving_handles,
+            timeout=timedelta(seconds=30),
+        )
+        work.wait()
+
+        new_size = comm.get_size()
+        my_rank = comm.get_rank()
+
+        for i in range(3):
+            tensor = torch.ones(2048, dtype=torch.float, device=self.device) * (
+                my_rank + 1 + i
+            )
+            comm.all_reduce(tensor, op=self._reduce_op_sum(), async_op=False)
+            expected = sum(range(1 + i, new_size + 1 + i))
+            self.assertTrue(
+                torch.allclose(tensor, torch.full_like(tensor, expected)),
+                f"AllReduce iteration {i} failed",
+            )
+
+        tensor = torch.zeros(1024, dtype=torch.float, device=self.device)
+        if my_rank == 0:
+            tensor.fill_(42.0)
+        comm.broadcast(tensor, root=0, async_op=False)
+        self.assertTrue(
+            torch.allclose(tensor, torch.full_like(tensor, 42.0)),
+            "Broadcast after shrink failed",
+        )
+
+        print(f"[Rank {my_rank}] 3 AllReduce + 1 Broadcast on child comm OK")
+        comm.finalize()
+
+    def test_shrink_exclude_middle_rank(self):
+        """Test shrink excluding a middle rank, verify rank renumbering."""
+        if not self._is_supported_backend():
+            self.skipTest(f"Backend {self.backend} does not support reconfigure()")
+        if self.world_size < 3:
+            self.skipTest("Need at least 3 ranks for shrink test")
+
+        comm, all_handles = self._create_reconfigured_comm("shrink_middle", 300)
+        exclude_rank = self.world_size // 2
+
+        if self.rank == exclude_rank:
+            comm.finalize()
+            return
+
+        surviving_handles = [h for i, h in enumerate(all_handles) if i != exclude_rank]
+        work = comm.reconfigure(
+            uuid=301,
+            init_handles=surviving_handles,
+            timeout=timedelta(seconds=30),
+        )
+        work.wait()
+
+        new_size = comm.get_size()
+        my_rank = comm.get_rank()
+        self.assertEqual(new_size, self.world_size - 1)
+        self.assertGreaterEqual(my_rank, 0)
+        self.assertLess(my_rank, new_size)
+
+        tensor = torch.ones(1024, dtype=torch.float, device=self.device) * (my_rank + 1)
+        comm.all_reduce(tensor, op=self._reduce_op_sum(), async_op=False)
+
+        expected = sum(range(1, new_size + 1))
+        self.assertTrue(
+            torch.allclose(tensor, torch.full_like(tensor, expected)),
+            f"AllReduce after middle-rank shrink failed",
+        )
+
+        print(
+            f"[Rank {my_rank}] Shrink excluding middle rank {exclude_rank}, "
+            f"new size={new_size}, allreduce OK"
+        )
+        comm.finalize()
+
     def test_reconfigure_scale_down_up(self):
         """Test that reconfigure works when scaling down and up."""
         if not self._is_supported_backend():
             self.skipTest(f"Backend {self.backend} does not support reconfigure()")
-        self._skip_if_nccl_too_old()
+        self._skip_if_grow_not_supported()
 
         import torchcomms
 
@@ -333,6 +498,7 @@ class ReconfigureTest(unittest.TestCase):
         """Test reconfigure from single rank to all ranks then allreduce."""
         if not self._is_supported_backend():
             self.skipTest(f"Backend {self.backend} does not support reconfigure()")
+        self._skip_if_grow_not_supported()
 
         import torchcomms
 
@@ -409,7 +575,7 @@ class ReconfigureTest(unittest.TestCase):
         """Test that reconfigure works when workers join late."""
         if not self._is_supported_backend():
             self.skipTest(f"Backend {self.backend} does not support reconfigure()")
-        self._skip_if_nccl_too_old()
+        self._skip_if_grow_not_supported()
 
         import torchcomms
 
@@ -444,7 +610,7 @@ class ReconfigureTest(unittest.TestCase):
         """Test that reconfigure works when there's a split brain condition."""
         if not self._is_supported_backend():
             self.skipTest(f"Backend {self.backend} does not support reconfigure()")
-        self._skip_if_nccl_too_old()
+        self._skip_if_grow_not_supported()
 
         import torchcomms
 

@@ -160,22 +160,30 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::reconfigure(
   auto quorum = findQuorum(opts.handles);
   bool inQuorum = nccl_comm_ && uuid_ >= 0 && uuid_ == quorum.uuid;
 
-  // Identity reconfigure: quorum covers the full new world, no new members.
-  // The old comm may be unhealthy (revoked after abort()), so fall back to
-  // fresh init — same as NCCL reference.
-  if (inQuorum && quorum.ranks.size() == static_cast<size_t>(new_size) &&
-      quorum.newMemberCount == 0) {
+  // Fall back to fresh init when shrink/grow has no advantage:
+  // - Single-rank quorum: a 1-rank comm has no bootstrap networking, so
+  //   commGrow will fail. Must clear unconditionally (not just when
+  //   inQuorum) so all ranks take the same fresh init path.
+  // - Identity reconfigure: same world size, no membership change — old comm
+  //   may be unhealthy (e.g. revoked after abort()).
+  if (quorum.ranks.size() == 1 ||
+      (inQuorum && quorum.ranks.size() == static_cast<size_t>(new_size) &&
+       quorum.newMemberCount == 0)) {
     inQuorum = false;
     quorum.ranks.clear();
   }
 
   // Clean up the existing communicator before any reconfiguration.
   if (nccl_comm_) {
-    // Revoke any in-flight work so ranks don't hang waiting for completions.
-    RCCLX_CHECK_IGNORE(
-        rcclx_api_,
-        rcclx_api_->commRevoke(nccl_comm_),
-        "RCCLX commRevoke failed during reconfigure");
+    // Only revoke when this rank is leaving the quorum (new joiner or fresh
+    // init). In-quorum ranks keep the comm alive for commShrink; revoking it
+    // would invalidate the comm before shrink runs.
+    if (!inQuorum) {
+      RCCLX_CHECK_IGNORE(
+          rcclx_api_,
+          rcclx_api_->commRevoke(nccl_comm_),
+          "RCCLX commRevoke failed during reconfigure");
+    }
 
     detachMemoryHook();
 
