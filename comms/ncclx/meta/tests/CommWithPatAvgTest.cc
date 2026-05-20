@@ -9,8 +9,6 @@
 
 #include "comm.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
-#include "meta/hints/CommHintConfig.h" // @manual
-#include "meta/hints/GlobalHints.h" // @manual
 #include "nccl.h"
 
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
@@ -24,9 +22,6 @@ class CommWithPatAvgTest : public NcclxBaseTestFixture {
   }
 
   void TearDown() override {
-    // Only reset our hint value, don't unregister all keys
-    ncclx::resetGlobalHint(
-        std::string(ncclx::HintKeys::kCommAlgoReduceScatter));
     NcclxBaseTestFixture::TearDown();
   }
 };
@@ -47,17 +42,24 @@ TEST_F(CommWithPatAvgTest, PatAvgEnableByCvar) {
   EXPECT_TRUE(comm->usePatAvg_);
 }
 
-TEST_F(CommWithPatAvgTest, PatAvgNotEnabledForOtherValues) {
+TEST_F(CommWithPatAvgTest, PatAvgNotEnabledByExplicitDisable) {
   EnvRAII cvarEnv(NCCL_REDUCESCATTER_PAT_AVG_ENABLE, false);
-
-  // Set hint to a different value
-  ASSERT_EQ(
-      ncclx::setGlobalHint(
-          std::string(ncclx::HintKeys::kCommAlgoReduceScatter), "sum:ring"),
-      ncclSuccess);
-
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints{{"usePatAvg", "0"}};
+  config.hints = &hints;
   ncclx::test::NcclCommRAII comm{
-      globalRank, numRanks, localRank, bootstrap_.get()};
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
+  ASSERT_NE(comm.get(), nullptr);
+  EXPECT_FALSE(comm->usePatAvg_);
+}
+
+TEST_F(CommWithPatAvgTest, PatAvgNotEnabledByUnrelatedHint) {
+  EnvRAII cvarEnv(NCCL_REDUCESCATTER_PAT_AVG_ENABLE, false);
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints{{"commDesc", "unrelated_hint"}};
+  config.hints = &hints;
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
   ASSERT_NE(comm.get(), nullptr);
   EXPECT_FALSE(comm->usePatAvg_);
 }
@@ -84,14 +86,8 @@ TEST_P(CommWithPatAvgTestParam, PatAvgEnableByHintWithModes) {
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   config.blocking = blockingInit ? 1 : 0;
   const auto commDescStr = fmt::format("{}-{}", kNcclUtCommDesc, "usePatAvg");
-  ncclx::Hints patAvgHints({{"commDesc", commDescStr}});
+  ncclx::Hints patAvgHints({{"commDesc", commDescStr}, {"usePatAvg", "1"}});
   config.hints = &patAvgHints;
-
-  // Enable by hint
-  ASSERT_EQ(
-      ncclx::setGlobalHint(
-          std::string(ncclx::HintKeys::kCommAlgoReduceScatter), "avg:patavg"),
-      ncclSuccess);
 
   // Use appropriate RAII wrapper based on creation mode
   std::optional<ncclx::test::NcclCommRAII> comm2Default;
@@ -119,10 +115,6 @@ TEST_P(CommWithPatAvgTestParam, PatAvgEnableByHintWithModes) {
   }
 
   EXPECT_TRUE(comm2->usePatAvg_);
-
-  ASSERT_TRUE(
-      ncclx::resetGlobalHint(
-          std::string(ncclx::HintKeys::kCommAlgoReduceScatter)));
 
   // Now disabled again
   {

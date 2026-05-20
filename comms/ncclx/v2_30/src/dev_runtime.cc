@@ -17,7 +17,7 @@
 #include "group.h"
 #include "gin/gin_host.h"
 #include "meta/rma/ncclWin.h"
-#include "meta/algoconf/AlgoConfig.h"
+#include "meta/NcclxConfig.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/wrapper/MetaFactory.h"
 #include "nccl_device.h"
@@ -1470,7 +1470,7 @@ ncclResult_t ncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size, nc
     // NCCL_WIN_DEVICE_API flag bypasses CTRAN and forces NCCL orig path.
     // This is needed for device API (GIN support) which only exists in the orig path.
     bool forceOrigPath = (winFlags & NCCL_WIN_DEVICE_API) != 0;
-    if(!forceOrigPath && ncclx::algoconf::getRmaAlgo() != NCCL_RMA_ALGO::orig && ctranInitialized(comm->ctranComm_.get())){
+    if(!forceOrigPath && NCCLX_CONFIG_FIELD(comm->config, rmaAlgo) != NCCL_RMA_ALGO::orig && ctranInitialized(comm->ctranComm_.get())){
       if (!ncclGetCuMemSysSupported()) {
         FB_ERRORRETURN(ncclInternalError, "ncclWin requires CUMEM support.");
       }
@@ -1542,7 +1542,7 @@ fail:
 NCCL_API(ncclResult_t, ncclCommWindowDeregister, ncclComm_t comm, ncclWindow_t win);
 ncclResult_t ncclCommWindowDeregister(struct ncclComm* comm, struct ncclWindow_vidmem* winDev) {
 
-  if(ncclx::algoconf::getRmaAlgo() != NCCL_RMA_ALGO::orig && ctranInitialized(comm->ctranComm_.get())){
+  if(NCCLX_CONFIG_FIELD(comm->config, rmaAlgo) != NCCL_RMA_ALGO::orig && ctranInitialized(comm->ctranComm_.get())){
     ncclWin* ncclWinPtr = ncclWinMap().find(winDev);
     // If window is found in CTRAN map, deregister via CTRAN path.
     // If not found (e.g., registered with NCCL_WIN_DEVICE_API), fall through
