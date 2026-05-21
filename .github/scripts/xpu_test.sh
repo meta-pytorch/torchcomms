@@ -17,8 +17,6 @@ export USE_GLOO=OFF
 export USE_TRANSPORT=OFF
 export USE_SYSTEM_LIBS=1
 
-python3 -m pip install --no-deps --pre torch pytorch-triton-xpu --index-url https://download.pytorch.org/whl/nightly/xpu --force-reinstall --no-cache-dir 
-
 python3 -m pip install --pre torch pytorch-triton-xpu --index-url https://download.pytorch.org/whl/nightly/xpu --force-reinstall --no-cache-dir
 
 cd torchcomms && pip install '.[dev]' --no-build-isolation && cd ..
