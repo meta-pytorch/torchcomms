@@ -193,7 +193,14 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
           for (auto recvRank : recvRanks) {
             if (recvRank != globalRank) {
               EXPECT_EQ(
-                  ctranSend(buf, count, dt, recvRank, ctranComm.get(), stream),
+                  ctranSend(
+                      buf,
+                      count,
+                      dt,
+                      recvRank,
+                      ctranComm.get(),
+                      stream,
+                      NCCL_SENDRECV_ALGO),
                   commSuccess);
               doSendRecv = true;
             }
@@ -209,7 +216,14 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
           }
           for (size_t p = 0; p < numOpPairsPerPeer; p++) {
             EXPECT_EQ(
-                ctranRecv(buf, count, dt, sendRank, ctranComm.get(), stream),
+                ctranRecv(
+                    buf,
+                    count,
+                    dt,
+                    sendRank,
+                    ctranComm.get(),
+                    stream,
+                    NCCL_SENDRECV_ALGO),
                 commSuccess);
           }
           doSendRecv = true;
@@ -218,7 +232,7 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
 
       // Indicating end of group
       commGroupDepth--;
-      EXPECT_EQ(ctranGroupEndHook(NCCL_SENDRECV_ALGO), commSuccess);
+      EXPECT_EQ(ctranGroupEndHook(), commSuccess);
 
       if (!useGraph) {
         CUDACHECK_TEST(cudaStreamSynchronize(stream));
