@@ -60,7 +60,8 @@ commResult_t ctranSend(
     commDataType_t datatype,
     int peer,
     CtranComm* comm,
-    cudaStream_t stream);
+    cudaStream_t stream,
+    enum NCCL_SENDRECV_ALGO algo);
 
 commResult_t ctranRecv(
     void* recvbuff,
@@ -68,7 +69,8 @@ commResult_t ctranRecv(
     commDataType_t datatype,
     int peer,
     CtranComm* comm,
-    cudaStream_t stream);
+    cudaStream_t stream,
+    enum NCCL_SENDRECV_ALGO algo);
 void ctranSendRecvCleanOpGroup();
 
 commResult_t ctranGroupEndHook(
@@ -76,7 +78,6 @@ commResult_t ctranGroupEndHook(
     enum NCCL_SENDRECV_ALGO algo,
     std::optional<std::chrono::milliseconds> timeout = std::nullopt);
 commResult_t ctranGroupEndHook(
-    enum NCCL_SENDRECV_ALGO algo,
     std::optional<std::chrono::milliseconds> timeout = std::nullopt);
 
 bool ctranAllGatherSupport(

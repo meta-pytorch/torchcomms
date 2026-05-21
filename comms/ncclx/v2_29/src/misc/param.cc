@@ -29,7 +29,6 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/InitFolly.h"
 
-#include "meta/algoconf/AlgoConfig.h"
 #include "cuda_runtime_api.h"
 
 const char* userHomeDir() {
@@ -95,7 +94,6 @@ void initEnv() {
     initEnvFunc();
     initNcclLogger();
     ncclx::NCCLXCommsTracingServiceUtil::startService();
-    ncclx::algoconf::setupGlobalHints();
   });
 }
 
