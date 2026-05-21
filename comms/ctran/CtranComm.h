@@ -24,7 +24,6 @@
 
 namespace comms::pipes {
 class MultiPeerTransport;
-class PipesTrace;
 struct Transport;
 } // namespace comms::pipes
 
@@ -200,7 +199,6 @@ class CtranComm {
   std::unique_ptr<comms::pipes::MultiPeerTransport> multiPeerTransport_;
   uint64_t* hierarchicalAgReadyCounters_{nullptr};
   size_t hierarchicalAgReadyCounterCount_{0};
-  std::unique_ptr<comms::pipes::PipesTrace> pipesTrace_;
 #endif // defined(ENABLE_PIPES)
 
   // Deferred cleanup for CUDA graph resources. CUDA user-object destructor

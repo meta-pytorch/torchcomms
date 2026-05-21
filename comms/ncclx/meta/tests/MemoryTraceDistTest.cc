@@ -25,7 +25,6 @@
 #include "comm.h" // @manual
 #include "comms/ncclx/meta/logger/tests/LoggerUtil.h"
 #include "debug.h" // @manual
-#include "meta/hints/GlobalHints.h" // @manual
 #include "nccl.h" // @manual
 
 class MemoryTraceTestFixture : public NcclxBaseTestFixture,
@@ -221,18 +220,14 @@ class MemoryTraceTestFixture : public NcclxBaseTestFixture,
   void* sendBuf{nullptr};
   void* recvBuf{nullptr};
   bool mockPassthru{true};
+  bool noLocal_{false};
 };
 
 class MemoryTraceNolocalTestFixture : public MemoryTraceTestFixture {
  public:
   void SetUp() override {
-    ncclx::setGlobalHint(std::string(ncclx::HintKeys::kCommNoLocal), "1");
+    noLocal_ = true;
     MemoryTraceTestFixture::SetUp();
-  }
-
-  void TearDown() override {
-    MemoryTraceTestFixture::TearDown();
-    ncclx::resetGlobalHint(std::string(ncclx::HintKeys::kCommNoLocal));
   }
 };
 
@@ -263,8 +258,14 @@ void MemoryTraceTestFixture::runNcclInternalBufferLogTest() {
   // First comm creation as well as first kernel launch has some extra memory
   // usage (https://fburl.com/code/rxjvjads), use second comm
   // creation/collective for testing
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  if (noLocal_) {
+    hints.set("noLocal", "1");
+  }
+  config.hints = &hints;
   comm = ncclx::test::createNcclComm(
-      globalRank, numRanks, localRank, bootstrap_.get());
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
   std::cout << "Rank " << this->globalRank << " finished init, run AR"
             << std::endl;
   size_t count = 1 << 10; // 1K elements
@@ -365,8 +366,14 @@ void MemoryTraceTestFixture::runUserBufferLoggingTest() {
 
   auto logFileName = initLogger();
   EXPECT_EQ(NCCL_COMM_WORLD, nullptr);
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  if (noLocal_) {
+    hints.set("noLocal", "1");
+  }
+  config.hints = &hints;
   comm = ncclx::test::createNcclComm(
-      globalRank, numRanks, localRank, bootstrap_.get());
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
 
   /* mapper registration logic */
   void *buf = nullptr, *segHdl = nullptr;

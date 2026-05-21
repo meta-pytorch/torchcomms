@@ -375,7 +375,7 @@ class UniflowBenchmark:
             f"--benchmark rdma_bandwidth --transport rdma"
             f" --iterations {a.iterations} --warmup {a.warmup}"
             f" --min-size {a.min_size} --max-size {a.max_size}"
-            f" --direction put --batch-size {a.batch_size}"
+            f" --direction {a.direction} --batch-size {a.batch_size}"
             f" --tx-depth {a.tx_depth}"
             f" --chunk-size {a.chunk_size}"
             f" --format csv --output {REMOTE_DIR}/results.csv"
@@ -387,13 +387,21 @@ class UniflowBenchmark:
         if a.nics:
             bench_flags += f" --rdma-devices {a.nics}"
 
-        env = f"MASTER_ADDR={a.master_ip} MASTER_PORT=29500 WORLD_SIZE=2"
+        env = f"MASTER_ADDR={a.master_ip} MASTER_PORT={a.master_port} WORLD_SIZE=2"
         if _verbose:
             env = f'SPDLOG_LEVEL="uniflow=info" {env}'
-        r0_cmd = f"{env} RANK=0 LOCAL_RANK=0 {self.binary_path} {bench_flags}"
+        command_prefix = ""
+        if a.numa_node >= 0:
+            command_prefix = (
+                f"numactl --cpunodebind={a.numa_node} --membind={a.numa_node} "
+            )
+        r0_cmd = (
+            f"{env} RANK=0 LOCAL_RANK=0 "
+            f"{command_prefix}{self.binary_path} {bench_flags}"
+        )
         r1_cmd = (
             f"{env} RANK=1 LOCAL_RANK={a.rank1_local_rank}"
-            f" {self.binary_path} {bench_flags}"
+            f" {command_prefix}{self.binary_path} {bench_flags}"
         )
 
         if dry_run:
@@ -842,6 +850,24 @@ def _parse_args():
         help="RDMA transfer chunk size in bytes (default: 524288)",
     )
     parser.add_argument(
+        "--master-port",
+        type=int,
+        default=29500,
+        help="Control-plane port for uniflow benchmark rendezvous (default: 29500)",
+    )
+    parser.add_argument(
+        "--numa-node",
+        type=int,
+        default=-1,
+        help="Run uniflow_bench under numactl for the given NUMA node (default: disabled)",
+    )
+    parser.add_argument(
+        "--direction",
+        default="put",
+        choices=["put", "get", "both"],
+        help="RDMA transfer direction for uniflow: put | get | both (default: put)",
+    )
+    parser.add_argument(
         "--no-cuda",
         action="store_true",
         help="Use CPU memory instead of GPU Direct RDMA (default: GPU Direct)",
@@ -983,8 +1009,12 @@ def _print_config(args, sizes):
         f" ({len(sizes)} steps)"
     )
     print(f"  Iterations: {args.iterations}")
+    print(f"  Direction:  {args.direction}")
     print(f"  Batch size: {args.batch_size}")
     print(f"  TX depth:   {args.tx_depth}")
+    print(f"  Port:       {args.master_port}")
+    if args.numa_node >= 0:
+        print(f"  NUMA node:  {args.numa_node}")
     if args.num_nics > 0:
         print(f"  Num NICs:   {args.num_nics}")
     if args.use_cuda:
