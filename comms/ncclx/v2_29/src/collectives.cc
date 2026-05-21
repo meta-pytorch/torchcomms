@@ -12,6 +12,7 @@
 #include "nvtx_payload_schemas.h"
 
 #include "comms/ctran/Ctran.h"
+#include "meta/NcclxConfig.h"
 #include "meta/algoconf/AlgoConfig.h"
 #include "meta/collectives/PatAvgHelper.h"
 #include "comms/ctran/utils/Checks.h"
@@ -100,7 +101,7 @@ ncclResult_t ncclAllGather(const void* sendbuff, void* recvbuff, size_t sendcoun
   NVTX3_FUNC_WITH_PARAMS(AllGather, NcclNvtxParamsAllGather,
     NVTX3_PAYLOAD(comm ? comm->commHash : 0, sendcount * ncclTypeSize(datatype)));
 
-  auto algo = ncclx::algoconf::getAllGatherAlgo();
+  auto algo = NCCLX_CONFIG_FIELD(comm->config, allgatherAlgo);
 
   if (algo != NCCL_ALLGATHER_ALGO::orig && ctranAllGatherSupport(comm->ctranComm_.get(), algo, stream)) {
     return metaCommToNccl(ctranAllGather(
@@ -131,7 +132,7 @@ NCCL_API(ncclResult_t, ncclAllReduce, const void* sendbuff, void* recvbuff, size
 ncclResult_t ncclAllReduce(const void* sendbuff, void* recvbuff, size_t count,
     ncclDataType_t datatype, ncclRedOp_t op, ncclComm* comm, cudaStream_t stream) {
 
-  auto algo = ncclx::algoconf::getAllReduceAlgo();
+  auto algo = NCCLX_CONFIG_FIELD(comm->config, allreduceAlgo);
 
   // [NCCLX] Redirect to CTRAN if enabled and applicable
   if (algo != NCCL_ALLREDUCE_ALGO::orig && ctranAllReduceSupport(comm->ctranComm_.get(), algo)) {
@@ -446,7 +447,7 @@ ncclResult_t ncclAllToAllv(
         recvbuff);
   }
 
-  if ((ncclx::algoconf::getAllToAllVAlgo() == NCCL_ALLTOALLV_ALGO::ctran) &&
+  if ((NCCLX_CONFIG_FIELD(comm->config, alltoallvAlgo) == NCCL_ALLTOALLV_ALGO::ctran) &&
       ctranAllToAllvSupport(comm->ctranComm_.get())) {
     return metaCommToNccl(ctranAllToAllv(
         sendbuff,
