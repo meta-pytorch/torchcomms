@@ -5,17 +5,6 @@ set -ex
 export ZE_FLAT_DEVICE_HIERARCHY=FLAT
 export CCL_TOPO_FABRIC_VERTEX_CONNECTION_CHECK=0
 
-#source Deep Learning Essentials components
-export TCM_ROOT=${DLE_PATH}/tcm/latest
-export LD_LIBRARY_PATH="${TCM_ROOT}/lib":${LD_LIBRARY_PATH}
-
-source ${DLE_PATH}/umf/latest/env/vars.sh
-source ${DLE_PATH}/compiler/latest/env/vars.sh
-source ${DLE_PATH}/tbb/latest/env/vars.sh
-source ${DLE_PATH}/ccl/latest/env/vars.sh
-source ${DLE_PATH}/pti/latest/env/vars.sh
-source ${DLE_PATH}/mkl/latest/env/vars.sh
-
 #Create Conda Env and install dependencies
 conda create -yn xpu_torchcomms_ci-${RUNNER_NAME} python=3.10
 source activate xpu_torchcomms_ci-${RUNNER_NAME}
@@ -30,14 +19,9 @@ export USE_SYSTEM_LIBS=1
 
 python3 -m pip install --no-deps --pre torch pytorch-triton-xpu --index-url https://download.pytorch.org/whl/nightly/xpu --force-reinstall --no-cache-dir 
 
-cd torchcomms && \
-    # Parse the base dev array directly out of setup.py
-    sed -n '/"dev": \[/,/\]/p' setup.py | grep -v -E '"dev"|\[|\]' | sed -e 's/[", ]//g' > requirements-xccl.txt && \
-    printf "%s\n" "typing-extensions" "sympy" >> requirements-xccl.txt  #Add additonal deps for xccl
-    python3 -m pip install -r requirements-xccl.txt && \
-    # Install torchcomms package without additional dependencies
-    python3 -m pip install . --no-build-isolation --no-deps && \
-cd ..
+python3 -m pip install --pre torch pytorch-triton-xpu --index-url https://download.pytorch.org/whl/nightly/xpu --force-reinstall --no-cache-dir
+
+cd torchcomms && pip install '.[dev]' --no-build-isolation && cd ..
 
 #Check Intel XPU visibility
 #Expose ZE_AFFINITY_MASK to explicitly expose the number of Intel GPUs assigned to the runner for all tests.
