@@ -74,6 +74,18 @@ cvars:
       all data is logged to scuba table nccl_profiler_algo.
       (the same format with NCCL_COMM_EVENT_LOGGING)
 
+ - name        : NCCL_CTRAN_GPE_PROFILING_LOGGING
+   type        : string
+   default     : ""
+   description : |-
+      File location for logging per-tracepoint GPE thread profiler rows
+      emitted by ctran::GpeProfiler via the DefaultGpeProfilerReporter.
+      Disabled by default (empty). MCCL injects its own
+      McclGpeProfilerReporter that writes directly to mccl_operation_trace
+      and bypasses this cvar; NCCLx consumers can opt in by setting this
+      to e.g. "scuba:nccl_profiler_gpe".
+      (the same format with NCCL_COMM_EVENT_LOGGING)
+
  - name        : NCCL_MEMORY_EVENT_LOGGING
    type        : string
    default     : ""
