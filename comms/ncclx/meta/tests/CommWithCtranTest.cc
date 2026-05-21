@@ -95,7 +95,9 @@ TEST_F(CommWithCtranTest, CTranAllGatherOverrideConfig) {
   EnvRAII ctranEnv(NCCL_CTRAN_ENABLE, true);
   EnvRAII env(NCCL_ALLGATHER_ALGO, NCCL_ALLGATHER_ALGO::orig);
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
-  config.ncclAllGatherAlgo = "ctring";
+  ncclx::Hints hints;
+  hints.set("allgatherAlgo", "ctring");
+  config.hints = &hints;
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
 
@@ -103,22 +105,20 @@ TEST_F(CommWithCtranTest, CTranAllGatherOverrideConfig) {
   ASSERT_NE(nullptr, comm->ctranComm_->ctran_);
   EXPECT_TRUE(ctranInitialized(comm->ctranComm_.get()));
 
-  auto algo = comm->ctranComm_->ctran_->algo->getAllGatherAlgo();
-  EXPECT_TRUE(algo == NCCL_ALLGATHER_ALGO::ctring);
+  auto algo = NCCLX_CONFIG_FIELD(comm->config, allgatherAlgo);
+  EXPECT_EQ(algo, NCCL_ALLGATHER_ALGO::ctring);
 }
 
 TEST_F(CommWithCtranTest, CTranAllGatherOverrideConfigSplitComm) {
   EnvRAII ctranEnv(NCCL_CTRAN_ENABLE, true);
   EnvRAII env(NCCL_ALLGATHER_ALGO, NCCL_ALLGATHER_ALGO::orig);
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
-  std::string algoStr = "ctring";
-  config.ncclAllGatherAlgo = algoStr.c_str();
+  ncclx::Hints hints;
+  hints.set("allgatherAlgo", "ctring");
+  config.hints = &hints;
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
 
-  // change pointer to be an invalid value, should still work since
-  // we copy the string to the config
-  algoStr = "badconfig";
   ncclx::test::NcclCommSplitRAII childComm{
       comm.get(), globalRank % 2, globalRank / 2};
   ASSERT_NE(nullptr, childComm.get());
@@ -127,11 +127,11 @@ TEST_F(CommWithCtranTest, CTranAllGatherOverrideConfigSplitComm) {
   ASSERT_NE(nullptr, comm->ctranComm_->ctran_);
   EXPECT_TRUE(ctranInitialized(comm->ctranComm_.get()));
 
-  auto algo = comm->ctranComm_->ctran_->algo->getAllGatherAlgo();
-  EXPECT_TRUE(algo == NCCL_ALLGATHER_ALGO::ctring);
+  auto algo = NCCLX_CONFIG_FIELD(comm->config, allgatherAlgo);
+  EXPECT_EQ(algo, NCCL_ALLGATHER_ALGO::ctring);
 
-  auto childAlgo = childComm->ctranComm_->ctran_->algo->getAllGatherAlgo();
-  EXPECT_TRUE(childAlgo == NCCL_ALLGATHER_ALGO::ctring);
+  auto childAlgo = NCCLX_CONFIG_FIELD(childComm->config, allgatherAlgo);
+  EXPECT_EQ(childAlgo, NCCL_ALLGATHER_ALGO::ctring);
 }
 
 TEST_F(CommWithCtranTest, PostCommDestroy) {

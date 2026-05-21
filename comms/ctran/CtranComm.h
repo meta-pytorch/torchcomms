@@ -48,7 +48,6 @@ struct ctranPipesConfig {
 struct ctranConfig {
   int blocking{-1};
   std::string commDesc;
-  const char* ncclAllGatherAlgo{nullptr};
   std::vector<enum CommBackend> backends = {};
   ctranPipesConfig pipesConfig;
   bool enableProfiler{NCCL_CTRAN_TRANSPORT_PROFILER};
@@ -56,7 +55,6 @@ struct ctranConfig {
   bool operator==(const ctranConfig& other) const {
     return (
         blocking == other.blocking && commDesc == other.commDesc &&
-        ncclAllGatherAlgo == other.ncclAllGatherAlgo &&
         backends == other.backends && pipesConfig == other.pipesConfig &&
         enableProfiler == other.enableProfiler);
   }

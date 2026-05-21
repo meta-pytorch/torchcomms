@@ -27,7 +27,6 @@ class Config {
   // When adding a new field, also add its key to knownHintKeys below.
   std::string commDesc = "undefined";
   std::vector<int> splitGroupRanks;
-  std::string ncclAllGatherAlgo = "undefined";
   bool fastInitMode = false;
 
   bool useCtran = false;
@@ -64,25 +63,15 @@ class Config {
 // Hints::set() to warn on unrecognized keys (typo detection).
 inline const std::vector<std::string>& knownHintKeys() {
   static const std::vector<std::string> keys = {
-      "commDesc",
-      "splitGroupRanks",
-      "ncclAllGatherAlgo",
-      "fastInitMode",
-      "useCtran",
-      "usePatAvg",
-      "noLocal",
-      "sendrecvAlgo",
-      "allgatherAlgo",
-      "allreduceAlgo",
-      "pipesIbgdaDataBufferSize",
-      "alltoallvAlgo",
-      "rmaAlgo",
-      "pipesNvlChunkSize",
-      "pipesUseDualStateBuffer",
-      "vCliqueSize",
-      "ncclBuffSize",
-      "ibSplitDataOnQps",
-      "ibQpsPerConnection",
+      "commDesc",          "splitGroupRanks",
+      "fastInitMode",      "useCtran",
+      "usePatAvg",         "noLocal",
+      "sendrecvAlgo",      "allgatherAlgo",
+      "allreduceAlgo",     "pipesIbgdaDataBufferSize",
+      "alltoallvAlgo",     "rmaAlgo",
+      "pipesNvlChunkSize", "pipesUseDualStateBuffer",
+      "vCliqueSize",       "ncclBuffSize",
+      "ibSplitDataOnQps",  "ibQpsPerConnection",
       "ibLazyConnect",
   };
   return keys;
