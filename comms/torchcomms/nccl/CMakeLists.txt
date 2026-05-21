@@ -42,6 +42,22 @@ target_include_directories(torchcomms_comms_nccl PRIVATE
     ${Python3_INCLUDE_DIRS}
 )
 target_compile_features(torchcomms_comms_nccl PRIVATE cxx_std_20)
+
+# Check whether the NCCL device API header is available (NCCL 2.28+). When
+# present, define TORCHCOMMS_HAS_NCCL_DEVICE_API so TorchCommNCCL can
+# compile the registerWithSymmMem path that publishes its ncclComm into
+# pytorch's c10d::symmetric_memory::NCCLDevCommManager.
+if(EXISTS "${NCCL_INCLUDE}/nccl_device.h")
+    message(STATUS
+        "NCCL device API header found, building TorchCommNCCL with "
+        "symm_mem registration support")
+    target_compile_definitions(torchcomms_comms_nccl
+        PRIVATE TORCHCOMMS_HAS_NCCL_DEVICE_API=1)
+else()
+    message(STATUS
+        "NCCL device API header NOT found (requires NCCL 2.28+), "
+        "building TorchCommNCCL without symm_mem registration support")
+endif()
 target_link_directories(torchcomms_comms_nccl PRIVATE ${CONDA_LIB})
 target_link_libraries(torchcomms_comms_nccl PRIVATE
     glog::glog_headers

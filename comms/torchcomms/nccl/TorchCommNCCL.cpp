@@ -11,7 +11,21 @@
 #include <c10/cuda/CUDAGuard.h>
 #include <fmt/core.h>
 #include <nccl.h> // @manual
+// pytorch's nccl_dev_cap.hpp gates NCCL_HAS_SYMMEM_{,DEVICE_}SUPPORT behind
+// `#if USE_NCCL`, which isn't set in torchcomms's standalone build. When the
+// NCCL device API is available (CMake probes for `nccl_device.h` and sets
+// TORCHCOMMS_HAS_NCCL_DEVICE_API), pull in the header pytorch's macro expects
+// and define both macros ourselves so nccl_devcomm_manager.hpp's namespace
+// (gated by NCCL_HAS_SYMMEM_SUPPORT) and class members (gated by
+// NCCL_HAS_SYMMEM_DEVICE_SUPPORT) are visible. NCCL 2.28+ device support
+// implies 2.27+ host support, so defining both is safe.
+#ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
+#include <nccl_device.h> // @manual
+#define NCCL_HAS_SYMMEM_SUPPORT
+#define NCCL_HAS_SYMMEM_DEVICE_SUPPORT
+#endif
 #include <torch/csrc/cuda/CUDAPluggableAllocator.h> // @manual=//caffe2:torch-cpp-cuda
+#include <torch/csrc/distributed/c10d/symm_mem/nccl_devcomm_manager.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include "comms/torchcomms/TorchCommFactory.hpp"
 #include "comms/torchcomms/nccl/TorchCommNCCLBootstrap.hpp"
 #include "comms/torchcomms/utils/Logging.hpp"
@@ -37,6 +51,19 @@ TorchCommNCCL::TorchCommNCCL(const ncclComm_t nccl_comm)
       shutdown_(false) {}
 
 TorchCommNCCL::~TorchCommNCCL() {
+#ifdef NCCL_HAS_SYMMEM_DEVICE_SUPPORT
+  // Drop ourselves from NCCLDevCommManager so a successor TorchCommNCCL
+  // (or a ProcessGroupNCCL) reusing the same group name can register
+  // cleanly. Safe to call when nothing was registered (no-op).
+  if (!symm_mem_group_name_.empty()) {
+    try {
+      c10d::symmetric_memory::NCCLDevCommManager::get(device_).unregister_comm(
+          symm_mem_group_name_);
+    } catch (...) {
+      // Best-effort; never throw from a destructor.
+    }
+  }
+#endif
   if (init_state_ == InitializationState::INITIALIZED) {
     TC_LOG(WARNING, this)
         << "TorchCommNCCL " << name_
@@ -394,6 +421,27 @@ std::string_view TorchCommNCCL::getBackendName() const {
 
 std::string_view TorchCommNCCL::getCommName() const {
   return name_;
+}
+
+void TorchCommNCCL::registerWithSymmMem(const std::string& group_name) {
+#ifdef NCCL_HAS_SYMMEM_DEVICE_SUPPORT
+  checkInitialized();
+  TORCH_CHECK(
+      nccl_comm_ != nullptr,
+      "[TorchCommNCCL][",
+      name_,
+      "]: register_with_symm_mem called but nccl_comm_ is null");
+  c10d::symmetric_memory::NCCLDevCommManager::get(device_).register_comm(
+      group_name, nccl_comm_);
+  symm_mem_group_name_ = group_name;
+  TC_LOG(INFO, this) << "registered with NCCLDevCommManager under group '"
+                     << group_name << "'";
+#else
+  throw std::logic_error(
+      "[TorchCommNCCL]: register_with_symm_mem requires torchcomms built "
+      "with TORCHCOMMS_HAS_NCCL_DEVICE_API (NCCL 2.28+ with nccl_device "
+      "headers).");
+#endif
 }
 
 static inline std::chrono::milliseconds getOperationTimeout(
