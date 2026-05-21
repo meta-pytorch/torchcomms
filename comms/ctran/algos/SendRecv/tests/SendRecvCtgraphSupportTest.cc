@@ -43,15 +43,27 @@ TEST_F(SendRecvCtgraphSupportTest, InvalidUsageOutsideCapture) {
   commGroupDepth++;
   ASSERT_EQ(
       ctranSend(
-          nullptr, count, commInt32, peer, comm_.get(), cudaStreamDefault),
+          nullptr,
+          count,
+          commInt32,
+          peer,
+          comm_.get(),
+          cudaStreamDefault,
+          NCCL_SENDRECV_ALGO::ctgraph),
       commSuccess);
   ASSERT_EQ(
       ctranRecv(
-          nullptr, count, commInt32, peer, comm_.get(), cudaStreamDefault),
+          nullptr,
+          count,
+          commInt32,
+          peer,
+          comm_.get(),
+          cudaStreamDefault,
+          NCCL_SENDRECV_ALGO::ctgraph),
       commSuccess);
   commGroupDepth--;
 
-  auto result = ctranGroupEndHook(NCCL_SENDRECV_ALGO::ctgraph, std::nullopt);
+  auto result = ctranGroupEndHook(std::nullopt);
   EXPECT_EQ(result, commInvalidUsage);
 }
 

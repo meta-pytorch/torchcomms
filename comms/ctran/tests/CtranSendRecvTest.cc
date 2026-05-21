@@ -107,7 +107,8 @@ class CtranSendRecvTest : public CtranIntraProcessFixture {
               kType,
               peer,
               state.ctranComm.get(),
-              state.stream));
+              state.stream,
+              NCCL_SENDRECV_ALGO));
     }
     for (const auto& [peer, nElem] : recvPeers) {
       EXPECT_EQ(
@@ -118,9 +119,10 @@ class CtranSendRecvTest : public CtranIntraProcessFixture {
               kType,
               peer,
               state.ctranComm.get(),
-              state.stream));
+              state.stream,
+              NCCL_SENDRECV_ALGO));
     }
-    EXPECT_EQ(commSuccess, ctranGroupEndHook(NCCL_SENDRECV_ALGO, timeout));
+    EXPECT_EQ(commSuccess, ctranGroupEndHook(timeout));
 
     // ensure async execution completion and no error
     EXPECT_EQ(cudaSuccess, cudaStreamSynchronize(state.stream));
