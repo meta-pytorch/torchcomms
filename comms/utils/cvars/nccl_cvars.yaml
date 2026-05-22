@@ -1791,6 +1791,21 @@ cvars:
      initialize MultiPeerTransport which provides unified NVLink and IBGDA
      transport for P2P communication.
 
+ - name        : NCCL_CTRAN_PIPES_TRACE_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Enable generic Pipes algorithm tracing. When enabled, CTA leaders write
+     compact per-phase events to an HRDW ring buffer and the host logs them
+     after the collective stream reaches the kernel.
+
+ - name        : NCCL_CTRAN_PIPES_TRACE_RING_SIZE
+   type        : uint64_t
+   default     : 1048576
+   description : |-
+     Number of HRDW ring-buffer entries reserved per communicator for
+     NCCL_CTRAN_PIPES_TRACE_ENABLE.
+
  - name        : NCCL_CTRAN_PIPES_NVL_CHUNK_SIZE
    type        : uint64_t
    default     : 524288
