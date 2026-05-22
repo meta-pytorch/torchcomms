@@ -956,6 +956,25 @@ class Hints {
     private:
         kvType kv;
 };
+
+/*
+ * Comm Set Config
+ *
+ * Update mutable configuration fields on a live communicator. Only
+ * algorithm-selection hint keys (sendrecvAlgo, allgatherAlgo, allreduceAlgo,
+ * alltoallvAlgo, rmaAlgo) may be changed after communicator creation.
+ *
+ * The config parameter must be initialized with NCCL_CONFIG_INITIALIZER. All
+ * flat ncclConfig_t fields must remain at their undefined defaults; only the
+ * hints pointer is read. Setting any flat field or any non-algo hint key
+ * returns ncclInvalidUsage. Passing an uninitialized config (missing magic)
+ * returns ncclInvalidArgument.
+ *
+ * The caller must ensure no concurrent collective or config update is in
+ * progress on the same communicator.
+ */
+// [META:COMM_SET_CONFIG]
+ncclResult_t commSetConfig(ncclComm_t comm, const ncclConfig_t* config);
 } // namespace ncclx
 
 #endif
