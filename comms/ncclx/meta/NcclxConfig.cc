@@ -80,7 +80,6 @@ Config::Config(const ncclConfig_t* config) {
 
   checkPtrConflict("commDesc", config->commDesc);
   checkPtrConflict("splitGroupRanks", config->splitGroupRanks);
-  checkPtrConflict("ncclAllGatherAlgo", config->ncclAllGatherAlgo);
   checkIntConflict("fastInitMode", config->fastInitMode);
 
   if (conflict) {
@@ -156,23 +155,6 @@ Config::Config(const ncclConfig_t* config) {
       }
       splitGroupRanks = elems;
     }
-  }
-
-  // ncclAllGatherAlgo — deprecated string field, kept for MetaFactory compat.
-  // The canonical field is allgatherAlgo (enum), parsed below with other algos.
-  if (config->ncclAllGatherAlgo) {
-    WARN(
-        "ncclConfig_t.ncclAllGatherAlgo is deprecated; use ncclConfig_t.hints "
-        "with key 'allgatherAlgo' instead");
-    ncclAllGatherAlgo = config->ncclAllGatherAlgo;
-  } else {
-    auto val = getHintStr("ncclAllGatherAlgo");
-    if (!val.empty()) {
-      ncclAllGatherAlgo = val;
-    }
-  }
-  if (ncclAllGatherAlgo != "undefined") {
-    algoStrToVal(ncclAllGatherAlgo, allgatherAlgo);
   }
 
   if (config->fastInitMode != NCCL_CONFIG_UNDEF_INT) {

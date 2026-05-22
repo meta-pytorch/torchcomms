@@ -1,6 +1,5 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include <string.h>
 #include <algorithm>
 #include <memory>
 
@@ -539,45 +538,6 @@ CtranAlgoRMALogger::~CtranAlgoRMALogger() {
       (void*)comm_,
       statex->commHash(),
       (void*)comm_->ctran_.get());
-}
-
-static const std::unordered_map<std::string, enum NCCL_ALLGATHER_ALGO>
-    ctranAllGatherAlgoMap = {
-        {"orig", NCCL_ALLGATHER_ALGO::orig},
-        {"ctran", NCCL_ALLGATHER_ALGO::ctran},
-        {"ctdirect", NCCL_ALLGATHER_ALGO::ctdirect},
-        {"ctring", NCCL_ALLGATHER_ALGO::ctring},
-        {"ctrd", NCCL_ALLGATHER_ALGO::ctrd},
-        {"ctsrd", NCCL_ALLGATHER_ALGO::ctsrd},
-        {"ctbrucks", NCCL_ALLGATHER_ALGO::ctbrucks},
-        {"cthierarchical_ring", NCCL_ALLGATHER_ALGO::cthierarchical_ring},
-        {"ctgraph", NCCL_ALLGATHER_ALGO::ctgraph},
-        {"ctgraph_pipeline", NCCL_ALLGATHER_ALGO::ctgraph_pipeline},
-        {"ctgraph_rdpipeline", NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline},
-        {"ctgraph_ring", NCCL_ALLGATHER_ALGO::ctgraph_ring},
-        {"ctgraph_rd", NCCL_ALLGATHER_ALGO::ctgraph_rd}};
-
-// FIXME: consolidate ctranConfigCommAlgoOverride with the algo config
-commResult_t ctranConfigCommAlgoOverride(CtranComm* comm) {
-  if (!ctranInitialized(comm)) {
-    return commSuccess;
-  }
-
-  if (comm->config_.ncclAllGatherAlgo == nullptr ||
-      std::strcmp(comm->config_.ncclAllGatherAlgo, "undefined") == 0) {
-    return commSuccess;
-  }
-
-  auto it = ctranAllGatherAlgoMap.find(comm->config_.ncclAllGatherAlgo);
-  if (it != ctranAllGatherAlgoMap.end()) {
-    comm->ctran_->algo->setAllGatherAlgo(it->second);
-  } else {
-    CLOGF(
-        WARN,
-        "Invalid value for ncclAllGatherAlgo: {}",
-        comm->config_.ncclAllGatherAlgo);
-  }
-  return commSuccess;
 }
 
 const ctran::algos::IPersistPlan* CtranAlgo::getOrCreatePersistPlan(
