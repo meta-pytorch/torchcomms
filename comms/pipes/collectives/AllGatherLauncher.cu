@@ -12,6 +12,11 @@
 #include "comms/pipes/TimeoutUtils.h"
 #include "comms/pipes/collectives/AllGatherDirect.cuh"
 
+// Keep the kernel definitions in this translation unit. Package builds link
+// this launcher as a standalone shared object, and CUDA kernel symbols are
+// hidden across that boundary.
+#include "AllGatherDirect.cu"
+
 namespace comms::pipes {
 
 namespace {
