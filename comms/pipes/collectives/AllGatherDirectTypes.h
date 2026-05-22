@@ -6,6 +6,7 @@
 #include <cstdint>
 
 #include "comms/pipes/P2pNvlTransportDevice.cuh"
+#include "comms/pipes/PipesTraceTypes.h"
 #include "comms/pipes/collectives/DirectCollectiveTypes.h"
 
 namespace comms::pipes {
@@ -61,6 +62,7 @@ struct HierarchicalAllgatherOverlapArgs {
   char* recvbuf{nullptr};
   HierarchicalAllgatherIbgdaRing ib_ring{};
   P2pNvlTransportDevice nvl_peers[kDirectNvlMaxRanks]{};
+  PipesTraceHandle trace{};
 };
 
 } // namespace comms::pipes

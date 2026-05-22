@@ -67,14 +67,26 @@ static AlgoDescriptor makeSendRecvCtgraph() {
     commGroupDepth++;
     ASSERT_EQ(
         ctranSend(
-            b->send.get(), count, commInt32, b->sendPeer, ctx.comm, ctx.stream),
+            b->send.get(),
+            count,
+            commInt32,
+            b->sendPeer,
+            ctx.comm,
+            ctx.stream,
+            algo),
         commSuccess);
     ASSERT_EQ(
         ctranRecv(
-            b->recv.get(), count, commInt32, b->recvPeer, ctx.comm, ctx.stream),
+            b->recv.get(),
+            count,
+            commInt32,
+            b->recvPeer,
+            ctx.comm,
+            ctx.stream,
+            algo),
         commSuccess);
     commGroupDepth--;
-    ASSERT_EQ(ctranGroupEndHook(algo, std::nullopt), commSuccess);
+    ASSERT_EQ(ctranGroupEndHook(std::nullopt), commSuccess);
   };
   return desc;
 }
@@ -150,15 +162,27 @@ TEST_P(CudaGraphSendRecvCtgraphExpandable, CaptureReplayVerify) {
 
   commGroupDepth++;
   ASSERT_EQ(
-      ctranSend(sendbuf, count, commInt32, sendPeer, comm.get(), stream.get()),
+      ctranSend(
+          sendbuf,
+          count,
+          commInt32,
+          sendPeer,
+          comm.get(),
+          stream.get(),
+          NCCL_SENDRECV_ALGO::ctgraph),
       commSuccess);
   ASSERT_EQ(
-      ctranRecv(recvbuf, count, commInt32, recvPeer, comm.get(), stream.get()),
+      ctranRecv(
+          recvbuf,
+          count,
+          commInt32,
+          recvPeer,
+          comm.get(),
+          stream.get(),
+          NCCL_SENDRECV_ALGO::ctgraph),
       commSuccess);
   commGroupDepth--;
-  ASSERT_EQ(
-      ctranGroupEndHook(NCCL_SENDRECV_ALGO::ctgraph, std::nullopt),
-      commSuccess);
+  ASSERT_EQ(ctranGroupEndHook(std::nullopt), commSuccess);
 
   ASSERT_EQ(cudaStreamEndCapture(stream.get(), &graph), cudaSuccess);
   ASSERT_EQ(cudaGraphInstantiate(&exec, graph, 0), cudaSuccess);

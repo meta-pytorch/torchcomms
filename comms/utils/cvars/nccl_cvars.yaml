@@ -74,6 +74,26 @@ cvars:
       all data is logged to scuba table nccl_profiler_algo.
       (the same format with NCCL_COMM_EVENT_LOGGING)
 
+ - name        : NCCL_CTRAN_GPE_PROFILING_LOGGING
+   type        : string
+   default     : ""
+   description : |-
+      File location for logging per-tracepoint GPE thread profiler rows
+      emitted by ctran::GpeProfiler via the DefaultGpeProfilerReporter.
+      Disabled by default (empty). MCCL injects its own
+      McclGpeProfilerReporter that writes directly to mccl_operation_trace
+      and bypasses this cvar; NCCLx consumers can opt in by setting this
+      to e.g. "scuba:nccl_profiler_gpe".
+      (the same format with NCCL_COMM_EVENT_LOGGING)
+
+ - name        : NCCL_CTRAN_GPE_PROFILING_SAMPLING_WEIGHT
+   type        : int
+   default     : 1000
+   description : |-
+     1-in-N sampling weight for per-iteration GpeProfiler Scuba reports.
+     Set to 0 to disable happy-path tracing (abort-only). Aborted
+     iterations are always reported regardless of sampling.
+
  - name        : NCCL_MEMORY_EVENT_LOGGING
    type        : string
    default     : ""
@@ -1770,6 +1790,21 @@ cvars:
      Enable Pipes MultiPeerTransport for Ctran. When enabled, Ctran will
      initialize MultiPeerTransport which provides unified NVLink and IBGDA
      transport for P2P communication.
+
+ - name        : NCCL_CTRAN_PIPES_TRACE_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Enable generic Pipes algorithm tracing. When enabled, CTA leaders write
+     compact per-phase events to an HRDW ring buffer and the host logs them
+     after the collective stream reaches the kernel.
+
+ - name        : NCCL_CTRAN_PIPES_TRACE_RING_SIZE
+   type        : uint64_t
+   default     : 1048576
+   description : |-
+     Number of HRDW ring-buffer entries reserved per communicator for
+     NCCL_CTRAN_PIPES_TRACE_ENABLE.
 
  - name        : NCCL_CTRAN_PIPES_NVL_CHUNK_SIZE
    type        : uint64_t

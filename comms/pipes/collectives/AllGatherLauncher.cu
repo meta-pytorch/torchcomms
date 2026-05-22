@@ -12,6 +12,11 @@
 #include "comms/pipes/TimeoutUtils.h"
 #include "comms/pipes/collectives/AllGatherDirect.cuh"
 
+// Keep the kernel definitions in this translation unit. Package builds link
+// this launcher as a standalone shared object, and CUDA kernel symbols are
+// hidden across that boundary.
+#include "AllGatherDirect.cu"
+
 namespace comms::pipes {
 
 namespace {
@@ -129,6 +134,7 @@ void launch_hierarchical_allgather_overlap(
   args.sendbuf = params.sendbuf;
   args.recvbuf = params.recvbuf;
   args.ib_ring = params.ib_ring;
+  args.trace = params.trace;
   for (int peer = 0; peer < params.nvl_size; ++peer) {
     if (peer == params.nvl_rank) {
       continue;

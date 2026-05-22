@@ -7,6 +7,7 @@
 #include <cstddef>
 
 #include "comms/pipes/P2pNvlTransportDevice.cuh"
+#include "comms/pipes/TiledBuffer.cuh"
 
 namespace comms::pipes::test {
 
@@ -129,6 +130,108 @@ void testWeightedRecvSend(
     uint32_t recvWeight,
     uint32_t sendWeight,
     GroupType groupType = GroupType::WARP);
+
+void testTileMultiCallSendRecv(
+    P2pNvlTransportDevice p2p,
+    TiledBuffer<char> sendTiles,
+    TiledBuffer<char> recvTiles,
+    int activeBlocks,
+    int numCalls,
+    size_t bytesPerCall,
+    size_t maxSignalBytes,
+    bool waitForSecondCallSignal,
+    int blockSize,
+    cudaStream_t stream = nullptr);
+
+void testTileMultiCallSendOnly(
+    P2pNvlTransportDevice p2p,
+    TiledBuffer<char> sendTiles,
+    int activeBlocks,
+    int numCalls,
+    size_t bytesPerCall,
+    size_t maxSignalBytes,
+    int blockSize,
+    cudaStream_t stream = nullptr);
+
+void testTileTwoCallSendOnly(
+    P2pNvlTransportDevice p2p,
+    TiledBuffer<char> sendTiles,
+    int activeBlocks,
+    size_t firstCallBytes,
+    size_t secondCallBytes,
+    size_t maxSignalBytes,
+    int blockSize,
+    cudaStream_t stream = nullptr);
+
+void testPrepareTileStaging(
+    P2pNvlTransportDevice p2p,
+    int activeBlocks,
+    int numCalls,
+    size_t bytesPerCall,
+    size_t maxSignalBytes,
+    int sourceRank,
+    int blockSize,
+    cudaStream_t stream = nullptr);
+
+void testPrepareTileTwoCallStaging(
+    P2pNvlTransportDevice p2p,
+    int activeBlocks,
+    size_t firstCallBytes,
+    size_t secondCallBytes,
+    size_t maxSignalBytes,
+    int sourceRank,
+    int blockSize,
+    cudaStream_t stream = nullptr);
+
+void testTileMultiCallRecvOnly(
+    P2pNvlTransportDevice p2p,
+    TiledBuffer<char> recvTiles,
+    int activeBlocks,
+    int numCalls,
+    size_t bytesPerCall,
+    size_t maxSignalBytes,
+    int blockSize,
+    cudaStream_t stream = nullptr);
+
+void testTileTwoCallRecvOnly(
+    P2pNvlTransportDevice p2p,
+    TiledBuffer<char> recvTiles,
+    int activeBlocks,
+    size_t firstCallBytes,
+    size_t secondCallBytes,
+    size_t maxSignalBytes,
+    int blockSize,
+    cudaStream_t stream = nullptr);
+
+void testTileMultiCallForward(
+    P2pNvlTransportDevice pred,
+    P2pNvlTransportDevice succ,
+    TiledBuffer<char> dstTiles,
+    int activeBlocks,
+    int numCalls,
+    size_t bytesPerCall,
+    size_t maxSignalBytes,
+    bool waitForSecondCallSignal,
+    int blockSize,
+    cudaStream_t stream = nullptr);
+
+void testTileTwoCallForward(
+    P2pNvlTransportDevice pred,
+    P2pNvlTransportDevice succ,
+    TiledBuffer<char> dstTiles,
+    int activeBlocks,
+    size_t firstCallBytes,
+    size_t secondCallBytes,
+    size_t maxSignalBytes,
+    int blockSize,
+    cudaStream_t stream = nullptr);
+
+void testCopyLocalStaging(
+    P2pNvlTransportDevice p2p,
+    void* dst,
+    size_t nbytes,
+    int blockSize,
+    cudaStream_t stream = nullptr);
 
 // Test put() - one-sided direct memory write to peer GPU and signal peer
 // Unlike send()/recv(), put() writes directly to dst_d without staging buffers
