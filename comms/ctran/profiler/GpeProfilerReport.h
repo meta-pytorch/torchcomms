@@ -61,6 +61,8 @@ constexpr std::string_view tracePointName(GpeTracePoint p) {
 // "abnormal_exit") and lands in the Scuba "Message" column.
 struct GpeProfilerReport {
   const CommLogData* logMetaData{nullptr};
+  uint64_t commHash{0};
+  int rank{-1};
   uint64_t opCount{0};
   int opType{-1};
   GpeTracePoint tracePoint{GpeTracePoint::ITER_START};
