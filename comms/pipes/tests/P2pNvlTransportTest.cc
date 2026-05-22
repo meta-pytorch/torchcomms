@@ -548,6 +548,137 @@ static void runTileTest(
   }
 }
 
+static unsigned char multiCallPattern(int rank, int call) {
+  return static_cast<unsigned char>(0x30 + rank * 0x20 + call);
+}
+
+static std::vector<char> makeTwoCallPatternBuffer(
+    size_t firstCallBytes,
+    size_t secondCallBytes,
+    int numBlocks,
+    int rank) {
+  const size_t tileBytes = firstCallBytes + secondCallBytes;
+  std::vector<char> data(tileBytes * numBlocks);
+
+  for (int block = 0; block < numBlocks; ++block) {
+    const size_t offset = block * tileBytes;
+    std::fill(
+        data.begin() + offset,
+        data.begin() + offset + firstCallBytes,
+        static_cast<char>(multiCallPattern(rank, 0)));
+    std::fill(
+        data.begin() + offset + firstCallBytes,
+        data.begin() + offset + tileBytes,
+        static_cast<char>(multiCallPattern(rank, 1)));
+  }
+
+  return data;
+}
+
+static void expectTwoCallPattern(
+    const std::vector<char>& data,
+    size_t firstCallBytes,
+    size_t secondCallBytes,
+    int numBlocks,
+    int sourceRank,
+    const std::string& label) {
+  const size_t callBytes[] = {firstCallBytes, secondCallBytes};
+  const size_t tileBytes = firstCallBytes + secondCallBytes;
+
+  for (int block = 0; block < numBlocks; ++block) {
+    size_t callOffset = block * tileBytes;
+    for (int call = 0; call < 2; ++call) {
+      const unsigned char expected = multiCallPattern(sourceRank, call);
+      for (size_t i = 0; i < callBytes[call]; ++i) {
+        EXPECT_EQ(static_cast<unsigned char>(data[callOffset + i]), expected)
+            << label << ": block=" << block << " call=" << call
+            << " byte=" << i;
+        if (static_cast<unsigned char>(data[callOffset + i]) != expected) {
+          return;
+        }
+      }
+      callOffset += callBytes[call];
+    }
+  }
+}
+
+static void expectPersistentTwoCallStagingPattern(
+    const std::vector<char>& data,
+    size_t slotSize,
+    size_t firstCallBytes,
+    size_t secondCallBytes,
+    size_t maxSignalBytes,
+    size_t pipelineDepth,
+    int numBlocks,
+    int sourceRank,
+    const std::string& label) {
+  const size_t callBytes[] = {firstCallBytes, secondCallBytes};
+  const size_t perBlockSlotSize = (slotSize / numBlocks) & ~15ULL;
+  const size_t stepsPerSlot =
+      (perBlockSlotSize + maxSignalBytes - 1) / maxSignalBytes;
+
+  for (int block = 0; block < numBlocks; ++block) {
+    size_t baseStep = 0;
+    for (int call = 0; call < 2; ++call) {
+      const unsigned char expected = multiCallPattern(sourceRank, call);
+      const size_t chunks =
+          (callBytes[call] + maxSignalBytes - 1) / maxSignalBytes;
+      for (size_t chunk = 0; chunk < chunks; ++chunk) {
+        const size_t step = baseStep + chunk;
+        const size_t slotStep = step / stepsPerSlot;
+        const size_t subStep = step % stepsPerSlot;
+        const size_t slot = slotStep % pipelineDepth;
+        const size_t chunkBytes =
+            ((chunk + 1) * maxSignalBytes <= callBytes[call])
+            ? maxSignalBytes
+            : callBytes[call] - chunk * maxSignalBytes;
+        const size_t offset = slot * slotSize + block * perBlockSlotSize +
+            subStep * maxSignalBytes;
+
+        for (size_t i = 0; i < chunkBytes; ++i) {
+          EXPECT_EQ(static_cast<unsigned char>(data[offset + i]), expected)
+              << label << ": block=" << block << " call=" << call
+              << " chunk=" << chunk << " byte=" << i;
+          if (static_cast<unsigned char>(data[offset + i]) != expected) {
+            return;
+          }
+        }
+      }
+      baseStep += chunks;
+    }
+  }
+}
+
+static P2pNvlTransportDevice makeLocalTileDevice(
+    const P2pNvlTransportOptions& options,
+    int numBlocks,
+    char* localData,
+    char* remoteData,
+    DeviceSpan<int64_t> stepState,
+    DeviceSpan<SignalState> localSignals,
+    DeviceSpan<SignalState> remoteSignals) {
+  LocalState localState{
+      localData,
+      DeviceSpan<ChunkState>(),
+      DeviceSpan<ChunkState>(),
+      localSignals,
+      DeviceSpan<BarrierState>(),
+      nullptr};
+
+  RemoteState remoteState{
+      remoteData,
+      DeviceSpan<ChunkState>(),
+      DeviceSpan<ChunkState>(),
+      remoteSignals,
+      DeviceSpan<BarrierState>(),
+      nullptr};
+
+  NvlinkTransportTileState tileState{
+      stepState, numBlocks, localSignals, remoteSignals};
+  return P2pNvlTransportDevice(
+      0, 1, options, localState, remoteState, tileState);
+}
+
 // Test various message sizes with default config
 TEST_F(P2pNvlTransportTestFixture, TileSendRecvMessageSizes) {
   if (numRanks != 2) {
@@ -779,6 +910,127 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCallPersistentStep) {
       2,
       4,
       5);
+}
+
+TEST_F(
+    P2pNvlTransportTestFixture,
+    TileSendRecvMultiCallWithoutDrainUsesPersistentCursor) {
+  const int numBlocks = 4;
+  const int threadCount = 256;
+  const size_t maxSignalBytes = 16 * 1024;
+  const size_t firstCallBytes = maxSignalBytes;
+  const size_t secondCallBytes = maxSignalBytes * 3;
+  const size_t tileBytes = firstCallBytes + secondCallBytes;
+  const size_t totalBytes = tileBytes * numBlocks;
+
+  P2pNvlTransportOptions options{
+      .dataBufferSize = tileBytes * numBlocks,
+      .chunkSize = maxSignalBytes,
+      .pipelineDepth = 2,
+  };
+  const size_t stagingBytes = options.dataBufferSize * options.pipelineDepth;
+
+  const std::vector<char> hostSend =
+      makeTwoCallPatternBuffer(firstCallBytes, secondCallBytes, numBlocks, 0);
+  DeviceBuffer sendBuf(totalBytes);
+  DeviceBuffer recvBuf(totalBytes);
+  DeviceBuffer stagingBuf(stagingBytes);
+  const size_t stepStateBytes = sizeof(int64_t) * numBlocks * 2;
+  const size_t signalBytes = sizeof(SignalState) * numBlocks * 2;
+  DeviceBuffer stepStateBuf(stepStateBytes);
+  DeviceBuffer localSignalsBuf(signalBytes);
+  DeviceBuffer remoteSignalsBuf(signalBytes);
+  CUDACHECK_TEST(cudaMemcpy(
+      sendBuf.get(), hostSend.data(), totalBytes, cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(cudaMemset(recvBuf.get(), 0, totalBytes));
+  CUDACHECK_TEST(cudaMemset(stagingBuf.get(), 0, stagingBytes));
+  CUDACHECK_TEST(cudaMemset(stepStateBuf.get(), 0, stepStateBytes));
+  CUDACHECK_TEST(cudaMemset(localSignalsBuf.get(), 0, signalBytes));
+  CUDACHECK_TEST(cudaMemset(remoteSignalsBuf.get(), 0, signalBytes));
+
+  auto p2pHost = makeLocalTileDevice(
+      options,
+      numBlocks,
+      static_cast<char*>(stagingBuf.get()),
+      static_cast<char*>(stagingBuf.get()),
+      DeviceSpan<int64_t>(
+          static_cast<int64_t*>(stepStateBuf.get()), numBlocks * 2),
+      DeviceSpan<SignalState>(
+          static_cast<SignalState*>(localSignalsBuf.get()), numBlocks * 2),
+      DeviceSpan<SignalState>(
+          static_cast<SignalState*>(remoteSignalsBuf.get()), numBlocks * 2));
+
+  TiledBuffer<char> sendTiles(
+      static_cast<char*>(sendBuf.get()), totalBytes, numBlocks);
+  TiledBuffer<char> recvTiles(
+      static_cast<char*>(recvBuf.get()), totalBytes, numBlocks);
+
+  test::testPrepareTileTwoCallStaging(
+      p2pHost,
+      numBlocks,
+      firstCallBytes,
+      secondCallBytes,
+      maxSignalBytes,
+      2,
+      threadCount);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  test::testTileTwoCallSendOnly(
+      p2pHost,
+      sendTiles,
+      numBlocks,
+      firstCallBytes,
+      secondCallBytes,
+      maxSignalBytes,
+      threadCount);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<char> hostStaging(stagingBytes);
+  CUDACHECK_TEST(cudaMemcpy(
+      hostStaging.data(),
+      stagingBuf.get(),
+      stagingBytes,
+      cudaMemcpyDeviceToHost));
+  expectPersistentTwoCallStagingPattern(
+      hostStaging,
+      options.dataBufferSize,
+      firstCallBytes,
+      secondCallBytes,
+      maxSignalBytes,
+      options.pipelineDepth,
+      numBlocks,
+      0,
+      "tile send persistent cursor staging");
+
+  CUDACHECK_TEST(cudaMemset(recvBuf.get(), 0, totalBytes));
+  test::testPrepareTileTwoCallStaging(
+      p2pHost,
+      numBlocks,
+      firstCallBytes,
+      secondCallBytes,
+      maxSignalBytes,
+      0,
+      threadCount);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  test::testTileTwoCallRecvOnly(
+      p2pHost,
+      recvTiles,
+      numBlocks,
+      firstCallBytes,
+      secondCallBytes,
+      maxSignalBytes,
+      threadCount);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<char> hostRecv(totalBytes);
+  CUDACHECK_TEST(cudaMemcpy(
+      hostRecv.data(), recvBuf.get(), totalBytes, cudaMemcpyDeviceToHost));
+  expectTwoCallPattern(
+      hostRecv,
+      firstCallBytes,
+      secondCallBytes,
+      numBlocks,
+      0,
+      "tile recv persistent cursor");
 }
 
 // Test multi-call with different message sizes per call
@@ -4424,6 +4676,123 @@ TEST_F(P2pNvlTransportTestFixture, TileForwardDesynchronizedStepState) {
       }
     }
   }
+}
+
+TEST_F(
+    P2pNvlTransportTestFixture,
+    TileForwardMultiCallWithoutDrainUsesPersistentCursor) {
+  const int numBlocks = 4;
+  const int threadCount = 256;
+  const size_t maxSignalBytes = 16 * 1024;
+  const size_t firstCallBytes = maxSignalBytes;
+  const size_t secondCallBytes = maxSignalBytes * 3;
+  const size_t tileBytes = firstCallBytes + secondCallBytes;
+  const size_t totalBytes = tileBytes * numBlocks;
+
+  P2pNvlTransportOptions options{
+      .dataBufferSize = tileBytes * numBlocks,
+      .chunkSize = maxSignalBytes,
+      .pipelineDepth = 2,
+  };
+  const size_t stagingBytes = options.dataBufferSize * options.pipelineDepth;
+
+  DeviceBuffer sourceStagingBuf(stagingBytes);
+  DeviceBuffer forwardedStagingBuf(stagingBytes);
+  DeviceBuffer dstBuf(totalBytes);
+  const size_t stepStateBytes = sizeof(int64_t) * numBlocks * 2;
+  const size_t signalBytes = sizeof(SignalState) * numBlocks * 2;
+  DeviceBuffer predStepStateBuf(stepStateBytes);
+  DeviceBuffer predLocalSignalsBuf(signalBytes);
+  DeviceBuffer predRemoteSignalsBuf(signalBytes);
+  DeviceBuffer succStepStateBuf(stepStateBytes);
+  DeviceBuffer succLocalSignalsBuf(signalBytes);
+  DeviceBuffer succRemoteSignalsBuf(signalBytes);
+
+  CUDACHECK_TEST(cudaMemset(sourceStagingBuf.get(), 0, stagingBytes));
+  CUDACHECK_TEST(cudaMemset(forwardedStagingBuf.get(), 0, stagingBytes));
+  CUDACHECK_TEST(cudaMemset(dstBuf.get(), 0, totalBytes));
+  CUDACHECK_TEST(cudaMemset(predStepStateBuf.get(), 0, stepStateBytes));
+  CUDACHECK_TEST(cudaMemset(predLocalSignalsBuf.get(), 0, signalBytes));
+  CUDACHECK_TEST(cudaMemset(predRemoteSignalsBuf.get(), 0, signalBytes));
+  CUDACHECK_TEST(cudaMemset(succStepStateBuf.get(), 0, stepStateBytes));
+  CUDACHECK_TEST(cudaMemset(succLocalSignalsBuf.get(), 0, signalBytes));
+  CUDACHECK_TEST(cudaMemset(succRemoteSignalsBuf.get(), 0, signalBytes));
+
+  auto pred = makeLocalTileDevice(
+      options,
+      numBlocks,
+      static_cast<char*>(sourceStagingBuf.get()),
+      nullptr,
+      DeviceSpan<int64_t>(
+          static_cast<int64_t*>(predStepStateBuf.get()), numBlocks * 2),
+      DeviceSpan<SignalState>(
+          static_cast<SignalState*>(predLocalSignalsBuf.get()), numBlocks * 2),
+      DeviceSpan<SignalState>(
+          static_cast<SignalState*>(predRemoteSignalsBuf.get()),
+          numBlocks * 2));
+  auto succ = makeLocalTileDevice(
+      options,
+      numBlocks,
+      nullptr,
+      static_cast<char*>(forwardedStagingBuf.get()),
+      DeviceSpan<int64_t>(
+          static_cast<int64_t*>(succStepStateBuf.get()), numBlocks * 2),
+      DeviceSpan<SignalState>(
+          static_cast<SignalState*>(succLocalSignalsBuf.get()), numBlocks * 2),
+      DeviceSpan<SignalState>(
+          static_cast<SignalState*>(succRemoteSignalsBuf.get()),
+          numBlocks * 2));
+
+  test::testPrepareTileTwoCallStaging(
+      pred,
+      numBlocks,
+      firstCallBytes,
+      secondCallBytes,
+      maxSignalBytes,
+      0,
+      threadCount);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  TiledBuffer<char> dstTiles(
+      static_cast<char*>(dstBuf.get()), totalBytes, numBlocks);
+  test::testTileTwoCallForward(
+      pred,
+      succ,
+      dstTiles,
+      numBlocks,
+      firstCallBytes,
+      secondCallBytes,
+      maxSignalBytes,
+      threadCount);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<char> hostStaging(stagingBytes);
+  CUDACHECK_TEST(cudaMemcpy(
+      hostStaging.data(),
+      forwardedStagingBuf.get(),
+      stagingBytes,
+      cudaMemcpyDeviceToHost));
+  expectPersistentTwoCallStagingPattern(
+      hostStaging,
+      options.dataBufferSize,
+      firstCallBytes,
+      secondCallBytes,
+      maxSignalBytes,
+      options.pipelineDepth,
+      numBlocks,
+      0,
+      "tile forward persistent cursor staging");
+
+  std::vector<char> hostDst(totalBytes);
+  CUDACHECK_TEST(cudaMemcpy(
+      hostDst.data(), dstBuf.get(), totalBytes, cudaMemcpyDeviceToHost));
+  expectTwoCallPattern(
+      hostDst,
+      firstCallBytes,
+      secondCallBytes,
+      numBlocks,
+      0,
+      "tile forward persistent cursor dst");
 }
 
 // Partial tiles (nbytes not evenly divisible by numBlocks)
