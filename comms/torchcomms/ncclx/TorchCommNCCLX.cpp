@@ -531,6 +531,23 @@ int64_t TorchCommNCCLX::getCommPtr() const {
   return reinterpret_cast<int64_t>(nccl_comm_);
 }
 
+void TorchCommNCCLX::setConfig(
+    const std::unordered_map<std::string, std::string>& hints) {
+  ncclx::Hints ncclHints;
+  for (const auto& [key, val] : hints) {
+    ncclHints.set(key, val);
+  }
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  config.hints = &ncclHints;
+
+  ncclResult_t result = ncclx::commSetConfig(nccl_comm_, &config);
+  if (result != ncclSuccess) {
+    throw std::runtime_error(
+        fmt::format(
+            "ncclx::commSetConfig failed: {}", ncclGetErrorString(result)));
+  }
+}
+
 static inline std::chrono::milliseconds getOperationTimeout(
     std::chrono::milliseconds timeout,
     std::chrono::milliseconds default_timeout) {
