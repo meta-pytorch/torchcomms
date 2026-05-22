@@ -1571,6 +1571,19 @@ cvars:
      multiple QPs.  This allows the communication to take multiple routes
      and is a poor-man's version of fully adaptive routing.
 
+ - name        : NCCL_CTRAN_IB_NUM_VCS_PER_RANK
+   type        : int
+   default     : 1
+   description : |-
+     Number of per-peer VCs (CtranIbVirtualConn) returned by
+     CtranIb::getVcs(peerRank). Each VC is pinned to a single NIC and
+     owns its own ctrl/notify/atomic + data QPs. The data QPs are
+     derived as NCCL_CTRAN_IB_MAX_QPS / NCCL_CTRAN_IB_NUM_VCS_PER_PEER
+     per VC, distributed across NICs by
+     NCCL_CTRAN_IB_NUM_VCS_PER_PEER / NCCL_CTRAN_IB_DEVICES_PER_RANK
+     VCs per NIC. Used by callers that obtain VCs via
+     CtranIb::getVcs(peerRank).
+
  - name        : NCCL_CTRAN_IB_QP_SCALING_THRESHOLD
    type        : uint64_t
    default     : 524288

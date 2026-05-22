@@ -5,6 +5,7 @@
 
 #include <memory>
 #include <optional>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -14,12 +15,14 @@
 #include <sys/socket.h>
 
 #include "comms/ctran/backends/ib/CtranIbBase.h"
+#include "comms/ctran/backends/ib/VcLayout.h"
 #include "comms/ctran/bootstrap/ISocketFactory.h"
 #include "comms/ctran/utils/Abort.h"
 #include "comms/ctran/utils/ExtUtils.h"
 #include "comms/utils/commSpecs.h"
 
 class CtranComm;
+class CtranIbVirtualConn;
 
 namespace ctran::ib {
 
@@ -27,10 +30,18 @@ class VcState;
 
 // Bootstrap is the internal handshake driver for one CtranIb instance. It
 // owns the listen socket and accept thread, knows how to client-connect to
-// a peer, and publishes every freshly-handshaken VC into the supplied
-// VcState. CtranIb only ever calls start() / connect() / shutdown() /
-// getListenAddress() on this object; the rest of the bootstrap surface is
-// private to BootstrapInternal.cc.
+// a peer, and publishes every freshly-handshaken VC (or vector of VCs in
+// multi-VC mode) into the supplied VcState. CtranIb only ever calls
+// start() / connect() / shutdown() / getListenAddress() on this object;
+// the rest of the bootstrap surface is private to BootstrapInternal.cc.
+//
+// Call hierarchy for a single peer connection (server or client side):
+//   acceptLoop / connect
+//     -> exchangeAndPublish
+//          for vcIdx in [0, vcLayout_.maxVcsPerPeer):
+//              build vc, swap bus cards (under vc->mutex)
+//          vcState_.setupAndPublishVc(vcs, remoteBusCards, peerRank)
+//          ack handshake
 //
 // Lifetime: held by std::unique_ptr<Bootstrap> bootstrap_ on CtranIb.
 // Allocated only when bootstrapMode != kExternal. Must be destroyed before
@@ -39,6 +50,7 @@ class Bootstrap {
  public:
   Bootstrap(
       VcState& vcState,
+      const VcLayout& vcLayout,
       std::shared_ptr<::ctran::bootstrap::ISocketFactory> socketFactory,
       std::shared_ptr<::ctran::utils::Abort> abortCtrl,
       const CommLogData& logData,
@@ -63,8 +75,9 @@ class Bootstrap {
   // the accept thread.
   void start(std::optional<const SocketServerAddr*> qpServerAddr);
 
-  // Slow path: open a client socket to the peer, exchange business cards,
-  // and publish the resulting VC via vcState_.setupAndPublishVc(...).
+  // Slow path: open a client socket to the peer, exchange business cards
+  // for all per-peer VCs, and hand the resulting VC vector to
+  // vcState_.setupAndPublishVc(...).
   commResult_t connect(
       int peerRank,
       std::optional<const SocketServerAddr*> peerAddr);
@@ -81,13 +94,17 @@ class Bootstrap {
   static void acceptLoop(Bootstrap* self);
 
   // Shared post-handshake path used by both the server accept side and the
-  // client connect side.
+  // client connect side. Loops over vcLayout_.maxVcsPerPeer VCs: build +
+  // swap bus cards under vc->mutex; then hands the resulting vector +
+  // remote bus cards to vcState_.setupAndPublishVc and exchanges the
+  // final ack.
   commResult_t exchangeAndPublish(
       std::unique_ptr<::ctran::bootstrap::ISocket> sock,
       bool isServer,
       int peerRank);
 
   VcState& vcState_;
+  const VcLayout& vcLayout_;
   std::shared_ptr<::ctran::bootstrap::ISocketFactory> socketFactory_;
   std::shared_ptr<::ctran::utils::Abort> abortCtrl_;
   const CommLogData& logData_;

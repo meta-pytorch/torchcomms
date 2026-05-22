@@ -5,6 +5,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <folly/Synchronized.h>
@@ -22,16 +23,23 @@ namespace ctran::ib {
 // NOTE: when using a VC, additional per-VC lock is required.
 struct VcStateMaps {
   folly::F14FastMap<QpUniqueId, std::shared_ptr<CtranIbVirtualConn>> qpToVcMap;
-  folly::F14FastMap<int, std::shared_ptr<CtranIbVirtualConn>> rankToVcMap;
+  // Per-peer VC vector returned by connectVcs() (lazy bootstrap), drained
+  // by releaseAll(). Uses std::unordered_map for value-reference
+  // stability across insertions.
+  // Single source of truth for per-peer VCs: legacy single-VC callers
+  // read rankToVcs[peer].front(); multi-VC callers iterate the vector.
+  std::unordered_map<int, std::vector<std::shared_ptr<CtranIbVirtualConn>>>
+      rankToVcs;
 };
 
 // VcState owns all per-peer virtual-connection state for a single CtranIb
 // instance. Both the internal bootstrap path (ctran::ib::Bootstrap) and the
-// external bootstrap path (BootstrapExternal.cc) publish established VCs
-// through setupAndPublishVc(); critical-path callers look them up through
-// getVc/getVcByQp. The class is intentionally not thread-safe at the
-// construction / init / releaseAll boundary; all mutating operations after
-// init() are themselves thread-safe (vcStateMaps_ is folly::Synchronized).
+// external bootstrap path (BootstrapExternal.cc) hand a freshly-constructed
+// VC vector + matching remote bus cards to setupAndPublishVc(); critical-path
+// callers look them up through getVc/getVcByQp. The class is intentionally
+// not thread-safe at the construction / init / releaseAll boundary; all
+// mutating operations after init() are themselves thread-safe
+// (vcStateMaps_ is folly::Synchronized).
 class VcState {
  public:
   VcState() = default;
@@ -51,23 +59,36 @@ class VcState {
 
   // Release every established VC, clear connectedPeerMap, and reset the
   // lock-free fast-path pointer. Callers must invoke this before tearing
-  // down resources referenced by the VCs (e.g., the shared CQ).
+  // down resources referenced by the VCs (e.g., the shared CQ). Any
+  // larger-rank connectVcs() spinner observes the cleared rankToVcs and
+  // exits via its abort check.
   void releaseAll();
 
-  // Setup a freshly-constructed VC with the remote bus card, publish it into
-  // vcStateMaps_, and log the established connection. Shared between the
-  // internal bootstrap path (ctran::ib::Bootstrap) and the external
-  // bootstrap path (BootstrapExternal.cc). The VC must not already be
+  // Setup a vector of freshly-constructed VCs with the matching remote
+  // bus cards (vcs[i] is set up with remoteVcIdentifiers[i]), atomically
+  // publish them into vcStateMaps_, and log each established connection.
+  // Shared between the internal bootstrap path (ctran::ib::Bootstrap) and
+  // the external bootstrap path (BootstrapExternal.cc). For the legacy
+  // single-VC case, both vectors have size 1.
+  //
+  // Steps:
+  //   * runs vc->setupVc(remoteVcIdentifiers[i]) under vc->mutex for each VC
+  //   * inserts every VC's ctrl/notify/atomic/data QPs into qpToVcMap
+  //   * sets rankToVcs[peerRank] = std::move(vcs)
+  //   * logs each established connection
+  // Thread-safe; callable concurrently by server (listen thread) and
+  // client (Bootstrap::connect) threads. The peer must not already be
   // present.
   commResult_t setupAndPublishVc(
-      std::shared_ptr<CtranIbVirtualConn> vc,
-      const std::string& remoteVcIdentifier,
+      std::vector<std::shared_ptr<CtranIbVirtualConn>> vcs,
+      const std::vector<std::string>& remoteVcIdentifiers,
       int peerRank);
 
-  // Update vcStateMaps_ to include the established VC.
-  // Thread-safe; callable concurrently by server and client threads.
-  commResult_t updateVcState(
-      std::shared_ptr<CtranIbVirtualConn> vc,
+  // ---- connectVcs() helpers used by CtranIb::connectVcs() ----
+  //
+  // Read-only lookup of the per-peer VC vector. Returns nullptr when the
+  // peer has not yet been published.
+  const std::vector<std::shared_ptr<CtranIbVirtualConn>>* tryGetVcs(
       int peerRank);
 
   // Returns true if the peer has been pre-connected (preConnect path).
@@ -88,23 +109,22 @@ class VcState {
     return !connectedPeerMap_.empty();
   }
 
-  // Get a virtual connection for a given peer.
-  // If the peer is not yet connected, return nullptr.
-  // For a returned VC, it is guaranteed to be ready to use.
+  // Get a virtual connection for a given peer (legacy single-VC view).
+  // Reads rankToVcs[peer].front(). If the peer is not yet connected,
+  // returns nullptr. For a returned VC, it is guaranteed to be ready
+  // to use.
   template <typename PerfConfig = DefaultPerfCollConfig>
   inline std::shared_ptr<CtranIbVirtualConn> getVc(int peerRank) {
     if (PerfConfig::skipVcConnectionCheck ||
         (vcStateMapsPtr_ && isPeerConnected(peerRank))) {
-      return vcStateMapsPtr_->rankToVcMap.at(peerRank);
+      return vcStateMapsPtr_->rankToVcs.at(peerRank).front();
     } else {
       auto locked = vcStateMaps_.rlock();
-
-      auto it = locked->rankToVcMap.find(peerRank);
-      if (it == locked->rankToVcMap.end()) {
+      auto it = locked->rankToVcs.find(peerRank);
+      if (it == locked->rankToVcs.end() || it->second.empty()) {
         return nullptr;
       }
-
-      return it->second;
+      return it->second.front();
     }
   }
 
