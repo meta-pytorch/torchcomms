@@ -34,19 +34,23 @@
 // PIPELINING (inside send / recv)
 // =========================================
 // Each block's tile may be larger than the per-block staging area. The tile
-// is therefore pipelined through the staging buffer in multiple steps:
+// is therefore pipelined through the staging buffer as a byte stream:
 //
 //   perBlockSlotSize = floor(dataBufferSize / numBlocks) & ~15
-//   totalSlotSteps   = ceil(tileBytes / perBlockSlotSize)
+//   pipelineBytes    = perBlockSlotSize * pipelineDepth
 //
-// Each step uses one of `pipelineDepth` slots (step % pipelineDepth) to
-// allow sender and receiver to overlap:
+// Each copy chunk maps its absolute byte cursor into the pipeline ring:
 //
-//   Step 0: sender writes to slot 0, signals tail=1
-//   Step 1: sender writes to slot 1, signals tail=2
-//           receiver reads slot 0, signals head=1
-//   Step 2: sender waits for head >= 1 (slot 0 freed), writes slot 0
-//           receiver reads slot 1, signals head=2
+//   pipelineOff = cursor % pipelineBytes
+//   slot        = pipelineOff / perBlockSlotSize
+//   chunkOff    = pipelineOff % perBlockSlotSize
+//
+// max_signal_bytes controls the largest copy/signaling chunk, but each chunk is
+// also capped at the end of the current per-block staging row. This keeps the
+// staging layout independent of max_signal_bytes across calls.
+//
+// The sender waits for head >= streamEnd - pipelineBytes before overwriting a
+// wrapped byte range. The receiver waits for tail >= streamEnd before reading.
 //   ...
 //
 // SIGNAL PROTOCOL
@@ -58,11 +62,11 @@
 //   signal[numBlocks + i]   = head counter for block pair i
 //                              (receiver → sender: "slot is freed")
 //
-// Both counters are monotonically increasing. The sender waits for
-//   head >= step - pipelineDepth + 1
-// before reusing a slot (backpressure). The receiver waits for
-//   tail >= step + 1
-// before reading (data availability).
+// Both counters are monotonically increasing byte cursors. The sender waits for
+//   head >= streamEnd - pipelineBytes
+// before reusing a byte range. The receiver waits for
+//   tail >= streamEnd
+// before reading.
 //
 // Memory ordering:
 //   - signal() uses st.release.sys.global → all prior writes (memcpy data)
@@ -72,14 +76,17 @@
 //
 // MULTI-CALL CORRECTNESS
 // ======================
-// The step counters are persisted in device memory (`stepState`):
-//   stepState[0..numBlocks-1]           = sender step per block
-//   stepState[numBlocks..2*numBlocks-1] = receiver step per block
+// The byte cursors are persisted in device memory (`stepState`):
+//   stepState[0..numBlocks-1]           = sender byte cursor per block
+//   stepState[numBlocks..2*numBlocks-1] = receiver byte cursor per block
 //
-// On first call (stepState zeroed), sender starts at step=0, receiver at
-// step=0. On subsequent calls, they resume from where they left off.
+// On first call (stepState zeroed), sender and receiver start at byte 0. On
+// subsequent calls, they resume from where they left off.
 // Because signals are monotonically increasing, old signal values from
 // previous calls are always < current expected values, so no ABA issue.
+// Since the cursor is in bytes, changing max_signal_bytes between calls with
+// the same active_blocks is safe. Changing active_blocks changes the staging
+// layout and requires a barrier first.
 //
 // PRECONDITION: stepState must be zeroed before the first kernel launch.
 // The transport's exchange() zeroes the signal buffers. For repeated
