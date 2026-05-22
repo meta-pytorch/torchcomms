@@ -16,14 +16,6 @@ commResult_t ctranAllGatherDirect(
     CtranComm* comm,
     cudaStream_t stream);
 
-commResult_t ctranAllGatherRd(
-    const void* sendbuff,
-    void* recvbuff,
-    size_t sendcount,
-    commDataType_t datatype,
-    CtranComm* comm,
-    cudaStream_t stream);
-
 commResult_t ctranAllGatherStreamedRd(
     const void* sendbuff,
     void* recvbuff,
@@ -61,8 +53,6 @@ static inline const std::string allGatherAlgoName(
   switch (algo) {
     case NCCL_ALLGATHER_ALGO::ctdirect:
       return "CtranAllGatherDirect";
-    case NCCL_ALLGATHER_ALGO::ctrd:
-      return "CtranAllGatherRd";
     case NCCL_ALLGATHER_ALGO::ctsrd:
       return "CtranAllGatherStreamedRd";
     case NCCL_ALLGATHER_ALGO::ctring:

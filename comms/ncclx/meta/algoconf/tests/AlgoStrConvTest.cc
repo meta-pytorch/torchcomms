@@ -48,9 +48,6 @@ void checkAlgoStrToVal(enum NCCL_ALLGATHER_ALGO algo) {
     case NCCL_ALLGATHER_ALGO::ctring:
       str = "ctring";
       break;
-    case NCCL_ALLGATHER_ALGO::ctrd:
-      str = "ctrd";
-      break;
     case NCCL_ALLGATHER_ALGO::ctsrd:
       str = "ctsrd";
       break;
@@ -159,7 +156,6 @@ TEST(AlgoStrConvTest, AllGatherCompleteness) {
   checkAlgoStrToVal(NCCL_ALLGATHER_ALGO::ctran);
   checkAlgoStrToVal(NCCL_ALLGATHER_ALGO::ctdirect);
   checkAlgoStrToVal(NCCL_ALLGATHER_ALGO::ctring);
-  checkAlgoStrToVal(NCCL_ALLGATHER_ALGO::ctrd);
   checkAlgoStrToVal(NCCL_ALLGATHER_ALGO::ctsrd);
   checkAlgoStrToVal(NCCL_ALLGATHER_ALGO::ctbrucks);
   checkAlgoStrToVal(NCCL_ALLGATHER_ALGO::cthierarchical_ring);

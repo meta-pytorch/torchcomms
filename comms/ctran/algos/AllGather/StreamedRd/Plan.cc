@@ -2,6 +2,7 @@
 
 #include "comms/ctran/algos/AllGather/StreamedRd/Plan.h"
 
+#include <algorithm>
 #include <utility>
 
 #include "comms/ctran/utils/Checks.h"
@@ -24,87 +25,56 @@ int computePeer(int rank, int step, int nRanks) {
   return pos == 0 ? rank + dist : rank - dist;
 }
 
-// Compute chunk order for a single sub-tree using iterative stack.
-// kRecvOnly: children in ascending step order (0, 1, ..., step-1)
-std::vector<int> computeChunksRecvOnly(int senderRank, int step, int nRanks) {
-  std::vector<int> chunks;
-  chunks.reserve(1 << step);
+// Build the per-step ordered chunk sequence that sender `senderRank` produces
+// at each outer step under the given fwdPeers value.
+//
+// Own (root) is ALWAYS pre-enqueued first at every step regardless of
+// fwdPeers — it has no network dependency, so we get it on the wire as
+// early as possible.
+//
+// For a sender `root` at depth `depth`, fwdPeers controls only the ordering
+// of *received* chunks that root accumulated from its earlier-step peers:
+//   Phase 1: chunks received at outer steps [depth-fwdPeers, depth-1] are
+//     forwarded immediately on receipt (they appear first after own).
+//   Phase 2: chunks received at outer steps [0, depth-fwdPeers-1] are
+//     deferred and flushed at the start of outer step `depth` (they appear
+//     after Phase 1 chunks).
+// At fwdPeers >= depth, Phase 1 covers all of [0, depth-1] and Phase 2 is
+// empty; at fwdPeers == 0, Phase 1 is empty and Phase 2 covers all.
+std::vector<int>
+chunksForSubtree(int root, int depth, int fwdPeers, int nRanks) {
+  std::vector<int> result;
+  result.reserve(1 << depth);
 
-  std::vector<std::pair<int, int>> stack;
-  stack.push_back({senderRank, step});
+  // Own always leads every step's send-plan.
+  result.push_back(root);
 
-  while (!stack.empty()) {
-    const auto [rank, depth] = stack.back();
-    stack.pop_back();
-    chunks.push_back(rank);
-    for (int child = depth - 1; child >= 0; child--) {
-      const int peer = computePeer(rank, child, nRanks);
-      stack.push_back({peer, child});
-    }
+  const int phase1Start = std::max(0, depth - fwdPeers);
+
+  // Phase 1: immediate forwards from receives at steps [phase1Start, depth-1].
+  for (int i = phase1Start; i < depth; i++) {
+    const int child = computePeer(root, i, nRanks);
+    auto sub = chunksForSubtree(child, i, fwdPeers, nRanks);
+    result.insert(result.end(), sub.begin(), sub.end());
   }
 
-  return chunks;
-}
-
-// kFull: most recent step first, then staged (step-1, 0, 1, ..., step-2)
-std::vector<int> computeChunksFull(int senderRank, int step, int nRanks) {
-  std::vector<int> chunks;
-  chunks.reserve(1 << step);
-
-  std::vector<std::pair<int, int>> stack;
-  stack.push_back({senderRank, step});
-
-  while (!stack.empty()) {
-    const auto [rank, depth] = stack.back();
-    stack.pop_back();
-    chunks.push_back(rank);
-    if (depth == 0) {
-      continue;
-    }
-    // Push staged children (step 0..depth-2) in reverse for stack ordering
-    for (int child = depth - 2; child >= 0; child--) {
-      const int peer = computePeer(rank, child, nRanks);
-      stack.push_back({peer, child});
-    }
-    // Push most recent child (step depth-1) last so it's popped first
-    const int newest = computePeer(rank, depth - 1, nRanks);
-    stack.push_back({newest, depth - 1});
+  // Phase 2: deferred flush — chunks received at steps [0, phase1Start - 1].
+  for (int i = 0; i < phase1Start; i++) {
+    const int child = computePeer(root, i, nRanks);
+    auto sub = chunksForSubtree(child, i, fwdPeers, nRanks);
+    result.insert(result.end(), sub.begin(), sub.end());
   }
 
-  return chunks;
+  return result;
 }
 
-// Build all steps incrementally for recvOnly mode.
-// step[i] = step[i-1] + subTree(peer_{i-1}, i-1)
+// Build all steps for sender `senderRank`. step[i] gives the ordered list of
+// chunks the sender enqueues for the peer at step i.
 std::vector<std::vector<int>>
-buildAllStepsRecvOnly(int senderRank, int nSteps, int nRanks) {
+buildAllSteps(int senderRank, int nSteps, int nRanks, int fwdPeers) {
   std::vector<std::vector<int>> steps(nSteps);
-  steps[0] = {senderRank};
-  for (int i = 1; i < nSteps; i++) {
-    const int peer = computePeer(senderRank, i - 1, nRanks);
-    auto newChunks = computeChunksRecvOnly(peer, i - 1, nRanks);
-    steps[i].reserve(1 << i);
-    steps[i] = steps[i - 1];
-    steps[i].insert(steps[i].end(), newChunks.begin(), newChunks.end());
-  }
-  return steps;
-}
-
-// Build all steps incrementally for full mode.
-// step[i] = [sender] + subTree(peer_{i-1}, i-1) + stagedTail
-std::vector<std::vector<int>>
-buildAllStepsFull(int senderRank, int nSteps, int nRanks) {
-  std::vector<std::vector<int>> steps(nSteps);
-  steps[0] = {senderRank};
-  std::vector<int> stagedTail;
-  for (int i = 1; i < nSteps; i++) {
-    const int peer = computePeer(senderRank, i - 1, nRanks);
-    auto newChunks = computeChunksFull(peer, i - 1, nRanks);
-    steps[i].reserve(1 << i);
-    steps[i].push_back(senderRank);
-    steps[i].insert(steps[i].end(), newChunks.begin(), newChunks.end());
-    steps[i].insert(steps[i].end(), stagedTail.begin(), stagedTail.end());
-    stagedTail.insert(stagedTail.end(), newChunks.begin(), newChunks.end());
+  for (int i = 0; i < nSteps; i++) {
+    steps[i] = chunksForSubtree(senderRank, i, fwdPeers, nRanks);
   }
   return steps;
 }
@@ -117,7 +87,7 @@ std::vector<int> computePeers(int myRank, int nSteps, int nRanks) {
   return peers;
 }
 
-inline void validateArgs(int myRank, int nRanks) {
+inline void validateArgs(int myRank, int nRanks, int fwdPeers) {
   FB_CHECKABORT(nRanks > 0, "nRanks must be positive, got {}", nRanks);
   FB_CHECKABORT(
       (nRanks & (nRanks - 1)) == 0,
@@ -128,49 +98,42 @@ inline void validateArgs(int myRank, int nRanks) {
       "myRank {} out of range [0, {})",
       myRank,
       nRanks);
+  FB_CHECKABORT(fwdPeers >= 0, "fwdPeers must be >= 0, got {}", fwdPeers);
 }
 
 } // namespace
 
-Plan createSendPlan(int myRank, int nRanks, FcMode fcMode) {
-  validateArgs(myRank, nRanks);
+Plan createSendPlan(int myRank, int nRanks, int fwdPeers) {
+  validateArgs(myRank, nRanks, fwdPeers);
   const int nSteps = log2i(nRanks);
   if (nSteps == 0) {
-    return Plan({}, {}, fcMode);
+    return Plan({}, {}, fwdPeers);
   }
   auto peers = computePeers(myRank, nSteps, nRanks);
-  if (fcMode == FcMode::kRecvOnly) {
-    return Plan(
-        buildAllStepsRecvOnly(myRank, nSteps, nRanks),
-        std::move(peers),
-        fcMode);
-  }
   return Plan(
-      buildAllStepsFull(myRank, nSteps, nRanks), std::move(peers), fcMode);
+      buildAllSteps(myRank, nSteps, nRanks, fwdPeers),
+      std::move(peers),
+      fwdPeers);
 }
 
-Plan createRecvPlan(int myRank, int nRanks, FcMode fcMode) {
-  validateArgs(myRank, nRanks);
+Plan createRecvPlan(int myRank, int nRanks, int fwdPeers) {
+  validateArgs(myRank, nRanks, fwdPeers);
   const int nSteps = log2i(nRanks);
   if (nSteps == 0) {
-    return Plan({}, {}, fcMode);
+    return Plan({}, {}, fwdPeers);
   }
   auto peers = computePeers(myRank, nSteps, nRanks);
   std::vector<std::vector<int>> steps(nSteps);
   for (int s = 0; s < nSteps; s++) {
-    if (fcMode == FcMode::kRecvOnly) {
-      steps[s] = computeChunksRecvOnly(peers[s], s, nRanks);
-    } else {
-      steps[s] = computeChunksFull(peers[s], s, nRanks);
-    }
+    steps[s] = chunksForSubtree(peers[s], s, fwdPeers, nRanks);
   }
-  return Plan(std::move(steps), std::move(peers), fcMode);
+  return Plan(std::move(steps), std::move(peers), fwdPeers);
 }
 
-PersistPlan createPersistPlan(int myRank, int nRanks, FcMode fcMode) {
+PersistPlan createPersistPlan(int myRank, int nRanks, int fwdPeers) {
   return PersistPlan(
-      createRecvPlan(myRank, nRanks, fcMode),
-      createSendPlan(myRank, nRanks, fcMode));
+      createRecvPlan(myRank, nRanks, fwdPeers),
+      createSendPlan(myRank, nRanks, fwdPeers));
 }
 
 } // namespace ctran::allgather::ctsrd

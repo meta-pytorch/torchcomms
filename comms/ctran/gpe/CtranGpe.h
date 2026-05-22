@@ -450,12 +450,7 @@ __global__ void ncclKernelAllGatherCtranRing(
     CtranAlgoDeviceState* devState,
     ctran::allgather::KernelArgs args);
 
-__global__ void ncclKernelAllGatherCtranRecDbl(
-    int* flag,
-    CtranAlgoDeviceState* devState,
-    ctran::allgather::KernelArgs args);
-
-__global__ void ncclKernelAllGatherCtranStreamedRd(
+__global__ void ncclKernelAllGatherCtranGpeStub(
     int* flag,
     CtranAlgoDeviceState* devState,
     ctran::allgather::KernelArgs args);
