@@ -3,9 +3,12 @@
 #ifndef CTRAN_IB_H_
 #define CTRAN_IB_H_
 
-#include <memory>
-
 #include <folly/SocketAddress.h>
+#include <memory>
+#include <mutex>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/backends/CtranCtrl.h"
@@ -14,6 +17,7 @@
 #include "comms/ctran/backends/ib/CtranIbImpl.h"
 #include "comms/ctran/backends/ib/CtranIbLocalVc.h"
 #include "comms/ctran/backends/ib/CtranIbVc.h"
+#include "comms/ctran/backends/ib/VcLayout.h"
 #include "comms/ctran/backends/ib/VcState.h"
 #include "comms/ctran/bootstrap/AbortableSocket.h"
 #include "comms/ctran/bootstrap/ISocketFactory.h"
@@ -150,6 +154,21 @@ class CtranIb {
   template <typename PerfConfig = DefaultPerfCollConfig>
   inline commResult_t progress() {
     return progressInternal<PerfConfig>();
+  }
+
+  // Progress only the CQ on the specified IB device.
+  //
+  // Useful for consumers (e.g., NIC-affine progress loops in
+  // p2pHostIbTransport) that want to drive one NIC's completions
+  // without contending on other NICs' CQs.
+  // Input arguments:
+  //   - device: the IB device index whose CQ should be progressed.
+  //             Must be in [0, getNumIbDevices()). Callers that
+  //             have a vcIdx can map via:
+  //                 device = vcIdx / getMaxVcsPerNic()
+  template <typename PerfConfig = DefaultPerfCollConfig>
+  inline commResult_t progress(int device) {
+    return progressInternal<PerfConfig>(device);
   }
 
   // Export a local memory registration for remote rank to import.
@@ -451,6 +470,69 @@ class CtranIb {
     return externalBootstrap_.get();
   }
 
+  // ---- VC API ----
+  //
+  // See backends/ib/docs/ctranib_multi_channel_vc_management.md for the
+  // full design.
+  // Per peer, connectVcs() returns a vector of getMaxVcsPerPeer() VCs,
+  // each a CtranIbVirtualConn pinned to a single NIC and owning its own
+  // ctrl/notify/atomic + data QPs. The vector is lazily created on
+  // first call. Consumers dispatch directly to vcs[i]->X(...) under
+  // the per-VC mutex via CTRAN_IB_PER_OBJ_LOCK_GUARD.
+
+  inline int getNumIbDevices() const {
+    return NCCL_CTRAN_IB_DEVICES_PER_RANK;
+  }
+  inline int getMaxVcsPerPeer() const {
+    return vcLayout_.maxVcsPerPeer;
+  }
+  inline int getMaxVcsPerNic() const {
+    return vcLayout_.maxVcsPerNic;
+  }
+
+  // Returns a reference to the per-peer VC vector for this peer. This
+  // call may block and may initiate a bootstrap handshake — it is NOT
+  // a pure lookup. For a non-blocking, null-on-miss lookup, see
+  // VcState::tryGetVcs(). Note that the return value may be empty and callsite
+  // should assert on it.
+  //
+  // On first call, lazily creates getMaxVcsPerPeer() VCs (each pinned
+  // to NIC vcIdx / getMaxVcsPerNic()) by exchanging bus cards over a
+  // single internal bootstrap socket. Subsequent calls return the
+  // cached vector.
+  // Both peers must call connectVcs() for each other (the smaller-rank
+  // side initiates the bootstrap; the larger-rank side blocks waiting
+  // for the listen thread to populate state).
+  // peerServerAddr (optional): explicit peer listen address. If omitted,
+  // the smaller-rank initiator uses the pre-exchanged listen addresses
+  // from the comm allgather (only available when a comm is attached).
+  //
+  // Thread-safety: connectVcs(peer, ...) is NOT safe to call concurrently
+  // from multiple threads for the same `peer`. Callers must serialize
+  // per-peer invocations (e.g. issue connectVcs once during connection
+  // setup). Concurrent calls for different peers are safe.
+  //
+  // Deadlock-freedom (despite the larger-rank side blocking):
+  //   connectVcs() is a collective-style API: every rank that participates
+  //   in a transfer with peer P must eventually call connectVcs(P, ...) on
+  //   both ends. The only blocking site is the larger-rank spinner,
+  //   which polls vcState_.tryGetVcs(peer) until the listen thread
+  //   observes the smaller-rank initiator's bootstrap socket and
+  //   publishes the VC vector via setupAndPublishVc(). The spin also
+  //   honors abortCtrl_, so releaseAll() / abort unblocks the spinner.
+  //   For a deadlock to exist, every rank in some cycle would have to
+  //   be blocked in connectVcs() with no smaller-rank initiator running.
+  //   That is impossible: in any pair (a, b) with a < b, rank a is by
+  //   definition the smaller-rank side and runs the non-blocking
+  //   initiator path (bootstrapConnectVcs), driving rank b's listen
+  //   thread to publish and unblock b's spinner. Because this argument
+  //   holds for every pair independently, connectVcs() calls from a single
+  //   rank can be issued in any order across peers without forming a
+  //   wait-for cycle.
+  const std::vector<std::shared_ptr<CtranIbVirtualConn>>& connectVcs(
+      int peerRank,
+      std::optional<const SocketServerAddr*> peerServerAddr = std::nullopt);
+
   // Get the virtual connection for a given peer.
   // If the peer is not yet connected, return nullptr.
   // For a returned VC, it is guaranteed to be ready to use.
@@ -531,6 +613,30 @@ class CtranIb {
           "No valid VirtualConnection (VC) found for peerRank {}",
           peerRank);
       return commInternalError;
+    }
+    return commSuccess;
+  }
+
+  // Resolve the [deviceBegin, deviceEnd) range that progressInternal()
+  // should poll. If `device` is unset, returns the full NIC range; if
+  // set, validates it is in-range and returns a single-NIC slice.
+  inline commResult_t resolveDeviceRange(
+      std::optional<int> device,
+      int& deviceBegin,
+      int& deviceEnd) {
+    deviceBegin = 0;
+    deviceEnd = NCCL_CTRAN_IB_DEVICES_PER_RANK;
+    if (device.has_value()) {
+      if (*device < 0 || *device >= NCCL_CTRAN_IB_DEVICES_PER_RANK) {
+        CLOGF(
+            ERR,
+            "CTRAN-IB: invalid device {} (numNics={})",
+            *device,
+            NCCL_CTRAN_IB_DEVICES_PER_RANK);
+        return commInternalError;
+      }
+      deviceBegin = *device;
+      deviceEnd = *device + 1;
     }
     return commSuccess;
   }
@@ -910,13 +1016,25 @@ class CtranIb {
     return commSuccess;
   }
 
+  // Progress IB completion queues.
+  //
+  // If `device` is std::nullopt (the default), polls every device's CQ
+  // in a loop until no CQE is found on any device.
+  // If `device` is set, polls only that single device's CQ until it
+  // drains.
   template <typename PerfConfig = DefaultPerfCollConfig>
-  inline commResult_t progressInternal() {
+  inline commResult_t progressInternal(
+      std::optional<int> device = std::nullopt) {
     FB_COMMCHECK(checkEpochLock(this));
+
+    int deviceBegin = 0;
+    int deviceEnd = 0;
+    FB_COMMCHECK(resolveDeviceRange(device, deviceBegin, deviceEnd));
+
     /* complete as many requests as possible */
     while (1) {
       bool continueWhileLoop = false;
-      for (int device = 0; device < NCCL_CTRAN_IB_DEVICES_PER_RANK; device++) {
+      for (int device = deviceBegin; device < deviceEnd; device++) {
         ibverbx::ibv_wc wc;
         int count;
 
@@ -1008,6 +1126,12 @@ class CtranIb {
   // connectedPeerMap bitmap). Late-initialized in init() once ncclLogData
   // is populated.
   ::ctran::ib::VcState vcState_;
+
+  // Derived from cvars at init() via the ctran::ib::VcLayout(numNics,
+  // NCCL_CTRAN_IB_NUM_VCS_PER_RANK) ctor. Drives both legacy
+  // (maxVcsPerPeer == 1, all NICs per VC) and multi-VC
+  // (maxVcsPerPeer >= numNics, one NIC per VC) modes uniformly.
+  ::ctran::ib::VcLayout vcLayout_;
 
   // Internal-bootstrap service: owns listen socket + accept thread +
   // client-connect path, and publishes every freshly-handshaken VC into
