@@ -1140,15 +1140,14 @@ class P2pIbgdaTransportDevice {
   //                      send()/recv() call. Must be <= maxGroups.
   //   perBlockSlot     = one block-group's partition within a slot:
   //                      (dataBufferSize / active_blocks) & ~15ULL
-  //   sub-chunk        = one signaled piece within a perBlockSlot. When
+  //   sub-chunk        = one signaled byte range within a perBlockSlot. When
   //                      max_signal_bytes == 0, a sub-chunk is the whole
   //                      perBlockSlot. Otherwise:
   //                        chunkSize = floor16(min(perBlockSlot,
   //                                             max_signal_bytes))
-  //                        chunksPerSlot = perBlockSlot / chunkSize
-  //   stepState        = persistent sub-chunk cursor. It advances by one per
-  //                      DATA_READY / SLOT_FREE / NIC_DONE event, not one per
-  //                      whole slot.
+  //   stepState        = persistent byte cursor. DATA_READY, SLOT_FREE, and
+  //                      NIC_DONE counters also advance by bytes, which keeps
+  //                      cursor state independent of max_signal_bytes.
   //
   // Typical usage:
   //   auto [role, sub] = group.partition(2);
@@ -1174,9 +1173,9 @@ class P2pIbgdaTransportDevice {
    * Signaling protocol (per group):
    *   NIC_DONE   — loopback counter incremented by NIC after each RDMA put.
    *                send waits on this before overwriting local sendStaging.
-   *   SLOT_FREE  — receiver increments per sub-chunk (symmetric with
-   *                DATA_READY). send waits before overwriting recvStaging.
-   *   DATA_READY — sender increments per sub-chunk, piggybacked on put.
+   *   SLOT_FREE  — receiver increments by bytesThis for each signaled byte
+   *                range. send waits before overwriting recvStaging.
+   *   DATA_READY — sender increments by bytesThis, piggybacked on put.
    *                recv waits on this before reading recvStaging.
    *
    * stepState persists across calls, so send() resumes the staging-ring cursor
@@ -1184,9 +1183,9 @@ class P2pIbgdaTransportDevice {
    * pipeline across repeated send() calls without a separate drain.
    *
    * The caller must keep the staging layout stable while a sequence is in
-   * flight. If active_blocks, max_signal_bytes, or any other parameter that
-   * changes the slot/sub-chunk mapping is modified, both sides must perform a
-   * higher-level barrier/quiescence step before issuing the next send()/recv().
+   * flight. Changing active_blocks changes the per-block staging partition, so
+   * both sides must perform a higher-level barrier/quiescence step first.
+   * max_signal_bytes may vary across calls with the same active_blocks.
    *
    * @param group           ThreadGroup (all threads participate in memcpy,
    *                        leader does RDMA ops).
@@ -1262,38 +1261,37 @@ class P2pIbgdaTransportDevice {
     if (chunkSize == 0) {
       chunkSize = perBlockSlot;
     }
-    const std::size_t chunksPerSlot = perBlockSlot / chunkSize;
-    const std::size_t totalChunks = (nbytes + chunkSize - 1) / chunkSize;
 
-    const int64_t baseStep = sendRecvState_.stepState[groupId];
     const int pipelineDepth = sendRecvState_.pipelineDepth;
     const std::size_t dataBufferSize = sendRecvState_.dataBufferSize;
     const int maxGroups = sendRecvState_.maxGroups;
-    const int64_t chunksPerSlot64 = static_cast<int64_t>(chunksPerSlot);
-    const int64_t pipelineChunks =
-        static_cast<int64_t>(pipelineDepth) * chunksPerSlot64;
+    const uint64_t baseByte =
+        static_cast<uint64_t>(sendRecvState_.stepState[groupId]);
+    const std::size_t pipelineBytes = perBlockSlot * pipelineDepth;
 
-    for (std::size_t s = 0; s < totalChunks; ++s) {
-      const int64_t chunkStep = baseStep + static_cast<int64_t>(s);
-      const int64_t slotStep = chunkStep / chunksPerSlot64;
-      const int64_t subStep = chunkStep % chunksPerSlot64;
-      const int slot = static_cast<int>(slotStep % pipelineDepth);
+    for (std::size_t dataOff = 0; dataOff < nbytes;) {
+      const uint64_t streamStart = baseByte + dataOff;
+      const std::size_t pipelineOff =
+          static_cast<std::size_t>(streamStart % pipelineBytes);
+      const int slot = static_cast<int>(pipelineOff / perBlockSlot);
       const std::size_t slotOff = slot * dataBufferSize;
-      const std::size_t chunkOff =
-          static_cast<std::size_t>(subStep) * chunkSize;
+      const std::size_t chunkOff = pipelineOff - slot * perBlockSlot;
+      const std::size_t slotRemaining = perBlockSlot - chunkOff;
+      const std::size_t dataRemaining = nbytes - dataOff;
+      std::size_t bytesThis =
+          chunkSize < dataRemaining ? chunkSize : dataRemaining;
+      bytesThis = bytesThis < slotRemaining ? bytesThis : slotRemaining;
       const std::size_t stagingOff =
           slotOff + groupId * perBlockSlot + chunkOff;
-      const std::size_t dataOff = s * chunkSize;
-      const std::size_t bytesThis =
-          (dataOff + chunkSize <= nbytes) ? chunkSize : (nbytes - dataOff);
+      const uint64_t streamEnd = streamStart + bytesThis;
 
       // (1) Wait for NIC to finish with this slot's local sendStaging.
-      if (chunkStep >= pipelineChunks) {
+      if (streamEnd > pipelineBytes) {
         wait_counter(
             group,
             sendRecvState_.localCounterBuf.subBuffer(
                 groupId * sizeof(uint64_t)),
-            static_cast<uint64_t>(chunkStep - pipelineChunks + 1),
+            streamEnd - pipelineBytes,
             timeout);
       }
 
@@ -1307,14 +1305,14 @@ class P2pIbgdaTransportDevice {
           args...);
       group.sync();
 
-      // (3) Backpressure: wait for receiver to free this sub-chunk's
-      //     recvStaging offset. Symmetric with DATA_READY (per sub-chunk).
-      if (chunkStep >= pipelineChunks) {
+      // (3) Backpressure: wait for receiver to free this byte range's
+      //     recvStaging offset. Symmetric with DATA_READY.
+      if (streamEnd > pipelineBytes) {
         wait_signal(
             group,
             sendRecvState_.localSignalBuf.subBuffer(
                 (maxGroups + groupId) * sizeof(uint64_t)),
-            static_cast<uint64_t>(chunkStep - pipelineChunks + 1),
+            streamEnd - pipelineBytes,
             timeout);
       }
 
@@ -1331,17 +1329,18 @@ class P2pIbgdaTransportDevice {
             bytesThis,
             sendRecvState_.remoteSignalBuf.subBuffer(
                 groupId * sizeof(uint64_t)),
-            1ULL,
+            bytesThis,
             sendRecvState_.localCounterBuf.subBuffer(
                 groupId * sizeof(uint64_t)),
-            1ULL);
+            bytesThis);
       }
       group.sync();
+      dataOff += bytesThis;
     }
 
     if (group.is_leader()) {
       sendRecvState_.stepState[groupId] =
-          baseStep + static_cast<int64_t>(totalChunks);
+          static_cast<int64_t>(baseByte + nbytes);
     }
     group.sync();
 #endif
@@ -1357,9 +1356,9 @@ class P2pIbgdaTransportDevice {
    * match the sender.
    *
    * Signaling protocol (per group, symmetric with send):
-   *   DATA_READY — sender increments per sub-chunk after RDMA put completes.
+   *   DATA_READY — sender increments by bytesThis after RDMA put completes.
    *                recv waits on this before copying from recvStaging.
-   *   SLOT_FREE  — recv increments per sub-chunk (symmetric with DATA_READY)
+   *   SLOT_FREE  — recv increments by bytesThis (symmetric with DATA_READY)
    *                to release backpressure on sender.
    *
    * @param group           ThreadGroup (all threads participate in memcpy,
@@ -1437,35 +1436,35 @@ class P2pIbgdaTransportDevice {
     if (chunkSize == 0) {
       chunkSize = perBlockSlot;
     }
-    const std::size_t chunksPerSlot = perBlockSlot / chunkSize;
-    const std::size_t totalChunks = (nbytes + chunkSize - 1) / chunkSize;
 
-    const int64_t baseStep =
-        sendRecvState_.stepState[sendRecvState_.maxGroups + groupId];
     const int pipelineDepth = sendRecvState_.pipelineDepth;
     const std::size_t dataBufferSize = sendRecvState_.dataBufferSize;
     const int maxGroups = sendRecvState_.maxGroups;
-    const int64_t chunksPerSlot64 = static_cast<int64_t>(chunksPerSlot);
+    const uint64_t baseByte = static_cast<uint64_t>(
+        sendRecvState_.stepState[sendRecvState_.maxGroups + groupId]);
+    const std::size_t pipelineBytes = perBlockSlot * pipelineDepth;
 
-    for (std::size_t s = 0; s < totalChunks; ++s) {
-      const int64_t chunkStep = baseStep + static_cast<int64_t>(s);
-      const int64_t slotStep = chunkStep / chunksPerSlot64;
-      const int64_t subStep = chunkStep % chunksPerSlot64;
-      const int slot = static_cast<int>(slotStep % pipelineDepth);
+    for (std::size_t dataOff = 0; dataOff < nbytes;) {
+      const uint64_t streamStart = baseByte + dataOff;
+      const std::size_t pipelineOff =
+          static_cast<std::size_t>(streamStart % pipelineBytes);
+      const int slot = static_cast<int>(pipelineOff / perBlockSlot);
       const std::size_t slotOff = slot * dataBufferSize;
-      const std::size_t chunkOff =
-          static_cast<std::size_t>(subStep) * chunkSize;
+      const std::size_t chunkOff = pipelineOff - slot * perBlockSlot;
+      const std::size_t slotRemaining = perBlockSlot - chunkOff;
+      const std::size_t dataRemaining = nbytes - dataOff;
+      std::size_t bytesThis =
+          chunkSize < dataRemaining ? chunkSize : dataRemaining;
+      bytesThis = bytesThis < slotRemaining ? bytesThis : slotRemaining;
       const std::size_t stagingOff =
           slotOff + groupId * perBlockSlot + chunkOff;
-      const std::size_t dataOff = s * chunkSize;
-      const std::size_t bytesThis =
-          (dataOff + chunkSize <= nbytes) ? chunkSize : (nbytes - dataOff);
+      const uint64_t streamEnd = streamStart + bytesThis;
 
       // (1) Wait for sender's DATA_READY signal.
       wait_signal(
           group,
           sendRecvState_.localSignalBuf.subBuffer(groupId * sizeof(uint64_t)),
-          static_cast<uint64_t>(chunkStep + 1),
+          streamEnd,
           timeout);
 
       // (2) Cooperative copy: local recvStaging → dst via CopyOp.
@@ -1478,19 +1477,19 @@ class P2pIbgdaTransportDevice {
           args...);
       group.sync();
 
-      // (3) Signal SLOT_FREE to sender — per sub-chunk (symmetric with
-      //     DATA_READY). Sender waits per sub-chunk before reusing remote
-      //     recvStaging at the same offset.
+      // (3) Signal SLOT_FREE to sender. Sender waits on the cumulative byte
+      //     threshold before reusing remote recvStaging at the same offset.
       signal(
           group,
           sendRecvState_.remoteSignalBuf.subBuffer(
               (maxGroups + groupId) * sizeof(uint64_t)),
-          1ULL);
+          bytesThis);
+      dataOff += bytesThis;
     }
 
     if (group.is_leader()) {
       sendRecvState_.stepState[sendRecvState_.maxGroups + groupId] =
-          baseStep + static_cast<int64_t>(totalChunks);
+          static_cast<int64_t>(baseByte + nbytes);
     }
     group.sync();
 #endif
@@ -1641,83 +1640,67 @@ class P2pIbgdaTransportDevice {
       fwdChunkSize = fwdPerBlockSlot;
     }
 
-    const std::size_t recvChunksPerSlot = recvPerBlockSlot / recvChunkSize;
-    const std::size_t fwdChunksPerSlot = fwdPerBlockSlot / fwdChunkSize;
-    const std::size_t totalRecvChunks =
-        (nbytes + recvChunkSize - 1) / recvChunkSize;
-    const std::size_t totalFwdChunks =
-        (nbytes + fwdChunkSize - 1) / fwdChunkSize;
-
-    // Step state
-    const int64_t recvBaseStep =
-        sendRecvState_.stepState[sendRecvState_.maxGroups + groupId];
     const int recvPipelineDepth = sendRecvState_.pipelineDepth;
     const std::size_t recvDataBufSize = sendRecvState_.dataBufferSize;
     const int recvMaxGroups = sendRecvState_.maxGroups;
-    const int64_t recvChunksPerSlot64 = static_cast<int64_t>(recvChunksPerSlot);
+    const uint64_t recvBaseByte = static_cast<uint64_t>(
+        sendRecvState_.stepState[sendRecvState_.maxGroups + groupId]);
+    const std::size_t recvPipelineBytes = recvPerBlockSlot * recvPipelineDepth;
 
-    const int64_t fwdBaseStep = fwd.sendRecvState_.stepState[groupId];
     const int fwdPipelineDepth = fwd.sendRecvState_.pipelineDepth;
     const std::size_t fwdDataBufSize = fwd.sendRecvState_.dataBufferSize;
     const int fwdMaxGroups = fwd.sendRecvState_.maxGroups;
-    const int64_t fwdChunksPerSlot64 = static_cast<int64_t>(fwdChunksPerSlot);
-    const int64_t fwdPipelineChunks =
-        static_cast<int64_t>(fwdPipelineDepth) * fwdChunksPerSlot64;
+    const uint64_t fwdBaseByte =
+        static_cast<uint64_t>(fwd.sendRecvState_.stepState[groupId]);
+    const std::size_t fwdPipelineBytes = fwdPerBlockSlot * fwdPipelineDepth;
 
-    // Both sides process the same nbytes; chunk sizes must match so that
-    // the loop counter advances recv and fwd step states in lockstep.
-    if (totalRecvChunks != totalFwdChunks) {
-      if (group.is_leader()) {
-        printf(
-            "[PIPES] FATAL: forward chunk count mismatch: "
-            "recv=%llu fwd=%llu\n",
-            (unsigned long long)totalRecvChunks,
-            (unsigned long long)totalFwdChunks);
-      }
-      __trap();
-    }
-
-    for (std::size_t s = 0; s < totalRecvChunks; ++s) {
+    for (std::size_t dataOff = 0; dataOff < nbytes;) {
       // --- Recv side offsets ---
-      const int64_t recvChunkStep = recvBaseStep + static_cast<int64_t>(s);
-      const int64_t recvSlotStep = recvChunkStep / recvChunksPerSlot64;
-      const int64_t recvSubStep = recvChunkStep % recvChunksPerSlot64;
-      const int recvSlot = static_cast<int>(recvSlotStep % recvPipelineDepth);
+      const uint64_t recvStreamStart = recvBaseByte + dataOff;
+      const std::size_t recvPipelineOff =
+          static_cast<std::size_t>(recvStreamStart % recvPipelineBytes);
+      const int recvSlot = static_cast<int>(recvPipelineOff / recvPerBlockSlot);
       const std::size_t recvSlotOff = recvSlot * recvDataBufSize;
       const std::size_t recvChunkOff =
-          static_cast<std::size_t>(recvSubStep) * recvChunkSize;
+          recvPipelineOff - recvSlot * recvPerBlockSlot;
       const std::size_t recvStagingOff =
           recvSlotOff + groupId * recvPerBlockSlot + recvChunkOff;
-      const std::size_t dataOff = s * recvChunkSize;
-      const std::size_t bytesThis = (dataOff + recvChunkSize <= nbytes)
-          ? recvChunkSize
-          : (nbytes - dataOff);
 
       // --- Fwd side offsets ---
-      const int64_t fwdChunkStep = fwdBaseStep + static_cast<int64_t>(s);
-      const int64_t fwdSlotStep = fwdChunkStep / fwdChunksPerSlot64;
-      const int64_t fwdSubStep = fwdChunkStep % fwdChunksPerSlot64;
-      const int fwdSlot = static_cast<int>(fwdSlotStep % fwdPipelineDepth);
+      const uint64_t fwdStreamStart = fwdBaseByte + dataOff;
+      const std::size_t fwdPipelineOff =
+          static_cast<std::size_t>(fwdStreamStart % fwdPipelineBytes);
+      const int fwdSlot = static_cast<int>(fwdPipelineOff / fwdPerBlockSlot);
       const std::size_t fwdSlotOff = fwdSlot * fwdDataBufSize;
       const std::size_t fwdChunkOff =
-          static_cast<std::size_t>(fwdSubStep) * fwdChunkSize;
+          fwdPipelineOff - fwdSlot * fwdPerBlockSlot;
       const std::size_t fwdStagingOff =
           fwdSlotOff + groupId * fwdPerBlockSlot + fwdChunkOff;
+      const std::size_t recvSlotRemaining = recvPerBlockSlot - recvChunkOff;
+      const std::size_t fwdSlotRemaining = fwdPerBlockSlot - fwdChunkOff;
+      const std::size_t dataRemaining = nbytes - dataOff;
+      std::size_t bytesThis =
+          recvChunkSize < fwdChunkSize ? recvChunkSize : fwdChunkSize;
+      bytesThis = bytesThis < dataRemaining ? bytesThis : dataRemaining;
+      bytesThis = bytesThis < recvSlotRemaining ? bytesThis : recvSlotRemaining;
+      bytesThis = bytesThis < fwdSlotRemaining ? bytesThis : fwdSlotRemaining;
+      const uint64_t recvStreamEnd = recvStreamStart + bytesThis;
+      const uint64_t fwdStreamEnd = fwdStreamStart + bytesThis;
 
       // (1) Wait for sender's DATA_READY.
       wait_signal(
           group,
           sendRecvState_.localSignalBuf.subBuffer(groupId * sizeof(uint64_t)),
-          static_cast<uint64_t>(recvChunkStep + 1),
+          recvStreamEnd,
           timeout);
 
       // (2) Wait for NIC_DONE on fwd's sendStaging (backpressure).
-      if (fwdChunkStep >= fwdPipelineChunks) {
+      if (fwdStreamEnd > fwdPipelineBytes) {
         fwd.wait_counter(
             group,
             fwd.sendRecvState_.localCounterBuf.subBuffer(
                 groupId * sizeof(uint64_t)),
-            static_cast<uint64_t>(fwdChunkStep - fwdPipelineChunks + 1),
+            fwdStreamEnd - fwdPipelineBytes,
             timeout);
       }
 
@@ -1739,16 +1722,16 @@ class P2pIbgdaTransportDevice {
           group,
           sendRecvState_.remoteSignalBuf.subBuffer(
               (recvMaxGroups + groupId) * sizeof(uint64_t)),
-          1ULL);
+          bytesThis);
 
       // (5) Wait for fwd receiver's SLOT_FREE (backpressure on fwd's
       //     recvStaging).
-      if (fwdChunkStep >= fwdPipelineChunks) {
+      if (fwdStreamEnd > fwdPipelineBytes) {
         fwd.wait_signal(
             group,
             fwd.sendRecvState_.localSignalBuf.subBuffer(
                 (fwdMaxGroups + groupId) * sizeof(uint64_t)),
-            static_cast<uint64_t>(fwdChunkStep - fwdPipelineChunks + 1),
+            fwdStreamEnd - fwdPipelineBytes,
             timeout);
       }
 
@@ -1764,20 +1747,21 @@ class P2pIbgdaTransportDevice {
             bytesThis,
             fwd.sendRecvState_.remoteSignalBuf.subBuffer(
                 groupId * sizeof(uint64_t)),
-            1ULL,
+            bytesThis,
             fwd.sendRecvState_.localCounterBuf.subBuffer(
                 groupId * sizeof(uint64_t)),
-            1ULL);
+            bytesThis);
       }
       group.sync();
+      dataOff += bytesThis;
     }
 
     // Update step state for both recv and fwd sides.
     if (group.is_leader()) {
       sendRecvState_.stepState[sendRecvState_.maxGroups + groupId] =
-          recvBaseStep + static_cast<int64_t>(totalRecvChunks);
+          static_cast<int64_t>(recvBaseByte + nbytes);
       fwd.sendRecvState_.stepState[groupId] =
-          fwdBaseStep + static_cast<int64_t>(totalRecvChunks);
+          static_cast<int64_t>(fwdBaseByte + nbytes);
     }
     group.sync();
 #endif

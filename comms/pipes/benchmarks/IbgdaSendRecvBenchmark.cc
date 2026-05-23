@@ -68,6 +68,30 @@ void expectUniformBuffer(
   }
 }
 
+void expectUniformBufferRange(
+    const DeviceBuffer& buf,
+    std::size_t offset,
+    std::size_t nbytes,
+    uint8_t expected,
+    int rank,
+    const char* label) {
+  std::vector<uint8_t> hostBuf(nbytes);
+  cudaError_t err = cudaMemcpy(
+      hostBuf.data(),
+      static_cast<const char*>(buf.get()) + offset,
+      nbytes,
+      cudaMemcpyDeviceToHost);
+  ASSERT_EQ(err, cudaSuccess)
+      << "cudaMemcpy failed: " << cudaGetErrorString(err);
+
+  for (std::size_t i = 0; i < nbytes; ++i) {
+    ASSERT_EQ(hostBuf[i], expected)
+        << "Rank " << rank << ": " << label << " data mismatch at byte " << i
+        << ", expected " << static_cast<int>(expected) << ", got "
+        << static_cast<int>(hostBuf[i]);
+  }
+}
+
 void expectStepState(
     const std::vector<int64_t>& steps,
     int maxGroups,
@@ -193,6 +217,7 @@ TEST_F(IbgdaSendRecvTest, StepStatePersistsAcrossKernelLaunches) {
   constexpr std::size_t kSectionsSecond = 2;
   constexpr std::size_t kBytesFirst = kSectionsFirst * kSlotSize;
   constexpr std::size_t kBytesSecond = kSectionsSecond * kSlotSize;
+  constexpr std::size_t kBytesPerGroupPerSection = kSlotSize / kNumBlocks;
   constexpr std::size_t kMaxBytes = kBytesFirst;
 
   int peerRank = (globalRank == 0) ? 1 : 0;
@@ -236,7 +261,7 @@ TEST_F(IbgdaSendRecvTest, StepStatePersistsAcrossKernelLaunches) {
   expectStepState(
       snapshotStepState(deviceTransport, kNumBlocks, stream_),
       kNumBlocks,
-      static_cast<int64_t>(kSectionsFirst));
+      static_cast<int64_t>(kSectionsFirst * kBytesPerGroupPerSection));
 
   const uint8_t secondPattern = static_cast<uint8_t>(0x50 + globalRank);
   ASSERT_EQ(
@@ -258,7 +283,91 @@ TEST_F(IbgdaSendRecvTest, StepStatePersistsAcrossKernelLaunches) {
   expectStepState(
       snapshotStepState(deviceTransport, kNumBlocks, stream_),
       kNumBlocks,
-      static_cast<int64_t>(kSectionsFirst + kSectionsSecond));
+      static_cast<int64_t>(
+          (kSectionsFirst + kSectionsSecond) * kBytesPerGroupPerSection));
+}
+
+TEST_F(IbgdaSendRecvTest, ChangingMaxSignalBytesWithinKernelUsesByteCursor) {
+  if (worldSize != 2) {
+    XLOGF(INFO, "Skipping: requires exactly 2 ranks, got {}", worldSize);
+    return;
+  }
+
+  constexpr int kNumBlocks = 4;
+  constexpr int kPipelineDepth = 2;
+  constexpr std::size_t kPerBlockSlot = 64 * 1024;
+  constexpr std::size_t kSlotSize = kPerBlockSlot * kNumBlocks;
+  constexpr std::size_t kFirstBytes = kSlotSize;
+  constexpr std::size_t kSecondBytes = (kPerBlockSlot / 2) * kNumBlocks;
+  constexpr std::size_t kTotalBytes = kFirstBytes + kSecondBytes;
+  constexpr std::size_t kFirstMaxSignalBytes = kPerBlockSlot;
+  constexpr std::size_t kSecondMaxSignalBytes = 16 * 1024;
+
+  int peerRank = (globalRank == 0) ? 1 : 0;
+
+  MultipeerIbgdaTransportConfig transportConfig{
+      .cudaDevice = localRank,
+      .dataBufferSize = kSlotSize,
+      .sendRecv =
+          SendRecvConfig{
+              .maxGroups = kNumBlocks,
+              .pipelineDepth = kPipelineDepth,
+          },
+  };
+
+  MultipeerIbgdaTransport transport(
+      globalRank, worldSize, bootstrap, transportConfig);
+  transport.exchange();
+
+  DeviceBuffer sendBuf(kTotalBytes);
+  DeviceBuffer recvBuf(kTotalBytes);
+  auto* deviceTransport = transport.getP2pTransportDevice(peerRank);
+
+  const uint8_t firstPattern = static_cast<uint8_t>(0x60 + globalRank);
+  const uint8_t secondPattern = static_cast<uint8_t>(0x70 + globalRank);
+  ASSERT_EQ(cudaMemset(sendBuf.get(), firstPattern, kFirstBytes), cudaSuccess);
+  ASSERT_EQ(
+      cudaMemset(
+          static_cast<char*>(sendBuf.get()) + kFirstBytes,
+          secondPattern,
+          kSecondBytes),
+      cudaSuccess);
+  ASSERT_EQ(cudaMemset(recvBuf.get(), 0, kTotalBytes), cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  bootstrap->barrierAll();
+
+  launch_ibgda_send_recv_two_call(
+      deviceTransport,
+      static_cast<char*>(sendBuf.get()),
+      static_cast<char*>(recvBuf.get()),
+      kFirstBytes,
+      kSecondBytes,
+      kNumBlocks,
+      kFirstMaxSignalBytes,
+      kSecondMaxSignalBytes,
+      stream_);
+  ASSERT_EQ(cudaStreamSynchronize(stream_), cudaSuccess);
+  bootstrap->barrierAll();
+
+  expectUniformBufferRange(
+      recvBuf,
+      0,
+      kFirstBytes,
+      static_cast<uint8_t>(0x60 + peerRank),
+      globalRank,
+      "first");
+  expectUniformBufferRange(
+      recvBuf,
+      kFirstBytes,
+      kSecondBytes,
+      static_cast<uint8_t>(0x70 + peerRank),
+      globalRank,
+      "second");
+  expectStepState(
+      snapshotStepState(deviceTransport, kNumBlocks, stream_),
+      kNumBlocks,
+      static_cast<int64_t>(kPerBlockSlot + kPerBlockSlot / 2));
 }
 
 TEST_F(IbgdaSendRecvTest, StepStatePersistsAcrossCudaGraphReplays) {
@@ -272,6 +381,7 @@ TEST_F(IbgdaSendRecvTest, StepStatePersistsAcrossCudaGraphReplays) {
   constexpr std::size_t kSlotSize = 1 * 1024 * 1024;
   constexpr std::size_t kSectionsPerReplay = 2;
   constexpr std::size_t kBytesPerReplay = kSectionsPerReplay * kSlotSize;
+  constexpr std::size_t kBytesPerGroupPerSection = kSlotSize / kNumBlocks;
   constexpr int kReplays = 3;
 
   int peerRank = (globalRank == 0) ? 1 : 0;
@@ -340,7 +450,8 @@ TEST_F(IbgdaSendRecvTest, StepStatePersistsAcrossCudaGraphReplays) {
     expectStepState(
         snapshotStepState(deviceTransport, kNumBlocks, stream_),
         kNumBlocks,
-        static_cast<int64_t>((replay + 1) * kSectionsPerReplay));
+        static_cast<int64_t>(
+            (replay + 1) * kSectionsPerReplay * kBytesPerGroupPerSection));
   }
 
   ASSERT_EQ(cudaGraphExecDestroy(graphExec), cudaSuccess);
