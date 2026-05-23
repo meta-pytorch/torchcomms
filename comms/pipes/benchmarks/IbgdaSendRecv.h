@@ -26,6 +26,7 @@ namespace comms::pipes::benchmark {
  * @param nbytes     Total bytes to transfer
  * @param numBlocks  Number of send blocks (= number of recv blocks)
  * @param stream     CUDA stream
+ * @param maxSignalBytes Max bytes per signaled sub-chunk
  * @param timeout    Optional timeout for wait operations
  */
 void launch_ibgda_send_recv(
@@ -34,6 +35,23 @@ void launch_ibgda_send_recv(
     char* dst,
     std::size_t nbytes,
     int numBlocks,
+    cudaStream_t stream,
+    std::size_t maxSignalBytes = 0,
+    Timeout timeout = Timeout());
+
+/**
+ * Launch bidirectional tile sendrecv kernel that performs two back-to-back
+ * send()/recv() calls with independent maxSignalBytes values.
+ */
+void launch_ibgda_send_recv_two_call(
+    P2pIbgdaTransportDevice* transport,
+    char* src,
+    char* dst,
+    std::size_t firstBytes,
+    std::size_t secondBytes,
+    int numBlocks,
+    std::size_t firstMaxSignalBytes,
+    std::size_t secondMaxSignalBytes,
     cudaStream_t stream,
     Timeout timeout = Timeout());
 
@@ -46,6 +64,7 @@ void launch_ibgda_send(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
+    std::size_t maxSignalBytes = 0,
     Timeout timeout = Timeout());
 
 /**
@@ -57,6 +76,7 @@ void launch_ibgda_recv(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
+    std::size_t maxSignalBytes = 0,
     Timeout timeout = Timeout());
 
 /**
