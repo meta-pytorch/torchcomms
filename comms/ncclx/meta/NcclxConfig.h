@@ -57,6 +57,8 @@ class Config {
 
   // Defer per-peer IBGDA state to first use (hint > CVAR).
   bool ibLazyConnect = false;
+  // Update mutable hint fields (algo config only).  Rejects immutable keys.
+  ncclResult_t update(const ncclx::Hints* hints);
 };
 
 // Hint keys corresponding to Config fields above.  Used by
@@ -73,6 +75,18 @@ inline const std::vector<std::string>& knownHintKeys() {
       "vCliqueSize",       "ncclBuffSize",
       "ibSplitDataOnQps",  "ibQpsPerConnection",
       "ibLazyConnect",
+  };
+  return keys;
+}
+
+// Algo hint keys that are safe to update on a live communicator.
+inline const std::vector<std::string>& mutableHintKeys() {
+  static const std::vector<std::string> keys = {
+      "sendrecvAlgo",
+      "allgatherAlgo",
+      "allreduceAlgo",
+      "alltoallvAlgo",
+      "rmaAlgo",
   };
   return keys;
 }
