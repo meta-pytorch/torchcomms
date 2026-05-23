@@ -243,7 +243,7 @@ INSTANTIATE_TEST_SUITE_P(
         ::testing::Values(
             NCCL_ALLGATHER_ALGO::orig,
             NCCL_ALLGATHER_ALGO::ctran,
-            NCCL_ALLGATHER_ALGO::ctrd,
+            NCCL_ALLGATHER_ALGO::ctsrd,
             NCCL_ALLGATHER_ALGO::ctring,
             NCCL_ALLGATHER_ALGO::ctdirect,
             NCCL_ALLGATHER_ALGO::ctbrucks),
