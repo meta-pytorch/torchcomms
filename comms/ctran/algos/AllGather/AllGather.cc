@@ -17,7 +17,6 @@ static bool isGraphAwareAlgo(enum NCCL_ALLGATHER_ALGO algo) {
     case NCCL_ALLGATHER_ALGO::ctgraph_rd:
       return true;
     case NCCL_ALLGATHER_ALGO::ctdirect:
-    case NCCL_ALLGATHER_ALGO::ctrd:
     case NCCL_ALLGATHER_ALGO::ctsrd:
     case NCCL_ALLGATHER_ALGO::ctring:
     case NCCL_ALLGATHER_ALGO::ctbrucks:
@@ -47,7 +46,6 @@ bool ctranAllGatherSupport(
   switch (algo) {
     case NCCL_ALLGATHER_ALGO::ctring:
     case NCCL_ALLGATHER_ALGO::ctbrucks:
-    case NCCL_ALLGATHER_ALGO::ctrd:
     case NCCL_ALLGATHER_ALGO::ctsrd:
       supported = statex->nLocalRanks() == 1;
       if (!supported) {
@@ -215,10 +213,6 @@ commResult_t ctranAllGather(
 
     case NCCL_ALLGATHER_ALGO::ctbrucks:
       return ctranAllGatherBrucksFF(
-          sendbuff, recvbuff, sendcount, datatype, comm, stream);
-
-    case NCCL_ALLGATHER_ALGO::ctrd:
-      return ctranAllGatherRd(
           sendbuff, recvbuff, sendcount, datatype, comm, stream);
 
     case NCCL_ALLGATHER_ALGO::ctsrd:

@@ -5,10 +5,12 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include <folly/ScopeGuard.h>
 #include <folly/SocketAddress.h>
@@ -53,6 +55,7 @@ namespace ctran::ib {
 
 Bootstrap::Bootstrap(
     VcState& vcState,
+    const VcLayout& vcLayout,
     std::shared_ptr<::ctran::bootstrap::ISocketFactory> socketFactory,
     std::shared_ptr<::ctran::utils::Abort> abortCtrl,
     const CommLogData& logData,
@@ -64,6 +67,7 @@ Bootstrap::Bootstrap(
     uint64_t commHash,
     const std::string& commDesc)
     : vcState_(vcState),
+      vcLayout_(vcLayout),
       socketFactory_(std::move(socketFactory)),
       abortCtrl_(std::move(abortCtrl)),
       logData_(logData),
@@ -228,34 +232,62 @@ commResult_t Bootstrap::exchangeAndPublish(
     return commInternalError;
   }
 
-  // Create a new VC for the peer
-  auto vc = std::make_shared<CtranIbVirtualConn>(
-      devices_, peerRank, comm_, trafficClass_, cudaDev_);
+  // Whether to exchange a single VC (legacy) or multiple VCs is a static
+  // property of this CtranIb instance, so the same loop handles both. The
+  // two ends always agree on the count via cvar (vcLayout_.maxVcsPerPeer).
+  const int numVcs = vcLayout_.maxVcsPerPeer;
+  std::vector<std::shared_ptr<CtranIbVirtualConn>> vcs;
+  std::vector<std::string> remoteBusCards;
+  vcs.reserve(numVcs);
+  remoteBusCards.reserve(numVcs);
 
-  std::string localBusCard, remoteBusCard;
-  {
-    // No need to lock since VC is not yet exposed to local rank. Lock to
-    // simply follow VC thread-safety semantics.
-    const std::lock_guard<std::mutex> lock(vc->mutex);
+  // Resolve the per-VC MAX_QPS slice for this peer (cvar/configList /
+  // numVcs). Different peers may resolve to different values depending
+  // on their connection class.
+  int maxQpsPerVc =
+      CtranIbVirtualConn::computeMaxQpsPerVc(comm_, peerRank, numVcs);
 
-    /* exchange business cards */
-    std::size_t size = vc->getBusCardSize();
-    localBusCard.resize(size);
-    remoteBusCard.resize(size);
-    FB_COMMCHECK(vc->getLocalBusCard(localBusCard.data()));
-    if (isServer) {
-      FB_SYSCHECKRETURN(
-          sock->recv(remoteBusCard.data(), size), commRemoteError);
-      FB_SYSCHECKRETURN(sock->send(localBusCard.data(), size), commRemoteError);
-    } else {
-      FB_SYSCHECKRETURN(sock->send(localBusCard.data(), size), commRemoteError);
-      FB_SYSCHECKRETURN(
-          sock->recv(remoteBusCard.data(), size), commRemoteError);
+  for (int vcIdx = 0; vcIdx < numVcs; ++vcIdx) {
+    // Create a new VC for the peer
+    auto vc = std::make_shared<CtranIbVirtualConn>(
+        devices_,
+        peerRank,
+        comm_,
+        trafficClass_,
+        cudaDev_,
+        vcLayout_.vcToActiveDevices[vcIdx],
+        maxQpsPerVc);
+
+    std::string localBusCard, remoteBusCard;
+    {
+      // No need to lock since VC is not yet exposed to local rank. Lock to
+      // simply follow VC thread-safety semantics.
+      const std::lock_guard<std::mutex> lock(vc->mutex);
+
+      /* exchange business cards */
+      std::size_t size = vc->getBusCardSize();
+      localBusCard.resize(size);
+      remoteBusCard.resize(size);
+      FB_COMMCHECK(vc->getLocalBusCard(localBusCard.data()));
+      if (isServer) {
+        FB_SYSCHECKRETURN(
+            sock->recv(remoteBusCard.data(), size), commRemoteError);
+        FB_SYSCHECKRETURN(
+            sock->send(localBusCard.data(), size), commRemoteError);
+      } else {
+        FB_SYSCHECKRETURN(
+            sock->send(localBusCard.data(), size), commRemoteError);
+        FB_SYSCHECKRETURN(
+            sock->recv(remoteBusCard.data(), size), commRemoteError);
+      }
     }
+
+    vcs.push_back(std::move(vc));
+    remoteBusCards.push_back(std::move(remoteBusCard));
   }
 
   FB_COMMCHECK(
-      vcState_.setupAndPublishVc(std::move(vc), remoteBusCard, peerRank));
+      vcState_.setupAndPublishVc(std::move(vcs), remoteBusCards, peerRank));
 
   // Ack that the connection is fully established.
   // Ensure remote rank don't use the VC before local setupVc and

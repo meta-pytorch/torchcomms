@@ -384,7 +384,6 @@ INSTANTIATE_TEST_SUITE_P(
             testing::Values(
                 NCCL_ALLGATHER_ALGO::ctdirect,
                 NCCL_ALLGATHER_ALGO::ctring,
-                NCCL_ALLGATHER_ALGO::ctrd,
                 NCCL_ALLGATHER_ALGO::ctsrd),
             testing::Values(0),
             testing::Values(8192, 1),
@@ -403,7 +402,6 @@ INSTANTIATE_TEST_SUITE_P(
             testing::Values(
                 NCCL_ALLGATHER_ALGO::ctdirect,
                 NCCL_ALLGATHER_ALGO::ctring,
-                NCCL_ALLGATHER_ALGO::ctrd,
                 NCCL_ALLGATHER_ALGO::ctsrd),
             testing::Values(0),
             testing::Values(8192, 1048576, 1048567, 1),
@@ -422,7 +420,6 @@ INSTANTIATE_TEST_SUITE_P(
             testing::Values(
                 NCCL_ALLGATHER_ALGO::ctdirect,
                 NCCL_ALLGATHER_ALGO::ctring,
-                NCCL_ALLGATHER_ALGO::ctrd,
                 NCCL_ALLGATHER_ALGO::ctsrd),
             testing::Values(256),
             testing::Values(1048567, 1),
@@ -441,7 +438,6 @@ INSTANTIATE_TEST_SUITE_P(
             testing::Values(
                 NCCL_ALLGATHER_ALGO::ctdirect,
                 NCCL_ALLGATHER_ALGO::ctring,
-                NCCL_ALLGATHER_ALGO::ctrd,
                 NCCL_ALLGATHER_ALGO::ctsrd),
             testing::Values(0),
             testing::Values(8192, 1),
@@ -495,6 +491,100 @@ INSTANTIATE_TEST_SUITE_P(
             testing::Values(1),
             testing::Values(kTestPairNone))),
     getTestName);
+
+// ---------------------------------------------------------------------------
+// ctsrd fwd_peers parameter sweep. Verifies correctness across the full
+// continuum of NCCL_CTRAN_ALLGATHER_CTSRD_FWD_PEERS values:
+//   -1  → recvOnly-equivalent (default, clamps to nSteps)
+//    0  → legacy ctrd burst behavior (no streaming)
+//    1  → legacy "full" FC (forward only to next step)
+//    2  → intermediate streaming (had no legacy analog)
+// All values must produce a correct AllGather; per-size chunk order varies
+// by fwd_peers but the final receive buffer must always be byte-correct.
+// ---------------------------------------------------------------------------
+// Param: (fwd_peers, count, inplace)
+using CtsrdFwdPeersParams = std::tuple<int, size_t, TestInPlaceType>;
+
+class CtsrdFwdPeersTest
+    : public CtranAllgatherTest,
+      public ::testing::WithParamInterface<
+          std::tuple<ctran::CtranEnvs, CtsrdFwdPeersParams>> {
+ protected:
+  void SetUp() override {
+    setUpWithEnvs(std::get<0>(GetParam()));
+  }
+};
+
+TEST_P(CtsrdFwdPeersTest, FwdPeersSweep) {
+  const auto& [fwdPeers, count, inplace] = std::get<1>(GetParam());
+  const auto algo = NCCL_ALLGATHER_ALGO::ctsrd;
+
+  EnvRAII envAlgo(NCCL_ALLGATHER_ALGO, algo);
+  EnvRAII envFp(NCCL_CTRAN_ALLGATHER_CTSRD_FWD_PEERS, fwdPeers);
+
+  const int nLocalRanks = ctranComm->statex_->nLocalRanks();
+  if (!ctranAllGatherSupport(ctranComm.get(), algo)) {
+    GTEST_SKIP() << "ctsrd needs nLocalRanks=1, got " << nLocalRanks;
+  }
+
+  const auto memType = kMemNcclMemAlloc;
+  if (ncclIsCuMemSupported() == false) {
+    GTEST_SKIP() << "CuMem not supported, skip test";
+  }
+  memorySetUp(memType, 0, count, inplace, kTestPairNone);
+  for (auto& seg : segments) {
+    COMMCHECK_TEST(ctran::globalRegisterWithPtr(seg.ptr, seg.size));
+  }
+
+  auto res = ctranAllGather(
+      sCommBuf, rCommBuf, count, dt, ctranComm.get(), testStream, algo);
+  EXPECT_EQ(res, commSuccess);
+  CUDACHECK_TEST(cudaStreamSynchronize(testStream));
+
+  // Verify recvbuf chunk by chunk
+  const size_t sCommBytes = count * commTypeSize(dt);
+  for (int i = 0; i < numRanks; ++i) {
+    std::vector<char> observedVals(sCommBytes, rand());
+    CUDACHECK_TEST(cudaMemcpy(
+        observedVals.data(),
+        reinterpret_cast<char*>(rCommBuf) + sCommBytes * i,
+        sCommBytes,
+        cudaMemcpyDefault));
+    EXPECT_THAT(observedVals, testing::Each(i))
+        << "rank " << globalRank << " peer " << i << " fwd_peers=" << fwdPeers;
+  }
+
+  verifyGpeLeak(ctranComm->ctran_.get());
+
+  for (auto& seg : segments) {
+    COMMCHECK_TEST(ctran::globalDeregisterWithPtr(seg.ptr, seg.size));
+  }
+  memoryCleanUp(memType, inplace, kTestPairNone);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    CtsrdFwdPeersSweep,
+    CtsrdFwdPeersTest,
+    ::testing::Combine(
+        ::testing::Values(ctran::kNolocalEnvs),
+        ::testing::Combine(
+            // Covers: 0 (ctrd burst), 1 (legacy full FC), -1 (default,
+            // recvOnly), 2 (intermediate). Note: -1 prints as "neg1" in test
+            // names.
+            ::testing::Values(0, 1, -1, 2),
+            ::testing::Values(8192, 1048576),
+            ::testing::Values(kTestInPlace, kTestOutOfPlace))),
+    [](const testing::TestParamInfo<
+        std::tuple<ctran::CtranEnvs, CtsrdFwdPeersParams>>& info) {
+      const auto& inner = std::get<1>(info.param);
+      const int fp = std::get<0>(inner);
+      const size_t count = std::get<1>(inner);
+      const TestInPlaceType inplace = std::get<2>(inner);
+      const std::string fpName =
+          (fp < 0) ? ("neg" + std::to_string(-fp)) : std::to_string(fp);
+      return ctran::envSuffix(std::get<0>(info.param)) + "fp" + fpName + "_" +
+          std::to_string(count) + "elements_" + testInPlaceTypeToStr(inplace);
+    });
 
 // Param: (CtranEnvs, (offset, count, inplace, iter, pairColl))
 using CtranSocketAllgatherParams =

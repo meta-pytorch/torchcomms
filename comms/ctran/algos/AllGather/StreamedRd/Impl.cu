@@ -5,7 +5,7 @@
 #include "comms/ctran/algos/common/GpeKernelDev.cuh"
 #include "comms/ctran/gpe/CtranGpeDev.h"
 
-__global__ void ncclKernelAllGatherCtranStreamedRd(
+__global__ void ncclKernelAllGatherCtranGpeStub(
     int* flag,
     CtranAlgoDeviceState* devState,
     ctran::allgather::KernelArgs args) {

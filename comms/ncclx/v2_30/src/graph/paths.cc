@@ -611,12 +611,6 @@ ncclResult_t ncclTopoNeedFlush(struct ncclComm* comm, int64_t netId, int netDev,
     if (gpu->paths[NET][n].type <= PATH_PXB && gpu->paths[CPU][c].type == PATH_C2C) {
       *flush = ncclTopoFlushC2c;
     }
-    // [META] PATH_P2C (C2C to CPU + PCIe to NIC) also requires flush: RDMA data
-    // arrives via PCIe while the proxy tail update reaches GPU via a different path,
-    // with no cross-path ordering guarantee.
-    if (NCCL_ENABLE_P2C_RDMA_FLUSH && gpu->paths[NET][n].type == PATH_P2C && gpu->paths[CPU][c].type == PATH_C2C) {
-      *flush = ncclTopoFlushC2c;
-    }
   }
   return ncclSuccess;
 }

@@ -38,8 +38,6 @@ ctranConfig makeCtranConfigFrom(ncclComm* comm) {
   struct ctranConfig tconfig = {
       .blocking = comm->config.blocking,
       .commDesc = NCCLX_CONFIG_FIELD(comm->config, commDesc),
-      .ncclAllGatherAlgo =
-          NCCLX_CONFIG_FIELD(comm->config, ncclAllGatherAlgo).c_str(),
   };
   if (comm->config.ncclxConfig != nullptr) {
     const auto* ncclxCfg =

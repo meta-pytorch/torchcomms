@@ -2,7 +2,9 @@
 
 #include "meta/NcclxConfig.h"
 
+#include "comm.h" // NOLINT
 #include "debug.h"
+#include "group.h" // NOLINT
 #include "nccl.h" // @manual
 #include "param.h"
 
@@ -80,7 +82,6 @@ Config::Config(const ncclConfig_t* config) {
 
   checkPtrConflict("commDesc", config->commDesc);
   checkPtrConflict("splitGroupRanks", config->splitGroupRanks);
-  checkPtrConflict("ncclAllGatherAlgo", config->ncclAllGatherAlgo);
   checkIntConflict("fastInitMode", config->fastInitMode);
 
   if (conflict) {
@@ -156,23 +157,6 @@ Config::Config(const ncclConfig_t* config) {
       }
       splitGroupRanks = elems;
     }
-  }
-
-  // ncclAllGatherAlgo — deprecated string field, kept for MetaFactory compat.
-  // The canonical field is allgatherAlgo (enum), parsed below with other algos.
-  if (config->ncclAllGatherAlgo) {
-    WARN(
-        "ncclConfig_t.ncclAllGatherAlgo is deprecated; use ncclConfig_t.hints "
-        "with key 'allgatherAlgo' instead");
-    ncclAllGatherAlgo = config->ncclAllGatherAlgo;
-  } else {
-    auto val = getHintStr("ncclAllGatherAlgo");
-    if (!val.empty()) {
-      ncclAllGatherAlgo = val;
-    }
-  }
-  if (ncclAllGatherAlgo != "undefined") {
-    algoStrToVal(ncclAllGatherAlgo, allgatherAlgo);
   }
 
   if (config->fastInitMode != NCCL_CONFIG_UNDEF_INT) {
@@ -306,6 +290,42 @@ Config::Config(const ncclConfig_t* config) {
   parseAlgoHint("rmaAlgo", rmaAlgo);
 }
 
+ncclResult_t Config::update(const ncclx::Hints* hints) {
+  if (hints == nullptr) {
+    return ncclSuccess;
+  }
+
+  const auto& mutableKeys = ncclx::mutableHintKeys();
+
+  for (const auto& key : ncclx::knownHintKeys()) {
+    if (std::find(mutableKeys.begin(), mutableKeys.end(), key) !=
+        mutableKeys.end()) {
+      continue;
+    }
+    std::string val;
+    if (hints->get(key, val) == ncclSuccess) {
+      WARN(
+          "ncclx::commSetConfig: hint key '%s' is not mutable post-init",
+          key.c_str());
+      return ncclInvalidUsage;
+    }
+  }
+
+  auto parseAlgoHint = [&](const char* key, auto& field) {
+    std::string val;
+    if (hints->get(key, val) == ncclSuccess) {
+      algoStrToVal(val, field);
+    }
+  };
+  parseAlgoHint("sendrecvAlgo", sendrecvAlgo);
+  parseAlgoHint("allgatherAlgo", allgatherAlgo);
+  parseAlgoHint("allreduceAlgo", allreduceAlgo);
+  parseAlgoHint("alltoallvAlgo", alltoallvAlgo);
+  parseAlgoHint("rmaAlgo", rmaAlgo);
+
+  return ncclSuccess;
+}
+
 } // namespace ncclx
 
 // C-style wrapper around the ncclx::Config parsing constructor.
@@ -318,4 +338,72 @@ ncclResult_t ncclxParseCommConfig(ncclConfig_t* config) {
   } catch (const std::exception&) {
     return ncclInvalidArgument;
   }
+}
+
+__attribute__((visibility("default"))) ncclResult_t
+ncclx::commSetConfig(ncclComm_t comm, const ncclConfig_t* config) {
+  if (comm == nullptr) {
+    WARN("ncclx::commSetConfig: comm is null");
+    return ncclInvalidArgument;
+  }
+
+  NCCLCHECK(ncclCommEnsureReady(comm));
+
+  if (ncclGroupDepth > 0) {
+    WARN("ncclx::commSetConfig: cannot update config inside a group call");
+    return ncclInvalidUsage;
+  }
+
+  if (config == nullptr) {
+    WARN("ncclx::commSetConfig: config is null");
+    return ncclInvalidArgument;
+  }
+
+  if (config->magic != NCCL_API_MAGIC) {
+    WARN(
+        "ncclx::commSetConfig: ncclConfig_t not initialized with "
+        "NCCL_CONFIG_INITIALIZER");
+    return ncclInvalidArgument;
+  }
+
+  if (config->blocking != NCCL_CONFIG_UNDEF_INT ||
+      config->cgaClusterSize != NCCL_CONFIG_UNDEF_INT ||
+      config->minCTAs != NCCL_CONFIG_UNDEF_INT ||
+      config->maxCTAs != NCCL_CONFIG_UNDEF_INT ||
+      config->splitShare != NCCL_CONFIG_UNDEF_INT ||
+      config->trafficClass != NCCL_CONFIG_UNDEF_INT ||
+      config->collnetEnable != NCCL_CONFIG_UNDEF_INT ||
+      config->CTAPolicy != NCCL_CONFIG_UNDEF_INT ||
+      config->shrinkShare != NCCL_CONFIG_UNDEF_INT ||
+      config->nvlsCTAs != NCCL_CONFIG_UNDEF_INT ||
+      config->nChannelsPerNetPeer != NCCL_CONFIG_UNDEF_INT ||
+      config->nvlinkCentricSched != NCCL_CONFIG_UNDEF_INT ||
+      config->graphUsageMode != NCCL_CONFIG_UNDEF_INT ||
+      config->numRmaCtx != NCCL_CONFIG_UNDEF_INT ||
+      config->netName != NCCL_CONFIG_UNDEF_PTR ||
+      config->commName != NCCL_CONFIG_UNDEF_PTR ||
+      config->commDesc != nullptr ||
+      config->splitGroupRanks != NCCL_CONFIG_UNDEF_PTR ||
+      config->splitGroupSize != NCCL_CONFIG_UNDEF_INT ||
+      config->fastInitMode != NCCL_CONFIG_UNDEF_INT ||
+      config->ncclxConfig != NCCL_CONFIG_UNDEF_PTR) {
+    WARN(
+        "ncclx::commSetConfig: ncclConfig_t fields are not mutable; "
+        "only algo hints are allowed");
+    return ncclInvalidUsage;
+  }
+
+  if (config->hints == NCCL_CONFIG_UNDEF_PTR || config->hints == nullptr) {
+    return ncclSuccess;
+  }
+
+  if (comm->config.ncclxConfig == NCCL_CONFIG_UNDEF_PTR ||
+      comm->config.ncclxConfig == nullptr) {
+    WARN("ncclx::commSetConfig: comm has no parsed ncclx::Config");
+    return ncclInvalidArgument;
+  }
+
+  auto* cfg = static_cast<ncclx::Config*>(comm->config.ncclxConfig);
+  const auto* hints = static_cast<const ncclx::Hints*>(config->hints);
+  return cfg->update(hints);
 }

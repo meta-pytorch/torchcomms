@@ -111,7 +111,27 @@ Returns:
           py::arg("async_op"),
           py::call_guard<py::gil_scoped_release>())
 #endif
-      ;
+      .def(
+          "set_config",
+          &TorchCommNCCLX::setConfig,
+          R"(
+Override NCCL communicator configuration at runtime via key-value hints.
+
+Applies the given hints to the communicator through ncclx::commSetConfig.
+Only mutable hints (e.g., algorithm selection) are accepted; immutable hints
+and unrecognized keys cause an exception.
+
+Args:
+    hints: Dict of key-value configuration hints.
+        Supported mutable keys include algorithm overrides such as
+        ``sendrecvAlgo``, ``allgatherAlgo``, ``allreduceAlgo``, etc.
+
+Raises:
+    RuntimeError: If any hint key is immutable, unrecognized, or the
+        underlying ncclx::commSetConfig call fails.
+)",
+          py::arg("hints"),
+          py::call_guard<py::gil_scoped_release>());
 
   m.def(
       "comm_dump_all",

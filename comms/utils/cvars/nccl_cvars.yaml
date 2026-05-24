@@ -86,14 +86,6 @@ cvars:
       to e.g. "scuba:nccl_profiler_gpe".
       (the same format with NCCL_COMM_EVENT_LOGGING)
 
- - name        : NCCL_CTRAN_GPE_PROFILING_SAMPLING_WEIGHT
-   type        : int
-   default     : 1000
-   description : |-
-     1-in-N sampling weight for per-iteration GpeProfiler Scuba reports.
-     Set to 0 to disable happy-path tracing (abort-only). Aborted
-     iterations are always reported regardless of sampling.
-
  - name        : NCCL_MEMORY_EVENT_LOGGING
    type        : string
    default     : ""
@@ -568,16 +560,6 @@ cvars:
    type        : int64_t
    default     : 0
    description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-net-force-flush
-
- - name        : NCCL_ENABLE_P2C_RDMA_FLUSH
-   type        : bool
-   default     : true
-   description : |-
-     Enable RDMA READ flush for PATH_P2C topology (C2C to CPU + PCIe to NIC)
-     on GB200. When RDMA data arrives via PCIe and the proxy tail update reaches
-     GPU via a different path (C2C), there is no cross-path ordering guarantee.
-     The flush drains pending PCIe writes before signaling the GPU kernel.
-     Set to false to disable for performance comparison.
 
  - name        : NCCL_NET_DISABLE_INTRA
    type        : int64_t
@@ -1217,13 +1199,6 @@ cvars:
      0 means no timeout.
 
 
- - name        : NCCL_CTRAN_AG_RD_RTR
-   type        : bool
-   default     : true
-   description : |-
-     Whether to wait for ready-to-receive at beginning of each iteration
-
-
  - name        : NCCL_CTRAN_ALLREDUCE_DIRECT_MAX_NUM_THREAD_BLOCKS
    type        : int
    default     : 32
@@ -1588,6 +1563,19 @@ cvars:
      Maximum number of QPs to enable, so data can be split across
      multiple QPs.  This allows the communication to take multiple routes
      and is a poor-man's version of fully adaptive routing.
+
+ - name        : NCCL_CTRAN_IB_NUM_VCS_PER_RANK
+   type        : int
+   default     : 1
+   description : |-
+     Number of per-peer VCs (CtranIbVirtualConn) returned by
+     CtranIb::getVcs(peerRank). Each VC is pinned to a single NIC and
+     owns its own ctrl/notify/atomic + data QPs. The data QPs are
+     derived as NCCL_CTRAN_IB_MAX_QPS / NCCL_CTRAN_IB_NUM_VCS_PER_PEER
+     per VC, distributed across NICs by
+     NCCL_CTRAN_IB_NUM_VCS_PER_PEER / NCCL_CTRAN_IB_DEVICES_PER_RANK
+     VCs per NIC. Used by callers that obtain VCs via
+     CtranIb::getVcs(peerRank).
 
  - name        : NCCL_CTRAN_IB_QP_SCALING_THRESHOLD
    type        : uint64_t
@@ -2112,15 +2100,14 @@ cvars:
  - name        : NCCL_ALLGATHER_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctdirect, ctring, ctrd, ctsrd, ctbrucks, cthierarchical_ring, ctgraph, ctgraph_pipeline, ctgraph_rdpipeline, ctgraph_ring, ctgraph_rd
+   choices     : orig, ctran, ctdirect, ctring, ctsrd, ctbrucks, cthierarchical_ring, ctgraph, ctgraph_pipeline, ctgraph_rdpipeline, ctgraph_ring, ctgraph_rd
    description : |-
      The algorithm to use for Allgather communication
      orig - Copy-based ring algorithm
      ctran - Picks the best ctran-based algorithm
      ctdirect - Ctran-based direct point-to-point algorithm
      ctring - Ctran-based ring algorithm
-     ctrd - Ctran-based recursive doubling algorithm
-     ctsrd - Ctran-based streamed recursive doubling algorithm
+     ctsrd - Ctran-based streamed recursive doubling algorithm (streaming depth controlled by NCCL_CTRAN_ALLGATHER_CTSRD_FWD_PEERS)
      cthierarchical_ring - Pipes-based hierarchical AllGather using an inter-node IBGDA ring per local rank followed by intra-node NVLink fanout; with nLocalRanks==1 it degenerates to the hierarchical kernel's IB-only phase
      ctgraph - Cudagraph-aware: auto-selects pipeline/ring/rd based on topology during graph capture
      ctgraph_pipeline - Cudagraph-aware: forces persistent pipeline algorithm (nLocalRanks>1)
@@ -2134,14 +2121,20 @@ cvars:
    description : |-
      Minimum send size in bytes for ctgraph auto-select to choose ring over recursive doubling when nLocalRanks==1. Default 128MB.
 
- - name        : NCCL_CTRAN_ALLGATHER_CTSRD_FC
-   type        : enum
-   default     : recvOnly
-   choices     : recvOnly, full
+ - name        : NCCL_CTRAN_ALLGATHER_CTSRD_FWD_PEERS
+   type        : int
+   default     : -1
    description : |-
-     Flow control mode for ctsrd (streamed recursive doubling) AllGather algorithm.
-     recvOnly - Receiver-only flow control. Pre-enqueue own chunk for all steps, forward received chunks to all future step peers immediately. Maximizes send/recv overlap.
-     full - Sender and receiver flow control. Forward received chunks to next step peer immediately, stage forwards for further steps until those steps begin. Reduces concurrent flows to at most 2 peers.
+     Immediate-forward depth for the ctsrd (streamed recursive-doubling)
+     AllGather algorithm. Controls how many future-step peers a received
+     chunk is forwarded to immediately on receipt; remaining forwards are
+     staged and flushed at the start of the target step. A value of -1
+     (default) means "forward to all future-step peers" (equivalent to the
+     legacy recvOnly streamed-rd behavior, maximum send/recv overlap). A
+     value of 0 stages everything (equivalent to the legacy non-streamed
+     ctrd burst behavior). 1 forwards each chunk only to the next step
+     (legacy full FC). Intermediate values are valid and produce a continuum
+     between burst and full streaming. Must be >= -1.
 
  - name        : NCCL_REDUCESCATTER_ALGO
    type        : enum

@@ -143,6 +143,20 @@ void testTileMultiCallSendRecv(
     int blockSize,
     cudaStream_t stream = nullptr);
 
+void testTileTwoCallVariableSignalSendRecv(
+    P2pNvlTransportDevice p2p,
+    TiledBuffer<char> sendTiles,
+    TiledBuffer<char> recvTiles,
+    int activeBlocks,
+    size_t firstCallBytes,
+    size_t secondCallBytes,
+    size_t firstMaxSignalBytes,
+    size_t secondMaxSignalBytes,
+    bool waitForSecondCallSignal,
+    int blockSize,
+    Timeout timeout = Timeout(),
+    cudaStream_t stream = nullptr);
+
 void testTileMultiCallSendOnly(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,
@@ -160,6 +174,29 @@ void testTileTwoCallSendOnly(
     size_t firstCallBytes,
     size_t secondCallBytes,
     size_t maxSignalBytes,
+    int blockSize,
+    cudaStream_t stream = nullptr);
+
+void testTileSendWaitsForWrappedSubstepAck(
+    P2pNvlTransportDevice p2p,
+    const char* sendData,
+    int activeBlocks,
+    size_t nbytes,
+    size_t maxSignalBytes,
+    unsigned char sentinel,
+    int* observedEarlyOverwrite,
+    int blockSize,
+    cudaStream_t stream = nullptr);
+
+void testTileForwardWaitsForWrappedSubstepAck(
+    P2pNvlTransportDevice pred,
+    P2pNvlTransportDevice succ,
+    char* dst,
+    int activeBlocks,
+    size_t nbytes,
+    size_t maxSignalBytes,
+    unsigned char sentinel,
+    int* observedEarlyOverwrite,
     int blockSize,
     cudaStream_t stream = nullptr);
 
@@ -223,6 +260,18 @@ void testTileTwoCallForward(
     size_t firstCallBytes,
     size_t secondCallBytes,
     size_t maxSignalBytes,
+    int blockSize,
+    cudaStream_t stream = nullptr);
+
+void testTileTwoCallVariableSignalForward(
+    P2pNvlTransportDevice pred,
+    P2pNvlTransportDevice succ,
+    TiledBuffer<char> dstTiles,
+    int activeBlocks,
+    size_t firstCallBytes,
+    size_t secondCallBytes,
+    size_t firstMaxSignalBytes,
+    size_t secondMaxSignalBytes,
     int blockSize,
     cudaStream_t stream = nullptr);
 

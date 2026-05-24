@@ -11,10 +11,6 @@ namespace ctran {
 
 // One of the GPE thread's instrumented tracepoints. Stamped by
 // gpeThreadFn at the corresponding boundary.
-//
-// INVARIANT: enum declaration order must match the chronological
-// order of mark() calls in CtranGpe::Impl::gpeThreadFn — enforced
-// by DCHECK_GE in GpeProfiler::mark().
 enum class GpeTracePoint : int {
   ITER_START, // Top of the GPE main loop iter (anchor; always emits).
   CMD_DEQUEUE, // cmdDequeue returned + injectMetadata ran (always emits).
@@ -62,9 +58,11 @@ constexpr std::string_view tracePointName(GpeTracePoint p) {
 // previous stamped tracepoint in the same iter (0 for ITER_START).
 // `aborted` and `message` are populated only on the ALGO_ABORTED row;
 // `message` carries the abort reason ("timeout" / "explicit" /
-// "abnormal_exit") and lands in the Scuba "message" column.
+// "abnormal_exit") and lands in the Scuba "Message" column.
 struct GpeProfilerReport {
   const CommLogData* logMetaData{nullptr};
+  uint64_t commHash{0};
+  int rank{-1};
   uint64_t opCount{0};
   int opType{-1};
   GpeTracePoint tracePoint{GpeTracePoint::ITER_START};

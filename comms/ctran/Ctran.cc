@@ -156,11 +156,6 @@ commResult_t ctranInit(
     return res;
   }
 
-  res = ctranConfigCommAlgoOverride(comm);
-  if (res != commSuccess) {
-    return res;
-  }
-
   initEvent.lapAndRecord("CtranInit COMPLETE");
   return commSuccess;
 }

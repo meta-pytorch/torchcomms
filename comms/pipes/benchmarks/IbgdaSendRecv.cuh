@@ -26,6 +26,18 @@ __global__ void ibgda_send_recv_kernel(
     char* dst,
     std::size_t totalBytes,
     int numBlocks,
+    std::size_t maxSignalBytes,
+    Timeout timeout);
+
+__global__ void ibgda_send_recv_two_call_kernel(
+    P2pIbgdaTransportDevice* transport,
+    char* src,
+    char* dst,
+    std::size_t firstBytes,
+    std::size_t secondBytes,
+    int numBlocks,
+    std::size_t firstMaxSignalBytes,
+    std::size_t secondMaxSignalBytes,
     Timeout timeout);
 
 /**
@@ -37,6 +49,7 @@ __global__ void ibgda_send_kernel(
     char* src,
     std::size_t totalBytes,
     int numBlocks,
+    std::size_t maxSignalBytes,
     Timeout timeout);
 
 /**
@@ -48,6 +61,7 @@ __global__ void ibgda_recv_kernel(
     char* dst,
     std::size_t totalBytes,
     int numBlocks,
+    std::size_t maxSignalBytes,
     Timeout timeout);
 
 } // namespace comms::pipes::benchmark
