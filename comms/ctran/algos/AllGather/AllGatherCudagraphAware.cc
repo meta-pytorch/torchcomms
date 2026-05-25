@@ -17,10 +17,12 @@
 //     via IB isendCtrl/irecvCtrl inside the GPE host node.
 //     Uses globalRegisterWithPtr so searchRegHandle hits the fast path.
 //
-// Cleanup: Resources are registered for deferred cleanup at capture time
-// (not at graph destruction). This ensures cleanup runs during comm
-// destruction on the main thread, regardless of when or whether the graph
-// is destroyed. Graph replay is guaranteed to finish before comm destroy.
+// Cleanup: Resources are kept alive by the graph, marked cleanup-ready by a
+// CUDA user-object callback at graph destruction, and drained later from safe
+// host-side points such as the next window creation or comm destruction.
+
+#include <atomic>
+#include <memory>
 
 #include <folly/ScopeGuard.h>
 
@@ -34,6 +36,12 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 
 namespace {
+
+void CUDART_CB markCudagraphCleanupReady(void* p) {
+  auto* ready = static_cast<std::shared_ptr<std::atomic<bool>>*>(p);
+  (*ready)->store(true, std::memory_order_release);
+  delete ready;
+}
 
 // winPersistBuffReg: register recvbuff as a window, exchange handles with
 // all peers. Both local and remote addresses must be stable across replays.
@@ -192,9 +200,24 @@ commResult_t ctranAllGatherCudagraphAware(
       break;
   }
 
-  // Success — transfer ownership to deferred cleanup
+  std::shared_ptr<std::atomic<bool>> cleanupReady;
+  ctran::utils::cudagraph::StreamCaptureInfo captureInfo;
+  FB_CUDACHECK(
+      ctran::utils::cudagraph::getStreamCaptureInfo(stream, captureInfo));
+  if (captureInfo.status == cudaStreamCaptureStatusActive) {
+    cleanupReady = std::make_shared<std::atomic<bool>>(false);
+    auto readyForCallback =
+        std::make_unique<std::shared_ptr<std::atomic<bool>>>(cleanupReady);
+    FB_COMMCHECK(
+        ctran::utils::cudagraph::retainUserObject(
+            readyForCallback.get(), markCudagraphCleanupReady, captureInfo));
+    readyForCallback.release();
+  }
+
+  // Success — transfer ownership to deferred cleanup.
   cleanupGuard.dismiss();
-  comm->cudagraphDeferredCleanup.add(std::move(cleanup));
+  comm->cudagraphDeferredCleanup.add(
+      std::move(cleanup), std::move(cleanupReady));
 
   return commSuccess;
 }

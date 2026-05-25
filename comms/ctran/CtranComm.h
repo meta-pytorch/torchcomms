@@ -2,16 +2,15 @@
 
 #pragma once
 
-#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
-#include <folly/Synchronized.h>
+#include "comms/ctran/CudagraphDeferredCleanup.h"
 #include "comms/ctran/bootstrap/ICtranBootstrap.h"
 #include "comms/ctran/commstate/CommStateX.h"
 #include "comms/ctran/interfaces/ICtran.h"
@@ -201,25 +200,6 @@ class CtranComm {
   std::unique_ptr<comms::pipes::PipesTrace> pipesTrace_;
 #endif // defined(ENABLE_PIPES)
 
-  // Deferred cleanup for CUDA graph resources. CUDA user-object destructor
-  // callbacks cannot call CUDA APIs, so cleanup is enqueued here and
-  // executed at comm destruction where CUDA APIs are safe.
-  class CudagraphDeferredCleanup {
-   public:
-    void add(std::function<void()> fn) {
-      fns_.wlock()->push_back(std::move(fn));
-    }
-    void runAll() {
-      auto fns = fns_.wlock();
-      for (auto& fn : *fns) {
-        fn();
-      }
-      fns->clear();
-    }
-
-   private:
-    folly::Synchronized<std::vector<std::function<void()>>> fns_;
-  };
   CudagraphDeferredCleanup cudagraphDeferredCleanup;
 
  private:
