@@ -22,6 +22,7 @@
 #if defined(ENABLE_PIPES)
 #include "comms/pipes/MultiPeerDeviceHandle.cuh"
 #include "comms/pipes/MultiPeerTransport.h"
+#include "comms/pipes/PipesTrace.h"
 #endif // defined(ENABLE_PIPES)
 
 Ctran::Ctran(
@@ -155,11 +156,6 @@ commResult_t ctranInit(
     return res;
   }
 
-  res = ctranConfigCommAlgoOverride(comm);
-  if (res != commSuccess) {
-    return res;
-  }
-
   initEvent.lapAndRecord("CtranInit COMPLETE");
   return commSuccess;
 }
@@ -193,6 +189,7 @@ void CtranComm::destroy() {
   // ensure they do so in a specific order. Therefore, we manually handle
   // their de-initialization here.
 #if defined(ENABLE_PIPES)
+  pipesTrace_.reset();
   if (hierarchicalAgReadyCounters_ != nullptr) {
     cudaFree(hierarchicalAgReadyCounters_);
     hierarchicalAgReadyCounters_ = nullptr;

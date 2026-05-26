@@ -4,11 +4,14 @@
 
 #include <memory>
 #include <mutex>
+#include <numeric>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "comms/ctran/backends/ib/CtranIbVc.h"
 #include "comms/ctran/backends/ib/VcState.h"
+#include "comms/ctran/utils/Checks.h"
 #include "comms/utils/logger/LogUtils.h"
 
 namespace ctran::ib {
@@ -32,8 +35,26 @@ BootstrapExternal::BootstrapExternal(
       trafficClass_(trafficClass) {}
 
 std::string BootstrapExternal::getLocalVcId(const int peerRank) {
+  // External bootstrap supports exactly one VC per peer that spans all
+  // local NICs (no NIC pinning). This matches the legacy single-VC
+  // semantics and avoids depending on the cvar-derived VcLayout used by
+  // the internal bootstrap path.
+  std::vector<int> activeDevices(devices_.size());
+  std::iota(activeDevices.begin(), activeDevices.end(), 0);
+
+  // Single VC per peer -> per-VC MAX_QPS == per-peer MAX_QPS. Value
+  // depends on the peer's connection class, so resolve per call.
+  int maxQpsPerVc =
+      CtranIbVirtualConn::computeMaxQpsPerVc(comm_, peerRank, /*numVcs=*/1);
+
   auto vc = std::make_shared<CtranIbVirtualConn>(
-      devices_, peerRank, comm_, trafficClass_, cudaDev_);
+      devices_,
+      peerRank,
+      comm_,
+      trafficClass_,
+      cudaDev_,
+      activeDevices,
+      maxQpsPerVc);
 
   std::string localBusCard;
   {
@@ -74,8 +95,13 @@ commResult_t BootstrapExternal::connectVc(
     pendingVcs_.erase(it);
   }
 
-  return vcState_.setupAndPublishVc(
-      std::move(vc), remoteVcIdentifier, peerRank);
+  // External bootstrap publishes a single VC per peer; wrap and delegate
+  // to the unified setup+publish entry point, which runs setupVc under
+  // vc->mutex.
+  std::vector<std::shared_ptr<CtranIbVirtualConn>> vcs;
+  vcs.push_back(std::move(vc));
+  std::vector<std::string> remoteIds{remoteVcIdentifier};
+  return vcState_.setupAndPublishVc(std::move(vcs), remoteIds, peerRank);
 }
 
 } // namespace ctran::ib

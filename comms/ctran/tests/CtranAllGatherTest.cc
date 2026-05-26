@@ -34,7 +34,7 @@ class CtranAllGatherTest : public CtranIntraProcessFixture,
     NCCL_ALLGATHER_ALGO = param.algo;
 
     if (NCCL_ALLGATHER_ALGO == NCCL_ALLGATHER_ALGO::ctring ||
-        NCCL_ALLGATHER_ALGO == NCCL_ALLGATHER_ALGO::ctrd ||
+        NCCL_ALLGATHER_ALGO == NCCL_ALLGATHER_ALGO::ctsrd ||
         NCCL_ALLGATHER_ALGO == NCCL_ALLGATHER_ALGO::ctbrucks) {
       NCCL_COMM_STATE_DEBUG_TOPO = NCCL_COMM_STATE_DEBUG_TOPO::nolocal;
       NCCL_IGNORE_TOPO_LOAD_FAILURE = true;
@@ -181,7 +181,7 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Values(
         TestParam{"allgather_ctdirect", NCCL_ALLGATHER_ALGO::ctdirect},
         TestParam{"allgather_ctring", NCCL_ALLGATHER_ALGO::ctring},
-        TestParam{"allgather_ctrd", NCCL_ALLGATHER_ALGO::ctrd},
+        TestParam{"allgather_ctsrd", NCCL_ALLGATHER_ALGO::ctsrd},
         TestParam{"allgather_ctbrucks", NCCL_ALLGATHER_ALGO::ctbrucks}),
     [](const ::testing::TestParamInfo<TestParam>& info) {
       return info.param.name;

@@ -23,7 +23,6 @@ TEST(ConfigHintsUT, NoHintsCreatesDefaults) {
   auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
   EXPECT_EQ(ncclxCfg->commDesc, "undefined");
   EXPECT_TRUE(ncclxCfg->splitGroupRanks.empty());
-  EXPECT_EQ(ncclxCfg->ncclAllGatherAlgo, "undefined");
   EXPECT_EQ(ncclxCfg->useCtran, false);
   EXPECT_EQ(ncclxCfg->usePatAvg, false);
   EXPECT_EQ(ncclxCfg->noLocal, false);
@@ -45,7 +44,6 @@ TEST(ConfigHintsUT, HintsCreateNcclxConfig) {
   ncclx::Hints hints;
   hints.set("commDesc", "test_desc");
   hints.set("fastInitMode", "1");
-  hints.set("ncclAllGatherAlgo", "custom_algo");
   config.hints = &hints;
 
   EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
@@ -55,7 +53,6 @@ TEST(ConfigHintsUT, HintsCreateNcclxConfig) {
 
   EXPECT_EQ(NCCLX_CONFIG_FIELD(config, commDesc), "test_desc");
   EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, fastInitMode));
-  EXPECT_EQ(NCCLX_CONFIG_FIELD(config, ncclAllGatherAlgo), "custom_algo");
 
   // Upstream NCCL fields should be untouched
   EXPECT_EQ(config.blocking, NCCL_CONFIG_UNDEF_INT);
@@ -70,7 +67,6 @@ TEST(ConfigHintsUT, PrefixedKeysMatchBareKeys) {
   ncclx::Hints hints;
   hints.set("ncclx::commDesc", "test_desc");
   hints.set("ncclx::fastInitMode", "1");
-  hints.set("ncclx::ncclAllGatherAlgo", "custom_algo");
   config.hints = &hints;
 
   EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
@@ -80,7 +76,6 @@ TEST(ConfigHintsUT, PrefixedKeysMatchBareKeys) {
 
   EXPECT_EQ(NCCLX_CONFIG_FIELD(config, commDesc), "test_desc");
   EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, fastInitMode));
-  EXPECT_EQ(NCCLX_CONFIG_FIELD(config, ncclAllGatherAlgo), "custom_algo");
 
   // Also verify get() with prefixed key returns the same value
   std::string val;

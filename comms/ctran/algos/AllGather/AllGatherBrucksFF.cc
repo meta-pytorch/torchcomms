@@ -325,7 +325,7 @@ commResult_t ctranAllGatherBrucksFF(
       std::move(opGroup),
       impl,
       config,
-      reinterpret_cast<void*>(ncclKernelAllGatherCtranRecDbl)));
+      reinterpret_cast<void*>(ncclKernelAllGatherCtranGpeStub)));
   if (extraCopyBuff != nullptr) {
     FB_CUDACHECK(cudaMemcpyAsync(
         recvbuff,

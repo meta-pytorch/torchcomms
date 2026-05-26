@@ -431,8 +431,8 @@ struct IbgdaBufferExchInfo {
  *     If max_signal_bytes is smaller than perBlockSlot, each per-block region
  *     is further subdivided into signaled sub-chunks:
  *       chunkSize = floor16(min(perBlockSlot, max_signal_bytes))
- *       chunksPerSlot = perBlockSlot / chunkSize
- *     stepState counts these sub-chunks, not whole slots.
+ *     stepState counts bytes, not sub-chunks, so max_signal_bytes may change
+ *     between calls as long as active_blocks is unchanged.
  *
  *   signalBuf: 2 * maxGroups * sizeof(uint64_t).
  *     [0, maxGroups)             — DATA_READY (sender -> receiver)
@@ -442,8 +442,8 @@ struct IbgdaBufferExchInfo {
  *     [0, maxGroups)             — NIC_DONE counters (loopback atomic)
  *
  *   stepState: 2 * maxGroups * sizeof(int64_t).
- *     [0, maxGroups)             — sender step counters
- *     [maxGroups, 2*maxGroups)   — receiver step counters
+ *     [0, maxGroups)             — sender byte cursors
+ *     [maxGroups, 2*maxGroups)   — receiver byte cursors
  */
 struct IbSendRecvState {
   IbgdaLocalBuffer
@@ -456,7 +456,7 @@ struct IbSendRecvState {
   IbgdaLocalBuffer localSignalBuf; ///< Signal inbox (DATA_READY + SLOT_FREE)
   IbgdaRemoteBuffer remoteSignalBuf; ///< Peer's signal inbox
   IbgdaLocalBuffer localCounterBuf; ///< NIC_DONE counter inbox
-  int64_t* stepState{nullptr}; ///< Per-group step counters
+  int64_t* stepState{nullptr}; ///< Per-group byte cursors
   int maxGroups{0}; ///< Layout size for signals/step arrays
   int pipelineDepth{0}; ///< Number of pipeline slots in the ring
   std::size_t dataBufferSize{0}; ///< Size of one pipeline slot in bytes

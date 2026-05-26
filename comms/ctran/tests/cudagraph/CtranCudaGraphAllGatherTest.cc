@@ -60,7 +60,7 @@ DEFINE_CUDAGRAPH_PARAM_TEST(
     makeAllGather(NCCL_ALLGATHER_ALGO::ctran),
     makeAllGather(NCCL_ALLGATHER_ALGO::ctdirect),
     makeAllGather(NCCL_ALLGATHER_ALGO::ctring),
-    makeAllGather(NCCL_ALLGATHER_ALGO::ctrd),
+    makeAllGather(NCCL_ALLGATHER_ALGO::ctsrd),
     makeAllGather(NCCL_ALLGATHER_ALGO::ctbrucks));
 
 int main(int argc, char* argv[]) {

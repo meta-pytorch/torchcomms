@@ -123,8 +123,6 @@ commResult_t initNcclCommCtran(ncclComm* ncclComm) {
   ctranComm->bootstrap_ = std::make_unique<rcclx::BaselineBootstrap>(ncclComm);
   ctranComm->statex_ =
       createCtranCommStateXFromNcclComm(ncclComm, ctranComm.get());
-  // TODO: add RCCL config to configure all gather algo
-  ctranComm->config_.ncclAllGatherAlgo = "undefined";
   // TODO: init CtranComm newCollTrace
   FB_COMMCHECK(ctranInit(ctranComm.get()));
 

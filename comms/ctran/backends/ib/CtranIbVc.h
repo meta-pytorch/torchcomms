@@ -5,6 +5,7 @@
 
 #include <deque>
 #include <mutex>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 #include "comms/ctran/CtranComm.h"
@@ -186,13 +187,39 @@ class CtranIbVirtualConn {
  public:
   // Prepare local resources for the virtual connection.
   // Actual connection happens only when setupVc is called.
+  //
+  // activeDevices: the set of IB device indices (active NICs) this VC owns.
+  // Must be non-empty and every entry must be in
+  // [0, NCCL_CTRAN_IB_DEVICES_PER_RANK). The first entry is taken as the
+  // ctrl/notify/atomic device (`ctrlDevice_ = activeDevices.front()`); all
+  // data QPs are distributed across the listed devices.
+  // maxQpsPerVc: per-VC data-QP budget. Callers compute this via
+  // computeMaxQpsPerVc(comm, peerRank, numVcsPerPeer); the VC then clamps
+  // it to CTRAN_HARDCODED_MAX_QPS and rounds up to a multiple of
+  // activeDevices.size(). The VC itself has no concept of "vcs per peer".
   CtranIbVirtualConn(
       std::vector<CtranIbDevice>& devices,
       int peerRank,
       CtranComm* comm,
       uint32_t pgTrafficClass,
-      int cudaDev);
+      int cudaDev,
+      std::vector<int> activeDevices,
+      int maxQpsPerVc);
   ~CtranIbVirtualConn();
+
+  // Return the cvar/configList-resolved per-VC MAX_QPS budget:
+  //   per-peer-MAX_QPS (cvar default or NCCL_CTRAN_IB_QP_CONFIG_* override
+  //   for the peer's connection class) divided evenly across numVcs.
+  // Used by CtranIb / Bootstrap to compute the maxQpsPerVc ctor argument
+  // without leaking vcs-per-peer semantics into this class. Aborts if
+  // the per-peer MAX_QPS is not a multiple of numVcs.
+  //
+  // TODO: move off `static` once per-CtranIb-instance QP config is
+  // introduced. With per-comm QP config, maxQps can differ per CtranIb
+  // instance, so the answer will no longer be a pure function of
+  // globals + (comm, peerRank, numVcs) and should be resolved against
+  // the owning CtranIb's instance state instead.
+  static int computeMaxQpsPerVc(CtranComm* comm, int peerRank, int numVcs);
 
   // The data channel may be temporarily unavailable due to run out of local
   // send queue WQE. VC has already internally scheduled an implicit signal to
@@ -221,6 +248,7 @@ class CtranIbVirtualConn {
   // Setup the IB connection between two peers.
   // Specifically, it updates the local control and data QPs with remote
   // business card info to establish the connection.
+  // Caller MUST hold vc->mutex (per the general VC thread-safety contract).
   commResult_t setupVc(void* remoteBusCard);
 
   // Implementation to send generic control message over the established IB
@@ -439,9 +467,44 @@ class CtranIbVirtualConn {
     return dataQps;
   }
 
-  // derive device index from qp idx
-  inline int getIbDevFromQpIdx(int qpIdx) {
-    return qpIdx / (maxNumQps_ / NCCL_CTRAN_IB_DEVICES_PER_RANK);
+  // derive the position within activeDevices_ from a qp idx. Use this when
+  // indexing per-VC vectors that are sized to activeDevices_.size() (e.g.
+  // PutInfo/GetInfo lkeys/rkeys built ordinally in iputImpl/igetImpl).
+  inline int getActiveDevIdxFromQpIdx(int qpIdx) const {
+    return qpIdx / numQpsPerDevice_;
+  }
+
+  // derive the global IB device index from a qp idx. Use this when indexing
+  // structures that are sized to NCCL_CTRAN_IB_DEVICES_PER_RANK (e.g. the
+  // global MR vector behind ibRegElem, or remoteAccessKey.rkeys, or the
+  // QpUniqueId carried in VcState's qpToVcMap).
+  inline int getIbDevFromQpIdx(int qpIdx) const {
+    return activeDevices_[getActiveDevIdxFromQpIdx(qpIdx)];
+  }
+
+  // Returns the IB device that hosts the control QPs for this VC.
+  // Always equals activeDevices_.front() today.
+  inline int getCtrlDevice() const {
+    return ctrlDevice_;
+  }
+
+  // Returns the IB device that hosts the notify QPs for this VC.
+  // Always equals activeDevices_.front() today.
+  inline int getNotifyDevice() const {
+    return notifyDevice_;
+  }
+
+  // Returns the IB device that hosts the atomic QPs for this VC.
+  // Always equals activeDevices_.front() today.
+  inline int getAtomicDevice() const {
+    return atomicDevice_;
+  }
+
+  // Returns the list of IB devices this VC owns QPs on. Used by callers
+  // (e.g. CtranIb::updateVcState) that need to know which CQ(s) own the
+  // VC's QPs.
+  inline const std::vector<int>& getActiveDevices() const {
+    return activeDevices_;
   }
 
   // Check if QPs have been initialized (via getLocalBusCard())
@@ -454,21 +517,24 @@ class CtranIbVirtualConn {
     FB_CHECKABORT(
         ibvNotifyQp_.has_value(),
         "Notify QP not initialized when checking isNotifyQp");
-    return ibvNotifyQp_->qp()->qp_num == qpId.first && qpId.second == 0;
+    return ibvNotifyQp_->qp()->qp_num == qpId.first &&
+        qpId.second == notifyDevice_;
   }
 
   inline bool isControlQp(QpUniqueId qpId) const {
     FB_CHECKABORT(
         ibvControlQp_.has_value(),
         "Control QP not initialized when checking isControlQp");
-    return ibvControlQp_->qp()->qp_num == qpId.first && qpId.second == 0;
+    return ibvControlQp_->qp()->qp_num == qpId.first &&
+        qpId.second == ctrlDevice_;
   }
 
   inline bool isAtomicQp(QpUniqueId qpId) const {
     FB_CHECKABORT(
         ibvAtomicQp_.has_value(),
         "Atomic QP not initialized when checking isAtomicQp");
-    return ibvAtomicQp_->qp()->qp_num == qpId.first && qpId.second == 0;
+    return ibvAtomicQp_->qp()->qp_num == qpId.first &&
+        qpId.second == atomicDevice_;
   }
 
   // Global rank of remote peer.
@@ -741,7 +807,7 @@ class CtranIbVirtualConn {
           (void*)sbuf);
       return commSystemError;
     }
-    for (int device = 0; device < NCCL_CTRAN_IB_DEVICES_PER_RANK; device++) {
+    for (int device : activeDevices_) {
       lkeys.push_back((*smrs)[device].mr()->lkey);
       rkeys.push_back(remoteAccessKey.rkeys[device]);
       CLOGF_TRACE(
@@ -750,7 +816,7 @@ class CtranIbVirtualConn {
           (void*)sbuf,
           (void*)dbuf,
           len,
-          rkeys[device]);
+          rkeys.back());
     }
 
     const auto putId = getPutId();
@@ -847,7 +913,7 @@ class CtranIbVirtualConn {
           (void*)dbuf);
       return commSystemError;
     }
-    for (int device = 0; device < NCCL_CTRAN_IB_DEVICES_PER_RANK; device++) {
+    for (int device : activeDevices_) {
       lkeys.push_back((*smrs)[device].mr()->lkey);
       rkeys.push_back(remoteAccessKey.rkeys[device]);
       CLOGF_TRACE(
@@ -856,7 +922,7 @@ class CtranIbVirtualConn {
           (void*)sbuf,
           (void*)dbuf,
           len,
-          rkeys[device]);
+          rkeys.back());
     }
 
     const auto getId = getGetId();
@@ -963,8 +1029,8 @@ class CtranIbVirtualConn {
           (void*)sbuf);
       return commSystemError;
     }
-    // For atomic operations, we always use device 0
-    int device = 0;
+    // For atomic operations, use the VC's atomic device.
+    int device = atomicDevice_;
     uint32_t lkey = (*smrs)[device].mr()->lkey;
     uint32_t rkey = remoteAccessKey.rkeys[device];
     CLOGF_TRACE(
@@ -992,8 +1058,8 @@ class CtranIbVirtualConn {
       uint64_t val,
       struct CtranIbRemoteAccessKey remoteAccessKey,
       CtranIbRequest* req) {
-    // For atomic operations, we always use device 0
-    int device = 0;
+    // For atomic operations, use the VC's atomic device.
+    int device = atomicDevice_;
     uint32_t rkey = remoteAccessKey.rkeys[device];
     CLOGF_TRACE(
         COLL,
@@ -1123,7 +1189,7 @@ class CtranIbVirtualConn {
             qpNum,
             ibDevice,
             getAtomicQpNum(),
-            0);
+            getAtomicDevice());
         FB_COMMCHECK(atomicComplete());
       } break;
 
@@ -1293,7 +1359,8 @@ class CtranIbVirtualConn {
     if (pendingPuts_.size() == 0) {
       return commSuccess;
     }
-    int device = getIbDevFromQpIdx(i);
+    int activeIdx = getActiveDevIdxFromQpIdx(i);
+    int device = activeDevices_[activeIdx];
     auto& put = pendingPuts_.front();
 
     uint64_t remData = put->len - put->offset;
@@ -1310,14 +1377,16 @@ class CtranIbVirtualConn {
 
     sendPutSg_.addr = reinterpret_cast<uint64_t>(put->sbuf) + put->offset;
     sendPutSg_.length = toSend;
-    sendPutSg_.lkey = put->lkeys[device];
+    // put->lkeys / put->rkeys are sized to activeDevices_.size() and indexed
+    // ordinally (see iputImpl), not by global IB device index.
+    sendPutSg_.lkey = put->lkeys[activeIdx];
 
     sendPutWr_.wr_id = nextWrId_++;
     sendPutWr_.send_flags = ibverbx::IBV_SEND_SIGNALED;
 
     sendPutWr_.wr.rdma.remote_addr =
         reinterpret_cast<uint64_t>(put->dbuf) + put->offset;
-    sendPutWr_.wr.rdma.rkey = put->rkeys[device];
+    sendPutWr_.wr.rdma.rkey = put->rkeys[activeIdx];
 
     // Use plain RDMA_WRITE when the caller does not request receiver-side
     // notification. Spray mode also uses plain writes; when spray notify is
@@ -1371,7 +1440,7 @@ class CtranIbVirtualConn {
     if (pendingGets_.size() == 0) {
       return commSuccess;
     }
-    int device = getIbDevFromQpIdx(i);
+    int activeIdx = getActiveDevIdxFromQpIdx(i);
     auto& get = pendingGets_.front();
 
     uint64_t remData = get->len - get->offset;
@@ -1388,13 +1457,15 @@ class CtranIbVirtualConn {
 
     sendGetSg_.addr = reinterpret_cast<uint64_t>(get->dbuf) + get->offset;
     sendGetSg_.length = toSend;
-    sendGetSg_.lkey = get->lkeys[device];
+    // get->lkeys / get->rkeys are sized to activeDevices_.size() and indexed
+    // ordinally (see igetImpl), not by global IB device index.
+    sendGetSg_.lkey = get->lkeys[activeIdx];
 
     sendGetWr_.wr_id = nextWrId_++;
 
     sendGetWr_.wr.rdma.remote_addr =
         reinterpret_cast<uint64_t>(get->sbuf) + get->offset;
-    sendGetWr_.wr.rdma.rkey = get->rkeys[device];
+    sendGetWr_.wr.rdma.rkey = get->rkeys[activeIdx];
 
     CLOGF_TRACE(
         COLL,
@@ -1782,8 +1853,22 @@ class CtranIbVirtualConn {
 
   bool isReady_{false};
   std::vector<CtranIbDevice> devices_;
+  // Set of IB device indices this VC owns QPs on (precomputed by
+  // ctran::ib::VcLayout and supplied by CtranIb). For legacy
+  // (maxVcsPerPeer == 1), this is [0, 1, ...,
+  // NCCL_CTRAN_IB_DEVICES_PER_RANK-1]. For a VC pinned to a single NIC, this is
+  // a single-element vector.
+  std::vector<int> activeDevices_;
+  // IB device indices that host this VC's control / notify / atomic QPs.
+  // Today all three equal activeDevices_.front(), but kept as separate
+  // fields so each role can later be pinned independently without
+  // touching the call sites.
+  int ctrlDevice_{0};
+  int notifyDevice_{0};
+  int atomicDevice_{0};
   uint8_t linkLayer_{0};
   int maxNumQps_{0};
+  int numQpsPerDevice_{0};
   size_t qpScalingTh_{NCCL_CTRAN_IB_QP_SCALING_THRESHOLD};
   enum NCCL_CTRAN_IB_VC_MODE vcMode_ { NCCL_CTRAN_IB_VC_MODE::spray };
   int maxQpMsgs_;
