@@ -60,11 +60,11 @@ class NVLinkTransport : public Transport {
       Segment::Span src,
       const RequestOptions& options = {}) override;
 
-  std::future<Result<size_t>> recv(
+  std::future<Status> recv(
       RegisteredSegment::Span dst,
       const RequestOptions& options = {}) override;
 
-  std::future<Result<size_t>> recv(
+  std::future<Status> recv(
       Segment::Span dst,
       const RequestOptions& options = {}) override;
 

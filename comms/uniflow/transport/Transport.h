@@ -65,7 +65,7 @@ class Transport {
       RegisteredSegment::Span src,
       const RequestOptions& options = {}) = 0;
 
-  virtual std::future<Result<size_t>> recv(
+  virtual std::future<Status> recv(
       RegisteredSegment::Span dst,
       const RequestOptions& options = {}) = 0;
 
@@ -74,7 +74,7 @@ class Transport {
       Segment::Span src,
       const RequestOptions& options = {}) = 0;
 
-  virtual std::future<Result<size_t>> recv(
+  virtual std::future<Status> recv(
       Segment::Span dst,
       const RequestOptions& options = {}) = 0;
 
