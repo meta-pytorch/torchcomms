@@ -100,6 +100,12 @@ void MultiPeerTransport::initFromTopology(
     }
     // ibgdaPeerRanks_ stays empty; ibgdaTransport_ stays nullptr.
   } else {
+    if (config.ibMode == IbBackendMode::kIbrcProxy) {
+      throw std::runtime_error(
+          "MultiPeerTransport: IBRC proxy mode selected, but the IBRC proxy "
+          "backend is not implemented yet.");
+    }
+
     for (int r = 0; r < nRanks_; ++r) {
       if (r == myRank_) {
         typePerRank_.at(r) = TransportType::SELF;

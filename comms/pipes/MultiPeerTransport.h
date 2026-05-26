@@ -13,6 +13,7 @@
 
 #include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/pipes/GpuMemHandler.h"
+#include "comms/pipes/IbTransportConfig.h"
 #include "comms/pipes/MultiPeerNvlTransport.h"
 #include "comms/pipes/MultipeerIbgdaTransport.h"
 #include "comms/pipes/P2pSelfTransportDevice.cuh"
@@ -28,6 +29,9 @@ struct MultiPeerDeviceHandle;
 struct MultiPeerTransportConfig {
   MultiPeerNvlTransportConfig nvlConfig;
   MultipeerIbgdaTransportConfig ibgdaConfig;
+
+  // Selects the IB backend for non-NVL peers. Default remains IBGDA.
+  IbBackendMode ibMode{IbBackendMode::kIbgda};
 
   // MNNVL topology overrides for UUID and clique ID.
   // See TopologyConfig for field-level documentation.
