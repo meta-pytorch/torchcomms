@@ -106,3 +106,7 @@ inline const std::vector<std::string>& mutableHintKeys() {
 // exactly once per config.
 // TODO: Move into ncclx namespace as ncclx::parseCommConfig and update callers.
 ncclResult_t ncclxParseCommConfig(ncclConfig_t* config);
+
+// Log all specified ncclConfig_t and resolved ncclx::Config fields for a
+// communicator.  Call after comm creation when commHash is available.
+void ncclxLogCommConfig(ncclComm_t comm);
