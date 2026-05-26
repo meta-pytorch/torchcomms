@@ -282,7 +282,7 @@ TEST_P(CudaGraphAllGatherCtgraphAutoSelect, CaptureReplayVerify) {
       count * sizeof(int32_t) >= NCCL_CTGRAPH_ALLGATHER_RING_THRESHOLD;
   const std::string expectedAlgo = (statex->nLocalRanks() > 1)
       ? ((!largeMessage && ctran::utils::isPowerOfTwo(statex->nNodes()))
-             ? "RecDbl"
+             ? "StreamedRd"
              : "Pipeline")
       : ((!largeMessage && ctran::utils::isPowerOfTwo(statex->nRanks()))
              ? "StreamedRd"
