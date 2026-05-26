@@ -16,6 +16,7 @@
 #include "comms/pipes/CudaDriverLazy.h"
 #include "comms/pipes/MultiPeerDeviceHandle.cuh"
 #include "comms/pipes/MultipeerIbgdaDeviceTransport.cuh"
+#include "comms/pipes/MultipeerIbrcProxyTransport.h"
 #include "comms/pipes/TopologyDiscovery.h"
 #include "comms/pipes/bootstrap/NvlBootstrapAdapter.h"
 
@@ -78,6 +79,7 @@ void MultiPeerTransport::initFromTopology(
   nvlLocalRank_ = globalToNvlLocal_.at(myRank_);
 
   typePerRank_.resize(nRanks_);
+  const bool useIbrcProxy = config.ibMode == IbBackendMode::kIbrcProxy;
 
   if (config.disableIb) {
     // NVL-only mode: validate all non-self peers are NVL-reachable, then
@@ -100,12 +102,6 @@ void MultiPeerTransport::initFromTopology(
     }
     // ibgdaPeerRanks_ stays empty; ibgdaTransport_ stays nullptr.
   } else {
-    if (config.ibMode == IbBackendMode::kIbrcProxy) {
-      throw std::runtime_error(
-          "MultiPeerTransport: IBRC proxy mode selected, but the IBRC proxy "
-          "backend is not implemented yet.");
-    }
-
     for (int r = 0; r < nRanks_; ++r) {
       if (r == myRank_) {
         typePerRank_.at(r) = TransportType::SELF;
@@ -136,7 +132,7 @@ void MultiPeerTransport::initFromTopology(
     }
     LOG(INFO) << "MultiPeerTransport: rank " << myRank_ << "/" << nRanks_
               << " topology: " << nvlCount << " NVL peers, " << ibgdaCount
-              << " IBGDA peers";
+              << " IB peers";
   }
   for (int r = 0; r < nRanks_; ++r) {
     VLOG(1) << "MultiPeerTransport: rank " << myRank_ << " -> rank " << r
@@ -160,16 +156,24 @@ void MultiPeerTransport::initFromTopology(
             << " nvlLocalRank=" << nvlLocalRank_;
   }
 
-  // Always create IBGDA transport — it is the universal fallback for all peers.
-  // NVL is preferred when available, but IBGDA covers every non-self rank.
+  // Create the selected IB backend. NVL is preferred when available, but the IB
+  // backend covers every non-self rank.
   if (!config.disableIb && nRanks_ > 1) {
-    auto ibgdaConfig = config.ibgdaConfig;
-    ibgdaConfig.cudaDevice = deviceId_;
-    ibgdaTransport_ = std::make_unique<MultipeerIbgdaTransport>(
-        myRank_, nRanks_, bootstrap_, ibgdaConfig);
-    VLOG(1) << "MultiPeerTransport: rank " << myRank_
-            << " created IBGDA sub-transport for " << ibgdaPeerRanks_.size()
-            << " peers";
+    auto ibConfig = config.ibgdaConfig;
+    ibConfig.cudaDevice = deviceId_;
+    if (useIbrcProxy) {
+      ibrcProxyTransport_ = std::make_unique<MultipeerIbrcProxyTransport>(
+          myRank_, nRanks_, bootstrap_, ibConfig);
+      VLOG(1) << "MultiPeerTransport: rank " << myRank_
+              << " created IBRC proxy sub-transport for "
+              << ibgdaPeerRanks_.size() << " peers";
+    } else {
+      ibgdaTransport_ = std::make_unique<MultipeerIbgdaTransport>(
+          myRank_, nRanks_, bootstrap_, ibConfig);
+      VLOG(1) << "MultiPeerTransport: rank " << myRank_
+              << " created IBGDA sub-transport for " << ibgdaPeerRanks_.size()
+              << " peers";
+    }
   }
 }
 
@@ -192,13 +196,17 @@ void MultiPeerTransport::exchange() {
 
   VLOG(1) << "MultiPeerTransport: rank " << myRank_ << " exchange()"
           << " nvl=" << (nvlTransport_ ? "yes" : "no")
-          << " ibgda=" << (ibgdaTransport_ ? "yes" : "no");
+          << " ibgda=" << (ibgdaTransport_ ? "yes" : "no")
+          << " ibrc_proxy=" << (ibrcProxyTransport_ ? "yes" : "no");
 
   if (nvlTransport_) {
     nvlTransport_->exchange();
   }
   if (ibgdaTransport_) {
     ibgdaTransport_->exchange();
+  }
+  if (ibrcProxyTransport_) {
+    ibrcProxyTransport_->exchange();
   }
 
   build_device_handle();

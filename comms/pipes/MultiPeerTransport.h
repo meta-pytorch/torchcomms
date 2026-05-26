@@ -25,12 +25,14 @@ namespace comms::pipes {
 // Forward declaration — include MultiPeerDeviceHandle.cuh to use
 // get_device_handle()
 struct MultiPeerDeviceHandle;
+class MultipeerIbrcProxyTransport;
 
 struct MultiPeerTransportConfig {
   MultiPeerNvlTransportConfig nvlConfig;
   MultipeerIbgdaTransportConfig ibgdaConfig;
 
-  // Selects the IB backend for non-NVL peers. Default remains IBGDA.
+  // Process-wide IB backend mode resolved by the caller from
+  // NCCL_CTRAN_PIPES_IB_MODE before constructing MultiPeerTransport.
   IbBackendMode ibMode{IbBackendMode::kIbgda};
 
   // MNNVL topology overrides for UUID and clique ID.
@@ -289,6 +291,7 @@ class MultiPeerTransport {
   std::shared_ptr<meta::comms::IBootstrap> nvlBootstrapAdapter_;
   std::unique_ptr<MultiPeerNvlTransport> nvlTransport_;
   std::unique_ptr<MultipeerIbgdaTransport> ibgdaTransport_;
+  std::unique_ptr<MultipeerIbrcProxyTransport> ibrcProxyTransport_;
 
   // --- GPU-allocated transport array for device handle ---
   Transport* transportsGpu_{nullptr};
