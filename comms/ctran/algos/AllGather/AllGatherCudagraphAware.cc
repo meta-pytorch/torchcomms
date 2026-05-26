@@ -3,12 +3,12 @@
 // Cudagraph-aware AllGather: when ctranAllGather() is called during CUDA graph
 // capture with a ctgraph* algorithm, this module handles buffer registration
 // and algorithm dispatch. The algo is either explicitly specified
-// (ctgraph_pipeline, ctgraph_ring, ctgraph_rd) or auto-selected by
-// selectCtgraphAlgo() based on topology and message size.
+// (ctgraph_pipeline, ctgraph_rdpipeline, ctgraph_ring, ctgraph_rd) or
+// auto-selected by selectCtgraphAlgo() based on topology and message size.
 //
 // Two registration strategies:
 //
-//   winPersistBuffReg (ctgraph_pipeline, nLocalRanks > 1):
+//   winPersistBuffReg (ctgraph_pipeline/rdpipeline, nLocalRanks > 1):
 //     Both local and remote addresses must be stable across replays.
 //     Uses window: ctranWinRegister → allGatherWinInit → allGatherWinExec.
 //
@@ -29,6 +29,7 @@
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/utils/CudaGraphUtils.h"
+#include "comms/ctran/utils/MathUtils.h"
 #include "comms/ctran/window/CtranWin.h"
 #include "comms/utils/CudaRAII.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -72,12 +73,15 @@ commResult_t localPersistBuffReg(void* recvbuff, size_t recvBytes) {
 enum NCCL_ALLGATHER_ALGO selectCtgraphAlgo(
     size_t sendBytes,
     const ncclx::CommStateX* statex) {
+  const bool largeMessage = sendBytes >= NCCL_CTGRAPH_ALLGATHER_RING_THRESHOLD;
   if (statex->nLocalRanks() > 1) {
-    return NCCL_ALLGATHER_ALGO::ctgraph_pipeline;
+    return (!largeMessage && ctran::utils::isPowerOfTwo(statex->nNodes()))
+        ? NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline
+        : NCCL_ALLGATHER_ALGO::ctgraph_pipeline;
   }
-  return (sendBytes >= NCCL_CTGRAPH_ALLGATHER_RING_THRESHOLD)
-      ? NCCL_ALLGATHER_ALGO::ctgraph_ring
-      : NCCL_ALLGATHER_ALGO::ctgraph_rd;
+  return (!largeMessage && ctran::utils::isPowerOfTwo(statex->nRanks()))
+      ? NCCL_ALLGATHER_ALGO::ctgraph_rd
+      : NCCL_ALLGATHER_ALGO::ctgraph_ring;
 }
 
 } // namespace

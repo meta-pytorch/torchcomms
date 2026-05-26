@@ -13,6 +13,7 @@
 #include "comms/ctran/tests/VerifyAlgoStatsUtil.h"
 #include "comms/ctran/tests/cudagraph/CtranCudaGraphParamTest.h"
 #include "comms/ctran/utils/Alloc.h"
+#include "comms/ctran/utils/MathUtils.h"
 
 #define NCCLCHECK_TEST_BENCH(cmd)                                         \
   do {                                                                    \
@@ -54,11 +55,13 @@ static AlgoDescriptor makeAllGatherCtgraph(
         statex->nLocalRanks() > 1) {
       return false;
     }
-    if (algo == NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline) {
-      const auto nNodes = statex->nNodes();
-      if (nNodes > 1 && (nNodes & (nNodes - 1)) != 0) {
-        return false;
-      }
+    if (algo == NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline &&
+        !ctran::utils::isPowerOfTwo(statex->nNodes())) {
+      return false;
+    }
+    if (algo == NCCL_ALLGATHER_ALGO::ctgraph_rd &&
+        !ctran::utils::isPowerOfTwo(statex->nRanks())) {
+      return false;
     }
     return true;
   };
@@ -131,12 +134,15 @@ TEST_P(CudaGraphAllGatherCtgraphExpandable, CaptureReplayVerify) {
       statex->nLocalRanks() > 1) {
     GTEST_SKIP() << allGatherAlgoName(algo) << " requires nLocalRanks == 1";
   }
-  if (algo == NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline) {
-    const auto nNodes = statex->nNodes();
-    if (nNodes > 1 && (nNodes & (nNodes - 1)) != 0) {
-      GTEST_SKIP() << allGatherAlgoName(algo)
-                   << " requires nNodes to be a power of 2";
-    }
+  if (algo == NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline &&
+      !ctran::utils::isPowerOfTwo(statex->nNodes())) {
+    GTEST_SKIP() << allGatherAlgoName(algo)
+                 << " requires nNodes to be a power of 2";
+  }
+  if (algo == NCCL_ALLGATHER_ALGO::ctgraph_rd &&
+      !ctran::utils::isPowerOfTwo(statex->nRanks())) {
+    GTEST_SKIP() << allGatherAlgoName(algo)
+                 << " requires nRanks to be a power of 2";
   }
 
   const int nRanks = numRanks;
@@ -209,13 +215,13 @@ INSTANTIATE_TEST_SUITE_P(
 
 // Verifies ctgraph auto-select picks the correct algorithm based on topology
 // and message size. Parameterized by sendcount (element count).
-// nLocalRanks > 1 → pipeline; nLocalRanks == 1 + small msg → rd;
-// nLocalRanks == 1 + large msg (>= threshold) → ring.
+// nLocalRanks > 1 + small msg + power-of-2 nNodes → rdpipeline;
+// nLocalRanks > 1 + large msg or non-power-of-2 nNodes → pipeline;
+// nLocalRanks == 1 + small msg + power-of-2 nRanks → rd/ctsrd;
+// nLocalRanks == 1 + large msg or non-power-of-2 nRanks → ring.
 struct AutoSelectParam {
   std::string name;
   size_t count;
-  std::string expectedAlgoWhenLocal;
-  std::string expectedAlgoWhenNolocal;
 };
 
 class CudaGraphAllGatherCtgraphAutoSelect
@@ -242,12 +248,6 @@ TEST_P(CudaGraphAllGatherCtgraphAutoSelect, CaptureReplayVerify) {
   const size_t count = param.count;
   const int nRanks = numRanks;
   const auto statex = comm->statex_.get();
-
-  // Large msg test only meaningful with nLocalRanks == 1
-  if (count * sizeof(int32_t) >= NCCL_CTGRAPH_ALLGATHER_RING_THRESHOLD &&
-      statex->nLocalRanks() > 1) {
-    GTEST_SKIP() << "Large message ring test requires nLocalRanks == 1";
-  }
 
   ctran::TestDeviceBuffer send(count * sizeof(int32_t));
   ctran::TestDeviceBuffer recv(count * nRanks * sizeof(int32_t));
@@ -278,9 +278,15 @@ TEST_P(CudaGraphAllGatherCtgraphAutoSelect, CaptureReplayVerify) {
 
   verifyAllGather(recv.get(), count, nRanks);
 
-  const auto& expectedAlgo = (statex->nLocalRanks() > 1)
-      ? param.expectedAlgoWhenLocal
-      : param.expectedAlgoWhenNolocal;
+  const bool largeMessage =
+      count * sizeof(int32_t) >= NCCL_CTGRAPH_ALLGATHER_RING_THRESHOLD;
+  const std::string expectedAlgo = (statex->nLocalRanks() > 1)
+      ? ((!largeMessage && ctran::utils::isPowerOfTwo(statex->nNodes()))
+             ? "RecDbl"
+             : "Pipeline")
+      : ((!largeMessage && ctran::utils::isPowerOfTwo(statex->nRanks()))
+             ? "StreamedRd"
+             : "Ring");
   algoStats_.verify(comm.get(), "AllGather", expectedAlgo);
 
   ASSERT_EQ(cudaGraphExecDestroy(exec), cudaSuccess);
@@ -296,8 +302,8 @@ INSTANTIATE_TEST_SUITE_P(
     CudaGraphAllGatherCtgraphAutoSelectTests,
     CudaGraphAllGatherCtgraphAutoSelect,
     ::testing::Values(
-        AutoSelectParam{"SmallMsg", 1024, "Pipeline", "Rd"},
-        AutoSelectParam{"LargeMsg", kRingThresholdCount, "Pipeline", "Ring"}),
+        AutoSelectParam{"SmallMsg", 1024},
+        AutoSelectParam{"LargeMsg", kRingThresholdCount}),
     [](const ::testing::TestParamInfo<AutoSelectParam>& info) {
       return info.param.name;
     });
