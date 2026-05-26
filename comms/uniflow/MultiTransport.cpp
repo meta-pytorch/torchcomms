@@ -289,18 +289,16 @@ std::future<Status> MultiTransport::send(
   return make_ready_future<Status>(ErrCode::NotImplemented);
 }
 
-std::future<Result<size_t>> MultiTransport::recv(
+std::future<Status> MultiTransport::recv(
     RegisteredSegment::Span dst,
     const RequestOptions& options) {
-  return make_ready_future<Result<size_t>>(
-      Result<size_t>(ErrCode::NotImplemented));
+  return make_ready_future<Status>(ErrCode::NotImplemented);
 }
 
-std::future<Result<size_t>> MultiTransport::recv(
+std::future<Status> MultiTransport::recv(
     Segment::Span dst,
     const RequestOptions& options) {
-  return make_ready_future<Result<size_t>>(
-      Result<size_t>(ErrCode::NotImplemented));
+  return make_ready_future<Status>(ErrCode::NotImplemented);
 }
 
 Result<RegisteredSegment> MultiTransportFactory::registerSegment(

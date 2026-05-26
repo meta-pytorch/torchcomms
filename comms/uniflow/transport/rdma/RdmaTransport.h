@@ -237,12 +237,12 @@ class RdmaTransport : public Transport {
       const RequestOptions& options = {}) override;
 
   /* Not yet implemented. Returns ErrCode::NotImplemented. */
-  std::future<Result<size_t>> recv(
+  std::future<Status> recv(
       RegisteredSegment::Span dst,
       const RequestOptions& options = {}) override;
 
   /* Not yet implemented. Returns ErrCode::NotImplemented. */
-  std::future<Result<size_t>> recv(
+  std::future<Status> recv(
       Segment::Span dst,
       const RequestOptions& options = {}) override;
 

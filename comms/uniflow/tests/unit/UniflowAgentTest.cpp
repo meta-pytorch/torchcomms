@@ -63,14 +63,12 @@ class MockTransport : public Transport {
   std::future<Status> send(Segment::Span, const RequestOptions&) override {
     return make_ready_future<Status>(ErrCode::NotImplemented);
   }
-  std::future<Result<size_t>> recv(
-      RegisteredSegment::Span,
-      const RequestOptions&) override {
-    return make_ready_future<Result<size_t>>(size_t{0});
-  }
-  std::future<Result<size_t>> recv(Segment::Span, const RequestOptions&)
+  std::future<Status> recv(RegisteredSegment::Span, const RequestOptions&)
       override {
-    return make_ready_future<Result<size_t>>(size_t{0});
+    return make_ready_future<Status>(Ok());
+  }
+  std::future<Status> recv(Segment::Span, const RequestOptions&) override {
+    return make_ready_future<Status>(Ok());
   }
   void shutdown() override {}
 
