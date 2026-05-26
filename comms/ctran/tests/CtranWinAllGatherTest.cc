@@ -7,6 +7,7 @@
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
+#include "comms/ctran/utils/MathUtils.h"
 #include "comms/ctran/window/CtranWin.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
@@ -70,9 +71,9 @@ class CtranWinAllGatherTest : public ctran::CtranDistTestFixture {
       GTEST_SKIP() << "allGatherP not supported on this topology";
     }
     const auto nNodes = statex->nNodes();
-    if (algoStr == "ctrdpipeline" && nNodes > 1 &&
-        (nNodes & (nNodes - 1)) != 0) {
-      GTEST_SKIP() << "ctrd requires nNodes to be a power of 2";
+    if ((algoStr == "ctrdpipeline" || algoStr == "ctsrdpipeline") &&
+        nNodes > 1 && !ctran::utils::isPowerOfTwo(nNodes)) {
+      GTEST_SKIP() << algoStr << " requires nNodes to be a power of 2";
     }
 
     cudaStream_t stream;
@@ -145,7 +146,11 @@ INSTANTIATE_TEST_SUITE_P(
     CtranWinAllGatherTestParam,
     ::testing::Combine(
         ::testing::Values(1024, 8192, 65536),
-        ::testing::Values("ctdirect", "ctpipeline", "ctrdpipeline")),
+        ::testing::Values(
+            "ctdirect",
+            "ctpipeline",
+            "ctrdpipeline",
+            "ctsrdpipeline")),
     [](const ::testing::TestParamInfo<CtranWinAllGatherTestParam::ParamType>&
            info) {
       return "count_" + std::to_string(std::get<0>(info.param)) + "_" +

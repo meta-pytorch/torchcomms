@@ -10,6 +10,7 @@ namespace ctran::algos {
 // Add new entries here when registering plans for additional algorithms.
 enum class PersistPlanKey {
   kAllgatherCtsrd,
+  kAllgatherPCtsrd,
 };
 
 struct PersistPlanKeyHash {
