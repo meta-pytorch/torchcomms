@@ -104,4 +104,89 @@ hierarchical_allgather_nvl_broadcast_from_recvbuf(
 #endif
 }
 
+template <typename T, typename ReduceOp, typename Group>
+__device__ __forceinline__ void
+hierarchical_reduce_scatter_nvl_reduce_to_workspace(
+    Group& group,
+    int ib_size,
+    int nvl_rank,
+    int nvl_size,
+    std::size_t chunk_elements,
+    std::size_t max_sig,
+    const P2pNvlTransportDevice* peers,
+    const T* input,
+    T* workspace,
+    Timeout timeout) {
+#ifdef __CUDA_ARCH__
+  const std::size_t chunk_bytes = chunk_elements * sizeof(T);
+  const char* input_base = reinterpret_cast<const char*>(input);
+  char* workspace_base = reinterpret_cast<char*>(workspace);
+
+  TiledBuffer<char> tile(nullptr, chunk_bytes, group);
+  const std::size_t tile_offset = group.group_id * tile.tile_elements;
+  const std::size_t tile_bytes = tile.bytes();
+
+  for (int ib_dst = 0; ib_dst < ib_size; ++ib_dst) {
+    const std::size_t workspace_chunk =
+        static_cast<std::size_t>(ib_dst) * chunk_bytes;
+    const std::size_t input_chunk =
+        (static_cast<std::size_t>(ib_dst) * nvl_size + nvl_rank) * chunk_bytes;
+    char* dst = workspace_base + workspace_chunk + tile_offset;
+
+    memcpy_vectorized(
+        dst, input_base + input_chunk + tile_offset, tile_bytes, group);
+    group.sync();
+
+    if (nvl_size <= 1 || tile_bytes == 0) {
+      continue;
+    }
+
+    const std::size_t pipeline_window =
+        direct_pipeline_window(peers, nvl_rank, nvl_size, group.total_groups);
+    PIPES_DEVICE_CHECK_MSG(
+        pipeline_window != 0,
+        "hierarchical reduce-scatter NVLink reduce pipeline window is zero");
+
+    for (std::size_t off = 0; off < tile_bytes; off += pipeline_window) {
+      const std::size_t remaining = tile_bytes - off;
+      const std::size_t window =
+          remaining < pipeline_window ? remaining : pipeline_window;
+
+      for (int peer_rank = 0; peer_rank < nvl_size; ++peer_rank) {
+        if (peer_rank == nvl_rank) {
+          continue;
+        }
+        const std::size_t peer_input_chunk =
+            (static_cast<std::size_t>(ib_dst) * nvl_size + peer_rank) *
+            chunk_bytes;
+        auto peer = peers[peer_rank];
+        peer.send(
+            group,
+            input_base + peer_input_chunk + tile_offset + off,
+            window,
+            group.total_groups,
+            max_sig,
+            timeout);
+      }
+
+      for (int peer_rank = 0; peer_rank < nvl_size; ++peer_rank) {
+        if (peer_rank == nvl_rank) {
+          continue;
+        }
+        char* window_dst = dst + off;
+        auto peer = peers[peer_rank];
+        peer.template recv<ReduceOp>(
+            group,
+            window_dst,
+            window,
+            group.total_groups,
+            max_sig,
+            timeout,
+            window_dst);
+      }
+    }
+  }
+#endif
+}
+
 } // namespace comms::pipes
