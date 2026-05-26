@@ -62,4 +62,15 @@ extern PFN_cuMemGetAllocationPropertiesFromHandle_v10020
 extern PFN_cuMemRetainAllocationHandle_v11000 pfn_cuMemRetainAllocationHandle;
 extern PFN_cuMemGetAddressRange_v3020 pfn_cuMemGetAddressRange;
 
+#if CUDART_VERSION >= 12010
+// NVSwitch multicast / multimem. These symbols are optional at runtime: older
+// drivers may not expose them even when the headers are new enough.
+extern PFN_cuMulticastCreate_v12010 pfn_cuMulticastCreate;
+extern PFN_cuMulticastAddDevice_v12010 pfn_cuMulticastAddDevice;
+extern PFN_cuMulticastBindMem_v12010 pfn_cuMulticastBindMem;
+extern PFN_cuMulticastBindAddr_v12010 pfn_cuMulticastBindAddr;
+extern PFN_cuMulticastUnbind_v12010 pfn_cuMulticastUnbind;
+extern PFN_cuMulticastGetGranularity_v12010 pfn_cuMulticastGetGranularity;
+#endif
+
 } // namespace comms::pipes

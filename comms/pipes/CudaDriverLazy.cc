@@ -30,6 +30,14 @@ PFN_cuMemGetAllocationPropertiesFromHandle_v10020
 PFN_cuMemRetainAllocationHandle_v11000 pfn_cuMemRetainAllocationHandle =
     nullptr;
 PFN_cuMemGetAddressRange_v3020 pfn_cuMemGetAddressRange = nullptr;
+#if CUDART_VERSION >= 12010
+PFN_cuMulticastCreate_v12010 pfn_cuMulticastCreate = nullptr;
+PFN_cuMulticastAddDevice_v12010 pfn_cuMulticastAddDevice = nullptr;
+PFN_cuMulticastBindMem_v12010 pfn_cuMulticastBindMem = nullptr;
+PFN_cuMulticastBindAddr_v12010 pfn_cuMulticastBindAddr = nullptr;
+PFN_cuMulticastUnbind_v12010 pfn_cuMulticastUnbind = nullptr;
+PFN_cuMulticastGetGranularity_v12010 pfn_cuMulticastGetGranularity = nullptr;
+#endif
 
 namespace {
 
@@ -50,6 +58,14 @@ int load_sym(const char* name, void** ptr) {
     return -1;
   }
   return 0;
+}
+
+void load_optional_sym(const char* name, void** ptr) {
+  cudaDriverEntryPointQueryResult status;
+  auto res = cudaGetDriverEntryPoint(name, ptr, cudaEnableDefault, &status);
+  if (res != cudaSuccess || status != cudaDriverEntryPointSuccess) {
+    *ptr = nullptr;
+  }
 }
 
 void do_init() {
@@ -76,6 +92,20 @@ void do_init() {
   LOAD(cuMemGetAllocationPropertiesFromHandle);
   LOAD(cuMemRetainAllocationHandle);
   LOAD(cuMemGetAddressRange);
+
+#if CUDART_VERSION >= 12010
+#define LOAD_OPTIONAL(symbol) \
+  load_optional_sym(#symbol, reinterpret_cast<void**>(&pfn_##symbol))
+
+  LOAD_OPTIONAL(cuMulticastCreate);
+  LOAD_OPTIONAL(cuMulticastAddDevice);
+  LOAD_OPTIONAL(cuMulticastBindMem);
+  LOAD_OPTIONAL(cuMulticastBindAddr);
+  LOAD_OPTIONAL(cuMulticastUnbind);
+  LOAD_OPTIONAL(cuMulticastGetGranularity);
+
+#undef LOAD_OPTIONAL
+#endif
 
 #undef LOAD
 
