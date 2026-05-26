@@ -6,6 +6,7 @@
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/utils/CudaGraphUtils.h"
+#include "comms/ctran/utils/MathUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 static bool isGraphAwareAlgo(enum NCCL_ALLGATHER_ALGO algo) {
@@ -151,6 +152,30 @@ bool ctranAllGatherSupport(
             "Falling back to baseline",
             allGatherAlgoName(algo),
             statex->nLocalRanks());
+        supported = false;
+        break;
+      }
+      if (algo == NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline &&
+          !ctran::utils::isPowerOfTwo(statex->nNodes())) {
+        CLOGF_SUBSYS(
+            WARN,
+            COLL,
+            "AllGather {} requires power-of-2 nNodes, got {}. "
+            "Falling back to baseline",
+            allGatherAlgoName(algo),
+            statex->nNodes());
+        supported = false;
+        break;
+      }
+      if (algo == NCCL_ALLGATHER_ALGO::ctgraph_rd &&
+          !ctran::utils::isPowerOfTwo(statex->nRanks())) {
+        CLOGF_SUBSYS(
+            WARN,
+            COLL,
+            "AllGather {} requires power-of-2 nRanks, got {}. "
+            "Falling back to baseline",
+            allGatherAlgoName(algo),
+            statex->nRanks());
         supported = false;
         break;
       }
