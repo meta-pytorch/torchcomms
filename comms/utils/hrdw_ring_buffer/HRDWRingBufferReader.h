@@ -33,26 +33,63 @@ __attribute__((always_inline)) inline T relaxedLoad(const T* ptr) {
 #endif
 }
 
-// Result of a single poll() call.
-struct PollResult {
+// Result of a single poll() call, specialized per MemoryCoherenceScope.
+// Both specializations carry entriesRead and entriesLost; each adds the
+// scope-specific fields its poll() implementation can populate.
+template <MemoryCoherenceScope C>
+struct PollResult;
+
+template <>
+struct PollResult<MemoryCoherenceScope::System> {
   uint64_t entriesRead{0};
   uint64_t entriesLost{0};
+  // True if poll() exited because the timeout elapsed before any new
+  // entries arrived.
   bool timedOut{false};
 };
 
-// CPU-side consumer for a HRDWRingBuffer. Uses the mapped writeIndex to
-// know how far ahead writers have gone, then validates each entry via
-// the per-entry epoch field. If the reader falls behind by more than
-// ringSize, it jumps to the tail and counts skipped entries as lost.
-//
-// Non-owning — the HRDWRingBuffer must outlive this reader. Single-threaded
-// (only the poll thread should call poll()).
-template <typename DataT>
-class HRDWRingBufferReader {
-  using Entry = typename HRDWRingBuffer<DataT>::Entry;
+template <>
+struct PollResult<MemoryCoherenceScope::Device> {
+  uint64_t entriesRead{0};
+  uint64_t entriesLost{0};
+  // Error from cudaStreamSynchronize / cudaMemcpy during the drain.
+  cudaError_t error{cudaSuccess};
+};
 
+// CPU-side consumer for an HRDWRingBuffer. Both scopes expose the same
+// public method — poll(...) — but the implementation differs per
+// MemoryCoherenceScope:
+//
+//   System: poll() reads pinned mapped memory directly and validates
+//           each entry via the per-slot epoch field. Lock-free and
+//           concurrent with the writer. Takes a callback and an
+//           optional timeout.
+//
+//   Device: poll() synchronizes the stream, cudaMemcpys the ring + write
+//           index to host, then iterates the host-side copy. Takes a
+//           stream and a callback. The internal read cursor advances
+//           on every poll, so successive calls only return entries
+//           written since the previous one.
+//
+// Non-owning — the HRDWRingBuffer must outlive this reader. Single-
+// threaded (only one thread should call into the reader).
+template <typename DataT, MemoryCoherenceScope C = MemoryCoherenceScope::System>
+class HRDWRingBufferReader;
+
+// State + ctor shared by the System and Device readers. The handle
+// fields (ring_, writeIndex_, size_, mask_, shift_) and the read
+// cursor are identical across scopes; only poll() differs.
+template <typename DataT, MemoryCoherenceScope C>
+class HRDWRingBufferReaderBase {
  public:
-  explicit HRDWRingBufferReader(const HRDWRingBuffer<DataT>& buffer)
+  uint64_t lastReadIndex() const {
+    return lastReadIndex_;
+  }
+
+ protected:
+  using EntryT = HRDWEntry<DataT, C>;
+
+  explicit HRDWRingBufferReaderBase(const HRDWRingBuffer<DataT, C>& buffer)
       : ring_(buffer.ring_),
         writeIndex_(buffer.writeIndex_),
         size_(buffer.size_),
@@ -60,6 +97,37 @@ class HRDWRingBufferReader {
         shift_(buffer.shift_) {
     assert(buffer.valid());
   }
+
+  EntryT* ring_;
+  uint64_t* writeIndex_;
+  uint32_t size_;
+  // size_ - 1. Cached so `slot & mask_` is one bitwise op per read
+  // instead of `slot % size_`.
+  uint32_t mask_;
+  // log2(size_). Cached so the per-slot expected epoch is computed as
+  // `(slot >> shift_) + 1` — a shift instead of a divide.
+  uint32_t shift_;
+  uint64_t lastReadIndex_{0};
+};
+
+template <typename DataT>
+class HRDWRingBufferReader<DataT, MemoryCoherenceScope::System>
+    : public HRDWRingBufferReaderBase<DataT, MemoryCoherenceScope::System> {
+  using Base = HRDWRingBufferReaderBase<DataT, MemoryCoherenceScope::System>;
+  using Base::lastReadIndex_;
+  using Base::mask_;
+  using Base::ring_;
+  using Base::shift_;
+  using Base::size_;
+  using Base::writeIndex_;
+  using typename Base::EntryT;
+
+ public:
+  using Result = PollResult<MemoryCoherenceScope::System>;
+
+  explicit HRDWRingBufferReader(
+      const HRDWRingBuffer<DataT, MemoryCoherenceScope::System>& buffer)
+      : Base(buffer) {}
 
   enum class ReadResult { kSuccess, kOverwritten, kNotReady };
 
@@ -74,12 +142,12 @@ class HRDWRingBufferReader {
   // Relaxed (rather than acquire) is sufficient because we don't rely on
   // ring[idx] writes being ordered with the writeIndex bump: the epoch
   // check below classifies any stale state as kNotReady / kOverwritten.
-  ReadResult tryRead(uint64_t slot, Entry& dest) const {
+  ReadResult tryRead(uint64_t slot, EntryT& dest) const {
     uint64_t idx = slot & mask_;
     uint32_t expected = static_cast<uint32_t>(slot >> shift_) + 1u;
 
     static_assert(
-        sizeof(Entry) == sizeof(unsigned __int128),
+        sizeof(EntryT) == sizeof(unsigned __int128),
         "Entry must be exactly 16 bytes for the atomic load");
     unsigned __int128 raw =
         relaxedLoad(reinterpret_cast<const unsigned __int128*>(&ring_[idx]));
@@ -105,12 +173,12 @@ class HRDWRingBufferReader {
   // If timeout is non-zero, waits up to that duration for the first entry
   // before returning empty.
   //
-  // Returns a PollResult with counts of entries read and lost.
+  // Returns a Result with counts of entries read and lost.
   template <typename Callback>
-  PollResult poll(
+  Result poll(
       Callback&& callback,
       std::chrono::milliseconds timeout = std::chrono::milliseconds{0}) {
-    PollResult result;
+    Result result;
 
     auto deadline = std::chrono::steady_clock::now() + timeout;
 
@@ -137,7 +205,7 @@ class HRDWRingBufferReader {
     validEntries_.clear();
 
     while (lastReadIndex_ < head) {
-      Entry entry;
+      EntryT entry;
       auto readResult = tryRead(lastReadIndex_, entry);
 
       switch (readResult) {
@@ -173,24 +241,115 @@ class HRDWRingBufferReader {
     return result;
   }
 
-  uint64_t lastReadIndex() const {
-    return lastReadIndex_;
+ private:
+  // Reusable buffer for accumulated entries — avoids allocation per poll().
+  std::vector<std::pair<EntryT, uint64_t>> validEntries_;
+};
+
+// Device-scope reader. Single-consumer, synchronous: poll() pulls a
+// cudaMemcpy snapshot of the ring after a stream sync, then invokes the
+// callback for each fresh entry. The internal read cursor advances on
+// every poll, so successive calls only return entries written since
+// the previous one.
+template <typename DataT>
+class HRDWRingBufferReader<DataT, MemoryCoherenceScope::Device>
+    : public HRDWRingBufferReaderBase<DataT, MemoryCoherenceScope::Device> {
+  using Base = HRDWRingBufferReaderBase<DataT, MemoryCoherenceScope::Device>;
+  using Base::lastReadIndex_;
+  using Base::mask_;
+  using Base::ring_;
+  using Base::shift_;
+  using Base::size_;
+  using Base::writeIndex_;
+  using typename Base::EntryT;
+
+ public:
+  using Result = PollResult<MemoryCoherenceScope::Device>;
+
+  explicit HRDWRingBufferReader(
+      const HRDWRingBuffer<DataT, MemoryCoherenceScope::Device>& buffer)
+      : Base(buffer) {}
+
+  // Poll for new entries since the last poll(). Synchronizes the stream,
+  // copies the ring and writeIndex from device to host, then invokes
+  // callback(entry, slot) for each valid entry. Entries that were lapped
+  // before this poll are counted in entriesLost.
+  template <typename Callback>
+  Result poll(cudaStream_t stream, Callback&& callback) {
+    Result result;
+
+    result.error = cudaStreamSynchronize(stream);
+    if (result.error != cudaSuccess) {
+      return result;
+    }
+
+    uint64_t head = 0;
+    result.error =
+        cudaMemcpy(&head, writeIndex_, sizeof(head), cudaMemcpyDeviceToHost);
+    if (result.error != cudaSuccess) {
+      return result;
+    }
+
+    if (head <= lastReadIndex_) {
+      return result;
+    }
+
+    uint64_t tail = lastReadIndex_;
+    if (head - tail > size_) {
+      result.entriesLost = head - tail - size_;
+      tail = head - size_;
+    }
+
+    uint64_t count = head - tail;
+    drainBuf_.resize(count);
+
+    // The entries may wrap around the ring. Copy in up to two segments.
+    uint64_t startIdx = tail & mask_;
+    uint64_t firstChunk =
+        std::min(count, static_cast<uint64_t>(size_) - startIdx);
+    result.error = cudaMemcpy(
+        drainBuf_.data(),
+        ring_ + startIdx,
+        firstChunk * sizeof(EntryT),
+        cudaMemcpyDeviceToHost);
+    if (result.error != cudaSuccess) {
+      return result;
+    }
+    if (firstChunk < count) {
+      result.error = cudaMemcpy(
+          drainBuf_.data() + firstChunk,
+          ring_,
+          (count - firstChunk) * sizeof(EntryT),
+          cudaMemcpyDeviceToHost);
+      if (result.error != cudaSuccess) {
+        return result;
+      }
+    }
+
+    // Validate epoch per slot. Two writers can claim slots that map to
+    // the same idx (slot and slot + size_); their atom.exch.b128 stores
+    // are non-torn but order isn't determined by claim order, so an
+    // older-generation entry can be observed at an idx whose current-
+    // generation entry was claimed first. The epoch check classifies
+    // such stale slots as lost rather than delivering wrong-generation
+    // data to the callback.
+    for (uint64_t i = 0; i < count; ++i) {
+      uint64_t slot = tail + i;
+      uint32_t expected = static_cast<uint32_t>(slot >> shift_) + 1u;
+      if (drainBuf_[i].epoch == expected) {
+        callback(drainBuf_[i], slot);
+        ++result.entriesRead;
+      } else {
+        ++result.entriesLost;
+      }
+    }
+    lastReadIndex_ = head;
+
+    return result;
   }
 
  private:
-  Entry* ring_;
-  uint64_t* writeIndex_;
-  uint32_t size_;
-  // size_ - 1. Cached so `slot & mask_` is one bitwise op per read
-  // instead of `slot % size_`.
-  uint32_t mask_;
-  // log2(size_). Cached so the per-slot expected epoch is computed as
-  // `(slot >> shift_) + 1` — a shift instead of a divide.
-  uint32_t shift_;
-  uint64_t lastReadIndex_{0};
-
-  // Reusable buffer for accumulated entries — avoids allocation per poll().
-  std::vector<std::pair<Entry, uint64_t>> validEntries_;
+  std::vector<EntryT> drainBuf_;
 };
 
 } // namespace hrdw_ring_buffer
