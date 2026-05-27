@@ -19,19 +19,19 @@ using TestEntry = TestBuffer::Entry;
 // Test accessor — friend of HRDWRingBuffer, provides access to internals
 // for CPU-side simulation of GPU writes.
 namespace hrdw_ring_buffer {
-template <typename DataT>
+template <typename DataT, MemoryCoherenceScope C = MemoryCoherenceScope::System>
 class HRDWRingBufferTestAccessor {
  public:
-  static HRDWEntry<DataT>* ring(const HRDWRingBuffer<DataT>& buf) {
+  static HRDWEntry<DataT, C>* ring(const HRDWRingBuffer<DataT, C>& buf) {
     return buf.ring_;
   }
-  static uint32_t mask(const HRDWRingBuffer<DataT>& buf) {
+  static uint32_t mask(const HRDWRingBuffer<DataT, C>& buf) {
     return buf.mask_;
   }
-  static uint32_t shift(const HRDWRingBuffer<DataT>& buf) {
+  static uint32_t shift(const HRDWRingBuffer<DataT, C>& buf) {
     return buf.shift_;
   }
-  static uint64_t* writeIndex(const HRDWRingBuffer<DataT>& buf) {
+  static uint64_t* writeIndex(const HRDWRingBuffer<DataT, C>& buf) {
     return buf.writeIndex_;
   }
 };
@@ -612,7 +612,7 @@ __global__ void countedEventRingBufferWriteKernel(
     uint32_t mask,
     uint32_t shift,
     DataT data) {
-  hrdwRingBufferWrite(ring, writeIdx, mask, shift, data);
+  HrdwRingBufferWriter<DataT>::write(ring, writeIdx, mask, shift, data);
 }
 } // namespace
 
