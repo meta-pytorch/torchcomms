@@ -106,7 +106,7 @@ jobs:
           DLE_PATH=${DLE_ROOT}/dle
           if [[ ! -d ${DLE_ROOT} ]]; then
             mkdir -p ${DLE_ROOT}
-            DLE_URL="https://registrationcenter-download.intel.com/akdlm/IRC_NAS/8170208e-86db-4faa-a0d6-1ecf62699574/intel-deep-learning-essentials-2026.0.0.624_offline.sh"
+            DLE_URL="https://registrationcenter-download.intel.com/akdlm/IRC_NAS/8170208e-86db-4faa-a0d6-1ecf62699574/intel-deep-learning-essentials-${DLE_VER}_offline.sh"
             wget -qO ${DLE_ROOT}/intel-deep-learning-essentials.sh ${DLE_URL}
             chmod +x ${DLE_ROOT}/intel-deep-learning-essentials.sh
             ${DLE_ROOT}/intel-deep-learning-essentials.sh -a --silent --eula accept --install-dir ${DLE_PATH} --instance=custom-id-${GITHUB_RUN_NUMBER}
