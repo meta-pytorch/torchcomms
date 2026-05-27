@@ -13,12 +13,12 @@
 
 #include <gtest/gtest.h>
 
-#include "comms/utils/HRDWRingBuffer.h"
-#include "comms/utils/HRDWRingBufferReader.h"
+#include "comms/utils/hrdw_ring_buffer/HRDWRingBuffer.h"
+#include "comms/utils/hrdw_ring_buffer/HRDWRingBufferReader.h"
 #include "comms/utils/tests/HRDWRingBufferTestTypes.h"
 
-using meta::comms::colltrace::HRDWRingBuffer;
-using meta::comms::colltrace::HRDWRingBufferReader;
+using hrdw_ring_buffer::HRDWRingBuffer;
+using hrdw_ring_buffer::HRDWRingBufferReader;
 
 class HRDWRingBufferStressTest : public ::testing::Test {
  protected:

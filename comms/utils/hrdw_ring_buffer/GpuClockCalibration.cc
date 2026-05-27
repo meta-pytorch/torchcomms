@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/utils/GpuClockCalibration.h"
+#include "comms/utils/hrdw_ring_buffer/GpuClockCalibration.h"
 
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 
@@ -32,7 +32,7 @@
     }                                  \
   } while (0)
 
-namespace meta::comms::colltrace {
+namespace hrdw_ring_buffer {
 
 std::chrono::system_clock::time_point GlobaltimerCalibration::toWallClock(
     uint64_t gpu_ns) const {
@@ -129,7 +129,7 @@ bool GlobaltimerCalibration::refresh() {
   // so the host timestamp is no earlier than the device reading.
   *anchor_.wlock() = Anchor{
       .device_ns = *mapped_ptr_,
-      .host_time = colltrace::precisionNow(),
+      .host_time = ::meta::comms::colltrace::precisionNow(),
   };
   return true;
 }
@@ -201,4 +201,4 @@ GlobaltimerCalibration::createForTest(
 
 #undef CUDA_CHECK_CC
 
-} // namespace meta::comms::colltrace
+} // namespace hrdw_ring_buffer

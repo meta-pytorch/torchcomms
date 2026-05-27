@@ -5,12 +5,12 @@
 
 #include <gtest/gtest.h>
 
-#include "comms/utils/HRDWRingBuffer.h"
-#include "comms/utils/HRDWRingBufferReader.h"
+#include "comms/utils/hrdw_ring_buffer/HRDWRingBuffer.h"
+#include "comms/utils/hrdw_ring_buffer/HRDWRingBufferReader.h"
 #include "comms/utils/tests/HRDWRingBufferTestTypes.h"
 
-using meta::comms::colltrace::HRDWRingBuffer;
-using meta::comms::colltrace::HRDWRingBufferReader;
+using hrdw_ring_buffer::HRDWRingBuffer;
+using hrdw_ring_buffer::HRDWRingBufferReader;
 
 using TestBuffer = HRDWRingBuffer<TestEvent>;
 using TestReader = HRDWRingBufferReader<TestEvent>;
@@ -18,7 +18,7 @@ using TestEntry = TestBuffer::Entry;
 
 // Test accessor — friend of HRDWRingBuffer, provides access to internals
 // for CPU-side simulation of GPU writes.
-namespace meta::comms::colltrace {
+namespace hrdw_ring_buffer {
 template <typename DataT>
 class HRDWRingBufferTestAccessor {
  public:
@@ -35,9 +35,8 @@ class HRDWRingBufferTestAccessor {
     return buf.writeIndex_;
   }
 };
-} // namespace meta::comms::colltrace
-using TestAccess =
-    meta::comms::colltrace::HRDWRingBufferTestAccessor<TestEvent>;
+} // namespace hrdw_ring_buffer
+using TestAccess = hrdw_ring_buffer::HRDWRingBufferTestAccessor<TestEvent>;
 
 class HRDWRingBufferTest : public ::testing::Test {};
 
@@ -603,7 +602,7 @@ TEST(HRDWRingBufferDestructionTest, PartialFillOnlyDestructsWritten) {
 // Explicit instantiation for CountedEvent so buf.write() works.
 // ---------------------------------------------------------------------------
 
-namespace meta::comms::colltrace {
+namespace hrdw_ring_buffer {
 
 namespace {
 template <typename DataT>
@@ -631,4 +630,4 @@ cudaError_t launchRingBufferWrite<CountedEvent>(
   return cudaGetLastError();
 }
 
-} // namespace meta::comms::colltrace
+} // namespace hrdw_ring_buffer

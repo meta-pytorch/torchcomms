@@ -7,12 +7,14 @@
 // NOLINTNEXTLINE(clang-diagnostic-pragma-once-outside-header)
 #pragma once
 
-#include "comms/utils/HRDWRingBuffer.h"
 #include "comms/utils/colltrace/GraphCollTraceEvent.h"
+#include "comms/utils/hrdw_ring_buffer/HRDWRingBuffer.h"
 
-namespace meta::comms::colltrace {
+namespace hrdw_ring_buffer {
 
 // --- GraphCollTraceEvent (graph-initiated colltrace) ---
+using ::meta::comms::colltrace::GraphCollTraceEvent;
+
 extern template cudaError_t launchRingBufferWrite<GraphCollTraceEvent>(
     cudaStream_t,
     HRDWEntry<GraphCollTraceEvent>*,
@@ -21,4 +23,4 @@ extern template cudaError_t launchRingBufferWrite<GraphCollTraceEvent>(
     uint32_t,
     GraphCollTraceEvent);
 
-} // namespace meta::comms::colltrace
+} // namespace hrdw_ring_buffer
