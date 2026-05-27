@@ -7,14 +7,14 @@
 
 #include <gtest/gtest.h>
 
-#include "comms/utils/HRDWRingBuffer.h"
-#include "comms/utils/HRDWRingBufferDeviceHandle.cuh"
-#include "comms/utils/HRDWRingBufferReader.h"
+#include "comms/utils/hrdw_ring_buffer/HRDWRingBuffer.h"
+#include "comms/utils/hrdw_ring_buffer/HRDWRingBufferDeviceHandle.cuh"
+#include "comms/utils/hrdw_ring_buffer/HRDWRingBufferReader.h"
 #include "comms/utils/tests/HRDWRingBufferTestTypes.h"
 
-using meta::comms::colltrace::HRDWRingBuffer;
-using meta::comms::colltrace::HRDWRingBufferDeviceHandle;
-using meta::comms::colltrace::HRDWRingBufferReader;
+using hrdw_ring_buffer::HRDWRingBuffer;
+using hrdw_ring_buffer::HRDWRingBufferDeviceHandle;
+using hrdw_ring_buffer::HRDWRingBufferReader;
 
 // kernel to write count entries to the buffer (one per thread)
 __global__ void inlineWriteKernel(

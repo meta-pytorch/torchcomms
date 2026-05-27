@@ -26,7 +26,7 @@
 // GlobaltimerCalibration::toWallClock(uint32_t).
 #define US_TICK_TIMESTAMP_SHIFT 10
 
-namespace meta::comms::colltrace {
+namespace hrdw_ring_buffer {
 
 // Calibration anchor mapping GPU %globaltimer nanoseconds to wall-clock time.
 // The first anchor is taken lazily on first use of get(); subsequent anchors
@@ -140,4 +140,4 @@ __device__ __forceinline__ uint64_t readGlobaltimer() {
 }
 #endif
 
-} // namespace meta::comms::colltrace
+} // namespace hrdw_ring_buffer

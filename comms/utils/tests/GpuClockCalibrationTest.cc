@@ -1,13 +1,13 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/utils/GpuClockCalibration.h"
+#include "comms/utils/hrdw_ring_buffer/GpuClockCalibration.h"
 
 #include <chrono>
 #include <cstdint>
 
 #include <gtest/gtest.h>
 
-using meta::comms::colltrace::GlobaltimerCalibration;
+using hrdw_ring_buffer::GlobaltimerCalibration;
 using namespace std::chrono_literals;
 
 namespace {

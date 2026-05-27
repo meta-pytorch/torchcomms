@@ -9,7 +9,7 @@
 #endif
 
 // needed for US_TICK_TIMESTAMP_SHIFT
-#include "comms/utils/GpuClockCalibration.h"
+#include "comms/utils/hrdw_ring_buffer/GpuClockCalibration.h"
 
 #include <algorithm>
 #if __cplusplus >= 202002L
@@ -26,7 +26,7 @@
 // writes encode epoch = uint32_t(slot >> shift) + 1, so 0 is unused.
 #define HRDW_RINGBUFFER_SLOT_EMPTY 0u
 
-namespace meta::comms::colltrace {
+namespace hrdw_ring_buffer {
 
 // ==========================================================================
 // HRDWRingBuffer — Host-Read Device-Write ring buffer for GPU-to-CPU
@@ -480,4 +480,4 @@ class HRDWRingBuffer {
   uint32_t shift_{0};
 };
 
-} // namespace meta::comms::colltrace
+} // namespace hrdw_ring_buffer

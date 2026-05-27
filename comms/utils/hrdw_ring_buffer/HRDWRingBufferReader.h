@@ -9,9 +9,9 @@
 #include <utility>
 #include <vector>
 
-#include "comms/utils/HRDWRingBuffer.h"
+#include "comms/utils/hrdw_ring_buffer/HRDWRingBuffer.h"
 
-namespace meta::comms::colltrace {
+namespace hrdw_ring_buffer {
 
 // Relaxed atomic load from GPU-mapped pinned memory. The reader doesn't
 // need acquire ordering: the writer publishes writeIndex and ring[idx]
@@ -193,4 +193,4 @@ class HRDWRingBufferReader {
   std::vector<std::pair<Entry, uint64_t>> validEntries_;
 };
 
-} // namespace meta::comms::colltrace
+} // namespace hrdw_ring_buffer

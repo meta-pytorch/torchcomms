@@ -25,4 +25,4 @@
 
 #pragma once // NOLINT(clang-diagnostic-pragma-once-outside-header)
 
-#include "comms/utils/HRDWRingBuffer.h" // IWYU pragma: export
+#include "comms/utils/hrdw_ring_buffer/HRDWRingBuffer.h" // IWYU pragma: export
