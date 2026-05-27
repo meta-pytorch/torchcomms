@@ -6,7 +6,7 @@
 
 #include "comms/utils/colltrace/HRDWRingBufferInstantiations.cuh"
 
-namespace meta::comms::colltrace {
+namespace hrdw_ring_buffer {
 
 template cudaError_t launchRingBufferWrite<GraphCollTraceEvent>(
     cudaStream_t,
@@ -16,4 +16,4 @@ template cudaError_t launchRingBufferWrite<GraphCollTraceEvent>(
     uint32_t,
     GraphCollTraceEvent);
 
-} // namespace meta::comms::colltrace
+} // namespace hrdw_ring_buffer

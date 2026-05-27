@@ -8,7 +8,7 @@
 #include <mutex>
 #include <utility>
 
-#include "comms/utils/GpuClockCalibration.h"
+#include "comms/utils/hrdw_ring_buffer/GpuClockCalibration.h"
 #include "comms/utils/logger/LogUtils.h"
 
 namespace comms::pipes {
@@ -103,7 +103,7 @@ void PipesTrace::ensure(uint32_t ringSize) {
   }
 
   reader_ = std::make_unique<Reader>(*buffer_);
-  ::meta::comms::colltrace::GlobaltimerCalibration::get();
+  ::hrdw_ring_buffer::GlobaltimerCalibration::get();
   startLogThread();
   CLOGF(INFO, "Pipes trace buffer ready ring_size={}", buffer_->size());
 }
@@ -148,7 +148,7 @@ void PipesTrace::enqueueLogBatch(PendingLogBatch batch) {
 }
 
 void PipesTrace::logBatch(const PendingLogBatch& batch) const {
-  auto& calibration = ::meta::comms::colltrace::GlobaltimerCalibration::get();
+  auto& calibration = ::hrdw_ring_buffer::GlobaltimerCalibration::get();
   for (const auto& pendingEntry : batch.entries) {
     const auto& entry = pendingEntry.entry;
     const auto wallTime = calibration.toWallClock(entry.timestamp);
