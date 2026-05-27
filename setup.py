@@ -14,7 +14,6 @@ from setuptools.command.build_ext import build_ext as build_ext_orig
 
 try:
     import torch
-    from torch.utils.cpp_extension import _get_pybind11_abi_build_flags
 except ModuleNotFoundError:
     # Fail with a helpful message — torch is required for all torchcomms builds.
     print(
@@ -56,6 +55,26 @@ def flag_str(val: bool):
 
 ROOT = os.path.abspath(os.path.dirname(__file__))
 TORCH_ROOT = os.path.dirname(torch.__file__)
+
+
+def get_torch_pybind11_include_root(build_temp: pathlib.Path) -> pathlib.Path:
+    torch_include = pathlib.Path(torch.__file__).resolve().parent / "include"
+    torch_pybind11 = torch_include / "pybind11"
+    if not (torch_pybind11 / "pybind11.h").exists():
+        raise RuntimeError(
+            f"PyTorch pybind11 headers were not found under {torch_pybind11}."
+        )
+
+    include_root = build_temp / "torch_pybind11_include"
+    include_root.mkdir(parents=True, exist_ok=True)
+    link = include_root / "pybind11"
+    if link.exists() or link.is_symlink():
+        if link.is_dir() and not link.is_symlink():
+            raise RuntimeError(f"Expected {link} to be a symlink.")
+        link.unlink()
+    link.symlink_to(torch_pybind11, target_is_directory=True)
+    return include_root
+
 
 print("Configuration:")
 USE_NCCL = flag_enabled("USE_NCCL", True)
@@ -126,14 +145,14 @@ class build_ext(build_ext_orig):
 
         # these dirs will be created in build_py, so if you don't have
         # any python sources to bundle, the dirs will be missing
-        build_temp = pathlib.Path(self.build_temp)
+        build_temp = pathlib.Path(self.build_temp).absolute()
         build_temp.mkdir(parents=True, exist_ok=True)
         extdir = pathlib.Path(self.get_ext_fullpath(ext.name))
 
         build_flags = []
-        build_flags += _get_pybind11_abi_build_flags()
         if detect_hipify_v2():
             build_flags += ["-DHIPIFY_V2"]
+        pybind11_include_root = get_torch_pybind11_include_root(build_temp)
 
         cfg = os.environ.get("CMAKE_BUILD_TYPE", "RelWithDebInfo")
         print(f"- Building with {cfg} configuration")
@@ -145,6 +164,7 @@ class build_ext(build_ext_orig):
             f"-DCMAKE_INSTALL_PREFIX={extdir.parent.absolute()}",
             f"-DCMAKE_INSTALL_DIR={extdir.parent.absolute()}",
             f"-DCMAKE_PREFIX_PATH={TORCH_ROOT}",
+            f"-DTORCHCOMMS_PYBIND11_INCLUDE_DIR={pybind11_include_root}",
             f"-DCMAKE_CXX_FLAGS={shlex.quote(' '.join(build_flags))}",
             f"-DPython3_EXECUTABLE={sys.executable}",
             f"-DLIB_SUFFIX={os.environ.get('LIB_SUFFIX', 'lib')}",
