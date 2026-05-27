@@ -118,6 +118,22 @@ NcclScubaSample CtranProfilerAlgoEvent::toSample() {
   return sample;
 }
 
+NcclScubaSample CtranProfilerGpeEvent::toSample() {
+  auto sample = CommEvent::toSample();
+  sample.addNormal("type", "CtranProfilerGpeEvent");
+  // NOTE: rank and commHash are added by CommEvent::toSample() above,
+  // sourced from logMetaData. Do NOT re-add here.
+  sample.addInt("opCount", opCount_);
+  sample.addInt("opType", opType_);
+  sample.addNormal("tracePoint", tracePoint_);
+  sample.addInt("iterUs", iterUs_);
+  sample.addInt("durationUs", durationUs_);
+  sample.addInt("aborted", aborted_ ? 1 : 0);
+  sample.addNormal("message", message_);
+  sample.addInt("iteration", iteration_);
+  return sample;
+}
+
 NcclScubaSample NetworkPerfMonitorEvent::toSample() {
   auto sample = CommEvent::toSample();
   sample.addNormal("type", "NetworkPerfMonitorEvent");

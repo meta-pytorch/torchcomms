@@ -619,6 +619,35 @@ void CtranIb::init(
   // accepted (i.e., before bootstrap_->start() spawns the listen thread).
   vcState_.init(this, this->ncclLogData, comm ? comm->statex_->nRanks() : 0);
 
+  // Derive per-peer-VC sizing from cvars via the unified VcLayout utility.
+  // Legacy single-VC (NCCL_CTRAN_IB_NUM_VCS_PER_RANK <= 0) is normalized to
+  // 1, so the layout (and per-VC active-NIC vector) is well-defined in
+  // every configuration.
+  int maxVcsPerPeer = NCCL_CTRAN_IB_NUM_VCS_PER_RANK;
+  if (maxVcsPerPeer <= 0) {
+    maxVcsPerPeer = 1;
+  }
+  if (NCCL_CTRAN_IB_MAX_QPS < maxVcsPerPeer) {
+    std::string msg = fmt::format(
+        "CTRAN-IB: invalid VC sizing: NCCL_CTRAN_IB_MAX_QPS={} must be "
+        ">= NCCL_CTRAN_IB_NUM_VCS_PER_RANK={} so that each per-peer VC "
+        "gets at least one data QP.",
+        NCCL_CTRAN_IB_MAX_QPS,
+        maxVcsPerPeer);
+    CLOGF(ERR, msg);
+    throw ctran::utils::Exception(msg, commInvalidArgument);
+  }
+  vcLayout_ =
+      ctran::ib::VcLayout(NCCL_CTRAN_IB_DEVICES_PER_RANK, maxVcsPerPeer);
+  CLOGF_SUBSYS(
+      INFO,
+      INIT,
+      "CTRAN-IB: VC layout: {} (numNics={}, NCCL_CTRAN_IB_MAX_QPS={}). "
+      "Per-VC data-QP count is determined per connection class inside CtranIbVirtualConn.",
+      vcLayout_.describe(),
+      NCCL_CTRAN_IB_DEVICES_PER_RANK,
+      NCCL_CTRAN_IB_MAX_QPS);
+
   // Optionally start internal bootstrap service.
   // If kExternal, external callsite would explicitly manage it and thus we skip
   // the internal bootstrap.
@@ -642,6 +671,7 @@ void CtranIb::init(
   } else {
     bootstrap_ = std::make_unique<Bootstrap>(
         vcState_,
+        vcLayout_,
         socketFactory_,
         abortCtrl_,
         ncclLogData,
@@ -1101,4 +1131,51 @@ uint32_t CtranIb::getPgToTrafficClassValue() const {
     return it->second;
   }
   return NCCL_IB_TC;
+}
+
+// ============================================================
+// Per-peer VC API implementation
+// ============================================================
+
+const std::vector<std::shared_ptr<CtranIbVirtualConn>>& CtranIb::connectVcs(
+    int peerRank,
+    std::optional<const SocketServerAddr*> peerServerAddr) {
+  // Fast path: per-peer VCs already published. References to values in
+  // std::unordered_map are stable across insertions, so the returned
+  // reference remains valid until releaseAll().
+  if (const auto* vcs = vcState_.tryGetVcs(peerRank)) {
+    return *vcs;
+  }
+
+  if (rank < peerRank) {
+    // Smaller rank initiates the rendezvous. connectVcs(peer, ...) must be
+    // called from a single thread per peer; concurrent per-peer callers
+    // are not supported.
+    FB_CHECKABORT(
+        bootstrap_ != nullptr,
+        "CTRAN-IB: connectVcs() called on externally-bootstrapped instance");
+    // bootstrap_->connect internally exchanges vcLayout_.maxVcsPerPeer
+    // VCs and publishes them into vcState_ (legacy single-VC callers
+    // read .front()).
+    const auto err = bootstrap_->connect(peerRank, peerServerAddr);
+    FB_CHECKABORT(
+        err == commSuccess,
+        "CTRAN-IB: bootstrap_->connect failed for peerRank " +
+            std::to_string(peerRank));
+  }
+
+  // Smaller-rank gets and returns vc created by connect. Larger-rank side spins
+  // until the listen thread publishes (mirrors preConnect()). The abort check
+  // lets teardown / explicit abort unblock us so we don't loop forever after
+  // releaseAll().
+  while (true) {
+    if (const auto* vcs = vcState_.tryGetVcs(peerRank)) {
+      return *vcs;
+    }
+    if (abortCtrl_ && abortCtrl_->Test()) {
+      static const std::vector<std::shared_ptr<CtranIbVirtualConn>> empty;
+      return empty;
+    }
+    std::this_thread::yield();
+  }
 }

@@ -58,6 +58,19 @@ class AlgoImpl {
       const size_t count,
       const commDataType_t datatype);
 
+  // Execute the streamed recursive-doubling algorithm of allgatherP.
+  // - Uses the ctsrd plan on logical node IDs. Each local rank owns one rail
+  //   column, so a logical node chunk maps to recvbuff[node * nLocalRanks +
+  //   localRank].
+  // - Inter-node forwarding streams per chunk on the GPE thread.
+  // - Intra-node NVL broadcast remains step-based: once all chunks for a step
+  //   arrive, every local rank crosses one local barrier and broadcasts that
+  //   step's received column chunks via CopyEngine.
+  commResult_t execStreamedRecursiveDoubling(
+      const void* sendbuff,
+      const size_t count,
+      const commDataType_t datatype);
+
   static inline const std::string algoName(enum NCCL_ALLGATHER_P_ALGO algo) {
     switch (algo) {
       case NCCL_ALLGATHER_P_ALGO::ctdirect:
@@ -66,6 +79,8 @@ class AlgoImpl {
         return "CtranAllGatherPPipeline";
       case NCCL_ALLGATHER_P_ALGO::ctrdpipeline:
         return "CtranAllGatherPRecDbl";
+      case NCCL_ALLGATHER_P_ALGO::ctsrdpipeline:
+        return "CtranAllGatherPStreamedRd";
       default:
         return "Unknown";
     }

@@ -33,8 +33,6 @@ enum CollType {
 };
 constexpr int kExpectedCommAttrLength = 5;
 
-commResult_t ctranConfigCommAlgoOverride(CtranComm* comm);
-
 class CtranAlgo {
  public:
   CtranAlgo(CtranComm* comm, ICtran* ctran);

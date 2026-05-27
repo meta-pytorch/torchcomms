@@ -12,7 +12,7 @@
 #include "nvtx_payload_schemas.h"
 
 #include "comms/ctran/Ctran.h"
-#include "meta/algoconf/AlgoConfig.h"
+#include "meta/NcclxConfig.h"
 #include "meta/collectives/PatAvgHelper.h"
 #include "comms/ctran/utils/Checks.h"
 #include "meta/wrapper/MetaFactory.h"
@@ -100,7 +100,7 @@ ncclResult_t ncclAllGather(const void* sendbuff, void* recvbuff, size_t sendcoun
   NVTX3_FUNC_WITH_PARAMS(AllGather, NcclNvtxParamsAllGather,
     NVTX3_PAYLOAD(comm ? comm->commHash : 0, sendcount * ncclTypeSize(datatype)));
 
-  auto algo = ncclx::algoconf::getAllGatherAlgo();
+  auto algo = NCCLX_CONFIG_FIELD(comm->config, allgatherAlgo);
 
   if (algo != NCCL_ALLGATHER_ALGO::orig && ctranAllGatherSupport(comm->ctranComm_.get(), algo, stream)) {
     return metaCommToNccl(ctranAllGather(
@@ -131,7 +131,7 @@ NCCL_API(ncclResult_t, ncclAllReduce, const void* sendbuff, void* recvbuff, size
 ncclResult_t ncclAllReduce(const void* sendbuff, void* recvbuff, size_t count,
     ncclDataType_t datatype, ncclRedOp_t op, ncclComm* comm, cudaStream_t stream) {
 
-  auto algo = ncclx::algoconf::getAllReduceAlgo();
+  auto algo = NCCLX_CONFIG_FIELD(comm->config, allreduceAlgo);
 
   // [NCCLX] Redirect to CTRAN if enabled and applicable
   if (algo != NCCL_ALLREDUCE_ALGO::orig && ctranAllReduceSupport(comm->ctranComm_.get(), algo)) {
@@ -275,7 +275,7 @@ ncclResult_t ncclSend(const void* sendbuff, size_t count, ncclDataType_t datatyp
   }
   SetCudaDevRAII setCudaDev(comm->cudaDev);
 
-  auto algo = ncclx::algoconf::getSendRecvAlgo();
+  auto algo = NCCLX_CONFIG_FIELD(comm->config, sendrecvAlgo); // [META:PER_COMM_CONFIG]
   if ((algo != NCCL_SENDRECV_ALGO::orig) &&
       ctranSendRecvSupport(peer, comm->ctranComm_.get(), algo, stream)) {
     // ctran send/recvs are enqueued within ctran wherease other non-ctran ones
@@ -283,7 +283,7 @@ ncclResult_t ncclSend(const void* sendbuff, size_t count, ncclDataType_t datatyp
     // groups of ops will be issued separately.
     ncclResult_t ret;
     NCCLCHECK(ncclGroupStart());
-    ret = metaCommToNccl(ctranSend(sendbuff, count, ncclToMetaComm(datatype), peer, comm->ctranComm_.get(), stream));
+    ret = metaCommToNccl(ctranSend(sendbuff, count, ncclToMetaComm(datatype), peer, comm->ctranComm_.get(), stream, algo));
     NCCLCHECK(ncclGroupEnd());
     return ret;
   }
@@ -318,7 +318,7 @@ ncclResult_t ncclRecv(void* recvbuff, size_t count, ncclDataType_t datatype, int
   }
   SetCudaDevRAII setCudaDev(comm->cudaDev);
 
-  auto algo = ncclx::algoconf::getSendRecvAlgo();
+  auto algo = NCCLX_CONFIG_FIELD(comm->config, sendrecvAlgo); // [META:PER_COMM_CONFIG]
   if ((algo != NCCL_SENDRECV_ALGO::orig) &&
       ctranSendRecvSupport(peer, comm->ctranComm_.get(), algo, stream)) {
     // ctran send/recvs are enqueued within ctran wherease other non-ctran ones
@@ -326,7 +326,7 @@ ncclResult_t ncclRecv(void* recvbuff, size_t count, ncclDataType_t datatype, int
     // groups of ops will be issued separately.
     ncclResult_t ret;
     NCCLCHECK(ncclGroupStart());
-    ret = metaCommToNccl(ctranRecv(recvbuff, count, ncclToMetaComm(datatype), peer, comm->ctranComm_.get(), stream));
+    ret = metaCommToNccl(ctranRecv(recvbuff, count, ncclToMetaComm(datatype), peer, comm->ctranComm_.get(), stream, algo));
     NCCLCHECK(ncclGroupEnd());
     return ret;
   }
@@ -446,7 +446,7 @@ ncclResult_t ncclAllToAllv(
         recvbuff);
   }
 
-  if ((ncclx::algoconf::getAllToAllVAlgo() == NCCL_ALLTOALLV_ALGO::ctran) &&
+  if ((NCCLX_CONFIG_FIELD(comm->config, alltoallvAlgo) == NCCL_ALLTOALLV_ALGO::ctran) &&
       ctranAllToAllvSupport(comm->ctranComm_.get())) {
     return metaCommToNccl(ctranAllToAllv(
         sendbuff,

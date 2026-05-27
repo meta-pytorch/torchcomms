@@ -2051,6 +2051,8 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
     INFO(NCCL_INIT, "%s comm %p rank %d nranks %d cudaDev %d nvmlDev %d busId %lx commId 0x%llx - Init COMPLETE", job->funcName,
          comm, comm->rank, comm->nRanks, comm->cudaDev, comm->nvmlDev, comm->busId, commIdHash);
   }
+  // [META:PER_COMM_CONFIG] Log ncclConfig_t and ncclx::Config after init
+  ncclxLogCommConfig(comm);
   sum_timers = 0.0;
   for (int it = 1; it < TIMERS_INIT_COUNT; ++it)
     sum_timers += (timers[it] / 1e9);
@@ -3358,7 +3360,7 @@ ncclResult_t  ncclCommShrink(ncclComm_t comm, int* excludeRanksList, int exclude
 
   // If the user provided a config, parse it.  Otherwise, deep-copy the
   // parent's config so the child inherits NCCLX settings (e.g.
-  // ncclAllGatherAlgo) that live in the ncclx::Config object.
+  // allgatherAlgo) that live in the ncclx::Config object.
   ncclConfig_t internalConfig;
   ncclConfig_t *internalConfigPtr;
   if (config) {
@@ -3425,7 +3427,7 @@ ncclResult_t ncclCommGrow(ncclComm_t comm, int nRanks, const ncclUniqueId* uniqu
   struct ncclBootstrapHandle recvHandle = {};
   // If the user provided a config, use it.  For existing ranks without
   // a config, deep-copy the parent's config so the child inherits NCCLX
-  // settings (e.g. ncclAllGatherAlgo) that live in the ncclx::Config
+  // settings (e.g. allgatherAlgo) that live in the ncclx::Config
   // object.  New ranks without a config start from defaults.
   ncclConfig_t internalConfig;
   if (config) {
@@ -3591,7 +3593,7 @@ ncclResult_t ncclCommSplit(ncclComm_t comm, int color, int key, ncclComm_t *newc
 
   // If the user provided a config, parse it.  Otherwise, deep-copy the
   // parent's config so the child inherits NCCLX settings (e.g.
-  // ncclAllGatherAlgo) that live in the ncclx::Config object.
+  // allgatherAlgo) that live in the ncclx::Config object.
   ncclConfig_t internalConfig;
   if (config) {
     internalConfig = *config;

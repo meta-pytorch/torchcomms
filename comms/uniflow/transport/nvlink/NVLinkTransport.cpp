@@ -280,20 +280,20 @@ std::future<Status> NVLinkTransport::send(
   return promise.get_future();
 }
 
-std::future<Result<size_t>> NVLinkTransport::recv(
+std::future<Status> NVLinkTransport::recv(
     RegisteredSegment::Span dst,
     const RequestOptions& options) {
   // TODO: Implement NVLink recv (registered)
-  std::promise<Result<size_t>> promise;
+  std::promise<Status> promise;
   promise.set_value(ErrCode::NotImplemented);
   return promise.get_future();
 }
 
-std::future<Result<size_t>> NVLinkTransport::recv(
+std::future<Status> NVLinkTransport::recv(
     Segment::Span dst,
     const RequestOptions& options) {
   // TODO: Implement NVLink recv (unregistered)
-  std::promise<Result<size_t>> promise;
+  std::promise<Status> promise;
   promise.set_value(ErrCode::NotImplemented);
   return promise.get_future();
 }

@@ -9,14 +9,13 @@
 #include <cstddef>
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
+#include "comms/ctran/tests/VerifyAlgoStatsUtil.h"
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
-#include "comms/testinfra/AlgoTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-
-using testinfra::AlgoRAII;
+#include "meta/algoconf/AlgoStrConv.h"
 
 class AllGatherTest : public NcclxBaseTestFixture {
  public:
@@ -30,20 +29,13 @@ class AllGatherTest : public NcclxBaseTestFixture {
     envs.push_back({"NCCL_COMM_STATE_DEBUG_TOPO", "nolocal"});
 #endif
     NcclxBaseTestFixture::SetUp(envs);
-    ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
-#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
-    ncclx::Hints hints{{"noLocal", "1"}};
-    config.hints = &hints;
-#endif
-    this->comm = ncclx::test::createNcclComm(
-        globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
+    ctranAlgoStats_.enable();
 
     CUDACHECK_TEST(cudaSetDevice(localRank));
     CUDACHECK_TEST(cudaStreamCreate(&stream));
   }
 
   void TearDown() override {
-    NCCLCHECK_TEST(ncclCommDestroy(comm));
     CUDACHECK_TEST(cudaStreamDestroy(stream));
     NcclxBaseTestFixture::TearDown();
   }
@@ -55,7 +47,17 @@ class AllGatherTest : public NcclxBaseTestFixture {
       bool useCudaGraph,
       MemAllocType memType,
       size_t count) {
-    auto algoGuard = AlgoRAII(NCCL_ALLGATHER_ALGO, algo);
+    // Create comm with per-comm hints for the allgather algorithm
+    ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints(
+        {{"allgatherAlgo", ncclx::algoconf::algoValToStr(algo)}});
+#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
+    hints.set("noLocal", "1");
+#endif
+    config.hints = &hints;
+    ncclx::test::NcclCommRAII commRaii(
+        globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
+    this->comm = commRaii.get();
 
     if ((memType == kMemNcclMemAlloc || memType == kCuMemAllocDisjoint) &&
         ncclIsCuMemSupported() == false) {
@@ -145,6 +147,12 @@ class AllGatherTest : public NcclxBaseTestFixture {
 
     CUDACHECK_TEST(cudaStreamSynchronize(stream));
 
+#ifdef TEST_ENABLE_CTRAN
+    if (algo != NCCL_ALLGATHER_ALGO::orig) {
+      ctranAlgoStats_.verify(comm->ctranComm_.get(), "AllGather", "Ctran");
+    }
+#endif
+
     // Check each received chunk
     for (int r = 0; r < numRanks; r++) {
       int expectedVal = r + 1;
@@ -170,6 +178,7 @@ class AllGatherTest : public NcclxBaseTestFixture {
  protected:
   ncclComm_t comm{};
   cudaStream_t stream{};
+  ctran::test::VerifyAlgoStatsHelper ctranAlgoStats_;
 };
 
 class AllgatherTestParam : public AllGatherTest,
@@ -234,7 +243,7 @@ INSTANTIATE_TEST_SUITE_P(
         ::testing::Values(
             NCCL_ALLGATHER_ALGO::orig,
             NCCL_ALLGATHER_ALGO::ctran,
-            NCCL_ALLGATHER_ALGO::ctrd,
+            NCCL_ALLGATHER_ALGO::ctsrd,
             NCCL_ALLGATHER_ALGO::ctring,
             NCCL_ALLGATHER_ALGO::ctdirect,
             NCCL_ALLGATHER_ALGO::ctbrucks),

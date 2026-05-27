@@ -20,12 +20,12 @@
 #include <gtest/gtest.h>
 
 #include "comms/testinfra/TestXPlatUtils.h"
-#include "comms/utils/GpuClockCalibration.h"
 #include "comms/utils/colltrace/CollTrace.h"
 #include "comms/utils/colltrace/CollTraceHandle.h"
 #include "comms/utils/colltrace/CudaWaitEvent.h"
 #include "comms/utils/colltrace/GraphCudaWaitEvent.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/hrdw_ring_buffer/GpuClockCalibration.h"
 
 using meta::comms::colltrace::CollTrace;
 using meta::comms::colltrace::CollTraceConfig;
@@ -159,7 +159,7 @@ class GraphColltraceProgressingTest : public ::testing::Test {
     // Enable cudagraph tracing for these tests.
     cvarGuard_.emplace(NCCL_COLLTRACE_TRACE_CUDA_GRAPH, true);
 
-    meta::comms::colltrace::GlobaltimerCalibration::get();
+    hrdw_ring_buffer::GlobaltimerCalibration::get();
 
     auto progressPlugin = std::make_unique<ProgressTrackingPlugin>();
     progressPlugin_ = progressPlugin.get();

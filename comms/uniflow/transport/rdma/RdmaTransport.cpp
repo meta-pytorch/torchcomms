@@ -1055,18 +1055,18 @@ std::future<Status> RdmaTransport::send(
   return promise.get_future();
 }
 
-std::future<Result<size_t>> RdmaTransport::recv(
+std::future<Status> RdmaTransport::recv(
     RegisteredSegment::Span dst,
     const RequestOptions& options) {
-  std::promise<Result<size_t>> promise;
+  std::promise<Status> promise;
   promise.set_value(ErrCode::NotImplemented);
   return promise.get_future();
 }
 
-std::future<Result<size_t>> RdmaTransport::recv(
+std::future<Status> RdmaTransport::recv(
     Segment::Span dst,
     const RequestOptions& options) {
-  std::promise<Result<size_t>> promise;
+  std::promise<Status> promise;
   promise.set_value(ErrCode::NotImplemented);
   return promise.get_future();
 }

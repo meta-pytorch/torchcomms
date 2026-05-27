@@ -75,15 +75,20 @@ class PrecisionClockImpl {
   }
 
 #if COMMS_HAS_FBCLOCK
-  // Reads fbclock without holding a mutex. fbclock_gettime mutates
+  // Reads fbclock without holding a mutex. fbclock_gettime_utc mutates
   // lib_.min_phc_delay (a monotonically-decreasing int64) on every call;
   // this is a benign race accepted by common/time/PTP.cpp as well.
   // The shared-memory read uses fbclock's own seqlock/CRC protocol.
+  //
+  // Uses the UTC variant (not fbclock_gettime, which returns TAI) so the
+  // returned ns count is on the same epoch as std::chrono::system_clock —
+  // otherwise callers wrapping the result in a system_clock::time_point
+  // would land ~37s in the future (current TAI-UTC leap-second offset).
   bool getTruetime(fbclock_truetime* out) noexcept {
     if (!usingPtp_) {
       return false;
     }
-    return fbclock_gettime(&lib_, out) == FBCLOCK_E_NO_ERROR;
+    return fbclock_gettime_utc(&lib_, out) == FBCLOCK_E_NO_ERROR;
   }
 #endif
 

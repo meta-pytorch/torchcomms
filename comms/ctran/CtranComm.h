@@ -24,6 +24,7 @@
 
 namespace comms::pipes {
 class MultiPeerTransport;
+class PipesTrace;
 struct Transport;
 } // namespace comms::pipes
 
@@ -48,7 +49,6 @@ struct ctranPipesConfig {
 struct ctranConfig {
   int blocking{-1};
   std::string commDesc;
-  const char* ncclAllGatherAlgo{nullptr};
   std::vector<enum CommBackend> backends = {};
   ctranPipesConfig pipesConfig;
   bool enableProfiler{NCCL_CTRAN_TRANSPORT_PROFILER};
@@ -56,7 +56,6 @@ struct ctranConfig {
   bool operator==(const ctranConfig& other) const {
     return (
         blocking == other.blocking && commDesc == other.commDesc &&
-        ncclAllGatherAlgo == other.ncclAllGatherAlgo &&
         backends == other.backends && pipesConfig == other.pipesConfig &&
         enableProfiler == other.enableProfiler);
   }
@@ -199,6 +198,7 @@ class CtranComm {
   std::unique_ptr<comms::pipes::MultiPeerTransport> multiPeerTransport_;
   uint64_t* hierarchicalAgReadyCounters_{nullptr};
   size_t hierarchicalAgReadyCounterCount_{0};
+  std::unique_ptr<comms::pipes::PipesTrace> pipesTrace_;
 #endif // defined(ENABLE_PIPES)
 
   // Deferred cleanup for CUDA graph resources. CUDA user-object destructor

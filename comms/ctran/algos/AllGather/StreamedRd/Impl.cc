@@ -1,72 +1,43 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include <algorithm>
-#include <deque>
-
 #include <folly/ScopeGuard.h>
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
+#include "comms/ctran/algos/AllGather/StreamedRd/Common.h"
 #include "comms/ctran/algos/AllGather/StreamedRd/Plan.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/utils/DevUtils.cuh"
-#include "comms/utils/cvars/nccl_cvars.h"
 
 namespace {
 
-using ctran::algos::IPersistPlan;
 using ctran::algos::PersistPlanKey;
 using ctran::allgather::ctsrd::createPersistPlan;
-using ctran::allgather::ctsrd::FcMode;
 using ctran::allgather::ctsrd::PersistPlan;
-using ctran::allgather::ctsrd::Plan;
+using ctran::allgather::ctsrd::common::resolveFwdPeers;
+using ctran::allgather::ctsrd::common::runExchangeAndProgress;
 
 const auto myAlgo = NCCL_ALLGATHER_ALGO::ctsrd;
+using CtsrdAlgoContext = ctran::allgather::ctsrd::AlgoContext;
 
-FcMode getFcMode() {
-  return (NCCL_CTRAN_ALLGATHER_CTSRD_FC ==
-          NCCL_CTRAN_ALLGATHER_CTSRD_FC::recvOnly)
-      ? FcMode::kRecvOnly
-      : FcMode::kFull;
-}
+struct AlgoContext : CtsrdAlgoContext {
+  using Base = CtsrdAlgoContext;
+  using Base::Base;
 
-struct PutQElem {
-  int step;
-  int chunkOffset;
-};
+  inline int peer(int step) const {
+    return recvPlan.peer(step);
+  }
 
-struct AlgoContext {
-  CtranMapper* mapper;
-  void* recvbuff;
-  void* memHdl;
-  const size_t sendSize;
-  const Plan& recvPlan;
-  const Plan& sendPlan;
+  inline commResult_t onStepComplete(int /* step */) {
+    return commSuccess;
+  }
 
-  // Per-step ctrl exchange state
-  std::vector<void*> remoteRecvBuffs;
-  std::vector<CtranMapperRemoteAccessKey> remoteAccessKeys;
-  std::vector<CtranMapperRequest> irecvReqs;
-  std::vector<CtranMapperRequest> isendReqs;
-  // Per-chunk notification, indexed by chunk offset in recvbuff
-  std::vector<CtranMapperNotify> notifyVec;
+  inline size_t chunkByteOffset(int chunk) const {
+    return static_cast<size_t>(chunk) * sendSize;
+  }
 
-  std::deque<PutQElem> putQ;
-  // One tracked request per peer (= per step), indexed by step.
-  // Only the last iput to each peer uses a tracked request; earlier iputs
-  // pass nullptr (fire-and-forget, safe due to in-order completion guarantee).
-  std::vector<CtranMapperRequest> iputReqs;
-
-  // Full FC only: per-step deferred puts flushed at step start
-  std::vector<std::vector<PutQElem>> deferredPuts;
-  // Per-step count of received notifications
-  std::vector<int> numReceived;
-
-  // Per-step count of enqueued puts, for plan order verification.
-  std::vector<int> putCount;
-
-  void enqueuePut(int step, int chunkOffset) {
+  inline void enqueuePut(int step, int chunkOffset) {
     const auto nth = putCount.at(step)++;
     const auto expChunkOffset = sendPlan.chunk(step, nth);
     FB_CHECKABORT(
@@ -78,140 +49,7 @@ struct AlgoContext {
         chunkOffset);
     putQ.push_back({step, chunkOffset});
   }
-
-  AlgoContext(
-      CtranMapper* mapper,
-      void* recvbuff,
-      size_t sendSize,
-      size_t nRanks,
-      const Plan& recvPlan,
-      const Plan& sendPlan)
-      : mapper(mapper),
-        recvbuff(recvbuff),
-        memHdl(nullptr),
-        sendSize(sendSize),
-        recvPlan(recvPlan),
-        sendPlan(sendPlan),
-        remoteRecvBuffs(recvPlan.nSteps()),
-        remoteAccessKeys(recvPlan.nSteps()),
-        irecvReqs(recvPlan.nSteps()),
-        isendReqs(recvPlan.nSteps()),
-        notifyVec(nRanks),
-        iputReqs(recvPlan.nSteps()),
-        numReceived(recvPlan.nSteps(), 0),
-        putCount(recvPlan.nSteps(), 0) {
-    if (recvPlan.fcMode() == FcMode::kFull) {
-      deferredPuts.resize(recvPlan.nSteps());
-    }
-  }
 };
-
-// Receive chunks for the current step and post forward puts for future steps.
-inline commResult_t
-progressRecvFwd(AlgoContext& ctx, int step, int expNumRecv) {
-  const auto nSteps = ctx.recvPlan.nSteps();
-  while (ctx.numReceived.at(step) < expNumRecv) {
-    const auto cid = ctx.numReceived.at(step);
-    const auto chunkOffset = ctx.recvPlan.chunk(step, cid);
-    auto rcvd = false;
-    FB_COMMCHECK(
-        ctx.mapper->checkNotify(&ctx.notifyVec.at(chunkOffset), &rcvd));
-    if (!rcvd) {
-      break;
-    }
-    ctx.numReceived.at(step)++;
-
-    if (ctx.recvPlan.fcMode() == FcMode::kRecvOnly) {
-      // Fwd received chunk to all future step peers immediately
-      for (int fwd = step + 1; fwd < nSteps; fwd++) {
-        ctx.enqueuePut(fwd, chunkOffset);
-      }
-    } else {
-      // Post fwd for step+1 immediately;
-      // fwds for step+2 and further are posted once step+1 recv completes
-      if (step + 1 < nSteps) {
-        ctx.enqueuePut(step + 1, chunkOffset);
-      }
-      for (int fwd = step + 2; fwd < nSteps; fwd++) {
-        ctx.deferredPuts.at(fwd).push_back({fwd, chunkOffset});
-      }
-    }
-  }
-  return commSuccess;
-}
-
-// Wait for all tracked iput requests (one per peer/step).
-inline commResult_t waitAllPuts(AlgoContext& ctx) {
-  const auto nSteps = ctx.recvPlan.nSteps();
-  for (int step = 0; step < nSteps; step++) {
-    FB_COMMCHECK(ctx.mapper->waitRequest(&ctx.iputReqs.at(step)));
-  }
-  return commSuccess;
-}
-
-// Issue ready puts from the queue. Only the last iput per peer is tracked.
-inline commResult_t progressPuts(AlgoContext& ctx) {
-  while (!ctx.putQ.empty()) {
-    const auto& elem = ctx.putQ.front();
-    CtranMapperRequest* req = nullptr;
-    if (ctx.sendPlan.isLastChunk(elem.step, elem.chunkOffset)) {
-      req = &ctx.iputReqs.at(elem.step);
-    }
-    FB_COMMCHECK(ctx.mapper->iput(
-        reinterpret_cast<char*>(ctx.recvbuff) + elem.chunkOffset * ctx.sendSize,
-        reinterpret_cast<char*>(ctx.remoteRecvBuffs.at(elem.step)) +
-            elem.chunkOffset * ctx.sendSize,
-        ctx.sendSize,
-        ctx.recvPlan.peer(elem.step),
-        CtranMapperConfig{
-            .memHdl_ = ctx.memHdl,
-            .remoteAccessKey_ = ctx.remoteAccessKeys.at(elem.step),
-            .notify_ = true},
-        req));
-    ctx.putQ.pop_front();
-  }
-  return commSuccess;
-}
-
-// Exchange ctrl messages and initialize per-chunk notifications for all steps.
-inline commResult_t exchangeCtrl(AlgoContext& ctx) {
-  const auto nSteps = ctx.recvPlan.nSteps();
-  for (int step = 0; step < nSteps; step++) {
-    const auto peer = ctx.recvPlan.peer(step);
-    FB_COMMCHECK(ctx.mapper->irecvCtrl(
-        &ctx.remoteRecvBuffs.at(step),
-        &ctx.remoteAccessKeys.at(step),
-        peer,
-        &ctx.irecvReqs.at(step)));
-    FB_COMMCHECK(ctx.mapper->isendCtrl(
-        ctx.recvbuff, ctx.memHdl, peer, &ctx.isendReqs.at(step)));
-    for (const auto chunkOffset : ctx.recvPlan.chunks(step)) {
-      FB_COMMCHECK(ctx.mapper->initNotify(
-          peer, ctx.memHdl, &ctx.notifyVec.at(chunkOffset)));
-    }
-  }
-  for (int step = 0; step < nSteps; step++) {
-    FB_COMMCHECK(ctx.mapper->waitRequest(&ctx.irecvReqs.at(step)));
-  }
-  return commSuccess;
-}
-
-// Full FC: flush pending fwds deferred from earlier steps into putQ.
-inline void postDeferredPuts(AlgoContext& ctx, int step) {
-  if (ctx.recvPlan.fcMode() == FcMode::kFull) {
-    for (auto& fwd : ctx.deferredPuts.at(step)) {
-      ctx.enqueuePut(fwd.step, fwd.chunkOffset);
-    }
-  }
-}
-
-inline commResult_t waitCtrl(AlgoContext& ctx) {
-  const auto nSteps = ctx.recvPlan.nSteps();
-  for (int step = 0; step < nSteps; step++) {
-    FB_COMMCHECK(ctx.mapper->waitRequest(&ctx.isendReqs.at(step)));
-  }
-  return commSuccess;
-}
 
 commResult_t impl(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
   auto* op = opGroup.front().get();
@@ -250,8 +88,8 @@ commResult_t impl(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
   auto* persistPlan = static_cast<const PersistPlan*>(
       comm->ctran_->algo->getOrCreatePersistPlan(
           PersistPlanKey::kAllgatherCtsrd, [&]() {
-            return std::make_unique<PersistPlan>(
-                createPersistPlan(rank, nRanks, getFcMode()));
+            return std::make_unique<PersistPlan>(createPersistPlan(
+                rank, nRanks, resolveFwdPeers(ctran::utils::log2i(nRanks))));
           }));
   const auto& recvPlan = persistPlan->recvPlan();
   const auto& sendPlan = persistPlan->sendPlan();
@@ -260,7 +98,6 @@ commResult_t impl(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
   if (recvPlan.nSteps() == 0) {
     return commSuccess;
   }
-  const auto nSteps = recvPlan.nSteps();
   AlgoContext ctx(
       mapper,
       reinterpret_cast<void*>(op->allgather.recvbuff),
@@ -283,35 +120,7 @@ commResult_t impl(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
   CTRAN_PROFILER_IF(
       profiler, profiler->endEvent(ctran::ProfilerEvent::BUF_REG));
 
-  CTRAN_PROFILER_IF(
-      profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_CTRL));
-  FB_COMMCHECK(exchangeCtrl(ctx));
-  CTRAN_PROFILER_IF(
-      profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_CTRL));
-
-  // Data transfer: step-ordered event loop
-  CTRAN_PROFILER_IF(
-      profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_DATA));
-
-  for (int step = 0; step < nSteps; step++) {
-    ctx.enqueuePut(step, rank);
-  }
-
-  for (int step = 0; step < nSteps; step++) {
-    postDeferredPuts(ctx, step);
-    const int expNumRecv = static_cast<int>(ctx.recvPlan.chunks(step).size());
-    while (ctx.numReceived.at(step) < expNumRecv) {
-      FB_COMMCHECK(progressRecvFwd(ctx, step, expNumRecv));
-      FB_COMMCHECK(progressPuts(ctx));
-    }
-  }
-
-  FB_COMMCHECK(waitAllPuts(ctx));
-
-  CTRAN_PROFILER_IF(
-      profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_DATA));
-
-  FB_COMMCHECK(waitCtrl(ctx));
+  FB_COMMCHECK(runExchangeAndProgress(ctx, rank, profiler));
 
   return commSuccess;
 }
@@ -328,11 +137,12 @@ commResult_t ctranAllGatherStreamedRd(
   auto* algo = comm->ctran_->algo.get();
   // Get or create the persist plan to drive the algorithm. It is persisted for
   // the lifetime of the communicator since it is defined purely based on nRanks
+  // and the (immutable) fwdPeers cvar.
   algo->getOrCreatePersistPlan(PersistPlanKey::kAllgatherCtsrd, [&]() {
     const auto rank = comm->statex_->rank();
     const auto nRanks = comm->statex_->nRanks();
-    return std::make_unique<PersistPlan>(
-        createPersistPlan(rank, nRanks, getFcMode()));
+    return std::make_unique<PersistPlan>(createPersistPlan(
+        rank, nRanks, resolveFwdPeers(ctran::utils::log2i(nRanks))));
   });
 
   CTRAN_COLL_INFO(
@@ -365,7 +175,7 @@ commResult_t ctranAllGatherStreamedRd(
       std::move(opGroup),
       impl,
       config,
-      reinterpret_cast<void*>(ncclKernelAllGatherCtranStreamedRd)));
+      reinterpret_cast<void*>(ncclKernelAllGatherCtranGpeStub)));
   if (extraCopyBuff != nullptr) {
     FB_CUDACHECK(cudaMemcpyAsync(
         recvbuff,

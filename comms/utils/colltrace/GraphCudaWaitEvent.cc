@@ -10,9 +10,9 @@
 #include <folly/logging/xlog.h>
 
 #include "comms/utils/CudaRAII.h"
-#include "comms/utils/HRDWRingBuffer.h"
 #include "comms/utils/checks.h"
 #include "comms/utils/colltrace/PrecisionClock.h"
+#include "comms/utils/hrdw_ring_buffer/HRDWRingBuffer.h"
 
 namespace meta::comms::colltrace {
 
@@ -41,7 +41,8 @@ GraphCudaWaitEvent::~GraphCudaWaitEvent() {
 }
 
 void GraphCudaWaitEvent::attachRingBuffer(
-    HRDWRingBuffer<GraphCollTraceEvent>* ringBuffer) noexcept {
+    ::hrdw_ring_buffer::HRDWRingBuffer<GraphCollTraceEvent>*
+        ringBuffer) noexcept {
   ringBuffer_ = ringBuffer;
 }
 

@@ -2,6 +2,9 @@
 
 #include <gtest/gtest.h>
 
+#include <numeric>
+#include <vector>
+
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/backends/ib/CtranIbBase.h"
 #include "comms/ctran/backends/ib/CtranIbVc.h"
@@ -22,12 +25,16 @@ TEST_P(CtranIbQpConfigTest, MaxNumQpsIsValidForAllConfigs) {
   EnvRAII envDevPerRank(NCCL_CTRAN_IB_DEVICES_PER_RANK, devicesPerRank);
 
   std::vector<CtranIbDevice> dummyDevices(devicesPerRank, CtranIbDevice{});
+  std::vector<int> activeDevices(devicesPerRank);
+  std::iota(activeDevices.begin(), activeDevices.end(), 0);
   CtranIbVirtualConn vc(
       dummyDevices,
       /*peerRank=*/0,
       /*comm=*/nullptr,
       /*pgTrafficClass=*/0,
-      /*cudaDev=*/0);
+      /*cudaDev=*/0,
+      /*activeDevices=*/std::move(activeDevices),
+      /*vcsPerPeer=*/1);
 
   const int maxNumQps = vc.getMaxNumQp();
   EXPECT_GE(maxNumQps, 1) << "maxNumQps must never be zero";
@@ -69,7 +76,9 @@ TEST(CtranIbQpConfigRegressionTest, MaxQps1DevPerRank2) {
       /*peerRank=*/0,
       /*comm=*/nullptr,
       /*pgTrafficClass=*/0,
-      /*cudaDev=*/0);
+      /*cudaDev=*/0,
+      /*activeDevices=*/std::vector<int>{0, 1},
+      /*vcsPerPeer=*/1);
 
   EXPECT_EQ(vc.getMaxNumQp(), 2);
 }

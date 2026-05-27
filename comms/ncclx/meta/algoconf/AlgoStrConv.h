@@ -31,8 +31,6 @@ inline void algoStrToVal(
     val = NCCL_ALLGATHER_ALGO::ctdirect;
   } else if (str == "ctring") {
     val = NCCL_ALLGATHER_ALGO::ctring;
-  } else if (str == "ctrd") {
-    val = NCCL_ALLGATHER_ALGO::ctrd;
   } else if (str == "ctsrd") {
     val = NCCL_ALLGATHER_ALGO::ctsrd;
   } else if (str == "ctbrucks") {
@@ -116,8 +114,6 @@ inline std::string algoValToStr(enum NCCL_ALLGATHER_ALGO val) {
       return "ctdirect";
     case NCCL_ALLGATHER_ALGO::ctring:
       return "ctring";
-    case NCCL_ALLGATHER_ALGO::ctrd:
-      return "ctrd";
     case NCCL_ALLGATHER_ALGO::ctsrd:
       return "ctsrd";
     case NCCL_ALLGATHER_ALGO::ctbrucks:

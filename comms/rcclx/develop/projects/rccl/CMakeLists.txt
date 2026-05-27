@@ -1013,9 +1013,9 @@ set(COMMON_FILES
   comms/utils/commSpecs.h
   comms/utils/Conversion.cc
   comms/utils/Conversion.h
-  comms/utils/GpuClockCalibration.cc
-  comms/utils/GpuClockCalibration.cu
-  comms/utils/GpuClockCalibration.h
+  comms/utils/hrdw_ring_buffer/GpuClockCalibration.cc
+  comms/utils/hrdw_ring_buffer/GpuClockCalibration.cu
+  comms/utils/hrdw_ring_buffer/GpuClockCalibration.h
   comms/utils/CudaChecks.h
   comms/utils/CudaRAII.cc
   comms/utils/CudaRAII.h

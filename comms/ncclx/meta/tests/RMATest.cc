@@ -8,13 +8,13 @@
 #include <nccl.h>
 #include <cstddef>
 #include "comm.h"
+#include "comms/ctran/tests/VerifyAlgoStatsUtil.h"
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
-#include "comms/testinfra/AlgoTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-
-using testinfra::AlgoRAII;
+#include "meta/NcclxConfig.h"
+#include "meta/algoconf/AlgoStrConv.h"
 
 // In v2.29+, RMA functions moved to ncclx:: namespace.
 // Bring them into scope so the same code compiles across versions.
@@ -32,16 +32,12 @@ class RMATest : public NcclxBaseTestFixture {
  protected:
   void SetUp() override {
     NcclxBaseTestFixture::SetUp();
-
-    this->comm = ncclx::test::createNcclComm(
-        globalRank, numRanks, localRank, bootstrap_.get());
-    ASSERT_NE(this->comm, nullptr);
+    ctranAlgoStats_.enable();
 
     CUDACHECK_TEST(cudaSetDevice(localRank));
     CUDACHECK_TEST(cudaStreamCreate(&stream));
   }
   void TearDown() override {
-    NCCLCHECK_TEST(ncclCommDestroy(this->comm));
     CUDACHECK_TEST(cudaStreamDestroy(stream));
     NcclxBaseTestFixture::TearDown();
   }
@@ -79,9 +75,15 @@ class RMATest : public NcclxBaseTestFixture {
   ncclComm_t comm{nullptr};
   cudaStream_t stream{};
   std::vector<TestMemSegment> segments;
+  ctran::test::VerifyAlgoStatsHelper ctranAlgoStats_;
 };
 
 TEST_F(RMATest, winPutOnly) {
+  ncclx::test::NcclCommRAII commRaii(
+      globalRank, numRanks, localRank, bootstrap_.get());
+  this->comm = commRaii.get();
+  ASSERT_NE(this->comm, nullptr);
+
   const size_t kNumElements = 8192;
   const size_t kNumIters = 10;
 
@@ -153,10 +155,16 @@ TEST_P(RMATestParam, winPut) {
   const auto& [kNumElements, ctranAllReduce, bufType] = GetParam();
   const size_t kNumIters = 10;
 
-  auto envGuard = AlgoRAII(
-      NCCL_ALLREDUCE_ALGO,
-      ctranAllReduce ? NCCL_ALLREDUCE_ALGO::ctdirect
-                     : NCCL_ALLREDUCE_ALGO::orig);
+  auto allreduceAlgoVal = ctranAllReduce ? NCCL_ALLREDUCE_ALGO::ctdirect
+                                         : NCCL_ALLREDUCE_ALGO::orig;
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints(
+      {{"allreduceAlgo", ncclx::algoconf::algoValToStr(allreduceAlgoVal)}});
+  config.hints = &hints;
+  ncclx::test::NcclCommRAII commRaii(
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
+  this->comm = commRaii.get();
+  ASSERT_NE(this->comm, nullptr);
 
   cudaStream_t put_stream, wait_stream;
   CUDACHECK_TEST(cudaStreamCreateWithFlags(&put_stream, cudaStreamNonBlocking));
@@ -220,6 +228,12 @@ TEST_P(RMATestParam, winPut) {
   CUDACHECK_TEST(cudaStreamSynchronize(put_stream));
   CUDACHECK_TEST(cudaStreamSynchronize(wait_stream));
 
+#ifdef TEST_ENABLE_CTRAN
+  if (ctranAllReduce) {
+    ctranAlgoStats_.verify(comm->ctranComm_.get(), "AllReduce", "Ctran");
+  }
+#endif
+
   auto res = ncclCommWindowDeregister(comm, win);
   EXPECT_EQ(res, ncclSuccess);
 
@@ -237,10 +251,16 @@ TEST_P(RMATestParam, winGet) {
   const auto& [kNumElements, ctranAllReduce, bufType] = GetParam();
   const size_t kNumIters = 10;
 
-  auto envGuard = AlgoRAII(
-      NCCL_ALLREDUCE_ALGO,
-      ctranAllReduce ? NCCL_ALLREDUCE_ALGO::ctdirect
-                     : NCCL_ALLREDUCE_ALGO::orig);
+  auto allreduceAlgoVal = ctranAllReduce ? NCCL_ALLREDUCE_ALGO::ctdirect
+                                         : NCCL_ALLREDUCE_ALGO::orig;
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints(
+      {{"allreduceAlgo", ncclx::algoconf::algoValToStr(allreduceAlgoVal)}});
+  config.hints = &hints;
+  ncclx::test::NcclCommRAII commRaii(
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
+  this->comm = commRaii.get();
+  ASSERT_NE(this->comm, nullptr);
 
   cudaStream_t get_stream;
   CUDACHECK_TEST(cudaStreamCreateWithFlags(&get_stream, cudaStreamNonBlocking));
@@ -288,7 +308,15 @@ TEST_P(RMATestParam, winGet) {
     NCCLCHECK_TEST(ncclAllReduce(
         arBuf, arBuf, kNumElements, ncclInt32, ncclSum, comm, get_stream));
   }
+
   CUDACHECK_TEST(cudaStreamSynchronize(get_stream));
+
+#ifdef TEST_ENABLE_CTRAN
+  if (ctranAllReduce) {
+    ctranAlgoStats_.verify(comm->ctranComm_.get(), "AllReduce", "Ctran");
+  }
+#endif
+
   this->barrier(comm, stream);
 
   size_t errs = checkChunkValue(
@@ -335,6 +363,11 @@ class MultiWindowTestParam
       public ::testing::WithParamInterface<std::tuple<size_t, size_t>> {};
 
 TEST_P(MultiWindowTestParam, multiWindow) {
+  ncclx::test::NcclCommRAII commRaii(
+      globalRank, numRanks, localRank, bootstrap_.get());
+  this->comm = commRaii.get();
+  ASSERT_NE(this->comm, nullptr);
+
   const auto& [kMaxNumElements, kNumIters] = GetParam();
   EXPECT_GE(kMaxNumElements, 1);
   EXPECT_GE(kNumIters, 1);

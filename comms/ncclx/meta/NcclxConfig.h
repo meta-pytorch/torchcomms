@@ -27,7 +27,6 @@ class Config {
   // When adding a new field, also add its key to knownHintKeys below.
   std::string commDesc = "undefined";
   std::vector<int> splitGroupRanks;
-  std::string ncclAllGatherAlgo = "undefined";
   bool fastInitMode = false;
 
   bool useCtran = false;
@@ -58,32 +57,36 @@ class Config {
 
   // Defer per-peer IBGDA state to first use (hint > CVAR).
   bool ibLazyConnect = false;
+  // Update mutable hint fields (algo config only).  Rejects immutable keys.
+  ncclResult_t update(const ncclx::Hints* hints);
 };
 
 // Hint keys corresponding to Config fields above.  Used by
 // Hints::set() to warn on unrecognized keys (typo detection).
 inline const std::vector<std::string>& knownHintKeys() {
   static const std::vector<std::string> keys = {
-      "commDesc",
-      "splitGroupRanks",
-      "ncclAllGatherAlgo",
-      "fastInitMode",
-      "useCtran",
-      "usePatAvg",
-      "noLocal",
+      "commDesc",          "splitGroupRanks",
+      "fastInitMode",      "useCtran",
+      "usePatAvg",         "noLocal",
+      "sendrecvAlgo",      "allgatherAlgo",
+      "allreduceAlgo",     "pipesIbgdaDataBufferSize",
+      "alltoallvAlgo",     "rmaAlgo",
+      "pipesNvlChunkSize", "pipesUseDualStateBuffer",
+      "vCliqueSize",       "ncclBuffSize",
+      "ibSplitDataOnQps",  "ibQpsPerConnection",
+      "ibLazyConnect",
+  };
+  return keys;
+}
+
+// Algo hint keys that are safe to update on a live communicator.
+inline const std::vector<std::string>& mutableHintKeys() {
+  static const std::vector<std::string> keys = {
       "sendrecvAlgo",
       "allgatherAlgo",
       "allreduceAlgo",
-      "pipesIbgdaDataBufferSize",
       "alltoallvAlgo",
       "rmaAlgo",
-      "pipesNvlChunkSize",
-      "pipesUseDualStateBuffer",
-      "vCliqueSize",
-      "ncclBuffSize",
-      "ibSplitDataOnQps",
-      "ibQpsPerConnection",
-      "ibLazyConnect",
   };
   return keys;
 }
@@ -103,3 +106,7 @@ inline const std::vector<std::string>& knownHintKeys() {
 // exactly once per config.
 // TODO: Move into ncclx namespace as ncclx::parseCommConfig and update callers.
 ncclResult_t ncclxParseCommConfig(ncclConfig_t* config);
+
+// Log all specified ncclConfig_t and resolved ncclx::Config fields for a
+// communicator.  Call after comm creation when commHash is available.
+void ncclxLogCommConfig(ncclComm_t comm);
