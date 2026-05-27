@@ -10,7 +10,7 @@
 //
 //   winPersistBuffReg (ctgraph_pipeline/rdpipeline, nLocalRanks > 1):
 //     Both local and remote addresses must be stable across replays.
-//     Uses window: ctranWinRegister → allGatherWinInit → allGatherWinExec.
+//     Uses window: ctranWinRegister → allGatherWinInit → AlgoImpl dispatch.
 //
 //   localPersistBuffReg (ctgraph_ring/rd, nLocalRanks == 1):
 //     Only local registration persists; remote exchange happens at each replay
@@ -27,6 +27,7 @@
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
+#include "comms/ctran/algos/AllGatherP/AlgoImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/ctran/utils/MathUtils.h"
@@ -172,16 +173,17 @@ commResult_t ctranAllGatherCudagraphAware(
 
   // Execute (captured into graph)
   switch (algo) {
-    case NCCL_ALLGATHER_ALGO::ctgraph_pipeline:
+    case NCCL_ALLGATHER_ALGO::ctgraph_pipeline: {
+      auto* pAlgo =
+          reinterpret_cast<ctran::allgatherp::AlgoImpl*>(request->algo);
+      FB_COMMCHECK(pAlgo->execPipeline(sendbuff, sendcount, datatype));
+      break;
+    }
     case NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline: {
-      auto savedPAlgo = NCCL_ALLGATHER_P_ALGO;
-      NCCL_ALLGATHER_P_ALGO = (algo == NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline)
-          ? NCCL_ALLGATHER_P_ALGO::ctrdpipeline
-          : NCCL_ALLGATHER_P_ALGO::ctpipeline;
-      auto pAlgoGuard = folly::makeGuard(
-          [savedPAlgo]() { NCCL_ALLGATHER_P_ALGO = savedPAlgo; });
+      auto* pAlgo =
+          reinterpret_cast<ctran::allgatherp::AlgoImpl*>(request->algo);
       FB_COMMCHECK(
-          ctran::allGatherWinExec(sendbuff, sendcount, datatype, request));
+          pAlgo->execStreamedRecursiveDoubling(sendbuff, sendcount, datatype));
       break;
     }
     case NCCL_ALLGATHER_ALGO::ctgraph_ring:
