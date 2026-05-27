@@ -2,6 +2,7 @@
 
 #include "comms/torchcomms/BackendWrapper.hpp"
 #include "comms/torchcomms/TorchComm.hpp"
+#include "comms/torchcomms/utils/Logging.hpp"
 
 #include <c10/core/DeviceGuard.h> // @manual=//caffe2:c10
 
@@ -587,6 +588,36 @@ bool BackendWrapper::verifyWorkTimeoutForTest(
 void BackendWrapper::setTimeout(std::chrono::milliseconds timeout) {
   options_->timeout = timeout;
 }
+void BackendWrapper::shutdown() {
+  // Idempotent: destroy_process_group iterates all backends and calls
+  // shutdown() on each, but multiple BackendWrappers can share the same
+  // underlying TorchComm (mixed cpu:gloo,cuda:nccl PGs registered through
+  // the backendType-to-wrapper dedup path). Finalize-on-already-finalized
+  // throws "TorchCommNCCL already finalized" — log and continue so destroy
+  // is always safe to call.
+  if (comm_) {
+    try {
+      comm_->finalize();
+    } catch (const std::exception& e) {
+      TC_LOG(WARNING)
+          << "BackendWrapper::shutdown: TorchComm::finalize() raised, "
+          << "treating as no-op (likely already finalized): " << e.what();
+    }
+  }
+}
+
+void BackendWrapper::abort() {
+  if (comm_) {
+    try {
+      comm_->abort();
+    } catch (const std::exception& e) {
+      TC_LOG(WARNING) << "BackendWrapper::abort: TorchComm::abort() raised, "
+                      << "treating as no-op (likely already aborted): "
+                      << e.what();
+    }
+  }
+}
+
 c10::intrusive_ptr<c10d::Backend> BackendWrapper::split(
     const c10::intrusive_ptr<c10d::Store>& /* store */,
     const std::vector<int>& ranks,
