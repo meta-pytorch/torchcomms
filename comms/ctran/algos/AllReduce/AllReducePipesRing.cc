@@ -85,6 +85,20 @@ commResult_t ctranAllReducePipesRing(
 
   const size_t messageBytes = count * sizeof(float);
 
+  bool enableBidirAg = false;
+  if (nRanks > 2) {
+    int64_t bidirMinSize = NCCL_CTRAN_ALLREDUCE_PIPES_BIDIR_AG_MIN_SIZE;
+    if (bidirMinSize == -1) {
+      enableBidirAg = false;
+    } else if (bidirMinSize == 0) {
+      enableBidirAg = true;
+    } else if (bidirMinSize == -2) {
+      enableBidirAg = (messageBytes >= 16UL * 1024 * 1024);
+    } else if (bidirMinSize > 0) {
+      enableBidirAg = (static_cast<int64_t>(messageBytes) >= bidirMinSize);
+    }
+  }
+
   int numRings;
   int numBlocks;
   if (NCCL_CTRAN_ALLREDUCE_PIPES_NUM_RINGS > 0) {
@@ -128,6 +142,7 @@ commResult_t ctranAllReducePipesRing(
   params.num_blocks = numBlocks;
   params.num_rings = numRings;
   params.stream = stream;
+  params.enable_bidir_ag = enableBidirAg;
 
   if (timeout.has_value()) {
     params.timeout_ms = static_cast<float>(timeout->count());

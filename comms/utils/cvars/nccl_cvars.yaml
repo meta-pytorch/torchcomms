@@ -1862,6 +1862,20 @@ cvars:
      for automatic selection based on message size. This is the total
      grid size (split across all rings).
 
+ - name        : NCCL_CTRAN_ALLREDUCE_PIPES_BIDIR_AG_MIN_SIZE
+   type        : int64_t
+   default     : -2
+   description : |-
+     Minimum message size in bytes for bi-directional AllGather optimization
+     in the Pipes ring AllReduce. Bi-directional AG sends data in both
+     directions simultaneously during the AllGather phase, reducing total
+     steps from W-1 to ceil((W-1)/2). This optimization benefits large
+     messages where the step reduction outweighs per-step overhead.
+     Set to 0 to enable for all message sizes.
+     Set to -1 to disable bi-directional AG entirely.
+     Set to -2 to auto-tune per GPU architecture (default).
+     Set to a positive value to enable only for messages at or above that size.
+
  - name        : NCCL_CTRAN_IBGDA_QP_DEPTH
    type        : uint64_t
    default     : 1024

@@ -15,7 +15,7 @@ namespace comms::pipes {
 
 namespace {
 
-template <int NumRings>
+template <int NumRings, bool EnableBidirAg>
 void launch_impl(const RingAllReduceLaunchParams& params, Timeout timeout) {
   const std::size_t chunk_elements = params.count / params.num_ranks;
 
@@ -37,7 +37,7 @@ void launch_impl(const RingAllReduceLaunchParams& params, Timeout timeout) {
     };
   }
 
-  ring_allreduce_kernel<NumRings, float, SumOp, 16384, 512>
+  ring_allreduce_kernel<NumRings, float, SumOp, 16384, 512, EnableBidirAg>
       <<<params.num_blocks, 512, 0, params.stream>>>(args, timeout);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
@@ -64,13 +64,22 @@ void launch_ring_allreduce(const RingAllReduceLaunchParams& params) {
 
   switch (params.num_rings) {
     case 1:
-      launch_impl<1>(params, timeout);
+      if (params.enable_bidir_ag)
+        launch_impl<1, true>(params, timeout);
+      else
+        launch_impl<1, false>(params, timeout);
       break;
     case 2:
-      launch_impl<2>(params, timeout);
+      if (params.enable_bidir_ag)
+        launch_impl<2, true>(params, timeout);
+      else
+        launch_impl<2, false>(params, timeout);
       break;
     case 4:
-      launch_impl<4>(params, timeout);
+      if (params.enable_bidir_ag)
+        launch_impl<4, true>(params, timeout);
+      else
+        launch_impl<4, false>(params, timeout);
       break;
     default:
       throw std::runtime_error(
