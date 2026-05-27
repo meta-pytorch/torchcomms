@@ -36,7 +36,6 @@ TEST_F(CommSetConfigTest, SetAllAlgoHints) {
       {"allreduceAlgo", "ctdirect"},
       {"sendrecvAlgo", "ctran"},
       {"alltoallvAlgo", "ctran"},
-      {"rmaAlgo", "ctran"},
   });
   newConfig.hints = &hints;
 
@@ -53,7 +52,6 @@ TEST_F(CommSetConfigTest, SetAllAlgoHints) {
   EXPECT_EQ(
       NCCL_ALLTOALLV_ALGO::ctran,
       NCCLX_CONFIG_FIELD(comm->config, alltoallvAlgo));
-  EXPECT_EQ(NCCL_RMA_ALGO::ctran, NCCLX_CONFIG_FIELD(comm->config, rmaAlgo));
 }
 
 TEST_F(CommSetConfigTest, RejectImmutableHintKey) {

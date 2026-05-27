@@ -80,14 +80,6 @@ inline void algoStrToVal(
   }
 }
 
-inline void algoStrToVal(const std::string& str, enum NCCL_RMA_ALGO& val) {
-  if (str == "ctran") {
-    val = NCCL_RMA_ALGO::ctran;
-  } else {
-    val = NCCL_RMA_ALGO::orig;
-  }
-}
-
 inline std::string algoValToStr(enum NCCL_SENDRECV_ALGO val) {
   switch (val) {
     case NCCL_SENDRECV_ALGO::orig:
@@ -158,16 +150,6 @@ inline std::string algoValToStr(enum NCCL_ALLTOALLV_ALGO val) {
       return "compCtran";
     case NCCL_ALLTOALLV_ALGO::bsCompCtran:
       return "bsCompCtran";
-  }
-  return "unknown";
-}
-
-inline std::string algoValToStr(enum NCCL_RMA_ALGO val) {
-  switch (val) {
-    case NCCL_RMA_ALGO::orig:
-      return "orig";
-    case NCCL_RMA_ALGO::ctran:
-      return "ctran";
   }
   return "unknown";
 }
