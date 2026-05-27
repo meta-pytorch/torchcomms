@@ -133,6 +133,32 @@ endif()
 
 find_package(Torch REQUIRED)
 
+function(torchcomms_use_torch_pybind11 target)
+    set(include_root "${TORCHCOMMS_PYBIND11_INCLUDE_DIR}")
+    if(NOT include_root)
+        # No setup.py-supplied path (e.g. a direct `cmake -B build` invocation).
+        # Fall back to PyTorch's bundled pybind11, exposed through a unique
+        # build-dir symlink so CMake does not dedup it against Torch::Torch's
+        # INTERFACE_SYSTEM include.
+        set(_torch_pybind11 "${TORCH_INSTALL_PREFIX}/include/pybind11")
+        if(NOT EXISTS "${_torch_pybind11}/pybind11.h")
+            message(FATAL_ERROR
+                "PyTorch bundled pybind11 not found at ${_torch_pybind11}")
+        endif()
+        set(include_root
+            "${CMAKE_CURRENT_BINARY_DIR}/_torch_pybind11_for_${target}")
+        file(MAKE_DIRECTORY "${include_root}")
+        file(CREATE_LINK
+            "${_torch_pybind11}" "${include_root}/pybind11" SYMBOLIC)
+    endif()
+    if(NOT EXISTS "${include_root}/pybind11/pybind11.h")
+        message(FATAL_ERROR
+            "torchcomms_use_torch_pybind11: ${include_root} does not contain "
+            "pybind11/pybind11.h")
+    endif()
+    target_include_directories(${target} BEFORE PRIVATE "${include_root}")
+endfunction()
+
 # Helper to glob sources
 file(GLOB TORCHCOMMS_SOURCES "comms/torchcomms/*.cpp")
 file(GLOB TORCHCOMMS_FAKE_SOURCES "comms/torchcomms/fake/*.cpp")
@@ -167,6 +193,7 @@ target_include_directories(torchcomms PRIVATE
     ${CONDA_INCLUDE}
     ${Python3_INCLUDE_DIRS}
 )
+torchcomms_use_torch_pybind11(torchcomms)
 target_compile_features(torchcomms PRIVATE cxx_std_20)
 target_link_directories(torchcomms PRIVATE ${CONDA_LIB})
 # glog/gflags/fmt must come before TORCH_LIBRARIES so our headers are found
@@ -211,6 +238,7 @@ target_include_directories(torchcomms_comms PRIVATE
     ${TORCH_INSTALL_PREFIX}/include
     ${Python3_INCLUDE_DIRS}
 )
+torchcomms_use_torch_pybind11(torchcomms_comms)
 target_compile_features(torchcomms_comms PRIVATE cxx_std_20)
 target_link_directories(torchcomms_comms PRIVATE ${CONDA_LIB})
 target_link_libraries(torchcomms_comms PRIVATE
