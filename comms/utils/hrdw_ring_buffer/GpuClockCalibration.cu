@@ -4,9 +4,9 @@
 
 #include <cstdint>
 
-#include "comms/utils/GpuClockCalibration.h"
+#include "comms/utils/hrdw_ring_buffer/GpuClockCalibration.h"
 
-namespace meta::comms::colltrace {
+namespace hrdw_ring_buffer {
 
 namespace {
 
@@ -21,4 +21,4 @@ cudaError_t launchReadGlobaltimer(cudaStream_t stream, uint64_t* out) {
   return cudaGetLastError();
 }
 
-} // namespace meta::comms::colltrace
+} // namespace hrdw_ring_buffer

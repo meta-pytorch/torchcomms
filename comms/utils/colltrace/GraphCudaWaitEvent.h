@@ -4,10 +4,10 @@
 
 #include <cuda_runtime.h>
 
-#include "comms/utils/HRDWRingBuffer.h"
 #include "comms/utils/colltrace/CollWaitEvent.h"
 #include "comms/utils/colltrace/GraphCollTraceEvent.h"
 #include "comms/utils/colltrace/GraphCollTraceState.h"
+#include "comms/utils/hrdw_ring_buffer/HRDWRingBuffer.h"
 
 namespace meta::comms::colltrace {
 
@@ -54,7 +54,8 @@ class GraphCudaWaitEvent : public ICollWaitEvent {
   CommsMaybe<system_clock_time_point> getCollEndTime() noexcept override;
 
   void attachRingBuffer(
-      HRDWRingBuffer<GraphCollTraceEvent>* ringBuffer) noexcept;
+      ::hrdw_ring_buffer::HRDWRingBuffer<GraphCollTraceEvent>*
+          ringBuffer) noexcept;
 
   cudaStream_t getStream() const noexcept {
     return stream_;
@@ -81,7 +82,7 @@ class GraphCudaWaitEvent : public ICollWaitEvent {
   cudaEvent_t depEvent_{nullptr};
 
   // owned by CollTrace, shared across ALL graphs. set via attachRingBuffer().
-  HRDWRingBuffer<GraphCollTraceEvent>* ringBuffer_{nullptr};
+  ::hrdw_ring_buffer::HRDWRingBuffer<GraphCollTraceEvent>* ringBuffer_{nullptr};
 };
 
 } // namespace meta::comms::colltrace

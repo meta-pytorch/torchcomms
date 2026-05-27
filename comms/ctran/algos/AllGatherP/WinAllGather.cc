@@ -130,6 +130,8 @@ commResult_t allGatherWinExec(
       return algo->execPipeline(sendbuff, count, datatype);
     case NCCL_ALLGATHER_P_ALGO::ctrdpipeline:
       return algo->execRecursiveDoubling(sendbuff, count, datatype);
+    case NCCL_ALLGATHER_P_ALGO::ctsrdpipeline:
+      return algo->execStreamedRecursiveDoubling(sendbuff, count, datatype);
     default:
       return ErrorStackTraceUtil::log(commInternalError);
   }

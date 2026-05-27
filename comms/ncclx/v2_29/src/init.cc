@@ -1913,6 +1913,8 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
     INFO(NCCL_INIT, "%s comm %p rank %d nranks %d cudaDev %d nvmlDev %d busId %lx commId 0x%llx - Init COMPLETE", job->funcName,
          comm, comm->rank, comm->nRanks, comm->cudaDev, comm->nvmlDev, comm->busId, commIdHash);
   }
+  // [META:PER_COMM_CONFIG] Log ncclConfig_t and ncclx::Config after init
+  ncclxLogCommConfig(comm);
   sum_timers = 0.0;
   for (int it = 1; it < TIMERS_INIT_COUNT; ++it)
     sum_timers += (timers[it] / 1e9);

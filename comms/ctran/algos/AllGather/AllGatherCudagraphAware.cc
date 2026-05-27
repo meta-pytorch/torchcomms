@@ -3,14 +3,14 @@
 // Cudagraph-aware AllGather: when ctranAllGather() is called during CUDA graph
 // capture with a ctgraph* algorithm, this module handles buffer registration
 // and algorithm dispatch. The algo is either explicitly specified
-// (ctgraph_pipeline, ctgraph_ring, ctgraph_rd) or auto-selected by
-// selectCtgraphAlgo() based on topology and message size.
+// (ctgraph_pipeline, ctgraph_rdpipeline, ctgraph_ring, ctgraph_rd) or
+// auto-selected by selectCtgraphAlgo() based on topology and message size.
 //
 // Two registration strategies:
 //
-//   winPersistBuffReg (ctgraph_pipeline, nLocalRanks > 1):
+//   winPersistBuffReg (ctgraph_pipeline/rdpipeline, nLocalRanks > 1):
 //     Both local and remote addresses must be stable across replays.
-//     Uses window: ctranWinRegister → allGatherWinInit → allGatherWinExec.
+//     Uses window: ctranWinRegister → allGatherWinInit → AlgoImpl dispatch.
 //
 //   localPersistBuffReg (ctgraph_ring/rd, nLocalRanks == 1):
 //     Only local registration persists; remote exchange happens at each replay
@@ -27,8 +27,10 @@
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
+#include "comms/ctran/algos/AllGatherP/AlgoImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/utils/CudaGraphUtils.h"
+#include "comms/ctran/utils/MathUtils.h"
 #include "comms/ctran/window/CtranWin.h"
 #include "comms/utils/CudaRAII.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -72,12 +74,15 @@ commResult_t localPersistBuffReg(void* recvbuff, size_t recvBytes) {
 enum NCCL_ALLGATHER_ALGO selectCtgraphAlgo(
     size_t sendBytes,
     const ncclx::CommStateX* statex) {
+  const bool largeMessage = sendBytes >= NCCL_CTGRAPH_ALLGATHER_RING_THRESHOLD;
   if (statex->nLocalRanks() > 1) {
-    return NCCL_ALLGATHER_ALGO::ctgraph_pipeline;
+    return (!largeMessage && ctran::utils::isPowerOfTwo(statex->nNodes()))
+        ? NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline
+        : NCCL_ALLGATHER_ALGO::ctgraph_pipeline;
   }
-  return (sendBytes >= NCCL_CTGRAPH_ALLGATHER_RING_THRESHOLD)
-      ? NCCL_ALLGATHER_ALGO::ctgraph_ring
-      : NCCL_ALLGATHER_ALGO::ctgraph_rd;
+  return (!largeMessage && ctran::utils::isPowerOfTwo(statex->nRanks()))
+      ? NCCL_ALLGATHER_ALGO::ctgraph_rd
+      : NCCL_ALLGATHER_ALGO::ctgraph_ring;
 }
 
 } // namespace
@@ -113,88 +118,69 @@ commResult_t ctranAllGatherCudagraphAware(
       statex->nLocalRanks(),
       statex->nNodes());
 
-  // Buffer registration + cleanup guard
-  ctran::CtranWin* win = nullptr;
-  CtranPersistentRequest* request = nullptr;
-
+  // Each branch handles registration, cleanup guard, execute, and deferred
+  // cleanup transfer in one block so the full lifecycle is visible together.
   switch (algo) {
     case NCCL_ALLGATHER_ALGO::ctgraph_pipeline:
-    case NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline:
+    case NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline: {
+      ctran::CtranWin* win = nullptr;
+      CtranPersistentRequest* request = nullptr;
       FB_COMMCHECK(
           winPersistBuffReg(recvbuff, recvBytes, comm, stream, &win, &request));
+      FB_CHECKABORT(
+          win != nullptr, "winPersistBuffReg succeeded but win is null");
+      FB_CHECKABORT(
+          request != nullptr,
+          "winPersistBuffReg succeeded but request is null");
+
+      auto cleanup = [request, win]() {
+        ctran::allGatherWinDestroy(request);
+        delete request;
+        win->free(true /* skipBarrier */);
+        delete win;
+      };
+      auto cleanupGuard = folly::makeGuard(cleanup);
+
+      auto* pAlgo =
+          reinterpret_cast<ctran::allgatherp::AlgoImpl*>(request->algo);
+      if (algo == NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline) {
+        FB_COMMCHECK(pAlgo->execStreamedRecursiveDoubling(
+            sendbuff, sendcount, datatype));
+      } else {
+        FB_COMMCHECK(pAlgo->execPipeline(sendbuff, sendcount, datatype));
+      }
+
+      cleanupGuard.dismiss();
+      comm->cudagraphDeferredCleanup.add(std::move(cleanup));
       break;
+    }
     case NCCL_ALLGATHER_ALGO::ctgraph_ring:
-    case NCCL_ALLGATHER_ALGO::ctgraph_rd:
+    case NCCL_ALLGATHER_ALGO::ctgraph_rd: {
       FB_COMMCHECK(localPersistBuffReg(recvbuff, recvBytes));
+
+      auto cleanup = [recvbuff, recvBytes]() {
+        ctran::globalDeregisterWithPtr(recvbuff, recvBytes);
+      };
+      auto cleanupGuard = folly::makeGuard(cleanup);
+
+      if (algo == NCCL_ALLGATHER_ALGO::ctgraph_ring) {
+        FB_COMMCHECK(ctranAllGatherRing(
+            sendbuff, recvbuff, sendcount, datatype, comm, stream));
+      } else {
+        FB_COMMCHECK(ctranAllGatherStreamedRd(
+            sendbuff, recvbuff, sendcount, datatype, comm, stream));
+      }
+
+      cleanupGuard.dismiss();
+      comm->cudagraphDeferredCleanup.add(std::move(cleanup));
       break;
+    }
     default:
       FB_ERRORRETURN(
           commInvalidArgument,
           "Unexpected algo {} in ctranAllGatherCudagraphAware",
           allGatherAlgoName(algo));
   }
-
-  // Cleanup lambda: shared between error guard and deferred cleanup.
-  std::function<void()> cleanup;
-  switch (algo) {
-    case NCCL_ALLGATHER_ALGO::ctgraph_pipeline:
-    case NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline:
-      cleanup = [request, win]() {
-        if (request) {
-          ctran::allGatherWinDestroy(request);
-          delete request;
-        }
-        if (win) {
-          win->free(true /* skipBarrier */);
-          delete win;
-        }
-      };
-      break;
-    case NCCL_ALLGATHER_ALGO::ctgraph_ring:
-    case NCCL_ALLGATHER_ALGO::ctgraph_rd:
-      cleanup = [recvbuff, recvBytes]() {
-        ctran::globalDeregisterWithPtr(recvbuff, recvBytes);
-      };
-      break;
-    default:
-      break;
-  }
-
-  auto cleanupGuard = folly::makeGuard([&cleanup]() {
-    if (cleanup) {
-      cleanup();
-    }
-  });
-
-  // Execute (captured into graph)
-  switch (algo) {
-    case NCCL_ALLGATHER_ALGO::ctgraph_pipeline:
-    case NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline: {
-      auto savedPAlgo = NCCL_ALLGATHER_P_ALGO;
-      NCCL_ALLGATHER_P_ALGO = (algo == NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline)
-          ? NCCL_ALLGATHER_P_ALGO::ctrdpipeline
-          : NCCL_ALLGATHER_P_ALGO::ctpipeline;
-      auto pAlgoGuard = folly::makeGuard(
-          [savedPAlgo]() { NCCL_ALLGATHER_P_ALGO = savedPAlgo; });
-      FB_COMMCHECK(
-          ctran::allGatherWinExec(sendbuff, sendcount, datatype, request));
-      break;
-    }
-    case NCCL_ALLGATHER_ALGO::ctgraph_ring:
-      FB_COMMCHECK(ctranAllGatherRing(
-          sendbuff, recvbuff, sendcount, datatype, comm, stream));
-      break;
-    case NCCL_ALLGATHER_ALGO::ctgraph_rd:
-      FB_COMMCHECK(ctranAllGatherStreamedRd(
-          sendbuff, recvbuff, sendcount, datatype, comm, stream));
-      break;
-    default:
-      break;
-  }
-
-  // Success — transfer ownership to deferred cleanup
-  cleanupGuard.dismiss();
-  comm->cudagraphDeferredCleanup.add(std::move(cleanup));
 
   return commSuccess;
 }

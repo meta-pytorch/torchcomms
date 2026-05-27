@@ -14,18 +14,18 @@
 #include <vector>
 
 #include "comms/pipes/PipesTraceTypes.h"
-#include "comms/utils/HRDWRingBuffer.h"
-#include "comms/utils/HRDWRingBufferReader.h"
+#include "comms/utils/hrdw_ring_buffer/HRDWRingBuffer.h"
+#include "comms/utils/hrdw_ring_buffer/HRDWRingBufferReader.h"
 
 namespace comms::pipes {
 
 class PipesTrace {
  public:
   using Buffer =
-      ::meta::comms::colltrace::HRDWRingBuffer<comms::pipes::PipesTraceEvent>;
+      ::hrdw_ring_buffer::HRDWRingBuffer<comms::pipes::PipesTraceEvent>;
   using Entry = typename Buffer::Entry;
-  using Reader = ::meta::comms::colltrace::HRDWRingBufferReader<
-      comms::pipes::PipesTraceEvent>;
+  using Reader =
+      ::hrdw_ring_buffer::HRDWRingBufferReader<comms::pipes::PipesTraceEvent>;
 
   PipesTrace() = default;
   ~PipesTrace();

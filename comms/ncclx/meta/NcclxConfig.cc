@@ -18,6 +18,7 @@
 #include <vector>
 
 using ncclx::algoconf::algoStrToVal;
+using ncclx::algoconf::algoValToStr;
 
 namespace ncclx {
 
@@ -328,6 +329,93 @@ ncclResult_t Config::update(const ncclx::Hints* hints) {
 
 } // namespace ncclx
 
+void ncclxLogCommConfig(ncclComm_t comm) {
+  if (comm == nullptr) {
+    return;
+  }
+
+  const auto& cfg = comm->config;
+
+  // Log non-UNDEF ncclConfig_t and ncclx::Config fields
+  std::string fields;
+  auto append = [&](const std::string& kv) {
+    if (!fields.empty()) {
+      fields += ' ';
+    }
+    fields += kv;
+  };
+  auto appendInt = [&](const char* name, int val) {
+    if (val != NCCL_CONFIG_UNDEF_INT) {
+      append(fmt::format("{}={}", name, val));
+    }
+  };
+  auto appendStr = [&](const char* name, const char* val) {
+    if (val != nullptr && val != NCCL_CONFIG_UNDEF_PTR) {
+      append(fmt::format("{}={}", name, val));
+    }
+  };
+
+  // ncclConfig_t fields
+  appendInt("blocking", cfg.blocking);
+  appendInt("cgaClusterSize", cfg.cgaClusterSize);
+  appendInt("minCTAs", cfg.minCTAs);
+  appendInt("maxCTAs", cfg.maxCTAs);
+  appendStr("netName", cfg.netName);
+  appendInt("splitShare", cfg.splitShare);
+  appendInt("trafficClass", cfg.trafficClass);
+  appendStr("commName", cfg.commName);
+  appendInt("collnetEnable", cfg.collnetEnable);
+  appendInt("CTAPolicy", cfg.CTAPolicy);
+  appendInt("shrinkShare", cfg.shrinkShare);
+  appendInt("nvlsCTAs", cfg.nvlsCTAs);
+  appendInt("nChannelsPerNetPeer", cfg.nChannelsPerNetPeer);
+  appendInt("nvlinkCentricSched", cfg.nvlinkCentricSched);
+  appendInt("graphUsageMode", cfg.graphUsageMode);
+  appendInt("numRmaCtx", cfg.numRmaCtx);
+  appendStr("commDesc", cfg.commDesc);
+  appendInt("fastInitMode", cfg.fastInitMode);
+
+  // ncclx::Config fields
+  if (cfg.ncclxConfig != NCCL_CONFIG_UNDEF_PTR && cfg.ncclxConfig != nullptr) {
+    const auto* xCfg = static_cast<const ncclx::Config*>(cfg.ncclxConfig);
+    auto appendAlgo = [&](const char* name, const auto& field) {
+      append(fmt::format("{}={}", name, algoValToStr(field)));
+    };
+    append(fmt::format("useCtran={}", xCfg->useCtran));
+    append(fmt::format("usePatAvg={}", xCfg->usePatAvg));
+    append(fmt::format("noLocal={}", xCfg->noLocal));
+    append(fmt::format("ibLazyConnect={}", xCfg->ibLazyConnect));
+    appendAlgo("sendrecvAlgo", xCfg->sendrecvAlgo);
+    appendAlgo("allgatherAlgo", xCfg->allgatherAlgo);
+    appendAlgo("allreduceAlgo", xCfg->allreduceAlgo);
+    appendAlgo("alltoallvAlgo", xCfg->alltoallvAlgo);
+    appendAlgo("rmaAlgo", xCfg->rmaAlgo);
+    auto appendIfSet = [&](const char* name, const auto& opt) {
+      if (opt.has_value()) {
+        append(fmt::format("{}={}", name, *opt));
+      }
+    };
+    if (xCfg->vCliqueSize != 0) {
+      append(fmt::format("vCliqueSize={}", xCfg->vCliqueSize));
+    }
+    appendIfSet("pipesNvlChunkSize", xCfg->pipesNvlChunkSize);
+    appendIfSet("pipesUseDualStateBuffer", xCfg->pipesUseDualStateBuffer);
+    appendIfSet("pipesIbgdaDataBufferSize", xCfg->pipesIbgdaDataBufferSize);
+    appendIfSet("ncclBuffSize", xCfg->ncclBuffSize);
+    appendIfSet("ibSplitDataOnQps", xCfg->ibSplitDataOnQps);
+    appendIfSet("ibQpsPerConnection", xCfg->ibQpsPerConnection);
+  }
+
+  INFO(
+      NCCL_INIT,
+      "NCCLX CONFIG: [commHash=%lx commDesc=%s rank=%d nRanks=%d] init %s",
+      comm->commHash,
+      NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str(),
+      comm->rank,
+      comm->nRanks,
+      fields.empty() ? "(defaults)" : fields.c_str());
+}
+
 // C-style wrapper around the ncclx::Config parsing constructor.
 // Most NCCL code is C-based, so this function translates C++
 // exceptions into ncclResult_t error codes for the C callers.
@@ -405,5 +493,33 @@ ncclx::commSetConfig(ncclComm_t comm, const ncclConfig_t* config) {
 
   auto* cfg = static_cast<ncclx::Config*>(comm->config.ncclxConfig);
   const auto* hints = static_cast<const ncclx::Hints*>(config->hints);
-  return cfg->update(hints);
+  NCCLCHECK(cfg->update(hints));
+
+  std::string updated;
+  auto appendIfSet = [&](const char* key, const auto& field) {
+    std::string val;
+    if (hints->get(key, val) == ncclSuccess) {
+      if (!updated.empty()) {
+        updated += ' ';
+      }
+      updated += fmt::format("{}={}", key, algoValToStr(field));
+    }
+  };
+  appendIfSet("sendrecvAlgo", cfg->sendrecvAlgo);
+  appendIfSet("allgatherAlgo", cfg->allgatherAlgo);
+  appendIfSet("allreduceAlgo", cfg->allreduceAlgo);
+  appendIfSet("alltoallvAlgo", cfg->alltoallvAlgo);
+  appendIfSet("rmaAlgo", cfg->rmaAlgo);
+
+  if (!updated.empty()) {
+    INFO(
+        NCCL_INIT,
+        "NCCLX CONFIG: [commHash=%lx commDesc=%s rank=%d nRanks=%d] update %s",
+        comm->commHash,
+        cfg->commDesc.c_str(),
+        comm->rank,
+        comm->nRanks,
+        updated.c_str());
+  }
+  return ncclSuccess;
 }
