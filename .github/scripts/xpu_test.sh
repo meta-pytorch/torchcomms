@@ -5,6 +5,10 @@ set -ex
 export ZE_FLAT_DEVICE_HIERARCHY=FLAT
 export CCL_TOPO_FABRIC_VERTEX_CONNECTION_CHECK=0
 
+#Source Intel Deep Learning Essentials
+
+source ${DLE_PATH}/setvars.sh
+
 #Create Conda Env and install dependencies
 conda create -yn xpu_torchcomms_ci-${RUNNER_NAME} python=3.10
 source activate xpu_torchcomms_ci-${RUNNER_NAME}
