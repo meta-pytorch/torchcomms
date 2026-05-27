@@ -237,13 +237,14 @@ class TorchCommXCCL : public TorchCommBackend,
       std::chrono::milliseconds timeout,
       const at::Tensor& inputTensor);
 
-  void checkRankRange(int rank) const;
-
   // Work tracking per stream
   TorchWorkXCCLQueue workq_;
 
   std::optional<xpuEvent_t>
       dependency_event_; // Pre-allocated event for stream dependencies
+
+  size_t max_event_pool_size_{};
+  bool high_priority_stream_{false};
 
  private:
   // Helper that automatically cleans up premul sums.
@@ -321,11 +322,6 @@ class TorchCommXCCL : public TorchCommBackend,
   std::condition_variable timeout_cv_;
   std::mutex timeout_mutex_;
 
- protected:
-  size_t max_event_pool_size_{};
-  bool high_priority_stream_{false};
-
- private:
   std::string name_;
   std::string backend_version_{"unknown"};
 };

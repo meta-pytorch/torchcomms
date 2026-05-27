@@ -849,13 +849,6 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_reduce(
   TracingGuard tracingGuard(
       name_, comm_size_, "all_reduce", rank_, tensor, tensor);
 
-  // oneCCL allreduce with PREMUL_SUM is a no-op for comm_size == 1
-  // (https://github.com/uxlfoundation/oneCCL/issues/196). Apply the factor on
-  // the current stream so the async dependency event serializes correctly.
-  if (comm_size_ == 1 && op == ReduceOp::RedOpType::PREMUL_SUM) {
-    applyPreMulFactor(tensor, op);
-  }
-
   xpuStream_t stream = getOperationStream(async_op);
   auto work = async_op
       ? createWork(
@@ -887,11 +880,8 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_reduce(
   // reductions natively.
   const auto maybe_new_op = [&]() -> ReduceOp {
     if (op == ReduceOp::RedOpType::PREMUL_SUM) {
-      // comm_size == 1 was already handled before getOperationStream above.
-      if (comm_size_ != 1) {
-        MAYBE_STREAM_GUARD(guard, stream, device_.type());
-        applyPreMulFactor(tensor, op);
-      }
+      MAYBE_STREAM_GUARD(guard, stream, device_.type());
+      applyPreMulFactor(tensor, op);
       return ReduceOp(ReduceOp::RedOpType::SUM);
     } else if (op == ReduceOp::RedOpType::AVG) {
       return ReduceOp(ReduceOp::RedOpType::SUM);
