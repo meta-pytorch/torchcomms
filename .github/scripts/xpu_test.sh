@@ -6,7 +6,6 @@ export ZE_FLAT_DEVICE_HIERARCHY=FLAT
 export CCL_TOPO_FABRIC_VERTEX_CONNECTION_CHECK=0
 
 #Source Intel Deep Learning Essentials
-
 source ${DLE_PATH}/setvars.sh
 
 #Create Conda Env and install dependencies
