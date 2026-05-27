@@ -1075,6 +1075,130 @@ TEST_F(TorchCommXCCLTest, AsyncErrorAbortsCommunicator) {
       XCCLException);
 }
 
+TEST_F(TorchCommXCCLTest, WorkDefaultTimeoutCausesAbortDuringCollective) {
+  // The timeout watchdog should detect a hung collective using the comm's
+  // default timeout, transition comm_state_ to TIMEOUT, and cause subsequent
+  // collective entrypoints to throw.
+  xpu_mock_->setupDefaultBehaviors();
+  xccl_mock_->setupDefaultBehaviors();
+  setupRankAndSize(0, 2);
+
+  // Short default timeout so the watchdog's 1s wake-up trips it quickly.
+  default_options_.abort_process_on_timeout_or_error = false;
+  default_options_.timeout = std::chrono::milliseconds(50);
+
+  auto comm = createMockedTorchComm();
+  comm->init(*device_, "test_comm", default_options_);
+
+  setupEventsForWork(*comm, 1);
+
+  auto tensor = createTestTensor({10, 10});
+
+  EXPECT_CALL(*xccl_mock_, allReduce(_, _, _, _, _, _, _))
+      .WillOnce(Return(onecclSuccess));
+
+  // Start event completes; end event never does → watchdog detects timeout.
+  setupWorkToTimeout();
+
+  auto work = comm->all_reduce(tensor, ReduceOp::SUM, true, AllReduceOptions());
+  auto* xccl_work = reinterpret_cast<TorchWorkXCCL*>(work.get());
+  EXPECT_EQ(getWorkTimeout(xccl_work), default_options_.timeout);
+
+  // Wait for watchdog thread to flip comm_state_ to TIMEOUT.
+  comm->waitTillTimeout();
+
+  // A subsequent entrypoint should surface the timeout via
+  // checkAndAbortIfTimedOutOrError.
+  EXPECT_THROW(
+      comm->all_reduce(tensor, ReduceOp::SUM, true, AllReduceOptions()),
+      std::runtime_error);
+
+  EXPECT_THROW(comm->finalize(), std::runtime_error);
+}
+
+TEST_F(TorchCommXCCLTest, WorkOperationTimeoutCausesAbortDuringCollective) {
+  // Same as above, but the timeout is supplied per-op via the options struct
+  // rather than via the communicator default.
+  xpu_mock_->setupDefaultBehaviors();
+  xccl_mock_->setupDefaultBehaviors();
+  setupRankAndSize(0, 2);
+
+  // Generous comm-wide default; the per-op timeout should win.
+  default_options_.abort_process_on_timeout_or_error = false;
+  default_options_.timeout = std::chrono::milliseconds(60'000);
+
+  auto comm = createMockedTorchComm();
+  comm->init(*device_, "test_comm", default_options_);
+
+  setupEventsForWork(*comm, 1);
+
+  auto tensor = createTestTensor({10, 10});
+
+  EXPECT_CALL(*xccl_mock_, allReduce(_, _, _, _, _, _, _))
+      .WillOnce(Return(onecclSuccess));
+
+  setupWorkToTimeout();
+
+  AllReduceOptions ar_options;
+  ar_options.timeout = std::chrono::milliseconds(50);
+  auto work = comm->all_reduce(tensor, ReduceOp::SUM, true, ar_options);
+  auto* xccl_work = reinterpret_cast<TorchWorkXCCL*>(work.get());
+  EXPECT_EQ(getWorkTimeout(xccl_work), std::chrono::milliseconds(50));
+
+  comm->waitTillTimeout();
+
+  EXPECT_THROW(
+      comm->all_reduce(tensor, ReduceOp::SUM, true, AllReduceOptions()),
+      std::runtime_error);
+
+  EXPECT_THROW(comm->finalize(), std::runtime_error);
+}
+
+TEST_F(TorchCommXCCLTest, AbortProcessOnTimeoutCausesProcessDeath) {
+  // When abort_process_on_timeout_or_error is true, a timed-out collective
+  // should cause the process to abort either via the watchdog thread or via
+  // the next user-thread entrypoint (checkAndAbortIfTimedOutOrError ->
+  // abort()). Verified via gtest death test.
+  EXPECT_DEATH(
+      {
+        xpu_mock_->setupDefaultBehaviors();
+        xccl_mock_->setupDefaultBehaviors();
+        setupRankAndSize(0, 2);
+
+        CommOptions options;
+        options.abort_process_on_timeout_or_error = true;
+        options.timeout = std::chrono::milliseconds(50);
+        options.store = store_;
+
+        auto comm = createMockedTorchComm();
+        comm->init(*device_, "test_comm", options);
+
+        setupEventsForWork(*comm, 1);
+
+        auto tensor = createTestTensor({10, 10});
+
+        EXPECT_CALL(*xccl_mock_, allReduce(_, _, _, _, _, _, _))
+            .WillRepeatedly(Return(onecclSuccess));
+
+        // End event never completes → watchdog (1s ticks) will eventually
+        // observe TIMEOUT. The next collective entrypoint also calls
+        // checkAndAbortIfTimedOutOrError, which abort()s when the option is
+        // set. Either path causes process death.
+        setupWorkToTimeout();
+
+        auto work =
+            comm->all_reduce(tensor, ReduceOp::SUM, true, AllReduceOptions());
+
+        // Give the watchdog two ticks: first to record start_completed_time_,
+        // second to detect elapsed > 50ms timeout.
+        std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+
+        // If the watchdog hasn't aborted yet, the next entrypoint will.
+        comm->all_reduce(tensor, ReduceOp::SUM, true, AllReduceOptions());
+      },
+      ".*");
+}
+
 // ============================================================================
 // 9. WAIT HOOK TESTS
 // ============================================================================

@@ -60,6 +60,20 @@ class TorchCommXCCLTest : public ::testing::Test {
       return workq_.empty();
     }
 
+    void waitTillCommState(CommState expectedState) {
+      while (comm_state_ != expectedState) {
+        std::this_thread::yield();
+      }
+    }
+
+    void waitTillTimeout() {
+      waitTillCommState(CommState::TIMEOUT);
+    }
+
+    void waitTillError() {
+      waitTillCommState(CommState::ERROR);
+    }
+
     xpuEvent_t& getAsyncDependencyEvent() {
       return dependency_event_.value();
     }
