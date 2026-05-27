@@ -7,8 +7,11 @@
 #include <torch/csrc/distributed/c10d/Work.hpp> // @manual=//caffe2:torch-cpp-cpu
 
 #include "comms/torchcomms/TorchCommBackend.hpp"
+#include "comms/torchcomms/TorchCommBatch.hpp"
 #include "comms/torchcomms/TorchCommTypes.hpp"
 #include "comms/torchcomms/TorchWork.hpp"
+
+#include <optional>
 
 namespace torch::comms {
 
@@ -117,6 +120,17 @@ class BackendWrapper : public c10d::Backend {
   c10::intrusive_ptr<c10d::Work>
   recv(std::vector<at::Tensor>& tensors, int srcRank, int tag) override;
 
+  // Coalescing hooks: c10d's _coalescing_manager (used by
+  // dist.batch_isend_irecv) calls these around a sequence of send/recv ops so
+  // the backend can issue them as one ncclGroupStart/End. Without them, mixed
+  // P2P batches on a single PG (e.g. PP 1F1B middle stage) deadlock because
+  // each tc.send/tc.recv is enqueued ungrouped on the same NCCL stream.
+  bool supportsCoalescing() const override {
+    return true;
+  }
+  void startCoalescing() override;
+  c10::intrusive_ptr<c10d::Work> endCoalescing() override;
+
   // Get the underlying backend comm for backend-specific operations
   std::shared_ptr<TorchComm> getComm() const;
 
@@ -161,6 +175,12 @@ class BackendWrapper : public c10d::Backend {
  private:
   std::shared_ptr<TorchComm> comm_;
   c10::intrusive_ptr<Options> options_;
+
+  // Active coalescing batch. Engaged between startCoalescing() and
+  // endCoalescing(); send()/recv() append into it instead of issuing
+  // immediately. c10d's coalescing manager serializes per-PG, so a single
+  // slot suffices.
+  std::optional<BatchSendRecv> coalescing_batch_;
 };
 
 } // namespace torch::comms
