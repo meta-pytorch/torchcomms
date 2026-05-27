@@ -12,7 +12,6 @@
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 
 #include "comms/utils/CommsMaybeChecks.h"
-#include "comms/utils/GpuClockCalibration.h"
 #include "comms/utils/checks.h"
 #include "comms/utils/colltrace/CudaWaitEvent.h"
 #include "comms/utils/colltrace/GraphCollTraceHandle.h"
@@ -20,6 +19,7 @@
 #include "comms/utils/colltrace/GraphCudaWaitEvent.h"
 #include "comms/utils/colltrace/PrecisionClock.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/hrdw_ring_buffer/GpuClockCalibration.h"
 
 namespace meta::comms::colltrace {
 
@@ -78,7 +78,7 @@ CollTrace::CollTrace(
     // Eagerly initialize the globaltimer calibration singleton now (outside
     // graph capture) so it is ready when GraphCudaWaitEvent is constructed
     // during capture.
-    GlobaltimerCalibration::get();
+    ::hrdw_ring_buffer::GlobaltimerCalibration::get();
 
     // 2x the max plugin retention ensures the ring holds at least the last
     // max_retention collective entries (each collective has 1x start + 1x end
@@ -472,7 +472,7 @@ void CollTrace::pollGraphEvents(
     return;
   }
 
-  const auto& cal = GlobaltimerCalibration::get();
+  const auto& cal = ::hrdw_ring_buffer::GlobaltimerCalibration::get();
 
   auto pollResult = ringReader_->poll(
       [&](const auto& entry, uint64_t /*slot*/) {
@@ -727,7 +727,7 @@ void CollTrace::collTraceThread(
       auto now = std::chrono::steady_clock::now();
       if (now - lastReanchor >= kReanchorInterval) {
         if (ringBuffer_.has_value()) {
-          GlobaltimerCalibration::get().refresh();
+          ::hrdw_ring_buffer::GlobaltimerCalibration::get().refresh();
         }
         if (auto* refpt = CudaReferencePoint::tryGet()) {
           refpt->refresh();

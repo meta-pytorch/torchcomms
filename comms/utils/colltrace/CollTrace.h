@@ -14,14 +14,14 @@
 #include <folly/MPMCQueue.h>
 #include <folly/concurrency/ConcurrentHashMap.h>
 
-#include "comms/utils/HRDWRingBuffer.h"
-#include "comms/utils/HRDWRingBufferReader.h"
 #include "comms/utils/colltrace/CollTraceEvent.h"
 #include "comms/utils/colltrace/CollTraceHandle.h"
 #include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/utils/colltrace/CollTracePlugin.h"
 #include "comms/utils/colltrace/GraphCollTraceEvent.h"
 #include "comms/utils/commSpecs.h"
+#include "comms/utils/hrdw_ring_buffer/HRDWRingBuffer.h"
+#include "comms/utils/hrdw_ring_buffer/HRDWRingBufferReader.h"
 
 struct CUstream_st;
 
@@ -192,9 +192,11 @@ class CollTrace : public ICollTrace {
 
   // Single shared ring buffer for ALL cuda graphs. RAII-managed via
   // HRDWRingBuffer (mapped pinned memory, GPU-writable, CPU-readable).
-  std::optional<HRDWRingBuffer<GraphCollTraceEvent>> ringBuffer_;
+  std::optional<::hrdw_ring_buffer::HRDWRingBuffer<GraphCollTraceEvent>>
+      ringBuffer_;
   // CPU-side reader for the shared ring buffer (poll thread only).
-  std::optional<HRDWRingBufferReader<GraphCollTraceEvent>> ringReader_;
+  std::optional<::hrdw_ring_buffer::HRDWRingBufferReader<GraphCollTraceEvent>>
+      ringReader_;
   // Map from collId to GraphCollectiveEntry* for fast lookup during polling.
   // Only accessed from the colltrace thread (no mutex needed). Entries are
   // added under graphStatesMutex_ and then inserted here on first poll.

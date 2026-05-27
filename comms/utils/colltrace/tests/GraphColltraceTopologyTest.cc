@@ -11,12 +11,12 @@
 #include <gtest/gtest.h>
 
 #include "comms/testinfra/TestXPlatUtils.h"
-#include "comms/utils/GpuClockCalibration.h"
 #include "comms/utils/colltrace/CollTrace.h"
 #include "comms/utils/colltrace/CollTraceHandle.h"
 #include "comms/utils/colltrace/GraphCudaWaitEvent.h"
 #include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/hrdw_ring_buffer/GpuClockCalibration.h"
 #include "comms/utils/test_utils/CudaGraphTestUtils.h"
 
 using meta::comms::colltrace::CollTrace;
@@ -64,7 +64,7 @@ class GraphColltraceTopologyTest : public ::testing::Test {
     // Enable cudagraph tracing for these tests.
     cvarGuard_.emplace(NCCL_COLLTRACE_TRACE_CUDA_GRAPH, true);
 
-    meta::comms::colltrace::GlobaltimerCalibration::get();
+    hrdw_ring_buffer::GlobaltimerCalibration::get();
 
     // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
     cudaMalloc(&buf1_, kWorkBytes);
@@ -641,7 +641,7 @@ TEST(GraphColltraceTopologyDisabledTest, NoTelemetryNodesWhenDisabled) {
 
   // Eagerly initialize globaltimer calibration before capture starts —
   // it does cudaHostAlloc which is illegal during stream capture.
-  meta::comms::colltrace::GlobaltimerCalibration::get();
+  hrdw_ring_buffer::GlobaltimerCalibration::get();
 
   // Capture a graph — recordCollective should fail for graph-captured
   // collectives when the ring buffer is not allocated.
@@ -705,7 +705,7 @@ class GraphColltraceFlushTest : public ::testing::Test {
     cudaStreamCreate(&stream_);
 
     cvarGuard_.emplace(NCCL_COLLTRACE_TRACE_CUDA_GRAPH, true);
-    meta::comms::colltrace::GlobaltimerCalibration::get();
+    hrdw_ring_buffer::GlobaltimerCalibration::get();
 
     // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
     cudaMalloc(&buf1_, kWorkBytes);

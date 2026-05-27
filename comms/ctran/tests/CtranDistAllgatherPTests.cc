@@ -18,6 +18,7 @@
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
+#include "comms/ctran/utils/MathUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 // Test sources uses ncclMemAlloc API from nccl.h/rccl.h, so adding this check
@@ -287,27 +288,32 @@ static std::string algoToStr(enum NCCL_ALLGATHER_P_ALGO algo) {
       return "ctpipeline";
     case NCCL_ALLGATHER_P_ALGO::ctrdpipeline:
       return "ctrdpipeline";
+    case NCCL_ALLGATHER_P_ALGO::ctsrdpipeline:
+      return "ctsrdpipeline";
     default:
       return "unknown";
   }
+}
+
+static bool requiresPowerOfTwoNodes(enum NCCL_ALLGATHER_P_ALGO algo) {
+  return algo == NCCL_ALLGATHER_P_ALGO::ctrdpipeline ||
+      algo == NCCL_ALLGATHER_P_ALGO::ctsrdpipeline;
 }
 
 TEST_P(CtranAllgatherPTestParam, Basic) {
   const auto& [maxSendCount, count, inplace, memType, algo] = GetParam();
   const std::string algoStr = algoToStr(algo);
   SysEnvRAII algoEnv("NCCL_ALLGATHER_P_ALGO", algoStr);
+  const auto nNodes = ctranComm->statex_->nNodes();
 
   if (memType == kMemNcclMemAlloc && ncclIsCuMemSupported() == false) {
     GTEST_SKIP() << "CuMem not supported, skipping this test";
   } else if (ctranComm->ctran_->mapper->ctranIbPtr() == nullptr) {
     GTEST_SKIP() << "No IB Backend found, skip test";
   } else if (
-      algo == NCCL_ALLGATHER_P_ALGO::ctrdpipeline &&
-      ctranComm->statex_->nNodes() > 1 &&
-      (ctranComm->statex_->nNodes() & (ctranComm->statex_->nNodes() - 1)) !=
-          0) {
-    GTEST_SKIP()
-        << "ctrdpipeline requires nNodes to be a power of 2, skip test";
+      requiresPowerOfTwoNodes(algo) && nNodes > 1 &&
+      !ctran::utils::isPowerOfTwo(nNodes)) {
+    GTEST_SKIP() << algoStr << " requires nNodes to be a power of 2, skip test";
   } else {
     run(maxSendCount, count, inplace, memType, ctranComm.get());
   }
@@ -335,10 +341,10 @@ TEST_P(CtranAllgatherPTestParam, VnodeBasic) {
     ASSERT_EQ(testComm->statex_->nLocalRanks(), 4);
     const auto vnodeNNodes = numRanks / 4;
     ASSERT_EQ(testComm->statex_->nNodes(), vnodeNNodes);
-    if (algo == NCCL_ALLGATHER_P_ALGO::ctrdpipeline && vnodeNNodes > 1 &&
-        (vnodeNNodes & (vnodeNNodes - 1)) != 0) {
-      GTEST_SKIP()
-          << "ctrdpipeline requires nNodes to be a power of 2, skip test";
+    if (requiresPowerOfTwoNodes(algo) && vnodeNNodes > 1 &&
+        !ctran::utils::isPowerOfTwo(vnodeNNodes)) {
+      GTEST_SKIP() << algoStr
+                   << " requires nNodes to be a power of 2, skip test";
     }
     run(maxSendCount, count, inplace, memType, testComm.get());
   }
@@ -370,10 +376,10 @@ TEST_P(CtranAllgatherPTestParam, VnodeBasicMultiStep) {
     ASSERT_EQ(testComm->statex_->nLocalRanks(), 2);
     const auto vnodeNNodes = numRanks / 2;
     ASSERT_EQ(testComm->statex_->nNodes(), vnodeNNodes);
-    if (algo == NCCL_ALLGATHER_P_ALGO::ctrdpipeline && vnodeNNodes > 1 &&
-        (vnodeNNodes & (vnodeNNodes - 1)) != 0) {
-      GTEST_SKIP()
-          << "ctrdpipeline requires nNodes to be a power of 2, skip test";
+    if (requiresPowerOfTwoNodes(algo) && vnodeNNodes > 1 &&
+        !ctran::utils::isPowerOfTwo(vnodeNNodes)) {
+      GTEST_SKIP() << algoStr
+                   << " requires nNodes to be a power of 2, skip test";
     }
     run(maxSendCount, count, inplace, memType, testComm.get());
   }
@@ -706,7 +712,8 @@ INSTANTIATE_TEST_SUITE_P(
         testing::Values(
             NCCL_ALLGATHER_P_ALGO::ctdirect,
             NCCL_ALLGATHER_P_ALGO::ctpipeline,
-            NCCL_ALLGATHER_P_ALGO::ctrdpipeline)),
+            NCCL_ALLGATHER_P_ALGO::ctrdpipeline,
+            NCCL_ALLGATHER_P_ALGO::ctsrdpipeline)),
     getTestName);
 
 int main(int argc, char* argv[]) {

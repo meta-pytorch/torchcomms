@@ -4,7 +4,7 @@
 
 #include <cstdint>
 
-#include "comms/utils/HRDWRingBuffer.h"
+#include "comms/utils/hrdw_ring_buffer/HRDWRingBuffer.h"
 
 namespace comms::pipes {
 
@@ -27,7 +27,7 @@ struct PipesTraceEvent {
 static_assert(sizeof(PipesTraceEvent) == 8);
 
 using PipesTraceHandle =
-    ::meta::comms::colltrace::HRDWRingBufferDeviceHandle<PipesTraceEvent>;
+    ::hrdw_ring_buffer::HRDWRingBufferDeviceHandle<PipesTraceEvent>;
 
 #if defined(__CUDACC__) || defined(__HIPCC__)
 __device__ __forceinline__ void write_pipes_trace(

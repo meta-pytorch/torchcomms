@@ -67,7 +67,7 @@ std::future<Status> Connection::send(
   return transport_->send(src, options);
 }
 
-std::future<Result<size_t>> Connection::recv(
+std::future<Status> Connection::recv(
     RegisteredSegment::Span dst,
     const RequestOptions& options) {
   return transport_->recv(dst, options);
@@ -80,7 +80,7 @@ std::future<Status> Connection::send(
   return transport_->send(src, options);
 }
 
-std::future<Result<size_t>> Connection::recv(
+std::future<Status> Connection::recv(
     Segment::Span dst,
     const RequestOptions& options) {
   return transport_->recv(dst, options);

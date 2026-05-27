@@ -97,10 +97,9 @@ class MockTransport : public Transport {
     p.set_value(ErrCode::NotImplemented);
     return p.get_future();
   }
-  std::future<Result<size_t>> recv(
-      RegisteredSegment::Span,
-      const RequestOptions&) override {
-    std::promise<Result<size_t>> p;
+  std::future<Status> recv(RegisteredSegment::Span, const RequestOptions&)
+      override {
+    std::promise<Status> p;
     p.set_value(ErrCode::NotImplemented);
     return p.get_future();
   }
@@ -109,9 +108,8 @@ class MockTransport : public Transport {
     p.set_value(ErrCode::NotImplemented);
     return p.get_future();
   }
-  std::future<Result<size_t>> recv(Segment::Span, const RequestOptions&)
-      override {
-    std::promise<Result<size_t>> p;
+  std::future<Status> recv(Segment::Span, const RequestOptions&) override {
+    std::promise<Status> p;
     p.set_value(ErrCode::NotImplemented);
     return p.get_future();
   }
