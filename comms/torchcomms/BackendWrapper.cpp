@@ -559,6 +559,10 @@ std::shared_ptr<TorchComm> BackendWrapper::getComm() const {
   return comm_;
 }
 
+std::shared_ptr<c10::Allocator> BackendWrapper::getMemAllocator() {
+  return comm_->getMemAllocator();
+}
+
 const std::string BackendWrapper::getBackendName() const {
   return comm_->getBackend();
 }
