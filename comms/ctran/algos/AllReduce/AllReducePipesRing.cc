@@ -83,7 +83,27 @@ commResult_t ctranAllReducePipesRing(
     return commInvalidArgument;
   }
 
-  const int numRings = 1;
+  const size_t messageBytes = count * sizeof(float);
+
+  int numRings;
+  int numBlocks;
+  if (NCCL_CTRAN_ALLREDUCE_PIPES_NUM_RINGS > 0) {
+    numRings = NCCL_CTRAN_ALLREDUCE_PIPES_NUM_RINGS;
+  } else if (messageBytes > 32UL * 1024 * 1024) {
+    numRings = 2;
+  } else {
+    numRings = 1;
+  }
+
+  if (NCCL_CTRAN_ALLREDUCE_PIPES_NUM_BLOCKS > 0) {
+    numBlocks = NCCL_CTRAN_ALLREDUCE_PIPES_NUM_BLOCKS;
+  } else if (messageBytes <= 1024 * 1024) {
+    numBlocks = 4;
+  } else if (messageBytes <= 32UL * 1024 * 1024) {
+    numBlocks = 8;
+  } else {
+    numBlocks = 16;
+  }
 
   auto ringsOpt = comms::pipes::make_standard_rings(nRanks, rank, numRings);
   if (!ringsOpt.has_value()) {
@@ -105,7 +125,7 @@ commResult_t ctranAllReducePipesRing(
   params.signaling_data_size = 0;
   params.input = static_cast<const float*>(sendbuff);
   params.output = static_cast<float*>(recvbuff);
-  params.num_blocks = 16;
+  params.num_blocks = numBlocks;
   params.num_rings = numRings;
   params.stream = stream;
 
