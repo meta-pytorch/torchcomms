@@ -4,7 +4,7 @@
 
 #include <cstddef>
 
-#include "comms/pipes/CopyUtils.cuh"
+#include "comms/pipes/CopyOp.cuh"
 #include "comms/pipes/DeviceCheck.cuh"
 #include "comms/pipes/P2pNvlTransportDevice.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
@@ -12,20 +12,6 @@
 #include "comms/pipes/Timeout.cuh"
 
 namespace comms::pipes {
-
-struct MemcpyAndSelfCopy {
-  template <typename... Args>
-  __device__ __forceinline__ static void send(
-      char* staging,
-      const char* src,
-      std::size_t nbytes,
-      ThreadGroup& group,
-      std::size_t byte_offset,
-      char* self_dst,
-      Args...) {
-    memcpy_vectorized(staging, self_dst + byte_offset, src, nbytes, group);
-  }
-};
 
 __device__ __forceinline__ std::size_t direct_pipeline_window(
     const P2pNvlTransportDevice* peers,

@@ -104,13 +104,9 @@ __global__ __launch_bounds__(kBlockSize, 1) void ring_allreduce_kernel(
   {
     char* output_base = reinterpret_cast<char*>(args.output);
 
-    // Local copy: reduced shard → correct position in output.
     const char* own_src = output_base + ring_offset + io_tile_offset;
     char* own_dst =
         output_base + my_rank * chunk_bytes + ring_offset + io_tile_offset;
-    if (own_src != own_dst) {
-      memcpy_vectorized(own_dst, own_src, io_tile_bytes, ring_group);
-    }
     ring_group.sync();
 
     const int num_fwd_recvs = EnableBidirAg ? (W - 1 + 1) / 2 : (W - 1);
@@ -121,13 +117,28 @@ __global__ __launch_bounds__(kBlockSize, 1) void ring_allreduce_kernel(
       const std::size_t window =
           (remaining < pipeline_window) ? remaining : pipeline_window;
 
-      char* send_src = output_base + my_rank * chunk_bytes + ring_offset +
-          io_tile_offset + off;
-      next.send(group, send_src, window, group.total_groups, max_sig, timeout);
+      if (own_src != own_dst) {
+        next.template send<MemcpyAndSelfCopy>(
+            group,
+            own_src + off,
+            window,
+            group.total_groups,
+            max_sig,
+            timeout,
+            own_dst + off);
+      } else {
+        next.send(
+            group, own_src + off, window, group.total_groups, max_sig, timeout);
+      }
       if constexpr (EnableBidirAg) {
         if (num_rev_recvs > 0) {
           prev.send(
-              group, send_src, window, group.total_groups, max_sig, timeout);
+              group,
+              own_src + off,
+              window,
+              group.total_groups,
+              max_sig,
+              timeout);
         }
       }
 

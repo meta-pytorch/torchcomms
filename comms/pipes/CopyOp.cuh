@@ -11,6 +11,29 @@
 
 namespace comms::pipes {
 
+/**
+ * MemcpyAndSelfCopy — Dual-destination send CopyOp.
+ *
+ * Fuses a local self-copy into the RDMA send staging copy. Reads src
+ * once and writes to both the staging buffer and a caller-supplied
+ * self_dst, eliminating a separate memcpy + barrier before the send.
+ * The self_dst pointer is forwarded through the Args... variadic pack
+ * of P2pIbgdaTransportDevice::send().
+ */
+struct MemcpyAndSelfCopy {
+  template <typename... Args>
+  __device__ __forceinline__ static void send(
+      char* staging,
+      const char* src,
+      std::size_t nbytes,
+      ThreadGroup& group,
+      std::size_t byte_offset,
+      char* self_dst,
+      Args...) {
+    memcpy_vectorized(staging, self_dst + byte_offset, src, nbytes, group);
+  }
+};
+
 template <typename T, typename AccumOp, int kTileElems, int kBlockSize>
 struct TileReduce {
   template <typename... Args>
