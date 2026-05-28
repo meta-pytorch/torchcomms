@@ -86,6 +86,41 @@
 
 namespace pipes_gda {
 
+#ifdef NIC_BNXT
+namespace {
+// File-local helper: spin on the non-blocking `pollOneCqAt` until the
+// CQE arrives, then trap on NIC error. Intentionally does NOT advance
+// `cq_sq.cqe_ci` or ring the CQ doorbell — callers manage `cqe_ci`
+// locally because ringing the CQ doorbell on the BNXT counter-only
+// paths flushes the QP into LOC_QP_OP error state (see callers).
+//
+// Not exposed in the `pipes_gda_*` API surface: this is a BNXT
+// CQE-drain idiom with no DOCA equivalent, kept internal to preserve
+// the 1:1 mirror with NVIDIA's `doca_gpu_dev_verbs_*` names.
+template <typename NicBackend>
+__device__ __forceinline__ void spin_poll_or_trap(
+    NicBackend& nic,
+    pipes_gda_gpu_dev_verbs_cq* cq,
+    uint64_t consIndex) {
+  int rc;
+  while ((rc = nic.pollOneCqAt(cq, consIndex)) == EBUSY) {
+  }
+  // `pollOneCqAt` already prints the BNXT CQE status on error; trap to
+  // surface the failure to the host instead of silently advancing
+  // `cqe_ci` past a failed WQE (which would let the GPU treat a
+  // NIC-error completion as success and produce misleading numbers).
+  // `__trap()` is a device-only intrinsic; HIP parses `__device__`
+  // function bodies during the host pass too, so gate it on the
+  // device-compile guard.
+  if (rc != 0) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+    __trap();
+#endif
+  }
+}
+} // namespace
+#endif
+
 // =============================================================================
 // Low-level WQE operations
 // =============================================================================
@@ -240,11 +275,26 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put(
         laddr.key,
         static_cast<uint32_t>(chunkSize));
     remaining -= chunkSize;
+
+#ifdef NIC_BNXT
+    // BNXT: per-WQE doorbell + per-chunk CQE drain. The mlx5 batched
+    // doorbell pattern desyncs the NIC, and overlapping chunks trigger
+    // LOC_QP_OP. The caller drains the last chunk's CQE.
+    pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, wqeIdx, wqeIdx);
+    pipes_gda_gpu_dev_verbs_submit(nic, qp, wqeIdx + 1);
+    if (i + 1 < numChunks) {
+      spin_poll_or_trap(nic, &qp->cq_sq, wqeIdx);
+      qp->cq_sq.cqe_ci = wqeIdx + 1;
+    }
+#endif
   }
 
   uint64_t lastIdx = baseIdx + numChunks - 1;
+#ifdef NIC_MLX5
+  // Mlx5: batched doorbell — single ring after all chunks prepared.
   pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, baseIdx, lastIdx);
   pipes_gda_gpu_dev_verbs_submit(nic, qp, lastIdx + 1);
+#endif
 
   *out_ticket = lastIdx;
 }
@@ -331,6 +381,14 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put_signal(
         laddr.key,
         static_cast<uint32_t>(chunkSize));
     remaining -= chunkSize;
+
+#ifdef NIC_BNXT
+    // BNXT: per-WQE doorbell + per-chunk CQE drain.
+    pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, wqeIdx, wqeIdx);
+    pipes_gda_gpu_dev_verbs_submit(nic, qp, wqeIdx + 1);
+    spin_poll_or_trap(nic, &qp->cq_sq, wqeIdx);
+    qp->cq_sq.cqe_ci = wqeIdx + 1;
+#endif
   }
 
   uint64_t sigIdx = baseIdx + numChunks;
@@ -349,8 +407,14 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put_signal(
       sig_val,
       0);
 
+#ifdef NIC_BNXT
+  // BNXT: per-WQE doorbell for the signal WQE too.
+  pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, sigIdx, sigIdx);
+  pipes_gda_gpu_dev_verbs_submit(nic, qp, sigIdx + 1);
+#else
   pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, baseIdx, sigIdx);
   pipes_gda_gpu_dev_verbs_submit(nic, qp, sigIdx + 1);
+#endif
 
   *out_ticket = sigIdx;
 }
@@ -488,8 +552,15 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put_signal_counter(
   if (numChunks == 0)
     numChunks = 1;
 
+  // PutWaitLocal benchmark passes IbgdaRemoteBuffer{} for sig (addr==0)
+  // — that means "no signal, just data write + counter". Skipping the
+  // atomic-FA WQE on this path drops per-iter latency from ~700us
+  // (BNXT atomic-FA RTT) to ~10-30us (RDMA-WRITE RTT).
+  bool hasSignal = (sigRemoteAddr.addr != 0);
+  uint32_t numWqes = numChunks + (hasSignal ? 1 : 0);
+
   uint64_t mainBase =
-      pipes_gda_gpu_dev_verbs_reserve_wq_slots(nic, mainQp, numChunks + 1);
+      pipes_gda_gpu_dev_verbs_reserve_wq_slots(nic, mainQp, numWqes);
   std::size_t remaining = size;
 
   for (uint32_t i = 0; i < numChunks; i++) {
@@ -511,29 +582,66 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put_signal_counter(
         laddr.key,
         static_cast<uint32_t>(chunkSize));
     remaining -= chunkSize;
+
+#ifdef NIC_BNXT
+    // BNXT: per-WQE doorbell + per-chunk CQE drain.
+    pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, mainQp, wqeIdx, wqeIdx);
+    pipes_gda_gpu_dev_verbs_submit(nic, mainQp, wqeIdx + 1);
+    spin_poll_or_trap(nic, &mainQp->cq_sq, wqeIdx);
+    mainQp->cq_sq.cqe_ci = wqeIdx + 1;
+#endif
   }
 
-  uint64_t sigIdx = mainBase + numChunks;
-  auto* sigWqe = pipes_gda_gpu_dev_verbs_get_wqe_ptr(nic, mainQp, sigIdx);
-  pipes_gda_gpu_dev_verbs_wqe_prepare_atomic(
-      nic,
-      mainQp,
-      sigWqe,
-      sigIdx,
-      static_cast<uint8_t>(
-          PIPES_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE |
-          PIPES_GDA_IB_MLX5_WQE_CTRL_FENCE),
-      sigRemoteAddr.addr,
-      sigRemoteAddr.key,
-      sigSinkAddr.addr,
-      sigSinkAddr.key,
-      sizeof(uint64_t),
-      sigVal,
-      0);
+  uint64_t lastIdx;
+  if (hasSignal) {
+    uint64_t sigIdx = mainBase + numChunks;
+    auto* sigWqe = pipes_gda_gpu_dev_verbs_get_wqe_ptr(nic, mainQp, sigIdx);
+    pipes_gda_gpu_dev_verbs_wqe_prepare_atomic(
+        nic,
+        mainQp,
+        sigWqe,
+        sigIdx,
+        static_cast<uint8_t>(
+            PIPES_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE |
+            PIPES_GDA_IB_MLX5_WQE_CTRL_FENCE),
+        sigRemoteAddr.addr,
+        sigRemoteAddr.key,
+        sigSinkAddr.addr,
+        sigSinkAddr.key,
+        sizeof(uint64_t),
+        sigVal,
+        0);
+    lastIdx = sigIdx;
+#ifdef NIC_BNXT
+    pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, mainQp, sigIdx, sigIdx);
+    pipes_gda_gpu_dev_verbs_submit(nic, mainQp, sigIdx + 1);
+#endif
+  } else {
+    lastIdx = mainBase + numChunks - 1;
+  }
 
-  pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, mainQp, mainBase, sigIdx);
-  pipes_gda_gpu_dev_verbs_submit(nic, mainQp, sigIdx + 1);
+#ifdef NIC_MLX5
+  pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, mainQp, mainBase, lastIdx);
+  pipes_gda_gpu_dev_verbs_submit(nic, mainQp, lastIdx + 1);
+#endif
 
+#ifdef NIC_BNXT
+  // BNXT has no inter-QP wait WQE primitive, so we can't gate a companion
+  // QP's atomic on the main QP's CQ. Use a single QP for everything:
+  // spin-poll the main QP's CQ on the monotonic con_indx, then
+  // GPU-atomic-increment the local counter directly. ncqe=1 + phase
+  // compression means the NIC overwrites the single CQE slot per WQE
+  // completion; ringing the CQ doorbell here causes the NIC to flush the
+  // QP into error state (status=LOC_QP_OP), so just track cqe_ci locally.
+  spin_poll_or_trap(nic, &mainQp->cq_sq, lastIdx);
+  mainQp->cq_sq.cqe_ci = lastIdx + 1;
+  __atomic_fetch_add(
+      reinterpret_cast<unsigned long long*>(counterRemoteAddr.addr),
+      static_cast<unsigned long long>(counterVal),
+      __ATOMIC_RELEASE);
+  (void)companionQp;
+  (void)counterSinkAddr;
+#else
   // Companion QP: WAIT + counter atomic
   uint64_t compBase =
       pipes_gda_gpu_dev_verbs_reserve_wq_slots(nic, companionQp, 2);
@@ -547,7 +655,7 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put_signal_counter(
       waitIdx,
       PIPES_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE,
       mainQp->cq_sq.cq_num,
-      sigIdx);
+      lastIdx);
 
   uint64_t cntIdx = compBase + 1;
   auto* cntWqe = pipes_gda_gpu_dev_verbs_get_wqe_ptr(nic, companionQp, cntIdx);
@@ -567,6 +675,7 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put_signal_counter(
 
   pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, companionQp, compBase, cntIdx);
   pipes_gda_gpu_dev_verbs_submit(nic, companionQp, cntIdx + 1);
+#endif
 }
 
 /**
@@ -586,6 +695,35 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_signal_counter(
     pipes_gda_gpu_dev_verbs_addr counterRemoteAddr,
     pipes_gda_gpu_dev_verbs_addr counterSinkAddr,
     uint64_t counterVal) {
+#ifdef NIC_BNXT
+  // BNXT counter-only fast path: when sigVal == 0 (P2pIbgdaTransportDevice
+  // routes counter-only puts through signal_counter with sigVal=0 against
+  // a discardSignalSlot — atomic FA on the slot is purely there to give
+  // mlx5's companion-QP something to wait on; on BNXT we don't need it),
+  // skip posting the slow atomic-FA WQE entirely. The prior put_cooperative
+  // WRITE was posted with CQ_UPDATE, so a CQE is on its way for that
+  // completion. Spin-poll until we observe the new CQE (con_indx >
+  // current cqe_ci) and bump the local counter via GPU atomic. Drops
+  // per-iter latency from ~700us (BNXT atomic-FA RTT) to ~10us (RDMA-WRITE
+  // RTT).
+  if (sigVal == 0) {
+    // Wait for the last reserved WQE (the prior put() may have chunked
+    // into multiple WRITE WQEs when size > PIPES_GDA_VERBS_MAX_TRANSFER_SIZE).
+    uint64_t lastWqeIdx = mainQp->sq_rsvd_index - 1;
+    spin_poll_or_trap(nic, &mainQp->cq_sq, lastWqeIdx);
+    mainQp->cq_sq.cqe_ci = lastWqeIdx + 1;
+    __atomic_fetch_add(
+        reinterpret_cast<unsigned long long*>(counterRemoteAddr.addr),
+        static_cast<unsigned long long>(counterVal),
+        __ATOMIC_RELEASE);
+    (void)companionQp;
+    (void)counterSinkAddr;
+    (void)sigSinkAddr;
+    (void)sigRemoteAddr;
+    return;
+  }
+#endif
+
   // Main QP: signal atomic
   uint64_t sigIdx = pipes_gda_gpu_dev_verbs_reserve_wq_slots(nic, mainQp, 1);
   auto* sigWqe = pipes_gda_gpu_dev_verbs_get_wqe_ptr(nic, mainQp, sigIdx);
@@ -606,6 +744,20 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_signal_counter(
   pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, mainQp, sigIdx, sigIdx);
   pipes_gda_gpu_dev_verbs_submit(nic, mainQp, sigIdx + 1);
 
+#ifdef NIC_BNXT
+  // BNXT: signal-with-real-target path. Spin-poll on mainQp's CQ
+  // con_indx, advance cqe_ci locally, then GPU-atomic-increment the local
+  // counter. Don't ring the CQ doorbell — for ncqe=1 it triggers a NIC
+  // flush into LOC_QP_OP.
+  spin_poll_or_trap(nic, &mainQp->cq_sq, sigIdx);
+  mainQp->cq_sq.cqe_ci = sigIdx + 1;
+  __atomic_fetch_add(
+      reinterpret_cast<unsigned long long*>(counterRemoteAddr.addr),
+      static_cast<unsigned long long>(counterVal),
+      __ATOMIC_RELEASE);
+  (void)companionQp;
+  (void)counterSinkAddr;
+#else
   // Companion QP: WAIT + counter atomic
   uint64_t compBase =
       pipes_gda_gpu_dev_verbs_reserve_wq_slots(nic, companionQp, 2);
@@ -639,6 +791,7 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_signal_counter(
 
   pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, companionQp, compBase, cntIdx);
   pipes_gda_gpu_dev_verbs_submit(nic, companionQp, cntIdx + 1);
+#endif
 }
 
 // =============================================================================

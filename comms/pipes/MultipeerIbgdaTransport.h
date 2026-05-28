@@ -127,7 +127,13 @@ struct MultipeerIbgdaTransportConfig {
 
   // Queue pair depth (number of outstanding WQEs per peer).
   // Higher values allow more pipelining but use more memory.
+  // BNXT bumps the default because qpDepth also sizes msn_tbl_sz on bnxt_re;
+  // cumulative WQEs across all tests must stay under it or the NIC hangs.
+#ifdef NIC_BNXT
+  uint32_t qpDepth{2048};
+#else
   uint32_t qpDepth{1024};
+#endif
 
   // Number of QP sets per (peer, NIC). Each set = main QP + companion QP +
   // loopback. With multi-NIC, total QPs to a peer = numQpsPerPeerPerNic *

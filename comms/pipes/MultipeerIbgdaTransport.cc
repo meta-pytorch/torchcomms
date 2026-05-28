@@ -263,11 +263,11 @@ void MultipeerIbgdaTransport::openIbDevice() {
 
   // Priority 2: Auto-discovery (top-numNics_ candidates by NUMA affinity).
   if (nicDevices_[0].deviceName.empty()) {
-    // On AMD, `DataDirectMode::Only` (the default) triggers
-    // `ibv_reg_dmabuf_mr` inside `augmentWithDataDirect()`, which SIGSEGV's
-    // on AMD libibverbs (the DMABUF probe is broken in the AMD HCA stack).
-    // Force `Disabled` to skip the probe — the deleted
-    // `MultipeerIbgdaTransportAmd` worked the same way (no DataDirect).
+    // On AMD, the `DataDirectMode::Only` default triggers
+    // `ibv_reg_dmabuf_mr` inside `augmentWithDataDirect()`, which is not
+    // exercised on AMD's libibverbs path here. Force `Disabled` to skip the
+    // DataDirect probe; the prior AMD-specific transport ran with the same
+    // configuration.
 #ifdef __HIP_PLATFORM_AMD__
     auto discovery = GpuNicDiscovery(
         config_.cudaDevice, config_.ibHca, DataDirectMode::Disabled);
@@ -919,8 +919,7 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
       source = "config.gpuNicMap";
     } else {
       // See comment on the auto-discovery branch in openIbDevice for why we
-      // force DataDirectMode::Disabled on AMD (avoids ibv_reg_dmabuf_mr
-      // SIGSEGV in augmentWithDataDirect on AMD libibverbs).
+      // force DataDirectMode::Disabled on AMD (skip the DataDirect probe).
 #ifdef __HIP_PLATFORM_AMD__
       GpuNicDiscovery discovery(
           config.cudaDevice, config.ibHca, DataDirectMode::Disabled);

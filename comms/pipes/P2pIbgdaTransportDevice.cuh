@@ -2,7 +2,11 @@
 
 #pragma once
 
+// `<cuda/atomic>` is NVIDIA-only. AMD uses `__hip_atomic_*` builtins
+// (already pulled in transitively via `HipDeviceCompat.h` below).
+#ifndef __HIP_PLATFORM_AMD__
 #include <cuda/atomic>
+#endif
 
 #include <cerrno>
 #include <cstddef>
@@ -724,8 +728,12 @@ class P2pIbgdaTransportDevice {
   __device__ __forceinline__ static uint64_t load_acquire_system_u64(
       const void* ptr) {
     auto* slot = static_cast<uint64_t*>(const_cast<void*>(ptr));
+#ifdef __HIP_PLATFORM_AMD__
+    return __hip_atomic_load(slot, __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_SYSTEM);
+#else
     return cuda::atomic_ref<uint64_t, cuda::thread_scope_system>{*slot}.load(
         cuda::memory_order_acquire);
+#endif
   }
 
   __device__ void finish_put_impl(
