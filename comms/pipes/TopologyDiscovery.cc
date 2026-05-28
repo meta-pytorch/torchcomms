@@ -10,6 +10,7 @@
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_set>
 
 #include <unistd.h>
 
@@ -96,6 +97,29 @@ TopologyResult TopologyDiscovery::classify(
   auto& myInfo = allInfo[myRank];
   const auto& peerAccessFn = peerAccessFn_;
 
+  std::optional<std::unordered_set<int>> logicalNvlRankSet;
+  if (topoConfig.logicalNvlRanks.has_value()) {
+    logicalNvlRankSet.emplace();
+    for (int rank : *topoConfig.logicalNvlRanks) {
+      if (rank < 0 || rank >= nRanks) {
+        throw std::runtime_error(
+            "TopologyDiscovery::classify: logicalNvlRanks contains rank " +
+            std::to_string(rank) + " outside [0, " + std::to_string(nRanks) +
+            ")");
+      }
+      logicalNvlRankSet->insert(rank);
+    }
+    if (logicalNvlRankSet->count(myRank) == 0) {
+      throw std::runtime_error(
+          "TopologyDiscovery::classify: logicalNvlRanks must include myRank " +
+          std::to_string(myRank));
+    }
+  }
+
+  auto isInLogicalNvlGroup = [&logicalNvlRankSet](int rank) {
+    return !logicalNvlRankSet.has_value() || logicalNvlRankSet->count(rank) > 0;
+  };
+
   // Handle MnnvlMode (following NCCL's NCCL_MNNVL_ENABLE semantics).
   // Env vars (NCCL_MNNVL_ENABLE, NCCL_P2P_DISABLE) are read by the caller
   // (e.g. CtranPipes) and passed via TopologyConfig fields.
@@ -155,6 +179,9 @@ TopologyResult TopologyDiscovery::classify(
     if (r == myRank) {
       continue;
     }
+    if (!isInLogicalNvlGroup(r)) {
+      continue;
+    }
 
     // Tier 1: MNNVL fabric match (GB200 cross-host NVLink).
     // Skipped when p2pDisable is true (NCCL_P2P_DISABLE=1 disables all
@@ -198,7 +225,9 @@ TopologyResult TopologyDiscovery::classify(
   LOG(INFO) << "TopologyDiscovery: rank " << myRank << " classified "
             << result.nvlPeerRanks.size() << " NVL peers from " << (nRanks - 1)
             << " total" << (topoConfig.p2pDisable ? " (p2p disabled)" : "")
-            << (myInfo.fabricInfo.available ? " (MNNVL)" : "");
+            << (myInfo.fabricInfo.available ? " (MNNVL)" : "")
+            << (logicalNvlRankSet.has_value() ? " (logical group constrained)"
+                                              : "");
 
   // Store fabric info in the result.
   if (myInfo.fabricInfo.available) {

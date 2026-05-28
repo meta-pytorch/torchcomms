@@ -73,6 +73,14 @@ struct TopologyConfig {
   //     <clusterUuid, cliqueId> pair form an NVLink clique.
   std::optional<int> mnnvlCliqueId;
 
+  // Optional logical NVL rank group supplied by an upper layer.
+  //
+  // When set, both MNNVL fabric matching and same-host P2P discovery are
+  // constrained to this rank set. This lets CTRAN pass CommStateX's effective
+  // local/NVL group, which may be a virtual clique smaller than the raw MNNVL
+  // fabric domain.
+  std::optional<std::vector<int>> logicalNvlRanks;
+
   // Disable all P2P NVLink transport (both Tier 1 MNNVL and Tier 2 same-host).
   // Follows NCCL's NCCL_P2P_DISABLE semantics (PATH_LOC — self only):
   //   - false (default): use NVLink when available (MNNVL or peer access)
@@ -157,8 +165,10 @@ using LocalInfoFn = std::function<RankTopologyInfo(int deviceId)>;
  *   TopologyDiscovery topo(myPeerAccessFn, myLocalInfoFn);
  *   auto result = topo.discover(myRank, nRanks, deviceId, bootstrap);
  *
- * MNNVL Overrides (following NCCL's NCCL_MNNVL_ENABLE / NCCL_MNNVL_UUID /
- *   NCCL_MNNVL_CLIQUE_ID):
+ * TopologyConfig:
+ *
+ * MNNVL overrides (following NCCL's NCCL_MNNVL_ENABLE / NCCL_MNNVL_UUID /
+ * NCCL_MNNVL_CLIQUE_ID):
  *   These optional parameters override the hardware-reported fabric info
  *   from NVML. They only take effect when fabric info is available (i.e.,
  *   on MNNVL-capable hardware like GB200).
@@ -173,6 +183,11 @@ using LocalInfoFn = std::function<RankTopologyInfo(int deviceId)>;
  *   - std::nullopt (default): use hardware-reported clique ID
  *   - 32-bit integer: override clique ID. Ranks with the same
  *     <clusterUuid, cliqueId> pair form an NVLink clique.
+ *
+ *   logicalNvlRanks:
+ *   - std::nullopt (default): discover every NVLink-reachable peer
+ *   - rank set: restrict both MNNVL and same-host P2P discovery to the given
+ *     logical group, preserving the upper layer's local/NVL rank mapping.
  */
 class TopologyDiscovery {
  public:
@@ -208,7 +223,7 @@ class TopologyDiscovery {
    * @param nRanks      Total number of ranks.
    * @param deviceId    CUDA device index.
    * @param bootstrap   Bootstrap interface for allGather.
-   * @param topoConfig  Optional MNNVL overrides for UUID and clique ID.
+   * @param topoConfig  Optional MNNVL overrides and logical rank constraints.
    */
   TopologyResult discover(
       int myRank,
@@ -233,7 +248,7 @@ class TopologyDiscovery {
    * @param allInfo      Pre-populated per-rank topology info (size == nRanks).
    *                     allInfo[myRank] may be modified by TopologyConfig
    *                     overrides.
-   * @param topoConfig   MNNVL overrides.
+   * @param topoConfig   Optional MNNVL overrides and logical rank constraints.
    */
   TopologyResult classify(
       int myRank,
