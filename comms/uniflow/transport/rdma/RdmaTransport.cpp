@@ -1062,6 +1062,12 @@ std::future<Status> RdmaTransport::rdmaSendRecvTransfer(
   if (options.stream.has_value()) {
     transfer->stream = static_cast<cudaStream_t>(options.stream.value());
   }
+  transfer->copyEngine.emplace(
+      transfer->data.memType(),
+      transfer->data.deviceId(),
+      transfer->stream,
+      cudaApi_.get(),
+      cudaDriverApi_.get());
   transfer->totalSteps = (transfer->data.size() + slabSize - 1) / slabSize;
   const uint16_t depth = static_cast<uint16_t>(std::min(
       {static_cast<uint64_t>(config_.pipelineDepth),
@@ -1302,25 +1308,12 @@ void RdmaTransport::sendCopyProgress(
     return;
   }
 
-  const auto& span = transfer.data;
   uint32_t slot = transfer.copied % depth;
   size_t offset = transfer.copied * slabSize;
-  size_t len = std::min(slabSize, span.size() - offset);
-  void* dst = transfer.localSlabs[slot].ptr();
-  const void* src = static_cast<const char*>(span.data()) + offset;
+  size_t len = std::min(slabSize, transfer.data.size() - offset);
+  const void* src = transfer.ptr(offset);
 
-  if (span.memType() == MemoryType::VRAM) {
-    auto stream = transfer.stream.value();
-    CudaDeviceGuard guard(*cudaApi_, span.deviceId());
-    cudaApi_->memcpyAsync(dst, src, len, cudaMemcpyDeviceToHost, stream);
-    cudaDriverApi_->streamWriteValue64(
-        stream,
-        static_cast<CUdeviceptr>(transfer.localSlabs[slot].stateDeviceAddr()),
-        1,
-        CU_STREAM_WRITE_VALUE_DEFAULT);
-  } else {
-    std::memcpy(dst, src, len);
-  }
+  transfer.copyEngine->copyToSlab(transfer.localSlabs[slot], src, len);
 
   ++transfer.copied;
 }
@@ -1333,13 +1326,10 @@ Status RdmaTransport::sendTransmitProgress(
     return Ok();
   }
 
-  auto& span = transfer.data;
   uint32_t slot = transfer.notified % depth;
   auto& slab = transfer.localSlabs[slot];
-  auto state = slab.state();
 
-  if (span.memType() == MemoryType::VRAM &&
-      state.load(std::memory_order_acquire) == 0) {
+  if (!transfer.copyEngine->isCopyDone(slab)) {
     return Ok();
   }
 
@@ -1349,7 +1339,7 @@ Status RdmaTransport::sendTransmitProgress(
   }
 
   size_t offset = transfer.notified * slabSize;
-  size_t len = std::min(slabSize, span.size() - offset);
+  size_t len = std::min(slabSize, transfer.data.size() - offset);
   uint16_t remoteSlab = static_cast<uint16_t>(remoteSlabIdx);
 
   auto res =
@@ -1360,9 +1350,7 @@ Status RdmaTransport::sendTransmitProgress(
     return Ok();
   }
 
-  if (span.memType() == MemoryType::VRAM) {
-    state.store(0, std::memory_order_release);
-  }
+  transfer.copyEngine->resetState(slab);
   ctrlCts(slot).store(kSlabIdxInvalid, std::memory_order_release);
   ++transfer.notified;
   return Ok();
@@ -1546,24 +1534,11 @@ void RdmaTransport::recvCopyProgress(
 
   uint32_t slot = transfer.copied % depth;
   auto& slab = transfer.localSlabs[slot];
-  auto& span = transfer.data;
   size_t offset = transfer.copied * slabSize;
-  size_t len = std::min(slabSize, span.size() - offset);
-  void* dst = static_cast<char*>(span.mutable_data()) + offset;
-  const void* src = slab.ptr();
+  size_t len = std::min(slabSize, transfer.data.size() - offset);
+  void* dst = transfer.ptr(offset);
 
-  if (span.memType() == MemoryType::VRAM) {
-    auto stream = transfer.stream.value();
-    CudaDeviceGuard guard(*cudaApi_, span.deviceId());
-    cudaApi_->memcpyAsync(dst, src, len, cudaMemcpyHostToDevice, stream);
-    cudaDriverApi_->streamWriteValue64(
-        stream,
-        static_cast<CUdeviceptr>(slab.stateDeviceAddr()),
-        1,
-        CU_STREAM_WRITE_VALUE_DEFAULT);
-  } else {
-    std::memcpy(dst, src, len);
-  }
+  transfer.copyEngine->copyFromSlab(dst, slab, len);
 
   ++transfer.copied;
 }
@@ -1585,13 +1560,9 @@ Status RdmaTransport::recvDoneProgress(
   }
 
   auto& slab = transfer.localSlabs[slot];
-  auto& span = transfer.data;
-  auto state = slab.state();
 
-  if (span.memType() == MemoryType::VRAM) {
-    if (state.load(std::memory_order_acquire) == 0) {
-      return Ok();
-    }
+  if (!transfer.copyEngine->isCopyDone(slab)) {
+    return Ok();
   }
 
   uint64_t nextStep = transfer.done + depth;
@@ -1606,9 +1577,7 @@ Status RdmaTransport::recvDoneProgress(
     }
   }
 
-  if (span.memType() == MemoryType::VRAM) {
-    state.store(0, std::memory_order_release);
-  }
+  transfer.copyEngine->resetState(slab);
 
   ++transfer.done;
   return Ok();
