@@ -591,6 +591,35 @@ bool DefaultNcclxApi::multimemSupport(ncclComm_t comm) {
   return false;
 #endif
 }
+
+ncclGinConnectionType_t DefaultNcclxApi::ginConnectionSupport(ncclComm_t comm) {
+#ifdef NCCL_COMM_PROPERTIES_INITIALIZER
+  ncclCommProperties_t props = NCCL_COMM_PROPERTIES_INITIALIZER;
+  if (ncclCommQueryProperties(comm, &props) != ncclSuccess) {
+    return NCCL_GIN_CONNECTION_NONE;
+  }
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 30, 0)
+  if (props.ginType != NCCL_GIN_TYPE_NONE) {
+    return NCCL_GIN_CONNECTION_FULL;
+  }
+  if (props.railedGinType != NCCL_GIN_TYPE_NONE) {
+    return NCCL_GIN_CONNECTION_RAIL;
+  }
+#elif NCCL_VERSION_CODE > NCCL_VERSION(2, 29, 3)
+  // NCCLX 2.29 still records the requested connection type when GIN first
+  // connects, and rejects a later FULL request if the communicator was already
+  // connected as RAIL. Without a public connected-state property, RAIL is the
+  // safe request whenever NCCLX says railed GIN is supported.
+  if (props.railedGinType != NCCL_GIN_TYPE_NONE) {
+    return NCCL_GIN_CONNECTION_RAIL;
+  }
+#endif
+  return NCCL_GIN_CONNECTION_NONE;
+#else
+  (void)comm;
+  return NCCL_GIN_CONNECTION_NONE;
+#endif
+}
 #endif // TORCHCOMMS_HAS_NCCL_DEVICE_API
 
 } // namespace torch::comms

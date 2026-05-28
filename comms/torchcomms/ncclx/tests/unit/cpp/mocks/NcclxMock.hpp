@@ -355,6 +355,11 @@ class NcclxMock : public NcclxApi {
   MOCK_METHOD(ncclTeam_t, teamLsa, (ncclComm_t comm), (override));
 
   MOCK_METHOD(bool, multimemSupport, (ncclComm_t comm), (override));
+  MOCK_METHOD(
+      ncclGinConnectionType_t,
+      ginConnectionSupport,
+      (ncclComm_t comm),
+      (override));
 
 #if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
   MOCK_METHOD(
