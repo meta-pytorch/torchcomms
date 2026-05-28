@@ -102,7 +102,7 @@ jobs:
           set -x
           #Install Intel Deep Learning Essentials
           DLE_VER=2026.0.0.624
-          DLE_ROOT=/tmp/${RUNNER_NAME}/dle-${DLE_VER}
+          DLE_ROOT=/home/jenkins/${RUNNER_NAME}/dle-${DLE_VER}
           DLE_PATH=${DLE_ROOT}/dle
           if [[ ! -d ${DLE_ROOT} ]]; then
             mkdir -p ${DLE_ROOT}
