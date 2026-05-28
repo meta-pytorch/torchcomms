@@ -9,6 +9,8 @@
 #include <optional>
 #include <unordered_map>
 
+#include "comms/uniflow/transport/rdma/CopyEngine.h"
+
 #include "comms/uniflow/drivers/cuda/CudaApi.h"
 #include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
 #include "comms/uniflow/drivers/ibverbs/IbvApi.h"
@@ -366,6 +368,11 @@ class RdmaTransport : public Transport {
 
     std::vector<RdmaSlab> localSlabs;
     std::shared_ptr<Task> task;
+    std::optional<CopyEngine> copyEngine;
+
+    void* ptr(size_t offset) const {
+      return static_cast<char*>(data.mutable_data()) + offset;
+    }
   };
 
   struct PendingTransfer {
