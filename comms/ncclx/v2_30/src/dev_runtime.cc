@@ -48,6 +48,41 @@ static std::mutex ncclWindowMapMutex;
 static ncclIntruAddressMap<ncclDevrWindow, struct ncclWindow_vidmem*, &ncclDevrWindow::vidmem, &ncclDevrWindow::next> ncclWindowMap;
 static ncclResult_t symWindowDestroy(struct ncclComm* comm, struct ncclWindow_vidmem* winDev, cudaStream_t stream);
 
+static bool ctranWindowSupport(CtranComm* ctranComm, const void* buff) {
+  if (buff == nullptr || !ctranInitialized(ctranComm) ||
+      !ncclGetCuMemSysSupported()) {
+    return false;
+  }
+  return ctranComm->statex_.get() != nullptr;
+}
+
+static bool isCuMemBuffer(void* buff) {
+  CUmemGenericAllocationHandle handle;
+  if (CUPFN(cuMemRetainAllocationHandle(&handle, buff)) != CUDA_SUCCESS) {
+    return false;
+  }
+  CUPFN(cuMemRelease(handle));
+  return true;
+}
+
+static ncclResult_t freeCtranWin(ncclWin* ctranWin) {
+  if (ctranWin == nullptr) {
+    return ncclSuccess;
+  }
+  auto ret = metaCommToNccl(ctran::ctranWinFree(ctranWin->ctranWindow));
+  delete ctranWin;
+  return ret;
+}
+
+static bool isCtranOnlyWindow(
+    struct ncclComm* comm,
+    struct ncclWindow_vidmem* winDev,
+    ncclWin* ctranWin) {
+  return ctranWin != nullptr && reinterpret_cast<ncclWindow_t>(ctranWin) == winDev &&
+      comm == ctranWin->comm;
+}
+
+
 // Complete types from src/include/dev_runtime.h
 struct ncclDevrMemory {
   int refCount;
@@ -1467,37 +1502,6 @@ fail:
 
 NCCL_API(ncclResult_t, ncclCommWindowRegister, ncclComm_t comm, void* buff, size_t size, ncclWindow_t* win, int winFlags);
 ncclResult_t ncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size, ncclWindow_t* win, int winFlags) {
-    // NCCL_WIN_DEVICE_API flag bypasses CTRAN and forces NCCL orig path.
-    // This is needed for device API (GIN support) which only exists in the orig path.
-    bool forceOrigPath = (winFlags & NCCL_WIN_DEVICE_API) != 0;
-    if(!forceOrigPath && NCCLX_CONFIG_FIELD(comm->config, rmaAlgo) != NCCL_RMA_ALGO::orig && ctranInitialized(comm->ctranComm_.get())){
-      if (!ncclGetCuMemSysSupported()) {
-        FB_ERRORRETURN(ncclInternalError, "ncclWin requires CUMEM support.");
-      }
-      if (buff == nullptr) {
-        FB_ERRORRETURN(
-            ncclInvalidUsage,
-            "Invalid baseptr to create shared buffer in ncclWinRegister.");
-      }
-
-      ncclWin* win_ = new ncclWin();
-      win_->comm = comm;
-
-      auto guard = folly::makeGuard([win_] { delete win_; });
-      NCCLCHECK(metaCommToNccl(
-          ctran::ctranWinRegister(
-              buff,
-              size,
-              comm->ctranComm_.get(),
-              &win_->ctranWindow)));
-
-      // Create empty ncclWindow as handle and register mapping
-      ncclWindow_t handle = new ncclWindow_vidmem();
-      ncclWinMap().insert(handle, win_);
-      *win = handle;
-      guard.dismiss();
-      return ncclSuccess;
-    }
   NCCLCHECK(CommCheck(comm, __func__, "comm"));
   NCCLCHECK(PtrCheck(win, __func__, "win"));
   *win = nullptr;
@@ -1506,10 +1510,37 @@ ncclResult_t ncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size, nc
     return ncclInvalidArgument;
   }
 
-  if (!comm->symmetricSupport) {
+  // NCCL_WIN_DEVICE_API bypasses CTRAN (device API only exists in orig path).
+  ncclWin* ctranWin = nullptr;
+  if ((winFlags & NCCL_WIN_DEVICE_API) == 0 &&
+      ctranWindowSupport(comm->ctranComm_.get(), buff)) {
+    ctranWin = new ncclWin();
+    ctranWin->comm = comm;
+    ncclResult_t ctranRes = metaCommToNccl(ctran::ctranWinRegister(
+        buff, size, comm->ctranComm_.get(), &ctranWin->ctranWindow));
+    if (ctranRes != ncclSuccess) {
+      delete ctranWin;
+      return ctranRes;
+    }
+  }
+
+  auto ctranCleanup = folly::makeGuard([&ctranWin] {
+    if (ctranWin) {
+      freeCtranWin(ctranWin);
+      ctranWin = nullptr;
+    }
+  });
+
+  if (!comm->symmetricSupport || !isCuMemBuffer(buff)) {
+    if (ctranWin) {
+      *win = reinterpret_cast<ncclWindow_t>(ctranWin);
+      ncclWinMap().insert(*win, ctranWin);
+      ctranCleanup.dismiss();
+    }
     return ncclSuccess;
   }
 
+  // Register symmetric window.
   ncclResult_t ret = ncclSuccess;
   int saveDev;
   struct ncclDevrRegTask* task;
@@ -1519,7 +1550,6 @@ ncclResult_t ncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size, nc
 
   NCCLCHECKGOTO(ncclCommEnsureReady(comm), ret, fail);
   CUDACHECKGOTO(cudaSetDevice(comm->cudaDev), ret, fail);
-
   NCCLCHECKGOTO(ncclDevrInitOnce(comm), ret, fail);
 
   NCCLCHECKGOTO(ncclCalloc(&task, 1), ret, fail);
@@ -1532,8 +1562,18 @@ ncclResult_t ncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size, nc
 
 exit:
   ncclGroupErrCheck(ret);
-  NCCLCHECK(ncclGroupEndInternal());
+  {
+    auto endRet = ncclGroupEndInternal();
+    if (ret == ncclSuccess) {
+      ret = endRet;
+    }
+  }
   cudaSetDevice(saveDev);
+
+  if (ret == ncclSuccess && ctranWin != nullptr && *win != nullptr) {
+    ncclWinMap().insert(*win, ctranWin);
+    ctranCleanup.dismiss();
+  }
   return ret;
 fail:
   goto exit;
@@ -1541,43 +1581,33 @@ fail:
 
 NCCL_API(ncclResult_t, ncclCommWindowDeregister, ncclComm_t comm, ncclWindow_t win);
 ncclResult_t ncclCommWindowDeregister(struct ncclComm* comm, struct ncclWindow_vidmem* winDev) {
-
-  if(NCCLX_CONFIG_FIELD(comm->config, rmaAlgo) != NCCL_RMA_ALGO::orig && ctranInitialized(comm->ctranComm_.get())){
-    ncclWin* ncclWinPtr = ncclWinMap().find(winDev);
-    // If window is found in CTRAN map, deregister via CTRAN path.
-    // If not found (e.g., registered with NCCL_WIN_DEVICE_API), fall through
-    // to symmetric/orig path deregistration below.
-    if (ncclWinPtr != nullptr && comm == ncclWinPtr->comm) {
-      auto statex = comm->ctranComm_->statex_.get();
-      if (statex == nullptr) {
-        FB_ERRORRETURN(ncclInternalError, "Empty communicator statex.");
-      }
-
-      // Remove from map first, then cleanup resources
-      ncclWinMap().erase(winDev);
-      auto guard = folly::makeGuard([winDev, ncclWinPtr] {
-        delete ncclWinPtr;
-        delete winDev;
-      });
-
-      NCCLCHECK(metaCommToNccl(ctran::ctranWinFree(ncclWinPtr->ctranWindow)));
-      return ncclSuccess;
-    }
-    // Window not in CTRAN map - fall through to orig path deregistration
-  }
+  ncclResult_t ctranFreeRet = ncclSuccess;
 
   NCCLCHECK(CommCheck(comm, __func__, "comm"));
   ncclResult_t ret = ncclSuccess;
   int saveDev;
   cudaStream_t stream;
+  ncclWin* ncclWinPtr = nullptr;
 
   if (winDev == nullptr) goto exit;
+
+  ncclWinPtr = ncclWinMap().find(winDev);
+  if (isCtranOnlyWindow(comm, winDev, ncclWinPtr)) {
+    ncclWinMap().erase(winDev);
+    ctranFreeRet = freeCtranWin(ncclWinPtr);
+    return ctranFreeRet;
+  }
+
+  if (ncclWinPtr != nullptr && comm == ncclWinPtr->comm) {
+    ncclWinMap().erase(winDev);
+    ctranFreeRet = freeCtranWin(ncclWinPtr);
+  }
 
   CUDACHECKGOTO(cudaGetDevice(&saveDev), ret, fail);
   CUDACHECKGOTO(cudaSetDevice(comm->cudaDev), ret, fail);
   CUDACHECKGOTO(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), ret, fail_dev);
 
-  { // Determine if this is a local-only window or a regular window.
+  {
     struct ncclDevrState* devr = &comm->devrState;
     struct ncclWindow_vidmem* winDevHost;
     NCCLCHECKGOTO(ncclShadowPoolToHost(&devr->shadows, winDev, &winDevHost), ret, fail_dev_stream);
@@ -1590,7 +1620,7 @@ ncclResult_t ncclCommWindowDeregister(struct ncclComm* comm, struct ncclWindow_v
     if (localWin->winFlags & NCCL_WIN_LOCAL_ONLY) {
       NCCLCHECKGOTO(symLocalWindowDestroy(comm, winDev, stream), ret, fail_dev_stream);
     } else {
-  NCCLCHECKGOTO(symWindowDestroy(comm, winDev, stream), ret, fail_dev_stream);
+      NCCLCHECKGOTO(symWindowDestroy(comm, winDev, stream), ret, fail_dev_stream);
     }
   }
 
@@ -1601,6 +1631,12 @@ fail_dev:
   cudaSetDevice(saveDev);
 fail:
 exit:
+  if (ctranFreeRet != ncclSuccess) {
+    WARN("ctranWinFree failed during deregister: %d", ctranFreeRet);
+    if (ret == ncclSuccess) {
+      ret = ctranFreeRet;
+    }
+  }
   return ret;
 }
 

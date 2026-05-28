@@ -37,7 +37,6 @@ class Config {
   enum NCCL_ALLGATHER_ALGO allgatherAlgo = NCCL_ALLGATHER_ALGO::orig;
   enum NCCL_ALLREDUCE_ALGO allreduceAlgo = NCCL_ALLREDUCE_ALGO::orig;
   enum NCCL_ALLTOALLV_ALGO alltoallvAlgo = NCCL_ALLTOALLV_ALGO::orig;
-  enum NCCL_RMA_ALGO rmaAlgo = NCCL_RMA_ALGO::orig;
 
   // Per-communicator MultiPeerTransport (pipes) NVL config overrides.
   // When set, override the corresponding CVARs for this communicator.
@@ -86,7 +85,6 @@ inline const std::vector<std::string>& mutableHintKeys() {
       "allgatherAlgo",
       "allreduceAlgo",
       "alltoallvAlgo",
-      "rmaAlgo",
   };
   return keys;
 }
