@@ -7,12 +7,15 @@
 
 #include "comms/pipes/MultiPeerNvlTransport.h"
 #include "comms/pipes/P2pSelfTransportDevice.cuh"
+#include "comms/pipes/amd/HipHostCompat.h"
 #include "comms/pipes/collectives/AllToAllv.cuh"
 #include "comms/pipes/tests/AllToAllvTest.cuh"
 #include "comms/pipes/tests/Utils.cuh"
 #include "comms/testinfra/BenchmarkTestFixture.h"
 #include "comms/testinfra/TestXPlatUtils.h"
+#ifndef __HIP_PLATFORM_AMD__
 #include "comms/utils/CudaRAII.h"
+#endif
 
 using namespace meta::comms;
 

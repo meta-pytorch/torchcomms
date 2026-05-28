@@ -10,7 +10,14 @@
 #include "comms/pipes/P2pNvlTransportDevice.cuh"
 #include "comms/pipes/P2pSelfTransportDevice.cuh"
 #include "comms/pipes/Transport.cuh"
+// On AMD, `meta::comms::DeviceBuffer` is provided by
+// `comms/pipes/amd/HipHostCompat.h`; the NVIDIA `CudaRAII.h` (which
+// includes `<cuda_runtime.h>` directly) is unavailable under hipcc.
+#ifdef __HIP_PLATFORM_AMD__
+#include "comms/pipes/amd/HipHostCompat.h"
+#else
 #include "comms/utils/CudaRAII.h"
+#endif
 
 namespace comms::pipes {
 

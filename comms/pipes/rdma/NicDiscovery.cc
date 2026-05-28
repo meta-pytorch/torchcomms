@@ -2,7 +2,11 @@
 
 #include "comms/pipes/rdma/NicDiscovery.h"
 
+#ifdef __HIP_PLATFORM_AMD__
+#include <hip/hip_runtime.h>
+#else
 #include <cuda_runtime.h>
+#endif
 #include <spdlog/spdlog.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -340,12 +344,27 @@ void NicDiscovery::logBestCandidate() {
 
 std::string GpuNicDiscovery::getCudaPciBusId(int cudaDevice) {
   char busId[32];
+#ifdef __HIP_PLATFORM_AMD__
+  // The deleted `MultipeerIbgdaTransportAmd::openIbDevice` (line 308)
+  // called `hipDeviceGetPCIBusId` directly — match that here. HIPify only
+  // translates source files in `gpu_cpp_library` targets, but
+  // `:nic_discovery` is `oss_cpp_library`, so `cudaDeviceGetPCIBusId`
+  // would link to the CUDA shim and fail at runtime on AMD hosts with
+  // "CUDA driver version is insufficient for CUDA runtime version".
+  hipError_t err = hipDeviceGetPCIBusId(busId, sizeof(busId), cudaDevice);
+  if (err != hipSuccess) {
+    throw std::runtime_error(
+        "Failed to get HIP device PCIe bus ID: " +
+        std::string(hipGetErrorString(err)));
+  }
+#else
   cudaError_t err = cudaDeviceGetPCIBusId(busId, sizeof(busId), cudaDevice);
   if (err != cudaSuccess) {
     throw std::runtime_error(
         "Failed to get CUDA device PCIe bus ID: " +
         std::string(cudaGetErrorString(err)));
   }
+#endif
   return std::string(busId);
 }
 

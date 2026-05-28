@@ -7,8 +7,12 @@
 #include <utility>
 #include <vector>
 
+#ifdef __HIP_PLATFORM_AMD__
+#include "comms/pipes/amd/DocaCompat.h"
+#else
 #include <doca_gpunetio_host.h>
 #include <doca_verbs_net_wrapper.h>
+#endif
 
 #include "comms/pipes/IbverbsLazy.h"
 #include "comms/pipes/rdma/IbHcaParser.h"
