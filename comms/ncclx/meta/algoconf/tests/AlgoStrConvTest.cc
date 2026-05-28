@@ -95,6 +95,9 @@ void checkAlgoStrToVal(enum NCCL_ALLREDUCE_ALGO algo) {
     case NCCL_ALLREDUCE_ALGO::ctring:
       str = "ctring";
       break;
+    case NCCL_ALLREDUCE_ALGO::pipesring:
+      str = "pipesring";
+      break;
   }
   enum NCCL_ALLREDUCE_ALGO result;
   algoStrToVal(str, result);
@@ -171,6 +174,7 @@ TEST(AlgoStrConvTest, AllReduceCompleteness) {
   checkAlgoStrToVal(NCCL_ALLREDUCE_ALGO::ctran);
   checkAlgoStrToVal(NCCL_ALLREDUCE_ALGO::ctdirect);
   checkAlgoStrToVal(NCCL_ALLREDUCE_ALGO::ctring);
+  checkAlgoStrToVal(NCCL_ALLREDUCE_ALGO::pipesring);
 }
 
 TEST(AlgoStrConvTest, AllToAllVCompleteness) {

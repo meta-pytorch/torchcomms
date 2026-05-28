@@ -41,11 +41,9 @@ __global__ __launch_bounds__(kBlockSize, 1) void ring_allgather_kernel(
   const int my_rank = args.my_rank;
   const int stride = (my_rank - topo.prev_rank + W) % W;
 
-  // Local copy: own chunk from sendbuf to recvbuf.
   const char* own_src = args.sendbuf + ring_offset + io_tile_offset;
   char* own_dst =
       args.recvbuf + my_rank * chunk_bytes + ring_offset + io_tile_offset;
-  memcpy_vectorized(own_dst, own_src, io_tile_bytes, ring_group);
   ring_group.sync();
 
   for (std::size_t off = 0; off < io_tile_bytes; off += pipeline_window) {
@@ -53,10 +51,14 @@ __global__ __launch_bounds__(kBlockSize, 1) void ring_allgather_kernel(
     const std::size_t window =
         (remaining < pipeline_window) ? remaining : pipeline_window;
 
-    // Step 0: Send own chunk to next.
-    char* send_src = args.recvbuf + my_rank * chunk_bytes + ring_offset +
-        io_tile_offset + off;
-    next.send(group, send_src, window, group.total_groups, max_sig, timeout);
+    next.template send<MemcpyAndSelfCopy>(
+        group,
+        own_src + off,
+        window,
+        group.total_groups,
+        max_sig,
+        timeout,
+        own_dst + off);
 
     // Steps 1..W-1: receive and forward (or just receive on last step).
     int current_rank = my_rank;
