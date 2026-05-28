@@ -1,24 +1,30 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 // =============================================================================
-// AMD GPU (HIP/ROCm) Compatibility Layer for IBGDA Verbs
+// HipDeviceCompat - HIP/AMD GCN device-side intrinsic shims
 // =============================================================================
 //
-// This header provides AMD GPU equivalents of the CUDA-specific intrinsics and
-// device functions used by IBGDA verbs device-side code.
+// Provides AMD-side equivalents of the CUDA device intrinsics that pipes
+// device code uses (originally written for CUDA PTX). Lives in `amd/`
+// and is consumed by `pipes_gda_*` device APIs and the IBGDA WQE
+// construction path.
 //
-// The original NVIDIA implementation in AmdVerbsCompat.h uses:
-// - CUDA PTX inline assembly for memory ordering (ld.relaxed, st.release,
-// fence)
-// - cuda::atomic_ref for lock-free atomic operations with scope control
-// - __ldg() for read-only cache loads
-// - __syncwarp() and __reduce_max_sync() for warp-level primitives
+// CUDA → AMD mapping:
+//   - CUDA PTX `ld.relaxed.sys.global` / `st.release.sys.global` /
+//     `fence.acq_rel.sys`  →  `__hip_atomic_*` + `__builtin_amdgcn_fence`
+//   - `cuda::atomic_ref`                                      →
+//   `__hip_atomic_*` builtins
+//   - `__ldg()` (read-only cache load)                        → const-qualified
+//   load
+//   - `__syncwarp()` / `__reduce_max_sync()`                  →  AMD wavefront
+//   intrinsics
+//   - `__trap()` (device-only fatal trap)                     →  `abort()` shim
+//   (host-pass safe)
 //
-// This file maps those to AMD GCN/CDNA equivalents using:
-// - __builtin_amdgcn_fence() for memory ordering
-// - __hip_atomic_* builtins for scoped atomics
-// - __builtin_nontemporal_load/store for non-cached I/O
-// - AMD wavefront intrinsics for warp-level operations
+// Also includes host-pass parsing stubs for HIP device intrinsics
+// (`__HIP_MEMORY_SCOPE_*`, `__lane_id`, `wall_clock64`, `__shfl_xor`,
+// `__builtin_amdgcn_fence`) so this header parses cleanly when
+// transitively included from a pure host `.cc` translation unit.
 // =============================================================================
 
 #pragma once
@@ -27,13 +33,71 @@
 #include <cstdint>
 
 // =============================================================================
-// Platform Detection
+// __trap() shim — HIP doesn't expose `__trap()` in host pass the way nvcc
+// does. When this header is included from a hipcc device-pass compile
+// (and not CUDA), alias `__trap()` to `abort()` so device fatal-error
+// paths (e.g., `IbgdaBuffer.h`) compile cleanly.
 // =============================================================================
 
-#if !defined(__HIP_PLATFORM_AMD__) && !defined(__HIPCC__)
-#error \
-    "This header requires AMD HIP (ROCm). For NVIDIA GPUs, use the original CUDA headers."
+#if defined(__HIP_DEVICE_COMPILE__) && !defined(__CUDA_ARCH__)
+#define __trap() abort()
 #endif
+
+// =============================================================================
+// Platform gate
+// =============================================================================
+//
+// Self-skip on non-HIP/non-AMD builds so this header can be included
+// unconditionally from cross-platform headers (e.g. `IbgdaBuffer.h`,
+// `Timeout.cuh`). All HIP-specific intrinsic shims and host-pass stubs
+// below are gated by this block.
+
+#ifdef __HIP_PLATFORM_AMD__
+
+// =============================================================================
+// Host-pass stubs for HIP device intrinsics
+// =============================================================================
+//
+// HIP processes `__device__` function bodies in BOTH passes (host and
+// device) for overload resolution, but several device-only macros
+// (`__HIP_MEMORY_SCOPE_*`) and intrinsics (`__lane_id`, `wall_clock64`,
+// `__shfl_xor`) aren't visible in the host pass. Provide stubs so the
+// `__device__` function bodies below parse cleanly when this header is
+// included transitively from a pure-`.cc` host translation unit (e.g.
+// `MultipeerIbgdaTransport.cc` via `DocaCompat.h`). The stubs are
+// never invoked at runtime — they only make the parser happy.
+
+// Values match clang's `SyncScope` enum (HIPSingleThread=0, HIPWavefront=1,
+// HIPWorkgroup=2, HIPAgent=3, HIPSystem=4) so the host-pass parser
+// accepts them as valid scope arguments to `__hip_atomic_*` builtins.
+#ifndef __HIP_DEVICE_COMPILE__
+#ifndef __HIP_MEMORY_SCOPE_SINGLETHREAD
+#define __HIP_MEMORY_SCOPE_SINGLETHREAD 0
+#endif
+#ifndef __HIP_MEMORY_SCOPE_WAVEFRONT
+#define __HIP_MEMORY_SCOPE_WAVEFRONT 1
+#endif
+#ifndef __HIP_MEMORY_SCOPE_WORKGROUP
+#define __HIP_MEMORY_SCOPE_WORKGROUP 2
+#endif
+#ifndef __HIP_MEMORY_SCOPE_AGENT
+#define __HIP_MEMORY_SCOPE_AGENT 3
+#endif
+#ifndef __HIP_MEMORY_SCOPE_SYSTEM
+#define __HIP_MEMORY_SCOPE_SYSTEM 4
+#endif
+inline unsigned int __lane_id() {
+  return 0;
+}
+inline uint64_t wall_clock64() {
+  return 0;
+}
+template <typename T>
+inline T __shfl_xor(T val, int /*lane_mask*/) {
+  return val;
+}
+#define __builtin_amdgcn_fence(scope, memord) ((void)0)
+#endif // !__HIP_DEVICE_COMPILE__
 
 // AMD wavefront size: 64 on GCN/CDNA, 32 on RDNA (default to 64 for datacenter
 // GPUs)
@@ -326,3 +390,5 @@ __device__ __forceinline__ void amd_store_wqe_seg(
   dst[0] = src[0];
   dst[1] = src[1];
 }
+
+#endif // __HIP_PLATFORM_AMD__

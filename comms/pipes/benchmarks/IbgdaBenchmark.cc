@@ -12,12 +12,15 @@
 #include <vector>
 
 #include "comms/pipes/MultipeerIbgdaTransport.h"
+#include "comms/pipes/amd/HipHostCompat.h"
 #include "comms/pipes/benchmarks/IbgdaBenchmark.h"
 #include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
+#ifndef __HIP_PLATFORM_AMD__
 #include "comms/utils/CudaRAII.h"
-
 using meta::comms::CudaEvent;
+#endif
+
 using meta::comms::DeviceBuffer;
 using meta::comms::MpiBaseTestFixture;
 using meta::comms::MPIEnvironmentBase;
@@ -81,11 +84,20 @@ class IbgdaBenchmarkFixture : public MpiBaseTestFixture {
     CUDA_CHECK_VOID(cudaSetDevice(localRank));
     CUDA_CHECK_VOID(cudaStreamCreate(&stream_));
 
-    // Get GPU clock rate for converting cycles to time
+    // Get GPU clock rate for converting cycles to time.
+#ifdef __HIP_PLATFORM_AMD__
+    // AMD `wall_clock64()` runs at a fixed 100 MHz on MI200/MI300, regardless
+    // of GPU core clock. `hipDeviceAttributeClockRate` returns the core
+    // clock (~1.5-2.0 GHz) — using it would make latency reports ~15x too
+    // small. The deleted `IbgdaBenchmarkAmd.cu` hardcoded 0.1f for the same
+    // reason.
+    clockRateGHz_ = 0.1f;
+#else
     int clockRateKHz;
     CUDA_CHECK_VOID(
         cudaDeviceGetAttribute(&clockRateKHz, cudaDevAttrClockRate, localRank));
     clockRateGHz_ = clockRateKHz / 1e6f;
+#endif
   }
 
   void TearDown() override {

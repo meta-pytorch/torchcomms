@@ -4,7 +4,7 @@
 
 #include <cstdio>
 
-#include "comms/pipes/HipCompat.cuh"
+#include "comms/pipes/amd/HipHostCompat.h"
 
 namespace comms::pipes {
 

@@ -35,10 +35,44 @@
 // VerbsOps - GPU-initiated RDMA one-sided verbs operations for AMD/HIP
 // =============================================================================
 //
-// Provides template helper functions that wrap NIC backend calls into a
-// higher-level API for GPU-initiated RDMA operations (put, signal, fence).
+// Provides helper functions that wrap NIC backend calls into a higher-level
+// API for GPU-initiated RDMA operations (put, signal, fence).
 //
-// All functions are templated on NicBackend for compile-time NIC selection.
+// =============================================================================
+// Two coexisting overload families
+// =============================================================================
+//
+// Each `pipes_gda_*` primitive is provided in TWO overloads with the same
+// name, distinguished by parameter list. They achieve identical
+// functionality; pick whichever is more convenient at the call site.
+//
+// 1. **NicBackend-explicit form** (legacy, used by AMD-only callers in
+//    `comms/pipes/amd/{collectives,benchmarks,tests}/`)
+//    - First parameter is `NicBackend& nic`.
+//    - Templated on `<typename NicBackend>` for compile-time NIC selection.
+//    - Existing AMD-only call sites use this form.
+//
+// 2. **DOCA-aligned form** (used by `comms/pipes/DocaCompat.h`)
+//    - **Signature is identical to the same-suffix `doca_*` API in NVIDIA's
+//      `<device/doca_gpunetio_dev_verbs_*.cuh>`** — same parameter list,
+//      same parameter order, same template parameters
+//      (`<MODE>`/`<SCOPE>`/`<HANDLER>`), same return type. DOCA-only
+//      params that AMD doesn't need (`opcode`, `lkey_id`) are accepted
+//      and `(void)`-cast inside the body.
+//    - No `nic` parameter; the function creates a stack-local
+//      `ActiveNicBackend nic{}` (stateless empty struct → zero-cost) and
+//      forwards to the NicBackend-explicit overload.
+//    - Lets `comms/pipes/P2pIbgdaTransportDevice.cuh` use one set of call
+//      shapes that resolve to DOCA on NVIDIA and to these wrappers on AMD,
+//      via a thin name-prefix shim in `DocaCompat.h`.
+//
+// Functional-equivalence map (DOCA suffix ↔ pipes_gda suffix):
+//   reserve_wq_slots / get_wqe_ptr / wqe_prepare_write /
+//   wqe_prepare_atomic / mark_wqes_ready / submit / wait / put /
+//   signal_counter / poll_one_cq_at / qp_get_cq_sq
+//
+// And `pipes_gda_fence` (no `gpu_dev_verbs_` infix) is the AMD
+// equivalent of `doca_fence` (defined in `comms/pipes/DocaVerbsUtils.cuh`).
 // =============================================================================
 
 #pragma once
@@ -47,7 +81,8 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "verbs/VerbsDev.h" // @manual
+#include "nic/NicSelector.h" // @manual
+#include "pipes_gda/PipesGdaDev.h" // @manual
 
 namespace pipes_gda {
 
@@ -604,6 +639,168 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_signal_counter(
 
   pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, companionQp, compBase, cntIdx);
   pipes_gda_gpu_dev_verbs_submit(nic, companionQp, cntIdx + 1);
+}
+
+// =============================================================================
+// DOCA-aligned overloads
+// =============================================================================
+//
+// Each function below has the SAME signature as its `doca_*` counterpart in
+// `<device/doca_gpunetio_dev_verbs_*.cuh>`, with `doca_` swapped for
+// `pipes_gda_`. They overload the NicBackend-explicit forms above:
+//   - Different parameter list (no leading `nic`, plus DOCA-only params).
+//   - Different template parameters (`<int MODE/SCOPE/HANDLER>` vs
+//     `<typename NicBackend>`) — disambiguates explicit-template calls.
+// Each forwards to the NicBackend-explicit form with a stack-local
+// `ActiveNicBackend nic{}`. The backend is a stateless empty struct, so
+// the temporary is zero-cost (compiler elides it).
+
+template <int MODE = 0>
+__device__ __forceinline__ uint64_t pipes_gda_gpu_dev_verbs_reserve_wq_slots(
+    pipes_gda_gpu_dev_verbs_qp* qp,
+    uint32_t numSlots) {
+  ActiveNicBackend nic{};
+  return pipes_gda_gpu_dev_verbs_reserve_wq_slots(nic, qp, numSlots);
+}
+
+__device__ __forceinline__ pipes_gda_gpu_dev_verbs_wqe*
+pipes_gda_gpu_dev_verbs_get_wqe_ptr(
+    pipes_gda_gpu_dev_verbs_qp* qp,
+    uint64_t wqeIdx) {
+  ActiveNicBackend nic{};
+  return pipes_gda_gpu_dev_verbs_get_wqe_ptr(nic, qp, wqeIdx);
+}
+
+__device__ __forceinline__ void pipes_gda_gpu_dev_verbs_wqe_prepare_write(
+    pipes_gda_gpu_dev_verbs_qp* qp,
+    pipes_gda_gpu_dev_verbs_wqe* wqe,
+    uint64_t wqeIdx,
+    uint8_t opcode,
+    uint8_t ctrlFlags,
+    uint32_t lkey_id,
+    uint64_t remoteAddr,
+    uint32_t remoteKey,
+    uint64_t localAddr,
+    uint32_t localKey,
+    uint32_t size) {
+  (void)opcode;
+  (void)lkey_id;
+  ActiveNicBackend nic{};
+  pipes_gda_gpu_dev_verbs_wqe_prepare_write(
+      nic,
+      qp,
+      wqe,
+      wqeIdx,
+      ctrlFlags,
+      remoteAddr,
+      remoteKey,
+      localAddr,
+      localKey,
+      size);
+}
+
+__device__ __forceinline__ void pipes_gda_gpu_dev_verbs_wqe_prepare_atomic(
+    pipes_gda_gpu_dev_verbs_qp* qp,
+    pipes_gda_gpu_dev_verbs_wqe* wqe,
+    uint64_t wqeIdx,
+    uint8_t opcode,
+    uint8_t ctrlFlags,
+    uint64_t remoteAddr,
+    uint32_t remoteKey,
+    uint64_t localAddr,
+    uint32_t localKey,
+    uint32_t size,
+    uint64_t addVal,
+    uint64_t compareVal) {
+  (void)opcode;
+  ActiveNicBackend nic{};
+  pipes_gda_gpu_dev_verbs_wqe_prepare_atomic(
+      nic,
+      qp,
+      wqe,
+      wqeIdx,
+      ctrlFlags,
+      remoteAddr,
+      remoteKey,
+      localAddr,
+      localKey,
+      size,
+      addVal,
+      compareVal);
+}
+
+template <int MODE = 0>
+__device__ __forceinline__ void pipes_gda_gpu_dev_verbs_mark_wqes_ready(
+    pipes_gda_gpu_dev_verbs_qp* qp,
+    uint64_t firstIdx,
+    uint64_t lastIdx) {
+  ActiveNicBackend nic{};
+  pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, firstIdx, lastIdx);
+}
+
+template <int MODE = 0, int SCOPE = 0, int HANDLER = 0>
+__device__ __forceinline__ void pipes_gda_gpu_dev_verbs_submit(
+    pipes_gda_gpu_dev_verbs_qp* qp,
+    uint64_t nextWqeIdx) {
+  ActiveNicBackend nic{};
+  pipes_gda_gpu_dev_verbs_submit(nic, qp, nextWqeIdx);
+}
+
+template <int MODE = 0, int HANDLER = 0>
+__device__ __forceinline__ void pipes_gda_gpu_dev_verbs_wait(
+    pipes_gda_gpu_dev_verbs_qp* qp,
+    uint64_t ticket) {
+  ActiveNicBackend nic{};
+  pipes_gda_gpu_dev_verbs_wait(nic, qp, ticket);
+}
+
+template <int MODE = 0, int HANDLER = 0, int EXEC = 0>
+__device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put(
+    pipes_gda_gpu_dev_verbs_qp* qp,
+    pipes_gda_gpu_dev_verbs_addr raddr,
+    pipes_gda_gpu_dev_verbs_addr laddr,
+    std::size_t size,
+    uint64_t* out_ticket) {
+  ActiveNicBackend nic{};
+  pipes_gda_gpu_dev_verbs_put(nic, qp, raddr, laddr, size, out_ticket);
+}
+
+template <int OP = 0, int MODE = 0, int HANDLER = 0>
+__device__ __forceinline__ void pipes_gda_gpu_dev_verbs_signal_counter(
+    pipes_gda_gpu_dev_verbs_qp* mainQp,
+    pipes_gda_gpu_dev_verbs_addr sigRemoteAddr,
+    pipes_gda_gpu_dev_verbs_addr sigSinkAddr,
+    uint64_t sigVal,
+    pipes_gda_gpu_dev_verbs_qp* companionQp,
+    pipes_gda_gpu_dev_verbs_addr counterRemoteAddr,
+    pipes_gda_gpu_dev_verbs_addr counterSinkAddr,
+    uint64_t counterVal) {
+  ActiveNicBackend nic{};
+  pipes_gda_gpu_dev_verbs_signal_counter(
+      nic,
+      mainQp,
+      sigRemoteAddr,
+      sigSinkAddr,
+      sigVal,
+      companionQp,
+      counterRemoteAddr,
+      counterSinkAddr,
+      counterVal);
+}
+
+template <int MODE = 0>
+__device__ __forceinline__ int pipes_gda_gpu_dev_verbs_poll_one_cq_at(
+    pipes_gda_gpu_dev_verbs_cq* cq,
+    uint64_t consIndex) {
+  ActiveNicBackend nic{};
+  return pipes_gda_gpu_dev_verbs_poll_one_cq_at(nic, cq, consIndex);
+}
+
+template <int MODE = 0, int HANDLER = 0>
+__device__ __forceinline__ void pipes_gda_fence(
+    pipes_gda_gpu_dev_verbs_qp* qp) {
+  ActiveNicBackend nic{};
+  pipes_gda_fence(nic, qp);
 }
 
 } // namespace pipes_gda

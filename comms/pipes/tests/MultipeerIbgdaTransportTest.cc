@@ -11,11 +11,14 @@
 #include <vector>
 
 #include "comms/pipes/MultipeerIbgdaTransport.h"
+#include "comms/pipes/amd/HipHostCompat.h"
 #include "comms/pipes/tests/MultipeerIbgdaTransportTest.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
+#ifndef __HIP_PLATFORM_AMD__
 #include "comms/utils/CudaRAII.h"
+#endif
 
 using meta::comms::DeviceBuffer;
 using meta::comms::MpiBaseTestFixture;

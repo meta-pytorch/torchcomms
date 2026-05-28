@@ -6,7 +6,9 @@
 
 #include <dlfcn.h>
 
-#include <cuda_runtime.h>
+// `cuda_runtime.h` is intentionally not included here. NvmlFabricInfo
+// only uses libnvidia-ml.so.1 via dlopen — no CUDA runtime symbols. This
+// keeps the header buildable under hipcc (which has no `<cuda_runtime.h>`).
 
 namespace comms::pipes {
 

@@ -2,10 +2,20 @@
 
 #include "comms/pipes/MultipeerIbgdaTransport.h"
 
+#ifdef __HIP_PLATFORM_AMD__
+// On AMD: use the HIP runtime for the cuda* API calls below (HIPify
+// renames cuda* -> hip* in source before compilation), and bring in
+// `meta::comms::DeviceBuffer` from the pipes-local HIP shim.
+#include <hip/hip_runtime.h>
+
+#include "comms/pipes/amd/HipHostCompat.h"
+#else
 #include <cuda_runtime.h>
+#endif
 #include <glog/logging.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -13,8 +23,14 @@
 
 #include <fmt/core.h>
 
+// NVIDIA-only host-side helpers. On AMD their functionality is provided
+// by `comms/pipes/amd/DocaCompat.h` (already included via
+// `MultipeerIbgdaTransport.h`) which translates `doca_*` to the
+// `pipes_gda_*` host APIs in `amd/pipes_gda/PipesGdaHost.{h,cc}`.
+#ifndef __HIP_PLATFORM_AMD__
 #include "comms/pipes/CudaDriverLazy.h"
 #include "comms/pipes/DocaHostUtils.h"
+#endif
 #include "comms/pipes/IbverbsLazy.h"
 #include "comms/pipes/MultipeerIbgdaDeviceTransport.cuh"
 #include "comms/pipes/MultipeerIbgdaTransportCuda.cuh"
@@ -247,7 +263,17 @@ void MultipeerIbgdaTransport::openIbDevice() {
 
   // Priority 2: Auto-discovery (top-numNics_ candidates by NUMA affinity).
   if (nicDevices_[0].deviceName.empty()) {
+    // On AMD, `DataDirectMode::Only` (the default) triggers
+    // `ibv_reg_dmabuf_mr` inside `augmentWithDataDirect()`, which SIGSEGV's
+    // on AMD libibverbs (the DMABUF probe is broken in the AMD HCA stack).
+    // Force `Disabled` to skip the probe — the deleted
+    // `MultipeerIbgdaTransportAmd` worked the same way (no DataDirect).
+#ifdef __HIP_PLATFORM_AMD__
+    auto discovery = GpuNicDiscovery(
+        config_.cudaDevice, config_.ibHca, DataDirectMode::Disabled);
+#else
     auto discovery = GpuNicDiscovery(config_.cudaDevice, config_.ibHca);
+#endif
     const auto& candidates = discovery.getCandidates();
     if (static_cast<int>(candidates.size()) < numNics_) {
       throw std::runtime_error(
@@ -400,13 +426,30 @@ void MultipeerIbgdaTransport::allocateResources() {
   // Allocate sink buffer for RDMA atomic return values (discarded).
   // DOCA's OPCODE_ATOMIC_FA requires a local address for the fetch-add
   // result. We don't need it, so we use a small "sink" buffer.
-  //
+  sinkBufferSize_ = sizeof(uint64_t);
+
+#ifdef __HIP_PLATFORM_AMD__
+  // On AMD: use host-pinned memory for the sink. AMD doesn't have a
+  // direct equivalent of CUDA's `gpuDirectRDMACapable=1` flag (the AMD
+  // path uses HSA + DMA-buf for GPU memory RDMA registration). Host-
+  // pinned memory works fine for the discarded atomic-FA result and
+  // matches what `comms/pipes/amd/MultipeerIbgdaTransportAmd.cu` does
+  // for the same purpose.
+  sinkBufferAllocSize_ = sinkBufferSize_;
+  sinkBufferHandle_ = 0;
+  hipError_t hipErr =
+      hipHostMalloc(&sinkBuffer_, sinkBufferSize_, hipHostMallocDefault);
+  if (hipErr != hipSuccess) {
+    throw std::runtime_error(
+        "Failed to allocate AMD sink buffer: " +
+        std::string(hipGetErrorString(hipErr)));
+  }
+  std::memset(sinkBuffer_, 0, sinkBufferSize_);
+#else
   // Uses cuMemCreate with gpuDirectRDMACapable=1 (instead of cudaMalloc /
   // doca_gpu_mem_alloc) so the memory can be registered as an IB MR on
   // aarch64/SMMU platforms (GB200). This matches GIN's ncclCuMemAlloc
   // pattern in gin_host_gdaki.cc.
-  sinkBufferSize_ = sizeof(uint64_t);
-
   if (cuda_driver_lazy_init() != 0) {
     throw std::runtime_error(
         "CUDA driver API not available for sink buffer allocation");
@@ -489,6 +532,7 @@ void MultipeerIbgdaTransport::allocateResources() {
   if (cudaErr != cudaSuccess) {
     throw std::runtime_error("Failed to zero sink buffer");
   }
+#endif
 }
 
 void MultipeerIbgdaTransport::registerMemory() {
@@ -874,7 +918,15 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
       n = static_cast<int>(it->second.size());
       source = "config.gpuNicMap";
     } else {
+      // See comment on the auto-discovery branch in openIbDevice for why we
+      // force DataDirectMode::Disabled on AMD (avoids ibv_reg_dmabuf_mr
+      // SIGSEGV in augmentWithDataDirect on AMD libibverbs).
+#ifdef __HIP_PLATFORM_AMD__
+      GpuNicDiscovery discovery(
+          config.cudaDevice, config.ibHca, DataDirectMode::Disabled);
+#else
       GpuNicDiscovery discovery(config.cudaDevice, config.ibHca);
+#endif
       auto bestNics = discovery.getBestAffinityNics();
       if (bestNics.empty()) {
         throw std::runtime_error(
@@ -903,10 +955,13 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
   }
 
   try {
-    // Resolve CUDA driver function pointers
+#ifndef __HIP_PLATFORM_AMD__
+    // Resolve CUDA driver function pointers (NVIDIA-only; AMD doesn't
+    // use the CUDA driver API for GPU memory allocation).
     if (cuda_driver_lazy_init() != 0) {
       throw std::runtime_error("CUDA driver not available");
     }
+#endif
 
     // Initialize DOCA GPU context
     initDocaGpu();
@@ -988,10 +1043,16 @@ void MultipeerIbgdaTransport::cleanup() {
   }
 
   // Deregister and free transport-owned signal/counter buffers.
-  // MRs must be deregistered BEFORE cudaFree (correct RDMA teardown order).
+  // MRs must be deregistered BEFORE freeing (correct RDMA teardown order).
+  // On AMD: signal/discard inboxes are host-pinned (NIC-accessible);
+  // counter is GPU device memory (sender-local, no NIC access).
   if (signalInboxGpu_ != nullptr) {
     deregisterBuffer(signalInboxGpu_);
+#ifdef __HIP_PLATFORM_AMD__
+    hipHostFree(signalInboxGpu_);
+#else
     cudaFree(signalInboxGpu_);
+#endif
     signalInboxGpu_ = nullptr;
   }
   signalRemoteViews_.clear();
@@ -999,14 +1060,22 @@ void MultipeerIbgdaTransport::cleanup() {
 
   if (counterGpu_ != nullptr) {
     deregisterBuffer(counterGpu_);
+#ifdef __HIP_PLATFORM_AMD__
+    hipFree(counterGpu_);
+#else
     cudaFree(counterGpu_);
+#endif
     counterGpu_ = nullptr;
   }
   counterViews_.clear();
 
   if (discardSignalGpu_ != nullptr) {
     deregisterBuffer(discardSignalGpu_);
+#ifdef __HIP_PLATFORM_AMD__
+    hipHostFree(discardSignalGpu_);
+#else
     cudaFree(discardSignalGpu_);
+#endif
     discardSignalGpu_ = nullptr;
   }
   discardSignalRemoteViews_.clear();
@@ -1031,14 +1100,19 @@ void MultipeerIbgdaTransport::cleanup() {
     }
   }
 
-  // Free sink buffer (cuMem-allocated with gpuDirectRDMACapable). Shared
-  // across NICs — only one allocation, freed after all per-NIC MRs.
+  // Free sink buffer. NVIDIA: cuMem-allocated with gpuDirectRDMACapable.
+  // AMD: hipHostMalloc'd. Shared across NICs — only one allocation,
+  // freed after all per-NIC MRs.
   if (sinkBuffer_ != nullptr) {
+#ifdef __HIP_PLATFORM_AMD__
+    hipHostFree(sinkBuffer_);
+#else
     auto devPtr = reinterpret_cast<CUdeviceptr>(sinkBuffer_);
     pfn_cuMemUnmap(devPtr, sinkBufferAllocSize_);
     pfn_cuMemAddressFree(devPtr, sinkBufferAllocSize_);
     pfn_cuMemRelease(
         static_cast<CUmemGenericAllocationHandle>(sinkBufferHandle_));
+#endif
     sinkBuffer_ = nullptr;
   }
 
@@ -1241,6 +1315,21 @@ void MultipeerIbgdaTransport::exchange() {
     const std::size_t totalSignalBytes =
         static_cast<std::size_t>(numPeers) * slotsPerPeer * sizeof(uint64_t);
 
+#ifdef __HIP_PLATFORM_AMD__
+    // Host-pinned: on AMD, GPU-memory MR registration relies on amdgpu's
+    // peer-mem integration which is unreliable on test hosts. Host-pinned
+    // memory works with `ibv_reg_mr` (no peer_mem needed) and is GPU-
+    // accessible via mapped memory — same approach as the deleted
+    // `MultipeerIbgdaTransportAmd::sinkBuffer_`.
+    hipError_t hipErr =
+        hipHostMalloc(&signalInboxGpu_, totalSignalBytes, hipHostMallocDefault);
+    if (hipErr != hipSuccess) {
+      throw std::runtime_error(
+          "Failed to allocate signal inbox (host-pinned): " +
+          std::string(hipGetErrorString(hipErr)));
+    }
+    std::memset(signalInboxGpu_, 0, totalSignalBytes);
+#else
     cudaError_t cudaErr = cudaMalloc(&signalInboxGpu_, totalSignalBytes);
     if (cudaErr != cudaSuccess) {
       throw std::runtime_error(
@@ -1251,6 +1340,7 @@ void MultipeerIbgdaTransport::exchange() {
     if (cudaErr != cudaSuccess) {
       throw std::runtime_error("Failed to zero signal inbox");
     }
+#endif
 
     // Register and exchange signal inbox
     auto localSignalBuf = registerBuffer(signalInboxGpu_, totalSignalBytes);
@@ -1288,6 +1378,22 @@ void MultipeerIbgdaTransport::exchange() {
     const std::size_t totalCounterBytes =
         static_cast<std::size_t>(numPeers) * slotsPerPeer * sizeof(uint64_t);
 
+#ifdef __HIP_PLATFORM_AMD__
+    // Counter is GPU-only: GPU writes via atomic_fetch_add and reads in
+    // wait_counter spin loop, no NIC-side access. Device memory (HBM,
+    // ~100ns/access) outperforms host-pinned (PCIe, ~1us/access) and
+    // dma-buf isn't needed.
+    hipError_t hipErr = hipMalloc(&counterGpu_, totalCounterBytes);
+    if (hipErr != hipSuccess) {
+      throw std::runtime_error(
+          "Failed to allocate counter buffer: " +
+          std::string(hipGetErrorString(hipErr)));
+    }
+    hipErr = hipMemset(counterGpu_, 0, totalCounterBytes);
+    if (hipErr != hipSuccess) {
+      throw std::runtime_error("Failed to zero counter buffer");
+    }
+#else
     cudaError_t cudaErr = cudaMalloc(&counterGpu_, totalCounterBytes);
     if (cudaErr != cudaSuccess) {
       throw std::runtime_error(
@@ -1298,6 +1404,7 @@ void MultipeerIbgdaTransport::exchange() {
     if (cudaErr != cudaSuccess) {
       throw std::runtime_error("Failed to zero counter buffer");
     }
+#endif
 
     auto localCounterBuf = registerBuffer(counterGpu_, totalCounterBytes);
 
@@ -1332,6 +1439,17 @@ void MultipeerIbgdaTransport::exchange() {
     const std::size_t totalDiscardBytes =
         static_cast<std::size_t>(numPeers) * sizeof(uint64_t);
 
+#ifdef __HIP_PLATFORM_AMD__
+    // See signal-inbox AMD branch above — same host-pinned rationale.
+    hipError_t hipErr = hipHostMalloc(
+        &discardSignalGpu_, totalDiscardBytes, hipHostMallocDefault);
+    if (hipErr != hipSuccess) {
+      throw std::runtime_error(
+          "Failed to allocate discard-signal buffer (host-pinned): " +
+          std::string(hipGetErrorString(hipErr)));
+    }
+    std::memset(discardSignalGpu_, 0, totalDiscardBytes);
+#else
     cudaError_t cudaErr = cudaMalloc(&discardSignalGpu_, totalDiscardBytes);
     if (cudaErr != cudaSuccess) {
       throw std::runtime_error(
@@ -1342,6 +1460,7 @@ void MultipeerIbgdaTransport::exchange() {
     if (cudaErr != cudaSuccess) {
       throw std::runtime_error("Failed to zero discard-signal buffer");
     }
+#endif
 
     auto localDiscardBuf = registerBuffer(discardSignalGpu_, totalDiscardBytes);
     auto remoteDiscardBufs = exchangeBuffer(localDiscardBuf);
@@ -1460,9 +1579,18 @@ IbgdaLocalBuffer MultipeerIbgdaTransport::registerBuffer(
     }
   }
 
-  // Cache miss — find the CUDA allocation base and register it on every
+  // Cache miss — find the GPU allocation base and register it on every
   // NIC's PD. Each NIC gets an independent MR over the same physical
   // memory; lkey/rkey differ per NIC.
+#ifdef __HIP_PLATFORM_AMD__
+  // On AMD: HIP doesn't expose an exact equivalent of
+  // `cuMemGetAddressRange` (which returns the original allocation
+  // base/size for a pointer in the middle of an allocation). For the
+  // common case where the caller passes the base pointer of an
+  // allocation, register exactly the requested range.
+  uintptr_t allocBase = reinterpret_cast<uintptr_t>(ptr);
+  size_t allocSize = size;
+#else
   CUdeviceptr allocBase = 0;
   size_t allocSize = 0;
   CUresult cuRes =
@@ -1471,6 +1599,7 @@ IbgdaLocalBuffer MultipeerIbgdaTransport::registerBuffer(
     throw std::runtime_error(
         "registerBuffer: cuMemGetAddressRange failed for ptr");
   }
+#endif
   int accessFlags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
       IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC;
 
@@ -1496,6 +1625,7 @@ IbgdaLocalBuffer MultipeerIbgdaTransport::registerBuffer(
       close(dmabuf->fd);
     }
     if (!mr) {
+      errno = 0;
       doca_error_t regErr = doca_verbs_wrapper_ibv_reg_mr(
           nicDevices_[n].ibvPd,
           reinterpret_cast<void*>(allocBase),
@@ -1503,12 +1633,21 @@ IbgdaLocalBuffer MultipeerIbgdaTransport::registerBuffer(
           accessFlags,
           &mr);
       if (regErr != DOCA_SUCCESS || !mr) {
+        const int savedErrno = errno;
         // Roll back partial registration before throwing.
         for (int j = 0; j < n; ++j) {
           doca_verbs_wrapper_ibv_dereg_mr(cached.mrs[j]);
         }
         throw std::runtime_error(
-            "Failed to register buffer with RDMA on NIC " + std::to_string(n));
+            fmt::format(
+                "Failed to register buffer with RDMA on NIC {} "
+                "(allocBase=0x{:x} allocSize={} regErr={} errno={} ({}))",
+                n,
+                allocBase,
+                allocSize,
+                static_cast<int>(regErr),
+                savedErrno,
+                std::strerror(savedErrno)));
       }
     }
     cached.mrs[n] = mr;
@@ -1560,7 +1699,25 @@ std::vector<IbgdaRemoteBuffer> MultipeerIbgdaTransport::exchangeBuffer(
     const IbgdaLocalBuffer& localBuf) {
   const int numPeers = nRanks_ - 1;
 
-  // Find the MR for this buffer via its CUDA allocation base.
+  // Find the MR for this buffer via its GPU allocation base.
+#ifdef __HIP_PLATFORM_AMD__
+  // Use `hipMemGetAddressRange` (direct analog of NVIDIA's
+  // `cuMemGetAddressRange`) so a sub-buffer (`localBuf.ptr` pointing into
+  // the middle of an allocation) resolves to the same key the MR was
+  // registered under. NOTE: an earlier attempt used
+  // `hipPointerGetAttributes().devicePointer`, but that returns the queried
+  // pointer (or its host-mapped equivalent) — NOT the allocation base —
+  // so it didn't actually fix the sub-buffer bug.
+  hipDeviceptr_t basePtr = 0;
+  size_t allocRange = 0;
+  if (hipMemGetAddressRange(&basePtr, &allocRange, localBuf.ptr) !=
+          hipSuccess ||
+      basePtr == 0) {
+    throw std::runtime_error(
+        "exchangeBuffer: hipMemGetAddressRange failed for ptr");
+  }
+  uintptr_t allocBase = reinterpret_cast<uintptr_t>(basePtr);
+#else
   CUdeviceptr allocBase = 0;
   size_t allocSize = 0;
   CUresult cuRes = pfn_cuMemGetAddressRange(
@@ -1569,6 +1726,7 @@ std::vector<IbgdaRemoteBuffer> MultipeerIbgdaTransport::exchangeBuffer(
     throw std::runtime_error(
         "exchangeBuffer: cuMemGetAddressRange failed for ptr");
   }
+#endif
   auto it = registeredBuffers_.find(static_cast<uintptr_t>(allocBase));
   if (it == registeredBuffers_.end()) {
     throw std::runtime_error(
