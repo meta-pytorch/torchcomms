@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "default_stable": {
+    "tile_rows": 32,
+    "tile_row_bytes": 2048,
+    "signal_bytes": 262144,
+    "num_blocks": 16,
+    "num_warps": 8
+  },
+  "default_ws": {
+    "tile_rows": 32,
+    "tile_row_bytes": 2048,
+    "num_blocks": 16,
+    "sender_warps": 4,
+    "receiver_warps": 4
+  },
+  "configs": [
+  ]
+}

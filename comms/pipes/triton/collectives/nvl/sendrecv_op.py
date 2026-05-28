@@ -20,6 +20,18 @@ pointers for the specific peer pair. This preserves the direct typed
 tensor argument pattern in the kernel, avoiding the store scalarization
 (``STG.E.U16``) that pointer-of-pointer indirection causes.
 
+Tuning parameters are loaded from a per-kernel JSON config file
+(``tuning_sendrecv.json``) keyed by ``(hardware, num_peers, msg_size)``.
+Environment variables override JSON config for debugging.
+
+Two kernel variants:
+
+- **Stable kernel** (``sendrecv.py``): supports sub-slot signaling via
+  ``signal_bytes`` for latency vs throughput trade-off.
+- **WS kernel** (``sendrecv_ws.py``): warp-specialized bidirectional with
+  concurrent sender/receiver TLX async tasks. No sub-slot signaling
+  (TLX barrier limitation). Adaptive stride as safety clamp.
+
 Composing collectives from this primitive:
 
   * **Ring AllGather**: call ``triton_nvl_sendrecv`` with
@@ -41,6 +53,7 @@ from torch._C._distributed_c10d import _SymmetricMemory
 
 from .sendrecv import triton_nvl_sendrecv_kernel
 from .sendrecv_ws import triton_nvl_sendrecv_bidir_ws_kernel
+from .tuning_config import _detect_hardware, get_sendrecv_config
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -54,40 +67,21 @@ logger: logging.Logger = logging.getLogger(__name__)
 _BLOCK_STRIDE_BYTES: int = int(
     os.environ.get("TRITON_NVL_BLOCK_STRIDE_BYTES", str(256 * 1024))
 )
-_PIPELINE_DEPTH: int = int(os.environ.get("TRITON_NVL_PIPELINE_DEPTH", "2"))
+_PIPELINE_DEPTH: int = 2
 _MAX_BLOCKS_PER_PEER: int = 32
-_DEFAULT_NUM_SEND_BLOCKS: int = 16
-_DEFAULT_NUM_WARPS: int = 8
-_DEFAULT_WS_SENDER_WARPS: int = int(os.environ.get("TRITON_NVL_WS_SENDER_WARPS", "4"))
-_DEFAULT_WS_RECEIVER_WARPS: int = int(
-    os.environ.get("TRITON_NVL_WS_RECEIVER_WARPS", "4")
-)
 _MODE_BIDIRECTIONAL: int = 0
 _MODE_SEND_ONLY: int = 1
 _MODE_RECV_ONLY: int = 2
+
+# Sentinel defaults — when these are passed, JSON config is used instead.
+_SENTINEL_NUM_BLOCKS: int = -1
+_SENTINEL_NUM_WARPS: int = -1
 
 
 class _Config(NamedTuple):
     tile_rows: int
     tile_cols: int
     num_stages: int
-
-
-def _compute_config(element_size: int) -> _Config:
-    return _Config(
-        tile_rows=32,
-        tile_cols=2048 // element_size,
-        num_stages=2,
-    )
-
-
-def _compute_ws_config(element_size: int) -> _Config:
-    tile_bytes = int(os.environ.get("TRITON_NVL_WS_TILE_BYTES", "2048"))
-    return _Config(
-        tile_rows=32,
-        tile_cols=tile_bytes // element_size,
-        num_stages=2,
-    )
 
 
 def _per_peer_bytes() -> int:
@@ -113,7 +107,7 @@ _STEP_STATE_CACHE: dict[
 
 
 def _required_signal_pad_bytes(world_size: int) -> int:
-    return 2 * world_size * _MAX_BLOCKS_PER_PEER * 8  # int64 = 8 bytes
+    return 2 * world_size * _MAX_BLOCKS_PER_PEER * 8
 
 
 def _get_staging_buffer(
@@ -138,7 +132,8 @@ def _get_staging_buffer(
 
     num_bytes = _per_peer_bytes() * world_size
     logger.info(
-        "triton_nvl_sendrecv staging cache miss on PG %s: allocating %d bytes (%d ranks)",
+        "triton_nvl_sendrecv staging cache miss on PG %s: "
+        "allocating %d bytes (%d ranks)",
         group.group_desc,
         num_bytes,
         world_size,
@@ -149,9 +144,9 @@ def _get_staging_buffer(
     if current_sig < required_sig:
         raise RuntimeError(
             f"Signal pad too small for {world_size}-rank group with "
-            f"{_MAX_BLOCKS_PER_PEER} blocks per peer: need {required_sig} bytes, "
-            f"have {current_sig}. Call symm_mem.set_signal_pad_size() before "
-            f"first allocation."
+            f"{_MAX_BLOCKS_PER_PEER} blocks per peer: need {required_sig} "
+            f"bytes, have {current_sig}. Call symm_mem.set_signal_pad_size() "
+            f"before first allocation."
         )
 
     raw = symm_mem.empty(num_bytes, dtype=torch.uint8, device=device)
@@ -199,8 +194,8 @@ def triton_nvl_sendrecv(
     recv_peer: int | None = None,
     *,
     group: dist.ProcessGroup,
-    num_blocks: int = _DEFAULT_NUM_SEND_BLOCKS,
-    num_warps: int = _DEFAULT_NUM_WARPS,
+    num_blocks: int = _SENTINEL_NUM_BLOCKS,
+    num_warps: int = _SENTINEL_NUM_WARPS,
 ) -> None:
     """Bidirectional NVLink copy-based send/recv.
 
@@ -254,9 +249,9 @@ def triton_nvl_sendrecv_ws(
     recv_peer: int | None = None,
     *,
     group: dist.ProcessGroup,
-    num_blocks: int = _DEFAULT_NUM_SEND_BLOCKS,
-    sender_warps: int = _DEFAULT_WS_SENDER_WARPS,
-    receiver_warps: int = _DEFAULT_WS_RECEIVER_WARPS,
+    num_blocks: int = _SENTINEL_NUM_BLOCKS,
+    sender_warps: int = -1,
+    receiver_warps: int = -1,
 ) -> None:
     """Warp-specialized bidirectional NVLink send/recv.
 
@@ -291,7 +286,7 @@ def triton_nvl_sendrecv_ws(
         recv_peer,
         group=group,
         num_blocks=num_blocks,
-        num_warps=sender_warps + receiver_warps,
+        num_warps=0,
         mode=_MODE_BIDIRECTIONAL,
         warp_specialized=True,
         sender_warps=sender_warps,
@@ -304,8 +299,8 @@ def triton_nvl_send(
     send_peer: int,
     *,
     group: dist.ProcessGroup,
-    num_blocks: int = _DEFAULT_NUM_SEND_BLOCKS,
-    num_warps: int = _DEFAULT_NUM_WARPS,
+    num_blocks: int = _SENTINEL_NUM_BLOCKS,
+    num_warps: int = _SENTINEL_NUM_WARPS,
 ) -> None:
     """Send ``send_buf`` to ``send_peer`` over NVLink using copy-based staging.
 
@@ -330,8 +325,8 @@ def triton_nvl_recv(
     recv_peer: int,
     *,
     group: dist.ProcessGroup,
-    num_blocks: int = _DEFAULT_NUM_SEND_BLOCKS,
-    num_warps: int = _DEFAULT_NUM_WARPS,
+    num_blocks: int = _SENTINEL_NUM_BLOCKS,
+    num_warps: int = _SENTINEL_NUM_WARPS,
 ) -> None:
     """Receive into ``recv_buf`` from ``recv_peer`` over NVLink.
 
@@ -362,12 +357,55 @@ def _launch(
     num_warps: int,
     mode: int,
     warp_specialized: bool = False,
-    sender_warps: int = 4,
-    receiver_warps: int = 4,
+    sender_warps: int = -1,
+    receiver_warps: int = -1,
 ) -> None:
-    assert send_buf.dtype == recv_buf.dtype, (
-        f"send/recv dtype mismatch: {send_buf.dtype} vs {recv_buf.dtype}"
+    assert send_buf.dtype == recv_buf.dtype
+
+    world_size = dist.get_world_size(group)
+    if world_size == 1:
+        recv_buf.copy_(send_buf)
+        return
+
+    local_rank = dist.get_rank(group)
+    assert send_peer != local_rank
+    assert recv_peer != local_rank
+    assert 0 <= send_peer < world_size
+    assert 0 <= recv_peer < world_size
+
+    # --- JSON config lookup ---
+    msg_bytes = send_buf.numel() * send_buf.element_size()
+    config = get_sendrecv_config(
+        msg_bytes=msg_bytes,
+        element_size=send_buf.element_size(),
+        num_peers=1,
     )
+
+    if warp_specialized:
+        if config.ws is None:
+            raise RuntimeError(
+                f"Warp-specialized variant requested but tuning JSON has no "
+                f"`ws` config for (hardware={_detect_hardware()!r}, "
+                f"num_peers=1, msg_bytes={msg_bytes}). Either populate "
+                f"`tuning_sendrecv.json` with a matching entry, set "
+                f"`default_ws`, or call triton_nvl_sendrecv() (stable kernel) "
+                f"instead."
+            )
+        ws_cfg = config.ws
+        if num_blocks == _SENTINEL_NUM_BLOCKS:
+            num_blocks = ws_cfg.num_blocks
+        if sender_warps < 0:
+            sender_warps = ws_cfg.sender_warps
+        if receiver_warps < 0:
+            receiver_warps = ws_cfg.receiver_warps
+
+    if not warp_specialized:
+        stable_cfg = config.stable
+        if num_blocks == _SENTINEL_NUM_BLOCKS:
+            num_blocks = stable_cfg.num_blocks
+        if num_warps == _SENTINEL_NUM_WARPS:
+            num_warps = stable_cfg.num_warps
+
     assert 0 < num_blocks <= _MAX_BLOCKS_PER_PEER, (
         f"num_blocks must be in (0, {_MAX_BLOCKS_PER_PEER}], got {num_blocks}"
     )
@@ -378,47 +416,37 @@ def _launch(
         assert 1 <= receiver_warps <= 8, (
             f"receiver_warps must be in [1, 8], got {receiver_warps}"
         )
-        total = sender_warps + receiver_warps
+        total_warps = sender_warps + receiver_warps
         # TLX requires `num_warps` to be a multiple of 4 for warp
         # specialization. (1+1=2 and similar small splits are rejected
         # downstream by the TritonTLXFixup MLIR pass.)
-        assert total % 4 == 0 and total <= 16, (
+        assert total_warps % 4 == 0 and total_warps <= 16, (
             f"sender_warps + receiver_warps must be a multiple of 4 "
             f"in [4, 16] (TLX warp-spec requirement), "
-            f"got {sender_warps} + {receiver_warps} = {total}"
+            f"got {sender_warps} + {receiver_warps} = {total_warps}"
         )
+        num_warps = total_warps
     else:
         assert num_warps in (4, 8), (
             f"num_warps must be 4 or 8 (only configs covered by tests); got {num_warps}"
         )
-
-    world_size = dist.get_world_size(group)
-    if world_size == 1:
-        recv_buf.copy_(send_buf)
-        return
-
-    local_rank = dist.get_rank(group)
-    assert send_peer != local_rank, "send_peer must differ from local rank"
-    assert recv_peer != local_rank, "recv_peer must differ from local rank"
-    assert 0 <= send_peer < world_size
-    assert 0 <= recv_peer < world_size
 
     handle = _get_staging_buffer(group, send_buf.device, world_size)
     sender_step_all, recver_step_all = _get_step_state(
         group, send_buf.device, world_size
     )
 
-    config = (
-        _compute_ws_config(send_buf.element_size())
-        if warp_specialized
-        else _compute_config(send_buf.element_size())
-    )
-    tile_numel = config.tile_rows * config.tile_cols
-    tile_bytes = tile_numel * send_buf.element_size()
-    per_peer_elems = _per_peer_bytes() // send_buf.element_size()
+    element_size = send_buf.element_size()
+    per_peer_elems = _per_peer_bytes() // element_size
+    block_stride_elems = _BLOCK_STRIDE_BYTES // element_size
 
-    orig_block_stride_elems = _BLOCK_STRIDE_BYTES // send_buf.element_size()
     if warp_specialized:
+        assert config.ws is not None
+        tile_rows = config.ws.tile_rows
+        tile_cols = config.ws.tile_cols
+        tile_numel = tile_rows * tile_cols
+        tile_bytes = tile_numel * element_size
+
         # Adaptive stride: pick the smallest stride that keeps the
         # while-loop iter count <= 2 (TLX `sync_threads()` bug).
         # `max_ws_stride` caps per-block staging so the sum across all
@@ -432,7 +460,7 @@ def _launch(
         target_tiles_per_step = -(-tiles_per_block // 2)
         needed_stride = target_tiles_per_step * tile_bytes
         ws_stride = max(min(needed_stride, max_ws_stride), _BLOCK_STRIDE_BYTES)
-        block_stride_elems = ws_stride // send_buf.element_size()
+        ws_block_stride_elems = ws_stride // element_size
         max_tiles_per_block_per_slot = max(ws_stride // tile_bytes, 1)
         # Fail-loud on the TLX iteration bug: if the requested stride
         # was capped below `needed_stride`, the achievable iters/block
@@ -452,10 +480,46 @@ def _launch(
                 f"triton_nvl_sendrecv() for large messages."
             )
     else:
-        block_stride_elems = orig_block_stride_elems
-        max_tiles_per_block_per_slot = max(_BLOCK_STRIDE_BYTES // tile_bytes, 1)
+        tile_rows = config.stable.tile_rows
+        tile_cols = config.stable.tile_cols
+        tile_numel = tile_rows * tile_cols
+        tile_bytes = tile_numel * element_size
 
-    staging_elems = orig_block_stride_elems * _MAX_BLOCKS_PER_PEER * _PIPELINE_DEPTH
+        signal_bytes = config.stable.signal_bytes
+        if signal_bytes > _BLOCK_STRIDE_BYTES:
+            # Sweep tooling that picks `signal_bytes > _BLOCK_STRIDE_BYTES`
+            # would silently lose its choice if we did not surface this.
+            # Clamp + warn-once so the sweep entry can be re-tuned (or the
+            # block stride raised) without producing wrong perf attribution.
+            logger.warning(
+                "tuning_config requested signal_bytes=%d but "
+                "_BLOCK_STRIDE_BYTES=%d; clamping signal_bytes to the "
+                "stride. The sweep entry under "
+                "(hardware, num_peers, msg_bytes) is effectively useless "
+                "until the block stride is raised.",
+                signal_bytes,
+                _BLOCK_STRIDE_BYTES,
+            )
+        signal_bytes = min(signal_bytes, _BLOCK_STRIDE_BYTES)
+        # Sub-slot signaling invariants (avoid silent staging-buffer
+        # corruption). The kernel writes one full tile per chunk into
+        # `slot_base + chunk_in_slot * SIGNAL_STRIDE_ELEMS`; if a tile
+        # is larger than a chunk, the write spills into the next chunk
+        # region while that chunk may still be in-flight on the wire.
+        assert signal_bytes >= tile_bytes, (
+            f"signal_bytes ({signal_bytes}) must be >= tile_bytes "
+            f"({tile_bytes}); a sub-slot chunk smaller than one tile "
+            f"causes staging-buffer overrun across chunks."
+        )
+        # `chunks_per_slot` is computed as floor(stride / signal_bytes);
+        # a non-divisor leaves a wasted tail in each slot (functionally
+        # safe but wasteful and an indicator of bad sweep input).
+        assert _BLOCK_STRIDE_BYTES % signal_bytes == 0, (
+            f"_BLOCK_STRIDE_BYTES ({_BLOCK_STRIDE_BYTES}) must be an "
+            f"integer multiple of signal_bytes ({signal_bytes})."
+        )
+
+    staging_elems = block_stride_elems * _MAX_BLOCKS_PER_PEER * _PIPELINE_DEPTH
 
     # --- Pre-resolve staging buffers for the specific peer pair ---
     # Sender writes to send_peer's staging area at local_rank's partition.
@@ -478,7 +542,6 @@ def _launch(
     #   [0 .. W*MBPP):       TAIL[peer * MBPP + block_id]
     #   [W*MBPP .. 2*W*MBPP): HEAD[peer * MBPP + block_id]
     head_offset = world_size * _MAX_BLOCKS_PER_PEER
-
     send_peer_sig = handle.get_signal_pad(send_peer).view(torch.int64)
     recv_peer_sig = handle.get_signal_pad(recv_peer).view(torch.int64)
     local_sig = handle.get_signal_pad(local_rank).view(torch.int64)
@@ -511,9 +574,9 @@ def _launch(
             recver_step_ptr=recver_step_ptr,
             send_numel=send_buf.numel(),
             recv_numel=recv_buf.numel(),
-            TILE_ROWS=config.tile_rows,
-            TILE_COLS=config.tile_cols,
-            BLOCK_STRIDE_ELEMS=block_stride_elems,
+            TILE_ROWS=tile_rows,
+            TILE_COLS=tile_cols,
+            BLOCK_STRIDE_ELEMS=ws_block_stride_elems,
             PIPELINE_DEPTH=_PIPELINE_DEPTH,
             MAX_TILES_PER_BLOCK_PER_SLOT=max_tiles_per_block_per_slot,
             NUM_SEND_BLOCKS=num_blocks,
@@ -526,6 +589,11 @@ def _launch(
             num_stages=0,
         )
         return
+
+    # --- Stable kernel with sub-slot signaling ---
+    tiles_per_signal = max(signal_bytes // tile_bytes, 1)
+    chunks_per_slot = max(_BLOCK_STRIDE_BYTES // signal_bytes, 1)
+    signal_stride_elems = signal_bytes // element_size
 
     grid = (2 * num_blocks,) if mode == _MODE_BIDIRECTIONAL else (num_blocks,)
 
@@ -549,14 +617,16 @@ def _launch(
         recver_step_ptr=recver_step_ptr,
         send_numel=send_buf.numel(),
         recv_numel=recv_buf.numel(),
-        TILE_ROWS=config.tile_rows,
-        TILE_COLS=config.tile_cols,
+        TILE_ROWS=tile_rows,
+        TILE_COLS=tile_cols,
         BLOCK_STRIDE_ELEMS=block_stride_elems,
+        SIGNAL_STRIDE_ELEMS=signal_stride_elems,
         PIPELINE_DEPTH=_PIPELINE_DEPTH,
         MAX_BLOCKS_PER_PEER=_MAX_BLOCKS_PER_PEER,
         NUM_SEND_BLOCKS=num_blocks,
-        MAX_TILES_PER_BLOCK_PER_SLOT=max_tiles_per_block_per_slot,
+        TILES_PER_SIGNAL=tiles_per_signal,
+        CHUNKS_PER_SLOT=chunks_per_slot,
         MODE=mode,
         num_warps=num_warps,
-        num_stages=config.num_stages,
+        num_stages=2,
     )

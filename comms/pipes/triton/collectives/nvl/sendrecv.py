@@ -94,6 +94,19 @@ specialized (no ``do_not_specialize``). Distinct ``(send_numel,
 recv_numel)`` pairs trigger Triton recompilation. For ring AllGather
 (single shard size per call) this is fine; callers driving many
 distinct sizes per process should reuse buffers.
+
+Sub-slot signaling
+------------------
+
+The ``CHUNKS_PER_SLOT`` constexpr controls how many DATA_READY signals
+are issued per pipeline slot fill. When ``CHUNKS_PER_SLOT == 1``
+(the default, ``signal_bytes == BLOCK_STRIDE_BYTES``), behavior is
+identical to signaling once per slot — full backward compatibility.
+
+When ``CHUNKS_PER_SLOT > 1`` (``signal_bytes < BLOCK_STRIDE_BYTES``),
+each slot is divided into chunks of ``SIGNAL_STRIDE_ELEMS`` elements.
+The sender signals DATA_READY after each chunk. Backpressure (SLOT_FREE)
+fires only at slot boundaries.
 """
 
 from __future__ import annotations
@@ -119,36 +132,32 @@ _MODE_RECV_ONLY = 2
 def triton_nvl_sendrecv_kernel(  # noqa: C901
     send_ptr,
     recv_ptr,
-    send_staging_buf,  # pre-sliced: send_peer's staging at local_rank's region
-    recv_staging_buf,  # pre-sliced: local staging at recv_peer's region
-    send_tail_sig,  # pre-sliced: signal base for sender TAIL (int64)
-    send_head_sig,  # pre-sliced: signal base for sender HEAD (int64)
-    recv_tail_sig,  # pre-sliced: signal base for receiver TAIL (int64)
-    recv_head_sig,  # pre-sliced: signal base for receiver HEAD (int64)
-    sender_step_ptr,  # pre-sliced: step_state[send_peer, :] shape (MBPP,)
-    recver_step_ptr,  # pre-sliced: step_state[recv_peer, :] shape (MBPP,)
+    send_staging_buf,
+    recv_staging_buf,
+    send_tail_sig,
+    send_head_sig,
+    recv_tail_sig,
+    recv_head_sig,
+    sender_step_ptr,
+    recver_step_ptr,
     send_numel,
     recv_numel,
     TILE_ROWS: tl.constexpr,
     TILE_COLS: tl.constexpr,
     BLOCK_STRIDE_ELEMS: tl.constexpr,
+    SIGNAL_STRIDE_ELEMS: tl.constexpr,
     PIPELINE_DEPTH: tl.constexpr,
     MAX_BLOCKS_PER_PEER: tl.constexpr,
     NUM_SEND_BLOCKS: tl.constexpr,
-    MAX_TILES_PER_BLOCK_PER_SLOT: tl.constexpr,
+    TILES_PER_SIGNAL: tl.constexpr,
+    CHUNKS_PER_SLOT: tl.constexpr,
     MODE: tl.constexpr,
 ):
     """NVLink copy-based send/recv kernel with pre-resolved N-rank pointers.
 
-    Bidirectional mode launches grid ``(2 * NUM_SEND_BLOCKS,)`` and
-    interleaves paired sender/receiver programs: even programs run sender
-    path ``pid // 2`` and odd programs run receiver path ``pid // 2``.
-    Send-only and recv-only modes launch grid ``(NUM_SEND_BLOCKS,)`` and run
-    exactly one path.
-
-    All staging buffer and signal pad pointers are pre-resolved by the
-    host for the specific ``(send_peer, recv_peer)`` pair, so the kernel
-    indexes by ``block_id`` only — no world_size or peer_rank needed.
+    The host passes peer-specific staging buffers, signal pads, and step-state
+    rows directly. That keeps the kernel simple and avoids pointer-of-pointer
+    loads that can pessimize Triton store codegen.
     """
     TILE_NUMEL: tl.constexpr = TILE_ROWS * TILE_COLS
 
@@ -190,26 +199,42 @@ def triton_nvl_sendrecv_kernel(  # noqa: C901
         send_step = start_step
 
         while send_tile_idx < num_send_tiles:
-            slot = (send_step - start_step) % PIPELINE_DEPTH
-            slot_base = (
-                sender_id * BLOCK_STRIDE_ELEMS * PIPELINE_DEPTH
-                + slot * BLOCK_STRIDE_ELEMS
-            )
-
-            # Wait for slot to be free. For the first PIPELINE_DEPTH steps
-            # of a non-first call, the slot may still hold data the remote
-            # receiver has not yet consumed — gate on start_step.
-            if send_step < start_step + PIPELINE_DEPTH:
-                wait_target = start_step
+            if CHUNKS_PER_SLOT == 1:
+                slot = (send_step - start_step) % PIPELINE_DEPTH
+                slot_base = (
+                    sender_id * BLOCK_STRIDE_ELEMS * PIPELINE_DEPTH
+                    + slot * BLOCK_STRIDE_ELEMS
+                )
+                # Wait for slot to be free. For the first PIPELINE_DEPTH steps
+                # of a non-first call, the slot may still hold data the remote
+                # receiver has not yet consumed — gate on start_step.
+                if send_step < start_step + PIPELINE_DEPTH:
+                    wait_target = start_step
+                else:
+                    wait_target = send_step - PIPELINE_DEPTH + 1
+                if flat_tid == 0:
+                    wait_ge_volatile(head_local_ptr, wait_target.to(tl.int64))
+                sync_threads()
             else:
-                wait_target = send_step - PIPELINE_DEPTH + 1
-            if flat_tid == 0:
-                wait_ge_volatile(head_local_ptr, wait_target.to(tl.int64))
-            sync_threads()
+                chunk_in_slot = (send_step - start_step) % CHUNKS_PER_SLOT
+                slot = ((send_step - start_step) // CHUNKS_PER_SLOT) % PIPELINE_DEPTH
+                slot_base = (
+                    sender_id * BLOCK_STRIDE_ELEMS * PIPELINE_DEPTH
+                    + slot * BLOCK_STRIDE_ELEMS
+                    + chunk_in_slot * SIGNAL_STRIDE_ELEMS
+                )
+                if chunk_in_slot == 0:
+                    if send_step < start_step + CHUNKS_PER_SLOT * PIPELINE_DEPTH:
+                        wait_target = start_step
+                    else:
+                        wait_target = send_step - CHUNKS_PER_SLOT * PIPELINE_DEPTH + 1
+                    if flat_tid == 0:
+                        wait_ge_volatile(head_local_ptr, wait_target.to(tl.int64))
+                sync_threads()
 
             buf_tile_idx = 0
             tiles_to_send_this_step = min(
-                MAX_TILES_PER_BLOCK_PER_SLOT,
+                TILES_PER_SIGNAL,
                 tl.cdiv(num_send_tiles - send_tile_idx, NUM_SEND_BLOCKS),
             )
             for _i in range(tiles_to_send_this_step):
@@ -267,11 +292,20 @@ def triton_nvl_sendrecv_kernel(  # noqa: C901
         recv_step = start_step
 
         while recv_tile_idx < num_recv_tiles:
-            slot = (recv_step - start_step) % PIPELINE_DEPTH
-            slot_base = (
-                receiver_id * BLOCK_STRIDE_ELEMS * PIPELINE_DEPTH
-                + slot * BLOCK_STRIDE_ELEMS
-            )
+            if CHUNKS_PER_SLOT == 1:
+                slot = (recv_step - start_step) % PIPELINE_DEPTH
+                slot_base = (
+                    receiver_id * BLOCK_STRIDE_ELEMS * PIPELINE_DEPTH
+                    + slot * BLOCK_STRIDE_ELEMS
+                )
+            else:
+                chunk_in_slot = (recv_step - start_step) % CHUNKS_PER_SLOT
+                slot = ((recv_step - start_step) // CHUNKS_PER_SLOT) % PIPELINE_DEPTH
+                slot_base = (
+                    receiver_id * BLOCK_STRIDE_ELEMS * PIPELINE_DEPTH
+                    + slot * BLOCK_STRIDE_ELEMS
+                    + chunk_in_slot * SIGNAL_STRIDE_ELEMS
+                )
 
             if flat_tid == 0:
                 wait_ge(tail_local_ptr, (recv_step + 1).to(tl.int64))
@@ -279,7 +313,7 @@ def triton_nvl_sendrecv_kernel(  # noqa: C901
 
             buf_tile_idx = 0
             tiles_to_recv_this_step = min(
-                MAX_TILES_PER_BLOCK_PER_SLOT,
+                TILES_PER_SIGNAL,
                 tl.cdiv(num_recv_tiles - recv_tile_idx, NUM_SEND_BLOCKS),
             )
             for _i in range(tiles_to_recv_this_step):
@@ -301,8 +335,20 @@ def triton_nvl_sendrecv_kernel(  # noqa: C901
                 buf_tile_idx += 1
 
             sync_threads()
-            if flat_tid == 0:
-                remote_store_i64_relaxed(head_remote_ptr, (recv_step + 1).to(tl.int64))
+            if CHUNKS_PER_SLOT == 1:
+                if flat_tid == 0:
+                    remote_store_i64_relaxed(
+                        head_remote_ptr, (recv_step + 1).to(tl.int64)
+                    )
+            else:
+                last_in_slot = (chunk_in_slot == CHUNKS_PER_SLOT - 1) or (
+                    recv_tile_idx >= num_recv_tiles
+                )
+                if last_in_slot:
+                    if flat_tid == 0:
+                        remote_store_i64_relaxed(
+                            head_remote_ptr, (recv_step + 1).to(tl.int64)
+                        )
             recv_step += 1
 
         tl.store(recver_step_ptr + receiver_id, recv_step.to(tl.int64))
