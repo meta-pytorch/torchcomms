@@ -7,22 +7,25 @@
 Allocates (and caches) the symmetric memory staging buffer plus the
 persistent step-state tensors, computes a kernel config, and launches.
 
-v1 scope (intentionally narrow):
+Supports **N-rank groups** with separate ``send_peer`` and ``recv_peer``
+arguments. Each rank's staging buffer is partitioned by sender rank,
+matching the layout used by ``all_to_all_single.py``. The signal pad
+uses a per-(peer, block) layout: TAIL at ``[peer * MBPP + block_id]``
+and HEAD at ``[HEAD_OFFSET + peer * MBPP + block_id]`` where
+``HEAD_OFFSET = world_size * MAX_BLOCKS_PER_PEER``.
 
-  * **2-rank groups only**. The staging buffer holds a single peer pair's
-    slot and the API takes a single ``peer_rank`` used for both directions
-    (sender → ``peer_rank``, receiver ← ``peer_rank``).
-  * Copy-based send-only, recv-only, and bidirectional sendrecv between
-    this rank and ``peer_rank``. Peer ranks must launch matching operations
-    simultaneously.
+Since ``send_peer`` and ``recv_peer`` are known at host launch time,
+the host pre-resolves all staging buffer, signal pad, and step state
+pointers for the specific peer pair. This preserves the direct typed
+tensor argument pattern in the kernel, avoiding the store scalarization
+(``STG.E.U16``) that pointer-of-pointer indirection causes.
 
-The bidirectional single-peer API is **not** directly composable into Ring AllGather on N>2 ranks —
-ring needs ``send_peer = (rank+1)%N`` paired with ``recv_peer =
-(rank-1)%N`` (different peers per direction), and the staging buffer
-needs per-sender slots like the MSL ``all_to_all_single_non_contig``
-kernel uses. The follow-up to add ring AllGather will introduce a
-``triton_nvl_sendrecv(send, recv, send_peer, recv_peer, ...)`` variant
-plus per-peer staging slots indexed by sender rank.
+Composing collectives from this primitive:
+
+  * **Ring AllGather**: call ``triton_nvl_sendrecv`` with
+    ``send_peer = (rank + 1) % N``, ``recv_peer = (rank - 1) % N``
+    in a host loop over N-1 ring steps.
+  * **Bidirectional exchange**: ``send_peer == recv_peer`` (the v1 API).
 """
 
 from __future__ import annotations
@@ -48,7 +51,7 @@ logger: logging.Logger = logging.getLogger(__name__)
 
 _BLOCK_STRIDE_BYTES: int = 256 * 1024
 _PIPELINE_DEPTH: int = 2
-_MAX_BLOCKS_PER_DIR: int = 32
+_MAX_BLOCKS_PER_PEER: int = 32
 _DEFAULT_NUM_SEND_BLOCKS: int = 16
 _DEFAULT_NUM_WARPS: int = 8
 _MODE_BIDIRECTIONAL: int = 0
@@ -70,8 +73,8 @@ def _compute_config(element_size: int) -> _Config:
     )
 
 
-def _per_pair_bytes() -> int:
-    return _BLOCK_STRIDE_BYTES * _PIPELINE_DEPTH * _MAX_BLOCKS_PER_DIR
+def _per_peer_bytes() -> int:
+    return _BLOCK_STRIDE_BYTES * _PIPELINE_DEPTH * _MAX_BLOCKS_PER_PEER
 
 
 # ---------------------------------------------------------------------------
@@ -84,37 +87,56 @@ def _per_pair_bytes() -> int:
 # caller multiplexes threads onto a single PG, wrap these in a lock.
 # ---------------------------------------------------------------------------
 
-_HANDLE_CACHE: dict[dist.ProcessGroup, _SymmetricMemory] = {}
+_HANDLE_CACHE: dict[tuple[dist.ProcessGroup, torch.device], _SymmetricMemory] = {}
 
 _STEP_STATE_CACHE: dict[
-    dist.ProcessGroup,
+    tuple[dist.ProcessGroup, torch.device],
     tuple[torch.Tensor, torch.Tensor],
 ] = {}
+
+
+def _required_signal_pad_bytes(world_size: int) -> int:
+    return 2 * world_size * _MAX_BLOCKS_PER_PEER * 8  # int64 = 8 bytes
 
 
 def _get_staging_buffer(
     group: dist.ProcessGroup,
     device: torch.device,
+    world_size: int,
 ) -> _SymmetricMemory:
     """Get or create the symmetric memory handle for ``group``.
 
-    The signal pad must be zero on entry to the first ``wait_ge(_, 0)`` call
-    on each block. ``symm_mem.empty`` zeroes the entire allocation including
-    the signal pad (via ``cudaMemset`` in CUDASymmetricMemory.cu's
-    ``allocate``), so the first launch is safe. We additionally zero the
-    signal pad explicitly + barrier so the invariant holds even if the
-    underlying allocator behaviour changes in a future torch release.
+    Staging is sized for N-rank: ``per_peer_bytes * world_size``.
+
+    The signal-pad sufficiency check runs only on the first allocation
+    for a given ``(group, device)``. Callers must call
+    ``symm_mem.set_signal_pad_size()`` before the first launch on any
+    process group; lazy reconfiguration after the first launch will not
+    be re-validated for already-cached groups.
     """
-    cached = _HANDLE_CACHE.get(group)
+    cache_key = (group, device)
+    cached = _HANDLE_CACHE.get(cache_key)
     if cached is not None:
         return cached
 
-    num_bytes = _per_pair_bytes()
+    num_bytes = _per_peer_bytes() * world_size
     logger.info(
-        "triton_nvl_sendrecv staging cache miss on PG %s: allocating %d bytes",
+        "triton_nvl_sendrecv staging cache miss on PG %s: allocating %d bytes (%d ranks)",
         group.group_desc,
         num_bytes,
+        world_size,
     )
+
+    required_sig = _required_signal_pad_bytes(world_size)
+    current_sig = symm_mem.get_signal_pad_size()
+    if current_sig < required_sig:
+        raise RuntimeError(
+            f"Signal pad too small for {world_size}-rank group with "
+            f"{_MAX_BLOCKS_PER_PEER} blocks per peer: need {required_sig} bytes, "
+            f"have {current_sig}. Call symm_mem.set_signal_pad_size() before "
+            f"first allocation."
+        )
+
     raw = symm_mem.empty(num_bytes, dtype=torch.uint8, device=device)
     handle = symm_mem.rendezvous(raw, group=group)
     # Defensive: explicitly zero the signal pad before any block can poll it.
@@ -122,23 +144,30 @@ def _get_staging_buffer(
     # rendezvous-then-barrier sequence below guarantees that.
     handle.get_signal_pad(handle.rank).zero_()
     dist.barrier(group)
-    _HANDLE_CACHE[group] = handle
+    _HANDLE_CACHE[cache_key] = handle
     return handle
 
 
 def _get_step_state(
     group: dist.ProcessGroup,
     device: torch.device,
+    world_size: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Get or create persistent monotonic step counters for ``group``."""
-    cached = _STEP_STATE_CACHE.get(group)
+    """Get or create persistent monotonic step counters for ``group``.
+
+    Shape: ``(world_size, MAX_BLOCKS_PER_PEER)`` — one counter per
+    (peer, block) pair.
+    """
+    cache_key = (group, device)
+    cached = _STEP_STATE_CACHE.get(cache_key)
     if cached is not None:
         return cached
 
-    sender_step = torch.zeros(_MAX_BLOCKS_PER_DIR, dtype=torch.int64, device=device)
-    recver_step = torch.zeros(_MAX_BLOCKS_PER_DIR, dtype=torch.int64, device=device)
-    _STEP_STATE_CACHE[group] = (sender_step, recver_step)
-    return _STEP_STATE_CACHE[group]
+    shape = (world_size, _MAX_BLOCKS_PER_PEER)
+    sender_step = torch.zeros(shape, dtype=torch.int64, device=device)
+    recver_step = torch.zeros(shape, dtype=torch.int64, device=device)
+    _STEP_STATE_CACHE[cache_key] = (sender_step, recver_step)
+    return _STEP_STATE_CACHE[cache_key]
 
 
 # ---------------------------------------------------------------------------
@@ -149,38 +178,42 @@ def _get_step_state(
 def triton_nvl_sendrecv(
     send_buf: torch.Tensor,
     recv_buf: torch.Tensor,
-    peer_rank: int,
+    send_peer: int,
+    recv_peer: int | None = None,
     *,
     group: dist.ProcessGroup,
     num_blocks: int = _DEFAULT_NUM_SEND_BLOCKS,
     num_warps: int = _DEFAULT_NUM_WARPS,
 ) -> None:
-    """Bidirectional NVLink copy-based send/recv between this rank and ``peer_rank``.
+    """Bidirectional NVLink copy-based send/recv.
 
-    Both ranks in the (sender, receiver) pair must call this function
-    simultaneously. ``send_buf`` and ``recv_buf`` must have the same shape
-    and dtype on both ranks.
+    Sends ``send_buf`` to ``send_peer`` and receives into ``recv_buf``
+    from ``recv_peer`` (defaults to ``send_peer`` if not given).
 
-    .. warning::
-        ``dtype`` and ``numel`` of ``send_buf`` / ``recv_buf`` MUST match
-        between the two ranks. There is no cross-rank validation; a
-        mismatch silently produces wrong staging slot offsets and
-        corrupts data.
+    Both peers must issue matching operations simultaneously:
+    ``send_peer`` must recv from this rank, and ``recv_peer`` must
+    send to this rank.
 
     Args:
-        send_buf: Source tensor to send to ``peer_rank``. Contiguous, CUDA.
-        recv_buf: Destination tensor to receive from ``peer_rank``. Contiguous, CUDA.
-        peer_rank: Rank in ``group`` to exchange with. ``send_peer`` and
-            ``recv_peer`` are the same rank in v1; see the module docstring
-            for why this is **not** directly extensible to Ring AllGather.
-        group: Process group used for symm-mem rendezvous. **v1 requires
-            size 2** — the assertion below is the enforcement point.
-        num_blocks: Thread blocks per direction. Defaults to 16. The actual
-            grid is ``2 * num_blocks`` for bidirectional mode (so default
-            gives a 32-block grid, apple-to-apple with NCCL's 32 channels)
-            and ``num_blocks`` for send-only / recv-only.
-        num_warps: Triton warps per block. Defaults to 8.
+        send_buf: Source tensor to send. Contiguous, CUDA.
+        recv_buf: Destination tensor to receive into. Contiguous, CUDA.
+        send_peer: Rank in ``group`` to send to.
+        recv_peer: Rank in ``group`` to receive from. Defaults to
+            ``send_peer`` for bidirectional exchange with a single peer.
+        group: Process group. Supports any world_size >= 2.
+        num_blocks: Thread blocks per direction.
+        num_warps: Triton warps per block.
+
+    Note: ``send_buf.numel()`` and ``recv_buf.numel()`` are passed as
+    Triton specialization constants. Each distinct ``(send_numel,
+    recv_numel)`` pair triggers a kernel recompile, which is the
+    intentional cost of preserving ~8.8 ms launch perf at 1 GiB. Ring
+    AllGather (single shard size per process) is unaffected; callers
+    driving many distinct sizes per process should consider reusing
+    fixed-size scratch buffers.
     """
+    if recv_peer is None:
+        recv_peer = send_peer
     assert send_buf.is_cuda and recv_buf.is_cuda
     assert send_buf.is_contiguous() and recv_buf.is_contiguous()
     assert send_buf.dtype == recv_buf.dtype
@@ -188,7 +221,8 @@ def triton_nvl_sendrecv(
     _launch(
         send_buf,
         recv_buf,
-        peer_rank,
+        send_peer,
+        recv_peer,
         group=group,
         num_blocks=num_blocks,
         num_warps=num_warps,
@@ -198,23 +232,23 @@ def triton_nvl_sendrecv(
 
 def triton_nvl_send(
     send_buf: torch.Tensor,
-    peer_rank: int,
+    send_peer: int,
     *,
     group: dist.ProcessGroup,
     num_blocks: int = _DEFAULT_NUM_SEND_BLOCKS,
     num_warps: int = _DEFAULT_NUM_WARPS,
 ) -> None:
-    """Send ``send_buf`` to ``peer_rank`` over NVLink using copy-based staging.
+    """Send ``send_buf`` to ``send_peer`` over NVLink using copy-based staging.
 
     Caller is responsible for ensuring the peer rank issues a matching
-    ``triton_nvl_recv`` with the same ``dtype`` and ``numel`` — there is
-    no cross-rank validation.
+    ``triton_nvl_recv`` with the same ``dtype`` and ``numel``.
     """
     assert send_buf.is_cuda and send_buf.is_contiguous()
     _launch(
         send_buf,
         send_buf,
-        peer_rank,
+        send_peer,
+        send_peer,
         group=group,
         num_blocks=num_blocks,
         num_warps=num_warps,
@@ -224,23 +258,23 @@ def triton_nvl_send(
 
 def triton_nvl_recv(
     recv_buf: torch.Tensor,
-    peer_rank: int,
+    recv_peer: int,
     *,
     group: dist.ProcessGroup,
     num_blocks: int = _DEFAULT_NUM_SEND_BLOCKS,
     num_warps: int = _DEFAULT_NUM_WARPS,
 ) -> None:
-    """Receive into ``recv_buf`` from ``peer_rank`` over NVLink.
+    """Receive into ``recv_buf`` from ``recv_peer`` over NVLink.
 
     Caller is responsible for ensuring the peer rank issues a matching
-    ``triton_nvl_send`` with the same ``dtype`` and ``numel`` — there is
-    no cross-rank validation.
+    ``triton_nvl_send`` with the same ``dtype`` and ``numel``.
     """
     assert recv_buf.is_cuda and recv_buf.is_contiguous()
     _launch(
         recv_buf,
         recv_buf,
-        peer_rank,
+        recv_peer,
+        recv_peer,
         group=group,
         num_blocks=num_blocks,
         num_warps=num_warps,
@@ -251,7 +285,8 @@ def triton_nvl_recv(
 def _launch(
     send_buf: torch.Tensor,
     recv_buf: torch.Tensor,
-    peer_rank: int,
+    send_peer: int,
+    recv_peer: int,
     *,
     group: dist.ProcessGroup,
     num_blocks: int,
@@ -261,8 +296,8 @@ def _launch(
     assert send_buf.dtype == recv_buf.dtype, (
         f"send/recv dtype mismatch: {send_buf.dtype} vs {recv_buf.dtype}"
     )
-    assert 0 < num_blocks <= _MAX_BLOCKS_PER_DIR, (
-        f"num_blocks must be in (0, {_MAX_BLOCKS_PER_DIR}], got {num_blocks}"
+    assert 0 < num_blocks <= _MAX_BLOCKS_PER_PEER, (
+        f"num_blocks must be in (0, {_MAX_BLOCKS_PER_PEER}], got {num_blocks}"
     )
     assert num_warps in (4, 8), (
         f"num_warps must be 4 or 8 (only configs covered by tests); got {num_warps}"
@@ -273,64 +308,91 @@ def _launch(
         recv_buf.copy_(send_buf)
         return
 
-    # v1 limit: single peer-pair staging buffer means we cannot service more
-    # than one (sender, receiver) pair per group. Lift this restriction in
-    # the follow-up that adds per-peer staging slots for Ring AllGather.
-    assert world_size == 2, (
-        f"triton_nvl_sendrecv v1 supports only 2-rank groups, got world_size={world_size}. "
-        "See module docstring for the planned per-peer slot API."
+    local_rank = dist.get_rank(group)
+    assert send_peer != local_rank, "send_peer must differ from local rank"
+    assert recv_peer != local_rank, "recv_peer must differ from local rank"
+    assert 0 <= send_peer < world_size
+    assert 0 <= recv_peer < world_size
+
+    handle = _get_staging_buffer(group, send_buf.device, world_size)
+    sender_step_all, recver_step_all = _get_step_state(
+        group, send_buf.device, world_size
     )
 
-    local_rank = dist.get_rank(group)
-    assert peer_rank != local_rank
-    assert 0 <= peer_rank < world_size
+    config = _compute_config(send_buf.element_size())
+    block_stride_elems = _BLOCK_STRIDE_BYTES // send_buf.element_size()
+    per_peer_elems = _per_peer_bytes() // send_buf.element_size()
+    tile_numel = config.tile_rows * config.tile_cols
+    tile_bytes = tile_numel * send_buf.element_size()
+    max_tiles_per_block_per_slot = max(_BLOCK_STRIDE_BYTES // tile_bytes, 1)
+
+    staging_elems = block_stride_elems * _MAX_BLOCKS_PER_PEER * _PIPELINE_DEPTH
+
+    # --- Pre-resolve staging buffers for the specific peer pair ---
+    # Sender writes to send_peer's staging area at local_rank's partition.
+    # Receiver reads from local staging area at recv_peer's partition.
+    send_staging_buf = handle.get_buffer(
+        send_peer,
+        sizes=[staging_elems],
+        dtype=send_buf.dtype,
+        storage_offset=local_rank * per_peer_elems,
+    )
+    recv_staging_buf = handle.get_buffer(
+        local_rank,
+        sizes=[staging_elems],
+        dtype=recv_buf.dtype,
+        storage_offset=recv_peer * per_peer_elems,
+    )
+
+    # --- Pre-resolve signal pad pointers for the specific peer pair ---
+    # Signal layout per rank (int64 entries):
+    #   [0 .. W*MBPP):       TAIL[peer * MBPP + block_id]
+    #   [W*MBPP .. 2*W*MBPP): HEAD[peer * MBPP + block_id]
+    head_offset = world_size * _MAX_BLOCKS_PER_PEER
+
+    send_peer_sig = handle.get_signal_pad(send_peer).view(torch.int64)
+    recv_peer_sig = handle.get_signal_pad(recv_peer).view(torch.int64)
+    local_sig = handle.get_signal_pad(local_rank).view(torch.int64)
+
+    # Sender: tail on send_peer written by local_rank, head on local polled for send_peer
+    send_tail_sig = send_peer_sig[local_rank * _MAX_BLOCKS_PER_PEER :]
+    send_head_sig = local_sig[head_offset + send_peer * _MAX_BLOCKS_PER_PEER :]
+
+    # Receiver: tail on local polled for recv_peer, head on recv_peer written by local_rank
+    recv_tail_sig = local_sig[recv_peer * _MAX_BLOCKS_PER_PEER :]
+    recv_head_sig = recv_peer_sig[head_offset + local_rank * _MAX_BLOCKS_PER_PEER :]
+
+    # --- Pre-slice step state to the peer rows ---
+    sender_step_ptr = sender_step_all[send_peer]
+    recver_step_ptr = recver_step_all[recv_peer]
+
+    grid = (2 * num_blocks,) if mode == _MODE_BIDIRECTIONAL else (num_blocks,)
 
     # Buffer and signal pad pointers are passed as direct typed tensors
     # (not pointer-of-pointer int64 tensors) so Triton emits 128-bit
     # vectorized stores instead of 16-bit scalar stores. See the kernel
     # docstring in sendrecv.py for the codegen rationale.
-    handle = _get_staging_buffer(group, send_buf.device)
-    sender_step, recver_step = _get_step_state(group, send_buf.device)
-
-    config = _compute_config(send_buf.element_size())
-    block_stride_elems = _BLOCK_STRIDE_BYTES // send_buf.element_size()
-    tile_numel = config.tile_rows * config.tile_cols
-    tile_bytes = tile_numel * send_buf.element_size()
-    max_tiles_per_block_per_slot = max(_BLOCK_STRIDE_BYTES // tile_bytes, 1)
-
-    staging_elems = block_stride_elems * _MAX_BLOCKS_PER_DIR * _PIPELINE_DEPTH
-    remote_buf = handle.get_buffer(
-        peer_rank, sizes=[staging_elems], dtype=send_buf.dtype
-    )
-    local_buf = handle.get_buffer(
-        local_rank, sizes=[staging_elems], dtype=recv_buf.dtype
-    )
-    remote_sig = handle.get_signal_pad(peer_rank).view(torch.int64)
-    local_sig = handle.get_signal_pad(local_rank).view(torch.int64)
-
-    grid = (2 * num_blocks,) if mode == _MODE_BIDIRECTIONAL else (num_blocks,)
-
     # pyre-ignore[28]: triton's `kernel[grid](...)` launcher accepts JIT-special
     # kwargs (`num_warps`, `num_stages`) that pyre can't see in the kernel
     # function's own signature. Not a real type error.
     triton_nvl_sendrecv_kernel[grid](
         send_ptr=send_buf,
         recv_ptr=recv_buf,
-        remote_buf=remote_buf,
-        local_buf=local_buf,
-        remote_sig=remote_sig,
-        local_sig=local_sig,
-        sender_step_ptr=sender_step,
-        recver_step_ptr=recver_step,
-        local_rank=local_rank,
-        peer_rank=peer_rank,
+        send_staging_buf=send_staging_buf,
+        recv_staging_buf=recv_staging_buf,
+        send_tail_sig=send_tail_sig,
+        send_head_sig=send_head_sig,
+        recv_tail_sig=recv_tail_sig,
+        recv_head_sig=recv_head_sig,
+        sender_step_ptr=sender_step_ptr,
+        recver_step_ptr=recver_step_ptr,
         send_numel=send_buf.numel(),
         recv_numel=recv_buf.numel(),
         TILE_ROWS=config.tile_rows,
         TILE_COLS=config.tile_cols,
         BLOCK_STRIDE_ELEMS=block_stride_elems,
         PIPELINE_DEPTH=_PIPELINE_DEPTH,
-        MAX_BLOCKS_PER_DIR=_MAX_BLOCKS_PER_DIR,
+        MAX_BLOCKS_PER_PEER=_MAX_BLOCKS_PER_PEER,
         NUM_SEND_BLOCKS=num_blocks,
         MAX_TILES_PER_BLOCK_PER_SLOT=max_tiles_per_block_per_slot,
         MODE=mode,

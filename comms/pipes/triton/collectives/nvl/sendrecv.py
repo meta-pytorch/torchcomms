@@ -4,40 +4,47 @@
 
 """Triton NVLink-only copy-based send/recv kernel.
 
-Single peer-pair copy-based send, receive, or bidirectional sendrecv,
+N-rank group-aware copy-based send, receive, or bidirectional sendrecv,
 double-buffered staging, monotonic int64 head/tail signaling. CUDA-graph
 replayable via persistent step-state counters that advance across replays.
 
-Scope: 2-rank groups only. ``send_peer`` and ``recv_peer`` are the same
-rank (single ``peer_rank`` arg). This kernel is **not** directly usable
-for Ring AllGather on world_size > 2 — ring needs ``(send_peer,
-recv_peer) = ((rank+1)%N, (rank-1)%N)`` plus per-sender staging slots.
-See ``sendrecv_op.py`` module docstring for the planned API/protocol
-extension.
+Supports separate ``send_peer`` and ``recv_peer`` (e.g., for ring
+topology: ``send_peer = (rank+1) % N``, ``recv_peer = (rank-1) % N``).
+All pointer resolution is done on the host side — the kernel receives
+pre-sliced staging buffer, signal pad, and step state pointers for the
+specific ``(send_peer, recv_peer)`` pair. This preserves direct typed
+tensor arguments, avoiding the store scalarization (``STG.E.U16``) that
+pointer-of-pointer indirection causes.
 
 Architecture
 ------------
 
 ::
 
-    Rank A (sender)                        Rank B (receiver)
-    ┌─────────────┐                        ┌─────────────┐
-    │ src tensor  │──(1) read──→           │             │
-    │ (local HBM) │            │           │             │
-    └─────────────┘            │           │             │
-                               ▼           │             │
-                   ┌─────────────────────┐ │             │
-                   │ staging buffer      │ │             │
-                   │ (Rank B symm mem)   │─(2) read───→  │
-                   │ [slot 0 | slot 1]   │ │       ▼     │
-                   └─────────────────────┘ │  ┌─────────────┐
-                                           │  │ dst tensor  │
-                                           │  │ (local HBM) │
-                                           │  └─────────────┘
-                                           └────────────────┘
+    Rank A (sender → send_peer)          send_peer (receiver)
+    ┌─────────────┐                      ┌─────────────┐
+    │ src tensor  │──(1) read──→         │             │
+    │ (local HBM) │            │         │             │
+    └─────────────┘            │         │             │
+                               ▼         │             │
+                   ┌─────────────────────┐             │
+                   │ staging buffer      │─(2) read──→ │
+                   │ (send_peer symm mem │       ▼     │
+                   │  local_rank region) │  ┌─────────────┐
+                   └─────────────────────┘  │ dst tensor  │
+                                            └─────────────┘
 
-    (1) Sender reads local src, REMOTE-writes to peer's staging buffer
-    (2) Receiver LOCAL-reads its staging buffer, writes to local dst
+    recv_peer (sender)                   Rank A (receiver ← recv_peer)
+    ┌─────────────┐                      ┌─────────────┐
+    │ src tensor  │──(1) read──→         │             │
+    └─────────────┘            │         │             │
+                               ▼         │             │
+                   ┌─────────────────────┐             │
+                   │ staging buffer      │─(2) read──→ │
+                   │ (local_rank symm mem│       ▼     │
+                   │  recv_peer region)  │  ┌─────────────┐
+                   └─────────────────────┘  │ dst tensor  │
+                                            └─────────────┘
 
 All remote operations are NVLink fire-and-forget writes (zero NVLink reads).
 
@@ -48,14 +55,13 @@ Each block ``k`` owns a fixed staging-buffer region
 ``[k * BLOCK_STRIDE * PIPELINE_DEPTH, (k+1) * BLOCK_STRIDE * PIPELINE_DEPTH)``
 and a fixed ``(head[k], tail[k])`` signal pair. Sender block ``k`` and
 receiver block ``k`` use the SAME signal slot ``k`` and the SAME buffer
-region. The block→region mapping is determined by ``MAX_BLOCKS_PER_DIR``
+region. The block→region mapping is determined by ``MAX_BLOCKS_PER_PEER``
 (constant) and is independent of the runtime ``NUM_SEND_BLOCKS``, so
 back-to-back kernel launches with different block counts cannot race.
 
-Signal-pad layout per rank (int64 entries; ``MBPD = MAX_BLOCKS_PER_DIR``)::
-
-    [0 .. MBPD):       TAIL — written by remote sender, polled by local receiver
-    [MBPD .. 2*MBPD):  HEAD — written by remote receiver, polled by local sender
+Signal pointers are pre-resolved by the host into the N-rank per-(peer,
+block) layout. The kernel sees them as simple base pointers and indexes
+by ``block_id`` only.
 
 Memory ordering:
 
@@ -69,6 +75,25 @@ Memory ordering:
     ``sync_threads()`` execution barrier. Consumer uses
     :func:`wait_ge_volatile` (no acquire). The sender does not read any
     payload written by the receiver, so the fence is unnecessary.
+
+Intra-block synchronization pattern (used 4× below):
+
+  * ``if flat_tid == 0: <wait>`` + ``sync_threads()`` — only thread 0
+    polls the signal; the barrier publishes that result to the rest of
+    the block before any data thread observes the slot as ready.
+  * ``sync_threads()`` + ``if flat_tid == 0: <publish>`` — all data
+    threads must have committed their stores (or completed their loads)
+    before thread 0 advances the counter and releases the slot.
+
+Removing or reordering either ``sync_threads()`` call is a silent
+correctness bug — TLS / per-warp scheduling will break the producer/
+consumer ordering invariant.
+
+Specialization note: ``send_numel`` and ``recv_numel`` are intentionally
+specialized (no ``do_not_specialize``). Distinct ``(send_numel,
+recv_numel)`` pairs trigger Triton recompilation. For ring AllGather
+(single shard size per call) this is fine; callers driving many
+distinct sizes per process should reuse buffers.
 """
 
 from __future__ import annotations
@@ -90,30 +115,30 @@ _MODE_SEND_ONLY = 1
 _MODE_RECV_ONLY = 2
 
 
-@triton.jit(do_not_specialize=["local_rank", "peer_rank"])
+@triton.jit
 def triton_nvl_sendrecv_kernel(  # noqa: C901
     send_ptr,
     recv_ptr,
-    remote_buf,  # direct tensor: peer's staging buffer
-    local_buf,  # direct tensor: own staging buffer
-    remote_sig,  # direct tensor: peer's signal pad (int64)
-    local_sig,  # direct tensor: own signal pad (int64)
-    sender_step_ptr,
-    recver_step_ptr,
-    local_rank,
-    peer_rank,
+    send_staging_buf,  # pre-sliced: send_peer's staging at local_rank's region
+    recv_staging_buf,  # pre-sliced: local staging at recv_peer's region
+    send_tail_sig,  # pre-sliced: signal base for sender TAIL (int64)
+    send_head_sig,  # pre-sliced: signal base for sender HEAD (int64)
+    recv_tail_sig,  # pre-sliced: signal base for receiver TAIL (int64)
+    recv_head_sig,  # pre-sliced: signal base for receiver HEAD (int64)
+    sender_step_ptr,  # pre-sliced: step_state[send_peer, :] shape (MBPP,)
+    recver_step_ptr,  # pre-sliced: step_state[recv_peer, :] shape (MBPP,)
     send_numel,
     recv_numel,
     TILE_ROWS: tl.constexpr,
     TILE_COLS: tl.constexpr,
     BLOCK_STRIDE_ELEMS: tl.constexpr,
     PIPELINE_DEPTH: tl.constexpr,
-    MAX_BLOCKS_PER_DIR: tl.constexpr,
+    MAX_BLOCKS_PER_PEER: tl.constexpr,
     NUM_SEND_BLOCKS: tl.constexpr,
     MAX_TILES_PER_BLOCK_PER_SLOT: tl.constexpr,
     MODE: tl.constexpr,
 ):
-    """NVLink copy-based send/recv kernel.
+    """NVLink copy-based send/recv kernel with pre-resolved N-rank pointers.
 
     Bidirectional mode launches grid ``(2 * NUM_SEND_BLOCKS,)`` and
     interleaves paired sender/receiver programs: even programs run sender
@@ -121,15 +146,9 @@ def triton_nvl_sendrecv_kernel(  # noqa: C901
     Send-only and recv-only modes launch grid ``(NUM_SEND_BLOCKS,)`` and run
     exactly one path.
 
-    Staging buffer and signal pad pointers are passed as direct typed
-    tensor arguments (via ``handle.get_buffer`` / ``handle.get_signal_pad``
-    on the host side) rather than loaded at runtime from a pointer-of-pointer
-    tensor. This is critical for Triton codegen: runtime-loaded store
-    destination pointers (``tl.load(...).to(pointer_type(...))``) trigger
-    the compiler's layout optimizer to emit scalar 16-bit stores
-    (``STG.E.U16``) instead of 128-bit vectorized stores (``STG.E.128``).
-    Direct tensor arguments avoid this, producing the same ``LDG.E.128 +
-    STG.E.128`` pattern that NCCL uses with ``uint4``.
+    All staging buffer and signal pad pointers are pre-resolved by the
+    host for the specific ``(send_peer, recv_peer)`` pair, so the kernel
+    indexes by ``block_id`` only — no world_size or peer_rank needed.
     """
     TILE_NUMEL: tl.constexpr = TILE_ROWS * TILE_COLS
 
@@ -144,20 +163,20 @@ def triton_nvl_sendrecv_kernel(  # noqa: C901
         is_sender = (pid % 2) == 0
         block_id = pid // 2
 
-    # Buffer and signal pointers are already typed kernel arguments —
-    # no pointer-of-pointer load needed.
-    HEAD_OFFSET: tl.constexpr = MAX_BLOCKS_PER_DIR
-
     flat_tid = get_flat_tid()
 
     if is_sender:
         # ===== SENDER =====
         sender_id = block_id
 
+        # Signal pointers: host pre-resolved to the correct per-(peer, block) base.
+        # Buffer and signal pointers are already typed kernel arguments —
+        # no pointer-of-pointer load needed (preserves the STG.E.U16-free
+        # vectorized-store codegen pattern).
         # tail: REMOTE — written here, polled by remote receiver
-        # head: LOCAL — polled here, written by remote receiver
-        tail_remote_ptr = remote_sig + sender_id
-        head_local_ptr = local_sig + HEAD_OFFSET + sender_id
+        # head: LOCAL  — polled here, written by remote receiver
+        tail_remote_ptr = send_tail_sig + sender_id
+        head_local_ptr = send_head_sig + sender_id
 
         start_step = tl.load(sender_step_ptr + sender_id).to(tl.int64)
 
@@ -206,17 +225,17 @@ def triton_nvl_sendrecv_kernel(  # noqa: C901
                 buf_off = (buf_t[:, None] * TILE_COLS + local_cols[None, :]).to(
                     tl.int64
                 )
-                tl.store(remote_buf + slot_base + buf_off, data, mask=mask)
+                tl.store(send_staging_buf + slot_base + buf_off, data, mask=mask)
 
                 send_tile_idx += NUM_SEND_BLOCKS
                 buf_tile_idx += 1
 
             sync_threads()
-            # ``bar.sync 0`` ensures all sender threads have finished issuing
-            # their staging stores before thread 0 issues the system fence.
-            # Without this barrier, thread 0's fence would only drain its own
-            # in-flight stores, leaving other threads' stores unsynchronized
-            # with the TAIL publish.
+            # ``bar.sync 0`` (sync_threads) above ensures all sender threads have
+            # finished issuing their staging stores before thread 0 issues the
+            # system fence. Without this barrier, thread 0's fence would only
+            # drain its own in-flight stores, leaving other threads' stores
+            # unsynchronized with the TAIL publish.
             if flat_tid == 0:
                 fence_and_remote_store_i64(
                     tail_remote_ptr, (send_step + 1).to(tl.int64)
@@ -230,10 +249,11 @@ def triton_nvl_sendrecv_kernel(  # noqa: C901
         # ===== RECEIVER =====
         receiver_id = block_id
 
-        # tail: LOCAL — polled here, written by remote sender
+        # Signal pointers: host pre-resolved to the correct per-(peer, block) base.
+        # tail: LOCAL  — polled here, written by remote sender
         # head: REMOTE — written here, polled by remote sender
-        tail_local_ptr = local_sig + receiver_id
-        head_remote_ptr = remote_sig + HEAD_OFFSET + receiver_id
+        tail_local_ptr = recv_tail_sig + receiver_id
+        head_remote_ptr = recv_head_sig + receiver_id
 
         start_step = tl.load(recver_step_ptr + receiver_id).to(tl.int64)
 
@@ -274,7 +294,7 @@ def triton_nvl_sendrecv_kernel(  # noqa: C901
                 buf_off = (buf_t[:, None] * TILE_COLS + local_cols[None, :]).to(
                     tl.int64
                 )
-                data = tl.load(local_buf + slot_base + buf_off, mask=mask)
+                data = tl.load(recv_staging_buf + slot_base + buf_off, mask=mask)
                 tl.store(recv_ptr + flat_idx.to(tl.int64), data, mask=mask)
 
                 recv_tile_idx += NUM_SEND_BLOCKS
