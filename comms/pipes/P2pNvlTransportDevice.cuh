@@ -10,12 +10,13 @@
 #include "comms/pipes/ChunkState.cuh"
 #include "comms/pipes/CopyUtils.cuh"
 #include "comms/pipes/DeviceCheck.cuh"
+#include "comms/pipes/DeviceMacros.cuh"
 #include "comms/pipes/DeviceSpan.cuh"
-#include "comms/pipes/HipCompat.cuh"
 #include "comms/pipes/MemcpyCopyOp.cuh"
 #include "comms/pipes/SignalState.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
 #include "comms/pipes/Timeout.cuh"
+#include "comms/pipes/amd/HipHostCompat.h"
 #include "comms/pipes/ll/LlOps.cuh"
 #include "comms/pipes/ll128/Ll128Ops.cuh"
 
@@ -441,14 +442,14 @@ class P2pNvlTransportDevice {
       void* srcbuff,
       std::size_t nbytes,
       const Timeout& timeout = Timeout()) {
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+#if PIPES_IS_DEVICE_COMPILE
     if (options_.dataBufferSize == 0) {
       printf(
           "P2pNvlTransportDevice::send_group() requires staging buffer"
           " (dataBufferSize > 0) at %s:%d\n",
           __FILE__,
           __LINE__);
-      __trap();
+      PIPES_DEVICE_TRAP();
     }
     char* src = reinterpret_cast<char*>(srcbuff);
 
@@ -710,14 +711,14 @@ class P2pNvlTransportDevice {
       std::size_t nbytes,
       [[maybe_unused]] const Timeout& timeout = Timeout(),
       [[maybe_unused]] Args... args) {
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+#if PIPES_IS_DEVICE_COMPILE
     if (options_.dataBufferSize == 0) {
       printf(
           "P2pNvlTransportDevice::recv_group() requires staging buffer"
           " (dataBufferSize > 0) at %s:%d\n",
           __FILE__,
           __LINE__);
-      __trap();
+      PIPES_DEVICE_TRAP();
     }
     char* dst = reinterpret_cast<char*>(dstbuff);
 
@@ -897,14 +898,14 @@ class P2pNvlTransportDevice {
       P2pNvlTransportDevice& successor,
       [[maybe_unused]] const Timeout& timeout = Timeout(),
       [[maybe_unused]] Args... args) {
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+#if PIPES_IS_DEVICE_COMPILE
     if (options_.dataBufferSize == 0) {
       printf(
           "P2pNvlTransportDevice::forward_group() requires staging buffer"
           " (dataBufferSize > 0) at %s:%d\n",
           __FILE__,
           __LINE__);
-      __trap();
+      PIPES_DEVICE_TRAP();
     }
     char* dst = reinterpret_cast<char*>(dstbuff);
 
@@ -1108,7 +1109,7 @@ class P2pNvlTransportDevice {
       [[maybe_unused]] char* dst_d,
       [[maybe_unused]] const char* src_d,
       [[maybe_unused]] std::size_t nbytes) {
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+#if PIPES_IS_DEVICE_COMPILE
     if (nbytes == 0) {
       return 0;
     }
@@ -1173,7 +1174,7 @@ class P2pNvlTransportDevice {
       char* __restrict__ dst_d,
       const char* __restrict__ src_d,
       std::size_t nbytes) {
-#ifdef __CUDA_ARCH__
+#if PIPES_IS_DEVICE_COMPILE
     if (nbytes == 0) {
       return;
     }
@@ -1314,7 +1315,7 @@ class P2pNvlTransportDevice {
       const char* src,
       size_t nbytes,
       const Timeout& timeout = Timeout()) {
-#ifdef __CUDA_ARCH__
+#if PIPES_IS_DEVICE_COMPILE
     PIPES_DEVICE_CHECK(remoteState_.ll128Buffer != nullptr);
     PIPES_DEVICE_CHECK(can_use_ll128(src, nbytes));
 
@@ -1346,7 +1347,7 @@ class P2pNvlTransportDevice {
       char* dst,
       size_t nbytes,
       const Timeout& timeout = Timeout()) {
-#ifdef __CUDA_ARCH__
+#if PIPES_IS_DEVICE_COMPILE
     PIPES_DEVICE_CHECK(localState_.ll128Buffer != nullptr);
     PIPES_DEVICE_CHECK(can_use_ll128(dst, nbytes));
 
@@ -1381,7 +1382,7 @@ class P2pNvlTransportDevice {
       size_t nbytes,
       const P2pNvlTransportDevice& successor_transport,
       const Timeout& timeout = Timeout()) {
-#ifdef __CUDA_ARCH__
+#if PIPES_IS_DEVICE_COMPILE
     PIPES_DEVICE_CHECK(localState_.ll128Buffer != nullptr);
     PIPES_DEVICE_CHECK(successor_transport.remoteState_.ll128Buffer != nullptr);
     PIPES_DEVICE_CHECK(can_use_ll128(dst, nbytes));
@@ -1435,7 +1436,7 @@ class P2pNvlTransportDevice {
       int active_blocks = 0,
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout()) {
-#ifdef __CUDA_ARCH__
+#if PIPES_IS_DEVICE_COMPILE
     if (nbytes == 0) {
       return;
     }
@@ -1450,7 +1451,7 @@ class P2pNvlTransportDevice {
           "Signal and step_state arrays would be accessed out of bounds.\n",
           effActive,
           max_groups);
-      __trap();
+      PIPES_DEVICE_TRAP();
     }
 
     if (groupId >= effActive) {
@@ -1459,7 +1460,7 @@ class P2pNvlTransportDevice {
           "Too many groups calling send.\n",
           groupId,
           effActive);
-      __trap();
+      PIPES_DEVICE_TRAP();
     }
 
     const char* __restrict__ srcPtr = reinterpret_cast<const char*>(src);
@@ -1474,7 +1475,7 @@ class P2pNvlTransportDevice {
           "Increase dataBufferSize or decrease active_blocks.\n",
           (unsigned long long)slotSize,
           effActive);
-      __trap();
+      PIPES_DEVICE_TRAP();
     }
     const std::size_t stagingOff = groupId * perBlockSlotSize;
 
@@ -1543,7 +1544,7 @@ class P2pNvlTransportDevice {
       std::size_t max_signal_bytes = 0,
       [[maybe_unused]] const Timeout& timeout = Timeout(),
       [[maybe_unused]] Args... args) {
-#ifdef __CUDA_ARCH__
+#if PIPES_IS_DEVICE_COMPILE
     if (nbytes == 0) {
       return;
     }
@@ -1558,7 +1559,7 @@ class P2pNvlTransportDevice {
           "Signal and step_state arrays would be accessed out of bounds.\n",
           effActive,
           max_groups);
-      __trap();
+      PIPES_DEVICE_TRAP();
     }
 
     if (groupId >= effActive) {
@@ -1567,7 +1568,7 @@ class P2pNvlTransportDevice {
           "Too many groups calling recv.\n",
           groupId,
           effActive);
-      __trap();
+      PIPES_DEVICE_TRAP();
     }
 
     char* __restrict__ dstPtr = reinterpret_cast<char*>(dst);
@@ -1582,7 +1583,7 @@ class P2pNvlTransportDevice {
           "Increase dataBufferSize or decrease active_blocks.\n",
           (unsigned long long)slotSize,
           effActive);
-      __trap();
+      PIPES_DEVICE_TRAP();
     }
     const std::size_t stagingOff = groupId * perBlockSlotSize;
 
@@ -1689,7 +1690,7 @@ class P2pNvlTransportDevice {
       std::size_t max_signal_bytes = 0,
       [[maybe_unused]] const Timeout& timeout = Timeout(),
       [[maybe_unused]] Args... args) {
-#ifdef __CUDA_ARCH__
+#if PIPES_IS_DEVICE_COMPILE
     if (nbytes == 0) {
       return;
     }
@@ -1704,7 +1705,7 @@ class P2pNvlTransportDevice {
           "Signal and step_state arrays would be accessed out of bounds.\n",
           effActive,
           max_groups);
-      __trap();
+      PIPES_DEVICE_TRAP();
     }
 
     if (groupId >= effActive) {
@@ -1713,7 +1714,7 @@ class P2pNvlTransportDevice {
           "Too many groups calling forward.\n",
           groupId,
           effActive);
-      __trap();
+      PIPES_DEVICE_TRAP();
     }
 
     char* __restrict__ dstPtr = reinterpret_cast<char*>(dst);
@@ -1731,7 +1732,7 @@ class P2pNvlTransportDevice {
           "Increase dataBufferSize or decrease active_blocks.\n",
           (unsigned long long)slotSize,
           effActive);
-      __trap();
+      PIPES_DEVICE_TRAP();
     }
     const std::size_t stagingOff = groupId * perBlockSlotSize;
 
@@ -1872,7 +1873,8 @@ class P2pNvlTransportDevice {
       size_t nbytes,
       int active_groups = 0,
       const Timeout& timeout = Timeout()) {
-#ifdef __CUDA_ARCH__
+#ifdef __CUDA_ARCH__ // NVIDIA-only: depends on ll_send/ll_recv/ll128_* not yet
+                     // ported to AMD
     PIPES_DEVICE_CHECK(remoteState_.llBuffer != nullptr);
     PIPES_DEVICE_CHECK(can_use_ll(src, nbytes, options_.llBufferNumLines));
 
@@ -1929,7 +1931,8 @@ class P2pNvlTransportDevice {
       size_t nbytes,
       int active_groups = 0,
       const Timeout& timeout = Timeout()) {
-#ifdef __CUDA_ARCH__
+#ifdef __CUDA_ARCH__ // NVIDIA-only: depends on ll_send/ll_recv/ll128_* not yet
+                     // ported to AMD
     PIPES_DEVICE_CHECK(localState_.llBuffer != nullptr);
     PIPES_DEVICE_CHECK(can_use_ll(dst, nbytes, options_.llBufferNumLines));
 
@@ -1989,7 +1992,8 @@ class P2pNvlTransportDevice {
       const P2pNvlTransportDevice& successor_transport,
       int active_groups = 0,
       const Timeout& timeout = Timeout()) {
-#ifdef __CUDA_ARCH__
+#ifdef __CUDA_ARCH__ // NVIDIA-only: depends on ll_send/ll_recv/ll128_* not yet
+                     // ported to AMD
     PIPES_DEVICE_CHECK(localState_.llBuffer != nullptr);
     PIPES_DEVICE_CHECK(successor_transport.remoteState_.llBuffer != nullptr);
     PIPES_DEVICE_CHECK(can_use_ll(dst, nbytes, options_.llBufferNumLines));

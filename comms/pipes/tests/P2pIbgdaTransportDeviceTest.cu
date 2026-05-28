@@ -1,8 +1,12 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
+// CudaHipCompat must come before Checks.h so the `cuda*` -> `hip*`
+// macro renames apply on AMD builds (Checks.h uses `cudaError_t` /
+// `cudaSuccess` / `cudaGetErrorString` / `cudaGetLastError` directly).
 #include "comms/pipes/IbgdaBuffer.h"
 #include "comms/pipes/P2pIbgdaTransportDevice.cuh"
 #include "comms/pipes/TimeoutUtils.h"
+#include "comms/pipes/amd/HipHostCompat.h"
 #include "comms/pipes/tests/Checks.h"
 #include "comms/pipes/tests/P2pIbgdaTransportDeviceTest.cuh"
 

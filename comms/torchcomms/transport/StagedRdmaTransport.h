@@ -187,8 +187,10 @@ class StagedRdmaTransportBase {
 
   // Protected helpers — called explicitly by subclasses, no virtual dispatch.
 
-  // Lazily create CUDA stream on first use. Called by send()/recv() when
-  // GPU memory is involved. No-op if stream already exists.
+  // Lazily create CUDA stream on first use and set the calling thread's
+  // CUDA device to match. The device must be set per-thread because the
+  // process-global stream cache only calls cudaSetDevice on the thread
+  // that first creates the stream, not on other threads that get a cache hit.
   void ensureCudaStream();
 
   // Initialize IB resources: device, PD, CQ, VirtualQP, staging buffer.

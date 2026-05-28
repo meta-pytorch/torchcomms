@@ -15,6 +15,16 @@
 #define NCCL_SHRINK_ABORT 0x01
 #endif
 
+// ncclWindow_t was introduced in NCCL 2.27; the window/RMA APIs
+// (ncclCommWindowRegister, ncclWinGetUserPtr, ncclPutSignal, ncclSignal,
+// ncclWaitSignal) only landed in 2.29+. Provide an opaque alias on older
+// headers so the NcclApi interface can be declared unconditionally — the
+// wrapper implementations return ncclInvalidUsage on older NCCL and
+// TorchCommNCCLWindow throws at construction.
+#if NCCL_VERSION_CODE < NCCL_VERSION(2, 27, 0)
+typedef struct ncclWindow_vidmem* ncclWindow_t;
+#endif
+
 namespace torch::comms {
 /**
  * Abstract interface for NCCL API operations.
@@ -187,6 +197,54 @@ class NcclApi {
 
   [[nodiscard]] virtual ncclResult_t memAlloc(void** buff, size_t size) = 0;
   [[nodiscard]] virtual ncclResult_t memFree(void* buff) = 0;
+
+  // Window / one-sided RMA operations.
+  // Available on NCCL 2.29+ (older NCCL returns ncclInvalidUsage).
+  [[nodiscard]] virtual ncclResult_t commWindowRegister(
+      ncclComm_t comm,
+      void* buffer,
+      size_t size,
+      ncclWindow_t* win,
+      int winFlags) = 0;
+
+  [[nodiscard]] virtual ncclResult_t commWindowDeregister(
+      ncclComm_t comm,
+      ncclWindow_t win) = 0;
+
+  [[nodiscard]] virtual ncclResult_t
+  winGetUserPtr(ncclComm_t comm, ncclWindow_t win, void** outUserPtr) = 0;
+
+  [[nodiscard]] virtual ncclResult_t putSignal(
+      const void* localbuff,
+      size_t count,
+      ncclDataType_t datatype,
+      int peer,
+      ncclWindow_t peerWin,
+      size_t peerWinOffset,
+      int sigIdx,
+      int ctx,
+      unsigned int flags,
+      ncclComm_t comm,
+      cudaStream_t stream) = 0;
+
+  [[nodiscard]] virtual ncclResult_t signal(
+      int peer,
+      int sigIdx,
+      int ctx,
+      unsigned int flags,
+      ncclComm_t comm,
+      cudaStream_t stream) = 0;
+
+  // waitSignal takes a single descriptor (peer, sigIdx, ctx, opCnt) — the only
+  // shape currently consumed by TorchCommNCCLWindow. Multi-descriptor waits can
+  // be added if needed.
+  [[nodiscard]] virtual ncclResult_t waitSignal(
+      int peer,
+      int sigIdx,
+      int ctx,
+      int opCnt,
+      ncclComm_t comm,
+      cudaStream_t stream) = 0;
 };
 
 /**
@@ -356,6 +414,49 @@ class DefaultNcclApi : public NcclApi {
 
   [[nodiscard]] ncclResult_t memAlloc(void** buff, size_t size) override;
   [[nodiscard]] ncclResult_t memFree(void* buff) override;
+
+  [[nodiscard]] ncclResult_t commWindowRegister(
+      ncclComm_t comm,
+      void* buffer,
+      size_t size,
+      ncclWindow_t* win,
+      int winFlags) override;
+
+  [[nodiscard]] ncclResult_t commWindowDeregister(
+      ncclComm_t comm,
+      ncclWindow_t win) override;
+
+  [[nodiscard]] ncclResult_t
+  winGetUserPtr(ncclComm_t comm, ncclWindow_t win, void** outUserPtr) override;
+
+  [[nodiscard]] ncclResult_t putSignal(
+      const void* localbuff,
+      size_t count,
+      ncclDataType_t datatype,
+      int peer,
+      ncclWindow_t peerWin,
+      size_t peerWinOffset,
+      int sigIdx,
+      int ctx,
+      unsigned int flags,
+      ncclComm_t comm,
+      cudaStream_t stream) override;
+
+  [[nodiscard]] ncclResult_t signal(
+      int peer,
+      int sigIdx,
+      int ctx,
+      unsigned int flags,
+      ncclComm_t comm,
+      cudaStream_t stream) override;
+
+  [[nodiscard]] ncclResult_t waitSignal(
+      int peer,
+      int sigIdx,
+      int ctx,
+      int opCnt,
+      ncclComm_t comm,
+      cudaStream_t stream) override;
 
  private:
   mutable std::mutex api_mutex_;

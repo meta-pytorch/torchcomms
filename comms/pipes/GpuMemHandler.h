@@ -2,20 +2,34 @@
 
 #pragma once
 
+#include <vector>
+
+// `<cuda.h>` (driver API) and `<cuda_runtime.h>` are NVIDIA-only. On AMD,
+// fabric-handle support is unavailable; the class falls back to the cudaIpc
+// path. HIPify rewrites the `cudaIpc*` / `cuMem*` / `CU*` symbol references
+// in this header (and the corresponding `.cc`) to their `hip*` equivalents
+// before compilation, and `<hip/hip_runtime.h>` provides the real HIP types
+// (`hipIpcMemHandle_t`, `hipMemGenericAllocationHandle_t`, `hipDeviceptr_t`).
+// The fabric-mode methods themselves are guarded by `#ifndef
+// __HIP_PLATFORM_AMD__` in `GpuMemHandler.cc` so the unsupported driver-API
+// calls aren't emitted on AMD.
+#ifdef __HIP_PLATFORM_AMD__
+#include <hip/hip_runtime.h>
+#else
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include <vector>
+#endif
 
 #include "comms/common/bootstrap/IBootstrap.h"
 
 namespace comms::pipes {
 
-#if CUDART_VERSION >= 12030
-using FabricHandle = CUmemFabricHandle;
-#else
+#if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12030
 struct FabricHandle {
   unsigned char data[64]; // CU_IPC_HANDLE_SIZE
 };
+#else
+using FabricHandle = CUmemFabricHandle;
 #endif
 
 /**

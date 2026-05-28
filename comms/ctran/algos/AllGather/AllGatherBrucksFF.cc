@@ -5,6 +5,11 @@
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/utils/DevUtils.cuh"
 
+__global__ void ncclKernelAllGatherCtranBrucks(
+    int* flag,
+    CtranAlgoDeviceState* devState,
+    ctran::allgather::KernelArgs args);
+
 static const auto myAlgo = NCCL_ALLGATHER_ALGO::ctbrucks;
 
 // # of steps is ceil(log2(p))
@@ -325,7 +330,7 @@ commResult_t ctranAllGatherBrucksFF(
       std::move(opGroup),
       impl,
       config,
-      reinterpret_cast<void*>(ncclKernelAllGatherCtranGpeStub)));
+      reinterpret_cast<void*>(ncclKernelAllGatherCtranBrucks)));
   if (extraCopyBuff != nullptr) {
     FB_CUDACHECK(cudaMemcpyAsync(
         recvbuff,

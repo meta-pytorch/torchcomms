@@ -14,6 +14,7 @@
 #include <torch/csrc/cuda/CUDAPluggableAllocator.h> // @manual=//caffe2:torch-cpp-cuda
 #include "comms/torchcomms/TorchCommFactory.hpp"
 #include "comms/torchcomms/nccl/TorchCommNCCLBootstrap.hpp"
+#include "comms/torchcomms/nccl/TorchCommWindowNCCL.hpp"
 #include "comms/torchcomms/utils/Logging.hpp"
 #include "comms/torchcomms/utils/TracingGuard.hpp"
 #include "comms/torchcomms/utils/Utils.hpp"
@@ -1491,6 +1492,17 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_to_all(
   return work;
 }
 
+std::shared_ptr<TorchCommWindow> TorchCommNCCL::new_window(
+    const std::optional<at::Tensor>& tensor) {
+  checkInitialized();
+  // new_window itself is local; tensor_register is the collective.
+  auto window = std::make_shared<TorchCommWindowNCCL>(shared_from_this());
+  if (tensor.has_value()) {
+    window->tensor_register(*tensor);
+  }
+  return window;
+}
+
 c10::intrusive_ptr<TorchWork> TorchCommNCCL::barrier(
     bool async_op,
     const BarrierOptions& options) {
@@ -1838,7 +1850,13 @@ void TorchCommNCCL::register_address(
       nccl_comm_,
       nccl_api_->commRegister(nccl_comm_, addr.addr, addr.len, &handle),
       "Failed to register memory with NCCL");
-  memoryRegistrationHandles_.emplace(addr.addr, RegistrationHandle(handle));
+  // Note: window (NCCL_WIN_COLL_SYMMETRIC) registration is collective and
+  // cannot safely happen from inside the allocator hook (which fires on
+  // arbitrary threads). It is registered lazily on demand by
+  // TorchCommWindowNCCL::ensureSegmentWindow(), keyed by the segment base
+  // we record here.
+  memoryRegistrationHandles_.emplace(
+      addr.addr, RegistrationHandle(handle, nullptr, addr.len));
 }
 
 void TorchCommNCCL::deregister_address(const TorchCommNCCL::Address& addr) {
@@ -1854,6 +1872,16 @@ void TorchCommNCCL::deregister_address(const TorchCommNCCL::Address& addr) {
     return;
   }
 
+  if (it->second.winHandle != nullptr) {
+    ncclResult_t winRc =
+        nccl_api_->commWindowDeregister(nccl_comm_, it->second.winHandle);
+    if (winRc != ncclSuccess) {
+      TC_LOG(ERROR, this) << "ncclCommWindowDeregister failed for segment "
+                          << addr.addr << ": "
+                          << nccl_api_->getErrorString(winRc);
+    }
+  }
+
   void* handle = it->second.regHandle;
   NCCL_CHECK(
       nccl_api_,
@@ -1862,6 +1890,64 @@ void TorchCommNCCL::deregister_address(const TorchCommNCCL::Address& addr) {
       "Failed to deregister memory with NCCL");
 
   memoryRegistrationHandles_.erase(it);
+}
+
+std::pair<ncclWindow_t, size_t> TorchCommNCCL::lookupSegmentWindow(
+    const void* ptr) const {
+  const auto target = reinterpret_cast<uintptr_t>(ptr);
+  // memoryRegistrationHandles_ is sorted by base address; upper_bound + step
+  // back finds the segment whose base <= target.
+  auto it = memoryRegistrationHandles_.upper_bound(const_cast<void*>(ptr));
+  if (it == memoryRegistrationHandles_.begin()) {
+    return {nullptr, 0};
+  }
+  --it;
+  const auto base = reinterpret_cast<uintptr_t>(it->first);
+  if (target < base || target >= base + it->second.len) {
+    return {nullptr, 0};
+  }
+  if (it->second.winHandle == nullptr) {
+    return {nullptr, 0};
+  }
+  return {it->second.winHandle, target - base};
+}
+
+ncclResult_t TorchCommNCCL::ensureSegmentWindow(const void* ptr) {
+  if (nccl_comm_ == nullptr) {
+    return ncclInvalidUsage;
+  }
+  const auto target = reinterpret_cast<uintptr_t>(ptr);
+  auto it = memoryRegistrationHandles_.upper_bound(const_cast<void*>(ptr));
+  if (it == memoryRegistrationHandles_.begin()) {
+    return ncclInvalidArgument;
+  }
+  --it;
+  const auto base = reinterpret_cast<uintptr_t>(it->first);
+  if (target < base || target >= base + it->second.len) {
+    return ncclInvalidArgument;
+  }
+  if (it->second.winHandle != nullptr) {
+    return ncclSuccess;
+  }
+  ncclWindow_t win = nullptr;
+  auto rc = nccl_api_->commWindowRegister(
+      nccl_comm_,
+      const_cast<void*>(it->first),
+      it->second.len,
+      &win,
+      NCCL_WIN_COLL_SYMMETRIC);
+  if (rc != ncclSuccess) {
+    return rc;
+  }
+  if (win == nullptr) {
+    // NCCL returned success but left the window handle unset. Observed on
+    // configurations without a transport capable of symmetric memory
+    // (no NVLink and no InfiniBand). Treat as unsupported so callers can
+    // surface a meaningful error or skip.
+    return ncclInvalidUsage;
+  }
+  it->second.winHandle = win;
+  return ncclSuccess;
 }
 
 NCCLException::NCCLException(

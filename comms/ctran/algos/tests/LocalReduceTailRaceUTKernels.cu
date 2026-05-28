@@ -7,12 +7,15 @@
 
 namespace {
 
-// Spin-sleep on block 0 only via a clock-cycle busy wait. Cross-platform
-// (NVIDIA + AMD/HIP); `__nanosleep` is NVIDIA-only. Cycle-to-ns
-// conversion is approximate (~2 GHz upper bound) which is fine since
-// the goal is just "delay enough that block 1 reaches phase 2 first".
-__device__ __forceinline__ void block0Delay(unsigned long long totalNs) {
-  if (blockIdx.x != 0 || threadIdx.x != 0) {
+// Spin-sleep on a single designated block via a clock-cycle busy wait.
+// Cross-platform (NVIDIA + AMD/HIP); `__nanosleep` is NVIDIA-only.
+// Cycle-to-ns conversion is approximate (~2 GHz upper bound) which is
+// fine since the goal is just "delay enough that other blocks reach
+// phase 2 first".
+__device__ __forceinline__ void blockNDelay(
+    int targetBlock,
+    unsigned long long totalNs) {
+  if (blockIdx.x != targetBlock || threadIdx.x != 0) {
     return;
   }
   constexpr unsigned long long kCyclesPerNs = 2;
@@ -25,59 +28,84 @@ __device__ __forceinline__ void block0Delay(unsigned long long totalNs) {
 
 } // namespace
 
-template <typename T>
+template <typename T, bool UseFallback>
 __global__ void multiWriterTailRaceKernel(
     T* buf,
     T* out,
     const T* src,
     size_t count,
     ctran::algos::GpeKernelSync* sync,
-    unsigned long long block0DelayNs) {
-  // Delay block 0 so other blocks reach phase 2 before block 0 finishes
-  // phase 1. The delay runs only on block 0's thread 0; the rest of
-  // block 0 waits at the barrier below. Other blocks pass through
+    int delayedBlockIdx,
+    unsigned long long delayNs) {
+  // Delay one block so other blocks reach phase 2 before it finishes
+  // phase 1. The delay runs only on the target block's thread 0; the rest
+  // of that block waits at the barrier below. Other blocks pass through
   // immediately and proceed to phase 1.
-  block0Delay(block0DelayNs);
+  blockNDelay(delayedBlockIdx, delayNs);
   __syncthreads();
 
-  // Phase 1: real `localReduceVectorized` writes `buf` from `src`. With
-  // NSrcs=1 + commSum the reduction is identity, so `buf` should equal
-  // `src` for every byte once all CTAs' writes have committed.
+  // Phase 1: real `localReduce*` writes `buf` from `src`. With NSrcs=1 +
+  // commSum the reduction is identity, so `buf` should equal `src` for
+  // every byte once all CTAs' writes have committed.
   {
     const T* srcs[1] = {src};
     T* dsts[1] = {buf};
-    localReduceVectorized<T, commSum, 1, 1>(
-        srcs, dsts, count, blockIdx.x, gridDim.x);
+    if constexpr (UseFallback) {
+      localReduceFallback<T, commSum>(
+          /*nsrcs=*/1, srcs, /*ndsts=*/1, dsts, count, blockIdx.x, gridDim.x);
+    } else {
+      localReduceVectorized<T, commSum, 1, 1>(
+          srcs, dsts, count, blockIdx.x, gridDim.x);
+    }
   }
 
-  // Per-CTA release + per-CTA acquire-on-own-flag, using the REAL
-  // production sync API. `complete` does `__syncthreads()` +
-  // `st.release.sys.global` on `sync->completeFlag[blockIdx.x]`.
-  // `waitPost` polls `sync->postFlag[blockIdx.x]` with `ld.acquire.sys.global`
-  // until it observes a value >= step. The host pre-posted step=1 for
-  // every worker before kernel launch, so `waitPost` returns immediately
-  // — but the acquire fence still fires. There is intentionally NO
-  // cross-CTA acquire here (no host `isComplete` between phases),
-  // matching the per-CTA-only sync pattern that opens the bug window.
+  // Intra-CTA release-then-acquire on this CTA's own flag pair. Purpose
+  // is purely a per-CTA fence between phase-1 writes and phase-2 reads
+  // on `buf` (without it, compiler/GPU may reorder across the phases).
+  // Each call only touches `sync->completeFlag[blockIdx.x]` /
+  // `sync->postFlag[blockIdx.x]`; no CTA reads another CTA's slot, so
+  // these calls provide NO cross-CTA visibility. Host pre-posted step=1
+  // for every worker before launch, so `waitPost` returns past the
+  // acquire fence immediately.
+  //
+  // GpeKernelSync is a GPE-thread<->kernel primitive
+  // (`comms/ctran/algos/common/GpeKernelSync.h`), not a CTA<->CTA
+  // primitive — we reuse its device-side primitives here only because
+  // they give us the release/acquire fence shape we want for the
+  // intra-CTA phase boundary. The test deliberately omits any cross-CTA
+  // barrier so that the byte-ownership invariant between phase-1 writer
+  // and phase-2 reader is the only thing standing between the two
+  // ops — pre-fix that invariant fails for some byte ranges, and the
+  // delayed-block setup turns the resulting stale read into a
+  // deterministic failure.
   ctran::algos::GpeKernelSyncDev::complete(sync, blockIdx.x, /*step=*/1);
   ctran::algos::GpeKernelSyncDev::waitPost(sync, blockIdx.x, /*step=*/1);
 
   // Phase 2: real `copyUnroll<4, T>` reads `buf` and writes `out`. Each
   // CTA reads only the bytes it owns under copyUnroll's per-CTA
-  // partition. If localReduceVectorized's per-CTA partition assigned
-  // some of those bytes to a different CTA in phase 1 (the bug), this
-  // CTA's read may hit init sentinel because the writer CTA was still
-  // sleeping in `block0Delay` and hadn't issued its phase-1 writes yet.
+  // partition. If the phase-1 writer's per-CTA partition assigned some
+  // of those bytes to a different CTA, this CTA's read may hit init
+  // sentinel because the writer CTA was still sleeping in `blockNDelay`
+  // and hadn't issued its phase-1 writes yet.
   copyUnroll<4, T>(out, buf, count, blockIdx.x, gridDim.x);
 }
 
-#define DECL_MULTI_WRITER_KERN(T)                        \
-  template __global__ void multiWriterTailRaceKernel<T>( \
-      T * buf,                                           \
-      T * out,                                           \
-      const T* src,                                      \
-      size_t count,                                      \
-      ctran::algos::GpeKernelSync* sync,                 \
-      unsigned long long block0DelayNs)
+#define DECL_MULTI_WRITER_KERN(T)                               \
+  template __global__ void multiWriterTailRaceKernel<T, false>( \
+      T * buf,                                                  \
+      T * out,                                                  \
+      const T* src,                                             \
+      size_t count,                                             \
+      ctran::algos::GpeKernelSync* sync,                        \
+      int delayedBlockIdx,                                      \
+      unsigned long long delayNs);                              \
+  template __global__ void multiWriterTailRaceKernel<T, true>(  \
+      T * buf,                                                  \
+      T * out,                                                  \
+      const T* src,                                             \
+      size_t count,                                             \
+      ctran::algos::GpeKernelSync* sync,                        \
+      int delayedBlockIdx,                                      \
+      unsigned long long delayNs)
 
 DECL_MULTI_WRITER_KERN(int32_t);

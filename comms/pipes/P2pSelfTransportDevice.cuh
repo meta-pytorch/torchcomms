@@ -5,9 +5,10 @@
 #include <cuda_runtime.h>
 
 #include <cstddef>
-#include "comms/pipes/HipCompat.cuh"
+#include "comms/pipes/amd/HipHostCompat.h"
 
 #include "comms/pipes/CopyUtils.cuh"
+#include "comms/pipes/DeviceMacros.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
 
 namespace comms::pipes {
@@ -47,8 +48,9 @@ class P2pSelfTransportDevice {
    * Calling this method will trap and abort the kernel.
    */
   __device__ void send(ThreadGroup& group, void* srcbuff, std::size_t nbytes) {
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    __trap(); // Abort kernel if send is called on SelfTransportDevice
+#if PIPES_IS_DEVICE_COMPILE
+    PIPES_DEVICE_TRAP(); // Abort kernel if send is called on
+                         // SelfTransportDevice
 #endif
   }
 
@@ -59,8 +61,9 @@ class P2pSelfTransportDevice {
    * Calling this method will trap and abort the kernel.
    */
   __device__ void recv(ThreadGroup& group, void* dstbuff, std::size_t nbytes) {
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    __trap(); // Abort kernel if recv is called on SelfTransportDevice
+#if PIPES_IS_DEVICE_COMPILE
+    PIPES_DEVICE_TRAP(); // Abort kernel if recv is called on
+                         // SelfTransportDevice
 #endif
   }
 
@@ -88,7 +91,7 @@ class P2pSelfTransportDevice {
       [[maybe_unused]] char* dst_d,
       [[maybe_unused]] const char* src_d,
       [[maybe_unused]] std::size_t nbytes) {
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+#if PIPES_IS_DEVICE_COMPILE
     // Early return for no-op cases (check before overlap to handle dst == src)
     if (nbytes == 0 || dst_d == src_d) {
       return;
@@ -148,7 +151,7 @@ class P2pSelfTransportDevice {
       char* __restrict__ dst_d,
       const char* __restrict__ src_d,
       std::size_t nbytes) {
-#ifdef __CUDA_ARCH__
+#if PIPES_IS_DEVICE_COMPILE
     if (nbytes == 0 || dst_d == src_d) {
       return;
     }

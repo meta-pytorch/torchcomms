@@ -991,6 +991,122 @@ TEST_F(StagedRdmaTransportDistributedTest, GpuSrcGpuDst) {
   runTransferWithMemType(/*srcOnGpu=*/true, /*dstOnGpu=*/true);
 }
 
+// --- Multi-EventBase stream cache test ---
+// Verifies that multiple transports on different EventBase threads can
+// share the process-global stream cache and transfer data correctly.
+
+TEST_F(StagedRdmaTransportDistributedTest, MultiEventBaseStreamCache) {
+  const size_t totalBytes = 8192;
+  int cudaDev = localRank;
+  ASSERT_EQ(cudaSetDevice(cudaDev), cudaSuccess);
+
+  // Two separate EventBase threads — simulates multiple handlers in one process
+  folly::ScopedEventBaseThread evbThread1("RDMA-Worker-1");
+  folly::ScopedEventBaseThread evbThread2("RDMA-Worker-2");
+
+  if (globalRank == 0) {
+    // First server transport on EventBase thread 1
+    StagedRdmaServerTransport transport1(cudaDev, evbThread1.getEventBase());
+    auto connInfo1 = transport1.setupLocalTransport();
+    auto peerConnInfo1 = exchangeConnInfo(connInfo1);
+    transport1.connectRemoteTransport(peerConnInfo1);
+
+    broadcastSize(totalBytes);
+
+    void* srcGpu = nullptr;
+    ASSERT_EQ(cudaMalloc(&srcGpu, totalBytes), cudaSuccess);
+    std::vector<uint8_t> hostBuf(totalBytes, 0xAA);
+    ASSERT_EQ(
+        cudaMemcpy(srcGpu, hostBuf.data(), totalBytes, cudaMemcpyHostToDevice),
+        cudaSuccess);
+
+    // Send on transport1 (thread 1 — creates stream, calls cudaSetDevice)
+    ScatterGatherDescriptor sgDesc;
+    sgDesc.entries.push_back({srcGpu, totalBytes});
+    auto result1 = transport1.send(sgDesc).get();
+    EXPECT_EQ(result1, commSuccess) << "Transport 1 send failed";
+
+    // Second server transport on EventBase thread 2 (stream cache hit —
+    // without the fix, thread 2 never gets cudaSetDevice)
+    StagedRdmaServerTransport transport2(cudaDev, evbThread2.getEventBase());
+    auto connInfo2 = transport2.setupLocalTransport();
+    auto peerConnInfo2 = exchangeConnInfo(connInfo2);
+    transport2.connectRemoteTransport(peerConnInfo2);
+
+    broadcastSize(totalBytes);
+
+    std::fill(hostBuf.begin(), hostBuf.end(), 0xBB);
+    ASSERT_EQ(
+        cudaMemcpy(srcGpu, hostBuf.data(), totalBytes, cudaMemcpyHostToDevice),
+        cudaSuccess);
+
+    sgDesc.entries.clear();
+    sgDesc.entries.push_back({srcGpu, totalBytes});
+    auto result2 = transport2.send(sgDesc).get();
+    EXPECT_EQ(result2, commSuccess)
+        << "Transport 2 send failed (stream cache hit bug)";
+
+    EXPECT_EQ(cudaFree(srcGpu), cudaSuccess);
+  } else {
+    // Client side — two transports matching the server
+    StagedRdmaClientTransport transport1(cudaDev, evbThread1.getEventBase());
+    auto connInfo1 = transport1.setupLocalTransport();
+    auto peerConnInfo1 = exchangeConnInfo(connInfo1);
+    transport1.connectRemoteTransport(peerConnInfo1);
+
+    auto recvBytes1 = broadcastSize(0);
+    void* dstGpu1 = nullptr;
+    ASSERT_EQ(cudaMalloc(&dstGpu1, recvBytes1), cudaSuccess);
+    ASSERT_EQ(cudaMemset(dstGpu1, 0, recvBytes1), cudaSuccess);
+
+    ScatterGatherDescriptor sgDesc1;
+    sgDesc1.entries.push_back({dstGpu1, recvBytes1});
+    auto result1 = transport1.recv(sgDesc1).get();
+    EXPECT_EQ(result1, commSuccess) << "Transport 1 recv failed";
+
+    if (result1 == commSuccess) {
+      std::vector<uint8_t> hostBuf(recvBytes1);
+      ASSERT_EQ(
+          cudaMemcpy(
+              hostBuf.data(), dstGpu1, recvBytes1, cudaMemcpyDeviceToHost),
+          cudaSuccess);
+      const std::vector<uint8_t> expected1(recvBytes1, 0xAA);
+      EXPECT_EQ(hostBuf, expected1) << "Transport 1 data mismatch";
+    }
+    EXPECT_EQ(cudaFree(dstGpu1), cudaSuccess);
+
+    // Second client transport on thread 2
+    StagedRdmaClientTransport transport2(cudaDev, evbThread2.getEventBase());
+    auto connInfo2 = transport2.setupLocalTransport();
+    auto peerConnInfo2 = exchangeConnInfo(connInfo2);
+    transport2.connectRemoteTransport(peerConnInfo2);
+
+    auto recvBytes2 = broadcastSize(0);
+    void* dstGpu2 = nullptr;
+    ASSERT_EQ(cudaMalloc(&dstGpu2, recvBytes2), cudaSuccess);
+    ASSERT_EQ(cudaMemset(dstGpu2, 0, recvBytes2), cudaSuccess);
+
+    ScatterGatherDescriptor sgDesc2;
+    sgDesc2.entries.push_back({dstGpu2, recvBytes2});
+    auto result2 = transport2.recv(sgDesc2).get();
+    EXPECT_EQ(result2, commSuccess)
+        << "Transport 2 recv failed (stream cache hit bug)";
+
+    if (result2 == commSuccess) {
+      std::vector<uint8_t> hostBuf(recvBytes2);
+      ASSERT_EQ(
+          cudaMemcpy(
+              hostBuf.data(), dstGpu2, recvBytes2, cudaMemcpyDeviceToHost),
+          cudaSuccess);
+      const std::vector<uint8_t> expected2(recvBytes2, 0xBB);
+      EXPECT_EQ(hostBuf, expected2) << "Transport 2 data mismatch";
+    }
+    EXPECT_EQ(cudaFree(dstGpu2), cudaSuccess);
+  }
+
+  MPI_Barrier(MPI_COMM_WORLD);
+}
+
 // --- main ---
 
 int main(int argc, char* argv[]) {

@@ -8,6 +8,18 @@
 
 namespace comms::pipes::benchmark {
 
+// On AMD MI200/MI300, `clock64()` returns the SM core clock (~1.5-2.0 GHz,
+// frequency-scaled), while `wall_clock64()` is a fixed 100 MHz monotonic
+// counter. The fixture's `cyclesToUs` divides by 0.1 GHz (matches
+// wall_clock64), so using `clock64()` would inflate reported latencies
+// by ~16x. NVIDIA's clock64() is the SM clock that matches the fixture's
+// cudaDevAttrClockRate query.
+#ifdef __HIP_PLATFORM_AMD__
+#define BENCHMARK_CLOCK64() wall_clock64()
+#else
+#define BENCHMARK_CLOCK64() clock64()
+#endif
+
 // Maximum number of peers supported by multi-peer kernels.
 constexpr int kMaxPeers = 128;
 
@@ -79,7 +91,7 @@ __global__ void ibgdaPutWaitLocalBatchKernel(
     }
 
     // Timed iterations using GPU cycle counter
-    unsigned long long startCycle = clock64();
+    unsigned long long startCycle = BENCHMARK_CLOCK64();
 
     for (int i = 0; i < numIters; i++) {
       transport->put(
@@ -94,7 +106,7 @@ __global__ void ibgdaPutWaitLocalBatchKernel(
       expected++;
     }
 
-    unsigned long long endCycle = clock64();
+    unsigned long long endCycle = BENCHMARK_CLOCK64();
     *totalCycles = endCycle - startCycle;
   }
 }
@@ -133,7 +145,7 @@ __global__ void ibgdaPutSignalWaitLocalBatchKernel(
     }
 
     // Timed iterations using GPU cycle counter
-    unsigned long long startCycle = clock64();
+    unsigned long long startCycle = BENCHMARK_CLOCK64();
 
     for (int i = 0; i < numIters; i++) {
       transport->put(
@@ -148,7 +160,7 @@ __global__ void ibgdaPutSignalWaitLocalBatchKernel(
       expected++;
     }
 
-    unsigned long long endCycle = clock64();
+    unsigned long long endCycle = BENCHMARK_CLOCK64();
     *totalCycles = endCycle - startCycle;
   }
 }
@@ -171,14 +183,14 @@ __global__ void ibgdaSignalOnlyBatchKernel(
     }
 
     // Timed iterations using GPU cycle counter
-    unsigned long long startCycle = clock64();
+    unsigned long long startCycle = BENCHMARK_CLOCK64();
 
     for (int i = 0; i < numIters; i++) {
       transport->signal(resolvedSignalBuf, 1);
       transport->flush();
     }
 
-    unsigned long long endCycle = clock64();
+    unsigned long long endCycle = BENCHMARK_CLOCK64();
     *totalCycles = endCycle - startCycle;
   }
 }
@@ -231,7 +243,7 @@ __global__ void ibgdaMultiPeerSerialCounterFanOutBatchKernel(
       expected++;
     }
 
-    unsigned long long startCycle = clock64();
+    unsigned long long startCycle = BENCHMARK_CLOCK64();
 
     for (int i = 0; i < numIters; i++) {
       // Fire put+signal+counter to all peers — each peer's companion QP
@@ -253,7 +265,7 @@ __global__ void ibgdaMultiPeerSerialCounterFanOutBatchKernel(
       expected++;
     }
 
-    unsigned long long endCycle = clock64();
+    unsigned long long endCycle = BENCHMARK_CLOCK64();
     *totalCycles = endCycle - startCycle;
   }
 }
@@ -300,7 +312,7 @@ __global__ void ibgdaMultiPeerCounterFanOutBatchKernel(
       expected += numPeers;
     }
 
-    unsigned long long startCycle = clock64();
+    unsigned long long startCycle = BENCHMARK_CLOCK64();
 
     for (int i = 0; i < numIters; i++) {
       // Fire put+signal+counter to all peers — all companion QPs write to
@@ -320,7 +332,7 @@ __global__ void ibgdaMultiPeerCounterFanOutBatchKernel(
       expected += numPeers;
     }
 
-    unsigned long long endCycle = clock64();
+    unsigned long long endCycle = BENCHMARK_CLOCK64();
     *totalCycles = endCycle - startCycle;
   }
 }

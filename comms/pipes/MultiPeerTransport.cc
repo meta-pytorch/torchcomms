@@ -10,10 +10,20 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
+#ifdef __HIP_PLATFORM_AMD__
+// On AMD, HIPify renames `cuda*` runtime calls to `hip*`; pull in the HIP
+// runtime so those symbols resolve. The CUDA driver-API path
+// (`CudaDriverLazy.h` + `cuMem*`) is unavailable; the corresponding code
+// paths in this file are guarded by `#ifndef __HIP_PLATFORM_AMD__`.
+#include <hip/hip_runtime.h>
+#else
 #include <cuda_runtime.h>
-#include <glog/logging.h>
 
 #include "comms/pipes/CudaDriverLazy.h"
+#endif
+
+#include <glog/logging.h>
+
 #include "comms/pipes/MultiPeerDeviceHandle.cuh"
 #include "comms/pipes/MultipeerIbgdaDeviceTransport.cuh"
 #include "comms/pipes/TopologyDiscovery.h"
@@ -179,10 +189,15 @@ void MultiPeerTransport::setExternalNvlDataBuffers(
 }
 
 void MultiPeerTransport::exchange() {
+#ifndef __HIP_PLATFORM_AMD__
+  // CUDA driver-API init is required for the cuMem-based fabric / POSIX-FD
+  // exchange paths. On AMD only the cudaIpc (hipIpc) path is available, so
+  // no driver-API init is needed.
   if (cuda_driver_lazy_init() != 0) {
     throw std::runtime_error(
         "MultiPeerTransport::exchange: failed to initialize CUDA driver API");
   }
+#endif
 
   VLOG(1) << "MultiPeerTransport: rank " << myRank_ << " exchange()"
           << " nvl=" << (nvlTransport_ ? "yes" : "no")
@@ -326,7 +341,7 @@ std::vector<IbgdaRemoteBuffer> MultiPeerTransport::exchangeIbgdaBuffer(
 
 MultiPeerTransport::NvlMemMode MultiPeerTransport::detectNvlMemMode(
     void* ptr) const {
-#if CUDART_VERSION >= 12030
+#if !defined(__HIP_PLATFORM_AMD__) && CUDART_VERSION >= 12030
   if (cuda_driver_lazy_init() != 0) {
     throw std::runtime_error("detectNvlMemMode: CUDA driver not available");
   }
@@ -407,7 +422,7 @@ std::vector<void*> MultiPeerTransport::exchangeNvlBufferCudaIpc(
 std::vector<void*> MultiPeerTransport::exchangeNvlBufferFabric(
     void* localPtr,
     std::size_t size) {
-#if CUDART_VERSION < 12030
+#if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12030
   throw std::runtime_error("Fabric handles require CUDA 12.3+");
 #else
   if (cuda_driver_lazy_init() != 0) {
@@ -515,7 +530,7 @@ std::vector<void*> MultiPeerTransport::exchangeNvlBufferFabric(
 std::vector<void*> MultiPeerTransport::exchangeNvlBufferPosixFd(
     void* localPtr,
     std::size_t size) {
-#if CUDART_VERSION < 12030
+#if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12030
   throw std::runtime_error("POSIX FD cuMem handles require CUDA 12.3+");
 #else
   if (cuda_driver_lazy_init() != 0) {
@@ -684,7 +699,7 @@ void MultiPeerTransport::unmapNvlBuffers(const std::vector<void*>& mappedPtrs) {
         it->second.mode == NvlMemMode::kPosixFd));
 
   if (isCuMem) {
-#if CUDART_VERSION >= 12030
+#if !defined(__HIP_PLATFORM_AMD__) && CUDART_VERSION >= 12030
     if (cuda_driver_lazy_init() != 0) {
       return;
     }
@@ -769,11 +784,6 @@ void MultiPeerTransport::build_device_handle() {
         new (&transportsHost[r]) Transport(devPtr);
         break;
       }
-
-      case TransportType::P2P_IBGDA_AMD:
-        throw std::runtime_error(
-            "P2P_IBGDA_AMD transport not supported in MultiPeerTransport "
-            "(use MultipeerIbgdaTransportAmd instead)");
     }
   }
 
