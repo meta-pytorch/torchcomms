@@ -202,6 +202,10 @@ class TorchCommNCCL : public TorchCommBackend,
       const std::string& name,
       const CommOptions& options = {}) override;
 
+  // Window / one-sided RMA. Requires NCCL 2.29+.
+  std::shared_ptr<TorchCommWindow> new_window(
+      const std::optional<at::Tensor>& tensor = std::nullopt) override;
+
   // Fault Tolerance API
   bool supportsReconfigure() const override {
     return true;
@@ -333,15 +337,24 @@ class TorchCommNCCL : public TorchCommBackend,
     std::shared_ptr<NcclApi> nccl_api_;
   };
 
-  // Struct to hold the registration handle for a buffer
+  // Struct to hold the registration handle for a buffer (and its symmetric
+  // window, if window registration succeeded for this segment).
   struct RegistrationHandle {
-    void* regHandle;
+    void* regHandle{nullptr};
+    ncclWindow_t winHandle{nullptr};
+    size_t len{0};
 
-    explicit RegistrationHandle(void* regHandle) : regHandle{regHandle} {}
+    RegistrationHandle() = default;
+    RegistrationHandle(void* regHandle, ncclWindow_t winHandle, size_t len)
+        : regHandle{regHandle}, winHandle{winHandle}, len{len} {}
 
     RegistrationHandle(RegistrationHandle&& other) noexcept
-        : regHandle{other.regHandle} {
+        : regHandle{other.regHandle},
+          winHandle{other.winHandle},
+          len{other.len} {
       other.regHandle = nullptr;
+      other.winHandle = nullptr;
+      other.len = 0;
     }
 
     RegistrationHandle(const RegistrationHandle&) = delete;
@@ -350,7 +363,11 @@ class TorchCommNCCL : public TorchCommBackend,
     RegistrationHandle& operator=(RegistrationHandle&& other) noexcept {
       if (this != &other) {
         regHandle = other.regHandle;
+        winHandle = other.winHandle;
+        len = other.len;
         other.regHandle = nullptr;
+        other.winHandle = nullptr;
+        other.len = 0;
       }
       return *this;
     }
@@ -358,6 +375,21 @@ class TorchCommNCCL : public TorchCommBackend,
     ~RegistrationHandle() = default;
   };
 
+ public:
+  // Look up the symmetric NCCL window covering `ptr` (which must lie inside
+  // a segment allocated from the NCCL mempool). Returns {win, offset_in_bytes}
+  // on success and {nullptr, 0} if `ptr` is not in any registered segment or
+  // window registration was unavailable for that segment.
+  std::pair<ncclWindow_t, size_t> lookupSegmentWindow(const void* ptr) const;
+
+  // Ensure the segment containing `ptr` is registered as a
+  // NCCL_WIN_COLL_SYMMETRIC window (collective; all ranks must call with the
+  // same segment). Returns ncclSuccess on success; ncclInvalidArgument if
+  // `ptr` is not in any segment from the NCCL mempool; or the underlying
+  // ncclCommWindowRegister error code.
+  ncclResult_t ensureSegmentWindow(const void* ptr);
+
+ private:
   // Constructor for split communicators
   explicit TorchCommNCCL(const ncclComm_t nccl_comm);
 

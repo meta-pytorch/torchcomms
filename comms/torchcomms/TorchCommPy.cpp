@@ -2342,15 +2342,29 @@ Raises: RuntimeError if the ranks list is non-empty and the current rank is not 
           &TorchComm::batch_op_create,
           "Create a batch operation object for batched P2P operations.",
           py::call_guard<py::gil_scoped_release>())
-      // NOTE: This property is kept temporarily to avoid breaking upstream
-      // callers. The allocator is actually a global static per backend
-      // (accessed via get_mem_allocator(backend)), not tied to the comm
-      // instance lifetime. Future code should use the global function
-      // directly.
+      .def(
+          "get_mem_allocator",
+          &TorchComm::getMemAllocator,
+          R"(
+          Return the symmetric (VMM-backed) CUDA allocator for this
+          communicator's backend. The allocator is a global static per backend
+          and is suitable for one-sided RMA / window registration.
+
+          Typical usage::
+
+              allocator = comm.get_mem_allocator()
+              pool = torch.cuda.MemPool(allocator)
+              with torch.cuda.use_mem_pool(pool):
+                  win_buf = torch.empty(N, device="cuda")
+              win = comm.new_window(win_buf)
+          )",
+          py::call_guard<py::gil_scoped_release>())
+      // Legacy property — kept for backwards compatibility. Prefer
+      // ``comm.get_mem_allocator()`` in new code.
       .def_property_readonly(
           "mem_allocator",
-          [](TorchComm& self) { return get_mem_allocator(self.getBackend()); },
-          "Get the communication-specific memory allocator")
+          &TorchComm::getMemAllocator,
+          "Deprecated alias for get_mem_allocator().")
 
       // Hook registration methods
       .def(
@@ -2630,6 +2644,12 @@ Note:
           "get_comm",
           &BackendWrapper::getComm,
           "Get the underlying TorchComm instance",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "get_mem_allocator",
+          &BackendWrapper::getMemAllocator,
+          "Return the symmetric CUDA allocator for the underlying backend "
+          "(see TorchComm.get_mem_allocator).",
           py::call_guard<py::gil_scoped_release>())
       .def("name", &BackendWrapper::getBackendName)
       .def_property_readonly(

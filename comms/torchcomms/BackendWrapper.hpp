@@ -120,6 +120,10 @@ class BackendWrapper : public c10d::Backend {
   // Get the underlying backend comm for backend-specific operations
   std::shared_ptr<TorchComm> getComm() const;
 
+  // Returns the symmetric (VMM-backed) CUDA allocator associated with this
+  // communicator's backend. See `TorchComm::getMemAllocator()`.
+  std::shared_ptr<c10::Allocator> getMemAllocator() override;
+
   c10::intrusive_ptr<Options> getOptions() {
     return options_;
   }

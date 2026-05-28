@@ -596,6 +596,10 @@ std::shared_ptr<c10::Allocator> get_mem_allocator(const std::string& backend) {
   return TorchCommFactory::get().get_allocator(backend);
 }
 
+std::shared_ptr<c10::Allocator> TorchComm::getMemAllocator() const {
+  return get_mem_allocator(backend_);
+}
+
 std::unique_ptr<RemovableHandle> TorchComm::registerPreHook(
     TorchComm::PreHook preHook) {
   auto hookId = nextHookId_++;
