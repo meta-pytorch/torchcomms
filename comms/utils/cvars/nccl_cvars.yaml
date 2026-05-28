@@ -86,6 +86,14 @@ cvars:
       to e.g. "scuba:nccl_profiler_gpe".
       (the same format with NCCL_COMM_EVENT_LOGGING)
 
+ - name        : NCCL_CTRAN_GPE_PROFILING_SAMPLING_WEIGHT
+   type        : int
+   default     : 1000
+   description : |-
+     1-in-N sampling weight for per-iteration GpeProfiler Scuba reports.
+     Set to 0 to disable happy-path tracing (abort-only). Aborted
+     iterations are always reported regardless of sampling.
+
  - name        : NCCL_MEMORY_EVENT_LOGGING
    type        : string
    default     : ""
@@ -95,7 +103,7 @@ cvars:
 
  - name        : NCCL_MEMTRACE_ENABLE
    type        : bool
-   default     : false
+   default     : true
    description : |-
      Enable memory tracing for all NCCLX memory allocations, frees, and
      registrations. When enabled, memory events are logged to Scuba and

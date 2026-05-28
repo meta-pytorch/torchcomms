@@ -2,19 +2,32 @@
 
 #pragma once
 
+// `<cuda/atomic>` is NVIDIA-only. AMD uses `__hip_atomic_*` builtins
+// (already pulled in transitively via `HipDeviceCompat.h` below).
+#ifndef __HIP_PLATFORM_AMD__
 #include <cuda/atomic>
+#endif
 
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
 
+// On NVIDIA, pull in the DOCA verbs headers + the Meta-internal
+// `DocaVerbsUtils.cuh` wrapper that defines `comms::pipes::doca_fence`.
+// On AMD, the DOCA headers don't exist; the DocaCompat shim provides
+// `doca_*` type aliases, constants, function shims, and `doca_fence`.
+#ifdef __HIP_PLATFORM_AMD__
+#include "comms/pipes/amd/DocaCompat.h"
+#else
 #include <device/doca_gpunetio_dev_verbs_counter.cuh>
 #include <device/doca_gpunetio_dev_verbs_onesided.cuh>
 
+#include "comms/pipes/DocaVerbsUtils.cuh"
+#endif
 #include "comms/pipes/CopyOp.cuh"
 #include "comms/pipes/CopyUtils.cuh"
+#include "comms/pipes/DeviceMacros.cuh"
 #include "comms/pipes/DeviceSpan.cuh"
-#include "comms/pipes/DocaVerbsUtils.cuh"
 #include "comms/pipes/IbgdaBuffer.h"
 #include "comms/pipes/ThreadGroup.cuh"
 #include "comms/pipes/Timeout.cuh"
@@ -25,10 +38,13 @@ struct Memcpy;
 
 inline constexpr uint64_t kDefaultDeviceTimeoutCycles = 10'000'000'000ULL;
 
+// `PIPES_DEVICE_TRAP()` is defined in `comms/pipes/DeviceMacros.cuh` and
+// is intentionally available across all `comms/pipes` device headers.
+
 // Slot-id bounds checks for the slot-index API. Catches both
 // out-of-range slot ids and slot-index calls made when the transport was
 // constructed with no owned signal/counter buffer (numSlots == 0).
-#ifdef __CUDA_ARCH__
+#if PIPES_IS_DEVICE_COMPILE
 #define IBGDA_CHECK_SLOT_ID(id, count, kind)            \
   do {                                                  \
     if (!((id) >= 0 && (id) < (count))) {               \
@@ -46,7 +62,7 @@ inline constexpr uint64_t kDefaultDeviceTimeoutCycles = 10'000'000'000ULL;
           threadIdx.x,                                  \
           threadIdx.y,                                  \
           threadIdx.z);                                 \
-      __trap();                                         \
+      PIPES_DEVICE_TRAP();                              \
     }                                                   \
   } while (0)
 #else
@@ -712,8 +728,12 @@ class P2pIbgdaTransportDevice {
   __device__ __forceinline__ static uint64_t load_acquire_system_u64(
       const void* ptr) {
     auto* slot = static_cast<uint64_t*>(const_cast<void*>(ptr));
+#ifdef __HIP_PLATFORM_AMD__
+    return __hip_atomic_load(slot, __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_SYSTEM);
+#else
     return cuda::atomic_ref<uint64_t, cuda::thread_scope_system>{*slot}.load(
         cuda::memory_order_acquire);
+#endif
   }
 
   __device__ void finish_put_impl(
@@ -891,7 +911,7 @@ class P2pIbgdaTransportDevice {
             group.group_size,
             qp_depth,
             group.group_size);
-        __trap();
+        PIPES_DEVICE_TRAP();
       }
     }
 
@@ -905,7 +925,7 @@ class P2pIbgdaTransportDevice {
 
     // Each thread prepares its WQE
     uint64_t wqe_idx = base_wqe_idx + group.thread_id_in_group;
-    struct doca_gpu_dev_verbs_wqe* wqe_ptr =
+    doca_gpu_dev_verbs_wqe* wqe_ptr =
         doca_gpu_dev_verbs_get_wqe_ptr(qp, wqe_idx);
 
     doca_gpu_dev_verbs_wqe_prepare_write(
@@ -979,7 +999,7 @@ class P2pIbgdaTransportDevice {
     uint64_t wqe_idx = doca_gpu_dev_verbs_reserve_wq_slots<
         DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(qp, 1);
 
-    struct doca_gpu_dev_verbs_wqe* wqe_ptr =
+    doca_gpu_dev_verbs_wqe* wqe_ptr =
         doca_gpu_dev_verbs_get_wqe_ptr(qp, wqe_idx);
 
     doca_gpu_dev_verbs_wqe_prepare_atomic(
@@ -1208,12 +1228,14 @@ class P2pIbgdaTransportDevice {
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args) {
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-#ifdef __HIP_PLATFORM_AMD__
-    static_assert(
-        false,
-        "P2pIbgdaTransportDevice::send() requires NVIDIA GPU (DOCA/IBGDA)");
-#endif
+#if !PIPES_IS_DEVICE_COMPILE
+    (void)group;
+    (void)src;
+    (void)nbytes;
+    (void)active_blocks;
+    (void)max_signal_bytes;
+    (void)timeout;
+#else
     if (nbytes == 0) {
       return;
     }
@@ -1229,7 +1251,7 @@ class P2pIbgdaTransportDevice {
             effActive,
             sendRecvState_.maxGroups);
       }
-      __trap();
+      PIPES_DEVICE_TRAP();
     }
     if (groupId >= effActive) {
       if (group.is_leader()) {
@@ -1238,7 +1260,7 @@ class P2pIbgdaTransportDevice {
             groupId,
             effActive);
       }
-      __trap();
+      PIPES_DEVICE_TRAP();
     }
 
     const std::size_t perBlockSlot =
@@ -1251,7 +1273,7 @@ class P2pIbgdaTransportDevice {
             (unsigned long long)sendRecvState_.dataBufferSize,
             effActive);
       }
-      __trap();
+      PIPES_DEVICE_TRAP();
     }
 
     std::size_t chunkSize =
@@ -1383,12 +1405,14 @@ class P2pIbgdaTransportDevice {
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args) {
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-#ifdef __HIP_PLATFORM_AMD__
-    static_assert(
-        false,
-        "P2pIbgdaTransportDevice::recv() requires NVIDIA GPU (DOCA/IBGDA)");
-#endif
+#if !PIPES_IS_DEVICE_COMPILE
+    (void)group;
+    (void)dst;
+    (void)nbytes;
+    (void)active_blocks;
+    (void)max_signal_bytes;
+    (void)timeout;
+#else
     if (nbytes == 0) {
       return;
     }
@@ -1404,7 +1428,7 @@ class P2pIbgdaTransportDevice {
             effActive,
             sendRecvState_.maxGroups);
       }
-      __trap();
+      PIPES_DEVICE_TRAP();
     }
     if (groupId >= effActive) {
       if (group.is_leader()) {
@@ -1413,7 +1437,7 @@ class P2pIbgdaTransportDevice {
             groupId,
             effActive);
       }
-      __trap();
+      PIPES_DEVICE_TRAP();
     }
 
     const std::size_t perBlockSlot =
@@ -1426,7 +1450,7 @@ class P2pIbgdaTransportDevice {
             (unsigned long long)sendRecvState_.dataBufferSize,
             effActive);
       }
-      __trap();
+      PIPES_DEVICE_TRAP();
     }
 
     std::size_t chunkSize =
@@ -1563,7 +1587,7 @@ class P2pIbgdaTransportDevice {
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args) {
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+#if PIPES_IS_DEVICE_COMPILE
 #ifdef __HIP_PLATFORM_AMD__
     static_assert(
         false,
@@ -1587,7 +1611,7 @@ class P2pIbgdaTransportDevice {
             sendRecvState_.maxGroups,
             groupId);
       }
-      __trap();
+      PIPES_DEVICE_TRAP();
     }
 
     const std::size_t recvPerBlockSlot =
@@ -1596,7 +1620,7 @@ class P2pIbgdaTransportDevice {
       if (group.is_leader()) {
         printf("[PIPES] FATAL: forward recvPerBlockSlot=0\n");
       }
-      __trap();
+      PIPES_DEVICE_TRAP();
     }
 
     // --- fwd side (fwd transport) ---
@@ -1612,7 +1636,7 @@ class P2pIbgdaTransportDevice {
             fwd.sendRecvState_.maxGroups,
             groupId);
       }
-      __trap();
+      PIPES_DEVICE_TRAP();
     }
 
     const std::size_t fwdPerBlockSlot =
@@ -1621,7 +1645,7 @@ class P2pIbgdaTransportDevice {
       if (group.is_leader()) {
         printf("[PIPES] FATAL: forward fwdPerBlockSlot=0\n");
       }
-      __trap();
+      PIPES_DEVICE_TRAP();
     }
 
     // Chunk sizes for recv and fwd sides
@@ -1820,7 +1844,7 @@ class P2pIbgdaTransportDevice {
           threadIdx.x,
           threadIdx.y,
           threadIdx.z);
-      __trap();
+      PIPES_DEVICE_TRAP();
     }
     int nic_id = group_id % nicDevices_.size();
     const auto& qps = nicDevices_[nic_id].qps;
@@ -1837,7 +1861,7 @@ class P2pIbgdaTransportDevice {
           threadIdx.x,
           threadIdx.y,
           threadIdx.z);
-      __trap();
+      PIPES_DEVICE_TRAP();
     }
     int qp_id = (group_id / nicDevices_.size()) % qps.size();
     return {nic_id, qp_id};

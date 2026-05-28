@@ -2,8 +2,10 @@
 
 #pragma once
 
+#ifndef __HIP_PLATFORM_AMD__
 #include <cuda.h>
 #include <cuda_runtime.h>
+#endif
 
 #include "comms/pipes/collectives/AllToAllv.cuh"
 

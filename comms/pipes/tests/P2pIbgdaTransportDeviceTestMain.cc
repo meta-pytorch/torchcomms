@@ -12,10 +12,16 @@
 #include <functional>
 #include <vector>
 
+// On AMD (`__HIP_PLATFORM_AMD__`), this maps `cuda*` runtime APIs to
+// `hip*` and provides a HIP-backed `meta::comms::DeviceBuffer`. No-op
+// on NVIDIA — the existing CudaRAII / cuda_runtime path stays in use.
 #include "comms/pipes/IbgdaBuffer.h"
+#include "comms/pipes/amd/HipHostCompat.h"
 #include "comms/pipes/tests/P2pIbgdaTransportDeviceTest.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
+#ifndef __HIP_PLATFORM_AMD__
 #include "comms/utils/CudaRAII.h"
+#endif
 
 using namespace meta::comms;
 
@@ -268,6 +274,15 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, PutCooperativePartitioningBlock) {
 // timeout expires and does not interfere when the signal is already satisfied.
 // =============================================================================
 
+// The timeout-trap tests rely on `cudaErrorIllegalInstruction` /
+// `cudaErrorAssert` / `cudaErrorLaunchFailure` to detect a `__trap()` from
+// device code. HIP does not expose `hipErrorIllegalInstruction` and AMD's
+// trap surface differs from CUDA's. Skip the trap-detection block on AMD;
+// the underlying `wait_signal(timeout)` behavior is exercised by the AMD
+// `doca_compat_amd_smoke` build target (compile-time correctness) and can
+// be added once a HIP-specific trap-detection helper exists.
+#ifndef __HIP_PLATFORM_AMD__
+
 // Test fixture for timeout trap tests that resets the device after each test
 // to clear __trap() state.
 class P2pIbgdaWaitSignalTimeoutTest : public ::testing::Test {
@@ -334,6 +349,8 @@ TEST_F(P2pIbgdaWaitSignalTimeoutTest, WaitSignalNoTimeoutWhenSatisfied) {
       cudaMemcpy(&success, d_success, sizeof(bool), cudaMemcpyDeviceToHost));
   EXPECT_TRUE(success);
 }
+
+#endif // !__HIP_PLATFORM_AMD__
 
 } // namespace comms::pipes::tests
 

@@ -20,6 +20,7 @@
 #endif
 
 #include "comms/common/DeviceConstants.cuh"
+#include "comms/ctran/algos/DevCommon.cuh"
 #include "comms/ctran/utils/DevUtils.cuh"
 
 /* FIXME: We are not currently using vectorized arithmetic.  We only
@@ -188,24 +189,17 @@ __device__ __forceinline__ void localReduceVectorized(
   constexpr uint32_t kWordsPerWarp =
       comms::device::kWarpSize * kWordsPerVectorLoad * kUnroll;
 
-  // Per-block granularity matches `copyUnroll<4, T>`'s numPerBlock
-  // (`fbcode/comms/ctran/algos/DevCommon.cuh:391-442`):
-  // blockDim.x * (16/sizeof(T)) * 4 = warpsPerBlock * kWordsPerWarp.
-  // Rounding `limitCount` down to this granularity (instead of
-  // `kWordsPerWarp`) makes the per-CTA byte ownership of this main loop
-  // identical to copyUnroll's, so a single-designated-CTA tail (matching
-  // the fix Pavan applied in D69774173) is well-defined and avoids the
-  // cross-CTA read race when the same buffer is written by both writers
-  // in adjacent rounds with only per-CTA sync between them.
-  const uint32_t numPerBlock = blockDim.x * kWordsPerVectorLoad * kUnroll;
+  // Per-CTA byte ownership comes from the shared `ctaPartition<T, 4>`
+  // helper — same source of truth as `copyUnroll<4, T>` (and the
+  // fallback path below). Inner-loop unroll/vectorization stays
+  // specialized here.
+  const auto p = ctaPartition<T, /*Unroll16=*/4>(count, workerId, numWorkers);
+  const uint32_t limitCount = static_cast<uint32_t>(p.limitUnroll);
 
   const uint32_t linearThreadId = blockDim.x * workerId + threadIdx.x;
   const uint32_t warpId = linearThreadId / comms::device::kWarpSize;
   const uint32_t laneId = threadIdx.x % comms::device::kWarpSize;
   const uint32_t numWarps = numWorkers * blockDim.x / comms::device::kWarpSize;
-
-  const uint32_t u32Count = uint32_t(count);
-  const uint32_t limitCount = ctran::utils::roundDown(u32Count, numPerBlock);
 
   TVec s[kUnroll][NSrcs];
 
@@ -257,14 +251,8 @@ __device__ __forceinline__ void localReduceVectorized(
     }
   }
 
-  // Loop epilogue to handle remainder. Single designated CTA mirrors
-  // `copyUnroll`'s tail (DevCommon.cuh:436-441): the worker whose main-loop
-  // stride covers this part of the buffer handles the entire tail. Required
-  // for per-CTA byte-ownership equality with the copyUnroll-family writers
-  // (`ctranKernCopyRaw`, `ctranKernCopyMultiDestRaw`) when both are invoked
-  // on the same buffer in adjacent rounds with per-CTA sync only.
-  if (count != limitCount &&
-      workerId == ((limitCount / numPerBlock) % numWorkers)) {
+  // Single-CTA tail; ownership computed once in `ctaPartition` above.
+  if (p.ownsTail) {
     for (uint32_t i = limitCount + threadIdx.x; i < count; i += blockDim.x) {
       T s = srcs[0][i];
 #pragma unroll
@@ -310,73 +298,79 @@ __device__ __forceinline__ void localReduceFallback(
   constexpr int kVectors = CTRAN_MAX_NVL_PEERS;
   assert(nsrcs <= kVectors);
 
+  // Inner per-thread unroll — controls register pressure of the
+  // `T s[kUnroll][kVectors]` array. Independent from the outer
+  // byte-ownership unroll (see Unroll16 below); see static_assert for
+  // the divisibility invariant the two must satisfy.
   // FIXME: adjust unroll factor for this un-vectorized version
   constexpr uint32_t kUnroll = 8;
 
-  // Each warp will handle kUnroll values (warp contiguous and sequential)
-  // at a time
+  // Each warp handles kUnroll values per inner iteration (warp-contiguous,
+  // lane-stride 1, k-stride kWarpSize).
   constexpr uint32_t kWordsPerWarp = comms::device::kWarpSize * kUnroll;
 
-  // Per-block granularity = warpsPerBlock * kWordsPerWarp = blockDim.x *
-  // kUnroll. Rounding `limitCount` down to this (instead of
-  // `kWordsPerWarp`) makes the per-CTA byte ownership self-consistent
-  // for the fallback's own internal loop, so the single-designated-CTA
-  // tail below is well-defined.
-  //
-  // NOTE: this `numPerBlock` does NOT match `copyUnroll<4, T>`'s
-  // `blockDim.x * (16/sizeof(T)) * 4` for `sizeof(T) < 8`. Fallback is
-  // intentionally left on its own partition because (a) the ring AR
-  // path never hits this fallback (its inputs are 16-byte aligned, so
-  // the dispatcher in `localReduce` always picks `localReduceVectorized`),
-  // and (b) fully aligning fallback with copyUnroll requires
-  // re-architecting the per-warp unroll. If a future algorithm pairs
-  // `localReduceFallback` with a copyUnroll-family writer on the same
-  // buffer for `sizeof(T) < 8`, the partitions still disagree and a
-  // separate fix is needed there.
-  const uint32_t numPerBlock = blockDim.x * kUnroll;
+  // Outer per-CTA chunk size comes from the shared `ctaPartition<T, Unroll16>`
+  // helper — same source of truth as `copyUnroll<Unroll16, T>` and
+  // `localReduceVectorized`. The inner warp-strided loop below covers
+  // one chunk per outer iteration with the existing kUnroll=8 unroll;
+  // for `sizeof(T) < 8` this means multiple inner iterations per chunk
+  // (e.g. 2 for fp32, 4 for fp16). For `sizeof(T) == 8` chunk size
+  // matches the inner stride exactly and behavior is unchanged.
+  constexpr int kOuterUnroll16 = 4;
+  // Inner kUnroll must divide the per-thread T-element count of the
+  // outer per-CTA chunk; otherwise the inner warp-strided loop
+  // overshoots / misaligns the chunk owned by this CTA.
+  static_assert(
+      ((sizeof(uint4) / sizeof(T)) * kOuterUnroll16) % kUnroll == 0,
+      "kUnroll must divide (16/sizeof(T)) * kOuterUnroll16");
+  const auto p = ctaPartition<T, kOuterUnroll16>(count, workerId, numWorkers);
 
-  const uint32_t linearThreadId = blockDim.x * workerId + threadIdx.x;
-  const uint32_t globalWarpId = linearThreadId / comms::device::kWarpSize;
   const uint32_t laneId = threadIdx.x % comms::device::kWarpSize;
-  const uint32_t numGlobalWarps =
-      numWorkers * blockDim.x / comms::device::kWarpSize;
-
-  const size_t limitCount = ctran::utils::roundDown(count, size_t(numPerBlock));
+  const uint32_t blockWarpId = threadIdx.x / comms::device::kWarpSize;
+  const uint32_t warpsPerBlock = blockDim.x / comms::device::kWarpSize;
+  const size_t inBlockStride =
+      size_t(warpsPerBlock) * kWordsPerWarp; // = blockDim * kUnroll
 
   T s[kUnroll][kVectors];
 
-  for (size_t i = globalWarpId * kWordsPerWarp + laneId; i < limitCount;
-       i += numGlobalWarps * kWordsPerWarp) {
-    for (uint32_t j = 0; j < nsrcs; ++j) {
+  // Outer loop: per-CTA chunks, striped across CTAs.
+  for (size_t blockBase = size_t(workerId) * p.numPerBlock;
+       blockBase < p.limitUnroll;
+       blockBase += size_t(numWorkers) * p.numPerBlock) {
+    // Inner loop: this CTA covers [blockBase, blockBase + numPerBlock)
+    // using the warp-strided pattern.
+    for (size_t warpBase = blockBase + size_t(blockWarpId) * kWordsPerWarp;
+         warpBase < blockBase + p.numPerBlock;
+         warpBase += inBlockStride) {
+      const size_t i = warpBase + laneId;
+      for (uint32_t j = 0; j < nsrcs; ++j) {
 #pragma unroll
-      for (int k = 0; k < kUnroll; ++k) {
-        s[k][j] = *(&srcs[j][i + k * comms::device::kWarpSize]);
+        for (int k = 0; k < kUnroll; ++k) {
+          s[k][j] = *(&srcs[j][i + k * comms::device::kWarpSize]);
+        }
       }
-    }
 
-    // reduce vertically along the vectors
+      // reduce vertically along the vectors
 #pragma unroll
-    for (int j = 0; j < kUnroll; ++j) {
-      for (uint32_t k = 1; k < nsrcs; ++k) {
-        s[j][0] = reduceNcclOp1<T, RedOp>(s[j][0], s[j][k]);
-      }
+      for (int j = 0; j < kUnroll; ++j) {
+        for (uint32_t k = 1; k < nsrcs; ++k) {
+          s[j][0] = reduceNcclOp1<T, RedOp>(s[j][0], s[j][k]);
+        }
 
-      if constexpr (RedOp == commAvg) {
-        s[j][0] = s[j][0] / int(nRanks);
-      }
+        if constexpr (RedOp == commAvg) {
+          s[j][0] = s[j][0] / int(nRanks);
+        }
 
-      for (int d = 0; d < ndsts; ++d) {
-        dsts[d][i + j * comms::device::kWarpSize] = s[j][0];
+        for (int d = 0; d < ndsts; ++d) {
+          dsts[d][i + j * comms::device::kWarpSize] = s[j][0];
+        }
       }
     }
   }
 
-  // Loop epilogue to handle remainder. Single designated CTA mirrors
-  // `copyUnroll`'s tail (DevCommon.cuh:436-441); see the matching comment
-  // in localReduceVectorized for the per-CTA byte-ownership rationale.
-  if (count != limitCount &&
-      workerId == ((limitCount / numPerBlock) % numWorkers)) {
-    for (size_t i = limitCount + threadIdx.x; i < count; i += blockDim.x) {
+  // Single-CTA tail; ownership computed once in `ctaPartition` above.
+  if (p.ownsTail) {
+    for (size_t i = p.limitUnroll + threadIdx.x; i < count; i += blockDim.x) {
       T s = srcs[0][i];
 #pragma unroll
       for (int j = 1; j < nsrcs; ++j) {

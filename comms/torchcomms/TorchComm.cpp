@@ -4,6 +4,7 @@
 #include "comms/torchcomms/TorchCommFactory.hpp"
 
 #include <atomic>
+#include <limits>
 
 namespace torch::comms {
 
@@ -88,10 +89,17 @@ std::shared_ptr<TorchComm> new_comm(
 }
 
 void TorchComm::finalize() {
-  auto op_id = GlobalOpIdGenerator::instance().nextOpId();
-  preHook(op_id, FinalizePreHookArgs{});
+  // finalize is a lifecycle event, not a collective — don't consume a
+  // global op_id slot. Built-in hooks (FlightRecorder, Clog) all
+  // short-circuit on finalize, and FlightRecorder keys its ring-buffer
+  // slot off op_id. Bumping the global counter here would leave a hole
+  // in the FR's index space. Use a sentinel op_id instead so
+  // pre/post hooks still pair on the same value for finalize-aware
+  // Python custom hooks.
+  constexpr size_t kFinalizeOpId = std::numeric_limits<size_t>::max();
+  preHook(kFinalizeOpId, FinalizePreHookArgs{});
   impl_->finalize();
-  postHook(op_id, FinalizePostHookArgs{});
+  postHook(kFinalizeOpId, FinalizePostHookArgs{});
 }
 
 int TorchComm::getRank() const {
@@ -594,6 +602,10 @@ c10::intrusive_ptr<TorchWork> BatchSendRecv::issue(
 // Global memory allocator function implementation
 std::shared_ptr<c10::Allocator> get_mem_allocator(const std::string& backend) {
   return TorchCommFactory::get().get_allocator(backend);
+}
+
+std::shared_ptr<c10::Allocator> TorchComm::getMemAllocator() const {
+  return get_mem_allocator(backend_);
 }
 
 std::unique_ptr<RemovableHandle> TorchComm::registerPreHook(

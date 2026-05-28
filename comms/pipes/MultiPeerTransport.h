@@ -8,8 +8,16 @@
 #include <unordered_map>
 #include <vector>
 
+// `<cuda.h>` (driver API) and `<cuda_runtime.h>` are NVIDIA-only. On AMD,
+// `comms/pipes/GpuMemHandler.h` (included below) brings in the HIP
+// runtime headers under `#ifdef __HIP_PLATFORM_AMD__` and provides the
+// stand-in types needed for the `CUdeviceptr` /
+// `CUmemGenericAllocationHandle` member fields used by the
+// `NvlExchangeRecord`.
+#ifndef __HIP_PLATFORM_AMD__
 #include <cuda.h>
 #include <cuda_runtime.h>
+#endif
 
 #include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/pipes/GpuMemHandler.h"
