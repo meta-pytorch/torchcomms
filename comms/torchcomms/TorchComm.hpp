@@ -166,6 +166,13 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
 
   std::string_view getBackendVersion() const;
 
+  // Returns the symmetric (VMM-backed) CUDA allocator associated with this
+  // communicator's backend. Memory allocated through this allocator (e.g. via
+  // a `torch.cuda.MemPool`) is suitable for backends that require symmetric
+  // VMM memory for window registration and one-sided RMA (NCCL, NCCLX).
+  // Equivalent to `get_mem_allocator(getBackend())`.
+  std::shared_ptr<c10::Allocator> getMemAllocator() const;
+
   // Device Transport API — returns device pointer as int64 for Triton kernels.
   // Throws if not supported by the backend.
   int64_t get_device_transport();

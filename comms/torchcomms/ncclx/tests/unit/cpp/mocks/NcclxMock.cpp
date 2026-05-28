@@ -133,6 +133,8 @@ void NcclxMock::setupDefaultBehaviors() {
   ON_CALL(*this, devCommCreate(_, _, _)).WillByDefault(Return(ncclSuccess));
   ON_CALL(*this, devCommDestroy(_, _)).WillByDefault(Return(ncclSuccess));
   ON_CALL(*this, multimemSupport(_)).WillByDefault(Return(false));
+  ON_CALL(*this, ginConnectionSupport(_))
+      .WillByDefault(Return(NCCL_GIN_CONNECTION_RAIL));
 #endif
 }
 

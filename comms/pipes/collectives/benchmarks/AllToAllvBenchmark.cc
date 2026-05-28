@@ -2,17 +2,22 @@
 
 #include <folly/init/Init.h>
 #include <folly/logging/xlog.h>
-#include <nccl.h>
 #include <chrono>
+#ifndef __HIP_PLATFORM_AMD__
+#include <nccl.h>
+#endif
 
 #include "comms/common/CudaWrap.h"
 #include "comms/pipes/MultiPeerNvlTransport.h"
 #include "comms/pipes/TimeoutUtils.h"
+#include "comms/pipes/amd/HipHostCompat.h"
 #include "comms/pipes/benchmarks/BenchmarkMacros.h"
 #include "comms/pipes/collectives/AllToAllv.h"
 #include "comms/testinfra/BenchmarkTestFixture.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
+#ifndef __HIP_PLATFORM_AMD__
 #include "comms/utils/CudaRAII.h"
+#endif
 
 #include <iomanip>
 #include <sstream>
@@ -64,18 +69,23 @@ class AllToAllvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     // globalRank would fail on multi-node setups where rank > num_gpus_per_node
     CUDA_CHECK_VOID(cudaSetDevice(localRank));
 
+#ifndef __HIP_PLATFORM_AMD__
     // Initialize NCCL with default channel settings
     NCCL_CHECK_VOID(
         ncclCommInitRank(&ncclComm_, worldSize, getNCCLId(), globalRank));
+#endif
     CUDA_CHECK_VOID(cudaStreamCreate(&stream_));
   }
 
   void TearDown() override {
+#ifndef __HIP_PLATFORM_AMD__
     NCCL_CHECK_VOID(ncclCommDestroy(ncclComm_));
+#endif
     CUDA_CHECK_VOID(cudaStreamDestroy(stream_));
     BenchmarkTestFixture::TearDown();
   }
 
+#ifndef __HIP_PLATFORM_AMD__
   ncclUniqueId getNCCLId() {
     ncclUniqueId id;
     if (globalRank == 0) {
@@ -198,6 +208,7 @@ class AllToAllvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
 
     return bandwidth_GBps;
   }
+#endif // __HIP_PLATFORM_AMD__
 
   /**
    * Run AllToAllv benchmark.
@@ -415,7 +426,9 @@ class AllToAllvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     XLOG(INFO) << ss.str();
   }
 
+#ifndef __HIP_PLATFORM_AMD__
   ncclComm_t ncclComm_{};
+#endif
   cudaStream_t stream_{};
 };
 
@@ -622,7 +635,10 @@ TEST_F(AllToAllvBenchmarkFixture, OptimalConfigs) {
 
   for (const auto& config : configs) {
     float ncclLatencyUs = 0.0f;
-    float ncclBandwidth = runNcclAllToAllvBenchmark(config, ncclLatencyUs);
+    float ncclBandwidth = 0.0f;
+#ifndef __HIP_PLATFORM_AMD__
+    ncclBandwidth = runNcclAllToAllvBenchmark(config, ncclLatencyUs);
+#endif
 
     float alltoallvLatencyUs = 0.0f;
     float alltoallvBandwidth =
@@ -639,7 +655,8 @@ TEST_F(AllToAllvBenchmarkFixture, OptimalConfigs) {
       result.alltoallvBandwidth = alltoallvBandwidth;
       result.ncclLatency = ncclLatencyUs;
       result.alltoallvLatency = alltoallvLatencyUs;
-      result.speedup = alltoallvBandwidth / ncclBandwidth;
+      result.speedup =
+          (ncclBandwidth > 0.0f) ? (alltoallvBandwidth / ncclBandwidth) : 0.0f;
       results.push_back(result);
     }
 

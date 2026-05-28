@@ -354,6 +354,10 @@ class NcclxApi {
 
   // Query whether the communicator supports NVLS multicast (multimem).
   [[nodiscard]] virtual bool multimemSupport(ncclComm_t comm) = 0;
+
+  // Query the best GIN connection type supported by the communicator.
+  [[nodiscard]] virtual ncclGinConnectionType_t ginConnectionSupport(
+      ncclComm_t comm) = 0;
 #endif
 
 #if defined(ENABLE_PIPES)
@@ -693,6 +697,9 @@ class DefaultNcclxApi : public NcclxApi {
   [[nodiscard]] ncclTeam_t teamLsa(ncclComm_t comm) override;
 
   [[nodiscard]] bool multimemSupport(ncclComm_t comm) override;
+
+  [[nodiscard]] ncclGinConnectionType_t ginConnectionSupport(
+      ncclComm_t comm) override;
 #endif
 
 #if defined(ENABLE_PIPES)

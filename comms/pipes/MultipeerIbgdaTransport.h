@@ -11,13 +11,23 @@
 #include <unordered_map>
 #include <vector>
 
+// Host-side DOCA APIs are NVIDIA-only. On AMD, `DocaCompat.h`
+// translates both device-side and host-side `doca_*` symbols to the
+// `pipes_gda_*` APIs implemented in `amd/pipes_gda/PipesGdaHost.{h,cc}`,
+// backed by HSA + raw mlx5dv + libibverbs.
+#ifdef __HIP_PLATFORM_AMD__
+#include "comms/pipes/amd/DocaCompat.h"
+#else
 #include <doca_gpunetio_host.h>
 #include "doca_verbs_net_wrapper.h"
+#endif
 
 #include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/pipes/IbgdaBuffer.h"
 #include "comms/pipes/IbverbsLazy.h"
+#ifndef __HIP_PLATFORM_AMD__
 #include "comms/utils/CudaRAII.h"
+#endif
 
 // Forward declarations for device types (defined in .cuh files)
 namespace comms::pipes {
@@ -117,7 +127,13 @@ struct MultipeerIbgdaTransportConfig {
 
   // Queue pair depth (number of outstanding WQEs per peer).
   // Higher values allow more pipelining but use more memory.
+  // BNXT bumps the default because qpDepth also sizes msn_tbl_sz on bnxt_re;
+  // cumulative WQEs across all tests must stay under it or the NIC hangs.
+#ifdef NIC_BNXT
+  uint32_t qpDepth{2048};
+#else
   uint32_t qpDepth{1024};
+#endif
 
   // Number of QP sets per (peer, NIC). Each set = main QP + companion QP +
   // loopback. With multi-NIC, total QPs to a peer = numQpsPerPeerPerNic *

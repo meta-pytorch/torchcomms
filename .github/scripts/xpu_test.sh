@@ -5,16 +5,8 @@ set -ex
 export ZE_FLAT_DEVICE_HIERARCHY=FLAT
 export CCL_TOPO_FABRIC_VERTEX_CONNECTION_CHECK=0
 
-#source Deep Learning Essentials components
-export TCM_ROOT=${DLE_PATH}/tcm/latest
-export LD_LIBRARY_PATH="${TCM_ROOT}/lib":${LD_LIBRARY_PATH}
-
-source ${DLE_PATH}/umf/latest/env/vars.sh
-source ${DLE_PATH}/compiler/latest/env/vars.sh
-source ${DLE_PATH}/tbb/latest/env/vars.sh
-source ${DLE_PATH}/ccl/latest/env/vars.sh
-source ${DLE_PATH}/pti/latest/env/vars.sh
-source ${DLE_PATH}/mkl/latest/env/vars.sh
+#Source Intel Deep Learning Essentials
+source ${DLE_PATH}/setvars.sh
 
 #Create Conda Env and install dependencies
 conda create -yn xpu_torchcomms_ci-${RUNNER_NAME} python=3.10

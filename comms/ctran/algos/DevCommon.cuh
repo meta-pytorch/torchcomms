@@ -384,6 +384,41 @@ copy(uint4* dst, const volatile uint4* src, size_t count) {
   }
 }
 
+// Per-CTA byte-ownership partition shared by every writer/reader family
+// that touches a buffer paired with `copyUnroll<Unroll16, T>`.
+//
+// The invariant any two such functions must satisfy: every byte of any
+// shared buffer must map to the same CTA in both. When that fails, a
+// later round's CTA can read or overwrite bytes a different CTA in the
+// earlier round hasn't yet committed — under per-CTA-only sync this is
+// undefined behavior (D69774173, S651852).
+//
+// Computing the partition in exactly one place makes the invariant
+// hold by construction. Inner-loop details (unroll factor, vectorized
+// vs scalar loads) remain free per writer; only the outer
+// per-CTA chunk size is fixed here.
+struct CtaPartition {
+  size_t numPerBlock; // per-CTA chunk size in T elements
+  size_t limitUnroll; // = roundDown(count, numPerBlock); identical across CTAs
+  bool ownsTail; // exactly one CTA per launch returns true
+};
+
+template <typename T, int Unroll16>
+__device__ __forceinline__ CtaPartition
+ctaPartition(size_t count, int groupIdx, int nGroups) {
+  // numPerBlock = blockDim * (16/sizeof(T)) * Unroll16. Keeping the
+  // sizeof(T) factor here is what guarantees that two writers
+  // instantiated with the same Unroll16 but different T's still agree
+  // on per-byte ownership (each block owns the same 16-byte region
+  // regardless of T).
+  constexpr int kTPer16Bytes = sizeof(uint4) / sizeof(T);
+  const size_t numPerBlock = blockDim.x * kTPer16Bytes * Unroll16;
+  const size_t limitUnroll = ctran::utils::roundDown(count, numPerBlock);
+  const bool ownsTail = (count != limitUnroll) &&
+      (groupIdx == ((limitUnroll / numPerBlock) % nGroups));
+  return {numPerBlock, limitUnroll, ownsTail};
+}
+
 // Thread blocks with the same groupIdx must own the same area of shared memory
 // in order to avoid race conditions. When a send and receive have mismatching
 // data types (one will have uint4 and the other will have T), each thread
@@ -391,26 +426,15 @@ copy(uint4* dst, const volatile uint4* src, size_t count) {
 template <int Unroll16, typename T>
 __device__ __forceinline__ void
 copyUnroll(T* dst, const T* src, size_t count, int groupIdx, int nGroups) {
-  // How many Ts are in a uint4-equivalent
+  // How many Ts are in a uint4-equivalent.
   constexpr int kTPer16Bytes = sizeof(uint4) / sizeof(T);
-
-  // Unroll16 is how many uint4-equivalents we load/store each iteration
+  // Unroll16 is how many uint4-equivalents we load/store each iteration.
   constexpr int kUnroll = kTPer16Bytes * Unroll16;
 
-  auto numPerBlock = blockDim.x * kUnroll;
-  auto limitUnroll = ctran::utils::roundDown(count, numPerBlock);
+  const auto p = ctaPartition<T, Unroll16>(count, groupIdx, nGroups);
 
-  // Some number of CTAs (groupIdx) will fit into this loop, and we may have
-  // some remainder which is guaranteed to lie in a single CTA (groupIdx), as
-  // limitUnroll is a multiple of the number of T elements handled per groupIdx
-  //
-  // As per the comment at the top of the function, we guarantee that each
-  // groupIdx handles a contiguous block of blockDim.x * Unroll16 * 16 bytes of
-  // data regardless of data type T passed, thus guaranteeing the same
-  // writer groupIdx would always touch the same region of memory.
-
-  for (size_t i = groupIdx * numPerBlock + threadIdx.x; i < limitUnroll;
-       i += nGroups * numPerBlock) {
+  for (size_t i = groupIdx * p.numPerBlock + threadIdx.x; i < p.limitUnroll;
+       i += nGroups * p.numPerBlock) {
     T v[kUnroll];
 
 #pragma unroll
@@ -424,18 +448,11 @@ copyUnroll(T* dst, const T* src, size_t count, int groupIdx, int nGroups) {
     }
   }
 
-  // remainder epilogue
-
-  // To avoid issues of trying to slice up the remaining data among CTAs and
-  // having different CTAs access different regions of memory, just give it to
-  // the group that is responsible for that part of the temporary
-  // buffer.
-  // The maximum number of bytes remaining to copy is
-  // less than blockDim.x * kUnroll * sizeof(T)
-  // e.g., 640 x 4 x 16 = less than 40 kiB, so not huge
-  if (count != limitUnroll &&
-      groupIdx == ((limitUnroll / numPerBlock) % nGroups)) {
-    for (size_t i = limitUnroll + threadIdx.x; i < count; i += blockDim.x) {
+  // Single-CTA tail: the owner under ctaPartition handles all remaining bytes.
+  // Tail size < numPerBlock < blockDim * kUnroll * sizeof(T) (~40 kiB
+  // worst case), so this is cheap.
+  if (p.ownsTail) {
+    for (size_t i = p.limitUnroll + threadIdx.x; i < count; i += blockDim.x) {
       dst[i] = src[i];
     }
   }
@@ -468,14 +485,15 @@ __device__ __forceinline__ void copyUnroll(
     return;
   }
 
+  // How many Ts are in a uint4-equivalent.
   constexpr int kTPer16Bytes = sizeof(uint4) / sizeof(T);
+  // Unroll16 is how many uint4-equivalents we load/store each iteration.
   constexpr int kUnroll = kTPer16Bytes * Unroll16;
 
-  auto numPerBlock = blockDim.x * kUnroll;
-  auto limitUnroll = ctran::utils::roundDown(count, numPerBlock);
+  const auto p = ctaPartition<T, Unroll16>(count, groupIdx, nGroups);
 
-  for (size_t i = groupIdx * numPerBlock + threadIdx.x; i < limitUnroll;
-       i += nGroups * numPerBlock) {
+  for (size_t i = groupIdx * p.numPerBlock + threadIdx.x; i < p.limitUnroll;
+       i += nGroups * p.numPerBlock) {
     T v[kUnroll];
 
 #pragma unroll
@@ -490,9 +508,9 @@ __device__ __forceinline__ void copyUnroll(
     }
   }
 
-  if (count != limitUnroll &&
-      groupIdx == ((limitUnroll / numPerBlock) % nGroups)) {
-    for (size_t i = limitUnroll + threadIdx.x; i < count; i += blockDim.x) {
+  // Single-CTA tail; ownership computed once in `ctaPartition` above.
+  if (p.ownsTail) {
+    for (size_t i = p.limitUnroll + threadIdx.x; i < count; i += blockDim.x) {
       T val = src[i];
       dst1[i] = val;
       dst2[i] = val;

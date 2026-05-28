@@ -434,6 +434,7 @@ void StagedRdmaTransportBase::initIbResources() {
 void StagedRdmaTransportBase::ensureCudaStream() {
   if (!stream_) {
     stream_ = getSharedStagedStream(cudaDev_);
+    CUDA_CHECK(cudaSetDevice(cudaDev_));
   }
 }
 

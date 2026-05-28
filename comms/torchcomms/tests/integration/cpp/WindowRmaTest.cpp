@@ -22,9 +22,7 @@ void WindowRmaTest::SetUp() {
   rank_ = torchcomm_->getRank();
   num_ranks_ = torchcomm_->getSize();
   device_index_ = rank_ % at::cuda::device_count();
-
-  // Get allocator using global function - obtained once and reused
-  allocator_ = torch::comms::get_mem_allocator(torchcomm_->getBackend());
+  allocator_ = torchcomm_->getMemAllocator();
 }
 
 // Called after EACH test run - destroy instance
@@ -47,11 +45,9 @@ void WindowRmaTest::testWindowPutBasic(
   auto put_stream = at::cuda::getStreamFromPool(false, device_index_);
   auto wait_stream = at::cuda::getStreamFromPool(false, device_index_);
 
-  // Create tensor with different values based on rank
-  at::Tensor input_tensor = createWindowRmaTensor(rank_, count, dtype);
-
-  // Get global allocator for the backend and create MemPool for RDMA-compatible
-  // memory
+  // Both the source tensor and the destination window must live in the
+  // NCCL mempool — the upstream window APIs require buffers to be inside a
+  // symmetric VMM-backed registered segment.
   auto cuda_allocator =
       torch::comms::get_mem_allocator(torchcomm_->getBackend());
   auto mem_pool = std::make_unique<at::cuda::MemPool>(
@@ -59,13 +55,9 @@ void WindowRmaTest::testWindowPutBasic(
           cuda_allocator));
   c10::cuda::CUDACachingAllocator::beginAllocateToPool(
       mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
-
-  // Allocate tensor from pool
-  at::Tensor tensor;
   auto options = at::TensorOptions().dtype(dtype).device(device_type_);
-  tensor = at::ones({count * num_ranks_}, options);
-
-  // End pool context immediately after allocation (Python: context exits here)
+  at::Tensor input_tensor = createWindowRmaTensor(rank_, count, dtype);
+  at::Tensor tensor = at::ones({count * num_ranks_}, options);
   c10::cuda::CUDACachingAllocator::endAllocateToPool(
       mem_pool->device(), mem_pool->id());
 
@@ -93,19 +85,10 @@ void WindowRmaTest::testWindowPutBasic(
         wait_stream);
   }
 
-  // Cleanup sequence
-  // 1. Sync streams before deregistering
   put_stream.synchronize();
   wait_stream.synchronize();
-
-  // 2. Deregister tensor from window (collective operation with internal
-  // barriers)
   win->tensor_deregister();
-
-  // 3. Explicitly destroy the window object
   win.reset();
-
-  // 4. Reset memory pool (matching Python's del pool)
   mem_pool.reset();
 }
 
@@ -122,11 +105,7 @@ void WindowRmaTest::testWindowPutWithTensorInNewWindow(
   auto put_stream = at::cuda::getStreamFromPool(false, device_index_);
   auto wait_stream = at::cuda::getStreamFromPool(false, device_index_);
 
-  // Create tensor with different values based on rank
-  at::Tensor input_tensor = createWindowRmaTensor(rank_, count, dtype);
-
-  // Get global allocator for the backend and create MemPool for RDMA-compatible
-  // memory
+  // Source and destination tensors must come from the NCCL mempool.
   auto cuda_allocator =
       torch::comms::get_mem_allocator(torchcomm_->getBackend());
   auto mem_pool = std::make_unique<at::cuda::MemPool>(
@@ -134,13 +113,9 @@ void WindowRmaTest::testWindowPutWithTensorInNewWindow(
           cuda_allocator));
   c10::cuda::CUDACachingAllocator::beginAllocateToPool(
       mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
-
-  // Allocate tensor from pool
-  at::Tensor tensor;
   auto options = at::TensorOptions().dtype(dtype).device(device_type_);
-  tensor = at::ones({count * num_ranks_}, options);
-
-  // End pool context immediately after allocation (Python: context exits here)
+  at::Tensor input_tensor = createWindowRmaTensor(rank_, count, dtype);
+  at::Tensor tensor = at::ones({count * num_ranks_}, options);
   c10::cuda::CUDACachingAllocator::endAllocateToPool(
       mem_pool->device(), mem_pool->id());
 

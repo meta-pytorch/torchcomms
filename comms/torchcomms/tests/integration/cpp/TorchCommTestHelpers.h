@@ -37,9 +37,11 @@ inline bool isRunningOnCPU() {
   return test_device_env && std::string(test_device_env) == "cpu";
 }
 
-// Check if RMA tests should be skipped. RMA window ops require the ncclx
-// backend with CTran enabled. Returns empty string if tests should run, or a
-// non-empty skip reason string.
+// Check if RMA tests should be skipped. RMA window ops are supported by:
+//   - the ncclx backend with CTran enabled, or
+//   - the nccl backend on NCCL 2.29+ (via ncclCommWindowRegister /
+//     ncclPutSignal / ncclSignal / ncclWaitSignal).
+// Returns empty string if tests should run, or a non-empty skip reason string.
 inline std::string shouldSkipRmaTest() {
   const auto envLower = [](const char* name) {
     const char* val = std::getenv(name);
@@ -52,13 +54,20 @@ inline std::string shouldSkipRmaTest() {
     const auto s = envLower(name);
     return s == "1" || s == "y" || s == "yes" || s == "t" || s == "true";
   };
-  if (envLower("TEST_BACKEND") != "ncclx") {
-    return "RMA window ops require ncclx backend";
+  const auto backend = envLower("TEST_BACKEND");
+  if (backend == "ncclx") {
+    if (!envBool("NCCL_CTRAN_ENABLE")) {
+      return "RMA window ops require ctran (NCCL_CTRAN_ENABLE not set)";
+    }
+    return "";
   }
-  if (!envBool("NCCL_CTRAN_ENABLE")) {
-    return "RMA window ops require ctran (NCCL_CTRAN_ENABLE not set)";
+  if (backend == "nccl") {
+    // The NCCL backend uses ncclCommWindowRegister / ncclPutSignal which are
+    // only available on NCCL 2.29+. Runtime version check happens in the
+    // backend; we just allow the test to run here.
+    return "";
   }
-  return "";
+  return "RMA window ops require ncclx or nccl backend";
 }
 
 // Convert a tensor to a string representation with nested brackets for each

@@ -7,7 +7,6 @@ import os
 import unittest
 
 import torch
-import torchcomms
 from torchcomms import TorchCommWinAccessType
 from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
     get_dtype_name,
@@ -18,16 +17,29 @@ from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
 def _should_skip_rma_test():
     """Check if RMA tests should be skipped.
 
-    RMA window ops require the ncclx backend with CTran enabled.
+    RMA window ops are supported by:
+      - the ncclx backend with CTran enabled, or
+      - the nccl backend on NCCL 2.29+ (via ncclCommWindowRegister /
+        ncclPutSignal / ncclSignal / ncclWaitSignal).
     Returns (should_skip, reason) where should_skip is a bool and reason is the
     skip message (only meaningful when should_skip is True).
     """
-    if os.getenv("TEST_BACKEND", "").lower() != "ncclx":
-        return True, "RMA window ops require ncclx backend"
-    # Match NCCL's env2bool: y/yes/t/true/1 are truthy (case-insensitive)
-    if os.getenv("NCCL_CTRAN_ENABLE", "").lower() not in ("1", "y", "yes", "t", "true"):
-        return True, "RMA window ops require ctran (NCCL_CTRAN_ENABLE not set)"
-    return False, ""
+    backend = os.getenv("TEST_BACKEND", "").lower()
+    if backend == "ncclx":
+        # Match NCCL's env2bool: y/yes/t/true/1 are truthy (case-insensitive)
+        if os.getenv("NCCL_CTRAN_ENABLE", "").lower() not in (
+            "1",
+            "y",
+            "yes",
+            "t",
+            "true",
+        ):
+            return True, "RMA window ops require ctran (NCCL_CTRAN_ENABLE not set)"
+        return False, ""
+    if backend == "nccl":
+        # NCCL 2.29+ runtime check happens in the backend at new_window() time.
+        return False, ""
+    return True, "RMA window ops require ncclx or nccl backend"
 
 
 _rma_skip, _rma_skip_reason = _should_skip_rma_test()
@@ -45,9 +57,27 @@ class WindowRmaTest(unittest.TestCase):
         self.rank = self.torchcomm.get_rank()
         self.num_ranks = self.torchcomm.get_size()
         self.device = self.torchcomm.get_device()
+        self.allocator = self.torchcomm.get_mem_allocator()
 
-        # Get allocator using global function - obtained once and reused
-        self.allocator = torchcomms.get_mem_allocator(self.torchcomm.get_backend())
+        # Probe NCCL symmetric-window support. NCCL_WIN_COLL_SYMMETRIC needs a
+        # transport that can expose VMM-backed memory across ranks (NVLink
+        # intra-node or IB inter-node). On hosts without either, NCCL leaves
+        # the window handle null and the backend now surfaces that as a
+        # ncclInvalidUsage. The probe is itself collective, so every rank
+        # either succeeds together or skips together.
+        if self.torchcomm.get_backend() == "nccl":
+            pool = torch.cuda.MemPool(self.allocator)
+            with torch.cuda.use_mem_pool(pool):
+                probe_buf = torch.empty(1, dtype=torch.float, device=self.device)
+            try:
+                probe_win = self.torchcomm.new_window()
+                probe_win.tensor_register(probe_buf)
+                probe_win.tensor_deregister()
+            except RuntimeError as e:
+                self.skipTest(
+                    "NCCL symmetric window registration unsupported on this "
+                    f"hardware (need NVLink or InfiniBand): {e}"
+                )
 
     def tearDown(self):
         self.allocator = None
@@ -70,18 +100,15 @@ class WindowRmaTest(unittest.TestCase):
         put_stream = torch.cuda.Stream()
         wait_stream = torch.cuda.Stream()
 
-        # Create input tensor (regular allocation)
-        input_tensor = (
-            torch.ones(
-                [count],
-                dtype=dtype,
-                device=self.device,
-            )
-            * self.rank
-        )
-        # Use the global allocator obtained in setUp
+        # Both the source tensor and the destination window must live in the
+        # NCCL mempool: backends like the upstream NCCL window APIs require
+        # the buffer to be inside a symmetric (VMM-backed) registered
+        # segment.
         pool = torch.cuda.MemPool(self.allocator)
         with torch.cuda.use_mem_pool(pool):
+            input_tensor = torch.full(
+                [count], self.rank, dtype=dtype, device=self.device
+            )
             win_buf = torch.ones(
                 [count * self.num_ranks], dtype=dtype, device=self.device
             )
@@ -157,8 +184,7 @@ class WindowRmaTest(unittest.TestCase):
             f"Testing map_remote_tensor_device_agnostic with count={count}, dtype={get_dtype_name(dtype)}"
         )
 
-        # Create memory pool and allocate window buffer within it
-        pool = torch.cuda.MemPool(self.torchcomm.mem_allocator)
+        pool = torch.cuda.MemPool(self.allocator)
         with torch.cuda.use_mem_pool(pool):
             win_buf = torch.arange(
                 count * self.num_ranks, dtype=dtype, device=self.device

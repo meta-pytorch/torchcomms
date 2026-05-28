@@ -450,11 +450,6 @@ __global__ void ncclKernelAllGatherCtranRing(
     CtranAlgoDeviceState* devState,
     ctran::allgather::KernelArgs args);
 
-__global__ void ncclKernelAllGatherCtranGpeStub(
-    int* flag,
-    CtranAlgoDeviceState* devState,
-    ctran::allgather::KernelArgs args);
-
 template <typename T, commRedOp_t RedOp>
 __global__ void ncclKernelAllReduceCtranDirect(
     int* flag,

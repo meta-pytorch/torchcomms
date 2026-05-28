@@ -10,6 +10,11 @@
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/utils/DevUtils.cuh"
 
+__global__ void ncclKernelAllGatherCtranStreamedRd(
+    int* flag,
+    CtranAlgoDeviceState* devState,
+    ctran::allgather::KernelArgs args);
+
 namespace {
 
 using ctran::algos::PersistPlanKey;
@@ -175,7 +180,7 @@ commResult_t ctranAllGatherStreamedRd(
       std::move(opGroup),
       impl,
       config,
-      reinterpret_cast<void*>(ncclKernelAllGatherCtranGpeStub)));
+      reinterpret_cast<void*>(ncclKernelAllGatherCtranStreamedRd)));
   if (extraCopyBuff != nullptr) {
     FB_CUDACHECK(cudaMemcpyAsync(
         recvbuff,
