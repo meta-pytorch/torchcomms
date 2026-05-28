@@ -6,7 +6,7 @@
 #
 
 ENABLE_TCPDM ?= 0
-ENABLE_PIPES ?= 0
+ENABLE_PIPES ?= 1
 
 # Assuming calling from src directory
 SRCDIR = $(abspath ./)
