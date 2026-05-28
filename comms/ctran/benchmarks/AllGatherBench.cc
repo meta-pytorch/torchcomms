@@ -181,9 +181,6 @@ enum NCCL_ALLGATHER_ALGO parseCtranAlgo(const std::string& algo) {
   if (algo == "ctdirect") {
     return NCCL_ALLGATHER_ALGO::ctdirect;
   }
-  if (algo == "ctrd") {
-    return NCCL_ALLGATHER_ALGO::ctrd;
-  }
   if (algo == "ctbrucks") {
     return NCCL_ALLGATHER_ALGO::ctbrucks;
   }
