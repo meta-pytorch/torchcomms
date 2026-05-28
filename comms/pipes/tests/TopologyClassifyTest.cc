@@ -160,6 +160,74 @@ TEST(TopologyClassifyTest, MnnvlMixedAvailability) {
   EXPECT_EQ(result.nvlPeerRanks[0], 1);
 }
 
+// A caller-provided logical NVL rank group constrains raw MNNVL discovery.
+TEST(TopologyClassifyTest, LogicalNvlRanksRestrictMnnvlTier1) {
+  constexpr int64_t kUuid = 0xAAAABBBBCCCCDDDD;
+  constexpr unsigned int kCliqueId = 1;
+
+  std::vector<RankTopologyInfo> allInfo = {
+      make_mnnvl_rank_info("host0", 0, kUuid, kCliqueId),
+      make_mnnvl_rank_info("host0", 1, kUuid, kCliqueId),
+      make_mnnvl_rank_info("host1", 0, kUuid, kCliqueId),
+      make_mnnvl_rank_info("host1", 1, kUuid, kCliqueId),
+      make_mnnvl_rank_info("host2", 0, kUuid, kCliqueId),
+      make_mnnvl_rank_info("host2", 1, kUuid, kCliqueId),
+      make_mnnvl_rank_info("host3", 0, kUuid, kCliqueId),
+      make_mnnvl_rank_info("host3", 1, kUuid, kCliqueId),
+  };
+
+  TopologyDiscovery topo;
+  TopologyConfig config;
+  config.logicalNvlRanks = std::vector<int>{4, 5, 6, 7};
+  auto result = topo.classify(/*myRank=*/4, /*nRanks=*/8, allInfo, config);
+
+  ASSERT_EQ(result.nvlPeerRanks.size(), 3u);
+  EXPECT_EQ(result.nvlPeerRanks[0], 5);
+  EXPECT_EQ(result.nvlPeerRanks[1], 6);
+  EXPECT_EQ(result.nvlPeerRanks[2], 7);
+  EXPECT_EQ(result.globalToNvlLocal.at(4), 0);
+  EXPECT_EQ(result.globalToNvlLocal.at(5), 1);
+  EXPECT_EQ(result.globalToNvlLocal.at(6), 2);
+  EXPECT_EQ(result.globalToNvlLocal.at(7), 3);
+  EXPECT_EQ(result.globalToNvlLocal.count(0), 0u);
+}
+
+// The same logical group constraint also applies to same-host Tier 2 peers.
+TEST(TopologyClassifyTest, LogicalNvlRanksRestrictSameHostTier2) {
+  std::vector<RankTopologyInfo> allInfo = {
+      make_rank_info("host0", 0),
+      make_rank_info("host0", 1),
+      make_rank_info("host0", 2),
+      make_rank_info("host0", 3),
+  };
+
+  TopologyDiscovery topo(always_can_access);
+  TopologyConfig config;
+  config.logicalNvlRanks = std::vector<int>{2, 3};
+  auto result = topo.classify(/*myRank=*/2, /*nRanks=*/4, allInfo, config);
+
+  ASSERT_EQ(result.nvlPeerRanks.size(), 1u);
+  EXPECT_EQ(result.nvlPeerRanks[0], 3);
+  EXPECT_EQ(result.globalToNvlLocal.at(2), 0);
+  EXPECT_EQ(result.globalToNvlLocal.at(3), 1);
+  EXPECT_EQ(result.globalToNvlLocal.count(0), 0u);
+  EXPECT_EQ(result.globalToNvlLocal.count(1), 0u);
+}
+
+TEST(TopologyClassifyTest, LogicalNvlRanksMustIncludeSelf) {
+  std::vector<RankTopologyInfo> allInfo = {
+      make_rank_info("host0", 0),
+      make_rank_info("host0", 1),
+  };
+
+  TopologyDiscovery topo(always_can_access);
+  TopologyConfig config;
+  config.logicalNvlRanks = std::vector<int>{1};
+  EXPECT_THROW(
+      topo.classify(/*myRank=*/0, /*nRanks=*/2, allInfo, config),
+      std::runtime_error);
+}
+
 // =============================================================================
 // MnnvlMode tests
 // =============================================================================
