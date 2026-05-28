@@ -150,6 +150,18 @@ class BackendWrapper : public c10d::Backend {
       const std::vector<int>& ranks,
       const c10::intrusive_ptr<c10d::Backend::Options>& opts) override;
 
+  // Called by torch.distributed.destroy_process_group(). Calls
+  // TorchComm::finalize() to drain in-flight work and close the comm
+  // gracefully — without this override the inherited base no-op leaves the
+  // communicator alive and the destructor's synchronous ncclCommDestroy
+  // can deadlock against the NCCL GC thread holding Work refs.
+  void shutdown() override;
+
+  // Called by destroy_process_group when the user wants forceful teardown.
+  // Delegates to TorchComm::abort() which uses graceful revoke in
+  // reconfigurable mode and destructive abort otherwise.
+  void abort() override;
+
  private:
   std::shared_ptr<TorchComm> comm_;
   c10::intrusive_ptr<Options> options_;
