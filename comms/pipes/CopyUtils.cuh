@@ -5,7 +5,7 @@
 #include <cuda_runtime.h>
 
 #include <cstddef>
-#include "comms/pipes/HipCompat.cuh"
+#include "comms/pipes/amd/HipHostCompat.h"
 
 #include "comms/pipes/ThreadGroup.cuh"
 

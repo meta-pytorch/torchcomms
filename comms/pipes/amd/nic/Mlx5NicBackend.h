@@ -48,9 +48,9 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "HipDeviceCompat.h" // @manual
 #include "nic/Mlx5Hsi.h" // @manual
-#include "verbs/AmdVerbsCompat.h" // @manual
-#include "verbs/VerbsDev.h" // @manual
+#include "pipes_gda/PipesGdaDev.h" // @manual
 
 namespace pipes_gda {
 

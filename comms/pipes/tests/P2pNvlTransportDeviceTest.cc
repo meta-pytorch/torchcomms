@@ -1243,6 +1243,15 @@ TEST_F(P2pNvlTransportDeviceTwoGpuFixture, DeviceResetSignalTwoGpu) {
 // =============================================================================
 
 TEST_F(P2pNvlTransportDeviceTwoGpuFixture, Ll128SendRecv_4KB) {
+#ifdef __HIP_PLATFORM_AMD__
+  // TODO: AMD port. The LL128 protocol uses `__syncwarp(uint32_t mask)` which
+  // requires a 64-bit mask on AMD's 64-lane wavefront (uint32_t is rejected
+  // by `amd_warp_sync_functions.h`). Underlying `comms/pipes/ll128/Ll128Ops`
+  // also uses CUDA-only intrinsics like `comms::device::ld_volatile_global`.
+  // Needs proper AMD-side intrinsic shims before this test can pass.
+  GTEST_SKIP() << "Ll128 not yet ported to AMD (warp sync mask type, "
+                  "device intrinsic shims). See TODO above.";
+#else
   // 4KB transfer via LL128 protocol through P2pNvlTransportDevice wrappers.
   // Verifies that the transport correctly wires ll128Buffer pointers and
   // delegates to the free functions.
@@ -1250,11 +1259,16 @@ TEST_F(P2pNvlTransportDeviceTwoGpuFixture, Ll128SendRecv_4KB) {
       /*nbytes=*/4096,
       /*numBlocks=*/1,
       /*blockSize=*/256);
+#endif
 }
 
 TEST_F(P2pNvlTransportDeviceTwoGpuFixture, Ll128SendRecv_4KB_Chunked_8pkt) {
+#ifdef __HIP_PLATFORM_AMD__
+  GTEST_SKIP() << "Ll128 not yet ported to AMD (see Ll128SendRecv_4KB TODO).";
+#else
   runLl128LoopbackTest(
       4096, /*numBlocks=*/1, /*blockSize=*/256, /*ll128BufferNumPackets=*/8);
+#endif
 }
 
 } // namespace comms::pipes

@@ -39,7 +39,7 @@
 #define PIPES_GDA_VERBS_DEV_H
 
 #include "nic/Mlx5Hsi.h" // @manual
-#include "verbs/VerbsDef.h" // @manual
+#include "pipes_gda/PipesGdaDef.h" // @manual
 
 #ifdef __cplusplus
 extern "C" {

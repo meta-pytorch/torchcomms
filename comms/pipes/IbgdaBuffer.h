@@ -8,7 +8,7 @@
 
 #include <endian.h>
 
-#include "comms/pipes/HipCompat.cuh"
+#include "comms/pipes/amd/HipHostCompat.h"
 #include "comms/pipes/rdma/NicConstants.h"
 
 // Allow compilation in both host (C++) and device (CUDA/HIP) contexts
