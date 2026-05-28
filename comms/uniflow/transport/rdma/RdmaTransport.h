@@ -23,6 +23,7 @@ constexpr uint8_t kRdmaVersion{1};
 // Forward declarations.
 class RdmaRegistrationHandle;
 class RdmaRemoteRegistrationHandle;
+class RdmaSlab;
 class RdmaSlabPool;
 
 /*
@@ -73,6 +74,7 @@ struct RdmaTransportInfo {
     uint8_t numNics{0};
     uint32_t numQps{0};
     uint64_t domainId{0};
+    uint32_t slabSize{0};
   };
   /* Per-NIC addressing info in the wire format. */
   struct __attribute__((packed)) NicInfo {
@@ -166,6 +168,7 @@ class RdmaTransport : public Transport {
   RdmaTransport(
       std::shared_ptr<IbvApi> ibvApi,
       std::shared_ptr<CudaApi> cudaApi,
+      std::shared_ptr<CudaDriverApi> cudaDriverApi,
       EventBase* evb,
       std::shared_ptr<std::vector<NicResources>> nics,
       uint64_t domainId,
@@ -254,11 +257,21 @@ class RdmaTransport : public Transport {
   void shutdown() override;
 
  private:
+  // --- Private methods ---
+
+  enum class IOType {
+    Put,
+    Get,
+    Send,
+    Recv,
+  };
+
   /// Tracks completion of a batch of RDMA work requests from a single
-  /// rdmaTransfer() call. All fields are accessed only on the EventBase
-  /// thread, so no synchronization is needed.
+  /// call. All fields are accessed only on the EventBase thread, so no
+  /// synchronization is needed.
   class Task {
    public:
+    explicit Task(IOType type) : type_(type) {}
     std::future<Status> get_future() {
       return promise_.get_future();
     }
@@ -280,6 +293,10 @@ class RdmaTransport : public Transport {
         return;
       }
       remainingWrs_ -= numWrs.value();
+    }
+
+    IOType type() const {
+      return type_;
     }
 
     bool isDone() const {
@@ -306,10 +323,11 @@ class RdmaTransport : public Transport {
     }
 
    private:
+    IOType type_{};
     bool fulfilled_{false};
     bool postFinished_{false};
     uint32_t remainingWrs_{0};
-    std::optional<Status> error_;
+    std::optional<Err> error_;
     std::promise<Status> promise_;
   };
 
@@ -324,11 +342,35 @@ class RdmaTransport : public Transport {
     const RdmaRemoteRegistrationHandle* remoteHandle{nullptr};
   };
 
-  struct PendingTransfer {
-    uint32_t taskId;
+  struct PutGetTransfer {
+    uint32_t taskId{};
     std::unique_ptr<std::vector<SendWr>> sendWrs;
     size_t idx{0};
     std::shared_ptr<Task> task;
+  };
+
+  struct SendRecvTransfer {
+    explicit SendRecvTransfer(IOType opType, Segment::Span data);
+    ~SendRecvTransfer();
+
+    IOType opType;
+    Segment::Span data;
+    uint32_t taskId{};
+    std::optional<cudaStream_t> stream;
+    uint32_t initStep{0};
+    uint64_t totalSteps{0};
+
+    uint64_t copied{0};
+    uint64_t notified{0};
+    uint64_t done{0};
+
+    std::vector<RdmaSlab> localSlabs;
+    std::shared_ptr<Task> task;
+  };
+
+  struct PendingTransfer {
+    std::unique_ptr<PutGetTransfer> putGetTransfer{nullptr};
+    std::unique_ptr<SendRecvTransfer> sendRecvTransfer{nullptr};
   };
 
   struct PendingCompletion {
@@ -354,14 +396,30 @@ class RdmaTransport : public Transport {
   // --- EventBase thread methods ---
 
   /// Entry point: dispatches buildSendWrs result to EventBase for posting.
-  std::future<Status> rdmaTransfer(
+  std::future<Status> rdmaPutGetTransfer(
       std::span<const TransferRequest> requests,
       ibv_wr_opcode opcode,
+      const RequestOptions& options);
+
+  std::future<Status> rdmaSendRecvTransfer(
+      IOType ioType,
+      Segment::Span data,
       const RequestOptions& options);
 
   /// Unified IO processing loop. Runs exclusively on EventBase thread.
   /// Posts WRs from pendingTransfers_, polls CQs, fulfills promises in order.
   void ioLooper() noexcept;
+
+  bool putGetIoProcess(PutGetTransfer& entry) noexcept;
+  bool sendRecvIoProcess(SendRecvTransfer& entry) noexcept;
+
+  uint32_t getQpAvail(std::vector<uint32_t>& qpAvail);
+
+  uint32_t assignToQps(
+      const uint32_t remaining,
+      const uint32_t totalAvail,
+      std::vector<uint32_t>& qpAvail,
+      std::vector<uint32_t>& qpAssigned);
 
   /// Distributes SendWrs across QPs proportional to available capacity
   /// and posts them.
@@ -376,15 +434,12 @@ class RdmaTransport : public Transport {
   /// Correctness invariant: numWrsPerQp_[q] is incremented by exactly
   /// the number of WRs that will generate CQEs (directly or via flush),
   /// ensuring pollCompletions will decrement it back to zero.
-  Result<uint32_t> spray(
-      std::vector<SendWr>& wrs,
-      size_t& idx,
-      uint32_t taskId,
-      std::shared_ptr<Task>& task);
+  Result<uint32_t>
+  spray(std::vector<SendWr>& wrs, size_t& idx, uint32_t taskId, Task& task);
 
   /// Returns whether a pending transfer may begin posting without exceeding
   /// the transport's conservative SQ admission budget.
-  bool canStartTransfer(const PendingTransfer& transfer) const;
+  bool canStartTransfer(const PutGetTransfer& transfer) const;
 
   /// Conservative global WR budget used to admit complete transfers. A single
   /// transfer larger than this budget may still start when no other WRs are
@@ -412,10 +467,13 @@ class RdmaTransport : public Transport {
       ibv_send_wr* head,
       uint32_t count,
       uint32_t taskId,
-      std::shared_ptr<Task>& task);
+      Task& task,
+      std::optional<uint16_t> slot = std::nullopt);
 
   /// Polls all CQs and routes completions to their tasks via inflightTasks_.
-  void pollCompletions();
+  Status pollCompletions();
+
+  // --- Copy-based send/recv pipeline (cursor model) ---
 
   /// Ctrl buffer helpers.
   std::atomic_ref<uint32_t> ctrlCts(uint16_t slotIdx);
@@ -424,8 +482,39 @@ class RdmaTransport : public Transport {
   uint64_t remoteCtrlNotifyAddr(uint16_t slotIdx, uint32_t qpIdx) const;
   size_t ctrlBufferSize() const;
 
+  // --- Send pipeline ---
+
+  Status sendProgress(SendRecvTransfer& transfer);
+  void
+  sendCopyProgress(SendRecvTransfer& transfer, uint32_t depth, size_t slabSize);
+  Status sendTransmitProgress(
+      SendRecvTransfer& transfer,
+      uint32_t depth,
+      size_t slabSize);
+  Result<size_t> postSlabTransfer(
+      SendRecvTransfer& transfer,
+      RdmaSlab& localSlab,
+      uint16_t remoteSlab,
+      size_t len,
+      uint32_t slot,
+      uint32_t taskId);
+
+  // --- Recv pipeline ---
+
+  Status recvProgress(SendRecvTransfer& transfer);
+  void recvNotifyProgress(
+      SendRecvTransfer& transfer,
+      uint32_t depth,
+      size_t slabSize);
+  void
+  recvCopyProgress(SendRecvTransfer& transfer, uint32_t depth, size_t slabSize);
+  Status recvDoneProgress(SendRecvTransfer& transfer, uint32_t depth);
+  Result<bool>
+  postCts(uint32_t slot, uint16_t slabIdx, uint32_t taskId, Task& task);
+
   const std::shared_ptr<IbvApi> ibvApi_;
   const std::shared_ptr<CudaApi> cudaApi_;
+  std::shared_ptr<CudaDriverApi> cudaDriverApi_;
   EventBase* evb_{nullptr};
 
   std::string name_;
@@ -446,7 +535,10 @@ class RdmaTransport : public Transport {
   uint32_t nextTaskId_{0};
 
   /// Number of pending CQEs for each nic. Accessed only on EventBase thread.
-  std::vector<int> numPendingCqe_{0};
+  std::vector<int> numPendingCqe_;
+
+  /// Number of pending CQEs for each slot. Accessed only on EventBase thread.
+  std::vector<int> slotPendingCqe_;
 
   /// Transfers awaiting WR posting. Accessed only on EventBase.
   std::deque<PendingTransfer> pendingTransfers_;
