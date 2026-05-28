@@ -18,7 +18,28 @@ from comms.pipes.triton.collectives.nvl.sendrecv_op import (
     triton_nvl_recv,
     triton_nvl_send,
     triton_nvl_sendrecv,
+    triton_nvl_sendrecv_ws,
 )
+
+
+# ---------------------------------------------------------------------------
+# Warp-specialized (WS) test gate.
+#
+# The WS path uses TLX `async_tasks` / `async_task` warp-specialization
+# codegen. In the current `//triton:triton` (in-tree TLX) build, the WS
+# kernel hits a runtime hang / barrier issue (see TLX_BARRIER_BUG.md and
+# the original D106331816 commit message: "tlx.sync_threads() has an
+# iteration-count-dependent barrier bug — hangs after >2 while-loop
+# iterations"). The kernel logic itself is correct — the failure is in
+# upstream TLX codegen.
+#
+# Until upstream TLX is fixed, we DO NOT run the WS test cases by default
+# (they would hang the entire test binary). The cases are kept inline so
+# they re-activate automatically once `TRITON_NVL_WS_TESTS_ENABLED=1` is
+# set, e.g. when a developer wants to validate WS against a fixed TLX
+# build, or once the upstream fix lands and we can flip the default.
+# ---------------------------------------------------------------------------
+_WS_TESTS_ENABLED: bool = os.environ.get("TRITON_NVL_WS_TESTS_ENABLED", "0") == "1"
 
 
 _BASE_CASES: list[tuple[str, int]] = [
@@ -115,6 +136,9 @@ def _run_bidirectional(
     *,
     num_blocks: int = 16,
     num_warps: int = 8,
+    warp_specialized: bool = False,
+    sender_warps: int = 4,
+    receiver_warps: int = 4,
 ) -> bool:
     peer_rank = 1 - local_rank
     device = torch.device(f"cuda:{local_rank}")
@@ -123,9 +147,25 @@ def _run_bidirectional(
     recv = torch.zeros(numel, dtype=dtype, device=device)
     expected = _make_pattern(peer_rank, numel, dtype, device)
 
-    triton_nvl_sendrecv(
-        send, recv, peer_rank, group=group, num_blocks=num_blocks, num_warps=num_warps
-    )
+    if warp_specialized:
+        triton_nvl_sendrecv_ws(
+            send,
+            recv,
+            peer_rank,
+            group=group,
+            num_blocks=num_blocks,
+            sender_warps=sender_warps,
+            receiver_warps=receiver_warps,
+        )
+    else:
+        triton_nvl_sendrecv(
+            send,
+            recv,
+            peer_rank,
+            group=group,
+            num_blocks=num_blocks,
+            num_warps=num_warps,
+        )
     torch.cuda.synchronize(device)
 
     ok = _all_ok(_check_equal(recv, expected, name, local_rank), device, group)
@@ -206,6 +246,9 @@ def _run_graph_case(
     group: dist.ProcessGroup,
     *,
     bidirectional: bool,
+    warp_specialized: bool = False,
+    sender_warps: int = 4,
+    receiver_warps: int = 4,
 ) -> bool:
     peer_rank: int = 1 - local_rank
     device = torch.device(f"cuda:{local_rank}")
@@ -216,7 +259,16 @@ def _run_graph_case(
     expected = _make_pattern(peer_rank, numel, dtype, device)
 
     def fn() -> None:
-        if bidirectional:
+        if warp_specialized:
+            triton_nvl_sendrecv_ws(
+                send,
+                recv,
+                peer_rank,
+                group=group,
+                sender_warps=sender_warps,
+                receiver_warps=receiver_warps,
+            )
+        elif bidirectional:
             triton_nvl_sendrecv(send, recv, peer_rank, group=group)
         elif local_rank == 0:
             triton_nvl_send(send, peer_rank, group=group)
@@ -239,7 +291,7 @@ def _run_graph_case(
                 recv, expected, "cuda_graph", local_rank
             )
 
-    label = f"{'bidirectional' if bidirectional else 'unidirectional'}_cuda_graph"
+    label = f"{'bidirectional_ws' if warp_specialized else 'bidirectional' if bidirectional else 'unidirectional'}_cuda_graph"
     ok = _all_ok(local_ok, device, group)
     if local_rank == 0:
         print(f"  {'PASS' if ok else 'FAIL'}: {label}")
@@ -253,19 +305,9 @@ def _record(
     dist.barrier(group)
 
 
-def _worker(local_rank: int, master_port: int) -> None:
-    os.environ["MASTER_ADDR"] = "localhost"
-    os.environ["MASTER_PORT"] = str(master_port)
-    os.environ["RANK"] = str(local_rank)
-    os.environ["LOCAL_RANK"] = str(local_rank)
-    os.environ["WORLD_SIZE"] = "2"
-
-    torch.cuda.set_device(local_rank)
-    dist.init_process_group("nccl")
-    group = dist.group.WORLD
-    assert group is not None
-
-    results: list[bool] = []
+def _record_base_cases(
+    results: list[bool], local_rank: int, group: dist.ProcessGroup
+) -> None:
     for name, msg_bytes in _BASE_CASES:
         _record(
             results,
@@ -275,6 +317,10 @@ def _worker(local_rank: int, master_port: int) -> None:
             group,
         )
 
+
+def _record_dtype_smoke_cases(
+    results: list[bool], local_rank: int, group: dist.ProcessGroup
+) -> None:
     for dtype in (torch.bfloat16, torch.float32):
         _record(
             results,
@@ -288,6 +334,35 @@ def _worker(local_rank: int, master_port: int) -> None:
             group,
         )
 
+
+def _record_ws_cases(
+    results: list[bool], local_rank: int, group: dist.ProcessGroup
+) -> None:
+    if not _WS_TESTS_ENABLED:
+        return
+
+    for sw, rw in [(2, 2), (4, 4), (3, 5)]:
+        for msg_label, msg_bytes in [("256KB", 256 * 1024), ("1MB", 1024 * 1024)]:
+            _record(
+                results,
+                lambda sw=sw, rw=rw, mb=msg_bytes, ml=msg_label: _run_bidirectional(
+                    f"bidirectional_ws_{sw}s{rw}r_{ml}_int32",
+                    mb,
+                    torch.int32,
+                    local_rank,
+                    group,
+                    num_blocks=16,
+                    warp_specialized=True,
+                    sender_warps=sw,
+                    receiver_warps=rw,
+                ),
+                group,
+            )
+
+
+def _record_unidirectional_cases(
+    results: list[bool], local_rank: int, group: dist.ProcessGroup
+) -> None:
     for src_rank in (0, 1):
         _record(
             results,
@@ -302,6 +377,10 @@ def _worker(local_rank: int, master_port: int) -> None:
             group,
         )
 
+
+def _record_config_cases(
+    results: list[bool], local_rank: int, group: dist.ProcessGroup
+) -> None:
     for num_blocks in (2, 16, 32):
         for num_warps in (4, 8):
             _record(
@@ -318,6 +397,10 @@ def _worker(local_rank: int, master_port: int) -> None:
                 group,
             )
 
+
+def _record_back_to_back_cases(
+    results: list[bool], local_rank: int, group: dist.ProcessGroup
+) -> None:
     for bidirectional in (False, True):
         for graph in (False, True):
             _record(
@@ -328,6 +411,10 @@ def _worker(local_rank: int, master_port: int) -> None:
                 group,
             )
 
+
+def _record_graph_cases(
+    results: list[bool], local_rank: int, group: dist.ProcessGroup
+) -> None:
     for bidirectional in (False, True):
         _record(
             results,
@@ -336,6 +423,37 @@ def _worker(local_rank: int, master_port: int) -> None:
             ),
             group,
         )
+
+    if _WS_TESTS_ENABLED:
+        _record(
+            results,
+            lambda: _run_graph_case(
+                local_rank, group, bidirectional=True, warp_specialized=True
+            ),
+            group,
+        )
+
+
+def _worker(local_rank: int, master_port: int) -> None:
+    os.environ["MASTER_ADDR"] = "localhost"
+    os.environ["MASTER_PORT"] = str(master_port)
+    os.environ["RANK"] = str(local_rank)
+    os.environ["LOCAL_RANK"] = str(local_rank)
+    os.environ["WORLD_SIZE"] = "2"
+
+    torch.cuda.set_device(local_rank)
+    dist.init_process_group("nccl")
+    group = dist.group.WORLD
+    assert group is not None
+
+    results: list[bool] = []
+    _record_base_cases(results, local_rank, group)
+    _record_dtype_smoke_cases(results, local_rank, group)
+    _record_ws_cases(results, local_rank, group)
+    _record_unidirectional_cases(results, local_rank, group)
+    _record_config_cases(results, local_rank, group)
+    _record_back_to_back_cases(results, local_rank, group)
+    _record_graph_cases(results, local_rank, group)
 
     if local_rank == 0:
         n_pass = sum(1 for ok in results if ok)

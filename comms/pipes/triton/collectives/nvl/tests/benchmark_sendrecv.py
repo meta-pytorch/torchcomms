@@ -74,6 +74,7 @@ from comms.pipes.triton.collectives.nvl.sendrecv_op import (
     triton_nvl_recv,
     triton_nvl_send,
     triton_nvl_sendrecv,
+    triton_nvl_sendrecv_ws,
 )
 
 
@@ -95,11 +96,25 @@ _MSG_SIZES_BYTES: list[int] = [
 ]
 
 
+_WS_SENDER_WARPS: int = int(os.environ.get("TRITON_NVL_WS_SENDER_WARPS", "4"))
+_WS_RECEIVER_WARPS: int = int(os.environ.get("TRITON_NVL_WS_RECEIVER_WARPS", "4"))
+_WS_MAX_BYTES: int = int(
+    os.environ.get("TRITON_NVL_WS_MAX_BYTES", str(64 * 1024 * 1024))
+)
+
+
 # NCCL ``NCCL_{MIN,MAX}_NCHANNELS`` allocation values to sweep.
 # At each cap we compare against NCCL with that allocation, and Triton
 # with ``num_blocks`` matched to NCCL's actual runtime grid (see table
 # in module docstring).
 _CAPS: list[int] = [4, 8, 16, 32]
+
+
+def _env_int_list(name: str, default: list[int]) -> list[int]:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    return [int(x.strip()) for x in raw.split(",") if x.strip()]
 
 
 # Hardcoded NCCL P2P kernel runtime grid table, keyed by
@@ -270,6 +285,7 @@ def _bench_triton(
     *,
     bidirectional: bool,
     num_blocks: int,
+    warp_specialized: bool = False,
 ) -> tuple[float, float]:
     """Bench Triton send/recv via CUDA-graph replay. Returns (μs, GB/s)."""
     device = torch.device(f"cuda:{local_rank}")
@@ -279,13 +295,24 @@ def _bench_triton(
 
     def fn() -> None:
         if bidirectional:
-            triton_nvl_sendrecv(
-                send,
-                recv,
-                peer_rank,
-                group=group,
-                num_blocks=num_blocks,
-            )
+            if warp_specialized:
+                triton_nvl_sendrecv_ws(
+                    send,
+                    recv,
+                    peer_rank,
+                    group=group,
+                    num_blocks=num_blocks,
+                    sender_warps=_WS_SENDER_WARPS,
+                    receiver_warps=_WS_RECEIVER_WARPS,
+                )
+            else:
+                triton_nvl_sendrecv(
+                    send,
+                    recv,
+                    peer_rank,
+                    group=group,
+                    num_blocks=num_blocks,
+                )
         elif local_rank == 0:
             triton_nvl_send(
                 send,
@@ -406,14 +433,20 @@ def _print_row(
     triton_bw: float,
     nccl_us: float,
     nccl_bw: float,
+    ws_us: float | None = None,
+    ws_bw: float | None = None,
 ) -> None:
     if rank != 0:
         return
     speedup = nccl_us / triton_us if triton_us > 0 else 0.0
+    extra = ""
+    if ws_us is not None and ws_bw is not None:
+        ws_speedup = nccl_us / ws_us if ws_us > 0 else 0.0
+        extra = f" | ws {ws_us:>10.2f} {ws_bw:>12.3f} {ws_speedup:>7.2f}x"
     print(
         f"{_fmt_size(msg_bytes):>10} | {iters:>6} | {triton_num_blocks:>6} {nccl_grid:>9} | "
         f"{triton_us:>10.2f} {triton_bw:>12.3f} | "
-        f"{nccl_us:>10.2f} {nccl_bw:>12.3f} | {speedup:>7.2f}x"
+        f"{nccl_us:>10.2f} {nccl_bw:>12.3f} | {speedup:>7.2f}x{extra}"
     )
 
 
@@ -425,43 +458,73 @@ def _run_table(
     bidirectional: bool,
     cap: int,
 ) -> None:
+    ws_only = os.environ.get("TRITON_NVL_BENCH_WS_ONLY") == "1"
     direction = (
-        "Bidirectional sendrecv"
+        "Bidirectional WS sendrecv"
+        if bidirectional and ws_only
+        else "Bidirectional sendrecv"
         if bidirectional
         else "Unidirectional rank0->rank1 send/recv"
     )
     title = f"{direction} | NCCL_NCHANNELS=cap={cap} (Triton num_blocks tracks NCCL runtime grid)"
     _print_header(local_rank, title)
-    for msg_bytes in _MSG_SIZES_BYTES:
+    for msg_bytes in _env_int_list("TRITON_NVL_BENCH_MSGS", _MSG_SIZES_BYTES):
         nccl_grid = _NCCL_GRID_TABLE[(msg_bytes, cap)]
         if bidirectional:
             triton_nb = _triton_num_blocks_bi(msg_bytes, cap)
         else:
             triton_nb = _triton_num_blocks_uni(msg_bytes, cap)
 
-        triton_us, triton_bw = _bench_triton(
-            msg_bytes,
-            local_rank,
-            peer_rank,
-            group,
-            bidirectional=bidirectional,
-            num_blocks=triton_nb,
-        )
+        ws_us: float | None = None
+        ws_bw: float | None = None
+        if bidirectional and ws_only and msg_bytes <= _WS_MAX_BYTES:
+            triton_us, triton_bw = _bench_triton(
+                msg_bytes,
+                local_rank,
+                peer_rank,
+                group,
+                bidirectional=True,
+                num_blocks=nccl_grid,
+                warp_specialized=True,
+            )
+        else:
+            triton_us, triton_bw = _bench_triton(
+                msg_bytes,
+                local_rank,
+                peer_rank,
+                group,
+                bidirectional=bidirectional,
+                num_blocks=triton_nb,
+            )
+            dist.barrier(group)
+            if bidirectional and msg_bytes <= _WS_MAX_BYTES:
+                ws_us, ws_bw = _bench_triton(
+                    msg_bytes,
+                    local_rank,
+                    peer_rank,
+                    group,
+                    bidirectional=True,
+                    num_blocks=nccl_grid,
+                    warp_specialized=True,
+                )
         dist.barrier(group)
         nccl_us, nccl_bw = _bench_nccl(
             msg_bytes, local_rank, peer_rank, group, bidirectional=bidirectional
         )
         dist.barrier(group)
+        display_nb = nccl_grid if bidirectional and ws_only else triton_nb
         _print_row(
             local_rank,
             msg_bytes,
             _iters_for_size(msg_bytes),
-            triton_nb,
+            display_nb,
             nccl_grid,
             triton_us,
             triton_bw,
             nccl_us,
             nccl_bw,
+            ws_us,
+            ws_bw,
         )
 
 
@@ -493,6 +556,10 @@ def _worker(local_rank: int, master_port: int, cap: int) -> None:
             "Triton bi: num_blocks = max(NCCL runtime grid // 2, 1)."
         )
         print("# BW = unidirectional payload bytes / latency.")
+        print(
+            f"# WS config: sender_warps={_WS_SENDER_WARPS}, "
+            f"receiver_warps={_WS_RECEIVER_WARPS}"
+        )
         print("#" * 100)
 
     _run_table(local_rank, peer_rank, group, bidirectional=False, cap=cap)
@@ -511,7 +578,7 @@ def main() -> None:
         f"(see _NCCL_GRID_TABLE); cap sweep: {_CAPS}"
     )
 
-    for cap in _CAPS:
+    for cap in _env_int_list("TRITON_NVL_BENCH_CAPS", _CAPS):
         os.environ["NCCL_MIN_NCHANNELS"] = str(cap)
         os.environ["NCCL_MAX_NCHANNELS"] = str(cap)
         port = _find_free_port()
