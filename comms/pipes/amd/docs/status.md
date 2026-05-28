@@ -4,10 +4,14 @@ This document tracks which `comms/pipes/` library targets, tests, and
 benchmarks build and run on AMD GPUs (HIP/ROCm). For the architecture and
 recipes for adding new AMD support, see [`design.md`](design.md).
 
-**Last updated:** 2026-05-08. After unification: single targets per
+**Last updated:** 2026-05-27. After unification: single targets per
 library / test, platform-specific bits routed via `select()` on
 `ovr_config//gpu:amd`. Legacy `*_amd_unified` and `*_amd` sibling
-targets retired.
+targets retired. NIC backend on AMD is selected at parse time via
+`-c hpc_comms.nic={mlx5,bnxt,ionic}` (default `bnxt`), wired by
+`//comms/pipes/amd:nic_config.bzl`; the chosen backend swaps the
+`PipesGdaHost.cc` `#ifdef NIC_*` blocks and the `rdma-core` dep
+without forking the source tree.
 
 ## Legend
 
@@ -69,8 +73,8 @@ These exist only on AMD; no NVIDIA counterpart by design.
 |---|---|
 | `:hip_compat` | `amd/HipHostCompat.h` + `amd/HipDeviceCompat.h` — `__trap()` + `meta::comms::DeviceBuffer`/`CudaEvent` HIP substitutes. |
 | `:doca_compat_amd` | `amd/DocaCompat.h` — `doca_*` → `pipes_gda_*` translation header (device + host). Re-exports `:pipes_gda_device` and `:pipes_gda_host`. |
-| `:pipes_gda` / `:pipes_gda_device` (in `comms/pipes/amd:`) | AMD-native NIC backends (`amd/nic/*`) and device-side `pipes_gda_*` API (`amd/pipes_gda/PipesGda{Def,Dev,Ops,Shared,Utils}.h`). |
-| `:pipes_gda_host` (in `comms/pipes/amd:`) | Host-side `pipes_gda_*` API (`amd/pipes_gda/PipesGdaHost.{h,cc}`) — QP / CQ / IBV_QP_* mask translation, HSA dmabuf export with isDevicePointer + page-alignment guards, `ibv_reg_*` wrappers. |
+| `:pipes_gda` / `:pipes_gda_device` (in `comms/pipes/amd:`) | AMD-native NIC backends (`amd/nic/*`) and device-side `pipes_gda_*` API (`amd/pipes_gda/PipesGda{Def,Dev,Ops,Shared,Utils}.h`). Backends: mlx5 (`Mlx5Hsi.h`, `Mlx5NicBackend.h`) and BNXT (`BnxtHsi.h`, `BnxtNicBackend.h`, `BnxtReDv.h`); selected at parse time via `-c hpc_comms.nic=...`. |
+| `:pipes_gda_host` (in `comms/pipes/amd:`) | Host-side `pipes_gda_*` API (`amd/pipes_gda/PipesGdaHost.{h,cc}`) — QP / CQ / IBV_QP_* mask translation, HSA dmabuf export with isDevicePointer + page-alignment guards, `ibv_reg_*` wrappers. Single `.cc` carries both mlx5 and BNXT host paths behind `#ifdef NIC_BNXT`. BNXT path goes through `bnxt_re_dv` direct verbs (dlopened via `SysIbv`), allocates SQ/CQ/RQ in GPU uncached memory + dma-buf, and carves the MSN table from the SQ tail. |
 
 ## Collectives (`comms/pipes/collectives/`)
 
@@ -110,7 +114,7 @@ fallback IPC path.
 | Test | Target | AMD | Notes |
 |---|---|---|---|
 | `P2pIbgdaTransportDeviceTest` | `:p2p_ibgda_transport_device_test` | ✅ | Single target via `select()`. |
-| `MultipeerIbgdaTransportTest` | `:multipeer_ibgda_transport_test` | ✅ | Single target via `select()` (post-unification — replaces the prior split `:multipeer_ibgda_transport_test` + `:multipeer_ibgda_transport_test_amd` pair). |
+| `MultipeerIbgdaTransportTest` | `:multipeer_ibgda_transport_test` | ✅ | Single target via `select()`. Build + runtime validated on AMD: all 5 `IbgdaBenchmarkFixture` tests (`PutWaitLocal`, `PutSignalWaitLocal`, `SignalOnly`, `PutSignalComparison`, `MultiPeerCounterFanOut`) PASS cross-host on dual-MI300X with BNXT NIC. |
 | `AllToAllvTest` | `:alltoallv_test` | ✅ | Single target via `select()` (post-unification — replaces the prior split). |
 
 ### Tests without AMD coverage (NVIDIA-only)
@@ -136,12 +140,11 @@ test BUCK plumbing.
 
 | Benchmark | NVIDIA Target | AMD | Reason |
 |---|---|---|---|
-| `IbgdaBenchmark` | `:ibgda_benchmark` | ❌ | DMABUF / libmlx5 blocker. |
-| `IbgdaSendRecvBenchmark` | `:ibgda_sendrecv_benchmark` | ❌ | Same DMABUF blocker. |
-| `AllToAllvBenchmark` | `:alltoallv_benchmark` | ❌ | Exercises IBGDA cross-node path; same blocker. |
+| `IbgdaBenchmark` | `:ibgda_benchmark` | ✅ | Runs cross-host on dual-MI300X via BNXT NIC backend (`-c hpc_comms.nic=bnxt`). All 5 fixtures PASS, with per-message latency and per-size bandwidth measured. The mlx5 path compiles from the same source; runtime coverage requires a host with the matching mlx5 + DMABUF stack. |
+| `IbgdaSendRecvBenchmark` | `:ibgda_sendrecv_benchmark` | 🚧 | Underlying transport works on AMD (same path as `IbgdaBenchmark`); benchmark BUCK plumbing not yet routed through `select()`. |
+| `AllToAllvBenchmark` | `:alltoallv_benchmark` | 🚧 | Underlying IBGDA cross-node path works on AMD via BNXT (proven by `IbgdaBenchmark` above and the `MultipeerIbgdaTransportTest` runtime PASS); benchmark BUCK plumbing not yet routed through `select()`. |
 | `AllToAllvLl128Benchmark` | `:alltoallv_ll128_benchmark` | ❌ | Blocked on LL128 support. |
 | `AllGatherBenchmark` | `:allgather_benchmark` | ❌ | Could be added (deps available); not yet plumbed. |
 | `IbSendRecvBenchmark*` | various | ❌ | Pulls in `<nccl.h>` and torchcomms; NCCL-on-AMD blocker. |
 | `:p2p_nvl_*_benchmark`, `:multi_peer_benchmark*`, `:tile_bench` | various | ❌ | Need AMD test BUCK entries. |
 | Servicelab benchmarks (`:copy_kernel_bench`, `:p2p_sync_bench`, etc.) | various | ❌ | Servicelab bench framework not yet verified on AMD. |
-

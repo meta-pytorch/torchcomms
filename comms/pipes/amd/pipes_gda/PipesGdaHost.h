@@ -30,8 +30,12 @@
 #include <hip/hip_runtime.h>
 #include <hsa/hsa.h>
 #include <hsa/hsa_ext_amd.h>
-#include <infiniband/mlx5dv.h>
 #include <infiniband/verbs.h>
+
+// `<infiniband/mlx5dv.h>` is intentionally NOT included here — it's an
+// implementation detail of the mlx5 backend (`PipesGdaHost.cc`). The BNXT
+// backend (`PipesGdaBnxtHost.cc`) compiles the same public header against
+// `bnxt_re_dv` instead. Each .cc pulls in its own vendor header.
 
 // ===========================================================================
 // Error codes
@@ -194,87 +198,59 @@ pipes_gda_error_t pipes_gda_gpu_mem_alloc(
     void** out_gpu_ptr);
 
 // --- pipes_gda_verbs ibv wrappers ---
-inline pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_get_device_list(
+//
+// Declared (not inlined) so each backend chooses how to dispatch:
+//   - PipesGdaHost.cc (mlx5):      direct calls into fbcode static libibverbs
+//   - PipesGdaBnxtHost.cc (BNXT):  routed through dlopen'd system libibverbs
+//                                  (PABI 34, supports kernel uverbs ABI 8)
+// The fbcode static libibverbs (PABI 59) cannot register the system BNXT
+// provider, so BNXT must use the system library throughout.
+pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_get_device_list(
     int* num_devices,
-    ibv_device*** out_list) {
-  *out_list = ibv_get_device_list(num_devices);
-  return *out_list ? PIPES_GDA_SUCCESS : PIPES_GDA_ERROR_DRIVER;
-}
+    ibv_device*** out_list);
 
-inline pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_free_device_list(
-    ibv_device** list) {
-  ibv_free_device_list(list);
-  return PIPES_GDA_SUCCESS;
-}
+pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_free_device_list(
+    ibv_device** list);
 
-inline pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_get_device_name(
+pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_get_device_name(
     ibv_device* dev,
-    const char** out_name) {
-  *out_name = ibv_get_device_name(dev);
-  return *out_name ? PIPES_GDA_SUCCESS : PIPES_GDA_ERROR_DRIVER;
-}
+    const char** out_name);
 
-inline pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_open_device(
+pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_open_device(
     ibv_device* dev,
-    ibv_context** out_ctx) {
-  *out_ctx = ibv_open_device(dev);
-  return *out_ctx ? PIPES_GDA_SUCCESS : PIPES_GDA_ERROR_DRIVER;
-}
+    ibv_context** out_ctx);
 
-inline pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_close_device(
-    ibv_context* ctx) {
-  return ibv_close_device(ctx) == 0 ? PIPES_GDA_SUCCESS
-                                    : PIPES_GDA_ERROR_DRIVER;
-}
+pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_close_device(ibv_context* ctx);
 
-inline pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_alloc_pd(
+pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_alloc_pd(
     ibv_context* ctx,
-    ibv_pd** out_pd) {
-  *out_pd = ibv_alloc_pd(ctx);
-  return *out_pd ? PIPES_GDA_SUCCESS : PIPES_GDA_ERROR_DRIVER;
-}
+    ibv_pd** out_pd);
 
-inline pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_dealloc_pd(ibv_pd* pd) {
-  return ibv_dealloc_pd(pd) == 0 ? PIPES_GDA_SUCCESS : PIPES_GDA_ERROR_DRIVER;
-}
+pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_dealloc_pd(ibv_pd* pd);
 
-inline pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_query_device(
+pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_query_device(
     ibv_context* ctx,
-    ibv_device_attr* attr) {
-  return ibv_query_device(ctx, attr) == 0 ? PIPES_GDA_SUCCESS
-                                          : PIPES_GDA_ERROR_DRIVER;
-}
+    ibv_device_attr* attr);
 
-inline pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_query_port(
+pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_query_port(
     ibv_context* ctx,
     uint8_t port,
-    ibv_port_attr* attr) {
-  return ibv_query_port(ctx, port, attr) == 0 ? PIPES_GDA_SUCCESS
-                                              : PIPES_GDA_ERROR_DRIVER;
-}
+    ibv_port_attr* attr);
 
-inline pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_query_gid(
+pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_query_gid(
     ibv_context* ctx,
     uint8_t port,
     int index,
-    union ibv_gid* gid) {
-  return ibv_query_gid(ctx, port, index, gid) == 0 ? PIPES_GDA_SUCCESS
-                                                   : PIPES_GDA_ERROR_DRIVER;
-}
+    union ibv_gid* gid);
 
-inline pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_reg_mr(
+pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_reg_mr(
     ibv_pd* pd,
     void* addr,
     std::size_t length,
     int access,
-    ibv_mr** out_mr) {
-  *out_mr = ibv_reg_mr(pd, addr, length, access);
-  return *out_mr ? PIPES_GDA_SUCCESS : PIPES_GDA_ERROR_DRIVER;
-}
+    ibv_mr** out_mr);
 
-inline pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_dereg_mr(ibv_mr* mr) {
-  return ibv_dereg_mr(mr) == 0 ? PIPES_GDA_SUCCESS : PIPES_GDA_ERROR_DRIVER;
-}
+pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_dereg_mr(ibv_mr* mr);
 
 // --- pipes_gda_verbs QP attribute setters ---
 pipes_gda_error_t pipes_gda_verbs_qp_attr_create(

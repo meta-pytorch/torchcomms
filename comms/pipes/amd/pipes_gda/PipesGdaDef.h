@@ -86,9 +86,17 @@ extern "C" {
 #define PIPES_GDA_VERBS_CQE_SIZE 64
 #define PIPES_GDA_VERBS_WQE_IDX_SHIFT 8
 
+// Per-WQE max RDMA WRITE size; larger transfers chunk in
+// `pipes_gda_gpu_dev_verbs_put`. BNXT caps lower than mlx5.
+#ifdef NIC_BNXT
+#define PIPES_GDA_VERBS_MAX_TRANSFER_SIZE_SHIFT 24
+#define PIPES_GDA_VERBS_MAX_TRANSFER_SIZE \
+  (1ULL << PIPES_GDA_VERBS_MAX_TRANSFER_SIZE_SHIFT) // 16MiB
+#else
 #define PIPES_GDA_VERBS_MAX_TRANSFER_SIZE_SHIFT 30
 #define PIPES_GDA_VERBS_MAX_TRANSFER_SIZE \
   (1ULL << PIPES_GDA_VERBS_MAX_TRANSFER_SIZE_SHIFT) // 1GiB
+#endif
 
 #ifndef ACCESS_ONCE
 #define ACCESS_ONCE(x) (*(volatile typeof(x)*)&(x))

@@ -28,8 +28,14 @@ using meta::comms::MPIEnvironmentBase;
 namespace comms::pipes::benchmark {
 
 // Benchmark iteration constants
-// All benchmarks now use batched kernels to exclude kernel launch overhead
+// All benchmarks now use batched kernels to exclude kernel launch overhead.
+// BNXT lowers the count to keep cumulative WQEs across all tests under
+// msn_tbl_sz; otherwise the MSN table wraps and the NIC hangs.
+#ifdef NIC_BNXT
+constexpr int kIbgdaBatchIters = 450;
+#else
 constexpr int kIbgdaBatchIters = 1000;
+#endif
 
 // CUDA error checking macro for void functions
 #define CUDA_CHECK_VOID(call)        \
