@@ -22,6 +22,7 @@ struct CommStateInfo {
   int node{0};
   int nLocalRanks{1};
   int nNodes{1};
+  int cliqueSize{0};
 };
 
 struct NcclCommMonitorInfo {
@@ -41,6 +42,10 @@ struct NcclCommMonitorInfo {
   // Adopted from MemoryTrace::getOrCreate() at registerComm time.
   // See MemoryTrace::getOrCreate() for dual ownership rationale.
   std::shared_ptr<meta::comms::memtrace::MemoryTrace> memTracer;
+
+  // Shared ownership of AlgoStats so it survives comm destruction.
+  // Baseline and ctran share the same instance via AlgoStats::getOrCreate.
+  std::shared_ptr<meta::comms::colltrace::AlgoStats> algoStats;
 
   static NcclCommMonitorInfo fromNcclComm(ncclComm_t comm);
 };

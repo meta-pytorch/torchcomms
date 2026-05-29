@@ -29,6 +29,12 @@ class AlgoStats {
   AlgoStats(uint64_t commHash, const std::string& commDesc)
       : commHash_(commHash), commDesc_(commDesc) {}
 
+  // Get or create a shared AlgoStats instance for a communicator.
+  // Both baseline and ctran record into the same instance keyed by commHash.
+  static std::shared_ptr<AlgoStats> getOrCreate(
+      uint64_t commHash,
+      const std::string& commDesc);
+
   // Record a collective execution with the given algorithm.
   // Thread-safe: can be called concurrently from multiple threads.
   void record(const std::string& opName, const std::string& algoName);

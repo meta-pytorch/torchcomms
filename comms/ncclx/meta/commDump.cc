@@ -164,6 +164,7 @@ static void dumpCommInfo(
   map["nRanks"] = std::to_string(comm->nRanks);
   map["localRanks"] = std::to_string(comm->localRanks);
   map["nNodes"] = std::to_string(comm->nNodes);
+  map["cliqueSize"] = std::to_string(comm->clique.size);
   map["commDesc"] = toQuotedString(NCCLX_CONFIG_FIELD(comm->config, commDesc));
 }
 
@@ -201,6 +202,9 @@ static void dumpCommInfo(
   }
   if (isKeyRequested(requestFields, "nNodes")) {
     map["nNodes"] = std::to_string(stateInfo.nNodes);
+  }
+  if (isKeyRequested(requestFields, "cliqueSize")) {
+    map["cliqueSize"] = std::to_string(stateInfo.cliqueSize);
   }
 }
 
@@ -272,6 +276,28 @@ static void dumpMemoryTrace(
   }
 }
 
+static void dumpAlgoStatToMap(
+    const std::shared_ptr<meta::comms::colltrace::AlgoStats>& algoStats,
+    std::unordered_map<std::string, std::string>& map,
+    const DumpFieldSet& requestFields = {}) {
+  if (!isKeyRequested(requestFields, "algoStat") || !algoStats) {
+    return;
+  }
+  auto dump = algoStats->dump();
+  if (dump.counts.empty()) {
+    return;
+  }
+  folly::dynamic obj = folly::dynamic::object();
+  for (const auto& [opName, algoMap] : dump.counts) {
+    folly::dynamic algoObj = folly::dynamic::object();
+    for (const auto& [algoName, count] : algoMap) {
+      algoObj[algoName] = count;
+    }
+    obj[opName] = std::move(algoObj);
+  }
+  map["algoStat"] = folly::toJson(obj);
+}
+
 std::unordered_map<std::string, std::string> commDumpByMonitorInfo(
     const ncclx::comms_monitor::NcclCommMonitorInfo& info,
     const std::unordered_set<std::string>& requestFields) {
@@ -286,6 +312,7 @@ std::unordered_map<std::string, std::string> commDumpByMonitorInfo(
            "nRanks",
            "localRanks",
            "nNodes",
+           "cliqueSize",
            "commDesc"})) {
     dumpCommInfo(&info.logMetaData, info.stateInfo, map, requestFields);
   }
@@ -321,6 +348,7 @@ std::unordered_map<std::string, std::string> commDumpByMonitorInfo(
     }
   }
 
+  dumpAlgoStatToMap(info.algoStats, map, requestFields);
   dumpProcessGlobalErrors(map, requestFields);
   dumpMemoryTrace(info.memTracer, map, requestFields);
 

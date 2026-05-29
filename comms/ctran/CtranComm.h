@@ -227,7 +227,7 @@ class CtranComm {
   friend commResult_t ctranInit(
       CtranComm* comm,
       std::unique_ptr<ctran::IProfilerReporter> reporter);
-  std::unique_ptr<meta::comms::colltrace::AlgoStats> algoStats_;
+  std::shared_ptr<meta::comms::colltrace::AlgoStats> algoStats_;
   // TODO: define proper constructor to make CtranComm be independent of
   // ncclComm.
   // While doing refactoring we always create CtranComm from ncclComm and it

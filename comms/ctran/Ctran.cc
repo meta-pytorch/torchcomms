@@ -145,7 +145,7 @@ commResult_t ctranInit(
 
   for (const auto& opt : NCCL_COLLTRACE) {
     if (opt == "algostat") {
-      comm->algoStats_ = std::make_unique<meta::comms::colltrace::AlgoStats>(
+      comm->algoStats_ = meta::comms::colltrace::AlgoStats::getOrCreate(
           comm->statex_->commHash(), comm->statex_->commDesc());
       break;
     }
