@@ -45,6 +45,7 @@ Usage patterns:
 from __future__ import annotations
 
 import logging
+import os
 from typing import NamedTuple
 
 import torch
@@ -53,6 +54,7 @@ import torch.distributed._symmetric_memory as symm_mem
 from torch._C._distributed_c10d import _SymmetricMemory
 
 from .sendrecv import triton_nvl_sendrecv_kernel
+from .sendrecv_ws import triton_nvl_sendrecv_bidir_ws_kernel
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -63,11 +65,17 @@ logger: logging.Logger = logging.getLogger(__name__)
 # so back-to-back launches with different block counts cannot race.
 # ---------------------------------------------------------------------------
 
-_BLOCK_STRIDE_BYTES: int = 256 * 1024
-_PIPELINE_DEPTH: int = 2
+_BLOCK_STRIDE_BYTES: int = int(
+    os.environ.get("TRITON_NVL_BLOCK_STRIDE_BYTES", str(256 * 1024))
+)
+_PIPELINE_DEPTH: int = int(os.environ.get("TRITON_NVL_PIPELINE_DEPTH", "2"))
 _MAX_BLOCKS_PER_PEER: int = 32
 _DEFAULT_NUM_SEND_BLOCKS: int = 16
 _DEFAULT_NUM_WARPS: int = 8
+_DEFAULT_WS_SENDER_WARPS: int = int(os.environ.get("TRITON_NVL_WS_SENDER_WARPS", "4"))
+_DEFAULT_WS_RECEIVER_WARPS: int = int(
+    os.environ.get("TRITON_NVL_WS_RECEIVER_WARPS", "4")
+)
 _MODE_BIDIRECTIONAL: int = 0
 _MODE_SEND_ONLY: int = 1
 _MODE_RECV_ONLY: int = 2
@@ -83,6 +91,15 @@ def _compute_config(element_size: int) -> _Config:
     return _Config(
         tile_rows=32,
         tile_cols=2048 // element_size,
+        num_stages=2,
+    )
+
+
+def _compute_ws_config(element_size: int) -> _Config:
+    tile_bytes = int(os.environ.get("TRITON_NVL_WS_TILE_BYTES", "2048"))
+    return _Config(
+        tile_rows=32,
+        tile_cols=tile_bytes // element_size,
         num_stages=2,
     )
 
@@ -286,6 +303,54 @@ def triton_nvl_sendrecv(
     )
 
 
+def triton_nvl_sendrecv_ws(
+    send_buf: torch.Tensor,
+    recv_buf: torch.Tensor,
+    send_peer: int,
+    recv_peer: int | None = None,
+    *,
+    group: dist.ProcessGroup,
+    num_blocks: int = _DEFAULT_NUM_SEND_BLOCKS,
+    sender_warps: int = _DEFAULT_WS_SENDER_WARPS,
+    receiver_warps: int = _DEFAULT_WS_RECEIVER_WARPS,
+) -> None:
+    """Warp-specialized bidirectional NVLink send/recv.
+
+    Each CTA runs sender and receiver as concurrent TLX async tasks,
+    allowing both NVLink directions to share the same SM. Default
+    configuration: 4 sender warps + 4 receiver warps = 8 total.
+
+    Notes:
+        * ``sender_warps`` and ``receiver_warps`` must each be a power of
+          two and sum to a power of two in ``[2, 16]`` (TLX warp-spec +
+          Triton ``num_warps`` requirement, which forces
+          ``sender_warps == receiver_warps``).
+        * The host launcher raises ``BLOCK_STRIDE_ELEMS`` adaptively to
+          lower the while-loop iteration count. This is a perf
+          optimization only (fewer ``fence.acq_rel.sys`` ops, a few % at
+          large messages); the kernel is correct at any iteration count.
+    """
+    if recv_peer is None:
+        recv_peer = send_peer
+    assert send_buf.is_cuda and recv_buf.is_cuda
+    assert send_buf.is_contiguous() and recv_buf.is_contiguous()
+    assert send_buf.dtype == recv_buf.dtype
+    assert send_buf.numel() == recv_buf.numel()
+    _launch(
+        send_buf,
+        recv_buf,
+        send_peer,
+        recv_peer,
+        group=group,
+        num_blocks=num_blocks,
+        num_warps=sender_warps + receiver_warps,
+        mode=_MODE_BIDIRECTIONAL,
+        warp_specialized=True,
+        sender_warps=sender_warps,
+        receiver_warps=receiver_warps,
+    )
+
+
 def triton_nvl_send(
     send_buf: torch.Tensor,
     send_peer: int,
@@ -352,6 +417,9 @@ def _launch(
     num_blocks: int,
     num_warps: int,
     mode: int,
+    warp_specialized: bool = False,
+    sender_warps: int = 4,
+    receiver_warps: int = 4,
 ) -> None:
     assert send_buf.dtype == recv_buf.dtype, (
         f"send/recv dtype mismatch: {send_buf.dtype} vs {recv_buf.dtype}"
@@ -359,9 +427,35 @@ def _launch(
     assert 0 < num_blocks <= _MAX_BLOCKS_PER_PEER, (
         f"num_blocks must be in (0, {_MAX_BLOCKS_PER_PEER}], got {num_blocks}"
     )
-    assert num_warps in (4, 8), (
-        f"num_warps must be 4 or 8 (only configs covered by tests); got {num_warps}"
-    )
+    if warp_specialized:
+        # TLX warp specialization requires EACH partition's warp count to be a
+        # power of two (verified by `ttg.warp_specialize`: "number of warps
+        # must be a power of 2"), and Triton requires the kernel's total
+        # `num_warps` to be a power of two as well. Two powers of two sum to a
+        # power of two only when they are equal, so this effectively requires
+        # `sender_warps == receiver_warps` drawn from {1, 2, 4, 8}. The old
+        # `total % 4 == 0` check wrongly accepted splits like (3, 5), which
+        # then crashed deep in the TritonTLXFixup MLIR pass.
+        def _is_pow2(x: int) -> bool:
+            return x >= 1 and (x & (x - 1)) == 0
+
+        total = sender_warps + receiver_warps
+        assert _is_pow2(sender_warps) and sender_warps <= 8, (
+            f"sender_warps must be a power of 2 in [1, 8], got {sender_warps}"
+        )
+        assert _is_pow2(receiver_warps) and receiver_warps <= 8, (
+            f"receiver_warps must be a power of 2 in [1, 8], got {receiver_warps}"
+        )
+        assert _is_pow2(total) and total <= 16, (
+            f"sender_warps + receiver_warps must be a power of 2 in [2, 16] "
+            f"(TLX warp-spec + Triton num_warps requirement, which forces "
+            f"sender_warps == receiver_warps); got {sender_warps} + "
+            f"{receiver_warps} = {total}"
+        )
+    else:
+        assert num_warps in (4, 8), (
+            f"num_warps must be 4 or 8 (only configs covered by tests); got {num_warps}"
+        )
 
     world_size = dist.get_world_size(group)
     if world_size == 1:
@@ -390,14 +484,55 @@ def _launch(
         group, send_buf.device, world_size
     )
 
-    config = _compute_config(send_buf.element_size())
-    block_stride_elems = _BLOCK_STRIDE_BYTES // send_buf.element_size()
-    per_peer_elems = _per_peer_bytes() // send_buf.element_size()
+    config = (
+        _compute_ws_config(send_buf.element_size())
+        if warp_specialized
+        else _compute_config(send_buf.element_size())
+    )
     tile_numel = config.tile_rows * config.tile_cols
     tile_bytes = tile_numel * send_buf.element_size()
-    max_tiles_per_block_per_slot = max(_BLOCK_STRIDE_BYTES // tile_bytes, 1)
+    per_peer_elems = _per_peer_bytes() // send_buf.element_size()
 
-    staging_elems = block_stride_elems * _MAX_BLOCKS_PER_PEER * _PIPELINE_DEPTH
+    orig_block_stride_elems = _BLOCK_STRIDE_BYTES // send_buf.element_size()
+    if warp_specialized:
+        # Adaptive stride (PERF optimization only). The WS kernel is now
+        # correct at any loop-iteration count (per-task compiler-sized
+        # barriers via tl.debug_barrier(); see sendrecv_ws.py). Raising the
+        # per-block stride lowers the iteration count, which reduces the
+        # number of `fence.acq_rel.sys` operations (one per step) and buys a
+        # few % at large messages (e.g. 64 MiB: ~1.07x at default 256 KiB
+        # stride vs ~1.12x at 2 MiB stride). It is NOT required for
+        # correctness, so there is no fail-loud guard here anymore.
+        # `max_ws_stride` caps per-block staging so the sum across all
+        # `num_blocks` blocks fits within the per-peer staging quota
+        # `_BLOCK_STRIDE_BYTES * _MAX_BLOCKS_PER_PEER` (and thus within
+        # `staging_elems` below); enforces no buffer overflow even when
+        # the requested stride to land a low iter count is large.
+        max_ws_stride = _BLOCK_STRIDE_BYTES * _MAX_BLOCKS_PER_PEER // num_blocks
+        num_tiles = -(-send_buf.numel() // tile_numel)
+        tiles_per_block = -(-num_tiles // num_blocks)
+        target_tiles_per_step = -(-tiles_per_block // 2)
+        needed_stride = target_tiles_per_step * tile_bytes
+        ws_stride = max(min(needed_stride, max_ws_stride), _BLOCK_STRIDE_BYTES)
+        block_stride_elems = ws_stride // send_buf.element_size()
+        max_tiles_per_block_per_slot = max(ws_stride // tile_bytes, 1)
+    else:
+        block_stride_elems = orig_block_stride_elems
+        max_tiles_per_block_per_slot = max(_BLOCK_STRIDE_BYTES // tile_bytes, 1)
+
+    staging_elems = orig_block_stride_elems * _MAX_BLOCKS_PER_PEER * _PIPELINE_DEPTH
+
+    # Buffer-overflow guard: the kernel writes at most
+    # `num_blocks * block_stride_elems * PIPELINE_DEPTH` elements into the
+    # per-peer staging region. The WS adaptive stride can raise
+    # `block_stride_elems` above the default, so make the (otherwise implicit)
+    # bound explicit instead of relying on the `max_ws_stride` floor-division
+    # arithmetic alone.
+    assert num_blocks * block_stride_elems * _PIPELINE_DEPTH <= staging_elems, (
+        f"staging overflow: num_blocks={num_blocks} * "
+        f"block_stride_elems={block_stride_elems} * depth={_PIPELINE_DEPTH} "
+        f"> staging_elems={staging_elems}"
+    )
 
     # --- Pre-resolve staging buffers for the specific peer pair ---
     # Sender writes to send_peer's staging area at local_rank's partition.
@@ -446,6 +581,38 @@ def _launch(
     # --- Pre-slice step state to the peer rows ---
     sender_step_ptr = sender_step_all[send_peer]
     recver_step_ptr = recver_step_all[recv_peer]
+
+    if warp_specialized:
+        grid = (num_blocks,)
+        # pyre-ignore[28]: triton's `kernel[grid](...)` launcher
+        triton_nvl_sendrecv_bidir_ws_kernel[grid](
+            send_ptr=send_buf,
+            recv_ptr=recv_buf,
+            send_staging_buf=send_staging_buf,
+            recv_staging_buf=recv_staging_buf,
+            send_tail_sig=send_tail_sig,
+            send_head_sig=send_head_sig,
+            recv_tail_sig=recv_tail_sig,
+            recv_head_sig=recv_head_sig,
+            sender_step_ptr=sender_step_ptr,
+            recver_step_ptr=recver_step_ptr,
+            send_numel=send_buf.numel(),
+            recv_numel=recv_buf.numel(),
+            TILE_ROWS=config.tile_rows,
+            TILE_COLS=config.tile_cols,
+            BLOCK_STRIDE_ELEMS=block_stride_elems,
+            PIPELINE_DEPTH=_PIPELINE_DEPTH,
+            MAX_TILES_PER_BLOCK_PER_SLOT=max_tiles_per_block_per_slot,
+            NUM_SEND_BLOCKS=num_blocks,
+            NUM_SENDER_WARPS=sender_warps,
+            NUM_RECEIVER_WARPS=receiver_warps,
+            num_warps=num_warps,
+            # WS uses TLX async_task for pipelining; disable Triton's
+            # software pipelining to avoid stage interleaving on top of
+            # the explicit sender/receiver task split.
+            num_stages=0,
+        )
+        return
 
     grid = (2 * num_blocks,) if mode == _MODE_BIDIRECTIONAL else (num_blocks,)
 
