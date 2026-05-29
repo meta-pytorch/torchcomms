@@ -315,6 +315,7 @@ waitUntilCommsForRank(int rank, Func func, std::chrono::milliseconds timeout) {
     if (func(response)) {
       co_return;
     }
+    co_await folly::coro::sleep(std::chrono::milliseconds(1000));
   }
   XLOG(FATAL) << "timed out waiting for comms predicate to be true, rank: "
               << rank;
@@ -385,7 +386,7 @@ TEST_F(NcclCommsTest, AnalyzerSuccess) {
     for (int i = 0; i < worldSize; ++i) {
       // Wait for the rank to be done with collectives
       mccl::McclIntegrationTestUtil::waitForKey(
-          fmt::format("done_with_collective_rank_{}", rank));
+          fmt::format("done_with_collective_rank_{}", i));
 
       // Get the comm dump state for each rank
       auto analyzerPortForRank = getCommServicePortNumberForRank(i);
