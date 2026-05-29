@@ -11,6 +11,8 @@
  *   Peer count sweep (N=2..2048, msg_size = 128MB / N):
  *     dcScalability           — DC baseline (1 AH, 1 MR, 1 DCI, 1 receiver NIC)
  *     dcMultiDci{2,4,8,16}    — multiple DCIs/DCTs on 1 receiver NIC
+ *     dcStreams{4,16}         — 1 DCI with DCI Streams enabled
+ *     dcMultiDci4Streams4     — 4 DCIs with 4 streams per DCI
  *     dcMultiNicRoundRobin    — multi-NIC receivers, round-robin write ordering
  *     dcMultiNicSorted        — multi-NIC receivers, writes grouped by dest NIC
  *     rcScalability           — RC baseline for comparison
@@ -213,7 +215,8 @@ static void dcMultiDciCore(
     size_t msgSize,
     int numDcis,
     folly::UserCounters& counters,
-    const char* benchName);
+    const char* benchName,
+    uint8_t logNumConcurrentStreams = 0);
 
 static void dcScalabilityCore(
     uint32_t iters,
@@ -550,11 +553,20 @@ static void dcMultiDciCore(
     size_t msgSize,
     int numDcis,
     folly::UserCounters& counters,
-    const char* benchName) {
+    const char* benchName,
+    uint8_t logNumConcurrentStreams) {
   if (!g_rdmaAvailability.checkDcAvailable()) {
     setSkipped(counters);
     return;
   }
+
+  bool useStreams = logNumConcurrentStreams > 0;
+  if (useStreams &&
+      !ibverbx::ibvSymbols.mlx5dv_internal_wr_set_dc_addr_stream) {
+    setSkipped(counters);
+    return;
+  }
+  int numStreamsPerDci = useStreams ? (1 << logNumConcurrentStreams) : 0;
 
   int numReceivers = static_cast<int>(numPeers) - 1;
   if (numReceivers < 1) {
@@ -594,9 +606,12 @@ static void dcMultiDciCore(
   };
   std::vector<DciState> dcis(numDcis);
   for (int d = 0; d < numDcis; ++d) {
-    auto dciResult = createDCILargeSq(*sender.pd, *sender.cq, kDciSqDepth);
+    auto dciResult = useStreams
+        ? createDCILargeSqWithStreams(
+              *sender.pd, *sender.cq, kDciSqDepth, logNumConcurrentStreams)
+        : createDCILargeSq(*sender.pd, *sender.cq, kDciSqDepth);
     if (!dciResult) {
-      setError(counters);
+      useStreams ? setSkipped(counters) : setError(counters);
       return;
     }
     dcis[d].qp = std::make_unique<ibverbx::IbvQp>(std::move(*dciResult));
@@ -684,6 +699,22 @@ static void dcMultiDciCore(
   // Batch size: match all-to-all formula (numDcis * SQ depth, capped by CQ)
   int batch = std::min(numDcis * kDciSqDepth, kSharedCqDepth);
 
+  auto postWrite = [&](int idx) {
+    int d = idx % numDcis;
+    if (useStreams) {
+      return postDcRdmaWriteStream(
+          dcis[d].exQp,
+          dcis[d].dvQp,
+          *ah,
+          recvCards[idx],
+          sge,
+          idx,
+          static_cast<uint16_t>(idx % numStreamsPerDci));
+    }
+    return postDcRdmaWrite(
+        dcis[d].exQp, dcis[d].dvQp, *ah, recvCards[idx], sge, idx);
+  };
+
   // Warmup
   for (int w = 0; w < kWarmupIters; ++w) {
     int rem = numReceivers;
@@ -691,10 +722,7 @@ static void dcMultiDciCore(
     while (rem > 0) {
       int b = std::min(rem, batch);
       for (int j = 0; j < b; ++j) {
-        int d = idx % numDcis;
-        if (postDcRdmaWrite(
-                dcis[d].exQp, dcis[d].dvQp, *ah, recvCards[idx], sge, idx) !=
-            0) {
+        if (postWrite(idx) != 0) {
           setError(counters);
           return;
         }
@@ -721,10 +749,7 @@ static void dcMultiDciCore(
 
       auto postStart = std::chrono::high_resolution_clock::now();
       for (int j = 0; j < thisBatch; ++j) {
-        int d = idx % numDcis;
-        if (postDcRdmaWrite(
-                dcis[d].exQp, dcis[d].dvQp, *ah, recvCards[idx], sge, idx) !=
-            0) {
+        if (postWrite(idx) != 0) {
           setError(counters);
           return;
         }
@@ -772,6 +797,8 @@ static void dcMultiDciCore(
   counters["num_receiver_nics"] =
       folly::UserMetric(1, folly::UserMetric::Type::METRIC);
   counters["num_ahs"] = folly::UserMetric(1, folly::UserMetric::Type::METRIC);
+  counters["num_streams_per_dci"] =
+      folly::UserMetric(numStreamsPerDci, folly::UserMetric::Type::METRIC);
 
   recordRawResult(
       benchName,
@@ -812,6 +839,44 @@ dcMultiDci16(uint32_t iters, size_t numPeers, folly::UserCounters& counters) {
       16,
       counters,
       "dcMultiDci_16");
+}
+
+static void
+dcStreams4(uint32_t iters, size_t numPeers, folly::UserCounters& counters) {
+  dcMultiDciCore(
+      iters,
+      numPeers,
+      kTotalInputSize / numPeers,
+      1,
+      counters,
+      "dcStreams_4",
+      2); // log2(4) = 2
+}
+
+static void
+dcStreams16(uint32_t iters, size_t numPeers, folly::UserCounters& counters) {
+  dcMultiDciCore(
+      iters,
+      numPeers,
+      kTotalInputSize / numPeers,
+      1,
+      counters,
+      "dcStreams_16",
+      4); // log2(16) = 4
+}
+
+static void dcMultiDci4Streams4(
+    uint32_t iters,
+    size_t numPeers,
+    folly::UserCounters& counters) {
+  dcMultiDciCore(
+      iters,
+      numPeers,
+      kTotalInputSize / numPeers,
+      4,
+      counters,
+      "dcMultiDci4_streams4",
+      2); // log2(4) = 2
 }
 
 // Wrapper: message size sweep with 4 DCIs at N=2048
@@ -1144,6 +1209,51 @@ REGISTER_SCALABILITY_BENCH(dcMultiDci16, N256, 256);
 REGISTER_SCALABILITY_BENCH(dcMultiDci16, N512, 512);
 REGISTER_SCALABILITY_BENCH(dcMultiDci16, N1024, 1024);
 REGISTER_SCALABILITY_BENCH(dcMultiDci16, N2048, 2048);
+
+BENCHMARK_DRAW_LINE();
+
+// DC Streams (4 concurrent streams, 1 DCI)
+REGISTER_SCALABILITY_BENCH(dcStreams4, N2, 2);
+REGISTER_SCALABILITY_BENCH(dcStreams4, N4, 4);
+REGISTER_SCALABILITY_BENCH(dcStreams4, N8, 8);
+REGISTER_SCALABILITY_BENCH(dcStreams4, N16, 16);
+REGISTER_SCALABILITY_BENCH(dcStreams4, N32, 32);
+REGISTER_SCALABILITY_BENCH(dcStreams4, N64, 64);
+REGISTER_SCALABILITY_BENCH(dcStreams4, N128, 128);
+REGISTER_SCALABILITY_BENCH(dcStreams4, N256, 256);
+REGISTER_SCALABILITY_BENCH(dcStreams4, N512, 512);
+REGISTER_SCALABILITY_BENCH(dcStreams4, N1024, 1024);
+REGISTER_SCALABILITY_BENCH(dcStreams4, N2048, 2048);
+
+BENCHMARK_DRAW_LINE();
+
+// DC Streams (16 concurrent streams, 1 DCI)
+REGISTER_SCALABILITY_BENCH(dcStreams16, N2, 2);
+REGISTER_SCALABILITY_BENCH(dcStreams16, N4, 4);
+REGISTER_SCALABILITY_BENCH(dcStreams16, N8, 8);
+REGISTER_SCALABILITY_BENCH(dcStreams16, N16, 16);
+REGISTER_SCALABILITY_BENCH(dcStreams16, N32, 32);
+REGISTER_SCALABILITY_BENCH(dcStreams16, N64, 64);
+REGISTER_SCALABILITY_BENCH(dcStreams16, N128, 128);
+REGISTER_SCALABILITY_BENCH(dcStreams16, N256, 256);
+REGISTER_SCALABILITY_BENCH(dcStreams16, N512, 512);
+REGISTER_SCALABILITY_BENCH(dcStreams16, N1024, 1024);
+REGISTER_SCALABILITY_BENCH(dcStreams16, N2048, 2048);
+
+BENCHMARK_DRAW_LINE();
+
+// DC Multi-DCI (4 DCIs) + Streams (4 concurrent streams per DCI)
+REGISTER_SCALABILITY_BENCH(dcMultiDci4Streams4, N2, 2);
+REGISTER_SCALABILITY_BENCH(dcMultiDci4Streams4, N4, 4);
+REGISTER_SCALABILITY_BENCH(dcMultiDci4Streams4, N8, 8);
+REGISTER_SCALABILITY_BENCH(dcMultiDci4Streams4, N16, 16);
+REGISTER_SCALABILITY_BENCH(dcMultiDci4Streams4, N32, 32);
+REGISTER_SCALABILITY_BENCH(dcMultiDci4Streams4, N64, 64);
+REGISTER_SCALABILITY_BENCH(dcMultiDci4Streams4, N128, 128);
+REGISTER_SCALABILITY_BENCH(dcMultiDci4Streams4, N256, 256);
+REGISTER_SCALABILITY_BENCH(dcMultiDci4Streams4, N512, 512);
+REGISTER_SCALABILITY_BENCH(dcMultiDci4Streams4, N1024, 1024);
+REGISTER_SCALABILITY_BENCH(dcMultiDci4Streams4, N2048, 2048);
 
 BENCHMARK_DRAW_LINE();
 
