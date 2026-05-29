@@ -1,0 +1,377 @@
+#---------------------------------------------------------------------------
+#
+#                SITE- AND/OR PLATFORM-SPECIFIC DEFINITIONS.
+#
+#---------------------------------------------------------------------------
+
+#---------------------------------------------------------------------------
+# Items in this file will need to be changed for each platform.
+#---------------------------------------------------------------------------
+
+#---------------------------------------------------------------------------
+#
+# CC/CXX         - C/C++ compiler
+# CFLAGS/CXXFLAG     - C/C++ compilation arguments
+# C_INC/CXX_INC      - any -I arguments required for compiling C/C++
+# CLINK/CXXLINK     - C/C++ linker
+# CLINKFLAGS/CXXLINKFLAGS - C/C++ linker flags
+# C_LIB/CXX_LIB      - any -L and -l arguments required for linking C/C++
+#
+# For C compilations are done with $(CC) $(C_INC) $(CFLAGS) or
+#                            $(CC) $(CFLAGS)
+# linking is done with       $(CLINK) $(C_LIB) $(CLINKFLAGS)
+#
+# For C++ compilations are done with $(CXX) $(CXX_INC) $(CXXFLAGS) or
+#                            $(CXX) $(CXXFLAGS)
+# linking is done with       $(CXXLINK) $(CXX_LIB) $(CXXLINKFLAGS)
+#---------------------------------------------------------------------------
+
+#---------------------------------------------------------------------------
+# Helper functions
+#---------------------------------------------------------------------------
+
+##################################################
+# Loading modules
+##################################################
+define loadModules
+  $(if $(MODULE_LOAD), module load $(CUDA_MODULE) $(1) $(if $(or $(QUIET), $(2)), > /dev/null 2> /dev/null,);,)
+endef
+
+##################################################
+# LOG HEADER AND FOOTER FORTMATS
+##################################################
+
+# Check if we are working on a git folder
+OMPVV_IS_GIT=${shell git rev-parse --is-inside-work-tree 2> /dev/null}
+ifeq ("${OMPVV_IS_GIT}", "true")
+  OMPVV_GIT_COMMIT=${shell git log -n 1 --pretty=format:%h}
+else
+  OMPVV_GIT_COMMIT=""
+endif
+
+# parameters (1) Action (2) System (3) Filename (4) other Info (compiler) (5) OMP spec version (6) Log File
+define log_section_header
+  -$(if $(LOG), @echo -e "*-*-*BEGIN*-*-*$(1)*-*-*$$(date)*-*-*$(2)*-*-*$(shell realpath --relative-to="$$(pwd)" $(3))*-*-*$(4)*-*-*$(OMPVV_GIT_COMMIT)*-*-*$(5)*-*-*" >> $(LOGDIR)/$(6);,)
+endef
+
+# parameters (1) Action (2) System (3) Output status  (4) other Info (compiler) (5) Log File
+define log_section_footer
+  -$(if $(LOG), @echo -e "*-*-*END*-*-*$(1)*-*-*$$(date)*-*-*$(2)*-*-*$(3)*-*-*$(4)*-*-*$(OMPVV_GIT_COMMIT)*-*-*\n" >> $(LOGDIR)/$(5);,)
+endef
+
+
+# Update the compiler settings, unless OMPVV_NO_COMPILER_CHANGES is set.
+ifndef OMPVV_NO_COMPILER_CHANGES
+
+#---------------------------------------------------------------------------
+# C compilers
+#---------------------------------------------------------------------------
+CCOMPILERS?="amdclang, cc, clang, gcc, xlc, xlc_r, icx, icpx, nvc"
+C_VERSION?= echo "version unknown"
+CC?=none
+CXX?=none
+FC?=none
+
+# Strip directory for matching the configuration below
+# setting values according to the Makefile variable override rules
+# But the full pathname compiler will be used for compilation
+OMPVV_USED_CC := $(notdir $(CC))
+OMPVV_USED_CXX := $(notdir $(CXX))
+OMPVV_USED_FC := $(notdir $(FC))
+
+
+ifeq ($(OMP_VERSION), 5.0)
+   OMPV = -fopenmp-version=50
+else ifeq ($(OMP_VERSION), 5.1)
+   OMPV =  -fopenmp-version=51
+else ifeq ($(OMP_VERSION), 5.2)
+   OMPV = -fopenmp-version=52
+endif
+
+
+ifeq ($(OMPVV_USED_CC), amdclang)
+    C_VERSION     =  $(CC) -dumpversion
+    CLINK         =  $(CC)
+    COFFLOADING   =  -fopenmp --offload-arch=native 
+    COFFLOADING   +=  $(OMPV)
+    C_NO_OFFLOADING =  -fopenmp
+    CFLAGS        += -lm -O3 $(COFFLOADING)
+    CLINKFLAGS    += -lm -O3 $(COFFLOADING)
+endif
+
+# NVIDIA compiler
+ifeq ($(OMPVV_USED_CC), nvc)
+    C_VERSION    =  $(CC) -dumpversion
+    CLINK        =  $(CC)
+    COFFLOADING   = -mp=gpu -gpu=cc80
+    C_NO_OFFLOADING = -mp=multicore
+    CFLAGS       += -O3 $(COFFLOADING)
+    CLINKFLAGS   += -O3 $(COFFLOADING)
+endif
+
+# CRAY and AMD compiler wrapers
+ifeq ($(OMPVV_USED_CC), cc)
+  C_VERSION      = $(CC) -dumpversion
+  CLINK          = $(CC)
+  COFFLOADING    = -fopenmp
+  C_NO_OFFLOADING = -fopenmp -fno-cray-openmp
+  CFLAGS         += -lm -O3 $(COFFLOADING)
+  CLINKFLAGS     += -lm -O3 $(COFFLOADING)
+endif
+
+# GCC compiler
+ifeq ($(OMPVV_USED_CC), gcc)
+  C_VERSION       =  $(CC) -dumpversion
+  CLINK           =  $(CC)
+  COFFLOADING     =  -foffload="-lm" -lm -fopenmp
+  C_NO_OFFLOADING =  -foffload=disable
+  CFLAGS          += -O3 -std=c99 $(COFFLOADING)
+  CLINKFLAGS      += -O3 $(COFFLOADING)
+endif
+
+# IBM XL compiler
+ifeq ($(OMPVV_USED_CC), $(filter $(OMPVV_USED_CC), xlc xlc_r))
+  C_VERSION       =  echo "$(shell $(call loadModules,$(C_COMPILER_MODULE),"shut up") $(CC) -qversion | tail -n 1|sed 's/Version:\ //')"
+  CLINK           =  $(CC)
+  COFFLOADING     =  -qoffload -qsmp=omp
+  C_NO_OFFLOADING =
+  CFLAGS          += -O3 $(COFFLOADING)
+  CLINKFLAGS      += -O3 $(COFFLOADING)
+endif
+
+# Intel ICX compiler
+ifeq ($(OMPVV_USED_CC), $(filter $(OMPVV_USED_CC), icx icpx))
+  C_VERSION       =  $(CC) -dumpversion
+  CLINK           =  $(CC)
+  COFFLOADING     =  -fopenmp-targets=spir64 -fiopenmp
+  C_NO_OFFLOADING =
+  CFLAGS          += -lm -O3 $(COFFLOADING)
+  CLINKFLAGS      += -lm -O3 $(COFFLOADING)
+endif
+
+# Clang compiler
+ifeq ($(OMPVV_USED_CC), clang)
+  C_VERSION       =  $(CC) -dumpversion
+  CLINK           =  $(CC)
+  COFFLOADING     =  -fopenmp --offload-arch=native
+  COFFLOADING     +=  $(OMPV)
+  C_NO_OFFLOADING =  -fopenmp
+  CFLAGS          += -lm -O3 $(COFFLOADING)
+  CLINKFLAGS      += -lm -O3 $(COFFLOADING)
+endif
+
+
+#---------------------------------------------------------------------------
+# C++ compilers
+#---------------------------------------------------------------------------
+CXXCOMPILERS?="amdclang++, CC, clang++, g++, xlc++, xlc++_r, icpx, nvc++"
+CXX_VERSION?= echo "version unknown"
+
+ifeq ($(OMPVV_USED_CXX), amdclang++)
+    CXX_VERSION     =  $(CXX) -dumpversion
+    CXXLINK         =  $(CXX)
+    CXXOFFLOADING   =  -fopenmp --offload-arch=native
+    CXXOFFLOADING   +=  $(OMPV)
+    CXX_NO_OFFLOADING =  -fopenmp
+    CXXFLAGS        += -std=c++11 -lm -O3 $(CXXOFFLOADING)
+    CXXLINKFLAGS    += -lm -O3 $(CXXOFFLOADING)
+endif
+
+# NVIDIA compiler
+ifeq ($(OMPVV_USED_CXX), nvc++)
+    CXX_VERSION    =  $(CXX) -dumpversion
+    CXXLINK        =  $(CXX)
+    CXXOFFLOADING   = -mp=gpu -gpu=cc80
+    CXX_NO_OFFLOADING = -mp=multicore
+    CXXFLAGS       += -O3 $(CXXOFFLOADING)
+    CXXLINKFLAGS   += -O3 $(CXXOFFLOADING)
+endif
+
+# CRAY and AMD compiler wrappers
+ifeq ($(OMPVV_USED_CXX), CC)
+  CXX_VERSION      = $(CXX) -dumpversion
+  CXXLINK          = $(CXX)
+  CXXOFFLOADING    = -fopenmp
+  CXXFLAGS         += -lm -O3 $(CXXOFFLOADING)
+  CXXLINKFLAGS     += -lm -O3 $(CXXOFFLOADING)
+endif
+
+# GCC compiler
+ifeq ($(OMPVV_USED_CXX), g++)
+  CXX_VERSION       =  $(CXX) -dumpversion
+  CXXLINK           =  $(CXX)
+  CXXOFFLOADING     =  -foffload="-lm" -lm -fopenmp
+  CXX_NO_OFFLOADING =  -foffload=disable
+  CXXFLAGS          += -O3 -std=c++11 $(CXXOFFLOADING)
+  CXXLINKFLAGS      += -O3 $(CXXOFFLOADING)
+endif
+
+# IBM XL compiler
+ifeq ($(OMPVV_USED_CXX), $(filter $(OMPVV_USED_CXX), xlc++ xlc++_r))
+  CXX_VERSION       =  echo "$(shell $(call loadModules,$(C_COMPILER_MODULE),"shut up") $(CXX) -qversion | tail -n 1|sed 's/Version:\ //')"
+  CXXLINK           =  $(CXX)
+  CXXOFFLOADING     =  -qoffload -qsmp=omp
+  CXX_NO_OFFLOADING =
+  CXXFLAGS          += -O3 -std=c++11 $(CXXOFFLOADING)
+  CXXLINKFLAGS      += -O3 $(CXXOFFLOADING)
+endif
+
+# Intel ICX compiler
+ifeq ($(OMPVV_USED_CXX), icpx)
+  CXX_VERSION       =  $(CXX) -dumpversion
+  CXXLINK           =  $(CXX)
+  CXXOFFLOADING     =  -fopenmp-targets=spir64 -fiopenmp
+  CXX_NO_OFFLOADING =
+  CXXFLAGS          += -lm -O3 $(CXXOFFLOADING)
+  CXXLINKFLAGS      += -lm -O3 $(CXXOFFLOADING)
+endif
+
+# Clang compiler
+ifeq ($(OMPVV_USED_CXX), clang++)
+  CXX_VERSION       =  $(CXX) -dumpversion
+  CXXLINK           =  $(CXX)
+  CXXOFFLOADING     =  -fopenmp --offload-arch=native
+  CXXOFFLOADING     +=  $(OMPV)
+  CXX_NO_OFFLOADING = -fopenmp
+  CXXFLAGS          += -lm -std=c++11 -O3 $(CXXOFFLOADING)
+  CXXLINKFLAGS      += -lm -O3 $(CXXOFFLOADING)
+endif
+
+#---------------------------------------------------------------------------
+# FORTRAN compilers
+#---------------------------------------------------------------------------
+FCOMPILERS?="amdflang, gfortran, xlf, xlf_r, ifx, ifort, ftn, nvfortran"
+F_VERSION?= echo "version unknown"
+
+ifeq ($(OMPVV_USED_FC), amdflang)
+    F_VERSION     =  $(FC) -dumpversion
+    FLINK         =  amdclang++
+    FOFFLOADING   =  -fopenmp --offload-arch=gfx90a
+    FOFFLOADING   +=  $(OMPV)
+    FFLAGS        += -lm -O3 $(FOFFLOADING)
+    FLINKFLAGS    += -lm -O3 $(FOFFLOADING)
+endif
+
+# NVIDIA compiler
+ifeq ($(OMPVV_USED_FC), nvfortran)
+    F_VERSION    =  $(FC) -dumpversion
+    FLINK        =  $(FC)
+    FOFFLOADING     = -mp=gpu -gpu=cc80
+    F_NO_OFFLOADING = -mp=multicore
+    FFLAGS       += -O3 $(FOFFLOADING)
+    FLINKFLAGS   += -O3 $(FOFFLOADING)
+endif
+
+# CRAY and AMD compiler wrappers
+ifeq ($(OMPVV_USED_FC), ftn)
+  F_VERSION      = echo "$(shell $(call loadModules,$(C_COMPILER_MODULE),"shut up") $(FC) --version|head -n1)"
+  FLINK          = cc
+  FOFFLOADING    = -fopenmp
+  F_NO_OFFLOADING = -hnoomp
+  FFLAGS         += -lm -dm -O3 $(FOFFLOADING)
+  FLINKFLAGS     += -lm -O3 $(FOFFLOADING)
+endif
+
+# GCC compiler
+ifeq ($(OMPVV_USED_FC), gfortran)
+  F_VERSION       =  $(FC) -dumpversion
+  FLINK           =  gcc
+  FOFFLOADING     =  -foffload="-lm" -lm -fopenmp -foffload-options=-lgfortran
+  F_NO_OFFLOADING =  -foffload=disable
+  FFLAGS          += -O3 $(FOFFLOADING) -ffree-line-length-none -J./ompvv
+  FLINKFLAGS      += -O3 $(FOFFLOADING)
+endif
+# GCC compiler
+
+# IBM XL compiler
+ifeq ($(OMPVV_USED_FC), $(filter $(OMPVV_USED_FC), xlf xlf_r))
+  F_VERSION       =  echo "$(shell $(call loadModules,$(C_COMPILER_MODULE),"shut up") $(FC) -qversion | tail -n 1|sed 's/Version:\ //')"
+  FLINK           =  xlc
+  FOFFLOADING     =  -qoffload -qsmp=omp -qmoddir=./ompvv
+  F_NO_OFFLOADING =
+  FFLAGS          += -O3 $(FOFFLOADING)
+  FLINKFLAGS      += -O3 $(FOFFLOADING)
+endif
+
+# Intel ICX compiler
+ifeq ($(OMPVV_USED_FC), $(filter $(OMPVV_USED_FC), ifx ifort))
+  F_VERSION       =  echo "$(shell $(call loadModules,$(C_COMPILER_MODULE),"shut up") $(FC) --version|head -n1)"
+  FLINK           =  $(FC)
+  FOFFLOADING     =  -fopenmp-targets=spir64 -fiopenmp
+  F_NO_OFFLOADING =
+  FFLAGS          += -lm -O3 $(FOFFLOADING)
+  FLINKFLAGS      += -lm -O3 $(FOFFLOADING)
+endif
+
+# Flang compiler
+ifeq ($(OMPVV_USED_FC), $(filter $(OMPVV_USED_FC), flang flang-new))
+  F_VERSION       =  $(FC) -dumpversion
+  FOFFLOADING     =  -fopenmp --offload-arch=native
+  FOFFLOADING     +=  $(OMPV)
+  F_NO_OFFLOADING = -fopenmp
+  FFLAGS          += -lm -O3 $(FOFFLOADING)
+  FLINKFLAGS      += -lm -O3 $(FOFFLOADING)
+endif
+
+# end of: ifndef OMPVV_NO_COMPILER_CHANGES
+endif
+
+#---------------------------------------------------------------------------
+# These macros are passed to the linker
+#---------------------------------------------------------------------------
+C_LIB  =
+CXX_LIB  =
+F_LIB =
+
+#---------------------------------------------------------------------------
+# These macros are passed to the compiler
+#---------------------------------------------------------------------------
+C_INC = -I./ompvv
+CXX_INC = -I./ompvv
+F_INC = -I./ompvv
+
+#---------------------------------------------------------------------------
+# Thread and team numbers for the compiler
+#---------------------------------------------------------------------------
+ifdef NUM_THREADS_DEVICE
+      DTHREADS = -DOMPVV_NUM_THREADS_DEVICE=${NUM_THREADS_DEVICE}
+endif
+
+ifdef NUM_TEAMS_DEVICE
+      DTEAMS = -DOMPVV_NUM_TEAMS_DEVICE=${NUM_TEAMS_DEVICE}
+endif
+
+ifdef NUM_THREADS_HOST
+      HTHREADS = -DOMPVV_NUM_THREADS_HOST=${NUM_THREADS_HOST}
+endif
+
+#---------------------------------------------------------------------------
+# Destination of executables, relative to subdirs of the main directory. .
+#---------------------------------------------------------------------------
+BINDIR ?= bin
+
+#---------------------------------------------------------------------------
+# COMPILER DEF
+#---------------------------------------------------------------------------
+CCOMPILE = $(CC) $(C_INC) $(CFLAGS)
+CXXCOMPILE = $(CXX) $(CXX_INC) $(CXXFLAGS)
+FCOMPILE = $(FC) $(F_INC) $(FFLAGS)
+
+#---------------------------------------------------------------------------
+# COLORS DEF
+#---------------------------------------------------------------------------
+TXTBLK := "\033[0;30m" # Black - Regular
+TXTRED := "\033[0;31m" # Red
+TXTGRN := "\033[0;32m" # Green
+TXTYLW := "\033[0;33m" # Yellow
+TXTBLU := "\033[0;34m" # Blue
+TXTPUR := "\033[0;35m" # Purple
+TXTCYN := "\033[0;36m" # Cyan
+TXTWHT := "\033[0;37m" # White
+TXTNOC := "\033[0m"
+
+#---------------------------------------------------------------------------
+# LOGS
+#---------------------------------------------------------------------------
+LOGRANDNUM = ${shell echo $$RANDOM}
+LOGTEMPFILE ?= _ompvv_temp_result_.exitstatus.${LOGRANDNUM}

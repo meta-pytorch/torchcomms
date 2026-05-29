@@ -14,14 +14,14 @@
 #include <folly/MPMCQueue.h>
 #include <folly/concurrency/ConcurrentHashMap.h>
 
-#include "comms/utils/HRDWRingBuffer.h"
-#include "comms/utils/HRDWRingBufferReader.h"
 #include "comms/utils/colltrace/CollTraceEvent.h"
 #include "comms/utils/colltrace/CollTraceHandle.h"
 #include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/utils/colltrace/CollTracePlugin.h"
 #include "comms/utils/colltrace/GraphCollTraceEvent.h"
 #include "comms/utils/commSpecs.h"
+#include "comms/utils/hrdw_ring_buffer/HRDWRingBuffer.h"
+#include "comms/utils/hrdw_ring_buffer/HRDWRingBufferReader.h"
 
 struct CUstream_st;
 
@@ -109,6 +109,9 @@ class CollTrace : public ICollTrace {
       CollTraceEvent& collEvent,
       CollTraceHandleTriggerState state) noexcept override;
 
+  uint64_t requestFlush() noexcept override;
+  void waitFlush(uint64_t gen) noexcept override;
+
  private:
   // Internal impl for graph-captured collectives, called when
   // recordCollective detects a GraphCudaWaitEvent.
@@ -122,6 +125,7 @@ class CollTrace : public ICollTrace {
    * cancellation.
    ***************************************************************************/
   bool isThreadCancelled() const noexcept;
+  void ackFlush(uint64_t gen) noexcept;
 
   void collTraceThread(
       const std::function<CommsMaybeVoid(void)>& threadSetupFunc);
@@ -188,9 +192,11 @@ class CollTrace : public ICollTrace {
 
   // Single shared ring buffer for ALL cuda graphs. RAII-managed via
   // HRDWRingBuffer (mapped pinned memory, GPU-writable, CPU-readable).
-  std::optional<HRDWRingBuffer<GraphCollTraceEvent>> ringBuffer_;
+  std::optional<::hrdw_ring_buffer::HRDWRingBuffer<GraphCollTraceEvent>>
+      ringBuffer_;
   // CPU-side reader for the shared ring buffer (poll thread only).
-  std::optional<HRDWRingBufferReader<GraphCollTraceEvent>> ringReader_;
+  std::optional<::hrdw_ring_buffer::HRDWRingBufferReader<GraphCollTraceEvent>>
+      ringReader_;
   // Map from collId to GraphCollectiveEntry* for fast lookup during polling.
   // Only accessed from the colltrace thread (no mutex needed). Entries are
   // added under graphStatesMutex_ and then inserted here on first poll.
@@ -199,10 +205,32 @@ class CollTrace : public ICollTrace {
   // Used to emit periodic kProgressing actions so the watchdog plugin can
   // detect hung graph collectives.
   std::unordered_set<uint32_t> progressingGraphCollectives_;
+  // Completed graph replay events whose kEnd has been processed. Cleared
+  // at the end of processCompletedEvents once plugins have taken ownership
+  // of the CollRecord shared_ptr.
+  std::vector<std::unique_ptr<CollTraceEvent>> graphReplayEvents_;
+
+  // Maps collId → in-flight replayEvent for collectives whose start event
+  // has been processed but end event hasn't arrived yet. The clone is
+  // created at start time so its startTs is captured immediately and
+  // can't be clobbered by a subsequent start for the same collId.
+  // Owns the CollTraceEvent so it survives across poll cycles.
+  std::unordered_map<uint32_t, std::unique_ptr<CollTraceEvent>>
+      inFlightReplays_;
 
   // Eager events being polled by the colltrace thread. Only accessed from
   // the colltrace thread — no mutex needed.
   std::vector<std::unique_ptr<CollTraceEvent>> eagerEvents_;
+
+  // Flush synchronization: requestFlush() increments requested and pushes
+  // a nullptr sentinel to wake the poll thread. The poll thread stores the
+  // requested value into completed after draining, then notifies via cv.
+  struct FlushState {
+    std::atomic<uint64_t> requested{0};
+    std::atomic<uint64_t> completed{0};
+    std::mutex mutex;
+    std::condition_variable cv;
+  } flushState_;
 
   std::atomic_flag threadShouldStop_;
   // Signaled by the poll thread after its first loop iteration completes.

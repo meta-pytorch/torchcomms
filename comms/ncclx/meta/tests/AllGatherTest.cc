@@ -9,29 +9,33 @@
 #include <cstddef>
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
+#include "comms/ctran/tests/VerifyAlgoStatsUtil.h"
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
-#include "comms/testinfra/AlgoTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-
-using testinfra::AlgoRAII;
+#include "meta/algoconf/AlgoStrConv.h"
 
 class AllGatherTest : public NcclxBaseTestFixture {
  public:
   AllGatherTest() = default;
   void SetUp() override {
-    NcclxBaseTestFixture::SetUp();
-    this->comm = ncclx::test::createNcclComm(
-        globalRank, numRanks, localRank, bootstrap_.get());
+    NcclxEnvs envs = {
+        {"NCCL_CTRAN_ENABLE", "1"},
+        {"NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET", "1"},
+    };
+#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
+    envs.push_back({"NCCL_COMM_STATE_DEBUG_TOPO", "nolocal"});
+#endif
+    NcclxBaseTestFixture::SetUp(envs);
+    ctranAlgoStats_.enable();
 
     CUDACHECK_TEST(cudaSetDevice(localRank));
     CUDACHECK_TEST(cudaStreamCreate(&stream));
   }
 
   void TearDown() override {
-    NCCLCHECK_TEST(ncclCommDestroy(comm));
     CUDACHECK_TEST(cudaStreamDestroy(stream));
     NcclxBaseTestFixture::TearDown();
   }
@@ -43,7 +47,17 @@ class AllGatherTest : public NcclxBaseTestFixture {
       bool useCudaGraph,
       MemAllocType memType,
       size_t count) {
-    auto algoGuard = AlgoRAII(NCCL_ALLGATHER_ALGO, algo);
+    // Create comm with per-comm hints for the allgather algorithm
+    ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints(
+        {{"allgatherAlgo", ncclx::algoconf::algoValToStr(algo)}});
+#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
+    hints.set("noLocal", "1");
+#endif
+    config.hints = &hints;
+    ncclx::test::NcclCommRAII commRaii(
+        globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
+    this->comm = commRaii.get();
 
     if ((memType == kMemNcclMemAlloc || memType == kCuMemAllocDisjoint) &&
         ncclIsCuMemSupported() == false) {
@@ -51,7 +65,6 @@ class AllGatherTest : public NcclxBaseTestFixture {
     }
 
     if (algo != NCCL_ALLGATHER_ALGO::orig) {
-#ifdef TEST_ENABLE_CTRAN
       if (!ctranAllGatherSupport(comm->ctranComm_.get(), algo)) {
         GTEST_SKIP() << "Ctran algorithm is not supported, skip test";
       }
@@ -62,9 +75,6 @@ class AllGatherTest : public NcclxBaseTestFixture {
         GTEST_SKIP()
             << "Ctran does not support cudaMalloc-ed buffer with nLocalRanks > 1, skip test";
       }
-#else
-      GTEST_SKIP() << "Ctran is not enabled, skip test";
-#endif
     }
 
     // Create and register buffers. If inplace, we use the same buffer for send
@@ -137,6 +147,12 @@ class AllGatherTest : public NcclxBaseTestFixture {
 
     CUDACHECK_TEST(cudaStreamSynchronize(stream));
 
+#ifdef TEST_ENABLE_CTRAN
+    if (algo != NCCL_ALLGATHER_ALGO::orig) {
+      ctranAlgoStats_.verify(comm->ctranComm_.get(), "AllGather", "Ctran");
+    }
+#endif
+
     // Check each received chunk
     for (int r = 0; r < numRanks; r++) {
       int expectedVal = r + 1;
@@ -162,6 +178,7 @@ class AllGatherTest : public NcclxBaseTestFixture {
  protected:
   ncclComm_t comm{};
   cudaStream_t stream{};
+  ctran::test::VerifyAlgoStatsHelper ctranAlgoStats_;
 };
 
 class AllgatherTestParam : public AllGatherTest,
@@ -187,15 +204,13 @@ TEST_P(AllgatherMemtypeGraphTestParam, Test) {
   auto registFlag = false;
   constexpr size_t count = 10e6 * 8;
 
-  auto GRAPH_REGISTER_OVERRIDE = 1L;
-  // TODO: we should throw proper error in the unsupported case in baseline
-  // NCCL graph register
-  if (algo == NCCL_ALLGATHER_ALGO::orig && useCudaGraph &&
+  const char* graphRegEnv = getenv("NCCL_GRAPH_REGISTER");
+  if (graphRegEnv != nullptr && std::string(graphRegEnv) == "1" &&
       memType == kCuMemAllocDisjoint) {
-    GRAPH_REGISTER_OVERRIDE = 0L;
+    GTEST_SKIP()
+        << "kCuMemAllocDisjoint not supported with NCCL_GRAPH_REGISTER=1";
   }
 
-  auto envGuard = EnvRAII(NCCL_GRAPH_REGISTER, GRAPH_REGISTER_OVERRIDE);
   runTest(algo, false /* inplace */, registFlag, useCudaGraph, memType, count);
 }
 
@@ -228,7 +243,7 @@ INSTANTIATE_TEST_SUITE_P(
         ::testing::Values(
             NCCL_ALLGATHER_ALGO::orig,
             NCCL_ALLGATHER_ALGO::ctran,
-            NCCL_ALLGATHER_ALGO::ctrd,
+            NCCL_ALLGATHER_ALGO::ctsrd,
             NCCL_ALLGATHER_ALGO::ctring,
             NCCL_ALLGATHER_ALGO::ctdirect,
             NCCL_ALLGATHER_ALGO::ctbrucks),

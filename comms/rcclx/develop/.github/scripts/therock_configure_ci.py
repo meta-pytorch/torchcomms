@@ -1,53 +1,67 @@
-# Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
-# SPDX-License-Identifier: MIT 
+"""
+This script determines which build flag and tests to run based on SUBTREES
+
+Required environment variables:
+  - SUBTREES
+"""
 
 import fnmatch
 import json
-import os
-from pathlib import Path
+import logging
 import subprocess
-import sys
-from typing import Iterable, Optional, Mapping
+from therock_matrix import subtree_to_project_map, project_map
+import time
+from typing import Mapping, Optional, Iterable
+import os
 
-def gha_set_output(vars: Mapping[str, str | Path]):
-    """Sets values in a step's output parameters.
+logging.basicConfig(level=logging.INFO)
 
-    This appends to the file located at the $GITHUB_OUTPUT environment variable.
 
-    See
-      * https://docs.github.com/en/actions/reference/workflow-commands-for-github-actions#setting-an-output-parameter
-      * https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/passing-information-between-jobs
+def set_github_output(d: Mapping[str, str]):
+    """Sets GITHUB_OUTPUT values.
+    See https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/passing-information-between-jobs
     """
-    print(f"Setting github output:\n{vars}")
-
-    step_output_file = os.getenv("GITHUB_OUTPUT")
+    logging.info(f"Setting github output:\n{d}")
+    step_output_file = os.environ.get("GITHUB_OUTPUT", "")
     if not step_output_file:
-        print("  Warning: GITHUB_OUTPUT env var not set, can't set github outputs")
+        logging.warning(
+            "Warning: GITHUB_OUTPUT env var not set, can't set github outputs"
+        )
         return
-
     with open(step_output_file, "a") as f:
-        f.writelines(f"{k}={str(v)}" + "\n" for k, v in vars.items())
+        f.writelines(f"{k}={v}" + "\n" for k, v in d.items())
 
+def retry(max_attempts, delay_seconds, exceptions):
+    def decorator(func):
+        def newfn(*args, **kwargs):
+            attempt = 0
+            while attempt < max_attempts:
+                try:
+                    return func(*args, **kwargs)
+                except exceptions as e:
+                    print(f'Exception {str(e)} thrown when attempting to run , attempt {attempt} of {max_attempts}')
+                    attempt += 1
+                    if attempt < max_attempts:
+                        backoff = delay_seconds * (2 ** (attempt - 1))
+                        time.sleep(backoff)
+            return func(*args, **kwargs)
+        return newfn
+    return decorator
+
+@retry(max_attempts=3, delay_seconds=2, exceptions=(TimeoutError))
 def get_modified_paths(base_ref: str) -> Optional[Iterable[str]]:
     """Returns the paths of modified files relative to the base reference."""
-    try:
-        return subprocess.run(
-            ["git", "diff", "--name-only", base_ref],
-            stdout=subprocess.PIPE,
-            check=True,
-            text=True,
-            timeout=60,
-        ).stdout.splitlines()
-    except TimeoutError:
-        print(
-            "Computing modified files timed out. Not using PR diff to determine"
-            " jobs to run.",
-            file=sys.stderr,
-        )
-        return None
-    
+    return subprocess.run(
+        ["git", "diff", "--name-only", base_ref],
+        stdout=subprocess.PIPE,
+        check=True,
+        text=True,
+        timeout=60,
+    ).stdout.splitlines()
+
+
 GITHUB_WORKFLOWS_CI_PATTERNS = [
-    "therock*.yml",
+    "therock*",
 ]
 
 
@@ -55,31 +69,44 @@ def is_path_workflow_file_related_to_ci(path: str) -> bool:
     return any(
         fnmatch.fnmatch(path, ".github/workflows/" + pattern)
         for pattern in GITHUB_WORKFLOWS_CI_PATTERNS
+    ) or any(
+        fnmatch.fnmatch(path, ".github/scripts/" + pattern)
+        for pattern in GITHUB_WORKFLOWS_CI_PATTERNS
     )
-    
+
+
 def check_for_workflow_file_related_to_ci(paths: Optional[Iterable[str]]) -> bool:
     if paths is None:
         return False
     return any(is_path_workflow_file_related_to_ci(p) for p in paths)
+
 
 # Paths matching any of these patterns are considered to have no influence over
 # build or test workflows so any related jobs can be skipped if all paths
 # modified by a commit/PR match a pattern in this list.
 SKIPPABLE_PATH_PATTERNS = [
     "docs/*",
-    "*.gitignore",
+    ".gitignore",
     "*.md",
-    "*LICENSE*",
-    "*NOTICES*",
-    '.github/CODEOWNERS',
-    '.github/*.md',
-    '.github/dependabot.yml',
-    '.azuredevops*',
+    "*.rtf",
+    "*.rst",
+    "*/.markdownlint-ci2.yaml",
+    "*/.readthedocs.yaml",
+    "*/.spellcheck.local.yaml",
+    "*/.wordlist.txt",
+    "projects/*/docs/*",
+    "projects/*/.gitignore",
+    "projects/rocr-runtime/libhsakmt/src/dxg/*",
+    "projects/rocshmem/*",
+    "shared/*/docs/*",
+    "shared/*/.gitignore",
 ]
+
 
 def is_path_skippable(path: str) -> bool:
     """Determines if a given relative path to a file matches any skippable patterns."""
     return any(fnmatch.fnmatch(path, pattern) for pattern in SKIPPABLE_PATH_PATTERNS)
+
 
 def check_for_non_skippable_path(paths: Optional[Iterable[str]]) -> bool:
     """Returns true if at least one path is not in the skippable set."""
@@ -87,48 +114,81 @@ def check_for_non_skippable_path(paths: Optional[Iterable[str]]) -> bool:
         return False
     return any(not is_path_skippable(p) for p in paths)
 
-def should_ci_run_given_modified_paths(paths: Optional[Iterable[str]]) -> bool:
-    """Returns true if CI workflows should run given a list of modified paths."""
 
-    if paths is None:
-        print("No files were modified, skipping TheRock CI jobs")
-        return False
+def retrieve_projects(args):
+    # Check if CI should be skipped based on modified paths
+    # (only for push and pull_request events, not workflow_dispatch or nightly)
+    if args.get("is_push") or args.get("is_pull_request"):
+        base_ref = args.get("base_ref")
+        modified_paths = get_modified_paths(base_ref)
 
-    paths_set = set(paths)
-    github_workflows_paths = set(
-        [p for p in paths if p.startswith(".github/workflows")]
-    )
-    other_paths = paths_set - github_workflows_paths
-    
-    related_to_ci = check_for_workflow_file_related_to_ci(github_workflows_paths)
-    contains_other_non_skippable_files = check_for_non_skippable_path(other_paths)
+        paths_set = set(modified_paths)
+        contains_non_skippable_files = check_for_non_skippable_path(paths_set)
 
-    print("should_ci_run_given_modified_paths findings:")
-    print(f"  contains_other_non_skippable_files: {contains_other_non_skippable_files}")
+        # If only skippable paths were modified, skip CI
+        if not contains_non_skippable_files:
+            logging.info("Only skippable paths were modified, skipping CI")
+            return []
 
-    if related_to_ci:
-        print("Enabling build jobs since a related workflow file was modified")
-        return True
-    elif contains_other_non_skippable_files:
-        print("Enabling TheRock CI jobs since a non-skippable path was modified")
-        return True
-    else:
-        print(
-            "Only unrelated and/or skippable paths were modified, skipping TheRock CI jobs"
-        )
-        return False
+    if args.get("is_pull_request"):
+        subtrees = list(subtree_to_project_map.keys())
 
-def main(args):
+    if args.get("is_workflow_dispatch"):
+        if args.get("input_projects") == "all":
+            subtrees = list(subtree_to_project_map.keys())
+        else:
+            subtrees = args.get("input_projects").split()
+
+    # If a push event to develop happens, we run tests on all subtrees
+    if args.get("is_push"):
+        subtrees = list(subtree_to_project_map.keys())
+
+    # If .github/*/therock* were changed, run all subtrees
     base_ref = args.get("base_ref")
     modified_paths = get_modified_paths(base_ref)
     print("modified_paths (max 200):", modified_paths[:200])
-    enable_jobs = should_ci_run_given_modified_paths(modified_paths)
-    output = {
-        'enable_therock_ci': json.dumps(enable_jobs)
-    }
-    gha_set_output(output)
+    related_to_therock_ci = check_for_workflow_file_related_to_ci(modified_paths)
+    if related_to_therock_ci:
+        subtrees = list(subtree_to_project_map.keys())
+
+    projects = set()
+    # collect the associated subtree to project
+    for subtree in subtrees:
+        if subtree in subtree_to_project_map:
+            projects.add(subtree_to_project_map.get(subtree))
+
+    # retrieve the subtrees to checkout, cmake options to build, and projects to test
+    project_to_run = []
+    # Currently as we have no tests, we just build all packages available if an applicable change is made.
+    # As we start to get an idea of test times, we can divide test jobs.
+    if projects:
+        for project in ["all"]:
+            if project in project_map:
+                project_to_run.append(project_map.get(project))
+
+    return project_to_run
+
+
+def run(args):
+    project_to_run = retrieve_projects(args)
+    set_github_output({"projects": json.dumps(project_to_run)})
+
 
 if __name__ == "__main__":
     args = {}
-    args["base_ref"] = os.environ.get("BASE_REF", "HEAD^1")
-    main(args)
+    github_event_name = os.getenv("GITHUB_EVENT_NAME")
+    args["is_pull_request"] = github_event_name == "pull_request"
+    args["is_push"] = github_event_name == "push"
+    args["is_workflow_dispatch"] = github_event_name == "workflow_dispatch"
+
+    input_subtrees = os.getenv("SUBTREES", "")
+    args["input_subtrees"] = input_subtrees
+
+    input_projects = os.getenv("PROJECTS", "")
+    args["input_projects"] = input_projects
+
+    args["base_ref"] = os.environ.get("BASE_REF", "HEAD^")
+
+    logging.info(f"Retrieved arguments {args}")
+
+    run(args)

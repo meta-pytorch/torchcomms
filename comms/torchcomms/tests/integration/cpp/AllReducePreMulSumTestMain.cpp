@@ -110,14 +110,23 @@ TEST_P(MultiGraph, InputDeleted) {
 
 auto allReducePreMulSumScalarParams() {
   return ::testing::Combine(
+#if TEST_FULL_SWEEP
       ::testing::Values(0, 4, 1024, 1024 * 1024),
       ::testing::Values(at::kHalf, at::kFloat, at::kDouble),
+#else
+      ::testing::Values(4, 1024 * 1024),
+      ::testing::Values(at::kFloat),
+#endif
       ::testing::Values(PreMulSumOpType::kScalar));
 }
 
 auto allReducePreMulSumBf16TensorParams() {
   return ::testing::Combine(
+#if TEST_FULL_SWEEP
       ::testing::Values(0, 4, 1024, 1024 * 1024),
+#else
+      ::testing::Values(4, 1024 * 1024),
+#endif
       ::testing::Values(at::kBFloat16),
       ::testing::Values(PreMulSumOpType::kTensor));
 }

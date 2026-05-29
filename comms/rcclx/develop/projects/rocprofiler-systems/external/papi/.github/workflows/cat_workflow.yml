@@ -1,0 +1,23 @@
+name: counter analysis toolkit
+
+on:
+  pull_request:
+    # run CI for updates to counter analysis toolkit
+    paths:
+      - 'src/counter_analysis_toolkit/**'
+  # allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  cat_tests:
+    strategy:
+      matrix:
+        debug: [yes, no] 
+        shlib: [with, without]
+      fail-fast: false
+    runs-on: [self-hosted, cpu_intel]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: counter analysis toolkit tests
+        run: .github/workflows/ci_cat.sh ${{matrix.debug}} ${{matrix.shlib}}

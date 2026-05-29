@@ -5,6 +5,11 @@
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/utils/DevUtils.cuh"
 
+__global__ void ncclKernelAllGatherCtranBrucks(
+    int* flag,
+    CtranAlgoDeviceState* devState,
+    ctran::allgather::KernelArgs args);
+
 static const auto myAlgo = NCCL_ALLGATHER_ALGO::ctbrucks;
 
 // # of steps is ceil(log2(p))
@@ -133,7 +138,12 @@ static commResult_t impl(
         comm->ctran_->mapper->isendCtrl(recvbuff, memHdl, srcPeer, &sendReq));
     isendReq[i] = std::unique_ptr<CtranMapperRequest>(sendReq);
 
-    // Initialize notify to receive notification from peer that's sending to us
+    // This algorithm uses one notify as a phase marker for each half-step:
+    // first-half completion releases the next step's first-half send, and
+    // second-half completion releases the step loop. CtranMapperNotify counts
+    // per-peer arrivals, but it does not identify which chunk or phase
+    // generated a notification. A notify-all conversion needs a way to preserve
+    // those phase boundaries, so this path keeps the existing notify markers.
     notifyVec[i] = std::make_unique<CtranMapperNotify>();
     FB_COMMCHECK(comm->ctran_->mapper->initNotify(
         srcPeer, memHdl, notifyVec.at(i).get()));
@@ -320,7 +330,7 @@ commResult_t ctranAllGatherBrucksFF(
       std::move(opGroup),
       impl,
       config,
-      reinterpret_cast<void*>(ncclKernelAllGatherCtranRecDbl)));
+      reinterpret_cast<void*>(ncclKernelAllGatherCtranBrucks)));
   if (extraCopyBuff != nullptr) {
     FB_CUDACHECK(cudaMemcpyAsync(
         recvbuff,

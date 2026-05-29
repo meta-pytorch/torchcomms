@@ -5,7 +5,24 @@
 #include <cstdint>
 #include <cstdio>
 
+// HipCompat provides `__trap` (mapped to `abort`) when this file is compiled
+// for the AMD device pass; on NVIDIA the include is a harmless no-op.
+#include "comms/pipes/DeviceMacros.cuh"
+#include "comms/pipes/amd/HipHostCompat.h"
+
 namespace comms::pipes {
+
+// GPU clock abstraction: NVIDIA uses clock64() (shader clock),
+// AMD uses wall_clock64() (fixed 100 MHz wall clock) for accurate timing.
+__device__ __forceinline__ uint64_t gpu_clock64() {
+#if defined(__HIP_DEVICE_COMPILE__) && !defined(__CUDA_ARCH__)
+  return wall_clock64();
+#elif defined(__CUDA_ARCH__)
+  return clock64();
+#else
+  return 0; // Host fallback (never called at runtime)
+#endif
+}
 
 // Forward declaration - full definition in ThreadGroup.cuh
 struct ThreadGroup;
@@ -78,16 +95,16 @@ struct Timeout {
    * deadline_cycles already being non-zero.
    */
   __device__ __forceinline__ void start() {
-#ifdef __CUDA_ARCH__
+#if PIPES_IS_DEVICE_COMPILE
     if (timeout_cycles > 0) {
       if (deadline_cycles != 0) {
         printf(
             "CUDA TIMEOUT ERROR: Timeout::start() called twice "
             "(deadline_cycles=%llu)\n",
             static_cast<unsigned long long>(deadline_cycles));
-        __trap(); // Double-start is a programming error
+        PIPES_DEVICE_TRAP(); // Double-start is a programming error
       }
-      deadline_cycles = clock64() + timeout_cycles;
+      deadline_cycles = gpu_clock64() + timeout_cycles;
     }
 #endif
   }
@@ -107,9 +124,9 @@ struct Timeout {
    * @return true if timeout has expired, false otherwise (or if disabled)
    */
   __device__ __forceinline__ bool checkExpired() const {
-#ifdef __CUDA_ARCH__
+#if PIPES_IS_DEVICE_COMPILE
     if (timeout_cycles > 0) {
-      return clock64() > deadline_cycles;
+      return gpu_clock64() > deadline_cycles;
     }
 #endif
     return false;
@@ -141,9 +158,9 @@ namespace comms::pipes {
 
 __device__ __forceinline__ bool Timeout::checkExpired(
     const ThreadGroup& group) const {
-#ifdef __CUDA_ARCH__
+#if PIPES_IS_DEVICE_COMPILE
   if (timeout_cycles > 0 && group.is_leader()) {
-    return clock64() > deadline_cycles;
+    return gpu_clock64() > deadline_cycles;
   }
 #else
   (void)group;
@@ -169,12 +186,12 @@ __device__ __forceinline__ bool Timeout::checkExpired(
  * @param fmt Printf-style format string (without newline)
  * @param ... Format arguments
  */
-#ifdef __CUDA_ARCH__
+#if PIPES_IS_DEVICE_COMPILE
 #define TIMEOUT_TRAP_IF_EXPIRED(timeout, group, fmt, ...)     \
   do {                                                        \
     if ((timeout).checkExpired(group)) {                      \
       printf("CUDA TIMEOUT ERROR: " fmt "\n", ##__VA_ARGS__); \
-      __trap();                                               \
+      PIPES_DEVICE_TRAP();                                    \
     }                                                         \
   } while (0)
 #else
@@ -194,12 +211,12 @@ __device__ __forceinline__ bool Timeout::checkExpired(
  * @param fmt Printf-style format string (without newline)
  * @param ... Format arguments
  */
-#ifdef __CUDA_ARCH__
+#if PIPES_IS_DEVICE_COMPILE
 #define TIMEOUT_TRAP_IF_EXPIRED_SINGLE(timeout, fmt, ...)     \
   do {                                                        \
     if ((timeout).checkExpired()) {                           \
       printf("CUDA TIMEOUT ERROR: " fmt "\n", ##__VA_ARGS__); \
-      __trap();                                               \
+      PIPES_DEVICE_TRAP();                                    \
     }                                                         \
   } while (0)
 #else

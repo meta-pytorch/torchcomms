@@ -58,6 +58,7 @@ class TorchWorkNCCL : public TorchWork {
   void recordEnd();
 
   friend class TorchCommNCCL;
+  friend class TorchCommWindowNCCL;
   friend class TorchWorkNCCLQueue;
 
  private:

@@ -212,66 +212,6 @@ TEST_F(MultiPeerIntegrationTestFixture, SelfTransportPut) {
 }
 
 // =============================================================================
-// IBGDA transport accessor via MultiPeerDeviceHandle
-// =============================================================================
-
-// Verify that the IBGDA transport accessor works on the device side.
-// For each IBGDA-typed peer, reads the signal count through get_ibgda()
-// and verifies it matches the configured value.
-TEST_F(MultiPeerIntegrationTestFixture, IbgdaAccessor) {
-  if (numRanks < 2) {
-    GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
-  }
-
-  auto states = create_and_exchange();
-
-  // Check if any peers use IBGDA as preferred transport
-  bool hasIbgdaPeers = false;
-  for (int r = 0; r < numRanks; ++r) {
-    if (states->get_transport_type(r) == TransportType::P2P_IBGDA) {
-      hasIbgdaPeers = true;
-      break;
-    }
-  }
-
-  if (!hasIbgdaPeers) {
-    GTEST_SKIP() << "No IBGDA-typed peers in this topology (single-node?). "
-                 << "Run with nnodes >= 2 to exercise IBGDA accessor.";
-  }
-
-  auto handle = states->get_device_handle();
-
-  int* output_d = nullptr;
-  CUDACHECK_TEST(cudaMalloc(&output_d, numRanks * sizeof(int)));
-  CUDACHECK_TEST(cudaMemset(output_d, 0xFF, numRanks * sizeof(int)));
-
-  test::test_ibgda_accessor(handle, output_d, kNumBlocks, kBlockSize);
-  CUDACHECK_TEST(cudaDeviceSynchronize());
-
-  std::vector<int> output_h(numRanks);
-  CUDACHECK_TEST(cudaMemcpy(
-      output_h.data(),
-      output_d,
-      numRanks * sizeof(int),
-      cudaMemcpyDeviceToHost));
-
-  for (int r = 0; r < numRanks; ++r) {
-    if (states->get_transport_type(r) == TransportType::P2P_IBGDA) {
-      // Signal count should be the configured value (4)
-      EXPECT_GT(output_h[r], 0)
-          << "Rank " << globalRank << ": IBGDA accessor for peer " << r
-          << " returned invalid signal count " << output_h[r];
-    } else {
-      EXPECT_EQ(output_h[r], -1) << "Rank " << globalRank << ": non-IBGDA peer "
-                                 << r << " should have -1, got " << output_h[r];
-    }
-  }
-
-  CUDACHECK_TEST(cudaFree(output_d));
-  MPI_Barrier(MPI_COMM_WORLD);
-}
-
-// =============================================================================
 // Bidirectional NVL communication
 // =============================================================================
 

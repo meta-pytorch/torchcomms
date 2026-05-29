@@ -8,6 +8,7 @@
 #include "comms/utils/checks.h"
 #include "comms/utils/colltrace/CollMetadataImpl.h"
 #include "comms/utils/colltrace/CollTrace.h"
+#include "meta/logger/DebugExt.h"
 
 #include "comms/utils/colltrace/CudaWaitEvent.h"
 #include "comms/utils/colltrace/DummyCollTraceHandle.h"
@@ -22,11 +23,8 @@
 #include "debug.h"
 #include "nccl.h"
 
-// TODO: Remove this guard once v2_27 is deprecated — v2_27 does not have the
-// comms/utils/colltrace:algostats dependency
-#if NCCL_MINOR >= 28
+#include "comms/ctran/CtranComm.h"
 #include "comms/utils/colltrace/AlgoStats.h"
-#endif
 
 #include <fmt/core.h>
 #include <folly/logging/xlog.h>
@@ -289,17 +287,6 @@ getEmptyKernelTaskMetadata(
 } // namespace
 
 ncclResult_t newCollTraceInit(ncclComm* comm) {
-  // TODO: this can be removed once new colltrace is fully rolled out
-  if (!NCCL_COLLTRACE_USE_NEW_COLLTRACE) {
-    XLOGF(
-        INFO,
-        "Skipping new CollTrace init, NCCL_COLLTRACE_USE_NEW_COLLTRACE is disabled");
-    return ncclSuccess;
-  }
-
-  // TODO: Remove this guard once v2_27 is deprecated — v2_27's comm.h does not
-  // have the algoStats field
-#if NCCL_MINOR >= 28
   // Parse NCCL_COLLTRACE configuration flags
   bool algoStatEnabled = false;
   bool verboseEnabled = false;
@@ -316,11 +303,10 @@ ncclResult_t newCollTraceInit(ncclComm* comm) {
 
   XLOGF(
       INFO,
-      "CollTrace init - NCCL_COLLTRACE: [algostat: {}, verbose: {}, trace: {}], NCCL_COLLTRACE_USE_NEW_COLLTRACE: {}",
+      "CollTrace init - NCCL_COLLTRACE: [algostat: {}, verbose: {}, trace: {}]",
       algoStatEnabled,
       verboseEnabled,
-      traceEnabled,
-      NCCL_COLLTRACE_USE_NEW_COLLTRACE);
+      traceEnabled);
 
   // Initialize standalone AlgoStats if algostat mode enabled
   // This is independent of which colltrace implementation is used
@@ -334,16 +320,6 @@ ncclResult_t newCollTraceInit(ncclComm* comm) {
   if ((!verboseEnabled && !traceEnabled)) {
     return ncclSuccess;
   }
-#else
-  if (NCCL_COLLTRACE.empty()) {
-    XLOGF(
-        INFO,
-        "Skipping CollTrace init. NCCL_COLLTRACE: {}, NCCL_COLLTRACE_USE_NEW_COLLTRACE: {}",
-        folly::join(", ", NCCL_COLLTRACE),
-        NCCL_COLLTRACE_USE_NEW_COLLTRACE);
-    return ncclSuccess;
-  }
-#endif
 
   XLOG(INFO, "Initializing new CollTrace");
 
@@ -478,13 +454,121 @@ getHandleFromNcclKernelPlan(ncclKernelPlan& plan, cudaStream_t stream) {
 std::unordered_map<std::string, std::string> collTraceGetInfo() {
   std::unordered_map<std::string, std::string> info;
   info["colltrace_enabled"] = folly::to<std::string>(!NCCL_COLLTRACE.empty());
-  info["colltrace_new_colltrace"] =
-      folly::to<std::string>(NCCL_COLLTRACE_USE_NEW_COLLTRACE);
+  info["colltrace_new_colltrace"] = folly::to<std::string>(true);
   info["colltrace_supports_check_async_error"] = folly::to<std::string>(true);
   // Only new colltrace supports checking timeout
-  info["colltrace_supports_check_timeout"] = folly::to<std::string>(
-      !NCCL_COLLTRACE.empty() && NCCL_COLLTRACE_USE_NEW_COLLTRACE);
+  info["colltrace_supports_check_timeout"] =
+      folly::to<std::string>(!NCCL_COLLTRACE.empty());
 
   return info;
 }
 } // namespace meta::comms::ncclx
+
+namespace ncclx::colltrace {
+
+__attribute__((visibility("default"))) void dumpAlgoStat(
+    ncclComm_t comm,
+    std::unordered_map<std::string, std::unordered_map<std::string, int64_t>>&
+        map) {
+  map.clear();
+  if (comm == nullptr) {
+    return;
+  }
+
+  // Dump baseline (ncclx) algo stats
+  if (comm->algoStats) {
+    auto dump = comm->algoStats->dump();
+    map.swap(dump.counts);
+  }
+
+  // Merge ctran algo stats
+  if (comm->ctranComm_) {
+    auto ctranDump = comm->ctranComm_->dumpAlgoStats();
+    if (ctranDump.has_value()) {
+      for (auto& [opName, algoMap] : ctranDump->counts) {
+        for (auto& [algoName, count] : algoMap) {
+          map[opName][algoName] += count;
+        }
+      }
+    }
+  }
+}
+
+namespace {
+
+struct AlgoInfo {
+  std::string opName;
+  std::string algoName;
+};
+
+std::optional<AlgoInfo> parseAlgoInfoFromNcclKernelPlan(ncclKernelPlan& plan) {
+  auto collTaskHead = ncclIntruQueueHead(&plan.collTaskQueue);
+  auto p2pTaskHead = ncclIntruQueueHead(&plan.p2pTaskQueue);
+  if (collTaskHead == nullptr && p2pTaskHead == nullptr) {
+    return std::nullopt;
+  }
+  if (collTaskHead != nullptr && collTaskHead->next != nullptr) {
+    return std::nullopt;
+  }
+  if (collTaskHead != nullptr && p2pTaskHead != nullptr) {
+    return std::nullopt;
+  }
+
+  if (collTaskHead != nullptr) {
+    return AlgoInfo{
+        .opName = std::string{ncclFuncToString(collTaskHead->func)},
+        .algoName = fmt::format(
+            "Baseline_{}_{}_{}",
+            ncclProtoToString(collTaskHead->protocol),
+            ncclAlgoToString(collTaskHead->algorithm),
+            static_cast<int>(collTaskHead->nMaxChannels)),
+    };
+  }
+
+  auto sendCount = 0;
+  auto recvCount = 0;
+  if (p2pTaskHead->func == ncclFuncSend) {
+    sendCount++;
+  } else {
+    recvCount++;
+  }
+  for (auto cur = p2pTaskHead->next; cur != nullptr; cur = cur->next) {
+    if (cur->func == ncclFuncSend) {
+      sendCount++;
+    } else {
+      recvCount++;
+    }
+  }
+
+  ncclFunc_t func = ncclFuncRecv;
+  if (sendCount > 0 && recvCount > 0) {
+    func = ncclFuncSendRecv;
+  } else if (sendCount > 0) {
+    func = ncclFuncSend;
+  }
+  auto opName = std::string{ncclFuncToString(func)};
+  auto algoName =
+      fmt::format("Baseline_{}_S{}_R{}", opName, sendCount, recvCount);
+  return AlgoInfo{
+      .opName = std::move(opName),
+      .algoName = std::move(algoName),
+  };
+}
+
+} // namespace
+
+std::shared_ptr<meta::comms::colltrace::ICollTraceHandle>
+collTraceBaselineGetHandle(ncclKernelPlan* plan, cudaStream_t stream) {
+  if (plan->comm->algoStats) {
+    auto algoInfo = parseAlgoInfoFromNcclKernelPlan(*plan);
+    if (algoInfo.has_value()) {
+      plan->comm->algoStats->record(algoInfo->opName, algoInfo->algoName);
+    }
+  }
+
+  if (NCCL_COLLTRACE.empty()) {
+    return std::make_unique<meta::comms::colltrace::DummyCollTraceHandle>();
+  }
+  return meta::comms::ncclx::getHandleFromNcclKernelPlan(*plan, stream);
+}
+} // namespace ncclx::colltrace

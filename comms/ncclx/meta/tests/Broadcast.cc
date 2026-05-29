@@ -12,7 +12,6 @@
 #include "comms/ctran/Ctran.h"
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
-#include "meta/colltrace/CollTrace.h"
 
 class BroadcastTestCommon : public NcclxBaseTestFixture {
  public:

@@ -3,9 +3,12 @@
 #pragma once
 
 #include <cuda_runtime.h>
+
 #include <cstddef>
+#include "comms/pipes/amd/HipHostCompat.h"
 
 #include "comms/pipes/CopyUtils.cuh"
+#include "comms/pipes/DeviceMacros.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
 
 namespace comms::pipes {
@@ -45,8 +48,9 @@ class P2pSelfTransportDevice {
    * Calling this method will trap and abort the kernel.
    */
   __device__ void send(ThreadGroup& group, void* srcbuff, std::size_t nbytes) {
-#ifdef __CUDA_ARCH__
-    __trap(); // Abort kernel if send is called on SelfTransportDevice
+#if PIPES_IS_DEVICE_COMPILE
+    PIPES_DEVICE_TRAP(); // Abort kernel if send is called on
+                         // SelfTransportDevice
 #endif
   }
 
@@ -57,13 +61,14 @@ class P2pSelfTransportDevice {
    * Calling this method will trap and abort the kernel.
    */
   __device__ void recv(ThreadGroup& group, void* dstbuff, std::size_t nbytes) {
-#ifdef __CUDA_ARCH__
-    __trap(); // Abort kernel if recv is called on SelfTransportDevice
+#if PIPES_IS_DEVICE_COMPILE
+    PIPES_DEVICE_TRAP(); // Abort kernel if recv is called on
+                         // SelfTransportDevice
 #endif
   }
 
   /**
-   * put - Direct local memory copy using vectorized operations
+   * put_group - Direct local memory copy using vectorized operations
    *
    * Performs a high-performance vectorized copy from src_d to dst_d using
    * memcpy_vectorized. The work is distributed across ALL thread groups
@@ -81,9 +86,12 @@ class P2pSelfTransportDevice {
    * @param src_d Source pointer (device memory)
    * @param nbytes Number of bytes to write
    */
-  __device__ __forceinline__ void
-  put(ThreadGroup& group, char* dst_d, const char* src_d, std::size_t nbytes) {
-#ifdef __CUDA_ARCH__
+  __device__ __forceinline__ void put_group(
+      [[maybe_unused]] ThreadGroup& group,
+      [[maybe_unused]] char* dst_d,
+      [[maybe_unused]] const char* src_d,
+      [[maybe_unused]] std::size_t nbytes) {
+#if PIPES_IS_DEVICE_COMPILE
     // Early return for no-op cases (check before overlap to handle dst == src)
     if (nbytes == 0 || dst_d == src_d) {
       return;
@@ -121,6 +129,34 @@ class P2pSelfTransportDevice {
             group);
       }
     });
+#endif
+  }
+  /**
+   * put - Per-group local memory copy using vectorized operations
+   *
+   * Performs a vectorized copy from src_d to dst_d using only threads within
+   * the calling group. Each group operates independently on its own data,
+   * so different groups can call put() with different src/dst/nbytes.
+   *
+   * Contrast with put_group(): put_group() is a grid-collective where all
+   * groups must cooperate on the same data. put() is per-group.
+   *
+   * @param group ThreadGroup for cooperative processing (group-local)
+   * @param dst_d Destination pointer (device memory)
+   * @param src_d Source pointer (device memory)
+   * @param nbytes Number of bytes to copy
+   */
+  __device__ __forceinline__ void put(
+      ThreadGroup& group,
+      char* __restrict__ dst_d,
+      const char* __restrict__ src_d,
+      std::size_t nbytes) {
+#if PIPES_IS_DEVICE_COMPILE
+    if (nbytes == 0 || dst_d == src_d) {
+      return;
+    }
+    assert_buffer_non_overlap(dst_d, src_d, nbytes);
+    memcpy_vectorized(dst_d, src_d, nbytes, group);
 #endif
   }
 };

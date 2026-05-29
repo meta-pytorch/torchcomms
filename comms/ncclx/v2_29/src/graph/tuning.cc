@@ -244,6 +244,61 @@ ncclResult_t ncclTopoInitTunerConstants(struct ncclComm* comm) {
   return ncclSuccess;
 }
 
+ncclResult_t ncclTopoGetAlgoTime(struct ncclComm* comm, int coll, int algorithm, int protocol, size_t nBytes, int numPipeOps, float* time);
+
+static void ncclTopoPrintTuning(struct ncclComm* comm) {
+  for (int coll=0; coll<NCCL_NUM_FUNCTIONS; coll++) {
+    for (int a=0; a<NCCL_NUM_ALGORITHMS; a++) {
+      for (int p=0; p<NCCL_NUM_PROTOCOLS; p++) {
+        if (comm->bandwidths[coll][a][p] > 0) {
+          INFO(NCCL_INIT, "Tuning: %s/%s/%s bw %.2f lat %.1f",
+            ncclFuncStr[coll], ncclAlgoStr[a], ncclProtoStr[p],
+            comm->bandwidths[coll][a][p], comm->latencies[coll][a][p]);
+        }
+      }
+    }
+  }
+  constexpr int lineLen = 1024;
+  char line[lineLen];
+  for (int coll=0; coll<NCCL_NUM_FUNCTIONS; coll++) {
+    int offset = snprintf(line, lineLen, "%s:", ncclFuncStr[coll]);
+    int prevAlgo = -1, prevProto = -1;
+    size_t rangeStart = 0;
+    for (int s=0; s<=30; s++) {
+      size_t nBytes = (size_t)1 << s;
+      float bestTime = -1.0;
+      int bestAlgo = -1, bestProto = -1;
+      for (int a=0; a<NCCL_NUM_ALGORITHMS; a++) {
+        for (int p=0; p<NCCL_NUM_PROTOCOLS; p++) {
+          float time;
+          ncclTopoGetAlgoTime(comm, coll, a, p, nBytes, 1, &time);
+          if (time >= 0 && (bestTime < 0 || time < bestTime)) {
+            bestTime = time;
+            bestAlgo = a;
+            bestProto = p;
+          }
+        }
+      }
+      if (bestAlgo != prevAlgo || bestProto != prevProto) {
+        if (prevAlgo >= 0) {
+          offset += snprintf(line+offset, std::max(0, lineLen-offset),
+            " [%ld-%ld]=%s/%s", (long)rangeStart, (long)(nBytes-1),
+            ncclAlgoStr[prevAlgo], ncclProtoStr[prevProto]);
+        }
+        prevAlgo = bestAlgo;
+        prevProto = bestProto;
+        rangeStart = nBytes;
+      }
+    }
+    if (prevAlgo >= 0) {
+      snprintf(line+offset, std::max(0, lineLen-offset),
+        " [%ld-INF]=%s/%s", (long)rangeStart,
+        ncclAlgoStr[prevAlgo], ncclProtoStr[prevProto]);
+    }
+    INFO(NCCL_INIT, "%s", line);
+  }
+}
+
 ncclResult_t ncclTopoTuneModel(struct ncclComm* comm, int minCompCap, int maxCompCap, struct ncclTopoGraph** graphs) {
   int simpleDefaultThreads = (graphs[NCCL_ALGO_RING]->bwIntra*graphs[NCCL_ALGO_RING]->nChannels <= PCI_BW) ? 256 : NCCL_SIMPLE_MAX_NTHREADS;
   comm->maxThreads[NCCL_ALGO_RING][NCCL_PROTO_SIMPLE] =
@@ -556,6 +611,8 @@ ncclResult_t ncclTopoTuneModel(struct ncclComm* comm, int minCompCap, int maxCom
       }
     }
   }
+
+  ncclTopoPrintTuning(comm);
 
   // Set per-thread amount of work before we increase nThreads and nChannels
   for (int a=0; a<NCCL_NUM_ALGORITHMS; a++) {

@@ -1,0 +1,39 @@
+[submodule "external/pybind11"]
+	path = external/pybind11
+	url = https://github.com/jrmadsen/pybind11.git
+[submodule "external/google-test"]
+	path = external/google-test
+	url = https://github.com/jrmadsen/googletest.git
+[submodule "external/caliper"]
+	path = external/caliper
+	url = https://github.com/jrmadsen/Caliper.git
+[submodule "external/gotcha"]
+	path = external/gotcha
+	url = https://github.com/ROCm/GOTCHA.git
+[submodule "external/llvm-ompt"]
+	path = external/llvm-ompt
+	url = https://github.com/NERSC/LLVM-openmp.git
+[submodule "external/line-profiler"]
+	path = external/line-profiler
+	url = https://github.com/jrmadsen/line_profiler.git
+[submodule "source/tests/external/nccl-tests"]
+	path = source/tests/external/nccl-tests
+	url = https://github.com/jrmadsen/nccl-tests.git
+[submodule "external/PTL"]
+	path = external/ptl
+	url = https://github.com/jrmadsen/PTL.git
+[submodule "external/hatchet"]
+	path = external/hatchet
+	url = https://github.com/jrmadsen/hatchet.git
+[submodule "external/dyninst"]
+	path = external/dyninst
+	url = https://github.com/jrmadsen/dyninst.git
+[submodule "external/perfetto"]
+	path = external/perfetto
+	url = https://android.googlesource.com/platform/external/perfetto
+[submodule "external/libunwind"]
+	path = external/libunwind
+	url = https://github.com/jrmadsen/libunwind.git
+[submodule "external/yaml-cpp"]
+	path = external/yaml-cpp
+	url = https://github.com/jrmadsen/yaml-cpp.git

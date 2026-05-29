@@ -1,0 +1,150 @@
+version: 2.0.{build}
+
+skip_commits:
+  files:
+    - docs/*
+    - .github/*
+    - scripts/*
+    - recipe/*
+    - spack/*
+    - docker/*
+    - '**/*.md'
+    - pyproject.toml
+    - pytest.ini
+    - requirements.txt
+    - setup.*
+    - VERSION
+
+skip_tags: true
+skip_branch_with_pr: true
+max_jobs: 2
+
+image:
+  - Visual Studio 2019
+
+test: on
+
+build:
+  parallel: true
+
+platform:
+  - x64
+
+environment:
+  CONTINUOUS_INTEGRATION: "true"
+  matrix:
+    - CONDA: 38
+      CPP: 17
+      CONFIG: Release
+      TOOLS: "OFF"
+      WINSOCK: "OFF"
+      USE_ARCH: "OFF"
+      USE_PYTHON: "OFF"
+      BUILD_C: "ON"
+      BUILD_SHARED: "ON"
+      BUILD_STATIC: "OFF"
+      BUILD_TESTING: "ON"
+      BUILD_EXAMPLES: "OFF"
+      RUN_EXAMPLES: "OFF"
+    - PYTHON: 37
+      CPP: 14
+      CONFIG: Debug
+      TOOLS: "ON"
+      WINSOCK: "OFF"
+      USE_ARCH: "OFF"
+      USE_PYTHON: "ON"
+      BUILD_C: "OFF"
+      BUILD_SHARED: "OFF"
+      BUILD_STATIC: "ON"
+      BUILD_TESTING: "OFF"
+      BUILD_EXAMPLES: "ON"
+      RUN_EXAMPLES: "OFF"
+
+install:
+  # Configure environment
+  - ps: |
+      # CMake architecture
+      if ($env:PLATFORM -eq "x64") {
+        $env:CMAKE_ARCH = "x64"
+      }
+
+      # CMake generator
+      if ($env:APPVEYOR_JOB_NAME -like "*Visual Studio 2017*") {
+        $env:CMAKE_GENERATOR = "Visual Studio 15 2017"
+      } else {
+        $env:CMAKE_GENERATOR = "Visual Studio 16 2019"
+      }
+
+      # Python environment
+      if ($env:PYTHON) {
+        if ($env:PLATFORM -eq "x64") {
+          $env:PATH = "C:\Python$env:PYTHON-x64;C:\Python$env:PYTHON-x64\Scripts;C:\Users\appveyor\AppData\Roaming\Python\Python$env:PYTHON\Scripts;$env:PATH"
+          $env:CMAKE_PREFIX_PATH = "C:\Python$env:PYTHON-x64;C:\Python$env:PYTHON-x64\Scripts"
+          $env:PYTHON_EXE = "C:\Python$env:PYTHON-x64\python.exe"
+        } else {
+          $env:PATH = "C:\Python$env:PYTHON;C:\Python$env:PYTHON\Scripts;C:\Users\appveyor\AppData\Roaming\Python\Python$env:PYTHON\Scripts;$env:PATH"
+          $env:CMAKE_PREFIX_PATH = "C:\Python$env:PYTHON;C:\Python$env:PYTHON\Scripts"
+          $env:PYTHON_EXE = "C:\Python$env:PYTHON\python.exe"
+        }
+        python -m pip install --disable-pip-version-check --user --upgrade pip wheel
+        python -m pip install --user numpy matplotlib pillow cython six pandas pydot multiprocess
+      } elseif ($env:CONDA) {
+        if ($env:PLATFORM -eq "x64") {
+          $env:PATH = "C:\Miniconda$env:CONDA-x64;C:\Miniconda$env:CONDA-x64\Scripts;$env:PATH"
+          $env:CMAKE_PREFIX_PATH = "C:\Miniconda$env:CONDA-x64;C:\Miniconda$env:CONDA-x64\Scripts"
+          $env:PYTHONHOME = "C:\Miniconda$env:CONDA-x64"
+          $env:PYTHON_EXE = "C:\Miniconda$env:CONDA-x64\python.exe"
+        } else {
+          $env:PATH = "C:\Miniconda$env:CONDA;C:\Miniconda$env:CONDA\Scripts;$env:PATH"
+          $env:CMAKE_PREFIX_PATH = "C:\Miniconda$env:CONDA;C:\Miniconda$env:CONDA\Scripts"
+          $env:PYTHONHOME = "C:\Miniconda$env:CONDA"
+          $env:PYTHON_EXE = "C:\Miniconda$env:CONDA\python.exe"
+        }
+      }
+      $env:TIMEMORY_FILE_OUTPUT = "OFF"
+      $env:TIMEMORY_AUTO_OUTPUT = "ON"
+      mkdir "C:\Users\appveyor\CTestTemp"
+      $env:TEMP = "C:\Users\appveyor\CTestTemp"
+
+build_script:
+  - mkdir build-timemory
+  - cd build-timemory
+  - cmake .. -G "%CMAKE_GENERATOR%" -A "%CMAKE_ARCH%"
+    -DBUILD_SHARED_LIBS="%BUILD_SHARED%"
+    -DBUILD_STATIC_LIBS="%BUILD_STATIC%"
+    -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+    -DCMAKE_BUILD_TYPE="%CONFIG%"
+    -DCMAKE_CXX_STANDARD="%CPP%"
+    -DCMAKE_INSTALL_PREFIX=..\install-timemory
+    -DPYTHON_EXECUTABLE="%PYTHON_EXE%"
+    -DTIMEMORY_USE_MPI=OFF
+    -DTIMEMORY_USE_PYTHON="%USE_PYTHON%"
+    -DTIMEMORY_USE_ARCH="%USE_ARCH%"
+    -DTIMEMORY_BUILD_C="%BUILD_C%"
+    -DTIMEMORY_BUILD_EXAMPLES="%BUILD_EXAMPLES%"
+    -DTIMEMORY_BUILD_TESTING=OFF
+    -DTIMEMORY_BUILD_MINIMAL_TESTING="%BUILD_TESTING%"
+    -DTIMEMORY_BUILD_TOOLS="%TOOLS%"
+    -DTIMEMORY_BUILD_GOOGLE_TEST="%BUILD_TESTING%"
+    -DTIMEMORY_USE_WINSOCK="%WINSOCK%"
+  - set MSBuildLogger="C:\Program Files\AppVeyor\BuildAgent\Appveyor.MSBuildLogger.dll"
+  - cmake --build . --config "%CONFIG%" --target ALL_BUILD -- /m /v:m /logger:%MSBuildLogger%
+  - cmake --build . --config "%CONFIG%" --target INSTALL -- /m /v:m /logger:%MSBuildLogger%
+  - ls
+  - ps: |
+      if ($env:BUILD_TESTING -eq "ON") {
+          iex "ctest --output-on-failure -j 2 -C $env:CONFIG"
+      }
+  - ps: |
+      if ($env:RUN_EXAMPLES -eq "ON") {
+        iex ".\outputs\runtime\$env:CONFIG\ex_optional_off.exe"
+        iex ".\outputs\runtime\$env:CONFIG\ex_cxx_basic.exe"
+        iex ".\outputs\runtime\$env:CONFIG\ex_optional_on.exe"
+        iex ".\outputs\runtime\$env:CONFIG\ex_cxx_overhead.exe"
+        iex ".\outputs\runtime\$env:CONFIG\ex_cxx_tuple.exe"
+        if ($env:BUILD_C -eq "ON") {
+          iex ".\outputs\runtime\$env:CONFIG\ex_c_minimal.exe"
+          iex ".\outputs\runtime\$env:CONFIG\ex_c_minimal_library.exe"
+          iex ".\outputs\runtime\$env:CONFIG\ex_c_timing.exe"
+        }
+      }

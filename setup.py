@@ -9,10 +9,33 @@ import pathlib
 import shlex
 import sys
 
-import torch
 from setuptools import Extension, find_packages, setup
 from setuptools.command.build_ext import build_ext as build_ext_orig
-from torch.utils.cpp_extension import _get_pybind11_abi_build_flags
+
+try:
+    import torch
+except ModuleNotFoundError:
+    # Fail with a helpful message — torch is required for all torchcomms builds.
+    print(
+        "\n"
+        "ERROR: PyTorch is required to build torchcomms but was not found.\n"
+        "\n"
+        "If PyTorch is already installed (e.g. in a conda env), use:\n"
+        "  pip install --no-build-isolation -e .\n"
+        "\n"
+        "Otherwise, install PyTorch first. For CUDA builds:\n"
+        "  pip install torch --index-url https://download.pytorch.org/whl/cu128\n"
+        "\n"
+        "  Adjust the CUDA suffix (cu118, cu121, cu124, cu126, cu128) to match your\n"
+        "  installed CUDA toolkit version (check with: nvcc --version).\n"
+        "\n"
+        "If using the oss conda env, install PyTorch with:\n"
+        "  pip install torch --index-url https://download.pytorch.org/whl/cu128\n"
+        "  (adjust cu128 to match your CUDA version: cu118, cu121, cu124, cu126, cu128)\n"
+        "  (check your CUDA version with: nvcc --version)\n",
+        file=sys.stderr,
+    )
+    raise
 
 
 def flag_enabled(flag: str, default: bool):
@@ -32,6 +55,26 @@ def flag_str(val: bool):
 
 ROOT = os.path.abspath(os.path.dirname(__file__))
 TORCH_ROOT = os.path.dirname(torch.__file__)
+
+
+def get_torch_pybind11_include_root(build_temp: pathlib.Path) -> pathlib.Path:
+    torch_include = pathlib.Path(torch.__file__).resolve().parent / "include"
+    torch_pybind11 = torch_include / "pybind11"
+    if not (torch_pybind11 / "pybind11.h").exists():
+        raise RuntimeError(
+            f"PyTorch pybind11 headers were not found under {torch_pybind11}."
+        )
+
+    include_root = build_temp / "torch_pybind11_include"
+    include_root.mkdir(parents=True, exist_ok=True)
+    link = include_root / "pybind11"
+    if link.exists() or link.is_symlink():
+        if link.is_dir() and not link.is_symlink():
+            raise RuntimeError(f"Expected {link} to be a symlink.")
+        link.unlink()
+    link.symlink_to(torch_pybind11, target_is_directory=True)
+    return include_root
+
 
 print("Configuration:")
 USE_NCCL = flag_enabled("USE_NCCL", True)
@@ -102,14 +145,14 @@ class build_ext(build_ext_orig):
 
         # these dirs will be created in build_py, so if you don't have
         # any python sources to bundle, the dirs will be missing
-        build_temp = pathlib.Path(self.build_temp)
+        build_temp = pathlib.Path(self.build_temp).absolute()
         build_temp.mkdir(parents=True, exist_ok=True)
         extdir = pathlib.Path(self.get_ext_fullpath(ext.name))
 
         build_flags = []
-        build_flags += _get_pybind11_abi_build_flags()
         if detect_hipify_v2():
             build_flags += ["-DHIPIFY_V2"]
+        pybind11_include_root = get_torch_pybind11_include_root(build_temp)
 
         cfg = os.environ.get("CMAKE_BUILD_TYPE", "RelWithDebInfo")
         print(f"- Building with {cfg} configuration")
@@ -121,6 +164,7 @@ class build_ext(build_ext_orig):
             f"-DCMAKE_INSTALL_PREFIX={extdir.parent.absolute()}",
             f"-DCMAKE_INSTALL_DIR={extdir.parent.absolute()}",
             f"-DCMAKE_PREFIX_PATH={TORCH_ROOT}",
+            f"-DTORCHCOMMS_PYBIND11_INCLUDE_DIR={pybind11_include_root}",
             f"-DCMAKE_CXX_FLAGS={shlex.quote(' '.join(build_flags))}",
             f"-DPython3_EXECUTABLE={sys.executable}",
             f"-DLIB_SUFFIX={os.environ.get('LIB_SUFFIX', 'lib')}",
@@ -152,41 +196,31 @@ extras_require = {
         "lintrunner",
         "parameterized",
         "pydot",
+        "expecttest",
     ],
 }
 
-ext_modules = [
-    CMakeExtension("torchcomms._comms"),
+BACKEND_FLAGS = [
+    ("nccl", USE_NCCL),
+    ("ncclx", USE_NCCLX),
+    ("gloo", USE_GLOO),
+    ("rccl", USE_RCCL),
+    ("rcclx", USE_RCCLX),
+    ("xccl", USE_XCCL),
 ]
 
-if USE_NCCL:
-    ext_modules += [
-        CMakeExtension("torchcomms._comms_nccl"),
-    ]
-if USE_NCCLX:
-    ext_modules += [
-        CMakeExtension("torchcomms._comms_ncclx"),
-    ]
-if USE_GLOO:
-    ext_modules += [
-        CMakeExtension("torchcomms._comms_gloo"),
-    ]
-if USE_RCCL:
-    ext_modules += [
-        CMakeExtension("torchcomms._comms_rccl"),
-    ]
-if USE_RCCLX:
-    ext_modules += [
-        CMakeExtension("torchcomms._comms_rcclx"),
-    ]
-if USE_XCCL:
-    ext_modules += [
-        CMakeExtension("torchcomms._comms_xccl"),
-    ]
+ext_modules = [CMakeExtension("torchcomms._comms")]
+ext_modules += [
+    CMakeExtension(f"torchcomms._comms_{name}")
+    for name, enabled in BACKEND_FLAGS
+    if enabled
+]
 if USE_TRANSPORT:
-    ext_modules += [
-        CMakeExtension("torchcomms._transport"),
-    ]
+    ext_modules.append(CMakeExtension("torchcomms._transport"))
+
+backend_entry_points = ["fake = torchcomms._comms"] + [
+    f"{name} = torchcomms._comms_{name}" for name, enabled in BACKEND_FLAGS if enabled
+]
 
 setup(
     name="torchcomms",
@@ -197,15 +231,7 @@ setup(
         "torchcomms.triton.fb": ["*.bc"],
     },
     entry_points={
-        "torchcomms.backends": [
-            "nccl = torchcomms._comms_nccl",
-            "ncclx = torchcomms._comms_ncclx",
-            "gloo = torchcomms._comms_gloo",
-            "rccl = torchcomms._comms_rccl",
-            "rcclx = torchcomms._comms_rcclx",
-            "xccl = torchcomms._comms_xccl",
-            "dummy = torchcomms._comms",
-        ]
+        "torchcomms.backends": backend_entry_points,
     },
     ext_modules=ext_modules,
     cmdclass={"build_ext": build_ext},

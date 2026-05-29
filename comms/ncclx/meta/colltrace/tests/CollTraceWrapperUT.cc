@@ -292,9 +292,6 @@ TEST_F(CollTraceWrapperUT, getMetadataFromNcclKernelPlan_CollectiveAndP2p) {
   EXPECT_EQ(dynamic["count"].asInt(), 1024);
 }
 
-// TODO: Remove this guard once v2_27 is deprecated — v2_27's comm.h does not
-// have the algoStats field, so the CollTraceInitConfigTest cannot compile
-#if NCCL_MINOR >= 28
 // Test fixture for newCollTraceInit configuration tests
 class CollTraceInitConfigTest
     : public ::testing::Test,
@@ -321,7 +318,6 @@ TEST_P(CollTraceInitConfigTest, ConfigCombinations) {
 
   // Use EnvRAII for clean cvar override (always use new colltrace)
   EnvRAII colltraceGuard(NCCL_COLLTRACE, config);
-  EnvRAII useNewGuard(NCCL_COLLTRACE_USE_NEW_COLLTRACE, true);
 
   // Compute expected values based on config input
   bool expectAlgoStats =
@@ -357,4 +353,3 @@ INSTANTIATE_TEST_SUITE_P(
       }
       return folly::join("_", info.param);
     });
-#endif // NCCL_MINOR >= 28

@@ -71,6 +71,11 @@ ncclResult_t DefaultNcclxApi::commAbort(ncclComm_t comm) {
   return ncclCommAbort(comm);
 }
 
+ncclResult_t DefaultNcclxApi::commRevoke(ncclComm_t comm) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+  return ncclCommRevoke(comm, 0);
+}
+
 ncclResult_t DefaultNcclxApi::commGetAsyncError(
     ncclComm_t comm,
     ncclResult_t* asyncError) {
@@ -86,6 +91,52 @@ ncclResult_t DefaultNcclxApi::commSplit(
     ncclConfig_t* config) {
   std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclCommSplit(comm, color, key, newcomm, config);
+}
+
+ncclResult_t DefaultNcclxApi::commShrink(
+    ncclComm_t comm,
+    int* excludeRanksList,
+    int excludeRanksCount,
+    ncclComm_t* newcomm,
+    ncclConfig_t* config,
+    int shrinkFlags) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+  return ncclCommShrink(
+      comm, excludeRanksList, excludeRanksCount, newcomm, config, shrinkFlags);
+}
+
+ncclResult_t DefaultNcclxApi::commGetUniqueId(
+    ncclComm_t comm,
+    ncclUniqueId* uniqueId) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
+  return ncclCommGetUniqueId(comm, uniqueId);
+#else
+  (void)comm;
+  (void)uniqueId;
+  return ncclInvalidUsage;
+#endif
+}
+
+ncclResult_t DefaultNcclxApi::commGrow(
+    ncclComm_t comm,
+    int nRanks,
+    const ncclUniqueId* uniqueId,
+    int rank,
+    ncclComm_t* newcomm,
+    ncclConfig_t* config) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
+  return ncclCommGrow(comm, nRanks, uniqueId, rank, newcomm, config);
+#else
+  (void)comm;
+  (void)nRanks;
+  (void)uniqueId;
+  (void)rank;
+  (void)newcomm;
+  (void)config;
+  return ncclInvalidUsage;
+#endif
 }
 
 ncclResult_t DefaultNcclxApi::commRegister(
@@ -291,147 +342,6 @@ ncclResult_t DefaultNcclxApi::deviceAllToAllv(
       hints);
 }
 
-ncclResult_t DefaultNcclxApi::alltoallvDynamicDispatch(
-    const void* sendbuff,
-    const size_t* sendSplitLengths,
-    size_t numSendSplitLengths,
-    const size_t* sendIndices,
-    const size_t* sendIndicesBlockLengths,
-    void* const* recvbuffs,
-    size_t* recvAllSplitLengths,
-    size_t maxSendcount,
-    size_t maxRecvcount,
-    ncclDataType_t datatype,
-    ncclComm_t comm,
-    cudaStream_t stream) {
-  std::lock_guard<std::mutex> lock(api_mutex_);
-#ifdef NCCL_ALLTOALLV_DYNAMIC_SUPPORTED
-  ncclx::Hints hints;
-  hints.set("ncclx_alltoallv_dynamic_sendbuffs_location", "cpu");
-  hints.set("ncclx_alltoallv_dynamic_recvbuffs_location", "cpu");
-  hints.set("ncclx_alltoallv_dynamic_sendcounts_location", "gpu");
-  hints.set("ncclx_alltoallv_dynamic_max_sendcounts_location", "cpu");
-  hints.set("ncclx_alltoallv_dynamic_max_recvcounts_location", "cpu");
-  hints.set("ncclx_alltoallv_dynamic_actual_recvcounts_location", "gpu");
-  return ncclx::alltoallvDynamicDispatch(
-      sendbuff,
-      sendSplitLengths,
-      numSendSplitLengths,
-      sendIndices,
-      sendIndicesBlockLengths,
-      recvbuffs,
-      recvAllSplitLengths,
-      maxSendcount,
-      maxRecvcount,
-      hints,
-      datatype,
-      comm,
-      stream);
-#else
-  throw std::logic_error(
-      "NCCLX alltoallvDynamicDispatch is not supported in this build");
-#endif
-}
-
-ncclResult_t DefaultNcclxApi::alltoallvDynamicCombine(
-    const void* sendbuff,
-    const size_t* sendSplitLengths,
-    size_t numSendSplitLengths,
-    const size_t* sendIndices,
-    const size_t* sendIndicesBlockLengths,
-    void* recvbuff,
-    size_t maxSendcount,
-    size_t maxRecvcount,
-    ncclDataType_t datatype,
-    ncclComm_t comm,
-    cudaStream_t stream) {
-  std::lock_guard<std::mutex> lock(api_mutex_);
-#ifdef NCCL_ALLTOALLV_DYNAMIC_SUPPORTED
-  ncclx::Hints hints;
-  hints.set("ncclx_alltoallv_dynamic_sendbuffs_location", "cpu");
-  hints.set("ncclx_alltoallv_dynamic_recvbuffs_location", "cpu");
-  hints.set("ncclx_alltoallv_dynamic_sendcounts_location", "gpu");
-  hints.set("ncclx_alltoallv_dynamic_max_sendcounts_location", "cpu");
-  hints.set("ncclx_alltoallv_dynamic_max_recvcounts_location", "cpu");
-  hints.set("ncclx_alltoallv_dynamic_actual_recvcounts_location", "gpu");
-  return ncclx::alltoallvDynamicCombine(
-      sendbuff,
-      sendSplitLengths,
-      numSendSplitLengths,
-      sendIndices,
-      sendIndicesBlockLengths,
-      recvbuff,
-      maxSendcount,
-      maxRecvcount,
-      hints,
-      datatype,
-      comm,
-      stream);
-#else
-  throw std::logic_error(
-      "NCCLX alltoallvDynamicCombine is not supported in this build");
-#endif
-}
-
-ncclResult_t DefaultNcclxApi::alltoallvDedupInit(
-    const size_t totalNumSendBlocks,
-    const size_t blockCount,
-    const size_t blockNumRecvBuckets,
-    const int numRecvBuckets,
-    ncclDataType_t datatype,
-    ncclComm_t comm,
-    cudaStream_t stream,
-    void** request) {
-  std::lock_guard<std::mutex> lock(api_mutex_);
-#ifdef NCCL_ALLTOALLV_DEDUP_SUPPORTED
-  ncclx::Hints hints;
-  return ncclx::allToAllvDedupInit(
-      totalNumSendBlocks,
-      blockCount,
-      blockNumRecvBuckets,
-      numRecvBuckets,
-      hints,
-      datatype,
-      comm,
-      stream,
-      request);
-#else
-  throw std::logic_error(
-      "NCCLX alltoallvDedupInit is not supported in this build");
-#endif
-}
-
-ncclResult_t DefaultNcclxApi::alltoallvDedupExec(
-    const void* sendBuff,
-    const int* sendIdx,
-    const int* fwdIdx,
-    const int* recvIdx,
-    void* recvBuff,
-    int recvBlockIds[],
-    void* request) {
-  std::lock_guard<std::mutex> lock(api_mutex_);
-#ifdef NCCL_ALLTOALLV_DEDUP_SUPPORTED
-  return ncclx::allToAllvDedupExec(
-      sendBuff, sendIdx, fwdIdx, recvIdx, recvBuff, recvBlockIds, request);
-#else
-  throw std::logic_error(
-      "NCCLX allToAllvDedupExec is not supported in this build");
-#endif
-}
-
-ncclResult_t DefaultNcclxApi::alltoallvDedupCombine(
-    const void* /* sendBuff */,
-    const int* /* sendIdx */,
-    const int* /* fwdIdx */,
-    const int* /* recvIdx */,
-    void* /* recvBuff */,
-    void* /* request */) {
-  std::lock_guard<std::mutex> lock(api_mutex_);
-  // placeholder for now; will add support after landed NCCLX side
-  throw std::logic_error(
-      "NCCLX allToAllvDedupCombine is not supported in this build");
-}
-
 ncclResult_t DefaultNcclxApi::allGatherInit(
     void* recvbuff,
     size_t maxRecvCount,
@@ -623,8 +533,8 @@ ncclResult_t DefaultNcclxApi::winLocalRegisterBuffer(
     ncclComm_t comm,
     void* ptr,
     size_t size,
-    uint32_t* outLkey) {
-  return ncclWinLocalRegisterBuffer(comm, ptr, size, outLkey);
+    ncclLkeyPerDevice* outLkeys) {
+  return ncclWinLocalRegisterBuffer(comm, ptr, size, outLkeys);
 }
 
 ncclResult_t DefaultNcclxApi::winLocalDeregisterBuffer(
@@ -667,6 +577,48 @@ ncclResult_t DefaultNcclxApi::winGetLsaMultimemDevicePointer(
 
 ncclTeam_t DefaultNcclxApi::teamLsa(ncclComm_t comm) {
   return ncclTeamLsa(comm);
+}
+
+bool DefaultNcclxApi::multimemSupport(ncclComm_t comm) {
+#ifdef NCCL_COMM_PROPERTIES_INITIALIZER
+  ncclCommProperties_t props = NCCL_COMM_PROPERTIES_INITIALIZER;
+  if (ncclCommQueryProperties(comm, &props) != ncclSuccess) {
+    return false;
+  }
+  return props.multimemSupport;
+#else
+  (void)comm;
+  return false;
+#endif
+}
+
+ncclGinConnectionType_t DefaultNcclxApi::ginConnectionSupport(ncclComm_t comm) {
+#ifdef NCCL_COMM_PROPERTIES_INITIALIZER
+  ncclCommProperties_t props = NCCL_COMM_PROPERTIES_INITIALIZER;
+  if (ncclCommQueryProperties(comm, &props) != ncclSuccess) {
+    return NCCL_GIN_CONNECTION_NONE;
+  }
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 30, 0)
+  if (props.ginType != NCCL_GIN_TYPE_NONE) {
+    return NCCL_GIN_CONNECTION_FULL;
+  }
+  if (props.railedGinType != NCCL_GIN_TYPE_NONE) {
+    return NCCL_GIN_CONNECTION_RAIL;
+  }
+#elif NCCL_VERSION_CODE > NCCL_VERSION(2, 29, 3)
+  // NCCLX 2.29 still records the requested connection type when GIN first
+  // connects, and rejects a later FULL request if the communicator was already
+  // connected as RAIL. Without a public connected-state property, RAIL is the
+  // safe request whenever NCCLX says railed GIN is supported.
+  if (props.railedGinType != NCCL_GIN_TYPE_NONE) {
+    return NCCL_GIN_CONNECTION_RAIL;
+  }
+#endif
+  return NCCL_GIN_CONNECTION_NONE;
+#else
+  (void)comm;
+  return NCCL_GIN_CONNECTION_NONE;
+#endif
 }
 #endif // TORCHCOMMS_HAS_NCCL_DEVICE_API
 

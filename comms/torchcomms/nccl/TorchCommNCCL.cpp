@@ -3,6 +3,7 @@
 #include "comms/torchcomms/nccl/TorchCommNCCL.hpp"
 
 #include <cstdlib>
+#include <cstring>
 #include <stdexcept>
 #include <string>
 
@@ -11,9 +12,9 @@
 #include <fmt/core.h>
 #include <nccl.h> // @manual
 #include <torch/csrc/cuda/CUDAPluggableAllocator.h> // @manual=//caffe2:torch-cpp-cuda
-
 #include "comms/torchcomms/TorchCommFactory.hpp"
 #include "comms/torchcomms/nccl/TorchCommNCCLBootstrap.hpp"
+#include "comms/torchcomms/nccl/TorchCommWindowNCCL.hpp"
 #include "comms/torchcomms/utils/Logging.hpp"
 #include "comms/torchcomms/utils/TracingGuard.hpp"
 #include "comms/torchcomms/utils/Utils.hpp"
@@ -87,27 +88,31 @@ void TorchCommNCCL::init(
     at::Device device,
     const std::string& name,
     const CommOptions& options) {
-  // Initialize private members
+  TC_LOG(INFO, this) << "Initializing TorchCommNCCL for device: " << device;
   device_ = device;
   name_ = name;
   options_ = options;
 
-  // Only initialize once
   if (init_state_ == InitializationState::INITIALIZED) {
     throw std::runtime_error("TorchCommNCCL already initialized");
   } else if (init_state_ == InitializationState::FINALIZED) {
     throw std::runtime_error("TorchCommNCCL already finalized");
   }
-  init_state_ = InitializationState::INITIALIZED;
 
-  // Initialize default NCCL API implementation if not already set
   if (!nccl_api_) {
     nccl_api_ = std::make_unique<DefaultNcclApi>();
   }
 
-  // Initialize default CUDA API implementation if not already set
   if (!cuda_api_) {
     cuda_api_ = std::make_unique<DefaultCudaApi>();
+  }
+
+  if (options.enable_reconfigure) {
+    options_.enable_reconfigure = true;
+    reconfigure_store_ = options_.store;
+    TC_LOG(INFO, this)
+        << "TorchCommNCCL dynamic regime enabled, deferring initialization";
+    return;
   }
 
   if (device_.index() == -1 || nccl_comm_ == nullptr) {
@@ -120,13 +125,20 @@ void TorchCommNCCL::init(
     }
   }
 
-  // Set CUDA device and verify it's accessible
+  initNcclResources();
+
+  init_state_ = InitializationState::INITIALIZED;
+  TracingGuard tracingGuard(name_, comm_size_, "init", rank_);
+
+  TC_LOG(INFO, this) << "TorchCommNCCL initialized for rank: " << rank_;
+}
+
+void TorchCommNCCL::initNcclResources() {
   CUDA_CHECK(
       cuda_api_,
       cuda_api_->setDevice(device_.index()),
       fmt::format("Failed to set CUDA device to {}", device_.index()));
 
-  // Verify device properties and memory availability
   cudaDeviceProp device_prop = {};
   CUDA_CHECK(
       cuda_api_,
@@ -134,23 +146,17 @@ void TorchCommNCCL::init(
       fmt::format(
           "Failed to get device properties for device {}", device_.index()));
 
-  // Check available memory
   size_t free_memory, total_memory;
   CUDA_CHECK(
       cuda_api_,
       cuda_api_->memGetInfo(&free_memory, &total_memory),
       fmt::format("Failed to get memory info for device {}", device_.index()));
 
-  // Read hints and store them
   high_priority_stream_ =
       options_.getHint<bool>(kHintHighPriorityStream, false);
 
-  // Create internal stream
-  //
-  // Default priority is 0 as per NVIDIA docs (https://fburl.com/2xb0iqwl).
   int stream_priority = 0;
 
-  // Check for high priority stream hint
   if (high_priority_stream_) {
     int leastPriority, greatestPriority;
     CUDA_CHECK(
@@ -160,35 +166,35 @@ void TorchCommNCCL::init(
     stream_priority = greatestPriority;
   }
 
-  CUDA_CHECK(
-      cuda_api_,
-      cuda_api_->streamCreateWithPriority(
-          &internal_stream_, cudaStreamNonBlocking, stream_priority),
-      fmt::format(
-          "Failed to create internal CUDA stream on device {}",
-          device_.index()));
+  if (!internal_stream_) {
+    CUDA_CHECK(
+        cuda_api_,
+        cuda_api_->streamCreateWithPriority(
+            &internal_stream_, cudaStreamNonBlocking, stream_priority),
+        fmt::format(
+            "Failed to create internal CUDA stream on device {}",
+            device_.index()));
+  }
 
-  // Create dependency event for stream synchronization
-  CUDA_CHECK(
-      cuda_api_,
-      cuda_api_->eventCreateWithFlags(
-          &dependency_event_, cudaEventDisableTiming),
-      fmt::format(
-          "Failed to create dependency event on device {}", device_.index()));
+  if (!dependency_event_) {
+    CUDA_CHECK(
+        cuda_api_,
+        cuda_api_->eventCreateWithFlags(
+            &dependency_event_, cudaEventDisableTiming),
+        fmt::format(
+            "Failed to create dependency event on device {}", device_.index()));
+  }
 
-  // Allocate CUDA buffer for barrier operations
-  CUDA_CHECK(
-      cuda_api_,
-      cuda_api_->malloc(&barrier_buffer_, sizeof(float)),
-      "Failed to allocate barrier buffer");
+  if (!barrier_buffer_) {
+    CUDA_CHECK(
+        cuda_api_,
+        cuda_api_->malloc(&barrier_buffer_, sizeof(float)),
+        "Failed to allocate barrier buffer");
+  }
 
   max_event_pool_size_ =
       options_.getHint<size_t>(kHintMaxEventPoolSize, kDefaultMaxEventPoolSize);
 
-  // Give up our internal reference to the store object here.  The caller
-  // would still need to keep a reference to the store object till the init
-  // call returns, at which point the NCCL communicator would already be
-  // created.
   if (options_.store) {
     options_.store.reset();
   }
@@ -207,13 +213,20 @@ void TorchCommNCCL::init(
       nccl_api_->commCount(nccl_comm_, &comm_size_),
       "NCCL Count failed");
 
-  TracingGuard tracingGuard(name_, comm_size_, "init", rank_);
+  if (!shutdown_) {
+    timeout_thread_ = std::thread(&TorchCommNCCL::timeoutWatchdog, this);
+  }
 
-  // Start timeout watchdog thread
-  timeout_thread_ = std::thread(&TorchCommNCCL::timeoutWatchdog, this);
-
-  // Register comm with CachingAllocator
   attachMemoryHook();
+}
+
+void TorchCommNCCL::abort() {
+  if (options_.enable_reconfigure) {
+    revokeNcclComm();
+  } else {
+    abortNcclComm();
+  }
+  comm_state_ = CommState::ERROR;
 }
 
 void TorchCommNCCL::finalize() {
@@ -335,7 +348,20 @@ void TorchCommNCCL::abortNcclComm() {
   }
   if (options_.abort_process_on_timeout_or_error) {
     TC_LOG(ERROR, this) << "Aborting process due to timeout";
-    abort();
+    ::abort();
+  }
+}
+
+void TorchCommNCCL::revokeNcclComm() {
+  TC_LOG(INFO, this) << "Calling abort hooks before commRevoke.";
+  runAbortHooks();
+  detachMemoryHook();
+  if (nccl_comm_) {
+    NCCL_CHECK(
+        nccl_api_,
+        nccl_comm_,
+        nccl_api_->commRevoke(nccl_comm_),
+        "NCCL Revoke failed");
   }
 }
 
@@ -390,6 +416,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::send(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
+  checkTensorDevice(tensor);
 
   TracingGuard tracingGuard(name_, comm_size_, "send", dst, tensor, tensor);
 
@@ -434,6 +461,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::recv(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
+  checkTensorDevice(tensor);
 
   TracingGuard tracingGuard(name_, comm_size_, "recv", src, tensor, tensor);
 
@@ -472,7 +500,6 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::batch_op_issue(
     const BatchP2POptions& options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
-
   if (ops.empty()) {
     throw std::runtime_error("Cannot issue empty batch operation");
   }
@@ -482,6 +509,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::batch_op_issue(
   std::vector<at::Tensor> output_tensors;
 
   for (const auto& op : ops) {
+    checkTensorDevice(op.tensor);
     if (op.type == BatchSendRecv::P2POp::OpType::SEND) {
       at::Tensor tensor = op.tensor;
       ensureTensorContiguous(tensor);
@@ -575,6 +603,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::broadcast(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
+  checkTensorDevice(tensor);
 
   TracingGuard tracingGuard(
       name_, comm_size_, "broadcast", root, tensor, tensor);
@@ -621,6 +650,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_reduce(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
+  checkTensorDevice(tensor);
 
   TracingGuard tracingGuard(
       name_, comm_size_, "all_reduce", rank_, tensor, tensor);
@@ -669,6 +699,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::reduce(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
+  checkTensorDevice(tensor);
 
   TracingGuard tracingGuard(name_, comm_size_, "reduce", root, tensor, tensor);
 
@@ -731,6 +762,9 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_gather(
           "All tensors in tensor_list must have same size as input tensor");
     }
   }
+
+  checkTensorDevice(tensor);
+  checkTensorsDevice(tensor_list);
 
   TracingGuard tracingGuard(
       name_, comm_size_, "all_gather", rank_, tensor_list, {tensor});
@@ -796,6 +830,9 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_gather_v(
     ensureTensorContiguous(t);
   }
 
+  checkTensorDevice(tensor);
+  checkTensorsDevice(tensor_list);
+
   TracingGuard tracingGuard(
       name_, comm_size_, "all_gather_v", rank_, tensor_list, {tensor});
 
@@ -859,6 +896,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_gather_single(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(output);
   ensureTensorContiguous(input);
+  checkTensorDevice(output);
+  checkTensorDevice(input);
 
   if (output.numel() != input.numel() * comm_size_) {
     throw std::runtime_error(
@@ -922,6 +961,9 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::reduce_scatter(
           "All input tensors must have same size as output tensor");
     }
   }
+
+  checkTensorsDevice(input_list);
+  checkTensorDevice(output);
 
   TracingGuard tracingGuard(
       name_, comm_size_, "reduce_scatter", rank_, input_list, {output});
@@ -1006,6 +1048,9 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::reduce_scatter_v(
     ensureTensorContiguous(t);
   }
 
+  checkTensorsDevice(input_list);
+  checkTensorDevice(output);
+
   TracingGuard tracingGuard(
       name_, comm_size_, "reduce_scatter_v", rank_, input_list, {output});
 
@@ -1086,6 +1131,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::reduce_scatter_single(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(output);
   ensureTensorContiguous(input);
+  checkTensorDevice(output);
+  checkTensorDevice(input);
 
   if (input.numel() != output.numel() * comm_size_) {
     throw std::runtime_error(
@@ -1139,6 +1186,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_to_all_single(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(output);
   ensureTensorContiguous(input);
+  checkTensorDevice(output);
+  checkTensorDevice(input);
 
   if (input.numel() != output.numel()) {
     throw std::runtime_error(
@@ -1235,6 +1284,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_to_all_v_single(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(output);
   ensureTensorContiguous(input);
+  checkTensorDevice(output);
+  checkTensorDevice(input);
 
   // Validate split sizes vectors
   if (input_split_sizes.size() != static_cast<size_t>(comm_size_)) {
@@ -1364,6 +1415,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_to_all(
     const AllToAllOptions& options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
+  checkTensorsDevice(output_tensor_list);
+  checkTensorsDevice(input_tensor_list);
   if (output_tensor_list.size() != static_cast<size_t>(comm_size_) ||
       input_tensor_list.size() != static_cast<size_t>(comm_size_)) {
     throw std::runtime_error(
@@ -1439,6 +1492,17 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_to_all(
   return work;
 }
 
+std::shared_ptr<TorchCommWindow> TorchCommNCCL::new_window(
+    const std::optional<at::Tensor>& tensor) {
+  checkInitialized();
+  // new_window itself is local; tensor_register is the collective.
+  auto window = std::make_shared<TorchCommWindowNCCL>(shared_from_this());
+  if (tensor.has_value()) {
+    window->tensor_register(*tensor);
+  }
+  return window;
+}
+
 c10::intrusive_ptr<TorchWork> TorchCommNCCL::barrier(
     bool async_op,
     const BarrierOptions& options) {
@@ -1485,6 +1549,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::scatter(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(output_tensor);
+  checkTensorDevice(output_tensor);
+  checkTensorsDevice(input_tensor_list);
 
   // Only the root rank needs valid input tensors
   if (rank_ == root) {
@@ -1588,6 +1654,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::gather(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(input_tensor);
+  checkTensorDevice(input_tensor);
+  checkTensorsDevice(output_tensor_list);
 
   // Only the root rank needs valid output tensors
   if (rank_ == root) {
@@ -1782,7 +1850,13 @@ void TorchCommNCCL::register_address(
       nccl_comm_,
       nccl_api_->commRegister(nccl_comm_, addr.addr, addr.len, &handle),
       "Failed to register memory with NCCL");
-  memoryRegistrationHandles_.emplace(addr.addr, RegistrationHandle(handle));
+  // Note: window (NCCL_WIN_COLL_SYMMETRIC) registration is collective and
+  // cannot safely happen from inside the allocator hook (which fires on
+  // arbitrary threads). It is registered lazily on demand by
+  // TorchCommWindowNCCL::ensureSegmentWindow(), keyed by the segment base
+  // we record here.
+  memoryRegistrationHandles_.emplace(
+      addr.addr, RegistrationHandle(handle, nullptr, addr.len));
 }
 
 void TorchCommNCCL::deregister_address(const TorchCommNCCL::Address& addr) {
@@ -1798,6 +1872,16 @@ void TorchCommNCCL::deregister_address(const TorchCommNCCL::Address& addr) {
     return;
   }
 
+  if (it->second.winHandle != nullptr) {
+    ncclResult_t winRc =
+        nccl_api_->commWindowDeregister(nccl_comm_, it->second.winHandle);
+    if (winRc != ncclSuccess) {
+      TC_LOG(ERROR, this) << "ncclCommWindowDeregister failed for segment "
+                          << addr.addr << ": "
+                          << nccl_api_->getErrorString(winRc);
+    }
+  }
+
   void* handle = it->second.regHandle;
   NCCL_CHECK(
       nccl_api_,
@@ -1806,6 +1890,64 @@ void TorchCommNCCL::deregister_address(const TorchCommNCCL::Address& addr) {
       "Failed to deregister memory with NCCL");
 
   memoryRegistrationHandles_.erase(it);
+}
+
+std::pair<ncclWindow_t, size_t> TorchCommNCCL::lookupSegmentWindow(
+    const void* ptr) const {
+  const auto target = reinterpret_cast<uintptr_t>(ptr);
+  // memoryRegistrationHandles_ is sorted by base address; upper_bound + step
+  // back finds the segment whose base <= target.
+  auto it = memoryRegistrationHandles_.upper_bound(const_cast<void*>(ptr));
+  if (it == memoryRegistrationHandles_.begin()) {
+    return {nullptr, 0};
+  }
+  --it;
+  const auto base = reinterpret_cast<uintptr_t>(it->first);
+  if (target < base || target >= base + it->second.len) {
+    return {nullptr, 0};
+  }
+  if (it->second.winHandle == nullptr) {
+    return {nullptr, 0};
+  }
+  return {it->second.winHandle, target - base};
+}
+
+ncclResult_t TorchCommNCCL::ensureSegmentWindow(const void* ptr) {
+  if (nccl_comm_ == nullptr) {
+    return ncclInvalidUsage;
+  }
+  const auto target = reinterpret_cast<uintptr_t>(ptr);
+  auto it = memoryRegistrationHandles_.upper_bound(const_cast<void*>(ptr));
+  if (it == memoryRegistrationHandles_.begin()) {
+    return ncclInvalidArgument;
+  }
+  --it;
+  const auto base = reinterpret_cast<uintptr_t>(it->first);
+  if (target < base || target >= base + it->second.len) {
+    return ncclInvalidArgument;
+  }
+  if (it->second.winHandle != nullptr) {
+    return ncclSuccess;
+  }
+  ncclWindow_t win = nullptr;
+  auto rc = nccl_api_->commWindowRegister(
+      nccl_comm_,
+      const_cast<void*>(it->first),
+      it->second.len,
+      &win,
+      NCCL_WIN_COLL_SYMMETRIC);
+  if (rc != ncclSuccess) {
+    return rc;
+  }
+  if (win == nullptr) {
+    // NCCL returned success but left the window handle unset. Observed on
+    // configurations without a transport capable of symmetric memory
+    // (no NVLink and no InfiniBand). Treat as unsupported so callers can
+    // surface a meaningful error or skip.
+    return ncclInvalidUsage;
+  }
+  it->second.winHandle = win;
+  return ncclSuccess;
 }
 
 NCCLException::NCCLException(

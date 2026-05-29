@@ -1,0 +1,7 @@
+For ICL use; testing on Saturn requires sudo privilege, but then
+you must duplicate the PAPI_LIBSMR_ROOT in the sudo environment.
+On Saturn, the following sequence works.
+export PAPI_LIBMSR_ROOT=/sw/libmsr/0.1.17/
+salloc -n1 -wa04 
+(The -n1 and -wa04) just select the node and can be changed).
+srun -n1 -wa04 sudo PAPI_LIBMSR_ROOT=$PAPI_LIBMSR_ROOT ./libmsr_basic

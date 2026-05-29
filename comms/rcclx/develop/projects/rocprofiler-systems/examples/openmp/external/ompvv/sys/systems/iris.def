@@ -1,0 +1,78 @@
+# Definitions for iris system
+
+$(info "Including iris.def file")
+
+#---------------------------------------------------------------------------
+# BATCH Scheduler
+#---------------------------------------------------------------------------
+BATCH_SCHEDULER =
+
+CUDA_MODULE ?= 
+#---------------------------------------------------------------------------
+# C compilers
+#---------------------------------------------------------------------------
+CCOMPILERS="clang, gcc, xlc"
+
+# GCC compiler
+ifeq ($(CC), gcc)
+  $(error GCC not configured in the iris.def file)
+  C_COMPILER_MODULE ?=
+  C_VERSION ?= gcc -dumpversion
+endif
+
+# Intel OneAPI compiler
+ifeq ($(CC), icx)
+  C_COMPILER_MODULE ?= oneapi
+  C_VERSION ?= icx -dumpversion
+endif
+
+# Clang compiler
+ifeq ($(CC), clang)
+  $(error $(CC) not configured in the iris.def file)
+  C_COMPILER_MODULE ?= 
+  C_VERSION ?= clang -v 2>&1 | grep -oh 'clang version [0-9.]* .*'| grep -oh 'version .*' | sed 's/version //g'
+endif
+
+#---------------------------------------------------------------------------
+# C++ compilers
+#---------------------------------------------------------------------------
+CXXCOMPILERS="clang++, g++, xlc++"
+
+# GCC compiler
+ifeq ($(CXX), g++)
+  $(error $(CXX) not configured in the iris.def file)
+  CXX_COMPILER_MODULE ?= 
+  CXX_VERSION ?= g++ -dumpversion
+endif
+
+# Intel OneAPI compiler
+ifeq ($(CXX), icpx)
+  CXX_COMPILER_MODULE ?= oneapi
+  CXX_VERSION ?= icpx -dumpversion
+endif
+
+# Clang compiler
+ifeq ($(CXX), clang++)
+  $(error $(CXX) not configured in the iris.def file)
+  CXX_COMPILER_MODULE ?= 
+  CXX_VERSION ?= clang++ -v 2>&1 | grep -oh 'clang version [0-9.]* .*'| grep -oh 'version .*' | sed 's/version //g'
+endif
+
+#---------------------------------------------------------------------------
+# FORTRAN Compilers
+#---------------------------------------------------------------------------
+FCOMPILERS="gfortran, xlf"
+
+# GCC compiler
+ifeq ($(FC), gfortran)
+  $(error $(FC) not configured in the iris.def file)
+  F_COMPILER_MODULE ?= 
+  F_VERSION ?= gfortran -dumpversion
+endif
+
+# GCC compiler
+ifeq ($(FC), ifx)
+  F_COMPILER_MODULE ?= oneapi
+  F_VERSION ?= ifx --version 2>&1 | grep 'ifx' | grep -oh '[0-9.]\+[a-zA-Z0-9. ]*'
+endif
+

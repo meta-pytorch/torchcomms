@@ -1,0 +1,90 @@
+name: unit tests
+
+on:
+  push:
+    branches: [ develop ]
+  pull_request:
+    branches: [ develop, releases/** ]
+
+jobs:
+  ubuntu:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.7", "3.8", "3.9", "3.10", "3.11"]
+        include:
+        - python-version: "3.6"
+          os: ubuntu-20.04
+
+    steps:
+    - uses: actions/checkout@v2
+    - uses: actions/setup-python@v2
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install Python3 packages
+      run: |
+        pip install --upgrade pip pytest
+        pip install -r requirements.txt
+        # Optional Dependency for HDF Checkpointing
+        pip install tables
+        python setup.py install
+        python setup.py build_ext --inplace
+        python -m pip list
+
+    - name: Lint and format check with flake8 and black
+      if: ${{ matrix.python-version == 3.9 }}
+      run: |
+        pip install --upgrade click
+        pip install --upgrade black
+        pip install --upgrade flake8
+        black -t py39 --diff --check .
+        flake8
+
+    - name: Update coverage
+      if: ${{ matrix.python-version == 3.9 }}
+      run: |
+        pip install --upgrade coverage==6.2
+
+    - name: Clone Caliper
+      uses: actions/checkout@v2
+      with:
+        repository: LLNL/Caliper
+        path: Caliper
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Build Caliper
+      working-directory: Caliper
+      run: |
+        mkdir build && mkdir install
+        cd build
+        cmake -DCMAKE_INSTALL_PREFIX=../install ../
+        make VERBOSE=1
+        make install
+        export PATH=$(pwd)/../install/bin:${PATH}
+        cd $GITHUB_WORKSPACE
+        which cali-query
+
+    - name: Build Timemory
+      if: ${{ matrix.python-version >= 3.6 }}
+      run: |
+        python -m pip install --upgrade scikit-build
+        export TIMEMORY_SETUP_ARGS="$(echo -DTIMEMORY_USE_GOTCHA=OFF -DTIMEMORY_BUILD_{C,FORTRAN,ERT,TOOLS,PYTHON_LINE_PROFILER,PYTHON_HATCHET}=OFF)"
+        python -m pip install --no-build-isolation --upgrade --no-cache-dir -v 'timemory==3.3.0rc4' -v -v -v
+
+    - name: Basic test with pytest
+      if: ${{ matrix.python-version != 3.9 }}
+      run: |
+        PYTHONPATH=. $(which pytest)
+
+    - name: Basic test with pytest
+      if: ${{ matrix.python-version == 3.9 }}
+      run: |
+        PYTHONPATH=. coverage run $(which pytest)
+
+    - name: "Upload coverage to Codecov"
+      if: ${{ matrix.python-version == 3.9 }}
+      uses: "codecov/codecov-action@v1"
+      with:
+        fail_ci_if_error: true

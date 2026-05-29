@@ -18,16 +18,13 @@
 #include "nccl.h" // @manual
 
 #include "comms/ctran/Ctran.h"
-#include "comms/ctran/CtranEx.h"
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
-#include "comms/testinfra/AlgoTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/utils/colltrace/CollTrace.h"
 #include "comms/utils/colltrace/tests/nvidia-only/CPUControlledKernel.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/commDump.h"
-#include "meta/wrapper/CtranExComm.h"
 
 using ::meta::comms::colltrace::CollTraceConfig;
 
@@ -44,7 +41,6 @@ class CollTraceTest : public NcclxBaseTestFixture {
          "HPC_JOB_NAME,HPC_JOB_VERSION,HPC_JOB_ATTEMPT_INDEX"},
         {"NCCL_CTRAN_ENABLE", "1"},
         {"NCCL_COLLTRACE", "trace"},
-        {"NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1"},
     });
 
     CUDACHECK_TEST(cudaStreamCreate(&this->stream));
@@ -79,28 +75,6 @@ class CollTraceTest : public NcclxBaseTestFixture {
         comm, sendBuf, count * this->numRanks * sizeof(int), &sendHandle));
     NCCLCHECK_TEST(ncclCommRegister(
         comm, recvBuf, count * this->numRanks * sizeof(int), &recvHandle));
-  }
-
-  void prepareCtranExBcast(
-      std::unique_ptr<::ctran::CtranExComm>& ctranExComm,
-      const int count) {
-    sendBuf = reinterpret_cast<int*>(malloc(count * sizeof(int)));
-    recvBuf = reinterpret_cast<int*>(malloc(count * sizeof(int)));
-    NCCLCHECK_TEST(
-        ctranExComm->regMem(sendBuf, count * sizeof(int), &sendHandle, true));
-    NCCLCHECK_TEST(
-        ctranExComm->regMem(recvBuf, count * sizeof(int), &recvHandle, true));
-  }
-
-  void releaseCtranExBcast(std::unique_ptr<::ctran::CtranExComm>& ctranExComm) {
-    NCCLCHECK_TEST(ctranExComm->deregMem(sendHandle));
-    NCCLCHECK_TEST(ctranExComm->deregMem(recvHandle));
-    free(sendBuf);
-    free(recvBuf);
-
-    // teardown won't free them again
-    sendBuf = nullptr;
-    recvBuf = nullptr;
   }
 
   void prepareAllToAll(const int count) {
@@ -163,10 +137,15 @@ class CollTraceTest : public NcclxBaseTestFixture {
 };
 
 TEST_F(CollTraceTest, NewCollTraceAllReduce) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
+  hints.set("noLocal", "1");
+#endif
+  config.hints = &hints;
   ncclx::test::NcclCommRAII comm{
-      globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
+
   const int count = 1048576;
   const int nColl = 10;
 
@@ -191,8 +170,6 @@ TEST_F(CollTraceTest, NewCollTraceAllReduce) {
 }
 
 TEST_F(CollTraceTest, MixedCtranBaseline) {
-  auto ctranAlgoGuard =
-      testinfra::AlgoRAII(NCCL_ALLGATHER_ALGO, NCCL_ALLGATHER_ALGO::ctring);
   auto ctranGuard = EnvRAII(NCCL_CTRAN_ENABLE, true);
   // CTran has temporarily disabled NVL backend support. Set to nolocal to
   // enable test
@@ -200,10 +177,14 @@ TEST_F(CollTraceTest, MixedCtranBaseline) {
       EnvRAII(NCCL_COMM_STATE_DEBUG_TOPO, NCCL_COMM_STATE_DEBUG_TOPO::nolocal);
   auto checksumSampleRateGuard =
       EnvRAII(NCCL_CTRAN_ALLGATHER_CHECKSUM_SAMPLE_RATE, 1);
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints{{"allgatherAlgo", "ctring"}};
+#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
+  hints.set("noLocal", "1");
+#endif
+  config.hints = &hints;
   ncclx::test::NcclCommRAII comm{
-      globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
 
   constexpr int count = 1048576;
   constexpr int nColl = 10;
@@ -246,83 +227,17 @@ TEST_F(CollTraceTest, MixedCtranBaseline) {
   }
 }
 
-TEST_F(CollTraceTest, TestBcastCtranEx) {
-  auto ctranGuard = EnvRAII(NCCL_CTRAN_ENABLE, true);
-  ncclx::test::NcclCommRAII comm{
-      globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
-
-  constexpr int count = 1048576;
-  constexpr int nColl = 10;
-
-  auto ctranExComm =
-      std::make_unique<::ctran::CtranExComm>(comm, "collTraceCpuBcastUt");
-  ASSERT_NE(ctranExComm, nullptr);
-
-  if (!ctranExComm->isInitialized() || !ctranExComm->supportBroadcast()) {
-    GTEST_SKIP() << fmt::format(
-        "Skip test because this comm does not have CtranEx support {} or no broadcast support {}.",
-        ctranExComm->isInitialized(),
-        ctranExComm->supportBroadcast());
-  }
-
-  prepareCtranExBcast(ctranExComm, count);
-
-  auto actualComm = ctranExComm->unsafeGetNcclComm();
-
-  std::vector<std::unique_ptr<::ctran::CtranExRequest>> reqs;
-
-  for (int i = 0; i < nColl; i++) {
-    ::ctran::CtranExRequest* reqPtr = nullptr;
-    NCCLCHECK_TEST(
-        ctranExComm->broadcast(sendBuf, recvBuf, count, ncclInt, 0, &reqPtr));
-
-    ASSERT_NE(reqPtr, nullptr);
-    reqs.push_back(std::unique_ptr<::ctran::CtranExRequest>(reqPtr));
-  }
-
-  // Wait completion of all bcast
-  for (auto& req : reqs) {
-    ASSERT_EQ(req->wait(), ncclSuccess);
-  }
-
-  // Sleep for a while to make sure all the colls are finished
-  std::this_thread::sleep_for(std::chrono::seconds(2));
-
-  auto startOpCount = 0;
-  auto dumpMap =
-      meta::comms::ncclx::dumpNewCollTrace(*actualComm->newCollTrace);
-
-  EXPECT_EQ(folly::parseJson(dumpMap["CT_pastColls"]).size(), nColl);
-  EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
-  EXPECT_EQ(folly::parseJson(dumpMap["CT_pendingColls"]).size(), 0);
-  auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
-  for (const auto& coll : pastCollsJson) {
-    EXPECT_EQ(coll["collId"].asInt(), startOpCount);
-    EXPECT_EQ(coll["opCount"].asInt(), startOpCount);
-    EXPECT_EQ(
-        coll["dataType"].asString(),
-        commDataTypeToString(ncclToMetaComm(ncclInt)));
-    EXPECT_EQ(coll["count"].asInt(), count);
-    // sendbuff and recvbuff are pointers, compare as string or skip if not
-    // available EXPECT_EQ(coll["sendbuff"].asInt(),
-    // reinterpret_cast<intptr_t>(sendBuf)); EXPECT_EQ(coll["recvbuff"].asInt(),
-    // reinterpret_cast<intptr_t>(recvBuf));
-    EXPECT_GT(coll["startTs"].asInt(), 0);
-    startOpCount++;
-  }
-
-  releaseCtranExBcast(ctranExComm);
-}
-
 TEST_F(CollTraceTest, GroupedSendRecv) {
   auto ctranGuard = EnvRAII{NCCL_SENDRECV_ALGO, NCCL_SENDRECV_ALGO::orig};
 
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
+  hints.set("noLocal", "1");
+#endif
+  config.hints = &hints;
   ncclx::test::NcclCommRAII comm{
-      globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
 
   const int count = 1048576;
   const int nColl = 10;
@@ -370,10 +285,14 @@ TEST_F(CollTraceTest, GroupedSendRecvCtran) {
   auto ctranGuard = EnvRAII(NCCL_CTRAN_ENABLE, true);
   auto ctranSRGuard = EnvRAII{NCCL_SENDRECV_ALGO, NCCL_SENDRECV_ALGO::ctran};
 
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
+  hints.set("noLocal", "1");
+#endif
+  config.hints = &hints;
   ncclx::test::NcclCommRAII comm{
-      globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
 
   const int count = 1048576;
   const int nColl = 10;
@@ -428,10 +347,14 @@ TEST_F(CollTraceTest, GroupedSendRecvCtran) {
 TEST_F(CollTraceTest, SimulatePPSendRecv) {
   auto ctranGuard = EnvRAII{NCCL_SENDRECV_ALGO, NCCL_SENDRECV_ALGO::orig};
 
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
+  hints.set("noLocal", "1");
+#endif
+  config.hints = &hints;
   ncclx::test::NcclCommRAII comm{
-      globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
 
   const int count = 1048576;
   const int nColl = 10;
@@ -492,10 +415,14 @@ TEST_F(CollTraceTest, SimulateCtranPPSendRecv) {
   auto ctranGuard = EnvRAII(NCCL_CTRAN_ENABLE, true);
   auto ctranSRGuard = EnvRAII{NCCL_SENDRECV_ALGO, NCCL_SENDRECV_ALGO::ctran};
 
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
+  hints.set("noLocal", "1");
+#endif
+  config.hints = &hints;
   ncclx::test::NcclCommRAII comm{
-      globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
 
   const int count = 1048576;
   const int nColl = 10;
@@ -567,10 +494,14 @@ TEST_F(CollTraceTest, winPutWait) {
   auto ctranGuard = EnvRAII(NCCL_CTRAN_ENABLE, true);
   auto recordGuard = EnvRAII{NCCL_COLLTRACE_RECORD_MAX, 1000};
 
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
+  hints.set("noLocal", "1");
+#endif
+  config.hints = &hints;
   ncclx::test::NcclCommRAII comm{
-      globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
 
   auto statex = comm->ctranComm_->statex_.get();
   ASSERT_NE(statex, nullptr);
@@ -697,10 +628,15 @@ TEST_F(CollTraceTest, winPutWait) {
 TEST_F(CollTraceTest, DumpWithUnfinished) {
   auto wakeUpGuard = EnvRAII(NCCL_COLLTRACE_WAKEUP_INTERVAL_MS, 10L);
 
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
+  hints.set("noLocal", "1");
+#endif
+  config.hints = &hints;
   ncclx::test::NcclCommRAII comm{
-      globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
+
   const int count = 1048576;
   const int nColl = 10;
 
@@ -750,13 +686,16 @@ TEST_F(CollTraceTest, DumpWithUnfinished) {
 
 TEST_F(CollTraceTest, DumpWithUnfinishedCtran) {
   auto wakeUpGuard = EnvRAII(NCCL_COLLTRACE_WAKEUP_INTERVAL_MS, 10L);
-  auto envGuard = EnvRAII(NCCL_ALLREDUCE_ALGO, NCCL_ALLREDUCE_ALGO::ctdirect);
   auto ctranGuard = EnvRAII(NCCL_CTRAN_ENABLE, true);
-
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints{{"allreduceAlgo", "ctdirect"}};
+#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
+  hints.set("noLocal", "1");
+#endif
+  config.hints = &hints;
   ncclx::test::NcclCommRAII comm{
-      globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
+
   const int count = 1048576;
   const int nColl = 10;
 
@@ -806,10 +745,14 @@ TEST_F(CollTraceTest, DumpWithUnfinishedCtran) {
 
 TEST_F(CollTraceTest, GroupedAllReduce) {
   auto envGuard = EnvRAII(NCCL_ALLREDUCE_ALGO, NCCL_ALLREDUCE_ALGO::orig);
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
+  hints.set("noLocal", "1");
+#endif
+  config.hints = &hints;
   ncclx::test::NcclCommRAII comm{
-      globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
 
   const int count = 1048576;
   const int nColl = 10;
@@ -844,10 +787,14 @@ TEST_F(CollTraceTest, GroupedSendRecvAllReduce) {
   auto ctranGuard = EnvRAII{NCCL_SENDRECV_ALGO, NCCL_SENDRECV_ALGO::orig};
   auto envGuard = EnvRAII(NCCL_ALLREDUCE_ALGO, NCCL_ALLREDUCE_ALGO::orig);
 
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
+  hints.set("noLocal", "1");
+#endif
+  config.hints = &hints;
   ncclx::test::NcclCommRAII comm{
-      globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
 
   const int count = 1048576;
   const int nColl = 10;
@@ -885,10 +832,15 @@ TEST_F(CollTraceTest, GroupedSendRecvAllReduce) {
 }
 
 TEST_F(CollTraceTest, CollTraceQueryInCapture) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
+  hints.set("noLocal", "1");
+#endif
+  config.hints = &hints;
   ncclx::test::NcclCommRAII comm{
-      globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
+
   const int count = 1048576;
   const int nColl = 20;
 
@@ -923,10 +875,14 @@ TEST_F(CollTraceTest, CollTraceTestEnqueueMoreThanPendingQueue) {
   auto wakeUpGuard = EnvRAII(NCCL_COLLTRACE_WAKEUP_INTERVAL_MS, 10L);
   auto ctranGuard = EnvRAII(NCCL_CTRAN_ENABLE, true);
 
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints commHints;
+#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
+  commHints.set("noLocal", "1");
+#endif
+  config.hints = &commHints;
   ncclx::test::NcclCommRAII comm{
-      globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_EQ(comm->collTrace, nullptr);
-  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
 
   const auto kNumElements = 8388608;
   const auto kNumIters = CollTraceConfig::kDefaultMaxPendingQueueSize;

@@ -16,7 +16,7 @@ commResult_t ctranAllGatherDirect(
     CtranComm* comm,
     cudaStream_t stream);
 
-commResult_t ctranAllGatherRd(
+commResult_t ctranAllGatherStreamedRd(
     const void* sendbuff,
     void* recvbuff,
     size_t sendcount,
@@ -40,25 +40,56 @@ commResult_t ctranAllGatherBrucksFF(
     CtranComm* comm,
     cudaStream_t stream);
 
+commResult_t ctranAllGatherHierarchicalRing(
+    const void* sendbuff,
+    void* recvbuff,
+    size_t sendcount,
+    commDataType_t datatype,
+    CtranComm* comm,
+    cudaStream_t stream);
+
 static inline const std::string allGatherAlgoName(
     enum NCCL_ALLGATHER_ALGO algo) {
   switch (algo) {
     case NCCL_ALLGATHER_ALGO::ctdirect:
       return "CtranAllGatherDirect";
-    case NCCL_ALLGATHER_ALGO::ctrd:
-      return "CtranAllGatherRd";
+    case NCCL_ALLGATHER_ALGO::ctsrd:
+      return "CtranAllGatherStreamedRd";
     case NCCL_ALLGATHER_ALGO::ctring:
       return "CtranAllGatherRing";
     case NCCL_ALLGATHER_ALGO::ctbrucks:
       return "CtranBrucksFF";
+    case NCCL_ALLGATHER_ALGO::cthierarchical_ring:
+      return "CtranAllGatherHierarchicalRing";
     case NCCL_ALLGATHER_ALGO::ctran:
       return "CtranAuto";
+    case NCCL_ALLGATHER_ALGO::ctgraph:
+      return "CtranCudagraphAware";
+    case NCCL_ALLGATHER_ALGO::ctgraph_pipeline:
+      return "CtranCudagraphPipeline";
+    case NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline:
+      return "CtranCudagraphRdPipeline";
+    case NCCL_ALLGATHER_ALGO::ctgraph_ring:
+      return "CtranCudagraphRing";
+    case NCCL_ALLGATHER_ALGO::ctgraph_rd:
+      return "CtranCudagraphRd";
     case NCCL_ALLGATHER_ALGO::orig:
       return "Baseline";
     default:
       return "Unknown";
   }
 }
+
+// Cudagraph-aware path: transparently converts a regular allgather to the
+// persistent window-based AGP algorithm during CUDA graph capture.
+commResult_t ctranAllGatherCudagraphAware(
+    const void* sendbuff,
+    void* recvbuff,
+    size_t sendcount,
+    commDataType_t datatype,
+    CtranComm* comm,
+    cudaStream_t stream,
+    enum NCCL_ALLGATHER_ALGO algo = NCCL_ALLGATHER_ALGO::ctgraph);
 
 commResult_t prepareAllGatherArgs(
     std::vector<std::unique_ptr<struct OpElem>>& opGroup,

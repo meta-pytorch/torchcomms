@@ -166,9 +166,20 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
 
   std::string_view getBackendVersion() const;
 
+  // Returns the symmetric (VMM-backed) CUDA allocator associated with this
+  // communicator's backend. Memory allocated through this allocator (e.g. via
+  // a `torch.cuda.MemPool`) is suitable for backends that require symmetric
+  // VMM memory for window registration and one-sided RMA (NCCL, NCCLX).
+  // Equivalent to `get_mem_allocator(getBackend())`.
+  std::shared_ptr<c10::Allocator> getMemAllocator() const;
+
   // Device Transport API — returns device pointer as int64 for Triton kernels.
   // Throws if not supported by the backend.
   int64_t get_device_transport();
+
+  // Memory Registration API
+  void tensor_register(const at::Tensor& tensor);
+  void tensor_deregister(const at::Tensor& tensor);
 
   std::shared_ptr<TorchCommBackend> getBackendImpl() const {
     return impl_;
@@ -217,18 +228,41 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
    */
   c10::intrusive_ptr<TorchWork> reconfigure(const ReconfigureOptions& opts);
 
+  /**
+   * Abort the communicator, stopping all in-flight operations.
+   * In reconfigurable mode, uses graceful revoke. Otherwise uses destructive
+   * abort. Sets error state but does not throw. Caller can recover via
+   * reconfigure().
+   */
+  void abort();
+
+  /**
+   * Check if abort/fault-tolerance is supported on this communicator.
+   *
+   * @return True if abort is supported, false otherwise.
+   */
+  bool isAbortSupported() const;
+
+  /**
+   * Check if the communicator is in an aborted state.
+   *
+   * @return True if the communicator has been aborted.
+   */
+  bool isAborted() const;
+
   // Hook types (defined in TorchCommHooks.hpp; aliased for backward compat)
-  using PreHookArgs = ::torch::comms::PreHookArgs;
-  using PostHookArgs = ::torch::comms::PostHookArgs;
   using PreHook = ::torch::comms::PreHook;
   using PostHook = ::torch::comms::PostHook;
   using AbortHook = ::torch::comms::AbortHook;
+  using GraphReplayHook = ::torch::comms::GraphReplayHook;
 
   // Hook registration (not thread-safe; must not be called while a collective
   // is in progress)
   std::unique_ptr<RemovableHandle> registerPreHook(PreHook preHook);
   std::unique_ptr<RemovableHandle> registerPostHook(PostHook postHook);
   std::unique_ptr<RemovableHandle> registerAbortHook(AbortHook hook);
+  std::unique_ptr<RemovableHandle> registerGraphReplayHook(
+      GraphReplayHook hook);
 
   // Disable copy and move semantics
   TorchComm(const TorchComm&) = delete;
@@ -255,8 +289,8 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
       std::shared_ptr<TorchCommBackend> impl,
       std::vector<int> ranks);
 
-  void preHook(PreHookArgs&& args);
-  void postHook(PostHookArgs&& args);
+  void preHook(size_t op_id, PreHookArgs&& args);
+  void postHook(size_t op_id, PostHookArgs&& args);
 
   // Rank validation helper
   void validateRank(int rank, const char* param_name) const;

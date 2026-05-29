@@ -92,6 +92,7 @@ struct Transport {
   /** Constructor for P2pIbgdaTransportDevice (non-owning pointer) */
   __host__ __device__ explicit Transport(P2pIbgdaTransportDevice* p)
       : type(TransportType::P2P_IBGDA), p2p_ibgda(p) {}
+
   /**
    * Delete copy constructor and copy assignment.
    * Transport objects contain device pointers and IPC handles that should not
@@ -109,7 +110,7 @@ struct Transport {
       new (&self) P2pSelfTransportDevice(std::move(other.self));
     } else if (type == TransportType::P2P_NVL) {
       new (&p2p_nvl) P2pNvlTransportDevice(std::move(other.p2p_nvl));
-    } else {
+    } else if (type == TransportType::P2P_IBGDA) {
       p2p_ibgda = other.p2p_ibgda;
     }
   }
@@ -134,7 +135,7 @@ struct Transport {
         new (&self) P2pSelfTransportDevice(std::move(other.self));
       } else if (type == TransportType::P2P_NVL) {
         new (&p2p_nvl) P2pNvlTransportDevice(std::move(other.p2p_nvl));
-      } else {
+      } else if (type == TransportType::P2P_IBGDA) {
         p2p_ibgda = other.p2p_ibgda;
       }
     }

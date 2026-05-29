@@ -3,16 +3,17 @@
 // Explicit instantiations for test event types.
 // The template definition lives in HRDWRingBuffer.h.
 
-#include "comms/utils/HRDWRingBuffer.h"
+#include "comms/utils/hrdw_ring_buffer/HRDWRingBuffer.h"
 #include "comms/utils/tests/HRDWRingBufferTestTypes.h"
 
-namespace meta::comms::colltrace {
+namespace hrdw_ring_buffer {
 
 template cudaError_t launchRingBufferWrite<TestEvent>(
     cudaStream_t,
     HRDWEntry<TestEvent>*,
     uint64_t*,
     uint32_t,
+    uint32_t,
     TestEvent);
 
-} // namespace meta::comms::colltrace
+} // namespace hrdw_ring_buffer

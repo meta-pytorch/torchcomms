@@ -2,6 +2,7 @@
 
 #include <comm.h>
 #include <folly/init/Init.h>
+#include <folly/json/json.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <nccl.h>
@@ -11,16 +12,15 @@
 
 #include "checks.h"
 #include "comms/ctran/Ctran.h"
+#include "comms/ctran/tests/VerifyAlgoStatsUtil.h"
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 
-#include "comms/testinfra/AlgoTestUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-// #include "meta/colltrace/CollTrace.h"
-#include "meta/hints/GlobalHints.h"
-
-using testinfra::AlgoRAII;
+#include "meta/NcclxConfig.h"
+#include "meta/algoconf/AlgoStrConv.h"
+#include "meta/commDump.h"
 
 class AllToAllvTest
     : public NcclxBaseTestFixture,
@@ -29,20 +29,17 @@ class AllToAllvTest
   AllToAllvTest() = default;
   void SetUp() override {
 #ifdef TEST_ENABLE_CTRAN
-    // setenv("NCCL_COLLTRACE", "trace", 0);
+    setenv("NCCL_COLLTRACE", "trace", 0);
 #endif
 
     NcclxBaseTestFixture::SetUp();
-
-    this->comm = ncclx::test::createNcclComm(
-        globalRank, numRanks, localRank, bootstrap_.get());
+    ctranAlgoStats_.enable();
 
     CUDACHECK_TEST(cudaSetDevice(this->localRank));
     CUDACHECK_TEST(cudaStreamCreate(&this->stream));
   }
 
   void TearDown() override {
-    NCCLCHECK_TEST(ncclCommDestroy(this->comm));
     CUDACHECK_TEST(cudaStreamDestroy(this->stream));
     NcclxBaseTestFixture::TearDown();
   }
@@ -245,25 +242,20 @@ class AllToAllvTest
     CUDACHECK_TEST(cudaFree(recvBuf));
 
 #ifdef TEST_ENABLE_CTRAN
-    // FIXME: Temp disable because causing test to segfault
-    /*
-    // CollTrace is updated by a separate thread, need wait for it to finish to
-    // avoid flaky test
-    comm->ctranComm_->collTrace_->waitForWorkerFinishQueue();
-    auto dump = comm->ctranComm_->collTrace_->dump();
-    EXPECT_EQ(dump.pastColls.size(), 1);
+    if (comm->newCollTrace) {
+      EXPECT_TRUE(
+          meta::comms::ncclx::waitForCollTraceDrain(*comm->newCollTrace));
 
-    for (auto& coll : dump.pastColls) {
-      if (NCCL_ALLTOALLV_ALGO == NCCL_ALLTOALLV_ALGO::ctran) {
-        EXPECT_EQ(coll.dataType, ncclInt);
-        EXPECT_EQ(coll.opName, "AllToAllV");
-        EXPECT_EQ(coll.codepath, CollTraceColl::Codepath::CTRAN);
-      } else {
-        EXPECT_EQ(coll.opName, "SendRecv");
-        EXPECT_EQ(coll.codepath, CollTraceColl::Codepath::BASELINE);
+      auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+      if (dumpMap.count("CT_pastColls")) {
+        auto ctPastColls = folly::parseJson(dumpMap["CT_pastColls"]);
+        EXPECT_EQ(ctPastColls.size(), 1);
+        for (int i = 0; i < static_cast<int>(ctPastColls.size()); i++) {
+          EXPECT_EQ(ctPastColls[i]["collId"].asInt(), i);
+          EXPECT_EQ(ctPastColls[i]["opCount"].asInt(), i);
+        }
       }
     }
-    */
 #endif
   }
 
@@ -554,25 +546,19 @@ class AllToAllvTest
     CUDACHECK_TEST(cudaFree(recvBuf));
 
 #ifdef TEST_ENABLE_CTRAN
-    // FIXME: Temp disable because causing test to segfault
-    /*
-    // CollTrace is updated by a separate thread, need wait for it to finish to
-    // avoid flaky test
-    comm->ctranComm_->collTrace_->waitForWorkerFinishQueue();
-    auto dump = comm->ctranComm_->collTrace_->dump();
-    EXPECT_EQ(dump.pastColls.size(), 1);
+    if (comm->newCollTrace) {
+      EXPECT_TRUE(
+          meta::comms::ncclx::waitForCollTraceDrain(*comm->newCollTrace));
 
-    for (auto& coll : dump.pastColls) {
-      if (NCCL_ALLTOALLV_ALGO == NCCL_ALLTOALLV_ALGO::ctran) {
-        EXPECT_EQ(coll.dataType, getNcclDataType<T>());
-        EXPECT_EQ(coll.opName, "AllToAllV");
-        EXPECT_EQ(coll.codepath, CollTraceColl::Codepath::CTRAN);
-      } else {
-        EXPECT_EQ(coll.opName, "SendRecv");
-        EXPECT_EQ(coll.codepath, CollTraceColl::Codepath::BASELINE);
+      auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+      if (dumpMap.count("CT_pastColls")) {
+        auto ctPastColls = folly::parseJson(dumpMap["CT_pastColls"]);
+        // Don't assert exact size here because run<T>() can be called
+        // multiple times on the same comm (e.g., AllToAllvWithHintOverride),
+        // and newCollTrace accumulates entries across calls.
+        EXPECT_GE(ctPastColls.size(), 1);
       }
     }
-    */
 #endif
   }
   template <typename T>
@@ -685,60 +671,140 @@ class AllToAllvTest
   }
 
  protected:
-  ncclComm_t comm;
+  ncclComm_t comm{nullptr};
   cudaStream_t stream;
+  ctran::test::VerifyAlgoStatsHelper ctranAlgoStats_;
 };
 
 TEST_F(AllToAllvTest, OutOfPlaceInt) {
+  ncclx::test::NcclCommRAII commRaii(
+      globalRank, numRanks, localRank, bootstrap_.get());
+  this->comm = commRaii.get();
   run<int>();
 }
+
 TEST_F(AllToAllvTest, OutOfPlaceUint8) {
+  ncclx::test::NcclCommRAII commRaii(
+      globalRank, numRanks, localRank, bootstrap_.get());
+  this->comm = commRaii.get();
   run<uint8_t>();
 }
+
 TEST_F(AllToAllvTest, OutOfPlaceFloat) {
+  ncclx::test::NcclCommRAII commRaii(
+      globalRank, numRanks, localRank, bootstrap_.get());
+  this->comm = commRaii.get();
   run<float>();
 }
 
 #ifdef TEST_ENABLE_CTRAN
 TEST_F(AllToAllvTest, CtranInt) {
-  auto envGuard = AlgoRAII(NCCL_ALLTOALLV_ALGO, NCCL_ALLTOALLV_ALGO::ctran);
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints{{"alltoallvAlgo", "ctran"}};
+  config.hints = &hints;
+  ncclx::test::NcclCommRAII commRaii(
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
+  this->comm = commRaii.get();
   run<int>();
+  ctranAlgoStats_.verify(comm->ctranComm_.get(), "AllToAll", "Ctran");
 }
 
 TEST_F(AllToAllvTest, CtranUint8) {
-  auto envGuard = AlgoRAII(NCCL_ALLTOALLV_ALGO, NCCL_ALLTOALLV_ALGO::ctran);
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints{{"alltoallvAlgo", "ctran"}};
+  config.hints = &hints;
+  ncclx::test::NcclCommRAII commRaii(
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
+  this->comm = commRaii.get();
   run<uint8_t>();
+  ctranAlgoStats_.verify(comm->ctranComm_.get(), "AllToAll", "Ctran");
 }
 #endif
 
 TEST_P(AllToAllvTest, CanCopy16Mismatch) {
-  auto envGuard = AlgoRAII(NCCL_ALLTOALLV_ALGO, GetParam());
+  const auto algo = GetParam();
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints{{"alltoallvAlgo", ncclx::algoconf::algoValToStr(algo)}};
+  config.hints = &hints;
+  ncclx::test::NcclCommRAII commRaii(
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
+  this->comm = commRaii.get();
   runCanCopy16Mismatch();
+#ifdef TEST_ENABLE_CTRAN
+  if (algo != NCCL_ALLTOALLV_ALGO::orig) {
+    ctranAlgoStats_.verify(comm->ctranComm_.get(), "AllToAll", "Ctran");
+  }
+#endif
 }
 
 #ifdef TEST_ENABLE_CTRAN
 TEST_P(AllToAllvTest, ZeroByteSendRecv) {
-  auto envGuard = AlgoRAII(NCCL_ALLTOALLV_ALGO, GetParam());
-  runZeroByteSendRecv(GetParam() == NCCL_ALLTOALLV_ALGO::ctran);
+  const auto algo = GetParam();
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints{{"alltoallvAlgo", ncclx::algoconf::algoValToStr(algo)}};
+  config.hints = &hints;
+  ncclx::test::NcclCommRAII commRaii(
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
+  this->comm = commRaii.get();
+  runZeroByteSendRecv(algo == NCCL_ALLTOALLV_ALGO::ctran);
+  if (algo != NCCL_ALLTOALLV_ALGO::orig) {
+    ctranAlgoStats_.verify(comm->ctranComm_.get(), "AllToAll", "Ctran");
+  }
 }
 #endif
 
 TEST_P(AllToAllvTest, ReuseSharedBuffer) {
-  auto envGuard = AlgoRAII(NCCL_ALLTOALLV_ALGO, GetParam());
+  const auto algo = GetParam();
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints{{"alltoallvAlgo", ncclx::algoconf::algoValToStr(algo)}};
+  config.hints = &hints;
+  ncclx::test::NcclCommRAII commRaii(
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
+  this->comm = commRaii.get();
   runReuseSharedBuffer();
+#ifdef TEST_ENABLE_CTRAN
+  if (algo != NCCL_ALLTOALLV_ALGO::orig) {
+    ctranAlgoStats_.verify(comm->ctranComm_.get(), "AllToAll", "Ctran");
+  }
+#endif
 }
 
 TEST_P(AllToAllvTest, SparseAlltoallvInt) {
-  auto envGuard = AlgoRAII(NCCL_ALLTOALLV_ALGO, GetParam());
+  const auto algo = GetParam();
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints{{"alltoallvAlgo", ncclx::algoconf::algoValToStr(algo)}};
+  config.hints = &hints;
+  ncclx::test::NcclCommRAII commRaii(
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
+  this->comm = commRaii.get();
   runSparseAlltoallv<int>(true /*registFlag*/);
+#ifdef TEST_ENABLE_CTRAN
+  if (algo != NCCL_ALLTOALLV_ALGO::orig) {
+    ctranAlgoStats_.verify(comm->ctranComm_.get(), "AllToAll", "Ctran");
+  }
+#endif
 }
 
 TEST_P(AllToAllvTest, SparseAlltoallvUint8) {
-  auto envGuard = AlgoRAII(NCCL_ALLTOALLV_ALGO, GetParam());
+  const auto algo = GetParam();
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints{{"alltoallvAlgo", ncclx::algoconf::algoValToStr(algo)}};
+  config.hints = &hints;
+  ncclx::test::NcclCommRAII commRaii(
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
+  this->comm = commRaii.get();
   runSparseAlltoallv<uint8_t>(true /*registFlag*/);
+#ifdef TEST_ENABLE_CTRAN
+  if (algo != NCCL_ALLTOALLV_ALGO::orig) {
+    ctranAlgoStats_.verify(comm->ctranComm_.get(), "AllToAll", "Ctran");
+  }
+#endif
 }
 
 TEST_F(AllToAllvTest, InvalidSendbuf) {
+  ncclx::test::NcclCommRAII commRaii(
+      globalRank, numRanks, localRank, bootstrap_.get());
+  this->comm = commRaii.get();
   constexpr int count = 1048576;
   int* buf = nullptr;
   CUDACHECK_TEST(cudaMalloc(&buf, count * this->numRanks * sizeof(int)));
@@ -765,6 +831,9 @@ TEST_F(AllToAllvTest, InvalidSendbuf) {
 }
 
 TEST_F(AllToAllvTest, InvalidRecvbuf) {
+  ncclx::test::NcclCommRAII commRaii(
+      globalRank, numRanks, localRank, bootstrap_.get());
+  this->comm = commRaii.get();
   constexpr int count = 1048576;
   int* buf = nullptr;
   CUDACHECK_TEST(cudaMalloc(&buf, count * this->numRanks * sizeof(int)));
@@ -791,6 +860,9 @@ TEST_F(AllToAllvTest, InvalidRecvbuf) {
 }
 
 TEST_F(AllToAllvTest, InvalidInPlace) {
+  ncclx::test::NcclCommRAII commRaii(
+      globalRank, numRanks, localRank, bootstrap_.get());
+  this->comm = commRaii.get();
   constexpr int count = 1048576;
   int* buf = nullptr;
   CUDACHECK_TEST(cudaMalloc(&buf, count * this->numRanks * sizeof(int)));
@@ -817,6 +889,9 @@ TEST_F(AllToAllvTest, InvalidInPlace) {
 }
 
 TEST_F(AllToAllvTest, ValidInPlace) {
+  ncclx::test::NcclCommRAII commRaii(
+      globalRank, numRanks, localRank, bootstrap_.get());
+  this->comm = commRaii.get();
   // prepare alltoallv arguments
   std::vector<size_t> sendCounts(this->numRanks, 0);
   std::vector<size_t> sendDispls(this->numRanks, 0);
@@ -838,13 +913,27 @@ TEST_F(AllToAllvTest, ValidInPlace) {
 }
 
 TEST_F(AllToAllvTest, AllToAllvWithHintOverride) {
-  AlgoRAII algoEnv(NCCL_ALLTOALLV_ALGO, NCCL_ALLTOALLV_ALGO::orig);
+  // Run with ctran algo via per-comm hint
+  {
+    ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints{{"alltoallvAlgo", "ctran"}};
+    config.hints = &hints;
+    ncclx::test::NcclCommRAII commRaii(
+        globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
+    this->comm = commRaii.get();
+    run<int>();
+#ifdef TEST_ENABLE_CTRAN
+    ctranAlgoStats_.verify(comm->ctranComm_.get(), "AllToAll", "Ctran");
+#endif
+  }
 
-  ASSERT_TRUE(ncclx::setGlobalHint("algo_alltoallv", "ctran"));
-  run<int>();
-
-  ASSERT_TRUE(ncclx::resetGlobalHint("algo_alltoallv"));
-  run<int>();
+  // Run with default algo (no hint override)
+  {
+    ncclx::test::NcclCommRAII commRaii(
+        globalRank, numRanks, localRank, bootstrap_.get());
+    this->comm = commRaii.get();
+    run<int>();
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(

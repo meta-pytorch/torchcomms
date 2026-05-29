@@ -15,6 +15,7 @@
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
+#include "comms/ctran/tests/VerifyAlgoStatsUtil.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -32,10 +33,13 @@ class CtranAllgatherTest : public ctran::CtranDistTestFixture,
   void *sCommBuf, *rCommBuf, *pCommBuf;
   std::vector<TestMemSegment> segments;
 
-  void SetUp() override {
+  ctran::test::VerifyAlgoStatsHelper algoStats_;
+
+  void setUpWithEnvs(const ctran::CtranEnvs& envs = {}) {
     setenv("NCCL_CTRAN_TRANSPORT_PROFILER", "1", 0);
     setenv("NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT", "1", 0);
-    ctran::CtranDistTestFixture::SetUp();
+    algoStats_.enable();
+    ctran::CtranDistTestFixture::SetUp(envs);
     ctranComm = makeCtranComm();
     segments.clear();
   }
@@ -152,19 +156,50 @@ class CtranAllgatherTest : public ctran::CtranDistTestFixture,
   std::unique_ptr<CtranComm> ctranComm{nullptr};
 };
 
-class CtranAllgatherTestParam : public CtranAllgatherTest,
-                                public ::testing::WithParamInterface<std::tuple<
-                                    enum NCCL_ALLGATHER_ALGO,
-                                    size_t,
-                                    size_t,
-                                    TestInPlaceType,
-                                    MemAllocType,
-                                    int,
-                                    TestPairCollType>> {};
+namespace {
+
+const ctran::CtranEnvs kHierarchicalRingEnvs = {
+    {"NCCL_COMM_STATE_DEBUG_TOPO", "nolocal"},
+    {"NCCL_CTRAN_USE_PIPES", "1"},
+    {"NCCL_CTRAN_IBGDA_SENDRECV_ENABLE", "1"},
+    {"NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE", "33554432"},
+};
+
+const ctran::CtranEnvs kHierarchicalRingOverlapEnvs = {
+    {"NCCL_CTRAN_USE_PIPES", "1"},
+    {"NCCL_CTRAN_IBGDA_SENDRECV_ENABLE", "1"},
+    {"NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE", "33554432"},
+    {"NCCL_CTRAN_HIER_AG_OVERLAP_ENABLE", "1"},
+    {"NCCL_CTRAN_PIPES_TRACE_ENABLE", "1"},
+    {"NCCL_CTRAN_PIPES_TRACE_RING_SIZE", "65536"},
+    {"NCCL_MNNVL_ENABLE", "0"},
+};
+
+} // namespace
+
+// Param: (CtranEnvs, (algo, offset, count, inplace, memType, iter, pairColl))
+using CtranAllgatherParams = std::tuple<
+    enum NCCL_ALLGATHER_ALGO,
+    size_t,
+    size_t,
+    TestInPlaceType,
+    MemAllocType,
+    int,
+    TestPairCollType>;
+
+class CtranAllgatherTestParam
+    : public CtranAllgatherTest,
+      public ::testing::WithParamInterface<
+          std::tuple<ctran::CtranEnvs, CtranAllgatherParams>> {
+ protected:
+  void SetUp() override {
+    setUpWithEnvs(std::get<0>(GetParam()));
+  }
+};
 
 TEST_P(CtranAllgatherTestParam, AllgatherAlgo) {
   const auto& [algo, offset, count, inplace, memType, iter, pairColl] =
-      GetParam();
+      std::get<1>(GetParam());
 
   // CollTrace will help check whether the specified algo is used
   EnvRAII env(NCCL_ALLGATHER_ALGO, algo);
@@ -236,12 +271,15 @@ TEST_P(CtranAllgatherTestParam, AllgatherAlgo) {
         << " on rank " << globalRank << " received from peer " << i;
   }
 
+  std::vector<CtranMapperBackend> excludedBackends{CtranMapperBackend::NVL};
+  if (algo == NCCL_ALLGATHER_ALGO::cthierarchical_ring) {
+    excludedBackends.push_back(CtranMapperBackend::IB);
+  }
   verifyBackendsUsed(
       ctranComm->ctran_.get(),
       ctranComm->statex_.get(),
       memType,
-      // AllGatherDirect uses kernel bcast not NVL iput
-      {CtranMapperBackend::NVL});
+      excludedBackends);
   verifyGpeLeak(ctranComm->ctran_.get());
 
   CUDACHECK_TEST(cudaDeviceSynchronize());
@@ -256,6 +294,8 @@ TEST_P(CtranAllgatherTestParam, AllgatherAlgo) {
     idx++;
   }
 
+  algoStats_.verify(ctranComm.get(), "AllGather", allGatherAlgoName(algo));
+
   for (auto& segment : segments) {
     COMMCHECK_TEST(ctran::globalDeregisterWithPtr(segment.ptr, segment.size));
   }
@@ -263,7 +303,17 @@ TEST_P(CtranAllgatherTestParam, AllgatherAlgo) {
   memoryCleanUp(memType, inplace, pairColl);
 }
 
-TEST_F(CtranAllgatherTest, OutOfPlaceAllgatherRingDynamicRegist) {
+// Envs-only parameterized fixture for tests that have no other params.
+class CtranAllgatherTestEnvFixture
+    : public CtranAllgatherTest,
+      public ::testing::WithParamInterface<ctran::CtranEnvs> {
+ protected:
+  void SetUp() override {
+    setUpWithEnvs(GetParam());
+  }
+};
+
+TEST_P(CtranAllgatherTestEnvFixture, OutOfPlaceAllgatherRingDynamicRegist) {
   size_t count = 8192;
   MemAllocType memType = kMemCudaMalloc;
 
@@ -302,107 +352,256 @@ TEST_F(CtranAllgatherTest, OutOfPlaceAllgatherRingDynamicRegist) {
   memoryCleanUp(memType, kTestOutOfPlace, kTestPairNone);
 }
 
+INSTANTIATE_TEST_SUITE_P(
+    CtranAllgatherTest,
+    CtranAllgatherTestEnvFixture,
+    ::testing::Values(ctran::kDefaultEnvs, ctran::kNolocalEnvs),
+    [](const testing::TestParamInfo<ctran::CtranEnvs>& info) {
+      auto s = ctran::envSuffix(info.param);
+      return s.empty() ? std::string("Default") : s;
+    });
+
 // common function to get test name from test parameter
 inline std::string getTestName(
     const testing::TestParamInfo<CtranAllgatherTestParam::ParamType>& info) {
-  return allGatherAlgoName(std::get<0>(info.param)) + "_" +
-      std::to_string(std::get<1>(info.param)) + "offset_" +
-      std::to_string(std::get<2>(info.param)) + "_" + "elements_" +
-      testInPlaceTypeToStr(std::get<3>(info.param)) + "_" +
-      testMemAllocTypeToStr(std::get<4>(info.param)) + "_" +
-      std::to_string(std::get<5>(info.param)) + "iters_" +
-      testPairCollTypeToStr(std::get<6>(info.param));
+  const auto& inner = std::get<1>(info.param);
+  return ctran::envSuffix(std::get<0>(info.param)) +
+      allGatherAlgoName(std::get<0>(inner)) + "_" +
+      std::to_string(std::get<1>(inner)) + "offset_" +
+      std::to_string(std::get<2>(inner)) + "_" + "elements_" +
+      testInPlaceTypeToStr(std::get<3>(inner)) + "_" +
+      testMemAllocTypeToStr(std::get<4>(inner)) + "_" +
+      std::to_string(std::get<5>(inner)) + "iters_" +
+      testPairCollTypeToStr(std::get<6>(inner));
 }
 
 INSTANTIATE_TEST_SUITE_P(
     CtranTestCudaMalloc,
     CtranAllgatherTestParam,
     ::testing::Combine(
-        testing::Values(
-            NCCL_ALLGATHER_ALGO::ctdirect,
-            NCCL_ALLGATHER_ALGO::ctring,
-            NCCL_ALLGATHER_ALGO::ctrd),
-        testing::Values(0),
-        testing::Values(8192, 1),
-        testing::Values(kTestInPlace, kTestOutOfPlace),
-        testing::Values(kMemCudaMalloc),
-        testing::Values(1),
-        testing::Values(kTestPairNone)),
+        ::testing::Values(ctran::kDefaultEnvs, ctran::kNolocalEnvs),
+        ::testing::Combine(
+            testing::Values(
+                NCCL_ALLGATHER_ALGO::ctdirect,
+                NCCL_ALLGATHER_ALGO::ctring,
+                NCCL_ALLGATHER_ALGO::ctsrd),
+            testing::Values(0),
+            testing::Values(8192, 1),
+            testing::Values(kTestInPlace, kTestOutOfPlace),
+            testing::Values(kMemCudaMalloc),
+            testing::Values(1),
+            testing::Values(kTestPairNone))),
     getTestName);
 
 INSTANTIATE_TEST_SUITE_P(
     CtranTestCumemInPlace,
     CtranAllgatherTestParam,
     ::testing::Combine(
-        testing::Values(
-            NCCL_ALLGATHER_ALGO::ctdirect,
-            NCCL_ALLGATHER_ALGO::ctring,
-            NCCL_ALLGATHER_ALGO::ctrd),
-        testing::Values(0),
-        testing::Values(8192, 1048576, 1048567, 1),
-        testing::Values(kTestInPlace),
-        testing::Values(kMemNcclMemAlloc),
-        testing::Values(1),
-        testing::Values(kTestPairNone)),
+        ::testing::Values(ctran::kDefaultEnvs, ctran::kNolocalEnvs),
+        ::testing::Combine(
+            testing::Values(
+                NCCL_ALLGATHER_ALGO::ctdirect,
+                NCCL_ALLGATHER_ALGO::ctring,
+                NCCL_ALLGATHER_ALGO::ctsrd),
+            testing::Values(0),
+            testing::Values(8192, 1048576, 1048567, 1),
+            testing::Values(kTestInPlace),
+            testing::Values(kMemNcclMemAlloc),
+            testing::Values(1),
+            testing::Values(kTestPairNone))),
     getTestName);
 
 INSTANTIATE_TEST_SUITE_P(
     CtranTestCumemOutOfPlace,
     CtranAllgatherTestParam,
     ::testing::Combine(
-        testing::Values(
-            NCCL_ALLGATHER_ALGO::ctdirect,
-            NCCL_ALLGATHER_ALGO::ctring,
-            NCCL_ALLGATHER_ALGO::ctrd),
-        testing::Values(256),
-        testing::Values(1048567, 1),
-        testing::Values(kTestOutOfPlace),
-        testing::Values(kMemNcclMemAlloc),
-        testing::Values(1),
-        testing::Values(kTestPairNone)),
+        ::testing::Values(ctran::kDefaultEnvs, ctran::kNolocalEnvs),
+        ::testing::Combine(
+            testing::Values(
+                NCCL_ALLGATHER_ALGO::ctdirect,
+                NCCL_ALLGATHER_ALGO::ctring,
+                NCCL_ALLGATHER_ALGO::ctsrd),
+            testing::Values(256),
+            testing::Values(1048567, 1),
+            testing::Values(kTestOutOfPlace),
+            testing::Values(kMemNcclMemAlloc),
+            testing::Values(1),
+            testing::Values(kTestPairNone))),
     getTestName);
 
 INSTANTIATE_TEST_SUITE_P(
     CtranTestCumemPair,
     CtranAllgatherTestParam,
     ::testing::Combine(
-        testing::Values(
-            NCCL_ALLGATHER_ALGO::ctdirect,
-            NCCL_ALLGATHER_ALGO::ctring,
-            NCCL_ALLGATHER_ALGO::ctrd),
-        testing::Values(0),
-        testing::Values(8192, 1),
-        testing::Values(kTestOutOfPlace),
-        testing::Values(kMemNcclMemAlloc),
-        testing::Values(20),
-        testing::Values(kTestPairAllReduce)),
+        ::testing::Values(ctran::kDefaultEnvs, ctran::kNolocalEnvs),
+        ::testing::Combine(
+            testing::Values(
+                NCCL_ALLGATHER_ALGO::ctdirect,
+                NCCL_ALLGATHER_ALGO::ctring,
+                NCCL_ALLGATHER_ALGO::ctsrd),
+            testing::Values(0),
+            testing::Values(8192, 1),
+            testing::Values(kTestOutOfPlace),
+            testing::Values(kMemNcclMemAlloc),
+            testing::Values(20),
+            testing::Values(kTestPairAllReduce))),
     getTestName);
 
 INSTANTIATE_TEST_SUITE_P(
     CtranTestDisjoint,
     CtranAllgatherTestParam,
     ::testing::Combine(
-        testing::Values(NCCL_ALLGATHER_ALGO::ctdirect),
-        testing::Values(0, 256),
-        testing::Values(1048568, 1),
-        testing::Values(kTestInPlace, kTestOutOfPlace),
-        testing::Values(kCuMemAllocDisjoint),
-        testing::Values(5),
-        testing::Values(kTestPairNone)),
+        ::testing::Values(ctran::kDefaultEnvs, ctran::kNolocalEnvs),
+        ::testing::Combine(
+            testing::Values(NCCL_ALLGATHER_ALGO::ctdirect),
+            testing::Values(0, 256),
+            testing::Values(1048568, 1),
+            testing::Values(kTestInPlace, kTestOutOfPlace),
+            testing::Values(kCuMemAllocDisjoint),
+            testing::Values(5),
+            testing::Values(kTestPairNone))),
     getTestName);
+
+INSTANTIATE_TEST_SUITE_P(
+    CtranTestHierarchicalRing,
+    CtranAllgatherTestParam,
+    ::testing::Combine(
+        ::testing::Values(kHierarchicalRingEnvs),
+        ::testing::Combine(
+            testing::Values(NCCL_ALLGATHER_ALGO::cthierarchical_ring),
+            testing::Values(0),
+            testing::Values(8192, 1),
+            testing::Values(kTestInPlace, kTestOutOfPlace),
+            testing::Values(kMemNcclMemAlloc),
+            testing::Values(1),
+            testing::Values(kTestPairNone))),
+    getTestName);
+
+INSTANTIATE_TEST_SUITE_P(
+    CtranTestHierarchicalRingOverlap,
+    CtranAllgatherTestParam,
+    ::testing::Combine(
+        ::testing::Values(kHierarchicalRingOverlapEnvs),
+        ::testing::Combine(
+            testing::Values(NCCL_ALLGATHER_ALGO::cthierarchical_ring),
+            testing::Values(0),
+            testing::Values(8192, 1),
+            testing::Values(kTestInPlace, kTestOutOfPlace),
+            testing::Values(kMemNcclMemAlloc),
+            testing::Values(1),
+            testing::Values(kTestPairNone))),
+    getTestName);
+
+// ---------------------------------------------------------------------------
+// ctsrd fwd_peers parameter sweep. Verifies correctness across the full
+// continuum of NCCL_CTRAN_ALLGATHER_CTSRD_FWD_PEERS values:
+//   -1  → recvOnly-equivalent (default, clamps to nSteps)
+//    0  → legacy ctrd burst behavior (no streaming)
+//    1  → legacy "full" FC (forward only to next step)
+//    2  → intermediate streaming (had no legacy analog)
+// All values must produce a correct AllGather; per-size chunk order varies
+// by fwd_peers but the final receive buffer must always be byte-correct.
+// ---------------------------------------------------------------------------
+// Param: (fwd_peers, count, inplace)
+using CtsrdFwdPeersParams = std::tuple<int, size_t, TestInPlaceType>;
+
+class CtsrdFwdPeersTest
+    : public CtranAllgatherTest,
+      public ::testing::WithParamInterface<
+          std::tuple<ctran::CtranEnvs, CtsrdFwdPeersParams>> {
+ protected:
+  void SetUp() override {
+    setUpWithEnvs(std::get<0>(GetParam()));
+  }
+};
+
+TEST_P(CtsrdFwdPeersTest, FwdPeersSweep) {
+  const auto& [fwdPeers, count, inplace] = std::get<1>(GetParam());
+  const auto algo = NCCL_ALLGATHER_ALGO::ctsrd;
+
+  EnvRAII envAlgo(NCCL_ALLGATHER_ALGO, algo);
+  EnvRAII envFp(NCCL_CTRAN_ALLGATHER_CTSRD_FWD_PEERS, fwdPeers);
+
+  const int nLocalRanks = ctranComm->statex_->nLocalRanks();
+  if (!ctranAllGatherSupport(ctranComm.get(), algo)) {
+    GTEST_SKIP() << "ctsrd needs nLocalRanks=1, got " << nLocalRanks;
+  }
+
+  const auto memType = kMemNcclMemAlloc;
+  if (ncclIsCuMemSupported() == false) {
+    GTEST_SKIP() << "CuMem not supported, skip test";
+  }
+  memorySetUp(memType, 0, count, inplace, kTestPairNone);
+  for (auto& seg : segments) {
+    COMMCHECK_TEST(ctran::globalRegisterWithPtr(seg.ptr, seg.size));
+  }
+
+  auto res = ctranAllGather(
+      sCommBuf, rCommBuf, count, dt, ctranComm.get(), testStream, algo);
+  EXPECT_EQ(res, commSuccess);
+  CUDACHECK_TEST(cudaStreamSynchronize(testStream));
+
+  // Verify recvbuf chunk by chunk
+  const size_t sCommBytes = count * commTypeSize(dt);
+  for (int i = 0; i < numRanks; ++i) {
+    std::vector<char> observedVals(sCommBytes, rand());
+    CUDACHECK_TEST(cudaMemcpy(
+        observedVals.data(),
+        reinterpret_cast<char*>(rCommBuf) + sCommBytes * i,
+        sCommBytes,
+        cudaMemcpyDefault));
+    EXPECT_THAT(observedVals, testing::Each(i))
+        << "rank " << globalRank << " peer " << i << " fwd_peers=" << fwdPeers;
+  }
+
+  verifyGpeLeak(ctranComm->ctran_.get());
+
+  for (auto& seg : segments) {
+    COMMCHECK_TEST(ctran::globalDeregisterWithPtr(seg.ptr, seg.size));
+  }
+  memoryCleanUp(memType, inplace, kTestPairNone);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    CtsrdFwdPeersSweep,
+    CtsrdFwdPeersTest,
+    ::testing::Combine(
+        ::testing::Values(ctran::kNolocalEnvs),
+        ::testing::Combine(
+            // Covers: 0 (ctrd burst), 1 (legacy full FC), -1 (default,
+            // recvOnly), 2 (intermediate). Note: -1 prints as "neg1" in test
+            // names.
+            ::testing::Values(0, 1, -1, 2),
+            ::testing::Values(8192, 1048576),
+            ::testing::Values(kTestInPlace, kTestOutOfPlace))),
+    [](const testing::TestParamInfo<
+        std::tuple<ctran::CtranEnvs, CtsrdFwdPeersParams>>& info) {
+      const auto& inner = std::get<1>(info.param);
+      const int fp = std::get<0>(inner);
+      const size_t count = std::get<1>(inner);
+      const TestInPlaceType inplace = std::get<2>(inner);
+      const std::string fpName =
+          (fp < 0) ? ("neg" + std::to_string(-fp)) : std::to_string(fp);
+      return ctran::envSuffix(std::get<0>(info.param)) + "fp" + fpName + "_" +
+          std::to_string(count) + "elements_" + testInPlaceTypeToStr(inplace);
+    });
+
+// Param: (CtranEnvs, (offset, count, inplace, iter, pairColl))
+using CtranSocketAllgatherParams =
+    std::tuple<size_t, size_t, TestInPlaceType, int, TestPairCollType>;
 
 class CtranSocketAllgatherTestParam
     : public CtranAllgatherTest,
       public ::testing::WithParamInterface<
-          std::tuple<size_t, size_t, TestInPlaceType, int, TestPairCollType>> {
+          std::tuple<ctran::CtranEnvs, CtranSocketAllgatherParams>> {
   void SetUp() override {
     EnvRAII env1(
         NCCL_CTRAN_BACKENDS,
         std::vector<enum NCCL_CTRAN_BACKENDS>{
             NCCL_CTRAN_BACKENDS::socket, NCCL_CTRAN_BACKENDS::nvl});
-    CtranAllgatherTest::SetUp();
+    setUpWithEnvs(std::get<0>(GetParam()));
 
-    if (enableNolocal || localSize < numRanks) {
+    if (ctran::isNolocalTopo() || localSize < numRanks) {
       GTEST_SKIP()
           << "Ctran Socket + NVL backend require intra-node only environment. Skip test";
     }
@@ -410,7 +609,8 @@ class CtranSocketAllgatherTestParam
 };
 
 TEST_P(CtranSocketAllgatherTestParam, AllgatherAlgo) {
-  const auto& [offset, count, inplace, iter, pairColl] = GetParam();
+  const auto& [offset, count, inplace, iter, pairColl] =
+      std::get<1>(GetParam());
   enum NCCL_ALLGATHER_ALGO algo = NCCL_ALLGATHER_ALGO::ctdirect;
 
   // CollTrace will help check whether the specified algo is used
@@ -495,33 +695,39 @@ TEST_P(CtranSocketAllgatherTestParam, AllgatherAlgo) {
 inline std::string getSocketTestName(
     const testing::TestParamInfo<CtranSocketAllgatherTestParam::ParamType>&
         info) {
-  return std::to_string(std::get<0>(info.param)) + "offset_" +
-      std::to_string(std::get<1>(info.param)) + "_" + "elements_" +
-      testInPlaceTypeToStr(std::get<2>(info.param)) + "_" + "socket_" +
-      std::to_string(std::get<3>(info.param)) + "iters_" +
-      testPairCollTypeToStr(std::get<4>(info.param));
+  const auto& inner = std::get<1>(info.param);
+  return ctran::envSuffix(std::get<0>(info.param)) +
+      std::to_string(std::get<0>(inner)) + "offset_" +
+      std::to_string(std::get<1>(inner)) + "_" + "elements_" +
+      testInPlaceTypeToStr(std::get<2>(inner)) + "_" + "socket_" +
+      std::to_string(std::get<3>(inner)) + "iters_" +
+      testPairCollTypeToStr(std::get<4>(inner));
 }
 
 INSTANTIATE_TEST_SUITE_P(
     CtranTestCumemInPlace,
     CtranSocketAllgatherTestParam,
     ::testing::Combine(
-        testing::Values(0),
-        testing::Values(8192, 1048576, 1048567, 1),
-        testing::Values(kTestInPlace),
-        testing::Values(1),
-        testing::Values(kTestPairNone)),
+        ::testing::Values(ctran::kDefaultEnvs, ctran::kNolocalEnvs),
+        ::testing::Combine(
+            testing::Values(0),
+            testing::Values(8192, 1048576, 1048567, 1),
+            testing::Values(kTestInPlace),
+            testing::Values(1),
+            testing::Values(kTestPairNone))),
     getSocketTestName);
 
 INSTANTIATE_TEST_SUITE_P(
     CtranTestCumemOutOfPlace,
     CtranSocketAllgatherTestParam,
     ::testing::Combine(
-        testing::Values(256),
-        testing::Values(1048567, 1),
-        testing::Values(kTestOutOfPlace),
-        testing::Values(1),
-        testing::Values(kTestPairNone)),
+        ::testing::Values(ctran::kDefaultEnvs, ctran::kNolocalEnvs),
+        ::testing::Combine(
+            testing::Values(256),
+            testing::Values(1048567, 1),
+            testing::Values(kTestOutOfPlace),
+            testing::Values(1),
+            testing::Values(kTestPairNone))),
     getSocketTestName);
 
 int main(int argc, char* argv[]) {

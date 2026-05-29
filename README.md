@@ -51,11 +51,11 @@ You can install torchcomms and PyTorch nightly builds using pip:
 # Cuda 12.6
 pip install --pre torch torchcomms --index-url https://download.pytorch.org/whl/nightly/cu126
 
-# Cuda 12.8
-pip install --pre torch torchcomms --index-url https://download.pytorch.org/whl/nightly/cu128
-
 # Cuda 13.0
 pip install --pre torch torchcomms --index-url https://download.pytorch.org/whl/nightly/cu130
+
+# Cuda 13.2
+pip install --pre torch torchcomms --index-url https://download.pytorch.org/whl/nightly/cu132
 ```
 
 ### Building from Source
@@ -343,4 +343,4 @@ Please check the directory and relevant files to verify the license.
 
 For convenience some of them are listed below:
 
-* [NCCL License](./comms/ncclx/v2_27/LICENSE.txt)
+* [NCCL License](./comms/ncclx/v2_29/LICENSE.txt)

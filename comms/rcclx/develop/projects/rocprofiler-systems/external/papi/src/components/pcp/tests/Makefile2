@@ -1,0 +1,26 @@
+# To use this file, specify make -f Makefile2 ...targets...
+# This allows construction of executables needed to do
+#  performance bench-testing of the PCP component. 
+
+NAME=pcp
+include ../../Makefile_comp_tests.target
+
+retZero.o: retZero.c
+	$(CC) -O0 $(INCLUDE) -c retZero.c -o retZero.o
+ 
+benchPCP.o:	benchPCP.c
+	$(CC) $(CFLAGS) $(OPTFLAGS) $(INCLUDE) -c benchPCP.c -o benchPCP.o -fverbose-asm -Wa,-adhln=benchPCP.s
+
+benchPCP: benchPCP.o $(UTILOBJS) $(PAPILIB)
+	$(CC) $(INCLUDE) -o benchPCP benchPCP.o $(UTILOBJS) $(PAPILIB) $(LDFLAGS) -Xlinker -Map=benchPCP_link.map
+
+benchStats.o:	benchStats.c
+	$(CC) $(CFLAGS) $(OPTFLAGS) $(INCLUDE) -c benchStats.c -o benchStats.o 
+
+benchStats: benchStats.o $(UTILOBJS) $(PAPILIB)
+	$(CC) $(INCLUDE) -o benchStats benchStats.o $(UTILOBJS) $(PAPILIB) $(LDFLAGS) -lm 
+
+clean:
+	rm -f benchPCP benchPCP.o benchPCP.s 
+	rm -f benchStats benchStats.o
+	rm -f retZero.o

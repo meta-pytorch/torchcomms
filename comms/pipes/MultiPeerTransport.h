@@ -8,8 +8,16 @@
 #include <unordered_map>
 #include <vector>
 
+// `<cuda.h>` (driver API) and `<cuda_runtime.h>` are NVIDIA-only. On AMD,
+// `comms/pipes/GpuMemHandler.h` (included below) brings in the HIP
+// runtime headers under `#ifdef __HIP_PLATFORM_AMD__` and provides the
+// stand-in types needed for the `CUdeviceptr` /
+// `CUmemGenericAllocationHandle` member fields used by the
+// `NvlExchangeRecord`.
+#ifndef __HIP_PLATFORM_AMD__
 #include <cuda.h>
 #include <cuda_runtime.h>
+#endif
 
 #include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/pipes/GpuMemHandler.h"
@@ -188,9 +196,24 @@ class MultiPeerTransport {
 
   /**
    * @return MultiPeerDeviceHandle suitable for passing to CUDA kernels.
-   * @throws std::runtime_error if exchange() has not been called.
+   * @throws std::runtime_error if lazy mode is enabled or exchange() not
+   * called.
    */
   MultiPeerDeviceHandle get_device_handle() const;
+
+  /**
+   * Materialize the specified IBGDA peers, then return the device handle.
+   * Use with lazy mode for DeviceWindow or direct Transport[] access.
+   *
+   * @param peers List of peer ranks to materialize
+   */
+  MultiPeerDeviceHandle get_device_handle(const std::vector<int>& peers);
+
+  bool is_lazy_mode() const;
+
+  void materializePeers(const std::vector<int>& peers);
+
+  void connectPeers();
 
   // --- IBGDA buffer registration (delegates to ibgdaTransport_) ---
 
@@ -253,6 +276,7 @@ class MultiPeerTransport {
   const int myRank_;
   const int nRanks_;
   const int deviceId_;
+  const bool ibLazyConnect_{false};
   std::shared_ptr<meta::comms::IBootstrap> bootstrap_;
 
   // --- Topology (populated in constructor) ---

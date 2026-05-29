@@ -22,4 +22,7 @@ target_include_directories(uniflow_controller PUBLIC
     ${ROOT}
 )
 
-target_link_libraries(uniflow_controller PRIVATE uniflow_logging)
+target_link_libraries(uniflow_controller PRIVATE
+    uniflow_executor
+    uniflow_logging
+)

@@ -22,18 +22,4 @@ struct PersistArgs {
 class AlgoImpl;
 } // namespace alltoallp
 
-namespace alltoallvdynamicp {
-struct PersistArgs {
-  std::vector<void*> recvbuffs;
-  std::vector<void*> recvHdls;
-  size_t maxSendCount;
-  size_t maxRecvCount;
-  commDataType_t datatype;
-  std::vector<void*> remoteRecvBuffs;
-  std::vector<struct CtranMapperRemoteAccessKey> remoteAccessKeys;
-};
-
-class AlgoImpl;
-} // namespace alltoallvdynamicp
-
 } // namespace ctran

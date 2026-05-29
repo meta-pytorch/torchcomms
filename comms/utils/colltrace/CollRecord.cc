@@ -110,15 +110,15 @@ bool CollTimingRecord::operator==(const CollTimingRecord& other) const {
 // CollRecord implementation
 CollRecord::CollRecord(
     uint64_t collId,
-    std::unique_ptr<ICollMetadata> ICollMetadata)
+    std::shared_ptr<ICollMetadata> ICollMetadata)
     : collId_(collId), collMetadata_(std::move(ICollMetadata)) {}
 
 uint64_t CollRecord::getCollId() const noexcept {
   return collId_;
 }
 
-const ICollMetadata* CollRecord::getCollMetadata() const {
-  return collMetadata_.get();
+const std::shared_ptr<ICollMetadata>& CollRecord::getCollMetadata() const {
+  return collMetadata_;
 }
 
 CollTimingRecord& CollRecord::getTimingInfo() {

@@ -10,9 +10,10 @@
 
 namespace torch::comms::test {
 
-// Type alias to avoid preprocessor comma issues inside MOCK_METHOD macros.
+// Type aliases to avoid preprocessor comma issues inside MOCK_METHOD macros.
 using NcclxCommDumpAllMap = std::
     unordered_map<std::string, std::unordered_map<std::string, std::string>>;
+using NcclxHintsMap = std::unordered_map<std::string, std::string>;
 
 /**
  * Mock implementation of NcclxGlobalApi using Google Mock.
@@ -25,7 +26,7 @@ class NcclxGlobalMock : public NcclxGlobalApi {
   MOCK_METHOD(
       ncclResult_t,
       commDumpAll,
-      (NcclxCommDumpAllMap & map),
+      (NcclxCommDumpAllMap & map, const NcclxHintsMap& hints),
       (override));
 
   void setupDefaultBehaviors() {
@@ -34,7 +35,7 @@ class NcclxGlobalMock : public NcclxGlobalApi {
 
     ON_CALL(*this, getErrorString(_))
         .WillByDefault(Return("mock nccl error string"));
-    ON_CALL(*this, commDumpAll(_)).WillByDefault(Return(ncclSuccess));
+    ON_CALL(*this, commDumpAll(_, _)).WillByDefault(Return(ncclSuccess));
   }
 
   void reset() {

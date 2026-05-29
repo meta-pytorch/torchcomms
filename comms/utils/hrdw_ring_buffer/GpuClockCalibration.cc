@@ -1,0 +1,204 @@
+// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+
+#include "comms/utils/hrdw_ring_buffer/GpuClockCalibration.h"
+
+#include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
+
+#include <chrono>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+
+#include <folly/ScopeGuard.h>
+#include <folly/logging/xlog.h>
+
+#include "comms/utils/colltrace/PrecisionClock.h"
+#include "comms/utils/cvars/nccl_cvars.h" // @manual=fbcode//comms/utils/cvars:ncclx-cvars
+
+// simple fprintf-based check for host code used at construction time, where
+// failure is unrecoverable (no calibration => no graph-mode timestamps).
+#define CUDA_CHECK_CC(cmd)             \
+  do {                                 \
+    auto _err = (cmd);                 \
+    if (_err != cudaSuccess) {         \
+      fprintf(                         \
+          stderr,                      \
+          "CUDA error %s:%d %s: %s\n", \
+          __FILE__,                    \
+          __LINE__,                    \
+          #cmd,                        \
+          cudaGetErrorString(_err));   \
+      abort();                         \
+    }                                  \
+  } while (0)
+
+namespace hrdw_ring_buffer {
+
+std::chrono::system_clock::time_point GlobaltimerCalibration::toWallClock(
+    uint64_t gpu_ns) const {
+  auto a = anchor_.copy();
+  if (a.host_time.time_since_epoch().count() == 0) {
+    // Anchor never populated — only reachable when the constructor's initial
+    // refresh failed AND NCCL_COLLTRACE_FATAL_ON_CALIBRATION_FAILURE was
+    // false. Returning epoch + delta yields timestamps near 1970, which is
+    // an obvious sentinel for downstream readers; warn rate-limited so the
+    // caller gets one log line per 5 s of bad readings.
+    XLOG_EVERY_MS(WARN, 5000)
+        << "GlobaltimerCalibration::toWallClock called before any successful "
+        << "refresh — returning a 1970-based sentinel timestamp";
+  }
+  auto delta_ns =
+      static_cast<int64_t>(gpu_ns) - static_cast<int64_t>(a.device_ns);
+  return a.host_time + std::chrono::nanoseconds(delta_ns);
+}
+
+GlobaltimerCalibration::GlobaltimerCalibration() {
+  CUDA_CHECK_CC(cudaHostAlloc(
+      reinterpret_cast<void**>(&mapped_ptr_),
+      sizeof(uint64_t),
+      cudaHostAllocDefault));
+  *mapped_ptr_ = 0;
+
+  // Dedicated non-blocking stream so periodic re-anchor reads do not
+  // serialize with the user's compute streams or wait on graph capture.
+  CUDA_CHECK_CC(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking));
+
+  // Take the initial anchor synchronously so callers see a valid mapping
+  // immediately after get() returns. A default-constructed anchor
+  // (host_time = epoch) would emit timestamps ~50+ years in the past;
+  // NCCL_COLLTRACE_FATAL_ON_CALIBRATION_FAILURE controls whether we crash
+  // (default, preserves historical behaviour) or degrade gracefully and
+  // wait for a periodic refresh to populate the anchor.
+  if (!refresh()) {
+    if (NCCL_COLLTRACE_FATAL_ON_CALIBRATION_FAILURE) {
+      XLOG(FATAL)
+          << "GlobaltimerCalibration: initial refresh() failed; refusing to "
+          << "expose a default anchor that would produce nonsensical timestamps "
+          << "(set NCCL_COLLTRACE_FATAL_ON_CALIBRATION_FAILURE=0 to demote to ERROR)";
+    } else {
+      XLOG(ERR)
+          << "GlobaltimerCalibration: initial refresh() failed; anchor will "
+          << "remain at epoch until a later refresh succeeds. Graph-mode "
+          << "timestamps will be near 1970 in the meantime.";
+    }
+    return;
+  }
+  // Defensive post-condition: refresh() returning true must have populated
+  // host_time. Catches any future refactor that decouples return value from
+  // anchor write.
+  XCHECK_NE(anchor_.copy().host_time.time_since_epoch().count(), 0)
+      << "GlobaltimerCalibration: anchor host_time still epoch after initial refresh";
+}
+
+// Concurrent callers are expected (multiple CollTrace instances → multiple
+// poll threads → all calling GlobaltimerCalibration::get().refresh()). Only
+// one proceeds; others short-circuit on the in-progress flag (see body). The
+// winner has exclusive access to the CUDA stream and the pinned mapped buffer
+// (mapped_ptr_); anchor_ is folly::Synchronized so readers via toWallClock()
+// remain safe across a refresh.
+bool GlobaltimerCalibration::refresh() {
+  // Try-and-skip: if another thread is already in refresh(), short-circuit
+  // without touching the CUDA stream or pinned buffer. Multiple CollTrace
+  // instances exist per process (one per NCCL communicator), so concurrent
+  // calls from independent poll threads are expected. The in-flight refresh
+  // will publish a fresh anchor before our caller's next wakeup, so we lose
+  // nothing by skipping this beat.
+  if (refresh_in_progress_.test_and_set(std::memory_order_acquire)) {
+    return false;
+  }
+  auto cleanup = folly::makeGuard(
+      [this] { refresh_in_progress_.clear(std::memory_order_release); });
+
+  auto launch_err = launchReadGlobaltimer(stream_, mapped_ptr_);
+  if (launch_err != cudaSuccess) {
+    XLOG_EVERY_MS(WARN, 5000)
+        << "GlobaltimerCalibration::refresh: launchReadGlobaltimer failed: "
+        << cudaGetErrorString(launch_err) << " — keeping previous anchor";
+    return false;
+  }
+  auto sync_err = cudaStreamSynchronize(stream_);
+  if (sync_err != cudaSuccess) {
+    XLOG_EVERY_MS(WARN, 5000)
+        << "GlobaltimerCalibration::refresh: cudaStreamSynchronize failed: "
+        << cudaGetErrorString(sync_err) << " — keeping previous anchor";
+    return false;
+  }
+
+  // PTP-aligned anchor when the fbclock daemon is reachable; otherwise
+  // falls back to system_clock. Read host_time *after* the kernel completes
+  // so the host timestamp is no earlier than the device reading.
+  *anchor_.wlock() = Anchor{
+      .device_ns = *mapped_ptr_,
+      .host_time = ::meta::comms::colltrace::precisionNow(),
+  };
+  return true;
+}
+
+std::chrono::system_clock::time_point GlobaltimerCalibration::toWallClock(
+    uint32_t gpu_ticks_low32) const {
+  auto a = anchor_.copy();
+  if (a.host_time.time_since_epoch().count() == 0) {
+    // Same sentinel-warn as the uint64_t overload — reachable only when the
+    // constructor's initial refresh failed AND
+    // NCCL_COLLTRACE_FATAL_ON_CALIBRATION_FAILURE was false. Without this
+    // check the elapsed-since-anchor math below would compute ~50+ years of
+    // nanoseconds and silently produce a bogus reconstructed timestamp.
+    XLOG_EVERY_MS(WARN, 5000)
+        << "GlobaltimerCalibration::toWallClock(uint32_t) called before any "
+        << "successful refresh — returning a 1970-based sentinel timestamp";
+  }
+  auto host_now = std::chrono::system_clock::now();
+  int64_t elapsed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           host_now - a.host_time)
+                           .count();
+  uint64_t now_device_ns = a.device_ns + static_cast<uint64_t>(elapsed_ns);
+  uint64_t now_ticks = now_device_ns >> US_TICK_TIMESTAMP_SHIFT;
+
+  // Events are always written before they're read, so the delta is
+  // semantically non-positive. Allow a small future window for clock
+  // skew (host/device drift, or race between event write and `now`
+  // read); anything beyond it is interpreted as a past wrap. This
+  // gives ~71 min - kFutureToleranceTicks of past lookback instead of
+  // ~36 min from a symmetric ±2^31 split.
+  constexpr uint32_t kFutureToleranceTicks =
+      (10ULL * 1'000'000'000ULL) >> US_TICK_TIMESTAMP_SHIFT; // ~10s
+  uint32_t udelta =
+      gpu_ticks_low32 - static_cast<uint32_t>(now_ticks); // mod 2^32
+  int64_t delta = udelta <= kFutureToleranceTicks
+      ? static_cast<int64_t>(udelta)
+      : static_cast<int64_t>(udelta) - (int64_t{1} << 32);
+  uint64_t full_ticks = now_ticks + static_cast<uint64_t>(delta);
+
+  int64_t delta_ns =
+      static_cast<int64_t>(full_ticks << US_TICK_TIMESTAMP_SHIFT) -
+      static_cast<int64_t>(a.device_ns);
+  return a.host_time + std::chrono::nanoseconds(delta_ns);
+}
+
+/* static */ GlobaltimerCalibration& GlobaltimerCalibration::get() {
+  // Heap-allocated and intentionally leaked: a function-local static would
+  // run ~GlobaltimerCalibration() during process exit, after CUDA has begun
+  // unloading, which segfaults under cudaErrorCudartUnloading. Matches the
+  // leak-by-design pattern used by CudaReferencePoint and PrecisionClockImpl.
+  static auto* p = new GlobaltimerCalibration();
+  return *p;
+}
+
+GlobaltimerCalibration::GlobaltimerCalibration(
+    TestOnlyTag,
+    uint64_t device_ns,
+    std::chrono::system_clock::time_point host_time) {
+  *anchor_.wlock() = Anchor{.device_ns = device_ns, .host_time = host_time};
+}
+
+/* static */ std::unique_ptr<GlobaltimerCalibration>
+GlobaltimerCalibration::createForTest(
+    uint64_t device_ns,
+    std::chrono::system_clock::time_point host_time) {
+  return std::unique_ptr<GlobaltimerCalibration>(
+      new GlobaltimerCalibration(TestOnlyTag{}, device_ns, host_time));
+}
+
+#undef CUDA_CHECK_CC
+
+} // namespace hrdw_ring_buffer

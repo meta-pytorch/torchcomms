@@ -1,0 +1,26 @@
+name: default components tests
+
+on:
+  pull_request:
+    # run CI only if perf_event, perf_event_uncore, or sysdetect directories or sub-directories receive updates
+    paths:
+      - 'src/components/perf_event/**'
+      - 'src/components/perf_event_uncore/**'
+      - 'src/components/sysdetect/**'
+        
+  # allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  component_tests:
+    strategy:
+      matrix:
+        debug: [yes, no] 
+        shlib: [with, without]
+      fail-fast: false
+    runs-on: [self-hosted, cpu_intel]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: default components tests
+        run: .github/workflows/ci_default_components.sh ${{matrix.debug}} ${{matrix.shlib}}

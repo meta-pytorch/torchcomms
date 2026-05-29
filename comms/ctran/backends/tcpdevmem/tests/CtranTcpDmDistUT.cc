@@ -12,7 +12,6 @@
 #include <folly/logging/xlog.h>
 
 #include "comms/ctran/Ctran.h"
-#include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/tcpdevmem/CtranTcpDm.h"
 #include "comms/ctran/backends/tcpdevmem/CtranTcpDmSingleton.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
@@ -47,11 +46,8 @@ class CtranTcpTest : public ctran::CtranDistTestFixture {
     ncclCvarInit(); // initialize cvars explicitly to take effect
     comm_ = makeCtranComm();
 
-    this->ctrlMgr = std::make_unique<CtranCtrlManager>();
-
     try {
-      this->ctranTcpDm =
-          std::make_unique<CtranTcpDm>(comm_.get(), this->ctrlMgr.get());
+      this->ctranTcpDm = std::make_unique<CtranTcpDm>(comm_.get());
     } catch (const ctran::utils::Exception&) {
       GTEST_SKIP() << "TCPDM backend not enabled. Skip test";
     } catch (const std::runtime_error&) {
@@ -61,7 +57,6 @@ class CtranTcpTest : public ctran::CtranDistTestFixture {
 
   void TearDown() override {
     this->ctranTcpDm.reset();
-    this->ctrlMgr.reset();
     comm_.reset();
     ctran::CtranDistTestFixture::TearDown();
   }
@@ -81,7 +76,6 @@ class CtranTcpTest : public ctran::CtranDistTestFixture {
  protected:
   std::unique_ptr<CtranComm> comm_{nullptr};
   std::unique_ptr<CtranTcpDm> ctranTcpDm{nullptr};
-  std::unique_ptr<CtranCtrlManager> ctrlMgr{nullptr};
   const int sendRank{0}, recvRank{1};
 };
 

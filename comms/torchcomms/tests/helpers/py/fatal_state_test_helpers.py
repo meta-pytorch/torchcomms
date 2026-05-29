@@ -16,14 +16,25 @@ class FatalStateTestMixin:
     ) -> subprocess.CompletedProcess:
         """Re-invoke current test binary with sentinel_var set.
 
-        Calls subprocess.run([sys.executable, sys.argv[0]], ...).
+        Under buck/PAR, sys.argv[0] is the test binary and re-invoking it
+        runs the module-level sentinel check. Under `python -m pytest`,
+        sys.argv[0] is the pytest entrypoint (e.g. .../pytest/__main__.py),
+        so re-invoking it would just start pytest with no args. In that
+        case, run the test class's source file directly so the
+        sentinel-driven early-exit at the top of the test module fires.
         Fails the test on TimeoutExpired.
         """
         env = os.environ.copy()
         env[sentinel_var] = "1"
+        entry = sys.argv[0]
+        entry_name = os.path.basename(entry).lower()
+        if "pytest" in entry_name or entry_name == "__main__.py":
+            module_file = sys.modules[self.__class__.__module__].__file__
+            if module_file:
+                entry = module_file
         try:
             return subprocess.run(
-                [sys.executable, sys.argv[0]],
+                [sys.executable, entry],
                 env=env,
                 timeout=timeout,
                 capture_output=True,

@@ -7,8 +7,11 @@
 #include <torch/csrc/distributed/c10d/Work.hpp> // @manual=//caffe2:torch-cpp-cpu
 
 #include "comms/torchcomms/TorchCommBackend.hpp"
+#include "comms/torchcomms/TorchCommBatch.hpp"
 #include "comms/torchcomms/TorchCommTypes.hpp"
 #include "comms/torchcomms/TorchWork.hpp"
+
+#include <optional>
 
 namespace torch::comms {
 
@@ -19,9 +22,6 @@ class WorkWrapper : public c10d::Work {
       std::vector<at::Tensor> outputTensors = {});
   ~WorkWrapper() override = default;
 
-  bool isCompleted() override;
-  bool isSuccess() const override;
-  std::exception_ptr exception() const override;
   void synchronize() override;
   bool wait(std::chrono::milliseconds timeout) override;
   std::vector<at::Tensor> result() override;
@@ -120,8 +120,23 @@ class BackendWrapper : public c10d::Backend {
   c10::intrusive_ptr<c10d::Work>
   recv(std::vector<at::Tensor>& tensors, int srcRank, int tag) override;
 
+  // Coalescing hooks: c10d's _coalescing_manager (used by
+  // dist.batch_isend_irecv) calls these around a sequence of send/recv ops so
+  // the backend can issue them as one ncclGroupStart/End. Without them, mixed
+  // P2P batches on a single PG (e.g. PP 1F1B middle stage) deadlock because
+  // each tc.send/tc.recv is enqueued ungrouped on the same NCCL stream.
+  bool supportsCoalescing() const override {
+    return true;
+  }
+  void startCoalescing() override;
+  c10::intrusive_ptr<c10d::Work> endCoalescing() override;
+
   // Get the underlying backend comm for backend-specific operations
   std::shared_ptr<TorchComm> getComm() const;
+
+  // Returns the symmetric (VMM-backed) CUDA allocator associated with this
+  // communicator's backend. See `TorchComm::getMemAllocator()`.
+  std::shared_ptr<c10::Allocator> getMemAllocator() override;
 
   c10::intrusive_ptr<Options> getOptions() {
     return options_;
@@ -149,10 +164,27 @@ class BackendWrapper : public c10d::Backend {
       const std::vector<int>& ranks,
       const c10::intrusive_ptr<c10d::Backend::Options>& opts) override;
 
+  // Called by torch.distributed.destroy_process_group(). Calls
+  // TorchComm::finalize() to drain in-flight work and close the comm
+  // gracefully — without this override the inherited base no-op leaves the
+  // communicator alive and the destructor's synchronous ncclCommDestroy
+  // can deadlock against the NCCL GC thread holding Work refs.
+  void shutdown() override;
+
+  // Called by destroy_process_group when the user wants forceful teardown.
+  // Delegates to TorchComm::abort() which uses graceful revoke in
+  // reconfigurable mode and destructive abort otherwise.
+  void abort() override;
+
  private:
   std::shared_ptr<TorchComm> comm_;
-  std::shared_ptr<TorchCommBackend> backend_;
   c10::intrusive_ptr<Options> options_;
+
+  // Active coalescing batch. Engaged between startCoalescing() and
+  // endCoalescing(); send()/recv() append into it instead of issuing
+  // immediately. c10d's coalescing manager serializes per-PG, so a single
+  // slot suffices.
+  std::optional<BatchSendRecv> coalescing_batch_;
 };
 
 } // namespace torch::comms

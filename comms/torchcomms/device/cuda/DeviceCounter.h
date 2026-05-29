@@ -33,6 +33,15 @@ class DeviceCounter {
   uint64_t read() const;
   cudaError_t increment(cudaStream_t stream, uint64_t amount = 1ULL);
 
+  // Reset the counter to zero. CPU-side write to mapped pinned memory; no
+  // CUDA API calls. Caller must ensure no in-flight GPU work atomic-adds
+  // to this counter when this is called.
+  void reset() {
+    if (counter_) {
+      *counter_ = 0;
+    }
+  }
+
   uint64_t* ptr() const {
     return counter_;
   }

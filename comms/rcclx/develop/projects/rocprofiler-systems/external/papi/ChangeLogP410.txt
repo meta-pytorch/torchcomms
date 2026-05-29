@@ -1,0 +1,527 @@
+2010-06-21	terpstra
+	* src/Makefile.in 1.52:
+	* src/configure 1.224:
+	* src/configure.in 1.224:
+		Change version numbers in anticipation of the impending 4.1 
+		release.
+
+2010-06-18	vweaver1
+	* src/components/example/example.c 1.4:
+		Correct a comment.
+
+2010-06-18	ralph
+	* doc/Doxyfile 1.5:
+	* doc/Doxyfile-everything 1.2:
+		Upped the version number in doxygen config files for upcoming 
+		release.
+
+	* INSTALL.txt 1.47:
+		Friday afternoon typo... the command given for generating all 
+		documentation was wrong
+
+	* src/components/lustre/linux-lustre.c 1.6:
+	* src/components/lustre/linux-lustre.h 1.5:
+		Fixed some of the comments to get doxygen's attention /* -> /**
+		
+		I'm still working out how to best do the papi_components group
+		but for now I just put the .h file for the component into the group. (@ingroup papi_components)
+		So that one file per component shows up listing.
+
+	* src/papi.h 1.208:
+		Added a small section about components on the main doxygen 
+		generated page.
+
+2010-06-17	jagode
+	* src/components/lustre/Rules.lustre 1.3:
+	* src/components/lustre/host_counter.c 1.2:
+	* src/components/lustre/host_counter.h 1.2:
+		Added new component for infiniband devices. Major changes for 
+		lustre component.
+
+	* src/components/README 1.4:
+		Added documentation (Doxygen) for InfiniBand (and lustre) 
+		component.
+
+2010-06-15	ralph
+	* src/components/acpi/linux-acpi.c 1.3:
+	* src/components/acpi/linux-acpi.h 1.2:
+	* src/components/lmsensors/linux-lmsensors.h 1.3:
+	* src/components/mx/linux-mx.h 1.2:
+	* src/components/net/linux-net.h 1.2:
+	* src/papi.c 1.360:
+	* src/papi_hl.c 1.85:
+	* src/utils/avail.c 1.53:
+	* src/utils/clockres.c 1.25:
+	* src/utils/command_line.c 1.15:
+	* src/utils/cost.c 1.40:
+	* src/utils/decode.c 1.9:
+	* src/utils/event_chooser.c 1.18:
+	* src/utils/mem_info.c 1.17:
+	* src/utils/native_avail.c 1.47:
+		Added documentation for the several components.
+		Doxygen will now search recursivly under the components directory for documented *.[c|h] files ( /** @file */ somewhere in it).
+		
+		Several other files got brief descriptions of what is in the file.
+
+2010-06-14	terpstra
+	* papi.spec 1.9:
+		Minor tweak to make sure libpfm builds without warnings.
+
+2010-06-11	jagode
+	* src/components/lmsensors/linux-lmsensors.c 1.2:
+		removed compiler warnings for lm-sensors component; switched to 
+		stderr so that papi_xml_event_info creates a clean output.
+
+2010-06-11	bsheely
+	* src/ctests/api.c 1.2:
+		Added first few api test cases
+
+2010-06-10	bsheely
+	* src/ctests/papi_test.h 1.39:
+	* src/ctests/test_utils.c 1.82:
+		Added test_fail_exit for use in single threaded tests
+
+2010-06-09	vweaver1
+	* src/perfctr-2.6.x/patches/aliases 1.13:
+	* src/perfctr-2.6.x/usr.lib/Makefile 1.31:
+		Fix conflicts from import.
+
+	* src/perfctr-2.6.x/CHANGES 1.1.1.28:
+	...
+	* src/perfctr-2.6.x/usr.lib/x86.c 1.1.1.11:
+		Import of perfctr 2.6.41
+
+2010-06-07	bsheely
+	* src/any-null.c 1.60:
+	* src/freq.c 1.1:
+	* src/papi_vector.c 1.31:
+		Moved timer impl from any-null.c into papi_vector.c and added 
+		generic functionality to compute frequency if unable to 
+		determine based on platform
+
+	* src/papi_data.c 1.40:
+	* src/papi_data.h 1.6:
+		Added new error code
+
+	* src/Makefile.inc 1.163:
+		Added freq.c to build
+
+	* src/configure 1.223:
+	* src/configure.in 1.223:
+		ctests/api (not yet implemented) added to default ctests
+
+2010-06-03	bsheely
+	* src/ctests/Makefile 1.155:
+		Initial commit for ctests/api which is not yet implemented
+
+2010-06-02	bsheely
+	* src/papi_lock.h 1.7:
+		Fixed for BG/P
+
+2010-06-01	vweaver1
+	* README 1.10:
+		Fix typo in README
+
+2010-06-01	bsheely
+	* src/config.h.in 1.13:
+		Added code to define _rtc when Cray is compiled with gcc
+
+	* src/cycle.h 1.4:
+		Rolled back previous changes
+
+2010-05-27	bsheely
+	* src/papi_internal.c 1.158:
+	* src/threads.h 1.15:
+		--with-no-cpu-component renamed --with-no-cpu-counters
+
+	* src/components/mx/configure 1.3:
+	* src/components/mx/configure.in 1.3:
+		Rollback last change
+
+	* src/ctests/multiattach.c 1.8:
+	* src/ctests/zero_attach.c 1.8:
+		Attempt to fix xlc compile errors
+
+2010-05-21	bsheely
+	* src/Rules.perfctr 1.66:
+	* src/Rules.perfctr-pfm 1.57:
+	* src/Rules.pfm 1.57:
+	* src/Rules.pfm_pe 1.18:
+		Use MISCHDRS from configure
+
+2010-05-20	bsheely
+	* src/components/mx/linux-mx.c 1.2:
+		Fixed compile error and warnings. Added option to configure
+
+2010-05-19	terpstra
+	* src/ctests/all_native_events.c 1.24:
+		Hard-code an exception for Nehalem OFFCORE_RESPONSE_0. This 
+		event can't be counted because it uses a shared chip-level 
+		register.
+
+2010-05-19	bsheely
+	* src/linux-ia64-memory.c 1.25:
+	* src/linux-ia64.c 1.183:
+	* src/pfmwrap.h 1.43:
+		Fixed warning in ia64
+
+	* src/components/net/linux-net.c 1.2:
+		Fixed compile warnings
+
+	* src/Makefile.in 1.51:
+		Extra compiler warning flags are not added until after the 
+		libpfm build
+
+2010-05-14	vweaver1
+	* src/linux-bgp.c 1.5:
+		Temporary fix to emulate cycles HW counter on BlueGeneP using
+		the get_cycles() call.
+
+2010-05-13	bsheely
+	* src/x86_cache_info.c 1.13:
+		added missing C library headers
+
+	* src/hwinfo_linux.c 1.7:
+		fixed compile errors on torc0 by including missing C library 
+		headers
+
+	* src/ftests/Makefile 1.66:
+	* src/utils/Makefile 1.16:
+		Replaced missing MEMSUBSTR macro in configure. AC_ARG_ENABLE 
+		macros replaced with AC_ARG_WITH macros. Continued changes for --
+		with-no-cpu-component
+
+2010-05-07	ralph
+	* doc/Doxyfile-everything 1.1:
+	* doc/Makefile 1.1:
+		Added makefile in doc to generate user and developer documentation.
+		
+		from src, make doc builds the user documentation in doc/html
+		(do we want this?)
+
+2010-05-07	jagode
+	* src/utils/event_info.c 1.14:
+		papi_xml_event_info generated some invalid xml output. This bug 
+		was introduced in Revision 1.10
+
+2010-05-07	bsheely
+	* src/any-null-memory.c 1.11:
+	* src/any-null.h 1.23:
+	* src/extras.c 1.170:
+	* src/multiplex.c 1.85:
+	* src/papi_preset.c 1.29:
+	* src/papi_vector.h 1.14:
+	* src/threads.c 1.36:
+		Added --with-no-cpu-component option which has only been tested 
+		on x86
+
+2010-05-03	ralph
+	* src/freebsd-memory.c 1.1:
+	* src/freebsd.c 1.9:
+	* src/freebsd.h 1.6:
+	* src/papi_fwrappers.c 1.86:
+		Updated Harald Servat's freebsd work to Component Papi.
+		
+		Has had cursory testing, but should be considered alpha quality.
+		(there is a really nasty bug when running the overflow_pthreads test)
+
+	* src/genpapifdef.c 1.43:
+		Removed a holdout from catamount support,
+		are there any platforms where we don't get malloc from stdlib?
+
+2010-05-03	bsheely
+	* src/papi_table.c 1.5:
+		Removed obsolete file
+
+2010-04-30	terpstra
+	* release_procedure.txt 1.17:
+		Add a few more steps on testing a patch.
+
+2010-04-30	bsheely
+	* src/components/acpi/Rules.acpi 1.2:
+	* src/components/lmsensors/Rules.lmsensors 1.2:
+	* src/components/lustre/Rules.lustre 1.2:
+	* src/components/mx/Rules.mx 1.2:
+	* src/components/net/Rules.net 1.2:
+		Adding new components no longer requires modification of Papi 
+		code
+
+2010-04-29	bsheely
+	* src/components/Rules.components 1.1:
+	* src/components/acpi/linux-acpi-memory.c 1.1:
+	* src/components/lmsensors/Makefile.lmsensors.in 1.1:
+	* src/components/lmsensors/configure 1.1:
+	* src/components/lmsensors/configure.in 1.1:
+	* src/components/lustre/host_counter.c 1.1:
+	* src/components/lustre/host_counter.h 1.1:
+	* src/components/mx/Makefile.mx.in 1.1:
+	* src/components/net/Makefile.net.in 1.1:
+	* src/components/net/configure 1.1:
+	* src/components/net/configure.in 1.1:
+	* src/host_counter.c 1.2:
+	* src/host_counter.h 1.2:
+	* src/linux-acpi-memory.c 1.4:
+	* src/linux-acpi.c 1.18:
+	* src/linux-acpi.h 1.10:
+	* src/linux-lmsensors.c 1.4:
+	* src/linux-lmsensors.h 1.4:
+	* src/linux-lustre.c 1.4:
+	* src/linux-lustre.h 1.2:
+	* src/linux-mx.c 1.17:
+	* src/linux-mx.h 1.10:
+	* src/linux-net.c 1.6:
+	* src/linux-net.h 1.4:
+		Created new build environment for components
+
+2010-04-21	bsheely
+	* src/perfmon.c 1.105:
+		removed code that was commented out (accidentally uncommented 
+		out on last commit
+
+2010-04-20	bsheely
+	* src/freebsd/map-i7.c 1.3:
+	* src/freebsd/map-i7.h 1.3:
+		Updated on 3.7 branch
+
+	* src/linux-bgl-events.c 1.4:
+	* src/linux-bgl-memory.c 1.4:
+	* src/linux-bgl.c 1.11:
+	* src/linux-bgl.h 1.4:
+	* src/linux-ia64.h 1.61:
+	* src/linux.c 1.77:
+	* src/papi_events.csv 1.9:
+	* src/papi_pfm_events.c 1.40:
+	* src/perf_events.c 1.26:
+	* src/perf_events.h 1.11:
+	* src/perfctr-ppc64.c 1.19:
+	* src/perfctr-x86.c 1.4:
+	* src/perfmon.h 1.24:
+	* src/pmapi-ppc64.c 1.11:
+	* src/solaris-ultra.c 1.128:
+		Removed code for obsolete platforms
+
+2010-04-16	jagode
+	* src/ctests/native.c 1.63:
+	* src/papiStdEventDefs.h 1.41:
+	* src/papi_internal.h 1.190:
+	* src/papi_preset.h 1.22:
+	* src/papi_protos.h 1.74:
+		After further investigations of the stack corruption issue on 
+		BGP, the real problem has been nailed down. The size of the 
+		PAPI_event_info_t struct is different on BGP systems which is 
+		due to a bigger PAPI_MAX_INFO_TERMS value. A _BGP was defined at 
+		configure time to differentiate between BGP and other systems. 
+		However, the problem is that a user program does not know this 
+		macro. When PAPI_event_info_t is initialized to zero, the 
+		beginning of the user program's stack frame is zeroed out --> 
+		BAD. It was fun, though.
+
+	* src/aix.c 1.87:
+		Fixed compilation errors for AIX which were due to missing 
+		inclusion of new header file papi_defines.h.
+
+2010-04-15	bsheely
+	* src/freebsd/map-atom.c 1.5:
+    ...
+	* src/freebsd/memory.c 1.4:
+		Added files
+
+2010-04-09	bsheely
+	* src/linux-ppc64-memory.c 1.9:
+	* src/perfctr-ppc32.c 1.11:
+	* src/perfctr-ppc32.h 1.4:
+	* src/perfctr-ppc64.h 1.11:
+	* src/ppc32_events.c 1.8:
+	* src/ppc64_events.c 1.9:
+	* src/ppc64_events.h 1.12:
+		Removed support for ppc32 architectures. Removed support for 
+		perfmon versions older than 2.5 except for Itanium. Removed all 
+		code related to POWER3 and POWER4.
+
+2010-04-08	bsheely
+	* src/solaris-niagara2.h 1.5:
+		Added new include file
+
+	* src/solaris-niagara2.c 1.7:
+		Removed recently added include file since that file is now 
+		included in the header which is included here
+
+2010-04-06	jagode
+	* src/linux-bgp.h 1.4:
+		Missing declaration of PAPI_MAX_LOCK (fixed for linux-bgp only)
+
+2010-04-05	bsheely
+	* src/papi_memory.c 1.23:
+		Resolved compile warning
+
+	* src/ctests/profile.c 1.60:
+		Modified code to exit properly on test failure
+
+2010-04-01	bsheely
+	* src/ctests/clockcore.c 1.21:
+		Prevent output after test failure
+
+2010-03-30	vweaver1
+	* src/libpfm-3.y/lib/pfmlib_intel_nhm.c 1.4:
+		Fix conflict from merge.
+
+	* src/libpfm-3.y/lib/intel_corei7_events.h 1.1.1.6:
+	* src/libpfm-3.y/lib/pfmlib_itanium2.c 1.1.1.3:
+	* src/libpfm-3.y/lib/pfmlib_montecito.c 1.1.1.4:
+		import libpfm CVS
+		
+		adds additional i7 model 46 support, fixes ia64 builds
+
+2010-03-29	bsheely
+	* src/ctests/pthrtough.c 1.11:
+		Fixed buffer overflow debug output related to threads.c. Rolled 
+		back change to pthrtough.c
+
+2010-03-19	bsheely
+	* src/solaris-ultra.h 1.43:
+		Add new include for remaining substrates
+
+2010-03-18	bsheely
+	* src/ctests/p4_lst_ins.c 1.5:
+	* src/ftests/native.F 1.56:
+	* src/p3_pfm_events.c 1.14:
+	* src/p4_events.c 1.56:
+	* src/p4_events.h 1.10:
+	* src/papi_defines.h 1.2:
+	* src/papi_memory.h 1.12:
+	* src/perfctr-p3.c 1.95:
+	* src/perfctr-p3.h 1.52:
+	* src/perfctr-p4.c 1.109:
+	* src/perfctr-p4.h 1.47:
+	* src/perfctr-x86.h 1.2:
+		Merge bsheely-temp branch by hand
+
+2010-03-12	vweaver1
+	* src/ctests/multiplex1.c 1.53:
+	* src/ctests/multiplex1_pthreads.c 1.54:
+	* src/solaris-memory.c 1.14:
+		Fix PAPI support for solaris-ultra.
+		This code had not worked for some time.
+		
+		* Derived events now work (although the events are still
+		  hard-coded and not read from the csv file)
+		* Add cache size detection routines
+		* Fix ntv_code_to_name()
+		* Modify the multiplex* ctests to use proper events on
+		  UltraSPARC
+		
+		All of the regression tests pass except for profile_pthreads.
+		This is because overflow handling is still partially broken.
+
+2010-03-05	ralph
+	* doc/doxygen_procedure.txt 1.1:
+		doc/doxygen_procedure.txt provides a quick overview of how to use doxygen
+			for commenting the PAPI code.
+		
+		The utilities are now commented, cloning the wiki man pages.
+		
+		The high level api is also documented, cloning the wiki again.
+		In the low level api, PAPI_accum - PAPI_destroy_eventset are documented.
+
+2010-03-05	bsheely
+	* src/ctests/thrspecific.c 1.6:
+		Test now passes while testing the same functionality without 
+		memory leaks
+
+2010-03-04	vweaver1
+	* src/libpfm-3.y/lib/pfmlib_priv.h 1.7:
+		Fix conflicts from the libpfm import.
+
+	* src/libpfm-3.y/docs/man3/libpfm_westmere.3 1.1.1.1:
+	* src/libpfm-3.y/examples_v2.x/showevtinfo.c 1.1.1.3:
+	* src/libpfm-3.y/include/perfmon/pfmlib.h 1.1.1.13:
+	* src/libpfm-3.y/lib/intel_wsm_events.h 1.1.1.1:
+	* src/libpfm-3.y/lib/intel_wsm_unc_events.h 1.1.1.1:
+	* src/libpfm-3.y/lib/pfmlib_common.c 1.1.1.14:
+	* src/libpfm-3.y/lib/pfmlib_intel_nhm_priv.h 1.1.1.3:
+		Import latest libpfm, which includes Westmere support
+
+2010-03-04	bsheely
+	* src/ctests/fork.c 1.7:
+	* src/ctests/fork2.c 1.4:
+	* src/ctests/krentel_pthreads.c 1.8:
+	* src/ctests/kufrin.c 1.15:
+	* src/ctests/overflow_pthreads.c 1.43:
+	* src/ctests/profile_pthreads.c 1.37:
+		Fixed memory leaks
+
+2010-03-03	vweaver1
+	* src/p3_ath_event_tables.h 1.4:
+	* src/p3_core_event_tables.h 1.5:
+	* src/p3_events.c 1.65:
+	* src/p3_opt_event_tables.h 1.4:
+	* src/p3_p2_event_tables.h 1.4:
+	* src/p3_p3_event_tables.h 1.4:
+	* src/p3_pm_event_tables.h 1.4:
+		Now that Athlon and Pentium II events use libpfm, remove the old
+		hard coded event table files.
+
+	* src/perfctr-2.6.x/README 1.1.1.6:
+	* src/perfctr-2.6.x/patches/patch-kernel-2.6.18-164.el5-redhat 1.1.1.1:
+	* src/perfctr-2.6.x/patches/patch-kernel-2.6.31 1.1.1.1:
+	* src/perfctr-2.6.x/patches/patch-kernel-2.6.32 1.1.1.1:
+		Import of perfctr 2.6.40
+
+2010-03-03	bsheely
+	* src/ctests/clockres_pthreads.c 1.11:
+	* src/ctests/fork_exec_overflow.c 1.12:
+	* src/ctests/zero_pthreads.c 1.29:
+		Fixed memory leaks
+
+2010-02-24	bsheely
+	* src/linux-memory.c 1.44:
+		Removed hack to compile without warnings using Wconversion
+
+2010-02-23	bsheely
+	* src/ctests/all_events.c 1.15:
+	* src/ctests/multiplex2.c 1.36:
+	* src/ctests/multiplex3_pthreads.c 1.45:
+		Fixed (debug) compile warnings
+
+2010-02-22	jagode
+	* src/.indent.pro 1.1:
+	...
+	* src/utils/version.c 1.4:
+		Added and applied new PAPI-coding-style profile file
+
+	* src/windows.c 1.6:
+		Added missing comment closer */ This misindented the rest of the 
+		source code in windows.c
+
+2010-02-16	terpstra
+	* src/ctests/prof_utils.h 1.8:
+		Cleaned up a bunch of implicit type conversions.
+
+2010-02-15	terpstra
+	* src/run_tests_exclude.txt 1.7:
+		Remove the PAPI_set_event_info and PAPI_encode_event API calls, 
+		since they were never supported, and generally come to be 
+		thought of as a bad idea.
+
+	* src/ctests/encode.c 1.7:
+	* src/ctests/encode2.c 1.5:
+		Remove the encode and encode2 tests that exercise 
+		PAPI_set_event_info and PAPI_encode_event API calls, since they 
+		were never supported, and generally come to be thought of as a 
+		bad idea.
+
+2010-01-25	bsheely
+	* src/examples/PAPI_flips.c 1.4:
+	* src/examples/PAPI_flops.c 1.4:
+	* src/examples/PAPI_get_opt.c 1.5:
+	* src/examples/PAPI_ipc.c 1.4:
+	* src/examples/PAPI_overflow.c 1.5:
+	* src/examples/PAPI_profil.c 1.7:
+	* src/examples/high_level.c 1.4:
+	* src/examples/locks_pthreads.c 1.3:
+	* src/examples/overflow_pthreads.c 1.5:
+		Fixed remaining compile warnings
+
+	* src/examples/sprofile.c 1.5:
+		Fixed compile warnings
+

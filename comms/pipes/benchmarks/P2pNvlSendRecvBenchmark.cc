@@ -298,14 +298,18 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     comms::pipes::TiledBuffer<char> recvTiles(
         static_cast<char*>(recvBuff.get()), config.nBytes, numSendBlocks);
 
-    int chunksPerSlot = config.chunksPerSlot;
+    std::size_t maxSignalBytes = config.chunksPerSlot > 1
+        ? static_cast<std::size_t>(
+              config.nBytes / config.numBlocks / config.chunksPerSlot) &
+            ~15ULL
+        : 0;
     void* kernelFunc = (void*)comms::pipes::benchmark::p2pTileSendRecv;
     void* args[] = {
         p2pDevicePtr,
         &sendTiles,
         &recvTiles,
         &numSendBlocks,
-        &chunksPerSlot,
+        &maxSignalBytes,
         &timeout};
 
     dim3 defaultClusterDim(comms::common::kDefaultClusterSize, 1, 1);

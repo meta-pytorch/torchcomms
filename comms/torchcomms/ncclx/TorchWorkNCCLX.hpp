@@ -15,7 +15,6 @@
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 #include <vector>
 #include "comms/torchcomms/TorchWork.hpp"
-#include "comms/torchcomms/ncclx/TorchCommNCCLXPersistentRequest.hpp"
 #include "comms/torchcomms/utils/TracingGuard.hpp"
 
 namespace torch::comms {
@@ -62,12 +61,6 @@ class TorchWorkNCCLX : public TorchWork {
     return timeout_ms_;
   }
 
-  // Set persistent request reference to keep it alive until work is freed
-  void setPersistentRequest(
-      at::intrusive_ptr<TorchCommNCCLXPersistentRequest> request) {
-    persistent_request_ = std::move(request);
-  }
-
   // Set CPU tensors that need to be kept alive for the lifetime of this
   // work object. Used for CPU tensors (e.g., pointer arrays) that must outlive
   // the async operation, especially during CUDA graph replay.
@@ -108,6 +101,14 @@ class TorchWorkNCCLX : public TorchWork {
   void initEvents();
   void releaseEvents();
 
+  // Record a cudaEventRecordExternal on the graph-monitor side stream
+  // (fork/rejoin pattern) if available, falling back to recording directly
+  // on stream_. Used by both recordStart() and recordEnd() to keep the
+  // external event's release fence off the main stream's critical path.
+  void recordExternalEventViaSideStream(
+      cudaEvent_t event,
+      const char* event_label);
+
   std::shared_ptr<TorchCommNCCLX> comm_;
   cudaEvent_t start_event_{};
   // Completion detection event. In both eager and graph modes, this event is
@@ -137,9 +138,6 @@ class TorchWorkNCCLX : public TorchWork {
   std::optional<std::chrono::steady_clock::time_point> start_completed_time_;
 
   std::optional<at::RecordFunction> recordFunction_;
-
-  // Reference to persistent request to keep it alive until work is freed
-  at::intrusive_ptr<TorchCommNCCLXPersistentRequest> persistent_request_;
 };
 
 class TorchWorkNCCLXQueue {

@@ -42,7 +42,7 @@ class MultiTransport {
       RegisteredSegment::Span src,
       const RequestOptions& options = {});
 
-  std::future<Result<size_t>> recv(
+  std::future<Status> recv(
       RegisteredSegment::Span dst,
       const RequestOptions& options = {});
 
@@ -51,7 +51,7 @@ class MultiTransport {
       Segment::Span src,
       const RequestOptions& options = {});
 
-  std::future<Result<size_t>> recv(
+  std::future<Status> recv(
       Segment::Span dst,
       const RequestOptions& options = {});
 
@@ -105,6 +105,8 @@ class MultiTransportFactory {
       std::span<const uint8_t> peerTopology);
 
   std::vector<uint8_t> getTopology();
+
+  static Status supported(TransportType type);
 
   friend class MultiTransportFactoryTest;
 

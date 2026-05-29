@@ -20,12 +20,12 @@
 #include <gtest/gtest.h>
 
 #include "comms/testinfra/TestXPlatUtils.h"
-#include "comms/utils/GpuClockCalibration.h"
 #include "comms/utils/colltrace/CollTrace.h"
 #include "comms/utils/colltrace/CollTraceHandle.h"
 #include "comms/utils/colltrace/CudaWaitEvent.h"
 #include "comms/utils/colltrace/GraphCudaWaitEvent.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/hrdw_ring_buffer/GpuClockCalibration.h"
 
 using meta::comms::colltrace::CollTrace;
 using meta::comms::colltrace::CollTraceConfig;
@@ -159,7 +159,7 @@ class GraphColltraceProgressingTest : public ::testing::Test {
     // Enable cudagraph tracing for these tests.
     cvarGuard_.emplace(NCCL_COLLTRACE_TRACE_CUDA_GRAPH, true);
 
-    meta::comms::colltrace::GlobaltimerCalibration::get();
+    hrdw_ring_buffer::GlobaltimerCalibration::get();
 
     auto progressPlugin = std::make_unique<ProgressTrackingPlugin>();
     progressPlugin_ = progressPlugin.get();
@@ -269,8 +269,6 @@ TEST_F(GraphColltraceProgressingTest, DetectsInFlightCollective) {
   ASSERT_NE(cg.instance, nullptr);
   ASSERT_EQ(cg.collIds.size(), kNumColls);
 
-  std::set<int64_t> validCollIds(cg.collIds.begin(), cg.collIds.end());
-
   // Replay once — 150ms total (3 × 50ms), giving the poll thread plenty
   // of time to observe in-flight entries.
   ASSERT_EQ(cudaGraphLaunch(cg.instance, stream_), cudaSuccess);
@@ -283,21 +281,16 @@ TEST_F(GraphColltraceProgressingTest, DetectsInFlightCollective) {
   auto progressedIds = progressPlugin_->getProgressedCollIds();
 
   // With 50ms per collective and 1ms poll interval, the poll thread
-  // should observe at least one in-flight collective.
+  // should observe at least one in-flight collective. Clone-on-start
+  // assigns new collIds to replay events, so we check count.
   EXPECT_FALSE(progressedIds.empty())
       << "Expected collEventProgressing to fire for at least one collective";
-
-  // Every reported collId must be from our captured set.
-  for (auto id : progressedIds) {
-    EXPECT_TRUE(validCollIds.count(id) > 0)
-        << "collEventProgressing reported unknown collId " << id;
-  }
 
   EXPECT_GT(progressPlugin_->progressCount(), 0);
 
   // After sync, all collectives should have completed.
   auto completedIds = progressPlugin_->getCompletedCollIds();
-  EXPECT_EQ(completedIds, validCollIds)
+  EXPECT_EQ(completedIds.size(), kNumColls)
       << "All collectives should be marked completed after stream sync";
 }
 
@@ -373,8 +366,6 @@ TEST_F(GraphColltraceProgressingTest, DetectsMultipleInFlightCollectives) {
       cudaSuccess);
   ASSERT_EQ(cg.collIds.size(), kNumColls);
 
-  std::set<int64_t> validCollIds(cg.collIds.begin(), cg.collIds.end());
-
   // Replay — all 3 collectives run concurrently with 100ms sleeps.
   // The poll thread (1ms interval) has ~100ms to observe all 3 as
   // simultaneously in-flight.
@@ -387,21 +378,18 @@ TEST_F(GraphColltraceProgressingTest, DetectsMultipleInFlightCollectives) {
   auto progressedIds = progressPlugin_->getProgressedCollIds();
 
   // All 3 collectives should have been observed as in-flight since
-  // they run concurrently for 100ms.
+  // they run concurrently for 100ms. Clone-on-start assigns new
+  // collIds to replay events, so we check count rather than matching
+  // capture-time ids.
   EXPECT_EQ(progressedIds.size(), kNumColls)
-      << "Expected all " << kNumColls
+      << "Expected exactly " << kNumColls
       << " concurrent collectives to be detected as in-flight";
-
-  for (auto id : progressedIds) {
-    EXPECT_TRUE(validCollIds.count(id) > 0)
-        << "collEventProgressing reported unknown collId " << id;
-  }
 
   EXPECT_GT(progressPlugin_->progressCount(), 0);
 
   // After sync, all collectives should have completed.
   auto completedIds = progressPlugin_->getCompletedCollIds();
-  EXPECT_EQ(completedIds, validCollIds)
+  EXPECT_EQ(completedIds.size(), kNumColls)
       << "All concurrent collectives should be marked completed after stream sync";
 
   // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)

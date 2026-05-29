@@ -31,22 +31,26 @@
 // Each sender block i sends tile i; each receiver block i receives tile i.
 // Sender block i is paired with receiver block i on the remote GPU.
 //
-// PIPELINING (inside send_tile / recv_tile)
+// PIPELINING (inside send / recv)
 // =========================================
 // Each block's tile may be larger than the per-block staging area. The tile
-// is therefore pipelined through the staging buffer in multiple steps:
+// is therefore pipelined through the staging buffer as a byte stream:
 //
 //   perBlockSlotSize = floor(dataBufferSize / numBlocks) & ~15
-//   totalSlotSteps   = ceil(tileBytes / perBlockSlotSize)
+//   pipelineBytes    = perBlockSlotSize * pipelineDepth
 //
-// Each step uses one of `pipelineDepth` slots (step % pipelineDepth) to
-// allow sender and receiver to overlap:
+// Each copy chunk maps its absolute byte cursor into the pipeline ring:
 //
-//   Step 0: sender writes to slot 0, signals tail=1
-//   Step 1: sender writes to slot 1, signals tail=2
-//           receiver reads slot 0, signals head=1
-//   Step 2: sender waits for head >= 1 (slot 0 freed), writes slot 0
-//           receiver reads slot 1, signals head=2
+//   pipelineOff = cursor % pipelineBytes
+//   slot        = pipelineOff / perBlockSlotSize
+//   chunkOff    = pipelineOff % perBlockSlotSize
+//
+// max_signal_bytes controls the largest copy/signaling chunk, but each chunk is
+// also capped at the end of the current per-block staging row. This keeps the
+// staging layout independent of max_signal_bytes across calls.
+//
+// The sender waits for head >= streamEnd - pipelineBytes before overwriting a
+// wrapped byte range. The receiver waits for tail >= streamEnd before reading.
 //   ...
 //
 // SIGNAL PROTOCOL
@@ -58,11 +62,11 @@
 //   signal[numBlocks + i]   = head counter for block pair i
 //                              (receiver → sender: "slot is freed")
 //
-// Both counters are monotonically increasing. The sender waits for
-//   head >= step - pipelineDepth + 1
-// before reusing a slot (backpressure). The receiver waits for
-//   tail >= step + 1
-// before reading (data availability).
+// Both counters are monotonically increasing byte cursors. The sender waits for
+//   head >= streamEnd - pipelineBytes
+// before reusing a byte range. The receiver waits for
+//   tail >= streamEnd
+// before reading.
 //
 // Memory ordering:
 //   - signal() uses st.release.sys.global → all prior writes (memcpy data)
@@ -72,14 +76,17 @@
 //
 // MULTI-CALL CORRECTNESS
 // ======================
-// The step counters are persisted in device memory (`stepState`):
-//   stepState[0..numBlocks-1]           = sender step per block
-//   stepState[numBlocks..2*numBlocks-1] = receiver step per block
+// The byte cursors are persisted in device memory (`stepState`):
+//   stepState[0..numBlocks-1]           = sender byte cursor per block
+//   stepState[numBlocks..2*numBlocks-1] = receiver byte cursor per block
 //
-// On first call (stepState zeroed), sender starts at step=0, receiver at
-// step=0. On subsequent calls, they resume from where they left off.
+// On first call (stepState zeroed), sender and receiver start at byte 0. On
+// subsequent calls, they resume from where they left off.
 // Because signals are monotonically increasing, old signal values from
 // previous calls are always < current expected values, so no ABA issue.
+// Since the cursor is in bytes, changing max_signal_bytes between calls with
+// the same active_blocks is safe. Changing active_blocks changes the staging
+// layout and requires a barrier first.
 //
 // PRECONDITION: stepState must be zeroed before the first kernel launch.
 // The transport's exchange() zeroes the signal buffers. For repeated
@@ -145,15 +152,15 @@ __global__ void p2pTileSendRecv(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
-    int numBlocks,
-    int chunksPerSlot = 1,
+    int active_blocks,
+    std::size_t max_signal_bytes = 0,
     Timeout timeout = Timeout());
 
 /**
  * p2pTileSendRecvDynamic — Variant using transport-internal tile state
  * with support for dynamic block count changes.
  *
- * Requires tileMaxBlocks > 0 and p2pBarrierCount >= tileMaxBlocks.
+ * Requires tile_max_groups > 0 and p2pBarrierCount >= tile_max_groups.
  * StepState, signals, and maxBlocks are managed internally by the transport.
  *
  * Signal layout uses maxBlocks (constant across launches) so that block k
@@ -161,7 +168,7 @@ __global__ void p2pTileSendRecv(
  * partition uses numBlocks (variable) for efficient use of staging memory.
  *
  * When numBlocks changes, the caller must set needsBarrier=true. Each block
- * does barrier_sync_threadgroup with its peer to ensure the remote GPU's
+ * does barrier_sync with its peer to ensure the remote GPU's
  * previous kernel completed all staging reads before the new layout takes
  * effect. See TileSendRecv.cu for the full correctness analysis.
  *
@@ -175,8 +182,38 @@ __global__ void p2pTileSendRecvDynamic(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
-    int numBlocks,
+    int active_blocks,
     bool needsBarrier,
+    Timeout timeout = Timeout());
+
+/**
+ * p2pTileForward — Tile-style fused recv+forward kernel.
+ *
+ * Each block calls P2pNvlTransportDevice::forward() to read its tile
+ * from the predecessor staging buffer (p2p_pred.localState_.dataBuffer)
+ * and dual-write it to (a) the local user dst tile and (b) the
+ * successor staging buffer (p2p_succ.remoteState_.dataBuffer).
+ *
+ * Launch with `numBlocks` total blocks (no role partition). Each block
+ * processes one tile.
+ *
+ * In a 2-rank ring test, p2p_pred == p2p_succ (the single transport
+ * between rank 0 and rank 1) — see ForwardGroup tests for pattern.
+ *
+ * @param p2p_pred   Transport to predecessor (read source staging)
+ * @param p2p_succ   Transport to successor (write target staging)
+ * @param dstTiles   Tiled view of the local output buffer
+ * @param active_blocks Number of blocks calling forward concurrently.
+ *                      0 means use tile_max_groups.
+ * @param max_signal_bytes Hint for signal granularity. 0 = per-slot signal.
+ * @param timeout    Optional timeout for signal waits
+ */
+__global__ void p2pTileForward(
+    P2pNvlTransportDevice p2p_pred,
+    P2pNvlTransportDevice p2p_succ,
+    TiledBuffer<char> dstTiles,
+    int active_blocks,
+    std::size_t max_signal_bytes = 0,
     Timeout timeout = Timeout());
 
 } // namespace comms::pipes::benchmark

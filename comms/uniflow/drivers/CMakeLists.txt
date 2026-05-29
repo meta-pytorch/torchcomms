@@ -3,3 +3,4 @@
 add_subdirectory(cuda)
 add_subdirectory(ibverbs)
 add_subdirectory(nvml)
+add_subdirectory(sysfs)

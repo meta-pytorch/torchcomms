@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <chrono>
+#include <optional>
 #include <thread>
 
 #include <gmock/gmock.h>
@@ -459,6 +460,31 @@ TEST(AbortTest, timeRemainingAfterCancel) {
   abort.SetTimeout(std::chrono::milliseconds(1000));
   abort.CancelTimeout();
   EXPECT_EQ(abort.TimeRemaining(), std::chrono::milliseconds{-1});
+}
+
+TEST(AbortTest, defaultTimeoutInitiallyUnset) {
+  Abort abort{/*enabled=*/true};
+  EXPECT_EQ(abort.GetDefaultTimeoutDuration(), std::nullopt);
+}
+
+TEST(AbortTest, defaultTimeoutSetAndGet) {
+  Abort abort{/*enabled=*/true};
+  constexpr std::chrono::milliseconds kDuration{750};
+  abort.SetDefaultTimeoutDuration(kDuration);
+  EXPECT_EQ(abort.GetDefaultTimeoutDuration(), kDuration);
+}
+
+TEST(AbortTest, defaultTimeoutMutable) {
+  Abort abort{/*enabled=*/true};
+  abort.SetDefaultTimeoutDuration(std::chrono::milliseconds(100));
+  abort.SetDefaultTimeoutDuration(std::chrono::milliseconds(5000));
+  EXPECT_EQ(abort.GetDefaultTimeoutDuration(), std::chrono::milliseconds(5000));
+}
+
+TEST(AbortTest, defaultTimeoutDisabledSetterNoop) {
+  Abort abort{/*enabled=*/false};
+  abort.SetDefaultTimeoutDuration(std::chrono::milliseconds(1000));
+  EXPECT_EQ(abort.GetDefaultTimeoutDuration(), std::nullopt);
 }
 
 } // namespace ctran::testing

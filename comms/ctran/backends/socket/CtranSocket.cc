@@ -14,13 +14,12 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 
-CtranSocket::CtranSocket(CtranComm* comm, CtranCtrlManager* ctrlMgr)
+CtranSocket::CtranSocket(CtranComm* comm)
     : comm(comm),
       rank_(comm->statex_->rank()),
       cudaDev_(comm->statex_->cudaDev()),
       commHash_(comm->statex_->commHash()),
-      commDesc_(comm->statex_->commDesc()),
-      ctrlMgr_(ctrlMgr) {
+      commDesc_(comm->statex_->commDesc()) {
   init(SocketServerAddr());
   CLOGF_SUBSYS(
       INFO,
@@ -35,14 +34,12 @@ CtranSocket::CtranSocket(
     int cudaDev,
     uint64_t commHash,
     const std::string& commDesc,
-    CtranCtrlManager* ctrlMgr,
     const SocketServerAddr& serverAddr)
     : comm(nullptr),
       rank_(rank),
       cudaDev_(cudaDev),
       commHash_(commHash),
-      commDesc_(commDesc),
-      ctrlMgr_(ctrlMgr) {
+      commDesc_(commDesc) {
   init(serverAddr);
   CLOGF_SUBSYS(
       INFO,
@@ -127,8 +124,9 @@ void CtranSocket::init(const SocketServerAddr& serverAddr) {
     this->preConnectPeerMap_.resize(comm->statex_->nRanks(), false);
     // only exchange listen sockets with bootstrapAllGather when using comm to
     // initialize CtranSocket
+    std::string resolvedIfName;
     auto maybeAddr = ctran::bootstrap::getInterfaceAddress(
-        NCCL_SOCKET_IFNAME, NCCL_SOCKET_IPADDR_PREFIX);
+        NCCL_SOCKET_IFNAME, NCCL_SOCKET_IPADDR_PREFIX, true, &resolvedIfName);
     if (maybeAddr.hasError()) {
       std::string msg = fmt::format(
           "CTRAN-SOCKET: No socket interfaces found (NCCL_SOCKET_IFNAME={}, NCCL_SOCKET_IPADDR_PREFIX={})",
@@ -143,12 +141,12 @@ void CtranSocket::init(const SocketServerAddr& serverAddr) {
           INIT,
           "CTRAN-SOCKET: socket address set to {} on interface {}",
           maybeAddr->str(),
-          NCCL_SOCKET_IFNAME);
+          resolvedIfName);
     }
 
     folly::SocketAddress ifAddrSockAddr(maybeAddr.value(), 0 /* port */);
     FB_SYSCHECKTHROW_EX(
-        listenSocket_.bindAndListen(ifAddrSockAddr, NCCL_SOCKET_IFNAME),
+        listenSocket_.bindAndListen(ifAddrSockAddr, resolvedIfName),
         ncclLogData_);
     CLOGF_SUBSYS(
         INFO,
@@ -458,14 +456,7 @@ commResult_t CtranSocket::progressInternal() {
           continueWhileLoop = false;
           continue;
         }
-        if (ctrlMgr_ && ctrlMgr_->hasCb(msg->type)) {
-          CLOGF_TRACE(
-              COLL,
-              "CTRAN-SOCKET: received and invoke callback for msg [{}] peer {}",
-              msg->toString(),
-              peerRanks[fid]);
-          FB_COMMCHECK(ctrlMgr_->runCb(peerRanks[fid], msg->type, msg.get()));
-        } else if (recvQueue.postedOps_.empty()) {
+        if (recvQueue.postedOps_.empty()) {
           // no posted op, let's read it and store as unexpected msg
           CLOGF_TRACE(
               COLL,

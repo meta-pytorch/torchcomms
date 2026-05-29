@@ -1,0 +1,8 @@
+coverage:
+  ignore:
+    - build/**
+    - ext/**
+    - test/**
+    - **/test/**
+    - **/rapidjson/**
+    - **/CurIOus/**

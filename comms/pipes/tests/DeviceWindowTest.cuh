@@ -263,4 +263,22 @@ void testDeviceWindowNvlOffsetPutCounter(
     int counterId,
     uint64_t counterVal);
 
+/**
+ * Test: DeviceWindow per-group NVL put with independent tiles
+ *
+ * Launches multiple blocks where each block independently puts its own
+ * tile of data to different offsets in the window buffer. This validates
+ * that DeviceWindow::put() uses per-group semantics, not
+ * grid-collective semantics. With grid-collective put(), each block
+ * would only copy 1/N of its tile, causing data corruption.
+ */
+void testDeviceWindowNvlOffsetPutPerGroup(
+    int myRank,
+    int nRanks,
+    char* windowBuf_d,
+    const char* srcBuf_d,
+    std::size_t srcBufSize,
+    std::size_t tileSize,
+    int numTiles);
+
 } // namespace comms::pipes::test

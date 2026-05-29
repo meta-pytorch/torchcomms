@@ -1,0 +1,8 @@
+2011-01-20
+
+	* src/papi_events.csv: 
+              Remove HW_INT:RCV event that was mistakenly enabled for Westmere
+   
+
+
+

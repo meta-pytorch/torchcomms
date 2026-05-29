@@ -9,6 +9,13 @@
 #include "comms/ctran/utils/DevAttribute.h"
 #include "comms/utils/commSpecs.h"
 
+#ifndef CTRAN_DISABLE_TCPDM
+#define CTRAN_TCPDM_ENABLE
+#include "comms/tcp_devmem/unpack/batch_unpack_kernel.h"
+#else
+#include "comms/ctran/backends/mock/CtranTcpDmBaseMock.h"
+#endif
+
 namespace ctran::allreduce::ring {
 
 struct KernArgs {
@@ -34,6 +41,9 @@ struct KernArgs {
   ctran::algos::GpeKernelSync* revRecvCopySync;
   void* tmpSendBufRev;
   void* tmpRecvBufRev;
+
+  // TCPDM unpack support
+  SQueues unpack{};
 };
 
 // used by e.g. NanChecker and Trace
@@ -568,10 +578,13 @@ DEVICE_ATTRIBUTE void opUpdateDone(AlgoContext& algoCtx) {
 
 } // namespace ctran::allreduce::ring
 
-// EnableBidirAg template parameter:
-// - true: bi-directional AllGather with reverse direction
-// - false: standard single-direction AG (lower register usage)
-template <typename T, commRedOp_t RedOp, bool EnableBidirAg>
+// EnableBidirAg: true = bi-directional AG, false = standard AG
+// Unpack: true = TCPDM SQueue unpack, false = IB (no unpack)
+template <
+    typename T,
+    commRedOp_t RedOp,
+    bool EnableBidirAg,
+    bool Unpack = false>
 __global__ void ncclKernelAllReduceCtranRing(
     int* flag,
     CtranAlgoDeviceState* devState,

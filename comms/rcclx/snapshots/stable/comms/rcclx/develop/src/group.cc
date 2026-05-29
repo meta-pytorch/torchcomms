@@ -589,6 +589,37 @@ static ncclResult_t groupLaunch(struct ncclAsyncJob *job_, ncclSimInfo_t* simInf
         memset(algoNeedConnect, 0, sizeof(bool) * NCCL_NUM_ALGORITHMS);
 
         CUDACHECKGOTO(cudaSetDevice(comm->cudaDev), ret, fail);
+
+        if (!comm->firstCollLogged && comm->initCompleteTimestamp != 0) {
+          comm->firstCollLogged = true;
+
+          // first collective timestamp
+          uint64_t firstCollectiveTimestamp = clockNano();
+          uint64_t firstCollectiveWallclock = wallClockNano();
+
+          // first collective type
+          const char* collName = "unknown";
+          struct ncclTaskColl* firstTask = comm->planner.collSorter.head;
+          if (firstTask && firstTask->func < ncclNumFuncs) {
+            static constexpr const char* ncclFuncNames[ncclNumFuncs] = {
+              "Broadcast", "Reduce", "AllGather", "ReduceScatter",
+              "AllReduce", "SendRecv", "Send", "Recv", "AllToAllPivot"
+            };
+            collName = ncclFuncNames[firstTask->func];
+          } else if (comm->planner.nTasksP2p > 0) {
+            collName = "P2P";
+          }
+
+          INFO(NCCL_INIT, "First Collective (rank %d nranks %d): commDesc %s commHash 0x%llx: "
+               "firstCollective(%s)=%.6f initComplete=%.6f delta=%.1f ms",
+               comm->rank, comm->nRanks,
+               comm->config.commDesc ? comm->config.commDesc : "N/A",
+               (unsigned long long)comm->commHash,
+               collName, firstCollectiveWallclock / 1e9,
+               comm->initCompleteWallclock / 1e9,
+               (firstCollectiveTimestamp - comm->initCompleteTimestamp) / 1e6);
+        }
+
         NCCLCHECKGOTO(ncclPrepareTasks(comm, algoNeedConnect, &needConnect, simInfo), ret, fail);
 
         if (comm->cuMemSupport && needConnect) {

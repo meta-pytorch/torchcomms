@@ -10,6 +10,16 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "strongstream.h"
 
+namespace {
+inline struct ncclCudaGraph ncclCudaGraphNoneCompat() {
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
+  return ncclCudaGraphNone(0);
+#else
+  return ncclCudaGraphNone();
+#endif
+}
+} // namespace
+
 class SlabAllocatorTest : public ::testing::Test {
  public:
   int cudaDev = 0;
@@ -88,7 +98,7 @@ TEST_F(SlabAllocatorTest, ReuseSlabIfPossible) {
   NCCLCHECK_TEST(ncclCalloc(&ss, 1));
   NCCLCHECK_TEST(ncclStrongStreamConstruct(ss));
   NCCLCHECK_TEST(ncclStrongStreamAcquire(
-      ncclCudaGraphNone(), ss, /*concurrent=*/false, &stream));
+      ncclCudaGraphNoneCompat(), ss, /*concurrent=*/false, &stream));
   size_t before_free, total;
   CUDACHECK_TEST(cudaMemGetInfo(&before_free, &total));
   // allocation calls: 1 byte, (2097152 - 16) bytes, 2097152 * 2, 2097152 /2
@@ -104,8 +114,8 @@ TEST_F(SlabAllocatorTest, ReuseSlabIfPossible) {
   size_t after_free;
   CUDACHECK_TEST(cudaMemGetInfo(&after_free, &total));
   EXPECT_EQ(before_free - after_free, allocator->getUsedMem());
-  NCCLCHECK_TEST(
-      ncclStrongStreamRelease(ncclCudaGraphNone(), ss, /*concurrent=*/false));
+  NCCLCHECK_TEST(ncclStrongStreamRelease(
+      ncclCudaGraphNoneCompat(), ss, /*concurrent=*/false));
   free(ss);
 }
 
@@ -115,7 +125,7 @@ TEST_F(SlabAllocatorTest, FreeMemoryUponDestruction) {
   NCCLCHECK_TEST(ncclCalloc(&ss, 1));
   NCCLCHECK_TEST(ncclStrongStreamConstruct(ss));
   NCCLCHECK_TEST(ncclStrongStreamAcquire(
-      ncclCudaGraphNone(), ss, /*concurrent=*/false, &stream));
+      ncclCudaGraphNoneCompat(), ss, /*concurrent=*/false, &stream));
   size_t before_free, total;
   CUDACHECK_TEST(cudaMemGetInfo(&before_free, &total));
   auto allocator = std::make_unique<ncclx::memory::SlabAllocator>();
@@ -126,8 +136,8 @@ TEST_F(SlabAllocatorTest, FreeMemoryUponDestruction) {
   EXPECT_EQ(actualUsedMem(allocator.get(), 2097152, ss), 2097152);
   EXPECT_EQ(actualUsedMem(allocator.get(), 2097152 * 2, ss), 2097152 * 2);
   NCCLCHECK_TEST(ncclStrongStreamSynchronize(ss));
-  NCCLCHECK_TEST(
-      ncclStrongStreamRelease(ncclCudaGraphNone(), ss, /*concurrent=*/false));
+  NCCLCHECK_TEST(ncclStrongStreamRelease(
+      ncclCudaGraphNoneCompat(), ss, /*concurrent=*/false));
   free(ss);
   allocator.reset();
   size_t after_free;
@@ -143,13 +153,13 @@ TEST_F(SlabAllocatorTest, CudaMemCpyAsync) {
   NCCLCHECK_TEST(ncclCalloc(&ss, 1));
   NCCLCHECK_TEST(ncclStrongStreamConstruct(ss));
   NCCLCHECK_TEST(ncclStrongStreamAcquire(
-      ncclCudaGraphNone(), ss, /*concurrent=*/false, &stream));
+      ncclCudaGraphNoneCompat(), ss, /*concurrent=*/false, &stream));
   allocAndCheckMemCpy(allocator.get(), 4, ss);
   allocAndCheckMemCpy(allocator.get(), 2097152, ss);
   allocAndCheckMemCpy(allocator.get(), 2097152 * 2, ss);
   NCCLCHECK_TEST(ncclStrongStreamSynchronize(ss));
-  NCCLCHECK_TEST(
-      ncclStrongStreamRelease(ncclCudaGraphNone(), ss, /*concurrent=*/false));
+  NCCLCHECK_TEST(ncclStrongStreamRelease(
+      ncclCudaGraphNoneCompat(), ss, /*concurrent=*/false));
   allocator.reset();
   free(ss);
 }

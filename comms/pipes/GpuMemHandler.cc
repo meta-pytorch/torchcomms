@@ -2,7 +2,16 @@
 
 #include "comms/pipes/GpuMemHandler.h"
 
+// CUDA driver API (`cuda.h` / `cudaTypedefs.h`) is NVIDIA-only. On AMD,
+// fabric handles aren't supported, so all `cuMem*` driver-API code paths
+// in this file are guarded by `#ifndef __HIP_PLATFORM_AMD__` and the cudaIpc
+// fallback path (which HIPify rewrites to hipIpc) is the only available
+// mechanism.
+#ifdef __HIP_PLATFORM_AMD__
+#include <hip/hip_runtime.h>
+#else
 #include "comms/pipes/CudaDriverLazy.h"
+#endif
 
 #include <glog/logging.h>
 #include <mutex>
@@ -18,6 +27,7 @@ void checkCudaError(cudaError_t err, const char* msg) {
   }
 }
 
+#ifndef __HIP_PLATFORM_AMD__
 void checkCuError(CUresult err, const char* msg) {
   if (err != CUDA_SUCCESS) {
     const char* errStr = nullptr;
@@ -26,6 +36,7 @@ void checkCuError(CUresult err, const char* msg) {
         std::string(msg) + ": " + (errStr ? errStr : "unknown error"));
   }
 }
+#endif
 
 // Minimum allocation size for trial allocation (matches ctran)
 constexpr size_t kTrialAllocSize = 2097152UL; // 2MB
@@ -33,7 +44,7 @@ constexpr size_t kTrialAllocSize = 2097152UL; // 2MB
 // Helper function that performs the actual fabric handle support check.
 // This is called once and the result is cached by isFabricHandleSupported().
 bool checkFabricHandleSupportedImpl() {
-#if CUDART_VERSION < 12030
+#if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12030
   return false;
 #else
   if (cuda_driver_lazy_init() != 0) {
@@ -272,7 +283,7 @@ void GpuMemHandler::exchangeMemPtrs() {
 // ============================================================================
 
 void GpuMemHandler::allocateFabricMemory(size_t size) {
-#if CUDART_VERSION < 12030
+#if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12030
   throw std::runtime_error("Fabric handles require CUDA 12.3+");
 #else
   if (cuda_driver_lazy_init() != 0) {
@@ -352,7 +363,7 @@ void GpuMemHandler::allocateFabricMemory(size_t size) {
 }
 
 void GpuMemHandler::exchangeFabricHandles() {
-#if CUDART_VERSION < 12030
+#if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12030
   throw std::runtime_error("Fabric handles require CUDA 12.3+");
 #else
   // Prepare data for allGather: fabric handle + allocated size
@@ -391,7 +402,7 @@ void GpuMemHandler::importFabricPeerMemory(
     int32_t rank,
     const FabricHandle& handle,
     size_t peerAllocatedSize) {
-#if CUDART_VERSION < 12030
+#if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12030
   throw std::runtime_error("Fabric handles require CUDA 12.3+");
 #else
   if (cuda_driver_lazy_init() != 0) {
@@ -454,7 +465,7 @@ void GpuMemHandler::importFabricPeerMemory(
 }
 
 void GpuMemHandler::cleanupFabric() {
-#if CUDART_VERSION >= 12030
+#if !defined(__HIP_PLATFORM_AMD__) && CUDART_VERSION >= 12030
   // Check if CUDA context is still valid
   CUcontext ctx = nullptr;
   if (pfn_cuCtxGetCurrent == nullptr ||

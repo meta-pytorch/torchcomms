@@ -109,7 +109,7 @@ __device__ __forceinline__ void all_gather(
 
     auto& transport = transports_per_rank[my_rank_id];
     assert(transport.type == TransportType::SELF);
-    transport.self.put(group, dst, src, sendcount);
+    transport.self.put_group(group, dst, src, sendcount);
     return;
   }
 
@@ -145,7 +145,7 @@ __device__ __forceinline__ void all_gather(
     }
 #endif
 
-    transport.self.put(group_per_peer, dst, src, sendcount);
+    transport.self.put_group(group_per_peer, dst, src, sendcount);
     return;
   }
 
@@ -177,14 +177,14 @@ __device__ __forceinline__ void all_gather(
   if (is_send) {
     // Send my local data to peer
     // Note: All sends use the same source buffer (sendbuff_d)
-    transport.p2p_nvl.send(
+    transport.p2p_nvl.send_group(
         group_per_peer,
         static_cast<char*>(const_cast<void*>(sendbuff_d)),
         sendcount,
         timeout);
   } else {
     // Receive peer's data into my recvbuff at appropriate offset
-    transport.p2p_nvl.recv(
+    transport.p2p_nvl.recv_group(
         group_per_peer,
         static_cast<char*>(recvbuff_d) + recv_offset,
         sendcount,

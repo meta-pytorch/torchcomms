@@ -15,67 +15,6 @@ bool isCpu(int deviceId) {
   return deviceId == -1;
 }
 
-/// Return names of all NICs matching the filter.
-std::vector<std::string> selectCpuNics(
-    const Topology& topo,
-    const NicFilter& filter) {
-  int nicCount = static_cast<int>(topo.nicCount());
-  std::vector<std::string> nics;
-  nics.reserve(nicCount);
-  PathType bestType = PathType::DIS;
-  uint32_t maxBw = 0;
-  for (int nic = 0; nic < nicCount; ++nic) {
-    if (!topo.filterNic(nic, filter)) {
-      continue;
-    }
-    const auto& nicNode = topo.getNicNode(nic);
-    const auto& numaNode =
-        topo.getCpuNode(std::get<TopoNode::NicData>(nicNode.data).numaNode);
-    const auto& path =
-        topo.getPath(numaNode.id, nicNode.id, {.allowC2C = true});
-    if (path.type < bestType || (path.type == bestType && path.bw > maxBw)) {
-      nics.clear();
-      nics.push_back(nicNode.name);
-      bestType = path.type;
-      maxBw = path.bw;
-    } else if (path.type == bestType && path.bw == maxBw) {
-      nics.push_back(nicNode.name);
-    }
-  }
-  return nics;
-}
-
-/// Return names of filtered NICs closest to the given GPU.
-std::vector<std::string>
-selectGpuNics(const Topology& topo, int deviceId, const NicFilter& filter) {
-  int nicCount = static_cast<int>(topo.nicCount());
-  const auto& gpuNode = topo.getGpuNode(deviceId);
-
-  std::vector<std::string> nics;
-  nics.reserve(nicCount);
-  PathType bestType = PathType::DIS;
-  uint32_t maxBw = 0;
-  for (int i = 0; i < nicCount; ++i) {
-    if (!topo.filterNic(i, filter)) {
-      continue;
-    }
-    const auto& nicNode = topo.getNicNode(i);
-    // Enable C2C paths so GPU→CPU bandwidth reflects the real interconnect
-    // (e.g. 447 GB/s C2C on GB200) rather than the PCIe stub. Without this,
-    // the GPU's low PCIe bandwidth masks NIC speed differences.
-    const auto& path = topo.getPath(gpuNode.id, nicNode.id, {.allowC2C = true});
-    if (path.type < bestType || (path.type == bestType && path.bw > maxBw)) {
-      nics.clear();
-      nics.push_back(nicNode.name);
-      bestType = path.type;
-      maxBw = path.bw;
-    } else if (path.type == bestType && path.bw == maxBw) {
-      nics.push_back(nicNode.name);
-    }
-  }
-  return nics;
-}
-
 } // namespace
 
 // ============================================================================
@@ -84,8 +23,23 @@ selectGpuNics(const Topology& topo, int deviceId, const NicFilter& filter) {
 
 std::vector<std::string> MultiTransportFactory::selectNics() {
   auto& topo = Topology::get();
-  return isCpu(deviceId_) ? selectCpuNics(topo, nicFilter_)
-                          : selectGpuNics(topo, deviceId_, nicFilter_);
+  return isCpu(deviceId_) ? topo.selectCpuNics(nicFilter_)
+                          : topo.selectGpuNics(deviceId_, nicFilter_);
+}
+
+Status MultiTransportFactory::supported(TransportType type) {
+  switch (type) {
+    case TransportType::NVLink:
+      return NVLinkTransportFactory::supported();
+    case TransportType::RDMA:
+      return RdmaTransportFactory::supported();
+    case TransportType::TCP:
+      return Err(ErrCode::NotImplemented, "tcp transport is not implemented");
+    case TransportType::Mock:
+      return Ok();
+    default:
+      return Err(ErrCode::InvalidArgument, "unknown transport type");
+  }
 }
 
 Status MultiTransport::validateRequests(
@@ -335,18 +289,16 @@ std::future<Status> MultiTransport::send(
   return make_ready_future<Status>(ErrCode::NotImplemented);
 }
 
-std::future<Result<size_t>> MultiTransport::recv(
+std::future<Status> MultiTransport::recv(
     RegisteredSegment::Span dst,
     const RequestOptions& options) {
-  return make_ready_future<Result<size_t>>(
-      Result<size_t>(ErrCode::NotImplemented));
+  return make_ready_future<Status>(ErrCode::NotImplemented);
 }
 
-std::future<Result<size_t>> MultiTransport::recv(
+std::future<Status> MultiTransport::recv(
     Segment::Span dst,
     const RequestOptions& options) {
-  return make_ready_future<Result<size_t>>(
-      Result<size_t>(ErrCode::NotImplemented));
+  return make_ready_future<Status>(ErrCode::NotImplemented);
 }
 
 Result<RegisteredSegment> MultiTransportFactory::registerSegment(
@@ -360,7 +312,7 @@ Result<RegisteredSegment> MultiTransportFactory::registerSegment(
       UNIFLOW_LOG_WARN(
           "Segment {} cannot be registered on transport {}: {}",
           segment.data(),
-          f->transportType(),
+          toStringView(f->transportType()),
           handle.error().message());
     }
   }
@@ -440,31 +392,34 @@ Result<std::unique_ptr<MultiTransport>> MultiTransportFactory::createTransport(
   CHECK_RETURN(parsed);
   auto& entries = parsed.value();
   if (entries.size() != factories_.size()) {
-    return Err(
-        ErrCode::InvalidArgument,
-        "transport count mismatch: local=" + std::to_string(factories_.size()) +
-            ", peer=" + std::to_string(entries.size()));
+    UNIFLOW_LOG_WARN(
+        "transport count mismatch: local={}, peer={}",
+        factories_.size(),
+        entries.size());
   }
 
   auto mt = std::make_unique<MultiTransport>(deviceId_, eventBaseThread_);
-  for (size_t i = 0; i < factories_.size(); ++i) {
-    if (entries[i].type != factories_[i]->transportType()) {
-      return Err(
-          ErrCode::TopologyDisconnect,
-          "transport type mismatch at " + std::to_string(i) +
-              ": local=" + std::to_string(factories_[i]->transportType()) +
-              ", peer=" + std::to_string(entries[i].type));
+  for (size_t i = 0, j = 0; i < entries.size() && j < factories_.size();) {
+    if (entries[i].type < factories_[j]->transportType()) {
+      ++i;
+      continue;
+    }
+    if (entries[i].type > factories_[j]->transportType()) {
+      ++j;
+      continue;
     }
 
-    auto transport = factories_[i]->createTransport(entries[i].data);
+    auto transport = factories_[j]->createTransport(entries[i].data);
     if (transport) {
       mt->addTransport(std::move(transport).value());
     } else {
       UNIFLOW_LOG_WARN(
           "Transport {} cannot be created: {}",
-          factories_[i]->transportType(),
+          factories_[j]->transportType(),
           transport.error().message());
     }
+    ++i;
+    ++j;
   }
   if (mt->transports_.empty()) {
     return Err(ErrCode::TopologyDisconnect, "no transport can be connected");

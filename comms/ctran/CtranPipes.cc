@@ -2,6 +2,8 @@
 
 #include "comms/ctran/CtranPipes.h"
 
+#include <algorithm>
+#include <memory>
 #include <set>
 
 #include "comms/ctran/CtranComm.h"
@@ -14,7 +16,44 @@
 #if defined(ENABLE_PIPES)
 
 #include "comms/pipes/MultiPeerTransport.h"
+#include "comms/pipes/PipesTrace.h"
 #include "comms/pipes/ll128/Ll128Packet.cuh"
+
+namespace {
+
+bool ctranPipesTraceEnabled() {
+  return NCCL_CTRAN_PIPES_TRACE_ENABLE;
+}
+
+} // namespace
+
+commResult_t ctran::ctranPreparePipesTrace(
+    CtranComm* comm,
+    comms::pipes::PipesTraceHandle& trace) {
+  trace = {};
+  if (!ctranPipesTraceEnabled()) {
+    return commSuccess;
+  }
+  const uint32_t ringSize = comms::pipes::PipesTrace::normalizeRingSize(
+      NCCL_CTRAN_PIPES_TRACE_RING_SIZE);
+  if (ringSize == 0) {
+    return commSuccess;
+  }
+
+  if (comm->pipesTrace_ == nullptr) {
+    comm->pipesTrace_ = std::make_unique<comms::pipes::PipesTrace>();
+  }
+  comm->pipesTrace_->ensure(ringSize);
+  trace = comm->pipesTrace_->deviceHandle();
+  return commSuccess;
+}
+
+void ctran::ctranEnqueuePipesTraceDrain(CtranComm* comm, cudaStream_t stream) {
+  if (!ctranPipesTraceEnabled() || comm->pipesTrace_ == nullptr) {
+    return;
+  }
+  comm->pipesTrace_->enqueueDrain(stream);
+}
 
 commResult_t ctranInitializePipes(CtranComm* comm) {
   if (!NCCL_CTRAN_USE_PIPES) {
@@ -36,8 +75,12 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     config.nvlConfig.pipelineDepth =
         static_cast<size_t>(NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH);
 
+    const bool hierAgOverlapEnabled =
+        NCCL_CTRAN_HIER_AG_OVERLAP_ENABLE && comm->statex_->nLocalRanks() > 1;
+    const size_t nvlSharedDevbufSize =
+        ctranEffectiveP2pNvlSharedDevbufSize(comm->statex_->nLocalRanks());
     config.nvlConfig.dataBufferSize = static_cast<size_t>(
-        NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE / config.nvlConfig.pipelineDepth);
+        nvlSharedDevbufSize / config.nvlConfig.pipelineDepth);
 
     config.nvlConfig.chunkSize = (pc.nvlChunkSize > 0)
         ? static_cast<size_t>(pc.nvlChunkSize)
@@ -46,6 +89,11 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     config.nvlConfig.useDualStateBuffer = (pc.useDualStateBuffer >= 0)
         ? (pc.useDualStateBuffer == 1)
         : NCCL_CTRAN_PIPES_USE_DUAL_STATE_BUFFER;
+    if (hierAgOverlapEnabled) {
+      config.nvlConfig.tile_max_groups = std::max(
+          config.nvlConfig.tile_max_groups,
+          static_cast<int>(NCCL_CTRAN_HIER_AG_NVL_NUM_BLOCKS));
+    }
 
     // LL128 buffer allocation for DeviceAllToAllv
     if (NCCL_CTRAN_DA2A_LL128_THRESHOLD > 0) {
@@ -83,7 +131,15 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
       }
       config.ibgdaConfig.ibHca = std::move(hcaStr);
     }
-    config.ibgdaConfig.dataBufferSize = NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE;
+    uint64_t ibgdaDataBufferSize = (pc.ibgdaDataBufferSize > 0)
+        ? static_cast<size_t>(pc.ibgdaDataBufferSize)
+        : static_cast<size_t>(NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE);
+    if (hierAgOverlapEnabled && NCCL_CTRAN_HIER_AG_IBGDA_DATA_BUFFER_SIZE > 0) {
+      ibgdaDataBufferSize = std::max(
+          ibgdaDataBufferSize, NCCL_CTRAN_HIER_AG_IBGDA_DATA_BUFFER_SIZE);
+    }
+    config.ibgdaConfig.dataBufferSize =
+        static_cast<size_t>(ibgdaDataBufferSize);
     config.ibgdaConfig.qpDepth = NCCL_CTRAN_IBGDA_QP_DEPTH;
     if (NCCL_IB_TIMEOUT != NCCL_IB_TIMEOUT_DEFAULTCVARVALUE) {
       config.ibgdaConfig.timeout = static_cast<uint8_t>(NCCL_IB_TIMEOUT);
@@ -107,6 +163,49 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
       config.ibgdaConfig.rnrRetry =
           static_cast<uint8_t>(NCCL_CTRAN_IBGDA_RNR_RETRY);
     }
+    config.ibgdaConfig.ibLazyConnect = pc.ibLazyConnect;
+    config.ibgdaConfig.materializePeerTimeoutMs =
+        NCCL_CTRAN_IBGDA_MATERIALIZE_PEER_TIMEOUT_MS;
+
+    if (NCCL_CTRAN_IBGDA_SENDRECV_ENABLE) {
+      config.ibgdaConfig.numQpsPerPeerPerNic =
+          static_cast<int>(NCCL_CTRAN_HIER_AG_IB_QPS_PER_PEER_PER_NIC);
+      if (config.ibgdaConfig.dataBufferSize == 0) {
+        CLOGF(
+            ERR,
+            "NCCL_CTRAN_IBGDA_SENDRECV_ENABLE=1 requires a positive "
+            "IBGDA data-buffer size via NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE "
+            "or per-communicator pipesIbgdaDataBufferSize");
+        return commInvalidArgument;
+      }
+      if (NCCL_CTRAN_IBGDA_SENDRECV_MAX_GROUPS <= 0) {
+        CLOGF(
+            ERR,
+            "NCCL_CTRAN_IBGDA_SENDRECV_MAX_GROUPS must be positive, got {}",
+            NCCL_CTRAN_IBGDA_SENDRECV_MAX_GROUPS);
+        return commInvalidArgument;
+      }
+      if (NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH <= 0) {
+        CLOGF(
+            ERR,
+            "NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH must be positive, got {}",
+            NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH);
+        return commInvalidArgument;
+      }
+      config.ibgdaConfig.sendRecv =
+          comms::pipes::MultipeerIbgdaTransportConfig::SendRecvConfig{
+              .maxGroups =
+                  static_cast<int>(NCCL_CTRAN_IBGDA_SENDRECV_MAX_GROUPS),
+              .pipelineDepth =
+                  static_cast<int>(NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH),
+          };
+      CLOGF(
+          INFO,
+          "Pipes IBGDA sendRecv configured: maxGroups={}, pipelineDepth={}, dataBufferSize={}",
+          config.ibgdaConfig.sendRecv->maxGroups,
+          config.ibgdaConfig.sendRecv->pipelineDepth,
+          config.ibgdaConfig.dataBufferSize);
+    }
 
     config.disableIb = NCCL_CTRAN_PIPES_DISABLE_IB;
     config.topoConfig.p2pDisable = NCCL_P2P_DISABLE ||
@@ -115,6 +214,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     // Topology config: MNNVL mode and overrides
     config.topoConfig.mnnvlMode =
         static_cast<comms::pipes::MnnvlMode>(NCCL_MNNVL_ENABLE);
+    config.topoConfig.logicalNvlRanks = comm->statex_->localRankToRanks();
 
     // Guard against H100 Grand Teton returning NVML fabric info
     // (state=COMPLETED) without actual cross-node NVLink (MNNVL) capability.

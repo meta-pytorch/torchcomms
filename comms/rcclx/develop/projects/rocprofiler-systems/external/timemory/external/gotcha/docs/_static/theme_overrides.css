@@ -1,0 +1,48 @@
+/* override table width restrictions */
+
+    .wy-table-responsive table td, .wy-table-responsive table th {
+        white-space: normal !important;
+    }
+    .wy-table-responsive {
+        margin-bottom: 24px;
+        max-width: 100%;
+        overflow: auto !important;
+    }
+
+/* wide table scroll-bar */
+
+    table.scrollwide {
+        display: block;
+        width: 700px;
+        background-color: #E0;
+        overflow: scroll; !important
+    }
+    table.scrollwide td {
+        white-space: nowrap;
+    }
+
+/* override navigation sidebar out-of-view on page scrolling */
+
+    .wy-nav-side {
+        position: fixed;
+        padding-bottom: 2em;
+        width: 300px;
+        overflow-x: hidden;
+        overflow-y: scroll;
+        min-height: 100%;
+        background: #343131;
+        z-index: 200;
+    }
+
+/* changed side navigation bg colors */
+    .wy-side-nav-search {
+        background: #222c32 !important;
+    }
+
+    .wy-nav-side {
+        background: #222c32;
+    }
+
+    .rst-versions{
+        border-top:solid 10px #222c32;
+    }

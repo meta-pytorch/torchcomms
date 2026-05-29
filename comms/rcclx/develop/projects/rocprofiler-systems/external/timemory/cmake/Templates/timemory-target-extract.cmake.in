@@ -1,0 +1,208 @@
+set(PROCESSED)
+# set(TIMEMORY_CMAKE_DEBUG ON)
+
+macro(TIMEMORY_PRINT_EXTRACTED_VARIABLES)
+    foreach(_TYPE COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_OPTIONS LINK_DIRECTORIES
+                  INCLUDE_DIRS LIBRARIES)
+        message(STATUS "timemory_${_TYPE} = ${timemory_${_TYPE}}")
+    endforeach()
+endmacro()
+
+macro(TIMEMORY_PARENT_SCOPE_VARIABLE _TYPE)
+    set(timemory_${_TYPE}
+        ${timemory_${_TYPE}} ${ARGN}
+        PARENT_SCOPE)
+endmacro()
+
+macro(TIMEMORY_LIST _CMD _LIST)
+    if("${_CMD}" STREQUAL "APPEND")
+        foreach(_ARG ${ARGN})
+            if(NOT "${_ARG}" IN_LIST ${_LIST})
+                list(${_CMD} ${_LIST} ${_ARG})
+            endif()
+        endforeach()
+    else()
+        list(${_CMD} ${_LIST} ${ARGN})
+    endif()
+endmacro()
+
+function(TIMEMORY_TARGET_NAME _TARG _VAR)
+    if(NOT EXISTS "${_TARG}")
+        if(TARGET "${_TARG}")
+            set(${_VAR}
+                "${_TARG}"
+                PARENT_SCOPE)
+        else()
+            foreach(
+                _PREFIX
+                "timemory::timemory-"
+                "timemory"
+                "timemory-"
+                "caliper::"
+                "gotcha::"
+                "Boost::"
+                "Threads::"
+                "Dyninst::"
+                "Kokkos::"
+                "OpenMP::")
+                if(NOT TARGET "${_TARG}" AND TARGET "${_PREFIX}${_TARG}")
+                    set(${_VAR}
+                        "${_PREFIX}${_TARG}"
+                        PARENT_SCOPE)
+                    break()
+                endif()
+            endforeach()
+        endif()
+    endif()
+endfunction()
+
+foreach(_TYPE COMPILE_DEFINITIONS COMPILE_OPTIONS INCLUDE_DIRS LINK_DIRECTORIES LIBRARIES
+              LINK_OPTIONS)
+    set(timemory_${_TYPE})
+endforeach()
+
+# ----------------------------------------------------------------------------------------#
+
+function(TIMEMORY_TARGET_EXTRACT _TARG _TYPE)
+
+    timemory_target_name(${_TARG} _TARG)
+
+    if(TIMEMORY_CMAKE_DEBUG)
+        message(STATUS "")
+        message(STATUS "Processing ${_TARG}...")
+        message(STATUS "")
+        timemory_print_extracted_variables()
+    endif()
+
+    if("${_TARG}" IN_LIST PROCESSED)
+        if(TIMEMORY_CMAKE_DEBUG)
+            message(STATUS "Skipping ${_TARG}...")
+        endif()
+        return()
+    endif()
+
+    list(APPEND PROCESSED "${_TARG}")
+    set(PROCESSED
+        ${PROCESSED}
+        PARENT_SCOPE)
+
+    get_target_property(INCLUDE_DIRS ${_TARG} ${_TYPE}_INCLUDE_DIRECTORIES)
+    get_target_property(COMPILE_OPTS ${_TARG} ${_TYPE}_COMPILE_OPTIONS)
+    get_target_property(COMPILE_DEFS ${_TARG} ${_TYPE}_COMPILE_DEFINITIONS)
+    get_target_property(LIBRARY_LINK ${_TARG} ${_TYPE}_LINK_LIBRARIES)
+    get_target_property(LIBRARY_LDIR ${_TARG} ${_TYPE}_LINK_DIRECTORIES)
+    get_target_property(LIBRARY_OPTS ${_TARG} ${_TYPE}_LINK_OPTIONS)
+
+    if(INCLUDE_DIRS)
+        timemory_list(APPEND timemory_INCLUDE_DIRS ${INCLUDE_DIRS})
+    endif()
+
+    if(COMPILE_OPTS)
+        timemory_list(APPEND timemory_COMPILE_OPTIONS ${COMPILE_OPTS})
+    endif()
+
+    if(COMPILE_DEFS)
+        timemory_list(APPEND timemory_COMPILE_DEFINITIONS ${COMPILE_DEFS})
+    endif()
+
+    if(LIBRARY_LDIR)
+        timemory_list(APPEND timemory_LINK_DIRECTORIES ${LIBRARY_LDIR})
+    endif()
+
+    if(LIBRARY_OPTS)
+        timemory_list(APPEND timemory_LINK_OPTIONS ${LIBRARY_OPTS})
+    endif()
+
+    # loop over all linked libraries
+    foreach(_LINK ${LIBRARY_LINK})
+
+        if(NOT _LINK)
+            continue()
+        endif()
+
+        if(TIMEMORY_CMAKE_DEBUG)
+            message(STATUS "looping ${_LINK}...")
+        endif()
+
+        timemory_target_name(${_LINK} _LINK)
+
+        if(${_LINK} IN_LIST PROCESSED)
+            continue()
+        endif()
+
+        set(IS_TARGET OFF)
+        set(IS_INTERFACE OFF)
+        set(IS_COMPILED OFF)
+        set(IS_FILE OFF)
+
+        # check if cmake target
+        if(TARGET ${_LINK})
+            set(IS_TARGET ON)
+        endif()
+
+        # check if timemory interface library
+        if(${_LINK} IN_LIST timemory_INTERFACE_LIBRARIES)
+            set(IS_INTERFACE ON)
+        endif()
+
+        # check if timemory compiled library
+        if(${_LINK} IN_LIST timemory_COMPILED_LIBRARIES)
+            set(IS_COMPILED ON)
+        endif()
+
+        # check if file
+        if(EXISTS ${_LINK})
+            set(IS_FILE ON)
+        endif()
+
+        if(IS_FILE)
+            timemory_list(APPEND timemory_LIBRARIES ${_LINK})
+        elseif(
+            IS_INTERFACE
+            OR IS_COMPILED
+            OR IS_TARGET)
+            if(NOT "${_LINK}" IN_LIST PROCESSED)
+                timemory_target_extract(${_LINK} INTERFACE)
+            endif()
+        endif()
+    endforeach()
+
+    if(_TARG
+       AND TARGET ${_TARG}
+       AND NOT EXISTS "${_TARG}"
+       AND NOT LIBRARY_LINK
+       AND NOT ${_TARG} IN_LIST timemory_INTERFACE_LIBRARIES
+       AND NOT ${_TARG} IN_LIST timemory_COMPILED_LIBRARIES
+       AND NOT "${_TARG}" MATCHES "timemory::timemory-*")
+        timemory_list(APPEND timemory_LIBRARIES ${_TARG})
+    endif()
+
+    timemory_parent_scope_variable(INCLUDE_DIRS)
+    timemory_parent_scope_variable(COMPILE_OPTIONS)
+    timemory_parent_scope_variable(COMPILE_DEFINITIONS)
+    timemory_parent_scope_variable(LINK_DIRECTORIES)
+    timemory_parent_scope_variable(LINK_OPTIONS)
+    timemory_parent_scope_variable(LIBRARIES)
+
+endfunction()
+
+# ----------------------------------------------------------------------------------------#
+
+foreach(_TARG ${timemory_INTERFACE_COMPONENTS})
+    timemory_target_name(${_TARG} _TARG)
+    timemory_target_extract(${_TARG} INTERFACE)
+endforeach()
+
+# ----------------------------------------------------------------------------------------#
+
+if(TIMEMORY_CMAKE_DEBUG)
+    message(STATUS "")
+    timemory_print_extracted_variables()
+    message(STATUS "")
+endif()
+
+# ----------------------------------------------------------------------------------------#
+# clean-up
+unset(PROCESSED)
+
+# ----------------------------------------------------------------------------------------#

@@ -389,6 +389,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::send(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
+  checkTensorDevice(tensor);
 
   TracingGuard tracingGuard(name_, comm_size_, "send", dst, tensor, tensor);
 
@@ -433,6 +434,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::recv(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
+  checkTensorDevice(tensor);
 
   TracingGuard tracingGuard(name_, comm_size_, "recv", src, {tensor}, {tensor});
 
@@ -481,6 +483,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::batch_op_issue(
   std::vector<at::Tensor> output_tensors;
 
   for (const auto& op : ops) {
+    checkTensorDevice(op.tensor);
     if (op.type == BatchSendRecv::P2POp::OpType::SEND) {
       at::Tensor tensor = op.tensor;
       ensureTensorContiguous(tensor);
@@ -578,6 +581,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::broadcast(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
+  checkTensorDevice(tensor);
 
   TracingGuard tracingGuard(
       name_, comm_size_, "broadcast", rank_, {tensor}, {tensor});
@@ -624,6 +628,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_reduce(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
+  checkTensorDevice(tensor);
 
   TracingGuard tracingGuard(
       name_, comm_size_, "all_reduce", rank_, {tensor}, {tensor});
@@ -671,6 +676,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::reduce(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
+  checkTensorDevice(tensor);
 
   TracingGuard tracingGuard(
       name_, comm_size_, "reduce", rank_, {tensor}, {tensor});
@@ -734,6 +740,9 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_gather(
           "All tensors in tensor_list must have same size as input tensor");
     }
   }
+
+  checkTensorDevice(tensor);
+  checkTensorsDevice(tensor_list);
 
   TracingGuard tracingGuard(
       name_, comm_size_, "all_gather", rank_, tensor_list, {tensor});
@@ -802,6 +811,9 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_gather_v(
     ensureTensorContiguous(t);
   }
 
+  checkTensorDevice(tensor);
+  checkTensorsDevice(tensor_list);
+
   TracingGuard tracingGuard(
       name_, comm_size_, "all_gather_v", rank_, tensor_list, {tensor});
 
@@ -868,6 +880,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_gather_single(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(output);
   ensureTensorContiguous(input);
+  checkTensorDevice(output);
+  checkTensorDevice(input);
 
   if (output.numel() != input.numel() * comm_size_) {
     throw std::runtime_error(
@@ -931,6 +945,9 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::reduce_scatter(
           "All input tensors must have same size as output tensor");
     }
   }
+
+  checkTensorDevice(output);
+  checkTensorsDevice(input_list);
 
   TracingGuard tracingGuard(
       name_, comm_size_, "reduce_scatter", rank_, input_list, {output});
@@ -1023,6 +1040,9 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::reduce_scatter_v(
     ensureTensorContiguous(t);
   }
 
+  checkTensorDevice(output);
+  checkTensorsDevice(input_list);
+
   TracingGuard tracingGuard(
       name_, comm_size_, "reduce_scatter_v", rank_, input_list, {output});
 
@@ -1113,6 +1133,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::reduce_scatter_single(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(output);
   ensureTensorContiguous(input);
+  checkTensorDevice(output);
+  checkTensorDevice(input);
 
   if (input.numel() != output.numel() * comm_size_) {
     throw std::runtime_error(
@@ -1166,6 +1188,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_to_all_single(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(output);
   ensureTensorContiguous(input);
+  checkTensorDevice(output);
+  checkTensorDevice(input);
 
   if (input.numel() != output.numel()) {
     throw std::runtime_error(
@@ -1225,6 +1249,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_to_all_v_single(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(output);
   ensureTensorContiguous(input);
+  checkTensorDevice(output);
+  checkTensorDevice(input);
 
   // Validate split sizes vectors
   if (input_split_sizes.size() != static_cast<size_t>(comm_size_)) {
@@ -1338,6 +1364,9 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_to_all(
     ensureTensorContiguous(input_tensor_list[i]);
     ensureTensorContiguous(output_tensor_list[i]);
   }
+
+  checkTensorsDevice(output_tensor_list);
+  checkTensorsDevice(input_tensor_list);
 
   TracingGuard tracingGuard(
       name_,
@@ -1455,6 +1484,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::scatter(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(output_tensor);
+  checkTensorDevice(output_tensor);
 
   // Only the root rank needs valid input tensors
   if (rank_ == root) {
@@ -1470,6 +1500,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::scatter(
             "All input tensors must have same size as output tensor");
       }
     }
+    checkTensorsDevice(input_tensor_list);
   }
 
   TracingGuard tracingGuard(
@@ -1564,6 +1595,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::gather(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(input_tensor);
+  checkTensorDevice(input_tensor);
 
   // Only the root rank needs valid output tensors
   if (rank_ == root) {
@@ -1579,6 +1611,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::gather(
             "All output tensors must have same size as input tensor");
       }
     }
+    checkTensorsDevice(output_tensor_list);
   }
 
   TracingGuard tracingGuard(
@@ -1671,6 +1704,7 @@ TorchCommBackend::AllGatherPHandle TorchCommRCCLX::all_gather_p_init(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(output);
+  checkTensorDevice(output);
 
   // Calculate max receive count (total elements in output) and buffer size
   size_t maxRecvCount = output.numel();
@@ -1724,6 +1758,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_gather_p_exec(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(input);
+  checkTensorDevice(input);
 
   TracingGuard tracingGuard(
       name_, comm_size_, "all_gather_p_exec", rank_, {input}, {});

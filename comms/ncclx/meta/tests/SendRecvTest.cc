@@ -11,13 +11,12 @@
 #include "checks.h"
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 
+#include "comms/ctran/tests/VerifyAlgoStatsUtil.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
-#include "comms/testinfra/AlgoTestUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "meta/hints/GlobalHints.h"
+#include "meta/algoconf/AlgoStrConv.h"
 
 static bool VERBOSE = true;
-using testinfra::AlgoRAII;
 
 class SendRecvTest : public NcclxBaseTestFixture {
  public:
@@ -25,15 +24,13 @@ class SendRecvTest : public NcclxBaseTestFixture {
   void SetUp() override {
     setenv("NCCL_CTRAN_ENABLE", "1", 1);
     NcclxBaseTestFixture::SetUp();
-    this->comm = ncclx::test::createNcclComm(
-        globalRank, numRanks, localRank, bootstrap_.get());
+    ctranAlgoStats_.enable();
 
     CUDACHECK_TEST(cudaSetDevice(this->localRank));
     CUDACHECK_TEST(cudaStreamCreate(&this->stream));
   }
 
   void TearDown() override {
-    NCCLCHECK_TEST(ncclCommDestroy(this->comm));
     CUDACHECK_TEST(cudaStreamDestroy(this->stream));
     NcclxBaseTestFixture::TearDown();
   }
@@ -81,10 +78,6 @@ class SendRecvTest : public NcclxBaseTestFixture {
     } else {
       return ncclComm->opCount;
     }
-  }
-
-  void resetOpCount() {
-    comm->opCount = 0;
   }
 
   void runSend(void) {
@@ -238,9 +231,10 @@ class SendRecvTest : public NcclxBaseTestFixture {
   }
 
  protected:
-  ncclComm_t comm;
+  ncclComm_t comm{nullptr};
   cudaStream_t stream;
   bool expectCtranAlgo_{false};
+  ctran::test::VerifyAlgoStatsHelper ctranAlgoStats_;
 
   int* sendBuf{nullptr};
   int* recvBuf{nullptr};
@@ -253,8 +247,18 @@ class SendRecvTestParam : public SendRecvTest,
                               std::tuple<enum NCCL_SENDRECV_ALGO>> {};
 
 TEST_P(SendRecvTestParam, SingleSend) {
-  auto& [algo] = GetParam();
-  AlgoRAII algoEnv(NCCL_SENDRECV_ALGO, algo);
+  const auto& [algo] = GetParam();
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints({
+      {"sendrecvAlgo", ncclx::algoconf::algoValToStr(algo)},
+  });
+#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
+  hints.set("noLocal", "1");
+#endif
+  config.hints = &hints;
+  ncclx::test::NcclCommRAII commRaii(
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
+  this->comm = commRaii.get();
 
   expectCtranAlgo_ = algo == NCCL_SENDRECV_ALGO::ctran;
 
@@ -262,43 +266,148 @@ TEST_P(SendRecvTestParam, SingleSend) {
 }
 
 TEST_P(SendRecvTestParam, GroupdSend) {
-  auto& [algo] = GetParam();
-  AlgoRAII algoEnv(NCCL_SENDRECV_ALGO, algo);
+  const auto& [algo] = GetParam();
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints({
+      {"sendrecvAlgo", ncclx::algoconf::algoValToStr(algo)},
+  });
+#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
+  hints.set("noLocal", "1");
+#endif
+  config.hints = &hints;
+  ncclx::test::NcclCommRAII commRaii(
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
+  this->comm = commRaii.get();
+
   expectCtranAlgo_ = algo == NCCL_SENDRECV_ALGO::ctran;
 
   runGroupedSend();
 }
 
 TEST_P(SendRecvTestParam, GroupedSendRecv) {
-  auto& [algo] = GetParam();
-  AlgoRAII algoEnv(NCCL_SENDRECV_ALGO, algo);
+  const auto& [algo] = GetParam();
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints({
+      {"sendrecvAlgo", ncclx::algoconf::algoValToStr(algo)},
+  });
+#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
+  hints.set("noLocal", "1");
+#endif
+  config.hints = &hints;
+  ncclx::test::NcclCommRAII commRaii(
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
+  this->comm = commRaii.get();
+
   expectCtranAlgo_ = algo == NCCL_SENDRECV_ALGO::ctran;
 
   runGroupedSendRecv();
 }
 
 TEST_P(SendRecvTestParam, SendRecvSelf) {
-  auto& [algo] = GetParam();
-  AlgoRAII algoEnv(NCCL_SENDRECV_ALGO, algo);
+  const auto& [algo] = GetParam();
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints({
+      {"sendrecvAlgo", ncclx::algoconf::algoValToStr(algo)},
+  });
+#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
+  hints.set("noLocal", "1");
+#endif
+  config.hints = &hints;
+  ncclx::test::NcclCommRAII commRaii(
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
+  this->comm = commRaii.get();
+
   expectCtranAlgo_ = algo == NCCL_SENDRECV_ALGO::ctran;
 
   runSendRecvSelf();
 }
 
 TEST_F(SendRecvTestParam, GroupedSendRecvWithHintOverride) {
-  AlgoRAII algoEnv(NCCL_SENDRECV_ALGO, NCCL_SENDRECV_ALGO::orig);
+  // First part: comm with ctran sendrecv hint → verify ctran path
+  {
+    ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints({{"sendrecvAlgo", "ctran"}});
+#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
+    hints.set("noLocal", "1");
+#endif
+    config.hints = &hints;
+    ncclx::test::NcclCommRAII commRaii(
+        globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
+    this->comm = commRaii.get();
 
-  ASSERT_TRUE(ncclx::setGlobalHint("algo_sendrecv", "ctran"));
-  expectCtranAlgo_ = true;
-  runGroupedSendRecv();
+    expectCtranAlgo_ = true;
+    runGroupedSendRecv();
+  }
 
-  // Ctran algo would also update the opCount shared with baseline; reset for
-  // baseline test
-  resetOpCount();
+  // Second part: comm without sendrecv algo override → verify baseline path
+  {
+    ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints;
+#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
+    hints.set("noLocal", "1");
+#endif
+    config.hints = &hints;
+    ncclx::test::NcclCommRAII commRaii(
+        globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
+    this->comm = commRaii.get();
 
-  ASSERT_TRUE(ncclx::resetGlobalHint("algo_sendrecv"));
-  expectCtranAlgo_ = false;
-  runGroupedSendRecv();
+    expectCtranAlgo_ = false;
+    runGroupedSendRecv();
+  }
+}
+
+// Cudagraph-aware SendRecv: capture grouped send/recv in a CUDA graph,
+// replay, and verify correctness. Uses ctgraph algo which pre-registers
+// buffers during capture.
+TEST_F(SendRecvTest, CtgraphGroupedSendRecv) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints({{"sendrecvAlgo", "ctgraph"}});
+#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
+  hints.set("noLocal", "1");
+#endif
+  config.hints = &hints;
+  ncclx::test::NcclCommRAII commRaii(
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
+  this->comm = commRaii.get();
+
+  if (comm->nRanks < 2) {
+    GTEST_SKIP() << "Need at least 2 ranks";
+  }
+
+  constexpr int count = 1048576;
+  constexpr int commCount = 1024;
+  prepareBufs(count, true);
+
+  const int sendPeer = (comm->rank + 1) % comm->nRanks;
+  const int recvPeer = (comm->rank + comm->nRanks - 1) % comm->nRanks;
+  // Capture
+  cudaGraph_t graph;
+  cudaGraphExec_t exec;
+  CUDACHECK_TEST(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
+  ncclGroupStart();
+  NCCLCHECK_TEST(ncclSend(sendBuf, commCount, ncclInt, sendPeer, comm, stream));
+  NCCLCHECK_TEST(ncclRecv(recvBuf, commCount, ncclInt, recvPeer, comm, stream));
+  ncclGroupEnd();
+  CUDACHECK_TEST(cudaStreamEndCapture(stream, &graph));
+  CUDACHECK_TEST(cudaGraphInstantiate(&exec, graph, 0));
+
+  // Replay
+  CUDACHECK_TEST(cudaGraphLaunch(exec, stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+
+  checkResults(recvPeer, commCount);
+
+  if (comm->noLocal_) {
+    // nolocal: IB backend → ctgraph routes to ctran
+    ctranAlgoStats_.verify(comm->ctranComm_.get(), "SendRecv", "Ctran");
+  } else {
+    // default: NVL peers → ctgraph falls back to baseline
+    ctranAlgoStats_.verifyNot(comm->ctranComm_.get(), "SendRecv", "Ctran");
+  }
+
+  CUDACHECK_TEST(cudaGraphExecDestroy(exec));
+  CUDACHECK_TEST(cudaGraphDestroy(graph));
+  releaseBufs(true);
 }
 
 INSTANTIATE_TEST_SUITE_P(

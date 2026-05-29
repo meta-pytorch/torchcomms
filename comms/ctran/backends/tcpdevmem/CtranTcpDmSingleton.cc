@@ -53,26 +53,31 @@ bool CtranTcpDmSingleton::supportBondTransport() {
   return false;
 }
 
-// Use a LeakySingleton to avoid shutdown order issues where CtranMapper
-// objects may outlive the singleton's destruction phase. LeakySingleton
-// intentionally leaks the object at shutdown to prevent crashes.
-folly::LeakySingleton<::comms::tcp_devmem::TransportInterface> tcpTransportPtr(
-    []() -> ::comms::tcp_devmem::TransportInterface* {
-      if (!CtranTcpDmSingleton::supportBondTransport()) {
-        return new ::comms::tcp_devmem::Transport();
-      }
+static folly::Singleton<::comms::tcp_devmem::TransportInterface>
+tcpTransportPtr([]() -> ::comms::tcp_devmem::TransportInterface* {
+  if (!CtranTcpDmSingleton::supportBondTransport()) {
+    return new ::comms::tcp_devmem::Transport();
+  }
 
-      auto devs = CtranTcpDmSingleton::getIfNames(
-          NCCL_IB_HCA, NCCL_CTRAN_IB_DEVICES_PER_RANK);
-      if (devs.size() && devs.front().size() == 1) {
-        return new ::comms::tcp_devmem::Transport();
-      } else {
-        return new ::comms::tcp_devmem::BondTransport(devs);
-      }
-    });
+  auto devs = CtranTcpDmSingleton::getIfNames(
+      NCCL_IB_HCA, NCCL_CTRAN_IB_DEVICES_PER_RANK);
+  if (devs.size() && devs.front().size() == 1) {
+    return new ::comms::tcp_devmem::Transport();
+  } else {
+    return new ::comms::tcp_devmem::BondTransport(devs);
+  }
+});
 
-::comms::tcp_devmem::TransportInterface* CtranTcpDmSingleton::getTransport() {
-  return &folly::LeakySingleton<::comms::tcp_devmem::TransportInterface>::get();
+std::shared_ptr<::comms::tcp_devmem::TransportInterface>
+CtranTcpDmSingleton::getTransport() {
+  auto ptr =
+      folly::Singleton<::comms::tcp_devmem::TransportInterface>::try_get();
+  if (!ptr) {
+    FB_ERRORTHROW_EX_NOCOMM(
+        commInternalError,
+        "TCP-DEVMEM: TransportInterface singleton is not available");
+  }
+  return ptr;
 }
 
 } // namespace ctran

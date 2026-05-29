@@ -7,8 +7,12 @@
 #include <utility>
 #include <vector>
 
+#ifdef __HIP_PLATFORM_AMD__
+#include "comms/pipes/amd/DocaCompat.h"
+#else
 #include <doca_gpunetio_host.h>
 #include <doca_verbs_net_wrapper.h>
+#endif
 
 #include "comms/pipes/IbverbsLazy.h"
 #include "comms/pipes/rdma/IbHcaParser.h"
@@ -106,6 +110,20 @@ class NicDiscovery {
   const std::vector<NicCandidate>& getCandidates() const {
     return candidates_;
   }
+
+  /**
+   * Get all NIC candidates at the best-affinity tier — i.e., NICs that
+   * share the same {pathType, bandwidthGbps, isDataDirect} as the top
+   * candidate. Returns an empty vector if no candidates were discovered.
+   *
+   * Used by multi-NIC transports to count how many equally-good NICs the
+   * GPU has access to (e.g., GB200/GB300 typically expose 2 NICs at the
+   * same PIX path tier with identical bandwidth).
+   *
+   * Since `candidates_` is sorted best-to-worst, the iteration stops at
+   * the first divergence — no full scan needed past the best tier.
+   */
+  std::vector<NicCandidate> getBestAffinityNics() const;
 
   /**
    * Get the anchor's NUMA node.

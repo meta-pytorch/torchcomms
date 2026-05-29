@@ -1,0 +1,22 @@
+# Swap files.
+.*.swp
+.*.swo
+*~
+
+*.pyc
+*.pyo
+*.so
+*.o
+*.a
+
+build/
+dist/
+_line_profiler.c
+line_profiler.egg-info/
+MANIFEST
+pypi-site-docs.zip
+index.html
+
+.coverage
+tests/htmlcov
+.vscode

@@ -3,10 +3,12 @@
 #pragma once
 
 #include <cstdint>
+
 #include "comms/common/AtomicUtils.cuh"
 #include "comms/common/BitOps.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
 #include "comms/pipes/Timeout.cuh"
+#include "comms/pipes/amd/HipHostCompat.h"
 
 namespace comms::pipes {
 

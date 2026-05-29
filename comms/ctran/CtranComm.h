@@ -4,7 +4,12 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <optional>
+#include <string>
+#include <vector>
 
 #include <folly/Synchronized.h>
 #include "comms/ctran/bootstrap/ICtranBootstrap.h"
@@ -13,32 +18,37 @@
 #include "comms/ctran/utils/Abort.h"
 #include "comms/ctran/utils/AsyncError.h"
 #include "comms/ctran/utils/Exception.h"
+#include "comms/utils/colltrace/AlgoStats.h"
 #include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/utils/commSpecs.h"
 
 namespace comms::pipes {
 class MultiPeerTransport;
+class PipesTrace;
 struct Transport;
 } // namespace comms::pipes
 
 using meta::comms::CommBackend;
 
-// Per-communicator pipes NVL transport overrides.
+// Per-communicator Pipes transport overrides.
 // -1 means use CVAR default.
 struct ctranPipesConfig {
   int64_t nvlChunkSize{-1};
   int useDualStateBuffer{-1}; // -1=cvar, 0=single, 1=dual
+  bool ibLazyConnect{false};
+  int64_t ibgdaDataBufferSize{-1};
 
   bool operator==(const ctranPipesConfig& other) const {
     return nvlChunkSize == other.nvlChunkSize &&
-        useDualStateBuffer == other.useDualStateBuffer;
+        useDualStateBuffer == other.useDualStateBuffer &&
+        ibLazyConnect == other.ibLazyConnect &&
+        ibgdaDataBufferSize == other.ibgdaDataBufferSize;
   }
 };
 
 struct ctranConfig {
   int blocking{-1};
   std::string commDesc;
-  const char* ncclAllGatherAlgo{nullptr};
   std::vector<enum CommBackend> backends = {};
   ctranPipesConfig pipesConfig;
   bool enableProfiler{NCCL_CTRAN_TRANSPORT_PROFILER};
@@ -46,15 +56,14 @@ struct ctranConfig {
   bool operator==(const ctranConfig& other) const {
     return (
         blocking == other.blocking && commDesc == other.commDesc &&
-        ncclAllGatherAlgo == other.ncclAllGatherAlgo &&
         backends == other.backends && pipesConfig == other.pipesConfig &&
         enableProfiler == other.enableProfiler);
   }
 };
 
 // Forward declaration to avoid circular dependency
-class CollTrace;
 struct ncclComm;
+class CtranGpe;
 namespace ncclx::memory {
 class memCacheAllocator;
 }
@@ -143,14 +152,23 @@ class CtranComm {
     return ctranOpCount_;
   }
 
-  // TODO: after finish refactoring remove factory method and define proper
-  // constructor
-  friend commResult_t setCtranCommBase(ncclComm* comm);
-
   // Get a pointer to the Transport array from MultiPeerTransport,
   // indexed by global rank. Returns nullptr if MultiPeerTransport is not
   // initialized.
   comms::pipes::Transport* getMultiPeerTransportsPtr() const;
+
+  // Returns a snapshot of the algo stats, or std::nullopt if stats are
+  // disabled.
+  std::optional<meta::comms::colltrace::AlgoStatDump> dumpAlgoStats() const;
+
+  void recordAlgoStats(const std::string& opName, const std::string& algoName);
+
+  // Record a collective algorithm invocation. No-op if algoStats is disabled.
+  inline void recordAlgoStat(
+      const std::string& opName,
+      const std::string& algoName) {
+    recordAlgoStats(opName, algoName);
+  }
 
   // fields are public to allow access from external code and tests
   // TODO: remove config_, it's redundant
@@ -173,15 +191,43 @@ class CtranComm {
   // CtranComm
   std::shared_ptr<ICtran> ctran_;
   std::unique_ptr<meta::comms::ICtranBootstrap> bootstrap_;
-  std::shared_ptr<CollTrace> collTrace_;
   std::shared_ptr<meta::comms::colltrace::ICollTrace> colltraceNew_;
   std::shared_ptr<ncclx::memory::memCacheAllocator> memCache_;
   std::unique_ptr<ncclx::CommStateX> statex_;
 #if defined(ENABLE_PIPES)
   std::unique_ptr<comms::pipes::MultiPeerTransport> multiPeerTransport_;
+  uint64_t* hierarchicalAgReadyCounters_{nullptr};
+  size_t hierarchicalAgReadyCounterCount_{0};
+  std::unique_ptr<comms::pipes::PipesTrace> pipesTrace_;
 #endif // defined(ENABLE_PIPES)
 
+  // Deferred cleanup for CUDA graph resources. CUDA user-object destructor
+  // callbacks cannot call CUDA APIs, so cleanup is enqueued here and
+  // executed at comm destruction where CUDA APIs are safe.
+  class CudagraphDeferredCleanup {
+   public:
+    void add(std::function<void()> fn) {
+      fns_.wlock()->push_back(std::move(fn));
+    }
+    void runAll() {
+      auto fns = fns_.wlock();
+      for (auto& fn : *fns) {
+        fn();
+      }
+      fns->clear();
+    }
+
+   private:
+    folly::Synchronized<std::vector<std::function<void()>>> fns_;
+  };
+  CudagraphDeferredCleanup cudagraphDeferredCleanup;
+
  private:
+  friend class CtranGpe;
+  friend commResult_t ctranInit(
+      CtranComm* comm,
+      std::unique_ptr<ctran::IProfilerReporter> reporter);
+  std::unique_ptr<meta::comms::colltrace::AlgoStats> algoStats_;
   // TODO: define proper constructor to make CtranComm be independent of
   // ncclComm.
   // While doing refactoring we always create CtranComm from ncclComm and it

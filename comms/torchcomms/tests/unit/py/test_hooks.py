@@ -6,13 +6,18 @@ import unittest
 
 import torch
 import torchcomms
-from torchcomms._comms import OpName, PostHookArgs, PreHookArgs, RemovableHandle
+from torchcomms._comms import (
+    AllReducePreHookArgs,
+    BroadcastPreHookArgs,
+    OpName,
+    RemovableHandle,
+)
 
 
 class TestHooks(unittest.TestCase):
     def _create_comm(self, name: str) -> torchcomms.TorchComm:
-        """Create a communicator using the dummy backend."""
-        return torchcomms.new_comm("dummy", torch.device("cpu"), name=name)
+        """Create a communicator using the fake backend."""
+        return torchcomms.new_comm("fake", torch.device("cpu"), name=name)
 
     def test_register_pre_hook(self) -> None:
         """Test that pre-hooks are called before collective operations."""
@@ -20,8 +25,8 @@ class TestHooks(unittest.TestCase):
 
         pre_hook_calls: list[OpName] = []
 
-        def my_pre_hook(args: PreHookArgs) -> None:
-            pre_hook_calls.append(args.name)
+        def my_pre_hook(name: OpName, op_id: int, args) -> None:
+            pre_hook_calls.append(name)
 
         handle = comm.register_pre_hook(my_pre_hook)
         self.assertIsInstance(handle, RemovableHandle)
@@ -40,10 +45,11 @@ class TestHooks(unittest.TestCase):
         """Test that post-hooks are called after collective operations."""
         comm = self._create_comm("test_post_hook")
 
-        post_hook_calls: list[OpName] = []
+        post_hook_call_count = 0
 
-        def my_post_hook(args: PostHookArgs) -> None:
-            post_hook_calls.append(args.name)
+        def my_post_hook(op_id: int, args) -> None:
+            nonlocal post_hook_call_count
+            post_hook_call_count += 1
 
         handle = comm.register_post_hook(my_post_hook)
         self.assertIsInstance(handle, RemovableHandle)
@@ -53,8 +59,7 @@ class TestHooks(unittest.TestCase):
         comm.all_reduce(tensor, torchcomms.ReduceOp.SUM, async_op=False)
 
         # Verify hook was called
-        self.assertEqual(len(post_hook_calls), 1)
-        self.assertEqual(post_hook_calls[0], OpName.all_reduce)
+        self.assertEqual(post_hook_call_count, 1)
 
         comm.finalize()
 
@@ -65,11 +70,11 @@ class TestHooks(unittest.TestCase):
         pre_op_ids: list[int] = []
         post_op_ids: list[int] = []
 
-        def my_pre_hook(args: PreHookArgs) -> None:
-            pre_op_ids.append(args.op_id)
+        def my_pre_hook(name: OpName, op_id: int, args) -> None:
+            pre_op_ids.append(op_id)
 
-        def my_post_hook(args: PostHookArgs) -> None:
-            post_op_ids.append(args.op_id)
+        def my_post_hook(op_id: int, args) -> None:
+            post_op_ids.append(op_id)
 
         comm.register_pre_hook(my_pre_hook)
         comm.register_post_hook(my_post_hook)
@@ -94,7 +99,7 @@ class TestHooks(unittest.TestCase):
 
         call_count = 0
 
-        def my_pre_hook(args: PreHookArgs) -> None:
+        def my_pre_hook(name: OpName, op_id: int, args) -> None:
             nonlocal call_count
             call_count += 1
 
@@ -121,11 +126,11 @@ class TestHooks(unittest.TestCase):
         hook1_calls = 0
         hook2_calls = 0
 
-        def hook1(args: PreHookArgs) -> None:
+        def hook1(name: OpName, op_id: int, args) -> None:
             nonlocal hook1_calls
             hook1_calls += 1
 
-        def hook2(args: PreHookArgs) -> None:
+        def hook2(name: OpName, op_id: int, args) -> None:
             nonlocal hook2_calls
             hook2_calls += 1
 
@@ -142,14 +147,14 @@ class TestHooks(unittest.TestCase):
 
         comm.finalize()
 
-    def test_pre_hook_args_properties(self) -> None:
-        """Test that PreHookArgs has expected properties."""
+    def test_pre_hook_args_typed(self) -> None:
+        """Test that pre-hook receives typed per-collective args."""
         comm = self._create_comm("test_args")
 
-        captured_args: list[PreHookArgs] = []
+        captured_args: list = []
 
-        def my_pre_hook(args: PreHookArgs) -> None:
-            captured_args.append(args)
+        def my_pre_hook(name: OpName, op_id: int, args) -> None:
+            captured_args.append((name, op_id, args))
 
         comm.register_pre_hook(my_pre_hook)
 
@@ -157,11 +162,34 @@ class TestHooks(unittest.TestCase):
         comm.broadcast(tensor, root=0, async_op=False)
 
         self.assertEqual(len(captured_args), 1)
-        args = captured_args[0]
-        self.assertEqual(args.name, OpName.broadcast)
+        name, op_id, args = captured_args[0]
+        self.assertEqual(name, OpName.broadcast)
+        self.assertIsInstance(op_id, int)
+        self.assertIsInstance(args, BroadcastPreHookArgs)
         self.assertEqual(args.root, 0)
-        self.assertIsInstance(args.op_id, int)
         self.assertFalse(args.async_op)
+
+        comm.finalize()
+
+    def test_pre_hook_args_all_reduce(self) -> None:
+        """Test that all_reduce pre-hook receives AllReducePreHookArgs."""
+        comm = self._create_comm("test_ar_args")
+
+        captured_args: list = []
+
+        def my_pre_hook(name: OpName, op_id: int, args) -> None:
+            captured_args.append(args)
+
+        comm.register_pre_hook(my_pre_hook)
+
+        tensor = torch.ones(10, dtype=torch.float32)
+        comm.all_reduce(tensor, torchcomms.ReduceOp.SUM, async_op=True)
+
+        self.assertEqual(len(captured_args), 1)
+        args = captured_args[0]
+        self.assertIsInstance(args, AllReducePreHookArgs)
+        self.assertEqual(args.tensor.numel(), 10)
+        self.assertTrue(args.async_op)
 
         comm.finalize()
 

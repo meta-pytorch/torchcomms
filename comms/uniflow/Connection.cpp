@@ -23,7 +23,7 @@ Status Connection::sendCtrlMsg(std::span<const uint8_t> payload) {
   size_t idx = 0;
   size_t len = payload.size();
   while (idx < len) {
-    auto send = ctrl_->send(payload.subspan(idx, len - idx));
+    auto send = ctrl_->send(payload.subspan(idx, len - idx)).get();
     CHECK_RETURN(send);
     idx += send.value();
   }
@@ -31,7 +31,7 @@ Status Connection::sendCtrlMsg(std::span<const uint8_t> payload) {
 }
 
 Result<size_t> Connection::recvCtrlMsg(std::vector<uint8_t>& payload) {
-  return ctrl_->recv(payload);
+  return ctrl_->recv(payload).get();
 }
 
 std::future<Status> Connection::put(
@@ -67,7 +67,7 @@ std::future<Status> Connection::send(
   return transport_->send(src, options);
 }
 
-std::future<Result<size_t>> Connection::recv(
+std::future<Status> Connection::recv(
     RegisteredSegment::Span dst,
     const RequestOptions& options) {
   return transport_->recv(dst, options);
@@ -80,7 +80,7 @@ std::future<Status> Connection::send(
   return transport_->send(src, options);
 }
 
-std::future<Result<size_t>> Connection::recv(
+std::future<Status> Connection::recv(
     Segment::Span dst,
     const RequestOptions& options) {
   return transport_->recv(dst, options);

@@ -72,9 +72,6 @@ TEST_F(CtranIbHcaTest, IbHcaExactMatchDev) {
   // devices match the condition
   nDevices = std::min(nDevices, (int)ibHcaExactDevs.size());
   for (int devId = 0; devId < nDevices; devId++) {
-    auto ctrlMgr = std::make_unique<CtranCtrlManager>();
-    // CtranComm* comm = this->commRAII->ctranComm;
-
     std::unique_ptr<ctran::TestCtranCommRAII> commRAII_ =
         ctran::createDummyCtranComm(devId);
     CtranComm* comm = commRAII_->ctranComm.get();
@@ -82,7 +79,7 @@ TEST_F(CtranIbHcaTest, IbHcaExactMatchDev) {
     EXPECT_EQ(NCCL_IB_HCA_PREFIX, "=");
 
     try {
-      auto ctranIb = std::make_unique<CtranIb>(comm, ctrlMgr.get());
+      auto ctranIb = std::make_unique<CtranIb>(comm);
       EXPECT_EQ(ctranIb->getIbDevName(), ibHcaExactDevs[devId]);
       printf(
           "CtranIbTest.IbHcaExactMatchDev: Rank %d devId %d uses devName %s devPort %d\n",

@@ -60,11 +60,19 @@ GraphTopology getGraphTopology(cudaGraph_t graph) {
   }
 
   size_t numEdges = 0;
-  CUDA_CHECK(cudaGraphGetEdges(graph, nullptr, nullptr, &numEdges));
+#if CUDART_VERSION >= 13000
+  CUDA_CHECK(cudaGraphGetEdges(graph, nullptr, nullptr, nullptr, &numEdges));
   topo.edgesFrom.resize(numEdges);
   topo.edgesTo.resize(numEdges);
   CUDA_CHECK(cudaGraphGetEdges(
-      graph, topo.edgesFrom.data(), topo.edgesTo.data(), &numEdges));
+      graph, topo.edgesFrom.data(), topo.edgesTo.data(), nullptr, &numEdges));
+#else
+  CUDA_CHECK(cudaGraphGetEdges_v2(graph, nullptr, nullptr, nullptr, &numEdges));
+  topo.edgesFrom.resize(numEdges);
+  topo.edgesTo.resize(numEdges);
+  CUDA_CHECK(cudaGraphGetEdges_v2(
+      graph, topo.edgesFrom.data(), topo.edgesTo.data(), nullptr, &numEdges));
+#endif
 
   return topo;
 }

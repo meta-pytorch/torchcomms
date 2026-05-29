@@ -8,8 +8,9 @@ import unittest
 from enum import Enum
 
 import torch
-from torchcomms.tests.integration.py.TorchCommTestHelpers import (
+from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
     get_dtype_name,
+    is_full_sweep,
     TorchCommTestWrapper,
 )
 
@@ -18,8 +19,12 @@ class AllToAllvSingleTest(unittest.TestCase):
     """Test class for all_to_all_v_single operations in TorchComm."""
 
     # Class variables for test parameters
-    counts = [4, 1024, 1024 * 1024]
-    dtypes = [torch.float, torch.int, torch.int8]
+    counts = [4, 1024, 1024 * 1024] if is_full_sweep() else [4, 1024 * 1024]
+    dtypes = (
+        [torch.float, torch.bfloat16, torch.int, torch.int8]
+        if is_full_sweep()
+        else [torch.float, torch.bfloat16]
+    )
     num_replays = 4
 
     def get_wrapper(self):
@@ -308,10 +313,21 @@ class AllToAllvSingleTest(unittest.TestCase):
         return input_tensor
 
     def _create_output_tensor(self, output_split_sizes, dtype):
-        """Create output tensor to store results."""
+        """Create output tensor to store results.
+
+        Pre-fill with a sentinel (NaN for float, -1 for ints) so unwritten
+        positions are caught by verification — using torch.zeros would hide
+        an off-by-one displacement bug where the buffer happens to already
+        contain 0.
+        """
         total_size = sum(output_split_sizes)
         options = {"dtype": dtype, "device": self.device}
-        return torch.zeros(total_size, **options)
+        output = torch.empty(total_size, **options)
+        if dtype in (torch.float, torch.double, torch.half, torch.bfloat16):
+            output.fill_(float("nan"))
+        else:
+            output.fill_(-1)
+        return output
 
     def _verify_results(self, output_tensor, output_split_sizes):
         """Verify the results of the all_to_all_v_single operation."""
@@ -330,6 +346,19 @@ class AllToAllvSingleTest(unittest.TestCase):
                     self.assertTrue(
                         torch.allclose(section.cpu(), expected),
                         f"Tensors not close enough for rank {i} section",
+                    )
+                elif output_tensor.dtype == torch.bfloat16:
+                    # Each section is filled with a single constant value, so the
+                    # bf16 representation of `expected_value` should bit-match the
+                    # received data. NaN-init means a missed write surfaces as
+                    # NaN, which torch.equal rejects.
+                    expected_value = float(i * 100 + self.rank + 1)
+                    expected = torch.full(
+                        (output_split_sizes[i],), expected_value, dtype=section.dtype
+                    )
+                    self.assertTrue(
+                        torch.equal(section.cpu(), expected),
+                        f"bfloat16 tensors not equal for rank {i} section",
                     )
                 elif output_tensor.dtype == torch.int:
                     expected_value = int(i * 100 + self.rank + 1)
@@ -359,17 +388,24 @@ class AllToAllvSingleTest(unittest.TestCase):
         return input_sizes, output_sizes
 
     def _create_variable_sizes(self, count):
-        """Create size vectors for variable pattern."""
-        # Test with variable sizes - create a symmetric communication pattern
-        # Each rank i sends (i+1)*count elements to each other rank j
-        # So rank j should expect to receive (i+1)*count elements from rank i
+        """Create size vectors for variable pattern.
+
+        Each (src, dst) pair gets a distinct size so the test exercises:
+          - different total tensor sizes per rank
+          - different per-destination split sizes within a single rank
+          - different per-source split sizes within a single rank
+
+        Rank i sends (i+1)*(j+1)*count elements to rank j, so rank j
+        expects to receive (i+1)*(j+1)*count elements from rank i.
+        """
         input_sizes = []
         output_sizes = []
+        for j in range(self.num_ranks):
+            # This rank (src=self.rank) sends to rank j.
+            input_sizes.append((self.rank + 1) * (j + 1) * count)
         for i in range(self.num_ranks):
-            # This rank sends (rank+1)*count elements to rank i
-            input_sizes.append((self.rank + 1) * count)
-            # This rank receives (i+1)*count elements from rank i
-            output_sizes.append((i + 1) * count)
+            # This rank (dst=self.rank) receives from rank i.
+            output_sizes.append((i + 1) * (self.rank + 1) * count)
         return input_sizes, output_sizes
 
     def _create_zero_sizes(self, count):

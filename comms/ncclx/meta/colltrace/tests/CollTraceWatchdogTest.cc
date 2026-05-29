@@ -1,3 +1,4 @@
+#include <folly/FileUtil.h>
 #include <folly/Random.h>
 #include <folly/stop_watch.h>
 #include <folly/testing/TestUtil.h>
@@ -12,7 +13,26 @@
 #include "comms/mccl/tests/CudaStream.h"
 #include "comms/mccl/tests/CudaTestUtil.h"
 #include "comms/utils/colltrace/tests/nvidia-only/CPUControlledKernel.h"
-#include "ftar/DynMemGpuBuffer.h"
+
+namespace {
+struct GpuBuffer {
+  explicit GpuBuffer(size_t size) : size_(size) {
+    cudaMalloc(&ptr_, size);
+  }
+  ~GpuBuffer() {
+    cudaFree(ptr_);
+  }
+  GpuBuffer(const GpuBuffer&) = delete;
+  GpuBuffer& operator=(const GpuBuffer&) = delete;
+  void* raw() const {
+    return ptr_;
+  }
+
+ private:
+  void* ptr_ = nullptr;
+  size_t size_ = 0;
+};
+} // namespace
 
 #define NCCLCHECK_FATAL(cmd)                                            \
   do {                                                                  \
@@ -43,16 +63,11 @@ class NcclComm {
       NCCLCHECK_FATAL(ncclGetUniqueId(&ncclUniqueID));
       mccl::McclIntegrationTestUtil::setKey(
           uniqueIDKey,
-          std::string(ncclUniqueID.internal, NCCL_UNIQUE_ID_BYTES),
-          std::nullopt);
+          std::string(ncclUniqueID.internal, NCCL_UNIQUE_ID_BYTES));
     } else {
       // Everyone else waits for it
-      auto value = mccl::McclIntegrationTestUtil::waitForKey(
-          uniqueIDKey, [](const auto& versionAndValue) {
-            return versionAndValue.has_value();
-          });
-      std::memcpy(
-          ncclUniqueID.internal, value.value.data(), NCCL_UNIQUE_ID_BYTES);
+      auto value = mccl::McclIntegrationTestUtil::waitForKey(uniqueIDKey);
+      std::memcpy(ncclUniqueID.internal, value.data(), NCCL_UNIQUE_ID_BYTES);
     }
     NCCLCHECK_FATAL(
         ncclCommInitRank(&comm_, worldSize, ncclUniqueID, globalRank));
@@ -115,7 +130,6 @@ class CollTraceWatchdogTest : public mccl::CollectiveIntegrationTestMixin,
                     // enable commsDumpAll
                     "NCCL_COMMSMONITOR_ENABLE=1",
                     "NCCL_COLLTRACE=trace",
-                    "NCCL_COLLTRACE_USE_NEW_COLLTRACE=1",
                     // enable ctran
                     "NCCL_CTRAN_ENABLE=1",
                     "NCCL_CTRAN_REGISTRATION_SIZE_CHECK=1",
@@ -183,8 +197,8 @@ class NcclAllReduce {
   }
 
  private:
-  facebook::ftar::DynMemGpuBuffer sendBuff_;
-  facebook::ftar::DynMemGpuBuffer recvBuff_;
+  GpuBuffer sendBuff_;
+  GpuBuffer recvBuff_;
 };
 
 TEST_F(CollTraceWatchdogTest, TestAsyncErrorFromGPE) {
@@ -209,7 +223,6 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorFromGPE) {
   NcclComm comm(worldSize, rank);
 
   // Ensure we are using new colltrace
-  ASSERT_EQ(comm.raw()->ctranComm_->collTrace_, nullptr);
   ASSERT_NE(comm.raw()->newCollTrace, nullptr);
 
   // Allocate memory on the CPU. A buffer size smaller than 4097 shall trigger
@@ -263,7 +276,6 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorWithGenericAsyncError) {
   mccl::cuda::CudaStream stream;
 
   // Ensure we are using new colltrace
-  ASSERT_EQ(comm.raw()->ctranComm_->collTrace_, nullptr);
   ASSERT_NE(comm.raw()->newCollTrace, nullptr);
 
   NcclAllReduce allReduce(comm.raw(), stream, 32);
@@ -305,7 +317,6 @@ TEST_F(CollTraceWatchdogTest, TestTimeoutBeforeColl) {
   mccl::cuda::CudaStream stream;
 
   // Ensure we are using new colltrace
-  ASSERT_EQ(comm.raw()->ctranComm_->collTrace_, nullptr);
   ASSERT_NE(comm.raw()->newCollTrace, nullptr);
 
   // Need a have an allReduce here to trigger pre-connect
@@ -357,7 +368,6 @@ TEST_F(CollTraceWatchdogTest, TestTimeoutInColl) {
   mccl::cuda::CudaStream stream;
 
   // Ensure we are using new colltrace
-  ASSERT_EQ(comm.raw()->ctranComm_->collTrace_, nullptr);
   ASSERT_NE(comm.raw()->newCollTrace, nullptr);
 
   // Need a have an allReduce here to trigger pre-connect
@@ -407,7 +417,6 @@ TEST_F(CollTraceWatchdogTest, TestBelowTimeoutInColl) {
   mccl::cuda::CudaStream stream;
 
   // Ensure we are using new colltrace
-  ASSERT_EQ(comm.raw()->ctranComm_->collTrace_, nullptr);
   ASSERT_NE(comm.raw()->newCollTrace, nullptr);
 
   // Need a have an allReduce here to trigger pre-connect
@@ -456,7 +465,6 @@ TEST_F(CollTraceWatchdogTest, TestBelowTimeoutBeforeColl) {
   mccl::cuda::CudaStream stream;
 
   // Ensure we are using new colltrace
-  ASSERT_EQ(comm.raw()->ctranComm_->collTrace_, nullptr);
   ASSERT_NE(comm.raw()->newCollTrace, nullptr);
 
   // Need a have an allReduce here to trigger pre-connect

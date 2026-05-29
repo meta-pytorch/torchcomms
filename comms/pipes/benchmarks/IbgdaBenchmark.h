@@ -16,7 +16,8 @@ namespace comms::pipes::benchmark {
 
 /**
  * Single-shot launchers for correctness verification.
- * Each launches exactly one put + signal + wait_local, no warmup, no loop.
+ * Each launches exactly one put + signal + counter, GPU spins on the local
+ * counter slot. No warmup, no loop.
  */
 void launchIbgdaPutSignalSingle(
     P2pIbgdaTransportDevice* transport,
@@ -25,12 +26,18 @@ void launchIbgdaPutSignalSingle(
     std::size_t nbytes,
     const IbgdaRemoteBuffer& remoteSignalBuf,
     int signalId,
+    const IbgdaLocalBuffer& localCounterBuf,
+    int counterId,
     cudaStream_t stream);
 
 /**
- * Launch batched kernel: Multiple put+wait_local iterations
+ * Launch batched kernel: Multiple put + counter iterations
  *
- * This avoids per-operation kernel launch overhead and uses GPU cycle counters
+ * Counter-only put (no peer signal): companion-QP loopback atomically
+ * increments the local counter when the put completes at the NIC. GPU spins
+ * on the local counter slot.
+ *
+ * Avoids per-operation kernel launch overhead and uses GPU cycle counters
  * for accurate timing of raw RDMA operations.
  *
  * @param totalCycles Output: total GPU cycles for numIters operations
@@ -40,15 +47,17 @@ void launchIbgdaPutWaitLocalBatch(
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
+    const IbgdaLocalBuffer& localCounterBuf,
+    int counterId,
     int numIters,
     unsigned long long* totalCycles,
     cudaStream_t stream);
 
 /**
- * Launch batched kernel: Multiple put+signal+wait_local iterations
+ * Launch batched kernel: Multiple put + signal + counter iterations
  *
- * Uses separate put + signal_remote_with_fence, which is safe for adaptive
- * routing.
+ * Companion-QP loopback atomically increments the local counter when the
+ * put+signal completes at the NIC. GPU spins on the local counter slot.
  *
  * @param totalCycles Output: total GPU cycles for numIters operations
  */
@@ -59,12 +68,17 @@ void launchIbgdaPutSignalWaitLocalBatch(
     std::size_t nbytes,
     const IbgdaRemoteBuffer& remoteSignalBuf,
     int signalId,
+    const IbgdaLocalBuffer& localCounterBuf,
+    int counterId,
     int numIters,
     unsigned long long* totalCycles,
     cudaStream_t stream);
 
 /**
  * Launch batched kernel: Multiple signal-only iterations
+ *
+ * Signal-only path uses fence() for completion (no counter primitive applies
+ * to signal-only ops).
  *
  * @param totalCycles Output: total GPU cycles for numIters operations
  */
@@ -76,55 +90,18 @@ void launchIbgdaSignalOnlyBatch(
     unsigned long long* totalCycles,
     cudaStream_t stream);
 
-/**
- * Launch batched kernel: put + wait_local (CQ poll)
- *
- * GPU thread polls NIC CQ at the work handle's WQE index for completion.
- * This is the CQ-based completion path for comparison against counter-based.
- *
- * @param totalCycles Output: total GPU cycles for numIters operations
- */
-void launchIbgdaPutCqPollWaitBatch(
-    P2pIbgdaTransportDevice* transport,
-    const IbgdaLocalBuffer& localBuf,
-    const IbgdaRemoteBuffer& remoteBuf,
-    std::size_t nbytes,
-    int numIters,
-    unsigned long long* totalCycles,
-    cudaStream_t stream);
-
-/**
- * Launch batched kernel: put + signal + counter via companion QP
- *
- * NIC does data write + remote signal atomic + companion QP WAIT +
- * local counter atomic. GPU thread spins on volatile local counter.
- * More NIC work but GPU polls local GPU memory (L2 cache).
- *
- * @param totalCycles Output: total GPU cycles for numIters operations
- */
-void launchIbgdaPutSignalCounterBatch(
-    P2pIbgdaTransportDevice* transport,
-    const IbgdaLocalBuffer& localDataBuf,
-    const IbgdaRemoteBuffer& remoteDataBuf,
-    std::size_t nbytes,
-    const IbgdaRemoteBuffer& remoteSignalBuf,
-    int signalId,
-    const IbgdaLocalBuffer& localCounterBuf,
-    int counterId,
-    int numIters,
-    unsigned long long* totalCycles,
-    cudaStream_t stream);
-
 // =========================================================================
 // Multi-peer kernels for counter fan-out validation
 // =========================================================================
 
 /**
- * Launch multi-peer CQ-poll kernel: put to each peer + wait_local on each QP
+ * Launch multi-peer serial counter fan-out: put+signal+counter to each peer
+ * with a per-peer counter slot, then wait_counter on each slot serially.
  *
- * GPU thread iterates over all peers, doing put + wait_local() on each QP
- * serially. Total wait = sum of all individual wait_local latencies (O(N) CQ
- * polls).
+ * O(N) wait_counter calls (one per peer, each peer's companion QP increments
+ * its own counter slot). This is the per-peer baseline for comparison against
+ * the shared-counter fan-out path (launchMultiPeerCounterFanOutBatch), which
+ * collapses the N waits into a single wait on a shared slot.
  *
  * @param transportsBase Base pointer to P2pIbgdaTransportDevice array (GPU mem)
  * @param transportStride Byte stride between consecutive transports
@@ -132,10 +109,14 @@ void launchIbgdaPutSignalCounterBatch(
  * @param localBuf Source data buffer (same for all peers)
  * @param remoteDataBufs Device array of per-peer remote data buffers
  * @param nbytes Data size per peer
+ * @param remoteSignalBufs Device array of per-peer remote signal buffers
+ * @param signalId Signal slot index
+ * @param localCounterBuf Local counter buffer with at least numPeers slots;
+ *                        slot p is used by peer p's companion QP
  * @param numIters Batch iterations
  * @param totalCycles Output: total GPU cycles
  */
-void launchMultiPeerCqPollFanOutBatch(
+void launchMultiPeerSerialCounterFanOutBatch(
     P2pIbgdaTransportDevice* transportsBase,
     std::size_t transportStride,
     int numPeers,
@@ -144,6 +125,7 @@ void launchMultiPeerCqPollFanOutBatch(
     std::size_t nbytes,
     const IbgdaRemoteBuffer* remoteSignalBufs,
     int signalId,
+    const IbgdaLocalBuffer& localCounterBuf,
     int numIters,
     unsigned long long* totalCycles,
     cudaStream_t stream);
@@ -152,7 +134,7 @@ void launchMultiPeerCqPollFanOutBatch(
  * Launch multi-peer counter fan-out kernel: put+signal+counter to all peers,
  * single counter poll
  *
- * GPU thread fires put_signal_counter_remote() to all peers (each companion
+ * GPU thread fires put() with signal+counter to all peers (each companion
  * QP atomically increments the SAME counter slot), then polls one counter
  * value until it reaches numPeers. Total wait ≈ max(peer latency) + loopback.
  *

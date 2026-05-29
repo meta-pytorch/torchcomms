@@ -20,7 +20,7 @@ namespace comms::pipes {
  * optimized for small/medium messages (<= 256KB per peer).
  *
  * Two differences from all_to_allv() (Simple protocol):
- * 1. Calls transport.p2p_nvl.ll128_send() / ll128_recv()
+ * 1. Calls transport.p2p_nvl.ll128_send_group() / ll128_recv_group()
  * 2. No cluster launch (volatile stores bypass L1 cache)
  *
  * The sender always polls for READY_TO_WRITE before overwriting each buffer
@@ -57,7 +57,7 @@ __device__ __forceinline__ void all_to_allv_ll128(
     PIPES_DEVICE_CHECK(send_info.nbytes == recv_info.nbytes);
     auto& transport = transports_per_rank[my_rank_id];
     PIPES_DEVICE_CHECK(transport.type == TransportType::SELF);
-    transport.self.put(
+    transport.self.put_group(
         group,
         static_cast<char*>(recvbuff_d) + recv_info.offset,
         static_cast<const char*>(sendbuff_d) + send_info.offset,
@@ -82,7 +82,7 @@ __device__ __forceinline__ void all_to_allv_ll128(
     PIPES_DEVICE_CHECK(send_info.nbytes == recv_info.nbytes);
     // Only one partition does the self-copy (match Simple protocol)
     if (partition_id == 0) {
-      transport.self.put(
+      transport.self.put_group(
           group_per_peer,
           static_cast<char*>(recvbuff_d) + recv_info.offset,
           static_cast<const char*>(sendbuff_d) + send_info.offset,
@@ -103,13 +103,13 @@ __device__ __forceinline__ void all_to_allv_ll128(
   PIPES_DEVICE_CHECK(transport.type == TransportType::P2P_NVL);
 
   if (partition_id == 0) {
-    transport.p2p_nvl.ll128_send(
+    transport.p2p_nvl.ll128_send_group(
         group_per_peer,
         static_cast<const char*>(sendbuff_d) + send_info.offset,
         send_info.nbytes,
         timeout);
   } else {
-    transport.p2p_nvl.ll128_recv(
+    transport.p2p_nvl.ll128_recv_group(
         group_per_peer,
         static_cast<char*>(recvbuff_d) + recv_info.offset,
         recv_info.nbytes,

@@ -54,7 +54,7 @@ void logGpuMemoryStats(int gpu) {
   CUDACHECK_TEST(cudaMemGetInfo(&free, &total));
   auto mbFree = static_cast<double>(free) / (1024 * 1024);
   auto mbTotal = static_cast<double>(total) / (1024 * 1024);
-  LOG(INFO) << "GPU " << gpu << " memory: " << "freeBytes=" << free << " ("
+  XLOG(DBG) << "GPU " << gpu << " memory: " << "freeBytes=" << free << " ("
             << mbFree << "MB), " << "totalBytes=" << total << "(" << mbTotal
             << "MB)";
 }
@@ -155,7 +155,7 @@ commResult_t commMemAllocDisjoint(
   for (int i = 0; i < numSegments; i++) {
     FB_CUCHECK(cuMemMap(curPtr, alignedSizes[i], 0, handles[i], 0));
     segments.emplace_back(reinterpret_cast<void*>(curPtr), alignedSizes[i]);
-    LOG(INFO) << "ncclMemAllocDisjoint maps segments[" << i << "] ptr "
+    XLOG(DBG) << "ncclMemAllocDisjoint maps segments[" << i << "] ptr "
               << reinterpret_cast<void*>(curPtr) << " size " << alignedSizes[i]
               << "/" << vaSize;
 
@@ -221,7 +221,7 @@ commResult_t commMemFreeDisjoint(
   CUdeviceptr curPtr = (CUdeviceptr)ptr;
   for (int i = 0; i < alignedSizes.size(); i++) {
     FB_CUCHECK(cuMemRetainAllocationHandle(&handle, (void*)curPtr));
-    LOG(INFO) << "ncclMemFreeDisjoint unmaps segments[" << i << "] ptr "
+    XLOG(DBG) << "ncclMemFreeDisjoint unmaps segments[" << i << "] ptr "
               << reinterpret_cast<void*>(curPtr) << " size " << alignedSizes[i]
               << "/" << vaSize;
     FB_CUCHECK(cuMemRelease(handle));
@@ -316,7 +316,7 @@ commResult_t commMemExpandBuffer(
     buf->segments.emplace_back(
         reinterpret_cast<void*>(curPtr), buf->segmentSize);
 
-    LOG(INFO) << "commMemExpandBuffer maps new segment ptr "
+    XLOG(DBG) << "commMemExpandBuffer maps new segment ptr "
               << reinterpret_cast<void*>(curPtr) << " size "
               << buf->segmentSize;
 
@@ -498,9 +498,6 @@ std::unique_ptr<CtranComm> CtranStandaloneFixture::makeCtranComm(
   std::strncpy(topo.dc, "ut_dc", ncclx::kMaxNameLen);
   std::strncpy(topo.zone, "ut_zone", ncclx::kMaxNameLen);
   std::strncpy(topo.host, "ut_host", ncclx::kMaxNameLen);
-  // we can only set one of the two, rtsw or su.
-  std::strncpy(topo.rtsw, "", ncclx::kMaxNameLen);
-  std::strncpy(topo.su, "ut_su", ncclx::kMaxNameLen);
 
   std::vector<ncclx::RankTopology> rankTopologies = {topo};
   std::vector<int> commRanksToWorldRanks = {0};
@@ -528,21 +525,6 @@ std::unique_ptr<CtranComm> CtranStandaloneFixture::makeCtranComm(
 // ============================================================================
 
 namespace {
-
-void initRankStatesTopologyWrapper(
-    ncclx::CommStateX* statex,
-    meta::comms::IBootstrap* bootstrap,
-    int nRanks) {
-  // Fake topology with nLocalRanks=1
-  if (NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::nolocal) {
-    statex->initRankTopologyNolocal();
-  } else if (NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::vnode) {
-    ASSERT_GE(nRanks, NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS);
-    statex->initRankTopologyVnode(NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS);
-  } else {
-    statex->initRankStatesTopology(std::move(bootstrap));
-  }
-}
 
 using PerRankState = CtranIntraProcessFixture::PerRankState;
 static void resetPerRankState(PerRankState& state) {
@@ -601,8 +583,7 @@ void initCtranCommMultiRank(
       std::move(rankTopologies),
       std::move(commRanksToWorldRanks),
       std::string{kMultiRankCommDesc});
-  initRankStatesTopologyWrapper(
-      ctranComm->statex_.get(), ctranComm->bootstrap_.get(), nRanks);
+  ctranComm->statex_->initRankStatesTopology(ctranComm->bootstrap_.get());
 
   FB_COMMCHECKTHROW_EX_NOCOMM(ctranInit(ctranComm));
 
@@ -723,6 +704,7 @@ bool CtranTestHelpers::isBackendValid(
 void CtranTestHelpers::verifyGpeLeak(ICtran* ctran) {
   ASSERT_EQ(ctran->gpe->numInUseKernelElems(), 0);
   ASSERT_EQ(ctran->gpe->numInUseKernelFlags(), 0);
+  ASSERT_EQ(ctran->gpe->numInUseGpeKernelSyncs(), 0);
 }
 
 void CtranTestHelpers::resetBackendsUsed(ICtran* ctran) {

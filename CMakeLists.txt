@@ -5,6 +5,20 @@ project(torchcomms_ncclx)
 set(CMAKE_VERBOSE_MAKEFILE ON)
 set(FETCHCONTENT_BASE_DIR "build/fetchcontent")
 
+# Some fetched third-party projects still declare pre-3.5 policy versions.
+# Newer CMake releases reject those unless we set a minimum policy floor.
+if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.31)
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+endif()
+
+# colltrace's HRDWRingBufferReader and TrainerContext use 128-bit atomic
+# loads/stores. The compiler may lower these to __atomic_load_16 /
+# __atomic_store_16 (libatomic) depending on the target and flags. Link
+# libatomic unconditionally so the libcall always resolves; on x86_64 with
+# -mcx16 (or aarch64 with LSE2) most ops inline and the dep is effectively
+# free.
+add_link_options("LINKER:--push-state,--no-as-needed" "-latomic" "LINKER:--pop-state")
+
 # Options
 option(USE_NCCL "Whether to build NCCL or not" ON)
 option(USE_NCCLX "Whether to build NCCLX or not" ON)
@@ -25,34 +39,48 @@ message(STATUS "  USE_TRANSPORT  : ${USE_TRANSPORT}")
 message(STATUS "  USE_TRITON     : ${USE_TRITON}")
 message(STATUS "  BUILD_TESTS    : ${BUILD_TESTS}")
 
-if(DEFINED ENV{TORCH_CUDA_ARCH_LIST})
-    set(TORCH_CUDA_ARCH_LIST $ENV{TORCH_CUDA_ARCH_LIST})
+# NEEDS_CUDA: TRUE when any enabled backend requires CUDA. GLOO and XCCL
+# are the only non-CUDA backends; if no CUDA-dependent backend is enabled
+# we can skip CUDA-specific setup like TORCH_CUDA_ARCH_LIST detection.
+if(USE_NCCL OR USE_NCCLX OR USE_RCCL OR USE_RCCLX OR USE_TRANSPORT OR USE_TRITON)
+    set(NEEDS_CUDA TRUE)
 else()
-    # Auto-detect from nvidia-smi, fall back to 9.0.
-    # Without this, .cu kernels (e.g. AtomicAddKernel.cu) are compiled only
-    # for sm_90 and fail at runtime on other GPUs with
-    # "no kernel image is available for execution on the device".
-    # See also: comms/torchcomms/triton/CMakeLists.txt for the same pattern.
-    execute_process(
-        COMMAND nvidia-smi --query-gpu=compute_cap --format=csv,noheader
-        OUTPUT_VARIABLE _smi_output
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_QUIET
-        RESULT_VARIABLE _smi_result
-    )
-    if(_smi_result EQUAL 0 AND _smi_output)
-        # Deduplicate compute capabilities across all GPUs
-        # (e.g. "9.0\n9.0\n9.0\n9.0" -> "9.0")
-        string(REPLACE "\n" ";" _cc_list "${_smi_output}")
-        list(REMOVE_DUPLICATES _cc_list)
-        list(JOIN _cc_list ";" TORCH_CUDA_ARCH_LIST)
-        message(STATUS "Auto-detected CUDA architectures from nvidia-smi: ${TORCH_CUDA_ARCH_LIST}")
-    else()
-        set(TORCH_CUDA_ARCH_LIST "9.0")
-        message(STATUS "nvidia-smi not available, defaulting CUDA architecture to 9.0")
-    endif()
+    set(NEEDS_CUDA FALSE)
 endif()
-message(STATUS "TORCH_CUDA_ARCH_LIST : ${TORCH_CUDA_ARCH_LIST}")
+message(STATUS "  NEEDS_CUDA  : ${NEEDS_CUDA}")
+
+if(NOT NEEDS_CUDA)
+    message(STATUS "Skipping CUDA arch detection (no CUDA-dependent backends enabled)")
+else()
+    if(DEFINED ENV{TORCH_CUDA_ARCH_LIST})
+        set(TORCH_CUDA_ARCH_LIST $ENV{TORCH_CUDA_ARCH_LIST})
+    else()
+        # Auto-detect from nvidia-smi, fall back to 9.0.
+        # Without this, .cu kernels (e.g. AtomicAddKernel.cu) are compiled only
+        # for sm_90 and fail at runtime on other GPUs with
+        # "no kernel image is available for execution on the device".
+        # See also: comms/torchcomms/triton/CMakeLists.txt for the same pattern.
+        execute_process(
+            COMMAND nvidia-smi --query-gpu=compute_cap --format=csv,noheader
+            OUTPUT_VARIABLE _smi_output
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+            RESULT_VARIABLE _smi_result
+        )
+        if(_smi_result EQUAL 0 AND _smi_output)
+            # Deduplicate compute capabilities across all GPUs
+            # (e.g. "9.0\n9.0\n9.0\n9.0" -> "9.0")
+            string(REPLACE "\n" ";" _cc_list "${_smi_output}")
+            list(REMOVE_DUPLICATES _cc_list)
+            list(JOIN _cc_list ";" TORCH_CUDA_ARCH_LIST)
+            message(STATUS "Auto-detected CUDA architectures from nvidia-smi: ${TORCH_CUDA_ARCH_LIST}")
+        else()
+            set(TORCH_CUDA_ARCH_LIST "9.0")
+            message(STATUS "nvidia-smi not available, defaulting CUDA architecture to 9.0")
+        endif()
+    endif()
+    message(STATUS "TORCH_CUDA_ARCH_LIST : ${TORCH_CUDA_ARCH_LIST}")
+endif()
 
 # Set ROOT early — needed by build_ncclx.cmake and backend CMakeLists.
 set(ROOT ${CMAKE_CURRENT_SOURCE_DIR})
@@ -105,9 +133,35 @@ endif()
 
 find_package(Torch REQUIRED)
 
+function(torchcomms_use_torch_pybind11 target)
+    set(include_root "${TORCHCOMMS_PYBIND11_INCLUDE_DIR}")
+    if(NOT include_root)
+        # No setup.py-supplied path (e.g. a direct `cmake -B build` invocation).
+        # Fall back to PyTorch's bundled pybind11, exposed through a unique
+        # build-dir symlink so CMake does not dedup it against Torch::Torch's
+        # INTERFACE_SYSTEM include.
+        set(_torch_pybind11 "${TORCH_INSTALL_PREFIX}/include/pybind11")
+        if(NOT EXISTS "${_torch_pybind11}/pybind11.h")
+            message(FATAL_ERROR
+                "PyTorch bundled pybind11 not found at ${_torch_pybind11}")
+        endif()
+        set(include_root
+            "${CMAKE_CURRENT_BINARY_DIR}/_torch_pybind11_for_${target}")
+        file(MAKE_DIRECTORY "${include_root}")
+        file(CREATE_LINK
+            "${_torch_pybind11}" "${include_root}/pybind11" SYMBOLIC)
+    endif()
+    if(NOT EXISTS "${include_root}/pybind11/pybind11.h")
+        message(FATAL_ERROR
+            "torchcomms_use_torch_pybind11: ${include_root} does not contain "
+            "pybind11/pybind11.h")
+    endif()
+    target_include_directories(${target} BEFORE PRIVATE "${include_root}")
+endfunction()
+
 # Helper to glob sources
 file(GLOB TORCHCOMMS_SOURCES "comms/torchcomms/*.cpp")
-file(GLOB TORCHCOMMS_DUMMY_SOURCES "comms/torchcomms/dummy/*.cpp")
+file(GLOB TORCHCOMMS_FAKE_SOURCES "comms/torchcomms/fake/*.cpp")
 file(GLOB TORCHCOMMS_PYTHON_SOURCES "comms/torchcomms/*Py.cpp")
 file(GLOB HOOKS_SOURCES "comms/torchcomms/hooks/*.cpp")
 file(GLOB HOOKS_PYTHON_SOURCES "comms/torchcomms/hooks/*Py.cpp")
@@ -118,7 +172,7 @@ list(REMOVE_ITEM TORCHCOMMS_SOURCES ${TORCHCOMMS_PYTHON_SOURCES})
 list(REMOVE_ITEM HOOKS_SOURCES ${HOOKS_PYTHON_SOURCES})
 list(REMOVE_ITEM UTILS_SOURCES ${UTILS_PYTHON_SOURCES})
 
-list(APPEND TORCHCOMMS_SOURCES ${TORCHCOMMS_DUMMY_SOURCES})
+list(APPEND TORCHCOMMS_SOURCES ${TORCHCOMMS_FAKE_SOURCES})
 
 list(APPEND TORCHCOMMS_SOURCES ${HOOKS_SOURCES})
 list(APPEND TORCHCOMMS_SOURCES ${UTILS_SOURCES})
@@ -139,6 +193,7 @@ target_include_directories(torchcomms PRIVATE
     ${CONDA_INCLUDE}
     ${Python3_INCLUDE_DIRS}
 )
+torchcomms_use_torch_pybind11(torchcomms)
 target_compile_features(torchcomms PRIVATE cxx_std_20)
 target_link_directories(torchcomms PRIVATE ${CONDA_LIB})
 # glog/gflags/fmt must come before TORCH_LIBRARIES so our headers are found
@@ -149,6 +204,14 @@ target_link_directories(torchcomms PRIVATE ${CONDA_LIB})
 target_link_libraries(torchcomms PRIVATE glog::glog gflags::gflags fmt::fmt)
 target_link_libraries(torchcomms PRIVATE ${TORCH_LIBRARIES} nlohmann_json::nlohmann_json)
 
+# Clog Hook sources (compiled into _comms)
+# Common hooks sources
+set(TORCHCOMMS_HOOKS_COMMON_SOURCES "comms/torchcomms/hooks/common/SignatureBuilder.cpp")
+
+file(GLOB TORCHCOMMS_CLOG_SOURCES "comms/torchcomms/hooks/clog/ClogHook.cpp")
+file(GLOB TORCHCOMMS_CLOG_PYTHON_SOURCES
+    "comms/torchcomms/hooks/clog/ClogHookPy.cpp")
+
 # Flight Recorder sources (compiled into _comms)
 file(GLOB TORCHCOMMS_FR_SOURCES "comms/torchcomms/hooks/fr/FlightRecorder.cpp")
 file(GLOB TORCHCOMMS_FR_PYTHON_SOURCES "comms/torchcomms/hooks/fr/FlightRecorderPy.cpp")
@@ -157,6 +220,9 @@ file(GLOB TORCHCOMMS_FR_PYTHON_SOURCES "comms/torchcomms/hooks/fr/FlightRecorder
 add_library(torchcomms_comms MODULE
     ${TORCHCOMMS_PYTHON_SOURCES}
     ${HOOKS_PYTHON_SOURCES}
+    ${TORCHCOMMS_HOOKS_COMMON_SOURCES}
+    ${TORCHCOMMS_CLOG_SOURCES}
+    ${TORCHCOMMS_CLOG_PYTHON_SOURCES}
     ${TORCHCOMMS_FR_SOURCES}
     ${TORCHCOMMS_FR_PYTHON_SOURCES}
 )
@@ -169,12 +235,15 @@ set_target_properties(torchcomms_comms PROPERTIES
 target_include_directories(torchcomms_comms PRIVATE
     ${ROOT}
     ${CONDA_INCLUDE}
+    ${TORCH_INSTALL_PREFIX}/include
     ${Python3_INCLUDE_DIRS}
 )
+torchcomms_use_torch_pybind11(torchcomms_comms)
 target_compile_features(torchcomms_comms PRIVATE cxx_std_20)
 target_link_directories(torchcomms_comms PRIVATE ${CONDA_LIB})
 target_link_libraries(torchcomms_comms PRIVATE
     torchcomms
+    fmt::fmt
     nlohmann_json::nlohmann_json
     ${TORCH_LIBRARIES}
     ${TORCH_PYTHON_LIB}

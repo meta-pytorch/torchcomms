@@ -12,12 +12,14 @@
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 
 #include "comms/utils/CommsMaybeChecks.h"
-#include "comms/utils/GpuClockCalibration.h"
 #include "comms/utils/checks.h"
+#include "comms/utils/colltrace/CudaWaitEvent.h"
 #include "comms/utils/colltrace/GraphCollTraceHandle.h"
 #include "comms/utils/colltrace/GraphCollTraceState.h"
 #include "comms/utils/colltrace/GraphCudaWaitEvent.h"
+#include "comms/utils/colltrace/PrecisionClock.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/hrdw_ring_buffer/GpuClockCalibration.h"
 
 namespace meta::comms::colltrace {
 
@@ -76,7 +78,7 @@ CollTrace::CollTrace(
     // Eagerly initialize the globaltimer calibration singleton now (outside
     // graph capture) so it is ready when GraphCudaWaitEvent is constructed
     // during capture.
-    GlobaltimerCalibration::get();
+    ::hrdw_ring_buffer::GlobaltimerCalibration::get();
 
     // 2x the max plugin retention ensures the ring holds at least the last
     // max_retention collective entries (each collective has 1x start + 1x end
@@ -123,8 +125,17 @@ CollTrace::CollTrace(
 }
 
 CollTrace::~CollTrace() {
-  // Set the cancellation flag
-  threadShouldStop_.test_and_set();
+  // Set the cancellation flag under the flush mutex so waitFlush()
+  // can't miss the state change between its predicate check and wait.
+  {
+    std::lock_guard lock(flushState_.mutex);
+    threadShouldStop_.test_and_set();
+  }
+  flushState_.cv.notify_all();
+  // Wake the poll thread if it is blocking on the MPMC queue so it sees
+  // the cancellation flag promptly instead of waiting for the full
+  // maxCheckCancelInterval.
+  pendingTraceColls_.writeIfNotFull(nullptr);
   // Invalidate all eager handles.
   for (auto& [_, handle] : eventToHandleMap_) {
     handle->invalidate();
@@ -149,7 +160,10 @@ std::shared_ptr<GraphCollTraceState> CollTrace::getOrCreateGraphState(
   unsigned long long graphId = 0;
   cudaGraph_t graph = nullptr;
 
-#if CUDART_VERSION >= 13000
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
+  auto res = hipStreamGetCaptureInfo_v2(
+      stream, &captureStatus, &graphId, &graph, nullptr, nullptr);
+#elif CUDART_VERSION >= 13000
   auto res = cudaStreamGetCaptureInfo(
       stream, &captureStatus, &graphId, &graph, nullptr, nullptr, nullptr);
 #else
@@ -282,8 +296,7 @@ CommsMaybeVoid CollTrace::triggerEventState(
       triggerPlugins<&ICollTracePlugin::afterCollKernelScheduled>(
           plugins_, collEvent); // Trigger plugins before calling waitEvent
       EXPECT_CHECK(collEvent.waitEvent->afterCollKernelScheduled());
-      collEvent.collRecord->getTimingInfo().setCollEnqueueTs(
-          std::chrono::system_clock::now());
+      collEvent.collRecord->getTimingInfo().setCollEnqueueTs(precisionNow());
       if (pendingTraceColls_.write(std::move(pendingEnqueueColl_))) {
         return folly::unit;
         // If the write fails, pendingEnqueueColl_ will not be moved. Do a
@@ -385,6 +398,33 @@ CollTrace::recordGraphCollectiveImpl(
   return handle;
 }
 
+uint64_t CollTrace::requestFlush() noexcept {
+  auto gen = flushState_.requested.fetch_add(1, std::memory_order_acq_rel) + 1;
+  // Best-effort sentinel to wake the poll thread. If the queue is full,
+  // the thread has plenty of work and will see the updated generation
+  // on its next iteration.
+  pendingTraceColls_.writeIfNotFull(nullptr);
+  return gen;
+}
+
+void CollTrace::waitFlush(uint64_t gen) noexcept {
+  std::unique_lock lock(flushState_.mutex);
+  flushState_.cv.wait(lock, [&] {
+    return flushState_.completed.load(std::memory_order_acquire) >= gen ||
+        isThreadCancelled();
+  });
+}
+
+void CollTrace::ackFlush(uint64_t gen) noexcept {
+  if (gen > flushState_.completed.load(std::memory_order_relaxed)) {
+    {
+      std::lock_guard lock(flushState_.mutex);
+      flushState_.completed.store(gen, std::memory_order_release);
+    }
+    flushState_.cv.notify_all();
+  }
+}
+
 bool CollTrace::isThreadCancelled() const noexcept {
   return threadShouldStop_.test(std::memory_order_relaxed);
 }
@@ -411,6 +451,7 @@ void CollTrace::pollGraphEvents(
           }
           collIdMap_.erase(collId);
           progressingGraphCollectives_.erase(collId);
+          inFlightReplays_.erase(collId);
         }
         return true;
       }
@@ -431,7 +472,7 @@ void CollTrace::pollGraphEvents(
     return;
   }
 
-  const auto& cal = GlobaltimerCalibration::get();
+  const auto& cal = ::hrdw_ring_buffer::GlobaltimerCalibration::get();
 
   auto pollResult = ringReader_->poll(
       [&](const auto& entry, uint64_t /*slot*/) {
@@ -444,13 +485,15 @@ void CollTrace::pollGraphEvents(
         }
 
         auto& collEntry = *(it->second);
-        auto timestamp = cal.toWallClock(entry.timestamp_ns);
+        auto timestamp = cal.toWallClock(entry.timestamp);
 
         if (isStartEvent) {
-          // if we see a new start event before we observed this collectives
-          // last end, the end event was likely overwritten (ring too small).
-          // the watchdog detects this via the changed start timestamp and
-          // resets its timer automatically but we should log it anyway
+          // Graph replays are sequential on the stream, so seeing a second
+          // start before the matching end means the prior end was dropped
+          // by ring buffer overflow. The previous in-flight clone will be
+          // discarded below without a kEnd action — this is the expected
+          // data-loss path (warned here; the watchdog detects the changed
+          // start timestamp and resets its timer automatically).
           if (auto [_, inserted] = progressingGraphCollectives_.insert(collId);
               !inserted) {
             XLOG_EVERY_MS(WARN, 5000)
@@ -458,17 +501,47 @@ void CollTrace::pollGraphEvents(
                 << " saw a new start event before the previous end event"
                    " — the end event was likely overwritten (ring too small)";
           }
-          collEntry.event->collRecord->getTimingInfo().setCollStartTs(
-              timestamp);
+
+          // Graph replays produce a fresh CollRecord with its own collId
+          // (distinct from the template) so that each replay is independently
+          // tracked through the plugin pipeline. The template's metadata is
+          // shared (must remain immutable post-construction).
+          auto& prev = collEntry.event->collRecord;
+
+          auto frozenRecord = std::make_shared<CollRecord>(
+              collId_.fetch_add(1), prev->getCollMetadata());
+          frozenRecord->getTimingInfo().setCollEnqueueTs(timestamp);
+          frozenRecord->getTimingInfo().setCollStartTs(timestamp);
+
+          auto replayEvent = std::make_unique<CollTraceEvent>(CollTraceEvent{
+              .collRecord = std::move(frozenRecord),
+              .waitEvent = nullptr,
+          });
+          auto* replayPtr = replayEvent.get();
+          if (auto replayIt = inFlightReplays_.find(collId);
+              replayIt != inFlightReplays_.end()) {
+            graphReplayEvents_.push_back(std::move(replayIt->second));
+            replayIt->second = std::move(replayEvent);
+          } else {
+            inFlightReplays_[collId] = std::move(replayEvent);
+          }
           actions.insert(
-              {collEntry.event.get(),
-               PendingActionType::kScheduleAndStart,
-               timestamp});
+              {replayPtr, PendingActionType::kScheduleAndStart, timestamp});
         } else /* isEndEvent */ {
-          collEntry.event->collRecord->getTimingInfo().setCollEndTs(timestamp);
           progressingGraphCollectives_.erase(collId);
-          actions.insert(
-              {collEntry.event.get(), PendingActionType::kEnd, timestamp});
+
+          if (auto replayIt = inFlightReplays_.find(collId);
+              replayIt != inFlightReplays_.end()) {
+            auto* replayPtr = replayIt->second.get();
+            replayPtr->collRecord->getTimingInfo().setCollEndTs(timestamp);
+            actions.insert({replayPtr, PendingActionType::kEnd, timestamp});
+            graphReplayEvents_.push_back(std::move(replayIt->second));
+            inFlightReplays_.erase(replayIt);
+          } else {
+            XLOG_EVERY_MS(WARN, 5000)
+                << logPrefix_ << ": graph collective " << collId
+                << " end event without matching start — dropped";
+          }
         }
       },
       /*timeout=*/config_.maxCheckCancelInterval);
@@ -479,16 +552,15 @@ void CollTrace::pollGraphEvents(
         << " graph replay timestamp(s) (overwritten)";
   }
 
-  // Emit kProgressing for every pending start so the watchdog plugin's
-  // timer accumulates. Without this, graph collectives would never trigger
-  // the watchdog timeout because collEventProgressing is only called on
-  // discrete ring buffer events.
-  auto now = std::chrono::system_clock::now();
+  // Emit kProgressing for every in-flight clone so the watchdog plugin's
+  // timer accumulates. We use inFlightReplays_ (the cloned events) rather
+  // than collIdMap_ (the templates) so that progressing fires against the
+  // actual replay record with correct timing.
+  auto now = precisionNow();
   for (auto collId : progressingGraphCollectives_) {
-    auto it = collIdMap_.find(collId);
-    if (it != collIdMap_.end()) {
-      actions.insert(
-          {it->second->event.get(), PendingActionType::kProgressing, now});
+    auto it = inFlightReplays_.find(collId);
+    if (it != inFlightReplays_.end()) {
+      actions.insert({it->second.get(), PendingActionType::kProgressing, now});
     }
   }
 }
@@ -500,8 +572,6 @@ void CollTrace::pollEagerEvents(
     std::unique_ptr<CollTraceEvent> event;
     while (pendingTraceColls_.read(event)) {
       if (event == nullptr) {
-        XLOG_FIRST_N(
-            ERR, 2, logPrefix_, ": Got null event from pendingTrace queue");
         continue;
       }
       eagerEvents_.push_back(std::move(event));
@@ -522,7 +592,7 @@ void CollTrace::pollEagerEvents(
 
     if (!started) {
       if (event->waitEvent->waitCollStart(kPollTimeout).value_or(false)) {
-        auto now = std::chrono::system_clock::now();
+        auto now = precisionNow();
         auto startTimeRes = event->waitEvent->getCollStartTime();
         auto startTs = startTimeRes.hasValue() ? startTimeRes.value() : now;
         timing.setCollStartTs(startTs);
@@ -532,24 +602,20 @@ void CollTrace::pollEagerEvents(
         // Fire progressing even before start so the watchdog plugin can
         // detect pre-start timeouts and async errors.
         actions.insert(
-            {event.get(),
-             PendingActionType::kProgressing,
-             std::chrono::system_clock::now()});
+            {event.get(), PendingActionType::kProgressing, precisionNow()});
       }
     }
 
     if (started && !ended) {
       if (event->waitEvent->waitCollEnd(kPollTimeout).value_or(false)) {
-        auto now = std::chrono::system_clock::now();
+        auto now = precisionNow();
         auto endTimeRes = event->waitEvent->getCollEndTime();
         auto endTs = endTimeRes.hasValue() ? endTimeRes.value() : now;
         timing.setCollEndTs(endTs);
         actions.insert({event.get(), PendingActionType::kEnd, endTs});
       } else {
         actions.insert(
-            {event.get(),
-             PendingActionType::kProgressing,
-             std::chrono::system_clock::now()});
+            {event.get(), PendingActionType::kProgressing, precisionNow()});
       }
     }
   }
@@ -600,6 +666,8 @@ void CollTrace::processCompletedEvents(
     }
   }
 
+  graphReplayEvents_.clear();
+
   // clean up completed eager events...
   static constexpr auto kEpoch = ICollWaitEvent::system_clock_time_point{};
   std::erase_if(
@@ -638,22 +706,55 @@ void CollTrace::collTraceThread(
 
   bool initialized = false;
 
+  // Periodic re-anchor of the GPU-time ↔ wall-clock mappings. Bounds
+  // residual drift between anchors to ~kReanchorInterval × oscillator-ppm
+  // (≤ ~100 ns at 1 s and 100 ppm).
+  //
+  // Two independent anchors live behind this:
+  //   - GlobaltimerCalibration: %globaltimer (graph mode). Refreshed only
+  //     when this CollTrace has graph mode enabled (ringBuffer_).
+  //   - CudaReferencePoint: cudaEventElapsedTime baseline (eager mode).
+  //     Refreshed only if some CudaWaitEvent has ever been created — we
+  //     check via CudaReferencePoint::tryGet() to avoid forcing CUDA init
+  //     in CPU-only colltrace deployments.
+  // Gated on NCCL_COLLTRACE_PERIODIC_REANCHOR (default false) — issuing CUDA
+  // calls from this thread has been observed to hang some training jobs.
+  constexpr auto kReanchorInterval = std::chrono::seconds(1);
+  auto lastReanchor = std::chrono::steady_clock::now();
+
   while (!isThreadCancelled()) {
+    if (NCCL_COLLTRACE_PERIODIC_REANCHOR) {
+      auto now = std::chrono::steady_clock::now();
+      if (now - lastReanchor >= kReanchorInterval) {
+        if (ringBuffer_.has_value()) {
+          ::hrdw_ring_buffer::GlobaltimerCalibration::get().refresh();
+        }
+        if (auto* refpt = CudaReferencePoint::tryGet()) {
+          refpt->refresh();
+        }
+        lastReanchor = now;
+      }
+    }
+
+    auto flushGen = flushState_.requested.load(std::memory_order_acquire);
     std::multiset<PendingAction> actions;
 
     pollGraphEvents(actions);
     pollEagerEvents(actions);
     processCompletedEvents(actions);
 
+    ackFlush(flushGen);
+
     if (!initialized) {
       threadStarted_.count_down();
       initialized = true;
     }
 
-    if (actions.empty()) {
-      // No active events. Block on the MPMC queue so incoming eager events
-      // wake the thread immediately instead of sleeping for the full
-      // interval. Graph events are polled at the top of the next iteration.
+    if (actions.empty() &&
+        flushState_.requested.load(std::memory_order_acquire) == flushGen) {
+      // No active events and no new flush request arrived during this cycle.
+      // Block on the MPMC queue so incoming eager events wake the thread
+      // immediately instead of sleeping for the full interval.
       std::unique_ptr<CollTraceEvent> event;
       auto deadline =
           std::chrono::steady_clock::now() + config_.maxCheckCancelInterval;

@@ -8,19 +8,14 @@
 bool ctranReduceScatterSupport(
     CtranComm* comm,
     enum NCCL_REDUCESCATTER_ALGO algo) {
+  if (!ctranInitialized(comm)) {
+    return false;
+  }
+
   const int nRanks = comm->statex_->nRanks();
   const int rank = comm->statex_->rank();
   const int nNodes = comm->statex_->nNodes();
   const int nLocalRanks = comm->statex_->nLocalRanks();
-
-  // Check if ctran is initialized
-  if (!ctranInitialized(comm)) {
-    CLOGF_EVERY_MS(
-        WARN,
-        60000,
-        "ctranReduceScatterSupport: CTRAN not initialized, falling back to baseline");
-    return false;
-  }
 
   // Check backend availability (except for single rank case)
   if (nRanks > 1 && !comm->ctran_->mapper->hasBackend()) {

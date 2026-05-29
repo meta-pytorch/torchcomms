@@ -4,6 +4,7 @@
 #define CTRAN_ALGO_H_
 
 #include <fmt/format.h>
+#include <functional>
 #include <vector>
 
 #include "comms/ctran/CtranComm.h"
@@ -17,6 +18,10 @@
 #include "comms/pipes/P2pNvlTransportDevice.cuh"
 #include "comms/utils/logger/Logger.h"
 
+#include <folly/Synchronized.h>
+
+#include "comms/ctran/algos/IPersistPlan.h"
+
 #define LOCAL_RANK_TO_DEV_REGION_POS(localRank, ownerLocalRank) \
   (localRank < ownerLocalRank ? localRank : localRank - 1)
 
@@ -28,20 +33,13 @@ enum CollType {
 };
 constexpr int kExpectedCommAttrLength = 5;
 
-// The following two values are used to allocate tmpbuf for
-// AllToAllvDynamic.
-// TODO: if model scale become larger, need to figure out ways to reduce
-// these value to avoid allocate a large staging buffer.
-// TODO: move the following and the tmpbuff allocation logic out of CtranAlgo,
-// and create new funcs in A2AvDynamic's own logic.
-inline size_t all2allvDynamicMaxSendcounts = 0;
-inline size_t all2allvDynamicMaxNumSplitsPerRank = 0;
-
-commResult_t ctranConfigCommAlgoOverride(CtranComm* comm);
-
 class CtranAlgo {
  public:
   CtranAlgo(CtranComm* comm, ICtran* ctran);
+
+  // Test-only constructor: skips CUDA/kernel init for CPU-only unit tests.
+  struct TestOnly {};
+  explicit CtranAlgo(TestOnly) {}
 
   ~CtranAlgo();
 
@@ -52,6 +50,12 @@ class CtranAlgo {
   // Get base pointer to pre-allocated P2pNvlTransportDevice array
   // Array is indexed by peer local rank
   comms::pipes::P2pNvlTransportDevice* getNvlTransportsBase();
+
+  // Thread-safe get-or-create for persistent algorithm plans.
+  // Returns a non-owning pointer to the plan (lifetime owned by this map).
+  const ctran::algos::IPersistPlan* getOrCreatePersistPlan(
+      ctran::algos::PersistPlanKey key,
+      std::function<std::unique_ptr<ctran::algos::IPersistPlan>()> createFn);
 
   // accessing allGatherAlgo
   void setAllGatherAlgo(enum NCCL_ALLGATHER_ALGO algo);
@@ -86,30 +90,6 @@ class CtranAlgo {
 
     // Temporary buffer to stage dst data for small messages
     MIN_REG_DST_TMPBUF,
-
-    // Temporary buffer to store sencdounts for inter-node alltoallv_dynamic
-    SENDCOUNTS_TMPBUF,
-
-    // Temporary buffer to store recvcounts for alltoallv_dynamic
-    // It would be used to store actualrecvcounts for dynamic and split
-    // store recvAllSplitLengths for split_non_contig
-    RECVCOUNTS_TMPBUF,
-
-    // Temporary buffer to store sendcounts in CPU memory for
-    // alltoallv_dynamic
-    SENDCOUNTS_TMPBUF_CPU,
-
-    // Temporary buffer to store sendindices in CPU memory for
-    // alltoallv_dynamic
-    SENDINDICES_TMPBUF_CPU,
-
-    // Temporary buffer to store sendindices in CPU memory for
-    // alltoallv_dynamic
-    SENDINDICES_BLOCKLEN_TMPBUF_CPU,
-
-    // Temporary buffer to store sendbuffs pointers in CPU memory for
-    // alltoallv_dynamic
-    SENDBUFFS_PTR_TMPBUF_CPU,
 
     // Temporary buffer to hold partially/fully reduced results for
     // communication to peers in AllReduce Ring Algorithm
@@ -163,11 +143,6 @@ class CtranAlgo {
   // local tmpbuf block
   void* tmpbuf{nullptr};
   std::string tmpBufKey;
-  // Temporary buffer to store sendcounts locally on CPU
-  size_t* sendCountsTmpbufCPU{nullptr};
-  size_t* sendIndicesTmpbufCPU{nullptr};
-  size_t* sendIndicesBlockLengthsTmpbufCPU{nullptr};
-  void** sendbuffsPtrTmpbufCPU{nullptr};
 
   void* tmpbufRegHdl{nullptr};
   void* tmpbufSegHdl{nullptr};
@@ -186,6 +161,13 @@ class CtranAlgo {
   // Allocated with cudaMalloc for device accessibility
   // Indexed by peer local rank, slot for self (localRank) is unused
   comms::pipes::P2pNvlTransportDevice* nvlTransports_{nullptr};
+
+  // Generic persistent plan map: any algorithm can register a cached plan.
+  folly::Synchronized<std::unordered_map<
+      ctran::algos::PersistPlanKey,
+      std::unique_ptr<ctran::algos::IPersistPlan>,
+      ctran::algos::PersistPlanKeyHash>>
+      persistPlans_;
 };
 
 class CtranAlgo::SharedResource {

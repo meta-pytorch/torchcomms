@@ -152,6 +152,20 @@ class bool(basetype):
     def utilfns(file):
         pass
 
+    def externDecl(self, file):
+        super().externDecl(file)
+        # Compile-time literal of the yaml `default:` field. Use this when
+        # the default value is needed at static-initialization time, before
+        # ncclCvarInit() runs — the runtime `_DEFAULTCVARVALUE` symbol is a
+        # plain global bool that remains zero-initialized (false) until
+        # ncclCvarInit() populates it.
+        indent(
+            file,
+            "inline constexpr bool %s_DEFAULT_LITERAL = %s;"
+            % (self.name, "true" if self.default else "false"),
+        )
+        file.write("\n")
+
     def readenv(self, file):
         indent(
             file, '%s = env2bool("%s", "%s");' % (self.name, self.envstr, self.default)

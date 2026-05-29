@@ -200,6 +200,20 @@ class Topology {
   /// Check if a NIC passes the given filter.
   bool filterNic(int nicIndex, const NicFilter& filter) const;
 
+  // --- NIC selection ---
+
+  /// Select NICs with the best path from their own NUMA node, filtered by
+  /// NicFilter. Returns multiple NICs when they share the same best path
+  /// type and bandwidth.
+  std::vector<std::string> selectCpuNics(const NicFilter& filter = {}) const;
+
+  /// Select NICs closest to the given GPU, filtered by NicFilter.
+  /// Returns multiple NICs when they share the same best path (e.g. GB200:
+  /// 2 NICs per GPU).
+  std::vector<std::string> selectGpuNics(
+      int cudaDeviceId,
+      const NicFilter& filter = {}) const;
+
   friend class TopologyTest;
 
  private:
