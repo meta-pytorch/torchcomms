@@ -235,6 +235,23 @@ class TorchCommNCCL : public TorchCommBackend,
     nccl_api_ = std::move(api);
   }
 
+  // Construct a fully initialized 2-rank sibling communicator for the
+  // pair (this->getRank(), peer_rank). Only the two participating ranks
+  // need to call this — bootstrap happens out of band through a
+  // PrefixStore (prefix = `name`) so no global collective coordination
+  // is required. Inside the returned comm, the lower-numbered global
+  // rank is local rank 0 and the higher is local rank 1. The caller
+  // must supply a `name` that is unique across pair-comm allocations
+  // for this {min,max} pair, otherwise the PrefixStore key for the
+  // ncclUniqueId will collide with an earlier (or concurrent) attempt.
+  // LazyBackend takes care of that — it owns the per-pair counter.
+  //
+  // Defined in TorchCommNCCLLazy.cpp alongside the nccl-lazy
+  // registration so all of the per-pair plumbing lives in one place.
+  std::shared_ptr<TorchCommNCCL> createPairComm(
+      int peer_rank,
+      const std::string& name);
+
   // Method to override the CUDA API implementation for testing
   void setCudaApi(std::shared_ptr<CudaApi> api) {
     cuda_api_ = std::move(api);
@@ -390,7 +407,11 @@ class TorchCommNCCL : public TorchCommBackend,
   ncclResult_t ensureSegmentWindow(const void* ptr);
 
  private:
-  // Constructor for split communicators
+  // Constructor that takes ownership of an already-built ncclComm,
+  // skipping the bootstrap path entirely. Used internally by split()
+  // and createPairComm() to plug a raw communicator into a fresh
+  // TorchCommNCCL before calling init() to wire up streams, events,
+  // hooks, and the watchdog.
   explicit TorchCommNCCL(const ncclComm_t nccl_comm);
 
   // Private utility methods

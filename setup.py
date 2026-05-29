@@ -221,6 +221,11 @@ if USE_TRANSPORT:
 backend_entry_points = ["fake = torchcomms._comms"] + [
     f"{name} = torchcomms._comms_{name}" for name, enabled in BACKEND_FLAGS if enabled
 ]
+# nccl-lazy is implemented inside the _comms_nccl extension via the
+# LazyBackend<TorchCommNCCL> template; expose it as an additional entry
+# point alias so `register_backend` discovery picks it up.
+if USE_NCCL:
+    backend_entry_points.append("nccl-lazy = torchcomms._comms_nccl")
 
 setup(
     name="torchcomms",
