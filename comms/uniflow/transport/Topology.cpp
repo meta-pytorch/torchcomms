@@ -4,7 +4,6 @@
 
 #include "comms/uniflow/drivers/sysfs/SysfsApi.h"
 
-#include <sched.h>
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -26,7 +25,10 @@ namespace {
 
 /// Normalize a CUDA PCI bus ID string to lowercase (e.g. "0000:07:00.0").
 void normalizePciBusId(char* p, size_t len) {
-  for (int i = 0; i < len && p[i]; ++i) {
+  if (p == nullptr) {
+    return;
+  }
+  for (size_t i = 0; i < len && p[i]; ++i) {
     p[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(p[i])));
   }
 }
@@ -292,12 +294,15 @@ bool isNvSwitchByClass(SysfsApi& sysfs, const std::string& sysfsDevicePath) {
 
 // --- Discovery functions ---
 
-Status discoverC2C(NvmlApi& nvmlApi, std::vector<GpuDiscovery>& gpus) {
+Status discoverC2C(
+    NvmlApi& nvmlApi,
+    std::vector<GpuDiscovery>& gpus,
+    const std::vector<nvmlDevice_t>& nvmlHandles) {
   for (size_t i = 0; i < gpus.size(); ++i) {
-    auto info = nvmlApi.deviceInfo(i);
-    if (!info) {
+    if (nvmlHandles[i] == nullptr) {
       continue;
     }
+    nvmlDevice_t nvmlDev = nvmlHandles[i];
     auto& gpu = gpus[i];
     if (gpu.data.sm < 90) {
       continue;
@@ -305,7 +310,7 @@ Status discoverC2C(NvmlApi& nvmlApi, std::vector<GpuDiscovery>& gpus) {
 
     nvmlFieldValue_t countFv{};
     countFv.fieldId = NVML_FI_DEV_C2C_LINK_COUNT;
-    auto st = nvmlApi.nvmlDeviceGetFieldValues(info->handle, 1, &countFv);
+    auto st = nvmlApi.nvmlDeviceGetFieldValues(nvmlDev, 1, &countFv);
     if (!st || countFv.nvmlReturn != NVML_SUCCESS || countFv.value.uiVal == 0) {
       continue;
     }
@@ -317,7 +322,7 @@ Status discoverC2C(NvmlApi& nvmlApi, std::vector<GpuDiscovery>& gpus) {
       fvs[0].scopeId = l;
       fvs[1].fieldId = NVML_FI_DEV_C2C_LINK_GET_MAX_BW;
       fvs[1].scopeId = l;
-      st = nvmlApi.nvmlDeviceGetFieldValues(info->handle, 2, fvs);
+      st = nvmlApi.nvmlDeviceGetFieldValues(nvmlDev, 2, fvs);
       if (!st) {
         continue;
       }
@@ -333,7 +338,13 @@ Status discoverC2C(NvmlApi& nvmlApi, std::vector<GpuDiscovery>& gpus) {
 /// Discover GPUs via NVML/CUDA: PCI info, NVLink, C2C.
 Result<std::vector<GpuDiscovery>>
 discoverGpus(CudaApi& cudaApi, NvmlApi& nvmlApi, SysfsApi& sysfs) {
-  auto count = nvmlApi.deviceCount();
+  // Use CUDA device count (respects CUDA_VISIBLE_DEVICES) instead of
+  // NVML count (sees all physical GPUs). NVML ignores
+  // CUDA_VISIBLE_DEVICES and always sees all GPUs, so iterating by
+  // NVML count would call cudaSetDevice on indices beyond the visible
+  // set, causing failures. We iterate by CUDA count and resolve each
+  // CUDA device to its NVML handle via PCI bus ID matching.
+  auto count = cudaApi.getDeviceCount();
   CHECK_RETURN(count);
   int gpuCount = count.value();
 
@@ -346,6 +357,8 @@ discoverGpus(CudaApi& cudaApi, NvmlApi& nvmlApi, SysfsApi& sysfs) {
   CudaDeviceGuard guard(cudaApi, oldDev.value());
 
   std::vector<GpuDiscovery> gpus(gpuCount);
+  // NVML handles per CUDA device, resolved via PCI bus ID.
+  std::vector<nvmlDevice_t> nvmlHandles(gpuCount, nullptr);
 
   for (int i = 0; i < gpuCount; ++i) {
     auto& gpu = gpus[i];
@@ -359,6 +372,15 @@ discoverGpus(CudaApi& cudaApi, NvmlApi& nvmlApi, SysfsApi& sysfs) {
     CHECK_EXPR(cudaApi.getDevicePCIBusId(pciBusIdBuf, kPciBusIdLen, i));
     normalizePciBusId(pciBusIdBuf, kPciBusIdLen);
 
+    // Resolve NVML handle for this CUDA device via PCI bus ID.
+    // This correctly maps CUDA device indices to NVML devices
+    // regardless of CUDA_VISIBLE_DEVICES reordering.
+    nvmlDevice_t nvmlDev = nullptr;
+    auto nvmlSt = nvmlApi.nvmlDeviceGetHandleByPciBusId(pciBusIdBuf, &nvmlDev);
+    if (nvmlSt) {
+      nvmlHandles[i] = nvmlDev;
+    }
+
     // Resolve the sysfs path.
     std::string sysfsLinkPath =
         std::string("/sys/bus/pci/devices/") + pciBusIdBuf;
@@ -371,11 +393,14 @@ discoverGpus(CudaApi& cudaApi, NvmlApi& nvmlApi, SysfsApi& sysfs) {
     gpu.ancestorChain = buildAncestorChain(sysfs, gpu.sysfsPath);
     gpu.linkInfo = readPcieLinkInfo(sysfs, gpu.sysfsPath);
 
-    // Get SM version from NVML.
-    auto info = nvmlApi.deviceInfo(i);
-    if (info) {
-      gpu.data.sm =
-          info->computeCapabilityMajor * 10 + info->computeCapabilityMinor;
+    // Get SM version via the resolved NVML handle.
+    if (nvmlHandles[i] != nullptr) {
+      int major = -1, minor = -1;
+      auto ccSt = nvmlApi.nvmlDeviceGetCudaComputeCapability(
+          nvmlHandles[i], &major, &minor);
+      if (ccSt) {
+        gpu.data.sm = major * 10 + minor;
+      }
     }
   }
 
@@ -403,10 +428,10 @@ discoverGpus(CudaApi& cudaApi, NvmlApi& nvmlApi, SysfsApi& sysfs) {
   };
 
   for (int i = 0; i < gpuCount; ++i) {
-    auto info = nvmlApi.deviceInfo(i);
-    if (!info) {
+    if (nvmlHandles[i] == nullptr) {
       continue;
     }
+    nvmlDevice_t nvmlDev = nvmlHandles[i];
     auto& gpu = gpus[i];
     int sm = gpu.data.sm;
     int maxNvLinks = getMaxNvLinks(sm);
@@ -414,7 +439,7 @@ discoverGpus(CudaApi& cudaApi, NvmlApi& nvmlApi, SysfsApi& sysfs) {
     for (int link = 0; link < maxNvLinks; ++link) {
       unsigned int canP2P = 0;
       auto st = nvmlApi.nvmlDeviceGetNvLinkCapability(
-          info->handle, link, NVML_NVLINK_CAP_P2P_SUPPORTED, &canP2P);
+          nvmlDev, link, NVML_NVLINK_CAP_P2P_SUPPORTED, &canP2P);
       if (!st || !canP2P) {
         continue;
       }
@@ -425,14 +450,14 @@ discoverGpus(CudaApi& cudaApi, NvmlApi& nvmlApi, SysfsApi& sysfs) {
         nvmlFieldValue_t fv{};
         fv.fieldId = NVML_FI_DEV_NVLINK_GET_STATE;
         fv.scopeId = link;
-        st = nvmlApi.nvmlDeviceGetFieldValues(info->handle, 1, &fv);
+        st = nvmlApi.nvmlDeviceGetFieldValues(nvmlDev, 1, &fv);
         if (st && fv.nvmlReturn == NVML_SUCCESS) {
           isActive = static_cast<nvmlEnableState_t>(fv.value.uiVal);
         }
       } else
 #endif
       {
-        nvmlApi.nvmlDeviceGetNvLinkState(info->handle, link, &isActive);
+        nvmlApi.nvmlDeviceGetNvLinkState(nvmlDev, link, &isActive);
       }
 
       if (isActive != NVML_FEATURE_ENABLED) {
@@ -440,8 +465,7 @@ discoverGpus(CudaApi& cudaApi, NvmlApi& nvmlApi, SysfsApi& sysfs) {
       }
 
       nvmlPciInfo_t remotePci{};
-      st = nvmlApi.nvmlDeviceGetNvLinkRemotePciInfo(
-          info->handle, link, &remotePci);
+      st = nvmlApi.nvmlDeviceGetNvLinkRemotePciInfo(nvmlDev, link, &remotePci);
       if (!st) {
         continue;
       }
@@ -473,8 +497,8 @@ discoverGpus(CudaApi& cudaApi, NvmlApi& nvmlApi, SysfsApi& sysfs) {
     }
   }
 
-  // C2C link detection via NVML.
-  discoverC2C(nvmlApi, gpus);
+  // C2C link detection via NVML (using resolved handles).
+  discoverC2C(nvmlApi, gpus, nvmlHandles);
 
   return gpus;
 }
@@ -512,9 +536,15 @@ Result<std::vector<NicDiscovery>> discoverNics(
   std::unique_ptr<ibv_device*[], decltype(devListDeleter)> devListGuard(
       devListResult.value(), devListDeleter);
   ibv_device** devList = devListGuard.get();
+  if (devList == nullptr) {
+    return nics;
+  }
 
   for (int i = 0; i < numDevices; ++i) {
     ibv_device* dev = devList[i];
+    if (dev == nullptr) {
+      continue;
+    }
 
     auto name = ibvApi.getDeviceName(dev);
     if (!name) {
@@ -695,8 +725,8 @@ uint32_t nvlinkPerLinkBwMBps(int sm) {
 
 /// Inter-CPU bandwidth constants in GB/s, matching NCCL (topo.h).
 // clang-format off
-constexpr uint32_t kBwP9MBps      = 32000;  // IBM POWER9
-constexpr uint32_t kBwArmMBps     =  6000;  // ARM
+[[maybe_unused]] constexpr uint32_t kBwP9MBps      = 32000;  // IBM POWER9
+[[maybe_unused]] constexpr uint32_t kBwArmMBps     =  6000;  // ARM
 constexpr uint32_t kBwAmdMBps     = 16000;  // AMD (all models)
 constexpr uint32_t kBwBdwQpiMBps  =  6000;  // Intel Broadwell and older
 constexpr uint32_t kBwSklQpiMBps  = 10000;  // Intel Skylake
@@ -892,20 +922,19 @@ Status Topology::discoverHardware(DiscoveryData& data) {
 }
 
 void Topology::buildNodes(const DiscoveryData& data) {
-  int gpuCount = data.gpus.size();
-  int nicCount = data.nics.size();
   int numaCount = data.numaCount;
 
   nodes_.clear();
-  nodes_.reserve(gpuCount + numaCount + nicCount);
+  nodes_.reserve(data.gpus.size() + numaCount + data.nics.size());
 
-  gpuNodeIds_.resize(gpuCount);
-  for (int i = 0; i < gpuCount; ++i) {
-    gpuNodeIds_[i] = addNode({
+  gpuNodeIds_.clear();
+  gpuNodeIds_.reserve(data.gpus.size());
+  for (const auto& gpu : data.gpus) {
+    gpuNodeIds_.push_back(addNode({
         .type = NodeType::GPU,
-        .name = "cuda:" + std::to_string(data.gpus[i].data.cudaDeviceId),
-        .data = data.gpus[i].data,
-    });
+        .name = "cuda:" + std::to_string(gpu.data.cudaDeviceId),
+        .data = gpu.data,
+    }));
   }
 
   cpuNodeIds_.resize(numaCount);
@@ -917,26 +946,28 @@ void Topology::buildNodes(const DiscoveryData& data) {
     });
   }
 
-  nicNodeIds_.resize(nicCount);
-  for (int i = 0; i < nicCount; ++i) {
-    nicNodeIds_[i] = addNode({
+  nicNodeIds_.clear();
+  nicNodeIds_.reserve(data.nics.size());
+  for (const auto& nic : data.nics) {
+    nicNodeIds_.push_back(addNode({
         .type = NodeType::NIC,
-        .name = data.nics[i].name,
-        .data = data.nics[i].data,
-    });
+        .name = nic.name,
+        .data = nic.data,
+    }));
   }
 }
 
 void Topology::buildP2pMatrix() {
-  int gpuCount = gpuNodeIds_.size();
+  size_t gpuCount = gpuNodeIds_.size();
   p2pMatrix_.resize(gpuCount, std::vector<bool>(gpuCount, false));
-  for (int i = 0; i < gpuCount; ++i) {
+  for (size_t i = 0; i < gpuCount; ++i) {
     p2pMatrix_[i][i] = true;
-    for (int j = 0; j < gpuCount; ++j) {
+    for (size_t j = 0; j < gpuCount; ++j) {
       if (i == j) {
         continue;
       }
-      auto result = cudaApi_->deviceCanAccessPeer(i, j);
+      auto result = cudaApi_->deviceCanAccessPeer(
+          static_cast<int>(i), static_cast<int>(j));
       if (result.hasValue()) {
         p2pMatrix_[i][j] = result.value();
       }
@@ -945,29 +976,31 @@ void Topology::buildP2pMatrix() {
 }
 
 void Topology::buildEdges(const DiscoveryData& data) {
-  int gpuCount = data.gpus.size();
-  int nicCount = data.nics.size();
   int numaCount = data.numaCount;
 
   // Collect all PCI devices for PCIe edge construction.
   std::vector<PciDevice> pciDevices;
-  pciDevices.reserve(gpuCount + nicCount);
-  for (int i = 0; i < gpuCount; ++i) {
+  pciDevices.reserve(data.gpus.size() + data.nics.size());
+  size_t gpuIndex = 0;
+  for (const auto& gpu : data.gpus) {
     pciDevices.push_back({
-        .nodeId = gpuNodeIds_[i],
-        .numaNode = data.gpus[i].data.numaNode,
-        .ancestorChain = data.gpus[i].ancestorChain,
+        .nodeId = gpuNodeIds_.at(gpuIndex),
+        .numaNode = gpu.data.numaNode,
+        .ancestorChain = gpu.ancestorChain,
     });
+    ++gpuIndex;
   }
-  for (int i = 0; i < nicCount; ++i) {
+  size_t nicIndex = 0;
+  for (const auto& nic : data.nics) {
     // Convert RDMA port speed from Mbps to MB/s for bandwidth comparison.
-    uint32_t portMBps = data.nics[i].data.portSpeedMbps / 8;
+    uint32_t portMBps = nic.data.portSpeedMbps / 8;
     pciDevices.push_back({
-        .nodeId = nicNodeIds_[i],
-        .numaNode = data.nics[i].data.numaNode,
-        .ancestorChain = data.nics[i].ancestorChain,
+        .nodeId = nicNodeIds_.at(nicIndex),
+        .numaNode = nic.data.numaNode,
+        .ancestorChain = nic.ancestorChain,
         .portSpeedMBps = portMBps,
     });
+    ++nicIndex;
   }
 
   // Connect each PCI device to its CPU node.
@@ -990,19 +1023,16 @@ void Topology::buildEdges(const DiscoveryData& data) {
   }
 
   // C2C edges (GPU → CPU for Grace Hopper systems).
-  for (int i = 0; i < gpuCount; ++i) {
-    if (data.gpus[i].c2cBwMBps == 0) {
+  for (size_t i = 0; i < data.gpus.size(); ++i) {
+    const auto& gpu = data.gpus.at(i);
+    if (gpu.c2cBwMBps == 0) {
       continue;
     }
-    int numa = data.gpus[i].data.numaNode;
+    int numa = gpu.data.numaNode;
     if (numa < 0 || numa >= numaCount) {
       continue;
     }
-    addLink(
-        gpuNodeIds_[i],
-        cpuNodeIds_[numa],
-        PathType::C2C,
-        data.gpus[i].c2cBwMBps);
+    addLink(gpuNodeIds_.at(i), cpuNodeIds_[numa], PathType::C2C, gpu.c2cBwMBps);
   }
 
   // Direct PCIe edges between devices sharing a PCIe switch.
@@ -1036,20 +1066,24 @@ void Topology::buildEdges(const DiscoveryData& data) {
   }
 
   // NVLink edges (direct GPU → GPU for NVSwitch-connected pairs).
-  for (int i = 0; i < gpuCount; ++i) {
-    if (data.gpus[i].nvSwitchLinkCount <= 0) {
+  const size_t gpuCount = data.gpus.size();
+  for (size_t i = 0; i < gpuCount; ++i) {
+    const auto& gpuI = data.gpus.at(i);
+    if (gpuI.nvSwitchLinkCount <= 0) {
       continue;
     }
-    uint32_t bwI = data.gpus[i].nvSwitchLinkCount *
-        nvlinkPerLinkBwMBps(data.gpus[i].data.sm);
-    for (int j = i + 1; j < gpuCount; ++j) {
-      if (data.gpus[j].nvSwitchLinkCount <= 0 || !p2pMatrix_[i][j]) {
+    uint32_t bwI = gpuI.nvSwitchLinkCount * nvlinkPerLinkBwMBps(gpuI.data.sm);
+    for (size_t j = i + 1; j < gpuCount; ++j) {
+      const auto& gpuJ = data.gpus.at(j);
+      if (gpuJ.nvSwitchLinkCount <= 0 || !p2pMatrix_[i][j]) {
         continue;
       }
-      uint32_t bwJ = data.gpus[j].nvSwitchLinkCount *
-          nvlinkPerLinkBwMBps(data.gpus[j].data.sm);
+      uint32_t bwJ = gpuJ.nvSwitchLinkCount * nvlinkPerLinkBwMBps(gpuJ.data.sm);
       addLink(
-          gpuNodeIds_[i], gpuNodeIds_[j], PathType::NVL, std::min(bwI, bwJ));
+          gpuNodeIds_.at(i),
+          gpuNodeIds_.at(j),
+          PathType::NVL,
+          std::min(bwI, bwJ));
     }
   }
 
