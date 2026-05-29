@@ -280,12 +280,26 @@ def _bench_triton(
     def fn() -> None:
         if bidirectional:
             triton_nvl_sendrecv(
-                send, recv, peer_rank, group=group, num_blocks=num_blocks
+                send,
+                recv,
+                peer_rank,
+                group=group,
+                num_blocks=num_blocks,
             )
         elif local_rank == 0:
-            triton_nvl_send(send, peer_rank, group=group, num_blocks=num_blocks)
+            triton_nvl_send(
+                send,
+                peer_rank,
+                group=group,
+                num_blocks=num_blocks,
+            )
         else:
-            triton_nvl_recv(recv, peer_rank, group=group, num_blocks=num_blocks)
+            triton_nvl_recv(
+                recv,
+                peer_rank,
+                group=group,
+                num_blocks=num_blocks,
+            )
 
     fn()
     dist.barrier(group)

@@ -33,6 +33,7 @@ from typing import NamedTuple
 import torch
 import torch.distributed as dist
 import torch.distributed._symmetric_memory as symm_mem
+from torch._C._distributed_c10d import _SymmetricMemory
 
 from .sendrecv import triton_nvl_sendrecv_kernel
 
@@ -83,10 +84,7 @@ def _per_pair_bytes() -> int:
 # caller multiplexes threads onto a single PG, wrap these in a lock.
 # ---------------------------------------------------------------------------
 
-_BUFFER_CACHE: dict[
-    dist.ProcessGroup,
-    tuple[object, torch.Tensor, torch.Tensor],  # (handle, buf_ptrs, sig_ptrs)
-] = {}
+_HANDLE_CACHE: dict[dist.ProcessGroup, _SymmetricMemory] = {}
 
 _STEP_STATE_CACHE: dict[
     dist.ProcessGroup,
@@ -97,8 +95,8 @@ _STEP_STATE_CACHE: dict[
 def _get_staging_buffer(
     group: dist.ProcessGroup,
     device: torch.device,
-) -> tuple[object, torch.Tensor, torch.Tensor]:
-    """Get or create the symmetric memory staging buffer for ``group``.
+) -> _SymmetricMemory:
+    """Get or create the symmetric memory handle for ``group``.
 
     The signal pad must be zero on entry to the first ``wait_ge(_, 0)`` call
     on each block. ``symm_mem.empty`` zeroes the entire allocation including
@@ -107,7 +105,7 @@ def _get_staging_buffer(
     signal pad explicitly + barrier so the invariant holds even if the
     underlying allocator behaviour changes in a future torch release.
     """
-    cached = _BUFFER_CACHE.get(group)
+    cached = _HANDLE_CACHE.get(group)
     if cached is not None:
         return cached
 
@@ -124,10 +122,8 @@ def _get_staging_buffer(
     # rendezvous-then-barrier sequence below guarantees that.
     handle.get_signal_pad(handle.rank).zero_()
     dist.barrier(group)
-    buf_ptrs = torch.tensor(handle.buffer_ptrs, device=device, dtype=torch.int64)
-    sig_ptrs = torch.tensor(handle.signal_pad_ptrs, device=device, dtype=torch.int64)
-    _BUFFER_CACHE[group] = (handle, buf_ptrs, sig_ptrs)
-    return _BUFFER_CACHE[group]
+    _HANDLE_CACHE[group] = handle
+    return handle
 
 
 def _get_step_state(
@@ -289,7 +285,11 @@ def _launch(
     assert peer_rank != local_rank
     assert 0 <= peer_rank < world_size
 
-    _, buf_ptrs, sig_ptrs = _get_staging_buffer(group, send_buf.device)
+    # Buffer and signal pad pointers are passed as direct typed tensors
+    # (not pointer-of-pointer int64 tensors) so Triton emits 128-bit
+    # vectorized stores instead of 16-bit scalar stores. See the kernel
+    # docstring in sendrecv.py for the codegen rationale.
+    handle = _get_staging_buffer(group, send_buf.device)
     sender_step, recver_step = _get_step_state(group, send_buf.device)
 
     config = _compute_config(send_buf.element_size())
@@ -297,6 +297,16 @@ def _launch(
     tile_numel = config.tile_rows * config.tile_cols
     tile_bytes = tile_numel * send_buf.element_size()
     max_tiles_per_block_per_slot = max(_BLOCK_STRIDE_BYTES // tile_bytes, 1)
+
+    staging_elems = block_stride_elems * _MAX_BLOCKS_PER_DIR * _PIPELINE_DEPTH
+    remote_buf = handle.get_buffer(
+        peer_rank, sizes=[staging_elems], dtype=send_buf.dtype
+    )
+    local_buf = handle.get_buffer(
+        local_rank, sizes=[staging_elems], dtype=recv_buf.dtype
+    )
+    remote_sig = handle.get_signal_pad(peer_rank).view(torch.int64)
+    local_sig = handle.get_signal_pad(local_rank).view(torch.int64)
 
     grid = (2 * num_blocks,) if mode == _MODE_BIDIRECTIONAL else (num_blocks,)
 
@@ -306,8 +316,10 @@ def _launch(
     triton_nvl_sendrecv_kernel[grid](
         send_ptr=send_buf,
         recv_ptr=recv_buf,
-        buffer_ptrs=buf_ptrs,
-        signal_pad_ptrs=sig_ptrs,
+        remote_buf=remote_buf,
+        local_buf=local_buf,
+        remote_sig=remote_sig,
+        local_sig=local_sig,
         sender_step_ptr=sender_step,
         recver_step_ptr=recver_step,
         local_rank=local_rank,

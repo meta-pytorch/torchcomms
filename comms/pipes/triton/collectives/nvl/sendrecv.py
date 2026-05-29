@@ -94,10 +94,12 @@ _MODE_RECV_ONLY = 2
 def triton_nvl_sendrecv_kernel(  # noqa: C901
     send_ptr,
     recv_ptr,
-    buffer_ptrs,  # int64 device tensor, shape (world_size,)
-    signal_pad_ptrs,  # int64 device tensor, shape (world_size,)
-    sender_step_ptr,  # int64 device tensor, shape (MAX_BLOCKS_PER_DIR,)
-    recver_step_ptr,  # int64 device tensor, shape (MAX_BLOCKS_PER_DIR,)
+    remote_buf,  # direct tensor: peer's staging buffer
+    local_buf,  # direct tensor: own staging buffer
+    remote_sig,  # direct tensor: peer's signal pad (int64)
+    local_sig,  # direct tensor: own signal pad (int64)
+    sender_step_ptr,
+    recver_step_ptr,
     local_rank,
     peer_rank,
     send_numel,
@@ -118,6 +120,16 @@ def triton_nvl_sendrecv_kernel(  # noqa: C901
     path ``pid // 2`` and odd programs run receiver path ``pid // 2``.
     Send-only and recv-only modes launch grid ``(NUM_SEND_BLOCKS,)`` and run
     exactly one path.
+
+    Staging buffer and signal pad pointers are passed as direct typed
+    tensor arguments (via ``handle.get_buffer`` / ``handle.get_signal_pad``
+    on the host side) rather than loaded at runtime from a pointer-of-pointer
+    tensor. This is critical for Triton codegen: runtime-loaded store
+    destination pointers (``tl.load(...).to(pointer_type(...))``) trigger
+    the compiler's layout optimizer to emit scalar 16-bit stores
+    (``STG.E.U16``) instead of 128-bit vectorized stores (``STG.E.128``).
+    Direct tensor arguments avoid this, producing the same ``LDG.E.128 +
+    STG.E.128`` pattern that NCCL uses with ``uint4``.
     """
     TILE_NUMEL: tl.constexpr = TILE_ROWS * TILE_COLS
 
@@ -132,21 +144,8 @@ def triton_nvl_sendrecv_kernel(  # noqa: C901
         is_sender = (pid % 2) == 0
         block_id = pid // 2
 
-    # ---- Buffer pointers ----
-    # Sender writes to peer rank's staging buffer; receiver reads its own.
-    buffer_ptrs_u64 = buffer_ptrs.to(tl.pointer_type(tl.uint64))
-    remote_buf = tl.load(buffer_ptrs_u64 + peer_rank).to(
-        tl.pointer_type(send_ptr.dtype.element_ty)
-    )
-    local_buf = tl.load(buffer_ptrs_u64 + local_rank).to(
-        tl.pointer_type(recv_ptr.dtype.element_ty)
-    )
-
-    # ---- Signal pad pointers ----
-    signal_pad_ptrs_u64 = signal_pad_ptrs.to(tl.pointer_type(tl.uint64))
-    remote_sig = tl.load(signal_pad_ptrs_u64 + peer_rank).to(tl.pointer_type(tl.int64))
-    local_sig = tl.load(signal_pad_ptrs_u64 + local_rank).to(tl.pointer_type(tl.int64))
-
+    # Buffer and signal pointers are already typed kernel arguments —
+    # no pointer-of-pointer load needed.
     HEAD_OFFSET: tl.constexpr = MAX_BLOCKS_PER_DIR
 
     flat_tid = get_flat_tid()
