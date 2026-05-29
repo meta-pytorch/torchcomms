@@ -4,14 +4,17 @@
 /// Requires at least 2 RDMA NICs. GPU tests require CUDA devices.
 /// Uses two transport instances on different NICs within the same process.
 
+#include "comms/uniflow/drivers/cuda/CudaApi.h"
 #include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
 #include "comms/uniflow/drivers/ibverbs/IbvApi.h"
 #include "comms/uniflow/executor/ScopedEventBaseThread.h"
 #include "comms/uniflow/transport/rdma/RdmaRegistrationHandle.h"
+#include "comms/uniflow/transport/rdma/RdmaSlabPool.h"
 #include "comms/uniflow/transport/rdma/RdmaTransport.h"
 
 #include <cuda_runtime_api.h> // @manual=third-party//cuda:cuda-lazy
 #include <cstring>
+#include <random>
 
 #include <gtest/gtest.h>
 
@@ -44,6 +47,7 @@ class SingleHostTest : public ::testing::Test {
  protected:
   void SetUp() override {
     ibvApi_ = std::make_shared<IbvApi>();
+    cudaDriverApi_ = std::make_shared<CudaDriverApi>();
     auto initStatus = ibvApi_->init();
     ASSERT_FALSE(initStatus.hasError())
         << "Failed to init IbvApi: " << initStatus.error().message();
@@ -114,6 +118,7 @@ class SingleHostTest : public ::testing::Test {
   }
 
   std::shared_ptr<IbvApi> ibvApi_;
+  std::shared_ptr<CudaDriverApi> cudaDriverApi_;
   ibv_device** deviceList_{nullptr};
   int numDevices_{0};
   std::vector<std::string> deviceNames_;
@@ -182,14 +187,12 @@ TEST_F(SingleHostTest, RepeatedRegisterDeregister) {
 // --- VRAM registration integration tests ---
 
 TEST_F(SingleHostTest, VramRegistrationWithCudaMalloc) {
-  auto cudaDriverApi = std::make_shared<CudaDriverApi>();
-
   RdmaTransportFactory factory(
       {deviceNames_[0]},
       evbThread_->getEventBase(),
       {},
       ibvApi_,
-      cudaDriverApi);
+      cudaDriverApi_);
 
   // Allocate GPU memory via cudaMalloc (page-aligned by default).
   constexpr size_t kSize = 1 << 20; // 1 MiB
@@ -222,14 +225,12 @@ TEST_F(SingleHostTest, VramRegistrationWithCudaMalloc) {
 }
 
 TEST_F(SingleHostTest, VramRegistrationWithMultiNics) {
-  auto cudaDriverApi = std::make_shared<CudaDriverApi>();
-
   RdmaTransportFactory factory(
       {deviceNames_[0], deviceNames_[1]},
       evbThread_->getEventBase(),
       {},
       ibvApi_,
-      cudaDriverApi);
+      cudaDriverApi_);
 
   // Allocate GPU memory via cudaMalloc (page-aligned by default).
   constexpr size_t kSize = 1 << 20; // 1 MiB
@@ -263,13 +264,12 @@ TEST_F(SingleHostTest, VramRegistrationWithMultiNics) {
 }
 
 TEST_F(SingleHostTest, VramRegistrationWithUnalignedAddress) {
-  auto cudaDriverApi = std::make_shared<CudaDriverApi>();
   RdmaTransportFactory factory(
       {deviceNames_[0]},
       evbThread_->getEventBase(),
       {},
       ibvApi_,
-      cudaDriverApi);
+      cudaDriverApi_);
 
   // Allocate a large GPU buffer and offset into it to create a
   // non-page-aligned address. cudaMalloc returns page-aligned memory,
@@ -644,6 +644,198 @@ INSTANTIATE_TEST_SUITE_P(
         TransferParam{12 * 1024 * 1024 + 12 * 1024, 1, "12MB12KB_x1"},
         TransferParam{12 * 1024 * 1024 + 12 * 1024, 4, "12MB12KB_x4"}),
     transferParamName);
+
+// --- DRAM send/recv tests ---
+
+struct SendRecvParam {
+  size_t bufSize;
+  std::string name;
+};
+
+std::string sendRecvParamName(
+    const ::testing::TestParamInfo<SendRecvParam>& info) {
+  return info.param.name;
+}
+
+class DramSendRecvTest : public SingleHostTest,
+                         public ::testing::WithParamInterface<SendRecvParam> {
+ protected:
+  struct SendRecvPair {
+    std::unique_ptr<ScopedEventBaseThread> evbThread0;
+    std::unique_ptr<ScopedEventBaseThread> evbThread1;
+    std::shared_ptr<RdmaSlabPool> slabPool0;
+    std::shared_ptr<RdmaSlabPool> slabPool1;
+    std::unique_ptr<RdmaTransport> transport0;
+    std::unique_ptr<RdmaTransport> transport1;
+  };
+
+  SendRecvPair connectSendRecvPair() {
+    SendRecvPair pair;
+    pair.evbThread0 = std::make_unique<ScopedEventBaseThread>();
+    pair.evbThread1 = std::make_unique<ScopedEventBaseThread>();
+    auto ibv = ibvApi_;
+    auto cudaApi = std::make_shared<CudaApi>();
+    auto cudaDriverApi = std::make_shared<CudaDriverApi>();
+
+    int nic1Idx = numDevices_ > 3 ? 3 : numDevices_ - 1;
+    auto nics0 = std::make_shared<std::vector<NicResources>>();
+    nics0->reserve(1);
+    nics0->emplace_back(deviceList_[0], ibv);
+
+    auto nics1 = std::make_shared<std::vector<NicResources>>();
+    nics1->reserve(1);
+    nics1->emplace_back(deviceList_[nic1Idx], ibv);
+
+    RdmaSlabPoolConfig poolConfig{.slabNum = 8, .slabSize = 512 * 1024};
+    pair.slabPool0 =
+        std::make_shared<RdmaSlabPool>(poolConfig, cudaApi, ibv, nics0);
+    pair.slabPool1 =
+        std::make_shared<RdmaSlabPool>(poolConfig, cudaApi, ibv, nics1);
+
+    std::mt19937_64 rng{std::random_device{}()};
+    uint64_t domain0 = rng();
+    uint64_t domain1 = rng();
+
+    RdmaTransportConfig config{.pipelineDepth = 8};
+    pair.transport0 = std::make_unique<RdmaTransport>(
+        ibv,
+        cudaApi,
+        cudaDriverApi,
+        pair.evbThread0->getEventBase(),
+        nics0,
+        domain0,
+        config,
+        pair.slabPool0);
+    pair.transport1 = std::make_unique<RdmaTransport>(
+        ibv,
+        cudaApi,
+        cudaDriverApi,
+        pair.evbThread1->getEventBase(),
+        nics1,
+        domain1,
+        config,
+        pair.slabPool1);
+
+    auto info0 = pair.transport0->bind();
+    auto info1 = pair.transport1->bind();
+    EXPECT_FALSE(info0.empty());
+    EXPECT_FALSE(info1.empty());
+
+    auto st0 = pair.transport0->connect(info1);
+    auto st1 = pair.transport1->connect(info0);
+    EXPECT_TRUE(st0) << st0.error().message();
+    EXPECT_TRUE(st1) << st1.error().message();
+
+    return pair;
+  }
+};
+
+TEST_P(DramSendRecvTest, SendRecv) {
+  const auto& param = GetParam();
+  const size_t bufSize = param.bufSize;
+
+  auto pair = connectSendRecvPair();
+
+  std::vector<char> sendBuf(bufSize);
+  std::vector<char> recvBuf(bufSize, 0);
+  for (size_t i = 0; i < bufSize; ++i) {
+    sendBuf[i] = static_cast<char>(i & 0xFF);
+  }
+
+  Segment sendSeg(sendBuf.data(), bufSize, MemoryType::DRAM);
+  Segment recvSeg(recvBuf.data(), bufSize, MemoryType::DRAM);
+
+  auto recvFuture = pair.transport1->recv(recvSeg.span());
+  auto sendFuture = pair.transport0->send(sendSeg.span());
+
+  auto sendStatus = sendFuture.get();
+  ASSERT_FALSE(sendStatus.hasError())
+      << "send failed: " << sendStatus.error().message();
+
+  auto recvResult = recvFuture.get();
+  ASSERT_TRUE(recvResult.hasValue())
+      << "recv failed: " << recvResult.error().message();
+
+  EXPECT_EQ(std::memcmp(sendBuf.data(), recvBuf.data(), bufSize), 0)
+      << "Data mismatch";
+
+  pair.transport0->shutdown();
+  pair.transport1->shutdown();
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    DramSendRecv,
+    DramSendRecvTest,
+    ::testing::Values(
+        SendRecvParam{4096, "4KB"},
+        SendRecvParam{512 * 1024, "512KB"},
+        SendRecvParam{2 * 1024 * 1024 + 1234, "2MB_unaligned"},
+        SendRecvParam{100 * 1024 * 1024, "100MB"}),
+    sendRecvParamName);
+
+// --- VRAM send/recv tests ---
+
+class VramSendRecvTest : public DramSendRecvTest {};
+
+TEST_P(VramSendRecvTest, SendRecv) {
+  int deviceCount = 0;
+  if (cudaGetDeviceCount(&deviceCount) != cudaSuccess || deviceCount < 2) {
+    GTEST_SKIP() << "Need at least 2 CUDA device, found " << deviceCount;
+  }
+
+  const auto& param = GetParam();
+  const size_t bufSize = param.bufSize;
+
+  auto pair = connectSendRecvPair();
+
+  CudaBuffer sendGpu(bufSize, 0);
+  CudaBuffer recvGpu(bufSize, 1);
+  ASSERT_NE(sendGpu.ptr, nullptr) << "cudaMalloc failed for send buffer";
+  ASSERT_NE(recvGpu.ptr, nullptr) << "cudaMalloc failed for recv buffer";
+
+  std::vector<char> staging(bufSize);
+  for (size_t i = 0; i < bufSize; ++i) {
+    staging[i] = static_cast<char>(i & 0xFF);
+  }
+  cudaSetDevice(0);
+  cudaMemcpy(sendGpu.ptr, staging.data(), bufSize, cudaMemcpyHostToDevice);
+  cudaSetDevice(1);
+  cudaMemset(recvGpu.ptr, 0, bufSize);
+  cudaDeviceSynchronize();
+
+  Segment sendSeg(sendGpu.ptr, bufSize, MemoryType::VRAM, 0);
+  Segment recvSeg(recvGpu.ptr, bufSize, MemoryType::VRAM, 1);
+
+  auto recvFuture = pair.transport1->recv(recvSeg.span(), {.stream = nullptr});
+  auto sendFuture = pair.transport0->send(sendSeg.span(), {.stream = nullptr});
+
+  auto sendStatus = sendFuture.get();
+  ASSERT_FALSE(sendStatus.hasError())
+      << "send failed: " << sendStatus.error().message();
+
+  auto recvResult = recvFuture.get();
+  ASSERT_TRUE(recvResult.hasValue())
+      << "recv failed: " << recvResult.error().message();
+
+  std::vector<char> verify(bufSize, 0);
+  cudaSetDevice(1);
+  cudaMemcpy(verify.data(), recvGpu.ptr, bufSize, cudaMemcpyDeviceToHost);
+  EXPECT_EQ(std::memcmp(staging.data(), verify.data(), bufSize), 0)
+      << "Data mismatch";
+
+  pair.transport0->shutdown();
+  pair.transport1->shutdown();
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    VramSendRecv,
+    VramSendRecvTest,
+    ::testing::Values(
+        SendRecvParam{4096, "4KB"},
+        SendRecvParam{512 * 1024, "512KB"},
+        SendRecvParam{2 * 1024 * 1024 + 1234, "2MB_unaligned"},
+        SendRecvParam{100 * 1024 * 1024, "100MB"}),
+    sendRecvParamName);
 
 } // namespace uniflow
 

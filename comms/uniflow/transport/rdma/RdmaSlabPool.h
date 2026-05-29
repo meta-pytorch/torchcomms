@@ -23,29 +23,7 @@ struct RdmaSlabPoolConfig {
   size_t slabSize{512 * 1024}; // 512KB
 };
 
-class RdmaSlabPool;
-
-/// RAII wrapper for an acquired slab. Auto-releases back to pool on
-/// destruction. Movable but not copyable. Call release() for explicit early
-/// release without waiting for destruction.
-class RdmaSlab {
- public:
-  ~RdmaSlab();
-  RdmaSlab(RdmaSlab&& other) noexcept;
-  RdmaSlab& operator=(RdmaSlab&& other) noexcept;
-  RdmaSlab(const RdmaSlab&) = delete;
-  RdmaSlab& operator=(const RdmaSlab&) = delete;
-
-  uint16_t index() const {
-    return index_;
-  }
-
- private:
-  friend class RdmaSlabPool;
-  RdmaSlab(std::shared_ptr<RdmaSlabPool> pool, uint16_t index);
-  std::shared_ptr<RdmaSlabPool> pool_;
-  uint16_t index_;
-};
+class RdmaSlab;
 
 /// Factory-level shared pool of host-pinned staging buffers for copy-based
 /// send/recv. Composed from three RAII subsystems:
@@ -97,6 +75,45 @@ class RdmaSlabPool : public std::enable_shared_from_this<RdmaSlabPool> {
   std::unique_ptr<PinnedBuffer> buffer_;
   std::unique_ptr<MrSet> mrSet_;
   std::unique_ptr<SlabAllocator> allocator_;
+};
+
+/// RAII wrapper for an acquired slab. Auto-releases back to pool on
+/// destruction. Movable but not copyable. Call release() for explicit early
+/// release without waiting for destruction.
+class RdmaSlab {
+ public:
+  ~RdmaSlab();
+  RdmaSlab(RdmaSlab&& other) noexcept;
+  RdmaSlab& operator=(RdmaSlab&& other) noexcept;
+  RdmaSlab(const RdmaSlab&) = delete;
+  RdmaSlab& operator=(const RdmaSlab&) = delete;
+
+  uint16_t index() const {
+    return index_;
+  }
+
+  void* ptr() const {
+    return pool_->slabPtr(index_);
+  }
+
+  uint64_t addr() const {
+    return pool_->slabAddr(index_);
+  }
+
+  uint64_t stateDeviceAddr() const {
+    return pool_->stateDeviceAddr(index_);
+  }
+
+  std::atomic_ref<uint64_t> state() const {
+    auto* ptr = static_cast<uint64_t*>(pool_->statePtr(index_));
+    return std::atomic_ref<uint64_t>{*ptr};
+  }
+
+ private:
+  friend class RdmaSlabPool;
+  RdmaSlab(std::shared_ptr<RdmaSlabPool> pool, uint16_t index);
+  std::shared_ptr<RdmaSlabPool> pool_;
+  uint16_t index_;
 };
 
 } // namespace uniflow
