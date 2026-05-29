@@ -284,14 +284,18 @@ static void dumpAlgoStatToMap(
     return;
   }
   auto dump = algoStats->dump();
-  if (dump.counts.empty()) {
+  if (dump.entries.empty()) {
     return;
   }
   folly::dynamic obj = folly::dynamic::object();
-  for (const auto& [opName, algoMap] : dump.counts) {
+  for (const auto& [opName, algoMap] : dump.entries) {
     folly::dynamic algoObj = folly::dynamic::object();
-    for (const auto& [algoName, count] : algoMap) {
-      algoObj[algoName] = count;
+    for (const auto& [algoName, sizeMap] : algoMap) {
+      folly::dynamic sizeObj = folly::dynamic::object();
+      for (const auto& [sz, count] : sizeMap) {
+        sizeObj[std::to_string(sz)] = count;
+      }
+      algoObj[algoName] = std::move(sizeObj);
     }
     obj[opName] = std::move(algoObj);
   }

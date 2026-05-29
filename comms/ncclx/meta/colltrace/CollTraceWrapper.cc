@@ -478,7 +478,13 @@ __attribute__((visibility("default"))) void dumpAlgoStat(
   // Baseline and ctran share the same AlgoStats instance via getOrCreate.
   if (comm->algoStats) {
     auto dump = comm->algoStats->dump();
-    map.swap(dump.counts);
+    for (const auto& [opName, algoMap] : dump.entries) {
+      for (const auto& [algoName, sizeMap] : algoMap) {
+        for (const auto& [sz, count] : sizeMap) {
+          map[opName][algoName] += count;
+        }
+      }
+    }
   }
 }
 
@@ -487,6 +493,7 @@ namespace {
 struct AlgoInfo {
   std::string opName;
   std::string algoName;
+  size_t msgSize{0};
 };
 
 std::optional<AlgoInfo> parseAlgoInfoFromNcclKernelPlan(ncclKernelPlan& plan) {
@@ -510,6 +517,7 @@ std::optional<AlgoInfo> parseAlgoInfoFromNcclKernelPlan(ncclKernelPlan& plan) {
             ncclProtoToString(collTaskHead->protocol),
             ncclAlgoToString(collTaskHead->algorithm),
             static_cast<int>(collTaskHead->nMaxChannels)),
+        .msgSize = collTaskHead->count * ncclTypeSize(collTaskHead->datatype),
     };
   }
 
@@ -550,7 +558,8 @@ collTraceBaselineGetHandle(ncclKernelPlan* plan, cudaStream_t stream) {
   if (plan->comm->algoStats) {
     auto algoInfo = parseAlgoInfoFromNcclKernelPlan(*plan);
     if (algoInfo.has_value()) {
-      plan->comm->algoStats->record(algoInfo->opName, algoInfo->algoName);
+      plan->comm->algoStats->record(
+          algoInfo->opName, algoInfo->algoName, algoInfo->msgSize);
     }
   }
 

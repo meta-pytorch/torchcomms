@@ -42,13 +42,18 @@ void VerifyAlgoStatsHelper::enable() {
 
 namespace {
 
-std::string formatStats(const std::unordered_map<std::string, int64_t>& stats) {
+std::string formatStats(
+    const std::unordered_map<std::string, std::map<size_t, int64_t>>& stats) {
   std::string result;
-  for (const auto& [name, count] : stats) {
+  for (const auto& [name, sizeMap] : stats) {
+    int64_t total = 0;
+    for (const auto& [sz, count] : sizeMap) {
+      total += count;
+    }
     if (!result.empty()) {
       result += ", ";
     }
-    result += fmt::format("{}({})", name, count);
+    result += fmt::format("{}({})", name, total);
   }
   return result;
 }
@@ -62,15 +67,21 @@ void VerifyAlgoStatsHelper::verify(
   auto statDumpOpt = comm->dumpAlgoStats();
   ASSERT_TRUE(statDumpOpt.has_value());
   auto statDump = std::move(*statDumpOpt);
-  auto it = statDump.counts.find(collective);
-  ASSERT_NE(it, statDump.counts.end())
+  auto it = statDump.entries.find(collective);
+  ASSERT_NE(it, statDump.entries.end())
       << collective << " not found in AlgoStats";
   bool found = false;
-  for (const auto& [algoName, callCount] : it->second) {
-    if (algoName.find(expectedAlgoSubstr) != std::string::npos &&
-        callCount > 0) {
-      found = true;
-      break;
+  for (const auto& [algoName, sizeMap] : it->second) {
+    if (algoName.find(expectedAlgoSubstr) != std::string::npos) {
+      for (const auto& [sz, count] : sizeMap) {
+        if (count > 0) {
+          found = true;
+          break;
+        }
+      }
+      if (found) {
+        break;
+      }
     }
   }
   EXPECT_TRUE(found) << "Expected algorithm containing '" << expectedAlgoSubstr
@@ -85,15 +96,18 @@ void VerifyAlgoStatsHelper::verifyNot(
   auto statDumpOpt = comm->dumpAlgoStats();
   ASSERT_TRUE(statDumpOpt.has_value());
   auto statDump = std::move(*statDumpOpt);
-  auto it = statDump.counts.find(collective);
-  if (it == statDump.counts.end()) {
+  auto it = statDump.entries.find(collective);
+  if (it == statDump.entries.end()) {
     return;
   }
-  for (const auto& [algoName, callCount] : it->second) {
+  for (const auto& [algoName, sizeMap] : it->second) {
+    int64_t total = 0;
+    for (const auto& [sz, count] : sizeMap) {
+      total += count;
+    }
     EXPECT_FALSE(
-        algoName.find(unexpectedAlgoSubstr) != std::string::npos &&
-        callCount > 0)
-        << "Unexpected algorithm '" << algoName << "' with count " << callCount
+        algoName.find(unexpectedAlgoSubstr) != std::string::npos && total > 0)
+        << "Unexpected algorithm '" << algoName << "' with count " << total
         << " found in " << collective;
   }
 }
@@ -105,8 +119,8 @@ void VerifyAlgoStatsHelper::dump(CtranComm* comm, const std::string& collective)
     return;
   }
   auto statDump = std::move(*statDumpOpt);
-  auto it = statDump.counts.find(collective);
-  if (it != statDump.counts.end()) {
+  auto it = statDump.entries.find(collective);
+  if (it != statDump.entries.end()) {
     fmt::print(
         stderr, "AlgoStats[{}]: [{}]\n", collective, formatStats(it->second));
   }

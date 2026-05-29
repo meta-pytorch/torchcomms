@@ -341,7 +341,10 @@ commResult_t ctranAllGatherHierarchicalRing(
   if (colltraceHandle != nullptr) {
     colltraceHandle->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel);
   }
-  comm->recordAlgoStats("AllGather", allGatherAlgoName(myAlgo));
+  comm->recordAlgoStats(
+      "AllGather",
+      allGatherAlgoName(myAlgo),
+      sendcount * commTypeSize(datatype));
 
   if (useOverlap) {
     comms::pipes::HierarchicalAllgatherOverlapLaunchParams overlapParams{};

@@ -125,9 +125,10 @@ std::optional<meta::comms::colltrace::AlgoStatDump> CtranComm::dumpAlgoStats()
 
 void CtranComm::recordAlgoStats(
     const std::string& opName,
-    const std::string& algoName) {
+    const std::string& algoName,
+    const size_t msgSize) {
   if (algoStats_) {
-    algoStats_->record(opName, algoName);
+    algoStats_->record(opName, algoName, msgSize);
   }
 }
 
