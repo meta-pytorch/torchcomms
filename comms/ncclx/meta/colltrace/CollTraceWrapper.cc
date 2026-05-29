@@ -311,7 +311,7 @@ ncclResult_t newCollTraceInit(ncclComm* comm) {
   // Initialize standalone AlgoStats if algostat mode enabled
   // This is independent of which colltrace implementation is used
   if (algoStatEnabled) {
-    comm->algoStats = std::make_unique<meta::comms::colltrace::AlgoStats>(
+    comm->algoStats = meta::comms::colltrace::AlgoStats::getOrCreate(
         comm->logMetaData.commHash, comm->logMetaData.commDesc);
   }
 
@@ -475,22 +475,10 @@ __attribute__((visibility("default"))) void dumpAlgoStat(
     return;
   }
 
-  // Dump baseline (ncclx) algo stats
+  // Baseline and ctran share the same AlgoStats instance via getOrCreate.
   if (comm->algoStats) {
     auto dump = comm->algoStats->dump();
     map.swap(dump.counts);
-  }
-
-  // Merge ctran algo stats
-  if (comm->ctranComm_) {
-    auto ctranDump = comm->ctranComm_->dumpAlgoStats();
-    if (ctranDump.has_value()) {
-      for (auto& [opName, algoMap] : ctranDump->counts) {
-        for (auto& [algoName, count] : algoMap) {
-          map[opName][algoName] += count;
-        }
-      }
-    }
   }
 }
 

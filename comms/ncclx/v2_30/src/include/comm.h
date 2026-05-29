@@ -840,7 +840,7 @@ struct ncclComm {
    */
   struct CommLogData logMetaData;
   std::shared_ptr<meta::comms::colltrace::ICollTrace> newCollTrace;
-  std::unique_ptr<meta::comms::colltrace::AlgoStats> algoStats;
+  std::shared_ptr<meta::comms::colltrace::AlgoStats> algoStats;
   std::shared_ptr<meta::comms::IBootstrap> ctranBootstrap;
   std::shared_ptr<ncclx::memory::memCacheAllocator> memCache{nullptr};
   std::vector<std::string> connSetupBufKeys;
