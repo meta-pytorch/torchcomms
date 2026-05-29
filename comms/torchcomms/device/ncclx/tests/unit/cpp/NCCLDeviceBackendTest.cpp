@@ -29,6 +29,8 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <cstdlib>
+
 #include "comms/torchcomms/device/DeviceBackendTraits.hpp"
 #include "comms/torchcomms/device/TorchCommDeviceWindow.hpp"
 #include "comms/torchcomms/device/cuda/CudaApi.hpp"
@@ -62,6 +64,7 @@ class NCCLDeviceBackendTest : public ::testing::Test {
   }
 
   void TearDown() override {
+    unsetenv("NCCL_GIN_ENABLE");
     nccl_mock_.reset();
   }
 
@@ -223,7 +226,9 @@ TEST_F(NCCLDeviceBackendTest, CreateDeviceWindowSuccessReturnsValidStruct) {
   // Let unique_ptr destructor call cudaFree via the deleter
 }
 
-TEST_F(NCCLDeviceBackendTest, CreateDeviceWindowConfigIsPassedCorrectly) {
+TEST_F(
+    NCCLDeviceBackendTest,
+    CreateDeviceWindowConfigDoesNotRequestGinByDefault) {
   // This test verifies that the config is correctly passed to devCommCreate.
   DeviceBackendConfig config;
   config.signal_count = 16;
@@ -258,9 +263,12 @@ TEST_F(NCCLDeviceBackendTest, CreateDeviceWindowConfigIsPassedCorrectly) {
 
   ASSERT_NE(device_window, nullptr);
   EXPECT_EQ(captured_reqs.ginSignalCount, 0);
-  EXPECT_EQ(captured_reqs.ginCounterCount, config.counter_count);
-  EXPECT_EQ(captured_reqs.barrierCount, config.barrier_count);
-  EXPECT_TRUE(captured_reqs.ginForceEnable);
+  EXPECT_EQ(captured_reqs.ginCounterCount, 0);
+  EXPECT_EQ(captured_reqs.barrierCount, 0);
+  EXPECT_EQ(captured_reqs.lsaBarrierCount, config.barrier_count);
+  EXPECT_EQ(captured_reqs.railGinBarrierCount, 0);
+  EXPECT_FALSE(captured_reqs.ginForceEnable);
+  EXPECT_EQ(captured_reqs.ginConnectionType, NCCL_GIN_CONNECTION_NONE);
 
   // Verify resource buffer requirements were chained in
   EXPECT_NE(captured_reqs.resourceRequirementsList, nullptr);
@@ -279,6 +287,156 @@ TEST_F(NCCLDeviceBackendTest, CreateDeviceWindowConfigIsPassedCorrectly) {
   nccl_mock_->devCommDestroy(deleter.nccl_comm, &deleter.dev_comm);
 
   // Let unique_ptr destructor call cudaFree via the deleter
+}
+
+TEST_F(NCCLDeviceBackendTest, CreateDeviceWindowRequestsGinWhenEnabled) {
+  DeviceBackendConfig config;
+  config.signal_count = 16;
+  config.counter_count = 32;
+  config.barrier_count = 2;
+  config.comm_rank = 3;
+  config.comm_size = 8;
+  config.gin_enabled = true;
+
+  ncclDevCommRequirements captured_reqs{};
+  EXPECT_CALL(*nccl_mock_, devCommCreate(fake_nccl_comm_, _, _))
+      .WillOnce(DoAll(
+          [&captured_reqs](
+              ncclComm_t,
+              const ncclDevCommRequirements_t* reqs,
+              ncclDevComm_t*) {
+            if (reqs) {
+              captured_reqs = *reqs;
+            }
+            return ncclSuccess;
+          },
+          SetArgPointee<2>(ncclDevComm{}),
+          Return(ncclSuccess)));
+
+  auto device_window = NCCLDeviceBackend::create_device_window(
+      fake_nccl_comm_,
+      nccl_mock_.get(),
+      cuda_api_.get(),
+      config,
+      fake_nccl_window_,
+      fake_base_,
+      1024);
+
+  ASSERT_NE(device_window, nullptr);
+  EXPECT_EQ(captured_reqs.ginSignalCount, 0);
+  EXPECT_EQ(captured_reqs.ginCounterCount, config.counter_count);
+  EXPECT_EQ(captured_reqs.barrierCount, config.barrier_count);
+  EXPECT_EQ(captured_reqs.lsaBarrierCount, config.barrier_count);
+  EXPECT_EQ(captured_reqs.railGinBarrierCount, config.barrier_count);
+  EXPECT_FALSE(captured_reqs.ginForceEnable);
+  EXPECT_EQ(captured_reqs.ginConnectionType, NCCL_GIN_CONNECTION_RAIL);
+
+  auto& deleter = device_window.get_deleter();
+  EXPECT_CALL(*nccl_mock_, devCommDestroy(fake_nccl_comm_, _))
+      .WillOnce(Return(ncclSuccess));
+  nccl_mock_->devCommDestroy(deleter.nccl_comm, &deleter.dev_comm);
+}
+
+TEST_F(NCCLDeviceBackendTest, CreateDeviceWindowRequestsFullGinWhenSupported) {
+  DeviceBackendConfig config;
+  config.signal_count = 16;
+  config.counter_count = 32;
+  config.barrier_count = 2;
+  config.comm_rank = 3;
+  config.comm_size = 8;
+  config.gin_enabled = true;
+
+  ON_CALL(*nccl_mock_, ginConnectionSupport(fake_nccl_comm_))
+      .WillByDefault(Return(NCCL_GIN_CONNECTION_FULL));
+
+  ncclDevCommRequirements captured_reqs{};
+  EXPECT_CALL(*nccl_mock_, devCommCreate(fake_nccl_comm_, _, _))
+      .WillOnce(DoAll(
+          [&captured_reqs](
+              ncclComm_t,
+              const ncclDevCommRequirements_t* reqs,
+              ncclDevComm_t*) {
+            if (reqs) {
+              captured_reqs = *reqs;
+            }
+            return ncclSuccess;
+          },
+          SetArgPointee<2>(ncclDevComm{}),
+          Return(ncclSuccess)));
+
+  auto device_window = NCCLDeviceBackend::create_device_window(
+      fake_nccl_comm_,
+      nccl_mock_.get(),
+      cuda_api_.get(),
+      config,
+      fake_nccl_window_,
+      fake_base_,
+      1024);
+
+  ASSERT_NE(device_window, nullptr);
+  EXPECT_EQ(captured_reqs.ginCounterCount, config.counter_count);
+  EXPECT_EQ(captured_reqs.barrierCount, config.barrier_count);
+  EXPECT_EQ(captured_reqs.railGinBarrierCount, config.barrier_count);
+  EXPECT_EQ(captured_reqs.ginConnectionType, NCCL_GIN_CONNECTION_FULL);
+
+  auto& deleter = device_window.get_deleter();
+  EXPECT_CALL(*nccl_mock_, devCommDestroy(fake_nccl_comm_, _))
+      .WillOnce(Return(ncclSuccess));
+  nccl_mock_->devCommDestroy(deleter.nccl_comm, &deleter.dev_comm);
+}
+
+TEST_F(NCCLDeviceBackendTest, RegisterLocalBufferSkipsWindowWhenGinDisabled) {
+  auto buf = NCCLDeviceBackend::register_local_buffer(
+      nccl_mock_.get(), fake_nccl_comm_, fake_base_, 4096);
+
+  EXPECT_EQ(buf.base_ptr, fake_base_);
+  EXPECT_EQ(buf.size, 4096u);
+  EXPECT_EQ(buf.backend_window, nullptr);
+}
+
+TEST_F(NCCLDeviceBackendTest, RegisterLocalBufferSkipsWindowForAllLsaRanks) {
+  setenv("NCCL_GIN_ENABLE", "1", 1);
+  ncclTeam_t lsa_team{};
+  lsa_team.nRanks = 4;
+
+  EXPECT_CALL(*nccl_mock_, commCount(fake_nccl_comm_, _))
+      .WillOnce(DoAll(SetArgPointee<1>(4), Return(ncclSuccess)));
+  EXPECT_CALL(*nccl_mock_, teamLsa(fake_nccl_comm_)).WillOnce(Return(lsa_team));
+  EXPECT_CALL(*nccl_mock_, commWindowRegister(_, _, _, _, _)).Times(0);
+
+  auto buf = NCCLDeviceBackend::register_local_buffer(
+      nccl_mock_.get(), fake_nccl_comm_, fake_base_, 4096);
+
+  EXPECT_EQ(buf.base_ptr, fake_base_);
+  EXPECT_EQ(buf.size, 4096u);
+  EXPECT_EQ(buf.backend_window, nullptr);
+}
+
+TEST_F(NCCLDeviceBackendTest, RegisterLocalBufferUsesWindowForRemoteGinRanks) {
+  setenv("NCCL_GIN_ENABLE", "1", 1);
+  ncclTeam_t lsa_team{};
+  lsa_team.nRanks = 4;
+  auto local_win = reinterpret_cast<ncclWindow_t>(0x6000);
+
+  EXPECT_CALL(*nccl_mock_, commCount(fake_nccl_comm_, _))
+      .WillOnce(DoAll(SetArgPointee<1>(8), Return(ncclSuccess)));
+  EXPECT_CALL(*nccl_mock_, teamLsa(fake_nccl_comm_)).WillOnce(Return(lsa_team));
+  EXPECT_CALL(
+      *nccl_mock_,
+      commWindowRegister(
+          fake_base_,
+          4096,
+          fake_nccl_comm_,
+          _,
+          NCCL_WIN_DEVICE_API | NCCL_WIN_LOCAL_ONLY))
+      .WillOnce(DoAll(SetArgPointee<3>(local_win), Return(ncclSuccess)));
+
+  auto buf = NCCLDeviceBackend::register_local_buffer(
+      nccl_mock_.get(), fake_nccl_comm_, fake_base_, 4096);
+
+  EXPECT_EQ(buf.base_ptr, fake_base_);
+  EXPECT_EQ(buf.size, 4096u);
+  EXPECT_EQ(buf.backend_window, static_cast<void*>(local_win));
 }
 
 TEST_F(NCCLDeviceBackendTest, CreateDeviceWindowStoresSignalBufferHandle) {

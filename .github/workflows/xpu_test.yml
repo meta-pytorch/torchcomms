@@ -22,7 +22,7 @@ jobs:
     timeout-minutes: 120
     runs-on: linux.idc.xpu.dist
     env:
-      DOCKER_IMAGE: intelgpu/ubuntu-24.04-lts2:2523.40
+      DOCKER_IMAGE: intelgpu/ubuntu-24.04-lts2:2523.59
     steps:
       - name: Checkout Torchcomms
         uses: actions/checkout@v4
@@ -100,20 +100,18 @@ jobs:
         timeout-minutes: 120
         run: |
           set -x
-
           #Install Intel Deep Learning Essentials
-          DLE_VER=2025.3.2.36
-          DLE_ROOT=/tmp/${RUNNER_NAME}/dle-${DLE_VER}
+          DLE_VER=2026.0.0.624
+          DLE_ROOT=/home/jenkins/${RUNNER_NAME}/dle-${DLE_VER}
           DLE_PATH=${DLE_ROOT}/dle
           if [[ ! -d ${DLE_ROOT} ]]; then
             mkdir -p ${DLE_ROOT}
-            DLE_URL="https://registrationcenter-download.intel.com/akdlm/IRC_NAS/b3e6c1bf-a6d5-4580-8b1d-80cbfd38c8af/intel-deep-learning-essentials-${DLE_VER}_offline.sh"
+            DLE_URL="https://registrationcenter-download.intel.com/akdlm/IRC_NAS/8170208e-86db-4faa-a0d6-1ecf62699574/intel-deep-learning-essentials-${DLE_VER}_offline.sh"
             wget -qO ${DLE_ROOT}/intel-deep-learning-essentials.sh ${DLE_URL}
             chmod +x ${DLE_ROOT}/intel-deep-learning-essentials.sh
             ${DLE_ROOT}/intel-deep-learning-essentials.sh -a --silent --eula accept --install-dir ${DLE_PATH} --instance=custom-id-${GITHUB_RUN_NUMBER}
             rm -f ${DLE_ROOT}/intel-deep-learning-essentials.sh
           fi
-
           # detached container should get cleaned up by teardown_ec2_linux
           # Used for GPU_FLAG since that doesn't play nice
           # shellcheck disable=SC2086,SC2090

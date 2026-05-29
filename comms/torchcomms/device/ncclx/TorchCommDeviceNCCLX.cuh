@@ -183,6 +183,10 @@ __device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::signal(
     }
   } else {
     // ---- GIN (RDMA) path ----
+    if (!gin_enabled_) {
+      return -1;
+    }
+
     // SET is not supported on RDMA (no atomic store opcode).
     if (op != SignalOp::ADD) {
       return -1;
@@ -233,7 +237,11 @@ __device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::put(
           ncclTeamLsa(dev_comm), ncclTeamWorld(dev_comm), dst_rank)) {
     // ---- LSA (NVLink) path ----
     // Cooperative memcpy through NVLink-mapped pointers.
-    void* src = ncclGetLocalPointer(src_win, src_offset);
+    if (src_buf.base_ptr == nullptr) {
+      return -1;
+    }
+    void* src =
+        static_cast<void*>(static_cast<char*>(src_buf.base_ptr) + src_offset);
     void* dst = ncclGetPeerPointer(dst_win, dst_offset, dst_rank);
 
     detail::memcpy_nvl(dst, src, bytes, scope);
@@ -247,6 +255,10 @@ __device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::put(
     // counter_id silently ignored for LSA — counters are GIN hardware only
   } else {
     // ---- GIN (RDMA) path ----
+    if (!gin_enabled_ || src_win == nullptr) {
+      return -1;
+    }
+
     ncclGin gin(dev_comm, kDefaultGinContextIndex);
 
     detail::nccl_coop_dispatch(scope, [&](auto coop) {
@@ -394,6 +406,9 @@ __device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::wait_counter(
     __trap();
     return -1; // Unreachable
   }
+  if (!gin_enabled_) {
+    return -1;
+  }
 
   const ncclDevComm& dev_comm = comm_;
   ncclGin gin(dev_comm, kDefaultGinContextIndex);
@@ -412,6 +427,10 @@ __device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::wait_counter(
 template <>
 __device__ inline uint64_t
 TorchCommDeviceWindow<NCCLDeviceBackend>::read_counter(int counter_id) const {
+  if (!gin_enabled_) {
+    return 0;
+  }
+
   const ncclDevComm& dev_comm = comm_;
   ncclGin gin(dev_comm, kDefaultGinContextIndex);
 
@@ -425,6 +444,10 @@ __device__ inline void TorchCommDeviceWindow<NCCLDeviceBackend>::reset_counter(
     CoopScope scope) {
   auto group = detail::make_thread_group(scope);
   group.sync();
+
+  if (!gin_enabled_) {
+    return;
+  }
 
   if (group.is_leader()) {
     const ncclDevComm& dev_comm = comm_;
@@ -464,6 +487,10 @@ __device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::flush(
   auto group = detail::make_thread_group(scope);
   group.sync();
 
+  if (!gin_enabled_) {
+    return 0;
+  }
+
   const ncclDevComm& dev_comm = comm_;
   ncclGin gin(dev_comm, kDefaultGinContextIndex);
   detail::nccl_coop_dispatch(scope, [&](auto coop) { gin.flush(coop); });
@@ -476,6 +503,20 @@ __device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::barrier(
     int barrier_id,
     CoopScope scope) {
   const ncclDevComm& dev_comm = comm_;
+
+  if (!gin_enabled_) {
+    detail::nccl_coop_dispatch(scope, [&](auto coop) {
+      ncclLsaBarrierSession barrier(
+          coop,
+          dev_comm,
+          ncclTeamTagLsa{},
+          static_cast<uint32_t>(barrier_id),
+          false /* multimem */);
+      barrier.sync(coop, cuda::memory_order_acq_rel);
+    });
+    return 0;
+  }
+
   ncclGin gin(dev_comm, kDefaultGinContextIndex);
 
   // World barrier: syncs LSA team (NVLink) first, then Rail team (RDMA)

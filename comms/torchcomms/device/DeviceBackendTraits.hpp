@@ -188,6 +188,7 @@ struct DeviceBackendConfig {
   int barrier_count{1};
   int comm_rank{0};
   int comm_size{1};
+  bool gin_enabled{false};
 };
 
 // =============================================================================

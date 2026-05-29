@@ -4,6 +4,10 @@
 
 #include <cuda_runtime.h>
 #include <fmt/core.h>
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
+#include <string>
 
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
 #include "comms/torchcomms/utils/Logging.hpp"
@@ -19,6 +23,26 @@
 #endif
 
 namespace torch::comms {
+
+namespace {
+
+bool isNcclGinEnabled() {
+  const char* env = std::getenv("NCCL_GIN_ENABLE");
+  if (env == nullptr) {
+    return false;
+  }
+
+  std::string value(env);
+  std::transform(
+      value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+      });
+
+  return value == "1" || value == "y" || value == "yes" || value == "t" ||
+      value == "true";
+}
+
+} // namespace
 
 // =============================================================================
 // Constructor / Destructor
@@ -469,7 +493,15 @@ void* TorchCommWindowNCCLX<Backend>::get_device_window(
     int barrier_count) {
   checkCommAndThrow();
 
-  if (Backend::select_device_win(win_, nccl_orig_win_) == nullptr) {
+  torchcomms::device::DeviceBackendConfig config;
+  config.gin_enabled = isNcclGinEnabled();
+
+  auto selected_win = Backend::select_device_win(win_, nccl_orig_win_);
+  if (selected_win == nullptr && !config.gin_enabled) {
+    selected_win = win_;
+  }
+
+  if (selected_win == nullptr) {
     throw std::runtime_error(
         "[TorchCommWindowNCCLX]: Window not initialized. "
         "Call tensor_register first.");
@@ -492,7 +524,6 @@ void* TorchCommWindowNCCLX<Backend>::get_device_window(
     counter_count = commSize;
   }
 
-  torchcomms::device::DeviceBackendConfig config;
   config.signal_count = signal_count;
   config.counter_count = counter_count;
   config.barrier_count = barrier_count;
@@ -518,7 +549,7 @@ void* TorchCommWindowNCCLX<Backend>::get_device_window(
         nccl_api_,
         torch_comm_->getCudaApi(),
         config,
-        Backend::select_device_win(win_, nccl_orig_win_),
+        selected_win,
         buf_ptr,
         win_size_);
   } else {
@@ -527,7 +558,7 @@ void* TorchCommWindowNCCLX<Backend>::get_device_window(
         nccl_api_,
         torch_comm_->getCudaApi(),
         config,
-        Backend::select_device_win(win_, nccl_orig_win_),
+        selected_win,
         buf_ptr,
         win_size_);
   }
@@ -542,15 +573,19 @@ void* TorchCommWindowNCCLX<Backend>::get_nvlink_address(
     size_t offset) {
   checkCommAndThrow();
 
-  if (nccl_orig_win_ == nullptr) {
+  auto query_win = nccl_orig_win_;
+  if (query_win == nullptr && !isNcclGinEnabled()) {
+    query_win = win_;
+  }
+  if (query_win == nullptr) {
     throw std::runtime_error(
-        "[TorchCommWindowNCCLX]: NCCL orig window not initialized. "
+        "[TorchCommWindowNCCLX]: NCCL window not initialized. "
         "Call tensor_register first.");
   }
 
   void* outPtr = nullptr;
   CHECK_EQ(
-      nccl_api_->winGetPeerDevicePointer(nccl_orig_win_, offset, peer, &outPtr),
+      nccl_api_->winGetPeerDevicePointer(query_win, offset, peer, &outPtr),
       ncclSuccess)
       << "[TorchCommWindowNCCLX]: ncclGetPeerDevicePointer failed";
 
@@ -561,16 +596,19 @@ template <typename Backend>
 void* TorchCommWindowNCCLX<Backend>::get_multimem_address(size_t offset) {
   checkCommAndThrow();
 
-  if (nccl_orig_win_ == nullptr) {
+  auto query_win = nccl_orig_win_;
+  if (query_win == nullptr && !isNcclGinEnabled()) {
+    query_win = win_;
+  }
+  if (query_win == nullptr) {
     throw std::runtime_error(
-        "[TorchCommWindowNCCLX]: NCCL orig window not initialized. "
+        "[TorchCommWindowNCCLX]: NCCL window not initialized. "
         "Call tensor_register first.");
   }
 
   void* outPtr = nullptr;
   CHECK_EQ(
-      nccl_api_->winGetLsaMultimemDevicePointer(
-          nccl_orig_win_, offset, &outPtr),
+      nccl_api_->winGetLsaMultimemDevicePointer(query_win, offset, &outPtr),
       ncclSuccess)
       << "[TorchCommWindowNCCLX]: ncclGetLsaMultimemDevicePointer failed";
 

@@ -214,6 +214,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     // Topology config: MNNVL mode and overrides
     config.topoConfig.mnnvlMode =
         static_cast<comms::pipes::MnnvlMode>(NCCL_MNNVL_ENABLE);
+    config.topoConfig.logicalNvlRanks = comm->statex_->localRankToRanks();
 
     // Guard against H100 Grand Teton returning NVML fabric info
     // (state=COMPLETED) without actual cross-node NVLink (MNNVL) capability.

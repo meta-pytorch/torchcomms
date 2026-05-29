@@ -109,14 +109,16 @@ class TorchCommDeviceWindow {
       size_t size,
       int rank,
       int num_ranks,
-      uint32_t signal_buffer_handle = 0)
+      uint32_t signal_buffer_handle = 0,
+      bool gin_enabled = false)
       : comm_(comm),
         window_(window),
         base_(base),
         size_(size),
         rank_(rank),
         num_ranks_(num_ranks),
-        signal_buffer_handle_(signal_buffer_handle) {}
+        signal_buffer_handle_(signal_buffer_handle),
+        gin_enabled_(gin_enabled) {}
 
   // =========================================================================
   // Metadata
@@ -254,6 +256,7 @@ class TorchCommDeviceWindow {
   int num_ranks_{};
   uint32_t signal_buffer_handle_{}; // Resource buffer handle for per-peer
                                     // signal slots
+  bool gin_enabled_{false};
 };
 
 // Type alias (also defined in backend-specific headers for convenience)

@@ -775,6 +775,25 @@ inline int postDcRdmaWrite(
       exQp, dvQp, ah, target.dctNum, target.rkey, target.remoteAddr, sge, wrId);
 }
 
+// Post DC RDMA write with DCI stream ID (DcBusinessCard variant)
+inline int postDcRdmaWriteStream(
+    ibv_qp_ex* exQp,
+    mlx5dv_qp_ex* dvQp,
+    IbvAh& ah,
+    const DcBusinessCard& target,
+    ibv_sge& sge,
+    uint64_t wrId,
+    uint16_t streamId) {
+  ibvSymbols.ibv_internal_wr_start(exQp);
+  exQp->wr_id = wrId;
+  exQp->wr_flags = IBV_SEND_SIGNALED;
+  ibvSymbols.ibv_internal_wr_rdma_write(exQp, target.rkey, target.remoteAddr);
+  ibvSymbols.ibv_internal_wr_set_sge_list(exQp, 1, &sge);
+  ibvSymbols.mlx5dv_internal_wr_set_dc_addr_stream(
+      dvQp, ah.ah(), target.dctNum, DC_KEY, streamId);
+  return ibvSymbols.ibv_internal_wr_complete(exQp);
+}
+
 // Standalone RC QP connection (INIT -> RTR -> RTS)
 inline bool
 connectRcQp(IbvQp& localQp, const ibv_gid& remoteGid, uint32_t remoteQpNum) {

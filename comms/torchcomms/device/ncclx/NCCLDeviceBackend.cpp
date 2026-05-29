@@ -7,6 +7,9 @@
 #include "comms/torchcomms/ncclx/NcclxApi.hpp"
 #include "comms/torchcomms/utils/Logging.hpp"
 
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -14,6 +17,26 @@
 namespace torchcomms::device {
 
 using torch::comms::RegisteredBuffer;
+
+namespace {
+
+bool isNcclGinEnabled() {
+  const char* env = std::getenv("NCCL_GIN_ENABLE");
+  if (env == nullptr) {
+    return false;
+  }
+
+  std::string value(env);
+  std::transform(
+      value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+      });
+
+  return value == "1" || value == "y" || value == "yes" || value == "t" ||
+      value == "true";
+}
+
+} // namespace
 
 // =============================================================================
 // DeviceWindowDeleter Implementation
@@ -95,17 +118,21 @@ NCCLDeviceBackend::Ptr NCCLDeviceBackend::create_device_window(
   // ncclInvalidArgument on topologies where multicast is unavailable.
   reqs.lsaMultimem = nccl_api->multimemSupport(nccl_comm) &&
       nccl_api->teamLsa(nccl_comm).nRanks > 2;
-  reqs.barrierCount = config.barrier_count;
+  reqs.barrierCount = config.gin_enabled ? config.barrier_count : 0;
   reqs.lsaBarrierCount = config.barrier_count;
-  reqs.railGinBarrierCount = config.barrier_count;
+  reqs.railGinBarrierCount = config.gin_enabled ? config.barrier_count : 0;
   reqs.lsaLLA2ABlockCount = 0;
   reqs.lsaLLA2ASlotCount = 0;
-  reqs.ginForceEnable = true;
+  reqs.ginForceEnable = false;
   reqs.ginContextCount = 1;
   reqs.ginSignalCount = 0;
-  reqs.ginCounterCount = config.counter_count;
+  reqs.ginCounterCount = config.gin_enabled ? config.counter_count : 0;
+  reqs.ginConnectionType = config.gin_enabled
+      ? nccl_api->ginConnectionSupport(nccl_comm)
+      : NCCL_GIN_CONNECTION_NONE;
 
-  // Create NCCL device communicator with GIN state
+  // Create NCCL device communicator. GIN resources are requested only when
+  // NCCL_GIN_ENABLE is explicitly set by the caller.
   ncclDevComm nccl_dev_comm{};
   auto result = nccl_api->devCommCreate(nccl_comm, &reqs, &nccl_dev_comm);
   if (result != ncclSuccess) {
@@ -123,7 +150,8 @@ NCCLDeviceBackend::Ptr NCCLDeviceBackend::create_device_window(
       size,
       config.comm_rank,
       config.comm_size,
-      signal_buffer_handle);
+      signal_buffer_handle,
+      config.gin_enabled);
 
   // Allocate device memory for the window struct
   TorchCommDeviceWindow<NCCLDeviceBackend>* device_ptr = nullptr;
@@ -182,6 +210,9 @@ void NCCLDeviceBackend::register_extra_window(
   if (*out_win != nullptr) {
     return;
   }
+  if (!isNcclGinEnabled()) {
+    return;
+  }
   CHECK_EQ(
       nccl_api->commWindowRegister(
           ptr, size, nccl_comm, out_win, NCCL_WIN_DEVICE_API),
@@ -207,6 +238,21 @@ RegisteredBuffer NCCLDeviceBackend::register_local_buffer(
     ncclComm_t nccl_comm,
     void* ptr,
     size_t size) {
+  RegisteredBuffer buf;
+  buf.base_ptr = ptr;
+  buf.size = size;
+
+  if (!isNcclGinEnabled()) {
+    return buf;
+  }
+
+  int comm_size = 0;
+  CHECK_EQ(nccl_api->commCount(nccl_comm, &comm_size), ncclSuccess)
+      << "[NCCLDeviceBackend]: Failed to query NCCL communicator size";
+  if (nccl_api->teamLsa(nccl_comm).nRanks >= comm_size) {
+    return buf;
+  }
+
   ncclWindow_t local_win = nullptr;
   CHECK_EQ(
       nccl_api->commWindowRegister(
@@ -221,9 +267,6 @@ RegisteredBuffer NCCLDeviceBackend::register_local_buffer(
   // GIN put uses backend_window (ncclWindow_t) for RDMA/NVLink transfers.
   // lkeys are unused by GIN — only the Pipes (IBGDA) backend needs them.
   // Default-constructed RegisteredBuffer zero-initializes the lkeys array.
-  RegisteredBuffer buf;
-  buf.base_ptr = ptr;
-  buf.size = size;
   buf.backend_window = static_cast<void*>(local_win);
   return buf;
 }
