@@ -96,11 +96,11 @@ class ReconfigureTest(unittest.TestCase):
     def _skip_if_grow_not_supported(self):
         """Skip test if commGrow is not available.
 
-        Skips for rccl/rcclx backends which do not implement commGrow,
-        and for nccl/ncclx with NCCL < 2.29 (commGrow/commGetUniqueId unavailable).
+        For nccl/ncclx, skip when the linked NCCL version is older than 2.29.
+        For rccl/rcclx, commGrow requires RCCL >= 2.29; the version check is
+        performed in the C++ backend at compile time, so we attempt the test
+        and rely on the backend to surface an error if the API is unavailable.
         """
-        if self.backend in ("rccl", "rcclx"):
-            self.skipTest(f"Backend {self.backend} does not implement commGrow")
         if self.backend not in ("nccl", "ncclx"):
             return
         if torch.cuda.is_available():

@@ -88,11 +88,15 @@ ncclResult_t DefaultRcclxApi::commGetUniqueId(
     ncclComm_t comm,
     ncclUniqueId* uniqueId) {
   std::lock_guard<std::mutex> lock(api_mutex_);
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
+  return ncclCommGetUniqueId(comm, uniqueId);
+#else
   (void)comm;
   (void)uniqueId;
-  TC_LOG(ERROR)
-      << "ncclCommGetUniqueId API is not implemented in RCCLX backend";
+  TC_LOG(ERROR) << "RCCL version " << NCCL_VERSION_CODE
+                << " does not support ncclCommGetUniqueId API";
   return ncclInvalidUsage;
+#endif
 }
 
 ncclResult_t DefaultRcclxApi::commGrow(
@@ -103,14 +107,19 @@ ncclResult_t DefaultRcclxApi::commGrow(
     ncclComm_t* newcomm,
     ncclConfig_t* config) {
   std::lock_guard<std::mutex> lock(api_mutex_);
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
+  return ncclCommGrow(comm, nRanks, uniqueId, rank, newcomm, config);
+#else
   (void)comm;
   (void)nRanks;
   (void)uniqueId;
   (void)rank;
   (void)newcomm;
   (void)config;
-  TC_LOG(ERROR) << "ncclCommGrow API is not implemented in RCCLX backend";
+  TC_LOG(ERROR) << "RCCL version " << NCCL_VERSION_CODE
+                << " does not support ncclCommGrow API";
   return ncclInvalidUsage;
+#endif
 }
 
 ncclResult_t DefaultRcclxApi::commRegister(

@@ -86,6 +86,28 @@ struct QuorumInfo {
   size_t newMemberCount = 0;
 };
 
+int findRankInHandles(
+    const std::variant<std::unordered_set<InitHandle>, std::vector<InitHandle>>&
+        handles,
+    const InitHandle& myHandle) {
+  return std::visit(
+      [&](const auto& h) -> int {
+        int result = -1;
+        int idx = 0;
+        for (const auto& handle : h) {
+          if (handle == myHandle) {
+            if (result >= 0) {
+              return -1;
+            }
+            result = idx;
+          }
+          idx++;
+        }
+        return result;
+      },
+      handles);
+}
+
 QuorumInfo findQuorum(
     const std::variant<std::unordered_set<InitHandle>, std::vector<InitHandle>>&
         handles) {
@@ -235,26 +257,43 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::reconfigure(
         hip_api_->setDevice(device_.index()),
         fmt::format("Failed to set HIP device to {}", device_.index()));
 
-    auto store = c10::make_intrusive<c10d::PrefixStore>(
-        fmt::format("{}/{}", name_, opts.uuid), reconfigure_store_);
-
-    int myRank = static_cast<int>(store->add("rank_counter", 1)) - 1;
-
     ncclUniqueId uniqueId{};
-    if (myRank == 0) {
+    int myRank = findRankInHandles(opts.handles, getInitHandle());
+
+    if (new_size > 1) {
+      auto store = c10::make_intrusive<c10d::PrefixStore>(
+          fmt::format("{}/{}", name_, opts.uuid), reconfigure_store_);
+
+      if (myRank < 0) {
+        myRank = static_cast<int>(store->add("rank_counter", 1)) - 1;
+      }
+
+      if (myRank == 0) {
+        RCCL_CHECK(
+            rccl_api_,
+            nccl_comm_,
+            rccl_api_->getUniqueId(&uniqueId),
+            "RCCL getUniqueId failed during reconfigure");
+        std::vector<uint8_t> vec(
+            reinterpret_cast<uint8_t*>(&uniqueId),
+            reinterpret_cast<uint8_t*>(&uniqueId) + sizeof(uniqueId));
+        store->set("unique_id", vec);
+      } else {
+        store->wait({"unique_id"}, reconfigureTimeout);
+        auto vec = store->get("unique_id");
+        std::memcpy(&uniqueId, vec.data(), sizeof(ncclUniqueId));
+      }
+    } else {
+      // Single-rank comm: no bootstrap networking needed, every rank
+      // creates a private 1-rank communicator with myRank=0.
       RCCL_CHECK(
           rccl_api_,
           nccl_comm_,
           rccl_api_->getUniqueId(&uniqueId),
           "RCCL getUniqueId failed during reconfigure");
-      std::vector<uint8_t> vec(
-          reinterpret_cast<uint8_t*>(&uniqueId),
-          reinterpret_cast<uint8_t*>(&uniqueId) + sizeof(uniqueId));
-      store->set("unique_id", vec);
-    } else {
-      store->wait({"unique_id"}, reconfigureTimeout);
-      auto vec = store->get("unique_id");
-      std::memcpy(&uniqueId, vec.data(), sizeof(ncclUniqueId));
+      if (myRank < 0) {
+        myRank = 0;
+      }
     }
 
     ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
