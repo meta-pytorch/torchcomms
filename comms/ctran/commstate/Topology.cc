@@ -93,11 +93,32 @@ std::optional<TopologyResult> loadTopology(
     }
   }
 
-  if (!NCCL_IGNORE_TOPO_LOAD_FAILURE) {
-    if (host.empty()) {
-      CLOGF(ERR, "Failed to load hostname (DEVICE_NAME) from {}", filepath);
+  if (host.empty()) {
+    char hostname[256] = {};
+    if (gethostname(hostname, sizeof(hostname) - 1) == 0 && hostname[0] != '\0') {
+      host = hostname;
+      CLOGF(
+          WARN,
+          "DEVICE_NAME not found in {}. Falling back to gethostname()={}",
+          filepath,
+          host);
+    } else if (!NCCL_IGNORE_TOPO_LOAD_FAILURE) {
+      CLOGF(
+          ERR,
+          "Failed to load hostname (DEVICE_NAME) from {} and gethostname() fallback failed",
+          filepath);
       return std::nullopt;
-    } else if (!backendNetworkTopology.empty() && !isBackendTopologyValid) {
+    } else {
+      CLOGF(
+          WARN,
+          "DEVICE_NAME not found in {} and gethostname() fallback failed. "
+          "Continuing because NCCL_IGNORE_TOPO_LOAD_FAILURE=1",
+          filepath);
+    }
+  }
+
+  if (!NCCL_IGNORE_TOPO_LOAD_FAILURE) {
+    if (!backendNetworkTopology.empty() && !isBackendTopologyValid) {
       CLOGF(
           ERR,
           "CTRAN cannot be enabled due to missing topology information. "
