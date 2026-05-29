@@ -8,16 +8,17 @@
 
 // Host-only includes. The guard uses __HIPCC__ || !__CUDACC__ so that:
 //  - Regular .cc files: visible (neither macro defined)
-//  - NVCC .cu files: hidden (folly headers don't compile under nvcc)
-//  - HIP .cc/-x hip files: visible (clang handles folly fine)
+//  - NVCC .cu files: hidden (the stdlib bits below compile fine under
+//    nvcc but the host-only class body still references std types nvcc
+//    doesn't need to see, and historically this guard also hid folly).
+//  - HIP .cc/-x hip files: visible (clang handles the stdlib fine).
 // After hipify (__CUDACC__ → __HIPCC__), this becomes __HIPCC__ || !__HIPCC__
-// which is always true — correct since HIP/clang has no folly issues.
+// which is always true.
 #if defined(__HIPCC__) || !defined(__CUDACC__)
 #include <atomic>
 #include <chrono>
 #include <memory>
-
-#include <folly/Synchronized.h>
+#include <mutex>
 #endif
 
 // Globaltimer (ns) is reduced to ~1024ns ticks (`>> shift`) to fit in 32
@@ -114,7 +115,12 @@ class GlobaltimerCalibration {
     std::chrono::system_clock::time_point host_time;
   };
 
-  folly::Synchronized<Anchor> anchor_;
+  // anchor_mutex_ is held only across the trivial copy in toWallClock()
+  // and the trivial write in refresh() — never across a CUDA call — so
+  // concurrent toWallClock() readers don't block on refresh()'s stream
+  // sync.
+  mutable std::mutex anchor_mutex_;
+  Anchor anchor_;
   uint64_t* mapped_ptr_ = nullptr;
   cudaStream_t stream_ = nullptr;
   // Serializes refresh() callers without blocking: contenders that find the

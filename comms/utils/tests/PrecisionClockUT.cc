@@ -13,13 +13,13 @@
 
 #include <gtest/gtest.h>
 
-#include "comms/utils/colltrace/PrecisionClock.h"
+#include "comms/utils/PrecisionClock.h"
 
-using meta::comms::colltrace::precisionErrorNs;
-using meta::comms::colltrace::precisionNow;
-using meta::comms::colltrace::precisionNowNs;
-using meta::comms::colltrace::precisionNowRangeNs;
-using meta::comms::colltrace::precisionUsingPtp;
+using meta::comms::precisionErrorNs;
+using meta::comms::precisionNow;
+using meta::comms::precisionNowNs;
+using meta::comms::precisionNowRangeNs;
+using meta::comms::precisionUsingPtp;
 
 class PrecisionClockFallbackTest : public ::testing::Test {
  protected:

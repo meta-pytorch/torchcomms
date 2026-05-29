@@ -183,6 +183,7 @@ function build_third_party {
     build_fb_oss_library "https://github.com/fastfloat/fast_float.git" "v8.0.2" fast_float "-DFASTFLOAT_INSTALL=ON"
     build_fb_oss_library "https://github.com/libevent/libevent.git" "release-2.1.12-stable" event
     build_fb_oss_library "https://github.com/google/double-conversion.git" "v3.3.1" double-conversion
+    build_fb_oss_library "https://github.com/abseil/abseil-cpp.git" "20240722.0" abseil-cpp "-DABSL_ENABLE_INSTALL=ON -DABSL_PROPAGATE_CXX_STD=ON"
     build_fb_oss_library "https://github.com/facebook/folly.git" "$third_party_tag" folly "-DUSE_STATIC_DEPS_ON_UNIX=ON -DOPENSSL_USE_STATIC_LIBS=ON"
   else
     if [[ -z "${NCCL_SKIP_CONDA_INSTALL}" ]]; then
@@ -206,6 +207,7 @@ function build_third_party {
         conda-forge::zlib
         conda-forge::libopenssl-static
         fmt
+        "conda-forge::libabseil>=20240722,<20240723"
       )
       conda install "${DEPS[@]}" --yes
       ensure_conda_libdwarf_symlinks
@@ -365,6 +367,7 @@ THRIFT_SERVICE_LDFLAGS+=(
 )
 THIRD_PARTY_LDFLAGS+="${THRIFT_SERVICE_LDFLAGS[*]} "
 THIRD_PARTY_LDFLAGS+="$(pkg-config --libs --static libfolly) "
+THIRD_PARTY_LDFLAGS+="$(pkg-config --libs --static absl_log absl_check) "
 # liburing: folly's cmake config declares this dependency but pkg-config omits
 # it. Add -luring if the system has liburing (folly uses io_uring for async I/O).
 if pkg-config --exists liburing 2>/dev/null; then
