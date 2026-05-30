@@ -3,7 +3,7 @@
 // Cudagraph-aware SendRecv: when ctranGroupEndHook is called with
 // algo=ctgraph during CUDA graph capture, this module pre-registers all
 // send/recv buffers via globalRegisterWithPtr (local-persist pattern),
-// then delegates to ctranGroupEndHookImpl(ctzcopy) for the actual GPE
+// then delegates to ctranGroupEndHookImpl(ctp2p) for the actual GPE
 // dispatch. The GPE host-node callbacks are captured into the graph and
 // re-execute on replay with pre-registered buffers (searchRegHandle
 // hits the fast path).
@@ -67,9 +67,9 @@ commResult_t ctranSendRecvCudagraphAware(
     }
   });
 
-  // Dispatch to normal eager path with ctzcopy
+  // Dispatch to normal eager path with ctp2p
   FB_COMMCHECK(
-      ctranGroupEndHookImpl(opGroup, NCCL_SENDRECV_ALGO::ctzcopy, timeout));
+      ctranGroupEndHookImpl(opGroup, NCCL_SENDRECV_ALGO::ctp2p, timeout));
 
   // Success — transfer cleanup to deferred
   cleanupGuard.dismiss();
