@@ -979,9 +979,13 @@ TEST_F(CommDumpTest, AlgoStatInCommDump) {
   ASSERT_TRUE(algoStatObj.count("AllReduce"));
 
   int totalCalls = 0;
-  for (const auto& [algoName, count] : algoStatObj["AllReduce"].items()) {
-    EXPECT_GT(count.asInt(), 0);
-    totalCalls += count.asInt();
+  for (const auto& [algoName, sizeMap] : algoStatObj["AllReduce"].items()) {
+    ASSERT_TRUE(sizeMap.isObject());
+    for (const auto& [sizeStr, count] : sizeMap.items()) {
+      EXPECT_GT(count.asInt(), 0);
+      EXPECT_GT(folly::to<size_t>(sizeStr.asString()), 0);
+      totalCalls += count.asInt();
+    }
   }
   EXPECT_EQ(totalCalls, numColls);
 }

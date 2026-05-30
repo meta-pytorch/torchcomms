@@ -24,9 +24,12 @@ std::shared_ptr<AlgoStats> AlgoStats::getOrCreate(
   return stats;
 }
 
-void AlgoStats::record(const std::string& opName, const std::string& algoName) {
+void AlgoStats::record(
+    const std::string& opName,
+    const std::string& algoName,
+    const std::size_t msgSize) {
   algoCounters_.withWLock(
-      [&](auto& counters) { ++counters[AlgoKey{opName, algoName}]; });
+      [&](auto& counters) { ++counters[AlgoKey{opName, algoName, msgSize}]; });
 }
 
 AlgoStatDump AlgoStats::dump() const {
@@ -36,7 +39,8 @@ AlgoStatDump AlgoStats::dump() const {
 
   algoCounters_.withRLock([&](const auto& counters) {
     for (const auto& [key, count] : counters) {
-      result.counts[key.first][key.second] = count;
+      result.entries[std::get<0>(key)][std::get<1>(key)][std::get<2>(key)] =
+          count;
     }
   });
 

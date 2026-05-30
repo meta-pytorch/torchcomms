@@ -362,6 +362,29 @@ CtranGpe::~CtranGpe() {
   this->pimpl->terminate();
 }
 
+namespace {
+inline size_t getMsgSizeFromOpGroup(
+    const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
+  if (opGroup.empty()) {
+    return 0;
+  }
+  const auto& op = *opGroup.front();
+  switch (op.type) {
+    case OpElem::ALLGATHER:
+      return op.allgather.sendcount * commTypeSize(op.allgather.datatype);
+    case OpElem::ALLREDUCE:
+      return op.allreduce.count * commTypeSize(op.allreduce.datatype);
+    case OpElem::REDUCESCATTER:
+      return op.reducescatter.recvcount *
+          commTypeSize(op.reducescatter.datatype);
+    case OpElem::ALLTOALL:
+      return op.alltoall.count * commTypeSize(op.alltoall.datatype);
+    default:
+      return 0;
+  }
+}
+} // namespace
+
 commResult_t CtranGpe::submit(
     std::vector<std::unique_ptr<struct OpElem>> opGroup,
     opFunc func,
@@ -370,7 +393,9 @@ commResult_t CtranGpe::submit(
     std::optional<std::chrono::milliseconds> timeout,
     PreLaunchGraphPrepareFn graphPrepareFn) {
   this->pimpl->comm->recordAlgoStat(
-      kernelTypeToOpName(kernelConfig.type), kernelConfig.algoName);
+      kernelTypeToOpName(kernelConfig.type),
+      kernelConfig.algoName,
+      getMsgSizeFromOpGroup(opGroup));
   return this->pimpl->submit(
       CtranGpeCmd::TypeEnum::GRAPH_ENQUEUE,
       std::move(opGroup),

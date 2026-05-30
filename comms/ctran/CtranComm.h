@@ -161,13 +161,17 @@ class CtranComm {
   // disabled.
   std::optional<meta::comms::colltrace::AlgoStatDump> dumpAlgoStats() const;
 
-  void recordAlgoStats(const std::string& opName, const std::string& algoName);
+  void recordAlgoStats(
+      const std::string& opName,
+      const std::string& algoName,
+      const size_t msgSize = 0);
 
   // Record a collective algorithm invocation. No-op if algoStats is disabled.
   inline void recordAlgoStat(
       const std::string& opName,
-      const std::string& algoName) {
-    recordAlgoStats(opName, algoName);
+      const std::string& algoName,
+      const size_t msgSize = 0) {
+    recordAlgoStats(opName, algoName, msgSize);
   }
 
   // fields are public to allow access from external code and tests
