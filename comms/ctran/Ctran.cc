@@ -125,9 +125,10 @@ std::optional<meta::comms::colltrace::AlgoStatDump> CtranComm::dumpAlgoStats()
 
 void CtranComm::recordAlgoStats(
     const std::string& opName,
-    const std::string& algoName) {
+    const std::string& algoName,
+    const size_t msgSize) {
   if (algoStats_) {
-    algoStats_->record(opName, algoName);
+    algoStats_->record(opName, algoName, msgSize);
   }
 }
 
@@ -145,7 +146,7 @@ commResult_t ctranInit(
 
   for (const auto& opt : NCCL_COLLTRACE) {
     if (opt == "algostat") {
-      comm->algoStats_ = std::make_unique<meta::comms::colltrace::AlgoStats>(
+      comm->algoStats_ = meta::comms::colltrace::AlgoStats::getOrCreate(
           comm->statex_->commHash(), comm->statex_->commDesc());
       break;
     }

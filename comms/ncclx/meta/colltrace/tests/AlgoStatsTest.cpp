@@ -21,9 +21,9 @@ TEST(AlgoStatsTest, BasicRecordAndDump) {
 
   EXPECT_EQ(dump.commHash, 0x12345678);
   EXPECT_EQ(dump.commDesc, "TP_PG");
-  EXPECT_EQ(dump.counts["ReduceScatter"]["PAT"], 2);
-  EXPECT_EQ(dump.counts["ReduceScatter"]["RING"], 1);
-  EXPECT_EQ(dump.counts["AllReduce"]["TREE"], 1);
+  EXPECT_EQ(dump.entries["ReduceScatter"]["PAT"][0], 2);
+  EXPECT_EQ(dump.entries["ReduceScatter"]["RING"][0], 1);
+  EXPECT_EQ(dump.entries["AllReduce"]["TREE"][0], 1);
 }
 
 TEST(AlgoStatsTest, Reset) {
@@ -33,12 +33,12 @@ TEST(AlgoStatsTest, Reset) {
   stats.record("AllGather", "RING");
 
   auto dumpBefore = stats.dump();
-  EXPECT_EQ(dumpBefore.counts["AllGather"]["RING"], 2);
+  EXPECT_EQ(dumpBefore.entries["AllGather"]["RING"][0], 2);
 
   stats.reset();
 
   auto dumpAfter = stats.dump();
-  EXPECT_TRUE(dumpAfter.counts.empty());
+  EXPECT_TRUE(dumpAfter.entries.empty());
   // Comm info should be preserved after reset
   EXPECT_EQ(dumpAfter.commHash, 0xABCD);
   EXPECT_EQ(dumpAfter.commDesc, "test_comm");
@@ -65,7 +65,8 @@ TEST(AlgoStatsTest, ConcurrentRecording) {
   }
 
   auto dump = stats.dump();
-  EXPECT_EQ(dump.counts["AllReduce"]["PAT"], kNumThreads * kRecordsPerThread);
+  EXPECT_EQ(
+      dump.entries["AllReduce"]["PAT"][0], kNumThreads * kRecordsPerThread);
 }
 
 TEST(AlgoStatsTest, MultipleCollectivesAndAlgorithms) {
@@ -87,12 +88,12 @@ TEST(AlgoStatsTest, MultipleCollectivesAndAlgorithms) {
 
   auto dump = stats.dump();
 
-  EXPECT_EQ(dump.counts.size(), 3); // 3 collectives
-  EXPECT_EQ(dump.counts["ReduceScatter"].size(), 2); // 2 algorithms
-  EXPECT_EQ(dump.counts["ReduceScatter"]["PAT"], 30);
-  EXPECT_EQ(dump.counts["ReduceScatter"]["RING"], 5);
-  EXPECT_EQ(dump.counts["AllReduce"]["TREE"], 50);
-  EXPECT_EQ(dump.counts["AllGather"]["RING"], 10);
+  EXPECT_EQ(dump.entries.size(), 3); // 3 collectives
+  EXPECT_EQ(dump.entries["ReduceScatter"].size(), 2); // 2 algorithms
+  EXPECT_EQ(dump.entries["ReduceScatter"]["PAT"][0], 30);
+  EXPECT_EQ(dump.entries["ReduceScatter"]["RING"][0], 5);
+  EXPECT_EQ(dump.entries["AllReduce"]["TREE"][0], 50);
+  EXPECT_EQ(dump.entries["AllGather"]["RING"][0], 10);
 }
 
 TEST(AlgoStatsTest, EmptyDump) {
@@ -102,5 +103,5 @@ TEST(AlgoStatsTest, EmptyDump) {
 
   EXPECT_EQ(dump.commHash, 0x9999);
   EXPECT_EQ(dump.commDesc, "empty_test");
-  EXPECT_TRUE(dump.counts.empty());
+  EXPECT_TRUE(dump.entries.empty());
 }
