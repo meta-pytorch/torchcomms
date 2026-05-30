@@ -285,6 +285,9 @@ void TorchCommNCCLX::timeoutWatchdog() noexcept {
         TC_LOG(ERROR, this) << "Aborting process due to error on rank " << rank_
                             << " - timeout watchdog detected operation error. ";
       }
+
+      runAbortHooks();
+
       std::abort();
     }
 
@@ -301,6 +304,9 @@ void TorchCommNCCLX::timeoutWatchdog() noexcept {
         TC_LOG(ERROR, this)
             << "Aborting process due to error on rank " << rank_
             << " - nccl hit async error: " << ncclGetErrorString(asyncErr);
+
+        runAbortHooks();
+
         std::abort();
       }
     }
@@ -335,6 +341,7 @@ void TorchCommNCCLX::checkAndAbortIfTimedOutOrError() {
       abortNcclComm();
       if (options_.abort_process_on_timeout_or_error) {
         TC_LOG(ERROR, this) << "Aborting process due to timeout";
+        runAbortHooks();
         std::abort();
       } else {
         throw std::runtime_error("NCCLX operation timed out");
@@ -353,6 +360,7 @@ void TorchCommNCCLX::checkAndAbortIfTimedOutOrError() {
     if (options_.abort_process_on_timeout_or_error) {
       TC_LOG(ERROR, this) << "Aborting process due to error: "
                           << ncclException.what();
+      runAbortHooks();
       std::abort();
     } else {
       throw ncclException;

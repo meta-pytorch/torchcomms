@@ -482,6 +482,7 @@ void TorchCommXCCL::abortXcclComm() {
   }
   if (options_.abort_process_on_timeout_or_error) {
     TC_LOG(ERROR, this) << "Aborting process due to timeout";
+    runAbortHooks();
     abort();
   }
 }

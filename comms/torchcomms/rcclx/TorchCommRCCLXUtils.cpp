@@ -248,6 +248,9 @@ void TorchCommRCCLX::timeoutWatchdog() noexcept {
       } else if (comm_state_ == CommState::ERROR) {
         TC_LOG(ERROR, this) << "Aborting process due to error";
       }
+
+      runAbortHooks();
+
       abort();
     }
 
@@ -264,6 +267,9 @@ void TorchCommRCCLX::timeoutWatchdog() noexcept {
         TC_LOG(ERROR, this)
             << "Aborting process due to error on rank " << rank_
             << " - rcclx hit async error: " << ncclGetErrorString(asyncErr);
+
+        runAbortHooks();
+
         abort();
       }
     }

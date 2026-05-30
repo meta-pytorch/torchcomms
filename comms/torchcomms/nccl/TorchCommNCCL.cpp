@@ -333,10 +333,6 @@ void TorchCommNCCL::finalize() {
 }
 
 void TorchCommNCCL::abortNcclComm() {
-  // Call abort hooks before aborting to allow users to capture debug info
-  TC_LOG(INFO, this) << "Calling abort hooks before aborting.";
-  runAbortHooks();
-
   detachMemoryHook();
   if (nccl_comm_) {
     NCCL_CHECK(
@@ -348,6 +344,7 @@ void TorchCommNCCL::abortNcclComm() {
   }
   if (options_.abort_process_on_timeout_or_error) {
     TC_LOG(ERROR, this) << "Aborting process due to timeout";
+    runAbortHooks();
     ::abort();
   }
 }
