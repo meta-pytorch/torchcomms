@@ -26,6 +26,13 @@ commResult_t ctranAllReduceRing(
     CtranComm* comm,
     cudaStream_t stream,
     std::optional<std::chrono::milliseconds> timeout = std::nullopt);
+/**
+ * Run the Pipes-backed tree AllReduce implementation.
+ *
+ * The implementation supports `commSum` over `commFloat32` and `commFloat16`.
+ * It relies on Pipes NVL and IBGDA transport staging for transient receives and
+ * does not allocate message-size-dependent AllReduce staging.
+ */
 commResult_t ctranAllReduceTree(
     const void* sendbuff,
     void* recvbuff,
