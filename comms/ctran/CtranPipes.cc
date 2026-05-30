@@ -57,9 +57,17 @@ void ctran::ctranEnqueuePipesTraceDrain(CtranComm* comm, cudaStream_t stream) {
 
 commResult_t ctranInitializePipes(CtranComm* comm) {
   if (!NCCL_CTRAN_USE_PIPES) {
+    CLOGF(INFO, "CTRAN-PIPES: initialization skipped; pipes are disabled");
     return commSuccess;
   }
   try {
+    CLOGF(
+        INFO,
+        "CTRAN-PIPES: initialization started rank={} nRanks={} cudaDev={}",
+        comm->statex_->rank(),
+        comm->statex_->nRanks(),
+        comm->statex_->cudaDev());
+
     // Create a non-owning shared_ptr wrapper for bootstrap.
     // SAFETY: multiPeerTransport_ must be destroyed before bootstrap_ in
     // CtranComm::destroy() to avoid dangling reference.
@@ -216,6 +224,32 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
         static_cast<comms::pipes::MnnvlMode>(NCCL_MNNVL_ENABLE);
     config.topoConfig.logicalNvlRanks = comm->statex_->localRankToRanks();
 
+    CLOGF(
+        INFO,
+        "CTRAN-PIPES: config prepared rank={} nvlPipelineDepth={} nvlSharedDevbufSize={} nvlDataBufferSize={} nvlChunkSize={} useDualStateBuffer={} hierAgOverlapEnabled={} disableIb={} p2pDisable={} mnnvlMode={} ibgdaDataBufferSize={} ibgdaQpDepth={} ibLazyConnect={} materializePeerTimeoutMs={}",
+        comm->statex_->rank(),
+        config.nvlConfig.pipelineDepth,
+        nvlSharedDevbufSize,
+        config.nvlConfig.dataBufferSize,
+        config.nvlConfig.chunkSize,
+        config.nvlConfig.useDualStateBuffer,
+        hierAgOverlapEnabled,
+        config.disableIb,
+        config.topoConfig.p2pDisable,
+        static_cast<int>(config.topoConfig.mnnvlMode),
+        config.ibgdaConfig.dataBufferSize,
+        config.ibgdaConfig.qpDepth,
+        config.ibgdaConfig.ibLazyConnect,
+        config.ibgdaConfig.materializePeerTimeoutMs);
+
+    CLOGF(
+        INFO,
+        "CTRAN-PIPES: full config prepared rank={} logicalNvlRanks={}",
+        comm->statex_->rank(),
+        config.topoConfig.logicalNvlRanks
+            ? config.topoConfig.logicalNvlRanks->size()
+            : 0);
+
     // Guard against H100 Grand Teton returning NVML fabric info
     // (state=COMPLETED) without actual cross-node NVLink (MNNVL) capability.
     // The FABRIC handle export/import probe (same check used by ncclx's
@@ -237,6 +271,10 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
       config.topoConfig.mnnvlCliqueId = static_cast<int>(NCCL_MNNVL_CLIQUE_ID);
     }
 
+    CLOGF(
+        INFO,
+        "CTRAN-PIPES: constructing MultiPeerTransport rank={}",
+        comm->statex_->rank());
     comm->multiPeerTransport_ =
         std::make_unique<comms::pipes::MultiPeerTransport>(
             comm->statex_->rank(),
@@ -257,7 +295,17 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
 
   // Wire staging buffers and build nvlTransports now that both CtranAlgo
   // (SharedResource) and MultiPeerTransport have been created.
-  return ctranInitPipesResources(comm->ctran_->algo.get());
+  CLOGF(
+      INFO,
+      "CTRAN-PIPES: starting resource initialization rank={}",
+      comm->statex_->rank());
+  auto ret = ctranInitPipesResources(comm->ctran_->algo.get());
+  CLOGF(
+      INFO,
+      "CTRAN-PIPES: resource initialization finished rank={} status={}",
+      comm->statex_->rank(),
+      static_cast<int>(ret));
+  return ret;
 }
 
 // Verify that ctran (CommStateX) and pipes (MultiPeerTransport) have a
@@ -332,11 +380,22 @@ void validatePipesCtranConsistency(CtranComm* comm) {
 commResult_t ctranInitPipesResources(CtranAlgo* algo) {
   auto* comm = algo->comm_;
   if (!comm->multiPeerTransport_) {
+    CLOGF(
+        INFO,
+        "CTRAN-PIPES: resource initialization skipped; MultiPeerTransport is not initialized");
     return commSuccess;
   }
 
   auto* statex = comm->statex_.get();
   int localRank = statex->localRank();
+  CLOGF(
+      INFO,
+      "CTRAN-PIPES: resource initialization started rank={} localRank={} nLocalRanks={} nRanks={} cudaDev={}",
+      statex->rank(),
+      localRank,
+      statex->nLocalRanks(),
+      statex->nRanks(),
+      statex->cudaDev());
 
   // Wire SharedResource staging buffers to MultiPeerTransport as external
   // data buffers, then exchange. This lets MultiPeerNvlTransport manage
@@ -348,17 +407,38 @@ commResult_t ctranInitPipesResources(CtranAlgo* algo) {
       "ctranInitPipesResources");
 
   int nvlNRanks = comm->multiPeerTransport_->nvl_n_ranks();
+  CLOGF(
+      INFO,
+      "CTRAN-PIPES: resource topology rank={} nvlNRanks={} nvlPeers={} ibgdaPeers={}",
+      statex->rank(),
+      nvlNRanks,
+      nvlNRanks - 1,
+      comm->multiPeerTransport_->ibgda_peer_ranks().size());
 
   // Wire staging buffers only when there are NVL peers. When P2P is disabled
   // (NCCL_P2P_DISABLE=1), nvlNRanks == 1 (self only) while nLocalRanks may
   // be larger. No NVL peers means no staging buffers to wire; communication
   // falls back to IBGDA for all peers including intra-node.
   if (nvlNRanks > 1) {
+    CLOGF(
+        INFO,
+        "CTRAN-PIPES: validating ctran/pipes consistency rank={}",
+        statex->rank());
     validatePipesCtranConsistency(comm);
+    CLOGF(
+        INFO,
+        "CTRAN-PIPES: ctran/pipes consistency validated rank={}",
+        statex->rank());
 
     // Build per-NVL-rank buffer spans. DeviceSpan is non-assignable (const
     // pointer member), so we construct the vectors in NVL local rank order.
     const auto bufSize = static_cast<uint32_t>(algo->devState_.bufSize);
+    CLOGF(
+        INFO,
+        "CTRAN-PIPES: building external NVL staging spans rank={} bufSize={} nvlNRanks={}",
+        statex->rank(),
+        bufSize,
+        nvlNRanks);
     std::vector<comms::pipes::DeviceSpan<char>> localSpans;
     std::vector<comms::pipes::DeviceSpan<char>> remoteSpans;
     localSpans.reserve(nvlNRanks);
@@ -372,6 +452,14 @@ commResult_t ctranInitPipesResources(CtranAlgo* algo) {
       }
       // Map NVL local rank back to statex local rank index (same value since
       // both systems assign indices in sorted global rank order).
+      CLOGF(
+          INFO,
+          "CTRAN-PIPES: wiring NVL staging span rank={} nvlLocalRank={} localBuf={} remoteBuf={} size={}",
+          statex->rank(),
+          nvl,
+          algo->devState_.localStagingBufsMap[nvl],
+          algo->devState_.remoteStagingBufsMap[nvl],
+          bufSize);
       localSpans.emplace_back(
           static_cast<char*>(algo->devState_.localStagingBufsMap[nvl]),
           bufSize);
@@ -384,12 +472,37 @@ commResult_t ctranInitPipesResources(CtranAlgo* algo) {
     externalBufs.localBuffers = std::move(localSpans);
     externalBufs.remoteBuffers = std::move(remoteSpans);
 
+    CLOGF(
+        INFO,
+        "CTRAN-PIPES: setting external NVL data buffers rank={}",
+        statex->rank());
     comm->multiPeerTransport_->setExternalNvlDataBuffers(
         std::move(externalBufs));
+    CLOGF(
+        INFO,
+        "CTRAN-PIPES: external NVL data buffers set rank={}",
+        statex->rank());
+  } else {
+    CLOGF(
+        INFO,
+        "CTRAN-PIPES: no NVL peers; skipping external staging buffer wiring rank={}",
+        statex->rank());
   }
 
+  CLOGF(
+      INFO,
+      "CTRAN-PIPES: starting MultiPeerTransport exchange rank={}",
+      statex->rank());
   comm->multiPeerTransport_->exchange();
+  CLOGF(
+      INFO,
+      "CTRAN-PIPES: MultiPeerTransport exchange finished rank={}",
+      statex->rank());
 
+  CLOGF(
+      INFO,
+      "CTRAN-PIPES: resource initialization finished rank={}",
+      statex->rank());
   return commSuccess;
 }
 
