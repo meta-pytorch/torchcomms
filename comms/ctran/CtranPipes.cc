@@ -21,6 +21,9 @@
 
 namespace {
 
+/** Default per-peer IBGDA send/recv data buffer for ctree AllReduce. */
+constexpr uint64_t kCtreeAllReduceIbgdaDataBufferSize = 32ULL * 1024 * 1024;
+
 bool ctranPipesTraceEnabled() {
   return NCCL_CTRAN_PIPES_TRACE_ENABLE;
 }
@@ -142,6 +145,10 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     uint64_t ibgdaDataBufferSize = (pc.ibgdaDataBufferSize > 0)
         ? static_cast<size_t>(pc.ibgdaDataBufferSize)
         : static_cast<size_t>(NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE);
+    if (NCCL_ALLREDUCE_ALGO == NCCL_ALLREDUCE_ALGO::ctree &&
+        ibgdaDataBufferSize == 0) {
+      ibgdaDataBufferSize = kCtreeAllReduceIbgdaDataBufferSize;
+    }
     if (hierAgOverlapEnabled && NCCL_CTRAN_HIER_AG_IBGDA_DATA_BUFFER_SIZE > 0) {
       ibgdaDataBufferSize = std::max(
           ibgdaDataBufferSize, NCCL_CTRAN_HIER_AG_IBGDA_DATA_BUFFER_SIZE);

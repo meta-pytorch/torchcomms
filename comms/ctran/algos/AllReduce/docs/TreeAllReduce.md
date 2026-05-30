@@ -86,10 +86,10 @@ When `nLocalRanks > 1`, segment owners publish globally reduced segments to all 
 The kernel uses `640` CUDA threads per block. `numBlocks` is capped at `16` for H100 and current GB200/GB300 use. The default policy starts at the cap and reduces blocks for small messages while:
 
 ```text
-totalBytes < numBlocks * 512 * 64
+totalBytes < numBlocks * 640 * 64
 ```
 
-This mirrors NCCL Tree Simple's channel-reduction shape while preserving CTREE's own cap. `NCCL_CTRAN_ALLREDUCE_TREE_NUM_BLOCKS` can override the selected block count for testing; the old `NCCL_CTRAN_ALLREDUCE_TREE_DATA_BLOCKS` spelling is retained as a compatibility alias.
+`NCCL_CTRAN_MAX_NBLOCKS` controls the cap and defaults to `16`, which keeps CTREE below the NCCL Tree CTA count used on the current H100 and GB200/GB300 validation setups.
 
 The implementation uses phase-specific tile widths:
 
@@ -100,16 +100,14 @@ Both are selected to satisfy Pipes tile divisibility constraints with `640`-thre
 
 ## Staging and Memory Lifetime
 
-CTREE uses communicator-lifetime staging for explicit tree receives. Staging is allocated with `ctran::utils::commCuMemAlloc` on the first CTREE collective call for the communicator and freed during communicator teardown with `commCuMemFree`.
-
-Later CTREE calls reuse the allocation when it is large enough. If a later call needs more staging than the first call reserved, the collective fails clearly and asks the caller to recreate the communicator with a first call that covers the maximum required message size. The implementation does not reallocate staging while a communicator may have in-flight transport users.
+CTREE does not allocate message-size-dependent AllReduce staging. NVL and IB receives use Pipes transport-owned staging buffers, and CTREE consumes those transient staging slices inside transport copy callbacks before the transport acknowledges and reuses the slots.
 
 The IBGDA send/recv transport data buffer is configured by per-communicator hint or `NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE` when provided. If neither is set and `NCCL_ALLREDUCE_ALGO=ctree`, CTREE defaults the per-peer IBGDA data buffer to `32MiB`.
 
 ## Correctness Invariants
 
 - No inter-block synchronization is required or assumed.
-- Each block owns disjoint data, staging, and transport group IDs.
+- Each block owns disjoint data and transport group IDs.
 - `group.sync()` is used only for block-local phase transitions.
 - In-place and out-of-place reductions use the same block ownership model; a block finishes the reads needed for its tile before that tile can be overwritten by later local publication.
 - Tail elements are handled by tile bounds and byte-count checks; only valid user elements are read or written.
