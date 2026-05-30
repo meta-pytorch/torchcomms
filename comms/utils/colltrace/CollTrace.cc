@@ -12,12 +12,12 @@
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 
 #include "comms/utils/CommsMaybeChecks.h"
+#include "comms/utils/PrecisionClock.h"
 #include "comms/utils/checks.h"
 #include "comms/utils/colltrace/CudaWaitEvent.h"
 #include "comms/utils/colltrace/GraphCollTraceHandle.h"
 #include "comms/utils/colltrace/GraphCollTraceState.h"
 #include "comms/utils/colltrace/GraphCudaWaitEvent.h"
-#include "comms/utils/colltrace/PrecisionClock.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/hrdw_ring_buffer/GpuClockCalibration.h"
 
