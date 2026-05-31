@@ -11,6 +11,7 @@
 #include <comms/torchcomms/TorchComm.hpp>
 #include <comms/torchcomms/utils/Utils.hpp>
 #include <torch/csrc/profiler/combined_traceback.h>
+#include <atomic>
 #include <chrono>
 #include <mutex>
 #include <optional>
@@ -284,6 +285,24 @@ class FlightRecorder {
    */
   size_t size() const;
 
+  /**
+   * Set the global rank for this process.
+   * Called during registerWithComm with the global rank derived from
+   * `comm->getRanks()[comm->getRank()]`, which yields the same value
+   * for every registered communicator (world comm or sub-PG). The
+   * dump_file handler uses this rank to name the per-rank trace file.
+   */
+  void setRank(int rank) {
+    rank_.store(rank, std::memory_order_relaxed);
+  }
+
+  /**
+   * Get the global rank, or -1 if not yet set.
+   */
+  int getRank() const {
+    return rank_.load(std::memory_order_relaxed);
+  }
+
  private:
   // Returns the entry with the given id and reset_epoch, if it exists.
   // Otherwise, returns std::nullopt.
@@ -315,6 +334,7 @@ class FlightRecorder {
 
   bool enabled_ = false;
   bool capture_cpp_stack_ = false;
+  std::atomic<int> rank_{-1};
   mutable std::mutex mutex_;
   std::vector<Entry> entries_;
   size_t max_entries_ = 0;
