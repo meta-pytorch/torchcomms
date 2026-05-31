@@ -49,6 +49,17 @@ list(FILTER FOLLY_LDFLAGS EXCLUDE REGEX "glog")
 list(FILTER FOLLY_LDFLAGS EXCLUDE REGEX "gflags")
 list(FILTER FOLLY_LDFLAGS EXCLUDE REGEX "libfmt")
 
+execute_process(
+    COMMAND pkg-config --libs --static absl_log absl_check
+    OUTPUT_VARIABLE ABSL_LDFLAGS_RAW
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE PKG_RESULT
+)
+if(NOT PKG_RESULT EQUAL 0)
+    message(FATAL_ERROR "pkg-config for absl_log/absl_check failed")
+endif()
+separate_arguments(ABSL_LDFLAGS NATIVE_COMMAND "${ABSL_LDFLAGS_RAW}")
+
 # Check NCCLX include exists
 if(NOT EXISTS "${NCCLX_INCLUDE}")
     message(FATAL_ERROR "NCCLX include not found at ${NCCLX_INCLUDE}")
@@ -186,6 +197,19 @@ endif()
 if(CUDA_FOUND)
     target_link_libraries(torchcomms_comms_ncclx PRIVATE CUDA::cudart)
 endif()
+
+# Link absl LAST — after the ncclx archive (NCCLX_STATIC_LIB) and the thrift /
+# folly archives above. The static absl_log_internal_* members that satisfy
+# ncclx's LOG / CHECK references (e.g. absl::log_internal::kCharNull) are only
+# pulled in if an undefined reference is already pending when the linker reaches
+# them; placed before the ncclx archive they'd be dropped, leaving the symbol
+# undefined at import time. The --start-group wrap also absorbs the mutual
+# references among the absl_log_* archives themselves.
+target_link_libraries(torchcomms_comms_ncclx PRIVATE
+    "-Wl,--start-group"
+    ${ABSL_LDFLAGS}
+    "-Wl,--end-group"
+)
 
 install(TARGETS torchcomms_comms_ncclx
     LIBRARY DESTINATION .

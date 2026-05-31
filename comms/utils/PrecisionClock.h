@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <utility>
 
-namespace meta::comms::colltrace {
+namespace meta::comms {
 
 // Wall-clock source for colltrace timestamps. Backed by fbclock when the
 // PTP daemon is reachable (giving PTP-aligned, fleet-comparable time with
@@ -39,4 +39,4 @@ uint64_t precisionErrorNs() noexcept;
 // Determined once at first call and cached for the process lifetime.
 bool precisionUsingPtp() noexcept;
 
-} // namespace meta::comms::colltrace
+} // namespace meta::comms

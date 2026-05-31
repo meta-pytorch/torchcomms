@@ -10,8 +10,8 @@
 #include <folly/logging/xlog.h>
 
 #include "comms/utils/CudaRAII.h"
+#include "comms/utils/PrecisionClock.h"
 #include "comms/utils/checks.h"
-#include "comms/utils/colltrace/PrecisionClock.h"
 #include "comms/utils/hrdw_ring_buffer/HRDWRingBuffer.h"
 
 namespace meta::comms::colltrace {
