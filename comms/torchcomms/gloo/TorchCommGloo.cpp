@@ -433,7 +433,12 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::createWork(
     return c10::make_intrusive<TorchWorkThread>(std::move(fn));
   }
 
-  fn();
+  try {
+    fn();
+  } catch (...) {
+    runAbortHooks();
+    throw;
+  }
   return c10::make_intrusive<TorchWorkCompleted>();
 }
 
