@@ -383,6 +383,12 @@ if [[ -z "${USE_SYSTEM_LIBS}" ]]; then
 else
   THIRD_PARTY_LDFLAGS+="-lglog -lgflags -lboost_context -lssl -lcrypto -lfmt"
 fi
+# Link the conda env's libstdc++ by SONAME (libstdc++.so.6) — NOT the bare
+# libstdc++.so symlink, which is from libstdcxx-devel (GCC 11.2, GLIBCXX_3.4.29)
+# while libstdc++.so.6 is from libstdcxx-ng (15.2.0, GLIBCXX_3.4.33).
+if [ -f "$CONDA_LIB_DIR/libstdc++.so.6" ]; then
+  THIRD_PARTY_LDFLAGS+=" $CONDA_LIB_DIR/libstdc++.so.6"
+fi
 
 echo "$THIRD_PARTY_LDFLAGS"
 
