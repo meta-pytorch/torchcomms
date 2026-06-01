@@ -215,6 +215,12 @@ CtranTcpDm::~CtranTcpDm() {
   for (auto comm : recvComms_) {
     transport_->closeRecv(comm.second);
   }
+
+  // shutdown the transport if this is the last CtranTcpDm instance
+  // cudaFreeHost() will fail if wait until Singleton is destroyed
+  if (transport_.use_count() <= 2) {
+    transport_->shutdown(false);
+  }
 }
 
 commResult_t CtranTcpDm::preConnect(const std::unordered_set<int>& peerRanks) {
