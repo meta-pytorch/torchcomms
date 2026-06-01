@@ -5,7 +5,10 @@
 
 #include <cstddef>
 #include <memory>
+#include <unordered_map>
 #include <vector>
+
+#include <folly/Synchronized.h>
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/backends/CtranAux.h"
@@ -21,6 +24,7 @@
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/regcache/IpcRegCache.h"
 #include "comms/ctran/regcache/RegCache.h"
+#include "comms/ctran/transport/IP2pHostTransport.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CtranPerf.h"
 #include "comms/ctran/utils/Exception.h"
@@ -877,6 +881,29 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   CtranIb* ctranIbPtr();
 
   CtranSocket* ctranSockPtr();
+
+  /* Get (lazily construct + cache) the per-peer host-side P2P
+   * transport.
+   *
+   * Each peer is bound to exactly one mode for the lifetime of its
+   * cached transport instance. The first call for a (peerRank, mode)
+   * pair constructs the matching derived class
+   * (ctran::transport::ib::HostZcTransport for kZeroCopy; kCopyBased
+   * support lands in a follow-up diff); subsequent calls return the
+   * cached instance. Calling with a different mode for a peer that
+   * already has a cached entry triggers an FB_CHECKABORT — algorithm
+   * code is responsible for picking one mode per peer.
+   *
+   * Returns nullptr if no IB backend is available on this mapper
+   * (e.g., NVL-only setups).
+   *
+   * The cache is cleared early in setAtDestruction() so that the CB
+   * transport's borrowed GpeKernelSync entries are returned to the
+   * gpe-owned pool while gpe is still alive.
+   */
+  ctran::transport::IP2pHostTransport* getP2pTransport(
+      int peerRank,
+      ctran::transport::HostTransportMode mode);
 
   // number of iput requests made for each backend
   std::vector<int> iPutCount;
@@ -2032,6 +2059,24 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   std::unique_ptr<class CtranNvl> ctranNvl{nullptr};
   std::unique_ptr<class CtranSocket> ctranSock{nullptr};
   std::unique_ptr<class ctran::CtranTcpDm> ctranTcpDm{nullptr};
+
+  // Per-peer cache of host-side P2P transports. Keyed by peerRank.
+  // The value is constructed lazily by getP2pTransport(peer, mode).
+  // Lifetime: cleared explicitly in setAtDestruction() before
+  // ctranIb / gpe are torn down (so cached transports release any
+  // borrowed pool entries while their pool is still alive). Declared
+  // after ctranIb so member-destruction order is also safe as a
+  // defensive backstop.
+  //
+  // Thread-safety: wrapped in folly::Synchronized because
+  // getP2pTransport() may be called concurrently from algorithm
+  // threads. Borrowed raw pointers handed out by getP2pTransport()
+  // remain valid after the lock is dropped — the map only grows;
+  // entries are never erased or rewritten except during teardown.
+  folly::Synchronized<std::unordered_map<
+      int,
+      std::unique_ptr<ctran::transport::IP2pHostTransport>>>
+      p2pHostTransports_;
 
   // holds enabled backends when the mapper is created.
   // A unified struct for holding all available backends.
