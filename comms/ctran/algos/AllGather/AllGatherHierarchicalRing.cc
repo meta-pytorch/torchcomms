@@ -25,6 +25,29 @@ using ::meta::comms::colltrace::CollTraceHandleTriggerState;
 
 namespace {
 
+constexpr size_t kHierarchicalAgOverlapChunk512KiB = 512 * 1024;
+constexpr size_t kHierarchicalAgOverlapChunk1MiB = 1024 * 1024;
+constexpr size_t kHierarchicalAgOverlapChunk2MiB = 2 * 1024 * 1024;
+constexpr size_t kHierarchicalAgOverlapChunk4MiB = 4 * 1024 * 1024;
+constexpr size_t kHierarchicalAgOverlapChunk8MiB = 8 * 1024 * 1024;
+
+size_t selectHierarchicalAgOverlapChunkBytes(size_t sendBytes) {
+  const size_t targetChunkBytes = (sendBytes + 7) / 8;
+  if (targetChunkBytes <= kHierarchicalAgOverlapChunk512KiB) {
+    return kHierarchicalAgOverlapChunk512KiB;
+  }
+  if (targetChunkBytes <= kHierarchicalAgOverlapChunk1MiB) {
+    return kHierarchicalAgOverlapChunk1MiB;
+  }
+  if (targetChunkBytes <= kHierarchicalAgOverlapChunk2MiB) {
+    return kHierarchicalAgOverlapChunk2MiB;
+  }
+  if (targetChunkBytes <= kHierarchicalAgOverlapChunk4MiB) {
+    return kHierarchicalAgOverlapChunk4MiB;
+  }
+  return kHierarchicalAgOverlapChunk8MiB;
+}
+
 commResult_t validateHierarchicalRingParams(CtranComm* comm, int numBlocks) {
   if (!NCCL_CTRAN_IBGDA_SENDRECV_ENABLE) {
     CLOGF_SUBSYS(
@@ -271,14 +294,6 @@ commResult_t ctranAllGatherHierarchicalRing(
           nvlNumBlocks);
       return commInvalidArgument;
     }
-    if (static_cast<size_t>(NCCL_CTRAN_HIER_AG_OVERLAP_CHUNK_BYTES) == 0) {
-      CLOGF_SUBSYS(
-          WARN,
-          COLL,
-          "AllGather {} requires positive NCCL_CTRAN_HIER_AG_OVERLAP_CHUNK_BYTES",
-          allGatherAlgoName(myAlgo));
-      return commInvalidArgument;
-    }
   }
 
   auto* mpt = comm->multiPeerTransport_.get();
@@ -356,8 +371,11 @@ commResult_t ctranAllGatherHierarchicalRing(
     overlapParams.sendcount = params.sendcount;
     overlapParams.ib_signaling_data_size = params.ib_signaling_data_size;
     overlapParams.nvl_signaling_data_size = params.nvl_signaling_data_size;
-    overlapParams.chunk_bytes =
+    const size_t configuredChunkBytes =
         static_cast<size_t>(NCCL_CTRAN_HIER_AG_OVERLAP_CHUNK_BYTES);
+    overlapParams.chunk_bytes = configuredChunkBytes != 0
+        ? configuredChunkBytes
+        : selectHierarchicalAgOverlapChunkBytes(sendBytes);
     overlapParams.ready_sequence = comm->ctran_->getOpCount() + 1;
     overlapParams.sendbuf = params.sendbuf;
     overlapParams.recvbuf = params.recvbuf;
