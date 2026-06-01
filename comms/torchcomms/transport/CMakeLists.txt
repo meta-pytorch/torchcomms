@@ -52,6 +52,17 @@ list(FILTER FOLLY_LDFLAGS EXCLUDE REGEX "glog")
 list(FILTER FOLLY_LDFLAGS EXCLUDE REGEX "gflags")
 list(FILTER FOLLY_LDFLAGS EXCLUDE REGEX "libfmt")
 
+execute_process(
+    COMMAND pkg-config --libs --static absl_log absl_check
+    OUTPUT_VARIABLE ABSL_LDFLAGS_RAW
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE PKG_RESULT
+)
+if(NOT PKG_RESULT EQUAL 0)
+    message(FATAL_ERROR "pkg-config for absl_log/absl_check failed")
+endif()
+separate_arguments(ABSL_LDFLAGS NATIVE_COMMAND "${ABSL_LDFLAGS_RAW}")
+
 add_library(torchcomms_transport MODULE
     ${TORCHCOMMS_TRANSPORT_SOURCES}
 )
@@ -102,6 +113,12 @@ endif()
 if(CUDA_FOUND)
     target_link_libraries(torchcomms_transport PRIVATE CUDA::cudart)
 endif()
+
+target_link_libraries(torchcomms_transport PRIVATE
+    "-Wl,--start-group"
+    ${ABSL_LDFLAGS}
+    "-Wl,--end-group"
+)
 
 install(TARGETS torchcomms_transport
     LIBRARY DESTINATION .
