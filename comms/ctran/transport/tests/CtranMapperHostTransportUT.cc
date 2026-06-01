@@ -73,6 +73,39 @@ TEST_F(CtranMapperHostTransportDistTest, GetZcTransportCachesPerPeer) {
   EXPECT_EQ(first->chunkSize(), 0u);
 }
 
+TEST_F(CtranMapperHostTransportDistTest, GetCbTransportCachesPerPeer) {
+  ASSERT_NE(comm_->ctran_->mapper, nullptr);
+  if (comm_->ctran_->mapper->ctranIbPtr() == nullptr) {
+    GTEST_SKIP() << "IB backend not available";
+  }
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Requires >= 2 ranks";
+  }
+
+  // HostCbTransport ctor (like HostZcTransport) eagerly calls
+  // ctranIb->connectVcs(peer) for the per-peer rendezvous. For
+  // deadlock-free progress every rank must initiate to every other
+  // peer; otherwise the larger-rank-side spinner hangs waiting on a
+  // peer that never initiated.
+  for (int p = 0; p < numRanks; ++p) {
+    if (p == globalRank) {
+      continue;
+    }
+    ASSERT_NE(
+        comm_->ctran_->mapper->getP2pTransport(
+            p, ctran::transport::HostTransportMode::kCopyBased),
+        nullptr);
+  }
+
+  const int peer = (globalRank + 1) % numRanks;
+  auto* t = comm_->ctran_->mapper->getP2pTransport(
+      peer, ctran::transport::HostTransportMode::kCopyBased);
+  ASSERT_NE(t, nullptr);
+  EXPECT_EQ(t->mode(), ctran::transport::HostTransportMode::kCopyBased);
+  EXPECT_GT(t->pipelineDepth(), 0);
+  EXPECT_GT(t->chunkSize(), 0u);
+}
+
 TEST_F(CtranMapperHostTransportDistTest, DifferentPeersGetDifferentTransports) {
   if (comm_->ctran_->mapper->ctranIbPtr() == nullptr) {
     GTEST_SKIP() << "IB backend not available";
@@ -106,6 +139,90 @@ TEST_F(CtranMapperHostTransportDistTest, DifferentPeersGetDifferentTransports) {
   EXPECT_NE(tA, tB);
   EXPECT_EQ(tA->peerRank(), peerA);
   EXPECT_EQ(tB->peerRank(), peerB);
+}
+
+TEST_F(CtranMapperHostTransportDistTest, ModeMismatchAborts) {
+  if (comm_->ctran_->mapper->ctranIbPtr() == nullptr) {
+    GTEST_SKIP() << "IB backend not available";
+  }
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Requires >= 2 ranks";
+  }
+
+  // All-to-all warm-up to drive the eager connectVcs rendezvous
+  // for every peer pair before the EXPECT_DEATH fork. Without this,
+  // the asymmetric single-peer call below races against the
+  // bootstrap channel and intermittently deadlocks one rank when
+  // run in sequence with other tests (see
+  // GetCbTransportCachesPerPeer for the same root cause).
+  for (int p = 0; p < numRanks; ++p) {
+    if (p == globalRank) {
+      continue;
+    }
+    ASSERT_NE(
+        comm_->ctran_->mapper->getP2pTransport(
+            p, ctran::transport::HostTransportMode::kZeroCopy),
+        nullptr);
+  }
+
+  const int peer = (globalRank + 1) % numRanks;
+  auto* zc = comm_->ctran_->mapper->getP2pTransport(
+      peer, ctran::transport::HostTransportMode::kZeroCopy);
+  ASSERT_NE(zc, nullptr);
+
+  // Asking for the same peer with a different mode must abort
+  // (FB_CHECKABORT). gtest's death-test matcher inspects only the
+  // child process's captured stderr; FB_CHECKABORT writes its message
+  // through CLOGF (which goes to the logger sink, not raw stderr), so
+  // the message itself isn't visible to EXPECT_DEATH. The signal
+  // handler's "*** Aborted at ..." banner IS visible — match on that
+  // so the test asserts only the death itself.
+  EXPECT_DEATH_IF_SUPPORTED(
+      {
+        (void)comm_->ctran_->mapper->getP2pTransport(
+            peer, ctran::transport::HostTransportMode::kCopyBased);
+      },
+      ".*Aborted.*");
+}
+
+TEST_F(CtranMapperHostTransportDistTest, CbCacheClearedBeforeGpeTeardown) {
+  // Construct a CB transport for a peer (which pops GpeKernelSync
+  // entries from gpe's pool). After the comm is destroyed,
+  // numInUseGpeKernelSyncs MUST be zero — i.e., setAtDestruction()
+  // cleared the per-peer cache before gpe was torn down so the CB
+  // transport's dtor returned its borrowed syncs.
+  if (comm_->ctran_->mapper->ctranIbPtr() == nullptr) {
+    GTEST_SKIP() << "IB backend not available";
+  }
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Requires >= 2 ranks";
+  }
+
+  // HostCbTransport ctor eagerly rendezvous via ctranIb->connectVcs;
+  // every rank must drive every other peer or larger-rank-side
+  // spinners deadlock (see GetCbTransportCachesPerPeer).
+  for (int p = 0; p < numRanks; ++p) {
+    if (p == globalRank) {
+      continue;
+    }
+    ASSERT_NE(
+        comm_->ctran_->mapper->getP2pTransport(
+            p, ctran::transport::HostTransportMode::kCopyBased),
+        nullptr);
+  }
+
+  const int peer = (globalRank + 1) % numRanks;
+  auto* cb = comm_->ctran_->mapper->getP2pTransport(
+      peer, ctran::transport::HostTransportMode::kCopyBased);
+  ASSERT_NE(cb, nullptr);
+
+  // Snapshot the pool size while the CB transport holds borrowed
+  // entries; expect non-zero.
+  EXPECT_GT(comm_->ctran_->gpe->numInUseGpeKernelSyncs(), 0u);
+
+  // Trigger the early cache-clear path.
+  comm_->ctran_->mapper->setAtDestruction();
+  EXPECT_EQ(comm_->ctran_->gpe->numInUseGpeKernelSyncs(), 0u);
 }
 
 int main(int argc, char* argv[]) {
