@@ -179,6 +179,16 @@ class TorchCommRCCLX : public TorchCommBackend,
       bool async_op,
       const BarrierOptions& options = {}) override;
 
+  // Fused multi-group sharded relay allreduce for 2D sparse parallelism
+  // Executes multiple allreduce groups in lockstep phases to eliminate XGMI
+  // contention
+  c10::intrusive_ptr<TorchWork> sharded_relay_multi_group_all_reduce(
+      std::vector<at::Tensor>& tensors,
+      const ReduceOp& op,
+      const std::vector<std::vector<int64_t>>& all_active_ranks,
+      const std::vector<int64_t>& per_group_counts,
+      bool async_op);
+
   // Scatter and Gather Operations
   c10::intrusive_ptr<TorchWork> scatter(
       at::Tensor& output_tensor,

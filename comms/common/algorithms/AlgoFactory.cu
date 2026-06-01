@@ -20,7 +20,14 @@ AlgoFactory::AlgoFactory(
         continue;
       }
       cudaError_t e = cudaDeviceEnablePeerAccess(i, 0);
-      if (e != cudaErrorPeerAccessAlreadyEnabled && e != cudaSuccess) {
+      if (e == cudaErrorPeerAccessAlreadyEnabled) {
+        // Drain the per-thread error slot. Without this, the stale 704
+        // (cudaErrorPeerAccessAlreadyEnabled) survives until the next
+        // cudaGetLastError() consumer (e.g. C10_CUDA_KERNEL_LAUNCH_CHECK
+        // after the next ATen kernel launch) which then incorrectly raises
+        // torch.AcceleratorError("peer access is already enabled").
+        (void)cudaGetLastError();
+      } else if (e != cudaSuccess) {
         CUDA_CHECK(e);
       }
     }
@@ -61,7 +68,14 @@ AlgoFactoryDev::AlgoFactoryDev(
         continue;
       }
       cudaError_t e = cudaDeviceEnablePeerAccess(i, 0);
-      if (e != cudaErrorPeerAccessAlreadyEnabled && e != cudaSuccess) {
+      if (e == cudaErrorPeerAccessAlreadyEnabled) {
+        // Drain the per-thread error slot. Without this, the stale 704
+        // (cudaErrorPeerAccessAlreadyEnabled) survives until the next
+        // cudaGetLastError() consumer (e.g. C10_CUDA_KERNEL_LAUNCH_CHECK
+        // after the next ATen kernel launch) which then incorrectly raises
+        // torch.AcceleratorError("peer access is already enabled").
+        (void)cudaGetLastError();
+      } else if (e != cudaSuccess) {
         CUDA_CHECK(e);
       }
     }
