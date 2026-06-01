@@ -12,6 +12,9 @@
 #include <torch/csrc/distributed/c10d/TraceUtils.h>
 #include <torch/csrc/distributed/c10d/control_plane/Handlers.hpp>
 #include <torch/csrc/jit/serialization/pickler.h>
+#include <atomic>
+#include <future>
+#include <mutex>
 #include <sstream>
 
 namespace torch {
@@ -107,6 +110,74 @@ c10d::control_plane::RegisterHandler torchcommsFrTraceJsonRegistration(
           processedParams[onlyActiveStr]);
       res.setContent(std::move(trace), "application/json");
       res.setStatus(200);
+    });
+
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
+c10d::control_plane::RegisterHandler torchcommsFrDumpFileRegistration(
+    "torchcomms_fr_dump_file",
+    [](const c10d::control_plane::Request& /* req */,
+       c10d::control_plane::Response& res) {
+      auto* recorder = FlightRecorder::get();
+      int rank = recorder->getRank();
+      // Reject if no communicator has registered yet — getRank() would
+      // otherwise return the default sentinel (-1) and we would write a
+      // bogus per-rank file.
+      if (rank < 0) {
+        res.setStatus(503);
+        res.setContent(
+            "Flight Recorder has not been registered with any communicator yet",
+            "text/plain");
+        return;
+      }
+
+      // Single-flight guard: rapid/overlapping calls (e.g. from a health
+      // check loop) must not each spawn a fresh worker thread writing to
+      // the same per-rank file. Use the previous future's state itself as
+      // the single-flight signal — when wait_for(0) returns `ready`, the
+      // worker has fully exited and reassigning the future will not block
+      // on a thread join. If it is not ready, the worker is still running
+      // (or in the middle of exiting); coalesce by returning immediately
+      // without launching another task.
+      // NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
+      static std::mutex dump_future_mutex;
+      // NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
+      static std::future<void> dump_future;
+
+      {
+        std::lock_guard<std::mutex> lock(dump_future_mutex);
+        if (dump_future.valid() &&
+            dump_future.wait_for(std::chrono::seconds(0)) !=
+                std::future_status::ready) {
+          res.setStatus(200);
+          res.setContent(
+              "Flight Recorder dump already in progress for rank " +
+                  std::to_string(rank),
+              "text/plain");
+          return;
+        }
+        // Using std::async with std::launch::async means the future's
+        // destructor joins the worker thread instead of leaking it
+        // (no detach()). The dump writes through the global singleton
+        // recorder + DebugInfoWriter, so we don't need to instantiate a
+        // new FlightRecorderHook.
+        dump_future = std::async(std::launch::async, [rank, recorder]() {
+          LOG(INFO) << "Writing Flight Recorder debug info to file for rank "
+                    << rank;
+          std::string trace = recorder->dump(
+              std::unordered_map<
+                  std::string,
+                  std::unordered_map<std::string, std::string>>{},
+              /*includeCollectives=*/true,
+              /*includeStackTraces=*/false,
+              /*onlyActive=*/false);
+          DebugInfoWriter::getWriter(rank).write(trace);
+        });
+      }
+
+      res.setStatus(200);
+      res.setContent(
+          "Flight Recorder dump initiated for rank " + std::to_string(rank),
+          "text/plain");
     });
 
 } // namespace
@@ -926,8 +997,15 @@ void FlightRecorderHook::registerWithComm(std::shared_ptr<TorchComm> comm) {
         self->onPostHook(device, op_id, args);
       });
 
-  // Register abort hook - called before aborting to dump flight recorder data
-  int rank = comm->getRank();
+  // Register abort hook - called before aborting to dump flight recorder data.
+  // Derive the global rank of this process from the comm's member ranks
+  // (`getRanks()`) indexed by this process's rank-within-comm (`getRank()`).
+  // This works for both the world comm and sub-PGs, so every registered
+  // communicator yields the same stable global identifier.
+  // Use .at() to satisfy facebook-hte-LocalUncheckedArrayBounds; for a
+  // well-formed comm, getRank() is always within bounds of getRanks().
+  int rank = comm_ranks.at(comm->getRank());
+  recorder_->setRank(rank);
   comm->registerAbortHook([self, rank]() { self->dump_file(rank); });
 
   registrations_.emplace_back(comm, pg_id, pg_desc);
