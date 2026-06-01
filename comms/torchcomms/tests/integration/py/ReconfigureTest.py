@@ -17,6 +17,7 @@ import unittest
 from datetime import timedelta
 
 import torch
+import torchcomms
 from torch.distributed import TCPStore
 from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
     skip_backend,
@@ -143,8 +144,6 @@ class ReconfigureTest(unittest.TestCase):
                 f"Backend {self.backend} supports reconfigure, skipping negative test"
             )
 
-        import torchcomms
-
         with self.assertRaises(RuntimeError) as context:
             torchcomms.new_comm(
                 self.backend,
@@ -163,29 +162,7 @@ class ReconfigureTest(unittest.TestCase):
         if not self._is_supported_backend():
             self.skipTest(f"Backend {self.backend} does not support reconfigure()")
 
-        import torchcomms
-
-        comm = torchcomms.new_comm(
-            self.backend,
-            self.device,
-            "reconfigure_basic",
-            enable_reconfigure=True,
-            store=self._get_store_for_comm(),
-        )
-
-        all_handles = self._collect_handles(comm, "test_reconfigure_basic")
-        self.assertGreater(len(all_handles), 0)
-
-        print(f"[Rank {self.rank}] Collected handles: {all_handles}")
-
-        work = comm.reconfigure(
-            uuid=0,
-            init_handles=all_handles,
-            timeout=timedelta(milliseconds=30000),
-        )
-        self.assertIsNotNone(work)
-
-        work.wait()
+        comm, _ = self._create_reconfigured_comm("reconfigure_basic", 0)
 
         self.assertGreaterEqual(comm.get_rank(), 0)
         self.assertLess(comm.get_rank(), self.world_size)
@@ -200,24 +177,7 @@ class ReconfigureTest(unittest.TestCase):
         if not self._is_supported_backend():
             self.skipTest(f"Backend {self.backend} does not support reconfigure()")
 
-        import torchcomms
-
-        comm = torchcomms.new_comm(
-            self.backend,
-            self.device,
-            "reconfigure_collective",
-            enable_reconfigure=True,
-            store=self._get_store_for_comm(),
-        )
-
-        all_handles = self._collect_handles(comm, "test_reconfigure_collective")
-
-        work = comm.reconfigure(
-            uuid=2,
-            init_handles=all_handles,
-            timeout=timedelta(milliseconds=30000),
-        )
-        work.wait()
+        comm, _ = self._create_reconfigured_comm("reconfigure_collective", 2)
 
         if self.world_size > 1:
             my_rank = comm.get_rank()
@@ -260,24 +220,7 @@ class ReconfigureTest(unittest.TestCase):
         if not self._is_supported_backend():
             self.skipTest(f"Backend {self.backend} does not support reconfigure()")
 
-        import torchcomms
-
-        comm = torchcomms.new_comm(
-            self.backend,
-            self.device,
-            "reconfigure_allreduce",
-            enable_reconfigure=True,
-            store=self._get_store_for_comm(),
-        )
-
-        all_handles = self._collect_handles(comm, "test_reconfigure_allreduce")
-
-        work = comm.reconfigure(
-            uuid=3,
-            init_handles=all_handles,
-            timeout=timedelta(milliseconds=30000),
-        )
-        work.wait()
+        comm, _ = self._create_reconfigured_comm("reconfigure_allreduce", 3)
 
         my_rank = comm.get_rank()
         tensor = torch.ones(4, dtype=torch.float, device=self.device) * (my_rank + 1)
@@ -298,11 +241,8 @@ class ReconfigureTest(unittest.TestCase):
 
         comm.finalize()
 
-
     def _create_reconfigured_comm(self, name, uuid):
         """Helper: create a comm and perform initial reconfigure."""
-        import torchcomms
-
         comm = torchcomms.new_comm(
             self.backend,
             self.device,
@@ -322,11 +262,6 @@ class ReconfigureTest(unittest.TestCase):
 
         post_handles = self._collect_handles(comm, f"{name}_post")
         return comm, post_handles
-
-    def _reduce_op_sum(self):
-        import torchcomms
-
-        return torchcomms.ReduceOp.SUM
 
     def test_shrink_basic(self):
         """Test shrink: exclude last rank, allreduce on child comm."""
@@ -355,7 +290,7 @@ class ReconfigureTest(unittest.TestCase):
 
         my_rank = comm.get_rank()
         tensor = torch.ones(1024, dtype=torch.float, device=self.device) * (my_rank + 1)
-        comm.all_reduce(tensor, op=self._reduce_op_sum(), async_op=False)
+        comm.all_reduce(tensor, op=torchcomms.ReduceOp.SUM, async_op=False)
 
         expected = sum(range(1, new_size + 1))
         self.assertTrue(
@@ -363,43 +298,17 @@ class ReconfigureTest(unittest.TestCase):
             f"AllReduce post-shrink failed: got {tensor[0].item()}, expected {expected}",
         )
 
-        print(f"[Rank {my_rank}] Shrink {self.world_size} -> {new_size}, allreduce OK")
-        comm.finalize()
-
-    def test_shrink_multiple_collectives(self):
-        """Test multiple allreduces + broadcast on child comm after shrink."""
-        if not self._is_supported_backend():
-            self.skipTest(f"Backend {self.backend} does not support reconfigure()")
-        if self.world_size < 3:
-            self.skipTest("Need at least 3 ranks for shrink test")
-
-        comm, all_handles = self._create_reconfigured_comm("shrink_multi", 200)
-        exclude_rank = self.world_size - 1
-
-        if self.rank == exclude_rank:
-            comm.finalize()
-            return
-
-        surviving_handles = [h for i, h in enumerate(all_handles) if i != exclude_rank]
-        work = comm.reconfigure(
-            uuid=201,
-            init_handles=surviving_handles,
-            timeout=timedelta(seconds=30),
-        )
-        work.wait()
-
-        new_size = comm.get_size()
-        my_rank = comm.get_rank()
-
+        # Exercise a few more collectives on the child comm to catch any
+        # state-tracking bugs that only surface on the second op onwards.
         for i in range(3):
             tensor = torch.ones(2048, dtype=torch.float, device=self.device) * (
                 my_rank + 1 + i
             )
-            comm.all_reduce(tensor, op=self._reduce_op_sum(), async_op=False)
+            comm.all_reduce(tensor, op=torchcomms.ReduceOp.SUM, async_op=False)
             expected = sum(range(1 + i, new_size + 1 + i))
             self.assertTrue(
                 torch.allclose(tensor, torch.full_like(tensor, expected)),
-                f"AllReduce iteration {i} failed",
+                f"AllReduce iteration {i} on shrunk comm failed",
             )
 
         tensor = torch.zeros(1024, dtype=torch.float, device=self.device)
@@ -408,10 +317,12 @@ class ReconfigureTest(unittest.TestCase):
         comm.broadcast(tensor, root=0, async_op=False)
         self.assertTrue(
             torch.allclose(tensor, torch.full_like(tensor, 42.0)),
-            "Broadcast after shrink failed",
+            "Broadcast on shrunk comm failed",
         )
 
-        print(f"[Rank {my_rank}] 3 AllReduce + 1 Broadcast on child comm OK")
+        print(
+            f"[Rank {my_rank}] Shrink {self.world_size} -> {new_size}, collectives OK"
+        )
         comm.finalize()
 
     def test_shrink_exclude_middle_rank(self):
@@ -443,7 +354,7 @@ class ReconfigureTest(unittest.TestCase):
         self.assertLess(my_rank, new_size)
 
         tensor = torch.ones(1024, dtype=torch.float, device=self.device) * (my_rank + 1)
-        comm.all_reduce(tensor, op=self._reduce_op_sum(), async_op=False)
+        comm.all_reduce(tensor, op=torchcomms.ReduceOp.SUM, async_op=False)
 
         expected = sum(range(1, new_size + 1))
         self.assertTrue(
@@ -462,8 +373,6 @@ class ReconfigureTest(unittest.TestCase):
         if not self._is_supported_backend():
             self.skipTest(f"Backend {self.backend} does not support reconfigure()")
         self._skip_if_grow_not_supported()
-
-        import torchcomms
 
         comm = torchcomms.new_comm(
             self.backend,
@@ -499,8 +408,6 @@ class ReconfigureTest(unittest.TestCase):
         if not self._is_supported_backend():
             self.skipTest(f"Backend {self.backend} does not support reconfigure()")
         self._skip_if_grow_not_supported()
-
-        import torchcomms
 
         comm = torchcomms.new_comm(
             self.backend,
@@ -545,22 +452,7 @@ class ReconfigureTest(unittest.TestCase):
         if not self._is_supported_backend():
             self.skipTest(f"Backend {self.backend} does not support reconfigure()")
 
-        import torchcomms
-
-        comm = torchcomms.new_comm(
-            self.backend,
-            self.device,
-            "reconfigure_identity",
-            enable_reconfigure=True,
-            store=self._get_store_for_comm(),
-        )
-
-        all_handles = self._collect_handles(comm, "test_reconfigure_identity1")
-        comm.reconfigure(
-            uuid=4,
-            init_handles=all_handles,
-            timeout=timedelta(milliseconds=30000),
-        ).wait()
+        comm, _ = self._create_reconfigured_comm("reconfigure_identity", 4)
 
         all_handles = self._collect_handles(comm, "test_reconfigure_identity2")
         comm.reconfigure(
@@ -576,8 +468,6 @@ class ReconfigureTest(unittest.TestCase):
         if not self._is_supported_backend():
             self.skipTest(f"Backend {self.backend} does not support reconfigure()")
         self._skip_if_grow_not_supported()
-
-        import torchcomms
 
         comm = torchcomms.new_comm(
             self.backend,
@@ -611,8 +501,6 @@ class ReconfigureTest(unittest.TestCase):
         if not self._is_supported_backend():
             self.skipTest(f"Backend {self.backend} does not support reconfigure()")
         self._skip_if_grow_not_supported()
-
-        import torchcomms
 
         comm = torchcomms.new_comm(
             self.backend,
@@ -652,22 +540,7 @@ class ReconfigureTest(unittest.TestCase):
         if not self._is_supported_backend():
             self.skipTest(f"Backend {self.backend} does not support reconfigure()")
 
-        import torchcomms
-
-        comm = torchcomms.new_comm(
-            self.backend,
-            self.device,
-            "reconfigure_after_abort",
-            enable_reconfigure=True,
-            store=self._get_store_for_comm(),
-        )
-
-        all_handles = self._collect_handles(comm, "test_reconfigure_after_abort1")
-        comm.reconfigure(
-            uuid=10,
-            init_handles=all_handles,
-            timeout=timedelta(milliseconds=30000),
-        ).wait()
+        comm, _ = self._create_reconfigured_comm("reconfigure_after_abort", 10)
 
         comm.abort()
 

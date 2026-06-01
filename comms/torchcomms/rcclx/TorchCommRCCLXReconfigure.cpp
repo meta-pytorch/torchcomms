@@ -77,15 +77,14 @@ struct HandleInfo {
 };
 
 HandleInfo parseHandle(const InitHandle& handle) {
-  // Format: "rcclx:<rank>:<uuid>:<storeAddr>" or legacy "rcclx:<rank>"
+  // Format: "rcclx:<rank>:<uuid>:<storeAddr>"
   auto first = handle.find(':');
   if (first == std::string::npos) {
     return {-1, -1, ""};
   }
   auto second = handle.find(':', first + 1);
   if (second == std::string::npos) {
-    // Legacy format: "rcclx:<rank>"
-    return {std::stoi(handle.substr(first + 1)), -1, ""};
+    return {-1, -1, ""};
   }
   int rank = std::stoi(handle.substr(first + 1, second - first - 1));
   auto third = handle.find(':', second + 1);
@@ -148,7 +147,7 @@ QuorumInfo findQuorum(
   QuorumInfo quorum;
   for (const auto& [uuid, ranks] : groupByUuid) {
     if (uuid < 0) {
-      continue; // Legacy / uninitialized handles
+      continue;
     }
     std::unordered_set<int> uniqueRanks(ranks.begin(), ranks.end());
     if (uniqueRanks.size() != ranks.size()) {
@@ -389,8 +388,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::reconfigure(
       RCCLX_CHECK(
           rcclx_api_,
           current,
-          rcclx_api_->commGrow(
-              current, new_size, nullptr, -1, &grown, nullptr),
+          rcclx_api_->commGrow(current, new_size, nullptr, -1, &grown, nullptr),
           "RCCLX commGrow failed during reconfigure");
       current = grown;
     }
