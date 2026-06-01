@@ -320,6 +320,7 @@ TEST_F(RdmaFactoryRegistrationTest, VramFallsBackToRegMrWhenDmaBufUnsupported) {
 
   auto result = factory_->registerSegment(segment);
   ASSERT_TRUE(result.hasValue());
+  EXPECT_EQ(factory_->dmaBufFallbackCount(), 1);
 }
 
 TEST_F(RdmaFactoryRegistrationTest, VramFallsBackToRegMrWhenGetHandleFails) {
@@ -343,6 +344,7 @@ TEST_F(RdmaFactoryRegistrationTest, VramFallsBackToRegMrWhenGetHandleFails) {
 
   auto result = factory_->registerSegment(segment);
   ASSERT_TRUE(result.hasValue());
+  EXPECT_EQ(factory_->dmaBufFallbackCount(), 1);
 }
 
 TEST_F(RdmaFactoryRegistrationTest, ImportSegmentSucceeds) {

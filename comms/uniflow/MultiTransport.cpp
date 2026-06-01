@@ -51,44 +51,26 @@ Status MultiTransport::validateRequests(
   auto localMemType = requests.front().local.memType();
   auto remoteMemType = requests.front().remote.memType();
   auto localMemDeviceId = requests.front().local.deviceId();
-  auto localHandles = requests.front().local.handles_;
-  auto remoteHandles = requests.front().remote.handles_;
 
   for (size_t i = 1; i < requests.size(); ++i) {
-    auto& local = requests[i].local;
-    auto& remote = requests[i].remote;
+    const auto& local = requests[i].local;
+    const auto& remote = requests[i].remote;
     if (local.memType() != localMemType || remote.memType() != remoteMemType ||
         local.deviceId() != localMemDeviceId) {
       return Err(
           ErrCode::InvalidArgument,
           "all requests must have the same memory type and device id");
     }
-
-    if (localHandles.size() != local.handles_.size() ||
-        remoteHandles.size() != remote.handles_.size()) {
-      return Err(
-          ErrCode::InvalidArgument,
-          "all requests must have the same number of handles");
-    }
-
-    for (size_t j = 0; j < localHandles.size(); ++j) {
-      if (localHandles[j]->transportType() !=
-          local.handles_[j]->transportType()) {
-        return Err(
-            ErrCode::InvalidArgument,
-            "all requests must have the same handles type");
-      }
-    }
-
-    for (size_t j = 0; j < remoteHandles.size(); ++j) {
-      if (remoteHandles[j]->transportType() !=
-          remote.handles_[j]->transportType()) {
-        return Err(
-            ErrCode::InvalidArgument,
-            "all requests must have the same handles type");
-      }
-    }
   }
+
+  // Handle counts and transport types are intentionally not validated here.
+  // A segment's handles describe the transports that were usable when that
+  // specific segment was registered or imported; they are capabilities, not a
+  // batch schema. For example, a GPU cache segment may expose both NVLink and
+  // RDMA, while a peer process that cannot import the NVLink handle still has a
+  // valid RDMA handle. selectTransport() enforces the real transfer invariant:
+  // one common transport must be available on every local and remote segment in
+  // the batch.
   return Ok();
 }
 
@@ -212,12 +194,9 @@ Result<Transport*> MultiTransport::selectTransport(
   auto localMemType = requests.front().local.memType();
   auto remoteMemType = requests.front().remote.memType();
   auto localDeviceId = requests.front().local.deviceId();
-  auto localHandles = requests.front().local.handles_;
-  auto remoteHandles = requests.front().remote.handles_;
 
-  // Helper to check if handles contain a given transport type.
-  auto hasHandleType = [](auto& handles, TransportType type) {
-    for (auto& h : handles) {
+  auto hasHandleType = [](const auto& handles, TransportType type) {
+    for (const auto& h : handles) {
       if (h->transportType() == type) {
         return true;
       }
@@ -225,29 +204,46 @@ Result<Transport*> MultiTransport::selectTransport(
     return false;
   };
 
-  // VRAM→VRAM on matching device: prefer NVLink if both sides have handles.
+  // A transport is eligible only if every request in the batch has a matching
+  // handle on both local and remote sides. This preserves the invariant that a
+  // single transport implementation executes the entire batch. Example use
+  // case: distributed KV-cache transfer can mix peers where NVLink is available
+  // with peers where RDMA is the only common capability; the batch should use
+  // NVLink only when all segments support it, otherwise fall back to RDMA.
+  auto allHaveTransport = [&](TransportType type) {
+    for (const auto& req : requests) {
+      if (!hasHandleType(req.local.handles_, type) ||
+          !hasHandleType(req.remote.handles_, type)) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  // VRAM→VRAM on matching device: prefer NVLink if ALL requests have it.
   if (localMemType == MemoryType::VRAM && remoteMemType == MemoryType::VRAM &&
       localDeviceId == deviceId_) {
-    if (hasHandleType(localHandles, TransportType::NVLink) &&
-        hasHandleType(remoteHandles, TransportType::NVLink)) {
+    if (allHaveTransport(TransportType::NVLink)) {
       if (auto* t = findTransport(TransportType::NVLink)) {
         return t;
       }
     }
   }
 
-  // Fallback priority: RDMA → TCP
+  // Fallback: RDMA → TCP, must be available in ALL requests.
   static constexpr TransportType kFallback[] = {
       TransportType::RDMA, TransportType::TCP};
   for (auto type : kFallback) {
-    if (auto* t = findTransport(type)) {
-      return t;
+    if (allHaveTransport(type)) {
+      if (auto* t = findTransport(type)) {
+        return t;
+      }
     }
   }
 
   return Err(
       ErrCode::NotConnected,
-      "no transport available for the given memory type and device id");
+      "no common transport available across all requests");
 }
 
 std::future<Status> MultiTransport::doTransfer(
