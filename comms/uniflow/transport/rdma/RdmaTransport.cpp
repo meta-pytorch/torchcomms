@@ -1901,15 +1901,36 @@ RdmaTransportFactory::registerSegment(Segment& segment) {
       int flags = 0;
       // TODO: set CU_MEM_RANGE_FLAG_DMA_BUF_MAPPING_TYPE_PCIE if data direct
       // link is available.
-      if (!cudaDriverApi_->cuMemGetHandleForAddressRange(
-              &fdGuard.fd,
-              static_cast<CUdeviceptr>(alignedAddr),
-              dmaBufLen,
-              CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
-              flags)) {
-        // TODO: WARNING LOG without exit, fallback to ibv_reg_mr.
+      auto dmaBufStatus = cudaDriverApi_->cuMemGetHandleForAddressRange(
+          &fdGuard.fd,
+          static_cast<CUdeviceptr>(alignedAddr),
+          dmaBufLen,
+          CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
+          flags);
+      if (!dmaBufStatus) {
+        fdGuard.fd = -1;
+        // DMA-BUF is the preferred GPU Direct RDMA registration path, but it
+        // is an optimization over a valid VRAM allocation rather than the only
+        // correctness path. Some CUDA allocation modes or driver states cannot
+        // export a DMA-BUF for an otherwise usable segment; fall back to normal
+        // MR registration so non-GDR-capable paths can still make progress.
+        UNIFLOW_LOG_WARN(
+            "cuMemGetHandleForAddressRange failed for VRAM segment "
+            "(addr=0x{:x}, len={}, device={}): {}. "
+            "Falling back to ibv_reg_mr; this may disable GPU Direct RDMA. "
+            "For PyTorch expandable-segment allocations, "
+            "TORCH_CUDA_EXPANDABLE_SEGMENTS_IPC=1 can restore DMA-BUF export.",
+            addr,
+            dmaBufLen,
+            segment.deviceId(),
+            dmaBufStatus.error().message());
       }
     }
+  }
+  const bool useRegMrFallback =
+      segment.memType() == MemoryType::VRAM && fdGuard.fd < 0;
+  if (useRegMrFallback) {
+    dmaBufFallbackCount_.fetch_add(1, std::memory_order_relaxed);
   }
 
   // Register with every NIC's protection domain so the region is usable

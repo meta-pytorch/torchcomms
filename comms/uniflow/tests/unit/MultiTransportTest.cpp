@@ -146,7 +146,7 @@ class MockTransportFactory : public TransportFactory {
       size_t /*segmentLength*/,
       std::span<const uint8_t> payload) override {
     if (failImport_) {
-      return Err(ErrCode::DriverError, "mock import failure");
+      return Err(importErrorCode_, "mock import failure");
     }
     return std::make_unique<MockRemoteRegistrationHandle>(
         transportType_, std::vector<uint8_t>(payload.begin(), payload.end()));
@@ -174,6 +174,9 @@ class MockTransportFactory : public TransportFactory {
   void setFailImport(bool fail) {
     failImport_ = fail;
   }
+  void setImportErrorCode(ErrCode code) {
+    importErrorCode_ = code;
+  }
   void setFailCreateTransport(bool fail) {
     failCreateTransport_ = fail;
   }
@@ -183,6 +186,7 @@ class MockTransportFactory : public TransportFactory {
   std::vector<uint8_t> topoData_;
   bool failRegister_{false};
   bool failImport_{false};
+  ErrCode importErrorCode_{ErrCode::DriverError};
   bool failCreateTransport_{false};
 };
 
@@ -533,6 +537,61 @@ TEST_F(MultiTransportFactoryTest, ImportSegmentPropagatesFactoryError) {
   EXPECT_EQ(importResult.error().code(), ErrCode::DriverError);
 }
 
+TEST_F(
+    MultiTransportFactoryTest,
+    ImportSegmentPreservesFirstErrorWhenAllHandlesFail) {
+  auto rdma = makeFactory(TransportType::RDMA, {0x01});
+  auto nvlink = makeFactory(TransportType::NVLink, {0x02});
+  MultiTransportFactory registerMtf = makeMultiTransportFactory({rdma, nvlink});
+
+  uint8_t buf[64];
+  Segment seg(buf, sizeof(buf), MemoryType::VRAM, 0);
+  auto regResult = registerMtf.registerSegment(seg);
+  ASSERT_TRUE(regResult.hasValue());
+  auto exported = regResult.value().exportId();
+  ASSERT_TRUE(exported.hasValue());
+
+  auto rdmaImport = makeFactory(TransportType::RDMA);
+  rdmaImport->setFailImport(true);
+  rdmaImport->setImportErrorCode(ErrCode::DriverError);
+  auto nvlinkImport = makeFactory(TransportType::NVLink);
+  nvlinkImport->setFailImport(true);
+  nvlinkImport->setImportErrorCode(ErrCode::InvalidArgument);
+  MultiTransportFactory importMtf =
+      makeMultiTransportFactory({rdmaImport, nvlinkImport});
+
+  auto importResult = importMtf.importSegment(exported.value());
+  ASSERT_TRUE(importResult.hasError());
+  EXPECT_EQ(importResult.error().code(), ErrCode::DriverError);
+}
+
+TEST_F(
+    MultiTransportFactoryTest,
+    ImportSegmentKeepsUsableHandlesWhenOptionalImportFails) {
+  auto rdma = makeFactory(TransportType::RDMA, {0x01});
+  auto nvlink = makeFactory(TransportType::NVLink, {0x02});
+  MultiTransportFactory registerMtf = makeMultiTransportFactory({rdma, nvlink});
+
+  uint8_t buf[64];
+  Segment seg(buf, sizeof(buf), MemoryType::VRAM, 0);
+  auto regResult = registerMtf.registerSegment(seg);
+  ASSERT_TRUE(regResult.hasValue());
+  auto exported = regResult.value().exportId();
+  ASSERT_TRUE(exported.hasValue());
+
+  auto rdmaImport = makeFactory(TransportType::RDMA);
+  auto nvlinkImport = makeFactory(TransportType::NVLink);
+  nvlinkImport->setFailImport(true);
+  MultiTransportFactory importMtf =
+      makeMultiTransportFactory({rdmaImport, nvlinkImport});
+
+  auto importResult = importMtf.importSegment(exported.value());
+  ASSERT_TRUE(importResult.hasValue()) << importResult.error().message();
+  auto& handles = getHandles(importResult.value());
+  ASSERT_EQ(handles.size(), 1u);
+  EXPECT_EQ(handles[0]->transportType(), TransportType::RDMA);
+}
+
 TEST_F(MultiTransportFactoryTest, RegisterSegmentZeroFactories) {
   MultiTransportFactory mtf = makeMultiTransportFactory({});
 
@@ -751,7 +810,7 @@ TEST_F(MultiTransportTest, VramPutRoutesToNvLink) {
       {local.regSeg.span(size_t{0}, size_t{32}),
        remote.remoteSeg.span(size_t{0}, size_t{32})}};
 
-  auto future = mt.put(std::move(reqs));
+  auto future = mt.put(reqs);
   EXPECT_TRUE(future.get().hasValue());
   EXPECT_EQ(nvlink->putCount, 1);
   EXPECT_EQ(rdma->putCount, 0);
@@ -769,7 +828,7 @@ TEST_F(MultiTransportTest, DramPutRoutesToRdma) {
       {local.regSeg.span(size_t{0}, size_t{32}),
        remote.remoteSeg.span(size_t{0}, size_t{32})}};
 
-  auto future = mt.put(std::move(reqs));
+  auto future = mt.put(reqs);
   EXPECT_TRUE(future.get().hasValue());
   EXPECT_EQ(rdma->putCount, 1);
   EXPECT_EQ(nvlink->putCount, 0);
@@ -788,7 +847,7 @@ TEST_F(MultiTransportTest, VramGetRoutesToNvLink) {
       {local.regSeg.span(size_t{0}, size_t{32}),
        remote.remoteSeg.span(size_t{0}, size_t{32})}};
 
-  auto future = mt.get(std::move(reqs));
+  auto future = mt.get(reqs);
   EXPECT_TRUE(future.get().hasValue());
   EXPECT_EQ(nvlink->getCount, 1);
   EXPECT_EQ(rdma->getCount, 0);
@@ -805,7 +864,7 @@ TEST_F(MultiTransportTest, DramGetRoutesToRdma) {
       {local.regSeg.span(size_t{0}, size_t{32}),
        remote.remoteSeg.span(size_t{0}, size_t{32})}};
 
-  auto future = mt.get(std::move(reqs));
+  auto future = mt.get(reqs);
   EXPECT_TRUE(future.get().hasValue());
   EXPECT_EQ(rdma->getCount, 1);
   EXPECT_EQ(nvlink->getCount, 0);
@@ -822,7 +881,7 @@ TEST_F(MultiTransportTest, VramFallsBackToRdmaWhenNoNvLink) {
       {local.regSeg.span(size_t{0}, size_t{32}),
        remote.remoteSeg.span(size_t{0}, size_t{32})}};
 
-  auto future = mt.put(std::move(reqs));
+  auto future = mt.put(reqs);
   EXPECT_TRUE(future.get().hasValue());
   EXPECT_EQ(rdma->putCount, 1);
 }
@@ -848,9 +907,59 @@ TEST_F(MultiTransportTest, MultiplePutsBatchToSameTransport) {
       {v2.regSeg.span(size_t{0}, size_t{32}),
        vr2.remoteSeg.span(size_t{0}, size_t{32})}};
 
-  auto future = mt.put(std::move(reqs));
+  auto future = mt.put(reqs);
   EXPECT_TRUE(future.get().hasValue());
   EXPECT_EQ(nvlink->putCount, 2);
+  EXPECT_EQ(rdma->putCount, 0);
+}
+
+TEST_F(
+    MultiTransportTest,
+    BatchFallsBackToRdmaWhenNvLinkMissingFromOneRequest) {
+  MultiTransport mt(0);
+  auto* nvlink = addMock(mt, TransportType::NVLink);
+  auto* rdma = addMock(mt, TransportType::RDMA);
+
+  TestSegments nvlinkCapableLocal(
+      MemoryType::VRAM, 0, {TransportType::NVLink, TransportType::RDMA});
+  TestSegments nvlinkCapableRemote(
+      MemoryType::VRAM, 0, {TransportType::NVLink, TransportType::RDMA});
+  TestSegments rdmaOnlyLocal(MemoryType::VRAM, 0, {TransportType::RDMA});
+  TestSegments rdmaOnlyRemote(MemoryType::VRAM, 0, {TransportType::RDMA});
+
+  std::vector<TransferRequest> reqs = {
+      {nvlinkCapableLocal.regSeg.span(size_t{0}, size_t{32}),
+       nvlinkCapableRemote.remoteSeg.span(size_t{0}, size_t{32})},
+      {rdmaOnlyLocal.regSeg.span(size_t{0}, size_t{32}),
+       rdmaOnlyRemote.remoteSeg.span(size_t{0}, size_t{32})}};
+
+  auto future = mt.put(reqs);
+  EXPECT_TRUE(future.get().hasValue());
+  EXPECT_EQ(rdma->putCount, 2);
+  EXPECT_EQ(nvlink->putCount, 0);
+}
+
+TEST_F(MultiTransportTest, BatchFailsWhenNoTransportIsCommonToAllRequests) {
+  MultiTransport mt(0);
+  auto* nvlink = addMock(mt, TransportType::NVLink);
+  auto* rdma = addMock(mt, TransportType::RDMA);
+
+  TestSegments nvlinkOnlyLocal(MemoryType::VRAM, 0, {TransportType::NVLink});
+  TestSegments nvlinkOnlyRemote(MemoryType::VRAM, 0, {TransportType::NVLink});
+  TestSegments rdmaOnlyLocal(MemoryType::VRAM, 0, {TransportType::RDMA});
+  TestSegments rdmaOnlyRemote(MemoryType::VRAM, 0, {TransportType::RDMA});
+
+  std::vector<TransferRequest> reqs = {
+      {nvlinkOnlyLocal.regSeg.span(size_t{0}, size_t{32}),
+       nvlinkOnlyRemote.remoteSeg.span(size_t{0}, size_t{32})},
+      {rdmaOnlyLocal.regSeg.span(size_t{0}, size_t{32}),
+       rdmaOnlyRemote.remoteSeg.span(size_t{0}, size_t{32})}};
+
+  auto future = mt.put(reqs);
+  auto status = future.get();
+  ASSERT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::NotConnected);
+  EXPECT_EQ(nvlink->putCount, 0);
   EXPECT_EQ(rdma->putCount, 0);
 }
 
@@ -859,7 +968,7 @@ TEST_F(MultiTransportTest, EmptyPutReturnsError) {
   addMock(mt, TransportType::RDMA);
 
   std::vector<TransferRequest> empty;
-  auto future = mt.put(std::move(empty));
+  auto future = mt.put(empty);
   auto status = future.get();
   EXPECT_TRUE(status.hasError());
   EXPECT_EQ(status.error().code(), ErrCode::InvalidArgument);
@@ -874,7 +983,7 @@ TEST_F(MultiTransportTest, PutWithNoTransportsReturnsError) {
       {local.regSeg.span(size_t{0}, size_t{32}),
        remote.remoteSeg.span(size_t{0}, size_t{32})}};
 
-  auto future = mt.put(std::move(reqs));
+  auto future = mt.put(reqs);
   auto status = future.get();
   EXPECT_TRUE(status.hasError());
   EXPECT_EQ(status.error().code(), ErrCode::NotConnected);
@@ -899,7 +1008,7 @@ TEST_F(MultiTransportTest, MixedMemoryTypesRejected) {
       {dram1.regSeg.span(size_t{0}, size_t{32}),
        dramR.remoteSeg.span(size_t{0}, size_t{32})}};
 
-  auto future = mt.put(std::move(reqs));
+  auto future = mt.put(reqs);
   auto status = future.get();
   EXPECT_TRUE(status.hasError());
   EXPECT_EQ(status.error().code(), ErrCode::InvalidArgument);
@@ -919,7 +1028,7 @@ TEST_F(MultiTransportTest, VramWrongDeviceFallsBackToRdma) {
       {local.regSeg.span(size_t{0}, size_t{32}),
        remote.remoteSeg.span(size_t{0}, size_t{32})}};
 
-  auto future = mt.put(std::move(reqs));
+  auto future = mt.put(reqs);
   EXPECT_TRUE(future.get().hasValue());
   EXPECT_EQ(rdma->putCount, 1);
   EXPECT_EQ(nvlink->putCount, 0);
@@ -938,7 +1047,7 @@ TEST_F(MultiTransportTest, CrossMemoryTypeFallsBackToRdma) {
       {local.regSeg.span(size_t{0}, size_t{32}),
        remote.remoteSeg.span(size_t{0}, size_t{32})}};
 
-  auto future = mt.put(std::move(reqs));
+  auto future = mt.put(reqs);
   EXPECT_TRUE(future.get().hasValue());
   EXPECT_EQ(rdma->putCount, 1);
   EXPECT_EQ(nvlink->putCount, 0);
@@ -957,7 +1066,7 @@ TEST_F(MultiTransportTest, AsymmetricHandlesFallBackToRdma) {
       {local.regSeg.span(size_t{0}, size_t{32}),
        remote.remoteSeg.span(size_t{0}, size_t{32})}};
 
-  auto future = mt.put(std::move(reqs));
+  auto future = mt.put(reqs);
   EXPECT_TRUE(future.get().hasValue());
   EXPECT_EQ(rdma->putCount, 1);
   EXPECT_EQ(nvlink->putCount, 0);
