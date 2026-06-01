@@ -16,13 +16,18 @@
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/transport/IP2pHostTransport.h"
+#include "comms/ctran/transport/ib/HostCbTransport.h"
 #include "comms/ctran/transport/ib/HostTransportImpl.h"
 #include "comms/ctran/transport/ib/HostZcTransport.h"
+#include "comms/ctran/transport/ib/tests/HostTestKernels.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 using namespace ctran::transport;
+using ctran::transport::ib::HostCbTransport;
 using ctran::transport::ib::HostZcTransport;
+using ctran::transport::ib::IbStagingCopyTestKernelArgs;
+using ctran::transport::ib::launchIbStagingCopyTestKernel;
 using ctran::transport::ib::impl::exportRecvBuf;
 using ctran::transport::ib::impl::importRemoteInfo;
 
@@ -316,15 +321,54 @@ class HostTransportParamTest : public ctran::CtranDistTestFixture,
   std::unique_ptr<IP2pHostTransport> makeTransport(
       int peerRank,
       CtranIb* ctranIb,
-      int /*pipelineDepth*/,
-      size_t /*chunkSize*/) {
-    // Only ZC is wired up in this diff; CB lands in a follow-up.
-    return std::make_unique<HostZcTransport>(
-        peerRank, ctranIb, globalRank, localRank, &comm->logMetaData_);
+      int pipelineDepth,
+      size_t chunkSize) {
+    if (isZc()) {
+      return std::make_unique<HostZcTransport>(
+          peerRank, ctranIb, globalRank, localRank, &comm->logMetaData_);
+    }
+    return std::make_unique<HostCbTransport>(
+        peerRank,
+        ctranIb,
+        comm->ctran_->gpe->gpeKernelSyncPool(),
+        pipelineDepth,
+        chunkSize,
+        globalRank,
+        localRank,
+        &comm->logMetaData_);
+  }
+
+  // Configure CB transport's per-slot GpeKernelSync.nworkers and launch
+  // the unified staging-copy kernel. ZC: no-op. Any of (sendBuf,
+  // recvBuf) may be nullptr for unidirectional cases.
+  void maybeSetupCbKernel(
+      IP2pHostTransport* transport,
+      char* sendBuf,
+      size_t sendTotalSize,
+      int sendBlocks,
+      char* recvBuf,
+      size_t recvTotalSize,
+      int recvBlocks,
+      cudaStream_t stream) {
+    if (isZc()) {
+      return;
+    }
+    auto* cb = static_cast<HostCbTransport*>(transport);
+    cb->setKernelNumBlocks(sendBlocks, recvBlocks);
+    IbStagingCopyTestKernelArgs args{};
+    args.devTransport = cb->getDeviceTransport();
+    args.sendBuf = sendBuf;
+    args.sendTotalSize = sendTotalSize;
+    args.sendBlocks = sendBlocks;
+    args.recvBuf = recvBuf;
+    args.recvTotalSize = recvTotalSize;
+    args.recvBlocks = recvBlocks;
+    launchIbStagingCopyTestKernel(args, stream);
   }
 
   int numVcs(IP2pHostTransport* transport) const {
-    return static_cast<HostZcTransport*>(transport)->numVcs();
+    return isZc() ? static_cast<HostZcTransport*>(transport)->numVcs()
+                  : static_cast<HostCbTransport*>(transport)->numVcs();
   }
 
   void printTestDesc(const std::string& testName, const std::string& testDesc) {
@@ -368,8 +412,9 @@ INSTANTIATE_TEST_SUITE_P(
     Modes,
     HostTransportParamTest,
     ::testing::Combine(
-        // CB mode lands in a follow-up diff.
-        ::testing::Values(HostTransportMode::kZeroCopy),
+        ::testing::Values(
+            HostTransportMode::kZeroCopy,
+            HostTransportMode::kCopyBased),
         // Single-channel exercises the trivial dispatch case; multi-channel
         // exercises the per-channel round-robin VC/slot mapping in the
         // unified runChunkLoop driver.
@@ -402,6 +447,7 @@ TEST_P(HostTransportParamTest, RoundTrip) {
   constexpr size_t kBufSize = 1 * 1024 * 1024;
   constexpr int kPipelineDepth = 8;
   constexpr size_t kChunkSize = 64 * 1024;
+  constexpr int kNumBlocks = 4;
 
   int* buf = nullptr;
   const size_t numElems = kBufSize / sizeof(int);
@@ -459,6 +505,15 @@ TEST_P(HostTransportParamTest, RoundTrip) {
         sizeof(ctrlMsg),
         &ctrlReq));
     COMMCHECK_TEST(transport->waitCtrlMsgDone(ctrlReq));
+    maybeSetupCbKernel(
+        transport.get(),
+        /*sendBuf=*/nullptr,
+        /*sendTotalSize=*/0,
+        /*sendBlocks=*/0,
+        /*recvBuf=*/reinterpret_cast<char*>(buf),
+        /*recvTotalSize=*/kBufSize,
+        /*recvBlocks=*/kNumBlocks,
+        copyStream);
     runChunkLoop</*IsSend=*/false>(
         transport.get(),
         numVcs(transport.get()),
@@ -479,6 +534,15 @@ TEST_P(HostTransportParamTest, RoundTrip) {
     RemotePeerInfo remote{};
     COMMCHECK_TEST(importRemoteInfo(recvMsg, &remote));
     EXPECT_EQ(remote.isZeroCopy, isZc());
+    maybeSetupCbKernel(
+        transport.get(),
+        /*sendBuf=*/reinterpret_cast<char*>(buf),
+        /*sendTotalSize=*/kBufSize,
+        /*sendBlocks=*/kNumBlocks,
+        /*recvBuf=*/nullptr,
+        /*recvTotalSize=*/0,
+        /*recvBlocks=*/0,
+        copyStream);
     runChunkLoop</*IsSend=*/true>(
         transport.get(),
         numVcs(transport.get()),
@@ -525,6 +589,7 @@ TEST_P(HostTransportParamTest, BidirectionalRoundTrip) {
   constexpr size_t kBufSize = 1 * 1024 * 1024;
   constexpr int kPipelineDepth = 8;
   constexpr size_t kChunkSize = 64 * 1024;
+  constexpr int kNumBlocks = 4;
 
   int* sendBuf = nullptr;
   int* recvBuf = nullptr;
@@ -585,6 +650,15 @@ TEST_P(HostTransportParamTest, BidirectionalRoundTrip) {
 
   cudaStream_t copyStream;
   ASSERT_EQ(cudaStreamCreate(&copyStream), cudaSuccess);
+  maybeSetupCbKernel(
+      transport.get(),
+      /*sendBuf=*/reinterpret_cast<char*>(sendBuf),
+      /*sendTotalSize=*/kBufSize,
+      /*sendBlocks=*/kNumBlocks / 2,
+      /*recvBuf=*/reinterpret_cast<char*>(recvBuf),
+      /*recvTotalSize=*/kBufSize,
+      /*recvBlocks=*/kNumBlocks / 2,
+      copyStream);
 
   const ChannelLayout layout{
       .numChannels = numChannels(),

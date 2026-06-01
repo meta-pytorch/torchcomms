@@ -206,7 +206,7 @@ std::optional<ChecksumArgs> ctranFillChecksumArgs(
     ChecksumItem* checksumItem,
     const CtranComm* comm);
 
-using GpeKernelSyncPool = PinnedHostPool<ctran::algos::GpeKernelSync>;
+// GpeKernelSyncPool alias is now declared in CtranGpe.h (public).
 commResult_t allocGpeKernelSyncs(
     GpeKernelSyncPool* gpeKernelSyncPool,
     size_t count,

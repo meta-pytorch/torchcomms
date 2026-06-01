@@ -495,3 +495,7 @@ commResult_t CtranGpe::allocGpeKernelSyncs(
   return ::allocGpeKernelSyncs(
       this->pimpl->gpeKernelSyncPool.get(), count, nworkers, gpeKernelSyncs);
 }
+
+::GpeKernelSyncPool* CtranGpe::gpeKernelSyncPool() {
+  return this->pimpl->gpeKernelSyncPool.get();
+}

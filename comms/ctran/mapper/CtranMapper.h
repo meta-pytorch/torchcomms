@@ -888,11 +888,12 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
    * Each peer is bound to exactly one mode for the lifetime of its
    * cached transport instance. The first call for a (peerRank, mode)
    * pair constructs the matching derived class
-   * (ctran::transport::ib::HostZcTransport for kZeroCopy; kCopyBased
-   * support lands in a follow-up diff); subsequent calls return the
-   * cached instance. Calling with a different mode for a peer that
-   * already has a cached entry triggers an FB_CHECKABORT — algorithm
-   * code is responsible for picking one mode per peer.
+   * (ctran::transport::ib::HostZcTransport for kZeroCopy,
+   * ctran::transport::ib::HostCbTransport for
+   * kCopyBased); subsequent calls return the cached instance. Calling
+   * with a different mode for a peer that already has a cached entry
+   * triggers an FB_CHECKABORT — algorithm code is responsible for
+   * picking one mode per peer.
    *
    * Returns nullptr if no IB backend is available on this mapper
    * (e.g., NVL-only setups).

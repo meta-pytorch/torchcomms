@@ -15,6 +15,7 @@
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/ctran/regcache/IpcRegCache.h"
 #include "comms/ctran/regcache/RegCache.h"
+#include "comms/ctran/transport/ib/HostCbTransport.h"
 #include "comms/ctran/transport/ib/HostZcTransport.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/utils/StrUtils.h"
@@ -971,8 +972,17 @@ ctran::transport::IP2pHostTransport* CtranMapper::getP2pTransport(
       break;
     case ctran::transport::HostTransportMode::kCopyBased:
       FB_CHECKABORT(
-          false,
-          "CTRAN-MAPPER: getP2pTransport(kCopyBased) not yet implemented.");
+          comm->ctran_ && comm->ctran_->gpe,
+          "CTRAN-MAPPER: getP2pTransport(kCopyBased) requires comm->ctran_->gpe to be initialized");
+      t = std::make_unique<ctran::transport::ib::HostCbTransport>(
+          peerRank,
+          ib,
+          comm->ctran_->gpe->gpeKernelSyncPool(),
+          NCCL_CTRAN_P2P_HOST_IB_PIPELINE_DEPTH,
+          NCCL_CTRAN_P2P_HOST_IB_CHUNK_SIZE,
+          comm->statex_->rank(),
+          comm->statex_->cudaDev(),
+          &comm->logMetaData_);
       break;
   }
   auto* raw = t.get();

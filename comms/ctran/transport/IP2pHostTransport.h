@@ -8,6 +8,7 @@
 
 #include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/ib/CtranIbBase.h"
+#include "comms/ctran/transport/ib/ChunkHooks.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/utils/commSpecs.h"
 
@@ -64,13 +65,13 @@ struct ChunkRequest {
   CtranIbRequest ibReq;
 };
 
-// Forward declaration for friend list of CtrlRequest. The ZC concrete
-// transport needs access to CtrlRequest's private storage to drive
-// the IB ctrl-msg exchange without exposing that machinery in the
-// public interface. The CB concrete transport lands in a follow-up
-// diff and will be added to the friend list at that point.
+// Forward declaration for friend list of CtrlRequest. The two
+// concrete IB host transports need access to CtrlRequest's private
+// storage to drive the IB ctrl-msg exchange without exposing that
+// machinery in the public interface.
 namespace ib {
 class HostZcTransport;
+class HostCbTransport;
 } // namespace ib
 
 // Caller-owned ctrl-exchange poll handle. Pure inflight-request tracker
@@ -91,6 +92,7 @@ class CtrlRequest {
   CtranIbRequest ctrlReq_;
 
   friend class ctran::transport::ib::HostZcTransport;
+  friend class ctran::transport::ib::HostCbTransport;
 };
 
 // Send-chunk args. Mode-agnostic — fields irrelevant to the active
@@ -99,9 +101,9 @@ class CtrlRequest {
 //
 // Field groups:
 //   - Common         : userBuf, offset, len, vcIdx, req
-//   - CB-specific    : stagingSlot, round
+//   - CB-specific    : stagingSlot, round, hooks
 //                      (ZC asserts stagingSlot == kNoStagingSlot,
-//                       round == 0.)
+//                       round == 0, hooks empty.)
 //   - ZC-send only   : localMrHdl, remoteMrHdl, remoteKey
 //                      (CB asserts these are nullptr.)
 struct SendChunkArgs {
@@ -118,6 +120,7 @@ struct SendChunkArgs {
   // CB-specific
   int stagingSlot{kNoStagingSlot};
   int round{0};
+  SendChunkHooks hooks{};
 
   // ZC-specific
   void* localMrHdl{nullptr};
@@ -139,14 +142,15 @@ struct RecvChunkArgs {
   // CB-specific
   int stagingSlot{kNoStagingSlot};
   int round{0};
+  RecvChunkHooks hooks{};
 };
 
 // Abstract per-peer host-side P2P transport interface.
 //
 // Concrete implementations split on transport mode:
 //   - ctran::transport::ib::HostZcTransport — pure zero-copy IB transport.
-//   - kCopyBased — the matching copy-based concrete class lands in a
-//     follow-up diff.
+//   - ctran::transport::ib::HostCbTransport — pure copy-based IB transport
+//     with per-slot staging buffer + GpeKernelSync flow control.
 //
 // Each peer is bound to exactly one mode for the lifetime of its
 // cached transport (see CtranMapper::getP2pTransport(peer, mode)).
