@@ -11,6 +11,7 @@
 
 #include "comms/uniflow/transport/rdma/CopyEngine.h"
 
+#include "comms/uniflow/drivers/DeviceAdapter.h"
 #include "comms/uniflow/drivers/cuda/CudaApi.h"
 #include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
 #include "comms/uniflow/drivers/ibverbs/IbvApi.h"
@@ -522,6 +523,7 @@ class RdmaTransport : public Transport {
   const std::shared_ptr<IbvApi> ibvApi_;
   const std::shared_ptr<CudaApi> cudaApi_;
   std::shared_ptr<CudaDriverApi> cudaDriverApi_;
+  std::shared_ptr<DeviceAdapter> deviceAdapter_;
   EventBase* evb_{nullptr};
 
   std::string name_;
@@ -678,6 +680,7 @@ class RdmaTransportFactory : public TransportFactory {
   std::shared_ptr<IbvApi> ibvApi_;
   std::shared_ptr<CudaDriverApi> cudaDriverApi_;
   std::shared_ptr<CudaApi> cudaApi_;
+
   EventBase* evb_{nullptr};
   uint64_t domainId_{0};
   size_t pageSize_{0};
