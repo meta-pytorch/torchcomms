@@ -1,6 +1,7 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include "comms/uniflow/transport/rdma/RdmaTransport.h"
+#include "comms/uniflow/drivers/DeviceAdapter.h"
 #include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
 #include "comms/uniflow/logging/Logger.h"
 #include "comms/uniflow/transport/rdma/RdmaRegistrationHandle.h"
@@ -221,6 +222,8 @@ RdmaTransport::RdmaTransport(
   CHECK_THROW_EXCEPTION(
       config_.numQps > 0 && config_.numQps <= 255, std::invalid_argument);
 
+  deviceAdapter_ = createDeviceAdapter(cudaApi_);
+
   const uint32_t numNics =
       std::min(config_.numQps, static_cast<uint32_t>(nicsHandle_->size()));
   nics_ = std::span<NicResources>(nicsHandle_->data(), numNics);
@@ -252,8 +255,7 @@ TransportInfo RdmaTransport::bind() {
   // CTS and Notify are separate regions so bidirectional send/recv is safe.
   const size_t ctrlSize = ctrlBufferSize();
   info_.ctrl.length = static_cast<uint32_t>(ctrlSize);
-  auto ctrlAllocResult = cudaApi_->hostAlloc(
-      ctrlSize, cudaHostAllocMapped | cudaHostAllocPortable);
+  auto ctrlAllocResult = deviceAdapter_->pinnedHostAlloc(ctrlSize);
   if (!ctrlAllocResult) {
     UNIFLOW_LOG_ERROR("bind: failed to allocate ctrl buffer");
     state_ = TransportState::Error;
@@ -1729,7 +1731,7 @@ void RdmaTransport::shutdown() {
   ctrlMrs_.clear();
 
   if (ctrlBuffer_) {
-    cudaApi_->hostFree(ctrlBuffer_);
+    deviceAdapter_->pinnedHostFree(ctrlBuffer_);
     ctrlBuffer_ = nullptr;
   }
 
@@ -1883,7 +1885,7 @@ RdmaTransportFactory::registerSegment(Segment& segment) {
     }
   } fdGuard;
 
-  // For cuMemGetHandleForAddressRange, the address must be page-aligned.
+  // dma buffers must be page aligned, the address must be page-aligned.
   // Align down to page boundary and track the offset for regDmabufMr.
   uint64_t dmaBufOffset = 0;
   uintptr_t addr = reinterpret_cast<uintptr_t>(segment.mutable_data());
