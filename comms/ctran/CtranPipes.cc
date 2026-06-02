@@ -215,6 +215,21 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
           config.ibgdaConfig.dataBufferSize);
     }
 
+    if (NCCL_CTRAN_PIPES_SENDRECV_ENABLE) {
+      config.ibgdaConfig.sendRecv =
+          comms::pipes::MultipeerIbgdaTransportConfig::SendRecvConfig{
+              .maxGroups =
+                  static_cast<int>(NCCL_CTRAN_PIPES_SENDRECV_MAX_GROUPS),
+              .pipelineDepth =
+                  static_cast<int>(NCCL_CTRAN_PIPES_SENDRECV_PIPELINE_DEPTH),
+          };
+      CLOGF(
+          INFO,
+          "Pipes IBGDA send/recv enabled (maxGroups={}, pipelineDepth={})",
+          NCCL_CTRAN_PIPES_SENDRECV_MAX_GROUPS,
+          NCCL_CTRAN_PIPES_SENDRECV_PIPELINE_DEPTH);
+    }
+
     config.disableIb = NCCL_CTRAN_PIPES_DISABLE_IB;
     config.topoConfig.p2pDisable = NCCL_P2P_DISABLE ||
         NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::nolocal;
