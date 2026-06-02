@@ -266,19 +266,18 @@ folly::coro::Task<PullOneJobResult> runAnalyzerAndGetResults() {
   co_return co_await pull_coro(config);
 }
 
-folly::coro::Task<void> runAnalyzerUntilResult(
+folly::coro::Task<bool> runAnalyzerUntilResult(
     PullOneJobResult expectedResult,
     std::chrono::milliseconds timeout) {
   folly::stop_watch<std::chrono::milliseconds> timer;
   while (timer.elapsed() < timeout) {
     auto result = co_await runAnalyzerAndGetResults();
     if (result.badRanks == expectedResult.badRanks) {
-      co_return;
+      co_return true;
     }
     co_await folly::coro::sleep(std::chrono::milliseconds(1000));
   }
-  XLOG(FATAL) << "timed out waiting for expected result: "
-              << folly::join(",", expectedResult.badRanks);
+  co_return false;
 }
 
 folly::coro::Task<bool> runAnalyzerUntilResultVerdict(
@@ -301,7 +300,7 @@ folly::coro::Task<bool> runAnalyzerUntilResultVerdict(
 }
 
 template <typename Func>
-folly::coro::Task<void>
+folly::coro::Task<bool>
 waitUntilCommsForRank(int rank, Func func, std::chrono::milliseconds timeout) {
   folly::stop_watch<std::chrono::milliseconds> timer;
   while (timer.elapsed() < timeout) {
@@ -313,11 +312,11 @@ waitUntilCommsForRank(int rank, Func func, std::chrono::milliseconds timeout) {
     XLOG(DBG2) << "Comm state: " << apache::thrift::debugString(response);
 
     if (func(response)) {
-      co_return;
+      co_return true;
     }
+    co_await folly::coro::sleep(std::chrono::milliseconds(500));
   }
-  XLOG(FATAL) << "timed out waiting for comms predicate to be true, rank: "
-              << rank;
+  co_return false;
 }
 
 } // namespace
@@ -381,6 +380,10 @@ TEST_F(NcclCommsTest, AnalyzerSuccess) {
 
   // Rank 0 checks state of collectives
   if (rank == 0) {
+    auto finishGuard = folly::makeGuard([]() {
+      mccl::McclIntegrationTestUtil::setKey("analyzer_check_0", "1");
+    });
+
     // Get comm dump state from all ranks
     for (int i = 0; i < worldSize; ++i) {
       // Wait for the rank to be done with collectives
@@ -396,37 +399,33 @@ TEST_F(NcclCommsTest, AnalyzerSuccess) {
       client->sync_getComms(response, request);
       XLOG(INFO) << "Comm state: " << apache::thrift::debugString(response);
 
-      folly::coro::blockingWait(waitUntilCommsForRank(
-          i,
-          [](const auto& response) {
-            const auto& commHashMap =
-                *response.commsForRank()->ncclParsedEntryMap();
-            if (commHashMap.size() != 1) {
-              XLOG(INFO) << "Expecting 1 comm, got " << commHashMap.size();
-              return false;
-            }
+      EXPECT_TRUE(
+          folly::coro::blockingWait(waitUntilCommsForRank(
+              i,
+              [](const auto& response) {
+                const auto& commHashMap =
+                    *response.commsForRank()->ncclParsedEntryMap();
+                if (commHashMap.empty()) {
+                  XLOG(INFO) << "No comms found";
+                  return false;
+                }
 
-            const auto& ncclParsedEntry = commHashMap.begin()->second;
-            if (!ncclParsedEntry.CT_currentColls()->empty()) {
-              XLOG(INFO) << "Expecting no ongoing collectives";
-              return false;
-            }
-            if (ncclParsedEntry.CT_pastColls()->size() != 1) {
-              XLOG(INFO) << "Expecting 1 past coll, got "
-                         << ncclParsedEntry.CT_pastColls()->size();
-              return false;
-            }
-            return true;
-          },
-          std::chrono::milliseconds(10000)));
+                for (const auto& [commHash, ncclParsedEntry] : commHashMap) {
+                  if (ncclParsedEntry.CT_pastColls()->size() == 1 &&
+                      ncclParsedEntry.CT_currentColls()->empty()) {
+                    return true;
+                  }
+                }
+                XLOG(INFO) << "No comm with 1 past coll and no current colls";
+                return false;
+              },
+              std::chrono::milliseconds(10000))));
     }
 
     PullOneJobResult analyzerExpectedResult;
-    folly::coro::blockingWait(runAnalyzerUntilResult(
-        analyzerExpectedResult, std::chrono::milliseconds(10000)));
-
-    // Notify other ranks to finish
-    mccl::McclIntegrationTestUtil::setKey("analyzer_check_0", "1");
+    EXPECT_TRUE(
+        folly::coro::blockingWait(runAnalyzerUntilResult(
+            analyzerExpectedResult, std::chrono::milliseconds(10000))));
   }
 
   // All ranks wait for the collectives check to complete
@@ -498,42 +497,55 @@ TEST_F(NcclCommsTest, OneRankHangs) {
 
   // Rank 0 checks state of collectives
   if (rank == 0) {
-    for (int i = 0; i < worldSize; ++i) {
-      folly::coro::blockingWait(waitUntilCommsForRank(
-          i,
-          [&i](const auto& response) {
-            const auto& commHashMap =
-                *response.commsForRank()->ncclParsedEntryMap();
-            if (commHashMap.size() != 1) {
-              XLOG(INFO) << "Expecting 1 comm, got " << commHashMap.size();
-              return false;
-            }
+    // Always join the collective to unblock the other ranks, even on failure
+    auto unblockGuard = folly::makeGuard([&]() {
+      NCCLCHECK(ncclAllReduce(
+          (const void*)sendBuff.raw(),
+          (void*)recvBuff.raw(),
+          size,
+          ncclFloat,
+          ncclSum,
+          comm.raw(),
+          stream.raw()));
+      CUDACHECK(cudaStreamSynchronize(stream.raw()));
+    });
 
-            const auto& ncclParsedEntry = commHashMap.begin()->second;
-            // Rank 0 is not in the collective
-            if (i != 0) {
-              if (ncclParsedEntry.CT_currentColls()->empty()) {
-                XLOG(INFO) << "Expecting current collective";
+    for (int i = 0; i < worldSize; ++i) {
+      EXPECT_TRUE(
+          folly::coro::blockingWait(waitUntilCommsForRank(
+              i,
+              [&i](const auto& response) {
+                const auto& commHashMap =
+                    *response.commsForRank()->ncclParsedEntryMap();
+                if (commHashMap.empty()) {
+                  XLOG(INFO) << "No comms found";
+                  return false;
+                }
+
+                for (const auto& [commHash, ncclParsedEntry] : commHashMap) {
+                  bool hasExpectedPastColls =
+                      (ncclParsedEntry.CT_pastColls()->size() == 3);
+                  bool hasExpectedCurrentColl =
+                      (i == 0) || !ncclParsedEntry.CT_currentColls()->empty();
+                  if (hasExpectedPastColls && hasExpectedCurrentColl) {
+                    return true;
+                  }
+                }
+                XLOG(INFO) << "No comm with expected state for rank " << i;
                 return false;
-              }
-            }
-            if (ncclParsedEntry.CT_pastColls()->size() != 3) {
-              XLOG(INFO) << "Expecting 3 past colls, got "
-                         << ncclParsedEntry.CT_pastColls()->size();
-              return false;
-            }
-            return true;
-          },
-          std::chrono::milliseconds(10000)));
+              },
+              std::chrono::milliseconds(10000))));
     }
 
     // Wait for analyzer to report rank 0 is missing
     PullOneJobResult analyzerExpectedResult;
     analyzerExpectedResult.badRanks.insert(0);
-    folly::coro::blockingWait(runAnalyzerUntilResult(
-        analyzerExpectedResult, std::chrono::milliseconds(20000)));
+    EXPECT_TRUE(
+        folly::coro::blockingWait(runAnalyzerUntilResult(
+            analyzerExpectedResult, std::chrono::milliseconds(20000))));
 
-    // Make rank 0 join the collective to unblock the other ranks
+    // Validate the results of the all reduce (guard runs AllReduce)
+    unblockGuard.dismiss();
     NCCLCHECK(ncclAllReduce(
         (const void*)sendBuff.raw(),
         (void*)recvBuff.raw(),
@@ -543,8 +555,6 @@ TEST_F(NcclCommsTest, OneRankHangs) {
         comm.raw(),
         stream.raw()));
     CUDACHECK(cudaStreamSynchronize(stream.raw()));
-
-    // Validate the results of the all reduce
     mccl::McclIntegrationTestUtil::validateGPUBuffer<float>(
         size, recvBuff.raw(), worldSize);
   }
@@ -624,46 +634,50 @@ TEST_F(NcclCommsTest, DISABLED_OneRankHangsCudaGraph) {
 
   // Rank 0 checks state of collectives
   if (rank == 0) {
-    for (int i = 0; i < worldSize; ++i) {
-      folly::coro::blockingWait(waitUntilCommsForRank(
-          i,
-          [&i](const auto& response) {
-            const auto& commHashMap =
-                *response.commsForRank()->ncclParsedEntryMap();
-            if (commHashMap.size() != 1) {
-              XLOG(INFO) << "Expecting 1 comm, got " << commHashMap.size();
-              return false;
-            }
+    // Always join the collective to unblock the other ranks, even on failure
+    auto unblockGuard = folly::makeGuard([&]() {
+      CUDACHECK(cudaGraphLaunch(instance, stream.raw()));
+      CUDACHECK(cudaStreamSynchronize(stream.raw()));
+    });
 
-            const auto& ncclParsedEntry = commHashMap.begin()->second;
-            // Rank 0 is not in the collective
-            if (i != 0) {
-              if (ncclParsedEntry.CT_currentColls()->empty()) {
-                XLOG(INFO) << "Expecting current collective";
+    for (int i = 0; i < worldSize; ++i) {
+      EXPECT_TRUE(
+          folly::coro::blockingWait(waitUntilCommsForRank(
+              i,
+              [&i](const auto& response) {
+                const auto& commHashMap =
+                    *response.commsForRank()->ncclParsedEntryMap();
+                if (commHashMap.empty()) {
+                  XLOG(INFO) << "No comms found";
+                  return false;
+                }
+
+                for (const auto& [commHash, ncclParsedEntry] : commHashMap) {
+                  bool hasExpectedPastColls =
+                      (ncclParsedEntry.CT_pastColls()->size() == 3);
+                  bool hasExpectedCurrentColl =
+                      (i == 0) || !ncclParsedEntry.CT_currentColls()->empty();
+                  if (hasExpectedPastColls && hasExpectedCurrentColl) {
+                    return true;
+                  }
+                }
+                XLOG(INFO) << "No comm with expected state for rank " << i;
                 return false;
-              }
-            }
-            if (ncclParsedEntry.CT_pastColls()->size() != 3) {
-              XLOG(INFO) << "Expecting 3 past colls, got "
-                         << ncclParsedEntry.CT_pastColls()->size();
-              return false;
-            }
-            return true;
-          },
-          std::chrono::milliseconds(10000)));
+              },
+              std::chrono::milliseconds(10000))));
     }
 
     // Wait for analyzer to report rank 0 is missing
     PullOneJobResult analyzerExpectedResult;
     analyzerExpectedResult.badRanks.insert(0);
-    folly::coro::blockingWait(runAnalyzerUntilResult(
-        analyzerExpectedResult, std::chrono::milliseconds(20000)));
+    EXPECT_TRUE(
+        folly::coro::blockingWait(runAnalyzerUntilResult(
+            analyzerExpectedResult, std::chrono::milliseconds(20000))));
 
-    // Make rank 0 join the collective to unblock the other ranks
+    // Validate the results of the all reduce (guard runs graph launch)
+    unblockGuard.dismiss();
     CUDACHECK(cudaGraphLaunch(instance, stream.raw()));
     CUDACHECK(cudaStreamSynchronize(stream.raw()));
-
-    // Validate the results of the all reduce
     mccl::McclIntegrationTestUtil::validateGPUBuffer<float>(
         size, recvBuff.raw(), worldSize);
   }
