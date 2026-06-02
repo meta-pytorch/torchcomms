@@ -896,6 +896,11 @@ list(FILTER PIPES_SOURCES EXCLUDE REGEX "GpuMemHandler\\.")
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "CudaDriverLazy\\.")
 # Exclude MultiPeerNvlTransport — it depends on GpuMemHandler.h which is excluded.
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "MultiPeerNvlTransport\\.")
+# Exclude comms/pipes/amd/ — the AMD GDA (GPUDirect Async) verbs backend
+# (pipes_gda, mlx5/bnxt nic backends) is only consumed by the excluded
+# MultipeerIbgdaTransport, and depends on mlx5dv/bnxt direct-verbs headers
+# (infiniband/mlx5dv.h, BnxtReDv.h) not available in this build.
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/pipes/amd/.*")
 
 # Run this command to get RCCLX_LIB_FILES:
 # find comms/rcclx/develop/meta -type f ! -path "*/tests/*" -path "*/lib/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" \) | sort
@@ -920,12 +925,18 @@ set(RCCLX_LIB_FILES
   comms/rcclx/develop/meta/lpcoll/low_precision_buffer_pool.cc
   comms/rcclx/develop/meta/lpcoll/low_precision_buffer_pool.h
   comms/rcclx/develop/meta/lpcoll/low_precision_common.h
+  comms/rcclx/develop/meta/lpcoll/low_precision_kernels.cu
   comms/rcclx/develop/meta/lpcoll/low_precision_kernels.h
   comms/rcclx/develop/meta/lpcoll/low_precision_reduce_scatter.cc
   comms/rcclx/develop/meta/lpcoll/low_precision_reduce_scatter.h
   comms/rcclx/develop/meta/lpcoll/low_precision_utility.h
   comms/rcclx/develop/meta/lpcoll/p2p_allgather.cc
   comms/rcclx/develop/meta/lpcoll/p2p_allgather.h
+  # find comms/rcclx/develop/meta -type f ! -path "*/tests/*" -path "*/relay/*" \( -name "*.cc" -o -name "*.h" -o -name "*.cu" \) | sort
+  comms/rcclx/develop/meta/relay/sharded_relay_allreduce.cc
+  comms/rcclx/develop/meta/relay/sharded_relay_allreduce.h
+  comms/rcclx/develop/meta/relay/sharded_relay_allreduce_kernels.cu
+  comms/rcclx/develop/meta/relay/sharded_relay_allreduce_kernels.h
 )
 
 # find comms/ctran/ -type f ! -path "*/tests/*" ! -path "*/benchmarks/*" ! -path "*/examples/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" -o -name "*.cuh" -o -name "*.cu" \) | sort
@@ -1238,6 +1249,11 @@ if (NOT Python3_FOUND)
   message(FATAL_ERROR "RCCL requires Python3 for generating host/device tables")
 endif()
 
+# Abseil (absl::log / absl::check) is used by
+# comms/utils/hrdw_ring_buffer/GpuClockCalibration.cc, which is compiled into
+# librccl. Resolved from CONDA_PREFIX via CMAKE_PREFIX_PATH (env), same as fmt.
+find_package(absl CONFIG REQUIRED)
+
 set(GEN_DIR "${HIPIFY_DIR}/gensrc")
 set(GEN_SYM_DIR "${GEN_DIR}/symmetric")
 
@@ -1311,6 +1327,14 @@ endforeach()
 
 # Find the generated files in the output directory
 file(GLOB_RECURSE GENERATED_FILES "${GEN_DIR}/*")
+
+# Exclude the per-function "specialized" kernel files (gensrc/specialized/*.cpp
+# and gensrc/specialized_files.txt). They are an alternative parallel-build code
+# path that re-emits DEFINE_ncclDevFunc for the same ncclDevFunc_* symbols
+# already defined by the grouped impl files above; compiling both causes
+# "duplicate symbol" errors at device (amdgcn) link time. The grouped impl
+# files plus device_table.cpp are the complete, referenced set.
+list(FILTER GENERATED_FILES EXCLUDE REGEX "/specialized")
 
 # Append all found generated files to the list
 foreach(file ${GENERATED_FILES})
@@ -1784,6 +1808,7 @@ target_link_libraries(rccl PRIVATE   hip::device)
 target_link_libraries(rccl PRIVATE   dl)
 target_link_libraries(rccl PRIVATE   ${SMI_LIBRARIES})
 target_link_libraries(rccl PRIVATE fmt::fmt-header-only)
+target_link_libraries(rccl PRIVATE absl::log absl::check)  # GpuClockCalibration.cc
 if(ENABLE_MSCCLPP)
   target_link_libraries(rccl PRIVATE mscclpp_nccl)
 endif()
