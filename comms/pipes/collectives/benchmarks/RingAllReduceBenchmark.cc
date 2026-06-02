@@ -45,12 +45,15 @@ struct RingAllReduceBenchmarkResult {
   std::size_t total_bytes{};
   int num_rings{};
   float nccl_bandwidth{};
+  float nccl_ring_bandwidth{};
   float ctran_bandwidth{};
   float ring_bandwidth{};
   float nccl_latency{};
+  float nccl_ring_latency{};
   float ctran_latency{};
   float ring_latency{};
   float speedup_vs_nccl{};
+  float speedup_vs_nccl_ring{};
   float speedup_vs_ctran{};
 };
 
@@ -67,11 +70,19 @@ class RingAllReduceBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     NCCL_CHECK_VOID(
         ncclCommInitRank(&comm_, worldSize, get_nccl_id(), globalRank));
 
+    setenv("NCCL_ALGO", "Ring", 1);
+    setenv("NCCL_PROTO", "Simple", 1);
+    NCCL_CHECK_VOID(
+        ncclCommInitRank(&ring_comm_, worldSize, get_nccl_id(), globalRank));
+    unsetenv("NCCL_ALGO");
+    unsetenv("NCCL_PROTO");
+
     CUDA_CHECK_VOID(cudaStreamCreate(&stream_));
   }
 
   void TearDown() override {
     NCCL_CHECK_VOID(ncclCommDestroy(comm_));
+    NCCL_CHECK_VOID(ncclCommDestroy(ring_comm_));
     CUDA_CHECK_VOID(cudaStreamDestroy(stream_));
     BenchmarkTestFixture::TearDown();
   }
@@ -103,14 +114,20 @@ class RingAllReduceBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
       const RingAllReduceBenchmarkConfig& config,
       float& latency_us) {
     NCCL_CHECK(set_allreduce_algo("orig"));
-    return run_ncclx_benchmark(config, latency_us);
+    return run_ncclx_benchmark(config, latency_us, comm_);
+  }
+
+  float run_nccl_ring_benchmark(
+      const RingAllReduceBenchmarkConfig& config,
+      float& latency_us) {
+    return run_ncclx_benchmark(config, latency_us, ring_comm_);
   }
 
   float run_ctran_benchmark(
       const RingAllReduceBenchmarkConfig& config,
       float& latency_us) {
     NCCL_CHECK(set_allreduce_algo("ctring"));
-    float bw = run_ncclx_benchmark(config, latency_us);
+    float bw = run_ncclx_benchmark(config, latency_us, comm_);
     NCCL_CHECK(set_allreduce_algo("orig"));
     return bw;
   }
@@ -124,7 +141,11 @@ class RingAllReduceBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
 
   float run_ncclx_benchmark(
       const RingAllReduceBenchmarkConfig& config,
-      float& latency_us) {
+      float& latency_us,
+      ncclComm_t nccl_comm = nullptr) {
+    if (nccl_comm == nullptr) {
+      nccl_comm = comm_;
+    }
     const std::size_t total_bytes = config.total_elements * sizeof(float);
 
     DeviceBuffer send_buf(total_bytes);
@@ -144,7 +165,7 @@ class RingAllReduceBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
           config.total_elements,
           ncclFloat,
           ncclSum,
-          comm_,
+          nccl_comm,
           stream_));
     }
 
@@ -156,7 +177,7 @@ class RingAllReduceBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
           config.total_elements,
           ncclFloat,
           ncclSum,
-          comm_,
+          nccl_comm,
           stream_));
     }
     CUDA_CHECK(cudaEventRecord(stop.get(), stream_));
@@ -308,46 +329,45 @@ class RingAllReduceBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
 
     std::stringstream ss;
     ss << "\n";
-    ss << "====================================================================================================\n";
-    ss << "         NCCL vs Ctran (ctring) vs Pipes Ring AllReduce Benchmark\n";
-    ss << "====================================================================================================\n";
-    ss << std::left << std::setw(14) << "Test" << std::right << std::setw(8)
+    ss << "============================================================================================================================\n";
+    ss << "         NCCL (auto) vs NCCL (Ring) vs Ctran (ctring) vs Pipes Ring AllReduce Benchmark\n";
+    ss << "============================================================================================================================\n";
+    ss << std::left << std::setw(16) << "Test" << std::right << std::setw(8)
        << "Size" << std::setw(4) << "R" << std::setw(9) << "NCCL"
-       << std::setw(9) << "Ctran" << std::setw(9) << "Pipes" << std::setw(10)
-       << "vs NCCL" << std::setw(10) << "vs Ctran" << std::setw(10) << "NCCL us"
-       << std::setw(10) << "Ctran us" << std::setw(10) << "Pipes us\n";
-    ss << std::left << std::setw(14) << "" << std::right << std::setw(8) << ""
-       << std::setw(4) << "" << std::setw(9) << "(GB/s)" << std::setw(9)
-       << "(GB/s)" << std::setw(9) << "(GB/s)" << std::setw(10) << ""
-       << std::setw(10) << "" << std::setw(10) << "" << std::setw(10) << ""
-       << std::setw(10) << "\n";
-    ss << "----------------------------------------------------------------------------------------------------\n";
+       << std::setw(10) << "NCCLRing" << std::setw(9) << "Ctran" << std::setw(9)
+       << "Pipes" << std::setw(10) << "vs NCCL" << std::setw(10) << "vs Ring"
+       << std::setw(10) << "vs Ctran" << "\n";
+    ss << std::left << std::setw(16) << "" << std::right << std::setw(8) << ""
+       << std::setw(4) << "" << std::setw(9) << "(GB/s)" << std::setw(10)
+       << "(GB/s)" << std::setw(9) << "(GB/s)" << std::setw(9) << "(GB/s)"
+       << "\n";
+    ss << "----------------------------------------------------------------------------------------------------------------------------\n";
 
     for (const auto& r : results) {
-      ss << std::left << std::setw(14) << r.test_name << std::right
+      ss << std::left << std::setw(16) << r.test_name << std::right
          << std::setw(8) << fmt_bytes(r.total_bytes) << std::setw(4)
          << r.num_rings << std::setw(9) << std::fixed << std::setprecision(2)
-         << r.nccl_bandwidth << std::setw(9) << std::fixed
-         << std::setprecision(2) << r.ctran_bandwidth << std::setw(9)
-         << std::fixed << std::setprecision(2) << r.ring_bandwidth
+         << r.nccl_bandwidth << std::setw(10) << std::fixed
+         << std::setprecision(2) << r.nccl_ring_bandwidth << std::setw(9)
+         << std::fixed << std::setprecision(2) << r.ctran_bandwidth
          << std::setw(9) << std::fixed << std::setprecision(2)
-         << r.speedup_vs_nccl << "x" << std::setw(9) << std::fixed
-         << std::setprecision(2) << r.speedup_vs_ctran << "x" << std::setw(10)
-         << std::fixed << std::setprecision(1) << r.nccl_latency
-         << std::setw(10) << std::fixed << std::setprecision(1)
-         << r.ctran_latency << std::setw(10) << std::fixed
-         << std::setprecision(1) << r.ring_latency << "\n";
+         << r.ring_bandwidth << std::setw(9) << std::fixed
+         << std::setprecision(2) << r.speedup_vs_nccl << "x" << std::setw(9)
+         << std::fixed << std::setprecision(2) << r.speedup_vs_nccl_ring << "x"
+         << std::setw(9) << std::fixed << std::setprecision(2)
+         << r.speedup_vs_ctran << "x\n";
     }
 
-    ss << "====================================================================================================\n";
+    ss << "============================================================================================================================\n";
     ss << worldSize
-       << " ranks | NCCL=orig(auto) | Ctran=ctring(GPE) | Pipes=IBGDA(device-native)\n";
-    ss << "====================================================================================================\n";
+       << " ranks | NCCL=orig(auto) | NCCLRing=Ring/Simple | Ctran=ctring(GPE) | Pipes=IBGDA(device-native)\n";
+    ss << "============================================================================================================================\n";
 
     XLOG(INFO) << ss.str();
   }
 
   ncclComm_t comm_{};
+  ncclComm_t ring_comm_{};
   cudaStream_t stream_{};
 };
 
@@ -360,7 +380,88 @@ TEST_F(RingAllReduceBenchmarkFixture, VsNccl) {
   int kNumQps = 4;
 
   std::vector<RingAllReduceBenchmarkConfig> configs = {
-      // === Baselines ===
+      // === Medium-size optimization: block count sweep at 4MB/16MB/32MB ===
+      // 4MB baselines
+      {.total_elements = 1024 * 1024,
+       .num_blocks = 16,
+       .num_rings = 1,
+       .data_buffer_size = kDataBufferSize,
+       .pipeline_depth = 2,
+       .num_qps = kNumQps,
+       .name = "4MB_16B"},
+      {.total_elements = 1024 * 1024,
+       .num_blocks = 8,
+       .num_rings = 1,
+       .data_buffer_size = kDataBufferSize,
+       .pipeline_depth = 2,
+       .num_qps = kNumQps,
+       .name = "4MB_8B"},
+      {.total_elements = 1024 * 1024,
+       .num_blocks = 4,
+       .num_rings = 1,
+       .data_buffer_size = kDataBufferSize,
+       .pipeline_depth = 2,
+       .num_qps = kNumQps,
+       .name = "4MB_4B"},
+      {.total_elements = 1024 * 1024,
+       .num_blocks = 2,
+       .num_rings = 1,
+       .data_buffer_size = kDataBufferSize,
+       .pipeline_depth = 2,
+       .num_qps = kNumQps,
+       .name = "4MB_2B"},
+      // 16MB baselines
+      {.total_elements = 4 * 1024 * 1024,
+       .num_blocks = 16,
+       .num_rings = 1,
+       .data_buffer_size = kDataBufferSize,
+       .pipeline_depth = 2,
+       .num_qps = kNumQps,
+       .name = "16MB_16B"},
+      {.total_elements = 4 * 1024 * 1024,
+       .num_blocks = 8,
+       .num_rings = 1,
+       .data_buffer_size = kDataBufferSize,
+       .pipeline_depth = 2,
+       .num_qps = kNumQps,
+       .name = "16MB_8B"},
+      {.total_elements = 4 * 1024 * 1024,
+       .num_blocks = 4,
+       .num_rings = 1,
+       .data_buffer_size = kDataBufferSize,
+       .pipeline_depth = 2,
+       .num_qps = kNumQps,
+       .name = "16MB_4B"},
+      {.total_elements = 4 * 1024 * 1024,
+       .num_blocks = 2,
+       .num_rings = 1,
+       .data_buffer_size = kDataBufferSize,
+       .pipeline_depth = 2,
+       .num_qps = kNumQps,
+       .name = "16MB_2B"},
+      // 32MB baselines
+      {.total_elements = 8 * 1024 * 1024,
+       .num_blocks = 16,
+       .num_rings = 1,
+       .data_buffer_size = kDataBufferSize,
+       .pipeline_depth = 2,
+       .num_qps = kNumQps,
+       .name = "32MB_16B"},
+      {.total_elements = 8 * 1024 * 1024,
+       .num_blocks = 8,
+       .num_rings = 1,
+       .data_buffer_size = kDataBufferSize,
+       .pipeline_depth = 2,
+       .num_qps = kNumQps,
+       .name = "32MB_8B"},
+      {.total_elements = 8 * 1024 * 1024,
+       .num_blocks = 4,
+       .num_rings = 1,
+       .data_buffer_size = kDataBufferSize,
+       .pipeline_depth = 2,
+       .num_qps = kNumQps,
+       .name = "32MB_4B"},
+      // 64MB + 512MB reference points
       {.total_elements = 16 * 1024 * 1024,
        .num_blocks = 16,
        .num_rings = 1,
@@ -368,43 +469,6 @@ TEST_F(RingAllReduceBenchmarkFixture, VsNccl) {
        .pipeline_depth = 2,
        .num_qps = kNumQps,
        .name = "64MB_16B"},
-      {.total_elements = 32 * 1024 * 1024,
-       .num_blocks = 16,
-       .num_rings = 1,
-       .data_buffer_size = kDataBufferSize,
-       .pipeline_depth = 2,
-       .num_qps = kNumQps,
-       .name = "128MB_16B"},
-      {.total_elements = 64 * 1024 * 1024,
-       .num_blocks = 32,
-       .num_rings = 1,
-       .data_buffer_size = kDataBufferSize,
-       .pipeline_depth = 2,
-       .num_qps = kNumQps,
-       .name = "256MB_32B"},
-      {.total_elements = 128 * 1024 * 1024,
-       .num_blocks = 32,
-       .num_rings = 1,
-       .data_buffer_size = kDataBufferSize,
-       .pipeline_depth = 2,
-       .num_qps = kNumQps,
-       .name = "512MB_32B"},
-      // === 1GB baseline ===
-      {.total_elements = 256 * 1024 * 1024,
-       .num_blocks = 32,
-       .num_rings = 1,
-       .data_buffer_size = kDataBufferSize,
-       .pipeline_depth = 2,
-       .num_qps = kNumQps,
-       .name = "1GB_32B"},
-      // === Block count sweep on GB200 ===
-      {.total_elements = 64 * 1024 * 1024,
-       .num_blocks = 16,
-       .num_rings = 1,
-       .data_buffer_size = kDataBufferSize,
-       .pipeline_depth = 2,
-       .num_qps = kNumQps,
-       .name = "256MB_16B"},
       {.total_elements = 128 * 1024 * 1024,
        .num_blocks = 16,
        .num_rings = 1,
@@ -412,42 +476,6 @@ TEST_F(RingAllReduceBenchmarkFixture, VsNccl) {
        .pipeline_depth = 2,
        .num_qps = kNumQps,
        .name = "512MB_16B"},
-      {.total_elements = 256 * 1024 * 1024,
-       .num_blocks = 16,
-       .num_rings = 1,
-       .data_buffer_size = kDataBufferSize,
-       .pipeline_depth = 2,
-       .num_qps = kNumQps,
-       .name = "1GB_16B"},
-      // === QP count sweep (multi-QP striping) ===
-      {.total_elements = 128 * 1024 * 1024,
-       .num_blocks = 16,
-       .num_rings = 1,
-       .data_buffer_size = kDataBufferSize,
-       .pipeline_depth = 2,
-       .num_qps = 2,
-       .name = "512MB_16B_2q"},
-      {.total_elements = 128 * 1024 * 1024,
-       .num_blocks = 16,
-       .num_rings = 1,
-       .data_buffer_size = kDataBufferSize,
-       .pipeline_depth = 2,
-       .num_qps = 8,
-       .name = "512MB_16B_8q"},
-      {.total_elements = 256 * 1024 * 1024,
-       .num_blocks = 16,
-       .num_rings = 1,
-       .data_buffer_size = kDataBufferSize,
-       .pipeline_depth = 2,
-       .num_qps = 2,
-       .name = "1GB_16B_2q"},
-      {.total_elements = 256 * 1024 * 1024,
-       .num_blocks = 16,
-       .num_rings = 1,
-       .data_buffer_size = kDataBufferSize,
-       .pipeline_depth = 2,
-       .num_qps = 8,
-       .name = "1GB_16B_8q"},
   };
 
   std::vector<RingAllReduceBenchmarkResult> results;
@@ -455,6 +483,9 @@ TEST_F(RingAllReduceBenchmarkFixture, VsNccl) {
   for (const auto& config : configs) {
     float nccl_lat = 0.0f;
     float nccl_bw = run_nccl_benchmark(config, nccl_lat);
+
+    float nccl_ring_lat = 0.0f;
+    float nccl_ring_bw = run_nccl_ring_benchmark(config, nccl_ring_lat);
 
     float ctran_lat = 0.0f;
     float ctran_bw = run_ctran_benchmark(config, ctran_lat);
@@ -469,12 +500,16 @@ TEST_F(RingAllReduceBenchmarkFixture, VsNccl) {
           .total_bytes = config.total_elements * sizeof(float),
           .num_rings = config.num_rings,
           .nccl_bandwidth = nccl_bw,
+          .nccl_ring_bandwidth = nccl_ring_bw,
           .ctran_bandwidth = ctran_bw,
           .ring_bandwidth = ring_bw,
           .nccl_latency = nccl_lat,
+          .nccl_ring_latency = nccl_ring_lat,
           .ctran_latency = ctran_lat,
           .ring_latency = ring_lat,
           .speedup_vs_nccl = (nccl_bw > 0) ? ring_bw / nccl_bw : 0.0f,
+          .speedup_vs_nccl_ring =
+              (nccl_ring_bw > 0) ? ring_bw / nccl_ring_bw : 0.0f,
           .speedup_vs_ctran = (ctran_bw > 0) ? ring_bw / ctran_bw : 0.0f,
       });
     }
