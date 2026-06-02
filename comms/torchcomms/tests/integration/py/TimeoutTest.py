@@ -179,6 +179,57 @@ if os.environ.get("_TORCHCOMM_RUN_GRAPH_TIMEOUT_AFTER_SUCCESS"):
     os._exit(1)
 
 
+def _run_capture_followup_after_timeout_failfast_scenario() -> None:
+    """After timeout, captured followup ops should fail fast, not hang."""
+
+    backend = os.environ.get("TEST_BACKEND", "")
+    rank, _ = get_rank_and_size()
+    device_count = torch.cuda.device_count()
+    device = torch.device("cuda", rank % device_count)
+    torch.cuda.set_device(device)
+
+    comm = torchcomms.new_comm(
+        backend,
+        device,
+        name="capture_followup_after_timeout_failfast_subprocess_comm",
+        abort_process_on_timeout_or_error=False,
+    )
+    capture_stream = torch.cuda.Stream() if rank == 1 else None
+
+    if rank == 0:
+        time.sleep(6.0)
+        os._exit(0)
+
+    comm.barrier(
+        async_op=True,
+        timeout=timedelta(milliseconds=500),
+    )
+    # The eager timeout is detected asynchronously by the watchdog.
+    time.sleep(3.0)
+
+    try:
+        assert capture_stream is not None
+        with torch.cuda.stream(capture_stream):
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph):
+                _wait(
+                    comm.barrier(
+                        async_op=False,
+                        timeout=timedelta(milliseconds=500),
+                    )
+                )
+        os._exit(2)
+    except RuntimeError as e:
+        if "timed out" not in str(e):
+            raise
+        os._exit(0)
+
+
+if os.environ.get("_TORCHCOMM_RUN_CAPTURE_FOLLOWUP_AFTER_TIMEOUT_FAILFAST"):
+    _run_capture_followup_after_timeout_failfast_scenario()
+    os._exit(1)
+
+
 class TestTimeout(CudaGraphTestBase, FatalStateTestMixin):
     """Tests timeout detection, abort behavior, and false timeout prevention."""
 
@@ -279,6 +330,27 @@ class TestTimeout(CudaGraphTestBase, FatalStateTestMixin):
                     expected=make_expected,
                     graph_assertions=assert_graph,
                 )
+
+    @unittest.skipIf(
+        os.getenv("TEST_BACKEND") not in ("nccl", "ncclx"),
+        f"Backend {os.getenv('TEST_BACKEND')} does not support this regression",
+    )
+    def test_capture_followup_after_timeout_fails_fast(self) -> None:
+        with self.create_comms(1):
+            pass
+
+        result = self.run_subprocess(
+            "_TORCHCOMM_RUN_CAPTURE_FOLLOWUP_AFTER_TIMEOUT_FAILFAST",
+            timeout=90,
+        )
+
+        self.assertEqual(
+            result.returncode,
+            0,
+            "Expected follow-up capture to fail fast, not hang.\n"
+            f"stdout:\n{result.stdout.decode(errors='replace')}\n"
+            f"stderr:\n{result.stderr.decode(errors='replace')}",
+        )
 
 
 if __name__ == "__main__":
