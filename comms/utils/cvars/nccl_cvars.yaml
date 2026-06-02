@@ -1845,6 +1845,64 @@ cvars:
      to be NVL-connected. All data movement and sync operations go over
      NVLink. Requires that all ranks are in the same NVL domain.
 
+ - name        : NCCL_CTRAN_PIPES_SENDRECV_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Enable pipelined send/recv staging buffers on the IBGDA transport in
+     Pipes MultiPeerTransport. Required for ring-based collectives
+     (pipesflatring AllReduce, Ring ReduceScatter, Ring AllGather) that use
+     the send()/recv()/forward() protocol. When false, only the raw
+     put/signal APIs are available on the transport handles.
+
+ - name        : NCCL_CTRAN_PIPES_SENDRECV_MAX_GROUPS
+   type        : uint64_t
+   default     : 128
+   description : |-
+     Maximum number of block-groups that may participate in a single
+     send()/recv() call on the IBGDA transport. This sizes the per-peer
+     signal, counter, and step-state arrays. Must be >= the total grid
+     blocks (num_blocks) launched by any ring collective kernel using
+     this transport. Default 128 matches SendRecvConfig's own default.
+
+ - name        : NCCL_CTRAN_PIPES_SENDRECV_PIPELINE_DEPTH
+   type        : uint64_t
+   default     : 2
+   description : |-
+     Number of logical slots in the send/recv staging ring on the IBGDA
+     transport. Total staging memory per peer per direction is
+     pipelineDepth * dataBufferSize. Deeper pipeline hides more latency
+     at the cost of more memory.
+
+ - name        : NCCL_CTRAN_ALLREDUCE_PIPES_NUM_RINGS
+   type        : int
+   default     : -1
+   description : |-
+     Number of rings for the pipesflatring AllReduce algorithm. Set to -1
+     for automatic selection based on message size.
+
+ - name        : NCCL_CTRAN_ALLREDUCE_PIPES_NUM_BLOCKS
+   type        : int
+   default     : -1
+   description : |-
+     Total grid blocks for the pipesflatring AllReduce algorithm. Set to -1
+     for automatic selection based on message size. This is the total
+     grid size (split across all rings).
+
+ - name        : NCCL_CTRAN_ALLREDUCE_PIPES_BIDIR_AG_MIN_SIZE
+   type        : int64_t
+   default     : -1
+   description : |-
+     Minimum message size in bytes for bi-directional AllGather optimization
+     in the Pipes ring AllReduce. Bi-directional AG sends data in both
+     directions simultaneously during the AllGather phase, reducing total
+     steps from W-1 to ceil((W-1)/2). This optimization benefits large
+     messages where the step reduction outweighs per-step overhead.
+     Set to 0 to enable for all message sizes.
+     Set to -1 to disable bi-directional AG entirely (default).
+     Set to -2 to auto-tune per GPU architecture.
+     Set to a positive value to enable only for messages at or above that size.
+
  - name        : NCCL_CTRAN_IBGDA_QP_DEPTH
    type        : uint64_t
    default     : 1024
@@ -2649,13 +2707,14 @@ cvars:
  - name        : NCCL_ALLREDUCE_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctdirect, ctring
+   choices     : orig, ctran, ctdirect, ctring, pipesflatring
    description : |-
      The algorithm to use for Allreduce communication
      orig - Copy-based algorithm
      ctran - Picks the best ctran-based algorithm
      ctdirect - Ctran-based direct point-to-point algorithm
      ctring - ctran-based ring algorithm
+     pipesflatring - Pipes-based device-native ring algorithm (IBGDA)
 
  - name        : NCCL_ALLREDUCE_TYPE
    type        : enum

@@ -34,6 +34,20 @@
 
 namespace comms::pipes {
 
+// Toggle release fences in the RDMA put path (send/forward).
+// __threadfence_system() ensures GPU stores are visible to PCIe/NIC devices.
+// __threadfence() is lighter (GPU-scope only) but may suffice if the NIC DMA
+// path snoops GPU L2 cache. Define to 1 to use device-scope fence; default 0
+// keeps system-scope fence.
+#ifndef PIPES_USE_DEVICE_SCOPE_RELEASE_FENCE
+#define PIPES_USE_DEVICE_SCOPE_RELEASE_FENCE 0
+#endif
+#if PIPES_USE_DEVICE_SCOPE_RELEASE_FENCE
+#define PIPES_RELEASE_FENCE() __threadfence()
+#else
+#define PIPES_RELEASE_FENCE() __threadfence_system()
+#endif
+
 struct Memcpy;
 
 inline constexpr uint64_t kDefaultDeviceTimeoutCycles = 10'000'000'000ULL;
@@ -1338,10 +1352,10 @@ class P2pIbgdaTransportDevice {
             timeout);
       }
 
-      // (4) threadfence_system + leader-only single-WQE RDMA put with
+      // (4) Release fence + leader-only single-WQE RDMA put with
       //     fused signal+counter. All threads fence to ensure memcpy
       //     stores are visible to the NIC before the leader posts the WQE.
-      __threadfence_system();
+      PIPES_RELEASE_FENCE();
       group.sync();
       if (group.is_leader()) {
         ThreadGroup solo{0, 1, group.group_id, 1, SyncScope::THREAD};
@@ -1759,8 +1773,8 @@ class P2pIbgdaTransportDevice {
             timeout);
       }
 
-      // (6) threadfence_system + RDMA put via fwd transport.
-      __threadfence_system();
+      // (6) Release fence + RDMA put via fwd transport.
+      PIPES_RELEASE_FENCE();
       group.sync();
       if (group.is_leader()) {
         ThreadGroup solo{0, 1, group.group_id, 1, SyncScope::THREAD};

@@ -123,4 +123,38 @@ TEST(MakeStandardRings, IterativeRankWalkMatchesRingTraversal) {
   }
 }
 
+TEST(MakeBidirRings, W8Rank0) {
+  auto rings = make_bidir_rings(8, 0);
+  ASSERT_TRUE(rings.has_value());
+  ASSERT_EQ(rings->size(), 2);
+  EXPECT_EQ((*rings)[0].next_rank, 1);
+  EXPECT_EQ((*rings)[0].prev_rank, 7);
+  EXPECT_EQ((*rings)[1].next_rank, 7);
+  EXPECT_EQ((*rings)[1].prev_rank, 1);
+}
+
+TEST(MakeBidirRings, W2ReturnsNullopt) {
+  EXPECT_FALSE(make_bidir_rings(2, 0).has_value());
+}
+
+TEST(MakeBidirRings, W3Rank1) {
+  auto rings = make_bidir_rings(3, 1);
+  ASSERT_TRUE(rings.has_value());
+  ASSERT_EQ(rings->size(), 2);
+  EXPECT_EQ((*rings)[0].next_rank, 2);
+  EXPECT_EQ((*rings)[0].prev_rank, 0);
+  EXPECT_EQ((*rings)[1].next_rank, 0);
+  EXPECT_EQ((*rings)[1].prev_rank, 2);
+}
+
+TEST(MakeBidirRings, ReverseRingIsInverseOfForward) {
+  int W = 8;
+  for (int rank = 0; rank < W; rank++) {
+    auto rings = make_bidir_rings(W, rank);
+    ASSERT_TRUE(rings.has_value());
+    EXPECT_EQ((*rings)[0].next_rank, (*rings)[1].prev_rank) << "rank=" << rank;
+    EXPECT_EQ((*rings)[0].prev_rank, (*rings)[1].next_rank) << "rank=" << rank;
+  }
+}
+
 } // namespace comms::pipes::test
