@@ -211,6 +211,9 @@ void TorchCommXCCL::timeoutWatchdog() noexcept {
         TC_LOG(ERROR) << "Aborting process due to error on rank " << rank_
                       << " - timeout watchdog detected operation error. ";
       }
+
+      runAbortHooks();
+
       abort();
     }
   }
@@ -232,6 +235,7 @@ void TorchCommXCCL::checkAndAbortIfTimedOutOrError() {
     //    abortXcclComm(); // cannot abort oneCCL communicator
     if (options_.abort_process_on_timeout_or_error) {
       TC_LOG(ERROR) << "Aborting process due to timeout";
+      runAbortHooks();
       abort();
     } else {
       throw std::runtime_error("XCCL operation timed out");
@@ -244,6 +248,7 @@ void TorchCommXCCL::checkAndAbortIfTimedOutOrError() {
     if (options_.abort_process_on_timeout_or_error) {
       TC_LOG(ERROR) << "Aborting process due to error: "
                     << xcclException.what();
+      runAbortHooks();
       abort();
     } else {
       throw xcclException;

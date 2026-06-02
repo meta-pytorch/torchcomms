@@ -3,6 +3,7 @@
 #include "comms/torchcomms/hooks/fr/FlightRecorder.hpp"
 #include "comms/torchcomms/hooks/common/OpNameHelper.hpp"
 
+#include <c10/core/impl/DeviceGuardImplInterface.h>
 #include <c10/util/ApproximateClock.h>
 #include <c10/util/WaitCounter.h>
 #include <c10/util/irange.h>
@@ -11,6 +12,9 @@
 #include <torch/csrc/distributed/c10d/TraceUtils.h>
 #include <torch/csrc/distributed/c10d/control_plane/Handlers.hpp>
 #include <torch/csrc/jit/serialization/pickler.h>
+#include <atomic>
+#include <future>
+#include <mutex>
 #include <sstream>
 
 namespace torch {
@@ -108,6 +112,74 @@ c10d::control_plane::RegisterHandler torchcommsFrTraceJsonRegistration(
       res.setStatus(200);
     });
 
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
+c10d::control_plane::RegisterHandler torchcommsFrDumpFileRegistration(
+    "torchcomms_fr_dump_file",
+    [](const c10d::control_plane::Request& /* req */,
+       c10d::control_plane::Response& res) {
+      auto* recorder = FlightRecorder::get();
+      int rank = recorder->getRank();
+      // Reject if no communicator has registered yet — getRank() would
+      // otherwise return the default sentinel (-1) and we would write a
+      // bogus per-rank file.
+      if (rank < 0) {
+        res.setStatus(503);
+        res.setContent(
+            "Flight Recorder has not been registered with any communicator yet",
+            "text/plain");
+        return;
+      }
+
+      // Single-flight guard: rapid/overlapping calls (e.g. from a health
+      // check loop) must not each spawn a fresh worker thread writing to
+      // the same per-rank file. Use the previous future's state itself as
+      // the single-flight signal — when wait_for(0) returns `ready`, the
+      // worker has fully exited and reassigning the future will not block
+      // on a thread join. If it is not ready, the worker is still running
+      // (or in the middle of exiting); coalesce by returning immediately
+      // without launching another task.
+      // NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
+      static std::mutex dump_future_mutex;
+      // NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
+      static std::future<void> dump_future;
+
+      {
+        std::lock_guard<std::mutex> lock(dump_future_mutex);
+        if (dump_future.valid() &&
+            dump_future.wait_for(std::chrono::seconds(0)) !=
+                std::future_status::ready) {
+          res.setStatus(200);
+          res.setContent(
+              "Flight Recorder dump already in progress for rank " +
+                  std::to_string(rank),
+              "text/plain");
+          return;
+        }
+        // Using std::async with std::launch::async means the future's
+        // destructor joins the worker thread instead of leaking it
+        // (no detach()). The dump writes through the global singleton
+        // recorder + DebugInfoWriter, so we don't need to instantiate a
+        // new FlightRecorderHook.
+        dump_future = std::async(std::launch::async, [rank, recorder]() {
+          LOG(INFO) << "Writing Flight Recorder debug info to file for rank "
+                    << rank;
+          std::string trace = recorder->dump(
+              std::unordered_map<
+                  std::string,
+                  std::unordered_map<std::string, std::string>>{},
+              /*includeCollectives=*/true,
+              /*includeStackTraces=*/false,
+              /*onlyActive=*/false);
+          DebugInfoWriter::getWriter(rank).write(trace);
+        });
+      }
+
+      res.setStatus(200);
+      res.setContent(
+          "Flight Recorder dump initiated for rank " + std::to_string(rank),
+          "text/plain");
+    });
+
 } // namespace
 float getDurationFromEvent(c10::Event& start, c10::Event& end);
 
@@ -145,8 +217,8 @@ void FlightRecorder::record(
     std::string profiling_name,
     const std::vector<at::Tensor>& inputs,
     const std::vector<at::Tensor>& outputs,
-    c10::Event* start,
-    c10::Event* end,
+    std::unique_ptr<c10::Event> start,
+    std::unique_ptr<c10::Event> end,
     std::chrono::milliseconds timeout_ms,
     std::shared_ptr<ProcessGroupStatus> pg_status) {
   if (!enabled_) {
@@ -156,7 +228,14 @@ void FlightRecorder::record(
   auto traceback =
       torch::CapturedTraceback::gather(true, true, capture_cpp_stack_);
 
+  c10::Event* start_ptr = start.get();
+  c10::Event* end_ptr = end.get();
+
   std::lock_guard<std::mutex> guard(mutex_);
+
+  if (start) {
+    pending_events_[op_id] = EventPair{std::move(start), std::move(end)};
+  }
 
   if (all_pg_status_.find(pg_id) == all_pg_status_.end()) {
     // Current pg_status is not in FR.
@@ -178,8 +257,8 @@ void FlightRecorder::record(
       op_id,
       std::move(profiling_name),
       std::move(traceback),
-      start,
-      end,
+      start_ptr,
+      end_ptr,
       c10::getTime(),
       timeout_ms.count(),
       std::nullopt,
@@ -323,59 +402,124 @@ std::optional<FlightRecorder::Entry> FlightRecorder::getEntry(
 
 void FlightRecorder::retire_id(
     std::optional<size_t> id,
+    const at::Device& device,
     bool compute_duration) {
   if (!enabled_ || !id) {
     return;
   }
 
-  bool can_compute_duration = false;
-  c10::Event* startEvent = nullptr;
-  c10::Event* endEvent = nullptr;
-  std::optional<float> duration = std::nullopt;
+  // Move the EventPair out of pending_events_ into a local so that the
+  // events outlive any concurrent record() that may overwrite
+  // pending_events_[*id] while we release the lock below. This also
+  // serves as a single cleanup point: when this function returns (normal
+  // or via exception), the local `events` is destroyed and the map no
+  // longer holds the entry — preventing leaks on all paths.
+  EventPair events;
+  {
+    std::lock_guard<std::mutex> extract_guard(mutex_);
+    auto events_it = pending_events_.find(*id);
+    if (events_it != pending_events_.end()) {
+      events = std::move(events_it->second);
+      pending_events_.erase(events_it);
+    }
+  }
+
+  // Record end event if available. Only attempt for CUDA devices to match
+  // the gating in onPreHook; other backends never populate pending_events_.
+  //
+  // Performed WITHOUT holding mutex_: CUDA event record() and
+  // getDeviceGuardImpl() can block (stream contention, queue back-pressure,
+  // device issues) and we never want a stalled CUDA call to also stall
+  // dump() and other callers waiting on mutex_.
+  bool events_invalid = false;
+  if (events.end && device.type() == c10::DeviceType::CUDA) {
+    try {
+      auto* guard_impl = c10::impl::getDeviceGuardImpl(device.type());
+      events.end->record(guard_impl->getStream(device));
+    } catch (const std::exception&) {
+      // Device record failed; the events are unusable for timing. Reset
+      // them so the raw pointers stored on the entry (which alias them)
+      // don't get dereferenced below.
+      events.start.reset();
+      events.end.reset();
+      events_invalid = true;
+    }
+  }
 
   std::unique_lock<std::mutex> guard(mutex_);
 
   // Look up the (id_, reset_epoch_) pair for this op_id
   auto it = op_id_to_id_and_epoch_.find(*id);
   if (it == op_id_to_id_and_epoch_.end()) {
-    return; // op_id not found
+    return; // op_id not found — `events` is destroyed via RAII
   }
   auto [internal_id, reset_epoch] = it->second;
   op_id_to_id_and_epoch_.erase(it);
 
+  bool can_compute_duration = false;
   Entry* entry = &entries_.at(getIdxFromId(internal_id, reset_epoch));
   if (entry->id_ == internal_id && entry->reset_epoch_ == reset_epoch) {
+    // If we destroyed the events due to a record-time exception, the
+    // entry's raw start_/end_ pointers now reference destroyed memory.
+    // Null them out before update_state to avoid use-after-free.
+    if (events_invalid) {
+      entry->start_ = entry->end_ = nullptr;
+    }
     update_state(*entry);
 
     if (compute_duration) {
       can_compute_duration = entry->time_discovered_completed_.has_value() &&
           entry->start_ && entry->end_;
-      startEvent = entry->start_;
-      endEvent = entry->end_;
+
+      // CPU-observed elapsed-time fallback. Used when device events are
+      // unavailable (CPU backends, backends without DeviceGuardImpl) or
+      // when events exist but have not yet been observed completed.
+      //
+      // NOTE: this is NOT a device-measured kernel duration. It measures
+      // wall-clock time between when `record()` ran on the pre-hook
+      // thread and `retire_id()` ran on the post-hook thread, which
+      // includes CPU scheduling, queueing, and post-hook dispatch
+      // latency. Treat `duration_ms` in this fallback as an upper bound
+      // on the actual collective runtime, not the runtime itself.
+      if (!can_compute_duration) {
+        auto now = c10::getTime();
+        entry->duration_ =
+            static_cast<float>(now - entry->time_created_) / 1e6f; // ns to ms
+      }
     }
     entry->retired_ = true;
     entry->start_ = entry->end_ = nullptr;
   }
 
   if (can_compute_duration) {
-    // Compute duration without without holding the lock, because
+    // Compute duration without holding the lock, because
     // cudaEventDuration() can hang, and we need to acquire the lock before we
     // can dump(), which we never want to block.
+    //
+    // The events are owned by the local `events`, so they survive any
+    // concurrent record() that may have rewritten pending_events_[*id].
     guard.unlock();
-    duration = getDurationFromEvent(*startEvent, *endEvent);
+    std::optional<float> duration;
+    try {
+      duration = getDurationFromEvent(*events.start, *events.end);
+    } catch (const std::exception& e) {
+      LOG(ERROR) << "Failed to compute duration for op_id " << *id << ": "
+                 << e.what();
+    }
     guard.lock();
 
-    // Refresh the entry pointer, see if the entry has been overwritten
-    entry = &entries_.at(getIdxFromId(*id, reset_epoch));
-    if (!(entry->id_ == *id && entry->reset_epoch_ == reset_epoch)) {
+    // Refresh the entry pointer in case it was overwritten while unlocked.
+    entry = &entries_.at(getIdxFromId(internal_id, reset_epoch));
+    if (entry->id_ == internal_id && entry->reset_epoch_ == reset_epoch) {
+      if (duration.has_value()) {
+        entry->duration_ = duration;
+      }
+    } else {
       LOG(INFO) << "retire_id abandoned for id " << *id
                 << ", event was overwritten while waiting to compute duration.";
-      return;
-    }
-    if (duration.has_value()) {
-      entry->duration_ = duration;
     }
   }
+  // `events` destroyed here — single cleanup point for pending_events_.
 }
 
 void FlightRecorder::reset_all() {
@@ -786,10 +930,11 @@ void DebugInfoWriter::registerWriter(std::unique_ptr<DebugInfoWriter> writer) {
 std::unique_ptr<DebugInfoWriter> DebugInfoWriter::writer_ = nullptr;
 std::atomic<bool> DebugInfoWriter::hasWriterRegistered_(false);
 
-float getDurationFromEvent(
-    [[maybe_unused]] c10::Event& startEvent,
-    [[maybe_unused]] c10::Event& endEvent) {
-  TORCH_CHECK(false, "getDuration not supported by c10::Event.");
+float getDurationFromEvent(c10::Event& startEvent, c10::Event& endEvent) {
+  TORCH_CHECK(
+      endEvent.query(),
+      "getDurationFromEvent can only be called after the end event has completed.");
+  return static_cast<float>(startEvent.elapsedTime(endEvent));
 }
 
 // ============================================================================
@@ -836,21 +981,31 @@ void FlightRecorderHook::registerWithComm(std::shared_ptr<TorchComm> comm) {
 
   auto self = shared_from_this();
 
+  auto device = comm->getDevice();
+
   // Register pre-hook - records the operation
-  auto pre_hook_handle = comm->registerPreHook(
-      [self, comm_name, pg_id, pg_desc](size_t op_id, const PreHookArgs& args) {
-        self->onPreHook(comm_name, pg_id, pg_desc, op_id, args);
+  auto pre_hook_handle =
+      comm->registerPreHook([self, comm_name, pg_id, pg_desc, device](
+                                size_t op_id, const PreHookArgs& args) {
+        self->onPreHook(comm_name, pg_id, pg_desc, device, op_id, args);
       });
 
   // Register post-hook - called via work callback when work completes
   // The post-hook is invoked by TorchComm when the work's callback fires
-  auto post_hook_handle =
-      comm->registerPostHook([self](size_t op_id, const PostHookArgs& args) {
-        self->onPostHook(op_id, args);
+  auto post_hook_handle = comm->registerPostHook(
+      [self, device](size_t op_id, const PostHookArgs& args) {
+        self->onPostHook(device, op_id, args);
       });
 
-  // Register abort hook - called before aborting to dump flight recorder data
-  int rank = comm->getRank();
+  // Register abort hook - called before aborting to dump flight recorder data.
+  // Derive the global rank of this process from the comm's member ranks
+  // (`getRanks()`) indexed by this process's rank-within-comm (`getRank()`).
+  // This works for both the world comm and sub-PGs, so every registered
+  // communicator yields the same stable global identifier.
+  // Use .at() to satisfy facebook-hte-LocalUncheckedArrayBounds; for a
+  // well-formed comm, getRank() is always within bounds of getRanks().
+  int rank = comm_ranks.at(comm->getRank());
+  recorder_->setRank(rank);
   comm->registerAbortHook([self, rank]() { self->dump_file(rank); });
 
   registrations_.emplace_back(comm, pg_id, pg_desc);
@@ -861,6 +1016,7 @@ void FlightRecorderHook::onPreHook(
     const std::string& comm_name,
     size_t pg_id,
     const std::string& pg_desc,
+    const at::Device& device,
     size_t op_id,
     const PreHookArgs& args) {
   auto name = getOpName(args);
@@ -927,8 +1083,26 @@ void FlightRecorderHook::onPreHook(
   std::string profiling_name =
       std::string(pg_desc) + ":" + std::string(opToString(name));
 
-  // TODO: Create start/end events for accurate timing
-  // For now, pass nullptr - timing will be based on CPU timestamps
+  // Create events for GPU-accurate timing on CUDA devices only.
+  // Other accelerator backends (XPU, MTIA) may not handle per-collective
+  // event creation gracefully; for those, fall back to wall-clock duration.
+  std::unique_ptr<c10::Event> start_event;
+  std::unique_ptr<c10::Event> end_event;
+  if (device.type() == c10::DeviceType::CUDA) {
+    try {
+      auto* guard_impl = c10::impl::getDeviceGuardImpl(device.type());
+      start_event = std::make_unique<c10::Event>(
+          device.type(), c10::EventFlag::BACKEND_DEFAULT);
+      end_event = std::make_unique<c10::Event>(
+          device.type(), c10::EventFlag::BACKEND_DEFAULT);
+      start_event->record(guard_impl->getStream(device));
+    } catch (const std::exception&) {
+      // Backend does not support DeviceGuardImpl or events.
+      // Fall back to no event tracking — duration will use wall-clock.
+      start_event.reset();
+      end_event.reset();
+    }
+  }
 
   recorder_->record(
       pg_id,
@@ -937,21 +1111,25 @@ void FlightRecorderHook::onPreHook(
       std::move(profiling_name),
       inputs,
       outputs,
-      nullptr, // start event
-      nullptr, // end event
+      std::move(start_event),
+      std::move(end_event),
       std::chrono::milliseconds(600000), // 10 minute default timeout
       nullptr // pg_status
   );
 }
 
-void FlightRecorderHook::onPostHook(size_t op_id, const PostHookArgs& args) {
+void FlightRecorderHook::onPostHook(
+    const at::Device& device,
+    size_t op_id,
+    const PostHookArgs& args) {
   if (!enabled_) {
     return;
   }
+
   if (std::get_if<FinalizePostHookArgs>(&args)) {
     return;
   }
-  recorder_->retire_id(op_id, false);
+  recorder_->retire_id(op_id, device, /*compute_duration=*/true);
 
   // Handle split operations - register the new communicator with flight
   // recorder

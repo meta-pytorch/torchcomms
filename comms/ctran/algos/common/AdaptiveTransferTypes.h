@@ -1,6 +1,8 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #pragma once
 
+#include "comms/ctran/backends/ib/CtranIbBase.h"
+
 namespace ctran {
 namespace algos {
 
@@ -36,7 +38,11 @@ struct DirectionalTransferConfig {
   TransferMode mode{
       TransferMode::ZERO_COPY}; // Default to zero-copy for backward compat
   void* memHdl{nullptr}; // Memory registration handle (populated by
-                         // checkAndSetTransferMode for zero-copy)
+                         // checkAndSetTransferMode for zero-copy).
+                         // Also used to carry remote buffer address after
+                         // resolveRemoteInfo on the recv config.
+  CtranIbRemoteAccessKey remoteKey{}; // Remote access key (ZC only, IB backend)
+  int numBlocks{0}; // Kernel blocks for copy-based staging D2D
 
   // Returns true if zero-copy path should be used.
   bool isZeroCopy() const {

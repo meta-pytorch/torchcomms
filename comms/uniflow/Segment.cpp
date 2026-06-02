@@ -2,6 +2,8 @@
 
 #include "comms/uniflow/Segment.h"
 #include <cstring>
+#include <optional>
+#include "comms/uniflow/logging/Logger.h"
 
 namespace {
 
@@ -130,6 +132,8 @@ Result<RemoteRegisteredSegment> RemoteRegisteredSegment::from(
       memType,
       static_cast<int>(deviceId));
 
+  std::optional<Err> firstImportError;
+
   // handles data
   for (uint8_t i = 0; i < numHandles; ++i) {
     const size_t headerSize = sizeof(uint8_t) + sizeof(uint32_t);
@@ -165,8 +169,37 @@ Result<RemoteRegisteredSegment> RemoteRegisteredSegment::from(
     pos += handleSize;
 
     auto handleResult = getHandle(transportType, len, handleData);
-    CHECK_RETURN(handleResult);
+    if (handleResult.hasError()) {
+      if (!firstImportError.has_value()) {
+        firstImportError = handleResult.error();
+      }
+      // A serialized segment may carry handles for multiple alternative
+      // transports. One handle can be unusable in a given process or topology
+      // while another remains valid, so keep importing the rest and let
+      // MultiTransport choose the common transport for the transfer batch.
+      UNIFLOW_LOG_WARN(
+          "importSegment: transport {} handle {}/{} could not be imported "
+          "and will be ignored: {}",
+          transportType,
+          i + 1,
+          numHandles,
+          handleResult.error().message());
+      continue;
+    }
     segment.handles_.emplace_back(std::move(handleResult).value());
+  }
+
+  if (segment.handles_.empty()) {
+    if (firstImportError.has_value()) {
+      return Err(
+          firstImportError->code(),
+          "importSegment: no transport backend could import this segment; "
+          "first error: " +
+              firstImportError->message());
+    }
+    return Err(
+        ErrCode::InvalidArgument,
+        "importSegment: no transport backend could import this segment");
   }
 
   return segment;

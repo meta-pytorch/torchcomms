@@ -1152,11 +1152,12 @@ cvars:
 
  - name        : NCCL_CTRAN_HIER_AG_OVERLAP_CHUNK_BYTES
    type        : uint64_t
-   default     : 4194304
+   default     : 0
    description : |-
-     Logical chunk size, in bytes, used by the experimental overlapped
-     cthierarchical_ring AllGather kernel for IB-ready notification and
-     NVLink fanout scheduling.
+     Override for the logical chunk size, in bytes, used by the experimental
+     overlapped cthierarchical_ring AllGather kernel for IB-ready notification
+     and NVLink fanout scheduling. When zero, ctran selects a chunk size from
+     {512KiB, 1MiB, 2MiB, 4MiB, 8MiB} based on the send message size.
 
  - name        : NCCL_CTRAN_HIER_AG_IBGDA_DATA_BUFFER_SIZE
    type        : uint64_t
@@ -1516,6 +1517,24 @@ cvars:
      Pipeline depth for NVL P2P copy-based kernel. This value controls the
      number of pipeline stages used for data transfer operations between
      NVLink peers.
+
+ - name        : NCCL_CTRAN_P2P_HOST_IB_PIPELINE_DEPTH
+   type        : int
+   default     : 8
+   description : |-
+     Pipeline depth for the host-side IB copy-based P2P transport
+     (HostCbTransport). This controls the number of in-flight staging slots
+     per peer. Must not exceed ctran::transport::ib::kMaxPipelineDepth
+     (defined in comms/ctran/transport/ib/HostCbTransport.h). Default matches
+     kMaxPipelineDepth.
+
+ - name        : NCCL_CTRAN_P2P_HOST_IB_CHUNK_SIZE
+   type        : size_t
+   default     : 524288
+   description : |-
+     Per-chunk staging-buffer size in bytes for the host-side IB copy-based
+     P2P transport (HostCbTransport). Each of the pipelineDepth staging
+     slots is this size on both send and recv sides. Default is 512 KiB.
 
  - name        : NCCL_CTRAN_BCAST_NVL_SHARED_DEVBUF_SIZE
    type        : uint64_t

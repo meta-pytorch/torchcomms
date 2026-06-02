@@ -11,6 +11,7 @@
 
 #include "comms/uniflow/transport/rdma/CopyEngine.h"
 
+#include "comms/uniflow/drivers/DeviceAdapter.h"
 #include "comms/uniflow/drivers/cuda/CudaApi.h"
 #include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
 #include "comms/uniflow/drivers/ibverbs/IbvApi.h"
@@ -522,6 +523,7 @@ class RdmaTransport : public Transport {
   const std::shared_ptr<IbvApi> ibvApi_;
   const std::shared_ptr<CudaApi> cudaApi_;
   std::shared_ptr<CudaDriverApi> cudaDriverApi_;
+  std::shared_ptr<DeviceAdapter> deviceAdapter_;
   EventBase* evb_{nullptr};
 
   std::string name_;
@@ -668,15 +670,21 @@ class RdmaTransportFactory : public TransportFactory {
   /* Return the topology information */
   std::vector<uint8_t> getTopology() override;
 
+  uint64_t dmaBufFallbackCount() const {
+    return dmaBufFallbackCount_.load(std::memory_order_relaxed);
+  }
+
  private:
   Status canConnect(std::span<const uint8_t> peerTopology) override;
 
   std::shared_ptr<IbvApi> ibvApi_;
   std::shared_ptr<CudaDriverApi> cudaDriverApi_;
   std::shared_ptr<CudaApi> cudaApi_;
+
   EventBase* evb_{nullptr};
   uint64_t domainId_{0};
   size_t pageSize_{0};
+  std::atomic<uint64_t> dmaBufFallbackCount_{0};
   std::shared_ptr<std::vector<NicResources>> nicsHandle_;
   const RdmaTransportConfig config_;
 };

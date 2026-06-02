@@ -8,6 +8,7 @@
 #include <optional>
 #include <span>
 
+#include "comms/uniflow/drivers/DeviceAdapter.h"
 #include "comms/uniflow/logging/Logger.h"
 #include "comms/uniflow/transport/rdma/RdmaResources.h"
 
@@ -17,21 +18,20 @@ namespace uniflow {
 
 class PinnedBuffer {
  public:
-  PinnedBuffer(size_t size, std::shared_ptr<CudaApi> cudaApi)
-      : cudaApi_(std::move(cudaApi)) {
-    auto result =
-        cudaApi_->hostAlloc(size, cudaHostAllocMapped | cudaHostAllocPortable);
+  PinnedBuffer(size_t size, std::shared_ptr<DeviceAdapter> deviceAdapter)
+      : deviceAdapter_(std::move(deviceAdapter)) {
+    auto result = deviceAdapter_->pinnedHostAlloc(size);
     if (!result) {
       throw std::runtime_error(
-          "PinnedBuffer: cudaHostAlloc failed: " + result.error().toString());
+          "PinnedBuffer: pinnedHostAlloc failed: " + result.error().toString());
     }
     hostPtr_ = result.value();
 
-    auto devResult = cudaApi_->hostGetDevicePointer(hostPtr_);
+    auto devResult = deviceAdapter_->hostGetDevicePointer(hostPtr_);
     if (!devResult) {
-      cudaApi_->hostFree(hostPtr_);
+      deviceAdapter_->pinnedHostFree(hostPtr_);
       throw std::runtime_error(
-          "PinnedBuffer: cudaHostGetDevicePointer failed: " +
+          "PinnedBuffer: hostGetDevicePointer failed: " +
           devResult.error().toString());
     }
     devicePtr_ = reinterpret_cast<uintptr_t>(devResult.value());
@@ -39,32 +39,14 @@ class PinnedBuffer {
 
   ~PinnedBuffer() {
     if (hostPtr_) {
-      cudaApi_->hostFree(hostPtr_);
+      deviceAdapter_->pinnedHostFree(hostPtr_);
     }
   }
 
   PinnedBuffer(const PinnedBuffer&) = delete;
   PinnedBuffer& operator=(const PinnedBuffer&) = delete;
-  PinnedBuffer(PinnedBuffer&& other) noexcept
-      : cudaApi_(std::move(other.cudaApi_)),
-        hostPtr_(other.hostPtr_),
-        devicePtr_(other.devicePtr_) {
-    other.hostPtr_ = nullptr;
-    other.devicePtr_ = 0;
-  }
-  PinnedBuffer& operator=(PinnedBuffer&& other) noexcept {
-    if (this != &other) {
-      if (hostPtr_) {
-        cudaApi_->hostFree(hostPtr_);
-      }
-      cudaApi_ = std::move(other.cudaApi_);
-      hostPtr_ = other.hostPtr_;
-      devicePtr_ = other.devicePtr_;
-      other.hostPtr_ = nullptr;
-      other.devicePtr_ = 0;
-    }
-    return *this;
-  }
+  PinnedBuffer(PinnedBuffer&&) = delete;
+  PinnedBuffer& operator=(PinnedBuffer&&) = delete;
 
   void* hostPtr() const {
     return hostPtr_;
@@ -74,7 +56,7 @@ class PinnedBuffer {
   }
 
  private:
-  std::shared_ptr<CudaApi> cudaApi_;
+  std::shared_ptr<DeviceAdapter> deviceAdapter_;
   void* hostPtr_{nullptr};
   uintptr_t devicePtr_{0};
 };
@@ -295,11 +277,13 @@ RdmaSlabPool::RdmaSlabPool(
         "RdmaSlabPool: slabSize must be > 0 and slabNum must be > 0");
   }
 
+  auto deviceAdapter = createDeviceAdapter(cudaApi);
+
   const size_t bufferSize = config_.slabNum * config_.slabSize;
   const size_t stateSize = config_.slabNum * sizeof(uint64_t);
   const size_t totalSize = bufferSize + stateSize;
 
-  buffer_ = std::make_unique<PinnedBuffer>(totalSize, cudaApi);
+  buffer_ = std::make_unique<PinnedBuffer>(totalSize, std::move(deviceAdapter));
   std::memset(static_cast<char*>(buffer_->hostPtr()), 0, totalSize);
 
   mrSet_ = std::make_unique<MrSet>(

@@ -15,6 +15,8 @@
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/ctran/regcache/IpcRegCache.h"
 #include "comms/ctran/regcache/RegCache.h"
+#include "comms/ctran/transport/ib/HostCbTransport.h"
+#include "comms/ctran/transport/ib/HostZcTransport.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/utils/StrUtils.h"
 #include "comms/utils/commSpecs.h"
@@ -420,6 +422,12 @@ void CtranMapper::reportProfiling(bool flush) {
 
 void CtranMapper::setAtDestruction() {
   this->atDestruction = true;
+  // Clear the per-peer host-transport cache early so that CB
+  // transports return their borrowed GpeKernelSync entries to the
+  // gpe-owned pool while gpe is still alive. Idempotent: subsequent
+  // calls (e.g., from ~CtranMapper) become no-ops since the map is
+  // already empty.
+  this->p2pHostTransports_.wlock()->clear();
 }
 
 CtranMapper::~CtranMapper() {
@@ -927,6 +935,59 @@ CtranIb* CtranMapper::ctranIbPtr() {
 
 CtranSocket* CtranMapper::ctranSockPtr() {
   return ctranSock.get();
+}
+
+ctran::transport::IP2pHostTransport* CtranMapper::getP2pTransport(
+    int peerRank,
+    ctran::transport::HostTransportMode mode) {
+  auto wlocked = p2pHostTransports_.wlock();
+  if (auto it = wlocked->find(peerRank); it != wlocked->end()) {
+    FB_CHECKABORT(
+        it->second->mode() == mode,
+        "CTRAN-MAPPER: getP2pTransport(peer=" + std::to_string(peerRank) +
+            ") mode mismatch - cached transport bound to a different mode. "
+            "Each peer is bound to exactly one mode for the lifetime of its "
+            "cached transport in this revision (mixed-mode is a follow-up).");
+    return it->second.get();
+  }
+
+  CtranIb* ib = ctranIb.get();
+  if (ib == nullptr) {
+    CLOGF(
+        WARN,
+        "CTRAN-MAPPER: getP2pTransport(peer={}): no IB backend on this mapper",
+        peerRank);
+    return nullptr;
+  }
+
+  std::unique_ptr<ctran::transport::IP2pHostTransport> t;
+  switch (mode) {
+    case ctran::transport::HostTransportMode::kZeroCopy:
+      t = std::make_unique<ctran::transport::ib::HostZcTransport>(
+          peerRank,
+          ib,
+          comm->statex_->rank(),
+          comm->statex_->cudaDev(),
+          &comm->logMetaData_);
+      break;
+    case ctran::transport::HostTransportMode::kCopyBased:
+      FB_CHECKABORT(
+          comm->ctran_ && comm->ctran_->gpe,
+          "CTRAN-MAPPER: getP2pTransport(kCopyBased) requires comm->ctran_->gpe to be initialized");
+      t = std::make_unique<ctran::transport::ib::HostCbTransport>(
+          peerRank,
+          ib,
+          comm->ctran_->gpe->gpeKernelSyncPool(),
+          NCCL_CTRAN_P2P_HOST_IB_PIPELINE_DEPTH,
+          NCCL_CTRAN_P2P_HOST_IB_CHUNK_SIZE,
+          comm->statex_->rank(),
+          comm->statex_->cudaDev(),
+          &comm->logMetaData_);
+      break;
+  }
+  auto* raw = t.get();
+  wlocked->emplace(peerRank, std::move(t));
+  return raw;
 }
 
 commResult_t CtranMapper::intraAllGatherCtrl(
