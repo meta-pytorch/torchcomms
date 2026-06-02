@@ -28,6 +28,18 @@ bool ctranAllReduceSupport(CtranComm* comm, enum NCCL_ALLREDUCE_ALGO algo) {
     case NCCL_ALLREDUCE_ALGO::ctran:
     case NCCL_ALLREDUCE_ALGO::ctdirect:
       return true;
+    case NCCL_ALLREDUCE_ALGO::pipesring:
+#if defined(ENABLE_PIPES)
+      if (comm->multiPeerTransport_ && NCCL_CTRAN_PIPES_SENDRECV_ENABLE &&
+          comm->statex_->nLocalRanks() == 1) {
+        return true;
+      }
+      CLOGF(
+          WARN,
+          "pipesring requires ENABLE_PIPES, NCCL_CTRAN_USE_PIPES=1, "
+          "NCCL_CTRAN_PIPES_SENDRECV_ENABLE=1, and nLocalRanks=1");
+#endif
+      return false;
     default: // invalid query
       return false;
   }
@@ -64,6 +76,13 @@ commResult_t ctranAllReduce(
             sendbuff, recvbuff, count, datatype, redOp, comm, stream, timeout);
       }
       return ctranAllReduceRing(
+          sendbuff, recvbuff, count, datatype, redOp, comm, stream, timeout);
+    case NCCL_ALLREDUCE_ALGO::pipesring:
+      if (comm->statex_->nRanks() == 1) {
+        return ctranAllReduceDirect(
+            sendbuff, recvbuff, count, datatype, redOp, comm, stream, timeout);
+      }
+      return ctranAllReducePipesRing(
           sendbuff, recvbuff, count, datatype, redOp, comm, stream, timeout);
     case NCCL_ALLREDUCE_ALGO::ctdirect:
     default:
