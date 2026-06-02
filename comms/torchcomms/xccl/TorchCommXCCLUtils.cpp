@@ -242,7 +242,10 @@ void TorchCommXCCL::checkAndAbortIfTimedOutOrError() {
     }
   } else if (comm_state_ == CommState::ERROR) {
     onecclResult_t asyncErr;
-    xccl_api_->commGetAsyncError(xccl_comm_, &asyncErr);
+    XCCL_CHECK_IGNORE(
+        xccl_api_,
+        xccl_api_->commGetAsyncError(xccl_comm_, &asyncErr),
+        "XCCL commGetAsyncError failed");
     XCCLException xcclException(*xccl_api_, "XCCL Async Error", asyncErr);
     //    abortXcclComm(); // cannot abort oneCCL communicator
     if (options_.abort_process_on_timeout_or_error) {

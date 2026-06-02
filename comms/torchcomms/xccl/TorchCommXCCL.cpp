@@ -223,10 +223,10 @@ TorchCommXCCL::~TorchCommXCCL() {
     if (xccl_comm_) {
       if (xccl_api_) {
         // Use destroy to free resources since oneCCL doesn't have abort api
-        onecclResult_t result = xccl_api_->commDestroy(xccl_comm_);
-        if (result != onecclSuccess) {
-          TC_LOG(ERROR, this) << "Failed to destroy XCCL communicator";
-        }
+        XCCL_CHECK_IGNORE(
+            xccl_api_,
+            xccl_api_->commDestroy(xccl_comm_),
+            "Failed to destroy XCCL communicator");
       }
       xccl_comm_ = nullptr;
     }
@@ -346,11 +346,10 @@ void TorchCommXCCL::init(
     options_.store.reset();
   }
 
-  onecclResult_t result;
-  result = xccl_api_->commUserRank(xccl_comm_, &rank_);
-  if (result != onecclSuccess) [[unlikely]] {
-    throw std::runtime_error("XCCL commUserRank failed");
-  }
+  XCCL_CHECK(
+      xccl_api_,
+      xccl_api_->commUserRank(xccl_comm_, &rank_),
+      "XCCL commUserRank failed");
 
   tryTorchCommLoggingInit("torchcomm");
 
@@ -362,10 +361,10 @@ void TorchCommXCCL::init(
                      << " Minor: " << xccl_api_->getMinorVersion()
                      << " Patch: " << xccl_api_->getPatchVersion() << ")";
 
-  result = xccl_api_->commCount(xccl_comm_, &comm_size_);
-  if (result != onecclSuccess) [[unlikely]] {
-    throw std::runtime_error("XCCL commCount failed");
-  }
+  XCCL_CHECK(
+      xccl_api_,
+      xccl_api_->commCount(xccl_comm_, &comm_size_),
+      "XCCL commCount failed");
 
   TracingGuard tracingGuard(name_, comm_size_, "init", rank_);
 
@@ -412,7 +411,10 @@ void TorchCommXCCL::finalize() {
   } else if (work_status == TorchWorkXCCL::WorkStatus::ERROR) {
     comm_state_ = CommState::ERROR;
     onecclResult_t asyncErr;
-    xccl_api_->commGetAsyncError(xccl_comm_, &asyncErr);
+    XCCL_CHECK_IGNORE(
+        xccl_api_,
+        xccl_api_->commGetAsyncError(xccl_comm_, &asyncErr),
+        "XCCL commGetAsyncError failed");
     XCCLException xcclException(*xccl_api_, "XCCL Async Error", asyncErr);
     abortXcclComm();
     throw xcclException;
@@ -459,11 +461,10 @@ void TorchCommXCCL::finalize() {
   // Destroy XCCL communicator
   // TODO: should probably not call this after calling abort.
   if (xccl_comm_) {
-    onecclResult_t result = xccl_api_->commDestroy(xccl_comm_);
-    if (result != onecclSuccess) [[unlikely]] {
-      TC_LOG(ERROR, this) << "XCCL commDestroy failed: "
-                          << xccl_api_->getErrorString(result);
-    }
+    XCCL_CHECK_IGNORE(
+        xccl_api_,
+        xccl_api_->commDestroy(xccl_comm_),
+        "XCCL commDestroy failed");
     xccl_comm_ = nullptr;
   }
 
@@ -491,10 +492,10 @@ int TorchCommXCCL::getRank() const {
   checkInitialized();
 
   int rank;
-  onecclResult_t result = xccl_api_->commUserRank(xccl_comm_, &rank);
-  if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(*xccl_api_, "XCCL commUserRank failed", result);
-  }
+  XCCL_CHECK(
+      xccl_api_,
+      xccl_api_->commUserRank(xccl_comm_, &rank),
+      "XCCL commUserRank failed");
   return rank;
 }
 
@@ -502,10 +503,10 @@ int TorchCommXCCL::getSize() const {
   checkInitialized();
 
   int comm_size;
-  onecclResult_t result = xccl_api_->commCount(xccl_comm_, &comm_size);
-  if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(*xccl_api_, "XCCL commCount failed", result);
-  }
+  XCCL_CHECK(
+      xccl_api_,
+      xccl_api_->commCount(xccl_comm_, &comm_size),
+      "XCCL commCount failed");
   return comm_size;
 }
 
@@ -563,17 +564,16 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::send(
         onecclInvalidUsage);
   }
 
-  onecclResult_t result = xccl_api_->send(
-      tensor.data_ptr(),
-      tensor.numel(),
-      getXcclDataType(tensor),
-      dst,
-      xccl_comm_,
-      stream);
-
-  if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(*xccl_api_, "XCCL send failed", result);
-  }
+  XCCL_CHECK(
+      xccl_api_,
+      xccl_api_->send(
+          tensor.data_ptr(),
+          tensor.numel(),
+          getXcclDataType(tensor),
+          dst,
+          xccl_comm_,
+          stream),
+      "XCCL send failed");
 
   work->recordEnd();
 
@@ -608,17 +608,16 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::recv(
         onecclInvalidUsage);
   }
 
-  onecclResult_t result = xccl_api_->recv(
-      tensor.data_ptr(),
-      tensor.numel(),
-      getXcclDataType(tensor),
-      src,
-      xccl_comm_,
-      stream);
-
-  if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(*xccl_api_, "XCCL recv failed", result);
-  }
+  XCCL_CHECK(
+      xccl_api_,
+      xccl_api_->recv(
+          tensor.data_ptr(),
+          tensor.numel(),
+          getXcclDataType(tensor),
+          src,
+          xccl_comm_,
+          stream),
+      "XCCL recv failed");
 
   work->recordEnd();
 
@@ -675,16 +674,15 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::batch_op_issue(
 
   work->recordStart("batch_op_issue");
 
-  onecclResult_t result = xccl_api_->groupStart();
-  if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(
-        *xccl_api_, "XCCL groupStart failed in batch_op_issue", result);
-  }
+  XCCL_CHECK(
+      xccl_api_,
+      xccl_api_->groupStart(),
+      "XCCL groupStart failed in batch_op_issue");
 
   // Issue each operation individually
   for (const auto& op : ops) {
     if (op.type == BatchSendRecv::P2POp::OpType::SEND) {
-      result = xccl_api_->send(
+      onecclResult_t result = xccl_api_->send(
           op.tensor.data_ptr(),
           op.tensor.numel(),
           getXcclDataType(op.tensor),
@@ -693,18 +691,15 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::batch_op_issue(
           stream);
 
       if (result != onecclSuccess) [[unlikely]] {
-        onecclResult_t result_cleanup =
-            xccl_api_->groupEnd(); // Clean up group on error
-        if (result_cleanup != onecclSuccess) {
-          TC_LOG(ERROR, this)
-              << "XCCL groupEnd failed during error cleanup after send failure in batch_op_issue: "
-              << xccl_api_->getErrorString(result_cleanup);
-        }
+        XCCL_CHECK_IGNORE(
+            xccl_api_,
+            xccl_api_->groupEnd(),
+            "XCCL groupEnd failed during error cleanup after send failure in batch_op_issue");
         throw XCCLException(
             *xccl_api_, "XCCL send failed in batch_op_issue", result);
       }
     } else if (op.type == BatchSendRecv::P2POp::OpType::RECV) {
-      result = xccl_api_->recv(
+      onecclResult_t result = xccl_api_->recv(
           op.tensor.data_ptr(),
           op.tensor.numel(),
           getXcclDataType(op.tensor),
@@ -713,24 +708,20 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::batch_op_issue(
           stream);
 
       if (result != onecclSuccess) [[unlikely]] {
-        onecclResult_t result_cleanup =
-            xccl_api_->groupEnd(); // Clean up group on error
-        if (result_cleanup != onecclSuccess) {
-          TC_LOG(ERROR, this)
-              << "XCCL groupEnd failed during error cleanup after recv failure in batch_op_issue: "
-              << xccl_api_->getErrorString(result_cleanup);
-        }
+        XCCL_CHECK_IGNORE(
+            xccl_api_,
+            xccl_api_->groupEnd(),
+            "XCCL groupEnd failed during error cleanup after recv failure in batch_op_issue");
         throw XCCLException(
             *xccl_api_, "XCCL recv failed in batch_op_issue", result);
       }
     }
   }
 
-  result = xccl_api_->groupEnd();
-  if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(
-        *xccl_api_, "XCCL groupEnd failed in batch_op_issue", result);
-  }
+  XCCL_CHECK(
+      xccl_api_,
+      xccl_api_->groupEnd(),
+      "XCCL groupEnd failed in batch_op_issue");
 
   work->recordEnd();
 
@@ -776,18 +767,17 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::broadcast(
   }
 
   const auto dataType = getXcclDataType(tensor);
-  onecclResult_t result = xccl_api_->broadcast(
-      tensor.data_ptr(),
-      tensor.data_ptr(),
-      tensor.numel(),
-      dataType,
-      root,
-      xccl_comm_,
-      stream);
-
-  if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(*xccl_api_, "XCCL broadcast failed", result);
-  }
+  XCCL_CHECK(
+      xccl_api_,
+      xccl_api_->broadcast(
+          tensor.data_ptr(),
+          tensor.data_ptr(),
+          tensor.numel(),
+          dataType,
+          root,
+          xccl_comm_,
+          stream),
+      "XCCL broadcast failed");
   work->recordEnd();
   enqueueWork(work, stream);
   return work;
@@ -847,18 +837,17 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_reduce(
   }();
 
   const auto dataType = getXcclDataType(tensor);
-  onecclResult_t result = xccl_api_->allReduce(
-      tensor.data_ptr(),
-      tensor.data_ptr(), // In-place operation
-      tensor.numel(),
-      dataType,
-      getXcclReduceOp(maybe_new_op, xccl_comm_, dataType),
-      xccl_comm_,
-      stream);
-
-  if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(*xccl_api_, "XCCL allReduce failed", result);
-  }
+  XCCL_CHECK(
+      xccl_api_,
+      xccl_api_->allReduce(
+          tensor.data_ptr(),
+          tensor.data_ptr(), // In-place operation
+          tensor.numel(),
+          dataType,
+          getXcclReduceOp(maybe_new_op, xccl_comm_, dataType),
+          xccl_comm_,
+          stream),
+      "XCCL allReduce failed");
 
   if (op == ReduceOp::RedOpType::AVG) {
     // For scale-out all_reduce with AVG, oneCCL does not support AVG
@@ -933,19 +922,18 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce(
       getMaybeScaledInputsAndNewOp(tensor, op, stream);
 
   const auto dataType = getXcclDataType(tensor);
-  onecclResult_t result = xccl_api_->reduce(
-      maybe_scaled_tensor.data_ptr(),
-      tensor.data_ptr(),
-      tensor.numel(),
-      dataType,
-      getXcclReduceOp(maybe_new_op, xccl_comm_, dataType),
-      root,
-      xccl_comm_,
-      stream);
-
-  if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(*xccl_api_, "XCCL reduce failed", result);
-  }
+  XCCL_CHECK(
+      xccl_api_,
+      xccl_api_->reduce(
+          maybe_scaled_tensor.data_ptr(),
+          tensor.data_ptr(),
+          tensor.numel(),
+          dataType,
+          getXcclReduceOp(maybe_new_op, xccl_comm_, dataType),
+          root,
+          xccl_comm_,
+          stream),
+      "XCCL reduce failed");
 
   if (rank_ == root && op == ReduceOp::RedOpType::AVG) {
     // If this is a reduce with AVG, we need to divide the result by
@@ -1026,18 +1014,16 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_gather(
 
   at::Tensor output_flattened = createFlattenedTensor(tensor_list, stream);
 
-  onecclResult_t result = xccl_api_->allGather(
-      tensor.data_ptr(),
-      output_flattened.data_ptr(),
-      tensor.numel(),
-      getXcclDataType(tensor),
-      xccl_comm_,
-      stream);
-
-  if (result != onecclSuccess) {
-    throw XCCLException(
-        *xccl_api_, "XCCL allGather failed in all_gather", result);
-  }
+  XCCL_CHECK(
+      xccl_api_,
+      xccl_api_->allGather(
+          tensor.data_ptr(),
+          output_flattened.data_ptr(),
+          tensor.numel(),
+          getXcclDataType(tensor),
+          xccl_comm_,
+          stream),
+      "XCCL allGather failed in all_gather");
 
   copyFlattenedTensorToTensors(output_flattened, tensor_list, xpu_api_, stream);
 
@@ -1083,11 +1069,10 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_gather_v(
   work->recordStart("all_gather_v");
 
   // Use multiple broadcast operations for all_gather_v
-  onecclResult_t result = xccl_api_->groupStart();
-  if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(
-        *xccl_api_, "XCCL groupStart failed in all_gather_v", result);
-  }
+  XCCL_CHECK(
+      xccl_api_,
+      xccl_api_->groupStart(),
+      "XCCL groupStart failed in all_gather_v");
 
   for (int i = 0; i < comm_size_; ++i) {
     // assign input/output tensors to support vector all_gather (all_gather_v)
@@ -1106,7 +1091,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_gather_v(
       continue;
     }
 
-    result = xccl_api_->broadcast(
+    onecclResult_t result = xccl_api_->broadcast(
         input.data_ptr(),
         output.data_ptr(),
         input.numel(),
@@ -1116,23 +1101,19 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_gather_v(
         stream);
 
     if (result != onecclSuccess) [[unlikely]] {
-      onecclResult_t result_cleanup =
-          xccl_api_->groupEnd(); // clean up group before throwing
-      if (result_cleanup != onecclSuccess) {
-        TC_LOG(ERROR, this)
-            << "XCCL groupEnd failed during error cleanup after broadcast failure in all_gather_v: "
-            << xccl_api_->getErrorString(result_cleanup);
-      }
+      XCCL_CHECK_IGNORE(
+          xccl_api_,
+          xccl_api_->groupEnd(),
+          "XCCL groupEnd failed during error cleanup after broadcast failure in all_gather_v");
       throw XCCLException(
           *xccl_api_, "XCCL broadcast failed in all_gather_v", result);
     }
   }
 
-  result = xccl_api_->groupEnd();
-  if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(
-        *xccl_api_, "XCCL groupEnd failed in all_gather_v", result);
-  }
+  XCCL_CHECK(
+      xccl_api_,
+      xccl_api_->groupEnd(),
+      "XCCL groupEnd failed in all_gather_v");
 
   work->recordEnd();
 
@@ -1184,18 +1165,16 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_gather_single(
     return work;
   }
 
-  onecclResult_t result = xccl_api_->allGather(
-      input.data_ptr(),
-      output.data_ptr(),
-      input.numel(),
-      getXcclDataType(input),
-      xccl_comm_,
-      stream);
-
-  if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(
-        *xccl_api_, "XCCL allGather failed in all_gather_single", result);
-  }
+  XCCL_CHECK(
+      xccl_api_,
+      xccl_api_->allGather(
+          input.data_ptr(),
+          output.data_ptr(),
+          input.numel(),
+          getXcclDataType(input),
+          xccl_comm_,
+          stream),
+      "XCCL allGather failed in all_gather_single");
 
   work->recordEnd();
 
@@ -1266,19 +1245,17 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter(
 
   const auto data_type = getXcclDataType(output);
 
-  onecclResult_t result = xccl_api_->reduceScatter(
-      input_flattened.data_ptr(),
-      output.data_ptr(),
-      output.numel(),
-      data_type,
-      getXcclReduceOp(maybe_new_op, xccl_comm_, data_type),
-      xccl_comm_,
-      stream);
-
-  if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(
-        *xccl_api_, "XCCL reduceScatter failed in reduce_scatter", result);
-  }
+  XCCL_CHECK(
+      xccl_api_,
+      xccl_api_->reduceScatter(
+          input_flattened.data_ptr(),
+          output.data_ptr(),
+          output.numel(),
+          data_type,
+          getXcclReduceOp(maybe_new_op, xccl_comm_, data_type),
+          xccl_comm_,
+          stream),
+      "XCCL reduceScatter failed in reduce_scatter");
 
   if (op == ReduceOp::RedOpType::AVG) {
     // If this is a reduce_scatter with AVG, we need to divide the result by
@@ -1356,11 +1333,10 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_v(
       getMaybeScaledInputsAndNewOp(input_list, op, stream);
 
   // Use multiple reduce operations for reduce_scatter
-  onecclResult_t result = xccl_api_->groupStart();
-  if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(
-        *xccl_api_, "XCCL groupStart failed in reduce_scatter_v", result);
-  }
+  XCCL_CHECK(
+      xccl_api_,
+      xccl_api_->groupStart(),
+      "XCCL groupStart failed in reduce_scatter_v");
 
   for (int i = 0; i < comm_size_; ++i) {
     auto& input_tensor = maybe_scaled_input_list[i];
@@ -1374,7 +1350,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_v(
     // when output is empty (nullptr). So we use input_tensor.data_ptr() for all
     // non-root ranks.
     auto out_ptr = (i == rank_) ? output.data_ptr() : input_tensor.data_ptr();
-    result = xccl_api_->reduce(
+    onecclResult_t result = xccl_api_->reduce(
         input_tensor.data_ptr(),
         out_ptr,
         input_tensor.numel(),
@@ -1384,23 +1360,19 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_v(
         xccl_comm_,
         stream);
     if (result != onecclSuccess) [[unlikely]] {
-      onecclResult_t result_cleanup =
-          xccl_api_->groupEnd(); // clean up group before throwing
-      if (result_cleanup != onecclSuccess) {
-        TC_LOG(ERROR, this)
-            << "XCCL groupEnd failed during error cleanup after reduce failure in reduce_scatter_v: "
-            << xccl_api_->getErrorString(result_cleanup);
-      }
+      XCCL_CHECK_IGNORE(
+          xccl_api_,
+          xccl_api_->groupEnd(),
+          "XCCL groupEnd failed during error cleanup after reduce failure in reduce_scatter_v");
       throw XCCLException(
           *xccl_api_, "XCCL reduce failed in reduce_scatter_v", result);
     }
   }
 
-  result = xccl_api_->groupEnd();
-  if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(
-        *xccl_api_, "XCCL groupEnd failed in reduce_scatter_v", result);
-  }
+  XCCL_CHECK(
+      xccl_api_,
+      xccl_api_->groupEnd(),
+      "XCCL groupEnd failed in reduce_scatter_v");
 
   if (op == ReduceOp::RedOpType::AVG) {
     // If this is a reduce_scatter with AVG, we need to divide the result by
@@ -1483,21 +1455,17 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_single(
       getMaybeScaledInputsAndNewOp(input, op, stream);
 
   const auto dataType = getXcclDataType(maybe_scaled_input);
-  onecclResult_t result = xccl_api_->reduceScatter(
-      maybe_scaled_input.data_ptr(),
-      output.data_ptr(),
-      output.numel(),
-      dataType,
-      getXcclReduceOp(maybe_new_op, xccl_comm_, dataType),
-      xccl_comm_,
-      stream);
-
-  if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(
-        *xccl_api_,
-        "XCCL reduceScatter failed in reduce_scatter_single",
-        result);
-  }
+  XCCL_CHECK(
+      xccl_api_,
+      xccl_api_->reduceScatter(
+          maybe_scaled_input.data_ptr(),
+          output.data_ptr(),
+          output.numel(),
+          dataType,
+          getXcclReduceOp(maybe_new_op, xccl_comm_, dataType),
+          xccl_comm_,
+          stream),
+      "XCCL reduceScatter failed in reduce_scatter_single");
 
   if (op == ReduceOp::RedOpType::AVG) {
     // If this is a reduce_scatter with AVG, we need to divide the result by
@@ -1574,18 +1542,16 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_to_all_single(
   size_t chunk_size = input.numel() / comm_size_;
   const auto data_type = getXcclDataType(input);
 
-  onecclResult_t result = xccl_api_->allToAll(
-      input.data_ptr(),
-      output.data_ptr(),
-      chunk_size,
-      data_type,
-      xccl_comm_,
-      stream);
-
-  if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(
-        *xccl_api_, "XCCL allToAll failed in all_to_all_single", result);
-  }
+  XCCL_CHECK(
+      xccl_api_,
+      xccl_api_->allToAll(
+          input.data_ptr(),
+          output.data_ptr(),
+          chunk_size,
+          data_type,
+          xccl_comm_,
+          stream),
+      "XCCL allToAll failed in all_to_all_single");
 
   // Record end event after XCCL operation
   work->recordEnd();
@@ -1686,11 +1652,10 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_to_all_v_single(
   char* sptr = static_cast<char*>(input.data_ptr());
   char* rptr = static_cast<char*>(output.data_ptr());
 
-  onecclResult_t result = xccl_api_->groupStart();
-  if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(
-        *xccl_api_, "XCCL groupStart failed in all_to_all_v_single", result);
-  }
+  XCCL_CHECK(
+      xccl_api_,
+      xccl_api_->groupStart(),
+      "XCCL groupStart failed in all_to_all_v_single");
 
   for (int i = 0; i < comm_size_; ++i) {
     if (sendcounts[i] == 0 && recvcounts[i] == 0) [[unlikely]] {
@@ -1711,7 +1676,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_to_all_v_single(
         continue;
       } else {
         // Send to rank i
-        result = xccl_api_->send(
+        onecclResult_t result = xccl_api_->send(
             sptr + senddispls[i] * type_size,
             sendcounts[i],
             data_type,
@@ -1719,13 +1684,10 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_to_all_v_single(
             xccl_comm_,
             stream);
         if (result != onecclSuccess) [[unlikely]] {
-          onecclResult_t result_cleanup =
-              xccl_api_->groupEnd(); // clean up group before throwing
-          if (result_cleanup != onecclSuccess) {
-            TC_LOG(ERROR, this)
-                << "XCCL groupEnd failed during error cleanup after send failure in all_to_all_v_single: "
-                << xccl_api_->getErrorString(result_cleanup);
-          }
+          XCCL_CHECK_IGNORE(
+              xccl_api_,
+              xccl_api_->groupEnd(),
+              "XCCL groupEnd failed during error cleanup after send failure in all_to_all_v_single");
           throw XCCLException(
               *xccl_api_, "XCCL send failed in all_to_all_v_single", result);
         }
@@ -1733,7 +1695,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_to_all_v_single(
     }
 
     if (recvcounts[i] > 0) {
-      result = xccl_api_->recv(
+      onecclResult_t result = xccl_api_->recv(
           rptr + recvdispls[i] * type_size,
           recvcounts[i],
           data_type,
@@ -1741,24 +1703,20 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_to_all_v_single(
           xccl_comm_,
           stream);
       if (result != onecclSuccess) [[unlikely]] {
-        onecclResult_t result_cleanup =
-            xccl_api_->groupEnd(); // clean up group before throwing
-        if (result_cleanup != onecclSuccess) {
-          TC_LOG(ERROR, this)
-              << "XCCL groupEnd failed during error cleanup after recv failure in all_to_all_v_single: "
-              << xccl_api_->getErrorString(result_cleanup);
-        }
+        XCCL_CHECK_IGNORE(
+            xccl_api_,
+            xccl_api_->groupEnd(),
+            "XCCL groupEnd failed during error cleanup after recv failure in all_to_all_v_single");
         throw XCCLException(
             *xccl_api_, "XCCL recv failed in all_to_all_v_single", result);
       }
     }
   }
 
-  result = xccl_api_->groupEnd();
-  if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(
-        *xccl_api_, "XCCL groupEnd failed in all_to_all_v_single", result);
-  }
+  XCCL_CHECK(
+      xccl_api_,
+      xccl_api_->groupEnd(),
+      "XCCL groupEnd failed in all_to_all_v_single");
 
   // Record end event after XCCL operation
   work->recordEnd();
@@ -1816,11 +1774,10 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_to_all(
   // Record start event before XCCL operations
   work->recordStart("all_to_all");
 
-  onecclResult_t result = xccl_api_->groupStart();
-  if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(
-        *xccl_api_, "XCCL groupStart failed in all_to_all", result);
-  }
+  XCCL_CHECK(
+      xccl_api_,
+      xccl_api_->groupStart(),
+      "XCCL groupStart failed in all_to_all");
 
   for (int i = 0; i < comm_size_; ++i) {
     if (input_tensor_list[i].numel() == 0) [[unlikely]] {
@@ -1841,7 +1798,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_to_all(
       continue;
     } else {
       // Send to rank i
-      result = xccl_api_->send(
+      onecclResult_t result = xccl_api_->send(
           input_tensor_list[i].data_ptr(),
           input_tensor_list[i].numel(),
           getXcclDataType(input_tensor_list[i]),
@@ -1849,20 +1806,17 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_to_all(
           xccl_comm_,
           stream);
       if (result != onecclSuccess) [[unlikely]] {
-        onecclResult_t result_cleanup =
-            xccl_api_->groupEnd(); // clean up group before throwing
-        if (result_cleanup != onecclSuccess) {
-          TC_LOG(ERROR, this)
-              << "XCCL groupEnd failed during error cleanup after send failure in all_to_all: "
-              << xccl_api_->getErrorString(result_cleanup);
-        }
+        XCCL_CHECK_IGNORE(
+            xccl_api_,
+            xccl_api_->groupEnd(),
+            "XCCL groupEnd failed during error cleanup after send failure in all_to_all");
         throw XCCLException(
             *xccl_api_, "XCCL send failed in all_to_all", result);
       }
     }
 
     // Receive from rank i
-    result = xccl_api_->recv(
+    onecclResult_t result = xccl_api_->recv(
         output_tensor_list[i].data_ptr(),
         output_tensor_list[i].numel(),
         getXcclDataType(output_tensor_list[i]),
@@ -1870,22 +1824,16 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_to_all(
         xccl_comm_,
         stream);
     if (result != onecclSuccess) [[unlikely]] {
-      onecclResult_t result_cleanup =
-          xccl_api_->groupEnd(); // clean up group before throwing
-      if (result_cleanup != onecclSuccess) {
-        TC_LOG(ERROR, this)
-            << "XCCL groupEnd failed during error cleanup after recv failure in all_to_all: "
-            << xccl_api_->getErrorString(result_cleanup);
-      }
+      XCCL_CHECK_IGNORE(
+          xccl_api_,
+          xccl_api_->groupEnd(),
+          "XCCL groupEnd failed during error cleanup after recv failure in all_to_all");
       throw XCCLException(*xccl_api_, "XCCL recv failed in all_to_all", result);
     }
   }
 
-  result = xccl_api_->groupEnd();
-  if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(
-        *xccl_api_, "XCCL groupEnd failed in all_to_all", result);
-  }
+  XCCL_CHECK(
+      xccl_api_, xccl_api_->groupEnd(), "XCCL groupEnd failed in all_to_all");
 
   // Record end event after XCCL operations
   work->recordEnd();
@@ -1911,18 +1859,17 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::barrier(
   work->recordStart("barrier");
 
   // Use pre-allocated XPU buffer for barrier
-  onecclResult_t result = xccl_api_->allReduce(
-      barrier_buffer_,
-      barrier_buffer_,
-      1,
-      onecclFloat32,
-      onecclSum,
-      xccl_comm_,
-      stream);
-
-  if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(*xccl_api_, "XCCL barrier failed", result);
-  }
+  XCCL_CHECK(
+      xccl_api_,
+      xccl_api_->allReduce(
+          barrier_buffer_,
+          barrier_buffer_,
+          1,
+          onecclFloat32,
+          onecclSum,
+          xccl_comm_,
+          stream),
+      "XCCL barrier failed");
 
   // Record end event after XCCL operation
   work->recordEnd();
@@ -1992,17 +1939,14 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::scatter(
   // See https://github.com/uxlfoundation/oneCCL/issues/193 for details.
 
   // Implement Scatter using point-to-point operations
-  onecclResult_t result = xccl_api_->groupStart();
-  if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(
-        *xccl_api_, "XCCL groupStart failed in scatter", result);
-  }
+  XCCL_CHECK(
+      xccl_api_, xccl_api_->groupStart(), "XCCL groupStart failed in scatter");
 
   if (rank_ == root) {
     // Root sends to all ranks (except itself)
     for (int i = 0; i < comm_size_; ++i) {
       if (i != root) {
-        result = xccl_api_->send(
+        onecclResult_t result = xccl_api_->send(
             input_tensor_list[i].data_ptr(),
             input_tensor_list[i].numel(),
             getXcclDataType(input_tensor_list[i]),
@@ -2010,13 +1954,10 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::scatter(
             xccl_comm_,
             stream);
         if (result != onecclSuccess) [[unlikely]] {
-          onecclResult_t result_cleanup =
-              xccl_api_->groupEnd(); // Clean up group on error
-          if (result_cleanup != onecclSuccess) {
-            TC_LOG(ERROR, this)
-                << "XCCL groupEnd failed during error cleanup after send failure in scatter: "
-                << xccl_api_->getErrorString(result_cleanup);
-          }
+          XCCL_CHECK_IGNORE(
+              xccl_api_,
+              xccl_api_->groupEnd(),
+              "XCCL groupEnd failed during error cleanup after send failure in scatter");
           throw XCCLException(
               *xccl_api_, "XCCL send failed in scatter", result);
         }
@@ -2035,7 +1976,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::scatter(
         "memcpyAsync failed in scatter");
   } else {
     // Non-root ranks receive from root
-    result = xccl_api_->recv(
+    onecclResult_t result = xccl_api_->recv(
         output_tensor.data_ptr(),
         output_tensor.numel(),
         getXcclDataType(output_tensor),
@@ -2043,20 +1984,15 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::scatter(
         xccl_comm_,
         stream);
     if (result != onecclSuccess) [[unlikely]] {
-      onecclResult_t result_cleanup =
-          xccl_api_->groupEnd(); // Clean up group on error
-      if (result_cleanup != onecclSuccess) {
-        TC_LOG(ERROR, this)
-            << "XCCL groupEnd failed during error cleanup after recv failure in scatter: "
-            << xccl_api_->getErrorString(result_cleanup);
-      }
+      XCCL_CHECK_IGNORE(
+          xccl_api_,
+          xccl_api_->groupEnd(),
+          "XCCL groupEnd failed during error cleanup after recv failure in scatter");
       throw XCCLException(*xccl_api_, "XCCL recv failed in scatter", result);
     }
   }
-  result = xccl_api_->groupEnd();
-  if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(*xccl_api_, "XCCL groupEnd failed in scatter", result);
-  }
+  XCCL_CHECK(
+      xccl_api_, xccl_api_->groupEnd(), "XCCL groupEnd failed in scatter");
 
   // Record end event after XCCL operations
   work->recordEnd();
@@ -2130,10 +2066,8 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::gather(
   // Unlike the NCCL implementation which groups only the send operations,
   // we group both send and receive operations to avoid a hang in oneCCL.
   // See https://github.com/uxlfoundation/oneCCL/issues/193 for details.
-  onecclResult_t result = xccl_api_->groupStart();
-  if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(*xccl_api_, "XCCL groupStart failed in gather", result);
-  }
+  XCCL_CHECK(
+      xccl_api_, xccl_api_->groupStart(), "XCCL groupStart failed in gather");
 
   if (rank_ == root) {
     // Root receives from all ranks (except itself)
@@ -2148,13 +2082,10 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::gather(
             xccl_comm_,
             stream);
         if (result != onecclSuccess) [[unlikely]] {
-          onecclResult_t result_cleanup =
-              xccl_api_->groupEnd(); // Clean up group on error
-          if (result_cleanup != onecclSuccess) {
-            TC_LOG(ERROR, this)
-                << "XCCL groupEnd failed during error cleanup after recv failure in gather: "
-                << xccl_api_->getErrorString(result_cleanup);
-          }
+          XCCL_CHECK_IGNORE(
+              xccl_api_,
+              xccl_api_->groupEnd(),
+              "XCCL groupEnd failed during error cleanup after recv failure in gather");
           throw XCCLException(*xccl_api_, "XCCL recv failed in gather", result);
         }
       }
@@ -2179,20 +2110,15 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::gather(
         xccl_comm_,
         stream);
     if (result != onecclSuccess) [[unlikely]] {
-      onecclResult_t result_cleanup =
-          xccl_api_->groupEnd(); // Clean up group on error
-      if (result_cleanup != onecclSuccess) {
-        TC_LOG(ERROR, this)
-            << "XCCL groupEnd failed during error cleanup after send failure in gather: "
-            << xccl_api_->getErrorString(result_cleanup);
-      }
+      XCCL_CHECK_IGNORE(
+          xccl_api_,
+          xccl_api_->groupEnd(),
+          "XCCL groupEnd failed during error cleanup after send failure in gather");
       throw XCCLException(*xccl_api_, "XCCL send failed in gather", result);
     }
   }
-  result = xccl_api_->groupEnd();
-  if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(*xccl_api_, "XCCL groupEnd failed in gather", result);
-  }
+  XCCL_CHECK(
+      xccl_api_, xccl_api_->groupEnd(), "XCCL groupEnd failed in gather");
 
   // Record end event after XCCL operations
   work->recordEnd();
@@ -2251,11 +2177,10 @@ std::shared_ptr<TorchCommBackend> TorchCommXCCL::split(
 
   populateXcclConfigFromHints(config, options, name);
 
-  onecclResult_t result =
-      xccl_api_->commSplit(xccl_comm_, color, new_rank, &new_comm, &config);
-  if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(*xccl_api_, "XCCL split failed", result);
-  }
+  XCCL_CHECK(
+      xccl_api_,
+      xccl_api_->commSplit(xccl_comm_, color, new_rank, &new_comm, &config),
+      "XCCL split failed");
 
   // If color was ONECCL_SPLIT_NOCOLOR, oneCCL returns nullptr in new_comm
   if (color == ONECCL_SPLIT_NOCOLOR || new_comm == nullptr) {
