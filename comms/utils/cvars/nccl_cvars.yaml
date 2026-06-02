@@ -1152,11 +1152,12 @@ cvars:
 
  - name        : NCCL_CTRAN_HIER_AG_OVERLAP_CHUNK_BYTES
    type        : uint64_t
-   default     : 4194304
+   default     : 0
    description : |-
-     Logical chunk size, in bytes, used by the experimental overlapped
-     cthierarchical_ring AllGather kernel for IB-ready notification and
-     NVLink fanout scheduling.
+     Override for the logical chunk size, in bytes, used by the experimental
+     overlapped cthierarchical_ring AllGather kernel for IB-ready notification
+     and NVLink fanout scheduling. When zero, ctran selects a chunk size from
+     {512KiB, 1MiB, 2MiB, 4MiB, 8MiB} based on the send message size.
 
  - name        : NCCL_CTRAN_HIER_AG_IBGDA_DATA_BUFFER_SIZE
    type        : uint64_t
