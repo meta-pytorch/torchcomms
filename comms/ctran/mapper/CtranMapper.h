@@ -1903,17 +1903,27 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       // receive operation. Once it does, it will mark tcpDmReq as complete,
       // allowing us to exit the loop.
 
-      if (kernElem == nullptr) {
-        CLOGF(ERR, "TCP Device Memory requires kernElem in the notifier");
-        return commInternalError;
-      }
-
-      const void* rbuff = kernElem->waitNotify.recvbuff;
-      size_t len = kernElem->waitNotify.nbytes;
-
-      if (rbuff == nullptr || len == 0) {
-        CLOGF(ERR, "TCP Device Memory requires recvbuff in the notifier");
-        return commInternalError;
+      const void* rbuff = nullptr;
+      size_t len = 0;
+      if (kernElem != nullptr) {
+        rbuff = kernElem->waitNotify.recvbuff;
+        len = kernElem->waitNotify.nbytes;
+        if (rbuff == nullptr || len == 0) {
+          CLOGF(ERR, "TCP Device Memory requires recvbuff in the notifier");
+          return commInternalError;
+        }
+      } else {
+        const DevMemType type = regElem->getType();
+        if (type != kHostUnregistered && type != kHostPinned) {
+          CLOGF(
+              ERR,
+              "TCP Device Memory requires kernElem in the notifier "
+              "(memType {})",
+              devMemTypeStr(type));
+          return commInternalError;
+        }
+        rbuff = regElem->buf;
+        len = regElem->len;
       }
 
       FB_COMMCHECK(this->ctranTcpDm->irecv(
