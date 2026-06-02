@@ -1845,6 +1845,35 @@ cvars:
      to be NVL-connected. All data movement and sync operations go over
      NVLink. Requires that all ranks are in the same NVL domain.
 
+ - name        : NCCL_CTRAN_PIPES_SENDRECV_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Enable pipelined send/recv staging buffers on the IBGDA transport in
+     Pipes MultiPeerTransport. Required for ring-based collectives
+     (pipesring AllReduce, Ring ReduceScatter, Ring AllGather) that use
+     the send()/recv()/forward() protocol. When false, only the raw
+     put/signal APIs are available on the transport handles.
+
+ - name        : NCCL_CTRAN_PIPES_SENDRECV_MAX_GROUPS
+   type        : uint64_t
+   default     : 128
+   description : |-
+     Maximum number of block-groups that may participate in a single
+     send()/recv() call on the IBGDA transport. This sizes the per-peer
+     signal, counter, and step-state arrays. Must be >= the total grid
+     blocks (num_blocks) launched by any ring collective kernel using
+     this transport. Default 128 matches SendRecvConfig's own default.
+
+ - name        : NCCL_CTRAN_PIPES_SENDRECV_PIPELINE_DEPTH
+   type        : uint64_t
+   default     : 2
+   description : |-
+     Number of logical slots in the send/recv staging ring on the IBGDA
+     transport. Total staging memory per peer per direction is
+     pipelineDepth * dataBufferSize. Deeper pipeline hides more latency
+     at the cost of more memory.
+
  - name        : NCCL_CTRAN_IBGDA_QP_DEPTH
    type        : uint64_t
    default     : 1024
@@ -2649,13 +2678,14 @@ cvars:
  - name        : NCCL_ALLREDUCE_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctdirect, ctring
+   choices     : orig, ctran, ctdirect, ctring, pipesring
    description : |-
      The algorithm to use for Allreduce communication
      orig - Copy-based algorithm
      ctran - Picks the best ctran-based algorithm
      ctdirect - Ctran-based direct point-to-point algorithm
      ctring - ctran-based ring algorithm
+     pipesring - Pipes-based device-native ring algorithm (IBGDA)
 
  - name        : NCCL_ALLREDUCE_TYPE
    type        : enum
