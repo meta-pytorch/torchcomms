@@ -45,55 +45,94 @@ __global__ __launch_bounds__(kBlockSize, 1) void ring_allreduce_kernel(
       ring_group.group_id * ring_tile.tile_elements;
   const std::size_t io_tile_bytes = ring_tile.bytes();
 
-  const std::size_t pipeline_window = next.pipeline_window(group.total_groups);
+  const std::size_t transport_window = next.pipeline_window(group.total_groups);
+  const std::size_t pipeline_window = (args.ib_window_bytes > 0)
+      ? min(args.ib_window_bytes, transport_window)
+      : transport_window;
 
   const int my_rank = args.my_rank;
   const int stride = (my_rank - topo.prev_rank + W) % W;
 
   // ═══════════════════════════════════════════════════════════════════
-  // PHASE 1: REDUCE-SCATTER (TileReduceStaged CopyOp)
+  // PHASE 1: REDUCE-SCATTER (TileReduceStaged or Memcpy CopyOp)
   // ═══════════════════════════════════════════════════════════════════
   {
     const char* input_base = reinterpret_cast<const char*>(args.input);
-    using ReduceOp = TileReduceStaged<T, AccumOp, kTileElems, kBlockSize>;
 
-    for (std::size_t off = 0; off < io_tile_bytes; off += pipeline_window) {
-      const std::size_t remaining = io_tile_bytes - off;
-      const std::size_t window =
-          (remaining < pipeline_window) ? remaining : pipeline_window;
+    if (args.skip_reduction) {
+      for (std::size_t off = 0; off < io_tile_bytes; off += pipeline_window) {
+        const std::size_t remaining = io_tile_bytes - off;
+        const std::size_t window =
+            (remaining < pipeline_window) ? remaining : pipeline_window;
 
-      int current_rank = (my_rank + W - stride) % W;
+        int current_rank = (my_rank + W - stride) % W;
 
-      const char* send_src = input_base + current_rank * chunk_bytes +
-          ring_offset + io_tile_offset + off;
-      next.send(group, send_src, window, group.total_groups, max_sig, timeout);
-
-      for (int step = 0; step < W - 1; step++) {
-        current_rank = (current_rank + W - stride) % W;
-        const char* local_input = input_base + current_rank * chunk_bytes +
+        const char* send_src = input_base + current_rank * chunk_bytes +
             ring_offset + io_tile_offset + off;
+        next.send(
+            group, send_src, window, group.total_groups, max_sig, timeout);
 
-        if (step < W - 2) {
-          prev.template forward<ReduceOp>(
-              group,
-              nullptr,
-              next,
-              window,
-              group.total_groups,
-              max_sig,
-              timeout,
-              local_input);
-        } else {
-          char* dst = reinterpret_cast<char*>(args.output) + ring_offset +
-              io_tile_offset + off;
-          prev.template recv<ReduceOp>(
-              group,
-              dst,
-              window,
-              group.total_groups,
-              max_sig,
-              timeout,
-              local_input);
+        for (int step = 0; step < W - 1; step++) {
+          current_rank = (current_rank + W - stride) % W;
+
+          if (step < W - 2) {
+            prev.forward(
+                group,
+                nullptr,
+                next,
+                window,
+                group.total_groups,
+                max_sig,
+                timeout);
+          } else {
+            char* dst = reinterpret_cast<char*>(args.output) + ring_offset +
+                io_tile_offset + off;
+            prev.recv(group, dst, window, group.total_groups, max_sig, timeout);
+          }
+        }
+      }
+    } else {
+      using ReduceOp = TileReduceStaged<T, AccumOp, kTileElems, kBlockSize>;
+
+      for (std::size_t off = 0; off < io_tile_bytes; off += pipeline_window) {
+        const std::size_t remaining = io_tile_bytes - off;
+        const std::size_t window =
+            (remaining < pipeline_window) ? remaining : pipeline_window;
+
+        int current_rank = (my_rank + W - stride) % W;
+
+        const char* send_src = input_base + current_rank * chunk_bytes +
+            ring_offset + io_tile_offset + off;
+        next.send(
+            group, send_src, window, group.total_groups, max_sig, timeout);
+
+        for (int step = 0; step < W - 1; step++) {
+          current_rank = (current_rank + W - stride) % W;
+          const char* local_input = input_base + current_rank * chunk_bytes +
+              ring_offset + io_tile_offset + off;
+
+          if (step < W - 2) {
+            prev.template forward<ReduceOp>(
+                group,
+                nullptr,
+                next,
+                window,
+                group.total_groups,
+                max_sig,
+                timeout,
+                local_input);
+          } else {
+            char* dst = reinterpret_cast<char*>(args.output) + ring_offset +
+                io_tile_offset + off;
+            prev.template recv<ReduceOp>(
+                group,
+                dst,
+                window,
+                group.total_groups,
+                max_sig,
+                timeout,
+                local_input);
+          }
         }
       }
     }

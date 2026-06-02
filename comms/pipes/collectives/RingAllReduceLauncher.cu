@@ -43,6 +43,8 @@ void launch_impl(const RingAllReduceLaunchParams& params, Timeout timeout) {
   args.num_ranks = params.num_ranks;
   args.chunk_elements = chunk_elements;
   args.signaling_data_size = params.signaling_data_size;
+  args.ib_window_bytes = params.ib_window_bytes;
+  args.skip_reduction = params.skip_reduction;
   args.input = params.input;
   args.output = params.output;
 

@@ -33,6 +33,9 @@ struct RingAllReduceBenchmarkConfig {
   int num_qps;
   bool enable_bidir_ag{false};
   bool use_reverse_ring{false};
+  std::size_t signaling_data_size{0};
+  std::size_t ib_window_bytes{0};
+  bool skip_reduction{false};
   std::string name;
 };
 
@@ -245,6 +248,9 @@ class RingAllReduceBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     launch_params.num_rings = config.num_rings;
     launch_params.stream = stream_;
     launch_params.enable_bidir_ag = config.enable_bidir_ag;
+    launch_params.signaling_data_size = config.signaling_data_size;
+    launch_params.ib_window_bytes = config.ib_window_bytes;
+    launch_params.skip_reduction = config.skip_reduction;
 
     for (int r = 0; r < config.num_rings; r++) {
       auto& rp = launch_params.rings[r];
@@ -354,42 +360,7 @@ TEST_F(RingAllReduceBenchmarkFixture, VsNccl) {
   int kNumQps = 4;
 
   std::vector<RingAllReduceBenchmarkConfig> configs = {
-      // Baselines: full sweep for first real Ctran comparison
-      {.total_elements = 64 * 1024,
-       .num_blocks = 8,
-       .num_rings = 1,
-       .data_buffer_size = kDataBufferSize,
-       .pipeline_depth = 2,
-       .num_qps = kNumQps,
-       .name = "256KB_8B"},
-      {.total_elements = 256 * 1024,
-       .num_blocks = 16,
-       .num_rings = 1,
-       .data_buffer_size = kDataBufferSize,
-       .pipeline_depth = 2,
-       .num_qps = kNumQps,
-       .name = "1MB_16B"},
-      {.total_elements = 1024 * 1024,
-       .num_blocks = 16,
-       .num_rings = 1,
-       .data_buffer_size = kDataBufferSize,
-       .pipeline_depth = 2,
-       .num_qps = kNumQps,
-       .name = "4MB_16B"},
-      {.total_elements = 4 * 1024 * 1024,
-       .num_blocks = 16,
-       .num_rings = 1,
-       .data_buffer_size = kDataBufferSize,
-       .pipeline_depth = 2,
-       .num_qps = kNumQps,
-       .name = "16MB_16B"},
-      {.total_elements = 8 * 1024 * 1024,
-       .num_blocks = 16,
-       .num_rings = 1,
-       .data_buffer_size = kDataBufferSize,
-       .pipeline_depth = 2,
-       .num_qps = kNumQps,
-       .name = "32MB_16B"},
+      // === Baselines ===
       {.total_elements = 16 * 1024 * 1024,
        .num_blocks = 16,
        .num_rings = 1,
@@ -418,58 +389,65 @@ TEST_F(RingAllReduceBenchmarkFixture, VsNccl) {
        .pipeline_depth = 2,
        .num_qps = kNumQps,
        .name = "512MB_32B"},
-      // Bidir at key sizes
-      {.total_elements = 64 * 1024 * 1024,
+      // === 1GB baseline ===
+      {.total_elements = 256 * 1024 * 1024,
        .num_blocks = 32,
        .num_rings = 1,
        .data_buffer_size = kDataBufferSize,
        .pipeline_depth = 2,
        .num_qps = kNumQps,
-       .enable_bidir_ag = true,
-       .name = "256MB_32B_bd"},
-      {.total_elements = 128 * 1024 * 1024,
-       .num_blocks = 32,
-       .num_rings = 1,
-       .data_buffer_size = kDataBufferSize,
-       .pipeline_depth = 2,
-       .num_qps = kNumQps,
-       .enable_bidir_ag = true,
-       .name = "512MB_32B_bd"},
-      // === Fair comparison: same total grid (perBlockSlot=1MB) ===
-      // Reverse ring: num_blocks halved so total grid matches baseline
+       .name = "1GB_32B"},
+      // === Block count sweep on GB200 ===
       {.total_elements = 64 * 1024 * 1024,
        .num_blocks = 16,
-       .num_rings = 2,
+       .num_rings = 1,
        .data_buffer_size = kDataBufferSize,
        .pipeline_depth = 2,
        .num_qps = kNumQps,
-       .use_reverse_ring = true,
-       .name = "256MB_16B_rv"},
+       .name = "256MB_16B"},
       {.total_elements = 128 * 1024 * 1024,
        .num_blocks = 16,
-       .num_rings = 2,
+       .num_rings = 1,
        .data_buffer_size = kDataBufferSize,
        .pipeline_depth = 2,
        .num_qps = kNumQps,
-       .use_reverse_ring = true,
-       .name = "512MB_16B_rv"},
-      // === Bidir at medium sizes (link not yet saturated) ===
-      {.total_elements = 4 * 1024 * 1024,
+       .name = "512MB_16B"},
+      {.total_elements = 256 * 1024 * 1024,
        .num_blocks = 16,
        .num_rings = 1,
        .data_buffer_size = kDataBufferSize,
        .pipeline_depth = 2,
        .num_qps = kNumQps,
-       .enable_bidir_ag = true,
-       .name = "16MB_16B_bd"},
-      {.total_elements = 8 * 1024 * 1024,
+       .name = "1GB_16B"},
+      // === QP count sweep (multi-QP striping) ===
+      {.total_elements = 128 * 1024 * 1024,
        .num_blocks = 16,
        .num_rings = 1,
        .data_buffer_size = kDataBufferSize,
        .pipeline_depth = 2,
-       .num_qps = kNumQps,
-       .enable_bidir_ag = true,
-       .name = "32MB_16B_bd"},
+       .num_qps = 2,
+       .name = "512MB_16B_2q"},
+      {.total_elements = 128 * 1024 * 1024,
+       .num_blocks = 16,
+       .num_rings = 1,
+       .data_buffer_size = kDataBufferSize,
+       .pipeline_depth = 2,
+       .num_qps = 8,
+       .name = "512MB_16B_8q"},
+      {.total_elements = 256 * 1024 * 1024,
+       .num_blocks = 16,
+       .num_rings = 1,
+       .data_buffer_size = kDataBufferSize,
+       .pipeline_depth = 2,
+       .num_qps = 2,
+       .name = "1GB_16B_2q"},
+      {.total_elements = 256 * 1024 * 1024,
+       .num_blocks = 16,
+       .num_rings = 1,
+       .data_buffer_size = kDataBufferSize,
+       .pipeline_depth = 2,
+       .num_qps = 8,
+       .name = "1GB_16B_8q"},
   };
 
   std::vector<RingAllReduceBenchmarkResult> results;

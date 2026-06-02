@@ -43,6 +43,8 @@ struct RingAllReduceArgs {
   int num_ranks{0};
   std::size_t chunk_elements{0};
   std::size_t signaling_data_size{0};
+  std::size_t ib_window_bytes{0};
+  bool skip_reduction{false};
   RingTopology rings[NumRings]{};
   const T* input{nullptr};
   T* output{nullptr};
