@@ -13,7 +13,8 @@ template <
     typename T,
     typename AccumOp,
     int kTileElems,
-    int kBlockSize>
+    int kBlockSize,
+    bool EnableBidirAg>
 __global__ __launch_bounds__(kBlockSize, 1) void ring_allreduce_kernel(
     const __grid_constant__ RingAllReduceArgs<NumRings, T> args,
     Timeout timeout) {
@@ -112,6 +113,9 @@ __global__ __launch_bounds__(kBlockSize, 1) void ring_allreduce_kernel(
     }
     ring_group.sync();
 
+    const int num_fwd_recvs = EnableBidirAg ? (W - 1 + 1) / 2 : (W - 1);
+    const int num_rev_recvs = EnableBidirAg ? (W - 1) / 2 : 0;
+
     for (std::size_t off = 0; off < io_tile_bytes; off += pipeline_window) {
       const std::size_t remaining = io_tile_bytes - off;
       const std::size_t window =
@@ -120,18 +124,53 @@ __global__ __launch_bounds__(kBlockSize, 1) void ring_allreduce_kernel(
       char* send_src = output_base + my_rank * chunk_bytes + ring_offset +
           io_tile_offset + off;
       next.send(group, send_src, window, group.total_groups, max_sig, timeout);
+      if constexpr (EnableBidirAg) {
+        if (num_rev_recvs > 0) {
+          prev.send(
+              group, send_src, window, group.total_groups, max_sig, timeout);
+        }
+      }
 
-      int current_rank = my_rank;
-      for (int step = 0; step < W - 1; step++) {
-        current_rank = (current_rank + W - stride) % W;
-        char* dst = output_base + current_rank * chunk_bytes + ring_offset +
+      int fwd_current = my_rank;
+      int rev_current = my_rank;
+
+      for (int step = 0; step < num_fwd_recvs; step++) {
+        fwd_current = (fwd_current + W - stride) % W;
+        char* fwd_dst = output_base + fwd_current * chunk_bytes + ring_offset +
             io_tile_offset + off;
-
-        if (step < W - 2) {
+        if (step < num_fwd_recvs - 1) {
           prev.forward(
-              group, dst, next, window, group.total_groups, max_sig, timeout);
+              group,
+              fwd_dst,
+              next,
+              window,
+              group.total_groups,
+              max_sig,
+              timeout);
         } else {
-          prev.recv(group, dst, window, group.total_groups, max_sig, timeout);
+          prev.recv(
+              group, fwd_dst, window, group.total_groups, max_sig, timeout);
+        }
+
+        if constexpr (EnableBidirAg) {
+          if (step < num_rev_recvs) {
+            rev_current = (rev_current + stride) % W;
+            char* rev_dst = output_base + rev_current * chunk_bytes +
+                ring_offset + io_tile_offset + off;
+            if (step < num_rev_recvs - 1) {
+              next.forward(
+                  group,
+                  rev_dst,
+                  prev,
+                  window,
+                  group.total_groups,
+                  max_sig,
+                  timeout);
+            } else {
+              next.recv(
+                  group, rev_dst, window, group.total_groups, max_sig, timeout);
+            }
+          }
         }
       }
     }
@@ -139,7 +178,7 @@ __global__ __launch_bounds__(kBlockSize, 1) void ring_allreduce_kernel(
 #endif
 }
 
-// Template instantiations
+// Template instantiations: EnableBidirAg = false (default)
 template __global__ void ring_allreduce_kernel<1, float, SumOp, 16384, 512>(
     const __grid_constant__ RingAllReduceArgs<1, float>,
     Timeout);
@@ -147,6 +186,20 @@ template __global__ void ring_allreduce_kernel<2, float, SumOp, 16384, 512>(
     const __grid_constant__ RingAllReduceArgs<2, float>,
     Timeout);
 template __global__ void ring_allreduce_kernel<4, float, SumOp, 16384, 512>(
+    const __grid_constant__ RingAllReduceArgs<4, float>,
+    Timeout);
+
+// Template instantiations: EnableBidirAg = true
+template __global__ void
+ring_allreduce_kernel<1, float, SumOp, 16384, 512, true>(
+    const __grid_constant__ RingAllReduceArgs<1, float>,
+    Timeout);
+template __global__ void
+ring_allreduce_kernel<2, float, SumOp, 16384, 512, true>(
+    const __grid_constant__ RingAllReduceArgs<2, float>,
+    Timeout);
+template __global__ void
+ring_allreduce_kernel<4, float, SumOp, 16384, 512, true>(
     const __grid_constant__ RingAllReduceArgs<4, float>,
     Timeout);
 

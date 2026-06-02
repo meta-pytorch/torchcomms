@@ -76,9 +76,42 @@ commResult_t ctranAllReducePipesRing(
 
   const size_t divisibleCount = (count / nRanks) * nRanks;
   const size_t remainder = count - divisibleCount;
+  const size_t messageBytes = divisibleCount * sizeof(float);
 
   if (divisibleCount > 0) {
-    const int numRings = 1;
+    bool enableBidirAg = false;
+    if (nRanks > 2) {
+      int64_t bidirMinSize = NCCL_CTRAN_ALLREDUCE_PIPES_BIDIR_AG_MIN_SIZE;
+      if (bidirMinSize == -1) {
+        enableBidirAg = false;
+      } else if (bidirMinSize == 0) {
+        enableBidirAg = true;
+      } else if (bidirMinSize == -2) {
+        enableBidirAg = (messageBytes >= 16UL * 1024 * 1024);
+      } else if (bidirMinSize > 0) {
+        enableBidirAg = (static_cast<int64_t>(messageBytes) >= bidirMinSize);
+      }
+    }
+
+    int numRings;
+    int numBlocks;
+    if (NCCL_CTRAN_ALLREDUCE_PIPES_NUM_RINGS > 0) {
+      numRings = NCCL_CTRAN_ALLREDUCE_PIPES_NUM_RINGS;
+    } else if (messageBytes > 32UL * 1024 * 1024) {
+      numRings = 2;
+    } else {
+      numRings = 1;
+    }
+
+    if (NCCL_CTRAN_ALLREDUCE_PIPES_NUM_BLOCKS > 0) {
+      numBlocks = NCCL_CTRAN_ALLREDUCE_PIPES_NUM_BLOCKS;
+    } else if (messageBytes <= 1024 * 1024) {
+      numBlocks = 4;
+    } else if (messageBytes <= 32UL * 1024 * 1024) {
+      numBlocks = 8;
+    } else {
+      numBlocks = 16;
+    }
 
     auto ringsOpt = comms::pipes::make_standard_rings(nRanks, rank, numRings);
     if (!ringsOpt.has_value()) {
@@ -100,9 +133,10 @@ commResult_t ctranAllReducePipesRing(
     params.signaling_data_size = 0;
     params.input = static_cast<const float*>(sendbuff);
     params.output = static_cast<float*>(recvbuff);
-    params.num_blocks = 16;
+    params.num_blocks = numBlocks;
     params.num_rings = numRings;
     params.stream = stream;
+    params.enable_bidir_ag = enableBidirAg;
 
     if (timeout.has_value()) {
       params.timeout_ms = static_cast<float>(timeout->count());
