@@ -4,7 +4,7 @@
 
 #include <cstddef>
 
-#include "comms/pipes/CopyUtils.cuh"
+#include "comms/pipes/CopyOp.cuh"
 #include "comms/pipes/DeviceCheck.cuh"
 #include "comms/pipes/P2pNvlTransportDevice.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
