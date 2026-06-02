@@ -1874,6 +1874,21 @@ cvars:
      pipelineDepth * dataBufferSize. Deeper pipeline hides more latency
      at the cost of more memory.
 
+ - name        : NCCL_CTRAN_ALLREDUCE_PIPES_NUM_RINGS
+   type        : int
+   default     : -1
+   description : |-
+     Number of rings for the pipesflatring AllReduce algorithm. Set to -1
+     for automatic selection based on message size.
+
+ - name        : NCCL_CTRAN_ALLREDUCE_PIPES_NUM_BLOCKS
+   type        : int
+   default     : -1
+   description : |-
+     Total grid blocks for the pipesflatring AllReduce algorithm. Set to -1
+     for automatic selection based on message size. This is the total
+     grid size (split across all rings).
+
  - name        : NCCL_CTRAN_IBGDA_QP_DEPTH
    type        : uint64_t
    default     : 1024
