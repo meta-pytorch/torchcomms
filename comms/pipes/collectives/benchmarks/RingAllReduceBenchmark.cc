@@ -31,6 +31,8 @@ struct RingAllReduceBenchmarkConfig {
   std::size_t data_buffer_size;
   int pipeline_depth;
   int num_qps;
+  bool enable_bidir_ag{false};
+  bool use_reverse_ring{false};
   std::string name;
 };
 
@@ -198,19 +200,25 @@ class RingAllReduceBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
       return 0.0f;
     }
 
-    if (config.num_rings <= 0 ||
-        config.num_rings > RingAllReduceLaunchParams::kMaxRings) {
-      XLOGF(ERR, "Unsupported num_rings={}", config.num_rings);
+    if (config.use_reverse_ring && config.num_rings != 2) {
+      XLOGF(
+          ERR,
+          "use_reverse_ring requires num_rings=2, got {}",
+          config.num_rings);
       latency_us = 0.0f;
       return 0.0f;
     }
 
-    auto rings_opt =
-        make_standard_rings(worldSize, globalRank, config.num_rings);
+    std::optional<std::vector<RingNeighbors>> rings_opt;
+    if (config.use_reverse_ring) {
+      rings_opt = make_bidir_rings(worldSize, globalRank);
+    } else {
+      rings_opt = make_standard_rings(worldSize, globalRank, config.num_rings);
+    }
     if (!rings_opt) {
       XLOGF(
           ERR,
-          "Cannot construct {} distinct rings for {} ranks",
+          "Cannot construct {} rings for {} ranks",
           config.num_rings,
           worldSize);
       latency_us = 0.0f;
@@ -236,6 +244,7 @@ class RingAllReduceBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     launch_params.num_blocks = config.num_blocks * config.num_rings;
     launch_params.num_rings = config.num_rings;
     launch_params.stream = stream_;
+    launch_params.enable_bidir_ag = config.enable_bidir_ag;
 
     for (int r = 0; r < config.num_rings; r++) {
       auto& rp = launch_params.rings[r];
@@ -345,6 +354,7 @@ TEST_F(RingAllReduceBenchmarkFixture, VsNccl) {
   int kNumQps = 4;
 
   std::vector<RingAllReduceBenchmarkConfig> configs = {
+      // Baselines: full sweep for first real Ctran comparison
       {.total_elements = 64 * 1024,
        .num_blocks = 8,
        .num_rings = 1,
@@ -373,6 +383,13 @@ TEST_F(RingAllReduceBenchmarkFixture, VsNccl) {
        .pipeline_depth = 2,
        .num_qps = kNumQps,
        .name = "16MB_16B"},
+      {.total_elements = 8 * 1024 * 1024,
+       .num_blocks = 16,
+       .num_rings = 1,
+       .data_buffer_size = kDataBufferSize,
+       .pipeline_depth = 2,
+       .num_qps = kNumQps,
+       .name = "32MB_16B"},
       {.total_elements = 16 * 1024 * 1024,
        .num_blocks = 16,
        .num_rings = 1,
@@ -401,34 +418,58 @@ TEST_F(RingAllReduceBenchmarkFixture, VsNccl) {
        .pipeline_depth = 2,
        .num_qps = kNumQps,
        .name = "512MB_32B"},
-      {.total_elements = 1024 * 1024,
-       .num_blocks = 16,
-       .num_rings = 2,
-       .data_buffer_size = kDataBufferSize,
-       .pipeline_depth = 2,
-       .num_qps = kNumQps,
-       .name = "4MB_16B_2R"},
-      {.total_elements = 16 * 1024 * 1024,
-       .num_blocks = 16,
-       .num_rings = 2,
-       .data_buffer_size = kDataBufferSize,
-       .pipeline_depth = 2,
-       .num_qps = kNumQps,
-       .name = "64MB_16B_2R"},
+      // Bidir at key sizes
       {.total_elements = 64 * 1024 * 1024,
        .num_blocks = 32,
-       .num_rings = 2,
+       .num_rings = 1,
        .data_buffer_size = kDataBufferSize,
        .pipeline_depth = 2,
        .num_qps = kNumQps,
-       .name = "256MB_32B_2R"},
+       .enable_bidir_ag = true,
+       .name = "256MB_32B_bd"},
       {.total_elements = 128 * 1024 * 1024,
        .num_blocks = 32,
+       .num_rings = 1,
+       .data_buffer_size = kDataBufferSize,
+       .pipeline_depth = 2,
+       .num_qps = kNumQps,
+       .enable_bidir_ag = true,
+       .name = "512MB_32B_bd"},
+      // === Fair comparison: same total grid (perBlockSlot=1MB) ===
+      // Reverse ring: num_blocks halved so total grid matches baseline
+      {.total_elements = 64 * 1024 * 1024,
+       .num_blocks = 16,
        .num_rings = 2,
        .data_buffer_size = kDataBufferSize,
        .pipeline_depth = 2,
        .num_qps = kNumQps,
-       .name = "512MB_32B_2R"},
+       .use_reverse_ring = true,
+       .name = "256MB_16B_rv"},
+      {.total_elements = 128 * 1024 * 1024,
+       .num_blocks = 16,
+       .num_rings = 2,
+       .data_buffer_size = kDataBufferSize,
+       .pipeline_depth = 2,
+       .num_qps = kNumQps,
+       .use_reverse_ring = true,
+       .name = "512MB_16B_rv"},
+      // === Bidir at medium sizes (link not yet saturated) ===
+      {.total_elements = 4 * 1024 * 1024,
+       .num_blocks = 16,
+       .num_rings = 1,
+       .data_buffer_size = kDataBufferSize,
+       .pipeline_depth = 2,
+       .num_qps = kNumQps,
+       .enable_bidir_ag = true,
+       .name = "16MB_16B_bd"},
+      {.total_elements = 8 * 1024 * 1024,
+       .num_blocks = 16,
+       .num_rings = 1,
+       .data_buffer_size = kDataBufferSize,
+       .pipeline_depth = 2,
+       .num_qps = kNumQps,
+       .enable_bidir_ag = true,
+       .name = "32MB_16B_bd"},
   };
 
   std::vector<RingAllReduceBenchmarkResult> results;

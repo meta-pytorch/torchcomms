@@ -45,4 +45,26 @@ make_standard_rings(int world_size, int my_rank, int num_rings) {
   return rings;
 }
 
+/**
+ * Return a 2-ring {forward, reverse} topology for bi-directional
+ * communication. Ring 0 uses stride 1, ring 1 uses stride W-1
+ * (the reverse direction). Returns nullopt for world_size < 3
+ * where forward and reverse are identical.
+ */
+inline std::optional<std::vector<RingNeighbors>> make_bidir_rings(
+    int world_size,
+    int my_rank) {
+  if (world_size < 3) {
+    return std::nullopt;
+  }
+  int fwd_stride = 1;
+  int rev_stride = world_size - 1;
+  return std::vector<RingNeighbors>{
+      {.prev_rank = (my_rank - fwd_stride + world_size) % world_size,
+       .next_rank = (my_rank + fwd_stride) % world_size},
+      {.prev_rank = (my_rank - rev_stride + world_size) % world_size,
+       .next_rank = (my_rank + rev_stride) % world_size},
+  };
+}
+
 } // namespace comms::pipes

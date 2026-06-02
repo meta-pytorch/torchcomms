@@ -12,7 +12,8 @@ template <
     typename T,
     typename AccumOp,
     int kTileElems,
-    int kBlockSize>
+    int kBlockSize,
+    bool EnableBidirAg = false>
 __global__ __launch_bounds__(kBlockSize, 1) void ring_allreduce_kernel(
     const __grid_constant__ RingAllReduceArgs<NumRings, T> args,
     Timeout timeout);

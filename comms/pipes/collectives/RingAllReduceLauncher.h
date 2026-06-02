@@ -19,6 +19,7 @@ struct RingAllReduceLaunchParams {
   int num_blocks{16};
   int num_rings{1};
   float timeout_ms{0.0f};
+  bool enable_bidir_ag{false};
   cudaStream_t stream{nullptr};
 
   struct RingParams {
