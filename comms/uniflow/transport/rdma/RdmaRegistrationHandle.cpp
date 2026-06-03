@@ -14,8 +14,12 @@ namespace uniflow {
 RdmaRegistrationHandle::RdmaRegistrationHandle(
     std::vector<ibv_mr*> mrs,
     std::shared_ptr<IbvApi> ibvApi,
-    uint64_t domainId)
-    : mrs_(std::move(mrs)), ibvApi_(std::move(ibvApi)), domainId_(domainId) {}
+    uint64_t domainId,
+    uint64_t registrationBase)
+    : mrs_(std::move(mrs)),
+      ibvApi_(std::move(ibvApi)),
+      domainId_(domainId),
+      registrationBase_(registrationBase) {}
 
 RdmaRegistrationHandle::~RdmaRegistrationHandle() {
   for (auto* mr : mrs_) {
@@ -32,6 +36,7 @@ std::vector<uint8_t> RdmaRegistrationHandle::serialize() const {
 
   Header header{
       .domainId = domainId_,
+      .registrationBase = registrationBase_,
       .numMrs = static_cast<uint8_t>(mrs_.size()),
   };
   std::memcpy(buf.data(), &header, sizeof(header));
@@ -53,7 +58,10 @@ std::vector<uint8_t> RdmaRegistrationHandle::serialize() const {
 
 RdmaRemoteRegistrationHandle::RdmaRemoteRegistrationHandle(
     std::vector<uint32_t> rkeys,
-    uint64_t domainId)
-    : rkeys_(std::move(rkeys)), domainId_(domainId) {}
+    uint64_t domainId,
+    uint64_t registrationBase)
+    : rkeys_(std::move(rkeys)),
+      domainId_(domainId),
+      registrationBase_(registrationBase) {}
 
 } // namespace uniflow

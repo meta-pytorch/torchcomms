@@ -22,13 +22,23 @@ namespace uniflow {
 /// obtained from ibv_reg_mr. Each MR pins the same memory region but
 /// is associated with a different protection domain.
 ///
-/// The serialized payload contains a domain id and per-MR rkeys, which
-/// the peer needs to perform one-sided RDMA operations on this memory.
+/// The serialized payload contains a domain id, a registrationBase, and
+/// per-MR rkeys, which the peer needs to perform one-sided RDMA operations
+/// on this memory.
+///
+/// `registrationBase` is the value the transport must subtract from a
+/// virtual address to form the address the NIC expects on the wire
+/// (SGE.addr / wr.rdma.remote_addr). It is 0 for ordinary single-buffer
+/// registrations and non-zero only when an adapter registers a larger
+/// containing region (e.g. a whole memory pool) and exposes individual
+/// buffers as offsets within that registration.
 class RdmaRegistrationHandle : public RegistrationHandle {
  public:
-  /// Packed wire format for serialization.
+  /// Packed wire format for serialization. Breaking format change vs.
+  /// pre-`registrationBase` versions — peers must run matching builds.
   struct __attribute__((packed)) Header {
     uint64_t domainId{0}; // Factory instance key
+    uint64_t registrationBase{0}; // VA → wire-address offset
     uint8_t numMrs{0}; // Number of MRs (one per NIC)
     // Followed by numMrs uint32_t rkeys.
   };
@@ -38,7 +48,8 @@ class RdmaRegistrationHandle : public RegistrationHandle {
   RdmaRegistrationHandle(
       std::vector<ibv_mr*> mrs,
       std::shared_ptr<IbvApi> ibvApi,
-      uint64_t domainId);
+      uint64_t domainId,
+      uint64_t registrationBase = 0);
 
   ~RdmaRegistrationHandle() override;
 
@@ -75,10 +86,19 @@ class RdmaRegistrationHandle : public RegistrationHandle {
     return domainId_;
   }
 
+  /// Value to subtract from a VA to produce the address the NIC expects
+  /// on the wire (SGE.addr / wr.rdma.remote_addr). Zero for ordinary
+  /// single-buffer registrations; non-zero when the underlying MR covers
+  /// a larger containing region.
+  uint64_t registrationBase() const noexcept {
+    return registrationBase_;
+  }
+
  private:
   std::vector<ibv_mr*> mrs_;
   std::shared_ptr<IbvApi> ibvApi_;
   uint64_t domainId_;
+  uint64_t registrationBase_{0};
 };
 
 // ---------------------------------------------------------------------------
@@ -90,7 +110,10 @@ class RdmaRegistrationHandle : public RegistrationHandle {
 /// used in RDMA work requests posted on QPs belonging to that NIC.
 class RdmaRemoteRegistrationHandle : public RemoteRegistrationHandle {
  public:
-  RdmaRemoteRegistrationHandle(std::vector<uint32_t> rkeys, uint64_t domainId);
+  RdmaRemoteRegistrationHandle(
+      std::vector<uint32_t> rkeys,
+      uint64_t domainId,
+      uint64_t registrationBase = 0);
 
   ~RdmaRemoteRegistrationHandle() override = default;
 
@@ -114,9 +137,16 @@ class RdmaRemoteRegistrationHandle : public RemoteRegistrationHandle {
     return domainId_;
   }
 
+  /// Mirror of the sender's `RdmaRegistrationHandle::registrationBase()` —
+  /// subtract from remote VA to form `wr.rdma.remote_addr`.
+  uint64_t registrationBase() const noexcept {
+    return registrationBase_;
+  }
+
  private:
   std::vector<uint32_t> rkeys_;
   uint64_t domainId_;
+  uint64_t registrationBase_{0};
 };
 
 } // namespace uniflow

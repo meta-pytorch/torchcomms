@@ -1975,7 +1975,7 @@ RdmaTransportFactory::importSegment(
 
   uint64_t domainId = header.domainId;
   return std::make_unique<RdmaRemoteRegistrationHandle>(
-      std::move(rkeys), domainId);
+      std::move(rkeys), domainId, header.registrationBase);
 }
 
 Result<std::unique_ptr<Transport>> RdmaTransportFactory::createTransport(
