@@ -29,7 +29,15 @@ inline constexpr bool NCCL_USE_PTP_DEFAULT_LITERAL = true;
 // without a per-build preprocessor flag: the Buck build sees the header
 // + links fbclock_c, the OSS / feedstock builds skip the branch and
 // fall back to std::chrono::system_clock.
-#if __has_include("time/fbclock/fbclock.h")
+//
+// COMMS_NO_FBCLOCK is an explicit opt-out for builds where fbclock.h IS
+// reachable via the include path (e.g. the RCCLX cmake/conda build adds
+// `-I fbcode`, so __has_include would otherwise be true) but fbclock_c
+// is NOT linked. Without this the build links a librccl.so with
+// undefined fbclock_init/fbclock_gettime_utc and PyTorch's dlopen fails.
+#if defined(COMMS_NO_FBCLOCK)
+#define COMMS_HAS_FBCLOCK 0
+#elif __has_include("time/fbclock/fbclock.h")
 #include "time/fbclock/fbclock.h"
 #define COMMS_HAS_FBCLOCK 1
 #else
