@@ -1,17 +1,23 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include <chrono>
+#include <cstdint>
+#include <limits>
 #include <optional>
+#include <vector>
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllReduce/AllReduceImpl.h"
+#include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 
 #if defined(ENABLE_PIPES)
 
+#include "comms/ctran/algos/AllReduce/AllReducePipesFlatRing.cuh"
 #include "comms/pipes/MultiPeerTransport.h"
-#include "comms/pipes/collectives/RingAllReduceLauncher.h"
+#include "comms/pipes/TimeoutUtils.h"
 #include "comms/pipes/collectives/RingUtils.h"
 
 namespace {
@@ -34,6 +40,72 @@ int getPipesFlatRingNumBlocks() {
   return NCCL_CTRAN_ALLREDUCE_PIPES_FLAT_RING_NUM_BLOCKS;
 }
 
+commResult_t makePipesTimeout(
+    std::optional<std::chrono::milliseconds> timeout,
+    comms::pipes::Timeout& pipesTimeout) {
+  pipesTimeout = comms::pipes::Timeout();
+  if (!timeout.has_value() || timeout->count() <= 0) {
+    return commSuccess;
+  }
+
+  if (timeout->count() > std::numeric_limits<uint32_t>::max()) {
+    CLOGF(
+        WARN,
+        "PipesFlatRingAllReduce timeout {}ms exceeds supported maximum",
+        timeout->count());
+    return commInvalidArgument;
+  }
+
+  int device = 0;
+  const auto err = cudaGetDevice(&device);
+  if (err != cudaSuccess) {
+    CLOGF(
+        ERR,
+        "PipesFlatRingAllReduce cudaGetDevice failed while creating timeout: {}",
+        cudaGetErrorString(err));
+    return commInternalError;
+  }
+
+  try {
+    pipesTimeout = comms::pipes::makeTimeout(
+        static_cast<uint32_t>(timeout->count()), device);
+  } catch (const std::exception& ex) {
+    CLOGF(
+        ERR,
+        "PipesFlatRingAllReduce failed to create Pipes timeout: {}",
+        ex.what());
+    return commInternalError;
+  }
+  return commSuccess;
+}
+
+commResult_t submitPipesFlatRingPhase(
+    CtranComm* comm,
+    cudaStream_t stream,
+    const char* phaseName,
+    uint64_t opCount,
+    ctran::allreduce::pipesflatring::KernArgs& kernArgs,
+    const void* kernel,
+    std::optional<std::chrono::milliseconds> timeout) {
+  KernelConfig config(
+      KernelConfig::KernelType::ALLREDUCE, stream, phaseName, opCount);
+  config.numBlocks = static_cast<unsigned int>(kernArgs.numBlocks);
+  config.numThreads = ctran::allreduce::pipesflatring::kBlockSize;
+  config.args.devState_d = comm->ctran_->algo->getDevState();
+  config.algoArgs = &kernArgs;
+
+  config.args.collective.allreduce.sendbuff = kernArgs.sendbuff;
+  config.args.collective.allreduce.recvbuff = kernArgs.recvbuff;
+  config.args.collective.allreduce.redOp = commRedOp_t::commSum;
+  config.args.collective.allreduce.count = kernArgs.count;
+  config.args.collective.allreduce.datatype = commDataType_t::commFloat32;
+
+  std::vector<std::unique_ptr<struct OpElem>> opGroup;
+  FB_COMMCHECK(comm->ctran_->gpe->submit(
+      std::move(opGroup), nullptr, config, kernel, timeout));
+  return commSuccess;
+}
+
 } // namespace
 
 commResult_t ctranAllReducePipesFlatRing(
@@ -45,6 +117,13 @@ commResult_t ctranAllReducePipesFlatRing(
     CtranComm* comm,
     cudaStream_t stream,
     std::optional<std::chrono::milliseconds> timeout) {
+  if (comm == nullptr || comm->ctran_ == nullptr ||
+      comm->ctran_->gpe == nullptr || comm->ctran_->algo == nullptr ||
+      comm->statex_ == nullptr) {
+    CLOGF(ERR, "PipesFlatRingAllReduce requires initialized Ctran state");
+    return commInternalError;
+  }
+
   if (!comm->multiPeerTransport_) {
     CLOGF(
         ERR,
@@ -116,12 +195,12 @@ commResult_t ctranAllReducePipesFlatRing(
       return commInvalidArgument;
     }
 
-    if (numRings > comms::pipes::RingAllReduceLaunchParams::kMaxRings) {
+    if (numRings > ctran::allreduce::pipesflatring::kMaxRings) {
       CLOGF(
           WARN,
-          "PipesFlatRingAllReduce num_rings={} exceeds launcher max {}",
+          "PipesFlatRingAllReduce num_rings={} exceeds Ctran flat-ring max {}",
           numRings,
-          comms::pipes::RingAllReduceLaunchParams::kMaxRings);
+          ctran::allreduce::pipesflatring::kMaxRings);
       return commInvalidArgument;
     }
 
@@ -143,6 +222,23 @@ commResult_t ctranAllReducePipesFlatRing(
       return commInvalidArgument;
     }
 
+    const auto dataBufferSize = NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE;
+    if (dataBufferSize == 0) {
+      CLOGF(
+          WARN,
+          "PipesFlatRingAllReduce requires positive NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE");
+      return commInvalidArgument;
+    }
+
+    if (dataBufferSize / static_cast<uint64_t>(numBlocks) < 16) {
+      CLOGF(
+          WARN,
+          "PipesFlatRingAllReduce dataBufferSize={} is too small for num_blocks={}",
+          dataBufferSize,
+          numBlocks);
+      return commInvalidArgument;
+    }
+
     auto ringsOpt = comms::pipes::make_standard_rings(nRanks, rank, numRings);
     if (!ringsOpt.has_value()) {
       CLOGF(
@@ -156,31 +252,46 @@ commResult_t ctranAllReducePipesFlatRing(
 
     auto* mpt = comm->multiPeerTransport_.get();
 
-    comms::pipes::RingAllReduceLaunchParams params{};
-    params.my_rank = rank;
-    params.num_ranks = nRanks;
-    params.count = divisibleCount;
-    params.signaling_data_size = 0;
-    params.input = static_cast<const float*>(sendbuff);
-    params.output = static_cast<float*>(recvbuff);
-    params.num_blocks = numBlocks;
-    params.num_rings = numRings;
-    params.stream = stream;
+    comms::pipes::Timeout pipesTimeout;
+    FB_COMMCHECK(makePipesTimeout(timeout, pipesTimeout));
 
-    if (timeout.has_value()) {
-      params.timeout_ms = static_cast<float>(timeout->count());
-    }
-
+    ctran::allreduce::pipesflatring::KernArgs kernArgs{};
+    kernArgs.rank = rank;
+    kernArgs.nRanks = nRanks;
+    kernArgs.count = divisibleCount;
+    kernArgs.chunkElements = divisibleCount / nRanks;
+    kernArgs.sendbuff = static_cast<const float*>(sendbuff);
+    kernArgs.recvbuff = static_cast<float*>(recvbuff);
+    kernArgs.numBlocks = numBlocks;
+    kernArgs.numRings = numRings;
+    kernArgs.signalingDataSize = 0;
+    kernArgs.timeout = pipesTimeout;
     for (int r = 0; r < numRings; r++) {
-      params.rings[r].prev_rank = rings[r].prev_rank;
-      params.rings[r].next_rank = rings[r].next_rank;
-      params.rings[r].prev =
+      kernArgs.rings[r].prevRank = rings[r].prev_rank;
+      kernArgs.rings[r].nextRank = rings[r].next_rank;
+      kernArgs.rings[r].prev =
           mpt->get_p2p_ibgda_transport_device(rings[r].prev_rank);
-      params.rings[r].next =
+      kernArgs.rings[r].next =
           mpt->get_p2p_ibgda_transport_device(rings[r].next_rank);
     }
 
-    comms::pipes::launch_ring_allreduce(params);
+    const auto opCount = comm->ctran_->getOpCount();
+    FB_COMMCHECK(submitPipesFlatRingPhase(
+        comm,
+        stream,
+        "PipesFlatRingReduceScatter",
+        opCount,
+        kernArgs,
+        reinterpret_cast<void*>(ctranKernelAllReducePipesFlatRingReduceScatter),
+        timeout));
+    FB_COMMCHECK(submitPipesFlatRingPhase(
+        comm,
+        stream,
+        "PipesFlatRingAllGather",
+        opCount,
+        kernArgs,
+        reinterpret_cast<void*>(ctranKernelAllReducePipesFlatRingAllGather),
+        timeout));
   }
 
   if (remainder > 0) {
