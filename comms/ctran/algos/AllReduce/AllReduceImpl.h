@@ -26,6 +26,15 @@ commResult_t ctranAllReduceRing(
     CtranComm* comm,
     cudaStream_t stream,
     std::optional<std::chrono::milliseconds> timeout = std::nullopt);
+commResult_t ctranAllReduceTree(
+    const void* sendbuff,
+    void* recvbuff,
+    size_t count,
+    commDataType_t datatype,
+    commRedOp_t redOp,
+    CtranComm* comm,
+    cudaStream_t stream,
+    std::optional<std::chrono::milliseconds> timeout = std::nullopt);
 
 static inline const std::string allReduceAlgoName(
     enum NCCL_ALLREDUCE_ALGO algo) {
@@ -38,6 +47,8 @@ static inline const std::string allReduceAlgoName(
       return "Baseline";
     case NCCL_ALLREDUCE_ALGO::ctring:
       return "CtranAllReduceRing";
+    case NCCL_ALLREDUCE_ALGO::ctree:
+      return "CtranAllReduceTree";
     default:
       return "Unknown";
   }
