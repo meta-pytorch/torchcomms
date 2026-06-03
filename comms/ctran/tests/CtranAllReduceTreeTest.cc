@@ -10,6 +10,7 @@
 #include <string>
 
 #include "CtranUtUtils.h"
+#include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/AllReduce/AllReduceImpl.h"
 #include "comms/ctran/tests/AllReduceTreeTestKernels.cuh"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
@@ -189,6 +190,17 @@ class CtranAllReduceTest : public ctran::CtranDistTestFixture,
       case NCCL_ALLREDUCE_ALGO::ctdirect:
         return ctranAllReduceDirect(
             sendbuf, recvbuf, count, datatype, redOp, comm, stream, timeout);
+      case NCCL_ALLREDUCE_ALGO::pipesflatring:
+        return ctranAllReduce(
+            sendbuf,
+            recvbuf,
+            count,
+            datatype,
+            redOp,
+            comm,
+            stream,
+            algo,
+            timeout);
       default:
         return commInvalidArgument;
     }
@@ -295,7 +307,9 @@ INSTANTIATE_TEST_SUITE_P(
     CtranAllReduce,
     IB_ONLY,
     ::testing::Combine(
-        ::testing::Values(NCCL_ALLREDUCE_ALGO::ctree),
+        ::testing::Values(
+            NCCL_ALLREDUCE_ALGO::ctree,
+            NCCL_ALLREDUCE_ALGO::pipesflatring),
         ::testing::Values(
             // Zero
             (size_t)0,

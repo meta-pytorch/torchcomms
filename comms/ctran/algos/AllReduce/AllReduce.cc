@@ -44,13 +44,14 @@ bool ctranAllReduceSupport(CtranComm* comm, enum NCCL_ALLREDUCE_ALGO algo) {
       return true;
     case NCCL_ALLREDUCE_ALGO::pipesflatring:
 #if defined(ENABLE_PIPES)
-      if (comm->multiPeerTransport_ && comm->statex_->nLocalRanks() == 1) {
+      if (comm->multiPeerTransport_ && NCCL_CTRAN_IBGDA_SENDRECV_ENABLE &&
+          comm->statex_->nLocalRanks() == 1) {
         return true;
       }
       CLOGF(
           WARN,
           "pipesflatring requires ENABLE_PIPES, NCCL_CTRAN_USE_PIPES=1, "
-          "NCCL_CTRAN_PIPES_SENDRECV_ENABLE=1, and nLocalRanks=1");
+          "NCCL_CTRAN_IBGDA_SENDRECV_ENABLE=1, and nLocalRanks=1");
 #endif
       return false;
     default: // invalid query
