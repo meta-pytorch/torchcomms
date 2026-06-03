@@ -90,7 +90,12 @@ class CtranTcpDm {
   commResult_t teardownUnpackConsumer(void* pool);
 
  private:
-  std::shared_ptr<::comms::tcp_devmem::TransportInterface> transport_;
+  // The Transport singleton is fetched via CtranTcpDmSingleton::getTransport()
+  // at each use site rather than held as a shared_ptr member. Holding it as a
+  // member kept the singleton ref-count elevated for the lifetime of every
+  // CtranTcpDm and prevented folly::Singleton's destroyInstances from running
+  // cleanly at process exit (FATAL "living references"). Mirrors what
+  // CtranIb does with CtranIbSingleton::getInstance().
   ctran::bootstrap::ServerSocket listenSocket_{
       static_cast<int>(NCCL_SOCKET_RETRY_CNT)};
   std::vector<sockaddr_storage> allListenSocketAddrs_{};
