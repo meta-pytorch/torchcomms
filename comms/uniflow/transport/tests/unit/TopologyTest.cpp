@@ -2,6 +2,7 @@
 
 #include "comms/uniflow/transport/Topology.h"
 
+#include "comms/uniflow/drivers/TopologyDiscovery.h"
 #include "comms/uniflow/drivers/cuda/mock/MockCudaApi.h"
 #include "comms/uniflow/drivers/ibverbs/mock/MockIbvApi.h"
 #include "comms/uniflow/drivers/nvml/mock/MockNvmlApi.h"
@@ -174,7 +175,9 @@ class TopologyTest : public ::testing::Test {
   }
 
   std::unique_ptr<Topology> createTopology() {
-    return std::unique_ptr<Topology>(new Topology(cuda_, nvml_, ibv_, sysfs_));
+    auto topo = std::make_unique<Topology>();
+    discoverTopology(*topo, cuda_, nvml_, ibv_, sysfs_);
+    return topo;
   }
 
   std::shared_ptr<NiceMock<MockCudaApi>> cuda_;

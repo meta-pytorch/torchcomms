@@ -19,6 +19,7 @@
 #include "comms/uniflow/benchmarks/Rendezvous.h"
 #include "comms/uniflow/benchmarks/SegmentHelper.h"
 #include "comms/uniflow/benchmarks/Stats.h"
+#include "comms/uniflow/drivers/TopologyDiscovery.h"
 #include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
 #include "comms/uniflow/drivers/ibverbs/IbvApi.h"
 #include "comms/uniflow/executor/ScopedEventBaseThread.h"
@@ -599,7 +600,7 @@ std::vector<BenchmarkResult> RdmaBandwidthBenchmark::run(
   if (!rdmaDevices_.empty()) {
     myDevices = rdmaDevices_;
   } else {
-    auto& topo = Topology::get();
+    auto& topo = sharedTopology();
     if (topo.available()) {
       myDevices = (config.cudaDevice < 0)
           ? topo.selectCpuNics()
