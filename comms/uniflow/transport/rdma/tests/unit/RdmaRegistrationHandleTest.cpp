@@ -180,11 +180,34 @@ TEST_F(RdmaRegistrationHandleTest, SerializeDeserializeRoundTrip) {
       header.numMrs * sizeof(uint32_t));
 
   // addr and length are provided by the caller, not from the wire.
-  RdmaRemoteRegistrationHandle remote(std::move(rkeys), header.domainId);
+  RdmaRemoteRegistrationHandle remote(
+      std::move(rkeys), header.domainId, header.registrationBase);
 
   EXPECT_EQ(remote.numMrs(), handle.numMrs());
   EXPECT_EQ(remote.rkey(0), handle.rkey(0));
   EXPECT_EQ(remote.rkey(1), handle.rkey(1));
+  EXPECT_EQ(remote.registrationBase(), handle.registrationBase());
+}
+
+TEST_F(RdmaRegistrationHandleTest, RegistrationBaseDefaultsToZero) {
+  ibv_mr mr{};
+  RdmaRegistrationHandle handle({&mr}, ibv_, 42);
+  EXPECT_EQ(handle.registrationBase(), 0u);
+}
+
+TEST_F(RdmaRegistrationHandleTest, RegistrationBaseRoundTripsNonZero) {
+  ibv_mr mr{};
+  mr.rkey = 0x77;
+  constexpr uint64_t kPoolBase = 0x7f0000000000ULL;
+  RdmaRegistrationHandle handle({&mr}, ibv_, 42, kPoolBase);
+  EXPECT_EQ(handle.registrationBase(), kPoolBase);
+
+  auto serialized = handle.serialize();
+  RdmaRegistrationHandle::Header header;
+  std::memcpy(&header, serialized.data(), sizeof(header));
+  EXPECT_EQ(header.domainId, 42u);
+  EXPECT_EQ(header.registrationBase, kPoolBase);
+  EXPECT_EQ(header.numMrs, 1u);
 }
 
 // --- Factory registerSegment/importSegment tests ---
