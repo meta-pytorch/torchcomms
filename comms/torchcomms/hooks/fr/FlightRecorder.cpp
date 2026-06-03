@@ -1,7 +1,9 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/torchcomms/hooks/fr/FlightRecorder.hpp"
+#include "comms/torchcomms/HealthCheck.hpp"
 #include "comms/torchcomms/hooks/common/OpNameHelper.hpp"
+#include "comms/torchcomms/utils/Utils.hpp"
 
 #include <c10/core/impl/DeviceGuardImplInterface.h>
 #include <c10/util/ApproximateClock.h>
@@ -16,6 +18,7 @@
 #include <future>
 #include <mutex>
 #include <sstream>
+#include <thread>
 
 namespace torch {
 namespace comms {
@@ -997,7 +1000,8 @@ void FlightRecorderHook::registerWithComm(std::shared_ptr<TorchComm> comm) {
         self->onPostHook(device, op_id, args);
       });
 
-  // Register abort hook - called before aborting to dump flight recorder data.
+  // Register abort hook - called before crashing to wait for health check
+  // that would request flight recorder dump.
   // Derive the global rank of this process from the comm's member ranks
   // (`getRanks()`) indexed by this process's rank-within-comm (`getRank()`).
   // This works for both the world comm and sub-PGs, so every registered
@@ -1006,7 +1010,18 @@ void FlightRecorderHook::registerWithComm(std::shared_ptr<TorchComm> comm) {
   // well-formed comm, getRank() is always within bounds of getRanks().
   int rank = comm_ranks.at(comm->getRank());
   recorder_->setRank(rank);
-  comm->registerAbortHook([self, rank]() { self->dump_file(rank); });
+  comm->registerAbortHook([]() {
+    TorchCommsHealthCheck::get()->setTimedOut();
+    auto wait_ms = env_to_value("TORCHCOMM_HEALTH_CHECK_WAIT_MS", 15000);
+    LOG(ERROR)
+        << "Waiting " << wait_ms
+        << "ms for health check and flight recorder dump before aborting";
+    // Intentional wait before aborting: gives the health check poll and
+    // the FR dump (initiated by the control plane handler) time to fire.
+    // Not a test sleep — this code path runs only on the way to abort().
+    // NOLINTNEXTLINE(facebook-hte-BadCall-sleep_for)
+    std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
+  });
 
   registrations_.emplace_back(comm, pg_id, pg_desc);
   enabled_ = true;

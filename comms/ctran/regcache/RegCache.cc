@@ -406,6 +406,7 @@ commResult_t ctran::RegCache::globalDeregister(
 
   // Free each segment
   size_t totalSegmentsFreed = 0;
+  size_t totalRegElemsFreed = 0;
   for (auto segHdl : segHdls) {
     bool freed = false;
     bool ncclManaged = false;
@@ -415,10 +416,11 @@ commResult_t ctran::RegCache::globalDeregister(
     if (freed) {
       totalSegmentsFreed++;
     }
+    totalRegElemsFreed += regElemsFreed.size();
   }
 
-  // Log a single memory event for the entire deregistration
-  if (totalSegmentsFreed > 0) {
+  // Only log when a real registration was torn down.
+  if (totalRegElemsFreed > 0) {
     CommLogData globalLogData{};
     globalLogData.commDesc = "global";
     meta::comms::memtrace::recordReg(
