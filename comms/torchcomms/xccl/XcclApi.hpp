@@ -159,6 +159,12 @@ class XcclApi {
       onecclRedOp_t op,
       onecclComm_t comm) = 0;
 
+  [[nodiscard]] virtual onecclResult_t memAlloc(
+      void** buff,
+      size_t size) = 0;
+  [[nodiscard]] virtual onecclResult_t memFree(
+      void* buff) = 0;
+
   virtual void setVersionInfo() = 0;
 
   [[nodiscard]] int getVersion() const {
@@ -323,6 +329,9 @@ class DefaultXcclApi : public XcclApi {
       onecclComm_t comm) override;
   [[nodiscard]] onecclResult_t redOpDestroy(onecclRedOp_t op, onecclComm_t comm)
       override;
+
+  [[nodiscard]] onecclResult_t memAlloc(void** buff, size_t size) override;
+  [[nodiscard]] onecclResult_t memFree(void* buff) override;
 
   void setVersionInfo() override;
 
