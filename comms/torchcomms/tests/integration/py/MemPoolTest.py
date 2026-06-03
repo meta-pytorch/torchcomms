@@ -13,7 +13,7 @@ class MemPoolTorchCommTest(unittest.TestCase):
     def setUp(self) -> None:
         if "TEST_BACKEND" not in os.environ:
             raise AssertionError("TEST_BACKEND not set")
-        self.device_ = torch.device("cuda")
+        self.device_ = torch.accelerator.current_accelerator()
         self.backend_ = os.environ["TEST_BACKEND"]
 
         self.num_comms_ = 16
@@ -47,21 +47,22 @@ class MemPoolTorchCommTest(unittest.TestCase):
         torch.testing.assert_close(tensor.cpu(), expected_tensor)
 
     @unittest.skipIf(
-        os.getenv("TEST_BACKEND") not in ["ncclx", "nccl"]
-        or torch.cuda.get_device_capability() < (9, 0),
-        "Skipping NCCLX/NCCL-only mem pool tests",
+        (os.getenv("TEST_BACKEND") not in ["ncclx", "nccl", "xccl"]
+        or (torch.cuda.is_available() and torch.cuda.get_device_capability() < (9, 0))),
+        "Skipping NCCLX/NCCL/XCCL-only mem pool tests",
     )
     def test_mem_pool(self) -> None:
         # Use the global allocator obtained in setUp - shared across all comms
         tensors = []
+        device_module = torch.get_device_module()
         for comm in self.comms_:
-            pool = torch.cuda.MemPool(self.allocator_)
-            with torch.cuda.use_mem_pool(pool):
+            pool = device_module.MemPool(self.allocator_)
+            with device_module.use_mem_pool(pool):
                 tensor = self._create_input_tensor(comm)
             tensors.append(tensor)
             comm.all_reduce(tensor, torchcomms.ReduceOp.SUM, False).wait()
 
-        torch.cuda.current_stream().synchronize()
+        device_module.current_stream().synchronize()
 
         for i, comm in enumerate(self.comms_):
             self._verify_results(tensors[i], comm)

@@ -1,7 +1,10 @@
 #include "comms/torchcomms/xccl/TorchCommXCCL.hpp"
 
 #include <ATen/xpu/XPUContext.h>
+#include <c10/core/DeviceGuard.h>
+#include <c10/xpu/XPUCachingAllocator.h>
 #include <c10/xpu/XPUStream.h>
+#include <torch/csrc/xpu/XPUPluggableAllocator.h>
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
@@ -237,6 +240,8 @@ TorchCommXCCL::~TorchCommXCCL() {
   if (options_.store) {
     options_.store.reset();
   }
+
+  detachMemoryHook();
 }
 
 void TorchCommXCCL::init(
@@ -371,6 +376,9 @@ void TorchCommXCCL::init(
 
   // Start timeout watchdog thread
   timeout_thread_ = std::thread(&TorchCommXCCL::timeoutWatchdog, this);
+
+  // Register comm with CachingAllocator
+  attachMemoryHook();
 }
 
 void TorchCommXCCL::finalize() {
@@ -459,6 +467,7 @@ void TorchCommXCCL::finalize() {
   // Destroy XCCL communicator
   // TODO: should probably not call this after calling abort.
   if (xccl_comm_) {
+    detachMemoryHook();
     onecclResult_t result = xccl_api_->commDestroy(xccl_comm_);
     if (result != onecclSuccess) [[unlikely]] {
       TC_LOG(ERROR, this) << "XCCL commDestroy failed: "
@@ -476,6 +485,7 @@ void TorchCommXCCL::finalize() {
 }
 
 void TorchCommXCCL::abortXcclComm() {
+  detachMemoryHook();
   if (xccl_comm_) {
     xccl_api_->commAbort(xccl_comm_);
     xccl_comm_ = nullptr;
@@ -2270,6 +2280,51 @@ std::shared_ptr<TorchCommBackend> TorchCommXCCL::split(
   return new_torchcomm;
 }
 
+void TorchCommXCCL::register_address(
+    const TorchCommXCCL::AddressWithLen& addr) {
+  // We got a register after we got rid of the comm. Is this a fatal error?
+  if (xccl_comm_ == nullptr) {
+    return;
+  }
+
+  if (memoryRegistrationHandles_.contains(addr.addr)) {
+    throw std::runtime_error("Memory already registered with XCCL");
+  }
+  void* handle = nullptr;
+  onecclResult_t result =
+      xccl_api_->commRegister(xccl_comm_, addr.addr, addr.len, &handle);
+
+  if (result != onecclSuccess) [[unlikely]] {
+    throw XCCLException(
+        *xccl_api_, "Failed to register memory with XCCL", result);
+  }
+  memoryRegistrationHandles_.emplace(addr.addr, RegistrationHandle(handle));
+}
+
+void TorchCommXCCL::deregister_address(const TorchCommXCCL::Address& addr) {
+  // We got a deregister after we got rid of the comm. Is this a fatal error?
+  if (xccl_comm_ == nullptr) {
+    return;
+  }
+
+  auto it = memoryRegistrationHandles_.find(addr.addr);
+  if (it == memoryRegistrationHandles_.end()) {
+    // it's possible that the memory was registered for a different comm,
+    // however failed registration for this comm.
+    return;
+  }
+
+  void* handle = it->second.regHandle;
+  onecclResult_t result = xccl_api_->commDeregister(xccl_comm_, handle);
+
+  if (result != onecclSuccess) [[unlikely]] {
+    throw XCCLException(
+        *xccl_api_, "Failed to deregister memory with XCCL", result);
+  }
+
+  memoryRegistrationHandles_.erase(it);
+}
+
 XCCLException::XCCLException(
     XcclApi& xccl_api,
     const std::string& message,
@@ -2290,6 +2345,54 @@ class XCCLRegistration {
     torch::comms::TorchCommFactory::get().register_backend("xccl", []() {
       return std::make_shared<torch::comms::TorchCommXCCL>();
     });
+
+    // Register allocator factory with its own xccl_api instance
+    torch::comms::TorchCommFactory::get().register_allocator_factory(
+        "xccl", []() {
+          // Create xccl_api for this allocator (captured in lambdas below)
+          auto xccl_api = std::make_shared<torch::comms::DefaultXcclApi>();
+          using xpuStream_t = ::c10::xpu::XPUStream;
+          static std::shared_ptr<c10::xpu::XPUCachingAllocator::XPUAllocator>
+              xccl_allocator =
+                  torch::xpu::XPUPluggableAllocator::createCustomAllocator(
+                      // alloc_fn
+                      [xccl_api](size_t size, int device, sycl::queue* queue) {
+                        c10::OptionalDeviceGuard gpuGuard(
+                            c10::Device(c10::kXPU, device));
+                        void* ptr = nullptr;
+                        onecclResult_t result = xccl_api->memAlloc(&ptr, size);
+                        TORCH_CHECK(
+                            result == onecclSuccess,
+                            "onecclMemAlloc failed: ",
+                            xccl_api->getErrorString(result));
+                        xpuStream_t stream =
+                            at::xpu::getStreamFromExternal(queue, device);
+                        LOG(INFO) << "XCCL mem allocator: allocated " << ptr
+                                  << " with " << size << " bytes in stream "
+                                  << stream;
+                        return ptr;
+                      },
+                      // free_fn
+                      [xccl_api](
+                          void* ptr,
+                          size_t size,
+                          int device,
+                          sycl::queue* queue) {
+                        xpuStream_t stream =
+                            at::xpu::getStreamFromExternal(queue, device);
+                        LOG(INFO)
+                            << "XCCL mem allocator: freeing " << ptr << " with "
+                            << size << " bytes in stream " << stream;
+                        c10::OptionalDeviceGuard gpuGuard(
+                            c10::Device(c10::kXPU, device));
+                        onecclResult_t result = xccl_api->memFree(ptr);
+                        TORCH_CHECK(
+                            result == onecclSuccess,
+                            "onecclMemFree failed: ",
+                            xccl_api->getErrorString(result));
+                      });
+          return xccl_allocator;
+        });
   }
 };
 

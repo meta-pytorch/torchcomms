@@ -4,6 +4,7 @@
 #include <string>
 #include "comms/torchcomms/utils/Logging.hpp"
 #include "comms/torchcomms/xccl/TorchCommXCCL.hpp"
+#include "comms/torchcomms/xccl/TorchCommXCCLCCA.hpp"
 
 namespace torch::comms {
 
@@ -343,4 +344,13 @@ void TorchCommXCCL::returnEvent(xpuEvent_t&& event) {
         xpu_api_, xpu_api_->eventDestroy(event), "Failed to destroy event");
   }
 }
+
+void TorchCommXCCL::attachMemoryHook() {
+  XcclCachingAllocatorHook::getInstance().registerComm(this);
+}
+
+void TorchCommXCCL::detachMemoryHook() {
+  XcclCachingAllocatorHook::getInstance().deregisterComm(this);
+}
+
 } // namespace torch::comms
