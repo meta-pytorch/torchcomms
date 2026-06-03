@@ -9,8 +9,7 @@
 
 #include "comms/pipes/CopyOp.cuh"
 #include "comms/pipes/TimeoutUtils.h"
-#include "comms/pipes/collectives/RingAllgather.cuh"
-#include "comms/pipes/collectives/RingReduceScatter.cuh"
+#include "comms/pipes/collectives/RingAllReduce.cuh"
 
 namespace comms::pipes {
 
@@ -37,51 +36,23 @@ void check_kernel_launch(const char* kernel_name) {
 
 template <int NumRings>
 void launch_impl(const RingAllReduceLaunchParams& params, Timeout timeout) {
-  const int my_rank = params.my_rank;
-  const int num_ranks = params.num_ranks;
-  const std::size_t chunk_elements = params.count / num_ranks;
-  const std::size_t chunk_bytes = chunk_elements * sizeof(float);
+  const std::size_t chunk_elements = params.count / params.num_ranks;
 
-  // Phase 1: ReduceScatter
-  // Writes reduced shard to output[my_rank * chunk_elements]
-  {
-    RingReduceScatterArgs<NumRings, float> args{};
-    args.my_rank = my_rank;
-    args.num_ranks = num_ranks;
-    args.chunk_elements = chunk_elements;
-    args.signaling_data_size = params.signaling_data_size;
-    args.input = params.input;
-    args.output = params.output + my_rank * chunk_elements;
+  RingAllReduceArgs<NumRings, float> args{};
+  args.my_rank = params.my_rank;
+  args.num_ranks = params.num_ranks;
+  args.chunk_elements = chunk_elements;
+  args.signaling_data_size = params.signaling_data_size;
+  args.input = params.input;
+  args.output = params.output;
 
-    for (int r = 0; r < NumRings; r++) {
-      args.rings[r] = to_ring_topology(params.rings[r]);
-    }
-
-    ring_reduce_scatter_kernel<NumRings, float, SumOp, 16384, 512>
-        <<<params.num_blocks, 512, 0, params.stream>>>(args, timeout);
-    check_kernel_launch("ReduceScatter");
+  for (int r = 0; r < NumRings; r++) {
+    args.rings[r] = to_ring_topology(params.rings[r]);
   }
 
-  // Phase 2: AllGather
-  // Reads reduced shard from output[my_rank * chunk_bytes], gathers into output
-  {
-    RingAllgatherArgs<NumRings> args{};
-    args.my_rank = my_rank;
-    args.num_ranks = num_ranks;
-    args.sendcount = chunk_bytes;
-    args.signaling_data_size = params.signaling_data_size;
-    args.sendbuf =
-        reinterpret_cast<const char*>(params.output) + my_rank * chunk_bytes;
-    args.recvbuf = reinterpret_cast<char*>(params.output);
-
-    for (int r = 0; r < NumRings; r++) {
-      args.rings[r] = to_ring_topology(params.rings[r]);
-    }
-
-    ring_allgather_kernel<NumRings, 512>
-        <<<params.num_blocks, 512, 0, params.stream>>>(args, timeout);
-    check_kernel_launch("AllGather");
-  }
+  ring_allreduce_kernel<NumRings, float, SumOp, 16384, 512>
+      <<<params.num_blocks, 512, 0, params.stream>>>(args, timeout);
+  check_kernel_launch("RingAllReduce");
 }
 
 } // namespace
