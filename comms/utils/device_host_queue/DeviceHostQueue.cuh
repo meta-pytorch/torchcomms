@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -16,22 +17,29 @@
 
 // =============================================================================
 // DeviceHostQueue<T, Policy> — bounded multi-producer ring in shared
-// host-pinned memory for passing fixed-size proxy commands from GPU to CPU (the
-// GPU delegates work to a CPU/engine proxy that runs it).
+// host-pinned memory for passing fixed-size proxy commands one way from GPU to
+// CPU (the GPU delegates work to a CPU/engine proxy that executes it). GPU
+// threads are the producers; the CPU is the consumer.
 //
-// Data flows one way: GPU threads are the producers, the CPU (the host owner)
-// is the single consumer. Only ConsumerPolicy::Single is implemented: many
-// producer threads reserve and publish slots, and the one host consumer drains
-// them in sequence order. A future ConsumerPolicy::Multi would add multiple
-// consumers, keeping per-consumer state off this shared ring.
+// Two consumer policies (ConsumerPolicy), selected at compile time:
+//   Single  one CPU consumer drains in strict sequence order via a private
+//           cursor (MPSC).
+//   Multi   several CPU consumer threads drain concurrently (MPMC); each
+//           published command is delivered to exactly one consumer. Consumers
+//           claim sequences in FIFO order through a shared host-side head and
+//           reclaim slots as a contiguous prefix. Processing across consumers
+//           is not globally ordered, but there is no loss or duplication.
+// The GPU producer protocol is identical for both policies.
 //
 // Coordinates (plain integers in shared memory; atomicity applied at the access
 // site — see "Memory model"):
 //   pi         producer reservation sequence (fetch_add / CAS)
 //   readySeq  per-slot publish marker (== seq + 1 once published)
 //   ci         reuse credit: a producer may overwrite a slot only after ci
-//              passes it. read() advances ci as it copies each command out, so
-//              copy-out frees the slot.
+//              passes it. The consumer advances ci as it copies commands out,
+//              so copy-out frees the slot.
+// All consumer claim/completion bookkeeping (the Multi head and done[] markers)
+// lives on the host side, never in the cross-domain ring.
 //
 // Memory model. The device producer uses system-scope atomics (comms::device);
 // the release store that publishes readySeq carries the barrier into the CPU
@@ -40,7 +48,8 @@
 // release/acquire (inner-shareable on Grace); that suffices because the ring is
 // coherent host-pinned memory and the device peer issues the system-scope half.
 // This split is the GB200-validated convention in comms (cf. ctran MemFence.h /
-// GpeKernelSync).
+// GpeKernelSync). Multi-consumer coordination (head, done[]) is
+// host-only and uses ordinary std::atomic, since all consumers are CPU threads.
 //
 // Minimal by design: no status/abort/timeout. The blocking variants spin with
 // no escape; bounded waits and teardown belong to the caller's progress loop.
@@ -52,6 +61,21 @@
 
 namespace meta::comms {
 
+// The ring's cross-domain words (readySeq, ci) are accessed atomically from
+// the GPU (system-scope atomics via comms::device) and the CPU
+// (std::atomic_ref). The torn-publish protection assumes those host accesses
+// are single instructions, not lock-backed fallbacks; a non-lock-free path
+// would not serialize against the GPU's atomic store to the same bytes. This
+// always holds on the host ABIs this targets (x86-64, aarch64/Grace), but
+// assert it explicitly.
+//
+// The device half needs no equivalent assert: comms::device uses raw PTX/HIP
+// system-scope atomics (atom/ld/st.*.sys.b64), which the ISA guarantees atomic.
+static_assert(
+    std::atomic_ref<uint64_t>::is_always_lock_free &&
+        std::atomic<uint64_t>::is_always_lock_free,
+    "DeviceHostQueue requires lock-free 64-bit host atomics");
+
 /// Outcome of a (non-blocking) queue operation.
 enum class QueueOpStatus : uint32_t {
   Ok,
@@ -59,10 +83,12 @@ enum class QueueOpStatus : uint32_t {
   Empty, // read(): ordered head not yet published
 };
 
-/// Consumer cardinality. Only Single is implemented in the initial cut; Multi
-/// is reserved for a future specialization.
+/// Consumer cardinality, selected at compile time.
 enum class ConsumerPolicy : uint32_t {
-  Single,
+  Single, // one CPU consumer (MPSC)
+  // Many concurrent CPU consumers (MPMC). NOTE: on a coherent fabric (GB200)
+  // Multi has LOWER dequeue throughput than Single (head-CAS contention) --
+  // pick it to distribute per-command work across threads, not for throughput.
   Multi,
 };
 
@@ -80,9 +106,8 @@ enum class Direction : uint32_t {
 template <class T, Direction Dir, ConsumerPolicy Policy>
 class DeviceHostQueue;
 
-/// One ring slot: payload plus its publish marker. Per-consumer bookkeeping
-/// (for a future Multi policy) lives on the consumer side, never in this
-/// cross-domain ring.
+/// One ring slot: payload plus its publish marker. Consumer bookkeeping lives
+/// on the host side (see HostConsumerState), never in this cross-domain ring.
 template <class T>
 struct alignas(64) DeviceHostQueueSlot {
   alignas(alignof(T)) std::byte payload[sizeof(T)];
@@ -130,15 +155,13 @@ inline void cpuRelax() {
 // DeviceHostQueue::producerHandle() and passed BY VALUE into kernels.
 // It holds no cursor, so it is safe to broadcast to every producer thread;
 // write()/blockingWrite() may be called concurrently by any number of threads.
+// The producer protocol does not depend on the consumer policy.
 // =============================================================================
 template <class T, ConsumerPolicy Policy = ConsumerPolicy::Single>
 class DeviceHostQueueProducer {
  public:
   static_assert(std::is_trivially_copyable_v<T>);
   static_assert(std::is_trivially_destructible_v<T>);
-  static_assert(
-      Policy == ConsumerPolicy::Single,
-      "DeviceHostQueue: only ConsumerPolicy::Single is implemented");
 
   DeviceHostQueueProducer() = default;
 
@@ -228,10 +251,40 @@ class DeviceHostQueueProducer {
 };
 
 // =============================================================================
+// Host-side consumer state, specialized per policy. Kept off the shared ring;
+// for Multi it is shared only among the (CPU) consumer threads.
+// =============================================================================
+template <ConsumerPolicy Policy>
+struct HostConsumerState;
+
+template <>
+struct HostConsumerState<ConsumerPolicy::Single> {
+  uint64_t nextToRead = 0; // private cursor of the one consumer
+  explicit HostConsumerState(uint32_t /*capacity*/) {}
+};
+
+template <>
+struct HostConsumerState<ConsumerPolicy::Multi> {
+  // Shared FIFO claim counter: each consumer CAS-claims the next sequence.
+  std::atomic<uint64_t> head{0};
+  // Per-slot completion markers (seq & mask): done[s] == seq + 1 once seq is
+  // copied out (absolute seqs -> ABA-safe). alignas(64) puts each on its own
+  // line so consumers completing nearby seqs don't false-share. Costs cap *
+  // 64B.
+  struct alignas(64) DoneMarker : std::atomic<uint64_t> {};
+  std::unique_ptr<DoneMarker[]> done;
+  explicit HostConsumerState(uint32_t capacity)
+      : done(std::make_unique<DoneMarker[]>(capacity)) {}
+};
+
+// =============================================================================
 // DeviceHostQueue<T, Policy> — host RAII owner of the cudaHostAlloc
-// allocation, and the single (CPU) consumer. Non-copyable, non-movable. The
-// host consumer methods (read/blockingRead) mirror the device producer over
-// the same plain words via std::atomic_ref. Hand producerHandle() to the GPU.
+// allocation, and the CPU-side consumer. Non-copyable, non-movable. The host
+// consumer methods (read/blockingRead) mirror the device producer over the
+// same plain words via std::atomic_ref. Hand producerHandle() to the GPU.
+//
+// Single: read()/blockingRead() must be called by one consumer only. Multi:
+// they are safe to call from many threads concurrently.
 //
 // Teardown: the caller must quiesce all producers (abort flag + stream sync)
 // before destruction — freeing a live shared ring is undefined behavior.
@@ -249,9 +302,6 @@ class DeviceHostQueue {
       "DeviceHostQueue: only Direction::D2H (device producer -> host consumer) "
       "is supported; H2D needs a host system-scope fence and is not yet "
       "implemented");
-  static_assert(
-      Policy == ConsumerPolicy::Single,
-      "DeviceHostQueue: only ConsumerPolicy::Single is implemented");
 
   using Producer = DeviceHostQueueProducer<T, Policy>;
 
@@ -261,11 +311,10 @@ class DeviceHostQueue {
   };
 
   /// Allocate and zero-initialize a queue. `capacity` must be a power of two.
-  explicit DeviceHostQueue(uint32_t capacity) {
-    if (capacity == 0 || (capacity & (capacity - 1)) != 0) {
-      throw std::runtime_error(
-          "DeviceHostQueue: capacity must be a power of two");
-    }
+  /// `requirePowerOfTwo` runs first (init-list), so a bad capacity throws
+  /// before any allocation.
+  explicit DeviceHostQueue(uint32_t capacity)
+      : consumer_(requirePowerOfTwo(capacity)) {
     capacity_ = capacity;
     mask_ = capacity - 1;
     static_assert(
@@ -343,24 +392,57 @@ class DeviceHostQueue {
     return d > capacity_ ? capacity_ : static_cast<size_t>(d);
   }
 
-  /// Single-owner host consumer dequeue: copies the next published command out
-  /// and releases its slot (advances ci) for producer reuse. Returns the
-  /// payload and its sequence via `out`. Returns Ok or Empty.
+  /// Consumer dequeue: copies the next published command out and releases its
+  /// slot (advances ci) for producer reuse. Returns the payload and its
+  /// sequence via `out`. Returns Ok or Empty.
+  ///
+  /// Single: call from one consumer only. Multi: safe from many threads; each
+  /// command is returned to exactly one caller, claimed in FIFO order.
   QueueOpStatus read(ReadResult& out) {
-    DeviceHostQueueSlot<T>& slot = slotsHost_[nextToRead_ & mask_];
-    uint64_t ready = std::atomic_ref<uint64_t>(slot.readySeq)
-                         .load(std::memory_order_acquire);
-    if (ready != nextToRead_ + 1) {
-      return QueueOpStatus::Empty;
+    if constexpr (Policy == ConsumerPolicy::Single) {
+      uint64_t seq = consumer_.nextToRead;
+      DeviceHostQueueSlot<T>& slot = slotsHost_[seq & mask_];
+      uint64_t ready = std::atomic_ref<uint64_t>(slot.readySeq)
+                           .load(std::memory_order_acquire);
+      if (ready != seq + 1) {
+        return QueueOpStatus::Empty;
+      }
+      memcpy(&out.value, slot.payload, sizeof(T)); // copy out: slot now free
+      out.seq = seq;
+      consumer_.nextToRead = seq + 1;
+      // Publish reuse credit; release pairs with the producer's acquire of ci.
+      std::atomic_ref<uint64_t>(ctrlHost_->ci)
+          .store(seq + 1, std::memory_order_release);
+      return QueueOpStatus::Ok;
+    } else { // ConsumerPolicy::Multi
+      std::atomic<uint64_t>& head = consumer_.head;
+      for (;;) {
+        uint64_t h = head.load(std::memory_order_acquire);
+        DeviceHostQueueSlot<T>& slot = slotsHost_[h & mask_];
+        uint64_t ready = std::atomic_ref<uint64_t>(slot.readySeq)
+                             .load(std::memory_order_acquire);
+        if (ready != h + 1) {
+          return QueueOpStatus::Empty; // head not yet published
+        }
+        if (!head.compare_exchange_weak(
+                h,
+                h + 1,
+                std::memory_order_acq_rel,
+                std::memory_order_relaxed)) {
+          continue; // another consumer took h (or head moved); retry
+        }
+        // Exclusive owner of seq h. The slot stays valid while we copy: a
+        // producer cannot reuse it until ci passes h, and ci only passes h
+        // after the done-marker we publish just below.
+        memcpy(&out.value, slot.payload, sizeof(T));
+        out.seq = h;
+        // Mark h consumed; release orders our copy-out before any consumer that
+        // observes this marker advances ci past h.
+        consumer_.done[h & mask_].store(h + 1, std::memory_order_release);
+        advanceReuseCreditMulti();
+        return QueueOpStatus::Ok;
+      }
     }
-    memcpy(
-        &out.value, slot.payload, sizeof(T)); // copy out: slot no longer needed
-    out.seq = nextToRead_;
-    ++nextToRead_;
-    // Publish reuse credit; release pairs with the producer's acquire of ci.
-    std::atomic_ref<uint64_t>(ctrlHost_->ci)
-        .store(nextToRead_, std::memory_order_release);
-    return QueueOpStatus::Ok;
   }
 
   /// Batched MPSC dequeue: copies up to `max` contiguous published commands
@@ -375,7 +457,7 @@ class DeviceHostQueue {
         "readMulti is MPSC-only; with ConsumerPolicy::Multi each consumer "
         "claims via read()");
     size_t n = 0;
-    uint64_t seq = nextToRead_;
+    uint64_t seq = consumer_.nextToRead;
     while (n < max) {
       DeviceHostQueueSlot<T>& slot = slotsHost_[seq & mask_];
       // Per-slot acquire pairs with the producer's release of readySeq, so the
@@ -391,7 +473,7 @@ class DeviceHostQueue {
       ++seq;
     }
     if (n > 0) {
-      nextToRead_ = seq;
+      consumer_.nextToRead = seq;
       // One release store frees the whole batch and orders the n copy-outs
       // before the credit; pairs with the producer's acquire of ci.
       std::atomic_ref<uint64_t>(ctrlHost_->ci)
@@ -400,8 +482,8 @@ class DeviceHostQueue {
     return n;
   }
 
-  /// Blocking host consumer dequeue: spins until the head is published, then
-  /// copies it out and releases its slot. Each empty poll issues a cpuRelax()
+  /// Blocking consumer dequeue: spins until a command is available, then copies
+  /// it out and releases its slot. Each empty poll issues a cpuRelax()
   /// hint (YIELD on aarch64/Grace, PAUSE on x86) so it does not burn the core
   /// hot. No escape (assumes a producer makes progress); a consumer that may
   /// idle, shares a core, or must also poll other things should loop on the
@@ -424,6 +506,42 @@ class DeviceHostQueue {
   }
 
  private:
+  static uint32_t requirePowerOfTwo(uint32_t capacity) {
+    if (capacity == 0 || (capacity & (capacity - 1)) != 0) {
+      throw std::runtime_error(
+          "DeviceHostQueue: capacity must be a power of two");
+    }
+    return capacity;
+  }
+
+  // Advance the shared reuse credit (ci) over the contiguous prefix of consumed
+  // slots (those whose absolute done-marker is published) so producers reclaim
+  // them. Opportunistic: whoever wins the ci CAS walks the prefix; a loser
+  // reloads and bails once the winner has drained to the last visible marker.
+  // So one consumer drains at a time -- not a livelock (each pass advances ci
+  // or breaks; ci is monotonic, bounded by markers). Reclaim is thus
+  // eventually- consistent and never deadlocks a producer (which blocks only on
+  // a full ring, i.e. commands are waiting, so consumers keep draining). A
+  // consumer that claims but never completes a seq stalls reclaim, like a dead
+  // Single consumer
+  // -- the caller's concern (no abort/timeout). Multi only.
+  void advanceReuseCreditMulti() {
+    std::atomic_ref<uint64_t> ci(ctrlHost_->ci);
+    for (;;) {
+      uint64_t c = ci.load(std::memory_order_relaxed);
+      if (consumer_.done[c & mask_].load(std::memory_order_acquire) != c + 1) {
+        break; // seq c not consumed yet -> end of contiguous freed prefix
+      }
+      // release: a producer acquiring ci sees the copy-out of every seq < c + 1
+      // (transitively, via the done acquire above).
+      if (ci.compare_exchange_weak(
+              c, c + 1, std::memory_order_release, std::memory_order_relaxed)) {
+        continue; // freed c; try to extend the prefix
+      }
+      // lost the race; reload -- the winner may already have drained the prefix
+    }
+  }
+
   DeviceHostQueueControl<T>* ctrlHost_ = nullptr;
   DeviceHostQueueControl<T>* ctrlDev_ = nullptr;
   DeviceHostQueueSlot<T>* slotsHost_ = nullptr;
@@ -431,7 +549,7 @@ class DeviceHostQueue {
   uint32_t capacity_ = 0;
   uint32_t mask_ =
       0; // capacity - 1; slot index = seq & mask_ (capacity is a power of two)
-  uint64_t nextToRead_ = 0; // host consumer cursor (single consumer)
+  HostConsumerState<Policy> consumer_; // off-ring consumer bookkeeping
 };
 
 } // namespace meta::comms

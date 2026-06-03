@@ -1,7 +1,9 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
+#include <atomic>
 #include <cstdint>
 #include <stdexcept>
+#include <thread>
 #include <vector>
 
 #include <cuda_runtime.h>
@@ -9,7 +11,9 @@
 
 #include "comms/utils/device_host_queue/DeviceHostQueue.cuh"
 
+using meta::comms::ConsumerPolicy;
 using meta::comms::DeviceHostQueue;
+using meta::comms::Direction;
 using meta::comms::QueueOpStatus;
 
 namespace {
@@ -36,10 +40,15 @@ static_assert(sizeof(Cmd) == 64);
 
 using IntQueue = DeviceHostQueue<uint64_t>;
 using CmdQueue = DeviceHostQueue<Cmd>;
+using MultiCmdQueue =
+    DeviceHostQueue<Cmd, Direction::D2H, ConsumerPolicy::Multi>;
 
-// Each thread is a producer that publishes `perThread` commands, tagged with
-// its global thread id and an increasing per-thread value.
-__global__ void producerKernel(CmdQueue::Producer q, uint32_t perThread) {
+// Each thread is a producer that publishes `perThread` Cmd commands, tagged
+// with its global thread id and an increasing per-thread value (guard words
+// mirror value). Templated on the producer handle so it serves both the Single
+// and Multi consumer-policy queues — the producer protocol is identical.
+template <class ProducerHandle>
+__global__ void producerKernel(ProducerHandle q, uint32_t perThread) {
   uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
   for (uint32_t i = 0; i < perThread; ++i) {
     Cmd c;
@@ -302,5 +311,117 @@ TEST(DeviceHostQueueTest, DeviceProducersHostConsumer) {
   for (uint32_t p = 0; p < producers; ++p) {
     EXPECT_EQ(counts[p], perThread) << "producer " << p;
   }
+  CUDACHECK(cudaStreamDestroy(stream));
+}
+
+// =============================================================================
+// ConsumerPolicy::Multi (MPMC) tests
+// =============================================================================
+
+TEST(DeviceHostQueueTest, MultiConsumerEmptyReadReturnsEmpty) {
+  MultiCmdQueue q(8);
+  MultiCmdQueue::ReadResult r;
+  EXPECT_EQ(q.read(r), QueueOpStatus::Empty);
+}
+
+// Many GPU producers -> several concurrent CPU consumers (MPMC). After the
+// queue is fully drained, verifies: every sequence is consumed exactly once (no
+// loss, no duplication), every producer's perThread values each arrive exactly
+// once, and no command is observed torn. Processing order across consumers is
+// NOT globally ordered by design; only exactly-once delivery is guaranteed.
+TEST(DeviceHostQueueTest, MultiConsumerNoLossNoDup) {
+  const uint32_t blocks = 8;
+  const uint32_t threads = 32;
+  const uint32_t perThread = 1000;
+  const uint32_t producers = blocks * threads;
+  const uint64_t total = uint64_t(producers) * perThread;
+
+  MultiCmdQueue q(1024);
+  cudaStream_t stream;
+  CUDACHECK(cudaStreamCreate(&stream));
+  producerKernel<<<blocks, threads, 0, stream>>>(q.producerHandle(), perThread);
+  CUDACHECK(cudaGetLastError());
+
+  struct Item {
+    uint64_t seq;
+    uint32_t producer;
+    uint32_t value;
+    bool torn;
+  };
+  const int nConsumers = 8;
+  std::vector<std::vector<Item>> got(nConsumers);
+  std::atomic<uint64_t> consumed{0};
+
+  // Each consumer drains until all `total` commands have been taken. read() is
+  // safe to call concurrently under ConsumerPolicy::Multi; every Ok hands the
+  // caller a command no other consumer will see.
+  auto worker = [&](int id) {
+    MultiCmdQueue::ReadResult r;
+    std::vector<Item>& mine = got[id];
+    while (consumed.load(std::memory_order_relaxed) < total) {
+      if (q.read(r) == QueueOpStatus::Ok) {
+        bool torn = false;
+        for (int j = 0; j < 14; ++j) {
+          if (r.value.guard[j] != r.value.value) {
+            torn = true;
+            break;
+          }
+        }
+        mine.push_back({r.seq, r.value.producer, r.value.value, torn});
+        consumed.fetch_add(1, std::memory_order_relaxed);
+      } else {
+        std::this_thread::yield();
+      }
+    }
+  };
+
+  std::vector<std::thread> consumers;
+  consumers.reserve(nConsumers);
+  for (int i = 0; i < nConsumers; ++i) {
+    consumers.emplace_back(worker, i);
+  }
+  for (auto& t : consumers) {
+    t.join();
+  }
+  CUDACHECK(cudaStreamSynchronize(stream));
+
+  // Aggregate single-threaded and verify exactly-once delivery.
+  std::vector<uint8_t> seqSeen(total, 0);
+  std::vector<uint8_t> pairSeen(
+      total, 0); // index = producer * perThread + value
+  uint64_t torn = 0;
+  uint64_t totalConsumed = 0;
+  for (int i = 0; i < nConsumers; ++i) {
+    for (const Item& it : got[i]) {
+      ++totalConsumed;
+      if (it.torn) {
+        ++torn;
+      }
+      ASSERT_LT(it.seq, total);
+      ++seqSeen[it.seq];
+      ASSERT_LT(it.producer, producers);
+      ASSERT_LT(it.value, perThread);
+      ++pairSeen[it.producer * perThread + it.value];
+    }
+  }
+  EXPECT_EQ(totalConsumed, total);
+  EXPECT_EQ(torn, 0u) << torn << " commands observed torn";
+
+  uint64_t seqDup = 0, seqMissing = 0, pairBad = 0;
+  for (uint64_t s = 0; s < total; ++s) {
+    if (seqSeen[s] > 1) {
+      ++seqDup;
+    } else if (seqSeen[s] == 0) {
+      ++seqMissing;
+    }
+    if (pairSeen[s] != 1) {
+      ++pairBad;
+    }
+  }
+  EXPECT_EQ(seqDup, 0u) << seqDup << " sequences consumed more than once";
+  EXPECT_EQ(seqMissing, 0u) << seqMissing << " sequences never consumed";
+  EXPECT_EQ(pairBad, 0u)
+      << pairBad << " (producer,value) pairs not delivered exactly once";
+
   CUDACHECK(cudaStreamDestroy(stream));
 }
