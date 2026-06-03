@@ -224,6 +224,60 @@ void runThroughputReadMulti(
   CUDA_CHECK(cudaStreamDestroy(stream));
 }
 
+// MPMC drain via readMulti: same producer load, but N concurrent consumers each
+// claim a contiguous published run [h, h+n) in ONE head CAS per batch (vs one
+// head CAS per command in read()). This is the path the batched-claim change
+// targets -- compare against the MPMC read() row at the same consumer count to
+// see the head-CAS-rate reduction.
+template <class T>
+void runThroughputReadMultiMPMC(
+    int blocks,
+    int threads,
+    uint64_t total,
+    int nConsumers,
+    uint32_t cap,
+    size_t batchMax,
+    double& mops,
+    double& gbps) {
+  using Q = DeviceHostQueue<T, Direction::D2H, ConsumerPolicy::Multi>;
+  Q q(cap);
+  const uint32_t perThread =
+      static_cast<uint32_t>(total / (uint64_t(blocks) * threads));
+  const uint64_t real = uint64_t(blocks) * threads * perThread;
+
+  cudaStream_t stream;
+  CUDA_CHECK(cudaStreamCreate(&stream));
+
+  auto t0 = Clock::now();
+  benchProducerKernel<T>
+      <<<blocks, threads, 0, stream>>>(q.producerHandle(), perThread);
+  CUDA_CHECK(cudaGetLastError());
+
+  std::atomic<uint64_t> consumed{0};
+  auto worker = [&]() {
+    std::vector<typename Q::ReadResult> batch(batchMax);
+    while (consumed.load(std::memory_order_relaxed) < real) {
+      size_t n = q.readMulti(batch.data(), batchMax);
+      if (n > 0) {
+        consumed.fetch_add(n, std::memory_order_relaxed);
+      }
+    }
+  };
+  std::vector<std::thread> ts;
+  ts.reserve(nConsumers);
+  for (int i = 0; i < nConsumers; ++i) {
+    ts.emplace_back(worker);
+  }
+  for (auto& t : ts) {
+    t.join();
+  }
+  CUDA_CHECK(cudaStreamSynchronize(stream));
+  double secs = secondsSince(t0);
+  mops = double(real) / secs / 1e6;
+  gbps = double(real) * sizeof(T) / secs / 1e9;
+  CUDA_CHECK(cudaStreamDestroy(stream));
+}
+
 // Flags for the host->GPU signaling words (go/stop). On AMD the coherent flag
 // is MANDATORY: a non-coherent mapped flag is not reliably visible to the
 // device mid-kernel under load, so the gated producer can miss the host's
@@ -456,6 +510,33 @@ void readMultiRow(
       s.median * sizeof(T) / 1e3);
 }
 
+// One readMulti (MPMC batched-claim) throughput row, same median+stddev
+// treatment. `consumers` concurrent threads each drain via readMulti.
+template <class T>
+void readMultiMPMCRow(
+    int payloadB,
+    int consumers,
+    int blocks,
+    int threads,
+    uint64_t total,
+    uint32_t cap,
+    size_t batchMax) {
+  MopsStat s = repeatMops([&] {
+    double m = 0, g = 0;
+    runThroughputReadMultiMPMC<T>(
+        blocks, threads, total, consumers, cap, batchMax, m, g);
+    return m;
+  });
+  printf(
+      "%-10d %-10d %-10d %-10.2f %-10.2f %-10.3f\n",
+      payloadB,
+      256,
+      consumers,
+      s.median,
+      s.stddev,
+      s.median * sizeof(T) / 1e3);
+}
+
 } // namespace
 
 int main() {
@@ -523,8 +604,31 @@ int main() {
   fflush(stdout);
 
   printf(
-      "\n=== Scaling: 256 GPU producers -> N host consumers, 64B payload ===\n");
-  printf("%-12s %-10s %-10s %-10s\n", "consumers", "Mops/s", "stddev", "GB/s");
+      "\n=== Throughput: GPU producers -> 4 host consumers (MPMC, readMulti) ===\n");
+  printf(
+      "%-10s %-10s %-10s %-10s %-10s %-10s\n",
+      "payloadB",
+      "producers",
+      "consumers",
+      "Mops/s",
+      "stddev",
+      "GB/s");
+  readMultiMPMCRow<Payload<4>>(16, 4, 8, 32, total, cap, 256);
+  readMultiMPMCRow<Payload<16>>(64, 4, 8, 32, total, cap, 256);
+  readMultiMPMCRow<Payload<32>>(128, 4, 8, 32, total, cap, 256);
+  readMultiMPMCRow<Payload<64>>(256, 4, 8, 32, total, cap, 256);
+  fflush(stdout);
+
+  printf(
+      "\n=== Scaling: 256 GPU producers -> N host consumers, 64B payload "
+      "(read() vs readMulti) ===\n");
+  printf(
+      "%-12s %-10s %-10s %-10s %-10s\n",
+      "consumers",
+      "path",
+      "Mops/s",
+      "stddev",
+      "GB/s");
   {
     MopsStat s = repeatMops([&] {
       double m = 0, g = 0;
@@ -533,25 +637,39 @@ int main() {
       return m;
     });
     printf(
-        "%-12s %-10.2f %-10.2f %-10.3f\n",
+        "%-12s %-10s %-10.2f %-10.2f %-10.3f\n",
         "1 (MPSC)",
+        "read",
         s.median,
         s.stddev,
         s.median * sizeof(Payload<16>) / 1e3);
   }
   for (int nc : {2, 4, 8}) {
-    MopsStat s = repeatMops([&] {
+    MopsStat sRead = repeatMops([&] {
       double m = 0, g = 0;
       runThroughput<Payload<16>, ConsumerPolicy::Multi>(
           8, 32, total, nc, cap, m, g);
       return m;
     });
     printf(
-        "%-12d %-10.2f %-10.2f %-10.3f\n",
+        "%-12d %-10s %-10.2f %-10.2f %-10.3f\n",
         nc,
-        s.median,
-        s.stddev,
-        s.median * sizeof(Payload<16>) / 1e3);
+        "read",
+        sRead.median,
+        sRead.stddev,
+        sRead.median * sizeof(Payload<16>) / 1e3);
+    MopsStat sMulti = repeatMops([&] {
+      double m = 0, g = 0;
+      runThroughputReadMultiMPMC<Payload<16>>(8, 32, total, nc, cap, 256, m, g);
+      return m;
+    });
+    printf(
+        "%-12d %-10s %-10.2f %-10.2f %-10.3f\n",
+        nc,
+        "readMulti",
+        sMulti.median,
+        sMulti.stddev,
+        sMulti.median * sizeof(Payload<16>) / 1e3);
   }
   fflush(stdout);
 

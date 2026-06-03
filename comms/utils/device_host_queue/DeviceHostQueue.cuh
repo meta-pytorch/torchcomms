@@ -445,41 +445,85 @@ class DeviceHostQueue {
     }
   }
 
-  /// Batched MPSC dequeue: copies up to `max` contiguous published commands
-  /// into out[0..n) in sequence order, then releases all n slots with a SINGLE
-  /// ci release store (vs one per command in read()). That store is the
-  /// cross-domain write that bounds drain throughput, so batching it is the
-  /// main consumer-side perf lever; prefer this over read() in a drain loop.
-  /// Returns n; n == 0 means the head is not yet published. MPSC only.
+  /// Batched dequeue: copies up to `max` contiguous published commands into
+  /// out[0..n) in sequence order and returns n (0 if the head is unpublished).
+  /// Prefer this over read() in a drain loop -- it amortizes the contended
+  /// cross-domain op over the batch.
+  ///
+  /// Single: scans from the private cursor and frees the whole batch with a
+  /// SINGLE ci release store (vs one per command in read()).
+  /// Multi: claims a contiguous published run [h, h+n) in ONE head CAS (vs one
+  /// CAS per command in read()), cutting head-CAS contention ~n x. Safe to call
+  /// concurrently; each command is delivered to exactly one caller.
   size_t readMulti(ReadResult* out, size_t max) {
-    static_assert(
-        Policy == ConsumerPolicy::Single,
-        "readMulti is MPSC-only; with ConsumerPolicy::Multi each consumer "
-        "claims via read()");
-    size_t n = 0;
-    uint64_t seq = consumer_.nextToRead;
-    while (n < max) {
-      DeviceHostQueueSlot<T>& slot = slotsHost_[seq & mask_];
-      // Per-slot acquire pairs with the producer's release of readySeq, so the
-      // payload copied just below is fully visible.
-      uint64_t ready = std::atomic_ref<uint64_t>(slot.readySeq)
-                           .load(std::memory_order_acquire);
-      if (ready != seq + 1) {
-        break; // first unpublished slot ends the contiguous batch
+    if constexpr (Policy == ConsumerPolicy::Single) {
+      size_t n = 0;
+      uint64_t seq = consumer_.nextToRead;
+      while (n < max) {
+        DeviceHostQueueSlot<T>& slot = slotsHost_[seq & mask_];
+        // Per-slot acquire pairs with the producer's release of readySeq, so
+        // the payload copied just below is fully visible.
+        uint64_t ready = std::atomic_ref<uint64_t>(slot.readySeq)
+                             .load(std::memory_order_acquire);
+        if (ready != seq + 1) {
+          break; // first unpublished slot ends the contiguous batch
+        }
+        memcpy(&out[n].value, slot.payload, sizeof(T));
+        out[n].seq = seq;
+        ++n;
+        ++seq;
       }
-      memcpy(&out[n].value, slot.payload, sizeof(T));
-      out[n].seq = seq;
-      ++n;
-      ++seq;
+      if (n > 0) {
+        consumer_.nextToRead = seq;
+        // One release store frees the whole batch and orders the n copy-outs
+        // before the credit; pairs with the producer's acquire of ci.
+        std::atomic_ref<uint64_t>(ctrlHost_->ci)
+            .store(seq, std::memory_order_release);
+      }
+      return n;
+    } else { // ConsumerPolicy::Multi
+      std::atomic<uint64_t>& head = consumer_.head;
+      for (;;) {
+        uint64_t h = head.load(std::memory_order_acquire);
+        // Count the contiguous published run [h, h+n). The acquire on each
+        // readySeq pairs with the producer's release, so the payloads copied
+        // after the claim are visible. A scanned-published slot can't be
+        // reclaimed before we claim it (its done marker is unset and head has
+        // not passed it), so the run stays valid through the CAS below.
+        size_t n = 0;
+        while (n < max) {
+          DeviceHostQueueSlot<T>& slot = slotsHost_[(h + n) & mask_];
+          uint64_t ready = std::atomic_ref<uint64_t>(slot.readySeq)
+                               .load(std::memory_order_acquire);
+          if (ready != h + n + 1) {
+            break;
+          }
+          ++n;
+        }
+        if (n == 0) {
+          return 0; // head not yet published
+        }
+        // Claim the whole run in one CAS; if head moved, re-peek and retry.
+        if (!head.compare_exchange_weak(
+                h,
+                h + n,
+                std::memory_order_acq_rel,
+                std::memory_order_relaxed)) {
+          continue;
+        }
+        for (size_t i = 0; i < n; ++i) {
+          DeviceHostQueueSlot<T>& slot = slotsHost_[(h + i) & mask_];
+          memcpy(&out[i].value, slot.payload, sizeof(T));
+          out[i].seq = h + i;
+          // Release: orders our copy-out before any consumer that observes this
+          // marker advances ci past h+i.
+          consumer_.done[(h + i) & mask_].store(
+              h + i + 1, std::memory_order_release);
+        }
+        advanceReuseCreditMulti();
+        return n;
+      }
     }
-    if (n > 0) {
-      consumer_.nextToRead = seq;
-      // One release store frees the whole batch and orders the n copy-outs
-      // before the credit; pairs with the producer's acquire of ci.
-      std::atomic_ref<uint64_t>(ctrlHost_->ci)
-          .store(seq, std::memory_order_release);
-    }
-    return n;
   }
 
   /// Blocking consumer dequeue: spins until a command is available, then copies

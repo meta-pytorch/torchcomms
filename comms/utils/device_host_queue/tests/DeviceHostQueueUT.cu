@@ -425,3 +425,107 @@ TEST(DeviceHostQueueTest, MultiConsumerNoLossNoDup) {
 
   CUDACHECK(cudaStreamDestroy(stream));
 }
+
+// Same exactly-once contract as MultiConsumerNoLossNoDup, but consumers drain
+// via the batched readMulti (one head CAS per run of up to kBatch commands)
+// instead of per-item read(). Exercises the multi-consumer batched-claim path.
+TEST(DeviceHostQueueTest, MultiConsumerReadMultiNoLossNoDup) {
+  const uint32_t blocks = 8;
+  const uint32_t threads = 32;
+  const uint32_t perThread = 1000;
+  const uint32_t producers = blocks * threads;
+  const uint64_t total = uint64_t(producers) * perThread;
+
+  MultiCmdQueue q(1024);
+  cudaStream_t stream;
+  CUDACHECK(cudaStreamCreate(&stream));
+  producerKernel<<<blocks, threads, 0, stream>>>(q.producerHandle(), perThread);
+  CUDACHECK(cudaGetLastError());
+
+  struct Item {
+    uint64_t seq;
+    uint32_t producer;
+    uint32_t value;
+    bool torn;
+  };
+  const int nConsumers = 8;
+  const size_t kBatch = 16;
+  std::vector<std::vector<Item>> got(nConsumers);
+  std::atomic<uint64_t> consumed{0};
+
+  // readMulti is safe to call concurrently under ConsumerPolicy::Multi; each
+  // call claims a contiguous run via one head CAS and returns it to this caller
+  // only.
+  auto worker = [&](int id) {
+    MultiCmdQueue::ReadResult batch[kBatch];
+    std::vector<Item>& mine = got[id];
+    while (consumed.load(std::memory_order_relaxed) < total) {
+      size_t n = q.readMulti(batch, kBatch);
+      if (n == 0) {
+        std::this_thread::yield();
+        continue;
+      }
+      for (size_t k = 0; k < n; ++k) {
+        const MultiCmdQueue::ReadResult& r = batch[k];
+        bool torn = false;
+        for (int j = 0; j < 14; ++j) {
+          if (r.value.guard[j] != r.value.value) {
+            torn = true;
+            break;
+          }
+        }
+        mine.push_back({r.seq, r.value.producer, r.value.value, torn});
+      }
+      consumed.fetch_add(n, std::memory_order_relaxed);
+    }
+  };
+
+  std::vector<std::thread> consumers;
+  consumers.reserve(nConsumers);
+  for (int i = 0; i < nConsumers; ++i) {
+    consumers.emplace_back(worker, i);
+  }
+  for (auto& t : consumers) {
+    t.join();
+  }
+  CUDACHECK(cudaStreamSynchronize(stream));
+
+  // Aggregate single-threaded and verify exactly-once delivery.
+  std::vector<uint8_t> seqSeen(total, 0);
+  std::vector<uint8_t> pairSeen(total, 0);
+  uint64_t torn = 0;
+  uint64_t totalConsumed = 0;
+  for (int i = 0; i < nConsumers; ++i) {
+    for (const Item& it : got[i]) {
+      ++totalConsumed;
+      if (it.torn) {
+        ++torn;
+      }
+      ASSERT_LT(it.seq, total);
+      ++seqSeen[it.seq];
+      ASSERT_LT(it.producer, producers);
+      ASSERT_LT(it.value, perThread);
+      ++pairSeen[it.producer * perThread + it.value];
+    }
+  }
+  EXPECT_EQ(totalConsumed, total);
+  EXPECT_EQ(torn, 0u) << torn << " commands observed torn";
+
+  uint64_t seqDup = 0, seqMissing = 0, pairBad = 0;
+  for (uint64_t s = 0; s < total; ++s) {
+    if (seqSeen[s] > 1) {
+      ++seqDup;
+    } else if (seqSeen[s] == 0) {
+      ++seqMissing;
+    }
+    if (pairSeen[s] != 1) {
+      ++pairBad;
+    }
+  }
+  EXPECT_EQ(seqDup, 0u) << seqDup << " sequences consumed more than once";
+  EXPECT_EQ(seqMissing, 0u) << seqMissing << " sequences never consumed";
+  EXPECT_EQ(pairBad, 0u)
+      << pairBad << " (producer,value) pairs not delivered exactly once";
+
+  CUDACHECK(cudaStreamDestroy(stream));
+}
