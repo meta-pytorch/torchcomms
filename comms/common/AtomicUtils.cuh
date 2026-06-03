@@ -642,4 +642,34 @@ atomic_fetch_add_release_gpu_global(uint32_t* ptr, uint32_t val) {
 #endif
 }
 
+// =============================================================================
+// Compare-and-Swap
+// =============================================================================
+
+// Relaxed system-scope compare-and-swap. Returns the value previously at *ptr;
+// the swap succeeded iff the returned value == cmp. Mirrors PTX atom.cas so a
+// caller can build a portable CAS-retry loop (e.g. claiming a ring slot).
+__device__ __forceinline__ uint64_t
+atomic_cas_relaxed_sys_global(uint64_t* ptr, uint64_t cmp, uint64_t val) {
+#ifdef __CUDA_ARCH__
+  uint64_t old_val;
+  asm volatile("atom.relaxed.sys.global.cas.b64 %0, [%1], %2, %3;"
+               : "=l"(old_val)
+               : "l"(ptr), "l"(cmp), "l"(val)
+               : "memory");
+  return old_val;
+#else
+  // Strong CAS (weak=false) is required: we infer success from the returned
+  // value (== cmp), but a *weak* CAS may fail SPURIOUSLY with *ptr still ==
+  // cmp, leaving `cmp` unchanged -- indistinguishable from a real success, so
+  // two callers could "claim" the same slot. Strong CAS never fails spuriously,
+  // so "returned == cmp" iff the swap happened, matching PTX atom.cas. On a
+  // real failure __atomic_compare_exchange_n writes the actual prior value into
+  // `cmp`.
+  __atomic_compare_exchange_n(
+      ptr, &cmp, val, /*weak=*/false, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+  return cmp;
+#endif
+}
+
 } // namespace comms::device
