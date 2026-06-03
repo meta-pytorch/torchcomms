@@ -97,6 +97,7 @@ class JobSpec:
     connector_key: str
     connector_class: str
     layout: str
+    tp: int
     name: str
     session_id: str
 
@@ -303,7 +304,7 @@ class MastBenchmarkRunner:
             "--connector",
             spec.connector_class,
             "--tp",
-            str(self.workload.tp),
+            str(spec.tp),
             "--model",
             self.workload.model,
             "--gpu-memory-utilization",
@@ -409,6 +410,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--job-timeout-sec", type=int, default=3600)
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--tp", type=int, default=1)
+    parser.add_argument(
+        "--tp-values",
+        type=int,
+        nargs="+",
+        help=(
+            "Tensor-parallel values to run. Defaults to the single --tp value. "
+            "Same-node MAST validation supports TP=1; TP>1 runs are cross-node only."
+        ),
+    )
     parser.add_argument("--warmup-iters", type=int, default=3)
     parser.add_argument("--measure-iters", type=int, default=3)
     parser.add_argument("--prompt-len", type=int, default=128)
@@ -437,23 +447,36 @@ def parse_args() -> argparse.Namespace:
 def make_job_specs(args: argparse.Namespace, package: str) -> list[JobSpec]:
     connectors = list(CONNECTORS) if args.connector == "both" else [args.connector]
     layouts = ["sn", "cn"] if args.layout == "both" else [args.layout]
+    tp_values = args.tp_values if args.tp_values is not None else [args.tp]
     package_suffix = package_hash_suffix(package)
     run_suffix = time.strftime("%m%d%H%M%S")
     specs: list[JobSpec] = []
-    for connector in connectors:
-        for layout in layouts:
-            connector_short = "uni" if connector == "uniflow" else "nixl"
-            name = f"{args.job_prefix}-{layout}-{connector_short}-{package_suffix}-{run_suffix}"
-            session_id = f"codex-{package_suffix}-{layout}-{connector}"
-            specs.append(
-                JobSpec(
-                    connector_key=connector,
-                    connector_class=CONNECTORS[connector],
-                    layout=layout,
-                    name=name,
-                    session_id=session_id,
+    for tp in tp_values:
+        for connector in connectors:
+            for layout in layouts:
+                if layout == "sn" and tp > 1:
+                    print(
+                        f"Skipping SN {CONNECTORS[connector]} TP={tp}: "
+                        "same-node multi-TP benchmark orchestration is not supported",
+                        flush=True,
+                    )
+                    continue
+                connector_short = "uni" if connector == "uniflow" else "nixl"
+                name = (
+                    f"{args.job_prefix}-{layout}-{connector_short}-tp{tp}-"
+                    f"{package_suffix}-{run_suffix}"
                 )
-            )
+                session_id = f"codex-{package_suffix}-{layout}-{connector}-tp{tp}"
+                specs.append(
+                    JobSpec(
+                        connector_key=connector,
+                        connector_class=CONNECTORS[connector],
+                        layout=layout,
+                        tp=tp,
+                        name=name,
+                        session_id=session_id,
+                    )
+                )
     return specs
 
 
@@ -472,10 +495,11 @@ def print_summary(package: str, results: Sequence[JobResult]) -> None:
     for result in results:
         status = "PASS" if result.passed else "FAIL"
         logger.info(
-            "%s: %s %s %s %s",
+            "%s: %s %s TP=%d %s %s",
             status,
             result.spec.layout.upper(),
             result.spec.connector_class,
+            result.spec.tp,
             result.state,
             result.app_uri,
         )
