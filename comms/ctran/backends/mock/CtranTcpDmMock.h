@@ -7,9 +7,13 @@
 
 namespace ctran {
 
+class Profiler;
+
 class CtranTcpDm {
  public:
-  explicit CtranTcpDm(CtranComm* comm) {}
+  explicit CtranTcpDm(
+      CtranComm* comm,
+      ctran::Profiler* /*profiler*/ = nullptr) {}
   ~CtranTcpDm() {}
 
   commResult_t preConnect(const std::unordered_set<int>& peerRanks) {

@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #include "comms/ctran/backends/tcpdevmem/CtranTcpDm.h"
 #include "comms/ctran/backends/tcpdevmem/CtranTcpDmSingleton.h"
+#include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/Debug.h"
 #include "comms/utils/StrUtils.h"
@@ -182,7 +183,9 @@ commResult_t CtranTcpDm::bootstrapConnect(
   return res;
 }
 
-CtranTcpDm::CtranTcpDm([[maybe_unused]] CtranComm* comm) {
+CtranTcpDm::CtranTcpDm(
+    [[maybe_unused]] CtranComm* comm,
+    ctran::Profiler* profiler) {
   transport_ = CtranTcpDmSingleton::getTransport();
 
   cudaDev_ = comm->statex_->cudaDev();
@@ -195,6 +198,8 @@ CtranTcpDm::CtranTcpDm([[maybe_unused]] CtranComm* comm) {
   transport_->open(netdev_);
 
   bootstrapPrepare(comm->bootstrap_.get());
+
+  registerProfilerHooks(profiler);
 
   CLOGF_SUBSYS(
       INFO,
@@ -387,6 +392,18 @@ CtranTcpDm::prepareUnpackConsumer(SQueues* sqs, size_t blocks, void** pool) {
 commResult_t CtranTcpDm::teardownUnpackConsumer(void* pool) {
   COMMCHECK_TCP(transport_->teardownUnpackConsumer(netdev_, pool));
   return commSuccess;
+}
+
+void CtranTcpDm::registerProfilerHooks(ctran::Profiler* profiler) {
+  if (!profiler) {
+    return;
+  }
+  profiler->registerStartHook(ProfilerEvent::ALGO_TOTAL, [this]() {
+    // Transport profiler start -- to be implemented.
+  });
+  profiler->registerEndHook(ProfilerEvent::ALGO_TOTAL, [this]() {
+    // Transport profiler end -- to be implemented.
+  });
 }
 
 } // namespace ctran
