@@ -6,7 +6,6 @@
 #
 
 ENABLE_TCPDM ?= 0
-ENABLE_PIPES ?= 1
 
 # Assuming calling from src directory
 SRCDIR = $(abspath ./)
@@ -23,10 +22,6 @@ CXXFLAGS += -DFMT_HEADER_ONLY=1
 
 ifeq ($(ENABLE_TCPDM),0)
 CXXFLAGS += -DCTRAN_DISABLE_TCPDM
-endif
-
-ifeq ($(ENABLE_PIPES),1)
-CXXFLAGS += -DENABLE_PIPES
 endif
 
 ##### src files
@@ -134,9 +129,15 @@ LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/AllGatherP/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/ReduceScatter/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/AllReduce/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/AllToAll/*.cc)
+LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/AllToAll/*.cu)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/SendRecv/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/Broadcast/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/RMA/*.cc)
+LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/prims/*.cc)
+LIBSRCFILES += ${BASE_DIR}/comms/ctran/prims/MultipeerIbgdaTransportCuda.cu
+LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/prims/rdma/*.cc)
+LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/prims/window/*.cc)
+LIBSRCFILES += ${BASE_DIR}/comms/ctran/prims/collectives/AllGatherLauncher.cu
 
 INCLUDES := -Iinclude
 INCLUDES += -Iinclude/plugin
@@ -278,9 +279,6 @@ DEPFILES   := $(LIBOBJ:%.o=%.d) $(BINOBJ:%.o=%.d) $(PARAMBINOBJ:%.o=%.d)
 LDFLAGS    += -Wl,--no-undefined
 LDFLAGS    += -L${CUDA_LIB} -L${BUILDDIR} -L${CONDA_LIB_DIR} -l$(CUDARTLIB) -lpthread -lm -lrt -ldl
 LDFLAGS    += ${THIRD_PARTY_LDFLAGS}
-ifeq ($(ENABLE_PIPES),1)
-LDFLAGS    += -lpipes
-endif
 LDFLAGS    += -Wl,--version-script=version.script
 ifeq ($(CUDARTLIB), cudarthook)
     # Ensure that cudart symbols are resolved within the module itself.

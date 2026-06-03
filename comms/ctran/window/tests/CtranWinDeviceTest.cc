@@ -6,16 +6,16 @@
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
+#include "comms/ctran/prims/MultiPeerTransport.h"
+#include "comms/ctran/prims/window/DeviceWindow.cuh"
+#include "comms/ctran/prims/window/HostWindow.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/window/CtranWin.h"
-#include "comms/pipes/MultiPeerTransport.h"
-#include "comms/pipes/window/DeviceWindow.cuh"
-#include "comms/pipes/window/HostWindow.h"
 
-using comms::pipes::DeviceWindow;
-using comms::pipes::WindowConfig;
 using ctran::CtranWin;
+using ctran::prims::DeviceWindow;
+using ctran::prims::WindowConfig;
 
 class CtranWinDeviceEnvironment : public ctran::CtranEnvironmentBase {
  public:

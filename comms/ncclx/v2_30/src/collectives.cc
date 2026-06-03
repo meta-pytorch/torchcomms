@@ -482,7 +482,6 @@ ncclResult_t ncclAllToAllv(
   return ncclSuccess;
 }
 
-#if defined(ENABLE_PIPES)
 __attribute__((visibility("default")))
 ncclResult_t ncclx::deviceAllToAllv(
     const void* sendbuff,
@@ -512,22 +511,6 @@ ncclResult_t ncclx::deviceAllToAllv(
       recvcountsMultiplier,
       hints));
 }
-#else
-__attribute__((visibility("default")))
-ncclResult_t ncclx::deviceAllToAllv(
-    const void* /*sendbuff*/,
-    void* /*recvbuff*/,
-    const int64_t* /*sendcounts_d*/,
-    const int64_t* /*recvcounts_d*/,
-    ncclDataType_t /*datatype*/,
-    ncclComm_t /*comm*/,
-    cudaStream_t /*stream*/,
-    int64_t /*sendcountsMultiplier*/,
-    int64_t /*recvcountsMultiplier*/,
-    const std::unordered_map<std::string, std::string>& /*hints*/) {
-  return ncclInvalidUsage;
-}
-#endif // ENABLE_PIPES
 
 __attribute__((visibility("default")))
 ncclResult_t ncclx::alltoallvDynamic(

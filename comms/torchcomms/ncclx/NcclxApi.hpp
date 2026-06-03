@@ -360,7 +360,6 @@ class NcclxApi {
       ncclComm_t comm) = 0;
 #endif
 
-#if defined(ENABLE_PIPES)
   // Create a DeviceWindow in device memory from a ctran-registered NcclxWindow.
   // COLLECTIVE on first call — all ranks must call together.
   // Returns opaque device pointer via outDevicePtr; free with
@@ -403,7 +402,6 @@ class NcclxApi {
   [[nodiscard]] virtual ncclResult_t winLocalDeregisterBuffer(
       ncclComm_t comm,
       void* ptr) = 0;
-#endif
 
   // Group operations
   [[nodiscard]] virtual ncclResult_t groupStart() = 0;
@@ -702,7 +700,6 @@ class DefaultNcclxApi : public NcclxApi {
       ncclComm_t comm) override;
 #endif
 
-#if defined(ENABLE_PIPES)
   ncclResult_t winCreateDeviceWin(
       NcclxWindow win,
       int signal_count,
@@ -725,7 +722,6 @@ class DefaultNcclxApi : public NcclxApi {
   [[nodiscard]] ncclResult_t winLocalDeregisterBuffer(
       ncclComm_t comm,
       void* ptr) override;
-#endif
 
   // Group operations
   [[nodiscard]] ncclResult_t groupStart() override;

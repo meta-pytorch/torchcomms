@@ -376,7 +376,6 @@ class NcclxMock : public NcclxApi {
 #endif
 #endif
 
-#if defined(ENABLE_PIPES)
   MOCK_METHOD(
       ncclResult_t,
       winCreateDeviceWin,
@@ -407,7 +406,6 @@ class NcclxMock : public NcclxApi {
       winLocalDeregisterBuffer,
       (ncclComm_t comm, void* ptr),
       (override));
-#endif
 
   // Group operations
   MOCK_METHOD(ncclResult_t, groupStart, (), (override));

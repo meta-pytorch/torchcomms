@@ -1,7 +1,5 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#if defined(ENABLE_PIPES)
-
 #include "comms/ctran/algos/AllToAll/DeviceAllToAllvPipesImpl.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -169,5 +167,3 @@ commResult_t setupKernelConfig(
 }
 
 } // namespace ctran::device_alltoallv_pipes
-
-#endif // ENABLE_PIPES

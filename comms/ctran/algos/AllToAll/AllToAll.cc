@@ -8,23 +8,19 @@
 #include "comms/ctran/algos/AllToAll/AllToAllImpl.h"
 #include "comms/ctran/algos/AllToAll/AllToAllPImpl.h"
 #include "comms/ctran/algos/AllToAll/AllToAllvImpl.h"
-#if defined(ENABLE_PIPES)
 #include "comms/ctran/algos/AllToAll/DeviceAllToAllvPipesImpl.h"
-#include "comms/pipes/MultiPeerTransport.h"
-#include "comms/pipes/Transport.cuh"
-#endif
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/gpe/CtranGpe.h"
+#include "comms/ctran/prims/MultiPeerTransport.h"
+#include "comms/ctran/prims/Transport.cuh"
 #include "comms/ctran/utils/CtranPerf.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
-#if defined(ENABLE_PIPES)
 template <PipeProtocol Proto>
 extern __global__ void ncclKernelDeviceAllToAllvPipes(
     int* flag,
     CtranAlgoDeviceState* devState,
     ctran::device_alltoallv_pipes::KernArgs args);
-#endif
 
 #define RETURN_ALLTOALLV_IB_IMPL(perfconfig) \
   return ctranAllToAllvIbImpl<perfconfig>(   \
@@ -187,7 +183,6 @@ bool ctranAllToAllSupport(
   return commTypeSize(datatype) * count >= NCCL_CTRAN_ALLTOALL_THRESHOLD;
 }
 
-#if defined(ENABLE_PIPES)
 // ============================================================================
 // Device AllToAllv (split sizes on device)
 // NVLink domain only — all peers must be reachable via NVLink.
@@ -276,34 +271,11 @@ bool ctranDeviceAllToAllvSupport(CtranComm* comm) {
   const auto statex = comm->statex_.get();
   for (int rank = 0; rank < statex->nRanks(); rank++) {
     auto type = comm->multiPeerTransport_->get_transport_type(rank);
-    if (type != comms::pipes::TransportType::P2P_NVL &&
-        type != comms::pipes::TransportType::SELF) {
+    if (type != ctran::prims::TransportType::P2P_NVL &&
+        type != ctran::prims::TransportType::SELF) {
       return false;
     }
   }
 
   return true;
 }
-#endif // ENABLE_PIPES
-
-// Stubs when ENABLE_PIPES is not defined — prevents linker errors from
-// unconditional declarations in Ctran.h.
-#if !defined(ENABLE_PIPES)
-commResult_t ctranDeviceAllToAllv(
-    const void* /*sendbuff*/,
-    void* /*recvbuff*/,
-    const int64_t* /*sendcounts_d*/,
-    const int64_t* /*recvcounts_d*/,
-    commDataType_t /*datatype*/,
-    CtranComm* /*comm*/,
-    cudaStream_t /*stream*/,
-    int64_t /*sendcountsMultiplier*/,
-    int64_t /*recvcountsMultiplier*/,
-    const std::unordered_map<std::string, std::string>& /*hints*/) {
-  return commInternalError;
-}
-
-bool ctranDeviceAllToAllvSupport(CtranComm* /*comm*/) {
-  return false;
-}
-#endif // !ENABLE_PIPES

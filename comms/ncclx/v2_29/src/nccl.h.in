@@ -995,7 +995,6 @@ ncclResult_t pncclWinSharedQuery(int rank, ncclComm_t comm, ncclWindow_t win, vo
  */
 ncclResult_t ncclWinGetAttributes(int rank, ncclWindow_t win, ncclWinAttr_t* attr);
 
-#if defined(ENABLE_PIPES)
 /*
  * Create a DeviceWindow in device memory from a ctran-registered ncclWindow_t.
  * COLLECTIVE on first call — all ranks must call together.
@@ -1035,7 +1034,7 @@ ncclResult_t ncclGetMultiPeerDeviceHandle(
 
 /*
  * NCCLX_MAX_NICS_PER_GPU — maximum number of IBGDA NICs per GPU exposed to
- * ncclWinLocalRegisterBuffer. Must match comms::pipes::kMaxNicsPerGpu and
+ * ncclWinLocalRegisterBuffer. Must match ctran::prims::kMaxNicsPerGpu and
  * torch::comms::kMaxNicsPerGpu (verified by static_assert in
  * PipesDeviceBackend.cpp). Increase only if a future platform supports
  * > 2 NICs per GPU; update all three constants in lockstep.
@@ -1087,7 +1086,6 @@ ncclResult_t ncclWinLocalRegisterBuffer(
 ncclResult_t ncclWinLocalDeregisterBuffer(
     ncclComm_t comm,
     void* ptr);
-#endif // ENABLE_PIPES
 
 /*
  * Free the window object and free the allocated memory

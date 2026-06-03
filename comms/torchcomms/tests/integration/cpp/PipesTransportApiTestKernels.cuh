@@ -7,14 +7,14 @@
 #pragma once
 
 #include <cuda_runtime.h>
-#include "comms/pipes/MultiPeerDeviceHandle.cuh"
+#include "comms/ctran/prims/MultiPeerDeviceHandle.cuh"
 
 namespace torchcomms::device::test {
 
 // Stress send/recv: rank 0 sends, rank 1 receives, with signal-based sync
 // between iterations. Verifies data integrity on receiver.
 void launchTransportStressSendRecvKernel(
-    comms::pipes::MultiPeerDeviceHandle handle,
+    ctran::prims::MultiPeerDeviceHandle handle,
     float* buf,
     size_t count,
     int peer,
@@ -25,7 +25,7 @@ void launchTransportStressSendRecvKernel(
 
 // Stress signal/wait: ring pattern, monotonic ADD signals with GE waits.
 void launchTransportStressSignalKernel(
-    comms::pipes::MultiPeerDeviceHandle handle,
+    ctran::prims::MultiPeerDeviceHandle handle,
     int peer,
     int iterations,
     int num_threads,
@@ -33,7 +33,7 @@ void launchTransportStressSignalKernel(
 
 // Combined: signal-sync + send/recv + signal/wait + verify per iteration.
 void launchTransportStressCombinedKernel(
-    comms::pipes::MultiPeerDeviceHandle handle,
+    ctran::prims::MultiPeerDeviceHandle handle,
     float* buf,
     size_t count,
     int peer,
@@ -44,7 +44,7 @@ void launchTransportStressCombinedKernel(
 
 // LL128 send/recv: warp-only, small messages.
 void launchTransportStressLl128Kernel(
-    comms::pipes::MultiPeerDeviceHandle handle,
+    ctran::prims::MultiPeerDeviceHandle handle,
     char* buf,
     size_t nbytes,
     int peer,

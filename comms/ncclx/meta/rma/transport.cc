@@ -1,13 +1,11 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 // Pipes transport API implementations (non-window transport operations).
 
-#if defined(ENABLE_PIPES)
-
 #include "checks.h"
 #include "comm.h"
 #include "comms/ctran/Ctran.h"
-#include "comms/pipes/MultiPeerDeviceHandle.cuh"
-#include "comms/pipes/MultiPeerTransport.h"
+#include "comms/ctran/prims/MultiPeerDeviceHandle.cuh"
+#include "comms/ctran/prims/MultiPeerTransport.h"
 
 #include "nccl.h"
 
@@ -54,5 +52,3 @@ ncclResult_t ncclGetMultiPeerDeviceHandle(
   *outNumIbPeers = handle.numIbPeers;
   return ncclSuccess;
 }
-
-#endif // ENABLE_PIPES

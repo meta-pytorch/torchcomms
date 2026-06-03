@@ -19,10 +19,8 @@
 #include "comms/torchcomms/device/TorchCommDeviceWindow.hpp"
 #endif
 
-#if defined(ENABLE_PIPES)
 #include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
 #include "comms/torchcomms/device/pipes/TorchCommDevicePipesTypes.hpp"
-#endif
 
 namespace torch::comms {
 
@@ -239,10 +237,7 @@ using TorchCommWindowNCCLXGin = TorchCommWindowNCCLX<HostOnlyBackend>;
 #endif
 
 // Type alias for the Pipes backend (IBGDA + NVLink device-side P2P).
-// Only available when ENABLE_PIPES is defined (propagated from ctran_lib).
-#if defined(ENABLE_PIPES)
 using TorchCommWindowNCCLXPipes =
     TorchCommWindowNCCLX<torchcomms::device::PipesDeviceBackend>;
-#endif
 
 } // namespace torch::comms

@@ -5,17 +5,15 @@
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/prims/MultiPeerTransport.h"
+#include "comms/ctran/prims/window/DeviceWindow.cuh"
+#include "comms/ctran/prims/window/HostWindow.h"
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/DevMemType.h"
 #include "comms/ctran/window/CtranWin.h"
 #include "comms/ctran/window/Types.h"
-#if defined(ENABLE_PIPES)
-#include "comms/pipes/MultiPeerTransport.h"
-#include "comms/pipes/window/DeviceWindow.cuh"
-#include "comms/pipes/window/HostWindow.h"
-#endif
 #include "comms/utils/logger/LogUtils.h"
 
 using ctran::window::RemWinInfo;
@@ -309,10 +307,8 @@ commResult_t CtranWin::free(bool skipBarrier) {
     }
   }
 
-#if defined(ENABLE_PIPES)
   // HostWindow handles cleanup via RAII
   hostWindow_.reset();
-#endif
 
   freeMem(winBasePtr);
 
@@ -324,10 +320,9 @@ bool CtranWin::nvlEnabled(int rank) const {
       comm->ctran_->mapper->hasBackend(rank, CtranMapperBackend::NVL);
 }
 
-#if defined(ENABLE_PIPES)
 commResult_t CtranWin::getDeviceWin(
-    comms::pipes::DeviceWindow* devWin,
-    const comms::pipes::WindowConfig& config) {
+    ctran::prims::DeviceWindow* devWin,
+    const ctran::prims::WindowConfig& config) {
   auto* transport = comm->multiPeerTransport_.get();
   if (!transport) {
     FB_ERRORRETURN(
@@ -349,7 +344,7 @@ commResult_t CtranWin::getDeviceWin(
         winDataPtr,
         dataBytes);
 
-    hostWindow_ = std::make_unique<comms::pipes::HostWindow>(
+    hostWindow_ = std::make_unique<ctran::prims::HostWindow>(
         *transport, config, winDataPtr, dataBytes);
 
     hostWindow_->exchange();
@@ -358,10 +353,9 @@ commResult_t CtranWin::getDeviceWin(
         INFO, INIT, "CTRAN-WINDOW: Rank {} device window built", myRank);
   }
 
-  new (devWin) comms::pipes::DeviceWindow(hostWindow_->getDeviceWindow());
+  new (devWin) ctran::prims::DeviceWindow(hostWindow_->getDeviceWindow());
   return commSuccess;
 }
-#endif // ENABLE_PIPES
 
 commResult_t ctranWinAllocate(
     size_t size,

@@ -825,7 +825,7 @@ set(RCCLX_FILES
 
 # Automatically collect all ctran and pipes source files.
 # Glob paths must be absolute because these dirs live outside CMAKE_SOURCE_DIR
-# (at fbcode/comms/ctran/ and fbcode/comms/pipes/, not under comms/rcclx/develop/).
+# (at fbcode/comms/ctran/ and fbcode/comms/ctran/prims/, not under comms/rcclx/develop/).
 file(GLOB_RECURSE CTRAN_SOURCES_ABS
     "${FBCODE_DIR}/comms/ctran/*.cc"
     "${FBCODE_DIR}/comms/ctran/*.cu"
@@ -844,6 +844,7 @@ endforeach()
 list(FILTER CTRAN_SOURCES EXCLUDE REGEX "comms/ctran/tests/.*")
 list(FILTER CTRAN_SOURCES EXCLUDE REGEX "comms/ctran/benchmarks/.*")
 list(FILTER CTRAN_SOURCES EXCLUDE REGEX "comms/ctran/examples/.*")
+list(FILTER CTRAN_SOURCES EXCLUDE REGEX "comms/ctran/prims/.*")
 # Also exclude nested tests/benchmarks/examples dirs (e.g. comms/ctran/algos/tests/, comms/ctran/gpe/tests/)
 list(FILTER CTRAN_SOURCES EXCLUDE REGEX "comms/ctran/.*/tests/.*")
 list(FILTER CTRAN_SOURCES EXCLUDE REGEX "comms/ctran/.*/benchmarks/.*")
@@ -857,10 +858,10 @@ endif()
 
 # Automatically collect all pipes source files.
 file(GLOB_RECURSE PIPES_SOURCES_ABS
-    "${FBCODE_DIR}/comms/pipes/*.cc"
-    "${FBCODE_DIR}/comms/pipes/*.cu"
-    "${FBCODE_DIR}/comms/pipes/*.h"
-    "${FBCODE_DIR}/comms/pipes/*.cuh"
+    "${FBCODE_DIR}/comms/ctran/prims/*.cc"
+    "${FBCODE_DIR}/comms/ctran/prims/*.cu"
+    "${FBCODE_DIR}/comms/ctran/prims/*.h"
+    "${FBCODE_DIR}/comms/ctran/prims/*.cuh"
 )
 
 set(PIPES_SOURCES "")
@@ -874,23 +875,23 @@ endforeach()
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "[Ii]bgda")
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "[Dd]oca")
 # MultiPeerTransport unconditionally includes MultipeerIbgdaTransport.h, so exclude it too.
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/pipes/MultiPeerTransport\\.")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/ctran/prims/MultiPeerTransport\\.")
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "MultiPeerTransportAmd\\.")
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "AllToAllvAmd\\.")
 # Exclude Dispatchv files (currently disabled)
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "Dispatchv\\.")
 # Exclude tests and benchmarks (they depend on gtest/mpi which are not available in this build)
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/pipes/tests/.*")
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/pipes/benchmarks/.*")
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/pipes/.*/tests/.*")
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/pipes/.*/benchmarks/.*")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/ctran/prims/tests/.*")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/ctran/prims/benchmarks/.*")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/ctran/prims/.*/tests/.*")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/ctran/prims/.*/benchmarks/.*")
 # Exclude all pipes collectives — they depend on CUDA-only headers (cuda_bf16.h,
 # P2pIbgdaTransportDevice.cuh, __trap) that are not available on ROCm/HIP.
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/pipes/collectives/.*")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/ctran/prims/collectives/.*")
 # Exclude rdma files — they depend on spdlog which is not available in this build.
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/pipes/rdma/.*")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/ctran/prims/rdma/.*")
 # Exclude window files — they depend on IbgdaBuffer.h which is excluded.
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/pipes/window/.*")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/ctran/prims/window/.*")
 # Exclude GpuMemHandler and CudaDriverLazy — they depend on cudaTypedefs.h which is not available.
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "GpuMemHandler\\.")
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "CudaDriverLazy\\.")
@@ -939,7 +940,7 @@ set(CTRAN_FILES
 
 # TODO: Add back comms/common/ files
 # Run this command to get COMMON_FILES:
-# find comms/utils/ comms/common comms/pipes -type f ! -path "*/tests/*" ! -path "*/benchmarks/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" -o -name "*.cuh" -o -name "*.cu" \) | sort
+# find comms/utils/ comms/common comms/ctran/prims -type f ! -path "*/tests/*" ! -path "*/benchmarks/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" -o -name "*.cuh" -o -name "*.cu" \) | sort
 set(COMMON_FILES
   comms/common/algorithms/AlgoFactory.cu
   comms/common/algorithms/AlgoFactory.cuh

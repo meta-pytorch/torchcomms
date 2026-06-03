@@ -44,11 +44,6 @@ NVCUFLAGS += --compiler-options "-DCTRAN_DISABLE_TCPDM"
 NVCUFLAGS_SYM += --compiler-options "-DCTRAN_DISABLE_TCPDM"
 endif
 
-ifeq ($(ENABLE_PIPES),1)
-NVCUFLAGS += --compiler-options "-DENABLE_PIPES"
-NVCUFLAGS_SYM += --compiler-options "-DENABLE_PIPES"
-endif
-
 SAY = @bash -c 'path="$$2"; [[ "$$(realpath "$$2")" =~ ^$(subst .,\.,$(abspath $(NCCLDIR)))/(.*)$$ ]] && path="$${BASH_REMATCH[1]}"; printf "%-15s %s\n" "$$1" "$$path"' SAY
 
 COMPILE.cu = $(NVCC) $(NVCUFLAGS) -dc $2 -o $1

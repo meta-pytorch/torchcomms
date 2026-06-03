@@ -10,12 +10,10 @@
 //   - NVLink peers (same node): direct memcpy with NVLink-mapped pointers
 //   - IBGDA peers (cross-node): RDMA writes via DOCA GPUNetIO
 //
-// The Window type is a typed device pointer (comms::pipes::DeviceWindow*)
+// The Window type is a typed device pointer (ctran::prims::DeviceWindow*)
 // allocated by ncclx. Device-side code uses it directly without casting.
 
 #pragma once
-
-#if defined(ENABLE_PIPES)
 
 #include <memory>
 
@@ -23,10 +21,10 @@
 
 #include "comms/torchcomms/RegisteredBuffer.hpp"
 
-namespace comms::pipes {
+namespace ctran::prims {
 class DeviceWindow;
 struct MultiPeerDeviceHandle;
-} // namespace comms::pipes
+} // namespace ctran::prims
 
 namespace torch::comms {
 class CudaApi;
@@ -50,7 +48,7 @@ class TorchCommDeviceWindow;
 //
 // Types:
 //   - Comm:   void* — unused for Pipes (no separate communicator handle).
-//   - Window: comms::pipes::DeviceWindow* — typed device pointer to the
+//   - Window: ctran::prims::DeviceWindow* — typed device pointer to the
 //             transport window allocated by ncclx via winCreateDeviceWin().
 
 struct PipesDeviceBackend {
@@ -61,7 +59,7 @@ struct PipesDeviceBackend {
   // Typed device pointer to the Pipes DeviceWindow. Device-side code accesses
   // transport handles, NVLink-mapped remote pointers, and IBGDA descriptors
   // directly through this pointer without casting.
-  using Window = comms::pipes::DeviceWindow*;
+  using Window = ctran::prims::DeviceWindow*;
 
   // =========================================================================
   // DeviceWindowDeleter - Custom deleter for device window cleanup
@@ -199,11 +197,9 @@ struct PipesDeviceBackend {
   // MultiPeerTransport::exchange() during ctran init).
   //
   // Throws std::runtime_error if pipes transport is not initialized.
-  static comms::pipes::MultiPeerDeviceHandle fetch_transport_handle(
+  static ctran::prims::MultiPeerDeviceHandle fetch_transport_handle(
       ncclComm_t nccl_comm,
       torch::comms::NcclxApi* nccl_api);
 };
 
 } // namespace torchcomms::device
-
-#endif // ENABLE_PIPES
