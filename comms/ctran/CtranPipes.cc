@@ -25,6 +25,8 @@ bool ctranPipesTraceEnabled() {
   return NCCL_CTRAN_PIPES_TRACE_ENABLE;
 }
 
+constexpr uint64_t kDefaultIbgdaSendRecvDataBufferSize = 32ULL * 1024 * 1024;
+
 } // namespace
 
 commResult_t ctran::ctranPreparePipesTrace(
@@ -145,6 +147,9 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     if (hierAgOverlapEnabled && NCCL_CTRAN_HIER_AG_IBGDA_DATA_BUFFER_SIZE > 0) {
       ibgdaDataBufferSize = std::max(
           ibgdaDataBufferSize, NCCL_CTRAN_HIER_AG_IBGDA_DATA_BUFFER_SIZE);
+    }
+    if (NCCL_CTRAN_IBGDA_SENDRECV_ENABLE && ibgdaDataBufferSize == 0) {
+      ibgdaDataBufferSize = kDefaultIbgdaSendRecvDataBufferSize;
     }
     config.ibgdaConfig.dataBufferSize =
         static_cast<size_t>(ibgdaDataBufferSize);

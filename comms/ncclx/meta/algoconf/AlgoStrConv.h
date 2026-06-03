@@ -61,6 +61,10 @@ inline void algoStrToVal(
     val = NCCL_ALLREDUCE_ALGO::ctdirect;
   } else if (str == "ctring") {
     val = NCCL_ALLREDUCE_ALGO::ctring;
+  } else if (str == "ctree") {
+    val = NCCL_ALLREDUCE_ALGO::ctree;
+  } else if (str == "pipesflatring") {
+    val = NCCL_ALLREDUCE_ALGO::pipesflatring;
   } else {
     val = NCCL_ALLREDUCE_ALGO::orig;
   }
@@ -144,6 +148,10 @@ inline std::string algoValToStr(enum NCCL_ALLREDUCE_ALGO val) {
       return "ctdirect";
     case NCCL_ALLREDUCE_ALGO::ctring:
       return "ctring";
+    case NCCL_ALLREDUCE_ALGO::ctree:
+      return "ctree";
+    case NCCL_ALLREDUCE_ALGO::pipesflatring:
+      return "pipesflatring";
   }
   return "unknown";
 }

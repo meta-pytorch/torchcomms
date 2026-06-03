@@ -1806,6 +1806,19 @@ cvars:
      initialize MultiPeerTransport which provides unified NVLink and IBGDA
      transport for P2P communication.
 
+ - name        : NCCL_CTRAN_MAX_NBLOCKS
+   type        : int
+   default     : 16
+   description : |-
+     Maximum number of logical CUDA blocks used by CTRAN collectives that support message-size-based block tuning.
+
+ - name        : NCCL_CTRAN_TREE_FANOUT
+   type        : int
+   default     : 2
+   description : |-
+     Fanout used when building CTREE tree topologies for experimental benchmarking.
+     Valid values are 1 through the compile-time maximum tree children.
+
  - name        : NCCL_CTRAN_PIPES_TRACE_ENABLE
    type        : bool
    default     : false
@@ -2649,13 +2662,15 @@ cvars:
  - name        : NCCL_ALLREDUCE_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctdirect, ctring
+   choices     : orig, ctran, ctdirect, ctring, ctree, pipesflatring
    description : |-
      The algorithm to use for Allreduce communication
      orig - Copy-based algorithm
      ctran - Picks the best ctran-based algorithm
      ctdirect - Ctran-based direct point-to-point algorithm
      ctring - ctran-based ring algorithm
+     ctree - Ctran-based tree algorithm (Pipes-native)
+     pipesflatring - Pipes-based device-native ring algorithm (IBGDA)
 
  - name        : NCCL_ALLREDUCE_TYPE
    type        : enum
@@ -3067,6 +3082,21 @@ cvars:
    description : |-
      Number of threads in each thread block used for the AllReduce
      kernel.
+
+ - name        : NCCL_CTRAN_ALLREDUCE_PIPES_FLAT_RING_NUM_RINGS
+   type        : int
+   default     : -1
+   description : |-
+     Number of rings for the pipesflatring AllReduce algorithm. Set to
+     -1 for automatic selection. Supported explicit values are 1, 2, and 4.
+
+ - name        : NCCL_CTRAN_ALLREDUCE_PIPES_FLAT_RING_NUM_BLOCKS
+   type        : int
+   default     : -1
+   description : |-
+     Total grid blocks for the pipesflatring AllReduce algorithm. Set to
+     -1 for automatic selection. This is the total grid size split across
+     all rings.
 
  - name        : NCCL_CTRAN_ALLREDUCE_RING_AUTO_TUNE_MAX_BDP
    type        : int
