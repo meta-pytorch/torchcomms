@@ -1,6 +1,7 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include "comms/uniflow/MultiTransport.h"
+#include "comms/uniflow/drivers/TopologyDiscovery.h"
 #include "comms/uniflow/logging/Logger.h"
 #include "comms/uniflow/transport/nvlink/NVLinkTransport.h"
 #include "comms/uniflow/transport/rdma/RdmaTransport.h"
@@ -22,7 +23,7 @@ bool isCpu(int deviceId) {
 // ============================================================================
 
 std::vector<std::string> MultiTransportFactory::selectNics() {
-  auto& topo = Topology::get();
+  auto& topo = sharedTopology();
   return isCpu(deviceId_) ? topo.selectCpuNics(nicFilter_)
                           : topo.selectGpuNics(deviceId_, nicFilter_);
 }
@@ -87,7 +88,7 @@ MultiTransportFactory::MultiTransportFactory(int deviceId, NicFilter nicFilter)
     : deviceId_(deviceId),
       nicFilter_(std::move(nicFilter)),
       eventBaseThread_(std::make_shared<ScopedEventBaseThread>()) {
-  auto& topo = Topology::get();
+  auto& topo = sharedTopology();
   CHECK_THROW_EXCEPTION(
       deviceId_ >= -1 && deviceId_ < static_cast<int>(topo.gpuCount()),
       std::runtime_error);
