@@ -27,6 +27,18 @@ commResult_t ctranAllReduceRing(
     cudaStream_t stream,
     std::optional<std::chrono::milliseconds> timeout = std::nullopt);
 /**
+ * Run the Pipes-backed ring AllReduce implementation.
+ */
+commResult_t ctranAllReducePipesFlatRing(
+    const void* sendbuff,
+    void* recvbuff,
+    size_t count,
+    commDataType_t datatype,
+    commRedOp_t redOp,
+    CtranComm* comm,
+    cudaStream_t stream,
+    std::optional<std::chrono::milliseconds> timeout = std::nullopt);
+/**
  * Run the Pipes-backed tree AllReduce implementation.
  *
  * The implementation supports `commSum` over `commFloat32` and `commFloat16`.
@@ -56,6 +68,8 @@ static inline const std::string allReduceAlgoName(
       return "CtranAllReduceRing";
     case NCCL_ALLREDUCE_ALGO::ctree:
       return "CtranAllReduceTree";
+    case NCCL_ALLREDUCE_ALGO::pipesflatring:
+      return "PipesFlatRingAllReduce";
     default:
       return "Unknown";
   }
