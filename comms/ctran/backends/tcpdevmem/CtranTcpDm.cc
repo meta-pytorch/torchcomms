@@ -117,6 +117,7 @@ void CtranTcpDm::bootstrapAccept() {
     ::comms::tcp_devmem::CommunicatorInterface* recvComm;
     COMMCHECKTHROW(transport_->accept(listenComm, &recvComm));
     COMMCHECKTHROW(transport_->closeListen(listenComm));
+    recvComm->setCommStats(&profilerCtx_.commStats);
 
     bootstrapAddRecvPeer(peerRank, recvComm);
 
@@ -166,6 +167,7 @@ commResult_t CtranTcpDm::bootstrapConnect(
 
   ::comms::tcp_devmem::CommunicatorInterface* sendComm{};
   COMMCHECKTHROW(transport_->connect(netdev_, &handle, &sendComm));
+  sendComm->setCommStats(&profilerCtx_.commStats);
 
   bootstrapAddSendPeer(peerRank, sendComm);
 
@@ -197,6 +199,11 @@ CtranTcpDm::CtranTcpDm(
 
   transport_->open(netdev_);
 
+  profilerCtx_.cuDev = cudaDev_;
+  profilerCtx_.rank = rank_;
+  profilerCtx_.nRanks = nRanks_;
+  profilerCtx_.commHash = commHash_;
+
   bootstrapPrepare(comm->bootstrap_.get());
 
   registerProfilerHooks(profiler);
@@ -226,6 +233,14 @@ CtranTcpDm::~CtranTcpDm() {
   if (transport_.use_count() <= 2) {
     transport_->shutdown(false);
   }
+}
+
+void CtranTcpDm::profilerStart() {
+  transport_->profilerStart(profilerCtx_);
+}
+
+void CtranTcpDm::profilerEnd() {
+  transport_->profilerEnd(profilerCtx_);
 }
 
 commResult_t CtranTcpDm::preConnect(const std::unordered_set<int>& peerRanks) {
@@ -398,12 +413,10 @@ void CtranTcpDm::registerProfilerHooks(ctran::Profiler* profiler) {
   if (!profiler) {
     return;
   }
-  profiler->registerStartHook(ProfilerEvent::ALGO_TOTAL, [this]() {
-    // Transport profiler start -- to be implemented.
-  });
-  profiler->registerEndHook(ProfilerEvent::ALGO_TOTAL, [this]() {
-    // Transport profiler end -- to be implemented.
-  });
+  profiler->registerStartHook(
+      ProfilerEvent::ALGO_TOTAL, [this]() { profilerStart(); });
+  profiler->registerEndHook(
+      ProfilerEvent::ALGO_TOTAL, [this]() { profilerEnd(); });
 }
 
 } // namespace ctran

@@ -80,6 +80,9 @@ class CtranTcpDm {
     return commSuccess;
   }
 
+  void profilerStart();
+  void profilerEnd();
+
   // irecv operations can not proceed unless the peer has been connected.
   // When there is no peer, irecv operations are queued and progress()
   // has to be called to make progress on them.
@@ -100,6 +103,7 @@ class CtranTcpDm {
   // mapper no longer needs to drive registration post-construction.
   void registerProfilerHooks(ctran::Profiler* profiler);
 
+  ::comms::tcp_devmem::ProfilerContext profilerCtx_{};
   std::shared_ptr<::comms::tcp_devmem::TransportInterface> transport_;
   ctran::bootstrap::ServerSocket listenSocket_{
       static_cast<int>(NCCL_SOCKET_RETRY_CNT)};
