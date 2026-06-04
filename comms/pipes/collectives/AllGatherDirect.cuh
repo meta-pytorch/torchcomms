@@ -9,18 +9,18 @@
 
 namespace comms::pipes {
 
-template <int kBlockSize>
+template <bool kInPlace, int kBlockSize>
 __global__ __launch_bounds__(kBlockSize, 1) void direct_allgather_nvl_kernel(
     const __grid_constant__ DirectAllgatherNvlArgs args,
     Timeout timeout);
 
-template <int kBlockSize>
+template <bool kInPlace, int kBlockSize>
 __global__
     __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_fused_kernel(
         const __grid_constant__ HierarchicalAllgatherFusedArgs args,
         Timeout timeout);
 
-template <int kBlockSize>
+template <bool kInPlace, int kBlockSize>
 __global__
     __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
         const __grid_constant__ HierarchicalAllgatherOverlapArgs args,

@@ -18,6 +18,7 @@ struct DirectAllgatherNvlLaunchParams {
   std::size_t signaling_data_size{0};
   const char* sendbuf{nullptr};
   char* recvbuf{nullptr};
+  bool in_place{false};
   int num_blocks{16};
   float timeout_ms{0.0f};
   cudaStream_t stream{nullptr};
@@ -37,6 +38,7 @@ struct HierarchicalAllgatherLaunchParams {
   std::size_t nvl_signaling_data_size{0};
   const char* sendbuf{nullptr};
   char* recvbuf{nullptr};
+  bool in_place{false};
   int ib_num_blocks{16};
   float timeout_ms{0.0f};
   cudaStream_t stream{nullptr};
@@ -61,6 +63,7 @@ struct HierarchicalAllgatherOverlapLaunchParams {
   uint64_t* ready_counters{nullptr};
   const char* sendbuf{nullptr};
   char* recvbuf{nullptr};
+  bool in_place{false};
   int ib_num_blocks{16};
   int nvl_num_blocks{16};
   float timeout_ms{0.0f};

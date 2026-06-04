@@ -5,6 +5,7 @@
 #include "comms/common/AtomicUtils.cuh"
 #include "comms/pipes/CopyUtils.cuh"
 #include "comms/pipes/DeviceCheck.cuh"
+#include "comms/pipes/MemcpyCopyOp.cuh"
 #include "comms/pipes/P2pIbgdaTransportDevice.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
 #include "comms/pipes/TiledBuffer.cuh"
@@ -12,7 +13,7 @@
 
 namespace comms::pipes {
 
-template <int kBlockSize>
+template <bool kInPlace, int kBlockSize>
 __global__ __launch_bounds__(kBlockSize, 1) void direct_allgather_nvl_kernel(
     const __grid_constant__ DirectAllgatherNvlArgs args,
     Timeout timeout) {
@@ -29,10 +30,13 @@ __global__ __launch_bounds__(kBlockSize, 1) void direct_allgather_nvl_kernel(
   const std::size_t tile_offset = group.group_id * tile.tile_elements;
   const std::size_t tile_bytes = tile.bytes();
 
-  const char* own_src = args.sendbuf + tile_offset;
-  char* own_dst = args.recvbuf + my_rank * sendcount + tile_offset;
-  memcpy_vectorized(own_dst, own_src, tile_bytes, group);
-  group.sync();
+  const char* tile_src = args.sendbuf + tile_offset;
+  if constexpr (!kInPlace) {
+    char* own_dst = args.recvbuf +
+        static_cast<std::size_t>(my_rank) * sendcount + tile_offset;
+    memcpy_vectorized(own_dst, tile_src, tile_bytes, group);
+    group.sync();
+  }
 
   if (W <= 1 || tile_bytes == 0) {
     return;
@@ -48,7 +52,7 @@ __global__ __launch_bounds__(kBlockSize, 1) void direct_allgather_nvl_kernel(
     const std::size_t window =
         remaining < pipeline_window ? remaining : pipeline_window;
 
-    const char* send_src = args.sendbuf + tile_offset + off;
+    const char* send_src = tile_src + off;
     for (int peer_rank = 0; peer_rank < W; ++peer_rank) {
       if (peer_rank == my_rank) {
         continue;
@@ -69,7 +73,7 @@ __global__ __launch_bounds__(kBlockSize, 1) void direct_allgather_nvl_kernel(
 #endif
 }
 
-template <int kBlockSize>
+template <bool kInPlace, int kBlockSize>
 __global__
 __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_fused_kernel(
     const __grid_constant__ HierarchicalAllgatherFusedArgs args,
@@ -86,18 +90,20 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_fused_kernel(
   const std::size_t io_tile_offset = group.group_id * ring_tile.tile_elements;
   const std::size_t io_tile_bytes = ring_tile.bytes();
 
-  const char* own_src = args.sendbuf + io_tile_offset;
   char* own_dst = args.recvbuf +
       (static_cast<std::size_t>(args.ib_rank) * args.nvl_size + args.nvl_rank) *
           chunk_bytes +
       io_tile_offset;
+  const char* tile_src = args.sendbuf + io_tile_offset;
 
   // Single IB node (W==1): self-copy then NVL broadcast within the local
   // NVL group. The broadcast is still needed because each NVL peer must
   // receive every other peer's chunk even when there is only one IB node.
   if (W <= 1) {
-    memcpy_vectorized(own_dst, own_src, io_tile_bytes, group);
-    group.sync();
+    if constexpr (!kInPlace) {
+      memcpy_vectorized(own_dst, tile_src, io_tile_bytes, group);
+      group.sync();
+    }
     hierarchical_allgather_nvl_broadcast_from_recvbuf(
         group,
         args.ib_size,
@@ -126,15 +132,20 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_fused_kernel(
     const std::size_t window =
         (remaining < pipeline_window) ? remaining : pipeline_window;
 
-    const char* send_src = args.sendbuf + io_tile_offset + off;
-    next.template send<MemcpyAndSelfCopy>(
-        group,
-        send_src,
-        window,
-        group.total_groups,
-        max_sig,
-        timeout,
-        own_dst + off);
+    const char* send_src = tile_src + off;
+    if constexpr (kInPlace) {
+      next.template send<Memcpy>(
+          group, send_src, window, group.total_groups, max_sig, timeout);
+    } else {
+      next.template send<MemcpyAndSelfCopy>(
+          group,
+          send_src,
+          window,
+          group.total_groups,
+          max_sig,
+          timeout,
+          own_dst + off);
+    }
 
     int fwd_current_rank = args.ib_rank;
     for (int step = 0; step < W - 1; step++) {
@@ -242,7 +253,7 @@ __device__ __forceinline__ void trace_hierarchical_allgather(
 
 } // namespace
 
-template <int kBlockSize>
+template <bool kInPlace, int kBlockSize>
 __global__
 __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
     const __grid_constant__ HierarchicalAllgatherOverlapArgs args,
@@ -275,15 +286,17 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
       const std::size_t bytes = (off + chunk_bytes <= args.sendcount)
           ? chunk_bytes
           : (args.sendcount - off);
-      const char* send_src = args.sendbuf + off;
       char* own_dst = args.recvbuf +
           (static_cast<std::size_t>(args.ib_rank) * args.nvl_size +
            args.nvl_rank) *
               args.sendcount +
           off;
+      const char* send_src = args.sendbuf + off;
 
       if (W <= 1) {
-        memcpy_vectorized(own_dst, send_src, bytes, group);
+        if constexpr (!kInPlace) {
+          memcpy_vectorized(own_dst, send_src, bytes, group);
+        }
         publish_ready(
             group,
             args.ready_counters,
@@ -313,14 +326,24 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
         const std::size_t window =
             remaining < ib_window ? remaining : ib_window;
 
-        next.template send<MemcpyAndSelfCopy>(
-            group,
-            send_src + chunk_off,
-            window,
-            args.ib_num_blocks,
-            args.ib_signaling_data_size,
-            timeout,
-            own_dst + chunk_off);
+        if constexpr (kInPlace) {
+          next.template send<Memcpy>(
+              group,
+              send_src + chunk_off,
+              window,
+              args.ib_num_blocks,
+              args.ib_signaling_data_size,
+              timeout);
+        } else {
+          next.template send<MemcpyAndSelfCopy>(
+              group,
+              send_src + chunk_off,
+              window,
+              args.ib_num_blocks,
+              args.ib_signaling_data_size,
+              timeout,
+              own_dst + chunk_off);
+        }
 
         int fwd_current_rank = args.ib_rank;
         for (int step = 0; step < W - 1; step++) {
@@ -479,15 +502,27 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
 #endif
 }
 
-template __global__ void direct_allgather_nvl_kernel<512>(
+template __global__ void direct_allgather_nvl_kernel<false, 512>(
     const __grid_constant__ DirectAllgatherNvlArgs,
     Timeout);
 
-template __global__ void hierarchical_allgather_fused_kernel<512>(
+template __global__ void direct_allgather_nvl_kernel<true, 512>(
+    const __grid_constant__ DirectAllgatherNvlArgs,
+    Timeout);
+
+template __global__ void hierarchical_allgather_fused_kernel<false, 512>(
     const __grid_constant__ HierarchicalAllgatherFusedArgs,
     Timeout);
 
-template __global__ void hierarchical_allgather_overlap_kernel<512>(
+template __global__ void hierarchical_allgather_fused_kernel<true, 512>(
+    const __grid_constant__ HierarchicalAllgatherFusedArgs,
+    Timeout);
+
+template __global__ void hierarchical_allgather_overlap_kernel<false, 512>(
+    const __grid_constant__ HierarchicalAllgatherOverlapArgs,
+    Timeout);
+
+template __global__ void hierarchical_allgather_overlap_kernel<true, 512>(
     const __grid_constant__ HierarchicalAllgatherOverlapArgs,
     Timeout);
 

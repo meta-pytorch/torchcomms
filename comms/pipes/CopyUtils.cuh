@@ -5,6 +5,8 @@
 #include <cuda_runtime.h>
 
 #include <cstddef>
+#include <cstdint>
+#include <cstdio>
 #include "comms/pipes/amd/HipHostCompat.h"
 
 #include "comms/pipes/ThreadGroup.cuh"
@@ -250,6 +252,46 @@ __device__ __forceinline__ void memcpy_vectorized_aligned_sys(
 }
 #endif
 
+/**
+ * assert_buffer_non_overlap - Assert that source and destination buffers do not
+ * overlap.
+ *
+ * memcpy_vectorized uses memcpy-style, __restrict__ vectorized loads/stores and
+ * a cooperative striding order, so overlapping source/destination ranges are
+ * not safe. Callers that support in-place operation must bypass the copy.
+ */
+__device__ __forceinline__ void assert_buffer_non_overlap(
+    char* dst_d,
+    const char* src_d,
+    std::size_t nbytes,
+    const ThreadGroup& group) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  const uintptr_t dst_begin = reinterpret_cast<uintptr_t>(dst_d);
+  const uintptr_t src_begin = reinterpret_cast<uintptr_t>(src_d);
+  const uintptr_t dst_end = dst_begin + nbytes;
+  const uintptr_t src_end = src_begin + nbytes;
+  if (nbytes > 0 && dst_begin != src_begin && dst_begin < src_end &&
+      src_begin < dst_end) {
+    if (group.is_leader()) {
+      printf(
+          "memcpy_vectorized partial overlap: dst=[0x%llx,0x%llx) src=[0x%llx,0x%llx) nbytes=%llu block=(%u,%u,%u) thread=(%u,%u,%u)\n",
+          static_cast<unsigned long long>(dst_begin),
+          static_cast<unsigned long long>(dst_end),
+          static_cast<unsigned long long>(src_begin),
+          static_cast<unsigned long long>(src_end),
+          static_cast<unsigned long long>(nbytes),
+          blockIdx.x,
+          blockIdx.y,
+          blockIdx.z,
+          threadIdx.x,
+          threadIdx.y,
+          threadIdx.z);
+    }
+    __trap();
+  }
+#endif // defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+}
+
 template <int kUnroll = 8>
 __device__ __forceinline__ void memcpy_vectorized(
     char* dst,
@@ -257,6 +299,11 @@ __device__ __forceinline__ void memcpy_vectorized(
     std::size_t len,
     const ThreadGroup& group) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  if (len == 0 || dst == src) {
+    return;
+  }
+  assert_buffer_non_overlap(dst, src, len, group);
+
   constexpr std::size_t kAlignment = sizeof(uint4);
   if ((uintptr_t)dst % kAlignment == 0 && (uintptr_t)src % kAlignment == 0) {
     const std::size_t nelems = len / kAlignment;
@@ -290,6 +337,21 @@ __device__ __forceinline__ void memcpy_vectorized(
     std::size_t len,
     const ThreadGroup& group) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  if (len == 0 || (dst1 == src && dst2 == src)) {
+    return;
+  }
+  if (dst1 == src) {
+    memcpy_vectorized<kUnroll>(dst2, src, len, group);
+    return;
+  }
+  if (dst2 == src || dst1 == dst2) {
+    memcpy_vectorized<kUnroll>(dst1, src, len, group);
+    return;
+  }
+  assert_buffer_non_overlap(dst1, src, len, group);
+  assert_buffer_non_overlap(dst2, src, len, group);
+  assert_buffer_non_overlap(dst1, dst2, len, group);
+
   constexpr std::size_t kAlignment = sizeof(uint4);
   if ((uintptr_t)dst1 % kAlignment == 0 && (uintptr_t)dst2 % kAlignment == 0 &&
       (uintptr_t)src % kAlignment == 0) {
@@ -309,34 +371,6 @@ __device__ __forceinline__ void memcpy_vectorized(
   }
 
   memcpy_vectorized_aligned<char, kUnroll>(dst1, dst2, src, len, group);
-#endif // defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-}
-
-/**
- * assert_buffer_non_overlap - Assert that source and destination buffers do not
- * overlap
- *
- * Checks that the memory regions [src_d, src_d + nbytes) and
- * [dst_d, dst_d + nbytes) are disjoint (non-overlapping). If they overlap,
- * the kernel is aborted via __trap().
- *
- * This is a safety check for memory copy operations that assume non-overlapping
- * buffers. Overlapping buffers with memcpy-style operations lead to undefined
- * behavior.
- *
- * @param dst_d Destination buffer pointer
- * @param src_d Source buffer pointer
- * @param nbytes Size of both buffers in bytes
- *
- * Note: Only active on device (__CUDA_ARCH__ / __HIP_DEVICE_COMPILE__). No-op
- * on host.
- */
-__device__ __forceinline__ void
-assert_buffer_non_overlap(char* dst_d, const char* src_d, std::size_t nbytes) {
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-  if (!(src_d + nbytes <= dst_d || dst_d + nbytes <= src_d)) {
-    __trap(); // Abort kernel if buffers overlap
-  }
 #endif // defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
 }
 
