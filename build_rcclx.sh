@@ -138,8 +138,8 @@ function build_third_party {
   if [ "$CLEAN_THIRD_PARTY" == 1 ]; then
     rm -f "${CONDA_PREFIX}"/*.cmake 2>/dev/null || true
   fi
-  local third_party_tag="v2026.01.19.00"
-  local folly_tag="v2026.02.23.00"
+  local third_party_tag="v2026.05.25.00"
+  local folly_tag="v2026.05.25.00"
 
   mkdir -p /tmp/third-party
   pushd /tmp/third-party

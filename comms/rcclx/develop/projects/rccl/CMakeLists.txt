@@ -1013,6 +1013,13 @@ set(COMMON_FILES
   comms/utils/colltrace/DummyCollTraceHandle.h
   comms/utils/colltrace/GenericMetadata.cc
   comms/utils/colltrace/GenericMetadata.h
+  comms/utils/colltrace/GraphCollTraceEvent.h
+  comms/utils/colltrace/GraphCollTraceHandle.h
+  comms/utils/colltrace/GraphCollTraceState.h
+  comms/utils/colltrace/GraphCudaWaitEvent.cc
+  comms/utils/colltrace/GraphCudaWaitEvent.h
+  comms/utils/colltrace/HRDWRingBufferInstantiations.cu
+  comms/utils/colltrace/HRDWRingBufferInstantiations.cuh
   comms/utils/colltrace/NetworkPerfMonitor.cc
   comms/utils/colltrace/NetworkPerfMonitor.h
   comms/utils/colltrace/plugins/CommDumpPlugin.cc
@@ -1036,6 +1043,8 @@ set(COMMON_FILES
   comms/utils/cvars/nccl_cvars.h
   comms/utils/EnvUtils.cc
   comms/utils/EnvUtils.h
+  comms/utils/GraphCaptureSideStream.cc
+  comms/utils/GraphCaptureSideStream.h
   comms/utils/InitFolly.cc
   comms/utils/InitFolly.h
   comms/utils/kernels/rng/philox_rng.cuh
@@ -1073,6 +1082,10 @@ set(COMMON_FILES
   comms/utils/logger/ScubaLogger.h
   comms/utils/MemUtils.cc
   comms/utils/MemUtils.h
+  comms/utils/memtrace/MemoryTrace.cc
+  comms/utils/memtrace/MemoryTrace.h
+  comms/utils/PrecisionClock.cc
+  comms/utils/PrecisionClock.h
   comms/utils/RankUtils.cc
   comms/utils/RankUtils.h
   comms/utils/StrUtils.h
@@ -1651,6 +1664,11 @@ target_compile_definitions(rccl PRIVATE GLOG_NO_ABBREVIATED_SEVERITIES)
 target_compile_definitions(rccl PRIVATE MOCK_SCUBA_DATA) # removes some Scuba logging in comms/utils/logger.
 target_compile_definitions(rccl PRIVATE CTRAN_DISABLE_TCPDM) # TCPDM has strict topology requirements, which is why it isn't supported NCCLX/RCCLX Conda packages. See T239012482.
 target_compile_definitions(rccl PRIVATE NVTX_DISABLE) # NVTX is for annotating code for profilers like NSight systems. It's disabled by default for the NCCLX Conda package.
+# comms/utils/PrecisionClock.cc finds time/fbclock/fbclock.h via the `-I fbcode`
+# in env CXXFLAGS, but this build does not link fbclock_c. Opt out so PrecisionClock
+# falls back to std::chrono::system_clock instead of leaving fbclock_init /
+# fbclock_gettime_utc undefined in librccl.so (which breaks PyTorch's dlopen).
+target_compile_definitions(rccl PRIVATE COMMS_NO_FBCLOCK)
 
 # Undefine __HIPCC__ for host-only .cc files that need types guarded by
 # #if !defined(__CUDACC__) (hipified to __HIPCC__) in AllReduce/Types.h.
@@ -1806,6 +1824,10 @@ target_link_libraries(rccl PRIVATE   Threads::Threads)
 target_link_libraries(rccl INTERFACE hip::host)
 target_link_libraries(rccl PRIVATE   hip::device)
 target_link_libraries(rccl PRIVATE   dl)
+# 128-bit atomics (__atomic_load_16/__atomic_store_16, emitted as libcalls on
+# x86_64) are not lock-free, so the compiler lowers them to libatomic. Without
+# this librccl.so has undefined __atomic_*_16 and PyTorch's dlopen fails.
+target_link_libraries(rccl PRIVATE   atomic)
 target_link_libraries(rccl PRIVATE   ${SMI_LIBRARIES})
 target_link_libraries(rccl PRIVATE fmt::fmt-header-only)
 target_link_libraries(rccl PRIVATE absl::log absl::check)  # GpuClockCalibration.cc
@@ -1883,6 +1905,12 @@ set(thrift_group_list
   ${CONDA_LIB_DIR}/libthriftprotocol.a
   ${CONDA_LIB_DIR}/libthrifttype.a
   ${CONDA_LIB_DIR}/libthrifttyperep.a
+  # New in thrift v2026.05.25.00: apache::thrift::dynamic (and its deps) are
+  # referenced by the thrift libs above but live in separate archives.
+  ${CONDA_LIB_DIR}/libthrift_dynamic_value.a
+  ${CONDA_LIB_DIR}/libthrift_path.a
+  ${CONDA_LIB_DIR}/libthriftannotation.a
+  ${CONDA_LIB_DIR}/libthriftfrozen2.a
   ${CONDA_LIB_DIR}/librpcmetadata.a
   ${CONDA_LIB_DIR}/libruntime.a
   ${CONDA_LIB_DIR}/libserverdbginfo.a
@@ -1912,6 +1940,8 @@ target_link_libraries(rccl PRIVATE
   ${CONDA_LIB_DIR}/libssl.a
   ${CONDA_LIB_DIR}/libcrypto.a
   ${CONDA_LIB_DIR}/libzstd.so
+  ${CONDA_LIB_DIR}/libsnappy.a
+  ${CONDA_LIB_DIR}/libbz2.a
   ${CONDA_LIB_DIR}/libsodium.a
 )
 
