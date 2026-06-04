@@ -159,11 +159,8 @@ class XcclApi {
       onecclRedOp_t op,
       onecclComm_t comm) = 0;
 
-  [[nodiscard]] virtual onecclResult_t memAlloc(
-      void** buff,
-      size_t size) = 0;
-  [[nodiscard]] virtual onecclResult_t memFree(
-      void* buff) = 0;
+  [[nodiscard]] virtual onecclResult_t memAlloc(void** buff, size_t size) = 0;
+  [[nodiscard]] virtual onecclResult_t memFree(void* buff) = 0;
 
   virtual void setVersionInfo() = 0;
 
