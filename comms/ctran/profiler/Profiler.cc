@@ -47,9 +47,7 @@ void Profiler::initForEachColl(int opCount, int samplingWeight) {
   }
 }
 
-void Profiler::startEvent(
-    ProfilerEvent event,
-    const std::function<void(Profiler&)>& callback) {
+void Profiler::startEvent(ProfilerEvent event) {
   if (!shouldTrace_) {
     return;
   }
@@ -58,14 +56,12 @@ void Profiler::startEvent(
   if (event == ProfilerEvent::ALGO_CTRL) {
     readyTs_ = getTimeStamp(timers_[idx].getCheckpoint());
   }
-  if (callback) {
-    callback(*this);
+  for (const auto& hook : startHooks_[idx]) {
+    hook();
   }
 }
 
-void Profiler::endEvent(
-    ProfilerEvent event,
-    const std::function<void(Profiler&)>& callback) {
+void Profiler::endEvent(ProfilerEvent event) {
   if (!shouldTrace_) {
     return;
   }
@@ -74,8 +70,8 @@ void Profiler::endEvent(
   if (event == ProfilerEvent::ALGO_CTRL) {
     controlTs_ = getTimeStamp(timers_[idx].getCheckpoint());
   }
-  if (callback) {
-    callback(*this);
+  for (const auto& hook : endHooks_[idx]) {
+    hook();
   }
 }
 
@@ -113,6 +109,14 @@ void Profiler::reportToScuba() {
   }
 
   shouldTrace_ = false;
+}
+
+void Profiler::registerStartHook(ProfilerEvent event, EventHook hook) {
+  startHooks_[static_cast<size_t>(event)].push_back(std::move(hook));
+}
+
+void Profiler::registerEndHook(ProfilerEvent event, EventHook hook) {
+  endHooks_[static_cast<size_t>(event)].push_back(std::move(hook));
 }
 
 } // namespace ctran
