@@ -119,6 +119,7 @@ void CtranTcpDm::bootstrapAccept() {
     ::comms::tcp_devmem::CommunicatorInterface* recvComm;
     COMMCHECKTHROW(transport->accept(listenComm, &recvComm));
     COMMCHECKTHROW(transport->closeListen(listenComm));
+    recvComm->setCommStats(&profilerCtx_.commStats);
 
     bootstrapAddRecvPeer(peerRank, recvComm);
 
@@ -170,6 +171,7 @@ commResult_t CtranTcpDm::bootstrapConnect(
   COMMCHECKTHROW(
       CtranTcpDmSingleton::getTransport()->connect(
           netdev_, &handle, &sendComm));
+  sendComm->setCommStats(&profilerCtx_.commStats);
 
   bootstrapAddSendPeer(peerRank, sendComm);
 
@@ -200,6 +202,11 @@ CtranTcpDm::CtranTcpDm(
   netdev_ = transport->getDeviceFor(cudaDev_);
   transport->open(netdev_);
 
+  profilerCtx_.cuDev = cudaDev_;
+  profilerCtx_.rank = rank_;
+  profilerCtx_.nRanks = nRanks_;
+  profilerCtx_.commHash = commHash_;
+
   bootstrapPrepare(comm->bootstrap_.get());
 
   registerProfilerHooks(profiler);
@@ -228,6 +235,14 @@ CtranTcpDm::~CtranTcpDm() {
   // Always request shutdown; Transport self-gates on `comms_ > 0` so only
   // the last CtranTcpDm actually tears down, while CUDA is still alive.
   transport->shutdown(false);
+}
+
+void CtranTcpDm::profilerStart() {
+  CtranTcpDmSingleton::getTransport()->profilerStart(profilerCtx_);
+}
+
+void CtranTcpDm::profilerEnd() {
+  CtranTcpDmSingleton::getTransport()->profilerEnd(profilerCtx_);
 }
 
 commResult_t CtranTcpDm::preConnect(const std::unordered_set<int>& peerRanks) {
@@ -406,12 +421,10 @@ void CtranTcpDm::registerProfilerHooks(ctran::Profiler* profiler) {
   if (!profiler) {
     return;
   }
-  profiler->registerStartHook(ProfilerEvent::ALGO_TOTAL, [this]() {
-    // Transport profiler start -- to be implemented.
-  });
-  profiler->registerEndHook(ProfilerEvent::ALGO_TOTAL, [this]() {
-    // Transport profiler end -- to be implemented.
-  });
+  profiler->registerStartHook(
+      ProfilerEvent::ALGO_TOTAL, [this]() { profilerStart(); });
+  profiler->registerEndHook(
+      ProfilerEvent::ALGO_TOTAL, [this]() { profilerEnd(); });
 }
 
 } // namespace ctran

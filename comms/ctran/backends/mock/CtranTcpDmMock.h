@@ -89,5 +89,8 @@ class CtranTcpDm {
   commResult_t teardownUnpackConsumer(void* pool) {
     return commInvalidUsage;
   }
+
+  void profilerStart() {}
+  void profilerEnd() {}
 };
 } // namespace ctran
