@@ -33,10 +33,12 @@ ncclDataType_t getNcclDataTypeInternal(const at::ScalarType scalar_type) {
       return ncclUint8;
     case at::ScalarType::BFloat16:
       return ncclBfloat16;
+#if HAVE_FP8
     case at::ScalarType::Float8_e5m2:
       return ncclFloat8e5m2;
     case at::ScalarType::Float8_e4m3fn:
       return ncclFloat8e4m3;
+#endif
     case at::ScalarType::UInt32:
       return ncclUint32;
     case at::ScalarType::UInt64:
