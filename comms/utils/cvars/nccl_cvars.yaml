@@ -2649,13 +2649,14 @@ cvars:
  - name        : NCCL_ALLREDUCE_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctdirect, ctring
+   choices     : orig, ctran, ctdirect, ctring, ctree
    description : |-
      The algorithm to use for Allreduce communication
      orig - Copy-based algorithm
      ctran - Picks the best ctran-based algorithm
      ctdirect - Ctran-based direct point-to-point algorithm
      ctring - ctran-based ring algorithm
+     ctree - Ctran-based tree algorithm (Pipes-native)
 
  - name        : NCCL_ALLREDUCE_TYPE
    type        : enum
