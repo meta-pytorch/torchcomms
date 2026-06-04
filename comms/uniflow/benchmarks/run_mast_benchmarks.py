@@ -12,7 +12,7 @@ import re
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence, TypedDict
 
@@ -48,6 +48,8 @@ WATCHDOG_PROGRESS_LOG_REGEX = "BENCHMARK_PROGRESS_JSON"
 WATCHDOG_FALLBACK_PROGRESS_LOG_REGEX = "read_blocks"
 BENCHMARK_RESULT_PREFIX = "BENCHMARK_RESULT_JSON: "
 UNIFLOW_TRANSFER_STATS_PREFIX = "UNIFLOW_TRANSFER_STATS_JSON: "
+ALLOC_CONF_TOKEN_RE = re.compile(r"-(?P<token>[A-Za-z0-9_]+)alloc-")
+ALLOC_CONF_TOKEN_PREFIX = "hex_"
 TERMINAL_STATES = {"SUCCEEDED", "FAILED", "CANCELLED"}
 FAILURE_STATES = {"FAILED", "CANCELLED"}
 MAX_CONSECUTIVE_STATUS_ERRORS = 10
@@ -63,10 +65,34 @@ CONNECTORS = {
     "uniflow": "UniflowConnector",
     "nixl": "NixlConnector",
 }
+NIXL_KV_BUFFER_DEVICES = ("auto", "cuda", "cpu")
+
+
+class AllocConfToken:
+    @staticmethod
+    def encode(pytorch_cuda_alloc_conf: str) -> str:
+        if pytorch_cuda_alloc_conf == "expandable_segments:True":
+            return "expandable"
+        if pytorch_cuda_alloc_conf == "default":
+            return "default"
+        return f"{ALLOC_CONF_TOKEN_PREFIX}{pytorch_cuda_alloc_conf.encode().hex()}"
+
+    @staticmethod
+    def decode(token: str) -> str:
+        if token == "default":
+            return "default"
+        if not token.startswith(ALLOC_CONF_TOKEN_PREFIX):
+            raise ValueError(f"Unrecognized alloc-conf token `{token}`")
+        encoded = token[len(ALLOC_CONF_TOKEN_PREFIX) :]
+        try:
+            return bytes.fromhex(encoded).decode()
+        except ValueError as exc:
+            raise ValueError(f"Invalid alloc-conf token `{token}`") from exc
 
 
 class LogSummaryRecord(TypedDict):
     structured_result: dict[str, object] | None
+    result_usable_for_comparison: bool
     correctness_passed: bool
     all_accuracy_passed: bool
     performance_seen: bool
@@ -82,6 +108,7 @@ class LogSummaryRecord(TypedDict):
     expired_kv_requests: int
     transfer_stats: dict[str, int | float]
     fatal_runtime_errors: list[str]
+    post_result_runtime_errors: list[str]
 
 
 class GateResultRecord(TypedDict):
@@ -96,6 +123,8 @@ class JobRecord(TypedDict):
     connector_class: str
     layout: str
     tp: int
+    nixl_kv_buffer_device: str
+    pytorch_cuda_alloc_conf: str
     name: str
     app_uri: str
     state: str
@@ -226,6 +255,7 @@ class Workload:
     gpu_memory_utilization: float
     mode: str
     timeout: int
+    validate_performance_outputs: bool
 
     @property
     def measured_requests(self) -> int:
@@ -287,6 +317,8 @@ class JobSpec:
     connector_class: str
     layout: str
     tp: int
+    nixl_kv_buffer_device: str
+    pytorch_cuda_alloc_conf: str
     name: str
     session_id: str
 
@@ -300,6 +332,14 @@ class ProgressSnapshot:
     """Monotonic benchmark progress observed from sparse MAST logs."""
 
     key: str
+    description: str
+
+
+@dataclass(frozen=True)
+class StructuredProgressRecord:
+    """One structured benchmark progress event parsed from MAST logs."""
+
+    completed_requests: int
     description: str
 
 
@@ -333,9 +373,15 @@ class MastApp:
 
 @dataclass(frozen=True)
 class LogSummary:
-    """Stable signals extracted from MAST logs for soak gating."""
+    """Stable signals extracted from MAST logs for soak gating.
+
+    `result_usable_for_comparison` means the benchmark result has enough valid
+    correctness and performance data for `--compare-json`, even if the runtime
+    gate later fails on a post-result shutdown traceback.
+    """
 
     structured_result: dict[str, object] | None
+    result_usable_for_comparison: bool
     correctness_passed: bool
     all_accuracy_passed: bool
     performance_seen: bool
@@ -351,10 +397,12 @@ class LogSummary:
     expired_kv_requests: int
     transfer_stats: dict[str, int | float]
     fatal_runtime_errors: list[str]
+    post_result_runtime_errors: list[str]
 
     def to_dict(self) -> LogSummaryRecord:
         return {
             "structured_result": self.structured_result,
+            "result_usable_for_comparison": self.result_usable_for_comparison,
             "correctness_passed": self.correctness_passed,
             "all_accuracy_passed": self.all_accuracy_passed,
             "performance_seen": self.performance_seen,
@@ -370,7 +418,22 @@ class LogSummary:
             "expired_kv_requests": self.expired_kv_requests,
             "transfer_stats": self.transfer_stats,
             "fatal_runtime_errors": self.fatal_runtime_errors,
+            "post_result_runtime_errors": self.post_result_runtime_errors,
         }
+
+
+@dataclass
+class LogParseState:
+    """Mutable state accumulated while parsing MAST benchmark logs."""
+
+    median_s: float | None = None
+    req_per_s: float | None = None
+    mismatch_count: int = 0
+    fatal_runtime_errors: list[str] = field(default_factory=list)
+    post_result_runtime_errors: list[str] = field(default_factory=list)
+    structured_result: dict[str, object] | None = None
+    transfer_stats_records: list[dict[str, object]] = field(default_factory=list)
+    saw_structured_result: bool = False
 
 
 @dataclass(frozen=True)
@@ -416,66 +479,87 @@ class BenchmarkLogParser:
     )
 
     def parse(self, log_lines: Sequence[str]) -> LogSummary:
-        median_s: float | None = None
-        req_per_s: float | None = None
-        mismatch_count = 0
-        fatal_runtime_errors: list[str] = []
-        structured_result: dict[str, object] | None = None
-        transfer_stats_records: list[dict[str, object]] = []
-
+        state = LogParseState()
         for line in log_lines:
-            parsed_result = self.parse_structured_result(line)
-            if parsed_result is not None:
-                structured_result = parsed_result
-            parsed_transfer_stats = self.parse_transfer_stats(line)
-            if parsed_transfer_stats is not None:
-                transfer_stats_records.append(parsed_transfer_stats)
+            self.update_parse_state(state, line)
+        return self.build_summary(state, "\n".join(log_lines))
 
-            performance_match = self.PERFORMANCE_RE.search(line)
-            if performance_match is not None:
-                median_s = float(performance_match.group("median"))
-                req_per_s = float(performance_match.group("rps"))
+    def update_parse_state(self, state: LogParseState, line: str) -> None:
+        self.record_structured_result(state, line)
+        self.record_transfer_stats(state, line)
+        self.record_performance(state, line)
+        self.record_mismatches(state, line)
+        self.record_runtime_error(state, line)
 
-            decode_match = self.DECODE_RE.search(line)
-            if decode_match is not None and median_s is None:
-                median_s = float(decode_match.group("median"))
+    def record_structured_result(self, state: LogParseState, line: str) -> None:
+        parsed_result = self.parse_structured_result(line)
+        if parsed_result is None:
+            return
+        state.structured_result = parsed_result
+        state.saw_structured_result = True
 
-            # Text logs can contain one correctness summary per measured iter;
-            # aggregate them until structured result JSON provides the final count.
-            failed_match = self.CORRECTNESS_FAILED_RE.search(line)
-            if failed_match is not None:
-                mismatch_count += int(failed_match.group("mismatches"))
-            else:
-                mismatch_match = self.MISMATCH_RE.search(line)
-                if mismatch_match is not None:
-                    mismatch_count += int(mismatch_match.group("mismatches"))
+    def record_transfer_stats(self, state: LogParseState, line: str) -> None:
+        parsed_transfer_stats = self.parse_transfer_stats(line)
+        if parsed_transfer_stats is not None:
+            state.transfer_stats_records.append(parsed_transfer_stats)
 
-            if self.FATAL_RE.search(line) and not self.should_ignore_runtime_error(
-                line
-            ):
-                fatal_runtime_errors.append(line)
+    def record_performance(self, state: LogParseState, line: str) -> None:
+        performance_match = self.PERFORMANCE_RE.search(line)
+        if performance_match is not None:
+            state.median_s = float(performance_match.group("median"))
+            state.req_per_s = float(performance_match.group("rps"))
+            return
 
-        output = "\n".join(log_lines)
-        structured_signals = self.structured_signals(structured_result)
-        structured_mismatches = structured_signals.get("mismatch_count")
-        if isinstance(structured_mismatches, int):
-            mismatch_count = structured_mismatches
-        structured_median = structured_signals.get("median_s")
-        if isinstance(structured_median, int | float):
-            median_s = float(structured_median)
-        structured_rps = structured_signals.get("req_per_s")
-        if isinstance(structured_rps, int | float):
-            req_per_s = float(structured_rps)
+        decode_match = self.DECODE_RE.search(line)
+        if decode_match is not None and state.median_s is None:
+            state.median_s = float(decode_match.group("median"))
+
+    def record_mismatches(self, state: LogParseState, line: str) -> None:
+        # Text logs can contain one correctness summary per measured iter;
+        # aggregate them until structured result JSON provides the final count.
+        failed_match = self.CORRECTNESS_FAILED_RE.search(line)
+        if failed_match is not None:
+            state.mismatch_count += int(failed_match.group("mismatches"))
+            return
+        mismatch_match = self.MISMATCH_RE.search(line)
+        if mismatch_match is not None:
+            state.mismatch_count += int(mismatch_match.group("mismatches"))
+
+    def record_runtime_error(self, state: LogParseState, line: str) -> None:
+        if not self.FATAL_RE.search(line) or self.should_ignore_runtime_error(line):
+            return
+        state.fatal_runtime_errors.append(line)
+        if state.saw_structured_result:
+            state.post_result_runtime_errors.append(line)
+
+    def build_summary(self, state: LogParseState, output: str) -> LogSummary:
+        structured_signals = self.structured_signals(state.structured_result)
+        mismatch_count = self.mismatch_count(state, structured_signals)
+        median_s = self.median_s(state, structured_signals)
+        req_per_s = self.req_per_s(state, structured_signals)
         completed_requests = structured_signals.get("completed_requests")
         completed_output_tokens = structured_signals.get("completed_output_tokens")
+        correctness_passed = bool(structured_signals.get("correctness_passed")) or (
+            "CORRECTNESS PASSED" in output
+        )
+        all_accuracy_passed = bool(structured_signals.get("all_accuracy_passed")) or (
+            "ALL ACCURACY TESTS PASSED" in output
+        )
+        performance_seen = median_s is not None or "PERFORMANCE:" in output
 
         return LogSummary(
-            structured_result=structured_result,
-            correctness_passed=bool(structured_signals.get("correctness_passed"))
-            or "CORRECTNESS PASSED" in output,
-            all_accuracy_passed=bool(structured_signals.get("all_accuracy_passed"))
-            or "ALL ACCURACY TESTS PASSED" in output,
-            performance_seen=median_s is not None or "PERFORMANCE:" in output,
+            structured_result=state.structured_result,
+            result_usable_for_comparison=self.result_usable_for_comparison(
+                correctness_passed=correctness_passed,
+                all_accuracy_passed=all_accuracy_passed,
+                performance_seen=performance_seen,
+                median_s=median_s,
+                req_per_s=req_per_s,
+                mismatch_count=mismatch_count,
+            ),
+            correctness_passed=correctness_passed,
+            all_accuracy_passed=all_accuracy_passed,
+            performance_seen=performance_seen,
             median_s=median_s,
             req_per_s=req_per_s,
             completed_requests=completed_requests
@@ -492,8 +576,58 @@ class BenchmarkLogParser:
                 "UniFlow transfer telemetry export failed"
             ),
             expired_kv_requests=len(self.EXPIRED_KV_REQUEST_RE.findall(output)),
-            transfer_stats=self.aggregate_transfer_stats(transfer_stats_records),
-            fatal_runtime_errors=fatal_runtime_errors,
+            transfer_stats=self.aggregate_transfer_stats(state.transfer_stats_records),
+            fatal_runtime_errors=state.fatal_runtime_errors,
+            post_result_runtime_errors=state.post_result_runtime_errors,
+        )
+
+    @staticmethod
+    def mismatch_count(
+        state: LogParseState,
+        structured_signals: dict[str, object],
+    ) -> int:
+        structured_mismatches = structured_signals.get("mismatch_count")
+        if isinstance(structured_mismatches, int):
+            return structured_mismatches
+        return state.mismatch_count
+
+    @staticmethod
+    def median_s(
+        state: LogParseState,
+        structured_signals: dict[str, object],
+    ) -> float | None:
+        structured_median = structured_signals.get("median_s")
+        if isinstance(structured_median, int | float):
+            return float(structured_median)
+        return state.median_s
+
+    @staticmethod
+    def req_per_s(
+        state: LogParseState,
+        structured_signals: dict[str, object],
+    ) -> float | None:
+        structured_rps = structured_signals.get("req_per_s")
+        if isinstance(structured_rps, int | float):
+            return float(structured_rps)
+        return state.req_per_s
+
+    @staticmethod
+    def result_usable_for_comparison(
+        *,
+        correctness_passed: bool,
+        all_accuracy_passed: bool,
+        performance_seen: bool,
+        median_s: float | None,
+        req_per_s: float | None,
+        mismatch_count: int,
+    ) -> bool:
+        return (
+            correctness_passed
+            and all_accuracy_passed
+            and performance_seen
+            and median_s is not None
+            and req_per_s is not None
+            and mismatch_count == 0
         )
 
     @staticmethod
@@ -741,7 +875,7 @@ class BenchmarkGateEvaluator:
         self.add_state_failures(result, failures)
         self.add_workload_failures(summary, failures)
         self.add_correctness_failures(summary, failures)
-        self.add_runtime_failures(summary, failures)
+        self.add_runtime_failures(summary, failures, warnings)
         self.add_transfer_failures(result, summary, failures)
         self.add_baseline_failures(result.spec, summary, failures, warnings)
         return GateResult(passed=not failures, failures=failures, warnings=warnings)
@@ -804,10 +938,16 @@ class BenchmarkGateEvaluator:
     def add_runtime_failures(
         summary: LogSummary,
         failures: list[str],
+        warnings: list[str],
     ) -> None:
         if summary.fatal_runtime_errors:
             failures.append(
                 f"{len(summary.fatal_runtime_errors)} fatal runtime log lines"
+            )
+        if summary.result_usable_for_comparison and summary.post_result_runtime_errors:
+            warnings.append(
+                f"{len(summary.post_result_runtime_errors)} post-result "
+                "runtime log lines"
             )
         if summary.telemetry_export_failures:
             failures.append(
@@ -892,6 +1032,8 @@ class BenchmarkReport:
                     "connector_class": result.spec.connector_class,
                     "layout": result.spec.layout,
                     "tp": result.spec.tp,
+                    "nixl_kv_buffer_device": result.spec.nixl_kv_buffer_device,
+                    "pytorch_cuda_alloc_conf": result.spec.pytorch_cuda_alloc_conf,
                     "name": result.spec.name,
                     "app_uri": result.app_uri,
                     "state": result.state,
@@ -958,8 +1100,8 @@ class BenchmarkMarkdownWriter:
             f"({workload.measure_iters} iters x {workload.num_prompts} prompts x "
             f"{workload.output_len} output tokens, concurrency={workload.concurrency})",
             "",
-            "| Job | State | Gate | Median | Req/s | Xfer GB | Blocks | Xfer GB/s | Mismatches | Issue |",
-            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+            "| Job | State | Gate | Result | Median | Req/s | Xfer GB | Blocks | Xfer GB/s | Mismatches | Issue |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
         for job in self.report.job_records():
             summary = job["summary"]
@@ -972,6 +1114,9 @@ class BenchmarkMarkdownWriter:
                         f"`{job['key']}`",
                         f"`{job['state']}`",
                         "`PASS`" if gate["passed"] else "`FAIL`",
+                        "`USABLE`"
+                        if summary["result_usable_for_comparison"]
+                        else "`UNUSABLE`",
                         self.format_value(summary["median_s"], "s"),
                         self.format_value(summary["req_per_s"], ""),
                         self.format_gb(transfer_stats["bytes_transferred"]),
@@ -1065,6 +1210,20 @@ class BenchmarkComparisonReport:
                 )
                 if not isinstance(transfer_stats, dict):
                     transfer_stats = {}
+                result_usable = (
+                    summary.get("result_usable_for_comparison")
+                    if isinstance(summary, dict)
+                    else False
+                )
+                if result_usable is None:
+                    result_usable = (
+                        bool(summary.get("correctness_passed"))
+                        and bool(summary.get("all_accuracy_passed"))
+                        and bool(summary.get("performance_seen"))
+                        and isinstance(summary.get("median_s"), int | float)
+                        and isinstance(summary.get("req_per_s"), int | float)
+                        and summary.get("mismatch_count") == 0
+                    )
                 rows.append(
                     {
                         "source": str(path),
@@ -1076,6 +1235,7 @@ class BenchmarkComparisonReport:
                         "measured_requests": workload.get("measured_requests", ""),
                         "state": job.get("state", ""),
                         "gate": gate,
+                        "result_usable_for_comparison": result_usable,
                         "median_s": summary.get("median_s")
                         if isinstance(summary, dict)
                         else None,
@@ -1103,12 +1263,13 @@ class BenchmarkComparisonReport:
         lines = [
             "# MAST Benchmark Comparison",
             "",
-            "| Profile | Layout | Connector | TP | Concurrency | Requests | State | Gate | Median | Req/s | Xfer GB | Blocks | Xfer GB/s | Mismatches | Transfer Failures |",
-            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+            "| Profile | Layout | Connector | TP | Concurrency | Requests | State | Gate | Result | Median | Req/s | Xfer GB | Blocks | Xfer GB/s | Mismatches | Transfer Failures |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
         for row in self.rows():
             gate = row.get("gate", {})
             gate_passed = isinstance(gate, dict) and gate.get("passed", False)
+            usable = bool(row["result_usable_for_comparison"])
             lines.append(
                 "| "
                 + " | ".join(
@@ -1121,6 +1282,7 @@ class BenchmarkComparisonReport:
                         str(row["measured_requests"]),
                         f"`{row['state']}`",
                         "`PASS`" if gate_passed else "`FAIL`",
+                        "`USABLE`" if usable else "`UNUSABLE`",
                         BenchmarkMarkdownWriter.format_value(row["median_s"], "s"),
                         BenchmarkMarkdownWriter.format_value(row["req_per_s"], ""),
                         BenchmarkMarkdownWriter.format_value(row["xfer_gb"], ""),
@@ -1143,7 +1305,12 @@ class BenchmarkComparisonReport:
 
 
 def job_key(spec: JobSpec) -> str:
-    return f"{spec.layout}:{spec.connector_key}:tp{spec.tp}"
+    key = f"{spec.layout}:{spec.connector_key}:tp{spec.tp}"
+    if spec.connector_key == "nixl" and spec.nixl_kv_buffer_device != "cuda":
+        key += f":kv-{spec.nixl_kv_buffer_device}"
+    if spec.pytorch_cuda_alloc_conf != "expandable_segments:True":
+        key += f":alloc-{alloc_conf_key(spec.pytorch_cuda_alloc_conf)}"
+    return key
 
 
 class CommandRunner:
@@ -1661,7 +1828,18 @@ class MastBenchmarkRunner:
             str(self.workload.timeout),
             "--barrier-timeout",
             str(self.config.job_timeout_sec),
+            "--pytorch-cuda-alloc-conf",
+            spec.pytorch_cuda_alloc_conf,
         ]
+        if self.workload.validate_performance_outputs:
+            cmd.append("--validate-performance-outputs")
+        if spec.connector_key == "nixl":
+            cmd.extend(
+                [
+                    "--nixl-kv-buffer-device",
+                    spec.nixl_kv_buffer_device,
+                ]
+            )
         if spec.is_cross_node:
             cmd.insert(cmd.index("--env"), "--bha_config_path")
             cmd.insert(cmd.index("--env"), str(self.config.bha_config_path))
@@ -1718,48 +1896,71 @@ class MastBenchmarkRunner:
     def _structured_progress_snapshot(
         lines: Sequence[str],
     ) -> ProgressSnapshot | None:
-        best_completed_requests = -1
-        best_description = ""
+        attempt_index = 0
+        previous_completed_requests: int | None = None
+        latest_completed_requests = -1
+        latest_description = ""
         for line in lines:
-            prefix_index = line.find("BENCHMARK_PROGRESS_JSON: ")
-            if prefix_index < 0:
+            progress = MastBenchmarkRunner.parse_structured_progress_line(line)
+            if progress is None:
                 continue
-            payload = line[prefix_index + len("BENCHMARK_PROGRESS_JSON: ") :].strip()
-            try:
-                progress_record = json.loads(payload)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(progress_record, dict):
-                continue
-            progress = progress_record.get("progress")
-            if not isinstance(progress, dict):
-                continue
-            completed_requests = progress.get("completed_requests")
-            total_requests = progress.get("total_requests")
-            completed_iters = progress.get("completed_iters")
-            total_iters = progress.get("total_iters")
-            if not isinstance(completed_requests, int):
-                continue
-            if completed_requests <= best_completed_requests:
-                continue
-            best_completed_requests = completed_requests
-            if isinstance(total_requests, int):
-                request_text = f"{completed_requests}/{total_requests} requests"
-            else:
-                request_text = f"{completed_requests} requests"
-            if isinstance(completed_iters, int) and isinstance(total_iters, int):
-                best_description = (
-                    f"{completed_iters}/{total_iters} iters, {request_text}"
-                )
-            else:
-                best_description = request_text
+            if (
+                previous_completed_requests is not None
+                and progress.completed_requests < previous_completed_requests
+            ):
+                attempt_index += 1
+            previous_completed_requests = progress.completed_requests
+            latest_completed_requests = progress.completed_requests
+            latest_description = progress.description
 
-        if best_completed_requests < 0:
+        if latest_completed_requests < 0:
             return None
+        if attempt_index:
+            latest_description = f"attempt {attempt_index + 1}, {latest_description}"
         return ProgressSnapshot(
-            key=f"structured:{best_completed_requests:012d}",
-            description=best_description,
+            key=f"structured:{attempt_index:04d}:{latest_completed_requests:012d}",
+            description=latest_description,
         )
+
+    @staticmethod
+    def parse_structured_progress_line(
+        line: str,
+    ) -> StructuredProgressRecord | None:
+        prefix_index = line.find("BENCHMARK_PROGRESS_JSON: ")
+        if prefix_index < 0:
+            return None
+        payload = line[prefix_index + len("BENCHMARK_PROGRESS_JSON: ") :].strip()
+        try:
+            progress_record = json.loads(payload)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(progress_record, dict):
+            return None
+        progress = progress_record.get("progress")
+        if not isinstance(progress, dict):
+            return None
+        completed_requests = progress.get("completed_requests")
+        if not isinstance(completed_requests, int):
+            return None
+        return StructuredProgressRecord(
+            completed_requests=completed_requests,
+            description=MastBenchmarkRunner.progress_description(progress),
+        )
+
+    @staticmethod
+    def progress_description(progress: dict[str, object]) -> str:
+        completed_requests = progress["completed_requests"]
+        total_requests = progress.get("total_requests")
+        completed_iters = progress.get("completed_iters")
+        total_iters = progress.get("total_iters")
+        request_text = (
+            f"{completed_requests}/{total_requests} requests"
+            if isinstance(total_requests, int)
+            else f"{completed_requests} requests"
+        )
+        if isinstance(completed_iters, int) and isinstance(total_iters, int):
+            return f"{completed_iters}/{total_iters} iters, {request_text}"
+        return request_text
 
     @staticmethod
     def _read_blocks_progress_snapshot(lines: Sequence[str]) -> ProgressSnapshot | None:
@@ -1988,6 +2189,25 @@ def parse_args() -> argparse.Namespace:
             "Same-node MAST validation supports TP=1; TP>1 runs are cross-node only."
         ),
     )
+    parser.add_argument(
+        "--nixl-kv-buffer-device",
+        choices=NIXL_KV_BUFFER_DEVICES,
+        default="cuda",
+        help=(
+            "NIXL KV transfer buffer device passed to the benchmark entry point. "
+            "The default `cuda` keeps CUDA-direct registration. Pass `cpu` to "
+            "stage through host memory for diagnostics, or `auto` to stage TP>1 "
+            "through host memory."
+        ),
+    )
+    parser.add_argument(
+        "--pytorch-cuda-alloc-conf",
+        default="expandable_segments:True",
+        help=(
+            "PYTORCH_CUDA_ALLOC_CONF passed to the benchmark entry point. "
+            "Pass `default` to leave the variable unset inside the benchmark."
+        ),
+    )
     parser.add_argument("--warmup-iters", type=int)
     parser.add_argument("--measure-iters", type=int)
     parser.add_argument("--prompt-len", type=int)
@@ -2004,6 +2224,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
     parser.add_argument("--mode")
     parser.add_argument("--timeout", type=int)
+    parser.add_argument(
+        "--validate-performance-outputs",
+        action="store_true",
+        help=(
+            "Validate every measured accuracy-mode performance output against "
+            "standalone baseline outputs. This adds baseline work and is intended "
+            "for publishable correctness runs."
+        ),
+    )
     parser.add_argument("--host-type", default="grandteton_80g_roce")
     parser.add_argument("--hpc-identity", default="networkai_mast_job_identity")
     parser.add_argument("--hpc-cluster-uuid", default="MastGenAICluster")
@@ -2069,19 +2298,51 @@ def build_job_spec(
     layout: str,
 ) -> JobSpec:
     connector_short = "uni" if connector == "uniflow" else "nixl"
+    nixl_kv_buffer_device = nixl_kv_buffer_device_for_job(
+        connector=connector,
+        tp=tp,
+        requested_device=args.nixl_kv_buffer_device,
+    )
+    pytorch_cuda_alloc_conf = args.pytorch_cuda_alloc_conf
+    connector_part = connector_short
+    if connector == "nixl" and nixl_kv_buffer_device != "cuda":
+        connector_part = f"{connector_short}-{nixl_kv_buffer_device}kv"
+    alloc_key = alloc_conf_key(pytorch_cuda_alloc_conf)
+    alloc_part = "" if alloc_key == "expandable" else f"-{alloc_key}alloc"
     name = (
-        f"{args.job_prefix}-{layout}-{connector_short}-tp{tp}-"
+        f"{args.job_prefix}-{layout}-{connector_part}-tp{tp}{alloc_part}-"
         f"{package_suffix}-{run_suffix}"
     )
-    session_id = f"codex-{package_suffix}-{layout}-{connector}-tp{tp}"
+    session_id_parts = ["codex", package_suffix, layout, connector]
+    if connector == "nixl" and nixl_kv_buffer_device != "cuda":
+        session_id_parts.append(f"{nixl_kv_buffer_device}kv")
+    if alloc_key != "expandable":
+        session_id_parts.append(f"{alloc_key}alloc")
+    session_id_parts.append(f"tp{tp}")
+    session_id = "-".join(session_id_parts)
     return JobSpec(
         connector_key=connector,
         connector_class=CONNECTORS[connector],
         layout=layout,
         tp=tp,
+        nixl_kv_buffer_device=nixl_kv_buffer_device,
+        pytorch_cuda_alloc_conf=pytorch_cuda_alloc_conf,
         name=name,
         session_id=session_id,
     )
+
+
+def nixl_kv_buffer_device_for_job(
+    *,
+    connector: str,
+    tp: int,
+    requested_device: str,
+) -> str:
+    if connector != "nixl":
+        return "cuda"
+    if requested_device != "auto":
+        return requested_device
+    return "cpu" if tp > 1 else "cuda"
 
 
 def make_existing_app_specs(app_uris: Sequence[str]) -> list[tuple[JobSpec, str]]:
@@ -2100,11 +2361,15 @@ def infer_job_spec_from_app_uri(app_uri: str) -> JobSpec:
     layout = infer_layout_from_name(name)
     connector_key = infer_connector_from_name(name)
     tp = infer_tp_from_name(name)
+    nixl_kv_buffer_device = infer_nixl_kv_buffer_device_from_name(name)
+    pytorch_cuda_alloc_conf = infer_pytorch_cuda_alloc_conf_from_name(name)
     return JobSpec(
         connector_key=connector_key,
         connector_class=CONNECTORS[connector_key],
         layout=layout,
         tp=tp,
+        nixl_kv_buffer_device=nixl_kv_buffer_device,
+        pytorch_cuda_alloc_conf=pytorch_cuda_alloc_conf,
         name=name,
         session_id="existing-mast-app",
     )
@@ -2131,6 +2396,24 @@ def infer_tp_from_name(name: str) -> int:
     if match is None:
         raise ValueError(f"Could not infer TP from MAST app name `{name}`")
     return int(match.group("tp"))
+
+
+def infer_nixl_kv_buffer_device_from_name(name: str) -> str:
+    match = re.search(r"-nixl-(?P<device>cpu|cuda)kv-", name)
+    if match is None:
+        return "cuda"
+    return match.group("device")
+
+
+def infer_pytorch_cuda_alloc_conf_from_name(name: str) -> str:
+    match = ALLOC_CONF_TOKEN_RE.search(name)
+    if match is None:
+        return "expandable_segments:True"
+    return AllocConfToken.decode(match.group("token"))
+
+
+def alloc_conf_key(pytorch_cuda_alloc_conf: str) -> str:
+    return AllocConfToken.encode(pytorch_cuda_alloc_conf)
 
 
 def print_summary(package: str, results: Sequence[JobResult]) -> None:
@@ -2181,6 +2464,7 @@ def make_workload(args: argparse.Namespace, profile: BenchmarkProfile) -> Worklo
         gpu_memory_utilization=args.gpu_memory_utilization,
         mode=profile_value(args, profile, "mode"),
         timeout=profile_value(args, profile, "timeout"),
+        validate_performance_outputs=args.validate_performance_outputs,
     )
 
 
