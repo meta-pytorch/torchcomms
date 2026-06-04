@@ -5,7 +5,9 @@
 #include <folly/Singleton.h>
 
 #include "comms/ctran/Ctran.h" // access to incomplete type
+#include "comms/ctran/mapper/CtranMapper.h"
 
+#include "comms/utils/StrUtils.h"
 #include "comms/utils/colltrace/NetworkPerfMonitor.h"
 #include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
 #include "comms/utils/cvars/nccl_cvars.h"

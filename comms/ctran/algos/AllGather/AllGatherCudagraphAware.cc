@@ -37,6 +37,12 @@
 
 namespace {
 
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+constexpr auto kStreamCaptureModeRelaxed = hipStreamCaptureModeRelaxed;
+#else
+constexpr auto kStreamCaptureModeRelaxed = cudaStreamCaptureModeRelaxed;
+#endif
+
 // winPersistBuffReg: register recvbuff as a window, exchange handles with
 // all peers. Both local and remote addresses must be stable across replays.
 commResult_t winPersistBuffReg(
@@ -52,8 +58,7 @@ commResult_t winPersistBuffReg(
 
   CtranPersistentRequest* request = nullptr;
   {
-    meta::comms::StreamCaptureModeGuard captureGuard{
-        cudaStreamCaptureModeRelaxed};
+    meta::comms::StreamCaptureModeGuard captureGuard{kStreamCaptureModeRelaxed};
     FB_COMMCHECK(ctran::allGatherWinInit(*winOut, comm, stream, request));
   }
 
@@ -65,8 +70,7 @@ commResult_t winPersistBuffReg(
 // localPersistBuffReg: register recvbuff locally via globalRegisterWithPtr.
 // Only local registration persists; remote exchange happens at each replay.
 commResult_t localPersistBuffReg(void* recvbuff, size_t recvBytes) {
-  meta::comms::StreamCaptureModeGuard captureGuard{
-      cudaStreamCaptureModeRelaxed};
+  meta::comms::StreamCaptureModeGuard captureGuard{kStreamCaptureModeRelaxed};
   FB_COMMCHECK(ctran::globalRegisterWithPtr(recvbuff, recvBytes, true, true));
   return commSuccess;
 }

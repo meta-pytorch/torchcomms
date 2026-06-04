@@ -1,5 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/tests/cudagraph/CtranCudaGraphParamTest.h"
 
 static AlgoDescriptor makeAllToAll() {

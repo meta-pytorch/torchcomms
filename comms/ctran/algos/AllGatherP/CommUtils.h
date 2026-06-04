@@ -27,6 +27,19 @@ inline commResult_t nvlBarrier(CtranComm* comm, cudaStream_t stream) {
   kernelArgs.at(2) = (void*)&devState_d;
   dim3 grid = {1, 1, 1};
   dim3 blocks = {1, 1, 1};
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+  FB_CUDACHECK(hipFuncSetAttribute(
+      reinterpret_cast<void*>(ncclKernelNvlBarrier),
+      hipFuncAttributeMaxDynamicSharedMemorySize,
+      sizeof(CtranAlgoDeviceState)));
+  FB_CUDACHECK(hipLaunchKernel(
+      reinterpret_cast<void*>(ncclKernelNvlBarrier),
+      grid,
+      blocks,
+      kernelArgs.data(),
+      sizeof(CtranAlgoDeviceState),
+      stream));
+#else
   FB_CUDACHECK(cudaFuncSetAttribute(
       reinterpret_cast<void*>(ncclKernelNvlBarrier),
       cudaFuncAttributeMaxDynamicSharedMemorySize,
@@ -38,6 +51,7 @@ inline commResult_t nvlBarrier(CtranComm* comm, cudaStream_t stream) {
       kernelArgs.data(),
       sizeof(CtranAlgoDeviceState),
       stream));
+#endif
   return commSuccess;
 }
 
@@ -99,10 +113,27 @@ inline commResult_t nvlCeBcast(
   // memcpy nodes in the graph.
   utils::cudagraph::StreamCaptureInfo captureInfo;
   FB_CUDACHECK(utils::cudagraph::getStreamCaptureInfo(stream, captureInfo));
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+  if (captureInfo.status == hipStreamCaptureStatusActive) {
+    for (size_t i = 0; i < numOps; i++) {
+      FB_CUDACHECK(hipMemcpyAsync(
+          dsts.at(i), srcs.at(i), sizes.at(i), hipMemcpyDefault, stream));
+    }
+  } else {
+    auto mapper = comm->ctran_->mapper.get();
+    for (size_t i = 0; i < numOps; i++) {
+      FB_COMMCHECK(mapper->icopy(dsts.at(i), srcs.at(i), sizes.at(i), stream));
+    }
+  }
+#else
   if (captureInfo.status == cudaStreamCaptureStatusActive) {
     for (size_t i = 0; i < numOps; i++) {
-      FB_CUDACHECK(cudaMemcpyAsync(
-          dsts.at(i), srcs.at(i), sizes.at(i), cudaMemcpyDefault, stream));
+      FB_CUDACHECK(CTRAN_CUDA_MEMCPY_ASYNC(
+          dsts.at(i),
+          srcs.at(i),
+          sizes.at(i),
+          CTRAN_CUDA_MEMCPY_DEFAULT,
+          stream));
     }
   } else {
 #if CUDART_VERSION >= 12080
@@ -132,6 +163,7 @@ inline commResult_t nvlCeBcast(
     }
 #endif
   }
+#endif
 
   return commSuccess;
 }

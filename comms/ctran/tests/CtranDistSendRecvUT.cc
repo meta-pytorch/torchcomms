@@ -10,6 +10,7 @@
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/SendRecv/Types.h"
 #include "comms/ctran/backends/ib/CtranIbSingleton.h"
+#include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/utils/CommGroupUtils.h"

@@ -4,6 +4,7 @@
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllGatherP/Types.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CudaStreamTypes.h"
 
 namespace ctran::allgatherp {
 

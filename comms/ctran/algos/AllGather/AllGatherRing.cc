@@ -5,6 +5,8 @@
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/gpe/CtranGpe.h"
+#include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
@@ -226,11 +228,11 @@ commResult_t ctranAllGatherRing(
       config,
       reinterpret_cast<void*>(ncclKernelAllGatherCtranRing)));
   if (extraCopyBuff != nullptr) {
-    FB_CUDACHECK(cudaMemcpyAsync(
+    FB_CUDACHECK(CTRAN_CUDA_MEMCPY_ASYNC(
         recvbuff,
         extraCopyBuff,
         sendcount * commTypeSize(datatype) * comm->statex_->nRanks(),
-        cudaMemcpyDefault,
+        CTRAN_CUDA_MEMCPY_DEFAULT,
         stream));
   }
   return commSuccess;

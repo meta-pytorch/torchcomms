@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #pragma once
+
 #include "comms/common/AtomicUtils.cuh"
 #include "comms/common/DeviceConstants.cuh"
 #include "comms/ctran/algos/CtranAlgoDev.h"

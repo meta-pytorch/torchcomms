@@ -862,7 +862,8 @@ commResult_t CtranMapper::icopy(
     (*req)->workStream = stream;
     traceReq = *req;
   }
-  FB_CUDACHECK(cudaMemcpyAsync(dbuf, sbuf, len, cudaMemcpyDefault, stream));
+  FB_CUDACHECK(CTRAN_CUDA_MEMCPY_ASYNC(
+      dbuf, sbuf, len, CTRAN_CUDA_MEMCPY_DEFAULT, stream));
 
   iCopyCount++;
 

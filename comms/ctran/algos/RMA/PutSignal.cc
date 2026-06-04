@@ -282,8 +282,8 @@ commResult_t ctranPutSignal(
       colltraceHandle->trigger(
           CollTraceHandleTriggerState::BeforeEnqueueKernel);
 
-      FB_CUDACHECK(cudaMemcpyAsync(
-          dstPtr, originBuff, countNbytes, cudaMemcpyDefault, stream));
+      FB_CUDACHECK(CTRAN_CUDA_MEMCPY_ASYNC(
+          dstPtr, originBuff, countNbytes, CTRAN_CUDA_MEMCPY_DEFAULT, stream));
 
       colltraceHandle->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel);
     }
@@ -331,7 +331,8 @@ commResult_t ctranPutSignal(
 // polling
 static commResult_t
 waitSignalDriverApi(int peer, CtranWin* win, cudaStream_t stream) {
-#if CUDART_VERSION >= 11070
+#if CUDART_VERSION >= 11070 && !defined(__HIP_PLATFORM_AMD__) && \
+    !defined(__HIP_PLATFORM_HCC__)
   if (!ctran::utils::canUse64BitStreamMemOps()) {
     return commInvalidUsage;
   }

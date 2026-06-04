@@ -4,6 +4,7 @@
 #include "comms/ctran/algos/AllGatherP/AlgoImpl.h"
 #include "comms/ctran/algos/AllGatherP/Types.h"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/window/CtranWin.h"
 #include "comms/utils/cvars/nccl_cvars.h"

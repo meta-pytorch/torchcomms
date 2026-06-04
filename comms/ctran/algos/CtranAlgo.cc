@@ -7,17 +7,24 @@
 #include "comms/ctran/CtranPipes.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/CtranAlgoConsts.h"
+#include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/memory/memCacheAllocator.h"
+#if defined(CTRAN_HAS_PRIMS)
+#include "comms/ctran/prims/ChunkState.cuh"
+#include "comms/ctran/prims/P2pNvlTransportDevice.cuh"
+#endif
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranIpc.h"
 #include "comms/ctran/utils/TmpBufSegManager.h"
-#include "comms/pipes/ChunkState.cuh"
-#include "comms/pipes/P2pNvlTransportDevice.cuh"
 
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 
-using comms::pipes::ChunkState;
-using comms::pipes::DeviceSpan;
+#if defined(CTRAN_HAS_PRIMS)
+using ctran::prims::ChunkState;
+using ctran::prims::DeviceSpan;
+#endif
 
 CtranAlgo::CtranAlgo(CtranComm* comm, ICtran* ctran)
     : comm_(comm), ctran_(ctran) {
@@ -81,11 +88,13 @@ CtranAlgo::~CtranAlgo() {
   // Note: No destructor calls needed since objects were constructed on CPU
   // and copied to device memory. The CPU objects were already destructed
   // when they went out of scope after cudaMemcpy.
+#if defined(CTRAN_HAS_PRIMS)
   if (nvlTransports_) {
     FB_COMMCHECKIGNORE(
         ctran::utils::commCudaFree(nvlTransports_, &this->comm_->logMetaData_));
     nvlTransports_ = nullptr;
   }
+#endif
 
   // Dot not throw exception in destructor to avoid early termination in stack
   // unwind. See discussion in
@@ -97,7 +106,8 @@ CtranAlgoDeviceState* CtranAlgo::getDevState() {
   return this->devState_d_;
 }
 
-comms::pipes::P2pNvlTransportDevice* CtranAlgo::getNvlTransportsBase() {
+ctran::prims::P2pNvlTransportDevice* CtranAlgo::getNvlTransportsBase() {
+#if defined(CTRAN_HAS_PRIMS)
   if (!isResInitialized_) {
     CLOGF(
         ERR,
@@ -105,6 +115,9 @@ comms::pipes::P2pNvlTransportDevice* CtranAlgo::getNvlTransportsBase() {
     return nullptr;
   }
   return nvlTransports_;
+#else
+  return nullptr;
+#endif
 }
 
 static const std::string kCtranAlgoInitResources{
@@ -112,8 +125,12 @@ static const std::string kCtranAlgoInitResources{
 
 namespace {
 inline size_t getPerPeerChunkStatesSize() {
+#if defined(CTRAN_HAS_PRIMS)
   static size_t size = sizeof(ChunkState) * CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS;
   return size;
+#else
+  return 0;
+#endif
 }
 
 // Helper to calculate sync and staging buffer and chunkState pointers for a
@@ -174,9 +191,9 @@ commResult_t CtranAlgo::initKernelResources() {
   // cudaGetDeviceProperties is always 0 while cudaDeviceGetAttribute returns
   // the correct value. AMD bug report: https://ontrack.amd.com/browse/FBA-621
   int maxSharedMemOptin;
-  FB_CUDACHECK(cudaDeviceGetAttribute(
+  FB_CUDACHECK(CTRAN_CUDA_DEVICE_GET_ATTRIBUTE(
       &maxSharedMemOptin,
-      cudaDevAttrMaxSharedMemoryPerBlockOptin,
+      CTRAN_CUDA_DEV_ATTR_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN,
       statex->cudaDev()));
 
   if (maxSharedMemOptin < sizeof(CtranAlgoDeviceState)) {
@@ -267,12 +284,13 @@ commResult_t CtranAlgo::initKernelResources() {
           1,
           &this->comm_->logMetaData_,
           "initKernelResources"));
-  FB_CUDACHECK(cudaMemcpy(
+  FB_CUDACHECK(CTRAN_CUDA_MEMCPY(
       this->devState_d_,
       &devState_,
       sizeof(CtranAlgoDeviceState),
-      cudaMemcpyHostToDevice));
+      CTRAN_CUDA_MEMCPY_HOST_TO_DEVICE));
 
+#if defined(CTRAN_HAS_PRIMS)
   // Pre-allocate P2pNvlTransportDevice array for all peers in device memory.
   FB_COMMCHECK(
       ctran::utils::commCudaMalloc(
@@ -281,7 +299,7 @@ commResult_t CtranAlgo::initKernelResources() {
           &this->comm_->logMetaData_,
           "initKernelResources-nvlTransports"));
 
-  comms::pipes::P2pNvlTransportOptions options{
+  ctran::prims::P2pNvlTransportOptions options{
       .dataBufferSize =
           nvlSharedDevbufSize / NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH,
       .chunkSize = NCCL_CTRAN_PIPES_NVL_CHUNK_SIZE,
@@ -293,27 +311,28 @@ commResult_t CtranAlgo::initKernelResources() {
       continue;
     }
 
-    comms::pipes::LocalState localState{
+    ctran::prims::LocalState localState{
         .dataBuffer = static_cast<char*>(devState_.localStagingBufsMap[peer]),
         .receiverStateBuffer = DeviceSpan<ChunkState>(
             static_cast<ChunkState*>(devState_.localChunkStatesMap[peer]),
             CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS)};
 
-    comms::pipes::RemoteState remoteState{
+    ctran::prims::RemoteState remoteState{
         .dataBuffer = static_cast<char*>(devState_.remoteStagingBufsMap[peer]),
         .receiverStateBuffer = DeviceSpan<ChunkState>(
             static_cast<ChunkState*>(devState_.remoteChunkStatesMap[peer]),
             CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS)};
 
     // Construct the object on CPU and copy to device memory
-    comms::pipes::P2pNvlTransportDevice transport(
+    ctran::prims::P2pNvlTransportDevice transport(
         localRank, peer, options, localState, remoteState);
-    FB_CUDACHECK(cudaMemcpy(
+    FB_CUDACHECK(CTRAN_CUDA_MEMCPY(
         &nvlTransports_[peer],
         &transport,
-        sizeof(comms::pipes::P2pNvlTransportDevice),
-        cudaMemcpyHostToDevice));
+        sizeof(ctran::prims::P2pNvlTransportDevice),
+        CTRAN_CUDA_MEMCPY_HOST_TO_DEVICE));
   }
+#endif
 
   this->isResInitialized_ = true;
 
@@ -345,7 +364,7 @@ CtranAlgo::SharedResource::SharedResource(CtranComm* comm) {
 
   if (!ctran::utils::getCuMemSysSupported()) {
     memType = DevMemType::kCudaMalloc;
-    cuMemHandleType = CU_MEM_HANDLE_TYPE_NONE;
+    cuMemHandleType = CTRAN_CU_MEM_HANDLE_TYPE_NONE;
   }
 
   // Throw exception if fails to allocate memory
@@ -377,13 +396,14 @@ CtranAlgo::SharedResource::SharedResource(CtranComm* comm) {
       syncInitialVal.syncs[j].stepOnSameBlockIdx = CTRAN_ALGO_STEP_RESET;
     }
     FB_CUDACHECKTHROW_EX(
-        cudaMemcpy(
+        CTRAN_CUDA_MEMCPY(
             statePtr_d,
             &syncInitialVal,
             sizeof(CtranAlgoDeviceSync),
-            cudaMemcpyHostToDevice),
+            CTRAN_CUDA_MEMCPY_HOST_TO_DEVICE),
         comm->logMetaData_);
 
+#if defined(CTRAN_HAS_PRIMS)
     void* chunkStatePtr_d = reinterpret_cast<char*>(devShmPtr) +
         (nLocalRanks - 1) *
             (sizeof(CtranAlgoDeviceSync) + nvlSharedDevbufSize) +
@@ -391,12 +411,13 @@ CtranAlgo::SharedResource::SharedResource(CtranComm* comm) {
     std::vector<ChunkState> initStates(
         CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS, ChunkState());
     FB_CUDACHECKTHROW_EX(
-        cudaMemcpy(
+        CTRAN_CUDA_MEMCPY(
             chunkStatePtr_d,
             initStates.data(),
             getPerPeerChunkStatesSize(),
-            cudaMemcpyHostToDevice),
+            CTRAN_CUDA_MEMCPY_HOST_TO_DEVICE),
         comm->logMetaData_);
+#endif
   }
 
   // Exchange IPC handle with all ranks in the NVL domain
@@ -448,6 +469,8 @@ CtranAlgo::SharedResource::SharedResource(CtranComm* comm) {
       statex->localRank());
   return;
 }
+
+CtranAlgo::SharedResource::~SharedResource() = default;
 
 commResult_t CtranAlgo::SharedResource::release() {
   const auto statex = comm_->statex_.get();

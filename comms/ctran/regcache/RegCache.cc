@@ -24,6 +24,12 @@ std::shared_ptr<ctran::RegCache> ctran::RegCache::getInstance() {
   return regCacheSingleton.try_get();
 }
 
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+constexpr auto kRegCacheStreamCaptureModeRelaxed = hipStreamCaptureModeRelaxed;
+#else
+constexpr auto kRegCacheStreamCaptureModeRelaxed = cudaStreamCaptureModeRelaxed;
+#endif
+
 ctran::RegCache::RegCache(void) {
   init();
 }
@@ -665,7 +671,7 @@ commResult_t ctran::regcache::SegmentRange::pinRange(
     size_t len,
     std::vector<ctran::regcache::SegmentRange>& segRangs) {
   meta::comms::StreamCaptureModeGuard captureGuard{
-      cudaStreamCaptureModeRelaxed};
+      kRegCacheStreamCaptureModeRelaxed};
 
   DevMemType memType{DevMemType::kCumem};
   FB_COMMCHECK(getDevMemType(ptr, cudaDev, memType));
@@ -1538,7 +1544,7 @@ commResult_t ctran::RegCache::deregAll() {
 commResult_t ctran::regcache::RegElem::doRegister(
     const std::vector<bool>& backends) {
   meta::comms::StreamCaptureModeGuard captureGuard{
-      cudaStreamCaptureModeRelaxed};
+      kRegCacheStreamCaptureModeRelaxed};
 
   auto stat = stateMnger.wlock();
 

@@ -6,6 +6,7 @@
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/Broadcast/BroadcastImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/mapper/CtranMapper.h"
 
 commResult_t ctranBroadcast(
     const void* sendbuff,

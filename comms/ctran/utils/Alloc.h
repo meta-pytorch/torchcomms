@@ -17,6 +17,12 @@
 
 namespace ctran::utils {
 
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+constexpr auto kAllocStreamCaptureModeRelaxed = hipStreamCaptureModeRelaxed;
+#else
+constexpr auto kAllocStreamCaptureModeRelaxed = cudaStreamCaptureModeRelaxed;
+#endif
+
 inline std::string cuMemHandleTypeStr(CUmemAllocationHandleType handleType) {
 #if defined(__HIP_PLATFORM_AMD__)
   // cuMemHandleTypeStr should not be called for AMD
@@ -69,7 +75,7 @@ commResult_t commCudaMallocDebug(
     const char* filefunc,
     int line) {
   commResult_t result = commSuccess;
-  cudaStreamCaptureMode mode = cudaStreamCaptureModeRelaxed;
+  cudaStreamCaptureMode mode = kAllocStreamCaptureModeRelaxed;
   *ptr = nullptr;
   FB_CUDACHECK(cudaThreadExchangeStreamCaptureMode(&mode));
   if (nelem > 0) {
@@ -118,7 +124,7 @@ finish:
 template <typename T>
 commResult_t commCudaFree(T* ptr, const CommLogData* logMetaData = nullptr) {
   commResult_t result = commSuccess;
-  cudaStreamCaptureMode mode = cudaStreamCaptureModeRelaxed;
+  cudaStreamCaptureMode mode = kAllocStreamCaptureModeRelaxed;
   CLOGF_TRACE(ALLOC, "Cuda Free pointer {}", (void*)ptr);
 
   FB_CUDACHECKGOTO(cudaThreadExchangeStreamCaptureMode(&mode), result, finish);
@@ -149,12 +155,12 @@ commResult_t commCudaHostAllocDebug(
     const char* filefunc,
     int line) {
   commResult_t result = commSuccess;
-  cudaStreamCaptureMode mode = cudaStreamCaptureModeRelaxed;
+  cudaStreamCaptureMode mode = kAllocStreamCaptureModeRelaxed;
   *ptr = nullptr;
   FB_CUDACHECK(cudaThreadExchangeStreamCaptureMode(&mode));
   if (nelem > 0) {
     FB_CUDACHECKGOTO(
-        cudaHostAlloc(ptr, nelem * sizeof(T), flags), result, finish);
+        CTRAN_CUDA_HOST_ALLOC(ptr, nelem * sizeof(T), flags), result, finish);
   }
 finish:
   FB_CUDACHECK(cudaThreadExchangeStreamCaptureMode(&mode));
@@ -186,12 +192,12 @@ commResult_t commCudaFreeHost(
     T* ptr,
     const CommLogData* logMetaData = nullptr) {
   commResult_t result = commSuccess;
-  cudaStreamCaptureMode mode = cudaStreamCaptureModeRelaxed;
+  cudaStreamCaptureMode mode = kAllocStreamCaptureModeRelaxed;
   CLOGF_TRACE(ALLOC, "CudaFreeHost pointer {}", (void*)ptr);
 
   FB_CUDACHECKGOTO(cudaThreadExchangeStreamCaptureMode(&mode), result, finish);
   if (ptr) {
-    FB_CUDACHECKGOTO(cudaFreeHost(ptr), result, finish);
+    FB_CUDACHECKGOTO(CTRAN_CUDA_FREE_HOST(ptr), result, finish);
   }
 finish:
   meta::comms::memtrace::recordFree(
@@ -215,7 +221,7 @@ commResult_t commCudaCallocAsync(
       !std::is_same<T, void>::value,
       "void pointers must be casted to valid types when calloc-ing for 'nelem' objects");
   commResult_t result = commSuccess;
-  cudaStreamCaptureMode mode = cudaStreamCaptureModeRelaxed;
+  cudaStreamCaptureMode mode = kAllocStreamCaptureModeRelaxed;
   *ptr = nullptr;
   FB_CUDACHECK(cudaThreadExchangeStreamCaptureMode(&mode));
   if (nelem > 0) {

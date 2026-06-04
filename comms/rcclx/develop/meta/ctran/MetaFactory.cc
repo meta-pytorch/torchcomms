@@ -5,6 +5,8 @@
 #include "BaselineBootstrap.h"
 #include "MetaFactory.h"
 #include "comm.h"
+#include "comms/common/algorithms/AlgoFactory.cuh"
+#include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllToAll/AllToAllPHintUtils.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/utils/Checks.h"
@@ -13,6 +15,15 @@
 #include "comms/utils/commSpecs.h"
 
 using namespace ctran;
+
+void NcclAlgoFactoryDevDeleter::operator()(
+    meta::comms::AlgoFactoryDev* algoFactory) const {
+  delete algoFactory;
+}
+
+void NcclCtranCommDeleter::operator()(CtranComm* ctranComm) const {
+  delete ctranComm;
+}
 
 ncclResult_t metaCommToNccl(commResult_t result) {
   switch (result) {
@@ -118,7 +129,7 @@ commDataType_t ncclToMetaComm(ncclDataType_t dataType) {
 }
 
 commResult_t initNcclCommCtran(ncclComm* ncclComm) {
-  auto ctranComm = std::make_unique<CtranComm>();
+  NcclCtranCommPtr ctranComm(new CtranComm());
   ctranComm->opCount_ = &ncclComm->opCount;
   ctranComm->bootstrap_ = std::make_unique<rcclx::BaselineBootstrap>(ncclComm);
   ctranComm->statex_ =

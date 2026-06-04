@@ -8,14 +8,14 @@
 #ifdef CTRAN_DISABLE_TCPDM
 #include "comms/ctran/backends/mock/CtranTcpDmBaseMock.h"
 #else
-#include "comms/tcp_devmem/unpack/batch_unpack_kernel.h"
+#include "comms/tcp_devmem/unpack/batch_unpack_types.h"
 #endif
 
 // Forward declaration to avoid including P2pNvlTransportDevice.cuh in this
 // header. Including that header would cause duplicate symbols when .cu files
 // including this header are compiled by both device_object and
 // hetero_ctran_device_lib.
-namespace comms::pipes {
+namespace ctran::prims {
 class P2pNvlTransportDevice;
 }
 
@@ -83,7 +83,7 @@ struct KernArgs {
 
   // Base pointer to pre-allocated P2pNvlTransportDevice array
   // Indexed by peerLocalRank to get the transport for each peer
-  comms::pipes::P2pNvlTransportDevice* nvlTransportsBase;
+  ctran::prims::P2pNvlTransportDevice* nvlTransportsBase;
 };
 
 struct KernelSendArgs {

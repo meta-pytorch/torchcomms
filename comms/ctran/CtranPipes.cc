@@ -2,6 +2,11 @@
 
 #include "comms/ctran/CtranPipes.h"
 
+#include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/logger/LogUtils.h"
+
+#if defined(CTRAN_HAS_PRIMS)
+
 #include <algorithm>
 #include <memory>
 #include <set>
@@ -10,14 +15,10 @@
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
-#include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
 
-#if defined(ENABLE_PIPES)
-
-#include "comms/pipes/MultiPeerTransport.h"
-#include "comms/pipes/PipesTrace.h"
-#include "comms/pipes/ll128/Ll128Packet.cuh"
+#include "comms/ctran/prims/MultiPeerTransport.h"
+#include "comms/ctran/prims/PipesTrace.h"
+#include "comms/ctran/prims/ll128/Ll128Packet.cuh"
 
 namespace {
 
@@ -29,19 +30,19 @@ bool ctranPipesTraceEnabled() {
 
 commResult_t ctran::ctranPreparePipesTrace(
     CtranComm* comm,
-    comms::pipes::PipesTraceHandle& trace) {
+    ctran::prims::PipesTraceHandle& trace) {
   trace = {};
   if (!ctranPipesTraceEnabled()) {
     return commSuccess;
   }
-  const uint32_t ringSize = comms::pipes::PipesTrace::normalizeRingSize(
+  const uint32_t ringSize = ctran::prims::PipesTrace::normalizeRingSize(
       NCCL_CTRAN_PIPES_TRACE_RING_SIZE);
   if (ringSize == 0) {
     return commSuccess;
   }
 
   if (comm->pipesTrace_ == nullptr) {
-    comm->pipesTrace_ = std::make_unique<comms::pipes::PipesTrace>();
+    comm->pipesTrace_ = std::make_unique<ctran::prims::PipesTrace>();
   }
   comm->pipesTrace_->ensure(ringSize);
   trace = comm->pipesTrace_->deviceHandle();
@@ -75,7 +76,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
         comm->bootstrap_.get(),
         [](meta::comms::IBootstrap*) {}); // no-op deleter
 
-    comms::pipes::MultiPeerTransportConfig config{};
+    ctran::prims::MultiPeerTransportConfig config{};
 
     // NVL config: per-comm hint > CVAR default
     const auto& pc = comm->config_.pipesConfig;
@@ -109,7 +110,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
         config.nvlConfig.ll128BufferSize = NCCL_CTRAN_DA2A_LL128_BUFFER_SIZE;
       } else {
         config.nvlConfig.ll128BufferSize =
-            comms::pipes::ll128_buffer_size(256 * 1024);
+            ctran::prims::ll128_buffer_size(256 * 1024);
       }
       CLOGF(
           INFO,
@@ -124,8 +125,8 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     }
     if (!NCCL_IB_ADDR_FAMILY.empty()) {
       config.ibgdaConfig.addressFamily = (NCCL_IB_ADDR_FAMILY == "IPV4")
-          ? comms::pipes::AddressFamily::IPV4
-          : comms::pipes::AddressFamily::IPV6;
+          ? ctran::prims::AddressFamily::IPV4
+          : ctran::prims::AddressFamily::IPV6;
     }
     // Pass raw NCCL_IB_HCA string to ibgdaConfig; NicDiscovery's ibHcaParser
     // handles prefix semantics and port suffixes internally.
@@ -201,7 +202,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
         return commInvalidArgument;
       }
       config.ibgdaConfig.sendRecv =
-          comms::pipes::MultipeerIbgdaTransportConfig::SendRecvConfig{
+          ctran::prims::MultipeerIbgdaTransportConfig::SendRecvConfig{
               .maxGroups =
                   static_cast<int>(NCCL_CTRAN_IBGDA_SENDRECV_MAX_GROUPS),
               .pipelineDepth =
@@ -221,7 +222,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
 
     // Topology config: MNNVL mode and overrides
     config.topoConfig.mnnvlMode =
-        static_cast<comms::pipes::MnnvlMode>(NCCL_MNNVL_ENABLE);
+        static_cast<ctran::prims::MnnvlMode>(NCCL_MNNVL_ENABLE);
     config.topoConfig.logicalNvlRanks = comm->statex_->localRankToRanks();
 
     CLOGF(
@@ -255,13 +256,13 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     // The FABRIC handle export/import probe (same check used by ncclx's
     // ncclMnnvlCheck Gate 7 and CommStateX's isCuMemFabricEnabled) is the only
     // reliable way to distinguish real MNNVL (GB200) from false positives.
-    if (config.topoConfig.mnnvlMode != comms::pipes::MnnvlMode::kDisabled &&
+    if (config.topoConfig.mnnvlMode != ctran::prims::MnnvlMode::kDisabled &&
         !ctran::utils::isCuMemFabricEnabled()) {
       CLOGF(
           INFO,
           "CTRAN-PIPES: FABRIC handle probe failed — disabling MNNVL Tier 1 "
           "topology detection (falling back to same-host peer access)");
-      config.topoConfig.mnnvlMode = comms::pipes::MnnvlMode::kDisabled;
+      config.topoConfig.mnnvlMode = ctran::prims::MnnvlMode::kDisabled;
     }
 
     if (NCCL_MNNVL_UUID != -1) {
@@ -276,7 +277,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
         "CTRAN-PIPES: constructing MultiPeerTransport rank={}",
         comm->statex_->rank());
     comm->multiPeerTransport_ =
-        std::make_unique<comms::pipes::MultiPeerTransport>(
+        std::make_unique<ctran::prims::MultiPeerTransport>(
             comm->statex_->rank(),
             comm->statex_->nRanks(),
             comm->statex_->cudaDev(),
@@ -439,8 +440,8 @@ commResult_t ctranInitPipesResources(CtranAlgo* algo) {
         statex->rank(),
         bufSize,
         nvlNRanks);
-    std::vector<comms::pipes::DeviceSpan<char>> localSpans;
-    std::vector<comms::pipes::DeviceSpan<char>> remoteSpans;
+    std::vector<ctran::prims::DeviceSpan<char>> localSpans;
+    std::vector<ctran::prims::DeviceSpan<char>> remoteSpans;
     localSpans.reserve(nvlNRanks);
     remoteSpans.reserve(nvlNRanks);
 
@@ -468,7 +469,7 @@ commResult_t ctranInitPipesResources(CtranAlgo* algo) {
           bufSize);
     }
 
-    comms::pipes::ExternalStagingBuffers externalBufs;
+    ctran::prims::ExternalStagingBuffers externalBufs;
     externalBufs.localBuffers = std::move(localSpans);
     externalBufs.remoteBuffers = std::move(remoteSpans);
 
@@ -508,12 +509,22 @@ commResult_t ctranInitPipesResources(CtranAlgo* algo) {
 
 #else
 
-commResult_t ctranInitializePipes(CtranComm* comm) {
+commResult_t ctranInitializePipes(CtranComm*) {
+  if (NCCL_CTRAN_USE_PIPES) {
+    CLOGF(
+        ERR,
+        "CTRAN prims transport integration is not compiled for this platform, "
+        "but NCCL_CTRAN_USE_PIPES=1 was requested");
+    return commInvalidUsage;
+  }
+  CLOGF(
+      INFO,
+      "CTRAN-PIPES: initialization skipped; prims transport integration is not compiled for this platform");
   return commSuccess;
 }
 
-commResult_t ctranInitPipesResources(CtranAlgo* algo) {
+commResult_t ctranInitPipesResources(CtranAlgo*) {
   return commSuccess;
 }
 
-#endif // defined(ENABLE_PIPES)
+#endif

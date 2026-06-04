@@ -10,8 +10,6 @@
 
 #pragma once
 
-#if defined(ENABLE_PIPES)
-
 #include "comms/torchcomms/device/TorchCommDeviceWindow.hpp"
 #include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
 
@@ -25,5 +23,3 @@ using DeviceWindowPipes = TorchCommDeviceWindow<PipesDeviceBackend>;
 using RegisteredBufferPipes = torch::comms::RegisteredBuffer;
 
 } // namespace torchcomms::device
-
-#endif // ENABLE_PIPES

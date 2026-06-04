@@ -1,17 +1,17 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 // TorchComms Transport API - implementations for LLVM bitcode
 //
-// Extern C wrappers around comms::pipes transport methods.
+// Extern C wrappers around ctran::prims transport methods.
 // All operations construct a block-scope ThreadGroup internally.
 
 #include <cuda_runtime.h>
 
 #include <cstddef>
 
-#include "comms/pipes/MultiPeerDeviceHandle.cuh"
-#include "comms/pipes/ThreadGroup.cuh"
+#include "comms/ctran/prims/MultiPeerDeviceHandle.cuh"
+#include "comms/ctran/prims/ThreadGroup.cuh"
 
-using namespace comms::pipes;
+using namespace ctran::prims;
 
 namespace {
 

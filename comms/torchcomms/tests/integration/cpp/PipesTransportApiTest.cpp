@@ -55,7 +55,7 @@ void PipesTransportApiTest::SetUp() {
   auto copy_err = cudaMemcpy(
       &handle_,
       reinterpret_cast<void*>(handle_ptr),
-      sizeof(comms::pipes::MultiPeerDeviceHandle),
+      sizeof(ctran::prims::MultiPeerDeviceHandle),
       cudaMemcpyDeviceToHost);
   ASSERT_EQ(copy_err, cudaSuccess) << "Failed to copy transport handle";
   ASSERT_EQ(handle_.myRank, rank_);

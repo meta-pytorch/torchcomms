@@ -1,11 +1,16 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#if defined(__HIP_PLATFORM_AMD__)
+#include <hip/hip_fp16.h>
+#else
 #include <cuda_fp16.h>
+#endif
 #include <iostream>
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/utils/ExtUtils.h"
@@ -207,12 +212,20 @@ static commResult_t impl(
 static unsigned int bestThreadBlockSize = 0;
 
 static inline unsigned int getThreadBlockSize() {
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+#define CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE \
+  hipOccupancyMaxPotentialBlockSize
+#else
+#define CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE \
+  cudaOccupancyMaxPotentialBlockSize
+#endif
+
   // If first time call, query cuda recommended blockSize
   if (bestThreadBlockSize == 0) {
     int minGridSize = 0;
     XCHECK(kernFnMap.contains(commFloat32))
         << "kernFnMap does not contain datatype";
-    FB_CUDACHECK(cudaOccupancyMaxPotentialBlockSize(
+    FB_CUDACHECK(CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE(
         &minGridSize,
         (int*)&bestThreadBlockSize,
         kernFnMap.at(commFloat32),
@@ -224,6 +237,8 @@ static inline unsigned int getThreadBlockSize() {
       ? bestThreadBlockSize
       : NCCL_CTRAN_NVL_ALLGATHERDIRECT_THREAD_BLOCK_SIZE;
 }
+
+#undef CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE
 
 static inline int getNumGroups(size_t nbytes) {
   // compute needed thread blocks for given bytes
@@ -309,11 +324,11 @@ commResult_t ctranAllGatherDirect(
   FB_COMMCHECK(comm->ctran_->gpe->submit(
       std::move(opGroup), impl, config, kernFnMap.at(datatype)));
   if (extraCopyBuff != nullptr) {
-    FB_CUDACHECK(cudaMemcpyAsync(
+    FB_CUDACHECK(CTRAN_CUDA_MEMCPY_ASYNC(
         recvbuff,
         extraCopyBuff,
         sendcount * commTypeSize(datatype) * comm->statex_->nRanks(),
-        cudaMemcpyDefault,
+        CTRAN_CUDA_MEMCPY_DEFAULT,
         stream));
   }
   return commSuccess;

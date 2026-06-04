@@ -5,6 +5,7 @@
 #include <stdlib.h>
 
 #include "comms/ctran/Ctran.h"
+#include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/utils/CtranIpc.h"
 #include "comms/testinfra/TestUtils.h"

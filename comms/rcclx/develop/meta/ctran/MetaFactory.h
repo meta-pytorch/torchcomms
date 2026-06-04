@@ -3,10 +3,14 @@
 #pragma once
 
 #include <memory>
-#include "comms/ctran/CtranComm.h"
 #include "comms/ctran/hints/Hints.h"
 #include "comms/utils/commSpecs.h"
 #include "nccl.h"
+
+class CtranComm;
+namespace ncclx {
+class CommStateX;
+} // namespace ncclx
 
 // Convert commResult_t to ncclResult_t
 ncclResult_t metaCommToNccl(commResult_t result);

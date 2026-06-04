@@ -125,7 +125,10 @@ inline commResult_t ctran::utils::CtranIpcMem::exportSegmentSharedHandle(
     }
   } else if (memType_ == DevMemType::kCudaMalloc) {
     void* p = (void*)pbase_;
-    FB_CUDACHECK(cudaIpcGetMemHandle(&sharedHandles_[segIdx].cudaIpcHandle, p));
+    FB_CUDACHECK(cudaIpcGetMemHandle(
+        reinterpret_cast<cudaIpcMemHandle_t*>(
+            &sharedHandles_[segIdx].cudaIpcHandle),
+        p));
   } else {
     FB_ERRORRETURN(
         commInternalError,
@@ -383,7 +386,10 @@ inline commResult_t CtranIpcMem::tryLoadCudaMallocMem(
   allocHandles_.emplace_back();
   sharedHandles_.emplace_back();
   sharedHandlesInitialized_.emplace_back(false);
-  FB_CUDACHECK(cudaIpcGetMemHandle(&sharedHandles_.back().cudaIpcHandle, p));
+  FB_CUDACHECK(cudaIpcGetMemHandle(
+      reinterpret_cast<cudaIpcMemHandle_t*>(
+          &sharedHandles_.back().cudaIpcHandle),
+      p));
   pbase_ = (CUdeviceptr)p;
   range_ = len;
   segmentRanges_.emplace_back(range_);
@@ -472,7 +478,8 @@ ctran::utils::CtranIpcRemMem::CtranIpcRemMem(
       logMetaData_(logMetaData),
       desc_(desc),
       memType_(ipcDesc.memType),
-      cuMemHandleType_(ipcDesc.cuMemHandleType) {
+      cuMemHandleType_(
+          static_cast<CUmemAllocationHandleType>(ipcDesc.cuMemHandleType)) {
   if (!CtranIpcSupport()) {
     FB_COMMCHECKTHROW_EX_NOCOMM(commInternalError);
   }
@@ -601,7 +608,8 @@ commResult_t CtranIpcRemMem::importCudaMallocMem(const CtranIpcDesc& ipcDesc) {
   void* p = nullptr;
   FB_CUDACHECK(cudaIpcOpenMemHandle(
       &p,
-      ipcDesc.segments[0].sharedHandle.cudaIpcHandle,
+      *reinterpret_cast<const cudaIpcMemHandle_t*>(
+          &ipcDesc.segments[0].sharedHandle.cudaIpcHandle),
       cudaIpcMemLazyEnablePeerAccess));
 
   pbase_ = (CUdeviceptr)p;

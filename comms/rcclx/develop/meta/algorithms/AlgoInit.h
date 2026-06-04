@@ -35,7 +35,7 @@ RCCL_PARAM(
 RCCL_PARAM(EnableDdaAllToAll, "ENABLE_DDA_ALL_TO_ALL", 1);
 RCCL_PARAM(DdaAllToAllMaxBytes, "DDA_ALL_TO_ALL_MAX_BYTES", 2 * 1024 * 1024);
 
-std::unique_ptr<meta::comms::AlgoFactoryDev> initAlgoFactory(ncclComm_t comm) {
+NcclAlgoFactoryDevPtr initAlgoFactory(ncclComm_t comm) {
   // DDA (Direct Device Access) only works for single-node setups where all
   // ranks share the same physical GPUs. Disable it for multi-node
   // configurations.
@@ -55,7 +55,7 @@ std::unique_ptr<meta::comms::AlgoFactoryDev> initAlgoFactory(ncclComm_t comm) {
     return nullptr;
   }
 
-  return std::make_unique<::meta::comms::AlgoFactoryDev>(
+  return NcclAlgoFactoryDevPtr(new ::meta::comms::AlgoFactoryDev(
       std::make_shared<::rcclx::BaselineBootstrap>(comm),
       comm->nRanks,
       comm->rank,
@@ -78,5 +78,5 @@ std::unique_ptr<meta::comms::AlgoFactoryDev> initAlgoFactory(ncclComm_t comm) {
       ::meta::comms::AlgoFactoryDev::AllToAllOptions{
           .enableDda = static_cast<bool>(rcclParamEnableDdaAllToAll()),
           .ddaMaxThresholdBytes =
-              static_cast<int>(rcclParamDdaAllToAllMaxBytes())});
+              static_cast<int>(rcclParamDdaAllToAllMaxBytes())}));
 }

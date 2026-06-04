@@ -26,11 +26,26 @@
 #include "latency_profiler/CollTrace.h"
 #include "rccl_common.h"
 #include "recorder.h"
-#include "comms/common/algorithms/AlgoFactory.cuh"
 #include "meta/lpcoll/low_precision_common.h"
 
-// Meta Ctran lib
-#include "comms/ctran/CtranComm.h"
+#include <memory>
+
+class CtranComm;
+namespace meta::comms {
+class AlgoFactoryDev;
+} // namespace meta::comms
+
+struct NcclAlgoFactoryDevDeleter {
+  void operator()(meta::comms::AlgoFactoryDev* algoFactory) const;
+};
+
+struct NcclCtranCommDeleter {
+  void operator()(CtranComm* ctranComm) const;
+};
+
+using NcclAlgoFactoryDevPtr =
+    std::unique_ptr<meta::comms::AlgoFactoryDev, NcclAlgoFactoryDevDeleter>;
+using NcclCtranCommPtr = std::unique_ptr<CtranComm, NcclCtranCommDeleter>;
 
 #ifdef ENABLE_ROCSHMEM
 #include <rocshmem/rocshmem.hpp>
@@ -743,7 +758,7 @@ struct ncclComm {
   struct ncclIntruQueue<struct ncclCeInitTask, &ncclCeInitTask::next> ceInitTaskQueue;
 
   // Choose custom collective algorithms
-  std::unique_ptr<meta::comms::AlgoFactoryDev> algoFactory{nullptr};
+  NcclAlgoFactoryDevPtr algoFactory{nullptr};
   // buffer registration cache
   struct ncclRegCache regCache;
   int isAllNvlink;
@@ -769,7 +784,7 @@ struct ncclComm {
   // multiProcessorCount from hipDeviceProp_t [RCCL]
   int cuCount;
   // This is the only bridge between ctran and baseline code
-  std::unique_ptr<CtranComm> ctranComm_;
+  NcclCtranCommPtr ctranComm_;
 
 #ifdef ENABLE_ROCSHMEM
   // circular ring buffer in rocshmem symmetric heap

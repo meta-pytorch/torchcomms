@@ -25,9 +25,7 @@
 #include "comms/torchcomms/ncclx/TorchWorkNCCLX.hpp"
 #include "comms/utils/GraphCaptureSideStream.h"
 
-#if defined(ENABLE_PIPES)
 #include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
-#endif
 
 namespace torch::comms {
 
@@ -297,12 +295,10 @@ class TorchCommNCCLX : public TorchCommBackend,
     return device_;
   }
 
-#if defined(ENABLE_PIPES)
   // Get device-allocated transport handle for Triton/CUDA kernels.
   // Returns device pointer as int64 (same pointer on subsequent calls).
   // The handle is freed when TorchCommNCCLX is destroyed.
   int64_t get_device_transport() override;
-#endif
 
  protected:
   // Event management for friend classes
@@ -487,10 +483,8 @@ class TorchCommNCCLX : public TorchCommBackend,
   // Initialize the NcclxCachingAllocatorHook singleton
   void attachMemoryHook();
 
-#if defined(ENABLE_PIPES)
   torchcomms::device::PipesDeviceBackend::TransportHandleDevPtr
       device_transport_handle_;
-#endif
 
   // Member variables
   ncclComm_t nccl_comm_{};

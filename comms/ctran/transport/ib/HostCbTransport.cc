@@ -6,6 +6,7 @@
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Exception.h"
+#include "comms/ctran/utils/PinnedHostPool.h"
 
 namespace ctran::transport::ib {
 
@@ -84,7 +85,11 @@ HostCbTransport::HostCbTransport(
       ctran::utils::commCudaHostAlloc(
           &remoteReady_,
           pipelineDepth_,
+#if defined(__HIP_PLATFORM_AMD__)
+          hipHostMallocDefault,
+#else
           cudaHostAllocDefault,
+#endif
           logMetaData_,
           "HostCbTransport.remoteReady"));
   memset(remoteReady_, 0, pipelineDepth_ * sizeof(uint64_t));
@@ -99,7 +104,11 @@ HostCbTransport::HostCbTransport(
       ctran::utils::commCudaHostAlloc(
           &fetchAddDiscardBuf_,
           1,
+#if defined(__HIP_PLATFORM_AMD__)
+          hipHostMallocDefault,
+#else
           cudaHostAllocDefault,
+#endif
           logMetaData_,
           "HostCbTransport.fetchAddDiscard"));
   *fetchAddDiscardBuf_ = 0;
@@ -188,11 +197,19 @@ HostTransportDev* HostCbTransport::getDeviceTransport() {
   FB_COMMCHECKTHROW_EX_NOCOMM(
       ctran::utils::commCudaMalloc(
           &devTransport_, 1, logMetaData_, "HostCbTransport.devTransport"));
+#if defined(__HIP_PLATFORM_AMD__)
+  FB_CUDACHECKTHROW_EX_NOCOMM(hipMemcpy(
+      devTransport_,
+      &hostCopy,
+      sizeof(HostTransportDev),
+      hipMemcpyHostToDevice));
+#else
   FB_CUDACHECKTHROW_EX_NOCOMM(cudaMemcpy(
       devTransport_,
       &hostCopy,
       sizeof(HostTransportDev),
       cudaMemcpyHostToDevice));
+#endif
 
   return devTransport_;
 }

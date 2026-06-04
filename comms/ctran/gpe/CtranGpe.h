@@ -20,8 +20,13 @@
 #include "comms/ctran/algos/SendRecv/Types.h"
 #include "comms/ctran/algos/common/GpeKernelSync.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
-#include "comms/ctran/utils/PinnedHostPool.h"
+#include "comms/ctran/utils/CudaStreamTypes.h"
+#include "comms/ctran/utils/PinnedHostPoolFwd.h"
 #include "comms/ctran/window/CtranWin.h"
+
+#if defined(__HIP_PLATFORM_AMD__) && !defined(__HIPCC__) && !defined(__global__)
+#define __global__
+#endif
 
 typedef commResult_t (*opFunc)(
     const std::vector<std::unique_ptr<struct OpElem>>& opGroup);

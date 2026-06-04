@@ -8,6 +8,15 @@
 
 namespace ctran::utils::cudagraph {
 
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+inline constexpr auto kStreamCaptureSuccess = hipSuccess;
+inline constexpr auto kStreamCaptureStatusActive = hipStreamCaptureStatusActive;
+#else
+inline constexpr auto kStreamCaptureSuccess = cudaSuccess;
+inline constexpr auto kStreamCaptureStatusActive =
+    cudaStreamCaptureStatusActive;
+#endif
+
 struct StreamCaptureInfo {
   cudaStreamCaptureStatus status;
   unsigned long long id;

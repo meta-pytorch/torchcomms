@@ -1,14 +1,12 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#if defined(ENABLE_PIPES)
-
 #include <cstddef>
 #include "comms/ctran/algos/AllToAll/Types.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
-#include "comms/pipes/DeviceSpan.cuh"
-#include "comms/pipes/Timeout.cuh"
-#include "comms/pipes/Transport.cuh"
-#include "comms/pipes/ll128/Ll128Packet.cuh"
+#include "comms/ctran/prims/DeviceSpan.cuh"
+#include "comms/ctran/prims/Timeout.cuh"
+#include "comms/ctran/prims/Transport.cuh"
+#include "comms/ctran/prims/ll128/Ll128Packet.cuh"
 
 // Compute the exclusive prefix sum of counts[0..rank-1] to get the
 // displacement for the given rank. Each thread computes its own peer's
@@ -27,15 +25,15 @@ computeDisplacement(const int64_t* counts_d, int rank) {
 // Select LL128 or Simple protocol and send data to peer via NVLink.
 template <PipeProtocol Proto>
 __device__ __forceinline__ void send_peer(
-    comms::pipes::Transport& transport,
-    comms::pipes::ThreadGroup& group,
+    ctran::prims::Transport& transport,
+    ctran::prims::ThreadGroup& group,
     const char* src,
     size_t bytes,
     size_t ll128ThresholdBytes,
-    comms::pipes::Timeout timeout) {
+    ctran::prims::Timeout timeout) {
   if constexpr (Proto == PipeProtocol::LL128) {
     bool use_ll128 = (bytes <= ll128ThresholdBytes) &&
-        comms::pipes::can_use_ll128(src, bytes);
+        ctran::prims::can_use_ll128(src, bytes);
     if (use_ll128) {
       transport.p2p_nvl.ll128_send_group(
           group, const_cast<char*>(src), bytes, timeout);
@@ -51,15 +49,15 @@ __device__ __forceinline__ void send_peer(
 // Select LL128 or Simple protocol and receive data from peer via NVLink.
 template <PipeProtocol Proto>
 __device__ __forceinline__ void recv_peer(
-    comms::pipes::Transport& transport,
-    comms::pipes::ThreadGroup& group,
+    ctran::prims::Transport& transport,
+    ctran::prims::ThreadGroup& group,
     char* dst,
     size_t bytes,
     size_t ll128ThresholdBytes,
-    comms::pipes::Timeout timeout) {
+    ctran::prims::Timeout timeout) {
   if constexpr (Proto == PipeProtocol::LL128) {
     bool use_ll128 = (bytes <= ll128ThresholdBytes) &&
-        comms::pipes::can_use_ll128(dst, bytes);
+        ctran::prims::can_use_ll128(dst, bytes);
     if (use_ll128) {
       transport.p2p_nvl.ll128_recv_group(group, dst, bytes, timeout);
     } else {
@@ -85,17 +83,17 @@ __global__ void ncclKernelDeviceAllToAllvPipes(
   // LL128 requires warp-level scheduling; Simple supports both.
   auto group = [&]() {
     if constexpr (Proto == PipeProtocol::LL128) {
-      return comms::pipes::make_warp_group();
+      return ctran::prims::make_warp_group();
     } else {
-      return args.useBlockGroup ? comms::pipes::make_block_group()
-                                : comms::pipes::make_warp_group();
+      return args.useBlockGroup ? ctran::prims::make_block_group()
+                                : ctran::prims::make_warp_group();
     }
   }();
 
   // Timeout for LL128 path (default = no timeout / infinite wait).
   // Harmless for Simple path (send/recv accept optional Timeout with same
   // default).
-  comms::pipes::Timeout timeout{};
+  ctran::prims::Timeout timeout{};
 
   if (nLocalRanks == 1) {
     // Single local rank — self-copy only
@@ -170,5 +168,3 @@ template __global__ void ncclKernelDeviceAllToAllvPipes<PipeProtocol::LL128>(
     int* flag,
     CtranAlgoDeviceState* devState,
     ctran::device_alltoallv_pipes::KernArgs args);
-
-#endif // ENABLE_PIPES

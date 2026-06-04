@@ -1,6 +1,10 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#if defined(__HIP_PLATFORM_AMD__)
+#include <hip/hip_fp16.h>
+#else
 #include <cuda_fp16.h>
+#endif
 #include <cstddef>
 #include <memory>
 
@@ -9,9 +13,18 @@
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/gpe/CtranGpe.h"
+#include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 namespace ctran::alltoall {
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+#define CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE \
+  hipOccupancyMaxPotentialBlockSize
+#else
+#define CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE \
+  cudaOccupancyMaxPotentialBlockSize
+#endif
+
 void* alltoallKerns[commNumTypes] = {
     (void*)ncclKernelAllToAll<int8_t>,
     (void*)ncclKernelAllToAll<uint8_t>,
@@ -71,7 +84,7 @@ commResult_t setupKernelConfig(
   // If first time call, query cuda recommended blockSize
   if (bestThreadBlockSize == 0) {
     int minGridSize = 0;
-    FB_CUDACHECK(cudaOccupancyMaxPotentialBlockSize(
+    FB_CUDACHECK(CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE(
         &minGridSize,
         (int*)&bestThreadBlockSize,
         reinterpret_cast<const void*>(alltoallKerns[datatype]),
@@ -106,4 +119,6 @@ commResult_t setupKernelConfig(
 
   return commSuccess;
 }
+
+#undef CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE
 } // namespace ctran::alltoall

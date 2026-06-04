@@ -11,6 +11,7 @@
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
+#include "comms/ctran/utils/CudaStreamTypes.h"
 #include "comms/utils/TypeUtils.h"
 #include "comms/utils/colltrace/CollRecord.h"
 #include "comms/utils/cvars/nccl_cvars.h"

@@ -19,6 +19,7 @@
 #include "meta/lpcoll/low_precision_reduce_scatter.h"
 #include "meta/lpcoll/p2p_allgather.h"
 #include "meta/relay/sharded_relay_allreduce.h"
+#include "comms/common/algorithms/AlgoFactory.cuh"
 #include "comms/ctran/Ctran.h"
 #include "MetaFactory.h"
 

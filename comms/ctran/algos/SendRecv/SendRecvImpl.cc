@@ -5,6 +5,14 @@ namespace {
 
 unsigned int bestThreadBlockSize = 0;
 
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+#define CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE \
+  hipOccupancyMaxPotentialBlockSize
+#else
+#define CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE \
+  cudaOccupancyMaxPotentialBlockSize
+#endif
+
 inline int getNumGroups(size_t nbytes) {
   // compute needed thread blocks for given bytes
   int nGroups = nbytes / NCCL_CTRAN_NVL_SENDRECV_CHUNK_SIZE;
@@ -18,7 +26,7 @@ inline unsigned int getThreadBlockSize() {
   // If first time call, query cuda recommended blockSize
   if (bestThreadBlockSize == 0) {
     int minGridSize = 0;
-    FB_CUDACHECK(cudaOccupancyMaxPotentialBlockSize(
+    FB_CUDACHECK(CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE(
         &minGridSize,
         (int*)&bestThreadBlockSize,
         reinterpret_cast<const void*>(ncclKernelSendRecv</*UNPACK=*/false>),
@@ -34,6 +42,8 @@ inline unsigned int getThreadBlockSize() {
       ? bestThreadBlockSize
       : NCCL_CTRAN_NVL_SENDRECV_ZCOPY_THREAD_BLOCK_SIZE;
 }
+
+#undef CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE
 
 } // namespace
 

@@ -19,6 +19,12 @@
 #include "comms/ctran/algos/SendRecv/SendRecvImpl.h"
 #include "comms/utils/CudaRAII.h"
 
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+constexpr auto kStreamCaptureModeRelaxed = hipStreamCaptureModeRelaxed;
+#else
+constexpr auto kStreamCaptureModeRelaxed = cudaStreamCaptureModeRelaxed;
+#endif
+
 commResult_t ctranSendRecvCudagraphAware(
     std::deque<OpElem*>& opGroup,
     CtranComm* comm,
@@ -41,8 +47,7 @@ commResult_t ctranSendRecvCudagraphAware(
   // Pre-register all send/recv buffers
   std::vector<std::pair<void*, size_t>> registeredBufs;
   {
-    meta::comms::StreamCaptureModeGuard captureGuard{
-        cudaStreamCaptureModeRelaxed};
+    meta::comms::StreamCaptureModeGuard captureGuard{kStreamCaptureModeRelaxed};
     for (const auto* op : opGroup) {
       if (op->type == OpElem::opType::SEND) {
         const size_t nbytes = op->send.count * commTypeSize(op->send.datatype);

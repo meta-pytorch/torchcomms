@@ -7,6 +7,7 @@
 #include <iostream>
 #include <memory>
 #include "comms/ctran/Ctran.h"
+#include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/testinfra/TestUtils.h"

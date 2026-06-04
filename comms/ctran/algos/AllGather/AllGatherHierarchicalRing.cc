@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#if defined(ENABLE_PIPES)
+#if defined(CTRAN_HAS_PRIMS)
 
 #include <cuda_runtime.h>
 
@@ -14,9 +14,10 @@
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
-#include "comms/pipes/MultiPeerTransport.h"
-#include "comms/pipes/collectives/AllGatherLauncher.h"
-#include "comms/pipes/collectives/RingUtils.h"
+#include "comms/ctran/prims/MultiPeerTransport.h"
+#include "comms/ctran/prims/collectives/AllGatherLauncher.h"
+#include "comms/ctran/prims/collectives/RingUtils.h"
+#include "comms/ctran/utils/Checks.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 
@@ -122,14 +123,14 @@ commResult_t validateHierarchicalRingParams(CtranComm* comm, int numBlocks) {
         nLocalRanks);
     return commInvalidArgument;
   }
-  if (nLocalRanks > comms::pipes::kDirectNvlMaxRanks) {
+  if (nLocalRanks > ctran::prims::kDirectNvlMaxRanks) {
     CLOGF_SUBSYS(
         WARN,
         COLL,
         "AllGather {} nLocalRanks={} exceeds direct NVLink peer capacity {}",
         allGatherAlgoName(myAlgo),
         nLocalRanks,
-        comms::pipes::kDirectNvlMaxRanks);
+        ctran::prims::kDirectNvlMaxRanks);
     return commInvalidArgument;
   }
 
@@ -164,7 +165,7 @@ commResult_t validateHierarchicalRingParams(CtranComm* comm, int numBlocks) {
   auto* mpt = comm->multiPeerTransport_.get();
   const int myNode = statex->node();
   const int localRank = statex->localRank();
-  auto rings = comms::pipes::make_standard_rings(nNodes, myNode, 1);
+  auto rings = ctran::prims::make_standard_rings(nNodes, myNode, 1);
   if (!rings.has_value()) {
     CLOGF_SUBSYS(
         WARN,
@@ -269,8 +270,8 @@ commResult_t ctranAllGatherHierarchicalRing(
 
   if (nRanks == 1) {
     if (sendBytes > 0 && sendbuff != recvbuff) {
-      FB_CUDACHECK(cudaMemcpyAsync(
-          recvbuff, sendbuff, sendBytes, cudaMemcpyDefault, stream));
+      FB_CUDACHECK(CTRAN_CUDA_MEMCPY_ASYNC(
+          recvbuff, sendbuff, sendBytes, CTRAN_CUDA_MEMCPY_DEFAULT, stream));
     }
     comm->ctran_->updateOpCount();
     return commSuccess;
@@ -297,12 +298,12 @@ commResult_t ctranAllGatherHierarchicalRing(
   }
 
   auto* mpt = comm->multiPeerTransport_.get();
-  auto ibRings = comms::pipes::make_standard_rings(nNodes, node, 1);
+  auto ibRings = ctran::prims::make_standard_rings(nNodes, node, 1);
   if (!ibRings.has_value()) {
     return commInvalidArgument;
   }
 
-  comms::pipes::HierarchicalAllgatherLaunchParams params{};
+  ctran::prims::HierarchicalAllgatherLaunchParams params{};
   params.num_ranks = nRanks;
   params.ib_rank = node;
   params.ib_size = nNodes;
@@ -333,7 +334,7 @@ commResult_t ctranAllGatherHierarchicalRing(
       continue;
     }
     const int peerGlobal = statex->localRankToRank(peerLocal);
-    new (&params.nvl_peers[peerLocal]) comms::pipes::P2pNvlTransportDevice(
+    new (&params.nvl_peers[peerLocal]) ctran::prims::P2pNvlTransportDevice(
         mpt->get_p2p_nvl_transport_device(peerGlobal));
   }
 
@@ -362,7 +363,7 @@ commResult_t ctranAllGatherHierarchicalRing(
       sendcount * commTypeSize(datatype));
 
   if (useOverlap) {
-    comms::pipes::HierarchicalAllgatherOverlapLaunchParams overlapParams{};
+    ctran::prims::HierarchicalAllgatherOverlapLaunchParams overlapParams{};
     overlapParams.num_ranks = params.num_ranks;
     overlapParams.ib_rank = params.ib_rank;
     overlapParams.ib_size = params.ib_size;
@@ -389,7 +390,7 @@ commResult_t ctranAllGatherHierarchicalRing(
         continue;
       }
       new (&overlapParams.nvl_peers[peer])
-          comms::pipes::P2pNvlTransportDevice(params.nvl_peers[peer]);
+          ctran::prims::P2pNvlTransportDevice(params.nvl_peers[peer]);
     }
 
     const size_t totalChunks =
@@ -399,10 +400,10 @@ commResult_t ctranAllGatherHierarchicalRing(
         ensureReadyCounterCapacity(comm, readyCounters, overlapParams.stream));
     overlapParams.ready_counters = comm->hierarchicalAgReadyCounters_;
     FB_COMMCHECK(ctran::ctranPreparePipesTrace(comm, overlapParams.trace));
-    comms::pipes::launch_hierarchical_allgather_overlap(overlapParams);
+    ctran::prims::launch_hierarchical_allgather_overlap(overlapParams);
     ctran::ctranEnqueuePipesTraceDrain(comm, overlapParams.stream);
   } else {
-    comms::pipes::launch_hierarchical_allgather_fused(params);
+    ctran::prims::launch_hierarchical_allgather_fused(params);
   }
   FB_CUDACHECK(cudaGetLastError());
 
@@ -414,19 +415,27 @@ commResult_t ctranAllGatherHierarchicalRing(
   return commSuccess;
 }
 
-#else // !ENABLE_PIPES
+#else
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
+#include "comms/utils/logger/LogUtils.h"
+
+static const auto myAlgo = NCCL_ALLGATHER_ALGO::cthierarchical_ring;
 
 commResult_t ctranAllGatherHierarchicalRing(
-    const void* /*sendbuff*/,
-    void* /*recvbuff*/,
-    size_t /*sendcount*/,
-    commDataType_t /*datatype*/,
-    CtranComm* /*comm*/,
-    cudaStream_t /*stream*/) {
-  return commInternalError;
+    const void*,
+    void*,
+    size_t,
+    commDataType_t,
+    CtranComm*,
+    cudaStream_t) {
+  CLOGF_SUBSYS(
+      WARN,
+      COLL,
+      "AllGather {} requires CTRAN prims transport integration, which is not compiled for this platform",
+      allGatherAlgoName(myAlgo));
+  return commInvalidUsage;
 }
 
-#endif // ENABLE_PIPES
+#endif

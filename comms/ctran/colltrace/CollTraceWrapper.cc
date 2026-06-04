@@ -18,6 +18,20 @@
 namespace meta::comms::colltrace {
 
 bool isCapturingStream(cudaStream_t stream) {
+#if defined(__HIP_PLATFORM_AMD__)
+  hipStreamCaptureStatus status;
+  auto res = hipStreamGetCaptureInfo(stream, &status, nullptr);
+
+  if (res != hipSuccess) {
+    XLOG_FIRST_N(
+        WARN,
+        1,
+        fmt::format(
+            "Internal error: hipStreamGetCaptureInfo failed by {}", res));
+    return false;
+  }
+  return status != hipStreamCaptureStatusNone;
+#else
   cudaStreamCaptureStatus status;
 
   // For hipStreamGetCaptureInfo it only takes 3 arguments. Since we don't use
@@ -33,6 +47,7 @@ bool isCapturingStream(cudaStream_t stream) {
     return false;
   }
   return status != cudaStreamCaptureStatusNone;
+#endif
 }
 
 GroupedP2PMetaData getGroupedP2PMetaData(

@@ -143,8 +143,8 @@ commResult_t ctranGet(
       colltraceHandle->trigger(
           CollTraceHandleTriggerState::BeforeEnqueueKernel);
 
-      FB_CUDACHECK(cudaMemcpyAsync(
-          recvBuff, srcPtr, countNbytes, cudaMemcpyDefault, stream));
+      FB_CUDACHECK(CTRAN_CUDA_MEMCPY_ASYNC(
+          recvBuff, srcPtr, countNbytes, CTRAN_CUDA_MEMCPY_DEFAULT, stream));
 
       colltraceHandle->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel);
     }

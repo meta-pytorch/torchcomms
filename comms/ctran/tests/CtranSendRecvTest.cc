@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include "comms/ctran/Ctran.h"
+#include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 
 namespace ctran::testing {

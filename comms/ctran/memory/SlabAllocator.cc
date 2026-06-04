@@ -10,6 +10,14 @@
 
 namespace ncclx::memory {
 
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+constexpr auto kSlabAllocatorStreamCaptureModeRelaxed =
+    hipStreamCaptureModeRelaxed;
+#else
+constexpr auto kSlabAllocatorStreamCaptureModeRelaxed =
+    cudaStreamCaptureModeRelaxed;
+#endif
+
 SlabAllocator::SlabAllocator() {
   if (!ctran::utils::getCuMemSysSupported()) {
     FB_ERRORTHROW_EX_NOCOMM(
@@ -28,7 +36,7 @@ commResult_t SlabAllocator::cuCallocAsync(
   // align allocation size to 16 bytes first, so we make sure startPtr_ is 16
   // bytes aligned
   size_t allocSize = ctran::utils::roundUp(numBytes, kMinAlignSize);
-  cudaStreamCaptureMode mode = cudaStreamCaptureModeRelaxed;
+  cudaStreamCaptureMode mode = kSlabAllocatorStreamCaptureModeRelaxed;
   FB_CUDACHECK(cudaThreadExchangeStreamCaptureMode(&mode));
   FB_COMMCHECK(
       allocateMem(ptr, allocSize, callsite, logMetaData, nullptr, nullptr));

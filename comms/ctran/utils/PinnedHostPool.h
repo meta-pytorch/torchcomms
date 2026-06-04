@@ -12,10 +12,19 @@ using cudaHostAlloc. It is NOT thread-safe.
 #include <vector>
 
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/PinnedHostPoolFwd.h"
 
 #include "comms/utils/CudaRAII.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
+
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+constexpr auto kPinnedHostPoolStreamCaptureModeRelaxed =
+    hipStreamCaptureModeRelaxed;
+#else
+constexpr auto kPinnedHostPoolStreamCaptureModeRelaxed =
+    cudaStreamCaptureModeRelaxed;
+#endif
 
 /*
 PinnedHostItem is the concept/interface for pinned host objects. All pinned host
@@ -27,14 +36,6 @@ reclaimed by the pool.
 - onPop() is called when the object is popped from the pool, it should make the
 object in use.
 */
-template <typename T>
-concept PinnedHostItem = requires(T t) {
-  { t.reset() } -> std::same_as<void>;
-  { T::name() } -> std::same_as<const char*>;
-  { t.inUse() } -> std::same_as<bool>;
-  { t.onPop() } -> std::same_as<void>;
-};
-
 template <PinnedHostItem T>
 class PinnedHostPool {
  public:
@@ -56,7 +57,7 @@ class PinnedHostPool {
           this->inuseItems_.size());
     }
     for (void* chunk : chunks_) {
-      FB_CUDACHECKIGNORE(cudaFreeHost(chunk));
+      FB_CUDACHECKIGNORE(CTRAN_CUDA_FREE_HOST(chunk));
     }
 
     // Do not throw exception in destructor to avoid early termination in stack
@@ -124,11 +125,11 @@ class PinnedHostPool {
  private:
   void allocChunk() {
     meta::comms::StreamCaptureModeGuard captureGuard{
-        cudaStreamCaptureModeRelaxed};
+        kPinnedHostPoolStreamCaptureModeRelaxed};
 
     void* mem = nullptr;
-    FB_CUDACHECKTHROW_EX_NOCOMM(
-        cudaHostAlloc(&mem, chunkSize_ * sizeof(T), cudaHostAllocDefault));
+    FB_CUDACHECKTHROW_EX_NOCOMM(CTRAN_CUDA_HOST_ALLOC(
+        &mem, chunkSize_ * sizeof(T), CTRAN_CUDA_HOST_ALLOC_DEFAULT));
     // Zero-initialize before reset(): cudaHostAlloc does not guarantee zeroed
     // memory when recycling pages from its internal pool. reset() calls
     // resetStatus() which loops `nworkers` times — if nworkers is non-zero

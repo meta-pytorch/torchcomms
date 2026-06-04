@@ -5,7 +5,7 @@
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/mapper/CtranMapper.h"
-#include "comms/ctran/utils/CudaWrap.h"
+#include "comms/ctran/utils/CudaStreamTypes.h"
 
 commResult_t ctranReduceScatterDirect(
     const void* sendbuff,

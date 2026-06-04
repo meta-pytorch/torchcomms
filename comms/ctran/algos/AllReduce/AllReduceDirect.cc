@@ -1,12 +1,17 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#if defined(__HIP_PLATFORM_AMD__)
+#include <hip/hip_fp16.h>
+#else
 #include <cuda_fp16.h>
+#endif
 #include <iostream>
 
 #include "comms/ctran/CtranComm.h"
 
 #include "comms/ctran/algos/AllReduce/AllReduceImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -578,6 +583,12 @@ commResult_t ctranAllReduceDirect(
   int nNodes = statex->nNodes();
   int node = statex->node();
 
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+  constexpr auto kMemcpyDefault = CTRAN_CUDA_MEMCPY_DEFAULT;
+#else
+  constexpr auto kMemcpyDefault = CTRAN_CUDA_MEMCPY_DEFAULT;
+#endif
+
   if (nRanks == 1) {
     // For single-rank comm, allreduce is a no-op if sendbuff == recvbuff
     if (sendbuff == recvbuff) {
@@ -586,8 +597,8 @@ commResult_t ctranAllReduceDirect(
 
     // otherwise, allreduce is just a copy
     size_t size = count * commTypeSize(datatype);
-    FB_CUDACHECK(
-        cudaMemcpyAsync(recvbuff, sendbuff, size, cudaMemcpyDefault, stream));
+    FB_CUDACHECK(CTRAN_CUDA_MEMCPY_ASYNC(
+        recvbuff, sendbuff, size, kMemcpyDefault, stream));
     return commSuccess;
   }
 
@@ -625,8 +636,8 @@ commResult_t ctranAllReduceDirect(
         CtranAlgo::TmpbufType::MIN_REG_SRC_TMPBUF);
     dbuf = comm->ctran_->algo->getTmpBuf(
         CtranAlgo::TmpbufType::MIN_REG_DST_TMPBUF);
-    FB_CUDACHECK(cudaMemcpyAsync(
-        sbuf, sendbuff, count * typeSize, cudaMemcpyDefault, stream));
+    FB_CUDACHECK(CTRAN_CUDA_MEMCPY_ASYNC(
+        sbuf, sendbuff, count * typeSize, kMemcpyDefault, stream));
   }
 
   op = std::unique_ptr<struct OpElem>(
@@ -670,12 +681,20 @@ commResult_t ctranAllReduceDirect(
   config.args.collective.allreduce.kernelElems[static_cast<int>(
       ctran::allreduce::KernElemRole::kRemInterReduce)] = nullptr;
 
-  FB_CUDACHECK(cudaOccupancyMaxPotentialBlockSize(
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+#define CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE \
+  hipOccupancyMaxPotentialBlockSize
+#else
+#define CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE \
+  cudaOccupancyMaxPotentialBlockSize
+#endif
+  FB_CUDACHECK(CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE(
       (int*)&config.numBlocks,
       (int*)&config.numThreads,
       func,
       0 /* dynamicSMemSize */,
       0 /* blockSizeLimit */));
+#undef CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE
   if (config.numBlocks > NCCL_CTRAN_ALLREDUCE_DIRECT_MAX_NUM_THREAD_BLOCKS) {
     config.numBlocks = NCCL_CTRAN_ALLREDUCE_DIRECT_MAX_NUM_THREAD_BLOCKS;
   }
@@ -760,8 +779,8 @@ commResult_t ctranAllReduceDirect(
       std::move(opGroup), impl, config, func, timeout));
 
   if (count * typeSize < CTRAN_MIN_REGISTRATION_SIZE) {
-    FB_CUDACHECK(cudaMemcpyAsync(
-        recvbuff, dbuf, count * typeSize, cudaMemcpyDefault, stream));
+    FB_CUDACHECK(CTRAN_CUDA_MEMCPY_ASYNC(
+        recvbuff, dbuf, count * typeSize, kMemcpyDefault, stream));
   }
 
   return commSuccess;

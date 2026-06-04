@@ -5,6 +5,9 @@
 #include <map>
 #include <mutex>
 
+#if defined(__HIP_PLATFORM_AMD__)
+#include <hip/hip_fp16.h>
+#else
 #include <cuda.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -13,6 +16,7 @@
 #endif
 #if CUDART_VERSION >= 11080
 #include <cuda_fp8.h>
+#endif
 #endif
 
 #include "comms/ctran/CtranComm.h"
@@ -23,6 +27,7 @@
 #include "comms/ctran/algos/AllReduce/Types.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/CtranAlgoConsts.h"
+#include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/utils/CudaUtils.h"
@@ -76,7 +81,11 @@ namespace {
 commResult_t getGpuArch(ctran::allreduce::ring::GpuArch* arch) {
   *arch = ctran::allreduce::ring::GpuArch::Default;
   int cudaDev = 0;
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+  FB_CUDACHECK(hipGetDevice(&cudaDev));
+#else
   FB_CUDACHECK(cudaGetDevice(&cudaDev));
+#endif
   auto cudaArch = ctran::utils::getCudaArch(cudaDev);
   if (!cudaArch.hasValue()) {
     CLOGF(ERR, "{}", cudaArch.error());
@@ -1240,12 +1249,20 @@ static commResult_t impl(
 
 commResult_t
 getNumBlocksAndThreads(int* numBlocks, int* numThreads, const void* func) {
-  FB_CUDACHECK(cudaOccupancyMaxPotentialBlockSize(
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+#define CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE \
+  hipOccupancyMaxPotentialBlockSize
+#else
+#define CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE \
+  cudaOccupancyMaxPotentialBlockSize
+#endif
+  FB_CUDACHECK(CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE(
       numBlocks,
       numThreads,
       func,
       0 /* dynamicSMemSize */,
       0 /* blockSizeLimit */));
+#undef CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE
 
   return commSuccess;
 }

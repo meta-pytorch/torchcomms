@@ -8,6 +8,7 @@
 #include <folly/init/Init.h>
 
 #include "comms/ctran/Ctran.h"
+#include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/utils/Checks.h"

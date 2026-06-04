@@ -2,7 +2,10 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
+#include <deque>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
@@ -10,21 +13,14 @@
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/hints/Hints.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
-#include "comms/ctran/utils/Checks.h"
-#include "comms/ctran/utils/CtranIpc.h"
-#include "comms/ctran/utils/DevMemType.h"
+#include "comms/ctran/utils/DevMemTypeDefs.h"
 #include "comms/ctran/window/Types.h"
-#if defined(ENABLE_PIPES)
-#include "comms/pipes/IbgdaBuffer.h"
-#endif
 
-#if defined(ENABLE_PIPES)
-namespace comms::pipes {
+namespace ctran::prims {
 class DeviceWindow;
 class HostWindow;
 struct WindowConfig;
-} // namespace comms::pipes
-#endif
+} // namespace ctran::prims
 
 namespace ctran {
 struct CtranWin {
@@ -87,28 +83,13 @@ struct CtranWin {
     return opCount;
   }
 
-  inline uint64_t ctranNextWaitSignalVal(int peer) {
-    FB_CHECKTHROW_EX_NOCOMM(
-        peer < signalSize,
-        "peer rank {} exceed window signal buffer size {}",
-        peer,
-        signalSize);
-    return waitSignalVal[peer].fetch_add(1, std::memory_order_relaxed);
-  }
+  uint64_t ctranNextWaitSignalVal(int peer);
 
-  inline uint64_t ctranNextSignalVal(int peer) {
-    FB_CHECKTHROW_EX_NOCOMM(
-        peer < signalSize,
-        "peer rank {} exceed window signal buffer size {}",
-        peer,
-        signalSize);
-    return signalVal[peer].fetch_add(1, std::memory_order_relaxed);
-  }
+  uint64_t ctranNextSignalVal(int peer);
 
   commResult_t allocate(void* userBufPtr = nullptr);
   commResult_t exchange();
 
-#if defined(ENABLE_PIPES)
   // COLLECTIVE on first call: all ranks must call this together.
   // Prerequisite: allocate() and exchange() must have been called first.
   // Registers the window data buffer with pipes' MultiPeerTransport for
@@ -118,16 +99,19 @@ struct CtranWin {
   // @param devWin  Output: populated device-side window handle.
   // @param config  WindowConfig controlling signal/counter/barrier allocation.
   commResult_t getDeviceWin(
-      comms::pipes::DeviceWindow* devWin,
-      const comms::pipes::WindowConfig& config);
+      ctran::prims::DeviceWindow* devWin,
+      const ctran::prims::WindowConfig& config);
 
   // Returns the pipes HostWindow pointer for this window.
   // The caller does not take ownership.
   // Returns nullptr if pipes device window is not initialized.
-  comms::pipes::HostWindow* getPipesHostWindow() const {
+  ctran::prims::HostWindow* getPipesHostWindow() const {
+#if defined(CTRAN_HAS_PRIMS)
     return hostWindow_.get();
-  }
+#else
+    return nullptr;
 #endif
+  }
 
   commResult_t free(bool skipBarrier = false);
 
@@ -176,8 +160,8 @@ struct CtranWin {
   // Actual size allocated for the total buffer per rank in this window
   size_t range_{0};
 
-#if defined(ENABLE_PIPES)
-  std::unique_ptr<comms::pipes::HostWindow> hostWindow_;
+#if defined(CTRAN_HAS_PRIMS)
+  std::unique_ptr<ctran::prims::HostWindow> hostWindow_;
 #endif
 };
 

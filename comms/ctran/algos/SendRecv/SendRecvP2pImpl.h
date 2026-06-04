@@ -6,6 +6,7 @@
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/SendRecv/Types.h"
+#include "comms/ctran/gpe/CtranGpe.h"
 
 namespace ctran::sendrecv {
 

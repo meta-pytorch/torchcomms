@@ -9,6 +9,7 @@
 #include <vector>
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
+#include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/regcache/IpcRegCache.h"
 #include "comms/ctran/regcache/IpcRegCacheBase.h"
 #include "comms/ctran/regcache/RegCache.h"

@@ -4,32 +4,8 @@
 
 #include <cuda.h>
 
+#include "comms/ctran/utils/DevMemTypeDefs.h"
 #include "comms/utils/commSpecs.h"
-
-enum DevMemType {
-  kCudaMalloc = 0,
-  kManaged = 1,
-  kHostPinned = 2,
-  kHostUnregistered = 3,
-  kCumem = 4,
-};
-
-inline const char* devMemTypeStr(DevMemType memType) {
-  switch (memType) {
-    case kCudaMalloc:
-      return "cudaMalloc";
-    case kManaged:
-      return "managed";
-    case kHostPinned:
-      return "hostPinned";
-    case kHostUnregistered:
-      return "hostUnregistered";
-    case kCumem:
-      return "cuMem";
-    default:
-      return "unknown";
-  }
-}
 
 /**
  * Determines the memory type of a given memory address on a specific CUDA

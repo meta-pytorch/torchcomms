@@ -8,6 +8,8 @@
 
 #include <folly/logging/xlog.h>
 
+#include "comms/ctran/gpe/CtranGpe.h"
+#include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/tests/bootstrap/MockBootstrap.h"
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"

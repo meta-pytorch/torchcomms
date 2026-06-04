@@ -7,6 +7,30 @@
 
 namespace {
 
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+using CtranStreamCaptureStatus = hipStreamCaptureStatus;
+constexpr auto kStreamCaptureStatusActive = hipStreamCaptureStatusActive;
+constexpr auto kHostAllocDefault = hipHostMallocDefault;
+
+inline commResult_t streamIsCapturing(
+    cudaStream_t stream,
+    CtranStreamCaptureStatus* status) {
+  FB_CUDACHECK(hipStreamIsCapturing(stream, status));
+  return commSuccess;
+}
+#else
+using CtranStreamCaptureStatus = cudaStreamCaptureStatus;
+constexpr auto kStreamCaptureStatusActive = cudaStreamCaptureStatusActive;
+constexpr auto kHostAllocDefault = cudaHostAllocDefault;
+
+inline commResult_t streamIsCapturing(
+    cudaStream_t stream,
+    CtranStreamCaptureStatus* status) {
+  FB_CUDACHECK(cudaStreamIsCapturing(stream, status));
+  return commSuccess;
+}
+#endif
+
 inline size_t getNumGroups(size_t nbytes) {
   // TODO: copied the same config from NCCL baseline, need further tune for
   // CTRAN
@@ -37,6 +61,13 @@ commResult_t setupP2pKernelConfig(
     const std::vector<OpElem*>& nvlOps,
     KernelConfig& config,
     ctran::sendrecv::KernArgs& kernArgs) {
+#if !defined(CTRAN_HAS_PRIMS)
+  (void)comm;
+  (void)nvlOps;
+  (void)config;
+  (void)kernArgs;
+  return commInvalidUsage;
+#else
   const auto statex = comm->statex_.get();
 
   kernArgs.numSends = 0;
@@ -67,9 +98,9 @@ commResult_t setupP2pKernelConfig(
   // anyway, and there is no limit on the number of ops.
   bool isCapturing = false;
   if (needUseList && config.stream) {
-    cudaStreamCaptureStatus status;
-    FB_CUDACHECK(cudaStreamIsCapturing(config.stream, &status));
-    isCapturing = status == cudaStreamCaptureStatusActive;
+    CtranStreamCaptureStatus status;
+    FB_COMMCHECK(streamIsCapturing(config.stream, &status));
+    isCapturing = status == kStreamCaptureStatusActive;
   }
 
   if (kernArgs.useList = needUseList; needUseList) {
@@ -91,7 +122,7 @@ commResult_t setupP2pKernelConfig(
             ctran::utils::commCudaHostAlloc(
                 &kernArgs.sendsList,
                 numSendOps,
-                cudaHostAllocDefault,
+                kHostAllocDefault,
                 &comm->logMetaData_,
                 "setupP2pKernelConfig"));
       }
@@ -100,7 +131,7 @@ commResult_t setupP2pKernelConfig(
             ctran::utils::commCudaHostAlloc(
                 &kernArgs.recvsList,
                 numRecvOps,
-                cudaHostAllocDefault,
+                kHostAllocDefault,
                 &comm->logMetaData_,
                 "setupP2pKernelConfig"));
       }
@@ -160,6 +191,7 @@ commResult_t setupP2pKernelConfig(
   config.numThreads = NCCL_CTRAN_NVL_SENDRECV_P2P_THREAD_BLOCK_SIZE;
   config.algoArgs = &kernArgs;
   return commSuccess;
+#endif
 }
 
 } // namespace ctran::sendrecv

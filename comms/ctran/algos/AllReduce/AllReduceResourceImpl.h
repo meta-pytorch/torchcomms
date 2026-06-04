@@ -3,7 +3,13 @@
 #pragma once
 #include "comms/ctran/algos/AllReduce/AllReduceNetTypes.h"
 #include "comms/ctran/algos/common/BufManager.h"
-#include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/mapper/CtranMapperTypes.h"
+#include "comms/ctran/utils/CudaStreamTypes.h"
+
+class CtranMapper;
+namespace ncclx {
+class CommStateX;
+} // namespace ncclx
 
 namespace ctran::algos::allreduce {
 enum class AllReduceResourceBufName {

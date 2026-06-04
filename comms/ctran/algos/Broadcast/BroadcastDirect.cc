@@ -7,8 +7,22 @@
 #include "comms/ctran/algos/Broadcast/BroadcastImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/gpe/CtranGpe.h"
+#include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/ExtUtils.h"
 #include "comms/utils/logger/LogUtils.h"
+
+#if defined(__HIP_PLATFORM_AMD__)
+#define CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE \
+  hipOccupancyMaxPotentialBlockSize
+#define CTRAN_MEMCPY_ASYNC CTRAN_CUDA_MEMCPY_ASYNC
+static constexpr auto kMemcpyDefault = CTRAN_CUDA_MEMCPY_DEFAULT;
+#else
+#define CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE \
+  cudaOccupancyMaxPotentialBlockSize
+#define CTRAN_MEMCPY_ASYNC CTRAN_CUDA_MEMCPY_ASYNC
+static constexpr auto kMemcpyDefault = CTRAN_CUDA_MEMCPY_DEFAULT;
+#endif
 
 static unsigned int bestThreadBlockSize = 0;
 static const auto myAlgo = NCCL_BROADCAST_ALGO::ctdirect;
@@ -26,7 +40,7 @@ static inline unsigned int getThreadBlockSize() {
   // If first time call, query cuda recommended blockSize
   if (bestThreadBlockSize == 0) {
     int minGridSize = 0;
-    FB_CUDACHECK(cudaOccupancyMaxPotentialBlockSize(
+    FB_CUDACHECK(CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE(
         &minGridSize,
         (int*)&bestThreadBlockSize,
         reinterpret_cast<const void*>(ncclKernelBroadcast</*UNPACK=*/false>),
@@ -295,8 +309,8 @@ commResult_t ctranBroadcastDirect(
         CtranAlgo::TmpbufType::MIN_REG_SRC_TMPBUF);
     dbuf = comm->ctran_->algo->getTmpBuf(
         CtranAlgo::TmpbufType::MIN_REG_DST_TMPBUF);
-    FB_CUDACHECK(cudaMemcpyAsync(
-        sbuf, sendbuff, count * typeSize, cudaMemcpyDefault, stream));
+    FB_CUDACHECK(CTRAN_MEMCPY_ASYNC(
+        sbuf, sendbuff, count * typeSize, kMemcpyDefault, stream));
   }
 
   op = std::unique_ptr<struct OpElem>(
@@ -329,8 +343,8 @@ commResult_t ctranBroadcastDirect(
 
   if (count * typeSize < CTRAN_MIN_REGISTRATION_SIZE &&
       statex->rank() != root) {
-    FB_CUDACHECK(cudaMemcpyAsync(
-        recvbuff, dbuf, count * typeSize, cudaMemcpyDefault, stream));
+    FB_CUDACHECK(CTRAN_MEMCPY_ASYNC(
+        recvbuff, dbuf, count * typeSize, kMemcpyDefault, stream));
   }
 
   return commSuccess;

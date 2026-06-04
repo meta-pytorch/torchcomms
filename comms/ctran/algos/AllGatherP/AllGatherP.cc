@@ -4,6 +4,7 @@
 #include "comms/ctran/algos/AllGatherP/Types.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/common/GpeKernelSync.h"
+#include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/hints/Hints.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 
@@ -73,12 +74,12 @@ commResult_t AlgoImpl::initResources() {
     CLOGF(
         WARN,
         "initResources: pipeSync already allocated, freeing before realloc");
-    FB_CUDACHECK(cudaFreeHost(resource_.pipeSync));
+    FB_CUDACHECK(CTRAN_CUDA_FREE_HOST(resource_.pipeSync));
     resource_.pipeSync = nullptr;
   }
   void* base = nullptr;
-  FB_CUDACHECK(
-      cudaHostAlloc(&base, sizeof(GpeKernelSync), cudaHostAllocDefault));
+  FB_CUDACHECK(CTRAN_CUDA_HOST_ALLOC(
+      &base, sizeof(GpeKernelSync), CTRAN_CUDA_HOST_ALLOC_DEFAULT));
 
   resource_.pipeSync = reinterpret_cast<GpeKernelSync*>(base);
   new (resource_.pipeSync) GpeKernelSync(1 /* numWorkers */);
@@ -125,7 +126,7 @@ commResult_t AlgoImpl::initialize() {
 
 commResult_t AlgoImpl::destroy() {
   if (resource_.pipeSync) {
-    FB_CUDACHECK(cudaFreeHost(resource_.pipeSync));
+    FB_CUDACHECK(CTRAN_CUDA_FREE_HOST(resource_.pipeSync));
     resource_.pipeSync = nullptr;
   }
   return commSuccess;

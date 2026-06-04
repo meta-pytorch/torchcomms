@@ -11,6 +11,7 @@
 #include <folly/init/Init.h>
 #include <gtest/gtest.h>
 
+#include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranNcclTestUtils.h"
 #include "comms/ctran/tests/cudagraph/CudaGraphTestBuilder.h"

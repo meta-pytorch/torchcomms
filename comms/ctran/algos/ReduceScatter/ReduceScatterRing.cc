@@ -1,11 +1,16 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#if defined(__HIP_PLATFORM_AMD__)
+#include <hip/hip_fp16.h>
+#else
 #include <cuda_fp16.h>
+#endif
 #include <deque>
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/ReduceScatter/ReduceScatterImpl.h"
+#include "comms/ctran/gpe/CtranGpe.h"
 
 CTRAN_DATATYPE_REDOP_TO_FUNC_MAPPER(
     reduceScatterKerns,
@@ -261,10 +266,18 @@ static inline int getNumGroups(size_t count, int nvectors) {
 static unsigned int bestThreadBlockSize = 0;
 
 static inline unsigned int getThreadBlockSize() {
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+#define CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE \
+  hipOccupancyMaxPotentialBlockSize
+#else
+#define CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE \
+  cudaOccupancyMaxPotentialBlockSize
+#endif
+
   // If first time call, query cuda recommended blockSize
   if (bestThreadBlockSize == 0) {
     int minGridSize = 0;
-    FB_CUDACHECK(cudaOccupancyMaxPotentialBlockSize(
+    FB_CUDACHECK(CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE(
         &minGridSize,
         (int*)&bestThreadBlockSize,
         reinterpret_cast<const void*>(
@@ -277,6 +290,8 @@ static inline unsigned int getThreadBlockSize() {
       ? bestThreadBlockSize
       : NCCL_CTRAN_REDUCESCATTER_THREAD_BLOCK_SIZE;
 }
+
+#undef CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE
 
 static inline commResult_t setupPlan(
     CtranComm* comm,

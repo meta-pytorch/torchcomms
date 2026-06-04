@@ -18,12 +18,14 @@
 #include "nccl.h" // @manual
 
 #include "comms/ctran/Ctran.h"
+#include "comms/ctran/window/CtranWin.h"
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/utils/colltrace/CollTrace.h"
 #include "comms/utils/colltrace/tests/nvidia-only/CPUControlledKernel.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/logger/Logger.h"
 #include "meta/commDump.h"
 
 using ::meta::comms::colltrace::CollTraceConfig;

@@ -9,8 +9,7 @@
 #include <sstream>
 
 #include "comms/ctran/backends/CtranAux.h"
-#include "comms/ctran/regcache/IpcRegCacheBase.h"
-#include "comms/ctran/utils/CtranIpc.h"
+#include "comms/ctran/regcache/IpcRegCacheTypes.h"
 
 /**
  * Define all control message types and packet format used in CTran backends.
@@ -66,19 +65,16 @@ struct CtranIbConfig {
  */
 struct ControlMsg {
   int type{ControlMsgType::UNSPECIFIED};
-  union {
-    struct ctran::regcache::IpcDesc ipcDesc;
-    struct ctran::regcache::IpcRelease ipcRls;
-    struct ctran::regcache::IBDesc ibDesc;
-  };
+  struct ctran::regcache::IpcDesc ipcDesc{};
+  struct ctran::regcache::IpcRelease ipcRls{};
+  struct ctran::regcache::IBDesc ibDesc{};
 
   AuxData_t<DefaultAuxType> aux; // Used to store the remote aux data
 
-  ControlMsg() {};
+  ControlMsg() = default;
   ControlMsg(int type) : type(type) {
     setType(type);
   };
-  ~ControlMsg() {};
 
   inline void setType(int newType) {
     type = newType;

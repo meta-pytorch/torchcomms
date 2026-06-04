@@ -1,10 +1,15 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
+#if defined(__HIP_PLATFORM_AMD__)
+#include <hip/hip_fp16.h>
+#else
 #include <cuda_fp16.h>
+#endif
 #include <deque>
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/ReduceScatter/ReduceScatterImpl.h"
+#include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/utils/DevUtils.cuh"
 #include "comms/ctran/utils/ExtUtils.h"
@@ -218,10 +223,18 @@ static inline int getNumGroups(size_t count, int nvectors) {
 static unsigned int bestThreadBlockSize = 0;
 
 static inline unsigned int getThreadBlockSize() {
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+#define CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE \
+  hipOccupancyMaxPotentialBlockSize
+#else
+#define CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE \
+  cudaOccupancyMaxPotentialBlockSize
+#endif
+
   // If first time call, query cuda recommended blockSize
   if (bestThreadBlockSize == 0) {
     int minGridSize = 0;
-    FB_CUDACHECK(cudaOccupancyMaxPotentialBlockSize(
+    FB_CUDACHECK(CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE(
         &minGridSize,
         (int*)&bestThreadBlockSize,
         reinterpret_cast<const void*>(ncclKernelReduceScatterRHD<int, commSum>),
@@ -233,6 +246,8 @@ static inline unsigned int getThreadBlockSize() {
       ? bestThreadBlockSize
       : NCCL_CTRAN_REDUCESCATTER_THREAD_BLOCK_SIZE;
 }
+
+#undef CTRAN_OCCUPANCY_MAX_POTENTIAL_BLOCK_SIZE
 
 static inline commResult_t setupPlan(
     CtranComm* comm,
@@ -357,8 +372,8 @@ commResult_t ctranReduceScatterRHD(
   if (totalBufSize < CTRAN_MIN_REGISTRATION_SIZE) {
     sbuf = comm->ctran_->algo->getTmpBuf(
         CtranAlgo::TmpbufType::MIN_REG_SRC_TMPBUF);
-    FB_CUDACHECK(cudaMemcpyAsync(
-        sbuf, sendbuff, totalBufSize, cudaMemcpyDefault, stream));
+    FB_CUDACHECK(CTRAN_CUDA_MEMCPY_ASYNC(
+        sbuf, sendbuff, totalBufSize, CTRAN_CUDA_MEMCPY_DEFAULT, stream));
   }
 
   if (recvcount * typeSize < CTRAN_MIN_REGISTRATION_SIZE) {
@@ -390,8 +405,12 @@ commResult_t ctranReduceScatterRHD(
   if (dbuf ==
       comm->ctran_->algo->getTmpBuf(
           CtranAlgo::TmpbufType::MIN_REG_DST_TMPBUF)) {
-    FB_CUDACHECK(cudaMemcpyAsync(
-        recvbuff, dbuf, recvcount * typeSize, cudaMemcpyDefault, stream));
+    FB_CUDACHECK(CTRAN_CUDA_MEMCPY_ASYNC(
+        recvbuff,
+        dbuf,
+        recvcount * typeSize,
+        CTRAN_CUDA_MEMCPY_DEFAULT,
+        stream));
   }
 
   return commSuccess;

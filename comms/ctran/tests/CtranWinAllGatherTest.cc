@@ -6,6 +6,8 @@
 #include <folly/init/Init.h>
 
 #include "comms/ctran/Ctran.h"
+#include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/utils/MathUtils.h"
 #include "comms/ctran/window/CtranWin.h"

@@ -21,15 +21,21 @@ class SendRecvP2pTest : public ::testing::Test {
 
  protected:
   void SetUp() override {
+#if !defined(CTRAN_HAS_PRIMS)
+    GTEST_SKIP() << "SendRecv P2P requires CTRAN prims transport integration.";
+#else
     cudaDev = 0;
     ncclCvarInit();
     CUDACHECK_TEST(cudaMalloc(&dummyDevState_d, sizeof(CtranAlgoDeviceState)));
     dummyCommRAII = ctran::createDummyCtranComm();
     dummyComm = dummyCommRAII->ctranComm.get();
+#endif
   }
 
   void TearDown() override {
-    CUDACHECK_TEST(cudaFree(dummyDevState_d));
+    if (dummyDevState_d != nullptr) {
+      CUDACHECK_TEST(cudaFree(dummyDevState_d));
+    }
   }
 
   // Create send/recv ops that trigger the useList path.

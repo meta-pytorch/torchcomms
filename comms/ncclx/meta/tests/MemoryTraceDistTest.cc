@@ -12,6 +12,7 @@
 #include <folly/testing/TestUtil.h>
 
 #include "comms/ctran/Ctran.h"
+#include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/memory/Utils.h"
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"

@@ -22,7 +22,8 @@ commResult_t commitBase(
               __func__));
       break;
     case MemType::kHostPinned:
-      FB_CUDACHECK(cudaHostAlloc(&base.ptr, base.size, cudaHostAllocDefault));
+      FB_CUDACHECK(CTRAN_CUDA_HOST_ALLOC(
+          &base.ptr, base.size, CTRAN_CUDA_HOST_ALLOC_DEFAULT));
       break;
     default:
       break;
@@ -70,7 +71,7 @@ commResult_t releaseBase(
                 {base.memKey}));
         break;
       case MemType::kHostPinned:
-        FB_CUDACHECK(cudaFreeHost(base.ptr));
+        FB_CUDACHECK(CTRAN_CUDA_FREE_HOST(base.ptr));
         break;
       default:
         break;

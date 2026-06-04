@@ -27,6 +27,7 @@
 #include "comms/ctran/transport/IP2pHostTransport.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CtranPerf.h"
+#include "comms/ctran/utils/CudaStreamTypes.h"
 #include "comms/ctran/utils/Exception.h"
 #include "comms/utils/commSpecs.h"
 
@@ -1015,7 +1016,18 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       }
       case CtranMapperRequest::ReqType::COPY:
         if (req->workStream.has_value()) {
-          auto cudaErr = cudaStreamQuery(req->workStream.value());
+#if defined(__HIP_PLATFORM_AMD__)
+          auto cudaErr =
+              hipStreamQuery(static_cast<hipStream_t>(req->workStream.value()));
+          if (cudaErr == hipSuccess) {
+            *isComplete = true;
+          } else if (cudaErr != hipErrorNotReady) {
+            CLOGF(ERR, "CTRAN: hipStreamQuery returned error '{}'", cudaErr);
+            return commSystemError;
+          }
+#else
+          auto cudaErr = cudaStreamQuery(
+              static_cast<cudaStream_t>(req->workStream.value()));
           if (cudaErr == cudaSuccess) {
             *isComplete = true;
           } else if (cudaErr != cudaErrorNotReady) {
@@ -1025,6 +1037,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
                 cudaGetErrorString(cudaErr));
             return commSystemError;
           }
+#endif
         } else {
           *isComplete = true;
         }

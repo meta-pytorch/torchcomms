@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include <cuda.h>
 #include <stdint.h>
 #include "comms/ctran/utils/DevAttribute.h"
 

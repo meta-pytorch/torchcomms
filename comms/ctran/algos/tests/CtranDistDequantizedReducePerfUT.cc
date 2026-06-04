@@ -2,6 +2,7 @@
 
 #include <folly/init/Init.h>
 
+#include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/tests/CtranAlgoDevTestUtils.h"
 #include "comms/ctran/algos/tests/CtranDistAlgoDevPerfUTBase.h"
 

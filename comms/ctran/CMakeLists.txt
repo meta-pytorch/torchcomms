@@ -10,6 +10,36 @@ list(FILTER CTRAN_SOURCES EXCLUDE REGEX ".*/tests/.*")
 list(FILTER CTRAN_SOURCES EXCLUDE REGEX ".*/benchmarks/.*")
 list(FILTER CTRAN_SOURCES EXCLUDE REGEX ".*/examples/.*")
 list(FILTER CTRAN_SOURCES EXCLUDE REGEX ".*/issues/.*")
+list(FILTER CTRAN_SOURCES EXCLUDE REGEX ".*/prims/.*")
+
+set(CTRAN_PRIMS_SOURCES
+    prims/CudaDriverLazy.cc
+    prims/GpuMemHandler.cc
+    prims/MultiPeerNvlTransport.cc
+    prims/MultiPeerTransport.cc
+    prims/PipesTrace.cc
+    prims/IbverbsLazy.cc
+    prims/MultipeerIbgdaTransport.cc
+    prims/TopologyDiscovery.cc
+    prims/window/HostWindow.cc
+    prims/rdma/IbHcaParser.cc
+    prims/rdma/NicDiscovery.cc
+)
+
+set(CTRAN_PRIMS_CUDA_SOURCES
+    prims/collectives/AllGatherLauncher.cu
+    prims/collectives/AllToAllv.cu
+    prims/MultipeerIbgdaTransportCuda.cu
+)
+
+set(CTRAN_PRIMS_LINK_LIBS
+    atomic
+    dl
+    doca_gpunetio
+    ibverbs
+    mlx5
+)
+
 if (NOT DEFINED ENABLE_TCPDM OR NOT ENABLE_TCPDM)
     add_compile_definitions(CTRAN_DISABLE_TCPDM)
     list(FILTER CTRAN_SOURCES EXCLUDE REGEX ".*/ctran/backends/tcpdevmem/.*")
@@ -33,9 +63,13 @@ file(GLOB CTRAN_GENSRC_FILES "${CMAKE_CURRENT_BINARY_DIR}/gensrc/*.cu")
 add_library(ctran OBJECT
   ${CTRAN_GENSRC_FILES}
   ${CTRAN_SOURCES}
+  ${CTRAN_PRIMS_SOURCES}
+  ${CTRAN_PRIMS_CUDA_SOURCES}
 )
 
 target_compile_features(ctran PRIVATE cxx_std_20)
+target_compile_definitions(ctran PUBLIC CTRAN_HAS_PRIMS)
+target_link_libraries(ctran PUBLIC ${CTRAN_PRIMS_LINK_LIBS})
 
 target_compile_options(ctran PRIVATE
     -fPIC

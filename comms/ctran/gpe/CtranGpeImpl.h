@@ -22,6 +22,10 @@
 #include "comms/ctran/utils/PinnedHostPool.h"
 #include "comms/utils/GraphCaptureSideStream.h"
 
+#if defined(__HIP_PLATFORM_AMD__) && !defined(CUDART_CB)
+#define CUDART_CB
+#endif
+
 struct CommLogData;
 
 struct KernelFlagItem {

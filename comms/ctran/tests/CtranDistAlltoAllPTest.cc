@@ -9,6 +9,7 @@
 #include "CtranUtUtils.h"
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/AllToAll/AllToAllPImpl.h"
+#include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/testinfra/TestUtils.h"

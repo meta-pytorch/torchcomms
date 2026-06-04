@@ -16,6 +16,7 @@
 #include "comms/ctran/gpe/CtranGpeImpl.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/Debug.h"
 #include "comms/ctran/utils/Exception.h"
@@ -60,7 +61,8 @@ CtranGpe::Impl::~Impl() = default;
 void OrderedWorkStreamGuard::init(const CommLogData& logMetaData) {
   logMetaData_ = &logMetaData;
   FB_CUDACHECKTHROW_EX(
-      cudaEventCreateWithFlags(&execModeSyncEvent_, cudaEventDisableTiming),
+      CTRAN_CUDA_EVENT_CREATE_WITH_FLAGS(
+          &execModeSyncEvent_, CTRAN_CUDA_EVENT_DISABLE_TIMING),
       logMetaData);
   sideStream_ = std::make_unique<meta::comms::GraphSideStream>();
 }
@@ -69,7 +71,8 @@ OrderedWorkStreamGuard::~OrderedWorkStreamGuard() {
   FB_CHECKABORT(
       logMetaData_ != nullptr,
       "OrderedWorkStreamGuard destroyed without init()");
-  FB_CUDACHECKTHROW_EX(cudaEventDestroy(execModeSyncEvent_), *logMetaData_);
+  FB_CUDACHECKTHROW_EX(
+      CTRAN_CUDA_EVENT_DESTROY(execModeSyncEvent_), *logMetaData_);
 }
 
 OrderedWorkStreamGuard::Scope::Scope(
@@ -169,7 +172,8 @@ void CUDART_CB CtranGpe::Impl::cmdDestroy(void* data) {
 commResult_t OrderedWorkStreamGuard::doAcquire(
     cudaStream_t userStream,
     const utils::cudagraph::StreamCaptureInfo& captureInfo) {
-  const bool isCapturing = captureInfo.status == cudaStreamCaptureStatusActive;
+  const bool isCapturing =
+      captureInfo.status == utils::cudagraph::kStreamCaptureStatusActive;
 
   bool isNewCapture = isCapturing && captureInfo.id != lastCaptureId_;
   if (isNewCapture) {
@@ -178,10 +182,11 @@ commResult_t OrderedWorkStreamGuard::doAcquire(
   }
 
   auto doWait = [&]() -> commResult_t {
-    FB_CUDACHECK(cudaStreamWaitEvent(
+    FB_CUDACHECK(CTRAN_CUDA_STREAM_WAIT_EVENT(
         userStream,
         execModeSyncEvent_,
-        isCapturing ? cudaEventWaitExternal : cudaEventWaitDefault));
+        isCapturing ? CTRAN_CUDA_EVENT_WAIT_EXTERNAL
+                    : CTRAN_CUDA_EVENT_WAIT_DEFAULT));
     return commSuccess;
   };
 
@@ -200,7 +205,7 @@ commResult_t OrderedWorkStreamGuard::doAcquire(
       // has fired before the caller can cmdEnqueue. Without this, the eager
       // command lands in the GPE queue first and the single-threaded GPE
       // deadlocks.
-      FB_CUDACHECK(cudaEventSynchronize(execModeSyncEvent_));
+      FB_CUDACHECK(CTRAN_CUDA_EVENT_SYNCHRONIZE(execModeSyncEvent_));
     } else if (userStream != lastUserStream_) {
       // Cross-stream eager, no graphs: GPU-side ordering only.
       // We don't make any thread-safety guarantees for submit()
@@ -216,7 +221,7 @@ commResult_t OrderedWorkStreamGuard::doAcquire(
     // explicit graph edge, since cudaStreamWaitEvent cannot see RECORD
     // nodes added via cudaGraphAddEventRecordNode.
 #if defined(__HIP_PLATFORM_AMD__)
-    FB_CUDACHECK(cudaStreamUpdateCaptureDependencies(
+    FB_CUDACHECK(hipStreamUpdateCaptureDependencies(
         userStream, &lastRecordNode_, 1, hipStreamAddCaptureDependencies));
 #elif CUDART_VERSION >= 13000
     FB_CUDACHECK(cudaStreamUpdateCaptureDependencies(
@@ -237,10 +242,11 @@ commResult_t OrderedWorkStreamGuard::doAcquire(
 commResult_t OrderedWorkStreamGuard::doRelease(
     cudaStream_t userStream,
     const utils::cudagraph::StreamCaptureInfo& captureInfo) {
-  const bool isCapturing = captureInfo.status == cudaStreamCaptureStatusActive;
+  const bool isCapturing =
+      captureInfo.status == utils::cudagraph::kStreamCaptureStatusActive;
 
   if (!isCapturing) {
-    FB_CUDACHECK(cudaEventRecord(execModeSyncEvent_, userStream));
+    FB_CUDACHECK(CTRAN_CUDA_EVENT_RECORD(execModeSyncEvent_, userStream));
   } else {
     // Route the external EVENT_RECORD node onto a side stream so its
     // release fence doesn't stall unrelated work on userStream between
@@ -290,7 +296,8 @@ commResult_t CtranGpe::Impl::submit(
   FB_CUDACHECK(
       utils::cudagraph::getStreamCaptureInfo(
           kernelConfig.stream, streamCaptureInfo));
-  bool isCapturing = streamCaptureInfo.status == cudaStreamCaptureStatusActive;
+  bool isCapturing =
+      streamCaptureInfo.status == utils::cudagraph::kStreamCaptureStatusActive;
 
   // For eager (non-capture) submits with empty opGroup but a
   // postKernelCleanup, we still need a cmd + kernelFlag so the GPE thread
@@ -524,14 +531,14 @@ commResult_t CtranGpe::Impl::submit(
         ? kernelConfig.dynamicSharedMemBytes
         : sizeof(CtranAlgoDeviceState);
     FB_CUDACHECKGOTO(
-        cudaFuncSetAttribute(
+        CTRAN_CUDA_FUNC_SET_ATTRIBUTE(
             ncclKernel,
-            cudaFuncAttributeMaxDynamicSharedMemorySize,
+            CTRAN_CUDA_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_MEMORY_SIZE,
             sharedMemBytes),
         res,
         fail);
     FB_CUDACHECKGOTO(
-        cudaLaunchKernel(
+        CTRAN_CUDA_LAUNCH_KERNEL(
             ncclKernel,
             grid,
             blocks,
@@ -554,14 +561,14 @@ commResult_t CtranGpe::Impl::submit(
       void* kernelFn =
           reinterpret_cast<void*>(checksumKernel<CHECKSUM_NUM_THREAD>);
       auto checksumGrid = getChecksumGrid(checksumArgs.value().size);
-      auto res = cudaLaunchKernel(
+      auto res = CTRAN_CUDA_LAUNCH_KERNEL(
           kernelFn,
           checksumGrid,
           CHECKSUM_NUM_THREAD,
           args.data(),
           0,
           launchStream);
-      if (res != cudaSuccess && checksumItem != nullptr) {
+      if (res != CTRAN_CUDA_SUCCESS && checksumItem != nullptr) {
         // Do not return error if the internal checksum fails
         CLOGF(WARN, "CTranGPE: Failed to launch checksum kernel");
         checksumItem->reset();
@@ -716,7 +723,7 @@ void CtranGpe::Impl::gpeThreadFn() {
       __func__);
 
   CTRAN_ASYNC_ERR_GUARD(comm->getAsyncError(), {
-    FB_CUDACHECKTHROW_EX(cudaSetDevice(cudaDev), comm->logMetaData_);
+    FB_CUDACHECKTHROW_EX(CTRAN_CUDA_SET_DEVICE(cudaDev), comm->logMetaData_);
 
     while (1) {
       auto cmd = cmdDequeue();
@@ -1092,10 +1099,10 @@ void KernelElem::wait(std::shared_ptr<ctran::utils::Abort> abort, int groupId) {
 }
 
 KernelElemPool::KernelElemPool(size_t capacity) : capacity_(capacity) {
-  FB_CUDACHECKTHROW_EX_NOCOMM(cudaHostAlloc(
+  FB_CUDACHECKTHROW_EX_NOCOMM(CTRAN_CUDA_HOST_ALLOC(
       &this->memPtr_,
       this->capacity_ * sizeof(struct KernelElem),
-      cudaHostAllocDefault));
+      CTRAN_CUDA_HOST_ALLOC_DEFAULT));
 
   for (int i = 0; i < capacity_; ++i) {
     KernelElem* workElem = reinterpret_cast<KernelElem*>(this->memPtr_) + i;
@@ -1113,7 +1120,7 @@ KernelElemPool::~KernelElemPool() {
         "CTRAN-GPE: Internal KernelElem pool has {} inuse elements",
         this->inuseWorkElems_.size());
   }
-  FB_CUDACHECKIGNORE(cudaFreeHost(this->memPtr_));
+  FB_CUDACHECKIGNORE(CTRAN_CUDA_FREE_HOST(this->memPtr_));
 
   // Dot not throw exception in destructor to avoid early termination in stack
   // unwind. See discussion in

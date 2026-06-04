@@ -4,19 +4,20 @@
 #include <fmt/format.h>
 #include <chrono>
 #include <cstddef>
+#include <optional>
 #include <vector>
 
 #include "comms/ctran/backends/CtranAux.h"
 #include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/ib/CtranIbBase.h"
 #include "comms/ctran/backends/socket/CtranSocketBase.h"
-#include "comms/ctran/regcache/IpcRegCacheBase.h"
+#include "comms/ctran/regcache/IpcRegCacheTypes.h"
 #include "comms/utils/commSpecs.h"
 
 #ifdef CTRAN_DISABLE_TCPDM
 #include "comms/ctran/backends/mock/CtranTcpDmBaseMock.h"
 #else
-#include "comms/ctran/backends/tcpdevmem/CtranTcpDmBase.h"
+#include "comms/ctran/backends/tcpdevmem/CtranTcpDmTypes.h"
 #endif
 
 using CtranMapperBackend = meta::comms::CommBackend;
@@ -220,8 +221,9 @@ class CtranMapperRequest {
     INCOMPLETE,
     COMPLETE,
   } state_{INCOMPLETE};
-  // stream this request is associated with
-  std::optional<cudaStream_t> workStream;
+  // Opaque CUDA/HIP stream associated with COPY requests. Keep this header
+  // independent of CUDA/HIP runtime typedefs; cast at the API boundary.
+  std::optional<void*> workStream;
 };
 
 struct CtranMapperPutMsg {

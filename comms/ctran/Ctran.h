@@ -4,22 +4,27 @@
 #define CTRAN_COMM_H_
 
 #include <chrono>
+#include <deque>
 #include <memory>
 #include <optional>
+#include <string>
+#include <unordered_map>
 
 #include "comms/ctran/interfaces/ICtran.h"
 
-#include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/ctran/CtranComm.h"
-#include "comms/ctran/algos/CtranAlgo.h"
-#include "comms/ctran/commstate/CommStateX.h"
-#include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/hints/Hints.h"
-#include "comms/ctran/mapper/CtranMapper.h"
-#include "comms/ctran/memory/memCacheAllocator.h"
+#include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/ctran/profiler/Profiler.h"
-#include "comms/ctran/window/CtranWin.h"
+#include "comms/ctran/utils/CudaStreamTypes.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+
+struct OpElem;
+class CtranPersistentRequest;
+
+namespace ctran {
+struct CtranWin;
+} // namespace ctran
 
 class Ctran : public ICtran {
  public:

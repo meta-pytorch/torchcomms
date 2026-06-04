@@ -6,6 +6,7 @@
 #include "comms/ctran/tests/CtranNcclTestUtils.h"
 
 #include "comms/ctran/Ctran.h"
+#include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
 

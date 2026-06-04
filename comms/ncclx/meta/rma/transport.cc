@@ -1,13 +1,13 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 // Pipes transport API implementations (non-window transport operations).
 
-#if defined(ENABLE_PIPES)
-
 #include "checks.h"
 #include "comm.h"
 #include "comms/ctran/Ctran.h"
-#include "comms/pipes/MultiPeerDeviceHandle.cuh"
-#include "comms/pipes/MultiPeerTransport.h"
+#if defined(CTRAN_HAS_PRIMS)
+#include "comms/ctran/prims/MultiPeerDeviceHandle.cuh"
+#include "comms/ctran/prims/MultiPeerTransport.h"
+#endif
 
 #include "nccl.h"
 
@@ -38,6 +38,11 @@ ncclResult_t ncclGetMultiPeerDeviceHandle(
     return ncclInternalError;
   }
 
+#if !defined(CTRAN_HAS_PRIMS)
+  WARN(
+      "ncclGetMultiPeerDeviceHandle: CTRAN prims transport integration is not compiled for this platform");
+  return ncclInternalError;
+#else
   auto* mpt = comm->ctranComm_->multiPeerTransport_.get();
   if (mpt == nullptr) {
     WARN(
@@ -53,6 +58,5 @@ ncclResult_t ncclGetMultiPeerDeviceHandle(
   *outNumNvlPeers = handle.numNvlPeers;
   *outNumIbPeers = handle.numIbPeers;
   return ncclSuccess;
+#endif
 }
-
-#endif // ENABLE_PIPES

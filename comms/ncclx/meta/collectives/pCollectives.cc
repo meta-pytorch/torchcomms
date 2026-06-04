@@ -4,6 +4,9 @@
 #include "nccl.h"
 
 #include "comms/ctran/Ctran.h"
+#include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/ExtUtils.h"
 #include "comms/utils/checks.h"
 
 #include "meta/wrapper/MetaFactory.h"

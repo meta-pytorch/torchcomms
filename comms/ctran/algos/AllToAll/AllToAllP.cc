@@ -2,6 +2,7 @@
 
 #include "comms/ctran/algos/AllToAll/AllToAllPImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/utils/logger/LogUtils.h"
 
 using ctran::alltoallp::AlgoImpl;

@@ -1,12 +1,17 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#if defined(__HIP_PLATFORM_AMD__)
+#include <hip/hip_fp16.h>
+#else
 #include <cuda_fp16.h>
+#endif
 #include <cstddef>
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllToAll/AllToAllvImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/gpe/CtranGpe.h"
+#include "comms/ctran/mapper/CtranMapper.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"

@@ -41,11 +41,23 @@ std::unordered_map<KernelConfig::KernelType, void*> kernelFns = {
      reinterpret_cast<void*>(ncclKernelRecv</*UNPACK=*/true>)},
     {KernelConfig::KernelType::SENDRECV_UNPACK,
      reinterpret_cast<void*>(ncclKernelSendRecv</*UNPACK=*/true>)},
+#if defined(CTRAN_HAS_PRIMS)
     {KernelConfig::KernelType::SENDRECV_P2P,
      reinterpret_cast<void*>(ncclKernelSendRecvP2p)},
+#endif
 };
 
 static const auto myAlgo = NCCL_SENDRECV_ALGO::ctran;
+
+namespace {
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+constexpr auto kStreamCaptureSuccess = hipSuccess;
+constexpr auto kStreamCaptureStatusActive = hipStreamCaptureStatusActive;
+#else
+constexpr auto kStreamCaptureSuccess = cudaSuccess;
+constexpr auto kStreamCaptureStatusActive = cudaStreamCaptureStatusActive;
+#endif
+} // namespace
 
 bool ctranSendRecvSupport(
     int peer,
@@ -55,6 +67,18 @@ bool ctranSendRecvSupport(
   if (!ctranInitialized(comm)) {
     return false;
   }
+
+#if !defined(CTRAN_HAS_PRIMS)
+  if (algo == NCCL_SENDRECV_ALGO::ctp2p ||
+      algo == NCCL_SENDRECV_ALGO::ctgraph) {
+    CLOGF_SUBSYS(
+        INFO,
+        COLL,
+        "SendRecv {} requires CTRAN prims transport integration, which is not compiled for this platform",
+        algo == NCCL_SENDRECV_ALGO::ctp2p ? "ctp2p" : "ctgraph");
+    return false;
+  }
+#endif
 
   const auto statex = comm->statex_.get();
 
@@ -70,8 +94,8 @@ bool ctranSendRecvSupport(
     ctran::utils::cudagraph::StreamCaptureInfo captureInfo;
     auto err =
         ctran::utils::cudagraph::getStreamCaptureInfo(stream, captureInfo);
-    if (err != cudaSuccess ||
-        captureInfo.status != cudaStreamCaptureStatusActive) {
+    if (err != kStreamCaptureSuccess ||
+        captureInfo.status != kStreamCaptureStatusActive) {
       CLOGF_SUBSYS(
           INFO,
           COLL,
@@ -155,6 +179,14 @@ commResult_t ctranGroupEndHookImpl(
     std::deque<OpElem*>& opGroup,
     enum NCCL_SENDRECV_ALGO algo,
     std::optional<std::chrono::milliseconds> timeout) {
+#if !defined(CTRAN_HAS_PRIMS)
+  if (algo == NCCL_SENDRECV_ALGO::ctp2p) {
+    FB_ERRORRETURN(
+        commInvalidUsage,
+        "SendRecv ctp2p requires CTRAN prims transport integration, which is not compiled for this platform");
+  }
+#endif
+
   // By default, use zero-copy kernel for sendrecv.
   if (algo == NCCL_SENDRECV_ALGO::ctran) {
     algo = NCCL_SENDRECV_ALGO::ctzcopy;
@@ -300,12 +332,19 @@ commResult_t ctranGroupEndHook(
   if (CtranOpGroup.empty()) {
     return commSuccess;
   }
+#if !defined(CTRAN_HAS_PRIMS)
+  if (algo == NCCL_SENDRECV_ALGO::ctgraph) {
+    FB_ERRORRETURN(
+        commInvalidUsage,
+        "SendRecv ctgraph requires CTRAN prims transport integration, which is not compiled for this platform");
+  }
+#endif
   if (algo == NCCL_SENDRECV_ALGO::ctgraph) {
     cudaStream_t stream = CtranOpGroup.front()->stream;
     ctran::utils::cudagraph::StreamCaptureInfo captureInfo;
     FB_CUDACHECK(
         ctran::utils::cudagraph::getStreamCaptureInfo(stream, captureInfo));
-    if (captureInfo.status == cudaStreamCaptureStatusActive) {
+    if (captureInfo.status == kStreamCaptureStatusActive) {
       return ctranSendRecvCudagraphAware(
           CtranOpGroup, CtranOpGroup.front()->comm_, stream, timeout);
     }

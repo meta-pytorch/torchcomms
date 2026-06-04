@@ -296,7 +296,7 @@ enum doca_verbs_qp_send_dbr_mode {
  * inert OR's that pass the validity check. The companion shim
  * `doca_verbs_v2_30_shim.cpp` provides stub setters that make the build link.
  * Net runtime effect: NCCLX 2.30 silently uses MLX5 driver defaults for
- * max_(dest_)?rd_atomic. Restore to (1 << 16) and (1 << 17) when comms/pipes
+ * max_(dest_)?rd_atomic. Restore to (1 << 16) and (1 << 17) when comms/ctran/prims
  * migrates off the shared 2.x doca-gpunetio shim and v2_30+ links a real DOCA 3.x.
  */
 #define DOCA_VERBS_QP_ATTR_MAX_QP_RD_ATOMIC 0

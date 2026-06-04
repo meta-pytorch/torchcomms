@@ -4,7 +4,14 @@
 #include <sstream>
 #include "comms/ctran/algos/AllReduce/AllReduceDevTypes.h"
 #include "comms/ctran/algos/AllReduce/AllReduceNetTypes.h"
+#include "comms/ctran/commstate/CommStateX.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+constexpr auto kMemcpyHostToDevice = CTRAN_CUDA_MEMCPY_HOST_TO_DEVICE;
+#else
+constexpr auto kMemcpyHostToDevice = CTRAN_CUDA_MEMCPY_HOST_TO_DEVICE;
+#endif
 
 #define SET_BUFF(bufMngr_, memType, bufName)                          \
   {                                                                   \
@@ -213,11 +220,11 @@ commResult_t AllReduceResourceImpl::initAllReduceDirectResourceAsync(
           (ctran::algos::MPSCTbSync<1>*)localCompleteFlags.ptr +
           i * nLocalRanks + peer;
       auto tmpLocalComplete = std::make_unique<ctran::algos::MPSCTbSync<1>>(1);
-      FB_CUDACHECK(cudaMemcpyAsync(
+      FB_CUDACHECK(CTRAN_CUDA_MEMCPY_ASYNC(
           localComplete,
           tmpLocalComplete.get(),
           sizeof(ctran::algos::MPSCTbSync<1>),
-          cudaMemcpyHostToDevice,
+          kMemcpyHostToDevice,
           stream));
 
       auto remotePost =
@@ -232,11 +239,11 @@ commResult_t AllReduceResourceImpl::initAllReduceDirectResourceAsync(
           (ctran::algos::MPSCTbSync<1>*)localPostFlags.ptr + i * nLocalRanks +
           peer;
       auto tmpLocalPost = std::make_unique<ctran::algos::MPSCTbSync<1>>(1);
-      FB_CUDACHECK(cudaMemcpyAsync(
+      FB_CUDACHECK(CTRAN_CUDA_MEMCPY_ASYNC(
           localPost,
           tmpLocalPost.get(),
           sizeof(ctran::algos::MPSCTbSync<1>),
-          cudaMemcpyHostToDevice,
+          kMemcpyHostToDevice,
           stream));
       ctran::algos::MPSCTbSync<1>* remoteComplete =
           (ctran::algos::MPSCTbSync<1>*)remoteCompleteFlags[peer].ptr +
@@ -254,11 +261,11 @@ commResult_t AllReduceResourceImpl::initAllReduceDirectResourceAsync(
           CTRAN_ALLREDUCE_BUFF_SIZE / CTRAN_ALLREDUCE_STEPS;
     }
     AllReduceDevConn* currDevPeer = devPeers + i * statex_->nRanks();
-    FB_CUDACHECK(cudaMemcpyAsync(
+    FB_CUDACHECK(CTRAN_CUDA_MEMCPY_ASYNC(
         currDevPeer,
         devConns.data(),
         devConns.size() * sizeof(AllReduceDevConn),
-        cudaMemcpyHostToDevice,
+        kMemcpyHostToDevice,
         stream));
     std::vector<AllReduceDevConn*> hostPointerArray(nRanks);
     for (auto r = 0; r < nRanks; r++) {
@@ -267,11 +274,11 @@ commResult_t AllReduceResourceImpl::initAllReduceDirectResourceAsync(
 
     AllReduceDevConn** currPeer = localPeerStructures + i * statex_->nRanks();
 
-    FB_CUDACHECK(cudaMemcpyAsync(
+    FB_CUDACHECK(CTRAN_CUDA_MEMCPY_ASYNC(
         currPeer,
         hostPointerArray.data(),
         hostPointerArray.size() * sizeof(AllReduceDevConn*),
-        cudaMemcpyHostToDevice,
+        kMemcpyHostToDevice,
         stream));
     commChannels->blocks[i].peers = currPeer;
   }
@@ -281,11 +288,11 @@ commResult_t AllReduceResourceImpl::initAllReduceDirectResourceAsync(
   ref_.allReduceComms = reinterpret_cast<AllReduceComm*>(reduceCommBuf.ptr);
 
   // Copy the CtranDevChannel structure directly to the channel field
-  FB_CUDACHECK(cudaMemcpyAsync(
+  FB_CUDACHECK(CTRAN_CUDA_MEMCPY_ASYNC(
       ref_.allReduceComms,
       commChannels.get(),
       sizeof(AllReduceComm),
-      cudaMemcpyHostToDevice,
+      kMemcpyHostToDevice,
       stream));
 
   return commSuccess;

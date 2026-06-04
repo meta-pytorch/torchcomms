@@ -10,6 +10,7 @@
 #include <memory>
 #include <vector>
 #include "comms/ctran/Ctran.h"
+#include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"

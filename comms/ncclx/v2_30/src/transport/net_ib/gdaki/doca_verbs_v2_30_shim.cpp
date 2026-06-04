@@ -18,11 +18,11 @@
 // Net runtime effect: NCCLX 2.30 silently uses the MLX5 driver default
 // for `max_rd_atomic` / `max_dest_rd_atomic` (typically 1). This is a
 // known performance trade-off, accepted because NCCLX 2.30 is not yet in
-// active use; the long-term fix is for `comms/pipes` to migrate off the
+// active use; the long-term fix is for `comms/ctran/prims` to migrate off the
 // shared 2.x doca-gpunetio shim layer so v2_30+ can consume a real DOCA
 // 3.x prebuilt that supplies these symbols natively.
 //
-// DELETE THIS SHIM once `comms/pipes` migrates off `doca_gpunetio_dl`
+// DELETE THIS SHIM once `comms/ctran/prims` migrates off `doca_gpunetio_dl`
 // AND v2_30+ NCCLX can link against a 3.x doca verbs library.
 
 #include <stddef.h>

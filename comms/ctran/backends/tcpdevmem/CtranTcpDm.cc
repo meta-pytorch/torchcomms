@@ -3,6 +3,9 @@
 #include "comms/ctran/backends/tcpdevmem/CtranTcpDmSingleton.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/Debug.h"
+#if !defined(__HIP_PLATFORM_AMD__)
+#include "comms/ctran/utils/CudaWrap.h"
+#endif
 #include "comms/utils/StrUtils.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/logger/LogUtils.h"
@@ -10,6 +13,18 @@
 #include "folly/synchronization/CallOnce.h"
 
 namespace ctran {
+
+namespace {
+
+int getTcpDmDmaBufFd(const void* buf, const size_t len) {
+#if defined(__HIP_PLATFORM_AMD__)
+  return -1;
+#else
+  return ctran::utils::getCuMemDmaBufFd(buf, len);
+#endif
+}
+
+} // namespace
 
 #define COMMCHECK_TCP(cmd)                                            \
   do {                                                                \
@@ -22,6 +37,32 @@ namespace ctran {
       return commInvalidArgument;                                     \
     }                                                                 \
   } while (0)
+
+bool CtranTcpDmRequest::isComplete() {
+  if (request_ == nullptr) {
+    // Pending irecv where sender has not been connected yet or send/recv
+    // control.
+    return done_;
+  }
+
+  // Can't access request after testRequest for send requests.
+  bool isRecv = request_->getOp() == ::comms::tcp_devmem::RequestOp::Recv;
+
+  int requestDone = 0;
+  COMMCHECKTHROW(transport_->testRequest(request_, &requestDone, nullptr));
+  if (requestDone) {
+    done_ = true;
+
+    if (isRecv) {
+      // For receive, after testRequest signals request completion, the callers
+      // should let the plugin know when the bounce buffer is safe to be reused.
+      // With CTRAN, the plugin drives unpack, so reuse is safe immediately.
+      COMMCHECKTHROW(transport_->consumedRequest(request_));
+    }
+  }
+
+  return done_;
+}
 
 void CtranTcpDm::bootstrapPrepare(meta::comms::IBootstrap* bootstrap) {
   folly::SocketAddress ifAddrSockAddr;
@@ -242,7 +283,7 @@ commResult_t CtranTcpDm::regMem(
 
   auto dev = transport->getDeviceFor(cudaDev);
 
-  int dmabufFd = ctran::utils::getCuMemDmaBufFd(buf, len);
+  int dmabufFd = getTcpDmDmaBufFd(buf, len);
   ::comms::tcp_devmem::MemHandleInterface* mhandle = nullptr;
   if (dmabufFd < 0) {
     COMMCHECK_TCP(transport->regMr(dev, (void*)buf, len, &mhandle));

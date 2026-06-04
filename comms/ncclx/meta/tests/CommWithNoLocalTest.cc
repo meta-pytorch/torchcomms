@@ -15,6 +15,7 @@
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/interfaces/ICtran.h"
+#include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 

@@ -12,6 +12,71 @@
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/logger/LogUtils.h"
 
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+#ifndef cudaMemcpyDefault
+#define cudaMemcpyDefault hipMemcpyDefault
+#endif
+#ifndef cudaOccupancyMaxPotentialBlockSize
+#define cudaOccupancyMaxPotentialBlockSize hipOccupancyMaxPotentialBlockSize
+#endif
+#ifndef cudaStreamCaptureModeRelaxed
+#define cudaStreamCaptureModeRelaxed hipStreamCaptureModeRelaxed
+#endif
+#define CTRAN_CUDA_MEMCPY_ASYNC hipMemcpyAsync
+#define CTRAN_CUDA_MEMCPY hipMemcpy
+#define CTRAN_CUDA_MEMCPY_DEFAULT hipMemcpyDefault
+#define CTRAN_CUDA_MEMCPY_DEVICE_TO_HOST hipMemcpyDeviceToHost
+#define CTRAN_CUDA_MEMCPY_HOST_TO_DEVICE hipMemcpyHostToDevice
+#define CTRAN_CUDA_HOST_ALLOC hipHostMalloc
+#define CTRAN_CUDA_HOST_ALLOC_DEFAULT hipHostMallocDefault
+#define CTRAN_CUDA_FREE_HOST hipFreeHost
+#define CTRAN_CUDA_SUCCESS hipSuccess
+#define CTRAN_CUDA_EVENT_CREATE_WITH_FLAGS hipEventCreateWithFlags
+#define CTRAN_CUDA_EVENT_DISABLE_TIMING hipEventDisableTiming
+#define CTRAN_CUDA_EVENT_DESTROY hipEventDestroy
+#define CTRAN_CUDA_EVENT_RECORD hipEventRecord
+#define CTRAN_CUDA_EVENT_SYNCHRONIZE hipEventSynchronize
+#define CTRAN_CUDA_EVENT_WAIT_DEFAULT hipEventWaitDefault
+#define CTRAN_CUDA_EVENT_WAIT_EXTERNAL hipEventWaitExternal
+#define CTRAN_CUDA_STREAM_WAIT_EVENT hipStreamWaitEvent
+#define CTRAN_CUDA_FUNC_SET_ATTRIBUTE hipFuncSetAttribute
+#define CTRAN_CUDA_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_MEMORY_SIZE \
+  hipFuncAttributeMaxDynamicSharedMemorySize
+#define CTRAN_CUDA_LAUNCH_KERNEL hipLaunchKernel
+#define CTRAN_CUDA_SET_DEVICE hipSetDevice
+#define CTRAN_CUDA_DEVICE_GET_ATTRIBUTE hipDeviceGetAttribute
+#define CTRAN_CUDA_DEV_ATTR_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN \
+  hipDeviceAttributeSharedMemPerBlockOptin
+#define CTRAN_CU_MEM_HANDLE_TYPE_NONE hipMemHandleTypeNone
+#else
+#define CTRAN_CUDA_MEMCPY_ASYNC cudaMemcpyAsync
+#define CTRAN_CUDA_MEMCPY cudaMemcpy
+#define CTRAN_CUDA_MEMCPY_DEFAULT cudaMemcpyDefault
+#define CTRAN_CUDA_MEMCPY_DEVICE_TO_HOST cudaMemcpyDeviceToHost
+#define CTRAN_CUDA_MEMCPY_HOST_TO_DEVICE cudaMemcpyHostToDevice
+#define CTRAN_CUDA_HOST_ALLOC cudaHostAlloc
+#define CTRAN_CUDA_HOST_ALLOC_DEFAULT cudaHostAllocDefault
+#define CTRAN_CUDA_FREE_HOST cudaFreeHost
+#define CTRAN_CUDA_SUCCESS cudaSuccess
+#define CTRAN_CUDA_EVENT_CREATE_WITH_FLAGS cudaEventCreateWithFlags
+#define CTRAN_CUDA_EVENT_DISABLE_TIMING cudaEventDisableTiming
+#define CTRAN_CUDA_EVENT_DESTROY cudaEventDestroy
+#define CTRAN_CUDA_EVENT_RECORD cudaEventRecord
+#define CTRAN_CUDA_EVENT_SYNCHRONIZE cudaEventSynchronize
+#define CTRAN_CUDA_EVENT_WAIT_DEFAULT cudaEventWaitDefault
+#define CTRAN_CUDA_EVENT_WAIT_EXTERNAL cudaEventWaitExternal
+#define CTRAN_CUDA_STREAM_WAIT_EVENT cudaStreamWaitEvent
+#define CTRAN_CUDA_FUNC_SET_ATTRIBUTE cudaFuncSetAttribute
+#define CTRAN_CUDA_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_MEMORY_SIZE \
+  cudaFuncAttributeMaxDynamicSharedMemorySize
+#define CTRAN_CUDA_LAUNCH_KERNEL cudaLaunchKernel
+#define CTRAN_CUDA_SET_DEVICE cudaSetDevice
+#define CTRAN_CUDA_DEVICE_GET_ATTRIBUTE cudaDeviceGetAttribute
+#define CTRAN_CUDA_DEV_ATTR_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN \
+  cudaDevAttrMaxSharedMemoryPerBlockOptin
+#define CTRAN_CU_MEM_HANDLE_TYPE_NONE CU_MEM_HANDLE_TYPE_NONE
+#endif
+
 /**
  * Error check macros.
  * We use logging level following the rules below:

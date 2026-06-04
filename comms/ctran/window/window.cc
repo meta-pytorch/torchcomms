@@ -5,17 +5,17 @@
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#if defined(CTRAN_HAS_PRIMS)
+#include "comms/ctran/prims/MultiPeerTransport.h"
+#include "comms/ctran/prims/window/DeviceWindow.cuh"
+#include "comms/ctran/prims/window/HostWindow.h"
+#endif
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/DevMemType.h"
 #include "comms/ctran/window/CtranWin.h"
 #include "comms/ctran/window/Types.h"
-#if defined(ENABLE_PIPES)
-#include "comms/pipes/MultiPeerTransport.h"
-#include "comms/pipes/window/DeviceWindow.cuh"
-#include "comms/pipes/window/HostWindow.h"
-#endif
 #include "comms/utils/logger/LogUtils.h"
 
 using ctran::window::RemWinInfo;
@@ -39,6 +39,24 @@ CtranWin::CtranWin(CtranComm* comm, size_t size, DevMemType bufType)
     val.store(1);
   for (auto& val : waitSignalVal)
     val.store(1);
+}
+
+uint64_t CtranWin::ctranNextWaitSignalVal(int peer) {
+  FB_CHECKTHROW_EX_NOCOMM(
+      peer < signalSize,
+      "peer rank {} exceed window signal buffer size {}",
+      peer,
+      signalSize);
+  return waitSignalVal[peer].fetch_add(1, std::memory_order_relaxed);
+}
+
+uint64_t CtranWin::ctranNextSignalVal(int peer) {
+  FB_CHECKTHROW_EX_NOCOMM(
+      peer < signalSize,
+      "peer rank {} exceed window signal buffer size {}",
+      peer,
+      signalSize);
+  return signalVal[peer].fetch_add(1, std::memory_order_relaxed);
 }
 
 commResult_t CtranWin::exchange() {
@@ -185,7 +203,11 @@ commResult_t CtranWin::allocate(void* userBufPtr) {
   allocDataBuf_ = userBufPtr == nullptr ? true : false;
 
   void* addr = nullptr;
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+  hipMemGenericAllocationHandle_t allocHandle = nullptr;
+#else
   CUmemGenericAllocationHandle allocHandle;
+#endif
   auto signalBytes = signalSize * sizeof(uint64_t);
   size_t allocSize = allocDataBuf_ ? dataBytes + signalBytes : signalBytes;
   if (isGpuMem()) {
@@ -199,10 +221,18 @@ commResult_t CtranWin::allocate(void* userBufPtr) {
             "allocate"));
 
     // query the actually allocated range of the memory
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+    range_ = allocSize;
+#else
     CUdeviceptr pbase = 0;
     FB_CUCHECK(cuMemGetAddressRange(&pbase, &range_, (CUdeviceptr)addr));
+#endif
   } else {
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+    FB_CUDACHECK(hipMallocHost(&addr, allocSize));
+#else
     FB_CUDACHECK(cudaMallocHost(&addr, allocSize));
+#endif
     range_ = allocSize;
   }
 
@@ -279,7 +309,11 @@ commResult_t CtranWin::free(bool skipBarrier) {
     if (isGpuMem()) {
       FB_COMMCHECK(utils::commCuMemFree(addr));
     } else {
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+      FB_CUDACHECK(hipFreeHost(addr));
+#else
       FB_CUDACHECK(cudaFreeHost(addr));
+#endif
     }
     return commSuccess;
   };
@@ -309,8 +343,8 @@ commResult_t CtranWin::free(bool skipBarrier) {
     }
   }
 
-#if defined(ENABLE_PIPES)
   // HostWindow handles cleanup via RAII
+#if defined(CTRAN_HAS_PRIMS)
   hostWindow_.reset();
 #endif
 
@@ -324,10 +358,16 @@ bool CtranWin::nvlEnabled(int rank) const {
       comm->ctran_->mapper->hasBackend(rank, CtranMapperBackend::NVL);
 }
 
-#if defined(ENABLE_PIPES)
 commResult_t CtranWin::getDeviceWin(
-    comms::pipes::DeviceWindow* devWin,
-    const comms::pipes::WindowConfig& config) {
+    ctran::prims::DeviceWindow* devWin,
+    const ctran::prims::WindowConfig& config) {
+#if !defined(CTRAN_HAS_PRIMS)
+  (void)devWin;
+  (void)config;
+  FB_ERRORRETURN(
+      commInvalidUsage,
+      "getDeviceWin: CTRAN prims transport integration is not compiled for this platform.");
+#else
   auto* transport = comm->multiPeerTransport_.get();
   if (!transport) {
     FB_ERRORRETURN(
@@ -349,7 +389,7 @@ commResult_t CtranWin::getDeviceWin(
         winDataPtr,
         dataBytes);
 
-    hostWindow_ = std::make_unique<comms::pipes::HostWindow>(
+    hostWindow_ = std::make_unique<ctran::prims::HostWindow>(
         *transport, config, winDataPtr, dataBytes);
 
     hostWindow_->exchange();
@@ -358,10 +398,10 @@ commResult_t CtranWin::getDeviceWin(
         INFO, INIT, "CTRAN-WINDOW: Rank {} device window built", myRank);
   }
 
-  new (devWin) comms::pipes::DeviceWindow(hostWindow_->getDeviceWindow());
+  new (devWin) ctran::prims::DeviceWindow(hostWindow_->getDeviceWindow());
   return commSuccess;
+#endif
 }
-#endif // ENABLE_PIPES
 
 commResult_t ctranWinAllocate(
     size_t size,

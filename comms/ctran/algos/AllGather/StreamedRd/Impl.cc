@@ -7,6 +7,8 @@
 #include "comms/ctran/algos/AllGather/StreamedRd/Common.h"
 #include "comms/ctran/algos/AllGather/StreamedRd/Plan.h"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/gpe/CtranGpe.h"
+#include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/utils/DevUtils.cuh"
 
@@ -182,11 +184,11 @@ commResult_t ctranAllGatherStreamedRd(
       config,
       reinterpret_cast<void*>(ncclKernelAllGatherCtranStreamedRd)));
   if (extraCopyBuff != nullptr) {
-    FB_CUDACHECK(cudaMemcpyAsync(
+    FB_CUDACHECK(CTRAN_CUDA_MEMCPY_ASYNC(
         recvbuff,
         extraCopyBuff,
         sendcount * commTypeSize(datatype) * comm->statex_->nRanks(),
-        cudaMemcpyDefault,
+        CTRAN_CUDA_MEMCPY_DEFAULT,
         stream));
   }
   return commSuccess;

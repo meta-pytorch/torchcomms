@@ -4,6 +4,8 @@
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/commstate/CommStateX.h"
+#include "comms/ctran/gpe/CtranGpe.h"
+#include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 

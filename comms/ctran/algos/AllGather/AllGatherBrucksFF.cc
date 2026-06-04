@@ -2,8 +2,19 @@
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
+#include "comms/ctran/gpe/CtranGpe.h"
+#include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/profiler/Profiler.h"
+#include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/DevUtils.cuh"
+
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+#define CTRAN_MEMCPY_ASYNC CTRAN_CUDA_MEMCPY_ASYNC
+static constexpr auto kMemcpyDefault = CTRAN_CUDA_MEMCPY_DEFAULT;
+#else
+#define CTRAN_MEMCPY_ASYNC CTRAN_CUDA_MEMCPY_ASYNC
+static constexpr auto kMemcpyDefault = CTRAN_CUDA_MEMCPY_DEFAULT;
+#endif
 
 __global__ void ncclKernelAllGatherCtranBrucks(
     int* flag,
@@ -332,11 +343,11 @@ commResult_t ctranAllGatherBrucksFF(
       config,
       reinterpret_cast<void*>(ncclKernelAllGatherCtranBrucks)));
   if (extraCopyBuff != nullptr) {
-    FB_CUDACHECK(cudaMemcpyAsync(
+    FB_CUDACHECK(CTRAN_MEMCPY_ASYNC(
         recvbuff,
         extraCopyBuff,
         sendcount * commTypeSize(datatype) * comm->statex_->nRanks(),
-        cudaMemcpyDefault,
+        kMemcpyDefault,
         stream));
   }
   return commSuccess;

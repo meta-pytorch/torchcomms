@@ -2,6 +2,8 @@
 
 #include <folly/init/Init.h>
 
+#include "comms/ctran/algos/CtranAlgo.h"
+
 #include "CtranDistAlgoDevUTBase.h"
 #include "CtranDistAlgoDevUTKernels.h"
 

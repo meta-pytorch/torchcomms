@@ -6,7 +6,6 @@
 #
 
 ENABLE_TCPDM ?= 0
-ENABLE_PIPES ?= 1
 
 # Assuming calling from src directory
 SRCDIR = $(abspath ./)
@@ -18,15 +17,13 @@ include ../makefiles/version.mk
 
 ##### Mock Scuba Data in CMake build
 CXXFLAGS += -DMOCK_SCUBA_DATA -DFOLLY_XLOG_STRIP_PREFIXES=\"${BASE_DIR}\"
+CXXFLAGS += -DCTRAN_HAS_PRIMS
+NVCUFLAGS += -DCTRAN_HAS_PRIMS
 # Use header-only fmt to avoid runtime dependency on libfmt.so
 CXXFLAGS += -DFMT_HEADER_ONLY=1
 
 ifeq ($(ENABLE_TCPDM),0)
 CXXFLAGS += -DCTRAN_DISABLE_TCPDM
-endif
-
-ifeq ($(ENABLE_PIPES),1)
-CXXFLAGS += -DENABLE_PIPES
 endif
 
 ##### src files
@@ -127,9 +124,16 @@ LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/AllGatherP/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/ReduceScatter/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/AllReduce/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/AllToAll/*.cc)
+LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/AllToAll/*.cu)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/SendRecv/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/Broadcast/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/RMA/*.cc)
+LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/prims/*.cc)
+LIBSRCFILES += ${BASE_DIR}/comms/ctran/prims/MultipeerIbgdaTransportCuda.cu
+LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/prims/rdma/*.cc)
+LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/prims/window/*.cc)
+LIBSRCFILES += ${BASE_DIR}/comms/ctran/prims/collectives/AllGatherLauncher.cu
+LIBSRCFILES += ${BASE_DIR}/comms/ctran/prims/collectives/AllToAllv.cu
 
 INCLUDES := -Iinclude
 INCLUDES += -Iinclude/plugin
@@ -268,9 +272,6 @@ DEPFILES   := $(LIBOBJ:%.o=%.d) $(BINOBJ:%.o=%.d)
 LDFLAGS    += -Wl,--no-undefined
 LDFLAGS    += -L${CUDA_LIB} -L${BUILDDIR} -L${CONDA_LIB_DIR} -l$(CUDARTLIB) -lpthread -lm -lrt -ldl
 LDFLAGS    += ${THIRD_PARTY_LDFLAGS}
-ifeq ($(ENABLE_PIPES),1)
-LDFLAGS    += -lpipes
-endif
 LDFLAGS    += -Wl,--version-script=version.script
 ifeq ($(CUDARTLIB), cudarthook)
     # Ensure that cudart symbols are resolved within the module itself.
@@ -441,7 +442,7 @@ $(OBJDIR)/%.o : %.c $(INCTARGETS)
 $(OBJDIR)/%.cu.o : %.cu $(INCTARGETS)
 	@printf "Compiling  %-35s > %s\n" $< $@
 	mkdir -p `dirname $@`
-	$(NVCC) $(NVCC_GENCODE) $(CXXSTD) -Xcompiler -fPIC -Xcompiler -fvisibility=hidden -I. -I$(INCDIR) -I$(OBJDIR)/include $(INCLUDES) -I$(INCPLUGIN) -I$(DOCA_HOME)/include -c $< -o $@
+	$(NVCC) $(NVCUFLAGS) -Xcompiler -fPIC -Xcompiler -fvisibility=hidden -I. -I$(INCDIR) -I$(OBJDIR)/include $(INCLUDES) -I$(INCPLUGIN) -I$(DOCA_HOME)/include -c $< -o $@
 
 $(OBJDIR)/misc/git_version.o: $(GIT_VERSION_FILE)
 

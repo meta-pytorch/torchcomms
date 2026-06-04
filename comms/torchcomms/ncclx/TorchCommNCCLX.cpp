@@ -21,9 +21,7 @@
 #include "comms/torchcomms/utils/Utils.hpp"
 #include "comms/utils/CudaRAII.h"
 
-#if defined(ENABLE_PIPES)
 #include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
-#endif
 
 namespace torch::comms {
 
@@ -2113,16 +2111,13 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::gather(
 std::shared_ptr<TorchCommWindow> TorchCommNCCLX::new_window(
     const std::optional<at::Tensor>& tensor) {
   std::shared_ptr<TorchCommWindow> win;
-#if defined(ENABLE_PIPES)
   // Select Pipes backend when NCCL_CTRAN_USE_PIPES is enabled.
   // Pipes uses ctran IBGDA/NVLink instead of GIN for device-side P2P.
   const char* pipes_env = std::getenv("NCCL_CTRAN_USE_PIPES");
   if (pipes_env != nullptr && std::string_view(pipes_env) == "1") {
     win = std::make_shared<TorchCommWindowNCCLXPipes>(
         nccl_comm_, shared_from_this());
-  } else
-#endif
-  {
+  } else {
     win = std::make_shared<TorchCommWindowNCCLXGin>(
         nccl_comm_, shared_from_this());
   }
@@ -2339,7 +2334,6 @@ class NCCLXRegistration {
 static const NCCLXRegistration registration{};
 } // namespace
 
-#if defined(ENABLE_PIPES)
 int64_t TorchCommNCCLX::get_device_transport() {
   if (!device_transport_handle_) {
     device_transport_handle_ =
@@ -2348,6 +2342,5 @@ int64_t TorchCommNCCLX::get_device_transport() {
   }
   return reinterpret_cast<int64_t>(device_transport_handle_.get());
 }
-#endif
 
 } // namespace torch::comms

@@ -3,11 +3,17 @@
 #pragma once
 #include <sstream>
 #include <vector>
-#include "comms/ctran/mapper/CtranMapper.h"
+
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/ctran/utils/TmpBufSegManager.h"
 
 using ::ctran::utils::TmpBufSegManager;
+
+class CtranMapper;
+
+namespace ncclx {
+class CommStateX;
+} // namespace ncclx
 
 /* Convenient types to manage temporary buffers used in algorithms */
 
@@ -85,7 +91,7 @@ struct RemRegBuf {
   std::string toString() const {
     std::stringstream ss;
     ss << "[REM_REG_BUF] peerRank: " << peerRank << " ptr: " << ptr
-       << ", backend: " << CtranMapper::backendToStr(rkey.backend);
+       << ", backend: " << CtranMapperBackendToString(rkey.backend);
     if (rkey.backend == CtranMapperBackend::IB) {
       for (int i = 0; i < rkey.ibKey.nKeys; i++) {
         ss << ", rkey: " << rkey.ibKey.rkeys[i];
@@ -147,7 +153,7 @@ class BufManager {
         memKey_(memKey) {};
   ~BufManager() {
     // It is recommended to call release() explicitly to catch any error
-    FB_COMMCHECKIGNORE(release());
+    (void)release();
   }
 
   // Check if the buffer is pre-inserted
@@ -276,7 +282,10 @@ class BufManager {
         base.memKey = memBaseKey;
         base.size = totalLen;
         base.type = (bufmanager::MemType)type;
-        FB_COMMCHECK(commitBase(base, statex_, logMetaData_));
+        auto result = commitBase(base, statex_, logMetaData_);
+        if (result != commSuccess) {
+          return result;
+        }
       }
     }
     isCommitted_ = true;
@@ -291,8 +300,11 @@ class BufManager {
       const int maxNumRanks) {
     for (auto& base : memBases_) {
       // zero-sized base is skipped internally
-      FB_COMMCHECK(
-          exchangeBase(base, peerRanks, maxNumRanks, statex_, mapper_));
+      auto result =
+          exchangeBase(base, peerRanks, maxNumRanks, statex_, mapper_);
+      if (result != commSuccess) {
+        return result;
+      }
     }
     isExchanged_ = true;
     return commSuccess;
@@ -303,7 +315,10 @@ class BufManager {
   inline commResult_t release() {
     for (auto& base : memBases_) {
       // zero-sized base is skipped internally
-      FB_COMMCHECK(releaseBase(base, statex_, mapper_));
+      auto result = releaseBase(base, statex_, mapper_);
+      if (result != commSuccess) {
+        return result;
+      }
     }
     isCommitted_ = false;
     isExchanged_ = false;

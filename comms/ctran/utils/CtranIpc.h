@@ -3,12 +3,10 @@
 #ifndef CTRAN_IPC_H_
 #define CTRAN_IPC_H_
 
-#include <algorithm>
-#include <sstream>
 #include <vector>
 
+#include "comms/ctran/utils/CtranIpcTypes.h"
 #include "comms/ctran/utils/CudaWrap.h"
-#include "comms/ctran/utils/DevMemType.h"
 #include "comms/utils/commSpecs.h"
 
 // TODO: remove this once we have a more portable way for CTRAN IPC
@@ -36,94 +34,6 @@ static inline bool CtranIpcSupport() {
   return ctran::utils::getCuMemSysSupported();
 #endif
 }
-
-typedef union {
-  uint64_t fd; // hold a CUmemGenericAllocationHandle for UDS fd support
-#if CUDART_VERSION >= 12040
-  CUmemFabricHandle handle;
-#else
-  // Dummy handle to make sure the size is the same as CUmemFabricHandle.
-  struct {
-    unsigned char data[CU_IPC_HANDLE_SIZE];
-  } handle;
-#endif
-  cudaIpcMemHandle_t cudaIpcHandle;
-} CtranIpcHandle;
-
-struct CtranIpcSegDesc {
-  CtranIpcHandle sharedHandle{0};
-  size_t range{0};
-};
-
-static inline void printHandle(
-    std::stringstream& ss,
-    const DevMemType memType,
-    const CUmemAllocationHandleType& cuMemHandleType,
-    const CtranIpcHandle& handle) {
-  bool isCumemFabric = false;
-#if CUDART_VERSION >= 12040
-  isCumemFabric = cuMemHandleType & CU_MEM_HANDLE_TYPE_FABRIC;
-#endif
-  if (memType == DevMemType::kCumem) {
-    if (isCumemFabric) {
-      ss << "fabric handle: ";
-      for (int j = 0; j < CU_IPC_HANDLE_SIZE; ++j) {
-        ss << std::hex << static_cast<int>(handle.handle.data[j]);
-      }
-    } else {
-      ss << "posix fd handle 0x" << std::hex << handle.fd;
-    }
-  } else if (memType == DevMemType::kCudaMalloc) {
-    ss << "ipc handle: ";
-    for (int j = 0; j < CU_IPC_HANDLE_SIZE; ++j) {
-      ss << "0x" << std::hex << static_cast<int>(handle.handle.data[j]);
-    }
-  } else {
-    ss << "unsupported device memory type " << devMemTypeStr(memType);
-  }
-}
-
-// maxNumHandles is needed so that CtranIpcDesc objects are constant
-// size for communication. It is set to 2 to reduce ControlMsg size, since we
-// temporarily disable disjoint segments support for NVL peers.
-// FIXME: this is a temporary hack; we should support arbitrary size via dynamic
-// allocated CtranIpcSegDesc list.
-#define CTRAN_IPC_INLINE_SEGMENTS 2
-
-struct CtranIpcDesc {
-  // Total number of segments including any extra segments beyond inline.
-  int totalSegments{0};
-  void* base{nullptr};
-  size_t range{0};
-  // pass local pid for peer to import sharedHandle as file descriptor
-  int pid{0};
-  DevMemType memType{DevMemType::kHostUnregistered};
-  CUmemAllocationHandleType cuMemHandleType{CU_MEM_HANDLE_TYPE_NONE};
-
-  // Preallocated payload for multi-segment IPC memory.
-  CtranIpcSegDesc segments[CTRAN_IPC_INLINE_SEGMENTS] = {};
-
-  // Number of valid entries in the inline segments[] array.
-  int numInlineSegments() const {
-    return std::min(totalSegments, CTRAN_IPC_INLINE_SEGMENTS);
-  }
-
-  std::string toString() const {
-    std::stringstream ss;
-    ss << "base: " << base << ", range: " << std::dec << range
-       << ", pid: " << pid;
-    ss << ", segments: [";
-    for (int i = 0; i < CTRAN_IPC_INLINE_SEGMENTS; ++i) {
-      if (i != 0) {
-        ss << ", ";
-      }
-      printHandle(ss, memType, cuMemHandleType, segments[i].sharedHandle);
-      ss << " range: " << std::dec << segments[i].range;
-    }
-    ss << "]";
-    return ss.str();
-  }
-};
 
 class CtranIpcMem {
   enum Mode {

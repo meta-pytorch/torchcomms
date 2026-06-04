@@ -4,6 +4,7 @@
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
+#include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/ctran/utils/MathUtils.h"
@@ -58,7 +59,15 @@ bool ctranAllGatherSupport(
       }
       break;
     case NCCL_ALLGATHER_ALGO::cthierarchical_ring:
-#if defined(ENABLE_PIPES)
+#if !defined(CTRAN_HAS_PRIMS)
+      CLOGF_SUBSYS(
+          WARN,
+          COLL,
+          "AllGather {} requires CTRAN prims transport integration, which is not compiled for this platform",
+          allGatherAlgoName(algo));
+      supported = false;
+      break;
+#else
       if (statex->nRanks() <= 1 || statex->nNodes() <= 1) {
         CLOGF_SUBSYS(
             WARN,
@@ -102,10 +111,8 @@ bool ctranAllGatherSupport(
         break;
       }
       supported = true;
-#else
-      supported = false;
-#endif
       break;
+#endif
     case NCCL_ALLGATHER_ALGO::ctdirect:
     case NCCL_ALLGATHER_ALGO::ctran:
       supported = true;
@@ -123,8 +130,9 @@ bool ctranAllGatherSupport(
       ctran::utils::cudagraph::StreamCaptureInfo captureInfo;
       auto err =
           ctran::utils::cudagraph::getStreamCaptureInfo(stream, captureInfo);
-      supported = (err == cudaSuccess) &&
-          (captureInfo.status == cudaStreamCaptureStatusActive);
+      supported = (err == ctran::utils::cudagraph::kStreamCaptureSuccess) &&
+          (captureInfo.status ==
+           ctran::utils::cudagraph::kStreamCaptureStatusActive);
       if (!supported) {
         CLOGF_SUBSYS(
             INFO,
@@ -203,7 +211,8 @@ commResult_t ctranAllGather(
     ctran::utils::cudagraph::StreamCaptureInfo captureInfo;
     FB_CUDACHECK(
         ctran::utils::cudagraph::getStreamCaptureInfo(stream, captureInfo));
-    if (captureInfo.status == cudaStreamCaptureStatusActive) {
+    if (captureInfo.status ==
+        ctran::utils::cudagraph::kStreamCaptureStatusActive) {
       return ctranAllGatherCudagraphAware(
           sendbuff, recvbuff, sendcount, datatype, comm, stream, algo);
     }

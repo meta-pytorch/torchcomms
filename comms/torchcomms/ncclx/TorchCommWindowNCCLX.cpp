@@ -18,9 +18,7 @@
 #include "comms/torchcomms/device/DeviceBackendTraits.hpp"
 #endif
 
-#if defined(ENABLE_PIPES)
 #include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
-#endif
 
 namespace torch::comms {
 
@@ -679,14 +677,9 @@ template class TorchCommWindowNCCLX<torchcomms::device::NCCLDeviceBackend>;
 template class TorchCommWindowNCCLX<HostOnlyBackend>;
 #endif
 
-// Pipes instantiation is independent of the device API flag.
-// ENABLE_PIPES can be set without TORCHCOMMS_HAS_NCCL_DEVICE_API (e.g.,
-// NCCLX 2.27 CMake builds with ENABLE_PIPES=1). In that case, host-side
-// window operations (put, signal, wait_signal) work; device API methods
-// (get_device_window, register_local_buffer) fall back to the base class
-// default that throws "not yet supported".
-#if defined(ENABLE_PIPES)
+// Pipes instantiation is independent of the device API flag. Host-side window
+// operations work without TORCHCOMMS_HAS_NCCL_DEVICE_API; device API methods
+// fall back to the base class default that throws "not yet supported".
 template class TorchCommWindowNCCLX<torchcomms::device::PipesDeviceBackend>;
-#endif
 
 } // namespace torch::comms

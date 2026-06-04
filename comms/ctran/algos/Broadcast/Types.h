@@ -8,7 +8,7 @@
 #ifdef CTRAN_DISABLE_TCPDM
 #include "comms/ctran/backends/mock/CtranTcpDmBaseMock.h"
 #else
-#include "comms/tcp_devmem/unpack/batch_unpack_kernel.h"
+#include "comms/tcp_devmem/unpack/batch_unpack_types.h"
 #endif
 
 // Forward declaration

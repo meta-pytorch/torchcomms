@@ -8,13 +8,22 @@
 #include "comms/ctran/utils/ErrorStackTraceUtil.h"
 #include "comms/utils/logger/LogUtils.h"
 
-#if CUDART_VERSION >= 11030
+#if !defined(__HIP_PLATFORM_AMD__) && CUDART_VERSION >= 11030
 #include <cudaTypedefs.h>
 
 #endif
 
 #if defined(__HIP_PLATFORM_AMD__)
 #include "comms/ctran/utils/HipGdrCheck.h"
+
+using CUdeviceptr = void*;
+using CUmemGenericAllocationHandle = hipMemGenericAllocationHandle_t;
+using cudaStream_t = hipStream_t;
+using cudaStreamCaptureStatus = hipStreamCaptureStatus;
+#define cudaStreamGetCaptureInfo hipStreamGetCaptureInfo
+#define cudaStreamIsCapturing hipStreamIsCapturing
+#define cudaStreamCaptureStatusNone hipStreamCaptureStatusNone
+#define cudaSuccess hipSuccess
 #endif
 
 template <>
