@@ -37,4 +37,15 @@ struct RingReduceScatterArgs {
   T* output{nullptr};
 };
 
+template <int NumRings, typename T>
+struct RingAllReduceArgs {
+  int my_rank{0};
+  int num_ranks{0};
+  std::size_t chunk_elements{0};
+  std::size_t signaling_data_size{0};
+  RingTopology rings[NumRings]{};
+  const T* input{nullptr};
+  T* output{nullptr};
+};
+
 } // namespace comms::pipes
