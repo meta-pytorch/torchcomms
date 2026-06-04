@@ -66,4 +66,15 @@ TEST_F(TorchCommAbortTest, AbortSetsAbortedStateWhenEnabled) {
   EXPECT_TRUE(comm_->isAborted());
 }
 
+TEST_F(TorchCommAbortTest, SetTimeoutDelegatesToBackend) {
+  constexpr std::chrono::milliseconds kTimeout{1234};
+  auto backend =
+      std::dynamic_pointer_cast<TorchCommFake>(comm_->getBackendImpl());
+  ASSERT_NE(backend, nullptr);
+
+  comm_->setTimeout(kTimeout);
+
+  EXPECT_EQ(backend->getTimeoutForTest(), kTimeout);
+}
+
 } // namespace torch::comms
