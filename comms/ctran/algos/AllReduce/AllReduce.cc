@@ -29,6 +29,18 @@ bool ctranAllReduceSupport(CtranComm* comm, enum NCCL_ALLREDUCE_ALGO algo) {
     case NCCL_ALLREDUCE_ALGO::ctdirect:
       return true;
     case NCCL_ALLREDUCE_ALGO::ctree:
+      if (!NCCL_CTRAN_USE_PIPES) {
+        CLOGF(
+            WARN,
+            "ctree algo requires NCCL_CTRAN_USE_PIPES=1 for Pipes transports");
+        return false;
+      }
+      if (comm->statex_->nNodes() > 1 && !NCCL_CTRAN_IBGDA_SENDRECV_ENABLE) {
+        CLOGF(
+            WARN,
+            "ctree algo requires NCCL_CTRAN_IBGDA_SENDRECV_ENABLE=1 for inter-node IB transfers");
+        return false;
+      }
       return true;
     default: // invalid query
       return false;
