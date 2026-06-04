@@ -965,9 +965,11 @@ doca_error_t doca_gpu_verbs_unexport_multi_qps_dev(struct doca_gpu *gpu_dev,
     return status;
 }
 
-static inline void priv_cpu_proxy_progress_full_assisted(struct doca_gpu_verbs_qp *qp) {
+static inline void priv_cpu_proxy_progress_full_assisted(struct doca_gpu_verbs_qp *qp,
+                                                         bool *out_progressed) {
     uint32_t tmp_db = 0;
     __be32 dbr_val;
+    bool progressed = false;
 
     tmp_db = (uint32_t) * ((volatile uint64_t *)qp->cpu_db);
     if (tmp_db != qp->sq_wqe_pi_last) {
@@ -987,7 +989,9 @@ static inline void priv_cpu_proxy_progress_full_assisted(struct doca_gpu_verbs_q
         *((volatile uint64_t *)qp->sq_db) = *((volatile uint64_t *)&ctrl_seg);
 
         qp->sq_wqe_pi_last = tmp_db;
+        progressed = true;
     }
+    *out_progressed = progressed;
 }
 
 static inline void priv_cpu_proxy_progress_dbr_assisted(struct doca_gpu_verbs_qp *qp) {
@@ -1008,7 +1012,8 @@ static inline void priv_cpu_proxy_progress_dbr_assisted(struct doca_gpu_verbs_qp
     }
 }
 
-doca_error_t doca_gpu_verbs_cpu_proxy_progress(struct doca_gpu_verbs_qp *qp) {
+doca_error_t doca_gpu_verbs_cpu_proxy_progress(struct doca_gpu_verbs_qp *qp, bool *out_progressed) {
+    bool progressed = false;
     if (qp == nullptr) return DOCA_ERROR_INVALID_VALUE;
 
     if (qp->cpu_proxy != true) return DOCA_ERROR_NOT_SUPPORTED;
@@ -1016,22 +1021,26 @@ doca_error_t doca_gpu_verbs_cpu_proxy_progress(struct doca_gpu_verbs_qp *qp) {
     if (qp->send_dbr_mode_ext == DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_NO_DBR_SW_EMULATED)
         priv_cpu_proxy_progress_dbr_assisted(qp);
     else
-        priv_cpu_proxy_progress_full_assisted(qp);
+        priv_cpu_proxy_progress_full_assisted(qp, &progressed);
 
+    if (out_progressed) *out_progressed = progressed;
     return DOCA_SUCCESS;
 }
 
 static void *priv_service_mainloop(void *args) {
     struct doca_gpu_verbs_service *service = (struct doca_gpu_verbs_service *)args;
-    const unsigned int num_loops = 1000;
+    bool progressed = false;
 
     while (service->running) {
         pthread_rwlock_rdlock(&service->service_lock);
-        for (unsigned int i = 0; i < num_loops; i++) {
+        do {
+            progressed = false;
             for (auto qp : *service->qps) {
-                doca_gpu_verbs_cpu_proxy_progress(qp);
+                bool qp_progressed = false;
+                doca_gpu_verbs_cpu_proxy_progress(qp, &qp_progressed);
+                progressed |= qp_progressed;
             }
-        }
+        } while (progressed);
         pthread_rwlock_unlock(&service->service_lock);
         sched_yield();
     }

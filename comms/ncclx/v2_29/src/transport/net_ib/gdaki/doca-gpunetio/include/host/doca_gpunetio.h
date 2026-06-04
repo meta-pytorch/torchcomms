@@ -321,13 +321,15 @@ doca_error_t doca_gpu_verbs_unexport_uar(uint64_t *uar_addr_gpu);
  *
  * @param [in] qp_cpu
  * QP to progress
+ * @param [out] out_progressed
+ * Whether the QP has been progressed. NULL if not needed.
  *
  * @return
  * DOCA_SUCCESS - in case of success.
  * doca_error code - in case of failure:
  * - DOCA_ERROR_INVALID_VALUE - if an invalid input had been received.
  */
-doca_error_t doca_gpu_verbs_cpu_proxy_progress(struct doca_gpu_verbs_qp *qp_cpu);
+doca_error_t doca_gpu_verbs_cpu_proxy_progress(struct doca_gpu_verbs_qp *qp_cpu, bool *out_progressed);
 
 /**
  * Create a service object.
