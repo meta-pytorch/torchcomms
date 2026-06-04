@@ -3083,6 +3083,21 @@ cvars:
      Number of threads in each thread block used for the AllReduce
      kernel.
 
+ - name        : NCCL_CTRAN_ALLREDUCE_PIPES_FLAT_RING_NUM_RINGS
+   type        : int
+   default     : -1
+   description : |-
+     Number of rings for the pipesflatring AllReduce algorithm. Set to
+     -1 for automatic selection. Supported explicit values are 1, 2, and 4.
+
+ - name        : NCCL_CTRAN_ALLREDUCE_PIPES_FLAT_RING_NUM_BLOCKS
+   type        : int
+   default     : -1
+   description : |-
+     Total grid blocks for the pipesflatring AllReduce algorithm. Set to
+     -1 for automatic selection. This is the total grid size split across
+     all rings.
+
  - name        : NCCL_CTRAN_ALLREDUCE_RING_AUTO_TUNE_MAX_BDP
    type        : int
    default     : 0
