@@ -302,9 +302,9 @@ enum doca_verbs_qp_send_dbr_mode {
 #define DOCA_VERBS_QP_ATTR_MAX_QP_RD_ATOMIC 0
 /**
  * @brief The maximum number of incoming RDMA Read/Atomic requests that a single QP can handle
- * concurrently as a responder. See note above.
+ * concurrently as a responder.
  */
-#define DOCA_VERBS_QP_ATTR_MAX_DEST_RD_ATOMIC 0
+#define DOCA_VERBS_QP_ATTR_MAX_DEST_RD_ATOMIC (1 << 17)
 
 /**
  * @brief Specifies the length of a GID (Global ID) in bytes.

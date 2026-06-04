@@ -436,8 +436,8 @@ $(PKGDIR)/%.pc : %.pc
 $(OBJDIR)/%.o : %.cc $(INCTARGETS)
 	@printf "Compiling  %-35s > %s\n" $< $@
 	mkdir -p `dirname $@`
-	$(CXX) -I. -I$(INCDIR) -I$(OBJDIR)/include $(CXXFLAGS) $(INCLUDES) -I$(INCPLUGIN) -I$(DOCA_HOME)/include -c $< -o $@
-	@$(CXX) -I. -I$(INCDIR) -I$(OBJDIR)/include $(CXXFLAGS) $(INCLUDES) -I$(INCPLUGIN) -I$(DOCA_HOME)/include -M $< > $(@:%.o=%.d.tmp)
+	$(CXX) -I. -I$(INCDIR) -I$(OBJDIR)/include $(CXXFLAGS) $(INCLUDES) -I$(INCPLUGIN) -I$(DOCA_HOME)/src -I$(DOCA_HOME)/include -c $< -o $@
+	@$(CXX) -I. -I$(INCDIR) -I$(OBJDIR)/include $(CXXFLAGS) $(INCLUDES) -I$(INCPLUGIN) -I$(DOCA_HOME)/src -I$(DOCA_HOME)/include -M $< > $(@:%.o=%.d.tmp)
 	@sed "0,/^.*:/s//$(subst /,\/,$@):/" $(@:%.o=%.d.tmp) > $(@:%.o=%.d)
 	@sed -e 's/.*://' -e 's/\\$$//' < $(@:%.o=%.d.tmp) | fmt -1 | \
                 sed -e 's/^ *//' -e 's/$$/:/' >> $(@:%.o=%.d)
@@ -446,8 +446,8 @@ $(OBJDIR)/%.o : %.cc $(INCTARGETS)
 $(OBJDIR)/%.o : %.cpp $(INCTARGETS)
 	@printf "Compiling  %-35s > %s\n" $< $@
 	mkdir -p `dirname $@`
-	$(CXX) -I. -I$(INCDIR) -I$(OBJDIR)/include $(CXXFLAGS) $(INCLUDES) -I$(INCPLUGIN) -I$(DOCA_HOME)/include -c $< -o $@
-	@$(CXX) -I. -I$(INCDIR) -I$(OBJDIR)/include $(CXXFLAGS) $(INCLUDES) -I$(INCPLUGIN) -I$(DOCA_HOME)/include -M $< > $(@:%.o=%.d.tmp)
+	$(CXX) -I. -I$(INCDIR) -I$(OBJDIR)/include $(CXXFLAGS) $(INCLUDES) -I$(INCPLUGIN) -I$(DOCA_HOME)/src -I$(DOCA_HOME)/include -c $< -o $@
+	@$(CXX) -I. -I$(INCDIR) -I$(OBJDIR)/include $(CXXFLAGS) $(INCLUDES) -I$(INCPLUGIN) -I$(DOCA_HOME)/src -I$(DOCA_HOME)/include -M $< > $(@:%.o=%.d.tmp)
 	@sed "0,/^.*:/s//$(subst /,\/,$@):/" $(@:%.o=%.d.tmp) > $(@:%.o=%.d)
 	@sed -e 's/.*://' -e 's/\\$$//' < $(@:%.o=%.d.tmp) | fmt -1 | \
                 sed -e 's/^ *//' -e 's/$$/:/' >> $(@:%.o=%.d)
@@ -456,8 +456,8 @@ $(OBJDIR)/%.o : %.cpp $(INCTARGETS)
 $(OBJDIR)/%.o : %.c $(INCTARGETS)
 	@printf "Compiling  %-35s > %s\n" $< $@
 	mkdir -p `dirname $@`
-	$(CC) -I. -I$(INCDIR) -I$(OBJDIR)/include $(CXXFLAGS) $(INCLUDES) -I$(INCPLUGIN) -I$(DOCA_HOME)/include -c $< -o $@
-	@$(CC) -I. -I$(INCDIR) -I$(OBJDIR)/include $(CXXFLAGS) $(INCLUDES) -I$(INCPLUGIN) -I$(DOCA_HOME)/include -M $< > $(@:%.o=%.d.tmp)
+	$(CC) -I. -I$(INCDIR) -I$(OBJDIR)/include $(CXXFLAGS) $(INCLUDES) -I$(INCPLUGIN) -I$(DOCA_HOME)/src -I$(DOCA_HOME)/include -c $< -o $@
+	@$(CC) -I. -I$(INCDIR) -I$(OBJDIR)/include $(CXXFLAGS) $(INCLUDES) -I$(INCPLUGIN) -I$(DOCA_HOME)/src -I$(DOCA_HOME)/include -M $< > $(@:%.o=%.d.tmp)
 	@sed "0,/^.*:/s//$(subst /,\/,$@):/" $(@:%.o=%.d.tmp) > $(@:%.o=%.d)
 	@sed -e 's/.*://' -e 's/\\$$//' < $(@:%.o=%.d.tmp) | fmt -1 | \
                 sed -e 's/^ *//' -e 's/$$/:/' >> $(@:%.o=%.d)
@@ -466,7 +466,7 @@ $(OBJDIR)/%.o : %.c $(INCTARGETS)
 $(OBJDIR)/%.cu.o : %.cu $(INCTARGETS)
 	@printf "Compiling  %-35s > %s\n" $< $@
 	mkdir -p `dirname $@`
-	$(NVCC) $(NVCC_GENCODE) $(CXXSTD) -Xcompiler -fPIC -Xcompiler -fvisibility=hidden -I. -I$(INCDIR) -I$(OBJDIR)/include $(INCLUDES) -I$(INCPLUGIN) -I$(DOCA_HOME)/include -c $< -o $@
+	$(NVCC) $(NVCC_GENCODE) $(CXXSTD) -Xcompiler -fPIC -Xcompiler -fvisibility=hidden -I. -I$(INCDIR) -I$(OBJDIR)/include $(INCLUDES) -I$(INCPLUGIN) -I$(DOCA_HOME)/src -I$(DOCA_HOME)/include -c $< -o $@
 
 $(OBJDIR)/misc/git_version.o: $(GIT_VERSION_FILE)
 
