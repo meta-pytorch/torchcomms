@@ -37,6 +37,9 @@ class Profiler {
   using EventDurationArray = std::array<uint64_t, NUM_PROFILER_EVENT_TYPES>;
   using EventTimerArray =
       std::array<utils::StopWatch<Clock>, NUM_PROFILER_EVENT_TYPES>;
+  using EventHook = std::function<void()>;
+  using EventHookArray =
+      std::array<std::vector<EventHook>, NUM_PROFILER_EVENT_TYPES>;
 
  public:
   // Construct with a reporter. If nullptr, defaults to
@@ -74,15 +77,18 @@ class Profiler {
     return controlTs_;
   }
 
-  void startEvent(
-      ProfilerEvent event,
-      const std::function<void(Profiler&)>& callback = {});
+  void startEvent(ProfilerEvent event);
 
-  void endEvent(
-      ProfilerEvent event,
-      const std::function<void(Profiler&)>& callback = {});
+  void endEvent(ProfilerEvent event);
 
   void reportToScuba();
+
+  // Register a hook that fires at the start / end of the given
+  // ProfilerEvent. Multiple hooks per (event, phase) are supported and
+  // fire in registration order. Hooks should be cheap and exception-free
+  // -- they run on the hot path of every traced collective.
+  void registerStartHook(ProfilerEvent event, EventHook hook);
+  void registerEndHook(ProfilerEvent event, EventHook hook);
 
  public:
   AlgoContext algoContext{};
@@ -98,6 +104,8 @@ class Profiler {
   uint64_t readyTs_{0};
   uint64_t controlTs_{0};
   std::unique_ptr<IProfilerReporter> reporter_;
+  EventHookArray startHooks_{};
+  EventHookArray endHooks_{};
 };
 
 } // namespace ctran

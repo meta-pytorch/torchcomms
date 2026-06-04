@@ -93,7 +93,7 @@ void computePacketSlice(
 
 } // namespace
 
-CtranMapper::CtranMapper(CtranComm* comm) {
+CtranMapper::CtranMapper(CtranComm* comm, ctran::Profiler* profiler) {
   const auto statex = comm->statex_.get();
   if (NCCL_MAPPERTRACE_ENABLE) {
     this->mapperTrace = std::make_unique<ncclx::colltrace::MapperTrace>();
@@ -177,7 +177,8 @@ CtranMapper::CtranMapper(CtranComm* comm) {
     }
   }
   if (enableBackends_[CtranMapperBackend::TCPDM]) {
-    this->ctranTcpDm = std::make_unique<class ctran::CtranTcpDm>(comm);
+    this->ctranTcpDm =
+        std::make_unique<class ctran::CtranTcpDm>(comm, profiler);
     CLOGF(WARN, "CTRAN-MAPPER: TCPDM backend is enabled");
   }
 
