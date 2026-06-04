@@ -400,7 +400,6 @@ commResult_t ctranAllGatherHierarchicalRing(
     overlapParams.ready_counters = comm->hierarchicalAgReadyCounters_;
     FB_COMMCHECK(ctran::ctranPreparePipesTrace(comm, overlapParams.trace));
     comms::pipes::launch_hierarchical_allgather_overlap(overlapParams);
-    ctran::ctranEnqueuePipesTraceDrain(comm, overlapParams.stream);
   } else {
     comms::pipes::launch_hierarchical_allgather_fused(params);
   }
