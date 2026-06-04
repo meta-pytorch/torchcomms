@@ -59,9 +59,15 @@ void launch_direct_allgather_nvl(const DirectAllgatherNvlLaunchParams& params) {
     new (&args.peers[peer]) P2pNvlTransportDevice(params.peers[peer]);
   }
 
-  direct_allgather_nvl_kernel<512>
-      <<<params.num_blocks, 512, 0, params.stream>>>(
-          args, make_launch_timeout(params.timeout_ms));
+  if (params.in_place) {
+    direct_allgather_nvl_kernel<true, 512>
+        <<<params.num_blocks, 512, 0, params.stream>>>(
+            args, make_launch_timeout(params.timeout_ms));
+  } else {
+    direct_allgather_nvl_kernel<false, 512>
+        <<<params.num_blocks, 512, 0, params.stream>>>(
+            args, make_launch_timeout(params.timeout_ms));
+  }
   PIPES_CUDA_CHECK(cudaGetLastError());
 }
 
@@ -91,9 +97,15 @@ void launch_hierarchical_allgather_fused(
     new (&args.nvl_peers[peer]) P2pNvlTransportDevice(params.nvl_peers[peer]);
   }
 
-  hierarchical_allgather_fused_kernel<512>
-      <<<params.ib_num_blocks, 512, 0, params.stream>>>(
-          args, make_launch_timeout(params.timeout_ms));
+  if (params.in_place) {
+    hierarchical_allgather_fused_kernel<true, 512>
+        <<<params.ib_num_blocks, 512, 0, params.stream>>>(
+            args, make_launch_timeout(params.timeout_ms));
+  } else {
+    hierarchical_allgather_fused_kernel<false, 512>
+        <<<params.ib_num_blocks, 512, 0, params.stream>>>(
+            args, make_launch_timeout(params.timeout_ms));
+  }
   PIPES_CUDA_CHECK(cudaGetLastError());
 }
 
@@ -142,9 +154,19 @@ void launch_hierarchical_allgather_overlap(
     new (&args.nvl_peers[peer]) P2pNvlTransportDevice(params.nvl_peers[peer]);
   }
 
-  hierarchical_allgather_overlap_kernel<512>
-      <<<params.ib_num_blocks + params.nvl_num_blocks, 512, 0, params.stream>>>(
-          args, make_launch_timeout(params.timeout_ms));
+  if (params.in_place) {
+    hierarchical_allgather_overlap_kernel<true, 512>
+        <<<params.ib_num_blocks + params.nvl_num_blocks,
+           512,
+           0,
+           params.stream>>>(args, make_launch_timeout(params.timeout_ms));
+  } else {
+    hierarchical_allgather_overlap_kernel<false, 512>
+        <<<params.ib_num_blocks + params.nvl_num_blocks,
+           512,
+           0,
+           params.stream>>>(args, make_launch_timeout(params.timeout_ms));
+  }
   PIPES_CUDA_CHECK(cudaGetLastError());
 }
 

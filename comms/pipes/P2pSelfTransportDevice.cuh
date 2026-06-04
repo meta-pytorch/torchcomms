@@ -98,7 +98,7 @@ class P2pSelfTransportDevice {
     }
 
     // Check for buffer overlap - only support non-overlapping buffers
-    assert_buffer_non_overlap(dst_d, src_d, nbytes);
+    assert_buffer_non_overlap(dst_d, src_d, nbytes, group);
 
     // Compute chunk size: aim for nbytes / total_groups per chunk,
     // aligned to 16 bytes (uint4 size) for efficient vectorized access
@@ -146,16 +146,13 @@ class P2pSelfTransportDevice {
    * @param src_d Source pointer (device memory)
    * @param nbytes Number of bytes to copy
    */
-  __device__ __forceinline__ void put(
-      ThreadGroup& group,
-      char* __restrict__ dst_d,
-      const char* __restrict__ src_d,
-      std::size_t nbytes) {
+  __device__ __forceinline__ void
+  put(ThreadGroup& group, char* dst_d, const char* src_d, std::size_t nbytes) {
 #if PIPES_IS_DEVICE_COMPILE
     if (nbytes == 0 || dst_d == src_d) {
       return;
     }
-    assert_buffer_non_overlap(dst_d, src_d, nbytes);
+    assert_buffer_non_overlap(dst_d, src_d, nbytes, group);
     memcpy_vectorized(dst_d, src_d, nbytes, group);
 #endif
   }
